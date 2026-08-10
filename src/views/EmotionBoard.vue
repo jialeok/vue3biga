@@ -1,9 +1,9 @@
-<template>
+﻿<template>
   <div id="emotionBoard" class="emotion-board">
     <div class="emotion-header" @click="toggleExpand">
-      <span class="emotion-title">情绪看板</span>
+      <span class="emotion-title">鎯呯华鐪嬫澘</span>
       <span class="emotion-summary" id="emotionSummary">{{ summaryText }}</span>
-      <span class="emotion-toggle" id="emotionToggleBtn">{{ expanded ? '▲' : '▼' }}</span>
+      <span class="emotion-toggle" id="emotionToggleBtn">{{ expanded ? '鈻? : '鈻? }}</span>
     </div>
     <div id="emotionContent" class="emotion-content" v-show="expanded">
       <div id="emotionVolumeLine" class="emotion-volume-line">
@@ -11,13 +11,13 @@
           <span>
             {{ part.label }}
             <span class="emv-val" :style="part.valueStyle">{{ part.valueText }}</span>
-            <span v-if="part.hasRefresh" class="emotion-refresh-btn" title="刷新预测量能" @click.stop="refreshPredictVol">
+            <span v-if="part.hasRefresh" class="emotion-refresh-btn" title="鍒锋柊棰勬祴閲忚兘" @click.stop="refreshPredictVol">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
             </span>
           </span>
           <span v-if="idx < volumeParts.length - 1" class="emotion-sep">/</span>
         </template>
-        <span v-if="volumeParts.length === 0">量能数据未抓取</span>
+        <span v-if="volumeParts.length === 0">閲忚兘鏁版嵁鏈姄鍙?/span>
       </div>
       <div id="emotionList" class="emotion-list">
         <div v-for="cfg in rowConfigs" :key="cfg.key" class="emotion-row">
@@ -31,8 +31,8 @@
           </div>
           <div class="emotion-trend-panel" :class="{ show: expandedRows.has(cfg.key) }">
             <template v-if="cfg.hasTrend">
-              <div class="emotion-trend-title">{{ cfg.title }} 近5日</div>
-              <div v-if="!trendPoints(cfg).length" style="font-size:11px;color:#94a3b8;padding:6px;">暂无趋势数据</div>
+              <div class="emotion-trend-title">{{ cfg.title }} 杩?鏃?/div>
+              <div v-if="!trendPoints(cfg).length" style="font-size:11px;color:#94a3b8;padding:6px;">鏆傛棤瓒嬪娍鏁版嵁</div>
               <TrendChart v-else :points="trendPoints(cfg)" color="#f59e0b" :percent="false" />
             </template>
           </div>
@@ -64,10 +64,10 @@ const fiveDays = computed(() => (data.value && data.value.five_days) || []);
 const summaryText = computed(() => {
   const m = metrics.value;
   const parts = [];
-  if (m.limitUp !== null && !isNaN(m.limitUp)) parts.push('涨停 ' + Math.round(m.limitUp));
-  if (m.limitDown !== null && !isNaN(m.limitDown)) parts.push('跌停 ' + Math.round(m.limitDown));
-  if (m.highestLb !== null && !isNaN(m.highestLb)) parts.push('最高 ' + Math.round(m.highestLb) + '板');
-  return parts.length > 0 ? parts.join(' / ') : '暂无数据';
+  if (m.limitUp !== null && !isNaN(m.limitUp)) parts.push('娑ㄥ仠 ' + Math.round(m.limitUp));
+  if (m.limitDown !== null && !isNaN(m.limitDown)) parts.push('璺屽仠 ' + Math.round(m.limitDown));
+  if (m.highestLb !== null && !isNaN(m.highestLb)) parts.push('鏈€楂?' + Math.round(m.highestLb) + '鏉?);
+  return parts.length > 0 ? parts.join(' / ') : '鏆傛棤鏁版嵁';
 });
 
 function yuanToYi(v) {
@@ -90,23 +90,23 @@ const volumeParts = computed(() => {
   const parts = [];
   if (predictYi !== null) {
     parts.push({
-      label: predictFallback ? '预测(昨)' : '预测',
-      valueText: predictYi + '亿',
+      label: predictFallback ? '棰勬祴(鏄?' : '棰勬祴',
+      valueText: predictYi + '浜?,
       valueStyle: '',
       hasRefresh: true
     });
   } else {
     parts.push({
-      label: '预测',
-      valueText: '待更新',
+      label: '棰勬祴',
+      valueText: '寰呮洿鏂?,
       valueStyle: 'color:#9ca3af;',
       hasRefresh: true
     });
   }
   if (yestYi !== null) {
     parts.push({
-      label: '昨日',
-      valueText: yestYi + '亿',
+      label: '鏄ㄦ棩',
+      valueText: yestYi + '浜?,
       valueStyle: '',
       hasRefresh: false
     });
@@ -177,7 +177,7 @@ async function loadEmotionData(date) {
       return rows[0];
     }
   } catch (e) {
-    console.warn('读取 emotion_data 失败:', e.message);
+    console.warn('璇诲彇 emotion_data 澶辫触:', e.message);
   }
   setEmotionDataCache({ date: date, data: null });
   return null;
@@ -196,7 +196,7 @@ async function refreshPredictVol(e) {
     const url = EMOTION_WORKER_BASE.replace(/\/$/, '') + '/refresh-emotion';
     const resp = await fetch(url, { method: 'POST' });
     const result = await resp.json();
-    if (!result.ok) throw new Error(result.error || '刷新失败');
+    if (!result.ok) throw new Error(result.error || '鍒锋柊澶辫触');
     const cache = getEmotionDataCache();
     if (cache && cache.date === uiStore.currentDate && cache.data) {
       cache.data.metrics = cache.data.metrics || {};
@@ -206,8 +206,8 @@ async function refreshPredictVol(e) {
       data.value = { ...cache.data };
     }
   } catch (e) {
-    console.error('[EMOTION-REFRESH] 刷新预测量能失败:', e.message);
-    alert('刷新预测量能失败：' + e.message);
+    console.error('[EMOTION-REFRESH] 鍒锋柊棰勬祴閲忚兘澶辫触:', e.message);
+    alert('鍒锋柊棰勬祴閲忚兘澶辫触锛? + e.message);
   } finally {
     refreshing.value = false;
   }
@@ -229,7 +229,7 @@ function startRealtime() {
       .subscribe((status) => {
       });
   } catch (e) {
-    console.warn('emotion_data Realtime 订阅失败:', e.message);
+    console.warn('emotion_data Realtime 璁㈤槄澶辫触:', e.message);
   }
 }
 
@@ -246,7 +246,7 @@ onUnmounted(() => {
 defineExpose({ loadAndRender, refreshPredictVol, toggleExpand, toggleRow, startRealtime });
 </script>
 
-<style scoped>
+<style>
 .emotion-board {
   border: 1px solid #e5e7eb;
   border-radius: 8px;

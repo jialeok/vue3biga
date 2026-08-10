@@ -1,149 +1,149 @@
-<template>
+﻿<template>
   <div class="jiwang-board">
-    <!-- 看板展示区 -->
+    <!-- 鐪嬫澘灞曠ず鍖?-->
     <div class="jiwang-display">
       <div class="jiwang-row">
-        <span class="jiwang-label">跌涨</span>
+        <span class="jiwang-label">璺屾定</span>
         <span id="jw-diezhang" class="jiwang-value">{{ display.diezhang || '-' }}</span>
       </div>
       <div class="jiwang-row">
-        <span class="jiwang-label">情绪</span>
+        <span class="jiwang-label">鎯呯华</span>
         <span id="jw-qingxu" class="jiwang-value">{{ display.qingxu || '-' }}</span>
       </div>
       <div class="jiwang-row">
-        <span class="jiwang-label">今日聚焦</span>
+        <span class="jiwang-label">浠婃棩鑱氱劍</span>
         <span id="jw-jujiao" class="jiwang-value">
-          <template v-if="display.jujiao === '谁增做谁' && display.whoIncrease">
-            <span style="font-size:13px;color:#1f2937">谁增做谁</span>
+          <template v-if="display.jujiao === '璋佸鍋氳皝' && display.whoIncrease">
+            <span style="font-size:13px;color:#1f2937">璋佸鍋氳皝</span>
             <span :style="whoIncreaseStyle">{{ display.whoIncrease }}</span>
           </template>
           <template v-else>{{ display.jujiao || '-' }}</template>
         </span>
       </div>
       <div class="jiwang-row">
-        <span class="jiwang-label">昨多板K线</span>
+        <span class="jiwang-label">鏄ㄥ鏉縆绾?/span>
         <span id="jw-kxian" class="jiwang-value">{{ kxianDisplay }}</span>
       </div>
       <div class="jiwang-row">
-        <span class="jiwang-label">观察</span>
+        <span class="jiwang-label">瑙傚療</span>
         <span id="jw-guancha" class="jiwang-value">{{ display.guancha || '-' }}</span>
       </div>
       <div class="jiwang-row">
-        <span class="jiwang-label">过程结果</span>
+        <span class="jiwang-label">杩囩▼缁撴灉</span>
         <span id="jw-guochengjieguo" class="jiwang-value">{{ display.guochengJieguo || '-' }}</span>
       </div>
       <div class="jiwang-row">
-        <span class="jiwang-label">收股结果</span>
+        <span class="jiwang-label">鏀惰偂缁撴灉</span>
         <span id="jw-shougujieguo" class="jiwang-value">{{ display.shouguJieguo || '-' }}</span>
       </div>
       <div class="jiwang-row">
-        <span class="jiwang-label">出手情况</span>
+        <span class="jiwang-label">鍑烘墜鎯呭喌</span>
         <span id="jw-chushou" class="jiwang-value" :class="chushouClass">{{ display.chushou || '-' }}</span>
       </div>
       <div class="jiwang-row">
-        <span class="jiwang-label">得出结论</span>
+        <span class="jiwang-label">寰楀嚭缁撹</span>
         <span id="jw-jielun" class="jiwang-value" :class="jielunClass">{{ display.jielun || '-' }}</span>
       </div>
       <div id="jiwangStamp" class="jiwang-stamp" :class="stampClass" :style="stampStyle">
         <div id="stampQuestion">
-          <template v-if="display.jielun === '出手'">
-            <div class="stamp-text">得出结论</div><div class="stamp-result">出手</div>
+          <template v-if="display.jielun === '鍑烘墜'">
+            <div class="stamp-text">寰楀嚭缁撹</div><div class="stamp-result">鍑烘墜</div>
           </template>
-          <template v-else-if="display.jielun === '空仓'">
-            <div class="stamp-text">得出结论</div><div class="stamp-result">空仓</div>
+          <template v-else-if="display.jielun === '绌轰粨'">
+            <div class="stamp-text">寰楀嚭缁撹</div><div class="stamp-result">绌轰粨</div>
           </template>
           <template v-else>?</template>
         </div>
       </div>
-      <button class="jiwang-edit-btn" @click="openEdit">编辑</button>
+      <button class="jiwang-edit-btn" @click="openEdit">缂栬緫</button>
     </div>
 
-    <!-- 编辑弹窗 -->
+    <!-- 缂栬緫寮圭獥 -->
     <Teleport to="body">
       <div v-if="modalActive" id="jiwangModal" class="jiwang-modal active" @click.self="closeModal">
         <div class="jiwang-modal-panel">
-          <div class="jiwang-modal-header">编辑记忘看板</div>
+          <div class="jiwang-modal-header">缂栬緫璁板繕鐪嬫澘</div>
           <form @submit.prevent="save">
             <div class="form-row">
-              <label>跌涨</label>
+              <label>璺屾定</label>
               <select id="jwEditDiezhang" v-model="form.diezhang" @change="onDiezhangChange">
-                <option value="">请选择</option>
+                <option value="">璇烽€夋嫨</option>
                 <option v-for="o in diezhangOptions" :key="o" :value="o">{{ o }}</option>
-                <option value="其它">其它</option>
+                <option value="鍏跺畠">鍏跺畠</option>
               </select>
-              <input id="jwEditDiezhangOther" v-if="form.diezhang === '其它'" v-model="form.diezhangOther" placeholder="自定义" />
+              <input id="jwEditDiezhangOther" v-if="form.diezhang === '鍏跺畠'" v-model="form.diezhangOther" placeholder="鑷畾涔? />
             </div>
             <div class="form-row">
-              <label>情绪</label>
+              <label>鎯呯华</label>
               <input id="jwEditQingxu" v-model="form.qingxu" />
             </div>
             <div class="form-row">
-              <label>今日聚焦</label>
+              <label>浠婃棩鑱氱劍</label>
               <select id="jwEditJujiao" v-model="form.jujiao" @change="onJujiaoChange">
-                <option value="最近多板">最近多板</option>
-                <option value="板块ETF">板块ETF</option>
-                <option value="谁增做谁">谁增做谁</option>
+                <option value="鏈€杩戝鏉?>鏈€杩戝鏉?/option>
+                <option value="鏉垮潡ETF">鏉垮潡ETF</option>
+                <option value="璋佸鍋氳皝">璋佸鍋氳皝</option>
               </select>
             </div>
-            <div class="form-row" v-if="form.jujiao === '谁增做谁'">
-              <label>谁增做谁</label>
+            <div class="form-row" v-if="form.jujiao === '璋佸鍋氳皝'">
+              <label>璋佸鍋氳皝</label>
               <select id="jwEditWhoIncrease" v-model="form.whoIncrease" @change="onWhoIncreaseChange">
-                <option value="">请选择</option>
-                <option value="龙头增">龙头增</option>
-                <option value="板块增">板块增</option>
-                <option value="谁都增">谁都增</option>
-                <option value="谁都减">谁都减</option>
+                <option value="">璇烽€夋嫨</option>
+                <option value="榫欏ご澧?>榫欏ご澧?/option>
+                <option value="鏉垮潡澧?>鏉垮潡澧?/option>
+                <option value="璋侀兘澧?>璋侀兘澧?/option>
+                <option value="璋侀兘鍑?>璋侀兘鍑?/option>
               </select>
             </div>
             <div class="form-row">
-              <label>K线前缀</label>
+              <label>K绾垮墠缂€</label>
               <input id="jwEditKxianPrefix" v-model="form.kxianPrefix" />
             </div>
             <div class="form-row">
-              <label>昨多板K线</label>
+              <label>鏄ㄥ鏉縆绾?/label>
               <input id="jwEditKxian" v-model="form.kxian" />
             </div>
             <div class="form-row">
-              <label>观察</label>
+              <label>瑙傚療</label>
               <select id="jwEditGuancha" v-model="form.guancha" @change="onGuanchaChange">
-                <option value="">请选择</option>
+                <option value="">璇烽€夋嫨</option>
                 <option v-for="o in guanchaOptions" :key="o" :value="o">{{ o }}</option>
               </select>
             </div>
             <div class="form-row">
-              <label>过程结果</label>
+              <label>杩囩▼缁撴灉</label>
               <select id="jwEditGuochengJieguo" v-model="form.guochengJieguo">
-                <option value="">请选择</option>
+                <option value="">璇烽€夋嫨</option>
                 <option v-for="o in guochengOptions" :key="o" :value="o">{{ o }}</option>
               </select>
             </div>
             <div class="form-row">
-              <label>收股结果（跌:涨）</label>
-              <input id="jwEditShouguJieguoDie" v-model="form.shouguDie" placeholder="跌" />
-              <input id="jwEditShouguJieguoZhang" v-model="form.shouguZhang" placeholder="涨" />
+              <label>鏀惰偂缁撴灉锛堣穼:娑級</label>
+              <input id="jwEditShouguJieguoDie" v-model="form.shouguDie" placeholder="璺? />
+              <input id="jwEditShouguJieguoZhang" v-model="form.shouguZhang" placeholder="娑? />
             </div>
             <div class="form-row">
-              <label>得出结论</label>
+              <label>寰楀嚭缁撹</label>
               <select id="jwEditJielun" v-model="form.jielun" @change="onJielunChange">
-                <option value="">请选择</option>
-                <option value="出手">出手</option>
-                <option value="空仓">空仓</option>
+                <option value="">璇烽€夋嫨</option>
+                <option value="鍑烘墜">鍑烘墜</option>
+                <option value="绌轰粨">绌轰粨</option>
               </select>
             </div>
             <div class="form-row">
-              <label>出手情况</label>
+              <label>鍑烘墜鎯呭喌</label>
               <select id="jwEditChushou" v-model="form.chushou">
-                <option value="">请选择</option>
+                <option value="">璇烽€夋嫨</option>
                 <option v-for="o in chushouOptions" :key="o" :value="o">{{ o }}</option>
               </select>
             </div>
             <div class="form-row">
-              <label>板块ETF</label>
-              <span id="editSectorEtfCheck" class="checkbox-option" :class="form.sectorEtf ? 'checked' : 'unchecked'" @click="form.sectorEtf = !form.sectorEtf">{{ form.sectorEtf ? '✓' : '×' }}</span>
+              <label>鏉垮潡ETF</label>
+              <span id="editSectorEtfCheck" class="checkbox-option" :class="form.sectorEtf ? 'checked' : 'unchecked'" @click="form.sectorEtf = !form.sectorEtf">{{ form.sectorEtf ? '鉁? : '脳' }}</span>
             </div>
             <div class="form-actions">
-              <button type="submit" class="btn-save">保存</button>
-              <button type="button" class="btn-cancel" @click="closeModal">取消</button>
+              <button type="submit" class="btn-save">淇濆瓨</button>
+              <button type="button" class="btn-cancel" @click="closeModal">鍙栨秷</button>
             </div>
           </form>
         </div>
@@ -170,12 +170,12 @@ const display = ref({});
 const modalActive = ref(false);
 
 const diezhangOptions = ['1:2', '1:3', '1:4', '2:1', '1:1', '2:3', '3:1', '3:2', '4:1'];
-const allGuanchaOptions = ['最近多板过程', '最近多板结果', '板块ETF过程', '两个过程'];
-const allGuochengOptions = ['成功', '失败', '继续观察'];
-const allChushouOptions = ['出手对了', '出手错了', '空仓对了', '空仓错了'];
+const allGuanchaOptions = ['鏈€杩戝鏉胯繃绋?, '鏈€杩戝鏉跨粨鏋?, '鏉垮潡ETF杩囩▼', '涓や釜杩囩▼'];
+const allGuochengOptions = ['鎴愬姛', '澶辫触', '缁х画瑙傚療'];
+const allChushouOptions = ['鍑烘墜瀵逛簡', '鍑烘墜閿欎簡', '绌轰粨瀵逛簡', '绌轰粨閿欎簡'];
 
 const form = reactive({
-  diezhang: '', diezhangOther: '', qingxu: '', jujiao: '最近多板', whoIncrease: '',
+  diezhang: '', diezhangOther: '', qingxu: '', jujiao: '鏈€杩戝鏉?, whoIncrease: '',
   kxianPrefix: '', kxian: '', guancha: '', guochengJieguo: '',
   shouguDie: '', shouguZhang: '', jielun: '', chushou: '', sectorEtf: false
 });
@@ -192,36 +192,36 @@ const kxianDisplay = computed(() => {
 
 const whoIncreaseStyle = computed(() => {
   const v = display.value.whoIncrease;
-  if (v === '龙头增' || v === '板块增' || v === '谁都增') return 'font-size:13px;color:#dc2626';
-  if (v === '谁都减') return 'font-size:13px;color:#059669';
+  if (v === '榫欏ご澧? || v === '鏉垮潡澧? || v === '璋侀兘澧?) return 'font-size:13px;color:#dc2626';
+  if (v === '璋侀兘鍑?) return 'font-size:13px;color:#059669';
   return '';
 });
 
 const chushouClass = computed(() => {
   const v = display.value.chushou;
-  if (v === '出手对了' || v === '空仓对了') return 'red-highlight-small';
-  if (v === '出手错了' || v === '空仓错了') return 'gray-highlight-small';
+  if (v === '鍑烘墜瀵逛簡' || v === '绌轰粨瀵逛簡') return 'red-highlight-small';
+  if (v === '鍑烘墜閿欎簡' || v === '绌轰粨閿欎簡') return 'gray-highlight-small';
   return '';
 });
 
 const jielunClass = computed(() => {
   const v = display.value.jielun;
-  if (v === '出手') return 'red-highlight';
-  if (v === '空仓') return 'gray-highlight';
+  if (v === '鍑烘墜') return 'red-highlight';
+  if (v === '绌轰粨') return 'gray-highlight';
   return '';
 });
 
 const stampClass = computed(() => {
   const v = display.value.jielun;
-  if (v === '出手') return 'red';
-  if (v === '空仓') return 'gray';
+  if (v === '鍑烘墜') return 'red';
+  if (v === '绌轰粨') return 'gray';
   return 'yellow';
 });
 
 const stampStyle = computed(() => {
   const v = display.value.jielun;
-  if (v === '出手') return { border: '3px solid rgba(248, 113, 113, 0.5)', background: 'rgba(248, 113, 113, 0.15)', color: 'rgba(248, 113, 113, 0.6)' };
-  if (v === '空仓') return { border: '3px solid rgba(156, 163, 175, 0.5)', background: 'rgba(156, 163, 175, 0.15)', color: 'rgba(156, 163, 175, 0.6)' };
+  if (v === '鍑烘墜') return { border: '3px solid rgba(248, 113, 113, 0.5)', background: 'rgba(248, 113, 113, 0.15)', color: 'rgba(248, 113, 113, 0.6)' };
+  if (v === '绌轰粨') return { border: '3px solid rgba(156, 163, 175, 0.5)', background: 'rgba(156, 163, 175, 0.15)', color: 'rgba(156, 163, 175, 0.6)' };
   return { border: '3px solid rgba(253, 224, 71, 0.25)', background: 'rgba(253, 224, 71, 0.08)', color: 'rgba(253, 224, 71, 0.35)' };
 });
 
@@ -245,13 +245,13 @@ function getKxianTypeByClose(closeValue) {
   if (!closeValue) return '';
   const value = parseFloat(closeValue);
   if (isNaN(value)) return '';
-  if (value >= 3.6) return `大阳${value}%`;
-  else if (value >= 2.6) return `中阳${value}%`;
-  else if (value >= 1.0) return `小阳${value}%`;
-  else if (value > -1.0) return `十字星${value}%`;
-  else if (value >= -2.5) return `小阴${value}%`;
-  else if (value >= -3.5) return `中阴${value}%`;
-  else return `大阴${value}%`;
+  if (value >= 3.6) return `澶ч槼${value}%`;
+  else if (value >= 2.6) return `涓槼${value}%`;
+  else if (value >= 1.0) return `灏忛槼${value}%`;
+  else if (value > -1.0) return `鍗佸瓧鏄?{value}%`;
+  else if (value >= -2.5) return `灏忛槾${value}%`;
+  else if (value >= -3.5) return `涓槾${value}%`;
+  else return `澶ч槾${value}%`;
 }
 
 function getPrevDayMultiBoardClose() {
@@ -260,7 +260,7 @@ function getPrevDayMultiBoardClose() {
   const biddingData = getBiddingData();
   const prevDayData = biddingData[prevDate];
   if (!prevDayData || !Array.isArray(prevDayData)) return null;
-  const multiBoardRow = prevDayData.find(row => row.name === '最近多板%');
+  const multiBoardRow = prevDayData.find(row => row.name === '鏈€杩戝鏉?');
   if (!multiBoardRow) return null;
   return multiBoardRow.close || null;
 }
@@ -277,13 +277,13 @@ function openEdit() {
   if (diezhangOptions.includes(diezhangValue)) {
     form.diezhang = diezhangValue;
   } else if (diezhangValue) {
-    form.diezhang = '其它';
+    form.diezhang = '鍏跺畠';
     form.diezhangOther = diezhangValue;
   } else {
     form.diezhang = '';
   }
   form.qingxu = d.qingxu || '';
-  form.jujiao = d.jujiao || '最近多板';
+  form.jujiao = d.jujiao || '鏈€杩戝鏉?;
   form.kxianPrefix = d.kxianPrefix || '';
 
   let kxianValue = d.kxian || '';
@@ -306,14 +306,14 @@ function openEdit() {
     render();
   }
 
-  form.whoIncrease = (d.jujiao === '谁增做谁' && d.whoIncrease) ? d.whoIncrease : '';
-  const jujiaoValue = d.jujiao || '最近多板';
+  form.whoIncrease = (d.jujiao === '璋佸鍋氳皝' && d.whoIncrease) ? d.whoIncrease : '';
+  const jujiaoValue = d.jujiao || '鏈€杩戝鏉?;
   const whoIncreaseValue = d.whoIncrease || '';
-  if (jujiaoValue === '最近多板') updateGuanchaOptions('duoban');
-  else if (jujiaoValue === '板块ETF') updateGuanchaOptions('etf');
-  else if (jujiaoValue === '谁增做谁') {
-    if (whoIncreaseValue === '龙头增') updateGuanchaOptions('duoban');
-    else if (whoIncreaseValue === '板块增') updateGuanchaOptions('etf');
+  if (jujiaoValue === '鏈€杩戝鏉?) updateGuanchaOptions('duoban');
+  else if (jujiaoValue === '鏉垮潡ETF') updateGuanchaOptions('etf');
+  else if (jujiaoValue === '璋佸鍋氳皝') {
+    if (whoIncreaseValue === '榫欏ご澧?) updateGuanchaOptions('duoban');
+    else if (whoIncreaseValue === '鏉垮潡澧?) updateGuanchaOptions('etf');
     else updateGuanchaOptions('all');
   } else updateGuanchaOptions('all');
 
@@ -343,41 +343,41 @@ function openEdit() {
 
 function onDiezhangChange() {}
 function onJujiaoChange() {
-  if (form.jujiao === '谁增做谁') updateGuanchaOptions('all');
-  else if (form.jujiao === '最近多板') { form.whoIncrease = ''; updateGuanchaOptions('duoban'); }
-  else if (form.jujiao === '板块ETF') { form.whoIncrease = ''; updateGuanchaOptions('etf'); }
+  if (form.jujiao === '璋佸鍋氳皝') updateGuanchaOptions('all');
+  else if (form.jujiao === '鏈€杩戝鏉?) { form.whoIncrease = ''; updateGuanchaOptions('duoban'); }
+  else if (form.jujiao === '鏉垮潡ETF') { form.whoIncrease = ''; updateGuanchaOptions('etf'); }
 }
 function onWhoIncreaseChange() {
   const v = form.whoIncrease;
-  if (v === '龙头增') updateGuanchaOptions('duoban');
-  else if (v === '板块增') updateGuanchaOptions('etf');
-  else if (v === '谁都增' || v === '谁都减') { updateGuanchaOptions('all'); form.guancha = '两个过程'; }
+  if (v === '榫欏ご澧?) updateGuanchaOptions('duoban');
+  else if (v === '鏉垮潡澧?) updateGuanchaOptions('etf');
+  else if (v === '璋侀兘澧? || v === '璋侀兘鍑?) { updateGuanchaOptions('all'); form.guancha = '涓や釜杩囩▼'; }
   else updateGuanchaOptions('all');
   onGuanchaChange();
 }
 function updateGuanchaOptions(type) {
-  if (type === 'duoban') guanchaOptions.value = ['最近多板过程', '最近多板结果'];
-  else if (type === 'etf') guanchaOptions.value = ['板块ETF过程'];
+  if (type === 'duoban') guanchaOptions.value = ['鏈€杩戝鏉胯繃绋?, '鏈€杩戝鏉跨粨鏋?];
+  else if (type === 'etf') guanchaOptions.value = ['鏉垮潡ETF杩囩▼'];
   else guanchaOptions.value = allGuanchaOptions;
 }
 function onGuanchaChange() {
   const v = form.guancha;
-  if (v === '最近多板过程' || v === '最近多板结果') guochengOptions.value = ['成功', '失败', '继续观察'];
-  else if (v === '板块ETF过程') guochengOptions.value = ['成功', '失败', '继续观察'];
+  if (v === '鏈€杩戝鏉胯繃绋? || v === '鏈€杩戝鏉跨粨鏋?) guochengOptions.value = ['鎴愬姛', '澶辫触', '缁х画瑙傚療'];
+  else if (v === '鏉垮潡ETF杩囩▼') guochengOptions.value = ['鎴愬姛', '澶辫触', '缁х画瑙傚療'];
   else guochengOptions.value = allGuochengOptions;
 }
 function onJielunChange() {
   const v = form.jielun;
-  if (v === '出手') chushouOptions.value = ['出手对了', '出手错了'];
-  else if (v === '空仓') chushouOptions.value = ['空仓对了', '空仓错了'];
+  if (v === '鍑烘墜') chushouOptions.value = ['鍑烘墜瀵逛簡', '鍑烘墜閿欎簡'];
+  else if (v === '绌轰粨') chushouOptions.value = ['绌轰粨瀵逛簡', '绌轰粨閿欎簡'];
   else chushouOptions.value = allChushouOptions;
 }
 
 function closeModal() { modalActive.value = false; }
 
 function save() {
-  const diezhangValue = form.diezhang === '其它' ? form.diezhangOther : form.diezhang;
-  const whoIncreaseValue = form.jujiao === '谁增做谁' ? form.whoIncrease : '';
+  const diezhangValue = form.diezhang === '鍏跺畠' ? form.diezhangOther : form.diezhang;
+  const whoIncreaseValue = form.jujiao === '璋佸鍋氳皝' ? form.whoIncrease : '';
   const stats = getStats();
   stats.sectorEtf = form.sectorEtf;
 
@@ -397,9 +397,9 @@ function save() {
   };
   getJiwangData()[uiStore.currentDate] = d;
   markJiwangDirty(uiStore.currentDate);
-  _dbgLog('saveJiwang: 保存 ' + uiStore.currentDate + ' 到内存, data=' + JSON.stringify(d).slice(0, 300));
+  _dbgLog('saveJiwang: 淇濆瓨 ' + uiStore.currentDate + ' 鍒板唴瀛? data=' + JSON.stringify(d).slice(0, 300));
   saveData();
-  pushJiwangNow(uiStore.currentDate, '✅ 记忘看板已保存并同步到云端');
+  pushJiwangNow(uiStore.currentDate, '鉁?璁板繕鐪嬫澘宸蹭繚瀛樺苟鍚屾鍒颁簯绔?);
   render();
   closeModal();
 
@@ -411,7 +411,7 @@ function save() {
 defineExpose({ render, openEdit, closeModal, save, formatAmount, getNthPreviousTradingDay, getKxianTypeByClose, getPrevDayMultiBoardClose });
 </script>
 
-<style scoped>
+<style>
 .jiwang-board {
   border: 1px solid #e5e7eb;
   border-radius: 8px;

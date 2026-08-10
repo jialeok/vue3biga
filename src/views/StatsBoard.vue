@@ -1,80 +1,80 @@
-<!--
-  StatsBoard.vue — 统计看板
-  迁移自: boards-stats.js (3845行, 61个导出函数)
-  已迁移: getStats(import)、saveData(import)、HeaderStats/EditModal组件、useScoreCalculation composable(评分/连涨连跌/周月统计)
-  window.* 引用: 0 处（评分逻辑委托已移入 composable）
+﻿<!--
+  StatsBoard.vue 鈥?缁熻鐪嬫澘
+  杩佺Щ鑷? boards-stats.js (3845琛? 61涓鍑哄嚱鏁?
+  宸茶縼绉? getStats(import)銆乻aveData(import)銆丠eaderStats/EditModal缁勪欢銆乽seScoreCalculation composable(璇勫垎/杩炴定杩炶穼/鍛ㄦ湀缁熻)
+  window.* 寮曠敤: 0 澶勶紙璇勫垎閫昏緫濮旀墭宸茬Щ鍏?composable锛?
 -->
 <template>
   <div class="stats-board">
     <HeaderStats :profit="profit" :gain="gain" :editable="true" @edit="openCircleEdit" />
 
     <div class="stats-stage-section">
-      <span class="stage-label">行情阶段</span>
+      <span class="stage-label">琛屾儏闃舵</span>
       <span class="stage-value">{{ marketStage || '-' }}</span>
     </div>
 
     <div class="stats-consecutive-section">
       <div class="consecutive-item">
-        <span class="consecutive-label">最近多板</span>
+        <span class="consecutive-label">鏈€杩戝鏉?/span>
         <span class="consecutive-value">{{ consecutiveUp.duoban || 0 }}</span>
       </div>
       <div class="consecutive-item">
-        <span class="consecutive-label">板块ETF</span>
+        <span class="consecutive-label">鏉垮潡ETF</span>
         <span class="consecutive-value">{{ consecutiveUp.bankuai || 0 }}</span>
       </div>
       <div class="consecutive-item">
-        <span class="consecutive-label">题材方向</span>
+        <span class="consecutive-label">棰樻潗鏂瑰悜</span>
         <span class="consecutive-value">{{ consecutiveUp.ticai || 0 }}</span>
       </div>
     </div>
 
     <div class="stats-score-section">
       <div class="score-item">
-        <span class="score-label">最近多板评分</span>
+        <span class="score-label">鏈€杩戝鏉胯瘎鍒?/span>
         <span class="score-value" :style="{ color: scoreColor(recentMultiScore) }">{{ recentMultiScore }}</span>
       </div>
       <div class="score-item">
-        <span class="score-label">板块ETF评分</span>
+        <span class="score-label">鏉垮潡ETF璇勫垎</span>
         <span class="score-value" :style="{ color: scoreColor(sectorEtfScore) }">{{ sectorEtfScore }}</span>
       </div>
       <div class="score-item">
-        <span class="score-label">题材方向评分</span>
+        <span class="score-label">棰樻潗鏂瑰悜璇勫垎</span>
         <span class="score-value" :style="{ color: scoreColor(topicDirectionScore) }">{{ topicDirectionScore }}</span>
       </div>
     </div>
 
     <div class="stats-period-section">
-      <button class="period-btn" @click="showWeekly">本周统计</button>
-      <button class="period-btn" @click="showLastWeek">上周统计</button>
-      <button class="period-btn" @click="showMonthly">本月统计</button>
-      <button class="period-btn" @click="openWeekendSummary">周末总结</button>
-      <button class="period-btn" @click="openWeekendReview">周末复盘</button>
-      <button class="period-btn" @click="openMonthlySummary">月度总结</button>
+      <button class="period-btn" @click="showWeekly">鏈懆缁熻</button>
+      <button class="period-btn" @click="showLastWeek">涓婂懆缁熻</button>
+      <button class="period-btn" @click="showMonthly">鏈湀缁熻</button>
+      <button class="period-btn" @click="openWeekendSummary">鍛ㄦ湯鎬荤粨</button>
+      <button class="period-btn" @click="openWeekendReview">鍛ㄦ湯澶嶇洏</button>
+      <button class="period-btn" @click="openMonthlySummary">鏈堝害鎬荤粨</button>
     </div>
 
-    <EditModal v-model="circleModalActive" title="编辑圆形统计" :show-clear="true" @save="saveCircleStats" @clear="clearCircleStats">
+    <EditModal v-model="circleModalActive" title="缂栬緫鍦嗗舰缁熻" :show-clear="true" @save="saveCircleStats" @clear="clearCircleStats">
       <div class="stats-form-row">
-        <label>今日盈亏</label>
+        <label>浠婃棩鐩堜簭</label>
         <input v-model.number="circleForm.profit" />
       </div>
       <div class="stats-form-row">
-        <label>账户涨幅(%)</label>
+        <label>璐︽埛娑ㄥ箙(%)</label>
         <input v-model.number="circleForm.gain" />
       </div>
       <div class="stats-form-row">
-        <label>账户余额</label>
+        <label>璐︽埛浣欓</label>
         <input v-model.number="circleForm.balance" />
       </div>
       <div class="stats-form-row">
-        <label>行情阶段</label>
+        <label>琛屾儏闃舵</label>
         <select v-model="circleForm.marketStage">
-          <option value="">请选择</option>
+          <option value="">璇烽€夋嫨</option>
           <option v-for="s in stageOptions" :key="s" :value="s">{{ s }}</option>
         </select>
       </div>
       <div class="stats-form-row" v-for="t in checkboxTypes" :key="t.key">
         <label>{{ t.label }}</label>
-        <span class="checkbox-option" :class="circleForm[t.key] ? 'checked' : 'unchecked'" @click="circleForm[t.key] = !circleForm[t.key]">{{ circleForm[t.key] ? '✓' : '×' }}</span>
+        <span class="checkbox-option" :class="circleForm[t.key] ? 'checked' : 'unchecked'" @click="circleForm[t.key] = !circleForm[t.key]">{{ circleForm[t.key] ? '鉁? : '脳' }}</span>
       </div>
     </EditModal>
   </div>
@@ -103,11 +103,11 @@ const marketStage = ref('');
 
 const circleModalActive = ref(false);
 
-const stageOptions = ['主升', '震荡', '下跌', '反弹', '筑底'];
+const stageOptions = ['涓诲崌', '闇囪崱', '涓嬭穼', '鍙嶅脊', '绛戝簳'];
 const checkboxTypes = [
-  { key: 'recentMulti', label: '最近多板' },
-  { key: 'sectorEtf', label: '板块ETF' },
-  { key: 'topicDirection', label: '题材方向' }
+  { key: 'recentMulti', label: '鏈€杩戝鏉? },
+  { key: 'sectorEtf', label: '鏉垮潡ETF' },
+  { key: 'topicDirection', label: '棰樻潗鏂瑰悜' }
 ];
 
 const circleForm = reactive({
@@ -177,7 +177,7 @@ onMounted(render);
 defineExpose({ render, openCircleEdit, closeCircleModal, saveCircleStats, clearCircleStats });
 </script>
 
-<style scoped>
+<style>
 .stats-board {
   display: flex;
   flex-direction: column;

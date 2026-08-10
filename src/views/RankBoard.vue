@@ -1,27 +1,27 @@
-<template>
+﻿<template>
   <div class="rank-board trading-day-element">
   <div class="rank-header" @dblclick.stop="openEdit">
-    <div class="rank-title">昨日最大成交额</div>
+    <div class="rank-title">鏄ㄦ棩鏈€澶ф垚浜ら</div>
     <div class="rank-subtitle"></div>
   </div>
   <div class="rank-content" @dblclick.stop="openEdit">
     <div class="rank-header-row">
-      <div class="rank-header-item rank-header-number">排名</div>
-      <div class="rank-header-item rank-header-stock">股票名称</div>
-      <div class="rank-header-item rank-header-jitu">竞图</div>
-      <div class="rank-header-item rank-header-diezhang">涨幅</div>
-      <div class="rank-header-item rank-header-concept">题材概念</div>
-      <div class="rank-header-item rank-header-turnover">成交额</div>
+      <div class="rank-header-item rank-header-number">鎺掑悕</div>
+      <div class="rank-header-item rank-header-stock">鑲＄エ鍚嶇О</div>
+      <div class="rank-header-item rank-header-jitu">绔炲浘</div>
+      <div class="rank-header-item rank-header-diezhang">娑ㄥ箙</div>
+      <div class="rank-header-item rank-header-concept">棰樻潗姒傚康</div>
+      <div class="rank-header-item rank-header-turnover">鎴愪氦棰?/div>
     </div>
     <template v-if="displayList.length === 0">
-      <div style="text-align:center;padding:20px;color:#9ca3af;font-size:13px">暂无排名数据</div>
+      <div style="text-align:center;padding:20px;color:#9ca3af;font-size:13px">鏆傛棤鎺掑悕鏁版嵁</div>
     </template>
     <template v-else>
       <div v-for="(item, idx) in displayList" :key="idx" :class="['rank-item', item.kind === 'empty' ? '' : '']" :style="item.kind === 'empty' ? 'height:16px;background:transparent;' : ''">
         <template v-if="item.kind === 'empty'"></template>
         <template v-else-if="item.kind === 'separator'">
           <div class="rank-number"></div>
-          <div class="rank-stock-name" style="color:#dc2626;font-weight:600;">今日排行</div>
+          <div class="rank-stock-name" style="color:#dc2626;font-weight:600;">浠婃棩鎺掕</div>
           <div class="rank-jitu"></div>
           <div class="rank-diezhang"></div>
           <div class="rank-concept" style="color:#dc2626;font-weight:600;">{{ item.time }}</div>
@@ -42,21 +42,21 @@
   <div v-if="showModal" class="rank-vue-modal-backdrop" @click.self="closeEdit">
     <div class="rank-vue-modal">
       <div class="rank-vue-modal-header">
-        <span>编辑昨日最大成交额</span>
+        <span>缂栬緫鏄ㄦ棩鏈€澶ф垚浜ら</span>
         <button @click="closeEdit">&times;</button>
       </div>
       <div class="rank-vue-modal-body">
         <div class="rank-vue-paste-area">
-          <textarea v-model="importText" placeholder="从 Excel 复制后直接粘贴到这里"></textarea>
+          <textarea v-model="importText" placeholder="浠?Excel 澶嶅埗鍚庣洿鎺ョ矘璐村埌杩欓噷"></textarea>
           <div class="rank-vue-import-status" :style="{ color: importStatus.color }">{{ importStatus.text }}</div>
-          <button type="button" class="rank-vue-add-btn" @click="onImport">导入粘贴数据</button>
+          <button type="button" class="rank-vue-add-btn" @click="onImport">瀵煎叆绮樿创鏁版嵁</button>
         </div>
 
         <div v-for="(item, idx) in draft" :key="idx" :class="['rank-vue-form-row', item.type === 'empty' ? 'rank-vue-empty-row' : '', item.type === 'separator' ? 'rank-vue-separator-row' : '']">
           <template v-if="item.type === 'empty'">
             <div class="rank-vue-form-number"></div>
             <input class="rank-vue-form-stock" disabled placeholder="-" style="visibility:hidden">
-            <select class="rank-vue-form-jitu" disabled style="visibility:hidden"><option>×</option></select>
+            <select class="rank-vue-form-jitu" disabled style="visibility:hidden"><option>脳</option></select>
             <input class="rank-vue-form-percent" disabled style="visibility:hidden">
             <input class="rank-vue-form-concept" disabled style="visibility:hidden">
             <input class="rank-vue-form-turnover" disabled style="visibility:hidden">
@@ -64,31 +64,31 @@
           </template>
           <template v-else-if="item.type === 'separator'">
             <div class="rank-vue-form-number"></div>
-            <input class="rank-vue-form-stock" value="今日排行" readonly>
-            <select class="rank-vue-form-jitu" disabled style="visibility:hidden"><option>×</option></select>
+            <input class="rank-vue-form-stock" value="浠婃棩鎺掕" readonly>
+            <select class="rank-vue-form-jitu" disabled style="visibility:hidden"><option>脳</option></select>
             <input class="rank-vue-form-percent" disabled style="visibility:hidden">
-            <input class="rank-vue-form-concept" v-model="item.time" placeholder="时间">
+            <input class="rank-vue-form-concept" v-model="item.time" placeholder="鏃堕棿">
             <input class="rank-vue-form-turnover" disabled style="visibility:hidden">
             <button type="button" class="rank-vue-remove-btn" @click="removeRow(idx)">&times;</button>
           </template>
           <template v-else>
             <div class="rank-vue-form-number">{{ idx + 1 }}</div>
-            <input class="rank-vue-form-stock" v-model="item.stock" placeholder="名称">
+            <input class="rank-vue-form-stock" v-model="item.stock" placeholder="鍚嶇О">
             <select class="rank-vue-form-jitu" v-model="item.jitu">
-              <option value="×">×</option>
-              <option value="✓">✓</option>
+              <option value="脳">脳</option>
+              <option value="鉁?>鉁?/option>
             </select>
-            <input class="rank-vue-form-percent" v-model="item.percent" placeholder="涨幅">
-            <input class="rank-vue-form-concept" v-model="item.concept" placeholder="题材">
-            <input class="rank-vue-form-turnover" v-model="item.turnover" placeholder="额">
+            <input class="rank-vue-form-percent" v-model="item.percent" placeholder="娑ㄥ箙">
+            <input class="rank-vue-form-concept" v-model="item.concept" placeholder="棰樻潗">
+            <input class="rank-vue-form-turnover" v-model="item.turnover" placeholder="棰?>
             <button type="button" class="rank-vue-remove-btn" @click="removeRow(idx)">&times;</button>
           </template>
         </div>
-        <button type="button" class="rank-vue-add-btn" @click="addRow">+ 添加新行</button>
+        <button type="button" class="rank-vue-add-btn" @click="addRow">+ 娣诲姞鏂拌</button>
       </div>
       <div class="rank-vue-modal-footer">
-        <button type="button" class="rank-vue-save-btn" @click="save">保存</button>
-        <button type="button" class="rank-vue-cancel-btn" @click="closeEdit">取消</button>
+        <button type="button" class="rank-vue-save-btn" @click="save">淇濆瓨</button>
+        <button type="button" class="rank-vue-cancel-btn" @click="closeEdit">鍙栨秷</button>
       </div>
     </div>
   </div>
@@ -120,7 +120,7 @@ function parsePercent(raw) {
 
 function parseTurnover(raw) {
   if (!raw) return '';
-  return String(raw).replace('亿', '').trim();
+  return String(raw).replace('浜?, '').trim();
 }
 
 function percentClass(percent) {
@@ -136,8 +136,8 @@ function rankPercentDisplay(percent) {
 
 function rankTurnoverDisplay(turnover) {
   if (!turnover && turnover !== 0) return '-';
-  const v = String(turnover).replace('亿', '');
-  return v + '亿';
+  const v = String(turnover).replace('浜?, '');
+  return v + '浜?;
 }
 
 function parseRankPaste(text) {
@@ -146,7 +146,7 @@ function parseRankPaste(text) {
   lines.forEach((line, index) => {
     if (!line.trim()) return;
     const trimmedLine = line.trim();
-    if (index === 0 && (trimmedLine.includes('股票名称') || trimmedLine.includes('涨幅') || trimmedLine.includes('概念'))) return;
+    if (index === 0 && (trimmedLine.includes('鑲＄エ鍚嶇О') || trimmedLine.includes('娑ㄥ箙') || trimmedLine.includes('姒傚康'))) return;
 
     let cells = line.split('\t');
     const firstCellHasSpaces = cells[0] && cells[0].trim().includes(' ');
@@ -174,7 +174,7 @@ function parseRankPaste(text) {
       if (second.includes('%') || second.includes('+') || second.includes('-') || second.startsWith('+') || second.startsWith('-')) {
         percentRaw = second;
         concept = third;
-      } else if (third.includes('亿') || third.includes('万') || (!isNaN(parseFloat(third)) && third.match(/\d/))) {
+      } else if (third.includes('浜?) || third.includes('涓?) || (!isNaN(parseFloat(third)) && third.match(/\d/))) {
         concept = second;
         turnoverRaw = third;
       } else {
@@ -185,7 +185,7 @@ function parseRankPaste(text) {
       const second = cells[1].trim();
       if (second.includes('%') || second.includes('+') || second.includes('-') || second.startsWith('+') || second.startsWith('-')) {
         percentRaw = second;
-      } else if (second.includes('亿') || second.includes('万') || (!isNaN(parseFloat(second)) && second.match(/\d/))) {
+      } else if (second.includes('浜?) || second.includes('涓?) || (!isNaN(parseFloat(second)) && second.match(/\d/))) {
         turnoverRaw = second;
       } else {
         concept = second;
@@ -195,7 +195,7 @@ function parseRankPaste(text) {
     const percent = parsePercent(percentRaw);
     const turnover = parseTurnover(turnoverRaw);
     if (!stock) return;
-    result.push({ stock, jitu: '×', percent, concept, turnover });
+    result.push({ stock, jitu: '脳', percent, concept, turnover });
   });
   return result;
 }
@@ -267,11 +267,11 @@ const displayList = computed(() => {
         kind: 'stock',
         index: displayIndex,
         stock: item.stock || '-',
-        jitu: item.jitu || '×',
+        jitu: item.jitu || '脳',
         percent: item.percent || '',
         concept: item.concept || '-',
         turnover: item.turnover || '',
-        isChecked: item.jitu === '✓'
+        isChecked: item.jitu === '鉁?
       });
     }
   });
@@ -290,7 +290,7 @@ function closeEdit() {
 }
 
 function addRow() {
-  draft.value.push({ stock: '', jitu: '×', percent: '', concept: '', turnover: '' });
+  draft.value.push({ stock: '', jitu: '脳', percent: '', concept: '', turnover: '' });
 }
 
 function removeRow(index) {
@@ -300,12 +300,12 @@ function removeRow(index) {
 function onImport() {
   const imported = parseRankPaste(importText.value);
   if (imported.length === 0) {
-    importStatus.value = { text: '未能解析到有效数据！', color: '#dc2626' };
+    importStatus.value = { text: '鏈兘瑙ｆ瀽鍒版湁鏁堟暟鎹紒', color: '#dc2626' };
     return;
   }
   draft.value = mergeImportedRows(draft.value, imported);
   importText.value = '';
-  importStatus.value = { text: `✅ 成功导入 ${imported.length} 条数据`, color: '#059669' };
+  importStatus.value = { text: `鉁?鎴愬姛瀵煎叆 ${imported.length} 鏉℃暟鎹甡, color: '#059669' };
 }
 
 function save() {
@@ -320,7 +320,7 @@ function save() {
       if (stock) {
         result.push({
           stock,
-          jitu: item.jitu || '×',
+          jitu: item.jitu || '脳',
           percent: parsePercent(item.percent),
           concept: (item.concept || '').trim(),
           turnover: parseTurnover(item.turnover)
@@ -342,7 +342,7 @@ onUnmounted(() => clearInterval(timer));
 defineExpose({ refresh, openEdit });
 </script>
 
-<style scoped>
+<style>
 .rank-vue-modal-backdrop {
   position: fixed;
   inset: 0;
