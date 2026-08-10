@@ -1,7 +1,7 @@
-import { _emit } from '../stores/eventBus.js';
+﻿import { _emit } from '../stores/eventBus.js';
 import { getPreviousTradingDay } from './trading-day-helpers.js';
 import { state } from './app-state.js';
-import { getAuctionData, getGroupData } from './app-core.js';
+import { getAuctionData, getGroupData } from './app-core-api.js';
 import { getTopicGroups } from './topic-rules.js';
 import { renderConsecutiveUp as _renderConsecutiveUp, autoCalculateRecentMultiScore as _autoCalcRecentMultiScore, getTodayTagTitles, getYesterdayDate, getTagTitlesByDate, getPreviousTradingDayWithData, getTodayBidding } from './tag-titles-helpers.js';
 

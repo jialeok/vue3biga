@@ -10,7 +10,7 @@
 import { getSupabase, getStocksData, loadAllData } from '../../data/supabase-client.js';
 import { _dbgLog } from '../../data/debug-log.js';
 import { _emit } from '../../stores/eventBus.js';
-import { getGroupData, getAuctionData, saveModule, patchAuctionFieldBatch, reconcileAuctionWatchlistFromLocalStorage, mergeAuctionDateRows, getHotAuctionData, _openHotAuctionShield, _closeHotAuctionShield } from '../app-core.js';
+import { getGroupData, getAuctionData, saveModule, patchAuctionFieldBatch, reconcileAuctionWatchlistFromLocalStorage, mergeAuctionDateRows, getHotAuctionData, _openHotAuctionShield, _closeHotAuctionShield } from '../app-core-api.js';
 import { _getAuctionWatchlistSet } from '../../data/watchlist-and-metrics.js';
 import { cleanseAuctionTagsOnce } from '../tag-rules.js';
 import { state } from '../app-state.js';

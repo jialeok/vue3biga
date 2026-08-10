@@ -3,7 +3,7 @@ import { getStockHistoryValue, _isAuctionWatchlistStock, _addAuctionWatchlistMem
 import { getPreviousTradingDay, isTradingDay } from './trading-day-helpers.js';
 import { getStocksData } from '../data/supabase-client.js';
 import { getStockCode } from '../data/stock-code-map.js';
-import { getAuctionData, scheduleCloudPush, markAuctionDirty } from './app-core.js';
+import { getAuctionData, scheduleCloudPush, markAuctionDirty } from './app-core-api.js';
 import { state } from './app-state.js';
 
         export function deriveAuctionTagState(name, date, _cache) {

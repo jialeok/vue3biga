@@ -1,7 +1,7 @@
 ﻿// scope-helpers.js — 早盘竞价(auction)与热门股票(hot)共用的参数化通用函数
 // 消除两份几乎一样的逻辑，统一为接受 scope/字段集 的通用版本
 
-import { getCurrentDate } from './app-core.js';
+import { getCurrentDate } from './app-core-api.js';
 
 // 通用 sanitize：只保留 patch 中属于 patchableFields 的字段
 export function _sanitizePatch(patch, patchableFields) {

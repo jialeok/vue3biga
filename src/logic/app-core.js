@@ -1,4 +1,5 @@
 ﻿import { state } from './app-state.js';
+import { _bindApi } from './app-core-api.js';
 import { showToast } from '../composables/useToast.js';
 import { fuyaoApiGet, tickerToThscode, LADDER_THSCODE } from '../data/api/fuyao-proxy.js';
 import { numcatApiPost } from '../data/api/numcat-proxy.js';
@@ -7991,3 +7992,5 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
 
 state._migrateFromV41 = _migrateFromV41;
 state._guardStack = _guardStack;
+
+_bindApi({ getCurrentDate, getAuctionData, getGroupData, scheduleCloudPush, markAuctionDirty, saveData, getTodayAuction, getNextTradingDay, getHotAuctionData, saveModule, patchAuctionFieldBatch, reconcileAuctionWatchlistFromLocalStorage, mergeAuctionDateRows, _openHotAuctionShield, _closeHotAuctionShield });
