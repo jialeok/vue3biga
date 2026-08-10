@@ -108,15 +108,15 @@ function emitAllRefresh() {
 
 function goToPrevTradingDay() {
   const prev = getPreviousTradingDay(getCurrentDate());
-  if (prev) { setCurrentDate(prev); emitAllRefresh(); }
+  if (prev) { uiStore.setDate(prev); setCurrentDate(prev); emitAllRefresh(); }
 }
 function goToNextTradingDay() {
   const next = getNextTradingDay(getCurrentDate());
-  if (next) { setCurrentDate(next); emitAllRefresh(); }
+  if (next) { uiStore.setDate(next); setCurrentDate(next); emitAllRefresh(); }
 }
 function goToday() {
   const today = getMostRecentTradingDay();
-  if (today) { setCurrentDate(today); emitAllRefresh(); }
+  if (today) { uiStore.setDate(today); setCurrentDate(today); emitAllRefresh(); }
 }
 
 function onAddStock() {
@@ -174,6 +174,7 @@ function openDatePicker() {
 function selectPickerDate(dateStr) {
   pickerSelected.value = dateStr;
   datePickerActive.value = false;
+  uiStore.setDate(dateStr);
   setCurrentDate(dateStr);
   emitAllRefresh();
 }
