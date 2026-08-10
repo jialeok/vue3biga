@@ -5,13 +5,15 @@
     <div v-if="content.trim()" style="white-space: pre-wrap;">{{ content }}</div>
     <div v-else class="hotspot-placeholder">暂无题材思路，点击添加...</div>
   </div>
-  <div v-if="editing" class="vue-edit-overlay" @click.self="cancel">
-    <div class="vue-edit-modal">
-      <div class="vue-edit-header"><span>编辑题材思路</span><button @click="cancel">×</button></div>
-      <textarea v-model="draft" placeholder="输入题材思路分析..."></textarea>
-      <button class="vue-edit-save" @click="save">保存</button>
+  <Teleport to="body">
+    <div v-if="editing" class="vue-edit-overlay" @click.self="cancel">
+      <div class="vue-edit-modal">
+        <div class="vue-edit-header"><span>编辑题材思路</span><button @click="cancel">×</button></div>
+        <textarea v-model="draft" placeholder="输入题材思路分析..."></textarea>
+        <button class="vue-edit-save" @click="save">保存</button>
+      </div>
     </div>
-  </div>
+  </Teleport>
   </div>
 </template>
 

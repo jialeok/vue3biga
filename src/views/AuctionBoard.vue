@@ -72,6 +72,13 @@
           <span style="font-weight:700;color:#dc2626;">竞/昨数：{{ viewData.stats && viewData.stats.jingYestCount || '-' }}</span>
           <span style="display:inline-block;width:28px;"></span>竞放量数：<span style="font-weight:700;">{{ viewData.stats && viewData.stats.highRatioCount || '-' }}</span>
         </div>
+        <div class="auction-header-row">
+          <div class="auction-header-item auction-header-number">序号</div>
+          <div class="auction-header-item auction-header-stock">股票名称</div>
+          <div class="auction-header-item auction-header-volume">竞价量(万)</div>
+          <div class="auction-header-item auction-header-yest">昨日成交量(万)</div>
+          <div class="auction-header-item auction-header-ratio">占比</div>
+        </div>
         <div v-if="showBackend" class="auction-backend-panel">
           <div class="backend-section">
             <span class="backend-label">同花顺:</span>
@@ -561,23 +568,16 @@ defineExpose({ refresh, toggleSort, expandAll, collapseAll });
   gap: 4px;
 }
 .page-dot {
-  width: 20px;
-  height: 20px;
-  border: 1px solid #d1d5db;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  background: #fff;
-  font-size: 10px;
-  color: #6b7280;
+  background: rgba(255, 255, 255, 0.4);
   cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
+  transition: all 0.3s;
 }
 .page-dot.active {
-  background: #6366f1;
-  color: #fff;
-  border-color: #6366f1;
+  background: #ffffff;
+  transform: scale(1.2);
 }
 .backend-toggle {
   margin-left: 8px;

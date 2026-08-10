@@ -39,59 +39,61 @@
     </template>
   </div>
 
-  <div v-if="showModal" class="rank-vue-modal-backdrop" @click.self="closeEdit">
-    <div class="rank-vue-modal">
-      <div class="rank-vue-modal-header">
-        <span>编辑昨日最大成交额</span>
-        <button @click="closeEdit">&times;</button>
-      </div>
-      <div class="rank-vue-modal-body">
-        <div class="rank-vue-paste-area">
-          <textarea v-model="importText" placeholder="从 Excel 复制后直接粘贴到这里"></textarea>
-          <div class="rank-vue-import-status" :style="{ color: importStatus.color }">{{ importStatus.text }}</div>
-          <button type="button" class="rank-vue-add-btn" @click="onImport">导入粘贴数据</button>
+  <Teleport to="body">
+    <div v-if="showModal" class="rank-vue-modal-backdrop" @click.self="closeEdit">
+      <div class="rank-vue-modal">
+        <div class="rank-vue-modal-header">
+          <span>编辑昨日最大成交额</span>
+          <button @click="closeEdit">&times;</button>
         </div>
+        <div class="rank-vue-modal-body">
+          <div class="rank-vue-paste-area">
+            <textarea v-model="importText" placeholder="从 Excel 复制后直接粘贴到这里"></textarea>
+            <div class="rank-vue-import-status" :style="{ color: importStatus.color }">{{ importStatus.text }}</div>
+            <button type="button" class="rank-vue-add-btn" @click="onImport">导入粘贴数据</button>
+          </div>
 
-        <div v-for="(item, idx) in draft" :key="idx" :class="['rank-vue-form-row', item.type === 'empty' ? 'rank-vue-empty-row' : '', item.type === 'separator' ? 'rank-vue-separator-row' : '']">
-          <template v-if="item.type === 'empty'">
-            <div class="rank-vue-form-number"></div>
-            <input class="rank-vue-form-stock" disabled placeholder="-" style="visibility:hidden">
-            <select class="rank-vue-form-jitu" disabled style="visibility:hidden"><option>×</option></select>
-            <input class="rank-vue-form-percent" disabled style="visibility:hidden">
-            <input class="rank-vue-form-concept" disabled style="visibility:hidden">
-            <input class="rank-vue-form-turnover" disabled style="visibility:hidden">
-            <button type="button" class="rank-vue-remove-btn" @click="removeRow(idx)">&times;</button>
-          </template>
-          <template v-else-if="item.type === 'separator'">
-            <div class="rank-vue-form-number"></div>
-            <input class="rank-vue-form-stock" value="今日排行" readonly>
-            <select class="rank-vue-form-jitu" disabled style="visibility:hidden"><option>×</option></select>
-            <input class="rank-vue-form-percent" disabled style="visibility:hidden">
-            <input class="rank-vue-form-concept" v-model="item.time" placeholder="时间">
-            <input class="rank-vue-form-turnover" disabled style="visibility:hidden">
-            <button type="button" class="rank-vue-remove-btn" @click="removeRow(idx)">&times;</button>
-          </template>
-          <template v-else>
-            <div class="rank-vue-form-number">{{ idx + 1 }}</div>
-            <input class="rank-vue-form-stock" v-model="item.stock" placeholder="名称">
-            <select class="rank-vue-form-jitu" v-model="item.jitu">
-              <option value="×">×</option>
-              <option value="✓">✓</option>
-            </select>
-            <input class="rank-vue-form-percent" v-model="item.percent" placeholder="涨幅">
-            <input class="rank-vue-form-concept" v-model="item.concept" placeholder="题材">
-            <input class="rank-vue-form-turnover" v-model="item.turnover" placeholder="额">
-            <button type="button" class="rank-vue-remove-btn" @click="removeRow(idx)">&times;</button>
-          </template>
+          <div v-for="(item, idx) in draft" :key="idx" :class="['rank-vue-form-row', item.type === 'empty' ? 'rank-vue-empty-row' : '', item.type === 'separator' ? 'rank-vue-separator-row' : '']">
+            <template v-if="item.type === 'empty'">
+              <div class="rank-vue-form-number"></div>
+              <input class="rank-vue-form-stock" disabled placeholder="-" style="visibility:hidden">
+              <select class="rank-vue-form-jitu" disabled style="visibility:hidden"><option>×</option></select>
+              <input class="rank-vue-form-percent" disabled style="visibility:hidden">
+              <input class="rank-vue-form-concept" disabled style="visibility:hidden">
+              <input class="rank-vue-form-turnover" disabled style="visibility:hidden">
+              <button type="button" class="rank-vue-remove-btn" @click="removeRow(idx)">&times;</button>
+            </template>
+            <template v-else-if="item.type === 'separator'">
+              <div class="rank-vue-form-number"></div>
+              <input class="rank-vue-form-stock" value="今日排行" readonly>
+              <select class="rank-vue-form-jitu" disabled style="visibility:hidden"><option>×</option></select>
+              <input class="rank-vue-form-percent" disabled style="visibility:hidden">
+              <input class="rank-vue-form-concept" v-model="item.time" placeholder="时间">
+              <input class="rank-vue-form-turnover" disabled style="visibility:hidden">
+              <button type="button" class="rank-vue-remove-btn" @click="removeRow(idx)">&times;</button>
+            </template>
+            <template v-else>
+              <div class="rank-vue-form-number">{{ idx + 1 }}</div>
+              <input class="rank-vue-form-stock" v-model="item.stock" placeholder="名称">
+              <select class="rank-vue-form-jitu" v-model="item.jitu">
+                <option value="×">×</option>
+                <option value="✓">✓</option>
+              </select>
+              <input class="rank-vue-form-percent" v-model="item.percent" placeholder="涨幅">
+              <input class="rank-vue-form-concept" v-model="item.concept" placeholder="题材">
+              <input class="rank-vue-form-turnover" v-model="item.turnover" placeholder="额">
+              <button type="button" class="rank-vue-remove-btn" @click="removeRow(idx)">&times;</button>
+            </template>
+          </div>
+          <button type="button" class="rank-vue-add-btn" @click="addRow">+ 添加新行</button>
         </div>
-        <button type="button" class="rank-vue-add-btn" @click="addRow">+ 添加新行</button>
-      </div>
-      <div class="rank-vue-modal-footer">
-        <button type="button" class="rank-vue-save-btn" @click="save">保存</button>
-        <button type="button" class="rank-vue-cancel-btn" @click="closeEdit">取消</button>
+        <div class="rank-vue-modal-footer">
+          <button type="button" class="rank-vue-save-btn" @click="save">保存</button>
+          <button type="button" class="rank-vue-cancel-btn" @click="closeEdit">取消</button>
+        </div>
       </div>
     </div>
-  </div>
+  </Teleport>
   </div>
 </template>
 
