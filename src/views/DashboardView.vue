@@ -68,6 +68,7 @@ import { ref, computed } from 'vue';
 import { getCurrentDate, setCurrentDate } from '../logic/app-core.js';
 import { getPreviousTradingDay, getNextTradingDay, getMostRecentTradingDay } from '../logic/trading-day-helpers.js';
 import { _emit } from '../stores/eventBus.js';
+import { useUiStore } from '../stores/uiStore.js';
 import EditModal from '../components/EditModal.vue';
 import HomeStocksView from './HomeStocksView.vue';
 import AuctionBoard from './AuctionBoard.vue';
@@ -83,10 +84,11 @@ import StatsBoard from './StatsBoard.vue';
 import TagTitlesBoard from './TagTitlesBoard.vue';
 
 const stocksRef = ref(null);
-const currentDate = computed(() => getCurrentDate());
+const uiStore = useUiStore();
+const currentDate = computed(() => uiStore.currentDate || getCurrentDate());
 
 const weekdayText = computed(() => {
-  const d = getCurrentDate();
+  const d = uiStore.currentDate || getCurrentDate();
   if (!d) return '';
   const days = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   return days[new Date(d + 'T00:00:00').getDay()];
