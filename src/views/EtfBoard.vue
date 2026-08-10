@@ -177,3 +177,19 @@ function refresh() {
 defineExpose({ openEdit, refresh });
 </script>
 
+<style>
+.board-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 1010; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.board-modal { background: #fff; border-radius: 16px; width: 100%; max-width: 400px; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 10px 40px rgba(0,0,0,0.15); }
+.board-modal-header { padding: 16px; border-bottom: 1px solid #f1f5f9; font-weight: 600; font-size: 15px; }
+.board-modal-body { padding: 16px; overflow-y: auto; }
+.board-modal-footer { padding: 12px 16px 16px; display: flex; gap: 10px; }
+.board-input { width: 100%; padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 13px; box-sizing: border-box; -webkit-touch-callout: default; touch-action: auto; }
+.board-input:focus { outline: none; border-color: #3b82f6; }
+.board-form-row { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; }
+.board-form-label { font-size: 12px; color: #64748b; width: 60px; flex-shrink: 0; }
+.board-btn { flex: 1; padding: 12px; border-radius: 10px; border: none; font-size: 14px; font-weight: 600; cursor: pointer; }
+.board-btn-primary { background: #3b82f6; color: #fff; }
+.board-btn-danger { background: #ef4444; color: #fff; }
+.board-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.board-hint { font-size: 11px; color: #94a3b8; margin-top: 4px; }
+</style>

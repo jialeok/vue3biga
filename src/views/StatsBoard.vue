@@ -177,3 +177,86 @@ onMounted(render);
 defineExpose({ render, openCircleEdit, closeCircleModal, saveCircleStats, clearCircleStats });
 </script>
 
+<style>
+.stats-board {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.stats-stage-section {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+}
+.stage-label { color: #6b7280; }
+.stage-value { font-weight: 600; color: #1f2937; }
+.stats-consecutive-section {
+  display: flex;
+  gap: 16px;
+}
+.consecutive-item {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  font-size: 13px;
+}
+.consecutive-label { color: #6b7280; }
+.consecutive-value { font-weight: 600; color: #dc2626; }
+.stats-score-section {
+  display: flex;
+  gap: 16px;
+}
+.score-item {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  font-size: 13px;
+}
+.score-label { color: #6b7280; }
+.score-value { font-weight: 600; }
+.stats-period-section {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.period-btn {
+  padding: 6px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+.stats-form-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+  gap: 8px;
+}
+.stats-form-row label {
+  width: 100px;
+  color: #6b7280;
+  font-size: 13px;
+}
+.stats-form-row input,
+.stats-form-row select {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.checkbox-option {
+  width: 24px;
+  height: 24px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.checkbox-option.checked { background: #dc2626; color: #fff; }
+.checkbox-option.unchecked { background: #fff; color: #9ca3af; }
+</style>

@@ -461,3 +461,186 @@ onUnmounted(() => {
 defineExpose({ refresh, toggleSort, expandAll, collapseAll });
 </script>
 
+<style>
+.auction-board-vue {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.auction-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #e5e7eb;
+  flex-wrap: wrap;
+}
+.toolbar-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #374151;
+  cursor: pointer;
+}
+.toolbar-btn {
+  padding: 4px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+.toolbar-search {
+  padding: 4px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: 12px;
+  width: 120px;
+}
+.auction-stats-bar {
+  display: flex;
+  gap: 16px;
+  padding: 6px 12px;
+  background: #f9fafb;
+  font-size: 12px;
+  color: #6b7280;
+  border-bottom: 1px solid #e5e7eb;
+}
+.stat-item {
+  font-weight: 500;
+}
+.auction-scroll-container {
+  height: 100%;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+.auction-empty {
+  text-align: center;
+  color: #9ca3af;
+  padding: 40px 0;
+  font-size: 14px;
+}
+.auction-obs-group {
+  border-bottom: 2px solid #fbbf24;
+  margin-bottom: 4px;
+}
+.auction-group-label {
+  padding: 4px 12px;
+  font-size: 11px;
+  color: #f59e0b;
+  font-weight: 600;
+}
+.auction-trend-panel {
+  padding: 6px 8px 8px;
+  background: #f8fafc;
+  margin-top: 4px;
+}
+.page-indicator {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 4px;
+}
+.page-dot {
+  width: 20px;
+  height: 20px;
+  border: 1px solid #d1d5db;
+  border-radius: 50%;
+  background: #fff;
+  font-size: 10px;
+  color: #6b7280;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.page-dot.active {
+  background: #6366f1;
+  color: #fff;
+  border-color: #6366f1;
+}
+.backend-toggle {
+  margin-left: 8px;
+  background: #f3f4f6;
+  font-weight: 600;
+}
+.auction-backend-panel {
+  padding: 8px 12px;
+  background: #f9fafb;
+  border-bottom: 1px solid #e5e7eb;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.backend-section {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.backend-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  min-width: 50px;
+}
+.backend-btn {
+  padding: 3px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  background: #fff;
+  font-size: 11px;
+  cursor: pointer;
+  color: #374151;
+}
+.backend-btn:hover {
+  background: #e5e7eb;
+}
+.auction-swipe-container {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+.topic-group {
+  border-bottom: 1px solid #e5e7eb;
+  padding: 6px 12px;
+}
+.topic-group-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.topic-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2937;
+}
+.topic-strength {
+  font-size: 11px;
+  color: #dc2626;
+  font-weight: 500;
+}
+.topic-count {
+  font-size: 11px;
+  color: #6b7280;
+  margin-left: auto;
+}
+.topic-group-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.topic-stock-item {
+  font-size: 12px;
+  color: #374151;
+  background: #f3f4f6;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+.topic-stock-item small {
+  color: #6b7280;
+  font-size: 10px;
+}
+</style>
