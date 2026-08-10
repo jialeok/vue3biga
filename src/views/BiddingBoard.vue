@@ -5,14 +5,14 @@
   保持委托: fetchBiddingSnapshotToForm(147行API+DOM)/onDuibanRowClick(79行DOM弹窗)/跨板副作用(syncSectorEtf/renderCircleStats/autoCalculate*/renderConsecutiveUp等)
 -->
 <template>
-  <div class="bidding-board">
-    <div class="bidding-display">
-      <div class="bidding-header">
-        <span class="bidding-title">竞价变化看板</span>
-        <button class="bidding-edit-btn" @click="openEdit">编辑</button>
-        <button class="bidding-diag-btn" @click="runDiagnostics">诊断</button>
-      </div>
-      <div class="bidding-table">
+  <div class="bidding-board trading-day-element" :class="{ minimized: !expanded }">
+    <div class="bidding-header" @click="toggleExpand">
+      <div class="bidding-title">竞价变化</div>
+      <div class="bidding-toggle-btn">{{ expanded ? '▲' : '▼' }}</div>
+    </div>
+    <div class="bidding-content" @dblclick="openEdit">
+      <div v-if="!biddingRows.length" class="bidding-placeholder">暂无数据，点击添加...</div>
+      <div v-else class="bidding-table">
         <div class="bidding-row bidding-row-header">
           <span class="col-name">名称</span>
           <span class="col-time915">9:15</span>
@@ -35,7 +35,6 @@
           <span class="col-change" :class="changeClass(row.change)">{{ row.change || '-' }}</span>
           <span class="col-close" :class="changeClass(row.close)">{{ row.close || '-' }}</span>
         </div>
-        <div v-if="!biddingRows.length" class="bidding-empty">暂无数据</div>
       </div>
     </div>
 
@@ -104,6 +103,12 @@ const duibanPopup = ref(null);
 const fetchStatus = ref('');
 const fetchLoading = ref(false);
 const clearConfirmActive = ref(false);
+const expanded = ref(false);
+
+function toggleExpand(e) {
+  if (e) e.stopPropagation();
+  expanded.value = !expanded.value;
+}
 
 function changeClass(v) {
   if (!v) return '';

@@ -1,5 +1,5 @@
 <template>
-  <div class="jiwang-board trading-day-element">
+  <div class="jiwang-board trading-day-element" @dblclick="openEdit">
     <!-- 看板展示区 -->
     <div class="jiwang-content">
       <div class="jiwang-item">
@@ -55,7 +55,7 @@
           <template v-else>?</template>
         </div>
       </div>
-      <button class="jiwang-edit-btn" @click="openEdit">编辑</button>
+
     </div>
 
     <!-- 编辑弹窗 -->

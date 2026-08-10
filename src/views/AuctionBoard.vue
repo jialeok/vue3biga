@@ -5,83 +5,98 @@
   保持委托: computeAuctionViewData(18个window依赖)
 -->
 <template>
-  <div class="auction-board" :data-source="dataSource">
-    <div class="auction-toolbar">
-      <label class="toolbar-toggle">
-        <input type="checkbox" :checked="sortState.byJingYest" @change="toggleSort('byJingYest')" />
-        <span>竞/昨</span>
-      </label>
-      <label class="toolbar-toggle">
-        <input type="checkbox" :checked="sortState.byRatio" @change="toggleSort('byRatio')" />
-        <span>环比</span>
-      </label>
-      <label class="toolbar-toggle">
-        <input type="checkbox" :checked="sortState.byParallel" @change="toggleSort('byParallel')" />
-        <span>平行</span>
-      </label>
-      <label class="toolbar-toggle">
-        <input type="checkbox" :checked="sortState.byJingYestRatio" @change="toggleSort('byJingYestRatio')" />
-        <span>竞/昨比</span>
-      </label>
-      <label class="toolbar-toggle">
-        <input type="checkbox" :checked="sortState.byThreeDayJingDie" @change="toggleSort('byThreeDayJingDie')" />
-        <span>三日竞跌</span>
-      </label>
-      <button class="toolbar-btn" @click="expandAll">全部展开</button>
-      <button class="toolbar-btn" @click="collapseAll">全部收起</button>
-      <input
-        class="toolbar-search"
-        v-model="highlightKeyword"
-        placeholder="搜索股票名"
-        @input="onSearch"
-      />
-    </div>
-
-    <div class="auction-stats-bar">
-      <span class="stat-item">总数: {{ viewData.rawCount || 0 }}</span>
-      <span class="stat-item">强度: {{ viewData.stats && viewData.stats.todayStrength != null ? viewData.stats.todayStrength + '%' : '-' }}</span>
-      <span class="stat-item">高比: {{ viewData.stats && viewData.stats.highRatioCount || 0 }}</span>
-      <span class="stat-item">竞/昨: {{ viewData.stats && viewData.stats.jingYestCount || 0 }}</span>
-      <span class="stat-item page-indicator">
-        <button v-for="p in 4" :key="p" class="page-dot" :class="{ active: currentPage === p - 1 }" @click="switchPage(p - 1)">{{ p }}</button>
-      </span>
-      <button class="toolbar-btn backend-toggle" @click="showBackend = !showBackend">后台</button>
-    </div>
-
-    <div v-if="showBackend" class="auction-backend-panel">
-      <div class="backend-section">
-        <span class="backend-label">同花顺:</span>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchHotLimitUpLadderFromThs : fetchLadderConstituentsMain)">梯子成分</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotYesterdayVolumeFromThs : fillYesterdayVolumeFromThs)">昨量填充</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotTodayYesterdayVolumeFromThs : fillTodayYesterdayVolumeFromThs)">今昨量</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotYesterdayYesterdayVolumeFromThs : fillYesterdayYesterdayVolumeFromThs)">昨昨量</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchHotChangePctFromThs : fetchChangePctFromThs)">涨幅抓取</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotHistoryGapPctFromThs : fillAuctionHistoryGapPctFromThs)">历史缺口涨幅</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotHistoryGapYestVolumeFromThs : fillAuctionHistoryGapYestVolumeFromThs)">历史缺口昨量</button>
+  <div class="auction-board trading-day-element" :class="{ collapsed: !expanded }" :data-source="dataSource">
+    <div class="auction-header" @click="toggleBoard" style="cursor:pointer">
+      <div>
+        <div class="group-tab-bar" @click.stop>
+          <span class="group-tab" :class="{ active: dataSource === 'auction' }" @click.stop="$emit('switch-group', 'auction')">早盘竞价</span>
+          <span class="group-tab" :class="{ active: dataSource === 'hot' }" @click.stop="$emit('switch-group', 'hot')">热门股票</span>
+        </div>
+        <div class="auction-title">
+          <span>{{ dataSource === 'hot' ? '热门股票' : '早盘竞价' }}</span>
+          <span style="margin-left: 8px; font-weight: 600;">强度：<span style="color: #ffffff;">{{ viewData.stats && viewData.stats.todayStrength != null ? viewData.stats.todayStrength + '%' : '-' }}</span></span>
+        </div>
+        <div class="auction-subtitle"></div>
       </div>
-      <div class="backend-section">
-        <span class="backend-label">猫抓:</span>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchHotTodayAuctionFromNumcat : fetchTodayAuctionFromNumcat)">今日竞价</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchAllHotAuctionFromNumcat : fetchAllAuctionFromNumcat)">全部竞价</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchThreeDaysHotAuctionFromNumcat : fetchThreeDaysAuctionFromNumcat)">三日竞价</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchFiveDaysHotAuctionFromNumcat : fetchFiveDaysAuctionFromNumcat)">五日竞价</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotTopicsFromNumcat : fillTopicsFromNumcat)">题材填充</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchHotMonitorWarningFromNumcat : fetchMonitorWarningFromNumcat)">监控预警</button>
-      </div>
-      <div class="backend-section">
-        <span class="backend-label">导入:</span>
-        <button class="backend-btn" @click="onImportPaste">粘贴导入</button>
-        <button class="backend-btn" @click="onHistoryFill">历史填充</button>
-        <button class="backend-btn" @click="onReplaceConcept">题材替换</button>
+      <div class="auction-header-right">
+        <div class="auction-page-indicator">
+          <span v-for="p in 4" :key="p" class="page-dot" :class="{ active: currentPage === p - 1 }" @click.stop="switchPage(p - 1)"></span>
+        </div>
+        <div class="auction-toggle-btn">{{ expanded ? '▲' : '▼' }}</div>
       </div>
     </div>
-
-    <div class="auction-swipe-container"
+    <div v-show="expanded" class="auction-swipe-container"
          @touchstart.passive="onSwipeStart"
          @touchend="onSwipeEnd"
          @mousedown="onSwipeStart"
          @mouseup="onSwipeEnd">
       <div v-show="currentPage === 0" class="auction-scroll-container">
+        <div class="auction-toolbar">
+          <div class="auction-toggle-item">
+            <span class="auction-toggle-label">全部展开</span>
+            <label class="auction-toggle-switch">
+              <input type="checkbox" @change="($event.target.checked ? expandAll : collapseAll)()" />
+              <span class="auction-toggle-slider"></span>
+            </label>
+          </div>
+          <div class="auction-toggle-item">
+            <span class="auction-toggle-label">数据</span>
+            <label class="auction-toggle-switch">
+              <input type="checkbox" :checked="sortState.byData" @change="toggleSort('byData')" />
+              <span class="auction-toggle-slider"></span>
+            </label>
+          </div>
+          <div class="auction-toggle-item">
+            <span class="auction-toggle-label">环比</span>
+            <label class="auction-toggle-switch">
+              <input type="checkbox" :checked="sortState.byRatio" @change="toggleSort('byRatio')" />
+              <span class="auction-toggle-slider"></span>
+            </label>
+          </div>
+          <div class="auction-toggle-item">
+            <span class="auction-toggle-label">平行</span>
+            <label class="auction-toggle-switch">
+              <input type="checkbox" :checked="sortState.byParallel" @change="toggleSort('byParallel')" />
+              <span class="auction-toggle-slider"></span>
+            </label>
+          </div>
+          <div class="auction-toggle-item">
+            <span class="auction-toggle-label">竞/昨</span>
+            <label class="auction-toggle-switch">
+              <input type="checkbox" :checked="sortState.byJingYest" @change="toggleSort('byJingYest')" />
+              <span class="auction-toggle-slider"></span>
+            </label>
+          </div>
+          <input class="auction-search-input" v-model="highlightKeyword" placeholder="搜索股票名" @input="onSearch" />
+        </div>
+        <div class="auction-highratio-stat">
+          <span style="font-weight:700;color:#dc2626;">竞/昨数：{{ viewData.stats && viewData.stats.jingYestCount || '-' }}</span>
+          <span style="display:inline-block;width:28px;"></span>竞放量数：<span style="font-weight:700;">{{ viewData.stats && viewData.stats.highRatioCount || '-' }}</span>
+          <button class="toolbar-btn backend-toggle" @click.stop="showBackend = !showBackend">后台</button>
+        </div>
+        <div v-if="showBackend" class="auction-backend-panel">
+          <div class="backend-section">
+            <span class="backend-label">同花顺:</span>
+            <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchHotLimitUpLadderFromThs : fetchLadderConstituentsMain)">梯子成分</button>
+            <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotYesterdayVolumeFromThs : fillYesterdayVolumeFromThs)">昨量填充</button>
+            <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotTodayYesterdayVolumeFromThs : fillTodayYesterdayVolumeFromThs)">今昨量</button>
+            <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotYesterdayYesterdayVolumeFromThs : fillYesterdayYesterdayVolumeFromThs)">昨昨量</button>
+            <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchHotChangePctFromThs : fetchChangePctFromThs)">涨幅抓取</button>
+          </div>
+          <div class="backend-section">
+            <span class="backend-label">猫抓:</span>
+            <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchHotTodayAuctionFromNumcat : fetchTodayAuctionFromNumcat)">今日竞价</button>
+            <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchAllHotAuctionFromNumcat : fetchAllAuctionFromNumcat)">全部竞价</button>
+            <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchThreeDaysHotAuctionFromNumcat : fetchThreeDaysAuctionFromNumcat)">三日竞价</button>
+            <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotTopicsFromNumcat : fillTopicsFromNumcat)">题材填充</button>
+          </div>
+          <div class="backend-section">
+            <span class="backend-label">导入:</span>
+            <button class="backend-btn" @click="onImportPaste">粘贴导入</button>
+            <button class="backend-btn" @click="onHistoryFill">历史填充</button>
+            <button class="backend-btn" @click="onReplaceConcept">题材替换</button>
+          </div>
+        </div>
         <div v-if="!viewData.items || viewData.items.length === 0" class="auction-empty">
           暂无数据
         </div>
@@ -223,8 +238,14 @@ const viewData = ref({ items: [], obsIndices: [], regularIndices: [], stats: {},
 
 const currentPage = ref(0);
 const showBackend = ref(false);
+const expanded = ref(false);
 let swipeStartX = 0;
 let swipeEndX = 0;
+
+function toggleBoard(e) {
+  if (e) e.stopPropagation();
+  expanded.value = !expanded.value;
+}
 
 const topicGroups = computed(() => {
   void viewData.value;

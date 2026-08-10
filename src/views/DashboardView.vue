@@ -17,6 +17,7 @@
     <PatternBoard />
     <BiddingBoard />
     <JiwangBoard />
+    <StatsBoard />
     <EmotionBoard />
     <TagTitlesBoard />
     <AuctionBoard />
@@ -24,7 +25,6 @@
     <EtfBoard />
     <RankBoard />
     <HotspotBoard />
-    <StatsBoard />
     <HomeStocksView ref="stocksRef" />
 
     <!-- 底部操作栏 -->

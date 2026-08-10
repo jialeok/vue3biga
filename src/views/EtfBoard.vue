@@ -1,4 +1,5 @@
 <template>
+  <div class="etf-board trading-day-element">
   <div :class="kind + '-header'" @dblclick.stop="openEdit">
     <div>
       <div :class="kind + '-title'">{{ title }}</div>
@@ -63,6 +64,7 @@
         <button class="board-btn" style="background:#f1f5f9;color:#475569" @click="showModal = false">取消</button>
       </div>
     </div>
+  </div>
   </div>
 </template>
 
