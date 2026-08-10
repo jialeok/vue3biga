@@ -67,12 +67,10 @@
               <span class="auction-toggle-slider"></span>
             </label>
           </div>
-          <input class="auction-search-input" v-model="highlightKeyword" placeholder="搜索股票名" @input="onSearch" />
         </div>
         <div class="auction-highratio-stat">
           <span style="font-weight:700;color:#dc2626;">竞/昨数：{{ viewData.stats && viewData.stats.jingYestCount || '-' }}</span>
           <span style="display:inline-block;width:28px;"></span>竞放量数：<span style="font-weight:700;">{{ viewData.stats && viewData.stats.highRatioCount || '-' }}</span>
-          <button class="toolbar-btn backend-toggle" @click.stop="showBackend = !showBackend">后台</button>
         </div>
         <div v-if="showBackend" class="auction-backend-panel">
           <div class="backend-section">

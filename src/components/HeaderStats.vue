@@ -1,14 +1,17 @@
 <template>
-  <div class="header-stats">
-    <div class="circle-card" :class="profitCardClass">
+  <div class="circle-stats-bar">
+    <div class="circle-card" :class="profitCardClass" @dblclick="$emit('edit')">
       <div class="circle-label">今日盈亏</div>
       <div class="circle-value">{{ profitDisplay }}</div>
     </div>
-    <div class="circle-card" :class="gainCardClass">
+    <div class="circle-card" :class="gainCardClass" @dblclick="$emit('edit')">
       <div class="circle-label">账户涨幅</div>
       <div class="circle-value">{{ gainDisplay }}</div>
     </div>
-    <button v-if="editable" class="circle-edit-btn" @click="$emit('edit')">编辑</button>
+    <div class="circle-card" :class="balanceCardClass" @dblclick="$emit('edit')">
+      <div class="circle-label">账户余额</div>
+      <div class="circle-value">{{ balanceDisplay }}</div>
+    </div>
   </div>
 </template>
 
@@ -18,6 +21,7 @@ import { computed } from 'vue';
 const props = defineProps({
   profit: { type: [String, Number], default: '' },
   gain: { type: [String, Number], default: '' },
+  balance: { type: [String, Number], default: '' },
   editable: { type: Boolean, default: false }
 });
 
@@ -37,6 +41,10 @@ const gainDisplay = computed(() => {
   if (props.gain === '' || props.gain === undefined || isNaN(parseFloat(props.gain))) return '-';
   return (parseFloat(props.gain) > 0 ? '+' : '') + props.gain + '%';
 });
+const balanceDisplay = computed(() => {
+  if (props.balance === '' || props.balance === undefined || isNaN(parseFloat(props.balance))) return '-';
+  return formatAmount(props.balance);
+});
 const profitCardClass = computed(() => {
   const n = parseFloat(props.profit);
   if (isNaN(n)) return '';
@@ -47,10 +55,11 @@ const gainCardClass = computed(() => {
   if (isNaN(n)) return '';
   return n > 0 ? 'positive' : (n < 0 ? 'negative' : '');
 });
+const balanceCardClass = computed(() => '');
 </script>
 
 <style scoped>
-.header-stats { display: flex; gap: 12px; align-items: center; }
+.circle-stats-bar { display: flex; gap: 12px; align-items: center; justify-content: center; }
 .circle-card {
   display: flex; flex-direction: column; align-items: center;
   padding: 12px 20px; border-radius: 50%; border: 2px solid #e5e7eb;
@@ -60,8 +69,4 @@ const gainCardClass = computed(() => {
 .circle-card.negative { border-color: #059669; background: #f0fdf4; }
 .circle-label { font-size: 11px; color: #6b7280; }
 .circle-value { font-size: 18px; font-weight: 600; color: #1f2937; }
-.circle-edit-btn {
-  padding: 6px 12px; border: 1px solid #d1d5db; border-radius: 6px;
-  background: #fff; font-size: 12px; cursor: pointer;
-}
 </style>

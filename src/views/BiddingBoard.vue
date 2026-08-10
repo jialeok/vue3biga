@@ -456,35 +456,6 @@ defineExpose({ render, openEdit, closeModal, save, addRow, removeRow, clearData,
 </script>
 
 <style>
-.bidding-board {
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  margin: 8px 0;
-  background: #fff;
-}
-.bidding-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  border-bottom: 1px solid #f3f4f6;
-}
-.bidding-title {
-  font-weight: 600;
-  color: #1f2937;
-  flex: 1;
-}
-.bidding-edit-btn, .bidding-diag-btn {
-  padding: 4px 12px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  background: #fff;
-  font-size: 12px;
-  cursor: pointer;
-}
-.bidding-table {
-  padding: 4px 0;
-}
 .bidding-row {
   display: grid;
   grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr;
@@ -500,11 +471,6 @@ defineExpose({ render, openEdit, closeModal, save, addRow, removeRow, clearData,
 }
 .bidding-row .up { color: #dc2626; }
 .bidding-row .down { color: #059669; }
-.bidding-empty {
-  text-align: center;
-  color: #9ca3af;
-  padding: 20px;
-}
 .bidding-edit-row {
   display: grid;
   grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr auto;

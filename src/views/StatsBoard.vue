@@ -5,12 +5,55 @@
   window.* 引用: 0 处（评分逻辑委托已移入 composable）
 -->
 <template>
-  <div class="stats-board">
-    <HeaderStats :profit="profit" :gain="gain" :editable="true" @edit="openCircleEdit" />
+  <div class="market-stage-container trading-day-element">
+    <div class="market-stage-inner">
+      <div class="second-row-layout">
+        <HeaderStats :profit="profit" :gain="gain" :balance="balance" @edit="openCircleEdit" />
+      </div>
 
-    <div class="stats-stage-section">
-      <span class="stage-label">行情阶段</span>
-      <span class="stage-value">{{ marketStage || '-' }}</span>
+      <div class="stats-stage-section">
+        <span class="stage-label">行情阶段</span>
+        <span class="stage-value">{{ marketStage || '-' }}</span>
+      </div>
+
+      <div class="stats-consecutive-section">
+        <div class="consecutive-item">
+          <span class="consecutive-label">最近多板</span>
+          <span class="consecutive-value">{{ consecutiveUp.duoban || 0 }}</span>
+        </div>
+        <div class="consecutive-item">
+          <span class="consecutive-label">板块ETF</span>
+          <span class="consecutive-value">{{ consecutiveUp.bankuai || 0 }}</span>
+        </div>
+        <div class="consecutive-item">
+          <span class="consecutive-label">题材方向</span>
+          <span class="consecutive-value">{{ consecutiveUp.ticai || 0 }}</span>
+        </div>
+      </div>
+
+      <div class="stats-score-section">
+        <div class="score-item">
+          <span class="score-label">最近多板评分</span>
+          <span class="score-value" :style="{ color: scoreColor(recentMultiScore) }">{{ recentMultiScore }}</span>
+        </div>
+        <div class="score-item">
+          <span class="score-label">板块ETF评分</span>
+          <span class="score-value" :style="{ color: scoreColor(sectorEtfScore) }">{{ sectorEtfScore }}</span>
+        </div>
+        <div class="score-item">
+          <span class="score-label">题材方向评分</span>
+          <span class="score-value" :style="{ color: scoreColor(topicDirectionScore) }">{{ topicDirectionScore }}</span>
+        </div>
+      </div>
+
+      <div class="stats-nav-bar">
+        <button class="stats-nav-btn weekly" @click="showWeekly">本周统计</button>
+        <button class="stats-nav-btn" @click="showLastWeek">上周统计</button>
+        <button class="stats-nav-btn monthly" @click="showMonthly">本月统计</button>
+        <button class="stats-nav-btn" @click="openWeekendSummary">周末总结</button>
+        <button class="stats-nav-btn" @click="openWeekendReview">周末复盘</button>
+        <button class="stats-nav-btn" @click="openMonthlySummary">月度总结</button>
+      </div>
     </div>
 
     <div class="stats-consecutive-section">
@@ -99,6 +142,7 @@ const {
 
 const profit = ref('');
 const gain = ref('');
+const balance = ref('');
 const marketStage = ref('');
 
 const circleModalActive = ref(false);
@@ -132,6 +176,7 @@ function render() {
   const s = getStats();
   profit.value = s.profit;
   gain.value = s.gain;
+  balance.value = s.balance || '';
   marketStage.value = s.marketStage || '';
   renderConsecutiveUp();
   calculateAll();
