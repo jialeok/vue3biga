@@ -110,6 +110,7 @@ async function checkPassword() {
     hidePassword();
     startSessionPoll();
     initApp();
+    _emit('auth:login-success');
   } catch (e) {
     console.error('checkPassword 失败:', e);
   statusText.value = '';

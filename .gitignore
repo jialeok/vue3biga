@@ -10,6 +10,15 @@ _graphtest/
 .codeartsdoer/
 .uploads/
 
+# Build output
+dist/
+_dist_bak_old/
+dist_old_*/
+
+# Temp files
+_window_matches.txt
+_window_tokens.txt
+
 # Local backup dumps (not source)
 股票助手备份_20260802_1931.json
 index单页没改造前备份.html

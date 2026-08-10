@@ -105,8 +105,31 @@ function setupVisibilityChange() {
   });
 }
 
+function onLoginSuccess() {
+  authReady.value = true;
+  try { initApp(); } catch (e) { console.error('initApp failed:', e); }
+  runMigrations();
+  setupEventBus();
+  setupVisibilityChange();
+
+  pullDailyHighlights().then(() => _emit('auction-refresh')).catch(e => _dbgLog('[AUCTION-ERR] daily_highlights ' + (e && e.message || e)));
+  pullBiddingForDate(getCurrentDate()).then(() => _emit('bidding-refresh')).catch(e => _dbgLog('[BIDDING] 首屏快速加载失败 ' + (e && e.message || e)));
+  pullHotStocksHighlights().catch(e => console.warn('hot_stocks_highlights:', e.message));
+  loadHotStocksFromCloud().then(() => _emit('auction-refresh')).catch(e => console.warn('hot_stocks:', e.message));
+  loadCoreTopicsFromCloud().then(() => _emit('auction-refresh')).catch(e => console.warn('core_topics:', e && e.message || e));
+
+  pullFromCloud().then(() => {
+    state.allData = null; loadAllData();
+    _emit('auction-refresh');
+    _emit('stocks-refresh');
+    _emit('bidding-refresh');
+    _emit('board-refresh');
+  }).catch(e => _dbgLog('[AUCTION-ERR] background pullFromCloud ' + (e && e.message || e)));
+}
+
 onMounted(async () => {
   setupGlobalListeners();
+  _on('auth:login-success', onLoginSuccess);
 
   if (localStorage.getItem('unlocked') !== '1' && sessionStorage.getItem('unlocked') === '1') {
     localStorage.setItem('unlocked', '1');
@@ -124,27 +147,7 @@ onMounted(async () => {
 
     authStore.sessionToken = savedToken;
     startSessionPoll();
-    authReady.value = true;
-
-    try { initApp(); } catch (e) { console.error('initApp failed:', e); }
-
-    runMigrations();
-    setupEventBus();
-    setupVisibilityChange();
-
-    pullDailyHighlights().then(() => _emit('auction-refresh')).catch(e => _dbgLog('[AUCTION-ERR] daily_highlights ' + (e && e.message || e)));
-    pullBiddingForDate(getCurrentDate()).then(() => _emit('bidding-refresh')).catch(e => _dbgLog('[BIDDING] 首屏快速加载失败 ' + (e && e.message || e)));
-    pullHotStocksHighlights().catch(e => console.warn('hot_stocks_highlights:', e.message));
-    loadHotStocksFromCloud().then(() => _emit('auction-refresh')).catch(e => console.warn('hot_stocks:', e.message));
-    loadCoreTopicsFromCloud().then(() => _emit('auction-refresh')).catch(e => console.warn('core_topics:', e && e.message || e));
-
-    pullFromCloud().then(() => {
-      state.allData = null; loadAllData();
-      _emit('auction-refresh');
-      _emit('stocks-refresh');
-      _emit('bidding-refresh');
-      _emit('board-refresh');
-    }).catch(e => _dbgLog('[AUCTION-ERR] background pullFromCloud ' + (e && e.message || e)));
+    onLoginSuccess();
   } else {
     loginRef.value && loginRef.value.showPassword();
   }
