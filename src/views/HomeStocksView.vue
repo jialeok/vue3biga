@@ -1,12 +1,12 @@
-﻿<template>
+<template>
   <div v-if="loading" class="loading-state trading-day-element">
-    <div class="loading-icon">鈴?/div>
-    <div class="loading-title">鍔犺浇涓?..</div>
+    <div class="loading-icon">⏳</div>
+    <div class="loading-title">加载中...</div>
   </div>
   <div v-else-if="sortedList.length === 0" class="empty-state trading-day-element" style="display:block">
-    <div class="empty-icon">馃搱</div>
-    <div class="empty-title">鏆傛棤鑲＄エ璁板綍</div>
-    <div class="empty-desc">鐐瑰嚮涓嬫柟 + 鎸夐挳娣诲姞绗竴鏉¤褰?/div>
+    <div class="empty-icon">📈</div>
+    <div class="empty-title">暂无股票记录</div>
+    <div class="empty-desc">点击下方 + 按钮添加第一条记录</div>
   </div>
   <div v-for="stock in sortedList" :key="stock.id"
        :id="'stock-card-' + stock.id"
@@ -37,49 +37,49 @@
           <span v-if="closeHeaderBadge(stock)" class="bomb-badge" :style="closeHeaderBadge(stock).style">{{ closeHeaderBadge(stock).text }}</span>
           {{ closeDisplay(stock).display }}
         </div>
-        <div class="expand-icon">鈻?/div>
+        <div class="expand-icon">▼</div>
       </div>
     </div>
     <div class="stock-body" @click="onBodyClick($event, stock)" @dblclick="onEdit(stock.id)">
       <div class="info-item">
-        <div class="info-label">鎹㈡墜鐜?/div>
+        <div class="info-label">换手率</div>
         <div class="turnover-highlight" :style="{ color: stocksTurnoverDisplay(stock).color }">{{ stocksTurnoverDisplay(stock).display }}</div>
       </div>
       <div class="info-item">
-        <div class="info-label">绔炰环寮€鐩?/div>
+        <div class="info-label">竞价开盘</div>
         <div class="info-value" :style="{ color: openDisplay(stock).color }">{{ openDisplay(stock).display }}</div>
       </div>
       <div class="info-item">
-        <div class="info-label">璋冩暣骞呭害</div>
+        <div class="info-label">调整幅度</div>
         <div class="info-value" :style="{ color: adjustDisplay(stock).color }">
           <span v-if="adjustDisplay(stock).symbol" :style="{ color: adjustDisplay(stock).symbolColor }">{{ adjustDisplay(stock).text }}{{ adjustDisplay(stock).symbol }}</span>
           <template v-else>{{ adjustDisplay(stock).text }}</template>
         </div>
       </div>
       <div class="info-item">
-        <div class="info-label">绔炵鍚堟暟褰㈡€?/div>
+        <div class="info-label">竞符合数形态</div>
         <div class="info-value" style="font-size:12px">{{ stock.pattern || '-' }}</div>
       </div>
       <div class="info-item">
-        <div class="info-label">闆惰酱浣嶇疆</div>
+        <div class="info-label">零轴位置</div>
         <div class="axis-value">{{ stock.axis || '-' }}</div>
       </div>
       <div class="info-item">
-        <div class="info-label">澶囨敞</div>
+        <div class="info-label">备注</div>
         <div class="remark-value">
           <span v-if="remarkDisplay(stock).prefix" :style="{ color: remarkDisplay(stock).prefixColor }">{{ remarkDisplay(stock).prefix }}</span>{{ remarkDisplay(stock).text || '-' }}
         </div>
       </div>
       <div class="info-item">
-        <div class="info-label">寮€鐩橀噺姣?/div>
+        <div class="info-label">开盘量比</div>
         <div class="info-value" :style="{ color: kbkDisplay(stock).color }">{{ kbkDisplay(stock).display }}</div>
       </div>
       <div class="info-item">
-        <div class="info-label">缂╂斁閲忚兘</div>
+        <div class="info-label">缩放量能</div>
         <div class="sfliangneng-value">{{ stock.sfliangneng || '-' }}</div>
       </div>
       <div class="info-item">
-        <div class="info-label">鐩稿叧棰樻潗</div>
+        <div class="info-label">相关题材</div>
         <div class="xgcaiti-value">{{ stock.xgcaiti ? stock.xgcaiti.replace(/[()]/g, '') : '-' }}</div>
       </div>
     </div>
@@ -87,10 +87,10 @@
       <TrendChart :points="trendCache[stock.id]" color="#f59e0b" :percent="true" />
     </div>
     <div class="stock-actions" :class="{ expanded: expandedActionsId === stock.id }" :id="'actions-' + stock.id">
-      <button class="action-btn btn-edit" @click.stop="onEdit(stock.id)">缂栬緫</button>
-      <button class="action-btn btn-copy" @click.stop="onCopyTomorrow(stock.id)">澶嶅埗鍒颁氦鏄撴棩</button>
-      <button class="action-btn btn-copy-date" @click.stop="onCopyDate(stock.id)">澶嶅埗鍒版棩鏈?/button>
-      <button class="action-btn btn-delete" @click.stop="onDelete(stock.id)">鍒犻櫎</button>
+      <button class="action-btn btn-edit" @click.stop="onEdit(stock.id)">编辑</button>
+      <button class="action-btn btn-copy" @click.stop="onCopyTomorrow(stock.id)">复制到交易日</button>
+      <button class="action-btn btn-copy-date" @click.stop="onCopyDate(stock.id)">复制到日期</button>
+      <button class="action-btn btn-delete" @click.stop="onDelete(stock.id)">删除</button>
     </div>
     <div v-if="stock.isSold && stock.soldRecords && stock.soldRecords.length"
          class="sold-records-display"
@@ -106,7 +106,7 @@
          class="sold-records-empty"
          style="padding:6px 15px;background:linear-gradient(90deg, rgba(59, 130, 246, 0.03), transparent);cursor:pointer;margin:8px 0;border-radius:8px;"
          @click.stop="onSoldEdit(stock.id)">
-      <div style="font-size:12px;color:#94a3b8;">馃挵 鐐瑰嚮娣诲姞</div>
+      <div style="font-size:12px;color:#94a3b8;">💰 点击添加</div>
     </div>
     <div class="track-simple" @click="onTrackEdit(stock)">
       <div v-if="trackItems(stock.track).length" class="track-scroll-container">
@@ -117,7 +117,7 @@
           </div>
         </div>
       </div>
-      <div v-else class="track-empty-hint">鏆傛棤杩借釜锛岀偣鍑绘坊鍔?..</div>
+      <div v-else class="track-empty-hint">暂无追踪，点击添加...</div>
     </div>
   </div>
 
@@ -132,45 +132,45 @@
     </div>
   </EditModal>
 
-  <EditModal v-model="soldEditModalActive" title="鍗栧嚭璁板綍缂栬緫" @save="saveSoldEditModal">
+  <EditModal v-model="soldEditModalActive" title="卖出记录编辑" @save="saveSoldEditModal">
     <div class="edit-form-row">
-      <label>鍗栧嚭绫诲瀷</label>
+      <label>卖出类型</label>
       <select v-model="soldEditForm.type">
-        <option value="閮ㄥ垎鍗?>閮ㄥ垎鍗?/option>
-        <option value="鍏ㄦ竻浠?>鍏ㄦ竻浠?/option>
+        <option value="部分卖">部分卖</option>
+        <option value="全清仓">全清仓</option>
       </select>
     </div>
     <div class="edit-form-row">
-      <label>鐩堜簭</label>
+      <label>盈亏</label>
       <input v-model.number="soldEditForm.profit" type="number" />
     </div>
     <div class="edit-form-row">
-      <label>鐧惧垎姣?%)</label>
+      <label>百分比(%)</label>
       <input v-model.number="soldEditForm.percent" type="number" />
     </div>
     <div class="edit-form-row">
-      <label>鏃ユ湡</label>
+      <label>日期</label>
       <input v-model="soldEditForm.date" placeholder="YYYY-MM-DD" />
     </div>
   </EditModal>
 
-  <EditModal v-model="trackEditModalActive" title="杩借釜璁板綍缂栬緫" @save="saveTrackEditModal">
+  <EditModal v-model="trackEditModalActive" title="追踪记录编辑" @save="saveTrackEditModal">
     <div class="edit-form-row">
-      <label>杩借釜鍐呭</label>
+      <label>追踪内容</label>
       <input v-model="trackEditForm.content" />
     </div>
     <div class="edit-form-row">
-      <label>鏃ユ湡</label>
+      <label>日期</label>
       <input v-model="trackEditForm.date" placeholder="YYYY-MM-DD" />
     </div>
   </EditModal>
 
-  <EditModal v-model="datePickerActive" title="閫夋嫨鏃ユ湡" :show-actions="false">
+  <EditModal v-model="datePickerActive" title="选择日期" :show-actions="false">
     <div class="date-picker-section">
       <div class="date-picker-nav">
-        <button @click="prevPickerMonth">鈥?/button>
+        <button @click="prevPickerMonth">‹</button>
         <span>{{ pickerYear }}-{{ String(pickerMonth + 1).padStart(2, '0') }}</span>
-        <button @click="nextPickerMonth">鈥?/button>
+        <button @click="nextPickerMonth">›</button>
       </div>
       <div class="date-picker-grid">
         <button v-for="day in pickerDays" :key="day.key"
@@ -181,8 +181,8 @@
         </button>
       </div>
       <div class="date-picker-actions">
-        <button @click="pickerGoToday">浠婂ぉ</button>
-        <button @click="datePickerActive = false">鍙栨秷</button>
+        <button @click="pickerGoToday">今天</button>
+        <button @click="datePickerActive = false">取消</button>
       </div>
     </div>
   </EditModal>
@@ -275,12 +275,12 @@ function getTagPriority(stock) {
 const sortedList = computed(() => {
   let list = [...(data.value.list || [])];
   const filter = getCurrentFilter();
-  if (filter === '宸蹭拱') list = list.filter(s => s.bought);
-  else if (filter === '宸插崠') list = list.filter(s => s.sold);
-  else if (filter === '鎸佹湁') list = list.filter(s => s.hold);
-  else if (filter === '鏈€杩戝鏉?) list = list.filter(s => s.recentMulti);
-  else if (filter === '鏉垮潡ETF') list = list.filter(s => s.sectorEtf);
-  else if (filter === '棰樻潗鏂瑰悜') list = list.filter(s => s.topicDirection);
+  if (filter === '已买') list = list.filter(s => s.bought);
+  else if (filter === '已卖') list = list.filter(s => s.sold);
+  else if (filter === '持有') list = list.filter(s => s.hold);
+  else if (filter === '最近多板') list = list.filter(s => s.recentMulti);
+  else if (filter === '板块ETF') list = list.filter(s => s.sectorEtf);
+  else if (filter === '题材方向') list = list.filter(s => s.topicDirection);
 
   list.sort((a, b) => {
     const pa = getPriority(a), pb = getPriority(b);
@@ -367,11 +367,11 @@ function closeDisplay(stock) {
 function adjustDisplay(stock) {
   const v = stock.adjust;
   if (v === undefined || v === '') return { text: '-', color: '#374151', symbol: '', symbolColor: '' };
-  const opts = ['浜屾澘鎴愬姛', '浜屾澘澶辫触', '涓夋澘鎴愬姛', '涓夋澘澶辫触', '鍥涙澘鎴愬姛', '鍥涙澘澶辫触', '浜旀澘鎴愬姛', '浜旀澘澶辫触'];
+  const opts = ['二板成功', '二板失败', '三板成功', '三板失败', '四板成功', '四板失败', '五板成功', '五板失败'];
   if (opts.includes(v)) {
-    const ok = v.includes('鎴愬姛');
+    const ok = v.includes('成功');
     const color = ok ? '#dc2626' : '#16a34a';
-    const sym = ok ? '鉁? : '鉁?;
+    const sym = ok ? '✔' : '✘';
     return { text: v, color: 'inherit', symbol: sym, symbolColor: color };
   }
   return { text: String(v), color: '#374151', symbol: '', symbolColor: '' };
@@ -394,28 +394,28 @@ function shunshiClass(stock) {
   return up ? 'tag-shunshi-up' : 'tag-shunshi-down';
 }
 function stageTag(stock) {
-  if (!stock.stage || stock.stage === '鍏跺畠') return null;
-  const map = { '浜屾尝': '浜?, '楂樹綅': '楂?, '杩炴澘': '杩?, '棣栨澘': '棣? };
+  if (!stock.stage || stock.stage === '其它') return null;
+  const map = { '二波': '二', '高位': '高', '连板': '连', '首板': '首' };
   const text = map[stock.stage] || stock.stage;
-  const cls = (stock.stage === '杩炴澘' || stock.stage === '棣栨澘' || stock.stage === '浜屾尝' || stock.stage === '楂樹綅') ? 'tag-pink' : 'tag-default';
+  const cls = (stock.stage === '连板' || stock.stage === '首板' || stock.stage === '二波' || stock.stage === '高位') ? 'tag-pink' : 'tag-default';
   return { text, cls };
 }
 
 function headerTags(stock) {
   let pos1 = null;
-  if (stock.bought) pos1 = { text: '涔?, cls: 'tag-bought' };
-  else if (stock.sold) pos1 = { text: '鍗?, cls: 'tag-sold' };
-  else if (stock.hold) pos1 = { text: '鎸?, cls: 'tag-hold' };
+  if (stock.bought) pos1 = { text: '买', cls: 'tag-bought' };
+  else if (stock.sold) pos1 = { text: '卖', cls: 'tag-sold' };
+  else if (stock.hold) pos1 = { text: '持', cls: 'tag-hold' };
 
   let pos2 = null;
-  if (stock.topicDirection) pos2 = { text: '棰樻潗', cls: 'tag-topicdirection' };
-  else if (stock.recentMulti) pos2 = { text: '澶氭澘', cls: 'tag-recentmulti' };
+  if (stock.topicDirection) pos2 = { text: '题材', cls: 'tag-topicdirection' };
+  else if (stock.recentMulti) pos2 = { text: '多板', cls: 'tag-recentmulti' };
   else if (stock.sectorEtf) pos2 = { text: 'ETF', cls: 'tag-sectoretf' };
 
   let pos3 = null;
   const starTag = getStarTagsForStock(stock.name);
   if (starTag) {
-    const starCls = ['鏄熺垎', '鏄熸渶澶?, '鏄熷', '鏄熷钩', '鏄熺幇'].includes(starTag) ? 'tag-star-up' : 'tag-star-down';
+    const starCls = ['星爆', '星最多', '星增', '星平', '星现'].includes(starTag) ? 'tag-star-up' : 'tag-star-down';
     pos3 = { text: starTag, cls: starCls, svg: true };
   }
   return { pos1, pos2, pos3 };
@@ -424,21 +424,21 @@ function secondTags(stock) {
   const pos2Tag = stock.topicDirection ? 'topicDirection' : (stock.recentMulti ? 'recentMulti' : (stock.sectorEtf ? 'sectorEtf' : null));
   const pos1Tag = stock.bought ? 'bought' : (stock.sold ? 'sold' : (stock.hold ? 'hold' : null));
   const tags = [];
-  if (stock.recentMulti && pos2Tag !== 'recentMulti') tags.push({ text: '澶氭澘', cls: 'tag-recentmulti' });
+  if (stock.recentMulti && pos2Tag !== 'recentMulti') tags.push({ text: '多板', cls: 'tag-recentmulti' });
   if (stock.sectorEtf && pos2Tag !== 'sectorEtf') tags.push({ text: 'ETF', cls: 'tag-sectoretf' });
-  if (stock.hold && pos1Tag !== 'hold') tags.push({ text: '鎸?, cls: 'tag-hold' });
-  if (stock.sold && pos1Tag !== 'sold') tags.push({ text: '鍗?, cls: 'tag-sold' });
+  if (stock.hold && pos1Tag !== 'hold') tags.push({ text: '持', cls: 'tag-hold' });
+  if (stock.sold && pos1Tag !== 'sold') tags.push({ text: '卖', cls: 'tag-sold' });
   const st = stageTag(stock);
   if (st) tags.push({ text: st.text, cls: st.cls });
-  if (stock.watch) tags.push({ text: '瑙?, cls: 'tag-watch' });
-  if (stock.dragon) tags.push({ text: '榫?, cls: 'tag-dragon' });
-  if (stock.nextDay === 'up') tags.push({ text: '娆℃棩娑?, cls: 'tag-next-up' });
-  if (stock.nextDay === 'down') tags.push({ text: '娆℃棩璺?, cls: 'tag-next-down' });
-  if (stock.sellHigh) tags.push({ text: '鍐查珮', cls: 'tag-sell-high' });
+  if (stock.watch) tags.push({ text: '观', cls: 'tag-watch' });
+  if (stock.dragon) tags.push({ text: '龙', cls: 'tag-dragon' });
+  if (stock.nextDay === 'up') tags.push({ text: '次日涨', cls: 'tag-next-up' });
+  if (stock.nextDay === 'down') tags.push({ text: '次日跌', cls: 'tag-next-down' });
+  if (stock.sellHigh) tags.push({ text: '冲高', cls: 'tag-sell-high' });
   if (stock.sell1120) tags.push({ text: '11:20', cls: 'tag-sell-1120' });
   if (stock.sell1450) tags.push({ text: '14:50', cls: 'tag-sell-1450' });
-  if (stock.nishi) tags.push({ text: '閫?, cls: nishiClass(stock) });
-  if (stock.shunshi) tags.push({ text: '椤?, cls: shunshiClass(stock) });
+  if (stock.nishi) tags.push({ text: '逆', cls: nishiClass(stock) });
+  if (stock.shunshi) tags.push({ text: '顺', cls: shunshiClass(stock) });
   return tags;
 }
 function soldRecordsReversed(stock) {
@@ -446,7 +446,7 @@ function soldRecordsReversed(stock) {
 }
 function profitText(profit) {
   const p = parseFloat(profit) || 0;
-  return p >= 0 ? '璧? : '浜?;
+  return p >= 0 ? '赚' : '亏';
 }
 function stocksPercentDisplay(percent) {
   if (!percent && percent !== 0) return '';
@@ -454,7 +454,7 @@ function stocksPercentDisplay(percent) {
   return (p >= 0 ? '+' : '') + percent + '%';
 }
 function typeText(type) {
-  return type === '閮ㄥ垎鍗? ? '閮ㄥ垎鍗? : (type === '鍏ㄦ竻浠? ? '鍏ㄦ竻浠? : '');
+  return type === '部分卖' ? '部分卖' : (type === '全清仓' ? '全清仓' : '');
 }
 function profitColor(profit) {
   return (parseFloat(profit) || 0) >= 0 ? '#dc2626' : '#16a34a';
@@ -462,19 +462,19 @@ function profitColor(profit) {
 
 function closeHeaderBadge(stock) {
   const status = getStockProfitStatus(stock.name, getStocksData());
-  if (status === '璧?) return { text: '璧?, style: 'background:#dc2626;color:#fff' };
-  if (status === '浜?) return { text: '浜?, style: 'background:#6b7280;color:#fff' };
-  if (stock.bomb) return { text: '鐐?, style: '' };
+  if (status === '赚') return { text: '赚', style: 'background:#dc2626;color:#fff' };
+  if (status === '亏') return { text: '亏', style: 'background:#6b7280;color:#fff' };
+  if (stock.bomb) return { text: '炸', style: '' };
   return null;
 }
 
 function remarkDisplay(stock) {
   if (!stock || (!stock.remarkType && !stock.remark)) return { prefix: '', prefixColor: '', text: '-' };
   const typeMap = {
-    'red_check': { text: '绔炲浘绗﹀悎鉁?, color: '#dc2626' },
-    'orange_check': { text: '绔炲浘鍕夊己绗﹀悎鉁?, color: '#f97316' },
-    'green_x': { text: '绔炲浘涓嶇鍚埫?, color: '#16a34a' },
-    'green_x_strong': { text: '绔炲浘闈炲父涓嶇鍚埫?, color: '#16a34a' }
+    'red_check': { text: '竞图符合✔', color: '#dc2626' },
+    'orange_check': { text: '竞图勉强符合✔', color: '#f97316' },
+    'green_x': { text: '竞图不符合×', color: '#16a34a' },
+    'green_x_strong': { text: '竞图非常不符合×', color: '#16a34a' }
   };
   let prefix = '', prefixColor = '';
   if (stock.remarkType && typeMap[stock.remarkType]) {
@@ -496,34 +496,34 @@ function trackItems(track) {
 }
 
 const editModalActive = ref(false);
-const editModalTitle = ref('缂栬緫鑲＄エ');
+const editModalTitle = ref('编辑股票');
 const editForm = reactive({});
 let editingStockId = null;
 const editFields = [
-  { key: 'name', label: '鑲＄エ鍚嶇О', type: 'text' },
-  { key: 'stage', label: '闃舵', type: 'select', options: ['浜屾澘', '棣栨澘', '杩炴澘', '浜屾尝', '楂樹綅', '鍏跺畠'] },
-  { key: 'open', label: '绔炰环寮€鐩?%)', type: 'text' },
-  { key: 'close', label: '鏀剁洏(%)', type: 'text' },
-  { key: 'turnover', label: '鎹㈡墜鐜?%)', type: 'text' },
-  { key: 'adjust', label: '璋冩暣骞呭害', type: 'text' },
-  { key: 'pattern', label: '绔炵鍚堟暟褰㈡€?, type: 'text' },
-  { key: 'axis', label: '闆惰酱浣嶇疆', type: 'text' },
-  { key: 'kbiliangkai', label: '寮€鐩橀噺姣?, type: 'text' },
-  { key: 'sfliangneng', label: '缂╂斁閲忚兘', type: 'text' },
-  { key: 'xgcaiti', label: '鐩稿叧棰樻潗', type: 'text' },
-  { key: 'remark', label: '澶囨敞', type: 'text' },
-  { key: 'bought', label: '宸蹭拱(0/1)', type: 'number' },
-  { key: 'sold', label: '宸插崠(0/1)', type: 'number' },
-  { key: 'hold', label: '鎸佹湁(0/1)', type: 'number' },
-  { key: 'watch', label: '瑙傚療(0/1)', type: 'number' },
-  { key: 'dragon', label: '榫欏ご(0/1)', type: 'number' },
+  { key: 'name', label: '股票名称', type: 'text' },
+  { key: 'stage', label: '阶段', type: 'select', options: ['二板', '首板', '连板', '二波', '高位', '其它'] },
+  { key: 'open', label: '竞价开盘(%)', type: 'text' },
+  { key: 'close', label: '收盘(%)', type: 'text' },
+  { key: 'turnover', label: '换手率(%)', type: 'text' },
+  { key: 'adjust', label: '调整幅度', type: 'text' },
+  { key: 'pattern', label: '竞符合数形态', type: 'text' },
+  { key: 'axis', label: '零轴位置', type: 'text' },
+  { key: 'kbiliangkai', label: '开盘量比', type: 'text' },
+  { key: 'sfliangneng', label: '缩放量能', type: 'text' },
+  { key: 'xgcaiti', label: '相关题材', type: 'text' },
+  { key: 'remark', label: '备注', type: 'text' },
+  { key: 'bought', label: '已买(0/1)', type: 'number' },
+  { key: 'sold', label: '已卖(0/1)', type: 'number' },
+  { key: 'hold', label: '持有(0/1)', type: 'number' },
+  { key: 'watch', label: '观察(0/1)', type: 'number' },
+  { key: 'dragon', label: '龙头(0/1)', type: 'number' },
 ];
 
 function openEditModal(id) {
   const stock = (getStocksData()[getCurrentDate()] || []).find(s => s.id === id);
-  if (!stock) { showToast('鏈壘鍒拌偂绁ㄦ暟鎹?); return; }
+  if (!stock) { showToast('未找到股票数据'); return; }
   editingStockId = id;
-  editModalTitle.value = '缂栬緫: ' + (stock.name || '');
+  editModalTitle.value = '编辑: ' + (stock.name || '');
   Object.keys(editForm).forEach(k => delete editForm[k]);
   editFields.forEach(f => { editForm[f.key] = stock[f.key] !== undefined ? stock[f.key] : ''; });
   editModalActive.value = true;
@@ -544,17 +544,17 @@ function saveEditModal() {
   saveData();
   editModalActive.value = false;
   refresh();
-  showToast('宸蹭繚瀛?);
+  showToast('已保存');
 }
 
 const soldEditModalActive = ref(false);
-const soldEditForm = reactive({ type: '閮ㄥ垎鍗?, profit: 0, percent: 0, date: '' });
+const soldEditForm = reactive({ type: '部分卖', profit: 0, percent: 0, date: '' });
 let soldEditingStockId = null;
 
 function openSoldEditModal(id) {
   soldEditingStockId = id;
   const today = getCurrentDate();
-  soldEditForm.type = '閮ㄥ垎鍗?;
+  soldEditForm.type = '部分卖';
   soldEditForm.profit = 0;
   soldEditForm.percent = 0;
   soldEditForm.date = today;
@@ -578,7 +578,7 @@ function saveSoldEditModal() {
   saveData();
   soldEditModalActive.value = false;
   refresh();
-  showToast('鍗栧嚭璁板綍宸蹭繚瀛?);
+  showToast('卖出记录已保存');
 }
 
 const trackEditModalActive = ref(false);
@@ -602,7 +602,7 @@ function saveTrackEditModal() {
   saveData();
   trackEditModalActive.value = false;
   refresh();
-  showToast('杩借釜璁板綍宸蹭繚瀛?);
+  showToast('追踪记录已保存');
 }
 
 const datePickerActive = ref(false);
@@ -700,7 +700,7 @@ function exportData() {
   a.download = 'stocks-export-' + getCurrentDate() + '.json';
   a.click();
   URL.revokeObjectURL(url);
-  showToast('宸插鍑?);
+  showToast('已导出');
 }
 
 function showImportModal() {
@@ -720,9 +720,9 @@ function showImportModal() {
         });
         saveData();
         refresh();
-        showToast('瀵煎叆鎴愬姛');
+        showToast('导入成功');
       } catch (err) {
-        showToast('瀵煎叆澶辫触: ' + err.message);
+        showToast('导入失败: ' + err.message);
       }
     };
     reader.readAsText(file);

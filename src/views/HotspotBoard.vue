@@ -1,15 +1,15 @@
-﻿<template>
+<template>
   <div class="hotspot-board trading-day-element">
-  <div class="hotspot-header"><div class="hotspot-title">棰樻潗鎬濊矾</div></div>
+  <div class="hotspot-header"><div class="hotspot-title">题材思路</div></div>
   <div class="hotspot-content" @click="startEdit">
     <div v-if="content.trim()" style="white-space: pre-wrap;">{{ content }}</div>
-    <div v-else class="hotspot-placeholder">鏆傛棤棰樻潗鎬濊矾锛岀偣鍑绘坊鍔?..</div>
+    <div v-else class="hotspot-placeholder">暂无题材思路，点击添加...</div>
   </div>
   <div v-if="editing" class="vue-edit-overlay" @click.self="cancel">
     <div class="vue-edit-modal">
-      <div class="vue-edit-header"><span>缂栬緫棰樻潗鎬濊矾</span><button @click="cancel">脳</button></div>
-      <textarea v-model="draft" placeholder="杈撳叆棰樻潗鎬濊矾鍒嗘瀽..."></textarea>
-      <button class="vue-edit-save" @click="save">淇濆瓨</button>
+      <div class="vue-edit-header"><span>编辑题材思路</span><button @click="cancel">×</button></div>
+      <textarea v-model="draft" placeholder="输入题材思路分析..."></textarea>
+      <button class="vue-edit-save" @click="save">保存</button>
     </div>
   </div>
   </div>
@@ -44,7 +44,7 @@ function save() {
   saveData();
   loadContent();
   editing.value = false;
-  showToast('鉁?棰樻潗鎬濊矾宸蹭繚瀛?);
+  showToast('✅ 题材思路已保存');
 }
 
 onMounted(() => loadContent());

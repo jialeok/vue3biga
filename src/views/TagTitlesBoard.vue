@@ -1,11 +1,11 @@
-﻿<template>
+<template>
   <div class="tag-titles-board">
-    <!-- 涓変釜鏍囩绫诲瀷灞曠ず鍖?-->
+    <!-- 三个标签类型展示区 -->
     <div v-for="t in types" :key="t.key" class="tag-title-section">
       <div class="tag-title-header">
         <span class="tag-title-name">{{ t.name }}</span>
         <span class="score-simple-value" :style="{ color: scoreColor(t.key) }">
-          璇勫垎 <span :id="t.key + 'ScoreValue'" :style="{ color: scoreColor(t.key) }">{{ scoreOf(t.key) }}</span>
+          评分 <span :id="t.key + 'ScoreValue'" :style="{ color: scoreColor(t.key) }">{{ scoreOf(t.key) }}</span>
         </span>
       </div>
       <div :id="t.key + 'TitleTags'" class="tag-title-tags" @click="openEdit(t.key)">
@@ -18,7 +18,7 @@
             :style="tagStyle(t.key, tag)"
           >{{ tag }}</span>
         </template>
-        <span v-else class="tag-empty-hint">鐐瑰嚮鏍囬娣诲姞鏍囩</span>
+        <span v-else class="tag-empty-hint">点击标题添加标签</span>
       </div>
       <div class="score-row">
         <input
@@ -37,13 +37,13 @@
       </div>
     </div>
 
-    <!-- 缂栬緫寮圭獥 -->
+    <!-- 编辑弹窗 -->
     <Teleport to="body">
       <div v-if="modalActive" id="tagTitleEditModal" class="tag-title-modal active" @click.self="closeModal">
         <div class="tag-title-modal-panel">
           <div class="tag-title-modal-header">
-            <span id="tagTitleEditHeader">缂栬緫{{ currentTypeName }}鏍囩</span>
-            <button class="modal-close-btn" @click="closeModal">脳</button>
+            <span id="tagTitleEditHeader">编辑{{ currentTypeName }}标签</span>
+            <button class="modal-close-btn" @click="closeModal">×</button>
           </div>
           <div id="tagTitleEditContainer" class="tag-title-edit-container">
             <template v-if="editTags.length">
@@ -54,17 +54,17 @@
                   :style="tagStyle(currentEditingType, tag)"
                   @click="toggleEditTag(tag)"
                 >{{ tag }}</span>
-                <span class="delete-tag-btn" @click="deleteTag(tag)">脳</span>
+                <span class="delete-tag-btn" @click="deleteTag(tag)">×</span>
               </div>
             </template>
-            <div v-else class="edit-empty-hint">鏆傛棤鏍囩锛岃娣诲姞鏂版爣绛?/div>
+            <div v-else class="edit-empty-hint">暂无标签，请添加新标签</div>
           </div>
           <div class="new-tag-row">
-            <input id="newTagInput" v-model="newTag" placeholder="鏂版爣绛惧悕绉? />
-            <button class="add-tag-btn" @click="addNewTag">娣诲姞</button>
+            <input id="newTagInput" v-model="newTag" placeholder="新标签名称" />
+            <button class="add-tag-btn" @click="addNewTag">添加</button>
           </div>
           <div v-if="colorSelectorVisible" id="colorSelector" class="color-selector">
-            <span class="color-selector-label">棰滆壊锛?span id="selectedTagName">{{ selectedTagForColor }}</span></span>
+            <span class="color-selector-label">颜色：<span id="selectedTagName">{{ selectedTagForColor }}</span></span>
             <div class="color-options">
               <span id="color-red" class="color-option color-red" :style="{ border: colorBorder('red') }" @click="selectTagColor('red')"></span>
               <span id="color-green" class="color-option color-green" :style="{ border: colorBorder('green') }" @click="selectTagColor('green')"></span>
@@ -72,8 +72,8 @@
             </div>
           </div>
           <div class="modal-actions">
-            <button class="btn-clear-all" @click="clearAllTags">娓呴櫎鍏ㄩ儴</button>
-            <button class="btn-save" @click="saveTagTitles">淇濆瓨</button>
+            <button class="btn-clear-all" @click="clearAllTags">清除全部</button>
+            <button class="btn-save" @click="saveTagTitles">保存</button>
           </div>
         </div>
       </div>
@@ -90,9 +90,9 @@ import { showToast } from '../composables/useToast.js';
 const uiStore = useUiStore();
 
 const types = [
-  { key: 'recentMulti', name: '鏈€杩戝鏉?, cls: 'recentmulti' },
-  { key: 'sectorEtf', name: '鏉垮潡ETF', cls: 'sectoretf' },
-  { key: 'topicDirection', name: '棰樻潗鏂瑰悜', cls: 'topicdirection' }
+  { key: 'recentMulti', name: '最近多板', cls: 'recentmulti' },
+  { key: 'sectorEtf', name: '板块ETF', cls: 'sectoretf' },
+  { key: 'topicDirection', name: '题材方向', cls: 'topicdirection' }
 ];
 
 const modalActive = ref(false);
@@ -188,7 +188,7 @@ function starClass(key, n) {
 }
 
 function updateStarsDisplay(containerId, value) {
-  // Vue 妯℃澘宸查€氳繃 starClass 鍝嶅簲寮忔覆鏌擄紝姝ゅ嚱鏁颁繚鐣欎緵澶栭儴璋冪敤
+  // Vue 模板已通过 starClass 响应式渲染，此函数保留供外部调用
   refreshTick.value++;
 }
 
@@ -283,9 +283,9 @@ function addTagToFutureDates(type, tag) {
 
 function addNewTag() {
   const tagName = newTag.value.trim();
-  if (!tagName) { alert('璇疯緭鍏ユ爣绛惧悕绉?); return; }
+  if (!tagName) { alert('请输入标签名称'); return; }
   const d = getTodayTagTitles();
-  if (d[currentEditingType.value].tags.includes(tagName)) { alert('鏍囩宸插瓨鍦?); return; }
+  if (d[currentEditingType.value].tags.includes(tagName)) { alert('标签已存在'); return; }
   d[currentEditingType.value].tags.unshift(tagName);
   d[currentEditingType.value].active[tagName] = false;
   d._lastModified = Date.now();
@@ -309,7 +309,7 @@ function deleteTagFromFutureDates(type, tag) {
 }
 
 function deleteTag(tag) {
-  if (!confirm('纭畾瑕佸垹闄ゆ爣绛?' + tag + '"鍚楋紵')) return;
+  if (!confirm('确定要删除标签"' + tag + '"吗？')) return;
   const d = getTodayTagTitles();
   d[currentEditingType.value].tags = d[currentEditingType.value].tags.filter(t => t !== tag);
   delete d[currentEditingType.value].active[tag];
@@ -321,7 +321,7 @@ function deleteTag(tag) {
 function saveTagTitles() {
   saveData();
   closeModal();
-  showToast('鉁?鏍囩宸蹭繚瀛橈紒');
+  showToast('✅ 标签已保存！');
 }
 
 function clearAllTagsFromFutureDates(type) {
@@ -339,14 +339,14 @@ function clearAllTagsFromFutureDates(type) {
 }
 
 function clearAllTags() {
-  if (!confirm('纭畾瑕佹竻闄?' + currentTypeName.value + '"鐨勫叏閮ㄦ爣绛惧悧锛熸鎿嶄綔涓嶅彲鎭㈠銆?)) return;
+  if (!confirm('确定要清除"' + currentTypeName.value + '"的全部标签吗？此操作不可恢复。')) return;
   const d = getTodayTagTitles();
   d[currentEditingType.value].tags = [];
   d[currentEditingType.value].active = {};
   d._lastModified = Date.now();
   saveData();
   refreshTick.value++;
-  showToast('鉁?鏍囩宸叉竻闄わ紒');
+  showToast('✅ 标签已清除！');
 }
 
 function render() { refreshTick.value++; }

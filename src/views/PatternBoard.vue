@@ -1,27 +1,27 @@
-﻿<template>
+<template>
   <div class="pattern-board trading-day-element">
   <div class="pattern-header" @click="toggleExpand">
-    <div class="pattern-title">妯″紡
+    <div class="pattern-title">模式
       <div class="pattern-tags">
-        <div v-if="pattern.update" class="pattern-tag update">鏇存柊</div>
-        <div v-if="pattern.keep" class="pattern-tag keep">鍧氬畧</div>
+        <div v-if="pattern.update" class="pattern-tag update">更新</div>
+        <div v-if="pattern.keep" class="pattern-tag keep">坚守</div>
       </div>
     </div>
-    <div class="pattern-toggle-btn">{{ expanded ? '鈻? : '鈻? }}</div>
+    <div class="pattern-toggle-btn">{{ expanded ? '▲' : '▼' }}</div>
   </div>
   <div v-show="expanded" class="pattern-content" @click="startEdit">
     <div v-if="pattern.content && pattern.content.trim()" style="white-space: pre-wrap;">{{ pattern.content }}</div>
-    <div v-else class="pattern-placeholder">鏆傛棤妯″紡蹇冨緱锛岀偣鍑绘坊鍔?..</div>
+    <div v-else class="pattern-placeholder">暂无模式心得，点击添加...</div>
   </div>
   <div v-if="editing" class="vue-edit-overlay" @click.self="cancel">
     <div class="vue-edit-modal">
-      <div class="vue-edit-header"><span>缂栬緫妯″紡蹇冨緱</span><button @click="cancel">脳</button></div>
-      <textarea v-model="draftContent" placeholder="杈撳叆妯″紡瀹屽杽蹇冨緱..."></textarea>
+      <div class="vue-edit-header"><span>编辑模式心得</span><button @click="cancel">×</button></div>
+      <textarea v-model="draftContent" placeholder="输入模式完善心得..."></textarea>
       <div class="vue-edit-checkboxes">
-        <label><input type="checkbox" v-model="draftUpdate"> 鏇存柊</label>
-        <label><input type="checkbox" v-model="draftKeep"> 鍧氬畧</label>
+        <label><input type="checkbox" v-model="draftUpdate"> 更新</label>
+        <label><input type="checkbox" v-model="draftKeep"> 坚守</label>
       </div>
-      <button class="vue-edit-save" @click="save">淇濆瓨妯″紡</button>
+      <button class="vue-edit-save" @click="save">保存模式</button>
     </div>
   </div>
   </div>
@@ -104,7 +104,7 @@ function save() {
   saveData();
   loadTodayPattern();
   editing.value = false;
-  showToast('鉁?妯″紡鏁版嵁宸蹭繚瀛? + ((update || keep) ? '锛屽凡妫€鏌ュ悗涓€澶╂暟鎹? : ''));
+  showToast('✅ 模式数据已保存' + ((update || keep) ? '，已检查后一天数据' : ''));
 }
 
 onMounted(() => loadTodayPattern());

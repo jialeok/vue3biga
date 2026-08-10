@@ -1,78 +1,78 @@
-﻿<!--
-  AuctionBoard.vue 鈥?鏃╃洏绔炰环鐪嬫澘涓荤粍浠?
-  杩佺Щ鑷? auction-pages.js + auction-render.js + auction-vue-mount.js + auction-components.js + auction-trend.js
-  宸茶縼绉? _syncSortStateToStore(reactive鐩村啓)銆乪xpandAll/collapseAll(expandedSet)銆乬etAuctionStockHistory(import)銆乼oggleAuctionRowSelect(inline)銆乻howAuctionNoteInput(inline)
-  淇濇寔濮旀墭: computeAuctionViewData(18涓獁indow渚濊禆)
+<!--
+  AuctionBoard.vue — 早盘竞价看板主组件
+  迁移自: auction-pages.js + auction-render.js + auction-vue-mount.js + auction-components.js + auction-trend.js
+  已迁移: _syncSortStateToStore(reactive直写)、expandAll/collapseAll(expandedSet)、getAuctionStockHistory(import)、toggleAuctionRowSelect(inline)、showAuctionNoteInput(inline)
+  保持委托: computeAuctionViewData(18个window依赖)
 -->
 <template>
   <div class="auction-board" :data-source="dataSource">
     <div class="auction-toolbar">
       <label class="toolbar-toggle">
         <input type="checkbox" :checked="sortState.byJingYest" @change="toggleSort('byJingYest')" />
-        <span>绔?鏄?/span>
+        <span>竞/昨</span>
       </label>
       <label class="toolbar-toggle">
         <input type="checkbox" :checked="sortState.byRatio" @change="toggleSort('byRatio')" />
-        <span>鐜瘮</span>
+        <span>环比</span>
       </label>
       <label class="toolbar-toggle">
         <input type="checkbox" :checked="sortState.byParallel" @change="toggleSort('byParallel')" />
-        <span>骞宠</span>
+        <span>平行</span>
       </label>
       <label class="toolbar-toggle">
         <input type="checkbox" :checked="sortState.byJingYestRatio" @change="toggleSort('byJingYestRatio')" />
-        <span>绔?鏄ㄦ瘮</span>
+        <span>竞/昨比</span>
       </label>
       <label class="toolbar-toggle">
         <input type="checkbox" :checked="sortState.byThreeDayJingDie" @change="toggleSort('byThreeDayJingDie')" />
-        <span>涓夋棩绔炶穼</span>
+        <span>三日竞跌</span>
       </label>
-      <button class="toolbar-btn" @click="expandAll">鍏ㄩ儴灞曞紑</button>
-      <button class="toolbar-btn" @click="collapseAll">鍏ㄩ儴鏀惰捣</button>
+      <button class="toolbar-btn" @click="expandAll">全部展开</button>
+      <button class="toolbar-btn" @click="collapseAll">全部收起</button>
       <input
         class="toolbar-search"
         v-model="highlightKeyword"
-        placeholder="鎼滅储鑲＄エ鍚?
+        placeholder="搜索股票名"
         @input="onSearch"
       />
     </div>
 
     <div class="auction-stats-bar">
-      <span class="stat-item">鎬绘暟: {{ viewData.rawCount || 0 }}</span>
-      <span class="stat-item">寮哄害: {{ viewData.stats && viewData.stats.todayStrength != null ? viewData.stats.todayStrength + '%' : '-' }}</span>
-      <span class="stat-item">楂樻瘮: {{ viewData.stats && viewData.stats.highRatioCount || 0 }}</span>
-      <span class="stat-item">绔?鏄? {{ viewData.stats && viewData.stats.jingYestCount || 0 }}</span>
+      <span class="stat-item">总数: {{ viewData.rawCount || 0 }}</span>
+      <span class="stat-item">强度: {{ viewData.stats && viewData.stats.todayStrength != null ? viewData.stats.todayStrength + '%' : '-' }}</span>
+      <span class="stat-item">高比: {{ viewData.stats && viewData.stats.highRatioCount || 0 }}</span>
+      <span class="stat-item">竞/昨: {{ viewData.stats && viewData.stats.jingYestCount || 0 }}</span>
       <span class="stat-item page-indicator">
         <button v-for="p in 4" :key="p" class="page-dot" :class="{ active: currentPage === p - 1 }" @click="switchPage(p - 1)">{{ p }}</button>
       </span>
-      <button class="toolbar-btn backend-toggle" @click="showBackend = !showBackend">鍚庡彴</button>
+      <button class="toolbar-btn backend-toggle" @click="showBackend = !showBackend">后台</button>
     </div>
 
     <div v-if="showBackend" class="auction-backend-panel">
       <div class="backend-section">
-        <span class="backend-label">鍚岃姳椤?</span>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchHotLimitUpLadderFromThs : fetchLadderConstituentsMain)">姊瓙鎴愬垎</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotYesterdayVolumeFromThs : fillYesterdayVolumeFromThs)">鏄ㄩ噺濉厖</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotTodayYesterdayVolumeFromThs : fillTodayYesterdayVolumeFromThs)">浠婃槰閲?/button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotYesterdayYesterdayVolumeFromThs : fillYesterdayYesterdayVolumeFromThs)">鏄ㄦ槰閲?/button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchHotChangePctFromThs : fetchChangePctFromThs)">娑ㄥ箙鎶撳彇</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotHistoryGapPctFromThs : fillAuctionHistoryGapPctFromThs)">鍘嗗彶缂哄彛娑ㄥ箙</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotHistoryGapYestVolumeFromThs : fillAuctionHistoryGapYestVolumeFromThs)">鍘嗗彶缂哄彛鏄ㄩ噺</button>
+        <span class="backend-label">同花顺:</span>
+        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchHotLimitUpLadderFromThs : fetchLadderConstituentsMain)">梯子成分</button>
+        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotYesterdayVolumeFromThs : fillYesterdayVolumeFromThs)">昨量填充</button>
+        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotTodayYesterdayVolumeFromThs : fillTodayYesterdayVolumeFromThs)">今昨量</button>
+        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotYesterdayYesterdayVolumeFromThs : fillYesterdayYesterdayVolumeFromThs)">昨昨量</button>
+        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchHotChangePctFromThs : fetchChangePctFromThs)">涨幅抓取</button>
+        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotHistoryGapPctFromThs : fillAuctionHistoryGapPctFromThs)">历史缺口涨幅</button>
+        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotHistoryGapYestVolumeFromThs : fillAuctionHistoryGapYestVolumeFromThs)">历史缺口昨量</button>
       </div>
       <div class="backend-section">
-        <span class="backend-label">鐚姄:</span>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchHotTodayAuctionFromNumcat : fetchTodayAuctionFromNumcat)">浠婃棩绔炰环</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchAllHotAuctionFromNumcat : fetchAllAuctionFromNumcat)">鍏ㄩ儴绔炰环</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchThreeDaysHotAuctionFromNumcat : fetchThreeDaysAuctionFromNumcat)">涓夋棩绔炰环</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchFiveDaysHotAuctionFromNumcat : fetchFiveDaysAuctionFromNumcat)">浜旀棩绔炰环</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotTopicsFromNumcat : fillTopicsFromNumcat)">棰樻潗濉厖</button>
-        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchHotMonitorWarningFromNumcat : fetchMonitorWarningFromNumcat)">鐩戞帶棰勮</button>
+        <span class="backend-label">猫抓:</span>
+        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchHotTodayAuctionFromNumcat : fetchTodayAuctionFromNumcat)">今日竞价</button>
+        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchAllHotAuctionFromNumcat : fetchAllAuctionFromNumcat)">全部竞价</button>
+        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchThreeDaysHotAuctionFromNumcat : fetchThreeDaysAuctionFromNumcat)">三日竞价</button>
+        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchFiveDaysHotAuctionFromNumcat : fetchFiveDaysAuctionFromNumcat)">五日竞价</button>
+        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotTopicsFromNumcat : fillTopicsFromNumcat)">题材填充</button>
+        <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchHotMonitorWarningFromNumcat : fetchMonitorWarningFromNumcat)">监控预警</button>
       </div>
       <div class="backend-section">
-        <span class="backend-label">瀵煎叆:</span>
-        <button class="backend-btn" @click="onImportPaste">绮樿创瀵煎叆</button>
-        <button class="backend-btn" @click="onHistoryFill">鍘嗗彶濉厖</button>
-        <button class="backend-btn" @click="onReplaceConcept">棰樻潗鏇挎崲</button>
+        <span class="backend-label">导入:</span>
+        <button class="backend-btn" @click="onImportPaste">粘贴导入</button>
+        <button class="backend-btn" @click="onHistoryFill">历史填充</button>
+        <button class="backend-btn" @click="onReplaceConcept">题材替换</button>
       </div>
     </div>
 
@@ -83,11 +83,11 @@
          @mouseup="onSwipeEnd">
       <div v-show="currentPage === 0" class="auction-scroll-container">
         <div v-if="!viewData.items || viewData.items.length === 0" class="auction-empty">
-          鏆傛棤鏁版嵁
+          暂无数据
         </div>
 
         <div v-if="viewData.obsIndices && viewData.obsIndices.length" class="auction-obs-group">
-          <div class="auction-group-label">瑙傚療</div>
+          <div class="auction-group-label">观察</div>
           <div v-for="item in obsItems" :key="item.index" :class="item.itemClass" @click="onToggleSelect(item.index)">
             <span :class="item.stockClass"
                   @dblclick.stop="onShowNote(item.index)"
@@ -137,12 +137,12 @@
       </div>
 
       <div v-show="currentPage === 1" class="auction-scroll-container">
-        <div v-if="topicGroups.length === 0" class="auction-empty">鏆傛棤棰樻潗鍒嗙粍鏁版嵁</div>
+        <div v-if="topicGroups.length === 0" class="auction-empty">暂无题材分组数据</div>
         <div v-for="group in topicGroups" :key="group.topic" class="topic-group">
           <div class="topic-group-header">
             <span class="topic-name">{{ group.topic }}</span>
-            <span class="topic-strength" v-if="group.strength !== null && group.strength !== undefined">寮哄害: {{ group.strength }}%</span>
-            <span class="topic-count">{{ group.stocks.length }}鍙?/span>
+            <span class="topic-strength" v-if="group.strength !== null && group.strength !== undefined">强度: {{ group.strength }}%</span>
+            <span class="topic-count">{{ group.stocks.length }}只</span>
           </div>
           <div class="topic-group-body">
             <span v-for="stock in group.stocks" :key="stock.stock" class="topic-stock-item">
@@ -154,11 +154,11 @@
       </div>
 
       <div v-show="currentPage === 2" class="auction-scroll-container">
-        <div class="auction-empty">绗?椤?鈥?棰樻潗鍘嗗彶锛堝乏鍙虫粦鍔ㄧ炕椤碉級</div>
+        <div class="auction-empty">第3页 — 题材历史（左右滑动翻页）</div>
       </div>
 
       <div v-show="currentPage === 3" class="auction-scroll-container">
-        <div class="auction-empty">绗?椤?鈥?澶嶅埗鑲＄エ瀹℃煡锛堝乏鍙虫粦鍔ㄧ炕椤碉級</div>
+        <div class="auction-empty">第4页 — 复制股票审查（左右滑动翻页）</div>
       </div>
     </div>
 
@@ -327,32 +327,32 @@ function runBackend(fn, ...args) {
     const result = task(...args);
     if (result && typeof result.then === 'function') {
       result
-        .then(() => { refresh(); showToast('鍚庡彴鎿嶄綔瀹屾垚'); })
-        .catch(e => { console.error('鍚庡彴鎿嶄綔澶辫触:', e); showToast('鎿嶄綔澶辫触: ' + (e && e.message)); });
+        .then(() => { refresh(); showToast('后台操作完成'); })
+        .catch(e => { console.error('后台操作失败:', e); showToast('操作失败: ' + (e && e.message)); });
     } else {
       refresh();
     }
   } catch (e) {
-    console.error('鍚庡彴鎿嶄綔澶辫触:', e);
-    showToast('鎿嶄綔澶辫触: ' + (e && e.message));
+    console.error('后台操作失败:', e);
+    showToast('操作失败: ' + (e && e.message));
   }
 }
 function onImportPaste() {
-  const text = prompt('绮樿创绔炰环鏁版嵁锛圕SV/JSON鏍煎紡锛夛細');
+  const text = prompt('粘贴竞价数据（CSV/JSON格式）：');
   if (!text) return;
   if (props.dataSource === 'hot') runBackend(importHotFromPaste, text);
   else runBackend(importAuctionFromPaste, text);
 }
 function onReplaceConcept() {
-  const text = prompt('绮樿创棰樻潗鏇挎崲鏁版嵁锛?);
+  const text = prompt('粘贴题材替换数据：');
   if (!text) return;
   if (props.dataSource === 'hot') runBackend(replaceHotConceptFromPaste, text);
   else runBackend(replaceConceptFromPaste, text);
 }
 function onHistoryFill() {
-  const text = prompt('绮樿创鍘嗗彶濉厖鏁版嵁锛?);
+  const text = prompt('粘贴历史填充数据：');
   if (!text) return;
-  const date = prompt('鐩爣鏃ユ湡锛圷YYY-MM-DD锛夛細', uiStore.currentDate);
+  const date = prompt('目标日期（YYYY-MM-DD）：', uiStore.currentDate);
   if (!date) return;
   if (props.dataSource === 'hot') runBackend(importHotHistoryFill, text, date);
   else runBackend(importAuctionHistoryFill, text, date);
@@ -376,9 +376,9 @@ function onToggleSelect(index) {
 function onShowNote(index) {
   const auctionList = getTodayGroupList(props.dataSource);
   const currentNote = getDisplayNote(auctionList[index]);
-  const note = prompt('璇疯緭鍏ユ敞閲婏紙濡傛定骞咃級锛?, currentNote);
+  const note = prompt('请输入注释（如涨幅）：', currentNote);
   if (note !== null) {
-    const normalizedNote = note.replace(/[锛屻€?锛沒/g, ',');
+    const normalizedNote = note.replace(/[，、;；]/g, ',');
     auctionList[index].note = normalizedNote;
     const parsed = parseNoteToFields(normalizedNote);
     auctionList[index].changePct = parsed.changePct;
@@ -391,13 +391,13 @@ function onShowNote(index) {
         note: normalizedNote,
         change_pct: parsed.changePct,
         topics: parsed.topics
-      }).catch(e => console.warn('patchHotField note 澶辫触:', e));
+      }).catch(e => console.warn('patchHotField note 失败:', e));
     } else {
       patchAuctionField(uiStore.currentDate, auctionList[index].stock, {
         note: normalizedNote,
         change_pct: parsed.changePct,
         topics: parsed.topics
-      }).catch(e => console.warn('patchAuctionField note 澶辫触:', e));
+      }).catch(e => console.warn('patchAuctionField note 失败:', e));
     }
 
     const stockName = auctionList[index].stock;
@@ -405,7 +405,7 @@ function onShowNote(index) {
 
     const topicsArr = extractTopics(normalizedNote);
     const stockCode = getStockCode(stockName) || auctionList[index].code || '';
-    pushStockTopicsToCloud(stockName, topicsArr, stockCode).catch(e => console.warn('pushStockTopicsToCloud 澶辫触:', e));
+    pushStockTopicsToCloud(stockName, topicsArr, stockCode).catch(e => console.warn('pushStockTopicsToCloud 失败:', e));
 
     syncStockTopicsFromAuction(uiStore.currentDate);
     saveModule('stocks');
