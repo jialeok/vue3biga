@@ -764,31 +764,3 @@ defineExpose({
 });
 </script>
 
-<style>
-.track-empty-hint {
-  font-size: 12px;
-  color: #94a3b8;
-  padding: 4px 0;
-}
-.loading-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 20px;
-  color: #64748b;
-}
-.loading-icon {
-  font-size: 32px;
-  margin-bottom: 8px;
-}
-.loading-title {
-  font-size: 14px;
-}
-.stock-trend {
-  padding: 8px 15px;
-  background: linear-gradient(90deg, rgba(245, 158, 11, 0.04), transparent);
-  border-radius: 8px;
-  margin: 4px 0;
-}
-</style>

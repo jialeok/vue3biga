@@ -3,7 +3,7 @@
     <div class="emotion-header" @click="toggleExpand">
       <span class="emotion-title">情绪看板</span>
       <span class="emotion-summary" id="emotionSummary">{{ summaryText }}</span>
-      <span class="emotion-toggle" id="emotionToggleBtn">{{ expanded ? '▲' : '▼' }}</span>
+      <span class="emotion-toggle-btn" id="emotionToggleBtn">{{ expanded ? '▲' : '▼' }}</span>
     </div>
     <div id="emotionContent" class="emotion-content" v-show="expanded">
       <div id="emotionVolumeLine" class="emotion-volume-line">
@@ -246,105 +246,3 @@ onUnmounted(() => {
 defineExpose({ loadAndRender, refreshPredictVol, toggleExpand, toggleRow, startRealtime });
 </script>
 
-<style>
-.emotion-board {
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  margin: 8px 0;
-  background: #fff;
-}
-.emotion-header {
-  display: flex;
-  align-items: center;
-  padding: 10px 14px;
-  cursor: pointer;
-  user-select: none;
-}
-.emotion-title {
-  font-weight: 600;
-  color: #1f2937;
-  margin-right: 12px;
-}
-.emotion-summary {
-  flex: 1;
-  color: #6b7280;
-  font-size: 13px;
-}
-.emotion-toggle {
-  color: #9ca3af;
-  font-size: 12px;
-}
-.emotion-content {
-  padding: 8px 14px;
-  border-top: 1px solid #f3f4f6;
-}
-.emotion-volume-line {
-  font-size: 13px;
-  color: #374151;
-  padding: 6px 0;
-  margin-bottom: 6px;
-}
-.emotion-volume-line :deep(.emv-val) {
-  font-weight: 600;
-}
-.emotion-volume-line :deep(.emotion-refresh-btn) {
-  cursor: pointer;
-  color: #6b7280;
-  margin-left: 4px;
-  display: inline-flex;
-  vertical-align: middle;
-}
-.emotion-sep {
-  color: #d1d5db;
-  margin: 0 6px;
-}
-.emotion-list {
-  display: flex;
-  flex-direction: column;
-}
-.emotion-row {
-  border-bottom: 1px solid #f3f4f6;
-}
-.emotion-row-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 4px;
-  cursor: pointer;
-}
-.emotion-row-title {
-  color: #374151;
-  font-size: 13px;
-}
-.emotion-row-value {
-  font-size: 13px;
-  font-weight: 600;
-  color: #1f2937;
-}
-.emotion-row-value.up {
-  color: #dc2626;
-}
-.emotion-row-value.down {
-  color: #059669;
-}
-.emotion-row-value .unit {
-  font-weight: 400;
-  color: #9ca3af;
-  margin-left: 2px;
-  font-size: 11px;
-}
-.emotion-trend-panel {
-  max-height: 0;
-  overflow: hidden;
-  transition: max-height 0.2s ease;
-}
-.emotion-trend-panel.show {
-  max-height: 200px;
-  padding: 6px 4px;
-}
-.emotion-trend-title {
-  font-size: 11px;
-  color: #6b7280;
-  margin-bottom: 4px;
-}
-</style>

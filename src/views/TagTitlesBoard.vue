@@ -1,41 +1,36 @@
 <template>
-  <div class="tag-titles-board">
-    <!-- 三个标签类型展示区 -->
-    <div v-for="t in types" :key="t.key" class="tag-title-section">
-      <div class="tag-title-header">
-        <span class="tag-title-name">{{ t.name }}</span>
-        <span class="score-simple-value" :style="{ color: scoreColor(t.key) }">
-          评分 <span :id="t.key + 'ScoreValue'" :style="{ color: scoreColor(t.key) }">{{ scoreOf(t.key) }}</span>
-        </span>
-      </div>
-      <div :id="t.key + 'TitleTags'" class="tag-title-tags" @click="openEdit(t.key)">
-        <template v-if="activeTags(t.key).length">
-          <span
-            v-for="tag in activeTags(t.key)"
-            :key="tag"
-            class="tag-title-tag"
-            :class="t.cls + ' frontend-active'"
-            :style="tagStyle(t.key, tag)"
-          >{{ tag }}</span>
-        </template>
-        <span v-else class="tag-empty-hint">点击标题添加标签</span>
-      </div>
-      <div class="score-row">
-        <input
-          :id="t.key + 'Score'"
-          type="range"
-          min="-20"
-          max="20"
-          step="1"
-          :value="scoreOf(t.key)"
-          @input="updateScore(t.key, $event.target.value)"
-          @touchstart="handleSliderTouch"
-        />
-        <div :id="t.key + 'Stars'" class="stars-container">
-          <span v-for="n in 10" :key="n" class="star" :class="starClass(t.key, n)"></span>
+  <div class="tag-titles-wrap">
+    <template v-for="t in types" :key="t.key">
+      <div class="tag-title-board trading-day-element" @click="openEdit(t.key)">
+        <div class="tag-title-content">
+          <div class="tag-title-left">
+            <div class="tag-title-text">{{ t.name }}</div>
+            <div :id="t.key + 'TitleTags'" class="tag-title-tags">
+              <template v-if="activeTags(t.key).length">
+                <span
+                  v-for="tag in activeTags(t.key)"
+                  :key="tag"
+                  class="tag-title-tag"
+                  :class="t.cls + ' frontend-active'"
+                  :style="tagStyle(t.key, tag)"
+                >{{ tag }}</span>
+              </template>
+              <span v-else class="tag-empty-hint">点击标题添加标签</span>
+            </div>
+          </div>
         </div>
       </div>
-    </div>
+      <div class="score-stars-container trading-day-element" :id="t.key + 'ScoreContainer'">
+        <div class="stars-wrapper" :id="t.key + 'Stars'">
+          <span v-for="n in 10" :key="n" class="star" :class="starClass(t.key, n)">★</span>
+        </div>
+        <input type="hidden" :id="t.key + 'Score'" :value="scoreOf(t.key)" />
+        <div class="score-simple-value">
+          <span>评分:</span>
+          <span :id="t.key + 'ScoreValue'" :style="{ color: scoreColor(t.key) }">{{ scoreOf(t.key) }}</span>
+        </div>
+      </div>
+    </template>
 
     <!-- 编辑弹窗 -->
     <Teleport to="body">
@@ -358,191 +353,3 @@ defineExpose({
 });
 </script>
 
-<style>
-.tag-titles-board {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.tag-title-section {
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 10px 14px;
-  background: #fff;
-}
-.tag-title-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-}
-.tag-title-name {
-  font-weight: 600;
-  color: #1f2937;
-  font-size: 14px;
-}
-.score-simple-value {
-  font-size: 12px;
-  color: #6b7280;
-}
-.tag-title-tags {
-  min-height: 28px;
-  cursor: pointer;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-.tag-title-tag {
-  display: inline-block;
-  padding: 2px 10px;
-  border-radius: 12px;
-  font-size: 12px;
-  background: #f3f4f6;
-  color: #374151;
-  border: 1px solid #e5e7eb;
-}
-.tag-empty-hint {
-  color: #94a3b8;
-  font-size: 13px;
-}
-.score-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 8px;
-}
-.score-row input[type="range"] {
-  flex: 1;
-}
-.stars-container {
-  display: flex;
-  gap: 2px;
-}
-.star {
-  width: 12px;
-  height: 12px;
-  background: #e5e7eb;
-  border-radius: 50%;
-  display: inline-block;
-}
-.star.active-positive {
-  background: #fbbf24;
-}
-.star.active-negative {
-  background: #10b981;
-}
-.tag-title-modal {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  z-index: 9999;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.tag-title-modal-panel {
-  background: #fff;
-  border-radius: 12px;
-  padding: 20px;
-  min-width: 480px;
-  max-height: 90vh;
-  overflow: auto;
-}
-.tag-title-modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-  font-size: 16px;
-  font-weight: 600;
-}
-.modal-close-btn {
-  border: none;
-  background: none;
-  font-size: 20px;
-  cursor: pointer;
-  color: #9ca3af;
-}
-.tag-title-edit-container {
-  min-height: 60px;
-  margin-bottom: 12px;
-}
-.edit-tag-item {
-  display: inline-flex;
-  align-items: center;
-  margin: 4px 8px 4px 0;
-}
-.tag-title-tag.active {
-  opacity: 1;
-}
-.delete-tag-btn {
-  margin-left: 4px;
-  cursor: pointer;
-  color: #ef4444;
-  font-size: 16px;
-  font-weight: bold;
-}
-.edit-empty-hint {
-  color: #64748b;
-  font-size: 14px;
-}
-.new-tag-row {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-.new-tag-row input {
-  flex: 1;
-  padding: 6px 8px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-}
-.add-tag-btn {
-  padding: 6px 16px;
-  border: none;
-  border-radius: 6px;
-  background: #2563eb;
-  color: #fff;
-  cursor: pointer;
-}
-.color-selector {
-  margin-bottom: 12px;
-  padding: 8px;
-  background: #f9fafb;
-  border-radius: 6px;
-}
-.color-selector-label {
-  font-size: 13px;
-  color: #374151;
-}
-.color-options {
-  display: flex;
-  gap: 8px;
-  margin-top: 6px;
-}
-.color-option {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  cursor: pointer;
-  border: 1px solid transparent;
-}
-.color-option.color-red { background: #dc2626; }
-.color-option.color-green { background: #16a34a; }
-.color-option.color-blue { background: #2563eb; }
-.modal-actions {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-}
-.btn-clear-all, .btn-save {
-  padding: 8px 16px;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 14px;
-}
-.btn-clear-all { background: #fee2e2; color: #dc2626; }
-.btn-save { background: #2563eb; color: #fff; }
-</style>
