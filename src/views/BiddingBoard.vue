@@ -32,8 +32,8 @@
           <span class="col-time915">{{ row.time915 || '-' }}</span>
           <span class="col-time920">{{ row.time920 || '-' }}</span>
           <span class="col-time930">{{ row.time930 || '-' }}</span>
-          <span class="col-change" :class="changeClass(row.change)">{{ row.change || '-' }}</span>
-          <span class="col-close" :class="changeClass(row.close)">{{ row.close || '-' }}</span>
+          <span class="col-change" :class="changeClass(row.change)">{{ formatPercent(row.change) }}</span>
+          <span class="col-close" :class="changeClass(row.close)">{{ formatPercent(row.close) }}</span>
         </div>
       </div>
     </div>
@@ -119,6 +119,13 @@ function changeClass(v) {
   const n = parseFloat(v);
   if (isNaN(n)) return '';
   return n > 0 ? 'up' : (n < 0 ? 'down' : '');
+}
+
+function formatPercent(v) {
+  if (!v && v !== 0) return '-';
+  const n = parseFloat(v);
+  if (isNaN(n)) return v;
+  return n + '%';
 }
 
 function getTodayBidding() {

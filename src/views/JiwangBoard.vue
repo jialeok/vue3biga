@@ -428,12 +428,13 @@ defineExpose({ render, openEdit, closeModal, save, formatAmount, getNthPreviousT
 .jiwang-modal-panel {
   background: #fff;
   border-radius: 16px;
-  padding: 20px;
-  width: 100%;
+  padding: 16px;
+  width: calc(100vw - 20px);
   max-width: 360px;
   max-height: 90vh;
   overflow-y: auto;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+  box-sizing: border-box;
 }
 .jiwang-modal-header {
   display: flex;
@@ -472,6 +473,9 @@ defineExpose({ render, openEdit, closeModal, save, formatAmount, getNthPreviousT
   background: #f9fafb;
   outline: none;
   transition: border-color 0.2s, background 0.2s;
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
 }
 .jiwang-form-input:focus,
 .jiwang-form-select:focus {

@@ -30,7 +30,7 @@
          @touchend="onSwipeEnd"
          @mousedown="onSwipeStart"
          @mouseup="onSwipeEnd">
-      <div v-show="currentPage === 0" class="auction-scroll-container">
+      <div v-show="currentPage === 0" class="auction-scroll-container" @dblclick.self="openBackend">
         <div class="auction-toolbar">
           <div class="auction-toggle-item">
             <span class="auction-toggle-label">全部展开</span>
@@ -72,12 +72,15 @@
           <span style="font-weight:700;color:#dc2626;">竞/昨数：{{ viewData.stats && viewData.stats.jingYestCount || '-' }}</span>
           <span style="display:inline-block;width:28px;"></span>竞放量数：<span style="font-weight:700;">{{ viewData.stats && viewData.stats.highRatioCount || '-' }}</span>
         </div>
-        <div class="auction-header-row">
+        <div class="auction-header-row" @click="onHeaderClick" style="cursor:pointer">
           <div class="auction-header-item auction-header-number">序号</div>
           <div class="auction-header-item auction-header-stock">股票名称</div>
           <div class="auction-header-item auction-header-volume">竞价量(万)</div>
           <div class="auction-header-item auction-header-yest">昨日成交量(万)</div>
           <div class="auction-header-item auction-header-ratio">占比</div>
+        </div>
+        <div v-if="searchActive" class="auction-search-container">
+          <input type="text" class="auction-search-input" v-model="searchKeyword" placeholder="输入股票名称搜索..." @click.stop />
         </div>
         <div v-if="showBackend" class="auction-backend-panel">
           <div class="backend-section">
@@ -102,56 +105,27 @@
             <button class="backend-btn" @click="onReplaceConcept">题材替换</button>
           </div>
         </div>
-        <div v-if="!viewData.items || viewData.items.length === 0" class="auction-empty">
-          暂无数据
+        <div v-if="!viewData.items || viewData.items.length === 0" class="auction-empty" @dblclick="openBackend">
+          暂无数据，双击打开后台
         </div>
 
-        <div v-if="viewData.obsIndices && viewData.obsIndices.length" class="auction-obs-group">
-          <div class="auction-group-label">观察</div>
-          <div v-for="(item, idx) in obsItems" :key="item.index" :class="item.itemClass" @click="onToggleSelect(item.index)">
-            <span class="auction-number">{{ idx + 1 }}</span>
-            <span :class="item.stockClass"
-                  @dblclick.stop="onShowNote(item.index)"
-                  @contextmenu.prevent="onLongPress(item.stock)"
-                  @touchstart.passive="startLongPress(item.stock)"
-                  @touchend="cancelLongPress"
-                  @touchmove="cancelLongPress"
-                  @mousedown="startLongPress(item.stock)"
-                  @mouseup="cancelLongPress"
-                  @mouseleave="cancelLongPress">{{ item.stock }}</span>
-            <span :class="item.numberClass">{{ item.volumeDisplay }}</span>
-            <span class="auction-yest" :class="item.yestColorClass">{{ item.yestVolumeDisplay }}</span>
-            <span :class="item.ratioClass" @click.stop="onExpandTrend(item.index)">
-              {{ item.ratio }} <span>{{ item.ratioArrow }}</span>
-            </span>
-            <AuctionBadge :item="item" :ctx="{}" :tag-state="item" />
-            <div v-if="expandedSet.has(item.index)" class="auction-trend-panel" style="display:block">
-              <TrendChart v-if="trendHistory[item.index]" :points="trendHistory[item.index]" color="#6366f1" />
-            </div>
-          </div>
-        </div>
-
-        <div v-if="viewData.regularIndices && viewData.regularIndices.length" class="auction-regular-group">
-          <div v-for="(item, idx) in regularItems" :key="item.index" :class="item.itemClass" @click="onToggleSelect(item.index)">
-            <span class="auction-number">{{ idx + 1 }}</span>
-            <span :class="item.stockClass"
-                  @dblclick.stop="onShowNote(item.index)"
-                  @contextmenu.prevent="onLongPress(item.stock)"
-                  @touchstart.passive="startLongPress(item.stock)"
-                  @touchend="cancelLongPress"
-                  @touchmove="cancelLongPress"
-                  @mousedown="startLongPress(item.stock)"
-                  @mouseup="cancelLongPress"
-                  @mouseleave="cancelLongPress">{{ item.stock }}</span>
-            <span :class="item.numberClass">{{ item.volumeDisplay }}</span>
-            <span class="auction-yest" :class="item.yestColorClass">{{ item.yestVolumeDisplay }}</span>
-            <span :class="item.ratioClass" @click.stop="onExpandTrend(item.index)">
-              {{ item.ratio }} <span>{{ item.ratioArrow }}</span>
-            </span>
-            <AuctionBadge :item="item" :ctx="{}" :tag-state="item" />
-            <div v-if="expandedSet.has(item.index)" class="auction-trend-panel" style="display:block">
-              <TrendChart v-if="trendHistory[item.index]" :points="trendHistory[item.index]" color="#6366f1" />
-            </div>
+        <div v-for="(item, idx) in filteredItems" :key="item.index" :class="item.itemClass" @click="onToggleSelect(item.index)">
+          <span class="auction-number" @click.stop="onExpandTrend(item.index)">{{ idx + 1 }}</span>
+          <span :class="item.stockClass"
+                @dblclick.stop="onShowNote(item.index)"
+                @contextmenu.prevent="onLongPress(item.stock)"
+                @touchstart.passive="startLongPress(item.stock)"
+                @touchend="cancelLongPress"
+                @touchmove="cancelLongPress"
+                @mousedown="startLongPress(item.stock)"
+                @mouseup="cancelLongPress"
+                @mouseleave="cancelLongPress">{{ item.stock }}</span>
+          <span :class="item.numberClass">{{ item.volumeDisplay }}</span>
+          <span class="auction-yest" :class="item.yestColorClass">{{ item.yestVolumeDisplay }}</span>
+          <span :class="item.ratioClass">{{ item.ratio }} <span>{{ item.ratioArrow }}</span></span>
+          <AuctionBadge :item="item" :ctx="{}" :tag-state="item" />
+          <div v-if="expandedSet.has(item.index)" class="auction-trend-panel">
+            <TrendChart v-if="trendHistory[item.index]" :points="trendHistory[item.index]" color="#6366f1" />
           </div>
         </div>
       </div>
@@ -275,6 +249,27 @@ const regularItems = computed(() => {
   const m = itemsByIndex.value;
   return viewData.value.regularIndices.map(i => m.get(i)).filter(Boolean);
 });
+const allItems = computed(() => {
+  return [...obsItems.value, ...regularItems.value];
+});
+
+const searchActive = ref(false);
+const searchKeyword = ref('');
+
+const filteredItems = computed(() => {
+  if (!searchKeyword.value.trim()) return allItems.value;
+  const kw = searchKeyword.value.trim().toLowerCase();
+  return allItems.value.filter(item => item.stock && item.stock.toLowerCase().includes(kw));
+});
+
+function openBackend() {
+  showBackend.value = !showBackend.value;
+}
+
+function onHeaderClick() {
+  searchActive.value = !searchActive.value;
+  if (!searchActive.value) searchKeyword.value = '';
+}
 
 function refresh() {
   viewData.value = computeAuctionViewData(props.dataSource, sortState);
@@ -494,9 +489,40 @@ defineExpose({ refresh, toggleSort, expandAll, collapseAll });
   border-bottom: 1px solid #f1f5f9;
   transition: background 0.2s;
   position: relative;
+  flex-wrap: wrap;
 }
 .auction-row:hover { background: #f8fafc; }
 .auction-row.obs-row { background: #f0f9ff; }
+.auction-trend-panel {
+  width: 100%;
+  flex-basis: 100%;
+  padding: 8px;
+  background: #f9fafb;
+  border-top: 1px solid #e5e7eb;
+}
+.auction-swipe-container {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  touch-action: pan-y !important;
+}
+.auction-scroll-container {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  touch-action: pan-y !important;
+}
+.auction-search-container {
+  padding: 8px 12px;
+  background: #f9fafb;
+  border-bottom: 1px solid #e5e7eb;
+}
+.auction-search-input {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+}
 .auction-board-vue {
   display: flex;
   flex-direction: column;
