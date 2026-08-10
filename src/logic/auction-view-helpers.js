@@ -1,4 +1,4 @@
-import { getTodayGroupList, getGroupData, getAuctionData } from './app-core.js';
+import { getTodayGroupList, getGroupData, getAuctionData } from './app-core-api.js';
 import { getPreviousTradingDay } from './trading-day-helpers.js';
 import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlightSetForDate, getDigitCount, getRatioDiffInfoForDate } from './auction-sort-rules.js';
 import { getAuctionStockHistory, ensureBoughtStocksForDate } from './tag-rules.js';

@@ -2,7 +2,7 @@ import { autoCalculateRecentMultiScore } from './tag-titles-helpers.js';
 import { getKxianTypeByClose } from './jiwang-helpers.js';
 import { getNextTradingDay } from './trading-day-helpers.js';
 import { getBiddingData, getJiwangData, getStocksData, getEtfData } from '../data/supabase-client.js';
-import { saveData, markJiwangDirty } from './app-core.js';
+import { saveData, markJiwangDirty } from './app-core-api.js';
 import { pushJiwangNow } from '../data/jiwang-data.js';
 import { fuyaoApiGet } from '../data/api/fuyao-proxy.js';
 import { _emit } from '../stores/eventBus.js';

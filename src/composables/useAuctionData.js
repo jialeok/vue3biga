@@ -7,7 +7,7 @@
  * 从 src/ui/composables/auction-composables.js 拆分而来，去 window 化为 ES module。
  */
 import { ref, computed } from 'vue';
-import { getTodayGroupList, getGroupData, getAuctionData } from '../logic/app-core.js';
+import { getTodayGroupList, getGroupData, getAuctionData } from '../logic/app-core-api.js';
 import { getNumericVolume, getStocksData } from '../data/supabase-client.js';
 import {
     getHighRatioStocksForDate,

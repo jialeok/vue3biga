@@ -1,6 +1,7 @@
 ﻿import { useAuctionStore } from '../stores/auctionStore.js';
 import { state } from '../logic/app-state.js';
-import { invalidateTopicCache } from './stock-topics.js';
+let _invalidateTopicCacheFn = null;
+export function _setInvalidateTopicCacheFn(fn) { _invalidateTopicCacheFn = fn; }
         // ============================================================
         // 早盘竞价拆表操作：auction_watchlist + market_metrics(scope='auction')
         // 列归属：
@@ -262,6 +263,6 @@ export async function pullAuctionFromTable() {
                 });
             });
             if (hasChanges) {
-                invalidateTopicCache();
+                if (_invalidateTopicCacheFn) _invalidateTopicCacheFn();
             }
         }

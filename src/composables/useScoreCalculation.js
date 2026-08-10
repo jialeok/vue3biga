@@ -3,7 +3,7 @@ import { autoCalculateRecentMultiScore as _calcRecentMultiScore, renderConsecuti
 import { autoCalculateSectorEtfScore, autoCalculateTopicDirectionScore, openMonthlySummaryModal, openWeekendReviewModal, openWeekendSummaryModal, showLastWeekStats, showMonthlyStats, showWeeklyStats } from '../logic/ui-bridge.js';
 import { ref } from 'vue';
 import { getScoreSettings, checkHasFumianTopic } from '../logic/score-helpers.js';
-import { getTodayJiwang, getGroupData, getTodayGroupList, saveData } from '../logic/app-core.js';
+import { getTodayJiwang, getGroupData, getTodayGroupList, saveData } from '../logic/app-core-api.js';
 import { getTopicGroups } from '../logic/topic-rules.js';
 import { getBiddingData } from '../data/supabase-client.js';
 import { useUiStore } from '../stores/uiStore.js';

@@ -2,7 +2,7 @@
 //  AI识图模块 (从 index.html 抽离)
 //  职责：AI识图导入的流程编排，调用 Supabase qwen-vision 函数 + 写入竞价数据
 // ============================================================
-import { replaceHotConceptFromPaste, importAuctionFromPaste, replaceConceptFromPaste, importHotFromPaste } from '../app-core.js';
+import { replaceHotConceptFromPaste, importAuctionFromPaste, replaceConceptFromPaste, importHotFromPaste } from '../app-core-api.js';
 import { _domSetText, _domSetValue, _domSetDisplay, _domSetColor, _domGet, _domQuery, _domValue, _domCreate, _domAddEventListener, _domAddEventListenerDoc } from '../ui-bridge.js';
 const SUPABASE_FUNC_URL = 'https://tonqfgeyxnnwicjopshn.supabase.co/functions/v1/qwen-vision';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRvbnFmZ2V5eG5ud2ljam9wc2huIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NjY3NzEsImV4cCI6MjA5NDI0Mjc3MX0.el-W10JIjr9iQXEKNxV7nLNdhZfOQp6waTY7ZSH27Jg';

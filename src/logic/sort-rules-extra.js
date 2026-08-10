@@ -2,7 +2,7 @@
         // 最多看 5 天（T..T-5 共 6 个数据点）。
         // 若序列全等（无严格递减），天数为 0。
         // 返回 Map<股票名称, 下跌天数>。
-        import { getGroupData } from './app-core.js';
+        import { getGroupData } from './app-core-api.js';
         import { getNumericVolume } from '../data/supabase-client.js';
         import { getStockHistoryValue } from '../data/watchlist-and-metrics.js';
         import { _signalCache, _signalFpFor } from './auction-sort-rules.js';

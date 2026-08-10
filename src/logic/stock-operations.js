@@ -1,5 +1,5 @@
 import { getStocksData } from '../data/supabase-client.js';
-import { saveData, getNextTradingDay } from './app-core.js';
+import { saveData, getNextTradingDay } from './app-core-api.js';
 import { state } from './app-state.js';
 import { _emit } from '../stores/eventBus.js';
 import { showToast } from '../composables/useToast.js';

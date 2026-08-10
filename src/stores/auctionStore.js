@@ -1,5 +1,7 @@
-﻿import { showAuctionNoteInput, showAuctionNotePopup, toggleAuctionRowSelect, copyAllTopicStocks, copyTopicStocks, expandAllAuctionTrendPanels, expandAllAuctionTrendPanelsP2, jumpToAuctionPage1, jumpToAuctionPage2, openAuctionNoteEditFromPage2, openCoreTopicModal, restoreExpandedAuctionTrendPanels, restoreExpandedTopicGroupsP2, showAuctionBuyPrompt, toggleAuctionSortHelp, toggleTopicGroupTrendPanels, openAuctionEdit, openHotEdit, renderAuction, toggleAuctionBoard, toggleStrengthSort } from '../logic/ui-bridge.js';
-import { state } from '../logic/app-state.js';
+﻿﻿import { state } from '../logic/app-state.js';
+
+let _uiFns = {};
+export function _bindUiFns(fns) { _uiFns = fns; }
 /**
  * auctionStore.js — 早盘竞价看板 Pinia store（迁移批次 3.3）
  * 从 IIFE + Vue.reactive 手写 store 重构为标准 Pinia defineStore
@@ -153,80 +155,80 @@ export const useAuctionStore = defineStore('auction', {
 
     // --- 交互代理（直接调用 window 全局函数，safeCall 内部兜底） ---
     toggleRowSelect(index) {
-      safeCall(toggleAuctionRowSelect, index);
+      safeCall(_uiFns.toggleAuctionRowSelect, index);
     },
 
     showNotePopup(el, note) {
-      safeCall(showAuctionNotePopup, el, note);
+      safeCall(_uiFns.showAuctionNotePopup, el, note);
     },
 
     showNoteInput(index, el) {
-      safeCall(showAuctionNoteInput, index, el);
+      safeCall(_uiFns.showAuctionNoteInput, index, el);
     },
 
     showBuyPrompt(stockName) {
-      safeCall(showAuctionBuyPrompt, stockName);
+      safeCall(_uiFns.showAuctionBuyPrompt, stockName);
     },
 
     openEdit(dataSource) {
-      if (dataSource === 'hot') safeCall(openHotEdit);
-      else safeCall(openAuctionEdit);
+      if (dataSource === 'hot') safeCall(_uiFns.openHotEdit);
+      else safeCall(_uiFns.openAuctionEdit);
     },
 
     jumpToPage2(stockName) {
-      safeCall(jumpToAuctionPage2, stockName);
+      safeCall(_uiFns.jumpToAuctionPage2, stockName);
     },
 
     jumpToPage1(stockName) {
-      safeCall(jumpToAuctionPage1, stockName);
+      safeCall(_uiFns.jumpToAuctionPage1, stockName);
     },
 
     toggleStrengthSort() {
-      safeCall(toggleStrengthSort);
+      safeCall(_uiFns.toggleStrengthSort);
     },
 
     toggleSortHelp(panelId) {
-      safeCall(toggleAuctionSortHelp, panelId);
+      safeCall(_uiFns.toggleAuctionSortHelp, panelId);
     },
 
     toggleBoard() {
-      safeCall(toggleAuctionBoard);
+      safeCall(_uiFns.toggleAuctionBoard);
     },
 
     toggleTopicGroupTrendPanels(topic) {
-      safeCall(toggleTopicGroupTrendPanels, topic);
+      safeCall(_uiFns.toggleTopicGroupTrendPanels, topic);
     },
 
     expandAllTrendPanels(dataSource) {
-      safeCall(expandAllAuctionTrendPanels, dataSource);
+      safeCall(_uiFns.expandAllAuctionTrendPanels, dataSource);
     },
 
     restoreExpandedTrendPanels(dataSource) {
-      safeCall(restoreExpandedAuctionTrendPanels, dataSource);
+      safeCall(_uiFns.restoreExpandedAuctionTrendPanels, dataSource);
     },
 
     expandAllTrendPanelsP2(dataSource) {
-      safeCall(expandAllAuctionTrendPanelsP2, dataSource);
+      safeCall(_uiFns.expandAllAuctionTrendPanelsP2, dataSource);
     },
 
     restoreExpandedTopicGroupsP2(dataSource) {
-      safeCall(restoreExpandedTopicGroupsP2, dataSource);
+      safeCall(_uiFns.restoreExpandedTopicGroupsP2, dataSource);
     },
 
     openCoreTopicModal() {
-      safeCall(openCoreTopicModal);
+      safeCall(_uiFns.openCoreTopicModal);
     },
 
     openAuctionNoteEditFromPage2(stockName) {
-      safeCall(openAuctionNoteEditFromPage2, stockName);
+      safeCall(_uiFns.openAuctionNoteEditFromPage2, stockName);
     },
 
     copyAllTopicStocks(topic, dataSource) {
-      safeCall(copyAllTopicStocks, topic, dataSource);
+      safeCall(_uiFns.copyAllTopicStocks, topic, dataSource);
     },
 
     copyTopicStocks(topic, limit, dataSource) {
-      safeCall(copyTopicStocks, topic, limit, dataSource);
+      safeCall(_uiFns.copyTopicStocks, topic, limit, dataSource);
     },
 
     // --- 日期 ---
@@ -245,7 +247,7 @@ export const useAuctionStore = defineStore('auction', {
 
     // --- 刷新 ---
     refresh() {
-      safeCall(renderAuction, this.currentGroup);
+      safeCall(_uiFns.renderAuction, this.currentGroup);
     },
 
     // --- 强度排序开关镜像 ---

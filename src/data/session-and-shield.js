@@ -73,7 +73,11 @@ export function _openAuctionShield() {
         //   - 存当天所有行（正式列表成员 in_watchlist=true + 影子记录 in_watchlist=false）
         //   - 趋势图查询直接读全部行（getStockHistoryValue / getAuctionStockHistory）
         //   - tap 主列表渲染时由调用方过滤 in_watchlist===true
-        state._auctionMemCache = _getAuctionStore() ? _getAuctionStore().auctionData : {}; // Vue 化：直接持有 store 响应式代理，就地写即响应式
+        state._auctionMemCache = {}; // 延迟到 _initAuctionMemCache() 中与 store 同步，避免模块初始化时 TDZ
+        export function _initAuctionMemCache() {
+            const _store = _getAuctionStore();
+            if (_store) state._auctionMemCache = _store.auctionData;
+        }
         state._dailyHighlightsCache = {}; // {date: Set(stockNames)} 预计算的竞/昨高光
         state._highlightsTableAvailable = false;
         state._highlightsPushTimer = null;

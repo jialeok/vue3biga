@@ -1,7 +1,7 @@
 ﻿import { _dbgLog } from '../data/debug-log.js';
 import { getPreviousTradingDay, isTradingDay } from './trading-day-helpers.js';
 import { buildTopicCache } from '../data/stock-topics.js';
-import { getStockHistoryTopics, getRankData } from './app-core.js';
+import { getStockHistoryTopics, getRankData } from './app-core-api.js';
 import { extractTopics, getDisplayNote } from './note-helpers.js';
 import { state } from './app-state.js';
 let _pullCoreTopicsFromCloudFn = null;

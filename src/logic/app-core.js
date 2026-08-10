@@ -3,11 +3,11 @@ import { _bindApi } from './app-core-api.js';
 import { showToast } from '../composables/useToast.js';
 import { fuyaoApiGet, tickerToThscode, LADDER_THSCODE } from '../data/api/fuyao-proxy.js';
 import { numcatApiPost } from '../data/api/numcat-proxy.js';
-import { normalizeAuctionNotes, pullAuctionFromTable, setAuctionDateData } from '../data/auction-data.js';
+import { normalizeAuctionNotes, pullAuctionFromTable, setAuctionDateData, _setInvalidateTopicCacheFn } from '../data/auction-data.js';
 import { _dbgLog, _dbgLogVerbose } from '../data/debug-log.js';
 import { pushHotTrendsToCloud } from '../data/hot-stocks.js';
 import { pushJiwangNow, scheduleJiwangPush } from '../data/jiwang-data.js';
-import { _closeAuctionShield, _openAuctionShield } from '../data/session-and-shield.js';
+import { _closeAuctionShield, _openAuctionShield, _initAuctionMemCache } from '../data/session-and-shield.js';
 import { loadCloudStockCodeMap, upsertStockCodeMap } from '../data/stock-code-map.js';
 import { buildTopicCache, invalidateTopicCache, loadCloudTopics, pushStockTopicsToCloud, scanDataSourceForTopics } from '../data/stock-topics.js';
 import { _moduleKey, getBiddingData, getJiwangData, getNumericVolume, getStocksData, getSupabase, loadAllData } from '../data/supabase-client.js';
@@ -21,7 +21,7 @@ import { _getLocalTodayStr, deriveAuctionTagState } from './tag-rules.js';
 import { getMostRecentTradingDay, getPreviousTradingDay, isTradingDay } from './trading-day-helpers.js';
 import { _domGet, _domQuery, _domSetColor, _domSetText, _domSetValue, _getCommentInputValue, _readTrackEditFormData, _restoreStockCardExpand, _switchGroupUI, closeCommentModal, closeHotEditModal, closeTrackEditModal, getNthPreviousTradingDay, handleFileImport, recalcDuibanFromAuction, renderAuction, renderAuctionForm, renderBidding, renderComment, renderDuiban, renderEmotionBoard, renderEtf, renderHotForm, renderHotspot, renderJiwang, renderList, renderMulti, renderPattern, renderRank, resetExpansionStateOnDateSwitch, saveAuction, setApiStatus, setStockCodeMapStatus, setStockCodeMapStatusHot, showAuctionDiagReport, showHint, showHotDiagReport, showNumcatChoiceModal, updateCloudSyncUI } from './ui-bridge.js';
 import { pullFromCloud, pushAuctionCodeToCloud, pushHotStocksDataToCloud, pushToCloud, syncAuctionListForDate, syncCloseChunk, syncHotStocksListForDate } from './workflows/auction-sync.js';
-import { useAuctionStore } from '../stores/auctionStore.js';
+import { useAuctionStore, _bindUiFns } from '../stores/auctionStore.js';
 function _getAuctionStore() { try { return useAuctionStore(); } catch { return null; } }
         export function switchGroup(g) {
             if (g !== 'auction' && g !== 'hot') return;
@@ -7993,4 +7993,10 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
 state._migrateFromV41 = _migrateFromV41;
 state._guardStack = _guardStack;
 
-_bindApi({ getCurrentDate, getAuctionData, getGroupData, scheduleCloudPush, markAuctionDirty, saveData, getTodayAuction, getNextTradingDay, getHotAuctionData, saveModule, patchAuctionFieldBatch, reconcileAuctionWatchlistFromLocalStorage, mergeAuctionDateRows, _openHotAuctionShield, _closeHotAuctionShield });
+_bindApi({ getCurrentDate, getAuctionData, getGroupData, scheduleCloudPush, markAuctionDirty, saveData, getTodayAuction, getNextTradingDay, getHotAuctionData, saveModule, patchAuctionFieldBatch, reconcileAuctionWatchlistFromLocalStorage, mergeAuctionDateRows, _openHotAuctionShield, _closeHotAuctionShield, getStockHistoryTopics, getRankData, getTagTitlesData, getTodayJiwang, getTodayGroupList, markJiwangDirty, replaceHotConceptFromPaste, importAuctionFromPaste, replaceConceptFromPaste, importHotFromPaste });
+
+_bindUiFns({ showAuctionNoteInput, showAuctionNotePopup, toggleAuctionRowSelect, copyAllTopicStocks, copyTopicStocks, expandAllAuctionTrendPanels, expandAllAuctionTrendPanelsP2, jumpToAuctionPage1, jumpToAuctionPage2, openAuctionNoteEditFromPage2, openCoreTopicModal, restoreExpandedAuctionTrendPanels, restoreExpandedTopicGroupsP2, showAuctionBuyPrompt, toggleAuctionSortHelp, toggleTopicGroupTrendPanels, openAuctionEdit, openHotEdit, renderAuction, toggleAuctionBoard, toggleStrengthSort });
+
+_initAuctionMemCache();
+
+_setInvalidateTopicCacheFn(invalidateTopicCache);

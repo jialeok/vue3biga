@@ -18,3 +18,13 @@ export function reconcileAuctionWatchlistFromLocalStorage() { return _fns.reconc
 export function mergeAuctionDateRows(d, r, s) { return _fns.mergeAuctionDateRows(d, r, s); }
 export function _openHotAuctionShield() { return _fns._openHotAuctionShield(); }
 export function _closeHotAuctionShield(t) { return _fns._closeHotAuctionShield(t); }
+export function getStockHistoryTopics(stockName) { return _fns.getStockHistoryTopics(stockName); }
+export function getRankData() { return _fns.getRankData(); }
+export function getTagTitlesData() { return _fns.getTagTitlesData(); }
+export function getTodayJiwang() { return _fns.getTodayJiwang(); }
+export function getTodayGroupList(ds) { return _fns.getTodayGroupList(ds); }
+export function markJiwangDirty(date) { return _fns.markJiwangDirty(date); }
+export function replaceHotConceptFromPaste() { return _fns.replaceHotConceptFromPaste(); }
+export function importAuctionFromPaste() { return _fns.importAuctionFromPaste(); }
+export function replaceConceptFromPaste() { return _fns.replaceConceptFromPaste(); }
+export function importHotFromPaste() { return _fns.importHotFromPaste(); }
