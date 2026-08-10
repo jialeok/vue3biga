@@ -50,50 +50,10 @@
         <button class="stats-nav-btn weekly" @click="showWeekly">本周统计</button>
         <button class="stats-nav-btn" @click="showLastWeek">上周统计</button>
         <button class="stats-nav-btn monthly" @click="showMonthly">本月统计</button>
-        <button class="stats-nav-btn" @click="openWeekendSummary">周末总结</button>
-        <button class="stats-nav-btn" @click="openWeekendReview">周末复盘</button>
-        <button class="stats-nav-btn" @click="openMonthlySummary">月度总结</button>
+        <button class="stats-nav-btn back-current" @click="goBackToCurrent">返回当前</button>
       </div>
     </div>
 
-    <div class="stats-consecutive-section">
-      <div class="consecutive-item">
-        <span class="consecutive-label">最近多板</span>
-        <span class="consecutive-value">{{ consecutiveUp.duoban || 0 }}</span>
-      </div>
-      <div class="consecutive-item">
-        <span class="consecutive-label">板块ETF</span>
-        <span class="consecutive-value">{{ consecutiveUp.bankuai || 0 }}</span>
-      </div>
-      <div class="consecutive-item">
-        <span class="consecutive-label">题材方向</span>
-        <span class="consecutive-value">{{ consecutiveUp.ticai || 0 }}</span>
-      </div>
-    </div>
-
-    <div class="stats-score-section">
-      <div class="score-item">
-        <span class="score-label">最近多板评分</span>
-        <span class="score-value" :style="{ color: scoreColor(recentMultiScore) }">{{ recentMultiScore }}</span>
-      </div>
-      <div class="score-item">
-        <span class="score-label">板块ETF评分</span>
-        <span class="score-value" :style="{ color: scoreColor(sectorEtfScore) }">{{ sectorEtfScore }}</span>
-      </div>
-      <div class="score-item">
-        <span class="score-label">题材方向评分</span>
-        <span class="score-value" :style="{ color: scoreColor(topicDirectionScore) }">{{ topicDirectionScore }}</span>
-      </div>
-    </div>
-
-    <div class="stats-period-section">
-      <button class="period-btn" @click="showWeekly">本周统计</button>
-      <button class="period-btn" @click="showLastWeek">上周统计</button>
-      <button class="period-btn" @click="showMonthly">本月统计</button>
-      <button class="period-btn" @click="openWeekendSummary">周末总结</button>
-      <button class="period-btn" @click="openWeekendReview">周末复盘</button>
-      <button class="period-btn" @click="openMonthlySummary">月度总结</button>
-    </div>
 
     <EditModal v-model="circleModalActive" title="编辑圆形统计" :show-clear="true" @save="saveCircleStats" @clear="clearCircleStats">
       <div class="stats-form-row">
@@ -132,6 +92,8 @@ import { getJiwangData } from '../data/supabase-client.js';
 import { saveData } from '../logic/app-core.js';
 import { useScoreCalculation } from '../composables/useScoreCalculation.js';
 
+const emit = defineEmits(['back-to-current']);
+
 const uiStore = useUiStore();
 const {
   recentMultiScore, sectorEtfScore, topicDirectionScore, consecutiveUp,
@@ -139,6 +101,10 @@ const {
   showWeekly, showLastWeek, showMonthly,
   openWeekendSummary, openWeekendReview, openMonthlySummary
 } = useScoreCalculation();
+
+function goBackToCurrent() {
+  emit('back-to-current');
+}
 
 const profit = ref('');
 const gain = ref('');

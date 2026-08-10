@@ -17,7 +17,7 @@
     <PatternBoard />
     <BiddingBoard />
     <JiwangBoard />
-    <StatsBoard />
+    <StatsBoard @back-to-current="goToday" />
     <EmotionBoard />
     <TagTitlesBoard />
     <AuctionBoard />

@@ -59,14 +59,5 @@ const balanceCardClass = computed(() => '');
 </script>
 
 <style scoped>
-.circle-stats-bar { display: flex; gap: 12px; align-items: center; justify-content: center; }
-.circle-card {
-  display: flex; flex-direction: column; align-items: center;
-  padding: 12px 20px; border-radius: 50%; border: 2px solid #e5e7eb;
-  background: #fff; min-width: 100px;
-}
-.circle-card.positive { border-color: #dc2626; background: #fef2f2; }
-.circle-card.negative { border-color: #059669; background: #f0fdf4; }
-.circle-label { font-size: 11px; color: #6b7280; }
-.circle-value { font-size: 18px; font-weight: 600; color: #1f2937; }
+
 </style>
