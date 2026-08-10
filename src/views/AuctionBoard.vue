@@ -125,7 +125,20 @@
           <span :class="item.ratioClass">{{ item.ratio }} <span>{{ item.ratioArrow }}</span></span>
           <AuctionBadge :item="item" :ctx="{}" :tag-state="item" />
           <div v-if="expandedSet.has(item.index)" class="auction-trend-panel">
-            <TrendChart v-if="trendHistory[item.index]" :points="trendHistory[item.index]" color="#6366f1" />
+            <template v-if="trendHistory[item.index]">
+              <div class="trend-chart-item">
+                <div class="trend-chart-label">竞价量(万) 近5日</div>
+                <TrendChart :points="trendHistory[item.index].volume" color="#6366f1" />
+              </div>
+              <div class="trend-chart-item">
+                <div class="trend-chart-label">昨日成交量(万) 近5日</div>
+                <TrendChart :points="trendHistory[item.index].yestVolume" color="#10b981" />
+              </div>
+              <div class="trend-chart-item" v-if="trendHistory[item.index].changePct.some(p => p.value !== null)">
+                <div class="trend-chart-label">涨幅(%) 近5日</div>
+                <TrendChart :points="trendHistory[item.index].changePct" color="#64748b" />
+              </div>
+            </template>
           </div>
         </div>
       </div>
@@ -298,7 +311,11 @@ function expandAll() {
     if (item && item.stock) {
       newSet.add(item.index);
       const history = getAuctionStockHistory(item.stock.trim(), uiStore.currentDate, 5, props.dataSource);
-      newHistory[item.index] = history.map(h => ({ date: h.date, value: h.volume }));
+      newHistory[item.index] = {
+        volume: history.map(h => ({ date: h.date, value: h.volume })),
+        yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
+        changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
+      };
     }
   });
   expandedSet.value = newSet;
@@ -312,8 +329,14 @@ function collapseAll() {
 
 function loadTrendHistory(index, stockName) {
   const history = getAuctionStockHistory(stockName.trim(), uiStore.currentDate, 5, props.dataSource);
-  const points = history.map(h => ({ date: h.date, value: h.volume }));
-  trendHistory.value = { ...trendHistory.value, [index]: points };
+  trendHistory.value = {
+    ...trendHistory.value,
+    [index]: {
+      volume: history.map(h => ({ date: h.date, value: h.volume })),
+      yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
+      changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
+    }
+  };
 }
 
 function onSearch() {
@@ -499,6 +522,14 @@ defineExpose({ refresh, toggleSort, expandAll, collapseAll });
   padding: 8px;
   background: #f9fafb;
   border-top: 1px solid #e5e7eb;
+}
+.trend-chart-item {
+  margin-bottom: 4px;
+}
+.trend-chart-label {
+  font-size: 10px;
+  color: #94a3b8;
+  margin-bottom: 2px;
 }
 .auction-swipe-container {
   overflow-y: auto !important;
