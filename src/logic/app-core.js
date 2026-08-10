@@ -11,6 +11,7 @@ import { _closeAuctionShield, _openAuctionShield, _initAuctionMemCache } from '.
 import { loadCloudStockCodeMap, upsertStockCodeMap } from '../data/stock-code-map.js';
 import { buildTopicCache, invalidateTopicCache, loadCloudTopics, pushStockTopicsToCloud, scanDataSourceForTopics } from '../data/stock-topics.js';
 import { _moduleKey, getBiddingData, getJiwangData, getNumericVolume, getStocksData, getSupabase, loadAllData } from '../data/supabase-client.js';
+import '../data/remaining-boards.js';
 import { _addAuctionWatchlistMember, _extractWatchlistNamesFromRows, _getAuctionWatchlistSet, _setAuctionWatchlistForDate, getStockHistoryValue, lockAuctionDateForImport, unlockAuctionDateForImport } from '../data/watchlist-and-metrics.js';
 import { getJingYestHighlightSetForDate, getJingYestStocksForDate } from './auction-sort-rules.js';
 import { syncStockCloseFromAuction, syncStockTopicsFromAuction } from './auction-stock-sync.js';
@@ -7992,6 +7993,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
 
 state._migrateFromV41 = _migrateFromV41;
 state._guardStack = _guardStack;
+state._guardAssertDate = _guardAssertDate;
 
 _bindApi({ getCurrentDate, getAuctionData, getGroupData, scheduleCloudPush, markAuctionDirty, saveData, getTodayAuction, getNextTradingDay, getHotAuctionData, saveModule, patchAuctionFieldBatch, reconcileAuctionWatchlistFromLocalStorage, mergeAuctionDateRows, _openHotAuctionShield, _closeHotAuctionShield, getStockHistoryTopics, getRankData, getTagTitlesData, getTodayJiwang, getTodayGroupList, markJiwangDirty, replaceHotConceptFromPaste, importAuctionFromPaste, replaceConceptFromPaste, importHotFromPaste });
 

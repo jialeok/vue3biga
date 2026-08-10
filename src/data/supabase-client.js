@@ -185,7 +185,7 @@ export function _moduleKey(name) {
                         }
                         if (key === 'stocks' || key === 'rank' || key === 'multi' ||
                             key === 'hotspot' || key === 'pattern' || key === 'tagTitles') {
-                            const cache = window['_' + key + 'MemCache'];
+                            const cache = state['_' + key + 'MemCache'];
                             if (cache) {
                                 state.allData[key] = cache;
                                 return;
