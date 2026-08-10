@@ -412,64 +412,6 @@ defineExpose({ render, openEdit, closeModal, save, formatAmount, getNthPreviousT
 </script>
 
 <style>
-.jiwang-board {
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 12px;
-  margin: 8px 0;
-  background: #fff;
-  position: relative;
-}
-.jiwang-row {
-  display: flex;
-  align-items: center;
-  padding: 4px 0;
-  font-size: 13px;
-}
-.jiwang-label {
-  width: 90px;
-  color: #6b7280;
-}
-.jiwang-value {
-  color: #1f2937;
-  font-weight: 500;
-}
-.red-highlight-small { color: #dc2626; }
-.gray-highlight-small { color: #9ca3af; }
-.red-highlight { color: #dc2626; font-weight: 600; }
-.gray-highlight { color: #9ca3af; font-weight: 600; }
-.jiwang-stamp {
-  position: absolute;
-  right: 16px;
-  top: 16px;
-  width: 80px;
-  height: 80px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 32px;
-  font-weight: 700;
-}
-.jiwang-stamp .stamp-text {
-  font-size: 10px;
-  text-align: center;
-}
-.jiwang-stamp .stamp-result {
-  font-size: 16px;
-  text-align: center;
-  font-weight: 700;
-}
-.jiwang-edit-btn {
-  margin-top: 8px;
-  padding: 6px 16px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  background: #fff;
-  color: #374151;
-  font-size: 13px;
-  cursor: pointer;
-}
 .jiwang-modal {
   position: fixed;
   inset: 0;
@@ -483,7 +425,9 @@ defineExpose({ render, openEdit, closeModal, save, formatAmount, getNthPreviousT
   background: #fff;
   border-radius: 12px;
   padding: 20px;
-  min-width: 420px;
+  min-width: 320px;
+  max-width: 380px;
+  width: 90vw;
   max-height: 90vh;
   overflow: auto;
 }
@@ -493,38 +437,6 @@ defineExpose({ render, openEdit, closeModal, save, formatAmount, getNthPreviousT
   margin-bottom: 16px;
   color: #1f2937;
 }
-.form-row {
-  display: flex;
-  align-items: center;
-  margin-bottom: 10px;
-  gap: 8px;
-}
-.form-row label {
-  width: 100px;
-  color: #6b7280;
-  font-size: 13px;
-}
-.form-row input,
-.form-row select {
-  flex: 1;
-  padding: 6px 8px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  font-size: 13px;
-}
-.checkbox-option {
-  width: 24px;
-  height: 24px;
-  border: 1px solid #d1d5db;
-  border-radius: 4px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  font-size: 14px;
-}
-.checkbox-option.checked { background: #dc2626; color: #fff; border-color: #dc2626; }
-.checkbox-option.unchecked { background: #fff; color: #9ca3af; }
 .form-actions {
   display: flex;
   gap: 8px;
