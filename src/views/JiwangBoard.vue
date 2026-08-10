@@ -1,48 +1,48 @@
 <template>
-  <div class="jiwang-board">
+  <div class="jiwang-board trading-day-element">
     <!-- 看板展示区 -->
-    <div class="jiwang-display">
-      <div class="jiwang-row">
-        <span class="jiwang-label">跌涨</span>
-        <span id="jw-diezhang" class="jiwang-value">{{ display.diezhang || '-' }}</span>
+    <div class="jiwang-content">
+      <div class="jiwang-item">
+        <div class="jiwang-label">昨日跌涨</div>
+        <div id="jw-diezhang" class="jiwang-value-highlight">{{ display.diezhang || '-' }}</div>
       </div>
-      <div class="jiwang-row">
-        <span class="jiwang-label">情绪</span>
-        <span id="jw-qingxu" class="jiwang-value">{{ display.qingxu || '-' }}</span>
+      <div class="jiwang-item">
+        <div class="jiwang-label">昨日情绪</div>
+        <div id="jw-qingxu" class="jiwang-value">{{ display.qingxu || '-' }}</div>
       </div>
-      <div class="jiwang-row">
-        <span class="jiwang-label">今日聚焦</span>
-        <span id="jw-jujiao" class="jiwang-value">
+      <div class="jiwang-item">
+        <div class="jiwang-label">今日聚焦</div>
+        <div id="jw-jujiao" class="jiwang-value">
           <template v-if="display.jujiao === '谁增做谁' && display.whoIncrease">
             <span style="font-size:13px;color:#1f2937">谁增做谁</span>
             <span :style="whoIncreaseStyle">{{ display.whoIncrease }}</span>
           </template>
           <template v-else>{{ display.jujiao || '-' }}</template>
-        </span>
+        </div>
       </div>
-      <div class="jiwang-row">
-        <span class="jiwang-label">昨多板K线</span>
-        <span id="jw-kxian" class="jiwang-value">{{ kxianDisplay }}</span>
+      <div class="jiwang-item">
+        <div class="jiwang-label">昨多板K线</div>
+        <div id="jw-kxian" class="jiwang-value">{{ kxianDisplay }}</div>
       </div>
-      <div class="jiwang-row">
-        <span class="jiwang-label">观察</span>
-        <span id="jw-guancha" class="jiwang-value">{{ display.guancha || '-' }}</span>
+      <div class="jiwang-item">
+        <div class="jiwang-label">观察</div>
+        <div id="jw-guancha" class="jiwang-value">{{ display.guancha || '-' }}</div>
       </div>
-      <div class="jiwang-row">
-        <span class="jiwang-label">过程结果</span>
-        <span id="jw-guochengjieguo" class="jiwang-value">{{ display.guochengJieguo || '-' }}</span>
+      <div class="jiwang-item">
+        <div class="jiwang-label">过程结果</div>
+        <div id="jw-guochengjieguo" class="jiwang-value">{{ display.guochengJieguo || '-' }}</div>
       </div>
-      <div class="jiwang-row">
-        <span class="jiwang-label">收股结果</span>
-        <span id="jw-shougujieguo" class="jiwang-value">{{ display.shouguJieguo || '-' }}</span>
+      <div class="jiwang-item">
+        <div class="jiwang-label">收股结果</div>
+        <div id="jw-shougujieguo" class="jiwang-value">{{ display.shouguJieguo || '-' }}</div>
       </div>
-      <div class="jiwang-row">
-        <span class="jiwang-label">出手情况</span>
-        <span id="jw-chushou" class="jiwang-value" :class="chushouClass">{{ display.chushou || '-' }}</span>
+      <div class="jiwang-item">
+        <div class="jiwang-label">出手情况</div>
+        <div id="jw-chushou" class="jiwang-value" :class="chushouClass">{{ display.chushou || '-' }}</div>
       </div>
-      <div class="jiwang-row">
-        <span class="jiwang-label">得出结论</span>
-        <span id="jw-jielun" class="jiwang-value" :class="jielunClass">{{ display.jielun || '-' }}</span>
+      <div class="jiwang-item">
+        <div class="jiwang-label">得出结论</div>
+        <div id="jw-jielun" class="jiwang-value" :class="jielunClass">{{ display.jielun || '-' }}</div>
       </div>
       <div id="jiwangStamp" class="jiwang-stamp" :class="stampClass" :style="stampStyle">
         <div id="stampQuestion">
