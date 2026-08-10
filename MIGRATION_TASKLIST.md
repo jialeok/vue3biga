@@ -917,3 +917,31 @@ ls -d src/ui 2>&1
 - **regularItems find O(n)** [x]：`AuctionBoard.vue:249` `regularItems` computed 仍用 `find` 而非 Map（P2-1 修复不完整），已改用 `itemsByIndex` Map
 
 - **构建验证** [x]：`npm run build` 通过（12.16s，187 modules，无警告）
+
+---
+
+### 2026-08-10 部署到新仓库 vue3biga + P0 Bug 修复
+
+#### P0 Bug: 登录后首页空白（authReady 未设置）— **已修复**
+- **问题**：`App.vue` 中 `<RouterView v-if="authReady" />` 只在 `authReady=true` 时渲染。`authReady` 是本地 `ref(false)`，只在 `onMounted` 中当 `localStorage.getItem('unlocked') === '1'` 时设为 `true`。`LoginOverlay.checkPassword()` 登录成功后调用 `hidePassword()` + `initApp()`，但**从未设置 `authReady = true`**。导致首次登录后 RouterView 不渲染，首页空白；只有刷新页面（localStorage 已有 unlocked=1）才显示
+- **修复** [x]：
+  - `LoginOverlay.vue`：登录成功后 `_emit('auth:login-success')`
+  - `App.vue`：提取 `onLoginSuccess()` 函数，监听 `auth:login-success` 事件，设置 `authReady.value = true`
+- **验收** [x]：`npm run build` 通过（19.24s，184 modules，无警告）
+
+#### 推送到新仓库 vue3biga
+- git remote 更新为 `https://github.com/jialeok/vue3biga.git`
+- commit `cf8fb12`：修复登录后首页空白 + 清理无用文件（CNAME、deploy.yml、fix-data-logic.ps1、migrate-esm.js）
+- force push 覆盖远程初始化提交（vue3biga 是新建空仓库，旧仓库 newbiga 不受影响）
+
+#### CI 部署失败修复 — **已修复**
+- **问题**：GitHub Actions "Setup Node" 步骤报错 `Dependencies lock file is not found`。原因：`.gitignore` 第 2 行忽略了 `package-lock.json`，导致未推送到远程。`setup-node` 的 `cache: npm` 需要 lock 文件
+- **修复** [x]：从 `.gitignore` 移除 `package-lock.json`，提交 lock 文件到仓库（commit `7388194`）
+- **验收** [x]：GitHub Actions 重新运行，`Status:completed Conclusion:success`
+
+#### 部署验证 [x]
+- Pages URL: `https://jialeok.github.io/vue3biga/`
+- HTML 壳正确加载（标题"股票日记 v260"，`<div id="app">`，base 路径 `/vue3biga/` 正确）
+- JS bundle: HTTP 200, 370.8KB
+- CSS bundle: HTTP 200, 81.1KB
+- **待用户浏览器验证**：访问 `https://jialeok.github.io/vue3biga/#/`，输入密码 `biga8450`，确认首页不再空白、看板正常显示
