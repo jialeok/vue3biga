@@ -1,5 +1,5 @@
 node_modules/
-package-lock.json
+
 .DS_Store
 
 # WorkBuddy internal state (not project source)
