@@ -37,7 +37,7 @@ defineEmits(['update:modelValue', 'save', 'clear']);
 }
 .edit-modal-panel {
   background: #fff; border-radius: 12px; padding: 20px;
-  min-width: 400px; max-height: 90vh; overflow: auto;
+  min-width: 320px; max-width: 90vw; width: 380px; max-height: 90vh; overflow: auto;
 }
 .edit-modal-header { font-size: 16px; font-weight: 600; margin-bottom: 16px; }
 .edit-modal-body { margin-bottom: 16px; }
