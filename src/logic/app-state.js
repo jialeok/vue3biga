@@ -135,4 +135,8 @@ export const state = {
     _aiVisionImages: [],
     isStrengthSortEnabled: false,
     defaultCoreTopics: null,
+    currentFilter: 'all',
+    editingId: null,
+    isStockListCollapsed: false,
+    topicAutoFilled: false,
 };

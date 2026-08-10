@@ -1,3 +1,5 @@
+import { state } from './app-state.js';
+
 export function getCurrentFilter() {
   return state.currentFilter;
 }
