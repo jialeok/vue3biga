@@ -108,7 +108,8 @@
 
         <div v-if="viewData.obsIndices && viewData.obsIndices.length" class="auction-obs-group">
           <div class="auction-group-label">观察</div>
-          <div v-for="item in obsItems" :key="item.index" :class="item.itemClass" @click="onToggleSelect(item.index)">
+          <div v-for="(item, idx) in obsItems" :key="item.index" :class="item.itemClass" @click="onToggleSelect(item.index)">
+            <span class="auction-number">{{ idx + 1 }}</span>
             <span :class="item.stockClass"
                   @dblclick.stop="onShowNote(item.index)"
                   @contextmenu.prevent="onLongPress(item.stock)"
@@ -118,13 +119,12 @@
                   @mousedown="startLongPress(item.stock)"
                   @mouseup="cancelLongPress"
                   @mouseleave="cancelLongPress">{{ item.stock }}</span>
-            <AuctionBadge :item="item" :ctx="{}" :tag-state="item" />
+            <span :class="item.numberClass">{{ item.volumeDisplay }}</span>
+            <span class="auction-yest" :class="item.yestColorClass">{{ item.yestVolumeDisplay }}</span>
             <span :class="item.ratioClass" @click.stop="onExpandTrend(item.index)">
               {{ item.ratio }} <span>{{ item.ratioArrow }}</span>
             </span>
-            <span :class="item.numberClass">{{ item.volumeDisplay }}</span>
-            <span class="auction-yest" :class="item.yestColorClass">{{ item.yestVolumeDisplay }}</span>
-            <span class="auction-note">{{ item.note }}</span>
+            <AuctionBadge :item="item" :ctx="{}" :tag-state="item" />
             <div v-if="expandedSet.has(item.index)" class="auction-trend-panel" style="display:block">
               <TrendChart v-if="trendHistory[item.index]" :points="trendHistory[item.index]" color="#6366f1" />
             </div>
@@ -132,7 +132,8 @@
         </div>
 
         <div v-if="viewData.regularIndices && viewData.regularIndices.length" class="auction-regular-group">
-          <div v-for="item in regularItems" :key="item.index" :class="item.itemClass" @click="onToggleSelect(item.index)">
+          <div v-for="(item, idx) in regularItems" :key="item.index" :class="item.itemClass" @click="onToggleSelect(item.index)">
+            <span class="auction-number">{{ idx + 1 }}</span>
             <span :class="item.stockClass"
                   @dblclick.stop="onShowNote(item.index)"
                   @contextmenu.prevent="onLongPress(item.stock)"
@@ -142,13 +143,12 @@
                   @mousedown="startLongPress(item.stock)"
                   @mouseup="cancelLongPress"
                   @mouseleave="cancelLongPress">{{ item.stock }}</span>
-            <AuctionBadge :item="item" :ctx="{}" :tag-state="item" />
+            <span :class="item.numberClass">{{ item.volumeDisplay }}</span>
+            <span class="auction-yest" :class="item.yestColorClass">{{ item.yestVolumeDisplay }}</span>
             <span :class="item.ratioClass" @click.stop="onExpandTrend(item.index)">
               {{ item.ratio }} <span>{{ item.ratioArrow }}</span>
             </span>
-            <span :class="item.numberClass">{{ item.volumeDisplay }}</span>
-            <span class="auction-yest" :class="item.yestColorClass">{{ item.yestVolumeDisplay }}</span>
-            <span class="auction-note">{{ item.note }}</span>
+            <AuctionBadge :item="item" :ctx="{}" :tag-state="item" />
             <div v-if="expandedSet.has(item.index)" class="auction-trend-panel" style="display:block">
               <TrendChart v-if="trendHistory[item.index]" :points="trendHistory[item.index]" color="#6366f1" />
             </div>
@@ -488,6 +488,15 @@ defineExpose({ refresh, toggleSort, expandAll, collapseAll });
 </script>
 
 <style>
+.auction-row {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid #f1f5f9;
+  transition: background 0.2s;
+  position: relative;
+}
+.auction-row:hover { background: #f8fafc; }
+.auction-row.obs-row { background: #f0f9ff; }
 .auction-board-vue {
   display: flex;
   flex-direction: column;

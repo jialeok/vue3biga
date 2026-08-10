@@ -41,13 +41,17 @@
     <EditModal v-model="modalActive" title="编辑竞价变化" :show-clear="true" save-text="保存" @save="save" @clear="clearData">
       <div class="bidding-edit-rows">
         <div v-for="(row, idx) in editRows" :key="idx" class="bidding-edit-row">
-          <input v-model="row.name" placeholder="名称" @input="onInputChange(row)" />
-          <input v-model="row.time915" placeholder="9:15" @input="onInputChange(row)" />
-          <input v-model="row.time920" placeholder="9:20" @input="onInputChange(row)" />
-          <input v-model="row.time930" placeholder="9:30" @input="onInputChange(row)" />
-          <input v-model="row.change" placeholder="涨幅" @input="onInputChange(row)" />
-          <input v-model="row.close" placeholder="收盘" @input="onInputChange(row)" />
-          <button class="remove-row-btn" @click="removeRow(idx)">×</button>
+          <div class="bidding-edit-row-top">
+            <input v-model="row.name" placeholder="名称" @input="onInputChange(row)" class="bidding-edit-name" />
+            <button class="remove-row-btn" @click="removeRow(idx)">×</button>
+          </div>
+          <div class="bidding-edit-row-bottom">
+            <input v-model="row.time915" placeholder="9:15" @input="onInputChange(row)" />
+            <input v-model="row.time920" placeholder="9:20" @input="onInputChange(row)" />
+            <input v-model="row.time930" placeholder="9:30" @input="onInputChange(row)" />
+            <input v-model="row.change" placeholder="涨幅" @input="onInputChange(row)" />
+            <input v-model="row.close" placeholder="收盘" @input="onInputChange(row)" />
+          </div>
         </div>
       </div>
       <div class="bidding-modal-extra-actions">
@@ -472,25 +476,48 @@ defineExpose({ render, openEdit, closeModal, save, addRow, removeRow, clearData,
 .bidding-row .up { color: #dc2626; }
 .bidding-row .down { color: #059669; }
 .bidding-edit-row {
-  display: grid;
-  grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr auto;
-  gap: 4px;
+  margin-bottom: 8px;
+  padding: 8px;
+  background: #f9fafb;
+  border-radius: 8px;
+}
+.bidding-edit-row-top {
+  display: flex;
+  gap: 6px;
   margin-bottom: 6px;
 }
-.bidding-edit-row input {
-  padding: 4px 6px;
-  border: 1px solid #d1d5db;
-  border-radius: 4px;
+.bidding-edit-name {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #fff;
+}
+.bidding-edit-row-bottom {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+}
+.bidding-edit-row-bottom input {
+  padding: 6px 4px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
   font-size: 12px;
+  text-align: center;
+  background: #fff;
+  min-width: 0;
 }
 .remove-row-btn {
   border: none;
   background: #fee2e2;
   color: #dc2626;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
   font-size: 16px;
-  width: 28px;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
 }
 .bidding-modal-extra-actions {
   display: flex;

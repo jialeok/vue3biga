@@ -15,9 +15,19 @@
     </div>
 
     <PatternBoard />
+
+    <!-- 统计导航栏（模式看板下方） -->
+    <div class="stats-nav-bar">
+      <button class="stats-nav-btn weekly" @click="showWeekly">本周统计</button>
+      <button class="stats-nav-btn" @click="showLastWeek">上周统计</button>
+      <button class="stats-nav-btn monthly" @click="showMonthly">本月统计</button>
+      <button class="stats-nav-btn back-current" @click="goToday">返回当前</button>
+    </div>
+
     <BiddingBoard />
     <JiwangBoard />
-    <StatsBoard @back-to-current="goToday" />
+    <StatsBoard />
+    <StarStatsBoard />
     <EmotionBoard />
     <TagTitlesBoard />
     <AuctionBoard :data-source="auctionGroup" @switch-group="onSwitchGroup" />
@@ -81,7 +91,11 @@ import EtfBoard from './EtfBoard.vue';
 import JiwangBoard from './JiwangBoard.vue';
 import EmotionBoard from './EmotionBoard.vue';
 import StatsBoard from './StatsBoard.vue';
+import StarStatsBoard from './StarStatsBoard.vue';
 import TagTitlesBoard from './TagTitlesBoard.vue';
+import { useScoreCalculation } from '../composables/useScoreCalculation.js';
+
+const { showWeekly, showLastWeek, showMonthly } = useScoreCalculation();
 
 const stocksRef = ref(null);
 const uiStore = useUiStore();

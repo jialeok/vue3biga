@@ -62,88 +62,91 @@
     <Teleport to="body">
       <div v-if="modalActive" id="jiwangModal" class="jiwang-modal active" @click.self="closeModal">
         <div class="jiwang-modal-panel">
-          <div class="jiwang-modal-header">编辑记忘看板</div>
-          <form @submit.prevent="save">
-            <div class="form-row">
-              <label>跌涨</label>
-              <select id="jwEditDiezhang" v-model="form.diezhang" @change="onDiezhangChange">
-                <option value="">请选择</option>
-                <option v-for="o in diezhangOptions" :key="o" :value="o">{{ o }}</option>
-                <option value="其它">其它</option>
-              </select>
-              <input id="jwEditDiezhangOther" v-if="form.diezhang === '其它'" v-model="form.diezhangOther" placeholder="自定义" />
+          <div class="jiwang-modal-header">
+            <span>编辑记忘看板</span>
+            <button class="jiwang-modal-close" @click="closeModal">×</button>
+          </div>
+          <form @submit.prevent="save" class="jiwang-form">
+            <div class="jiwang-form-grid">
+              <div class="jiwang-form-item">
+                <label class="jiwang-form-label">跌涨</label>
+                <select v-model="form.diezhang" @change="onDiezhangChange" class="jiwang-form-select">
+                  <option value="">请选择</option>
+                  <option v-for="o in diezhangOptions" :key="o" :value="o">{{ o }}</option>
+                  <option value="其它">其它</option>
+                </select>
+                <input v-if="form.diezhang === '其它'" v-model="form.diezhangOther" placeholder="自定义" class="jiwang-form-input" />
+              </div>
+              <div class="jiwang-form-item">
+                <label class="jiwang-form-label">情绪</label>
+                <input v-model="form.qingxu" class="jiwang-form-input" />
+              </div>
+              <div class="jiwang-form-item">
+                <label class="jiwang-form-label">今日聚焦</label>
+                <select v-model="form.jujiao" @change="onJujiaoChange" class="jiwang-form-select">
+                  <option value="最近多板">最近多板</option>
+                  <option value="板块ETF">板块ETF</option>
+                  <option value="谁增做谁">谁增做谁</option>
+                </select>
+              </div>
+              <div class="jiwang-form-item" v-if="form.jujiao === '谁增做谁'">
+                <label class="jiwang-form-label">谁增做谁</label>
+                <select v-model="form.whoIncrease" @change="onWhoIncreaseChange" class="jiwang-form-select">
+                  <option value="">请选择</option>
+                  <option value="龙头增">龙头增</option>
+                  <option value="板块增">板块增</option>
+                  <option value="谁都增">谁都增</option>
+                  <option value="谁都减">谁都减</option>
+                </select>
+              </div>
+              <div class="jiwang-form-item">
+                <label class="jiwang-form-label">K线前缀</label>
+                <input v-model="form.kxianPrefix" class="jiwang-form-input" />
+              </div>
+              <div class="jiwang-form-item">
+                <label class="jiwang-form-label">昨多板K线</label>
+                <input v-model="form.kxian" class="jiwang-form-input" />
+              </div>
+              <div class="jiwang-form-item">
+                <label class="jiwang-form-label">观察</label>
+                <select v-model="form.guancha" @change="onGuanchaChange" class="jiwang-form-select">
+                  <option value="">请选择</option>
+                  <option v-for="o in guanchaOptions" :key="o" :value="o">{{ o }}</option>
+                </select>
+              </div>
+              <div class="jiwang-form-item">
+                <label class="jiwang-form-label">过程结果</label>
+                <select v-model="form.guochengJieguo" class="jiwang-form-select">
+                  <option value="">请选择</option>
+                  <option v-for="o in guochengOptions" :key="o" :value="o">{{ o }}</option>
+                </select>
+              </div>
+              <div class="jiwang-form-item jiwang-form-two-col">
+                <label class="jiwang-form-label">收股结果（跌:涨）</label>
+                <div class="jiwang-two-inputs">
+                  <input v-model="form.shouguDie" placeholder="跌" class="jiwang-form-input" />
+                  <input v-model="form.shouguZhang" placeholder="涨" class="jiwang-form-input" />
+                </div>
+              </div>
+              <div class="jiwang-form-item">
+                <label class="jiwang-form-label">得出结论</label>
+                <select v-model="form.jielun" @change="onJielunChange" class="jiwang-form-select">
+                  <option value="">请选择</option>
+                  <option value="出手">出手</option>
+                  <option value="空仓">空仓</option>
+                </select>
+              </div>
+              <div class="jiwang-form-item">
+                <label class="jiwang-form-label">出手情况</label>
+                <select v-model="form.chushou" class="jiwang-form-select">
+                  <option value="">请选择</option>
+                  <option v-for="o in chushouOptions" :key="o" :value="o">{{ o }}</option>
+                </select>
+              </div>
             </div>
-            <div class="form-row">
-              <label>情绪</label>
-              <input id="jwEditQingxu" v-model="form.qingxu" />
-            </div>
-            <div class="form-row">
-              <label>今日聚焦</label>
-              <select id="jwEditJujiao" v-model="form.jujiao" @change="onJujiaoChange">
-                <option value="最近多板">最近多板</option>
-                <option value="板块ETF">板块ETF</option>
-                <option value="谁增做谁">谁增做谁</option>
-              </select>
-            </div>
-            <div class="form-row" v-if="form.jujiao === '谁增做谁'">
-              <label>谁增做谁</label>
-              <select id="jwEditWhoIncrease" v-model="form.whoIncrease" @change="onWhoIncreaseChange">
-                <option value="">请选择</option>
-                <option value="龙头增">龙头增</option>
-                <option value="板块增">板块增</option>
-                <option value="谁都增">谁都增</option>
-                <option value="谁都减">谁都减</option>
-              </select>
-            </div>
-            <div class="form-row">
-              <label>K线前缀</label>
-              <input id="jwEditKxianPrefix" v-model="form.kxianPrefix" />
-            </div>
-            <div class="form-row">
-              <label>昨多板K线</label>
-              <input id="jwEditKxian" v-model="form.kxian" />
-            </div>
-            <div class="form-row">
-              <label>观察</label>
-              <select id="jwEditGuancha" v-model="form.guancha" @change="onGuanchaChange">
-                <option value="">请选择</option>
-                <option v-for="o in guanchaOptions" :key="o" :value="o">{{ o }}</option>
-              </select>
-            </div>
-            <div class="form-row">
-              <label>过程结果</label>
-              <select id="jwEditGuochengJieguo" v-model="form.guochengJieguo">
-                <option value="">请选择</option>
-                <option v-for="o in guochengOptions" :key="o" :value="o">{{ o }}</option>
-              </select>
-            </div>
-            <div class="form-row">
-              <label>收股结果（跌:涨）</label>
-              <input id="jwEditShouguJieguoDie" v-model="form.shouguDie" placeholder="跌" />
-              <input id="jwEditShouguJieguoZhang" v-model="form.shouguZhang" placeholder="涨" />
-            </div>
-            <div class="form-row">
-              <label>得出结论</label>
-              <select id="jwEditJielun" v-model="form.jielun" @change="onJielunChange">
-                <option value="">请选择</option>
-                <option value="出手">出手</option>
-                <option value="空仓">空仓</option>
-              </select>
-            </div>
-            <div class="form-row">
-              <label>出手情况</label>
-              <select id="jwEditChushou" v-model="form.chushou">
-                <option value="">请选择</option>
-                <option v-for="o in chushouOptions" :key="o" :value="o">{{ o }}</option>
-              </select>
-            </div>
-            <div class="form-row">
-              <label>板块ETF</label>
-              <span id="editSectorEtfCheck" class="checkbox-option" :class="form.sectorEtf ? 'checked' : 'unchecked'" @click="form.sectorEtf = !form.sectorEtf">{{ form.sectorEtf ? '✓' : '×' }}</span>
-            </div>
-            <div class="form-actions">
-              <button type="submit" class="btn-save">保存</button>
-              <button type="button" class="btn-cancel" @click="closeModal">取消</button>
+            <div class="jiwang-form-actions">
+              <button type="submit" class="jiwang-btn-save">保存</button>
+              <button type="button" class="jiwang-btn-cancel" @click="closeModal">取消</button>
             </div>
           </form>
         </div>
@@ -420,36 +423,85 @@ defineExpose({ render, openEdit, closeModal, save, formatAmount, getNthPreviousT
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 10px;
 }
 .jiwang-modal-panel {
   background: #fff;
-  border-radius: 12px;
+  border-radius: 16px;
   padding: 20px;
-  min-width: 320px;
-  max-width: 380px;
-  width: 90vw;
+  width: 100%;
+  max-width: 360px;
   max-height: 90vh;
-  overflow: auto;
+  overflow-y: auto;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
 }
 .jiwang-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   font-size: 16px;
   font-weight: 600;
   margin-bottom: 16px;
   color: #1f2937;
 }
-.form-actions {
+.jiwang-modal-close {
+  background: none;
+  border: none;
+  font-size: 22px;
+  color: #9ca3af;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+.jiwang-modal-close:hover { color: #ef4444; }
+.jiwang-form { display: flex; flex-direction: column; gap: 12px; }
+.jiwang-form-grid { display: flex; flex-direction: column; gap: 10px; }
+.jiwang-form-item { display: flex; flex-direction: column; gap: 4px; }
+.jiwang-form-label {
+  font-size: 12px;
+  color: #6b7280;
+  font-weight: 500;
+}
+.jiwang-form-input,
+.jiwang-form-select {
+  padding: 8px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #1f2937;
+  background: #f9fafb;
+  outline: none;
+  transition: border-color 0.2s, background 0.2s;
+}
+.jiwang-form-input:focus,
+.jiwang-form-select:focus {
+  border-color: #6366f1;
+  background: #fff;
+}
+.jiwang-form-two-col .jiwang-two-inputs {
   display: flex;
   gap: 8px;
-  margin-top: 16px;
 }
-.btn-save, .btn-cancel {
+.jiwang-form-two-col .jiwang-two-inputs input {
   flex: 1;
-  padding: 8px;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
-  cursor: pointer;
 }
-.btn-save { background: #2563eb; color: #fff; }
-.btn-cancel { background: #e5e7eb; color: #374151; }
+.jiwang-form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.jiwang-btn-save, .jiwang-btn-cancel {
+  flex: 1;
+  padding: 10px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.jiwang-btn-save { background: #6366f1; color: #fff; }
+.jiwang-btn-save:hover { background: #4f46e5; }
+.jiwang-btn-cancel { background: #f3f4f6; color: #374151; }
+.jiwang-btn-cancel:hover { background: #e5e7eb; }
 </style>
