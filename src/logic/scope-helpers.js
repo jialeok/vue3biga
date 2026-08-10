@@ -1,6 +1,8 @@
 ﻿// scope-helpers.js — 早盘竞价(auction)与热门股票(hot)共用的参数化通用函数
 // 消除两份几乎一样的逻辑，统一为接受 scope/字段集 的通用版本
 
+import { getCurrentDate } from './app-core.js';
+
 // 通用 sanitize：只保留 patch 中属于 patchableFields 的字段
 export function _sanitizePatch(patch, patchableFields) {
     const clean = {};
@@ -28,7 +30,7 @@ export function _splitPatch(cleanPatch, watchlistFields, metricsFields) {
 export function _backupScopeData(opts) {
     // opts: { type, date, getDataFn, backupKeyPrefix, watchlistIndex?, label }
     try {
-        const targetDate = opts.date || window.currentDate;
+        const targetDate = opts.date || getCurrentDate();
         const scopeData = opts.getDataFn();
         const backupKey = opts.type === 'import'
             ? (opts.backupKeyPrefix + '_import_backup')
@@ -81,7 +83,7 @@ export function _rollbackScopeData(opts) {
     try { dayBackup = JSON.parse(raw); } catch (e) {
         throw new Error('撤回数据解析失败: ' + e.message);
     }
-    const targetDate = dayBackup.date || window.currentDate;
+    const targetDate = dayBackup.date || getCurrentDate();
     const scopeData = opts.getDataFn();
     scopeData[targetDate] = dayBackup.data || [];
     if (opts.watchlistIndex && dayBackup.watchlist) {

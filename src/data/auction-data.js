@@ -1,3 +1,6 @@
+﻿import { useAuctionStore } from '../stores/auctionStore.js';
+import { state } from '../logic/app-state.js';
+import { invalidateTopicCache } from './stock-topics.js';
         // ============================================================
         // 早盘竞价拆表操作：auction_watchlist + market_metrics(scope='auction')
         // 列归属：
@@ -5,9 +8,12 @@
         //                      source/obs_auto_added/selected/bought/sold/fixed
         //   market_metrics：date/stock/code/volume/yest_volume/change_pct/time930/seal_count/scope/source
         // ============================================================
-        window._auctionTableAvailable = false; // 运行时标记：auction_watchlist 表是否可用
-        window._marketMetricsTableAvailable = false; // 运行时标记：market_metrics 表是否可用
-        window._lastPushedAuctionStatus = '';  // 上次推送的 auction 状态签名（避免无变化时重复推送）
+        import { getSupabase } from './supabase-client.js';
+        import { _dbgLog } from './debug-log.js';
+
+        state._auctionTableAvailable = false; // 运行时标记：auction_watchlist 表是否可用
+        state._marketMetricsTableAvailable = false; // 运行时标记：market_metrics 表是否可用
+        state._lastPushedAuctionStatus = '';  // 上次推送的 auction 状态签名（避免无变化时重复推送）
 
         // 从 auction_watchlist 与 market_metrics(scope='auction') 全量读取并合并，
         // 组装成 {date: [正式成员 rows]} 结构返回，同时把全量快照写入 _auctionMemCache。
@@ -17,8 +23,9 @@
         //   - market_metrics(scope='auction') 的行 → 影子记录（不登记到索引）
         //   - 公共字段以对应来源为准；watchlist 行额外带 source/obs_auto_added/selected/bought/sold/fixed；
         //     metrics 行额外带 time930/seal_count。
-        export async function pullAuctionFromTable() {
-            const sb = window.getSupabase();
+        function _getAuctionStore() { try { return useAuctionStore(); } catch { return null; } }
+export async function pullAuctionFromTable() {
+            const sb = getSupabase();
             const result = {};
             // 阶段四 Bug 6 收尾修复：不能 _auctionMemCache = {} 重新赋值，否则会切断
             // allData.auction 与 _auctionMemCache 的引用关系（同 Bug 3 整体导入的坑）。
@@ -68,10 +75,10 @@
                     if (data.length < pageSize) break;
                     offset += pageSize;
                 }
-                window._auctionTableAvailable = true;
+                state._auctionTableAvailable = true;
             } catch (e) {
                 watchlistError = e;
-                window._auctionTableAvailable = false;
+                state._auctionTableAvailable = false;
             }
 
             // 2) 读取 market_metrics(scope='auction')（影子记录/指标数据）
@@ -130,10 +137,10 @@
                     if (data.length < pageSize) break;
                     offset += pageSize;
                 }
-                window._marketMetricsTableAvailable = true;
+                state._marketMetricsTableAvailable = true;
             } catch (e) {
                 metricsError = e;
-                window._marketMetricsTableAvailable = false;
+                state._marketMetricsTableAvailable = false;
             }
 
             // 3) 读取 market_metrics(scope='hot') 作为 yest_volume/volume/change_pct 的二级回退（全表）
@@ -172,7 +179,7 @@
                     if (hotData.length < pageSize) break;
                     offset += pageSize;
                 }
-            } catch (e) { window._dbgLog('[AUCTION-PULL] hot 二级回退失败（不影响主流程）' + (e && e.message || e)); }
+            } catch (e) { _dbgLog('[AUCTION-PULL] hot 二级回退失败（不影响主流程）' + (e && e.message || e)); }
 
             if (watchlistError && metricsError) {
                 throw watchlistError;
@@ -181,11 +188,11 @@
             // 通过 guard API 按日期写入，保留未在云端返回的本地日期（日期隔离）
             Object.keys(cloudByDate).forEach(function(d) {
                 const rows = Object.values(cloudByDate[d]);
-                window.setAuctionDateData(d, rows, 'window.pullAuctionFromTable');
+                setAuctionDateData(d, rows, 'window.pullAuctionFromTable');
                 // 方案2：覆盖该日期的正式成员索引（未在云端返回的日期保留原索引）
-                window._auctionWatchlistIndex[d] = newWatchlistIndex[d] || new Set();
+                state._auctionWatchlistIndex[d] = newWatchlistIndex[d] || new Set();
                 // 返回值只含正式成员行，供调用方做长度检查
-                const watchlistSet = window._auctionWatchlistIndex[d];
+                const watchlistSet = state._auctionWatchlistIndex[d];
                 rows.forEach(function(r) {
                     if (r && r.stock && watchlistSet.has(r.stock.trim())) {
                         if (!result[d]) result[d] = [];
@@ -205,7 +212,7 @@
                     }
                 });
             });
-            window._dbgLog('[AUCTION-WRITE] window.pullAuctionFromTable cloudDates=' + Object.keys(cloudByDate).length + ' preservedLocalDates=' + (Object.keys(window._auctionMemCache).length - Object.keys(cloudByDate).length));
+            _dbgLog('[AUCTION-WRITE] window.pullAuctionFromTable cloudDates=' + Object.keys(cloudByDate).length + ' preservedLocalDates=' + (Object.keys(state._auctionMemCache).length - Object.keys(cloudByDate).length));
             return result;
         }
 
@@ -213,23 +220,23 @@
         // ===== setAuctionDateData（从 logic/app-core.js 移至 data 层）=====
         // 写入指定日期的竞价行数据到内存缓存，带 guard 日志
         export function setAuctionDateData(date, newList, source) {
-            if (!date || typeof date !== 'string') { window._dbgLog('[AUCTION-GUARD] ⚠️ invalid date source=' + source); return; }
+            if (!date || typeof date !== 'string') { _dbgLog('[AUCTION-GUARD] ⚠️ invalid date source=' + source); return; }
             var normalizedList = newList || [];
-            var before = (window._auctionMemCache[date] || []).length;
-            window._auctionMemCache[date] = normalizedList;
-            var after = (window._auctionMemCache[date] || []).length;
-            window._dbgLog('[AUCTION-GUARD] set date=' + date + ' before=' + before + ' after=' + after + ' source=' + source + window._guardStack());
-            if (window.auctionStore && date !== window.auctionStore.currentDate) {
-                try { window._dbgLog('[AUCTION-GUARD] sample date=' + date + ' source=' + source + ' stocks=' + (normalizedList||[]).slice(0,3).map(function(r){return r&&r.stock||'?';}).join(',')); } catch(e){}
+            var before = (state._auctionMemCache[date] || []).length;
+            state._auctionMemCache[date] = normalizedList;
+            var after = (state._auctionMemCache[date] || []).length;
+            _dbgLog('[AUCTION-GUARD] set date=' + date + ' before=' + before + ' after=' + after + ' source=' + source + state._guardStack());
+            if (_getAuctionStore() && date !== _getAuctionStore().currentDate) {
+                try { _dbgLog('[AUCTION-GUARD] sample date=' + date + ' source=' + source + ' stocks=' + (normalizedList||[]).slice(0,3).map(function(r){return r&&r.stock||'?';}).join(',')); } catch(e){}
             }
-            window._guardAssertDate(date, source);
+            state._guardAssertDate(date, source);
         }
         // ===== normalizeAuctionNotes（从 logic/app-core.js 移至 data 层）=====
         export function normalizeAuctionNotes() {
-            if (!window.allData || !window.allData.auction) return;
+            if (!state.allData || !state.allData.auction) return;
             let hasChanges = false;
-            Object.keys(window.allData.auction).forEach(date => {
-                const dayList = window.allData.auction[date];
+            Object.keys(state.allData.auction).forEach(date => {
+                const dayList = state.allData.auction[date];
                 if (!dayList || !Array.isArray(dayList)) return;
                 dayList.forEach(item => {
                     if (!item.note) return;
@@ -254,6 +261,6 @@
                 });
             });
             if (hasChanges) {
-                window.invalidateTopicCache();
+                invalidateTopicCache();
             }
         }

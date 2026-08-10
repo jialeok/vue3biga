@@ -88,7 +88,7 @@
             }).join('');
 
             const dateLabelsHtml = coords.map((c, i) => {
-                return `<text x="${c.x.toFixed(1)}" y="${height + 2}" font-size="8.5" fill="#94a3b8" text-anchor="middle">${window.formatTrendDateLabel(points[i].date)}</text>`;
+                return `<text x="${c.x.toFixed(1)}" y="${height + 2}" font-size="8.5" fill="#94a3b8" text-anchor="middle">${formatTrendDateLabel(points[i].date)}</text>`;
             }).join('');
 
             return `
@@ -108,11 +108,11 @@
             const yestPoints = history.map(h => ({ date: h.date, value: h.yestVolume }));
             const changePctPoints = history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null }));
 
-            const volumeSvg = window.renderMiniTrendSvg(volumePoints, '#6366f1'); // 靛蓝色：竞价量
-            const yestSvg = window.renderMiniTrendSvg(yestPoints, '#10b981');    // 绿色：昨日成交量
+            const volumeSvg = renderMiniTrendSvg(volumePoints, '#6366f1'); // 靛蓝色：竞价量
+            const yestSvg = renderMiniTrendSvg(yestPoints, '#10b981');    // 绿色：昨日成交量
             // 涨幅图颜色按点位涨跌各自上色（红涨绿跌），这里传入的 color 仅作为无数据兜底色
             const hasChangePctData = changePctPoints.some(p => p.value !== null);
-            const changePctSvg = hasChangePctData ? window.renderMiniTrendSvg(changePctPoints, '#64748b', { percent: true }) : '';
+            const changePctSvg = hasChangePctData ? renderMiniTrendSvg(changePctPoints, '#64748b', { percent: true }) : '';
 
             // 计算"今日竞价量 / 昨日竞价量"比值：history最后一项是今天，倒数第二项是昨天
             // 若昨天是断点（无数据）或昨日竞价量为0，则不显示比值

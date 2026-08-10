@@ -1,7 +1,15 @@
-﻿        export function deriveAuctionTagState(name, date, _cache) {
+﻿import { _dbgLog, _dbgLogVerbose } from '../data/debug-log.js';
+import { getStockHistoryValue, _isAuctionWatchlistStock, _addAuctionWatchlistMember } from '../data/watchlist-and-metrics.js';
+import { getPreviousTradingDay, isTradingDay } from './trading-day-helpers.js';
+import { getStocksData } from '../data/supabase-client.js';
+import { getStockCode } from '../data/stock-code-map.js';
+import { getAuctionData, scheduleCloudPush, markAuctionDirty } from './app-core.js';
+import { state } from './app-state.js';
+
+        export function deriveAuctionTagState(name, date, _cache) {
             const result = { sold: false, bought: false, selected: false, source: 'none' };
             if (!name || !date) return result;
-            const stocksData = window.getStocksData();
+            const stocksData = getStocksData();
             let todayRec;
             if (_cache && _cache.todayMap) {
                 todayRec = _cache.todayMap.get(name);
@@ -14,7 +22,7 @@
                 else if (todayRec.hold === true) { result.selected = true; result.source = 'today'; }
                 return result;
             }
-            const prevDay = window.getPreviousTradingDay(date);
+            const prevDay = getPreviousTradingDay(date);
             if (prevDay) {
                 let prevRec;
                 if (_cache && _cache.prevMap) {
@@ -36,7 +44,7 @@
                     result.selected = true; result.source = 'inherited';
                 }
             }
-            window._dbgLogVerbose('[TAG-STATE] ' + name + ' @ ' + date + ' sold=' + result.sold + ' bought=' + result.bought + ' selected=' + result.selected + ' source=' + result.source);
+            _dbgLogVerbose('[TAG-STATE] ' + name + ' @ ' + date + ' sold=' + result.sold + ' bought=' + result.bought + ' selected=' + result.selected + ' source=' + result.source);
             return result;
         }
 
@@ -44,8 +52,8 @@
         // todayMap/prevMap 均为 姓名(trim后)→记录 的 Map，供同一次渲染内所有 deriveAuctionTagState
         // 调用复用，避免 O(每行 × stocksData长度) 的重复线性扫描。
         export function _buildTagStateCache(date) {
-            const stocksData = window.getStocksData();
-            const prevDay = window.getPreviousTradingDay(date);
+            const stocksData = getStocksData();
+            const prevDay = getPreviousTradingDay(date);
             const todayMap = new Map();
             (stocksData[date] || []).forEach(function(s) { if (s && s.name) todayMap.set(s.name.trim(), s); });
             const prevMap = new Map();
@@ -68,7 +76,7 @@
             const FLAG = 'stockApp_v42_tag_cleanse_v1';
             try { if (localStorage.getItem(FLAG)) return; } catch (e) { return; }
             try { localStorage.setItem(FLAG, JSON.stringify({ time: new Date().toISOString(), skipped: 'planB' })); } catch (e) {}
-            window._dbgLog('[TAG-CLEANSE] 方案 B：auctionData 不再存储派生标签，跳过清洗');
+            _dbgLog('[TAG-CLEANSE] 方案 B：auctionData 不再存储派生标签，跳过清洗');
         }
 
         // 返回本地"今天"日期字符串（YYYY-MM-DD），与 goToday() 使用同一套本地时区取法，
@@ -79,100 +87,6 @@
             const month = String(now.getMonth() + 1).padStart(2, '0');
             const day = String(now.getDate()).padStart(2, '0');
             return `${year}-${month}-${day}`;
-        }
-
-        export function ensureObservationStocks(date) {
-            if (!date) return;
-            const today = window._getLocalTodayStr();
-            // 历史锁定：只对"今天及以后"生效（允许预览下一交易日）。打开/查看历史日期时绝不自动继承或清理任何股票，
-            // 只如实显示保存时的样子——避免用户之后的操作（买/卖标记变化等）反过来回溯
-            // 改写已经保存好的历史日期列表，造成"历史记录全乱了"的问题。
-            if (date < today) return;
-            // [BUG-FIX 2026-07-27] 若 date > today，说明用户在预览下一交易日，显式标记日志便于排查。
-            const isPreview = date > today;
-            // [BUG-FIX 2026-07-26] 非交易日（周末/节假日）不自动继承上一交易日股票，
-            // 避免周日显示周五数据、用户误以为历史日期数据残留/时间错位。
-            if (!window.isTradingDay(date)) {
-                window._dbgLog('[OBS-ENSURE] ' + date + ' 非交易日，跳过观察组继承');
-                return;
-            }
-
-            const prevDay = window.getPreviousTradingDay(date);
-            if (!prevDay) return;
-
-            // [DEBUG-VUE-FIX 2026-07-25] 默认可见的执行摘要，理由同 ensureBoughtStocksForDate：
-            // 之前"数据未就绪"分支完全静默 return，无法从日志区分"函数没跑"和"跑了但
-            // 高光集合恰好是空的"，容易被误判为继承逻辑本身失效。
-            window._dbgLog('[OBS-ENSURE] === 调用开始 === date=' + date + ' prevDay=' + prevDay + (isPreview ? ' [预览下一交易日]' : ' [当天]'));
-
-            // 上一交易日"竞/昨"实际高光（蓝色高光）达标股票，口径与界面显示、"竞/昨数"统计保持一致
-            const obsStocksRaw = window.getJingYestHighlightSetForDate(prevDay);
-            if (!obsStocksRaw || obsStocksRaw.size === 0) {
-                // 数据未就绪时不设标记，等待下次渲染重试（数据加载完成后 _auctionMemCache 会有值）
-                window._dbgLog('[OBS-ENSURE] === 调用结束（提前返回）=== prevDay=' + prevDay + ' 高光集合为空（数据可能未就绪），本轮不处理，等下次渲染重试');
-                return;
-            }
-            window._dbgLog('[OBS-ENSURE] prevDay=' + prevDay + ' 高光集合 ' + obsStocksRaw.size + ' 只：' + [...obsStocksRaw].join('、'));
-
-            // [BUG-FIX 2026-07-27] 卖出标签的股票也要进入观察组：不再过滤当天/上一交易日已卖出的股票。
-            // 观察组 = 符合竞昨条件（平行+差值>0）的股票，与手动买卖标签无关。
-            const prevDayStocksData = window.getStocksData()[prevDay] || [];
-            const prevDaySoldMap = new Map();
-            prevDayStocksData.forEach(function(s) { if (s && s.name) prevDaySoldMap.set(s.name.trim(), s.sold === true); });
-            const soldIncluded = [];
-            const obsStocks = new Set([...obsStocksRaw].filter(function(name) {
-                const todaySold = window.deriveAuctionTagState(name, date).sold;
-                const prevSold = prevDaySoldMap.get(name) === true;
-                if (todaySold || prevSold) {
-                    soldIncluded.push(name + (todaySold ? '(今卖)' : '(昨卖)'));
-                }
-                return true;
-            }));
-            if (soldIncluded.length > 0) {
-                window._dbgLog('[OBS-ENSURE] 含已卖出但仍纳入观察组 ' + soldIncluded.length + ' 只：' + soldIncluded.join('、'));
-            }
-            window._dbgLog('[OBS-ENSURE] 应继承 ' + obsStocks.size + ' 只：' + [...obsStocks].join('、'));
-
-            const auctionData = window.getAuctionData();
-            const dayList = auctionData[date] || [];
-            const existingNames = new Set(dayList.map(function(s) { return s.stock ? s.stock.trim() : ''; }));
-
-            // 已自动添加的股票名集合
-            var autoAdded = JSON.parse(localStorage.getItem('obsAutoAdded_' + date) || '[]');
-            var autoAddedSet = new Set(autoAdded);
-
-            var hasNew = false;
-            const _beforeLen = dayList.length;
-
-            const signature = [...obsStocks].sort().join('|');
-            const alreadyEnsured = !hasNew && localStorage.getItem('obsEnsured_' + date) === signature;
-
-            if (!alreadyEnsured) {
-                obsStocks.forEach(function(name) {
-                    if (!existingNames.has(name)) {
-                        // 不在当日列表中 → 自动添加
-                        // 方案2：行对象不携带 in_watchlist，通过 _addAuctionWatchlistMember 登记为正式成员
-                        // [CODEMAP-FIX] 从 stockcodemap 内存缓存补 code，避免观察组继承的股票长期缺代码
-                        dayList.push({ stock: name, code: window.getStockCode(name), volume: '', yestVolume: '', note: '', obsAutoAdded: true });
-                        window._addAuctionWatchlistMember(date, name);
-                        autoAddedSet.add(name);
-                        hasNew = true;
-                    }
-                });
-            }
-
-            if (hasNew) {
-                try { window._dbgLog('[OBS-ENSURE] date=' + date + ' before=' + _beforeLen + ' after=' + dayList.length + ' stocks=' + (dayList||[]).slice(0,3).map(function(r){return r&&r.stock||'?';}).join(',')); } catch(e){}
-                window.setAuctionDateData(date, dayList, 'window.ensureObservationStocks');
-                window.saveModule('auction');
-                window.markAuctionDirty(date);
-                window.scheduleCloudPush();
-            }
-
-            // 保存 autoAdded 集合（即使没有新增，也要保存空集合以区分 * 标记）
-            localStorage.setItem('obsAutoAdded_' + date, JSON.stringify([...autoAddedSet]));
-            localStorage.setItem('obsEnsured_' + date, signature);
-            window._dbgLog('[OBS-ENSURE] === 调用结束 === 应继承' + obsStocks.size + '只，本轮' + (hasNew ? '有变动(' + _beforeLen + '→' + dayList.length + '条)' : '无变动') + '，signature=' + (alreadyEnsured ? '一致跳过新增' : '已重算'));
         }
 
         // 买入/持有/卖出股票进次日观察组（早盘竞价 tab 专属，与 ensureObservationStocks 平行）：
@@ -187,7 +101,7 @@
         //     （观察组语义，导入时受 8617 行的继承保护不被冲掉）+ 延续昨天是"买"/"持"/"卖"的标记
         //   · 今日已有（比如最近多板本来就有）→ 不动任何数据，只把名字记入 obsBought_<date> 集合
         // [BUG-FIX 2026-07-27] 已卖出（sold=true）的股票也纳入继承：用户要求卖出标签同样进入次日观察组。
-        // "买"/"持"/"卖"字显示：渲染层按当天实时标签（isBought/isSelected/isSold，来自 getStocksData()[window.currentDate]
+        // "买"/"持"/"卖"字显示：渲染层按当天实时标签（isBought/isSelected/isSold，来自 getStocksData()[state.currentDate]
         // 的实时同步）优先判断，只有当天没有再打标签时才回退用 obsBought_<date> 集合的继承快照；
         // 这样如果继承进来后又用"复制到交易日"等方式把标签改成了"持"，上标会跟着变，不会锁死成"买"。
         // 观察组继承来的（obsAutoAdded=true）即使 bought=true 也不给红色背景（用户明确不要背景）。
@@ -200,39 +114,39 @@
         // 名单变化就重新跑一次补入逻辑。权威来源只认 getStocksData()，无记录即清除。
         export function ensureBoughtStocksForDate(date) {
             if (!date) return;
-            const today = window._getLocalTodayStr();
+            const today = _getLocalTodayStr();
             // 历史锁定：与 ensureObservationStocks 一致，只对"今天及以后"生效（允许预览下一交易日），历史日期只读不改。
             if (date < today) return;
             const isPreview = date > today;
             // [BUG-FIX 2026-07-26] 非交易日（周末/节假日）不自动继承买入/持有股票，
             // 与 ensureObservationStocks 保持一致，避免非交易日被填充上一交易日数据。
-            if (!window.isTradingDay(date)) {
-                window._dbgLog('[BOUGHT-ENSURE] ' + date + ' 非交易日，跳过买入继承');
+            if (!isTradingDay(date)) {
+                _dbgLog('[BOUGHT-ENSURE] ' + date + ' 非交易日，跳过买入继承');
                 return;
             }
 
-            const prevDay = window.getPreviousTradingDay(date);
+            const prevDay = getPreviousTradingDay(date);
             if (!prevDay) return;
 
             // [DEBUG-VUE-FIX 2026-07-25] 默认可见的执行摘要（不依赖 _DBG_VERBOSE 开关）。
             // 之前只有 hasNew=true 时才走默认可见的 _dbgLog，导致"函数没跑"和"跑了但
             // 没变化"在日志里完全区分不出来——诊断报告只能看 localStorage[boughtEnsured_*]
             // 有没有设置来间接猜测，容易误判成"数据丢失/继承失败"。现在每次调用都留痕。
-            window._dbgLog('[BOUGHT-ENSURE] === 调用开始 === date=' + date + ' prevDay=' + prevDay);
+            _dbgLog('[BOUGHT-ENSURE] === 调用开始 === date=' + date + ' prevDay=' + prevDay);
 
-            window._dbgLogVerbose('[BOUGHT-ENSURE] enter date=' + date + ' prevDay=' + prevDay);
-            try { window._dbgLog('[BOUGHT-ENSURE] enter date=' + date + ' prevDay=' + prevDay); } catch(e){}
+            _dbgLogVerbose('[BOUGHT-ENSURE] enter date=' + date + ' prevDay=' + prevDay);
+            try { _dbgLog('[BOUGHT-ENSURE] enter date=' + date + ' prevDay=' + prevDay); } catch(e){}
 
             // 权威来源只用 getStocksData()（点击"卖/买/持有"标签直接写入的地方，
             // 只有用户真正操作过的股票才会出现），不再看 auctionData[prevDay]。
-            const prevStocksTags = window.getStocksData()[prevDay];
+            const prevStocksTags = getStocksData()[prevDay];
             // 昨天完全没有手动标签数据 → 数据未就绪，等下次渲染重试，不设标记（与观察组同一语义）
             if (!prevStocksTags || prevStocksTags.length === 0) {
-                window._dbgLog('[BOUGHT-ENSURE] === 调用结束（提前返回）=== window.getStocksData[' + prevDay + '] 为空，本轮不处理，等下次渲染重试');
-                window._dbgLogVerbose('[BOUGHT-ENSURE] window.getStocksData[' + prevDay + '] 为空，return。注意：若昨日在竞价看板点过"买"但未同步到股票列表页，这里读不到');
+                _dbgLog('[BOUGHT-ENSURE] === 调用结束（提前返回）=== window.getStocksData[' + prevDay + '] 为空，本轮不处理，等下次渲染重试');
+                _dbgLogVerbose('[BOUGHT-ENSURE] window.getStocksData[' + prevDay + '] 为空，return。注意：若昨日在竞价看板点过"买"但未同步到股票列表页，这里读不到');
                 return;
             }
-            window._dbgLogVerbose('[BOUGHT-ENSURE] prevStocksTags 共 ' + prevStocksTags.length + ' 条');
+            _dbgLogVerbose('[BOUGHT-ENSURE] prevStocksTags 共 ' + prevStocksTags.length + ' 条');
 
             // [BUG-FIX 2026-07-27] 买入/持有/卖出标签的股票都进入次日观察组。
             // 只继承一天：明天看的是明天的 getStocksData()[明天前一天]，不会无限往后传。
@@ -245,32 +159,32 @@
                 const wasHeld = s.hold === true;
                 if (wasSold || wasBought || wasHeld) {
                     holdingNames.push(nameTrim);
-                    window._dbgLogVerbose('[BOUGHT-ENSURE] 命中 ' + nameTrim + ' | sold=' + wasSold + ' bought=' + wasBought + ' hold=' + wasHeld);
+                    _dbgLogVerbose('[BOUGHT-ENSURE] 命中 ' + nameTrim + ' | sold=' + wasSold + ' bought=' + wasBought + ' hold=' + wasHeld);
                 }
             });
-            window._dbgLogVerbose('[BOUGHT-ENSURE] holdingNames 共 ' + holdingNames.length + ' 只：' + (holdingNames.length > 0 ? holdingNames.join('、') : '(无)'));
+            _dbgLogVerbose('[BOUGHT-ENSURE] holdingNames 共 ' + holdingNames.length + ' 只：' + (holdingNames.length > 0 ? holdingNames.join('、') : '(无)'));
 
             // 对照打印：auctionData[prevDay] 中 bought=true/sold=true 的股票——排查"竞价看板有标签但 stocksData 没有"的数据不一致
             try {
-                const _aucPrev = (window.getAuctionData()[prevDay] || []).filter(function(s) { return s && s.stock; });
+                const _aucPrev = (getAuctionData()[prevDay] || []).filter(function(s) { return s && s.stock; });
                 const _aucTaggedNames = _aucPrev.filter(function(s) { return s.bought === true || s.sold === true || s.hold === true; }).map(function(s) { return s.stock.trim(); });
-                window._dbgLogVerbose('[BOUGHT-ENSURE] 对照 auctionData[' + prevDay + '] 有标签 共 ' + _aucTaggedNames.length + ' 只：' + (_aucTaggedNames.length > 0 ? _aucTaggedNames.join('、') : '(无)'));
+                _dbgLogVerbose('[BOUGHT-ENSURE] 对照 auctionData[' + prevDay + '] 有标签 共 ' + _aucTaggedNames.length + ' 只：' + (_aucTaggedNames.length > 0 ? _aucTaggedNames.join('、') : '(无)'));
                 const _leak = _aucTaggedNames.filter(function(n) { return holdingNames.indexOf(n) < 0; });
                 if (_leak.length > 0) {
-                    window._dbgLogVerbose('[BOUGHT-ENSURE] ⚠️ 竞价看板有标签但 stocksData 未记录（会丢失继承）：' + _leak.join('、'));
+                    _dbgLogVerbose('[BOUGHT-ENSURE] ⚠️ 竞价看板有标签但 stocksData 未记录（会丢失继承）：' + _leak.join('、'));
                 }
             } catch (e) {
-                window._dbgLogVerbose('[BOUGHT-ENSURE] 对照 auctionData 异常：' + e.message);
+                _dbgLogVerbose('[BOUGHT-ENSURE] 对照 auctionData 异常：' + e.message);
             }
 
-            const auctionData = window.getAuctionData();
+            const auctionData = getAuctionData();
             const dayList = auctionData[date] || [];
             const existingNames = new Set(dayList.map(function(s) { return s.stock ? s.stock.trim() : ''; }));
             const autoAdded = JSON.parse(localStorage.getItem('obsAutoAdded_' + date) || '[]');
             const autoAddedSet = new Set(autoAdded);
             // （已删除 obsBoughtRemoved_ "用户手动删除不再加回"机制：该键在全代码库只有读取、
             // 从未有任何写入，是失效的死代码；删除不影响任何现有行为）
-            window._dbgLogVerbose('[BOUGHT-ENSURE] 今日已有 ' + existingNames.size + ' 只');
+            _dbgLogVerbose('[BOUGHT-ENSURE] 今日已有 ' + existingNames.size + ' 只');
 
             // 检查今日 auctionData 是否已完整正确包含所有 holdingNames（含：是否正式成员/obsAutoAdded）。
             // 这是签名机制的关键：不只是看 holdingNames 名单有没有变，还要看今日列表里这些股票是否真正存在且字段正确。
@@ -284,19 +198,19 @@
                 const row = _existingRowMap[n];
                 if (!row) {
                     _missingOrWrong.push(n + '(缺失)');
-                } else if (!window._isAuctionWatchlistStock(date, n) || row.obsAutoAdded !== true) {
-                    _missingOrWrong.push(n + '(字段错:formal=' + window._isAuctionWatchlistStock(date, n) + ',oa=' + row.obsAutoAdded + ')');
+                } else if (!_isAuctionWatchlistStock(date, n) || row.obsAutoAdded !== true) {
+                    _missingOrWrong.push(n + '(字段错:formal=' + _isAuctionWatchlistStock(date, n) + ',oa=' + row.obsAutoAdded + ')');
                 }
             });
             // 签名 = 应继承名单 + 今日实际完整性状态。缺失/字段错时签名变化（|miss），全部正确时 |ok。
             // 名单变、股票被删、字段被改坏——都会让签名变化触发重跑；全部正确且名单没变才跳过。
             const signature = holdingNames.slice().sort().join('|') + '|v3|' + (_missingOrWrong.length === 0 ? 'ok' : 'miss:' + _missingOrWrong.length);
             if (_missingOrWrong.length === 0 && localStorage.getItem('boughtEnsured_' + date) === signature) {
-                window._dbgLog('[BOUGHT-ENSURE] === 调用结束（签名一致，跳过）=== 持有' + holdingNames.length + '只，今日列表已完整正确，无需改动');
-                window._dbgLogVerbose('[BOUGHT-ENSURE] 签名一致且今日完整跳过（boughtEnsured_' + date + '=' + signature + '）');
+                _dbgLog('[BOUGHT-ENSURE] === 调用结束（签名一致，跳过）=== 持有' + holdingNames.length + '只，今日列表已完整正确，无需改动');
+                _dbgLogVerbose('[BOUGHT-ENSURE] 签名一致且今日完整跳过（boughtEnsured_' + date + '=' + signature + '）');
                 return;
             }
-            window._dbgLogVerbose('[BOUGHT-ENSURE] 重算（旧=' + (localStorage.getItem('boughtEnsured_' + date) || '(无)') + ' → 新=' + signature + '）');
+            _dbgLogVerbose('[BOUGHT-ENSURE] 重算（旧=' + (localStorage.getItem('boughtEnsured_' + date) || '(无)') + ' → 新=' + signature + '）');
 
             // [BUG-FIX 2026-07-27] 记录"昨日买/持/卖"集合——渲染层据此显示"买"/"持"/"卖"字
             localStorage.setItem('obsBought_' + date, JSON.stringify(holdingNames));
@@ -309,14 +223,14 @@
                     // 导致渲染层 getTodayAuction()/getTodayGroupList() 过滤掉它看不到。
                     // 方案2：这里就地修正为正式成员（登记到索引）+观察组+持，让它能被渲染显示。
                     const existingRow = _existingRowMap[name];
-                    const _isFormal = window._isAuctionWatchlistStock(date, name);
+                    const _isFormal = _isAuctionWatchlistStock(date, name);
                     if (existingRow && (!_isFormal || existingRow.obsAutoAdded !== true)) {
-                        window._dbgLogVerbose('[BOUGHT-ENSURE] ⚠️ 修正已有行字段 ' + name + ' | 旧 isFormal=' + _isFormal + ' obsAutoAdded=' + existingRow.obsAutoAdded);
-                        window._addAuctionWatchlistMember(date, name);
+                        _dbgLogVerbose('[BOUGHT-ENSURE] ⚠️ 修正已有行字段 ' + name + ' | 旧 isFormal=' + _isFormal + ' obsAutoAdded=' + existingRow.obsAutoAdded);
+                        _addAuctionWatchlistMember(date, name);
                         existingRow.obsAutoAdded = true;
                         // [CODEMAP-FIX] 顺带补 code（如果这一行本来就缺）
                         if (!((existingRow.code || '').trim())) {
-                            const _mapCode = window.getStockCode(name);
+                            const _mapCode = getStockCode(name);
                             if (_mapCode) existingRow.code = _mapCode;
                         }
                         // 方案 B：不再写 selected/bought/sold —— 标签由 deriveAuctionTagState 在渲染时派生
@@ -324,7 +238,7 @@
                         addedCount++;
                         autoAddedSet.add(name);
                     } else {
-                        window._dbgLogVerbose('[BOUGHT-ENSURE] 跳过(今日已有且字段正确) ' + name);
+                        _dbgLogVerbose('[BOUGHT-ENSURE] 跳过(今日已有且字段正确) ' + name);
                     }
                     return;
                 }
@@ -332,26 +246,26 @@
                 // 方案 B：不再写 selected/bought/sold —— 标签由 stocksData 的前一日记录在渲染时派生。
                 // 方案2：行对象不携带 in_watchlist，通过 _addAuctionWatchlistMember 登记为正式成员
                 // [CODEMAP-FIX] 从 stockcodemap 内存缓存补 code，避免买入继承的股票长期缺代码
-                dayList.push({ stock: name, code: window.getStockCode(name), volume: '', yestVolume: '', note: '', obsAutoAdded: true });
-                window._addAuctionWatchlistMember(date, name);
+                dayList.push({ stock: name, code: getStockCode(name), volume: '', yestVolume: '', note: '', obsAutoAdded: true });
+                _addAuctionWatchlistMember(date, name);
                 autoAddedSet.add(name);
                 hasNew = true;
                 addedCount++;
-                window._dbgLogVerbose('[BOUGHT-ENSURE] ✅ 补入观察组 ' + name);
+                _dbgLogVerbose('[BOUGHT-ENSURE] ✅ 补入观察组 ' + name);
             });
 
             if (hasNew) {
-                try { window._dbgLog('[BOUGHT-ENSURE] date=' + date + ' added=' + addedCount + ' stocks=' + (holdingNames||[]).slice(0,3).join(',')); } catch(e){}
+                try { _dbgLog('[BOUGHT-ENSURE] date=' + date + ' added=' + addedCount + ' stocks=' + (holdingNames||[]).slice(0,3).join(',')); } catch(e){}
                 auctionData[date] = dayList;
-                window.markAuctionDirty(date);
-                window.scheduleCloudPush();
-                window._dbgLogVerbose('[BOUGHT-ENSURE] 新增/修正 ' + addedCount + ' 只，已写回 auctionData[' + date + ']');
+                markAuctionDirty(date);
+                scheduleCloudPush();
+                _dbgLogVerbose('[BOUGHT-ENSURE] 新增/修正 ' + addedCount + ' 只，已写回 auctionData[' + date + ']');
             } else {
-                window._dbgLogVerbose('[BOUGHT-ENSURE] 本轮无新增');
+                _dbgLogVerbose('[BOUGHT-ENSURE] 本轮无新增');
             }
             localStorage.setItem('obsAutoAdded_' + date, JSON.stringify([...autoAddedSet]));
             localStorage.setItem('boughtEnsured_' + date, signature);
-            window._dbgLog('[BOUGHT-ENSURE] === 调用结束 === holdingNames=' + holdingNames.length + ' 新增/修正=' + addedCount + ' 缺失或字段错=' + _missingOrWrong.length + (_missingOrWrong.length > 0 ? '（' + _missingOrWrong.join(',') + '）' : ''));
+            _dbgLog('[BOUGHT-ENSURE] === 调用结束 === holdingNames=' + holdingNames.length + ' 新增/修正=' + addedCount + ' 缺失或字段错=' + _missingOrWrong.length + (_missingOrWrong.length > 0 ? '（' + _missingOrWrong.join(',') + '）' : ''));
         }
 
         export function getAuctionStockHistory(stockName, endDate, count, dataSource='auction') {
@@ -362,11 +276,11 @@
                 // 优先 auction 本地缓存数据，回退 scraper_raw_data 缓存（对比日曲线）
                 days.push({
                     date: d,
-                    volume: window.getStockHistoryValue(d, stockName, 'volume', dataSource),
-                    yestVolume: window.getStockHistoryValue(d, stockName, 'yestVolume', dataSource),
-                    changePct: window.getStockHistoryValue(d, stockName, 'changePct', dataSource)
+                    volume: getStockHistoryValue(d, stockName, 'volume', dataSource),
+                    yestVolume: getStockHistoryValue(d, stockName, 'yestVolume', dataSource),
+                    changePct: getStockHistoryValue(d, stockName, 'changePct', dataSource)
                 });
-                d = window.getPreviousTradingDay(d);
+                d = getPreviousTradingDay(d);
             }
             return days.reverse(); // 正序：从早到晚
         }

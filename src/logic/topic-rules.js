@@ -1,16 +1,24 @@
-﻿        export async function loadCoreTopicsFromCloud() {
+﻿import { _dbgLog } from '../data/debug-log.js';
+import { getPreviousTradingDay, isTradingDay } from './trading-day-helpers.js';
+import { buildTopicCache } from '../data/stock-topics.js';
+import { getStockHistoryTopics, getRankData } from './app-core.js';
+import { extractTopics, getDisplayNote } from './note-helpers.js';
+import { state } from './app-state.js';
+import { pullCoreTopicsFromCloud, pushCoreTopicsToCloud } from './ui-bridge.js';
+
+        export async function loadCoreTopicsFromCloud() {
             try {
-                const cloudTopics = await window.pullCoreTopicsFromCloud();
-                window._coreTopicsCloudLoaded = true;
+                const cloudTopics = await pullCoreTopicsFromCloud();
+                state._coreTopicsCloudLoaded = true;
                 if (!cloudTopics || cloudTopics.length === 0) {
                     // 云端为空，把本地/默认核心词推到云端
-                    const localTopics = window.getCoreTopics();
+                    const localTopics = getCoreTopics();
                     if (localTopics && localTopics.length > 0) {
-                        window._dbgLog('[CORE-TOPICS] 云端 core_topics 表为空，推送本地 ' + localTopics.length + ' 个核心词到云端');
-                        window._coreTopicsPushingToCloud = true;
-                        window.pushCoreTopicsToCloud(localTopics).catch(function(e) {
-                            window._dbgLog('[AUCTION-ERR] core_topics 初始化推送失败: ' + (e && e.message || e));
-                        }).finally(function() { window._coreTopicsPushingToCloud = false; });
+                        _dbgLog('[CORE-TOPICS] 云端 core_topics 表为空，推送本地 ' + localTopics.length + ' 个核心词到云端');
+                        state._coreTopicsPushingToCloud = true;
+                        pushCoreTopicsToCloud(localTopics).catch(function(e) {
+                            _dbgLog('[AUCTION-ERR] core_topics 初始化推送失败: ' + (e && e.message || e));
+                        }).finally(function() { state._coreTopicsPushingToCloud = false; });
                     }
                     return;
                 }
@@ -19,7 +27,7 @@
                     return t && typeof t.name === 'string' && t.name.trim();
                 });
                 if (validCloud.length === 0) {
-                    window._dbgLog('[CORE-TOPICS] 云端 core_topics 数据无效（无 name 字段），不覆盖本地');
+                    _dbgLog('[CORE-TOPICS] 云端 core_topics 数据无效（无 name 字段），不覆盖本地');
                     return;
                 }
                 // 云端有有效数据，覆盖本地（云端是唯一真相源，避免多设备不一致）
@@ -29,10 +37,10 @@
                 // 简单比较：名称数量不同就覆盖
                 if (localParsed.length !== validCloud.length || JSON.stringify(localParsed.map(c=>c.name).sort()) !== JSON.stringify(validCloud.map(c=>c.name).sort())) {
                     localStorage.setItem('coreTopics', cloudStr);
-                    window._dbgLog('[CORE-TOPICS] 从云端恢复 ' + validCloud.length + ' 个核心词到本地');
+                    _dbgLog('[CORE-TOPICS] 从云端恢复 ' + validCloud.length + ' 个核心词到本地');
                 }
             } catch (e) {
-                window._dbgLog('[AUCTION-ERR] window.loadCoreTopicsFromCloud 失败（core_topics 表可能未创建）: ' + (e && e.message || e));
+                _dbgLog('[AUCTION-ERR] window.loadCoreTopicsFromCloud 失败（core_topics 表可能未创建）: ' + (e && e.message || e));
             }
         }
 
@@ -44,7 +52,7 @@
         // 现在改为：空数组/非数组/长度为 0 都回退到 window.defaultCoreTopics。
         export function getCoreTopics() {
             if (_coreTopicsMemCache) return _coreTopicsMemCache;
-            let _result = window.defaultCoreTopics;
+            let _result = state.defaultCoreTopics;
             const stored = localStorage.getItem('coreTopics');
             if (stored) {
                 try {
@@ -53,7 +61,7 @@
                         _result = parsed;
                     } else {
                         localStorage.removeItem('coreTopics');
-                        window._dbgLog('[CORE-TOPICS] 检测到空 coreTopics，回退默认 34 个核心词');
+                        _dbgLog('[CORE-TOPICS] 检测到空 coreTopics，回退默认 34 个核心词');
                     }
                 } catch (e) { /* _result 保持 defaultCoreTopics */ }
             }
@@ -66,25 +74,25 @@
             _coreTopicsMemCache = null;
             localStorage.setItem('coreTopics', JSON.stringify(topics));
             // 异步推送到云端（不阻塞 UI）
-            if (!window._coreTopicsPushingToCloud) {
-                window._coreTopicsPushingToCloud = true;
-                window.pushCoreTopicsToCloud(topics).catch(function(e) {
-                    window._dbgLog('[AUCTION-ERR] core_topics 推送失败: ' + (e && e.message || e));
-                }).finally(function() { window._coreTopicsPushingToCloud = false; });
+            if (!state._coreTopicsPushingToCloud) {
+                state._coreTopicsPushingToCloud = true;
+                pushCoreTopicsToCloud(topics).catch(function(e) {
+                    _dbgLog('[AUCTION-ERR] core_topics 推送失败: ' + (e && e.message || e));
+                }).finally(function() { state._coreTopicsPushingToCloud = false; });
             }
         }
 
         // 获取最近5个交易日列表（从当前日期往前推，排除周末和假期）
         export function getLast5TradingDays() {
             const days = [];
-            let date = window.currentDate;
+            let date = state.currentDate;
             
             // 循环直到获取到5个交易日
             while (days.length < 5 && date) {
-                if (window.isTradingDay(date)) {
+                if (isTradingDay(date)) {
                     days.push(date);
                 }
-                date = window.getPreviousTradingDay(date);
+                date = getPreviousTradingDay(date);
                 if (!date) break;
             }
             
@@ -122,7 +130,7 @@
         // 这里改为"结果按 (日期,题材) 缓存"，缓存失效只依赖 rankData[dateStr] 的
         // 数组引用是否变化（手动编辑保存/清除当天数据/云端拉取都会换新数组或删除该 key），
         // 不需要额外维护版本号，也不改变原有的匹配逻辑，只是不重复算。
-        window._topicRankByDateCache = new Map();   // dateStr -> { ref, map: Map(topic -> count) }
+        state._topicRankByDateCache = new Map();   // dateStr -> { ref, map: Map(topic -> count) }
         const _topicRankWeekDayCache = new Map();  // dateStr -> { ref, coreTopicsRaw, map: Map(topicName -> boolean) }
 
         // 统计本周题材在昨日最大成交额看板中出现的次数（缓存版，逻辑与原实现完全一致）
@@ -132,9 +140,9 @@
         // 不传参时行为与原来完全一致。
         export function getTopicRankCountThisWeek(topicName, rankDataParam, coreTopicsParam) {
             try {
-                const weekDays = window.getLast5TradingDays();
-                const rankData = rankDataParam || window.getRankData();
-                const coreTopics = coreTopicsParam || window.getCoreTopics();
+                const weekDays = getLast5TradingDays();
+                const rankData = rankDataParam || getRankData();
+                const coreTopics = coreTopicsParam || getCoreTopics();
                 
                 if (!weekDays || weekDays.length === 0 || !rankData || !coreTopics) {
                     return 0;
@@ -164,7 +172,7 @@
                             const concepts = item.concept.split(/[,，、\s]+/).filter(c => c.trim());
                             // 检查是否有匹配核心词的题材
                             return concepts.some(concept => {
-                                const matchedCores = window.matchTopicToCore(concept, coreTopics);
+                                const matchedCores = matchTopicToCore(concept, coreTopics);
                                 return matchedCores.includes(topicName);
                             });
                         });
@@ -243,10 +251,10 @@
             const __fp = auctionList.length + '|' + auctionList.map(function(i) { return (i.stock||'') + ':' + (i.topics||''); }).join('\u00a7');
             if (_topicGroupsFp === __fp && _topicGroupsCache) return _topicGroupsCache;
             const __tgT0 = performance.now();
-            const coreTopics = window.getCoreTopics();
+            const coreTopics = getCoreTopics();
             const __tgAfterCore = performance.now();
             // 预构建历史题材缓存，供当日 note 为空时回退使用
-            window.buildTopicCache();
+            buildTopicCache();
             const __tgAfterBuild = performance.now();
             const coreGroups = {};
             
@@ -262,16 +270,16 @@
                 // [BUG-FIX 2026-07-26] 兼容既有 note 括号格式，也兼容拆分字段后
                 // 只存 changePct/topics 的新格式（热门股票等路径）。优先用 getDisplayNote
                 // 重建完整 note，避免题材分组只看到空 note 而全部落入"其它"。
-                const displayNote = window.getDisplayNote(item);
-                let topics = window.extractTopics(displayNote);
+                const displayNote = getDisplayNote(item);
+                let topics = extractTopics(displayNote);
                 // 当日 note 为空时，回退到历史题材缓存（从历史日期的 note 中提取）
                 if (topics.length === 0 && item.stock) {
                     const __hfT0 = performance.now();
-                    const historyNote = window.getStockHistoryTopics(item.stock);
+                    const historyNote = getStockHistoryTopics(item.stock);
                     __tgHistoryFallbackTime += performance.now() - __hfT0;
                     __tgHistoryFallbackCalls++;
                     if (historyNote) {
-                        topics = window.extractTopics(historyNote);
+                        topics = extractTopics(historyNote);
                     }
                 }
                 const volume = parseFloat(item.volume) || 0;
@@ -299,7 +307,7 @@
                 const stockTopicsByCore = {};
                 
                 topics.forEach(topic => {
-                    const matchedCores = window.matchTopicToCore(topic, coreTopics);
+                    const matchedCores = matchTopicToCore(topic, coreTopics);
                     
                     if (matchedCores.length > 0) {
                         matchedCores.forEach(coreName => {
@@ -442,7 +450,7 @@
 
             const __tgTotal = performance.now() - __tgT0;
             if (__tgTotal > 50) {
-                window._dbgLog('[PERF-SEG] window.getTopicGroups 耗时' + __tgTotal.toFixed(1) + 'ms（共' + auctionList.length + '只股票）：window.getCoreTopics(localStorage)=' + (__tgAfterCore - __tgT0).toFixed(1) + 'ms，window.buildTopicCache=' + (__tgAfterBuild - __tgAfterCore).toFixed(1) + 'ms，历史题材回退=' + __tgHistoryFallbackTime.toFixed(1) + 'ms（' + __tgHistoryFallbackCalls + '只触发回退，均值' + (__tgHistoryFallbackTime / Math.max(1, __tgHistoryFallbackCalls)).toFixed(2) + 'ms/只），主循环及排序剩余=' + (__tgTotal - (__tgAfterBuild - __tgT0) - __tgHistoryFallbackTime).toFixed(1) + 'ms');
+                _dbgLog('[PERF-SEG] window.getTopicGroups 耗时' + __tgTotal.toFixed(1) + 'ms（共' + auctionList.length + '只股票）：getCoreTopics(localStorage)=' + (__tgAfterCore - __tgT0).toFixed(1) + 'ms，window.buildTopicCache=' + (__tgAfterBuild - __tgAfterCore).toFixed(1) + 'ms，历史题材回退=' + __tgHistoryFallbackTime.toFixed(1) + 'ms（' + __tgHistoryFallbackCalls + '只触发回退，均值' + (__tgHistoryFallbackTime / Math.max(1, __tgHistoryFallbackCalls)).toFixed(2) + 'ms/只），主循环及排序剩余=' + (__tgTotal - (__tgAfterBuild - __tgT0) - __tgHistoryFallbackTime).toFixed(1) + 'ms');
             }
             _topicGroupsFp = __fp;
             _topicGroupsCache = validGroups;

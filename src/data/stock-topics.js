@@ -1,7 +1,12 @@
+﻿import { _emit } from '../stores/eventBus.js';
+import { state } from '../logic/app-state.js';
         // ===== stock_topics 表操作（题材库独立表）=====
         // 从 stock_topics 表全量读取，返回 {stockName: Set(topics)}
+        import { getSupabase } from './supabase-client.js';
+        import { _dbgLog } from './debug-log.js';
+
         export async function pullStockTopicsFromCloud() {
-            const sb = window.getSupabase();
+            const sb = getSupabase();
             const allRows = [];
             let from = 0;
             const pageSize = 1000;
@@ -33,13 +38,13 @@
         // 不能用"这次传入的"直接替换掉之前已经攒下的题材。
         export async function pushStockTopicsToCloud(stockName, topicsArray, code) {
             if (!stockName) return;
-            const sb = window.getSupabase();
+            const sb = getSupabase();
             const trimmedName = stockName.trim();
             const newTopics = (topicsArray || []).filter(t => t && t.trim()).map(t => t.trim());
 
             // 先取云端/本地缓存里该股票已有的题材，与本次新题材合并去重
-            const existingSet = (window._cloudTopicsCache && window._cloudTopicsCache[trimmedName])
-                ? new Set(window._cloudTopicsCache[trimmedName])
+            const existingSet = (state._cloudTopicsCache && state._cloudTopicsCache[trimmedName])
+                ? new Set(state._cloudTopicsCache[trimmedName])
                 : new Set();
             newTopics.forEach(function(t) { existingSet.add(t); });
             const mergedTopics = Array.from(existingSet);
@@ -56,50 +61,50 @@
             if (error) throw error;
 
             // 同步更新本地缓存，避免下次 buildTopicCache 时丢失
-            if (!window._cloudTopicsCache) window._cloudTopicsCache = {};
-            window._cloudTopicsCache[trimmedName] = new Set(mergedTopics);
-            if (window._topicCacheBuilt && window._topicCache) {
-                window._topicCache[trimmedName] = new Set(mergedTopics);
+            if (!state._cloudTopicsCache) state._cloudTopicsCache = {};
+            state._cloudTopicsCache[trimmedName] = new Set(mergedTopics);
+            if (state._topicCacheBuilt && state._topicCache) {
+                state._topicCache[trimmedName] = new Set(mergedTopics);
             }
         }
 
         // 从云端加载题材库到内存缓存（非阻塞，失败只打日志）
         export async function loadCloudTopics() {
             try {
-                window._cloudTopicsCache = await window.pullStockTopicsFromCloud();
-                console.log('题材库加载完成:', Object.keys(window._cloudTopicsCache).length, '只股票');
+                state._cloudTopicsCache = await pullStockTopicsFromCloud();
+                console.log('题材库加载完成:', Object.keys(state._cloudTopicsCache).length, '只股票');
             } catch (e) {
                 console.warn('window.loadCloudTopics 失败，回退到本地扫描:', e.message);
-                window._cloudTopicsCache = null;
+                state._cloudTopicsCache = null;
             }
         }
 
         // 启动 stock_topics 表的 Realtime 订阅
         export function startStockTopicsRealtime() {
-            window.stopStockTopicsRealtime();
+            stopStockTopicsRealtime();
             try {
-                const sb = window.getSupabase();
-                window._stockTopicsChannel = sb
+                const sb = getSupabase();
+                state._stockTopicsChannel = sb
                     .channel('stock_topics_changes')
                     .on('postgres_changes', {
                         event: '*', schema: 'public', table: 'stock_topics'
                     }, function(payload) {
                         // 题材库变更，重新拉取云端题材并刷新第二页
-                        window.loadCloudTopics().then(function() {
-                            window.invalidateTopicCache();
-                            window.buildTopicCache();
-                            window._emit('data:realtime-update', { boards: 'auction' });
-                        }).catch(function(e) { window._dbgLog('[AUCTION-ERR] Stock topics Realtime 重建缓存 ' + (e && e.message || e)); });
+                        loadCloudTopics().then(function() {
+                            invalidateTopicCache();
+                            buildTopicCache();
+                            _emit('data:realtime-update', { boards: 'auction' });
+                        }).catch(function(e) { _dbgLog('[AUCTION-ERR] Stock topics Realtime 重建缓存 ' + (e && e.message || e)); });
                     })
                     .subscribe();
                 console.log('Stock topics Realtime 订阅已启动');
-            } catch (e) { window._dbgLog('[AUCTION-ERR] Stock topics Realtime 订阅失败 ' + (e && e.message || e)); }
+            } catch (e) { _dbgLog('[AUCTION-ERR] Stock topics Realtime 订阅失败 ' + (e && e.message || e)); }
         }
 
         export function stopStockTopicsRealtime() {
-            if (window._stockTopicsChannel) {
-                try { window.getSupabase().removeChannel(window._stockTopicsChannel); } catch(e) {}
-                window._stockTopicsChannel = null;
+            if (state._stockTopicsChannel) {
+                try { getSupabase().removeChannel(state._stockTopicsChannel); } catch(e) {}
+                state._stockTopicsChannel = null;
             }
         }
 
@@ -115,17 +120,17 @@
                 dayList.forEach(item => {
                     if (!item.stock) return;
                     const name = item.stock.trim();
-                    if (!window._topicCache[name]) window._topicCache[name] = new Set();
+                    if (!state._topicCache[name]) state._topicCache[name] = new Set();
                     if (item.topics) {
                         item.topics.split(/[+，,，、;；]/).forEach(t => {
-                            t = t.trim(); if (t) window._topicCache[name].add(t);
+                            t = t.trim(); if (t) state._topicCache[name].add(t);
                         });
                     }
                     if (item.note) {
                         const bracketMatches = item.note.match(/\([^)]+\)/g) || [];
                         bracketMatches.forEach(match => {
                             const topics = match.replace(/[()（）]/g, '').split(/[+，,，、;；]/).map(t => t.trim()).filter(t => t);
-                            topics.forEach(t => window._topicCache[name].add(t));
+                            topics.forEach(t => state._topicCache[name].add(t));
                         });
                     }
                 });
@@ -133,33 +138,33 @@
         }
 
         export function buildTopicCache() {
-            if (window._topicCacheBuilt && window._topicCache) return window._topicCache;
-            window._topicCache = {};
+            if (state._topicCacheBuilt && state._topicCache) return state._topicCache;
+            state._topicCache = {};
 
-            if (window._cloudTopicsCache) {
-                Object.keys(window._cloudTopicsCache).forEach(function(name) {
-                    const topics = window._cloudTopicsCache[name];
+            if (state._cloudTopicsCache) {
+                Object.keys(state._cloudTopicsCache).forEach(function(name) {
+                    const topics = state._cloudTopicsCache[name];
                     if (topics && topics.size > 0) {
-                        window._topicCache[name] = new Set(topics);
+                        state._topicCache[name] = new Set(topics);
                     }
                 });
             }
 
             const TOPIC_CACHE_DAYS = 66;
-            window.scanDataSourceForTopics(window._auctionMemCache || {});
-            window.scanDataSourceForTopics(window._hotAuctionData || {});
-            window._topicCacheBuilt = true;
-            return window._topicCache;
+            scanDataSourceForTopics(state._auctionMemCache || {});
+            scanDataSourceForTopics(state._hotAuctionData || {});
+            state._topicCacheBuilt = true;
+            return state._topicCache;
         }
 
         export function invalidateTopicCache() {
-            window._topicCache = null;
-            window._topicCacheBuilt = false;
-            window._topicCacheVersion = (window._topicCacheVersion || 0) + 1;
-            window._topicCacheInvalidateCount = (window._topicCacheInvalidateCount || 0) + 1;
+            state._topicCache = null;
+            state._topicCacheBuilt = false;
+            state._topicCacheVersion = (state._topicCacheVersion || 0) + 1;
+            state._topicCacheInvalidateCount = (state._topicCacheInvalidateCount || 0) + 1;
             const __now = performance.now();
-            if (window._topicCacheLastInvalidateTs && (__now - window._topicCacheLastInvalidateTs) < 2000) {
-                window._dbgLog('[PERF-DEBUG] 题材缓存失效过于频繁：距上次失效仅 ' + (__now - window._topicCacheLastInvalidateTs).toFixed(0) + 'ms（累计失效 ' + window._topicCacheInvalidateCount + ' 次）来源: ' + ((new Error()).stack ? (new Error()).stack.split('\n')[2] : '?'));
+            if (state._topicCacheLastInvalidateTs && (__now - state._topicCacheLastInvalidateTs) < 2000) {
+                _dbgLog('[PERF-DEBUG] 题材缓存失效过于频繁：距上次失效仅 ' + (__now - state._topicCacheLastInvalidateTs).toFixed(0) + 'ms（累计失效 ' + state._topicCacheInvalidateCount + ' 次）来源: ' + ((new Error()).stack ? (new Error()).stack.split('\n')[2] : '?'));
             }
-            window._topicCacheLastInvalidateTs = __now;
+            state._topicCacheLastInvalidateTs = __now;
         }

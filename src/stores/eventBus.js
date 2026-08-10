@@ -1,26 +1,23 @@
 /**
- * eventBus.js — 简单事件总线
+ * eventBus.js — 事件总线（迁移批次 3.5）
+ * 基于 mitt，向后兼容 window._emit / window._on / window._off
  * 用于 data/logic 层向 ui 层发通知，避免跨层直接调用
  */
-window._eventBus = window._eventBus || {};
-window._eventListeners = window._eventListeners || {};
+import mitt from 'mitt';
+
+const emitter = mitt();
 
 export function _emit(event, data) {
-    const listeners = window._eventListeners[event];
-    if (!listeners) return;
-    for (let i = 0; i < listeners.length; i++) {
-        try { listeners[i](data); } catch (e) { console.warn('[eventBus] ' + event + ' handler error:', e); }
-    }
+  emitter.emit(event, data);
 }
 
 export function _on(event, handler) {
-    if (!window._eventListeners[event]) window._eventListeners[event] = [];
-    window._eventListeners[event].push(handler);
+  emitter.on(event, handler);
 }
 
 export function _off(event, handler) {
-    const listeners = window._eventListeners[event];
-    if (!listeners) return;
-    const idx = listeners.indexOf(handler);
-    if (idx >= 0) listeners.splice(idx, 1);
+  emitter.off(event, handler);
 }
+
+
+export default emitter;

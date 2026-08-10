@@ -1,0 +1,173 @@
+import { reactive, watch } from 'vue';
+import { getSupabase } from '../data/supabase-client.js';
+import { useUiStore } from '../stores/uiStore.js';
+import { showToast, showWarningToast } from './useToast.js';
+
+const boardState = reactive({
+  currentDate: '',
+  recentMulti: null,
+  earlyEtf: null,
+  loadingRecent: false,
+  loadingEtf: false,
+  savingRecent: false,
+  savingEtf: false,
+  realtimeReady: false,
+  lastError: ''
+});
+
+function syncDate() {
+  const uiStore = useUiStore();
+  if (uiStore.currentDate) boardState.currentDate = uiStore.currentDate;
+}
+
+function formatNowIso() {
+  return new Date().toISOString();
+}
+
+async function loadRecentMulti(date) {
+  if (!date) return;
+  boardState.loadingRecent = true;
+  try {
+    const sb = getSupabase();
+    const { data, error } = await sb
+      .from('recent_multi_data')
+      .select('*')
+      .eq('date', date)
+      .maybeSingle();
+    if (error) throw error;
+    boardState.recentMulti = data || null;
+  } catch (e) {
+    boardState.lastError = '最近多板加载失败: ' + (e.message || e);
+    console.warn('[Board] loadRecentMulti error:', e);
+  } finally {
+    boardState.loadingRecent = false;
+  }
+}
+
+async function loadEarlyEtf(date) {
+  if (!date) return;
+  boardState.loadingEtf = true;
+  try {
+    const sb = getSupabase();
+    const { data, error } = await sb
+      .from('early_etf_data')
+      .select('*')
+      .eq('date', date)
+      .maybeSingle();
+    if (error) throw error;
+    boardState.earlyEtf = data || null;
+  } catch (e) {
+    boardState.lastError = 'ETF 加载失败: ' + (e.message || e);
+    console.warn('[Board] loadEarlyEtf error:', e);
+  } finally {
+    boardState.loadingEtf = false;
+  }
+}
+
+async function saveRecentMulti(payload) {
+  const date = boardState.currentDate;
+  if (!date) return { error: '无当前日期' };
+  boardState.savingRecent = true;
+  try {
+    const sb = getSupabase();
+    const row = {
+      date,
+      shuliang: payload.shuliang || '',
+      die_count: payload.die_count ?? null,
+      zhang_count: payload.zhang_count ?? null,
+      die_zhangbi: payload.die_zhangbi || '',
+      jingtu: payload.jingtu || '',
+      tushi: payload.tushi || '',
+      comment: payload.comment || '',
+      updated_at: formatNowIso()
+    };
+    const { data, error } = await sb
+      .from('recent_multi_data')
+      .upsert(row, { onConflict: 'date' })
+      .select()
+      .single();
+    if (error) throw error;
+    if (data && data.tushi !== row.tushi) {
+      await sb.from('recent_multi_data').update({ tushi: row.tushi, updated_at: row.updated_at }).eq('date', date);
+      data.tushi = row.tushi;
+    }
+    boardState.recentMulti = data;
+    return { data, error: null };
+  } catch (e) {
+    boardState.lastError = '最近多板保存失败: ' + (e.message || e);
+    return { error: e };
+  } finally {
+    boardState.savingRecent = false;
+  }
+}
+
+async function saveEarlyEtf(payload) {
+  const date = boardState.currentDate;
+  if (!date) return { error: '无当前日期' };
+  boardState.savingEtf = true;
+  try {
+    const sb = getSupabase();
+    const row = {
+      date,
+      shuliang: payload.shuliang || '',
+      die_count: payload.die_count ?? null,
+      zhang_count: payload.zhang_count ?? null,
+      die_zhangbi: payload.die_zhangbi || '',
+      jingtu: payload.jingtu || '',
+      tushi: payload.tushi || '',
+      comment: payload.comment || '',
+      sector_etf_close: payload.sector_etf_close ?? boardState.earlyEtf?.sector_etf_close ?? null,
+      sector_etf_synced_at: payload.sector_etf_synced_at ?? boardState.earlyEtf?.sector_etf_synced_at ?? null,
+      updated_at: formatNowIso()
+    };
+    const { data, error } = await sb
+      .from('early_etf_data')
+      .upsert(row, { onConflict: 'date' })
+      .select()
+      .single();
+    if (error) throw error;
+    if (data && data.tushi !== row.tushi) {
+      await sb.from('early_etf_data').update({ tushi: row.tushi, updated_at: row.updated_at }).eq('date', date);
+      data.tushi = row.tushi;
+    }
+    boardState.earlyEtf = data;
+    return { data, error: null };
+  } catch (e) {
+    boardState.lastError = 'ETF 保存失败: ' + (e.message || e);
+    return { error: e };
+  } finally {
+    boardState.savingEtf = false;
+  }
+}
+
+let _dateWatchStarted = false;
+function ensureDateWatch() {
+  if (_dateWatchStarted) return;
+  _dateWatchStarted = true;
+  const uiStore = useUiStore();
+  watch(() => uiStore.currentDate, (val) => {
+    if (val && val !== boardState.currentDate) {
+      boardState.currentDate = val;
+      loadRecentMulti(val);
+      loadEarlyEtf(val);
+    }
+  });
+  if (uiStore.currentDate) {
+    boardState.currentDate = uiStore.currentDate;
+    loadRecentMulti(uiStore.currentDate);
+    loadEarlyEtf(uiStore.currentDate);
+  }
+}
+
+export function useBoardData() {
+  ensureDateWatch();
+  return {
+    boardState,
+    loadRecentMulti,
+    loadEarlyEtf,
+    saveRecentMulti,
+    saveEarlyEtf,
+    toast: showToast,
+    warnToast: showWarningToast,
+  };
+}

@@ -1,6 +1,7 @@
-        // [PERF] 初始化信号函数指纹缓存（之前从未定义，导致所有信号函数缓存空转）
-        if (!window._signalCache) window._signalCache = {};
-        if (!window._viewFpList) window._viewFpList = function(list) {
+import { state } from './app-state.js';
+        // [PERF] 信号函数指纹缓存（模块级，导出供 sort-rules-extra.js 复用）
+        export const _signalCache = {};
+        export function _viewFpList(list) {
             if (!list || !list.length) return '0';
             var fp = list.length + '|';
             for (var i = 0; i < list.length; i++) {
@@ -9,38 +10,45 @@
                 fp += (it.stock || '') + ':' + (it.volume || '') + ':' + (it.yestVolume || '') + ':' + (it.changePct || '') + ',';
             }
             return fp;
-        };
-        if (!window._signalFpFor) window._signalFpFor = function(dateStr, dataSource) {
-            var __g = window.getGroupData(dataSource);
-            var __t1 = window.getPreviousTradingDay(dateStr);
-            return window._viewFpList(__g[dateStr]) + '' + window._viewFpList(__g[__t1]);
-        };
+        }
+        import { getGroupData } from './app-core.js';
+        import { getNumericVolume } from '../data/supabase-client.js';
+        import { getStockHistoryValue, _histRowMapFor } from '../data/watchlist-and-metrics.js';
+        import { _dbgLogVerbose } from '../data/debug-log.js';
+        import { getDailyHighlightsForDate } from '../data/daily-highlights.js';
+        import { getPreviousTradingDay } from './trading-day-helpers.js';
+
+        export function _signalFpFor(dateStr, dataSource) {
+            var __g = getGroupData(dataSource);
+            var __t1 = getPreviousTradingDay(dateStr);
+            return _viewFpList(__g[dateStr]) + '' + _viewFpList(__g[__t1]);
+        }
 
         export function getHighRatioStocksForDate(dateStr, dataSource='auction') {
             // [PERF-CORE] 指纹缓存：同一组输入数据在同帧/多次调用间直接复用结果
             const __k = 'hr|' + (dataSource || 'auction') + '|' + dateStr;
-            const __sc = window._signalCache;
+            const __sc = _signalCache;
             let __fp = null;
-            if (__sc && window._viewFpList) {
-                const __g = window.getGroupData(dataSource);
-                const __t1 = window.getPreviousTradingDay(dateStr);
-                __fp = window._viewFpList(__g[dateStr]) + '' + window._viewFpList(__g[__t1]);
+            if (__sc && _viewFpList) {
+                const __g = getGroupData(dataSource);
+                const __t1 = getPreviousTradingDay(dateStr);
+                __fp = _viewFpList(__g[dateStr]) + '' + _viewFpList(__g[__t1]);
                 const __e = __sc[__k];
                 if (__e && __e.fp === __fp) return __e.value;
             }
-            const auctionData = window.getGroupData(dataSource);
+            const auctionData = getGroupData(dataSource);
             const todayList = auctionData[dateStr] || [];
-            const prevDate = window.getPreviousTradingDay(dateStr);
+            const prevDate = getPreviousTradingDay(dateStr);
             const prevList = prevDate ? (auctionData[prevDate] || []) : [];
-            const prevMap = window._histRowMapFor(prevList);
+            const prevMap = _histRowMapFor(prevList);
 
             const stockNames = new Set();
             todayList.forEach(item => {
                 if (!item || !item.stock) return;
-                const todayVolume = window.getNumericVolume(item.volume);
+                const todayVolume = getNumericVolume(item.volume);
                 if (todayVolume === null || todayVolume === 0) return;
                 const prevItem = prevMap.get(item.stock.trim());
-                const prevVolume = prevItem ? window.getNumericVolume(prevItem.volume) : null;
+                const prevVolume = prevItem ? getNumericVolume(prevItem.volume) : null;
                 if (prevVolume === null || prevVolume === 0) return;
                 const ratio = todayVolume / prevVolume;
                 const roundedRatio = Math.round(ratio * 10) / 10; // 四舍五入到一位小数，与表格显示的"今/昨比"保持一致
@@ -62,30 +70,30 @@
         export function getParallelStocksForDate(dateStr, dataSource='auction') {
             // [PERF-CORE] 指纹缓存：同一组输入数据直接复用结果
             const __k = 'par|' + (dataSource || 'auction') + '|' + dateStr;
-            const __sc = window._signalCache;
+            const __sc = _signalCache;
             let __fp = null;
-            if (__sc && window._signalFpFor) {
-                __fp = window._signalFpFor(dateStr, dataSource);
+            if (__sc && _signalFpFor) {
+                __fp = _signalFpFor(dateStr, dataSource);
                 const __e = __sc[__k];
                 if (__e && __e.fp === __fp) return __e.value;
             }
-            const auctionData = window.getGroupData(dataSource);
+            const auctionData = getGroupData(dataSource);
             const todayList = auctionData[dateStr] || [];
-            const t1Date = window.getPreviousTradingDay(dateStr);
+            const t1Date = getPreviousTradingDay(dateStr);
 
             const stockNames = new Set();
             todayList.forEach(item => {
                 if (!item || !item.stock) return;
                 const name = item.stock.trim();
 
-                const todayVolume = window.getNumericVolume(item.volume);
+                const todayVolume = getNumericVolume(item.volume);
                 // T的yestVolume字段 = T-1交易日自身的总成交量
-                const t1OwnVolume = window.getNumericVolume(item.yestVolume);
+                const t1OwnVolume = getNumericVolume(item.yestVolume);
 
                 // T-1 竞价量、T-2 成交量 从全量快照缓存查询（含非自选股）
-                const t1Volume = window.getStockHistoryValue(t1Date, name, 'volume', dataSource);
+                const t1Volume = getStockHistoryValue(t1Date, name, 'volume', dataSource);
                 // T-1的yestVolume字段 = T-2交易日自身的总成交量
-                const t2OwnVolume = window.getStockHistoryValue(t1Date, name, 'yestVolume', dataSource);
+                const t2OwnVolume = getStockHistoryValue(t1Date, name, 'yestVolume', dataSource);
 
                 // 条件1：今日竞价量 > T-1交易日竞价量
                 if (todayVolume === null || t1Volume === null) return;
@@ -119,16 +127,16 @@
         export function getRatioDiffInfoForDate(dateStr, dataSource='auction') {
             // [PERF-CORE] 指纹缓存：同一组输入数据直接复用结果
             const __k = 'rdi|' + (dataSource || 'auction') + '|' + dateStr;
-            const __sc = window._signalCache;
+            const __sc = _signalCache;
             let __fp = null;
-            if (__sc && window._signalFpFor) {
-                __fp = window._signalFpFor(dateStr, dataSource);
+            if (__sc && _signalFpFor) {
+                __fp = _signalFpFor(dateStr, dataSource);
                 const __e = __sc[__k];
                 if (__e && __e.fp === __fp) return __e.value;
             }
-            const auctionData = window.getGroupData(dataSource);
+            const auctionData = getGroupData(dataSource);
             const todayList = auctionData[dateStr] || [];
-            const t1Date = window.getPreviousTradingDay(dateStr);
+            const t1Date = getPreviousTradingDay(dateStr);
 
             const infoMap = new Map();
             todayList.forEach(item => {
@@ -136,18 +144,18 @@
                 const name = item.stock.trim();
 
                 // 今/昨比：今日竞价量 / T-1竞价量（T-1数据从全量快照缓存查询，含非自选股）
-                const todayVolume = window.getNumericVolume(item.volume);
-                const t1Volume = window.getStockHistoryValue(t1Date, name, 'volume', dataSource);
+                const todayVolume = getNumericVolume(item.volume);
+                const t1Volume = getStockHistoryValue(t1Date, name, 'volume', dataSource);
                 if (todayVolume === null || t1Volume === null || t1Volume === 0) return;
                 const jingRatio = todayVolume / t1Volume;
 
                 // 昨/前比：昨日成交量(今天记录的yestVolume) / 前日成交量(T-1记录的yestVolume)
-                const yestVolume = window.getNumericVolume(item.yestVolume);
-                const prevVolume = window.getStockHistoryValue(t1Date, name, 'yestVolume', dataSource);
+                const yestVolume = getNumericVolume(item.yestVolume);
+                const prevVolume = getStockHistoryValue(t1Date, name, 'yestVolume', dataSource);
                 if (yestVolume === null || prevVolume === null || prevVolume === 0) return;
                 const yestRatio = yestVolume / prevVolume;
 
-                const digitGap = Math.abs(window.getDigitCount(todayVolume) - window.getDigitCount(yestVolume));
+                const digitGap = Math.abs(getDigitCount(todayVolume) - getDigitCount(yestVolume));
                 infoMap.set(name, { diff: jingRatio - yestRatio, digitGap, jingRatio });
             });
             if (__sc && __fp !== null) __sc[__k] = { fp: __fp, value: infoMap };
@@ -158,8 +166,8 @@
         // 返回 Map<股票名称, {diff, digitGap}>，key集合是 getParallelStocksForDate 结果的子集，且 diff 必然 > 0
         // 排序时先比 digitGap（从小到大），digitGap 相同再比 diff（从大到小）
         export function getJingYestStocksForDate(dateStr, dataSource='auction') {
-            const parallelStockNames = window.getParallelStocksForDate(dateStr, dataSource);
-            const infoMap = window.getRatioDiffInfoForDate(dateStr, dataSource);
+            const parallelStockNames = getParallelStocksForDate(dateStr, dataSource);
+            const infoMap = getRatioDiffInfoForDate(dateStr, dataSource);
 
             const stockDiffMap = new Map();
             parallelStockNames.forEach(name => {
@@ -178,20 +186,20 @@
             // [PERF-CORE] 指纹缓存：该函数在每次看板计算里被调用 3 次以上
             // （当日高光 + 前一日观察组判定 + 排序分支），口径完全一致时直接复用。
             const __k = 'jyh|' + (dataSource || 'auction') + '|' + dateStr;
-            const __sc = window._signalCache;
+            const __sc = _signalCache;
             let __fp = null;
-            if (__sc && window._signalFpFor) {
-                const __hl = (dataSource === 'hot' ? window._hotHighlightsCache : window._dailyHighlightsCache)[dateStr];
-                __fp = window._signalFpFor(dateStr, dataSource) + '|' + (__hl ? [...__hl].sort().join(',') : '');
+            if (__sc && _signalFpFor) {
+                const __hl = (dataSource === 'hot' ? state._hotHighlightsCache : state._dailyHighlightsCache)[dateStr];
+                __fp = _signalFpFor(dateStr, dataSource) + '|' + (__hl ? [...__hl].sort().join(',') : '');
                 const __e = __sc[__k];
                 if (__e && __e.fp === __fp) return __e.value;
             }
             // 优先实时计算（与抓取程序口径一致：本地 rawData + 全量快照缓存 _auctionMemCache / _hotFullRowCache）
             // 修复历史 Bug：原先优先用云端 daily_highlights 缓存，可能存的是旧的/错误的高光集合，
             // 导致本地数据更新后高光仍显示旧结果（与抓取程序不一致），且推送有 2s debounce + Realtime 延迟 → 延迟感。
-            const stockDiffMap = window.getJingYestStocksForDate(dateStr, dataSource);
+            const stockDiffMap = getJingYestStocksForDate(dateStr, dataSource);
             if (stockDiffMap.size > 0) {
-                window._dbgLogVerbose('[JING-YEST-HL] ' + dateStr + ' 平行+diff>0 共' + stockDiffMap.size + '只：' +
+                _dbgLogVerbose('[JING-YEST-HL] ' + dateStr + ' 平行+diff>0 共' + stockDiffMap.size + '只：' +
                     [...stockDiffMap].map(function([n, i]) { return n + '(diff=' + (i && i.diff !== undefined ? i.diff.toFixed(2) : '?') + ',dg=' + (i && i.digitGap !== undefined ? i.digitGap : '?') + ')'; }).join('、'));
             }
             let __result;
@@ -199,7 +207,7 @@
                 __result = new Set([...stockDiffMap].filter(([, info]) => info && info.diff > 0).map(([name]) => name));
             } else {
                 // 实时计算无结果（可能 T-1 全量快照缓存未就绪）→ 回退到云端缓存，避免空白
-                const cached = window.getDailyHighlightsForDate(dateStr, dataSource);
+                const cached = getDailyHighlightsForDate(dateStr, dataSource);
                 __result = cached ? cached : new Set();
             }
             if (__sc && __fp !== null) __sc[__k] = { fp: __fp, value: __result };

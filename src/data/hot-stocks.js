@@ -1,7 +1,13 @@
-﻿        // ============================================================
+﻿import { _emit } from '../stores/eventBus.js';
+import { useAuctionStore } from '../stores/auctionStore.js';
+import { state } from '../logic/app-state.js';
+        // ============================================================
         // hot_stocks / hot_stocks_highlights 表操作（热门股票分组，结构与早盘竞价对应函数一致）
         // 通过 dataSource='hot' 复用同一套算法函数，此处仅提供数据加载/订阅/推送
         // ============================================================
+
+        import { getSupabase, getNumericVolume } from './supabase-client.js';
+        import { _dbgLog } from './debug-log.js';
 
         // 从 hot_stocks 与 market_metrics(scope='hot') 双表读取并合并，
         // 组装成 {date: [items]} 结构返回，同时把全量快照写入 _hotFullRowCache。
@@ -15,8 +21,9 @@
         // 整表重置会用空值覆盖本地补全值，导致趋势图刷新后丢失数据。
         // 改为字段级 merge 后，云端空字段不会覆盖本地已有值，趋势图能读到补全值。
         // 注意：不保留云端没有的行（避免另一台设备删除的行复活）；只对云端已有的行做字段级合并。
-        window.HOT_MERGE_FIELDS = ['code', 'volume', 'yest_volume', 'note', 'change_pct', 'topics', 'selected', 'bought', 'sold', 'fixed'];
-        export function _mergeHotCloudToLocal(oldList, cloudRows) {
+        state.HOT_MERGE_FIELDS = ['code', 'volume', 'yest_volume', 'note', 'change_pct', 'topics', 'selected', 'bought', 'sold', 'fixed'];
+        function _getAuctionStore() { try { return useAuctionStore(); } catch { return null; } }
+export function _mergeHotCloudToLocal(oldList, cloudRows) {
             if (!oldList || oldList.length === 0) return cloudRows.slice();
             const oldMap = {};
             oldList.forEach(function(r) {
@@ -27,7 +34,7 @@
                 const local = oldMap[cr.stock.trim()];
                 if (!local) return cr; // 本地没有，用云端
                 const row = Object.assign({}, local); // 以本地为基础，保留本地已有字段
-                window.HOT_MERGE_FIELDS.forEach(function(f) {
+                state.HOT_MERGE_FIELDS.forEach(function(f) {
                     // 云端字段非空（非 undefined/null/''）才覆盖本地
                     if (cr[f] !== undefined && cr[f] !== null && cr[f] !== '') {
                         row[f] = cr[f];
@@ -39,14 +46,14 @@
 
         export async function loadHotStocksFromCloud() {
             // 若刚推送了本地修改（saveAuction 的 hot 分支），跳过重新加载，防止云端空数据覆盖本地修改
-            if (window._justPushedHotAuction) return;
-            const sb = window.getSupabase();
+            if (state._justPushedHotAuction) return;
+            const sb = getSupabase();
             const result = {};
             const cloudByDate = {};
             // 保存旧的本地数据，用于合并 note/changePct/topics（云端有值才覆盖，避免抓取程序空字段覆盖主程序编辑）
-            const oldLocalData = window._hotAuctionData || {};
+            const oldLocalData = state._hotAuctionData || {};
             // [BUG-FIX] 从 stockcodemap 云端表拿 name→code 映射，云端 code 为空时做回填。
-            const scMap = window._scMapCache || {};
+            const scMap = state._scMapCache || {};
             let offset = 0;
             const pageSize = 1000;
 
@@ -89,10 +96,10 @@
                     if (data.length < pageSize) break;
                     offset += pageSize;
                 }
-                window._hotAuctionTableAvailable = true;
+                state._hotAuctionTableAvailable = true;
             } catch (e) {
                 stocksError = e;
-                window._hotAuctionTableAvailable = false;
+                state._hotAuctionTableAvailable = false;
             }
 
             // 2) 读取 market_metrics(scope='hot')（影子记录/指标数据）
@@ -135,10 +142,10 @@
                     if (data.length < pageSize) break;
                     offset += pageSize;
                 }
-                window._marketMetricsTableAvailable = true;
+                state._marketMetricsTableAvailable = true;
             } catch (e) {
                 metricsError = e;
-                window._marketMetricsTableAvailable = false;
+                state._marketMetricsTableAvailable = false;
             }
 
             if (stocksError && metricsError) {
@@ -149,11 +156,11 @@
             // [BUG-FIX] 不再整表清空 _hotFullRowCache，改为字段级 merge：
             // 保留旧对象引用，逐 date 用 _mergeHotCloudToLocal 字段级合并（云端非空才覆盖本地）。
             // 这样竞态期间本地刚写入的补全值不会被云端旧值（空字段）覆盖，趋势图能读到补全值。
-            window._hotWatchlistIndex = newWatchlistIndex; // 替换为本次加载的正式成员索引
+            state._hotWatchlistIndex = newWatchlistIndex; // 替换为本次加载的正式成员索引
             Object.keys(cloudByDate).forEach(function(d) {
-                const rows = window._mergeHotCloudToLocal(window._hotFullRowCache[d], Object.values(cloudByDate[d]));
-                window._hotFullRowCache[d] = rows;
-                const watchlistSet = window._hotWatchlistIndex[d] || new Set();
+                const rows = _mergeHotCloudToLocal(state._hotFullRowCache[d], Object.values(cloudByDate[d]));
+                state._hotFullRowCache[d] = rows;
+                const watchlistSet = state._hotWatchlistIndex[d] || new Set();
                 rows.forEach(function(r) {
                     if (watchlistSet.has((r.stock || '').trim())) {
                         if (!result[d]) result[d] = [];
@@ -163,8 +170,8 @@
                         result[d].push({
                             stock: r.stock,
                             code: r.code || (local ? (local.code || '') : ''),
-                            volume: window.getNumericVolume(r.volume) !== null ? r.volume : (local ? (local.volume || '') : ''),
-                            yestVolume: window.getNumericVolume(r.yest_volume) !== null ? r.yest_volume : (local ? (local.yestVolume || '') : ''),
+                            volume: getNumericVolume(r.volume) !== null ? r.volume : (local ? (local.volume || '') : ''),
+                            yestVolume: getNumericVolume(r.yest_volume) !== null ? r.yest_volume : (local ? (local.yestVolume || '') : ''),
                             note: (r.note && r.note.trim()) ? r.note : (local ? (local.note || '') : ''),
                             changePct: (r.change_pct && String(r.change_pct).trim()) ? r.change_pct : (local ? (local.changePct || '') : ''),
                             topics: (r.topics && r.topics.trim()) ? r.topics : (local ? (local.topics || '') : ''),
@@ -186,49 +193,49 @@
             // 内容未变可以跳过），只对真正变化的 key 做响应式写入，且只在最后
             // bump 一次 stocksDataVersion 作为统一失效信号，而不是让每次单独的
             // 属性增删各自触发一轮依赖失效判定。
-            if (window.auctionStore && window._hotAuctionData === window.auctionStore.hotAuctionData) {
+            if (_getAuctionStore() && state._hotAuctionData === _getAuctionStore().hotAuctionData) {
                 const _t0 = performance.now();
-                const oldKeys = Object.keys(window._hotAuctionData);
+                const oldKeys = Object.keys(state._hotAuctionData);
                 const newKeys = Object.keys(result);
                 const newKeySet = new Set(newKeys);
                 let _removed = 0, _changed = 0, _unchanged = 0;
                 // 1) 删除云端已不存在的日期
                 oldKeys.forEach(function (d) {
-                    if (!newKeySet.has(d)) { delete window._hotAuctionData[d]; _removed++; }
+                    if (!newKeySet.has(d)) { delete state._hotAuctionData[d]; _removed++; }
                 });
                 // 2) 只有内容真正变化（JSON 不同）才写入，内容相同的日期跳过，
                 //    避免给没有变化的日期也触发一次响应式 set
                 newKeys.forEach(function (d) {
-                    const oldVal = window._hotAuctionData[d];
+                    const oldVal = state._hotAuctionData[d];
                     const newVal = result[d];
                     if (oldVal === undefined || JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
-                        window._hotAuctionData[d] = newVal;
+                        state._hotAuctionData[d] = newVal;
                         _changed++;
                     } else {
                         _unchanged++;
                     }
                 });
-                window._dbgLog('[PERF-FIX] window.loadHotStocksFromCloud 响应式写入：删除' + _removed + '/变化' + _changed + '/未变跳过' + _unchanged + '，diff+写入耗时=' + (performance.now() - _t0).toFixed(1) + 'ms');
+                _dbgLog('[PERF-FIX] window.loadHotStocksFromCloud 响应式写入：删除' + _removed + '/变化' + _changed + '/未变跳过' + _unchanged + '，diff+写入耗时=' + (performance.now() - _t0).toFixed(1) + 'ms');
             } else {
-                window._hotAuctionData = result;
+                state._hotAuctionData = result;
             }
             // [DEBUG] 输出 _hotFullRowCache 中各日期的影子/正式记录数，帮助排查"刷新后消失"
             const _fullCacheSummary = {};
-            Object.keys(window._hotFullRowCache).forEach(function(d) {
-                const rows = window._hotFullRowCache[d] || [];
-                const watchlistSet = window._hotWatchlistIndex[d] || new Set();
+            Object.keys(state._hotFullRowCache).forEach(function(d) {
+                const rows = state._hotFullRowCache[d] || [];
+                const watchlistSet = state._hotWatchlistIndex[d] || new Set();
                 const watchlistCount = rows.filter(function(r) { return r && r.stock && watchlistSet.has(r.stock.trim()); }).length;
                 _fullCacheSummary[d] = { total: rows.length, watchlist: watchlistCount };
             });
             console.log('hot_stocks 加载完成:', Object.keys(result).length, '个日期' +
                 ' | market_metrics读取=' + metricsRowsRead + '行' +
-                ' | _hotFullRowCache日期=' + Object.keys(window._hotFullRowCache).length,
+                ' | _hotFullRowCache日期=' + Object.keys(state._hotFullRowCache).length,
                 _fullCacheSummary);
         }
 
         // 从 hot_stocks_highlights 表加载所有预计算高光（小表，快）
         export async function pullHotStocksHighlights() {
-            const sb = window.getSupabase();
+            const sb = getSupabase();
             const result = {};
             let offset = 0;
             const pageSize = 1000;
@@ -247,28 +254,28 @@
                 if (data.length < pageSize) break;
                 offset += pageSize;
             }
-            window._hotHighlightsCache = result;
-            window._hotHighlightsTableAvailable = true;
+            state._hotHighlightsCache = result;
+            state._hotHighlightsTableAvailable = true;
             console.log('hot_stocks_highlights 加载完成:', Object.keys(result).length, '个日期');
         }
 
         // 推送某日期的高光到 hot_stocks_highlights 表
         export async function pushHotStocksHighlights(date, highlightSet) {
-            const sb = window.getSupabase();
+            const sb = getSupabase();
             const now = new Date().toISOString();
             const stockNames = highlightSet ? [...highlightSet] : [];
 
             // [FIX 2026-07-24 自循环根治] 与 pushDailyHighlights 同款：集合未变化时跳过写库，
             // 否则"renderHotStocks → 写 highlights → Realtime 回显 → renderHotStocks"无限自循环。
-            const cached = window._hotHighlightsCache[date];
+            const cached = state._hotHighlightsCache[date];
             if (cached && cached.size === stockNames.length &&
                 stockNames.every(function(n) { return cached.has(n); })) {
                 return;
             }
 
             // 自推送屏蔽：本次写入触发的 Realtime 通知直接忽略
-            window._justPushedHotHighlights = true;
-            setTimeout(function() { window._justPushedHotHighlights = false; }, 5000);
+            state._justPushedHotHighlights = true;
+            setTimeout(function() { state._justPushedHotHighlights = false; }, 5000);
 
             // 1. 先把该日期所有行标记为 false（清除旧高光）
             const { error: updErr } = await sb.from('hot_stocks_highlights')
@@ -290,7 +297,7 @@
             }
 
             // 更新本地缓存
-            window._hotHighlightsCache[date] = new Set(stockNames);
+            state._hotHighlightsCache[date] = new Set(stockNames);
         }
 
         // ===== 热门股票tap：三张表（hot_stocks / hot_stocks_highlights / hot_stock_trends）的
@@ -303,55 +310,55 @@
         // market_metrics 两张表、统一一个防抖池，不会有这个问题，所以体验更流畅。
         // 统一后：不论哪张表先收到变化通知，都汇入同一个定时器，到点后按需重新拉取各自数据，
         // 最后只调用一次 renderHotStocks()。
-        window._hotAuctionRealtimeTimer = null;
-        window._pendingHotRealtimeDates = new Set();
-        window._pendingHotReload = { stocks: false, highlights: false, trends: false };
+        state._hotAuctionRealtimeTimer = null;
+        state._pendingHotRealtimeDates = new Set();
+        state._pendingHotReload = { stocks: false, highlights: false, trends: false };
         export function _scheduleHotRealtimeReload() {
-            if (window._hotAuctionRealtimeTimer) clearTimeout(window._hotAuctionRealtimeTimer);
-            window._hotAuctionRealtimeTimer = setTimeout(function() {
-                var need = window._pendingHotReload;
-                window._pendingHotReload = { stocks: false, highlights: false, trends: false };
-                window._hotAuctionRealtimeTimer = null;
+            if (state._hotAuctionRealtimeTimer) clearTimeout(state._hotAuctionRealtimeTimer);
+            state._hotAuctionRealtimeTimer = setTimeout(function() {
+                var need = state._pendingHotReload;
+                state._pendingHotReload = { stocks: false, highlights: false, trends: false };
+                state._hotAuctionRealtimeTimer = null;
                 var tasks = [];
                 if (need.stocks) {
-                    tasks.push(window.loadHotStocksFromCloud().catch(function(e) {
+                    tasks.push(loadHotStocksFromCloud().catch(function(e) {
                         console.warn('Realtime window.loadHotStocksFromCloud 失败:', e);
                     }));
                 }
                 if (need.highlights) {
-                    tasks.push(window.pullHotStocksHighlights().catch(function(e) {
+                    tasks.push(pullHotStocksHighlights().catch(function(e) {
                         console.warn('hot_stocks_highlights Realtime 重载失败:', e);
                     }));
                 }
                 if (need.trends) {
-                    tasks.push(window.loadHotTrendsFromCloud().catch(function(e) {
+                    tasks.push(loadHotTrendsFromCloud().catch(function(e) {
                         console.warn('hot_stock_trends Realtime 重载失败:', e);
                     }));
                 }
                 Promise.all(tasks).then(function() {
-                    if (typeof window.renderHotStocks === 'function') window._emit('data:realtime-update', { boards: 'hot' }); // 三张表变化只触发这一次整体重渲染
+                    _emit('data:realtime-update', { boards: 'hot' }); // 三张表变化只触发这一次整体重渲染
                 });
             }, 800);
         }
         export function _debounceHotAuctionRealtime(date) {
-            window._pendingHotRealtimeDates.add(date);
-            window._pendingHotReload.stocks = true;
-            window._scheduleHotRealtimeReload();
+            state._pendingHotRealtimeDates.add(date);
+            state._pendingHotReload.stocks = true;
+            _scheduleHotRealtimeReload();
         }
 
         export function startHotStocksRealtime() {
-            window.stopHotStocksRealtime();
+            stopHotStocksRealtime();
             try {
-                const sb = window.getSupabase();
-                window._hotAuctionRealtimeChannel = sb
+                const sb = getSupabase();
+                state._hotAuctionRealtimeChannel = sb
                     .channel('hot_stocks_changes')
                     .on('postgres_changes', {
                         event: '*', schema: 'public', table: 'hot_stocks'
                     }, function(payload) {
-                        if (window._justPushedHotAuction) return; // 自己刚推的，忽略
+                        if (state._justPushedHotAuction) return; // 自己刚推的，忽略
                         const row = payload.new || payload.old;
                         if (!row || !row.date) return;
-                        window._debounceHotAuctionRealtime(row.date);
+                        _debounceHotAuctionRealtime(row.date);
                     })
                     .subscribe();
                 console.log('Hot Stocks Realtime 订阅已启动');
@@ -361,29 +368,29 @@
         }
 
         export function stopHotStocksRealtime() {
-            if (window._hotAuctionRealtimeChannel) {
-                try { window.getSupabase().removeChannel(window._hotAuctionRealtimeChannel); } catch(e) {}
-                window._hotAuctionRealtimeChannel = null;
+            if (state._hotAuctionRealtimeChannel) {
+                try { getSupabase().removeChannel(state._hotAuctionRealtimeChannel); } catch(e) {}
+                state._hotAuctionRealtimeChannel = null;
             }
         }
 
         // hot_stocks_highlights 表 Realtime 订阅
-        window._hotHighlightsReloadTimer = null;
+        state._hotHighlightsReloadTimer = null;
         export function startHotHighlightsRealtime() {
-            window.stopHotHighlightsRealtime();
+            stopHotHighlightsRealtime();
             try {
-                const sb = window.getSupabase();
-                window._hotHighlightsChannel = sb
+                const sb = getSupabase();
+                state._hotHighlightsChannel = sb
                     .channel('hot_stocks_highlights_changes')
                     .on('postgres_changes', {
                         event: '*', schema: 'public', table: 'hot_stocks_highlights'
                     }, function(payload) {
-                        if (window._justPushedHotHighlights) return; // 自己刚推的，忽略（防自循环）
+                        if (state._justPushedHotHighlights) return; // 自己刚推的，忽略（防自循环）
                         var row = payload.new || payload.old;
                         if (!row || !row.date) return;
                         // 汇入统一防抖池，避免和 hot_stocks / hot_stock_trends 各自独立触发重渲染
-                        window._pendingHotReload.highlights = true;
-                        window._scheduleHotRealtimeReload();
+                        state._pendingHotReload.highlights = true;
+                        _scheduleHotRealtimeReload();
                     })
                     .subscribe();
                 console.log('hot_stocks_highlights Realtime 订阅已启动');
@@ -391,9 +398,9 @@
         }
 
         export function stopHotHighlightsRealtime() {
-            if (window._hotHighlightsChannel) {
-                try { window._hotHighlightsChannel.unsubscribe(); } catch(e) {}
-                window._hotHighlightsChannel = null;
+            if (state._hotHighlightsChannel) {
+                try { state._hotHighlightsChannel.unsubscribe(); } catch(e) {}
+                state._hotHighlightsChannel = null;
             }
         }
 
@@ -405,8 +412,8 @@
         // 从 market_metrics(scope='hot') 全量读取，构建 _hotTrendsCache = {date: [items]}
         // 拆表后统一：热门股票趋势数据也落到 market_metrics，与早盘竞价影子数据共用同一张表。
         export async function loadHotTrendsFromCloud() {
-            if (window._justPushedHotTrends) return;
-            const sb = window.getSupabase();
+            if (state._justPushedHotTrends) return;
+            const sb = getSupabase();
             const result = {};
             let offset = 0;
             const pageSize = 1000;
@@ -436,7 +443,7 @@
                     offset += pageSize;
                 }
                 usedMarketMetrics = true;
-                window._marketMetricsTableAvailable = true;
+                state._marketMetricsTableAvailable = true;
             } catch (e) {
                 console.warn('[HOT-TRENDS] 从 market_metrics 读取失败，回退到 hot_stock_trends:', e.message);
             }
@@ -466,8 +473,8 @@
                 }
             }
 
-            window._hotTrendsTableAvailable = true;
-            window._hotTrendsCache = result;
+            state._hotTrendsTableAvailable = true;
+            state._hotTrendsCache = result;
             console.log('hot trends 加载完成:', Object.keys(result).length + ' 个日期' + (usedMarketMetrics ? '（来源：market_metrics）' : '（来源：hot_stock_trends 回退）'));
         }
 
@@ -479,22 +486,22 @@
             //    此处重复写入 market_metrics 会用空字符串覆盖已有有效值，导致"抓竞价量后成交量消失"的互斥bug。
             // 2. 本函数职责单一化：只负责①更新本地 _hotTrendsCache（趋势图立即可见）②同步到旧表 hot_stock_trends（兼容回退逻辑）。
             // 3. market_metrics 是主数据源，由 patchHotFieldBatch 写入，Realtime 会自动触发 _hotTrendsCache 刷新。
-            window._justPushedHotTrends = true;
+            state._justPushedHotTrends = true;
             try {
-                const scMap = window._scMapCache || {};
+                const scMap = state._scMapCache || {};
                 const now = new Date().toISOString();
-                if (!window._hotTrendsCache[date]) window._hotTrendsCache[date] = [];
+                if (!state._hotTrendsCache[date]) state._hotTrendsCache[date] = [];
 
                 // 从两个来源构建完整的 existing 数据：
                 // - _hotTrendsCache: 趋势缓存本身（历史影子数据）
                 // - _hotFullRowCache: 全量业务缓存（patchHotFieldBatch刚写入的最新数据在这）
                 var existingMap = {};
-                window._hotTrendsCache[date].forEach(function(r) {
+                state._hotTrendsCache[date].forEach(function(r) {
                     if (r && r.stock) existingMap[r.stock] = Object.assign({}, r);
                 });
                 // 合并 _hotFullRowCache 中的最新数据（业务字段权威来源）
-                if (window._hotFullRowCache[date]) {
-                    window._hotFullRowCache[date].forEach(function(r) {
+                if (state._hotFullRowCache[date]) {
+                    state._hotFullRowCache[date].forEach(function(r) {
                         if (r && r.stock) {
                             var name = r.stock.trim();
                             var merged = existingMap[name] || { stock: name };
@@ -543,7 +550,7 @@
 
                 // 先更新本地 _hotTrendsCache（无条件，趋势图立即可见）
                 // 重建缓存，确保和 existingMap 一致
-                window._hotTrendsCache[date] = rows.map(function(r) {
+                state._hotTrendsCache[date] = rows.map(function(r) {
                     return {
                         stock: r.stock,
                         code: r.code,
@@ -554,7 +561,7 @@
                 });
 
                 // 云端同步到旧表 hot_stock_trends（market_metrics 由 patchHotFieldBatch 负责，此处不再写入）
-                const sb = window.getSupabase();
+                const sb = getSupabase();
                 const batchSize = 500;
                 // [BUG-FIX] 不再依赖 _hotTrendsTableAvailable 标记静默跳过：初始化完成前该标记可能为 false，
                 // 导致抓取数据只进本地缓存、不进云端，刷新后丢失。改为直接尝试写入，表不存在时再报错。
@@ -563,39 +570,39 @@
                         .upsert(rows.slice(i, i + batchSize), { onConflict: 'date,stock' });
                     if (error) {
                         if (error.message && error.message.indexOf('relation') >= 0) {
-                            window._hotTrendsTableAvailable = false;
+                            state._hotTrendsTableAvailable = false;
                         }
                         // [BUG-FIX] hot_stock_trends 是旧表（已被 market_metrics scope=hot 替代），
                         // RLS 策略可能不允许前端 anon key 写入。数据已通过 patchHotFieldBatch 写入 market_metrics，
                         // 本地 _hotTrendsCache 也已更新，此处 RLS 失败不影响功能，静默跳过即可。
                         if (error.message && error.message.indexOf('row-level security policy') >= 0) {
                             console.warn('[HOT-TRENDS] hot_stock_trends RLS 策略拒绝写入（旧表已废弃，market_metrics 为主数据源），已跳过');
-                            window._hotTrendsTableAvailable = false;
+                            state._hotTrendsTableAvailable = false;
                             break;
                         }
                         throw error;
                     }
                 }
-                window._hotTrendsTableAvailable = true;
+                state._hotTrendsTableAvailable = true;
             } finally {
-                setTimeout(function() { window._justPushedHotTrends = false; }, 2000);
+                setTimeout(function() { state._justPushedHotTrends = false; }, 2000);
             }
         }
 
         // 删除单行：从 hot_stock_trends 与 market_metrics(scope='hot') 删除 (date, stock)
         export async function deleteHotTrendFromCloud(date, stock) {
-            if (!window._hotTrendsTableAvailable && !window._marketMetricsTableAvailable) return;
-            window._justPushedHotTrends = true;
+            if (!state._hotTrendsTableAvailable && !state._marketMetricsTableAvailable) return;
+            state._justPushedHotTrends = true;
             try {
-                const sb = window.getSupabase();
-                if (window._hotTrendsTableAvailable) {
+                const sb = getSupabase();
+                if (state._hotTrendsTableAvailable) {
                     const { error } = await sb.from('hot_stock_trends')
                         .delete()
                         .eq('date', date)
                         .eq('stock', stock);
                     if (error) throw error;
                 }
-                if (window._marketMetricsTableAvailable) {
+                if (state._marketMetricsTableAvailable) {
                     const { error } = await sb.from('market_metrics')
                         .delete()
                         .eq('date', date)
@@ -603,69 +610,69 @@
                         .eq('scope', 'hot');
                     if (error) throw error;
                 }
-                if (window._hotTrendsCache[date]) {
-                    window._hotTrendsCache[date] = window._hotTrendsCache[date].filter(function(r) {
+                if (state._hotTrendsCache[date]) {
+                    state._hotTrendsCache[date] = state._hotTrendsCache[date].filter(function(r) {
                         return r && r.stock !== stock;
                     });
                 }
             } finally {
-                setTimeout(function() { window._justPushedHotTrends = false; }, 2000);
+                setTimeout(function() { state._justPushedHotTrends = false; }, 2000);
             }
         }
 
         // 按日期清空：从 hot_stock_trends 与 market_metrics(scope='hot') 删除该 date 下所有行
         export async function deleteHotTrendsForDateFromCloud(date) {
-            if (!window._hotTrendsTableAvailable && !window._marketMetricsTableAvailable) return;
-            window._justPushedHotTrends = true;
+            if (!state._hotTrendsTableAvailable && !state._marketMetricsTableAvailable) return;
+            state._justPushedHotTrends = true;
             try {
-                const sb = window.getSupabase();
-                if (window._hotTrendsTableAvailable) {
+                const sb = getSupabase();
+                if (state._hotTrendsTableAvailable) {
                     const { error } = await sb.from('hot_stock_trends')
                         .delete()
                         .eq('date', date);
                     if (error) throw error;
                 }
-                if (window._marketMetricsTableAvailable) {
+                if (state._marketMetricsTableAvailable) {
                     const { error } = await sb.from('market_metrics')
                         .delete()
                         .eq('date', date)
                         .eq('scope', 'hot');
                     if (error) throw error;
                 }
-                window._hotTrendsCache[date] = [];
+                state._hotTrendsCache[date] = [];
             } finally {
-                setTimeout(function() { window._justPushedHotTrends = false; }, 2000);
+                setTimeout(function() { state._justPushedHotTrends = false; }, 2000);
             }
         }
 
         // hot 趋势 Realtime 订阅：同时监听 market_metrics(scope='hot') 与旧 hot_stock_trends
         // 拆表后统一写 market_metrics，但保留对旧表的监听以兼容未升级客户端。
         export function startHotTrendsRealtime() {
-            window.stopHotTrendsRealtime();
+            stopHotTrendsRealtime();
             try {
-                const sb = window.getSupabase();
-                window._hotTrendsRealtimeChannel = sb
+                const sb = getSupabase();
+                state._hotTrendsRealtimeChannel = sb
                     .channel('hot_stock_trends_changes')
                     .on('postgres_changes', {
                         event: '*', schema: 'public', table: 'hot_stock_trends'
                     }, function(payload) {
-                        if (window._justPushedHotTrends) return;
+                        if (state._justPushedHotTrends) return;
                         var row = payload.new || payload.old;
                         if (!row || !row.date) return;
-                        window._pendingHotReload.trends = true;
-                        window._scheduleHotRealtimeReload();
+                        state._pendingHotReload.trends = true;
+                        _scheduleHotRealtimeReload();
                     })
                     .subscribe();
-                window._marketMetricsHotRealtimeChannel = sb
+                state._marketMetricsHotRealtimeChannel = sb
                     .channel('market_metrics_hot_changes')
                     .on('postgres_changes', {
                         event: '*', schema: 'public', table: 'market_metrics'
                     }, function(payload) {
-                        if (window._justPushedHotAuction || window._justPushedHotTrends) return; // 自己刚推的，忽略
+                        if (state._justPushedHotAuction || state._justPushedHotTrends) return; // 自己刚推的，忽略
                         var row = payload.new || payload.old;
                         if (!row || !row.date || row.scope !== 'hot') return;
-                        window._pendingHotReload.stocks = true; // market_metrics变化影响_hotFullRowCache，需触发loadHotStocksFromCloud
-                        window._scheduleHotRealtimeReload();
+                        state._pendingHotReload.stocks = true; // market_metrics变化影响_hotFullRowCache，需触发loadHotStocksFromCloud
+                        _scheduleHotRealtimeReload();
                     })
                     .subscribe();
                 console.log('hot trends Realtime 订阅已启动（hot_stock_trends + market_metrics scope=hot）');
@@ -675,13 +682,13 @@
         }
 
         export function stopHotTrendsRealtime() {
-            if (window._hotTrendsRealtimeChannel) {
-                try { window.getSupabase().removeChannel(window._hotTrendsRealtimeChannel); } catch(e) {}
-                window._hotTrendsRealtimeChannel = null;
+            if (state._hotTrendsRealtimeChannel) {
+                try { getSupabase().removeChannel(state._hotTrendsRealtimeChannel); } catch(e) {}
+                state._hotTrendsRealtimeChannel = null;
             }
-            if (window._marketMetricsHotRealtimeChannel) {
-                try { window.getSupabase().removeChannel(window._marketMetricsHotRealtimeChannel); } catch(e) {}
-                window._marketMetricsHotRealtimeChannel = null;
+            if (state._marketMetricsHotRealtimeChannel) {
+                try { getSupabase().removeChannel(state._marketMetricsHotRealtimeChannel); } catch(e) {}
+                state._marketMetricsHotRealtimeChannel = null;
             }
         }
 
@@ -691,7 +698,7 @@
             const key = '_hot_stocks_shadow_migrated_to_metrics';
             if (localStorage.getItem(key) === '1') return;
             try {
-                const sb = window.getSupabase();
+                const sb = getSupabase();
                 const shadowRows = [];
                 let offset = 0;
                 const pageSize = 1000;
@@ -767,11 +774,11 @@
         // 一次性迁移：把 hot_stocks 表中已有的 volume/yest_volume/change_pct 灌入 hot_stock_trends 表
         export async function migrateHotStocksToTrendsTable() {
             if (localStorage.getItem('_hot_trends_table_migrated') === '1') {
-                window._hotTrendsTableAvailable = true;
+                state._hotTrendsTableAvailable = true;
                 return;
             }
             try {
-                const sb = window.getSupabase();
+                const sb = getSupabase();
                 const allRows = [];
                 let offset = 0;
                 const pageSize = 1000;
@@ -792,7 +799,7 @@
                            (r.change_pct && String(r.change_pct).trim());
                 });
                 if (validRows.length === 0) {
-                    window._hotTrendsTableAvailable = true;
+                    state._hotTrendsTableAvailable = true;
                     localStorage.setItem('_hot_trends_table_migrated', '1');
                     console.log('[迁移] hot_stocks 无可迁移的趋势数据，hot_stock_trends 表已就绪');
                     return;
@@ -822,7 +829,7 @@
                         migrated += chunk.length;
                     }
                 }
-                window._hotTrendsTableAvailable = true;
+                state._hotTrendsTableAvailable = true;
                 localStorage.setItem('_hot_trends_table_migrated', '1');
                 console.log('[迁移] hot_stock_trends 已迁移', migrated, '行趋势数据');
             } catch (e) {
@@ -834,11 +841,11 @@
         // 拆表后统一读 market_metrics，旧数据需要同步一份过去。
         export async function migrateHotTrendsToMarketMetrics() {
             if (localStorage.getItem('_hot_trends_migrated_to_market_metrics') === '1') {
-                window._marketMetricsTableAvailable = true;
+                state._marketMetricsTableAvailable = true;
                 return;
             }
             try {
-                const sb = window.getSupabase();
+                const sb = getSupabase();
                 const allRows = [];
                 let offset = 0;
                 const pageSize = 1000;
@@ -850,7 +857,7 @@
                         if (error.message && error.message.indexOf('relation') >= 0) {
                             console.log('[迁移] 旧 hot_stock_trends 表不存在，无需迁移到 market_metrics');
                             localStorage.setItem('_hot_trends_migrated_to_market_metrics', '1');
-                            window._marketMetricsTableAvailable = true;
+                            state._marketMetricsTableAvailable = true;
                             return;
                         }
                         throw error;
@@ -862,7 +869,7 @@
                 }
                 if (allRows.length === 0) {
                     localStorage.setItem('_hot_trends_migrated_to_market_metrics', '1');
-                    window._marketMetricsTableAvailable = true;
+                    state._marketMetricsTableAvailable = true;
                     console.log('[迁移] hot_stock_trends 无数据，market_metrics(scope=hot) 无需迁移');
                     return;
                 }
@@ -893,7 +900,7 @@
                         migrated += chunk.length;
                     }
                 }
-                window._marketMetricsTableAvailable = true;
+                state._marketMetricsTableAvailable = true;
                 localStorage.setItem('_hot_trends_migrated_to_market_metrics', '1');
                 console.log('[迁移] hot_stock_trends → market_metrics(scope=hot) 已迁移', migrated, '行');
             } catch (e) {

@@ -1,76 +1,66 @@
+﻿import { showAuctionNoteInput, showAuctionNotePopup, toggleAuctionRowSelect, copyAllTopicStocks, copyTopicStocks, expandAllAuctionTrendPanels, expandAllAuctionTrendPanelsP2, jumpToAuctionPage1, jumpToAuctionPage2, openAuctionNoteEditFromPage2, openCoreTopicModal, restoreExpandedAuctionTrendPanels, restoreExpandedTopicGroupsP2, showAuctionBuyPrompt, toggleAuctionSortHelp, toggleTopicGroupTrendPanels, openAuctionEdit, openHotEdit, renderAuction, toggleAuctionBoard, toggleStrengthSort } from '../logic/ui-bridge.js';
+import { state } from '../logic/app-state.js';
 /**
- * auction-store.js
- * 早盘竞价看板统一状态层（彻底重构版）
- * - 只保留真正的 UI 状态，无手动记忆化、无版本号、无 DOM 同步副作用
- * - 对全局函数的调用全部走安全包装，提供清晰的可选降级
- * - 与全局 window.currentDate / currentGroup 双向同步由外部日期切换逻辑与本文件 watch 共同维护
+ * auctionStore.js — 早盘竞价看板 Pinia store（迁移批次 3.3）
+ * 从 IIFE + Vue.reactive 手写 store 重构为标准 Pinia defineStore
+ * 保留 window.auctionStore 向后兼容赋值
  */
-(function () {
-  'use strict';
-  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+import { createPinia, defineStore } from 'pinia';
+import { watch } from 'vue';
 
-  // [TDZ-FIX] 同 auction-vue-mount.js：原写法在 window.Vue 不存在时会读取本行正在声明的
-  // const Vue，触发 TDZ 错误，导致 Vue 未就绪时整个 store 初始化 IIFE 抛错中断。
-  // 直接用 window.Vue（全局 Vue 即 window.Vue）即可，避免自引用 TDZ。
-  const Vue = window.Vue || null;
-  if (!Vue) {
-    console.warn('[AUCTION-STORE] Vue 未就绪，跳过 store 初始化（保留原生 innerHTML 渲染）');
-    return;
+// ---------- 内部辅助函数 ----------
+export function safeCall(fn, ...args) {
+  try {
+    if (typeof fn === 'function') return fn(...args);
+  } catch (e) {
+    console.warn('[AUCTION-STORE] 全局函数调用失败:', e);
   }
+  return undefined;
+}
 
-  // ---------- 工具函数 ----------
-  function safeCall(fn, ...args) {
-    try {
-      if (typeof fn === 'function') return fn(...args);
-    } catch (e) {
-      console.warn('[AUCTION-STORE] 全局函数调用失败:', e);
+function createSortState() {
+  return {
+    auction: { byData: false, byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false },
+    hot: { byData: false, byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false }
+  };
+}
+
+function createSortStateP2() {
+  return {
+    auction: { byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false },
+    hot: { byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false }
+  };
+}
+
+function tabKey(store) {
+  const ds = store.currentGroup;
+  return ds === 'hot' ? 'hot' : 'auction';
+}
+
+function syncGlobalCurrentGroup(store) {
+  try {
+    if (typeof state.currentGroup !== 'undefined' && state.currentGroup !== store.currentGroup) {
+      state.currentGroup = store.currentGroup;
     }
-    return undefined;
-  }
-  window.safeCall = safeCall;
+  } catch (e) {}
+}
 
-  function syncGlobalCurrentGroup() {
-    try {
-      if (typeof window.currentGroup !== 'undefined' && window.currentGroup !== store.currentGroup) {
-        window.currentGroup = store.currentGroup;
-      }
-    } catch (e) {}
-  }
-  window.syncGlobalCurrentGroup = syncGlobalCurrentGroup;
+function syncGlobalCurrentDate(store) {
+  try {
+    if (typeof state.currentDate !== 'undefined' && state.currentDate !== store.currentDate) {
+      state.currentDate = store.currentDate;
+    }
+  } catch (e) {}
+}
 
-  function syncGlobalCurrentDate() {
-    try {
-      if (typeof window.currentDate !== 'undefined' && window.currentDate !== store.currentDate) {
-        window.currentDate = store.currentDate;
-      }
-    } catch (e) {}
-  }
-  window.syncGlobalCurrentDate = syncGlobalCurrentDate;
-
-  function createSortState() {
-    return {
-      auction: { byData: false, byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false },
-      hot: { byData: false, byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false }
-    };
-  }
-  window.createSortState = createSortState;
-
-  function createSortStateP2() {
-    return {
-      auction: { byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false },
-      hot: { byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false }
-    };
-  }
-  window.createSortStateP2 = createSortStateP2;
-
-  // ---------- 状态树 ----------
-  const store = Vue.reactive({
+export const useAuctionStore = defineStore('auction', {
+  state: () => ({
     // 基础导航
-    currentDate: (typeof window.currentDate !== 'undefined' ? window.currentDate : '') || '',
-    currentGroup: 'auction', // 'auction' | 'hot'
-    currentPage: 0,          // 0=主列表, 1=题材分组, 2=题材历史, 3=统计看板
+    currentDate: (typeof window !== 'undefined' && state.currentDate != null) ? state.currentDate : '',
+    currentGroup: 'auction',
+    currentPage: 0,
 
-    // 数据源（保持与 index.html 中 _auctionMemCache / _hotAuctionData 的引用兼容）
+    // 数据源
     auctionData: {},
     hotAuctionData: {},
 
@@ -81,8 +71,8 @@
     highlightKeyword: '',
 
     // 排序状态（按 tab 隔离）
-    sortState: window.createSortState(),
-    sortStateP2: window.createSortStateP2(),
+    sortState: createSortState(),
+    sortStateP2: createSortStateP2(),
 
     // 全部展开
     expandAll: false,
@@ -91,196 +81,233 @@
     // 强度排序开关
     strengthSortEnabled: false,
 
-    // 标签派生信号版本（兼容 index.html 中 renderAuction 的失效信号）
+    // 标签派生信号版本
     stocksDataVersion: 0,
 
-    // 按数据源隔离的版本号：auction / hot 独立 bump，避免无关 tab 重算
+    // 按数据源隔离的版本号
     dataVersions: { auction: 0, hot: 0 },
 
     // actions 占位（下方绑定）
-    actions: null
-  });
-
-  function tabKey(dataSource) { if (!dataSource) dataSource = store.currentGroup; return dataSource === 'hot' ? 'hot' : 'auction'; }
-  window.tabKey = tabKey;
-
-  const actions = {
+    actions: null,
+  }),
+  actions: {
     // --- 导航 ---
     switchGroup(group) {
       if (group !== 'auction' && group !== 'hot') return;
-      store.currentGroup = group;
-      store.currentPage = 0;
-      store.highlightKeyword = '';
-      window.syncGlobalCurrentGroup();
+      this.currentGroup = group;
+      this.currentPage = 0;
+      this.highlightKeyword = '';
+      syncGlobalCurrentGroup(this);
     },
 
     switchPage(page) {
       const p = parseInt(page, 10);
       if (isNaN(p) || p < 0 || p > 3) return;
-      store.currentPage = p;
+      this.currentPage = p;
     },
 
     // --- 排序 ---
     setSortState(page, key, value) {
-      const t = window.tabKey();
-      if (page === 1 && store.sortState[t]) {
-        store.sortState[t][key] = !!value;
-      } else if (page === 2 && store.sortStateP2[t]) {
-        store.sortStateP2[t][key] = !!value;
+      const t = tabKey(this);
+      if (page === 1 && this.sortState[t]) {
+        this.sortState[t][key] = !!value;
+      } else if (page === 2 && this.sortStateP2[t]) {
+        this.sortStateP2[t][key] = !!value;
       }
     },
 
     // --- 展开/收起 ---
     toggleTrendPanel(stockName) {
       if (!stockName) return;
-      const set = store.expandedStocks;
+      const set = this.expandedStocks;
       if (set.has(stockName)) set.delete(stockName); else set.add(stockName);
     },
 
     toggleP2Topic(topic) {
       if (!topic) return;
-      const key = window.tabKey() + '|' + topic;
-      const set = store.p2ExpandedTopics;
+      const key = tabKey(this) + '|' + topic;
+      const set = this.p2ExpandedTopics;
       if (set.has(key)) set.delete(key); else set.add(key);
     },
 
     setExpandAll(value, page) {
-      if (page === 2) store.expandAllP2 = !!value;
-      else store.expandAll = !!value;
+      if (page === 2) this.expandAllP2 = !!value;
+      else this.expandAll = !!value;
     },
 
     // --- 高亮 ---
     setHighlight(stockName) {
-      store.highlightStock = stockName || '';
+      this.highlightStock = stockName || '';
     },
     clearHighlight() {
-      store.highlightStock = '';
+      this.highlightStock = '';
     },
 
     setHighlightKeyword(keyword) {
-      store.highlightKeyword = (keyword || '').trim().toLowerCase();
+      this.highlightKeyword = (keyword || '').trim().toLowerCase();
     },
 
     clearHighlightKeyword() {
-      store.highlightKeyword = '';
+      this.highlightKeyword = '';
     },
 
-    // --- 交互代理（统一走安全调用） ---
+    // --- 交互代理（直接调用 window 全局函数，safeCall 内部兜底） ---
     toggleRowSelect(index) {
-      window.safeCall(window.toggleAuctionRowSelect, index);
+      safeCall(toggleAuctionRowSelect, index);
     },
 
     showNotePopup(el, note) {
-      window.safeCall(window.showAuctionNotePopup, el, note);
+      safeCall(showAuctionNotePopup, el, note);
     },
 
     showNoteInput(index, el) {
-      window.safeCall(window.showAuctionNoteInput, index, el);
+      safeCall(showAuctionNoteInput, index, el);
     },
 
     showBuyPrompt(stockName) {
-      window.safeCall(window.showAuctionBuyPrompt, stockName);
+      safeCall(showAuctionBuyPrompt, stockName);
     },
 
     openEdit(dataSource) {
-      if (dataSource === 'hot') window.safeCall(window.openHotEdit);
-      else window.safeCall(window.openAuctionEdit);
+      if (dataSource === 'hot') safeCall(openHotEdit);
+      else safeCall(openAuctionEdit);
     },
 
     jumpToPage2(stockName) {
-      window.safeCall(window.jumpToAuctionPage2, stockName);
+      safeCall(jumpToAuctionPage2, stockName);
     },
 
     jumpToPage1(stockName) {
-      window.safeCall(window.jumpToAuctionPage1, stockName);
+      safeCall(jumpToAuctionPage1, stockName);
     },
 
     toggleStrengthSort() {
-      window.safeCall(window.toggleStrengthSort);
+      safeCall(toggleStrengthSort);
     },
 
     toggleSortHelp(panelId) {
-      window.safeCall(window.toggleAuctionSortHelp, panelId);
+      safeCall(toggleAuctionSortHelp, panelId);
     },
 
     toggleBoard() {
-      window.safeCall(window.toggleAuctionBoard);
+      safeCall(toggleAuctionBoard);
     },
 
     toggleTopicGroupTrendPanels(topic) {
-      window.safeCall(window.toggleTopicGroupTrendPanels, topic);
+      safeCall(toggleTopicGroupTrendPanels, topic);
     },
 
     expandAllTrendPanels(dataSource) {
-      window.safeCall(window.expandAllAuctionTrendPanels, dataSource);
+      safeCall(expandAllAuctionTrendPanels, dataSource);
     },
 
     restoreExpandedTrendPanels(dataSource) {
-      window.safeCall(window.restoreExpandedAuctionTrendPanels, dataSource);
+      safeCall(restoreExpandedAuctionTrendPanels, dataSource);
     },
 
     expandAllTrendPanelsP2(dataSource) {
-      window.safeCall(window.expandAllAuctionTrendPanelsP2, dataSource);
+      safeCall(expandAllAuctionTrendPanelsP2, dataSource);
     },
 
     restoreExpandedTopicGroupsP2(dataSource) {
-      window.safeCall(window.restoreExpandedTopicGroupsP2, dataSource);
+      safeCall(restoreExpandedTopicGroupsP2, dataSource);
     },
 
     openCoreTopicModal() {
-      window.safeCall(window.openCoreTopicModal);
+      safeCall(openCoreTopicModal);
     },
 
     openAuctionNoteEditFromPage2(stockName) {
-      window.safeCall(window.openAuctionNoteEditFromPage2, stockName);
+      safeCall(openAuctionNoteEditFromPage2, stockName);
     },
 
     copyAllTopicStocks(topic, dataSource) {
-      window.safeCall(window.copyAllTopicStocks, topic, dataSource);
+      safeCall(copyAllTopicStocks, topic, dataSource);
     },
 
     copyTopicStocks(topic, limit, dataSource) {
-      window.safeCall(window.copyTopicStocks, topic, limit, dataSource);
+      safeCall(copyTopicStocks, topic, limit, dataSource);
     },
 
     // --- 日期 ---
     setDate(date) {
-      store.currentDate = date || '';
-      store.expandedStocks.clear();
-      store.p2ExpandedTopics.clear();
-      store.highlightStock = '';
-      store.highlightKeyword = '';
-      store.sortState = window.createSortState();
-      store.sortStateP2 = window.createSortStateP2();
-      store.expandAll = false;
-      store.expandAllP2 = false;
-      window.syncGlobalCurrentDate();
+      this.currentDate = date || '';
+      this.expandedStocks.clear();
+      this.p2ExpandedTopics.clear();
+      this.highlightStock = '';
+      this.highlightKeyword = '';
+      this.sortState = createSortState();
+      this.sortStateP2 = createSortStateP2();
+      this.expandAll = false;
+      this.expandAllP2 = false;
+      syncGlobalCurrentDate(this);
     },
 
     // --- 刷新 ---
     refresh() {
-      window.safeCall(window.renderAuction, store.currentGroup);
+      safeCall(renderAuction, this.currentGroup);
     },
 
     // --- 强度排序开关镜像 ---
     setStrengthSortEnabled(value) {
-      store.strengthSortEnabled = !!value;
+      this.strengthSortEnabled = !!value;
     },
 
     // --- 按数据源失效信号 ---
     bumpDataVersion(source) {
-      if (store.dataVersions && source in store.dataVersions) {
-        store.dataVersions[source] = (store.dataVersions[source] || 0) + 1;
+      if (this.dataVersions && source in this.dataVersions) {
+        this.dataVersions[source] = (this.dataVersions[source] || 0) + 1;
       }
-    }
-  };
+    },
+  },
+});
 
-  store.actions = actions;
-  window.auctionStore = store;
+// 独立 pinia 实例，模块加载即创建 store
+const _pinia = createPinia();
+const store = useAuctionStore(_pinia);
 
-  // store -> global 同步
-  try {
-    Vue.watch(() => store.currentGroup, window.syncGlobalCurrentGroup);
-    Vue.watch(() => store.currentDate, window.syncGlobalCurrentDate);
-  } catch (e) {}
-})();
+// 绑定 actions 引用（向后兼容：旧代码通过 store.actions.xxx 调用）
+store.actions = {
+  switchGroup: (g) => store.switchGroup(g),
+  switchPage: (p) => store.switchPage(p),
+  setSortState: (pg, k, v) => store.setSortState(pg, k, v),
+  toggleTrendPanel: (s) => store.toggleTrendPanel(s),
+  toggleP2Topic: (t) => store.toggleP2Topic(t),
+  setExpandAll: (v, p) => store.setExpandAll(v, p),
+  setHighlight: (s) => store.setHighlight(s),
+  clearHighlight: () => store.clearHighlight(),
+  setHighlightKeyword: (k) => store.setHighlightKeyword(k),
+  clearHighlightKeyword: () => store.clearHighlightKeyword(),
+  toggleRowSelect: (i) => store.toggleRowSelect(i),
+  showNotePopup: (el, n) => store.showNotePopup(el, n),
+  showNoteInput: (i, el) => store.showNoteInput(i, el),
+  showBuyPrompt: (s) => store.showBuyPrompt(s),
+  openEdit: (ds) => store.openEdit(ds),
+  jumpToPage2: (s) => store.jumpToPage2(s),
+  jumpToPage1: (s) => store.jumpToPage1(s),
+  toggleStrengthSort: () => store.toggleStrengthSort(),
+  toggleSortHelp: (p) => store.toggleSortHelp(p),
+  toggleBoard: () => store.toggleBoard(),
+  toggleTopicGroupTrendPanels: (t) => store.toggleTopicGroupTrendPanels(t),
+  expandAllTrendPanels: (ds) => store.expandAllTrendPanels(ds),
+  restoreExpandedTrendPanels: (ds) => store.restoreExpandedTrendPanels(ds),
+  expandAllTrendPanelsP2: (ds) => store.expandAllTrendPanelsP2(ds),
+  restoreExpandedTopicGroupsP2: (ds) => store.restoreExpandedTopicGroupsP2(ds),
+  openCoreTopicModal: () => store.openCoreTopicModal(),
+  openAuctionNoteEditFromPage2: (s) => store.openAuctionNoteEditFromPage2(s),
+  copyAllTopicStocks: (t, ds) => store.copyAllTopicStocks(t, ds),
+  copyTopicStocks: (t, l, ds) => store.copyTopicStocks(t, l, ds),
+  setDate: (d) => store.setDate(d),
+  refresh: () => store.refresh(),
+  setStrengthSortEnabled: (v) => store.setStrengthSortEnabled(v),
+  bumpDataVersion: (s) => store.bumpDataVersion(s),
+};
+
+
+// store -> global 同步（currentGroup / currentDate 变化时同步到 window）
+try {
+  watch(() => store.currentGroup, () => syncGlobalCurrentGroup(store));
+  watch(() => store.currentDate, () => syncGlobalCurrentDate(store));
+} catch (e) {}
+
+export default store;

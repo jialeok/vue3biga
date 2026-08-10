@@ -1,4 +1,4 @@
-// auction-sync.js — 云端拉取/推送调度（从 app-core.js 抽离）
+﻿// auction-sync.js — 云端拉取/推送调度（从 app-core.js 抽离）
 // 逻辑层 workflow：编排 data/ 层的 supabase 读写 + 本地缓存同步
 
         // 批量更新某日期所有股票的状态列（主程序拥有：selected/obs_auto_added）
@@ -7,11 +7,25 @@
         // （股票列表页手动标签），行上残留的旧标签位已是废弃字段，覆写云端只会让
         // 陈旧值继续沉淀（"幽灵标签"）。云端这三列保持最后一次旧值自然退役。
         // 拆表后：只写 auction_watchlist，该表没有 in_watchlist 列（每行天然是正式成员）。
+import { getSupabase, getStocksData, loadAllData } from '../../data/supabase-client.js';
+import { _dbgLog } from '../../data/debug-log.js';
+import { _emit } from '../../stores/eventBus.js';
+import { getGroupData, getAuctionData, saveModule, patchAuctionFieldBatch, reconcileAuctionWatchlistFromLocalStorage, mergeAuctionDateRows, getHotAuctionData, _openHotAuctionShield, _closeHotAuctionShield } from '../app-core.js';
+import { _getAuctionWatchlistSet } from '../../data/watchlist-and-metrics.js';
+import { cleanseAuctionTagsOnce } from '../tag-rules.js';
+import { state } from '../app-state.js';
+import { pullAuctionFromTable } from '../../data/auction-data.js';
+import { pullBiddingFromTable, pushBiddingToCloud } from '../../data/bidding-data.js';
+import { pullJiwangFromTable } from '../../data/jiwang-data.js';
+import { updateCloudSyncUI, recalcDuibanFromAuction } from '../ui-bridge.js';
+import { _openAuctionShield, _closeAuctionShield } from '../../data/session-and-shield.js';
+import { syncStockTopicsFromAuction } from '../auction-stock-sync.js';
+
         export async function pushAuctionStatusForDate(date) {
-            const sb = window.getSupabase();
+            const sb = getSupabase();
             // 方案2：用 _auctionWatchlistIndex 判断正式成员，只推送正式成员的状态
-            const watchlistSet = window._getAuctionWatchlistSet(date);
-            const auctionList = (window.getAuctionData()[date] || []).filter(function(s) { return s && s.stock && watchlistSet.has(s.stock.trim()); });
+            const watchlistSet = _getAuctionWatchlistSet(date);
+            const auctionList = (getAuctionData()[date] || []).filter(function(s) { return s && s.stock && watchlistSet.has(s.stock.trim()); });
             if (auctionList.length === 0) return;
             const now = new Date().toISOString();
             // 分批并行更新（每批 25 个），避免过多并发请求
@@ -40,10 +54,10 @@
         // 方案2：用 _auctionWatchlistIndex 判断正式成员（localList 只含正式成员），
         //   同步完成后用 localStocks 覆盖该日期的索引，保持索引与云端一致。
         export async function syncAuctionListForDate(date) {
-            const sb = window.getSupabase();
+            const sb = getSupabase();
             // 方案2：用 _auctionWatchlistIndex 过滤正式成员
-            const watchlistSet = window._getAuctionWatchlistSet(date);
-            const localList = (window.getAuctionData()[date] || []).filter(function(s) { return s && s.stock && watchlistSet.has(s.stock.trim()); });
+            const watchlistSet = _getAuctionWatchlistSet(date);
+            const localList = (getAuctionData()[date] || []).filter(function(s) { return s && s.stock && watchlistSet.has(s.stock.trim()); });
             const localStocks = new Set(localList.map(function(s) { return s.stock.trim(); }));
 
             // 读取云端 auction_watchlist 该日期已有股票
@@ -53,7 +67,7 @@
             const cloudStocks = new Set((cloudRows || []).map(function(r) { return (r.stock || '').trim(); }));
 
             const now = new Date().toISOString();
-            const scMap = window._scMapCache || {};
+            const scMap = state._scMapCache || {};
 
             // 1. 云端有但本地无的股票：从 auction_watchlist 物理删除
             const toRemove = [];
@@ -70,7 +84,7 @@
             const _removeRatio = _cloudTotal > 0 ? (toRemove.length / _cloudTotal) : 0;
             const _suspiciousWipe = _cloudTotal > 0 && _removeRatio > 0.6;
             if (_suspiciousWipe) {
-                window._dbgLog('[SYNC-GUARD] ⛔ window.syncAuctionListForDate date=' + date +
+                _dbgLog('[SYNC-GUARD] ⛔ window.syncAuctionListForDate date=' + date +
                     ' 疑似本地快照不完整，已跳过本次批量删除！云端共' + _cloudTotal +
                     '只，本地仅' + localStocks.size + '只，拟移除' + toRemove.length +
                     '只（比例' + Math.round(_removeRatio * 100) + '%）。' +
@@ -79,7 +93,7 @@
                 return;
             }
             if (toRemove.length > 0) {
-                window._dbgLog('[SYNC-GUARD] window.syncAuctionListForDate date=' + date + ' 正常删除 ' +
+                _dbgLog('[SYNC-GUARD] window.syncAuctionListForDate date=' + date + ' 正常删除 ' +
                     toRemove.length + ' 只（云端' + _cloudTotal + '只 → 本地' + localStocks.size +
                     '只）：' + toRemove.join('、'));
                 const { error: rmErr } = await sb.from('auction_watchlist')
@@ -131,21 +145,21 @@
                 if (updErr) throw updErr;
             }
 
-            window._dbgLog('[SYNC-GUARD] window.syncAuctionListForDate date=' + date + ' 完成：云端' + _cloudTotal +
+            _dbgLog('[SYNC-GUARD] window.syncAuctionListForDate date=' + date + ' 完成：云端' + _cloudTotal +
                 '只 → 本地' + localStocks.size + '只（删除' + toRemove.length + ' / 新增' + newStocks.length +
                 ' / 更新状态' + existingStocks.length + '）');
             // 方案2：同步完成后更新本地正式成员索引（与云端 auction_watchlist 一致）
-            window._auctionWatchlistIndex[date] = new Set(localStocks);
+            state._auctionWatchlistIndex[date] = new Set(localStocks);
         }
 
         // 热门股票脏日期全量同步（改表名 hot_stocks、数据源 getGroupData('hot')）
         // 拆表后：hot_stocks 没有 in_watchlist 列，每行天然是正式成员；
         // 云端有但本地无的股票直接物理删除，不再置 in_watchlist=false。
         export async function syncHotStocksListForDate(date) {
-            window._openHotAuctionShield(); // 计数器式屏蔽窗口：与 window.patchHotFieldBatch 并发时互不干扰
+            _openHotAuctionShield(); // 计数器式屏蔽窗口：与 window.patchHotFieldBatch 并发时互不干扰
             try {
-            const sb = window.getSupabase();
-            const localList = (window.getGroupData('hot')[date] || []).filter(function(s) { return s && s.stock; });
+            const sb = getSupabase();
+            const localList = (getGroupData('hot')[date] || []).filter(function(s) { return s && s.stock; });
             const localStocks = new Set(localList.map(function(s) { return s.stock.trim(); }));
 
             const { data: cloudRows, error: readErr } = await sb.from('hot_stocks')
@@ -154,7 +168,7 @@
             const cloudStocks = new Set((cloudRows || []).map(function(r) { return (r.stock || '').trim(); }));
 
             const now = new Date().toISOString();
-            const scMap = window._scMapCache || {};
+            const scMap = state._scMapCache || {};
 
             // 1. 云端有但本地无的股票：从 hot_stocks 物理删除
             const toRemove = [];
@@ -165,7 +179,7 @@
             const _removeRatioHot = _cloudTotalHot > 0 ? (toRemove.length / _cloudTotalHot) : 0;
             const _suspiciousWipeHot = _cloudTotalHot > 0 && _removeRatioHot > 0.6;
             if (_suspiciousWipeHot) {
-                window._dbgLog('[SYNC-GUARD] ⛔ window.syncHotStocksListForDate date=' + date +
+                _dbgLog('[SYNC-GUARD] ⛔ window.syncHotStocksListForDate date=' + date +
                     ' 疑似本地快照不完整，已跳过本次批量删除！云端共' + _cloudTotalHot +
                     '只，本地仅' + localStocks.size + '只，拟移除' + toRemove.length +
                     '只（比例' + Math.round(_removeRatioHot * 100) + '%）。' +
@@ -173,7 +187,7 @@
                     '。若该日期确实需要清空，请手动操作确认；本次不做任何改动。');
             } else {
             if (toRemove.length > 0) {
-                window._dbgLog('[SYNC-GUARD] window.syncHotStocksListForDate date=' + date + ' 正常删除 ' +
+                _dbgLog('[SYNC-GUARD] window.syncHotStocksListForDate date=' + date + ' 正常删除 ' +
                     toRemove.length + ' 只（云端' + _cloudTotalHot + '只 → 本地' + localStocks.size +
                     '只）：' + toRemove.join('、'));
                 const { error: rmErr } = await sb.from('hot_stocks')
@@ -225,10 +239,10 @@
             }
 
             // 方案2：同步完成后更新本地正式成员索引
-            window._hotWatchlistIndex[date] = new Set(localStocks);
+            state._hotWatchlistIndex[date] = new Set(localStocks);
             } finally {
                 // 写入真正全部完成后，再留 2 秒缓冲吸收 Realtime 回显，而不是在写入尚未结束时就提前放开
-                window._closeHotAuctionShield(2000);
+                _closeHotAuctionShield(2000);
             }
         }
 
@@ -243,25 +257,25 @@
             // 会导致"登录/刷新后立刻点击同花顺接口按钮"时数据被无声丢弃、云端完全没写入。
             // 改为：最多等待 5 秒（loadHotStocksFromCloud 正常几百毫秒~1秒内完成），
             // 超时仍未就绪才放弃，并在控制台留痕方便排查。
-            if (!window._hotAuctionTableAvailable && !window._marketMetricsTableAvailable) {
+            if (!state._hotAuctionTableAvailable && !state._marketMetricsTableAvailable) {
                 const waitStart = Date.now();
-                while (!window._hotAuctionTableAvailable && !window._marketMetricsTableAvailable && Date.now() - waitStart < 5000) {
+                while (!state._hotAuctionTableAvailable && !state._marketMetricsTableAvailable && Date.now() - waitStart < 5000) {
                     await new Promise(function(r) { setTimeout(r, 100); });
                 }
-                if (!window._hotAuctionTableAvailable && !window._marketMetricsTableAvailable) {
+                if (!state._hotAuctionTableAvailable && !state._marketMetricsTableAvailable) {
                     console.warn('window.pushHotStocksDataToCloud 放弃：hot_stocks 与 market_metrics 表 5 秒内均未就绪，数据未写入云端。日期:', date);
                     return;
                 }
             }
-            window._openHotAuctionShield();
+            _openHotAuctionShield();
             try {
-            const sb = window.getSupabase();
-            const scMap = window._scMapCache || {};
+            const sb = getSupabase();
+            const scMap = state._scMapCache || {};
             const now = new Date().toISOString();
             // 判断依据：该股票是否已经是"当前 hotAuctionData[date] 正式列表"的成员。
             // 正式列表成员 → hot_stocks；不在正式列表里的股票 → market_metrics(scope='hot')。
             const existingWatchlistNames = {};
-            const _watchlistSourceList = watchlistSnapshot !== undefined ? watchlistSnapshot : (window.getHotAuctionData()[date] || []);
+            const _watchlistSourceList = watchlistSnapshot !== undefined ? watchlistSnapshot : (getHotAuctionData()[date] || []);
             (_watchlistSourceList || []).forEach(function(s) {
                 if (s && s.stock) existingWatchlistNames[s.stock.trim()] = true;
             });
@@ -273,7 +287,7 @@
                 // [BUG-FIX] 防止本地/映射都没有 code 时，用 '' 覆盖云端已有的 code。
                 let code = (scMap[nameTrim] || '').trim() || (item.code || '').trim();
                 if (!code) {
-                    const cached = (window._hotFullRowCache[date] || []).find(function(r) { return r && r.stock === nameTrim; });
+                    const cached = (state._hotFullRowCache[date] || []).find(function(r) { return r && r.stock === nameTrim; });
                     code = cached ? (cached.code || '').trim() : '';
                 }
                 const isWatchlist = !!existingWatchlistNames[nameTrim];
@@ -317,60 +331,60 @@
                 });
             });
 
-            if (watchlistRows.length > 0 && window._hotAuctionTableAvailable) {
+            if (watchlistRows.length > 0 && state._hotAuctionTableAvailable) {
                 const { error } = await sb.from('hot_stocks')
                     .upsert(watchlistRows, { onConflict: 'date,stock' });
                 if (error) throw error;
             }
-            if (metricsRows.length > 0 && window._marketMetricsTableAvailable) {
+            if (metricsRows.length > 0 && state._marketMetricsTableAvailable) {
                 const { error } = await sb.from('market_metrics')
                     .upsert(metricsRows, { onConflict: 'date,stock,scope' });
                 if (error) throw error;
             }
 
             // 合并到本地全量快照缓存，避免趋势图读到旧数据
-            if (!window._hotFullRowCache[date]) window._hotFullRowCache[date] = [];
+            if (!state._hotFullRowCache[date]) state._hotFullRowCache[date] = [];
             localOps.forEach(function(op) {
                 const row = op.row;
-                var idx = window._hotFullRowCache[date].findIndex(function(r) { return r.stock === row.stock; });
+                var idx = state._hotFullRowCache[date].findIndex(function(r) { return r.stock === row.stock; });
                 if (idx >= 0) {
-                    Object.keys(row).forEach(function(k) { window._hotFullRowCache[date][idx][k] = row[k]; });
+                    Object.keys(row).forEach(function(k) { state._hotFullRowCache[date][idx][k] = row[k]; });
                 } else {
-                    window._hotFullRowCache[date].push(row);
+                    state._hotFullRowCache[date].push(row);
                 }
             });
             } finally {
-                window._closeHotAuctionShield(2000);
+                _closeHotAuctionShield(2000);
             }
         }
 
         // pushToCloud 中调用：同步 auction 数据到新表
         export async function pushAuctionToCloud() {
-            if (!window._auctionTableAvailable) return; // 表不可用时跳过，回退到 user_data
-            window._openAuctionShield();
+            if (!state._auctionTableAvailable) return; // 表不可用时跳过，回退到 user_data
+            _openAuctionShield();
             try {
-            const dirtyDates = window._auctionDirtyDates ? Array.from(window._auctionDirtyDates) : [];
+            const dirtyDates = state._auctionDirtyDates ? Array.from(state._auctionDirtyDates) : [];
 
             // 1. 脏日期：全量同步（增删股票）
             for (let i = 0; i < dirtyDates.length; i++) {
-                try { await window.syncAuctionListForDate(dirtyDates[i]); }
-                catch(e) { window._dbgLog('[AUCTION-ERR] window.syncAuctionListForDate date=' + dirtyDates[i] + ' ' + (e && e.message)); }
+                try { await syncAuctionListForDate(dirtyDates[i]); }
+                catch(e) { _dbgLog('[AUCTION-ERR] window.syncAuctionListForDate date=' + dirtyDates[i] + ' ' + (e && e.message)); }
             }
 
             // 说明：曾经这里还有一个"当前日期：仅当状态签名变化时才推送"的兜底分支，
-            // 每次都读取*触发这一刻*的 window.currentDate。但 scheduleCloudPush 是 2 秒防抖，
+            // 每次都读取*触发这一刻*的 state.currentDate。但 scheduleCloudPush 是 2 秒防抖，
             // 如果用户在这 2 秒内切换了日期（保存后立刻翻页很常见），
-            // 计时器触发时 window.currentDate 已经是新日期——导致把"刚编辑的那天"的推送，
+            // 计时器触发时 state.currentDate 已经是新日期——导致把"刚编辑的那天"的推送，
             // 错误地当成"当前打开的这天"的状态推送来源，产生跨日期写串的问题
             // （表现为"今天的股票被写进了历史日期"）。
             // 所有真实编辑路径（saveAuction/导入/标签变化等）都已经在编辑发生的
             // 那一刻调用 markAuctionDirty(编辑时的日期)，dirtyDates 才是唯一可信来源，
-            // 不需要也不应该再按"触发时刻的 window.currentDate"做兜底推送。
+            // 不需要也不应该再按"触发时刻的 state.currentDate"做兜底推送。
 
             // 2. 清空脏日期标记
-            if (window._auctionDirtyDates) window._auctionDirtyDates.clear();
+            if (state._auctionDirtyDates) state._auctionDirtyDates.clear();
             } finally {
-                window._closeAuctionShield(2000);
+                _closeAuctionShield(2000);
             }
         }
 
@@ -381,14 +395,14 @@
         //   - 导入批次中的影子记录（in_watchlist!==true）若已存在于 auction_watchlist，
         //     则物理删除，替代旧 auction_data 时代的"置 in_watchlist=false 降级"。
         export async function pushAuctionDataToCloud(date, items) {
-            if (!window._auctionTableAvailable) return;
-            window._openAuctionShield();
+            if (!state._auctionTableAvailable) return;
+            _openAuctionShield();
             try {
-            const sb = window.getSupabase();
-            const scMap = window._scMapCache || {};
+            const sb = getSupabase();
+            const scMap = state._scMapCache || {};
             const now = new Date().toISOString();
             // 方案2：用 _auctionWatchlistIndex 判断正式成员（替代旧 in_watchlist===true 判断）
-            const watchlistSet = window._getAuctionWatchlistSet(date);
+            const watchlistSet = _getAuctionWatchlistSet(date);
             const existingWatchlistNames = {};
             watchlistSet.forEach(function(name) { existingWatchlistNames[name] = true; });
             const rows = items.filter(function(s) { return s && s.stock && existingWatchlistNames[s.stock.trim()]; }).map(function(item) {
@@ -413,7 +427,7 @@
 
             // 影子记录：从 auction_watchlist 物理删除（不再降级）
             const shadowItems = items.filter(function(s) { return s && s.stock && !existingWatchlistNames[s.stock.trim()]; });
-            if (window._auctionTableAvailable && shadowItems.length > 0) {
+            if (state._auctionTableAvailable && shadowItems.length > 0) {
                 const shadowNames = shadowItems.map(function(s) { return s.stock.trim(); });
                 const { error: delErr } = await sb.from('auction_watchlist')
                     .delete()
@@ -426,7 +440,7 @@
 
             // 推送成功后，直接把这批数据合并进本地内存缓存，
             // 避免趋势图因 _justPushedAuction 屏蔽了 Realtime 回显而读不到当天刚导入/编辑的数据
-            var _existingList = window._auctionMemCache[date] || [];
+            var _existingList = state._auctionMemCache[date] || [];
             var mergedRows = [];
             rows.forEach(function(row) {
                 var idx = _existingList.findIndex(function(r) { return r.stock === row.stock; });
@@ -439,18 +453,18 @@
                 };
                 mergedRows.push(mergedRow);
             });
-            window.mergeAuctionDateRows(date, mergedRows, 'window.pushAuctionDataToCloud');
+            mergeAuctionDateRows(date, mergedRows, 'window.pushAuctionDataToCloud');
 
             // 更新状态签名（导入后状态可能变了）
-            if (date === window.currentDate) {
-                const wset = window._getAuctionWatchlistSet(window.currentDate);
-                window._lastPushedAuctionStatus = JSON.stringify((window.getAuctionData()[window.currentDate] || []).filter(function(s) { return s && s.stock && wset.has(s.stock.trim()); }).map(function(s) {
+            if (date === state.currentDate) {
+                const wset = _getAuctionWatchlistSet(state.currentDate);
+                state._lastPushedAuctionStatus = JSON.stringify((getAuctionData()[state.currentDate] || []).filter(function(s) { return s && s.stock && wset.has(s.stock.trim()); }).map(function(s) {
                     return { s: s.stock, sel: s.selected || false, b: s.bought || false,
                              so: s.sold || false, f: s.fixed || false };
                 }));
             }
             } finally {
-                window._closeAuctionShield(2000);
+                _closeAuctionShield(2000);
             }
         }
 
@@ -460,11 +474,11 @@
         // 都由 patchAuctionFieldBatch 内部统一处理。
         // 拆表后：code 是公共字段，patchAuctionFieldBatch 会同时写入 auction_watchlist 与 market_metrics。
         export async function pushAuctionCodeToCloud(date) {
-            if (!window._auctionTableAvailable && !window._marketMetricsTableAvailable) return;
-            const scMap = window._scMapCache || {};
+            if (!state._auctionTableAvailable && !state._marketMetricsTableAvailable) return;
+            const scMap = state._scMapCache || {};
             // 方案2：用 _auctionWatchlistIndex 判断正式成员，只推送正式成员的 code
-            const watchlistSet = window._getAuctionWatchlistSet(date);
-            const auctionList = (window.getAuctionData()[date] || []).filter(function(s) { return s && s.stock && watchlistSet.has(s.stock.trim()); });
+            const watchlistSet = _getAuctionWatchlistSet(date);
+            const auctionList = (getAuctionData()[date] || []).filter(function(s) { return s && s.stock && watchlistSet.has(s.stock.trim()); });
             const items = [];
             auctionList.forEach(function(item) {
                 var code = scMap[item.stock.trim()] || '';
@@ -473,7 +487,7 @@
                 }
             });
             if (items.length > 0) {
-                await window.patchAuctionFieldBatch(date, items);
+                await patchAuctionFieldBatch(date, items);
             }
         }
 
@@ -481,9 +495,9 @@
         // 云端数据拉取（解锁后执行一次）
         // ============================================================
         export async function pullFromCloud() {
-            const statusEl = { set innerHTML(v) { window._domSetHtml('syncStatus', v); } };
+            const _setSyncStatus = (v) => { try { const el = document.getElementById('syncStatus'); if (el) el.textContent = v; } catch {} };
             try {
-                const sb = window.getSupabase();
+                const sb = getSupabase();
                 const { data, error } = await sb
                     .from('user_data')
                     .select('data')
@@ -492,7 +506,7 @@
 
                 if (error) throw error;
                 if (!data || !data.data || Object.keys(data.data).length === 0) {
-                    statusEl.innerHTML = '<span style="color:#34d399">✅ 云端暂无数据，使用本地数据</span>';
+                    _setSyncStatus('✅ 云端暂无数据，使用本地数据');
                     return;
                 }
 
@@ -550,12 +564,12 @@
                 }
 
                 // 重置内存中的 allData，让 loadAllData() 重新从 localStorage 读取
-                window.allData = null;
+                state.allData = null;
 
                 // 从 auction_watchlist + market_metrics 拉取 auction 数据（拆表后新增）
                 // 若新表不可用或为空，保留本地数据（不清空）
                 try {
-                    const tableAuction = await window.pullAuctionFromTable();
+                    const tableAuction = await pullAuctionFromTable();
                     // 阶段四 Bug 6 收尾修复：auction 已改为纯内存缓存（_auctionMemCache）+ 云端表，
                     // 不再落 localStorage（Bug 4），也不需要 allData = null 重置——
                     // pullAuctionFromTable 内部已原地清空+灌入 _auctionMemCache，
@@ -566,26 +580,26 @@
                     // 新表为空时：保留本地数据，不清空（可能是迁移未完成或表刚创建）
                     // 更新状态签名，避免 pull 后立即触发无意义的 push
                     // 方案2：状态签名只统计正式成员（用 _auctionWatchlistIndex 判断）
-                    const _pullWset = window._getAuctionWatchlistSet(window.currentDate);
-                    const todayList = (window._auctionMemCache[window.currentDate] || []).filter(function(s) { return s && s.stock && _pullWset.has(s.stock.trim()); });
-                    window._lastPushedAuctionStatus = JSON.stringify(todayList.map(function(s) {
+                    const _pullWset = _getAuctionWatchlistSet(state.currentDate);
+                    const todayList = (state._auctionMemCache[state.currentDate] || []).filter(function(s) { return s && s.stock && _pullWset.has(s.stock.trim()); });
+                    state._lastPushedAuctionStatus = JSON.stringify(todayList.map(function(s) {
                         return { s: s.stock, sel: s.selected || false, b: s.bought || false,
                                  so: s.sold || false, f: s.fixed || false };
                     }));
                 } catch(tableErr) {
-                    window._dbgLog('[AUCTION-ERR] window.pullAuctionFromTable ' + (tableErr && tableErr.message));
+                    _dbgLog('[AUCTION-ERR] window.pullAuctionFromTable ' + (tableErr && tableErr.message));
                 }
 
                 // 阶段六 影子bug6 收尾：拉取完成后立即对账，用 localStorage 旧正式列表纠正云端已提升的影子记录
                 try {
-                    const reconcileResult = await window.reconcileAuctionWatchlistFromLocalStorage();
+                    const reconcileResult = await reconcileAuctionWatchlistFromLocalStorage();
                     if (!reconcileResult.skipped && reconcileResult.demoted > 0) {
-                        window._dbgLog('[RECONCILE] 首次对账降级 ' + reconcileResult.demoted + ' 只影子记录，触发重新渲染');
+                        _dbgLog('[RECONCILE] 首次对账降级 ' + reconcileResult.demoted + ' 只影子记录，触发重新渲染');
                         // 对账改了 _auctionMemCache 行的 in_watchlist，需重新渲染当前页
-                        if (typeof window.renderAuction === 'function') window.renderAuction(window.currentGroup);
+                        _emit('auction-refresh');
                     }
                 } catch(e) {
-                    window._dbgLog('[AUCTION-ERR] window.reconcileAuctionWatchlistFromLocalStorage ' + (e && e.message || e));
+                    _dbgLog('[AUCTION-ERR] window.reconcileAuctionWatchlistFromLocalStorage ' + (e && e.message || e));
                 }
 
                 // 一次性标签清洗（stockApp_v42_tag_cleanse_v1）：云端拉取完成后执行，
@@ -593,35 +607,33 @@
                 // 清除历史遗留脏位（误标"买"、幽灵灰色"卖出"），并推送云端覆盖脏行。
                 // 只跑一次；清洗前自动备份到 auctionData_tag_cleanse_backup。
                 try {
-                    if (typeof window.cleanseAuctionTagsOnce === 'function') {
-                        await window.cleanseAuctionTagsOnce();
-                        if (typeof window.renderAuction === 'function') window.renderAuction(window.currentGroup);
-                    }
+                    await cleanseAuctionTagsOnce();
+                    _emit('auction-refresh');
                 } catch(e) {
-                    window._dbgLog('[AUCTION-ERR] window.cleanseAuctionTagsOnce ' + (e && e.message || e));
+                    _dbgLog('[AUCTION-ERR] cleanseAuctionTagsOnce ' + (e && e.message || e));
                 }
 
                 // 从 bidding_data 独立表拉取 bidding 数据（云端表是权威来源之一，
                 // 但不能因为某次拉取没返回某个日期就把本地已保存的数据删掉）。
                 try {
-                    const tableBidding = await window.pullBiddingFromTable();
+                    const tableBidding = await pullBiddingFromTable();
                     // 收集"正在推送到云端"或"有本地待推送编辑"的日期，这些日期不能被云端旧值覆盖。
                     const pendingDates = new Set();
-                    if (window._biddingPushInFlight) window._biddingPushInFlight.forEach(function(d) { pendingDates.add(d); });
-                    if (window._biddingDirtyDates) window._biddingDirtyDates.forEach(function(d) { pendingDates.add(d); });
-                    if (window._justPushedBidding) pendingDates.add(window.currentDate);
-                    const _beforeKeys = Object.keys(window._biddingMemCache || {}).join(',');
-                    if (!window._biddingMemCache) window._biddingMemCache = {};
+                    if (state._biddingPushInFlight) state._biddingPushInFlight.forEach(function(d) { pendingDates.add(d); });
+                    if (state._biddingDirtyDates) state._biddingDirtyDates.forEach(function(d) { pendingDates.add(d); });
+                    if (state._justPushedBidding) pendingDates.add(state.currentDate);
+                    const _beforeKeys = Object.keys(state._biddingMemCache || {}).join(',');
+                    if (!state._biddingMemCache) state._biddingMemCache = {};
                     // [BUG-FIX] 改为只覆盖云端实际返回的日期；云端没返回的日期保留本地原值。
                     // 否则一次分页/网络抖动导致某天没返回，就会把本地该天数据清空——
                     // 这正是"保存后刷新数据消失"的根因之一。
                     Object.keys(tableBidding).forEach(function(d) {
-                        if (!pendingDates.has(d)) window._biddingMemCache[d] = tableBidding[d];
+                        if (!pendingDates.has(d)) state._biddingMemCache[d] = tableBidding[d];
                     });
-                    if (window.allData) window.allData.bidding = window._biddingMemCache;
-                    window._dbgLog('[BIDDING-STARTUP] 云端表共 ' + Object.keys(tableBidding).length +
+                    if (state.allData) state.allData.bidding = state._biddingMemCache;
+                    _dbgLog('[BIDDING-STARTUP] 云端表共 ' + Object.keys(tableBidding).length +
                         ' 天，合并前本地=' + _beforeKeys +
-                        '，合并后=' + Object.keys(window._biddingMemCache).join(',') +
+                        '，合并后=' + Object.keys(state._biddingMemCache).join(',') +
                         '，跳过推送中=' + Array.from(pendingDates).join(','));
                 } catch(tableErr) {
                     console.warn('bidding_data 表拉取失败，回退到内存缓存:', tableErr.message);
@@ -629,9 +641,9 @@
 
                 // 从 jiwang_data 独立表拉取记忘看板数据（云端表是唯一权威来源）
                 try {
-                    const _beforeMerge = JSON.stringify((window._jiwangMemCache || {})[window.currentDate] || null).slice(0, 200);
-                    const tableJiwang = await window.pullJiwangFromTable();
-                    if (!window._jiwangMemCache) window._jiwangMemCache = {};
+                    const _beforeMerge = JSON.stringify((state._jiwangMemCache || {})[state.currentDate] || null).slice(0, 200);
+                    const tableJiwang = await pullJiwangFromTable();
+                    if (!state._jiwangMemCache) state._jiwangMemCache = {};
                     // 重要修复：以前这里会把"这次没在 pendingDates 里的本地日期"全部删掉，
                     // 再用 tableJiwang 里有的日期重新填回来。问题是——如果某个日期的数据
                     // 已经真正保存成功（三个 pending 标记都已清空），但这次 pullJiwangFromTable()
@@ -643,49 +655,49 @@
                     // 场景（用户主动清空当天数据）由 deleteJiwangFromCloud() 单独处理，
                     // 不需要也不应该依赖这里的"全量拉取"来清理。
                     const pendingDates = new Set();
-                    if (window._jiwangDirtyDates) window._jiwangDirtyDates.forEach(function(d) { pendingDates.add(d); });
-                    if (window._jiwangPushTimers) Object.keys(window._jiwangPushTimers).forEach(function(d) { pendingDates.add(d); });
-                    if (window._justPushedJiwang) pendingDates.add(window.currentDate);
+                    if (state._jiwangDirtyDates) state._jiwangDirtyDates.forEach(function(d) { pendingDates.add(d); });
+                    if (state._jiwangPushTimers) Object.keys(state._jiwangPushTimers).forEach(function(d) { pendingDates.add(d); });
+                    if (state._justPushedJiwang) pendingDates.add(state.currentDate);
                     Object.keys(tableJiwang).forEach(function(d) {
-                        if (!pendingDates.has(d)) window._jiwangMemCache[d] = tableJiwang[d];
+                        if (!pendingDates.has(d)) state._jiwangMemCache[d] = tableJiwang[d];
                     });
-                    if (window.allData) window.allData.jiwang = window._jiwangMemCache;
-                    const _afterMerge = JSON.stringify(window._jiwangMemCache[window.currentDate] || null).slice(0, 200);
-                    window._dbgLog('pullFromCloud: jiwang 合并完成, window.currentDate=' + window.currentDate +
-                        ', 云端表共 ' + Object.keys(tableJiwang).length + ' 天, 云端是否含当前日期=' + tableJiwang.hasOwnProperty(window.currentDate) +
+                    if (state.allData) state.allData.jiwang = state._jiwangMemCache;
+                    const _afterMerge = JSON.stringify(state._jiwangMemCache[state.currentDate] || null).slice(0, 200);
+                    _dbgLog('pullFromCloud: jiwang 合并完成, state.currentDate=' + state.currentDate +
+                        ', 云端表共 ' + Object.keys(tableJiwang).length + ' 天, 云端是否含当前日期=' + tableJiwang.hasOwnProperty(state.currentDate) +
                         ', 合并前=' + _beforeMerge + ', 合并后=' + _afterMerge);
                     if (pendingDates.size > 0) {
-                        window._dbgLog('pullFromCloud: 跳过覆盖有本地待推送编辑的记忘看板日期: ' + Array.from(pendingDates).join(','));
+                        _dbgLog('pullFromCloud: 跳过覆盖有本地待推送编辑的记忘看板日期: ' + Array.from(pendingDates).join(','));
                     }
                 } catch(tableErr) {
                     console.warn('jiwang_data 表拉取失败，回退到内存缓存:', tableErr.message);
-                    window._dbgLog('pullFromCloud: jiwang_data 表拉取失败: ' + (tableErr && tableErr.message));
+                    _dbgLog('pullFromCloud: jiwang_data 表拉取失败: ' + (tableErr && tableErr.message));
                 }
 
 
                 // 观察组可能受云端数据影响（上一交易日"竞/昨"达标股票可能变化），清除标记重新计算
                 // 买入继承同理：昨日 bought/sold 状态可能被另一台设备改过，一并清除重算
-                try { localStorage.removeItem('obsEnsured_' + window.currentDate); } catch(e) {}
-                try { localStorage.removeItem('boughtEnsured_' + window.currentDate); } catch(e) {}
-                try { localStorage.removeItem('obsBought_' + window.currentDate); } catch(e) {}
+                try { localStorage.removeItem('obsEnsured_' + state.currentDate); } catch(e) {}
+                try { localStorage.removeItem('boughtEnsured_' + state.currentDate); } catch(e) {}
+                try { localStorage.removeItem('obsBought_' + state.currentDate); } catch(e) {}
 
-                statusEl.innerHTML = '<span style="color:#34d399">✅ 云端数据同步成功</span>';
+                _setSyncStatus('✅ 云端数据同步成功');
             } catch (e) {
-                window._dbgLog('[AUCTION-ERR] window.pullFromCloud ' + (e && e.message || e));
-                statusEl.innerHTML = '<span style="color:#f87171">⚠️ 云端拉取失败，使用本地数据</span>';
+                _dbgLog('[AUCTION-ERR] window.pullFromCloud ' + (e && e.message || e));
+                _setSyncStatus('⚠️ 云端拉取失败，使用本地数据');
             }
         }
 
         export async function pushToCloud() {
-            window.updateCloudSyncUI('syncing');
+            updateCloudSyncUI('syncing');
             try {
                 // 复用 exportData 的数据收集逻辑
-                window.loadAllData();
-                const stockCount = Object.keys(window.allData.stocks || {}).reduce((n, d) => n + ((window.allData.stocks[d]||[]).length), 0);
+                loadAllData();
+                const stockCount = Object.keys(state.allData.stocks || {}).reduce((n, d) => n + ((state.allData.stocks[d]||[]).length), 0);
                 // 如果本地完全没有数据，跳过推送，防止把空数据覆盖云端
-                if (stockCount === 0 && Object.keys(window.allData.jiwang || {}).length === 0) {
-                    window._dbgLog && window._dbgLog('window.pushToCloud 跳过: 本地无数据，不覆盖云端');
-                    window.updateCloudSyncUI('synced');
+                if (stockCount === 0 && Object.keys(state.allData.jiwang || {}).length === 0) {
+                    _dbgLog && _dbgLog('window.pushToCloud 跳过: 本地无数据，不覆盖云端');
+                    updateCloudSyncUI('synced');
                     return;
                 }
                 const summaries = {};
@@ -709,16 +721,16 @@
                 });
 
                 const payload = {
-                    stocks: window.allData.stocks || {},
-                    jiwang: window._jiwangTableAvailable ? {} : (window.allData.jiwang || {}),
-                    rank: window.allData.rank || {},
-                    multi: window.allData.multi || {},
-                    hotspot: window.allData.hotspot || {},
-                    pattern: window.allData.pattern || {},
-                    bidding: window._biddingTableAvailable ? {} : (window.allData.bidding || {}),
-                    auction: window._auctionTableAvailable ? {} : (window.allData.auction || {}),
-                    tagTitles: window.allData.tagTitles || {},
-                    holidays: window.allData.holidays || [],
+                    stocks: state.allData.stocks || {},
+                    jiwang: state._jiwangTableAvailable ? {} : (state.allData.jiwang || {}),
+                    rank: state.allData.rank || {},
+                    multi: state.allData.multi || {},
+                    hotspot: state.allData.hotspot || {},
+                    pattern: state.allData.pattern || {},
+                    bidding: state._biddingTableAvailable ? {} : (state.allData.bidding || {}),
+                    auction: state._auctionTableAvailable ? {} : (state.allData.auction || {}),
+                    tagTitles: state.allData.tagTitles || {},
+                    holidays: state.allData.holidays || [],
                     duibanData: JSON.parse(localStorage.getItem('duibanData') || '{}'),
                     duibanComment: JSON.parse(localStorage.getItem('duibanComment') || '{}'),
                     stockEtfData: JSON.parse(localStorage.getItem('stockEtfData') || '{}'),
@@ -744,11 +756,11 @@
                     hasFumianTopics: hasFumianTopics,
                     summaries: summaries,
                     copiedStocksData: JSON.parse(localStorage.getItem('copiedStocksData') || '{}'),
-                    exportDate: window.currentDate,
+                    exportDate: state.currentDate,
                     version: '4.2'
                 };
 
-                const sb = window.getSupabase();
+                const sb = getSupabase();
 
                 // auction 数据已拆表到 auction_watchlist + market_metrics，不再在 user_data blob 中合并
                 // （旧合并逻辑已移除，由 pushAuctionToCloud 按列归属更新新表）
@@ -759,25 +771,25 @@
 
                 if (error) throw error;
                 // 标记刚推送，5秒内忽略自己触发的 Realtime 通知
-                window._justPushed = true;
-                setTimeout(function() { window._justPushed = false; }, 5000);
+                state._justPushed = true;
+                setTimeout(function() { state._justPushed = false; }, 5000);
                 // auction 数据同步到独立表（按列归属更新，不覆盖抓取程序的行情列）
                 // 脏日期标记在 pushAuctionToCloud 内部清空
-                try { await window.pushAuctionToCloud(); } catch(e) { console.warn('window.pushAuctionToCloud 失败:', e); window._dbgLog('[PUSH-ERR] window.pushAuctionToCloud ' + (e && e.message || e)); }
+                try { await pushAuctionToCloud(); } catch(e) { console.warn('window.pushAuctionToCloud 失败:', e); _dbgLog('[PUSH-ERR] window.pushAuctionToCloud ' + (e && e.message || e)); }
                 // bidding 数据同步到独立表
-                try { await window.pushBiddingToCloud(window.currentDate); } catch(e) { console.warn('window.pushBiddingToCloud 失败:', e); }
-                window.updateCloudSyncUI('synced');
+                try { await pushBiddingToCloud(state.currentDate); } catch(e) { console.warn('window.pushBiddingToCloud 失败:', e); }
+                updateCloudSyncUI('synced');
             } catch (e) {
                 console.error('window.pushToCloud 失败:', e);
-                window.updateCloudSyncUI('offline');
+                updateCloudSyncUI('offline');
             }
         }
 
-            function syncCloseChunk() {
+            export function syncCloseChunk() {
                 const end = Math.min(syncIdx + 30, itemsToSync.length);
                 for (; syncIdx < end; syncIdx++) {
                     const item = itemsToSync[syncIdx];
-                    const stocksData = window.getStocksData();
+                    const stocksData = getStocksData();
                     if (stocksData[targetDate]) {
                         const stock = stocksData[targetDate].find(s => s.name && s.name.trim() === item.stock.trim());
                         if (stock) {
@@ -787,14 +799,14 @@
                     }
                 }
                 if (syncIdx < itemsToSync.length) {
-                    setTimeout(window.syncCloseChunk, 0);
+                    setTimeout(syncCloseChunk, 0);
                 } else {
                     // 所有收盘涨幅同步完成，再同步题材，最后统一保存一次
-                    window.syncStockTopicsFromAuction();
-                    window.saveModule('stocks');
+                    syncStockTopicsFromAuction();
+                    saveModule('stocks');
                     // 涨跌幅可能已批量新增/覆盖，重新统计"最近多板"的总数量和跌涨比
-                    window.recalcDuibanFromAuction();
+                    recalcDuibanFromAuction();
                 }
             }
-            window.syncCloseChunk = syncCloseChunk;
+            state._syncCloseChunk = syncCloseChunk;
 

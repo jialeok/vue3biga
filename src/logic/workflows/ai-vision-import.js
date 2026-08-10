@@ -1,12 +1,14 @@
-// ============================================================
+﻿// ============================================================
 //  AI识图模块 (从 index.html 抽离)
 //  职责：AI识图导入的流程编排，调用 Supabase qwen-vision 函数 + 写入竞价数据
 // ============================================================
+import { replaceHotConceptFromPaste, importAuctionFromPaste, replaceConceptFromPaste, importHotFromPaste } from '../app-core.js';
+import { _domSetText, _domSetValue, _domSetDisplay, _domSetColor, _domGet, _domQuery, _domValue, _domCreate, _domAddEventListener, _domAddEventListenerDoc } from '../ui-bridge.js';
 const SUPABASE_FUNC_URL = 'https://tonqfgeyxnnwicjopshn.supabase.co/functions/v1/qwen-vision';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRvbnFmZ2V5eG5ud2ljam9wc2huIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NjY3NzEsImV4cCI6MjA5NDI0Mjc3MX0.el-W10JIjr9iQXEKNxV7nLNdhZfOQp6waTY7ZSH27Jg';
 
-window._aiVisionImages = []; // [{name, base64}]
-window._aiVisionTarget = null; // 'auction' | 'hot'，标记 AI 识图来源弹窗
+let _aiVisionImages = []; // [{name, base64}]
+let _aiVisionTarget = null; // 'auction' | 'hot'，标记 AI 识图来源弹窗
 
 const AI_VISION_PROMPTS = [
   // 0 - 占比
@@ -25,44 +27,37 @@ const AI_VISION_PROMPTS = [
 export function openAiVisionModal() {
   _aiVisionTarget = 'auction';
   _aiVisionImages = [];
-  window._domSetText('aiVisionThumbs', '');
-  window._domSetValue('aiVisionResult', '');
-  window._domSetText('aiVisionStatus', '');
-  window._domSetDisplay('aiVisionModal', 'block');
+  _domSetText('aiVisionThumbs', '');
+  _domSetValue('aiVisionResult', '');
+  _domSetText('aiVisionStatus', '');
+  _domSetDisplay('aiVisionModal', 'block');
 }
 
 export function closeAiVisionModal() {
-  window._domSetDisplay('aiVisionModal', 'none');
+  _domSetDisplay('aiVisionModal', 'none');
 }
 
-// 关闭：点击遮罩
-// 事件绑定延后到 queueMicrotask：ES module 求值阶段各模块导出尚未挂到 window，
-// 此时调用 window._domAddEventListener 会抛错并中断整个 entry.js（导致 checkPassword 未定义、登录按钮无响应）。
-// 延后到当前同步求值结束后执行，届时所有模块已挂到 window，绑定可正常注册。
+// 关闭：点击遮罩 + 粘贴截图支持
 queueMicrotask(function() {
-  if (typeof window._domAddEventListener === 'function') {
-    window._domAddEventListener('aiVisionModal', 'click', function(e) {
-      if (e.target === window._domGet('aiVisionModal')) window.closeAiVisionModal();
-    });
-  }
-  if (typeof window._domAddEventListenerDoc === 'function') {
-    // 粘贴截图支持
-    window._domAddEventListenerDoc('paste', function(e) {
-      if (window._domGet('aiVisionModal').style.display === 'none') return;
-      const items = e.clipboardData && e.clipboardData.items;
-      if (!items) return;
-      for (const item of items) {
-        if (item.type.startsWith('image/')) {
-          const file = item.getAsFile();
-          if (file) window.aiVisionAddFile(file);
-        }
+  _domAddEventListener('aiVisionModal', 'click', function(e) {
+    if (e.target === _domGet('aiVisionModal')) closeAiVisionModal();
+  });
+  _domAddEventListenerDoc('paste', function(e) {
+    const modal = _domGet('aiVisionModal');
+    if (!modal || modal.style.display === 'none') return;
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (file) aiVisionAddFile(file);
       }
-    });
-  }
+    }
+  });
 });
 
 export function aiVisionHandleFiles(files) {
-  for (const file of files) window.aiVisionAddFile(file);
+  for (const file of files) aiVisionAddFile(file);
 }
 
 export function aiVisionAddFile(file) {
@@ -73,12 +68,12 @@ export function aiVisionAddFile(file) {
     const id = Date.now() + Math.random();
     _aiVisionImages.push({ id, base64, name: file.name || 'paste' });
     // 缩略图
-    const thumbBox = window._domCreate('div');
+    const thumbBox = _domCreate('div');
     thumbBox.style.cssText = 'position:relative;width:60px;height:60px;flex-shrink:0;';
-    const img = window._domCreate('img');
+    const img = _domCreate('img');
     img.src = dataUrl;
     img.style.cssText = 'width:60px;height:60px;object-fit:cover;border-radius:8px;border:1px solid #e2e8f0;';
-    const del = window._domCreate('button');
+    const del = _domCreate('button');
     del.textContent = '×';
     del.style.cssText = 'position:absolute;top:-4px;right:-4px;width:18px;height:18px;border-radius:50%;background:#ef4444;color:#fff;border:none;font-size:12px;line-height:1;cursor:pointer;padding:0;';
     del.onclick = function() {
@@ -87,25 +82,25 @@ export function aiVisionAddFile(file) {
     };
     thumbBox.appendChild(img);
     thumbBox.appendChild(del);
-    window._domGet('aiVisionThumbs').appendChild(thumbBox);
+    _domGet('aiVisionThumbs').appendChild(thumbBox);
   };
   reader.readAsDataURL(file);
 }
 
 export async function aiVisionRun() {
   if (_aiVisionImages.length === 0) {
-    window._domSetText('aiVisionStatus', '⚠️ 请先上传图片');
-    window._domSetColor('aiVisionStatus', '#dc2626');
+    _domSetText('aiVisionStatus', '⚠️ 请先上传图片');
+    _domSetColor('aiVisionStatus', '#dc2626');
     return;
   }
-  const modeVal = parseInt(window._domQuery('input[name="aiVisionMode"]:checked').value);
+  const modeVal = parseInt(_domQuery('input[name="aiVisionMode"]:checked').value);
   const prompt = AI_VISION_PROMPTS[modeVal];
 
-  const btn = window._domGet('aiVisionRunBtn');
+  const btn = _domGet('aiVisionRunBtn');
   btn.disabled = true;
   btn.textContent = '识别中…';
 
-  const statusEl = window._domGet('aiVisionStatus');
+  const statusEl = _domGet('aiVisionStatus');
 
   // 逐张识别，合并去重
   const allLines = new Map(); // stock → line string
@@ -162,32 +157,32 @@ export async function aiVisionRun() {
   // 组装输出（补表头）
   const headerMap = ['股票名称\t竞价量\t昨日成交量', '股票名称\t涨幅', '股票名称\t涨幅\t所属概念', '股票名称\t所属概念'];
   const output = [headerMap[modeVal], ...allLines.values()].join('\n');
-  window._domSetValue('aiVisionResult', output);
+  _domSetValue('aiVisionResult', output);
   statusEl.textContent = `✅ 识别完成，共 ${allLines.size} 条${errorCount > 0 ? `（${errorCount}张识别失败）` : ''}`;
   statusEl.style.color = '#059669';
 }
 
 export function aiVisionWrite() {
-  const result = window._domValue('aiVisionResult').trim();
+  const result = _domValue('aiVisionResult').trim();
   if (!result) {
-    window._domSetText('aiVisionStatus', '⚠️ 识别结果为空');
-    window._domSetColor('aiVisionStatus', '#dc2626');
+    _domSetText('aiVisionStatus', '⚠️ 识别结果为空');
+    _domSetColor('aiVisionStatus', '#dc2626');
     return;
   }
   // 根据来源弹窗决定写入哪个 textarea、调用哪组函数
   const isHot = _aiVisionTarget === 'hot';
   const textareaId = isHot ? 'hotPasteInput' : 'auctionPasteInput';
-  const textarea = window._domGet(textareaId);
+  const textarea = _domGet(textareaId);
   if (!textarea) { throw new Error('找不到输入框'); }
   textarea.value = result;
 
   // 根据写入方式调用对应函数
-  const action = window._domQuery('input[name="aiVisionAction"]:checked').value;
+  const action = _domQuery('input[name="aiVisionAction"]:checked').value;
   if (action === 'import') {
-    if (isHot) window.importHotFromPaste(); else window.importAuctionFromPaste();
+    if (isHot) importHotFromPaste(); else importAuctionFromPaste();
   } else {
-    if (isHot) window.replaceHotConceptFromPaste(); else window.replaceConceptFromPaste();
+    if (isHot) replaceHotConceptFromPaste(); else replaceConceptFromPaste();
   }
   _aiVisionTarget = null; // 用完重置
-  window.closeAiVisionModal();
+  closeAiVisionModal();
 }

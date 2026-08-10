@@ -1,8 +1,13 @@
+﻿import { state } from '../logic/app-state.js';
         // ===== daily_highlights 表操作（预计算竞/昨高光，加速加载）=====
+
+        import { getSupabase } from './supabase-client.js';
+        import { _dbgLog } from './debug-log.js';
+        import { pushHotStocksHighlights } from './hot-stocks.js';
 
         // 从 daily_highlights 表加载所有预计算高光（小表，快）
         export async function pullDailyHighlights() {
-            const sb = window.getSupabase();
+            const sb = getSupabase();
             const result = {};
             let offset = 0;
             const pageSize = 1000;
@@ -21,32 +26,32 @@
                 if (data.length < pageSize) break;
                 offset += pageSize;
             }
-            window._dailyHighlightsCache = result;
-            window._highlightsTableAvailable = true;
+            state._dailyHighlightsCache = result;
+            state._highlightsTableAvailable = true;
             console.log('daily_highlights 加载完成:', Object.keys(result).length, '个日期');
         }
 
         // 推送某日期的高光到 daily_highlights 表（debounced）
         export function schedulePushDailyHighlights(date, highlightSet, dataSource) {
             if (dataSource === 'hot') {
-                if (!window._hotHighlightsTableAvailable) return;
-                if (window._hotHighlightsPushTimer) clearTimeout(window._hotHighlightsPushTimer);
-                window._hotHighlightsPushTimer = setTimeout(function() {
-                    window._hotHighlightsPushTimer = null;
-                    window.pushHotStocksHighlights(date, highlightSet);
+                if (!state._hotHighlightsTableAvailable) return;
+                if (state._hotHighlightsPushTimer) clearTimeout(state._hotHighlightsPushTimer);
+                state._hotHighlightsPushTimer = setTimeout(function() {
+                    state._hotHighlightsPushTimer = null;
+                    pushHotStocksHighlights(date, highlightSet);
                 }, 2000);
                 return;
             }
-            if (!window._highlightsTableAvailable) return;
-            if (window._highlightsPushTimer) clearTimeout(window._highlightsPushTimer);
-            window._highlightsPushTimer = setTimeout(function() {
-                window._highlightsPushTimer = null;
-                window.pushDailyHighlights(date, highlightSet);
+            if (!state._highlightsTableAvailable) return;
+            if (state._highlightsPushTimer) clearTimeout(state._highlightsPushTimer);
+            state._highlightsPushTimer = setTimeout(function() {
+                state._highlightsPushTimer = null;
+                    pushDailyHighlights(date, highlightSet);
             }, 2000);
         }
 
         export async function pushDailyHighlights(date, highlightSet) {
-            const sb = window.getSupabase();
+            const sb = getSupabase();
             const now = new Date().toISOString();
             const stockNames = highlightSet ? [...highlightSet] : [];
 
@@ -55,15 +60,15 @@
             // daily_highlights 的 Realtime 订阅原先没有自推送屏蔽，收到自己刚写的变更后
             // 又触发 _scheduleAuctionRealtimeReload → renderAuction → 再次推送 → 无限自循环。
             // 实测线上每 4~5 秒重写一次当日全部行并整体重渲染看板（卡顿/耗电主因）。
-            const cached = window._dailyHighlightsCache[date];
+            const cached = state._dailyHighlightsCache[date];
             if (cached && cached.size === stockNames.length &&
                 stockNames.every(function(n) { return cached.has(n); })) {
                 return; // 内容未变化：不写库、不触发 Realtime、不打断用户交互
             }
 
             // 自推送屏蔽：本次写入触发的 Realtime 通知直接忽略，避免自己卷自己
-            window._justPushedHighlights = true;
-            setTimeout(function() { window._justPushedHighlights = false; }, 5000);
+            state._justPushedHighlights = true;
+            setTimeout(function() { state._justPushedHighlights = false; }, 5000);
 
             // 1. 先把该日期所有行标记为 false（清除旧高光）
             const { error: updErr } = await sb.from('daily_highlights')
@@ -85,46 +90,46 @@
             }
 
             // 更新本地缓存
-            window._dailyHighlightsCache[date] = new Set(stockNames);
+            state._dailyHighlightsCache[date] = new Set(stockNames);
         }
 
         // 从缓存获取某日期的高光集合（无缓存返回 null，触发回退计算）
         // 'hot' 读 _hotHighlightsCache（hot_stocks_highlights 表），否则读 _dailyHighlightsCache（daily_highlights 表）
         export function getDailyHighlightsForDate(date, dataSource='auction') {
             if (dataSource === 'hot') {
-                if (!window._hotHighlightsTableAvailable) return null;
-                return window._hotHighlightsCache[date] || null;
+                if (!state._hotHighlightsTableAvailable) return null;
+                return state._hotHighlightsCache[date] || null;
             }
-            if (!window._highlightsTableAvailable) return null;
-            return window._dailyHighlightsCache[date] || null;
+            if (!state._highlightsTableAvailable) return null;
+            return state._dailyHighlightsCache[date] || null;
         }
 
         // daily_highlights 表 Realtime 订阅
         export function startHighlightsRealtime() {
-            window.stopHighlightsRealtime();
+            stopHighlightsRealtime();
             try {
-                const sb = window.getSupabase();
-                window._highlightsChannel = sb
+                const sb = getSupabase();
+                state._highlightsChannel = sb
                     .channel('daily_highlights_changes')
                     .on('postgres_changes', {
                         event: '*', schema: 'public', table: 'daily_highlights'
                     }, function(payload) {
-                        if (window._justPushedHighlights) return; // 自己刚推的，忽略（防自循环）
+                        if (state._justPushedHighlights) return; // 自己刚推的，忽略（防自循环）
                         var row = payload.new || payload.old;
                         if (!row || !row.date) return;
                         // 汇入与 auction_watchlist + market_metrics 共用的统一防抖池，避免两张表几乎同时变更时
                         // 各自独立触发 renderAuction 导致短时间内连续两次整体重渲染（见上方注释）
-                        window._pendingAuctionReload.highlights = true;
-                        window._scheduleAuctionRealtimeReload();
+                        state._pendingAuctionReload.highlights = true;
+                        state._scheduleAuctionRealtimeReload();
                     })
                     .subscribe();
                 console.log('daily_highlights Realtime 订阅已启动');
-            } catch (e) { window._dbgLog('[AUCTION-ERR] highlights Realtime 订阅失败 ' + (e && e.message || e)); }
+            } catch (e) { _dbgLog('[AUCTION-ERR] highlights Realtime 订阅失败 ' + (e && e.message || e)); }
         }
 
         export function stopHighlightsRealtime() {
-            if (window._highlightsChannel) {
-                try { window._highlightsChannel.unsubscribe(); } catch(e) {}
-                window._highlightsChannel = null;
+            if (state._highlightsChannel) {
+                try { state._highlightsChannel.unsubscribe(); } catch(e) {}
+                state._highlightsChannel = null;
             }
         }
