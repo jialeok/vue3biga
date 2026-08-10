@@ -1,4 +1,5 @@
-﻿import { _dbgLog, _dbgLogVerbose } from '../data/debug-log.js';
+﻿import { _setGetLocalTodayStr } from './trading-day-helpers.js';
+import { _dbgLog, _dbgLogVerbose } from '../data/debug-log.js';
 import { getStockHistoryValue, _isAuctionWatchlistStock, _addAuctionWatchlistMember } from '../data/watchlist-and-metrics.js';
 import { getPreviousTradingDay, isTradingDay } from './trading-day-helpers.js';
 import { getStocksData } from '../data/supabase-client.js';
@@ -88,6 +89,7 @@ import { state } from './app-state.js';
             const day = String(now.getDate()).padStart(2, '0');
             return `${year}-${month}-${day}`;
         }
+        _setGetLocalTodayStr(_getLocalTodayStr);
 
         // 买入/持有/卖出股票进次日观察组（早盘竞价 tab 专属，与 ensureObservationStocks 平行）：
         // 只继承一天，不会无限往后传——判断依据只看 getStocksData()[昨天]（点击"卖/买/持有"

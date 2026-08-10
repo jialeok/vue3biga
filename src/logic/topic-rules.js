@@ -4,11 +4,13 @@ import { buildTopicCache } from '../data/stock-topics.js';
 import { getStockHistoryTopics, getRankData } from './app-core.js';
 import { extractTopics, getDisplayNote } from './note-helpers.js';
 import { state } from './app-state.js';
-import { pullCoreTopicsFromCloud, pushCoreTopicsToCloud } from './ui-bridge.js';
+let _pullCoreTopicsFromCloudFn = null;
+let _pushCoreTopicsToCloudFn = null;
+export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pull; _pushCoreTopicsToCloudFn = push; }
 
         export async function loadCoreTopicsFromCloud() {
             try {
-                const cloudTopics = await pullCoreTopicsFromCloud();
+                const cloudTopics = await _pullCoreTopicsFromCloudFn();
                 state._coreTopicsCloudLoaded = true;
                 if (!cloudTopics || cloudTopics.length === 0) {
                     // 云端为空，把本地/默认核心词推到云端
@@ -16,7 +18,7 @@ import { pullCoreTopicsFromCloud, pushCoreTopicsToCloud } from './ui-bridge.js';
                     if (localTopics && localTopics.length > 0) {
                         _dbgLog('[CORE-TOPICS] 云端 core_topics 表为空，推送本地 ' + localTopics.length + ' 个核心词到云端');
                         state._coreTopicsPushingToCloud = true;
-                        pushCoreTopicsToCloud(localTopics).catch(function(e) {
+                        _pushCoreTopicsToCloudFn(localTopics).catch(function(e) {
                             _dbgLog('[AUCTION-ERR] core_topics 初始化推送失败: ' + (e && e.message || e));
                         }).finally(function() { state._coreTopicsPushingToCloud = false; });
                     }
@@ -76,7 +78,7 @@ import { pullCoreTopicsFromCloud, pushCoreTopicsToCloud } from './ui-bridge.js';
             // 异步推送到云端（不阻塞 UI）
             if (!state._coreTopicsPushingToCloud) {
                 state._coreTopicsPushingToCloud = true;
-                pushCoreTopicsToCloud(topics).catch(function(e) {
+                _pushCoreTopicsToCloudFn(topics).catch(function(e) {
                     _dbgLog('[AUCTION-ERR] core_topics 推送失败: ' + (e && e.message || e));
                 }).finally(function() { state._coreTopicsPushingToCloud = false; });
             }

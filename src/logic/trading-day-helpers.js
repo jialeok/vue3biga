@@ -1,5 +1,6 @@
-import { loadAllData } from '../data/supabase-client.js';
-import { _getLocalTodayStr } from './tag-rules.js';
+﻿import { loadAllData } from '../data/supabase-client.js';
+let _getLocalTodayStrFn = null;
+export function _setGetLocalTodayStr(fn) { _getLocalTodayStrFn = fn; }
 
 const _prevTdMemo = new Map();
 
@@ -19,7 +20,7 @@ export function isAutoHoliday(dateStr) {
   const tradingDays = getTradingDays();
   if (tradingDays.includes(dateStr)) return false;
   if (tradingDays.length === 0) return false;
-  const today = _getLocalTodayStr();
+  const today = _getLocalTodayStrFn();
   const oneYearAgo = (function() {
     const d = new Date(today + 'T00:00:00');
     d.setFullYear(d.getFullYear() - 1);
@@ -97,7 +98,7 @@ export function isWeekend(dateStr) {
 }
 
 export function getMostRecentTradingDay() {
-  const todayStr = _getLocalTodayStr();
+  const todayStr = _getLocalTodayStrFn();
   if (isTradingDay(todayStr)) return todayStr;
   let d = new Date(todayStr + 'T00:00:00');
   for (let i = 0; i < 60; i++) {

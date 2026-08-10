@@ -1,4 +1,5 @@
-﻿import { _emit } from '../stores/eventBus.js';
+﻿import { _setCoreTopicsFns } from './topic-rules.js';
+import { _emit } from '../stores/eventBus.js';
 import { getPreviousTradingDay } from './trading-day-helpers.js';
 import { state } from './app-state.js';
 import { getAuctionData, getGroupData } from './app-core-api.js';
@@ -50,6 +51,7 @@ export function renderAuctionForm() {}
 export async function saveAuction() {}
 export function pullCoreTopicsFromCloud() { return Promise.resolve(); }
 export function pushCoreTopicsToCloud() { return Promise.resolve(); }
+_setCoreTopicsFns(pullCoreTopicsFromCloud, pushCoreTopicsToCloud);
 export function toggleAuctionBoard() {}
 export function toggleStrengthSort() {}
 

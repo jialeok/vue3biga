@@ -8,7 +8,8 @@ import { invalidateTopicCache } from './stock-topics.js';
         //                      source/obs_auto_added/selected/bought/sold/fixed
         //   market_metrics：date/stock/code/volume/yest_volume/change_pct/time930/seal_count/scope/source
         // ============================================================
-        import { getSupabase } from './supabase-client.js';
+        let _getSupabaseFn = null;
+export function _setGetSupabaseFn(fn) { _getSupabaseFn = fn; }
         import { _dbgLog } from './debug-log.js';
 
         state._auctionTableAvailable = false; // 运行时标记：auction_watchlist 表是否可用
@@ -25,7 +26,7 @@ import { invalidateTopicCache } from './stock-topics.js';
         //     metrics 行额外带 time930/seal_count。
         function _getAuctionStore() { try { return useAuctionStore(); } catch { return null; } }
 export async function pullAuctionFromTable() {
-            const sb = getSupabase();
+            const sb = _getSupabaseFn();
             const result = {};
             // 阶段四 Bug 6 收尾修复：不能 _auctionMemCache = {} 重新赋值，否则会切断
             // allData.auction 与 _auctionMemCache 的引用关系（同 Bug 3 整体导入的坑）。

@@ -1,6 +1,7 @@
 ﻿import { useAuctionStore } from '../stores/auctionStore.js';
 import { state } from '../logic/app-state.js';
-import { getStocksData } from './supabase-client.js';
+let _getStocksDataFn = null;
+export function _setGetStocksDataFn(fn) { _getStocksDataFn = fn; }
         // Session Token + Realtime 订阅（互踢 + 云端变更自动同步）
         // ============================================================
         state._sessionToken = null;
@@ -48,7 +49,7 @@ export function _openAuctionShield() {
         //    fetchLadderConstituentsMain、fetchAuctionFromNumcat 等）的「就地写」
         //    行为天然进入 Vue 响应式轨道，函数逻辑一字不改。
         //  - stocksData 是标签唯一权威源镜像：loadAllData() 构建后同步指向，
-        //    改标签只写 getStocksData()（allData.stocks）。
+        //    改标签只写 _getStocksDataFn()（allData.stocks）。
         //    方案 B：标签不再写入 auctionData 行（bought/sold/fixed 不存储），
         //    渲染时由 deriveAuctionTagState 实时派生。selected 保留为手动点选。
         //  - state.currentDate / currentGroup / currentPage / 排序 / 展开状态等 UI 状态
@@ -61,7 +62,7 @@ export function _openAuctionShield() {
         export function syncStocksDataToStore() {
             const _store = _getAuctionStore();
             if (!_store) return;
-            try { _store.stocksData = getStocksData(); } catch (e) {}
+            try { _store.stocksData = _getStocksDataFn(); } catch (e) {}
         }
         state._auctionFullRowCache_DELETED = null; // 阶段三 E：已删除，保留占位避免其它处误引用导致 ReferenceError；查询统一改走 _auctionMemCache
         // ── 独立化改造 阶段一 新增 ──────────────────────────────────────────

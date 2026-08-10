@@ -1,4 +1,6 @@
-﻿﻿import { createClient } from '@supabase/supabase-js';
+﻿import { _setGetSupabaseFn } from './auction-data.js';
+import { _setGetStocksDataFn } from './session-and-shield.js';
+﻿import { createClient } from '@supabase/supabase-js';
 import { useAuctionStore } from '../stores/auctionStore.js';
 import { state } from '../logic/app-state.js';
         import { _dbgLog } from './debug-log.js';
@@ -64,6 +66,7 @@ export function _getExpandedStocksSet(dataSource) {
             }
             return state._supabaseClient;
         }
+        _setGetSupabaseFn(getSupabase);
 
         // 防抖推送计时器
         state._pushDebounceTimer = null;
@@ -225,6 +228,7 @@ export function _moduleKey(name) {
         }
 
         export function getStocksData() { return state._stocksMemCache || (loadAllData().stocks || {}); }
+        _setGetStocksDataFn(getStocksData);
         export function getJiwangData() { const d = loadAllData(); return d ? d.jiwang : {}; }
         export function getBiddingData() { const d = loadAllData(); return (d && d.bidding) || {}; }
         export function getEtfData() {
