@@ -7,18 +7,18 @@
       <button class="date-nav-today" @click="goToday">今天</button>
     </div>
 
-    <HomeStocksView ref="stocksRef" />
-    <AuctionBoard />
-    <BiddingBoard />
-    <HotspotBoard />
     <PatternBoard />
-    <RankBoard />
-    <DuibanBoard />
-    <EtfBoard />
+    <BiddingBoard />
     <JiwangBoard />
     <EmotionBoard />
-    <StatsBoard />
     <TagTitlesBoard />
+    <AuctionBoard />
+    <DuibanBoard />
+    <EtfBoard />
+    <RankBoard />
+    <HotspotBoard />
+    <StatsBoard />
+    <HomeStocksView ref="stocksRef" />
 
     <EditModal v-model="datePickerActive" title="选择日期" :show-actions="false">
       <div class="date-picker-section">
