@@ -1,4 +1,5 @@
 <template>
+  <div class="pattern-board trading-day-element">
   <div class="pattern-header" @click="toggleExpand">
     <div class="pattern-title">模式
       <div class="pattern-tags">
@@ -22,6 +23,7 @@
       </div>
       <button class="vue-edit-save" @click="save">保存模式</button>
     </div>
+  </div>
   </div>
 </template>
 

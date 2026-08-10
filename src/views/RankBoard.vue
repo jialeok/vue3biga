@@ -1,4 +1,5 @@
 <template>
+  <div class="rank-board trading-day-element">
   <div class="rank-header" @dblclick.stop="openEdit">
     <div class="rank-title">昨日最大成交额</div>
     <div class="rank-subtitle"></div>
@@ -90,6 +91,7 @@
         <button type="button" class="rank-vue-cancel-btn" @click="closeEdit">取消</button>
       </div>
     </div>
+  </div>
   </div>
 </template>
 

@@ -1,10 +1,17 @@
 <template>
-  <div class="container">
+  <div class="container" id="gestureArea">
+    <!-- 日期导航 -->
     <div class="date-nav">
-      <button class="date-nav-btn" @click="goToPrevTradingDay">‹</button>
-      <span class="date-nav-date" @click="openDatePicker">{{ currentDate }}</span>
-      <button class="date-nav-btn" @click="goToNextTradingDay">›</button>
-      <button class="date-nav-today" @click="goToday">今天</button>
+      <button class="nav-btn" @click="goToPrevTradingDay">‹</button>
+      <div class="date-selector" @click="openDatePicker">
+        <div class="date-text">{{ currentDate }}</div>
+        <div style="font-size:11px;margin-top:4px">
+          <span>{{ weekdayText }}</span>
+          <span class="market-status market-open">市</span>
+        </div>
+      </div>
+      <button class="nav-btn" @click="goToNextTradingDay">›</button>
+      <button class="today-btn" @click="goToday">今天</button>
     </div>
 
     <PatternBoard />
@@ -19,6 +26,18 @@
     <HotspotBoard />
     <StatsBoard />
     <HomeStocksView ref="stocksRef" />
+
+    <!-- 底部操作栏 -->
+    <div class="bottom-bar">
+      <div style="display:flex;align-items:center">
+        <button class="icon-btn" @click="onExport">📤</button>
+        <span style="font-size:16px;margin-left:10px;cursor:pointer;" @click="onPullCloud">☁️</span>
+        <button class="icon-btn" style="margin-left:20px" @click="onImport">📥</button>
+        <button class="date-nav-btn" style="margin-left:30px" @click="goToPrevTradingDay">◀</button>
+        <button class="date-nav-btn" style="margin-left:18px" @click="goToNextTradingDay">▶</button>
+      </div>
+      <button class="fab" style="margin-left:auto" @click="onAddStock">+</button>
+    </div>
 
     <EditModal v-model="datePickerActive" title="选择日期" :show-actions="false">
       <div class="date-picker-section">
@@ -45,9 +64,9 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed } from 'vue';
 import { getCurrentDate, setCurrentDate } from '../logic/app-core.js';
-import { getPreviousTradingDay, getNextTradingDay, getMostRecentTradingDay, isTradingDay } from '../logic/trading-day-helpers.js';
+import { getPreviousTradingDay, getNextTradingDay, getMostRecentTradingDay } from '../logic/trading-day-helpers.js';
 import { _emit } from '../stores/eventBus.js';
 import EditModal from '../components/EditModal.vue';
 import HomeStocksView from './HomeStocksView.vue';
@@ -65,6 +84,13 @@ import TagTitlesBoard from './TagTitlesBoard.vue';
 
 const stocksRef = ref(null);
 const currentDate = computed(() => getCurrentDate());
+
+const weekdayText = computed(() => {
+  const d = getCurrentDate();
+  if (!d) return '';
+  const days = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+  return days[new Date(d + 'T00:00:00').getDay()];
+});
 
 function emitAllRefresh() {
   _emit('stocks-refresh');
@@ -89,6 +115,23 @@ function goToNextTradingDay() {
 function goToday() {
   const today = getMostRecentTradingDay();
   if (today) { setCurrentDate(today); emitAllRefresh(); }
+}
+
+function onAddStock() {
+  if (stocksRef.value && stocksRef.value.openModal) {
+    stocksRef.value.openModal();
+  }
+}
+function onExport() {
+  if (stocksRef.value && stocksRef.value.exportData) {
+    stocksRef.value.exportData();
+  }
+}
+function onImport() {
+  _emit('show-import-modal');
+}
+function onPullCloud() {
+  _emit('data:cloud-changed');
 }
 
 const datePickerActive = ref(false);
@@ -145,107 +188,3 @@ function pickerGoToday() {
   selectPickerDate(today);
 }
 </script>
-
-<style scoped>
-.container {
-  max-width: 400px;
-  margin: 0 auto;
-  background: #ffffff;
-  min-height: 100vh;
-  padding-bottom: 100px;
-  box-shadow: 0 0 20px rgba(0, 0, 0, 0.05);
-}
-.date-nav {
-  background: rgba(255, 255, 255, 0.95);
-  padding: 12px 15px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  position: sticky;
-  top: 0;
-  z-index: 99;
-  backdrop-filter: blur(10px);
-  border-bottom: 1px solid #e2e8f0;
-}
-.date-nav-btn {
-  background: none;
-  border: none;
-  font-size: 20px;
-  color: #475569;
-  cursor: pointer;
-  padding: 4px 12px;
-}
-.date-nav-date {
-  font-size: 16px;
-  font-weight: 600;
-  color: #1f2937;
-  cursor: pointer;
-}
-.date-nav-today {
-  background: #3b82f6;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  padding: 4px 12px;
-  font-size: 13px;
-  cursor: pointer;
-}
-.date-picker-section {
-  padding: 10px;
-}
-.date-picker-nav {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
-}
-.date-picker-nav button {
-  background: none;
-  border: none;
-  font-size: 18px;
-  cursor: pointer;
-  padding: 4px 12px;
-}
-.date-picker-nav span {
-  font-weight: 600;
-}
-.date-picker-grid {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 4px;
-}
-.date-picker-grid button {
-  padding: 8px 4px;
-  border: 1px solid #e2e8f0;
-  background: white;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 13px;
-}
-.date-picker-grid button.date-selected {
-  background: #3b82f6;
-  color: white;
-  border-color: #3b82f6;
-}
-.date-picker-grid button.date-today {
-  border-color: #3b82f6;
-  color: #3b82f6;
-}
-.date-picker-grid button:disabled {
-  background: #f1f5f9;
-  color: #cbd5e1;
-  cursor: default;
-}
-.date-picker-actions {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 10px;
-}
-.date-picker-actions button {
-  padding: 6px 16px;
-  border: 1px solid #e2e8f0;
-  background: white;
-  border-radius: 6px;
-  cursor: pointer;
-}
-</style>

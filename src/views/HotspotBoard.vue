@@ -1,4 +1,5 @@
 <template>
+  <div class="hotspot-board trading-day-element">
   <div class="hotspot-header"><div class="hotspot-title">题材思路</div></div>
   <div class="hotspot-content" @click="startEdit">
     <div v-if="content.trim()" style="white-space: pre-wrap;">{{ content }}</div>
@@ -10,6 +11,7 @@
       <textarea v-model="draft" placeholder="输入题材思路分析..."></textarea>
       <button class="vue-edit-save" @click="save">保存</button>
     </div>
+  </div>
   </div>
 </template>
 

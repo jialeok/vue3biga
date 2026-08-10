@@ -5,7 +5,7 @@
   保持委托: computeAuctionViewData(18个window依赖)
 -->
 <template>
-  <div class="auction-board-vue" :data-source="dataSource">
+  <div class="auction-board" :data-source="dataSource">
     <div class="auction-toolbar">
       <label class="toolbar-toggle">
         <input type="checkbox" :checked="sortState.byJingYest" @change="toggleSort('byJingYest')" />
