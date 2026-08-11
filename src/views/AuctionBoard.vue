@@ -145,18 +145,91 @@
       </div>
 
       <div v-show="currentPage === 1" class="auction-scroll-container">
-        <div v-if="topicGroups.length === 0" class="auction-empty">暂无题材分组数据</div>
-        <div v-for="group in topicGroups" :key="group.topic" class="auction-topic-group">
-          <div class="auction-topic-header">
-            <span class="auction-topic-left">【{{ group.topic }}】</span>
-            <span class="auction-topic-strength" v-if="group.strength !== null && group.strength !== undefined"> 强度<span style="color:#ef4444;">{{ group.strength }}%</span></span>
-            <span class="auction-topic-count">{{ group.stocks.length }}只</span>
+        <div class="auction-toolbar">
+          <div class="auction-toggle-item">
+            <span class="auction-toggle-label">全部展开</span>
+            <label class="auction-toggle-switch">
+              <input type="checkbox" :checked="p2ExpandAll" @change="p2ToggleExpandAll" />
+              <span class="auction-toggle-slider"></span>
+            </label>
           </div>
-          <div class="auction-topic-body">
-            <div v-for="stock in group.stocks" :key="stock.stock" class="auction-topic-stock-row">
-              <span class="auction-topic-stock-name">{{ stock.stock }}</span>
-              <small v-if="stock.ratioValue" class="auction-topic-stock-ratio">{{ Math.round(stock.ratioValue) }}%</small>
+          <div class="auction-toggle-item">
+            <span class="auction-toggle-label">环比</span>
+            <label class="auction-toggle-switch">
+              <input type="checkbox" :checked="sortState2.byRatio" @change="toggleSort2('byRatio')" />
+              <span class="auction-toggle-slider"></span>
+            </label>
+          </div>
+          <div class="auction-toggle-item">
+            <span class="auction-toggle-label">平行</span>
+            <label class="auction-toggle-switch">
+              <input type="checkbox" :checked="sortState2.byParallel" @change="toggleSort2('byParallel')" />
+              <span class="auction-toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+        <div class="auction-toolbar-row2">
+          <div class="auction-toggle-item">
+            <span class="auction-toggle-label">竞/昨</span>
+            <label class="auction-toggle-switch">
+              <input type="checkbox" :checked="sortState2.byJingYest" @change="toggleSort2('byJingYest')" />
+              <span class="auction-toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+        <div class="auction-highratio-stat">
+          <span style="font-weight:700;color:#dc2626;">竞/昨数：{{ p2JingYestCount }}</span><span style="display:inline-block;width:28px;"></span>竞放量数：<span style="font-weight:700;">{{ p2HighRatioCount }}</span>
+        </div>
+        <div v-if="sortedTopicGroups.length === 0" class="auction-empty">暂无题材分组数据</div>
+        <div v-else>
+          <div class="auction-header-row">
+            <div class="auction-header-item auction-header-stock" style="flex:0 0 75px;padding-left:10px;">股票名称</div>
+            <div class="auction-header-item auction-header-change" style="flex:0 0 55px;">涨幅</div>
+            <div class="auction-header-item auction-header-volume" style="flex:1;text-align:left;padding-left:8px;">题材</div>
+            <div class="auction-header-item" style="flex:0 0 70px;cursor:pointer;" @click="toggleStrengthSort">
+              <span :class="{ 'strength-sort-active': isStrengthSortEnabled }">{{ isStrengthSortEnabled ? '▼强度' : '强度' }}</span>
             </div>
+            <div class="auction-header-item auction-header-ratio" style="flex:0 0 50px;">占比</div>
+          </div>
+          <div v-for="group in sortedTopicGroups" :key="group.topic" class="auction-topic-group" :data-topic-group="group.topic">
+            <div v-if="canGroupExpand(group.topic)" class="auction-topic-expand-row" @click="toggleGroupExpand(group.topic)">
+              <span class="auction-topic-expand-arrow" :class="{ expanded: p2ExpandedTopics.has(group.topic) }">▼</span>
+            </div>
+            <div class="auction-topic-header">
+              <span class="auction-topic-left">【{{ group.topic }}】{{ getRankAppearText(group.topic) }}</span>
+              <span class="auction-topic-stars" v-if="group.topic !== '其它'">{{ getStarSymbols(group.starCount) }}</span>
+              <span class="auction-topic-strength" v-if="group.topic !== '其它' && group.strength !== null"> 强度<span style="color:#ef4444;">{{ group.strength }}%</span></span>
+              <span class="auction-topic-count">{{ group.stocks.length }}只</span>
+            </div>
+            <template v-if="p2ExpandedTopics.has(group.topic) || !canGroupExpand(group.topic)">
+              <div v-for="stock in group.stocks" :key="group.topic + '-' + stock.stock"
+                   :class="getTopicRowClass(group, stock)"
+                   :data-stock="stock.stock || ''"
+                   @click="canGroupExpand(group.topic) && toggleP2Trend(group.topic, stock.stock)">
+                <div class="auction-topic-stock" :style="getStockStyle(stock.stock)">{{ stock.stock || '-' }}</div>
+                <div :class="getChangeClass(stock)">{{ getChangePctDisplay(stock) }}</div>
+                <div class="auction-topic-name" :style="getTopicNameStyle()">{{ getTopicsDisplay(stock) }}</div>
+                <div class="auction-topic-ratio">{{ stock.ratio }}</div>
+              </div>
+              <div v-for="stock in group.stocks" :key="'trend-' + group.topic + '-' + stock.stock"
+                   v-if="canGroupExpand(group.topic) && p2ExpandedSet.has(group.topic + '|' + stock.stock)"
+                   class="auction-trend-panel">
+                <template v-if="p2TrendHistory[group.topic + '|' + stock.stock]">
+                  <div class="trend-chart-item">
+                    <div class="trend-chart-label">竞价量(万) 近5日</div>
+                    <TrendChart :points="p2TrendHistory[group.topic + '|' + stock.stock].volume" color="#6366f1" />
+                  </div>
+                  <div class="trend-chart-item">
+                    <div class="trend-chart-label">昨日成交量(万) 近5日</div>
+                    <TrendChart :points="p2TrendHistory[group.topic + '|' + stock.stock].yestVolume" color="#10b981" />
+                  </div>
+                  <div class="trend-chart-item" v-if="p2TrendHistory[group.topic + '|' + stock.stock].changePct.some(p => p.value !== null)">
+                    <div class="trend-chart-label">涨幅(%) 近5日</div>
+                    <TrendChart :points="p2TrendHistory[group.topic + '|' + stock.stock].changePct" color="#64748b" />
+                  </div>
+                </template>
+              </div>
+            </template>
           </div>
         </div>
       </div>
@@ -193,7 +266,7 @@ import LongPressTagMenu from '../components/LongPressTagMenu.vue';
 import { useUiStore } from '../stores/uiStore.js';
 import { useAuctionStore } from '../stores/auctionStore.js';
 import { _on, _off } from '../stores/eventBus.js';
-import { saveData, getTodayGroupList, patchHotField, patchAuctionField, saveModule,
+import { saveData, getTodayGroupList, getGroupData, patchHotField, patchAuctionField, saveModule,
   fetchLadderConstituentsMain, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs,
   fillYesterdayYesterdayVolumeFromThs, fetchChangePctFromThs,
   fillAuctionHistoryGapPctFromThs, fillAuctionHistoryGapYestVolumeFromThs,
@@ -210,8 +283,11 @@ import { saveData, getTodayGroupList, patchHotField, patchAuctionField, saveModu
   importHotFromPaste, importHotHistoryFill, replaceHotConceptFromPaste
 } from '../logic/app-core.js';
 import { getAuctionStockHistory, deriveAuctionTagState } from '../logic/tag-rules.js';
-import { getTopicGroups } from '../logic/topic-rules.js';
+import { getTopicGroups, getTopicRankCountThisWeek } from '../logic/topic-rules.js';
 import { getDisplayNote, parseNoteToFields, extractTopics } from '../logic/note-helpers.js';
+import { getPreviousTradingDay } from '../logic/trading-day-helpers.js';
+import { getHighRatioStocksForDate, getJingYestHighlightSetForDate, getParallelStocksForDate } from '../logic/auction-sort-rules.js';
+import { getNumericVolume } from '../data/supabase-client.js';
 import { syncStockCloseFromAuction, syncStockTopicsFromAuction } from '../logic/auction-stock-sync.js';
 import { getStockCode } from '../data/stock-code-map.js';
 import { pushStockTopicsToCloud } from '../data/stock-topics.js';
@@ -288,6 +364,186 @@ const filteredItems = computed(() => {
   const kw = searchKeyword.value.trim().toLowerCase();
   return allItems.value.filter(item => item.stock && item.stock.toLowerCase().includes(kw));
 });
+
+// ===== 第二页（题材分组）状态与逻辑 =====
+const sortState2 = reactive({ byRatio: false, byParallel: false, byJingYest: false });
+const isStrengthSortEnabled = ref(false);
+const p2ExpandedSet = ref(new Set());
+const p2TrendHistory = ref({});
+const p2ExpandedTopics = ref(new Set());
+const p2ExpandAll = ref(false);
+
+function getStarSymbols(starCount) {
+  if (starCount <= 0) return '-';
+  if (starCount >= 6) return starCount + '★';
+  return '★'.repeat(starCount);
+}
+function extractChangeFromNote(note) {
+  if (!note) return '-';
+  const m = note.match(/([+-]?\d+\.?\d*%)/);
+  return m ? m[1] : '-';
+}
+function getChangePctDisplay(item) {
+  if (item && item.changePct) {
+    if (/^[+-]?\d+\.?\d*%$/.test(item.changePct)) {
+      const num = parseFloat(item.changePct);
+      if (!isNaN(num) && Math.abs(num) <= 20) return item.changePct;
+      return '-';
+    }
+    return item.changePct;
+  }
+  return extractChangeFromNote(item ? item.note : '');
+}
+function canGroupExpand(topic) {
+  return topic !== '其它' && topic !== '并购重组';
+}
+function getRankAppearText(topic) {
+  try {
+    const cnt = getTopicRankCountThisWeek(topic);
+    return cnt > 0 ? ` 上榜${cnt}次` : '';
+  } catch (e) { return ''; }
+}
+function getTopicsDisplay(stock) {
+  return stock.topics ? stock.topics.join(',').replace(/[，、;；]/g, ',') : '-';
+}
+function getStockStyle(stockName) {
+  const cnt = p2StockTopicCount.value[stockName] || 1;
+  if (cnt >= 3) return 'color:#ef4444;font-weight:500;';
+  if (cnt === 2) return 'color:#1f2937;font-weight:500;';
+  return 'color:rgba(0,0,0,0.6);font-weight:500;';
+}
+function getTopicNameStyle() {
+  return 'color:#6b7280;font-weight:400;';
+}
+function getChangeClass(stock) {
+  const v = getChangePctDisplay(stock);
+  if (v.includes('涨停') || (v.startsWith('-') === false && v !== '-')) return 'auction-topic-change auction-change-red';
+  if (v.startsWith('-')) return 'auction-topic-change auction-change-green';
+  return 'auction-topic-change';
+}
+function getTopicRowClass(group, stock) {
+  const auctionList = getTodayGroupList(props.dataSource);
+  const auctionItem = auctionList.find(it => it.stock && it.stock.trim() === (stock.stock || '').trim());
+  let cls = 'auction-topic-row';
+  if (auctionItem) {
+    const ts2 = deriveAuctionTagState(auctionItem.stock.trim(), uiStore.currentDate);
+    if (ts2.sold) cls += ' sold';
+    else if (ts2.bought) cls += ' bought';
+    else if (ts2.selected) cls += ' selected';
+    else if (auctionItem.selected === true) cls += ' manual-selected';
+  }
+  if (canGroupExpand(group.topic)) cls += ' auction-trend-trigger-p2';
+  return cls;
+}
+
+const p2StockTopicCount = computed(() => {
+  const counts = {};
+  topicGroups.value.forEach(g => {
+    if (g.topic === '其它') return;
+    g.stocks.forEach(s => { if (s.stock) counts[s.stock] = (counts[s.stock] || 0) + 1; });
+  });
+  return counts;
+});
+
+const p2HighRatioInfo = computed(() => {
+  try { return getHighRatioStocksForDate(uiStore.currentDate, props.dataSource); }
+  catch (e) { return { count: '-', stockNames: new Set() }; }
+});
+const p2JingYestSet = computed(() => {
+  try { return getJingYestHighlightSetForDate(uiStore.currentDate, props.dataSource); }
+  catch (e) { return new Set(); }
+});
+const p2ParallelSet = computed(() => {
+  try { return getParallelStocksForDate(uiStore.currentDate, props.dataSource); }
+  catch (e) { return new Set(); }
+});
+const p2JingYestCount = computed(() => p2JingYestSet.value ? p2JingYestSet.value.size : '-');
+const p2HighRatioCount = computed(() => p2HighRatioInfo.value ? p2HighRatioInfo.value.count : '-');
+
+const sortedTopicGroups = computed(() => {
+  const groups = topicGroups.value;
+  if (!groups || groups.length === 0) return [];
+  const auctionData = getGroupData(props.dataSource);
+  const prevDate = getPreviousTradingDay(uiStore.currentDate);
+  const prevAuctionList = prevDate ? (auctionData[prevDate] || []) : [];
+  const auctionList = getTodayGroupList(props.dataSource);
+
+  const enriched = groups.map(g => {
+    if (g.topic === '其它') return { ...g, strength: null };
+    let strongCount = 0;
+    g.stocks.forEach(stock => {
+      let hasDownArrow = false;
+      if (prevAuctionList.length > 0 && stock.stock) {
+        const prevItem = prevAuctionList.find(p => p.stock && p.stock.trim() === stock.stock.trim());
+        if (prevItem && prevItem.yestVolume) {
+          const prevVolume = parseFloat(prevItem.volume) || 0;
+          const prevYestVolume = parseFloat(prevItem.yestVolume) || 0;
+          if (prevYestVolume > 0) {
+            const prevRatioValue = (prevVolume / prevYestVolume) * 100;
+            if (Math.round(stock.ratioValue) < Math.round(prevRatioValue)) hasDownArrow = true;
+          }
+        }
+      }
+      if (!hasDownArrow) strongCount++;
+    });
+    return { ...g, strength: g.stocks.length > 0 ? Math.round((strongCount / g.stocks.length) * 100) : 0 };
+  });
+
+  const otherGroup = enriched.find(g => g.topic === '其它');
+  let sorted;
+  if (isStrengthSortEnabled.value) {
+    sorted = enriched.filter(g => g.topic !== '其它').sort((a, b) => (b.strength || 0) - (a.strength || 0));
+  } else {
+    sorted = enriched.filter(g => g.topic !== '其它').sort((a, b) => (b.strength || 0) - (a.strength || 0));
+  }
+  if (otherGroup) sorted.push(otherGroup);
+  return sorted;
+});
+
+function toggleSort2(key) {
+  sortState2[key] = !sortState2[key];
+}
+function toggleStrengthSort() {
+  isStrengthSortEnabled.value = !isStrengthSortEnabled.value;
+}
+function toggleGroupExpand(topic) {
+  const s = new Set(p2ExpandedTopics.value);
+  if (s.has(topic)) s.delete(topic); else s.add(topic);
+  p2ExpandedTopics.value = s;
+}
+function p2ToggleExpandAll() {
+  p2ExpandAll.value = !p2ExpandAll.value;
+  if (p2ExpandAll.value) {
+    const s = new Set();
+    sortedTopicGroups.value.forEach(g => { if (canGroupExpand(g.topic)) s.add(g.topic); });
+    p2ExpandedTopics.value = s;
+  } else {
+    p2ExpandedTopics.value = new Set();
+  }
+}
+function loadP2TrendHistory(stockName) {
+  const history = getAuctionStockHistory(stockName.trim(), uiStore.currentDate, 5, props.dataSource);
+  return {
+    volume: history.map(h => ({ date: h.date, value: h.volume })),
+    yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
+    changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
+  };
+}
+function toggleP2Trend(topic, stockName) {
+  if (!canGroupExpand(topic)) return;
+  const key = topic + '|' + stockName;
+  const s = new Set(p2ExpandedSet.value);
+  if (s.has(key)) {
+    s.delete(key);
+    const h = { ...p2TrendHistory.value };
+    delete h[key];
+    p2TrendHistory.value = h;
+  } else {
+    s.add(key);
+    p2TrendHistory.value = { ...p2TrendHistory.value, [key]: loadP2TrendHistory(stockName) };
+  }
+  p2ExpandedSet.value = s;
+}
 
 function openBackend() {
   showBackend.value = !showBackend.value;
@@ -749,4 +1005,140 @@ defineExpose({ refresh, toggleSort, expandAll, collapseAll });
   color: #6b7280;
   font-size: 10px;
 }
+/* ===== 第二页题材分组样式（复刻原始 HTML） ===== */
+.auction-toolbar-row2 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid #e5e7eb;
+  flex-wrap: wrap;
+}
+.auction-header-change { flex: 0.6; text-align: center; }
+.auction-topic-group {
+  margin-bottom: 12px;
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 8px;
+}
+.auction-topic-group:last-child {
+  margin-bottom: 0;
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.auction-topic-header {
+  background: linear-gradient(135deg, #f3e8ff, #ede9fe);
+  padding: 6px 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #7c3aed;
+  display: flex;
+  align-items: center;
+  border-radius: 6px;
+  margin-bottom: 6px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.auction-topic-left {
+  flex: 0 0 130px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.auction-topic-stars {
+  flex: 0 0 80px;
+  text-align: left;
+  color: #dc2626;
+  font-size: 13px;
+  letter-spacing: 1px;
+}
+.auction-topic-strength {
+  flex: 0 0 70px;
+  font-size: 12px;
+}
+.auction-topic-count {
+  font-size: 11px;
+  color: #9333ea;
+  background: rgba(147, 51, 234, 0.1);
+  padding: 2px 8px;
+  border-radius: 10px;
+  margin-left: auto;
+}
+.auction-topic-expand-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 9px 0;
+  cursor: pointer;
+}
+.auction-topic-expand-arrow {
+  font-size: 12px;
+  color: #9333ea;
+  background: rgba(147, 51, 234, 0.12);
+  transition: transform 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+}
+.auction-topic-expand-arrow.expanded {
+  transform: rotate(180deg);
+}
+.auction-topic-row {
+  display: flex;
+  border-bottom: 1px solid #f1f5f9;
+  padding: 6px 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.auction-topic-row:last-child {
+  border-bottom: none;
+}
+.auction-topic-row.sold { background: #f3f4f6; }
+.auction-topic-row.bought { background: #fee2e2; }
+.auction-topic-row.selected { background: #f3e8ff; }
+.auction-topic-row.high-ratio { box-shadow: inset 4px 0 0 #f59e0b; }
+.auction-topic-row.parallel-match { box-shadow: inset 4px 0 0 #10b981; }
+.auction-topic-row.jing-yest-match { box-shadow: inset 4px 0 0 #3b82f6; }
+.auction-topic-stock {
+  flex: 0 0 75px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #1f2937;
+  padding-left: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+.auction-topic-change {
+  flex: 0 0 55px;
+  font-size: 12px;
+  color: #374151;
+  text-align: center;
+}
+.auction-change-red { color: #dc2626; font-weight: 600; }
+.auction-change-green { color: #16a34a; font-weight: 600; }
+.auction-topic-name {
+  flex: 1;
+  font-size: 12px;
+  color: #6b7280;
+  text-align: left;
+  padding-left: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-sizing: border-box;
+}
+.auction-topic-ratio {
+  flex: 0 0 50px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #374151;
+  text-align: center;
+  padding-right: 10px;
+  box-sizing: border-box;
+}
+.strength-sort-active { color: #7c3aed; font-weight: 700; }
+.auction-trend-trigger-p2 { cursor: pointer; }
 </style>
