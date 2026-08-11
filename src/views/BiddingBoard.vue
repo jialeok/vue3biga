@@ -469,16 +469,27 @@ defineExpose({ render, openEdit, closeModal, save, addRow, removeRow, clearData,
 <style>
 .bidding-row {
   display: grid;
-  grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr;
-  gap: 4px;
-  padding: 6px 14px;
-  font-size: 13px;
+  grid-template-columns: 32% 17% 17% 17% 17% 17%;
+  gap: 2px;
+  padding: 6px 8px;
+  font-size: 11px;
   border-bottom: 1px solid #f9fafb;
+  align-items: center;
 }
 .bidding-row-header {
   font-weight: 600;
   color: #6b7280;
   background: #f9fafb;
+  font-size: 10px;
+}
+.bidding-row .col-name {
+  text-align: left;
+  font-weight: 500;
+  color: #1f2937;
+  white-space: normal;
+  word-wrap: break-word;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .bidding-row .up { color: #dc2626; }
 .bidding-row .down { color: #059669; }

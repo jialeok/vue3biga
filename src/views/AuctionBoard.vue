@@ -27,9 +27,7 @@
     </div>
     <div v-show="expanded" class="auction-swipe-container"
          @touchstart.passive="onSwipeStart"
-         @touchend.passive="onSwipeEnd"
-         @mousedown="onSwipeStart"
-         @mouseup="onSwipeEnd">
+         @touchend.passive="onSwipeEnd">
       <div v-show="currentPage === 0" class="auction-scroll-container" @dblclick.self="openBackend">
         <div class="auction-toolbar">
           <div class="auction-toggle-item">
@@ -148,27 +146,38 @@
 
       <div v-show="currentPage === 1" class="auction-scroll-container">
         <div v-if="topicGroups.length === 0" class="auction-empty">暂无题材分组数据</div>
-        <div v-for="group in topicGroups" :key="group.topic" class="topic-group">
-          <div class="topic-group-header">
-            <span class="topic-name">{{ group.topic }}</span>
-            <span class="topic-strength" v-if="group.strength !== null && group.strength !== undefined">强度: {{ group.strength }}%</span>
-            <span class="topic-count">{{ group.stocks.length }}只</span>
+        <div v-for="group in topicGroups" :key="group.topic" class="auction-topic-group">
+          <div class="auction-topic-header">
+            <span class="auction-topic-left">【{{ group.topic }}】</span>
+            <span class="auction-topic-strength" v-if="group.strength !== null && group.strength !== undefined"> 强度<span style="color:#ef4444;">{{ group.strength }}%</span></span>
+            <span class="auction-topic-count">{{ group.stocks.length }}只</span>
           </div>
-          <div class="topic-group-body">
-            <span v-for="stock in group.stocks" :key="stock.stock" class="topic-stock-item">
-              {{ stock.stock }}
-              <small v-if="stock.ratioValue">{{ Math.round(stock.ratioValue) }}%</small>
-            </span>
+          <div class="auction-topic-body">
+            <div v-for="stock in group.stocks" :key="stock.stock" class="auction-topic-stock-row">
+              <span class="auction-topic-stock-name">{{ stock.stock }}</span>
+              <small v-if="stock.ratioValue" class="auction-topic-stock-ratio">{{ Math.round(stock.ratioValue) }}%</small>
+            </div>
           </div>
         </div>
       </div>
 
       <div v-show="currentPage === 2" class="auction-scroll-container">
-        <div class="auction-empty">第3页 — 题材历史（左右滑动翻页）</div>
+        <div v-if="topicGroups.length === 0" class="auction-empty">暂无题材历史数据</div>
+        <div v-for="group in topicGroups" :key="'hist-' + group.topic" class="auction-topic-group">
+          <div class="auction-topic-header">
+            <span class="auction-topic-left">【{{ group.topic }}】</span>
+            <span class="auction-topic-count">{{ group.stocks.length }}只</span>
+          </div>
+          <div class="auction-topic-body">
+            <div v-for="stock in group.stocks" :key="'hist-' + stock.stock" class="auction-topic-stock-row">
+              <span class="auction-topic-stock-name">{{ stock.stock }}</span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div v-show="currentPage === 3" class="auction-scroll-container">
-        <div class="auction-empty">第4页 — 复制股票审查（左右滑动翻页）</div>
+        <div class="auction-empty">第4页 — 复制股票审查</div>
       </div>
     </div>
 
@@ -553,21 +562,15 @@ defineExpose({ refresh, toggleSort, expandAll, collapseAll });
 .auction-swipe-container {
   flex: 1;
   position: relative;
-  /* 必须 visible !important 覆盖 main.css 的 overflow: hidden。
-     overflow: hidden 会让该元素成为滚动容器(scroll container),
-     触摸垂直滑动时浏览器尝试滚动该元素本身而非冒泡到 body,
-     因内容不溢出 -> 滚不动 -> 滚动链终止 -> 看似"冻结"。
-     翻页用 v-show(display:none) 不需要 overflow:hidden 裁剪。 */
   overflow: visible !important;
-  touch-action: pan-x pan-y;
+  touch-action: auto !important;
+  overscroll-behavior: auto !important;
 }
 .auction-scroll-container {
-  /* 同理 visible, 不成为滚动容器, 让垂直滑动冒泡到 body。
-     注意: overflow-x/overflow-y 一个 visible 一个非 visible 时,
-     浏览器会把 visible 计算成 auto 又变滚动容器, 所以必须都 visible。 */
   overflow: visible !important;
   padding: 4px 0;
-  touch-action: pan-x pan-y;
+  touch-action: auto !important;
+  overscroll-behavior: auto !important;
 }
 .auction-search-container {
   padding: 8px 12px;
