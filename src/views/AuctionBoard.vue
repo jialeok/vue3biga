@@ -144,7 +144,7 @@
         </div>
       </div>
 
-      <div v-show="currentPage === 1" class="auction-scroll-container">
+      <div v-show="currentPage === 1" class="auction-scroll-container" @dblclick.self="openCoreTopicModal">
         <div class="auction-toolbar">
           <div class="auction-toggle-item">
             <span class="auction-toggle-label">全部展开</span>
@@ -211,24 +211,25 @@
                 <div class="auction-topic-name" :style="getTopicNameStyle()">{{ getTopicsDisplay(stock) }}</div>
                 <div class="auction-topic-ratio">{{ stock.ratio }}</div>
               </div>
-              <div v-for="stock in group.stocks" :key="'trend-' + group.topic + '-' + stock.stock"
-                   v-if="canGroupExpand(group.topic) && p2ExpandedSet.has(group.topic + '|' + stock.stock)"
-                   class="auction-trend-panel">
-                <template v-if="p2TrendHistory[group.topic + '|' + stock.stock]">
-                  <div class="trend-chart-item">
-                    <div class="trend-chart-label">竞价量(万) 近5日</div>
-                    <TrendChart :points="p2TrendHistory[group.topic + '|' + stock.stock].volume" color="#6366f1" />
-                  </div>
-                  <div class="trend-chart-item">
-                    <div class="trend-chart-label">昨日成交量(万) 近5日</div>
-                    <TrendChart :points="p2TrendHistory[group.topic + '|' + stock.stock].yestVolume" color="#10b981" />
-                  </div>
-                  <div class="trend-chart-item" v-if="p2TrendHistory[group.topic + '|' + stock.stock].changePct.some(p => p.value !== null)">
-                    <div class="trend-chart-label">涨幅(%) 近5日</div>
-                    <TrendChart :points="p2TrendHistory[group.topic + '|' + stock.stock].changePct" color="#64748b" />
+              <template v-for="stock in group.stocks" :key="'trend-' + group.topic + '-' + stock.stock">
+                <div v-if="canGroupExpand(group.topic) && p2ExpandedSet.has(group.topic + '|' + stock.stock)"
+                     class="auction-trend-panel">
+                  <template v-if="p2TrendHistory[group.topic + '|' + stock.stock]">
+                    <div class="trend-chart-item">
+                      <div class="trend-chart-label">竞价量(万) 近5日</div>
+                      <TrendChart :points="p2TrendHistory[group.topic + '|' + stock.stock].volume" color="#6366f1" />
+                    </div>
+                    <div class="trend-chart-item">
+                      <div class="trend-chart-label">昨日成交量(万) 近5日</div>
+                      <TrendChart :points="p2TrendHistory[group.topic + '|' + stock.stock].yestVolume" color="#10b981" />
+                    </div>
+                    <div class="trend-chart-item" v-if="p2TrendHistory[group.topic + '|' + stock.stock].changePct.some(p => p.value !== null)">
+                      <div class="trend-chart-label">涨幅(%) 近5日</div>
+                      <TrendChart :points="p2TrendHistory[group.topic + '|' + stock.stock].changePct" color="#64748b" />
                   </div>
                 </template>
-              </div>
+                </div>
+              </template>
             </template>
           </div>
         </div>
@@ -255,6 +256,7 @@
     </div>
 
     <LongPressTagMenu ref="longPressMenuRef" :data-source="dataSource" />
+    <CoreTopicModal ref="coreTopicModalRef" />
   </div>
 </template>
 
@@ -263,6 +265,7 @@ import { ref, computed, reactive, watch, onMounted, onUnmounted } from 'vue';
 import AuctionBadge from '../components/AuctionBadge.vue';
 import TrendChart from '../components/TrendChart.vue';
 import LongPressTagMenu from '../components/LongPressTagMenu.vue';
+import CoreTopicModal from '../components/CoreTopicModal.vue';
 import { useUiStore } from '../stores/uiStore.js';
 import { useAuctionStore } from '../stores/auctionStore.js';
 import { _on, _off } from '../stores/eventBus.js';
@@ -313,6 +316,7 @@ const highlightKeyword = ref('');
 const expandedSet = ref(new Set());
 const trendHistory = ref({});
 const longPressMenuRef = ref(null);
+const coreTopicModalRef = ref(null);
 let longPressTimer = null;
 const viewData = ref({ items: [], obsIndices: [], regularIndices: [], stats: {}, rawCount: 0 });
 
@@ -547,6 +551,9 @@ function toggleP2Trend(topic, stockName) {
 
 function openBackend() {
   showBackend.value = !showBackend.value;
+}
+function openCoreTopicModal() {
+  if (coreTopicModalRef.value) coreTopicModalRef.value.open();
 }
 
 function onHeaderClick() {

@@ -4,6 +4,7 @@ import { getPreviousTradingDay } from './trading-day-helpers.js';
 import { state } from './app-state.js';
 import { getAuctionData, getGroupData } from './app-core-api.js';
 import { getTopicGroups } from './topic-rules.js';
+import { getSupabase } from '../data/supabase-client.js';
 import { renderConsecutiveUp as _renderConsecutiveUp, autoCalculateRecentMultiScore as _autoCalcRecentMultiScore, getTodayTagTitles, getYesterdayDate, getTagTitlesByDate, getPreviousTradingDayWithData, getTodayBidding } from './tag-titles-helpers.js';
 
 function _noop() {}
@@ -49,8 +50,28 @@ export function openTrackEdit() {}
 export function renderAuction() { _emit('auction-refresh'); }
 export function renderAuctionForm() {}
 export async function saveAuction() {}
-export function pullCoreTopicsFromCloud() { return Promise.resolve(); }
-export function pushCoreTopicsToCloud() { return Promise.resolve(); }
+export async function pullCoreTopicsFromCloud() {
+  const sb = getSupabase();
+  if (!sb) return null;
+  const { data, error } = await sb.from('core_topics').select('name,synonyms,updated_at').order('name', { ascending: true });
+  if (error) throw error;
+  if (!data || data.length === 0) return null;
+  return data.map(row => {
+    let syns = row.synonyms;
+    if (typeof syns === 'string') { try { syns = JSON.parse(syns); } catch { syns = syns.split(','); } }
+    return { name: row.name, synonyms: Array.isArray(syns) ? syns : [] };
+  });
+}
+export async function pushCoreTopicsToCloud(topics) {
+  const sb = getSupabase();
+  if (!sb) return;
+  const { error: delErr } = await sb.from('core_topics').delete().neq('name', '___never___');
+  if (delErr) throw delErr;
+  if (!topics || topics.length === 0) return;
+  const rows = topics.map(t => ({ name: t.name, synonyms: JSON.stringify(t.synonyms || []), updated_at: new Date().toISOString() }));
+  const { error: insErr } = await sb.from('core_topics').insert(rows);
+  if (insErr) throw insErr;
+}
 _setCoreTopicsFns(pullCoreTopicsFromCloud, pushCoreTopicsToCloud);
 export function toggleAuctionBoard() {}
 export function toggleStrengthSort() {}
