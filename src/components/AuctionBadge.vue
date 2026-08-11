@@ -36,24 +36,30 @@ const todayChoice = computed(() => {
 
 <style scoped>
 .auction-badge-group {
-  /* 绝对定位到父容器(.auction-stock-name)右上角, 脱离文档流不占空间。
+  /* 绝对定位到父容器(.auction-stock-name)右上角外侧, 脱离文档流不占空间。
+     不预留 padding, 名称列宽度不被撑开, 后面四列位置固定不动。
+     right 取负值让角标浮在名称右侧的间隙里, 不压住名称文字。
      pointer-events:none 确保不阻挡父级股票名称的长按/双击/右键事件。 */
   position: absolute;
-  top: 2px;
-  right: 2px;
+  top: -8px;
+  right: -18px;
   display: inline-flex;
   align-items: center;
   gap: 2px;
   pointer-events: none;
-  z-index: 1;
+  z-index: 2;
 }
 .auction-badge {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
   padding: 0 3px;
   border-radius: 3px;
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 700;
-  line-height: 1.3;
+  line-height: 1;
 }
 .badge-warn {
   background: #fef3c7;

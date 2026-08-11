@@ -528,12 +528,12 @@ defineExpose({ refresh, toggleSort, expandAll, collapseAll });
 .auction-row.obs-row { background: #f0f9ff; }
 /* 股票名称列作为 badge 的定位父级。
    - position:relative 让内部 absolute 的 badge-group 相对它定位。
-   - padding-right 给 badge 避让空间, 避免遮住名称尾部(2-3字)。
-   - .auction-stock-text 只渲染纯名称文字, badge 是独立兄弟元素,
-     后期 textContent/data-stock 取名称不会混入 badge 文字。 */
+   - 不再用 padding-right 预留角标空间(那会撑宽名称列、挤动后面四列)。
+   - badge 改为 absolute 浮动角标, 完全脱离文档流, 五列位置固定不变。
+   - overflow:visible 确保角标不被裁剪(父级容器已是 visible)。 */
 .auction-stock-name {
   position: relative;
-  padding-right: 22px;
+  overflow: visible;
 }
 .auction-trend-panel {
   width: 100%;
