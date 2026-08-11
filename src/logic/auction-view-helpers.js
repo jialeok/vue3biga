@@ -32,8 +32,8 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   }
 
   let ratioArrow = '';
-  if (ctx.prevAuctionList && ctx.prevAuctionList.length > 0 && stockName) {
-    const prevItem = ctx.prevAuctionList.find(p => p.stock && p.stock.trim() === stockName);
+  if (ctx.prevAuctionMap && stockName) {
+    const prevItem = ctx.prevAuctionMap.get(stockName);
     if (prevItem && prevItem.yestVolume) {
       const prevVolume = parseFloat(prevItem.volume) || 0;
       const prevYestVolume = parseFloat(prevItem.yestVolume) || 0;
@@ -175,11 +175,24 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   const parallelStocksToday = getParallelStocksForDate(currentDate, dataSource);
   const jingYestToggleChecked = sortState.byJingYest || sortState.byJingYestRatio;
 
+  const _prevMap = new Map();
+  if (prevAuctionList.length > 0) {
+    for (const p of prevAuctionList) {
+      if (p && p.stock) _prevMap.set(p.stock.trim(), p);
+    }
+  }
+  const _prevPrevMap = new Map();
+  if (prevPrevAuctionList.length > 0) {
+    for (const p of prevPrevAuctionList) {
+      if (p && p.stock) _prevPrevMap.set(p.stock.trim(), p);
+    }
+  }
+
   let strongCount = 0;
   auctionList.forEach(item => {
     let hasDown = false;
-    if (prevAuctionList.length > 0 && item.stock) {
-      const prevItem = prevAuctionList.find(p => p.stock && p.stock.trim() === item.stock.trim());
+    if (item.stock) {
+      const prevItem = _prevMap.get(item.stock.trim());
       if (prevItem && prevItem.yestVolume) {
         const prevVolume = parseFloat(prevItem.volume) || 0;
         const prevYestVolume = parseFloat(prevItem.yestVolume) || 0;
@@ -200,8 +213,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   if (yTotal > 0) {
     prevAuctionList.forEach(item => {
       let hasDown = false;
-      if (prevPrevAuctionList.length > 0 && item.stock) {
-        const pp = prevPrevAuctionList.find(p => p.stock && p.stock.trim() === item.stock.trim());
+      if (item.stock) {
+        const pp = _prevPrevMap.get(item.stock.trim());
         if (pp && pp.yestVolume) {
           const ppv = parseFloat(pp.volume) || 0;
           const ppy = parseFloat(pp.yestVolume) || 0;
@@ -230,6 +243,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   } else if (sortState.byRatio) {
     const highRatioStocksForSort = getHighRatioStocksForDate(currentDate, dataSource);
     const prevDayList = prevDate ? (getGroupData(dataSource)[prevDate] || []) : [];
+    const _prevDayMap = new Map();
+    for (const p of prevDayList) { if (p && p.stock) _prevDayMap.set(p.stock.trim(), p); }
     renderOrder = renderOrder.map((idx, pos) => {
       const it = auctionList[idx];
       const stockName = it && it.stock ? it.stock.trim() : '';
@@ -237,7 +252,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       const yestVolume = it ? getNumericVolume(it.yestVolume) : null;
       let ratio = null;
       if (todayVolume !== null && todayVolume !== 0) {
-        const prevItem = prevDayList.find(p => p.stock && p.stock.trim() === stockName);
+        const prevItem = _prevDayMap.get(stockName);
         const prevVolume = prevItem ? getNumericVolume(prevItem.volume) : null;
         if (prevVolume !== null && prevVolume !== 0) ratio = todayVolume / prevVolume;
       }
@@ -420,6 +435,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     dataSource, date: currentDate, confirmedSoldSet: _confirmedSoldSet,
     isObsMember: _isObsMember,
     prevAuctionList,
+    prevAuctionMap: _prevMap,
     jingYestToggleChecked,
     jingYestHighlightSet,
     sortByParallelEnabled: sortState.byParallel,

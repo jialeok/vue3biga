@@ -6,6 +6,7 @@ import { getAuctionData, getGroupData } from './app-core-api.js';
 import { getTopicGroups } from './topic-rules.js';
 import { getSupabase } from '../data/supabase-client.js';
 import { renderConsecutiveUp as _renderConsecutiveUp, autoCalculateRecentMultiScore as _autoCalcRecentMultiScore, getTodayTagTitles, getYesterdayDate, getTagTitlesByDate, getPreviousTradingDayWithData, getTodayBidding } from './tag-titles-helpers.js';
+import { reactive } from 'vue';
 
 function _noop() {}
 
@@ -17,7 +18,12 @@ function _getAuctionTag(date, stockName) {
   } catch { return null; }
 }
 
-export function setApiStatus() {}
+export const apiStatusMap = reactive({});
+
+export function setApiStatus(elId, msg, isOk) {
+  if (!elId) return;
+  apiStatusMap[elId] = { msg: String(msg || ''), ok: !!isOk, ts: Date.now() };
+}
 export function _domGet() { return null; }
 export function _domQuery() { return null; }
 export function _domSetText() {}

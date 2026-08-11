@@ -58,10 +58,26 @@
               <span class="auction-toggle-slider"></span>
             </label>
           </div>
+        </div>
+        <div class="auction-toolbar-row2">
           <div class="auction-toggle-item">
             <span class="auction-toggle-label">竞/昨</span>
             <label class="auction-toggle-switch">
               <input type="checkbox" :checked="sortState.byJingYest" @change="toggleSort('byJingYest')" />
+              <span class="auction-toggle-slider"></span>
+            </label>
+          </div>
+          <div class="auction-toggle-item">
+            <span class="auction-toggle-label">竞/昨占比</span>
+            <label class="auction-toggle-switch">
+              <input type="checkbox" :checked="sortState.byJingYestRatio" @change="toggleSort('byJingYestRatio')" />
+              <span class="auction-toggle-slider"></span>
+            </label>
+          </div>
+          <div class="auction-toggle-item">
+            <span class="auction-toggle-label">三天竞跌</span>
+            <label class="auction-toggle-switch">
+              <input type="checkbox" :checked="sortState.byThreeDayJingDie" @change="toggleSort('byThreeDayJingDie')" />
               <span class="auction-toggle-slider"></span>
             </label>
           </div>
@@ -80,34 +96,54 @@
         <div v-if="searchActive" class="auction-search-container">
           <input type="text" class="auction-search-input" v-model="searchKeyword" placeholder="输入股票名称搜索..." @click.stop />
         </div>
-        <div v-if="showBackend" class="auction-backend-panel">
-          <div class="backend-section">
-            <span class="backend-label">同花顺:</span>
-            <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchHotLimitUpLadderFromThs : fetchLadderConstituentsMain)">梯子成分</button>
-            <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotYesterdayVolumeFromThs : fillYesterdayVolumeFromThs)">昨量填充</button>
-            <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotTodayYesterdayVolumeFromThs : fillTodayYesterdayVolumeFromThs)">今昨量</button>
-            <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotYesterdayYesterdayVolumeFromThs : fillYesterdayYesterdayVolumeFromThs)">昨昨量</button>
-            <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchHotChangePctFromThs : fetchChangePctFromThs)">涨幅抓取</button>
+        <div v-if="showBackend" class="auction-backend-panel" :class="{ 'is-loading': backendLoading }">
+          <div class="backend-block backend-block-ths">
+            <div class="backend-block-header">
+              <span class="backend-block-title">同花顺接口</span>
+              <span class="backend-block-sub">fuyao-proxy</span>
+            </div>
+            <div class="backend-grid">
+              <button class="backend-btn backend-btn-ths" @click="runBackend(dataSource === 'hot' ? fetchHotLimitUpLadderFromThs : fetchLadderConstituentsMain)">梯子成分</button>
+              <button class="backend-btn backend-btn-ths" @click="runBackend(dataSource === 'hot' ? fillHotYesterdayVolumeFromThs : fillYesterdayVolumeFromThs)">昨量填充</button>
+              <button class="backend-btn backend-btn-ths" @click="runBackend(dataSource === 'hot' ? fillHotTodayYesterdayVolumeFromThs : fillTodayYesterdayVolumeFromThs)">今昨量</button>
+              <button class="backend-btn backend-btn-ths" @click="runBackend(dataSource === 'hot' ? fillHotYesterdayYesterdayVolumeFromThs : fillYesterdayYesterdayVolumeFromThs)">昨昨量</button>
+              <button class="backend-btn backend-btn-ths" @click="runBackend(dataSource === 'hot' ? fetchHotChangePctFromThs : fetchChangePctFromThs)">涨幅抓取</button>
+            </div>
+            <div class="backend-status" :style="{ color: (apiStatusMap[dataSource === 'hot' ? 'thsApiStatusHot' : 'thsApiStatus'] || {}).ok ? '#059669' : '#dc2626' }">
+              {{ (apiStatusMap[dataSource === 'hot' ? 'thsApiStatusHot' : 'thsApiStatus'] || {}).msg || '' }}
+            </div>
           </div>
-          <div class="backend-section">
-            <span class="backend-label">猫抓:</span>
-            <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchHotTodayAuctionFromNumcat : fetchTodayAuctionFromNumcat)">今日竞价</button>
-            <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchAllHotAuctionFromNumcat : fetchAllAuctionFromNumcat)">全部竞价</button>
-            <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fetchThreeDaysHotAuctionFromNumcat : fetchThreeDaysAuctionFromNumcat)">三日竞价</button>
-            <button class="backend-btn" @click="runBackend(dataSource === 'hot' ? fillHotTopicsFromNumcat : fillTopicsFromNumcat)">题材填充</button>
+          <div class="backend-block backend-block-numcat">
+            <div class="backend-block-header">
+              <span class="backend-block-title">猫抓数据接口</span>
+              <span class="backend-block-sub">每日10次</span>
+            </div>
+            <div class="backend-grid">
+              <button class="backend-btn backend-btn-numcat" @click="runBackend(dataSource === 'hot' ? fetchHotTodayAuctionFromNumcat : fetchTodayAuctionFromNumcat)">今日竞价</button>
+              <button class="backend-btn backend-btn-numcat" @click="runBackend(dataSource === 'hot' ? fetchAllHotAuctionFromNumcat : fetchAllAuctionFromNumcat)">全部竞价</button>
+              <button class="backend-btn backend-btn-numcat" @click="runBackend(dataSource === 'hot' ? fetchThreeDaysHotAuctionFromNumcat : fetchThreeDaysAuctionFromNumcat)">三日竞价</button>
+              <button class="backend-btn backend-btn-numcat" @click="runBackend(dataSource === 'hot' ? fillHotTopicsFromNumcat : fillTopicsFromNumcat)">题材填充</button>
+            </div>
+            <div class="backend-status" :style="{ color: (apiStatusMap[dataSource === 'hot' ? 'numcatApiStatusHot' : 'numcatApiStatus'] || {}).ok ? '#059669' : '#dc2626' }">
+              {{ (apiStatusMap[dataSource === 'hot' ? 'numcatApiStatusHot' : 'numcatApiStatus'] || {}).msg || '' }}
+            </div>
           </div>
-          <div class="backend-section">
-            <span class="backend-label">导入:</span>
-            <button class="backend-btn" @click="onImportPaste">粘贴导入</button>
-            <button class="backend-btn" @click="onHistoryFill">历史填充</button>
-            <button class="backend-btn" @click="onReplaceConcept">题材替换</button>
+          <div class="backend-block backend-block-import">
+            <div class="backend-block-header">
+              <span class="backend-block-title">数据导入</span>
+            </div>
+            <div class="backend-grid">
+              <button class="backend-btn backend-btn-import" @click="onImportPaste">粘贴导入</button>
+              <button class="backend-btn backend-btn-import" @click="onHistoryFill">历史填充</button>
+              <button class="backend-btn backend-btn-import" @click="onReplaceConcept">题材替换</button>
+            </div>
           </div>
         </div>
         <div v-if="!viewData.items || viewData.items.length === 0" class="auction-empty" @dblclick="openBackend">
           暂无数据，双击打开后台
         </div>
 
-        <template v-for="(item, idx) in filteredItems" :key="item.index">
+        <template v-for="(item, idx) in filteredItems" :key="item.index" v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.index)]">
           <div :class="item.itemClass" :data-index="item.index" :data-stock="item.stock || ''" @click="onToggleSelect(item.index)">
             <div :class="item.numberClass" @click.stop="onExpandTrend(item.index)">{{ idx + 1 }}</div>
             <div :class="item.stockClass"
@@ -131,11 +167,18 @@
           <div v-if="expandedSet.has(item.index)" class="auction-trend-panel">
             <template v-if="trendHistory[item.index]">
               <div class="trend-chart-item">
-                <div class="trend-chart-label">竞价量(万) 近5日</div>
+                <div class="trend-chart-label trend-chart-label-with-stats">
+                  <span>竞价量(万) 近5日</span>
+                  <span v-if="trendHistory[item.index].diff != null" style="color:#2563eb; font-weight:600;">差值 {{ trendHistory[item.index].diff }}</span>
+                  <span v-if="trendHistory[item.index].jingRatio != null" style="color:#6366f1; font-weight:600;">今/昨比 {{ trendHistory[item.index].jingRatio }}</span>
+                </div>
                 <TrendChart :points="trendHistory[item.index].volume" color="#6366f1" />
               </div>
               <div class="trend-chart-item">
-                <div class="trend-chart-label">昨日成交量(万) 近5日</div>
+                <div class="trend-chart-label trend-chart-label-with-stats">
+                  <span>昨日成交量(万) 近5日</span>
+                  <span v-if="trendHistory[item.index].yestRatio != null" style="color:#10b981; font-weight:600;">昨/前比 {{ trendHistory[item.index].yestRatio }}</span>
+                </div>
                 <TrendChart :points="trendHistory[item.index].yestVolume" color="#10b981" />
               </div>
               <div class="trend-chart-item" v-if="trendHistory[item.index].changePct.some(p => p.value !== null)">
@@ -179,6 +222,20 @@
               <span class="auction-toggle-slider"></span>
             </label>
           </div>
+          <div class="auction-toggle-item">
+            <span class="auction-toggle-label">竞/昨占比</span>
+            <label class="auction-toggle-switch">
+              <input type="checkbox" :checked="sortState2.byJingYestRatio" @change="toggleSort2('byJingYestRatio')" />
+              <span class="auction-toggle-slider"></span>
+            </label>
+          </div>
+          <div class="auction-toggle-item">
+            <span class="auction-toggle-label">三天竞跌</span>
+            <label class="auction-toggle-switch">
+              <input type="checkbox" :checked="sortState2.byThreeDayJingDie" @change="toggleSort2('byThreeDayJingDie')" />
+              <span class="auction-toggle-slider"></span>
+            </label>
+          </div>
         </div>
         <div class="auction-highratio-stat">
           <span style="font-weight:700;color:#dc2626;">竞/昨数：{{ p2JingYestCount }}</span><span style="display:inline-block;width:28px;"></span>竞放量数：<span style="font-weight:700;">{{ p2HighRatioCount }}</span>
@@ -217,11 +274,18 @@
                    class="auction-trend-panel">
                 <template v-if="p2TrendHistory[group.topic + '|' + stock.stock]">
                   <div class="trend-chart-item">
-                    <div class="trend-chart-label">竞价量(万) 近5日</div>
+                    <div class="trend-chart-label trend-chart-label-with-stats">
+                      <span>竞价量(万) 近5日</span>
+                      <span v-if="p2TrendHistory[group.topic + '|' + stock.stock].diff != null" style="color:#2563eb; font-weight:600;">差值 {{ p2TrendHistory[group.topic + '|' + stock.stock].diff }}</span>
+                      <span v-if="p2TrendHistory[group.topic + '|' + stock.stock].jingRatio != null" style="color:#6366f1; font-weight:600;">今/昨比 {{ p2TrendHistory[group.topic + '|' + stock.stock].jingRatio }}</span>
+                    </div>
                     <TrendChart :points="p2TrendHistory[group.topic + '|' + stock.stock].volume" color="#6366f1" />
                   </div>
                   <div class="trend-chart-item">
-                    <div class="trend-chart-label">昨日成交量(万) 近5日</div>
+                    <div class="trend-chart-label trend-chart-label-with-stats">
+                      <span>昨日成交量(万) 近5日</span>
+                      <span v-if="p2TrendHistory[group.topic + '|' + stock.stock].yestRatio != null" style="color:#10b981; font-weight:600;">昨/前比 {{ p2TrendHistory[group.topic + '|' + stock.stock].yestRatio }}</span>
+                    </div>
                     <TrendChart :points="p2TrendHistory[group.topic + '|' + stock.stock].yestVolume" color="#10b981" />
                   </div>
                   <div class="trend-chart-item" v-if="p2TrendHistory[group.topic + '|' + stock.stock].changePct.some(p => p.value !== null)">
@@ -340,6 +404,7 @@ import { getStockCode } from '../data/stock-code-map.js';
 import { pushStockTopicsToCloud } from '../data/stock-topics.js';
 import { computeAuctionViewData } from '../logic/auction-view-helpers.js';
 import { showToast } from '../composables/useToast.js';
+import { apiStatusMap } from '../logic/ui-bridge.js';
 
 const uiStore = useUiStore();
 const auctionStore = useAuctionStore();
@@ -422,7 +487,7 @@ const filteredItems = computed(() => {
 });
 
 // ===== 第二页（题材分组）状态与逻辑 =====
-const sortState2 = reactive({ byRatio: false, byParallel: false, byJingYest: false });
+const sortState2 = reactive({ byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false });
 const isStrengthSortEnabled = ref(false);
 const p2ExpandedSet = ref(new Set());
 const p2TrendHistory = ref({});
@@ -601,10 +666,12 @@ function p2ToggleExpandAll() {
 }
 function loadP2TrendHistory(stockName) {
   const history = getAuctionStockHistory(stockName.trim(), uiStore.currentDate, 5, props.dataSource);
+  const stats = _computeTrendStats(history);
   return {
     volume: history.map(h => ({ date: h.date, value: h.volume })),
     yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
     changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
+    ...stats
   };
 }
 function toggleP2Trend(topic, stockName) {
@@ -883,10 +950,12 @@ function expandAll() {
     if (item && item.stock) {
       newSet.add(item.index);
       const history = getAuctionStockHistory(item.stock.trim(), uiStore.currentDate, 5, props.dataSource);
+      const stats = _computeTrendStats(history);
       newHistory[item.index] = {
         volume: history.map(h => ({ date: h.date, value: h.volume })),
         yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
         changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
+        ...stats
       };
     }
   });
@@ -899,14 +968,36 @@ function collapseAll() {
   trendHistory.value = {};
 }
 
+function _computeTrendStats(history) {
+  let jingRatio = null, yestRatio = null, diff = null;
+  if (history.length >= 2) {
+    const todayVol = history[history.length - 1].volume;
+    const yestVol = history[history.length - 2].volume;
+    if (todayVol != null && yestVol != null && yestVol !== 0) {
+      jingRatio = (todayVol / yestVol).toFixed(1);
+    }
+    const yestVolumeVal = history[history.length - 1].yestVolume;
+    const prevVolumeVal = history[history.length - 2].yestVolume;
+    if (yestVolumeVal != null && prevVolumeVal != null && prevVolumeVal !== 0) {
+      yestRatio = (yestVolumeVal / prevVolumeVal).toFixed(1);
+    }
+    if (jingRatio != null && yestRatio != null) {
+      diff = (parseFloat(jingRatio) - parseFloat(yestRatio)).toFixed(1);
+    }
+  }
+  return { jingRatio, yestRatio, diff };
+}
+
 function loadTrendHistory(index, stockName) {
   const history = getAuctionStockHistory(stockName.trim(), uiStore.currentDate, 5, props.dataSource);
+  const stats = _computeTrendStats(history);
   trendHistory.value = {
     ...trendHistory.value,
     [index]: {
       volume: history.map(h => ({ date: h.date, value: h.volume })),
       yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
       changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
+      ...stats
     }
   };
 }
@@ -941,21 +1032,28 @@ function handleSwipe() {
   else if (diff < -threshold && currentPage.value > 0) switchPage(currentPage.value - 1);
 }
 
+const backendLoading = ref(false);
 function runBackend(fn, ...args) {
+  if (backendLoading.value) return;
   const task = typeof fn === 'function' ? fn : null;
   if (!task) return;
+  backendLoading.value = true;
+  const statusKey = props.dataSource === 'hot' ? 'thsApiStatusHot' : 'thsApiStatus';
   try {
     const result = task(...args);
     if (result && typeof result.then === 'function') {
       result
         .then(() => { refresh(); showToast('后台操作完成'); })
-        .catch(e => { console.error('后台操作失败:', e); showToast('操作失败: ' + (e && e.message)); });
+        .catch(e => { console.error('后台操作失败:', e); showToast('操作失败: ' + (e && e.message)); })
+        .finally(() => { backendLoading.value = false; });
     } else {
       refresh();
+      backendLoading.value = false;
     }
   } catch (e) {
     console.error('后台操作失败:', e);
     showToast('操作失败: ' + (e && e.message));
+    backendLoading.value = false;
   }
 }
 function onImportPaste() {
@@ -1143,6 +1241,18 @@ defineExpose({ refresh, toggleSort, expandAll, collapseAll });
   color: #94a3b8;
   margin-bottom: 2px;
 }
+.trend-chart-label-with-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.trend-chart-label-with-stats > span:first-child {
+  flex: 0 0 auto;
+}
+.trend-chart-label-with-stats > span:not(:first-child) {
+  flex: 0 0 auto;
+}
 .auction-swipe-container {
   flex: 1;
   position: relative;
@@ -1261,36 +1371,89 @@ defineExpose({ refresh, toggleSort, expandAll, collapseAll });
   font-weight: 600;
 }
 .auction-backend-panel {
-  padding: 8px 12px;
+  padding: 8px 10px;
   background: #f9fafb;
   border-bottom: 1px solid #e5e7eb;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
 }
-.backend-section {
+.backend-block {
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+}
+.backend-block-ths {
+  background: #fffbeb;
+  border-color: #fcd34d;
+}
+.backend-block-numcat {
+  background: #fdf2f8;
+  border-color: #f9a8d4;
+}
+.backend-block-import {
+  background: #f0fdf4;
+  border-color: #86efac;
+}
+.backend-block-header {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
+  justify-content: space-between;
+  margin-bottom: 8px;
 }
-.backend-label {
-  font-size: 12px;
+.backend-block-title {
+  font-size: 13px;
   font-weight: 600;
-  color: #374151;
-  min-width: 50px;
+}
+.backend-block-ths .backend-block-title { color: #92400e; }
+.backend-block-numcat .backend-block-title { color: #831843; }
+.backend-block-import .backend-block-title { color: #166534; }
+.backend-block-sub {
+  font-size: 10px;
+  font-family: monospace;
+  opacity: 0.7;
+}
+.backend-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
 }
 .backend-btn {
-  padding: 3px 8px;
-  border: 1px solid #d1d5db;
+  padding: 8px 6px;
+  border: none;
   border-radius: 4px;
-  background: #fff;
-  font-size: 11px;
+  font-size: 12px;
   cursor: pointer;
-  color: #374151;
+  color: #fff;
+  min-height: 36px;
+  transition: opacity 0.2s;
 }
-.backend-btn:hover {
-  background: #e5e7eb;
+.backend-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.backend-btn-ths {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+}
+.backend-btn-numcat {
+  background: linear-gradient(135deg, #ec4899, #db2777);
+}
+.backend-btn-import {
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+}
+.backend-btn:hover:not(:disabled) {
+  opacity: 0.85;
+}
+.auction-backend-panel.is-loading .backend-btn {
+  pointer-events: none;
+  opacity: 0.5;
+}
+.backend-status {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  min-height: 16px;
+  font-weight: 500;
 }
 .topic-group {
   border-bottom: 1px solid #e5e7eb;
