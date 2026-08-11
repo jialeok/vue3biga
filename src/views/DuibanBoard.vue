@@ -1,33 +1,35 @@
 <template>
-  <div :class="kind + '-header'" @dblclick.stop="openEdit">
-    <div>
-      <div :class="kind + '-title'">{{ title }}</div>
-      <div :class="kind + '-subtitle'"></div>
-    </div>
-  </div>
-  <div :class="kind + '-content'" @dblclick.stop="openEdit">
-    <div :class="kind + '-scroll-container'">
-      <div :class="kind + '-header-row'">
-        <div :class="kind + '-header-item ' + kind + '-header-shuliang'">总数量</div>
-        <div :class="kind + '-header-item ' + kind + '-header-dieZhangbi'">跌涨比</div>
-        <div :class="kind + '-header-item ' + kind + '-header-jingtu'">竞符合数</div>
-        <div :class="kind + '-header-item ' + kind + '-header-tushi'">图示</div>
+  <div class="duiban-board trading-day-element">
+    <div :class="kind + '-header'" @dblclick.stop="openEdit">
+      <div>
+        <div :class="kind + '-title'">{{ title }}</div>
+        <div :class="kind + '-subtitle'"></div>
       </div>
-      <div v-if="!hasData" :class="kind + '-empty'">暂无数据，点击添加...</div>
-      <div v-else :class="kind + '-row'">
-        <div :class="kind + '-item ' + kind + '-item-shuliang'">{{ data?.shuliang || '' }}</div>
-        <div :class="kind + '-item ' + kind + '-item-dieZhangbi'">{{ data?.die_zhangbi || '' }}</div>
-        <div :class="kind + '-item ' + kind + '-item-jingtu'">{{ data?.jingtu || '' }}</div>
-        <div :class="kind + '-item ' + kind + '-item-tushi'">
-          <a v-if="isTushiLink(data?.tushi)" :href="data.tushi" target="_blank" @click.stop>{{ tushiLinkText(data.tushi) }}</a>
-          <template v-else>{{ data?.tushi || '' }}</template>
+    </div>
+    <div :class="kind + '-content'" @dblclick.stop="openEdit">
+      <div :class="kind + '-scroll-container'">
+        <div :class="kind + '-header-row'">
+          <div :class="kind + '-header-item ' + kind + '-header-shuliang'">总数量</div>
+          <div :class="kind + '-header-item ' + kind + '-header-dieZhangbi'">跌涨比</div>
+          <div :class="kind + '-header-item ' + kind + '-header-jingtu'">竞符合数</div>
+          <div :class="kind + '-header-item ' + kind + '-header-tushi'">图示</div>
+        </div>
+        <div v-if="!hasData" :class="kind + '-empty'">暂无数据，点击添加...</div>
+        <div v-else :class="kind + '-row'">
+          <div :class="kind + '-item ' + kind + '-item-shuliang'">{{ data?.shuliang || '' }}</div>
+          <div :class="kind + '-item ' + kind + '-item-dieZhangbi'">{{ data?.die_zhangbi || '' }}</div>
+          <div :class="kind + '-item ' + kind + '-item-jingtu'">{{ data?.jingtu || '' }}</div>
+          <div :class="kind + '-item ' + kind + '-item-tushi'">
+            <a v-if="isTushiLink(data?.tushi)" :href="data.tushi" target="_blank" @click.stop>{{ tushiLinkText(data.tushi) }}</a>
+            <template v-else>{{ data?.tushi || '' }}</template>
+          </div>
         </div>
       </div>
     </div>
-  </div>
-  <div :class="kind + '-comment-display'" @click.stop="openEdit">
-    <span v-if="!data || !data.comment" :class="kind + '-comment-placeholder'">暂无评论，点击添加...</span>
-    <span v-else>{{ data.comment }}</span>
+    <div :class="kind + '-comment-display'" @click.stop="openEdit">
+      <span v-if="!data || !data.comment" :class="kind + '-comment-placeholder'">暂无评论，点击添加...</span>
+      <span v-else>{{ data.comment }}</span>
+    </div>
   </div>
 
   <div v-if="showModal" class="board-modal-backdrop" @click.self="showModal = false">

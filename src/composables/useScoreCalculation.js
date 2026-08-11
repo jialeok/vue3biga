@@ -34,9 +34,43 @@ export function useScoreCalculation() {
     }
   }
 
-  function showWeekly() { if (typeof showWeeklyStats === 'function') showWeeklyStats(); }
-  function showLastWeek() { if (typeof showLastWeekStats === 'function') showLastWeekStats(); }
-  function showMonthly() { if (typeof showMonthlyStats === 'function') showMonthlyStats(); }
+  function _formatDate(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+  function _isWeekend(dateStr) {
+    const d = new Date(dateStr + 'T00:00:00');
+    const day = d.getDay();
+    return day === 0 || day === 6;
+  }
+  function showWeekly() {
+    const baseDate = new Date(uiStore.currentDate + 'T00:00:00');
+    const dayOfWeek = baseDate.getDay();
+    let daysToSaturday = dayOfWeek === 0 ? -1 : (6 - dayOfWeek + 7) % 7;
+    const saturday = new Date(baseDate);
+    saturday.setDate(baseDate.getDate() + daysToSaturday);
+    uiStore.setDate(_formatDate(saturday));
+  }
+  function showLastWeek() {
+    const baseDate = new Date(uiStore.currentDate + 'T00:00:00');
+    const dayOfWeek = baseDate.getDay();
+    const daysToLastSaturday = -((dayOfWeek + 1) % 7 + 6) % 7 - 1;
+    const lastSaturday = new Date(baseDate);
+    lastSaturday.setDate(baseDate.getDate() + daysToLastSaturday);
+    uiStore.setDate(_formatDate(lastSaturday));
+  }
+  function showMonthly() {
+    if (!_isWeekend(uiStore.currentDate)) {
+      const baseDate = new Date(uiStore.currentDate + 'T00:00:00');
+      const dayOfWeek = baseDate.getDay();
+      let daysToSaturday = (6 - dayOfWeek + 7) % 7;
+      const saturday = new Date(baseDate);
+      saturday.setDate(baseDate.getDate() + daysToSaturday);
+      uiStore.setDate(_formatDate(saturday));
+    }
+  }
   function openWeekendSummary() { if (typeof openWeekendSummaryModal === 'function') openWeekendSummaryModal(); }
   function openWeekendReview() { if (typeof openWeekendReviewModal === 'function') openWeekendReviewModal(); }
   function openMonthlySummary() { if (typeof openMonthlySummaryModal === 'function') openMonthlySummaryModal(); }

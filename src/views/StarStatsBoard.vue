@@ -61,11 +61,12 @@
 
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue';
-import { getTodayGroupList, getGroupData } from '../logic/app-core.js';
+import { getTodayGroupList, getGroupData, getTodayJiwang } from '../logic/app-core.js';
 import { getTopicGroups } from '../logic/topic-rules.js';
 import { getPreviousTradingDay } from '../logic/trading-day-helpers.js';
 import { useUiStore } from '../stores/uiStore.js';
 import { useAuctionStore } from '../stores/auctionStore.js';
+import { computeAuctionViewData } from '../logic/auction-view-helpers.js';
 
 const uiStore = useUiStore();
 const auctionStore = useAuctionStore();
@@ -183,8 +184,45 @@ function render() {
     }));
 
   const riseCount = cats.xingzeng + cats.xingxian;
-  strengthText.value = riseCount > 0 ? riseCount + '%' : '-';
-  centerColor.value = riseCount > 0 ? '#f43f5e' : '#6b7280';
+
+  let todayStrength = null, yesterdayStrength = null;
+  try {
+    const todayView = computeAuctionViewData(dataSource, {});
+    todayStrength = todayView.stats && todayView.stats.todayStrength != null ? todayView.stats.todayStrength : null;
+    yesterdayStrength = todayView.stats && todayView.stats.yesterdayStrength != null ? todayView.stats.yesterdayStrength : null;
+  } catch (e) {}
+
+  let strengthArrow = '';
+  if (todayStrength != null && yesterdayStrength != null) {
+    if (todayStrength > yesterdayStrength) strengthArrow = '⬆';
+    else if (todayStrength < yesterdayStrength) strengthArrow = '⬇';
+  }
+
+  let isKongcang = false;
+  try {
+    const todayJiwang = getTodayJiwang();
+    isKongcang = todayJiwang && todayJiwang.jielun === '空仓';
+  } catch (e) {}
+
+  let displayArrow = '';
+  if (isKongcang) {
+    centerColor.value = '#10b981';
+    displayArrow = strengthArrow === '⬇' ? '↓' : (strengthArrow === '⬆' ? '↑' : '');
+    centerLabel.value = '空仓';
+  } else if (strengthArrow === '⬇') {
+    centerColor.value = '#10b981';
+    displayArrow = '↓';
+    centerLabel.value = '空仓';
+  } else if (strengthArrow === '⬆') {
+    centerColor.value = '#ef4444';
+    displayArrow = '↑';
+    centerLabel.value = '出手';
+  } else {
+    centerColor.value = '#1f2937';
+    displayArrow = '';
+    centerLabel.value = '强度';
+  }
+  strengthText.value = (todayStrength != null ? todayStrength + '%' : '-') + displayArrow;
 }
 
 watch(() => [uiStore.currentDate, uiStore.currentGroup, auctionStore.dataVersions.auction, auctionStore.dataVersions.hot], render, { immediate: false });
