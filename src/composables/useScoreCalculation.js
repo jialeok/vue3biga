@@ -53,11 +53,7 @@ export function useScoreCalculation() {
     _emit('auction-refresh');
     _emit('bidding-refresh');
     _emit('board-refresh');
-    _emit('jiwang-refresh');
-    _emit('rank-refresh');
-    _emit('duiban-refresh');
-    _emit('emotion-refresh');
-    _emit('etf-refresh');
+
   }
   function showWeekly() {
     const baseDate = new Date(uiStore.currentDate + 'T00:00:00');

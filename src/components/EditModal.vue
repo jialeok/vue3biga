@@ -33,20 +33,21 @@ defineEmits(['update:modelValue', 'save', 'clear']);
 <style scoped>
 .edit-modal-backdrop {
   position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5);
-  z-index: 9999; display: flex; align-items: center; justify-content: center;
+  z-index: 9999; display: flex; align-items: flex-end; justify-content: center;
 }
 .edit-modal-panel {
-  background: #fff; border-radius: 12px; padding: 20px;
-  min-width: 320px; max-width: 90vw; width: 380px; max-height: 90vh; overflow: auto;
+  background: #fff; border-radius: 24px 24px 0 0; padding: 20px;
+  width: 100%; max-width: 400px; max-height: 85vh; overflow-y: auto;
+  padding-bottom: 40px; box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.1);
 }
 .edit-modal-header { font-size: 16px; font-weight: 600; margin-bottom: 16px; }
 .edit-modal-body { margin-bottom: 16px; }
 .edit-modal-actions { display: flex; gap: 8px; }
 .edit-modal-actions button {
-  flex: 1; padding: 8px 16px; border: none; border-radius: 6px;
-  cursor: pointer; font-size: 13px;
+  flex: 1; padding: 12px 16px; border: none; border-radius: 12px;
+  cursor: pointer; font-size: 15px; font-weight: 600;
 }
-.btn-save { background: #2563eb; color: #fff; }
+.btn-save { background: linear-gradient(135deg, #3b82f6, #2563eb); color: #fff; }
 .btn-clear { background: #fee2e2; color: #dc2626; }
 .btn-cancel { background: #e5e7eb; color: #374151; }
 </style>

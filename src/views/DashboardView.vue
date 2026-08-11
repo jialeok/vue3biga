@@ -35,6 +35,7 @@
     <EtfBoard />
     <RankBoard />
     <HotspotBoard />
+    <WeekendStatsBoard :visible="showWeekendStats" :is-monthly="isMonthlyStats" />
     <HomeStocksView ref="stocksRef" />
 
     <!-- 底部操作栏 -->
@@ -93,9 +94,17 @@ import EmotionBoard from './EmotionBoard.vue';
 import StatsBoard from './StatsBoard.vue';
 import StarStatsBoard from './StarStatsBoard.vue';
 import TagTitlesBoard from './TagTitlesBoard.vue';
+import WeekendStatsBoard from './WeekendStatsBoard.vue';
 import { useScoreCalculation } from '../composables/useScoreCalculation.js';
 
-const { showWeekly, showLastWeek, showMonthly } = useScoreCalculation();
+const { showWeekly: _showWeekly, showLastWeek: _showLastWeek, showMonthly: _showMonthly } = useScoreCalculation();
+
+const showWeekendStats = ref(false);
+const isMonthlyStats = ref(false);
+
+function showWeekly() { isMonthlyStats.value = false; showWeekendStats.value = true; _showWeekly(); }
+function showLastWeek() { isMonthlyStats.value = false; showWeekendStats.value = true; _showLastWeek(); }
+function showMonthly() { isMonthlyStats.value = true; showWeekendStats.value = true; _showMonthly(); }
 
 const stocksRef = ref(null);
 const uiStore = useUiStore();
@@ -137,6 +146,7 @@ function goToNextTradingDay() {
   if (next) { uiStore.setDate(next); setCurrentDate(next); emitAllRefresh(); }
 }
 function goToday() {
+  showWeekendStats.value = false;
   const today = getMostRecentTradingDay();
   if (today) { uiStore.setDate(today); setCurrentDate(today); emitAllRefresh(); }
 }
