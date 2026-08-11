@@ -76,7 +76,7 @@
           <div class="auction-header-item auction-header-number">序号</div>
           <div class="auction-header-item auction-header-stock">股票名称</div>
           <div class="auction-header-item auction-header-volume">竞价量(万)</div>
-          <div class="auction-header-item auction-header-yest">昨日成交量(万)</div>
+          <div class="auction-header-item auction-header-yest">昨成交量(万)</div>
           <div class="auction-header-item auction-header-ratio">占比</div>
         </div>
         <div v-if="searchActive" class="auction-search-container">

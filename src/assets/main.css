@@ -2416,7 +2416,7 @@
         }
 
         .auction-header-number { flex: 0.4; text-align: center; }
-        .auction-header-stock { flex: 1.2; text-align: left; padding-left: 10px; }
+        .auction-header-stock { flex: 1.2; text-align: left; padding-left: 4px; }
         .auction-header-change { flex: 0.6; text-align: center; }
         .auction-header-volume { flex: 1; text-align: center; }
         .auction-header-yest { flex: 1; text-align: center; font-size: 11px; }
@@ -2482,7 +2482,7 @@
             font-size: 12px;
             font-weight: 600;
             color: #64748b;
-            padding: 8px 6px;
+            padding: 8px 2px;
             text-align: center;
             -webkit-user-select: none;
             user-select: none;
@@ -2495,8 +2495,8 @@
             font-size: 13px;
             font-weight: 600;
             color: #1f2937;
-            padding: 8px 6px;
-            padding-left: 10px;
+            padding: 8px 2px;
+            padding-left: 4px;
             text-align: left;
             white-space: nowrap;
             overflow: hidden;
