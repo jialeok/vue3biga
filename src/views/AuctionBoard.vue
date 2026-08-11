@@ -28,7 +28,7 @@
     <div v-show="expanded" class="auction-swipe-container"
          @touchstart.passive="onSwipeStart"
          @touchend.passive="onSwipeEnd">
-      <div v-show="currentPage === 0" class="auction-scroll-container" @dblclick.self="openBackend">
+      <div v-if="currentPage === 0" class="auction-scroll-container" @dblclick.self="openBackend">
         <div class="auction-toolbar">
           <div class="auction-toggle-item">
             <span class="auction-toggle-label">全部展开</span>
@@ -144,7 +144,7 @@
         </div>
       </div>
 
-      <div v-show="currentPage === 1" class="auction-scroll-container">
+      <div v-if="currentPage === 1" class="auction-scroll-container">
         <div class="auction-toolbar">
           <div class="auction-toggle-item">
             <span class="auction-toggle-label">全部展开</span>
@@ -201,16 +201,15 @@
               <span class="auction-topic-strength" v-if="group.topic !== '其它' && group.strength !== null"> 强度<span style="color:#ef4444;">{{ group.strength }}%</span></span>
               <span class="auction-topic-count">{{ group.stocks.length }}只</span>
             </div>
-            <div v-for="stock in group.stocks" :key="group.topic + '-' + stock.stock"
-                 :class="getTopicRowClass(group, stock)"
-                 :data-stock="stock.stock || ''"
-                 @click="canGroupExpand(group.topic) && toggleP2Trend(group.topic, stock.stock)">
-              <div class="auction-topic-stock" :style="getStockStyle(stock.stock)">{{ stock.stock || '-' }}</div>
-              <div :class="getChangeClass(stock)">{{ getChangePctDisplay(stock) }}</div>
-              <div class="auction-topic-name" :style="getTopicNameStyle()" @click.stop="openCoreTopicModal">{{ getTopicsDisplay(stock) }}</div>
-              <div class="auction-topic-ratio">{{ stock.ratio }}</div>
-            </div>
-            <template v-for="stock in group.stocks" :key="'trend-' + group.topic + '-' + stock.stock">
+            <template v-for="stock in group.stocks" :key="group.topic + '-' + stock.stock">
+              <div :class="getTopicRowClass(group, stock)"
+                   :data-stock="stock.stock || ''"
+                   @click="canGroupExpand(group.topic) && toggleP2Trend(group.topic, stock.stock)">
+                <div class="auction-topic-stock" :style="getStockStyle(stock.stock)">{{ stock.stock || '-' }}</div>
+                <div :class="getChangeClass(stock)">{{ getChangePctDisplay(stock) }}</div>
+                <div class="auction-topic-name" :style="getTopicNameStyle()" @click.stop="openCoreTopicModal">{{ getTopicsDisplay(stock) }}</div>
+                <div class="auction-topic-ratio">{{ stock.ratio }}</div>
+              </div>
               <div v-if="canGroupExpand(group.topic) && p2ExpandedSet.has(group.topic + '|' + stock.stock)"
                    class="auction-trend-panel">
                 <template v-if="p2TrendHistory[group.topic + '|' + stock.stock]">
@@ -233,7 +232,7 @@
         </div>
       </div>
 
-      <div v-show="currentPage === 2" class="auction-scroll-container">
+      <div v-if="currentPage === 2" class="auction-scroll-container">
         <div v-if="page3Data.topics.length === 0" class="auction-empty">暂无符合条件的题材（需5日内出现2次以上）</div>
         <div v-for="topicItem in page3Data.topics" :key="topicItem.topic" class="auction-topic-history-group">
           <div class="auction-topic-history-title">
@@ -281,7 +280,7 @@
         </div>
       </div>
 
-      <div v-show="currentPage === 3" class="auction-scroll-container auction-page-4">
+      <div v-if="currentPage === 3" class="auction-scroll-container auction-page-4">
         <div v-if="page4DisplayStocks.length === 0" class="auction-copied-placeholder">暂无复制的股票<br>请从第三页复制题材股票</div>
         <div v-else>
           <div v-for="(stock, idx) in page4DisplayStocks" :key="stock.name + '-' + idx" class="auction-copied-row">
