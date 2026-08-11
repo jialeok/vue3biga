@@ -101,6 +101,9 @@
             <button @click="onRunDiag" class="btn btn-diag">🔍 运行诊断</button>
           </div>
 
+          <!-- 接口状态 -->
+          <div v-if="apiStatus" class="api-status-bar">{{ apiStatus }}</div>
+
           <!-- 表单行 -->
           <div class="form-scroll">
             <div v-for="(row, idx) in editRows" :key="idx" class="form-row">
@@ -265,17 +268,21 @@ function save() {
   close();
 }
 
+const loading = ref(false);
+
 function runBackend(fn) {
-  if (!fn) return;
+  if (!fn || loading.value) return;
+  loading.value = true;
   apiStatus.value = '执行中...';
   Promise.resolve(fn()).then(() => {
     refreshRows();
     apiStatus.value = '完成';
     auctionStore.bumpDataVersion(ds.value);
-    auctionStore.refresh();
   }).catch(e => {
     console.error('接口调用失败:', e);
-    apiStatus.value = '失败: ' + e.message;
+    apiStatus.value = '失败: ' + (e && e.message ? e.message : String(e));
+  }).finally(() => {
+    loading.value = false;
   });
 }
 
@@ -727,6 +734,7 @@ defineExpose({ open, close });
 .btn-numcat { background: linear-gradient(135deg, #ec4899, #db2777); color: #fff; }
 .btn-numcat-wide { grid-column: span 2; background: linear-gradient(135deg, #be185d, #9d174d); font-weight: 600; }
 .btn-diag { width: 100%; background: linear-gradient(135deg, #22c55e, #16a34a); color: #fff; font-weight: 600; }
+.api-status-bar { padding: 6px 14px; font-size: 11px; color: #059669; background: #f0fdf4; border-bottom: 1px solid #f3f4f6; }
 .btn-codemap-import { background: linear-gradient(135deg, #10b981, #059669); color: #fff; }
 .btn-codemap-auto { background: linear-gradient(135deg, #8b5cf6, #7c3aed); color: #fff; }
 .btn-codemap-clear { background: #fee2e2; color: #dc2626; border: 1px solid #fecaca; }

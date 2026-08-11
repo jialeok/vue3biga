@@ -400,16 +400,14 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   let obsIndices, regularIndices, hiddenObsIndices;
   if (jingYestToggleChecked) {
     hiddenObsIndices = [];
-    const merged = [];
     _obsIndicesRaw.forEach(i => {
       const stockName = auctionList[i].stock.trim();
       const matchesToday = jingYestHighlightSet && jingYestHighlightSet.has(stockName);
       const isBoughtInherited = _obsBoughtVisibleSet.has(stockName);
       if (!matchesToday && !isBoughtInherited) hiddenObsIndices.push(i);
-      else merged.push(i);
     });
-    obsIndices = merged;
-    regularIndices = renderOrder.filter(i => hiddenObsIndices.indexOf(i) < 0 && merged.indexOf(i) < 0);
+    obsIndices = [];
+    regularIndices = renderOrder.filter(i => hiddenObsIndices.indexOf(i) < 0);
   } else {
     obsIndices = _obsIndicesRaw;
     regularIndices = renderOrder.filter(i => obsIndices.indexOf(i) < 0);
