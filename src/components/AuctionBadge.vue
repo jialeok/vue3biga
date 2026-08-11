@@ -1,5 +1,7 @@
 <template>
-  <!-- 竞价角标渲染组件：从 buildBadgeHtml 迁移，纯 VueC3 路径替代原 HTML 拼接 -->
+  <!-- 竞价角标渲染组件：从 buildBadgeHtml 迁移，纯 VueC3 路径替代原 HTML 拼接。
+       badge-group 由父容器 .auction-stock-name (position:relative) 定位到右上角,
+       pointer-events:none 不阻挡股票名称的长按/双击/右键。 -->
   <span class="auction-badge-group">
     <span v-if="item.monitorWarning" class="auction-badge badge-warn" title="严重异常波动">⚠</span>
     <span v-if="tagState.sold" class="auction-badge badge-sell">卖</span>
@@ -34,17 +36,24 @@ const todayChoice = computed(() => {
 
 <style scoped>
 .auction-badge-group {
+  /* 绝对定位到父容器(.auction-stock-name)右上角, 脱离文档流不占空间。
+     pointer-events:none 确保不阻挡父级股票名称的长按/双击/右键事件。 */
+  position: absolute;
+  top: 2px;
+  right: 2px;
   display: inline-flex;
   align-items: center;
   gap: 2px;
+  pointer-events: none;
+  z-index: 1;
 }
 .auction-badge {
   display: inline-block;
-  padding: 1px 5px;
-  border-radius: 8px;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.4;
+  padding: 0 3px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.3;
 }
 .badge-warn {
   background: #fef3c7;

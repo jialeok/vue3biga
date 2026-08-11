@@ -112,6 +112,7 @@
         <div v-for="(item, idx) in filteredItems" :key="item.index" :class="item.itemClass" @click="onToggleSelect(item.index)">
           <span class="auction-number" @click.stop="onExpandTrend(item.index)">{{ idx + 1 }}</span>
           <span :class="item.stockClass"
+                :data-stock="item.stock"
                 @dblclick.stop="onShowNote(item.index)"
                 @contextmenu.prevent="onLongPress(item.stock)"
                 @touchstart.passive="startLongPress(item.stock)"
@@ -119,11 +120,13 @@
                 @touchmove="cancelLongPress"
                 @mousedown="startLongPress(item.stock)"
                 @mouseup="cancelLongPress"
-                @mouseleave="cancelLongPress">{{ item.stock }}</span>
+                @mouseleave="cancelLongPress">
+            <span class="auction-stock-text">{{ item.stock }}</span>
+            <AuctionBadge :item="item" :ctx="{}" :tag-state="item" />
+          </span>
           <span :class="item.numberClass">{{ item.volumeDisplay }}</span>
           <span class="auction-yest" :class="item.yestColorClass">{{ item.yestVolumeDisplay }}</span>
           <span :class="item.ratioClass">{{ item.ratio }} <span>{{ item.ratioArrow }}</span></span>
-          <AuctionBadge :item="item" :ctx="{}" :tag-state="item" />
           <div v-if="expandedSet.has(item.index)" class="auction-trend-panel">
             <template v-if="trendHistory[item.index]">
               <div class="trend-chart-item">
@@ -523,6 +526,15 @@ defineExpose({ refresh, toggleSort, expandAll, collapseAll });
 }
 .auction-row:hover { background: #f8fafc; }
 .auction-row.obs-row { background: #f0f9ff; }
+/* 股票名称列作为 badge 的定位父级。
+   - position:relative 让内部 absolute 的 badge-group 相对它定位。
+   - padding-right 给 badge 避让空间, 避免遮住名称尾部(2-3字)。
+   - .auction-stock-text 只渲染纯名称文字, badge 是独立兄弟元素,
+     后期 textContent/data-stock 取名称不会混入 badge 文字。 */
+.auction-stock-name {
+  position: relative;
+  padding-right: 22px;
+}
 .auction-trend-panel {
   width: 100%;
   flex-basis: 100%;
