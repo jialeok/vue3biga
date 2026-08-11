@@ -71,10 +71,13 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   const isJingYestMatch = ctx.jingYestToggleChecked && ctx.jingYestHighlightSet && stockName && ctx.jingYestHighlightSet.has(stockName);
   const isParallelMatch = ctx.sortByParallelEnabled && !ctx.jingYestToggleChecked && stockName && ctx.parallelStocksToday && ctx.parallelStocksToday.has(stockName);
   const isHighRatioMatch = ctx.sortByRatioEnabled && stockName && ctx.highRatioToday && ctx.highRatioToday.stockNames && ctx.highRatioToday.stockNames.has(stockName);
+  const isThreeDayJingDieMatch = ctx.sortByThreeDayJingDieEnabled && ctx.threeDayJingDieSet && stockName && (ctx.threeDayJingDieSet.get(stockName) || 0) >= 2;
   if (isJingYestMatch) {
     itemClass += ' jing-yest-match';
   } else if (isParallelMatch) {
     itemClass += ' parallel-match';
+  } else if (isThreeDayJingDieMatch) {
+    itemClass += ' three-day-jing-die';
   } else if (isHighRatioMatch) {
     itemClass += ' high-ratio';
   }
@@ -253,22 +256,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       }
       return a.pos - b.pos;
     }).map(x => x.idx);
-  } else if (sortState.byJingYest) {
-    renderOrder = renderOrder.map((idx, pos) => {
-      const stockName = auctionList[idx] && auctionList[idx].stock ? auctionList[idx].stock.trim() : '';
-      const isHighlight = stockName && jingYestHighlightSet && jingYestHighlightSet.has(stockName);
-      const tier = isHighlight ? 0 : 1;
-      const vol = auctionList[idx] ? (parseFloat(auctionList[idx].volume) || 0) : 0;
-      const yvol = auctionList[idx] ? (parseFloat(auctionList[idx].yestVolume) || 0) : 0;
-      const jr = (vol > 0 && yvol > 0) ? (vol / yvol) : null;
-      return { idx, pos, jr, tier };
-    }).sort((a, b) => {
-      if (a.tier !== b.tier) return a.tier - b.tier;
-      if (a.jr === null && b.jr === null) return a.pos - b.pos;
-      if (a.jr === null) return 1;
-      if (b.jr === null) return -1;
-      return b.jr - a.jr;
-    }).map(x => x.idx);
+
   } else if (sortState.byJingYestRatio) {
     renderOrder = renderOrder.map((idx, pos) => {
       const stockName = auctionList[idx] && auctionList[idx].stock ? auctionList[idx].stock.trim() : '';
@@ -404,6 +392,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     hiddenObsIndices = [];
   }
 
+  const _threeDayJingDieSet = sortState.byThreeDayJingDie ? getThreeDayJingDieSet(currentDate, dataSource) : null;
+
   const ctx = {
     dataSource, date: currentDate, confirmedSoldSet: _confirmedSoldSet,
     isObsMember: _isObsMember,
@@ -413,7 +403,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     sortByParallelEnabled: sortState.byParallel,
     parallelStocksToday,
     sortByRatioEnabled: sortState.byRatio,
-    highRatioToday
+    highRatioToday,
+    sortByThreeDayJingDieEnabled: sortState.byThreeDayJingDie,
+    threeDayJingDieSet: _threeDayJingDieSet
   };
   const fullOrder = obsIndices.concat(regularIndices);
   const items = fullOrder.map((i, pos) => _enrichAuctionItem(auctionList[i], i, ctx)).filter(Boolean);

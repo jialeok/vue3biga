@@ -1115,6 +1115,10 @@ defineExpose({ refresh, toggleSort, expandAll, collapseAll });
   border-left: 3px solid #f97316;
 }
 .auction-item.manual-selected:hover { background: #ffedd5 !important; }
+.auction-item.high-ratio { box-shadow: inset 4px 0 0 #f59e0b; }
+.auction-item.parallel-match { box-shadow: inset 4px 0 0 #10b981; }
+.auction-item.jing-yest-match { box-shadow: inset 4px 0 0 #3b82f6; }
+.auction-item.three-day-jing-die { box-shadow: inset 4px 0 0 #059669; }
 /* 股票名称列作为 badge 的定位父级。
    - position:relative 让内部 absolute 的 badge-group 相对它定位。
    - 不再用 padding-right 预留角标空间(那会撑宽名称列、挤动后面四列)。
@@ -1425,6 +1429,7 @@ defineExpose({ refresh, toggleSort, expandAll, collapseAll });
 .auction-topic-row.high-ratio { box-shadow: inset 4px 0 0 #f59e0b; }
 .auction-topic-row.parallel-match { box-shadow: inset 4px 0 0 #10b981; }
 .auction-topic-row.jing-yest-match { box-shadow: inset 4px 0 0 #3b82f6; }
+.auction-topic-row.three-day-jing-die { box-shadow: inset 4px 0 0 #059669; }
 .auction-topic-stock {
   flex: 0 0 75px;
   font-size: 13px;
