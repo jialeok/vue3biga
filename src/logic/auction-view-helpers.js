@@ -257,6 +257,30 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       return a.pos - b.pos;
     }).map(x => x.idx);
 
+  } else if (sortState.byJingYest) {
+    const parallelStockNamesForSort = getParallelStocksForDate(currentDate, dataSource);
+    const allRatioDiffInfo = getRatioDiffInfoForDate(currentDate, dataSource);
+    renderOrder = renderOrder.map((idx, pos) => {
+      const stockName = auctionList[idx] && auctionList[idx].stock ? auctionList[idx].stock.trim() : '';
+      const isParallel = parallelStockNamesForSort.has(stockName);
+      const isHighlight = stockName && jingYestHighlightSet && jingYestHighlightSet.has(stockName);
+      const tier = isHighlight ? 0 : (isParallel ? 1 : 2);
+      const fallbackInfo = (tier === 0 || tier === 1) ? allRatioDiffInfo.get(stockName) : null;
+      const diff = fallbackInfo ? fallbackInfo.diff : null;
+      const digitGap = fallbackInfo ? fallbackInfo.digitGap : null;
+      return { idx, pos, diff, digitGap, tier };
+    }).sort((a, b) => {
+      if (a.tier !== b.tier) return a.tier - b.tier;
+      if (a.tier === 0 || a.tier === 1) {
+        if (a.digitGap === null && b.digitGap === null) return a.pos - b.pos;
+        if (a.digitGap === null) return 1;
+        if (b.digitGap === null) return -1;
+        if (a.digitGap !== b.digitGap) return a.digitGap - b.digitGap;
+        return b.diff - a.diff;
+      }
+      return a.pos - b.pos;
+    }).map(x => x.idx);
+
   } else if (sortState.byJingYestRatio) {
     renderOrder = renderOrder.map((idx, pos) => {
       const stockName = auctionList[idx] && auctionList[idx].stock ? auctionList[idx].stock.trim() : '';
