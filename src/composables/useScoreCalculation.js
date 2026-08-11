@@ -7,6 +7,9 @@ import { getTodayJiwang, getGroupData, getTodayGroupList, saveData } from '../lo
 import { getTopicGroups } from '../logic/topic-rules.js';
 import { getBiddingData } from '../data/supabase-client.js';
 import { useUiStore } from '../stores/uiStore.js';
+import { setCurrentDate } from '../logic/app-core.js';
+import { setCurrentFilter } from '../logic/stock-list-state.js';
+import { _emit } from '../stores/eventBus.js';
 
 export function useScoreCalculation() {
   const uiStore = useUiStore();
@@ -45,13 +48,28 @@ export function useScoreCalculation() {
     const day = d.getDay();
     return day === 0 || day === 6;
   }
+  function _emitAllRefresh() {
+    _emit('stocks-refresh');
+    _emit('auction-refresh');
+    _emit('bidding-refresh');
+    _emit('board-refresh');
+    _emit('jiwang-refresh');
+    _emit('rank-refresh');
+    _emit('duiban-refresh');
+    _emit('emotion-refresh');
+    _emit('etf-refresh');
+  }
   function showWeekly() {
     const baseDate = new Date(uiStore.currentDate + 'T00:00:00');
     const dayOfWeek = baseDate.getDay();
     let daysToSaturday = dayOfWeek === 0 ? -1 : (6 - dayOfWeek + 7) % 7;
     const saturday = new Date(baseDate);
     saturday.setDate(baseDate.getDate() + daysToSaturday);
-    uiStore.setDate(_formatDate(saturday));
+    const dateStr = _formatDate(saturday);
+    uiStore.setDate(dateStr);
+    setCurrentDate(dateStr);
+    setCurrentFilter('all');
+    _emitAllRefresh();
   }
   function showLastWeek() {
     const baseDate = new Date(uiStore.currentDate + 'T00:00:00');
@@ -59,7 +77,11 @@ export function useScoreCalculation() {
     const daysToLastSaturday = -((dayOfWeek + 1) % 7 + 6) % 7 - 1;
     const lastSaturday = new Date(baseDate);
     lastSaturday.setDate(baseDate.getDate() + daysToLastSaturday);
-    uiStore.setDate(_formatDate(lastSaturday));
+    const dateStr = _formatDate(lastSaturday);
+    uiStore.setDate(dateStr);
+    setCurrentDate(dateStr);
+    setCurrentFilter('all');
+    _emitAllRefresh();
   }
   function showMonthly() {
     if (!_isWeekend(uiStore.currentDate)) {
@@ -68,7 +90,11 @@ export function useScoreCalculation() {
       let daysToSaturday = (6 - dayOfWeek + 7) % 7;
       const saturday = new Date(baseDate);
       saturday.setDate(baseDate.getDate() + daysToSaturday);
-      uiStore.setDate(_formatDate(saturday));
+      const dateStr = _formatDate(saturday);
+      uiStore.setDate(dateStr);
+      setCurrentDate(dateStr);
+      setCurrentFilter('all');
+      _emitAllRefresh();
     }
   }
   function openWeekendSummary() { if (typeof openWeekendSummaryModal === 'function') openWeekendSummaryModal(); }

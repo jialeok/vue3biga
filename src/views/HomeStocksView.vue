@@ -9,6 +9,38 @@
     <div class="empty-desc">点击下方 + 按钮添加第一条记录</div>
   </div>
 
+  <!-- 紧凑型统计卡片 -->
+  <div v-if="!loading" class="compact-stats-bar trading-day-element">
+    <div class="compact-stat-card" :class="{ 'active-filter-all': currentFilter === 'all' }" @click="setFilter('all')">
+      <div class="compact-stat-label">今日记录</div>
+      <div class="compact-stat-value">{{ stockStats.todayCount }}</div>
+    </div>
+    <div class="compact-stat-card" :class="{ 'active-filter-bought': currentFilter === '已买' }" @click="setFilter('已买')">
+      <div class="compact-stat-label" style="color:#d97706">已买</div>
+      <div class="compact-stat-value" style="color:#d97706">{{ stockStats.boughtCount }}</div>
+    </div>
+    <div class="compact-stat-card" :class="{ 'active-filter-sold': currentFilter === '已卖' }" @click="setFilter('已卖')">
+      <div class="compact-stat-label" style="color:#dc2626">已卖</div>
+      <div class="compact-stat-value" style="color:#dc2626">{{ stockStats.soldCount }}</div>
+    </div>
+    <div class="compact-stat-card" :class="{ 'active-filter-hold': currentFilter === '持有' }" @click="setFilter('持有')">
+      <div class="compact-stat-label" style="color:#2563eb">持有</div>
+      <div class="compact-stat-value" style="color:#2563eb">{{ stockStats.holdCount }}</div>
+    </div>
+    <div class="compact-stat-card" :class="{ 'active-filter-recentmulti': currentFilter === '最近多板' }" @click="setFilter('最近多板')">
+      <div class="compact-stat-label" style="color:#2563eb">最近多板</div>
+      <div class="compact-stat-value" style="color:#2563eb">{{ stockStats.recentMultiCount }}</div>
+    </div>
+    <div class="compact-stat-card" :class="{ 'active-filter-sectoretf': currentFilter === '板块ETF' }" @click="setFilter('板块ETF')">
+      <div class="compact-stat-label" style="color:#2563eb">板块ETF</div>
+      <div class="compact-stat-value" style="color:#2563eb">{{ stockStats.sectorEtfCount }}</div>
+    </div>
+    <div class="compact-stat-card" :class="{ 'active-filter-topicdirection': currentFilter === '题材方向' }" @click="setFilter('题材方向')">
+      <div class="compact-stat-label" style="color:#9333ea">题材方向</div>
+      <div class="compact-stat-value" style="color:#9333ea">{{ stockStats.topicDirectionCount }}</div>
+    </div>
+  </div>
+
   <!-- 股票列表折叠开关 -->
   <div v-if="!loading" class="stock-list-toggle-bar trading-day-element">
     <button class="stock-list-toggle-btn" @click="toggleCollapse">
@@ -21,6 +53,7 @@
   <!-- 股票列表 -->
   <div v-if="!loading" class="stock-list trading-day-element" :class="{ collapsed: isCollapsedMode }">
   <div v-for="stock in sortedList" :key="stock.id"
+       v-memo="[stock, isExpanded(stock), expandedActionsId === stock.id, trendCache[stock.id]]"
        :id="'stock-card-' + stock.id"
        class="stock-card"
        :class="{ bought: stock.bought, sold: stock.sold, 'single-expanded': isExpanded(stock), 'single-collapsed': !isCollapsedMode && !isExpanded(stock) }">
@@ -257,14 +290,14 @@ function allTodayData() {
   return getStocksData()[getCurrentDate()] || [];
 }
 
-function getStockCloseTrend(stockName, count) {
+function getStockCloseTrend(stockName, count, dayStockMaps) {
   const points = [];
-  const stocksData = getStocksData();
+  const name = stockName.trim();
   let d = getCurrentDate();
   for (let i = 0; i < count; i++) {
     if (!d) break;
-    const dayStocks = stocksData[d] || [];
-    const stock = dayStocks.find(s => s.name && s.name.trim() === stockName.trim());
+    const map = dayStockMaps[d];
+    const stock = map ? map.get(name) : null;
     const closeVal = stock && stock.close !== undefined && stock.close !== '' ? parseFloat(stock.close) : null;
     points.push({ date: d, value: closeVal });
     d = getPreviousTradingDay(d);
@@ -285,9 +318,15 @@ function getTagPriority(stock) {
   return 0;
 }
 
+const currentFilter = ref(getCurrentFilter());
+function setFilter(filter) {
+  setCurrentFilter(filter);
+  currentFilter.value = filter;
+}
+
 const sortedList = computed(() => {
   let list = [...(data.value.list || [])];
-  const filter = getCurrentFilter();
+  const filter = currentFilter.value;
   if (filter === '已买') list = list.filter(s => s.bought);
   else if (filter === '已卖') list = list.filter(s => s.sold);
   else if (filter === '持有') list = list.filter(s => s.hold);
@@ -317,9 +356,20 @@ function refresh() {
   const list = allTodayData();
   data.value = { currentDate: newDate, list };
   updateStockStats(list);
+  const stocksData = getStocksData();
+  const dayStockMaps = {};
+  let d = newDate;
+  for (let i = 0; i < 5; i++) {
+    if (!d) break;
+    const dayStocks = stocksData[d] || [];
+    const map = new Map();
+    dayStocks.forEach(s => { if (s.name) map.set(s.name.trim(), s); });
+    dayStockMaps[d] = map;
+    d = getPreviousTradingDay(d);
+  }
   const cache = {};
   list.forEach(s => {
-    if (s.name) cache[s.id] = getStockCloseTrend(s.name, 5);
+    if (s.name) cache[s.id] = getStockCloseTrend(s.name, 5, dayStockMaps);
   });
   trendCache.value = cache;
   loading.value = false;
@@ -683,10 +733,6 @@ function pickerGoToday() {
   selectPickerDate(today);
 }
 
-function setFilter(filter) {
-  setCurrentFilter(filter);
-  refresh();
-}
 
 function changeDate(days) {
   const cur = getCurrentDate();
