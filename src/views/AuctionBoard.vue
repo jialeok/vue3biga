@@ -114,11 +114,11 @@
                  :data-stock="item.stock"
                  :data-note="item.note || ''"
                  @dblclick.stop="onShowNote(item.index)"
-                 @contextmenu.prevent="onLongPress(item.stock, $event)"
-                 @touchstart.passive="startLongPress(item.stock, $event)"
+                 @contextmenu.prevent="onLongPress(item.stock)"
+                 @touchstart.passive="startLongPress(item.stock)"
                  @touchend="cancelLongPress"
                  @touchmove="cancelLongPress"
-                 @mousedown="startLongPress(item.stock, $event)"
+                 @mousedown="startLongPress(item.stock)"
                  @mouseup="cancelLongPress"
                  @mouseleave="cancelLongPress">
               <span class="auction-stock-text">{{ item.stock }}</span>
@@ -1035,21 +1035,19 @@ function onExpandTrend(index) {
   expandedSet.value = newSet;
 }
 
-function startLongPress(stockName, event) {
+function startLongPress(stockName) {
   cancelLongPress();
-  const x = event.clientX || (event.touches && event.touches[0] && event.touches[0].clientX) || 0;
-  const y = event.clientY || (event.touches && event.touches[0] && event.touches[0].clientY) || 0;
   longPressTimer = setTimeout(() => {
-    onLongPress(stockName, x, y);
+    onLongPress(stockName);
   }, 500);
 }
 function cancelLongPress() {
   if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
 }
-function onLongPress(stockName, x, y) {
+function onLongPress(stockName) {
   cancelLongPress();
   if (stockName && longPressMenuRef.value) {
-    longPressMenuRef.value.open(stockName, x, y);
+    longPressMenuRef.value.open(stockName);
   }
 }
 
