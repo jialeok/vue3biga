@@ -3,11 +3,23 @@
     <div class="loading-icon">⏳</div>
     <div class="loading-title">加载中...</div>
   </div>
-  <div v-else-if="sortedList.length === 0" class="empty-state trading-day-element" style="display:block">
+  <div v-if="!loading && sortedList.length === 0" class="empty-state trading-day-element" style="display:block">
     <div class="empty-icon">📈</div>
     <div class="empty-title">暂无股票记录</div>
     <div class="empty-desc">点击下方 + 按钮添加第一条记录</div>
   </div>
+
+  <!-- 股票列表折叠开关 -->
+  <div v-if="!loading" class="stock-list-toggle-bar trading-day-element">
+    <button class="stock-list-toggle-btn" @click="toggleCollapse">
+      <span>{{ toggleIcon }}</span>
+      <span>{{ toggleText }}</span>
+      <span class="stock-list-count">({{ sortedList.length }})</span>
+    </button>
+  </div>
+
+  <!-- 股票列表 -->
+  <div v-if="!loading" class="stock-list trading-day-element" :class="{ collapsed: isCollapsedMode }">
   <div v-for="stock in sortedList" :key="stock.id"
        :id="'stock-card-' + stock.id"
        class="stock-card"
@@ -120,6 +132,7 @@
       <div v-else class="track-empty-hint">暂无追踪，点击添加...</div>
     </div>
   </div>
+  </div>
 
   <EditModal v-model="editModalActive" :title="editModalTitle" @save="saveEditModal">
     <div class="edit-form-row" v-for="field in editFields" :key="field.key">
@@ -195,7 +208,7 @@ import { getStocksData } from '../data/supabase-client.js';
 import { formatDate, getStarTagsForStock, getStockProfitStatus } from '../logic/ui-bridge.js';
 import { editStock, copyToTomorrow, copyToDate, deleteStock, openSoldEdit, openTrackEdit } from '../logic/stock-operations.js';
 import { showToast } from '../composables/useToast.js';
-import { getCurrentFilter, setCurrentFilter, getIsStockListCollapsed } from '../logic/stock-list-state.js';
+import { getCurrentFilter, setCurrentFilter, getIsStockListCollapsed, setIsStockListCollapsed } from '../logic/stock-list-state.js';
 import { _on, _off } from '../stores/eventBus.js';
 import { useUiStore } from '../stores/uiStore.js';
 import { getPreviousTradingDay, getNextTradingDay, isTradingDay, getMostRecentTradingDay } from '../logic/trading-day-helpers.js';
@@ -312,7 +325,19 @@ function refresh() {
   loading.value = false;
 }
 
-const isCollapsedMode = computed(() => getIsStockListCollapsed());
+const isCollapsedMode = ref(getIsStockListCollapsed());
+const toggleText = computed(() => isCollapsedMode.value ? '展开全部' : '收起全部');
+const toggleIcon = computed(() => isCollapsedMode.value ? '📋' : '📑');
+function toggleCollapse() {
+  isCollapsedMode.value = !isCollapsedMode.value;
+  setIsStockListCollapsed(isCollapsedMode.value);
+  if (isCollapsedMode.value) {
+    collapsedIds.value = new Set();
+  } else {
+    expandedIds.value = new Set();
+  }
+  expandedActionsId.value = null;
+}
 function isExpanded(stock) {
   return isCollapsedMode.value ? expandedIds.value.has(stock.id) : !collapsedIds.value.has(stock.id);
 }

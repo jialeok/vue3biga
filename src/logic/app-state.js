@@ -172,6 +172,6 @@ export const state = {
     ],
     currentFilter: 'all',
     editingId: null,
-    isStockListCollapsed: false,
+    isStockListCollapsed: true,
     topicAutoFilled: false,
 };
