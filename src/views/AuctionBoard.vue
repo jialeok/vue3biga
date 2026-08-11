@@ -541,15 +541,19 @@ defineExpose({ refresh, toggleSort, expandAll, collapseAll });
 .auction-swipe-container {
   flex: 1;
   position: relative;
-  overflow-x: hidden !important;
-  /* 注意: 不要设 touch-action: pan-y !important;
-     该容器没有高度约束、自身不滚动, 若设 pan-y 浏览器会把垂直手势
-     当作该容器自己处理而不冒泡到 body, 导致整页划不动。
-     pan-x pan-y 表示允许浏览器默认的双向手势, 垂直方向冒泡到 body 滚动。 */
+  /* 必须 visible !important 覆盖 main.css 的 overflow: hidden。
+     overflow: hidden 会让该元素成为滚动容器(scroll container),
+     触摸垂直滑动时浏览器尝试滚动该元素本身而非冒泡到 body,
+     因内容不溢出 -> 滚不动 -> 滚动链终止 -> 看似"冻结"。
+     翻页用 v-show(display:none) 不需要 overflow:hidden 裁剪。 */
+  overflow: visible !important;
   touch-action: pan-x pan-y;
 }
 .auction-scroll-container {
-  overflow-x: hidden !important;
+  /* 同理 visible, 不成为滚动容器, 让垂直滑动冒泡到 body。
+     注意: overflow-x/overflow-y 一个 visible 一个非 visible 时,
+     浏览器会把 visible 计算成 auto 又变滚动容器, 所以必须都 visible。 */
+  overflow: visible !important;
   padding: 4px 0;
   touch-action: pan-x pan-y;
 }
