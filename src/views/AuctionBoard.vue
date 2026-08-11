@@ -114,11 +114,11 @@
                  :data-stock="item.stock"
                  :data-note="item.note || ''"
                  @dblclick.stop="onShowNote(item.index)"
-                 @contextmenu.prevent="onLongPress(item.stock)"
-                 @touchstart.passive="startLongPress(item.stock)"
+                 @contextmenu.prevent="onLongPress(item.stock, $event)"
+                 @touchstart.passive="startLongPress(item.stock, $event)"
                  @touchend="cancelLongPress"
                  @touchmove="cancelLongPress"
-                 @mousedown="startLongPress(item.stock)"
+                 @mousedown="startLongPress(item.stock, $event)"
                  @mouseup="cancelLongPress"
                  @mouseleave="cancelLongPress">
               <span class="auction-stock-text">{{ item.stock }}</span>
@@ -140,7 +140,7 @@
               </div>
               <div class="trend-chart-item" v-if="trendHistory[item.index].changePct.some(p => p.value !== null)">
                 <div class="trend-chart-label">涨幅(%) 近5日</div>
-                <TrendChart :points="trendHistory[item.index].changePct" color="#64748b" />
+                <TrendChart :points="trendHistory[item.index].changePct" color="#64748b" :percent="true" />
               </div>
             </template>
           </div>
@@ -226,7 +226,7 @@
                   </div>
                   <div class="trend-chart-item" v-if="p2TrendHistory[group.topic + '|' + stock.stock].changePct.some(p => p.value !== null)">
                     <div class="trend-chart-label">涨幅(%) 近5日</div>
-                    <TrendChart :points="p2TrendHistory[group.topic + '|' + stock.stock].changePct" color="#64748b" />
+                    <TrendChart :points="p2TrendHistory[group.topic + '|' + stock.stock].changePct" color="#64748b" :percent="true" />
                   </div>
                 </template>
               </div>
@@ -1035,19 +1035,21 @@ function onExpandTrend(index) {
   expandedSet.value = newSet;
 }
 
-function startLongPress(stockName) {
+function startLongPress(stockName, event) {
   cancelLongPress();
+  const x = event.clientX || (event.touches && event.touches[0] && event.touches[0].clientX) || 0;
+  const y = event.clientY || (event.touches && event.touches[0] && event.touches[0].clientY) || 0;
   longPressTimer = setTimeout(() => {
-    onLongPress(stockName);
+    onLongPress(stockName, x, y);
   }, 500);
 }
 function cancelLongPress() {
   if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
 }
-function onLongPress(stockName) {
+function onLongPress(stockName, x, y) {
   cancelLongPress();
   if (stockName && longPressMenuRef.value) {
-    longPressMenuRef.value.open(stockName);
+    longPressMenuRef.value.open(stockName, x, y);
   }
 }
 
