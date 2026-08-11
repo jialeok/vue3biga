@@ -1027,7 +1027,7 @@
         }
 
         .duiban-content {
-            padding: 12px;
+            padding: 6px;
             font-size: 12px;
         }
 
@@ -1036,7 +1036,6 @@
             overflow-x: auto;
             overflow-y: hidden;
             -webkit-overflow-scrolling: touch;
-            padding-right: 8px;
         }
 
         .duiban-scroll-container::-webkit-scrollbar {
@@ -1056,9 +1055,9 @@
         .duiban-header-row {
             display: flex;
             align-items: center;
-            padding: 10px 4px;
+            padding: 6px 2px;
             border-bottom: 1px solid #f1f5f9;
-            margin-bottom: 8px;
+            margin-bottom: 4px;
         }
 
         .duiban-header-item {
@@ -1069,19 +1068,19 @@
             overflow: hidden;
             text-overflow: ellipsis;
             text-align: center;
-            padding: 0 4px;
+            padding: 0 2px;
             min-width: 0;
         }
 
         .duiban-header-dieZhangbi { flex: 1; text-align: center; }
         .duiban-header-jingtu { flex: 1; text-align: center; }
-        .duiban-header-shuliang { flex: 1; text-align: center; }
+        .duiban-header-shuliang { flex: 1.2; text-align: left; }
         .duiban-header-tushi { flex: 1; text-align: center; }
 
         .duiban-row {
             display: flex;
             align-items: center;
-            padding: 8px 4px;
+            padding: 6px 2px;
             border-bottom: 1px solid #f8fafc;
             font-size: 12px;
             cursor: pointer;
@@ -1093,7 +1092,7 @@
         }
 
         .duiban-item {
-            padding: 0 4px;
+            padding: 0 2px;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -1102,7 +1101,7 @@
 
         .duiban-item-dieZhangbi { flex: 1; text-align: center; font-weight: 600; color: #1f2937; }
         .duiban-item-jingtu { flex: 1; text-align: center; }
-        .duiban-item-shuliang { flex: 1; text-align: center; font-weight: 600; color: #dc2626; }
+        .duiban-item-shuliang { flex: 1.2; text-align: left; font-weight: 600; color: #dc2626; }
         .duiban-item-tushi { flex: 1; text-align: center; }
 
         .duiban-empty {
@@ -3542,19 +3541,6 @@
             font-size: 13px;
         }
 
-        /* 周末统计看板 */
-        .weekend-stats-board {
-            margin: 0 15px 10px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-radius: 16px;
-            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
-            overflow: hidden;
-            display: none;
-        }
-
-        .weekend-stats-board.active {
-            display: block;
-        }
 
         /* 本月统计看板 */
         .monthly-stats-board {
