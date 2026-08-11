@@ -83,9 +83,7 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   if (isGray) numberClass += ' gray-text';
 
   let stockClass = 'auction-stock-name auction-note-trigger';
-  if (isBought) stockClass += ' tag-bought';
-  if (isSold) stockClass += ' tag-sold';
-  if (isSelected) stockClass += ' tag-selected';
+
 
   let ratioClass = 'auction-ratio auction-ratio-clickable';
   if (ratioValue >= 10) {

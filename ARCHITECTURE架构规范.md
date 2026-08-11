@@ -1,3 +1,7 @@
+---
+name: "architechure"
+description: "# 项目架构规范"
+---
 # vue3biga 架构规范 V2
 
 > **项目路线：纯 Vue3 / Vite / Pinia / Vue Router / ES Module /
@@ -263,6 +267,87 @@ export async function updateStock(payload) {
 ``` js
 supabase.from(...)
 ```
+
+## 5.1 禁止 localStorage 存储业务数据（红线）
+
+> **localStorage 只能用于非业务数据（如 UI 偏好、临时输入缓存、调试标记）。**
+
+绝对禁止用 localStorage 存储：
+
+``` text
+核心词库
+股票数据
+竞价数据
+题材分组
+用户配置
+看板状态
+标签数据
+排名数据
+记忘数据
+任何需要跨设备同步的业务数据
+```
+
+原因：
+
+``` text
+localStorage 是浏览器本地存储
+ ↓
+换设备 / 清缓存 / 换浏览器 = 数据丢失
+ ↓
+多设备数据不一致
+ ↓
+核心词丢失 → 题材分组全部落入"其它"
+ ↓
+用户看不到分类数据
+```
+
+### 正确做法：字段级写入 Supabase
+
+所有业务数据必须通过 Supabase 表字段级写入持久化：
+
+``` text
+读取：Supabase 表 → 内存缓存 → getCoreTopics()
+写入：saveCoreTopics() → Supabase 表字段级 update/insert → 内存缓存更新
+```
+
+推荐模式：
+
+``` js
+// Data 层：字段级写入
+export async function patchCoreTopicField(name, field, value) {
+    const sb = getSupabase();
+    const { error } = await sb.from('core_topics')
+        .update({ [field]: value, updated_at: new Date().toISOString() })
+        .eq('name', name);
+    if (error) throw error;
+}
+
+// Logic 层：内存缓存 + 云端推送
+export function saveCoreTopics(topics) {
+    _coreTopicsMemCache = topics;        // 内存缓存立即生效
+    pushCoreTopicsToCloud(topics);       // 异步推送 Supabase
+}
+```
+
+### 禁止：
+
+``` js
+localStorage.setItem('coreTopics', JSON.stringify(topics));
+localStorage.getItem('coreTopics');
+```
+
+### 已迁移到云端存储的数据：
+
+``` text
+core_topics 表    ← 核心词库（name + synonyms + updated_at）
+auction_watchlist  ← 竞价股票列表
+stocks            ← 股票数据
+rank              ← 排名数据
+jiwang            ← 记忘数据
+bidding           ← 竞价变化数据
+```
+
+以后新增任何业务数据，必须创建对应的 Supabase 表，禁止用 localStorage。
 
 ------------------------------------------------------------------------
 
@@ -1840,27 +1925,35 @@ Realtime 回归
 
 ### ⑤ 数据库是持久化真相
 
-Pinia 不是数据库。
+Pinia 不是数据库。localStorage 不是数据库。
 
-### ⑥ 保存必须有结果
+### ⑥ 禁止 localStorage 存业务数据
+
+所有业务数据必须通过 Supabase 字段级写入。localStorage 只能用于 UI 偏好等非业务数据。换设备不能丢数据。
+
+### ⑦ 保存必须有结果
 
 不能静默失败。
 
-### ⑦ 读取失败绝不能当空数据
+### ⑧ 读取失败绝不能当空数据
 
 这是数据安全红线。
 
-### ⑧ 空数据绝不能自动触发批量删除
+### ⑨ 空数据绝不能自动触发批量删除
 
 这是数据安全红线。
 
-### ⑨ 所有危险删除必须有护栏
+### ⑩ 所有危险删除必须有护栏
 
 尤其是批量同步。
 
 ### ⑩ 修 Bug 不能破坏架构
 
 > **宁可补齐 Vue3 模块，也不要把旧代码重新挂回来。**
+
+### ⑪ 换设备不能丢数据
+
+> **所有业务数据在 Supabase，不在 localStorage。换设备、清缓存、换浏览器后数据必须仍在。**
 
 ------------------------------------------------------------------------
 

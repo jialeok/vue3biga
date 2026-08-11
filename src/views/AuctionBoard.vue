@@ -28,7 +28,7 @@
     <div v-show="expanded" class="auction-swipe-container"
          @touchstart.passive="onSwipeStart"
          @touchend.passive="onSwipeEnd">
-      <div v-if="currentPage === 0" class="auction-scroll-container" @dblclick.self="openBackend">
+      <div v-if="currentPage === 0" class="auction-scroll-container" @dblclick="openEditModal">
         <div class="auction-toolbar">
           <div class="auction-toggle-item">
             <span class="auction-toggle-label">全部展开</span>
@@ -125,7 +125,7 @@
               <AuctionBadge :item="item" :ctx="{}" :tag-state="item" />
             </div>
             <div class="auction-volume">{{ item.volumeDisplay }}</div>
-            <div :class="item.yestColorClass" :data-index="item.index" :data-note="item.note || ''">{{ item.yestVolumeDisplay }}</div>
+            <div :class="item.yestColorClass" :data-index="item.index" :data-note="item.note || ''" @contextmenu.prevent="openEditModal">{{ item.yestVolumeDisplay }}</div>
             <div :class="item.ratioClass" :data-index="item.index">{{ item.ratio }}<span v-if="item.ratioArrow" :style="{ color: item.ratioArrow === '⬆' ? '#ef4444' : '#10b981' }">{{ item.ratioArrow }}</span></div>
           </div>
           <div v-if="expandedSet.has(item.index)" class="auction-trend-panel">
@@ -299,6 +299,7 @@
 
     <LongPressTagMenu ref="longPressMenuRef" :data-source="dataSource" />
     <CoreTopicModal ref="coreTopicModalRef" />
+    <AuctionEditModal ref="editModalRef" :data-source="dataSource" />
   </div>
 </template>
 
@@ -308,6 +309,7 @@ import AuctionBadge from '../components/AuctionBadge.vue';
 import TrendChart from '../components/TrendChart.vue';
 import LongPressTagMenu from '../components/LongPressTagMenu.vue';
 import CoreTopicModal from '../components/CoreTopicModal.vue';
+import AuctionEditModal from '../components/AuctionEditModal.vue';
 import { useUiStore } from '../stores/uiStore.js';
 import { useAuctionStore } from '../stores/auctionStore.js';
 import { _on, _off } from '../stores/eventBus.js';
@@ -359,6 +361,7 @@ const expandedSet = ref(new Set());
 const trendHistory = ref({});
 const longPressMenuRef = ref(null);
 const coreTopicModalRef = ref(null);
+const editModalRef = ref(null);
 let longPressTimer = null;
 const viewData = ref({ items: [], obsIndices: [], regularIndices: [], stats: {}, rawCount: 0 });
 
@@ -833,6 +836,9 @@ const page4DisplayStocks = computed(() => {
 
 function openBackend() {
   showBackend.value = !showBackend.value;
+}
+function openEditModal() {
+  if (editModalRef.value) editModalRef.value.open();
 }
 function openCoreTopicModal() {
   if (coreTopicModalRef.value) coreTopicModalRef.value.open();
