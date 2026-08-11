@@ -26,6 +26,7 @@ import auctionStore from '../stores/auctionStore.js';
 import { ensureStockInNextDay } from '../logic/auction-stock-sync.js';
 import { getStocksData } from '../data/supabase-client.js';
 import { saveModule } from '../logic/app-core.js';
+import { getPreviousTradingDay } from '../logic/trading-day-helpers.js';
 
 const uiStore = useUiStore();
 
@@ -69,6 +70,10 @@ function close() {
 
 function onSelect(b) {
   auctionTagStore.setTag(currentDate.value, stockName.value, b.tag);
+  if (b.tag === null) {
+    const prevDay = getPreviousTradingDay(currentDate.value);
+    if (prevDay) auctionTagStore.removeTag(prevDay, stockName.value);
+  }
 
   const stocksData = getStocksData();
   const date = currentDate.value;

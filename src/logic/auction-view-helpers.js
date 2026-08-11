@@ -46,14 +46,14 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     }
   }
 
-  const tagState = deriveAuctionTagState(stockName, ctx.date);
-  const isConfirmedSold = tagState.sold || (stockName && ctx.confirmedSoldSet && ctx.confirmedSoldSet.has(stockName));
-  const isSelected = !isConfirmedSold && (tagState.selected || rawItem.selected === true);
-  const isBought = !isConfirmedSold && tagState.bought;
-  const isSold = tagState.sold;
-  const isFixed = tagState.sold || tagState.bought || tagState.selected;
-  const isObsInheritedBought = isBought && rawItem.obsAutoAdded === true;
-  const isGray = !isSelected && !isBought && !isSold && ratioValue < 4.5;
+  const _solidState = getAuctionTagState(stockName, ctx.date);
+  const isSold = _solidState.sold;
+  const isSelected = !isSold && (_solidState.selected || _solidState.bought);
+  const isBought = false;
+  const isConfirmedSold = isSold || (stockName && ctx.confirmedSoldSet && ctx.confirmedSoldSet.has(stockName));
+  const isFixed = isSold || isSelected;
+  const isObsInheritedBought = false;
+  const isGray = !isSelected && !isSold && ratioValue < 4.5;
 
   let itemClass = 'auction-item';
   if (isSold) {

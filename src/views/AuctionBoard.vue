@@ -363,7 +363,14 @@ const longPressMenuRef = ref(null);
 const coreTopicModalRef = ref(null);
 const editModalRef = ref(null);
 let longPressTimer = null;
-const viewData = ref({ items: [], obsIndices: [], regularIndices: [], stats: {}, rawCount: 0 });
+const _dsKey = () => props.dataSource === 'hot' ? 'hot' : 'auction';
+const viewData = computed(() => {
+  void auctionStore.dataVersions[_dsKey()];
+  void uiStore.currentDate;
+  void sortState.byData; void sortState.byRatio; void sortState.byParallel;
+  void sortState.byJingYest; void sortState.byJingYestRatio; void sortState.byThreeDayJingDie;
+  return computeAuctionViewData(props.dataSource, sortState);
+});
 
 const currentPage = ref(0);
 const showBackend = ref(false);
@@ -850,7 +857,7 @@ function onHeaderClick() {
 }
 
 function refresh() {
-  viewData.value = computeAuctionViewData(props.dataSource, sortState);
+  auctionStore.bumpDataVersion(_dsKey());
 }
 
 function toggleSort(key) {
