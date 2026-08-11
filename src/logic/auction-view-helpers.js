@@ -130,6 +130,7 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     sold: isSold,
     selected: isSelected,
     confirmedSold: isConfirmedSold,
+    todayChoice: _getAuctionTag(ctx.date, stockName),
     isGray
   };
 }
