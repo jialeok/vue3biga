@@ -55,6 +55,7 @@
 <script setup>
 import { ref, watch } from 'vue';
 import { getCoreTopics, saveCoreTopics } from '../logic/topic-rules.js';
+import { state } from '../logic/app-state.js';
 import { _emit } from '../stores/eventBus.js';
 
 const visible = ref(false);
@@ -121,7 +122,7 @@ function deleteCoreTopic(index) {
 }
 function resetCoreTopics() {
   if (!confirm('确定恢复默认核心词？当前设置将被覆盖。')) return;
-  localStorage.removeItem('coreTopics');
+  saveCoreTopics(state.defaultCoreTopics || []);
   refreshList();
 }
 

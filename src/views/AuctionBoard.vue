@@ -144,7 +144,7 @@
         </div>
       </div>
 
-      <div v-show="currentPage === 1" class="auction-scroll-container" @dblclick.self="openCoreTopicModal">
+      <div v-show="currentPage === 1" class="auction-scroll-container">
         <div class="auction-toolbar">
           <div class="auction-toggle-item">
             <span class="auction-toggle-label">全部展开</span>
@@ -207,7 +207,7 @@
                  @click="canGroupExpand(group.topic) && toggleP2Trend(group.topic, stock.stock)">
               <div class="auction-topic-stock" :style="getStockStyle(stock.stock)">{{ stock.stock || '-' }}</div>
               <div :class="getChangeClass(stock)">{{ getChangePctDisplay(stock) }}</div>
-              <div class="auction-topic-name" :style="getTopicNameStyle()">{{ getTopicsDisplay(stock) }}</div>
+              <div class="auction-topic-name" :style="getTopicNameStyle()" @click.stop="openCoreTopicModal">{{ getTopicsDisplay(stock) }}</div>
               <div class="auction-topic-ratio">{{ stock.ratio }}</div>
             </div>
             <template v-for="stock in group.stocks" :key="'trend-' + group.topic + '-' + stock.stock">

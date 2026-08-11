@@ -8,74 +8,47 @@ let _pullCoreTopicsFromCloudFn = null;
 let _pushCoreTopicsToCloudFn = null;
 export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pull; _pushCoreTopicsToCloudFn = push; }
 
+        let _coreTopicsMemCache = null;
         export async function loadCoreTopicsFromCloud() {
             try {
                 const cloudTopics = await _pullCoreTopicsFromCloudFn();
                 state._coreTopicsCloudLoaded = true;
                 if (!cloudTopics || cloudTopics.length === 0) {
-                    // 云端为空，把本地/默认核心词推到云端
-                    const localTopics = getCoreTopics();
-                    if (localTopics && localTopics.length > 0) {
-                        _dbgLog('[CORE-TOPICS] 云端 core_topics 表为空，推送本地 ' + localTopics.length + ' 个核心词到云端');
+                    const defaultTopics = state.defaultCoreTopics || [];
+                    if (defaultTopics.length > 0) {
+                        _coreTopicsMemCache = defaultTopics;
+                        _dbgLog('[CORE-TOPICS] 云端 core_topics 表为空，推送默认 ' + defaultTopics.length + ' 个核心词到云端');
                         state._coreTopicsPushingToCloud = true;
-                        _pushCoreTopicsToCloudFn(localTopics).catch(function(e) {
+                        _pushCoreTopicsToCloudFn(defaultTopics).catch(function(e) {
                             _dbgLog('[AUCTION-ERR] core_topics 初始化推送失败: ' + (e && e.message || e));
                         }).finally(function() { state._coreTopicsPushingToCloud = false; });
                     }
                     return;
                 }
-                // [BUG-FIX] 校验云端数据有效性：每个元素必须有 name 字段，否则视为脏数据
                 const validCloud = cloudTopics.filter(function(t) {
                     return t && typeof t.name === 'string' && t.name.trim();
                 });
                 if (validCloud.length === 0) {
-                    _dbgLog('[CORE-TOPICS] 云端 core_topics 数据无效（无 name 字段），不覆盖本地');
+                    _dbgLog('[CORE-TOPICS] 云端 core_topics 数据无效，使用默认核心词');
+                    _coreTopicsMemCache = state.defaultCoreTopics;
                     return;
                 }
-                // 云端有有效数据，覆盖本地（云端是唯一真相源，避免多设备不一致）
-                const localStr = localStorage.getItem('coreTopics') || '';
-                const cloudStr = JSON.stringify(validCloud);
-                const localParsed = localStr ? JSON.parse(localStr) : [];
-                // 简单比较：名称数量不同就覆盖
-                if (localParsed.length !== validCloud.length || JSON.stringify(localParsed.map(c=>c.name).sort()) !== JSON.stringify(validCloud.map(c=>c.name).sort())) {
-                    localStorage.setItem('coreTopics', cloudStr);
-                    _dbgLog('[CORE-TOPICS] 从云端恢复 ' + validCloud.length + ' 个核心词到本地');
-                }
+                _coreTopicsMemCache = validCloud;
+                _dbgLog('[CORE-TOPICS] 从云端加载 ' + validCloud.length + ' 个核心词');
             } catch (e) {
-                _dbgLog('[AUCTION-ERR] window.loadCoreTopicsFromCloud 失败（core_topics 表可能未创建）: ' + (e && e.message || e));
+                _dbgLog('[AUCTION-ERR] loadCoreTopicsFromCloud 失败: ' + (e && e.message || e));
+                _coreTopicsMemCache = state.defaultCoreTopics;
             }
         }
 
-        // [PERF] getCoreTopics 内存缓存：避免每次 getTopicGroups 都 localStorage 读 + JSON.parse
-        let _coreTopicsMemCache = null;
-        // 获取核心词库
-        // [BUG-FIX 2026-07-26] 之前 localStorage 存 '[]'（空数组字符串）时直接返回 []，
-        // 导致核心词管理弹窗空白 + 第二页题材分组全部落入"其它"。
-        // 现在改为：空数组/非数组/长度为 0 都回退到 window.defaultCoreTopics。
         export function getCoreTopics() {
-            if (_coreTopicsMemCache) return _coreTopicsMemCache;
-            let _result = state.defaultCoreTopics;
-            const stored = localStorage.getItem('coreTopics');
-            if (stored) {
-                try {
-                    const parsed = JSON.parse(stored);
-                    if (Array.isArray(parsed) && parsed.length > 0) {
-                        _result = parsed;
-                    } else {
-                        localStorage.removeItem('coreTopics');
-                        _dbgLog('[CORE-TOPICS] 检测到空 coreTopics，回退默认 34 个核心词');
-                    }
-                } catch (e) { /* _result 保持 defaultCoreTopics */ }
-            }
-            _coreTopicsMemCache = _result;
-            return _result;
+            if (_coreTopicsMemCache && _coreTopicsMemCache.length > 0) return _coreTopicsMemCache;
+            return state.defaultCoreTopics || [];
         }
 
-        // 保存核心词库（同步到 localStorage + 云端 core_topics 表）
         export function saveCoreTopics(topics) {
-            _coreTopicsMemCache = null;
-            localStorage.setItem('coreTopics', JSON.stringify(topics));
-            // 异步推送到云端（不阻塞 UI）
+            _coreTopicsMemCache = topics;
+            _topicGroupsFp = null;
             if (!state._coreTopicsPushingToCloud) {
                 state._coreTopicsPushingToCloud = true;
                 _pushCoreTopicsToCloudFn(topics).catch(function(e) {
@@ -250,7 +223,8 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
         let _topicGroupsCache = null;
         // 获取题材分组（使用核心词匹配）
         export function getTopicGroups(auctionList) {
-            const __fp = auctionList.length + '|' + auctionList.map(function(i) { return (i.stock||'') + ':' + (i.topics||''); }).join('\u00a7');
+            const __coreFp = getCoreTopics().map(c => c.name).join(',');
+            const __fp = auctionList.length + '|' + auctionList.map(function(i) { return (i.stock||'') + ':' + (i.topics||''); }).join('\u00a7') + '|' + __coreFp;
             if (_topicGroupsFp === __fp && _topicGroupsCache) return _topicGroupsCache;
             const __tgT0 = performance.now();
             const coreTopics = getCoreTopics();
