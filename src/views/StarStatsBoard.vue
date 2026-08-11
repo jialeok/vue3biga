@@ -1,7 +1,6 @@
 <!--
   StarStatsBoard.vue — 星标签统计看板（题材星标签统计）
-  结构对照原始 HTML index没拆分的整体UI设计.html 第6011-6015行
-  数据: 从竞价数据中提取题材分组统计
+  分类: 星无/星现/星平/星增/星减（对照原版 auction-pages.js renderStarStatsBoard）
 -->
 <template>
   <div class="star-stats-board trading-day-element">
@@ -38,7 +37,7 @@
         </div>
         <div class="star-stats-summary-item">
           <div class="star-stats-summary-label">个股数量</div>
-          <div class="star-stats-summary-value">{{ stockCount }}</div>
+          <div class="star-stats-summary-value">{{ stockCountText }}</div>
         </div>
         <div class="star-stats-summary-item">
           <div class="star-stats-summary-label">个股总数最多题材</div>
@@ -56,28 +55,34 @@
         </div>
       </div>
     </div>
-    <div v-else class="star-stats-empty">暂无题材数据</div>
+    <div v-else class="star-stats-empty">暂无星变化数据</div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue';
-import { getTodayGroupList, getCurrentDate } from '../logic/app-core.js';
+import { ref, computed, watch, onMounted } from 'vue';
+import { getTodayGroupList, getGroupData } from '../logic/app-core.js';
 import { getTopicGroups } from '../logic/topic-rules.js';
+import { getPreviousTradingDay } from '../logic/trading-day-helpers.js';
+import { useUiStore } from '../stores/uiStore.js';
+import { useAuctionStore } from '../stores/auctionStore.js';
+
+const uiStore = useUiStore();
+const auctionStore = useAuctionStore();
 
 const topicCount = ref(0);
-const stockCount = ref(0);
+const stockCountText = ref('-');
 const maxStockTopic = ref('');
 const categories = ref([]);
 const strengthText = ref('-');
 const centerLabel = ref('强度');
 const centerColor = ref('#6b7280');
 
-const size = 120;
+const size = 220;
 const cx = size / 2;
 const cy = size / 2;
-const radius = 45;
-const strokeWidth = 18;
+const radius = (size - 34) / 2;
+const strokeWidth = 34;
 
 const hasData = computed(() => categories.value.length > 0);
 
@@ -98,59 +103,91 @@ const arcs = computed(() => {
 });
 
 const colorMap = {
-  rise: { color: '#ef4444', label: '涨停' },
-  highRatio: { color: '#f97316', label: '高开' },
-  flat: { color: '#3b82f6', label: '平开' },
-  fall: { color: '#10b981', label: '下跌' },
-  other: { color: '#6b7280', label: '其他' },
+  xianian: { color: '#94a3b8', label: '星无' },
+  xingxian: { color: '#f43f5e', label: '星现' },
+  xingping: { color: '#3b82f6', label: '星平' },
+  xingzeng: { color: '#f59e0b', label: '星增' },
+  xingjian: { color: '#10b981', label: '星减' },
 };
 
 function render() {
-  const auctionList = getTodayGroupList('auction');
-  if (!auctionList || auctionList.length === 0) {
+  const currentDate = uiStore.currentDate;
+  const dataSource = uiStore.currentGroup || 'auction';
+  void auctionStore.dataVersions[dataSource === 'hot' ? 'hot' : 'auction'];
+
+  const todayAuction = getTodayGroupList(dataSource);
+  if (!todayAuction || todayAuction.length === 0) {
+    categories.value = [];
+    topicCount.value = 0;
+    stockCountText.value = '-';
+    maxStockTopic.value = '';
+    return;
+  }
+
+  const todayGroups = getTopicGroups(todayAuction);
+  const prevDate = getPreviousTradingDay(currentDate);
+  const auctionData = getGroupData(dataSource);
+  const yesterdayAuction = prevDate ? (auctionData[prevDate] || []) : [];
+  const yesterdayGroups = yesterdayAuction.length > 0 ? getTopicGroups(yesterdayAuction) : [];
+
+  const cats = {
+    xianian: 0, xingxian: 0, xingping: 0, xingzeng: 0, xingjian: 0
+  };
+
+  let maxStockCount = 0;
+  let maxTopic = '';
+
+  todayGroups.forEach(group => {
+    if (!group.topic || group.topic === '---' || group.topic === '其它' || group.topic === '并购重组') return;
+    const todayStar = group.starCount || 0;
+    const yGroup = yesterdayGroups.find(g => g.topic === group.topic);
+    const yesterdayStar = yGroup ? (yGroup.starCount || 0) : 0;
+
+    if (todayStar === 0) cats.xianian++;
+    else if (yesterdayStar === 0) cats.xingxian++;
+    else if (todayStar === yesterdayStar) cats.xingping++;
+    else if (todayStar > yesterdayStar) cats.xingzeng++;
+    else if (todayStar < yesterdayStar) cats.xingjian++;
+
+    const sc = group.stocks ? group.stocks.length : 0;
+    if (sc > maxStockCount) { maxStockCount = sc; maxTopic = group.topic; }
+  });
+
+  const validTopicCount = todayGroups.filter(g => g.topic && g.topic !== '---' && g.topic !== '其它' && g.topic !== '并购重组').length;
+  topicCount.value = validTopicCount;
+
+  const todayStockCount = todayAuction.length;
+  const yesterdayStockCount = yesterdayAuction.length;
+  let arrow = '-';
+  if (todayStockCount > yesterdayStockCount) arrow = '↑';
+  else if (todayStockCount < yesterdayStockCount) arrow = '↓';
+  stockCountText.value = `${todayStockCount}${arrow}`;
+  maxStockTopic.value = maxTopic ? `${maxTopic}（${maxStockCount}）` : '';
+
+  const total = cats.xianian + cats.xingxian + cats.xingping + cats.xingzeng + cats.xingjian;
+  if (total === 0) {
     categories.value = [];
     return;
   }
-  const groups = getTopicGroups(auctionList);
-  topicCount.value = groups.length;
-  stockCount.value = auctionList.length;
 
-  let maxCount = 0;
-  groups.forEach(g => {
-    if (g.stocks.length > maxCount) {
-      maxCount = g.stocks.length;
-      maxStockTopic.value = `${g.topic}（${maxCount}）`;
-    }
-  });
-
-  const counts = { rise: 0, highRatio: 0, flat: 0, fall: 0, other: 0 };
-  auctionList.forEach(item => {
-    const pct = parseFloat(item.changePct || item.percent || 0);
-    if (pct >= 9.5) counts.rise++;
-    else if (pct > 0) counts.highRatio++;
-    else if (pct === 0) counts.flat++;
-    else if (pct < 0) counts.fall++;
-    else counts.other++;
-  });
-
-  const total = auctionList.length;
-  const order = ['rise', 'highRatio', 'flat', 'fall', 'other'];
+  const order = ['xianian', 'xingxian', 'xingping', 'xingzeng', 'xingjian'];
   categories.value = order
-    .filter(k => counts[k] > 0)
+    .filter(k => cats[k] > 0)
     .map(k => ({
       key: k,
       color: colorMap[k].color,
       label: colorMap[k].label,
-      count: counts[k],
-      percent: Math.round((counts[k] / total) * 100),
-      barWidth: Math.round((counts[k] / total) * 100),
+      count: cats[k],
+      percent: Math.round((cats[k] / total) * 100),
+      barWidth: Math.round((cats[k] / total) * 100),
     }));
 
-  const riseCount = counts.rise;
+  const riseCount = cats.xingzeng + cats.xingxian;
   strengthText.value = riseCount > 0 ? riseCount + '%' : '-';
-  centerColor.value = riseCount > 0 ? '#ef4444' : '#6b7280';
+  centerColor.value = riseCount > 0 ? '#f43f5e' : '#6b7280';
 }
 
+watch(() => [uiStore.currentDate, uiStore.currentGroup, auctionStore.dataVersions.auction, auctionStore.dataVersions.hot], render, { immediate: false });
 onMounted(render);
 
 defineExpose({ render });

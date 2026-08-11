@@ -272,6 +272,7 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
                             stock: item.stock,
                             topics: ['---'],
                             note: item.note || '',
+                            changePct: item.changePct || '',
                             ratioValue: ratioValue,
                             ratio: ratioValue > 0 ? Math.round(ratioValue) + '%' : '-'
                         };
@@ -309,6 +310,7 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
                         stock: item.stock,
                         topics: stockTopicsByCore[coreName],
                         note: item.note || '',
+                        changePct: item.changePct || '',
                         ratioValue: ratioValue,
                         ratio: ratioValue > 0 ? Math.round(ratioValue) + '%' : '-'
                     };

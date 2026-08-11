@@ -143,7 +143,7 @@
           暂无数据，双击打开后台
         </div>
 
-        <template v-for="(item, idx) in filteredItems" :key="item.index" v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.index)]">
+        <template v-for="(item, idx) in filteredObsItems" :key="item.index" v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.index)]">
           <div :class="item.itemClass" :data-index="item.index" :data-stock="item.stock || ''" @click="onToggleSelect(item.index)">
             <div :class="item.numberClass" @click.stop="onExpandTrend(item.index)">{{ idx + 1 }}</div>
             <div :class="item.stockClass"
@@ -188,6 +188,53 @@
             </template>
           </div>
         </template>
+        <div v-if="showObsSeparator" class="auction-obs-separator"></div>
+        <template v-for="(item, idx) in filteredRegularItems" :key="item.index" v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.index)]">
+          <div :class="item.itemClass" :data-index="item.index" :data-stock="item.stock || ''" @click="onToggleSelect(item.index)">
+            <div :class="item.numberClass" @click.stop="onExpandTrend(item.index)">{{ filteredObsItems.length + idx + 1 }}</div>
+            <div :class="item.stockClass"
+                 :data-stock="item.stock"
+                 :data-note="item.note || ''"
+                 @dblclick.stop="onShowNote(item.index)"
+                 @contextmenu.prevent="onLongPress(item.stock)"
+                 @touchstart.passive="startLongPress(item.stock)"
+                 @touchend="cancelLongPress"
+                 @touchmove="cancelLongPress"
+                 @mousedown="startLongPress(item.stock)"
+                 @mouseup="cancelLongPress"
+                 @mouseleave="cancelLongPress">
+              <span class="auction-stock-text">{{ item.stock }}</span>
+              <AuctionBadge :item="item" :ctx="{}" :tag-state="item" />
+            </div>
+            <div class="auction-volume">{{ item.volumeDisplay }}</div>
+            <div :class="item.yestColorClass" :data-index="item.index" :data-note="item.note || ''" @contextmenu.prevent="openEditModal">{{ item.yestVolumeDisplay }}</div>
+            <div :class="item.ratioClass" :data-index="item.index">{{ item.ratio }}<span v-if="item.ratioArrow" :style="{ color: item.ratioArrow === '⬆' ? '#ef4444' : '#10b981' }">{{ item.ratioArrow }}</span></div>
+          </div>
+          <div v-if="expandedSet.has(item.index)" class="auction-trend-panel">
+            <template v-if="trendHistory[item.index]">
+              <div class="trend-chart-item">
+                <div class="trend-chart-label trend-chart-label-with-stats">
+                  <span>竞价量(万) 近5日</span>
+                  <span v-if="trendHistory[item.index].diff != null" style="color:#2563eb; font-weight:600;">差值 {{ trendHistory[item.index].diff }}</span>
+                  <span v-if="trendHistory[item.index].jingRatio != null" style="color:#6366f1; font-weight:600;">今/昨比 {{ trendHistory[item.index].jingRatio }}</span>
+                </div>
+                <TrendChart :points="trendHistory[item.index].volume" color="#6366f1" />
+              </div>
+              <div class="trend-chart-item">
+                <div class="trend-chart-label trend-chart-label-with-stats">
+                  <span>昨日成交量(万) 近5日</span>
+                  <span v-if="trendHistory[item.index].yestRatio != null" style="color:#10b981; font-weight:600;">昨/前比 {{ trendHistory[item.index].yestRatio }}</span>
+                </div>
+                <TrendChart :points="trendHistory[item.index].yestVolume" color="#10b981" />
+              </div>
+              <div class="trend-chart-item" v-if="trendHistory[item.index].changePct.some(p => p.value !== null)">
+                <div class="trend-chart-label">涨幅(%) 近5日</div>
+                <TrendChart :points="trendHistory[item.index].changePct" color="#64748b" :percent="true" />
+              </div>
+            </template>
+          </div>
+        </template>
+
       </div>
 
       <div v-if="currentPage === 1" class="auction-scroll-container">
@@ -485,6 +532,17 @@ const filteredItems = computed(() => {
   const kw = searchKeyword.value.trim().toLowerCase();
   return allItems.value.filter(item => item.stock && item.stock.toLowerCase().includes(kw));
 });
+const filteredObsItems = computed(() => {
+  if (!searchKeyword.value.trim()) return obsItems.value;
+  const kw = searchKeyword.value.trim().toLowerCase();
+  return obsItems.value.filter(item => item.stock && item.stock.toLowerCase().includes(kw));
+});
+const filteredRegularItems = computed(() => {
+  if (!searchKeyword.value.trim()) return regularItems.value;
+  const kw = searchKeyword.value.trim().toLowerCase();
+  return regularItems.value.filter(item => item.stock && item.stock.toLowerCase().includes(kw));
+});
+const showObsSeparator = computed(() => filteredObsItems.value.length > 0 && filteredRegularItems.value.length > 0);
 
 // ===== 第二页（题材分组）状态与逻辑 =====
 const sortState2 = reactive({ byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false });
@@ -623,6 +681,29 @@ const sortedTopicGroups = computed(() => {
 
 function toggleSort2(key) {
   sortState2[key] = !sortState2[key];
+  if (sortState2[key]) {
+    if (key === 'byRatio') {
+      sortState2.byParallel = false; sortState2.byJingYest = false;
+      sortState2.byJingYestRatio = false; sortState2.byThreeDayJingDie = false;
+    } else if (key === 'byParallel') {
+      sortState2.byRatio = false; sortState2.byThreeDayJingDie = false;
+    } else if (key === 'byJingYest') {
+      sortState2.byRatio = false; sortState2.byJingYestRatio = false; sortState2.byThreeDayJingDie = false;
+      sortState2.byParallel = true;
+    } else if (key === 'byJingYestRatio') {
+      sortState2.byRatio = false; sortState2.byParallel = false;
+      sortState2.byJingYest = false; sortState2.byThreeDayJingDie = false;
+    } else if (key === 'byThreeDayJingDie') {
+      sortState2.byRatio = false; sortState2.byParallel = false;
+      sortState2.byJingYest = false; sortState2.byJingYestRatio = false;
+    }
+  } else {
+    if (key === 'byParallel') {
+      sortState2.byJingYest = false; sortState2.byJingYestRatio = false;
+    } else if (key === 'byJingYest') {
+      sortState2.byParallel = false;
+    }
+  }
 }
 function toggleStrengthSort() {
   isStrengthSortEnabled.value = !isStrengthSortEnabled.value;
@@ -929,6 +1010,34 @@ function refresh() {
 
 function toggleSort(key) {
   sortState[key] = !sortState[key];
+  if (sortState[key]) {
+    if (key === 'byData') {
+      sortState.byRatio = false; sortState.byParallel = false;
+      sortState.byJingYest = false; sortState.byJingYestRatio = false; sortState.byThreeDayJingDie = false;
+    } else if (key === 'byRatio') {
+      sortState.byData = false; sortState.byParallel = false;
+      sortState.byJingYest = false; sortState.byJingYestRatio = false; sortState.byThreeDayJingDie = false;
+    } else if (key === 'byParallel') {
+      sortState.byData = false; sortState.byRatio = false;
+      sortState.byThreeDayJingDie = false;
+    } else if (key === 'byJingYest') {
+      sortState.byData = false; sortState.byRatio = false;
+      sortState.byJingYestRatio = false; sortState.byThreeDayJingDie = false;
+      sortState.byParallel = true;
+    } else if (key === 'byJingYestRatio') {
+      sortState.byData = false; sortState.byRatio = false; sortState.byParallel = false;
+      sortState.byJingYest = false; sortState.byThreeDayJingDie = false;
+    } else if (key === 'byThreeDayJingDie') {
+      sortState.byData = false; sortState.byRatio = false; sortState.byParallel = false;
+      sortState.byJingYest = false; sortState.byJingYestRatio = false;
+    }
+  } else {
+    if (key === 'byParallel') {
+      sortState.byJingYest = false; sortState.byJingYestRatio = false;
+    } else if (key === 'byJingYest') {
+      sortState.byParallel = false;
+    }
+  }
   const _p = props.dataSource === 'hot' ? 'hot' : 'auction';
   if (auctionStore.sortState && auctionStore.sortState[_p]) {
     const s = auctionStore.sortState[_p];
@@ -1191,6 +1300,10 @@ defineExpose({ refresh, toggleSort, expandAll, collapseAll });
   flex-wrap: wrap;
 }
 .auction-row:hover { background: #f8fafc; }
+.auction-obs-separator {
+  margin: 10px 12px;
+  border-top: 1.5px dashed #cbd5e1;
+}
 .auction-row.obs-row { background: #f0f9ff; }
 /* 行状态用左竖线表示，不用整行背景色 */
 .auction-item.sold {
