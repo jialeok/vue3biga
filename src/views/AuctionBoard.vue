@@ -27,7 +27,7 @@
     </div>
     <div v-show="expanded" class="auction-swipe-container"
          @touchstart.passive="onSwipeStart"
-         @touchend="onSwipeEnd"
+         @touchend.passive="onSwipeEnd"
          @mousedown="onSwipeStart"
          @mouseup="onSwipeEnd">
       <div v-show="currentPage === 0" class="auction-scroll-container" @dblclick.self="openBackend">
@@ -233,6 +233,8 @@ const showBackend = ref(false);
 const expanded = ref(false);
 let swipeStartX = 0;
 let swipeEndX = 0;
+let swipeStartY = 0;
+let swipeEndY = 0;
 
 function toggleBoard(e) {
   if (e) e.stopPropagation();
@@ -349,17 +351,22 @@ function switchPage(page) {
   currentPage.value = page;
 }
 function onSwipeStart(e) {
-  if (e.touches) swipeStartX = e.touches[0].clientX;
-  else swipeStartX = e.clientX;
+  if (e.touches) { swipeStartX = e.touches[0].clientX; swipeStartY = e.touches[0].clientY; }
+  else { swipeStartX = e.clientX; swipeStartY = e.clientY; }
 }
 function onSwipeEnd(e) {
-  if (e.changedTouches) swipeEndX = e.changedTouches[0].clientX;
-  else swipeEndX = e.clientX;
+  if (e.changedTouches) { swipeEndX = e.changedTouches[0].clientX; swipeEndY = e.changedTouches[0].clientY; }
+  else { swipeEndX = e.clientX; swipeEndY = e.clientY; }
   handleSwipe();
 }
 function handleSwipe() {
-  const diff = swipeStartX - swipeEndX;
+  const dx = Math.abs(swipeStartX - swipeEndX);
+  const dy = Math.abs(swipeStartY - swipeEndY);
   const threshold = 50;
+  // 仅当水平位移明显大于垂直位移时才视为左右滑动翻页,
+  // 避免用户上下滑动时因手抖水平偏移而误切到空白页。
+  if (dx < threshold || dx <= dy) return;
+  const diff = swipeStartX - swipeEndX;
   if (diff > threshold && currentPage.value < 3) switchPage(currentPage.value + 1);
   else if (diff < -threshold && currentPage.value > 0) switchPage(currentPage.value - 1);
 }
@@ -532,14 +539,19 @@ defineExpose({ refresh, toggleSort, expandAll, collapseAll });
   margin-bottom: 2px;
 }
 .auction-swipe-container {
-  overflow-y: auto !important;
+  flex: 1;
+  position: relative;
   overflow-x: hidden !important;
-  touch-action: pan-y !important;
+  /* 注意: 不要设 touch-action: pan-y !important;
+     该容器没有高度约束、自身不滚动, 若设 pan-y 浏览器会把垂直手势
+     当作该容器自己处理而不冒泡到 body, 导致整页划不动。
+     pan-x pan-y 表示允许浏览器默认的双向手势, 垂直方向冒泡到 body 滚动。 */
+  touch-action: pan-x pan-y;
 }
 .auction-scroll-container {
-  overflow-y: auto !important;
   overflow-x: hidden !important;
-  touch-action: pan-y !important;
+  padding: 4px 0;
+  touch-action: pan-x pan-y;
 }
 .auction-search-container {
   padding: 8px 12px;
@@ -601,11 +613,6 @@ defineExpose({ refresh, toggleSort, expandAll, collapseAll });
 }
 .stat-item {
   font-weight: 500;
-}
-.auction-scroll-container {
-  height: 100%;
-  overflow-y: auto;
-  padding: 4px 0;
 }
 .auction-empty {
   text-align: center;
@@ -681,11 +688,6 @@ defineExpose({ refresh, toggleSort, expandAll, collapseAll });
 }
 .backend-btn:hover {
   background: #e5e7eb;
-}
-.auction-swipe-container {
-  flex: 1;
-  overflow: hidden;
-  position: relative;
 }
 .topic-group {
   border-bottom: 1px solid #e5e7eb;
