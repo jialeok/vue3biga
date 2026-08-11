@@ -107,24 +107,27 @@
           暂无数据，双击打开后台
         </div>
 
-        <div v-for="(item, idx) in filteredItems" :key="item.index" :class="item.itemClass" @click="onToggleSelect(item.index)">
-          <span class="auction-number" @click.stop="onExpandTrend(item.index)">{{ idx + 1 }}</span>
-          <span :class="item.stockClass"
-                :data-stock="item.stock"
-                @dblclick.stop="onShowNote(item.index)"
-                @contextmenu.prevent="onLongPress(item.stock)"
-                @touchstart.passive="startLongPress(item.stock)"
-                @touchend="cancelLongPress"
-                @touchmove="cancelLongPress"
-                @mousedown="startLongPress(item.stock)"
-                @mouseup="cancelLongPress"
-                @mouseleave="cancelLongPress">
-            <span class="auction-stock-text">{{ item.stock }}</span>
-            <AuctionBadge :item="item" :ctx="{}" :tag-state="item" />
-          </span>
-          <span :class="item.numberClass">{{ item.volumeDisplay }}</span>
-          <span class="auction-yest" :class="item.yestColorClass">{{ item.yestVolumeDisplay }}</span>
-          <span :class="item.ratioClass">{{ item.ratio }} <span>{{ item.ratioArrow }}</span></span>
+        <template v-for="(item, idx) in filteredItems" :key="item.index">
+          <div :class="item.itemClass" :data-index="item.index" :data-stock="item.stock || ''" @click="onToggleSelect(item.index)">
+            <div :class="item.numberClass" @click.stop="onExpandTrend(item.index)">{{ idx + 1 }}</div>
+            <div :class="item.stockClass"
+                 :data-stock="item.stock"
+                 :data-note="item.note || ''"
+                 @dblclick.stop="onShowNote(item.index)"
+                 @contextmenu.prevent="onLongPress(item.stock)"
+                 @touchstart.passive="startLongPress(item.stock)"
+                 @touchend="cancelLongPress"
+                 @touchmove="cancelLongPress"
+                 @mousedown="startLongPress(item.stock)"
+                 @mouseup="cancelLongPress"
+                 @mouseleave="cancelLongPress">
+              <span class="auction-stock-text">{{ item.stock }}</span>
+              <AuctionBadge :item="item" :ctx="{}" :tag-state="item" />
+            </div>
+            <div class="auction-volume">{{ item.volumeDisplay }}</div>
+            <div :class="item.yestColorClass" :data-index="item.index" :data-note="item.note || ''">{{ item.yestVolumeDisplay }}</div>
+            <div :class="item.ratioClass" :data-index="item.index">{{ item.ratio }}<span v-if="item.ratioArrow" :style="{ color: item.ratioArrow === '⬆' ? '#ef4444' : '#10b981' }">{{ item.ratioArrow }}</span></div>
+          </div>
           <div v-if="expandedSet.has(item.index)" class="auction-trend-panel">
             <template v-if="trendHistory[item.index]">
               <div class="trend-chart-item">
@@ -141,7 +144,7 @@
               </div>
             </template>
           </div>
-        </div>
+        </template>
       </div>
 
       <div v-if="currentPage === 1" class="auction-scroll-container">
@@ -1078,6 +1081,27 @@ defineExpose({ refresh, toggleSort, expandAll, collapseAll });
 }
 .auction-row:hover { background: #f8fafc; }
 .auction-row.obs-row { background: #f0f9ff; }
+/* 行状态用左竖线表示，不用整行背景色 */
+.auction-item.sold {
+  background: none !important;
+  border-left: 3px solid #9ca3af;
+}
+.auction-item.sold:hover { background: #f3f4f6 !important; }
+.auction-item.bought {
+  background: none !important;
+  border-left: 3px solid #ef4444;
+}
+.auction-item.bought:hover { background: #fee2e2 !important; }
+.auction-item.selected {
+  background: none !important;
+  border-left: 3px solid #8b5cf6;
+}
+.auction-item.selected:hover { background: #f3e8ff !important; }
+.auction-item.manual-selected {
+  background: none !important;
+  border-left: 3px solid #f97316;
+}
+.auction-item.manual-selected:hover { background: #ffedd5 !important; }
 /* 股票名称列作为 badge 的定位父级。
    - position:relative 让内部 absolute 的 badge-group 相对它定位。
    - 不再用 padding-right 预留角标空间(那会撑宽名称列、挤动后面四列)。

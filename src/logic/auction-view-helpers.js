@@ -1,7 +1,7 @@
 import { getTodayGroupList, getGroupData, getAuctionData } from './app-core-api.js';
 import { getPreviousTradingDay } from './trading-day-helpers.js';
 import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlightSetForDate, getDigitCount, getRatioDiffInfoForDate } from './auction-sort-rules.js';
-import { getAuctionStockHistory, ensureBoughtStocksForDate } from './tag-rules.js';
+import { getAuctionStockHistory, ensureBoughtStocksForDate, deriveAuctionTagState } from './tag-rules.js';
 import { getThreeDayJingDieSet } from './sort-rules-extra.js';
 import { getNumericVolume, getStocksData } from '../data/supabase-client.js';
 import { state } from './app-state.js';
@@ -20,62 +20,106 @@ function _getAuctionTag(date, stockName) {
 function _enrichAuctionItem(rawItem, index, ctx) {
   if (!rawItem) return null;
   const stockName = rawItem.stock ? rawItem.stock.trim() : '';
-  const volume = rawItem.volume || '';
-  const yestVolume = rawItem.yestVolume || '';
+  const volume = parseFloat(rawItem.volume) || 0;
+  const yestVolume = parseFloat(rawItem.yestVolume) || 0;
   const note = getDisplayNote(rawItem);
 
-  const todayVol = getNumericVolume(volume);
-  const yestVol = getNumericVolume(yestVolume);
-  let ratio = null;
-  if (todayVol !== null && todayVol !== 0 && yestVol !== null && yestVol !== 0) {
-    ratio = todayVol / yestVol;
+  let ratioValue = 0;
+  let ratioDisplay = '-';
+  if (yestVolume > 0) {
+    ratioValue = (volume / yestVolume) * 100;
+    ratioDisplay = Math.round(ratioValue) + '%';
   }
-  const ratioDisplay = ratio !== null ? (ratio * 100).toFixed(0) + '%' : '-';
+
   let ratioArrow = '';
-  if (ratio !== null) {
-    if (ratio >= 1.5) ratioArrow = '⬆';
-    else if (ratio < 0.8) ratioArrow = '⬇';
+  if (ctx.prevAuctionList && ctx.prevAuctionList.length > 0 && stockName) {
+    const prevItem = ctx.prevAuctionList.find(p => p.stock && p.stock.trim() === stockName);
+    if (prevItem && prevItem.yestVolume) {
+      const prevVolume = parseFloat(prevItem.volume) || 0;
+      const prevYestVolume = parseFloat(prevItem.yestVolume) || 0;
+      if (prevYestVolume > 0) {
+        const prevRatio = Math.round((prevVolume / prevYestVolume) * 100);
+        const currRatio = Math.round(ratioValue);
+        if (currRatio > prevRatio) ratioArrow = '⬆';
+        else if (currRatio < prevRatio) ratioArrow = '⬇';
+      }
+    }
   }
 
-  const ts = getAuctionTagState(stockName, ctx.date);
-  const isBought = ts.bought;
-  const isSold = ts.sold;
-  const isSelected = ts.selected;
-  const isConfirmedSold = ctx.confirmedSoldSet && ctx.confirmedSoldSet.has(stockName);
+  const tagState = deriveAuctionTagState(stockName, ctx.date);
+  const isConfirmedSold = tagState.sold || (stockName && ctx.confirmedSoldSet && ctx.confirmedSoldSet.has(stockName));
+  const isSelected = !isConfirmedSold && (tagState.selected || rawItem.selected === true);
+  const isBought = !isConfirmedSold && tagState.bought;
+  const isSold = tagState.sold;
+  const isFixed = tagState.sold || tagState.bought || tagState.selected;
+  const isObsInheritedBought = isBought && rawItem.obsAutoAdded === true;
+  const isGray = !isSelected && !isBought && !isSold && ratioValue < 4.5;
 
-  let stockClass = 'auction-stock-name';
+  let itemClass = 'auction-item';
+  if (isSold) {
+    itemClass += ' sold';
+  } else if (isConfirmedSold && !isSold) {
+    // 已确认卖出但非当天手动卖出：常规展示
+  } else if (isBought && !isObsInheritedBought) {
+    itemClass += ' bought';
+  } else if (isSelected && isFixed) {
+    itemClass += ' selected';
+  } else if (isSelected && !isFixed) {
+    itemClass += ' manual-selected';
+  }
+
+  const isJingYestMatch = ctx.jingYestToggleChecked && ctx.jingYestHighlightSet && stockName && ctx.jingYestHighlightSet.has(stockName);
+  const isParallelMatch = ctx.sortByParallelEnabled && !ctx.jingYestToggleChecked && stockName && ctx.parallelStocksToday && ctx.parallelStocksToday.has(stockName);
+  const isHighRatioMatch = ctx.sortByRatioEnabled && stockName && ctx.highRatioToday && ctx.highRatioToday.stockNames && ctx.highRatioToday.stockNames.has(stockName);
+  if (isJingYestMatch) {
+    itemClass += ' jing-yest-match';
+  } else if (isParallelMatch) {
+    itemClass += ' parallel-match';
+  } else if (isHighRatioMatch) {
+    itemClass += ' high-ratio';
+  }
+
+  let numberClass = 'auction-number auction-trend-trigger';
+  if (isGray) numberClass += ' gray-text';
+
+  let stockClass = 'auction-stock-name auction-note-trigger';
   if (isBought) stockClass += ' tag-bought';
   if (isSold) stockClass += ' tag-sold';
   if (isSelected) stockClass += ' tag-selected';
 
-  let itemClass = 'auction-row';
-  if (ctx.isObsMember(stockName)) itemClass += ' obs-row';
-
-  let numberClass = 'auction-volume';
-  if (todayVol !== null && yestVol !== null) {
-    const dg = Math.abs(getDigitCount(todayVol) - getDigitCount(yestVol));
-    if (dg <= 1 && ratio !== null && ratio >= 1) numberClass += ' vol-highlight';
+  let ratioClass = 'auction-ratio auction-ratio-clickable';
+  if (ratioValue >= 10) {
+    ratioClass += ' highlight';
+  } else if (ratioValue >= 4.5 && ratioValue < 10) {
+    ratioClass += ' highlight-light';
   }
 
-  let yestColorClass = 'auction-yest';
-  if (yestVol !== null && todayVol !== null) {
-    if (todayVol > yestVol) yestColorClass += ' yest-up';
-    else if (todayVol < yestVol) yestColorClass += ' yest-down';
+  let yestColorClass = 'auction-yest auction-yest-note';
+  if (note) {
+    if (note.includes('涨停')) {
+      yestColorClass += ' auction-yest-red';
+    } else if (note.includes('跌停')) {
+      yestColorClass += ' auction-yest-green';
+    } else {
+      const numMatches = note.match(/-?\d+\.?\d*/g);
+      if (numMatches && numMatches.length > 0) {
+        const lastNum = parseFloat(numMatches[numMatches.length - 1]);
+        if (lastNum > 0) yestColorClass += ' auction-yest-red';
+        else if (lastNum < 0) yestColorClass += ' auction-yest-green';
+      }
+    }
   }
 
-  let ratioClass = 'auction-ratio';
-  if (ratio !== null) {
-    if (ratio >= 1.5) ratioClass += ' ratio-high';
-    else if (ratio < 0.8) ratioClass += ' ratio-low';
-  }
+  const volumeDisplay = rawItem.volume ? Math.round(parseFloat(rawItem.volume)) : '-';
+  const yestVolumeDisplay = rawItem.yestVolume ? Math.round(parseFloat(rawItem.yestVolume)) : '-';
 
   return {
     index,
     stock: stockName,
-    volume,
-    yestVolume,
-    volumeDisplay: volume || '-',
-    yestVolumeDisplay: yestVolume || '-',
+    volume: rawItem.volume || '',
+    yestVolume: rawItem.yestVolume || '',
+    volumeDisplay,
+    yestVolumeDisplay,
     ratio: ratioDisplay,
     ratioArrow,
     ratioClass,
@@ -87,7 +131,8 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     bought: isBought,
     sold: isSold,
     selected: isSelected,
-    confirmedSold: isConfirmedSold
+    confirmedSold: isConfirmedSold,
+    isGray
   };
 }
 
@@ -362,7 +407,14 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   const ctx = {
     dataSource, date: currentDate, confirmedSoldSet: _confirmedSoldSet,
-    isObsMember: _isObsMember
+    isObsMember: _isObsMember,
+    prevAuctionList,
+    jingYestToggleChecked,
+    jingYestHighlightSet,
+    sortByParallelEnabled: sortState.byParallel,
+    parallelStocksToday,
+    sortByRatioEnabled: sortState.byRatio,
+    highRatioToday
   };
   const fullOrder = obsIndices.concat(regularIndices);
   const items = fullOrder.map((i, pos) => _enrichAuctionItem(auctionList[i], i, ctx)).filter(Boolean);
