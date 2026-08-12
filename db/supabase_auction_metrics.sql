@@ -37,7 +37,7 @@ create table if not exists market_metrics (
   volume text,
   yest_volume text,
   change_pct text,
-  time925 text,
+  time930 text,
   seal_count text,
   auc_pct_chg text,     -- 竞价涨幅(%)，格式 "+X.XX%"，按日期存，供「五日竞价涨幅」趋势图
   um_vol text,          -- 未匹配量(万手)，numcat um_vol(手)÷100 转万手，展示 "251w"
