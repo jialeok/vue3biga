@@ -33,7 +33,7 @@
           <span class="col-time920">{{ row.time920 || '-' }}</span>
           <span class="col-time930">{{ row.time930 || '-' }}</span>
           <span class="col-change" :class="changeClass(row.change)">{{ formatPercent(row.change) }}</span>
-          <span class="col-close" :class="changeClass(row.close)">{{ formatPercent(row.close) }}</span>
+          <span class="col-close" :class="changeClass(row.close)">{{ formatClose(row.close, row.name) }}</span>
         </div>
       </div>
     </div>
@@ -91,7 +91,7 @@ import { ref, watch, onMounted } from 'vue';
 import EditModal from '../components/EditModal.vue';
 import { useUiStore } from '../stores/uiStore.js';
 import { getBiddingData, getJiwangData, getBiddingDirtyDates, getBiddingPushInFlight } from '../data/supabase-client.js';
-import { getDefaultBiddingTemplate, pushBiddingToCloud, syncBiddingDeletionsToCloud, fetchBiddingCloudRows } from '../data/bidding-data.js';
+import { getDefaultBiddingTemplate, orderBiddingRows, pushBiddingToCloud, syncBiddingDeletionsToCloud, fetchBiddingCloudRows } from '../data/bidding-data.js';
 import { saveData, markJiwangDirty } from '../logic/app-core.js';
 import { _dbgLog } from '../data/debug-log.js';
 import { showToast, showWarningToast } from '../composables/useToast.js';
@@ -131,6 +131,16 @@ function formatPercent(v) {
   return n + '%';
 }
 
+// 收盘列单位：昨日资金前十 / 板块ETF 类为「红盘家数」，单位用「红」而非「%」；其余行沿用 %（当前逻辑正确）。
+function formatClose(v, name) {
+  if (!v && v !== 0) return '-';
+  if (name === '昨日资金前十' || (name && name.indexOf('板块ETF') === 0)) {
+    const n = parseFloat(v);
+    return (isNaN(n) ? v : n) + '红';
+  }
+  return formatPercent(v);
+}
+
 function getTodayBidding() {
   const biddingData = getBiddingData();
   const existingData = biddingData[uiStore.currentDate];
@@ -143,7 +153,7 @@ function getTodayBidding() {
              (row.change && row.change.toString().trim() !== '') ||
              (row.close && row.close.toString().trim() !== '');
     });
-    if (hasValidData) return existingData;
+    if (hasValidData) return orderBiddingRows(existingData);
   }
   return null;
 }
@@ -272,7 +282,7 @@ async function save() {
     }
   })();
 
-  getBiddingData()[uiStore.currentDate] = biddingData;
+  getBiddingData()[uiStore.currentDate] = orderBiddingRows(biddingData);
   saveData();
 
   const sectorEtfRow = biddingData.find(row => row.name && row.name.startsWith('板块ETF'));

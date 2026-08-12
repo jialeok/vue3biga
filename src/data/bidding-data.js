@@ -412,26 +412,46 @@ import { state } from '../logic/app-state.js';
             }
         }
 
-        export function getDefaultBiddingTemplate() {
-            const stored = localStorage.getItem('biddingDefaultTemplate_v41');
-            if (stored) {
-                try {
-                    const template = JSON.parse(stored);
-                    if (template && Array.isArray(template) && template.length > 0) {
-                        return template;
-                    }
-                } catch (e) {
+        // 竞价变化看板固定行顺序（写死，去掉旧模板/localStorage 逻辑）。
+        // 前台展示与后台编辑弹窗统一按此顺序，避免按插入顺序 / DB 扫描顺序乱序。
+        export const BIDDING_ROW_ORDER = [
+            '最近多板%',
+            '板块ETF(48)',
+            '昨日资金前十',
+            '大盘ETF',
+            '大盘（%）',
+            '封单家数',
+            '账号溢价'
+        ];
+
+        // 按固定顺序排序竞价行；列表中未出现的行（如用户自定义行）保持原相对顺序追加在末尾。
+        export function orderBiddingRows(rows) {
+            if (!Array.isArray(rows)) return rows;
+            const idxOf = new Map();
+            BIDDING_ROW_ORDER.forEach(function(n, i) { idxOf.set(n, i); });
+            const placed = [];
+            const unknown = [];
+            rows.forEach(function(r) {
+                const name = (r && r.name || '').trim();
+                if (idxOf.has(name)) {
+                    const pos = idxOf.get(name);
+                    if (placed[pos] === undefined) placed[pos] = r;
+                    else unknown.push(r); // 同名重复行，多余者追加末尾
+                } else {
+                    unknown.push(r);
                 }
+            });
+            const result = [];
+            for (let i = 0; i < BIDDING_ROW_ORDER.length; i++) {
+                if (placed[i] !== undefined) result.push(placed[i]);
             }
-            return [
-                { name: '最近多板%' },
-                { name: '板块ETF(48)' },
-                { name: '昨日资金前十' },
-                { name: '大盘ETF' },
-                { name: '大盘（%）' },
-                { name: '封单家数' },
-                { name: '账号溢价' }
-            ];
+            unknown.forEach(function(r) { result.push(r); });
+            return result;
+        }
+
+        // 默认模板（仅用于诊断展示）。不再读写 localStorage 模板，直接返回写死的固定顺序。
+        export function getDefaultBiddingTemplate() {
+            return BIDDING_ROW_ORDER.map(function(n) { return { name: n }; });
         }
 
         export async function fetchBiddingCloudRows(date) {
