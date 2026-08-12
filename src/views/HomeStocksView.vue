@@ -49,7 +49,7 @@
   <!-- 股票列表 -->
   <div v-if="!loading" class="stock-list trading-day-element" :class="{ collapsed: isCollapsedMode }">
   <div v-for="stock in sortedList" :key="stock.id"
-       v-memo="[stock, isExpanded(stock), expandedActionsId === stock.id, trendCache[stock.id]]"
+       v-memo="[stock, isExpanded(stock), expandedActionsId === stock.id]"
        :id="'stock-card-' + stock.id"
        class="stock-card"
        :class="{ bought: stock.bought, sold: stock.sold, 'single-expanded': isExpanded(stock), 'single-collapsed': !isCollapsedMode && !isExpanded(stock) }">
@@ -124,9 +124,6 @@
         <div class="xgcaiti-value">{{ stock.xgcaiti ? stock.xgcaiti.replace(/[()]/g, '') : '-' }}</div>
       </div>
     </div>
-    <div v-if="isExpanded(stock) && trendCache[stock.id] && trendCache[stock.id].length > 1" class="stock-trend">
-      <TrendChart :points="trendCache[stock.id]" color="#f59e0b" :percent="true" />
-    </div>
     <div class="stock-actions" :class="{ expanded: expandedActionsId === stock.id }" :id="'actions-' + stock.id">
       <button class="action-btn btn-edit" @click.stop="onEdit(stock.id)">编辑</button>
       <button class="action-btn btn-copy" @click.stop="onCopyTomorrow(stock.id)">复制到交易日</button>
@@ -150,8 +147,9 @@
       <div style="font-size:12px;color:#94a3b8;">💰 点击添加</div>
     </div>
     <div class="track-simple" @click="onTrackEdit(stock)">
+      <div class="track-simple-head">📌 追踪记录</div>
       <div v-if="trackItems(stock.track).length" class="track-scroll-container">
-        <div class="track-window.content-display">
+        <div class="track-window content-display">
           <div v-for="(item, idx) in trackItems(stock.track)" :key="(item.date||'')+'|'+idx" class="track-item">
             <span class="track-date">{{ formatDate(item.date) }}</span>
             <span>{{ item.content || '' }}</span>
@@ -197,43 +195,67 @@
       <div class="form-group"><label class="form-label">调整幅度 %</label><input class="form-input" v-model="editForm.adjust" placeholder="如：-6.6"></div>
     </div>
     <div class="form-group"><label class="form-label">缩放量能</label><input class="form-input" v-model="editForm.sfliangneng" placeholder="如：温和放量"></div>
-    <div class="form-row" style="flex-wrap:wrap;gap:6px">
-      <div class="form-group" style="flex:1;min-width:80px"><label class="form-label">已买</label><input type="checkbox" v-model="editForm.bought" style="width:20px;height:20px"></div>
-      <div class="form-group" style="flex:1;min-width:80px"><label class="form-label">已卖</label><input type="checkbox" v-model="editForm.sold" style="width:20px;height:20px"></div>
-      <div class="form-group" style="flex:1;min-width:80px"><label class="form-label">持有</label><input type="checkbox" v-model="editForm.hold" style="width:20px;height:20px"></div>
-      <div class="form-group" style="flex:1;min-width:80px"><label class="form-label">观察</label><input type="checkbox" v-model="editForm.watch" style="width:20px;height:20px"></div>
-      <div class="form-group" style="flex:1;min-width:80px"><label class="form-label">龙头</label><input type="checkbox" v-model="editForm.dragon" style="width:20px;height:20px"></div>
+    <div class="form-group">
+      <label class="form-label">标签</label>
+      <div class="edit-tags-wrap">
+        <label class="edit-tag"><input type="checkbox" v-model="editForm.bomb"><span>💣 炸板</span></label>
+        <label class="edit-tag tag-amber"><input type="checkbox" v-model="editForm.bought"><span>已买入</span></label>
+        <label class="edit-tag tag-red"><input type="checkbox" v-model="editForm.sold"><span>已卖出</span></label>
+        <label class="edit-tag tag-amber-bg"><input type="checkbox" v-model="editForm.sellHigh"><span>冲高卖</span></label>
+        <label class="edit-tag tag-blue-bg"><input type="checkbox" v-model="editForm.sell1120"><span>11:20卖</span></label>
+        <label class="edit-tag tag-pink-bg"><input type="checkbox" v-model="editForm.sell1450"><span>14:50卖</span></label>
+        <label class="edit-tag tag-red"><input type="checkbox" v-model="editForm.dragon"><span>👑 龙头</span></label>
+        <label class="edit-tag tag-blue-bg"><input type="checkbox" v-model="editForm.hold"><span>持有</span></label>
+        <label class="edit-tag tag-purple-bg"><input type="checkbox" v-model="editForm.watch"><span>观望</span></label>
+        <label class="edit-tag tag-green-bg"><input type="checkbox" v-model="editForm.topicDirection"><span>题材方向</span></label>
+        <label class="edit-tag tag-amber-bg"><input type="checkbox" v-model="editForm.recentMulti"><span>最近多板</span></label>
+        <label class="edit-tag tag-blue-bg"><input type="checkbox" v-model="editForm.sectorEtf"><span>板块ETF</span></label>
+        <label class="edit-tag tag-red-bg"><input type="checkbox" v-model="editForm.nishi"><span>逆势</span></label>
+        <label class="edit-tag tag-emerald-bg"><input type="checkbox" v-model="editForm.shunshi"><span>顺势</span></label>
+      </div>
+      <div class="edit-nextday">
+        <span class="edit-nextday-label">次日预测</span>
+        <button type="button" :class="['nextday-pill', { active: editForm.nextDay === 'up' }]" @click="editForm.nextDay = editForm.nextDay === 'up' ? '' : 'up'">📈 次日涨</button>
+        <button type="button" :class="['nextday-pill', { active: editForm.nextDay === 'down' }]" @click="editForm.nextDay = editForm.nextDay === 'down' ? '' : 'down'">📉 次日跌</button>
+      </div>
     </div>
   </EditModal>
 
   <EditModal v-model="soldEditModalActive" :title="'💰 ' + soldEditStockName + ' - 卖出记录'" @save="saveSoldEditModal">
     <div class="track-edit-list">
       <div v-for="(row, idx) in editingSoldRows" :key="row.id" class="track-edit-row sold-edit-row">
-        <div class="track-edit-date">
-          <input class="track-date-input sold-date-input" v-model="row.date" placeholder="YYYY-MM-DD HH:mm" />
-        </div>
-        <div class="track-edit-content">
-          <input class="track-content-input sold-profit-input" v-model="row.profit" placeholder="盈利 如：+1260" />
-        </div>
-        <div class="track-edit-content">
-          <input class="track-content-input sold-percent-input" v-model="row.percent" placeholder="涨幅 如：+4.5%" />
-        </div>
-        <div class="track-edit-content">
-          <select class="track-content-input sold-type-input" v-model="row.type">
-            <option value="">请选择</option>
-            <option value="全清仓">全清仓</option>
-            <option value="部分卖">部分卖</option>
-          </select>
-        </div>
-        <div class="track-edit-delete">
+        <div class="sold-row-head">
+          <span class="sold-row-index">卖出 #{{ idx + 1 }}</span>
           <button type="button" class="remove-track-btn" @click="removeSoldRow(idx)">×</button>
+        </div>
+        <div class="sold-grid">
+          <div class="sold-field">
+            <label>日期</label>
+            <input class="track-date-input sold-date-input" v-model="row.date" placeholder="YYYY-MM-DD HH:mm" />
+          </div>
+          <div class="sold-field">
+            <label>盈利</label>
+            <input class="track-content-input sold-profit-input" v-model="row.profit" placeholder="如：+1260" />
+          </div>
+          <div class="sold-field">
+            <label>涨幅</label>
+            <input class="track-content-input sold-percent-input" v-model="row.percent" placeholder="如：+4.5%" />
+          </div>
+          <div class="sold-field">
+            <label>类型</label>
+            <select class="track-content-input sold-type-input" v-model="row.type">
+              <option value="">请选择</option>
+              <option value="全清仓">全清仓</option>
+              <option value="部分卖">部分卖</option>
+            </select>
+          </div>
         </div>
       </div>
     </div>
     <button type="button" class="add-track-row-btn" @click="addSoldRow" style="margin-top:10px">+ 添加一条</button>
   </EditModal>
 
-  <EditModal v-model="trackEditModalActive" :title="'编辑追踪记录 - ' + trackEditStockName" @save="saveTrackEditModal">
+  <EditModal v-model="trackEditModalActive" :title="'📌 编辑追踪记录 - ' + trackEditStockName" @save="saveTrackEditModal">
     <div class="track-edit-list">
       <div v-for="(row, idx) in editingTrackRows" :key="idx" class="track-edit-row">
         <div class="track-edit-date">
@@ -285,7 +307,6 @@ import { _on, _off } from '../stores/eventBus.js';
 import { useUiStore } from '../stores/uiStore.js';
 import { getPreviousTradingDay, getNextTradingDay, isTradingDay, getMostRecentTradingDay } from '../logic/trading-day-helpers.js';
 import EditModal from '../components/EditModal.vue';
-import TrendChart from '../components/TrendChart.vue';
 
 const uiStore = useUiStore();
 const loading = ref(true);
@@ -322,26 +343,10 @@ const data = ref({ currentDate: '', list: [] });
 const expandedIds = shallowRef(new Set());
 const collapsedIds = shallowRef(new Set());
 const expandedActionsId = ref(null);
-const trendCache = ref({});
 let lastDate = null;
 
 function allTodayData() {
   return getStocksData()[getCurrentDate()] || [];
-}
-
-function getStockCloseTrend(stockName, count, dayStockMaps) {
-  const points = [];
-  const name = stockName.trim();
-  let d = getCurrentDate();
-  for (let i = 0; i < count; i++) {
-    if (!d) break;
-    const map = dayStockMaps[d];
-    const stock = map ? map.get(name) : null;
-    const closeVal = stock && stock.close !== undefined && stock.close !== '' ? parseFloat(stock.close) : null;
-    points.push({ date: d, value: closeVal });
-    d = getPreviousTradingDay(d);
-  }
-  return points.reverse();
 }
 
 function getPriority(stock) {
@@ -397,22 +402,6 @@ function refresh() {
   const list = allTodayData();
   data.value = { currentDate: newDate, list };
   updateStockStats(list);
-  const stocksData = getStocksData();
-  const dayStockMaps = {};
-  let d = newDate;
-  for (let i = 0; i < 5; i++) {
-    if (!d) break;
-    const dayStocks = stocksData[d] || [];
-    const map = new Map();
-    dayStocks.forEach(s => { if (s.name) map.set(s.name.trim(), s); });
-    dayStockMaps[d] = map;
-    d = getPreviousTradingDay(d);
-  }
-  const cache = {};
-  list.forEach(s => {
-    if (s.name) cache[s.id] = getStockCloseTrend(s.name, 5, dayStockMaps);
-  });
-  trendCache.value = cache;
   loading.value = false;
 }
 
@@ -636,11 +625,21 @@ const editFields = [
   { key: 'sfliangneng', label: '缩放量能', type: 'text' },
   { key: 'xgcaiti', label: '相关题材', type: 'text' },
   { key: 'remark', label: '备注', type: 'text' },
-  { key: 'bought', label: '已买(0/1)', type: 'number' },
-  { key: 'sold', label: '已卖(0/1)', type: 'number' },
-  { key: 'hold', label: '持有(0/1)', type: 'number' },
-  { key: 'watch', label: '观察(0/1)', type: 'number' },
-  { key: 'dragon', label: '龙头(0/1)', type: 'number' },
+  { key: 'bought', label: '已买', type: 'bool' },
+  { key: 'sold', label: '已卖', type: 'bool' },
+  { key: 'hold', label: '持有', type: 'bool' },
+  { key: 'watch', label: '观察', type: 'bool' },
+  { key: 'dragon', label: '龙头', type: 'bool' },
+  { key: 'bomb', label: '炸板', type: 'bool' },
+  { key: 'sellHigh', label: '冲高卖', type: 'bool' },
+  { key: 'sell1120', label: '11:20卖', type: 'bool' },
+  { key: 'sell1450', label: '14:50卖', type: 'bool' },
+  { key: 'topicDirection', label: '题材方向', type: 'bool' },
+  { key: 'recentMulti', label: '最近多板', type: 'bool' },
+  { key: 'sectorEtf', label: '板块ETF', type: 'bool' },
+  { key: 'nishi', label: '逆势', type: 'bool' },
+  { key: 'shunshi', label: '顺势', type: 'bool' },
+  { key: 'nextDay', label: '次日预测', type: 'text' },
 ];
 
 function openEditModal(id) {
@@ -651,7 +650,7 @@ function openEditModal(id) {
   Object.keys(editForm).forEach(k => delete editForm[k]);
   editFields.forEach(f => {
     const val = stock[f.key] !== undefined ? stock[f.key] : '';
-    if (['bought','sold','hold','watch','dragon'].includes(f.key)) {
+    if (['bought','sold','hold','watch','dragon','bomb','sellHigh','sell1120','sell1450','topicDirection','recentMulti','sectorEtf','nishi','shunshi'].includes(f.key)) {
       editForm[f.key] = val === true || val === 1 || val === '1';
     } else {
       editForm[f.key] = val;
@@ -666,7 +665,7 @@ function saveEditModal() {
   const stock = list.find(s => s.id === editingStockId);
   if (!stock) { editModalActive.value = false; return; }
   Object.keys(editForm).forEach(k => {
-    if (['bought','sold','hold','watch','dragon'].includes(k)) {
+    if (['bought','sold','hold','watch','dragon','bomb','sellHigh','sell1120','sell1450','topicDirection','recentMulti','sectorEtf','nishi','shunshi'].includes(k)) {
       stock[k] = !!editForm[k];
     } else {
       stock[k] = editForm[k];
@@ -965,10 +964,62 @@ defineExpose({
 .loading-title {
   font-size: 14px;
 }
-.stock-trend {
-  padding: 8px 15px;
-  background: linear-gradient(90deg, rgba(245, 158, 11, 0.04), transparent);
+.edit-tags-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.edit-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
   border-radius: 8px;
-  margin: 4px 0;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  font-size: 13px;
+  color: #374151;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.edit-tag input { width: 16px; height: 16px; }
+.tag-amber { color: #d97706; font-weight: 600; }
+.tag-red { color: #dc2626; font-weight: 600; }
+.tag-amber-bg { background: #fef3c7; border-color: #fcd34d; color: #d97706; font-weight: 600; }
+.tag-blue-bg { background: #dbeafe; border-color: #93c5fd; color: #2563eb; font-weight: 600; }
+.tag-pink-bg { background: #fce7f3; border-color: #f9a8d4; color: #db2777; font-weight: 600; }
+.tag-purple-bg { background: #faf5ff; border-color: #e9d5ff; color: #9333ea; font-weight: 600; }
+.tag-green-bg { background: #f0fdf4; border-color: #bbf7d0; color: #16a34a; font-weight: 600; }
+.tag-red-bg { background: #fef2f2; border-color: #fecaca; color: #dc2626; font-weight: 600; }
+.tag-emerald-bg { background: #ecfdf5; border-color: #a7f3d0; color: #059669; font-weight: 600; }
+.edit-nextday {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.edit-nextday-label { font-size: 13px; color: #374151; font-weight: 600; }
+.nextday-pill {
+  padding: 6px 12px;
+  border-radius: 20px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  font-size: 13px;
+  color: #64748b;
+  cursor: pointer;
+}
+.nextday-pill.active {
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  color: #fff;
+  border-color: transparent;
+  font-weight: 600;
+}
+.track-simple-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: #3b82f6;
+  margin-bottom: 6px;
 }
 </style>

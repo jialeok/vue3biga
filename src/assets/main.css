@@ -4688,9 +4688,10 @@
             overflow-y: hidden !important;
         }
 
-        /* 卖出记录编辑模态框 - 横向滚动 */
+        /* 卖出记录编辑模态框 - 纵向滚动（移动端卡片布局） */
         #soldEditModal .modal-content {
-            overflow-x: auto;
+            overflow-x: hidden;
+            overflow-y: auto;
         }
 
         .modal-content-rank {
@@ -4735,19 +4736,49 @@
             flex: 1;
         }
 
-        .sold-edit-row .track-edit-date {
-            width: 130px;
+        .sold-edit-row {
+            flex-direction: column;
+            align-items: stretch;
+            background: #fff;
+            border: 1px solid #fecaca;
+            border-radius: 12px;
+            padding: 10px 12px;
+            gap: 10px;
+            box-shadow: 0 1px 3px rgba(220, 38, 38, 0.06);
         }
 
-        .sold-edit-row .track-edit-content {
-            flex: none;
-            width: 70px;
+        .sold-row-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
         }
 
-        .sold-edit-row .track-edit-delete {
-            flex-shrink: 0;
-            width: 32px;
-            height: 32px;
+        .sold-row-index {
+            font-size: 12px;
+            font-weight: 600;
+            color: #dc2626;
+        }
+
+        .sold-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .sold-field {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .sold-field > label {
+            font-size: 11px;
+            color: #94a3b8;
+        }
+
+        .sold-field .track-content-input,
+        .sold-field .track-date-input {
+            min-height: 38px;
         }
 
         .track-edit-delete {
