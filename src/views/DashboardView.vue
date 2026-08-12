@@ -12,7 +12,6 @@
       </div>
       <button class="nav-btn" @click="goToNextTradingDay">›</button>
       <button class="today-btn" @click="goToday">今天</button>
-      <button class="holiday-toggle-btn" :class="{ 'is-holiday': isCurrentHoliday }" @click="toggleCurrentHoliday">{{ isCurrentHoliday ? '取消假期' : '设为假期' }}</button>
     </div>
 
     <!-- 统计导航栏（模式看板上方） -->
@@ -123,23 +122,6 @@ const weekdayText = computed(() => {
 
 // [FEATURE] 假期双向切换：holidayTick 用于在非响应式的 allData.holidays/tradingDays 变更后强制重算
 const holidayTick = ref(0);
-
-// 当前查看日期的实际假期状态（有效状态 = 非交易日即假期）
-const isCurrentHoliday = computed(() => {
-  void holidayTick.value;
-  const d = uiStore.currentDate || getCurrentDate();
-  return d ? !isTradingDay(d) : false;
-});
-
-function toggleCurrentHoliday() {
-  const d = uiStore.currentDate || getCurrentDate();
-  if (!d) return;
-  const result = toggleHoliday(d);
-  if (!result) return;
-  saveData();
-  holidayTick.value++;
-  showToast(result === 'holiday' ? '已设为假期' : '已取消假期（设为交易日）');
-}
 
 // 日期选择器内选中日期的假期切换按钮文案（描述"将要执行的动作"）
 const pickerHolidayLabel = computed(() => {
