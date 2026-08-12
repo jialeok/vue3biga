@@ -18,7 +18,7 @@
           <span class="col-time915">9:15</span>
           <span class="col-time920">9:20</span>
           <span class="col-time930">9:25</span>
-          <span class="col-change">涨幅</span>
+          <span class="col-change">增减</span>
           <span class="col-close">收盘</span>
         </div>
         <div
@@ -32,7 +32,7 @@
           <span class="col-time915">{{ row.time915 || '-' }}</span>
           <span class="col-time920">{{ row.time920 || '-' }}</span>
           <span class="col-time930">{{ row.time930 || '-' }}</span>
-          <span class="col-change" :class="changeClass(row.change)">{{ formatPercent(row.change) }}</span>
+          <span class="col-change" :class="changeTagClass(row.change)">{{ row.change || '-' }}</span>
           <span class="col-close" :class="changeClass(row.close)">{{ formatClose(row.close, row.name) }}</span>
         </div>
       </div>
@@ -54,7 +54,7 @@
             <input v-model="row.time915" placeholder="9:15" @input="onInputChange(row)" />
             <input v-model="row.time920" placeholder="9:20" @input="onInputChange(row)" />
             <input v-model="row.time930" placeholder="9:25" @input="onInputChange(row)" />
-            <input v-model="row.change" placeholder="涨幅" @input="onInputChange(row)" />
+            <input :value="row.change" placeholder="增减" readonly class="bidding-row-change" :class="changeTagClass(row.change)" />
             <input v-model="row.close" placeholder="收盘" @input="onInputChange(row)" />
           </div>
         </div>
@@ -124,6 +124,26 @@ function changeClass(v) {
   return n > 0 ? 'up' : (n < 0 ? 'down' : '');
 }
 
+// 增减列样式（迁移自老版 boards-bidding.js:614-621）：增=红加粗、减=绿、平=深灰加粗
+function changeTagClass(v) {
+  if (v === '增') return 'tag-up';
+  if (v === '减') return 'tag-down';
+  if (v === '平') return 'tag-flat';
+  return '';
+}
+
+// 增减逻辑（迁移自老版 boards-bidding.js:1141-1156 / 当前 onInputChange）：9:25 与 9:20 比较
+function computeChange(time920, time930) {
+  const t920 = parseFloat(time920);
+  const t930 = parseFloat(time930);
+  if (time920 && time920.toString().trim() && time930 && time930.toString().trim() && !isNaN(t920) && !isNaN(t930)) {
+    if (t930 > t920) return '增';
+    if (t930 < t920) return '减';
+    return '平';
+  }
+  return '';
+}
+
 function formatPercent(v) {
   if (!v && v !== 0) return '-';
   const n = parseFloat(v);
@@ -164,7 +184,12 @@ function render() {
 
 function openEdit() {
   const data = getTodayBidding();
-  editRows.value = data ? data.map(r => ({ ...r })) : [];
+  editRows.value = data ? data.map(r => {
+    const copied = { ...r };
+    // 打开时按 9:25/9:20 重算增减（对齐老版渲染期重算逻辑）
+    copied.change = computeChange(copied.time920, copied.time930);
+    return copied;
+  }) : [];
   saving.value = false;
   modalActive.value = true;
 }
@@ -174,15 +199,7 @@ function closeModal() { modalActive.value = false; }
 function onInputChange(row) {
   row._touched = true;
 
-  const time920Val = parseFloat(row.time920);
-  const time930Val = parseFloat(row.time930);
-  if (row.time920 && row.time920.toString().trim() && row.time930 && row.time930.toString().trim() && !isNaN(time920Val) && !isNaN(time930Val)) {
-    if (time930Val > time920Val) row.change = '增';
-    else if (time930Val < time920Val) row.change = '减';
-    else row.change = '平';
-  } else {
-    row.change = '';
-  }
+  row.change = computeChange(row.time920, row.time930);
 
   syncBiddingCloseToEtf(row);
 
@@ -517,6 +534,12 @@ defineExpose({ render, openEdit, closeModal, save, addRow, removeRow, clearData,
 }
 .bidding-row .up { color: #dc2626; }
 .bidding-row .down { color: #059669; }
+/* 增减列样式（迁移自老版 boards-bidding.js:614-621）：增=红加粗、减=绿、平=深灰加粗；
+   同时服务于前台展示列(.col-change)与后台只读输入框(.bidding-row-change) */
+.tag-up { color: #ef4444; font-weight: bold; font-size: 11px; }
+.tag-down { color: #059669; font-size: 12px; }
+.tag-flat { color: #1f2937; font-weight: 600; }
+.bidding-row-change { background: #f8fafc; font-weight: 600; cursor: default; }
 .bidding-edit-row {
   margin-bottom: 8px;
   padding: 8px;
