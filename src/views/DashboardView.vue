@@ -14,29 +14,32 @@
       <button class="today-btn" @click="goToday">今天</button>
     </div>
 
-    <PatternBoard />
-
-    <!-- 统计导航栏（模式看板下方） -->
+    <!-- 统计导航栏（模式看板上方） -->
     <div class="stats-nav-bar">
       <button class="stats-nav-btn weekly" @click="showWeekly">本周统计</button>
-      <button class="stats-nav-btn" @click="showLastWeek">上周统计</button>
       <button class="stats-nav-btn monthly" @click="showMonthly">本月统计</button>
       <button class="stats-nav-btn back-current" @click="goToday">返回当前</button>
     </div>
 
-    <BiddingBoard />
-    <JiwangBoard />
-    <StatsBoard />
-    <StarStatsBoard />
-    <EmotionBoard />
-    <TagTitlesBoard />
-    <AuctionBoard :data-source="auctionGroup" @switch-group="onSwitchGroup" />
-    <DuibanBoard />
-    <EtfBoard />
-    <RankBoard />
-    <HotspotBoard />
-    <WeekendStatsBoard :visible="showWeekendStats" :is-monthly="isMonthlyStats" />
-    <HomeStocksView ref="stocksRef" />
+    <PatternBoard />
+
+    <template v-if="!statsMode">
+      <BiddingBoard />
+      <JiwangBoard />
+      <StatsBoard />
+      <StarStatsBoard />
+      <EmotionBoard />
+      <TagTitlesBoard />
+      <AuctionBoard :data-source="auctionGroup" @switch-group="onSwitchGroup" />
+      <DuibanBoard />
+      <EtfBoard />
+      <RankBoard />
+      <HotspotBoard />
+      <HomeStocksView ref="stocksRef" />
+    </template>
+
+    <WeekendStatsBoard v-if="statsMode === 'weekly'" />
+    <MonthlyStatsBoard v-if="statsMode === 'monthly'" />
 
     <!-- 底部操作栏 -->
     <div class="bottom-bar">
@@ -75,7 +78,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { getCurrentDate, setCurrentDate } from '../logic/app-core.js';
 import { getPreviousTradingDay, getNextTradingDay, getMostRecentTradingDay } from '../logic/trading-day-helpers.js';
 import { _emit } from '../stores/eventBus.js';
@@ -95,16 +98,20 @@ import StatsBoard from './StatsBoard.vue';
 import StarStatsBoard from './StarStatsBoard.vue';
 import TagTitlesBoard from './TagTitlesBoard.vue';
 import WeekendStatsBoard from './WeekendStatsBoard.vue';
+import MonthlyStatsBoard from './MonthlyStatsBoard.vue';
 import { useScoreCalculation } from '../composables/useScoreCalculation.js';
 
-const { showWeekly: _showWeekly, showLastWeek: _showLastWeek, showMonthly: _showMonthly } = useScoreCalculation();
+const { showWeekly: _showWeekly, showMonthly: _showMonthly } = useScoreCalculation();
 
-const showWeekendStats = ref(false);
-const isMonthlyStats = ref(false);
+const statsMode = ref(null);
 
-function showWeekly() { isMonthlyStats.value = false; showWeekendStats.value = true; _showWeekly(); }
-function showLastWeek() { isMonthlyStats.value = false; showWeekendStats.value = true; _showLastWeek(); }
-function showMonthly() { isMonthlyStats.value = true; showWeekendStats.value = true; _showMonthly(); }
+function showWeekly() { statsMode.value = 'weekly'; _showWeekly(); }
+function showMonthly() { statsMode.value = 'monthly'; _showMonthly(); }
+
+watch(statsMode, (mode) => {
+  if (mode) document.body.classList.add('weekend-mode');
+  else document.body.classList.remove('weekend-mode');
+});
 
 const stocksRef = ref(null);
 const uiStore = useUiStore();
@@ -146,7 +153,7 @@ function goToNextTradingDay() {
   if (next) { uiStore.setDate(next); setCurrentDate(next); emitAllRefresh(); }
 }
 function goToday() {
-  showWeekendStats.value = false;
+  statsMode.value = null;
   const today = getMostRecentTradingDay();
   if (today) { uiStore.setDate(today); setCurrentDate(today); emitAllRefresh(); }
 }

@@ -1027,7 +1027,7 @@
         }
 
         .duiban-content {
-            padding: 6px;
+            padding: 12px;
             font-size: 12px;
         }
 
@@ -1036,6 +1036,7 @@
             overflow-x: auto;
             overflow-y: hidden;
             -webkit-overflow-scrolling: touch;
+            padding-right: 8px;
         }
 
         .duiban-scroll-container::-webkit-scrollbar {
@@ -1055,9 +1056,9 @@
         .duiban-header-row {
             display: flex;
             align-items: center;
-            padding: 6px 2px;
+            padding: 10px 4px;
             border-bottom: 1px solid #f1f5f9;
-            margin-bottom: 4px;
+            margin-bottom: 8px;
         }
 
         .duiban-header-item {
@@ -1068,23 +1069,22 @@
             overflow: hidden;
             text-overflow: ellipsis;
             text-align: center;
-            padding: 0 2px;
-            min-width: 0;
+            padding: 0 4px;
         }
 
         .duiban-header-dieZhangbi { flex: 1; text-align: center; }
         .duiban-header-jingtu { flex: 1; text-align: center; }
-        .duiban-header-shuliang { flex: 1.2; text-align: left; }
+        .duiban-header-shuliang { flex: 1; text-align: center; }
         .duiban-header-tushi { flex: 1; text-align: center; }
 
         .duiban-row {
             display: flex;
             align-items: center;
-            padding: 6px 2px;
+            padding: 8px 4px;
             border-bottom: 1px solid #f8fafc;
             font-size: 12px;
             cursor: pointer;
-
+            min-width: max-content;
         }
 
         .duiban-row:hover {
@@ -1092,16 +1092,15 @@
         }
 
         .duiban-item {
-            padding: 0 2px;
+            padding: 0 4px;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            min-width: 0;
         }
 
         .duiban-item-dieZhangbi { flex: 1; text-align: center; font-weight: 600; color: #1f2937; }
         .duiban-item-jingtu { flex: 1; text-align: center; }
-        .duiban-item-shuliang { flex: 1.2; text-align: left; font-weight: 600; color: #dc2626; }
+        .duiban-item-shuliang { flex: 1; text-align: center; font-weight: 600; color: #dc2626; }
         .duiban-item-tushi { flex: 1; text-align: center; }
 
         .duiban-empty {
@@ -3542,6 +3541,15 @@
         }
 
 
+        /* 周末统计看板 */
+        .weekend-stats-board {
+            margin: 0 15px 10px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 16px;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+            overflow: hidden;
+        }
+
         /* 本月统计看板 */
         .monthly-stats-board {
             margin: 0 15px 10px;
@@ -3549,13 +3557,8 @@
             border-radius: 16px;
             box-shadow: 0 4px 15px rgba(245, 87, 108, 0.3);
             overflow: hidden;
-            display: none;
             position: relative;
             z-index: 100;
-        }
-
-        .monthly-stats-board.active {
-            display: block !important;
         }
 
         /* 周末时隐藏交易日元素 */
@@ -5731,99 +5734,3 @@
             box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
         }
 
-        /* 周末统计看板 */
-        .weekend-stats-board {
-            margin: 0 15px 10px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-radius: 16px;
-            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
-            overflow: hidden;
-        }
-        .weekend-header {
-            padding: 16px 20px;
-            text-align: center;
-            color: white;
-        }
-        .weekend-title {
-            font-size: 18px;
-            font-weight: 700;
-        }
-        .weekend-subtitle {
-            font-size: 12px;
-            opacity: 0.8;
-            margin-top: 4px;
-        }
-        .weekend-content {
-            padding: 0 16px 16px;
-        }
-        .weekend-section {
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 12px;
-            margin-bottom: 10px;
-            padding: 14px;
-        }
-        .weekend-section-title {
-            font-size: 14px;
-            font-weight: 600;
-            color: #1f2937;
-            margin-bottom: 10px;
-        }
-        .weekend-profit-section {
-            display: flex;
-            justify-content: space-around;
-            gap: 8px;
-        }
-        .weekend-profit-item {
-            text-align: center;
-            flex: 1;
-        }
-        .weekend-profit-label {
-            font-size: 12px;
-            color: #64748b;
-            margin-bottom: 4px;
-        }
-        .weekend-profit-value {
-            font-size: 18px;
-            font-weight: 700;
-        }
-        .weekend-profit-item.profit .weekend-profit-value { color: #dc2626; }
-        .weekend-profit-item.loss .weekend-profit-value { color: #16a34a; }
-        .weekend-profit-item.balance .weekend-profit-value { color: #2563eb; }
-        .weekend-stat-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 8px;
-        }
-        .weekend-stat-item {
-            text-align: center;
-            background: #f8fafc;
-            border-radius: 8px;
-            padding: 8px 4px;
-        }
-        .weekend-stat-label {
-            font-size: 10px;
-            color: #64748b;
-            margin-bottom: 2px;
-        }
-        .weekend-stat-value {
-            font-size: 14px;
-            font-weight: 700;
-            color: #1f2937;
-        }
-        .weekend-stock-list {
-            font-size: 13px;
-            color: #374151;
-        }
-        .weekend-stock-item {
-            padding: 6px 0;
-            border-bottom: 1px solid #f1f5f9;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .weekend-stock-item:last-child {
-            border-bottom: none;
-        }
-        .weekend-stock-name {
-            font-weight: 500;
-        }
