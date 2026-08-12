@@ -41,6 +41,7 @@ import { pullDailyHighlights } from '../data/daily-highlights.js';
 import { _emit } from '../stores/eventBus.js';
 import { loadCloudTopics, buildTopicCache, invalidateTopicCache } from '../data/stock-topics.js';
 import { loadCloudStockCodeMap } from '../data/stock-code-map.js';
+import { pullHotStocksHighlights, migrateHotStocksShadowToMetrics, loadHotStocksFromCloud, migrateHotStocksToTrendsTable, migrateHotTrendsToMarketMetrics, loadHotTrendsFromCloud } from '../data/hot-stocks.js';
 import { clearPushDebounceTimer } from '../logic/session-helpers.js';
 import authStore from '../stores/authStore.js';
 
@@ -116,6 +117,17 @@ async function checkPassword() {
   pullDailyHighlights().then(() => _emit('auction-refresh')).catch((e) => {
     _dbgLog('[AUCTION-ERR] daily_highlights 加载失败 ' + (e && e.message || e));
   });
+  // 热门股票共享影子记录：题材库/趋势图/竞-昨高光 与早盘竞价按股票名共享，必须加载，
+  // 否则早盘竞价第二页题材与题材星标签统计看板会空（热门股票 tab UI 已移除，但数据仍在共享）。
+  pullHotStocksHighlights().catch((e) => console.warn('hot_stocks_highlights 加载失败:', e.message));
+  migrateHotStocksShadowToMetrics()
+    .then(() => loadHotStocksFromCloud())
+    .then(() => { invalidateTopicCache(); buildTopicCache(); _emit('auction-refresh'); })
+    .catch((e) => console.warn('hot_stocks 加载失败:', e.message));
+  migrateHotStocksToTrendsTable()
+    .then(() => migrateHotTrendsToMarketMetrics())
+    .then(() => loadHotTrendsFromCloud())
+    .catch((e) => console.warn('hot trends 加载失败:', e.message));
   loadCloudTopics().then(() => {
     invalidateTopicCache(); buildTopicCache(); _emit('auction-refresh');
   }).catch(() => {});
