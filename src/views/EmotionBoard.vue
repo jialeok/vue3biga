@@ -5,7 +5,8 @@
       <span class="emotion-summary" id="emotionSummary">{{ summaryText }}</span>
       <span class="emotion-toggle-btn" id="emotionToggleBtn">{{ expanded ? '▲' : '▼' }}</span>
     </div>
-    <div id="emotionContent" class="emotion-content" v-show="expanded">
+      <div id="emotionContent" class="emotion-content" v-show="expanded">
+      <div v-if="fallbackDate" class="emotion-fallback-hint">数据未更新至 {{ uiStore.currentDate }}，显示最近可用：{{ fallbackDate }}</div>
       <div id="emotionVolumeLine" class="emotion-volume-line">
         <template v-for="(part, idx) in volumeParts" :key="idx">
           <span>
@@ -43,7 +44,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import TrendChart from '../components/TrendChart.vue';
 import { useUiStore } from '../stores/uiStore.js';
 import { getSupabase } from '../data/supabase-client.js';
@@ -60,6 +61,12 @@ let realtimeChannel = null;
 const rowConfigs = computed(() => EMOTION_ROW_CONFIG);
 const metrics = computed(() => (data.value && data.value.metrics) || {});
 const fiveDays = computed(() => (data.value && data.value.five_days) || []);
+// 当展示的数据日期与当前选择日期不一致（回退到最近可用），给出提示
+const fallbackDate = computed(() => {
+  if (!data.value || !data.value.date) return null;
+  const cd = uiStore.currentDate;
+  return (data.value.date !== cd) ? data.value.date : null;
+});
 
 const summaryText = computed(() => {
   const m = metrics.value;
@@ -176,6 +183,18 @@ async function loadEmotionData(date) {
       setEmotionDataCache({ date: date, data: rows[0] });
       return rows[0];
     }
+    // [FALLBACK] 当前日期暂无数据（如当日 worker 尚未产出），回退到最近一个有数据的日期，
+    // 避免情绪看板在大清早/数据未就绪时整片空白（emotion_data 按天产出，当天行要等约北京时间16:00）
+    const { data: latest, error: e2 } = await sb.from('emotion_data')
+      .select('date, metrics, five_days, updated_at')
+      .order('date', { ascending: false })
+      .limit(1);
+    if (e2) throw e2;
+    if (latest && latest.length > 0) {
+      const fb = latest[0];
+      setEmotionDataCache({ date: date, data: fb });
+      return fb;
+    }
   } catch (e) {
     console.warn('读取 emotion_data 失败:', e.message);
   }
@@ -236,6 +255,11 @@ function startRealtime() {
 onMounted(() => {
   loadAndRender();
   startRealtime();
+});
+// 切换日期时重新拉取（之前仅在 mounted/expand 时加载，日期选择器切换后不会刷新）
+watch(() => uiStore.currentDate, () => {
+  if (expanded.value) loadAndRender();
+  else { setEmotionDataCache(null); }
 });
 onUnmounted(() => {
   if (realtimeChannel && getSupabase) {
