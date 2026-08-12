@@ -125,6 +125,7 @@ function onLoginSuccess() {
     _emit('stocks-refresh');
     _emit('bidding-refresh');
     _emit('board-refresh');
+    _emit('jiwang-refresh');
   }).catch(e => _dbgLog('[AUCTION-ERR] background pullFromCloud ' + (e && e.message || e)));
 }
 

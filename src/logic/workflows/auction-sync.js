@@ -662,6 +662,9 @@ import { syncStockTopicsFromAuction } from '../auction-stock-sync.js';
                         if (!pendingDates.has(d)) state._jiwangMemCache[d] = tableJiwang[d];
                     });
                     if (state.allData) state.allData.jiwang = state._jiwangMemCache;
+                    // 记忘看板是快照式渲染（display 为一次性 ref，非 reactive），必须显式通知刷新，
+                    // 否则初始云端拉取虽已灌入 _jiwangMemCache，前台却一直空白直到用户手动保存。
+                    _emit('jiwang-refresh');
                     const _afterMerge = JSON.stringify(state._jiwangMemCache[state.currentDate] || null).slice(0, 200);
                     _dbgLog('pullFromCloud: jiwang 合并完成, state.currentDate=' + state.currentDate +
                         ', 云端表共 ' + Object.keys(tableJiwang).length + ' 天, 云端是否含当前日期=' + tableJiwang.hasOwnProperty(state.currentDate) +

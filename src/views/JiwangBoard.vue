@@ -165,9 +165,10 @@
 </template>
 
 <script setup>
-import { ref, computed, reactive } from 'vue';
+import { ref, computed, reactive, onMounted, onUnmounted, watch } from 'vue';
 import { useUiStore } from '../stores/uiStore.js';
 import { _dbgLog } from '../data/debug-log.js';
+import { _on, _off } from '../stores/eventBus.js';
 import { saveData, getTodayJiwang, markJiwangDirty } from '../logic/app-core.js';
 import { getBiddingData, getJiwangData } from '../data/supabase-client.js';
 import { pushJiwangNow } from '../data/jiwang-data.js';
@@ -284,6 +285,15 @@ function render() {
   display.value = d;
   renderCircleStats();
 }
+
+// 记忘看板显示依赖一次性快照（display 为 ref，非 reactive），必须显式触发刷新：
+// 1) 挂载时先渲染一次（此时云端可能尚未拉回，渲染后会由下方 jiwang-refresh 再次刷新）
+// 2) 监听云端拉取 / Realtime 完成后的 jiwang-refresh 事件重新渲染
+// 3) 切换日期时重新读取当日数据
+onMounted(() => { render(); });
+_on('jiwang-refresh', render);
+watch(() => uiStore.currentDate, () => render());
+onUnmounted(() => { _off('jiwang-refresh', render); });
 
 function openEdit() {
   const d = getTodayJiwang() || {};
