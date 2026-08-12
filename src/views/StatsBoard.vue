@@ -73,12 +73,13 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue';
+import { ref, reactive, onMounted, onUnmounted, watch } from 'vue';
 import HeaderStats from '../components/HeaderStats.vue';
 import EditModal from '../components/EditModal.vue';
 import { useUiStore } from '../stores/uiStore.js';
 import { getJiwangData } from '../data/supabase-client.js';
 import { saveData } from '../logic/app-core.js';
+import { _on, _off } from '../stores/eventBus.js';
 
 const uiStore = useUiStore();
 
@@ -172,7 +173,13 @@ function saveComment() {
   commentModalActive.value = false;
 }
 
-onMounted(render);
+// 1) 挂载时先渲染一次（此时云端可能尚未拉回，渲染后会由下方 jiwang-refresh 再次刷新）
+// 2) 监听 currentDate 切换（DashboardView 内 StatsBoard 常驻挂载，切日期不会重新挂载，必须主动监听）
+// 3) 监听云端拉取 / Realtime 完成后的 jiwang-refresh 事件重新渲染
+onMounted(() => { render(); });
+_on('jiwang-refresh', render);
+watch(() => uiStore.currentDate, () => render());
+onUnmounted(() => { _off('jiwang-refresh', render); });
 
 defineExpose({ render });
 </script>
