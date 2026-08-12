@@ -38,12 +38,17 @@
       </div>
     </div>
 
-    <EditModal v-model="modalActive" title="编辑竞价变化" :show-clear="true" save-text="保存" @save="save" @clear="clearData">
+    <EditModal v-model="modalActive" title="编辑竞价变化" :show-clear="true" save-text="保存" :saving="saving" clear-class="btn-clear-gray" @save="save" @clear="clearData">
+      <div class="bidding-edit-desc">记录竞价变化数据</div>
+      <div class="bidding-fetch-row">
+        <button type="button" class="btn-fetch-snapshot" @click="fetchSnapshot" :disabled="fetchLoading">{{ fetchLoading ? '⏳ 抓取中...' : '📡 抓取当前时段数据' }}</button>
+        <span v-if="fetchStatus" class="bidding-fetch-status">{{ fetchStatus }}</span>
+      </div>
       <div class="bidding-edit-rows">
         <div v-for="(row, idx) in editRows" :key="idx" class="bidding-edit-row">
           <div class="bidding-edit-row-top">
             <input v-model="row.name" placeholder="名称" @input="onInputChange(row)" class="bidding-edit-name" />
-            <button class="remove-row-btn" @click="removeRow(idx)">×</button>
+            <button class="remove-row-btn" @click="removeRow(idx)">删</button>
           </div>
           <div class="bidding-edit-row-bottom">
             <input v-model="row.time915" placeholder="9:15" @input="onInputChange(row)" />
@@ -54,11 +59,7 @@
           </div>
         </div>
       </div>
-      <div class="bidding-modal-extra-actions">
-        <button class="btn-add-row" @click="addRow">+ 添加行</button>
-        <button class="btn-fetch-snapshot" @click="fetchSnapshot" :disabled="fetchLoading">{{ fetchLoading ? '拉取中...' : '拉取快照' }}</button>
-      </div>
-      <div v-if="fetchStatus" class="bidding-fetch-status">{{ fetchStatus }}</div>
+      <button type="button" class="btn-add-row" @click="addRow">+ 添加新行</button>
     </EditModal>
 
     <Teleport to="body">
@@ -76,7 +77,7 @@
           <div class="clear-confirm-title">确定要清除所有数据吗？</div>
           <div class="clear-confirm-desc">将保留第一列（要盯项目）的内容，清除其他所有列的数据。</div>
           <div class="clear-confirm-actions">
-            <button class="btn-confirm-clear" @click="confirmClearData">确定清除</button>
+            <button class="btn-confirm-clear" @click="confirmClearData" :disabled="clearing">{{ clearing ? '清除中...' : '确定清除' }}</button>
             <button class="btn-cancel-clear" @click="clearConfirmActive = false">取消</button>
           </div>
         </div>
@@ -106,6 +107,8 @@ const editRows = ref([]);
 const duibanPopup = ref(null);
 const fetchStatus = ref('');
 const fetchLoading = ref(false);
+const saving = ref(false);
+const clearing = ref(false);
 const clearConfirmActive = ref(false);
 const expanded = ref(false);
 
@@ -152,6 +155,7 @@ function render() {
 function openEdit() {
   const data = getTodayBidding();
   editRows.value = data ? data.map(r => ({ ...r })) : [];
+  saving.value = false;
   modalActive.value = true;
 }
 
@@ -203,6 +207,7 @@ function removeRow(idx) {
 }
 
 async function save() {
+  saving.value = true;
   const _dirtyDates = getBiddingDirtyDates();
   if (_dirtyDates) _dirtyDates.add(uiStore.currentDate);
 
@@ -313,6 +318,7 @@ async function save() {
     cloudErr = e;
     console.warn('saveBidding 云端同步失败:', e);
   } finally {
+    saving.value = false;
     modalActive.value = false;
     if (cloudErr) {
       const detail = (cloudErr && (cloudErr.message || cloudErr.details || cloudErr.hint || cloudErr.code)) || String(cloudErr);
@@ -329,12 +335,14 @@ function clearData() {
   clearConfirmActive.value = true;
 }
 
-function confirmClearData() {
+async function confirmClearData() {
+  clearing.value = true;
   clearConfirmActive.value = false;
 
   let biddingData = getTodayBidding();
   if (!biddingData || biddingData.length === 0) {
     showToast('没有数据需要清除');
+    clearing.value = false;
     return;
   }
 
@@ -358,10 +366,14 @@ function confirmClearData() {
   getBiddingData()[uiStore.currentDate] = biddingData;
   saveData();
 
-  pushBiddingToCloud(uiStore.currentDate).catch(function(e) {
+  try {
+    await pushBiddingToCloud(uiStore.currentDate);
+  } catch (e) {
     _dbgLog('[BIDDING-CLEAR] pushBiddingToCloud 失败: ' + (e && e.message));
     showWarningToast('⚠️ 云端清除失败，旧数据可能仍在：' + (e && e.message), 8000);
-  });
+  } finally {
+    clearing.value = false;
+  }
 
   const jiwangData = getJiwangData();
   if (!jiwangData[uiStore.currentDate]) jiwangData[uiStore.currentDate] = {};
@@ -529,25 +541,56 @@ defineExpose({ render, openEdit, closeModal, save, addRow, removeRow, clearData,
   min-width: 0;
 }
 .remove-row-btn {
-  border: none;
-  background: #fee2e2;
-  color: #dc2626;
-  border-radius: 6px;
+  border: 1px solid #ef4444;
+  background: #fef2f2;
+  color: #ef4444;
+  border-radius: 4px;
   cursor: pointer;
-  font-size: 16px;
-  width: 32px;
-  height: 32px;
+  font-size: 10px;
+  padding: 4px 6px;
+  height: 30px;
   flex-shrink: 0;
+  white-space: nowrap;
 }
-.bidding-modal-extra-actions {
-  display: flex;
-  gap: 8px;
+.bidding-edit-desc {
+  font-size: 12px;
+  color: #64748b;
   margin-bottom: 12px;
 }
-.btn-add-row { background: #e0f2fe; color: #0284c7; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
-.btn-fetch-snapshot { background: #fef3c7; color: #b45309; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.bidding-fetch-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.btn-add-row {
+  width: 100%;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  color: #64748b;
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  margin-top: 8px;
+}
+.btn-fetch-snapshot {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  color: #fff;
+  padding: 8px 14px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
 .btn-fetch-snapshot:disabled { opacity: 0.6; cursor: not-allowed; }
-.bidding-fetch-status { font-size: 12px; color: #6b7280; margin-top: 8px; }
+.bidding-fetch-status { font-size: 11px; color: #6b7280; }
 .duiban-history-popup-overlay { position: fixed; inset: 0; z-index: 9998; }
 .duiban-history-popup {
   position: fixed; z-index: 9999; background: #fff; border: 1px solid #d1d5db;

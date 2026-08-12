@@ -7,8 +7,11 @@
           <slot />
         </div>
         <div v-if="showActions" class="edit-modal-actions">
-          <button class="btn-save" @click="$emit('save')">{{ saveText }}</button>
-          <button v-if="showClear" class="btn-clear" @click="$emit('clear')">{{ clearText }}</button>
+          <button class="btn-save" :disabled="saving" @click="$emit('save')">
+            <span v-if="saving" class="btn-spinner"></span>
+            <span>{{ saving ? '保存中...' : saveText }}</span>
+          </button>
+          <button v-if="showClear" :class="clearClass" @click="$emit('clear')">{{ clearText }}</button>
           <button class="btn-cancel" @click="$emit('update:modelValue', false)">{{ cancelText }}</button>
         </div>
       </div>
@@ -24,7 +27,11 @@ defineProps({
   showClear: { type: Boolean, default: false },
   saveText: { type: String, default: '保存' },
   clearText: { type: String, default: '清空' },
-  cancelText: { type: String, default: '取消' }
+  cancelText: { type: String, default: '取消' },
+  // 保存中进度态：禁用保存按钮并显示转圈 + "保存中..."（对标旧版 setBtnLoading）
+  saving: { type: Boolean, default: false },
+  // 各看板可定制清除按钮样式（如竞价看板用灰色 btn-clear-gray，其它看板沿用默认红色）
+  clearClass: { type: String, default: 'btn-clear' }
 });
 
 defineEmits(['update:modelValue', 'save', 'clear']);
@@ -46,8 +53,23 @@ defineEmits(['update:modelValue', 'save', 'clear']);
 .edit-modal-actions button {
   flex: 1; padding: 12px 16px; border: none; border-radius: 12px;
   cursor: pointer; font-size: 15px; font-weight: 600;
+  display: inline-flex; align-items: center; justify-content: center;
 }
 .btn-save { background: linear-gradient(135deg, #3b82f6, #2563eb); color: #fff; }
+.btn-save:disabled { opacity: 0.7; cursor: not-allowed; }
 .btn-clear { background: #fee2e2; color: #dc2626; }
+.btn-clear-gray { background: #6b7280; color: #fff; }
 .btn-cancel { background: #e5e7eb; color: #374151; }
+
+/* 保存进度转圈（对标旧版 setBtnLoading 的「处理中...」文字提示，叠加视觉 spinner） */
+.btn-spinner {
+  display: inline-block;
+  width: 14px; height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.45);
+  border-top-color: #fff;
+  border-radius: 50%;
+  margin-right: 6px;
+  animation: btn-spin 0.7s linear infinite;
+}
+@keyframes btn-spin { to { transform: rotate(360deg); } }
 </style>
