@@ -469,7 +469,9 @@ defineExpose({ render, openEdit, closeModal, save, addRow, removeRow, clearData,
 <style>
 .bidding-row {
   display: grid;
-  grid-template-columns: 32% 17% 17% 17% 17% 17%;
+  /* 用 fr 替代 %：fr 会像旧版 table-layout:fixed 那样把 32/17/17/17/17/17 归一化到 100% 容器内，
+     避免 117% 溢出被 .bidding-content{overflow:hidden} 裁掉最右侧「收盘」列（之前右边被容器遮住的根因） */
+  grid-template-columns: 32fr 17fr 17fr 17fr 17fr 17fr;
   gap: 2px;
   padding: 6px 8px;
   font-size: 11px;
