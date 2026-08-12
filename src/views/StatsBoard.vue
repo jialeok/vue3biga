@@ -35,33 +35,6 @@
       </div>
 
       <!-- 第二行：三个复选框 -->
-      <div class="first-row-layout">
-        <div class="layout-item">
-          <div class="checkbox-row">
-            <div class="checkbox-label">最近多板</div>
-            <div class="checkbox-options">
-              <div class="checkbox-option" :class="recentMulti ? 'checked' : 'unchecked'" @click="toggleCheckbox('recentMulti')">{{ recentMulti ? '✓' : '×' }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="layout-item">
-          <div class="checkbox-row">
-            <div class="checkbox-label">题材方向</div>
-            <div class="checkbox-options">
-              <div class="checkbox-option" :class="topicDirection ? 'checked' : 'unchecked'" @click="toggleCheckbox('topicDirection')">{{ topicDirection ? '✓' : '×' }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="layout-item">
-          <div class="checkbox-row">
-            <div class="checkbox-label">板块ETF</div>
-            <div class="checkbox-options">
-              <div class="checkbox-option" :class="sectorEtf ? 'checked' : 'unchecked'" @click="toggleCheckbox('sectorEtf')">{{ sectorEtf ? '✓' : '×' }}</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
       <!-- 第三行：三个圆形统计卡片 -->
       <div class="second-row-layout">
         <HeaderStats :profit="profit" :gain="gain" :balance="balance" @edit="openCircleEdit" />
@@ -114,9 +87,6 @@ const gain = ref('');
 const balance = ref('');
 const marketStage = ref('');
 const position = ref('');
-const recentMulti = ref(false);
-const sectorEtf = ref(false);
-const topicDirection = ref(false);
 const comment = ref('');
 
 const circleModalActive = ref(false);
@@ -145,9 +115,6 @@ function render() {
   balance.value = s.balance ?? '';
   marketStage.value = s.marketStage || '';
   position.value = s.position || '';
-  recentMulti.value = s.recentMulti || false;
-  sectorEtf.value = s.sectorEtf || false;
-  topicDirection.value = s.topicDirection || false;
   comment.value = s.comment || '';
 }
 
@@ -164,16 +131,7 @@ function updatePosition() {
 }
 
 function toggleCheckbox(key) {
-  if (key === 'recentMulti') {
-    recentMulti.value = !recentMulti.value;
-    getStats().recentMulti = recentMulti.value;
-  } else if (key === 'sectorEtf') {
-    sectorEtf.value = !sectorEtf.value;
-    getStats().sectorEtf = sectorEtf.value;
-  } else if (key === 'topicDirection') {
-    topicDirection.value = !topicDirection.value;
-    getStats().topicDirection = topicDirection.value;
-  }
+  // 保留接口供扩展使用
   saveData();
 }
 

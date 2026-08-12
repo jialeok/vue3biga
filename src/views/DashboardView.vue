@@ -29,7 +29,6 @@
       <StatsBoard />
       <StarStatsBoard />
       <EmotionBoard />
-      <TagTitlesBoard />
       <AuctionBoard :data-source="auctionGroup" @switch-group="onSwitchGroup" />
       <DuibanBoard />
       <EtfBoard />
@@ -92,7 +91,6 @@ import JiwangBoard from './JiwangBoard.vue';
 import EmotionBoard from './EmotionBoard.vue';
 import StatsBoard from './StatsBoard.vue';
 import StarStatsBoard from './StarStatsBoard.vue';
-import TagTitlesBoard from './TagTitlesBoard.vue';
 import WeekendStatsBoard from './WeekendStatsBoard.vue';
 import MonthlyStatsBoard from './MonthlyStatsBoard.vue';
 import { useScoreCalculation } from '../composables/useScoreCalculation.js';

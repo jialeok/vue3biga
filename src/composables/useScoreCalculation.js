@@ -1,8 +1,7 @@
 ﻿
-import { autoCalculateRecentMultiScore as _calcRecentMultiScore, renderConsecutiveUp as _calcConsecutiveUp } from '../logic/tag-titles-helpers.js';
-import { autoCalculateSectorEtfScore, autoCalculateTopicDirectionScore, openMonthlySummaryModal, openWeekendReviewModal, openWeekendSummaryModal, showLastWeekStats, showMonthlyStats, showWeeklyStats } from '../logic/ui-bridge.js';
+import { renderConsecutiveUp as _calcConsecutiveUp } from '../logic/tag-titles-helpers.js';
+import { openMonthlySummaryModal, openWeekendReviewModal, openWeekendSummaryModal, showLastWeekStats, showMonthlyStats, showWeeklyStats } from '../logic/ui-bridge.js';
 import { ref } from 'vue';
-import { getScoreSettings, checkHasFumianTopic } from '../logic/score-helpers.js';
 import { getTodayJiwang, getGroupData, getTodayGroupList, saveData } from '../logic/app-core-api.js';
 import { getTopicGroups } from '../logic/topic-rules.js';
 import { getBiddingData } from '../data/supabase-client.js';
@@ -13,21 +12,10 @@ import { _emit } from '../stores/eventBus.js';
 
 export function useScoreCalculation() {
   const uiStore = useUiStore();
-  const recentMultiScore = ref(0);
-  const sectorEtfScore = ref(0);
-  const topicDirectionScore = ref(0);
   const consecutiveUp = ref({ duoban: 0, bankuai: 0, ticai: 0 });
 
   function calculateAll() {
-    if (typeof _calcRecentMultiScore === 'function') {
-      recentMultiScore.value = _calcRecentMultiScore();
-    }
-    if (typeof autoCalculateSectorEtfScore === 'function') {
-      sectorEtfScore.value = autoCalculateSectorEtfScore();
-    }
-    if (typeof autoCalculateTopicDirectionScore === 'function') {
-      topicDirectionScore.value = autoCalculateTopicDirectionScore();
-    }
+    // 评分计算已移除（标签标题看板已删除）
   }
 
   function renderConsecutiveUp() {
@@ -98,9 +86,6 @@ export function useScoreCalculation() {
   function openMonthlySummary() { if (typeof openMonthlySummaryModal === 'function') openMonthlySummaryModal(); }
 
   return {
-    recentMultiScore,
-    sectorEtfScore,
-    topicDirectionScore,
     consecutiveUp,
     calculateAll,
     renderConsecutiveUp,

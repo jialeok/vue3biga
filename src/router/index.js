@@ -10,7 +10,6 @@ const routes = [
   { path: '/emotion', name: 'emotion', component: () => import('../views/EmotionBoard.vue') },
   { path: '/bidding', name: 'bidding', component: () => import('../views/BiddingBoard.vue') },
   { path: '/stats', name: 'stats', component: () => import('../views/StatsBoard.vue') },
-  { path: '/tag-titles', name: 'tag-titles', component: () => import('../views/TagTitlesBoard.vue') },
 ];
 
 const router = createRouter({

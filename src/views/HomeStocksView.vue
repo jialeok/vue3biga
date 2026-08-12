@@ -23,18 +23,6 @@
       <div class="compact-stat-label" style="color:#2563eb">持有</div>
       <div class="compact-stat-value" style="color:#2563eb">{{ stockStats.holdCount }}</div>
     </div>
-    <div class="compact-stat-card" :class="{ 'active-filter-recentmulti': currentFilter === '最近多板' }" @click="setFilter('最近多板')">
-      <div class="compact-stat-label" style="color:#2563eb">最近多板</div>
-      <div class="compact-stat-value" style="color:#2563eb">{{ stockStats.recentMultiCount }}</div>
-    </div>
-    <div class="compact-stat-card" :class="{ 'active-filter-sectoretf': currentFilter === '板块ETF' }" @click="setFilter('板块ETF')">
-      <div class="compact-stat-label" style="color:#2563eb">板块ETF</div>
-      <div class="compact-stat-value" style="color:#2563eb">{{ stockStats.sectorEtfCount }}</div>
-    </div>
-    <div class="compact-stat-card" :class="{ 'active-filter-topicdirection': currentFilter === '题材方向' }" @click="setFilter('题材方向')">
-      <div class="compact-stat-label" style="color:#9333ea">题材方向</div>
-      <div class="compact-stat-value" style="color:#9333ea">{{ stockStats.topicDirectionCount }}</div>
-    </div>
   </div>
 
   <!-- 股票列表折叠开关 -->
@@ -207,9 +195,6 @@
         <label class="edit-tag tag-red"><input type="checkbox" v-model="editForm.dragon"><span>👑 龙头</span></label>
         <label class="edit-tag tag-blue-bg"><input type="checkbox" v-model="editForm.hold"><span>持有</span></label>
         <label class="edit-tag tag-purple-bg"><input type="checkbox" v-model="editForm.watch"><span>观望</span></label>
-        <label class="edit-tag tag-green-bg"><input type="checkbox" v-model="editForm.topicDirection"><span>题材方向</span></label>
-        <label class="edit-tag tag-amber-bg"><input type="checkbox" v-model="editForm.recentMulti"><span>最近多板</span></label>
-        <label class="edit-tag tag-blue-bg"><input type="checkbox" v-model="editForm.sectorEtf"><span>板块ETF</span></label>
         <label class="edit-tag tag-red-bg"><input type="checkbox" v-model="editForm.nishi"><span>逆势</span></label>
         <label class="edit-tag tag-emerald-bg"><input type="checkbox" v-model="editForm.shunshi"><span>顺势</span></label>
       </div>
@@ -316,8 +301,7 @@ function safe(fn, ...args) {
 }
 
 const stockStats = reactive({
-  todayCount: 0, boughtCount: 0, soldCount: 0, holdCount: 0,
-  recentMultiCount: 0, sectorEtfCount: 0, topicDirectionCount: 0
+  todayCount: 0, boughtCount: 0, soldCount: 0, holdCount: 0
 });
 
 function updateStockStats(all) {
@@ -326,16 +310,10 @@ function updateStockStats(all) {
   stockStats.boughtCount = 0;
   stockStats.soldCount = 0;
   stockStats.holdCount = 0;
-  stockStats.recentMultiCount = 0;
-  stockStats.sectorEtfCount = 0;
-  stockStats.topicDirectionCount = 0;
   list.forEach(s => {
     if (s.bought) stockStats.boughtCount++;
     if (s.sold) stockStats.soldCount++;
     if (s.hold) stockStats.holdCount++;
-    if (s.recentMulti) stockStats.recentMultiCount++;
-    if (s.sectorEtf) stockStats.sectorEtfCount++;
-    if (s.topicDirection) stockStats.topicDirectionCount++;
   });
 }
 
@@ -355,12 +333,6 @@ function getPriority(stock) {
   if (stock.sold) return 1;
   return 0;
 }
-function getTagPriority(stock) {
-  if (stock.recentMulti) return 3;
-  if (stock.sectorEtf) return 2;
-  if (stock.topicDirection) return 1;
-  return 0;
-}
 
 const currentFilter = ref(getCurrentFilter());
 function setFilter(filter) {
@@ -374,15 +346,10 @@ const sortedList = computed(() => {
   if (filter === '已买') list = list.filter(s => s.bought);
   else if (filter === '已卖') list = list.filter(s => s.sold);
   else if (filter === '持有') list = list.filter(s => s.hold);
-  else if (filter === '最近多板') list = list.filter(s => s.recentMulti);
-  else if (filter === '板块ETF') list = list.filter(s => s.sectorEtf);
-  else if (filter === '题材方向') list = list.filter(s => s.topicDirection);
 
   list.sort((a, b) => {
     const pa = getPriority(a), pb = getPriority(b);
     if (pa !== pb) return pb - pa;
-    const ta = getTagPriority(a), tb = getTagPriority(b);
-    if (ta !== tb) return tb - ta;
     return (b.id || 0) - (a.id || 0);
   });
   return list;
@@ -521,9 +488,6 @@ function headerTags(stock) {
   else if (stock.hold) pos1 = { text: '持', cls: 'tag-hold' };
 
   let pos2 = null;
-  if (stock.topicDirection) pos2 = { text: '题材', cls: 'tag-topicdirection' };
-  else if (stock.recentMulti) pos2 = { text: '多板', cls: 'tag-recentmulti' };
-  else if (stock.sectorEtf) pos2 = { text: 'ETF', cls: 'tag-sectoretf' };
 
   let pos3 = null;
   const starTag = getStarTagsForStock(stock.name);
@@ -534,11 +498,8 @@ function headerTags(stock) {
   return { pos1, pos2, pos3 };
 }
 function secondTags(stock) {
-  const pos2Tag = stock.topicDirection ? 'topicDirection' : (stock.recentMulti ? 'recentMulti' : (stock.sectorEtf ? 'sectorEtf' : null));
   const pos1Tag = stock.bought ? 'bought' : (stock.sold ? 'sold' : (stock.hold ? 'hold' : null));
   const tags = [];
-  if (stock.recentMulti && pos2Tag !== 'recentMulti') tags.push({ text: '多板', cls: 'tag-recentmulti' });
-  if (stock.sectorEtf && pos2Tag !== 'sectorEtf') tags.push({ text: 'ETF', cls: 'tag-sectoretf' });
   if (stock.hold && pos1Tag !== 'hold') tags.push({ text: '持', cls: 'tag-hold' });
   if (stock.sold && pos1Tag !== 'sold') tags.push({ text: '卖', cls: 'tag-sold' });
   const st = stageTag(stock);
@@ -634,9 +595,6 @@ const editFields = [
   { key: 'sellHigh', label: '冲高卖', type: 'bool' },
   { key: 'sell1120', label: '11:20卖', type: 'bool' },
   { key: 'sell1450', label: '14:50卖', type: 'bool' },
-  { key: 'topicDirection', label: '题材方向', type: 'bool' },
-  { key: 'recentMulti', label: '最近多板', type: 'bool' },
-  { key: 'sectorEtf', label: '板块ETF', type: 'bool' },
   { key: 'nishi', label: '逆势', type: 'bool' },
   { key: 'shunshi', label: '顺势', type: 'bool' },
   { key: 'nextDay', label: '次日预测', type: 'text' },
@@ -650,7 +608,7 @@ function openEditModal(id) {
   Object.keys(editForm).forEach(k => delete editForm[k]);
   editFields.forEach(f => {
     const val = stock[f.key] !== undefined ? stock[f.key] : '';
-    if (['bought','sold','hold','watch','dragon','bomb','sellHigh','sell1120','sell1450','topicDirection','recentMulti','sectorEtf','nishi','shunshi'].includes(f.key)) {
+    if (['bought','sold','hold','watch','dragon','bomb','sellHigh','sell1120','sell1450','nishi','shunshi'].includes(f.key)) {
       editForm[f.key] = val === true || val === 1 || val === '1';
     } else {
       editForm[f.key] = val;
