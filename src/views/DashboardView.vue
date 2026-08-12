@@ -29,7 +29,7 @@
       <StatsBoard />
       <StarStatsBoard />
       <EmotionBoard />
-      <AuctionBoard :data-source="auctionGroup" @switch-group="onSwitchGroup" />
+      <AuctionBoard />
       <DuibanBoard />
       <EtfBoard />
       <HomeStocksView ref="stocksRef" />
@@ -110,14 +110,6 @@ watch(statsMode, (mode) => {
 const stocksRef = ref(null);
 const uiStore = useUiStore();
 const currentDate = computed(() => uiStore.currentDate || getCurrentDate());
-const auctionGroup = ref('auction');
-
-function onSwitchGroup(group) {
-  if (group === 'auction' || group === 'hot') {
-    auctionGroup.value = group;
-    uiStore.switchGroup(group);
-  }
-}
 
 const weekdayText = computed(() => {
   const d = uiStore.currentDate || getCurrentDate();

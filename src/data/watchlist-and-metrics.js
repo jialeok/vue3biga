@@ -12,7 +12,6 @@ import { startStockCodeMapRealtime, stopStockCodeMapRealtime } from './stock-cod
 import { startBiddingRealtime, stopBiddingRealtime } from './bidding-data.js';
 import { startJiwangRealtime, stopJiwangRealtime } from './jiwang-data.js';
 import { startHighlightsRealtime, stopHighlightsRealtime, pullDailyHighlights } from './daily-highlights.js';
-import { startHotStocksRealtime, stopHotStocksRealtime, startHotHighlightsRealtime, stopHotHighlightsRealtime, startHotTrendsRealtime, stopHotTrendsRealtime } from './hot-stocks.js';
 import { setAuctionDateData } from './auction-data.js';
 
         state._jiwangTableAvailable = false; // jiwang_data 表是否可用
@@ -142,9 +141,6 @@ import { setAuctionDateData } from './auction-data.js';
             startBiddingRealtime(); // 同时启动 bidding_data 表的 Realtime 订阅（竞价变化看板）
             startJiwangRealtime(); // 同时启动 jiwang_data 表的 Realtime 订阅（记忘看板）
             startHighlightsRealtime(); // 同时启动 daily_highlights 表的 Realtime 订阅（竞/昨高光）
-            startHotStocksRealtime(); // 同时启动 hot_stocks 表的 Realtime 订阅（热门股票）
-            startHotHighlightsRealtime(); // 同时启动 hot_stocks_highlights 表的 Realtime 订阅（热门股票竞/昨高光）
-            startHotTrendsRealtime(); // 同时启动 hot_stock_trends 表的 Realtime 订阅（热门股票趋势图独立表）
             try {
                 const sb = getSupabase();
                 state._realtimeChannel = sb
@@ -189,9 +185,6 @@ import { setAuctionDateData } from './auction-data.js';
             stopBiddingRealtime();
             stopJiwangRealtime();
             stopHighlightsRealtime();
-            stopHotStocksRealtime();
-            stopHotHighlightsRealtime();
-            stopHotTrendsRealtime();
         }
 
         // ===== 早盘竞价tap：两张表（auction_watchlist / market_metrics / daily_highlights）的

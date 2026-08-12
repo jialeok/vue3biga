@@ -1,6 +1,7 @@
 <template>
   <LoginOverlay ref="loginRef" />
   <DebugLogModal ref="debugRef" />
+  <NumcatChoiceModal />
   <RouterView v-if="authReady" />
 </template>
 
@@ -8,10 +9,10 @@
 import { ref, onMounted } from 'vue';
 import LoginOverlay from './components/LoginOverlay.vue';
 import DebugLogModal from './components/DebugLogModal.vue';
+import NumcatChoiceModal from './components/NumcatChoiceModal.vue';
 import { useAuthStore } from './stores/authStore.js';
 import { startSessionPoll } from './data/watchlist-and-metrics.js';
 import { pullDailyHighlights } from './data/daily-highlights.js';
-import { pullHotStocksHighlights, loadHotStocksFromCloud } from './data/hot-stocks.js';
 import { loadCoreTopicsFromCloud } from './logic/topic-rules.js';
 import { pullFromCloud } from './logic/workflows/auction-sync.js';
 import { initApp, getCurrentDate, migrateAuctionToTable, migrateAuctionDataToNewTables } from './logic/app-core.js';
@@ -113,8 +114,6 @@ function onLoginSuccess() {
 
   pullDailyHighlights().then(() => _emit('auction-refresh')).catch(e => _dbgLog('[AUCTION-ERR] daily_highlights ' + (e && e.message || e)));
   pullBiddingForDate(getCurrentDate()).then(() => _emit('bidding-refresh')).catch(e => _dbgLog('[BIDDING] 首屏快速加载失败 ' + (e && e.message || e)));
-  pullHotStocksHighlights().catch(e => console.warn('hot_stocks_highlights:', e.message));
-  loadHotStocksFromCloud().then(() => _emit('auction-refresh')).catch(e => console.warn('hot_stocks:', e.message));
   loadCoreTopicsFromCloud().then(() => _emit('auction-refresh')).catch(e => console.warn('core_topics:', e && e.message || e));
 
   pullFromCloud().then(() => {

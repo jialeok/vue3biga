@@ -87,7 +87,7 @@ export const useAuctionStore = defineStore('auction', {
     stocksDataVersion: 0,
 
     // 按数据源隔离的版本号
-    dataVersions: { auction: 0, hot: 0 },
+    dataVersions: { auction: 0 },
 
     // actions 占位（下方绑定）
     actions: null,
@@ -170,9 +170,8 @@ export const useAuctionStore = defineStore('auction', {
       safeCall(_uiFns.showAuctionBuyPrompt, stockName);
     },
 
-    openEdit(dataSource) {
-      if (dataSource === 'hot') safeCall(_uiFns.openHotEdit);
-      else safeCall(_uiFns.openAuctionEdit);
+    openEdit() {
+      safeCall(_uiFns.openAuctionEdit);
     },
 
     jumpToPage2(stockName) {

@@ -1615,32 +1615,6 @@
             margin-top: 2px;
         }
 
-        /* 分组 Tab 切换条（早盘竞价 / 热门股票） */
-        .group-tab-bar {
-            display: inline-flex;
-            align-items: center;
-            gap: 2px;
-            background: rgba(255, 255, 255, 0.18);
-            border-radius: 8px;
-            padding: 2px;
-            margin-bottom: 4px;
-        }
-        .group-tab {
-            font-size: 12px;
-            font-weight: 600;
-            color: rgba(255, 255, 255, 0.85);
-            padding: 3px 10px;
-            border-radius: 6px;
-            cursor: pointer;
-            user-select: none;
-            white-space: nowrap;
-            transition: background 0.15s, color 0.15s;
-        }
-        .group-tab.active {
-            background: #ffffff;
-            color: #7c3aed;
-        }
-
         .auction-content {
             padding: 0;
             touch-action: pan-x pan-y;

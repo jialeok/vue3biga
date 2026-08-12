@@ -113,8 +113,8 @@ const colorMap = {
 
 function render() {
   const currentDate = uiStore.currentDate;
-  const dataSource = uiStore.currentGroup || 'auction';
-  void auctionStore.dataVersions[dataSource === 'hot' ? 'hot' : 'auction'];
+  const dataSource = 'auction';
+  void auctionStore.dataVersions.auction;
 
   const todayAuction = getTodayGroupList(dataSource);
   if (!todayAuction || todayAuction.length === 0) {
@@ -225,7 +225,7 @@ function render() {
   strengthText.value = (todayStrength != null ? todayStrength + '%' : '-') + displayArrow;
 }
 
-watch(() => [uiStore.currentDate, uiStore.currentGroup, auctionStore.dataVersions.auction, auctionStore.dataVersions.hot], render, { immediate: false });
+watch(() => [uiStore.currentDate, auctionStore.dataVersions.auction], render, { immediate: false });
 onMounted(render);
 
 defineExpose({ render });

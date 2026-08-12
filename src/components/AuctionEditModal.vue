@@ -5,7 +5,7 @@
 
         <!-- 头部（随内容一起滚动） -->
         <div class="modal-header">
-          <div class="auction-edit-title">{{ isHot ? '编辑热门股票' : '编辑最近多板早盘竞价' }}</div>
+          <div class="auction-edit-title">编辑最近多板早盘竞价</div>
           <button class="close-btn" @click="close">×</button>
         </div>
 
@@ -139,21 +139,15 @@ import { apiStatusMap } from '../logic/ui-bridge.js';
 import {
   getTodayGroupList, saveData, getAuctionData,
   importAuctionFromPaste, importAuctionHistoryFill,
-  importHotFromPaste, importHotHistoryFill,
-  replaceConceptFromPaste, replaceHotConceptFromPaste,
-  importStockCodeMap, importStockCodeMapHot, autoCompleteMissingStockCodes,
+  replaceConceptFromPaste,
+  importStockCodeMap, autoCompleteMissingStockCodes,
   fetchLadderConstituentsMain, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs,
   fillYesterdayYesterdayVolumeFromThs, fetchChangePctFromThs, fillAuctionHistoryGapYestVolumeFromThs,
   fillAuctionHistoryGapPctFromThs,
   fetchTodayAuctionFromNumcat, fetchAllAuctionFromNumcat, fetchFiveDaysAuctionFromNumcat,
   fillYesterdayAuctionFromNumcat, fillTopicsFromNumcat, fetchMonitorWarningFromNumcat,
   runAuctionApiDiagnostics, rollbackAuctionData, repairAuctionInWatchlistForDate,
-  patchAuctionFieldBatch, markAuctionDirty, scheduleCloudPush,
-  fetchHotLimitUpLadderFromThs, fillHotYesterdayVolumeFromThs, fillHotTodayYesterdayVolumeFromThs,
-  fillHotYesterdayYesterdayVolumeFromThs, fetchHotChangePctFromThs, fillHotHistoryGapYestVolumeFromThs,
-  fillHotHistoryGapPctFromThs,
-  fetchHotTodayAuctionFromNumcat, fetchAllHotAuctionFromNumcat, fetchFiveDaysHotAuctionFromNumcat,
-  fillHotYesterdayAuctionFromNumcat, fillHotTopicsFromNumcat, fetchHotMonitorWarningFromNumcat
+  patchAuctionFieldBatch, markAuctionDirty, scheduleCloudPush
 } from '../logic/app-core.js';
 import { openAiVisionModal } from '../logic/workflows/ai-vision-import.js';
 import { parseNoteToFields } from '../logic/note-helpers.js';
@@ -162,10 +156,6 @@ import { useUiStore } from '../stores/uiStore.js';
 import auctionStore from '../stores/auctionStore.js';
 
 const uiStore = useUiStore();
-
-const props = defineProps({
-  dataSource: { type: String, default: 'auction' }
-});
 
 const visible = ref(false);
 const editRows = ref([]);
@@ -178,22 +168,11 @@ const historyDate = ref('');
 const historyColType = ref('volume');
 const historyText = ref('');
 
-const isHot = computed(() => props.dataSource === 'hot');
-const ds = computed(() => isHot.value ? 'hot' : 'auction');
-
 const pasteStatus = ref('');
 const codeMapStatus = ref('');
 const historyStatus = ref('');
 
-const thsFns = computed(() => isHot.value ? {
-  ladder: fetchHotLimitUpLadderFromThs,
-  yestVol: fillHotYesterdayVolumeFromThs,
-  todayYest: fillHotTodayYesterdayVolumeFromThs,
-  prevYest: fillHotYesterdayYesterdayVolumeFromThs,
-  changePct: fetchHotChangePctFromThs,
-  gapPct: () => fillHotHistoryGapPctFromThs(null, 'hot'),
-  gapYest: fillHotHistoryGapYestVolumeFromThs
-} : {
+const thsFns = {
   ladder: fetchLadderConstituentsMain,
   yestVol: fillYesterdayVolumeFromThs,
   todayYest: fillTodayYesterdayVolumeFromThs,
@@ -201,45 +180,38 @@ const thsFns = computed(() => isHot.value ? {
   changePct: fetchChangePctFromThs,
   gapPct: () => fillAuctionHistoryGapPctFromThs(null, 'auction'),
   gapYest: fillAuctionHistoryGapYestVolumeFromThs
-});
+};
 
-const numcatFns = computed(() => isHot.value ? {
-  yestAuction: fillHotYesterdayAuctionFromNumcat,
-  today: fetchHotTodayAuctionFromNumcat,
-  all: fetchAllHotAuctionFromNumcat,
-  fiveDays: fetchFiveDaysHotAuctionFromNumcat,
-  topics: fillHotTopicsFromNumcat,
-  monitor: fetchHotMonitorWarningFromNumcat
-} : {
+const numcatFns = {
   yestAuction: fillYesterdayAuctionFromNumcat,
   today: fetchTodayAuctionFromNumcat,
   all: fetchAllAuctionFromNumcat,
   fiveDays: fetchFiveDaysAuctionFromNumcat,
   topics: fillTopicsFromNumcat,
   monitor: fetchMonitorWarningFromNumcat
-});
+};
 
 const thsButtons = computed(() => [
-  { key: 'ths-ladder', label: '获取最近多板', fn: thsFns.value.ladder },
-  { key: 'ths-yestVol', label: '两全昨日成交量', fn: thsFns.value.yestVol },
-  { key: 'ths-todayYest', label: '当天昨日成交量', fn: thsFns.value.todayYest },
-  { key: 'ths-prevYest', label: '对比日昨成交量', fn: thsFns.value.prevYest },
-  { key: 'ths-changePct', label: '获取涨幅', fn: thsFns.value.changePct },
-  { key: 'ths-gapPct', label: '历史断点涨幅', fn: thsFns.value.gapPct },
-  { key: 'ths-gapYest', label: '历史断点昨日成交量', fn: thsFns.value.gapYest, wide: true }
+  { key: 'ths-ladder', label: '获取最近多板', fn: thsFns.ladder },
+  { key: 'ths-yestVol', label: '两全昨日成交量', fn: thsFns.yestVol },
+  { key: 'ths-todayYest', label: '当天昨日成交量', fn: thsFns.todayYest },
+  { key: 'ths-prevYest', label: '对比日昨成交量', fn: thsFns.prevYest },
+  { key: 'ths-changePct', label: '获取涨幅', fn: thsFns.changePct },
+  { key: 'ths-gapPct', label: '历史断点涨幅', fn: thsFns.gapPct },
+  { key: 'ths-gapYest', label: '历史断点昨日成交量', fn: thsFns.gapYest, wide: true }
 ]);
 
 const numcatButtons = computed(() => [
-  { key: 'nc-yestAuction', label: '补全昨日竞价量', fn: numcatFns.value.yestAuction },
-  { key: 'nc-today', label: '获取当天竞价量', fn: numcatFns.value.today },
-  { key: 'nc-all', label: '全竞价量（昨日+今日一次请求）', fn: numcatFns.value.all, wide: true },
-  { key: 'nc-fiveDays', label: '连抓五天补全（竞价量+昨成交量+涨幅）', fn: numcatFns.value.fiveDays, wide: true },
-  { key: 'nc-topics', label: '补全题材', fn: numcatFns.value.topics },
-  { key: 'nc-monitor', label: '查询监管', fn: numcatFns.value.monitor }
+  { key: 'nc-yestAuction', label: '补全昨日竞价量', fn: numcatFns.yestAuction },
+  { key: 'nc-today', label: '获取当天竞价量', fn: numcatFns.today },
+  { key: 'nc-all', label: '全竞价量（昨日+今日一次请求）', fn: numcatFns.all, wide: true },
+  { key: 'nc-fiveDays', label: '连抓五天补全（竞价量+昨成交量+涨幅）', fn: numcatFns.fiveDays, wide: true },
+  { key: 'nc-topics', label: '补全题材', fn: numcatFns.topics },
+  { key: 'nc-monitor', label: '查询监管', fn: numcatFns.monitor }
 ]);
 
 function refreshRows() {
-  const list = getTodayGroupList(props.dataSource);
+  const list = getTodayGroupList('auction');
   editRows.value = list.map(item => ({
     stock: item.stock || '',
     volume: item.volume || '',
@@ -284,7 +256,7 @@ function clearAllRows() {
 }
 
 function save() {
-  const list = getTodayGroupList(props.dataSource);
+  const list = getTodayGroupList('auction');
   list.length = 0;
   editRows.value.forEach(row => {
     if (row.stock && row.stock.trim()) {
@@ -296,7 +268,7 @@ function save() {
     }
   });
   saveData();
-  auctionStore.bumpDataVersion(ds.value);
+  auctionStore.bumpDataVersion('auction');
   auctionStore.refresh();
   close();
 }
@@ -353,7 +325,7 @@ watch(
     if (entry && isTerminal(entry.msg)) {
       if (entry.ok) {
         refreshRows();
-        auctionStore.bumpDataVersion(ds.value);
+        auctionStore.bumpDataVersion('auction');
         auctionStore.refresh();
       }
       setTimeout(() => {
@@ -370,13 +342,13 @@ watch(
 
 function onPasteImport() {
   if (!pasteText.value.trim()) return;
-  const fn = isHot.value ? importHotFromPaste : importAuctionFromPaste;
+  const fn = importAuctionFromPaste;
   pasteStatus.value = '导入中...';
   fn(pasteText.value).then(() => {
     refreshRows();
     pasteText.value = '';
     pasteStatus.value = '完成';
-    auctionStore.bumpDataVersion(ds.value);
+    auctionStore.bumpDataVersion('auction');
     auctionStore.refresh();
   }).catch(e => {
     console.error('导入失败:', e);
@@ -386,12 +358,12 @@ function onPasteImport() {
 
 function onReplaceConcept() {
   if (!pasteText.value.trim()) return;
-  const fn = isHot.value ? replaceHotConceptFromPaste : replaceConceptFromPaste;
+  const fn = replaceConceptFromPaste;
   pasteStatus.value = '替换中...';
   Promise.resolve(fn(pasteText.value)).then(() => {
     refreshRows();
     pasteStatus.value = '完成';
-    auctionStore.bumpDataVersion(ds.value);
+    auctionStore.bumpDataVersion('auction');
     auctionStore.refresh();
   }).catch(e => {
     console.error('替换概念失败:', e);
@@ -405,7 +377,7 @@ function onAiVision() {
 
 function onImportCodeMap() {
   if (!codeMapText.value.trim()) return;
-  const fn = isHot.value ? importStockCodeMapHot : importStockCodeMap;
+  const fn = importStockCodeMap;
   codeMapStatus.value = '导入中...';
   Promise.resolve(fn(codeMapText.value)).then(() => {
     codeMapText.value = '';
@@ -417,7 +389,7 @@ function onImportCodeMap() {
 }
 
 function onAutoCompleteCode() {
-  autoCompleteMissingStockCodes(props.dataSource);
+  autoCompleteMissingStockCodes('auction');
 }
 
 function onClearCodeMap() {
@@ -428,13 +400,13 @@ function onClearCodeMap() {
 
 function onHistoryFill() {
   if (!historyText.value.trim()) return;
-  const fn = isHot.value ? importHotHistoryFill : importAuctionHistoryFill;
+  const fn = importAuctionHistoryFill;
   historyStatus.value = '补录中...';
   fn(historyText.value, historyDate.value, historyColType.value).then(() => {
     refreshRows();
     historyText.value = '';
     historyStatus.value = '完成';
-    auctionStore.bumpDataVersion(ds.value);
+    auctionStore.bumpDataVersion('auction');
     auctionStore.refresh();
   }).catch(e => {
     console.error('历史填充失败:', e);
@@ -459,14 +431,14 @@ function onRunDiag() {
 function onRollback() {
   rollbackAuctionData();
   refreshRows();
-  auctionStore.bumpDataVersion(ds.value);
+  auctionStore.bumpDataVersion('auction');
   auctionStore.refresh();
 }
 
 function onRepair() {
   repairAuctionInWatchlistForDate().then(() => {
     refreshRows();
-    auctionStore.bumpDataVersion(ds.value);
+    auctionStore.bumpDataVersion('auction');
     auctionStore.refresh();
   }).catch(e => console.error('恢复失败:', e));
 }
@@ -558,19 +530,19 @@ function _clearAllNotes() {
 function onClearConcepts() {
   _clearAllConcepts();
   refreshRows();
-  auctionStore.bumpDataVersion(ds.value);
+  auctionStore.bumpDataVersion('auction');
   auctionStore.refresh();
 }
 function onClearText() {
   _clearAllText();
   refreshRows();
-  auctionStore.bumpDataVersion(ds.value);
+  auctionStore.bumpDataVersion('auction');
   auctionStore.refresh();
 }
 function onClearNotes() {
   _clearAllNotes();
   refreshRows();
-  auctionStore.bumpDataVersion(ds.value);
+  auctionStore.bumpDataVersion('auction');
   auctionStore.refresh();
 }
 

@@ -39,21 +39,27 @@ export function renderComment() {}
 export function closeCommentModal() {}
 export function _readTrackEditFormData() { return {}; }
 export function renderHotForm() { _emit('auction-refresh'); }
-// 迁移占位：原 DOM「覆盖/补全」选择弹窗未迁移到 Vue。这里还原其语义——
-// 调用方（同花顺/猫抓各补全类按钮）依赖它拿到 overwrite 开关才继续执行，
-// 此前是空函数导致按钮点了不执行。用 confirm 还原二选一：
-// 确定 = 覆盖模式（覆盖已有值），取消 = 补全模式（仅填充空值）。
+// 覆盖/补全 选择弹窗（Vue 化）：取代原 window.confirm 系统 UI。
+// 调用方（同花顺/猫抓各补全类按钮）依赖它拿到 overwrite 开关才继续执行。
+// 这里只把选择状态写入响应式 numcatChoice，由 <NumcatChoiceModal> 渲染美观弹窗，
+// 用户点击后通过 resolveNumcatChoice 回调 overwrite（true=覆盖 / false=补全）。
+export const numcatChoice = reactive({ visible: false, title: '', cb: null });
+
 export function showNumcatChoiceModal(title, cb) {
-  let overwrite = false;
-  try {
-    overwrite = window.confirm(
-      (title || '操作模式') +
-      '\n\n[确定] = 覆盖模式（覆盖已有值）\n[取消] = 补全模式（仅填充空值）'
-    );
-  } catch (e) {
-    overwrite = false;
+  numcatChoice.title = title || '操作模式';
+  numcatChoice.cb = typeof cb === 'function' ? cb : null;
+  numcatChoice.visible = true;
+}
+
+export function resolveNumcatChoice(overwrite) {
+  const cb = numcatChoice.cb;
+  numcatChoice.visible = false;
+  numcatChoice.cb = null;
+  // overwrite 为 null/undefined 表示用户点击「取消」→ 中止本次操作，不执行回调
+  if (cb && overwrite !== null && overwrite !== undefined) {
+    try { cb(!!overwrite); }
+    catch (e) { console.error('补全/覆盖选择回调失败:', e); }
   }
-  if (typeof cb === 'function') cb(overwrite);
 }
 export function updateCloudSyncUI() {}
 export function _switchGroupUI() {}

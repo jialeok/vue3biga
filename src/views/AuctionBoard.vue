@@ -8,12 +8,8 @@
   <div class="auction-board trading-day-element" :class="{ collapsed: !expanded }" :data-source="dataSource">
     <div class="auction-header" @click="toggleBoard" style="cursor:pointer">
       <div>
-        <div class="group-tab-bar" @click.stop>
-          <span class="group-tab" :class="{ active: dataSource === 'auction' }" @click.stop="$emit('switch-group', 'auction')">早盘竞价</span>
-          <span class="group-tab" :class="{ active: dataSource === 'hot' }" @click.stop="$emit('switch-group', 'hot')">热门股票</span>
-        </div>
         <div class="auction-title">
-          <span>{{ dataSource === 'hot' ? '热门股票' : '早盘竞价' }}</span>
+          <span>早盘竞价</span>
           <span style="margin-left: 8px; font-weight: 600;">强度：<span style="color: #ffffff;">{{ viewData.stats && viewData.stats.todayStrength != null ? viewData.stats.todayStrength + '%' : '-' }}</span></span>
         </div>
         <div class="auction-subtitle"></div>
@@ -103,14 +99,14 @@
               <span class="backend-block-sub">fuyao-proxy</span>
             </div>
             <div class="backend-grid">
-              <button class="backend-btn backend-btn-ths" @click="runBackend(dataSource === 'hot' ? fetchHotLimitUpLadderFromThs : fetchLadderConstituentsMain)">梯子成分</button>
-              <button class="backend-btn backend-btn-ths" @click="runBackend(dataSource === 'hot' ? fillHotYesterdayVolumeFromThs : fillYesterdayVolumeFromThs)">昨量填充</button>
-              <button class="backend-btn backend-btn-ths" @click="runBackend(dataSource === 'hot' ? fillHotTodayYesterdayVolumeFromThs : fillTodayYesterdayVolumeFromThs)">今昨量</button>
-              <button class="backend-btn backend-btn-ths" @click="runBackend(dataSource === 'hot' ? fillHotYesterdayYesterdayVolumeFromThs : fillYesterdayYesterdayVolumeFromThs)">昨昨量</button>
-              <button class="backend-btn backend-btn-ths" @click="runBackend(dataSource === 'hot' ? fetchHotChangePctFromThs : fetchChangePctFromThs)">涨幅抓取</button>
+              <button class="backend-btn backend-btn-ths" @click="runBackend(fetchLadderConstituentsMain)">梯子成分</button>
+              <button class="backend-btn backend-btn-ths" @click="runBackend(fillYesterdayVolumeFromThs)">昨量填充</button>
+              <button class="backend-btn backend-btn-ths" @click="runBackend(fillTodayYesterdayVolumeFromThs)">今昨量</button>
+              <button class="backend-btn backend-btn-ths" @click="runBackend(fillYesterdayYesterdayVolumeFromThs)">昨昨量</button>
+              <button class="backend-btn backend-btn-ths" @click="runBackend(fetchChangePctFromThs)">涨幅抓取</button>
             </div>
-            <div class="backend-status" :style="{ color: (apiStatusMap[dataSource === 'hot' ? 'thsApiStatusHot' : 'thsApiStatus'] || {}).ok ? '#059669' : '#dc2626' }">
-              {{ (apiStatusMap[dataSource === 'hot' ? 'thsApiStatusHot' : 'thsApiStatus'] || {}).msg || '' }}
+            <div class="backend-status" :style="{ color: (apiStatusMap['thsApiStatus'] || {}).ok ? '#059669' : '#dc2626' }">
+              {{ (apiStatusMap['thsApiStatus'] || {}).msg || '' }}
             </div>
           </div>
           <div class="backend-block backend-block-numcat">
@@ -119,13 +115,13 @@
               <span class="backend-block-sub">每日10次</span>
             </div>
             <div class="backend-grid">
-              <button class="backend-btn backend-btn-numcat" @click="runBackend(dataSource === 'hot' ? fetchHotTodayAuctionFromNumcat : fetchTodayAuctionFromNumcat)">今日竞价</button>
-              <button class="backend-btn backend-btn-numcat" @click="runBackend(dataSource === 'hot' ? fetchAllHotAuctionFromNumcat : fetchAllAuctionFromNumcat)">全部竞价</button>
-              <button class="backend-btn backend-btn-numcat" @click="runBackend(dataSource === 'hot' ? fetchThreeDaysHotAuctionFromNumcat : fetchThreeDaysAuctionFromNumcat)">三日竞价</button>
-              <button class="backend-btn backend-btn-numcat" @click="runBackend(dataSource === 'hot' ? fillHotTopicsFromNumcat : fillTopicsFromNumcat)">题材填充</button>
+              <button class="backend-btn backend-btn-numcat" @click="runBackend(fetchTodayAuctionFromNumcat)">今日竞价</button>
+              <button class="backend-btn backend-btn-numcat" @click="runBackend(fetchAllAuctionFromNumcat)">全部竞价</button>
+              <button class="backend-btn backend-btn-numcat" @click="runBackend(fetchThreeDaysAuctionFromNumcat)">三日竞价</button>
+              <button class="backend-btn backend-btn-numcat" @click="runBackend(fillTopicsFromNumcat)">题材填充</button>
             </div>
-            <div class="backend-status" :style="{ color: (apiStatusMap[dataSource === 'hot' ? 'numcatApiStatusHot' : 'numcatApiStatus'] || {}).ok ? '#059669' : '#dc2626' }">
-              {{ (apiStatusMap[dataSource === 'hot' ? 'numcatApiStatusHot' : 'numcatApiStatus'] || {}).msg || '' }}
+            <div class="backend-status" :style="{ color: (apiStatusMap['numcatApiStatus'] || {}).ok ? '#059669' : '#dc2626' }">
+              {{ (apiStatusMap['numcatApiStatus'] || {}).msg || '' }}
             </div>
           </div>
           <div class="backend-block backend-block-import">
@@ -408,9 +404,9 @@
       </div>
     </div>
 
-    <LongPressTagMenu ref="longPressMenuRef" :data-source="dataSource" />
+    <LongPressTagMenu ref="longPressMenuRef" />
     <CoreTopicModal ref="coreTopicModalRef" />
-    <AuctionEditModal ref="editModalRef" :data-source="dataSource" />
+    <AuctionEditModal ref="editModalRef" />
   </div>
 </template>
 
@@ -424,21 +420,13 @@ import AuctionEditModal from '../components/AuctionEditModal.vue';
 import { useUiStore } from '../stores/uiStore.js';
 import { useAuctionStore } from '../stores/auctionStore.js';
 import { _on, _off } from '../stores/eventBus.js';
-import { saveData, getTodayGroupList, getGroupData, patchHotField, patchAuctionField, saveModule,
+import { saveData, getTodayGroupList, getGroupData, patchAuctionField, saveModule,
   fetchLadderConstituentsMain, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs,
   fillYesterdayYesterdayVolumeFromThs, fetchChangePctFromThs,
-  fillAuctionHistoryGapPctFromThs, fillAuctionHistoryGapYestVolumeFromThs,
-  fetchAuctionFromNumcat, fetchTodayAuctionFromNumcat, fetchAllAuctionFromNumcat,
-  fetchThreeDaysAuctionFromNumcat, fetchFiveDaysAuctionFromNumcat,
-  fillTopicsFromNumcat, fetchMonitorWarningFromNumcat,
-  importAuctionFromPaste, importAuctionHistoryFill, replaceConceptFromPaste,
-  fetchHotLimitUpLadderFromThs, fillHotYesterdayVolumeFromThs,
-  fillHotTodayYesterdayVolumeFromThs, fillHotYesterdayYesterdayVolumeFromThs,
-  fetchHotChangePctFromThs, fillHotHistoryGapPctFromThs, fillHotHistoryGapYestVolumeFromThs,
-  fetchHotAuctionFromNumcat, fetchHotTodayAuctionFromNumcat, fetchAllHotAuctionFromNumcat,
-  fetchThreeDaysHotAuctionFromNumcat, fetchFiveDaysHotAuctionFromNumcat,
-  fillHotTopicsFromNumcat, fetchHotMonitorWarningFromNumcat,
-  importHotFromPaste, importHotHistoryFill, replaceHotConceptFromPaste
+  fetchTodayAuctionFromNumcat, fetchAllAuctionFromNumcat,
+  fetchThreeDaysAuctionFromNumcat,
+  fillTopicsFromNumcat,
+  importAuctionFromPaste, importAuctionHistoryFill, replaceConceptFromPaste
 } from '../logic/app-core.js';
 import { getAuctionStockHistory, deriveAuctionTagState } from '../logic/tag-rules.js';
 import { getTopicGroups, getTopicRankCountThisWeek } from '../logic/topic-rules.js';
@@ -475,7 +463,7 @@ const longPressMenuRef = ref(null);
 const coreTopicModalRef = ref(null);
 const editModalRef = ref(null);
 let longPressTimer = null;
-const _dsKey = () => props.dataSource === 'hot' ? 'hot' : 'auction';
+const _dsKey = () => 'auction';
 const viewData = computed(() => {
   void auctionStore.dataVersions[_dsKey()];
   void uiStore.currentDate;
@@ -1038,7 +1026,7 @@ function toggleSort(key) {
       sortState.byParallel = false;
     }
   }
-  const _p = props.dataSource === 'hot' ? 'hot' : 'auction';
+  const _p = 'auction';
   if (auctionStore.sortState && auctionStore.sortState[_p]) {
     const s = auctionStore.sortState[_p];
     s.byData = sortState.byData;
@@ -1147,7 +1135,7 @@ function runBackend(fn, ...args) {
   const task = typeof fn === 'function' ? fn : null;
   if (!task) return;
   backendLoading.value = true;
-  const statusKey = props.dataSource === 'hot' ? 'thsApiStatusHot' : 'thsApiStatus';
+  const statusKey = 'thsApiStatus';
   try {
     const result = task(...args);
     if (result && typeof result.then === 'function') {
@@ -1168,22 +1156,19 @@ function runBackend(fn, ...args) {
 function onImportPaste() {
   const text = prompt('粘贴竞价数据（CSV/JSON格式）：');
   if (!text) return;
-  if (props.dataSource === 'hot') runBackend(importHotFromPaste, text);
-  else runBackend(importAuctionFromPaste, text);
+  runBackend(importAuctionFromPaste, text);
 }
 function onReplaceConcept() {
   const text = prompt('粘贴题材替换数据：');
   if (!text) return;
-  if (props.dataSource === 'hot') runBackend(replaceHotConceptFromPaste, text);
-  else runBackend(replaceConceptFromPaste, text);
+  runBackend(replaceConceptFromPaste, text);
 }
 function onHistoryFill() {
   const text = prompt('粘贴历史填充数据：');
   if (!text) return;
   const date = prompt('目标日期（YYYY-MM-DD）：', uiStore.currentDate);
   if (!date) return;
-  if (props.dataSource === 'hot') runBackend(importHotHistoryFill, text, date);
-  else runBackend(importAuctionHistoryFill, text, date);
+  runBackend(importAuctionHistoryFill, text, date);
 }
 
 
@@ -1214,19 +1199,11 @@ function onShowNote(index) {
     saveData();
     refresh();
 
-    if (props.dataSource === 'hot') {
-      patchHotField(uiStore.currentDate, auctionList[index].stock, {
-        note: normalizedNote,
-        change_pct: parsed.changePct,
-        topics: parsed.topics
-      }).catch(e => console.warn('patchHotField note 失败:', e));
-    } else {
-      patchAuctionField(uiStore.currentDate, auctionList[index].stock, {
-        note: normalizedNote,
-        change_pct: parsed.changePct,
-        topics: parsed.topics
-      }).catch(e => console.warn('patchAuctionField note 失败:', e));
-    }
+    patchAuctionField(uiStore.currentDate, auctionList[index].stock, {
+      note: normalizedNote,
+      change_pct: parsed.changePct,
+      topics: parsed.topics
+    }).catch(e => console.warn('patchAuctionField note 失败:', e));
 
     const stockName = auctionList[index].stock;
     syncStockCloseFromAuction(stockName, normalizedNote, uiStore.currentDate);

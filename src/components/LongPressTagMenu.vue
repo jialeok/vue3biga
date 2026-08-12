@@ -30,10 +30,6 @@ import { getPreviousTradingDay } from '../logic/trading-day-helpers.js';
 
 const uiStore = useUiStore();
 
-const props = defineProps({
-  dataSource: { type: String, default: 'auction' }
-});
-
 const visible = ref(false);
 const stockName = ref('');
 const currentDate = ref('');
@@ -93,8 +89,7 @@ function onSelect(b) {
     ensureStockInNextDay(stockName.value, currentDate.value);
   }
   close();
-  const ds = props.dataSource === 'hot' ? 'hot' : 'auction';
-  auctionStore.bumpDataVersion(ds);
+  auctionStore.bumpDataVersion('auction');
   auctionStore.refresh();
 }
 

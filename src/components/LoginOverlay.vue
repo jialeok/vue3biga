@@ -36,17 +36,9 @@ import { _dbgLog } from '../data/debug-log.js';
 import { sha256, PASSWORD_HASH } from '../data/supabase-client.js';
 import { generateToken, writeSessionToken, startSessionPoll, stopSessionPoll } from '../data/watchlist-and-metrics.js';
 import { pullFromCloud } from '../logic/workflows/auction-sync.js';
-import { initApp, renderHotStocks } from '../logic/app-core.js';
+import { initApp } from '../logic/app-core.js';
 import { pullDailyHighlights } from '../data/daily-highlights.js';
 import { _emit } from '../stores/eventBus.js';
-import {
-  pullHotStocksHighlights,
-  migrateHotStocksShadowToMetrics,
-  loadHotStocksFromCloud,
-  migrateHotStocksToTrendsTable,
-  migrateHotTrendsToMarketMetrics,
-  loadHotTrendsFromCloud,
-} from '../data/hot-stocks.js';
 import { loadCloudTopics, buildTopicCache, invalidateTopicCache } from '../data/stock-topics.js';
 import { loadCloudStockCodeMap } from '../data/stock-code-map.js';
 import { clearPushDebounceTimer } from '../logic/session-helpers.js';
@@ -124,14 +116,6 @@ async function checkPassword() {
   pullDailyHighlights().then(() => _emit('auction-refresh')).catch((e) => {
     _dbgLog('[AUCTION-ERR] daily_highlights 加载失败 ' + (e && e.message || e));
   });
-  pullHotStocksHighlights().catch((e) => console.warn('hot_stocks_highlights 加载失败:', e.message));
-  migrateHotStocksShadowToMetrics().then(() => loadHotStocksFromCloud())
-    .then(() => { renderHotStocks(); })
-    .catch((e) => console.warn('hot_stocks 加载失败:', e.message));
-  migrateHotStocksToTrendsTable().then(() => migrateHotTrendsToMarketMetrics())
-    .then(() => loadHotTrendsFromCloud())
-    .then(() => { renderHotStocks(); })
-    .catch((e) => console.warn('hot trends 加载失败:', e.message));
   loadCloudTopics().then(() => {
     invalidateTopicCache(); buildTopicCache(); _emit('auction-refresh');
   }).catch(() => {});
