@@ -20,16 +20,6 @@
           </div>
         </div>
       </div>
-      <div class="score-stars-container trading-day-element" :id="t.key + 'ScoreContainer'">
-        <div class="stars-wrapper" :id="t.key + 'Stars'">
-          <span v-for="n in 10" :key="n" class="star" :class="starClass(t.key, n)">★</span>
-        </div>
-        <input type="hidden" :id="t.key + 'Score'" :value="scoreOf(t.key)" />
-        <div class="score-simple-value">
-          <span>评分:</span>
-          <span :id="t.key + 'ScoreValue'" :style="{ color: scoreColor(t.key) }">{{ scoreOf(t.key) }}</span>
-        </div>
-      </div>
     </template>
 
     <!-- 编辑弹窗 -->
@@ -156,13 +146,6 @@ function activeTags(key) {
   if (!d || !d[key]) return [];
   return (d[key].tags || []).filter(tag => d[key].active[tag]);
 }
-function scoreOf(key) {
-  const d = todayData();
-  return (d && d[key] && d[key].score) || 0;
-}
-function scoreColor(key) {
-  return scoreOf(key) >= 5 ? '#ef4444' : '#10b981';
-}
 function tagStyle(key, tag) {
   const d = todayData();
   if (!d || !d[key]) return '';
@@ -175,27 +158,6 @@ function tagStyle(key, tag) {
   const c = colorKey ? colorMap[colorKey] : null;
   return c ? `background:${c.background};color:${c.color};border:1px solid ${c.border};` : '';
 }
-function starClass(key, n) {
-  const v = scoreOf(key);
-  const starCount = Math.abs(v) / 2;
-  if (n > starCount) return '';
-  return v > 0 ? 'active-positive' : (v < 0 ? 'active-negative' : '');
-}
-
-function updateStarsDisplay(containerId, value) {
-  // Vue 模板已通过 starClass 响应式渲染，此函数保留供外部调用
-  refreshTick.value++;
-}
-
-function updateScore(key, value) {
-  const d = getTodayTagTitles();
-  if (d[key]) {
-    d[key].score = parseInt(value);
-    saveData();
-    refreshTick.value++;
-  }
-}
-
 function toggleTagTitle(event, type, tag) {
   event.stopPropagation();
   const d = getTodayTagTitles();
@@ -348,7 +310,7 @@ function render() { refreshTick.value++; }
 
 defineExpose({
   render, getTodayMulti, getTodayHotspot, getPreviousTagDate, syncTagsToFutureDates,
-  toggleTagTitle, openEdit, closeModal, updateStarsDisplay, updateScore,
+  toggleTagTitle, openEdit, closeModal,
   toggleEditTag, selectTagColor, addNewTag, deleteTag, saveTagTitles, clearAllTags
 });
 </script>
