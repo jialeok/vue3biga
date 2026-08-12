@@ -1257,11 +1257,6 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             return jiwangData[state.currentDate] || null;
         }
 
-        // 获取当日排名数据
-        export function getTodayRank() {
-            return getRankData()[state.currentDate] || [];
-        }
-
         // 获取分组数据（早盘竞价 / 热门股票），通过 dataSource 切换数据源
         // 'auction' 直接返回模块级独立内存缓存 _auctionMemCache（阶段四 Bug 1 修复），
         // 不再走 loadAllData().auction —— 后者虽然阶段四 Bug 2 修好后也指向 _auctionMemCache，

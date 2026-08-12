@@ -51,7 +51,6 @@ function setupEventBus() {
     if (!data || !data.boards || data.boards === 'all') {
       _emit('stocks-refresh');
       _emit('jiwang-refresh');
-      _emit('rank-refresh');
       _emit('auction-refresh');
       _emit('board-refresh');
       _emit('bidding-refresh');

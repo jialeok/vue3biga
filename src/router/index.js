@@ -3,9 +3,7 @@ import { createRouter, createWebHashHistory } from 'vue-router';
 const routes = [
   { path: '/', name: 'home', component: () => import('../views/DashboardView.vue') },
   { path: '/auction', name: 'auction', component: () => import('../views/AuctionBoard.vue') },
-  { path: '/hotspot', name: 'hotspot', component: () => import('../views/HotspotBoard.vue') },
   { path: '/pattern', name: 'pattern', component: () => import('../views/PatternBoard.vue') },
-  { path: '/rank', name: 'rank', component: () => import('../views/RankBoard.vue') },
   { path: '/duiban', name: 'duiban', component: () => import('../views/DuibanBoard.vue') },
   { path: '/etf', name: 'etf', component: () => import('../views/EtfBoard.vue') },
   { path: '/jiwang', name: 'jiwang', component: () => import('../views/JiwangBoard.vue') },

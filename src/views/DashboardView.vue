@@ -33,8 +33,6 @@
       <AuctionBoard :data-source="auctionGroup" @switch-group="onSwitchGroup" />
       <DuibanBoard />
       <EtfBoard />
-      <RankBoard />
-      <HotspotBoard />
       <HomeStocksView ref="stocksRef" />
     </template>
 
@@ -87,9 +85,7 @@ import EditModal from '../components/EditModal.vue';
 import HomeStocksView from './HomeStocksView.vue';
 import AuctionBoard from './AuctionBoard.vue';
 import BiddingBoard from './BiddingBoard.vue';
-import HotspotBoard from './HotspotBoard.vue';
 import PatternBoard from './PatternBoard.vue';
-import RankBoard from './RankBoard.vue';
 import DuibanBoard from './DuibanBoard.vue';
 import EtfBoard from './EtfBoard.vue';
 import JiwangBoard from './JiwangBoard.vue';
@@ -139,7 +135,6 @@ function emitAllRefresh() {
   requestAnimationFrame(() => {
     _emit('board-refresh');
     _emit('jiwang-refresh');
-    _emit('rank-refresh');
     _emit('duiban-refresh');
     _emit('emotion-refresh');
     _emit('etf-refresh');

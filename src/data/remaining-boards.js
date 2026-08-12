@@ -512,7 +512,6 @@ async function _onDateChanged(date) {
   pushRemainingNow();
   await loadAllRemainingForDate(date);
   _emit('stocks-refresh');
-  _emit('rank-refresh');
   _emit('board-refresh');
 }
 
@@ -542,7 +541,7 @@ function _subscribeRealtime() {
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'rank_data' }, (payload) => {
         const date = payload.new && payload.new.date;
-        if (date === _currentDate()) loadRankForDate(date).then(() => _emit('rank-refresh'));
+        if (date === _currentDate()) loadRankForDate(date);
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'multi_data' }, (payload) => {
         const date = payload.new && payload.new.date;
