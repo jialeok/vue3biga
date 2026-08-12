@@ -4292,11 +4292,14 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                 }
                 const codes = [];
                 const codeToStock = {};
+                const noCodeNames = [];   // 因缺少代码映射而未能发起查询的股票（对应「股票+代码表无对应」）
                 todayList.forEach(function(s) {
                     const code = (s.code || scMap[s.stock.trim()] || '').trim();
                     if (code) {
                         codes.push(code);
                         codeToStock[code] = s;
+                    } else {
+                        noCodeNames.push(s.stock);
                     }
                 });
 
@@ -4328,16 +4331,18 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                 }
 
                 let filledCount = 0;
-                let skippedCount = 0;
+                let emptyThemeCount = 0;          // 接口返回了但 theme_names_kpl 为空 → 接口本身无题材数据
+                const returnedCodes = new Set();   // 接口实际返回的行对应的代码集合
                 // 阶段四 Bug 5 收尾：改用字段级 patch 上报，只携带本次真正改动的 topics 字段
                 const topicsPatches = [];
                 items.forEach(function(row) {
                     const code = String(row[symIdx] || '').trim();
                     const themeNames = String(row[themeIdx] || '').trim();
                     const stock = codeToStock[code];
+                    returnedCodes.add(code);
                     if (!stock) return;
                     if (!themeNames) {
-                        skippedCount++;
+                        emptyThemeCount++;
                         return;
                     }
                     // 全部保留题材，不再截断为前3个（一只股票可能同时属于多个题材分类）
@@ -4350,7 +4355,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                         return true;
                     });
                     if (topicList.length === 0) {
-                        skippedCount++;
+                        emptyThemeCount++;
                         return;
                     }
                     const allTopicsStr = topicList.join('，');
@@ -4364,8 +4369,9 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                     filledCount++;
                 });
 
-                // 没有返回数据的股票也算跳过
-                skippedCount += (codes.length - filledCount - skippedCount);
+                // 发起查询但接口未返回任何行的代码（代码无法被识别 / 接口确实无该票）
+                const interfaceMissingCodes = codes.filter(function(c) { return !returnedCodes.has(c); });
+                const interfaceMissingNames = interfaceMissingCodes.map(function(c) { return (codeToStock[c] && codeToStock[c].stock) || c; });
 
                 saveModule('auction');
                 invalidateTopicCache();
@@ -4379,9 +4385,19 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                     });
                 }
 
-                setApiStatus('numcatApiStatus',
-                    '✅ 补全 ' + filledCount + ' 只股票题材，跳过 ' + skippedCount + ' 只无数据或已有题材',
-                    true);
+                // 诊断明细：区分三类「未补全」原因，让用户能直接判断是「代码映射缺失」还是「接口无题材」
+                let detail = '';
+                if (noCodeNames.length) {
+                    detail += '；代码映射缺失未查询(' + noCodeNames.length + ')：' + noCodeNames.slice(0, 25).join('、');
+                }
+                if (interfaceMissingNames.length) {
+                    detail += '；接口无返回(' + interfaceMissingNames.length + ')：' + interfaceMissingNames.slice(0, 25).join('、');
+                }
+                if (emptyThemeCount) {
+                    detail += '；接口返回但无题材(' + emptyThemeCount + ')';
+                }
+                const headline = filledCount > 0 ? ('✅ 补全 ' + filledCount + ' 只题材') : ('⚠️ 题材补全 0 只');
+                setApiStatus('numcatApiStatus', headline + detail, filledCount > 0);
             } catch (err) {
                 console.error('fillTopicsFromNumcat 失败:', err);
                 let msg = err && err.message ? err.message : '获取失败';
