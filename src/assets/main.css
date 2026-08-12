@@ -694,15 +694,21 @@
         }
 
         .jiwang-stamp.red {
-            border: 3px solid #dc2626 !important;
-            background: rgba(220, 38, 38, 0.15) !important;
-            color: #dc2626 !important;
+            border: 3px solid rgba(248, 113, 113, 0.5);
+            background: rgba(248, 113, 113, 0.15);
+            color: rgba(248, 113, 113, 0.6);
         }
 
         .jiwang-stamp.gray {
-            border: 3px solid rgba(156, 163, 175, 0.5) !important;
-            background: rgba(156, 163, 175, 0.1) !important;
-            color: rgba(156, 163, 175, 0.6) !important;
+            border: 3px solid rgba(156, 163, 175, 0.5);
+            background: rgba(156, 163, 175, 0.15);
+            color: rgba(156, 163, 175, 0.6);
+        }
+
+        .jiwang-stamp.yellow {
+            border: 3px solid rgba(253, 224, 71, 0.25);
+            background: rgba(253, 224, 71, 0.08);
+            color: rgba(253, 224, 71, 0.35);
         }
 
         .jiwang-stamp.orange {
