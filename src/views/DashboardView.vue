@@ -136,12 +136,14 @@ function emitAllRefresh() {
   _emit('stocks-refresh');
   _emit('auction-refresh');
   _emit('bidding-refresh');
-  _emit('board-refresh');
-  _emit('jiwang-refresh');
-  _emit('rank-refresh');
-  _emit('duiban-refresh');
-  _emit('emotion-refresh');
-  _emit('etf-refresh');
+  requestAnimationFrame(() => {
+    _emit('board-refresh');
+    _emit('jiwang-refresh');
+    _emit('rank-refresh');
+    _emit('duiban-refresh');
+    _emit('emotion-refresh');
+    _emit('etf-refresh');
+  });
 }
 
 function goToPrevTradingDay() {
