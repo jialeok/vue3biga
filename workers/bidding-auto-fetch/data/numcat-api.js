@@ -6,7 +6,7 @@ export async function numcatDailyAuc(env, symbols, startDateYMD, endDateYMD) {
   const body = {
     apiname: 'daily_auc',
     apikey: env.NUMCAT_API_KEY,
-    fields: 'symbol,name,tradedate,auc_vol,auc_pct_chg,auc_to_pre_vol_pct',
+    fields: 'symbol,name,tradedate,auc_vol,auc_pct_chg,auc_to_pre_vol_pct,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover',
     params: {
       symbols: symbols,
       startdate: startDateYMD,

@@ -7,7 +7,7 @@ export function _setInvalidateTopicCacheFn(fn) { _invalidateTopicCacheFn = fn; }
         // 列归属：
         //   auction_watchlist：date/stock/code/volume/yest_volume/note/change_pct/topics
         //                      source/obs_auto_added/selected/bought/sold/fixed
-        //   market_metrics：date/stock/code/volume/yest_volume/change_pct/time930/seal_count/scope/source
+        //   market_metrics：date/stock/code/volume/yest_volume/change_pct/time925/seal_count/scope/source
         // ============================================================
         let _getSupabaseFn = null;
 export function _setGetSupabaseFn(fn) { _getSupabaseFn = fn; }
@@ -24,7 +24,7 @@ export function _setGetSupabaseFn(fn) { _getSupabaseFn = fn; }
         //   - auction_watchlist 的行 → 登记到 _auctionWatchlistIndex[date]（正式成员）
         //   - market_metrics(scope='auction') 的行 → 影子记录（不登记到索引）
         //   - 公共字段以对应来源为准；watchlist 行额外带 source/obs_auto_added/selected/bought/sold/fixed；
-        //     metrics 行额外带 time930/seal_count。
+        //     metrics 行额外带 time925/seal_count。
         function _getAuctionStore() { try { return useAuctionStore(); } catch { return null; } }
 export async function pullAuctionFromTable() {
             const sb = _getSupabaseFn();
@@ -89,7 +89,7 @@ export async function pullAuctionFromTable() {
             try {
                 while (true) {
                     const { data, error } = await sb.from('market_metrics')
-                        .select('date,stock,code,volume,yest_volume,change_pct,time930,seal_count,source')
+                        .select('date,stock,code,volume,yest_volume,change_pct,time925,seal_count,auc_pct_chg,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover,source')
                         .eq('scope', 'auction')
                         .range(offset, offset + pageSize - 1);
                     if (error) throw error;
@@ -100,11 +100,11 @@ export async function pullAuctionFromTable() {
                         if (!key) return;
                         const existing = cloudByDate[row.date][key];
                         if (existing) {
-                            // 该股票同时在 watchlist 里：补充 metrics 特有字段（time930/seal_count），
+                            // 该股票同时在 watchlist 里：补充 metrics 特有字段（time925/seal_count），
                             // 并在 watchlist 行的 volume/yest_volume/change_pct 为空时回退取 metrics 的值。
                             // 【BUG-FIX】worker morning 把 watchlist 的 volume/yest_volume/change_pct 写成空串，
                             // 真实值只写到了 market_metrics；如果这里不回退，刷新后趋势图会读空值消失。
-                            if (row.time930 !== undefined && row.time930 !== null && row.time930 !== '') existing.time930 = row.time930;
+                            if (row.time925 !== undefined && row.time925 !== null && row.time925 !== '') existing.time925 = row.time925;
                             if (row.seal_count !== undefined && row.seal_count !== null && row.seal_count !== '') existing.seal_count = row.seal_count;
                             if (row.volume !== undefined && row.volume !== null && String(row.volume).trim() !== '' &&
                                 (!existing.volume || String(existing.volume).trim() === '')) {
@@ -120,6 +120,12 @@ export async function pullAuctionFromTable() {
                                 existing.change_pct = row.change_pct;
                                 existing.changePct = row.change_pct; // camelCase 别名同步
                             }
+                            // 竞价指标字段（仅 market_metrics 有，watchlist 行无这些列，直接补值）
+                            if (row.auc_pct_chg !== undefined && row.auc_pct_chg !== null && String(row.auc_pct_chg).trim() !== '') existing.auc_pct_chg = row.auc_pct_chg;
+                            if (row.um_vol !== undefined && row.um_vol !== null && String(row.um_vol).trim() !== '') existing.um_vol = row.um_vol;
+                            if (row.open_bid_pct !== undefined && row.open_bid_pct !== null && String(row.open_bid_pct).trim() !== '') existing.open_bid_pct = row.open_bid_pct;
+                            if (row.auc_vol_ratio !== undefined && row.auc_vol_ratio !== null && String(row.auc_vol_ratio).trim() !== '') existing.auc_vol_ratio = row.auc_vol_ratio;
+                            if (row.auc_turnover !== undefined && row.auc_turnover !== null && String(row.auc_turnover).trim() !== '') existing.auc_turnover = row.auc_turnover;
                             return;
                         }
                         cloudByDate[row.date][key] = {
@@ -130,8 +136,13 @@ export async function pullAuctionFromTable() {
                             yestVolume: row.yest_volume || '', // camelCase 别名
                             change_pct: row.change_pct || '',
                             changePct: row.change_pct || '', // camelCase 别名
-                            time930: row.time930 || '',
+                            time925: row.time925 || '',
                             seal_count: row.seal_count || '',
+                            auc_pct_chg: row.auc_pct_chg || '',
+                            um_vol: row.um_vol || '',
+                            open_bid_pct: row.open_bid_pct || '',
+                            auc_vol_ratio: row.auc_vol_ratio || '',
+                            auc_turnover: row.auc_turnover || '',
                             source: row.source || 'manual'
                         };
                         // 注意：影子记录不加入 newWatchlistIndex

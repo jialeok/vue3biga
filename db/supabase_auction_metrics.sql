@@ -37,8 +37,13 @@ create table if not exists market_metrics (
   volume text,
   yest_volume text,
   change_pct text,
-  time930 text,
+  time925 text,
   seal_count text,
+  auc_pct_chg text,     -- 竞价涨幅(%)，格式 "+X.XX%"，按日期存，供「五日竞价涨幅」趋势图
+  um_vol text,          -- 未匹配量(万手)，numcat um_vol(手)÷100 转万手，展示 "251w"
+  open_bid_pct text,    -- 抢筹幅度(%)，数字字符串，展示 "0.57%"
+  auc_vol_ratio text,   -- 竞价量比，数字字符串，展示 "2.18"
+  auc_turnover text,    -- 真换手率(%)，数字字符串，展示 "0.18%"
   scope text not null default 'auction',  -- 'auction' | 'hot'，区分属于哪个 tab
   source text default 'manual',           -- ths_api | manual_fill | computed | worker
   created_at timestamptz default now(),

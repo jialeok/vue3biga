@@ -280,7 +280,8 @@ import { state } from './app-state.js';
                     date: d,
                     volume: getStockHistoryValue(d, stockName, 'volume', dataSource),
                     yestVolume: getStockHistoryValue(d, stockName, 'yestVolume', dataSource),
-                    changePct: getStockHistoryValue(d, stockName, 'changePct', dataSource)
+                    changePct: getStockHistoryValue(d, stockName, 'changePct', dataSource),
+                    aucPctChg: getStockHistoryValue(d, stockName, 'aucPctChg', dataSource)
                 });
                 d = getPreviousTradingDay(d);
             }

@@ -162,6 +162,11 @@
           </div>
           <div v-if="expandedSet.has(item.index)" class="auction-trend-panel">
             <template v-if="trendHistory[item.index]">
+              <div class="auction-daily-metrics">
+                <template v-for="m in dailyMetricsList(item.stock)" :key="m.label">
+                  <span class="adm-item"><b>{{ m.label }}</b>：{{ m.value }}</span>
+                </template>
+              </div>
               <div class="trend-chart-item">
                 <div class="trend-chart-label trend-chart-label-with-stats">
                   <span>竞价量(万) 近5日</span>
@@ -176,6 +181,10 @@
                   <span v-if="trendHistory[item.index].yestRatio != null" style="color:#10b981; font-weight:600;">昨/前比 {{ trendHistory[item.index].yestRatio }}</span>
                 </div>
                 <TrendChart :points="trendHistory[item.index].yestVolume" color="#10b981" />
+              </div>
+              <div class="trend-chart-item" v-if="trendHistory[item.index].aucPctChg.some(p => p.value !== null)">
+                <div class="trend-chart-label">竞价涨幅(%) 近5日</div>
+                <TrendChart :points="trendHistory[item.index].aucPctChg" color="#f59e0b" :percent="true" />
               </div>
               <div class="trend-chart-item" v-if="trendHistory[item.index].changePct.some(p => p.value !== null)">
                 <div class="trend-chart-label">涨幅(%) 近5日</div>
@@ -208,6 +217,11 @@
           </div>
           <div v-if="expandedSet.has(item.index)" class="auction-trend-panel">
             <template v-if="trendHistory[item.index]">
+              <div class="auction-daily-metrics">
+                <template v-for="m in dailyMetricsList(item.stock)" :key="m.label">
+                  <span class="adm-item"><b>{{ m.label }}</b>：{{ m.value }}</span>
+                </template>
+              </div>
               <div class="trend-chart-item">
                 <div class="trend-chart-label trend-chart-label-with-stats">
                   <span>竞价量(万) 近5日</span>
@@ -222,6 +236,10 @@
                   <span v-if="trendHistory[item.index].yestRatio != null" style="color:#10b981; font-weight:600;">昨/前比 {{ trendHistory[item.index].yestRatio }}</span>
                 </div>
                 <TrendChart :points="trendHistory[item.index].yestVolume" color="#10b981" />
+              </div>
+              <div class="trend-chart-item" v-if="trendHistory[item.index].aucPctChg.some(p => p.value !== null)">
+                <div class="trend-chart-label">竞价涨幅(%) 近5日</div>
+                <TrendChart :points="trendHistory[item.index].aucPctChg" color="#f59e0b" :percent="true" />
               </div>
               <div class="trend-chart-item" v-if="trendHistory[item.index].changePct.some(p => p.value !== null)">
                 <div class="trend-chart-label">涨幅(%) 近5日</div>
@@ -316,6 +334,11 @@
               <div v-if="canGroupExpand(group.topic) && p2ExpandedSet.has(group.topic + '|' + stock.stock)"
                    class="auction-trend-panel">
                 <template v-if="p2TrendHistory[group.topic + '|' + stock.stock]">
+                  <div class="auction-daily-metrics">
+                    <template v-for="m in dailyMetricsList(stock.stock)" :key="m.label">
+                      <span class="adm-item"><b>{{ m.label }}</b>：{{ m.value }}</span>
+                    </template>
+                  </div>
                   <div class="trend-chart-item">
                     <div class="trend-chart-label trend-chart-label-with-stats">
                       <span>竞价量(万) 近5日</span>
@@ -330,6 +353,10 @@
                       <span v-if="p2TrendHistory[group.topic + '|' + stock.stock].yestRatio != null" style="color:#10b981; font-weight:600;">昨/前比 {{ p2TrendHistory[group.topic + '|' + stock.stock].yestRatio }}</span>
                     </div>
                     <TrendChart :points="p2TrendHistory[group.topic + '|' + stock.stock].yestVolume" color="#10b981" />
+                  </div>
+                  <div class="trend-chart-item" v-if="p2TrendHistory[group.topic + '|' + stock.stock].aucPctChg.some(p => p.value !== null)">
+                    <div class="trend-chart-label">竞价涨幅(%) 近5日</div>
+                    <TrendChart :points="p2TrendHistory[group.topic + '|' + stock.stock].aucPctChg" color="#f59e0b" :percent="true" />
                   </div>
                   <div class="trend-chart-item" v-if="p2TrendHistory[group.topic + '|' + stock.stock].changePct.some(p => p.value !== null)">
                     <div class="trend-chart-label">涨幅(%) 近5日</div>
@@ -429,6 +456,7 @@ import { saveData, getTodayGroupList, getGroupData, patchAuctionField, saveModul
   importAuctionFromPaste, importAuctionHistoryFill, replaceConceptFromPaste
 } from '../logic/app-core.js';
 import { getAuctionStockHistory, deriveAuctionTagState } from '../logic/tag-rules.js';
+import { getStockHistoryValue } from '../data/watchlist-and-metrics.js';
 import { getTopicGroups, getTopicRankCountThisWeek } from '../logic/topic-rules.js';
 import { getDisplayNote, parseNoteToFields, extractTopics } from '../logic/note-helpers.js';
 import { getPreviousTradingDay, isTradingDay } from '../logic/trading-day-helpers.js';
@@ -748,6 +776,7 @@ function loadP2TrendHistory(stockName) {
     volume: history.map(h => ({ date: h.date, value: h.volume })),
     yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
     changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
+    aucPctChg: history.map(h => ({ date: h.date, value: h.aucPctChg !== undefined ? h.aucPctChg : null })),
     ...stats
   };
 }
@@ -1060,6 +1089,7 @@ function expandAll() {
         volume: history.map(h => ({ date: h.date, value: h.volume })),
         yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
         changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
+        aucPctChg: history.map(h => ({ date: h.date, value: h.aucPctChg !== undefined ? h.aucPctChg : null })),
         ...stats
       };
     }
@@ -1102,6 +1132,7 @@ function loadTrendHistory(index, stockName) {
       volume: history.map(h => ({ date: h.date, value: h.volume })),
       yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
       changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
+      aucPctChg: history.map(h => ({ date: h.date, value: h.aucPctChg !== undefined ? h.aucPctChg : null })),
       ...stats
     }
   };
@@ -1110,6 +1141,32 @@ function loadTrendHistory(index, stockName) {
 function onSearch() {
   if (auctionStore) auctionStore.highlightKeyword = highlightKeyword.value;
   refresh();
+}
+
+// 当日竞价指标（仅市场客观值，不进历史趋势）：未匹配量/抢筹幅度/竞价量比/真换手率
+function dailyAuctionMetrics(stockName) {
+  const date = uiStore.currentDate;
+  const umVol = getStockHistoryValue(date, stockName, 'umVol');          // 万手，显示如 251w
+  const openBidPct = getStockHistoryValue(date, stockName, 'openBidPct'); // 百分比数值，如 0.57
+  const aucVolRatio = getStockHistoryValue(date, stockName, 'aucVolRatio'); // 量比，如 2.18
+  const aucTurnover = getStockHistoryValue(date, stockName, 'aucTurnover'); // 百分比数值，如 3.21
+  return {
+    umVol: umVol != null && umVol !== '' ? (umVol + 'w') : null,
+    openBidPct: openBidPct != null && openBidPct !== '' ? (openBidPct + '%') : null,
+    aucVolRatio: aucVolRatio != null && aucVolRatio !== '' ? String(aucVolRatio) : null,
+    aucTurnover: aucTurnover != null && aucTurnover !== '' ? (aucTurnover + '%') : null
+  };
+}
+
+function dailyMetricsList(stockName) {
+  if (!stockName) return [];
+  const m = dailyAuctionMetrics(stockName.trim());
+  const list = [];
+  if (m.umVol != null) list.push({ label: '未匹配量', value: m.umVol });
+  if (m.openBidPct != null) list.push({ label: '抢筹幅度', value: m.openBidPct });
+  if (m.aucVolRatio != null) list.push({ label: '竞价量比', value: m.aucVolRatio });
+  if (m.aucTurnover != null) list.push({ label: '真换手率', value: m.aucTurnover });
+  return list;
 }
 
 function switchPage(page) {
@@ -1330,6 +1387,24 @@ defineExpose({ refresh, toggleSort, expandAll, collapseAll });
   padding: 8px;
   background: #f9fafb;
   border-top: 1px solid #e5e7eb;
+}
+.auction-daily-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 4px 2px 6px;
+  margin-bottom: 4px;
+  border-bottom: 1px dashed #e5e7eb;
+  font-size: 11px;
+  color: #475569;
+  line-height: 1.4;
+}
+.adm-item {
+  white-space: nowrap;
+}
+.adm-item > b {
+  color: #334155;
+  font-weight: 600;
 }
 .trend-chart-item {
   margin-bottom: 4px;

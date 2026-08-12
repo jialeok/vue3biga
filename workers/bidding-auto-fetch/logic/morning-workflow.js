@@ -162,6 +162,10 @@ function parseNumcatToMetrics(items, fields, constituents, logs) {
   const volIdx = fields.indexOf('auc_vol');
   const pctIdx = fields.indexOf('auc_pct_chg');
   const ratioIdx = fields.indexOf('auc_to_pre_vol_pct');
+  const umIdx = fields.indexOf('um_vol');
+  const obpIdx = fields.indexOf('open_bid_pct');
+  const avrIdx = fields.indexOf('auc_vol_ratio');
+  const atrIdx = fields.indexOf('auc_turnover');
 
   logs.push('步骤4：解析数据并写入 market_metrics...');
   const codeToName = {};
@@ -213,13 +217,63 @@ function parseNumcatToMetrics(items, fields, constituents, logs) {
       }
     }
 
+    // auc_pct_chg（竞价涨幅）：与 change_pct 同源（均取自 auc_pct_chg 字段），
+    // 但后续 step5 会用 numcat daily 的收盘涨幅覆盖 change_pct，
+    // 这里单独保存纯竞价涨幅，供「五日竞价涨幅」趋势图使用（不被覆盖）。
+    const aucPctChgStr = changePctStr;
+
+    // um_vol（未匹配量，手）→ 万手（与 volume 同口径 ÷100），展示 "251w"
+    let umVolStr = '';
+    if (umIdx >= 0) {
+      const um = row[umIdx];
+      if (um !== null && um !== undefined && um !== '') {
+        const n = Number(um);
+        if (!isNaN(n)) umVolStr = String(Math.round(n / 100));
+      }
+    }
+
+    // open_bid_pct（抢筹幅度 %）
+    let openBidPctStr = '';
+    if (obpIdx >= 0) {
+      const v = row[obpIdx];
+      if (v !== null && v !== undefined && v !== '') {
+        const n = Number(v);
+        if (!isNaN(n)) openBidPctStr = n.toFixed(2);
+      }
+    }
+
+    // auc_vol_ratio（竞价量比）
+    let aucVolRatioStr = '';
+    if (avrIdx >= 0) {
+      const v = row[avrIdx];
+      if (v !== null && v !== undefined && v !== '') {
+        const n = Number(v);
+        if (!isNaN(n)) aucVolRatioStr = n.toFixed(2);
+      }
+    }
+
+    // auc_turnover（真换手率 %）
+    let aucTurnoverStr = '';
+    if (atrIdx >= 0) {
+      const v = row[atrIdx];
+      if (v !== null && v !== undefined && v !== '') {
+        const n = Number(v);
+        if (!isNaN(n)) aucTurnoverStr = n.toFixed(2);
+      }
+    }
+
     if (!metricsByDate[dateStr]) metricsByDate[dateStr] = [];
     metricsByDate[dateStr].push({
       stock: stockName,
       code: code,
       volume: volumeStr,
       change_pct: changePctStr,
-      yest_volume: yestVolumeStr
+      yest_volume: yestVolumeStr,
+      auc_pct_chg: aucPctChgStr,
+      um_vol: umVolStr,
+      open_bid_pct: openBidPctStr,
+      auc_vol_ratio: aucVolRatioStr,
+      auc_turnover: aucTurnoverStr
     });
     parsedCount++;
   });
@@ -316,7 +370,14 @@ async function writeMarketMetricsBatched(env, metricsByDate, nowIso, logs) {
       const hasVolume = m.volume !== '';
       const hasYestVolume = m.yest_volume !== '';
       const hasChangePct = m.change_pct !== '';
-      const shapeKey = (hasVolume ? 'v' : '') + (hasYestVolume ? 'y' : '') + (hasChangePct ? 'p' : '');
+      const hasAucPctChg = m.auc_pct_chg !== '';
+      const hasUmVol = m.um_vol !== '';
+      const hasOpenBidPct = m.open_bid_pct !== '';
+      const hasAucVolRatio = m.auc_vol_ratio !== '';
+      const hasAucTurnover = m.auc_turnover !== '';
+      const shapeKey = (hasVolume ? 'v' : '') + (hasYestVolume ? 'y' : '') + (hasChangePct ? 'p' : '')
+        + (hasAucPctChg ? 'a' : '') + (hasUmVol ? 'u' : '') + (hasOpenBidPct ? 'o' : '')
+        + (hasAucVolRatio ? 'r' : '') + (hasAucTurnover ? 't' : '');
       const row = {
         date: dateStr,
         stock: m.stock,
@@ -329,6 +390,11 @@ async function writeMarketMetricsBatched(env, metricsByDate, nowIso, logs) {
       if (hasVolume) row.volume = m.volume;
       if (hasYestVolume) row.yest_volume = m.yest_volume;
       if (hasChangePct) row.change_pct = m.change_pct;
+      if (hasAucPctChg) row.auc_pct_chg = m.auc_pct_chg;
+      if (hasUmVol) row.um_vol = m.um_vol;
+      if (hasOpenBidPct) row.open_bid_pct = m.open_bid_pct;
+      if (hasAucVolRatio) row.auc_vol_ratio = m.auc_vol_ratio;
+      if (hasAucTurnover) row.auc_turnover = m.auc_turnover;
       if (!shapeBuckets[shapeKey]) shapeBuckets[shapeKey] = [];
       shapeBuckets[shapeKey].push(row);
     });

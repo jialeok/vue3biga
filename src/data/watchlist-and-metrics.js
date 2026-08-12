@@ -351,7 +351,7 @@ import { setAuctionDateData } from './auction-data.js';
             // 2) 读取 market_metrics(scope='auction')（影子记录/指标数据）
             try {
                 const { data, error } = await sb.from('market_metrics')
-                    .select('stock,code,volume,yest_volume,change_pct,time930,seal_count,source')
+                    .select('stock,code,volume,yest_volume,change_pct,time925,seal_count,auc_pct_chg,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover,source')
                     .eq('date', date)
                     .eq('scope', 'auction');
                 if (error) throw error;
@@ -359,11 +359,11 @@ import { setAuctionDateData } from './auction-data.js';
                     const key = (row.stock || '').trim();
                     if (!key) return;
                     if (cloudByStock[key]) {
-                        // 该股票同时在 watchlist 里：补充 metrics 特有字段（time930/seal_count），
+                        // 该股票同时在 watchlist 里：补充 metrics 特有字段（time925/seal_count），
                         // 并在 watchlist 行的 volume/yest_volume/change_pct 为空时回退取 metrics 的值。
                         // 【BUG-FIX】worker morning 把 watchlist 的 volume/yest_volume/change_pct 写成空串，
                         // 真实值只写到了 market_metrics；如果这里不回退，刷新后趋势图会读空值消失。
-                        if (row.time930 !== undefined && row.time930 !== null && row.time930 !== '') cloudByStock[key].time930 = row.time930;
+                        if (row.time925 !== undefined && row.time925 !== null && row.time925 !== '') cloudByStock[key].time925 = row.time925;
                         if (row.seal_count !== undefined && row.seal_count !== null && row.seal_count !== '') cloudByStock[key].seal_count = row.seal_count;
                         if (row.volume !== undefined && row.volume !== null && String(row.volume).trim() !== '' &&
                             (!cloudByStock[key].volume || String(cloudByStock[key].volume).trim() === '')) {
@@ -378,6 +378,12 @@ import { setAuctionDateData } from './auction-data.js';
                             (!cloudByStock[key].change_pct || String(cloudByStock[key].change_pct).trim() === '')) {
                             cloudByStock[key].change_pct = row.change_pct;
                             cloudByStock[key].changePct = row.change_pct; // camelCase 别名同步
+                            // 竞价指标字段（仅 market_metrics 有，watchlist 行无这些列，直接补值）
+                            if (row.auc_pct_chg !== undefined && row.auc_pct_chg !== null && String(row.auc_pct_chg).trim() !== '') cloudByStock[key].auc_pct_chg = row.auc_pct_chg;
+                            if (row.um_vol !== undefined && row.um_vol !== null && String(row.um_vol).trim() !== '') cloudByStock[key].um_vol = row.um_vol;
+                            if (row.open_bid_pct !== undefined && row.open_bid_pct !== null && String(row.open_bid_pct).trim() !== '') cloudByStock[key].open_bid_pct = row.open_bid_pct;
+                            if (row.auc_vol_ratio !== undefined && row.auc_vol_ratio !== null && String(row.auc_vol_ratio).trim() !== '') cloudByStock[key].auc_vol_ratio = row.auc_vol_ratio;
+                            if (row.auc_turnover !== undefined && row.auc_turnover !== null && String(row.auc_turnover).trim() !== '') cloudByStock[key].auc_turnover = row.auc_turnover;
                         }
                         return;
                     }
@@ -389,8 +395,13 @@ import { setAuctionDateData } from './auction-data.js';
                         yestVolume: row.yest_volume || '', // camelCase 别名
                         change_pct: row.change_pct || '',
                         changePct: row.change_pct || '', // camelCase 别名
-                        time930: row.time930 || '',
+                        time925: row.time925 || '',
                         seal_count: row.seal_count || '',
+                        auc_pct_chg: row.auc_pct_chg || '',
+                        um_vol: row.um_vol || '',
+                        open_bid_pct: row.open_bid_pct || '',
+                        auc_vol_ratio: row.auc_vol_ratio || '',
+                        auc_turnover: row.auc_turnover || '',
                         source: row.source || 'manual'
                     };
                     // 注意：影子记录不加入 newWatchlistSet
@@ -501,6 +512,30 @@ import { setAuctionDateData } from './auction-data.js';
                 if (!raw) return null;
                 const num = parseFloat(String(raw).replace('%', '').replace('+', ''));
                 return isNaN(num) ? null : num;
+            }
+            if (field === 'aucPctChg') {
+                // auc_pct_chg（五日竞价涨幅）：与 change_pct 同源，存的是字符串如 "+3.25%"，解析成数字
+                const raw = found.auc_pct_chg || found.aucPctChg || '';
+                if (!raw) return null;
+                const num = parseFloat(String(raw).replace('%', '').replace('+', ''));
+                return isNaN(num) ? null : num;
+            }
+            // 当日竞价指标（仅 market_metrics 有，不进历史趋势，只取当日值）
+            if (field === 'umVol') {
+                const raw = found.um_vol != null ? String(found.um_vol) : '';
+                return raw.trim() !== '' ? raw : null;
+            }
+            if (field === 'openBidPct') {
+                const raw = found.open_bid_pct != null ? String(found.open_bid_pct) : '';
+                return raw.trim() !== '' ? raw : null;
+            }
+            if (field === 'aucVolRatio') {
+                const raw = found.auc_vol_ratio != null ? String(found.auc_vol_ratio) : '';
+                return raw.trim() !== '' ? raw : null;
+            }
+            if (field === 'aucTurnover') {
+                const raw = found.auc_turnover != null ? String(found.auc_turnover) : '';
+                return raw.trim() !== '' ? raw : null;
             }
             if (field === 'volume') {
                 return getNumericVolume(found.volume);

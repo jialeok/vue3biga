@@ -348,10 +348,10 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         //
         // 拆表后字段归属：
         //   auction_watchlist：note, topics, source, obs_auto_added, selected, bought, sold, fixed, code
-        //   market_metrics(scope='auction')：volume, yest_volume, change_pct, time930, seal_count, code
+        //   market_metrics(scope='auction')：volume, yest_volume, change_pct, time925, seal_count, code
         // 公共字段 code 同时写入两张表。
         const AUCTION_WATCHLIST_FIELDS = ['note', 'topics', 'source', 'obs_auto_added', 'selected', 'bought', 'sold', 'fixed', 'code'];
-        const AUCTION_METRICS_FIELDS = ['volume', 'yest_volume', 'change_pct', 'time930', 'seal_count', 'code'];
+        const AUCTION_METRICS_FIELDS = ['volume', 'yest_volume', 'change_pct', 'time925', 'seal_count', 'code'];
         const AUCTION_PATCHABLE_FIELDS = AUCTION_WATCHLIST_FIELDS.concat(AUCTION_METRICS_FIELDS.filter(function(f) { return AUCTION_WATCHLIST_FIELDS.indexOf(f) < 0; }));
 
         // 从调用方传入的 patch 对象中，只挑出白名单内、且确实存在（!== undefined）的字段。
