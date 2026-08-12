@@ -43,7 +43,9 @@ function cancel() {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 2000;
+  /* 必须高于所有后台模态框（AuctionEditModal 9998 / DebugLogModal 99999 / LoginOverlay 99998），
+     否则在编辑框内点接口按钮弹出的选择框会被压在编辑框后面 */
+  z-index: 100000;
   padding: 20px;
 }
 .numcat-choice-card {
