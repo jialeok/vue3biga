@@ -43,7 +43,7 @@ export function renderHotForm() { _emit('auction-refresh'); }
 // 调用方（同花顺/猫抓各补全类按钮）依赖它拿到 overwrite 开关才继续执行。
 // 这里只把选择状态写入响应式 numcatChoice，由 <NumcatChoiceModal> 渲染美观弹窗，
 // 用户点击后通过 resolveNumcatChoice 回调 overwrite（true=覆盖 / false=补全）。
-export const numcatChoice = reactive({ visible: false, title: '', cb: null });
+export const numcatChoice = reactive({ visible: false, title: '', cb: null, cancelSignal: 0 });
 
 export function showNumcatChoiceModal(title, cb) {
   numcatChoice.title = title || '操作模式';
@@ -59,6 +59,10 @@ export function resolveNumcatChoice(overwrite) {
   if (cb && overwrite !== null && overwrite !== undefined) {
     try { cb(!!overwrite); }
     catch (e) { console.error('补全/覆盖选择回调失败:', e); }
+  } else {
+    // 取消：递增取消信号，供调用方（后台编辑框）解除「处理中」按钮锁定，
+    // 否则因不执行回调、无 ✅/❌ 终止消息，busyKey 会永久卡在「处理中...」
+    numcatChoice.cancelSignal++;
   }
 }
 export function updateCloudSyncUI() {}

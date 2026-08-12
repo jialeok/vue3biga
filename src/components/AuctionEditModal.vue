@@ -135,7 +135,7 @@
 
 <script setup>
 import { ref, computed, watch } from 'vue';
-import { apiStatusMap } from '../logic/ui-bridge.js';
+import { apiStatusMap, numcatChoice } from '../logic/ui-bridge.js';
 import {
   getTodayGroupList, saveData, getAuctionData,
   importAuctionFromPaste, importAuctionHistoryFill,
@@ -336,6 +336,24 @@ watch(
           if (busyTimer) { clearTimeout(busyTimer); busyTimer = null; }
         }
       }, 1200);
+    }
+  }
+);
+
+// 用户点击「取消」关闭覆盖/补全选择弹窗时，解除按钮「处理中...」锁定。
+// 原因：选择类接口函数（如 fetchTodayAuctionFromNumcat）只在 showNumcatChoiceModal 打开弹窗后立即返回，
+// 真正的抓取被延迟到用户选择之后；取消时不执行回调、不产生 ✅/❌ 终止消息，
+// 上面那条 watch 不会触发，busyKey 会永久卡在「处理中...」。这里用取消信号即时解锁。
+watch(
+  () => numcatChoice.cancelSignal,
+  () => {
+    if (!busyKey.value) return;
+    const id = activeElId.value;
+    busyKey.value = '';
+    activeElId.value = '';
+    if (busyTimer) { clearTimeout(busyTimer); busyTimer = null; }
+    if (id && apiStatusMap[id]) {
+      apiStatusMap[id] = { msg: '已取消操作', ok: true, ts: Date.now() };
     }
   }
 );
