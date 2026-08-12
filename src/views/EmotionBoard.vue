@@ -61,6 +61,12 @@ let realtimeChannel = null;
 const rowConfigs = computed(() => EMOTION_ROW_CONFIG);
 const metrics = computed(() => (data.value && data.value.metrics) || {});
 const fiveDays = computed(() => (data.value && data.value.five_days) || []);
+// 真实「今天」（北京时间）。仅当查询日期等于今天时才允许回退到最近可用数据；
+// 历史日期 / 未来日期一律不回退，避免未来每一天都挂着陈旧数据。
+const realToday = computed(() => {
+  const d = new Date(Date.now() + 8 * 3600 * 1000);
+  return d.toISOString().slice(0, 10);
+});
 // 当展示的数据日期与当前选择日期不一致（回退到最近可用），给出提示
 const fallbackDate = computed(() => {
   if (!data.value || !data.value.date) return null;
@@ -183,17 +189,20 @@ async function loadEmotionData(date) {
       setEmotionDataCache({ date: date, data: rows[0] });
       return rows[0];
     }
-    // [FALLBACK] 当前日期暂无数据（如当日 worker 尚未产出），回退到最近一个有数据的日期，
-    // 避免情绪看板在大清早/数据未就绪时整片空白（emotion_data 按天产出，当天行要等约北京时间16:00）
-    const { data: latest, error: e2 } = await sb.from('emotion_data')
-      .select('date, metrics, five_days, updated_at')
-      .order('date', { ascending: false })
-      .limit(1);
-    if (e2) throw e2;
-    if (latest && latest.length > 0) {
-      const fb = latest[0];
-      setEmotionDataCache({ date: date, data: fb });
-      return fb;
+    // [FALLBACK] 仅当查询日期就是「今天」时才回退到最近一个有数据的日期。
+    // 今天的数据要等 worker 约北京时间16:00 产出，大清早/数据未就绪时避免整片空白；
+    // 历史日期 / 未来日期不回退（否则未来每一天都会挂着陈旧数据，造成误导）。
+    if (date === realToday.value) {
+      const { data: latest, error: e2 } = await sb.from('emotion_data')
+        .select('date, metrics, five_days, updated_at')
+        .order('date', { ascending: false })
+        .limit(1);
+      if (e2) throw e2;
+      if (latest && latest.length > 0) {
+        const fb = latest[0];
+        setEmotionDataCache({ date: date, data: fb });
+        return fb;
+      }
     }
   } catch (e) {
     console.warn('读取 emotion_data 失败:', e.message);
