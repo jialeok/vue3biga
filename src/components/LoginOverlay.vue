@@ -117,23 +117,27 @@ async function checkPassword() {
   pullDailyHighlights().then(() => _emit('auction-refresh')).catch((e) => {
     _dbgLog('[AUCTION-ERR] daily_highlights 加载失败 ' + (e && e.message || e));
   });
+
   // 热门股票共享影子记录：题材库/趋势图/竞-昨高光 与早盘竞价按股票名共享，必须加载，
   // 否则早盘竞价第二页题材与题材星标签统计看板会空（热门股票 tab UI 已移除，但数据仍在共享）。
-  pullHotStocksHighlights().catch((e) => console.warn('hot_stocks_highlights 加载失败:', e.message));
-  migrateHotStocksShadowToMetrics()
+  // 关键修复：之前 buildTopicCache 被多处异步分散调用，存在竞争——若某次 build 早于
+  // hot 数据 / 题材库加载完成，_topicCacheBuilt 标记为真后不再重建，导致共享题材回退缺数据。
+  // 改为全部题材来源加载完成后再统一 invalidate+build 一次。
+  const pHotShadow = migrateHotStocksShadowToMetrics()
     .then(() => loadHotStocksFromCloud())
-    .then(() => { invalidateTopicCache(); buildTopicCache(); _emit('auction-refresh'); })
     .catch((e) => console.warn('hot_stocks 加载失败:', e.message));
-  migrateHotStocksToTrendsTable()
+  const pHotTrends = migrateHotStocksToTrendsTable()
     .then(() => migrateHotTrendsToMarketMetrics())
     .then(() => loadHotTrendsFromCloud())
     .catch((e) => console.warn('hot trends 加载失败:', e.message));
-  loadCloudTopics().then(() => {
-    invalidateTopicCache(); buildTopicCache(); _emit('auction-refresh');
-  }).catch(() => {});
-  loadCloudStockCodeMap().then(() => {
+  const pHotHi = pullHotStocksHighlights().catch((e) => console.warn('hot_stocks_highlights 加载失败:', e.message));
+  const pTopics = loadCloudTopics().catch(() => {});
+  const pCodeMap = loadCloudStockCodeMap().catch(() => {});
+  Promise.all([pHotShadow, pHotTrends, pHotHi, pTopics, pCodeMap]).then(() => {
+    invalidateTopicCache();
+    buildTopicCache();
     _emit('auction-refresh');
-  }).catch(() => {});
+  });
 }
 
 defineExpose({ showPassword, hidePassword, showKicked, forceLogout, reloginFromKicked, checkPassword });

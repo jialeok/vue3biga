@@ -425,7 +425,7 @@ import { saveData, getTodayGroupList, getGroupData, patchAuctionField, saveModul
   fillYesterdayYesterdayVolumeFromThs, fetchChangePctFromThs,
   fetchTodayAuctionFromNumcat, fetchAllAuctionFromNumcat,
   fetchThreeDaysAuctionFromNumcat,
-  fillTopicsFromNumcat,
+  fillTopicsFromNumcat, getStockHistoryTopics,
   importAuctionFromPaste, importAuctionHistoryFill, replaceConceptFromPaste
 } from '../logic/app-core.js';
 import { getAuctionStockHistory, deriveAuctionTagState } from '../logic/tag-rules.js';
@@ -571,7 +571,15 @@ function getRankAppearText(topic) {
   } catch (e) { return ''; }
 }
 function getTopicsDisplay(stock) {
-  return stock.topics ? stock.topics.join(',').replace(/[，、;；]/g, ',') : '-';
+  let topics = stock.topics ? stock.topics.join(',') : '';
+  if (!topics.trim() && stock.stock) {
+    // 题材可能只存在于共享题材库（stock_topics 云库 / 热门股票影子记录），
+    // 早盘竞价行自身 topics 为空时回退到历史题材缓存，避免删除热门股票 tab 后题材显示为空。
+    const hist = getStockHistoryTopics(stock.stock);
+    if (hist) topics = hist.replace(/[()（）]/g, '').replace(/[，、;；]/g, ',');
+  }
+  const trimmed = topics.replace(/[，、;；]/g, ',').trim();
+  return trimmed ? trimmed : '-';
 }
 function getStockStyle(stockName) {
   const cnt = p2StockTopicCount.value[stockName] || 1;
