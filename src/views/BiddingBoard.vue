@@ -17,7 +17,7 @@
           <span class="col-name">名称</span>
           <span class="col-time915">9:15</span>
           <span class="col-time920">9:20</span>
-          <span class="col-time930">9:25</span>
+          <span class="col-time925">9:25</span>
           <span class="col-change">增减</span>
           <span class="col-close">收盘</span>
         </div>
@@ -31,7 +31,7 @@
           <span class="col-name">{{ row.name || '-' }}</span>
           <span class="col-time915">{{ row.time915 || '-' }}</span>
           <span class="col-time920">{{ row.time920 || '-' }}</span>
-          <span class="col-time930">{{ row.time930 || '-' }}</span>
+          <span class="col-time925">{{ row.time925 || '-' }}</span>
           <span class="col-change" :class="changeTagClass(row.change)">{{ row.change || '-' }}</span>
           <span class="col-close" :class="changeClass(row.close)">{{ formatClose(row.close, row.name) }}</span>
         </div>
@@ -53,7 +53,7 @@
           <div class="bidding-edit-row-bottom">
             <input v-model="row.time915" placeholder="9:15" @input="onInputChange(row)" />
             <input v-model="row.time920" placeholder="9:20" @input="onInputChange(row)" />
-            <input v-model="row.time930" placeholder="9:25" @input="onInputChange(row)" />
+            <input v-model="row.time925" placeholder="9:25" @input="onInputChange(row)" />
             <input :value="row.change" placeholder="增减" readonly class="bidding-row-change" :class="changeTagClass(row.change)" />
             <input v-model="row.close" placeholder="收盘" @input="onInputChange(row)" />
           </div>
@@ -133,10 +133,10 @@ function changeTagClass(v) {
 }
 
 // 增减逻辑（迁移自老版 boards-bidding.js:1141-1156 / 当前 onInputChange）：9:25 与 9:20 比较
-function computeChange(time920, time930) {
+function computeChange(time920, time925) {
   const t920 = parseFloat(time920);
-  const t930 = parseFloat(time930);
-  if (time920 && time920.toString().trim() && time930 && time930.toString().trim() && !isNaN(t920) && !isNaN(t930)) {
+  const t930 = parseFloat(time925);
+  if (time920 && time920.toString().trim() && time925 && time925.toString().trim() && !isNaN(t920) && !isNaN(t930)) {
     if (t930 > t920) return '增';
     if (t930 < t920) return '减';
     return '平';
@@ -169,7 +169,7 @@ function getTodayBidding() {
       return (row.name && row.name.toString().trim() !== '') ||
              (row.time915 && row.time915.toString().trim() !== '') ||
              (row.time920 && row.time920.toString().trim() !== '') ||
-             (row.time930 && row.time930.toString().trim() !== '') ||
+             (row.time925 && row.time925.toString().trim() !== '') ||
              (row.change && row.change.toString().trim() !== '') ||
              (row.close && row.close.toString().trim() !== '');
     });
@@ -187,7 +187,7 @@ function openEdit() {
   editRows.value = data ? data.map(r => {
     const copied = { ...r };
     // 打开时按 9:25/9:20 重算增减（对齐老版渲染期重算逻辑）
-    copied.change = computeChange(copied.time920, copied.time930);
+    copied.change = computeChange(copied.time920, copied.time925);
     return copied;
   }) : [];
   saving.value = false;
@@ -199,7 +199,7 @@ function closeModal() { modalActive.value = false; }
 function onInputChange(row) {
   row._touched = true;
 
-  row.change = computeChange(row.time920, row.time930);
+  row.change = computeChange(row.time920, row.time925);
 
   syncBiddingCloseToEtf(row);
 
@@ -226,7 +226,7 @@ function onInputChange(row) {
 }
 
 function addRow() {
-  editRows.value.push({ name: '', time915: '', time920: '', time930: '', change: '', close: '' });
+  editRows.value.push({ name: '', time915: '', time920: '', time925: '', change: '', close: '' });
 }
 
 function removeRow(idx) {
@@ -242,20 +242,20 @@ async function save() {
     name: (row.name || '').toString().trim(),
     time915: (row.time915 || '').toString().trim(),
     time920: (row.time920 || '').toString().trim(),
-    time930: (row.time930 || '').toString().trim(),
+    time925: (row.time925 || '').toString().trim(),
     change: (row.change || '').toString().trim(),
     close: (row.close || '').toString().trim(),
     touched: {
       time915: !!row._touched,
       time920: !!row._touched,
-      time930: !!row._touched,
+      time925: !!row._touched,
       change: !!row._touched,
       close: !!row._touched,
     }
   }));
 
   const oldBiddingDataForMerge = getTodayBidding() || [];
-  const FIELDS_TO_MERGE = ['time915', 'time920', 'time930', 'change', 'close'];
+  const FIELDS_TO_MERGE = ['time915', 'time920', 'time925', 'change', 'close'];
   const biddingData = rawRows.map(function(newRow, i) {
     let oldRow = null;
     if (newRow.name) {
@@ -284,18 +284,18 @@ async function save() {
     const newRow = biddingData.find(r => r.name && r.name.trim() === '最近多板%');
     if (!newRow) return;
     const oldRow = oldBiddingData ? oldBiddingData.find(r => r.name && r.name.trim() === '最近多板%') : null;
-    if (oldRow && oldRow.time930_initial !== undefined && oldRow.time930_initial !== '') {
-      newRow.time930_initial = oldRow.time930_initial;
-      newRow.time930_initial_modifiedAt = oldRow.time930_initial_modifiedAt;
-      newRow.time930_modifiedAt = Date.now();
-    } else if (newRow.time930 && newRow.time930.trim() !== '') {
-      newRow.time930_initial = newRow.time930;
-      newRow.time930_initial_modifiedAt = Date.now();
-      newRow.time930_modifiedAt = undefined;
+    if (oldRow && oldRow.time925_initial !== undefined && oldRow.time925_initial !== '') {
+      newRow.time925_initial = oldRow.time925_initial;
+      newRow.time925_initial_modifiedAt = oldRow.time925_initial_modifiedAt;
+      newRow.time925_modifiedAt = Date.now();
+    } else if (newRow.time925 && newRow.time925.trim() !== '') {
+      newRow.time925_initial = newRow.time925;
+      newRow.time925_initial_modifiedAt = Date.now();
+      newRow.time925_modifiedAt = undefined;
     } else {
-      newRow.time930_initial = undefined;
-      newRow.time930_initial_modifiedAt = undefined;
-      newRow.time930_modifiedAt = undefined;
+      newRow.time925_initial = undefined;
+      newRow.time925_initial_modifiedAt = undefined;
+      newRow.time925_modifiedAt = undefined;
     }
   })();
 
@@ -306,8 +306,8 @@ async function save() {
   if (sectorEtfRow) {
     const rawValue = (sectorEtfRow.close && sectorEtfRow.close.trim() !== '')
       ? sectorEtfRow.close.trim()
-      : (sectorEtfRow.time930 && sectorEtfRow.time930.trim() !== '')
-        ? sectorEtfRow.time930.trim()
+      : (sectorEtfRow.time925 && sectorEtfRow.time925.trim() !== '')
+        ? sectorEtfRow.time925.trim()
         : '';
     if (rawValue !== '') {
       syncSectorEtfZhangNum(rawValue);
@@ -382,12 +382,12 @@ async function confirmClearData() {
   biddingData.forEach(row => {
     row.time915 = '';
     row.time920 = '';
-    row.time930 = '';
+    row.time925 = '';
     row.change = '';
     row.close = '';
-    delete row.time930_initial;
-    delete row.time930_initial_modifiedAt;
-    delete row.time930_modifiedAt;
+    delete row.time925_initial;
+    delete row.time925_initial_modifiedAt;
+    delete row.time925_modifiedAt;
   });
 
   getBiddingData()[uiStore.currentDate] = biddingData;
@@ -432,10 +432,10 @@ async function fetchSnapshot() {
       filledRows++;
       if (rowName.indexOf('板块ETF') === 0) sectorEtfFilledValue = value;
       const time920Val = parseFloat(row.time920);
-      const time930Val = parseFloat(row.time930);
-      if (row.time920 && row.time930 && !isNaN(time920Val) && !isNaN(time930Val)) {
-        if (time930Val > time920Val) row.change = '增';
-        else if (time930Val < time920Val) row.change = '减';
+      const time925Val = parseFloat(row.time925);
+      if (row.time920 && row.time925 && !isNaN(time920Val) && !isNaN(time925Val)) {
+        if (time925Val > time920Val) row.change = '增';
+        else if (time925Val < time920Val) row.change = '减';
         else row.change = '平';
       }
     });
@@ -476,7 +476,7 @@ async function runDiagnostics() {
   push('本地内存行数: ' + localRows.length);
   localRows.forEach(function(r) {
     push('  ' + (r.name || '(无名)') + ' | 915=' + (r.time915 || '-') +
-         ' 920=' + (r.time920 || '-') + ' 930=' + (r.time930 || '-') +
+         ' 920=' + (r.time920 || '-') + ' 930=' + (r.time925 || '-') +
          ' change=' + (r.change || '-') + ' close=' + (r.close || '-'));
   });
   push('默认模板: ' + getDefaultBiddingTemplate().map(function(t) { return t.name; }).join('、'));
@@ -488,7 +488,7 @@ async function runDiagnostics() {
     const cloudRows = await fetchBiddingCloudRows(uiStore.currentDate);
     push('云端当前日期行数: ' + cloudRows.length);
     cloudRows.forEach(function(r) {
-      const hasValue = (r.time915 || r.time920 || r.time930 || r.change || r.close);
+      const hasValue = (r.time915 || r.time920 || r.time925 || r.change || r.close);
       push('  ' + (r.name || '(无名)') + (hasValue ? ' [有值]' : ' [空]'));
     });
   } catch (e) {

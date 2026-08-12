@@ -144,10 +144,10 @@ export function getPreviousTradingDayWithData(date) {
 
     if (bidding && Array.isArray(bidding)) {
       for (const row of bidding) {
-        const time930 = (row.time930 || '').toString().trim();
+        const time925 = (row.time925 || '').toString().trim();
         const close = (row.close || '').toString().trim();
         if ((row.name === '最近多板%' || row.name.startsWith('板块ETF') || row.name === '昨成交额前五')
-          && time930 !== '' && close !== '') {
+          && time925 !== '' && close !== '') {
           hasValidData = true;
           break;
         }
@@ -178,7 +178,7 @@ export function getTodayBidding() {
       return (row.name && row.name.toString().trim() !== '') ||
         (row.time915 && row.time915.toString().trim() !== '') ||
         (row.time920 && row.time920.toString().trim() !== '') ||
-        (row.time930 && row.time930.toString().trim() !== '') ||
+        (row.time925 && row.time925.toString().trim() !== '') ||
         (row.change && row.change.toString().trim() !== '') ||
         (row.close && row.close.toString().trim() !== '');
     });
@@ -205,11 +205,11 @@ export function renderConsecutiveUp() {
 
   if (todayBidding && Array.isArray(todayBidding)) {
     todayBidding.forEach(row => {
-      const time930 = (row.time930 || '').toString().trim();
+      const time925 = (row.time925 || '').toString().trim();
       const close = (row.close || '').toString().trim();
-      if (row.name === '最近多板%' && time930 !== '' && close !== '') hasTodayData.duoban = true;
-      if (row.name && row.name.startsWith('板块ETF') && time930 !== '' && close !== '') hasTodayData.bankuai = true;
-      if (row.name === '昨成交额前五' && time930 !== '' && close !== '') hasTodayData.ticai = true;
+      if (row.name === '最近多板%' && time925 !== '' && close !== '') hasTodayData.duoban = true;
+      if (row.name && row.name.startsWith('板块ETF') && time925 !== '' && close !== '') hasTodayData.bankuai = true;
+      if (row.name === '昨成交额前五' && time925 !== '' && close !== '') hasTodayData.ticai = true;
     });
   }
 
@@ -321,15 +321,15 @@ export function autoCalculateRecentMultiScore() {
     const currentBidding = biddingData[currentDate];
     if (currentBidding && currentBidding.length > 0) {
       const duobanRow = currentBidding.find(row => row.name && row.name.trim() === '最近多板%');
-      if (duobanRow && duobanRow.time930) {
-        const time930Value = parseFloat(duobanRow.time930);
-        if (!isNaN(time930Value) && time930Value < -1) {
+      if (duobanRow && duobanRow.time925) {
+        const time925Value = parseFloat(duobanRow.time925);
+        if (!isNaN(time925Value) && time925Value < -1) {
           score += s.jingjiaDie1;
         }
       }
       const dapanRow = currentBidding.find(row => row.name && row.name.trim() === '大盘（%）');
-      if (dapanRow && dapanRow.time930) {
-        const dapanValue = parseFloat(dapanRow.time930);
+      if (dapanRow && dapanRow.time925) {
+        const dapanValue = parseFloat(dapanRow.time925);
         if (!isNaN(dapanValue)) {
           if (dapanValue > 1) {
             score += s.dapanMore1;

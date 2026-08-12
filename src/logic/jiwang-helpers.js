@@ -51,21 +51,21 @@ export function autoCalculateConsecutiveDays() {
         }
         if (!targetKey) return;
 
-        const time930Str = (row.time930 || '').toString().trim();
+        const time925Str = (row.time925 || '').toString().trim();
         const closeStr = (row.close || '').toString().trim();
-        const time930 = parseFloat(time930Str);
+        const time925 = parseFloat(time925Str);
         const close = parseFloat(closeStr);
-        if (time930Str === '' || closeStr === '' || isNaN(time930) || isNaN(close)) return;
+        if (time925Str === '' || closeStr === '' || isNaN(time925) || isNaN(close)) return;
 
         let todayDirection;
         if (targetKey === 'ticai') {
-          if (close === time930) {
+          if (close === time925) {
             todayDirection = (close >= 3) ? 1 : -1;
           } else {
-            todayDirection = (close > time930) ? 1 : -1;
+            todayDirection = (close > time925) ? 1 : -1;
           }
         } else {
-          todayDirection = (close > time930) ? 1 : -1;
+          todayDirection = (close > time925) ? 1 : -1;
         }
 
         const st = consecutiveState[targetKey];

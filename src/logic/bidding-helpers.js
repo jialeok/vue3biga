@@ -85,11 +85,11 @@ export function autoTagShunshiNishi(skipRender) {
   const duibanRow = biddingData.find(row => row.name && row.name.trim() === '最近多板%');
   if (!duibanRow) return;
 
-  const time930 = parseFloat(duibanRow.time930);
+  const time925 = parseFloat(duibanRow.time925);
   const close = parseFloat(duibanRow.close);
-  if (isNaN(time930) || isNaN(close)) return;
+  if (isNaN(time925) || isNaN(close)) return;
 
-  const isShunshi = time930 < close;
+  const isShunshi = time925 < close;
 
   const stocks = getStocksData()[currentDate] || [];
   let hasUpdate = false;
@@ -135,10 +135,10 @@ export function autoTagShunshiNishi(skipRender) {
 
 export function getDuibanRowHistory(row) {
   if (!row) return null;
-  const initial = row.time930_initial !== undefined ? row.time930_initial : '';
-  const final = row.time930 || '';
-  const initialModifiedAt = row.time930_initial_modifiedAt;
-  const finalModifiedAt = row.time930_modifiedAt;
+  const initial = row.time925_initial !== undefined ? row.time925_initial : '';
+  const final = row.time925 || '';
+  const initialModifiedAt = row.time925_initial_modifiedAt;
+  const finalModifiedAt = row.time925_modifiedAt;
 
   const formatMMSS = (ts) => {
     if (!ts) return '';
@@ -198,7 +198,7 @@ function biddingCurrentPoint() {
   const mins = now.getUTCHours() * 60 + now.getUTCMinutes();
   if (mins >= 9 * 60 + 10 && mins < 9 * 60 + 17) return { col: 'time915', label: '9:15' };
   if (mins >= 9 * 60 + 17 && mins < 9 * 60 + 22) return { col: 'time920', label: '9:20' };
-  if (mins >= 9 * 60 + 22 && mins < 9 * 60 + 40) return { col: 'time930', label: '9:25' };
+  if (mins >= 9 * 60 + 22 && mins < 9 * 60 + 40) return { col: 'time925', label: '9:25' };
   if (mins >= 15 * 60) return { col: 'close', label: '收盘' };
   return null;
 }
