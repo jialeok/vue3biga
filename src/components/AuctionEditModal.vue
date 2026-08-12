@@ -71,13 +71,13 @@
           </div>
           <div class="api-grid">
             <button v-for="b in thsButtons" :key="b.key"
-              @click="runBackend(b.fn, b.key, thsStatus)"
+              @click="runBackend(b.fn, b.key, 'thsApiStatus')"
               :class="['btn', 'btn-ths', { 'btn-ths-wide': b.wide }]"
               :disabled="busyKey === b.key">
               {{ busyKey === b.key ? '处理中...' : b.label }}
             </button>
           </div>
-          <span class="api-status-line">{{ thsStatus }}</span>
+          <span class="api-status-line" :class="statusCls('thsApiStatus')">{{ statusMsg('thsApiStatus') }}</span>
         </div>
 
         <!-- 猫抓接口 -->
@@ -88,13 +88,13 @@
           </div>
           <div class="api-grid">
             <button v-for="b in numcatButtons" :key="b.key"
-              @click="runBackend(b.fn, b.key, numcatStatus)"
+              @click="runBackend(b.fn, b.key, 'numcatApiStatus')"
               :class="['btn', 'btn-numcat', { 'btn-numcat-wide': b.wide }]"
               :disabled="busyKey === b.key">
               {{ busyKey === b.key ? '处理中...' : b.label }}
             </button>
           </div>
-          <span class="api-status-line">{{ numcatStatus }}</span>
+          <span class="api-status-line" :class="statusCls('numcatApiStatus')">{{ statusMsg('numcatApiStatus') }}</span>
         </div>
 
         <!-- 接口诊断 -->
@@ -104,7 +104,7 @@
             <span class="api-section-tag">独立运行</span>
           </div>
           <button @click="onRunDiag" class="btn btn-diag" :disabled="busyKey === 'diag'">{{ busyKey === 'diag' ? '诊断中...' : '🔍 运行诊断' }}</button>
-          <span class="api-status-line">{{ diagStatus }}</span>
+          <span class="api-status-line" :class="statusCls('auctionDiagStatus')">{{ statusMsg('auctionDiagStatus') }}</span>
         </div>
 
         <!-- 表单行 -->
@@ -134,7 +134,8 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
+import { apiStatusMap } from '../logic/ui-bridge.js';
 import {
   getTodayGroupList, saveData, getAuctionData,
   importAuctionFromPaste, importAuctionHistoryFill,
@@ -180,9 +181,6 @@ const historyText = ref('');
 const isHot = computed(() => props.dataSource === 'hot');
 const ds = computed(() => isHot.value ? 'hot' : 'auction');
 
-const thsStatus = ref('');
-const numcatStatus = ref('');
-const diagStatus = ref('');
 const pasteStatus = ref('');
 const codeMapStatus = ref('');
 const historyStatus = ref('');
@@ -258,12 +256,16 @@ function open() {
   codeMapText.value = '';
   historyText.value = '';
   historyDate.value = auctionStore.currentDate || '';
-  thsStatus.value = '';
-  numcatStatus.value = '';
-  diagStatus.value = '';
   pasteStatus.value = '';
   codeMapStatus.value = '';
   historyStatus.value = '';
+  // 清除上次会话残留的接口进度，并复位忙碌锁
+  delete apiStatusMap.thsApiStatus;
+  delete apiStatusMap.numcatApiStatus;
+  delete apiStatusMap.auctionDiagStatus;
+  busyKey.value = '';
+  activeElId.value = '';
+  if (busyTimer) { clearTimeout(busyTimer); busyTimer = null; }
   visible.value = true;
 }
 function close() {
@@ -300,28 +302,71 @@ function save() {
 }
 
 const busyKey = ref('');
+const activeElId = ref('');       // 当前正在执行的接口对应的状态 id
+let busyTimer = null;             // 兜底解锁计时器
 
-// statusRef 接收对应区块的状态文本 ref，按钮进度提示 + 区块状态行双重反馈
-function runBackend(fn, key, statusRef) {
+// 读取 app-core 业务层已经写到 apiStatusMap 的真实进度（原版 setApiStatus 的迁移植）
+function statusMsg(elId) {
+  const e = apiStatusMap[elId];
+  return e ? e.msg : '';
+}
+function statusCls(elId) {
+  const e = apiStatusMap[elId];
+  return { ok: !!(e && e.ok === true), err: !!(e && e.ok === false) };
+}
+// 终止消息：原版每条接口函数收尾都会写 ✅ 成功 / ❌ 失败，据此判定任务完成
+function isTerminal(msg) {
+  return typeof msg === 'string' && (msg.indexOf('✅') >= 0 || msg.indexOf('❌') >= 0);
+}
+
+// statusRef 改为 elId（thsApiStatus / numcatApiStatus / auctionDiagStatus），
+// 进度文本完全来自 app-core 内部的 setApiStatus（正在抓取 N 只 / ✅覆盖 X 跳过 Y / ❌...），
+// 不再写自造的「执行中/完成」，从而保证用户能看到真实的抓取进度与成功/失败计数。
+function runBackend(fn, key, elId) {
   if (!fn || busyKey.value) return;
   busyKey.value = key;
-  if (statusRef) statusRef.value = '执行中...';
-  // 用 Promise.resolve().then 包裹，确保 fn 同步抛错也能被 catch/finally 捕获，
-  // 避免按钮卡在「处理中...」且无任何进度反馈（原 window.setBtnLoading 在 Vue 下无 DOM 目标会同步抛错）
-  Promise.resolve().then(() => fn())
-    .then(() => {
-      refreshRows();
-      if (statusRef) statusRef.value = '完成';
-      auctionStore.bumpDataVersion(ds.value);
-    })
-    .catch(e => {
-      console.error('接口调用失败:', e);
-      if (statusRef) statusRef.value = '失败: ' + (e && e.message ? e.message : String(e));
-    })
-    .finally(() => {
-      busyKey.value = '';
-    });
+  activeElId.value = elId;
+  if (apiStatusMap[elId]) delete apiStatusMap[elId]; // 清掉上次残留，避免立即被判定为终止
+  // 用 Promise.resolve().then 包裹，确保 fn 同步抛错也能被捕获
+  // （原 window.setBtnLoading 在 Vue 下无 DOM 目标会同步抛错）
+  Promise.resolve().then(() => fn()).catch(e => {
+    console.error('接口调用异常:', e);
+    apiStatusMap[elId] = { msg: '❌ ' + (e && e.message ? e.message : String(e)), ok: false, ts: Date.now() };
+  });
+  // 兜底：60s 内无任何终止消息（异常漏报）时强制解锁，避免按钮永久卡死
+  if (busyTimer) clearTimeout(busyTimer);
+  busyTimer = setTimeout(() => { busyKey.value = ''; activeElId.value = ''; }, 60000);
 }
+
+// 监听三个接口状态 id 的时间戳：一旦出现终止消息（✅/❌），回填表单行并解锁按钮。
+// 终止消息保留 1.2s 便于用户看清「覆盖 X 只 / 跳过 Y 只」后再解锁。
+watch(
+  () => [
+    apiStatusMap.thsApiStatus && apiStatusMap.thsApiStatus.ts,
+    apiStatusMap.numcatApiStatus && apiStatusMap.numcatApiStatus.ts,
+    apiStatusMap.auctionDiagStatus && apiStatusMap.auctionDiagStatus.ts
+  ],
+  () => {
+    const elId = activeElId.value;
+    if (!elId) return;
+    const entry = apiStatusMap[elId];
+    if (entry && isTerminal(entry.msg)) {
+      if (entry.ok) {
+        refreshRows();
+        auctionStore.bumpDataVersion(ds.value);
+        auctionStore.refresh();
+      }
+      setTimeout(() => {
+        const e2 = apiStatusMap[elId];
+        if (e2 && isTerminal(e2.msg)) {
+          busyKey.value = '';
+          activeElId.value = '';
+          if (busyTimer) { clearTimeout(busyTimer); busyTimer = null; }
+        }
+      }, 1200);
+    }
+  }
+);
 
 function onPasteImport() {
   if (!pasteText.value.trim()) return;
@@ -400,11 +445,15 @@ function onHistoryFill() {
 function onRunDiag() {
   if (busyKey.value) return;
   busyKey.value = 'diag';
-  diagStatus.value = '诊断中...';
+  activeElId.value = 'auctionDiagStatus';
+  if (apiStatusMap.auctionDiagStatus) delete apiStatusMap.auctionDiagStatus;
   Promise.resolve().then(() => runAuctionApiDiagnostics())
-    .then(() => { diagStatus.value = '诊断完成'; })
-    .catch(e => { diagStatus.value = '诊断失败: ' + (e && e.message ? e.message : String(e)); })
-    .finally(() => { busyKey.value = ''; });
+    .catch(e => {
+      console.error('诊断异常:', e);
+      apiStatusMap.auctionDiagStatus = { msg: '❌ ' + (e && e.message ? e.message : String(e)), ok: false, ts: Date.now() };
+    });
+  if (busyTimer) clearTimeout(busyTimer);
+  busyTimer = setTimeout(() => { busyKey.value = ''; activeElId.value = ''; }, 60000);
 }
 
 function onRollback() {
@@ -794,10 +843,15 @@ defineExpose({ open, close });
   margin-top: 6px;
   font-size: 12px;
   min-height: 16px;
+  line-height: 1.5;
+  word-break: break-all;
 }
 .api-ths .api-status-line { color: #92400e; }
 .api-numcat .api-status-line { color: #831843; }
 .api-diag .api-status-line { color: #166534; }
+/* 成功/失败按原版 setApiStatus 的 isOk 着色（绿=成功/进行中，红=失败） */
+.api-status-line.ok { color: #059669 !important; font-weight: 600; }
+.api-status-line.err { color: #dc2626 !important; font-weight: 600; }
 
 /* 通用小按钮（粘贴/映射/历史区） */
 .btn {

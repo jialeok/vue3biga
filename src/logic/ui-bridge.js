@@ -39,7 +39,22 @@ export function renderComment() {}
 export function closeCommentModal() {}
 export function _readTrackEditFormData() { return {}; }
 export function renderHotForm() { _emit('auction-refresh'); }
-export function showNumcatChoiceModal() {}
+// 迁移占位：原 DOM「覆盖/补全」选择弹窗未迁移到 Vue。这里还原其语义——
+// 调用方（同花顺/猫抓各补全类按钮）依赖它拿到 overwrite 开关才继续执行，
+// 此前是空函数导致按钮点了不执行。用 confirm 还原二选一：
+// 确定 = 覆盖模式（覆盖已有值），取消 = 补全模式（仅填充空值）。
+export function showNumcatChoiceModal(title, cb) {
+  let overwrite = false;
+  try {
+    overwrite = window.confirm(
+      (title || '操作模式') +
+      '\n\n[确定] = 覆盖模式（覆盖已有值）\n[取消] = 补全模式（仅填充空值）'
+    );
+  } catch (e) {
+    overwrite = false;
+  }
+  if (typeof cb === 'function') cb(overwrite);
+}
 export function updateCloudSyncUI() {}
 export function _switchGroupUI() {}
 export function showHotDiagReport() {}
