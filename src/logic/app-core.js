@@ -2073,8 +2073,9 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                 return !existing;
             });
             if (missing.length === 0) {
-                showToast('没有缺失代码的股票');
-                return;
+                const msg = '没有缺失代码的股票';
+                showToast(msg);
+                return msg;
             }
 
             let completed = 0, failed = 0;
@@ -2100,19 +2101,29 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                 } catch (e) {
                     _dbgLog('[AUCTION-ERR] autoCompleteMissingStockCodes upsertStockCodeMap ' + (e && e.message || e));
                 }
-                if (ds === 'hot') {
-                    await patchHotFieldBatch(state.currentDate, patches);
-                } else {
-                    await patchAuctionFieldBatch(state.currentDate, patches);
+                try {
+                    if (ds === 'hot') {
+                        await patchHotFieldBatch(state.currentDate, patches);
+                    } else {
+                        await patchAuctionFieldBatch(state.currentDate, patches);
+                    }
+                } catch (e) {
+                    _dbgLog('[AUCTION-ERR] autoCompleteMissingStockCodes patchFieldBatch ' + (e && e.message || e));
                 }
             }
 
-            showToast('代码补全：' + completed + ' 只成功，' + failed + ' 只失败');
-            if (ds === 'hot') {
-                if (typeof renderHotStocks === 'function') renderHotStocks();
-            } else {
-                if (typeof renderAuction === 'function') renderAuction();
+            const msg = '代码补全：' + completed + ' 只成功，' + failed + ' 只失败';
+            showToast(msg);
+            try {
+                if (ds === 'hot') {
+                    if (typeof renderHotStocks === 'function') renderHotStocks();
+                } else {
+                    if (typeof renderAuction === 'function') renderAuction();
+                }
+            } catch (e) {
+                _dbgLog('[AUCTION-ERR] autoCompleteMissingStockCodes render ' + (e && e.message || e));
             }
+            return msg;
         }
 
         export async function importStockCodeMap(rawText) {

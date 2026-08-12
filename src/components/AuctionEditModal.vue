@@ -35,7 +35,6 @@
             <div class="codemap-btns">
               <button @click="onImportCodeMap" class="btn btn-codemap-import">导入代码映射</button>
               <button @click="onAutoCompleteCode" class="btn btn-codemap-auto">自动补全代码</button>
-              <button @click="onClearCodeMap" class="btn btn-codemap-clear">清空映射</button>
             </div>
             <span v-if="codeMapStatus" class="inline-status">{{ codeMapStatus }}</span>
           </div>
@@ -394,7 +393,10 @@ function onAiVision() {
 }
 
 function onImportCodeMap() {
-  if (!codeMapText.value.trim()) return;
+  if (!codeMapText.value.trim()) {
+    codeMapStatus.value = '请先粘贴映射数据（格式：股票名[TAB]代码）';
+    return;
+  }
   const fn = importStockCodeMap;
   codeMapStatus.value = '导入中...';
   Promise.resolve(fn(codeMapText.value)).then((msg) => {
@@ -407,13 +409,13 @@ function onImportCodeMap() {
 }
 
 function onAutoCompleteCode() {
-  autoCompleteMissingStockCodes('auction');
-}
-
-function onClearCodeMap() {
-  if (!confirm('确定清空股票代码映射？清空后抓取程序将读不到代码。')) return;
-  codeMapText.value = '';
-  alert('已清空输入框（云端映射需到云端 stockcodemap 表操作）');
+  codeMapStatus.value = '补全中...';
+  Promise.resolve(autoCompleteMissingStockCodes('auction')).then((msg) => {
+    codeMapStatus.value = msg || '补全完成';
+  }).catch(e => {
+    console.error('自动补全代码失败:', e);
+    codeMapStatus.value = '失败: ' + (e && e.message ? e.message : String(e));
+  });
 }
 
 function onHistoryFill() {
@@ -862,7 +864,6 @@ defineExpose({ open, close });
 .btn-diag { width: 100%; padding: 10px 8px; font-size: 12px; min-height: 40px; background: linear-gradient(135deg, #22c55e, #16a34a); color: #fff; font-weight: 600; }
 .btn-codemap-import { background: linear-gradient(135deg, #10b981, #059669); color: #fff; }
 .btn-codemap-auto { background: linear-gradient(135deg, #8b5cf6, #7c3aed); color: #fff; }
-.btn-codemap-clear { background: #fee2e2; color: #dc2626; border: 1px solid #fecaca; }
 .btn-history-fill { margin-top: 8px; background: linear-gradient(135deg, #3b82f6, #2563eb); color: #fff; }
 .inline-status {
   display: inline-block;
