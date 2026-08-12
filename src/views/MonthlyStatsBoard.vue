@@ -148,9 +148,10 @@
 
 <script setup>
 import { ref, computed, watch, nextTick } from 'vue';
-import { getStocksData } from '../data/supabase-client.js';
+import { getStocksData, getJiwangData, getEtfData } from '../data/supabase-client.js';
+import { getRankData } from '../logic/app-core.js';
 import { useUiStore } from '../stores/uiStore.js';
-import { isWeekend } from '../logic/trading-day-helpers.js';
+import { isWeekend, isTradingDay } from '../logic/trading-day-helpers.js';
 
 const uiStore = useUiStore();
 
@@ -193,10 +194,21 @@ function computeStats(dates) {
     emptyWinRate: 0, chushouWinRate: 0,
   };
   const stocksData = getStocksData();
-  const seenTradingDays = new Set();
+  const jiwangData = getJiwangData();
   dates.forEach(d => {
+    if (isTradingDay(d)) {
+      r.tradingDays++;
+      const dayJiwang = jiwangData[d];
+      if (dayJiwang) {
+        if (dayJiwang.jielun === '空仓') r.emptyCount++;
+        else if (dayJiwang.jielun === '出手') r.chushouCount++;
+        if (dayJiwang.chushou === '空仓对了') r.emptyRight++;
+        else if (dayJiwang.chushou === '空仓错了') r.emptyWrong++;
+        else if (dayJiwang.chushou === '出手对了') r.chushouRight++;
+        else if (dayJiwang.chushou === '出手错了') r.chushouWrong++;
+      }
+    }
     const list = stocksData[d] || [];
-    if (list.length > 0) seenTradingDays.add(d);
     list.forEach(s => {
       if (s.soldRecords) {
         s.soldRecords.forEach(rec => {
@@ -205,15 +217,8 @@ function computeStats(dates) {
           else r.totalLoss += Math.abs(p);
         });
       }
-      if (s.emptyResult === '对') r.emptyRight++;
-      else if (s.emptyResult === '错') r.emptyWrong++;
-      if (s.chushouResult === '对') r.chushouRight++;
-      else if (s.chushouResult === '错') r.chushouWrong++;
-      if (s.isEmpty) r.emptyCount++;
-      if (s.isChushou) r.chushouCount++;
     });
   });
-  r.tradingDays = seenTradingDays.size;
   r.balance = r.totalProfit - r.totalLoss;
   r.emptyWinRate = r.emptyRight + r.emptyWrong > 0 ? Math.round(r.emptyRight / (r.emptyRight + r.emptyWrong) * 100) : 0;
   r.chushouWinRate = r.chushouRight + r.chushouWrong > 0 ? Math.round(r.chushouRight / (r.chushouRight + r.chushouWrong) * 100) : 0;
@@ -233,13 +238,13 @@ const totalStats = computed(() => {
     d.setDate(d.getDate() + 1);
   }
   const r = computeStats(dates);
-  r.dateRange = `${startDate} ~ ${end}`;
-  const stocksData = getStocksData();
+  r.dateRange = `${startDate} 至 ${end}`;
   let unrecorded = 0;
   dates.forEach(dt => {
-    if (!isWeekend(dt)) {
-      const list = stocksData[dt] || [];
-      if (list.length === 0) unrecorded++;
+    if (isTradingDay(dt)) {
+      const jiwangData = getJiwangData();
+      const dayJiwang = jiwangData[dt];
+      if (!dayJiwang || !dayJiwang.jielun) unrecorded++;
     }
   });
   r.unrecordedCount = unrecorded;
@@ -247,39 +252,56 @@ const totalStats = computed(() => {
 });
 
 function computeTopStocks(dates) {
-  const stocksData = getStocksData();
+  const rankData = getRankData() || {};
   const counts = {};
   dates.forEach(d => {
-    (stocksData[d] || []).forEach(s => {
-      if (s.name) counts[s.name] = (counts[s.name] || 0) + 1;
-    });
+    const dayRank = rankData[d];
+    if (dayRank && Array.isArray(dayRank)) {
+      dayRank.forEach(item => {
+        if (item.stock) counts[item.stock] = (counts[item.stock] || 0) + 1;
+      });
+    }
+  });
+  return Object.entries(counts).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 10);
+}
+
+function computeTopEtfs(dates) {
+  const etfData = getEtfData() || {};
+  const counts = {};
+  dates.forEach(d => {
+    const dayEtf = etfData[d];
+    if (dayEtf && Array.isArray(dayEtf)) {
+      dayEtf.forEach(item => {
+        if (item.name) counts[item.name] = (counts[item.name] || 0) + 1;
+      });
+    }
   });
   return Object.entries(counts).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 10);
 }
 
 const topStocks = computed(() => computeTopStocks(getMonthDates()));
-const topEtfs = computed(() => []);
+const topEtfs = computed(() => computeTopEtfs(getMonthDates()));
 const duibanPerformance = computed(() => []);
 
 const recordStats = computed(() => {
   const dates = getMonthDates();
-  const stocksData = getStocksData();
+  const jiwangData = getJiwangData();
   let duibanCount = 0, topicCount = 0, etfCount = 0;
   let duibanRight = 0, topicRight = 0, etfRight = 0;
-  let duibanTotal = 0, topicTotal = 0, etfTotal = 0;
   dates.forEach(d => {
-    const list = stocksData[d] || [];
-    list.forEach(s => {
-      if (s.recentMulti) { duibanCount++; if (s.recentMultiResult === '对') duibanRight++; if (s.recentMultiResult) duibanTotal++; }
-      if (s.topic) { topicCount++; if (s.topicResult === '对') topicRight++; if (s.topicResult) topicTotal++; }
-      if (s.etf) { etfCount++; if (s.etfResult === '对') etfRight++; if (s.etfResult) etfTotal++; }
-    });
+    const dayJiwang = jiwangData[d];
+    if (!dayJiwang) return;
+    const st = dayJiwang.stats || {};
+    const isRight = dayJiwang.chushou === '空仓对了' || dayJiwang.chushou === '出手对了';
+    if (st.recentMulti === true) { duibanCount++; if (isRight) duibanRight++; }
+    if (st.topicDirection === true) { topicCount++; if (isRight) topicRight++; }
+    if (st.sectorEtf === true) { etfCount++; if (isRight) etfRight++; }
   });
   return {
     duibanCount, topicCount, etfCount,
-    duibanWinRate: duibanTotal > 0 ? Math.round(duibanRight / duibanTotal * 100) : 0,
-    topicWinRate: topicTotal > 0 ? Math.round(topicRight / topicTotal * 100) : 0,
-    etfWinRate: etfTotal > 0 ? Math.round(etfRight / etfTotal * 100) : 0,
+    duibanWinRate: duibanCount > 0 ? Math.round(duibanRight / duibanCount * 100) : 0,
+    topicWinRate: topicCount > 0 ? Math.round(topicRight / topicCount * 100) : 0,
+    etfWinRate: etfCount > 0 ? Math.round(etfRight / etfCount * 100) : 0,
   };
 });
 

@@ -1036,7 +1036,7 @@
             overflow-x: auto;
             overflow-y: hidden;
             -webkit-overflow-scrolling: touch;
-            padding-right: 8px;
+            box-sizing: border-box;
         }
 
         .duiban-scroll-container::-webkit-scrollbar {
@@ -3580,23 +3580,6 @@
             display: none !important;
         }
 
-        /* 返回当前按钮：只在统计视图（周末模式）显示，交易日视图隐藏 */
-        .stats-nav-btn.back-current {
-            display: none;
-        }
-
-        body.weekend-mode .stats-nav-btn.back-current {
-            display: inline-block !important;
-        }
-        
-        /* 本月统计按钮：只在周末模式显示，交易日隐藏 */
-        .stats-nav-btn.monthly {
-            display: none;
-        }
-
-        body.weekend-mode .stats-nav-btn.monthly {
-            display: inline-block !important;
-        }
 
         /* 自定义日期选择器日历样式 */
         .date-picker-calendar {
