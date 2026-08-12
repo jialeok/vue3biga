@@ -66,13 +66,12 @@
               <span class="api-section-tag">883410.TI · fuyao-proxy</span>
             </div>
             <div class="api-grid">
-              <button @click="runBackend(thsFns.ladder)" class="btn btn-ths">获取最近多板</button>
-              <button @click="runBackend(thsFns.yestVol)" class="btn btn-ths">两全昨日成交量</button>
-              <button @click="runBackend(thsFns.todayYest)" class="btn btn-ths">当天昨日成交量</button>
-              <button @click="runBackend(thsFns.prevYest)" class="btn btn-ths">对比日昨成交量</button>
-              <button @click="runBackend(thsFns.changePct)" class="btn btn-ths">获取涨幅</button>
-              <button @click="runBackend(thsFns.gapPct)" class="btn btn-ths">历史断点涨幅</button>
-              <button @click="runBackend(thsFns.gapYest)" class="btn btn-ths btn-ths-wide">历史断点昨日成交量</button>
+              <button v-for="b in thsButtons" :key="b.key"
+                @click="runBackend(b.fn, b.key)"
+                :class="['btn', 'btn-ths', { 'btn-ths-wide': b.wide }]"
+                :disabled="busyKey === b.key">
+                {{ busyKey === b.key ? '处理中...' : b.label }}
+              </button>
             </div>
           </div>
 
@@ -83,12 +82,12 @@
               <span class="api-section-tag">免费额度每日10次</span>
             </div>
             <div class="api-grid">
-              <button @click="runBackend(numcatFns.yestAuction)" class="btn btn-numcat">补全昨日竞价量</button>
-              <button @click="runBackend(numcatFns.today)" class="btn btn-numcat">获取当天竞价量</button>
-              <button @click="runBackend(numcatFns.all)" class="btn btn-numcat btn-numcat-wide">全竞价量（昨日+今日）</button>
-              <button @click="runBackend(numcatFns.fiveDays)" class="btn btn-numcat btn-numcat-wide">连抓五天补全</button>
-              <button @click="runBackend(numcatFns.topics)" class="btn btn-numcat">补全题材</button>
-              <button @click="runBackend(numcatFns.monitor)" class="btn btn-numcat">查询监管</button>
+              <button v-for="b in numcatButtons" :key="b.key"
+                @click="runBackend(b.fn, b.key)"
+                :class="['btn', 'btn-numcat', { 'btn-numcat-wide': b.wide }]"
+                :disabled="busyKey === b.key">
+                {{ busyKey === b.key ? '处理中...' : b.label }}
+              </button>
             </div>
           </div>
 
@@ -98,7 +97,7 @@
               <span class="api-section-title">接口诊断</span>
               <span class="api-section-tag">独立运行</span>
             </div>
-            <button @click="onRunDiag" class="btn btn-diag">🔍 运行诊断</button>
+            <button @click="onRunDiag" class="btn btn-diag" :disabled="busyKey === 'diag'">{{ busyKey === 'diag' ? '诊断中...' : '🔍 运行诊断' }}</button>
           </div>
 
           <!-- 接口状态 -->
@@ -214,6 +213,25 @@ const numcatFns = computed(() => isHot.value ? {
   monitor: fetchMonitorWarningFromNumcat
 });
 
+const thsButtons = computed(() => [
+  { key: 'ths-ladder', label: '获取最近多板', fn: thsFns.value.ladder },
+  { key: 'ths-yestVol', label: '两全昨日成交量', fn: thsFns.value.yestVol },
+  { key: 'ths-todayYest', label: '当天昨日成交量', fn: thsFns.value.todayYest },
+  { key: 'ths-prevYest', label: '对比日昨成交量', fn: thsFns.value.prevYest },
+  { key: 'ths-changePct', label: '获取涨幅', fn: thsFns.value.changePct },
+  { key: 'ths-gapPct', label: '历史断点涨幅', fn: thsFns.value.gapPct },
+  { key: 'ths-gapYest', label: '历史断点昨日成交量', fn: thsFns.value.gapYest, wide: true }
+]);
+
+const numcatButtons = computed(() => [
+  { key: 'nc-yestAuction', label: '补全昨日竞价量', fn: numcatFns.value.yestAuction },
+  { key: 'nc-today', label: '获取当天竞价量', fn: numcatFns.value.today },
+  { key: 'nc-all', label: '全竞价量（昨日+今日一次请求）', fn: numcatFns.value.all, wide: true },
+  { key: 'nc-fiveDays', label: '连抓五天补全（竞价量+昨成交量+涨幅）', fn: numcatFns.value.fiveDays, wide: true },
+  { key: 'nc-topics', label: '补全题材', fn: numcatFns.value.topics },
+  { key: 'nc-monitor', label: '查询监管', fn: numcatFns.value.monitor }
+]);
+
 function refreshRows() {
   const list = getTodayGroupList(props.dataSource);
   editRows.value = list.map(item => ({
@@ -268,11 +286,11 @@ function save() {
   close();
 }
 
-const loading = ref(false);
+const busyKey = ref('');
 
-function runBackend(fn) {
-  if (!fn || loading.value) return;
-  loading.value = true;
+function runBackend(fn, key) {
+  if (!fn || busyKey.value) return;
+  busyKey.value = key;
   apiStatus.value = '执行中...';
   Promise.resolve(fn()).then(() => {
     refreshRows();
@@ -282,7 +300,7 @@ function runBackend(fn) {
     console.error('接口调用失败:', e);
     apiStatus.value = '失败: ' + (e && e.message ? e.message : String(e));
   }).finally(() => {
-    loading.value = false;
+    busyKey.value = '';
   });
 }
 
@@ -341,11 +359,15 @@ function onHistoryFill() {
 }
 
 function onRunDiag() {
+  if (busyKey.value) return;
+  busyKey.value = 'diag';
   apiStatus.value = '诊断中...';
   runAuctionApiDiagnostics().then(() => {
     apiStatus.value = '诊断完成';
   }).catch(e => {
     apiStatus.value = '诊断失败: ' + e.message;
+  }).finally(() => {
+    busyKey.value = '';
   });
 }
 
@@ -679,17 +701,21 @@ defineExpose({ open, close });
 
 /* API 区块 */
 .api-section {
-  padding: 10px 14px;
-  border-bottom: 1px solid #f3f4f6;
+  margin-bottom: 16px;
+  padding: 10px;
+  border-radius: 6px;
 }
 .api-ths {
   background: #fffbeb;
+  border: 1px solid #fcd34d;
 }
 .api-numcat {
   background: #fdf2f8;
+  border: 1px solid #f9a8d4;
 }
 .api-diag {
   background: #f0fdf4;
+  border: 1px solid #86efac;
 }
 .api-section-header {
   display: flex;
@@ -714,7 +740,16 @@ defineExpose({ open, close });
 .api-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 5px;
+  gap: 8px;
+}
+.api-grid .btn {
+  padding: 10px 8px;
+  font-size: 12px;
+  min-height: 40px;
+}
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 /* 按钮 */
@@ -733,7 +768,7 @@ defineExpose({ open, close });
 .btn-ths-wide { grid-column: span 2; font-weight: 600; }
 .btn-numcat { background: linear-gradient(135deg, #ec4899, #db2777); color: #fff; }
 .btn-numcat-wide { grid-column: span 2; background: linear-gradient(135deg, #be185d, #9d174d); font-weight: 600; }
-.btn-diag { width: 100%; background: linear-gradient(135deg, #22c55e, #16a34a); color: #fff; font-weight: 600; }
+.btn-diag { width: 100%; padding: 10px 8px; font-size: 12px; min-height: 40px; background: linear-gradient(135deg, #22c55e, #16a34a); color: #fff; font-weight: 600; }
 .api-status-bar { padding: 6px 14px; font-size: 11px; color: #059669; background: #f0fdf4; border-bottom: 1px solid #f3f4f6; }
 .btn-codemap-import { background: linear-gradient(135deg, #10b981, #059669); color: #fff; }
 .btn-codemap-auto { background: linear-gradient(135deg, #8b5cf6, #7c3aed); color: #fff; }
@@ -782,13 +817,30 @@ defineExpose({ open, close });
 /* 底部操作 */
 .edit-actions {
   display: flex;
-  gap: 6px;
-  padding: 8px 14px;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
   border-top: 1px solid #e5e7eb;
   flex-shrink: 0;
-  flex-wrap: wrap;
 }
-.btn-add { background: #f0f9ff; color: #0284c7; border: 1px solid #bae6fd; }
+.edit-actions .btn {
+  width: 100%;
+  padding: 16px;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.edit-actions .btn-add {
+  width: 100%;
+  background: #f1f5f9;
+  color: #64748b;
+  border: 1px solid #e2e8f0;
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 400;
+  min-height: 40px;
+}
 .btn-save { background: linear-gradient(135deg, #22c55e, #16a34a); color: #fff; }
 .btn-rollback { background: linear-gradient(135deg, #3b82f6, #2563eb); color: #fff; }
 .btn-clear-concept { background: linear-gradient(135deg, #ef4444, #dc2626); color: #fff; }
