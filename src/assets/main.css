@@ -3842,16 +3842,6 @@
             padding: 3px 8px;
         }
 
-        .tag-recentmulti {
-            background: linear-gradient(135deg, #a855f7, #9333ea);
-            color: white;
-        }
-
-        .tag-topicdirection {
-            background: linear-gradient(135deg, #a855f7, #9333ea);
-            color: white;
-        }
-
         .tag-default {
             background: linear-gradient(135deg, #64748b, #475569);
             color: white;
@@ -3909,11 +3899,6 @@
         }
 
         .tag-watch {
-            background: linear-gradient(135deg, #a855f7, #9333ea);
-            color: white;
-        }
-
-        .tag-sectoretf {
             background: linear-gradient(135deg, #a855f7, #9333ea);
             color: white;
         }

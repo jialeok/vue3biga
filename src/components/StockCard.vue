@@ -136,9 +136,6 @@ const headerTags = computed(() => {
   else if (stock.hold) pos1 = { text: '持', cls: 'tag-hold' };
 
   let pos2 = null;
-  if (stock.topicDirection) pos2 = { text: '题材', cls: 'tag-topicdirection' };
-  else if (stock.recentMulti) pos2 = { text: '多板', cls: 'tag-recentmulti' };
-  else if (stock.sectorEtf) pos2 = { text: 'ETF', cls: 'tag-sectoretf' };
 
   let pos3 = null;
   const starTag = props.getStarTagsForStock(stock.name);
@@ -151,11 +148,8 @@ const headerTags = computed(() => {
 
 const secondTags = computed(() => {
   const stock = props.stock;
-  const pos2Tag = stock.topicDirection ? 'topicDirection' : (stock.recentMulti ? 'recentMulti' : (stock.sectorEtf ? 'sectorEtf' : null));
   const pos1Tag = stock.bought ? 'bought' : (stock.sold ? 'sold' : (stock.hold ? 'hold' : null));
   const tags = [];
-  if (stock.recentMulti && pos2Tag !== 'recentMulti') tags.push({ text: '多板', cls: 'tag-recentmulti' });
-  if (stock.sectorEtf && pos2Tag !== 'sectorEtf') tags.push({ text: 'ETF', cls: 'tag-sectoretf' });
   if (stock.hold && pos1Tag !== 'hold') tags.push({ text: '持', cls: 'tag-hold' });
   if (stock.sold && pos1Tag !== 'sold') tags.push({ text: '卖', cls: 'tag-sold' });
   const st = stageTag(stock);
