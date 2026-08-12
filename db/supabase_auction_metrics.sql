@@ -37,7 +37,7 @@ create table if not exists market_metrics (
   volume text,
   yest_volume text,
   change_pct text,
-  time925 text,
+  time930 text,
   seal_count text,
   scope text not null default 'auction',  -- 'auction' | 'hot'，区分属于哪个 tab
   source text default 'manual',           -- ths_api | manual_fill | computed | worker
