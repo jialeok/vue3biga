@@ -19,7 +19,7 @@ export async function runBidding(env, point, source) {
   let existingByName = {};
   if (point === 't0925') {
     try { (await readTodayBiddingRows(env, date)).forEach(r => existingByName[(r.name || '').trim()] = r); }
-    catch (e( e) { console.error('读今日行失败:', e.message); }
+    catch (e) { console.error('读今日行失败:', e.message); }
   }
 
   function buildUpsertPayload(computed, now) {

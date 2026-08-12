@@ -36,14 +36,14 @@ begin
     select 1 from information_schema.columns
     where table_schema = 'public' and table_name = 'bidding_data' and column_name = 'time930_initial_modifiedAt'
   ) then
-    alter table bidding_data rename column time930_initial_modifiedAt to time925_initial_modifiedAt;
+    alter table bidding_data rename column "time930_initial_modifiedAt" to "time925_initial_modifiedAt";
   end if;
 
   if exists (
     select 1 from information_schema.columns
     where table_schema = 'public' and table_name = 'bidding_data' and column_name = 'time930_modifiedAt'
   ) then
-    alter table bidding_data rename column time930_modifiedAt to time925_modifiedAt;
+    alter table bidding_data rename column "time930_modifiedAt" to "time925_modifiedAt";
   end if;
 end $$;
 
