@@ -3,11 +3,7 @@
     <div class="loading-icon">⏳</div>
     <div class="loading-title">加载中...</div>
   </div>
-  <div v-if="!loading && sortedList.length === 0" class="empty-state trading-day-element" style="display:block">
-    <div class="empty-icon">📈</div>
-    <div class="empty-title">暂无股票记录</div>
-    <div class="empty-desc">点击下方 + 按钮添加第一条记录</div>
-  </div>
+
 
   <!-- 紧凑型统计卡片 -->
   <div v-if="!loading" class="compact-stats-bar trading-day-element">
@@ -167,14 +163,46 @@
   </div>
   </div>
 
+  <div v-if="!loading && sortedList.length === 0" class="empty-state trading-day-element" style="display:block">
+    <div class="empty-icon">📈</div>
+    <div class="empty-title">暂无股票记录</div>
+    <div class="empty-desc">点击下方 + 按钮添加第一条记录</div>
+  </div>
+
   <EditModal v-model="editModalActive" :title="editModalTitle" @save="saveEditModal">
-    <div class="edit-form-row" v-for="field in editFields" :key="field.key">
-      <label>{{ field.label }}</label>
-      <input v-if="field.type === 'text'" v-model="editForm[field.key]" />
-      <input v-else-if="field.type === 'number'" v-model.number="editForm[field.key]" type="number" />
-      <select v-else-if="field.type === 'select'" v-model="editForm[field.key]">
-        <option v-for="opt in field.options" :key="opt" :value="opt">{{ opt }}</option>
-      </select>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">股票名称</label><input class="form-input" v-model="editForm.name" placeholder="如：综艺股份"></div>
+      <div class="form-group"><label class="form-label">相关题材</label><input class="form-input" v-model="editForm.xgcaiti" placeholder="如：人工智能、新能源"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">竞价开盘 %</label><input class="form-input" v-model="editForm.open" placeholder="如：0.79"></div>
+      <div class="form-group"><label class="form-label">开盘量比</label><input class="form-input" v-model="editForm.kbiliangkai" placeholder=">=3红色,<3绿色"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">竞符合数形态</label><input class="form-input" v-model="editForm.pattern" placeholder="如：正厂形、U形"></div>
+      <div class="form-group"><label class="form-label">零轴位置</label><input class="form-input" v-model="editForm.axis" placeholder="如：零轴上、零轴下"></div>
+    </div>
+    <div class="form-group"><label class="form-label">备注</label><input class="form-input" v-model="editForm.remark" placeholder="可选填"></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">收盘涨幅 %</label><input class="form-input" v-model="editForm.close" placeholder="如：4.09"></div>
+      <div class="form-group"><label class="form-label">换手率 %</label><input class="form-input" v-model="editForm.turnover" placeholder="如：11.5"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">阶段</label>
+        <select class="form-input" v-model="editForm.stage">
+          <option value="其它">其它</option><option value="二板">二板</option><option value="首板">首板</option><option value="连板">连板</option><option value="二波">二波</option><option value="高位">高位</option>
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">调整幅度 %</label><input class="form-input" v-model="editForm.adjust" placeholder="如：-6.6"></div>
+    </div>
+    <div class="form-group"><label class="form-label">缩放量能</label><input class="form-input" v-model="editForm.sfliangneng" placeholder="如：温和放量"></div>
+    <div class="form-row" style="flex-wrap:wrap;gap:6px">
+      <div class="form-group" style="flex:1;min-width:80px"><label class="form-label">已买</label><input type="checkbox" v-model="editForm.bought" style="width:20px;height:20px"></div>
+      <div class="form-group" style="flex:1;min-width:80px"><label class="form-label">已卖</label><input type="checkbox" v-model="editForm.sold" style="width:20px;height:20px"></div>
+      <div class="form-group" style="flex:1;min-width:80px"><label class="form-label">持有</label><input type="checkbox" v-model="editForm.hold" style="width:20px;height:20px"></div>
+      <div class="form-group" style="flex:1;min-width:80px"><label class="form-label">观察</label><input type="checkbox" v-model="editForm.watch" style="width:20px;height:20px"></div>
+      <div class="form-group" style="flex:1;min-width:80px"><label class="form-label">龙头</label><input type="checkbox" v-model="editForm.dragon" style="width:20px;height:20px"></div>
     </div>
   </EditModal>
 
@@ -600,7 +628,14 @@ function openEditModal(id) {
   editingStockId = id;
   editModalTitle.value = '编辑: ' + (stock.name || '');
   Object.keys(editForm).forEach(k => delete editForm[k]);
-  editFields.forEach(f => { editForm[f.key] = stock[f.key] !== undefined ? stock[f.key] : ''; });
+  editFields.forEach(f => {
+    const val = stock[f.key] !== undefined ? stock[f.key] : '';
+    if (['bought','sold','hold','watch','dragon'].includes(f.key)) {
+      editForm[f.key] = val === true || val === 1 || val === '1';
+    } else {
+      editForm[f.key] = val;
+    }
+  });
   editModalActive.value = true;
 }
 

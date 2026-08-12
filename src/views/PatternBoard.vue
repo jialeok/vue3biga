@@ -13,24 +13,29 @@
     <div v-if="pattern.content && pattern.content.trim()" style="white-space: pre-wrap;">{{ pattern.content }}</div>
     <div v-else class="pattern-placeholder">暂无模式心得，点击添加...</div>
   </div>
-  <div v-if="editing" class="vue-edit-overlay" @click.self="cancel">
-    <div class="vue-edit-modal">
-      <div class="vue-edit-header"><span>编辑模式心得</span><button @click="cancel">×</button></div>
-      <textarea v-model="draftContent" placeholder="输入模式完善心得..."></textarea>
-      <div class="vue-edit-checkboxes">
-        <label><input type="checkbox" v-model="draftUpdate"> 更新</label>
-        <label><input type="checkbox" v-model="draftKeep"> 坚守</label>
+  </div>
+
+  <EditModal v-model="editing" title="编辑模式" @save="save">
+    <div style="font-size:12px;color:#64748b;margin-bottom:12px">记录当日模式完善心得</div>
+    <textarea v-model="draftContent" placeholder="输入模式完善心得..." rows="6" style="width:100%;padding:12px;border:1px solid #e2e8f0;border-radius:12px;font-size:15px;box-sizing:border-box;resize:vertical"></textarea>
+    <div style="display:flex;gap:8px;margin:14px 0;flex-wrap:wrap">
+      <div style="flex:1;display:flex;align-items:center;gap:6px;padding:10px;border-radius:12px;background:rgba(59,130,246,0.05)">
+        <input type="checkbox" v-model="draftUpdate" style="width:18px;height:18px">
+        <span style="font-size:13px;color:#3b82f6;font-weight:600">更新</span>
       </div>
-      <button class="vue-edit-save" @click="save">保存模式</button>
+      <div style="flex:1;display:flex;align-items:center;gap:6px;padding:10px;border-radius:12px;background:rgba(16,185,129,0.05)">
+        <input type="checkbox" v-model="draftKeep" style="width:18px;height:18px">
+        <span style="font-size:13px;color:#059669;font-weight:600">坚守</span>
+      </div>
     </div>
-  </div>
-  </div>
+  </EditModal>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue';
 import { getCurrentDate, getPatternData, saveData, getNextDate, getPreviousDate } from '../logic/app-core.js';
 import { showToast } from '../composables/useToast.js';
+import EditModal from '../components/EditModal.vue';
 
 const expanded = ref(false);
 const editing = ref(false);
@@ -81,7 +86,7 @@ function startEdit() {
   draftKeep.value = !!pattern.value.keep;
   editing.value = true;
 }
-function cancel() { editing.value = false; }
+
 function save() {
   const content = draftContent.value.trim();
   const update = draftUpdate.value;
