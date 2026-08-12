@@ -24,7 +24,7 @@ export function getTagTitlesData() { return _fns.getTagTitlesData(); }
 export function getTodayJiwang() { return _fns.getTodayJiwang(); }
 export function getTodayGroupList(ds) { return _fns.getTodayGroupList(ds); }
 export function markJiwangDirty(date) { return _fns.markJiwangDirty(date); }
-export function replaceHotConceptFromPaste() { return _fns.replaceHotConceptFromPaste(); }
-export function importAuctionFromPaste() { return _fns.importAuctionFromPaste(); }
-export function replaceConceptFromPaste() { return _fns.replaceConceptFromPaste(); }
-export function importHotFromPaste() { return _fns.importHotFromPaste(); }
+export function replaceHotConceptFromPaste(...args) { return _fns.replaceHotConceptFromPaste(...args); }
+export function importAuctionFromPaste(...args) { return _fns.importAuctionFromPaste(...args); }
+export function replaceConceptFromPaste(...args) { return _fns.replaceConceptFromPaste(...args); }
+export function importHotFromPaste(...args) { return _fns.importHotFromPaste(...args); }

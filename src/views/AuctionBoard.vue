@@ -1148,7 +1148,7 @@ function runBackend(fn, ...args) {
     const result = task(...args);
     if (result && typeof result.then === 'function') {
       result
-        .then(() => { refresh(); showToast('后台操作完成'); })
+        .then((msg) => { refresh(); showToast(msg || '后台操作完成'); })
         .catch(e => { console.error('后台操作失败:', e); showToast('操作失败: ' + (e && e.message)); })
         .finally(() => { backendLoading.value = false; });
     } else {

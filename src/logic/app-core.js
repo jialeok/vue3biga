@@ -2115,12 +2115,10 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             }
         }
 
-        export async function importStockCodeMap() {
+        export async function importStockCodeMap(rawText) {
             const targetDate = _getAuctionStore() ? _getAuctionStore().currentDate : state.currentDate;
-            const ta = _domGet('stockCodeMapInput');
-            if (!ta) return;
-            const raw = ta.value.trim();
-            if (!raw) { setStockCodeMapStatus('请先粘贴数据', true); ta.focus(); return; }
+            const raw = (rawText || '').trim();
+            if (!raw) { throw new Error('请先粘贴数据'); }
             const map = Object.assign({}, state._scMapCache || {});
             const newNames = []; // 本次导入的名称（用于同步到今日竞价列表）
             const scPairs = [];
@@ -2187,37 +2185,31 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                     });
                     patchAuctionFieldBatch(targetDate, patches).catch(function(e) { _dbgLog('[AUCTION-ERR] patchAuctionFieldBatch code-map-import ' + (e && e.message || e)); });
                 }
-                // 刷新后台编辑表单和前台看板
-                renderAuctionForm();
-                renderAuction();
+                // 刷新由 Vue 组件在导入完成后统一触发（refreshRows + auctionStore.refresh）
             }
 
             scheduleCloudPush();
             // 同步代码到 auction_watchlist + market_metrics 的 code 列（拆表后新增）
             pushAuctionCodeToCloud(targetDate).catch(function(e) { _dbgLog('[AUCTION-ERR] importAuctionCodeMap pushAuctionCodeToCloud ' + targetDate + ' ' + (e && e.message || e)); });
-            ta.value = '';
-            setStockCodeMapStatus(`✅ 已导入 ${count} 条映射，${addedToAuction} 只已加入今日竞价列表`, false);
+            return `✅ 已导入 ${count} 条映射，${addedToAuction} 只已加入今日竞价列表`;
         }
 
 
 
 
         // 从粘贴导入早盘竞价数据
-        export function importAuctionFromPaste() {
+        // [VUE3-FIX] 改为纯逻辑函数：粘贴文本由 Vue 组件通过 rawText 参数传入（不再依赖 _domGet 读取 DOM），
+        // 进度/结果以 Promise resolve 的字符串返回给组件显示（不再调用 _domSetText）。
+        export async function importAuctionFromPaste(rawText) {
             const targetDate = _getAuctionStore() ? _getAuctionStore().currentDate : state.currentDate;
             const sysToday = (typeof _getLocalTodayStr === 'function') ? _getLocalTodayStr() : '';
             if (sysToday && targetDate > sysToday) {
                 _dbgLog('[DATE-WARN] importAuctionFromPaste 写入未来日期 targetDate=' + targetDate + ' sysToday=' + sysToday + '，请确认这是预期行为');
             }
             _dbgLog('[AUCTION-WRITE] importAuctionFromPaste targetDate=' + targetDate);
-            const textarea = _domGet('auctionPasteInput');
-            const rawText = textarea ? textarea.value : '';
-            const pasteText = rawText.trim();
+            const pasteText = (rawText || '').trim();
             if (!pasteText) {
-                _domSetText('auctionImportStatus', '请先粘贴数据！');
-                _domSetColor('auctionImportStatus', '#dc2626');
-                textarea && textarea.focus();
-                return;
+                throw new Error('请先粘贴数据！');
             }
 
             // 备份早盘竞价数据（用于撤回）
@@ -2358,9 +2350,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             });
 
             if (fullDataList.length === 0 && noteList.length === 0) {
-                _domSetText('auctionImportStatus', '未能解析到有效数据！');
-                _domSetColor('auctionImportStatus', '#dc2626');
-                return;
+                throw new Error('未能解析到有效数据！');
             }
 
             let auctionList = [...existingList];
@@ -2569,28 +2559,16 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                     });
                 }
             })();
-            _domSetValue('auctionPasteInput', '');
             let statusMsg = '✅ ';
             if (fullDataCount > 0) statusMsg += `新增${fullDataCount}条`;
             if (fullDataUpdateCount > 0) statusMsg += ` 更新${fullDataUpdateCount}条`;
             if (noteUpdateCount > 0) statusMsg += ` 更新注释${noteUpdateCount}条`;
             if (noteNewCount > 0) statusMsg += ` 新增注释${noteNewCount}条`;
-            _domSetText('auctionImportStatus', statusMsg);
-            _domSetColor('auctionImportStatus', '#059669');
 
             // 异步分批同步收盘涨幅（每帧30条），避免主线程卡死导致 localStorage 写入失败
-            const itemsToSync = auctionList.filter(item => item.stock && item.note);
-            let syncIdx = 0;
-
-            setTimeout(() => renderAuctionForm(), 0);
-            setTimeout(() => renderAuction(), 20);
-            setTimeout(() => renderList(), 40);
             setTimeout(syncCloseChunk, 60);
 
-            const submitBtn = _domQuery('#auctionForm .submit-btn');
-            if (submitBtn) {
-                submitBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            }
+            return statusMsg;
         }
 
         // 解析"258.5万"或"3528"这类竞价量文本，统一返回数字字符串（不做单位换算）
@@ -2648,39 +2626,25 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         //       只要该股票在当前列表里存在，就允许把数值补进"目标日期"（下拉框选的历史日期）对应的记录里；
         //       目标日期原本没有该股票的记录时，会新建一条只含数值的记录（不算新增股票，只是数据记录，因为该股票本身在当前列表里是存在的）；
         //       已有值不覆盖；当前列表里不存在的股票，直接跳过，不导入。
-        export function importAuctionHistoryFill() {
-            const textarea = _domGet('auctionHistoryFillInput');
-            const rawText = textarea ? textarea.value : '';
-            const pasteText = rawText.trim();
-            const statusEl = _domGet('auctionHistoryFillStatus');
-            const dateInput = _domGet('auctionHistoryFillDate');
-            const targetDate = dateInput ? dateInput.value : '';
+        export async function importAuctionHistoryFill(rawText, targetDate, colType) {
+            const pasteText = (rawText || '').trim();
             const sysToday = (typeof _getLocalTodayStr === 'function') ? _getLocalTodayStr() : '';
             if (sysToday && targetDate > sysToday) {
                 _dbgLog('[DATE-WARN] importAuctionHistoryFill 写入未来日期 targetDate=' + targetDate + ' sysToday=' + sysToday + '，请确认这是预期行为');
             }
 
             if (!targetDate) {
-                if (statusEl) {
-                    statusEl.textContent = '请先选择目标日期！';
-                    statusEl.style.color = '#dc2626';
-                }
-                return;
+                throw new Error('请先选择目标日期！');
             }
 
             if (!pasteText) {
-                if (statusEl) {
-                    statusEl.textContent = '请先粘贴数据！';
-                    statusEl.style.color = '#dc2626';
-                }
-                textarea && textarea.focus();
-                return;
+                throw new Error('请先粘贴数据！');
             }
+            const twoColField = colType || 'volume'; // 两列格式时，数字要填入的字段名
 
             _dbgLog('[AUCTION-WRITE] importAuctionHistoryFill targetDate=' + targetDate);
 
-            const colTypeRadio = _domQuery('input[name="auctionHistoryFillColType"]:checked');
-            const twoColField = colTypeRadio ? colTypeRadio.value : 'volume'; // 两列格式时，数字要填入的字段名
+            // 列类型（竞价量/昨日成交量）改由参数 colType 传入，不再读取 DOM 单选
 
             // 备份早盘竞价数据（用于撤回），与现有导入功能共用同一套备份/撤回机制
             // 注意：这里备份的是 targetDate（用户选择要补录的历史日期），而不是当天，
@@ -2800,17 +2764,12 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             });
 
             if (filledCount === 0 && overwritedCount === 0) {
-
-                if (statusEl) {
-                    let msg = '未补录任何数据';
-                    const parts = [];
-                    if (skippedNotInCurrent > 0) parts.push(`${skippedNotInCurrent}条不在当前股票列表中`);
-                    if (invalidCount > 0) parts.push(`${invalidCount}行无法识别`);
-                    if (parts.length) msg += `（${parts.join('，')}）`;
-                    statusEl.textContent = msg;
-                    statusEl.style.color = '#dc2626';
-                }
-                return;
+                let msg = '未补录任何数据';
+                const parts = [];
+                if (skippedNotInCurrent > 0) parts.push(`${skippedNotInCurrent}条不在当前股票列表中`);
+                if (invalidCount > 0) parts.push(`${invalidCount}行无法识别`);
+                if (parts.length) msg += `（${parts.join('，')}）`;
+                return msg;
             }
 
             setAuctionDateData(targetDate, targetList, 'importAuctionHistoryFill');
@@ -2821,23 +2780,12 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                 patchAuctionFieldBatch(targetDate, historyPatches).catch(function(e) { _dbgLog('[AUCTION-ERR] importAuctionHistoryFill patchAuctionFieldBatch ' + (e && e.message || e)); });
             }
 
-            textarea.value = '';
             let statusMsg = `✅ ${targetDate} 补齐${filledCount}个字段`;
             if (overwritedCount > 0) statusMsg += ` 覆盖${overwritedCount}个字段`;
             if (addedCount > 0) statusMsg += ` 新增${addedCount}条数据记录`;
             if (skippedNotInCurrent > 0) statusMsg += ` 跳过${skippedNotInCurrent}条(不在当前股票列表中)`;
             if (invalidCount > 0) statusMsg += ` 无法识别${invalidCount}行`;
-            if (statusEl) {
-                statusEl.textContent = statusMsg;
-                statusEl.style.color = '#059669';
-            }
-
-            // 若补录的正是当前正在查看的日期，刷新表单和看板显示
-            if (targetDate === state.currentDate) {
-                setTimeout(() => renderAuctionForm(), 0);
-                setTimeout(() => renderAuction(), 20);
-                setTimeout(() => renderList(), 40);
-            }
+            return statusMsg;
         }
 
         // ============================================================
@@ -7872,16 +7820,11 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
 
 
 
-        export function replaceConceptFromPaste() {
+        export async function replaceConceptFromPaste(rawText) {
             const targetDate = _getAuctionStore() ? _getAuctionStore().currentDate : state.currentDate;
-            const textarea = _domGet('auctionPasteInput');
-            const rawText = textarea ? textarea.value : '';
-            const pasteText = rawText.trim();
+            const pasteText = (rawText || '').trim();
             if (!pasteText) {
-                _domSetText('auctionImportStatus', '请先粘贴数据！');
-                _domSetColor('auctionImportStatus', '#dc2626');
-                textarea && textarea.focus();
-                return;
+                throw new Error('请先粘贴数据！');
             }
 
             const lines = pasteText.split(/\r?\n/);
@@ -7974,26 +7917,15 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                 syncStockTopicsFromAuction();
                 saveModule('stocks');
                 
-                renderAuctionForm();
-                renderAuction();
-                renderList();
-
                 // 概念替换可能改变了note的格式，保险起见重新统计一次"最近多板"
                 recalcDuibanFromAuction();
             }
 
-            _domSetValue('auctionPasteInput', '');
             let statusMsg = '✅ 替换了 ' + replaceCount + ' 条概念';
             if (notFoundCount > 0) {
                 statusMsg += '，未找到: ' + notFoundStocks.slice(0, 3).join(', ') + (notFoundCount > 3 ? '...' : '');
             }
-            _domSetText('auctionImportStatus', statusMsg);
-            _domSetColor('auctionImportStatus', replaceCount > 0 ? '#059669' : '#dc2626');
-            
-            const submitBtn = _domQuery('#auctionForm .submit-btn');
-            if (submitBtn) {
-                submitBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            }
+            return statusMsg;
         }
 
 

@@ -362,10 +362,10 @@ function onPasteImport() {
   if (!pasteText.value.trim()) return;
   const fn = importAuctionFromPaste;
   pasteStatus.value = '导入中...';
-  fn(pasteText.value).then(() => {
+  fn(pasteText.value).then((msg) => {
     refreshRows();
     pasteText.value = '';
-    pasteStatus.value = '完成';
+    pasteStatus.value = msg || '完成';
     auctionStore.bumpDataVersion('auction');
     auctionStore.refresh();
   }).catch(e => {
@@ -378,9 +378,9 @@ function onReplaceConcept() {
   if (!pasteText.value.trim()) return;
   const fn = replaceConceptFromPaste;
   pasteStatus.value = '替换中...';
-  Promise.resolve(fn(pasteText.value)).then(() => {
+  Promise.resolve(fn(pasteText.value)).then((msg) => {
     refreshRows();
-    pasteStatus.value = '完成';
+    pasteStatus.value = msg || '完成';
     auctionStore.bumpDataVersion('auction');
     auctionStore.refresh();
   }).catch(e => {
@@ -397,9 +397,9 @@ function onImportCodeMap() {
   if (!codeMapText.value.trim()) return;
   const fn = importStockCodeMap;
   codeMapStatus.value = '导入中...';
-  Promise.resolve(fn(codeMapText.value)).then(() => {
+  Promise.resolve(fn(codeMapText.value)).then((msg) => {
     codeMapText.value = '';
-    codeMapStatus.value = '完成';
+    codeMapStatus.value = msg || '完成';
   }).catch(e => {
     console.error('导入代码映射失败:', e);
     codeMapStatus.value = '失败: ' + (e && e.message ? e.message : String(e));
@@ -420,10 +420,10 @@ function onHistoryFill() {
   if (!historyText.value.trim()) return;
   const fn = importAuctionHistoryFill;
   historyStatus.value = '补录中...';
-  fn(historyText.value, historyDate.value, historyColType.value).then(() => {
+  fn(historyText.value, historyDate.value, historyColType.value).then((msg) => {
     refreshRows();
     historyText.value = '';
-    historyStatus.value = '完成';
+    historyStatus.value = msg || '完成';
     auctionStore.bumpDataVersion('auction');
     auctionStore.refresh();
   }).catch(e => {
