@@ -931,7 +931,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         export function getTagTitlesData() { return state._tagTitlesMemCache || loadAllData().tagTitles; }
         
         state.currentFilter = 'all';
-        state.isStockListCollapsed = false; // 股票列表收起状态
+        state.isStockListCollapsed = true; // 股票列表收起状态（默认收起，与原版 initStockListCollapse 一致）
         state.editingId = null;
         state.topicAutoFilled = false;
 

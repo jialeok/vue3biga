@@ -206,37 +206,48 @@
     </div>
   </EditModal>
 
-  <EditModal v-model="soldEditModalActive" title="卖出记录编辑" @save="saveSoldEditModal">
-    <div class="edit-form-row">
-      <label>卖出类型</label>
-      <select v-model="soldEditForm.type">
-        <option value="部分卖">部分卖</option>
-        <option value="全清仓">全清仓</option>
-      </select>
+  <EditModal v-model="soldEditModalActive" :title="'💰 ' + soldEditStockName + ' - 卖出记录'" @save="saveSoldEditModal">
+    <div class="track-edit-list">
+      <div v-for="(row, idx) in editingSoldRows" :key="row.id" class="track-edit-row sold-edit-row">
+        <div class="track-edit-date">
+          <input class="track-date-input sold-date-input" v-model="row.date" placeholder="YYYY-MM-DD HH:mm" />
+        </div>
+        <div class="track-edit-content">
+          <input class="track-content-input sold-profit-input" v-model="row.profit" placeholder="盈利 如：+1260" />
+        </div>
+        <div class="track-edit-content">
+          <input class="track-content-input sold-percent-input" v-model="row.percent" placeholder="涨幅 如：+4.5%" />
+        </div>
+        <div class="track-edit-content">
+          <select class="track-content-input sold-type-input" v-model="row.type">
+            <option value="">请选择</option>
+            <option value="全清仓">全清仓</option>
+            <option value="部分卖">部分卖</option>
+          </select>
+        </div>
+        <div class="track-edit-delete">
+          <button type="button" class="remove-track-btn" @click="removeSoldRow(idx)">×</button>
+        </div>
+      </div>
     </div>
-    <div class="edit-form-row">
-      <label>盈亏</label>
-      <input v-model.number="soldEditForm.profit" type="number" />
-    </div>
-    <div class="edit-form-row">
-      <label>百分比(%)</label>
-      <input v-model.number="soldEditForm.percent" type="number" />
-    </div>
-    <div class="edit-form-row">
-      <label>日期</label>
-      <input v-model="soldEditForm.date" placeholder="YYYY-MM-DD" />
-    </div>
+    <button type="button" class="add-track-row-btn" @click="addSoldRow" style="margin-top:10px">+ 添加一条</button>
   </EditModal>
 
-  <EditModal v-model="trackEditModalActive" title="追踪记录编辑" @save="saveTrackEditModal">
-    <div class="edit-form-row">
-      <label>追踪内容</label>
-      <input v-model="trackEditForm.content" />
+  <EditModal v-model="trackEditModalActive" :title="'编辑追踪记录 - ' + trackEditStockName" @save="saveTrackEditModal">
+    <div class="track-edit-list">
+      <div v-for="(row, idx) in editingTrackRows" :key="idx" class="track-edit-row">
+        <div class="track-edit-date">
+          <input class="track-date-input" v-model="row.date" placeholder="自动填充" readonly style="background:#f8fafc;cursor:default" />
+        </div>
+        <div class="track-edit-content">
+          <textarea class="track-content-input" v-model="row.content" placeholder="追踪内容..." @input="onTrackContentInput(idx)"></textarea>
+        </div>
+        <div class="track-edit-delete">
+          <button type="button" class="remove-track-btn" @click="removeTrackRow(idx)">×</button>
+        </div>
+      </div>
     </div>
-    <div class="edit-form-row">
-      <label>日期</label>
-      <input v-model="trackEditForm.date" placeholder="YYYY-MM-DD" />
-    </div>
+    <button type="button" class="add-track-row-btn" @click="addTrackRow" style="margin-top:10px">+ 添加行</button>
   </EditModal>
 
   <EditModal v-model="datePickerActive" title="选择日期" :show-actions="false">
@@ -263,10 +274,10 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, reactive, computed, watch, onMounted, onUnmounted, shallowRef, triggerRef } from 'vue';
 import { getCurrentDate, setCurrentDate, saveData } from '../logic/app-core.js';
 import { getStocksData } from '../data/supabase-client.js';
-import { formatDate, getStarTagsForStock, getStockProfitStatus } from '../logic/ui-bridge.js';
+import { formatDate, getStarTagsForStock, getStockProfitStatus, clearStarTagCache, clearProfitStatusCache } from '../logic/ui-bridge.js';
 import { editStock, copyToTomorrow, copyToDate, deleteStock, openSoldEdit, openTrackEdit } from '../logic/stock-operations.js';
 import { showToast } from '../composables/useToast.js';
 import { getCurrentFilter, setCurrentFilter, getIsStockListCollapsed, setIsStockListCollapsed } from '../logic/stock-list-state.js';
@@ -308,8 +319,8 @@ function updateStockStats(all) {
 }
 
 const data = ref({ currentDate: '', list: [] });
-const expandedIds = ref(new Set());
-const collapsedIds = ref(new Set());
+const expandedIds = shallowRef(new Set());
+const collapsedIds = shallowRef(new Set());
 const expandedActionsId = ref(null);
 const trendCache = ref({});
 let lastDate = null;
@@ -374,6 +385,8 @@ const sortedList = computed(() => {
 
 function refresh() {
   loading.value = true;
+  clearStarTagCache();
+  clearProfitStatusCache();
   const newDate = getCurrentDate();
   if (newDate !== lastDate) {
     expandedIds.value = new Set();
@@ -403,6 +416,14 @@ function refresh() {
   loading.value = false;
 }
 
+function localRefresh(stockId) {
+  if (stockId != null) {
+    const idx = data.value.list.findIndex(s => s.id === stockId || s.id == stockId);
+    if (idx !== -1) data.value.list[idx] = { ...data.value.list[idx] };
+  }
+  data.value = { currentDate: data.value.currentDate, list: [...data.value.list] };
+}
+
 const isCollapsedMode = ref(getIsStockListCollapsed());
 const toggleText = computed(() => isCollapsedMode.value ? '展开全部' : '收起全部');
 const toggleIcon = computed(() => isCollapsedMode.value ? '📋' : '📑');
@@ -423,11 +444,11 @@ function toggleExpand(stock) {
   if (isCollapsedMode.value) {
     const set = expandedIds.value;
     if (set.has(stock.id)) set.delete(stock.id); else set.add(stock.id);
-    expandedIds.value = new Set(set);
+    triggerRef(expandedIds);
   } else {
     const set = collapsedIds.value;
     if (set.has(stock.id)) set.delete(stock.id); else set.add(stock.id);
-    collapsedIds.value = new Set(set);
+    triggerRef(collapsedIds);
   }
   expandedActionsId.value = null;
 }
@@ -658,60 +679,113 @@ function saveEditModal() {
 }
 
 const soldEditModalActive = ref(false);
-const soldEditForm = reactive({ type: '部分卖', profit: 0, percent: 0, date: '' });
+const editingSoldRows = ref([]);
 let soldEditingStockId = null;
+const soldEditStockName = ref('');
+
+function genSoldId() { return Date.now().toString() + Math.random().toString(36).substr(2, 5); }
+function pad2(n) { return String(n).padStart(2, '0'); }
+function nowTimeStr() { const n = new Date(); return getCurrentDate() + ' ' + pad2(n.getHours()) + ':' + pad2(n.getMinutes()); }
 
 function openSoldEditModal(id) {
   soldEditingStockId = id;
-  const today = getCurrentDate();
-  soldEditForm.type = '部分卖';
-  soldEditForm.profit = 0;
-  soldEditForm.percent = 0;
-  soldEditForm.date = today;
+  const list = getStocksData()[getCurrentDate()] || [];
+  const stock = list.find(s => s.id === id || s.id == id);
+  if (!stock) { showToast('未找到股票数据'); return; }
+  soldEditStockName.value = stock.name || '股票';
+  const records = (stock.soldRecords && stock.soldRecords.length > 0) ? JSON.parse(JSON.stringify(stock.soldRecords)) : [];
+  editingSoldRows.value = records.length > 0
+    ? records.map(r => ({ id: r.id || genSoldId(), date: r.date || '', profit: r.profit != null ? String(r.profit) : '', percent: r.percent != null ? String(r.percent) : '', type: r.type || '' }))
+    : [{ id: genSoldId(), date: nowTimeStr(), profit: '', percent: '', type: '' }];
   soldEditModalActive.value = true;
 }
+
+function addSoldRow() { editingSoldRows.value.push({ id: genSoldId(), date: nowTimeStr(), profit: '', percent: '', type: '' }); }
+function removeSoldRow(idx) { editingSoldRows.value.splice(idx, 1); }
 
 function saveSoldEditModal() {
   if (soldEditingStockId === null) return;
   const list = getStocksData()[getCurrentDate()] || [];
-  const stock = list.find(s => s.id === soldEditingStockId);
-  if (!stock) { soldEditModalActive.value = false; return; }
-  if (!stock.soldRecords) stock.soldRecords = [];
-  stock.soldRecords.push({
-    type: soldEditForm.type,
-    profit: soldEditForm.profit,
-    percent: soldEditForm.percent,
-    date: soldEditForm.date
-  });
-  stock.isSold = true;
-  stock.sold = true;
+  const stockIndex = list.findIndex(s => s.id === soldEditingStockId || s.id == soldEditingStockId);
+  if (stockIndex === -1) { soldEditModalActive.value = false; return; }
+  const stock = list[stockIndex];
+  const records = editingSoldRows.value
+    .filter(r => (r.date || '').trim())
+    .map(r => ({ id: r.id || genSoldId(), date: (r.date || '').trim(), profit: (r.profit || '').trim(), percent: (r.percent || '').trim(), type: r.type || '' }));
+  const hasFullClear = records.some(r => r.type === '全清仓');
+  const hasValidSold = records.some(r => r.type === '全清仓' || r.type === '部分卖');
+  const isFirstSold = !stock.soldRecords || stock.soldRecords.length === 0;
+  stock.soldRecords = records;
+  stock.isSold = records.length > 0;
+  if (isFirstSold && records.length > 0 && !stock.bought) { stock.bought = true; }
+  if (!isFirstSold && hasValidSold) { stock.bought = false; stock.sold = true; }
+  if (hasFullClear) {
+    if (stock.hold || stock.bought) { stock.hold = false; stock.bought = false; stock.sold = true; }
+  } else if (hasValidSold) {
+    if (!stock.sold) stock.sold = true;
+  }
+  const stockName = stock.name;
+  const allData = getStocksData();
+  const allDates = Object.keys(allData).sort();
+  const curIdx = allDates.indexOf(getCurrentDate());
+  if (curIdx !== -1) {
+    for (let i = curIdx + 1; i < allDates.length; i++) {
+      const futureList = allData[allDates[i]];
+      const fi = futureList.findIndex(s => s.name === stockName);
+      if (fi !== -1) {
+        futureList[fi].soldRecords = JSON.parse(JSON.stringify(records));
+        futureList[fi].isSold = records.length > 0;
+      }
+    }
+  }
   saveData();
   soldEditModalActive.value = false;
-  refresh();
+  clearProfitStatusCache();
+  localRefresh(soldEditingStockId);
   showToast('卖出记录已保存');
 }
 
 const trackEditModalActive = ref(false);
-const trackEditForm = reactive({ content: '', date: '' });
+const editingTrackRows = ref([]);
 let trackEditingStockId = null;
+const trackEditStockName = ref('');
 
 function openTrackEditModal(id) {
   trackEditingStockId = id;
-  trackEditForm.content = '';
-  trackEditForm.date = getCurrentDate();
+  const list = getStocksData()[getCurrentDate()] || [];
+  const stock = list.find(s => s.id === id || s.id == id);
+  if (!stock) { showToast('未找到股票数据'); return; }
+  trackEditStockName.value = stock.name || '股票';
+  const trackData = stock.track ? JSON.parse(JSON.stringify(stock.track)) : [];
+  editingTrackRows.value = trackData.length > 0
+    ? trackData.map(r => ({ date: r.date || '', content: r.content || '' }))
+    : [{ date: '', content: '' }];
   trackEditModalActive.value = true;
+}
+
+function addTrackRow() { editingTrackRows.value.push({ date: '', content: '' }); }
+function removeTrackRow(idx) {
+  if (editingTrackRows.value.length > 1) { editingTrackRows.value.splice(idx, 1); }
+  else { editingTrackRows.value[0].date = ''; editingTrackRows.value[0].content = ''; }
+}
+function onTrackContentInput(idx) {
+  const row = editingTrackRows.value[idx];
+  const c = (row.content || '').trim();
+  if (c && !(row.date || '').trim()) { row.date = nowTimeStr(); }
+  else if (!c) { row.date = ''; }
 }
 
 function saveTrackEditModal() {
   if (trackEditingStockId === null) return;
   const list = getStocksData()[getCurrentDate()] || [];
-  const stock = list.find(s => s.id === trackEditingStockId);
+  const stock = list.find(s => s.id === trackEditingStockId || s.id == trackEditingStockId);
   if (!stock) { trackEditModalActive.value = false; return; }
-  if (!stock.track) stock.track = [];
-  stock.track.push({ content: trackEditForm.content, date: trackEditForm.date });
+  stock.track = editingTrackRows.value
+    .map(r => ({ date: (r.date || '').trim(), content: (r.content || '').trim() }))
+    .filter(r => r.date || r.content);
   saveData();
   trackEditModalActive.value = false;
-  refresh();
+  localRefresh(trackEditingStockId);
   showToast('追踪记录已保存');
 }
 

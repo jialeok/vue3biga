@@ -104,13 +104,17 @@ export function restoreExpandedTopicGroupsP2() {}
 export function showAuctionBuyPrompt() {}
 export function toggleAuctionSortHelp() {}
 export function toggleTopicGroupTrendPanels() {}
+const _starTagCache = new Map();
+export function clearStarTagCache() { _starTagCache.clear(); }
 export function getStarTagsForStock(stockName) {
   if (!stockName) return null;
+  const cacheKey = state.currentDate + '|' + stockName.trim();
+  if (_starTagCache.has(cacheKey)) return _starTagCache.get(cacheKey);
   const auctionData = getAuctionData();
   const todayAuctionList = auctionData[state.currentDate] || [];
   const prevDate = getPreviousTradingDay(state.currentDate);
   const prevAuctionList = prevDate ? (auctionData[prevDate] || []) : [];
-  if (todayAuctionList.length === 0) return null;
+  if (todayAuctionList.length === 0) { _starTagCache.set(cacheKey, null); return null; }
 
   const todayGroups = getTopicGroups(todayAuctionList);
   const prevGroups = prevDate ? getTopicGroups(prevAuctionList) : [];
@@ -125,7 +129,7 @@ export function getStarTagsForStock(stockName) {
     const prevStarCount = prevGroup ? (prevGroup.starCount || 0) : 0;
     stockTopics.push({ topic: group.topic, todayStarCount, prevStarCount, starChange: todayStarCount - prevStarCount });
   });
-  if (stockTopics.length === 0) return null;
+  if (stockTopics.length === 0) { _starTagCache.set(cacheKey, null); return null; }
 
   let maxStarTopic = null, maxStarCount = 0;
   todayGroups.forEach(group => {
@@ -145,21 +149,28 @@ export function getStarTagsForStock(stockName) {
     else if (st.todayStarCount === 0 && st.prevStarCount > 0) { tag = '星无'; priority = 7; }
     if (tag && (priority < bestPriority || bestPriority === 0)) { bestTag = tag; bestPriority = priority; }
   });
+  _starTagCache.set(cacheKey, bestTag);
   return bestTag;
 }
 
+const _profitStatusCache = new Map();
+export function clearProfitStatusCache() { _profitStatusCache.clear(); }
 export function getStockProfitStatus(stockName, stocksData) {
   if (!stockName || !stocksData) return null;
+  const cacheKey = state.currentDate + '|' + stockName.trim();
+  if (_profitStatusCache.has(cacheKey)) return _profitStatusCache.get(cacheKey);
   const todayStocks = stocksData[state.currentDate] || [];
   const stock = todayStocks.find(s => s.name && s.name.trim() === stockName.trim());
-  if (!stock || !stock.soldRecords || stock.soldRecords.length === 0) return null;
+  if (!stock || !stock.soldRecords || stock.soldRecords.length === 0) { _profitStatusCache.set(cacheKey, null); return null; }
   const sortedRecords = [...stock.soldRecords].sort((a, b) => new Date(b.date) - new Date(a.date));
   const latestRecord = sortedRecords[0];
-  if (!latestRecord || latestRecord.profit === undefined || latestRecord.profit === null) return null;
+  if (!latestRecord || latestRecord.profit === undefined || latestRecord.profit === null) { _profitStatusCache.set(cacheKey, null); return null; }
   const profitStr = String(latestRecord.profit).replace(/[^\d.-]/g, '');
   const profitValue = parseFloat(profitStr);
-  if (isNaN(profitValue)) return null;
-  return profitValue >= 0 ? '赚' : '亏';
+  if (isNaN(profitValue)) { _profitStatusCache.set(cacheKey, null); return null; }
+  const result = profitValue >= 0 ? '赚' : '亏';
+  _profitStatusCache.set(cacheKey, result);
+  return result;
 }
 
 export function showAuctionNoteInput() {}
