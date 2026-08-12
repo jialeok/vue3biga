@@ -57,16 +57,16 @@
       <div class="date-picker-section">
         <div class="date-picker-nav">
           <button @click="prevPickerMonth">‹</button>
-          <span>{{ pickerYear }}-{{ String(pickerMonth + 1).padStart(2, '0') }}</span>
+          <span class="picker-month-title">{{ pickerYear }}年{{ pickerMonth + 1 }}月</span>
           <button @click="nextPickerMonth">›</button>
         </div>
-        <div class="date-picker-grid">
-          <button v-for="day in pickerDays" :key="day.key"
-                  :class="{ 'date-selected': day.key === pickerSelected, 'date-today': day.isToday, 'date-disabled': !day.valid }"
-                  :disabled="!day.valid"
-                  @click="selectPickerDate(day.key)">
-            {{ day.label }}
-          </button>
+        <!-- 旧版 7 列日历：星期表头 + 圆形日期格（normal-day/weekend/holiday/selected/empty） -->
+        <div class="date-picker-calendar">
+          <template v-for="cell in pickerDays" :key="cell.key">
+            <div v-if="cell.type === 'header'" class="calendar-header">{{ cell.label }}</div>
+            <div v-else-if="cell.type === 'empty'" class="calendar-day empty"></div>
+            <div v-else class="calendar-day" :class="cell.cls" @click="selectPickerDate(cell.key)">{{ cell.label }}</div>
+          </template>
         </div>
         <div class="date-picker-actions">
           <button @click="pickerGoToday">今天</button>
@@ -80,7 +80,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue';
 import { getCurrentDate, setCurrentDate } from '../logic/app-core.js';
-import { getPreviousTradingDay, getNextTradingDay, getMostRecentTradingDay } from '../logic/trading-day-helpers.js';
+import { getPreviousTradingDay, getNextTradingDay, getMostRecentTradingDay, getHolidays, getTradingDays } from '../logic/trading-day-helpers.js';
 import { _emit } from '../stores/eventBus.js';
 import { useUiStore } from '../stores/uiStore.js';
 import EditModal from '../components/EditModal.vue';
@@ -182,25 +182,51 @@ const pickerYear = ref(2026);
 const pickerMonth = ref(0);
 const pickerSelected = ref('');
 
+// [PERF] 本地今日，仅用于自动识别非交易日（与旧 isAutoHoliday 一致）
+function _localTodayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 const pickerDays = computed(() => {
-  const days = [];
-  const firstDay = new Date(pickerYear.value, pickerMonth.value, 1);
+  const year = pickerYear.value;
+  const month = pickerMonth.value;
+  const selected = pickerSelected.value || getCurrentDate();
+
+  // [PERF] 一次性取值并转 Set，逐日 O(1) 查询。
+  // 旧版 getHolidays()/isAutoHoliday() 逐日调用 loadAllData()，一个月约 32 次数据读取，是卡顿根因。
+  const holSet = new Set(getHolidays());
+  const tdSet = new Set(getTradingDays());
+  const todayLocal = _localTodayStr();
+  const oneYearAgo = (() => {
+    const d = new Date(todayLocal + 'T00:00:00');
+    d.setFullYear(d.getFullYear() - 1);
+    return d.toISOString().slice(0, 10);
+  })();
+
+  const weekDays = ['日', '一', '二', '三', '四', '五', '六'];
+  const cells = [];
+  weekDays.forEach((w) => cells.push({ key: 'h-' + w, type: 'header', label: w }));
+
+  const firstDay = new Date(year, month, 1);
   const startWeekday = firstDay.getDay();
-  const lastDate = new Date(pickerYear.value, pickerMonth.value + 1, 0).getDate();
-  const todayStr = getMostRecentTradingDay();
-  for (let i = 0; i < startWeekday; i++) {
-    days.push({ key: 'pad-' + i, label: '', valid: false, isToday: false });
+  const lastDate = new Date(year, month + 1, 0).getDate();
+  for (let i = 0; i < startWeekday; i++) cells.push({ key: 'pad-' + i, type: 'empty' });
+
+  for (let day = 1; day <= lastDate; day++) {
+    const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const dow = new Date(dateStr + 'T00:00:00').getDay();
+    const isWeekend = dow === 0 || dow === 6;
+    const isHoliday = holSet.has(dateStr);
+    // 自动识别非交易日：非假期、非周末、不在交易日列表、且落在最近一年内（与旧 isAutoHoliday 等价）
+    const autoHoliday = !isHoliday && !isWeekend && !tdSet.has(dateStr) && dateStr >= oneYearAgo && dateStr <= todayLocal;
+    let cls = 'normal-day';
+    if (dateStr === selected) cls = 'selected';
+    else if (isHoliday || autoHoliday) cls = 'holiday';
+    else if (isWeekend) cls = 'weekend';
+    cells.push({ key: dateStr, type: 'day', label: day, cls });
   }
-  for (let d = 1; d <= lastDate; d++) {
-    const dateStr = pickerYear.value + '-' + String(pickerMonth.value + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
-    days.push({
-      key: dateStr,
-      label: d,
-      valid: true,
-      isToday: dateStr === todayStr,
-    });
-  }
-  return days;
+  return cells;
 });
 
 function openDatePicker() {

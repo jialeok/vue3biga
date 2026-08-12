@@ -3645,6 +3645,61 @@
             pointer-events: none;
         }
 
+        /* 日期选择器容器 / 月份导航 / 底部按钮（复刻旧版布局） */
+        .date-picker-section {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .date-picker-nav {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .date-picker-nav .picker-month-title {
+            font-weight: 600;
+            color: #1f2937;
+            font-size: 14px;
+        }
+
+        .date-picker-nav > button {
+            background: #f1f5f9;
+            border: none;
+            color: #64748b;
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        .date-picker-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 4px;
+        }
+
+        .date-picker-actions > button {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .date-picker-actions > button:first-child {
+            background: linear-gradient(135deg, #3b82f6, #2563eb);
+            color: #fff;
+        }
+
+        .date-picker-actions > button:last-child {
+            background: #f1f5f9;
+            color: #64748b;
+        }
+
         /* 周六模式：隐藏"本周统计"按钮 */
         body.saturday-mode .hide-on-saturday {
             display: none !important;
