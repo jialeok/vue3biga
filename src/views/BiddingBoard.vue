@@ -17,7 +17,7 @@
           <span class="col-name">名称</span>
           <span class="col-time915">9:15</span>
           <span class="col-time920">9:20</span>
-          <span class="col-time930">9:30</span>
+          <span class="col-time930">9:25</span>
           <span class="col-change">涨幅</span>
           <span class="col-close">收盘</span>
         </div>
@@ -53,7 +53,7 @@
           <div class="bidding-edit-row-bottom">
             <input v-model="row.time915" placeholder="9:15" @input="onInputChange(row)" />
             <input v-model="row.time920" placeholder="9:20" @input="onInputChange(row)" />
-            <input v-model="row.time930" placeholder="9:30" @input="onInputChange(row)" />
+            <input v-model="row.time930" placeholder="9:25" @input="onInputChange(row)" />
             <input v-model="row.change" placeholder="涨幅" @input="onInputChange(row)" />
             <input v-model="row.close" placeholder="收盘" @input="onInputChange(row)" />
           </div>
