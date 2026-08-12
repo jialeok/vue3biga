@@ -79,4 +79,4 @@ export const CRON_TO_POINT = {
   '0 8 * * 1-5': 'close',
 };
 
-export const POINT_TO_COLUMN = { t0915: 'time915', t0920: 'time920', t0925: 'time930', t0926: 'time930', close: 'close' };
+export const POINT_TO_COLUMN = { t0915: 'time915', t0920: 'time920', t0925: 'time925', t0926: 'time925', close: 'close' };

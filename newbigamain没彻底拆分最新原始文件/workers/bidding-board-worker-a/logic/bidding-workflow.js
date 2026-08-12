@@ -37,13 +37,13 @@ export async function runBidding(env, point, source) {
         const v925 = parseFloat(r.value);
         if (!isNaN(v920) && !isNaN(v925)) row.change = v925 > v920 ? '增' : (v925 < v920 ? '减' : '平');
         if (rowName === CONFIG.ROW_LADDER) {
-          const prevInitial = prev ? prev.time930_initial : null;
+          const prevInitial = prev ? prev.time925_initial : null;
           if (prevInitial !== undefined && prevInitial !== null && String(prevInitial).trim() !== '') {
-            row.time930_initial = prevInitial;
-            row.time930_initial_modifiedAt = (prev && prev.time930_initial_modifiedAt) || now;
+            row.time925_initial = prevInitial;
+            row.time925_initial_modifiedAt = (prev && prev.time925_initial_modifiedAt) || now;
           } else {
-            row.time930_initial = r.value;
-            row.time930_initial_modifiedAt = now;
+            row.time925_initial = r.value;
+            row.time925_initial_modifiedAt = now;
           }
         }
       }
@@ -108,16 +108,16 @@ export async function runDuobanSecond(env, source) {
   const now = new Date().toISOString();
   const upsertPayload = [];
 
-  // 最近多板% 特殊处理：保留 time930_initial 逻辑
+  // 最近多板% 特殊处理：保留 time925_initial 逻辑
   const existing = existingByName[CONFIG.ROW_LADDER] || null;
-  const row = { date: date, name: CONFIG.ROW_LADDER, time930: duobanResult.value, updated_at: now };
-  if (existing && existing.time930_initial !== undefined && existing.time930_initial !== null && String(existing.time930_initial).trim() !== '') {
-    row.time930_initial = existing.time930_initial;
-    row.time930_initial_modifiedAt = existing.time930_initial_modifiedAt || now;
-    row.time930_modifiedAt = now;
+  const row = { date: date, name: CONFIG.ROW_LADDER, time925: duobanResult.value, updated_at: now };
+  if (existing && existing.time925_initial !== undefined && existing.time925_initial !== null && String(existing.time925_initial).trim() !== '') {
+    row.time925_initial = existing.time925_initial;
+    row.time925_initial_modifiedAt = existing.time925_initial_modifiedAt || now;
+    row.time925_modifiedAt = now;
   } else if (duobanResult.value !== null && duobanResult.value !== undefined) {
-    row.time930_initial = duobanResult.value;
-    row.time930_initial_modifiedAt = now;
+    row.time925_initial = duobanResult.value;
+    row.time925_initial_modifiedAt = now;
   }
   if (existing && existing.time920 !== undefined && existing.time920 !== null && String(existing.time920).trim() !== '' && duobanResult.value !== null) {
     const v926 = parseFloat(duobanResult.value);
@@ -126,12 +126,12 @@ export async function runDuobanSecond(env, source) {
   }
   if (duobanResult.value !== null && duobanResult.value !== undefined) upsertPayload.push(row);
 
-  // 其它4行：只写非 null 值到 time930 列（补写 9:25 缺失的数据）
+  // 其它4行：只写非 null 值到 time925 列（补写 9:25 缺失的数据）
   const otherRows = [CONFIG.ROW_SECTOR_ETF, CONFIG.ROW_TOP10, CONFIG.ROW_BIG_ETF, CONFIG.ROW_MAIN_INDEX];
   otherRows.forEach(rowName => {
     const r = computed[rowName];
     if (!r || r.value === null || r.value === undefined) return;
-    const otherRow = { date: date, name: rowName, time930: r.value, updated_at: now };
+    const otherRow = { date: date, name: rowName, time925: r.value, updated_at: now };
     const prev = existingByName[rowName];
     if (prev && prev.time920 !== undefined && prev.time920 !== null && String(prev.time920).trim() !== '') {
       const v926 = parseFloat(r.value);

@@ -11,7 +11,7 @@ export function sbHeaders(env) {
 
 export async function readTodayBiddingRows(env, date) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/bidding_data?date=eq.' + encodeURIComponent(date) +
-    '&select=name,time915,time920,time930,close,time930_initial,time930_initial_modifiedAt,time930_modifiedAt';
+    '&select=name,time915,time920,time925,close,time925_initial,time925_initial_modifiedAt,time925_modifiedAt';
   const resp = await fetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) throw new Error('读取 bidding_data 失败: HTTP ' + resp.status);
   return await resp.json();

@@ -37,4 +37,4 @@ export const CRON_TO_POINT = {
   '0 8 * * 1-5': 'close',
 };
 
-export const SEAL_COLUMN = 'time930';
+export const SEAL_COLUMN = 'time925';

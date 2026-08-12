@@ -351,7 +351,7 @@ import { setAuctionDateData } from './auction-data.js';
             // 2) 读取 market_metrics(scope='auction')（影子记录/指标数据）
             try {
                 const { data, error } = await sb.from('market_metrics')
-                    .select('stock,code,volume,yest_volume,change_pct,time930,seal_count,source')
+                    .select('stock,code,volume,yest_volume,change_pct,time925,seal_count,source')
                     .eq('date', date)
                     .eq('scope', 'auction');
                 if (error) throw error;
@@ -359,11 +359,11 @@ import { setAuctionDateData } from './auction-data.js';
                     const key = (row.stock || '').trim();
                     if (!key) return;
                     if (cloudByStock[key]) {
-                        // 该股票同时在 watchlist 里：补充 metrics 特有字段（time930/seal_count），
+                        // 该股票同时在 watchlist 里：补充 metrics 特有字段（time925/seal_count），
                         // 并在 watchlist 行的 volume/yest_volume/change_pct 为空时回退取 metrics 的值。
                         // 【BUG-FIX】worker morning 把 watchlist 的 volume/yest_volume/change_pct 写成空串，
                         // 真实值只写到了 market_metrics；如果这里不回退，刷新后趋势图会读空值消失。
-                        if (row.time930 !== undefined && row.time930 !== null && row.time930 !== '') cloudByStock[key].time930 = row.time930;
+                        if (row.time925 !== undefined && row.time925 !== null && row.time925 !== '') cloudByStock[key].time925 = row.time925;
                         if (row.seal_count !== undefined && row.seal_count !== null && row.seal_count !== '') cloudByStock[key].seal_count = row.seal_count;
                         if (row.volume !== undefined && row.volume !== null && String(row.volume).trim() !== '' &&
                             (!cloudByStock[key].volume || String(cloudByStock[key].volume).trim() === '')) {
@@ -389,7 +389,7 @@ import { setAuctionDateData } from './auction-data.js';
                         yestVolume: row.yest_volume || '', // camelCase 别名
                         change_pct: row.change_pct || '',
                         changePct: row.change_pct || '', // camelCase 别名
-                        time930: row.time930 || '',
+                        time925: row.time925 || '',
                         seal_count: row.seal_count || '',
                         source: row.source || 'manual'
                     };

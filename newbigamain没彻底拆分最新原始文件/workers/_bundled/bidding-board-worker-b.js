@@ -42,7 +42,7 @@ const CRON_TO_POINT = {
   '0 8 * * 1-5': 'close',
 };
 
-const SEAL_COLUMN = 'time930';
+const SEAL_COLUMN = 'time925';
 
 // ────── _shared-source/date-utils.js ──────
 // date-utils.js — 北京时间日期工具（源文件，各 Worker 复制使用）

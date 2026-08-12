@@ -6,7 +6,7 @@ import { state } from '../logic/app-state.js';
         import { _dbgLog } from './debug-log.js';
         import { _openAuctionShield, _closeAuctionShield } from './session-and-shield.js';
 
-        // 清理竞价变化行：封单家数只应出现在 9:25（内部字段 time925，对应 bidding_data 表 DB 列 time930）列，收盘列不应有值
+        // 清理竞价变化行：封单家数只应出现在 9:25（内部字段 time925，对应 bidding_data 表 DB 列 time925）列，收盘列不应有值
         export function sanitizeBiddingRow(row) {
             if (!row) return row;
             if (row.name && row.name.trim() === '封单家数') {
@@ -23,7 +23,7 @@ import { state } from '../logic/app-state.js';
             const pageSize = 1000;
             while (true) {
                 const { data, error } = await sb.from('bidding_data')
-                    .select('"date",name,time915,time920,time930,"change",close,time930_initial,time930_initial_modifiedAt,time930_modifiedAt')
+                    .select('"date",name,time915,time920,time925,"change",close,time925_initial,time925_initial_modifiedAt,time925_modifiedAt')
                     .range(offset, offset + pageSize - 1);
                 if (error) throw error;
                 if (!data || data.length === 0) break;
@@ -37,18 +37,18 @@ import { state } from '../logic/app-state.js';
                         name: row.name,
                         time915: row.time915 || '',
                         time920: row.time920 || '',
-                        time925: row.time930 || '',
+                        time925: row.time925 || '',
                         change: row.change || '',
                         close: row.close || ''
                     };
-                    if (row.time930_initial !== null && row.time930_initial !== undefined) {
-                        item.time925_initial = row.time930_initial;
+                    if (row.time925_initial !== null && row.time925_initial !== undefined) {
+                        item.time925_initial = row.time925_initial;
                     }
-                    if (row.time930_initial_modifiedAt !== null && row.time930_initial_modifiedAt !== undefined) {
-                        item.time925_initial_modifiedAt = row.time930_initial_modifiedAt;
+                    if (row.time925_initial_modifiedAt !== null && row.time925_initial_modifiedAt !== undefined) {
+                        item.time925_initial_modifiedAt = row.time925_initial_modifiedAt;
                     }
-                    if (row.time930_modifiedAt !== null && row.time930_modifiedAt !== undefined) {
-                        item.time925_modifiedAt = row.time930_modifiedAt;
+                    if (row.time925_modifiedAt !== null && row.time925_modifiedAt !== undefined) {
+                        item.time925_modifiedAt = row.time925_modifiedAt;
                     }
                     result[row.date].push(item);
                 });
@@ -69,7 +69,7 @@ import { state } from '../logic/app-state.js';
             }
             const sb = getSupabase();
             const { data, error } = await sb.from('bidding_data')
-                .select('name,time915,time920,time930,"change",close,time930_initial,time930_initial_modifiedAt,time930_modifiedAt')
+                .select('name,time915,time920,time925,"change",close,time925_initial,time925_initial_modifiedAt,time925_modifiedAt')
                 .eq('"date"', date);
             if (error) throw error;
             if (!data || data.length === 0) return;
@@ -81,18 +81,18 @@ import { state } from '../logic/app-state.js';
                     name: row.name,
                     time915: row.time915 || '',
                     time920: row.time920 || '',
-                    time930: row.time930 || '',
+                    time925: row.time925 || '',
                     change: row.change || '',
                     close: row.close || ''
                 };
-                if (row.time930_initial !== null && row.time930_initial !== undefined) {
-                    item.time930_initial = row.time930_initial;
+                if (row.time925_initial !== null && row.time925_initial !== undefined) {
+                    item.time925_initial = row.time925_initial;
                 }
-                if (row.time930_initial_modifiedAt !== null && row.time930_initial_modifiedAt !== undefined) {
-                    item.time930_initial_modifiedAt = row.time930_initial_modifiedAt;
+                if (row.time925_initial_modifiedAt !== null && row.time925_initial_modifiedAt !== undefined) {
+                    item.time925_initial_modifiedAt = row.time925_initial_modifiedAt;
                 }
-                if (row.time930_modifiedAt !== null && row.time930_modifiedAt !== undefined) {
-                    item.time930_modifiedAt = row.time930_modifiedAt;
+                if (row.time925_modifiedAt !== null && row.time925_modifiedAt !== undefined) {
+                    item.time925_modifiedAt = row.time925_modifiedAt;
                 }
                 return item;
             });
@@ -103,7 +103,7 @@ import { state } from '../logic/app-state.js';
         }
 
         // 当日竞价变化数据 UPSERT 到 bidding_data 表
-        // 把 time925_initial_modifiedAt / time925_modifiedAt（内部字段，对应 DB 列 time930_initial / time930_modifiedAt）这类"修改时间"字段
+        // 把 time925_initial_modifiedAt / time925_modifiedAt（内部字段，对应 DB 列 time925_initial / time925_modifiedAt）这类"修改时间"字段
         // 统一转成 Postgres timestamp 能接受的 ISO 字符串。
         // 这两个字段在本地历史上一直用 Date.now() 赋值（纯数字毫秒时间戳），
         // 直接传给云端 timestamp 字段会报 "date/time field value out of range"。
@@ -152,19 +152,19 @@ import { state } from '../logic/app-state.js';
                         name: item.name,
                         time915: item.time915 || '',
                         time920: item.time920 || '',
-                        time930: item.time925 || '',
+                        time925: item.time925 || '',
                         change: item.change || '',
                         close: item.close || '',
                         updated_at: now
                     };
                     if (item.time925_initial !== undefined && item.time925_initial !== null) {
-                        row.time930_initial = item.time925_initial;
+                        row.time925_initial = item.time925_initial;
                     }
                     if (item.time925_initial_modifiedAt !== undefined && item.time925_initial_modifiedAt !== null) {
-                        row.time930_initial_modifiedAt = toIsoTimestamp(item.time925_initial_modifiedAt);
+                        row.time925_initial_modifiedAt = toIsoTimestamp(item.time925_initial_modifiedAt);
                     }
                     if (item.time925_modifiedAt !== undefined && item.time925_modifiedAt !== null) {
-                        row.time930_modifiedAt = toIsoTimestamp(item.time925_modifiedAt);
+                        row.time925_modifiedAt = toIsoTimestamp(item.time925_modifiedAt);
                     }
                     return row;
                 });
@@ -341,19 +341,19 @@ import { state } from '../logic/app-state.js';
                         name: item.name,
                         time915: item.time915 || '',
                         time920: item.time920 || '',
-                        time930: item.time930 || '',
+                        time925: item.time930 || '',
                         change: item.change || '',
                         close: item.close || '',
                         updated_at: now
                     };
                     if (item.time930_initial !== undefined && item.time930_initial !== null) {
-                        row.time930_initial = item.time930_initial;
+                        row.time925_initial = item.time930_initial;
                     }
                     if (item.time930_initial_modifiedAt !== undefined && item.time930_initial_modifiedAt !== null) {
-                        row.time930_initial_modifiedAt = toIsoTimestamp(item.time930_initial_modifiedAt);
+                        row.time925_initial_modifiedAt = toIsoTimestamp(item.time930_initial_modifiedAt);
                     }
                     if (item.time930_modifiedAt !== undefined && item.time930_modifiedAt !== null) {
-                        row.time930_modifiedAt = toIsoTimestamp(item.time930_modifiedAt);
+                        row.time925_modifiedAt = toIsoTimestamp(item.time930_modifiedAt);
                     }
                     return row;
                 });
@@ -457,14 +457,14 @@ import { state } from '../logic/app-state.js';
         export async function fetchBiddingCloudRows(date) {
             const sb = getSupabase();
             const { data, error } = await sb.from('bidding_data')
-                .select('name,time915,time920,time930,"change",close')
+                .select('name,time915,time920,time925,"change",close')
                 .eq('date', date);
             if (error) throw error;
-            // [字段映射] DB 列名为 time930（历史遗留，实际存 9:25 竞价数据），内部统一使用 time925
+            // [字段映射] DB 列已统一为 time925（实际存 9:25 竞价数据），内部直接使用 time925
             return (data || []).map(function(r) {
                 const result = {};
-                Object.keys(r).forEach(function(k) { if (k !== 'time930') result[k] = r[k]; });
-                result.time925 = r.time930;
+                Object.keys(r).forEach(function(k) { if (k !== 'time925') result[k] = r[k]; });
+                result.time925 = r.time925 || '';
                 return result;
             });
         }
