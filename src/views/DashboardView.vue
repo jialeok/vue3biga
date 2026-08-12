@@ -12,6 +12,7 @@
       </div>
       <button class="nav-btn" @click="goToNextTradingDay">›</button>
       <button class="today-btn" @click="goToday">今天</button>
+      <button class="holiday-toggle-btn" :class="{ 'is-holiday': isCurrentHoliday }" @click="toggleCurrentHoliday">{{ isCurrentHoliday ? '取消假期' : '设为假期' }}</button>
     </div>
 
     <!-- 统计导航栏（模式看板上方） -->
@@ -67,6 +68,7 @@
         </div>
         <div class="date-picker-actions">
           <button @click="pickerGoToday">今天</button>
+          <button class="holiday-toggle-btn" :class="{ 'is-holiday': pickerHolidayLabel === '取消假期' }" @click="togglePickerHoliday">{{ pickerHolidayLabel }}</button>
           <button @click="datePickerActive = false">取消</button>
         </div>
       </div>
@@ -76,10 +78,11 @@
 
 <script setup>
 import { ref, computed, watch } from 'vue';
-import { getCurrentDate, setCurrentDate } from '../logic/app-core.js';
-import { getPreviousTradingDay, getNextTradingDay, getMostRecentTradingDay, getHolidays, getTradingDays } from '../logic/trading-day-helpers.js';
+import { getCurrentDate, setCurrentDate, saveData } from '../logic/app-core.js';
+import { getPreviousTradingDay, getNextTradingDay, getMostRecentTradingDay, getHolidays, getTradingDays, isTradingDay, toggleHoliday } from '../logic/trading-day-helpers.js';
 import { _emit } from '../stores/eventBus.js';
 import { useUiStore } from '../stores/uiStore.js';
+import { showToast } from '../composables/useToast.js';
 import EditModal from '../components/EditModal.vue';
 import HomeStocksView from './HomeStocksView.vue';
 import AuctionBoard from './AuctionBoard.vue';
@@ -117,6 +120,44 @@ const weekdayText = computed(() => {
   const days = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   return days[new Date(d + 'T00:00:00').getDay()];
 });
+
+// [FEATURE] 假期双向切换：holidayTick 用于在非响应式的 allData.holidays/tradingDays 变更后强制重算
+const holidayTick = ref(0);
+
+// 当前查看日期的实际假期状态（有效状态 = 非交易日即假期）
+const isCurrentHoliday = computed(() => {
+  void holidayTick.value;
+  const d = uiStore.currentDate || getCurrentDate();
+  return d ? !isTradingDay(d) : false;
+});
+
+function toggleCurrentHoliday() {
+  const d = uiStore.currentDate || getCurrentDate();
+  if (!d) return;
+  const result = toggleHoliday(d);
+  if (!result) return;
+  saveData();
+  holidayTick.value++;
+  showToast(result === 'holiday' ? '已设为假期' : '已取消假期（设为交易日）');
+}
+
+// 日期选择器内选中日期的假期切换按钮文案（描述"将要执行的动作"）
+const pickerHolidayLabel = computed(() => {
+  void holidayTick.value;
+  const d = pickerSelected.value || getCurrentDate();
+  if (!d) return '设为假期';
+  return isTradingDay(d) ? '设为假期' : '取消假期';
+});
+
+function togglePickerHoliday() {
+  const d = pickerSelected.value || getCurrentDate();
+  if (!d) return;
+  const result = toggleHoliday(d);
+  if (!result) return;
+  saveData();
+  holidayTick.value++;
+  showToast(result === 'holiday' ? '已设为假期' : '已取消假期（设为交易日）');
+}
 
 function emitAllRefresh() {
   _emit('stocks-refresh');
@@ -174,6 +215,7 @@ function _localTodayStr() {
 }
 
 const pickerDays = computed(() => {
+  void holidayTick.value; // 假期状态切换后强制重算日历着色
   const year = pickerYear.value;
   const month = pickerMonth.value;
   const selected = pickerSelected.value || getCurrentDate();

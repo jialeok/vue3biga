@@ -103,6 +103,23 @@
             cursor: pointer;
         }
 
+        /* 假期双向切换按钮（复刻旧版 #pickerHolidayBtn 橙/红渐变） */
+        .holiday-toggle-btn {
+            font-size: 11px;
+            color: #ffffff;
+            background: linear-gradient(135deg, #f97316, #ea580c);
+            padding: 4px 10px;
+            border-radius: 12px;
+            border: none;
+            cursor: pointer;
+        }
+        .holiday-toggle-btn.is-holiday {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+        }
+        .holiday-toggle-btn:hover {
+            opacity: 0.9;
+        }
+
         /* 模式看板 */
         .pattern-board {
             margin: 10px 15px 10px;

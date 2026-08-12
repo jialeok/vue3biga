@@ -97,6 +97,36 @@ export function isWeekend(dateStr) {
   return !isTradingDay(dateStr);
 }
 
+/**
+ * 切换某日期的「假期 / 交易日」状态（旧版日期选择器仅有"标记假期"、取消要靠清数据，本次做成真正的双向切换）。
+ * - 当前是假期 -> 切为交易日：从 holidays 移除，并显式加入 tradingDays 以覆盖自动识别（autoHoliday）。
+ * - 当前是交易日 -> 切为假期：从 tradingDays 移除，加入 holidays。
+ * 返回 'holiday' | 'trading' 表示切换后的状态。
+ * 注意：holidays / tradingDays 是 localStorage 配置模块（与旧版一致，无云端同步），saveData() 负责落盘。
+ */
+export function toggleHoliday(dateStr) {
+  if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
+  const data = loadAllData();
+  if (!data.holidays) data.holidays = [];
+  if (!data.tradingDays) data.tradingDays = [];
+  const hol = data.holidays;
+  const td = data.tradingDays;
+  const isHol = !isTradingDay(dateStr);
+  if (isHol) {
+    const hi = hol.indexOf(dateStr);
+    if (hi > -1) hol.splice(hi, 1);
+    if (!td.includes(dateStr)) td.push(dateStr);
+  } else {
+    const ti = td.indexOf(dateStr);
+    if (ti > -1) td.splice(ti, 1);
+    if (!hol.includes(dateStr)) hol.push(dateStr);
+  }
+  // 上一/下一交易日计算有记忆缓存，状态翻转后必须清空，否则结果过期
+  _prevTdMemo.clear();
+  _nextTdMemo.clear();
+  return isHol ? 'trading' : 'holiday';
+}
+
 export function getMostRecentTradingDay() {
   const todayStr = _getLocalTodayStrFn();
   if (isTradingDay(todayStr)) return todayStr;
