@@ -15,7 +15,7 @@
         import { getNumericVolume } from '../data/supabase-client.js';
         import { getStockHistoryValue, _histRowMapFor } from '../data/watchlist-and-metrics.js';
         import { _dbgLogVerbose } from '../data/debug-log.js';
-        import { getDailyHighlightsForDate } from '../data/daily-highlights.js';
+
         import { getPreviousTradingDay } from './trading-day-helpers.js';
 
         export function _signalFpFor(dateStr, dataSource) {
@@ -189,8 +189,7 @@
             const __sc = _signalCache;
             let __fp = null;
             if (__sc && _signalFpFor) {
-                const __hl = (dataSource === 'hot' ? state._hotHighlightsCache : state._dailyHighlightsCache)[dateStr];
-                __fp = _signalFpFor(dateStr, dataSource) + '|' + (__hl ? [...__hl].sort().join(',') : '');
+                __fp = _signalFpFor(dateStr, dataSource);
                 const __e = __sc[__k];
                 if (__e && __e.fp === __fp) return __e.value;
             }
@@ -206,9 +205,7 @@
             if (stockDiffMap.size > 0) {
                 __result = new Set([...stockDiffMap].filter(([, info]) => info && info.diff > 0).map(([name]) => name));
             } else {
-                // 实时计算无结果（可能 T-1 全量快照缓存未就绪）→ 回退到云端缓存，避免空白
-                const cached = getDailyHighlightsForDate(dateStr, dataSource);
-                __result = cached ? cached : new Set();
+                __result = new Set();
             }
             if (__sc && __fp !== null) __sc[__k] = { fp: __fp, value: __result };
             return __result;
