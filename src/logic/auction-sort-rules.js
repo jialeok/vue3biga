@@ -58,7 +58,7 @@
                 }
             });
             const __result = { count: stockNames.size, stockNames };
-            if (__sc && __fp !== null) __sc[__k] = { fp: __fp, value: __result };
+            if (__sc && __fp !== null && stockNames.size > 0) __sc[__k] = { fp: __fp, value: __result };
             return __result;
         }
 
@@ -106,7 +106,9 @@
 
                 stockNames.add(name);
             });
-            if (__sc && __fp !== null) __sc[__k] = { fp: __fp, value: stockNames };
+            // 不缓存空结果：空结果大概率是全量快照(_auctionMemCache)未就绪导致，
+            // 指纹只覆盖watchlist数据不覆盖全量快照，缓存空结果会锁住错误的0。
+            if (__sc && __fp !== null && stockNames.size > 0) __sc[__k] = { fp: __fp, value: stockNames };
             return stockNames;
         }
 
@@ -159,7 +161,7 @@
                 const digitGap = Math.abs(getDigitCount(todayVolume) - getDigitCount(yestVolume));
                 infoMap.set(name, { diff: jingRatio - yestRatio, digitGap, jingRatio });
             });
-            if (__sc && __fp !== null) __sc[__k] = { fp: __fp, value: infoMap };
+            if (__sc && __fp !== null && infoMap.size > 0) __sc[__k] = { fp: __fp, value: infoMap };
             return infoMap;
         }
 
@@ -208,6 +210,6 @@
             } else {
                 __result = new Set();
             }
-            if (__sc && __fp !== null) __sc[__k] = { fp: __fp, value: __result };
+            if (__sc && __fp !== null && __result.size > 0) __sc[__k] = { fp: __fp, value: __result };
             return __result;
         }

@@ -48,6 +48,6 @@
                     result.set(name, declineDays);
                 }
             });
-            if (__sc && __fp !== null) __sc[__k] = { fp: __fp, value: result };
+            if (__sc && __fp !== null && result.size > 0) __sc[__k] = { fp: __fp, value: result };
             return result;
         }
