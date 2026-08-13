@@ -19,20 +19,18 @@ import { _dbgLog } from '../data/debug-log.js';
 // 真实 DOM 展开/恢复由 useAuctionEvents / 遗留全局函数在组件事件后执行。
 // ============================================================
 export function useAuctionExpand() {
-    function isStockExpanded(stockName, dataSource) {
+    function isStockExpanded(stockName) {
         if (!stockName) return false;
-        const tab = dataSource === 'hot' ? 'hot' : 'auction';
-        return _getAuctionStore().currentGroup === tab && _getAuctionStore().expandedStocks.has(stockName);
+        return _getAuctionStore().expandedStocks.has(stockName);
     }
 
-    function isP2TopicExpanded(topic, dataSource) {
+    function isP2TopicExpanded(topic) {
         if (!topic) return false;
-        const key = (dataSource === 'hot' ? 'hot' : 'auction') + '|' + topic;
+        const key = 'auction|' + topic;
         return _getAuctionStore().p2ExpandedTopics.has(key);
     }
 
-    function isExpandAll(page, dataSource) {
-        const tab = dataSource === 'hot' ? 'hot' : 'auction';
+    function isExpandAll(page) {
         if (page === 2) return _getAuctionStore().expandAllP2;
         return _getAuctionStore().expandAll;
     }
@@ -79,25 +77,24 @@ export function useAuctionGesture() {
 export function useAuctionEvents() {
 
 
-    function createHandlers(dataSource) {
-        const ds = dataSource === 'hot' ? 'hot' : 'auction';
+    function createHandlers() {
         const actions = _getAuctionStore().actions;
 
         return {
             // 头部
             toggleBoard: () => actions.toggleBoard(),
-            switchGroup: (group) => actions.switchGroup(group),
+
             switchPage: (page) => actions.switchPage(page),
 
             // Page1 工具栏
             onExpandAllChange: (page, checked) => {
                 actions.setExpandAll(checked, page);
                 if (page === 2) {
-                    if (checked) actions.expandAllTrendPanelsP2(ds);
-                    else actions.restoreExpandedTopicGroupsP2(ds);
+                    if (checked) actions.expandAllTrendPanelsP2('auction');
+                    else actions.restoreExpandedTopicGroupsP2('auction');
                 } else {
-                    if (checked) actions.expandAllTrendPanels(ds);
-                    else actions.restoreExpandedTrendPanels(ds);
+                    if (checked) actions.expandAllTrendPanels('auction');
+                    else actions.restoreExpandedTrendPanels('auction');
                 }
             },
             onSortChange: (page, key, checked) => actions.setSortState(page, key, checked),
@@ -126,7 +123,7 @@ export function useAuctionEvents() {
             },
             onYestContext: (e) => {
                 if (e) { e.preventDefault(); e.stopPropagation(); }
-                actions.openEdit(ds);
+                actions.openEdit('auction');
             },
             onYestLongPress: (index, el) => actions.showNoteInput(index, el),
             onNameClick: (stockName, lpState, e) => {
@@ -164,12 +161,12 @@ export function useAuctionEvents() {
                 if (sn) actions.openAuctionNoteEditFromPage2(sn);
             },
             openCoreTopicModal: () => actions.openCoreTopicModal(),
-            openEdit: () => actions.openEdit(ds),
+            openEdit: () => actions.openEdit('auction'),
 
             // Page3
-            copyAll: (topic) => actions.copyAllTopicStocks(topic, ds),
-            copy5: (topic) => actions.copyTopicStocks(topic, 5, ds),
-            copy2: (topic) => actions.copyTopicStocks(topic, 2, ds)
+            copyAll: (topic) => actions.copyAllTopicStocks(topic, 'auction'),
+            copy5: (topic) => actions.copyTopicStocks(topic, 5, 'auction'),
+            copy2: (topic) => actions.copyTopicStocks(topic, 2, 'auction')
         };
     }
 

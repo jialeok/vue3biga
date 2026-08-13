@@ -19,10 +19,7 @@ export const useUiStore = defineStore('ui', {
     setDate(date) {
       this.currentDate = date || '';
     },
-    switchGroup(group) {
-      if (group !== 'auction' && group !== 'hot') return;
-      this.currentGroup = group;
-    },
+
     switchPage(page) {
       const p = parseInt(page, 10);
       if (isNaN(p) || p < 0) return;
@@ -66,7 +63,7 @@ if (typeof window !== 'undefined') {
 // 这里再用 watch 把 store 变化广播到可能挂载的其它全局镜像（兜底）
 try {
   watch(() => store.currentDate, (v) => { if (state.currentDate !== v) state.currentDate = v; });
-  watch(() => store.currentGroup, (v) => { if (state.currentGroup !== v) state.currentGroup = v; });
+
 } catch (e) {}
 
 export default store;

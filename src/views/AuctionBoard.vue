@@ -5,7 +5,7 @@
   保持委托: computeAuctionViewData(18个window依赖)
 -->
 <template>
-  <div class="auction-board trading-day-element" :class="{ collapsed: !expanded }" :data-source="dataSource">
+  <div class="auction-board trading-day-element" :class="{ collapsed: !expanded }" data-source="auction">
     <div class="auction-header" @click="toggleBoard" style="cursor:pointer">
       <div>
         <div class="auction-title">
@@ -466,16 +466,13 @@ import { getNumericVolume } from '../data/supabase-client.js';
 import { syncStockCloseFromAuction, syncStockTopicsFromAuction } from '../logic/auction-stock-sync.js';
 import { getStockCode } from '../data/stock-code-map.js';
 import { pushStockTopicsToCloud } from '../data/stock-topics.js';
-import { computeAuctionViewData } from '../logic/auction-view-helpers.js';
+import { computeAuctionViewData, prepareAuctionData } from '../logic/auction-view-helpers.js';
 import { showToast } from '../composables/useToast.js';
 import { apiStatusMap } from '../logic/ui-bridge.js';
 
 const uiStore = useUiStore();
 const auctionStore = useAuctionStore();
 
-const props = defineProps({
-  dataSource: { type: String, default: 'auction' }
-});
 
 const sortState = reactive({
   byData: false,
@@ -492,13 +489,12 @@ const longPressMenuRef = ref(null);
 const coreTopicModalRef = ref(null);
 const editModalRef = ref(null);
 let longPressTimer = null;
-const _dsKey = () => 'auction';
 const viewData = computed(() => {
-  void auctionStore.dataVersions[_dsKey()];
+  void auctionStore.dataVersions['auction'];
   void uiStore.currentDate;
   void sortState.byData; void sortState.byRatio; void sortState.byParallel;
   void sortState.byJingYest; void sortState.byJingYestRatio; void sortState.byThreeDayJingDie;
-  return computeAuctionViewData(props.dataSource, sortState);
+  return computeAuctionViewData('auction', sortState);
 });
 
 const currentPage = ref(0);
@@ -517,7 +513,7 @@ function toggleBoard(e) {
 const topicGroups = computed(() => {
   void viewData.value;
   void uiStore.currentDate;
-  const auctionList = getTodayGroupList(props.dataSource);
+  const auctionList = getTodayGroupList('auction');
   if (!auctionList || auctionList.length === 0) return [];
   return getTopicGroups(auctionList);
 });
@@ -626,7 +622,7 @@ function getChangeClass(stock) {
   return 'auction-topic-change';
 }
 function getTopicRowClass(group, stock) {
-  const auctionList = getTodayGroupList(props.dataSource);
+  const auctionList = getTodayGroupList('auction');
   const auctionItem = auctionList.find(it => it.stock && it.stock.trim() === (stock.stock || '').trim());
   let cls = 'auction-topic-row';
   if (auctionItem) {
@@ -650,15 +646,15 @@ const p2StockTopicCount = computed(() => {
 });
 
 const p2HighRatioInfo = computed(() => {
-  try { return getHighRatioStocksForDate(uiStore.currentDate, props.dataSource); }
+  try { return getHighRatioStocksForDate(uiStore.currentDate, 'auction'); }
   catch (e) { return { count: '-', stockNames: new Set() }; }
 });
 const p2JingYestSet = computed(() => {
-  try { return getJingYestHighlightSetForDate(uiStore.currentDate, props.dataSource); }
+  try { return getJingYestHighlightSetForDate(uiStore.currentDate, 'auction'); }
   catch (e) { return new Set(); }
 });
 const p2ParallelSet = computed(() => {
-  try { return getParallelStocksForDate(uiStore.currentDate, props.dataSource); }
+  try { return getParallelStocksForDate(uiStore.currentDate, 'auction'); }
   catch (e) { return new Set(); }
 });
 const p2JingYestCount = computed(() => {
@@ -677,10 +673,10 @@ const p2HighRatioCount = computed(() => p2HighRatioInfo.value ? p2HighRatioInfo.
 const sortedTopicGroups = computed(() => {
   const groups = topicGroups.value;
   if (!groups || groups.length === 0) return [];
-  const auctionData = getGroupData(props.dataSource);
+  const auctionData = getGroupData('auction');
   const prevDate = getPreviousTradingDay(uiStore.currentDate);
   const prevAuctionList = prevDate ? (auctionData[prevDate] || []) : [];
-  const auctionList = getTodayGroupList(props.dataSource);
+  const auctionList = getTodayGroupList('auction');
 
   const enriched = groups.map(g => {
     if (g.topic === '其它') return { ...g, strength: null };
@@ -781,7 +777,7 @@ function p2ToggleExpandAll() {
   }
 }
 function loadP2TrendHistory(stockName) {
-  const history = getAuctionStockHistory(stockName.trim(), uiStore.currentDate, 5, props.dataSource);
+  const history = getAuctionStockHistory(stockName.trim(), uiStore.currentDate, 5, 'auction');
   const stats = _computeTrendStats(history);
   return {
     volume: history.map(h => ({ date: h.date, value: h.volume })),
@@ -822,7 +818,7 @@ const page3Data = computed(() => {
   const allTradingDays = getLastNTradingDays(6);
   if (allTradingDays.length === 0) return { topics: [], tradingDays: [] };
   const tradingDays = allTradingDays.slice(0, 5);
-  const auctionData = getGroupData(props.dataSource);
+  const auctionData = getGroupData('auction');
   const allTopicData = {};
 
   allTradingDays.forEach(dateStr => {
@@ -933,10 +929,10 @@ function saveCopiedStocks() {
   } catch {}
 }
 function copyAllTopicStocks(topic) {
-  const auctionList = getTodayGroupList(props.dataSource);
+  const auctionList = getTodayGroupList('auction');
   if (!auctionList || auctionList.length === 0) return;
   const prevDate = getPreviousTradingDay(uiStore.currentDate);
-  const auctionData = getGroupData(props.dataSource);
+  const auctionData = getGroupData('auction');
   const prevAuctionList = prevDate ? (auctionData[prevDate] || []) : [];
   const groups = getTopicGroups(auctionList);
   const topicGroup = groups.find(g => g.topic === topic);
@@ -963,10 +959,10 @@ function copyAllTopicStocks(topic) {
   switchPage(3);
 }
 function copyTopicStocks(topic, minRatio) {
-  const auctionList = getTodayGroupList(props.dataSource);
+  const auctionList = getTodayGroupList('auction');
   if (!auctionList || auctionList.length === 0) return;
   const prevDate = getPreviousTradingDay(uiStore.currentDate);
-  const auctionData = getGroupData(props.dataSource);
+  const auctionData = getGroupData('auction');
   const prevAuctionList = prevDate ? (auctionData[prevDate] || []) : [];
   const groups = getTopicGroups(auctionList);
   const topicGroup = groups.find(g => g.topic === topic);
@@ -1041,7 +1037,7 @@ function onHeaderClick() {
 }
 
 function refresh() {
-  auctionStore.bumpDataVersion(_dsKey());
+  auctionStore.bumpDataVersion('auction');
 }
 
 function toggleSort(key) {
@@ -1074,9 +1070,8 @@ function toggleSort(key) {
       sortState.byParallel = false;
     }
   }
-  const _p = 'auction';
-  if (auctionStore.sortState && auctionStore.sortState[_p]) {
-    const s = auctionStore.sortState[_p];
+  if (auctionStore.sortState && auctionStore.sortState['auction']) {
+    const s = auctionStore.sortState['auction'];
     s.byData = sortState.byData;
     s.byRatio = sortState.byRatio;
     s.byParallel = sortState.byParallel;
@@ -1094,7 +1089,7 @@ function expandAll() {
   allItems.forEach(item => {
     if (item && item.stock) {
       newSet.add(item.index);
-      const history = getAuctionStockHistory(item.stock.trim(), uiStore.currentDate, 5, props.dataSource);
+      const history = getAuctionStockHistory(item.stock.trim(), uiStore.currentDate, 5, 'auction');
       const stats = _computeTrendStats(history);
       newHistory[item.index] = {
         volume: history.map(h => ({ date: h.date, value: h.volume })),
@@ -1135,7 +1130,7 @@ function _computeTrendStats(history) {
 }
 
 function loadTrendHistory(index, stockName) {
-  const history = getAuctionStockHistory(stockName.trim(), uiStore.currentDate, 5, props.dataSource);
+  const history = getAuctionStockHistory(stockName.trim(), uiStore.currentDate, 5, 'auction');
   const stats = _computeTrendStats(history);
   trendHistory.value = {
     ...trendHistory.value,
@@ -1249,7 +1244,7 @@ function onHistoryFill() {
 
 
 function onToggleSelect(index) {
-  const auctionList = getTodayGroupList(props.dataSource);
+  const auctionList = getTodayGroupList('auction');
   if (auctionList[index]) {
     const _stockName = auctionList[index].stock ? auctionList[index].stock.trim() : '';
     const _ts = deriveAuctionTagState(_stockName, uiStore.currentDate);
@@ -1263,7 +1258,7 @@ function onToggleSelect(index) {
 }
 
 function onShowNote(index) {
-  const auctionList = getTodayGroupList(props.dataSource);
+  const auctionList = getTodayGroupList('auction');
   const currentNote = getDisplayNote(auctionList[index]);
   const note = prompt('请输入注释（如涨幅）：', currentNote);
   if (note !== null) {
@@ -1331,10 +1326,12 @@ watch(() => uiStore.currentDate, () => {
 });
 
 onMounted(() => {
+  if (uiStore.currentDate) prepareAuctionData(uiStore.currentDate);
   refresh();
   loadCopiedStocks();
   _on('auction-refresh', refresh);
 });
+watch(() => uiStore.currentDate, (v) => { if (v) prepareAuctionData(v); });
 onUnmounted(() => {
   cancelLongPress();
   _off('auction-refresh', refresh);

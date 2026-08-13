@@ -138,16 +138,15 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   };
 }
 
+export function prepareAuctionData(currentDate) {
+  try { ensureBoughtStocksForDate(currentDate); } catch (e) { console.warn('ensureBoughtStocksForDate failed:', e); }
+  try { ensureObservationStocks(currentDate); } catch (e) { console.warn('ensureObservationStocks failed:', e); }
+}
+
 export function computeAuctionViewData(dataSource, sortStateOverride) {
   dataSource = dataSource || 'auction';
   const _p = dataSource === 'hot' ? 'hot' : 'auction';
   const currentDate = state.currentDate;
-
-  if (dataSource !== 'hot') {
-    try { ensureBoughtStocksForDate(currentDate); } catch (e) { console.warn('ensureBoughtStocksForDate failed:', e); }
-    // 恢复：前一天竞昨高光自动带入当天观察组（修复 8/13 观察组只剩 2 只的问题）
-    try { ensureObservationStocks(currentDate); } catch (e) { console.warn('ensureObservationStocks failed:', e); }
-  }
 
   const auctionList = getTodayGroupList(dataSource);
   if (!auctionList || auctionList.length === 0) {

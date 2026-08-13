@@ -1,4 +1,5 @@
 ﻿﻿import { state } from '../logic/app-state.js';
+import { useUiStore } from './uiStore.js';
 
 let _uiFns = {};
 export function _bindUiFns(fns) { _uiFns = fns; }
@@ -34,17 +35,8 @@ function createSortStateP2() {
   };
 }
 
-function tabKey(store) {
-  const ds = store.currentGroup;
-  return ds === 'hot' ? 'hot' : 'auction';
-}
-
-function syncGlobalCurrentGroup(store) {
-  try {
-    if (typeof state.currentGroup !== 'undefined' && state.currentGroup !== store.currentGroup) {
-      state.currentGroup = store.currentGroup;
-    }
-  } catch (e) {}
+function tabKey() {
+  return 'auction';
 }
 
 function syncGlobalCurrentDate(store) {
@@ -94,13 +86,6 @@ export const useAuctionStore = defineStore('auction', {
   }),
   actions: {
     // --- 导航 ---
-    switchGroup(group) {
-      if (group !== 'auction' && group !== 'hot') return;
-      this.currentGroup = group;
-      this.currentPage = 0;
-      this.highlightKeyword = '';
-      syncGlobalCurrentGroup(this);
-    },
 
     switchPage(page) {
       const p = parseInt(page, 10);
@@ -110,7 +95,7 @@ export const useAuctionStore = defineStore('auction', {
 
     // --- 排序 ---
     setSortState(page, key, value) {
-      const t = tabKey(this);
+      const t = tabKey();
       if (page === 1 && this.sortState[t]) {
         this.sortState[t][key] = !!value;
       } else if (page === 2 && this.sortStateP2[t]) {
@@ -127,7 +112,7 @@ export const useAuctionStore = defineStore('auction', {
 
     toggleP2Topic(topic) {
       if (!topic) return;
-      const key = tabKey(this) + '|' + topic;
+      const key = tabKey() + '|' + topic;
       const set = this.p2ExpandedTopics;
       if (set.has(key)) set.delete(key); else set.add(key);
     },
@@ -246,7 +231,7 @@ export const useAuctionStore = defineStore('auction', {
 
     // --- 刷新 ---
     refresh() {
-      safeCall(_uiFns.renderAuction, this.currentGroup);
+      safeCall(_uiFns.renderAuction, 'auction');
     },
 
     // --- 强度排序开关镜像 ---
@@ -269,7 +254,7 @@ const store = useAuctionStore(_pinia);
 
 // 绑定 actions 引用（向后兼容：旧代码通过 store.actions.xxx 调用）
 store.actions = {
-  switchGroup: (g) => store.switchGroup(g),
+
   switchPage: (p) => store.switchPage(p),
   setSortState: (pg, k, v) => store.setSortState(pg, k, v),
   toggleTrendPanel: (s) => store.toggleTrendPanel(s),
@@ -305,10 +290,13 @@ store.actions = {
 };
 
 
-// store -> global 同步（currentGroup / currentDate 变化时同步到 window）
+// store -> global 同步（currentDate 变化时同步到 window）
 try {
-  watch(() => store.currentGroup, () => syncGlobalCurrentGroup(store));
   watch(() => store.currentDate, () => syncGlobalCurrentDate(store));
+  // uiStore.currentDate → auctionStore.currentDate 防御性同步
+  // 确保任何通过 uiStore.setDate 切换日期的路径都能同步到 auctionStore
+  const _uiStore = useUiStore();
+  watch(() => _uiStore.currentDate, (v) => { if (v && store.currentDate !== v) store.currentDate = v; });
 } catch (e) {}
 
 export default store;

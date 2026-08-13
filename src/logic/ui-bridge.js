@@ -66,7 +66,7 @@ export function resolveNumcatChoice(overwrite) {
   }
 }
 export function updateCloudSyncUI() {}
-export function _switchGroupUI() {}
+
 export function showHotDiagReport() {}
 export function showAuctionDiagReport() {}
 export function closeTrackEditModal() {}

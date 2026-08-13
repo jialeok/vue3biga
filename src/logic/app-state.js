@@ -16,7 +16,7 @@ export const state = {
     allData: null,
     currentDate: null,
     DATA_VERSION: null,
-    currentGroup: null,
+    currentGroup: 'auction',
     auctionCurrentPage: 0,
     _hotTrendsCache: {},
     _hotTrendsTableAvailable: false,
