@@ -1,6 +1,7 @@
 ﻿import { _setGetLocalTodayStr } from './trading-day-helpers.js';
 import { _dbgLog, _dbgLogVerbose } from '../data/debug-log.js';
 import { getStockHistoryValue, _isAuctionWatchlistStock, _addAuctionWatchlistMember } from '../data/watchlist-and-metrics.js';
+import { getJingYestHighlightSetForDate } from './auction-sort-rules.js';
 import { getPreviousTradingDay, isTradingDay } from './trading-day-helpers.js';
 import { getStocksData } from '../data/supabase-client.js';
 import { getStockCode } from '../data/stock-code-map.js';
@@ -90,6 +91,80 @@ import { state } from './app-state.js';
             return `${year}-${month}-${day}`;
         }
         _setGetLocalTodayStr(_getLocalTodayStr);
+
+        // 前一天"竞/昨"实际高光（蓝色高光）达标股票，自动带入当天观察组（早盘竞价 tab 专属）：
+        // 与 ensureBoughtStocksForDate 平行，但继承的是"前一天竞昨高光集合"而非"买卖标签"。
+        // 口径与界面显示、"竞/昨数"统计保持一致（统一走 getJingYestHighlightSetForDate）。
+        // 历史锁定：只对"今天及以后"生效（允许预览下一交易日），历史日期只读不改——
+        // 避免在查看历史日期时，用当前 prevDay 高光集回溯改写已保存好的历史列表。
+        // [恢复说明] 该函数曾在本项目拆分时遗失，导致观察组只显示"恰好已在当天列表里"的前日高光，
+        // 而非完整的前一日竞昨集合（表现为 8/13 观察组只剩 2 只而非应继承的 6 只）。此处按原版逻辑恢复。
+        export function ensureObservationStocks(date) {
+            if (!date) return;
+            const today = _getLocalTodayStr();
+            // 历史锁定：只对"今天及以后"生效（允许预览下一交易日）。打开/查看历史日期时绝不自动继承或清理任何股票，
+            // 只如实显示保存时的样子。
+            if (date < today) return;
+            // 非交易日（周末/节假日）不自动继承上一交易日股票，避免非交易日被填充上一交易日数据。
+            if (!isTradingDay(date)) {
+                _dbgLog('[OBS-ENSURE] ' + date + ' 非交易日，跳过观察组继承');
+                return;
+            }
+
+            const prevDay = getPreviousTradingDay(date);
+            if (!prevDay) return;
+
+            _dbgLog('[OBS-ENSURE] === 调用开始 === date=' + date + ' prevDay=' + prevDay);
+
+            // 上一交易日"竞/昨"实际高光（蓝色高光）达标股票，口径与界面显示、"竞/昨数"统计保持一致
+            const obsStocksRaw = getJingYestHighlightSetForDate(prevDay);
+            if (!obsStocksRaw || obsStocksRaw.size === 0) {
+                // 数据未就绪时不设标记，等待下次渲染重试（数据加载完成后快照缓存会有值）
+                _dbgLog('[OBS-ENSURE] === 调用结束（提前返回）=== prevDay=' + prevDay + ' 高光集合为空（数据可能未就绪），本轮不处理，等下次渲染重试');
+                return;
+            }
+            _dbgLog('[OBS-ENSURE] prevDay=' + prevDay + ' 高光集合 ' + obsStocksRaw.size + ' 只：' + [...obsStocksRaw].join('、'));
+
+            // 观察组 = 符合竞昨条件（平行+差值>0）的股票，与手动买卖标签无关（含已卖出）。
+            const obsStocks = new Set(obsStocksRaw);
+
+            const auctionData = getAuctionData();
+            const dayList = auctionData[date] || [];
+            const existingNames = new Set(dayList.map(function(s) { return s.stock ? s.stock.trim() : ''; }));
+
+            // 已自动添加的股票名集合（与 ensureBoughtStocksForDate 共用 obsAutoAdded_<date>）
+            const autoAdded = JSON.parse(localStorage.getItem('obsAutoAdded_' + date) || '[]');
+            const autoAddedSet = new Set(autoAdded);
+
+            const signature = [...obsStocks].sort().join('|');
+            const alreadyEnsured = localStorage.getItem('obsEnsured_' + date) === signature;
+
+            let hasNew = false;
+            const _beforeLen = dayList.length;
+
+            if (!alreadyEnsured) {
+                obsStocks.forEach(function(name) {
+                    if (!existingNames.has(name)) {
+                        // 不在当日列表中 → 自动添加为观察组正式成员（空壳行，待抓取/手动补量）
+                        dayList.push({ stock: name, code: getStockCode(name), volume: '', yestVolume: '', note: '', obsAutoAdded: true });
+                        _addAuctionWatchlistMember(date, name);
+                        autoAddedSet.add(name);
+                        hasNew = true;
+                    }
+                });
+            }
+
+            if (hasNew) {
+                _dbgLog('[OBS-ENSURE] date=' + date + ' before=' + _beforeLen + ' after=' + dayList.length);
+                auctionData[date] = dayList;
+                markAuctionDirty(date);
+                scheduleCloudPush();
+            }
+
+            localStorage.setItem('obsAutoAdded_' + date, JSON.stringify([...autoAddedSet]));
+            localStorage.setItem('obsEnsured_' + date, signature);
+            _dbgLog('[OBS-ENSURE] === 调用结束 === 应继承' + obsStocks.size + '只，本轮' + (hasNew ? '有变动(' + _beforeLen + '→' + dayList.length + '条)' : '无变动') + '，signature=' + (alreadyEnsured ? '一致跳过' : '已重算'));
+        }
 
         // 买入/持有/卖出股票进次日观察组（早盘竞价 tab 专属，与 ensureObservationStocks 平行）：
         // 只继承一天，不会无限往后传——判断依据只看 getStocksData()[昨天]（点击"卖/买/持有"

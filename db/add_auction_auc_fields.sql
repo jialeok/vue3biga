@@ -48,7 +48,7 @@ begin
   end if;
 end $$;
 
--- 校验：应返回 0 行
+-- 校验：成功执行后应返回 5 行（即 5 列均已存在）；若返回 0 行说明上方 ALTER 未生效
 select column_name from information_schema.columns
 where table_schema = 'public' and table_name = 'market_metrics'
   and column_name in ('auc_pct_chg', 'um_vol', 'open_bid_pct', 'auc_vol_ratio', 'auc_turnover');

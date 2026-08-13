@@ -1,7 +1,7 @@
 import { getTodayGroupList, getGroupData, getAuctionData } from './app-core-api.js';
 import { getPreviousTradingDay } from './trading-day-helpers.js';
 import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlightSetForDate, getDigitCount, getRatioDiffInfoForDate } from './auction-sort-rules.js';
-import { getAuctionStockHistory, ensureBoughtStocksForDate, deriveAuctionTagState } from './tag-rules.js';
+import { getAuctionStockHistory, ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagState } from './tag-rules.js';
 import { getThreeDayJingDieSet } from './sort-rules-extra.js';
 import { getNumericVolume, getStocksData } from '../data/supabase-client.js';
 import { state } from './app-state.js';
@@ -145,6 +145,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   if (dataSource !== 'hot') {
     try { ensureBoughtStocksForDate(currentDate); } catch (e) { console.warn('ensureBoughtStocksForDate failed:', e); }
+    // 恢复：前一天竞昨高光自动带入当天观察组（修复 8/13 观察组只剩 2 只的问题）
+    try { ensureObservationStocks(currentDate); } catch (e) { console.warn('ensureObservationStocks failed:', e); }
   }
 
   const auctionList = getTodayGroupList(dataSource);
