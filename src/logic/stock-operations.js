@@ -3,16 +3,31 @@ import { saveData, getNextTradingDay } from './app-core-api.js';
 import { state } from './app-state.js';
 import { _emit } from '../stores/eventBus.js';
 import { showToast } from '../composables/useToast.js';
+import { pushRemainingNow } from '../data/remaining-boards.js';
+
+function _genStockId() {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
 
 export function deleteStock(id) {
+    if (id === undefined || id === null || Number.isNaN(id)) {
+        showToast('⚠️ 记录ID无效，无法删除');
+        return;
+    }
     if (!confirm('确定要删除这条记录吗？')) return;
     const currentDate = state.currentDate;
-    if (!getStocksData()[currentDate]) return;
-    const stockToDelete = getStocksData()[currentDate].find(s => s.id === id);
-    const stockName = stockToDelete ? stockToDelete.name : null;
-    getStocksData()[currentDate] = getStocksData()[currentDate].filter(s => s.id !== id);
-    if (getStocksData()[currentDate].length === 0) delete getStocksData()[currentDate];
+    const dayList = getStocksData()[currentDate];
+    if (!dayList || !Array.isArray(dayList)) return;
+    const idx = dayList.findIndex(s => s && s.id === id);
+    if (idx === -1) {
+        showToast('⚠️ 未找到该记录');
+        return;
+    }
+    const stockName = dayList[idx].name || null;
+    dayList.splice(idx, 1);
+    if (dayList.length === 0) delete getStocksData()[currentDate];
     saveData();
+    pushRemainingNow(currentDate);
     _emit('stocks-refresh');
     if (stockName) showToast('已删除 ' + stockName);
 }
@@ -36,7 +51,7 @@ export function copyToTomorrow(id) {
         }
     }
     const newStock = {
-        id: Date.now(),
+        id: _genStockId(),
         name: stock.name || '',
         stage: stock.stage || '二板',
         xgcaiti: stock.xgcaiti || '',
@@ -113,7 +128,7 @@ export function copyToDate(id) {
         }
     }
     const newStock = {
-        id: Date.now(),
+        id: _genStockId(),
         name: stock.name || '',
         stage: stock.stage || '二板',
         xgcaiti: stock.xgcaiti || '',

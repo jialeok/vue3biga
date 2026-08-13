@@ -354,13 +354,35 @@ async function saveStocksForDate(date) {
   const list = Array.isArray(_stocksMemCache[date]) ? _stocksMemCache[date] : [];
   try {
     const sb = getSupabase();
-    await sb.from('stocks_data').delete().eq('date', date);
-    if (list.length > 0) {
-      const rows = list.filter(s => s && s.name).map(s => _stockToRow(date, s));
-      if (rows.length > 0) {
-        await sb.from('stocks_data').insert(rows);
-      }
+    const localRows = list.filter(s => s && s.name).map(s => _stockToRow(date, s));
+    const localNames = new Set(localRows.map(r => r.name));
+
+    // 1. 查询云端现有行（仅取 name），计算需要删除的差集
+    const { data: cloudRows, error: qErr } = await sb
+      .from('stocks_data')
+      .select('name')
+      .eq('date', date);
+    if (qErr) throw qErr;
+    const toDeleteNames = (cloudRows || [])
+      .map(r => r.name)
+      .filter(n => !localNames.has(n));
+
+    // 2. upsert 本地行（插入+更新）；失败时云端仍保留旧数据，不丢数据
+    if (localRows.length > 0) {
+      const { error: upErr } = await sb.from('stocks_data')
+        .upsert(localRows, { onConflict: 'date,name' });
+      if (upErr) throw upErr;
     }
+
+    // 3. 删除云端有但本地已无的行
+    if (toDeleteNames.length > 0) {
+      const { error: delErr } = await sb.from('stocks_data')
+        .delete()
+        .eq('date', date)
+        .in('name', toDeleteNames);
+      if (delErr) throw delErr;
+    }
+
     _lastPushed.stocks[date] = JSON.stringify(list);
   } catch (e) {
     _warn('saveStocksForDate ' + date + ' 失败: ' + (e.message || e));
