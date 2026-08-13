@@ -18,9 +18,6 @@
 
         import { getPreviousTradingDay } from './trading-day-helpers.js';
 
-        if (typeof window !== 'undefined') {
-          window.__debugJingYest = { getJingYestStocksForDate, getParallelStocksForDate, getRatioDiffInfoForDate, getJingYestHighlightSetForDate, getGroupData, getStockHistoryValue, getNumericVolume, getPreviousTradingDay };
-        }
 
         export function _signalFpFor(dateStr, dataSource) {
             var __g = getGroupData(dataSource);

@@ -590,6 +590,11 @@ import { syncStockTopicsFromAuction } from '../auction-stock-sync.js';
                     _dbgLog('[AUCTION-ERR] window.pullAuctionFromTable ' + (tableErr && tableErr.message));
                 }
 
+                // pullAuctionFromTable 加载了所有日期的全量快照到 _auctionMemCache，
+                // 首次渲染时 T-1 数据可能未就绪导致竞昨高光算成 0 并被指纹缓存锁住。
+                // 这里无条件触发重渲染，让高光用完整 T-1 数据重算。
+                _emit('auction-refresh');
+
                 // 阶段六 影子bug6 收尾：拉取完成后立即对账，用 localStorage 旧正式列表纠正云端已提升的影子记录
                 try {
                     const reconcileResult = await reconcileAuctionWatchlistFromLocalStorage();
