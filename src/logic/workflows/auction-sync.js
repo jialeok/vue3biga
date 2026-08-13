@@ -15,6 +15,7 @@ import { _getAuctionWatchlistSet } from '../../data/watchlist-and-metrics.js';
 import { cleanseAuctionTagsOnce } from '../tag-rules.js';
 import { state } from '../app-state.js';
 import { pullAuctionFromTable } from '../../data/auction-data.js';
+import { _signalCache } from '../auction-sort-rules.js';
 import { pullBiddingFromTable, pushBiddingToCloud } from '../../data/bidding-data.js';
 import { pullJiwangFromTable } from '../../data/jiwang-data.js';
 import { updateCloudSyncUI, recalcDuibanFromAuction } from '../ui-bridge.js';
@@ -592,7 +593,10 @@ import { syncStockTopicsFromAuction } from '../auction-stock-sync.js';
 
                 // pullAuctionFromTable 加载了所有日期的全量快照到 _auctionMemCache，
                 // 首次渲染时 T-1 数据可能未就绪导致竞昨高光算成 0 并被指纹缓存锁住。
-                // 这里无条件触发重渲染，让高光用完整 T-1 数据重算。
+                // 指纹 _signalFpFor 只覆盖 watchlist 数据，不覆盖 _auctionMemCache 全量快照，
+                // 所以全量快照就绪后指纹不变 → 缓存命中 → 返回旧的 0。
+                // 修复：清空 _signalCache，强制重渲染时用完整全量快照重算。
+                Object.keys(_signalCache).forEach(function(k) { delete _signalCache[k]; });
                 _emit('auction-refresh');
 
                 // 阶段六 影子bug6 收尾：拉取完成后立即对账，用 localStorage 旧正式列表纠正云端已提升的影子记录
