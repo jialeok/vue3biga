@@ -30,7 +30,7 @@
           <span class="col-name">{{ row.name }}</span>
           <span class="col-time915">{{ row.time915 || '-' }}</span>
           <span class="col-time920">{{ row.time920 || '-' }}</span>
-          <span class="col-time925">{{ row.time925 || '-' }}</span>
+          <span class="col-time925" :class="duibanTime925Class(row)">{{ row.time925 || '-' }}</span>
           <span class="col-change" :class="changeTagClass(row.change)">{{ row.change || '-' }}</span>
           <span class="col-close" :class="changeClass(row.close)">{{ formatClose(row.close, row.name) }}</span>
         </div>
@@ -45,20 +45,26 @@
       </div>
       <div class="bidding-edit-rows">
         <div v-for="(row, idx) in editRows" :key="idx" class="bidding-edit-row" :class="{ 'bidding-edit-row-time26': row.name === '最近多板%time26' }">
-          <div class="bidding-edit-row-top">
-            <input :value="row.name" readonly class="bidding-edit-name bidding-edit-name-readonly" />
-          </div>
-          <div v-if="row.name === '最近多板%time26'" class="bidding-edit-row-bottom bidding-edit-row-bottom-time26">
-            <input v-model="row.time925" placeholder="9:26" @input="onInputChange(row)" />
-            <input :value="row.change" placeholder="增减" readonly class="bidding-row-change" :class="changeTagClass(row.change)" />
-          </div>
-          <div v-else class="bidding-edit-row-bottom">
-            <input v-model="row.time915" placeholder="9:15" @input="onInputChange(row)" />
-            <input v-model="row.time920" placeholder="9:20" @input="onInputChange(row)" />
-            <input v-model="row.time925" placeholder="9:25" @input="onInputChange(row)" />
-            <input :value="row.change" placeholder="增减" readonly class="bidding-row-change" :class="changeTagClass(row.change)" />
-            <input v-model="row.close" placeholder="收盘" @input="onInputChange(row)" />
-          </div>
+          <template v-if="row.name === '最近多板%time26'">
+            <div class="bidding-edit-row-time26-line">
+              <input :value="row.name" readonly class="bidding-edit-name-readonly-line" />
+              <input v-model="row.time925" placeholder="9:26" @input="onInputChange(row)" />
+              <input :value="row.change" placeholder="增减" readonly class="bidding-row-change" :class="changeTagClass(row.change)" />
+              <span class="bidding-edit-empty-cell"></span>
+            </div>
+          </template>
+          <template v-else>
+            <div class="bidding-edit-row-top">
+              <input :value="row.name" readonly class="bidding-edit-name bidding-edit-name-readonly" />
+            </div>
+            <div class="bidding-edit-row-bottom">
+              <input v-model="row.time915" placeholder="9:15" @input="onInputChange(row)" />
+              <input v-model="row.time920" placeholder="9:20" @input="onInputChange(row)" />
+              <input v-model="row.time925" placeholder="9:25" @input="onInputChange(row)" />
+              <input :value="row.change" placeholder="增减" readonly class="bidding-row-change" :class="changeTagClass(row.change)" />
+              <input v-model="row.close" placeholder="收盘" @input="onInputChange(row)" />
+            </div>
+          </template>
         </div>
       </div>
     </EditModal>
@@ -115,6 +121,18 @@ const clearConfirmActive = ref(false);
 const expanded = ref(false);
 
 const visibleBiddingRows = computed(() => biddingRows.value.filter(r => r.name !== '最近多板%time26'));
+
+const time26Change = computed(() => {
+  const row = biddingRows.value.find(r => r.name === '最近多板%time26');
+  return row ? (row.change || '') : '';
+});
+
+function duibanTime925Class(row) {
+  if (row.name !== '最近多板%') return '';
+  if (time26Change.value === '增') return 'up';
+  if (time26Change.value === '减') return 'down';
+  return '';
+}
 
 function toggleExpand(e) {
   if (e) e.stopPropagation();
@@ -599,11 +617,32 @@ defineExpose({ render, openEdit, closeModal, save, clearData, fetchSnapshot, run
   grid-template-columns: repeat(5, 1fr);
   gap: 4px;
 }
-.bidding-edit-row-bottom-time26 {
+.bidding-edit-row-time26-line {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
   gap: 4px;
+  align-items: center;
 }
+.bidding-edit-name-readonly-line {
+  padding: 6px 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #f1f5f9;
+  color: #334155;
+  font-weight: 600;
+  text-align: left;
+}
+.bidding-edit-row-time26-line input {
+  padding: 6px 4px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 12px;
+  text-align: center;
+  background: #fff;
+  min-width: 0;
+}
+.bidding-edit-empty-cell {}
 .bidding-edit-row-time26 {
   background: #fff7ed;
   border: 1px dashed #fdba74;
