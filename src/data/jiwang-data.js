@@ -195,11 +195,11 @@ import { state } from '../logic/app-state.js';
         // 或切换日期，请求可能根本没发出去，且 catch 不会触发、不会有任何报错提示。
         // successMsg 为空则不弹成功提示（用于像勾选框这种高频操作，避免 toast 刷屏）。
         export function pushJiwangNow(date, successMsg) {
-            if (!date) return;
+            if (!date) return Promise.resolve();
             clearTimeout(state._jiwangPushTimers[date]);
             delete state._jiwangPushTimers[date];
             _dbgLog('pushJiwangNow: 立即推送 ' + date);
-            pushJiwangToCloud(date).then(function() {
+            return pushJiwangToCloud(date).then(function() {
                 if (successMsg) _emit('ui:toast', { type: 'success', msg: successMsg });
             }).catch(function(e) {
                 console.warn('window.pushJiwangNow 失败:', e);
