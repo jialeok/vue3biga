@@ -21,7 +21,7 @@
           <span class="col-close">收盘</span>
         </div>
         <div
-          v-for="(row, idx) in biddingRows"
+          v-for="(row, idx) in visibleBiddingRows"
           :key="idx"
           class="bidding-row"
           :class="row.rowClass"
@@ -44,11 +44,15 @@
         <span v-if="fetchStatus" class="bidding-fetch-status">{{ fetchStatus }}</span>
       </div>
       <div class="bidding-edit-rows">
-        <div v-for="(row, idx) in editRows" :key="idx" class="bidding-edit-row">
+        <div v-for="(row, idx) in editRows" :key="idx" class="bidding-edit-row" :class="{ 'bidding-edit-row-time26': row.name === '最近多板%time26' }">
           <div class="bidding-edit-row-top">
             <input :value="row.name" readonly class="bidding-edit-name bidding-edit-name-readonly" />
           </div>
-          <div class="bidding-edit-row-bottom">
+          <div v-if="row.name === '最近多板%time26'" class="bidding-edit-row-bottom bidding-edit-row-bottom-time26">
+            <input v-model="row.time925" placeholder="9:26" @input="onInputChange(row)" />
+            <input :value="row.change" placeholder="增减" readonly class="bidding-row-change" :class="changeTagClass(row.change)" />
+          </div>
+          <div v-else class="bidding-edit-row-bottom">
             <input v-model="row.time915" placeholder="9:15" @input="onInputChange(row)" />
             <input v-model="row.time920" placeholder="9:20" @input="onInputChange(row)" />
             <input v-model="row.time925" placeholder="9:25" @input="onInputChange(row)" />
@@ -84,7 +88,7 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted, onUnmounted } from 'vue';
+import { ref, watch, onMounted, onUnmounted, computed } from 'vue';
 import EditModal from '../components/EditModal.vue';
 import { useUiStore } from '../stores/uiStore.js';
 import { _on, _off } from '../stores/eventBus.js';
@@ -109,6 +113,8 @@ const saving = ref(false);
 const clearing = ref(false);
 const clearConfirmActive = ref(false);
 const expanded = ref(false);
+
+const visibleBiddingRows = computed(() => biddingRows.value.filter(r => r.name !== '最近多板%time26'));
 
 function toggleExpand(e) {
   if (e) e.stopPropagation();
@@ -137,6 +143,21 @@ function computeChange(time920, time925) {
   if (time920 && time920.toString().trim() && time925 && time925.toString().trim() && !isNaN(t920) && !isNaN(t930)) {
     if (t930 > t920) return '增';
     if (t930 < t920) return '减';
+    return '平';
+  }
+  return '';
+}
+
+// 最近多板%time26 行增减：自身 time925 与上方"最近多板%"行的 time925 比较
+function computeTime26Change(time26Row, duibanRow) {
+  if (!time26Row || !duibanRow) return '';
+  const t925 = parseFloat(duibanRow.time925);
+  const t26 = parseFloat(time26Row.time925);
+  if (duibanRow.time925 && duibanRow.time925.toString().trim() &&
+      time26Row.time925 && time26Row.time925.toString().trim() &&
+      !isNaN(t925) && !isNaN(t26)) {
+    if (t26 > t925) return '增';
+    if (t26 < t925) return '减';
     return '平';
   }
   return '';
@@ -191,11 +212,16 @@ function render() {
 }
 
 function openEdit() {
-  editRows.value = getTodayBidding().map(r => {
+  const rows = getTodayBidding().map(r => {
     const copied = { ...r };
     copied.change = computeChange(copied.time920, copied.time925);
     return copied;
   });
+  const duibanRow = rows.find(r => r.name === '最近多板%');
+  rows.forEach(r => {
+    if (r.name === '最近多板%time26') r.change = computeTime26Change(r, duibanRow);
+  });
+  editRows.value = rows;
   saving.value = false;
   modalActive.value = true;
 }
@@ -205,7 +231,16 @@ function closeModal() { modalActive.value = false; }
 function onInputChange(row) {
   row._touched = true;
 
-  row.change = computeChange(row.time920, row.time925);
+  if (row.name === '最近多板%time26') {
+    const duibanRow = editRows.value.find(r => r.name === '最近多板%');
+    row.change = computeTime26Change(row, duibanRow);
+  } else {
+    row.change = computeChange(row.time920, row.time925);
+    if (row.name === '最近多板%') {
+      const time26Row = editRows.value.find(r => r.name === '最近多板%time26');
+      if (time26Row) time26Row.change = computeTime26Change(time26Row, row);
+    }
+  }
 
   syncBiddingCloseToEtf(row);
 
@@ -563,6 +598,15 @@ defineExpose({ render, openEdit, closeModal, save, clearData, fetchSnapshot, run
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   gap: 4px;
+}
+.bidding-edit-row-bottom-time26 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+.bidding-edit-row-time26 {
+  background: #fff7ed;
+  border: 1px dashed #fdba74;
 }
 .bidding-edit-row-bottom input {
   padding: 6px 4px;

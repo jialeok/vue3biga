@@ -416,6 +416,7 @@ import { state } from '../logic/app-state.js';
         // 前台展示与后台编辑弹窗统一按此顺序，避免按插入顺序 / DB 扫描顺序乱序。
         export const BIDDING_ROW_ORDER = [
             '最近多板%',
+            '最近多板%time26',
             '板块ETF(48)',
             '昨日资金前十',
             '大盘ETF',
