@@ -192,8 +192,9 @@ import { state } from './app-state.js';
         export function ensureBoughtStocksForDate(date) {
             if (!date) return;
             const today = _getLocalTodayStr();
-            // 历史锁定：与 ensureObservationStocks 一致，只对"今天及以后"生效（允许预览下一交易日），历史日期只读不改。
-            if (date < today) return;
+            // [BUG-FIX 2026-08-14] 历史日期也做回溯清理（清除旧逻辑残留的 obsAutoAdded），
+            // 但跳过添加新股票（保留历史数据不增不减）。
+            const isHistorical = date < today;
             const isPreview = date > today;
             // [BUG-FIX 2026-07-26] 非交易日（周末/节假日）不自动继承买入/持有股票，
             // 与 ensureObservationStocks 保持一致，避免非交易日被填充上一交易日数据。
@@ -314,6 +315,36 @@ import { state } from './app-state.js';
 
             // [BUG-FIX 2026-07-27] 记录"昨日买/持/卖"集合——渲染层据此显示"买"/"持"/"卖"字
             localStorage.setItem('obsBought_' + date, JSON.stringify(holdingNames));
+
+            // [BUG-FIX 2026-08-14] 回溯清理：移除旧逻辑残留的错误 obsAutoAdded 行。
+            // 旧逻辑把常规组买入的股票也设成了 obsAutoAdded=true，新逻辑只允许观察组成员。
+            // 合法的 obsAutoAdded = 买入继承集(holdingNames) ∪ 竞昨高光集(ensureObservationStocks 添加的)。
+            const _obsStocksForClean = getJingYestHighlightSetForDate(prevDay);
+            const _validObsNames = new Set([...holdingNames, ...(_obsStocksForClean || [])]);
+            let _cleanedCount = 0;
+            dayList.forEach(function(row) {
+                if (row && row.stock && row.obsAutoAdded === true) {
+                    const _n = row.stock.trim();
+                    if (!_validObsNames.has(_n)) {
+                        row.obsAutoAdded = undefined;
+                        _cleanedCount++;
+                        _dbgLogVerbose('[BOUGHT-ENSURE] 回溯清理 ' + _n + ' | 旧 obsAutoAdded=true 但非观察组成员，已清除');
+                    }
+                }
+            });
+            if (_cleanedCount > 0) {
+                auctionData[date] = dayList;
+                markAuctionDirty(date);
+                scheduleCloudPush();
+                _dbgLog('[BOUGHT-ENSURE] 回溯清理 ' + _cleanedCount + ' 只错误的 obsAutoAdded 行（旧逻辑残留）');
+            }
+
+            // 历史日期：只清理不添加，保留历史数据不增不减
+            if (isHistorical) {
+                localStorage.setItem('boughtEnsured_' + date, signature);
+                _dbgLog('[BOUGHT-ENSURE] === 调用结束（历史日期，只清理不添加）=== holdingNames=' + holdingNames.length + ' 清理=' + _cleanedCount);
+                return;
+            }
 
             let hasNew = false;
             let addedCount = 0;
