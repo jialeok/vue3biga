@@ -418,7 +418,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       const matchesToday = jingYestHighlightSet && jingYestHighlightSet.has(stockName);
       const item = auctionList[i];
       const hasTodayData = item && ((item.volume || '').toString().trim() !== '' || (item.yestVolume || '').toString().trim() !== '');
-      const isBoughtInherited = _obsBoughtVisibleSet.has(stockName) && hasTodayData;
+      const isBoughtInherited = _obsBoughtSet.has(stockName) && hasTodayData;
       if (!matchesToday && !isBoughtInherited) hiddenObsIndices.push(i);
     });
     obsIndices = [];
