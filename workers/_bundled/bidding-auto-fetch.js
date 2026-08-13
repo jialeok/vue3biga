@@ -499,6 +499,17 @@ async function fetchAndWriteWatchlist(env, today, logs) {
     }
   } catch (e) { logs.push('读取前一日 watchlist 失败(非致命): ' + e.message); }
 
+  // [BUG-FIX] 也读今日 auction_watchlist，合并用户在前端提前打开页面时已加入的股票
+  try {
+    const todayStocks = await readAuctionWatchlistForDate(env, today);
+    const existingCodes = new Set(constituents.map(c => c.code));
+    const todayExtra = todayStocks.filter(s => s.code && !existingCodes.has(s.code));
+    if (todayExtra.length > 0) {
+      logs.push('今日 watchlist 额外股票(前端提前继承): ' + todayExtra.length + ' 只，合并到抓取名单');
+      constituents = constituents.concat(todayExtra);
+    }
+  } catch (e) { logs.push('读取今日 watchlist 失败(非致命): ' + e.message); }
+
   // 【BUG-FIX】不写 volume/yest_volume/change_pct/note/topics 字段：
   // 这些字段的真实值由步骤4写入 market_metrics 表。如果这里把空串写进 watchlist，
   // 后续每个交易日的 morning 都会用空串覆盖用户在前端手动编辑过的值。
