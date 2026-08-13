@@ -385,9 +385,7 @@ async function confirmClearData() {
     row.time925 = '';
     row.change = '';
     row.close = '';
-    delete row.time925_initial;
-    delete row.time925_initial_modifiedAt;
-    delete row.time925_modifiedAt;
+
   });
 
   getBiddingData()[uiStore.currentDate] = biddingData;
