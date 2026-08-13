@@ -231,6 +231,15 @@ import { state } from './app-state.js';
             prevStocksTags.forEach(function(s) {
                 if (!s || !s.name) return;
                 const nameTrim = s.name.trim();
+                // [BUG-FIX 2026-08-14] 与 deriveAuctionTagState 的 prevIsInheritedOnly 防护对齐：
+                // 前一日记录若"仅"是继承来的（inheritedHold===true 且用户未手动确认 bought=true），
+                // 不再进入次日观察组——否则从更早日期继承来的 hold 记录会无限往后传递，
+                // 导致观察组股票越积越多（如8月11日的 hold 继承到12日再继承到13日）。
+                const isInheritedOnly = s.inheritedHold === true && s.bought !== true;
+                if (isInheritedOnly) {
+                    _dbgLogVerbose('[BOUGHT-ENSURE] 跳过仅继承记录 ' + nameTrim + ' | inheritedHold=true bought=' + (s.bought === true));
+                    return;
+                }
                 const wasSold = s.sold === true;
                 const wasBought = s.bought === true;
                 const wasHeld = s.hold === true;
