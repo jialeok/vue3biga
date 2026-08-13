@@ -464,7 +464,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       strongCount,
       totalCount,
       highRatioCount: highRatioToday.count,
-      jingYestCount: jingYestHighlightSet ? jingYestHighlightSet.size : 0
+      // 竞/昨数：统计「当前列表里实际符合竞昨条件的股票数」（与页面蓝色高光一致），
+      // 而非全市场竞昨全集（全市场集会包含大量不在用户自选列表里的股票，造成黄色条与蓝色高光对不上）。
+      jingYestCount: auctionList.filter(it => it && it.stock && jingYestHighlightSet && jingYestHighlightSet.has(it.stock.trim())).length
     }
   };
 }

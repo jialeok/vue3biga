@@ -79,7 +79,7 @@
           </div>
         </div>
         <div class="auction-highratio-stat">
-          <span style="font-weight:700;color:#dc2626;">当日竞/昨数：{{ viewData.stats && viewData.stats.jingYestCount || '-' }}</span>
+          <span style="font-weight:700;color:#dc2626;">竞昨数：{{ viewData.stats && viewData.stats.jingYestCount || '-' }}</span>
           <span style="display:inline-block;width:28px;"></span>竞放量数：<span style="font-weight:700;">{{ viewData.stats && viewData.stats.highRatioCount || '-' }}</span>
         </div>
         <div class="auction-header-row" @click="onHeaderClick" style="cursor:pointer">
@@ -139,7 +139,7 @@
           暂无数据，双击打开后台
         </div>
 
-        <div v-if="filteredObsItems.length > 0" class="auction-group-label auction-obs-group-label">观察组（前一日竞昨高光）</div>
+        <div v-if="filteredObsItems.length > 0" class="auction-group-label auction-obs-group-label">观察组</div>
         <template v-for="(item, idx) in filteredObsItems" :key="item.index" v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.index)]">
           <div :class="item.itemClass" :data-index="item.index" :data-stock="item.stock || ''" @click="onToggleSelect(item.index)">
             <div :class="item.numberClass" @click.stop="onExpandTrend(item.index)">{{ idx + 1 }}</div>
@@ -300,7 +300,7 @@
           </div>
         </div>
         <div class="auction-highratio-stat">
-          <span style="font-weight:700;color:#dc2626;">当日竞/昨数：{{ p2JingYestCount }}</span><span style="display:inline-block;width:28px;"></span>竞放量数：<span style="font-weight:700;">{{ p2HighRatioCount }}</span>
+          <span style="font-weight:700;color:#dc2626;">竞昨数：{{ p2JingYestCount }}</span><span style="display:inline-block;width:28px;"></span>竞放量数：<span style="font-weight:700;">{{ p2HighRatioCount }}</span>
         </div>
         <div v-if="sortedTopicGroups.length === 0" class="auction-empty">暂无题材分组数据</div>
         <div v-else>
@@ -661,7 +661,17 @@ const p2ParallelSet = computed(() => {
   try { return getParallelStocksForDate(uiStore.currentDate, props.dataSource); }
   catch (e) { return new Set(); }
 });
-const p2JingYestCount = computed(() => p2JingYestSet.value ? p2JingYestSet.value.size : '-');
+const p2JingYestCount = computed(() => {
+  // 与首页一致：统计「当前列表（题材分组）里实际符合竞昨条件的股票数」，而非全市场竞昨全集，
+  // 避免黄色条数字与页面蓝色高光对不上。
+  if (!p2JingYestSet.value) return '-';
+  let cnt = 0;
+  topicGroups.value.forEach(g => {
+    if (!g.stocks) return;
+    g.stocks.forEach(s => { if (s.stock && p2JingYestSet.value.has(s.stock.trim())) cnt++; });
+  });
+  return cnt;
+});
 const p2HighRatioCount = computed(() => p2HighRatioInfo.value ? p2HighRatioInfo.value.count : '-');
 
 const sortedTopicGroups = computed(() => {
