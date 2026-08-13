@@ -3,62 +3,54 @@ import { _dbgLog, _dbgLogVerbose } from '../data/debug-log.js';
 import { getStockHistoryValue, _isAuctionWatchlistStock, _addAuctionWatchlistMember } from '../data/watchlist-and-metrics.js';
 import { getJingYestHighlightSetForDate } from './auction-sort-rules.js';
 import { getPreviousTradingDay, isTradingDay } from './trading-day-helpers.js';
-import { getStocksData } from '../data/supabase-client.js';
+
 import { getStockCode } from '../data/stock-code-map.js';
 import { getAuctionData, scheduleCloudPush, markAuctionDirty } from './app-core-api.js';
 import { state } from './app-state.js';
 
+        // [REFACTOR 2026-08-14] 竞价看板标签独立于 stocksData，从 auctionBoardTags localStorage 读
+        let _auctionTagsCache = null;
+        let _auctionTagsCacheTime = 0;
+        function _getAuctionTags() {
+            const now = Date.now();
+            if (_auctionTagsCache && now - _auctionTagsCacheTime < 3000) return _auctionTagsCache;
+            try {
+                _auctionTagsCache = JSON.parse(localStorage.getItem('auctionBoardTags') || '{}');
+            } catch (e) {
+                _auctionTagsCache = {};
+            }
+            _auctionTagsCacheTime = now;
+            return _auctionTagsCache;
+        }
+        function _readTag(date, name) {
+            const tags = _getAuctionTags();
+            return (tags[date] && tags[date][name.trim()]) || null;
+        }
+
         export function deriveAuctionTagState(name, date, _cache, inheritOnly) {
             const result = { sold: false, bought: false, selected: false, source: 'none' };
             if (!name || !date) return result;
-            const stocksData = getStocksData();
-            let todayRec;
-            if (_cache && _cache.todayMap) {
-                todayRec = _cache.todayMap.get(name);
-            } else {
-                todayRec = (stocksData[date] || []).find(function(s) { return s && s.name && s.name.trim() === name; });
-            }
-            if (!inheritOnly && todayRec) {
-                if (todayRec.sold === true) { result.sold = true; result.source = 'today'; }
-                else if (todayRec.bought === true) { result.bought = true; result.source = 'today'; }
-                else if (todayRec.hold === true) { result.selected = true; result.source = 'today'; }
+            const todayTag = _readTag(date, name);
+            if (!inheritOnly && todayTag) {
+                if (todayTag === 'sell') { result.sold = true; result.source = 'today'; }
+                else if (todayTag === 'buy') { result.bought = true; result.source = 'today'; }
+                else if (todayTag === 'hold') { result.selected = true; result.source = 'today'; }
                 return result;
             }
             const prevDay = getPreviousTradingDay(date);
             if (prevDay) {
-                let prevRec;
-                if (_cache && _cache.prevMap) {
-                    prevRec = _cache.prevMap.get(name);
-                } else {
-                    prevRec = (stocksData[prevDay] || []).find(function(s) { return s && s.name && s.name.trim() === name; });
-                }
-                const prevIsInheritedOnly = prevRec && prevRec.inheritedHold === true && prevRec.bought !== true;
-                // [REFACTOR 2026-08-14] 区分买入/持有/卖出继承
-                if (prevRec && !prevIsInheritedOnly && prevRec.sold === true) {
-                    result.sold = true; result.source = 'inherited';
-                } else if (prevRec && !prevIsInheritedOnly && prevRec.sold !== true && prevRec.bought === true) {
-                    result.bought = true; result.source = 'inherited';
-                } else if (prevRec && !prevIsInheritedOnly && prevRec.sold !== true && prevRec.hold === true) {
-                    result.selected = true; result.source = 'inherited';
-                }
+                const prevTag = _readTag(prevDay, name);
+                if (prevTag === 'sell') { result.sold = true; result.source = 'inherited'; }
+                else if (prevTag === 'buy') { result.bought = true; result.source = 'inherited'; }
+                else if (prevTag === 'hold') { result.selected = true; result.source = 'inherited'; }
             }
             return result;
         }
 
 
-        // 配合 deriveAuctionTagState 的 _cache 参数使用：为指定 date 预建 {todayMap, prevMap}。
-        // todayMap/prevMap 均为 姓名(trim后)→记录 的 Map，供同一次渲染内所有 deriveAuctionTagState
-        // 调用复用，避免 O(每行 × stocksData长度) 的重复线性扫描。
+        // [REFACTOR 2026-08-14] deriveAuctionTagState 已改为从 auctionBoardTags 读，不需要 cache
         export function _buildTagStateCache(date) {
-            const stocksData = getStocksData();
-            const prevDay = getPreviousTradingDay(date);
-            const todayMap = new Map();
-            (stocksData[date] || []).forEach(function(s) { if (s && s.name) todayMap.set(s.name.trim(), s); });
-            const prevMap = new Map();
-            if (prevDay) {
-                (stocksData[prevDay] || []).forEach(function(s) { if (s && s.name) prevMap.set(s.name.trim(), s); });
-            }
-            return { todayMap, prevMap };
+            return null;
         }
 
         // 方案 B：applyDerivedTagToRow 已删除。
@@ -202,25 +194,17 @@ import { state } from './app-state.js';
             if (!prevDay) return;
             _dbgLog('[BOUGHT-ENSURE] === 调用开始 === date=' + date + ' prevDay=' + prevDay);
 
-            const prevStocksTags = getStocksData()[prevDay];
-            if (!prevStocksTags || prevStocksTags.length === 0) {
-                _dbgLog('[BOUGHT-ENSURE] === 调用结束 === getStocksData[' + prevDay + '] 为空');
-                return;
-            }
-
             // 前一日竞昨高光集（决定观察组/常规组归属）
             const prevObsSet = getJingYestHighlightSetForDate(prevDay);
+
+            // [REFACTOR 2026-08-14] 从 auctionBoardTags 读标签，不读 stocksData
+            const prevDayTags = _getAuctionTags()[prevDay] || {};
+            const taggedNames = Object.keys(prevDayTags).filter(function(n) { return prevDayTags[n]; });
 
             // 分两组继承
             const obsInherited = [];
             const regularInherited = [];
-            prevStocksTags.forEach(function(s) {
-                if (!s || !s.name) return;
-                const name = s.name.trim();
-                const isInheritedOnly = s.inheritedHold === true && s.bought !== true;
-                if (isInheritedOnly) return;
-                const hasTag = s.bought === true || s.hold === true || s.sold === true;
-                if (!hasTag) return;
+            taggedNames.forEach(function(name) {
                 if (prevObsSet && prevObsSet.has(name)) {
                     obsInherited.push(name);
                 } else {

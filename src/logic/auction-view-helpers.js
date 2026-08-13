@@ -379,26 +379,19 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // 显示层读不到、被错分到常规组）。
   const _obsBoughtSet = new Set(JSON.parse(localStorage.getItem('obsBought_' + currentDate) || '[]'));
 
+  // [REFACTOR 2026-08-14] 从 auctionBoardTags 读已卖出集合，不读 stocksData
   const _confirmedSoldSet = (function() {
     const result = new Set();
-    const stocksData = getStocksData();
-    const namesToCheck = new Set(auctionList.map(function(it) { return it.stock ? it.stock.trim() : ''; }).filter(Boolean));
-    if (namesToCheck.size === 0) return result;
-    const allDates = Object.keys(stocksData).filter(function(d) { return d <= currentDate; }).sort().reverse();
-    const seen = new Set();
-    for (const d of allDates) {
-      if (seen.size >= namesToCheck.size) break;
-      const dayList = stocksData[d];
-      if (!dayList) continue;
-      for (const s of dayList) {
-        if (!s || !s.name) continue;
-        const n = s.name.trim();
-        if (namesToCheck.has(n) && !seen.has(n)) {
-          seen.add(n);
-          if (s.sold === true) result.add(n);
-        }
-      }
-    }
+    try {
+      const tags = JSON.parse(localStorage.getItem('auctionBoardTags') || '{}');
+      Object.keys(tags).forEach(function(d) {
+        if (d > currentDate) return;
+        const dayTags = tags[d] || {};
+        Object.keys(dayTags).forEach(function(name) {
+          if (dayTags[name] === 'sell') result.add(name.trim());
+        });
+      });
+    } catch (e) {}
     return result;
   })();
 

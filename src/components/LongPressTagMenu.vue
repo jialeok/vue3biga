@@ -24,9 +24,7 @@ import { useUiStore } from '../stores/uiStore.js';
 import auctionTagStore from '../stores/auctionTagStore.js';
 import auctionStore from '../stores/auctionStore.js';
 import { ensureStockInNextDay } from '../logic/auction-stock-sync.js';
-import { getStocksData } from '../data/supabase-client.js';
-import { saveModule } from '../logic/app-core.js';
-import { getPreviousTradingDay } from '../logic/trading-day-helpers.js';
+
 import { deriveAuctionTagState } from '../logic/tag-rules.js';
 import { showToast } from '../composables/useToast.js';
 
@@ -77,21 +75,8 @@ function onSelect(b) {
     }
   }
 
+  // [REFACTOR 2026-08-14] 竞价看板标签完全独立，只写 auctionTagStore，不写 stocksData
   auctionTagStore.setTag(currentDate.value, stockName.value, b.tag);
-
-  const stocksData = getStocksData();
-  const date = currentDate.value;
-  if (!stocksData[date]) stocksData[date] = [];
-  const stockNameTrim = stockName.value.trim();
-  let stockRec = stocksData[date].find(s => s && s.name && s.name.trim() === stockNameTrim);
-  if (!stockRec) {
-    stockRec = { name: stockNameTrim };
-    stocksData[date].push(stockRec);
-  }
-  stockRec.bought = (b.tag === 'buy');
-  stockRec.sold = (b.tag === 'sell');
-  stockRec.hold = (b.tag === 'hold');
-  saveModule('stocks');
 
   if (b.tag === 'buy' || b.tag === 'sell' || b.tag === 'hold') {
     ensureStockInNextDay(stockName.value, currentDate.value);
