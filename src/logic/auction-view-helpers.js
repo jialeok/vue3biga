@@ -416,8 +416,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   const _obsBoughtVisibleSet = new Set([..._obsBoughtSet].filter(n => !_confirmedSoldSet.has(n)));
   const _isObsMember = function(name) {
+    if (_obsBoughtVisibleSet.has(name)) return true;
     if (_taggedPrevDaySet.has(name)) return false;
-    return (_obsStocks && _obsStocks.has(name)) || _obsBoughtVisibleSet.has(name);
+    return (_obsStocks && _obsStocks.has(name));
   };
   const _obsIndicesRaw = renderOrder.filter(i => auctionList[i] && auctionList[i].stock && _isObsMember(auctionList[i].stock.trim()));
 
