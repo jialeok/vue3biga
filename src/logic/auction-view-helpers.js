@@ -377,11 +377,18 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   }
 
   const _obsStocks = getJingYestHighlightSetForDate(prevDate, dataSource);
-  const _obsBoughtSet = new Set();
+  // [恢复源文件口径] 昨日买/持/卖继承集合由 ensureBoughtStocksForDate 写入 localStorage['obsBought_'+currentDate]，
+  // 权威来源 = 股票列表页 getStocksData[prevDay]（迁移版曾误用 getAuctionTagState/auctionBoardTags，导致按列表页继承的股票
+  // 显示层读不到、被错分到常规组）。
+  const _obsBoughtSet = new Set(JSON.parse(localStorage.getItem('obsBought_' + currentDate) || '[]'));
+
+  // [恢复源文件] 前一日在竞价看板手动打过 买/卖/持 标签（auctionBoardTags[prevDay]）的股票不进观察组，归常规组，
+  // 防止被动继承的前日观察组股票被打标后仍留在观察组。
+  const _taggedPrevDaySet = new Set();
   auctionList.forEach(function(item) {
     if (item && item.stock) {
       var ts = getAuctionTagState(item.stock.trim(), currentDate);
-      if (ts.source === 'inherited') _obsBoughtSet.add(item.stock.trim());
+      if (ts.source === 'inherited') _taggedPrevDaySet.add(item.stock.trim());
     }
   });
 
@@ -410,6 +417,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   const _obsBoughtVisibleSet = new Set([..._obsBoughtSet].filter(n => !_confirmedSoldSet.has(n)));
   const _isObsMember = function(name) {
+    if (_taggedPrevDaySet.has(name)) return false;
     return (_obsStocks && _obsStocks.has(name)) || _obsBoughtVisibleSet.has(name);
   };
   const _obsIndicesRaw = renderOrder.filter(i => auctionList[i] && auctionList[i].stock && _isObsMember(auctionList[i].stock.trim()));
