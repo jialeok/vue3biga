@@ -87,9 +87,10 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted } from 'vue';
+import { ref, watch, onMounted, onUnmounted } from 'vue';
 import EditModal from '../components/EditModal.vue';
 import { useUiStore } from '../stores/uiStore.js';
+import { _on, _off } from '../stores/eventBus.js';
 import { getBiddingData, getJiwangData, getBiddingDirtyDates, getBiddingPushInFlight } from '../data/supabase-client.js';
 import { getDefaultBiddingTemplate, orderBiddingRows, pushBiddingToCloud, syncBiddingDeletionsToCloud, fetchBiddingCloudRows } from '../data/bidding-data.js';
 import { saveData, markJiwangDirty } from '../logic/app-core.js';
@@ -338,8 +339,12 @@ async function save() {
 
   let cloudErr = null;
   try {
-    await pushBiddingToCloud(uiStore.currentDate);
-    await syncBiddingDeletionsToCloud(uiStore.currentDate);
+    const withTimeout = (p, ms, label) => Promise.race([
+      p,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(label + ' 超时（' + ms + 'ms）')), ms))
+    ]);
+    await withTimeout(pushBiddingToCloud(uiStore.currentDate), 15000, '推送竞价数据');
+    await withTimeout(syncBiddingDeletionsToCloud(uiStore.currentDate), 15000, '同步删除行');
     _dbgLog('[BIDDING-SAVE] 云端同步完成 ' + uiStore.currentDate);
   } catch (e) {
     cloudErr = e;
@@ -498,7 +503,20 @@ async function runDiagnostics() {
   return lines.join('\n');
 }
 
-onMounted(render);
+function onRealtimeUpdate(payload) {
+  if (!payload || payload.boards === 'bidding' || payload.boards === 'all') render();
+}
+
+onMounted(() => {
+  render();
+  _on('bidding-refresh', render);
+  _on('data:realtime-update', onRealtimeUpdate);
+});
+
+onUnmounted(() => {
+  _off('bidding-refresh', render);
+  _off('data:realtime-update', onRealtimeUpdate);
+});
 
 watch(() => uiStore.currentDate, () => { render(); });
 
