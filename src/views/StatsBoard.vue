@@ -78,7 +78,8 @@ import HeaderStats from '../components/HeaderStats.vue';
 import EditModal from '../components/EditModal.vue';
 import { useUiStore } from '../stores/uiStore.js';
 import { getJiwangData } from '../data/supabase-client.js';
-import { saveData } from '../logic/app-core.js';
+import { saveData, markJiwangDirty } from '../logic/app-core.js';
+import { pushJiwangNow } from '../data/jiwang-data.js';
 import { _on, _off } from '../stores/eventBus.js';
 
 const uiStore = useUiStore();
@@ -122,13 +123,17 @@ function render() {
 function updateMarketStage() {
   const s = getStats();
   s.marketStage = marketStage.value;
+  markJiwangDirty(uiStore.currentDate);
   saveData();
+  pushJiwangNow(uiStore.currentDate);
 }
 
 function updatePosition() {
   const s = getStats();
   s.position = position.value;
+  markJiwangDirty(uiStore.currentDate);
   saveData();
+  pushJiwangNow(uiStore.currentDate);
 }
 
 function toggleCheckbox(key) {
@@ -149,7 +154,9 @@ function saveCircleStats() {
   s.profit = circleForm.profit;
   s.gain = circleForm.gain;
   s.balance = circleForm.balance;
+  markJiwangDirty(uiStore.currentDate);
   saveData();
+  pushJiwangNow(uiStore.currentDate, '✅ 圆形统计已保存并同步到云端');
   circleModalActive.value = false;
   render();
 }
@@ -168,7 +175,9 @@ function openCommentEdit() {
 function saveComment() {
   const s = getStats();
   s.comment = commentDraft.value;
+  markJiwangDirty(uiStore.currentDate);
   saveData();
+  pushJiwangNow(uiStore.currentDate, '✅ 评论已保存并同步到云端');
   comment.value = commentDraft.value;
   commentModalActive.value = false;
 }
