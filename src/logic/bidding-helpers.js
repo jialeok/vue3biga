@@ -133,30 +133,6 @@ export function autoTagShunshiNishi(skipRender) {
   return hasUpdate;
 }
 
-export function getDuibanRowHistory(row) {
-  if (!row) return null;
-  const initial = row.time925_initial !== undefined ? row.time925_initial : '';
-  const final = row.time925 || '';
-  const initialModifiedAt = row.time925_initial_modifiedAt;
-  const finalModifiedAt = row.time925_modifiedAt;
-
-  const formatMMSS = (ts) => {
-    if (!ts) return '';
-    let d;
-    if (/^\d+$/.test(String(ts))) d = new Date(parseInt(ts));
-    else d = new Date(ts);
-    if (isNaN(d.getTime())) return '';
-    const pad = n => String(n).padStart(2, '0');
-    return `${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-  };
-
-  return {
-    initial: initial,
-    final: final,
-    initialTime: formatMMSS(initialModifiedAt),
-    finalTime: formatMMSS(finalModifiedAt)
-  };
-}
 
 const BIDDING_SECTOR_ETFS = [
   { code: '560780', name: '半导体设备ETF' }, { code: '159995', name: '芯片ETF华夏' },

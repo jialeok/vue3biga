@@ -218,7 +218,7 @@ function sbHeaders() {
 
 async function readTodayBiddingRows(date) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/bidding_data?date=eq.' + encodeURIComponent(date) +
-    '&select=name,time915,time920,time925,close,time925_initial,time925_initial_modifiedAt,time925_modifiedAt';
+    '&select=name,time915,time920,time925,close';
   const resp = await fetch(url, { headers: sbHeaders() });
   if (!resp.ok) throw new Error('读取 bidding_data 失败: HTTP ' + resp.status);
   return await resp.json();
@@ -357,16 +357,7 @@ function buildUpsertPayload(computed, existingByName, column, point, date, now) 
       const v920 = prev ? parseFloat(prev.time920) : NaN;
       const v925 = parseFloat(r.value);
       if (!isNaN(v920) && !isNaN(v925)) row.change = v925 > v920 ? '增' : (v925 < v920 ? '减' : '平');
-      if (rowName === CONFIG.ROW_LADDER) {
-        const prevInitial = prev ? prev.time925_initial : null;
-        if (prevInitial !== undefined && prevInitial !== null && String(prevInitial).trim() !== '') {
-          row.time925_initial = prevInitial;
-          row.time925_initial_modifiedAt = (prev && prev.time925_initial_modifiedAt) || now;
-        } else {
-          row.time925_initial = r.value;
-          row.time925_initial_modifiedAt = now;
-        }
-      }
+
     }
     payload.push(row);
   });
@@ -430,23 +421,17 @@ async function runDuobanSecond(source) {
   const now = new Date().toISOString();
   const upsertPayload = [];
 
-  // 最近多板% 特殊处理：保留 time925_initial 逻辑（9:26 覆盖写 time925）
-  const existing = existingByName[CONFIG.ROW_LADDER] || null;
-  const row = { date: date, name: CONFIG.ROW_LADDER, time925: duobanResult.value, updated_at: now };
-  if (existing && existing.time925_initial !== undefined && existing.time925_initial !== null && String(existing.time925_initial).trim() !== '') {
-    row.time925_initial = existing.time925_initial;
-    row.time925_initial_modifiedAt = existing.time925_initial_modifiedAt || now;
-    row.time925_modifiedAt = now;
-  } else if (duobanResult.value !== null && duobanResult.value !== undefined) {
-    row.time925_initial = duobanResult.value;
-    row.time925_initial_modifiedAt = now;
+  // 最近多板%time26 行：写 9:26 抓取值，change 与"最近多板%"行 time925 比较
+  if (duobanResult.value !== null && duobanResult.value !== undefined) {
+    const time26Row = { date: date, name: '最近多板%time26', time925: duobanResult.value, updated_at: now };
+    const duibanExisting = existingByName[CONFIG.ROW_LADDER];
+    if (duibanExisting && duibanExisting.time925 !== undefined && duibanExisting.time925 !== null && String(duibanExisting.time925).trim() !== '') {
+      const v925 = parseFloat(duibanExisting.time925);
+      const v926 = parseFloat(duobanResult.value);
+      if (!isNaN(v925) && !isNaN(v926)) time26Row.change = v926 > v925 ? '增' : (v926 < v925 ? '减' : '平');
+    }
+    upsertPayload.push(time26Row);
   }
-  if (existing && existing.time920 !== undefined && existing.time920 !== null && String(existing.time920).trim() !== '' && duobanResult.value !== null) {
-    const v926 = parseFloat(duobanResult.value);
-    const v920 = parseFloat(existing.time920);
-    if (!isNaN(v926) && !isNaN(v920)) row.change = v926 > v920 ? '增' : (v926 < v920 ? '减' : '平');
-  }
-  if (duobanResult.value !== null && duobanResult.value !== undefined) upsertPayload.push(row);
 
   // 其它4行：只写非 null 值到 time925 列（补写 9:25 缺失的数据）
   const otherRows = [CONFIG.ROW_SECTOR_ETF, CONFIG.ROW_TOP10, CONFIG.ROW_BIG_ETF, CONFIG.ROW_MAIN_INDEX];

@@ -25,7 +25,7 @@
           :key="idx"
           class="bidding-row"
           :class="row.rowClass"
-          @click="onRowClick($event, row)"
+
         >
           <span class="col-name">{{ row.name }}</span>
           <span class="col-time915">{{ row.time915 || '-' }}</span>
@@ -70,15 +70,7 @@
     </EditModal>
 
     <Teleport to="body">
-      <div v-if="duibanPopup" class="duiban-history-popup-overlay" @click="closeDuibanPopup">
-        <div class="duiban-history-popup" @click.stop>
-          <div class="dh-row">{{ duibanPopup.initialTime ? duibanPopup.initialTime + '　' : '' }}{{ duibanPopup.initial }}%</div>
-          <div class="dh-row">{{ duibanPopup.finalTime ? duibanPopup.finalTime + '　' : '' }}{{ duibanPopup.final }}%</div>
-        </div>
-      </div>
-    </Teleport>
 
-    <Teleport to="body">
       <div v-if="clearConfirmActive" class="clear-confirm-overlay" @click="clearConfirmActive = false">
         <div class="clear-confirm-panel" @click.stop>
           <div class="clear-confirm-title">确定要清除所有数据吗？</div>
@@ -105,14 +97,14 @@ import { _dbgLog } from '../data/debug-log.js';
 import { showToast, showWarningToast } from '../composables/useToast.js';
 import { renderCircleStats, autoCalculateConsecutiveDays } from '../logic/jiwang-helpers.js';
 import { renderConsecutiveUp } from '../logic/tag-titles-helpers.js';
-import { syncBiddingCloseToEtf, syncSectorEtfZhangNum, syncJiwangKxianFromBidding, autoTagShunshiNishi, fetchBiddingSnapshotToForm, getDuibanRowHistory, autoCalculateRecentMultiScore } from '../logic/bidding-helpers.js';
+import { syncBiddingCloseToEtf, syncSectorEtfZhangNum, syncJiwangKxianFromBidding, autoTagShunshiNishi, fetchBiddingSnapshotToForm, autoCalculateRecentMultiScore } from '../logic/bidding-helpers.js';
 
 const uiStore = useUiStore();
 
 const modalActive = ref(false);
 const biddingRows = ref([]);
 const editRows = ref([]);
-const duibanPopup = ref(null);
+
 const fetchStatus = ref('');
 const fetchLoading = ref(false);
 const saving = ref(false);
@@ -210,7 +202,7 @@ function getTodayBidding() {
   return BIDDING_ROW_ORDER.map(name => {
     const row = existingMap.get(name);
     if (!row) return { name, time915: '', time920: '', time925: '', change: '', close: '' };
-    const item = {
+    return {
       name,
       time915: row.time915 || '',
       time920: row.time920 || '',
@@ -218,10 +210,6 @@ function getTodayBidding() {
       change: row.change || '',
       close: row.close || ''
     };
-    if (row.time925_initial !== undefined) item.time925_initial = row.time925_initial;
-    if (row.time925_initial_modifiedAt !== undefined) item.time925_initial_modifiedAt = row.time925_initial_modifiedAt;
-    if (row.time925_modifiedAt !== undefined) item.time925_modifiedAt = row.time925_modifiedAt;
-    return item;
   });
 }
 
@@ -292,13 +280,10 @@ async function save() {
     const _dirtyDates = getBiddingDirtyDates();
     if (_dirtyDates) _dirtyDates.add(uiStore.currentDate);
 
-    const oldRows = getTodayBidding();
-    const oldMap = new Map();
-    oldRows.forEach(r => { if (r && r.name) oldMap.set(r.name.trim(), r); });
 
     const biddingData = editRows.value.map(row => {
       const name = (row.name || '').toString().trim();
-      const item = {
+      return {
         name,
         time915: (row.time915 || '').toString().trim(),
         time920: (row.time920 || '').toString().trim(),
@@ -306,32 +291,7 @@ async function save() {
         change: (row.change || '').toString().trim(),
         close: (row.close || '').toString().trim()
       };
-      const oldRow = oldMap.get(name);
-      if (oldRow) {
-        if (oldRow.time925_initial !== undefined) item.time925_initial = oldRow.time925_initial;
-        if (oldRow.time925_initial_modifiedAt !== undefined) item.time925_initial_modifiedAt = oldRow.time925_initial_modifiedAt;
-        if (oldRow.time925_modifiedAt !== undefined) item.time925_modifiedAt = oldRow.time925_modifiedAt;
-      }
-      return item;
     });
-
-    const duibanRow = biddingData.find(r => r.name === '最近多板%');
-    if (duibanRow) {
-      const oldDuiban = oldMap.get('最近多板%');
-      if (oldDuiban && oldDuiban.time925_initial !== undefined && oldDuiban.time925_initial !== '') {
-        duibanRow.time925_initial = oldDuiban.time925_initial;
-        duibanRow.time925_initial_modifiedAt = oldDuiban.time925_initial_modifiedAt;
-        duibanRow.time925_modifiedAt = Date.now();
-      } else if (duibanRow.time925 && duibanRow.time925.trim() !== '') {
-        duibanRow.time925_initial = duibanRow.time925;
-        duibanRow.time925_initial_modifiedAt = Date.now();
-        duibanRow.time925_modifiedAt = undefined;
-      } else {
-        duibanRow.time925_initial = undefined;
-        duibanRow.time925_initial_modifiedAt = undefined;
-        duibanRow.time925_modifiedAt = undefined;
-      }
-    }
 
     getBiddingData()[uiStore.currentDate] = orderBiddingRows(biddingData);
     saveData();
@@ -494,18 +454,6 @@ async function fetchSnapshot() {
   }
 }
 
-function onRowClick(event, row) {
-  if (row.name && row.name.trim() === '最近多板%') {
-    const history = getDuibanRowHistory(row);
-    if (history && (history.initial || history.final)) {
-      duibanPopup.value = history;
-    }
-  }
-}
-
-function closeDuibanPopup() {
-  duibanPopup.value = null;
-}
 
 async function runDiagnostics() {
   const lines = [];
@@ -686,13 +634,7 @@ defineExpose({ render, openEdit, closeModal, save, clearData, fetchSnapshot, run
 }
 .btn-fetch-snapshot:disabled { opacity: 0.6; cursor: not-allowed; }
 .bidding-fetch-status { font-size: 11px; color: #6b7280; }
-.duiban-history-popup-overlay { position: fixed; inset: 0; z-index: 9998; }
-.duiban-history-popup {
-  position: fixed; z-index: 9999; background: #fff; border: 1px solid #d1d5db;
-  border-radius: 8px; padding: 8px 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-  font-size: 13px; top: 50%; left: 50%; transform: translate(-50%, -50%);
-}
-.dh-row { padding: 4px 0; white-space: nowrap; }
+
 .clear-confirm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 10000; display: flex; align-items: center; justify-content: center; }
 .clear-confirm-panel { background: #fff; border-radius: 12px; padding: 24px; min-width: 320px; }
 .clear-confirm-title { font-size: 16px; font-weight: 600; margin-bottom: 8px; }

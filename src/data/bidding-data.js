@@ -23,7 +23,7 @@ import { state } from '../logic/app-state.js';
             const pageSize = 1000;
             while (true) {
                 const { data, error } = await sb.from('bidding_data')
-                    .select('"date",name,time915,time920,time925,"change",close,time925_initial,time925_initial_modifiedAt,time925_modifiedAt')
+                    .select('"date",name,time915,time920,time925,"change",close')
                     .range(offset, offset + pageSize - 1);
                 if (error) throw error;
                 if (!data || data.length === 0) break;
@@ -41,15 +41,6 @@ import { state } from '../logic/app-state.js';
                         change: row.change || '',
                         close: row.close || ''
                     };
-                    if (row.time925_initial !== null && row.time925_initial !== undefined) {
-                        item.time925_initial = row.time925_initial;
-                    }
-                    if (row.time925_initial_modifiedAt !== null && row.time925_initial_modifiedAt !== undefined) {
-                        item.time925_initial_modifiedAt = row.time925_initial_modifiedAt;
-                    }
-                    if (row.time925_modifiedAt !== null && row.time925_modifiedAt !== undefined) {
-                        item.time925_modifiedAt = row.time925_modifiedAt;
-                    }
                     result[row.date].push(item);
                 });
                 if (data.length < pageSize) break;
@@ -69,7 +60,7 @@ import { state } from '../logic/app-state.js';
             }
             const sb = getSupabase();
             const { data, error } = await sb.from('bidding_data')
-                .select('name,time915,time920,time925,"change",close,time925_initial,time925_initial_modifiedAt,time925_modifiedAt')
+                .select('name,time915,time920,time925,"change",close')
                 .eq('"date"', date);
             if (error) throw error;
             if (!data || data.length === 0) return;
@@ -77,7 +68,7 @@ import { state } from '../logic/app-state.js';
                 // 兼容旧行名：'9点25分封单家数' -> '封单家数'
                 if (row.name && row.name.trim() === '9点25分封单家数') row.name = '封单家数';
                 sanitizeBiddingRow(row);
-                var item = {
+                return {
                     name: row.name,
                     time915: row.time915 || '',
                     time920: row.time920 || '',
@@ -85,16 +76,6 @@ import { state } from '../logic/app-state.js';
                     change: row.change || '',
                     close: row.close || ''
                 };
-                if (row.time925_initial !== null && row.time925_initial !== undefined) {
-                    item.time925_initial = row.time925_initial;
-                }
-                if (row.time925_initial_modifiedAt !== null && row.time925_initial_modifiedAt !== undefined) {
-                    item.time925_initial_modifiedAt = row.time925_initial_modifiedAt;
-                }
-                if (row.time925_modifiedAt !== null && row.time925_modifiedAt !== undefined) {
-                    item.time925_modifiedAt = row.time925_modifiedAt;
-                }
-                return item;
             });
             // 直接写入持久内存缓存（bidding 已不落 localStorage）
             const biddingData = getBiddingData();
@@ -103,29 +84,6 @@ import { state } from '../logic/app-state.js';
         }
 
         // 当日竞价变化数据 UPSERT 到 bidding_data 表
-        // 把 time925_initial_modifiedAt / time925_modifiedAt（内部字段，对应 DB 列 time925_initial / time925_modifiedAt）这类"修改时间"字段
-        // 统一转成 Postgres timestamp 能接受的 ISO 字符串。
-        // 这两个字段在本地历史上一直用 Date.now() 赋值（纯数字毫秒时间戳），
-        // 直接传给云端 timestamp 字段会报 "date/time field value out of range"。
-        // 这里做兼容处理：数字/数字字符串 -> 转 ISO；已经是合法日期字符串 -> 原样返回；
-        // 无法识别 -> 返回 null，避免再次把脏数据带进 upsert 导致同一行报错。
-        export function toIsoTimestamp(v) {
-            if (v === undefined || v === null || v === '') return null;
-            if (typeof v === 'number') {
-                var d = new Date(v);
-                return isNaN(d.getTime()) ? null : d.toISOString();
-            }
-            if (typeof v === 'string') {
-                // 纯数字字符串（例如旧数据被 JSON 序列化后变成字符串）也当毫秒时间戳处理
-                if (/^\d+$/.test(v)) {
-                    var dNum = new Date(Number(v));
-                    return isNaN(dNum.getTime()) ? null : dNum.toISOString();
-                }
-                var dStr = new Date(v);
-                return isNaN(dStr.getTime()) ? null : dStr.toISOString();
-            }
-            return null;
-        }
 
         export async function pushBiddingToCloud(date) {
             // 注：不再用 _biddingTableAvailable 做早退保护。该表已长期稳定使用，
@@ -147,7 +105,7 @@ import { state } from '../logic/app-state.js';
                 const now = new Date().toISOString();
                 const rows = biddingData.filter(function(r) { return r && r.name; }).map(function(item) {
                     sanitizeBiddingRow(item);
-                    var row = {
+                    return {
                         date: date,
                         name: item.name,
                         time915: item.time915 || '',
@@ -157,16 +115,6 @@ import { state } from '../logic/app-state.js';
                         close: item.close || '',
                         updated_at: now
                     };
-                    if (item.time925_initial !== undefined && item.time925_initial !== null) {
-                        row.time925_initial = item.time925_initial;
-                    }
-                    if (item.time925_initial_modifiedAt !== undefined && item.time925_initial_modifiedAt !== null) {
-                        row.time925_initial_modifiedAt = toIsoTimestamp(item.time925_initial_modifiedAt);
-                    }
-                    if (item.time925_modifiedAt !== undefined && item.time925_modifiedAt !== null) {
-                        row.time925_modifiedAt = toIsoTimestamp(item.time925_modifiedAt);
-                    }
-                    return row;
                 });
                 if (rows.length === 0) return;
                 // [安全网] 避免空表单/空模板覆盖云端已有数据。如果所有行的业务字段均为空，
@@ -336,7 +284,7 @@ import { state } from '../logic/app-state.js';
                 var rows = biddingData[date].filter(function(r) { return r && r.name; }).map(function(item) {
                     // 迁移旧本地数据时清理：封单家数的收盘列不应有值
                     sanitizeBiddingRow(item);
-                    var row = {
+                    return {
                         date: date,
                         name: item.name,
                         time915: item.time915 || '',
@@ -346,16 +294,6 @@ import { state } from '../logic/app-state.js';
                         close: item.close || '',
                         updated_at: now
                     };
-                    if (item.time930_initial !== undefined && item.time930_initial !== null) {
-                        row.time925_initial = item.time930_initial;
-                    }
-                    if (item.time930_initial_modifiedAt !== undefined && item.time930_initial_modifiedAt !== null) {
-                        row.time925_initial_modifiedAt = toIsoTimestamp(item.time930_initial_modifiedAt);
-                    }
-                    if (item.time930_modifiedAt !== undefined && item.time930_modifiedAt !== null) {
-                        row.time925_modifiedAt = toIsoTimestamp(item.time930_modifiedAt);
-                    }
-                    return row;
                 });
                 if (rows.length === 0) continue;
                 try {
