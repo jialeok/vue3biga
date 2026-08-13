@@ -1,7 +1,7 @@
 import { getTodayGroupList, getGroupData, getAuctionData } from './app-core-api.js';
 import { getPreviousTradingDay } from './trading-day-helpers.js';
 import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlightSetForDate, getDigitCount, getRatioDiffInfoForDate } from './auction-sort-rules.js';
-import { getAuctionStockHistory, ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagState } from './tag-rules.js';
+import { getAuctionStockHistory, ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagState, _buildTagStateCache } from './tag-rules.js';
 import { getThreeDayJingDieSet } from './sort-rules-extra.js';
 import { getNumericVolume, getStocksData } from '../data/supabase-client.js';
 import { state } from './app-state.js';
@@ -46,26 +46,24 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     }
   }
 
-  const _solidState = getAuctionTagState(stockName, ctx.date);
-  const isSold = _solidState.sold;
-  const isSelected = !isSold && (_solidState.selected || _solidState.bought);
-  const isBought = false;
+  // [REFACTOR 2026-08-14] 用 deriveAuctionTagState(inheritOnly=true) 获取继承标签
+  // 当天的标签通过 todayChoice（_getAuctionTag）显示虚线箭头
+  const _inheritState = deriveAuctionTagState(stockName, ctx.date, ctx.tagStateCache, true);
+  const isSold = _inheritState.sold;
+  const isBought = _inheritState.bought;
+  const isSelected = _inheritState.selected;
   const isConfirmedSold = isSold || (stockName && ctx.confirmedSoldSet && ctx.confirmedSoldSet.has(stockName));
-  const isFixed = isSold || isSelected;
-  const isObsInheritedBought = false;
-  const isGray = !isSelected && !isSold && ratioValue < 4.5;
+  const isGray = !isSelected && !isSold && !isBought && ratioValue < 4.5;
 
   let itemClass = 'auction-item';
   if (isSold) {
     itemClass += ' sold';
   } else if (isConfirmedSold && !isSold) {
     // 已确认卖出但非当天手动卖出：常规展示
-  } else if (isBought && !isObsInheritedBought) {
+  } else if (isBought) {
     itemClass += ' bought';
-  } else if (isSelected && isFixed) {
+  } else if (isSelected) {
     itemClass += ' selected';
-  } else if (isSelected && !isFixed) {
-    itemClass += ' manual-selected';
   }
 
   const isJingYestMatch = ctx.jingYestToggleChecked && ctx.jingYestHighlightSet && stockName && ctx.jingYestHighlightSet.has(stockName);
@@ -381,16 +379,6 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // 显示层读不到、被错分到常规组）。
   const _obsBoughtSet = new Set(JSON.parse(localStorage.getItem('obsBought_' + currentDate) || '[]'));
 
-  // [恢复源文件] 前一日在竞价看板手动打过 买/卖/持 标签（auctionBoardTags[prevDay]）的股票不进观察组，归常规组，
-  // 防止被动继承的前日观察组股票被打标后仍留在观察组。
-  const _taggedPrevDaySet = new Set();
-  auctionList.forEach(function(item) {
-    if (item && item.stock) {
-      var ts = getAuctionTagState(item.stock.trim(), currentDate);
-      if (ts.source === 'inherited') _taggedPrevDaySet.add(item.stock.trim());
-    }
-  });
-
   const _confirmedSoldSet = (function() {
     const result = new Set();
     const stocksData = getStocksData();
@@ -414,10 +402,10 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     return result;
   })();
 
-  const _obsBoughtVisibleSet = new Set([..._obsBoughtSet].filter(n => !_confirmedSoldSet.has(n)));
+  // [REFACTOR 2026-08-14] 观察组 = 前一日竞昨高光 + obsBought_（观察组标签继承）
+  // 卖出也继承（用户确认），不需要过滤 _confirmedSoldSet
   const _isObsMember = function(name) {
-    if (_obsBoughtVisibleSet.has(name)) return true;
-    if (_taggedPrevDaySet.has(name)) return false;
+    if (_obsBoughtSet.has(name)) return true;
     return (_obsStocks && _obsStocks.has(name));
   };
   const _obsIndicesRaw = renderOrder.filter(i => auctionList[i] && auctionList[i].stock && _isObsMember(auctionList[i].stock.trim()));
@@ -448,6 +436,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     isObsMember: _isObsMember,
     prevAuctionList,
     prevAuctionMap: _prevMap,
+    tagStateCache: _buildTagStateCache(currentDate),
     jingYestToggleChecked,
     jingYestHighlightSet,
     sortByParallelEnabled: sortState.byParallel,

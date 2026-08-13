@@ -27,6 +27,8 @@ import { ensureStockInNextDay } from '../logic/auction-stock-sync.js';
 import { getStocksData } from '../data/supabase-client.js';
 import { saveModule } from '../logic/app-core.js';
 import { getPreviousTradingDay } from '../logic/trading-day-helpers.js';
+import { deriveAuctionTagState } from '../logic/tag-rules.js';
+import { showToast } from '../composables/useToast.js';
 
 const uiStore = useUiStore();
 
@@ -65,11 +67,17 @@ function close() {
 }
 
 function onSelect(b) {
-  auctionTagStore.setTag(currentDate.value, stockName.value, b.tag);
+  // [REFACTOR 2026-08-14] 取消标签：继承的不能取消，只有当天手动打的才能取消
   if (b.tag === null) {
-    const prevDay = getPreviousTradingDay(currentDate.value);
-    if (prevDay) auctionTagStore.removeTag(prevDay, stockName.value);
+    const inheritState = deriveAuctionTagState(stockName.value.trim(), currentDate.value, null, true);
+    if (inheritState.source === 'inherited') {
+      showToast('继承的标签不能取消，请重新打标签');
+      close();
+      return;
+    }
   }
+
+  auctionTagStore.setTag(currentDate.value, stockName.value, b.tag);
 
   const stocksData = getStocksData();
   const date = currentDate.value;
