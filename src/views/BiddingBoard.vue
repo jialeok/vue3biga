@@ -11,8 +11,7 @@
       <div class="bidding-toggle-btn">{{ expanded ? '▲' : '▼' }}</div>
     </div>
     <div class="bidding-content" @dblclick="openEdit">
-      <div v-if="!biddingRows.length" class="bidding-placeholder">暂无数据，点击添加...</div>
-      <div v-else class="bidding-table">
+      <div class="bidding-table">
         <div class="bidding-row bidding-row-header">
           <span class="col-name">名称</span>
           <span class="col-time915">9:15</span>
@@ -28,7 +27,7 @@
           :class="row.rowClass"
           @click="onRowClick($event, row)"
         >
-          <span class="col-name">{{ row.name || '-' }}</span>
+          <span class="col-name">{{ row.name }}</span>
           <span class="col-time915">{{ row.time915 || '-' }}</span>
           <span class="col-time920">{{ row.time920 || '-' }}</span>
           <span class="col-time925">{{ row.time925 || '-' }}</span>
@@ -39,7 +38,7 @@
     </div>
 
     <EditModal v-model="modalActive" title="编辑竞价变化" :show-clear="true" save-text="保存" :saving="saving" clear-class="btn-clear-gray" @save="save" @clear="clearData">
-      <div class="bidding-edit-desc">记录竞价变化数据</div>
+      <div class="bidding-edit-desc">记录竞价变化数据（固定 7 行，行名不可编辑）</div>
       <div class="bidding-fetch-row">
         <button type="button" class="btn-fetch-snapshot" @click="fetchSnapshot" :disabled="fetchLoading">{{ fetchLoading ? '⏳ 抓取中...' : '📡 抓取当前时段数据' }}</button>
         <span v-if="fetchStatus" class="bidding-fetch-status">{{ fetchStatus }}</span>
@@ -47,8 +46,7 @@
       <div class="bidding-edit-rows">
         <div v-for="(row, idx) in editRows" :key="idx" class="bidding-edit-row">
           <div class="bidding-edit-row-top">
-            <input v-model="row.name" placeholder="名称" @input="onInputChange(row)" class="bidding-edit-name" />
-            <button class="remove-row-btn" @click="removeRow(idx)">删</button>
+            <input :value="row.name" readonly class="bidding-edit-name bidding-edit-name-readonly" />
           </div>
           <div class="bidding-edit-row-bottom">
             <input v-model="row.time915" placeholder="9:15" @input="onInputChange(row)" />
@@ -59,7 +57,6 @@
           </div>
         </div>
       </div>
-      <button type="button" class="btn-add-row" @click="addRow">+ 添加新行</button>
     </EditModal>
 
     <Teleport to="body">
@@ -92,7 +89,7 @@ import EditModal from '../components/EditModal.vue';
 import { useUiStore } from '../stores/uiStore.js';
 import { _on, _off } from '../stores/eventBus.js';
 import { getBiddingData, getJiwangData, getBiddingDirtyDates, getBiddingPushInFlight } from '../data/supabase-client.js';
-import { getDefaultBiddingTemplate, orderBiddingRows, pushBiddingToCloud, syncBiddingDeletionsToCloud, fetchBiddingCloudRows } from '../data/bidding-data.js';
+import { BIDDING_ROW_ORDER, getDefaultBiddingTemplate, orderBiddingRows, pushBiddingToCloud, syncBiddingDeletionsToCloud, fetchBiddingCloudRows } from '../data/bidding-data.js';
 import { saveData, markJiwangDirty } from '../logic/app-core.js';
 import { _dbgLog } from '../data/debug-log.js';
 import { showToast, showWarningToast } from '../composables/useToast.js';
@@ -164,33 +161,41 @@ function formatClose(v, name) {
 
 function getTodayBidding() {
   const biddingData = getBiddingData();
-  const existingData = biddingData[uiStore.currentDate];
-  if (existingData !== undefined && Array.isArray(existingData)) {
-    const hasValidData = existingData.some(row => {
-      return (row.name && row.name.toString().trim() !== '') ||
-             (row.time915 && row.time915.toString().trim() !== '') ||
-             (row.time920 && row.time920.toString().trim() !== '') ||
-             (row.time925 && row.time925.toString().trim() !== '') ||
-             (row.change && row.change.toString().trim() !== '') ||
-             (row.close && row.close.toString().trim() !== '');
+  const existing = biddingData[uiStore.currentDate];
+  const existingMap = new Map();
+  if (Array.isArray(existing)) {
+    existing.forEach(r => {
+      if (r && r.name) existingMap.set(r.name.toString().trim(), r);
     });
-    if (hasValidData) return orderBiddingRows(existingData);
   }
-  return null;
+  return BIDDING_ROW_ORDER.map(name => {
+    const row = existingMap.get(name);
+    if (!row) return { name, time915: '', time920: '', time925: '', change: '', close: '' };
+    const item = {
+      name,
+      time915: row.time915 || '',
+      time920: row.time920 || '',
+      time925: row.time925 || '',
+      change: row.change || '',
+      close: row.close || ''
+    };
+    if (row.time925_initial !== undefined) item.time925_initial = row.time925_initial;
+    if (row.time925_initial_modifiedAt !== undefined) item.time925_initial_modifiedAt = row.time925_initial_modifiedAt;
+    if (row.time925_modifiedAt !== undefined) item.time925_modifiedAt = row.time925_modifiedAt;
+    return item;
+  });
 }
 
 function render() {
-  biddingRows.value = getTodayBidding() || [];
+  biddingRows.value = getTodayBidding();
 }
 
 function openEdit() {
-  const data = getTodayBidding();
-  editRows.value = data ? data.map(r => {
+  editRows.value = getTodayBidding().map(r => {
     const copied = { ...r };
-    // 打开时按 9:25/9:20 重算增减（对齐老版渲染期重算逻辑）
     copied.change = computeChange(copied.time920, copied.time925);
     return copied;
-  }) : [];
+  });
   saving.value = false;
   modalActive.value = true;
 }
@@ -226,141 +231,118 @@ function onInputChange(row) {
   autoCalculateConsecutiveDays();
 }
 
-function addRow() {
-  editRows.value.push({ name: '', time915: '', time920: '', time925: '', change: '', close: '' });
-}
-
-function removeRow(idx) {
-  editRows.value.splice(idx, 1);
-}
 
 async function save() {
   saving.value = true;
-  const _dirtyDates = getBiddingDirtyDates();
-  if (_dirtyDates) _dirtyDates.add(uiStore.currentDate);
-
-  const rawRows = editRows.value.map(row => ({
-    name: (row.name || '').toString().trim(),
-    time915: (row.time915 || '').toString().trim(),
-    time920: (row.time920 || '').toString().trim(),
-    time925: (row.time925 || '').toString().trim(),
-    change: (row.change || '').toString().trim(),
-    close: (row.close || '').toString().trim(),
-    touched: {
-      time915: !!row._touched,
-      time920: !!row._touched,
-      time925: !!row._touched,
-      change: !!row._touched,
-      close: !!row._touched,
-    }
-  }));
-
-  const oldBiddingDataForMerge = getTodayBidding() || [];
-  const FIELDS_TO_MERGE = ['time915', 'time920', 'time925', 'change', 'close'];
-  const biddingData = rawRows.map(function(newRow, i) {
-    let oldRow = null;
-    if (newRow.name) {
-      oldRow = oldBiddingDataForMerge.find(r => r && r.name === newRow.name);
-    }
-    if (!oldRow) {
-      oldRow = oldBiddingDataForMerge[i] || null;
-    }
-    if (!oldRow) {
-      const { touched, ...rest } = newRow;
-      return rest;
-    }
-    const merged = { ...newRow };
-    FIELDS_TO_MERGE.forEach(function(field) {
-      if (merged.touched && merged.touched[field]) return;
-      if (merged[field] === '' && oldRow[field] !== undefined && oldRow[field] !== '') {
-        merged[field] = oldRow[field];
-      }
-    });
-    delete merged.touched;
-    return merged;
-  });
-
-  (function lockDuibanTime930History() {
-    const oldBiddingData = getTodayBidding();
-    const newRow = biddingData.find(r => r.name && r.name.trim() === '最近多板%');
-    if (!newRow) return;
-    const oldRow = oldBiddingData ? oldBiddingData.find(r => r.name && r.name.trim() === '最近多板%') : null;
-    if (oldRow && oldRow.time925_initial !== undefined && oldRow.time925_initial !== '') {
-      newRow.time925_initial = oldRow.time925_initial;
-      newRow.time925_initial_modifiedAt = oldRow.time925_initial_modifiedAt;
-      newRow.time925_modifiedAt = Date.now();
-    } else if (newRow.time925 && newRow.time925.trim() !== '') {
-      newRow.time925_initial = newRow.time925;
-      newRow.time925_initial_modifiedAt = Date.now();
-      newRow.time925_modifiedAt = undefined;
-    } else {
-      newRow.time925_initial = undefined;
-      newRow.time925_initial_modifiedAt = undefined;
-      newRow.time925_modifiedAt = undefined;
-    }
-  })();
-
-  getBiddingData()[uiStore.currentDate] = orderBiddingRows(biddingData);
-  saveData();
-
-  const sectorEtfRow = biddingData.find(row => row.name && row.name.startsWith('板块ETF'));
-  if (sectorEtfRow) {
-    const rawValue = (sectorEtfRow.close && sectorEtfRow.close.trim() !== '')
-      ? sectorEtfRow.close.trim()
-      : (sectorEtfRow.time925 && sectorEtfRow.time925.trim() !== '')
-        ? sectorEtfRow.time925.trim()
-        : '';
-    if (rawValue !== '') {
-      syncSectorEtfZhangNum(rawValue);
-      _dbgLog('[BIDDING-SAVE] 保存时同步板块ETF涨数: ' + rawValue);
-    }
-  }
-
-  const accountPremiumRow = biddingData.find(row => row.name === '账号溢价');
-  if (accountPremiumRow && accountPremiumRow.close && accountPremiumRow.close.trim() !== '') {
-    const profitNum = parseFloat(accountPremiumRow.close.trim());
-    if (!isNaN(profitNum)) {
-      const jiwangData = getJiwangData();
-      if (!jiwangData[uiStore.currentDate]) jiwangData[uiStore.currentDate] = {};
-      if (!jiwangData[uiStore.currentDate].stats) jiwangData[uiStore.currentDate].stats = {};
-      jiwangData[uiStore.currentDate].stats.profit = profitNum;
-      markJiwangDirty(uiStore.currentDate);
-      saveData();
-      renderCircleStats();
-    }
-  }
-
-  render();
-
-  autoCalculateRecentMultiScore();
-  autoCalculateConsecutiveDays();
-  renderConsecutiveUp();
-  syncJiwangKxianFromBidding();
-
   let cloudErr = null;
   try {
+    const _dirtyDates = getBiddingDirtyDates();
+    if (_dirtyDates) _dirtyDates.add(uiStore.currentDate);
+
+    const oldRows = getTodayBidding();
+    const oldMap = new Map();
+    oldRows.forEach(r => { if (r && r.name) oldMap.set(r.name.trim(), r); });
+
+    const biddingData = editRows.value.map(row => {
+      const name = (row.name || '').toString().trim();
+      const item = {
+        name,
+        time915: (row.time915 || '').toString().trim(),
+        time920: (row.time920 || '').toString().trim(),
+        time925: (row.time925 || '').toString().trim(),
+        change: (row.change || '').toString().trim(),
+        close: (row.close || '').toString().trim()
+      };
+      const oldRow = oldMap.get(name);
+      if (oldRow) {
+        if (oldRow.time925_initial !== undefined) item.time925_initial = oldRow.time925_initial;
+        if (oldRow.time925_initial_modifiedAt !== undefined) item.time925_initial_modifiedAt = oldRow.time925_initial_modifiedAt;
+        if (oldRow.time925_modifiedAt !== undefined) item.time925_modifiedAt = oldRow.time925_modifiedAt;
+      }
+      return item;
+    });
+
+    const duibanRow = biddingData.find(r => r.name === '最近多板%');
+    if (duibanRow) {
+      const oldDuiban = oldMap.get('最近多板%');
+      if (oldDuiban && oldDuiban.time925_initial !== undefined && oldDuiban.time925_initial !== '') {
+        duibanRow.time925_initial = oldDuiban.time925_initial;
+        duibanRow.time925_initial_modifiedAt = oldDuiban.time925_initial_modifiedAt;
+        duibanRow.time925_modifiedAt = Date.now();
+      } else if (duibanRow.time925 && duibanRow.time925.trim() !== '') {
+        duibanRow.time925_initial = duibanRow.time925;
+        duibanRow.time925_initial_modifiedAt = Date.now();
+        duibanRow.time925_modifiedAt = undefined;
+      } else {
+        duibanRow.time925_initial = undefined;
+        duibanRow.time925_initial_modifiedAt = undefined;
+        duibanRow.time925_modifiedAt = undefined;
+      }
+    }
+
+    getBiddingData()[uiStore.currentDate] = orderBiddingRows(biddingData);
+    saveData();
+
+    const sectorEtfRow = biddingData.find(row => row.name && row.name.startsWith('板块ETF'));
+    if (sectorEtfRow) {
+      const rawValue = (sectorEtfRow.close && sectorEtfRow.close.trim() !== '')
+        ? sectorEtfRow.close.trim()
+        : (sectorEtfRow.time925 && sectorEtfRow.time925.trim() !== '')
+          ? sectorEtfRow.time925.trim()
+          : '';
+      if (rawValue !== '') {
+        syncSectorEtfZhangNum(rawValue);
+        _dbgLog('[BIDDING-SAVE] 保存时同步板块ETF涨数: ' + rawValue);
+      }
+    }
+
+    const accountPremiumRow = biddingData.find(row => row.name === '账号溢价');
+    if (accountPremiumRow && accountPremiumRow.close && accountPremiumRow.close.trim() !== '') {
+      const profitNum = parseFloat(accountPremiumRow.close.trim());
+      if (!isNaN(profitNum)) {
+        const jiwangData = getJiwangData();
+        if (!jiwangData[uiStore.currentDate]) jiwangData[uiStore.currentDate] = {};
+        if (!jiwangData[uiStore.currentDate].stats) jiwangData[uiStore.currentDate].stats = {};
+        jiwangData[uiStore.currentDate].stats.profit = profitNum;
+        markJiwangDirty(uiStore.currentDate);
+        saveData();
+        renderCircleStats();
+      }
+    }
+
+    render();
+    autoCalculateRecentMultiScore();
+    autoCalculateConsecutiveDays();
+    renderConsecutiveUp();
+    syncJiwangKxianFromBidding();
+
     const withTimeout = (p, ms, label) => Promise.race([
       p,
       new Promise((_, reject) => setTimeout(() => reject(new Error(label + ' 超时（' + ms + 'ms）')), ms))
     ]);
-    await withTimeout(pushBiddingToCloud(uiStore.currentDate), 15000, '推送竞价数据');
-    await withTimeout(syncBiddingDeletionsToCloud(uiStore.currentDate), 15000, '同步删除行');
-    _dbgLog('[BIDDING-SAVE] 云端同步完成 ' + uiStore.currentDate);
+    try {
+      await withTimeout(pushBiddingToCloud(uiStore.currentDate), 15000, '推送竞价数据');
+      await withTimeout(syncBiddingDeletionsToCloud(uiStore.currentDate), 15000, '同步删除行');
+      _dbgLog('[BIDDING-SAVE] 云端同步完成 ' + uiStore.currentDate);
+    } catch (e) {
+      cloudErr = e;
+      console.warn('saveBidding 云端同步失败:', e);
+    }
+
+    autoTagShunshiNishi();
   } catch (e) {
-    cloudErr = e;
-    console.warn('saveBidding 云端同步失败:', e);
+    cloudErr = cloudErr || e;
+    console.error('saveBidding 失败:', e);
   } finally {
     saving.value = false;
     modalActive.value = false;
     if (cloudErr) {
       const detail = (cloudErr && (cloudErr.message || cloudErr.details || cloudErr.hint || cloudErr.code)) || String(cloudErr);
-      showWarningToast('⚠️ 本地已保存，但云端同步失败！原因: ' + detail, 10000);
+      showWarningToast('⚠️ 保存失败：' + detail, 10000);
     } else {
       showToast('✅ 竞价变化保存成功（已同步云端）！');
     }
   }
-
-  autoTagShunshiNishi();
 }
 
 function clearData() {
@@ -520,7 +502,7 @@ onUnmounted(() => {
 
 watch(() => uiStore.currentDate, () => { render(); });
 
-defineExpose({ render, openEdit, closeModal, save, addRow, removeRow, clearData, fetchSnapshot, runDiagnostics });
+defineExpose({ render, openEdit, closeModal, save, clearData, fetchSnapshot, runDiagnostics });
 </script>
 
 <style>
@@ -591,17 +573,11 @@ defineExpose({ render, openEdit, closeModal, save, addRow, removeRow, clearData,
   background: #fff;
   min-width: 0;
 }
-.remove-row-btn {
-  border: 1px solid #ef4444;
-  background: #fef2f2;
-  color: #ef4444;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 10px;
-  padding: 4px 6px;
-  height: 30px;
-  flex-shrink: 0;
-  white-space: nowrap;
+.bidding-edit-name-readonly {
+  background: #f1f5f9;
+  color: #334155;
+  font-weight: 600;
+  cursor: default;
 }
 .bidding-edit-desc {
   font-size: 12px;
@@ -613,21 +589,6 @@ defineExpose({ render, openEdit, closeModal, save, addRow, removeRow, clearData,
   gap: 8px;
   align-items: center;
   margin-bottom: 10px;
-}
-.btn-add-row {
-  width: 100%;
-  background: #f1f5f9;
-  border: 1px solid #e2e8f0;
-  color: #64748b;
-  padding: 12px;
-  border-radius: 8px;
-  font-size: 13px;
-  height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  margin-top: 8px;
 }
 .btn-fetch-snapshot {
   background: linear-gradient(135deg, #f59e0b, #d97706);
