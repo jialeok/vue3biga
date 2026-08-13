@@ -225,16 +225,26 @@ import { state } from './app-state.js';
             }
             _dbgLogVerbose('[BOUGHT-ENSURE] prevStocksTags 共 ' + prevStocksTags.length + ' 条');
 
-            // [BUG-FIX 2026-07-27] 买入/持有/卖出标签的股票都进入次日观察组。
-            // 只继承一天：明天看的是明天的 getStocksData()[明天前一天]，不会无限往后传。
+            // [BUG-FIX 2026-08-14] 只继承前一日观察组的买入/持有/卖出股票到次日观察组。
+            // 常规组买入的股票不进次日观察组（用户期望：常规组买入 → 次日常规组）。
+            // 观察组成员标志 = auctionData[prevDay] 中该行 obsAutoAdded === true
+            // （ensureObservationStocks 和 ensureBoughtStocksForDate 自动添加时都设此字段）。
+            const _prevDayList = getAuctionData()[prevDay] || [];
+            const _prevObsSet = new Set();
+            _prevDayList.forEach(function(s) {
+                if (s && s.stock && s.obsAutoAdded === true) {
+                    _prevObsSet.add(s.stock.trim());
+                }
+            });
+            _dbgLogVerbose('[BOUGHT-ENSURE] 前一日观察组(obsAutoAdded) ' + _prevObsSet.size + ' 只：' + (_prevObsSet.size > 0 ? [..._prevObsSet].join('、') : '(无)'));
+
             const holdingNames = [];
             prevStocksTags.forEach(function(s) {
                 if (!s || !s.name) return;
                 const nameTrim = s.name.trim();
                 // [BUG-FIX 2026-08-14] 与 deriveAuctionTagState 的 prevIsInheritedOnly 防护对齐：
                 // 前一日记录若"仅"是继承来的（inheritedHold===true 且用户未手动确认 bought=true），
-                // 不再进入次日观察组——否则从更早日期继承来的 hold 记录会无限往后传递，
-                // 导致观察组股票越积越多（如8月11日的 hold 继承到12日再继承到13日）。
+                // 不再进入次日观察组——否则从更早日期继承来的 hold 记录会无限往后传递。
                 const isInheritedOnly = s.inheritedHold === true && s.bought !== true;
                 if (isInheritedOnly) {
                     _dbgLogVerbose('[BOUGHT-ENSURE] 跳过仅继承记录 ' + nameTrim + ' | inheritedHold=true bought=' + (s.bought === true));
@@ -244,8 +254,12 @@ import { state } from './app-state.js';
                 const wasBought = s.bought === true;
                 const wasHeld = s.hold === true;
                 if (wasSold || wasBought || wasHeld) {
-                    holdingNames.push(nameTrim);
-                    _dbgLogVerbose('[BOUGHT-ENSURE] 命中 ' + nameTrim + ' | sold=' + wasSold + ' bought=' + wasBought + ' hold=' + wasHeld);
+                    if (_prevObsSet.has(nameTrim)) {
+                        holdingNames.push(nameTrim);
+                        _dbgLogVerbose('[BOUGHT-ENSURE] 命中 ' + nameTrim + ' | sold=' + wasSold + ' bought=' + wasBought + ' hold=' + wasHeld);
+                    } else {
+                        _dbgLogVerbose('[BOUGHT-ENSURE] 跳过常规组标签 ' + nameTrim + ' | 有标签但非观察组成员，不继承到次日观察组');
+                    }
                 }
             });
             _dbgLogVerbose('[BOUGHT-ENSURE] holdingNames 共 ' + holdingNames.length + ' 只：' + (holdingNames.length > 0 ? holdingNames.join('、') : '(无)'));
