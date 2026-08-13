@@ -1329,13 +1329,18 @@ onMounted(() => {
   if (uiStore.currentDate) prepareAuctionData(uiStore.currentDate);
   refresh();
   loadCopiedStocks();
-  _on('auction-refresh', refresh);
+  _on('auction-refresh', onAuctionRefresh);
 });
 watch(() => uiStore.currentDate, (v) => { if (v) prepareAuctionData(v); });
 onUnmounted(() => {
   cancelLongPress();
-  _off('auction-refresh', refresh);
+  _off('auction-refresh', onAuctionRefresh);
 });
+
+function onAuctionRefresh() {
+  if (uiStore.currentDate) prepareAuctionData(uiStore.currentDate);
+  refresh();
+}
 
 defineExpose({ refresh, toggleSort, expandAll, collapseAll });
 </script>
