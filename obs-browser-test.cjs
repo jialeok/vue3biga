@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const playwright = require('C:/Users/jialeok/.workbuddy/binaries/node/workspace/node_modules/playwright');
 
-const BUILD_DIR = 'C:/c/tmp/vue3biga-build-1786697884';
+const BUILD_DIR = 'C:/c/tmp/vue3biga-build-1786699768';
 const PORT = 4178;
 const PASSWORD = 'biga8450';
 
@@ -72,12 +72,15 @@ async function selectDate(page, y, m, d) {
 async function readBoard(page) {
   return await page.evaluate(() => {
     const container = document.querySelector('.auction-scroll-container');
-    if (!container) return { obs: 0, reg: 0, total: 0, jingYest: null, obsNames: [], jingYestNames: [] };
-    let obs = 0, reg = 0, seenSep = false;
+    if (!container) return { obs: 0, reg: 0, total: 0, jingYest: null, noData: 0, obsNames: [], jingYestNames: [] };
+    let obs = 0, reg = 0, seenSep = false, noData = 0;
     const obsNames = [];
     for (const child of container.children) {
       if (child.classList && child.classList.contains('auction-obs-separator')) { seenSep = true; continue; }
       if (child.classList && child.classList.contains('auction-item')) {
+        const volEl = child.querySelector('.auction-volume');
+        const volTxt = volEl ? (volEl.textContent || '').trim() : '';
+        if (volTxt === '' || volTxt === '—' || volTxt === '-') noData++;
         if (seenSep) reg++; else { obs++; const nm = child.querySelector('.auction-stock-name'); if (nm) obsNames.push(nm.textContent.trim()); }
       }
     }
@@ -91,7 +94,7 @@ async function readBoard(page) {
     }
     // 竞昨高光股票名单（蓝色高光 .jing-yest-match）
     const jingYestNames = Array.from(document.querySelectorAll('.auction-item.jing-yest-match .auction-stock-name')).map(n => n.textContent.trim());
-    return { obs, reg, total: obs + reg, jingYest, obsNames, jingYestNames };
+    return { obs, reg, total: obs + reg, jingYest, noData, obsNames, jingYestNames };
   });
 }
 
@@ -134,39 +137,25 @@ async function readBoard(page) {
     const defaultDate = (await page.textContent('.date-text')).trim();
     report.defaultDate = defaultDate;
 
-    // 目标：(源日期 -> 观察日期)
-    const cases = [
-      { src: '2026-08-11', obs: '2026-08-12', label: '8/11高光 -> 8/12观察组' },
-      { src: '2026-08-14', obs: '2026-08-17', label: '8/14高光 -> 8/17观察组' },
+    // 目标：逐日期检查"影子记录"（无数据壳）是否已清除
+    // 已抓取的历史/今天日期：必须 noData===0（无无数据壳）
+    // 8/17 未抓取日：保留 16 只继承预览（允许全无数据）
+    const dates = [
+      { y: 2026, m: 8, d: 11, label: '8/11' },
+      { y: 2026, m: 8, d: 12, label: '8/12' },
+      { y: 2026, m: 8, d: 13, label: '8/13' },
+      { y: 2026, m: 8, d: 14, label: '8/14' },
+      { y: 2026, m: 8, d: 17, label: '8/17' },
     ];
-
-    for (const c of cases) {
-      // 读源日期竞昨数 + 高光名单
-      const [sy, sm, sd] = c.src.split('-').map(Number);
-      await selectDate(page, sy, sm, sd);
-      await page.waitForTimeout(2000);
-      const srcBoard = await readBoard(page);
-      // 读观察日期观察组数 + 名单
-      const [oy, om, od] = c.obs.split('-').map(Number);
-      await selectDate(page, oy, om, od);
-      await page.waitForTimeout(2000);
-      const obsBoard = await readBoard(page);
-      const srcSet = new Set(srcBoard.jingYestNames || []);
-      const obsSet = new Set(obsBoard.obsNames || []);
-      const missingInObs = [...srcSet].filter(n => !obsSet.has(n));
-      const extraInObs = [...obsSet].filter(n => !srcSet.has(n));
-      report[c.label] = {
-        srcDate: c.src,
-        srcJingYest: srcBoard.jingYest,
-        srcJingYestNames: srcBoard.jingYestNames,
-        obsDate: c.obs,
-        obsCount: obsBoard.obs,
-        obsNames: obsBoard.obsNames,
-        regCount: obsBoard.reg,
-        match: srcBoard.jingYest !== null && srcBoard.jingYest === obsBoard.obs,
-        missingInObs,
-        extraInObs,
-      };
+    for (const dt of dates) {
+      await selectDate(page, dt.y, dt.m, dt.d);
+      await page.waitForTimeout(2200);
+      const b = await readBoard(page);
+      const isPreview = b.total > 0 && b.noData === b.total; // 全部无数据 = 纯继承预览日
+      const ghostFree = isPreview ? true : (b.noData === 0);
+      const entry = { obs: b.obs, reg: b.reg, total: b.total, noData: b.noData, jingYest: b.jingYest, isPreview, ghostFree };
+      if (dt.label === '8/17') entry.obsPreviewOk = (b.obs === 16);
+      report[dt.label] = entry;
     }
   } catch (e) {
     report.error = e.message;
@@ -178,7 +167,11 @@ async function readBoard(page) {
 
   await browser.close();
   server.close();
-  // 退出码：有错误或不匹配则非0
-  const allMatch = !report.error && Object.values(report).filter(v => v && v.match !== undefined).every(v => v.match);
+  // 退出码：有错误、任一日期仍有影子记录、或 8/17 预览异常则非0
+  const dateEntries = Object.values(report).filter(v => v && v.ghostFree !== undefined);
+  const allGhostFree = dateEntries.every(v => v.ghostFree);
+  const previewOk = !report['8/17'] || report['8/17'].obsPreviewOk === true;
+  const allMatch = !report.error && allGhostFree && previewOk;
+  report.summary = { allGhostFree, previewOk, passed: allMatch };
   process.exit(allMatch ? 0 : 1);
 })();

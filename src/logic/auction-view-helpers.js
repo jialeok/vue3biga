@@ -175,8 +175,14 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     _injectNames.add(n);
     _injectedRows.push({ stock: n, code: getStockCode(n), volume: '', yestVolume: '', note: '', obsAutoAdded: true });
   }
-  if (_obsStocks) _obsStocks.forEach(_maybeInject);
-  _obsBoughtSet.forEach(_maybeInject);
+  // [OBS-FIX 2026-08-14 v2] 仅对「无真实抓取数据」的日期（未来未抓取日，如 8/17）注入观察组预览空壳行。
+  // 已抓取的历史/今天日期不再注入：历史日期应如实显示当天真实抓取的列表，混入无数据壳会造成
+  // 「影子记录 / 五日数据不全」的伪股票（用户反馈核心问题）。未抓取日无真实数据，注入继承预览是合理的。
+  const _dayHasRealData = auctionList.length > 0;
+  if (!_dayHasRealData) {
+    if (_obsStocks) _obsStocks.forEach(_maybeInject);
+    _obsBoughtSet.forEach(_maybeInject);
+  }
   // renderList 仅服务于视图渲染；真实业务数据(auctionList)保持不变，统计口径仍基于 auctionList。
   const renderList = _injectedRows.length ? auctionList.concat(_injectedRows) : auctionList;
 

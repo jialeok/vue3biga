@@ -130,7 +130,10 @@ import { state } from './app-state.js';
             let hasNew = false;
             const _beforeLen = dayList.length;
 
-            if (!alreadyEnsured) {
+            // [OBS-FIX 2026-08-14 v2] 仅当当天列表为空（未抓取日）才注入 obs 壳并持久化；
+            // 已抓取的历史/今天日期不再注入，避免云端累积无数据 obs 壳（影子记录）。
+            const _dayHasRealData = dayList.some(function(r) { return r && !(r.volume === undefined || r.volume === null || r.volume === ''); });
+            if (!alreadyEnsured && !_dayHasRealData) {
                 obsStocks.forEach(function(name) {
                     if (!existingNames.has(name)) {
                         // 不在当日列表中 → 自动添加为观察组正式成员（空壳行，待抓取/手动补量）
