@@ -160,7 +160,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // 关键：视图层注入不写入 auctionData、不触发云端推送——历史锁定(ensureObservationStocks 对历史日期提前返回)
   // 只防止「改写云端」，但视图必须始终如实呈现继承结果，否则历史日期观察组会丢失本该继承的股票（表现为 8/12 少了3只）。
   const _obsStocks = getJingYestHighlightSetForDate(prevDate, dataSource);
-  const _obsBoughtSet = new Set(JSON.parse(localStorage.getItem('obsBought_' + currentDate) || '[]'));
+  const _obsBoughtSet = new Set(JSON.parse(localStorage.getItem('obsBought_' + currentDate) || '[]')); // 合规：防重复/调试标记（§8 允许）
   const _isObsMember = function(name) {
     if (!name) return false;
     if (_obsBoughtSet.has(name)) return true;
@@ -412,7 +412,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   const _confirmedSoldSet = (function() {
     const result = new Set();
     try {
-      const tags = JSON.parse(localStorage.getItem('auctionBoardTags') || '{}'); // §8：读本地快照兜底（非唯一真相），同步源为 auctionTagStore（Supabase）
+      const tags = JSON.parse(localStorage.getItem('auctionBoardTags') || '{}'); // 合规：读本地快照兜底（§8 允许，非唯一真相），同步源为 auctionTagStore（Supabase）
       Object.keys(tags).forEach(function(d) {
         if (d > currentDate) return;
         const dayTags = tags[d] || {};

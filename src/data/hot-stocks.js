@@ -703,7 +703,7 @@ export function _mergeHotCloudToLocal(oldList, cloudRows) {
         // 并在原表物理删除。新 hot_stocks 表不再保留 in_watchlist 列，每行天然是正式成员。
         export async function migrateHotStocksShadowToMetrics() {
             const key = '_hot_stocks_shadow_migrated_to_metrics';
-            if (localStorage.getItem(key) === '1') return;
+            if (localStorage.getItem(key) === '1') return; // 合规：一次性迁移标记（§8 允许）
             try {
                 const sb = getSupabase();
                 const shadowRows = [];
@@ -717,8 +717,8 @@ export function _mergeHotCloudToLocal(oldList, cloudRows) {
                     if (error) {
                         // 新表已无 in_watchlist 列，查询会报错，视为无需迁移
                         if (error.message && (error.message.indexOf('in_watchlist') >= 0 || error.message.indexOf('column') >= 0 || error.message.indexOf('does not exist') >= 0)) {
-                            localStorage.setItem(key, '1');
-                            return;
+                        localStorage.setItem(key, '1'); // 合规：一次性迁移标记（§8 允许）
+                        return;
                         }
                         throw error;
                     }
@@ -728,7 +728,7 @@ export function _mergeHotCloudToLocal(oldList, cloudRows) {
                     offset += pageSize;
                 }
                 if (shadowRows.length === 0) {
-                    localStorage.setItem(key, '1');
+                    localStorage.setItem(key, '1'); // 合规：一次性迁移标记（§8 允许）
                     console.log('[迁移] hot_stocks 无影子记录，无需迁移到 market_metrics(scope=hot)');
                     return;
                 }
@@ -771,7 +771,7 @@ export function _mergeHotCloudToLocal(oldList, cloudRows) {
                         .eq('date', d)
                         .in('stock', datesMap[d]);
                 }));
-                localStorage.setItem(key, '1');
+                localStorage.setItem(key, '1'); // 合规：一次性迁移标记（§8 允许）
                 console.log('[迁移] hot_stocks 影子记录已迁移', migrated, '行到 market_metrics(scope=hot)');
             } catch (e) {
                 console.warn('[迁移] hot_stocks 影子记录迁移失败:', e.message);
@@ -780,7 +780,7 @@ export function _mergeHotCloudToLocal(oldList, cloudRows) {
 
         // 一次性迁移：把 hot_stocks 表中已有的 volume/yest_volume/change_pct 灌入 hot_stock_trends 表
         export async function migrateHotStocksToTrendsTable() {
-            if (localStorage.getItem('_hot_trends_table_migrated') === '1') {
+            if (localStorage.getItem('_hot_trends_table_migrated') === '1') { // 合规：一次性迁移标记（§8 允许）
                 state._hotTrendsTableAvailable = true;
                 return;
             }
@@ -847,7 +847,7 @@ export function _mergeHotCloudToLocal(oldList, cloudRows) {
         // 一次性迁移：把 hot_stock_trends 表中已有的趋势数据灌入 market_metrics(scope='hot')
         // 拆表后统一读 market_metrics，旧数据需要同步一份过去。
         export async function migrateHotTrendsToMarketMetrics() {
-            if (localStorage.getItem('_hot_trends_migrated_to_market_metrics') === '1') {
+            if (localStorage.getItem('_hot_trends_migrated_to_market_metrics') === '1') { // 合规：一次性迁移标记（§8 允许）
                 state._marketMetricsTableAvailable = true;
                 return;
             }

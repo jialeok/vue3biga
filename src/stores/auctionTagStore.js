@@ -21,7 +21,7 @@ const TABLE = 'auction_board_tags';
 // 本地快照（最后一次已知值）：云端不可用时的兜底，不阻断渲染；不再是唯一真相。
 function loadTagsFromStorage() {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); // 合规：标签兜底快照（§8 允许，非唯一真相）
   } catch (e) {
     return {};
   }
@@ -29,7 +29,7 @@ function loadTagsFromStorage() {
 
 function saveTagsToStorage(tags) {
   try {
-    // §8：本地快照仅为云端不可用兜底（非唯一真相），持久真相已上云（见 _persistTag/_persistClearDate）。
+    // 合规：本地快照仅为云端不可用兜底（§8 允许，非唯一真相），持久真相已上云（见 _persistTag/_persistClearDate）。
     // 保留此写以支撑「清缓存/换设备时仍有兜底」与首屏免闪烁；是否彻底移除待单独决策（RED LINE：勿静默删用户数据）。
     localStorage.setItem(STORAGE_KEY, JSON.stringify(tags));
   } catch (e) {}

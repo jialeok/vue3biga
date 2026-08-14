@@ -14,7 +14,7 @@ function _noop() {}
 function _getAuctionTag(date, stockName) {
   if (!date || !stockName) return null;
   try {
-    const tags = JSON.parse(localStorage.getItem('auctionBoardTags') || '{}'); // §8：读本地快照兜底（非唯一真相），同步源为 auctionTagStore（Supabase）
+    const tags = JSON.parse(localStorage.getItem('auctionBoardTags') || '{}'); // 合规：读本地快照兜底（§8 允许，非唯一真相），同步源为 auctionTagStore（Supabase）
     return (tags[date] && tags[date][stockName.trim()]) || null;
   } catch { return null; }
 }

@@ -917,13 +917,13 @@ function getArrowDisplay(dayData, nextDayData) {
 const copiedStocks = ref([]);
 function loadCopiedStocks() {
   try {
-    const all = JSON.parse(localStorage.getItem('copiedStocksData') || '{}');
+    const all = JSON.parse(localStorage.getItem('copiedStocksData') || '{}'); // 合规：临时剪贴板/输入缓存（§8 允许）
     copiedStocks.value = all[uiStore.currentDate] || [];
   } catch { copiedStocks.value = []; }
 }
 function saveCopiedStocks() {
   try {
-    const all = JSON.parse(localStorage.getItem('copiedStocksData') || '{}');
+    const all = JSON.parse(localStorage.getItem('copiedStocksData') || '{}'); // 合规：临时剪贴板/输入缓存（§8 允许）
     all[uiStore.currentDate] = copiedStocks.value;
     localStorage.setItem('copiedStocksData', JSON.stringify(all)); // 合规：临时剪贴板/输入缓存（§8 允许）
   } catch {}

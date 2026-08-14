@@ -29,7 +29,11 @@ export function syncSectorEtfZhangNum(zhangNum) {
   const dieValue = total - zhangNum;
   firstEtf.dieZhangbi = dieValue + ':' + zhangNum;
   etfData[currentDate] = todayEtf;
-  // §8-TODO：stockEtfData 为业务数据（板块ETF），落 localStorage 违反 §8；应迁移 Supabase（独立表或 market_metrics），待单独决策。
+  // §8 违规标注（业务数据落 localStorage）：stockEtfData = { [date]: [{shuliang, dieZhangbi, jingtu, tushi}] } 属板块ETF业务数据。
+  // 迁云方案：新增 Supabase 表 auction_etf(date text PK, data jsonb, updated_at timestamptz)，或复用 market_metrics(scope='auction') 新增 etf_data jsonb 列；
+  //   - 写：本函数改为 upsert 该表（替代本行 localStorage.setItem）；
+  //   - 读：supabase-client.js getEtfData() 改为 select 该表（当前仍读 localStorage，归其他 agent 所有，本 agent 禁止编辑）。
+  //   读站点未迁云前若改写 Supabase 会导致 getEtfData() 返回 {}、板块ETF看板丢数据，故暂保留下方 localStorage 写入；待读站点一并迁云后移除。
   localStorage.setItem('stockEtfData', JSON.stringify(etfData));
 
   _dbgLog('[SECTOR-ETF] 同步到ETF看板: 总 ' + total + ', 涨 ' + zhangNum + ', 跌:涨 = ' + firstEtf.dieZhangbi);

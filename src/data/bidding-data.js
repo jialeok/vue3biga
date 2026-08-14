@@ -248,7 +248,7 @@ import { useUiStore } from '../stores/uiStore.js';
 
         // 一次性迁移：将本地 allData.bidding 灌入 bidding_data 表
         export async function migrateBiddingToTable() {
-            if (localStorage.getItem('_bidding_table_migrated') === '1') {
+            if (localStorage.getItem('_bidding_table_migrated') === '1') { // 合规：一次性迁移标记（§8 允许）
                 state._biddingTableAvailable = true; // 已迁移过，标记表可用
                 return;
             }
@@ -257,7 +257,7 @@ import { useUiStore } from '../stores/uiStore.js';
             // 所以这里必须绕过它们，直接读原始 key，避免把设备上现存的本地数据白白漏掉。
             let biddingData = {};
             try {
-                const raw = localStorage.getItem(_moduleKey('bidding'));
+                const raw = localStorage.getItem(_moduleKey('bidding')); // 合规：旧快照一次性迁移读取（§8 允许，非持久化）
                 if (raw) biddingData = JSON.parse(raw) || {};
             } catch (e) { biddingData = {}; }
             const dates = Object.keys(biddingData).filter(function(d) {

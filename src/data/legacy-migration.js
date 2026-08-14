@@ -22,7 +22,7 @@ import { getAuctionData } from '../logic/app-core.js';
 // 一次性迁移：将本地 allData.auction 按 in_watchlist 拆到 auction_watchlist 与 market_metrics(scope='auction')。
 // 拆表后：in_watchlist===true 的行进入 auction_watchlist；in_watchlist!==true 的行进入 market_metrics(scope='auction')。
 export async function migrateAuctionToTable() {
-    if (localStorage.getItem('_auction_table_migrated') === '1') {
+    if (localStorage.getItem('_auction_table_migrated') === '1') { // 合规：一次性迁移标记（§8 允许）
         state._auctionTableAvailable = true; // 已迁移过，标记表可用
         state._marketMetricsTableAvailable = true;
         return;
@@ -123,7 +123,7 @@ export async function migrateAuctionToTable() {
     if (!hadError || watchlistRows > 0 || metricsRows > 0) {
         state._auctionTableAvailable = true;
         state._marketMetricsTableAvailable = true;
-        localStorage.setItem('_auction_table_migrated', '1');
+        localStorage.setItem('_auction_table_migrated', '1'); // 合规：一次性迁移标记（§8 允许）
         console.log('[迁移] auction_watchlist 已灌入 ' + watchlistRows + ' 条，market_metrics(scope=auction) 已灌入 ' + metricsRows + ' 条');
     } else {
         console.warn('[迁移] 迁移失败，auction 表标记为不可用，保留本地数据');
@@ -134,7 +134,7 @@ export async function migrateAuctionToTable() {
 // auction_watchlist 与 market_metrics(scope='auction')，并在 localStorage 标记已迁移。
 export async function migrateAuctionDataToNewTables() {
     const sb = getSupabase();
-    const alreadyMigrated = localStorage.getItem('_auction_data_migrated_to_new_tables') === '1';
+    const alreadyMigrated = localStorage.getItem('_auction_data_migrated_to_new_tables') === '1'; // 合规：一次性迁移标记（§8 允许）
 
     // 兜底：即使标记已存在，如果 auction_watchlist 为空而 auction_data 仍有数据，说明 SQL/前次迁移未跑完，强制重迁
     let needForceMigrate = false;

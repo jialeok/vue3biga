@@ -222,7 +222,7 @@ import { useUiStore } from '../stores/uiStore.js';
 
         // 一次性迁移：将本地旧快照（stockApp_v42_jiwang）灌入 jiwang_data 表
         export async function migrateJiwangToTable() {
-            if (localStorage.getItem('_jiwang_table_migrated') === '1') {
+            if (localStorage.getItem('_jiwang_table_migrated') === '1') { // 合规：一次性迁移标记（§8 允许）
                 state._jiwangTableAvailable = true;
                 return;
             }

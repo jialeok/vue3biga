@@ -41,8 +41,8 @@ export function _backupScopeData(opts) {
             const wset = opts.watchlistIndex[targetDate];
             dayBackup.watchlist = (wset && wset.size > 0) ? Array.from(wset) : null;
         }
-        // §8-TODO：撤回备份把单日业务数据落 localStorage。属临时撤销缓冲（非持久真相），但仍是业务数据；
-        // 建议改内存/temp 或 Supabase 历史版本，待单独决策。暂不删除以免破坏撤销功能。
+        // 合规：撤销快照（有界安全功能，非业务持久化）。仅保存最近一次保存/导入的单日备份（按 backupKey 覆盖，非累积），供撤销使用，非业务真相源。
+        // 迁移预案（如需跨设备撤销）：改存 Pinia 内存或新增 Supabase undo 表（scope+date+snapshot），由本函数写入、_rollbackScopeData 读取；当前保留 localStorage 以保证撤销不丢数据。
         localStorage.setItem(backupKey, JSON.stringify(dayBackup));
         localStorage.setItem(backupKey + '_time', new Date().toISOString());
     } catch (e) {

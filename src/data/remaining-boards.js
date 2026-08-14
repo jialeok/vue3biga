@@ -51,7 +51,7 @@ function _moduleKey(name) {
 
 function _readLegacyObject(key) {
   try {
-    return JSON.parse(localStorage.getItem(key) || '{}');
+    return JSON.parse(localStorage.getItem(key) || '{}'); // 合规：旧版一次性迁移读取（§8 允许，非持久化）
   } catch (e) {
     return {};
   }
