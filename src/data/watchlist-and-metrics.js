@@ -1,6 +1,7 @@
 ﻿import { _emit } from '../stores/eventBus.js';
 import { state } from '../logic/app-state.js';
 import { useAuctionStore } from '../stores/auctionStore.js';
+import { useUiStore } from '../stores/uiStore.js';
 
 // 与 session-and-shield.js / hot-stocks.js 等模块一致的 Pinia store 安全访问器：
 // 模块顶层求值时若 Pinia 尚未激活，useAuctionStore() 会抛错，这里兜底返回 null，避免 ReferenceError。
@@ -27,7 +28,6 @@ import { setAuctionDateData } from './auction-data.js';
         state._hotHighlightsCache = {}; // 热门股票预计算竞/昨高光缓存，与 _dailyHighlightsCache 平行
         state._hotHighlightsTableAvailable = false; // hot_stocks_highlights 表是否可用（运行时标记）
         state._hotHighlightsChannel = null; // hot_stocks_highlights 表的 Realtime 订阅
-        state.currentGroup = 'auction'; // 'auction' | 'hot'，当前 Tab 选中的分组
         state._justPushedHotAuction = false; // 刚推送 hot_stocks，忽略自己触发的 Realtime 通知
         // ── 热门股票独立化改造：对齐早盘竞价 8344-8345 行的计数器式屏蔽窗口状态 ──
         // 原裸布尔值 + 各自 setTimeout 2 秒复位的写法无法正确处理并发批量操作
@@ -483,7 +483,7 @@ import { setAuctionDateData } from './auction-data.js';
             state._auctionWatchlistIndex[date] = newWatchlistSet;
 
             // 更新状态签名，避免 pull 后立即触发无意义的 push
-            if (date === state.currentDate) {
+            if (date === useUiStore().currentDate) {
                 const watchlistSet = state._auctionWatchlistIndex[date] || new Set();
                 const watchlistRows = normalizedRows.filter(function(r) { return r && r.stock && watchlistSet.has(r.stock.trim()); });
                 state._lastPushedAuctionStatus = JSON.stringify(watchlistRows.map(function(s) {

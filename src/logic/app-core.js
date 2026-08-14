@@ -23,7 +23,10 @@ import { getMostRecentTradingDay, getPreviousTradingDay, isTradingDay } from './
 import { _domGet, _domQuery, _domSetColor, _domSetText, _domSetValue, _getCommentInputValue, _readTrackEditFormData, _restoreStockCardExpand, closeCommentModal, closeHotEditModal, closeTrackEditModal, copyAllTopicStocks, copyTopicStocks, expandAllAuctionTrendPanels, expandAllAuctionTrendPanelsP2, getNthPreviousTradingDay, handleFileImport, jumpToAuctionPage1, jumpToAuctionPage2, openAuctionEdit, openAuctionNoteEditFromPage2, openCoreTopicModal, openHotEdit, recalcDuibanFromAuction, renderAuction, renderAuctionForm, renderBidding, renderComment, renderDuiban, renderEmotionBoard, renderEtf, renderHotForm, renderHotspot, renderJiwang, renderList, renderMulti, renderPattern, renderRank, resetExpansionStateOnDateSwitch, restoreExpandedAuctionTrendPanels, restoreExpandedTopicGroupsP2, saveAuction, setApiStatus, setStockCodeMapStatus, setStockCodeMapStatusHot, showAuctionBuyPrompt, showAuctionDiagReport, showAuctionNoteInput, showAuctionNotePopup, showHint, showHotDiagReport, showNumcatChoiceModal, toggleAuctionBoard, toggleAuctionRowSelect, toggleAuctionSortHelp, toggleStrengthSort, toggleTopicGroupTrendPanels, updateCloudSyncUI } from './ui-bridge.js';
 import { pullFromCloud, pushAuctionCodeToCloud, pushHotStocksDataToCloud, pushToCloud, syncAuctionListForDate, syncCloseChunk, syncHotStocksListForDate } from './workflows/auction-sync.js';
 import { useAuctionStore, _bindUiFns } from '../stores/auctionStore.js';
+import { useUiStore } from '../stores/uiStore.js';
 function _getAuctionStore() { try { return useAuctionStore(); } catch { return null; } }
+// 重构（Phase 5 彻底）：导入期（Pinia 尚未激活）安全读取当前日期，避免模块顶层求值抛错。
+function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { return ''; } }
 
 
         // 热门股票渲染：复用 renderAuction 底层逻辑，dataSource='hot'
@@ -43,7 +46,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         // 页面正在看的那一天）。
         // ============================================================
         export async function repairAuctionInWatchlistForDate(dateArg) {
-            const date = dateArg || state.currentDate;
+            const date = dateArg || useUiStore().currentDate;
             if (!date) { throw new Error('无法确定要恢复的日期'); }
 
             const sb = getSupabase();
@@ -76,7 +79,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                 _dbgLog('[REPAIR] date=' + date + ' 恢复完成，云端 watchlist ' + cloudRows.length + '条，修复本地异常' + repairedCount + '条');
                 console.log('✅ 已恢复 ' + date + '：云端 watchlist 共 ' + cloudRows.length + ' 条，' + repairedCount + ' 条本地显示异常已修复（影子记录未改动）');
 
-                if (date === state.currentDate) {
+                if (date === useUiStore().currentDate) {
                     renderAuction();
                     renderList();
                 }
@@ -857,15 +860,6 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             }
         })();
 
-        // [ISSUE#1 修复] 启动默认落到"今天"：若持久化的 lastEditedDate 早于今天
-        // （或无效/在未来），一律以北京时间为准重置为今天，避免打开后停在 8/5 等
-        // 旧日期、并向前串数据（"未来的日期也继承 8/5"的根因就是 currentDate 卡在旧日期）。
-        const _beijingToday = _computeBeijingToday();
-        state.currentDate = localStorage.getItem('lastEditedDate_' + state.DATA_VERSION);
-        const _dateValid = state.currentDate && /^\d{4}-\d{2}-\d{2}$/.test(state.currentDate) && state.currentDate >= '2025-01-01';
-        if (!_dateValid || state.currentDate !== _beijingToday) {
-            setCurrentDate(_beijingToday);
-        }
         // 统一日期写入口：同时更新全局 currentDate 与响应式 auctionStore.currentDate，
         // 杜绝"全局已切、store 未跟"导致的跨日期写错位（fetchLadderConstituentsMain 等以
         // auctionStore.currentDate 为 targetDate，store 滞后会把今天的数据写到旧日期）。
@@ -877,7 +871,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                 const stack = (new Error().stack || '').split('\n').slice(2, 5).join(' <- ');
                 _dbgLog('[DATE-SWITCH] 切换到 ' + newDate + ' | 来源: ' + stack);
             }
-            state.currentDate = newDate;
+            useUiStore().currentDate = newDate;
             if (typeof _getAuctionStore() !== 'undefined' && _getAuctionStore()) {
                 _getAuctionStore().currentDate = newDate;
             }
@@ -886,9 +880,9 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                 resetExpansionStateOnDateSwitch();
             }
         }
-        export function getCurrentDate() { return state.currentDate; }
+        export function getCurrentDate() { return useUiStore().currentDate; }
         if (typeof _dbgLog === 'function') {
-            _dbgLog('页面脚本加载: currentDate 初始化为 ' + state.currentDate + ' | 代码版本 v3-0804-RANKCACHE-FIX（找到真正瓶颈：getRankData每题材调用N次→改为每次渲染只调用1次，避免反复触发响应式store写入）');
+            _dbgLog('页面脚本加载: currentDate 初始化为 ' + _uiDateSafe() + ' | 代码版本 v3-0804-RANKCACHE-FIX（找到真正瓶颈：getRankData每题材调用N次→改为每次渲染只调用1次，避免反复触发响应式store写入）');
             _dbgLog('[AUCTION-GUARD] selfCheck active=true refIdentity=' + (state._auctionMemCache === (typeof _getAuctionStore() !== 'undefined' && _getAuctionStore() ? _getAuctionStore().auctionData : null)) + ' dates=' + Object.keys(state._auctionMemCache || {}).length);
         }
 
@@ -1104,7 +1098,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             if (name === 'stocks' || name === 'rank' || name === 'multi' ||
                 name === 'hotspot' || name === 'pattern' || name === 'tagTitles') {
                 if (typeof remainingBoards !== 'undefined' && remainingBoards.markDirty) {
-                    remainingBoards.markDirty(name, state.currentDate);
+                    remainingBoards.markDirty(name, useUiStore().currentDate);
                     remainingBoards.schedulePush();
                 }
                 return;
@@ -1146,11 +1140,11 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                 }
             });
             // 阶段八：触发剩余看板的云端同步
-            if (typeof remainingBoards !== 'undefined' && remainingBoards.markAllDirty && state.currentDate) {
-                remainingBoards.markAllDirty(state.currentDate);
+            if (typeof remainingBoards !== 'undefined' && remainingBoards.markAllDirty && useUiStore().currentDate) {
+                remainingBoards.markAllDirty(useUiStore().currentDate);
                 remainingBoards.schedulePush();
             }
-            localStorage.setItem('lastEditedDate_' + state.DATA_VERSION, state.currentDate);
+            localStorage.setItem('lastEditedDate_' + state.DATA_VERSION, useUiStore().currentDate);
             // jiwang 数据独立防抖推送到 jiwang_data 表：遍历所有被标记为脏的日期
             // （不能只推 currentDate —— 例如"昨多板K线"回填是写 nextDate，
             // 若只看 currentDate 会漏推）
@@ -1173,11 +1167,11 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             const comment = _getCommentInputValue();
             const stats = getStats();
             stats.comment = comment;
-            markJiwangDirty(state.currentDate);
+            markJiwangDirty(useUiStore().currentDate);
             saveData();
             renderComment();
             closeCommentModal();
-            pushJiwangNow(state.currentDate, '✅ 评论已保存并同步到云端');
+            pushJiwangNow(useUiStore().currentDate, '✅ 评论已保存并同步到云端');
         }
 
 
@@ -1208,10 +1202,10 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             const trackData = _readTrackEditFormData();
             const expandedStockId = state.currentTrackEditId;
             
-            if (!state.allData.stocks[state.currentDate]) {
-                state.allData.stocks[state.currentDate] = [];
+            if (!state.allData.stocks[useUiStore().currentDate]) {
+                state.allData.stocks[useUiStore().currentDate] = [];
             }
-            state.allData.stocks[state.currentDate][stockIndex].track = trackData;
+            state.allData.stocks[useUiStore().currentDate][stockIndex].track = trackData;
             
             saveData();
             renderList();
@@ -1237,13 +1231,13 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
 
         // 获取当日股票数据
         export function getTodayData() {
-            return getStocksData()[state.currentDate] || [];
+            return getStocksData()[useUiStore().currentDate] || [];
         }
 
         // 获取当日记忘数据
         export function getTodayJiwang() {
             const jiwangData = getJiwangData();
-            return jiwangData[state.currentDate] || null;
+            return jiwangData[useUiStore().currentDate] || null;
         }
 
         // 获取分组数据（早盘竞价 / 热门股票），通过 dataSource 切换数据源
@@ -1267,8 +1261,8 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         //   独立 Set 判断。_auctionMemCache[date] 同时存正式成员和影子记录（仅供趋势图
         //   历史查询），渲染/统计/批量操作都只应看到正式列表。
         export function getTodayAuction() {
-            const list = getAuctionData()[state.currentDate] || [];
-            const watchlistSet = _getAuctionWatchlistSet(state.currentDate);
+            const list = getAuctionData()[useUiStore().currentDate] || [];
+            const watchlistSet = _getAuctionWatchlistSet(useUiStore().currentDate);
             return list.filter(function(r) { return r && r.stock && watchlistSet.has(r.stock.trim()); });
         }
 
@@ -1276,13 +1270,13 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         // 返回数组的浅拷贝，防止外部修改意外影响原始数据，确保日期间数据隔离
         // 方案2：auction 分组用 _auctionWatchlistIndex 判断正式成员；hot 分组天然只含正式成员。
         export function getTodayGroupList(dataSource='auction') {
-            const list = getGroupData(dataSource)[state.currentDate] || [];
+            const list = getGroupData(dataSource)[useUiStore().currentDate] || [];
             if (dataSource === 'hot') {
                 // 方案2：_hotAuctionData 只从 hot_stocks 表加载正式成员，无需过滤
                 return list.filter(function(r) { return r && r.stock; });
             }
             // auction 分组：用 _auctionWatchlistIndex 独立 Set 判断正式成员
-            const watchlistSet = _getAuctionWatchlistSet(state.currentDate);
+            const watchlistSet = _getAuctionWatchlistSet(useUiStore().currentDate);
             const result = list.filter(function(r) { return r && r.stock && watchlistSet.has(r.stock.trim()); });
             // [DEBUG-VUE-FIX 2026-07-25] 暴露"后台有导入记录、前台不显示"这类问题的
             // 第一手证据：原始条数 vs 实际渲染条数 vs 被过滤掉的影子记录名单。
@@ -1290,7 +1284,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             if (list.length > 0 && result.length !== list.length) {
                 const filteredOut = list.filter(function(r) { return !r || !r.stock || !watchlistSet.has(r.stock.trim()); })
                     .map(function(r) { return (r && r.stock ? r.stock.trim() : '(无名)') + '[shadow]'; });
-                _dbgLog('[AUCTION-DEBUG] getTodayGroupList(' + dataSource + ') currentDate=' + state.currentDate +
+                _dbgLog('[AUCTION-DEBUG] getTodayGroupList(' + dataSource + ') currentDate=' + useUiStore().currentDate +
                     ' 原始' + list.length + '条 → 正式列表' + result.length + '条，被过滤' + filteredOut.length + '条：' + filteredOut.join(', '));
             }
             return result;
@@ -1417,7 +1411,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             buildTopicCache();
             const formContainer = _domGet('hotFormContainer');
             const rows = formContainer.querySelectorAll('.auction-form-row');
-            const existingList = getHotAuctionData()[state.currentDate] || [];
+            const existingList = getHotAuctionData()[useUiStore().currentDate] || [];
             const scMap = state._scMapCache || {};
             const hotList = [];
             rows.forEach((row, index) => {
@@ -1442,7 +1436,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                     // 再取云端全量快照缓存里的 code，避免保存动作把同花顺/猫抓已回填的 code 冲掉。
                     let code = (existingItem ? (existingItem.code || '').trim() : '') || (scMap[stock] || '').trim();
                     if (!code) {
-                        const cached = (state._hotFullRowCache[state.currentDate] || []).find(function(r) { return r && r.stock === stock; });
+                        const cached = (state._hotFullRowCache[useUiStore().currentDate] || []).find(function(r) { return r && r.stock === stock; });
                         code = cached ? (cached.code || '').trim() : '';
                     }
                     hotList.push({
@@ -1461,17 +1455,17 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                 const ratioB = parseFloat(b.volume) / parseFloat(b.yestVolume) || 0;
                 return ratioB - ratioA;
             });
-            getHotAuctionData()[state.currentDate] = hotList;
+            getHotAuctionData()[useUiStore().currentDate] = hotList;
             invalidateTopicCache();
             renderAuction('hot');
             const board = _domGet('auctionBoard');
             if (board) board.classList.remove('collapsed');
-            syncHotStocksListForDate(state.currentDate).catch(function(err) {
+            syncHotStocksListForDate(useUiStore().currentDate).catch(function(err) {
                 console.error('saveHotStocks syncHotStocksListForDate 失败:', err);
             });
             // syncHotStocksListForDate 不会更新已有股票的 note/changePct/topics，这里补一次，
             // 避免新股票带出的历史题材（getStockHistoryTopics）只留在本地、刷新后丢失
-            pushHotStocksDataToCloud(state.currentDate, hotList).catch(function(err) {
+            pushHotStocksDataToCloud(useUiStore().currentDate, hotList).catch(function(err) {
                 console.error('saveHotStocks pushHotStocksDataToCloud 失败:', err);
             });
             closeHotEditModal();
@@ -1494,7 +1488,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             const scMap = state._scMapCache || {};
             const lines = pasteText.split(/\r?\n/);
             const hotData = getHotAuctionData();
-            const existingList = hotData[state.currentDate] || [];
+            const existingList = hotData[useUiStore().currentDate] || [];
             let fullDataList = [];
             let noteList = [];
             let hasFullData = false;
@@ -1615,7 +1609,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                     const historyTopics = getStockHistoryTopics(dataItem.stock);
                     var parsedHist = parseNoteToFields(historyTopics);
                     // [BUG-FIX] 新股票回填代码：优先 stockcodemap，再云端快照缓存。
-                    const cached = (state._hotFullRowCache[state.currentDate] || []).find(function(r) { return r && r.stock === dataItem.stock; });
+                    const cached = (state._hotFullRowCache[useUiStore().currentDate] || []).find(function(r) { return r && r.stock === dataItem.stock; });
                     hotList.push({
                         ...dataItem,
                         code: dataItem.code || scMap[dataItem.stock] || (cached ? (cached.code || '') : '') || '',
@@ -1675,7 +1669,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                         finalTopics = Array.from(allTopics2).join(',');
                     }
                     // [BUG-FIX] 新股票回填代码：优先 stockcodemap，再云端快照缓存。
-                    const cached2 = (state._hotFullRowCache[state.currentDate] || []).find(function(r) { return r && r.stock === noteItem.stock; });
+                    const cached2 = (state._hotFullRowCache[useUiStore().currentDate] || []).find(function(r) { return r && r.stock === noteItem.stock; });
                     hotList.push({
                         stock: noteItem.stock, volume: '', yestVolume: '',
                         code: scMap[noteItem.stock] || (cached2 ? (cached2.code || '') : '') || '',
@@ -1695,15 +1689,15 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             }
 
             // 写入 _hotAuctionData（不写 localStorage，不调 saveModule/saveData）
-            getHotAuctionData()[state.currentDate] = hotList;
+            getHotAuctionData()[useUiStore().currentDate] = hotList;
             invalidateTopicCache();
             // 同步到 hot_stocks 表：增删/状态用 syncHotStocksListForDate，
             // 但它不会把已有股票的 note/changePct/topics/volume 写到云端（只处理增删和选中状态），
             // 所以这里必须再补一次 pushHotStocksDataToCloud，否则涨幅/题材/注释等更新只留在本地，刷新后消失
-            syncHotStocksListForDate(state.currentDate).catch(function(err) {
+            syncHotStocksListForDate(useUiStore().currentDate).catch(function(err) {
                 console.error('importHotFromPaste syncHotStocksListForDate 失败:', err);
             });
-            pushHotStocksDataToCloud(state.currentDate, hotList).catch(function(err) {
+            pushHotStocksDataToCloud(useUiStore().currentDate, hotList).catch(function(err) {
                 console.error('importHotFromPaste pushHotStocksDataToCloud 失败:', err);
             });
             // 阶段八修复：热门股票导入之前从未把题材同步进跨 tab 共享的 stock_topics 表，
@@ -1753,7 +1747,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             }
             const lines = pasteText.split(/\r?\n/);
             const hotData = getHotAuctionData();
-            const existingList = hotData[state.currentDate] || [];
+            const existingList = hotData[useUiStore().currentDate] || [];
             let replaceCount = 0, notFoundCount = 0;
             const notFoundStocks = [];
             lines.forEach(line => {
@@ -1808,14 +1802,14 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                 }
             });
             if (replaceCount > 0) {
-                getHotAuctionData()[state.currentDate] = existingList;
+                getHotAuctionData()[useUiStore().currentDate] = existingList;
                 invalidateTopicCache();
-                syncHotStocksListForDate(state.currentDate).catch(function(err) {
+                syncHotStocksListForDate(useUiStore().currentDate).catch(function(err) {
                     console.error('replaceHotConceptFromPaste syncHotStocksListForDate 失败:', err);
                 });
                 // syncHotStocksListForDate 只同步增删/选中状态，不会把刚替换的 note/changePct/topics 写到云端
                 // （这正是之前"粘贴导入题材、保存后刷新就消失"的原因）——这里补上真正写入这些字段的调用
-                pushHotStocksDataToCloud(state.currentDate, existingList).catch(function(err) {
+                pushHotStocksDataToCloud(useUiStore().currentDate, existingList).catch(function(err) {
                     console.error('replaceHotConceptFromPaste pushHotStocksDataToCloud 失败:', err);
                 });
                 renderHotForm();
@@ -1856,7 +1850,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             const lines = pasteText.split(/\r?\n/);
             const hotData = getHotAuctionData();
             const targetList = [...(hotData[targetDate] || [])];
-            const currentStockSet = new Set((hotData[state.currentDate] || []).map(item => item.stock && item.stock.trim()).filter(Boolean));
+            const currentStockSet = new Set((hotData[useUiStore().currentDate] || []).map(item => item.stock && item.stock.trim()).filter(Boolean));
             let filledCount = 0, addedCount = 0, overwritedCount = 0, skippedNotInCurrent = 0, invalidCount = 0;
 
             lines.forEach((line, index) => {
@@ -1940,7 +1934,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             if (skippedNotInCurrent > 0) statusMsg += ` 跳过${skippedNotInCurrent}条(不在当前股票列表中)`;
             if (invalidCount > 0) statusMsg += ` 无法识别${invalidCount}行`;
             if (statusEl) { statusEl.textContent = statusMsg; statusEl.style.color = '#059669'; }
-            if (targetDate === state.currentDate) {
+            if (targetDate === useUiStore().currentDate) {
                 setTimeout(() => renderHotForm(), 0);
                 setTimeout(() => renderAuction('hot'), 20);
             }
@@ -1994,7 +1988,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             // 避免列表里已有股票仍缺 code，后续同花顺/猫抓补全找不到代码。
             let codePatches = [];
             if (newNames.length > 0) {
-                const hotList = (getHotAuctionData()[state.currentDate] || []).slice();
+                const hotList = (getHotAuctionData()[useUiStore().currentDate] || []).slice();
                 newNames.forEach(name => {
                     const exists = hotList.some(item => item && item.stock && item.stock.trim() === name);
                     if (!exists) {
@@ -2011,13 +2005,13 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                         codePatches.push({ stock: name, code: mappedCode });
                     }
                 });
-                getHotAuctionData()[state.currentDate] = hotList;
+                getHotAuctionData()[useUiStore().currentDate] = hotList;
                 invalidateTopicCache();
-                syncHotStocksListForDate(state.currentDate).catch(function(err) {
+                syncHotStocksListForDate(useUiStore().currentDate).catch(function(err) {
                     console.error('importStockCodeMapHot syncHotStocksListForDate 失败:', err);
                 });
                 if (codePatches.length > 0) {
-                    patchHotFieldBatch(state.currentDate, codePatches).catch(function(e) {
+                    patchHotFieldBatch(useUiStore().currentDate, codePatches).catch(function(e) {
                         console.warn('importStockCodeMapHot patchHotFieldBatch code 失败:', e);
                     });
                 }
@@ -2055,7 +2049,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         // 自动补全当前日期指定分组（auction/hot）下缺失代码的股票
         export async function autoCompleteMissingStockCodes(dataSource) {
             const ds = dataSource === 'hot' ? 'hot' : 'auction';
-            const list = (getGroupData(ds)[state.currentDate] || []).filter(function(r) { return r && r.stock; });
+            const list = (getGroupData(ds)[useUiStore().currentDate] || []).filter(function(r) { return r && r.stock; });
             const scMap = state._scMapCache || {};
             const missing = list.filter(function(r) {
                 const existing = (r.code || '').trim() || scMap[r.stock.trim()];
@@ -2092,9 +2086,9 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                 }
                 try {
                     if (ds === 'hot') {
-                        await patchHotFieldBatch(state.currentDate, patches);
+                        await patchHotFieldBatch(useUiStore().currentDate, patches);
                     } else {
-                        await patchAuctionFieldBatch(state.currentDate, patches);
+                        await patchAuctionFieldBatch(useUiStore().currentDate, patches);
                     }
                 } catch (e) {
                     _dbgLog('[AUCTION-ERR] autoCompleteMissingStockCodes patchFieldBatch ' + (e && e.message || e));
@@ -2116,7 +2110,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         }
 
         export async function importStockCodeMap(rawText) {
-            const targetDate = _getAuctionStore() ? _getAuctionStore().currentDate : state.currentDate;
+            const targetDate = _getAuctionStore() ? _getAuctionStore().currentDate : useUiStore().currentDate;
             const raw = (rawText || '').trim();
             if (!raw) { throw new Error('请先粘贴数据'); }
             const map = Object.assign({}, state._scMapCache || {});
@@ -2201,7 +2195,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         // [VUE3-FIX] 改为纯逻辑函数：粘贴文本由 Vue 组件通过 rawText 参数传入（不再依赖 _domGet 读取 DOM），
         // 进度/结果以 Promise resolve 的字符串返回给组件显示（不再调用 _domSetText）。
         export async function importAuctionFromPaste(rawText) {
-            const targetDate = _getAuctionStore() ? _getAuctionStore().currentDate : state.currentDate;
+            const targetDate = _getAuctionStore() ? _getAuctionStore().currentDate : useUiStore().currentDate;
             const sysToday = (typeof _getLocalTodayStr === 'function') ? _getLocalTodayStr() : '';
             if (sysToday && targetDate > sysToday) {
                 _dbgLog('[DATE-WARN] importAuctionFromPaste 写入未来日期 targetDate=' + targetDate + ' sysToday=' + sysToday + '，请确认这是预期行为');
@@ -2829,7 +2823,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         export async function fetchLadderConstituentsMain(btn) {
             const statusEl = _domGet('thsApiStatus');
             // 锁定"点击那一刻"的日期，全程只认这一个值，杜绝异步等待期间日期漂移
-            const targetDate = _getAuctionStore() ? _getAuctionStore().currentDate : state.currentDate;
+            const targetDate = _getAuctionStore() ? _getAuctionStore().currentDate : useUiStore().currentDate;
             _dbgLog('[AUCTION-WRITE] fetchLadderConstituentsMain targetDate=' + targetDate);
             // 守卫：同花顺"最近多板"接口没有查询历史日期的能力，永远只返回"当前最近一个
             // 交易日"的实时成分股。只有当页面停留的日期恰好等于这个"最近交易日"才允许写入
@@ -2978,13 +2972,13 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                 // 否则说明用户已经切到别的日期在忙别的事，此时若仍用刚写入的这批数据刷新
                 // 界面上正显示的另一天，等于用错误日期的内容覆盖了正确的渲染，容易造成
                 // "看着是这天的数据、其实是那天的"的混淆——所以此时只提示、不刷新视图。
-                if (state.currentDate === targetDate) {
+                if (useUiStore().currentDate === targetDate) {
                     renderAuctionForm();
                     renderAuction();
                     renderList();
                     setApiStatus('thsApiStatus', '✅ 已获取 ' + newList.length + ' 只最近多板股票', true);
                 } else {
-                    setApiStatus('thsApiStatus', '✅ 已获取 ' + newList.length + ' 只最近多板股票（写入 ' + targetDate + '，当前页面在 ' + state.currentDate + '，切回该日期即可看到）', true);
+                    setApiStatus('thsApiStatus', '✅ 已获取 ' + newList.length + ' 只最近多板股票（写入 ' + targetDate + '，当前页面在 ' + useUiStore().currentDate + '，切回该日期即可看到）', true);
                 }
             } catch (err) {
                 _dbgLog('[AUCTION-ERR] fetchLadderConstituentsMain ' + (err && err.message || err));
@@ -3140,7 +3134,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             const statusEl = _domGet('thsApiStatus');
             setBtnLoading(btn, true);
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 const yesterday = getPreviousTradingDay(today);
                 const dayBefore = yesterday ? getPreviousTradingDay(yesterday) : null;
                 if (!yesterday || !dayBefore) {
@@ -3294,7 +3288,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         export async function _fillTodayYesterdayVolumeFromThsImpl(btn, overwrite) {
             setBtnLoading(btn, true);
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 const yesterday = getPreviousTradingDay(today);
                 if (!yesterday) {
                     setApiStatus('thsApiStatus', '❌ 无法确定上一交易日', false);
@@ -3373,7 +3367,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         export async function _fillYesterdayYesterdayVolumeFromThsImpl(btn, overwrite) {
             setBtnLoading(btn, true);
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 const yesterday = getPreviousTradingDay(today);
                 const dayBefore = yesterday ? getPreviousTradingDay(yesterday) : null;
                 if (!yesterday || !dayBefore) {
@@ -3486,7 +3480,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         export async function _fetchChangePctFromThsImpl(btn, overwrite) {
             setBtnLoading(btn, true);
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 const auctionData = getAuctionData();
                 const todayList = (auctionData[today] || []).filter(function(s) { return s && s.stock; });
 
@@ -3618,7 +3612,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             const modeLabel = mode === 'overwrite' ? '覆盖' : '补全';
             setBtnLoading(btn, true);
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 // 早盘竞价第一页正式列表（过滤影子记录）
                 const todayList = getTodayAuction().filter(function(s) { return s && s.stock; });
                 if (todayList.length === 0) {
@@ -3833,7 +3827,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         export async function fillAuctionHistoryGapYestVolumeFromThs(btn) {
             setBtnLoading(btn, true);
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 // 早盘竞价第一页正式列表（过滤影子记录）
                 const todayList = getTodayAuction().filter(function(s) { return s && s.stock; });
                 if (todayList.length === 0) {
@@ -4049,7 +4043,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         export async function fetchFiveDaysAuctionFromNumcat(btn) {
             setBtnLoading(btn, true);
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 const dates = [today];
                 let d = today;
                 for (let i = 0; i < 4; i++) {
@@ -4211,7 +4205,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         export async function fillTopicsFromNumcat(btn) {
             setBtnLoading(btn, true);
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 // 方案2：用 _auctionWatchlistIndex 判断正式成员，只对正式成员补全题材
                 const _ftWset = _getAuctionWatchlistSet(today);
                 const todayList = (getAuctionData()[today] || []).filter(function(s) {
@@ -4354,7 +4348,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         export async function fetchMonitorWarningFromNumcat(btn) {
             setBtnLoading(btn, true);
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 // 方案2：用 _auctionWatchlistIndex 判断正式成员，只查询正式成员的监管记录
                 const _mwWset = _getAuctionWatchlistSet(today);
                 const fullList = (getAuctionData()[today] || []).filter(function(s) { return s && s.stock && _mwWset.has(s.stock.trim()); });
@@ -4470,7 +4464,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         export async function fetchSkyrocketHotStocksMain(btn) {
             setBtnLoading(btn, true);
             // 锁定"点击那一刻"的日期，全程只认这一个值，杜绝异步等待期间日期漂移
-            const targetDate = state.currentDate;
+            const targetDate = useUiStore().currentDate;
             try {
                 // 获取系统今天（Asia/Shanghai 时区，yyyy-MM-dd 格式）
                 const now = new Date();
@@ -4599,12 +4593,12 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
 
                 // 刷新表单和看板：只有当"接口返回时页面仍停留在 targetDate"才刷新当前视图，
                 // 避免用刚写入的这批数据去刷新界面上正显示的另一天，造成日期混淆。
-                if (state.currentDate === targetDate) {
+                if (useUiStore().currentDate === targetDate) {
                     renderHotForm();
                     renderHotStocks();
                     setApiStatus('thsApiStatusHot', statusMsg, true);
                 } else {
-                    setApiStatus('thsApiStatusHot', statusMsg + '（写入 ' + targetDate + '，当前页面在 ' + state.currentDate + '，切回该日期即可看到）', true);
+                    setApiStatus('thsApiStatusHot', statusMsg + '（写入 ' + targetDate + '，当前页面在 ' + useUiStore().currentDate + '，切回该日期即可看到）', true);
                 }
             } catch (err) {
                 console.error('fetchSkyrocketHotStocksMain 失败:', err);
@@ -4622,7 +4616,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         // 当天/历史日期统一逻辑：昨日 = getPreviousTradingDay(targetDate)。
         export async function fetchHotLimitUpLadderFromThs(btn) {
             // 锁定"点击那一刻"的日期，杜绝异步等待期间日期漂移导致写入目标错乱
-            const targetDate = state.currentDate;
+            const targetDate = useUiStore().currentDate;
             const sysToday = _getLocalTodayStr();
             setBtnLoading(btn, true);
             try {
@@ -4750,12 +4744,12 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                 });
 
                 const statusMsg = '✅ 已获取 ' + fetchDate + ' 的 ' + constituents.length + ' 只昨日涨停连板股票';
-                if (state.currentDate === targetDate) {
+                if (useUiStore().currentDate === targetDate) {
                     renderHotForm();
                     renderHotStocks();
                     setApiStatus('thsApiStatusHot', statusMsg + (isFutureDate ? '（已预置到 ' + targetDate + '）' : ''), true);
                 } else {
-                    setApiStatus('thsApiStatusHot', statusMsg + '（写入 ' + targetDate + '，当前页面在 ' + state.currentDate + '，切回该日期即可看到）', true);
+                    setApiStatus('thsApiStatusHot', statusMsg + '（写入 ' + targetDate + '，当前页面在 ' + useUiStore().currentDate + '，切回该日期即可看到）', true);
                 }
             } catch (err) {
                 console.error('fetchHotLimitUpLadderFromThs 失败:', err);
@@ -4772,7 +4766,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             setBtnLoading(btn, true);
             _openHotAuctionShield(); // [BUG-FIX] 入口立即开 shield，覆盖 await fetchDayVolumes 期间的竞态窗口
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 const yesterday = getPreviousTradingDay(today);
                 const dayBefore = yesterday ? getPreviousTradingDay(yesterday) : null;
                 if (!yesterday || !dayBefore) {
@@ -4993,7 +4987,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             setBtnLoading(btn, true);
             _openHotAuctionShield(); // [BUG-FIX] 入口立即开 shield，覆盖 await fetchDayVolumes 期间的竞态窗口
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 const yesterday = getPreviousTradingDay(today);
                 if (!yesterday) {
                     setApiStatus('thsApiStatusHot', '❌ 无法确定上一交易日', false);
@@ -5178,7 +5172,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             setBtnLoading(btn, true);
             _openHotAuctionShield(); // [BUG-FIX] 入口立即开 shield，覆盖 await fetchDayVolumes 期间的竞态窗口
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 const yesterday = getPreviousTradingDay(today);
                 const dayBefore = yesterday ? getPreviousTradingDay(yesterday) : null;
                 if (!yesterday || !dayBefore) {
@@ -5360,7 +5354,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         export async function _fetchHotChangePctFromThsImpl(btn, overwrite) {
             setBtnLoading(btn, true);
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 const hotAuctionData = getHotAuctionData();
                 const todayList = (hotAuctionData[today] || []).filter(function(s) { return s && s.stock; });
 
@@ -5536,7 +5530,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             setBtnLoading(btn, true);
             _openHotAuctionShield(); // [BUG-FIX] 入口立即开 shield，覆盖 await fetchDayVolumes 期间的竞态窗口
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 const hotData = getHotAuctionData();
                 const todayList = (hotData[today] || []).filter(function(s) { return s && s.stock; });
                 if (todayList.length === 0) {
@@ -5778,7 +5772,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             setBtnLoading(btn, true);
             _openHotAuctionShield(); // [BUG-FIX] 入口立即开 shield，覆盖 await fetchDayVolumes 期间的竞态窗口
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 const hotData = getHotAuctionData();
                 const todayList = (hotData[today] || []).filter(function(s) { return s && s.stock; });
                 if (todayList.length === 0) {
@@ -5970,7 +5964,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         export async function fetchFiveDaysHotAuctionFromNumcat(btn) {
             setBtnLoading(btn, true);
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 const dates = [today];
                 let d = today;
                 for (let i = 0; i < 4; i++) {
@@ -6137,7 +6131,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         export async function fetchHotAuctionFromNumcat(btn, opts) {
             setBtnLoading(btn, true);
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 const yesterday = getPreviousTradingDay(today);
                 if (!yesterday) {
                     setApiStatus('numcatApiStatusHot', '❌ 无法确定上一交易日', false);
@@ -6633,7 +6627,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
             push('');
 
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 const yesterday = getPreviousTradingDay(today);
                 const dayBefore = yesterday ? getPreviousTradingDay(yesterday) : null;
                 push('【交易日】当前日期(today)=' + today);
@@ -6880,7 +6874,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         export async function fillHotTopicsFromNumcat(btn) {
             setBtnLoading(btn, true);
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 const todayList = (getHotAuctionData()[today] || []).filter(function(s) {
                     return s && s.stock && !((s.topics || '').trim());
                 });
@@ -6994,7 +6988,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         export async function fetchHotMonitorWarningFromNumcat(btn) {
             setBtnLoading(btn, true);
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 const fullList = (getHotAuctionData()[today] || []).filter(function(s) { return s && s.stock; });
 
                 if (fullList.length === 0) {
@@ -7089,7 +7083,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         export async function fetchAuctionFromNumcat(btn, opts) {
             setBtnLoading(btn, true);
             try {
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 const yesterday = getPreviousTradingDay(today);
                 if (!yesterday) {
                     setApiStatus('numcatApiStatus', '❌ 无法确定上一交易日', false);
@@ -7482,7 +7476,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
 
             try {
                 const sysToday = (typeof _getLocalTodayStr === 'function') ? _getLocalTodayStr() : '';
-                const today = state.currentDate;
+                const today = useUiStore().currentDate;
                 const viewDate = today;
                 const yesterday = getPreviousTradingDay(today);
                 const dayBefore = yesterday ? getPreviousTradingDay(yesterday) : null;
@@ -7813,7 +7807,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
 
 
         export async function replaceConceptFromPaste(rawText) {
-            const targetDate = _getAuctionStore() ? _getAuctionStore().currentDate : state.currentDate;
+            const targetDate = _getAuctionStore() ? _getAuctionStore().currentDate : useUiStore().currentDate;
             const pasteText = (rawText || '').trim();
             if (!pasteText) {
                 throw new Error('请先粘贴数据！');

@@ -4,6 +4,7 @@ import { buildTopicCache } from '../data/stock-topics.js';
 import { getStockHistoryTopics, getRankData } from './app-core-api.js';
 import { extractTopics, getDisplayNote } from './note-helpers.js';
 import { state } from './app-state.js';
+import { useUiStore } from '../stores/uiStore.js';
 let _pullCoreTopicsFromCloudFn = null;
 let _pushCoreTopicsToCloudFn = null;
 export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pull; _pushCoreTopicsToCloudFn = push; }
@@ -60,7 +61,7 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
         // 获取最近5个交易日列表（从当前日期往前推，排除周末和假期）
         export function getLast5TradingDays() {
             const days = [];
-            let date = state.currentDate;
+            let date = useUiStore().currentDate;
             
             // 循环直到获取到5个交易日
             while (days.length < 5 && date) {

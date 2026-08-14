@@ -9,6 +9,7 @@ import { state } from './app-state.js';
 import { useAuctionStore } from '../stores/auctionStore.js';
 import { getAuctionTagState } from './ui-bridge.js';
 import { getDisplayNote } from './note-helpers.js';
+import { useUiStore } from '../stores/uiStore.js';
 
 function _getAuctionTag(date, stockName) {
   if (!date || !stockName) return null;
@@ -145,7 +146,7 @@ export function prepareAuctionData(currentDate) {
 export function computeAuctionViewData(dataSource, sortStateOverride) {
   dataSource = dataSource || 'auction';
   const _p = dataSource === 'hot' ? 'hot' : 'auction';
-  const currentDate = state.currentDate;
+  const currentDate = useUiStore().currentDate;
 
   const auctionList = getTodayGroupList(dataSource);
   if (!auctionList || auctionList.length === 0) {

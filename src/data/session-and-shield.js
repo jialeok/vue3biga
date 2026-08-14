@@ -52,7 +52,7 @@ export function _openAuctionShield() {
         //    改标签只写 _getStocksDataFn()（allData.stocks）。
         //    方案 B：标签不再写入 auctionData 行（bought/sold/fixed 不存储），
         //    渲染时由 deriveAuctionTagState 实时派生。selected 保留为手动点选。
-        //  - state.currentDate / currentGroup / currentPage / 排序 / 展开状态等 UI 状态
+        //  - currentDate / currentGroup / currentPage 等 UI 状态（Phase 5 已迁 useUiStore()，见 src/stores/uiStore.js）
         //    先入 schema，具体字段的「全局变量 ↔ store」双向绑定为后续阶段接入。
         // ============================================================
         // auctionStore 由 stores/auctionStore.js 创建（Vue 响应式）；

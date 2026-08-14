@@ -1,4 +1,3 @@
-import { useUiStore } from '../stores/uiStore.js';
 export const state = {
     _scMapCache: null,
     _hotFullRowCache: {},
@@ -16,8 +15,6 @@ export const state = {
     _pushDebounceTimer: null,
     allData: null,
     DATA_VERSION: null,
-    currentGroup: 'auction',
-    auctionCurrentPage: 0,
     _hotTrendsCache: {},
     _hotTrendsTableAvailable: false,
     _justPushedHotTrends: false,
@@ -124,7 +121,6 @@ export const state = {
     _allDataLastRebuildAt: null,
     _allDataRebuildCount: 0,
     _auctionFullRowCache_DELETED: {},
-    currentTab: null,
     unlocked: false,
     _coreTopicsCloudLoaded: false,
     _coreTopicsPushingToCloud: false,
@@ -175,14 +171,6 @@ export const state = {
     topicAutoFilled: false,
 };
 
-// 重构（biga-auction-arch-refactor Phase 0）：currentDate 单一真相源。
-// state.currentDate 不再独立持有真相，而是委托到 app 级 uiStore（useUiStore().currentDate），
-// 与 window.currentDate 一样只是向后兼容别名，杜绝“state / window / 孤儿 store”多真相漂移。
-// _currentDateFallback 仅用于 Pinia 尚未激活的极早期（理论上运行期不会命中）。
-let _currentDateFallback = null;
-Object.defineProperty(state, 'currentDate', {
-  configurable: true,
-  enumerable: true,
-  get() { try { return useUiStore().currentDate; } catch (e) { return _currentDateFallback; } },
-  set(v) { _currentDateFallback = v; try { useUiStore().currentDate = v; } catch (e) {} },
-});
+// 重构（biga-auction-arch-refactor Phase 5 彻底）：currentDate / currentGroup / currentPage /
+// currentTab 已全量迁移到 app 级 useUiStore()（src/stores/uiStore.js），本文件不再持有这些
+// UI 真相字段；仅保留运行期缓存 / 标记容器（_xxx 字段），符合架构规范“app-state 作运行期标记容器”。

@@ -3,6 +3,7 @@ import { getSupabase } from './supabase-client.js';
 import { _dbgLog } from './debug-log.js';
 import { _emit } from '../stores/eventBus.js';
 import { showToast } from '../composables/useToast.js';
+import { useUiStore } from '../stores/uiStore.js';
 
 const MODULE_KEYS = ['stocks', 'rank', 'multi', 'hotspot', 'pattern', 'tagTitles'];
 
@@ -524,7 +525,7 @@ export function pushRemainingNow(date) {
 }
 
 function _currentDate() {
-  if (state.currentDate) return state.currentDate;
+  if (useUiStore().currentDate) return useUiStore().currentDate;
   return null;
 }
 

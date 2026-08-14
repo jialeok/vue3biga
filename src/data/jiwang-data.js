@@ -7,6 +7,7 @@ import { state } from '../logic/app-state.js';
 
         import { getSupabase, _moduleKey, getJiwangData } from './supabase-client.js';
         import { _dbgLog } from './debug-log.js';
+import { useUiStore } from '../stores/uiStore.js';
 
         // 从 jiwang_data 表全量读取，返回 {date: {...}}
         export async function pullJiwangFromTable() {
@@ -70,7 +71,7 @@ import { state } from '../logic/app-state.js';
             // 避免以后新增调用点时忘记加这个判断，导致重新引入"覆盖未推送编辑"的问题。
             const pending = (state._jiwangDirtyDates && state._jiwangDirtyDates.has(date)) ||
                 (state._jiwangPushTimers && state._jiwangPushTimers[date]) ||
-                (state._justPushedJiwang && date === state.currentDate);
+                (state._justPushedJiwang && date === useUiStore().currentDate);
             if (pending) {
                 _dbgLog && _dbgLog('pullJiwangForDate: ' + date + ' 有本地待推送编辑，跳过覆盖');
                 return;
@@ -299,7 +300,7 @@ import { state } from '../logic/app-state.js';
                         const changedDate = row.date;
                         _dbgLog('JiwangRealtime: 收到 ' + changedDate + ' 变化（他端推送），拉取该日数据');
                         pullJiwangForDate(changedDate).then(function() {
-                            if (changedDate === state.currentDate) {
+                            if (changedDate === useUiStore().currentDate) {
                                 _emit('data:realtime-update', { boards: 'jiwang' });
                                 _emit('data:realtime-update', { boards: 'marketStage' });
                             }

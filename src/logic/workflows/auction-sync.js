@@ -21,6 +21,7 @@ import { pullJiwangFromTable } from '../../data/jiwang-data.js';
 import { updateCloudSyncUI, recalcDuibanFromAuction } from '../ui-bridge.js';
 import { _openAuctionShield, _closeAuctionShield } from '../../data/session-and-shield.js';
 import { syncStockTopicsFromAuction } from '../auction-stock-sync.js';
+import { useUiStore } from '../../stores/uiStore.js';
 
         export async function pushAuctionStatusForDate(date) {
             const sb = getSupabase();
@@ -373,14 +374,14 @@ import { syncStockTopicsFromAuction } from '../auction-stock-sync.js';
             }
 
             // 说明：曾经这里还有一个"当前日期：仅当状态签名变化时才推送"的兜底分支，
-            // 每次都读取*触发这一刻*的 state.currentDate。但 scheduleCloudPush 是 2 秒防抖，
+            // 每次都读取*触发这一刻*的 useUiStore().currentDate。但 scheduleCloudPush 是 2 秒防抖，
             // 如果用户在这 2 秒内切换了日期（保存后立刻翻页很常见），
-            // 计时器触发时 state.currentDate 已经是新日期——导致把"刚编辑的那天"的推送，
+            // 计时器触发时 useUiStore().currentDate 已经是新日期——导致把"刚编辑的那天"的推送，
             // 错误地当成"当前打开的这天"的状态推送来源，产生跨日期写串的问题
             // （表现为"今天的股票被写进了历史日期"）。
             // 所有真实编辑路径（saveAuction/导入/标签变化等）都已经在编辑发生的
             // 那一刻调用 markAuctionDirty(编辑时的日期)，dirtyDates 才是唯一可信来源，
-            // 不需要也不应该再按"触发时刻的 state.currentDate"做兜底推送。
+            // 不需要也不应该再按"触发时刻的 useUiStore().currentDate"做兜底推送。
 
             // 2. 清空脏日期标记
             if (state._auctionDirtyDates) state._auctionDirtyDates.clear();
@@ -457,9 +458,9 @@ import { syncStockTopicsFromAuction } from '../auction-stock-sync.js';
             mergeAuctionDateRows(date, mergedRows, 'window.pushAuctionDataToCloud');
 
             // 更新状态签名（导入后状态可能变了）
-            if (date === state.currentDate) {
-                const wset = _getAuctionWatchlistSet(state.currentDate);
-                state._lastPushedAuctionStatus = JSON.stringify((getAuctionData()[state.currentDate] || []).filter(function(s) { return s && s.stock && wset.has(s.stock.trim()); }).map(function(s) {
+            if (date === useUiStore().currentDate) {
+                const wset = _getAuctionWatchlistSet(useUiStore().currentDate);
+                state._lastPushedAuctionStatus = JSON.stringify((getAuctionData()[useUiStore().currentDate] || []).filter(function(s) { return s && s.stock && wset.has(s.stock.trim()); }).map(function(s) {
                     return { s: s.stock, sel: s.selected || false, b: s.bought || false,
                              so: s.sold || false, f: s.fixed || false };
                 }));
@@ -581,8 +582,8 @@ import { syncStockTopicsFromAuction } from '../auction-stock-sync.js';
                     // 新表为空时：保留本地数据，不清空（可能是迁移未完成或表刚创建）
                     // 更新状态签名，避免 pull 后立即触发无意义的 push
                     // 方案2：状态签名只统计正式成员（用 _auctionWatchlistIndex 判断）
-                    const _pullWset = _getAuctionWatchlistSet(state.currentDate);
-                    const todayList = (state._auctionMemCache[state.currentDate] || []).filter(function(s) { return s && s.stock && _pullWset.has(s.stock.trim()); });
+                    const _pullWset = _getAuctionWatchlistSet(useUiStore().currentDate);
+                    const todayList = (state._auctionMemCache[useUiStore().currentDate] || []).filter(function(s) { return s && s.stock && _pullWset.has(s.stock.trim()); });
                     state._lastPushedAuctionStatus = JSON.stringify(todayList.map(function(s) {
                         return { s: s.stock, sel: s.selected || false, b: s.bought || false,
                                  so: s.sold || false, f: s.fixed || false };
@@ -630,7 +631,7 @@ import { syncStockTopicsFromAuction } from '../auction-stock-sync.js';
                     const pendingDates = new Set();
                     if (state._biddingPushInFlight) state._biddingPushInFlight.forEach(function(d) { pendingDates.add(d); });
                     if (state._biddingDirtyDates) state._biddingDirtyDates.forEach(function(d) { pendingDates.add(d); });
-                    if (state._justPushedBidding) pendingDates.add(state.currentDate);
+                    if (state._justPushedBidding) pendingDates.add(useUiStore().currentDate);
                     const _beforeKeys = Object.keys(state._biddingMemCache || {}).join(',');
                     if (!state._biddingMemCache) state._biddingMemCache = {};
                     // [BUG-FIX] 改为只覆盖云端实际返回的日期；云端没返回的日期保留本地原值。
@@ -650,7 +651,7 @@ import { syncStockTopicsFromAuction } from '../auction-stock-sync.js';
 
                 // 从 jiwang_data 独立表拉取记忘看板数据（云端表是唯一权威来源）
                 try {
-                    const _beforeMerge = JSON.stringify((state._jiwangMemCache || {})[state.currentDate] || null).slice(0, 200);
+                    const _beforeMerge = JSON.stringify((state._jiwangMemCache || {})[useUiStore().currentDate] || null).slice(0, 200);
                     const tableJiwang = await pullJiwangFromTable();
                     if (!state._jiwangMemCache) state._jiwangMemCache = {};
                     // 重要修复：以前这里会把"这次没在 pendingDates 里的本地日期"全部删掉，
@@ -666,7 +667,7 @@ import { syncStockTopicsFromAuction } from '../auction-stock-sync.js';
                     const pendingDates = new Set();
                     if (state._jiwangDirtyDates) state._jiwangDirtyDates.forEach(function(d) { pendingDates.add(d); });
                     if (state._jiwangPushTimers) Object.keys(state._jiwangPushTimers).forEach(function(d) { pendingDates.add(d); });
-                    if (state._justPushedJiwang) pendingDates.add(state.currentDate);
+                    if (state._justPushedJiwang) pendingDates.add(useUiStore().currentDate);
                     Object.keys(tableJiwang).forEach(function(d) {
                         if (!pendingDates.has(d)) state._jiwangMemCache[d] = tableJiwang[d];
                     });
@@ -674,9 +675,9 @@ import { syncStockTopicsFromAuction } from '../auction-stock-sync.js';
                     // 记忘看板是快照式渲染（display 为一次性 ref，非 reactive），必须显式通知刷新，
                     // 否则初始云端拉取虽已灌入 _jiwangMemCache，前台却一直空白直到用户手动保存。
                     _emit('jiwang-refresh');
-                    const _afterMerge = JSON.stringify(state._jiwangMemCache[state.currentDate] || null).slice(0, 200);
-                    _dbgLog('pullFromCloud: jiwang 合并完成, state.currentDate=' + state.currentDate +
-                        ', 云端表共 ' + Object.keys(tableJiwang).length + ' 天, 云端是否含当前日期=' + tableJiwang.hasOwnProperty(state.currentDate) +
+                    const _afterMerge = JSON.stringify(state._jiwangMemCache[useUiStore().currentDate] || null).slice(0, 200);
+                    _dbgLog('pullFromCloud: jiwang 合并完成, useUiStore().currentDate=' + useUiStore().currentDate +
+                        ', 云端表共 ' + Object.keys(tableJiwang).length + ' 天, 云端是否含当前日期=' + tableJiwang.hasOwnProperty(useUiStore().currentDate) +
                         ', 合并前=' + _beforeMerge + ', 合并后=' + _afterMerge);
                     if (pendingDates.size > 0) {
                         _dbgLog('pullFromCloud: 跳过覆盖有本地待推送编辑的记忘看板日期: ' + Array.from(pendingDates).join(','));
@@ -689,9 +690,9 @@ import { syncStockTopicsFromAuction } from '../auction-stock-sync.js';
 
                 // 观察组可能受云端数据影响（上一交易日"竞/昨"达标股票可能变化），清除标记重新计算
                 // 买入继承同理：昨日 bought/sold 状态可能被另一台设备改过，一并清除重算
-                try { localStorage.removeItem('obsEnsured_' + state.currentDate); } catch(e) {}
-                try { localStorage.removeItem('boughtEnsured_' + state.currentDate); } catch(e) {}
-                try { localStorage.removeItem('obsBought_' + state.currentDate); } catch(e) {}
+                try { localStorage.removeItem('obsEnsured_' + useUiStore().currentDate); } catch(e) {}
+                try { localStorage.removeItem('boughtEnsured_' + useUiStore().currentDate); } catch(e) {}
+                try { localStorage.removeItem('obsBought_' + useUiStore().currentDate); } catch(e) {}
 
                 _setSyncStatus('✅ 云端数据同步成功');
             } catch (e) {
@@ -768,7 +769,7 @@ import { syncStockTopicsFromAuction } from '../auction-stock-sync.js';
                     hasFumianTopics: hasFumianTopics,
                     summaries: summaries,
                     copiedStocksData: JSON.parse(localStorage.getItem('copiedStocksData') || '{}'),
-                    exportDate: state.currentDate,
+                    exportDate: useUiStore().currentDate,
                     version: '4.2'
                 };
 
@@ -789,7 +790,7 @@ import { syncStockTopicsFromAuction } from '../auction-stock-sync.js';
                 // 脏日期标记在 pushAuctionToCloud 内部清空
                 try { await pushAuctionToCloud(); } catch(e) { console.warn('window.pushAuctionToCloud 失败:', e); _dbgLog('[PUSH-ERR] window.pushAuctionToCloud ' + (e && e.message || e)); }
                 // bidding 数据同步到独立表
-                try { await pushBiddingToCloud(state.currentDate); } catch(e) { console.warn('window.pushBiddingToCloud 失败:', e); }
+                try { await pushBiddingToCloud(useUiStore().currentDate); } catch(e) { console.warn('window.pushBiddingToCloud 失败:', e); }
                 updateCloudSyncUI('synced');
             } catch (e) {
                 console.error('window.pushToCloud 失败:', e);

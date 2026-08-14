@@ -7,6 +7,7 @@ import { getTopicGroups } from './topic-rules.js';
 import { getSupabase } from '../data/supabase-client.js';
 import { renderConsecutiveUp as _renderConsecutiveUp, autoCalculateRecentMultiScore as _autoCalcRecentMultiScore, getTodayTagTitles, getYesterdayDate, getTagTitlesByDate, getPreviousTradingDayWithData, getTodayBidding } from './tag-titles-helpers.js';
 import { reactive } from 'vue';
+import { useUiStore } from '../stores/uiStore.js';
 
 function _noop() {}
 
@@ -111,7 +112,7 @@ export function toggleAuctionTrendPanel() {}
 export function toggleAuctionTrendPanelP2() {}
 export function resetExpansionStateOnDateSwitch() {}
 export function getAuctionTagState(stockName, date) {
-  const d = date || state.currentDate;
+  const d = date || useUiStore().currentDate;
   const prevDay = getPreviousTradingDay(d);
   const tag = prevDay ? _getAuctionTag(prevDay, stockName) : null;
   return { bought: tag === 'buy', sold: tag === 'sell', selected: tag === 'hold', source: tag ? 'inherited' : 'none' };
@@ -133,11 +134,11 @@ const _starTagCache = new Map();
 export function clearStarTagCache() { _starTagCache.clear(); }
 export function getStarTagsForStock(stockName) {
   if (!stockName) return null;
-  const cacheKey = state.currentDate + '|' + stockName.trim();
+  const cacheKey = useUiStore().currentDate + '|' + stockName.trim();
   if (_starTagCache.has(cacheKey)) return _starTagCache.get(cacheKey);
   const auctionData = getAuctionData();
-  const todayAuctionList = auctionData[state.currentDate] || [];
-  const prevDate = getPreviousTradingDay(state.currentDate);
+  const todayAuctionList = auctionData[useUiStore().currentDate] || [];
+  const prevDate = getPreviousTradingDay(useUiStore().currentDate);
   const prevAuctionList = prevDate ? (auctionData[prevDate] || []) : [];
   if (todayAuctionList.length === 0) { _starTagCache.set(cacheKey, null); return null; }
 
@@ -182,9 +183,9 @@ const _profitStatusCache = new Map();
 export function clearProfitStatusCache() { _profitStatusCache.clear(); }
 export function getStockProfitStatus(stockName, stocksData) {
   if (!stockName || !stocksData) return null;
-  const cacheKey = state.currentDate + '|' + stockName.trim();
+  const cacheKey = useUiStore().currentDate + '|' + stockName.trim();
   if (_profitStatusCache.has(cacheKey)) return _profitStatusCache.get(cacheKey);
-  const todayStocks = stocksData[state.currentDate] || [];
+  const todayStocks = stocksData[useUiStore().currentDate] || [];
   const stock = todayStocks.find(s => s.name && s.name.trim() === stockName.trim());
   if (!stock || !stock.soldRecords || stock.soldRecords.length === 0) { _profitStatusCache.set(cacheKey, null); return null; }
   const sortedRecords = [...stock.soldRecords].sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -205,7 +206,7 @@ export function toggleAuctionRowSelect() {}
 export function renderBidding() { _emit('bidding-refresh'); }
 export function getTodayDuiban() {
   const auctionData = getAuctionData();
-  return (auctionData && auctionData[state.currentDate]) || [];
+  return (auctionData && auctionData[useUiStore().currentDate]) || [];
 }
 export function renderDuiban() { _emit('board-refresh'); }
 export function recalcDuibanFromAuction() {}

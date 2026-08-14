@@ -24,6 +24,7 @@ import { pullBiddingForDate, migrateBiddingToTable } from './data/bidding-data.j
 import { migrateJiwangToTable, pullJiwangForDate } from './data/jiwang-data.js';
 import { showToast, showWarningToast } from './composables/useToast.js';
 import { state } from './logic/app-state.js';
+import { useUiStore } from './stores/uiStore.js';
 
 const loginRef = ref(null);
 const debugRef = ref(null);
@@ -90,18 +91,18 @@ function setupEventBus() {
 function setupVisibilityChange() {
   document.addEventListener('visibilitychange', function() {
     if (document.visibilityState !== 'visible') return;
-    _dbgLog('visibilitychange: 切回前台, state.currentDate=' + state.currentDate);
+    _dbgLog('visibilitychange: 切回前台, useUiStore().currentDate=' + useUiStore().currentDate);
     state.allData = null;
     loadAllData();
     _emit('stocks-refresh');
     _emit('auction-refresh');
-    pullBiddingForDate(state.currentDate).then(() => _emit('bidding-refresh')).catch(e => console.warn('切回前台 bidding:', e.message));
+    pullBiddingForDate(useUiStore().currentDate).then(() => _emit('bidding-refresh')).catch(e => console.warn('切回前台 bidding:', e.message));
     state._emotionDataCache = null;
     _emit('emotion-refresh');
-    const jiwangPending = (state._jiwangDirtyDates && state._jiwangDirtyDates.has(state.currentDate)) ||
-      (state._jiwangPushTimers && state._jiwangPushTimers[state.currentDate]);
+    const jiwangPending = (state._jiwangDirtyDates && state._jiwangDirtyDates.has(useUiStore().currentDate)) ||
+      (state._jiwangPushTimers && state._jiwangPushTimers[useUiStore().currentDate]);
     if (!jiwangPending) {
-      pullJiwangForDate(state.currentDate).then(() => _emit('jiwang-refresh')).catch(e => console.warn('切回前台 jiwang:', e.message));
+      pullJiwangForDate(useUiStore().currentDate).then(() => _emit('jiwang-refresh')).catch(e => console.warn('切回前台 jiwang:', e.message));
     }
   });
 }

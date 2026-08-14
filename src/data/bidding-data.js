@@ -5,6 +5,7 @@ import { state } from '../logic/app-state.js';
         import { getSupabase, _moduleKey, getBiddingData } from './supabase-client.js';
         import { _dbgLog } from './debug-log.js';
         import { _openAuctionShield, _closeAuctionShield } from './session-and-shield.js';
+import { useUiStore } from '../stores/uiStore.js';
 
         // 清理竞价变化行：封单家数只应出现在 9:25（内部字段 time925，对应 bidding_data 表 DB 列 time925）列，收盘列不应有值
         export function sanitizeBiddingRow(row) {
@@ -185,7 +186,7 @@ import { state } from '../logic/app-state.js';
         }
 
         // 删除 auction_watchlist 与 market_metrics(scope='auction') 中某天的全部数据
-        // （阶段四 Bug 3 修复：与 bidding 对齐，"清空当日数据"原本只 delete allData.auction[state.currentDate]，
+        // （阶段四 Bug 3 修复：与 bidding 对齐，"清空当日数据"原本只 delete allData.auction[useUiStore().currentDate]，
         //  云端行还在，下次刷新/Realtime 会把数据"复活"）
         export async function deleteAuctionFromCloud(date) {
             if (!date) return;
@@ -335,7 +336,7 @@ import { state } from '../logic/app-state.js';
                         const changedDate = row.date;
                         // 拉取该日期的最新竞价数据并刷新看板
                         pullBiddingForDate(changedDate).then(function() {
-                            if (changedDate === state.currentDate) _emit('data:realtime-update', { boards: 'bidding' });
+                            if (changedDate === useUiStore().currentDate) _emit('data:realtime-update', { boards: 'bidding' });
                         }).catch(function(e) { _dbgLog('[AUCTION-ERR] Bidding Realtime 拉取失败 ' + (e && e.message || e)); });
                     })
                     .subscribe();

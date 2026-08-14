@@ -4,6 +4,7 @@ import { state } from './app-state.js';
 import { _emit } from '../stores/eventBus.js';
 import { showToast } from '../composables/useToast.js';
 import { pushRemainingNow } from '../data/remaining-boards.js';
+import { useUiStore } from '../stores/uiStore.js';
 
 function _genStockId() {
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -15,7 +16,7 @@ export function deleteStock(id) {
         return;
     }
     if (!confirm('确定要删除这条记录吗？')) return;
-    const currentDate = state.currentDate;
+    const currentDate = useUiStore().currentDate;
     const dayList = getStocksData()[currentDate];
     if (!dayList || !Array.isArray(dayList)) return;
     const idx = dayList.findIndex(s => s && s.id === id);
@@ -33,7 +34,7 @@ export function deleteStock(id) {
 }
 
 export function copyToTomorrow(id) {
-    const currentDate = state.currentDate;
+    const currentDate = useUiStore().currentDate;
     const stock = (getStocksData()[currentDate] || []).find(s => s.id === id);
     if (!stock) {
         showToast('⚠️ 未找到股票数据');
@@ -99,7 +100,7 @@ export function copyToTomorrow(id) {
 }
 
 export function copyToDate(id) {
-    const currentDate = state.currentDate;
+    const currentDate = useUiStore().currentDate;
     const stock = (getStocksData()[currentDate] || []).find(s => s.id === id);
     if (!stock) {
         showToast('⚠️ 未找到股票数据');
