@@ -1036,7 +1036,7 @@ ls -d src/ui 2>&1
 
 ### ⬜ 3.1 拆解目标模块树（对应 §15 标准结构）
 
-按域拆分计划动手 
+按域拆分计划动手
 
 ### ⬜ 3.2 执行顺序与强制步骤（低风险→高风险，每域独立可回滚）
 
@@ -1171,19 +1171,22 @@ ls -d src/ui 2>&1
 
 ## 十一、in_watchlist 迁移确认方法（用户自查，决定能否字面归零）
 
-> 仅当用户能确认"**所有历史数据已迁移完毕、旧表无活跃数据**"时，才能删除一次性迁移函数让 `grep in_watchlist = 0`。
+> 仅当用户能确认"**所有历史数据已迁移完毕、旧表无活跃数据**"时，才能删除一次性迁移函数让 `grep in_watchlist = 0`。  
 > 用以下任一方式自查：
 
 **方式 A — Supabase SQL（推荐，最准）**：在 Supabase SQL Editor 执行，看是否还有未迁移行：
+
 ```sql
 -- 旧 auction_data 表是否还存在且含数据
 select count(*) as auction_data_rows from auction_data;   -- 表不存在会报错，说明已拆完，安全
 -- 旧 hot_stocks 表
 select count(*) as hot_stocks_rows from hot_stocks;
 ```
+
 若两表均"不存在"或"行数 = 0"，则可安全删除迁移函数；否则保留。
 
 **方式 B — 浏览器控制台**（应用启动后，看旧快照是否还残留）：
+
 ```js
 console.log('stockApp_v42_auction 残留:', localStorage.getItem('stockApp_v42_auction'));
 console.log('stockAppData_v41 残留:', localStorage.getItem('stockAppData_v41'));
@@ -1193,11 +1196,13 @@ console.log('stockAppData_v41 残留:', localStorage.getItem('stockAppData_v41')
 ## 十二、进度更新（2026-08-14 晚）
 
 ### 已完成
+
 - ✅ **B（§3 表修订）**：skill §3 第 3 行固定现实权威（`market_metrics(scope='auction').change_pct`）。
 - ✅ **§16 第一步：date/ 域模块**：新建 `src/logic/date/date-helpers.js`，从 app-core.js 抽出 5 个纯 date 函数（`getWeekday`/`getPreviousDate`/`getNextDate`/`_shiftDateStr`/`buildYesterdayListFromToday`），用 import + re-export 保证 PatternBoard.vue 等调用点零破坏。app-core 净减约 70 行。
 - ✅ **§8 标签数据上云**：重写 `auctionTagStore.js` —— Pinia 同步真相 + localStorage 本地快照缓存 + Supabase 持久真相（`auction_board_tags` 表，启动 `initApp→initAuctionTags` 拉取、写时 upsert/delete）；新增 `db/supabase_auction_board_tags.sql`（需用户在 Supabase 手动执行一次建表）。`in_watchlist` 迁移函数仍保留（见十一）。
 
 ### 待做（下一轮）
+
 - ⬜ §16 继续：`rank/multi/pattern/tagTitles`(纯 getter) → `bidding/jiwang` → `stocks` → `auction` → `hotspot`。
 - ⬜ §14 App.vue 瘦身（useAppBootstrap）。
 - ⬜ §6 allData 收敛（随 auction/hotspot 拆分逐域做）。
@@ -1206,3 +1211,75 @@ console.log('stockAppData_v41 残留:', localStorage.getItem('stockAppData_v41')
 ## 十三、提交链总览（含本地未推）
 
 `cf8364a`→`fe6bf6f`→`6173670`→`a9cb90b`→`5269a80`→`f9c0615`(§16-1) → `36fec75`(清单,本地未推) → `<本轮>`(date 拆分 + 标签上云)
+
+---
+
+## 十四、热门股票(hot) tab 清理 — UI 渲染死代码可删，数据层 / 共享影子记录必须保留
+
+> 用户需求（2026-08-14 晚）：热门股票 tab 现在不用了 → 但其**趋势图记录 / 影子记录必须保留**。  
+> 本章是对用户自行分析结论的**代码核实 + 修正**：UI 渲染层确为死代码可删，但数据加载层是竞价看板共享题材的命脉，**不可删**。
+
+### 14.1 核实结论（与用户分析一致的部分）
+
+- `热门股票` 在 Vue3 版本**确无 UI 入口**：无任何 `.vue` 挂载 `dataSource="hot"` 视图；`AuctionBoard.vue` 活跃视图仅有 auction；`renderHotStocks`/`saveHotStocks` 仅在 `app-core.js` 内部互相调用，外部入口只剩 `App.vue`/`LoginOverlay.vue` 的"数据拉取"两行（只把数据灌进 `state._hotAuctionData`，无组件渲染、无按钮触发 `saveHotStocks`）。
+- `app-core.js` 内 hot 专属函数**无任何 `.vue` 或外部模块 import**（`app-core-api.js` 未导出其中任何一个）→ 公共 API 不含它们。
+
+### 14.2 🔴 红线纠正（最重要，修正用户"先注释掉拉取调用"的建议）
+
+- **不要**删除 `App.vue:119-120` 或 `LoginOverlay.vue:126-133` 的 hot 数据拉取调用。删之会让竞价看板题材统计**变空**，与"保留影子记录"自相矛盾。
+- **证据链**：`loadHotStocksFromCloud()`（hot-stocks.js:47）写入 `state._hotAuctionData`（:196-220）→ `stock-topics.js:155` 在 `buildTopicCache()` 中 `scanDataSourceForTopics(state._hotAuctionData)` → `buildTopicCache` 于 `LoginOverlay.vue:138` 启动调用，产出"题材星标签统计看板"与竞价第二页题材。
+- `LoginOverlay.vue:121-125` **已有明确注释**："热门股票共享影子记录：题材库/趋势图/竞-昨高光 与早盘竞价按股票名共享，必须加载，否则早盘竞价第二页题材与题材星标签统计看板会空（热门股票 tab UI 已移除，但数据仍在共享）。"
+- 即：用户"趋势图/影子记录要保留"的要求，**恰好依赖**这套数据加载层。
+
+### 14.3 可整段删除的函数（app-core.js，纯 hot UI 死代码，零外部引用，非数据层依赖）
+
+| 分类           | 函数（行号）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 渲染           | `renderHotStocks` (37)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| 表单/备份/回滚     | `saveHotStocks` (1182)、`backupHotStocksData` (1115)、`rollbackHotStocksData` (1125)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| 导入           | `importHotHistoryFill` (1605)、`importStockCodeMapHot` (1723)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| 诊断           | `runHotApiDiagnostics` (6365)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| 趋势主函数        | `fetchSkyrocketHotStocksMain` (4209)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| 同花顺抓取族（15）   | `fetchHotLimitUpLadderFromThs`(4362)、`fillHotYesterdayVolumeFromThs`(4510)、`fillHotTodayYesterdayVolumeFromThs`(4725)、`_fillHotTodayYesterdayVolumeFromThsImpl`(4731)、`fillHotYesterdayYesterdayVolumeFromThs`(4910)、`_fillHotYesterdayYesterdayVolumeFromThsImpl`(4916)、`fetchHotChangePctFromThs`(5093)、`_fetchHotChangePctFromThsImpl`(5099)、`fillHotHistoryGapPctFromThs`(5272)、`fillHotHistoryGapYestVolumeFromThs`(5516)、`fillHotYesterdayAuctionFromNumcat`(5671)、`fetchHotTodayAuctionFromNumcat`(5681)、`fetchAllHotAuctionFromNumcat`(5691)、`fetchThreeDaysHotAuctionFromNumcat`(5701)、`fetchFiveDaysHotAuctionFromNumcat`(5709) |
+| 猫抓/题材/预警族（5） | `fetchHotAuctionFromNumcat`(5876)、`fillHotTopicsFromNumcat`(6619)、`fetchHotMonitorWarningFromNumcat`(6733)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+
+> 上表按钮族内部还有**非 "Hot" 命名的 helper**（如 `renderHotForm`/`renderHotRow` 等），同属该死代码块，随块一并删除。  
+> `renderHotStocks` 在 app-core.js 内部被 14 处调用，均为同块内按钮处理函数，删除整块后无残留调用。
+
+### 14.4 ⚠️ 不可删（数据层 / 共享 / 外部可达）— 删之破坏竞价看板
+
+| 函数（行号）                                                                                                                   | 保留原因                                                                                                                                                            |
+| ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `getHotAuctionData` (1106)                                                                                               | 被 `auction-sync.js:280` 用作 hot scope watchlist 来源 fallback；且喂 `buildTopicCache` 的 `_hotAuctionData` 读取                                                          |
+| `_openHotAuctionShield` (183) / `_closeHotAuctionShield` (191)                                                           | 被 `auction-sync.js`（161/247/272/359）当通用竞态屏蔽窗口使用 → 拍卖同步依赖，非 hot 专属                                                                                               |
+| `patchHotField`(225)/`patchHotFieldBatch`(230)/`_sanitizeHotPatch`(210)/`_splitHotPatch`(214)/`_mergeHotPatchLocal`(220) | 被 `importHotFromPaste` 调用（1863），而 `importHotFromPaste` 外部可达（见下）                                                                                                 |
+| `importHotFromPaste` (1249) / `replaceHotConceptFromPaste` (1511)                                                        | 经 `app-core-api.js` 导出，被 `ai-vision-import.js` 调用；`ai-vision-import.js` 被 `AuctionEditModal.vue:151` import（`openAiVisionModal`）→ **AI 视觉粘贴导入的 hot 分支仍可达**，非死代码 |
+
+### 14.5 数据加载层（data/hot-stocks.js，非 app-core.js）— 全部保留
+
+`loadHotStocksFromCloud` / `pullHotStocksHighlights` / `loadHotTrendsFromCloud` / 其 Realtime 订阅（`startHotStocksRealtime` 等）/ `pushHotTrendsToCloud` / 各 `migrateHotStocks*` 一次性迁移 → 必须保留（见 14.2 证据链）。  
+`data/hot-stocks.js` 文件本身保留（仍被 `watchlist-and-metrics.js` / `LoginOverlay.vue` import）。  
+Supabase 云端表（`hot_stocks` / `hot_stock_trends` / `hot_stocks_highlights` 等）**不动**。
+
+### 14.6 实施顺序（按 red line：删前 grep 计数 0 + 单独 commit + build 验证）
+
+1. **第一步（纯删除，零风险）**：删 app-core.js 14.3 全部死代码函数 + 其内部非 Hot 命名 helper。`app-core-api.js` 经核实未导出这些函数 → 无需动 API facade。
+2. **第二步**：确认 14.4 的 `getHotAuctionData` / shield / patch 集群 / `importHot*` / `replaceHotConcept*` 保留不动。
+3. **第三步**：`data/hot-stocks.js` 顶部加"已弃用但保留（共享数据层）"头注释，不改逻辑。
+4. **第四步**：Supabase 表不动。
+
+### 14.7 验收
+
+- `grep -rn "renderHotStocks\|saveHotStocks\|runHotApiDiagnostics\|fillHot\|fetchHot" src/` 仅剩注释/字符串字面量（实际调用 0）。
+- `npm run build` 通过。
+- 启动后竞价看板第二页题材 / 题材星标签统计看板仍有数据（Regression，验证 14.2 红线未被破坏）。
+
+---
+
+## 十五、进度更新（2026-08-14 晚 · 热门股票清理核实）
+
+- ✅ **用户分析核实完成**：确认 hot tab 在 Vue3 UI 上确无入口；app-core.js hot 专属函数零外部 import。
+- 🔴 **修正用户建议**：拒绝"注释掉 App.vue/LoginOverlay 的 hot 拉取调用"——会清空竞价看板题材统计，与"保留影子记录"矛盾（证据：`stock-topics.js:155` + `LoginOverlay.vue:121-125` 注释 + `auction-sync.js:280`）。
+- ✅ 产出 app-core.js **26 个可删函数精确清单**（14.3）+ **11 个必须保留函数**（14.4）+ 数据层保留项（14.5）。
+- ⬜ **待执行**：实际删除 14.3 死代码（需 grep-0 验证 + 单独 commit + build + 题材统计回归）。本轮仅完成清单与任务登记，未动代码。
+
