@@ -86,13 +86,16 @@ import { setAuctionDateData } from './auction-data.js';
             const set = state._auctionWatchlistIndex[date];
             if (set) set.delete(stockName.trim());
         }
-        // 从导入/备份的行数据中提取正式成员名单（兼容旧数据可能携带的 in_watchlist 字段）
+        // 从导入/备份的行数据中提取正式成员名单。
+        // 重构（Phase 2）：正式/影子身份的唯一权威是 _auctionWatchlistIndex[date]（Set），
+        // 行对象不再携带 in_watchlist 字段，禁止用行字段推断身份（消除“双标准 → 凭空冒股”）。
+        // 新备份恢复优先走 backupPayload.watchlist（序列化索引，见 app-core 恢复逻辑）；
+        // 此处仅作“无索引旧备份”的最后兜底：新 schema 下传入的行本就来自 auction_watchlist（均正式），
+        // 故直接取全部股票名，不再读 in_watchlist。
         export function _extractWatchlistNamesFromRows(rows) {
             const names = [];
             (rows || []).forEach(function(r) {
                 if (!r || !r.stock) return;
-                // 兼容旧数据：in_watchlist === false 为影子记录；其余（true/undefined/null）视为正式成员
-                if (r.in_watchlist === false) return;
                 names.push(r.stock.trim());
             });
             return names;
