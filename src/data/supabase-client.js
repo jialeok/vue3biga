@@ -6,6 +6,7 @@ import { state } from '../logic/app-state.js';
         import { _dbgLog } from './debug-log.js';
         import { normalizeAuctionNotes } from './auction-data.js';
         import { syncStocksDataToStore } from './session-and-shield.js';
+        import { loadEtfData } from './etf-sync.js';
 
         state.allData = null; // §6：置空仅为触发下方内存缓存重建入口；allData 是 CACHE（非真相源），请勿当 DB 读。
         // §6：rank 缓存经 state._rankMemCache 单独持有（与 allData 解耦），此处 allData=null 不会连坐 rank 缓存；安全。
@@ -241,11 +242,19 @@ export function _moduleKey(name) {
         _setGetStocksDataFn(getStocksData);
         export function getJiwangData() { const d = loadAllData(); return d ? d.jiwang : {}; }
         export function getBiddingData() { const d = loadAllData(); return (d && d.bidding) || {}; }
-        // §8 已上云（读经 localStorage 兜底；写经 etf-sync→Supabase auction_etf）。
-        // Supabase 表未建时自动降级，不丢数据。保留此 localStorage 读直至云读路径验证切换。
+        // §8 已上云：真相源 = Supabase auction_etf；内存缓存 _etfCache 由 hydrateEtfData() 启动拉取填充。
+        // 冷启动兜底：_etfCache 未填充（或云端返回空）前，返回 localStorage 旧值，避免切换瞬间旧数据丢失。
+        let _etfCache = null;
         export function getEtfData() {
+            if (_etfCache) return _etfCache;
             try { return JSON.parse(localStorage.getItem('stockEtfData') || '{}'); }
             catch (e) { return {}; }
+        }
+        export async function hydrateEtfData() {
+            try {
+                const c = await loadEtfData();
+                if (c && Object.keys(c).length) _etfCache = c;
+            } catch (e) { console.error('[etf] hydrate 失败：', e && e.message); }
         }
         export function getBiddingDirtyDates() { return state._biddingDirtyDates; }
         export function getBiddingPushInFlight() { return state._biddingPushInFlight; }

@@ -30,10 +30,7 @@ export async function syncSectorEtfZhangNum(zhangNum) {
   const dieValue = total - zhangNum;
   firstEtf.dieZhangbi = dieValue + ':' + zhangNum;
   etfData[currentDate] = todayEtf;
-  // §8 已上云（写路径双写）：Supabase auction_etf + localStorage 兜底。
-  // 读取仍经 getEtfData() 的 localStorage 兜底，Supabase 表未建时自动降级不丢数据。
-  // 读路径切换待验证后移除 localStorage（见 §8-TODO）。
-  localStorage.setItem('stockEtfData', JSON.stringify(etfData));
+  // §8 已上云：stockEtfData 真相源 = Supabase auction_etf（saveEtfData 双写）；已移除 localStorage 写入，localStorage 仅作冷启动兜底读取（见 getEtfData / hydrateEtfData）。
   try { await saveEtfData(etfData); } catch (e) { console.error('[SECTOR-ETF] 上云异常：', e && e.message); }
 
   _dbgLog('[SECTOR-ETF] 同步到ETF看板: 总 ' + total + ', 涨 ' + zhangNum + ', 跌:涨 = ' + firstEtf.dieZhangbi);

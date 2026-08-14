@@ -1,3 +1,5 @@
+import { getFumianCache } from '../data/fumian-sync.js';
+
 const defaultScoreSettings = {
     recentMulti: {
         die1: -5, die2: -3, die3: 5, die4: 6, die5: 7,
@@ -71,7 +73,10 @@ export function saveScoreSettingsToStorage(type, settings) {
 }
 
 export function checkHasFumianTopic(currentDate) {
-    // §8 已上云（写路径双写，见 src/data/fumian-sync.js / auction-sync pullFromCloud）：hasFumianTopic_<date> 负面题材布尔标记现已由 auction-sync pullFromCloud 双写到 Supabase topic_fumian，localStorage 保留兜底。
-    // 读取仍经 localStorage 兜底（本函数体不变），云读路径 loadFumianTopics() 待验证后切换；Supabase 表未建时自动降级不丢数据。
-    return localStorage.getItem('hasFumianTopic_' + currentDate) === 'true';
+    // §8 已上云：真相源 = Supabase topic_fumian；读取走云缓存 getFumianCache（由 loadFumianTopics/hydrate 填充），
+    // 云缓存未命中时回退 localStorage 旧值（冷启动兜底），避免切换瞬间旧数据丢失。本地写入已由 auction-sync 移除。
+    const key = 'hasFumianTopic_' + currentDate;
+    const cloudVal = getFumianCache(key);
+    if (cloudVal !== null) return cloudVal === 'true';
+    return localStorage.getItem(key) === 'true';
 }

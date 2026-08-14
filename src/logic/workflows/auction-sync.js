@@ -9,6 +9,9 @@
         // 拆表后：只写 auction_watchlist，该表没有 in_watchlist 列（每行天然是正式成员）。
 import { getSupabase, getStocksData, loadAllData } from '../../data/supabase-client.js';
 import { saveFumianTopics } from '../../data/fumian-sync.js';
+import { saveDuibanData } from '../../data/duiban-sync.js';
+import { saveEtfComment } from '../../data/etf-comment-sync.js';
+import { saveBiddingTemplate } from '../../data/bidding-template-sync.js';
 import { _dbgLog } from '../../data/debug-log.js';
 import { _emit } from '../../stores/eventBus.js';
 import { getGroupData, getAuctionData, saveModule, patchAuctionFieldBatch, reconcileAuctionWatchlistFromLocalStorage, mergeAuctionDateRows, getHotAuctionData, _openHotAuctionShield, _closeHotAuctionShield } from '../app-core-api.js';
@@ -537,25 +540,29 @@ import { useUiStore } from '../../stores/uiStore.js';
                 localStorage.setItem('stockApp_' + DV + '__migrated', '1');
 
                 // 其余散落 key
-                // §8-TODO: duibanData 为业务数据（对标/对板块），应迁 Supabase（duiban 表，见 state._duibanTableAvailable，当前 false 未启用），待单独决策；getTodayDuiban 当前仍依赖 localStorage，移除会丢数据，故保留本地写。
-                // §8-TODO: stockEtfData 为业务数据（板块ETF），应迁 Supabase（候选 early_etf_data / market_metrics），待单独决策；getEtfData() 当前仍读 localStorage，移除会丢数据，故保留。
-                // §8-TODO: stockEtfComment 为业务数据（板块ETF 点评），无确认 Supabase 读路径，应迁 Supabase 独立表，待单独决策；当前保留以避免丢数据。
-                // （duibanComment / coreTopics / biddingDefaultTemplate_v41 / copiedStocksData 同为业务/配置数据，§8 收敛待统一决策，此处一并保留。）
-                const extraKeys = ['duibanData', 'duibanComment', 'stockEtfData', 'stockEtfComment',
+                // §8 收口：duibanData 已双写 Supabase（saveDuibanData → duiban 表）；stockEtfComment 已双写 Supabase（saveEtfComment 独立表）；
+                // biddingDefaultTemplate_v41 已双写 Supabase（saveBiddingTemplate）。三者仍保留下方 localStorage 兜底（fail-soft 降级，绝不丢数据）。
+                // （过渡：duibanComment / copiedStocksData 暂无确认云端路径，按 §8 保留 localStorage 兜底；coreTopics 已另有云端路径 topic-rules.js。）
+                const extraKeys = ['duibanData', 'duibanComment', 'stockEtfComment',
                                    'coreTopics', 'biddingDefaultTemplate_v41', 'copiedStocksData'];
                 extraKeys.forEach(key => {
                     if (cloudObj[key] !== undefined) {
                         localStorage.setItem(key, JSON.stringify(cloudObj[key]));
+                        // §8 双写：保留 localStorage 兜底 + 新增云端 Supabase（fire-and-forget，内部 try/catch 已 fail-soft）
+                        try {
+                            if (key === 'duibanData') saveDuibanData(cloudObj[key]);
+                            else if (key === 'stockEtfComment') saveEtfComment(cloudObj[key]);
+                            else if (key === 'biddingDefaultTemplate_v41') saveBiddingTemplate(cloudObj[key]);
+                        } catch (e) { console.error('[auction-sync] §8 双写异常(' + key + ')：', e && e.message); }
                     }
                 });
                 // summaries / hasFumianTopics（带前缀的动态 key）
                 if (cloudObj.summaries) {
                     Object.entries(cloudObj.summaries).forEach(([k, v]) => localStorage.setItem(k, v));
                 }
-                // §8 已上云（写路径双写）：Supabase topic_fumian + localStorage 兜底；读取仍经 checkHasFumianTopic 的 localStorage 兜底（见 score-helpers.js）；Supabase 表未建时自动降级，不丢数据。
+                // §8 已上云（写路径仅上云，已移除 localStorage 写入；读路径已切云端 loadFumianTopics → getFumianCache，localStorage 仅作冷启动兜底）。
                 if (cloudObj.hasFumianTopics) {
-                    Object.entries(cloudObj.hasFumianTopics).forEach(([k, v]) => localStorage.setItem(k, v));
-                    // 双写：新增 Supabase upsert，保留 localStorage 兜底（失败自动降级，绝不破坏既有路径）
+                    // 双写：新增 Supabase upsert（失败自动降级，绝不破坏既有路径）；localStorage 写入已移除（用户已授权上云）
                     try {
                         await saveFumianTopics(cloudObj.hasFumianTopics);
                     } catch (e) {
