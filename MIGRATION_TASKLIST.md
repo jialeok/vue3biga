@@ -945,3 +945,184 @@ ls -d src/ui 2>&1
 - JS bundle: HTTP 200, 370.8KB
 - CSS bundle: HTTP 200, 81.1KB
 - **待用户浏览器验证**：访问 `https://jialeok.github.io/vue3biga/#/`，输入密码 `biga8450`，确认首页不再空白、看板正常显示
+
+---
+
+# 早盘竞价架构重构 + 规范合规收尾清单（2026-08-14 起）
+
+> 配合 `biga-auction-arch-refactor` skill 与 `ARCHITECTURE架构规范_V3.md` 使用。
+> 前面批次 0–8（纯 Vue3 迁移）已全部 [x]，本清单是**架构合规收尾**阶段，目标是
+> 消灭 skill 诊断的 6 大病灶、并补齐规范 §6/§8/§16 的剩余硬约束。
+> **状态图例**：✅ 已完成  ⬜ 未做  ⚠️ 偏离/待拍板
+
+---
+
+## 一、Skill 6 条验收标准（逐条对账）
+
+| # | 验收项 | 依据 | 状态 | 说明 |
+|---|---|---|---|---|
+| ① | `stores/` 内 `createPinia()` 计数 0 | skill §5.1 | ✅ | 4 个 store 孤儿 Pinia 已删（commit `cf8364a`） |
+| ② | `state.currentDate`/`window.currentDate` 字面=0 | skill §5.2 | ✅ | Phase5 全量迁 `useUiStore()`（commit `5269a80`），grep 已 0 匹配 |
+| ③ | `grep in_watchlist` = 0 | skill §5.3 | ⚠️ | 活路径已 0 读取；残留仅在 legacy 一次性迁移函数 + 注释（见二.1） |
+| ④ | 「获取涨幅」按钮立即更新 | skill §5.4 | ✅ | 用户实测"覆盖了，可以了" |
+| ⑤ | 导入/多设备不凭空冒股/重复 | skill §5.5 | ✅ | Phase2 索引单判定 + Phase4 union 合并 |
+| ⑥ | Realtime 仅变更行更新不整段替换 | skill §5.6 | ✅ | Phase4 增量合并（commit `a9cb90b`） |
+
+---
+
+## 二、Skill 未彻底项（必须收口）
+
+### ⬜ 2.1 验收③ `in_watchlist` 字面归零
+- **依据**：skill 病灶 B、Phase 2、§5.3（禁止读取/写入 `in_watchlist`）。
+- **现状**：活代码 0 读取（双标准 bug 已根除）；真实字段读取仅剩两处历史兼容层
+  一次性迁移函数：
+  - `src/data/legacy-migration.js`（`migrateAuctionToTable` / `migrateAuctionDataToNewTables`，读旧 `allData.auction` 的 `in_watchlist` 列）
+  - `src/data/hot-stocks.js`（hot 一次性迁移，读旧 `hot_stocks` 表的 `in_watchlist` 列）
+  - 其余全是说明性注释（解释新架构已丢弃该字段）。
+- **待做（二选一，⚠️ 需用户拍板）**：
+  1. 若用户确认**所有用户历史数据已完成迁移**（旧 `auction_data`/`hot_stocks` 表已无活跃数据）→ 删除这两个一次性迁移函数，使 `grep in_watchlist` 字面归零；
+  2. 否则保留并文档化偏离（删之会令未迁移用户失去最后数据保护，违反 §11 数据安全红线）。
+
+### ⚠️ 2.2 字段权威映射表偏离澄清（病灶 C / Phase 3）
+- **依据**：skill §3 字段权威表第 3 行："当天涨幅 `change_pct` 权威 = `auction_watchlist.change_pct`，严禁 `market_metrics` 回退"。
+- **现状（已批准但偏离规范字面）**：落地为 `market_metrics(scope='auction').change_pct` 为权威——
+  因为 morning worker 把 `auction_watchlist.change_pct` 写成空串、按钮经 `patchAuctionFieldBatch` 也写进 `market_metrics`。
+- **待做（二选一，⚠️ 需用户拍板）**：
+  - A（改回规范字面）：让按钮直接写 `auction_watchlist.change_pct`、显示只读它。风险：每天早上涨幅被 worker 空串清空，除非改 worker（仓库外，改不了）→ 实际不可行；
+  - B（修订规范 §3 表）：把第 3 行固定为"现实权威 = `market_metrics(scope='auction').change_pct`"，消除规范与代码偏离。**推荐 B**。
+
+---
+
+## 三、架构 §16：app-core.js 按业务域拆分
+
+> `app-core.js` 是 ~7700 行、~130 导出函数的单体巨文件（横跨所有业务域，
+> 被约 50 个文件 import、高度互依），正是 §16 点名的"无限增长"债务，也是
+> **事实上的"总业务逻辑聚合层"**。已抽离 auction 一次性迁移函数（commit `f9c0615`，净减 218 行）。
+
+### ⬜ 3.1 拆解目标模块树（对应 §15 标准结构）
+```
+src/logic/
+├── app/         initApp, _migrateFromV41, 守卫(_guardStack/_guardAssertDate), setCurrentDate/getCurrentDate
+├── stocks/      saveModule/saveData/saveComment/saveTrackEdit, getTodayData, 代码映射导入, replaceConceptFromPaste
+├── auction/     patchAuction*, clear/delete/mergeAuctionDate*, getAuctionData, importAuctionFromPaste,
+│                importAuctionHistoryFill, backup/rollbackAuctionData, fetchLadderConstituentsMain,
+│                *FromNumcat(auction), fill*Auction*FromThs, fetchChangePctFromThs, runAuctionApiDiagnostics,
+│                reconcileAuctionWatchlist*
+├── hotspot/     renderHotStocks, patchHot*, saveHotStocks, importHot*, getHotspotData, *Hot*FromNumcat/FromThs,
+│                runHotApiDiagnostics, backup/rollbackHotStocksData
+├── bidding/     migrateBiddingToTable, pullBiddingForDate, markAuctionDirty
+├── jiwang/      migrateJiwangToTable, pullJiwangForDate, markJiwangDirty, getTodayJiwang
+├── rank/        getRankData
+├── multi/       getMultiData
+├── pattern/     getPatternData
+├── tagTitles/   getTagTitlesData
+└── date/        isMarketClosed, getNextTradingDay, getWeekday, getPreviousDate/getNextDate, _shiftDateStr,
+                 buildYesterdayListFromToday, fetchDayVolumes
+```
+
+### ⬜ 3.2 执行顺序与强制步骤（低风险→高风险，每域独立可回滚）
+1. `date/`（纯 getter，零风险）→ 2. `rank/multi/pattern/tagTitles`（纯 getter）→
+3. `bidding/jiwang` → 4. `stocks` → 5. `auction` → 6. `hotspot`（最大，最后）。
+- **每域强制步骤**：新建模块 → 迁移函数 → 更新所有 import 站点 → `vite build`
+  （临时 outDir，避开 safe-delete 拦截）→ 回归（启动/日期切换/导入/Realtime）
+  → **单独 commit + push**。
+- **红线**：未构建验证绝不批量移动；只迁移不删函数；`app-state.js` 保留作运行期标记容器。
+
+### ⬜ 3.3 `App.vue` 瘦身（规范 §14）
+- **依据**：§14（App.vue 应轻量，不堆"登录/Migration/Realtime/股票同步/竞价同步/数据迁移/VisibilityChange"）。
+- **现状**：`App.vue` 仍直接持有 `runMigrations()`、`setupVisibilityChange()`、`onLoginSuccess()→initApp()`，并 import 大量 `pull*/migrate*`。
+- **待做**：下沉到 `useAppBootstrap()` 组合式（§14 推荐），App.vue 只留 `<AppShell><RouterView/></AppShell>` + 调用 `useAppBootstrap()`。
+
+### ✅ 3.4 `remaining-boards.js` 复核（§16）
+- **依据**：§16「remaining-boards.js 若功能被新模块替代→直接删除」。
+- **结论**：已确认是**活跃 ES Module**（`import/export` 齐全，被 `app-core.js:14`、`stock-operations.js:6` 正常 import），**非隐藏旧模块，不动**。
+
+---
+
+## 四、架构 §6：allData 收敛（五套真相红线）★本轮新增，原清单遗漏
+
+### 规范原文（§6）
+- 禁止：`A 看板读新表 / B 看板读旧表 / C 看 allData / D 看 localStorage` 然后认为"差不多"。
+- 禁止同时存在 `Supabase / allData / Pinia / local cache / 组件 ref` **五套真相**。
+- **如果 `allData` 只是历史兼容层，必须明确其身份为 `cache / view model / store` 之一，并逐步移除。**
+
+### ⬜ 4.1 现状（违反 "C 看 allData" + "五套真相"）
+- `allData` 是巨型内存对象，散落于 `supabase-client.js`（重建入口）、`app-core.js`、`auction-data.js`、
+  `App.vue`、`auction-sync.js`、`tag-titles-helpers.js`、`HomeStocksView.vue`、`DashboardView.vue`、
+  `session-and-shield.js`，且被频繁 `= null` 重置触发重建（rank 缓存因此全失效，见 `supabase-client.js:163`）。
+- 它目前被当成**第三套真相**（与 Supabase、Pinia 并存），正是 §6 明禁的形态。
+
+### ⬜ 4.2 待做
+1. 明确 `allData` = **内存 cache** 身份（在 `supabase-client.js` 加文档标注，不做第二真相）；
+2. 把直接 `state.allData.xxx` / `getStocksData()` 内部读 allData 的读取点收敛到 Data 层 getter
+   （`loadAllData()` 已是入口，各业务改用各自 `_xxxMemCache`：`auction/bidding/jiwang` 已部分分离）；
+3. 逐步脱离 allData 大对象，消除 `allData=null` 重置连坐（避免 rank 缓存无故失效）；
+4. 最终目标：`grep -rn "allData" src/` 仅剩 cache 重建入口一处。
+
+---
+
+## 五、架构 §8：localStorage 红线审计 ★本轮新增，原清单遗漏
+
+### 规范原文（§8）
+- **只能用于**：UI 偏好 / 临时输入缓存 / 调试标记 / 其他非业务数据。
+- **禁止存储**：核心词库 / 股票数据 / 竞价数据 / 题材分组 / 用户配置 / 看板业务状态 /
+  标签数据 / 排名数据 / 记忘数据 / 任何需要跨设备同步的业务数据。
+- 所有业务数据必须持久化到 Supabase（§8 + 总原则⑤⑥）。
+
+### ⬜ 5.1 现状审计（⚠️ 已发现违规点）
+- `auctionTagStore.js`：`localStorage["auctionBoardTags"]` 读写 **标签数据** —— 属 §8 明禁项（标签数据），
+  且无法跨设备同步（清缓存/换设备即丢）。早期审查5修复时把标签同时写 `auctionTagStore`(localStorage)
+  和 `getStocksData()`(Supabase)，但 localStorage 副本仍保留 → **需收敛到仅 Supabase**。
+- `uiStore.js` / `App.vue`：持久化 `lastEditedDate_*`、`unlocked`、`DATA_VERSION` 等 ——
+  `unlocked` 属登录态（可视为会话标记，临界）；`lastEditedDate` 属 UI 偏好/临时（允许）；
+  `DATA_VERSION` 属调试标记（允许）。需逐 key 判定。
+- `app-core.js` 顶层：`localStorage.getItem('lastEditedDate_' + DATA_VERSION)` —— 读取当前日期，
+  属"临时输入缓存/UI 偏好"边缘，但既然已迁 `uiStore.currentDate`，该 localStorage 直读应改为走 store。
+
+### ⬜ 5.2 待做
+1. 全仓库 `grep -rn "localStorage" src/` 拉出所有 key 清单；
+2. 逐 key 分类：**允许**（UI 偏好/调试标记/临时输入） vs **违规**（业务数据）；
+3. 违规项（尤其标签数据）迁到 Supabase，删除 localStorage 写入/读取；
+4. 保留项加注释标注"合规：UI 偏好/调试标记"，并统一经 store 读写（不再裸 `localStorage.getItem`）。
+
+---
+
+## 六、规范延后项（不阻塞，随 §16 顺势做）
+
+### ⬜ 6.1 `app-state.js` 巨对象收敛（规范 §18）
+- **依据**：§18（禁止把 stocks/auction/bidding/rank… 全塞进一个巨大响应式对象）。
+- **现状**：`state` 仍有 ~150 个 `_xxx` 字段（运行期标记/缓存容器）。
+- **说明**：skill Phase 5 **明确允许**保留 app-state.js 作"运行期标记容器"，**非违规**。收敛应随
+  §16 各域拆分时把对应 `_xxxMemCache` 下沉到域模块，不单独强求归零。
+
+---
+
+## 七、需要用户拍板的 5 件事
+
+1. **2.1**：是否确认"全员历史数据已迁移" → 决定能否删 legacy 迁移函数让 `in_watchlist` 字面归零。
+2. **2.2**：字段权威偏离选 A（改回规范字面，实际不可行）还是 B（修订规范 §3 表固定现实，推荐）。
+3. **§16（3.2）**：是否按域拆分计划开工？建议从 `date/`(纯 getter) 和 `App.vue 瘦身`(§14) 先做起。
+4. **§6（4.2）**：是否授权把 `allData` 收敛为纯 cache 并逐步移除（涉及多文件读取点改动，需逐域回归）。
+5. **§8（5.2）**：是否授权把 localStorage 中**标签数据等违规业务数据**迁到 Supabase（动写入路径，需回归验证）。
+
+---
+
+## 八、进度记录区
+
+### 2026-08-14 早盘竞价重构（5 阶段全完成，已推 main）
+- `cf8364a` Phase0/1 孤儿 Pinia 删除 + 日期单真相源
+- `fe6bf6f` Phase2 竞价成员身份单判定（索引 `_auctionWatchlistIndex[date]`）
+- `6173670` Phase3 当天涨幅改 `market_metrics.change_pct` 唯一权威（权威模型，偏离 skill §3 字面）
+- `a9cb90b` Phase4 Realtime 增量 union 合并 + 删除导入锁（病灶 D 根因修复）
+- `5269a80` Phase5 彻底：`currentDate` 家族全量迁 `useUiStore()` 并清零 `state.` 引用
+- `f9c0615` §16 第一步：抽离 auction 一次性迁移函数到 `legacy-migration.js`（app-core 净减 218 行）
+
+### 2026-08-14 收尾清单编制
+- 用户指出原清单遗漏规范 §6（allData 五套真相红线）与 §8（localStorage 红线），已补入四、五两章。
+- 确认 `app-core.js` 为事实上"总业务逻辑聚合层"（单体巨文件），§16 拆分对象明确。
+- 确认 `remaining-boards.js` 为活跃 ES Module，非 §16 违规对象，不动。
+
+---
+
+## 九、已推 main 的提交链（总览）
+`cf8364a`(P0/1) → `fe6bf6f`(P2) → `6173670`(P3) → `a9cb90b`(P4) → `5269a80`(P5) → `f9c0615`(§16-1)
