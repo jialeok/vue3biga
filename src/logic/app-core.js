@@ -30,6 +30,19 @@ import { pullFromCloud, pushAuctionCodeToCloud, pushHotStocksDataToCloud, pushTo
 import { useAuctionStore, _bindUiFns } from '../stores/auctionStore.js';
 import { initAuctionTags } from '../stores/auctionTagStore.js';
 import { useUiStore } from '../stores/uiStore.js';
+// §16 修复：域函数迁至各域模块后，原 `export { ... } from` re-export 不会在本模块创建局部绑定；
+// 而本模块 _bindApi 注册（第 786 行）与内部调用仍以这些名字作为局部变量引用，导致模块求值期
+// ReferenceError（表现为浏览器「getAuctionData is not defined」→ 整页空白）。
+// 故在此显式 import（与上方 date-helpers 的 import+export 写法一致），下方 re-export 行保留供外部调用点零破坏。
+import { getBiddingData } from './bidding/bidding.js';
+import { getRankData } from './rank/rank.js';
+import { getMultiData } from './multi/multi.js';
+import { getPatternData } from './pattern/pattern.js';
+import { getTagTitlesData } from './tagTitles/tagTitles.js';
+import { markJiwangDirty, getTodayJiwang } from './jiwang/jiwang.js';
+import { searchTickerCodeByName, autoCompleteMissingStockCodes, importStockCodeMap, extractCodeFromFuyaoItem, getStockHistoryTopics, replaceConceptFromPaste } from './stocks/stocks.js';
+import { getAuctionData, getTodayAuction, getTodayGroupList, markAuctionDirty, patchAuctionField, patchAuctionFieldBatch, _sanitizeAuctionPatch, _splitAuctionPatch, _mergeAuctionPatchLocal, clearAuctionDateData, deleteAuctionDateData, mergeAuctionDateRows, clearAllAuctionDates, repairAuctionInWatchlistForDate, reconcileAuctionWatchlistFromLocalStorage, reconcileAuctionWatchlist, backupAuctionData, rollbackAuctionData, importAuctionFromPaste, parseVolumeOnlyText, splitHistoryFillLine, importAuctionHistoryFill, fetchLadderConstituentsMain, fetchDayVolumes, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs, _fillTodayYesterdayVolumeFromThsImpl, fillYesterdayYesterdayVolumeFromThs, _fillYesterdayYesterdayVolumeFromThsImpl, fetchChangePctFromThs, _fetchChangePctFromThsImpl, fillAuctionHistoryGapPctFromThs, fillAuctionHistoryGapYestVolumeFromThs, fillYesterdayAuctionFromNumcat, fetchTodayAuctionFromNumcat, fetchAllAuctionFromNumcat, fetchThreeDaysAuctionFromNumcat, fetchFiveDaysAuctionFromNumcat, fillTopicsFromNumcat, fetchMonitorWarningFromNumcat, fetchAuctionFromNumcat, runAuctionApiDiagnostics, AUCTION_WATCHLIST_FIELDS, AUCTION_METRICS_FIELDS, AUCTION_PATCHABLE_FIELDS, _auctionFirstClearDumped } from './auction/auction.js';
+import { getHotspotData, getHotAuctionData, _openHotAuctionShield, _closeHotAuctionShield, _sanitizeHotPatch, _splitHotPatch, _mergeHotPatchLocal, patchHotField, patchHotFieldBatch, backupHotStocksData, importHotFromPaste, replaceHotConceptFromPaste, HOT_WATCHLIST_FIELDS, HOT_METRICS_FIELDS, HOT_PATCHABLE_FIELDS } from './hotspot/hotspot.js';
 export function _getAuctionStore() { try { return useAuctionStore(); } catch { return null; } }
 // 重构（Phase 5 彻底）：导入期（Pinia 尚未激活）安全读取当前日期，避免模块顶层求值抛错。
 function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { return ''; } }
