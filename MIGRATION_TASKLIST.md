@@ -1293,11 +1293,19 @@ Supabase 云端表（`hot_stocks` / `hot_stock_trends` / `hot_stocks_highlights`
 
 - ✅ **§16 第一步（date/）**：`src/logic/date/date-helpers.js`（2026-08-14，已推）。
 - ✅ **§16 rank/multi/pattern/tagTitles（纯 getter）**：新建 `src/logic/rank/rank.js`、`multi/multi.js`、`pattern/pattern.js`、`tagTitles/tagTitles.js`，迁出 `getRankData/getMultiData/getPatternData/getTagTitlesData` 四个纯 getter；app-core.js 改为 `export { ... } from` re-export 保兼容。`getHotspotData` 留待 hotspot 域（最大，最后）。`vite build` 通过，已 commit + push（`fdee326`）。
-- ⬜ **§16 下一步（按 3.2 顺序）**：`bidding/jiwang` → `stocks` → `auction` → `hotspot`（各域：新建模块 → 迁移函数 → 更新 import → build → 回归 → 单独 commit+push；红线：只迁移不删函数、未构建不批量移动）。
-- ⬜ **§14 App.vue 瘦身**（useAppBootstrap）。
-- ⬜ **§6 allData 收敛**（77 处引用）。
-- ⬜ **§8 localStorage 审计**（218 处引用，标签数据已迁 Supabase，待逐 key 分类标注）。
+- ✅ **§16 全 5 域拆分完成**（2026-08-15，多智能体并行执行）：`bidding/jiwang`→`stocks`→`auction`→`hotspot` 全部迁出至 `src/logic/<domain>/<domain>.js`，app-core.js 由 4725→803 行（移除 ~83% 体量）；所有原导出符号经 re-export 保留可达，构建通过。新建模块：`bidding/bidding.js`(re-export getBiddingData)、`jiwang/jiwang.js`、`stocks/stocks.js`、`auction/auction.js`、`hotspot/hotspot.js`（含全部 hot load-bearing 符号：getHotAuctionData/shield/patch/importHotFromPaste/replaceHotConceptFromPaste/backupHotStocksData）。红线：未删任何导出符号、未动 data/hot-stocks.js 加载层、未动 app-state.js、未触碰凭据。
+- ✅ **§14 App.vue 瘦身**：抽 `src/composables/useAppBootstrap.js`，App.vue 由 165→19 行；bootstrap 行为等价（事件/拉取/visibilitychange 完全一致）。
+- ✅ **§6 allData 收敛**：`supabase-client.js` 在 `loadAllData()` 入口+allData 重置/重建点加 §6 红线声明（allData=内存 cache，非真相源）；收敛 `normalizeAuctionNotes` 等直读至 `_xxxMemCache`/Data getter；rank 缓存连坐经分析确认已由 mem-cache 间接层解耦、无需修复（修正误导 debug 日志）。激进目标「grep allData 仅剩缓存重建入口」未达成→推迟（余为行为关键的内部缓存别名，按红线文档化保留）。
+- ✅ **§8 localStorage 审计**：全仓库逐 key 分类（允许：unlocked/sessionToken 会话、*_migrated 迁移标记、obs*/bought* 防重复标记、lastNumcatFillDebug/RECONCILE_FLAG/stockApp_v42 调试、scoreSettings UI偏好、holidays/tradingDays 日历、auctionBoardTags 兜底读；违规标记 §8-TODO 待单独决策：stockEtfData、pullFromCloud 旧 cloud 缓存写回、_backupScopeData 单日撤销备份、hasFumianTopic_* 派生标记）。auctionTagStore 标签已上云，localStorage['auctionBoardTags'] 仅留作云 down 兜底+防闪，未移除（避免破坏）。
+
+## 十七、进度更新（2026-08-15 深夜 · §16/§14/§6/§8 全部收口）
+
+- 执行方式：多智能体并行——Agent A 负责 §16 全 5 域拆分（拥有 app-core.js）；Agent B 负责 §14 App.vue 瘦身（拥有 App.vue+组合式，不碰 app-core.js）；二者并行无文件冲突。§6+§8 因触及 app-core.js/supabase-client.js，于 §16 落地后由 Agent C 串行执行。
+- 安全事件：Agent B 误将含 GitHub PAT 的 `仓库地址TOKEN.txt` 暂存，已 `git rm --cached`+加 `.gitignore(*TOKEN.txt)`+amend 移出，未推送、凭据未泄露（已复核：该文件从未进任何提交，仍原样在磁盘）。
+- 验收：§16+§14 集成构建通过（195 模块）；§6+§8 提交后全仓构建通过（200 模块）。所有原导出符号保留、无破坏。
+- 待用户浏览器回归：登录→各看板渲染、竞价第二页题材/题材星标签统计看板有数据（静态+构建已验证，运行期需手动确认，尤其 §16 重排后跨模块循环依赖可能触发的取值时序）。
+- ⬜ **遗留（推迟，非阻塞）**：① §6 激进收敛目标（allData 仅剩缓存重建入口）；② §8 违规 key 的迁云/删除决策（破坏性行为，需单独拍板，勿擅自删数据）。
 
 ### 提交链（本地+远程，2026-08-15）
-`cf8364a`→`fe6bf6f`→`6173670`→`a9cb90b`→`5269a80`→`f9c0615`→`36fec75`→`323449b`→`4a0e571`(清单十四/十五章)→`c44531a`(§14.6 hot清理)→`fdee326`(§16 getter拆分) — 全部已推 main。
+`cf8364a`→`fe6bf6f`→`6173670`→`a9cb90b`→`5269a80`→`f9c0615`→`36fec75`→`323449b`→`4a0e571`(清单十四/十五章)→`c44531a`(§14.6 hot清理)→`fdee326`(§16 getter拆分)→`44cb9ca`(§14 App.vue瘦身)→`36d8e6b`(bidding)→`3057c42`(jiwang)→`4b064a6`(stocks)→`5047cc9`(auction)→`65e3552`(hotspot)→`d561eb6`(删临时脚本)→`2c658f9`(§6+§8)。本段落均本地已提交，待统一 push 到 origin/main。
 
