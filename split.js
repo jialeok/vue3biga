@@ -155,12 +155,12 @@ for (const node of ast.program.body) {
     const d = node.declaration;
     if (d.declarations.some(decl => decl.id && decl.id.type === 'Identifier' && movedConstNames.has(decl.id.name))) {
       removeRanges.push({ start: node.start, end: node.end });
-      movedCode.push(dedent(src.slice(node.start, node.end)));
+      movedCode.push('export ' + dedent(src.slice(node.start, node.end)));
     }
   } else if (node.type === 'VariableDeclaration') {
     if (node.declarations.some(decl => decl.id && decl.id.type === 'Identifier' && movedConstNames.has(decl.id.name))) {
       removeRanges.push({ start: node.start, end: node.end });
-      movedCode.push(dedent(src.slice(node.start, node.end)));
+      movedCode.push('export ' + dedent(src.slice(node.start, node.end)));
     }
   }
 }
@@ -256,7 +256,7 @@ newSrc += "export { " + allMoved.join(', ') + " } from './" + DOMAIN + '/' + DOM
 
 // Now apply the export keywords for internal helpers (length change is safe here)
 for (const h of exportTheseNow) {
-  const re = new RegExp('function ' + h + '\\s*\\(');
+  const re = new RegExp('(?<!export\\s)function ' + h + '\\s*\\(');
   if (re.test(newSrc)) newSrc = newSrc.replace(re, 'export function ' + h + '(');
 }
 
