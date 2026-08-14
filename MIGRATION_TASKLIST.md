@@ -1433,3 +1433,69 @@ Supabase 云端表（`hot_stocks` / `hot_stock_trends` / `hot_stocks_highlights`
 ### 21.5 验收结论
 **PASS** —— 核心红线条目全达标；§8 业务数据全部双写 / 上云（含用户授权的读取切换 + 移除本地写），失败降级不丢数据；9/9 文件语法校验 + 构建通过；上一轮 CONDITIONAL 的全部非阻塞待办已清零。`duibanComment` 过渡保留与 3 张新 SQL 待手动执行为仅余非阻断项。
 
+---
+
+## 二十二、全量看板审查（2026-08-15 · 10 智能体并行）
+
+> **执行方式**：按板块数量把 13 个看板派给 10 个只读审计代理（核心看板 AuctionBidding/Home/Dashboard/Etf/Duiban/Jiwang 单分；Emotion+Stats、Pattern+StarStats、Weekend+Monthly 双分）。每个代理只读审查其看板 + 直接调用的 Logic/Data 模块，对照 `ARCHITECTURE架构规范_V3.md` 找规范违反与 Bug。所有结论基于 Read/Grep 实测。
+
+### 22.0 概览统计
+- 看板数：13（视图 13 个）。审计代理：10。
+- 判定分布：**FAIL 1**（EmotionBoard）｜**CONDITIONAL 11**（Auction/Bidding/Home/Dashboard/Etf/Duiban/Jiwang/Stats/Pattern/StarStats/Weekend/Monthly）｜**PASS 0**。
+- 问题总量（去重后）：**BUG 18** ｜ **规范违反 29** ｜ **性能隐患 13** ｜ 建议/清理 ≈ 30（P3）。
+- 严重度：**P1（阻断）≈ 15** ｜ **P2 ≈ 28** ｜ **P3 ≈ 40**。
+
+### 22.1 各看板审查结论表
+| 看板 | 判定 | BUG | 规范违反 | 性能隐患 | 代理编号 |
+|---|---|---|---|---|---|
+| AuctionBoard | CONDITIONAL | 1(A1-01 P2) | 8(A2-01~08) | 3(A3-01~03) | A1 |
+| BiddingBoard | CONDITIONAL | 2(A2-01 P1/A2-02 P2) | 4(A2-03~06) | 2(A2-07/08) | A2 |
+| HomeStocksView | CONDITIONAL | 3(HS-01/02 P1/HS-03 P2) | 3(HS-04 P1/HS-05/06 P2) | 4(HS-07~10) | A3 |
+| DashboardView | CONDITIONAL | 0 | 1(A4-03 P3) | 1(A4-01 P2) | A4 |
+| EtfBoard | CONDITIONAL | 1(A5-01 P1) | 4(A5-02~05) | 0 | A5 |
+| DuibanBoard | CONDITIONAL | 1(A6-01 P2) | 2(A6-02/03P2) | 0 | A6 |
+| JiwangBoard | CONDITIONAL | 2(A7-01/03 P1) | 3(A7-02/04/05) | 1(A7-06) | A7 |
+| EmotionBoard | **FAIL** | 1(E-02 P1) | 2(E-01 P1/E-03 P2) | 0 | A8 |
+| StatsBoard | CONDITIONAL | 0 | 1(S-01 P2) | 1(S-03) | A8 |
+| PatternBoard | CONDITIONAL | 0 | 2(A9-01/02 P2) | 1(A9-03) | A9 |
+| StarStatsBoard | CONDITIONAL | 0 | 2(B9-01/02 P2) | 2(B9-04/05) | A9 |
+| WeekendStatsBoard | CONDITIONAL | 3(W-01/02 P1/W-06 P3) | 3(W-03/04 P2/W-07 P3) | 1(W-05) | A10 |
+| MonthlyStatsBoard | CONDITIONAL | 3(M-01/02 P1/M-06 P3) | 3(M-03/04 P2/M-07 P3) | 1(M-05) | A10 |
+
+### 22.2 ⬜ P1 阻断项（必须修，验收前置）
+- ⬜ **[E-01] EmotionBoard 视图层直连 Supabase CRUD**（`EmotionBoard.vue:183/196` `sb.from('emotion_data')`）。违反 §2/§3.1/§5。须下沉到 `src/data/emotion-data.js` + 新建 `src/logic/emotion/` 域模块。
+- ⬜ **[E-02] EmotionBoard 读取失败被永久缓存为 null**（`:207-211` catch 仅 warn 后 `setEmotionDataCache(null)`）。违反 §10/§11「读取失败 ≠ 空数据」。失败分支不得落缓存，须向 UI 抛错。
+- ⬜ **[A2-01] BiddingBoard 「清除数据」未同步云端却提示成功**（根因 `bidding-data.js:123-134` `pushBiddingToCloud` 对全空 7 行 `return` 不删云端；组件仍 toast 成功）。违反 §10/§11/§8。须显式调 `deleteBiddingFromCloud(date)` 并对云端结果判定提示。
+- ⬜ **[A2-03] BiddingBoard 抓取行情注入 `<script>` + 读 `window` 业务全局**（`bidding-helpers.js:190-209` `document.createElement('script')` + `window['v_'+code]`）。违反 §16 纯 Vue3 红线。改为标准 fetch，数据经 ref/computed 回写。
+- ⬜ **[HS-01] HomeStocksView 编辑保存后卡片不刷新**（`saveEditModal` 用 `refresh()` 整体重赋值但 `stock` 引用不变，配合 `v-memo` 跳过重渲染）。违反 §17/§23/§42。改 `localRefresh(editingStockId)` 与另两个保存一致。
+- ⬜ **[HS-02] HomeStocksView 保存失败对用户不可见**（`saveEditModal` 立即 `showToast('已保存')`，但 `saveData()`→`remainingBoards.schedulePush()` 异步防抖推送失败被 `.catch(()=>{})` 静默）。违反 §10。须 `await` 推送结果并按成功/失败 toast。
+- ⬜ **[HS-04] HomeStocksView UI 直接读写 Data 层内部缓存**（`getStocksData()[getCurrentDate()]` 原地改 `stock[k]`/`soldRecords`/`stocksData[date]=...`）。违反 §2。须抽 Logic 层 `editStock/deleteStock` 承担缓存更新+保存。
+- ⬜ **[WX-01] 统计看板（Weekend/Monthly）计算属性读非响应式缓存 → 陈旧数据**（`W-01/M-01`：`state._stocksMemCache`/`allData.jiwang`/`_etfCache` 均为普通变量/对象，computed 仅追踪 `currentDate`，编辑/Realtime/ETF hydration 后不重算）。根因 `src/logic/app-state.js:1` 的 `state` 非 `reactive`。须接响应式 store 或显式数据版本号触发重算。
+- ⬜ **[WX-02] 统计看板总结用 `window.prompt()` 写入本地 ref 从不持久化**（`W-02/M-02`：刷新/换设备即丢，绕过既有 `useScoreCalculation.openWeekendSummary` modal 链路）。违反 §8/§10。须复用 modal 链路或经 Data 层写入 Supabase。
+- ⬜ **[A5-01] EtfBoard 保存按钮 `saving` 标志接错**（`EtfBoard.vue:85` 读 `loadingEtf` 实为 ETF loading；保存走 `saveEarlyEtf` 置位 `savingEtf`）。结果保存中按钮不禁用、无「保存中」反馈。改为 `boardState.savingEtf`。
+- ⬜ **[A5-02] EtfBoard 板块ETF 双真相**（`early_etf_data` vs 规范认定的 `auction_etf`/`auction_etf_comment`，schema 不同、互不同步）。违反 §6/§8。须与负责人确认权威源并收口（勿擅自改表名，§38/§40）。
+- ⬜ **[A7-01] JiwangBoard `save()` 调用不存在的 `autoCalculateRecentMultiScore` 抛 TypeError**（该函数已从 `useScoreCalculation` 返回值移除，`:430` 调用 `undefined`）。导致连续天数等派生数据保存后不重算。须从 `bidding-helpers.js`/`tag-titles-helpers.js` 正确导入或补回返回值。
+- ⬜ **[A7-03] JiwangBoard `openEdit()` 打开即静默落库**（`:324-331` 自动推算 K 线后直接改缓存 + `pushJiwangNow`，发生在用户点「保存」前）。违反 §2/§10。K 线仅作表单默认值，落库只在 `save()`。
+
+### 22.3 P2 规范/性能偏离（分组，建议下一轮批量修）
+- **§10 保存静默成功（高频）**：A2-04（tag-titles 空 catch）、A2-05（备注未 await）、A5-06（冗余 update 静默）、A6-03（load 失败伪装空）、A9-02（save 无条件 toast 成功）、B9-01/B9-02（空 catch 吞异常）、S-02（toggleCheckbox 死代码防抖丢改）。统一整改：保存/读取须 await 结果并 toast 成功/失败；禁止空 catch。
+- **§2/§16 UI 越界写缓存 / DOM 旁路**：A2-01（UI mutate 共享行）、A2-05/06（跨域直改 bidding/jiwang 缓存）、A7-02（UI 直写 `getJiwangData()`）、A9-01（`document.getElementById` 旁路 Vue）、S-01（直改 `allData.jiwang`）、A5-03（composable 直连 Supabase CRUD）。统一整改：经 Logic/Data 层受控写入。
+- **§8 业务数据 localStorage 残留 / 双真相**：A2-02/A2-03（标签 `auctionBoardTags`、观察组 `obsBought_` 渲染期直读 localStorage，绕过已上云 `auctionTagStore`）、A4-03（`holidays`/`tradingDays` 落 localStorage 本地化）、A5-04（`getEtfData` 降级回退陈旧 localStorage 值）、A5-02（早期双真相）、A6 备注（`recent_multi_data` 才是 live 对标表，`auction_duiban` 为迁移遗留双真相）。
+- **§31/§42 Realtime 缺口**：A6-02（`recent_multi_data`/`early_etf_data` 无订阅）、A5-05（`early_etf_data` 无订阅）、A9-03（pattern 缓存无响应式依赖，Realtime 不刷新 UI）、E-05（emotion Realtime 组件内订阅）。统一建立模块级统一 Realtime + 响应式刷新。
+- **§30 图表未复用**：W-03/M-03（自绘 canvas 与 `TrendChart.vue` 重复）。改用 `<TrendChart>`。
+- **§3.1/§4 业务规则内联 View**：E-03、W-04/M-04（盈亏/胜率/聚合内联 `.vue`）。下沉 logic 模块。
+- **性能（全量重算/重复请求/重复 watch）**：A3-01（单格编辑全量重算）、A3-02（模板内排序 3 次）、A3-03（两个 watch currentDate）、A2-07（按键即遍历全部日期重算）、A2-08（双路推送）、HS-07（refresh 整段替换）、HS-08（日期切换双重刷新）、HS-09（模板 O(N²) find）、HS-10（300ms setInterval 轮询）、A4-01（日期切换广播 8 路全量）、A7-06（saveData 粗粒度全应用同步）、S-03（getStats 每次 loadAllData）、B9-04（computeAuctionViewData 浪费全量）、B9-05（O(n²) find）。统一：增量更新、响应式驱动、去重请求、移除轮询/掩盖延时。
+
+### 22.4 P3 清理 / 文档（汇总，低优先）
+- 过时注释/死代码/死导入：A2-06(v-html)、A2-07/08(过时注释)、A2-09~14、A4-02(document.body 未清理)、A4-04(冗余 currentDate)、A5-07/08、A6-04/05/06、A7-07/08、A9-04(空 setInterval)/A9-05、B9-03(void 死代码)、W-07/M-07(`isWeekend` 死导入)、W-08/M-08(硬编码 startDate)、S-04(经 app-core 中转)、E-04(alert 阻塞弹窗)。
+- A6-01（DuibanBoard `saving` 被 `loadingEtf` 错误耦合，阻止保存）虽标 P2，实为功能性 bug，建议并入 P1 批次修。
+
+### 22.5 横向根因（优先级最高的系统性病灶）
+1. **`src/logic/app-state.js:1` 的 `state` 是普通对象非 `reactive`** → 多个看板 computed 只追踪 `currentDate`，底层数据变更不重算 → W-01/M-01/A1-01 陈旧数据。这是本轮最普遍的根因，建议在 Pinia store 内以 `reactive`/`ref` 暴露数据并让看板依赖 store。
+2. **`remaining-boards.js` 全局单体 `saveData()` + `schedulePush()`**：几乎所有看板保存都走它，导致①保存失败静默（防抖异步 `.catch(()=>{})`）、②粗粒度全应用云同步、③对 `window.remainingBoards` 业务全局的硬依赖（§16 点名）。须按 §16 完成 remaining-boards 迁移 / 让 saveData 返回结果并显式提示。
+3. **保存成功=UI 先 toast 后异步推**：HS-02/A2-01/A9-02/B9-01/02 共性。须改为 await 推送结果再提示。
+4. **§8 业务数据 localStorage 残留 + 双真相**：标签/观察组/holidays/ETF 早期表。须统一经已上云 store/sync 模块读取。
+
+### 22.6 验收判定
+**FAIL（整体）** —— 存在 1 个 FAIL 看板（EmotionBoard 视图直连 Supabase）与 ≈15 个 P1 阻断项（含数据陈旧、保存静默成功、清除未上云、打开即落库、双真相、UI 越界写等）。§8 上云与 §16 拆分虽已收口，但**看板层 CRUD 链路与响应式/持久化闭环**仍是主要欠账。修复 22.2 全部 P1 + 22.5 根因后，整体方可进入 CONDITIONAL→PASS。P2/P3 可分批持续收敛。
+
