@@ -142,8 +142,10 @@ for (const node of ast.program.body) {
     fnName = node.id.name;
   }
   if (fnName && movedNames.has(fnName)) {
-    removeRanges.push({ start: node.start, end: node.end });
-    movedCode.push(dedent(src.slice(node.start, node.end)));
+    const fnDecl = node.type === 'ExportNamedDeclaration' ? node.declaration : node;
+    const end = fnDecl.body.end; // exact position after the function body's closing '}'
+    removeRanges.push({ start: node.start, end: end });
+    movedCode.push(dedent(src.slice(node.start, end)));
   }
 }
 
@@ -205,13 +207,8 @@ for (const fnName of movedNames) {
   }
 }
 
-// Export internal helpers if referenced
-for (const h of EXPORT_THESE) {
-  if (appCoreImports.has(h)) {
-    const re = new RegExp('function ' + h + '\\s*\\(');
-    if (re.test(src)) src = src.replace(re, 'export function ' + h + '(');
-  }
-}
+// Export internal helpers if referenced (applied to newSrc AFTER rebuild to avoid shifting AST offsets)
+const exportTheseNow = [...appCoreImports].filter(h => EXPORT_THESE.includes(h));
 
 // Build domain module content
 let mod = '';
@@ -257,9 +254,37 @@ const allMoved = [...movedNames, ...movedConstNames];
 newSrc = newSrc.replace(/\s+$/, '') + '\n\n// §16 域拆分：' + DOMAIN + ' 域函数已迁出至 ./' + DOMAIN + '/' + DOMAIN + '.js\n';
 newSrc += "export { " + allMoved.join(', ') + " } from './" + DOMAIN + '/' + DOMAIN + ".js';\n";
 
+// Now apply the export keywords for internal helpers (length change is safe here)
+for (const h of exportTheseNow) {
+  const re = new RegExp('function ' + h + '\\s*\\(');
+  if (re.test(newSrc)) newSrc = newSrc.replace(re, 'export function ' + h + '(');
+}
+
 fs.writeFileSync(APP_CORE, newSrc);
 console.log('app-core.js: ' + origLen + ' -> ' + newSrc.length + ' bytes (removed ' + (origLen - newSrc.length) + ')');
 
 function dedent(text) {
   return text.split('\n').map(line => line.replace(/^ {1,8}/, '')).join('\n');
+}
+
+// Manual brace matcher: from the first '{' at/after openIdx, find the matching '}'.
+function findBlockEnd(s, openIdx) {
+  let depth = 0;
+  let i = openIdx;
+  if (i < 0 || s[i] !== '{') return openIdx + 1;
+  let inStr = null;
+  while (i < s.length) {
+    const ch = s[i];
+    if (inStr) {
+      if (ch === '\\') { i += 2; continue; }
+      if (ch === inStr) inStr = null;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { inStr = ch; i++; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) return i + 1; }
+    i++;
+  }
+  return s.length;
 }
