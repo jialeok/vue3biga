@@ -489,17 +489,18 @@ function scanStocksDirty() {
 async function pushAllRemainingDirty() {
   if (_isPushing) return;
   _isPushing = true;
+  const failures = [];
   try {
     scanStocksDirty();
     const tasks = [];
     MODULE_KEYS.forEach(key => {
       _dirty[key].forEach(date => {
-        if (key === 'stocks') tasks.push(saveStocksForDate(date).then(() => _dirty.stocks.delete(date)).catch(() => {}));
-        else if (key === 'rank') tasks.push(saveRankForDate(date).then(() => _dirty.rank.delete(date)).catch(() => {}));
-        else if (key === 'multi') tasks.push(saveMultiForDate(date).then(() => _dirty.multi.delete(date)).catch(() => {}));
-        else if (key === 'hotspot') tasks.push(saveHotspotForDate(date).then(() => _dirty.hotspot.delete(date)).catch(() => {}));
-        else if (key === 'pattern') tasks.push(savePatternForDate(date).then(() => _dirty.pattern.delete(date)).catch(() => {}));
-        else if (key === 'tagTitles') tasks.push(saveTagTitlesForDate(date).then(() => _dirty.tagTitles.delete(date)).catch(() => {}));
+        if (key === 'stocks') tasks.push(saveStocksForDate(date).then(() => _dirty.stocks.delete(date)).catch(e => failures.push({ key, date, e })));
+        else if (key === 'rank') tasks.push(saveRankForDate(date).then(() => _dirty.rank.delete(date)).catch(e => failures.push({ key, date, e })));
+        else if (key === 'multi') tasks.push(saveMultiForDate(date).then(() => _dirty.multi.delete(date)).catch(e => failures.push({ key, date, e })));
+        else if (key === 'hotspot') tasks.push(saveHotspotForDate(date).then(() => _dirty.hotspot.delete(date)).catch(e => failures.push({ key, date, e })));
+        else if (key === 'pattern') tasks.push(savePatternForDate(date).then(() => _dirty.pattern.delete(date)).catch(e => failures.push({ key, date, e })));
+        else if (key === 'tagTitles') tasks.push(saveTagTitlesForDate(date).then(() => _dirty.tagTitles.delete(date)).catch(e => failures.push({ key, date, e })));
       });
     });
     if (tasks.length > 0) {
@@ -509,19 +510,42 @@ async function pushAllRemainingDirty() {
   } finally {
     _isPushing = false;
   }
+  // §10：禁止静默失败。只要有任一模块推送失败即整体 reject，供调用方 toast 错误。
+  if (failures.length > 0) {
+    const summary = failures
+      .map(f => f.key + '[' + f.date + ']: ' + (f.e && f.e.message ? f.e.message : f.e))
+      .join('; ');
+    throw new Error('部分模块推送失败 - ' + summary);
+  }
 }
 
+// 返回 Promise：防抖到点后执行推送，resolve({ success:true }) / resolve({ success:false, error })
+// 永不 reject，避免调用方未捕获导致 unhandled rejection。
 export function scheduleRemainingPush() {
   if (_pushDebounceTimer) clearTimeout(_pushDebounceTimer);
-  _pushDebounceTimer = setTimeout(() => {
-    pushAllRemainingDirty().catch(e => _warn('scheduleRemainingPush error: ' + (e.message || e)));
-  }, 1200);
+  return new Promise((resolve) => {
+    _pushDebounceTimer = setTimeout(() => {
+      pushAllRemainingDirty()
+        .then(() => resolve({ success: true }))
+        .catch(e => {
+          _warn('scheduleRemainingPush error: ' + (e.message || e));
+          resolve({ success: false, error: e });
+        });
+    }, 1200);
+  });
 }
 
+// 返回 Promise：立即（清除防抖）推送当前脏数据，
+// resolve({ success:true }) 或 resolve({ success:false, error })。
 export function pushRemainingNow(date) {
   if (date) markAllRemainingDirty(date);
   if (_pushDebounceTimer) clearTimeout(_pushDebounceTimer);
-  pushAllRemainingDirty().catch(e => _warn('pushRemainingNow error: ' + (e.message || e)));
+  return pushAllRemainingDirty()
+    .then(() => ({ success: true }))
+    .catch(e => {
+      _warn('pushRemainingNow error: ' + (e.message || e));
+      return { success: false, error: e };
+    });
 }
 
 function _currentDate() {

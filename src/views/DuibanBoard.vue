@@ -14,7 +14,10 @@
           <div :class="kind + '-header-item ' + kind + '-header-jingtu'">竞符合数</div>
           <div :class="kind + '-header-item ' + kind + '-header-tushi'">图示</div>
         </div>
-        <div v-if="!hasData" :class="kind + '-empty'">暂无数据，点击添加...</div>
+        <div v-if="loadFailed" :class="kind + '-empty'" style="color:#ef4444">
+          读取失败，<span @click.stop="refresh" style="color:#3b82f6;text-decoration:underline;cursor:pointer">点击重试</span>
+        </div>
+        <div v-else-if="!hasData" :class="kind + '-empty'">暂无数据，点击添加...</div>
         <div v-else :class="kind + '-row'">
           <div :class="kind + '-item ' + kind + '-item-shuliang'">{{ data?.shuliang || '' }}</div>
           <div :class="kind + '-item ' + kind + '-item-dieZhangbi'">{{ data?.die_zhangbi || '' }}</div>
@@ -69,9 +72,10 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch } from 'vue';
+import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useBoardData } from '../composables/useBoardData.js';
 import { parseDieZhangbi, buildDieZhangbi } from '../logic/board-helpers.js';
+import { subscribeRecentMulti } from '../data/duiban-sync.js';
 
 const { boardState, loadRecentMulti, saveRecentMulti, toast, warnToast } = useBoardData();
 
@@ -81,10 +85,28 @@ const defaultTotal = 56;
 
 const showModal = ref(false);
 const data = computed(() => boardState.recentMulti);
-const loading = computed(() => boardState.loadingRecent || boardState.loadingEtf);
-const saving = computed(() => boardState.savingRecent || boardState.loadingEtf);
+// A6-01：保存按钮的禁用/loading 仅由本看板专属标志 savingRecent 决定，
+// 移除与 loadingEtf 的耦合，确保保存期间按钮正确禁用、保存后可再次保存。
+const saving = computed(() => boardState.savingRecent);
 
 const hasData = computed(() => data.value && (data.value.shuliang || data.value.die_zhangbi || data.value.jingtu || data.value.tushi));
+
+// A6-03：读取失败须可见，不得伪装成空（§10/§11）。区分「失败」与「真无数据」。
+const loadFailed = ref(false);
+watch(
+  () => boardState.lastError,
+  (msg) => {
+    // 仅匹配「最近多板加载失败」前缀，避免与保存失败（submit 已 toast）混淆
+    if (msg && typeof msg === 'string' && msg.indexOf('最近多板加载失败') === 0) {
+      loadFailed.value = true;
+      warnToast('读取失败: ' + msg);
+    }
+  }
+);
+watch(
+  () => boardState.recentMulti,
+  () => { loadFailed.value = false; }
+);
 
 const form = reactive({
   shuliang: '',
@@ -156,7 +178,7 @@ async function submit() {
     shuliang: String(total),
     die_count: die,
     zhang_count: zhang,
-    // window.buildDieZhangbi 待后续批次迁移
+    // 计算 跌:涨 比例
     die_zhangbi: buildDieZhangbi(die, zhang),
     jingtu: form.jingtu.trim(),
     tushi: form.tushi.trim(),
@@ -173,8 +195,31 @@ async function submit() {
 
 function openEdit() { showModal.value = true; }
 function refresh() {
+  loadFailed.value = false;
   if (boardState.currentDate) loadRecentMulti(boardState.currentDate);
 }
+
+// A6-02：模块级 Realtime 订阅 recent_multi_data（§31 统一持有 channel，离开 unsubscribe）。
+// DuibanBoard 当前走 recent_multi_data（未上云 auction_duiban），故在此建立订阅。
+let _unsubRecentMulti = null;
+onMounted(() => {
+  // 初始失败态检查（§11：读取失败 ≠ 空数据）
+  if (boardState.lastError && String(boardState.lastError).indexOf('最近多板加载失败') === 0) {
+    loadFailed.value = true;
+  }
+  _unsubRecentMulti = subscribeRecentMulti((payload) => {
+    const cur = boardState.currentDate;
+    if (!cur || !payload) return;
+    if (payload.eventType === 'DELETE') {
+      if (payload.old && payload.old.date === cur) boardState.recentMulti = null;
+    } else if (payload.new && payload.new.date === cur) {
+      boardState.recentMulti = payload.new;
+    }
+  });
+});
+onUnmounted(() => {
+  if (_unsubRecentMulti) { _unsubRecentMulti(); _unsubRecentMulti = null; }
+});
 
 defineExpose({ openEdit, refresh });
 </script>

@@ -76,8 +76,8 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue';
-import { getCurrentDate, setCurrentDate, saveData } from '../logic/app-core.js';
+import { ref, computed, watch, onUnmounted } from 'vue';
+import { setCurrentDate, saveData } from '../logic/app-core.js';
 import { getPreviousTradingDay, getNextTradingDay, getMostRecentTradingDay, getHolidays, getTradingDays, isTradingDay, toggleHoliday } from '../logic/trading-day-helpers.js';
 import { _emit } from '../stores/eventBus.js';
 import { useUiStore } from '../stores/uiStore.js';
@@ -109,12 +109,19 @@ watch(statsMode, (mode) => {
   else document.body.classList.remove('weekend-mode');
 });
 
+// [A4-02] Dashboard 卸载时清理 weekend-mode 类，避免 document.body 残留样式（原只在 watch 内增删，缺卸载清理）。
+onUnmounted(() => {
+  document.body.classList.remove('weekend-mode');
+});
+
 const stocksRef = ref(null);
 const uiStore = useUiStore();
-const currentDate = computed(() => uiStore.currentDate || getCurrentDate());
+// [A4-04] 移除冗余 currentDate：getCurrentDate() 仅是 useUiStore().currentDate 的包装，
+// uiStore.currentDate || getCurrentDate() 恒等于 uiStore.currentDate，统一走响应式 uiStore。
+const currentDate = computed(() => uiStore.currentDate);
 
 const weekdayText = computed(() => {
-  const d = uiStore.currentDate || getCurrentDate();
+  const d = uiStore.currentDate;
   if (!d) return '';
   const days = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   return days[new Date(d + 'T00:00:00').getDay()];
@@ -126,13 +133,13 @@ const holidayTick = ref(0);
 // 日期选择器内选中日期的假期切换按钮文案（描述"将要执行的动作"）
 const pickerHolidayLabel = computed(() => {
   void holidayTick.value;
-  const d = pickerSelected.value || getCurrentDate();
+  const d = pickerSelected.value || uiStore.currentDate;
   if (!d) return '设为假期';
   return isTradingDay(d) ? '设为假期' : '取消假期';
 });
 
 function togglePickerHoliday() {
-  const d = pickerSelected.value || getCurrentDate();
+  const d = pickerSelected.value || uiStore.currentDate;
   if (!d) return;
   const result = toggleHoliday(d);
   if (!result) return;
@@ -141,31 +148,23 @@ function togglePickerHoliday() {
   showToast(result === 'holiday' ? '已设为假期' : '已取消假期（设为交易日）');
 }
 
-function emitAllRefresh() {
-  _emit('stocks-refresh');
-  _emit('auction-refresh');
-  _emit('bidding-refresh');
-  requestAnimationFrame(() => {
-    _emit('board-refresh');
-    _emit('jiwang-refresh');
-    _emit('duiban-refresh');
-    _emit('emotion-refresh');
-    _emit('etf-refresh');
-  });
-}
-
+// [A4-01] 移除日期切换的「8 路全量重算广播」。
+// 各看板（Auction/Jiwang/Stats/Bidding/HomeStocks/Emotion/StarStats）均自行
+// watch(() => uiStore.currentDate) 响应日期切换；ETF/Duiban 经 useBoardData 内部
+// watch(uiStore.currentDate) 重新拉取云端。日期变化已由 setCurrentDate 经响应式
+// uiStore.currentDate 统一驱动，无需 Dashboard 主动广播触发无目的全量重算/重复请求。
 function goToPrevTradingDay() {
-  const prev = getPreviousTradingDay(getCurrentDate());
-  if (prev) { uiStore.setDate(prev); setCurrentDate(prev); emitAllRefresh(); }
+  const prev = getPreviousTradingDay(uiStore.currentDate);
+  if (prev) setCurrentDate(prev);
 }
 function goToNextTradingDay() {
-  const next = getNextTradingDay(getCurrentDate());
-  if (next) { uiStore.setDate(next); setCurrentDate(next); emitAllRefresh(); }
+  const next = getNextTradingDay(uiStore.currentDate);
+  if (next) setCurrentDate(next);
 }
 function goToday() {
   statsMode.value = null;
   const today = getMostRecentTradingDay();
-  if (today) { uiStore.setDate(today); setCurrentDate(today); emitAllRefresh(); }
+  if (today) setCurrentDate(today);
 }
 
 function onAddStock() {
@@ -200,10 +199,13 @@ const pickerDays = computed(() => {
   void holidayTick.value; // 假期状态切换后强制重算日历着色
   const year = pickerYear.value;
   const month = pickerMonth.value;
-  const selected = pickerSelected.value || getCurrentDate();
+  const selected = pickerSelected.value || uiStore.currentDate;
 
   // [PERF] 一次性取值并转 Set，逐日 O(1) 查询。
   // 旧版 getHolidays()/isAutoHoliday() 逐日调用 loadAllData()，一个月约 32 次数据读取，是卡顿根因。
+  // [A4-03/§8] holidays / tradingDays 是非业务的「交易日历参考缓存」（localStorage 配置模块，
+  // 无云端同步，见 trading-day-helpers.toggleHoliday 注释），不属于用户业务数据，按 §8 允许保留本地，
+  // 仅用于日历着色与交易日推算，不可当作业务真相源。
   const holSet = new Set(getHolidays());
   const tdSet = new Set(getTradingDays());
   const todayLocal = _localTodayStr();
@@ -239,7 +241,7 @@ const pickerDays = computed(() => {
 });
 
 function openDatePicker() {
-  const cur = getCurrentDate();
+  const cur = uiStore.currentDate;
   if (cur && /^\d{4}-\d{2}-\d{2}$/.test(cur)) {
     pickerYear.value = parseInt(cur.slice(0, 4));
     pickerMonth.value = parseInt(cur.slice(5, 7)) - 1;
@@ -250,9 +252,7 @@ function openDatePicker() {
 function selectPickerDate(dateStr) {
   pickerSelected.value = dateStr;
   datePickerActive.value = false;
-  uiStore.setDate(dateStr);
   setCurrentDate(dateStr);
-  emitAllRefresh();
 }
 function prevPickerMonth() {
   if (pickerMonth.value === 0) { pickerMonth.value = 11; pickerYear.value--; }

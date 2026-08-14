@@ -1,4 +1,6 @@
-export const state = {
+import { reactive } from 'vue';
+
+export const state = reactive({
     _scMapCache: null,
     _hotFullRowCache: {},
     _marketMetricsTableAvailable: false,
@@ -162,7 +164,7 @@ export const state = {
     editingId: null,
     isStockListCollapsed: true,
     topicAutoFilled: false,
-};
+});
 
 // 重构（biga-auction-arch-refactor Phase 5 彻底）：currentDate / currentGroup / currentPage /
 // currentTab 已全量迁移到 app 级 useUiStore()（src/stores/uiStore.js），本文件不再持有这些

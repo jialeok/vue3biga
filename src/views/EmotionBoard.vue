@@ -7,6 +7,7 @@
     </div>
       <div id="emotionContent" class="emotion-content" v-show="expanded">
       <div v-if="fallbackDate" class="emotion-fallback-hint">数据未更新至 {{ uiStore.currentDate }}，显示最近可用：{{ fallbackDate }}</div>
+      <div v-if="error" class="emotion-error-hint">加载失败：{{ error }}（请重试）</div>
       <div id="emotionVolumeLine" class="emotion-volume-line">
         <template v-for="(part, idx) in volumeParts" :key="idx">
           <span>
@@ -47,16 +48,28 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import TrendChart from '../components/TrendChart.vue';
 import { useUiStore } from '../stores/uiStore.js';
-import { getSupabase } from '../data/supabase-client.js';
-import { EMOTION_ROW_CONFIG, EMOTION_WORKER_BASE, getEmotionDataCache, setEmotionDataCache } from '../data/emotion-config.js';
+import { EMOTION_ROW_CONFIG, EMOTION_WORKER_BASE, getEmotionDataCache } from '../data/emotion-config.js';
+import {
+  loadEmotionSafe,
+  subscribeEmotion,
+  unsubscribeEmotion,
+  yuanToYi,
+  formatEmotionNumber,
+  emotionRowIsMissing,
+  emotionRowValueText,
+  emotionRowValueClass,
+  emotionRowExtraValue,
+  emotionTrendPoints,
+} from '../logic/emotion/emotion-workflow.js';
+import { showToast } from '../composables/useToast.js';
 
 const uiStore = useUiStore();
 
 const expanded = ref(true);
 const data = ref(null);
+const error = ref(null);
 const expandedRows = ref(new Set());
 const refreshing = ref(false);
-let realtimeChannel = null;
 
 const rowConfigs = computed(() => EMOTION_ROW_CONFIG);
 const metrics = computed(() => (data.value && data.value.metrics) || {});
@@ -83,15 +96,7 @@ const summaryText = computed(() => {
   return parts.length > 0 ? parts.join(' / ') : '暂无数据';
 });
 
-function yuanToYi(v) {
-  if (v === null || v === undefined || isNaN(v)) return null;
-  return Number((Number(v) / 1e8).toFixed(2));
-}
-function formatEmotionNumber(v, decimals) {
-  if (v === null || v === undefined || isNaN(v)) return '-';
-  if (decimals === undefined) return String(Math.round(Number(v)));
-  return Number(v).toFixed(decimals);
-}
+// 亿元换算 / 数值格式化由 emotion-workflow.js 提供（E-03 业务规则下沉 Logic），此处复用导入。
 
 const volumeParts = computed(() => {
   const m = metrics.value;
@@ -127,40 +132,21 @@ const volumeParts = computed(() => {
   return parts;
 });
 
+// 以下为模板薄包装：真正业务规则已下沉到 emotion-workflow.js（E-03）。
 function rowIsMissing(cfg) {
-  let val = metrics.value[cfg.key];
-  if (cfg.key === 'amountDiff') val = metrics.value.amountDiff;
-  return val === null || val === undefined || isNaN(val);
+  return emotionRowIsMissing(metrics.value, cfg);
 }
 function rowValueText(cfg) {
-  let val = metrics.value[cfg.key];
-  if (cfg.key === 'amountDiff') val = metrics.value.amountDiff;
-  return formatEmotionNumber(val, cfg.key === 'amountDiff' ? 2 : 0);
+  return emotionRowValueText(metrics.value, cfg);
 }
 function rowValueClass(cfg) {
-  if (rowIsMissing(cfg)) return '';
-  let val = metrics.value[cfg.key];
-  if (cfg.key === 'amountDiff') val = metrics.value.amountDiff;
-  const n = Number(val);
-  if (cfg.key === 'amountDiff') {
-    return n > 0 ? 'up' : (n < 0 ? 'down' : '');
-  }
-  return '';
+  return emotionRowValueClass(metrics.value, cfg);
 }
 function rowExtraValue(cfg) {
-  if (!cfg.extraKey) return null;
-  const v = metrics.value[cfg.extraKey];
-  if (v === null || v === undefined || isNaN(v)) return null;
-  return Number(v);
+  return emotionRowExtraValue(metrics.value, cfg);
 }
 function trendPoints(cfg) {
-  const fd = fiveDays.value;
-  if (!Array.isArray(fd) || fd.length === 0) return [];
-  return fd.map((d) => {
-    let v = d[cfg.field];
-    if ((cfg.field === 'amount' || cfg.field === 'amountDiff') && v !== null && v !== undefined) v = yuanToYi(v);
-    return { date: d._date || '', value: (v === null || v === undefined || isNaN(v)) ? null : Number(v) };
-  });
+  return emotionTrendPoints(fiveDays.value, cfg);
 }
 
 function toggleExpand(e) {
@@ -174,46 +160,19 @@ function toggleRow(key) {
   expandedRows.value = new Set(set);
 }
 
-async function loadEmotionData(date) {
-  date = date || uiStore.currentDate;
-  const cache = getEmotionDataCache();
-  if (cache && cache.date === date) return cache.data;
-  try {
-    const sb = getSupabase();
-    const { data: rows, error } = await sb.from('emotion_data')
-      .select('date, metrics, five_days, updated_at')
-      .eq('date', date)
-      .limit(1);
-    if (error) throw error;
-    if (rows && rows.length > 0) {
-      setEmotionDataCache({ date: date, data: rows[0] });
-      return rows[0];
-    }
-    // [FALLBACK] 仅当查询日期就是「今天」时才回退到最近一个有数据的日期。
-    // 今天的数据要等 worker 约北京时间16:00 产出，大清早/数据未就绪时避免整片空白；
-    // 历史日期 / 未来日期不回退（否则未来每一天都会挂着陈旧数据，造成误导）。
-    if (date === realToday.value) {
-      const { data: latest, error: e2 } = await sb.from('emotion_data')
-        .select('date, metrics, five_days, updated_at')
-        .order('date', { ascending: false })
-        .limit(1);
-      if (e2) throw e2;
-      if (latest && latest.length > 0) {
-        const fb = latest[0];
-        setEmotionDataCache({ date: date, data: fb });
-        return fb;
-      }
-    }
-  } catch (e) {
-    console.warn('读取 emotion_data 失败:', e.message);
-  }
-  setEmotionDataCache({ date: date, data: null });
-  return null;
-}
-
 async function loadAndRender() {
-  const d = await loadEmotionData(uiStore.currentDate);
-  data.value = d;
+  const date = uiStore.currentDate;
+  // §10/§11 / E-02：读取失败由 loadEmotionSafe 返回 {ok:false}，此处置错误态 + toast，
+  // 绝不把失败的结果写进缓存伪装成 null；只有「成功但查无此日」才会得到 data:null。
+  const res = await loadEmotionSafe(date, { allowFallback: date === realToday.value });
+  if (res.ok) {
+    error.value = null;
+    data.value = res.data;
+  } else {
+    data.value = null;
+    error.value = (res.error && res.error.message) ? res.error.message : '未知错误';
+    showToast('加载失败，请重试');
+  }
 }
 
 async function refreshPredictVol(e) {
@@ -235,47 +194,29 @@ async function refreshPredictVol(e) {
     }
   } catch (e) {
     console.error('[EMOTION-REFRESH] 刷新预测量能失败:', e.message);
-    alert('刷新预测量能失败：' + e.message);
+    showToast('刷新预测量能失败：' + e.message); // E-04：alert 阻塞弹窗改 toast
   } finally {
     refreshing.value = false;
   }
 }
 
-function startRealtime() {
-  if (realtimeChannel) return;
-  try {
-    const sb = getSupabase();
-    realtimeChannel = sb
-      .channel('emotion_data_changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'emotion_data' }, (payload) => {
-        const changedDate = payload.new && payload.new.date;
-        if (changedDate === uiStore.currentDate) {
-          setEmotionDataCache(null);
-          loadAndRender();
-        }
-      })
-      .subscribe((status) => {
-      });
-  } catch (e) {
-    console.warn('emotion_data Realtime 订阅失败:', e.message);
-  }
+function onRealtimeChange(changedDate) {
+  // §10/§11：Realtime 变更只触发刷新，不顺手把缓存写成 null（那是失败伪装空数据的旧坑）
+  if (changedDate === uiStore.currentDate) loadAndRender();
 }
 
 onMounted(() => {
   loadAndRender();
-  startRealtime();
+  subscribeEmotion(onRealtimeChange); // E-05：模块级统一订阅，离开页面 unsubscribe
 });
 // 切换日期时重新拉取（之前仅在 mounted/expand 时加载，日期选择器切换后不会刷新）
 watch(() => uiStore.currentDate, () => {
   if (expanded.value) loadAndRender();
-  else { setEmotionDataCache(null); }
 });
 onUnmounted(() => {
-  if (realtimeChannel && getSupabase) {
-    try { getSupabase().removeChannel(realtimeChannel); } catch (e) {}
-  }
+  unsubscribeEmotion(); // E-05：离开页面退订，避免重复订阅
 });
 
-defineExpose({ loadAndRender, refreshPredictVol, toggleExpand, toggleRow, startRealtime });
+defineExpose({ loadAndRender, refreshPredictVol, toggleExpand, toggleRow });
 </script>
 

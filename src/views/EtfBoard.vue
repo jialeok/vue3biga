@@ -82,7 +82,7 @@ const defaultTotal = 48;
 const showModal = ref(false);
 const data = computed(() => boardState.earlyEtf);
 const loading = computed(() => boardState.loadingRecent || boardState.loadingEtf);
-const saving = computed(() => boardState.savingRecent || boardState.loadingEtf);
+const saving = computed(() => boardState.savingEtf);
 
 const hasData = computed(() => data.value && (data.value.shuliang || data.value.die_zhangbi || data.value.jingtu || data.value.tushi));
 

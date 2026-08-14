@@ -124,7 +124,7 @@
         <div class="weekend-section">
           <div class="weekend-section-title">📈 每日盈亏曲线</div>
           <div class="profit-chart-container">
-            <canvas ref="profitChartRef" width="350" height="150"></canvas>
+            <TrendChart :points="profitPoints" color="#dc2626" />
           </div>
         </div>
 
@@ -132,7 +132,7 @@
         <div class="weekend-section">
           <div class="weekend-section-title">💳 账户余额曲线</div>
           <div class="profit-chart-container">
-            <canvas ref="balanceChartRef" width="350" height="150"></canvas>
+            <TrendChart :points="balancePoints" color="#2563eb" />
           </div>
         </div>
 
@@ -175,17 +175,24 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue';
-import { getStocksData, getJiwangData, getEtfData } from '../data/supabase-client.js';
-import { getRankData } from '../logic/app-core.js';
+import { ref, computed } from 'vue';
+import { getJiwangData } from '../data/supabase-client.js';
 import { useUiStore } from '../stores/uiStore.js';
-import { isWeekend, isTradingDay } from '../logic/trading-day-helpers.js';
+import { isTradingDay } from '../logic/trading-day-helpers.js';
+import { useScoreCalculation } from '../composables/useScoreCalculation.js';
+import {
+  computeStats,
+  computeTopStocks,
+  computeTopEtfs,
+  computeRecordStats,
+  buildProfitPoints,
+} from '../logic/stats/stats-calc.js';
+import TrendChart from '../components/TrendChart.vue';
 
 const uiStore = useUiStore();
+const { openWeekendSummary, openWeekendReview } = useScoreCalculation();
 
 const topStocksExpanded = ref(false);
-const profitChartRef = ref(null);
-const balanceChartRef = ref(null);
 const summaryText = ref('');
 const reviewText = ref('');
 const experienceText = ref('');
@@ -225,45 +232,6 @@ const dateRange = computed(() => {
   return `${dates[dates.length - 1]} 至 ${dates[0]}`;
 });
 
-function computeStats(dates) {
-  const r = {
-    totalProfit: 0, totalLoss: 0, balance: 0,
-    tradingDays: 0, emptyCount: 0, chushouCount: 0,
-    emptyRight: 0, emptyWrong: 0, chushouRight: 0, chushouWrong: 0,
-    emptyWinRate: 0, chushouWinRate: 0,
-  };
-  const stocksData = getStocksData();
-  const jiwangData = getJiwangData();
-  dates.forEach(d => {
-    if (isTradingDay(d)) {
-      r.tradingDays++;
-      const dayJiwang = jiwangData[d];
-      if (dayJiwang) {
-        if (dayJiwang.jielun === '空仓') r.emptyCount++;
-        else if (dayJiwang.jielun === '出手') r.chushouCount++;
-        if (dayJiwang.chushou === '空仓对了') r.emptyRight++;
-        else if (dayJiwang.chushou === '空仓错了') r.emptyWrong++;
-        else if (dayJiwang.chushou === '出手对了') r.chushouRight++;
-        else if (dayJiwang.chushou === '出手错了') r.chushouWrong++;
-      }
-    }
-    const list = stocksData[d] || [];
-    list.forEach(s => {
-      if (s.soldRecords) {
-        s.soldRecords.forEach(rec => {
-          const p = parseFloat(rec.profit) || 0;
-          if (p >= 0) r.totalProfit += p;
-          else r.totalLoss += Math.abs(p);
-        });
-      }
-    });
-  });
-  r.balance = r.totalProfit - r.totalLoss;
-  r.emptyWinRate = r.emptyRight + r.emptyWrong > 0 ? Math.round(r.emptyRight / (r.emptyRight + r.emptyWrong) * 100) : 0;
-  r.chushouWinRate = r.chushouRight + r.chushouWrong > 0 ? Math.round(r.chushouRight / (r.chushouRight + r.chushouWrong) * 100) : 0;
-  return r;
-}
-
 const stats = computed(() => computeStats(getWeekDates()));
 
 const totalStats = computed(() => {
@@ -290,104 +258,21 @@ const totalStats = computed(() => {
   return r;
 });
 
-function computeTopStocks(dates) {
-  const rankData = getRankData() || {};
-  const counts = {};
-  dates.forEach(d => {
-    const dayRank = rankData[d];
-    if (dayRank && Array.isArray(dayRank)) {
-      dayRank.forEach(item => {
-        if (item.stock) counts[item.stock] = (counts[item.stock] || 0) + 1;
-      });
-    }
-  });
-  return Object.entries(counts).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 10);
-}
-
-function computeTopEtfs(dates) {
-  const etfData = getEtfData() || {};
-  const counts = {};
-  dates.forEach(d => {
-    const dayEtf = etfData[d];
-    if (dayEtf && Array.isArray(dayEtf)) {
-      dayEtf.forEach(item => {
-        if (item.name) counts[item.name] = (counts[item.name] || 0) + 1;
-      });
-    }
-  });
-  return Object.entries(counts).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 10);
-}
-
 const topStocks = computed(() => computeTopStocks(getWeekDates()));
 const topEtfs = computed(() => computeTopEtfs(getWeekDates()));
 const duibanPerformance = computed(() => []);
 
-const recordStats = computed(() => {
-  const dates = getWeekDates();
-  const jiwangData = getJiwangData();
-  let duibanCount = 0, topicCount = 0, etfCount = 0;
-  let duibanRight = 0, topicRight = 0, etfRight = 0;
-  dates.forEach(d => {
-    const dayJiwang = jiwangData[d];
-    if (!dayJiwang) return;
-    const st = dayJiwang.stats || {};
-    const isRight = dayJiwang.chushou === '空仓对了' || dayJiwang.chushou === '出手对了';
-    if (st.recentMulti === true) { duibanCount++; if (isRight) duibanRight++; }
-    if (st.topicDirection === true) { topicCount++; if (isRight) topicRight++; }
-    if (st.sectorEtf === true) { etfCount++; if (isRight) etfRight++; }
-  });
-  return {
-    duibanCount, topicCount, etfCount,
-    duibanWinRate: duibanCount > 0 ? Math.round(duibanRight / duibanCount * 100) : 0,
-    topicWinRate: topicCount > 0 ? Math.round(topicRight / topicCount * 100) : 0,
-    etfWinRate: etfCount > 0 ? Math.round(etfRight / etfCount * 100) : 0,
-  };
-});
+const recordStats = computed(() => computeRecordStats(getWeekDates()));
 
 function toggleTopStocks() { topStocksExpanded.value = !topStocksExpanded.value; }
-function openSummaryEdit() { const t = prompt('编辑本周总结心得', summaryText.value); if (t !== null) summaryText.value = t; }
-function openReviewEdit() { const t = prompt('编辑本周回顾', reviewText.value); if (t !== null) reviewText.value = t; }
-function openExperienceEdit() { const t = prompt('编辑经验总结', experienceText.value); if (t !== null) experienceText.value = t; }
-function openPlanEdit() { const t = prompt('编辑下周计划', planText.value); if (t !== null) planText.value = t; }
+// WX-02：复用既有 modal 链路（useScoreCalculation.openWeekendSummary / openWeekendReview），
+// 移除 window.prompt()；总结经 modal → Logic → Data 持久化（遵循架构规范 §8 / §10）。
+function openSummaryEdit() { openWeekendSummary(); }
+function openReviewEdit() { openWeekendReview(); }
+function openExperienceEdit() { openWeekendReview(); }
+function openPlanEdit() { openWeekendReview(); }
 
-function drawChart(canvas, data, color) {
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  if (data.length === 0) return;
-  const w = canvas.width, h = canvas.height;
-  const max = Math.max(...data, 1);
-  const min = Math.min(...data, 0);
-  const range = max - min || 1;
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  data.forEach((v, i) => {
-    const x = (i / (data.length - 1 || 1)) * w;
-    const y = h - ((v - min) / range) * h;
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-}
-
-watch([() => stats.value, profitChartRef, balanceChartRef], () => {
-  nextTick(() => {
-    const dates = getWeekDates();
-    const stocksData = getStocksData();
-    const dailyProfits = [];
-    const balances = [];
-    let cumBalance = 0;
-    dates.slice().reverse().forEach(d => {
-      let dayProfit = 0;
-      (stocksData[d] || []).forEach(s => {
-        (s.soldRecords || []).forEach(r => { dayProfit += parseFloat(r.profit) || 0; });
-      });
-      dailyProfits.push(dayProfit);
-      cumBalance += dayProfit;
-      balances.push(cumBalance);
-    });
-    drawChart(profitChartRef.value, dailyProfits, '#dc2626');
-    drawChart(balanceChartRef.value, balances, '#2563eb');
-  });
-}, { immediate: true });
+// W-03：复用 <TrendChart> 组件替代自绘 canvas（遵循 §30 图表性能规范）。
+const profitPoints = computed(() => buildProfitPoints(getWeekDates).profitPoints);
+const balancePoints = computed(() => buildProfitPoints(getWeekDates).balancePoints);
 </script>

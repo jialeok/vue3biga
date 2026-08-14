@@ -63,3 +63,45 @@ export async function loadDuibanData() {
     return null;
   }
 }
+
+/**
+ * 模块级 Realtime 订阅（§31）：统一持有 recent_multi_data 的 channel，引用计数管理，
+ * 当最后一个订阅者离开时 unsubscribe，避免重复订阅。
+ * 注意：DuibanBoard 当前数据源为 recent_multi_data（未上云 auction_duiban），
+ * 故在此为 recent_multi_data 建立订阅。若将来统一走 auction_duiban，可迁移订阅目标。
+ *
+ * @param {(payload: Object) => void} cb Realtime 事件回调
+ * @returns {() => void} 取消订阅函数
+ */
+let _recentMultiChannel = null;
+const _recentMultiListeners = new Set();
+
+function _ensureRecentMultiChannel() {
+  if (_recentMultiChannel) return _recentMultiChannel;
+  const sb = getSupabase();
+  if (!sb || typeof sb.channel !== 'function') return null;
+  _recentMultiChannel = sb
+    .channel('recent_multi_data_rt')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'recent_multi_data' }, (payload) => {
+      _recentMultiListeners.forEach((fn) => {
+        try { fn(payload); } catch (e) {
+          console.error('[duiban-sync] realtime listener error:', e && e.message);
+        }
+      });
+    })
+    .subscribe();
+  return _recentMultiChannel;
+}
+
+export function subscribeRecentMulti(cb) {
+  if (typeof cb !== 'function') return () => {};
+  _recentMultiListeners.add(cb);
+  _ensureRecentMultiChannel();
+  return () => {
+    _recentMultiListeners.delete(cb);
+    if (_recentMultiListeners.size === 0 && _recentMultiChannel) {
+      try { getSupabase()?.removeChannel(_recentMultiChannel); } catch (e) {}
+      _recentMultiChannel = null;
+    }
+  };
+}

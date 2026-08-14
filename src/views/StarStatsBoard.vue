@@ -114,7 +114,6 @@ const colorMap = {
 function render() {
   const currentDate = uiStore.currentDate;
   const dataSource = 'auction';
-  void auctionStore.dataVersions.auction;
 
   const todayAuction = getTodayGroupList(dataSource);
   if (!todayAuction || todayAuction.length === 0) {
@@ -131,6 +130,12 @@ function render() {
   const yesterdayAuction = prevDate ? (auctionData[prevDate] || []) : [];
   const yesterdayGroups = yesterdayAuction.length > 0 ? getTopicGroups(yesterdayAuction) : [];
 
+  // §19 性能：预建「按题材索引」，将 O(n²) 的 find 改为 O(1) 查找（原 todayGroups.forEach 内 yesterdayGroups.find）。
+  const yesterdayByTopic = {};
+  for (const g of yesterdayGroups) {
+    if (g && g.topic) yesterdayByTopic[g.topic] = g;
+  }
+
   const cats = {
     xianian: 0, xingxian: 0, xingping: 0, xingzeng: 0, xingjian: 0
   };
@@ -141,7 +146,7 @@ function render() {
   todayGroups.forEach(group => {
     if (!group.topic || group.topic === '---' || group.topic === '其它' || group.topic === '并购重组') return;
     const todayStar = group.starCount || 0;
-    const yGroup = yesterdayGroups.find(g => g.topic === group.topic);
+    const yGroup = yesterdayByTopic[group.topic];
     const yesterdayStar = yGroup ? (yGroup.starCount || 0) : 0;
 
     if (todayStar === 0) cats.xianian++;
@@ -190,7 +195,9 @@ function render() {
     const todayView = computeAuctionViewData(dataSource, {});
     todayStrength = todayView.stats && todayView.stats.todayStrength != null ? todayView.stats.todayStrength : null;
     yesterdayStrength = todayView.stats && todayView.stats.yesterdayStrength != null ? todayView.stats.yesterdayStrength : null;
-  } catch (e) {}
+  } catch (e) {
+    console.error('[StarStatsBoard] computeAuctionViewData 失败：', e && e.message);
+  }
 
   let strengthArrow = '';
   if (todayStrength != null && yesterdayStrength != null) {
@@ -202,7 +209,9 @@ function render() {
   try {
     const todayJiwang = getTodayJiwang();
     isKongcang = todayJiwang && todayJiwang.jielun === '空仓';
-  } catch (e) {}
+  } catch (e) {
+    console.error('[StarStatsBoard] getTodayJiwang 失败：', e && e.message);
+  }
 
   let displayArrow = '';
   if (isKongcang) {

@@ -77,9 +77,8 @@ import { ref, reactive, onMounted, onUnmounted, watch } from 'vue';
 import HeaderStats from '../components/HeaderStats.vue';
 import EditModal from '../components/EditModal.vue';
 import { useUiStore } from '../stores/uiStore.js';
-import { getJiwangData } from '../data/supabase-client.js';
-import { saveData, markJiwangDirty } from '../logic/app-core.js';
-import { pushJiwangNow } from '../data/jiwang-data.js';
+// [S-01] StatsBoard 经 Logic 层（src/logic/stats/）受控读写 jiwang.stats，不再直接原地改 allData.jiwang
+import { readStats, writeStats } from '../logic/stats/stats-logic.js';
 import { _on, _off } from '../stores/eventBus.js';
 
 const uiStore = useUiStore();
@@ -99,15 +98,16 @@ const circleForm = reactive({
   profit: '', gain: '', balance: ''
 });
 
+// [S-03] 缓存当前日期的 stats 对象引用，避免每次操作都走 getJiwangData()→loadAllData() 重建。
+// 仅当日期切换（或缓存失效）时才重新经 Logic 层读取。
+const _statsCache = ref(null);
+const _statsCacheDate = ref(null);
 function getStats() {
-  const jiwangData = getJiwangData();
-  if (!jiwangData[uiStore.currentDate]) {
-    jiwangData[uiStore.currentDate] = {};
+  if (_statsCacheDate.value !== uiStore.currentDate || !_statsCache.value) {
+    _statsCache.value = readStats(uiStore.currentDate);
+    _statsCacheDate.value = uiStore.currentDate;
   }
-  if (!jiwangData[uiStore.currentDate].stats) {
-    jiwangData[uiStore.currentDate].stats = {};
-  }
-  return jiwangData[uiStore.currentDate].stats;
+  return _statsCache.value;
 }
 
 function render() {
@@ -120,26 +120,16 @@ function render() {
   comment.value = s.comment || '';
 }
 
-function updateMarketStage() {
-  const s = getStats();
-  s.marketStage = marketStage.value;
-  markJiwangDirty(uiStore.currentDate);
-  saveData();
-  pushJiwangNow(uiStore.currentDate);
+async function updateMarketStage() {
+  await writeStats(uiStore.currentDate, { marketStage: marketStage.value }, '');
 }
 
-function updatePosition() {
-  const s = getStats();
-  s.position = position.value;
-  markJiwangDirty(uiStore.currentDate);
-  saveData();
-  pushJiwangNow(uiStore.currentDate);
+async function updatePosition() {
+  await writeStats(uiStore.currentDate, { position: position.value }, '');
 }
 
-function toggleCheckbox(key) {
-  // 保留接口供扩展使用
-  saveData();
-}
+// [S-02] 旧的 toggleCheckbox 为死代码（无任何复选框调用，且其 saveData() 不持久化任何改动），
+// 移除无效防抖/死写，避免误导。如需复选框，应经 writeStats(..., successMsg) 真正持久化。
 
 function openCircleEdit() {
   const s = getStats();
@@ -149,14 +139,12 @@ function openCircleEdit() {
   circleModalActive.value = true;
 }
 
-function saveCircleStats() {
-  const s = getStats();
-  s.profit = circleForm.profit;
-  s.gain = circleForm.gain;
-  s.balance = circleForm.balance;
-  markJiwangDirty(uiStore.currentDate);
-  saveData();
-  pushJiwangNow(uiStore.currentDate, '✅ 圆形统计已保存并同步到云端');
+async function saveCircleStats() {
+  await writeStats(uiStore.currentDate, {
+    profit: circleForm.profit,
+    gain: circleForm.gain,
+    balance: circleForm.balance,
+  }, '✅ 圆形统计已保存并同步到云端');
   circleModalActive.value = false;
   render();
 }
@@ -172,12 +160,8 @@ function openCommentEdit() {
   commentModalActive.value = true;
 }
 
-function saveComment() {
-  const s = getStats();
-  s.comment = commentDraft.value;
-  markJiwangDirty(uiStore.currentDate);
-  saveData();
-  pushJiwangNow(uiStore.currentDate, '✅ 评论已保存并同步到云端');
+async function saveComment() {
+  await writeStats(uiStore.currentDate, { comment: commentDraft.value }, '✅ 评论已保存并同步到云端');
   comment.value = commentDraft.value;
   commentModalActive.value = false;
 }

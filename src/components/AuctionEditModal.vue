@@ -151,10 +151,7 @@ import {
 import { openAiVisionModal } from '../logic/workflows/ai-vision-import.js';
 import { parseNoteToFields } from '../logic/note-helpers.js';
 import { syncStockTopicsFromAuction } from '../logic/auction-stock-sync.js';
-import { useUiStore } from '../stores/uiStore.js';
 import auctionStore from '../stores/auctionStore.js';
-
-const uiStore = useUiStore();
 
 const visible = ref(false);
 const editRows = ref([]);

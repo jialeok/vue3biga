@@ -38,3 +38,11 @@ export function getTodayJiwang() {
     return jiwangData[useUiStore().currentDate] || null;
 }
 
+// §2/§10：受控写入入口。UI 不得再原地改 getJiwangData() 的返回值，统一经此函数落内存缓存并标记脏。
+export function saveJiwangData(date, data) {
+    if (!date || !data || typeof data !== 'object') return;
+    const jiwangData = getJiwangData();
+    jiwangData[date] = data;
+    markJiwangDirty(date);
+}
+

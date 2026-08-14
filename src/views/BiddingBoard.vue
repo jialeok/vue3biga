@@ -91,7 +91,7 @@ import EditModal from '../components/EditModal.vue';
 import { useUiStore } from '../stores/uiStore.js';
 import { _on, _off } from '../stores/eventBus.js';
 import { getBiddingData, getJiwangData, getBiddingDirtyDates, getBiddingPushInFlight } from '../data/supabase-client.js';
-import { BIDDING_ROW_ORDER, getDefaultBiddingTemplate, orderBiddingRows, pushBiddingToCloud, syncBiddingDeletionsToCloud, fetchBiddingCloudRows } from '../data/bidding-data.js';
+import { BIDDING_ROW_ORDER, getDefaultBiddingTemplate, orderBiddingRows, pushBiddingToCloud, syncBiddingDeletionsToCloud, deleteBiddingFromCloud, fetchBiddingCloudRows } from '../data/bidding-data.js';
 import { saveData, markJiwangDirty } from '../logic/app-core.js';
 import { _dbgLog } from '../data/debug-log.js';
 import { showToast, showWarningToast } from '../composables/useToast.js';
@@ -391,13 +391,15 @@ async function confirmClearData() {
   getBiddingData()[uiStore.currentDate] = biddingData;
   saveData();
 
+  // [A2-01] 清除=删除操作。本地清空后必须显式删除云端当日数据：
+  // pushBiddingToCloud 对全空 7 行直接 return 不删云端，故改用 deleteBiddingFromCloud。
+  // 仅删当日 date（§11 删除安全），失败 throw、不静默（§10）；按云端结果提示成功/失败。
+  let cloudErr = null;
   try {
-    await pushBiddingToCloud(uiStore.currentDate);
+    await deleteBiddingFromCloud(uiStore.currentDate);
   } catch (e) {
-    _dbgLog('[BIDDING-CLEAR] pushBiddingToCloud 失败: ' + (e && e.message));
-    showWarningToast('⚠️ 云端清除失败，旧数据可能仍在：' + (e && e.message), 8000);
-  } finally {
-    clearing.value = false;
+    cloudErr = e;
+    console.error('[BIDDING-CLEAR] deleteBiddingFromCloud 失败:', e);
   }
 
   const jiwangData = getJiwangData();
@@ -408,9 +410,17 @@ async function confirmClearData() {
   saveData();
   renderCircleStats();
 
+  render();
   openEdit();
-  showToast('已清除数据');
   autoCalculateConsecutiveDays();
+
+  clearing.value = false;
+  if (cloudErr) {
+    const detail = (cloudErr && (cloudErr.message || cloudErr.details || cloudErr.hint || cloudErr.code)) || String(cloudErr);
+    showWarningToast('⚠️ 云端清除失败，旧数据可能仍在：' + detail, 8000);
+  } else {
+    showToast('✅ 已清除数据并同步云端');
+  }
 }
 
 async function fetchSnapshot() {

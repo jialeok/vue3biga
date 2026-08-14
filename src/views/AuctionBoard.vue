@@ -1,8 +1,10 @@
 <!--
-  AuctionBoard.vue — 早盘竞价看板主组件
-  迁移自: auction-pages.js + auction-render.js + auction-vue-mount.js + auction-components.js + auction-trend.js
-  已迁移: _syncSortStateToStore(reactive直写)、expandAll/collapseAll(expandedSet)、getAuctionStockHistory(import)、toggleAuctionRowSelect(inline)、showAuctionNoteInput(inline)
-  保持委托: computeAuctionViewData(18个window依赖)
+  AuctionBoard.vue — 早盘竞价看板主组件（纯 Vue3 / Vite / Pinia）
+  数据源：auctionStore.dataVersions['auction'] 失效信号 + useUiStore().currentDate；
+  派生展示：computeAuctionViewData（logic/auction-view-helpers.js）之上叠加增量行缓存层
+           （logic/auction/incremental-view.js，A3-01），单格编辑只重新派生变化的行。
+  模板行级 v-memo 保证未变化行（单元格）不重渲染（§17/§23/§29）。
+  单格编辑/选择经 Logic 层写入后 bump 数据版本触发重算，不直接写 Supabase（§2/§10）。
 -->
 <template>
   <div class="auction-board trading-day-element" :class="{ collapsed: !expanded }" data-source="auction">
@@ -389,7 +391,7 @@
             <span class="auction-history-col auction-history-count">总数</span>
             <span class="auction-history-col auction-history-arrow">变化</span>
           </div>
-          <div v-for="(dayData, idx) in [...topicItem.data].sort((a,b) => b.date.localeCompare(a.date))"
+          <div v-for="(dayData, idx) in topicItem.sortedData"
                :key="topicItem.topic + '-' + dayData.date"
                :class="['auction-topic-history-row', { today: dayData.date === uiStore.currentDate }]">
             <span class="auction-history-col auction-history-date">{{ formatDateShort(dayData.date) }}</span>
@@ -399,20 +401,20 @@
                 <span class="auction-history-col auction-history-star" :style="{ color: dayData.isUp ? '#ef4444' : '#10b981', fontSize: dayData.starCount >= 6 ? '13px' : '12px', fontWeight: dayData.starCount >= 6 ? 600 : 'normal' }">{{ dayData.starText }}</span>
                 <span class="auction-history-col auction-history-strength" style="font-size:12px;font-weight:500;"><span :style="{ color: dayData.isUp ? '#ef4444' : '#10b981' }">{{ dayData.strength }}%</span></span>
                 <span class="auction-history-col auction-history-count" :style="{ fontSize: '12px', fontWeight: 500, color: dayData.isUp ? '#ef4444' : '#10b981' }">{{ dayData.stockCount }}</span>
-                <span class="auction-history-col auction-history-arrow" style="font-size:12px;font-weight:500;"><span :style="{ color: dayData.isUp ? '#ef4444' : '#10b981' }">{{ dayData.isUp ? '涨' : '跌' }}</span><span v-html="getArrowDisplay(dayData, [...topicItem.data].sort((a,b) => b.date.localeCompare(a.date))[idx + 1])"></span></span>
+                <span class="auction-history-col auction-history-arrow" style="font-size:12px;font-weight:500;"><span :style="{ color: dayData.isUp ? '#ef4444' : '#10b981' }">{{ dayData.isUp ? '涨' : '跌' }}</span><span v-if="dayData.arrow.text" :style="{ color: dayData.arrow.color }">{{ dayData.arrow.text }}</span></span>
               </template>
               <template v-else>
                 <span class="auction-history-col auction-history-star" :style="{ color: dayData.starCount > 0 ? '#f97316' : '#333', fontSize: dayData.starCount >= 6 ? '13px' : '12px', fontWeight: dayData.starCount >= 6 ? 600 : 'normal' }">{{ dayData.starText }}</span>
                 <span class="auction-history-col auction-history-strength" style="font-size:12px;font-weight:500;"><span :style="{ color: dayData.starCount > 0 ? '#f97316' : '#333' }">{{ dayData.strength }}%</span></span>
                 <span class="auction-history-col auction-history-count" :style="{ fontSize: '12px', fontWeight: 500, color: dayData.starCount > 0 ? '#f97316' : '#333' }">{{ dayData.stockCount }}</span>
-                <span class="auction-history-col auction-history-arrow" style="font-size:12px;font-weight:500;"><span v-html="getArrowDisplay(dayData, [...topicItem.data].sort((a,b) => b.date.localeCompare(a.date))[idx + 1])"></span></span>
+                <span class="auction-history-col auction-history-arrow" style="font-size:12px;font-weight:500;"><span v-if="dayData.arrow.text" :style="{ color: dayData.arrow.color }">{{ dayData.arrow.text }}</span></span>
               </template>
             </template>
             <template v-else>
               <span class="auction-history-col auction-history-star">-</span>
               <span class="auction-history-col auction-history-strength" style="font-size:12px;font-weight:500;"><span style="color:#333;">0%</span></span>
               <span class="auction-history-col auction-history-count" style="font-size:12px;font-weight:500;color:#333;">0</span>
-              <span class="auction-history-col auction-history-arrow" style="font-size:12px;font-weight:500;"><span v-html="getArrowDisplay(dayData, [...topicItem.data].sort((a,b) => b.date.localeCompare(a.date))[idx + 1])"></span></span>
+              <span class="auction-history-col auction-history-arrow" style="font-size:12px;font-weight:500;"><span v-if="dayData.arrow.text" :style="{ color: dayData.arrow.color }">{{ dayData.arrow.text }}</span></span>
             </template>
           </div>
         </div>
@@ -462,11 +464,11 @@ import { getTopicGroups, getTopicRankCountThisWeek } from '../logic/topic-rules.
 import { getDisplayNote, parseNoteToFields, extractTopics } from '../logic/note-helpers.js';
 import { getPreviousTradingDay, isTradingDay } from '../logic/trading-day-helpers.js';
 import { getHighRatioStocksForDate, getJingYestHighlightSetForDate, getParallelStocksForDate } from '../logic/auction-sort-rules.js';
-import { getNumericVolume } from '../data/supabase-client.js';
 import { syncStockCloseFromAuction, syncStockTopicsFromAuction } from '../logic/auction-stock-sync.js';
 import { getStockCode } from '../data/stock-code-map.js';
 import { pushStockTopicsToCloud } from '../data/stock-topics.js';
-import { computeAuctionViewData, prepareAuctionData } from '../logic/auction-view-helpers.js';
+import { prepareAuctionData } from '../logic/auction-view-helpers.js';
+import { computeAuctionViewDataIncremental } from '../logic/auction/incremental-view.js';
 import { showToast } from '../composables/useToast.js';
 import { apiStatusMap } from '../logic/ui-bridge.js';
 
@@ -482,7 +484,6 @@ const sortState = reactive({
   byJingYestRatio: false,
   byThreeDayJingDie: false
 });
-const highlightKeyword = ref('');
 const expandedSet = ref(new Set());
 const trendHistory = ref({});
 const longPressMenuRef = ref(null);
@@ -494,7 +495,8 @@ const viewData = computed(() => {
   void uiStore.currentDate;
   void sortState.byData; void sortState.byRatio; void sortState.byParallel;
   void sortState.byJingYest; void sortState.byJingYestRatio; void sortState.byThreeDayJingDie;
-  return computeAuctionViewData('auction', sortState);
+  // A3-01：经增量行缓存层，单格编辑只重新派生变化的行（logic/auction/incremental-view.js）
+  return computeAuctionViewDataIncremental('auction', sortState);
 });
 
 const currentPage = ref(0);
@@ -646,14 +648,17 @@ const p2StockTopicCount = computed(() => {
 });
 
 const p2HighRatioInfo = computed(() => {
+  void auctionStore.dataVersions['auction'];
   try { return getHighRatioStocksForDate(uiStore.currentDate, 'auction'); }
   catch (e) { return { count: '-', stockNames: new Set() }; }
 });
 const p2JingYestSet = computed(() => {
+  void auctionStore.dataVersions['auction'];
   try { return getJingYestHighlightSetForDate(uiStore.currentDate, 'auction'); }
   catch (e) { return new Set(); }
 });
 const p2ParallelSet = computed(() => {
+  void auctionStore.dataVersions['auction'];
   try { return getParallelStocksForDate(uiStore.currentDate, 'auction'); }
   catch (e) { return new Set(); }
 });
@@ -893,25 +898,36 @@ const page3Data = computed(() => {
     return bStars - aStars;
   });
 
-  return { topics: validTopics, tradingDays };
+  const topics = validTopics.map(({ topic, data }) => ({
+    topic,
+    data,
+    // A3-02：每个题材的历史数据按日期倒序只排一次，箭头（getHistoryArrow）也在此处预计算，
+    // 模板不再重复 .sort(...) 与 v-html（A2-06）。
+    sortedData: data.slice().sort((a, b) => b.date.localeCompare(a.date)).map((d, i, arr) => ({
+      ...d,
+      arrow: getHistoryArrow(d, arr[i + 1])
+    }))
+  }));
+  return { topics, tradingDays };
 });
 
 function formatDateShort(dateStr) {
   const parts = dateStr.split('-');
   return `${parseInt(parts[1])}月${parseInt(parts[2])}`;
 }
-function getArrowDisplay(dayData, nextDayData) {
-  if (!dayData.hasData) return '<span style="color:#9ca3af;">-</span>';
-  if (!nextDayData) return '';
+// A2-06：不再返回 v-html 字符串，改为安全的 { text, color } 对象，模板用 {{ }} + :style 渲染。
+function getHistoryArrow(dayData, nextDayData) {
+  if (!dayData.hasData) return { text: '-', color: '#9ca3af' };
+  if (!nextDayData) return { text: '', color: '' };
   const currS = dayData.strength || 0, prevS = nextDayData.strength || 0;
   const currStar = dayData.starCount || 0, prevStar = nextDayData.starCount || 0;
-  if (currS > prevS) return '<span style="color:#ef4444;">⬆</span>';
+  if (currS > prevS) return { text: '⬆', color: '#ef4444' };
   if (currS < prevS) {
-    if (prevS > 70 && prevStar > 0) return '<span style="color:#ef4444;">≈</span>';
-    if (prevStar === 0 && currStar > 0) return '<span style="color:#ef4444;">⬆</span>';
-    return '<span style="color:#10b981;">⬇</span>';
+    if (prevS > 70 && prevStar > 0) return { text: '≈', color: '#ef4444' };
+    if (prevStar === 0 && currStar > 0) return { text: '⬆', color: '#ef4444' };
+    return { text: '⬇', color: '#10b981' };
   }
-  return '<span style="color:#f97316;">平</span>';
+  return { text: '平', color: '#f97316' };
 }
 
 const copiedStocks = ref([]);
@@ -1144,11 +1160,6 @@ function loadTrendHistory(index, stockName) {
   };
 }
 
-function onSearch() {
-  if (auctionStore) auctionStore.highlightKeyword = highlightKeyword.value;
-  refresh();
-}
-
 // 当日竞价指标（仅市场客观值，不进历史趋势）：未匹配量/抢筹幅度/竞价量比/真换手率
 function dailyAuctionMetrics(stockName) {
   const date = uiStore.currentDate;
@@ -1319,9 +1330,11 @@ function onLongPress(stockName) {
   }
 }
 
-watch(() => uiStore.currentDate, () => {
+// A3-03：日期切换只用一个 watch 统一处理（清空展开/趋势缓存 + 准备数据 + 刷新），避免重复触发
+watch(() => uiStore.currentDate, (v) => {
   expandedSet.value = new Set();
   trendHistory.value = {};
+  if (v) prepareAuctionData(v);
   refresh();
 });
 
@@ -1331,7 +1344,6 @@ onMounted(() => {
   loadCopiedStocks();
   _on('auction-refresh', onAuctionRefresh);
 });
-watch(() => uiStore.currentDate, (v) => { if (v) prepareAuctionData(v); });
 onUnmounted(() => {
   cancelLongPress();
   _off('auction-refresh', onAuctionRefresh);

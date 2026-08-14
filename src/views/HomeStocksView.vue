@@ -282,10 +282,11 @@
 
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted, shallowRef, triggerRef } from 'vue';
-import { getCurrentDate, setCurrentDate, saveData } from '../logic/app-core.js';
+import { getCurrentDate, setCurrentDate } from '../logic/app-core.js';
 import { getStocksData } from '../data/supabase-client.js';
 import { formatDate, getStarTagsForStock, getStockProfitStatus, clearStarTagCache, clearProfitStatusCache } from '../logic/ui-bridge.js';
 import { editStock, copyToTomorrow, copyToDate, deleteStock, openSoldEdit, openTrackEdit } from '../logic/stock-operations.js';
+import { saveStockFields, saveSoldRecords, saveTrack, importStockData } from '../logic/stocks/stocks-edit.js';
 import { showToast } from '../composables/useToast.js';
 import { getCurrentFilter, setCurrentFilter, getIsStockListCollapsed, setIsStockListCollapsed } from '../logic/stock-list-state.js';
 import { _on, _off } from '../stores/eventBus.js';
@@ -617,22 +618,21 @@ function openEditModal(id) {
   editModalActive.value = true;
 }
 
-function saveEditModal() {
+async function saveEditModal() {
   if (editingStockId === null) return;
-  const list = getStocksData()[getCurrentDate()] || [];
-  const stock = list.find(s => s.id === editingStockId);
-  if (!stock) { editModalActive.value = false; return; }
-  Object.keys(editForm).forEach(k => {
-    if (['bought','sold','hold','watch','dragon','bomb','sellHigh','sell1120','sell1450','topicDirection','recentMulti','sectorEtf','nishi','shunshi'].includes(k)) {
-      stock[k] = !!editForm[k];
-    } else {
-      stock[k] = editForm[k];
-    }
-  });
-  saveData();
-  editModalActive.value = false;
-  refresh();
-  showToast('已保存');
+  const fields = { ...editForm };
+  try {
+    // HS-04：缓存更新+保存交给 Logic 层（stocks-edit.js），UI 不再直接改写 Data 内部对象
+    // HS-02：await 真实推送结果，成败可见
+    await saveStockFields(editingStockId, fields);
+    // HS-01：用 localRefresh 精准更新该行（生成新对象引用），使 v-memo 失效并刷新
+    editModalActive.value = false;
+    localRefresh(editingStockId);
+    showToast('已保存');
+  } catch (e) {
+    console.error('[HomeStocksView] saveEditModal 保存失败', e);
+    showToast('保存失败：' + (e && e.message ? e.message : '未知错误'));
+  }
 }
 
 const soldEditModalActive = ref(false);
@@ -660,46 +660,19 @@ function openSoldEditModal(id) {
 function addSoldRow() { editingSoldRows.value.push({ id: genSoldId(), date: nowTimeStr(), profit: '', percent: '', type: '' }); }
 function removeSoldRow(idx) { editingSoldRows.value.splice(idx, 1); }
 
-function saveSoldEditModal() {
+async function saveSoldEditModal() {
   if (soldEditingStockId === null) return;
-  const list = getStocksData()[getCurrentDate()] || [];
-  const stockIndex = list.findIndex(s => s.id === soldEditingStockId || s.id == soldEditingStockId);
-  if (stockIndex === -1) { soldEditModalActive.value = false; return; }
-  const stock = list[stockIndex];
-  const records = editingSoldRows.value
-    .filter(r => (r.date || '').trim())
-    .map(r => ({ id: r.id || genSoldId(), date: (r.date || '').trim(), profit: (r.profit || '').trim(), percent: (r.percent || '').trim(), type: r.type || '' }));
-  const hasFullClear = records.some(r => r.type === '全清仓');
-  const hasValidSold = records.some(r => r.type === '全清仓' || r.type === '部分卖');
-  const isFirstSold = !stock.soldRecords || stock.soldRecords.length === 0;
-  stock.soldRecords = records;
-  stock.isSold = records.length > 0;
-  if (isFirstSold && records.length > 0 && !stock.bought) { stock.bought = true; }
-  if (!isFirstSold && hasValidSold) { stock.bought = false; stock.sold = true; }
-  if (hasFullClear) {
-    if (stock.hold || stock.bought) { stock.hold = false; stock.bought = false; stock.sold = true; }
-  } else if (hasValidSold) {
-    if (!stock.sold) stock.sold = true;
+  try {
+    // HS-04：缓存更新+保存交给 Logic 层；HS-02：await 真实推送结果，成败可见
+    await saveSoldRecords(soldEditingStockId, editingSoldRows.value);
+    soldEditModalActive.value = false;
+    clearProfitStatusCache();
+    localRefresh(soldEditingStockId);
+    showToast('卖出记录已保存');
+  } catch (e) {
+    console.error('[HomeStocksView] saveSoldEditModal 保存失败', e);
+    showToast('保存失败：' + (e && e.message ? e.message : '未知错误'));
   }
-  const stockName = stock.name;
-  const allData = getStocksData();
-  const allDates = Object.keys(allData).sort();
-  const curIdx = allDates.indexOf(getCurrentDate());
-  if (curIdx !== -1) {
-    for (let i = curIdx + 1; i < allDates.length; i++) {
-      const futureList = allData[allDates[i]];
-      const fi = futureList.findIndex(s => s.name === stockName);
-      if (fi !== -1) {
-        futureList[fi].soldRecords = JSON.parse(JSON.stringify(records));
-        futureList[fi].isSold = records.length > 0;
-      }
-    }
-  }
-  saveData();
-  soldEditModalActive.value = false;
-  clearProfitStatusCache();
-  localRefresh(soldEditingStockId);
-  showToast('卖出记录已保存');
 }
 
 const trackEditModalActive = ref(false);
@@ -732,18 +705,18 @@ function onTrackContentInput(idx) {
   else if (!c) { row.date = ''; }
 }
 
-function saveTrackEditModal() {
+async function saveTrackEditModal() {
   if (trackEditingStockId === null) return;
-  const list = getStocksData()[getCurrentDate()] || [];
-  const stock = list.find(s => s.id === trackEditingStockId || s.id == trackEditingStockId);
-  if (!stock) { trackEditModalActive.value = false; return; }
-  stock.track = editingTrackRows.value
-    .map(r => ({ date: (r.date || '').trim(), content: (r.content || '').trim() }))
-    .filter(r => r.date || r.content);
-  saveData();
-  trackEditModalActive.value = false;
-  localRefresh(trackEditingStockId);
-  showToast('追踪记录已保存');
+  try {
+    // HS-04：缓存更新+保存交给 Logic 层；HS-02：await 真实推送结果，成败可见
+    await saveTrack(trackEditingStockId, editingTrackRows.value);
+    trackEditModalActive.value = false;
+    localRefresh(trackEditingStockId);
+    showToast('追踪记录已保存');
+  } catch (e) {
+    console.error('[HomeStocksView] saveTrackEditModal 保存失败', e);
+    showToast('保存失败：' + (e && e.message ? e.message : '未知错误'));
+  }
 }
 
 const datePickerActive = ref(false);
@@ -848,18 +821,16 @@ function showImportModal() {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       try {
         const imported = JSON.parse(ev.target.result);
-        const stocksData = getStocksData();
-        Object.keys(imported).forEach(date => {
-          stocksData[date] = imported[date];
-        });
-        saveData();
+        // HS-04：整体替换缓存+保存交给 Logic 层；HS-02：await 真实推送结果，成败可见
+        await importStockData(imported);
         refresh();
         showToast('导入成功');
       } catch (err) {
-        showToast('导入失败: ' + err.message);
+        console.error('[HomeStocksView] 导入失败', err);
+        showToast('导入失败: ' + (err && err.message ? err.message : err));
       }
     };
     reader.readAsText(file);

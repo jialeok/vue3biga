@@ -182,31 +182,41 @@ function biddingCurrentPoint() {
 }
 
 function biddingGetTencentPcts(thscodes) {
+  // [A2-03] 改为标准 fetch + 正则解析，移除 document.createElement('script') 注入与
+  // window['v_'+code] 全局读写（§16 纯 Vue3 红线：禁止向 DOM/业务全局挂数据）。
+  // 解析方式对齐 workers/bidding-board-worker-a/data/tencent-api.js（项目既有的 §16 合规实现），抓取功能等价。
   return new Promise((resolve, reject) => {
     const tqCodes = thscodes.map(c => {
       const num = c.split('.')[0];
       return (c.slice(-2) === 'SZ' ? 'sz' : 'sh') + num;
     });
-    const s = document.createElement('script');
-    s.src = 'https://qt.gtimg.cn/q=' + tqCodes.join(',');
-    s.charset = 'gbk';
-    const timer = setTimeout(() => { s.remove(); reject(new Error('腾讯行情请求超时')); }, 10000);
-    s.onload = () => {
-      clearTimeout(timer);
-      const result = {};
-      tqCodes.forEach(code => {
-        const raw = window['v_' + code];
-        if (!raw) return;
-        const pct = parseFloat(String(raw).split('~')[32]);
-        if (!isNaN(pct)) {
-          result[code.slice(2) + (code.slice(0, 2) === 'sz' ? '.SZ' : '.SH')] = pct;
+    const url = 'https://qt.gtimg.cn/q=' + tqCodes.join(',');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    fetch(url, { signal: controller.signal })
+      .then(resp => {
+        if (!resp.ok) throw new Error('腾讯行情请求失败：HTTP ' + resp.status);
+        return resp.text();
+      })
+      .then(text => {
+        const result = {};
+        // 从返回文本中提取 v_<code> 赋值内容（不再依赖全局 window['v_'+code]），按 ~ 分隔取第 33 字段（涨幅%）
+        const re = /v_([a-z]{2}\d{6})="([^"]*)"/g;
+        let m;
+        while ((m = re.exec(text)) !== null) {
+          const pct = parseFloat(m[2].split('~')[32]);
+          if (!isNaN(pct)) {
+            const num = m[1].slice(2);
+            result[num + (m[1].slice(0, 2) === 'sz' ? '.SZ' : '.SH')] = pct;
+          }
         }
-      });
-      s.remove();
-      resolve(result);
-    };
-    s.onerror = () => { clearTimeout(timer); s.remove(); reject(new Error('腾讯行情加载失败')); };
-    document.head.appendChild(s);
+        resolve(result);
+      })
+      .catch(e => {
+        if (e && e.name === 'AbortError') reject(new Error('腾讯行情请求超时'));
+        else reject(new Error('腾讯行情加载失败: ' + (e && e.message || e)));
+      })
+      .finally(() => clearTimeout(timer));
   });
 }
 
