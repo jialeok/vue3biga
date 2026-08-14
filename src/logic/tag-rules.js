@@ -179,9 +179,11 @@ import { state } from './app-state.js';
         // 名单变化就重新跑一次补入逻辑。权威来源只认 getStocksData()，无记录即清除。
         // [REFACTOR 2026-08-14] 重写标签继承逻辑：
         // 观察组 = 前一日竞昨高光集 + 前一日【观察组内】打标签的股票（obsBought_）
-        // 常规组 = watchlist + 前一日【常规组内】打标签的股票（regularBought_，自动添加到列表）
-        // 卖出也继承（要观察）。只继承一天：跳过 inheritedHold 的仅继承记录。
-        // 历史日期只清理不添加。
+        // 常规组 = 仅当天真实抓取/用户手动录入（带数据）的股票。
+        //   —— 2026-08-14 修正：取消「常规组标签继承」（regularBought_ 不再自动添加空壳行）。
+        //      前一日在常规组打标签的股票会产生无数据的伪股票、污染常规组（用户反馈"五天数据不全"），
+        //      故移除；需持续观察的股票统一走「竞昨高光继承」进入观察组即可。
+        // 卖出也继承（要观察，仍进观察组）。只继承一天。历史日期只清理不添加。
         export function ensureBoughtStocksForDate(date) {
             if (!date) return;
             const today = _getLocalTodayStr();
@@ -228,21 +230,35 @@ import { state } from './app-state.js';
             // 前置依赖 getJingYestHighlightSetForDate(prevDay) 已在本函数开头计算（prevObsSet）。
             const _sourceReady = !!(prevObsSet && prevObsSet.size > 0);
             const _validObsNames = new Set([...obsInherited, ...(prevObsSet || [])]);
-            const _validRegularNames = new Set(regularInherited);
             let _cleanedCount = 0;
             if (_sourceReady) {
-            dayList.forEach(function(row) {
+            const _removeIdx = [];
+            const _noData = function(row) {
+                const v = row.volume;
+                const y = (row.yestVolume !== undefined ? row.yestVolume : row.yest_volume);
+                return (v === undefined || v === null || v === '') && (y === undefined || y === null || y === '');
+            };
+            dayList.forEach(function(row, idx) {
                 if (!row || !row.stock) return;
                 const n = row.stock.trim();
-                if (row.obsAutoAdded === true && !_validObsNames.has(n)) {
+                const wasObs = row.obsAutoAdded === true;
+                if (wasObs && !_validObsNames.has(n)) {
+                    // 观察组壳失去资格：只清标志转回常规组，不删行（可能已有真实数据）
                     row.obsAutoAdded = undefined;
                     _cleanedCount++;
                 }
-                if (row.regularAutoAdded === true && !_validRegularNames.has(n)) {
-                    row.regularAutoAdded = undefined;
-                    _cleanedCount++;
+                // [REG-FIX 2026-08-14] 常规组标签继承已取消：移除常规组内「无真实数据的继承壳」
+                // （obsAutoAdded 不为 true 且 volume/yest_volume 皆空且来源=手动/常规继承）。
+                // 这些不是当天抓取的真股票，会污染常规组、造成"五天数据不全"的伪股票。
+                // 仅移除无数据壳；已有真实数据的行（无论来源）一律保留，绝不误删真股票。
+                if (!wasObs && _noData(row) && (row.source === 'manual' || row.regularAutoAdded === true)) {
+                    _removeIdx.push(idx);
                 }
             });
+            if (_removeIdx.length > 0) {
+                _removeIdx.sort(function(a, b) { return b - a; }).forEach(function(i) { dayList.splice(i, 1); });
+                _cleanedCount += _removeIdx.length;
+            }
             } else {
                 _dbgLog('[BOUGHT-ENSURE] 源未就绪（prevObsSet 为空），跳过回溯清理，避免误删继承空壳');
             }
@@ -250,7 +266,7 @@ import { state } from './app-state.js';
                 auctionData[date] = dayList;
                 markAuctionDirty(date);
                 scheduleCloudPush();
-                _dbgLog('[BOUGHT-ENSURE] 回溯清理 ' + _cleanedCount + ' 只错误行');
+                _dbgLog('[BOUGHT-ENSURE] 回溯清理 ' + _cleanedCount + ' 只错误行（含移除无数据常规继承壳）');
             }
 
             if (isHistorical) {
@@ -288,7 +304,10 @@ import { state } from './app-state.js';
             }
 
             obsInherited.forEach(function(n) { _addOne(n, true); });
-            regularInherited.forEach(function(n) { _addOne(n, false); });
+            // [REG-FIX 2026-08-14] 取消常规组标签继承：前一日在常规组打过标签的股票，
+            // 不再以空壳行塞入次日常规组（会造成"五天数据不全"的伪股票，污染常规组）。
+            // 常规组只保留当天真实抓取/用户手动录入并带数据的股票；需持续观察的股票
+            // 已统一走「竞昨高光继承」进入观察组，无需常规组重复继承。
 
             if (hasNew) {
                 auctionData[date] = dayList;

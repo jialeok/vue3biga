@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const playwright = require('C:/Users/jialeok/.workbuddy/binaries/node/workspace/node_modules/playwright');
 
-const BUILD_DIR = 'C:/c/tmp/vue3biga-build-1786693889';
+const BUILD_DIR = 'C:/c/tmp/vue3biga-build-1786697884';
 const PORT = 4178;
 const PASSWORD = 'biga8450';
 
@@ -116,7 +116,19 @@ async function readBoard(page) {
     await page.fill('#pwdInput', PASSWORD);
     await page.click('.login-btn');
     // 等待数据加载（竞价行出现，DOM 挂载即可，不强制可见性以避免长列表误判）
-    await page.waitForSelector('.auction-item', { state: 'attached', timeout: 90000 });
+    try {
+      await page.waitForSelector('.auction-item', { state: 'attached', timeout: 180000 });
+    } catch (e) {
+      const diag = await page.evaluate(() => {
+        const c = document.querySelector('.auction-scroll-container');
+        const all = document.querySelectorAll('.auction-item').length;
+        const bodyTxt = (document.body.innerText || '').slice(0, 300);
+        return { hasContainer: !!c, containerChildren: c ? c.children.length : -1, auctionItems: all, bodySnippet: bodyTxt };
+      }).catch(() => null);
+      report.error = 'waitForSelector .auction-item 超时: ' + e.message;
+      report.diag = diag;
+      throw e;
+    }
     await page.waitForTimeout(2500); // 等渲染稳定
 
     const defaultDate = (await page.textContent('.date-text')).trim();
