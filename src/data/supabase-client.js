@@ -241,6 +241,8 @@ export function _moduleKey(name) {
         _setGetStocksDataFn(getStocksData);
         export function getJiwangData() { const d = loadAllData(); return d ? d.jiwang : {}; }
         export function getBiddingData() { const d = loadAllData(); return (d && d.bidding) || {}; }
+        // §8 已上云（读经 localStorage 兜底；写经 etf-sync→Supabase auction_etf）。
+        // Supabase 表未建时自动降级，不丢数据。保留此 localStorage 读直至云读路径验证切换。
         export function getEtfData() {
             try { return JSON.parse(localStorage.getItem('stockEtfData') || '{}'); }
             catch (e) { return {}; }

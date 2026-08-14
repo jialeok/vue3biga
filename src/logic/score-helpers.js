@@ -71,10 +71,7 @@ export function saveScoreSettingsToStorage(type, settings) {
 }
 
 export function checkHasFumianTopic(currentDate) {
-    // §8 违规标注（派生业务标记落 localStorage）：hasFumianTopic_<date> = 负面题材布尔标记，属业务数据。
-    // 迁云方案：在 market_metrics(scope='hot') 新增 has_fumian_topic boolean 列（按 date 唯一），或新增 topic_fumian(date PK, has_fumian boolean) 表；
-    //   - 写：auction-sync.js（其他 agent 所有）pullFromCloud 收集 hasFumianTopics 处改为 upsert 该表；
-    //   - 读：本函数改为 select 该表（当前仍读 localStorage，因写入方未迁云，本 agent 禁止改写入方）。
-    //   写入方归其他 agent，本 agent 仅标注；待写入方迁云后本读站点一并切换并移除 localStorage。
+    // §8 已上云（写路径双写，见 src/data/fumian-sync.js / auction-sync pullFromCloud）：hasFumianTopic_<date> 负面题材布尔标记现已由 auction-sync pullFromCloud 双写到 Supabase topic_fumian，localStorage 保留兜底。
+    // 读取仍经 localStorage 兜底（本函数体不变），云读路径 loadFumianTopics() 待验证后切换；Supabase 表未建时自动降级不丢数据。
     return localStorage.getItem('hasFumianTopic_' + currentDate) === 'true';
 }

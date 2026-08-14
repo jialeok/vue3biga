@@ -192,6 +192,8 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
             updateCloudSyncUI('syncing');
             try {
                 await pullFromCloud();
+                // §6：allData 为内存 cache（非真相源），此处为重建入口：清空后由 loadAllData() 重建。
+                //     注：state._rankMemCache 等各域缓存为独立字段，不受 allData=null 连坐（rank 已解耦）。
                 state.allData = null; loadAllData();
                 renderList(); renderJiwang(); renderRank(); renderAuction();
                 renderMulti(); renderHotspot(); renderPattern(); renderBidding();
@@ -431,6 +433,7 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
                 return;
             }
             try {
+                // §6：序列化内存缓存别名 state.allData[name]（非真相源）落 localStorage，仅遗留未拆表模块到达此分支。
                 localStorage.setItem(_moduleKey(name), JSON.stringify(state.allData[name]));
             } catch (e) {
                 console.error('saveModule 失败 [' + name + ']:', e);
@@ -455,6 +458,7 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
                     key === 'hotspot' || key === 'pattern' || key === 'tagTitles') {
                     return;
                 }
+                // §6：读内存缓存别名 state.allData[key]（非真相源）落 localStorage，仅遗留未拆表模块到达此分支。
                 if (state.allData && state.allData[key] !== undefined) {
                     try {
                         localStorage.setItem(_moduleKey(key), JSON.stringify(state.allData[key]));
@@ -529,6 +533,8 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
             const trackData = _readTrackEditFormData();
             const expandedStockId = state.currentTrackEditId;
             
+            // §6：state.allData.stocks[date] 此处为内存缓存别名（非真相源），真相经 getStocksData() / state._stocksMemCache。
+            //     仅原地写 track 字段，不改读值行为；本函数仅在 allData 重建完成后被触发（allData=null 期间不会调用）。
             if (!state.allData.stocks[useUiStore().currentDate]) {
                 state.allData.stocks[useUiStore().currentDate] = [];
             }

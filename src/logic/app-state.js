@@ -12,6 +12,8 @@ export const state = {
     _justPushedHotAuction: false,
     _justPushedHotAuctionCounter: 0,
     _pushDebounceTimer: null,
+    // §6：allData 仅为内存 CACHE（非真相源）——由各域 _xxxMemCache / Data getter 重建填充，不是五套真相之一。
+    //     读取统一走 Data 层 getter（getStocksData()/getBiddingData()/getEtfData() 等）或各域 state._xxxMemCache，禁止当作真相源。
     allData: null,
     DATA_VERSION: null,
     _hotTrendsCache: {},
@@ -109,8 +111,8 @@ export const state = {
     SUPABASE_ANON_KEY: null,
     SUPABASE_URL: null,
     __auctionStoreFallback: null,
-    _allDataLastRebuildAt: null,
-    _allDataRebuildCount: 0,
+    _allDataLastRebuildAt: null, // §6：allData 缓存重建时间戳（仅观测用，非真相源）
+    _allDataRebuildCount: 0, // §6：allData 缓存重建计数（仅观测用，非真相源）
     _auctionFullRowCache_DELETED: {},
     unlocked: false,
     _coreTopicsCloudLoaded: false,

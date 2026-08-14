@@ -8,6 +8,7 @@
         // 陈旧值继续沉淀（"幽灵标签"）。云端这三列保持最后一次旧值自然退役。
         // 拆表后：只写 auction_watchlist，该表没有 in_watchlist 列（每行天然是正式成员）。
 import { getSupabase, getStocksData, loadAllData } from '../../data/supabase-client.js';
+import { saveFumianTopics } from '../../data/fumian-sync.js';
 import { _dbgLog } from '../../data/debug-log.js';
 import { _emit } from '../../stores/eventBus.js';
 import { getGroupData, getAuctionData, saveModule, patchAuctionFieldBatch, reconcileAuctionWatchlistFromLocalStorage, mergeAuctionDateRows, getHotAuctionData, _openHotAuctionShield, _closeHotAuctionShield } from '../app-core-api.js';
@@ -551,9 +552,15 @@ import { useUiStore } from '../../stores/uiStore.js';
                 if (cloudObj.summaries) {
                     Object.entries(cloudObj.summaries).forEach(([k, v]) => localStorage.setItem(k, v));
                 }
-                // §8-TODO: hasFumianTopic_* 为派生业务标记（负面题材），属业务数据，应随题材上云（见 score-helpers.js checkHasFumianTopic §8-TODO），待单独决策；当前保留以避免丢数据。
+                // §8 已上云（写路径双写）：Supabase topic_fumian + localStorage 兜底；读取仍经 checkHasFumianTopic 的 localStorage 兜底（见 score-helpers.js）；Supabase 表未建时自动降级，不丢数据。
                 if (cloudObj.hasFumianTopics) {
                     Object.entries(cloudObj.hasFumianTopics).forEach(([k, v]) => localStorage.setItem(k, v));
+                    // 双写：新增 Supabase upsert，保留 localStorage 兜底（失败自动降级，绝不破坏既有路径）
+                    try {
+                        await saveFumianTopics(cloudObj.hasFumianTopics);
+                    } catch (e) {
+                        console.error('[auction-sync] hasFumian 上云异常：', e && e.message);
+                    }
                 }
                 if (cloudObj.scoreSettings) {
                     ['recentMulti', 'sectorEtf', 'topicDirection'].forEach(type => {

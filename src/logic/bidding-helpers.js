@@ -5,13 +5,14 @@ import { getBiddingData, getJiwangData, getStocksData, getEtfData } from '../dat
 import { saveData, markJiwangDirty } from './app-core-api.js';
 import { pushJiwangNow } from '../data/jiwang-data.js';
 import { fuyaoApiGet } from '../data/api/fuyao-proxy.js';
+import { saveEtfData } from '../data/etf-sync.js';
 import { _emit } from '../stores/eventBus.js';
 import { _dbgLog } from '../data/debug-log.js';
 import { useUiStore } from '../stores/uiStore.js';
 
 export { autoCalculateRecentMultiScore };
 
-export function syncSectorEtfZhangNum(zhangNum) {
+export async function syncSectorEtfZhangNum(zhangNum) {
   zhangNum = parseInt(zhangNum) || 0;
   const uiStore = useUiStore();
   const currentDate = uiStore.currentDate;
@@ -29,12 +30,11 @@ export function syncSectorEtfZhangNum(zhangNum) {
   const dieValue = total - zhangNum;
   firstEtf.dieZhangbi = dieValue + ':' + zhangNum;
   etfData[currentDate] = todayEtf;
-  // §8 违规标注（业务数据落 localStorage）：stockEtfData = { [date]: [{shuliang, dieZhangbi, jingtu, tushi}] } 属板块ETF业务数据。
-  // 迁云方案：新增 Supabase 表 auction_etf(date text PK, data jsonb, updated_at timestamptz)，或复用 market_metrics(scope='auction') 新增 etf_data jsonb 列；
-  //   - 写：本函数改为 upsert 该表（替代本行 localStorage.setItem）；
-  //   - 读：supabase-client.js getEtfData() 改为 select 该表（当前仍读 localStorage，归其他 agent 所有，本 agent 禁止编辑）。
-  //   读站点未迁云前若改写 Supabase 会导致 getEtfData() 返回 {}、板块ETF看板丢数据，故暂保留下方 localStorage 写入；待读站点一并迁云后移除。
+  // §8 已上云（写路径双写）：Supabase auction_etf + localStorage 兜底。
+  // 读取仍经 getEtfData() 的 localStorage 兜底，Supabase 表未建时自动降级不丢数据。
+  // 读路径切换待验证后移除 localStorage（见 §8-TODO）。
   localStorage.setItem('stockEtfData', JSON.stringify(etfData));
+  try { await saveEtfData(etfData); } catch (e) { console.error('[SECTOR-ETF] 上云异常：', e && e.message); }
 
   _dbgLog('[SECTOR-ETF] 同步到ETF看板: 总 ' + total + ', 涨 ' + zhangNum + ', 跌:涨 = ' + firstEtf.dieZhangbi);
 

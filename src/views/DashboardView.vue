@@ -120,7 +120,7 @@ const weekdayText = computed(() => {
   return days[new Date(d + 'T00:00:00').getDay()];
 });
 
-// [FEATURE] 假期双向切换：holidayTick 用于在非响应式的 allData.holidays/tradingDays 变更后强制重算
+// [FEATURE] 假期双向切换：holidayTick 用于在非响应式的 allData.holidays/tradingDays（§6：allData 为内存 cache，非真相源）变更后强制重算
 const holidayTick = ref(0);
 
 // 日期选择器内选中日期的假期切换按钮文案（描述"将要执行的动作"）

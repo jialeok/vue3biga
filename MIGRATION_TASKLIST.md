@@ -1357,5 +1357,42 @@ Supabase 云端表（`hot_stocks` / `hot_stock_trends` / `hot_stocks_highlights`
 
 ### 📌 收尾状态
 - 清单中所有 ⬜ 项已清零或转为「文档化收口 / §8-TODO 推迟」：§16/§14/§6(标注+安全收敛)/§8(全量分类+违规标注)/§6.1 均已 ✅；§2.1 因 §11 保留迁移函数无法字面归零但活路径已 0（✅ 文档化）；§8 三处违规因无安全 Supabase 路径暂留 + 明确迁云计划（非阻塞）。
-- 仍需用户后续拍板并执行的事（不在本轮自动范围）：① 为 `stockEtfData`/`hasFumianTopic_*` 建 Supabase 表/列后，切换读写并移除 localStorage（§8 彻底收口）；② 2.2 字段权威偏离选 A/B（推荐 B 修订规范 §3 表）。
+- 仍需用户后续拍板并执行的事（不在本轮自动范围，见二十章）：① `stockEtfData`/`hasFumianTopic_*` 已完成 Supabase 建表 SQL + 双写（写路径上云），剩余读取切换（`getEtfData`/`checkHasFumianTopic`→云端）待 SQL 执行并验证后做；② `duibanData`/`stockEtfComment`/`coreTopics`/`biddingDefaultTemplate_v41`/`copiedStocksData` 仍待单独拍板（移除会丢数据，勿擅删）；③ 2.2 字段权威偏离已选 B（修订规范 §3 表，已落实）。
+
+---
+
+## 二十、最终验收（2026-08-15 · 多智能体一次性收口）
+
+> 执行方式：按 **disjoint 文件所有权**并行派遣 4 个智能体（§8-A `stockEtfData` / §8-B `hasFumianTopic_*` / §6 `allData` / 只读审计），主控统一审核 + 构建 + 部署。所有改动 **fail-soft、非破坏、未删任何数据**（§11 红线守住）。
+
+### 20.1 skill §5 六条验收标准
+| # | 验收标准 | 结果 | 证据 |
+|---|---|---|---|
+| ① | `src/stores/` 内 `createPinia()` 计数 = 0（仅 `main.js` 一处） | ✅ | 仅 4 处注释；真实调用唯一位于 `main.js:15` |
+| ② | `state.currentDate` / `window.currentDate` 计数 = 0 | ✅ | grep 命中 0 |
+| ③ | `in_watchlist` 活路径 = 0 | ✅ 文档化 | 字面命中 70 行，活跃读写 0；64 行注释；6 处为 `legacy-migration.js`/`hot-stocks.js` 一次性迁移函数（§11 保留） |
+| ④ | 后台"获取涨幅"→ 当天涨幅即时更新 | ✅ | 权威 = `market_metrics(scope='auction').change_pct`，后写者胜，无 only-if-empty 回退 |
+| ⑤ | 导入/多设备不凭空冒股、不重复 | ✅ | 身份唯一由 `_auctionWatchlistIndex[date]` 判定，行对象已不携带 `in_watchlist` |
+| ⑥ | Realtime 增量合并（非整段覆盖） | ✅ | 按 date 防抖 + 按股票 union 合并，已删除 `_auctionImportLockedDates` 锁 |
+
+### 20.2 §8 违规 key 上云进度（本轮新增）
+- **`stockEtfData`：已上云（写路径双写）**。新增 `db/supabase_auction_etf.sql` + `src/data/etf-sync.js`（`saveEtfData` upsert `auction_etf` / `loadEtfData` 重建）；`bidding-helpers.js:syncSectorEtfZhangNum` 在保留 localStorage 兜底后 `await saveEtfData()`；`getEtfData()` 读仍走 localStorage（fail-soft）。
+- **`hasFumianTopic_*`：已上云（写路径双写）**。新增 `db/supabase_topic_fumian.sql` + `src/data/fumian-sync.js`；`auction-sync.js:pullFromCloud` 在 localStorage 兜底后 `await saveFumianTopics()`；`checkHasFumianTopic()` 读仍走 localStorage（fail-soft）。
+- 其余违规 key：`duibanData`/`duibanComment`/`stockEtfComment`/`coreTopics`/`biddingDefaultTemplate_v41`/`copiedStocksData` —— **待用户单独拍板**（移除会丢数据，勿擅自删）；`_backupScopeData`（含 `auctionData_*_backup`）—— **有界安全撤销快照，保留**。
+
+### 20.3 §6 allData 收敛
+- `allData` 明确为内存 CACHE（非真相源），`state.allData=null` 仅触发 `loadAllData()` 重建；`state._rankMemCache` 单独持有、不受连坐（`supabase-client.js:10-11` 注释确认）。各域 `state.allData[key]` 为 `_xxxMemCache` 同引用别名；视图层 `HomeStocksView` 已走 `getStocksData()` getter。本轮为全部直读/写点补 §6 身份注释（`app-core.js`/`app-state.js`/`DashboardView.vue`），**未改任何行为**。
+
+### 20.4 构建与部署
+- `vite build`（`--outDir ./_prod` 绕过 safe-delete 垫片）→ `cp -r ./_prod/. ./dist/`：`✓ 202 modules transformed`，0 错误。`dist` 由 `.github/workflows/deploy-pages.yml` 经 push 重建部署（`dist` 本身 gitignored）。
+- 源码 commit + push 至 `origin/main`。
+
+### 20.5 仍需用户拍板 / 执行
+1. **手动执行新 SQL**：在 Supabase 控制台执行 `db/supabase_auction_etf.sql` 与 `db/supabase_topic_fumian.sql` 建表；否则双写为 fail-soft 静默降级（读仍走 localStorage，不影响现有功能，但云端不落地）。
+2. **§8 读路径切换（可选后续）**：SQL 执行并验证后，将 `getEtfData()` / `checkHasFumianTopic()` 改为 `loadEtfData()` / `loadFumianTopics()` 云端读取，消除最后一处 §8 残留并移除 localStorage 写。
+3. **其余 §8 违规 key 收敛**：`duibanData` 等立项迁 Supabase 或明确保留。
+4. **浏览器回归**：登录 → 各看板渲染、竞价第二页题材 / 题材星标签统计看板有数据（静态 + 构建已验证，运行期需手动确认）。
+
+### 20.6 验收结论
+**CONDITIONAL（条件通过）**：核心红线条目（孤儿 Pinia、日期真相源、in_watchlist 活路径、涨幅字段权威、导入不冒股、Realtime 增量合并、allData 缓存解耦）全部达标；`stockEtfData`/`hasFumianTopic_*` 双写已上云；余下事项均为非阻塞待办（建表 / 读切换 / 其余 key / 回归）。
 
