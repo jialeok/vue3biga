@@ -12,7 +12,7 @@ import { loadCloudStockCodeMap, upsertStockCodeMap } from '../data/stock-code-ma
 import { buildTopicCache, invalidateTopicCache, loadCloudTopics, pushStockTopicsToCloud, scanDataSourceForTopics } from '../data/stock-topics.js';
 import { _moduleKey, getBiddingData, getJiwangData, getNumericVolume, getStocksData, getSupabase, loadAllData } from '../data/supabase-client.js';
 import { remainingBoards } from '../data/remaining-boards.js';
-import { _addAuctionWatchlistMember, _extractWatchlistNamesFromRows, _getAuctionWatchlistSet, _setAuctionWatchlistForDate, getStockHistoryValue, lockAuctionDateForImport, unlockAuctionDateForImport } from '../data/watchlist-and-metrics.js';
+import { _addAuctionWatchlistMember, _extractWatchlistNamesFromRows, _getAuctionWatchlistSet, _setAuctionWatchlistForDate, getStockHistoryValue } from '../data/watchlist-and-metrics.js';
 import { getJingYestHighlightSetForDate, getJingYestStocksForDate } from './auction-sort-rules.js';
 import { syncStockCloseFromAuction, syncStockTopicsFromAuction } from './auction-stock-sync.js';
 import { getStats } from './jiwang-helpers.js';
@@ -2843,9 +2843,6 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                 return;
             }
             setBtnLoading(btn, true);
-            // 导入期间锁定该日期：期间任何 Realtime 触发的回拉都会跳过这一天，
-            // 防止导入还没推送完成时被云端"旧数据"整段覆盖（见 lockAuctionDateForImport 注释）
-            lockAuctionDateForImport(targetDate);
             try {
                 const data = await fuyaoApiGet('/api/a-share-index/constituents/ths-stock-list', { thscode: LADDER_THSCODE });
                 const constituents = (data && data.item) || [];
@@ -2996,11 +2993,6 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
                 setApiStatus('thsApiStatus', '❌ ' + msg, false);
             } finally {
                 setBtnLoading(btn, false);
-                // 延迟解锁：scheduleCloudPush 是 2 秒防抖，加上网络推送本身的耗时，
-                // 提前解锁会让解锁后、真正推送完成前这段窗口内到达的 Realtime 通知
-                // 仍然读到"推送前的云端旧数据"把刚导入的列表冲掉。延迟到留出安全余量
-                // （3.5 秒）之后再解锁，确保这次导入自己的推送已经完成。
-                setTimeout(function() { unlockAuctionDateForImport(targetDate); }, 3500);
             }
         }
 

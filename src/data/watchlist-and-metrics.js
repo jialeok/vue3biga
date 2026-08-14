@@ -292,27 +292,16 @@ import { setAuctionDateData } from './auction-data.js';
             }
         }
 
-        // 正在执行"获取最近多板"等整表覆盖式导入操作的日期集合。
-        // 修复：导入函数（如 fetchLadderConstituentsMain）本地写入 _auctionMemCache 到
-        // 云端推送完成之间有一段异步窗口（网络耗时 + 2 秒推送防抖）。若这期间 Realtime
-        // 收到任何其它变更通知（哪怕是同一次导入自己触发的、或另一台设备的无关操作），
-        // pullAuctionMarketDataForDate 会用云端"旧数据"整段替换 _auctionMemCache[date]，
-        // 把刚导入还没来得及推送上云的新列表整个冲掉——表现为"导入最近多板，页面自动
-        // 刷新后列表被清空/变乱、出现重复股票"。用这个锁在导入期间让 Realtime 拉取直接跳过
-        // 该日期，导入完成后解锁，之后的 Realtime 通知才正常生效。
-        if (!state._auctionImportLockedDates) state._auctionImportLockedDates = new Set();
-        export function lockAuctionDateForImport(date) { if (date) state._auctionImportLockedDates.add(date); }
-        export function unlockAuctionDateForImport(date) { if (date) state._auctionImportLockedDates.delete(date); }
+        // 【Phase 4 病灶 D 根因修复】不再用导入锁打补丁。整段覆盖式回拉才是"冲掉本地未上云
+        // 数据"的真正根因——已改为按股票 union 合并（见 pullAuctionMarketDataForDate）：
+        // 云端字段覆盖本地同名段、本地独有字段与本地独有股票保留，Realtime 回拉不再清空/打乱
+        // 刚导入的列表。故 _auctionImportLockedDates 锁已删除（多余的并发安全网）。
 
         // 拉取某日期的行情数据并合并到本地（只更新行情列，保留本地状态标记）
         // 拆表后：同时读取 auction_watchlist 与 market_metrics(scope='auction')，合并后整段替换 _auctionMemCache[date]。
         // 方案2：行对象不再携带 in_watchlist 字段；正式/影子身份由 _auctionWatchlistIndex[date] Set 独立维护。
         export async function pullAuctionMarketDataForDate(date, opts) {
             if (!state._auctionTableAvailable && !state._marketMetricsTableAvailable) return;
-            if (state._auctionImportLockedDates && state._auctionImportLockedDates.has(date)) {
-                _dbgLog && _dbgLog('[AUCTION-PULL] ' + date + ' 正在导入中（锁定），跳过本次 Realtime 回拉，避免冲掉刚写入的数据');
-                return;
-            }
             const sb = getSupabase();
             const cloudByStock = {};
             // 方案2：本次拉取该日期的正式成员索引（auction_watchlist 表天然只有正式成员）
@@ -450,23 +439,43 @@ import { setAuctionDateData } from './auction-data.js';
 
             if (Object.keys(cloudByStock).length === 0) return;
 
-            // 全量快照缓存：包含该日期所有行（正式成员 + 影子记录），供历史行情查询
-            // 阶段四 Bug 6 修复：改为整段替换 _auctionMemCache（对齐 bidding 模式 pullBiddingForDate）。
-            // 同时为兼容现有渲染代码（读 camelCase 字段），每行同时携带 snake_case 和 camelCase 别名。
-            const cloudNames = new Set(Object.keys(cloudByStock));
-            // 保留本地 obsAutoAdded=true 的观察组继承股票（云端没有的），追加到云端列表末尾
+            // 【Phase 4 病灶 D 根因修复】不再整段覆盖 _auctionMemCache[date]，改为按股票 union 合并：
+            //  1) 以本地现有行打底（保留本地状态标记 / 本地独有股票 / 观察组继承股）；
+            //  2) 云端行 upsert——同名段以云端为准覆盖，本地独有字段保留；
+            //  3) 本地独有股票（如刚导入尚未推送上云的股票）不会被冲掉，也不会凭空新增/重复。
+            // 这样 Realtime 回拉与「获取最近多板」导入并发时不再互相覆盖，导入锁因此可删。
+            // 每张行同时携带 snake_case 与 camelCase 别名，供渲染代码兼容。
             const prePullList = state._auctionMemCache[date] || [];
-            const localObsStocks = prePullList.filter(function(s) {
-                return s && s.stock && s.obsAutoAdded && !cloudNames.has(s.stock.trim());
+            const preByStock = {};
+            prePullList.forEach(function(r) { if (r && r.stock) preByStock[r.stock.trim()] = r; });
+
+            const resultByStock = {};
+            // 1) 本地现有行打底（保留本地独有字段与本地独有股票）
+            prePullList.forEach(function(r) { if (r && r.stock) resultByStock[r.stock.trim()] = Object.assign({}, r); });
+            // 2) 云端行 upsert：同名段覆盖，本地独有字段保留
+            Object.keys(cloudByStock).forEach(function(key) {
+                const cloudRow = cloudByStock[key];
+                const existing = resultByStock[key];
+                if (existing) {
+                    Object.keys(cloudRow).forEach(function(k) { existing[k] = cloudRow[k]; });
+                    resultByStock[key] = existing;
+                } else {
+                    resultByStock[key] = Object.assign({}, cloudRow);
+                }
             });
-            // 观察组继承股票属于正式成员，需登记到索引
+
+            // 观察组继承股票属于正式成员，需登记到索引（已通过 preByStock 保留在数组里）
+            const localObsStocks = prePullList.filter(function(s) {
+                return s && s.stock && s.obsAutoAdded && !cloudByStock[s.stock.trim()];
+            });
             localObsStocks.forEach(function(s) { newWatchlistSet.add(s.stock.trim()); });
-            const normalizedRows = Object.values(cloudByStock).concat(localObsStocks);
-            // 方案2：用 _auctionWatchlistIndex 判断本地正式成员数量
-            var _localFormal = (state._auctionMemCache[date] || []).filter(function(s) { return s && s.stock && _isAuctionWatchlistStock(date, s.stock.trim()); }).length;
+
+            const normalizedRows = Object.values(resultByStock);
+            // 方案2：用 _auctionWatchlistIndex 判断本地正式成员数量（旧索引，本函数末尾才更新）
+            var _localFormal = prePullList.filter(function(s) { return s && s.stock && _isAuctionWatchlistStock(date, s.stock.trim()); }).length;
             var _cloudN = (normalizedRows || []).length;
             if (opts && opts.realtime && _localFormal > 0 && _cloudN < _localFormal) {
-                _dbgLog('[AUCTION-GUARD] ⚠️ refuse replace date=' + date + ' local=' + _localFormal + ' cloud=' + _cloudN + ' (realtime)');
+                _dbgLog('[AUCTION-GUARD] ⚠️ refuse merge date=' + date + ' local=' + _localFormal + ' cloud=' + _cloudN + ' (realtime)');
                 return;
             }
             setAuctionDateData(date, normalizedRows, 'pullAuctionMarketDataForDate' + (opts && opts.realtime ? '(realtime)' : ''));

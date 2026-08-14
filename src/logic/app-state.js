@@ -60,7 +60,6 @@ export const state = {
     _debugSnapshots: {},
     _pendingAuctionReload: false,
     _pendingJiwangReload: false,
-    _auctionImportLockedDates: {},
     _auctionRealtimeChannel: null,
     _biddingDirtyDates: null,
     _biddingRealtimeChannel: null,
