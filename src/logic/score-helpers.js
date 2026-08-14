@@ -59,7 +59,7 @@ const defaultScoreSettings = {
 };
 
 export function getScoreSettings(type) {
-    const stored = localStorage.getItem(`scoreSettings_${type}`);
+    const stored = localStorage.getItem(`scoreSettings_${type}`); // 合规：UI偏好/评分设置（§8 允许）
     if (stored) {
         return JSON.parse(stored);
     }
@@ -67,9 +67,10 @@ export function getScoreSettings(type) {
 }
 
 export function saveScoreSettingsToStorage(type, settings) {
-    localStorage.setItem(`scoreSettings_${type}`, JSON.stringify(settings));
+    localStorage.setItem(`scoreSettings_${type}`, JSON.stringify(settings)); // 合规：UI偏好/评分设置（§8 允许）
 }
 
 export function checkHasFumianTopic(currentDate) {
+    // §8-TODO：hasFumianTopic_* 为派生业务标记（负面题材），属业务数据，应随题材上云，待单独决策迁移。
     return localStorage.getItem('hasFumianTopic_' + currentDate) === 'true';
 }

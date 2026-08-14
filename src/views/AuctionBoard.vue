@@ -925,7 +925,7 @@ function saveCopiedStocks() {
   try {
     const all = JSON.parse(localStorage.getItem('copiedStocksData') || '{}');
     all[uiStore.currentDate] = copiedStocks.value;
-    localStorage.setItem('copiedStocksData', JSON.stringify(all));
+    localStorage.setItem('copiedStocksData', JSON.stringify(all)); // 合规：临时剪贴板/输入缓存（§8 允许）
   } catch {}
 }
 function copyAllTopicStocks(topic) {

@@ -102,7 +102,7 @@ export async function reconcileAuctionWatchlistFromLocalStorage() {
         } else {
             _dbgLog('[RECONCILE-DEBUG] 本次对账无命中（0 只会被误伤），符合预期');
         }
-        localStorage.setItem(RECONCILE_FLAG, '1');
+        localStorage.setItem(RECONCILE_FLAG, '1'); // 合规：一次性对账调试标记（§8 允许）
         return { skipped: false, demoted: 0, wouldHaveDemoted: wouldDemote.length, detail: wouldDemote, disabled: true };
     } catch (e) {
         console.warn('[RECONCILE-DEBUG] 诊断执行失败:', e.message);
@@ -2810,7 +2810,7 @@ export async function fetchAuctionFromNumcat(btn, opts) {
             // 🔍[调试-诊断报告用] 把本次猫抓请求的原始返回 + 逐只处理结果快照存入 localStorage，
             // 供"运行诊断"读取展示。只保留最近一次，避免占用过多存储。
             try {
-                localStorage.setItem('lastNumcatFillDebug_' + today, JSON.stringify({
+                localStorage.setItem('lastNumcatFillDebug_' + today, JSON.stringify({ // 合规：诊断调试快照（§8 允许）
                     requestedAt: new Date().toISOString(),
                     today: today,
                     overwrite: !!opts.overwriteToday,

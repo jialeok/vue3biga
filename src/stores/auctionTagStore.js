@@ -29,6 +29,8 @@ function loadTagsFromStorage() {
 
 function saveTagsToStorage(tags) {
   try {
+    // §8：本地快照仅为云端不可用兜底（非唯一真相），持久真相已上云（见 _persistTag/_persistClearDate）。
+    // 保留此写以支撑「清缓存/换设备时仍有兜底」与首屏免闪烁；是否彻底移除待单独决策（RED LINE：勿静默删用户数据）。
     localStorage.setItem(STORAGE_KEY, JSON.stringify(tags));
   } catch (e) {}
 }

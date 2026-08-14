@@ -158,7 +158,7 @@ export function useAuctionData() {
         }
         return {
             obsStocks: getJingYestHighlightSetForDate(prevDate, dataSource),
-            autoAddedSet: new Set(JSON.parse(localStorage.getItem('obsAutoAdded_' + date) || '[]')),
+            autoAddedSet: new Set(JSON.parse(localStorage.getItem('obsAutoAdded_' + date) || '[]')), // 合规：防重复/调试标记（§8 允许）
             obsBoughtSet: obsBoughtSet
         };
     }

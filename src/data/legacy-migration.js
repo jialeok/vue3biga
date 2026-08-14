@@ -48,7 +48,7 @@ export async function migrateAuctionToTable() {
             if (watchlistOk || metricsOk) {
                 state._auctionTableAvailable = watchlistOk;
                 state._marketMetricsTableAvailable = metricsOk;
-                localStorage.setItem('_auction_table_migrated', '1');
+                localStorage.setItem('_auction_table_migrated', '1'); // 合规：一次性迁移标记（§8 允许）
                 console.log('[迁移] 本地无 auction 数据，auction_watchlist/market_metrics 表已就绪');
             }
         } catch(e) { console.warn('[迁移] 表不可用:', e.message); }
@@ -170,7 +170,7 @@ export async function migrateAuctionDataToNewTables() {
             if (error) {
                 if (error.message && error.message.indexOf('relation') >= 0) {
                     console.log('[迁移] 旧 auction_data 表不存在，无需迁移');
-                    localStorage.setItem('_auction_data_migrated_to_new_tables', '1');
+                    localStorage.setItem('_auction_data_migrated_to_new_tables', '1'); // 合规：一次性迁移标记（§8 允许）
                     state._auctionTableAvailable = true;
                     state._marketMetricsTableAvailable = true;
                     return;
@@ -183,7 +183,7 @@ export async function migrateAuctionDataToNewTables() {
             offset += pageSize;
         }
         if (allRows.length === 0) {
-            localStorage.setItem('_auction_data_migrated_to_new_tables', '1');
+            localStorage.setItem('_auction_data_migrated_to_new_tables', '1'); // 合规：一次性迁移标记（§8 允许）
             state._auctionTableAvailable = true;
             state._marketMetricsTableAvailable = true;
             console.log('[迁移] 旧 auction_data 表无数据，已标记迁移完成');
@@ -231,7 +231,7 @@ export async function migrateAuctionDataToNewTables() {
         }
         state._auctionTableAvailable = true;
         state._marketMetricsTableAvailable = true;
-        localStorage.setItem('_auction_data_migrated_to_new_tables', '1');
+        localStorage.setItem('_auction_data_migrated_to_new_tables', '1'); // 合规：一次性迁移标记（§8 允许）
         console.log('[迁移] 旧 auction_data 已拆分：auction_watchlist ' + watchlistBatch.length + ' 条，market_metrics(scope=auction) ' + metricsBatch.length + ' 条');
     } catch (e) {
         console.warn('[迁移] 旧 auction_data 拆分失败:', e.message);

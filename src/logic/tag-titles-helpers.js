@@ -118,6 +118,7 @@ export function getYesterdayDate(date) {
 }
 
 export function getTagTitlesByDate(date) {
+  // §6：loadAllData() 返回的 allData.tagTitles 即内存缓存 state._tagTitlesMemCache（同一引用），此处读/写缓存别名，非 DB。
   const allData = loadAllData();
   if (!allData.tagTitles[date]) {
     allData.tagTitles[date] = {

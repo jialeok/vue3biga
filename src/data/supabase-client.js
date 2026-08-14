@@ -7,7 +7,7 @@ import { state } from '../logic/app-state.js';
         import { normalizeAuctionNotes } from './auction-data.js';
         import { syncStocksDataToStore } from './session-and-shield.js';
 
-        state.allData = null;
+        state.allData = null; // §6：置空仅为触发下方内存缓存重建入口；allData 是 CACHE（非真相源），请勿当 DB 读。
         // bidding（竞价变化）内存缓存：与 allData 的 null-reset 周期解耦。
         // allData 在很多地方会被设为 null 强制"从 localStorage 重新加载"，
         // 但 bidding 已不落 localStorage，若跟着一起清空会在切换页面可见性等
@@ -150,6 +150,15 @@ export function _moduleKey(name) {
         // ===== loadAllData + getStocksData + getJiwangData + getBiddingData（从 logic/app-core.js 移至 data 层）=====
         const _MODULE_KEYS = ['stocks', 'auction', 'jiwang', 'rank', 'multi', 'hotspot', 'pattern', 'bidding', 'tagTitles', 'holidays', 'tradingDays'];
 
+        // ============================================================
+        // §6 allData 收敛红线（ARCHITECTURE §6）
+        // allData = in-memory CACHE only, NOT a source of truth.
+        // 权威数据在 Supabase 表 + Pinia store。请勿像读数据库那样读 allData。
+        // 重建后 state.allData[key] 与各域 _xxxMemCache 是「同一份引用」（见下方分支），
+        // 因此读 allData 本质就是读内存缓存别名；业务读写应走各域 Data 层 getter
+        // （getStocksData / getJiwangData / getBiddingData / getRankData 等），
+        // 不要新增绕过 getter 的 state.allData.xxx 直读。
+        // ============================================================
         export function loadAllData() {
             if (state.allData && state._allDataLastRebuildAt && (Date.now() - state._allDataLastRebuildAt < 500)) {
                 if (typeof _dbgLog === 'function') {
@@ -160,7 +169,7 @@ export function _moduleKey(name) {
             if (!state.allData) {
                 if (typeof _dbgLog === 'function') {
                     state._allDataRebuildCount = (state._allDataRebuildCount || 0) + 1;
-                    _dbgLog('[RANK-CACHE] window.loadAllData 重建 state.allData（第' + state._allDataRebuildCount + '次，会让 rank 所有日期换新数组引用，rank缓存全部失效）｜来源:' + (new Error().stack || '').split('\n').slice(2, 4).join(' <- '));
+                    _dbgLog('[RANK-CACHE] window.loadAllData 重建 state.allData（第' + state._allDataRebuildCount + '次）。注：各域 _xxxMemCache 引用不变，rank 经 state._rankMemCache 保持稳定，不受 allData=null 连坐；仅当某日期数组被原地替换时该日期缓存失效）｜来源:' + (new Error().stack || '').split('\n').slice(2, 4).join(' <- '));
                 }
                 if (!localStorage.getItem(_moduleKey('_migrated'))) {
                     state._migrateFromV41();
@@ -215,7 +224,7 @@ export function _moduleKey(name) {
                     if (!state._hotspotMemCache) state._hotspotMemCache = {};
                     if (!state._patternMemCache) state._patternMemCache = {};
                     if (!state._tagTitlesMemCache) state._tagTitlesMemCache = {};
-                    state.allData = {
+                    state.allData = { // §6：重建内存缓存；各字段指向对应 _xxxMemCache（同一引用）
                         stocks: state._stocksMemCache, jiwang: state._jiwangMemCache, rank: state._rankMemCache, multi: state._multiMemCache,
                         hotspot: state._hotspotMemCache, pattern: state._patternMemCache, bidding: state._biddingMemCache, tagTitles: state._tagTitlesMemCache,
                         auction: state._auctionMemCache, holidays: [], tradingDays: []

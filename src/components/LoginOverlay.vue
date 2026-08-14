@@ -67,8 +67,8 @@ function forceLogout() {
   stopSessionPoll();
   clearPushDebounceTimer();
   authStore.sessionToken = null;
-  localStorage.removeItem('unlocked');
-  localStorage.removeItem('sessionToken');
+  localStorage.removeItem('unlocked'); // 合规：登录会话标记（§8 允许）
+  localStorage.removeItem('sessionToken'); // 合规：登录会话标记（§8 允许）
   kickedVisible.value = true;
 }
 
@@ -92,8 +92,8 @@ async function checkPassword() {
     statusText.value = '🔄 正在登录并同步数据...';
     statusColor.value = '#60a5fa';
     authStore.sessionToken = generateToken();
-    localStorage.setItem('unlocked', '1');
-    localStorage.setItem('sessionToken', authStore.sessionToken);
+    localStorage.setItem('unlocked', '1'); // 合规：登录会话标记（§8 允许）
+    localStorage.setItem('sessionToken', authStore.sessionToken); // 合规：登录会话标记（§8 允许）
     await writeSessionToken(authStore.sessionToken);
     statusText.value = '🔄 等待数据同步完成...';
     statusColor.value = '#60a5fa';

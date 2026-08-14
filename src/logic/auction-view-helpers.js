@@ -14,7 +14,7 @@ import { useUiStore } from '../stores/uiStore.js';
 function _getAuctionTag(date, stockName) {
   if (!date || !stockName) return null;
   try {
-    const tags = JSON.parse(localStorage.getItem('auctionBoardTags') || '{}');
+    const tags = JSON.parse(localStorage.getItem('auctionBoardTags') || '{}'); // §8：读本地快照兜底（非唯一真相），同步源为 auctionTagStore（Supabase）
     return (tags[date] && tags[date][stockName.trim()]) || null;
   } catch { return null; }
 }
@@ -412,7 +412,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   const _confirmedSoldSet = (function() {
     const result = new Set();
     try {
-      const tags = JSON.parse(localStorage.getItem('auctionBoardTags') || '{}');
+      const tags = JSON.parse(localStorage.getItem('auctionBoardTags') || '{}'); // §8：读本地快照兜底（非唯一真相），同步源为 auctionTagStore（Supabase）
       Object.keys(tags).forEach(function(d) {
         if (d > currentDate) return;
         const dayTags = tags[d] || {};

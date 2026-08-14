@@ -240,7 +240,7 @@ import { useUiStore } from '../stores/uiStore.js';
                     const { error } = await sb.from('jiwang_data').select('"date"').limit(1);
                     if (!error) {
                         state._jiwangTableAvailable = true;
-                        localStorage.setItem('_jiwang_table_migrated', '1');
+                        localStorage.setItem('_jiwang_table_migrated', '1'); // 合规：一键迁移标记（§8 允许）
                         console.log('[迁移] 本地无 jiwang 数据，jiwang_data 表已就绪');
                     }
                 } catch(e) { console.warn('[迁移] jiwang_data 表不可用:', e.message); }

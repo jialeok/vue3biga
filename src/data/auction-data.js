@@ -248,10 +248,12 @@ export async function pullAuctionFromTable() {
         }
         // ===== normalizeAuctionNotes（从 logic/app-core.js 移至 data 层）=====
         export function normalizeAuctionNotes() {
-            if (!state.allData || !state.allData.auction) return;
+            // §6：直接读内存缓存 state._auctionMemCache（= allData.auction，但重置 allData=null 期间仍稳定），
+            // 不再依赖 state.allData.auction 别名，收敛到 Data 层缓存引用。
+            if (!state._auctionMemCache) return;
             let hasChanges = false;
-            Object.keys(state.allData.auction).forEach(date => {
-                const dayList = state.allData.auction[date];
+            Object.keys(state._auctionMemCache).forEach(date => {
+                const dayList = state._auctionMemCache[date];
                 if (!dayList || !Array.isArray(dayList)) return;
                 dayList.forEach(item => {
                     if (!item.note) return;

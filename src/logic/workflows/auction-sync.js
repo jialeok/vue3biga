@@ -514,6 +514,9 @@ import { useUiStore } from '../../stores/uiStore.js';
 
                 const cloudObj = data.data;
 
+                // §8-TODO：下方整段把云端业务数据（stocks/jiwang/rank/multi/hotspot/pattern/auction/bidding/tagTitles
+                // 及 duibanData/stockEtfData/coreTopics 等散落 key）写回 localStorage，违反 §8「业务数据不得落 localStorage」。
+                // 这是旧版 cloud-pull 缓存机制，迁移 Supabase 后应由内存缓存 + Realtime 取代；移除前需确认无其它模块依赖此 localStorage 兜底，待单独决策。
                 // 将云端数据写入 localStorage（覆盖本地）
                 const moduleKeys = ['stocks', 'auction', 'jiwang', 'rank', 'multi', 'hotspot', 'pattern', 'bidding', 'tagTitles', 'holidays', 'tradingDays'];
                 const DV = 'v42';
@@ -706,6 +709,7 @@ import { useUiStore } from '../../stores/uiStore.js';
             try {
                 // 复用 exportData 的数据收集逻辑
                 loadAllData();
+                // §6：下方一次性快照读取 state.allData.* 为内存缓存别名（= 各域 _xxxMemCache），用于构建 cloudObj 上传，非读 DB。
                 const stockCount = Object.keys(state.allData.stocks || {}).reduce((n, d) => n + ((state.allData.stocks[d]||[]).length), 0);
                 // 如果本地完全没有数据，跳过推送，防止把空数据覆盖云端
                 if (stockCount === 0 && Object.keys(state.allData.jiwang || {}).length === 0) {

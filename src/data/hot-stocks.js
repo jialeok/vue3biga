@@ -807,7 +807,7 @@ export function _mergeHotCloudToLocal(oldList, cloudRows) {
                 });
                 if (validRows.length === 0) {
                     state._hotTrendsTableAvailable = true;
-                    localStorage.setItem('_hot_trends_table_migrated', '1');
+                    localStorage.setItem('_hot_trends_table_migrated', '1'); // 合规：一次性迁移标记（§8 允许）
                     console.log('[迁移] hot_stocks 无可迁移的趋势数据，hot_stock_trends 表已就绪');
                     return;
                 }
@@ -863,7 +863,7 @@ export function _mergeHotCloudToLocal(oldList, cloudRows) {
                     if (error) {
                         if (error.message && error.message.indexOf('relation') >= 0) {
                             console.log('[迁移] 旧 hot_stock_trends 表不存在，无需迁移到 market_metrics');
-                            localStorage.setItem('_hot_trends_migrated_to_market_metrics', '1');
+                            localStorage.setItem('_hot_trends_migrated_to_market_metrics', '1'); // 合规：一次性迁移标记（§8 允许）
                             state._marketMetricsTableAvailable = true;
                             return;
                         }

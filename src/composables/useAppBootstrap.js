@@ -130,20 +130,20 @@ export function useAppBootstrap(loginRef) {
 
     // Dev auto-login: ?autologin=1 bypasses password for testing
     if (new URLSearchParams(location.search).get('autologin') === '1') {
-      localStorage.setItem('unlocked', '1');
-      localStorage.setItem('sessionToken', 'dev-autologin');
+      localStorage.setItem('unlocked', '1'); // 合规：登录会话标记（§8 允许）
+      localStorage.setItem('sessionToken', 'dev-autologin'); // 合规：登录会话标记（§8 允许）
     }
 
     if (localStorage.getItem('unlocked') !== '1' && sessionStorage.getItem('unlocked') === '1') {
-      localStorage.setItem('unlocked', '1');
+      localStorage.setItem('unlocked', '1'); // 合规：登录会话标记（§8 允许）
       const oldToken = sessionStorage.getItem('sessionToken');
-      if (oldToken) localStorage.setItem('sessionToken', oldToken);
+      if (oldToken) localStorage.setItem('sessionToken', oldToken); // 合规：登录会话标记（§8 允许）
     }
 
     if (localStorage.getItem('unlocked') === '1') {
-      const savedToken = localStorage.getItem('sessionToken');
+      const savedToken = localStorage.getItem('sessionToken'); // 合规：登录会话标记（§8 允许）
       if (!savedToken) {
-        localStorage.removeItem('unlocked');
+        localStorage.removeItem('unlocked'); // 合规：登录会话标记（§8 允许）
         loginRef.value && loginRef.value.showPassword();
         return;
       }

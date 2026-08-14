@@ -270,7 +270,7 @@ import { useUiStore } from '../stores/uiStore.js';
                     const { data, error } = await sb.from('bidding_data').select('"date"').limit(1);
                     if (!error) {
                         state._biddingTableAvailable = true;
-                        localStorage.setItem('_bidding_table_migrated', '1');
+                        localStorage.setItem('_bidding_table_migrated', '1'); // 合规：一键迁移标记（§8 允许）
                         console.log('[迁移] 本地无 bidding 数据，bidding_data 表已就绪');
                     }
                 } catch(e) { console.warn('[迁移] bidding_data 表不可用:', e.message); }
@@ -313,7 +313,7 @@ import { useUiStore } from '../stores/uiStore.js';
             }
             if (!hadError) {
                 state._biddingTableAvailable = true;
-                localStorage.setItem('_bidding_table_migrated', '1');
+                localStorage.setItem('_bidding_table_migrated', '1'); // 合规：一键迁移标记（§8 允许）
                 // 迁移确认成功后清除本地旧快照，云端表从此是唯一数据源
                 try { localStorage.removeItem(_moduleKey('bidding')); } catch (e) {}
                 console.log('[迁移] bidding_data 迁移完成:', totalRows, '行');

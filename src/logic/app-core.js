@@ -399,6 +399,7 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
         
 
         export function saveModule(name) {
+            // §6：state.allData[name] 是内存缓存别名（= 各域 _xxxMemCache）。此处仅用于判定是否有数据可落盘，非读 DB。
             if (!state.allData || !state.allData[name]) return;
             // bidding 已改为纯云端表 + 内存缓存，不再落 localStorage
             if (name === 'bidding') return;
@@ -468,7 +469,7 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
                 state._jiwangDirtyDates.clear();
             }
             // 已解锁状态下，触发防抖云同步（2秒后推送）
-            if (localStorage.getItem('unlocked') === '1') {
+            if (localStorage.getItem('unlocked') === '1') { // 合规：登录会话标记（§8 允许）
                 scheduleCloudPush();
             }
         }

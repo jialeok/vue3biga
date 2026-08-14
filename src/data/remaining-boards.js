@@ -149,7 +149,7 @@ function preloadLegacyToCaches() {
 }
 
 async function migrateLegacyBoardsToSupabase() {
-  if (localStorage.getItem('stockApp_v42_remaining_migrated') === '1') return;
+  if (localStorage.getItem('stockApp_v42_remaining_migrated') === '1') return; // 合规：一次性迁移标记（§8 允许）
 
   for (const key of MODULE_KEYS) {
     const legacy = _readLegacyObject(_moduleKey(key));
@@ -212,7 +212,7 @@ async function migrateLegacyBoardsToSupabase() {
     }
   }
 
-  localStorage.setItem('stockApp_v42_remaining_migrated', '1');
+  localStorage.setItem('stockApp_v42_remaining_migrated', '1'); // 合规：一次性迁移标记（§8 允许）
 }
 
 async function loadStocksForDate(date) {

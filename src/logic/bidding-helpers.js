@@ -29,6 +29,7 @@ export function syncSectorEtfZhangNum(zhangNum) {
   const dieValue = total - zhangNum;
   firstEtf.dieZhangbi = dieValue + ':' + zhangNum;
   etfData[currentDate] = todayEtf;
+  // §8-TODO：stockEtfData 为业务数据（板块ETF），落 localStorage 违反 §8；应迁移 Supabase（独立表或 market_metrics），待单独决策。
   localStorage.setItem('stockEtfData', JSON.stringify(etfData));
 
   _dbgLog('[SECTOR-ETF] 同步到ETF看板: 总 ' + total + ', 涨 ' + zhangNum + ', 跌:涨 = ' + firstEtf.dieZhangbi);

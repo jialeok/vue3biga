@@ -41,6 +41,8 @@ export function _backupScopeData(opts) {
             const wset = opts.watchlistIndex[targetDate];
             dayBackup.watchlist = (wset && wset.size > 0) ? Array.from(wset) : null;
         }
+        // §8-TODO：撤回备份把单日业务数据落 localStorage。属临时撤销缓冲（非持久真相），但仍是业务数据；
+        // 建议改内存/temp 或 Supabase 历史版本，待单独决策。暂不删除以免破坏撤销功能。
         localStorage.setItem(backupKey, JSON.stringify(dayBackup));
         localStorage.setItem(backupKey + '_time', new Date().toISOString());
     } catch (e) {
