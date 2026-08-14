@@ -10,7 +10,9 @@ import { pushJiwangNow, scheduleJiwangPush } from '../data/jiwang-data.js';
 import { _closeAuctionShield, _openAuctionShield, _initAuctionMemCache } from '../data/session-and-shield.js';
 import { loadCloudStockCodeMap, upsertStockCodeMap } from '../data/stock-code-map.js';
 import { buildTopicCache, invalidateTopicCache, loadCloudTopics, pushStockTopicsToCloud, scanDataSourceForTopics } from '../data/stock-topics.js';
-import { _moduleKey, getBiddingData, getJiwangData, getNumericVolume, getStocksData, getSupabase, loadAllData } from '../data/supabase-client.js';
+import { _moduleKey, getJiwangData, getNumericVolume, getStocksData, getSupabase, loadAllData } from '../data/supabase-client.js';
+// §16 域拆分：bidding 域函数已迁出至 ./bidding/bidding.js（getBiddingData 重新由此导出）
+export { getBiddingData } from './bidding/bidding.js';
 import { remainingBoards } from '../data/remaining-boards.js';
 import { _addAuctionWatchlistMember, _extractWatchlistNamesFromRows, _getAuctionWatchlistSet, _setAuctionWatchlistForDate, getStockHistoryValue } from '../data/watchlist-and-metrics.js';
 import { getJingYestHighlightSetForDate, getJingYestStocksForDate } from './auction-sort-rules.js';
