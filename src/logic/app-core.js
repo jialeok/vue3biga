@@ -681,11 +681,11 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
             }
         }
 
-                                        export function getRankData() { return state._rankMemCache || loadAllData().rank; }
-        export function getMultiData() { return state._multiMemCache || loadAllData().multi; }
+        export { getRankData } from './rank/rank.js';
+        export { getMultiData } from './multi/multi.js';
         export function getHotspotData() { return state._hotspotMemCache || loadAllData().hotspot; }
-        export function getPatternData() { return state._patternMemCache || loadAllData().pattern; }
-        export function getTagTitlesData() { return state._tagTitlesMemCache || loadAllData().tagTitles; }
+        export { getPatternData } from './pattern/pattern.js';
+        export { getTagTitlesData } from './tagTitles/tagTitles.js';
         
         state.currentFilter = 'all';
         state.isStockListCollapsed = true; // 股票列表收起状态（默认收起，与原版 initStockListCollapse 一致）
