@@ -1,3 +1,4 @@
+import { useUiStore } from '../stores/uiStore.js';
 export const state = {
     _scMapCache: null,
     _hotFullRowCache: {},
@@ -14,7 +15,6 @@ export const state = {
     _justPushedHotAuctionCounter: 0,
     _pushDebounceTimer: null,
     allData: null,
-    currentDate: null,
     DATA_VERSION: null,
     currentGroup: 'auction',
     auctionCurrentPage: 0,
@@ -175,3 +175,15 @@ export const state = {
     isStockListCollapsed: true,
     topicAutoFilled: false,
 };
+
+// 重构（biga-auction-arch-refactor Phase 0）：currentDate 单一真相源。
+// state.currentDate 不再独立持有真相，而是委托到 app 级 uiStore（useUiStore().currentDate），
+// 与 window.currentDate 一样只是向后兼容别名，杜绝“state / window / 孤儿 store”多真相漂移。
+// _currentDateFallback 仅用于 Pinia 尚未激活的极早期（理论上运行期不会命中）。
+let _currentDateFallback = null;
+Object.defineProperty(state, 'currentDate', {
+  configurable: true,
+  enumerable: true,
+  get() { try { return useUiStore().currentDate; } catch (e) { return _currentDateFallback; } },
+  set(v) { _currentDateFallback = v; try { useUiStore().currentDate = v; } catch (e) {} },
+});

@@ -4,7 +4,7 @@
  * 结构: { "2026-08-07": { "大晟文化": "buy", ... } }
  * 标签值: 'buy' | 'sell' | 'hold' | null
  */
-import { createPinia, defineStore } from 'pinia';
+import { defineStore } from 'pinia';
 
 const STORAGE_KEY = 'auctionBoardTags';
 
@@ -61,7 +61,10 @@ export const useAuctionTagStore = defineStore('auctionTag', {
   },
 });
 
-const _pinia = createPinia();
-const store = useAuctionTagStore(_pinia);
-
-export default store;
+// 向后兼容默认导出：委托到 app 级 useAuctionTagStore() 的 Proxy（非孤儿实例、非第二真相源）。
+const _tagProxy = new Proxy({}, {
+  get(_t, p) { try { const s = useAuctionTagStore(); const v = s[p]; return typeof v === 'function' ? v.bind(s) : v; } catch (e) { return undefined; } },
+  set(_t, p, v) { try { useAuctionTagStore()[p] = v; } catch (e) {} return true; },
+  has(_t, p) { try { return p in useAuctionTagStore(); } catch (e) { return false; } },
+});
+export default _tagProxy;

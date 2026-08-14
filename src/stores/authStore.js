@@ -4,7 +4,7 @@
  * 从 src/data/session-and-shield.js 拆出会话 token / Realtime channel / 推送屏蔽状态
  * 向后兼容：state._sessionToken / state.unlocked / state._justPushed* 等全局引用
  */
-import { createPinia, defineStore } from 'pinia';
+import { defineStore } from 'pinia';
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
@@ -47,48 +47,50 @@ export const useAuthStore = defineStore('auth', {
   },
 });
 
-// 独立 pinia 实例，模块加载即创建 store（向后兼容 window 全局引用）
-const _pinia = createPinia();
-const store = useAuthStore(_pinia);
-
+// 单一真相源：window 上的登录态别名委托到 app 级 useAuthStore()（不再持有孤儿实例）。
 if (typeof window !== 'undefined') {
-  // 双向同步：state._sessionToken ↔ store.sessionToken
+  // 登录态全局别名委托（向后兼容 window._sessionToken / window.unlocked 等直接读写）
   Object.defineProperty(window, '_sessionToken', {
-    get() { return store.sessionToken; },
-    set(v) { store.sessionToken = v; },
+    get() { try { return useAuthStore().sessionToken; } catch (e) { return null; } },
+    set(v) { try { useAuthStore().sessionToken = v; } catch (e) {} },
     configurable: true,
   });
   Object.defineProperty(window, '_realtimeChannel', {
-    get() { return store.realtimeChannel; },
-    set(v) { store.realtimeChannel = v; },
+    get() { try { return useAuthStore().realtimeChannel; } catch (e) { return null; } },
+    set(v) { try { useAuthStore().realtimeChannel = v; } catch (e) {} },
     configurable: true,
   });
   Object.defineProperty(window, 'unlocked', {
-    get() { return store.unlocked; },
-    set(v) { store.unlocked = !!v; },
+    get() { try { return useAuthStore().unlocked; } catch (e) { return false; } },
+    set(v) { try { useAuthStore().unlocked = !!v; } catch (e) {} },
     configurable: true,
   });
   Object.defineProperty(window, '_justPushed', {
-    get() { return store._justPushed; },
-    set(v) { store._justPushed = !!v; },
+    get() { try { return useAuthStore()._justPushed; } catch (e) { return false; } },
+    set(v) { try { useAuthStore()._justPushed = !!v; } catch (e) {} },
     configurable: true,
   });
   Object.defineProperty(window, '_justPushedAuction', {
-    get() { return store._justPushedAuction; },
-    set(v) { store._justPushedAuction = !!v; },
+    get() { try { return useAuthStore()._justPushedAuction; } catch (e) { return false; } },
+    set(v) { try { useAuthStore()._justPushedAuction = !!v; } catch (e) {} },
     configurable: true,
   });
   Object.defineProperty(window, '_justPushedAuctionCounter', {
-    get() { return store._justPushedAuctionCounter; },
-    set(v) { store._justPushedAuctionCounter = v; },
+    get() { try { return useAuthStore()._justPushedAuctionCounter; } catch (e) { return 0; } },
+    set(v) { try { useAuthStore()._justPushedAuctionCounter = v; } catch (e) {} },
     configurable: true,
   });
   Object.defineProperty(window, '_justPushedAuctionTimer', {
-    get() { return store._justPushedAuctionTimer; },
-    set(v) { store._justPushedAuctionTimer = v; },
+    get() { try { return useAuthStore()._justPushedAuctionTimer; } catch (e) { return null; } },
+    set(v) { try { useAuthStore()._justPushedAuctionTimer = v; } catch (e) {} },
     configurable: true,
   });
-
 }
 
-export default store;
+// 向后兼容默认导出：委托到 app 级 useAuthStore() 的 Proxy（非孤儿实例、非第二真相源）。
+const _authProxy = new Proxy({}, {
+  get(_t, p) { try { const s = useAuthStore(); const v = s[p]; return typeof v === 'function' ? v.bind(s) : v; } catch (e) { return undefined; } },
+  set(_t, p, v) { try { useAuthStore()[p] = v; } catch (e) {} return true; },
+  has(_t, p) { try { return p in useAuthStore(); } catch (e) { return false; } },
+});
+export default _authProxy;

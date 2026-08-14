@@ -1,16 +1,20 @@
 ﻿import { state } from '../logic/app-state.js';
 /**
- * uiStore.js — 全局 UI 状态 Pinia store（迁移批次 3.2）
+ * uiStore.js — 全局 UI 状态 Pinia store（单一真相源，app 级 Pinia）
  * currentDate / currentGroup / currentPage / currentTab
- * 向后兼容：state.currentDate / state.currentGroup / state.auctionCurrentPage / state.currentTab
- * state.currentDate 被大量代码直接读写，用 Object.defineProperty 做双向同步
+ *
+ * 重构（biga-auction-arch-refactor Phase 0/1）：
+ * - 删除本文件内独立的 createPinia() 孤儿实例（之前 window.currentDate 绑到孤儿实例，
+ *   而组件用 app 级 useUiStore()，两套实例互相漂移 → 日期一切换就全乱）。
+ * - 全应用仅 main.js 一处 app.use(createPinia())；日期唯一真相源 = useUiStore().currentDate。
+ * - window.currentDate 改为委托到 app 级 useUiStore()（仅作向后兼容别名，不是第二个真相）。
+ * - state.currentDate 由 app-state.js 统一委托到本 store，故此处不再双向桥接。
  */
-import { createPinia, defineStore } from 'pinia';
-import { watch } from 'vue';
+import { defineStore } from 'pinia';
 
 export const useUiStore = defineStore('ui', {
   state: () => ({
-    currentDate: (typeof window !== 'undefined' && state.currentDate != null) ? state.currentDate : '',
+    currentDate: '',
     currentGroup: (typeof window !== 'undefined' && state.currentGroup != null) ? state.currentGroup : 'auction',
     currentPage: (typeof window !== 'undefined' && state.auctionCurrentPage != null) ? state.auctionCurrentPage : 0,
     currentTab: (typeof window !== 'undefined' && state.currentTab != null) ? state.currentTab : '',
@@ -31,39 +35,35 @@ export const useUiStore = defineStore('ui', {
   },
 });
 
-const _pinia = createPinia();
-const store = useUiStore(_pinia);
-
 if (typeof window !== 'undefined') {
-  // 双向同步 state.currentDate ↔ store.currentDate（被大量代码直接读写）
+  // 单一真相源：window.currentDate 委托到 app 级 useUiStore()（不再持有孤儿实例）。
+  // 任何通过 window.currentDate 读写的代码，最终都落在同一个 app 级 store 实例上。
   Object.defineProperty(window, 'currentDate', {
-    get() { return store.currentDate; },
-    set(v) { store.currentDate = v; },
+    get() { try { return useUiStore().currentDate; } catch (e) { return ''; } },
+    set(v) { try { useUiStore().currentDate = v; } catch (e) {} },
     configurable: true,
   });
   Object.defineProperty(window, 'currentGroup', {
-    get() { return store.currentGroup; },
-    set(v) { store.currentGroup = v; },
+    get() { try { return useUiStore().currentGroup; } catch (e) { return 'auction'; } },
+    set(v) { try { useUiStore().currentGroup = v; } catch (e) {} },
     configurable: true,
   });
   Object.defineProperty(window, 'auctionCurrentPage', {
-    get() { return store.currentPage; },
-    set(v) { store.currentPage = v; },
+    get() { try { return useUiStore().currentPage; } catch (e) { return 0; } },
+    set(v) { try { useUiStore().currentPage = v; } catch (e) {} },
     configurable: true,
   });
   Object.defineProperty(window, 'currentTab', {
-    get() { return store.currentTab; },
-    set(v) { store.currentTab = v; },
+    get() { try { return useUiStore().currentTab; } catch (e) { return ''; } },
+    set(v) { try { useUiStore().currentTab = v; } catch (e) {} },
     configurable: true,
   });
-
 }
 
-// watch 保障：若外部直接赋值 state.currentDate 已通过 setter 写入 store，
-// 这里再用 watch 把 store 变化广播到可能挂载的其它全局镜像（兜底）
-try {
-  watch(() => store.currentDate, (v) => { if (state.currentDate !== v) state.currentDate = v; });
-
-} catch (e) {}
-
-export default store;
+// 向后兼容默认导出：委托到 app 级 useUiStore() 的 Proxy（非孤儿实例、非第二真相源）。
+const _uiProxy = new Proxy({}, {
+  get(_t, p) { try { const s = useUiStore(); const v = s[p]; return typeof v === 'function' ? v.bind(s) : v; } catch (e) { return undefined; } },
+  set(_t, p, v) { try { useUiStore()[p] = v; } catch (e) {} return true; },
+  has(_t, p) { try { return p in useUiStore(); } catch (e) { return false; } },
+});
+export default _uiProxy;

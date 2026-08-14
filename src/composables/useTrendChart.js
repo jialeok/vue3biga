@@ -1,5 +1,5 @@
 ﻿﻿import { toggleAuctionTrendPanel, toggleAuctionTrendPanelP2 } from '../logic/ui-bridge.js';
-import { useAuctionStore, safeCall } from '../stores/auctionStore.js';
+import { useAuctionStore, safeCall, auctionActions } from '../stores/auctionStore.js';
 /**
  * useTrendChart.js
  * 早盘竞价看板趋势图交互 composable（Vue 3）
@@ -11,6 +11,9 @@ import { useAuctionStore, safeCall } from '../stores/auctionStore.js';
  */
 import { ref, computed } from 'vue';
 import { _dbgLog } from '../data/debug-log.js';
+
+// 本地安全访问器（与本项目其他 data/ 模块一致的约定）：返回 app 级 auction store
+function _getAuctionStore() { try { return useAuctionStore(); } catch (e) { return null; } }
 
 // ============================================================
 // Composable: useAuctionExpand
@@ -57,9 +60,9 @@ export function useAuctionGesture() {
             const dx = e.changedTouches[0].screenX - touchStartX;
             const dy = e.changedTouches[0].screenY - touchStartY;
             if (Math.abs(dx) < 50 || Math.abs(dy) > Math.abs(dx)) return;
-            if (!store || !store.actions) return;
-            if (dx < 0 && store.currentPage < 3) store.actions.switchPage(store.currentPage + 1);
-            else if (dx > 0 && store.currentPage > 0) store.actions.switchPage(store.currentPage - 1);
+            if (!store) return;
+            if (dx < 0 && store.currentPage < 3) auctionActions.switchPage(store.currentPage + 1);
+            else if (dx > 0 && store.currentPage > 0) auctionActions.switchPage(store.currentPage - 1);
         }
 
         return { onTouchStart, onTouchEnd };
@@ -78,7 +81,7 @@ export function useAuctionEvents() {
 
 
     function createHandlers() {
-        const actions = _getAuctionStore().actions;
+        const actions = auctionActions;
 
         return {
             // 头部
