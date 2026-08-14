@@ -1,4 +1,5 @@
 import { state } from '../app-state.js';
+if (!state._jiwangMemCache) state._jiwangMemCache = {}; // §6.1：域缓存下沉，jiwang 域拥有 _jiwangMemCache
 import { _bindApi } from '../app-core-api.js';
 import { showToast } from '../../composables/useToast.js';
 import { fuyaoApiGet, tickerToThscode, LADDER_THSCODE } from '../../data/api/fuyao-proxy.js';

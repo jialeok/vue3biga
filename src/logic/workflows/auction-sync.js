@@ -536,6 +536,10 @@ import { useUiStore } from '../../stores/uiStore.js';
                 localStorage.setItem('stockApp_' + DV + '__migrated', '1');
 
                 // 其余散落 key
+                // §8-TODO: duibanData 为业务数据（对标/对板块），应迁 Supabase（duiban 表，见 state._duibanTableAvailable，当前 false 未启用），待单独决策；getTodayDuiban 当前仍依赖 localStorage，移除会丢数据，故保留本地写。
+                // §8-TODO: stockEtfData 为业务数据（板块ETF），应迁 Supabase（候选 early_etf_data / market_metrics），待单独决策；getEtfData() 当前仍读 localStorage，移除会丢数据，故保留。
+                // §8-TODO: stockEtfComment 为业务数据（板块ETF 点评），无确认 Supabase 读路径，应迁 Supabase 独立表，待单独决策；当前保留以避免丢数据。
+                // （duibanComment / coreTopics / biddingDefaultTemplate_v41 / copiedStocksData 同为业务/配置数据，§8 收敛待统一决策，此处一并保留。）
                 const extraKeys = ['duibanData', 'duibanComment', 'stockEtfData', 'stockEtfComment',
                                    'coreTopics', 'biddingDefaultTemplate_v41', 'copiedStocksData'];
                 extraKeys.forEach(key => {
@@ -547,6 +551,7 @@ import { useUiStore } from '../../stores/uiStore.js';
                 if (cloudObj.summaries) {
                     Object.entries(cloudObj.summaries).forEach(([k, v]) => localStorage.setItem(k, v));
                 }
+                // §8-TODO: hasFumianTopic_* 为派生业务标记（负面题材），属业务数据，应随题材上云（见 score-helpers.js checkHasFumianTopic §8-TODO），待单独决策；当前保留以避免丢数据。
                 if (cloudObj.hasFumianTopics) {
                     Object.entries(cloudObj.hasFumianTopics).forEach(([k, v]) => localStorage.setItem(k, v));
                 }
@@ -569,6 +574,7 @@ import { useUiStore } from '../../stores/uiStore.js';
                 }
 
                 // 重置内存中的 allData，让 loadAllData() 重新从 localStorage 读取
+                // §6：rank 缓存经 state._rankMemCache 单独持有（与 allData 解耦），此 null 重置不连坐 rank；安全。
                 state.allData = null;
 
                 // 从 auction_watchlist + market_metrics 拉取 auction 数据（拆表后新增）

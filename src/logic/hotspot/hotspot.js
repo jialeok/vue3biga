@@ -1,4 +1,5 @@
 import { state } from '../app-state.js';
+if (!state._hotspotMemCache) state._hotspotMemCache = {}; // §6.1：域缓存下沉，hotspot 域拥有 _hotspotMemCache
 import { _bindApi } from '../app-core-api.js';
 import { showToast } from '../../composables/useToast.js';
 import { fuyaoApiGet, tickerToThscode, LADDER_THSCODE } from '../../data/api/fuyao-proxy.js';

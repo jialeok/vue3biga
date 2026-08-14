@@ -8,6 +8,7 @@ import { state } from '../logic/app-state.js';
         import { syncStocksDataToStore } from './session-and-shield.js';
 
         state.allData = null; // §6：置空仅为触发下方内存缓存重建入口；allData 是 CACHE（非真相源），请勿当 DB 读。
+        // §6：rank 缓存经 state._rankMemCache 单独持有（与 allData 解耦），此处 allData=null 不会连坐 rank 缓存；安全。
         // bidding（竞价变化）内存缓存：与 allData 的 null-reset 周期解耦。
         // allData 在很多地方会被设为 null 强制"从 localStorage 重新加载"，
         // 但 bidding 已不落 localStorage，若跟着一起清空会在切换页面可见性等
