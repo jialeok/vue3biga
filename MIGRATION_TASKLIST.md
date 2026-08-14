@@ -1236,7 +1236,7 @@ console.log('stockAppData_v41 残留:', localStorage.getItem('stockAppData_v41')
 | 分类           | 函数（行号）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 渲染           | `renderHotStocks` (37)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| 表单/备份/回滚     | `saveHotStocks` (1182)、`backupHotStocksData` (1115)、`rollbackHotStocksData` (1125)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| 表单/备份/回滚     | `saveHotStocks` (1182)、`rollbackHotStocksData` (1125)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | 导入           | `importHotHistoryFill` (1605)、`importStockCodeMapHot` (1723)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | 诊断           | `runHotApiDiagnostics` (6365)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | 趋势主函数        | `fetchSkyrocketHotStocksMain` (4209)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
@@ -1254,6 +1254,9 @@ console.log('stockAppData_v41 残留:', localStorage.getItem('stockAppData_v41')
 | `_openHotAuctionShield` (183) / `_closeHotAuctionShield` (191)                                                           | 被 `auction-sync.js`（161/247/272/359）当通用竞态屏蔽窗口使用 → 拍卖同步依赖，非 hot 专属                                                                                               |
 | `patchHotField`(225)/`patchHotFieldBatch`(230)/`_sanitizeHotPatch`(210)/`_splitHotPatch`(214)/`_mergeHotPatchLocal`(220) | 被 `importHotFromPaste` 调用（1863），而 `importHotFromPaste` 外部可达（见下）                                                                                                 |
 | `importHotFromPaste` (1249) / `replaceHotConceptFromPaste` (1511)                                                        | 经 `app-core-api.js` 导出，被 `ai-vision-import.js` 调用；`ai-vision-import.js` 被 `AuctionEditModal.vue:151` import（`openAiVisionModal`）→ **AI 视觉粘贴导入的 hot 分支仍可达**，非死代码 |
+| `backupHotStocksData`（原 1115，2026-08-15 核实为活路径依赖，已恢复） | 被 `importHotFromPaste`（KEEP 活函数：AI 视觉粘贴导入，外部可达）调用做导入前备份；依赖活函数 `_backupScopeData`。原 14.3 误列可删，已作废该项。 |
+
+> **🔴 执行修正（2026-08-15）**：原 14.3 把 `backupHotStocksData` 列为可删，但 `importHotFromPaste`（KEEP 活函数）调用它。删除 26 函数时一度误删导致 `importHotFromPaste` 运行期 `ReferenceError`，已恢复。同理 `rollbackHotStocksData` 仅被已删 `saveHotStocks` 调用，确为死代码，维持删除。
 
 ### 14.5 数据加载层（data/hot-stocks.js，非 app-core.js）— 全部保留
 
@@ -1270,16 +1273,19 @@ Supabase 云端表（`hot_stocks` / `hot_stock_trends` / `hot_stocks_highlights`
 
 ### 14.7 验收
 
-- `grep -rn "renderHotStocks\|saveHotStocks\|runHotApiDiagnostics\|fillHot\|fetchHot" src/` 仅剩注释/字符串字面量（实际调用 0）。
-- `npm run build` 通过。
-- 启动后竞价看板第二页题材 / 题材星标签统计看板仍有数据（Regression，验证 14.2 红线未被破坏）。
+- ✅ `grep -rn "renderHotStocks\|saveHotStocks\|runHotApiDiagnostics\|fillHot\|fetchHot" src/` → 仅剩注释/字符串字面量 + 一处 `typeof renderHotStocks === 'function'` 守卫调用（在 KEEP 函数 `autoCompleteMissingStockCodes` 内，求值恒为 false、永不执行，安全）。全仓库零真实调用。
+- ✅ `vite build`（--outDir 项目外临时目录）通过：190 modules transformed，built in 13s。
+- ⬜ 启动后竞价看板第二页题材 / 题材星标签统计看板仍有数据（**需浏览器手动 Regression**，验证 14.2 红线未被破坏；本次仅做静态+构建验证）。
+
+> 实测修正：`backupHotStocksData` 因被活函数 `importHotFromPaste` 调用，已恢复并移出"可删"清单（见 14.4）。实际删除 **25 个**纯死代码函数 + 其内部 helper，app-core.js 净减约 2965 行（7678→4714 行，含恢复 1 函数）。
 
 ---
 
-## 十五、进度更新（2026-08-14 晚 · 热门股票清理核实）
+## 十五、进度更新（2026-08-15 · 热门股票清理执行）
 
-- ✅ **用户分析核实完成**：确认 hot tab 在 Vue3 UI 上确无入口；app-core.js hot 专属函数零外部 import。
-- 🔴 **修正用户建议**：拒绝"注释掉 App.vue/LoginOverlay 的 hot 拉取调用"——会清空竞价看板题材统计，与"保留影子记录"矛盾（证据：`stock-topics.js:155` + `LoginOverlay.vue:121-125` 注释 + `auction-sync.js:280`）。
-- ✅ 产出 app-core.js **26 个可删函数精确清单**（14.3）+ **11 个必须保留函数**（14.4）+ 数据层保留项（14.5）。
-- ⬜ **待执行**：实际删除 14.3 死代码（需 grep-0 验证 + 单独 commit + build + 题材统计回归）。本轮仅完成清单与任务登记，未动代码。
+- ✅ **实际删除 25 个纯 hot UI 死代码函数**（14.3 原 26 项，扣除 `backupHotStocksData` 因活路径依赖已恢复）：`renderHotStocks`/`saveHotStocks`/`rollbackHotStocksData`/`importHotHistoryFill`/`importStockCodeMapHot`/`runHotApiDiagnostics`/`fetchSkyrocketHotStocksMain` + 同花顺抓取族 15 + 猫抓/题材/预警族 5 + 其内部非 Hot helper。app-core.js 由 7678 行降至 4714 行。
+- 🔴 **执行中发现并修正**：`backupHotStocksData` 被 KEEP 活函数 `importHotFromPaste`（AI 视觉粘贴导入）调用 → 误删会导致运行期 ReferenceError，已恢复（移出可删清单，补入 14.4）。`rollbackHotStocksData` 仅被已删 `saveHotStocks` 调用，确为死代码，维持删除。
+- ✅ `data/hot-stocks.js` 顶部加"已弃用但保留（共享数据层）"头注释（14.6 第三步）。
+- ✅ `vite build` 通过；构建仅静态验证，**题材统计回归需浏览器手动确认**。
+- ✅ 已单独 commit + push 到 main（见提交链）。
 
