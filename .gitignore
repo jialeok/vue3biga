@@ -19,6 +19,9 @@ dist_old_*/
 _window_matches.txt
 _window_tokens.txt
 
+# Local credential / token files (never commit)
+*TOKEN.txt
+
 # Local backup dumps (not source)
 股票助手备份_20260802_1931.json
 index单页没改造前备份.html

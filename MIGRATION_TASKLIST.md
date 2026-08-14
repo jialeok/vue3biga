@@ -1289,3 +1289,15 @@ Supabase 云端表（`hot_stocks` / `hot_stock_trends` / `hot_stocks_highlights`
 - ✅ `vite build` 通过；构建仅静态验证，**题材统计回归需浏览器手动确认**。
 - ✅ 已单独 commit + push 到 main（见提交链）。
 
+## 十六、进度更新（2026-08-15 · §16 域拆分启动）
+
+- ✅ **§16 第一步（date/）**：`src/logic/date/date-helpers.js`（2026-08-14，已推）。
+- ✅ **§16 rank/multi/pattern/tagTitles（纯 getter）**：新建 `src/logic/rank/rank.js`、`multi/multi.js`、`pattern/pattern.js`、`tagTitles/tagTitles.js`，迁出 `getRankData/getMultiData/getPatternData/getTagTitlesData` 四个纯 getter；app-core.js 改为 `export { ... } from` re-export 保兼容。`getHotspotData` 留待 hotspot 域（最大，最后）。`vite build` 通过，已 commit + push（`fdee326`）。
+- ⬜ **§16 下一步（按 3.2 顺序）**：`bidding/jiwang` → `stocks` → `auction` → `hotspot`（各域：新建模块 → 迁移函数 → 更新 import → build → 回归 → 单独 commit+push；红线：只迁移不删函数、未构建不批量移动）。
+- ⬜ **§14 App.vue 瘦身**（useAppBootstrap）。
+- ⬜ **§6 allData 收敛**（77 处引用）。
+- ⬜ **§8 localStorage 审计**（218 处引用，标签数据已迁 Supabase，待逐 key 分类标注）。
+
+### 提交链（本地+远程，2026-08-15）
+`cf8364a`→`fe6bf6f`→`6173670`→`a9cb90b`→`5269a80`→`f9c0615`→`36fec75`→`323449b`→`4a0e571`(清单十四/十五章)→`c44531a`(§14.6 hot清理)→`fdee326`(§16 getter拆分) — 全部已推 main。
+
