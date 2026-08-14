@@ -20,9 +20,13 @@ import { buildNoteFromFields, cleanTopicsForDisplay, parseNoteToFields } from '.
 import { _backupScopeData, _mergePatchLocal, _patchScopeField, _sanitizePatch, _splitPatch } from './scope-helpers.js';
 import { _getLocalTodayStr, deriveAuctionTagState } from './tag-rules.js';
 import { getMostRecentTradingDay, getPreviousTradingDay, isTradingDay } from './trading-day-helpers.js';
+// §16 域拆分：纯日期工具已迁至 ./date/date-helpers.js（import 供本模块内部调用，re-export 供外部调用点零破坏）
+import { getWeekday, getPreviousDate, getNextDate, _shiftDateStr, buildYesterdayListFromToday } from './date/date-helpers.js';
+export { getWeekday, getPreviousDate, getNextDate, _shiftDateStr, buildYesterdayListFromToday } from './date/date-helpers.js';
 import { _domGet, _domQuery, _domSetColor, _domSetText, _domSetValue, _getCommentInputValue, _readTrackEditFormData, _restoreStockCardExpand, closeCommentModal, closeHotEditModal, closeTrackEditModal, copyAllTopicStocks, copyTopicStocks, expandAllAuctionTrendPanels, expandAllAuctionTrendPanelsP2, getNthPreviousTradingDay, handleFileImport, jumpToAuctionPage1, jumpToAuctionPage2, openAuctionEdit, openAuctionNoteEditFromPage2, openCoreTopicModal, openHotEdit, recalcDuibanFromAuction, renderAuction, renderAuctionForm, renderBidding, renderComment, renderDuiban, renderEmotionBoard, renderEtf, renderHotForm, renderHotspot, renderJiwang, renderList, renderMulti, renderPattern, renderRank, resetExpansionStateOnDateSwitch, restoreExpandedAuctionTrendPanels, restoreExpandedTopicGroupsP2, saveAuction, setApiStatus, setStockCodeMapStatus, setStockCodeMapStatusHot, showAuctionBuyPrompt, showAuctionDiagReport, showAuctionNoteInput, showAuctionNotePopup, showHint, showHotDiagReport, showNumcatChoiceModal, toggleAuctionBoard, toggleAuctionRowSelect, toggleAuctionSortHelp, toggleStrengthSort, toggleTopicGroupTrendPanels, updateCloudSyncUI } from './ui-bridge.js';
 import { pullFromCloud, pushAuctionCodeToCloud, pushHotStocksDataToCloud, pushToCloud, syncAuctionListForDate, syncCloseChunk, syncHotStocksListForDate } from './workflows/auction-sync.js';
 import { useAuctionStore, _bindUiFns } from '../stores/auctionStore.js';
+import { initAuctionTags } from '../stores/auctionTagStore.js';
 import { useUiStore } from '../stores/uiStore.js';
 function _getAuctionStore() { try { return useAuctionStore(); } catch { return null; } }
 // 重构（Phase 5 彻底）：导入期（Pinia 尚未激活）安全读取当前日期，避免模块顶层求值抛错。
@@ -626,6 +630,8 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
             }
             // 触发原有的 DOMContentLoaded 逻辑（已绑定在页面底部）
             if (typeof _appInit === "function") _appInit();
+            // §8 合规：启动拉取云端竞价标签（Supabase 持久化真相，跨设备不丢）
+            initAuctionTags();
         }
 
         state.DATA_VERSION = 'v42';
@@ -718,10 +724,7 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
             return date.toISOString().split('T')[0];
         }
 
-        // 获取星期几
-        export function getWeekday(d) {
-            return ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][new Date(d).getDay()];
-        }
+        // 获取星期几（已迁至 ./date/date-helpers.js）
 
 
         // 备份早盘竞价数据（用于撤回）
@@ -998,19 +1001,7 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
             showToast('✅ 追踪记录已保存！');
         }
 
-        // 获取前一天日期
-        export function getPreviousDate(date) {
-            const d = new Date(date);
-            d.setDate(d.getDate() - 1);
-            return d.toISOString().split('T')[0];
-        }
-
-        // 获取后一天日期
-        export function getNextDate(date) {
-            const d = new Date(date);
-            d.setDate(d.getDate() + 1);
-            return d.toISOString().split('T')[0];
-        }
+        // 获取前一天/后一天日期（已迁至 ./date/date-helpers.js）
 
         // 获取当日股票数据
         export function getTodayData() {
@@ -2879,38 +2870,9 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
         }
 
         // 日期字符串偏移辅助：dayStr 加/减 n 天，返回 YYYY-MM-DD
-        export function _shiftDateStr(dayStr, n) {
-            var d = new Date(dayStr + 'T00:00:00');
-            d.setDate(d.getDate() + n);
-            return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-        }
+        // _shiftDateStr（已迁至 ./date/date-helpers.js）
 
-        // 基于 todayList（当前显示的表格）构建 yesterdayList
-        // 保留 auctionData[yesterday] 原有同名股票的业务字段（volume/yestVolume/note 等）
-        // 这是用户的核心需求：不管股票怎么导入的，只要表格里显示了，就是获取数据的基础
-        export function buildYesterdayListFromToday(todayList, auctionData, yesterday) {
-            const existingYesterdayMap = {};
-            (auctionData[yesterday] || []).forEach(function(s) {
-                if (s && s.stock) existingYesterdayMap[s.stock.trim()] = s;
-            });
-            return todayList.map(function(s) {
-                const name = (s.stock || '').trim();
-                const existing = existingYesterdayMap[name];
-                return {
-                    stock: s.stock,
-                    code: (s.code || (existing ? (existing.code || '') : '') || '').trim(),
-                    volume: existing ? (existing.volume || '') : '',
-                    yestVolume: existing ? (existing.yestVolume || '') : '',
-                    note: existing ? (existing.note || '') : '',
-                    changePct: existing ? (existing.changePct || '') : '',
-                    topics: existing ? (existing.topics || '') : '',
-                    selected: existing ? existing.selected : false,
-                    bought: existing ? existing.bought : false,
-                    sold: existing ? existing.sold : false,
-                    fixed: existing ? existing.fixed : false
-                };
-            });
-        }
+        // buildYesterdayListFromToday（已迁至 ./date/date-helpers.js）
 
         // ---------- 同花顺：补全昨日成交量（填两个交易日的 yestVolume，不动 volume） ----------
         export async function fillYesterdayVolumeFromThs(btn) {
