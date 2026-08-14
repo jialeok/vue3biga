@@ -87,6 +87,11 @@
                 if (!item || !item.stock) return;
                 const name = item.stock.trim();
 
+                // [OBS-FIX 2026-08-14] 跳过继承空壳行（obsAutoAdded）：空壳是前一天竞昨高光自动补入的占位行，
+                // 一旦被回填竞价量就会被误算成当天竞昨高光，进而反向继承进后一天观察组，形成"越传越多"的反馈环。
+                // 排除后，前一天高光集合在任意时间重算都保持稳定，观察组数量才能与"前一天竞昨高光"严格一致。
+                if (item.obsAutoAdded === true) return;
+
                 const todayVolume = getNumericVolume(item.volume);
                 // T的yestVolume字段 = T-1交易日自身的总成交量
                 const t1OwnVolume = getNumericVolume(item.yestVolume);
@@ -145,6 +150,9 @@
             todayList.forEach(item => {
                 if (!item || !item.stock) return;
                 const name = item.stock.trim();
+
+                // [OBS-FIX 2026-08-14] 与 getParallelStocksForDate 同步排除继承空壳行，保证竞昨高光口径一致。
+                if (item.obsAutoAdded === true) return;
 
                 // 今/昨比：今日竞价量 / T-1竞价量（T-1数据从全量快照缓存查询，含非自选股）
                 const todayVolume = getNumericVolume(item.volume);

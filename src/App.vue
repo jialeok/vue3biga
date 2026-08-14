@@ -126,20 +126,6 @@ function onLoginSuccess() {
     _emit('bidding-refresh');
     _emit('board-refresh');
     _emit('jiwang-refresh');
-    // Dev self-test: compute highlights and show result overlay
-    if (new URLSearchParams(location.search).get('autologin') === '1') {
-      import('./logic/auction-sort-rules.js').then(m => {
-        const hl0812 = m.getJingYestHighlightSetForDate('2026-08-12');
-        const hl0811 = m.getJingYestHighlightSetForDate('2026-08-11');
-        const div = document.createElement('div');
-        div.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#1e293b;color:#0f0;padding:12px;font:14px monospace;white-space:pre;';
-        div.textContent = '=== HIGHLIGHT SELF-TEST ===\n' +
-          'getJingYestHighlightSetForDate(2026-08-12): ' + hl0812.size + ' 只 -> ' + [...hl0812].join(', ') + '\n' +
-          'getJingYestHighlightSetForDate(2026-08-11): ' + hl0811.size + ' 只 -> ' + [...hl0811].join(', ') + '\n' +
-          '8月12日蓝色高光应=11, 8月13日观察组来源应=11';
-        document.body.appendChild(div);
-      });
-    }
   }).catch(e => _dbgLog('[AUCTION-ERR] background pullFromCloud ' + (e && e.message || e)));
 }
 

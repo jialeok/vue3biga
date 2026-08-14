@@ -3,6 +3,7 @@ import { getPreviousTradingDay } from './trading-day-helpers.js';
 import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlightSetForDate, getDigitCount, getRatioDiffInfoForDate } from './auction-sort-rules.js';
 import { getAuctionStockHistory, ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagState, _buildTagStateCache } from './tag-rules.js';
 import { getThreeDayJingDieSet } from './sort-rules-extra.js';
+import { getStockCode } from '../data/stock-code-map.js';
 import { getNumericVolume, getStocksData } from '../data/supabase-client.js';
 import { state } from './app-state.js';
 import { useAuctionStore } from '../stores/auctionStore.js';
@@ -152,6 +153,33 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   }
 
   const prevDate = getPreviousTradingDay(currentDate);
+
+  // [OBS-FIX 2026-08-14] 观察组归属（前一日竞昨高光 + 观察组标签继承）在顶部统一计算，
+  // 并据此在「渲染列表」中注入空壳行，保证「观察组(蚂蚁线上)数量 == 前一日竞昨高光数」严格成立。
+  // 关键：视图层注入不写入 auctionData、不触发云端推送——历史锁定(ensureObservationStocks 对历史日期提前返回)
+  // 只防止「改写云端」，但视图必须始终如实呈现继承结果，否则历史日期观察组会丢失本该继承的股票（表现为 8/12 少了3只）。
+  const _obsStocks = getJingYestHighlightSetForDate(prevDate, dataSource);
+  const _obsBoughtSet = new Set(JSON.parse(localStorage.getItem('obsBought_' + currentDate) || '[]'));
+  const _isObsMember = function(name) {
+    if (!name) return false;
+    if (_obsBoughtSet.has(name)) return true;
+    return (_obsStocks && _obsStocks.has(name));
+  };
+  // 凡应属观察组但不在当日列表的股票，构造渲染用空壳行（与 ensureObservationStocks 形状一致，便于 _enrichAuctionItem 统一处理）。
+  const _existingNames = new Set(auctionList.map(function(s) { return s && s.stock ? s.stock.trim() : ''; }));
+  const _injectNames = new Set();
+  const _injectedRows = [];
+  function _maybeInject(n) {
+    if (!n) return;
+    if (_existingNames.has(n) || _injectNames.has(n)) return;
+    _injectNames.add(n);
+    _injectedRows.push({ stock: n, code: getStockCode(n), volume: '', yestVolume: '', note: '', obsAutoAdded: true });
+  }
+  if (_obsStocks) _obsStocks.forEach(_maybeInject);
+  _obsBoughtSet.forEach(_maybeInject);
+  // renderList 仅服务于视图渲染；真实业务数据(auctionList)保持不变，统计口径仍基于 auctionList。
+  const renderList = _injectedRows.length ? auctionList.concat(_injectedRows) : auctionList;
+
   const auctionData = getGroupData(dataSource);
   const prevAuctionList = prevDate ? (auctionData[prevDate] || []) : [];
   const prevPrevDate = prevDate ? getPreviousTradingDay(prevDate) : null;
@@ -229,11 +257,11 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   }
   const yesterdayStrength = yTotal > 0 ? Math.round((yStrongCount / yTotal) * 100) : null;
 
-  let renderOrder = auctionList.map((_, idx) => idx);
+  let renderOrder = renderList.map((_, idx) => idx);
 
   if (sortState.byData) {
     const dataCountCache = renderOrder.map(idx => {
-      const it = auctionList[idx];
+      const it = renderList[idx];
       if (!it || !it.stock) return 0;
       const history = getAuctionStockHistory(it.stock.trim(), currentDate, 5, dataSource);
       return history.filter(h => h.volume !== null || h.yestVolume !== null).length;
@@ -245,7 +273,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     const _prevDayMap = new Map();
     for (const p of prevDayList) { if (p && p.stock) _prevDayMap.set(p.stock.trim(), p); }
     renderOrder = renderOrder.map((idx, pos) => {
-      const it = auctionList[idx];
+      const it = renderList[idx];
       const stockName = it && it.stock ? it.stock.trim() : '';
       const todayVolume = it ? getNumericVolume(it.volume) : null;
       const yestVolume = it ? getNumericVolume(it.yestVolume) : null;
@@ -275,7 +303,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     const parallelStockNamesForSort = getParallelStocksForDate(currentDate, dataSource);
     const allRatioDiffInfo = getRatioDiffInfoForDate(currentDate, dataSource);
     renderOrder = renderOrder.map((idx, pos) => {
-      const stockName = auctionList[idx] && auctionList[idx].stock ? auctionList[idx].stock.trim() : '';
+      const stockName = renderList[idx] && renderList[idx].stock ? renderList[idx].stock.trim() : '';
       const isParallel = parallelStockNamesForSort.has(stockName);
       const isHighlight = stockName && jingYestHighlightSet && jingYestHighlightSet.has(stockName);
       const tier = isHighlight ? 0 : (isParallel ? 1 : 2);
@@ -297,11 +325,11 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   } else if (sortState.byJingYestRatio) {
     renderOrder = renderOrder.map((idx, pos) => {
-      const stockName = auctionList[idx] && auctionList[idx].stock ? auctionList[idx].stock.trim() : '';
+      const stockName = renderList[idx] && renderList[idx].stock ? renderList[idx].stock.trim() : '';
       const isHighlight = stockName && jingYestHighlightSet && jingYestHighlightSet.has(stockName);
       const tier = isHighlight ? 0 : 1;
-      const vol = auctionList[idx] ? (parseFloat(auctionList[idx].volume) || 0) : 0;
-      const yvol = auctionList[idx] ? (parseFloat(auctionList[idx].yestVolume) || 0) : 0;
+      const vol = renderList[idx] ? (parseFloat(renderList[idx].volume) || 0) : 0;
+      const yvol = renderList[idx] ? (parseFloat(renderList[idx].yestVolume) || 0) : 0;
       const jr = (vol > 0 && yvol > 0) ? (vol / yvol) : null;
       return { idx, pos, jr, tier };
     }).sort((a, b) => {
@@ -314,10 +342,10 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   } else if (sortState.byThreeDayJingDie) {
     const threeDayJingDieSet = getThreeDayJingDieSet(currentDate, dataSource);
     renderOrder = renderOrder.map((idx, pos) => {
-      const stockName = auctionList[idx] && auctionList[idx].stock ? auctionList[idx].stock.trim() : '';
+      const stockName = renderList[idx] && renderList[idx].stock ? renderList[idx].stock.trim() : '';
       const dd = stockName && threeDayJingDieSet ? (threeDayJingDieSet.get(stockName) || 0) : 0;
-      const vol = auctionList[idx] ? (parseFloat(auctionList[idx].volume) || 0) : 0;
-      const yvol = auctionList[idx] ? (parseFloat(auctionList[idx].yestVolume) || 0) : 0;
+      const vol = renderList[idx] ? (parseFloat(renderList[idx].volume) || 0) : 0;
+      const yvol = renderList[idx] ? (parseFloat(renderList[idx].yestVolume) || 0) : 0;
       const jr = (vol > 0 && yvol > 0) ? (vol / yvol) : null;
       return { idx, pos, dd, jr };
     }).sort((a, b) => {
@@ -332,7 +360,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       const parallelStockNamesForSort = getParallelStocksForDate(currentDate, dataSource);
       const allRatioDiffInfo = getRatioDiffInfoForDate(currentDate, dataSource);
       renderOrder = renderOrder.map((idx, pos) => {
-        const stockName = auctionList[idx] && auctionList[idx].stock ? auctionList[idx].stock.trim() : '';
+        const stockName = renderList[idx] && renderList[idx].stock ? renderList[idx].stock.trim() : '';
         const isParallel = parallelStockNamesForSort.has(stockName);
         const isHighlight = stockName && jingYestHighlightSet && jingYestHighlightSet.has(stockName);
         const tier = isHighlight ? 0 : (isParallel ? 1 : 2);
@@ -355,7 +383,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       const parallelStockNames = getParallelStocksForDate(currentDate, dataSource);
       const allRatioDiffInfoForParallel = getRatioDiffInfoForDate(currentDate, dataSource);
       renderOrder = renderOrder.map((idx, pos) => {
-        const stockName = auctionList[idx] && auctionList[idx].stock ? auctionList[idx].stock.trim() : '';
+        const stockName = renderList[idx] && renderList[idx].stock ? renderList[idx].stock.trim() : '';
         const qualifies = stockName && parallelStockNames.has(stockName);
         const info = qualifies ? allRatioDiffInfoForParallel.get(stockName) : null;
         return { idx, pos, qualifies, diff: info ? info.diff : null, digitGap: info ? info.digitGap : null };
@@ -373,12 +401,6 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     }
   }
 
-  const _obsStocks = getJingYestHighlightSetForDate(prevDate, dataSource);
-  // [恢复源文件口径] 昨日买/持/卖继承集合由 ensureBoughtStocksForDate 写入 localStorage['obsBought_'+currentDate]，
-  // 权威来源 = 股票列表页 getStocksData[prevDay]（迁移版曾误用 getAuctionTagState/auctionBoardTags，导致按列表页继承的股票
-  // 显示层读不到、被错分到常规组）。
-  const _obsBoughtSet = new Set(JSON.parse(localStorage.getItem('obsBought_' + currentDate) || '[]'));
-
   // [REFACTOR 2026-08-14] 从 auctionBoardTags 读已卖出集合，不读 stocksData
   const _confirmedSoldSet = (function() {
     const result = new Set();
@@ -395,21 +417,17 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     return result;
   })();
 
-  // [REFACTOR 2026-08-14] 观察组 = 前一日竞昨高光 + obsBought_（观察组标签继承）
-  // 卖出也继承（用户确认），不需要过滤 _confirmedSoldSet
-  const _isObsMember = function(name) {
-    if (_obsBoughtSet.has(name)) return true;
-    return (_obsStocks && _obsStocks.has(name));
-  };
-  const _obsIndicesRaw = renderOrder.filter(i => auctionList[i] && auctionList[i].stock && _isObsMember(auctionList[i].stock.trim()));
+  // [OBS-FIX 2026-08-14] _obsStocks / _obsBoughtSet / _isObsMember 已在函数顶部「视图注入」段统一定义，
+  // 此处直接复用，确保「观察组归属口径」与「视图注入空壳行」完全一致（单一真相，杜绝两套定义分叉）。
+  const _obsIndicesRaw = renderOrder.filter(i => renderList[i] && renderList[i].stock && _isObsMember(renderList[i].stock.trim()));
 
   let obsIndices, regularIndices, hiddenObsIndices;
   if (jingYestToggleChecked) {
     hiddenObsIndices = [];
     _obsIndicesRaw.forEach(i => {
-      const stockName = auctionList[i].stock.trim();
+      const stockName = renderList[i].stock.trim();
       const matchesToday = jingYestHighlightSet && jingYestHighlightSet.has(stockName);
-      const item = auctionList[i];
+      const item = renderList[i];
       const hasTodayData = item && ((item.volume || '').toString().trim() !== '' || (item.yestVolume || '').toString().trim() !== '');
       const isBoughtInherited = _obsBoughtSet.has(stockName) && hasTodayData;
       if (!matchesToday && !isBoughtInherited) hiddenObsIndices.push(i);
@@ -440,7 +458,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     threeDayJingDieSet: _threeDayJingDieSet
   };
   const fullOrder = obsIndices.concat(regularIndices);
-  const items = fullOrder.map((i, pos) => _enrichAuctionItem(auctionList[i], i, ctx)).filter(Boolean);
+  const items = fullOrder.map((i, pos) => _enrichAuctionItem(renderList[i], i, ctx)).filter(Boolean);
 
   return {
     date: currentDate,

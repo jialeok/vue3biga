@@ -223,9 +223,14 @@ import { state } from './app-state.js';
             dayList.forEach(function(s) { if (s && s.stock) _existingRowMap[s.stock.trim()] = s; });
 
             // 回溯清理：移除旧逻辑残留的错误 obsAutoAdded/regularAutoAdded
+            // [OBS-FIX 2026-08-14] 数据未就绪（前一天高光集合为空）时禁止清理——否则会把本应继承的
+            // 空壳标志当成"错误残留"清掉，符合 §11「读取失败/未就绪即停止同步，不删除」。
+            // 前置依赖 getJingYestHighlightSetForDate(prevDay) 已在本函数开头计算（prevObsSet）。
+            const _sourceReady = !!(prevObsSet && prevObsSet.size > 0);
             const _validObsNames = new Set([...obsInherited, ...(prevObsSet || [])]);
             const _validRegularNames = new Set(regularInherited);
             let _cleanedCount = 0;
+            if (_sourceReady) {
             dayList.forEach(function(row) {
                 if (!row || !row.stock) return;
                 const n = row.stock.trim();
@@ -238,6 +243,9 @@ import { state } from './app-state.js';
                     _cleanedCount++;
                 }
             });
+            } else {
+                _dbgLog('[BOUGHT-ENSURE] 源未就绪（prevObsSet 为空），跳过回溯清理，避免误删继承空壳');
+            }
             if (_cleanedCount > 0) {
                 auctionData[date] = dayList;
                 markAuctionDirty(date);
