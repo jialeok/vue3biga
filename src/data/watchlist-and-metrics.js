@@ -268,7 +268,8 @@ import { setAuctionDateData } from './auction-data.js';
                         if (state._justPushedAuction) return; // 自己刚推的，忽略
                         const row = payload.new || payload.old;
                         // 处理 scope='auction' 的变更；也处理 scope='hot'——
-                        // auction 合并以 hot 作为 yest_volume/volume/change_pct 的二级回退，
+                        // auction 合并仍以 hot 作为 yest_volume/volume 的二级回退（change_pct 自 Phase 3 起
+                        // 不再从 hot 回退，权威源是 market_metrics(scope='auction')），
                         // hot 写入新值时 auction 看板也需重拉刷新（统一防抖池，不会与 hot 分组互相循环）。
                         if (!row || !row.date || (row.scope !== 'auction' && row.scope !== 'hot')) return;
                         _debounceAuctionRealtime(row.date);
@@ -363,9 +364,10 @@ import { setAuctionDateData } from './auction-data.js';
                     if (!key) return;
                     if (cloudByStock[key]) {
                         // 该股票同时在 watchlist 里：补充 metrics 特有字段（time930/seal_count），
-                        // 并在 watchlist 行的 volume/yest_volume/change_pct 为空时回退取 metrics 的值。
-                        // 【BUG-FIX】worker morning 把 watchlist 的 volume/yest_volume/change_pct 写成空串，
+                        // 并仅在 watchlist 行的 volume/yest_volume 为空时回退取 metrics 的值。
+                        // 【BUG-FIX】worker morning 把 watchlist 的 volume/yest_volume 写成空串，
                         // 真实值只写到了 market_metrics；如果这里不回退，刷新后趋势图会读空值消失。
+                        // 注意：change_pct 不再走回退——它已改为以 market_metrics 为唯一权威（见下方权威模型块）。
                         if (row.time930 !== undefined && row.time930 !== null && row.time930 !== '') cloudByStock[key].time930 = row.time930;
                         if (row.seal_count !== undefined && row.seal_count !== null && row.seal_count !== '') cloudByStock[key].seal_count = row.seal_count;
                         if (row.volume !== undefined && row.volume !== null && String(row.volume).trim() !== '' &&
@@ -377,17 +379,20 @@ import { setAuctionDateData } from './auction-data.js';
                             cloudByStock[key].yest_volume = row.yest_volume;
                             cloudByStock[key].yestVolume = row.yest_volume; // camelCase 别名同步
                         }
-                        if (row.change_pct !== undefined && row.change_pct !== null && String(row.change_pct).trim() !== '' &&
-                            (!cloudByStock[key].change_pct || String(cloudByStock[key].change_pct).trim() === '')) {
+                        // 【权威模型 / Phase 3】当天涨幅以 market_metrics(scope='auction').change_pct 为唯一权威。
+                        // worker 与「获取涨幅」按钮都写它（patchAuctionFieldBatch→metricsPatch），后写者胜。
+                        // market_metrics 非空即覆盖合并行，不再 only-if-empty 回退到 watchlist 行
+                        // （watchlist 行的 change_pct 由 worker 写成空串，仅为兼容保留其旧手动值兜底）。
+                        // 竞价指标字段（auc_pct_chg 等）仅 market_metrics 有，按「有则补」填充，与涨幅权威无关。
+                        if (row.change_pct !== undefined && row.change_pct !== null && String(row.change_pct).trim() !== '') {
                             cloudByStock[key].change_pct = row.change_pct;
                             cloudByStock[key].changePct = row.change_pct; // camelCase 别名同步
-                            // 竞价指标字段（仅 market_metrics 有，watchlist 行无这些列，直接补值）
-                            if (row.auc_pct_chg !== undefined && row.auc_pct_chg !== null && String(row.auc_pct_chg).trim() !== '') cloudByStock[key].auc_pct_chg = row.auc_pct_chg;
-                            if (row.um_vol !== undefined && row.um_vol !== null && String(row.um_vol).trim() !== '') cloudByStock[key].um_vol = row.um_vol;
-                            if (row.open_bid_pct !== undefined && row.open_bid_pct !== null && String(row.open_bid_pct).trim() !== '') cloudByStock[key].open_bid_pct = row.open_bid_pct;
-                            if (row.auc_vol_ratio !== undefined && row.auc_vol_ratio !== null && String(row.auc_vol_ratio).trim() !== '') cloudByStock[key].auc_vol_ratio = row.auc_vol_ratio;
-                            if (row.auc_turnover !== undefined && row.auc_turnover !== null && String(row.auc_turnover).trim() !== '') cloudByStock[key].auc_turnover = row.auc_turnover;
                         }
+                        if (row.auc_pct_chg !== undefined && row.auc_pct_chg !== null && String(row.auc_pct_chg).trim() !== '') cloudByStock[key].auc_pct_chg = row.auc_pct_chg;
+                        if (row.um_vol !== undefined && row.um_vol !== null && String(row.um_vol).trim() !== '') cloudByStock[key].um_vol = row.um_vol;
+                        if (row.open_bid_pct !== undefined && row.open_bid_pct !== null && String(row.open_bid_pct).trim() !== '') cloudByStock[key].open_bid_pct = row.open_bid_pct;
+                        if (row.auc_vol_ratio !== undefined && row.auc_vol_ratio !== null && String(row.auc_vol_ratio).trim() !== '') cloudByStock[key].auc_vol_ratio = row.auc_vol_ratio;
+                        if (row.auc_turnover !== undefined && row.auc_turnover !== null && String(row.auc_turnover).trim() !== '') cloudByStock[key].auc_turnover = row.auc_turnover;
                         return;
                     }
                     cloudByStock[key] = {
@@ -436,11 +441,9 @@ import { setAuctionDateData } from './auction-data.js';
                             existing.yest_volume = row.yest_volume;
                             existing.yestVolume = row.yest_volume;
                         }
-                        if (row.change_pct != null && String(row.change_pct).trim() !== '' &&
-                            (!existing.change_pct || String(existing.change_pct).trim() === '')) {
-                            existing.change_pct = row.change_pct;
-                            existing.changePct = row.change_pct;
-                        }
+                        // 【Phase 3】不再从 hot scope 回退 change_pct：当天涨幅的唯一权威是
+                        // market_metrics(scope='auction').change_pct，hot 的 change_pct 属于另一个 tab，
+                        // 混入会污染早盘竞价板的涨幅显示。
                     });
                 }
             } catch (e) { /* hot 回退失败不影响主流程 */ }

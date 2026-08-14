@@ -101,9 +101,10 @@ export async function pullAuctionFromTable() {
                         const existing = cloudByDate[row.date][key];
                         if (existing) {
                             // 该股票同时在 watchlist 里：补充 metrics 特有字段（time930/seal_count），
-                            // 并在 watchlist 行的 volume/yest_volume/change_pct 为空时回退取 metrics 的值。
-                            // 【BUG-FIX】worker morning 把 watchlist 的 volume/yest_volume/change_pct 写成空串，
+                            // 并仅在 watchlist 行的 volume/yest_volume 为空时回退取 metrics 的值。
+                            // 【BUG-FIX】worker morning 把 watchlist 的 volume/yest_volume 写成空串，
                             // 真实值只写到了 market_metrics；如果这里不回退，刷新后趋势图会读空值消失。
+                            // 注意：change_pct 不再走回退——它已改为以 market_metrics 为唯一权威（见下方权威模型块）。
                             if (row.time930 !== undefined && row.time930 !== null && row.time930 !== '') existing.time930 = row.time930;
                             if (row.seal_count !== undefined && row.seal_count !== null && row.seal_count !== '') existing.seal_count = row.seal_count;
                             if (row.volume !== undefined && row.volume !== null && String(row.volume).trim() !== '' &&
@@ -115,8 +116,10 @@ export async function pullAuctionFromTable() {
                                 existing.yest_volume = row.yest_volume;
                                 existing.yestVolume = row.yest_volume; // camelCase 别名同步
                             }
-                            if (row.change_pct !== undefined && row.change_pct !== null && String(row.change_pct).trim() !== '' &&
-                                (!existing.change_pct || String(existing.change_pct).trim() === '')) {
+                            // 【权威模型 / Phase 3】当天涨幅以 market_metrics(scope='auction').change_pct 为唯一权威。
+                            // worker 与「获取涨幅」按钮都写它（patchAuctionFieldBatch→metricsPatch），后写者胜。
+                            // market_metrics 非空即覆盖合并行，不再 only-if-empty 回退到 watchlist 行。
+                            if (row.change_pct !== undefined && row.change_pct !== null && String(row.change_pct).trim() !== '') {
                                 existing.change_pct = row.change_pct;
                                 existing.changePct = row.change_pct; // camelCase 别名同步
                             }
@@ -156,7 +159,8 @@ export async function pullAuctionFromTable() {
                 state._marketMetricsTableAvailable = false;
             }
 
-            // 3) 读取 market_metrics(scope='hot') 作为 yest_volume/volume/change_pct 的二级回退（全表）
+            // 3) 读取 market_metrics(scope='hot') 作为 yest_volume/volume 的二级回退（全表）。
+            //    change_pct 自 Phase 3 起不再从 hot 回退，权威源是 market_metrics(scope='auction')。
             // 【BUG-FIX】auction scope 部分行 yest_volume 为空，但 hot scope 同一股票同一日有值——
             //   yest_volume 是市场客观值（前一日完整成交量），与 tab 归属无关，可安全回退。
             //   只给已存在的行补值，不新增行（hot 影子记录不进入 auction 列表）。
@@ -183,11 +187,9 @@ export async function pullAuctionFromTable() {
                             existing.yest_volume = row.yest_volume;
                             existing.yestVolume = row.yest_volume;
                         }
-                        if (row.change_pct != null && String(row.change_pct).trim() !== '' &&
-                            (!existing.change_pct || String(existing.change_pct).trim() === '')) {
-                            existing.change_pct = row.change_pct;
-                            existing.changePct = row.change_pct;
-                        }
+                        // 【Phase 3】不再从 hot scope 回退 change_pct：当天涨幅的唯一权威是
+                        // market_metrics(scope='auction').change_pct，hot 的 change_pct 属于另一个 tab，
+                        // 混入会污染早盘竞价板的涨幅显示。
                     });
                     if (hotData.length < pageSize) break;
                     offset += pageSize;
