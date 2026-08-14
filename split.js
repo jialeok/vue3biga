@@ -215,11 +215,12 @@ for (const h of EXPORT_THESE) {
 
 // Build domain module content
 let mod = '';
-mod += "import { state } from '../app-state.js';\n";
-// copy external import lines verbatim
+// copy external import lines, rewriting relative paths one level deeper (domain is nested in src/logic/<domain>/)
 for (const imp of importLines) {
-  const line = src.slice(imp.start, imp.end);
-  // skip imports of app-core itself or relative domain modules (we handle those separately)
+  let line = src.slice(imp.start, imp.end);
+  line = line.replace(/(from\s+['"])(\.\.?\/)/g, function(m, p1, p2) {
+    return p1 + (p2 === './' ? '../' : '../../');
+  });
   mod += line + '\n';
 }
 // domain sibling imports

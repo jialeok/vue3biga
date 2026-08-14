@@ -496,9 +496,7 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
         // 推送该日期到 jiwang_data 表，避免每次 saveData()（可能因为改股票、改题材等
         // 与 jiwang 无关的操作触发）都无谓地 upsert 一次 jiwang_data。
         if (!state._jiwangDirtyDates) state._jiwangDirtyDates = new Set();
-        export function markJiwangDirty(date) {
-            if (date) state._jiwangDirtyDates.add(date);
-        }
+        
 
         // ============================================================
         // 集中写入守卫 API（harden-auction-date-isolation）
@@ -996,10 +994,7 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
         }
 
         // 获取当日记忘数据
-        export function getTodayJiwang() {
-            const jiwangData = getJiwangData();
-            return jiwangData[useUiStore().currentDate] || null;
-        }
+        
 
         // 获取分组数据（早盘竞价 / 热门股票），通过 dataSource 切换数据源
         // 'auction' 直接返回模块级独立内存缓存 _auctionMemCache（阶段四 Bug 1 修复），
@@ -4725,3 +4720,5 @@ _initAuctionMemCache();
 
 _setInvalidateTopicCacheFn(invalidateTopicCache);
 
+// §16 域拆分：jiwang 域函数已迁出至 ./jiwang/jiwang.js
+export { markJiwangDirty, getTodayJiwang } from './jiwang/jiwang.js';
