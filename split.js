@@ -85,6 +85,9 @@ function d_declarations(d) { return d.declarations; }
 // Build set of all top-level defined names (own names only).
 const allTopNames = new Set(topDefs.keys());
 
+// Global set of ALL moved names (this + other domains) so cross-domain refs resolve.
+const allMovedNames = new Set([...Object.values(MOVED).flat(), ...Object.values(MOVED_CONSTS).flat()]);
+
 // Collect referenced identifiers + local declared names within a function node.
 function collectRefs(fnNode) {
   const refs = new Set();
@@ -189,18 +192,21 @@ for (const fnName of movedNames) {
   const { refs, locals } = collectRefs(fnNode);
   for (const r of refs) {
     if (locals.has(r)) continue;
-    if (!allTopNames.has(r)) continue; // not an app-core own def -> covered by header import
-    if (movedNames.has(r) || movedConstNames.has(r)) {
-      // determine which domain owns r
-      let owner = null;
-      for (const dom of Object.keys(MOVED)) if (MOVED[dom].includes(r)) owner = dom;
-      if (!owner) for (const dom of Object.keys(MOVED_CONSTS)) if (MOVED_CONSTS[dom].includes(r)) owner = dom;
-      if (owner && owner !== DOMAIN) {
-        if (!domainImports.has(owner)) domainImports.set(owner, new Set());
-        domainImports.get(owner).add(r);
+    if (allMovedNames.has(r)) {
+      if (movedNames.has(r) || movedConstNames.has(r)) {
+        // same domain -> local, no import
+      } else {
+        let owner = null;
+        for (const dom of Object.keys(MOVED)) if (MOVED[dom].includes(r)) owner = dom;
+        if (!owner) for (const dom of Object.keys(MOVED_CONSTS)) if (MOVED_CONSTS[dom].includes(r)) owner = dom;
+        if (owner && owner !== DOMAIN) {
+          if (!domainImports.has(owner)) domainImports.set(owner, new Set());
+          domainImports.get(owner).add(r);
+        }
       }
-      // same domain -> local, no import
-    } else {
+      continue;
+    }
+    if (allTopNames.has(r)) {
       // staying app-core def -> import from app-core
       appCoreImports.add(r);
     }
