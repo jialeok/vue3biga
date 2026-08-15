@@ -89,7 +89,15 @@ function _ensureRecentMultiChannel() {
         }
       });
     })
-    .subscribe();
+    .subscribe((status) => {
+      // §31 Realtime 生命周期自愈：channel 进入错误/超时态时，移除坏 channel 并在仍有
+      // 订阅者时重建，避免事件静默丢失（表现为只有手动刷新/切日期才更新）。
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        try { getSupabase()?.removeChannel(_recentMultiChannel); } catch (e) {}
+        _recentMultiChannel = null;
+        if (_recentMultiListeners.size > 0) _ensureRecentMultiChannel();
+      }
+    });
   return _recentMultiChannel;
 }
 

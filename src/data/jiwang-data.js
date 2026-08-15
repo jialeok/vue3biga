@@ -5,9 +5,13 @@ import { state } from '../logic/app-state.js';
         // guochengJieguo/shouguJieguo/jielun/chushou 为核心文本字段，stats 是弹性
         // jsonb（行情阶段/仓位/勾选项等，字段还在持续增加，不逐个拆列）。
 
-        import { getSupabase, _moduleKey, getJiwangData } from './supabase-client.js';
-        import { _dbgLog } from './debug-log.js';
+import { getSupabase, _moduleKey, getJiwangData } from './supabase-client.js';
+import { _dbgLog } from './debug-log.js';
 import { useUiStore } from '../stores/uiStore.js';
+import { reactive } from 'vue';
+// 复用 duiban 域已有的 recent_multi_data Realtime 订阅（不另建 channel，避免重复订阅）。
+// 此处仅挂载一个只读聚合缓存供 stats-calc 的 computeRecordStats 使用（§15 单一数据源）。
+import { subscribeRecentMulti } from './duiban-sync.js';
 
         // 从 jiwang_data 表全量读取，返回 {date: {...}}
         export async function pullJiwangFromTable() {
@@ -316,5 +320,48 @@ import { useUiStore } from '../stores/uiStore.js';
                 try { getSupabase().removeChannel(state._jiwangRealtimeChannel); } catch(e) {}
                 state._jiwangRealtimeChannel = null;
             }
+        }
+
+        // ===== 最近多板（recent_multi_data）统计聚合缓存 =====
+        // 供 stats-calc.computeRecordStats 聚合「最近多板表现」使用。该表的真相源在 duiban 域
+        // （useBoardData.saveRecentMulti / duiban-sync），这里只维护一份「只读聚合缓存」，
+        // 不持有任何写入逻辑。复用 duiban-sync.subscribeRecentMulti 的订阅（不重复建 channel）。
+        // 缓存为 reactive：computeRecordStats 在 computed 内读取会被 Vue 自动追踪（§17 响应性），
+        // Realtime 变更或首次 hydrate 完成后看板自动重算（fail-soft：任何失败仅 warn，不抛）。
+        const _recentMultiMemCache = reactive({});
+        let _recentMultiStatsSynced = false;
+
+        export function getRecentMultiData() {
+            _ensureRecentMultiStatsSync();
+            return _recentMultiMemCache;
+        }
+
+        async function hydrateRecentMultiData() {
+            try {
+                const sb = getSupabase();
+                if (!sb) return;
+                const { data, error } = await sb.from('recent_multi_data').select('*');
+                if (error) { console.error('[jiwang-data] hydrateRecentMultiData 失败:', error.message); return; }
+                (data || []).forEach(function(r) { if (r && r.date) _recentMultiMemCache[r.date] = r; });
+            } catch (e) { console.error('[jiwang-data] hydrateRecentMultiData 异常:', e && e.message); }
+        }
+
+        function _ensureRecentMultiStatsSync() {
+            if (_recentMultiStatsSynced) return;
+            _recentMultiStatsSynced = true;
+            // 首次访问即拉全量；失败不影响渲染，computed 会因后续 realtime / 重试刷新。
+            hydrateRecentMultiData().catch(function(e) { console.warn('[jiwang-data] hydrateRecentMultiData 失败:', e); });
+            // 订阅 recent_multi_data 变更，保持聚合缓存最新（§31 Realtime 自愈由 duiban-sync 负责）。
+            try {
+                subscribeRecentMulti(function(payload) {
+                    if (!payload) return;
+                    if (payload.eventType === 'DELETE' || !payload.new || !payload.new.date) {
+                        const d = payload.old && payload.old.date;
+                        if (d) delete _recentMultiMemCache[d];
+                    } else {
+                        _recentMultiMemCache[payload.new.date] = payload.new;
+                    }
+                });
+            } catch (e) { console.warn('[jiwang-data] 订阅 recent_multi_data 失败:', e); }
         }
 

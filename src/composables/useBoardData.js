@@ -1,4 +1,4 @@
-import { reactive, watch } from 'vue';
+import { reactive, watch, effectScope } from 'vue';
 import { getSupabase } from '../data/supabase-client.js';
 import { loadEtfBoardByDate, saveEtfBoardRow } from '../data/etf-board-data.js';
 import { useUiStore } from '../stores/uiStore.js';
@@ -133,12 +133,19 @@ function ensureDateWatch() {
   if (_dateWatchStarted) return;
   _dateWatchStarted = true;
   const uiStore = useUiStore();
-  watch(() => uiStore.currentDate, (val) => {
-    if (val && val !== boardState.currentDate) {
-      boardState.currentDate = val;
-      loadRecentMulti(val);
-      loadEarlyEtf(val);
-    }
+  // 用 detached scope 创建全局 watcher：本 hub 是全应用共享的单一数据源，
+  // 若在组件 setup 内创建的 watch 会绑定到首个调用组件的 effect scope，
+  // 该组件卸载后 watcher 被销毁，而 _dateWatchStarted 守卫阻止重建，
+  // 导致后续日期切换不再触发重载（boardState 卡死为空直到手动刷新）。
+  const scope = effectScope(true);
+  scope.run(() => {
+    watch(() => uiStore.currentDate, (val) => {
+      if (val && val !== boardState.currentDate) {
+        boardState.currentDate = val;
+        loadRecentMulti(val);
+        loadEarlyEtf(val);
+      }
+    });
   });
   if (uiStore.currentDate) {
     boardState.currentDate = uiStore.currentDate;

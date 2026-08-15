@@ -207,18 +207,23 @@ onMounted(() => {
   if (boardState.lastError && String(boardState.lastError).indexOf('最近多板加载失败') === 0) {
     loadFailed.value = true;
   }
+  // §31：防御 dev StrictMode / HMR 重挂载导致的重复订阅或泄漏——先清理旧订阅再重建。
+  if (_unsubRecentMulti) { try { _unsubRecentMulti(); } catch (e) {} _unsubRecentMulti = null; }
+  boardState.realtimeReady = true;
   _unsubRecentMulti = subscribeRecentMulti((payload) => {
     const cur = boardState.currentDate;
     if (!cur || !payload) return;
     if (payload.eventType === 'DELETE') {
       if (payload.old && payload.old.date === cur) boardState.recentMulti = null;
     } else if (payload.new && payload.new.date === cur) {
+      // INSERT / UPDATE：以云端新行覆盖当前日期数据（§15 单一数据源）
       boardState.recentMulti = payload.new;
     }
   });
 });
 onUnmounted(() => {
   if (_unsubRecentMulti) { _unsubRecentMulti(); _unsubRecentMulti = null; }
+  boardState.realtimeReady = false;
 });
 
 defineExpose({ openEdit, refresh });

@@ -69,9 +69,10 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch } from 'vue';
+import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useBoardData } from '../composables/useBoardData.js';
 import { parseDieZhangbi, buildDieZhangbi } from '../logic/board-helpers.js';
+import { subscribeEtfBoard } from '../data/etf-board-data.js';
 
 const { boardState, loadEarlyEtf, saveEarlyEtf, toast, warnToast } = useBoardData();
 
@@ -175,6 +176,27 @@ function openEdit() { showModal.value = true; }
 function refresh() {
   if (boardState.currentDate) loadEarlyEtf(boardState.currentDate);
 }
+
+// §31 Realtime 订阅 early_etf_data：后台/他端/云端录入时自动更新总数量/跌涨比。
+// 镜像 DuibanBoard 模式；模块级变量防 HMR/StrictMode 重挂载泄漏。
+let _unsubEtf = null;
+onMounted(() => {
+  // §31：防御 dev StrictMode / HMR 重挂载导致的重复订阅或泄漏——先清理旧订阅再重建。
+  if (_unsubEtf) { try { _unsubEtf(); } catch (e) {} _unsubEtf = null; }
+  _unsubEtf = subscribeEtfBoard((payload) => {
+    const cur = boardState.currentDate;
+    if (!cur || !payload) return;
+    if (payload.eventType === 'DELETE') {
+      if (payload.old && payload.old.date === cur) boardState.earlyEtf = null;
+    } else if (payload.new && payload.new.date === cur) {
+      // INSERT / UPDATE：以云端新行覆盖当前日期数据（§15 单一数据源）
+      boardState.earlyEtf = payload.new;
+    }
+  });
+});
+onUnmounted(() => {
+  if (_unsubEtf) { _unsubEtf(); _unsubEtf = null; }
+});
 
 defineExpose({ openEdit, refresh });
 </script>

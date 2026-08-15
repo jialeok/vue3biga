@@ -9,7 +9,7 @@
       <div class="first-row-layout">
         <div class="layout-item" style="flex: 1;">
           <div class="market-stage-selector">
-            <select class="market-stage-select" v-model="marketStage" @change="updateMarketStage">
+            <select class="market-stage-select" v-model="marketStage">
               <option value="">空仓行情</option>
               <option value="轮动行情">轮动行情</option>
               <option value="主线行情">主线行情</option>
@@ -22,7 +22,7 @@
         </div>
         <div class="layout-item" style="flex: 1;">
           <div class="market-stage-selector" style="padding: 0 5px;">
-            <select class="market-stage-select" v-model="position" @change="updatePosition" style="width: calc(100% + 5px);">
+            <select class="market-stage-select" v-model="position" style="width: calc(100% + 5px);">
               <option value="">请选择</option>
               <option value="全仓">全仓</option>
               <option value="二分之一仓">二分之一仓</option>
@@ -73,22 +73,15 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, watch } from 'vue';
+import { ref, reactive, computed } from 'vue';
 import HeaderStats from '../components/HeaderStats.vue';
 import EditModal from '../components/EditModal.vue';
 import { useUiStore } from '../stores/uiStore.js';
 // [S-01] StatsBoard 经 Logic 层（src/logic/stats/）受控读写 jiwang.stats，不再直接原地改 allData.jiwang
-import { readStats, writeStats } from '../logic/stats/stats-logic.js';
-import { _on, _off } from '../stores/eventBus.js';
+import { writeStats } from '../logic/stats/stats-logic.js';
+import { getJiwangData } from '../data/supabase-client.js';
 
 const uiStore = useUiStore();
-
-const profit = ref('');
-const gain = ref('');
-const balance = ref('');
-const marketStage = ref('');
-const position = ref('');
-const comment = ref('');
 
 const circleModalActive = ref(false);
 const commentModalActive = ref(false);
@@ -98,41 +91,42 @@ const circleForm = reactive({
   profit: '', gain: '', balance: ''
 });
 
-// [S-03] 缓存当前日期的 stats 对象引用，避免每次操作都走 getJiwangData()→loadAllData() 重建。
-// 仅当日期切换（或缓存失效）时才重新经 Logic 层读取。
-const _statsCache = ref(null);
-const _statsCacheDate = ref(null);
-function getStats() {
-  if (_statsCacheDate.value !== uiStore.currentDate || !_statsCache.value) {
-    _statsCache.value = readStats(uiStore.currentDate);
-    _statsCacheDate.value = uiStore.currentDate;
-  }
-  return _statsCache.value;
+// §17/§18：直接派生自响应式 jiwang 数据源，任何对 jiwang[date].stats 的变更
+// （本看板 writeStats 或云端 Realtime 拉取）都会立即重算并刷新 UI，无需手动 render/事件总线。
+const statsOf = computed(() => {
+  const jiwang = getJiwangData();
+  const d = uiStore.currentDate;
+  return (jiwang && d && jiwang[d] && jiwang[d].stats) ? jiwang[d].stats : {};
+});
+
+const profit = computed(() => statsOf.value.profit ?? '');
+const gain = computed(() => statsOf.value.gain ?? '');
+const balance = computed(() => statsOf.value.balance ?? '');
+const comment = computed(() => statsOf.value.comment || '');
+
+// 行情阶段 / 仓位为双向绑定控件：getter 派生自响应式源，setter 经 Logic 层写回（§2）。
+const marketStage = computed({
+  get: () => statsOf.value.marketStage || '',
+  set: (v) => updateMarketStage(v)
+});
+const position = computed({
+  get: () => statsOf.value.position || '',
+  set: (v) => updatePosition(v)
+});
+
+async function updateMarketStage(value) {
+  await writeStats(uiStore.currentDate, { marketStage: value }, '');
 }
 
-function render() {
-  const s = getStats();
-  profit.value = s.profit ?? '';
-  gain.value = s.gain ?? '';
-  balance.value = s.balance ?? '';
-  marketStage.value = s.marketStage || '';
-  position.value = s.position || '';
-  comment.value = s.comment || '';
-}
-
-async function updateMarketStage() {
-  await writeStats(uiStore.currentDate, { marketStage: marketStage.value }, '');
-}
-
-async function updatePosition() {
-  await writeStats(uiStore.currentDate, { position: position.value }, '');
+async function updatePosition(value) {
+  await writeStats(uiStore.currentDate, { position: value }, '');
 }
 
 // [S-02] 旧的 toggleCheckbox 为死代码（无任何复选框调用，且其 saveData() 不持久化任何改动），
 // 移除无效防抖/死写，避免误导。如需复选框，应经 writeStats(..., successMsg) 真正持久化。
 
 function openCircleEdit() {
-  const s = getStats();
+  const s = statsOf.value;
   circleForm.profit = s.profit ?? '';
   circleForm.gain = s.gain ?? '';
   circleForm.balance = s.balance ?? '';
@@ -146,7 +140,6 @@ async function saveCircleStats() {
     balance: circleForm.balance,
   }, '✅ 圆形统计已保存并同步到云端');
   circleModalActive.value = false;
-  render();
 }
 
 function clearCircleStats() {
@@ -162,19 +155,8 @@ function openCommentEdit() {
 
 async function saveComment() {
   await writeStats(uiStore.currentDate, { comment: commentDraft.value }, '✅ 评论已保存并同步到云端');
-  comment.value = commentDraft.value;
   commentModalActive.value = false;
 }
-
-// 1) 挂载时先渲染一次（此时云端可能尚未拉回，渲染后会由下方 jiwang-refresh 再次刷新）
-// 2) 监听 currentDate 切换（DashboardView 内 StatsBoard 常驻挂载，切日期不会重新挂载，必须主动监听）
-// 3) 监听云端拉取 / Realtime 完成后的 jiwang-refresh 事件重新渲染
-onMounted(() => { render(); });
-_on('jiwang-refresh', render);
-watch(() => uiStore.currentDate, () => render());
-onUnmounted(() => { _off('jiwang-refresh', render); });
-
-defineExpose({ render });
 </script>
 
 <style>

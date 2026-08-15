@@ -9,6 +9,7 @@
 // buildProfitPoints 优先读 jiwang.stats.profit / stats.balance，soldRecords 仅作空值回退。
 import { getStocksData, getJiwangData } from '../../data/supabase-client.js';
 import { getEtfBoardData } from '../../data/etf-board-data.js';
+import { getRecentMultiData } from '../../data/jiwang-data.js';
 import { getRankData } from '../app-core.js';
 import { isTradingDay } from '../trading-day-helpers.js';
 
@@ -82,37 +83,71 @@ export function computeTopStocks(dates) {
 
 export function computeTopEtfs(dates) {
   const etfData = getEtfBoardData() || {};
-  const counts = {};
+  const list = [];
   dates.forEach(d => {
     const dayEtf = etfData[d];
-    if (dayEtf && Array.isArray(dayEtf)) {
-      dayEtf.forEach(item => {
-        if (item.name) counts[item.name] = (counts[item.name] || 0) + 1;
-      });
-    }
+    if (!dayEtf || !Array.isArray(dayEtf) || dayEtf.length === 0) return;
+    // early_etf_data 每行是当日 ETF 板块汇总（非逐只 ETF）：shuliang=总数量，die_zhangbi=跌:涨。
+    // 原实现误读 item.name（该表无 per-ETF name 字段）→ counts 永远为空 → 列表恒为 []。
+    // 修正：把「日期」作为板块表现条目名，总数量作为 count，并附跌涨比/涨/跌，供看板聚合展示。
+    const row = dayEtf[0];
+    if (!row || typeof row !== 'object') return;
+    const shuliang = parseInt(row.shuliang, 10) || 0;
+    let die = 0, zhang = 0;
+    const dz = (row.die_zhangbi || '').split(':');
+    if (dz.length === 2) { die = parseInt(dz[0], 10) || 0; zhang = parseInt(dz[1], 10) || 0; }
+    list.push({
+      name: d,
+      count: shuliang,
+      dieZhangbi: row.die_zhangbi || '',
+      up: zhang,
+      down: die,
+    });
   });
-  return Object.entries(counts).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 10);
+  // 与原始意图一致：按总数量降序取前 10（Top 榜单）
+  return list.sort((a, b) => b.count - a.count).slice(0, 10);
 }
 
 export function computeRecordStats(dates) {
-  const jiwangData = getJiwangData() || {};
-  let duibanCount = 0, topicCount = 0, etfCount = 0;
-  let duibanRight = 0, topicRight = 0, etfRight = 0;
-  dates.forEach(d => {
-    const dayJiwang = jiwangData[d];
-    if (!dayJiwang) return;
-    const st = dayJiwang.stats || {};
-    const isRight = dayJiwang.chushou === '空仓对了' || dayJiwang.chushou === '出手对了';
-    if (st.recentMulti === true) { duibanCount++; if (isRight) duibanRight++; }
-    if (st.topicDirection === true) { topicCount++; if (isRight) topicRight++; }
-    if (st.sectorEtf === true) { etfCount++; if (isRight) etfRight++; }
-  });
-  return {
-    duibanCount, topicCount, etfCount,
-    duibanWinRate: duibanCount > 0 ? Math.round(duibanRight / duibanCount * 100) : 0,
-    topicWinRate: topicCount > 0 ? Math.round(topicRight / topicCount * 100) : 0,
-    etfWinRate: etfCount > 0 ? Math.round(etfRight / etfCount * 100) : 0,
-  };
+  const EMPTY = { duibanCount: 0, topicCount: 0, etfCount: 0, duibanWinRate: 0, topicWinRate: 0, etfWinRate: 0 };
+  try {
+    // 最近多板真实数据源 = recent_multi_data（jiwang.stats.recentMulti 从未被写入，恒为空）。
+    const recentMulti = getRecentMultiData() || {};
+    const jiwangData = getJiwangData() || {};
+    let duibanCount = 0, duibanRight = 0;
+    let topicCount = 0, topicRight = 0, etfCount = 0, etfRight = 0;
+    dates.forEach(d => {
+      // 最近多板：该日存在 recent_multi_data 记录即算一条「多板」记录。
+      const rm = recentMulti[d];
+      if (rm && typeof rm === 'object') {
+        duibanCount++;
+        // 胜率：板块净多（涨数 > 跌数）记「对了」；缺计数时回退解析 die_zhangbi（跌:涨）。
+        let win = parseInt(rm.zhang_count, 10) > parseInt(rm.die_count, 10);
+        if (!win && rm.die_zhangbi) {
+          const parts = String(rm.die_zhangbi).split(':');
+          if (parts.length === 2) win = (parseInt(parts[1], 10) || 0) > (parseInt(parts[0], 10) || 0);
+        }
+        if (win) duibanRight++;
+      }
+      // 题材方向 / 板块ETF：保留 jiwang.stats 标记逻辑（§6 仍以此为准，未越界读其它域）。
+      const dayJiwang = jiwangData[d];
+      if (dayJiwang) {
+        const st = dayJiwang.stats || {};
+        const isRight = dayJiwang.chushou === '空仓对了' || dayJiwang.chushou === '出手对了';
+        if (st.topicDirection === true) { topicCount++; if (isRight) topicRight++; }
+        if (st.sectorEtf === true) { etfCount++; if (isRight) etfRight++; }
+      }
+    });
+    return {
+      duibanCount, topicCount, etfCount,
+      duibanWinRate: duibanCount > 0 ? Math.round(duibanRight / duibanCount * 100) : 0,
+      topicWinRate: topicCount > 0 ? Math.round(topicRight / topicCount * 100) : 0,
+      etfWinRate: etfCount > 0 ? Math.round(etfRight / etfCount * 100) : 0,
+    };
+  } catch (e) {
+    console.error('[stats-calc] computeRecordStats 失败:', e);
+    return EMPTY;
+  }
 }
 
 // 构建 TrendChart 所需的 points：{ date, value }（按时间升序）
