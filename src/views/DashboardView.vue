@@ -2,7 +2,7 @@
   <div class="container" id="gestureArea">
     <!-- 日期导航 -->
     <div class="date-nav">
-      <button class="nav-btn" @click="goToPrevTradingDay">‹</button>
+      <button class="nav-btn" @click="goToPrevDay">‹</button>
       <div class="date-selector" @click="openDatePicker">
         <div class="date-text">{{ currentDate }}</div>
         <div style="font-size:11px;margin-top:4px">
@@ -10,7 +10,7 @@
           <span class="market-status market-open">市</span>
         </div>
       </div>
-      <button class="nav-btn" @click="goToNextTradingDay">›</button>
+      <button class="nav-btn" @click="goToNextDay">›</button>
       <button class="today-btn" @click="goToday">今天</button>
     </div>
 
@@ -78,7 +78,7 @@
 <script setup>
 import { ref, computed, watch, onUnmounted } from 'vue';
 import { setCurrentDate, saveData } from '../logic/app-core.js';
-import { getPreviousTradingDay, getNextTradingDay, getMostRecentTradingDay, getHolidays, getTradingDays, isTradingDay, toggleHoliday } from '../logic/trading-day-helpers.js';
+import { getPreviousTradingDay, getNextTradingDay, getPreviousCalendarDay, getNextCalendarDay, getMostRecentTradingDay, getHolidays, getTradingDays, isTradingDay, toggleHoliday } from '../logic/trading-day-helpers.js';
 import { _emit } from '../stores/eventBus.js';
 import { useUiStore } from '../stores/uiStore.js';
 import { showToast } from '../composables/useToast.js';
@@ -156,6 +156,15 @@ function goToPrevTradingDay() {
 }
 function goToNextTradingDay() {
   const next = getNextTradingDay(uiStore.currentDate);
+  if (next) { setCurrentDate(next); statsView.onDateChanged(); }
+}
+// 顶部日期导航：按真实日历日 ±1（含周末），用于落在周六/周日展示周末看板。
+function goToPrevDay() {
+  const prev = getPreviousCalendarDay(uiStore.currentDate);
+  if (prev) { setCurrentDate(prev); statsView.onDateChanged(); }
+}
+function goToNextDay() {
+  const next = getNextCalendarDay(uiStore.currentDate);
   if (next) { setCurrentDate(next); statsView.onDateChanged(); }
 }
 function goToday() {

@@ -90,6 +90,28 @@ export function getNextTradingDay(dateStr) {
   return result;
 }
 
+export function getPreviousCalendarDay(dateStr) {
+  if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
+  const date = new Date(dateStr + 'T00:00:00');
+  date.setDate(date.getDate() - 1);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const ds = `${year}-${month}-${day}`;
+  if (ds < '2025-01-01') return null;
+  return ds;
+}
+
+export function getNextCalendarDay(dateStr) {
+  if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
+  const date = new Date(dateStr + 'T00:00:00');
+  date.setDate(date.getDate() + 1);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export function isWeekend(dateStr) {
   const date = new Date(dateStr + 'T00:00:00');
   const day = date.getDay();
