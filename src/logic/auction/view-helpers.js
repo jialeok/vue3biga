@@ -186,14 +186,16 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     _injectNames.add(n);
     _injectedRows.push({ stock: n, code: getStockCode(n), volume: '', yestVolume: '', note: '', obsAutoAdded: true });
   }
-  // [OBS-FIX 2026-08-14 v2] 仅对「无真实抓取数据」的日期（未来未抓取日，如 8/17）注入观察组预览空壳行。
-  // 已抓取的历史/今天日期不再注入：历史日期应如实显示当天真实抓取的列表，混入无数据壳会造成
-  // 「影子记录 / 五日数据不全」的伪股票（用户反馈核心问题）。未抓取日无真实数据，注入继承预览是合理的。
-  const _dayHasRealData = auctionList.length > 0;
-  if (!_dayHasRealData) {
-    if (_obsStocks) _obsStocks.forEach(_maybeInject);
-    _obsBoughtSet.forEach(_maybeInject);
-  }
+  // [OBS-FIX 2026-08-15 v3] 观察组完整继承恢复：无论当天是否已抓取真实数据，都把
+  // 「前一日竞昨高光 + obsBought」中不在当日列表的股票注入为观察组预览空壳行（蚂蚁线上观察组分栏）。
+  //  - 修复全局少股：8/10 观察组 16≠18、8/11 观察组 26≠28（8/14 v2 禁止已抓取日注入导致观察组只剩交集）；
+  //    观察组语义 = 前日竞昨高光完整集合，与"当日是否已抓取"无关。
+  //  - 注入行仅用于视图渲染（renderList），不写入 auctionData、不推送云端（§6：观察组不落库、不产生影子记录）；
+  //    历史锁定仍由 ensureObservationStocks（数据层）承担，视图层只如实呈现继承结果。
+  //  - 注入行 obsAutoAdded=true，经 _isObsMember 判定进入观察组分栏（蚂蚁线上），绝不混入常规组（蚂蚁线下）。
+  //  - 统计口径仍基于 auctionList + 正式成员索引（getAuctionBoardList 已过滤），注入壳不影响总数/涨跌比。
+  if (_obsStocks) _obsStocks.forEach(_maybeInject);
+  _obsBoughtSet.forEach(_maybeInject);
   // renderList 仅服务于视图渲染；真实业务数据(auctionList)保持不变，统计口径仍基于 auctionList。
   const renderList = _injectedRows.length ? auctionList.concat(_injectedRows) : auctionList;
 
