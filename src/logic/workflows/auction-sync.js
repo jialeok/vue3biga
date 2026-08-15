@@ -502,7 +502,9 @@ import { useUiStore } from '../../stores/uiStore.js';
         // 云端数据拉取（解锁后执行一次）
         // ============================================================
         export async function pullFromCloud() {
-            const _setSyncStatus = (v) => { try { const el = document.getElementById('syncStatus'); if (el) el.textContent = v; } catch {} };
+            // §3/§4 收口（P0-3 修复）：原 _setSyncStatus 用 document.getElementById('syncStatus') 在 logic 层
+            // 直接写 DOM，绕过 LoginOverlay.vue 的响应式 statusText，造成双写冲突。同步状态属信息展示，
+            // 且 statusText 为组件私有 ref、无供逻辑层写入的共享通道，故删除 DOM 写，仅保留诊断日志。
             try {
                 const sb = getSupabase();
                 const { data, error } = await sb
@@ -513,28 +515,23 @@ import { useUiStore } from '../../stores/uiStore.js';
 
                 if (error) throw error;
                 if (!data || !data.data || Object.keys(data.data).length === 0) {
-                    _setSyncStatus('✅ 云端暂无数据，使用本地数据');
+                    _dbgLog('[PULL] 云端暂无数据，使用本地数据');
                     return;
                 }
 
                 const cloudObj = data.data;
 
-                // §8-TODO：下方整段把云端业务数据（stocks/jiwang/rank/multi/hotspot/pattern/auction/bidding/tagTitles
-                // 及 duibanData/stockEtfData/coreTopics 等散落 key）写回 localStorage，违反 §8「业务数据不得落 localStorage」。
-                // 这是旧版 cloud-pull 缓存机制，迁移 Supabase 后应由内存缓存 + Realtime 取代；移除前需确认无其它模块依赖此 localStorage 兜底，待单独决策。
-                // 将云端数据写入 localStorage（覆盖本地）
+                // §8 收口（P0-1 修复）：原 cloud-pull 把云端 blob 各模块镜像写回 stockApp_v42_* localStorage，
+                // 违反 §8「核心业务数据不得落 localStorage」。现各模块已迁移到「云端专用表 + 内存缓存(_xxxMemCache)」，
+                // loadAllData 优先读内存缓存、不再从这些 localStorage key 读（src/data/supabase-client.js:199-214），
+                // 故下方不再镜像 stocks/auction/bidding/rank/multi/hotspot/pattern/tagTitles/jiwang（云端已是唯一真相源）。
+                // 仅 holidays / tradingDays 无对应内存缓存、仍由 loadAllData 从 localStorage 兜底读取（见 supabase-client.js:205），
+                // 予以保留写入（非 §8 违规，无合适云端表，且被读回作为数据源）。
                 const moduleKeys = ['stocks', 'auction', 'jiwang', 'rank', 'multi', 'hotspot', 'pattern', 'bidding', 'tagTitles', 'holidays', 'tradingDays'];
                 const DV = 'v42';
+                const _localStorageFallbackKeys = ['holidays', 'tradingDays'];
                 moduleKeys.forEach(key => {
-                    if (cloudObj[key] !== undefined) {
-                        // 已拆到独立表的模块：blob 中如果是空对象，不覆盖本地（数据在独立表中，空对象是拆表后的正常状态）
-                        // jiwang 已完全脱离 localStorage（云端表是唯一数据源），一律跳过，不再写入
-                        if (key === 'jiwang') return;
-                        if ((key === 'bidding' || key === 'auction') &&
-                            cloudObj[key] && typeof cloudObj[key] === 'object' &&
-                            Object.keys(cloudObj[key]).length === 0) {
-                            return; // 跳过，保留本地数据
-                        }
+                    if (_localStorageFallbackKeys.indexOf(key) !== -1 && cloudObj[key] !== undefined) {
                         localStorage.setItem('stockApp_' + DV + '_' + key, JSON.stringify(cloudObj[key]));
                     }
                 });
@@ -723,10 +720,9 @@ import { useUiStore } from '../../stores/uiStore.js';
                 try { localStorage.removeItem('boughtEnsured_' + useUiStore().currentDate); } catch(e) {}
                 try { localStorage.removeItem('obsBought_' + useUiStore().currentDate); } catch(e) {}
 
-                _setSyncStatus('✅ 云端数据同步成功');
+                _dbgLog('[PULL] 云端数据同步成功');
             } catch (e) {
                 _dbgLog('[AUCTION-ERR] window.pullFromCloud ' + (e && e.message || e));
-                _setSyncStatus('⚠️ 云端拉取失败，使用本地数据');
             }
         }
 

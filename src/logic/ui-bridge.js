@@ -29,10 +29,6 @@ export function setApiStatus(elId, msg, isOk) {
 }
 export function _domGet() { return null; }
 export function _domQuery() { return null; }
-export function _domValue() { return ''; }
-export function _domCreate() { return null; }
-export function _getCommentInputValue() { return ''; }
-export function _readTrackEditFormData() { return {}; }
 export function renderHotForm() { _emit('auction-refresh'); }
 // 覆盖/补全 选择弹窗（Vue 化）：取代原 window.confirm 系统 UI。
 // 调用方（同花顺/猫抓各补全类按钮）依赖它拿到 overwrite 开关才继续执行。
@@ -62,7 +58,6 @@ export function resolveNumcatChoice(overwrite) {
 }
 
 export function renderAuction() { _emit('auction-refresh'); }
-export async function saveAuction() {}
 export async function pullCoreTopicsFromCloud() {
   const sb = getSupabase();
   if (!sb) return null;
@@ -86,7 +81,6 @@ export async function pushCoreTopicsToCloud(topics) {
   if (insErr) throw insErr;
 }
 _setCoreTopicsFns(pullCoreTopicsFromCloud, pushCoreTopicsToCloud);
-export function toggleStrengthSort() {}
 
 export function resetExpansionStateOnDateSwitch() {}
 export function getAuctionTagState(stockName, date) {
@@ -95,12 +89,6 @@ export function getAuctionTagState(stockName, date) {
   const tag = prevDay ? _getAuctionTag(prevDay, stockName) : null;
   return { bought: tag === 'buy', sold: tag === 'sell', selected: tag === 'hold', source: tag ? 'inherited' : 'none' };
 }
-export function copyAllTopicStocks() {}
-export function copyTopicStocks() {}
-export function openAuctionNoteEditFromPage2() {}
-export function openCoreTopicModal() {}
-export function restoreExpandedTopicGroupsP2() {}
-export function toggleTopicGroupTrendPanels() {}
 const _starTagCache = new Map();
 export function clearStarTagCache() { _starTagCache.clear(); }
 export function getStarTagsForStock(stockName) {

@@ -11,8 +11,6 @@ import { _closeAuctionShield, _openAuctionShield, _initAuctionMemCache } from '.
 import { loadCloudStockCodeMap, upsertStockCodeMap } from '../data/stock-code-map.js';
 import { buildTopicCache, invalidateTopicCache, loadCloudTopics, pushStockTopicsToCloud, scanDataSourceForTopics } from '../data/stock-topics.js';
 import { _moduleKey, getJiwangData, getNumericVolume, getStocksData, getSupabase, loadAllData } from '../data/supabase-client.js';
-// §16 域拆分：bidding 域函数已迁出至 ./bidding/bidding.js（getBiddingData 重新由此导出）
-export { getBiddingData } from './bidding/bidding.js';
 import { remainingBoards } from '../data/remaining-boards.js';
 import { _addAuctionWatchlistMember, _extractWatchlistNamesFromRows, _getAuctionWatchlistSet, _setAuctionWatchlistForDate, getStockHistoryValue } from '../data/watchlist-and-metrics.js';
 import { getJingYestHighlightSetForDate, getJingYestStocksForDate } from './auction/sort-rules.js';
@@ -24,7 +22,7 @@ import { _getLocalTodayStr, deriveAuctionTagState } from './tagTitles/rules.js';
 import { getMostRecentTradingDay, getPreviousTradingDay, isTradingDay } from './date/trading-day-helpers.js';
 // §16 域拆分：纯日期工具已迁至 ./date/date-helpers.js（import 供本模块内部调用，re-export 供外部调用点零破坏）
 import { getWeekday, getPreviousDate, getNextDate, _shiftDateStr, buildYesterdayListFromToday } from './date/date-helpers.js';
-export { getWeekday, getPreviousDate, getNextDate, _shiftDateStr, buildYesterdayListFromToday } from './date/date-helpers.js';
+export { getPreviousDate, getNextDate } from './date/date-helpers.js';
 import { _domGet, _domQuery, getNthPreviousTradingDay, recalcDuibanFromAuction, renderAuction, renderBidding, renderDuiban, renderEmotionBoard, renderEtf, renderHotForm, renderHotspot, renderJiwang, renderList, renderMulti, renderPattern, renderRank, resetExpansionStateOnDateSwitch, setApiStatus, showNumcatChoiceModal } from './ui-bridge.js';
 import { pullFromCloud, pushAuctionCodeToCloud, pushHotStocksDataToCloud, pushToCloud, syncAuctionListForDate, syncCloseChunk, syncHotStocksListForDate } from './workflows/auction-sync.js';
 import { useAuctionStore, _bindUiFns } from '../stores/auctionStore.js';
@@ -43,7 +41,9 @@ import { markJiwangDirty, getTodayJiwang } from './jiwang/jiwang.js';
 import { searchTickerCodeByName, autoCompleteMissingStockCodes, importStockCodeMap, extractCodeFromFuyaoItem, getStockHistoryTopics, replaceConceptFromPaste } from './stocks/stocks.js';
 import { getAuctionData, getTodayAuction, getTodayGroupList, markAuctionDirty, patchAuctionField, patchAuctionFieldBatch, _sanitizeAuctionPatch, _splitAuctionPatch, _mergeAuctionPatchLocal, clearAuctionDateData, deleteAuctionDateData, mergeAuctionDateRows, clearAllAuctionDates, repairAuctionInWatchlistForDate, reconcileAuctionWatchlistFromLocalStorage, reconcileAuctionWatchlist, backupAuctionData, rollbackAuctionData, importAuctionFromPaste, parseVolumeOnlyText, splitHistoryFillLine, importAuctionHistoryFill, fetchLadderConstituentsMain, fetchDayVolumes, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs, _fillTodayYesterdayVolumeFromThsImpl, fillYesterdayYesterdayVolumeFromThs, _fillYesterdayYesterdayVolumeFromThsImpl, fetchChangePctFromThs, _fetchChangePctFromThsImpl, fillAuctionHistoryGapPctFromThs, fillAuctionHistoryGapYestVolumeFromThs, fillYesterdayAuctionFromNumcat, fetchTodayAuctionFromNumcat, fetchAllAuctionFromNumcat, fetchThreeDaysAuctionFromNumcat, fetchFiveDaysAuctionFromNumcat, fillTopicsFromNumcat, fetchMonitorWarningFromNumcat, fetchAuctionFromNumcat, AUCTION_WATCHLIST_FIELDS, AUCTION_METRICS_FIELDS, AUCTION_PATCHABLE_FIELDS, _auctionFirstClearDumped } from './auction/auction.js';
 import { getHotspotData, getHotAuctionData, _openHotAuctionShield, _closeHotAuctionShield, _sanitizeHotPatch, _splitHotPatch, _mergeHotPatchLocal, patchHotField, patchHotFieldBatch, backupHotStocksData, importHotFromPaste, replaceHotConceptFromPaste, HOT_WATCHLIST_FIELDS, HOT_METRICS_FIELDS, HOT_PATCHABLE_FIELDS } from './hotspot/hotspot.js';
-export function _getAuctionStore() { try { return useAuctionStore(); } catch { return null; } }
+// §42 解环：以下共享工具/常量迁至 ./shared/core-shared.js，app-core 仅 import + re-export（行为不变），供内部调用与外部调用点零破坏。
+import { getGroupData, _getAuctionStore, saveModule, scheduleCloudPush, saveData, _dumpAuctionSnapshot, _guardStack, _guardAssertDate, setBtnLoading, MODULE_KEYS } from './shared/core-shared.js';
+export { getGroupData, _getAuctionStore, saveModule, scheduleCloudPush, saveData, _dumpAuctionSnapshot, _guardStack, _guardAssertDate, setBtnLoading } from './shared/core-shared.js';
 // 重构（Phase 5 彻底）：导入期（Pinia 尚未激活）安全读取当前日期，避免模块顶层求值抛错。
 function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { return ''; } }
 
@@ -211,10 +211,6 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
         // ============================================================
         // 云端数据推送（防抖，操作停止 2 秒后触发）
         // ============================================================
-        export function scheduleCloudPush() {
-            clearTimeout(state._pushDebounceTimer);
-            state._pushDebounceTimer = setTimeout(pushToCloud, 2000);
-        }
 
         // 记录"确实发生过增删股票操作"的 auction 日期。
         // 只有被标记过的日期，在 pushToCloud 合并云端数据时才允许用本地名单覆盖云端，
@@ -234,36 +230,6 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
         // 统一记录 [AUCTION-GUARD] 日志（targetDate、before/after 行数、source、调用栈前5帧），
         // 校验 date 非空，对单日 source 断言 date === auctionStore.currentDate（不一致只警告不阻断）。
         // ============================================================
-        export function _guardStack() {
-            try { return ' stack=' + (new Error().stack || '').split('\n').slice(2, 7).join(' <- '); }
-            catch (e) { return ''; }
-        }
-        export function _guardAssertDate(date, source) {
-            try {
-                if (!_getAuctionStore()) return;
-                if (date === _getAuctionStore().currentDate) return;
-                var OK = ['pullAuctionFromTable','clearAllAuctionDates','restore','handleFileImport','importAuctionHistoryFill'];
-                if (OK.indexOf(source) >= 0) {
-                    _dbgLog('[AUCTION-GUARD] cross-date-ok date=' + date + ' source=' + source);
-                    return;
-                }
-                _dbgLog('[AUCTION-GUARD] ⚠️ date=' + date + ' ≠ _getAuctionStore().currentDate=' + _getAuctionStore().currentDate + ' source=' + source);
-            } catch(e){}
-        }
-        
-        export function _dumpAuctionSnapshot(label) {
-            try {
-                var keys = Object.keys(state._auctionMemCache).sort();
-                var parts = keys.map(function(d) {
-                    var arr = state._auctionMemCache[d] || [];
-                    // 方案2：用 _auctionWatchlistIndex 判断正式成员数量
-                    var wset = state._auctionWatchlistIndex[d] || new Set();
-                    var formal = arr.filter(function(s) { return s && s.stock && wset.has(s.stock.trim()); }).length;
-                    return d + ':' + formal + '/' + arr.length;
-                });
-                _dbgLog('[AUCTION-GUARD] snapshot ' + label + ' dates=' + keys.length + ' | ' + parts.join(', '));
-            } catch (e) {}
-        }
                 
         
         
@@ -305,19 +271,17 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
         }
 
         state.DATA_VERSION = 'v42';
-        const MODULE_KEYS = ['stocks', 'auction', 'jiwang', 'rank', 'multi', 'hotspot', 'pattern', 'bidding', 'tagTitles', 'holidays', 'tradingDays'];
 
         // 一次性清理：早期测试阶段遗留的陈旧 lastEditedDate（如 2025-01-02）会导致
         // 应用一直卡在那个日期。这里清除"去年今日"之前的值，让它退回默认走"今天"。
         // 只做一次判断、直接清除 key，不做动态阈值计算（之前的动态阈值方案因为在
         // initApp()/_appInit() 等多处各自独立读取同一个 key，顺序上互相覆盖，没有真正生效）。
-        (function _cleanupStaleLastEditedDate() {
-            const v = localStorage.getItem('lastEditedDate_' + state.DATA_VERSION);
-            const _minValidDate = (new Date().getFullYear() - 1) + '-01-01';
-            if (v && v < _minValidDate) {
-                localStorage.removeItem('lastEditedDate_' + state.DATA_VERSION);
-            }
-        })();
+        // [§16 修复] 原实现为顶层 IIFE，违反"app-core 不得无限增长"红线，已内联为模块顶层语句。
+        const _staleLastEditedDate = localStorage.getItem('lastEditedDate_' + state.DATA_VERSION);
+        const _minValidDate = (new Date().getFullYear() - 1) + '-01-01';
+        if (_staleLastEditedDate && _staleLastEditedDate < _minValidDate) {
+            localStorage.removeItem('lastEditedDate_' + state.DATA_VERSION);
+        }
 
         // 统一日期写入口：同时更新全局 currentDate 与响应式 auctionStore.currentDate，
         // 杜绝"全局已切、store 未跟"导致的跨日期写错位（fetchLadderConstituentsMain 等以
@@ -367,10 +331,8 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
         }
 
         export { getRankData } from './rank/rank.js';
-        export { getMultiData } from './multi/multi.js';
-        
+
         export { getPatternData } from './pattern/pattern.js';
-        export { getTagTitlesData } from './tagTitles/tagTitles.js';
         
         state.currentFilter = 'all';
         state.isStockListCollapsed = true; // 股票列表收起状态（默认收起，与原版 initStockListCollapse 一致）
@@ -407,91 +369,8 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
 
         // 撤回早盘竞价数据
         // 只精准恢复被备份的那一天，不碰其它任何日期
-        
 
-        export function saveModule(name) {
-            // §6：state.allData[name] 是内存缓存别名（= 各域 _xxxMemCache）。此处仅用于判定是否有数据可落盘，非读 DB。
-            if (!state.allData || !state.allData[name]) return;
-            // bidding 已改为纯云端表 + 内存缓存，不再落 localStorage
-            if (name === 'bidding') return;
-            // 阶段四 Bug 4 修复：auction 同样改为纯云端表（auction_watchlist + market_metrics）+ 内存缓存（_auctionMemCache），
-            // 不再落 localStorage，避免本地旧/空快照在下次保存或导入时把云端数据覆盖掉，
-            // 也避免与 _auctionMemCache 形成两份不同步的状态
-            if (name === 'auction') return;
-            // 阶段八：stocks / rank / multi / hotspot / pattern / tagTitles 已独立拆表，
-            // 不落 localStorage，改为异步推送 Supabase
-            if (name === 'stocks' || name === 'rank' || name === 'multi' ||
-                name === 'hotspot' || name === 'pattern' || name === 'tagTitles') {
-                if (typeof remainingBoards !== 'undefined' && remainingBoards.markDirty) {
-                    remainingBoards.markDirty(name, useUiStore().currentDate);
-                    remainingBoards.schedulePush();
-                }
-                return;
-            }
-            try {
-                // §6：序列化内存缓存别名 state.allData[name]（非真相源）落 localStorage，仅遗留未拆表模块到达此分支。
-                localStorage.setItem(_moduleKey(name), JSON.stringify(state.allData[name]));
-            } catch (e) {
-                console.error('saveModule 失败 [' + name + ']:', e);
-                if (e.name === 'QuotaExceededError' || e.code === 22) {
-                    showToast('⚠️ 存储空间不足，数据可能未保存！请导出备份后清理旧数据。');
-                }
-            }
-        }
-
-        export function saveData() {
-            MODULE_KEYS.forEach(key => {
-                // bidding 已改为纯云端表（bidding_data）+ 内存缓存，不再落 localStorage，
-                // 避免本地旧/空快照在下次保存或导入时把云端数据覆盖掉
-                if (key === 'bidding') return;
-                // jiwang 同理，已改为纯云端表（jiwang_data）+ 内存缓存
-                if (key === 'jiwang') return;
-                // 阶段四 Bug 4 修复：auction 同样不再落 localStorage
-                if (key === 'auction') return;
-                // 阶段八：stocks / rank / multi / hotspot / pattern / tagTitles 已独立拆表，
-                // 不走 localStorage，改为标记脏数据并异步推送 Supabase
-                if (key === 'stocks' || key === 'rank' || key === 'multi' ||
-                    key === 'hotspot' || key === 'pattern' || key === 'tagTitles') {
-                    return;
-                }
-                // §6：读内存缓存别名 state.allData[key]（非真相源）落 localStorage，仅遗留未拆表模块到达此分支。
-                if (state.allData && state.allData[key] !== undefined) {
-                    try {
-                        localStorage.setItem(_moduleKey(key), JSON.stringify(state.allData[key]));
-                    } catch (e) {
-                        console.error('saveData 失败 [' + key + ']:', e);
-                        if (e.name === 'QuotaExceededError' || e.code === 22) {
-                            showToast('⚠️ 存储空间不足，数据可能未保存！请导出备份后清理旧数据。');
-                        }
-                    }
-                }
-            });
-            // 阶段八：触发剩余看板的云端同步
-            if (typeof remainingBoards !== 'undefined' && remainingBoards.markAllDirty && useUiStore().currentDate) {
-                remainingBoards.markAllDirty(useUiStore().currentDate);
-                remainingBoards.schedulePush();
-            }
-            localStorage.setItem('lastEditedDate_' + state.DATA_VERSION, useUiStore().currentDate);
-            // jiwang 数据独立防抖推送到 jiwang_data 表：遍历所有被标记为脏的日期
-            // （不能只推 currentDate —— 例如"昨多板K线"回填是写 nextDate，
-            // 若只看 currentDate 会漏推）
-            if (state._jiwangDirtyDates && state._jiwangDirtyDates.size > 0) {
-                Array.from(state._jiwangDirtyDates).forEach(function(d) {
-                    scheduleJiwangPush(d);
-                });
-                state._jiwangDirtyDates.clear();
-            }
-            // 已解锁状态下，触发防抖云同步（2秒后推送）
-            if (localStorage.getItem('unlocked') === '1') { // 合规：登录会话标记（§8 允许）
-                scheduleCloudPush();
-            }
-        }
-
-
-
-
-
-        // 获取前一天/后一天日期（已迁至 ./date/date-helpers.js）
+// 获取前一天/后一天日期（已迁至 ./date/date-helpers.js）
 
         // 获取当日股票数据
         export function getTodayData() {
@@ -506,10 +385,6 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
         // 不再走 loadAllData().auction —— 后者虽然阶段四 Bug 2 修好后也指向 _auctionMemCache，
         // 但这里直接返回可以避开 loadAllData 的初始化副作用，并明确"渲染读的就是 patch 写的那份"。
         // 'hot' 读 _hotAuctionData 本地缓存
-        export function getGroupData(dataSource='auction') {
-            if (dataSource === 'hot') return state._hotAuctionData || {};
-            return state._auctionMemCache;
-        }
 
         // 获取早盘竞价数据（向后兼容：所有现有调用点不传参，行为不变）
         
@@ -605,18 +480,6 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
 
 
         // 按钮禁用/恢复（传入按钮元素和原始文本）
-        export function setBtnLoading(btn, loading, originalText) {
-            if (!btn) return;
-            if (loading) {
-                btn.disabled = true;
-                btn.dataset.originalText = btn.textContent;
-                btn.textContent = '处理中...';
-            } else {
-                btn.disabled = false;
-                if (originalText) btn.textContent = originalText;
-                else if (btn.dataset.originalText) btn.textContent = btn.dataset.originalText;
-            }
-        }
 
         // ---------- 同花顺：获取最近多板 883410 成分股并导入当日竞价列表 ----------
         // 【竞态修复】点击这个按钮到接口真正返回之间有网络耗时，这段时间里如果用户切换了
@@ -759,10 +622,10 @@ _setInvalidateTopicCacheFn(invalidateTopicCache);
 export { markJiwangDirty, getTodayJiwang } from './jiwang/jiwang.js';
 
 // §16 域拆分：stocks 域函数已迁出至 ./stocks/stocks.js
-export { searchTickerCodeByName, autoCompleteMissingStockCodes, importStockCodeMap, extractCodeFromFuyaoItem, getStockHistoryTopics, replaceConceptFromPaste } from './stocks/stocks.js';
+export { autoCompleteMissingStockCodes, importStockCodeMap, getStockHistoryTopics, replaceConceptFromPaste } from './stocks/stocks.js';
 
 // §16 域拆分：auction 域函数已迁出至 ./auction/auction.js
-export { getAuctionData, getTodayAuction, getTodayGroupList, markAuctionDirty, patchAuctionField, patchAuctionFieldBatch, _sanitizeAuctionPatch, _splitAuctionPatch, _mergeAuctionPatchLocal, clearAuctionDateData, deleteAuctionDateData, mergeAuctionDateRows, clearAllAuctionDates, repairAuctionInWatchlistForDate, reconcileAuctionWatchlistFromLocalStorage, reconcileAuctionWatchlist, backupAuctionData, rollbackAuctionData, importAuctionFromPaste, parseVolumeOnlyText, splitHistoryFillLine, importAuctionHistoryFill, fetchLadderConstituentsMain, fetchDayVolumes, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs, _fillTodayYesterdayVolumeFromThsImpl, fillYesterdayYesterdayVolumeFromThs, _fillYesterdayYesterdayVolumeFromThsImpl, fetchChangePctFromThs, _fetchChangePctFromThsImpl, fillAuctionHistoryGapPctFromThs, fillAuctionHistoryGapYestVolumeFromThs, fillYesterdayAuctionFromNumcat, fetchTodayAuctionFromNumcat, fetchAllAuctionFromNumcat, fetchThreeDaysAuctionFromNumcat, fetchFiveDaysAuctionFromNumcat, fillTopicsFromNumcat, fetchMonitorWarningFromNumcat, fetchAuctionFromNumcat, AUCTION_WATCHLIST_FIELDS, AUCTION_METRICS_FIELDS, AUCTION_PATCHABLE_FIELDS, _auctionFirstClearDumped } from './auction/auction.js';
+export { getAuctionData, getTodayGroupList, markAuctionDirty, patchAuctionField, patchAuctionFieldBatch, mergeAuctionDateRows, repairAuctionInWatchlistForDate, rollbackAuctionData, importAuctionFromPaste, importAuctionHistoryFill, fetchLadderConstituentsMain, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs, fillYesterdayYesterdayVolumeFromThs, fetchChangePctFromThs, fillAuctionHistoryGapPctFromThs, fillAuctionHistoryGapYestVolumeFromThs, fillYesterdayAuctionFromNumcat, fetchTodayAuctionFromNumcat, fetchAllAuctionFromNumcat, fetchThreeDaysAuctionFromNumcat, fetchFiveDaysAuctionFromNumcat, fillTopicsFromNumcat, fetchMonitorWarningFromNumcat } from './auction/auction.js';
 
 // §16 域拆分：hotspot 域函数已迁出至 ./hotspot/hotspot.js
-export { getHotspotData, getHotAuctionData, _openHotAuctionShield, _closeHotAuctionShield, _sanitizeHotPatch, _splitHotPatch, _mergeHotPatchLocal, patchHotField, patchHotFieldBatch, backupHotStocksData, importHotFromPaste, replaceHotConceptFromPaste, HOT_WATCHLIST_FIELDS, HOT_METRICS_FIELDS, HOT_PATCHABLE_FIELDS } from './hotspot/hotspot.js';
+export { patchHotFieldBatch } from './hotspot/hotspot.js';

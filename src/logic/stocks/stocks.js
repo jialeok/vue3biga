@@ -27,7 +27,9 @@ import { pullFromCloud, pushAuctionCodeToCloud, pushHotStocksDataToCloud, pushTo
 import { useAuctionStore, _bindUiFns } from '../../stores/auctionStore.js';
 import { initAuctionTags } from '../../stores/auctionTagStore.js';
 import { useUiStore } from '../../stores/uiStore.js';
-import { getGroupData, patchHotFieldBatch, patchAuctionFieldBatch, _getAuctionStore, getAuctionData, mergeAuctionDateRows, markAuctionDirty, scheduleCloudPush, saveData, saveModule } from '../app-core.js';
+import { getGroupData, _getAuctionStore, saveModule, scheduleCloudPush, saveData } from '../shared/core-shared.js';
+import { patchAuctionFieldBatch, getAuctionData, mergeAuctionDateRows, markAuctionDirty } from '../auction/auction.js';
+import { patchHotFieldBatch } from '../hotspot/hotspot.js';
 
 // §16 域拆分：stocks 域（原 app-core.js 迁出）
 export function getStockHistoryTopics(stockName) {

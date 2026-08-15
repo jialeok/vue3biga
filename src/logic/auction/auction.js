@@ -27,7 +27,9 @@ import { pullFromCloud, pushAuctionCodeToCloud, pushHotStocksDataToCloud, pushTo
 import { useAuctionStore, _bindUiFns } from '../../stores/auctionStore.js';
 import { initAuctionTags } from '../../stores/auctionTagStore.js';
 import { useUiStore } from '../../stores/uiStore.js';
-import { getGroupData, _dumpAuctionSnapshot, _guardStack, _getAuctionStore, _guardAssertDate, saveModule, setBtnLoading, scheduleCloudPush } from '../app-core.js';
+import { getGroupData, _dumpAuctionSnapshot, _guardStack, _getAuctionStore, _guardAssertDate, saveModule, setBtnLoading, scheduleCloudPush } from '../shared/core-shared.js';
+// §P1-6：纯函数 parseVolumeOnlyText / splitHistoryFillLine 已抽取到 ./auction-helpers.js（行为等价）。
+import { parseVolumeOnlyText, splitHistoryFillLine } from './auction-helpers.js';
 
 // §16 域拆分：auction 域（原 app-core.js 迁出）
 export async function repairAuctionInWatchlistForDate(dateArg) {
@@ -806,42 +808,9 @@ export async function importAuctionFromPaste(rawText) {
     return statusMsg;
 }
 
-export function parseVolumeOnlyText(text) {
-    if (!text) return null;
-    const trimmed = text.trim();
-    if (trimmed.includes('万')) {
-        const match = trimmed.match(/(-?\d+\.?\d*)\s*万/);
-        return match ? match[1] : null;
-    }
-    const match = trimmed.match(/^-?\d+\.?\d*$/);
-    return match ? trimmed : null;
-}
-
-export function splitHistoryFillLine(line) {
-    if (line.indexOf('\t') !== -1) {
-        return line.split('\t');
-    }
-    const tokens = line.trim().split(/\s+/).filter(Boolean);
-    if (tokens.length <= 1) {
-        return [line.trim()];
-    }
-    const isNumToken = (t) => parseVolumeOnlyText(t) !== null;
-    let splitAt = tokens.length; // 数值列的起始下标
-    for (let i = tokens.length - 1; i >= Math.max(1, tokens.length - 2); i--) {
-        if (isNumToken(tokens[i])) {
-            splitAt = i;
-        } else {
-            break;
-        }
-    }
-    if (splitAt === tokens.length) {
-        // 没有识别到末尾的数字 token，整行当作股票名称
-        return [line.trim()];
-    }
-    const stockName = tokens.slice(0, splitAt).join(' ');
-    const numCells = tokens.slice(splitAt);
-    return [stockName, ...numCells];
-}
+// §P1-6：原 export function parseVolumeOnlyText / splitHistoryFillLine 已迁至 ./auction-helpers.js。
+// 保留同名导出（re-export），确保 app-core.js 及 auction.js 内部调用方完全等价、无需改动。
+export { parseVolumeOnlyText, splitHistoryFillLine };
 
 export async function importAuctionHistoryFill(rawText, targetDate, colType) {
     const pasteText = (rawText || '').trim();

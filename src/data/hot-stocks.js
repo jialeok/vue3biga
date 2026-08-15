@@ -670,19 +670,11 @@ export function _mergeHotCloudToLocal(oldList, cloudRows) {
                         _scheduleHotRealtimeReload();
                     })
                     .subscribe();
-                state._marketMetricsHotRealtimeChannel = sb
-                    .channel('market_metrics_hot_changes')
-                    .on('postgres_changes', {
-                        event: '*', schema: 'public', table: 'market_metrics'
-                    }, function(payload) {
-                        if (state._justPushedHotAuction || state._justPushedHotTrends) return; // 自己刚推的，忽略
-                        var row = payload.new || payload.old;
-                        if (!row || !row.date || row.scope !== 'hot') return;
-                        state._pendingHotReload.stocks = true; // market_metrics变化影响_hotFullRowCache，需触发loadHotStocksFromCloud
-                        _scheduleHotRealtimeReload();
-                    })
-                    .subscribe();
-                console.log('hot trends Realtime 订阅已启动（hot_stock_trends + market_metrics scope=hot）');
+                // [FIX P1-9] market_metrics(scope='hot') 的订阅已去重：不再由本模块重复订阅同一张表，
+                // 统一交由 watchlist-and-metrics.js 的 market_metrics 权威订阅处理，并在其回调中
+                // 调用下方 triggerHotMetricsRealtimeReload() 触发热门股票看板刷新（详见 watchlist-and-metrics.js）。
+                // 这样既消除双 channel 重复订阅（§31/§39），又保证 hot 看板的更新不丢失。
+                console.log('hot trends Realtime 订阅已启动（hot_stock_trends；market_metrics 由 watchlist-and-metrics 统一订阅）');
             } catch (e) {
                 console.error('hot trends Realtime 订阅失败:', e);
             }
@@ -693,10 +685,18 @@ export function _mergeHotCloudToLocal(oldList, cloudRows) {
                 try { getSupabase().removeChannel(state._hotTrendsRealtimeChannel); } catch(e) {}
                 state._hotTrendsRealtimeChannel = null;
             }
-            if (state._marketMetricsHotRealtimeChannel) {
-                try { getSupabase().removeChannel(state._marketMetricsHotRealtimeChannel); } catch(e) {}
-                state._marketMetricsHotRealtimeChannel = null;
-            }
+            // [FIX P1-9] market_metrics(scope='hot') 订阅已移至 watchlist-and-metrics.js，此处不再持有该 channel
+        }
+
+        // [FIX P1-9] market_metrics(scope='hot') 变化的统一刷新入口（由 watchlist-and-metrics.js 的
+        // 权威 market_metrics 订阅回调调用）。保留原 hot-stocks 订阅回调的全部本地逻辑：
+        // 自推送屏蔽 + 置位 _pendingHotReload.stocks + 走统一防抖池触发 loadHotStocksFromCloud 刷新热门看板。
+        // 这样把"重复订阅"改为"复用共享刷新函数"，确保 hot 看板更新不丢失（§39 不破坏同步/不造重复订阅）。
+        export function triggerHotMetricsRealtimeReload(date) {
+            if (state._justPushedHotAuction || state._justPushedHotTrends) return; // 自己刚推的，忽略
+            if (!date) return;
+            state._pendingHotReload.stocks = true; // market_metrics变化影响_hotFullRowCache，需触发loadHotStocksFromCloud
+            _scheduleHotRealtimeReload();
         }
 
         // 一次性迁移：把旧 hot_stocks 表中 in_watchlist=false 的影子记录迁移到 market_metrics(scope='hot')，

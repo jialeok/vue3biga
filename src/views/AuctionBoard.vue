@@ -489,6 +489,21 @@ import { prepareAuctionData } from '../logic/auction/view-helpers.js';
 import { computeAuctionViewDataIncremental } from '../logic/auction/incremental-view.js';
 import { showToast } from '../composables/useToast.js';
 import { apiStatusMap } from '../logic/ui-bridge.js';
+// §P1-6：展示层纯函数已抽取到 ../composables/auction-board-helpers.js（行为等价，模板/脚本调用方式不变）。
+import {
+    getStarSymbols,
+    extractChangeFromNote,
+    getChangePctDisplay,
+    canGroupExpand,
+    getTopicNameStyle,
+    getChangeClass,
+    getTopicsDisplay,
+    formatDateShort,
+    getHistoryArrow,
+    getRankAppearText,
+    _normalizeNotePunct,
+    _buildFullNoteWithTopics
+} from '../composables/auction-board-helpers.js';
 
 const uiStore = useUiStore();
 const auctionStore = useAuctionStore();
@@ -588,62 +603,15 @@ const p2TrendHistory = ref({});
 const p2ExpandedTopics = ref(new Set());
 const p2ExpandAll = ref(false);
 
-function getStarSymbols(starCount) {
-  if (starCount <= 0) return '-';
-  if (starCount >= 6) return starCount + '★';
-  return '★'.repeat(starCount);
-}
-function extractChangeFromNote(note) {
-  if (!note) return '-';
-  const m = note.match(/([+-]?\d+\.?\d*%)/);
-  return m ? m[1] : '-';
-}
-function getChangePctDisplay(item) {
-  if (item && item.changePct) {
-    if (/^[+-]?\d+\.?\d*%$/.test(item.changePct)) {
-      const num = parseFloat(item.changePct);
-      if (!isNaN(num) && Math.abs(num) <= 20) return item.changePct;
-      return '-';
-    }
-    return item.changePct;
-  }
-  return extractChangeFromNote(item ? item.note : '');
-}
-function canGroupExpand(topic) {
-  return topic !== '其它' && topic !== '并购重组';
-}
-function getRankAppearText(topic) {
-  try {
-    const cnt = getTopicRankCountThisWeek(topic);
-    return cnt > 0 ? ` 上榜${cnt}次` : '';
-  } catch (e) { return ''; }
-}
-function getTopicsDisplay(stock) {
-  let topics = stock.topics ? stock.topics.join(',') : '';
-  if (!topics.trim() && stock.stock) {
-    // 题材可能只存在于共享题材库（stock_topics 云库 / 热门股票影子记录），
-    // 早盘竞价行自身 topics 为空时回退到历史题材缓存，避免删除热门股票 tab 后题材显示为空。
-    const hist = getStockHistoryTopics(stock.stock);
-    if (hist) topics = hist.replace(/[()（）]/g, '').replace(/[，、;；]/g, ',');
-  }
-  const trimmed = topics.replace(/[，、;；]/g, ',').trim();
-  return trimmed ? trimmed : '-';
-}
+// §P1-6：getStarSymbols / extractChangeFromNote / getChangePctDisplay / canGroupExpand /
+// getRankAppearText / getTopicsDisplay 已迁至 ../composables/auction-board-helpers.js（同名 import）。
 function getStockStyle(stockName) {
   const cnt = p2StockTopicCount.value[stockName] || 1;
   if (cnt >= 3) return 'color:#ef4444;font-weight:500;';
   if (cnt === 2) return 'color:#1f2937;font-weight:500;';
   return 'color:rgba(0,0,0,0.6);font-weight:500;';
 }
-function getTopicNameStyle() {
-  return 'color:#6b7280;font-weight:400;';
-}
-function getChangeClass(stock) {
-  const v = getChangePctDisplay(stock);
-  if (v.includes('涨停') || (v.startsWith('-') === false && v !== '-')) return 'auction-topic-change auction-change-red';
-  if (v.startsWith('-')) return 'auction-topic-change auction-change-green';
-  return 'auction-topic-change';
-}
+// §P1-6：getTopicNameStyle / getChangeClass 已迁至 ../composables/auction-board-helpers.js（同名 import）。
 function getTopicRowClass(group, stock) {
   const auctionList = getTodayGroupList('auction');
   const auctionItem = auctionList.find(it => it.stock && it.stock.trim() === (stock.stock || '').trim());
@@ -963,24 +931,8 @@ const page3Data = computed(() => {
   return { topics, tradingDays };
 });
 
-function formatDateShort(dateStr) {
-  const parts = dateStr.split('-');
-  return `${parseInt(parts[1])}月${parseInt(parts[2])}`;
-}
+// §P1-6：formatDateShort / getHistoryArrow 已迁至 ../composables/auction-board-helpers.js（同名 import）。
 // A2-06：不再返回 v-html 字符串，改为安全的 { text, color } 对象，模板用 {{ }} + :style 渲染。
-function getHistoryArrow(dayData, nextDayData) {
-  if (!dayData.hasData) return { text: '-', color: '#9ca3af' };
-  if (!nextDayData) return { text: '', color: '' };
-  const currS = dayData.strength || 0, prevS = nextDayData.strength || 0;
-  const currStar = dayData.starCount || 0, prevStar = nextDayData.starCount || 0;
-  if (currS > prevS) return { text: '⬆', color: '#ef4444' };
-  if (currS < prevS) {
-    if (prevS > 70 && prevStar > 0) return { text: '≈', color: '#ef4444' };
-    if (prevStar === 0 && currStar > 0) return { text: '⬆', color: '#ef4444' };
-    return { text: '⬇', color: '#10b981' };
-  }
-  return { text: '平', color: '#f97316' };
-}
 
 const copiedStocks = ref([]);
 function loadCopiedStocks() {
@@ -1349,28 +1301,9 @@ const volumeNoteDraft = ref('');
 let volumeNoteIndex = -1;
 
 // [FIX 2026-08-16] 题材补全（toast 与编辑框共用）：行内 topics 为空时（早盘竞价行只存涨幅、
+// §P1-6：_normalizeNotePunct / _buildFullNoteWithTopics 已迁至 ../composables/auction-board-helpers.js（同名 import）。
 // 题材在共享题材库 stock_topics），回退查 getStockHistoryTopics——与第二页题材分组 getTopicsDisplay 同口径。
 // 输出统一英文标点：-2.6%(机器人,人工智能,AI应用)
-function _normalizeNotePunct(note) {
-  return String(note || '').replace(/[，、;；]/g, ',').replace(/[（]/g, '(').replace(/[）]/g, ')');
-}
-function _buildFullNoteWithTopics(item, baseNote) {
-  let note = _normalizeNotePunct(baseNote);
-  if (!note.includes('(') && item && item.stock) {
-    try {
-      const histTopics = getStockHistoryTopics(item.stock);
-      if (histTopics) {
-        const cleanTopics = String(histTopics).replace(/[()（）]/g, '').replace(/[，、;；]/g, ',');
-        if (cleanTopics.trim()) {
-          const pctMatch = note.match(/^([+-]?\d+\.?\d*%)/);
-          const pct = pctMatch ? pctMatch[1] : (note.replace(/[()（），,]/g, '').trim());
-          note = (pct || '') + '(' + cleanTopics + ')';
-        }
-      }
-    } catch (e) {}
-  }
-  return note;
-}
 
 function onEditVolumeNote(index) {
   volumeNoteIndex = index;

@@ -27,7 +27,7 @@ import { pullFromCloud, pushAuctionCodeToCloud, pushHotStocksDataToCloud, pushTo
 import { useAuctionStore, _bindUiFns } from '../../stores/auctionStore.js';
 import { initAuctionTags } from '../../stores/auctionTagStore.js';
 import { useUiStore } from '../../stores/uiStore.js';
-import { getStockHistoryTopics } from '../stocks/stocks.js';
+import { getStockHistoryTopics } from '../app-core-api.js';
 
 // §16 域拆分：hotspot 域（原 app-core.js 迁出）
 export function _openHotAuctionShield() {
@@ -189,8 +189,12 @@ export function importHotFromPaste() {
     const pasteText = rawText.trim();
     if (!pasteText) {
         const status = _domGet('hotImportStatus');
-        status.textContent = '请先粘贴数据！';
-        status.style.color = '#dc2626';
+        if (status) {
+            status.textContent = '请先粘贴数据！';
+            status.style.color = '#dc2626';
+        } else {
+            console.warn('[importHotFromPaste] 缺失 DOM 元素 hotImportStatus，无法展示状态');
+        }
         textarea && textarea.focus();
         return;
     }
@@ -284,8 +288,12 @@ export function importHotFromPaste() {
 
     if (fullDataList.length === 0 && noteList.length === 0) {
         const status = _domGet('hotImportStatus');
-        status.textContent = '未能解析到有效数据！';
-        status.style.color = '#dc2626';
+        if (status) {
+            status.textContent = '未能解析到有效数据！';
+            status.style.color = '#dc2626';
+        } else {
+            console.warn('[importHotFromPaste] 缺失 DOM 元素 hotImportStatus，无法展示状态');
+        }
         return;
     }
 
@@ -435,8 +443,12 @@ export function importHotFromPaste() {
     if (fullDataUpdateCount > 0) statusMsg += ` 更新${fullDataUpdateCount}条`;
     if (noteUpdateCount > 0) statusMsg += ` 更新注释${noteUpdateCount}条`;
     if (noteNewCount > 0) statusMsg += ` 新增注释${noteNewCount}条`;
-    statusEl.textContent = statusMsg;
-    statusEl.style.color = '#059669';
+    if (statusEl) {
+        statusEl.textContent = statusMsg;
+        statusEl.style.color = '#059669';
+    } else {
+        console.warn('[importHotFromPaste] 缺失 DOM 元素 hotImportStatus，无法展示状态');
+    }
     // 刷新表单和前台（不调 renderList/recalcDuibanFromAuction/syncCloseChunk）
     setTimeout(() => renderHotForm(), 0);
     setTimeout(() => renderAuction('hot'), 20);
@@ -450,8 +462,12 @@ export function replaceHotConceptFromPaste() {
     const pasteText = rawText.trim();
     if (!pasteText) {
         const status = _domGet('hotImportStatus');
-        status.textContent = '请先粘贴数据！';
-        status.style.color = '#dc2626';
+        if (status) {
+            status.textContent = '请先粘贴数据！';
+            status.style.color = '#dc2626';
+        } else {
+            console.warn('[replaceHotConceptFromPaste] 缺失 DOM 元素 hotImportStatus，无法展示状态');
+        }
         textarea && textarea.focus();
         return;
     }
@@ -530,8 +546,12 @@ export function replaceHotConceptFromPaste() {
     const statusEl = _domGet('hotImportStatus');
     let statusMsg = '✅ 替换了 ' + replaceCount + ' 条概念';
     if (notFoundCount > 0) statusMsg += '，未找到: ' + notFoundStocks.slice(0, 3).join(', ') + (notFoundCount > 3 ? '...' : '');
-    statusEl.textContent = statusMsg;
-    statusEl.style.color = replaceCount > 0 ? '#059669' : '#dc2626';
+    if (statusEl) {
+        statusEl.textContent = statusMsg;
+        statusEl.style.color = replaceCount > 0 ? '#059669' : '#dc2626';
+    } else {
+        console.warn('[replaceHotConceptFromPaste] 缺失 DOM 元素 hotImportStatus，无法展示状态');
+    }
     const submitBtn = _domQuery('#hotForm .submit-btn');
     if (submitBtn) submitBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }

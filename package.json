@@ -3,6 +3,7 @@
   "version": "1.1.0",
   "description": "股票日记 App — 三层架构（data → logic → ui）",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

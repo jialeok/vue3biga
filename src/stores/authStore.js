@@ -47,46 +47,7 @@ export const useAuthStore = defineStore('auth', {
   },
 });
 
-// 单一真相源：window 上的登录态别名委托到 app 级 useAuthStore()（不再持有孤儿实例）。
-if (typeof window !== 'undefined') {
-  // 登录态全局别名委托（向后兼容 window._sessionToken / window.unlocked 等直接读写）
-  Object.defineProperty(window, '_sessionToken', {
-    get() { try { return useAuthStore().sessionToken; } catch (e) { return null; } },
-    set(v) { try { useAuthStore().sessionToken = v; } catch (e) {} },
-    configurable: true,
-  });
-  Object.defineProperty(window, '_realtimeChannel', {
-    get() { try { return useAuthStore().realtimeChannel; } catch (e) { return null; } },
-    set(v) { try { useAuthStore().realtimeChannel = v; } catch (e) {} },
-    configurable: true,
-  });
-  Object.defineProperty(window, 'unlocked', {
-    get() { try { return useAuthStore().unlocked; } catch (e) { return false; } },
-    set(v) { try { useAuthStore().unlocked = !!v; } catch (e) {} },
-    configurable: true,
-  });
-  Object.defineProperty(window, '_justPushed', {
-    get() { try { return useAuthStore()._justPushed; } catch (e) { return false; } },
-    set(v) { try { useAuthStore()._justPushed = !!v; } catch (e) {} },
-    configurable: true,
-  });
-  Object.defineProperty(window, '_justPushedAuction', {
-    get() { try { return useAuthStore()._justPushedAuction; } catch (e) { return false; } },
-    set(v) { try { useAuthStore()._justPushedAuction = !!v; } catch (e) {} },
-    configurable: true,
-  });
-  Object.defineProperty(window, '_justPushedAuctionCounter', {
-    get() { try { return useAuthStore()._justPushedAuctionCounter; } catch (e) { return 0; } },
-    set(v) { try { useAuthStore()._justPushedAuctionCounter = v; } catch (e) {} },
-    configurable: true,
-  });
-  Object.defineProperty(window, '_justPushedAuctionTimer', {
-    get() { try { return useAuthStore()._justPushedAuctionTimer; } catch (e) { return null; } },
-    set(v) { try { useAuthStore()._justPushedAuctionTimer = v; } catch (e) {} },
-    configurable: true,
-  });
-}
-
+// 登录态为 Pinia 单一真相源（不再向 window 暴露任何业务全局，符合 §16 / §39）。
 // 向后兼容默认导出：委托到 app 级 useAuthStore() 的 Proxy（非孤儿实例、非第二真相源）。
 const _authProxy = new Proxy({}, {
   get(_t, p) { try { const s = useAuthStore(); const v = s[p]; return typeof v === 'function' ? v.bind(s) : v; } catch (e) { return undefined; } },

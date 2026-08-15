@@ -25,3 +25,11 @@ _window_tokens.txt
 # Local backup dumps (not source)
 股票助手备份_20260802_1931.json
 index单页没改造前备份.html
+newbigamain没彻底拆分最新原始文件/
+
+# Build / verification scratch logs (UTF-16, stale)
+build-log*.txt
+
+# One-off / local tooling scripts (not shipped)
+obs-*.cjs
+test-highlight.mjs

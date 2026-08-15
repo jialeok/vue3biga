@@ -562,10 +562,16 @@ async function _onDateChanged(date) {
   _emit('board-refresh');
 }
 
+// [FIX P1-9] 300ms 轮询处置说明：本轮询仅负责监听「UI 当前交易日(_currentDate)」的切换，
+// 属于本地 UI 状态变化（用户在界面上切换交易日），Realtime 推送只能推送数据库表行变更，
+// 无法感知本地 UI 状态切换，故该功能不可替代，保留轮询。但持有 timer 引用，确保 _watchDate
+// 被重复调用时不会创建多个并行轮询循环（§31 防重复创建）。
+let _watchDateTimer = null;
 function _watchDate() {
+  if (_watchDateTimer) { clearInterval(_watchDateTimer); _watchDateTimer = null; }
   let _last = _currentDate();
   if (_last) _onDateChanged(_last);
-  setInterval(() => {
+  _watchDateTimer = setInterval(() => {
     const d = _currentDate();
     if (d && d !== _last) {
       _last = d;
@@ -574,10 +580,19 @@ function _watchDate() {
   }, 300);
 }
 
+// [FIX P1-9 §31] 模块级持有 channel 引用，支持统一退订，避免重复订阅/泄漏
+let _remainingRealtimeChannel = null;
+
 function _subscribeRealtime() {
+  // 自保护：若 channel 已存在，先退订再重建，防止重复订阅（§31 防重复订阅）
+  if (_remainingRealtimeChannel) {
+    try { getSupabase().removeChannel(_remainingRealtimeChannel); } catch (e) {}
+    _remainingRealtimeChannel = null;
+  }
   try {
     const sb = getSupabase();
-    sb.channel('remaining-boards-changes')
+    _remainingRealtimeChannel = sb
+      .channel('remaining-boards-changes')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'stocks_data' }, (payload) => {
         const date = payload.new && payload.new.date;
         if (date && date !== _currentDate()) {
@@ -609,6 +624,15 @@ function _subscribeRealtime() {
       .subscribe();
   } catch (e) {
     _warn('Realtime 订阅失败: ' + (e.message || e));
+    _remainingRealtimeChannel = null;
+  }
+}
+
+// [FIX P1-9 §31] 配对退订：移除 remaining-boards 的 Realtime channel，防止会话/页面离开后泄漏
+export function stopRemainingRealtime() {
+  if (_remainingRealtimeChannel) {
+    try { getSupabase().removeChannel(_remainingRealtimeChannel); } catch (e) {}
+    _remainingRealtimeChannel = null;
   }
 }
 

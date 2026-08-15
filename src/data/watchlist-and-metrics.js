@@ -13,7 +13,7 @@ import { startStockCodeMapRealtime, stopStockCodeMapRealtime } from './stock-cod
 import { startBiddingRealtime, stopBiddingRealtime } from './bidding-data.js';
 import { startJiwangRealtime, stopJiwangRealtime } from './jiwang-data.js';
 import { startHighlightsRealtime, stopHighlightsRealtime, pullDailyHighlights } from './daily-highlights.js';
-import { startHotStocksRealtime, stopHotStocksRealtime, startHotHighlightsRealtime, stopHotHighlightsRealtime, startHotTrendsRealtime, stopHotTrendsRealtime } from './hot-stocks.js';
+import { startHotStocksRealtime, stopHotStocksRealtime, startHotHighlightsRealtime, stopHotHighlightsRealtime, startHotTrendsRealtime, stopHotTrendsRealtime, triggerHotMetricsRealtimeReload } from './hot-stocks.js';
 import { setAuctionDateData } from './auction-data.js';
 
         state._jiwangTableAvailable = false; // jiwang_data 表是否可用
@@ -40,7 +40,6 @@ import { setAuctionDateData } from './auction-data.js';
         state._hotAuctionTableAvailable = false; // 运行时标记：hot_stocks 表是否可用
         state._hotAuctionRealtimeChannel = null; // hot_stocks 表的 Realtime 订阅
         state._hotTrendsRealtimeChannel = null; // hot_stock_trends 表的 Realtime 订阅（兼容旧表）
-        state._marketMetricsHotRealtimeChannel = null; // market_metrics(scope='hot') 表的 Realtime 订阅
         state._hotTrendsTableAvailable = false; // 运行时标记：hot_stock_trends 表是否可用
         state._hotTrendsCache = {}; // hot_stock_trends 表本地缓存 {date: [items]}（原缺失声明）
         state._hotTrendsReloadTimer = null; // hot_stock_trends Realtime 收到变更后的防抖重载定时器（原缺失声明）
@@ -265,14 +264,22 @@ import { setAuctionDateData } from './auction-data.js';
                     .on('postgres_changes', {
                         event: '*', schema: 'public', table: 'market_metrics'
                     }, function(payload) {
-                        if (state._justPushedAuction) return; // 自己刚推的，忽略
                         const row = payload.new || payload.old;
                         // 处理 scope='auction' 的变更；也处理 scope='hot'——
                         // auction 合并仍以 hot 作为 yest_volume/volume 的二级回退（change_pct 自 Phase 3 起
                         // 不再从 hot 回退，权威源是 market_metrics(scope='auction')），
                         // hot 写入新值时 auction 看板也需重拉刷新（统一防抖池，不会与 hot 分组互相循环）。
+                        // [FIX P1-9] market_metrics 双 channel 去重：本订阅为唯一权威订阅。scope='hot' 行
+                        // 除触发 auction 看板重拉外，还需刷热门股票看板（原 hot-stocks 重复订阅的逻辑），
+                        // 故复用 triggerHotMetricsRealtimeReload() 触发热门看板刷新，避免重复订阅且更新不丢失。
                         if (!row || !row.date || (row.scope !== 'auction' && row.scope !== 'hot')) return;
-                        _debounceAuctionRealtime(row.date);
+                        if (row.scope === 'auction') {
+                            if (state._justPushedAuction) return; // 自己刚推的，忽略
+                            _debounceAuctionRealtime(row.date);
+                        } else if (row.scope === 'hot') {
+                            _debounceAuctionRealtime(row.date); // auction 以 hot 作 volume/yest_volume 二级回退，需重拉
+                            triggerHotMetricsRealtimeReload(row.date); // 热门股票看板刷新（替代原重复订阅）
+                        }
                     })
                     .subscribe();
                 console.log('Auction Realtime 订阅已启动（auction_watchlist + market_metrics）');

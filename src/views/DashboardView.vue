@@ -23,20 +23,20 @@
 
     <PatternBoard />
 
-    <template v-if="boardView === 'trading'">
-      <BiddingBoard />
-      <JiwangBoard />
-      <StatsBoard />
-      <StarStatsBoard />
-      <EmotionBoard />
-      <AuctionBoard />
-      <DuibanBoard />
-      <EtfBoard />
-      <HomeStocksView ref="stocksRef" />
-    </template>
+    <!-- [P1-8] trading 态 9 看板由 v-if 改 v-show：跨周末/切 tab 不再 destroy→重建→重查→重算→重订阅。
+         组件仅挂载一次（display 切换），日期刷新仍由各看板内部 watch(uiStore.currentDate) 驱动。 -->
+    <BiddingBoard v-show="boardView === 'trading'" />
+    <JiwangBoard v-show="boardView === 'trading'" />
+    <StatsBoard v-show="boardView === 'trading'" />
+    <StarStatsBoard v-show="boardView === 'trading'" />
+    <EmotionBoard v-show="boardView === 'trading'" />
+    <AuctionBoard v-show="boardView === 'trading'" />
+    <DuibanBoard v-show="boardView === 'trading'" />
+    <EtfBoard v-show="boardView === 'trading'" />
+    <HomeStocksView ref="stocksRef" v-show="boardView === 'trading'" />
 
-    <WeekendStatsBoard v-if="boardView === 'weekly'" />
-    <MonthlyStatsBoard v-if="boardView === 'monthly'" />
+    <WeekendStatsBoard v-show="boardView === 'weekly'" />
+    <MonthlyStatsBoard v-show="boardView === 'monthly'" />
 
     <!-- 底部操作栏 -->
     <div class="bottom-bar">
