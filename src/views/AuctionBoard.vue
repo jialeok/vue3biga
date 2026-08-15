@@ -202,7 +202,7 @@
         <div v-if="showObsSeparator" class="auction-obs-separator"></div>
         <template v-for="(item, idx) in filteredRegularItems" :key="item.index" v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.index)]">
           <div :class="item.itemClass" :data-index="item.index" :data-stock="item.stock || ''" @click="onToggleSelect(item.index)">
-            <div :class="item.numberClass" @click.stop="onExpandTrend(item.index)">{{ filteredObsItems.length + idx + 1 }}</div>
+            <div :class="item.numberClass" @click.stop="onExpandTrend(item.index)" @dblclick.stop>{{ filteredObsItems.length + idx + 1 }}</div>
             <div :class="item.stockClass"
                  :data-stock="item.stock"
                  :data-note="item.note || ''"
@@ -775,19 +775,25 @@ function toggleGroupExpand(topic) {
       expandSet.delete(key);
       delete trendHistory[key];
     });
-  } else {
-    topicSet.add(topic);
-    group.stocks.forEach(stock => {
-      const key = topic + '|' + stock.stock;
-      expandSet.add(key);
-      if (!trendHistory[key] && stock.stock) {
-        trendHistory[key] = loadP2TrendHistory(stock.stock);
-      }
-    });
+    p2ExpandedTopics.value = topicSet;
+    p2ExpandedSet.value = expandSet;
+    p2TrendHistory.value = trendHistory;
+    return;
   }
+  // [FIX 2026-08-16] 展开整组不再一次性同步加载全部股票历史（§33 性能：N只股票×5日×4字段会阻塞主线程，体验卡顿）。
+  // 先即时展开全部行（仅集合操作，秒开），历史数据分批异步补齐（每帧一批，图表逐批出现）。
+  topicSet.add(topic);
+  const pending = [];
+  const loadDate = uiStore.currentDate;
+  group.stocks.forEach(stock => {
+    const key = topic + '|' + stock.stock;
+    expandSet.add(key);
+    if (!trendHistory[key] && stock.stock) pending.push({ key, name: stock.stock });
+  });
   p2ExpandedTopics.value = topicSet;
   p2ExpandedSet.value = expandSet;
   p2TrendHistory.value = trendHistory;
+  loadP2TrendHistoryChunked(pending, loadDate);
 }
 function p2ToggleExpandAll() {
   p2ExpandAll.value = !p2ExpandAll.value;
@@ -809,6 +815,31 @@ function loadP2TrendHistory(stockName) {
     aucPctChg: history.map(h => ({ date: h.date, value: h.aucPctChg !== undefined ? h.aucPctChg : null })),
     ...stats
   };
+}
+
+// [FIX 2026-08-16] 整组展开分批异步加载趋势历史（§33 性能）：每帧一批（默认 4 只），
+// 行先即时展开、图表逐批出现，避免一次性同步加载 N 只股票历史阻塞主线程（第二页三角展开卡顿根因）。
+// 每批自链定时器独立运行：连开多个组互不取消；已收起/日期已变的行自动跳过，不残留脏数据。
+function loadP2TrendHistoryChunked(pending, loadDate) {
+  if (!pending || pending.length === 0) return;
+  let i = 0;
+  const CHUNK = 4;
+  const step = () => {
+    // 日期已切换 → 中止剩余加载，避免把旧日期数据写进新日期
+    if (loadDate !== uiStore.currentDate) return;
+    const end = Math.min(i + CHUNK, pending.length);
+    const next = { ...p2TrendHistory.value };
+    for (; i < end; i++) {
+      const p = pending[i];
+      if (!p || !p.name) continue;
+      // 行可能已被用户收起 → 跳过，避免残留数据
+      if (!p2ExpandedSet.value.has(p.key)) continue;
+      next[p.key] = loadP2TrendHistory(p.name);
+    }
+    p2TrendHistory.value = next;
+    if (i < pending.length) setTimeout(step, 16);
+  };
+  step();
 }
 function toggleP2Trend(topic, stockName) {
   if (!canGroupExpand(topic)) return;
@@ -1222,6 +1253,12 @@ function dailyMetricsList(stockName) {
 function switchPage(page) {
   if (page < 0 || page > 3) return;
   currentPage.value = page;
+  // [FIX 2026-08-16] 页面切换即重置序号双击防抖与收起悬浮 toast：
+  //  - 防抖：切页后立刻点序号不应被上一次点击的 300ms 窗口误吞（§24/§25 页面生命周期整洁）
+  //  - toast：position:fixed 悬浮在页面根，切页后若不收起会盖住第一页序号列，点击序号变成点 toast（"展不开"）
+  _lastExpandClickTs = 0;
+  _lastExpandIndex = -1;
+  closeNotePopup();
 }
 function onSwipeStart(e) {
   if (e.touches) { swipeStartX = e.touches[0].clientX; swipeStartY = e.touches[0].clientY; }
@@ -1424,12 +1461,15 @@ function closeNotePopup() {
 }
 
 // [FIX 2026-08-16] 序号双击防抖：双击会触发两次 click（展开→收起），用户误以为"被冻住"。
-// 300ms 内的第二次点击忽略（浏览器 dblclick 的两击间隔 ~250ms），保证双击序号稳定展开趋势图。
+// 300ms 内的「同一行」第二次点击忽略（浏览器 dblclick 的两击间隔 ~250ms），保证双击序号稳定展开趋势图；
+// 不同行快速点击互不影响（按 index 分别防抖，杜绝"点A行后300ms内点B行没反应"）。
 let _lastExpandClickTs = 0;
+let _lastExpandIndex = -1;
 function onExpandTrend(index) {
   const now = Date.now();
-  if (now - _lastExpandClickTs < 300) return;
+  if (index === _lastExpandIndex && now - _lastExpandClickTs < 300) return;
   _lastExpandClickTs = now;
+  _lastExpandIndex = index;
   const newSet = new Set(expandedSet.value);
   if (newSet.has(index)) {
     newSet.delete(index);
