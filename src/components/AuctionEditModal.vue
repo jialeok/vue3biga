@@ -137,8 +137,12 @@ import {
   rollbackAuctionData, repairAuctionInWatchlistForDate,
   patchAuctionFieldBatch, markAuctionDirty, scheduleCloudPush
 } from '../logic/app-core.js';
-import { parseNoteToFields } from '../logic/note/helpers.js';
 import { syncStockTopicsFromAuction } from '../logic/auction/stock-sync.js';
+import {
+  buildAuctionRows, buildAuctionSaveList, isTerminalStatus,
+  apiStatusMsg, apiStatusCls,
+  computeConceptClear, computeTextClear, computeNotesClear
+} from '../logic/auction/auction-edit-helpers.js';
 import auctionStore from '../stores/auctionStore.js';
 
 const visible = ref(false);
@@ -196,11 +200,7 @@ const numcatButtons = computed(() => [
 
 function refreshRows() {
   const list = getTodayGroupList('auction');
-  editRows.value = list.map(item => ({
-    stock: item.stock || '',
-    volume: item.volume || '',
-    yestVolume: item.yestVolume || ''
-  }));
+  editRows.value = buildAuctionRows(list);
 }
 
 function open() {
@@ -242,14 +242,8 @@ function clearAllRows() {
 function save() {
   const list = getTodayGroupList('auction');
   list.length = 0;
-  editRows.value.forEach(row => {
-    if (row.stock && row.stock.trim()) {
-      list.push({
-        stock: row.stock.trim(),
-        volume: row.volume || '',
-        yestVolume: row.yestVolume || ''
-      });
-    }
+  buildAuctionSaveList(editRows.value).forEach(row => {
+    list.push({ stock: row.stock, volume: row.volume, yestVolume: row.yestVolume });
   });
   saveData();
   auctionStore.bumpDataVersion('auction');
@@ -263,16 +257,14 @@ let busyTimer = null;             // 兜底解锁计时器
 
 // 读取 app-core 业务层已经写到 apiStatusMap 的真实进度（原版 setApiStatus 的迁移植）
 function statusMsg(elId) {
-  const e = apiStatusMap[elId];
-  return e ? e.msg : '';
+  return apiStatusMsg(apiStatusMap[elId]);
 }
 function statusCls(elId) {
-  const e = apiStatusMap[elId];
-  return { ok: !!(e && e.ok === true), err: !!(e && e.ok === false) };
+  return apiStatusCls(apiStatusMap[elId]);
 }
 // 终止消息：原版每条接口函数收尾都会写 ✅ 成功 / ❌ 失败，据此判定任务完成
 function isTerminal(msg) {
-  return typeof msg === 'string' && (msg.indexOf('✅') >= 0 || msg.indexOf('❌') >= 0);
+  return isTerminalStatus(msg);
 }
 
 // statusRef 改为 elId（thsApiStatus / numcatApiStatus / auctionDiagStatus），
@@ -435,20 +427,9 @@ function _clearAllConcepts() {
   const auctionData = getAuctionData();
   const existingList = auctionData[targetDate] || [];
   if (existingList.length === 0) { alert('当前没有数据可清除！'); return; }
-  let clearCount = 0;
-  existingList.forEach(item => {
-    if ((item.note && item.note.includes('(')) || item.topics) {
-      let newNote = item.note || '';
-      newNote = newNote.replace(/\(([^)]+)\)/g, '');
-      item.note = newNote;
-      item.topics = '';
-      const parsed = parseNoteToFields(newNote);
-      item.changePct = parsed.changePct;
-      clearCount++;
-    }
-  });
+  const { clearCount, patch } = computeConceptClear(existingList);
   if (clearCount > 0) {
-    patchAuctionFieldBatch(targetDate, existingList.filter(i => i.stock).map(i => ({ stock: i.stock.trim(), note: i.note || '', topics: '', change_pct: i.changePct || '' })));
+    patchAuctionFieldBatch(targetDate, patch);
     markAuctionDirty(targetDate);
     scheduleCloudPush();
     saveData();
@@ -464,25 +445,9 @@ function _clearAllText() {
   const auctionData = getAuctionData();
   const existingList = auctionData[targetDate] || [];
   if (existingList.length === 0) { alert('当前没有数据可清除！'); return; }
-  let clearCount = 0;
-  existingList.forEach(item => {
-    if (item.note) {
-      const percentMatches = item.note.match(/-?\d+\.?\d*%/g) || [];
-      const bracketMatches = item.note.match(/\([^)]+\)/g) || [];
-      const ztDtMatches = item.note.match(/涨停|跌停/g) || [];
-      const uniqueZtDt = [...new Set(ztDtMatches)];
-      const newNote = percentMatches.join('') + uniqueZtDt.join('') + bracketMatches.join('');
-      if (newNote !== item.note) {
-        item.note = newNote;
-        const parsed = parseNoteToFields(newNote);
-        item.changePct = parsed.changePct;
-        item.topics = parsed.topics;
-        clearCount++;
-      }
-    }
-  });
+  const { clearCount, patch } = computeTextClear(existingList);
   if (clearCount > 0) {
-    patchAuctionFieldBatch(targetDate, existingList.filter(i => i.stock).map(i => ({ stock: i.stock.trim(), note: i.note || '', change_pct: i.changePct || '', topics: i.topics || '' })));
+    patchAuctionFieldBatch(targetDate, patch);
     markAuctionDirty(targetDate);
     scheduleCloudPush();
     saveData();
@@ -498,12 +463,9 @@ function _clearAllNotes() {
   const auctionData = getAuctionData();
   const existingList = auctionData[targetDate] || [];
   if (existingList.length === 0) { alert('当前没有数据可清除！'); return; }
-  let clearCount = 0;
-  existingList.forEach(item => {
-    if (item.note) { item.note = ''; clearCount++; }
-  });
+  const { clearCount, patch } = computeNotesClear(existingList);
   if (clearCount > 0) {
-    patchAuctionFieldBatch(targetDate, existingList.filter(i => i.stock).map(i => ({ stock: i.stock.trim(), note: '' })));
+    patchAuctionFieldBatch(targetDate, patch);
     markAuctionDirty(targetDate);
     scheduleCloudPush();
     saveData();

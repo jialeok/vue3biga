@@ -1,4 +1,4 @@
-﻿import { state } from '../logic/app-state.js';
+import { state } from '../logic/app-state.js';
         // ===== daily_highlights 表操作（预计算竞/昨高光，加速加载）=====
 
         import { getSupabase } from './supabase-client.js';

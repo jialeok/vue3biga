@@ -1,4 +1,4 @@
-﻿import { _emit } from '../stores/eventBus.js';
+import { _emit } from '../stores/eventBus.js';
 import { state } from '../logic/app-state.js';
 import { useAuctionStore } from '../stores/auctionStore.js';
 import { useUiStore } from '../stores/uiStore.js';

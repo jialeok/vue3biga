@@ -1,4 +1,4 @@
-﻿import { useAuctionStore } from '../stores/auctionStore.js';
+import { useAuctionStore } from '../stores/auctionStore.js';
 import { state } from '../logic/app-state.js';
 let _invalidateTopicCacheFn = null;
 export function _setInvalidateTopicCacheFn(fn) { _invalidateTopicCacheFn = fn; }

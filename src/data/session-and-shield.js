@@ -1,4 +1,4 @@
-﻿import { useAuctionStore } from '../stores/auctionStore.js';
+import { useAuctionStore } from '../stores/auctionStore.js';
 import { state } from '../logic/app-state.js';
 let _getStocksDataFn = null;
 export function _setGetStocksDataFn(fn) { _getStocksDataFn = fn; }

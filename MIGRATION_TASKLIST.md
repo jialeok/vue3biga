@@ -204,10 +204,10 @@ grep -n "defineStore" src/stores/*.js
 > 删兜底、跑检查、更新进度记录），确认方法论没问题，再去啃后面体量大的。
 
 - [x] **5.1** `ui/components/rank-vue.js`（54 处 `window.xxx`）  
-  → 目标：`views/RankBoard.vue`
+  → 目标：`views/RankBoard.vue`（⚠️ 该目标后续已被替代：`RankBoard.vue` 已于迁移后删除，`src/views/` 下已不存在，由 `HomeStocksView` 等承接；2026-08-16 核查）
 - [x] **5.2** `ui/components/boards-vue.js`（191 处，含三个看板：stocks/  
   hotspot/pattern）  
-  → 目标：拆成 `views/HomeStocksView.vue`、`views/HotspotBoard.vue`、  
+  → 目标：拆成 `views/HomeStocksView.vue`、`views/HotspotBoard.vue`（⚠️ `HotspotBoard.vue` 已于迁移后删除，`src/views/` 下已不存在；题材思路编辑器功能并入 `AuctionBoard` `dataSource="hot"` 体系；2026-08-16 核查）、  
   `views/PatternBoard.vue` 三个独立文件（**不要**合并成一个大文件，  
   三个看板职责不同，应该是三个组件）
 - [x] **5.3** `ui/dashboards.js`（213 处，含 duiban/etf 两个看板的  
@@ -1541,3 +1541,34 @@ Supabase 云端表（`hot_stocks` / `hot_stock_trends` / `hot_stocks_highlights`
   3. **[A5-06] EtfBoard 冗余 update 静默**：未在本轮范围显式处理，下轮核对。
   4. **浏览器回归**：登录后各看板渲染、竞价题材统计、ETF/负面题材/对标数据有数据；重点验证 `state` reactive 后统计看板不再陈旧、各保存失败可见、Emotion 下沉后 CRUD 正常。
 - **验收判定（更新）**：整体由 **FAIL → CONDITIONAL（待浏览器回归确认）**。12/13 P1 阻断项已根除，22.5 两大根因已修，属文件内 P2 同步收敛；唯一硬阻塞 A5-02 为「表权威需用户决策」的外部依赖，非代码缺陷。
+
+---
+
+## 状态更正与补充（2026-08-16）
+
+> 由 §8 数据安全红线专项代理补充（权限内仅改本文档 + `src/logic/scope/helpers.js` + 新增 `db/` 文件）。以下均经仓库实际核查，无虚构条目。
+
+### C1. 已删除视图更正（回应审计：文档曾把 RankBoard/HotspotBoard/TagTitlesBoard 当现存视图）
+
+- 经 `ls src/views/RankBoard.vue` / `HotspotBoard.vue` / `TagTitlesBoard.vue` 核查，三者 **均不存在（已删除）**。
+- 替代关系（核实）：
+  - `RankBoard.vue` → 由 `HomeStocksView.vue` 等承接（热门/排名展示并入现有看板体系）。
+  - `HotspotBoard.vue`（题材思路编辑器）→ 并入 `AuctionBoard.vue` 的 `dataSource="hot"` 体系（见本文档第 783 行「关键发现」）。
+  - `TagTitlesBoard.vue` → 标签标题功能由已上云 `auctionTagStore` / `tag-rules.js` 承接。
+- 正文相关条目（5.1 / 5.2 / 7.5 等）为 2026-08-08 的历史迁移记录，其「目标/已创建」表述已在该行内加 ⚠️ 删除注记，避免被误读为现存视图。历史记录本身保留，不作删除。
+
+### C2. 模块数更正（回应审计：134/187 与现 212 不符）
+
+- **当前模块数 = 212 modules**（最新构建验收：本文档第 1537 行，`vite build` ✓ 212 modules，0 错误，2026-08-15）。
+- 文档中更早出现的 `134 modules`（第 503 行）、`182/184/185/187 modules`（第 662/689/722/750/777/803/849/893/950 行）、`190/202 modules`（第 1280/1397 行）均为**历史构建阶段的计数**，反映当时源码体量，非当前总数。
+- 实测当前源码文件：80 个 `.js` + 25 个 `.vue` = **105 个源文件**（vite 的 212 modules 含编译/分块产生的中间模块，口径不同于源文件数）。结论：文档最终计数 212 准确，早期 187/134 为过时阶段值，不应作为「当前模块数」引用。
+
+### C3. 本轮完成项（数据安全红线 §8 / §11 / §16）
+
+- [x] **C3-1 §8 撤销快照内存化**：`src/logic/scope/helpers.js` 的 `_backupScopeData` / `_rollbackScopeData` 原将撤销快照写入 `localStorage`（`backupKey` / `backupKey+'_time'`），违反 §8「业务数据不得落 localStorage」。已改为写入模块级内存 `Map`（`_undoSnapshotStore`，文件顶部新增），**函数签名与回滚行为完全不变**（成功返回 `true`、失败抛错文案保持一致）；进程重启后本会话撤销快照失效（符合内存-only 预期）。`node --check` 通过。
+- [x] **C3-2 孤儿/废弃表清理 SQL（新增 `db/`）**：
+  - `db/cleanup_auction_etf.sql`：`auction_etf` 已废弃（0 行，对应 `etf-sync.js` 不存在，权威源为 `early_etf_data`），提供幂等 `DROP TABLE IF EXISTS` + 解除 Realtime 发布。
+  - `db/cleanup_auction_etf_comment.sql`：同上，`auction_etf_comment` 已废弃。
+  - `db/cleanup_auction_bidding_template.sql`：`auction_bidding_template` 只写不读（`saveBiddingTemplate` 被 `auction-sync.js:558` 调用，但 `loadBiddingTemplate` 全 src 0 调用方）；提供 `DROP TABLE IF EXISTS`，并明确标注**删表前须先移除调用方**，否则写入会 fail-soft 报错。
+- [x] **C3-3 Realtime 单向缺口文档（新增 `db/`）**：`db/REALTIME_SINGLE_DIRECTION_GAPS.md` 列出 4 张单向表缺口：`auction_duiban`（only-write）、`auction_bidding_template`（write-no-read）、`topic_fumian`（write-no-subscribe → 多端负面题材不同步）、`core_topics`（write-no-subscribe），均附核实位置与修复方向。
+- 注：`db/` 下既有 `supabase_auction_etf.sql` / `supabase_etf_comment.sql` / `supabase_bidding_template.sql` 为 CREATE TABLE 脚本（由 E1 代理负责），本代理新建清理脚本使用不同文件名，未改动它们。

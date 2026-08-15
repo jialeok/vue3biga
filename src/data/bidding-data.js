@@ -1,4 +1,4 @@
-﻿import { _emit } from '../stores/eventBus.js';
+import { _emit } from '../stores/eventBus.js';
 import { state } from '../logic/app-state.js';
         // ===== bidding_data 表操作（竞价变化看板独立表）=====
 

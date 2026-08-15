@@ -1,4 +1,4 @@
-﻿import { defineStore } from 'pinia';
+import { defineStore } from 'pinia';
 
 /**
  * uiStore.js — 全局 UI 状态 Pinia store（单一真相源，app 级 Pinia）

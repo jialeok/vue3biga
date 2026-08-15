@@ -1,4 +1,4 @@
-﻿import { _dbgLog } from '../../data/debug-log.js';
+import { _dbgLog } from '../../data/debug-log.js';
 import { getPreviousTradingDay, isTradingDay } from '../date/trading-day-helpers.js';
 import { buildTopicCache } from '../../data/stock-topics.js';
 import { getStockHistoryTopics, getRankData } from '../app-core-api.js';

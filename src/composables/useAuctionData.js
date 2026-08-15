@@ -1,4 +1,4 @@
-﻿﻿﻿﻿import { getTodayDuiban, getAuctionTagState } from '../logic/ui-bridge.js';
+﻿﻿﻿import { getTodayDuiban, getAuctionTagState } from '../logic/ui-bridge.js';
 /**
  * useAuctionData.js
  * 早盘竞价看板数据获取 composable（Vue 3）

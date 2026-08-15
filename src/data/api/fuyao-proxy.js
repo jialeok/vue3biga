@@ -1,4 +1,4 @@
-﻿import { state } from '../../logic/app-state.js';
+import { state } from '../../logic/app-state.js';
 // fuyao-proxy.js — 同花顺 fuyao 行情接口代理（data/api/ 层）
 // 从 app-core.js 抽离，纯数据层：不碰 DOM，只负责 HTTP 请求和错误处理
 

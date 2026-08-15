@@ -628,11 +628,16 @@ function _subscribeRealtime() {
   }
 }
 
-// [FIX P1-9 §31] 配对退订：移除 remaining-boards 的 Realtime channel，防止会话/页面离开后泄漏
+// [FIX P1-9 §31] 配对退订：同时移除 remaining-boards 的 Realtime channel 与日期监听轮询，
+// 避免会话/页面离开后 channel 与 setInterval 双重泄漏（§31 防重复订阅 + 清理定时器 + 无泄漏轮询）
 export function stopRemainingRealtime() {
   if (_remainingRealtimeChannel) {
     try { getSupabase().removeChannel(_remainingRealtimeChannel); } catch (e) {}
     _remainingRealtimeChannel = null;
+  }
+  if (_watchDateTimer) {
+    clearInterval(_watchDateTimer);
+    _watchDateTimer = null;
   }
 }
 
@@ -655,6 +660,7 @@ export function initRemainingBoards() {
     }
     if (d) await loadAllRemainingForDate(d);
   })().then(() => {
+    _lastLoadDate = _currentDate(); // 标记已加载日期，避免 _watchDate 立即重复加载（§33 首载/刷新分离）
     _watchDate();
     _subscribeRealtime();
   }).catch((e) => {

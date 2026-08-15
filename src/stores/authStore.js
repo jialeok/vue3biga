@@ -1,4 +1,4 @@
-﻿import { state } from '../logic/app-state.js';
+import { state } from '../logic/app-state.js';
 /**
  * authStore.js — 登录态 Pinia store（迁移批次 3.1）
  * 从 src/data/session-and-shield.js 拆出会话 token / Realtime channel / 推送屏蔽状态

@@ -1,4 +1,4 @@
-﻿import { useUiStore } from './uiStore.js';
+import { useUiStore } from './uiStore.js';
 import { defineStore } from 'pinia';
 
 let _uiFns = {};
@@ -11,8 +11,9 @@ export function _bindUiFns(fns) { _uiFns = fns; }
  * - 全应用仅 main.js 一处 app.use(createPinia())；本 store 只通过 useAuctionStore() hook 访问。
  * - 日期单一真相源 = useUiStore().currentDate；setDate 直接写入 uiStore（真理），
  *   auctionStore.currentDate 仅作显示镜像，由 main.js 的单向 watch 从 uiStore 同步，避免双真相。
- * - 向后兼容的 .actions API 改为导出 auctionActions（委托到当前 app 级 store 实例），
- *   不再依赖孤儿实例上挂的 store.actions。
+ * - 向后兼容的 .actions API（auctionActions 兼容层）已于 A11 清理中移除（§16 死代码）：
+ *   该层仅委托到 _uiFns 空桩，全项目 0 个外部调用点。保留 _auctionProxy 默认导出
+ *   （LongPressTagMenu / AuctionEditModal 经它访问 live 的 bumpDataVersion / refresh）。
  */
 
 // 安全访问器：模块顶层求值时若 Pinia 尚未激活，useAuctionStore() 会抛错，这里兜底返回 null。
@@ -136,82 +137,9 @@ export const useAuctionStore = defineStore('auction', {
       this.highlightKeyword = '';
     },
 
-    // --- 交互代理（直接调用 window 全局函数，safeCall 内部兜底） ---
-    toggleRowSelect(index) {
-      safeCall(_uiFns.toggleAuctionRowSelect, index);
-    },
-
-    showNotePopup(el, note) {
-      safeCall(_uiFns.showAuctionNotePopup, el, note);
-    },
-
-    showNoteInput(index, el) {
-      safeCall(_uiFns.showAuctionNoteInput, index, el);
-    },
-
-    showBuyPrompt(stockName) {
-      safeCall(_uiFns.showAuctionBuyPrompt, stockName);
-    },
-
-    openEdit() {
-      safeCall(_uiFns.openAuctionEdit);
-    },
-
-    jumpToPage2(stockName) {
-      safeCall(_uiFns.jumpToAuctionPage2, stockName);
-    },
-
-    jumpToPage1(stockName) {
-      safeCall(_uiFns.jumpToAuctionPage1, stockName);
-    },
-
-    toggleStrengthSort() {
-      safeCall(_uiFns.toggleStrengthSort);
-    },
-
-    toggleSortHelp(panelId) {
-      safeCall(_uiFns.toggleAuctionSortHelp, panelId);
-    },
-
-    toggleBoard() {
-      safeCall(_uiFns.toggleAuctionBoard);
-    },
-
-    toggleTopicGroupTrendPanels(topic) {
-      safeCall(_uiFns.toggleTopicGroupTrendPanels, topic);
-    },
-
-    expandAllTrendPanels(dataSource) {
-      safeCall(_uiFns.expandAllAuctionTrendPanels, dataSource);
-    },
-
-    restoreExpandedTrendPanels(dataSource) {
-      safeCall(_uiFns.restoreExpandedAuctionTrendPanels, dataSource);
-    },
-
-    expandAllTrendPanelsP2(dataSource) {
-      safeCall(_uiFns.expandAllAuctionTrendPanelsP2, dataSource);
-    },
-
-    restoreExpandedTopicGroupsP2(dataSource) {
-      safeCall(_uiFns.restoreExpandedTopicGroupsP2, dataSource);
-    },
-
-    openCoreTopicModal() {
-      safeCall(_uiFns.openCoreTopicModal);
-    },
-
-    openAuctionNoteEditFromPage2(stockName) {
-      safeCall(_uiFns.openAuctionNoteEditFromPage2, stockName);
-    },
-
-    copyAllTopicStocks(topic, dataSource) {
-      safeCall(_uiFns.copyAllTopicStocks, topic, dataSource);
-    },
-
-    copyTopicStocks(topic, limit, dataSource) {
-      safeCall(_uiFns.copyTopicStocks, topic, limit, dataSource);
-    },
+    // [A11 §16] 下方 19 个 safeCall(_uiFns.xxx) 委托全部为死代码：对应 ui-bridge 空桩已删除，
+    // 这些 _uiFns 键在运行时始终为 undefined（AuctionBoard 一律走本地实现）。已整体移除。
+    // 仅保留 live 的 refresh() → _uiFns.renderAuction（见下方“刷新”节）。
 
     // --- 日期 ---
     // 单一真相源 = useUiStore().currentDate（app 级）。这里同时写 uiStore（真理）与本地镜像。
@@ -246,43 +174,6 @@ export const useAuctionStore = defineStore('auction', {
     },
   },
 });
-
-// 向后兼容：旧代码通过 store.actions.xxx 调用。改为委托到当前 app 级 store 实例
-// （之前挂在孤儿实例上，app 级 store 拿不到 .actions，导致 useTrendChart 的滑动/事件代理失效）。
-export const auctionActions = {
-  switchPage: (p) => { const s = _liveStore(); if (s) s.switchPage(p); },
-  setSortState: (pg, k, v) => { const s = _liveStore(); if (s) s.setSortState(pg, k, v); },
-  toggleTrendPanel: (st) => { const s = _liveStore(); if (s) s.toggleTrendPanel(st); },
-  toggleP2Topic: (t) => { const s = _liveStore(); if (s) s.toggleP2Topic(t); },
-  setExpandAll: (v, p) => { const s = _liveStore(); if (s) s.setExpandAll(v, p); },
-  setHighlight: (st) => { const s = _liveStore(); if (s) s.setHighlight(st); },
-  clearHighlight: () => { const s = _liveStore(); if (s) s.clearHighlight(); },
-  setHighlightKeyword: (k) => { const s = _liveStore(); if (s) s.setHighlightKeyword(k); },
-  clearHighlightKeyword: () => { const s = _liveStore(); if (s) s.clearHighlightKeyword(); },
-  toggleRowSelect: (i) => { const s = _liveStore(); if (s) s.toggleRowSelect(i); },
-  showNotePopup: (el, n) => { const s = _liveStore(); if (s) s.showNotePopup(el, n); },
-  showNoteInput: (i, el) => { const s = _liveStore(); if (s) s.showNoteInput(i, el); },
-  showBuyPrompt: (st) => { const s = _liveStore(); if (s) s.showBuyPrompt(st); },
-  openEdit: (ds) => { const s = _liveStore(); if (s) s.openEdit(ds); },
-  jumpToPage2: (st) => { const s = _liveStore(); if (s) s.jumpToPage2(st); },
-  jumpToPage1: (st) => { const s = _liveStore(); if (s) s.jumpToPage1(st); },
-  toggleStrengthSort: () => { const s = _liveStore(); if (s) s.toggleStrengthSort(); },
-  toggleSortHelp: (p) => { const s = _liveStore(); if (s) s.toggleSortHelp(p); },
-  toggleBoard: () => { const s = _liveStore(); if (s) s.toggleBoard(); },
-  toggleTopicGroupTrendPanels: (t) => { const s = _liveStore(); if (s) s.toggleTopicGroupTrendPanels(t); },
-  expandAllTrendPanels: (ds) => { const s = _liveStore(); if (s) s.expandAllTrendPanels(ds); },
-  restoreExpandedTrendPanels: (ds) => { const s = _liveStore(); if (s) s.restoreExpandedTrendPanels(ds); },
-  expandAllTrendPanelsP2: (ds) => { const s = _liveStore(); if (s) s.expandAllTrendPanelsP2(ds); },
-  restoreExpandedTopicGroupsP2: (ds) => { const s = _liveStore(); if (s) s.restoreExpandedTopicGroupsP2(ds); },
-  openCoreTopicModal: () => { const s = _liveStore(); if (s) s.openCoreTopicModal(); },
-  openAuctionNoteEditFromPage2: (st) => { const s = _liveStore(); if (s) s.openAuctionNoteEditFromPage2(st); },
-  copyAllTopicStocks: (t, ds) => { const s = _liveStore(); if (s) s.copyAllTopicStocks(t, ds); },
-  copyTopicStocks: (t, l, ds) => { const s = _liveStore(); if (s) s.copyTopicStocks(t, l, ds); },
-  setDate: (d) => { const s = _liveStore(); if (s) s.setDate(d); },
-  refresh: () => { const s = _liveStore(); if (s) s.refresh(); },
-  setStrengthSortEnabled: (v) => { const s = _liveStore(); if (s) s.setStrengthSortEnabled(v); },
-  bumpDataVersion: (sv) => { const s = _liveStore(); if (s) s.bumpDataVersion(sv); },
-};
 
 // 向后兼容默认导出：委托到 app 级 useAuctionStore() 的 Proxy（非孤儿实例、非第二真相源）。
 // 原本默认导出是孤儿实例；现改为代理，旧代码 import auctionStore from '...' 仍可用且指向同一真相。

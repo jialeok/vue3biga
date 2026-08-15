@@ -1,4 +1,4 @@
-﻿import { _emit } from '../stores/eventBus.js';
+import { _emit } from '../stores/eventBus.js';
 import { state } from '../logic/app-state.js';
         // ===== jiwang_data 表操作（记忘看板/昨日复盘独立表）=====
         // 字段说明：diezhang/qingxu/jujiao/whoIncrease/kxianPrefix/kxian/guancha/

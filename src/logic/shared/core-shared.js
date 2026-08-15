@@ -105,8 +105,8 @@ export function saveData() {
         // auction 同样不再落 localStorage
         if (key === 'auction') return;
         // stocks / rank / multi / hotspot / pattern / tagTitles 已独立拆表，不走 localStorage
-        if (key === 'stocks' || key === 'rank' || name === 'multi' ||
-            name === 'hotspot' || name === 'pattern' || name === 'tagTitles') {
+        if (key === 'stocks' || key === 'rank' || key === 'multi' ||
+            key === 'hotspot' || key === 'pattern' || key === 'tagTitles') {
             return;
         }
         // 读内存缓存别名 state.allData[key]（非真相源）落 localStorage，仅遗留未拆表模块到达此分支。

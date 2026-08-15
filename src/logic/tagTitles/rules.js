@@ -1,4 +1,4 @@
-﻿import { _setGetLocalTodayStr } from '../date/trading-day-helpers.js';
+import { _setGetLocalTodayStr } from '../date/trading-day-helpers.js';
 import { _dbgLog, _dbgLogVerbose } from '../../data/debug-log.js';
 import { getStockHistoryValue, _isAuctionWatchlistStock } from '../../data/watchlist-and-metrics.js';
 import { getJingYestHighlightSetForDate } from '../auction/sort-rules.js';

@@ -1,4 +1,4 @@
-﻿import { getJiwangData, getBiddingData } from '../../data/supabase-client.js';
+import { getJiwangData, getBiddingData } from '../../data/supabase-client.js';
 import { useUiStore } from '../../stores/uiStore.js';
 import { getTagTitlesByDate, renderConsecutiveUp } from '../tagTitles/helpers.js';
 import { saveData } from '../app-core-api.js';

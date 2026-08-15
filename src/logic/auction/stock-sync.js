@@ -1,4 +1,4 @@
-﻿import { getStocksData } from '../../data/supabase-client.js';
+import { getStocksData } from '../../data/supabase-client.js';
 import { getTodayAuction, saveData, getNextTradingDay, getAuctionData } from '../app-core-api.js';
 import { extractTopics } from '../note/helpers.js';
 import { getStockCode } from '../../data/stock-code-map.js';

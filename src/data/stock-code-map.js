@@ -1,4 +1,4 @@
-﻿import { state } from '../logic/app-state.js';
+import { state } from '../logic/app-state.js';
         // ===== stockcodemap 表操作（股票名↔代码映射唯一真相源，取代旧的本地 localStorage.stockCodeMap）=====
         // 内存缓存 _scMapCache 保留（读取性能），但不再落 localStorage；跨设备一致性靠 Realtime 订阅维护。
 

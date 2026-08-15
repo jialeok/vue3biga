@@ -1,4 +1,4 @@
-﻿import { state } from '../../logic/app-state.js';
+import { state } from '../../logic/app-state.js';
 // numcat-proxy.js — 猫抓 numcat �5 接口代理（data/api/ 层）
 // 从 app-core.js 抽离，纯数据层：不碰 DOM，只负责 HTTP 请求和错误处理
 

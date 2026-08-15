@@ -1,4 +1,4 @@
-﻿import { state } from '../app-state.js';
+import { state } from '../app-state.js';
         // [PERF] 信号函数指纹缓存（模块级，导出供 sort-rules-extra.js 复用）
         export const _signalCache = {};
         export function _viewFpList(list) {

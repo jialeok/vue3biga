@@ -1,7 +1,12 @@
-﻿// scope-helpers.js — 早盘竞价(auction)与热门股票(hot)共用的参数化通用函数
+// scope-helpers.js — 早盘竞价(auction)与热门股票(hot)共用的参数化通用函数
 // 消除两份几乎一样的逻辑，统一为接受 scope/字段集 的通用版本
 
 import { getCurrentDate } from '../app-core-api.js';
+
+// §8 红线：撤销快照属于有界安全功能（非业务真相源），禁止持久化到 localStorage。
+// 改用模块级内存 Map（按 backupKey 覆盖，非累积），进程重启即丢失——撤销仅在同一会话内有效。
+// 如需跨设备/跨会话撤销，见 _backupScopeData 下方迁移预案（Pinia 内存态或新增 Supabase undo 表）。
+const _undoSnapshotStore = new Map();
 
 // 通用 sanitize：只保留 patch 中属于 patchableFields 的字段
 export function _sanitizePatch(patch, patchableFields) {
@@ -26,7 +31,7 @@ export function _splitPatch(cleanPatch, watchlistFields, metricsFields) {
     return { watchlistPatch: watchlistPatch, metricsPatch: metricsPatch };
 }
 
-// 通用 backup：按日期备份单日数据到 localStorage
+// 通用 backup：按日期备份单日数据到内存（_undoSnapshotStore，非 localStorage）
 export function _backupScopeData(opts) {
     // opts: { type, date, getDataFn, backupKeyPrefix, watchlistIndex?, label }
     try {
@@ -41,10 +46,12 @@ export function _backupScopeData(opts) {
             const wset = opts.watchlistIndex[targetDate];
             dayBackup.watchlist = (wset && wset.size > 0) ? Array.from(wset) : null;
         }
-        // 合规：撤销快照（有界安全功能，非业务持久化）。仅保存最近一次保存/导入的单日备份（按 backupKey 覆盖，非累积），供撤销使用，非业务真相源。
-        // 迁移预案（如需跨设备撤销）：改存 Pinia 内存或新增 Supabase undo 表（scope+date+snapshot），由本函数写入、_rollbackScopeData 读取；当前保留 localStorage 以保证撤销不丢数据。
-        localStorage.setItem(backupKey, JSON.stringify(dayBackup));
-        localStorage.setItem(backupKey + '_time', new Date().toISOString());
+        // §8 红线：撤销快照是有界安全功能、非业务真相源，禁止落 localStorage。
+        // 改为写入模块级内存 Map（按 backupKey 覆盖，非累积），见文件顶部 _undoSnapshotStore。
+        // 迁移预案（如需跨设备/跨会话撤销）：改存 Pinia 内存态或新增 Supabase undo 表（scope+date+snapshot），
+        // 由本函数写入、_rollbackScopeData 读取；当前仅内存，进程重启后本会话撤销快照即失效。
+        _undoSnapshotStore.set(backupKey, JSON.stringify(dayBackup));
+        _undoSnapshotStore.set(backupKey + '_time', new Date().toISOString());
     } catch (e) {
         console.warn((opts.label || 'scope') + '备份失败:', e);
     }
@@ -71,13 +78,13 @@ export function _mergePatchLocal(date, stock, cleanPatch, cacheObj, initFn) {
     }
 }
 
-// 通用 rollback：从 localStorage 恢复备份数据
+// 通用 rollback：从内存（_undoSnapshotStore）恢复备份数据
 export function _rollbackScopeData(opts) {
     // opts: { type, getDataFn, setDataFn, backupKeyPrefix, watchlistIndex?, label, onSuccess, onComplete }
     const backupKey = opts.type === 'import'
         ? (opts.backupKeyPrefix + '_import_backup')
         : (opts.backupKeyPrefix + '_save_backup');
-    const raw = localStorage.getItem(backupKey);
+    const raw = _undoSnapshotStore.get(backupKey);
     if (!raw) {
         throw new Error('没有可撤回的' + (opts.label || '') + '数据');
     }

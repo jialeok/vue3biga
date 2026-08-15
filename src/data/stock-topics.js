@@ -1,4 +1,4 @@
-﻿import { _emit } from '../stores/eventBus.js';
+import { _emit } from '../stores/eventBus.js';
 import { state } from '../logic/app-state.js';
         // ===== stock_topics 表操作（题材库独立表）=====
         // 从 stock_topics 表全量读取，返回 {stockName: Set(topics)}
