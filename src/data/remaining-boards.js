@@ -1,4 +1,4 @@
-﻿import { state } from '../logic/app-state.js';
+import { state } from '../logic/app-state.js';
 import { getSupabase } from './supabase-client.js';
 import { _dbgLog } from './debug-log.js';
 import { _emit } from '../stores/eventBus.js';
@@ -614,6 +614,11 @@ function _subscribeRealtime() {
 
 export function initRemainingBoards() {
   preloadLegacyToCaches();
+  // [FIX 2026-08-16] §24/§25 生命周期：本函数原来在模块顶层立即执行（文件末尾 initRemainingBoards();），
+  // 而本模块被 app-core.js 等静态 import → 顶层代码在 main.js 执行 app.use(createPinia()) 之前就运行，
+  // 内部 _currentDate() → useUiStore() 在 Pinia 未激活时调用，抛 "Cannot read properties of undefined (reading '_s')"
+  // （_s 是 Pinia 内部字段，未激活实例为 undefined），且 async 链无 catch 变成 unhandled rejection。
+  // 现改为由 main.js 在 Pinia 安装后显式调用；此处异步链补 catch（§10 不静默失败，失败打日志不中断其它启动）。
   (async () => {
     const d = _currentDate();
     if (d) {
@@ -628,6 +633,8 @@ export function initRemainingBoards() {
   })().then(() => {
     _watchDate();
     _subscribeRealtime();
+  }).catch((e) => {
+    _warn('initRemainingBoards 初始化失败: ' + (e && e.message ? e.message : e));
   });
 }
 
@@ -642,4 +649,5 @@ export const remainingBoards = {
   caches: _caches
 };
 
-initRemainingBoards();
+// [FIX 2026-08-16] 不再在模块顶层立即执行 initRemainingBoards()（会抢在 Pinia 安装前调用 useUiStore
+// 导致 _s 报错）；改由 main.js 在 app.use(createPinia()) 之后显式调用（§24/§25 生命周期）。
