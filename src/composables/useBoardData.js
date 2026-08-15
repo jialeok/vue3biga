@@ -141,15 +141,34 @@ async function maybeAutoRecalc(date, attempt = 0) {
     return null;
   });
   if (res) {
-    if (res.recentMulti) boardState.recentMulti = res.recentMulti;
-    if (res.earlyEtf) boardState.earlyEtf = res.earlyEtf;
+    // 仅当仍是当前日期才回写，避免快速切日期时把旧日期结果误写入新日期的 boardState
+    if (boardState.currentDate === date) {
+      if (res.recentMulti) boardState.recentMulti = res.recentMulti;
+      if (res.earlyEtf) boardState.earlyEtf = res.earlyEtf;
+    }
     return;
   }
   // res 为 null 表示当日竞价列表为空（可能尚未加载完），有限重试
   if (attempt < 2) {
-    setTimeout(() => { maybeAutoRecalc(date, attempt + 1); }, 500 * (attempt + 1));
+    setTimeout(() => {
+      if (boardState.currentDate === date) maybeAutoRecalc(date, attempt + 1);
+    }, 500 * (attempt + 1));
   }
 }
+
+// 切换日期的统一入口（§6 自愈 + 修复切日期空白）：
+// 1. 先清空上一切换残留的 boardState（根因：stale 旧日期值让 guard 误判「已存在」而跳过新日期的自动统计，导致 8/14 空白）；
+// 2. 等云端该日期数据加载完毕（此时 guard 基于新日期真实状态判断，不会误跳过）；
+// 3. 再按需触发自动推导，缺失才写回，不覆盖已有统计（§11）。
+async function onDateChanged(date) {
+  if (!date) return;
+  boardState.recentMulti = null;
+  boardState.earlyEtf = null;
+  await loadRecentMulti(date);
+  await loadEarlyEtf(date);
+  await maybeAutoRecalc(date);
+}
+
 function ensureDateWatch() {
   if (_dateWatchStarted) return;
   _dateWatchStarted = true;
@@ -163,17 +182,13 @@ function ensureDateWatch() {
     watch(() => uiStore.currentDate, (val) => {
       if (val && val !== boardState.currentDate) {
         boardState.currentDate = val;
-        loadRecentMulti(val);
-        loadEarlyEtf(val);
-        maybeAutoRecalc(val);
+        onDateChanged(val);
       }
     });
   });
   if (uiStore.currentDate) {
     boardState.currentDate = uiStore.currentDate;
-    loadRecentMulti(uiStore.currentDate);
-    loadEarlyEtf(uiStore.currentDate);
-    maybeAutoRecalc(uiStore.currentDate);
+    onDateChanged(uiStore.currentDate);
   }
 }
 

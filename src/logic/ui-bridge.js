@@ -4,7 +4,7 @@ import { getPreviousTradingDay } from './date/trading-day-helpers.js';
 import { state } from './app-state.js';
 import { getAuctionData, getGroupData } from './app-core-api.js';
 import { getTopicGroups } from './topic/rules.js';
-import { getSupabase } from '../data/supabase-client.js';
+import { getSupabase, getBiddingData } from '../data/supabase-client.js';
 import { _getAuctionWatchlistSet } from '../data/watchlist-and-metrics.js';
 import { saveRecentMultiRow } from '../data/duiban-sync.js';
 import { saveEtfBoardRow } from '../data/etf-board-data.js';
@@ -212,30 +212,37 @@ export function getTodayDuiban() {
 }
 export function renderDuiban() { _emit('board-refresh'); }
 /**
- * 从「早盘竞价股票列表」自动推导 最近多板 / 早盘板块ETF 的总数量与跌涨比，写回各自唯一真相表。
- * - 最近多板 → recent_multi_data（saveRecentMultiRow，合并 upsert）
- * - 早盘板块ETF → early_etf_data（saveEtfBoardRow，合并 upsert）
- * 看板只读 boardState（由 Realtime 自愈更新），本函数只负责「推导 + 写回」，不引入第二真相源（§6）。
+ * 从「早盘竞价股票列表」自动推导 最近多板 的总数量与跌涨比，写回 recent_multi_data。
+ * 口径（对齐竞价看板实际展示）：
+ *   - 总数量 = 竞价看板列表实际展示的股票支数（与 AuctionBoard 同口径：_getAuctionWatchlistSet 过滤；
+ *             watchlist 尚未加载时回退全量，避免误判为 0/空白）。
+ *   - 涨数   = 列表中 note 含「涨停」，或首个百分比 > 0（且非「跌停」）的支数。
+ *   - 跌数   = 总数量 − 涨数；跌涨比 = `${跌}:${涨}`。
+ * 看板只读 boardState（Realtime 自愈更新），本函数只负责「推导 + 写回」，不引入第二真相源（§6）。
+ * 列表为空（total===0）时返回 null，不写回、不覆盖已有统计（§11）。
  *
- * 计数口径（对齐旧系统 recalcDuibanFromAuction）：
- *   总数量 = 当日正式竞价股票支数（按 _auctionWatchlistIndex 过滤后的列表长度）
- *   涨数   = note 含「涨停」，或 note 中首个百分比 > 0 的支数
- *   跌数   = 总数量 − 涨数
- *   跌涨比 = `${跌数}:${涨数}`
- *
- * @param {string} [date] 目标日期，默认当前日期。列表为空时直接返回（不覆盖已有统计，§11 不把空当删除）。
- * @returns {Promise<{recentMulti:*, earlyEtf:*}|null>}
+ * @param {string} date 目标日期
+ * @returns {{total:number,rise:number,fall:number,die_zhangbi:string}|null}
  */
-function computeAuctionCounts(date) {
+function getAuctionBoardList(date) {
   const list = getAuctionData()[date] || [];
   const watchlistSet = _getAuctionWatchlistSet(date);
-  const formal = list.filter(function (r) {
+  // 与 AuctionBoard（getTodayGroupList）一致：按 watchlist 过滤正式成员。
+  // watchlist 未加载（size===0）时回退全量，避免竞价为空导致统计空白（原 bug：watchlist 半载→少算）。
+  if (!watchlistSet || watchlistSet.size === 0) {
+    return list.filter(function (r) { return r && (r.stock || r.name); });
+  }
+  return list.filter(function (r) {
     return r && r.stock && watchlistSet.has(r.stock.trim());
   });
-  const total = formal.length;
+}
+
+function computeAuctionCounts(date) {
+  const list = getAuctionBoardList(date);
+  const total = list.length;
   if (total === 0) return null;
   let rise = 0;
-  formal.forEach(function (item) {
+  list.forEach(function (item) {
     const note = item.note || '';
     if (note.includes('涨停')) { rise++; return; }
     if (note.includes('跌停')) return;
@@ -246,36 +253,72 @@ function computeAuctionCounts(date) {
     }
   });
   const fall = total - rise;
-  return { total, rise, fall, die_zhangbi: fall + ':' + rise };
+  return { total: total, rise: rise, fall: fall, die_zhangbi: fall + ':' + rise };
+}
+
+/**
+ * 从「竞价变化看板」的 板块ETF 行收盘值 自动推导 早盘板块ETF 的总数量与跌涨比，写回 early_etf_data。
+ * 口径（用户定义）：
+ *   - 总数量 = 固定 48（板块ETF 行数）。
+ *   - 涨数   = 板块ETF 行的 收盘 值（即 48 只板块ETF 中红盘家数，BiddingBoard 以「X红」展示）。
+ *   - 跌数   = 48 − 涨数；跌涨比 = `${跌}:${涨}`。
+ * 板块ETF 行无收盘值时返回 null，不写回、不覆盖已有统计（§11）。
+ *
+ * @param {string} date 目标日期
+ * @returns {{total:number,rise:number,fall:number,die_zhangbi:string}|null}
+ */
+function computeEtfCounts(date) {
+  const TOTAL_ETF = 48;
+  const bidding = getBiddingData()[date] || [];
+  const sectorRow = bidding.find(function (r) {
+    return r && r.name && r.name.indexOf('板块ETF') === 0;
+  });
+  if (!sectorRow || sectorRow.close === '' || sectorRow.close == null) return null;
+  const rise = parseInt(String(sectorRow.close).trim(), 10) || 0;
+  const fall = Math.max(0, TOTAL_ETF - rise);
+  return { total: TOTAL_ETF, rise: rise, fall: fall, die_zhangbi: fall + ':' + rise };
 }
 
 export async function recalcDuibanFromAuction(date) {
   const targetDate = date || useUiStore().currentDate;
   if (!targetDate) return null;
-  const counts = computeAuctionCounts(targetDate);
-  if (!counts) return null; // 列表为空：不覆盖、不删除已有统计
-  const row = {
-    date: targetDate,
-    shuliang: String(counts.total),
-    die_count: counts.fall,
-    zhang_count: counts.rise,
-    die_zhangbi: counts.die_zhangbi
-  };
+  const auctionCounts = computeAuctionCounts(targetDate);
+  const etfCounts = computeEtfCounts(targetDate);
   let recentMulti = null;
   let earlyEtf = null;
-  try {
-    const r1 = await saveRecentMultiRow(row);
-    if (r1 && r1.ok && r1.data) recentMulti = r1.data;
-  } catch (e) {
-    console.warn('[recalc] 最近多板写回失败:', e && e.message);
+  // 最近多板：总数量=竞价列表支数，涨=上涨支数，跌=总−涨
+  if (auctionCounts) {
+    const row = {
+      date: targetDate,
+      shuliang: String(auctionCounts.total),
+      die_count: auctionCounts.fall,
+      zhang_count: auctionCounts.rise,
+      die_zhangbi: auctionCounts.die_zhangbi
+    };
+    try {
+      const r1 = await saveRecentMultiRow(row);
+      if (r1 && r1.ok && r1.data) recentMulti = r1.data;
+    } catch (e) {
+      console.warn('[recalc] 最近多板写回失败:', e && e.message);
+    }
   }
-  try {
-    const r2 = await saveEtfBoardRow(row);
-    if (r2 && r2.ok && r2.data) earlyEtf = r2.data;
-  } catch (e) {
-    console.warn('[recalc] 早盘ETF写回失败:', e && e.message);
+  // 早盘板块ETF：总数量=48，涨=板块ETF行收盘(红盘家数)，跌=48−涨（与竞价股票统计完全独立，不串数据 §6）
+  if (etfCounts) {
+    const row = {
+      date: targetDate,
+      shuliang: String(etfCounts.total),
+      die_count: etfCounts.fall,
+      zhang_count: etfCounts.rise,
+      die_zhangbi: etfCounts.die_zhangbi
+    };
+    try {
+      const r2 = await saveEtfBoardRow(row);
+      if (r2 && r2.ok && r2.data) earlyEtf = r2.data;
+    } catch (e) {
+      console.warn('[recalc] 早盘ETF写回失败:', e && e.message);
+    }
   }
-  return { recentMulti, earlyEtf };
+  return { recentMulti: recentMulti, earlyEtf: earlyEtf };
 }
 
 export function renderEmotionBoard() { _emit('board-refresh'); }
