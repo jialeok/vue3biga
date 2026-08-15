@@ -148,6 +148,13 @@ async function maybeAutoRecalc(date, attempt = 0) {
       if (res.recentMulti) boardState.recentMulti = res.recentMulti;
       if (res.earlyEtf) boardState.earlyEtf = res.earlyEtf;
     }
+    // 源数据（竞价列表/正式成员索引）尚空导致 recentMulti 未推导出来时，有限重试等待数据加载，
+    // 避免「列表晚于统计加载」竞态下最近多板持续空白（历史 8/14 类症状）。earlyEtf 来自板块ETF收盘，不依赖此重试。
+    if (!res.recentMulti && attempt < 2) {
+      setTimeout(() => {
+        if (boardState.currentDate === date) maybeAutoRecalc(date, attempt + 1);
+      }, 500 * (attempt + 1));
+    }
     return;
   }
   // res 为 null 表示当日竞价列表为空（可能尚未加载完），有限重试

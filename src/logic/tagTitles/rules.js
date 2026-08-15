@@ -1,6 +1,6 @@
 ﻿import { _setGetLocalTodayStr } from '../date/trading-day-helpers.js';
 import { _dbgLog, _dbgLogVerbose } from '../../data/debug-log.js';
-import { getStockHistoryValue, _isAuctionWatchlistStock, _addAuctionWatchlistMember } from '../../data/watchlist-and-metrics.js';
+import { getStockHistoryValue, _isAuctionWatchlistStock } from '../../data/watchlist-and-metrics.js';
 import { getJingYestHighlightSetForDate } from '../auction/sort-rules.js';
 import { getPreviousTradingDay, isTradingDay } from '../date/trading-day-helpers.js';
 
@@ -138,9 +138,8 @@ import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
             if (!alreadyEnsured && !_dayHasRealData) {
                 obsStocks.forEach(function(name) {
                     if (!existingNames.has(name)) {
-                        // 不在当日列表中 → 自动添加为观察组正式成员（空壳行，待抓取/手动补量）
+                        // 不在当日列表中 → 自动添加为观察组（空壳行，待抓取/手动补量）。§6：观察组不登记正式成员索引。
                         dayList.push({ stock: name, code: getStockCode(name), volume: '', yestVolume: '', note: '', obsAutoAdded: true });
-                        _addAuctionWatchlistMember(date, name);
                         autoAddedSet.add(name);
                         hasNew = true;
                     }
@@ -289,7 +288,6 @@ import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
                     const _isFormal = _isAuctionWatchlistStock(date, name);
                     const flag = isObs ? 'obsAutoAdded' : 'regularAutoAdded';
                     if (row && (!_isFormal || row[flag] !== true)) {
-                        _addAuctionWatchlistMember(date, name);
                         row[flag] = true;
                         if (!((row.code || '').trim())) {
                             const c = getStockCode(name);
@@ -304,7 +302,6 @@ import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
                 if (isObs) { newRow.obsAutoAdded = true; autoAddedSet.add(name); }
                 else { newRow.regularAutoAdded = true; }
                 dayList.push(newRow);
-                _addAuctionWatchlistMember(date, name);
                 hasNew = true;
             }
 

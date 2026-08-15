@@ -3,7 +3,6 @@ import { getTodayAuction, saveData, getNextTradingDay, getAuctionData } from '..
 import { extractTopics } from '../note/helpers.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 import { setAuctionDateData } from '../../data/auction-data.js';
-import { _addAuctionWatchlistMember } from '../../data/watchlist-and-metrics.js';
 
 export function syncStockCloseFromAuction(stockName, note, currentDate) {
     if (!stockName) return;
@@ -66,7 +65,6 @@ export function ensureStockInNextDay(stockName, date) {
         dayList.push({ stock: stockName.trim(), code: getStockCode(stockName), volume: '', yestVolume: '', note: '', obsAutoAdded: true });
         auctionData[nextDay] = dayList;
         setAuctionDateData(nextDay, dayList, 'auctionBoardTags');
-        _addAuctionWatchlistMember(nextDay, stockName.trim());
         saveData();
     }
 }

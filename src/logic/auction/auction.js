@@ -408,9 +408,12 @@ export function getTodayGroupList(dataSource='auction') {
         // 方案2：_hotAuctionData 只从 hot_stocks 表加载正式成员，无需过滤
         return list.filter(function(r) { return r && r.stock; });
     }
-    // auction 分组：用 _auctionWatchlistIndex 独立 Set 判断正式成员
+    // auction 分组：正式成员 = _auctionWatchlistIndex（§6：只含正式成员，已排除 obsAutoAdded 观察组）。
+    // 观察组(obsAutoAdded)虽不计入正式索引/总数量，但仍作为「观察组」显示在竞价看板（保留次日观察组继承功能）。
     const watchlistSet = _getAuctionWatchlistSet(useUiStore().currentDate);
-    const result = list.filter(function(r) { return r && r.stock && watchlistSet.has(r.stock.trim()); });
+    const result = list.filter(function(r) {
+        return r && r.stock && (watchlistSet.has(r.stock.trim()) || r.obsAutoAdded === true);
+    });
     // [DEBUG-VUE-FIX 2026-07-25] 暴露"后台有导入记录、前台不显示"这类问题的
     // 第一手证据：原始条数 vs 实际渲染条数 vs 被过滤掉的影子记录名单。
     // 只在条数发生变化（有过滤发生）时打印，避免刷屏。
@@ -728,8 +731,10 @@ export async function importAuctionFromPaste(rawText) {
     // 方案 B：标签不再写入 auctionData 行，渲染时由 deriveAuctionTagState 实时派生。
 
     setAuctionDateData(targetDate, auctionList, 'importAuctionFromPaste');
-    // 方案2：粘贴导入是全量覆盖，所有导入的股票都是正式成员，整日期替换索引
-    _setAuctionWatchlistForDate(targetDate, auctionList.map(function(r) { return r && r.stock; }));
+    // §6：粘贴导入全量覆盖，但观察组继承残留行(obsAutoAdded)不进正式成员索引（避免 87≠76）
+    _setAuctionWatchlistForDate(targetDate, auctionList
+        .filter(function(r) { return !(r && r.obsAutoAdded === true); })
+        .map(function(r) { return r && r.stock; }));
     saveModule('auction');
     invalidateTopicCache();
     // 同步到 auction_watchlist + market_metrics（阶段二 C：改为字段级 patch）
@@ -1120,8 +1125,10 @@ export async function fetchLadderConstituentsMain(btn) {
         }
 
         setAuctionDateData(targetDate, newList, 'fetchLadderConstituentsMain');
-        // 方案2：获取最近多板是全量覆盖，所有 newList 里的股票都是正式成员
-        _setAuctionWatchlistForDate(targetDate, newList.map(function(r) { return r && r.stock; }));
+        // §6：获取最近多板是全量覆盖，但只有「非观察组」成分股才是正式成员；obsAutoAdded 继承行不进索引（避免 87≠76）
+        _setAuctionWatchlistForDate(targetDate, newList
+            .filter(function(r) { return !(r && r.obsAutoAdded === true); })
+            .map(function(r) { return r && r.stock; }));
         saveModule('auction');
         invalidateTopicCache();
 

@@ -61,9 +61,10 @@ import { useUiStore } from '../../stores/uiStore.js';
         //   同步完成后用 localStocks 覆盖该日期的索引，保持索引与云端一致。
         export async function syncAuctionListForDate(date) {
             const sb = getSupabase();
-            // 方案2：用 _auctionWatchlistIndex 过滤正式成员
-            const watchlistSet = _getAuctionWatchlistSet(date);
-            const localList = (getAuctionData()[date] || []).filter(function(s) { return s && s.stock && watchlistSet.has(s.stock.trim()); });
+            // §6：同步时推送「当日全部行」（含 obsAutoAdded 观察组），不依赖已被排除 obs 的索引，
+            // 否则观察组行会被判为「本地已删除」而从云端 auction_watchlist 物理删除（数据丢失）。
+            // 索引(_auctionWatchlistIndex)仅用于「总数量」计数，须保持只含正式成员。
+            const localList = (getAuctionData()[date] || []).filter(function(s) { return s && s.stock; });
             const localStocks = new Set(localList.map(function(s) { return s.stock.trim(); }));
 
             // 读取云端 auction_watchlist 该日期已有股票
@@ -154,8 +155,8 @@ import { useUiStore } from '../../stores/uiStore.js';
             _dbgLog('[SYNC-GUARD] window.syncAuctionListForDate date=' + date + ' 完成：云端' + _cloudTotal +
                 '只 → 本地' + localStocks.size + '只（删除' + toRemove.length + ' / 新增' + newStocks.length +
                 ' / 更新状态' + existingStocks.length + '）');
-            // 方案2：同步完成后更新本地正式成员索引（与云端 auction_watchlist 一致）
-            state._auctionWatchlistIndex[date] = new Set(localStocks);
+            // §6：同步完成后更新本地正式成员索引——仅含正式成员（排除 obsAutoAdded 观察组），与「总数量」口径一致
+            state._auctionWatchlistIndex[date] = new Set(localList.filter(function(s) { return !s.obsAutoAdded; }).map(function(s) { return s.stock.trim(); }));
         }
 
         // 热门股票脏日期全量同步（改表名 hot_stocks、数据源 getGroupData('hot')）

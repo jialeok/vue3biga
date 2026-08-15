@@ -334,7 +334,8 @@ import { setAuctionDateData } from './auction-data.js';
                         sold: row.sold || false,
                         fixed: row.fixed || false
                     };
-                    newWatchlistSet.add(key);
+                    // §6：obs_auto_added 观察股不计入正式成员索引（根因：87≠76）。索引只含正式成员。
+                    if (!row.obs_auto_added) newWatchlistSet.add(key);
                 });
                 state._auctionTableAvailable = true;
             } catch (e) {
@@ -464,11 +465,9 @@ import { setAuctionDateData } from './auction-data.js';
                 }
             });
 
-            // 观察组继承股票属于正式成员，需登记到索引（已通过 preByStock 保留在数组里）
-            const localObsStocks = prePullList.filter(function(s) {
-                return s && s.stock && s.obsAutoAdded && !cloudByStock[s.stock.trim()];
-            });
-            localObsStocks.forEach(function(s) { newWatchlistSet.add(s.stock.trim()); });
+            // §6：观察组(obsAutoAdded)绝不进入正式成员索引——索引只含 auction_watchlist 的正式成员。
+            // 观察组行仍保留在 auctionData（prePullList）中，由 getTodayGroupList 按 obsAutoAdded 标记放行显示，
+            // 既保持观察组可见/参与次日继承，又不污染「总数量」计数（87≠76 根因）。
 
             const normalizedRows = Object.values(resultByStock);
             // 方案2：用 _auctionWatchlistIndex 判断本地正式成员数量（旧索引，本函数末尾才更新）

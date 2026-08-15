@@ -72,7 +72,8 @@ export async function pullAuctionFromTable() {
                             fixed: row.fixed || false
                         };
                         if (!newWatchlistIndex[row.date]) newWatchlistIndex[row.date] = new Set();
-                        newWatchlistIndex[row.date].add(key);
+                        // §6：obs_auto_added 观察股不计入正式成员索引
+                        if (!row.obs_auto_added) newWatchlistIndex[row.date].add(key);
                     });
                     if (data.length < pageSize) break;
                     offset += pageSize;
