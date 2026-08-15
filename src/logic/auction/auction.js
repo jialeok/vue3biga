@@ -46,11 +46,17 @@ export async function repairAuctionInWatchlistForDate(dateArg) {
             throw new Error(date + ' 云端 watchlist 没有任何记录，无法恢复（不是"被隐藏"，而是本来就没有数据）');
         }
 
-        const cloudStocks = new Set((cloudRows || []).map(function(r) { return (r.stock || '').trim(); }));
-        _dbgLog('[REPAIR] date=' + date + ' 云端 watchlist 共' + cloudRows.length + '条：' +
-            Array.from(cloudStocks).join('、'));
+        // §6 红线：观察组（obs_auto_added=true）绝不并入正式成员索引（与 pullAuctionMarketDataForDate /
+        // pullAuctionFromTable / syncAuctionListForDate 同口径）。云端 auction_watchlist 含 obs 行
+        // （d94b4bc 后同步层推送全部行含 obs），若不过滤会把观察组算进「最近多板总数量」→ 84≠78。
+        const cloudStocks = new Set((cloudRows || []).filter(function(r) { return r && r.obs_auto_added !== true; })
+            .map(function(r) { return (r.stock || '').trim(); }));
+        const obsStocks = (cloudRows || []).filter(function(r) { return r && r.obs_auto_added === true; })
+            .map(function(r) { return (r.stock || '').trim(); });
+        _dbgLog('[REPAIR] date=' + date + ' 云端 watchlist 共' + cloudRows.length + '条（正式' + cloudStocks.size + ' + 观察组' + obsStocks.length + '）：' +
+            Array.from(cloudStocks).join('、') + (obsStocks.length ? '；观察组不并入索引：' + obsStocks.join('、') : ''));
 
-        // 方案2：把云端 watchlist 名单合并进本地正式成员索引（只增不删，影子记录保持原样）
+        // 方案2：把云端 watchlist 正式成员名单合并进本地正式成员索引（只增不删，影子记录保持原样）
         if (!state._auctionWatchlistIndex[date]) state._auctionWatchlistIndex[date] = new Set();
         const localSet = state._auctionWatchlistIndex[date];
         let repairedCount = 0;
@@ -61,7 +67,7 @@ export async function repairAuctionInWatchlistForDate(dateArg) {
             }
         });
 
-        _dbgLog('[REPAIR] date=' + date + ' 恢复完成，云端 watchlist ' + cloudRows.length + '条，修复本地异常' + repairedCount + '条');
+        _dbgLog('[REPAIR] date=' + date + ' 恢复完成，云端 watchlist 正式成员 ' + cloudStocks.size + '条，修复本地异常' + repairedCount + '条（观察组 ' + obsStocks.length + ' 条未并入索引）');
         console.log('✅ 已恢复 ' + date + '：云端 watchlist 共 ' + cloudRows.length + ' 条，' + repairedCount + ' 条本地显示异常已修复（影子记录未改动）');
 
         if (date === useUiStore().currentDate) {
@@ -347,7 +353,9 @@ export function rollbackAuctionData() {
             if (Array.isArray(backupWatchlist) && backupWatchlist.length > 0) {
                 _setAuctionWatchlistForDate(backupDate, backupWatchlist);
             } else {
-                _setAuctionWatchlistForDate(backupDate, _extractWatchlistNamesFromRows(backupDayData));
+                // 旧备份兜底：仅取非观察组行作为正式成员（§6：obs 观察组绝不进正式索引）
+                _setAuctionWatchlistForDate(backupDate,
+                    _extractWatchlistNamesFromRows(backupDayData.filter(function(r) { return !(r && r.obsAutoAdded === true); })));
             }
         }
         setAuctionDateData(backupDate, backupDayData, 'restore');
