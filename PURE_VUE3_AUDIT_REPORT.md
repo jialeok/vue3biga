@@ -89,22 +89,26 @@
 2. **`src/stores/auctionTagStore.js:34` — 标签快照写 localStorage**
    - 注释辩护"云端 auction_board_tags 为持久真相、本地仅兜底、非唯一真相"
    - 严格按 §8（明文禁"标签"）属违规，但云端真相完整，风险低；建议保留待决策标注或彻底移除
+   - ⚠️ 附带 §11 风险：`loadTagsFromStorage`（:24-27）JSON 解析失败返回 `{}`——损坏快照被当空数据，且下次 `saveTagsToStorage` 会用 `{}` 覆盖旧快照
 
 3. **`src/logic/scope/helpers.js:46-47` — 撤销快照写 localStorage（⚠️ 待评估）**
    - 单日竞价/热门数据备份，有界功能，注释称"非业务真相源"；边界上可算临时缓存豁免
 
+4. **`src/logic/app-core.js` saveModule 未排除 jiwang（⚠️ 潜在）**
+   - `saveModule`（:412-440）已排除 bidding/auction/六大拆表模块，**但 jiwang 未排除**（仅 saveData :448 排除）；当前无调用方传 'jiwang'，但函数全局导出，属潜在落盘路径（会写 `stockApp_v42_jiwang`）
+
 ### ✅ 合规项
 
 - 登录会话/剪贴板缓存/一次性迁移标记/调试标记：全部合规（§8 允许类）
-- **_suspiciousWipe 删除保护完整**：`auction-sync.js:92-93/187-188`（比例 >0.6 即拦截）
-- **§10 静默失败**：未发现"DB 读取失败伪装空数据"直接命中；Supabase 读取失败均 throw/warn
-- **§11 删除验证**：删除均检查 error 并 throw
+- **_suspiciousWipe 删除保护完整**：`auction-sync.js:90-101/185-195`（比例 >0.6 即拦截，删除仅在 else 分支）
+- **§10 静默失败**：未发现"DB 读取失败伪装空数据"直接命中（`catch { return [] }` 0 命中）；Supabase 读取失败均 throw 或 console.warn 回退内存缓存
+- **§11 删除验证**：删除均检查 error 并 throw（:110/:204/:443、bidding-data.js、jiwang-data.js、remaining-boards.js、auctionTagStore.js）
 
 ### ⚠️ 小缺口
 
-- `tagTitles/helpers.js:345`、`AuctionBoard.vue:946`、`auctionTagStore.js:35` 空 catch（非 DB，低危）
+- `tagTitles/helpers.js:345`（评分计算静默返回 0）、`AuctionBoard.vue:946`（剪贴板读写静默）、`auctionTagStore.js:35`（标签快照写失败静默）空 catch（非 DB，低危）
 - `hot-stocks.js:768-773` 迁移物理删除的 Promise.all 无逐条 error 检查
-- `bidding-data.js` 删除前有计数、删除后无核对
+- `bidding-data.js:191-223` deleteAuctionFromCloud 删除前有计数、删除后无核对
 
 ---
 
