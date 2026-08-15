@@ -237,6 +237,42 @@
 
 ---
 
+## 十、完成状态跟踪（截至 2026-08-16，main = b899553）
+
+> 本报告基线为 commit `61f8f03`。以下条目在基线之后已被实际修复（commit 链 `1bcaec0` → `127eeee` → `ab5f481` → `1fefbd3` → `b899553`，由 12 智能体收口 + 主智能体验收 + 后续专项重构完成）。本表为**真实代码核验结果**（grep / node --check / vite build），非凭记忆勾选。
+
+### 🔴 P0（红线）
+| # | 问题 | 状态 | 处置 / commit |
+|---|---|---|---|
+| 1 | §8 云端业务数据写回 localStorage | ✅ 已完成 | `auction-sync.js` 9 个 blob 字段的 pull→push 暂存由 localStorage 改为模块内存 `_cloudBlobExtras`（ab5f481）；语义零变化、重启由下次 pull 重建、不丢数据；保留 §8 允许的 `scoreSettings_*`/`holidays`/`tradingDays`/`__migrated`/`lastEditedDate_v42` |
+| 2 | window 登录态别名挂载（authStore 7 处 defineProperty） | ✅ 已完成 | R2 核查全 src `grep defineProperty` 0 处，已彻底清除（报告基线时仍残留，后续已删） |
+| 3 | logic 层直接操作 DOM（auction-sync.js:505） | ✅ 已完成 | `_setSyncStatus` 移除；`grep document.getElementById` 全 src 仅剩注释，状态改走 Vue 响应式 `statusText` |
+| 4 | hotspot.js null 解引用崩溃点 | ✅ 已完成 | `importHotFromPaste`/`replaceHotConceptFromPaste` 迁到 `rawText` 参数（对齐 stocks/auction 主流），删除 `_domGet` 桩调用（b899553） |
+
+### 🟠 P1（架构遗留）
+| # | 问题 | 状态 | 处置 / commit |
+|---|---|---|---|
+| 5 | app-core 中转站 + ui-bridge 空桩 + auctionStore 死委托 + `_uiFns` undefined | ⚠️ 部分完成 | ui-bridge `_domGet/_domQuery` 空桩删除（b899553）、auctionStore 19 个 `_uiFns` 死委托 + `auctionActions` 兼容层移除（127eeee E2）；**app-core.js 物理拆分仍刻意推迟**（原地去 window 化已完成，非阻塞） |
+| 6 | 巨型文件（auction.js / AuctionBoard.vue / main.css 等） | ⬜ 未做 | 见下方「auction.js 拆分评估」——规范仅对 app-core.js 强制拆分（§16），巨型文件属 P1 可维护性，未强制 |
+| 7 | router 9 条全闲置 + DashboardView 聚合 + 无 KeepAlive + 日期跨周末重建 | ⚠️ 部分完成 | 8 条 0 导航死路由删除（127eeee F1）；DashboardView 路由驱动 / KeepAlive / v-show 未做 |
+| 8 | Realtime：remaining-boards 无退订 + market_metrics 双订阅 | ✅ 已完成 | R4 补 `clearInterval(_watchDateTimer)` 回收 300ms 轮询 + 合并 market_metrics 为单 channel（仅 watchlist-and-metrics.js:262 拥有） |
+
+### 🟡 P2（工程化/优化）
+| # | 问题 | 状态 | 处置 / commit |
+|---|---|---|---|
+| 10 | 标签快照写 localStorage（auctionTagStore） | ✅ 已无实际风险 | R2 确认 `saveTagsToStorage` 已是 no-op，§8 写入与 §11 覆盖风险均消除 |
+| 11 | 备份目录进 git + build-log + README 空 | ⬜ 未做 | — |
+| 12 | 无 type:module / 零测试 / 零 lint / BOM / 循环依赖 | ⚠️ 部分完成 | 26 文件 BOM 剥离（127eeee F4）；type:module / 测试 / lint / 循环依赖未做 |
+| 13 | numcat-proxy/fuyao-proxy 源码 + 9 表建表 SQL + auction_duiban 双真相 | ✅ 已完成 | 9 张缺表建表 SQL + numcat-proxy/fuyao-proxy Edge Function 源码入库（127eeee E1）；auction_duiban 收敛（b899553，表结构保留不丢数据）；建表脚本 `db/_E1_RUN_ALL_CREATE_TABLES.sql` 已修 COMMENT 语法 + policy 幂等（1fefbd3） |
+| 14 | 模板行内函数 + 撤销快照落盘 | ⚠️ 部分完成 | 撤销快照由 localStorage 改为模块内存 Map（127eeee F3）；模板行内轻量函数调用未做 |
+
+### auction.js 拆分评估（问题 6 专项结论）
+- 规范 §16（ARCHITECTURE V3 第 949–968 行）**仅对 `app-core.js` 明确「不得继续无限增长 / 应按业务拆分」**；auction.js 的「巨型文件」在报告中列为 **P1 可维护性**，非红线，规范未设单文件行数硬上限。
+- 当前 `logic/auction/` 已拆出 7 个低耦合助手模块（view-helpers 526 / sort-rules 223 / auction-edit-helpers 158 / incremental-view 155 / stock-sync 69 / auction-helpers 55 / sort-rules-extra 53 ≈ 1239 行），auction.js 本体 2916 行是强耦合的竞价编排核心（共享大量 `state._xxx`）。
+- **结论：为满足合规无需拆；为可维护性建议「按需抽簇」而非盲目大拆分**——盲目拆 2916 行紧耦合、共享 state 的文件易引入循环依赖（已存在 app-core↔auction 环，§42 已标记）与回归。仅在出现清晰、低耦合的函数簇时才抽离（沿用已成功的抽簇模式）。
+
+---
+
 ## 附：已完成的修复（本会话）
 
 - ✅ AI 视觉导入/诊断报告删除、周月总结编辑 Vue 化、30+ 死代码空桩清理（commit 61f8f03）
@@ -244,3 +280,13 @@
 - ✅ 情绪看板完整性校验/封单家数改同花顺/连抓五天历史日期（commit 8e60a79/066f0c8）
 - ✅ 4 个 sync 文件完全上云（duiban/etf-board/bidding-template/fumian 0 处 localStorage 写）
 - ✅ **worker B `logs` 未定义 bug 修复**（emotion-workflow.js:84，数据完整性分支 ReferenceError 导致情绪不落库；已改 console.warn 并重新打包 `_bundled/bidding-board-worker-b.js`）——**需重新部署 worker B**
+
+---
+
+### 附（续）：12 智能体收口 + 专项重构（2026-08-15~16，main = b899553）
+
+- ✅ **12 智能体收口 PURE_VUE3 红线条目**（commit `127eeee`，43 files +971/-211）：移除 auctionStore 19 死委托 + `auctionActions` 兼容层、删除 8 条 0 导航死路由、AuctionEditModal 抽 7+ 纯函数、撤销快照内存化、9 表建表 SQL + numcat-proxy/fuyao-proxy Edge Function 源码入库、26 文件 BOM 剥离、remaining Realtime 定时器回收 + market_metrics 合并
+- ✅ **auction-sync §8 彻底合规**（commit `ab5f481`）：9 个 blob 字段 pull→push 暂存由 localStorage 改为模块内存 `_cloudBlobExtras`，消除「业务数据落 localStorage」违规（语义零变化、不丢数据）
+- ✅ **建表 SQL 修复**（commit `1fefbd3`）：修正 `comment on table` 语法错误（PostgreSQL 42601）+ 加 policy 幂等保护（`db/_E1_RUN_ALL_CREATE_TABLES.sql` 可反复 Run）
+- ✅ **auction_duiban 孤儿写收敛 + `_domGet` 空桩清理**（commit `b899553`，8 files +28/-128）：删 duiban-sync 死函数、hotspot 两粘贴函数迁 `rawText`、auction.js 死变量清理；node --check 8 文件全过、vite build 0 错 0 警（216 modules）
+- 📌 **用户侧待办（非代码）**：① 在 Supabase 执行 `db/_E1_RUN_ALL_CREATE_TABLES.sql` 建 9 表（用户已跑通）；② 浏览器回归点一遍（DashboardView 切日期/周末不重建、Realtime 不重复订阅、撤销快照仅会话内有效）；③ 确认 hotspot 粘贴调用的 Vue 入口已把粘贴内容传入 `rawText` 参数
