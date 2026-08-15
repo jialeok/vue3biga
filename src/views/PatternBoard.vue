@@ -33,7 +33,8 @@
 
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue';
-import { getCurrentDate, getPatternData, saveData, getNextDate, getPreviousDate } from '../logic/app-core.js';
+import { getCurrentDate, getPatternData, saveData } from '../logic/app-core.js';
+import { getPreviousTradingDay, getNextTradingDay } from '../logic/date/trading-day-helpers.js';
 import { showToast } from '../composables/useToast.js';
 import { useUiStore } from '../stores/uiStore.js';
 import { getPatternStore, setPatternReactive, hydratePatternStore } from '../logic/pattern/pattern-store.js';
@@ -60,7 +61,7 @@ function ensureTodayPattern() {
     setPatternReactive(date, patternData[date]);
     return;
   }
-  const prevDate = getPreviousDate(date);
+  const prevDate = getPreviousTradingDay(date);
   if (prevDate && patternData[prevDate]) {
     const prevPattern = patternData[prevDate];
     if (prevPattern.update || prevPattern.keep) {
@@ -102,7 +103,7 @@ async function save() {
   setPatternReactive(date, { content, update, keep }); // 乐观更新，立即刷新本页
 
   if (update || keep) {
-    const nextDate = getNextDate(date);
+    const nextDate = getNextTradingDay(date);
     if (nextDate) {
       const nextPattern = patternData[nextDate];
       if (nextPattern && (!nextPattern.content || nextPattern.content.trim() === '')) {

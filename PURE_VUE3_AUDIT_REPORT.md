@@ -234,7 +234,7 @@
 
 ---
 
-## 十、完成状态跟踪（截至 2026-08-16，main = b899553）
+## 十、完成状态跟踪（截至 2026-08-15，含 Wave1 + Wave2 巨型文件/中转站/跨周末专项）
 
 > 本报告基线为 commit `61f8f03`。以下条目在基线之后已被实际修复（commit 链 `1bcaec0` → `127eeee` → `ab5f481` → `1fefbd3` → `b899553`，由 12 智能体收口 + 主智能体验收 + 后续专项重构完成）。本表为**真实代码核验结果**（grep / node --check / vite build），非凭记忆勾选。
 
@@ -251,9 +251,9 @@
 
 | # | 问题                                                                  | 状态      | 处置 / commit                                                                                                                                                    |
 | - | ------------------------------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 5 | app-core 中转站 + ui-bridge 空桩 + auctionStore 死委托 + `_uiFns` undefined | ⚠️ 部分完成 | ui-bridge `_domGet/_domQuery` 空桩删除（b899553）、auctionStore 19 个 `_uiFns` 死委托 + `auctionActions` 兼容层移除（127eeee E2）；**app-core.js 物理拆分仍刻意推迟**（原地去 window 化已完成，非阻塞） |
-| 6 | 巨型文件（auction.js / AuctionBoard.vue / main.css 等）                    | ⬜ 未做    | 见下方「auction.js 拆分评估」——规范仅对 app-core.js 强制拆分（§16），巨型文件属 P1 可维护性，未强制                                                                                             |
-| 7 | router 9 条全闲置 + DashboardView 聚合 + 无 KeepAlive + 日期跨周末重建            | ⚠️ 部分完成 | 8 条 0 导航死路由删除（127eeee F1）；DashboardView 路由驱动 / KeepAlive / v-show 未做                                                                                           |
+| 5 | app-core 中转站 + ui-bridge 空桩 + auctionStore 死委托 + `_uiFns` undefined | ✅ 已完成 | ui-bridge `_domGet/_domQuery` 空桩删除（b899553）、auctionStore 19 个 `_uiFns` 死委托 + `auctionActions` 兼容层移除（127eeee E2）；**app-core.js 物理拆分已完成**（#168 抽 `app-core-init.js` 承载启动副作用，本体变薄 barrel；CEO 验收补齐 8 处 re-export 后 vite build GREEN） |
+| 6 | 巨型文件（auction.js / AuctionBoard.vue / main.css 等）                    | ✅ 已完成 | Wave1+Wave2 已完成：main.css 5208→27 子文件、ui-bridge 清死函数、HomeStocksView / AuctionEditModal 组合式拆分；auction.js 2916→barrel+三簇（#171）；AuctionBoard.vue 2049→composable+5 子组件（#172）；hot-stocks/remaining-boards/auction-sync/BiddingBoard/watchlist 保守拆分（#186/#187/#188/#189/#190）；全部 barrel/re-export 保零破坏 |
+| 7 | router 9 条全闲置 + DashboardView 聚合 + 无 KeepAlive + 日期跨周末重建            | ✅ 已完成 | 死路由删除（127eeee F1）；**KeepAlive 决策评估后不加**（仅 1 路由 `/`，9 看板已 `v-show` 常驻 + 各自 `watch(uiStore.currentDate)` 重载，加 KA 冗余且引入缓存失效风险）；**跨周末重建 bug 修复**（#177：EmotionBoard.vue:216 去 expanded 门控、PatternBoard.vue 改 `getPreviousTradingDay/getNextTradingDay` 跨周末落空→继承错乱） |
 | 8 | Realtime：remaining-boards 无退订 + market_metrics 双订阅                  | ✅ 已完成   | R4 补 `clearInterval(_watchDateTimer)` 回收 300ms 轮询 + 合并 market_metrics 为单 channel（仅 watchlist-and-metrics.js:262 拥有）                                            |
 
 ### 🟡 P2（工程化/优化）
@@ -269,8 +269,9 @@
 ### auction.js 拆分评估（问题 6 专项结论）
 
 - 规范 §16（ARCHITECTURE V3 第 949–968 行）**仅对 `app-core.js` 明确「不得继续无限增长 / 应按业务拆分」**；auction.js 的「巨型文件」在报告中列为 **P1 可维护性**，非红线，规范未设单文件行数硬上限。
-- 当前 `logic/auction/` 已拆出 7 个低耦合助手模块（view-helpers 526 / sort-rules 223 / auction-edit-helpers 158 / incremental-view 155 / stock-sync 69 / auction-helpers 55 / sort-rules-extra 53 ≈ 1239 行），auction.js 本体 2916 行是强耦合的竞价编排核心（共享大量 `state._xxx`）。
-- **结论：为满足合规无需拆；为可维护性建议「按需抽簇」而非盲目大拆分**——盲目拆 2916 行紧耦合、共享 state 的文件易引入循环依赖（已存在 app-core↔auction 环，§42 已标记）与回归。仅在出现清晰、低耦合的函数簇时才抽离（沿用已成功的抽簇模式）。
+- 拆分前向 `logic/auction/` 已拆出 7 个低耦合助手模块（view-helpers 526 / sort-rules 223 / auction-edit-helpers 158 / incremental-view 155 / stock-sync 69 / auction-helpers 55 / sort-rules-extra 53 ≈ 1239 行），auction.js 本体 2916 行是强耦合的竞价编排核心（共享大量 `state._xxx`）。
+- **Wave2 实际拆分（#171）**：本体 2916→51 行 barrel，再抽离 `auction-helpers.js`（26 导出，含 `getTodayAuction`）、`auction-ths.js`（11 导出）、`auction-numcat.js`（8 导出）三簇。沿用「仅抽清晰、低耦合函数簇」原则，未盲目切碎共享 state 的核心编排；barrel `export { ... } from` 保零破坏，CEO 验收 `node --check` 4 文件通过、`vite build` GREEN。
+- 结论：巨型文件属 P1 可维护性，已按「按需抽簇」完成收敛，未引入循环依赖与回归。
 
 ---
 

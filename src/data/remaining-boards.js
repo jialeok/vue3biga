@@ -1,128 +1,37 @@
-import { state } from '../logic/app-state.js';
 import { getSupabase } from './supabase-client.js';
 import { _dbgLog } from './debug-log.js';
 import { _emit } from '../stores/eventBus.js';
-import { showToast } from '../composables/useToast.js';
 import { useUiStore } from '../stores/uiStore.js';
 
-const MODULE_KEYS = ['stocks', 'rank', 'multi', 'hotspot', 'pattern', 'tagTitles'];
+import {
+  MODULE_KEYS,
+  _stocksMemCache,
+  _rankMemCache,
+  _multiMemCache,
+  _hotspotMemCache,
+  _patternMemCache,
+  _tagTitlesMemCache,
+  _caches,
+  _dirty,
+  _lastPushed
+} from './board-state.js';
+import { _moduleKey, _readLegacyObject, _isDateKey, _warn } from './board-helpers.js';
 
-const _stocksMemCache = state._stocksMemCache = {};
-const _rankMemCache = state._rankMemCache = {};
-const _multiMemCache = state._multiMemCache = {};
-const _hotspotMemCache = state._hotspotMemCache = {};
-const _patternMemCache = state._patternMemCache = {};
-const _tagTitlesMemCache = state._tagTitlesMemCache = {};
-
-const _caches = {
-  stocks: _stocksMemCache,
-  rank: _rankMemCache,
-  multi: _multiMemCache,
-  hotspot: _hotspotMemCache,
-  pattern: _patternMemCache,
-  tagTitles: _tagTitlesMemCache
-};
-
-const _dirty = {
-  stocks: new Set(),
-  rank: new Set(),
-  multi: new Set(),
-  hotspot: new Set(),
-  pattern: new Set(),
-  tagTitles: new Set()
-};
-
-const _lastPushed = {
-  stocks: {},
-  rank: {},
-  multi: {},
-  hotspot: {},
-  pattern: {},
-  tagTitles: {}
-};
+import {
+  loadStocksForDate,
+  saveStocksForDate,
+  scanStocksDirty,
+  _stockToRow
+} from './board-stocks.js';
+import { loadRankForDate, saveRankForDate } from './board-rank.js';
+import { loadMultiForDate, saveMultiForDate } from './board-multi.js';
+import { loadHotspotForDate, saveHotspotForDate } from './board-hotspot.js';
+import { loadPatternForDate, savePatternForDate } from './board-pattern.js';
+import { loadTagTitlesForDate, saveTagTitlesForDate } from './board-tagtitles.js';
 
 let _pushDebounceTimer = null;
 let _isPushing = false;
 let _lastLoadDate = null;
-
-function _moduleKey(name) {
-  return 'stockApp_v42_' + name;
-}
-
-function _readLegacyObject(key) {
-  try {
-    return JSON.parse(localStorage.getItem(key) || '{}'); // 合规：旧版一次性迁移读取（§8 允许，非持久化）
-  } catch (e) {
-    return {};
-  }
-}
-
-function _isDateKey(k) {
-  return typeof k === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(k);
-}
-
-function _warn(msg) {
-  console.warn('[RB]', msg);
-}
-
-const STOCK_FIELD_MAP = {
-  id: 'local_id',
-  name: 'name',
-  stage: 'stage',
-  adjust: 'adjust',
-  open: 'open',
-  close: 'close',
-  turnover: 'turnover',
-  kbiliangkai: 'kbiliangkai',
-  sfliangneng: 'sfliangneng',
-  xgcaiti: 'xgcaiti',
-  nextDay: 'next_day',
-  bomb: 'bomb',
-  bought: 'bought',
-  sold: 'sold',
-  sellHigh: 'sell_high',
-  sell1120: 'sell_1120',
-  sell1450: 'sell_1450',
-  hold: 'hold',
-  watch: 'watch',
-  dragon: 'dragon',
-  pattern: 'pattern',
-  axis: 'axis',
-  comment: 'comment',
-  remark: 'remark',
-  remarkType: 'remark_type',
-  track: 'track',
-  soldRecords: 'sold_records',
-  isSold: 'is_sold',
-  recentMulti: 'recent_multi',
-  topicDirection: 'topic_direction',
-  sectorEtf: 'sector_etf',
-  nishi: 'nishi',
-  shunshi: 'shunshi',
-  inheritedHold: 'inherited_hold'
-};
-
-function _stockToRow(date, stock) {
-  const row = { date };
-  Object.keys(STOCK_FIELD_MAP).forEach(key => {
-    const col = STOCK_FIELD_MAP[key];
-    let val = stock[key];
-    if (val === undefined) val = null;
-    row[col] = val;
-  });
-  return row;
-}
-
-function _rowToStock(row) {
-  const stock = {};
-  Object.keys(STOCK_FIELD_MAP).forEach(key => {
-    const col = STOCK_FIELD_MAP[key];
-    let val = row[col];
-    if (val === null) val = undefined;
-    stock[key] = val;
-  });
-  return stock;
-}
 
 function preloadLegacyToCaches() {
   for (const key of MODULE_KEYS) {
@@ -215,129 +124,6 @@ async function migrateLegacyBoardsToSupabase() {
   localStorage.setItem('stockApp_v42_remaining_migrated', '1'); // 合规：一次性迁移标记（§8 允许）
 }
 
-async function loadStocksForDate(date) {
-  if (!date) return;
-  try {
-    const sb = getSupabase();
-    const { data, error } = await sb
-      .from('stocks_data')
-      .select('*')
-      .eq('date', date)
-      .order('local_id', { ascending: false });
-    if (error) throw error;
-    const list = (data || []).map(_rowToStock);
-    if (list.length > 0 || !_stocksMemCache[date]) {
-      _stocksMemCache[date] = list;
-      _lastPushed.stocks[date] = JSON.stringify(list);
-    }
-  } catch (e) {
-    _warn('loadStocksForDate ' + date + ' 失败: ' + (e.message || e));
-  }
-}
-
-async function loadRankForDate(date) {
-  if (!date) return;
-  try {
-    const sb = getSupabase();
-    const { data, error } = await sb
-      .from('rank_data')
-      .select('*')
-      .eq('date', date)
-      .maybeSingle();
-    if (error) throw error;
-    const hasData = data && Array.isArray(data.data);
-    const val = hasData ? data.data : (_rankMemCache[date] || []);
-    _rankMemCache[date] = val;
-    _lastPushed.rank[date] = JSON.stringify(val);
-  } catch (e) {
-    _warn('loadRankForDate ' + date + ' 失败: ' + (e.message || e));
-  }
-}
-
-async function loadMultiForDate(date) {
-  if (!date) return;
-  try {
-    const sb = getSupabase();
-    const { data, error } = await sb
-      .from('multi_data')
-      .select('*')
-      .eq('date', date)
-      .maybeSingle();
-    if (error) throw error;
-    const hasData = data && Array.isArray(data.data);
-    const val = hasData ? data.data : (_multiMemCache[date] || []);
-    _multiMemCache[date] = val;
-    _lastPushed.multi[date] = JSON.stringify(val);
-  } catch (e) {
-    _warn('loadMultiForDate ' + date + ' 失败: ' + (e.message || e));
-  }
-}
-
-async function loadHotspotForDate(date) {
-  if (!date) return;
-  try {
-    const sb = getSupabase();
-    const { data, error } = await sb
-      .from('hotspot_data')
-      .select('*')
-      .eq('date', date)
-      .maybeSingle();
-    if (error) throw error;
-    const hasData = data && typeof data.content === 'string';
-    const val = hasData ? data.content : (_hotspotMemCache[date] || '');
-    _hotspotMemCache[date] = val;
-    _lastPushed.hotspot[date] = val;
-  } catch (e) {
-    _warn('loadHotspotForDate ' + date + ' 失败: ' + (e.message || e));
-  }
-}
-
-async function loadPatternForDate(date) {
-  if (!date) return;
-  try {
-    const sb = getSupabase();
-    const { data, error } = await sb
-      .from('pattern_data')
-      .select('*')
-      .eq('date', date)
-      .maybeSingle();
-    if (error) throw error;
-    const defaultVal = { content: '', update: false, keep: false };
-    const val = data
-      ? { content: data.content || '', update: !!data.update_flag, keep: !!data.keep_flag }
-      : (_patternMemCache[date] || defaultVal);
-    _patternMemCache[date] = val;
-    _lastPushed.pattern[date] = JSON.stringify(val);
-  } catch (e) {
-    _warn('loadPatternForDate ' + date + ' 失败: ' + (e.message || e));
-  }
-}
-
-async function loadTagTitlesForDate(date) {
-  if (!date) return;
-  try {
-    const sb = getSupabase();
-    const { data, error } = await sb
-      .from('tag_titles_data')
-      .select('*')
-      .eq('date', date)
-      .maybeSingle();
-    if (error) throw error;
-    const defaultVal = {
-      recentMulti: { tags: [], active: {}, score: 0 },
-      sectorEtf: { tags: [], active: {}, score: 0 },
-      topicDirection: { tags: [], active: {}, score: 0 },
-      consecutiveUp: { duoban: 0, bankuai: 0, ticai: 0 }
-    };
-    const hasData = data && data.data && typeof data.data === 'object';
-    const val = hasData ? data.data : (_tagTitlesMemCache[date] || defaultVal);
-    _tagTitlesMemCache[date] = val;
-    _lastPushed.tagTitles[date] = JSON.stringify(val);
-  } catch (e) {
-    _warn('loadTagTitlesForDate ' + date + ' 失败: ' + (e.message || e));
-  }
-}
-
 async function loadAllRemainingForDate(date) {
   if (!date) return;
   await Promise.all([
@@ -350,122 +136,6 @@ async function loadAllRemainingForDate(date) {
   ]);
 }
 
-async function saveStocksForDate(date) {
-  if (!date) return;
-  const list = Array.isArray(_stocksMemCache[date]) ? _stocksMemCache[date] : [];
-  try {
-    const sb = getSupabase();
-    const localRows = list.filter(s => s && s.name).map(s => _stockToRow(date, s));
-    const localNames = new Set(localRows.map(r => r.name));
-
-    // 1. 查询云端现有行（仅取 name），计算需要删除的差集
-    const { data: cloudRows, error: qErr } = await sb
-      .from('stocks_data')
-      .select('name')
-      .eq('date', date);
-    if (qErr) throw qErr;
-    const toDeleteNames = (cloudRows || [])
-      .map(r => r.name)
-      .filter(n => !localNames.has(n));
-
-    // 2. upsert 本地行（插入+更新）；失败时云端仍保留旧数据，不丢数据
-    if (localRows.length > 0) {
-      const { error: upErr } = await sb.from('stocks_data')
-        .upsert(localRows, { onConflict: 'date,name' });
-      if (upErr) throw upErr;
-    }
-
-    // 3. 删除云端有但本地已无的行
-    if (toDeleteNames.length > 0) {
-      const { error: delErr } = await sb.from('stocks_data')
-        .delete()
-        .eq('date', date)
-        .in('name', toDeleteNames);
-      if (delErr) throw delErr;
-    }
-
-    _lastPushed.stocks[date] = JSON.stringify(list);
-  } catch (e) {
-    _warn('saveStocksForDate ' + date + ' 失败: ' + (e.message || e));
-    throw e;
-  }
-}
-
-async function saveRankForDate(date) {
-  if (!date) return;
-  const data = _rankMemCache[date] || [];
-  try {
-    const sb = getSupabase();
-    await sb.from('rank_data').upsert({ date, data }, { onConflict: 'date' });
-    _lastPushed.rank[date] = JSON.stringify(data);
-  } catch (e) {
-    _warn('saveRankForDate ' + date + ' 失败: ' + (e.message || e));
-    throw e;
-  }
-}
-
-async function saveMultiForDate(date) {
-  if (!date) return;
-  const data = _multiMemCache[date] || [];
-  try {
-    const sb = getSupabase();
-    await sb.from('multi_data').upsert({ date, data }, { onConflict: 'date' });
-    _lastPushed.multi[date] = JSON.stringify(data);
-  } catch (e) {
-    _warn('saveMultiForDate ' + date + ' 失败: ' + (e.message || e));
-    throw e;
-  }
-}
-
-async function saveHotspotForDate(date) {
-  if (!date) return;
-  const content = _hotspotMemCache[date] || '';
-  try {
-    const sb = getSupabase();
-    await sb.from('hotspot_data').upsert({ date, content }, { onConflict: 'date' });
-    _lastPushed.hotspot[date] = content;
-  } catch (e) {
-    _warn('saveHotspotForDate ' + date + ' 失败: ' + (e.message || e));
-    throw e;
-  }
-}
-
-async function savePatternForDate(date) {
-  if (!date) return;
-  const p = _patternMemCache[date] || { content: '', update: false, keep: false };
-  try {
-    const sb = getSupabase();
-    await sb.from('pattern_data').upsert({
-      date,
-      content: p.content || '',
-      update_flag: !!p.update,
-      keep_flag: !!p.keep
-    }, { onConflict: 'date' });
-    _lastPushed.pattern[date] = JSON.stringify(p);
-  } catch (e) {
-    _warn('savePatternForDate ' + date + ' 失败: ' + (e.message || e));
-    throw e;
-  }
-}
-
-async function saveTagTitlesForDate(date) {
-  if (!date) return;
-  const data = _tagTitlesMemCache[date] || {
-    recentMulti: { tags: [], active: {}, score: 0 },
-    sectorEtf: { tags: [], active: {}, score: 0 },
-    topicDirection: { tags: [], active: {}, score: 0 },
-    consecutiveUp: { duoban: 0, bankuai: 0, ticai: 0 }
-  };
-  try {
-    const sb = getSupabase();
-    await sb.from('tag_titles_data').upsert({ date, data }, { onConflict: 'date' });
-    _lastPushed.tagTitles[date] = JSON.stringify(data);
-  } catch (e) {
-    _warn('saveTagTitlesForDate ' + date + ' 失败: ' + (e.message || e));
-    throw e;
-  }
-}
-
 export function markRemainingDirty(module, date) {
   if (!module || !date || !_dirty[module]) return;
   _dirty[module].add(date);
@@ -474,16 +144,6 @@ export function markRemainingDirty(module, date) {
 export function markAllRemainingDirty(date) {
   if (!date) return;
   MODULE_KEYS.forEach(key => _dirty[key].add(date));
-}
-
-function scanStocksDirty() {
-  Object.keys(_stocksMemCache).forEach(date => {
-    if (!_isDateKey(date)) return;
-    const snap = JSON.stringify(_stocksMemCache[date]);
-    if (_lastPushed.stocks[date] !== snap) {
-      _dirty.stocks.add(date);
-    }
-  });
 }
 
 async function pushAllRemainingDirty() {

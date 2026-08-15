@@ -37,6 +37,7 @@ import { getRankData } from './rank/rank.js';
 import { getMultiData } from './multi/multi.js';
 import { getPatternData } from './pattern/pattern.js';
 import { getTagTitlesData } from './tagTitles/tagTitles.js';
+export { getTagTitlesData } from './tagTitles/tagTitles.js';
 import { markJiwangDirty, getTodayJiwang } from './jiwang/jiwang.js';
 import { searchTickerCodeByName, autoCompleteMissingStockCodes, importStockCodeMap, extractCodeFromFuyaoItem, getStockHistoryTopics, replaceConceptFromPaste } from './stocks/stocks.js';
 import { getAuctionData, getTodayAuction, getTodayGroupList, markAuctionDirty, patchAuctionField, patchAuctionFieldBatch, _sanitizeAuctionPatch, _splitAuctionPatch, _mergeAuctionPatchLocal, clearAuctionDateData, deleteAuctionDateData, mergeAuctionDateRows, clearAllAuctionDates, repairAuctionInWatchlistForDate, reconcileAuctionWatchlistFromLocalStorage, reconcileAuctionWatchlist, backupAuctionData, rollbackAuctionData, importAuctionFromPaste, parseVolumeOnlyText, splitHistoryFillLine, importAuctionHistoryFill, fetchLadderConstituentsMain, fetchDayVolumes, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs, _fillTodayYesterdayVolumeFromThsImpl, fillYesterdayYesterdayVolumeFromThs, _fillYesterdayYesterdayVolumeFromThsImpl, fetchChangePctFromThs, _fetchChangePctFromThsImpl, fillAuctionHistoryGapPctFromThs, fillAuctionHistoryGapYestVolumeFromThs, fillYesterdayAuctionFromNumcat, fetchTodayAuctionFromNumcat, fetchAllAuctionFromNumcat, fetchThreeDaysAuctionFromNumcat, fetchFiveDaysAuctionFromNumcat, fillTopicsFromNumcat, fetchMonitorWarningFromNumcat, fetchAuctionFromNumcat, AUCTION_WATCHLIST_FIELDS, AUCTION_METRICS_FIELDS, AUCTION_PATCHABLE_FIELDS, _auctionFirstClearDumped } from './auction/auction.js';
@@ -44,8 +45,11 @@ import { getHotspotData, getHotAuctionData, _openHotAuctionShield, _closeHotAuct
 // §42 解环：以下共享工具/常量迁至 ./shared/core-shared.js，app-core 仅 import + re-export（行为不变），供内部调用与外部调用点零破坏。
 import { getGroupData, _getAuctionStore, saveModule, scheduleCloudPush, saveData, _dumpAuctionSnapshot, _guardStack, _guardAssertDate, setBtnLoading, MODULE_KEYS } from './shared/core-shared.js';
 export { getGroupData, _getAuctionStore, saveModule, scheduleCloudPush, saveData, _dumpAuctionSnapshot, _guardStack, _guardAssertDate, setBtnLoading } from './shared/core-shared.js';
+// §16 拆分：启动期初始化副作用已迁至 app-core-init.js（initAppCore）。
+import { initAppCore } from './app-core-init.js';
+export { initAppCore };
 // 重构（Phase 5 彻底）：导入期（Pinia 尚未激活）安全读取当前日期，避免模块顶层求值抛错。
-function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { return ''; } }
+export function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { return ''; } }
 
 
         // 热门股票渲染：复用 renderAuction 底层逻辑，dataSource='hot'
@@ -215,13 +219,13 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
         // 记录"确实发生过增删股票操作"的 auction 日期。
         // 只有被标记过的日期，在 pushToCloud 合并云端数据时才允许用本地名单覆盖云端，
         // 避免仅仅因为翻看某个历史日期（currentDate 指向它）就被误判为"允许增删"。
-        if (!state._auctionDirtyDates) state._auctionDirtyDates = new Set();
+        // [已迁至 app-core-init.js initAppCore] auction dirty-date Set 初始化
         
 
         // 记录"jiwang 数据确实被改动过"的日期，saveData() 据此判断是否需要
         // 推送该日期到 jiwang_data 表，避免每次 saveData()（可能因为改股票、改题材等
         // 与 jiwang 无关的操作触发）都无谓地 upsert 一次 jiwang_data。
-        if (!state._jiwangDirtyDates) state._jiwangDirtyDates = new Set();
+        // [已迁至 app-core-init.js initAppCore] jiwang dirty-date Set 初始化
         
 
         // ============================================================
@@ -254,6 +258,7 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
         _computeBeijingToday = _computeBeijingToday;
 
         export function initApp() {
+            initAppCore();
             // [ISSUE#1 修复] 启动默认落到"今天"：pullFromCloud 可能更新过 currentDate，
             // 这里重新读取 localStorage，但只有"恰为今天"才沿用，否则一律以北京时间为准
             // 重置为今天，避免打开后停在 8/5 等旧日期、并向前串数据（"未来的日期也继承 8/5"）。
@@ -270,18 +275,14 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
             initAuctionTags();
         }
 
-        state.DATA_VERSION = 'v42';
+        // [已迁至 app-core-init.js initAppCore] DATA_VERSION 初始化
 
         // 一次性清理：早期测试阶段遗留的陈旧 lastEditedDate（如 2025-01-02）会导致
         // 应用一直卡在那个日期。这里清除"去年今日"之前的值，让它退回默认走"今天"。
         // 只做一次判断、直接清除 key，不做动态阈值计算（之前的动态阈值方案因为在
         // initApp()/_appInit() 等多处各自独立读取同一个 key，顺序上互相覆盖，没有真正生效）。
         // [§16 修复] 原实现为顶层 IIFE，违反"app-core 不得无限增长"红线，已内联为模块顶层语句。
-        const _staleLastEditedDate = localStorage.getItem('lastEditedDate_' + state.DATA_VERSION);
-        const _minValidDate = (new Date().getFullYear() - 1) + '-01-01';
-        if (_staleLastEditedDate && _staleLastEditedDate < _minValidDate) {
-            localStorage.removeItem('lastEditedDate_' + state.DATA_VERSION);
-        }
+        // [已迁至 app-core-init.js initAppCore] 陈旧 lastEditedDate 清理
 
         // 统一日期写入口：同时更新全局 currentDate 与响应式 auctionStore.currentDate，
         // 杜绝"全局已切、store 未跟"导致的跨日期写错位（fetchLadderConstituentsMain 等以
@@ -304,12 +305,9 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
             }
         }
         export function getCurrentDate() { return useUiStore().currentDate; }
-        if (typeof _dbgLog === 'function') {
-            _dbgLog('页面脚本加载: currentDate 初始化为 ' + _uiDateSafe() + ' | 代码版本 v3-0804-RANKCACHE-FIX（找到真正瓶颈：getRankData每题材调用N次→改为每次渲染只调用1次，避免反复触发响应式store写入）');
-            _dbgLog('[AUCTION-GUARD] selfCheck active=true refIdentity=' + (state._auctionMemCache === (typeof _getAuctionStore() !== 'undefined' && _getAuctionStore() ? _getAuctionStore().auctionData : null)) + ' dates=' + Object.keys(state._auctionMemCache || {}).length);
-        }
+        // [已迁至 app-core-init.js initAppCore] 启动诊断日志
 
-        state.isStrengthSortEnabled = false;
+        // [已迁至 app-core-init.js initAppCore] isStrengthSortEnabled 初始化
 
                 export function _migrateFromV41() {
             const oldData = localStorage.getItem('stockAppData_v41');
@@ -334,10 +332,7 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
 
         export { getPatternData } from './pattern/pattern.js';
         
-        state.currentFilter = 'all';
-        state.isStockListCollapsed = true; // 股票列表收起状态（默认收起，与原版 initStockListCollapse 一致）
-        state.editingId = null;
-        state.topicAutoFilled = false;
+        // [已迁至 app-core-init.js initAppCore] currentFilter/isStockListCollapsed/editingId/topicAutoFilled 初始化
 
         // 判断是否为休市日
         export function isMarketClosed(d) {
@@ -604,19 +599,11 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
 
         // 渲染早盘竞价表单
 
-state._migrateFromV41 = _migrateFromV41;
-state._guardStack = _guardStack;
-state._guardAssertDate = _guardAssertDate;
-
-_bindApi({ getCurrentDate, getAuctionData, getGroupData, scheduleCloudPush, markAuctionDirty, saveData, getTodayAuction, getNextTradingDay, getHotAuctionData, saveModule, patchAuctionFieldBatch, reconcileAuctionWatchlistFromLocalStorage, mergeAuctionDateRows, _openHotAuctionShield, _closeHotAuctionShield, getStockHistoryTopics, getRankData, getTagTitlesData, getTodayJiwang, getTodayGroupList, markJiwangDirty, replaceHotConceptFromPaste, importAuctionFromPaste, replaceConceptFromPaste, importHotFromPaste });
-
-// [FIX 2026-08-15] _bindUiFns 仅保留真实实现（renderAuction → auction-refresh 事件）；
-// 原绑定的 toggleStrengthSort 等一批空桩对应 store action 已删除（Vue 组件走本地实现，§16）。
-_bindUiFns({ renderAuction });
-
-_initAuctionMemCache();
-
-_setInvalidateTopicCacheFn(invalidateTopicCache);
+// [已迁至 app-core-init.js initAppCore] state 绑定 _migrateFromV41/_guardStack/_guardAssertDate
+// [已迁至 app-core-init.js initAppCore] _bindApi 注册 API 门面（getCurrentDate 等 29 个函数）
+// [已迁至 app-core-init.js initAppCore] _bindUiFns 注册（renderAuction → auction-refresh，刷新链路必需）
+// [已迁至 app-core-init.js initAppCore] _initAuctionMemCache 启动各 store 实时订阅
+// [已迁至 app-core-init.js initAppCore] _setInvalidateTopicCacheFn 注入 invalidateTopicCache
 
 // §16 域拆分：jiwang 域函数已迁出至 ./jiwang/jiwang.js
 export { markJiwangDirty, getTodayJiwang } from './jiwang/jiwang.js';
@@ -625,7 +612,7 @@ export { markJiwangDirty, getTodayJiwang } from './jiwang/jiwang.js';
 export { autoCompleteMissingStockCodes, importStockCodeMap, getStockHistoryTopics, replaceConceptFromPaste } from './stocks/stocks.js';
 
 // §16 域拆分：auction 域函数已迁出至 ./auction/auction.js
-export { getAuctionData, getTodayGroupList, markAuctionDirty, patchAuctionField, patchAuctionFieldBatch, mergeAuctionDateRows, repairAuctionInWatchlistForDate, rollbackAuctionData, importAuctionFromPaste, importAuctionHistoryFill, fetchLadderConstituentsMain, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs, fillYesterdayYesterdayVolumeFromThs, fetchChangePctFromThs, fillAuctionHistoryGapPctFromThs, fillAuctionHistoryGapYestVolumeFromThs, fillYesterdayAuctionFromNumcat, fetchTodayAuctionFromNumcat, fetchAllAuctionFromNumcat, fetchThreeDaysAuctionFromNumcat, fetchFiveDaysAuctionFromNumcat, fillTopicsFromNumcat, fetchMonitorWarningFromNumcat } from './auction/auction.js';
+export { getTodayAuction, reconcileAuctionWatchlistFromLocalStorage, getAuctionData, getTodayGroupList, markAuctionDirty, patchAuctionField, patchAuctionFieldBatch, mergeAuctionDateRows, repairAuctionInWatchlistForDate, rollbackAuctionData, importAuctionFromPaste, importAuctionHistoryFill, fetchLadderConstituentsMain, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs, fillYesterdayYesterdayVolumeFromThs, fetchChangePctFromThs, fillAuctionHistoryGapPctFromThs, fillAuctionHistoryGapYestVolumeFromThs, fillYesterdayAuctionFromNumcat, fetchTodayAuctionFromNumcat, fetchAllAuctionFromNumcat, fetchThreeDaysAuctionFromNumcat, fetchFiveDaysAuctionFromNumcat, fillTopicsFromNumcat, fetchMonitorWarningFromNumcat } from './auction/auction.js';
 
 // §16 域拆分：hotspot 域函数已迁出至 ./hotspot/hotspot.js
-export { patchHotFieldBatch } from './hotspot/hotspot.js';
+export { getHotAuctionData, _openHotAuctionShield, _closeHotAuctionShield, replaceHotConceptFromPaste, importHotFromPaste, patchHotFieldBatch } from './hotspot/hotspot.js';

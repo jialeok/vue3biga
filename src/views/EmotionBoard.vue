@@ -209,9 +209,12 @@ onMounted(() => {
   loadAndRender();
   subscribeEmotion(onRealtimeChange); // E-05：模块级统一订阅，离开页面 unsubscribe
 });
-// 切换日期时重新拉取（之前仅在 mounted/expand 时加载，日期选择器切换后不会刷新）
+// 切换日期时重新拉取（之前仅在 mounted/expand 时加载，日期选择器切换后不会刷新）。
+// [FIX #177] 原先的 watch 体被 `if (expanded.value)` 拦截：情绪板折叠时切日期不会触发
+// loadAndRender，导致 data.value 残留上一日期数据（跨周末 Fri→Mon 时尤为明显，显示错乱）。
+// 改为「任何日期切换都重拉」，expanded 仅为 UI 展开态，不应阻止数据刷新（§6 单源：只经 uiStore.currentDate 驱动）。
 watch(() => uiStore.currentDate, () => {
-  if (expanded.value) loadAndRender();
+  loadAndRender();
 });
 onUnmounted(() => {
   unsubscribeEmotion(); // E-05：离开页面退订，避免重复订阅
