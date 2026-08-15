@@ -2221,7 +2221,8 @@ export async function fetchFiveDaysAuctionFromNumcat(btn) {
         const aucByDate = {};
         items.forEach(function(row) {
             const code = String(row[symbolIdx] || '').trim();
-            const tradedate = String(row[tradedateIdx] || '').trim();
+            // [FIX 2026-08-15] 归一化 tradedate（'2026-08-10' → '20260810'），与请求窗口 ymd 对齐
+            const tradedate = String(row[tradedateIdx] || '').trim().replace(/-/g, '');
             const aucVol = row[aucVolIdx];
             if (!code || !tradedate || aucVol === null || aucVol === undefined) return;
             if (!aucByDate[tradedate]) aucByDate[tradedate] = {};
@@ -2248,7 +2249,8 @@ export async function fetchFiveDaysAuctionFromNumcat(btn) {
         if (dSymbolIdx >= 0 && dTradeIdx >= 0 && dPctIdx >= 0) {
             dailyItems.forEach(function(row) {
                 const code = String(row[dSymbolIdx] || '').trim();
-                const tradedate = String(row[dTradeIdx] || '').trim();
+                // [FIX 2026-08-15] 归一化 tradedate（'2026-08-10' → '20260810'）
+                const tradedate = String(row[dTradeIdx] || '').trim().replace(/-/g, '');
                 const rawPct = row[dPctIdx];
                 if (!code || !tradedate || rawPct === null || rawPct === undefined || rawPct === '') return;
                 if (!pctByDate[tradedate]) pctByDate[tradedate] = {};
@@ -2709,10 +2711,13 @@ export async function fetchAuctionFromNumcat(btn, opts) {
         }
 
         // 按日期分组：YYYYMMDD -> { code: { vol: aucVol(万), pct: "+2.5%", rawPct } }
+        // [FIX 2026-08-15] 归一化 tradedate 为 YYYYMMDD（接口可能返回 '20260810' 或 '2026-08-10'，
+        // 统一 key 避免与请求窗口 dates 的 ymd 比对时 miss，历史日期补全同样适用）。
         const aucByDate = {};
         items.forEach(function(row) {
             const code = String(row[symbolIdx] || '').trim();
-            const tradedate = String(row[tradedateIdx] || '').trim();
+            const tradedateRaw = String(row[tradedateIdx] || '').trim();
+            const tradedate = tradedateRaw.replace(/-/g, '');
             const aucVol = row[aucVolIdx];
             if (!code || !tradedate || aucVol === null || aucVol === undefined) return;
             if (!aucByDate[tradedate]) aucByDate[tradedate] = {};
