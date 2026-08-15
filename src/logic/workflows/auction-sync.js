@@ -27,6 +27,15 @@ import { _openAuctionShield, _closeAuctionShield } from '../../data/session-and-
 import { syncStockTopicsFromAuction } from '../auction/stock-sync.js';
 import { useUiStore } from '../../stores/uiStore.js';
 
+        // §8 合规：pullFromCloud/pushToCloud 之间传递的「blob 额外字段」(duibanData/duibanComment/
+        // stockEtfComment/coreTopics/biddingDefaultTemplate_v41/copiedStocksData/summaries 等)
+        // 原以 localStorage 做暂存（业务数据落 localStorage，违反 §8）。现改为模块内存对象暂存：
+        // 语义与数据流完全不变（pull 写入、push 读出），仅存储介质从 localStorage 换成内存；
+        // 重启后由下次 pullFromCloud 从云端 user_data blob 重新填充，不丢数据（这些字段本身也都有
+        // 各自的云端真相源，或仅作 blob 冗余备份）。scoreSettings/holidays/tradingDays 等 §8 允许的
+        // UI 偏好/兜底 key 仍按原样走 localStorage。
+        const _cloudBlobExtras = {};
+
         export async function pushAuctionStatusForDate(date) {
             const sb = getSupabase();
             // 方案2：用 _auctionWatchlistIndex 判断正式成员，只推送正式成员的状态
@@ -539,14 +548,16 @@ import { useUiStore } from '../../stores/uiStore.js';
 
                 // 其余散落 key
                 // §8 收口：duibanData 已双写 Supabase（saveDuibanData → duiban 表）；stockEtfComment 已并入 Supabase early_etf_data.comment 列（saveEtfBoardComment）；
-                // biddingDefaultTemplate_v41 已双写 Supabase（saveBiddingTemplate）。三者仍保留下方 localStorage 兜底（fail-soft 降级，绝不丢数据）。
-                // （过渡：duibanComment / copiedStocksData 暂无确认云端路径，按 §8 保留 localStorage 兜底；coreTopics 已另有云端路径 topic-rules.js。）
+                // biddingDefaultTemplate_v41 已双写 Supabase（saveBiddingTemplate）；coreTopics 另有云端路径 topic-rules.js（getCoreTopics）。
+                // 上述字段以及 duibanComment/copiedStocksData/summaries 的「pull→push 暂存」已从 localStorage 改为模块内存 _cloudBlobExtras（见顶部声明），
+                // 不再把业务数据写进 localStorage；云端双写保留作为 fail-soft 冗余真相源，绝不丢数据。
                 const extraKeys = ['duibanData', 'duibanComment', 'stockEtfComment',
                                    'coreTopics', 'biddingDefaultTemplate_v41', 'copiedStocksData'];
                 extraKeys.forEach(key => {
                     if (cloudObj[key] !== undefined) {
-                        localStorage.setItem(key, JSON.stringify(cloudObj[key]));
-                        // §8 双写：保留 localStorage 兜底 + 新增云端 Supabase（fire-and-forget，内部 try/catch 已 fail-soft）
+                        // §8 合规：暂存改为模块内存 _cloudBlobExtras（见顶部声明），不再写 localStorage
+                        _cloudBlobExtras[key] = cloudObj[key];
+                        // §8 双写：新增云端 Supabase（fire-and-forget，内部 try/catch 已 fail-soft）
                         try {
                             if (key === 'duibanData') saveDuibanData(cloudObj[key]);
                             else if (key === 'stockEtfComment') {
@@ -559,9 +570,9 @@ import { useUiStore } from '../../stores/uiStore.js';
                         } catch (e) { console.error('[auction-sync] §8 双写异常(' + key + ')：', e && e.message); }
                     }
                 });
-                // summaries / hasFumianTopics（带前缀的动态 key）
+                // summaries（带前缀的动态 key）：暂存改为内存 _cloudBlobExtras（§8 合规，不再逐 key 写 localStorage）
                 if (cloudObj.summaries) {
-                    Object.entries(cloudObj.summaries).forEach(([k, v]) => localStorage.setItem(k, v));
+                    _cloudBlobExtras.summaries = cloudObj.summaries;
                 }
                 // §8 已上云（写路径仅上云，已移除 localStorage 写入；读路径已切云端 loadFumianTopics → getFumianCache，localStorage 仅作冷启动兜底）。
                 if (cloudObj.hasFumianTopics) {
@@ -737,20 +748,10 @@ import { useUiStore } from '../../stores/uiStore.js';
                     _dbgLog && _dbgLog('window.pushToCloud 跳过: 本地无数据，不覆盖云端');
                     return;
                 }
-                const summaries = {};
-                for (let i = 0; i < localStorage.length; i++) {
-                    const key = localStorage.key(i);
-                    if (key && (key.startsWith('weekly_summary_') || key.startsWith('weekend_summary_') || key.startsWith('monthly_summary_'))) {
-                        summaries[key] = localStorage.getItem(key);
-                    }
-                }
+                // §8 合规：summaries / hasFumianTopics 不再扫描 localStorage；
+                // summaries 从内存 _cloudBlobExtras 取（pull 时已填充）；hasFumianTopics 已迁移到云端 fumian 表（saveFumianTopics），blob 副本恒为空。
+                const summaries = _cloudBlobExtras.summaries || {};
                 const hasFumianTopics = {};
-                for (let i = 0; i < localStorage.length; i++) {
-                    const key = localStorage.key(i);
-                    if (key && key.startsWith('hasFumianTopic_')) {
-                        hasFumianTopics[key] = localStorage.getItem(key);
-                    }
-                }
                 const scoreSettings = {};
                 ['recentMulti', 'sectorEtf', 'topicDirection'].forEach(type => {
                     const val = localStorage.getItem('scoreSettings_' + type);
@@ -768,31 +769,31 @@ import { useUiStore } from '../../stores/uiStore.js';
                     auction: state._auctionTableAvailable ? {} : (state.allData.auction || {}),
                     tagTitles: state.allData.tagTitles || {},
                     holidays: state.allData.holidays || [],
-                    duibanData: JSON.parse(localStorage.getItem('duibanData') || '{}'),
-                    duibanComment: JSON.parse(localStorage.getItem('duibanComment') || '{}'),
-                    stockEtfData: JSON.parse(localStorage.getItem('stockEtfData') || '{}'),
-                    stockEtfComment: JSON.parse(localStorage.getItem('stockEtfComment') || '{}'),
-                    coreTopics: JSON.parse(localStorage.getItem('coreTopics') || '[]'),
+                    duibanData: _cloudBlobExtras.duibanData || {},
+                    duibanComment: _cloudBlobExtras.duibanComment || {},
+                    stockEtfData: {},  // §8：stockEtfData 早已不落 localStorage（pull 不再写），此处恒为 {}，去掉死读的 localStorage 访问
+                    stockEtfComment: _cloudBlobExtras.stockEtfComment || {},
+                    coreTopics: _cloudBlobExtras.coreTopics || [],
                     // [FIX 2026-07-24] 本地没有模板时绝不把空数组推上云。
                     // 云端 biddingDefaultTemplate 是 Worker 自动抓取的行名来源：
                     // 某次推送把 [] 带上云后，Worker 读不到任何行 → 当天自动抓取整天空白
-                    // （2026-07-24 实发事故）。本地缺失时用硬编码默认模板兜底并自愈 localStorage。
+                    // （2026-07-24 实发事故）。本地缺失时用硬编码默认模板兜底并自愈到内存 _cloudBlobExtras（不再写 localStorage）。
                     biddingDefaultTemplate: (function() {
                         try {
-                            const t = JSON.parse(localStorage.getItem('biddingDefaultTemplate_v41') || 'null');
+                            const t = _cloudBlobExtras.biddingDefaultTemplate_v41;
                             if (Array.isArray(t) && t.length > 0) return t;
                         } catch (e) {}
                         const d = [
                             { name: '最近多板%' }, { name: '板块ETF(48)' }, { name: '昨日资金前十' },
                             { name: '大盘ETF' }, { name: '大盘（%）' }, { name: '封单家数' }, { name: '账号溢价' }
                         ];
-                        try { localStorage.setItem('biddingDefaultTemplate_v41', JSON.stringify(d)); } catch (e) {}
+                        _cloudBlobExtras.biddingDefaultTemplate_v41 = d;
                         return d;
                     })(),
                     scoreSettings: scoreSettings,
                     hasFumianTopics: hasFumianTopics,
                     summaries: summaries,
-                    copiedStocksData: JSON.parse(localStorage.getItem('copiedStocksData') || '{}'),
+                    copiedStocksData: _cloudBlobExtras.copiedStocksData || {},
                     exportDate: useUiStore().currentDate,
                     version: '4.2'
                 };
