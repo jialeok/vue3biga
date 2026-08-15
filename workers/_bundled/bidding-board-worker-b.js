@@ -1,5 +1,5 @@
 // ===== bidding-board-worker-b — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-08-13 02:43:12
+// 生成时间: 2026-08-15 23:18:51
 // 注意: 此文件由 _bundle-workers.ps1 自动生成，请勿手动编辑
 
 // ────── bidding-board-worker-b/config.js ──────
@@ -151,6 +151,38 @@ async function getNextTradingDay(env, today) {
   return localGetNextTradingDay(today);
 }
 
+// [FIX 2026-08-15] 获取最近多板（883410）成分股 thscode 列表
+async function getLadderConstituents(env) {
+  const data = await fuyaoGet(env, '/api/a-share-index/constituents/ths-stock-list', { thscode: '883410.TI' });
+  return ((data && data.item) || []).filter(function (it) { return it && it.thscode; });
+}
+
+// [FIX 2026-08-15] 快照接口获取一批股票的 {thscode, price_change_ratio_pct}（涨停/一字板判定用）
+async function getStockSnapshots(env, thscodes) {
+  const result = {};
+  const BATCH = 40;
+  for (let i = 0; i < thscodes.length; i += BATCH) {
+    const chunk = thscodes.slice(i, i + BATCH);
+    const data = await fuyaoGet(env, '/api/a-share/prices/snapshot', { thscodes: chunk.join(',') });
+    ((data && data.item) || []).forEach(function (it) {
+      if (it && it.thscode && it.price_change_ratio_pct !== null && it.price_change_ratio_pct !== undefined) {
+        result[it.thscode] = Number(it.price_change_ratio_pct);
+      }
+    });
+  }
+  return result;
+}
+
+// [FIX 2026-08-15] 一字板判定：竞价/开盘涨幅达到涨停（主板 10%、创业板/科创板 20%）。
+// thscode 形如 '300xxx.SZ'/'688xxx.SH' → 20% 涨停；其余 10%。涨停阈值略低于理论值容错（9.9/19.9）。
+function isLimitUpBoard(thscode, pct) {
+  if (!thscode || pct === null || pct === undefined || isNaN(pct)) return false;
+  const code = String(thscode).split('.')[0];
+  const isChiNext = /^30\d{4}$/.test(code);   // 创业板 300xxx
+  const isSTAR = /^688\d{4}$/.test(code);     // 科创板 688xxx
+  return isChiNext || isSTAR ? pct >= 19.9 : pct >= 9.9;
+}
+
 function localGetNextTradingDay(dateStr) {
   let d = new Date(dateStr + 'T00:00:00');
   d.setDate(d.getDate() + 1);
@@ -161,6 +193,127 @@ function localGetNextTradingDay(dateStr) {
     d.setDate(d.getDate() + 1);
   }
 }
+
+// ────── bidding-board-worker-b/data/supabase-write.js ──────
+// data/supabase-write.js — Supabase 读写
+
+function sbHeaders(env) {
+  return {
+    'apikey': env.SUPABASE_ANON_KEY,
+    'Authorization': 'Bearer ' + env.SUPABASE_ANON_KEY,
+    'Content-Type': 'application/json',
+  };
+}
+
+async function upsertBiddingRows(env, rows) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/bidding_data?on_conflict=date%2Cname';
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: Object.assign(sbHeaders(env), { 'Prefer': 'resolution=merge-duplicates' }),
+    body: JSON.stringify(rows),
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error('upsert bidding_data 失败: HTTP ' + resp.status + ' ' + text.slice(0, 300));
+  }
+}
+
+async function writeLog(env, entry) {
+  try {
+    await fetch(CONFIG.SUPABASE_URL + '/rest/v1/bidding_fetch_log', {
+      method: 'POST',
+      headers: Object.assign(sbHeaders(env), { 'Prefer': 'return=minimal' }),
+      body: JSON.stringify(entry),
+    });
+  } catch (e) { console.error('写 bidding_fetch_log 失败（已忽略）:', e.message); }
+}
+
+async function updateJiwangShouguJieguo(env, date, stats) {
+  const shouguJieguo = stats.down + ':' + stats.up;
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/' + CONFIG.JIWANG_TABLE;
+  const body = { date: date, shouguJieguo: shouguJieguo, updated_at: new Date().toISOString() };
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: Object.assign(sbHeaders(env), {
+      'Prefer': 'resolution=merge-duplicates, return=minimal'
+    }),
+    body: JSON.stringify(body)
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error('Supabase upsert 失败: HTTP ' + resp.status + ': ' + text.slice(0, 300));
+  }
+}
+
+// ────── bidding-board-worker-b/logic/seal-workflow.js ──────
+// logic/seal-workflow.js — 封单家数（9:25 竞价一字板）
+// [FIX 2026-08-15] 数据源从 NumCat 改为同花顺接口：
+//   需求：9:25 用同花顺接口快照抓取「早盘竞价看板的最近多板（883410）」成分股，
+//         判断哪些是一字板（竞价/开盘涨幅达到涨停），计算数量填入 bidding_data 封单家数行 time925 列。
+//   原实现：NumCat emoindic-daily 的 owfd_0925_count 字段 — 不稳定（8/14 等日期接口计数类字段缺失，
+//         且 emoindic 是日级指标，9:25 时往往还没有当天数据 → findTodayItem 找不到 → 空白）。
+
+async function runSeal(env, source) {
+  const date = beijingToday();
+  const logBase = { run_date: date, time_point: 't0925', source: source || 'cron', job: 'seal', worker: 'B' };
+
+  if (!(await isTradingDay(env))) {
+    await writeLog(env, Object.assign(logBase, { ok: false, detail: { skipped: '非交易日' } }));
+    return { ok: false, error: '非交易日，已跳过' };
+  }
+
+  let sealResult;
+  try {
+    // 1. 取 883410 最近多板成分股
+    const constituents = await getLadderConstituents(env);
+    if (!constituents || constituents.length === 0) {
+      sealResult = { value: null, error: '883410 最近多板成分股为空' };
+    } else {
+      // 2. 快照抓取涨幅
+      const thscodes = constituents.map(c => c.thscode).filter(Boolean);
+      const pcts = await getStockSnapshots(env, thscodes);
+      // 3. 统计一字板家数（竞价/开盘涨幅 ≥ 涨停阈值）
+      let limitUpCount = 0;
+      const limitUpNames = [];
+      let haveCount = 0;
+      constituents.forEach(function (c) {
+        const pct = pcts[c.thscode];
+        if (typeof pct === 'number' && !isNaN(pct)) {
+          haveCount++;
+          if (isLimitUpBoard(c.thscode, pct)) {
+            limitUpCount++;
+            limitUpNames.push((c.name || c.thscode));
+          }
+        }
+      });
+      sealResult = {
+        value: String(limitUpCount),
+        detail: {
+          constituents: constituents.length,
+          haveSnapshot: haveCount,
+          limitUp: limitUpCount,
+          names: limitUpNames.slice(0, 50),
+          threshold: '主板10%/创业板科创板20%'
+        }
+      };
+    }
+  } catch (e) {
+    sealResult = { value: null, error: e.message };
+  }
+
+  const now = new Date().toISOString();
+  const row = { date: date, name: CONFIG.ROW_SEAL, updated_at: now };
+  row[SEAL_COLUMN] = sealResult.value;
+
+  let ok = true, writeError = null;
+  if (sealResult.value !== null && sealResult.value !== undefined) {
+    try { await upsertBiddingRows(env, [row]); }
+    catch (e) { ok = false; writeError = e.message; }
+  }
+  await writeLog(env, Object.assign(logBase, { ok, detail: { written: sealResult.value !== null ? [row] : [], row: sealResult, writeError } }));
+  return { ok, date, point: 't0925-seal', column: SEAL_COLUMN, written: sealResult.value !== null ? [row] : [], row: sealResult, writeError };
+}
+
 
 // ────── bidding-board-worker-b/data/numcat-api.js ──────
 // data/numcat-api.js — NumCat 情绪周期接口
@@ -260,95 +413,6 @@ async function fetchNumCatMarketStats(env) {
   return buildJiwangStats(fields, items);
 }
 
-// ────── bidding-board-worker-b/data/supabase-write.js ──────
-// data/supabase-write.js — Supabase 读写
-
-function sbHeaders(env) {
-  return {
-    'apikey': env.SUPABASE_ANON_KEY,
-    'Authorization': 'Bearer ' + env.SUPABASE_ANON_KEY,
-    'Content-Type': 'application/json',
-  };
-}
-
-async function upsertBiddingRows(env, rows) {
-  const url = CONFIG.SUPABASE_URL + '/rest/v1/bidding_data?on_conflict=date%2Cname';
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: Object.assign(sbHeaders(env), { 'Prefer': 'resolution=merge-duplicates' }),
-    body: JSON.stringify(rows),
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error('upsert bidding_data 失败: HTTP ' + resp.status + ' ' + text.slice(0, 300));
-  }
-}
-
-async function writeLog(env, entry) {
-  try {
-    await fetch(CONFIG.SUPABASE_URL + '/rest/v1/bidding_fetch_log', {
-      method: 'POST',
-      headers: Object.assign(sbHeaders(env), { 'Prefer': 'return=minimal' }),
-      body: JSON.stringify(entry),
-    });
-  } catch (e) { console.error('写 bidding_fetch_log 失败（已忽略）:', e.message); }
-}
-
-async function updateJiwangShouguJieguo(env, date, stats) {
-  const shouguJieguo = stats.down + ':' + stats.up;
-  const url = CONFIG.SUPABASE_URL + '/rest/v1/' + CONFIG.JIWANG_TABLE;
-  const body = { date: date, shouguJieguo: shouguJieguo, updated_at: new Date().toISOString() };
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: Object.assign(sbHeaders(env), {
-      'Prefer': 'resolution=merge-duplicates, return=minimal'
-    }),
-    body: JSON.stringify(body)
-  });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    throw new Error('Supabase upsert 失败: HTTP ' + resp.status + ': ' + text.slice(0, 300));
-  }
-}
-
-// ────── bidding-board-worker-b/logic/seal-workflow.js ──────
-// logic/seal-workflow.js — 封单家数
-
-async function runSeal(env, source) {
-  const date = beijingToday();
-  const logBase = { run_date: date, time_point: 't0925', source: source || 'cron', job: 'seal', worker: 'B' };
-
-  if (!(await isTradingDay(env))) {
-    await writeLog(env, Object.assign(logBase, { ok: false, detail: { skipped: '非交易日' } }));
-    return { ok: false, error: '非交易日，已跳过' };
-  }
-
-  let sealResult;
-  try {
-    const numcat = await numcatEmoindic(env);
-    const seal = numcat.sealCount;
-    if (seal === null || isNaN(seal)) {
-      sealResult = { value: null, error: 'NumCat 封单家数字段全部缺失，候选: ' + CONFIG.SEAL_FIELD_CANDIDATES.join(', ') + '，可用字段: ' + numcat.availableFields.join(', ') };
-    } else {
-      sealResult = { value: String(Math.round(seal)) };
-    }
-  } catch (e) {
-    sealResult = { value: null, error: e.message };
-  }
-
-  const now = new Date().toISOString();
-  const row = { date: date, name: CONFIG.ROW_SEAL, updated_at: now };
-  row[SEAL_COLUMN] = sealResult.value;
-
-  let ok = true, writeError = null;
-  if (sealResult.value !== null && sealResult.value !== undefined) {
-    try { await upsertBiddingRows(env, [row]); }
-    catch (e) { ok = false; writeError = e.message; }
-  }
-  await writeLog(env, Object.assign(logBase, { ok, detail: { written: sealResult.value !== null ? [row] : [], row: sealResult, writeError } }));
-  return { ok, date, point: 't0925-seal', column: SEAL_COLUMN, written: sealResult.value !== null ? [row] : [], row: sealResult, writeError };
-}
-
 // ────── bidding-board-worker-b/logic/emotion-workflow.js ──────
 // logic/emotion-workflow.js — 情绪看板逻辑
 
@@ -414,6 +478,25 @@ async function runEmotion(env, source, sharedFull) {
     if (val === null) missingFields.push(key + '(' + CONFIG.EMOTION_FIELDS[key].join('/') + ')');
   }
 
+  // [FIX 2026-08-15] 数据完整性校验：numcat 情绪接口有时对"昨日"只返回金额类字段
+  // （am/am_diff/am_pred 有值），但计数类字段（涨停/跌停/一字板/最高连板/炸板）全部为 0/null
+  // （8/14 抓取时 8/13 的数据即如此：amountDiff 正常、limitUp/limitDown/onceLimit/highestLb/zhaban 全 0）。
+  // 这种"金额正常但计数全缺"是接口数据不完整，不是真实市场状态（涨停家数不可能 0 而成交额正常）。
+  // 处理：把这些计数指标置 null（前端显示「待更新」而不是误导性的 0），并在日志中标记，等待下次重试补全。
+  const _countKeys = ['limitUp', 'limitDown', 'onceLimit', 'highestLb', 'zhaban'];
+  const _hasAmount = metrics.amount !== null && metrics.amount !== undefined && metrics.amount !== 0;
+  const _countsAllMissing = _countKeys.every(function(k) {
+    const v = metrics[k];
+    return v === null || v === undefined || Number(v) === 0;
+  });
+  if (_hasAmount && _countsAllMissing) {
+    const _savedCounts = {};
+    _countKeys.forEach(function(k) { _savedCounts[k] = metrics[k]; metrics[k] = null; });
+    logs.push('⚠️ 数据完整性校验：昨日金额=' + metrics.amount + ' 正常，但计数类字段全缺（涨停/跌停/一字板/最高连板/炸板 原值 ' +
+      JSON.stringify(_savedCounts) + '），判定为接口数据不完整，计数置 null 等待补全（§11 不把缺失伪装成 0）');
+    missingFields.push('counts-all-missing(接口数据不完整)');
+  }
+
   let predictVolFallback = false;
   if (metrics.predictVol === null && yesterdayItem) {
     const yPred = pickEmotionValue(fields, yesterdayItem, CONFIG.EMOTION_FIELDS.predictVol);
@@ -442,6 +525,16 @@ async function runEmotion(env, source, sharedFull) {
     const row = {};
     for (const key of Object.keys(CONFIG.EMOTION_FIELDS)) {
       row[key] = pickEmotionValue(fields, item, CONFIG.EMOTION_FIELDS[key]);
+    }
+    // [FIX 2026-08-15] 与 metrics 同口径：金额正常但计数全缺的天（接口数据不完整），计数置 null，
+    // 避免趋势图显示误导性的 0（8/14 抓取时 8/13 一行即如此）。
+    const _rowHasAmount = row.amount !== null && row.amount !== undefined && row.amount !== 0;
+    const _rowCountsAllMissing = _countKeys.every(function(k) {
+      const v = row[k];
+      return v === null || v === undefined || Number(v) === 0;
+    });
+    if (_rowHasAmount && _rowCountsAllMissing) {
+      _countKeys.forEach(function(k) { row[k] = null; });
     }
     if (dateField) {
       const dIdx = fields.indexOf(dateField);

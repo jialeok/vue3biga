@@ -67,6 +67,25 @@ export async function runEmotion(env, source, sharedFull) {
     if (val === null) missingFields.push(key + '(' + CONFIG.EMOTION_FIELDS[key].join('/') + ')');
   }
 
+  // [FIX 2026-08-15] 数据完整性校验：numcat 情绪接口有时对"昨日"只返回金额类字段
+  // （am/am_diff/am_pred 有值），但计数类字段（涨停/跌停/一字板/最高连板/炸板）全部为 0/null
+  // （8/14 抓取时 8/13 的数据即如此：amountDiff 正常、limitUp/limitDown/onceLimit/highestLb/zhaban 全 0）。
+  // 这种"金额正常但计数全缺"是接口数据不完整，不是真实市场状态（涨停家数不可能 0 而成交额正常）。
+  // 处理：把这些计数指标置 null（前端显示「待更新」而不是误导性的 0），并在日志中标记，等待下次重试补全。
+  const _countKeys = ['limitUp', 'limitDown', 'onceLimit', 'highestLb', 'zhaban'];
+  const _hasAmount = metrics.amount !== null && metrics.amount !== undefined && metrics.amount !== 0;
+  const _countsAllMissing = _countKeys.every(function(k) {
+    const v = metrics[k];
+    return v === null || v === undefined || Number(v) === 0;
+  });
+  if (_hasAmount && _countsAllMissing) {
+    const _savedCounts = {};
+    _countKeys.forEach(function(k) { _savedCounts[k] = metrics[k]; metrics[k] = null; });
+    logs.push('⚠️ 数据完整性校验：昨日金额=' + metrics.amount + ' 正常，但计数类字段全缺（涨停/跌停/一字板/最高连板/炸板 原值 ' +
+      JSON.stringify(_savedCounts) + '），判定为接口数据不完整，计数置 null 等待补全（§11 不把缺失伪装成 0）');
+    missingFields.push('counts-all-missing(接口数据不完整)');
+  }
+
   let predictVolFallback = false;
   if (metrics.predictVol === null && yesterdayItem) {
     const yPred = pickEmotionValue(fields, yesterdayItem, CONFIG.EMOTION_FIELDS.predictVol);
@@ -95,6 +114,16 @@ export async function runEmotion(env, source, sharedFull) {
     const row = {};
     for (const key of Object.keys(CONFIG.EMOTION_FIELDS)) {
       row[key] = pickEmotionValue(fields, item, CONFIG.EMOTION_FIELDS[key]);
+    }
+    // [FIX 2026-08-15] 与 metrics 同口径：金额正常但计数全缺的天（接口数据不完整），计数置 null，
+    // 避免趋势图显示误导性的 0（8/14 抓取时 8/13 一行即如此）。
+    const _rowHasAmount = row.amount !== null && row.amount !== undefined && row.amount !== 0;
+    const _rowCountsAllMissing = _countKeys.every(function(k) {
+      const v = row[k];
+      return v === null || v === undefined || Number(v) === 0;
+    });
+    if (_rowHasAmount && _rowCountsAllMissing) {
+      _countKeys.forEach(function(k) { row[k] = null; });
     }
     if (dateField) {
       const dIdx = fields.indexOf(dateField);

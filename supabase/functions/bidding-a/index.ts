@@ -26,6 +26,7 @@ const CONFIG = {
   ROW_TOP10: '昨日资金前十',
   ROW_BIG_ETF: '大盘ETF',
   ROW_MAIN_INDEX: '大盘（%）',
+  ROW_SEAL: '封单家数',
 
   LADDER_INDEX: '883410.TI',
   TOP10_INDEX: '883901.TI',
@@ -159,6 +160,16 @@ async function getStockSnapshotPcts(thscodes) {
   return result;
 }
 
+// [FIX 2026-08-15] 一字板判定：9:25 竞价/开盘涨幅达到涨停（主板 10%、创业板/科创板 20%）。
+// thscode 形如 '300xxx.SZ'/'688xxx.SH' → 20% 涨停；其余 10%。阈值略低于理论值容错（9.9/19.9）。
+function isLimitUpBoard(thscode, pct) {
+  if (!thscode || pct === null || pct === undefined || isNaN(pct)) return false;
+  const code = String(thscode).split('.')[0];
+  const isChiNext = /^30\d{4}$/.test(code); // 创业板 300xxx
+  const isSTAR = /^688\d{4}$/.test(code);   // 科创板 688xxx
+  return isChiNext || isSTAR ? pct >= 19.9 : pct >= 9.9;
+}
+
 async function getIndexSnapshotPcts(thscodes) {
   const result = {};
   const data = await fuyaoGet('/api/a-share-index/prices/snapshot', { thscodes: thscodes.join(',') });
@@ -259,9 +270,9 @@ async function stopT0925Fill() {
   } catch (e) { console.warn('停止 bidding-t0925-fill 失败（已忽略，早退已避免接口调用）:', e.message); }
 }
 
-// 竞价变化看板的 5 个固定行是否都已写入 time925（非 null）
+// 竞价变化看板的 6 个固定行是否都已写入 time925（非 null；封单家数允许 '0'，是有效值）
 function allRowsFilled(existingByName) {
-  const REQUIRED = [CONFIG.ROW_LADDER, CONFIG.ROW_SECTOR_ETF, CONFIG.ROW_TOP10, CONFIG.ROW_BIG_ETF, CONFIG.ROW_MAIN_INDEX];
+  const REQUIRED = [CONFIG.ROW_LADDER, CONFIG.ROW_SECTOR_ETF, CONFIG.ROW_TOP10, CONFIG.ROW_BIG_ETF, CONFIG.ROW_MAIN_INDEX, CONFIG.ROW_SEAL];
   return REQUIRED.every(function (name) {
     const r = existingByName[name];
     return !!(r && r.time925 !== undefined && r.time925 !== null && String(r.time925).trim() !== '');
@@ -280,18 +291,45 @@ function fmtPct(n) {
 async function computeBiddingRows(point) {
   const rows = {};
 
+  // [FIX 2026-08-15] 最近多板（883410）成分股快照：供「最近多板%」平均涨幅与「封单家数」一字板统计共用，
+  // 避免重复请求同花顺接口（9:25 封单家数 = 最近多板成分股中竞价/开盘一字涨停的家数，用户指定口径）。
+  let ladderCodes = [];
+  let ladderPcts = {};
   try {
-    const codes = await getConstituentThscodes(CONFIG.LADDER_INDEX);
-    if (codes.length === 0) rows[CONFIG.ROW_LADDER] = { value: null, error: '883410 成分股为空' };
+    ladderCodes = await getConstituentThscodes(CONFIG.LADDER_INDEX);
+    if (ladderCodes.length > 0) ladderPcts = await getStockSnapshotPcts(ladderCodes);
+  } catch (e) { /* 交由各行的错误处理兜底 */ }
+
+  try {
+    if (ladderCodes.length === 0) rows[CONFIG.ROW_LADDER] = { value: null, error: '883410 成分股为空' };
     else {
-      const pcts = await getStockSnapshotPcts(codes);
-      const vals = codes.map(c => pcts[c]).filter(v => typeof v === 'number' && !isNaN(v));
+      const vals = ladderCodes.map(c => ladderPcts[c]).filter(v => typeof v === 'number' && !isNaN(v));
       const avg = avgOf(vals);
       rows[CONFIG.ROW_LADDER] = avg === null
-        ? { value: null, error: '成分股快照全部缺失(' + codes.length + '只)' }
-        : { value: fmtPct(avg), missing: codes.length - vals.length > 0 ? [String(codes.length - vals.length) + '只无快照'] : undefined };
+        ? { value: null, error: '成分股快照全部缺失(' + ladderCodes.length + '只)' }
+        : { value: fmtPct(avg), missing: ladderCodes.length - vals.length > 0 ? [String(ladderCodes.length - vals.length) + '只无快照'] : undefined };
     }
   } catch (e) { rows[CONFIG.ROW_LADDER] = { value: null, error: e.message }; }
+
+  // [FIX 2026-08-15] 封单家数：9:25 最近多板成分股中一字板（竞价/开盘涨停）家数。
+  // 替代原 NumCat owfd_0925_count（不稳定：emoindic 日级指标 9:25 常无当天数据 → 空白）。
+  try {
+    if (ladderCodes.length === 0) {
+      rows[CONFIG.ROW_SEAL] = { value: null, error: '883410 成分股为空' };
+    } else {
+      let limitUpCount = 0, haveCount = 0;
+      ladderCodes.forEach(c => {
+        const pct = ladderPcts[c];
+        if (typeof pct === 'number' && !isNaN(pct)) {
+          haveCount++;
+          if (isLimitUpBoard(c, pct)) limitUpCount++;
+        }
+      });
+      rows[CONFIG.ROW_SEAL] = haveCount === 0
+        ? { value: null, error: '成分股快照全部缺失(' + ladderCodes.length + '只)' }
+        : { value: String(limitUpCount), missing: ladderCodes.length - haveCount > 0 ? [String(ladderCodes.length - haveCount) + '只无快照'] : undefined };
+    }
+  } catch (e) { rows[CONFIG.ROW_SEAL] = { value: null, error: e.message }; }
 
   try {
     const stockCodes = CONFIG.SECTOR_ETFS.filter(e => e.type === 'stock').map(e => e.code);

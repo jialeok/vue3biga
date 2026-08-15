@@ -39,6 +39,38 @@ export async function getNextTradingDay(env, today) {
   return localGetNextTradingDay(today);
 }
 
+// [FIX 2026-08-15] 获取最近多板（883410）成分股 thscode 列表
+export async function getLadderConstituents(env) {
+  const data = await fuyaoGet(env, '/api/a-share-index/constituents/ths-stock-list', { thscode: '883410.TI' });
+  return ((data && data.item) || []).filter(function (it) { return it && it.thscode; });
+}
+
+// [FIX 2026-08-15] 快照接口获取一批股票的 {thscode, price_change_ratio_pct}（涨停/一字板判定用）
+export async function getStockSnapshots(env, thscodes) {
+  const result = {};
+  const BATCH = 40;
+  for (let i = 0; i < thscodes.length; i += BATCH) {
+    const chunk = thscodes.slice(i, i + BATCH);
+    const data = await fuyaoGet(env, '/api/a-share/prices/snapshot', { thscodes: chunk.join(',') });
+    ((data && data.item) || []).forEach(function (it) {
+      if (it && it.thscode && it.price_change_ratio_pct !== null && it.price_change_ratio_pct !== undefined) {
+        result[it.thscode] = Number(it.price_change_ratio_pct);
+      }
+    });
+  }
+  return result;
+}
+
+// [FIX 2026-08-15] 一字板判定：竞价/开盘涨幅达到涨停（主板 10%、创业板/科创板 20%）。
+// thscode 形如 '300xxx.SZ'/'688xxx.SH' → 20% 涨停；其余 10%。涨停阈值略低于理论值容错（9.9/19.9）。
+export function isLimitUpBoard(thscode, pct) {
+  if (!thscode || pct === null || pct === undefined || isNaN(pct)) return false;
+  const code = String(thscode).split('.')[0];
+  const isChiNext = /^30\d{4}$/.test(code);   // 创业板 300xxx
+  const isSTAR = /^688\d{4}$/.test(code);     // 科创板 688xxx
+  return isChiNext || isSTAR ? pct >= 19.9 : pct >= 9.9;
+}
+
 export function localGetNextTradingDay(dateStr) {
   let d = new Date(dateStr + 'T00:00:00');
   d.setDate(d.getDate() + 1);

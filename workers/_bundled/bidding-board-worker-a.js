@@ -1,5 +1,5 @@
 // ===== bidding-board-worker-a — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-08-13 02:43:12
+// 生成时间: 2026-08-15 23:18:51
 // 注意: 此文件由 _bundle-workers.ps1 自动生成，请勿手动编辑
 
 // ────── bidding-board-worker-a/config.js ──────
@@ -398,8 +398,8 @@ async function runBidding(env, point, source) {
         const v920 = prev ? parseFloat(prev.time920) : NaN;
         const v925 = parseFloat(r.value);
         if (!isNaN(v920) && !isNaN(v925)) row.change = v925 > v920 ? '增' : (v925 < v920 ? '减' : '平');
-      }
 
+      }
       payload.push(row);
     });
     return { payload, results };
