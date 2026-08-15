@@ -31,7 +31,6 @@ comment on table bidding_data is '竞价变化看板固定行时序数据：9:15
 create index if not exists idx_bidding_data_date on bidding_data (date);
 
 alter table bidding_data enable row level security;
-
 drop policy if exists "allow_all_bidding_data" on bidding_data;
 create policy "allow_all_bidding_data" on bidding_data for all to anon using (true) with check (true);
 
@@ -62,7 +61,6 @@ create table if not exists core_topics (
 comment on table core_topics is '核心题材词库：name + 同义词 synonyms（JSON 字符串），前端匹配题材用';
 
 alter table core_topics enable row level security;
-
 drop policy if exists "allow_all_core_topics" on core_topics;
 create policy "allow_all_core_topics" on core_topics for all to anon using (true) with check (true);
 
@@ -99,7 +97,6 @@ comment on table daily_highlights is '预计算竞/昨高光缓存：命中股�
 create index if not exists idx_daily_highlights_date on daily_highlights (date);
 
 alter table daily_highlights enable row level security;
-
 drop policy if exists "allow_all_daily_highlights" on daily_highlights;
 create policy "allow_all_daily_highlights" on daily_highlights for all to anon using (true) with check (true);
 
@@ -138,7 +135,6 @@ comment on table hot_stock_trends is '热门股票趋势图快照：成交量/�
 create index if not exists idx_hot_stock_trends_date on hot_stock_trends (date);
 
 alter table hot_stock_trends enable row level security;
-
 drop policy if exists "allow_all_hot_stock_trends" on hot_stock_trends;
 create policy "allow_all_hot_stock_trends" on hot_stock_trends for all to anon using (true) with check (true);
 
@@ -165,12 +161,11 @@ create table if not exists hot_stocks_highlights (
   primary key (date, stock)
 );
 
-comment on hot_stocks_highlights is '热门股票预计算竞/昨高光缓存：命中股票集合（加速看板加载）';
+comment on table hot_stocks_highlights is '热门股票预计算竞/昨高光缓存：命中股票集合（加速看板加载）';
 
 create index if not exists idx_hot_stocks_highlights_date on hot_stocks_highlights (date);
 
 alter table hot_stocks_highlights enable row level security;
-
 drop policy if exists "allow_all_hot_stocks_highlights" on hot_stocks_highlights;
 create policy "allow_all_hot_stocks_highlights" on hot_stocks_highlights for all to anon using (true) with check (true);
 
@@ -214,7 +209,6 @@ comment on table jiwang_data is '记忘看板/昨日复盘文本字段 + 弹性 
 create index if not exists idx_jiwang_data_date on jiwang_data (date);
 
 alter table jiwang_data enable row level security;
-
 drop policy if exists "allow_all_jiwang_data" on jiwang_data;
 create policy "allow_all_jiwang_data" on jiwang_data for all to anon using (true) with check (true);
 
@@ -245,7 +239,6 @@ comment on table stock_topics is '题材库：每只股票归属的题材集合�
 create index if not exists idx_stock_topics_code on stock_topics (code);
 
 alter table stock_topics enable row level security;
-
 drop policy if exists "allow_all_stock_topics" on stock_topics;
 create policy "allow_all_stock_topics" on stock_topics for all to anon using (true) with check (true);
 
@@ -275,7 +268,6 @@ comment on table stockcodemap is '股票名称 → 代码映射（跨设备唯�
 create index if not exists idx_stockcodemap_code on stockcodemap (code);
 
 alter table stockcodemap enable row level security;
-
 drop policy if exists "allow_all_stockcodemap" on stockcodemap;
 create policy "allow_all_stockcodemap" on stockcodemap for all to anon using (true) with check (true);
 
@@ -308,7 +300,6 @@ create table if not exists user_data (
 comment on table user_data is '遗留兼容表：owner 行存整库 blob、session 行存登录 token（历史兼容，新功能勿用）';
 
 alter table user_data enable row level security;
-
 drop policy if exists "allow_all_user_data" on user_data;
 create policy "allow_all_user_data" on user_data for all to anon using (true) with check (true);
 

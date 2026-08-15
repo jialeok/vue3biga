@@ -13,7 +13,7 @@ create table if not exists hot_stocks_highlights (
   primary key (date, stock)
 );
 
-comment on hot_stocks_highlights is '热门股票预计算竞/昨高光缓存：命中股票集合（加速看板加载）';
+comment on table hot_stocks_highlights is '热门股票预计算竞/昨高光缓存：命中股票集合（加速看板加载）';
 
 create index if not exists idx_hot_stocks_highlights_date on hot_stocks_highlights (date);
 
