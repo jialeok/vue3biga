@@ -33,11 +33,18 @@ export async function loadEtfBoardByDate(date) {
 }
 
 // 保存一行；返回 { ok, error, data? }（§10 禁止静默失败）。更新缓存。
+// ⚠️ Supabase upsert 是「整行替换」：若只传部分字段（如 bidding-helpers 只传 shuliang/die_zhangbi/jingtu/tushi，
+// 或 saveEtfBoardComment 只传 comment），会把同日期行的其他列清空 → 数据丢失。
+// 故先读取已有行合并后再 upsert 完整行（§6 数据保全）。
 export async function saveEtfBoardRow(row) {
+  if (!row || !row.date) return { ok: false, error: new Error('row.date required') };
   try {
     const sb = getSupabase(); if (!sb) return { ok: false, error: new Error('no supabase') };
-    const payload = { ...row, updated_at: new Date().toISOString() };
-    const { data, error } = await sb.from(ETF_BOARD_TABLE).upsert(payload, { onConflict: 'date' }).select().single();
+    let merged = { ...row };
+    const { data: existing } = await sb.from(ETF_BOARD_TABLE).select('*').eq('date', row.date).maybeSingle();
+    if (existing) merged = { ...existing, ...row, date: row.date };
+    merged.updated_at = new Date().toISOString();
+    const { data, error } = await sb.from(ETF_BOARD_TABLE).upsert(merged, { onConflict: 'date' }).select().single();
     if (error) return { ok: false, error };
     if (data && data.date) _etfBoardCache[data.date] = data;
     return { ok: true, data };

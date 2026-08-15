@@ -33,7 +33,7 @@ export async function syncSectorEtfZhangNum(zhangNum) {
   const res = await saveEtfBoardRow({
     date: currentDate,
     shuliang: firstEtf.shuliang,
-    dieZhangbi: firstEtf.dieZhangbi,
+    die_zhangbi: firstEtf.dieZhangbi,
     jingtu: firstEtf.jingtu || '',
     tushi: firstEtf.tushi || ''
   });
