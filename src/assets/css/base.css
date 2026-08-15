@@ -1,0 +1,105 @@
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+        }
+
+        /* 输入框和文本域必须允许选中和粘贴，否则移动端粘贴后 value 为空 */
+        input, textarea, select {
+            -webkit-user-select: text !important;
+            -moz-user-select: text !important;
+            -ms-user-select: text !important;
+            user-select: text !important;
+            -webkit-touch-callout: default !important;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
+            background: #f8fafc;
+            color: #1f2937;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 400px;
+            margin: 0 auto;
+            background: #ffffff;
+            min-height: 100vh;
+            padding-bottom: 100px;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.05);
+        }
+
+        .date-nav {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 12px 15px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            z-index: 99;
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .nav-btn {
+            background: #f1f5f9;
+            border: none;
+            color: #64748b;
+            width: 36px;
+            height: 36px;
+            border-radius: 10px;
+            font-size: 18px;
+            cursor: pointer;
+        }
+
+        .date-selector {
+            position: relative;
+            padding: 8px 16px;
+            background: #f8fafc;
+            border-radius: 16px;
+            border: 1px solid #e2e8f0;
+            text-align: center;
+            cursor: pointer;
+            overflow: hidden;
+        }
+
+        .date-text {
+            font-size: 15px;
+            font-weight: 600;
+            color: #1f2937;
+        }
+
+        .market-status {
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 10px;
+            margin-left: 6px;
+        }
+
+        .market-open {
+            background: rgba(16, 185, 129, 0.15);
+            color: #059669;
+        }
+
+        .market-closed {
+            background: rgba(239, 68, 68, 0.15);
+            color: #dc2626;
+        }
+
+        .today-btn {
+            font-size: 11px;
+            color: #3b82f6;
+            background: #eff6ff;
+            padding: 4px 10px;
+            border-radius: 12px;
+            border: 1px solid #bfdbfe;
+            cursor: pointer;
+        }
+

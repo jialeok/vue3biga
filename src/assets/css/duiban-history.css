@@ -1,0 +1,39 @@
+        /* 最近多板% 9:25修改历史弹出提示 */
+        .duiban-history-popup {
+            position: fixed;
+            z-index: 9999;
+            background: #1f2937;
+            color: #fff;
+            font-size: 12px;
+            line-height: 1.6;
+            padding: 10px 14px;
+            border-radius: 10px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+            max-width: 240px;
+            pointer-events: none;
+        }
+
+        .duiban-history-popup .dh-row {
+            white-space: nowrap;
+        }
+
+        .duiban-history-popup .dh-row + .dh-row {
+            margin-top: 4px;
+        }
+
+        .duiban-history-popup .dh-label {
+            color: #9ca3af;
+        }
+
+        .bidding-table tr.account-premium-row td:first-child {
+            font-size: 11px;
+        }
+
+        .bidding-table tr.account-premium-row td:nth-child(5) {
+            font-size: 11px;
+        }
+
+        .bidding-table tr.account-premium-row td:not(:first-child):not(:nth-child(5)) {
+            font-size: 9px;
+        }
+

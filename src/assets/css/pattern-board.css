@@ -1,0 +1,97 @@
+        /* 模式看板 */
+        .pattern-board {
+            margin: 10px 15px 10px;
+            background: #ffffff;
+            border: 1px solid #8b5cf6;
+            border-radius: 16px;
+            cursor: pointer;
+            box-shadow: 0 1px 3px rgba(139, 92, 246, 0.15);
+        }
+
+        .pattern-header {
+            padding: 10px 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #f1f5f9;
+        }
+
+        .pattern-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #8b5cf6;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .pattern-tags {
+            display: flex;
+            gap: 4px;
+            align-items: center;
+        }
+
+        .pattern-tag {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 8px;
+            font-weight: 500;
+        }
+
+        .pattern-tag.update {
+            background: rgba(59, 130, 246, 0.1);
+            color: #3b82f6;
+            border: 1px solid rgba(59, 130, 246, 0.3);
+        }
+
+        .pattern-tag.keep {
+            background: rgba(16, 185, 129, 0.1);
+            color: #059669;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .pattern-content {
+            padding: 12px 15px;
+            min-height: 40px;
+            font-size: 13px;
+            color: #6d28d9;
+            line-height: 1.5;
+            max-height: none;
+            overflow: hidden;
+            transition: max-height 0.3s ease;
+        }
+
+        /* 模式看板完全折叠状态 - 只显示标题栏 */
+        .pattern-board.minimized .pattern-content {
+            display: none;
+        }
+
+        .pattern-board.minimized .pattern-header {
+            border-bottom: none;
+        }
+
+        .pattern-placeholder {
+            color: #a78bfa;
+            font-size: 13px;
+        }
+
+        /* 模式展开/收起按钮 */
+        .pattern-toggle-btn {
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            color: #8b5cf6;
+            cursor: pointer;
+            border-radius: 50%;
+            transition: all 0.2s;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+        }
+
+        .pattern-toggle-btn:hover {
+            background: rgba(139, 92, 246, 0.1);
+        }
+

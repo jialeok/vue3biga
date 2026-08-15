@@ -1,0 +1,122 @@
+        /* 最近多板看板样式 */
+        .duiban-board {
+            margin: 0 15px 10px;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+            overflow: hidden;
+        }
+
+        .duiban-header {
+            padding: 10px 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #f1f5f9;
+            cursor: pointer;
+            border-radius: 16px 16px 0 0;
+            transition: background 0.2s;
+        }
+
+        .duiban-header:hover {
+            background: rgba(0, 0, 0, 0.02);
+        }
+
+        .duiban-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #1f2937;
+        }
+
+        .duiban-subtitle {
+            font-size: 11px;
+            color: #64748b;
+            margin-top: 2px;
+        }
+
+        .duiban-content {
+            padding: 8px;
+            font-size: 12px;
+        }
+
+        .duiban-scroll-container {
+            width: 100%;
+            overflow-x: auto;
+            overflow-y: hidden;
+            -webkit-overflow-scrolling: touch;
+            box-sizing: border-box;
+        }
+
+        .duiban-scroll-container::-webkit-scrollbar {
+            height: 4px;
+        }
+
+        .duiban-scroll-container::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 2px;
+        }
+
+        .duiban-scroll-container::-webkit-scrollbar-track {
+            background: #f1f5f9;
+            border-radius: 2px;
+        }
+
+        .duiban-header-row {
+            display: flex;
+            align-items: center;
+            padding: 6px 2px;
+            border-bottom: 1px solid #f1f5f9;
+            margin-bottom: 4px;
+        }
+
+        .duiban-header-item {
+            font-size: 11px;
+            font-weight: 600;
+            color: #64748b;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            text-align: center;
+            padding: 0 2px;
+            min-width: 0;
+        }
+
+        .duiban-header-dieZhangbi { flex: 1; text-align: center; }
+        .duiban-header-jingtu { flex: 1; text-align: center; }
+        .duiban-header-shuliang { flex: 1; text-align: center; }
+        .duiban-header-tushi { flex: 1; text-align: center; }
+
+        .duiban-row {
+            display: flex;
+            align-items: center;
+            padding: 6px 2px;
+            border-bottom: 1px solid #f8fafc;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        .duiban-row:hover {
+            background: #f8fafc;
+        }
+
+        .duiban-item {
+            padding: 0 2px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            min-width: 0;
+        }
+
+        .duiban-item-dieZhangbi { flex: 1; text-align: center; font-weight: 600; color: #1f2937; }
+        .duiban-item-jingtu { flex: 1; text-align: center; }
+        .duiban-item-shuliang { flex: 1; text-align: center; font-weight: 600; color: #dc2626; }
+        .duiban-item-tushi { flex: 1; text-align: center; }
+
+        .duiban-empty {
+            text-align: center;
+            color: #94a3b8;
+            padding: 20px;
+            font-size: 12px;
+        }
+

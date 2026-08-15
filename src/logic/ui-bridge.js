@@ -8,7 +8,7 @@ import { getSupabase, getBiddingData } from '../data/supabase-client.js';
 import { _getAuctionWatchlistSet } from '../data/watchlist-and-metrics.js';
 import { saveRecentMultiRow } from '../data/duiban-sync.js';
 import { saveEtfBoardRow } from '../data/etf-board-data.js';
-import { renderConsecutiveUp as _renderConsecutiveUp, autoCalculateRecentMultiScore as _autoCalcRecentMultiScore, getTodayTagTitles, getYesterdayDate, getTagTitlesByDate, getPreviousTradingDayWithData, getTodayBidding } from './tagTitles/helpers.js';
+import { getTodayTagTitles, getYesterdayDate, getTagTitlesByDate, getPreviousTradingDayWithData, getTodayBidding } from './tagTitles/helpers.js';
 import { reactive } from 'vue';
 import { useUiStore } from '../stores/uiStore.js';
 import { useAuctionTagStore } from '../stores/auctionTagStore.js';
@@ -303,8 +303,6 @@ export function renderHotspot() { _emit('board-refresh'); }
 export function renderPattern() { _emit('board-refresh'); }
 export function renderRank() { _emit('board-refresh'); }
 
-export function autoCalculateRecentMultiScore() { return _autoCalcRecentMultiScore(); }
-export function renderConsecutiveUp() { return _renderConsecutiveUp(); }
 export { getTodayTagTitles, getYesterdayDate, getTagTitlesByDate, getPreviousTradingDayWithData, getTodayBidding };
 
 export function renderList() { _emit('stocks-refresh'); }

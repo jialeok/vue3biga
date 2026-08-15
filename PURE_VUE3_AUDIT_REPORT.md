@@ -186,8 +186,6 @@
 | **依赖锁死在区间下界**             | vue 3.4.0 / pinia 2.2.0 / vite 5.4.21 / supabase-js 2.45.0，lockfile 冻结在最低版本                                   | 缺失 bug 修复      |
 | **MIGRATION_TASKLIST 过时** | 仍把已删除的 RankBoard/HotspotBoard/TagTitlesBoard 当现存视图；模块数 134/187 与现 212 不符；条目停在 2026-08-15                      | 文档误导           |
 
-
-
 ---
 
 ## 八、遗留问题分级清单
@@ -293,3 +291,4 @@
 - ✅ **建表 SQL 修复**（commit `1fefbd3`）：修正 `comment on table` 语法错误（PostgreSQL 42601）+ 加 policy 幂等保护（`db/_E1_RUN_ALL_CREATE_TABLES.sql` 可反复 Run）
 - ✅ **auction_duiban 孤儿写收敛 + `_domGet` 空桩清理**（commit `b899553`，8 files +28/-128）：删 duiban-sync 死函数、hotspot 两粘贴函数迁 `rawText`、auction.js 死变量清理；node --check 8 文件全过、vite build 0 错 0 警（216 modules）
 - 📌 **用户侧待办（非代码）**：① 在 Supabase 执行 `db/_E1_RUN_ALL_CREATE_TABLES.sql` 建 9 表（用户已跑通）；② 浏览器回归点一遍（DashboardView 切日期/周末不重建、Realtime 不重复订阅、撤销快照仅会话内有效）；③ 确认 hotspot 粘贴调用的 Vue 入口已把粘贴内容传入 `rawText` 参数
+

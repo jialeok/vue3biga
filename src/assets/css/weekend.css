@@ -1,0 +1,302 @@
+        /* 周末统计看板 */
+        .weekend-stats-board {
+            margin: 0 15px 10px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 16px;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+            overflow: hidden;
+        }
+
+        /* 本月统计看板 */
+        .monthly-stats-board {
+            margin: 0 15px 10px;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            border-radius: 16px;
+            box-shadow: 0 4px 15px rgba(245, 87, 108, 0.3);
+            overflow: hidden;
+            position: relative;
+            z-index: 100;
+        }
+
+        /* 周末时隐藏交易日元素 */
+        body.weekend-mode .trading-day-element {
+            display: none !important;
+        }
+
+        /* 只在周末统计模式下显示的按钮 */
+        .weekend-only-btn {
+            display: none;
+        }
+
+        body.weekend-mode .weekend-only-btn {
+            display: inline-block !important;
+        }
+
+        /* 只在交易日显示的按钮 */
+        body.weekend-mode .trading-day-only-btn {
+            display: none !important;
+        }
+
+
+        /* 自定义日期选择器日历样式 */
+        .date-picker-calendar {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 2px;
+        }
+        
+        .date-picker-calendar .calendar-header {
+            text-align: center;
+            font-size: 11px;
+            font-weight: 600;
+            color: #64748b;
+            padding: 4px 0;
+        }
+        
+        .date-picker-calendar .calendar-day {
+            aspect-ratio: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+            border-radius: 50%;
+            cursor: pointer;
+            transition: all 0.15s;
+            min-width: 32px;
+            min-height: 32px;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+        }
+        
+        .date-picker-calendar .calendar-day:active {
+            transform: scale(0.9);
+        }
+        
+        .date-picker-calendar .calendar-day.normal-day {
+            color: #1f2937;
+        }
+        
+        .date-picker-calendar .calendar-day.weekend {
+            color: #9ca3af;
+        }
+        
+        .date-picker-calendar .calendar-day.holiday {
+            background: #fee2e2;
+            color: #dc2626;
+        }
+        
+        .date-picker-calendar .calendar-day.selected {
+            background: #3b82f6;
+            color: #fff;
+        }
+        
+        .date-picker-calendar .calendar-day.empty {
+            cursor: default;
+            pointer-events: none;
+        }
+
+        /* 日期选择器容器 / 月份导航 / 底部按钮（复刻旧版布局） */
+        .date-picker-section {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .date-picker-nav {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .date-picker-nav .picker-month-title {
+            font-weight: 600;
+            color: #1f2937;
+            font-size: 14px;
+        }
+
+        .date-picker-nav > button {
+            background: #f1f5f9;
+            border: none;
+            color: #64748b;
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        .date-picker-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 4px;
+        }
+
+        .date-picker-actions > button {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .date-picker-actions > button:first-child {
+            background: linear-gradient(135deg, #3b82f6, #2563eb);
+            color: #fff;
+        }
+
+        .date-picker-actions > button:last-child {
+            background: #f1f5f9;
+            color: #64748b;
+        }
+
+        /* 周六模式：隐藏"本周统计"按钮 */
+        body.saturday-mode .hide-on-saturday {
+            display: none !important;
+        }
+
+        /* 周日模式：隐藏"本月统计"按钮 */
+        body.sunday-mode .hide-on-sunday {
+            display: none !important;
+        }
+
+        /* 周六模式：显示周统计内容，隐藏周末总结内容 */
+        body.saturday-mode .saturday-content {
+            display: block !important;
+        }
+        body.saturday-mode .sunday-content {
+            display: none !important;
+        }
+
+        /* 周日模式：显示周末总结内容，隐藏周统计内容 */
+        body.sunday-mode .saturday-content {
+            display: none !important;
+        }
+        body.sunday-mode .sunday-content {
+            display: block !important;
+        }
+
+        .weekend-header {
+            padding: 15px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .weekend-header-content {
+            flex: 1;
+            text-align: center;
+        }
+
+        .weekend-title {
+            font-size: 18px;
+            font-weight: 700;
+            color: #ffffff;
+            margin-bottom: 5px;
+        }
+
+        .weekend-subtitle {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.8);
+        }
+
+        .weekend-content {
+            padding: 15px;
+        }
+
+        .weekend-section {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 12px;
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+
+        .weekend-section:last-child {
+            margin-bottom: 0;
+        }
+
+        .weekend-summary-content {
+            font-size: 13px;
+            color: #374151;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            cursor: pointer;
+        }
+
+        .weekend-summary-placeholder {
+            font-size: 13px;
+            color: #9ca3af;
+            font-style: italic;
+        }
+
+        .profit-chart-container {
+            width: 100%;
+            height: 150px;
+            background: #f8fafc;
+            border-radius: 8px;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+
+        .profit-chart-container canvas {
+            width: 100%;
+            height: 100%;
+        }
+
+        .weekend-section-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #4c1d95;
+            margin-bottom: 10px;
+            padding: 10px 12px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 6px;
+            cursor: pointer;
+            user-select: none;
+            background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+            transition: background 0.2s;
+        }
+
+        .weekend-section-title:hover {
+            background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%);
+        }
+
+        .weekend-section-title .toggle-icon {
+            font-size: 10px;
+            transition: transform 0.3s ease;
+        }
+
+        .weekend-section-title.expanded .toggle-icon {
+            transform: rotate(180deg);
+        }
+
+        .weekend-stat-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+        }
+
+        .weekend-stat-item {
+            background: #f5f3ff;
+            border-radius: 8px;
+            padding: 10px;
+            text-align: center;
+        }
+
+        .weekend-stat-label {
+            font-size: 11px;
+            color: #6b7280;
+            margin-bottom: 4px;
+        }
+
+        .weekend-stat-value {
+            font-size: 16px;
+            font-weight: 700;
+            color: #7c3aed;
+        }
+

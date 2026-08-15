@@ -1,0 +1,123 @@
+        /* ETF看板 - 表头 */
+        .etf-header-row {
+            display: flex;
+            align-items: center;
+            padding: 10px 4px;
+            border-bottom: 1px solid #f1f5f9;
+            margin-bottom: 8px;
+        }
+
+        .etf-header-item {
+            font-size: 11px;
+            font-weight: 600;
+            color: #64748b;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            text-align: center;
+            padding: 0 4px;
+        }
+
+        .etf-header-shuliang { flex: 1; text-align: center; }
+        .etf-header-dieZhangbi { flex: 1; text-align: center; }
+        .etf-header-jingtu { flex: 1; text-align: center; }
+        .etf-header-tushi { flex: 1; text-align: center; }
+
+        /* ETF看板 - 内容行 */
+        .etf-row {
+            display: flex;
+            align-items: center;
+            padding: 8px 4px;
+            border-bottom: 1px solid #f8fafc;
+            font-size: 12px;
+            cursor: pointer;
+            min-width: max-content;
+        }
+
+        .etf-row:hover {
+            background: #f8fafc;
+        }
+
+        .etf-item {
+            padding: 0 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .etf-item-shuliang { flex: 1; text-align: center; font-weight: 600; color: #dc2626; }
+        .etf-item-dieZhangbi { flex: 1; text-align: center; font-weight: 600; color: #1f2937; }
+        .etf-item-jingtu { flex: 1; text-align: center; }
+        .etf-item-tushi { flex: 1; text-align: center; }
+
+        /* ETF看板样式 */
+        .etf-board {
+            margin: 0 15px 10px;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+            overflow: hidden;
+        }
+
+        .etf-scroll-container {
+            width: 100%;
+            overflow-x: auto;
+            overflow-y: hidden;
+            -webkit-overflow-scrolling: touch;
+            padding-right: 8px;
+        }
+
+        .etf-scroll-container::-webkit-scrollbar {
+            height: 4px;
+        }
+
+        .etf-scroll-container::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 2px;
+        }
+
+        .etf-scroll-container::-webkit-scrollbar-track {
+            background: #f1f5f9;
+            border-radius: 2px;
+        }
+
+        .etf-header {
+            padding: 10px 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #f1f5f9;
+            cursor: pointer;
+            border-radius: 16px 16px 0 0;
+            transition: background 0.2s;
+        }
+
+        .etf-header:hover {
+            background: rgba(0, 0, 0, 0.02);
+        }
+
+        .etf-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #1f2937;
+        }
+
+        .etf-subtitle {
+            font-size: 11px;
+            color: #64748b;
+            margin-top: 2px;
+        }
+
+        .etf-content {
+            padding: 12px;
+            font-size: 12px;
+        }
+
+        .etf-empty {
+            text-align: center;
+            color: #94a3b8;
+            padding: 20px;
+            font-size: 12px;
+        }
+

@@ -1,0 +1,156 @@
+        /* 多板展示行 - 修改为第一列12汉字，其他列4汉字 */
+        .multi-row {
+            display: flex;
+            margin-bottom: 10px;
+            align-items: center;
+        }
+
+        .multi-row:last-child {
+            margin-bottom: 0;
+        }
+
+        .multi-stocks {
+            flex: 1;
+            display: flex;
+            align-items: center;
+        }
+
+        /* 选择复制模式：可点击的行 */
+        .multi-row.selectable {
+            cursor: pointer;
+            padding: 4px 8px;
+            margin: 0 -8px;
+            border-radius: 8px;
+            transition: background 0.2s;
+        }
+
+        .multi-row.selectable:hover {
+            background: #f1f5f9;
+        }
+
+        .multi-row.selectable.selected {
+            background: #dbeafe;
+            border: 2px solid #3b82f6;
+        }
+
+        .multi-stock-item {
+            font-size: 12px;
+            color: rgb(51, 102, 204);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            padding: 0 4px;
+            text-align: center;
+            box-sizing: border-box;
+        }
+
+        /* 第一列：容纳6个汉字 */
+        .multi-stock-item:first-child {
+            width: 30%; /* 第一列占30%宽度 */
+            font-size: 13px;
+        }
+
+        /* 其他三列：每列容纳5个汉字 */
+        .multi-stock-item:nth-child(2),
+        .multi-stock-item:nth-child(3),
+        .multi-stock-item:nth-child(4) {
+            width: 23.33%; /* 其他列各占23.33%宽度 */
+        }
+
+        /* 整行特殊样式 - 第一列出现数字时整行变黑色 */
+        .multi-row-special .multi-stock-item {
+            font-size: 13px; /* 恢复正常字号 */
+            color: #1f2937 !important; /* 黑色字体 */
+            font-weight: 500;
+        }
+
+        /* 特殊样式行的第二列字体大小为12px */
+        .multi-row-special .multi-stock-item:nth-child(2) {
+            font-size: 12px;
+        }
+
+        /* 特殊样式行的第三列字体大小为10px */
+        .multi-row-special .multi-stock-item:nth-child(3) {
+            font-size: 10px;
+        }
+
+        /* 第一列特殊样式 - 修复显示问题，保持一行显示 */
+        .multi-stock-item.first-col-special {
+            font-size: 14px;
+            font-weight: normal; /* 不加粗 */
+            color: #1f2937; /* 颜色 #1f2937 */
+            min-width: 0;
+            white-space: nowrap; /* 不换行 */
+            overflow: visible; /* 不隐藏溢出内容 */
+            text-overflow: clip; /* 不使用省略号 */
+            word-break: keep-all; /* 保持单词不换行 */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            flex-shrink: 0; /* 防止缩小 */
+            max-width: 100%; /* 最大宽度为100% */
+        }
+
+        /* 其他列样式 */
+        .multi-stock-item.normal-col {
+            font-size: 13px;
+            color: rgb(51, 102, 204);
+        }
+
+        /* 多板表单行 - 修改为第一列宽，其他列窄 */
+        .multi-form-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+            align-items: center;
+            cursor: pointer;
+            padding: 4px 8px;
+            margin-left: -8px;
+            margin-right: -8px;
+            border-radius: 8px;
+            transition: background 0.2s;
+        }
+
+        .multi-form-row:last-child {
+            margin-bottom: 0;
+        }
+
+        .multi-form-row:hover {
+            background: #f1f5f9;
+        }
+
+        .multi-form-row.selected {
+            background: #dbeafe;
+            border: 2px solid #3b82f6;
+        }
+
+        .multi-form-stock {
+            min-width: 0;
+            box-sizing: border-box;
+        }
+
+        /* 表单第一列：容纳6个汉字 */
+        .multi-form-stock:first-child {
+            width: 30%;
+        }
+
+        /* 表单其他三列：每列容纳5个汉字 */
+        .multi-form-stock:nth-child(2),
+        .multi-form-stock:nth-child(3),
+        .multi-form-stock:nth-child(4) {
+            width: 23.33%;
+        }
+
+        .multi-form-stock .form-input {
+            font-size: 13px;
+            padding: 10px 8px;
+            text-align: center;
+        }
+
+
+
+
+
+
+

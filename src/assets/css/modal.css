@@ -1,0 +1,474 @@
+        /* 模态框 */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 2000;
+            align-items: flex-end;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: #ffffff;
+            width: 100%;
+            max-width: 400px;
+            border-radius: 24px 24px 0 0;
+            padding: 20px;
+            max-height: 85vh;
+            overflow-y: auto;
+            padding-bottom: 300px;
+            box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.1);
+        }
+
+        /* 日期选择器模态框 - 从顶部显示 */
+        #datePickerModal {
+            align-items: flex-start !important;
+            padding-top: 120px;
+        }
+        
+        #datePickerModal .modal-content {
+            padding-bottom: 20px;
+            border-radius: 24px;
+        }
+
+        /* 追踪记录编辑模态框 - 隐藏模态框滚动条 */
+        .modal-content-track-edit {
+            overflow-y: hidden !important;
+        }
+
+        /* 卖出记录编辑模态框 - 纵向滚动（移动端卡片布局） */
+        #soldEditModal .modal-content {
+            overflow-x: hidden;
+            overflow-y: auto;
+        }
+
+        .modal-content-rank {
+            overflow-y: auto;
+            padding: 24px;
+        }
+
+        /* ETF编辑模态框 - 适合手机 */
+        .modal-content-etf {
+            overflow-y: auto;
+            overflow-x: auto;
+            padding: 16px;
+            width: 100%;
+            max-width: 400px;
+        }
+
+        /* 后台追踪记录编辑列表容器 - 不限制高度 */
+        .track-edit-container {
+            width: 100%;
+            margin-top: 10px;
+        }
+
+        /* 追踪记录编辑列表 */
+        .track-edit-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .track-edit-row {
+            display: flex;
+            gap: 8px;
+            align-items: flex-start;
+        }
+
+        .track-edit-date {
+            flex-shrink: 0;
+            width: 130px;
+        }
+
+        .track-edit-content {
+            flex: 1;
+        }
+
+        .sold-edit-row {
+            flex-direction: column;
+            align-items: stretch;
+            background: #fff;
+            border: 1px solid #fecaca;
+            border-radius: 12px;
+            padding: 10px 12px;
+            gap: 10px;
+            box-shadow: 0 1px 3px rgba(220, 38, 38, 0.06);
+        }
+
+        .sold-row-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .sold-row-index {
+            font-size: 12px;
+            font-weight: 600;
+            color: #dc2626;
+        }
+
+        .sold-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .sold-field {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .sold-field > label {
+            font-size: 11px;
+            color: #94a3b8;
+        }
+
+        .sold-field .track-content-input,
+        .sold-field .track-date-input {
+            min-height: 38px;
+        }
+
+        .track-edit-delete {
+            flex-shrink: 0;
+            width: 32px;
+            height: 32px;
+        }
+
+        .track-edit-date .track-date-input {
+            width: 100%;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-size: 13px;
+            outline: none;
+            box-sizing: border-box;
+        }
+
+        .track-edit-date .track-date-input:focus {
+            border-color: #3b82f6;
+        }
+
+        .track-edit-content .track-content-input {
+            width: 100%;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-size: 13px;
+            outline: none;
+            box-sizing: border-box;
+            min-height: auto;
+        }
+
+        .track-edit-content .track-content-input:focus {
+            border-color: #3b82f6;
+        }
+
+        /* 追踪记录编辑（不是卖出记录）的内容输入框高度 */
+        .track-edit-row:not(.sold-edit-row) .track-edit-content .track-content-input {
+            height: 68px;
+        }
+
+        .track-edit-delete .remove-track-btn {
+            width: 32px;
+            height: 32px;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            background: #fef2f2;
+            color: #ef4444;
+            font-size: 16px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+
+        .track-edit-delete .remove-track-btn:hover {
+            background: #fee2e2;
+            border-color: #fecaca;
+        }
+
+        /* 追踪记录编辑模态框内容 - 不限制高度 */
+        .modal-content-track-edit {
+            max-height: none !important;
+            overflow-y: visible !important;
+            padding-bottom: 20px !important;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #f1f5f9;
+        }
+
+        .close-btn {
+            background: #f8fafc;
+            border: none;
+            color: #64748b;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            font-size: 20px;
+            cursor: pointer;
+        }
+
+        .text-export-area {
+            width: 100%;
+            min-height: 200px;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 12px;
+            color: #059669;
+            font-family: monospace;
+            font-size: 12px;
+            word-break: break-all;
+        }
+
+        .copy-btn {
+            background: linear-gradient(135deg, #10b981, #059669);
+            border: none;
+            color: white;
+            padding: 12px;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            margin-top: 10px;
+            width: 100%;
+            cursor: pointer;
+        }
+
+        .input-area {
+            width: 100%;
+            min-height: 150px;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 12px;
+            color: #1f2937;
+            font-size: 14px;
+        }
+
+        .form-group {
+            margin-bottom: 14px;
+        }
+
+        /* 股票名称自动建议下拉框 */
+        .stock-suggestions {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            max-height: 240px;
+            overflow-y: auto;
+            z-index: 1000;
+        }
+
+        .stock-suggestions div {
+            padding: 10px 12px;
+            cursor: pointer;
+            font-size: 14px;
+            border-bottom: 1px solid #f3f4f6;
+        }
+
+        .stock-suggestions div:last-child {
+            border-bottom: none;
+        }
+
+        .stock-suggestions div:hover {
+            background: #f3f4f6;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 12px;
+            color: #64748b;
+            margin-bottom: 6px;
+        }
+
+        .form-input {
+            width: 100%;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 12px 16px;
+            color: #1f2937;
+            font-size: 15px;
+            outline: none;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+            -webkit-user-select: text;
+            -moz-user-select: text;
+            -ms-user-select: text;
+            user-select: text;
+            pointer-events: auto;
+        }
+
+        .form-input:focus {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        /* select 表单在手机端的点击问题 */
+        select.form-input {
+            appearance: none;
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            padding-right: 36px;
+            pointer-events: auto;
+            touch-action: manipulation;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+
+        /* 记忘看板模态框中的select样式 - 手机端优化 */
+        #jiwangModal select.form-input {
+            padding: 8px 12px;
+            font-size: 13px;
+            border-radius: 8px;
+        }
+
+        #jiwangModal .form-label {
+            font-size: 12px;
+            margin-bottom: 4px;
+        }
+
+        /* 竞价变化模态框中的输入框样式 - 紧凑优化 */
+        #biddingModal .form-input {
+            padding: 4px 6px;
+            font-size: 13px;
+            border-radius: 4px;
+            border-width: 1px;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+            pointer-events: auto;
+        }
+
+        #biddingModal .form-input:focus {
+            box-shadow: none;
+            border-color: #3b82f6;
+        }
+
+        /* 竞价变化模态框：从顶部弹出，避免内容超高时顶部行被裁切无法点击 */
+        #biddingModal {
+            align-items: flex-start !important;
+            padding-top: 0 !important;
+        }
+
+        #biddingModal .modal-content {
+            border-radius: 0 0 24px 24px;
+            max-height: 92vh;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            padding-bottom: 40px;
+        }
+
+        .form-row {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .form-row .form-group {
+            flex: 1;
+            min-width: 80px;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px;
+            background: #f8fafc;
+            border-radius: 12px;
+            border: 1px solid #e2e8f0;
+        }
+
+        .checkbox-group.update-group {
+            background: #eff6ff;
+            border-color: #bfdbfe;
+        }
+
+        .checkbox-group.keep-group {
+            background: rgba(16, 185, 129, 0.1);
+            border-color: rgba(16, 185, 129, 0.3);
+        }
+
+        .checkbox-group.bought-group {
+            background: #fffbeb;
+            border-color: #fde68a;
+        }
+
+        .checkbox-group.sold-group {
+            background: #fef2f2;
+            border-color: #fecaca;
+        }
+
+        .checkbox-group.dragon-group {
+            background: #fef2f2;
+            border-color: #fecaca;
+        }
+
+        .submit-btn {
+            width: 100%;
+            background: linear-gradient(135deg, #3b82f6, #2563eb);
+            border: none;
+            color: white;
+            padding: 16px;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            margin-top: 10px;
+            cursor: pointer;
+        }
+
+        .nextday-selector {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+
+        .nextday-option {
+            flex: 1;
+            padding: 10px;
+            border-radius: 10px;
+            border: 1px solid #e2e8f0;
+            background: #f8fafc;
+            text-align: center;
+            cursor: pointer;
+        }
+
+        .nextday-option.selected-up {
+            background: rgba(239, 68, 68, 0.1);
+            border-color: #ef4444;
+            color: #dc2626;
+            font-weight: 600;
+        }
+
+        .nextday-option.selected-down {
+            background: rgba(16, 185, 129, 0.1);
+            border-color: #10b981;
+            color: #059669;
+            font-weight: 600;
+        }
+

@@ -1,0 +1,192 @@
+        /* 新增标签样式 */
+        .tag-hold {
+            background: linear-gradient(135deg, #2563eb, #1d4ed8);
+            color: white;
+        }
+
+        .tag-watch {
+            background: linear-gradient(135deg, #a855f7, #9333ea);
+            color: white;
+        }
+
+        .tag-nishi {
+            background: linear-gradient(135deg, #f87171, #ef4444);
+            color: white;
+        }
+
+        .tag-nishi-up {
+            background: linear-gradient(135deg, #f87171, #ef4444);
+            color: white;
+        }
+
+        .tag-nishi-down {
+            background: linear-gradient(135deg, #34d399, #10b981);
+            color: white;
+        }
+
+        .tag-shunshi {
+            background: linear-gradient(135deg, #34d399, #10b981);
+            color: white;
+        }
+
+        .tag-shunshi-up {
+            background: linear-gradient(135deg, #f87171, #ef4444);
+            color: white;
+        }
+
+        .tag-shunshi-down {
+            background: linear-gradient(135deg, #34d399, #10b981);
+            color: white;
+        }
+
+        .tag-star-up {
+            background: linear-gradient(135deg, #f87171, #ef4444);
+            color: white;
+            -webkit-text-stroke: 0;
+            text-shadow: none;
+            filter: drop-shadow(0 0 0 transparent);
+        }
+
+        .tag-star-down {
+            background: linear-gradient(135deg, #34d399, #10b981);
+            color: white;
+            -webkit-text-stroke: 0;
+            text-shadow: none;
+            filter: drop-shadow(0 0 0 transparent);
+        }
+
+        .close-rate-header {
+            font-size: 20px;
+            font-weight: 700;
+        }
+
+        .close-rate-header.up {
+            color: #dc2626;
+        }
+
+        .close-rate-header.down {
+            color: #059669;
+        }
+
+        .bomb-badge {
+            background: #fee2e2;
+            color: #dc2626;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-size: 10px;
+            margin-right: 6px;
+        }
+
+        .stock-body {
+            padding: 12px 15px;
+            display: flex;
+            flex-wrap: wrap;
+            border-bottom: 1px solid #f8fafc;
+        }
+
+        .info-item {
+            width: 33.333%;
+            padding: 6px 0;
+        }
+
+        .info-label {
+            font-size: 10px;
+            color: #64748b;
+            margin-bottom: 2px;
+        }
+
+        .info-value {
+            font-size: 13px;
+            font-weight: 600;
+            color: #374151;
+        }
+
+        .axis-value,
+        .remark-value,
+        .sfliangneng-value,
+        .xgcaiti-value {
+            font-size: 11px;
+            font-weight: 600;
+            color: #374151;
+        }
+
+        .info-item:nth-child(7),
+        .info-item:nth-child(8),
+        .info-item:nth-child(9) {
+            margin-top: 2px;
+            padding-top: 8px;
+            border-top: 1px solid #f8fafc;
+        }
+
+        .turnover-highlight {
+            font-size: 18px;
+            font-weight: 700;
+        }
+
+        .tags-row {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .tags-row-first {
+            flex-wrap: wrap;
+        }
+
+        .tags-row-first > .tag {
+            flex-shrink: 0;
+        }
+
+        .stock-actions {
+            display: none;
+            padding: 0 15px 15px;
+            gap: 10px;
+            border-top: 1px solid #f8fafc;
+        }
+
+        .stock-actions.expanded {
+            display: flex;
+        }
+
+        .action-btn {
+            flex: 1;
+            padding: 8px 4px;
+            border-radius: 10px;
+            border: none;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .btn-edit {
+            background: #dbeafe;
+            color: #2563eb;
+            border: 1px solid #bfdbfe;
+        }
+
+        .btn-copy {
+            background: #d1fae5;
+            color: #059669;
+            border: 1px solid #a7f3d0;
+        }
+
+        .btn-copy-date {
+            background: #e0e7ff;
+            color: #4f46e5;
+            border: 1px solid #c7d2fe;
+        }
+
+        .btn-delete {
+            background: #fee2e2;
+            color: #dc2626;
+            border: 1px solid #fecaca;
+        }
+
+        .btn-clear {
+            background: #e5e7eb;
+            color: #4b5563;
+            border: 1px solid #d1d5db;
+        }
+

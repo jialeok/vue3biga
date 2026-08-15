@@ -1,0 +1,154 @@
+        /* 竞价变化看板 - 类似模式看板样式 */
+        .bidding-board {
+            margin: 10px 15px 10px;
+            background: #ffffff;
+            border: none;
+            border-radius: 16px;
+            cursor: pointer;
+            box-shadow: none;
+        }
+
+        .bidding-header {
+            padding: 10px 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-radius: 15px 15px 0 0;
+            background: linear-gradient(135deg, #f97316, #ea580c);
+            transition: background 0.2s;
+        }
+        
+        .bidding-header:hover {
+            background: linear-gradient(135deg, #ea580c, #c2410c);
+        }
+
+        .bidding-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #ffffff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .bidding-toggle-btn {
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.9);
+            cursor: pointer;
+            border-radius: 50%;
+            transition: all 0.2s;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .bidding-toggle-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        .bidding-board.minimized .bidding-content {
+            display: none;
+        }
+
+        .bidding-board.minimized .bidding-header {
+            border-radius: 15px;
+            margin-bottom: 0;
+        }
+
+        .bidding-content {
+            padding: 12px 15px;
+            min-height: 40px;
+            font-size: 13px;
+            color: #1f2937;
+            line-height: 1.5;
+            max-height: none;
+            overflow: hidden;
+            transition: max-height 0.3s ease;
+            cursor: pointer;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 0 0 15px 15px;
+        }
+        
+        .bidding-content:hover {
+            background: rgba(59, 130, 246, 0.02);
+        }
+        
+        .bidding-board.minimized .bidding-content {
+            cursor: default;
+        }
+
+        .bidding-board.minimized .bidding-content:hover {
+            background: transparent;
+        }
+
+        .bidding-placeholder {
+            color: #9ca3af;
+            font-size: 13px;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .bidding-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+            table-layout: fixed;
+        }
+
+        .bidding-table th,
+        .bidding-table td {
+            padding: 6px 4px;
+            text-align: center;
+            border: none;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .bidding-table th {
+            background: #f9fafb;
+            color: #6b7280;
+            font-weight: 600;
+            font-size: 10px;
+        }
+
+        .bidding-table td {
+            color: #374151;
+        }
+
+        .bidding-table td:first-child {
+            text-align: left;
+            font-weight: 500;
+            color: #1f2937;
+            white-space: normal;
+            word-wrap: break-word;
+            width: 32%;
+        }
+
+        .bidding-table th:first-child {
+            width: 32%;
+        }
+
+        .bidding-table th:not(:first-child),
+        .bidding-table td:not(:first-child) {
+            width: 17%;
+        }
+
+        .bidding-table tr:hover td {
+            background: #f9fafb;
+        }
+
+        .bidding-table tr.duiban-row-clickable {
+            cursor: pointer;
+        }
+
+        .bidding-table tr.duiban-row-clickable:active td {
+            background: #f1f5f9;
+        }
+

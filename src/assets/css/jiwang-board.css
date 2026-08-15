@@ -1,0 +1,126 @@
+        /* 记忘看板 */
+        .jiwang-board {
+            margin: 0 15px 10px;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            cursor: pointer;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .jiwang-content {
+            padding: 12px 8px;
+            display: flex;
+            flex-wrap: wrap;
+        }
+
+        .jiwang-item {
+            width: 33.333%;
+            padding: 6px 2px;
+            text-align: center;
+        }
+
+        .jiwang-label {
+            font-size: 10px;
+            color: #64748b;
+            margin-bottom: 3px;
+        }
+
+        /* 记忘看板印章 */
+        .jiwang-stamp {
+            position: absolute;
+            bottom: -10px;
+            right: -15px;
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            transform: rotate(-15deg);
+            pointer-events: none;
+        }
+
+        .jiwang-stamp.red {
+            border: 3px solid rgba(248, 113, 113, 0.5);
+            background: rgba(248, 113, 113, 0.15);
+            color: rgba(248, 113, 113, 0.6);
+        }
+
+        .jiwang-stamp.gray {
+            border: 3px solid rgba(156, 163, 175, 0.5);
+            background: rgba(156, 163, 175, 0.15);
+            color: rgba(156, 163, 175, 0.6);
+        }
+
+        .jiwang-stamp.yellow {
+            border: 3px solid rgba(253, 224, 71, 0.25);
+            background: rgba(253, 224, 71, 0.08);
+            color: rgba(253, 224, 71, 0.35);
+        }
+
+        .jiwang-stamp.orange {
+            border: 3px solid #f97316 !important;
+            background: rgba(249, 115, 22, 0.15) !important;
+            color: #f97316 !important;
+        }
+
+        .stamp-text {
+            font-size: 10px;
+            font-weight: bold;
+            margin-bottom: 2px;
+            color: inherit;
+        }
+
+        .stamp-result {
+            font-size: 14px;
+            font-weight: bold;
+            color: inherit;
+        }
+
+        .stamp-question {
+            font-size: 36px;
+            font-weight: bold;
+            line-height: 1;
+            color: inherit;
+        }
+
+        .jiwang-value {
+            font-size: 13px;
+            font-weight: 500;
+            color: #1f2937;
+        }
+
+        .jiwang-value-highlight {
+            font-size: 14px;
+            font-weight: 700;
+            color: #1f2937;
+        }
+
+        .jiwang-value.red-highlight {
+            font-size: 16px;
+            font-weight: 700;
+            color: #dc2626;
+        }
+
+        .jiwang-value.gray-highlight {
+            font-size: 16px;
+            font-weight: 700;
+            color: #6b7280;
+        }
+
+        .jiwang-value.red-highlight-small {
+            font-size: 13px;
+            font-weight: 500;
+            color: #dc2626;
+        }
+
+        .jiwang-value.gray-highlight-small {
+            font-size: 13px;
+            font-weight: 500;
+            color: #6b7280;
+        }
+

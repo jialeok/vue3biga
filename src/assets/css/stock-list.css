@@ -1,0 +1,279 @@
+        /* 股票列表折叠开关 */
+        .stock-list-toggle-bar {
+            padding: 10px 15px;
+            display: flex;
+            justify-content: center;
+            border-bottom: 1px solid #e2e8f0;
+            margin-bottom: 10px;
+        }
+
+        .stock-list-toggle-btn {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: linear-gradient(135deg, #3b82f6, #2563eb);
+            color: white;
+            border: none;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3);
+            transition: all 0.2s;
+        }
+
+        .stock-list-toggle-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(59, 130, 246, 0.4);
+        }
+
+        .stock-list-toggle-btn:active {
+            transform: translateY(0);
+        }
+
+        .stock-list-count {
+            font-size: 11px;
+            opacity: 0.9;
+        }
+
+        /* 股票列表 */
+        .stock-list {
+            padding: 0 15px;
+            margin-top: 12px;
+        }
+
+        /* 收起状态的股票卡片 */
+        .stock-list.collapsed .stock-body,
+        .stock-list.collapsed .stock-actions,
+        .stock-list.collapsed .track-simple,
+        .stock-list.collapsed .sold-records-display,
+        .stock-list.collapsed .sold-records-empty {
+            display: none !important;
+        }
+
+        .stock-list.collapsed .stock-card {
+            margin-bottom: 6px;
+        }
+
+        .stock-list.collapsed .stock-header {
+            border-bottom: none;
+        }
+
+        /* 收起状态下的单张卡片展开 */
+        .stock-list.collapsed .stock-card.single-expanded .stock-body,
+        .stock-list.collapsed .stock-card.single-expanded .track-simple {
+            display: flex !important;
+            flex-wrap: wrap !important;
+        }
+        
+        .stock-list.collapsed .stock-card.single-expanded .stock-body > .info-item {
+            flex: 0 0 33.333% !important;
+            max-width: 33.333% !important;
+            width: 33.333% !important;
+            box-sizing: border-box !important;
+        }
+        
+        .stock-list.collapsed .stock-card.single-expanded .sold-records-display,
+        .stock-list.collapsed .stock-card.single-expanded .sold-records-empty {
+            display: flex !important;
+            flex-direction: column;
+            width: 100% !important;
+            box-sizing: border-box !important;
+        }
+
+        /* 收起状态下展开的股票默认不显示编辑按钮 */
+        .stock-list.collapsed .stock-card.single-expanded .stock-actions {
+            display: none !important;
+        }
+
+        /* 收起状态下展开的股票，点击左边后显示编辑按钮 */
+        .stock-list.collapsed .stock-card.single-expanded .stock-actions.expanded {
+            display: flex !important;
+        }
+
+        .stock-list.collapsed .stock-card.single-expanded {
+            margin-bottom: 10px;
+            border: 2px solid #e2e8f0;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+        }
+
+        .stock-list.collapsed .stock-card.single-expanded .stock-header {
+            border-bottom: 1px solid #f1f5f9;
+            background: linear-gradient(90deg, rgba(59, 130, 246, 0.03), transparent);
+        }
+
+        /* 展开状态下的单张卡片收起 */
+        .stock-list:not(.collapsed) .stock-card.single-collapsed .stock-body,
+        .stock-list:not(.collapsed) .stock-card.single-collapsed .stock-actions,
+        .stock-list:not(.collapsed) .stock-card.single-collapsed .track-simple,
+        .stock-list:not(.collapsed) .stock-card.single-collapsed .sold-records-display,
+        .stock-list:not(.collapsed) .stock-card.single-collapsed .sold-records-empty {
+            display: none !important;
+        }
+
+        .stock-list:not(.collapsed) .stock-card.single-collapsed {
+            margin-bottom: 6px;
+        }
+
+        .stock-list:not(.collapsed) .stock-card.single-collapsed .stock-header {
+            border-bottom: none;
+        }
+
+        .stock-card {
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            margin-bottom: 10px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+        }
+
+        .stock-card.bought {
+            border-color: #fbbf24;
+        }
+
+        .stock-card.bought .stock-header {
+            background: #fffbeb;
+        }
+
+        .stock-card.sold {
+            border-color: #f87171;
+        }
+
+        .stock-card.sold .stock-header {
+            background: #fff5f5;
+        }
+
+        .stock-header {
+            background: linear-gradient(90deg, rgba(59, 130, 246, 0.05), transparent);
+            padding: 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: stretch;
+            border-bottom: 1px solid #f1f5f9;
+        }
+
+        .stock-header-left {
+            flex: 1;
+            padding: 14px 15px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            pointer-events: auto;
+        }
+
+        .stock-header-right {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 15px;
+            cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            pointer-events: auto;
+        }
+
+        .expand-icon {
+            font-size: 10px;
+            color: #64748b;
+            transition: transform 0.2s;
+            transform: rotate(0deg);
+        }
+        
+        /* 列表收起状态时：正常卡片显示收起（小三角向下） */
+        .stock-list.collapsed .expand-icon {
+            transform: rotate(0deg);
+        }
+        
+        /* 列表收起状态时：展开的卡片显示展开（小三角向上） */
+        .stock-list.collapsed .stock-card.single-expanded .expand-icon {
+            transform: rotate(180deg);
+        }
+        
+        /* 列表展开状态时：正常卡片显示展开（小三角向上） */
+        .stock-list:not(.collapsed) .expand-icon {
+            transform: rotate(180deg);
+        }
+        
+        /* 列表展开状态时：收起的卡片显示收起（小三角向下） */
+        .stock-list:not(.collapsed) .stock-card.single-collapsed .expand-icon {
+            transform: rotate(0deg);
+        }
+
+        .stock-name {
+            font-size: 16px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            color: #1f2937;
+        }
+
+        .tag {
+            font-size: 10px;
+            padding: 3px 8px;
+            border-radius: 20px;
+            font-weight: 500;
+        }
+
+        .tag-placeholder {
+            visibility: hidden;
+            padding: 3px 8px;
+        }
+
+        .tag-default {
+            background: linear-gradient(135deg, #64748b, #475569);
+            color: white;
+        }
+
+        .tag-pink {
+            background: linear-gradient(135deg, #f472b6, #db2777);
+            color: white;
+        }
+
+        .tag-bought {
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            color: white;
+        }
+
+        .tag-sold {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+            color: white;
+        }
+
+        .tag-sell-high {
+            background: linear-gradient(135deg, #fbbf24, #d97706);
+            color: white;
+        }
+
+        .tag-sell-1120 {
+            background: linear-gradient(135deg, #60a5fa, #3b82f6);
+            color: white;
+        }
+
+        .tag-sell-1450 {
+            background: linear-gradient(135deg, #f472b6, #ec4899);
+            color: white;
+        }
+
+        .tag-next-up {
+            background: linear-gradient(135deg, #f87171, #ef4444);
+            color: white;
+        }
+
+        .tag-next-down {
+            background: linear-gradient(135deg, #34d399, #10b981);
+            color: white;
+        }
+
+        .tag-dragon {
+            background: linear-gradient(135deg, #dc2626, #ef4444);
+            color: white;
+        }
+

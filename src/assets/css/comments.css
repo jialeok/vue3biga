@@ -1,0 +1,120 @@
+        /* ETF评论区域 */
+        .etf-comment-section {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #e2e8f0;
+        }
+
+        .etf-comment-label {
+            font-size: 12px;
+            font-weight: 600;
+            color: #64748b;
+            margin-bottom: 8px;
+        }
+
+        .etf-comment-input {
+            width: 100%;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 10px 12px;
+            font-size: 12px;
+            outline: none;
+            min-height: 60px;
+            resize: vertical;
+            font-family: inherit;
+        }
+
+        .etf-comment-input:focus {
+            border-color: #3b82f6;
+        }
+
+        /* ETF前台评论显示 */
+        .etf-comment-display {
+            margin: 12px;
+            margin-top: 15px;
+            padding: 12px 15px;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            font-size: 11px;
+            color: #374151;
+            line-height: 1.5;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .etf-comment-display:hover {
+            border-color: #3b82f6;
+            background: #ffffff;
+        }
+
+        .etf-comment-placeholder {
+            color: #9ca3af;
+            font-size: 13px;
+        }
+
+        .etf-comment-text {
+            color: #374151;
+            font-size: 13px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+        }
+
+        /* 最近多板前台评论显示 */
+        .duiban-comment-display {
+            margin: 12px;
+            margin-top: 15px;
+            padding: 12px 15px;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            font-size: 11px;
+            color: #374151;
+            line-height: 1.5;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .duiban-comment-display:hover {
+            border-color: #3b82f6;
+            background: #ffffff;
+        }
+
+        .duiban-comment-placeholder {
+            color: #9ca3af;
+            font-size: 13px;
+        }
+
+        .duiban-comment-text {
+            color: #374151;
+            font-size: 13px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+        }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,134 @@
+        /* ETF编辑模态框样式 */
+        .etf-edit-container {
+            max-height: 400px;
+            overflow-y: auto;
+            overflow-x: auto;
+            padding-right: 4px;
+        }
+
+        .etf-edit-header {
+            display: flex;
+            align-items: stretch;
+            gap: 4px;
+            padding: 0;
+            margin-bottom: 6px;
+            background: #f1f5f9;
+            border-bottom: 1px solid #e2e8f0;
+            font-size: 12px;
+            font-weight: 600;
+            color: #475569;
+        }
+
+        .etf-header-cell {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            text-align: center;
+            flex-shrink: 0;
+            box-sizing: border-box;
+        }
+
+        .etf-edit-container::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        .etf-edit-container::-webkit-scrollbar-track {
+            background: #f1f5f9;
+            border-radius: 3px;
+        }
+
+        .etf-edit-container::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 3px;
+        }
+
+        .etf-edit-row {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            margin-bottom: 6px;
+            padding: 0;
+            background: transparent;
+            border-radius: 0;
+            min-width: max-content;
+        }
+
+        .etf-edit-header-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 8px;
+            padding: 0 6px;
+            min-width: max-content;
+        }
+
+        .etf-edit-header-name { width: 70px; flex-shrink: 0; font-size: 11px; font-weight: 600; color: #64748b; }
+        .etf-edit-header-chart { width: 70px; flex-shrink: 0; font-size: 11px; font-weight: 600; color: #64748b; text-align: center; }
+        .etf-edit-header-yizi { width: 70px; flex-shrink: 0; font-size: 11px; font-weight: 600; color: #64748b; text-align: center; }
+        .etf-edit-header-close { width: 70px; flex-shrink: 0; font-size: 11px; font-weight: 600; color: #64748b; text-align: center; }
+        .etf-edit-header-capacity { width: 70px; flex-shrink: 0; font-size: 11px; font-weight: 600; color: #64748b; text-align: center; }
+        .etf-edit-header-action { width: 20px; flex-shrink: 0; }
+
+        .etf-edit-number {
+            width: 24px;
+            font-size: 11px;
+            font-weight: 600;
+            color: #64748b;
+            text-align: center;
+            flex-shrink: 0;
+        }
+
+        .etf-edit-name { width: 70px; flex-shrink: 0; }
+        .etf-edit-chart { width: 70px; flex-shrink: 0; }
+        .etf-edit-yizi { width: 70px; flex-shrink: 0; }
+        .etf-edit-close { width: 70px; flex-shrink: 0; }
+        .etf-edit-capacity { width: 70px; flex-shrink: 0; }
+
+        .etf-edit-shuliang-input { width: 70px !important; border: 1px solid #e2e8f0; border-radius: 0; padding: 0; font-size: 12px; outline: none; background: white; text-align: center; }
+        .etf-edit-dieZhangbi-input { width: 90px !important; border: 1px solid #e2e8f0; border-radius: 0; padding: 0; font-size: 12px; outline: none; background: white; text-align: center; }
+        .etf-edit-jingtu-input { width: 70px !important; border: 1px solid #e2e8f0; border-radius: 0; padding: 0; font-size: 12px; outline: none; background: white; text-align: center; }
+        .etf-edit-tushi-input { width: 70px !important; border: 1px solid #e2e8f0; border-radius: 0; padding: 0; font-size: 12px; outline: none; background: white; text-align: center; }
+
+        .etf-edit-input:focus {
+            border-color: #3b82f6;
+        }
+
+        .etf-row-actions {
+            display: flex;
+            gap: 0;
+            padding-left: 0;
+        }
+
+        .etf-remove-btn {
+            background: #fee2e2;
+            border: 1px solid #fecaca;
+            color: #dc2626;
+            width: 50px;
+            height: 24px;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .add-etf-row-btn {
+            background: #f1f5f9;
+            border: 1px solid #e2e8f0;
+            color: #64748b;
+            padding: 8px;
+            border-radius: 8px;
+            font-size: 12px;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 4px;
+        }
+
+        .add-etf-row-btn:hover {
+            background: #e2e8f0;
+        }
+

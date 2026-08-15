@@ -1,0 +1,228 @@
+        /* 追踪表格样式 */
+        .track-scroll-container {
+            max-height: 300px;
+            overflow-y: auto;
+            overflow-x: hidden;
+            margin-right: -8px;
+            padding-right: 8px;
+        }
+
+        .track-scroll-container::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .track-scroll-container::-webkit-scrollbar-track {
+            background: #f1f5f9;
+            border-radius: 3px;
+        }
+
+        .track-scroll-container::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 3px;
+        }
+
+        .track-scroll-container::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+
+        /* 追踪日期输入框基础样式 */
+        .track-date-input {
+            width: 100%;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 6px 8px;
+            font-size: 12px;
+            outline: none;
+        }
+
+        .track-date-input:focus {
+            border-color: #3b82f6;
+        }
+
+        /* 追踪内容输入框基础样式 */
+        .track-content-input {
+            width: 100%;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 6px 8px;
+            font-size: 12px;
+            outline: none;
+            min-height: 60px;
+            resize: vertical;
+        }
+
+        .track-content-input:focus {
+            border-color: #3b82f6;
+        }
+
+        .track-row-actions {
+            display: flex;
+            gap: 4px;
+            padding-left: 4px;
+        }
+
+        .track-remove-btn {
+            background: #fee2e2;
+            border: 1px solid #fecaca;
+            color: #dc2626;
+            width: 24px;
+            height: 24px;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .add-track-row-btn {
+            background: #f1f5f9;
+            border: 1px solid #e2e8f0;
+            color: #64748b;
+            padding: 8px;
+            border-radius: 8px;
+            font-size: 12px;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 4px;
+        }
+
+        /* 更新股票列表中的追踪显示 */
+        .track-content-display {
+            color: #374151;
+            font-size: 11px;
+            line-height: 1.5;
+            overflow-y: auto;
+            overflow-x: hidden;
+            cursor: pointer;
+            padding: 4px 8px;
+            margin: -4px -8px;
+            border-radius: 6px;
+            transition: all 0.2s;
+            -webkit-tap-highlight-color: transparent;
+            direction: ltr;
+        }
+
+        /* 滚动条容器 - 叠加滚动条（静止时隐藏） */
+        .track-scroll-container {
+            width: 100%;
+            max-height: 80px;
+            overflow-y: auto;
+            overflow-x: hidden;
+            position: relative;
+        }
+
+        /* Chrome/Safari滚动条 - 叠加样式，静止时透明 */
+        .track-scroll-container::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+            background: transparent;
+        }
+
+        .track-scroll-container::-webkit-scrollbar-track {
+            background: transparent;
+            border-radius: 3px;
+        }
+
+        .track-scroll-container::-webkit-scrollbar-thumb {
+            background: rgba(203, 213, 225, 0.6);
+            border-radius: 3px;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+
+        .track-scroll-container::-webkit-scrollbar-thumb:hover {
+            background: rgba(148, 163, 184, 0.8);
+            opacity: 1;
+        }
+
+        .track-scroll-container::-webkit-scrollbar-thumb:active {
+            background: rgba(148, 163, 184, 1);
+            opacity: 1;
+        }
+
+        /* Firefox滚动条 - 静止时透明 */
+        .track-scroll-container {
+            scrollbar-width: thin;
+            scrollbar-color: transparent transparent;
+        }
+
+        .track-scroll-container:hover {
+            scrollbar-color: rgba(203, 213, 225, 0.6) transparent;
+        }
+
+        .track-item {
+            margin-bottom: 0;
+            padding-bottom: 0;
+            font-size: 12px;
+        }
+
+        .track-item:last-child {
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+
+        .track-date {
+            font-weight: 600;
+            color: #3b82f6;
+            margin-right: 8px;
+            font-size: 12px;
+        }
+
+        .track-empty-hint {
+            color: rgba(59, 130, 246, 0.6);
+            font-size: 11px;
+            cursor: pointer;
+            padding: 4px 8px;
+            margin: -4px -8px;
+            border-radius: 6px;
+            transition: all 0.2s;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .track-empty-hint:hover {
+            background: rgba(59, 130, 246, 0.05);
+            color: rgba(59, 130, 246, 0.8);
+        }
+
+        .track-simple {
+            padding: 10px 15px;
+            background: linear-gradient(90deg, rgba(59, 130, 246, 0.05), transparent);
+            cursor: pointer;
+        }
+
+        .track-placeholder {
+            color: rgba(59, 130, 246, 0.5);
+            font-size: 11px;
+        }
+
+        /* 追踪日期输入框和内容输入框 */
+        .track-date-input,
+        .track-content-input {
+            width: 100%;
+            border: 1px solid rgba(59, 130, 246, 0.2);
+            border-radius: 4px;
+            padding: 6px 8px;
+            font-size: 13px;
+            box-sizing: border-box;
+        }
+
+        .track-date-input {
+            min-width: 80px;
+            text-align: center;
+        }
+
+        .track-date-input:focus,
+        .track-content-input:focus {
+            outline: none;
+            border-color: rgba(59, 130, 246, 0.5);
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+        }
+
+        .track-content-input {
+            min-height: 40px;
+            resize: vertical;
+            font-family: inherit;
+        }
+

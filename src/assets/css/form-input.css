@@ -1,0 +1,70 @@
+        /* 排名编辑表单 */
+
+        /* 早盘竞价编辑表单 */
+        .auction-form-row {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 16px;
+            align-items: center;
+            height: 44px;
+            flex-shrink: 0;
+        }
+
+        .auction-form-stock-input {
+            flex: 1.5;
+            min-width: 100px;
+        }
+
+        .auction-form-volume-input,
+        .auction-form-yest-input {
+            flex: 1;
+            min-width: 80px;
+        }
+
+
+
+
+
+
+
+
+
+
+
+
+
+        .remove-rank-btn {
+            flex: 0 0 32px;
+            max-width: 32px;
+            width: 32px;
+            height: 32px;
+            margin-left: 6px;
+            background: #fee2e2;
+            border: 1px solid #fecaca;
+            color: #dc2626;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            align-self: center;
+        }
+
+        .add-rank-btn {
+            background: #f1f5f9;
+            border: 1px solid #e2e8f0;
+            color: #64748b;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 13px;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 8px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
