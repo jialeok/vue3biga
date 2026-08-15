@@ -135,7 +135,9 @@ let _dateWatchStarted = false;
 // 拍卖数据可能为异步加载，首次检查为空时做有限次延迟重试（避免 race 导致永远不统计）。
 async function maybeAutoRecalc(date, attempt = 0) {
   if (!date) return;
-  if (boardState.recentMulti !== null && boardState.earlyEtf !== null) return;
+  // 自动统计语义：看板数值由「竞价列表（正式成员）/ 板块ETF 收盘」源数据推导，非人工长期维护。
+  // 每次切到该日期都重新推导并写回（覆盖旧值），使 8/13(87→76)/8/14 等历史错误值自愈。
+  // 源数据为空（attempt 内重试仍空）时不写回、不覆盖（§11）；源存在则覆盖，让错误值被修正。
   const res = await recalcDuibanFromAuction(date).catch((e) => {
     console.warn('[Board] 自动统计失败:', e && e.message);
     return null;
@@ -156,10 +158,10 @@ async function maybeAutoRecalc(date, attempt = 0) {
   }
 }
 
-// 切换日期的统一入口（§6 自愈 + 修复切日期空白）：
+// 切换日期的统一入口（§6 自愈 + 修复切日期空白 + 历史错误值自愈）：
 // 1. 先清空上一切换残留的 boardState（根因：stale 旧日期值让 guard 误判「已存在」而跳过新日期的自动统计，导致 8/14 空白）；
-// 2. 等云端该日期数据加载完毕（此时 guard 基于新日期真实状态判断，不会误跳过）；
-// 3. 再按需触发自动推导，缺失才写回，不覆盖已有统计（§11）。
+// 2. 等云端该日期数据加载完毕；
+// 3. 再触发自动推导：源数据存在则覆盖写回（修正 8/13 的 87/41 等错误值），缺失才留空（§11）。
 async function onDateChanged(date) {
   if (!date) return;
   boardState.recentMulti = null;

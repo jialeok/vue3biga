@@ -227,11 +227,9 @@ export function renderDuiban() { _emit('board-refresh'); }
 function getAuctionBoardList(date) {
   const list = getAuctionData()[date] || [];
   const watchlistSet = _getAuctionWatchlistSet(date);
-  // 与 AuctionBoard（getTodayGroupList）一致：按 watchlist 过滤正式成员。
-  // watchlist 未加载（size===0）时回退全量，避免竞价为空导致统计空白（原 bug：watchlist 半载→少算）。
-  if (!watchlistSet || watchlistSet.size === 0) {
-    return list.filter(function (r) { return r && (r.stock || r.name); });
-  }
+  // 按「正式成员索引」(_auctionWatchlistIndex[date]) 过滤 —— 唯一真相源（§6）。
+  // 该索引来自 auction_watchlist 表（天然只有正式成员），排除影子/观察股（病灶 B/D 的额外股，即列表里多出来的 7~11 只）。
+  // 严禁回退全量：watchlist 未加载（size===0）时返回空，交由 maybeAutoRecalc 重试，绝不把非成员算进总数（否则 83→87）。
   return list.filter(function (r) {
     return r && r.stock && watchlistSet.has(r.stock.trim());
   });
@@ -270,9 +268,16 @@ function computeAuctionCounts(date) {
 function computeEtfCounts(date) {
   const TOTAL_ETF = 48;
   const bidding = getBiddingData()[date] || [];
-  const sectorRow = bidding.find(function (r) {
-    return r && r.name && r.name.indexOf('板块ETF') === 0;
-  });
+  // 与竞价变化看板 getTodayBidding 同口径：按行名建 Map（后者覆盖，last-wins），取「板块ETF(48)」正式行。
+  // 严禁 startsWith('板块ETF') 直接 find —— 历史数据里可能存在同名/快照重复行（某行 close=41 在前），
+  // startsWith 会命中第一条而竞价看板按 last-wins 显示 11，导致 ETF 涨数算成 41（#92/#93 复现 bug）。
+  const rowMap = new Map();
+  bidding.forEach(function (r) { if (r && r.name) rowMap.set(r.name.toString().trim(), r); });
+  const sectorRow = rowMap.get('板块ETF(48)')
+    || rowMap.get('板块ETF')
+    || Array.from(rowMap.values()).find(function (r) {
+        return r && r.name && r.name.indexOf('板块ETF') === 0 && r.name.indexOf('time26') === -1;
+      });
   if (!sectorRow || sectorRow.close === '' || sectorRow.close == null) return null;
   const rise = parseInt(String(sectorRow.close).trim(), 10) || 0;
   const fall = Math.max(0, TOTAL_ETF - rise);
