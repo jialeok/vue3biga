@@ -144,7 +144,7 @@
         <div v-if="filteredObsItems.length > 0" class="auction-group-label auction-obs-group-label">观察组</div>
         <template v-for="(item, idx) in filteredObsItems" :key="item.index" v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.index)]">
           <div :class="item.itemClass" :data-index="item.index" :data-stock="item.stock || ''" @click="onToggleSelect(item.index)">
-            <div :class="item.numberClass" @click.stop="onExpandTrend(item.index)">{{ idx + 1 }}</div>
+            <div :class="item.numberClass" @click.stop="onExpandTrend(item.index)" @dblclick.stop>{{ idx + 1 }}</div>
             <div :class="item.stockClass"
                  :data-stock="item.stock"
                  :data-note="item.note || ''"
@@ -164,9 +164,9 @@
                  @click.stop="onYestClick(item, $event)"
                  @dblclick.stop="openEditModal()"
                  @contextmenu.prevent>{{ item.yestVolumeDisplay }}</div>
-            <div :class="item.ratioClass" :data-index="item.index">{{ item.ratio }}<span v-if="item.ratioArrow" :style="{ color: item.ratioArrow === '⬆' ? '#ef4444' : '#10b981' }">{{ item.ratioArrow }}</span></div>
+            <div :class="item.ratioClass" :data-index="item.index" @dblclick.stop>{{ item.ratio }}<span v-if="item.ratioArrow" :style="{ color: item.ratioArrow === '⬆' ? '#ef4444' : '#10b981' }">{{ item.ratioArrow }}</span></div>
           </div>
-          <div v-if="expandedSet.has(item.index)" class="auction-trend-panel">
+          <div v-if="expandedSet.has(item.index)" class="auction-trend-panel" @dblclick.stop>
             <template v-if="trendHistory[item.index]">
               <div class="auction-daily-metrics">
                 <template v-for="m in dailyMetricsList(item.stock)" :key="m.label">
@@ -222,9 +222,9 @@
                  @click.stop="onYestClick(item, $event)"
                  @dblclick.stop="openEditModal()"
                  @contextmenu.prevent>{{ item.yestVolumeDisplay }}</div>
-            <div :class="item.ratioClass" :data-index="item.index">{{ item.ratio }}<span v-if="item.ratioArrow" :style="{ color: item.ratioArrow === '⬆' ? '#ef4444' : '#10b981' }">{{ item.ratioArrow }}</span></div>
+            <div :class="item.ratioClass" :data-index="item.index" @dblclick.stop>{{ item.ratio }}<span v-if="item.ratioArrow" :style="{ color: item.ratioArrow === '⬆' ? '#ef4444' : '#10b981' }">{{ item.ratioArrow }}</span></div>
           </div>
-          <div v-if="expandedSet.has(item.index)" class="auction-trend-panel">
+          <div v-if="expandedSet.has(item.index)" class="auction-trend-panel" @dblclick.stop>
             <template v-if="trendHistory[item.index]">
               <div class="auction-daily-metrics">
                 <template v-for="m in dailyMetricsList(item.stock)" :key="m.label">
@@ -1307,11 +1307,36 @@ const volumeNoteModalActive = ref(false);
 const volumeNoteDraft = ref('');
 let volumeNoteIndex = -1;
 
+// [FIX 2026-08-16] 题材补全（toast 与编辑框共用）：行内 topics 为空时（早盘竞价行只存涨幅、
+// 题材在共享题材库 stock_topics），回退查 getStockHistoryTopics——与第二页题材分组 getTopicsDisplay 同口径。
+// 输出统一英文标点：-2.6%(机器人,人工智能,AI应用)
+function _normalizeNotePunct(note) {
+  return String(note || '').replace(/[，、;；]/g, ',').replace(/[（]/g, '(').replace(/[）]/g, ')');
+}
+function _buildFullNoteWithTopics(item, baseNote) {
+  let note = _normalizeNotePunct(baseNote);
+  if (!note.includes('(') && item && item.stock) {
+    try {
+      const histTopics = getStockHistoryTopics(item.stock);
+      if (histTopics) {
+        const cleanTopics = String(histTopics).replace(/[()（）]/g, '').replace(/[，、;；]/g, ',');
+        if (cleanTopics.trim()) {
+          const pctMatch = note.match(/^([+-]?\d+\.?\d*%)/);
+          const pct = pctMatch ? pctMatch[1] : (note.replace(/[()（），,]/g, '').trim());
+          note = (pct || '') + '(' + cleanTopics + ')';
+        }
+      }
+    } catch (e) {}
+  }
+  return note;
+}
+
 function onEditVolumeNote(index) {
   volumeNoteIndex = index;
   const auctionList = getTodayGroupList('auction');
-  const currentNote = auctionList[index] ? getDisplayNote(auctionList[index]) : '';
-  volumeNoteDraft.value = currentNote;
+  const rawNote = auctionList[index] ? getDisplayNote(auctionList[index]) : '';
+  // 编辑框内容与黑色 toast 同步：补全题材、统一英文标点（双向同步：保存后 toast 也显示同一格式）
+  volumeNoteDraft.value = _buildFullNoteWithTopics(auctionList[index], rawNote);
   volumeNoteModalActive.value = true;
 }
 
@@ -1345,7 +1370,8 @@ function _persistVolumeNote(normalizedNote) {
 }
 
 async function saveVolumeNote() {
-  const normalizedNote = (volumeNoteDraft.value || '').replace(/[，、;；]/g, ',');
+  // [FIX 2026-08-16] 保存统一英文标点（与 toast/第二页格式一致：-2.6%(机器人,人工智能,AI应用)）
+  const normalizedNote = _normalizeNotePunct(volumeNoteDraft.value || '');
   _persistVolumeNote(normalizedNote);
   volumeNoteModalActive.value = false;
   volumeNoteIndex = -1;
@@ -1365,24 +1391,8 @@ let notePopupScrollCleanup = null;
 
 function onYestClick(item, event) {
   if (!item) return;
-  let note = getDisplayNote(item) || '';
-  // [FIX 2026-08-16] 统一英文标点：中文逗号/顿号/分号 → 英文逗号，括号统一英文（与第二页题材格式一致）
-  note = note.replace(/[，、;；]/g, ',').replace(/[（]/g, '(').replace(/[）]/g, ')');
-  // [FIX 2026-08-16] 题材补全：行内 topics 为空时（早盘竞价行只存涨幅，题材在共享题材库），
-  // 回退查 getStockHistoryTopics，与第二页题材分组显示一致（同 getTopicsDisplay 口径）。
-  if (!note.includes('(') && item && item.stock) {
-    try {
-      const histTopics = getStockHistoryTopics(item.stock);
-      if (histTopics) {
-        const cleanTopics = String(histTopics).replace(/[()（）]/g, '').replace(/[，、;；]/g, ',');
-        if (cleanTopics.trim()) {
-          // 保留涨幅前缀（若有），末尾补题材：-2.6%(机器人,人工智能,AI应用)
-          const pctMatch = note.match(/^([+-]?\d+\.?\d*%)/);
-          note = (pctMatch ? pctMatch[1] : note.replace(/[()（），,]/g, '').trim()) + '(' + cleanTopics + ')';
-        }
-      }
-    } catch (e) {}
-  }
+  // [FIX 2026-08-16] 与编辑框同一口径：统一英文标点 + 题材补全（共享 _buildFullNoteWithTopics）
+  const note = _buildFullNoteWithTopics(item, getDisplayNote(item));
   if (!note.trim()) return;
   // 已显示同一行 → 点击关闭（切换）
   if (notePopup.value && notePopupText.value === note) { closeNotePopup(); return; }
@@ -1413,7 +1423,13 @@ function closeNotePopup() {
   if (notePopupScrollCleanup) { notePopupScrollCleanup(); }
 }
 
+// [FIX 2026-08-16] 序号双击防抖：双击会触发两次 click（展开→收起），用户误以为"被冻住"。
+// 300ms 内的第二次点击忽略（浏览器 dblclick 的两击间隔 ~250ms），保证双击序号稳定展开趋势图。
+let _lastExpandClickTs = 0;
 function onExpandTrend(index) {
+  const now = Date.now();
+  if (now - _lastExpandClickTs < 300) return;
+  _lastExpandClickTs = now;
   const newSet = new Set(expandedSet.value);
   if (newSet.has(index)) {
     newSet.delete(index);
