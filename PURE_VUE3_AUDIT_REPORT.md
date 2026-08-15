@@ -56,11 +56,12 @@
 
 | 问题 | 现状 | 违反点 |
 |---|---|---|
-| **app-core.js 中转站** | 768 行，re-export 70+ 域函数，`_bindApi`/`_bindUiFns` 双注册，`_migrateFromV41` 仍被调用 | §16"不得无限增长" |
-| **巨型文件** | auction.js 2945 行/154.7KB、AuctionBoard.vue 1949 行/82.4KB、main.css 5208 行（0 个 @media）、auction-sync.js 851 行、AuctionEditModal.vue 948 行、app-core.js 768 行 | §15/§16 可维护性 |
+| **app-core.js 中转站** | 768 行，re-export 70+ 域函数，`_bindApi`/`_bindUiFns` 双注册，`_migrateFromV41` 仍被调用；**顶层 IIFE**（:314-320）违反 §16；与 8+ 域模块循环 import | §16"不得无限增长" |
+| **巨型文件** | auction.js 2945 行/154.7KB（37 处直接读写 state._xxx 全局共享）、AuctionBoard.vue 1949 行/82.4KB、main.css 5208 行（0 个 @media）、auction-sync.js 851 行、AuctionEditModal.vue 948 行、app-core.js 768 行 | §15/§16 可维护性 |
 | **hotspot.js null 解引用崩溃点** | `importHotFromPaste`/`replaceHotConceptFromPaste` 直接 `_domGet('hotPasteInput').value` 无守卫（:191-193/:432-438/:452-454/:530-534），运行即 TypeError；目前无 Vue 调用方但挂在 `_bindApi`/re-export 上，属"半死炸弹" | §10 静默失败/运行时崩溃 |
-| **ui-bridge 残留 8 空桩** | toggleStrengthSort/copyAllTopicStocks/copyTopicStocks/openCoreTopicModal/openAuctionNoteEditFromPage2/restoreExpandedTopicGroupsP2/toggleTopicGroupTrendPanels/resetExpansionStateOnDateSwitch——**全项目 0 真实调用**，仅经 auctionStore `_uiFns` 委托（18 个键 undefined，safeCall 静默 no-op）；AuctionBoard.vue 全走本地实现 | §16 死代码 |
-| **auctionStore auctionActions 死委托** | 兼容层 20+ action 委托到 `_uiFns`（多数 undefined），全项目 **0 个外部调用点** | §16 死代码 |
+| **ui-bridge 残留 15 空桩** | _domGet/_domQuery/_domValue/_domCreate/_getCommentInputValue/_readTrackEditFormData/saveAuction/toggleStrengthSort/copyAllTopicStocks/copyTopicStocks/openCoreTopicModal/openAuctionNoteEditFromPage2/restoreExpandedTopicGroupsP2/toggleTopicGroupTrendPanels/resetExpansionStateOnDateSwitch——**全项目 0 真实调用**，仅经 auctionStore `_uiFns` 委托（18 个键 undefined，safeCall 静默 no-op）；AuctionBoard.vue 全走本地实现 | §16 死代码 |
+| **auctionStore auctionActions 死委托** | 兼容层 20+ action 委托到 `_uiFns`（多数 undefined），全项目 **0 个外部调用点**；safeCall 仅在 auctionStore 内部使用 | §16 死代码 |
+| **切日期重置展开功能缺口** | `resetExpansionStateOnDateSwitch`（空桩）虽被 app-core.js:338-339 调用，但 `setCurrentDate`（:335）**直写 auctionStore.currentDate 绕过 store.setDate** → 展开状态重置意图实际丢失 | §24 生命周期/功能缺口 |
 | **router 完全闲置** | 9 条路由注册，但**全项目 0 处导航调用**（无 router.push/link/useRouter），只有 '/' 可达 | §24 页面生命周期 |
 | **remaining-boards.js 订阅无退订** | `_subscribeRealtime()`（:577-613）channel 未持有引用、全文件无 removeChannel；附带 :568 setInterval 300ms 轮询 | §31 Realtime 生命周期 |
 | **market_metrics 重复订阅** | 同表被 `watchlist-and-metrics.js:263-277` + `hot-stocks.js:673-684` 双 channel 订阅 | §31 防重复订阅 |
@@ -127,8 +128,8 @@
 |---|---|---|
 | **DashboardView 聚合 13 子组件 + 无 KeepAlive** | `/` 首页 v-if 切换 13 个看板（trading 态 9 个 + Pattern + weekly/monthly + EditModal），全 src **0 处 KeepAlive** | §24/§25 页面生命周期与底部导航性能 |
 | **路由未驱动看板切换** | router 注册 9 条路由（/auction /pattern /duiban 等），但主界面走 DashboardView 内嵌 v-if，路由闲置 | §24 页面生命周期 |
-| **Realtime 订阅分散 16 个 channel** | 订阅点分散在 10+ 个 data 文件（hot-stocks 8 处、watchlist-and-metrics 6 处等），需确认生命周期统一管理、离开页面 unsubscribe | §31 |
-| **模板行内函数调用** | AuctionBoard 模板多处 `{{ getXxx() }}`（轻量但每行每次渲染调用） | §21 建议改 computed/预计算 |
+| **Realtime 订阅分散 16 个 channel** | 订阅点分散在 10+ 个 data 文件（hot-stocks 8 处、watchlist-and-metrics 6 处等）；**market_metrics 双 channel 重复订阅**（watchlist-and-metrics.js:263 + hot-stocks.js:673）；**remaining-boards.js 订阅无退订 + 300ms setInterval 轮询**（:568）；14 个 channel 有 removeChannel（大体合规） | §31 |
+| **模板行内函数调用** | AuctionBoard 模板多处 `{{ getXxx() }}`（轻量但每行每次渲染调用）；**HomeStocksView 每行 ~20+ 次函数调用**（headerTags×6/closeDisplay×3/adjustDisplay×6 等），靠 v-memo 部分兜底 | §21 建议改 computed/预计算 |
 | **`_setSyncStatus` 双写** | auction-sync.js:505 logic 层直接写 `#syncStatus` textContent，绕过 Vue 响应式，与 LoginOverlay 的 statusText 双写冲突 | §17 响应式原则 |
 
 ### ✅ 已改善（本次会话）
