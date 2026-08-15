@@ -178,10 +178,13 @@
 | **零测试** | src 下 0 个 test/spec 文件，无 vitest/jest | §43 性能回归无自动化支撑 |
 | **零 lint/format** | 无 eslint/prettier，代码风格不统一 | 长期维护成本 |
 | **备份目录 96 文件被 git 跟踪** | `newbigamain没彻底拆分最新原始文件/` 96 个文件（占 git 268 文件的 36%）、2.7MB，.gitignore 未覆盖 | 仓库污染、误引用风险 |
-| **构建日志被跟踪** | build-log.txt ~ build-log5.txt 5 个日志文件在 git 里 | 仓库噪音 |
+| **构建日志/一次性脚本被跟踪** | build-log.txt ~ build-log5.txt 5 个 UTF-16 陈旧日志 + obs-*.cjs × 3 + test-highlight.mjs 一次性脚本在 git 里 | 仓库噪音 |
 | **README 为空** | 只有 "# biga" | 接手成本高 |
-| **26 个源文件带 BOM** | 含 BOM 的 UTF-8 文件（Vite/Node 可能警告） | 编码一致性 |
-| **2 个直接循环依赖** | app-core↔auction、app-core↔stocks | 模块边界模糊 |
+| **26 个源文件带 BOM** | 含 BOM 的 UTF-8 文件（含 main.js/supabase-client.js/auctionStore.js 及 data/ 几乎全部）；supabase-client.js:6-31 行 8 空格坏缩进 | 编码一致性 |
+| **2 个直接循环依赖** | app-core↔auction、app-core↔stocks（Rollup 不报错但静态分析必报环，§42 不达标） | 模块边界模糊 |
+| **主包未拆 vendor** | 主 bundle 410KB（gzip 132KB）未做 vendor 拆分/按需优化 | 首屏加载 |
+| **依赖锁死在区间下界** | vue 3.4.0 / pinia 2.2.0 / vite 5.4.21 / supabase-js 2.45.0，lockfile 冻结在最低版本 | 缺失 bug 修复 |
+| **MIGRATION_TASKLIST 过时** | 仍把已删除的 RankBoard/HotspotBoard/TagTitlesBoard 当现存视图；模块数 134/187 与现 212 不符；条目停在 2026-08-15 | 文档误导 |
 
 ---
 
