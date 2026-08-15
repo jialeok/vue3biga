@@ -65,6 +65,29 @@ export async function loadDuibanData() {
 }
 
 /**
+ * 合并 upsert 一行到 recent_multi_data（按 date 冲突）。
+ * 与 saveEtfBoardRow 对齐：先读已有行再合并，避免 upsert 整行替换把 tushi/jingtu/comment 等列清空（§6 数据保全）。
+ * @param {Object} row 至少含 date；可只传 shuliang/die_count/zhang_count/die_zhangbi 等部分字段
+ * @returns {Promise<{ok:boolean, error?:*, data?}>}
+ */
+export async function saveRecentMultiRow(row) {
+  if (!row || !row.date) return { ok: false, error: new Error('row.date required') };
+  try {
+    const sb = getSupabase();
+    if (!sb) return { ok: false, error: new Error('no supabase') };
+    let merged = { ...row };
+    const { data: existing } = await sb.from('recent_multi_data').select('*').eq('date', row.date).maybeSingle();
+    if (existing) merged = { ...existing, ...row, date: row.date };
+    merged.updated_at = new Date().toISOString();
+    const { data, error } = await sb.from('recent_multi_data').upsert(merged, { onConflict: 'date' }).select().single();
+    if (error) return { ok: false, error };
+    return { ok: true, data };
+  } catch (e) {
+    return { ok: false, error: e };
+  }
+}
+
+/**
  * 模块级 Realtime 订阅（§31）：统一持有 recent_multi_data 的 channel，引用计数管理，
  * 当最后一个订阅者离开时 unsubscribe，避免重复订阅。
  * 注意：DuibanBoard 当前数据源为 recent_multi_data（未上云 auction_duiban），

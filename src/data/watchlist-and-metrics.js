@@ -587,3 +587,55 @@ import { setAuctionDateData } from './auction-data.js';
             return null;
         }
 
+        // 趋势图历史按需补水：某日行情缓存未命中（典型为「非当前交易日」的历史日，
+        // pullAuctionMarketDataForDate 只拉当前日期）时，直接从 market_metrics 云端拉该 (date,stock)
+        // 并合并进内存缓存，使 getStockHistoryValue 后续能命中，趋势图显示真实 5 日数据。
+        // 这是 §6 根治（缓存未 hydration 导致趋势空白），不是兼容补丁：只补缺失行，不动既有真相源。
+        export async function hydrateStockHistoryRow(date, stockName, dataSource = 'auction') {
+            if (!date || !stockName) return null;
+            const cache = dataSource === 'hot' ? state._hotFullRowCache : state._auctionMemCache;
+            const rows = cache[date] || [];
+            const found = _histRowMapFor(rows).get(stockName.trim());
+            // 缓存已有该股票的关键指标则无需再拉（volume / change_pct 任一非空即视为已 hydrated）
+            if (found && ((found.volume != null && String(found.volume).trim() !== '') ||
+                (found.change_pct != null && String(found.change_pct).trim() !== ''))) {
+                return found;
+            }
+            const sb = getSupabase();
+            if (!sb) return null;
+            try {
+                const { data, error } = await sb.from('market_metrics')
+                    .select('stock,code,volume,yest_volume,change_pct,time930,seal_count,auc_pct_chg,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover,source')
+                    .eq('date', date)
+                    .eq('scope', dataSource)
+                    .eq('stock', stockName.trim())
+                    .maybeSingle();
+                if (error) return null;
+                if (!data) return null;
+                const mapped = {
+                    stock: data.stock,
+                    code: data.code || '',
+                    volume: data.volume || '',
+                    yest_volume: data.yest_volume || '',
+                    yestVolume: data.yest_volume || '',
+                    change_pct: data.change_pct || '',
+                    changePct: data.change_pct || '',
+                    auc_pct_chg: data.auc_pct_chg || '',
+                    time930: data.time930,
+                    seal_count: data.seal_count,
+                    um_vol: data.um_vol,
+                    open_bid_pct: data.open_bid_pct,
+                    auc_vol_ratio: data.auc_vol_ratio,
+                    auc_turnover: data.auc_turnover,
+                    source: data.source || 'manual'
+                };
+                if (!cache[date]) cache[date] = [];
+                const idx = cache[date].findIndex(r => r.stock && r.stock.trim() === stockName.trim());
+                if (idx >= 0) cache[date][idx] = Object.assign({}, cache[date][idx], mapped);
+                else cache[date].push(mapped);
+                return mapped;
+            } catch (e) {
+                return null;
+            }
+        }
+

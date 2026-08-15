@@ -846,8 +846,8 @@ import { useUiStore } from '../../stores/uiStore.js';
                     // 所有收盘涨幅同步完成，再同步题材，最后统一保存一次
                     syncStockTopicsFromAuction();
                     saveModule('stocks');
-                    // 涨跌幅可能已批量新增/覆盖，重新统计"最近多板"的总数量和跌涨比
-                    recalcDuibanFromAuction();
+                    // 涨跌幅可能已批量新增/覆盖，重新统计"最近多板"/早盘ETF的总数量和跌涨比
+                    recalcDuibanFromAuction(targetDate);
                 }
             }
             state._syncCloseChunk = syncCloseChunk;

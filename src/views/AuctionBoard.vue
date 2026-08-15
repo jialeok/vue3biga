@@ -459,6 +459,7 @@ import { saveData, getTodayGroupList, getGroupData, patchAuctionField, saveModul
   importAuctionFromPaste, importAuctionHistoryFill, replaceConceptFromPaste
 } from '../logic/app-core.js';
 import { getAuctionStockHistory, deriveAuctionTagState } from '../logic/tag-rules.js';
+import { hydrateStockHistoryRow } from '../data/watchlist-and-metrics.js';
 import { getStockHistoryValue } from '../data/watchlist-and-metrics.js';
 import { getTopicGroups, getTopicRankCountThisWeek } from '../logic/topic-rules.js';
 import { getDisplayNote, parseNoteToFields, extractTopics } from '../logic/note-helpers.js';
@@ -1145,19 +1146,34 @@ function _computeTrendStats(history) {
   return { jingRatio, yestRatio, diff };
 }
 
-function loadTrendHistory(index, stockName) {
-  const history = getAuctionStockHistory(stockName.trim(), uiStore.currentDate, 5, 'auction');
-  const stats = _computeTrendStats(history);
-  trendHistory.value = {
-    ...trendHistory.value,
-    [index]: {
-      volume: history.map(h => ({ date: h.date, value: h.volume })),
-      yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
-      changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
-      aucPctChg: history.map(h => ({ date: h.date, value: h.aucPctChg !== undefined ? h.aucPctChg : null })),
-      ...stats
-    }
+async function loadTrendHistory(index, stockName) {
+  const name = (stockName || '').trim();
+  if (!name) return;
+  // 先用内存缓存即时出图：保证点击序号后面板立即展开（不依赖网络，根治"展开空白/像没展开"）
+  const paint = (history) => {
+    const stats = _computeTrendStats(history);
+    trendHistory.value = {
+      ...trendHistory.value,
+      [index]: {
+        volume: history.map(h => ({ date: h.date, value: h.volume })),
+        yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
+        changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
+        aucPctChg: history.map(h => ({ date: h.date, value: h.aucPctChg !== undefined ? h.aucPctChg : null })),
+        ...stats
+      }
+    };
   };
+  const history = getAuctionStockHistory(name, uiStore.currentDate, 5, 'auction');
+  paint(history);
+  // 再按需补齐缺失的历史交易日（market_metrics 云端），补齐后重算刷新趋势图，使 5 日数据完整
+  let hydrated = false;
+  for (const h of history) {
+    const ok = await hydrateStockHistoryRow(h.date, name, 'auction');
+    if (ok) hydrated = true;
+  }
+  if (hydrated) {
+    paint(getAuctionStockHistory(name, uiStore.currentDate, 5, 'auction'));
+  }
 }
 
 // 当日竞价指标（仅市场客观值，不进历史趋势）：未匹配量/抢筹幅度/竞价量比/真换手率

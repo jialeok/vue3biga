@@ -3,6 +3,7 @@ import { getSupabase } from '../data/supabase-client.js';
 import { loadEtfBoardByDate, saveEtfBoardRow } from '../data/etf-board-data.js';
 import { useUiStore } from '../stores/uiStore.js';
 import { showToast, showWarningToast } from './useToast.js';
+import { recalcDuibanFromAuction } from '../logic/ui-bridge.js';
 
 const boardState = reactive({
   currentDate: '',
@@ -129,6 +130,26 @@ async function saveEarlyEtf(payload) {
 }
 
 let _dateWatchStarted = false;
+// §6 自愈：切换到某日期时，若该日期的「最近多板 / 早盘ETF」统计行缺失（云端确无记录），
+// 但早盘竞价股票列表已存在，则自动推导并写回，使看板无需手动统计即自动填充。
+// 拍卖数据可能为异步加载，首次检查为空时做有限次延迟重试（避免 race 导致永远不统计）。
+async function maybeAutoRecalc(date, attempt = 0) {
+  if (!date) return;
+  if (boardState.recentMulti !== null && boardState.earlyEtf !== null) return;
+  const res = await recalcDuibanFromAuction(date).catch((e) => {
+    console.warn('[Board] 自动统计失败:', e && e.message);
+    return null;
+  });
+  if (res) {
+    if (res.recentMulti) boardState.recentMulti = res.recentMulti;
+    if (res.earlyEtf) boardState.earlyEtf = res.earlyEtf;
+    return;
+  }
+  // res 为 null 表示当日竞价列表为空（可能尚未加载完），有限重试
+  if (attempt < 2) {
+    setTimeout(() => { maybeAutoRecalc(date, attempt + 1); }, 500 * (attempt + 1));
+  }
+}
 function ensureDateWatch() {
   if (_dateWatchStarted) return;
   _dateWatchStarted = true;
@@ -144,6 +165,7 @@ function ensureDateWatch() {
         boardState.currentDate = val;
         loadRecentMulti(val);
         loadEarlyEtf(val);
+        maybeAutoRecalc(val);
       }
     });
   });
@@ -151,6 +173,7 @@ function ensureDateWatch() {
     boardState.currentDate = uiStore.currentDate;
     loadRecentMulti(uiStore.currentDate);
     loadEarlyEtf(uiStore.currentDate);
+    maybeAutoRecalc(uiStore.currentDate);
   }
 }
 

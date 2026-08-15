@@ -330,8 +330,8 @@ export async function replaceConceptFromPaste(rawText) {
         syncStockTopicsFromAuction();
         saveModule('stocks');
         
-        // 概念替换可能改变了note的格式，保险起见重新统计一次"最近多板"
-        recalcDuibanFromAuction();
+        // 概念替换可能改变了note的格式，保险起见重新统计一次"最近多板"/早盘ETF
+        recalcDuibanFromAuction(targetDate);
     }
 
     let statusMsg = '✅ 替换了 ' + replaceCount + ' 条概念';
