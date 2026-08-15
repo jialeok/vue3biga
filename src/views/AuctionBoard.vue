@@ -148,7 +148,6 @@
             <div :class="item.stockClass"
                  :data-stock="item.stock"
                  :data-note="item.note || ''"
-                 @dblclick.stop="onShowNote(item.index)"
                  @contextmenu.prevent="onLongPress(item.stock)"
                  @touchstart.passive="startLongPress(item.stock)"
                  @touchend="cancelLongPress"
@@ -159,8 +158,11 @@
               <span class="auction-stock-text">{{ item.stock }}<span v-if="item.obsFormalStar" class="auction-obs-formal-star">*</span></span>
               <AuctionBadge :item="item" :ctx="{}" :tag-state="item" />
             </div>
-            <div class="auction-volume">{{ item.volumeDisplay }}</div>
-            <div :class="item.yestColorClass" :data-index="item.index" :data-note="item.note || ''" @contextmenu.prevent="openEditModal">{{ item.yestVolumeDisplay }}</div>
+            <div class="auction-volume" @dblclick.stop="onEditVolumeNote(item.index)">{{ item.volumeDisplay }}</div>
+            <div :class="item.yestColorClass" :data-index="item.index" :data-note="item.note || ''"
+                 @click.stop="onYestClick(item, $event)"
+                 @dblclick.stop="openEditModal()"
+                 @contextmenu.prevent>{{ item.yestVolumeDisplay }}</div>
             <div :class="item.ratioClass" :data-index="item.index">{{ item.ratio }}<span v-if="item.ratioArrow" :style="{ color: item.ratioArrow === '⬆' ? '#ef4444' : '#10b981' }">{{ item.ratioArrow }}</span></div>
           </div>
           <div v-if="expandedSet.has(item.index)" class="auction-trend-panel">
@@ -203,7 +205,6 @@
             <div :class="item.stockClass"
                  :data-stock="item.stock"
                  :data-note="item.note || ''"
-                 @dblclick.stop="onShowNote(item.index)"
                  @contextmenu.prevent="onLongPress(item.stock)"
                  @touchstart.passive="startLongPress(item.stock)"
                  @touchend="cancelLongPress"
@@ -214,8 +215,11 @@
               <span class="auction-stock-text">{{ item.stock }}<span v-if="item.obsFormalStar" class="auction-obs-formal-star">*</span></span>
               <AuctionBadge :item="item" :ctx="{}" :tag-state="item" />
             </div>
-            <div class="auction-volume">{{ item.volumeDisplay }}</div>
-            <div :class="item.yestColorClass" :data-index="item.index" :data-note="item.note || ''" @contextmenu.prevent="openEditModal">{{ item.yestVolumeDisplay }}</div>
+            <div class="auction-volume" @dblclick.stop="onEditVolumeNote(item.index)">{{ item.volumeDisplay }}</div>
+            <div :class="item.yestColorClass" :data-index="item.index" :data-note="item.note || ''"
+                 @click.stop="onYestClick(item, $event)"
+                 @dblclick.stop="openEditModal()"
+                 @contextmenu.prevent>{{ item.yestVolumeDisplay }}</div>
             <div :class="item.ratioClass" :data-index="item.index">{{ item.ratio }}<span v-if="item.ratioArrow" :style="{ color: item.ratioArrow === '⬆' ? '#ef4444' : '#10b981' }">{{ item.ratioArrow }}</span></div>
           </div>
           <div v-if="expandedSet.has(item.index)" class="auction-trend-panel">
@@ -437,6 +441,16 @@
     <LongPressTagMenu ref="longPressMenuRef" />
     <CoreTopicModal ref="coreTopicModalRef" />
     <AuctionEditModal ref="editModalRef" />
+
+    <!-- [FIX 2026-08-16] 昨成交量单击 → 黑色小 toast 显示涨幅+题材（贴数值下方，点击/滚动关闭）；
+         竞价量双击 → 涨幅题材编辑弹窗（替代原双击股票名 prompt）。 -->
+    <div v-if="notePopup" class="auction-note-popup" :style="notePopupStyle" @click="closeNotePopup">{{ notePopupText }}</div>
+
+    <EditModal v-model="volumeNoteModalActive" title="编辑涨幅与题材" show-clear clear-text="清空" @save="saveVolumeNote" @clear="clearVolumeNote">
+      <div style="font-size:12px;color:#6b7280;margin-bottom:8px;">格式：涨幅(题材1,题材2)，如 2.6%(机器人,人工智能,AI应用)</div>
+      <input v-model="volumeNoteDraft" placeholder="如 2.6%(机器人,人工智能,AI应用)" class="volume-note-input"
+             style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;box-sizing:border-box;" />
+    </EditModal>
   </div>
 </template>
 
@@ -447,6 +461,7 @@ import TrendChart from '../components/TrendChart.vue';
 import LongPressTagMenu from '../components/LongPressTagMenu.vue';
 import CoreTopicModal from '../components/CoreTopicModal.vue';
 import AuctionEditModal from '../components/AuctionEditModal.vue';
+import EditModal from '../components/EditModal.vue';
 import { useUiStore } from '../stores/uiStore.js';
 import { useAuctionStore } from '../stores/auctionStore.js';
 import { _on, _off } from '../stores/eventBus.js';
@@ -1284,35 +1299,97 @@ function onToggleSelect(index) {
   }
 }
 
-function onShowNote(index) {
+// [FIX 2026-08-16] 交互重构：竞价量双击编辑涨幅题材 / 昨成交量单击黑色toast / 双击后台。
+// 原 onShowNote（双击股票名 prompt）已移除——改为竞价量列双击弹 Vue EditModal（§4 不用原生 prompt）。
+const volumeNoteModalActive = ref(false);
+const volumeNoteDraft = ref('');
+let volumeNoteIndex = -1;
+
+function onEditVolumeNote(index) {
+  volumeNoteIndex = index;
   const auctionList = getTodayGroupList('auction');
-  const currentNote = getDisplayNote(auctionList[index]);
-  const note = prompt('请输入注释（如涨幅）：', currentNote);
-  if (note !== null) {
-    const normalizedNote = note.replace(/[，、;；]/g, ',');
-    auctionList[index].note = normalizedNote;
-    const parsed = parseNoteToFields(normalizedNote);
-    auctionList[index].changePct = parsed.changePct;
-    auctionList[index].topics = parsed.topics;
-    saveData();
-    refresh();
+  const currentNote = auctionList[index] ? getDisplayNote(auctionList[index]) : '';
+  volumeNoteDraft.value = currentNote;
+  volumeNoteModalActive.value = true;
+}
 
-    patchAuctionField(uiStore.currentDate, auctionList[index].stock, {
-      note: normalizedNote,
-      change_pct: parsed.changePct,
-      topics: parsed.topics
-    }).catch(e => console.warn('patchAuctionField note 失败:', e));
+function _persistVolumeNote(normalizedNote) {
+  if (volumeNoteIndex < 0) return;
+  const auctionList = getTodayGroupList('auction');
+  const item = auctionList[volumeNoteIndex];
+  if (!item) return;
+  item.note = normalizedNote;
+  const parsed = parseNoteToFields(normalizedNote);
+  item.changePct = parsed.changePct;
+  item.topics = parsed.topics;
+  saveData();
+  refresh();
 
-    const stockName = auctionList[index].stock;
-    syncStockCloseFromAuction(stockName, normalizedNote, uiStore.currentDate);
+  patchAuctionField(uiStore.currentDate, item.stock, {
+    note: normalizedNote,
+    change_pct: parsed.changePct,
+    topics: parsed.topics
+  }).catch(e => console.warn('patchAuctionField note 失败:', e));
 
-    const topicsArr = extractTopics(normalizedNote);
-    const stockCode = getStockCode(stockName) || auctionList[index].code || '';
-    pushStockTopicsToCloud(stockName, topicsArr, stockCode).catch(e => console.warn('pushStockTopicsToCloud 失败:', e));
+  const stockName = item.stock;
+  syncStockCloseFromAuction(stockName, normalizedNote, uiStore.currentDate);
 
-    syncStockTopicsFromAuction(uiStore.currentDate);
-    saveModule('stocks');
+  const topicsArr = extractTopics(normalizedNote);
+  const stockCode = getStockCode(stockName) || item.code || '';
+  pushStockTopicsToCloud(stockName, topicsArr, stockCode).catch(e => console.warn('pushStockTopicsToCloud 失败:', e));
+
+  syncStockTopicsFromAuction(uiStore.currentDate);
+  saveModule('stocks');
+}
+
+async function saveVolumeNote() {
+  const normalizedNote = (volumeNoteDraft.value || '').replace(/[，、;；]/g, ',');
+  _persistVolumeNote(normalizedNote);
+  volumeNoteModalActive.value = false;
+  volumeNoteIndex = -1;
+}
+
+async function clearVolumeNote() {
+  _persistVolumeNote('');
+  volumeNoteModalActive.value = false;
+  volumeNoteIndex = -1;
+}
+
+// 昨成交量单击 → 黑色小 toast（贴数值下方，点击/滚动关闭）
+const notePopup = ref(false);
+const notePopupText = ref('');
+const notePopupStyle = ref({});
+let notePopupScrollCleanup = null;
+
+function onYestClick(item, event) {
+  if (!item) return;
+  const note = getDisplayNote(item) || '';
+  if (!note.trim()) return;
+  // 已显示同一行 → 点击关闭（切换）
+  if (notePopup.value && notePopupText.value === note) { closeNotePopup(); return; }
+  const el = event && event.currentTarget;
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  notePopupText.value = note;
+  notePopupStyle.value = {
+    left: Math.max(4, Math.min(rect.left + rect.width / 2 - 60, window.innerWidth - 124)) + 'px',
+    top: (rect.bottom + 4) + 'px',
+    position: 'fixed',
+    maxWidth: '220px'
+  };
+  notePopup.value = true;
+  // 滚动关闭（捕获阶段，看板滚动即收起）
+  if (!notePopupScrollCleanup) {
+    const handler = function() { closeNotePopup(); };
+    document.addEventListener('scroll', handler, true);
+    notePopupScrollCleanup = function() { document.removeEventListener('scroll', handler, true); notePopupScrollCleanup = null; };
   }
+}
+
+function closeNotePopup() {
+  notePopup.value = false;
+  notePopupText.value = '';
+  if (notePopupScrollCleanup) { notePopupScrollCleanup(); }
 }
 
 function onExpandTrend(index) {
