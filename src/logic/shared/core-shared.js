@@ -75,6 +75,8 @@ export function saveModule(name) {
     if (name === 'bidding') return;
     // auction 同样改为纯云端表 + 内存缓存，不再落 localStorage
     if (name === 'auction') return;
+    // jiwang 同理，已改为纯云端表，不再落 localStorage
+    if (name === 'jiwang') return;
     // stocks / rank / multi / hotspot / pattern / tagTitles 已独立拆表，不落 localStorage，改为异步推送 Supabase
     if (name === 'stocks' || name === 'rank' || name === 'multi' ||
         name === 'hotspot' || name === 'pattern' || name === 'tagTitles') {

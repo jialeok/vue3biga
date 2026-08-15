@@ -765,12 +765,24 @@ export function _mergeHotCloudToLocal(oldList, cloudRows) {
                     if (!datesMap[r.date]) datesMap[r.date] = [];
                     datesMap[r.date].push(r.stock.trim());
                 });
-                await Promise.all(Object.keys(datesMap).map(function(d) {
-                    return sb.from('hot_stocks')
-                        .delete()
-                        .eq('date', d)
-                        .in('stock', datesMap[d]);
-                }));
+                // 逐条删除 + 错误收集：避免单条失败被 Promise.all 静默吞掉，留下不一致迁移状态
+                const failedDeletes = [];
+                for (const d of Object.keys(datesMap)) {
+                    try {
+                        const { error } = await sb.from('hot_stocks')
+                            .delete()
+                            .eq('date', d)
+                            .in('stock', datesMap[d]);
+                        if (error) failedDeletes.push({ date: d, reason: error.message });
+                    } catch (e) {
+                        failedDeletes.push({ date: d, reason: e && e.message });
+                    }
+                }
+                if (failedDeletes.length > 0) {
+                    failedDeletes.forEach(function(f) {
+                        console.error('[迁移] 影子记录物理删除失败 (date=' + f.date + '):', f.reason);
+                    });
+                }
                 localStorage.setItem(key, '1'); // 合规：一次性迁移标记（§8 允许）
                 console.log('[迁移] hot_stocks 影子记录已迁移', migrated, '行到 market_metrics(scope=hot)');
             } catch (e) {

@@ -342,7 +342,10 @@ export function autoCalculateRecentMultiScore() {
         }
       }
     }
-  } catch {}
+  } catch (e) {
+    // 低危：竞价涨跌评分读取异常时静默返回 0，记录原因便于排查
+    console.warn('[评分] 读取竞价数据计算评分失败，返回 0:', e && e.message);
+  }
 
   return score;
 }

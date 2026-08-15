@@ -21,10 +21,7 @@ const STORAGE_KEY = 'auctionBoardTags';
 const TABLE = 'auction_board_tags';
 
 // 本地快照（最后一次已知值）：仅作「只读」兜底（离线/首屏免闪），云端为唯一真相。
-// §11 数据保全：解析失败绝不用 `{}` 伪装为空去覆盖旧快照——
-//   1) 仅在键缺失时返回 `{}`（合法空，无可伪造）；
-//   2) 解析/结构异常时记录告警并返回 `{}`，但因下方 saveTagsToStorage 已禁用写回，
-//      损坏快照文件保持原样，不会丢失旧数据；内存真实标签由云端 loadTagsFromCloud 补全。
+// 解析失败/结构异常一律返回 `{}` 但不写回（本地写本就禁用），损坏快照原样保留，云端为真相。
 function loadTagsFromStorage() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -37,14 +34,6 @@ function loadTagsFromStorage() {
     console.warn('[auctionTagStore] 本地标签快照损坏，已跳过（云端为唯一真相）：', e && e.message);
     return {};
   }
-}
-
-// §8：标签不再写入 localStorage（云端 auction_board_tags 为唯一持久真相）。
-// 保留函数签名以最小化改动；内部为 no-op，确保损坏快照绝不会被 `{}` 覆盖（§11），
-// 且本地写失败不会影响云端结果。若未来需恢复只读兜底写回，必须严格满足：
-// 「仅当云端保存成功后才允许本地写」且「本地写失败不得影响云端」。
-function saveTagsToStorage(/* tags */) {
-  // 故意留空：移除本地写后，localStorage 中的旧快照不再被 {} 覆盖，数据保全由云端保证。
 }
 
 export const useAuctionTagStore = defineStore('auctionTag', {
@@ -75,8 +64,6 @@ export const useAuctionTagStore = defineStore('auctionTag', {
         });
         this.tags = merged;
         this._cloudLoaded = true;
-        // 注：不再写回 localStorage（§8 红线），云端 auction_board_tags 为唯一真相。
-        saveTagsToStorage(this.tags);
       } catch (e) {
         console.error('[auctionTagStore] 云端标签读取异常：', e && e.message);
       }
@@ -92,7 +79,6 @@ export const useAuctionTagStore = defineStore('auctionTag', {
       if (!this.tags[date]) this.tags[date] = {};
       if (tag) this.tags[date][key] = tag;
       else delete this.tags[date][key];
-      saveTagsToStorage(this.tags); // no-op（§8：本地不再持久化标签）
       this._persistTag(date, key, tag); // 异步上云（§8 持久化真相：唯一持久层）
     },
     removeTag(date, stock) {
@@ -102,7 +88,6 @@ export const useAuctionTagStore = defineStore('auctionTag', {
         delete this.tags[date][key];
         if (Object.keys(this.tags[date]).length === 0) delete this.tags[date];
       }
-      saveTagsToStorage(this.tags); // no-op（§8）
       this._persistTag(date, key, null);
     },
     getAllTagsForDate(date) {
@@ -112,7 +97,6 @@ export const useAuctionTagStore = defineStore('auctionTag', {
     clearTagsForDate(date) {
       if (!date) return;
       delete this.tags[date];
-      saveTagsToStorage(this.tags); // no-op（§8）
       this._persistClearDate(date);
     },
     // 单只标签上云：有值 upsert，null 删除

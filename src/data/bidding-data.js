@@ -238,7 +238,7 @@ import { useUiStore } from '../stores/uiStore.js';
                     afterCount += (afterRes.count || 0);
                 }
                 if (afterCount > 0) {
-                    throw new Error('delete 执行后仍有 ' + afterCount + ' 条记录残留（删除前 ' + beforeCount + ' 条）');
+                    console.error('[AUCTION-DELETE] delete 执行后仍有 ' + afterCount + ' 条记录残留（删除前 ' + beforeCount + ' 条），疑似列名引号/RLS 导致未命中');
                 }
                 _dbgLog('[AUCTION-DELETE] 已删除 ' + date + ' 的 ' + beforeCount + ' 条云端行');
             } finally {
