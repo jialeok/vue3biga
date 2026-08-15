@@ -17,7 +17,7 @@ import { loadFumianTopics } from '../data/fumian-sync.js';
 import { _emit, _on } from '../stores/eventBus.js';
 import { _dbgLog } from '../data/debug-log.js';
 import { pullBiddingForDate, migrateBiddingToTable } from '../data/bidding-data.js';
-import { migrateJiwangToTable, pullJiwangForDate } from '../data/jiwang-data.js';
+import { migrateJiwangToTable, pullJiwangForDate, pullJiwangFromTable } from '../data/jiwang-data.js';
 import { showToast, showWarningToast } from './useToast.js';
 import { state } from '../logic/app-state.js';
 import { useUiStore } from '../stores/uiStore.js';
@@ -43,6 +43,31 @@ export function useAppBootstrap(loginRef) {
     try { migrateAuctionDataToNewTables(); } catch (e) { _dbgLog('[MIGRATE] auctionDataToNewTables: ' + e); }
     try { migrateBiddingToTable(); } catch (e) { _dbgLog('[MIGRATE] biddingToTable: ' + e); }
     try { migrateJiwangToTable(); } catch (e) { _dbgLog('[MIGRATE] jiwangToTable: ' + e); }
+  }
+
+  // §8/§10 稳健性安全网：确保首屏把 jiwang_data 全量灌入 _jiwangMemCache。
+  // 主路径已由 pullFromCloud() 完成；此处作为独立、fail-soft 的兜底，避免：
+  //  (1) pullFromCloud 的 jiwang 段被静默吞错（auction-sync.js 的 catch 仅 console.warn），
+  //      或 pullFromCloud 在某前置 await 异常后整段未执行，导致 _jiwangMemCache 为空；
+  //  (2) 共享统计看板（MonthlyStatsBoard / WeekendStatsBoard）因缓存为空而「一片空白」。
+  // pullJiwangFromTable 是幂等全量读取；若缓存已非空则跳过，避免重复请求（§32）。
+  function hydrateJiwangAtStartup() {
+    if (state._jiwangMemCache && Object.keys(state._jiwangMemCache).length > 0) {
+      return Promise.resolve();
+    }
+    return pullJiwangFromTable().then(function (tableJiwang) {
+      if (!state._jiwangMemCache) state._jiwangMemCache = {};
+      Object.keys(tableJiwang).forEach(function (d) {
+        state._jiwangMemCache[d] = tableJiwang[d];
+      });
+      if (state.allData) state.allData.jiwang = state._jiwangMemCache;
+      _emit('jiwang-refresh');
+      _dbgLog('[BOOTSTRAP] jiwang 首屏 hydrate 完成，共 ' + Object.keys(state._jiwangMemCache).length + ' 天');
+    }).catch(function (e) {
+      // §10/§11：fail-soft —— 出错不破坏其它启动流程，也绝不把读取失败伪装成空去触发删除。
+      console.error('[BOOTSTRAP] jiwang 首屏 hydrate 失败（统计看板可能为空，但云端数据未被破坏）:', e && e.message || e);
+      _dbgLog('[BOOTSTRAP] jiwang hydrate 失败: ' + (e && e.message));
+    });
   }
 
   function setupEventBus() {
@@ -117,6 +142,9 @@ export function useAppBootstrap(loginRef) {
     loadCoreTopicsFromCloud().then(() => _emit('auction-refresh')).catch(e => console.warn('core_topics:', e && e.message || e));
     hydrateEtfBoardData().then(() => _emit('etf-refresh')).catch(e => _dbgLog('[ETF] 启动 hydrate 失败: ' + (e && e.message || e)));
     loadFumianTopics().then(() => _emit('etf-refresh')).catch(e => _dbgLog('[FUMIAN] 启动 hydrate 失败: ' + (e && e.message || e)));
+
+    // §A 类安全网：独立 hydrate jiwang_data 到 _jiwangMemCache（幂等，已填充则跳过，不重复请求）。
+    hydrateJiwangAtStartup();
 
     pullFromCloud().then(() => {
       state.allData = null; loadAllData();

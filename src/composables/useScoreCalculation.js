@@ -44,7 +44,14 @@ export function useScoreCalculation() {
 
   }
   function showWeekly() {
-    const baseDate = new Date(uiStore.currentDate + 'T00:00:00');
+    // [W-BLANK-FIX] 守卫：uiStore.currentDate 为空/无效时 new Date('T00:00:00') 会产生
+    // Invalid Date → 下方算出 "NaN-NaN-NaN" 写入 currentDate，进而使 WeekendStatsBoard
+    // 的 isSaturday 误判为 false → 整页内容被 v-show 隐藏（一片空白）。故兜底为今天。
+    let baseStr = uiStore.currentDate;
+    if (!baseStr || isNaN(new Date(baseStr + 'T00:00:00').getTime())) {
+      baseStr = _formatDate(new Date());
+    }
+    const baseDate = new Date(baseStr + 'T00:00:00');
     const dayOfWeek = baseDate.getDay();
     let daysToSaturday = dayOfWeek === 0 ? -1 : (6 - dayOfWeek + 7) % 7;
     const saturday = new Date(baseDate);
@@ -56,7 +63,12 @@ export function useScoreCalculation() {
     _emitAllRefresh();
   }
   function showLastWeek() {
-    const baseDate = new Date(uiStore.currentDate + 'T00:00:00');
+    // [W-BLANK-FIX] 同 showWeekly，守卫空/无效 currentDate，避免污染全局 currentDate。
+    let baseStr = uiStore.currentDate;
+    if (!baseStr || isNaN(new Date(baseStr + 'T00:00:00').getTime())) {
+      baseStr = _formatDate(new Date());
+    }
+    const baseDate = new Date(baseStr + 'T00:00:00');
     const dayOfWeek = baseDate.getDay();
     const daysToLastSaturday = -((dayOfWeek + 1) % 7 + 6) % 7 - 1;
     const lastSaturday = new Date(baseDate);
@@ -68,8 +80,13 @@ export function useScoreCalculation() {
     _emitAllRefresh();
   }
   function showMonthly() {
-    if (!_isWeekend(uiStore.currentDate)) {
-      const baseDate = new Date(uiStore.currentDate + 'T00:00:00');
+    // [W-BLANK-FIX] 守卫空/无效 currentDate，避免算出 NaN 日期而污染全局 currentDate。
+    let baseStr = uiStore.currentDate;
+    if (!baseStr || isNaN(new Date(baseStr + 'T00:00:00').getTime())) {
+      baseStr = _formatDate(new Date());
+    }
+    if (!_isWeekend(baseStr)) {
+      const baseDate = new Date(baseStr + 'T00:00:00');
       const dayOfWeek = baseDate.getDay();
       let daysToSaturday = (6 - dayOfWeek + 7) % 7;
       const saturday = new Date(baseDate);

@@ -19,13 +19,18 @@ export function computeStats(dates) {
     emptyRight: 0, emptyWrong: 0, chushouRight: 0, chushouWrong: 0,
     emptyWinRate: 0, chushouWinRate: 0,
   };
-  const stocksData = getStocksData();
-  const jiwangData = getJiwangData();
+  // 防御：getStocksData / getJiwangData 在分区分支下 _xxxMemCache 未初始化前，
+  // state.allData[key] 可能短暂为 undefined；统一兜底为 {}，避免 xxx[d] 抛
+  // "Cannot read properties of undefined"（§10：不得让读取失败伪装成异常崩溃）。
+  const stocksData = getStocksData() || {};
+  const jiwangData = getJiwangData() || {};
   let latestBalance = null; // 区间内最新的账户余额快照（stats.balance）
   dates.forEach(d => {
+    // [W-BLANK-FIX] dayJiwang 提升到 forEach 块顶部：非交易日（周六/周日）也会走到下方 dayStats
+    // 计算，若声明在 if 块内会触发 TDZ ReferenceError，使 computeStats 抛错、整页渲染失败（空白根因）。
+    const dayJiwang = jiwangData[d];
     if (isTradingDay(d)) {
       r.tradingDays++;
-      const dayJiwang = jiwangData[d];
       if (dayJiwang) {
         if (dayJiwang.jielun === '空仓') r.emptyCount++;
         else if (dayJiwang.jielun === '出手') r.chushouCount++;
@@ -90,7 +95,7 @@ export function computeTopEtfs(dates) {
 }
 
 export function computeRecordStats(dates) {
-  const jiwangData = getJiwangData();
+  const jiwangData = getJiwangData() || {};
   let duibanCount = 0, topicCount = 0, etfCount = 0;
   let duibanRight = 0, topicRight = 0, etfRight = 0;
   dates.forEach(d => {
@@ -115,8 +120,8 @@ export function computeRecordStats(dates) {
 // 账户余额曲线来自 jiwang.stats.balance，按时间顺序 carry-forward 最近一次已知余额。
 export function buildProfitPoints(getDates) {
   const dates = getDates();
-  const stocksData = getStocksData();
-  const jiwangData = getJiwangData();
+  const stocksData = getStocksData() || {};
+  const jiwangData = getJiwangData() || {};
   const profitPoints = [];
   const balancePoints = [];
   const asc = dates.slice().reverse();

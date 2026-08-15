@@ -200,9 +200,28 @@ const planText = ref('');
 
 const currentDate = computed(() => uiStore.currentDate || '');
 
+// [W-BLANK-FIX] 周六判断根因修复：currentDate 未零填充（如 2026-8-15）或为空时，
+// new Date(x+'T00:00:00') 在部分浏览器为 Invalid Date → getDay()=NaN → isSaturday=false
+// → 周六主内容（9 个真实区块）被 v-show 整体隐藏 → 页面只剩周日 3 个空占位框，表现为「一片空白」。
+// 故：① 用本地解析 + 零填充补正，跨浏览器稳健；② 解析失败一律默认 true（周末看板主视图），
+// 避免任何异常日期把全部内容隐藏。
+function parseLocalDate(s) {
+  if (!s) return null;
+  let d = new Date(s + 'T00:00:00');
+  if (!isNaN(d.getTime())) return d;
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
+  if (m) {
+    const norm = `${m[1]}-${String(+m[2]).padStart(2, '0')}-${String(+m[3]).padStart(2, '0')}`;
+    d = new Date(norm + 'T00:00:00');
+    if (!isNaN(d.getTime())) return d;
+  }
+  return null;
+}
+
 const isSaturday = computed(() => {
   if (!currentDate.value) return true;
-  const d = new Date(currentDate.value + 'T00:00:00');
+  const d = parseLocalDate(currentDate.value);
+  if (!d) return true; // 无效日期兜底：显示周六主内容，避免空白
   return d.getDay() === 6;
 });
 
@@ -210,7 +229,8 @@ function getWeekDates() {
   const dates = [];
   const base = currentDate.value;
   if (!base) return dates;
-  const d = new Date(base + 'T00:00:00');
+  const d = parseLocalDate(base);
+  if (!d) return dates; // 无效日期直接返回空区间，避免遍历出 NaN-NaN-NaN
   const dow = d.getDay();
   const saturday = new Date(d);
   saturday.setDate(d.getDate() + (6 - dow + 7) % 7);
@@ -249,7 +269,7 @@ const totalStats = computed(() => {
   let unrecorded = 0;
   dates.forEach(dt => {
     if (isTradingDay(dt)) {
-      const jiwangData = getJiwangData();
+      const jiwangData = getJiwangData() || {};
       const dayJiwang = jiwangData[dt];
       if (!dayJiwang || !dayJiwang.jielun) unrecorded++;
     }
@@ -260,6 +280,12 @@ const totalStats = computed(() => {
 
 const topStocks = computed(() => computeTopStocks(getWeekDates()));
 const topEtfs = computed(() => computeTopEtfs(getWeekDates()));
+
+// [W-FINDING] duibanPerformance 当前恒为 []（死代码）→ 第 4 区块「本周最近多板表现」恒显「暂无数据」。
+// 真实数据源为「多板/对板」看板（duiban-sync.js 域，跨模块，本代理无所有权），需聚合本周内
+// 多板记录按股票计数。低成本正确修复路径：在 stats-calc 增加 computeTopDuiban(dates)，
+// 读取 duiban 域数据并返回 {name,count}[]；本代理仅占位 []，待与负责月度/对板看板的 Agent 对齐接口后接入。
+// 倾向保留该 section 而非删除，避免误删功能；接入前用户可见「暂无数据」占位（已知缺口，不阻塞空白修复）。
 const duibanPerformance = computed(() => []);
 
 const recordStats = computed(() => computeRecordStats(getWeekDates()));
