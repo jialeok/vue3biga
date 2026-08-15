@@ -159,36 +159,24 @@ import {
   computeRecordStats,
   buildProfitPoints,
 } from '../logic/stats/stats-calc.js';
+// §2/§4/§15：月日期与聚合纯函数下沉 Logic 层（monthly-logic.js）
+import { getMonthDates, computeDuibanPerformance, formatDate } from '../logic/stats/monthly-logic.js';
 import TrendChart from '../components/TrendChart.vue';
 
 const uiStore = useUiStore();
 const { openMonthlySummary } = useScoreCalculation();
 
 const topStocksExpanded = ref(false);
+// §10/§11：summaryText 仍为 ref('')，是已知缺口（openMonthlySummary 经 modal → Logic → Data 持久化，
+// 但当前 modal 为空实现，summaryText 尚未回填）。保留并标注，不阻塞本次重构。
 const summaryText = ref('');
 
+// 响应式根：依赖 uiStore.currentDate（Pinia 响应式），DashboardView 按日期切换挂载后随日期重算。
+// 所有 computed 均以 currentDate 为依赖根，无需额外 watch（§17/§26 日期切换响应式边界）。
 const currentDate = computed(() => uiStore.currentDate || '');
 
-function getMonthDates() {
-  const base = currentDate.value;
-  if (!base) return [];
-  const d = new Date(base + 'T00:00:00');
-  const year = d.getFullYear();
-  const month = d.getMonth();
-  const dates = [];
-  const lastDay = new Date(year, month + 1, 0).getDate();
-  for (let i = 1; i <= lastDay; i++) {
-    dates.push(`${year}-${String(month + 1).padStart(2, '0')}-${String(i).padStart(2, '0')}`);
-  }
-  return dates;
-}
-
-function formatDate(d) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
 const dateRange = computed(() => {
-  const dates = getMonthDates();
+  const dates = getMonthDates(currentDate.value);
   if (dates.length === 0) return '--';
   return `${dates[0]} ~ ${dates[dates.length - 1]}`;
 });
@@ -204,7 +192,7 @@ const EMPTY_STATS = {
 };
 
 const stats = computed(() => {
-  try { return computeStats(getMonthDates()); }
+  try { return computeStats(getMonthDates(currentDate.value)); }
   catch (e) { console.error('[MonthlyStats] computeStats 失败（已降级为全 0）:', e); return { ...EMPTY_STATS }; }
 });
 
@@ -235,34 +223,23 @@ const totalStats = computed(() => {
 });
 
 const topStocks = computed(() => {
-  try { return computeTopStocks(getMonthDates()); }
+  try { return computeTopStocks(getMonthDates(currentDate.value)); }
   catch (e) { console.error('[MonthlyStats] computeTopStocks 失败:', e); return []; }
 });
 const topEtfs = computed(() => {
-  try { return computeTopEtfs(getMonthDates()); }
+  try { return computeTopEtfs(getMonthDates(currentDate.value)); }
   catch (e) { console.error('[MonthlyStats] computeTopEtfs 失败:', e); return []; }
 });
 
-// 修复死代码：原为 const duibanPerformance = computed(() => [])，恒空 → 「本月最近多板表现」恒显「暂无数据」。
-// 改为接真实数据：从 Data 层 getter getJiwangData() 读取当月 stats.recentMulti === true 的交易日。
-// 注：此轻量展示聚合本应下沉到 stats-calc（Agent 1 负责），此处先消除恒空 bug（§4 待重构，不引入新 bug）。
+// §4 Logic 层下沉：聚合逻辑已收口到 monthly-logic.computeDuibanPerformance。
+// 此处仅编排（读取 Data 层 getter → 委托 Logic 聚合），保持消除恒空 bug（§10/§11 fail-soft）。
 const duibanPerformance = computed(() => {
-  try {
-    const jiwangData = getJiwangData() || {};
-    const dates = getMonthDates();
-    const items = [];
-    dates.forEach(d => {
-      const day = jiwangData[d];
-      if (day && day.stats && day.stats.recentMulti === true) {
-        items.push({ name: d, count: 1, result: day.chushou || '' });
-      }
-    });
-    return items;
-  } catch (e) { console.error('[MonthlyStats] duibanPerformance 失败:', e); return []; }
+  try { return computeDuibanPerformance(getJiwangData() || {}, getMonthDates(currentDate.value)); }
+  catch (e) { console.error('[MonthlyStats] duibanPerformance 失败:', e); return []; }
 });
 
 const recordStats = computed(() => {
-  try { return computeRecordStats(getMonthDates()); }
+  try { return computeRecordStats(getMonthDates(currentDate.value)); }
   catch (e) {
     console.error('[MonthlyStats] computeRecordStats 失败:', e);
     return { duibanCount: 0, topicCount: 0, etfCount: 0, duibanWinRate: 0, topicWinRate: 0, etfWinRate: 0 };
@@ -277,12 +254,14 @@ function openSummaryEdit() { openMonthlySummary(); }
 
 // W-03：复用 <TrendChart> 组件替代自绘 canvas（遵循 §30 图表性能规范）。
 // 防御性包裹：buildProfitPoints 内部若抛错（B 类 getter 异常），降级为空数组，避免整块看板空白。
+// buildProfitPoints 期望接收一个「返回日期数组的函数」(getDates())，故用 thunk 包裹，
+// 在 computed 求值期读取 currentDate.value → 保持响应式依赖（§17）。
 const profitPoints = computed(() => {
-  try { return buildProfitPoints(getMonthDates).profitPoints; }
+  try { return buildProfitPoints(() => getMonthDates(currentDate.value)).profitPoints; }
   catch (e) { console.error('[MonthlyStats] buildProfitPoints(profit) 失败:', e); return []; }
 });
 const balancePoints = computed(() => {
-  try { return buildProfitPoints(getMonthDates).balancePoints; }
+  try { return buildProfitPoints(() => getMonthDates(currentDate.value)).balancePoints; }
   catch (e) { console.error('[MonthlyStats] buildProfitPoints(balance) 失败:', e); return []; }
 });
 </script>

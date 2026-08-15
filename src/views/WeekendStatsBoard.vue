@@ -187,72 +187,43 @@ import {
   computeRecordStats,
   buildProfitPoints,
 } from '../logic/stats/stats-calc.js';
+// [分层] 日期解析/周区间/格式化统一收口到 Logic 层（架构规范 §4：日期逻辑归属 Logic），
+// 不再在 .vue 内联（原 parseLocalDate / getWeekDates / formatDate 已搬出）。
+import { parseLocalDate, getWeekDates, formatDate } from '../logic/stats/weekend-logic.js';
 import TrendChart from '../components/TrendChart.vue';
 
 const uiStore = useUiStore();
 const { openWeekendSummary, openWeekendReview } = useScoreCalculation();
 
 const topStocksExpanded = ref(false);
+// [已知缺口] summaryText / reviewText / experienceText / planText 仍为空 ref。
+// openWeekendSummary / openWeekendReview 经 modal → Logic → Data 持久化，但 modal 链路尚未回填这些字段
+// （openWeekendSummaryModal 为空实现），故此处恒为空、显示「点击输入」占位。保留不阻塞，待 modal 接入后自然会填值。
 const summaryText = ref('');
 const reviewText = ref('');
 const experienceText = ref('');
 const planText = ref('');
 
+// 响应式根：uiStore.currentDate 变化 → 所有依赖它的 computed 自动重算（架构规范 §17）。
+// DashboardView 按日期切换挂载本板子，切换后 currentDate 变化即驱动重算，无需额外 watch。
 const currentDate = computed(() => uiStore.currentDate || '');
 
-// [W-BLANK-FIX] 周六判断根因修复：currentDate 未零填充（如 2026-8-15）或为空时，
-// new Date(x+'T00:00:00') 在部分浏览器为 Invalid Date → getDay()=NaN → isSaturday=false
-// → 周六主内容（9 个真实区块）被 v-show 整体隐藏 → 页面只剩周日 3 个空占位框，表现为「一片空白」。
-// 故：① 用本地解析 + 零填充补正，跨浏览器稳健；② 解析失败一律默认 true（周末看板主视图），
-// 避免任何异常日期把全部内容隐藏。
-function parseLocalDate(s) {
-  if (!s) return null;
-  let d = new Date(s + 'T00:00:00');
-  if (!isNaN(d.getTime())) return d;
-  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
-  if (m) {
-    const norm = `${m[1]}-${String(+m[2]).padStart(2, '0')}-${String(+m[3]).padStart(2, '0')}`;
-    d = new Date(norm + 'T00:00:00');
-    if (!isNaN(d.getTime())) return d;
-  }
-  return null;
-}
-
+// [语义修复] 原 isSaturday 仅在「交易日 getDay()===6」为真 → 周一~周五均为 false，
+// 导致交易日也显示「周日总结」那 3 个空占位框（不当）。新语义：
+// 只要不是周日（getDay()!==0）就显示「周统计」内容（周六与交易日都显示统计）；
+// 仅周日（getDay()===0）显示回顾/经验/计划总结。空/无效日期兜底显示统计，避免空白。
 const isSaturday = computed(() => {
-  if (!currentDate.value) return true;
   const d = parseLocalDate(currentDate.value);
-  if (!d) return true; // 无效日期兜底：显示周六主内容，避免空白
-  return d.getDay() === 6;
+  return !d || d.getDay() !== 0; // 无效/空 → 默认显示统计；仅周日(0)显示总结
 });
 
-function getWeekDates() {
-  const dates = [];
-  const base = currentDate.value;
-  if (!base) return dates;
-  const d = parseLocalDate(base);
-  if (!d) return dates; // 无效日期直接返回空区间，避免遍历出 NaN-NaN-NaN
-  const dow = d.getDay();
-  const saturday = new Date(d);
-  saturday.setDate(d.getDate() + (6 - dow + 7) % 7);
-  for (let i = 0; i < 7; i++) {
-    const dt = new Date(saturday);
-    dt.setDate(saturday.getDate() - i);
-    dates.push(formatDate(dt));
-  }
-  return dates;
-}
-
-function formatDate(d) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
 const dateRange = computed(() => {
-  const dates = getWeekDates();
+  const dates = getWeekDates(currentDate.value);
   if (dates.length === 0) return '--';
   return `${dates[dates.length - 1]} 至 ${dates[0]}`;
 });
 
-const stats = computed(() => computeStats(getWeekDates()));
+const stats = computed(() => computeStats(getWeekDates(currentDate.value)));
 
 const totalStats = computed(() => {
   const startDate = '2026-02-01';
@@ -278,17 +249,17 @@ const totalStats = computed(() => {
   return r;
 });
 
-const topStocks = computed(() => computeTopStocks(getWeekDates()));
-const topEtfs = computed(() => computeTopEtfs(getWeekDates()));
+const topStocks = computed(() => computeTopStocks(getWeekDates(currentDate.value)));
+const topEtfs = computed(() => computeTopEtfs(getWeekDates(currentDate.value)));
 
-// [W-FINDING] duibanPerformance 当前恒为 []（死代码）→ 第 4 区块「本周最近多板表现」恒显「暂无数据」。
-// 真实数据源为「多板/对板」看板（duiban-sync.js 域，跨模块，本代理无所有权），需聚合本周内
-// 多板记录按股票计数。低成本正确修复路径：在 stats-calc 增加 computeTopDuiban(dates)，
-// 读取 duiban 域数据并返回 {name,count}[]；本代理仅占位 []，待与负责月度/对板看板的 Agent 对齐接口后接入。
-// 倾向保留该 section 而非删除，避免误删功能；接入前用户可见「暂无数据」占位（已知缺口，不阻塞空白修复）。
+// [已知缺口] duibanPerformance 当前恒为 []（占位）→ 第 4 区块「本周最近多板表现」恒显「暂无数据」。
+// 真实数据源为「多板/对板」看板（duiban 域，跨模块，本板子无所有权），需聚合本周内多板记录按股票计数。
+// 正确修复路径：在 stats-calc 增加 computeTopDuiban(dates) 读取 duiban 域并返回 {name,count}[]；
+// 本板子仅占位 []，待与负责对板/月度看板的 Agent 对齐接口后接入，避免越界读 duiban 域引入 bug。
+// 保留该 section 而非删除，避免误删功能；接入前用户可见「暂无数据」占位（已知缺口，不阻塞）。
 const duibanPerformance = computed(() => []);
 
-const recordStats = computed(() => computeRecordStats(getWeekDates()));
+const recordStats = computed(() => computeRecordStats(getWeekDates(currentDate.value)));
 
 function toggleTopStocks() { topStocksExpanded.value = !topStocksExpanded.value; }
 // WX-02：复用既有 modal 链路（useScoreCalculation.openWeekendSummary / openWeekendReview），
@@ -299,6 +270,8 @@ function openExperienceEdit() { openWeekendReview(); }
 function openPlanEdit() { openWeekendReview(); }
 
 // W-03：复用 <TrendChart> 组件替代自绘 canvas（遵循 §30 图表性能规范）。
-const profitPoints = computed(() => buildProfitPoints(getWeekDates).profitPoints);
-const balancePoints = computed(() => buildProfitPoints(getWeekDates).balancePoints);
+// buildProfitPoints(getDates) 内部调用 getDates() 取日期数组；getWeekDates 现需 base 参数，
+// 故传入 () => getWeekDates(currentDate.value)，确保随 currentDate 响应式重算。
+const profitPoints = computed(() => buildProfitPoints(() => getWeekDates(currentDate.value)).profitPoints);
+const balancePoints = computed(() => buildProfitPoints(() => getWeekDates(currentDate.value)).balancePoints);
 </script>

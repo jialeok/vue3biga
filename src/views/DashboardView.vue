@@ -16,14 +16,14 @@
 
     <!-- 统计导航栏（模式看板上方） -->
     <div class="stats-nav-bar">
-      <button class="stats-nav-btn weekly" @click="showWeekly">本周统计</button>
-      <button class="stats-nav-btn monthly" @click="showMonthly">本月统计</button>
+      <button class="stats-nav-btn weekly" :class="{ active: boardView === 'weekly' }" @click="statsView.setMode('weekly')">本周统计</button>
+      <button class="stats-nav-btn monthly" :class="{ active: boardView === 'monthly' }" @click="statsView.setMode('monthly')">本月统计</button>
       <button class="stats-nav-btn back-current" @click="goToday">返回当前</button>
     </div>
 
     <PatternBoard />
 
-    <template v-if="!statsMode">
+    <template v-if="boardView === 'trading'">
       <BiddingBoard />
       <JiwangBoard />
       <StatsBoard />
@@ -35,8 +35,8 @@
       <HomeStocksView ref="stocksRef" />
     </template>
 
-    <WeekendStatsBoard v-if="statsMode === 'weekly'" />
-    <MonthlyStatsBoard v-if="statsMode === 'monthly'" />
+    <WeekendStatsBoard v-if="boardView === 'weekly'" />
+    <MonthlyStatsBoard v-if="boardView === 'monthly'" />
 
     <!-- 底部操作栏 -->
     <div class="bottom-bar">
@@ -95,17 +95,14 @@ import StatsBoard from './StatsBoard.vue';
 import StarStatsBoard from './StarStatsBoard.vue';
 import WeekendStatsBoard from './WeekendStatsBoard.vue';
 import MonthlyStatsBoard from './MonthlyStatsBoard.vue';
-import { useScoreCalculation } from '../composables/useScoreCalculation.js';
+import { useStatsView } from '../composables/useStatsView.js';
 
-const { showWeekly: _showWeekly, showMonthly: _showMonthly } = useScoreCalculation();
+// [STATS-VIEW] 模板由当前日期派生（单一真相源在 useStatsView），手动按钮仅作覆盖。
+const statsView = useStatsView();
+const boardView = statsView.boardView;
 
-const statsMode = ref(null);
-
-function showWeekly() { statsMode.value = 'weekly'; _showWeekly(); }
-function showMonthly() { statsMode.value = 'monthly'; _showMonthly(); }
-
-watch(statsMode, (mode) => {
-  if (mode) document.body.classList.add('weekend-mode');
+watch(boardView, (mode) => {
+  if (mode && mode !== 'trading') document.body.classList.add('weekend-mode');
   else document.body.classList.remove('weekend-mode');
 });
 
@@ -155,14 +152,14 @@ function togglePickerHoliday() {
 // uiStore.currentDate 统一驱动，无需 Dashboard 主动广播触发无目的全量重算/重复请求。
 function goToPrevTradingDay() {
   const prev = getPreviousTradingDay(uiStore.currentDate);
-  if (prev) setCurrentDate(prev);
+  if (prev) { setCurrentDate(prev); statsView.onDateChanged(); }
 }
 function goToNextTradingDay() {
   const next = getNextTradingDay(uiStore.currentDate);
-  if (next) setCurrentDate(next);
+  if (next) { setCurrentDate(next); statsView.onDateChanged(); }
 }
 function goToday() {
-  statsMode.value = null;
+  statsView.resetToAuto();
   const today = getMostRecentTradingDay();
   if (today) setCurrentDate(today);
 }
@@ -253,6 +250,7 @@ function selectPickerDate(dateStr) {
   pickerSelected.value = dateStr;
   datePickerActive.value = false;
   setCurrentDate(dateStr);
+  statsView.onDateChanged();
 }
 function prevPickerMonth() {
   if (pickerMonth.value === 0) { pickerMonth.value = 11; pickerYear.value--; }
