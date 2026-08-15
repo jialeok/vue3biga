@@ -81,7 +81,9 @@ export async function runEmotion(env, source, sharedFull) {
   if (_hasAmount && _countsAllMissing) {
     const _savedCounts = {};
     _countKeys.forEach(function(k) { _savedCounts[k] = metrics[k]; metrics[k] = null; });
-    logs.push('⚠️ 数据完整性校验：昨日金额=' + metrics.amount + ' 正常，但计数类字段全缺（涨停/跌停/一字板/最高连板/炸板 原值 ' +
+    // [FIX 2026-08-15] 原 logs.push 引用了不存在的 logs 变量 → ReferenceError 导致整个情绪写入崩溃；
+    // 改用 console.warn（worker 环境日志可见），不影响数据落库流程。
+    console.warn('⚠️ 数据完整性校验：昨日金额=' + metrics.amount + ' 正常，但计数类字段全缺（涨停/跌停/一字板/最高连板/炸板 原值 ' +
       JSON.stringify(_savedCounts) + '），判定为接口数据不完整，计数置 null 等待补全（§11 不把缺失伪装成 0）');
     missingFields.push('counts-all-missing(接口数据不完整)');
   }
