@@ -11,7 +11,7 @@ import { getStocksData, getJiwangData } from '../../data/supabase-client.js';
 import { getEtfBoardData } from '../../data/etf-board-data.js';
 import { getRecentMultiData } from '../../data/jiwang-data.js';
 import { getRankData } from '../app-core.js';
-import { isTradingDay } from '../trading-day-helpers.js';
+import { isTradingDay } from '../date/trading-day-helpers.js';
 
 export function computeStats(dates) {
   const r = {

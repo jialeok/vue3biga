@@ -15,13 +15,13 @@ import { _moduleKey, getJiwangData, getNumericVolume, getStocksData, getSupabase
 export { getBiddingData } from './bidding/bidding.js';
 import { remainingBoards } from '../data/remaining-boards.js';
 import { _addAuctionWatchlistMember, _extractWatchlistNamesFromRows, _getAuctionWatchlistSet, _setAuctionWatchlistForDate, getStockHistoryValue } from '../data/watchlist-and-metrics.js';
-import { getJingYestHighlightSetForDate, getJingYestStocksForDate } from './auction-sort-rules.js';
-import { syncStockCloseFromAuction, syncStockTopicsFromAuction } from './auction-stock-sync.js';
-import { getStats } from './jiwang-helpers.js';
-import { buildNoteFromFields, cleanTopicsForDisplay, parseNoteToFields } from './note-helpers.js';
-import { _backupScopeData, _mergePatchLocal, _patchScopeField, _sanitizePatch, _splitPatch } from './scope-helpers.js';
-import { _getLocalTodayStr, deriveAuctionTagState } from './tag-rules.js';
-import { getMostRecentTradingDay, getPreviousTradingDay, isTradingDay } from './trading-day-helpers.js';
+import { getJingYestHighlightSetForDate, getJingYestStocksForDate } from './auction/sort-rules.js';
+import { syncStockCloseFromAuction, syncStockTopicsFromAuction } from './auction/stock-sync.js';
+import { getStats } from './jiwang/helpers.js';
+import { buildNoteFromFields, cleanTopicsForDisplay, parseNoteToFields } from './note/helpers.js';
+import { _backupScopeData, _mergePatchLocal, _patchScopeField, _sanitizePatch, _splitPatch } from './scope/helpers.js';
+import { _getLocalTodayStr, deriveAuctionTagState } from './tagTitles/rules.js';
+import { getMostRecentTradingDay, getPreviousTradingDay, isTradingDay } from './date/trading-day-helpers.js';
 // §16 域拆分：纯日期工具已迁至 ./date/date-helpers.js（import 供本模块内部调用，re-export 供外部调用点零破坏）
 import { getWeekday, getPreviousDate, getNextDate, _shiftDateStr, buildYesterdayListFromToday } from './date/date-helpers.js';
 export { getWeekday, getPreviousDate, getNextDate, _shiftDateStr, buildYesterdayListFromToday } from './date/date-helpers.js';

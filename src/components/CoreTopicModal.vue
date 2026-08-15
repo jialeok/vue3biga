@@ -54,7 +54,7 @@
 
 <script setup>
 import { ref, watch } from 'vue';
-import { getCoreTopics, saveCoreTopics } from '../logic/topic-rules.js';
+import { getCoreTopics, saveCoreTopics } from '../logic/topic/rules.js';
 import { state } from '../logic/app-state.js';
 import { _emit } from '../stores/eventBus.js';
 

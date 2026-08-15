@@ -62,11 +62,11 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue';
 import { getTodayGroupList, getGroupData, getTodayJiwang } from '../logic/app-core.js';
-import { getTopicGroups } from '../logic/topic-rules.js';
-import { getPreviousTradingDay } from '../logic/trading-day-helpers.js';
+import { getTopicGroups } from '../logic/topic/rules.js';
+import { getPreviousTradingDay } from '../logic/date/trading-day-helpers.js';
 import { useUiStore } from '../stores/uiStore.js';
 import { useAuctionStore } from '../stores/auctionStore.js';
-import { computeAuctionViewData } from '../logic/auction-view-helpers.js';
+import { computeAuctionViewData } from '../logic/auction/view-helpers.js';
 
 const uiStore = useUiStore();
 const auctionStore = useAuctionStore();

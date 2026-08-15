@@ -95,9 +95,9 @@ import { BIDDING_ROW_ORDER, getDefaultBiddingTemplate, orderBiddingRows, pushBid
 import { saveData, markJiwangDirty } from '../logic/app-core.js';
 import { _dbgLog } from '../data/debug-log.js';
 import { showToast, showWarningToast } from '../composables/useToast.js';
-import { renderCircleStats, autoCalculateConsecutiveDays } from '../logic/jiwang-helpers.js';
-import { renderConsecutiveUp } from '../logic/tag-titles-helpers.js';
-import { syncBiddingCloseToEtf, syncSectorEtfZhangNum, syncJiwangKxianFromBidding, autoTagShunshiNishi, fetchBiddingSnapshotToForm, autoCalculateRecentMultiScore } from '../logic/bidding-helpers.js';
+import { renderCircleStats, autoCalculateConsecutiveDays } from '../logic/jiwang/helpers.js';
+import { renderConsecutiveUp } from '../logic/tagTitles/helpers.js';
+import { syncBiddingCloseToEtf, syncSectorEtfZhangNum, syncJiwangKxianFromBidding, autoTagShunshiNishi, fetchBiddingSnapshotToForm, autoCalculateRecentMultiScore } from '../logic/bidding/helpers.js';
 
 const uiStore = useUiStore();
 

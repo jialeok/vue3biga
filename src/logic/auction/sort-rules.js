@@ -1,4 +1,4 @@
-﻿import { state } from './app-state.js';
+﻿import { state } from '../app-state.js';
         // [PERF] 信号函数指纹缓存（模块级，导出供 sort-rules-extra.js 复用）
         export const _signalCache = {};
         export function _viewFpList(list) {
@@ -11,12 +11,12 @@
             }
             return fp;
         }
-        import { getGroupData } from './app-core-api.js';
-        import { getNumericVolume } from '../data/supabase-client.js';
-        import { getStockHistoryValue, _histRowMapFor } from '../data/watchlist-and-metrics.js';
-        import { _dbgLogVerbose } from '../data/debug-log.js';
+        import { getGroupData } from '../app-core-api.js';
+        import { getNumericVolume } from '../../data/supabase-client.js';
+        import { getStockHistoryValue, _histRowMapFor } from '../../data/watchlist-and-metrics.js';
+        import { _dbgLogVerbose } from '../../data/debug-log.js';
 
-        import { getPreviousTradingDay } from './trading-day-helpers.js';
+        import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
 
 
         export function _signalFpFor(dateStr, dataSource) {

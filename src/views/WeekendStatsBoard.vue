@@ -178,7 +178,7 @@
 import { ref, computed } from 'vue';
 import { getJiwangData } from '../data/supabase-client.js';
 import { useUiStore } from '../stores/uiStore.js';
-import { isTradingDay } from '../logic/trading-day-helpers.js';
+import { isTradingDay } from '../logic/date/trading-day-helpers.js';
 import { useScoreCalculation } from '../composables/useScoreCalculation.js';
 import {
   computeStats,

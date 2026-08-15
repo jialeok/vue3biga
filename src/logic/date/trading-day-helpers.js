@@ -1,4 +1,4 @@
-﻿import { loadAllData } from '../data/supabase-client.js';
+﻿import { loadAllData } from '../../data/supabase-client.js';
 let _getLocalTodayStrFn = null;
 export function _setGetLocalTodayStr(fn) { _getLocalTodayStrFn = fn; }
 

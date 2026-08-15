@@ -71,7 +71,7 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useBoardData } from '../composables/useBoardData.js';
-import { parseDieZhangbi, buildDieZhangbi } from '../logic/board-helpers.js';
+import { parseDieZhangbi, buildDieZhangbi } from '../logic/board/helpers.js';
 import { subscribeEtfBoard } from '../data/etf-board-data.js';
 
 const { boardState, loadEarlyEtf, saveEarlyEtf, toast, warnToast } = useBoardData();

@@ -14,11 +14,11 @@ import {
     getParallelStocksForDate,
     getJingYestHighlightSetForDate,
     getRatioDiffInfoForDate
-} from '../logic/auction-sort-rules.js';
-import { _buildTagStateCache } from '../logic/tag-rules.js';
+} from '../logic/auction/sort-rules.js';
+import { _buildTagStateCache } from '../logic/tagTitles/rules.js';
 import { buildTopicCache } from '../data/stock-topics.js';
 import { _dbgLog } from '../data/debug-log.js';
-import { getPreviousTradingDay } from '../logic/trading-day-helpers.js';
+import { getPreviousTradingDay } from '../logic/date/trading-day-helpers.js';
 
 // ============================================================
 // Composable: useAuctionData

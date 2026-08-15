@@ -7,7 +7,7 @@ import { useAuthStore } from '../stores/authStore.js';
 import { startSessionPoll } from '../data/watchlist-and-metrics.js';
 import { pullDailyHighlights } from '../data/daily-highlights.js';
 import { pullHotStocksHighlights, loadHotStocksFromCloud } from '../data/hot-stocks.js';
-import { loadCoreTopicsFromCloud } from '../logic/topic-rules.js';
+import { loadCoreTopicsFromCloud } from '../logic/topic/rules.js';
 import { pullFromCloud } from '../logic/workflows/auction-sync.js';
 import { initApp, getCurrentDate } from '../logic/app-core.js';
 import { migrateAuctionToTable, migrateAuctionDataToNewTables } from '../data/legacy-migration.js';

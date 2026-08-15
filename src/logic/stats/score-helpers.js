@@ -1,4 +1,4 @@
-import { getFumianCache } from '../data/fumian-sync.js';
+import { getFumianCache } from '../../data/fumian-sync.js';
 
 const defaultScoreSettings = {
     recentMulti: {

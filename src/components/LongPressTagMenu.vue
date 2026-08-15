@@ -23,9 +23,9 @@ import { ref, computed } from 'vue';
 import { useUiStore } from '../stores/uiStore.js';
 import auctionTagStore from '../stores/auctionTagStore.js';
 import auctionStore from '../stores/auctionStore.js';
-import { ensureStockInNextDay } from '../logic/auction-stock-sync.js';
+import { ensureStockInNextDay } from '../logic/auction/stock-sync.js';
 
-import { deriveAuctionTagState } from '../logic/tag-rules.js';
+import { deriveAuctionTagState } from '../logic/tagTitles/rules.js';
 import { showToast } from '../composables/useToast.js';
 
 const uiStore = useUiStore();

@@ -7,7 +7,7 @@
  */
 import { ref, computed } from 'vue';
 import { getNumericVolume } from '../data/supabase-client.js';
-import { getDigitCount } from '../logic/auction-sort-rules.js';
+import { getDigitCount } from '../logic/auction/sort-rules.js';
 import { _dbgLog } from '../data/debug-log.js';
 
 // ============================================================

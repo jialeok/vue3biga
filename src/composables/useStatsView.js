@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue';
 import { useUiStore } from '../stores/uiStore.js';
-import { isWeekend } from '../logic/trading-day-helpers.js';
+import { isWeekend } from '../logic/date/trading-day-helpers.js';
 
 /**
  * useStatsView.js — 「显示哪个看板」的单一真相源（Logic / ViewModel 层）

@@ -1,13 +1,13 @@
-﻿import { _setGetLocalTodayStr } from './trading-day-helpers.js';
-import { _dbgLog, _dbgLogVerbose } from '../data/debug-log.js';
-import { getStockHistoryValue, _isAuctionWatchlistStock, _addAuctionWatchlistMember } from '../data/watchlist-and-metrics.js';
-import { getJingYestHighlightSetForDate } from './auction-sort-rules.js';
-import { getPreviousTradingDay, isTradingDay } from './trading-day-helpers.js';
+﻿import { _setGetLocalTodayStr } from '../date/trading-day-helpers.js';
+import { _dbgLog, _dbgLogVerbose } from '../../data/debug-log.js';
+import { getStockHistoryValue, _isAuctionWatchlistStock, _addAuctionWatchlistMember } from '../../data/watchlist-and-metrics.js';
+import { getJingYestHighlightSetForDate } from '../auction/sort-rules.js';
+import { getPreviousTradingDay, isTradingDay } from '../date/trading-day-helpers.js';
 
-import { getStockCode } from '../data/stock-code-map.js';
-import { getAuctionData, scheduleCloudPush, markAuctionDirty } from './app-core-api.js';
-import { state } from './app-state.js';
-import { useAuctionTagStore } from '../stores/auctionTagStore.js';
+import { getStockCode } from '../../data/stock-code-map.js';
+import { getAuctionData, scheduleCloudPush, markAuctionDirty } from '../app-core-api.js';
+import { state } from '../app-state.js';
+import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 
         // [REFACTOR 2026-08-15] 标签真相收敛到 auctionTagStore（云端），不再直接读 localStorage（§6/§8 修复双真相）
         let _auctionTagsCache = null;

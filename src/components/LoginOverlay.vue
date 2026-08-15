@@ -42,7 +42,7 @@ import { _emit } from '../stores/eventBus.js';
 import { loadCloudTopics, buildTopicCache, invalidateTopicCache } from '../data/stock-topics.js';
 import { loadCloudStockCodeMap } from '../data/stock-code-map.js';
 import { pullHotStocksHighlights, migrateHotStocksShadowToMetrics, loadHotStocksFromCloud, migrateHotStocksToTrendsTable, migrateHotTrendsToMarketMetrics, loadHotTrendsFromCloud } from '../data/hot-stocks.js';
-import { clearPushDebounceTimer } from '../logic/session-helpers.js';
+import { clearPushDebounceTimer } from '../logic/session/helpers.js';
 import authStore from '../stores/authStore.js';
 
 const passwordVisible = ref(false);

@@ -458,17 +458,17 @@ import { saveData, getTodayGroupList, getGroupData, patchAuctionField, saveModul
   fillTopicsFromNumcat, getStockHistoryTopics,
   importAuctionFromPaste, importAuctionHistoryFill, replaceConceptFromPaste
 } from '../logic/app-core.js';
-import { getAuctionStockHistory, deriveAuctionTagState } from '../logic/tag-rules.js';
+import { getAuctionStockHistory, deriveAuctionTagState } from '../logic/tagTitles/rules.js';
 import { hydrateStockHistoryRow } from '../data/watchlist-and-metrics.js';
 import { getStockHistoryValue } from '../data/watchlist-and-metrics.js';
-import { getTopicGroups, getTopicRankCountThisWeek } from '../logic/topic-rules.js';
-import { getDisplayNote, parseNoteToFields, extractTopics } from '../logic/note-helpers.js';
-import { getPreviousTradingDay, isTradingDay } from '../logic/trading-day-helpers.js';
-import { getHighRatioStocksForDate, getJingYestHighlightSetForDate, getParallelStocksForDate } from '../logic/auction-sort-rules.js';
-import { syncStockCloseFromAuction, syncStockTopicsFromAuction } from '../logic/auction-stock-sync.js';
+import { getTopicGroups, getTopicRankCountThisWeek } from '../logic/topic/rules.js';
+import { getDisplayNote, parseNoteToFields, extractTopics } from '../logic/note/helpers.js';
+import { getPreviousTradingDay, isTradingDay } from '../logic/date/trading-day-helpers.js';
+import { getHighRatioStocksForDate, getJingYestHighlightSetForDate, getParallelStocksForDate } from '../logic/auction/sort-rules.js';
+import { syncStockCloseFromAuction, syncStockTopicsFromAuction } from '../logic/auction/stock-sync.js';
 import { getStockCode } from '../data/stock-code-map.js';
 import { pushStockTopicsToCloud } from '../data/stock-topics.js';
-import { prepareAuctionData } from '../logic/auction-view-helpers.js';
+import { prepareAuctionData } from '../logic/auction/view-helpers.js';
 import { computeAuctionViewDataIncremental } from '../logic/auction/incremental-view.js';
 import { showToast } from '../composables/useToast.js';
 import { apiStatusMap } from '../logic/ui-bridge.js';

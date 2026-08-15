@@ -172,12 +172,12 @@ import { _on, _off } from '../stores/eventBus.js';
 import { getTodayJiwang } from '../logic/app-core.js';
 import { getBiddingData } from '../data/supabase-client.js';
 import { pushJiwangNow } from '../data/jiwang-data.js';
-import { getStats, autoCalculateConsecutiveDays, renderCircleStats } from '../logic/jiwang-helpers.js';
-import { getPreviousTradingDay } from '../logic/trading-day-helpers.js';
-import { renderConsecutiveUp } from '../logic/tag-titles-helpers.js';
+import { getStats, autoCalculateConsecutiveDays, renderCircleStats } from '../logic/jiwang/helpers.js';
+import { getPreviousTradingDay } from '../logic/date/trading-day-helpers.js';
+import { renderConsecutiveUp } from '../logic/tagTitles/helpers.js';
 // [A7-01] 修正导入源：autoCalculateRecentMultiScore 在 bidding-helpers.js 中已 re-export，
 // 不要从 useScoreCalculation() 解构（其返回值不含该函数，会得到 undefined 而抛 TypeError）。
-import { autoCalculateRecentMultiScore } from '../logic/bidding-helpers.js';
+import { autoCalculateRecentMultiScore } from '../logic/bidding/helpers.js';
 // [A7-02] 经 Logic 层受控写入，UI 不再原地改 getJiwangData() 返回值
 import { saveJiwangData } from '../logic/jiwang/jiwang.js';
 

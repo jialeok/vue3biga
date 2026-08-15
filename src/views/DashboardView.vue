@@ -78,7 +78,7 @@
 <script setup>
 import { ref, computed, watch, onUnmounted } from 'vue';
 import { setCurrentDate, saveData } from '../logic/app-core.js';
-import { getPreviousTradingDay, getNextTradingDay, getPreviousCalendarDay, getNextCalendarDay, getMostRecentTradingDay, getHolidays, getTradingDays, isTradingDay, toggleHoliday } from '../logic/trading-day-helpers.js';
+import { getPreviousTradingDay, getNextTradingDay, getPreviousCalendarDay, getNextCalendarDay, getMostRecentTradingDay, getHolidays, getTradingDays, isTradingDay, toggleHoliday } from '../logic/date/trading-day-helpers.js';
 import { _emit } from '../stores/eventBus.js';
 import { useUiStore } from '../stores/uiStore.js';
 import { showToast } from '../composables/useToast.js';

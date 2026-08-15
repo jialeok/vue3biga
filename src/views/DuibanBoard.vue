@@ -74,7 +74,7 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useBoardData } from '../composables/useBoardData.js';
-import { parseDieZhangbi, buildDieZhangbi } from '../logic/board-helpers.js';
+import { parseDieZhangbi, buildDieZhangbi } from '../logic/board/helpers.js';
 import { subscribeRecentMulti } from '../data/duiban-sync.js';
 
 const { boardState, loadRecentMulti, saveRecentMulti, toast, warnToast } = useBoardData();

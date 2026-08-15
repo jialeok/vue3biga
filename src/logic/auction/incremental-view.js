@@ -8,16 +8,16 @@
 //   - 仅某行“行内输入”变化 → 仅该行 rowSig 失配 → 仅该行重新派生；其余行复用缓存对象（输入完全相同，结果必然一致）。
 //   任何失配都回退到 computeAuctionViewData 的新鲜结果，不存在“看起来更新了实际没更新”的风险。
 
-import { computeAuctionViewData } from '../auction-view-helpers.js';
-import { getPreviousTradingDay } from '../trading-day-helpers.js';
+import { computeAuctionViewData } from './view-helpers.js';
+import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
 import { getGroupData } from '../app-core-api.js';
 import {
   getHighRatioStocksForDate,
   getJingYestHighlightSetForDate,
   getParallelStocksForDate
-} from '../auction-sort-rules.js';
-import { getThreeDayJingDieSet } from '../sort-rules-extra.js';
-import { deriveAuctionTagState } from '../tag-rules.js';
+} from './sort-rules.js';
+import { getThreeDayJingDieSet } from './sort-rules-extra.js';
+import { deriveAuctionTagState } from '../tagTitles/rules.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 
 const rowCache = new Map(); // key: `${dataSource}|${index}` -> { sig, item }

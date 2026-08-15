@@ -285,13 +285,13 @@ import { ref, reactive, computed, watch, onMounted, onUnmounted, shallowRef, tri
 import { getCurrentDate, setCurrentDate } from '../logic/app-core.js';
 import { getStocksData } from '../data/supabase-client.js';
 import { formatDate, getStarTagsForStock, getStockProfitStatus, clearStarTagCache, clearProfitStatusCache } from '../logic/ui-bridge.js';
-import { editStock, copyToTomorrow, copyToDate, deleteStock, openSoldEdit, openTrackEdit } from '../logic/stock-operations.js';
+import { editStock, copyToTomorrow, copyToDate, deleteStock, openSoldEdit, openTrackEdit } from '../logic/stocks/operations.js';
 import { saveStockFields, saveSoldRecords, saveTrack, importStockData } from '../logic/stocks/stocks-edit.js';
 import { showToast } from '../composables/useToast.js';
-import { getCurrentFilter, setCurrentFilter, getIsStockListCollapsed, setIsStockListCollapsed } from '../logic/stock-list-state.js';
+import { getCurrentFilter, setCurrentFilter, getIsStockListCollapsed, setIsStockListCollapsed } from '../logic/stocks/list-state.js';
 import { _on, _off } from '../stores/eventBus.js';
 import { useUiStore } from '../stores/uiStore.js';
-import { getPreviousTradingDay, getNextTradingDay, isTradingDay, getMostRecentTradingDay } from '../logic/trading-day-helpers.js';
+import { getPreviousTradingDay, getNextTradingDay, isTradingDay, getMostRecentTradingDay } from '../logic/date/trading-day-helpers.js';
 import EditModal from '../components/EditModal.vue';
 
 const uiStore = useUiStore();
