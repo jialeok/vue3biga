@@ -4,7 +4,7 @@ import { localIsTradingDay } from '../../_shared-source/holidays.js';
 import { CONFIG } from '../config.js';
 import { fetchLadderConstituents, fetchHistoricalPctChg } from '../data/fuyao-api.js';
 import { numcatDailyAuc, numcatDaily } from '../data/numcat-api.js';
-import { upsertAuctionWatchlist, upsertMarketMetrics, readAuctionWatchlistForDate } from '../data/supabase-write.js';
+import { upsertAuctionWatchlist, upsertMarketMetrics, readAuctionWatchlistForDate, readStockCodeMap } from '../data/supabase-write.js';
 import { getRecentTradingDays } from './holiday-check.js';
 
 // 1. 检查是否交易日
@@ -35,14 +35,21 @@ async function fetchAndWriteWatchlist(env, today, logs) {
   // 确保 worker 也为它们抓取竞价数据，否则观察组股票早上没有数据
   let constituents = ladderConstituents;
   try {
+    // [FIX 2026-08-15] 观察组/打标签股票在 watchlist 表里 code 常为空（worker 从不写 code 到这些行），
+    // 用 stockcodemap 表按名称补 code，否则 numcat 按 code 抓取时这些股票会被跳过 → 观察组当天无数据。
+    const codeMap = await readStockCodeMap(env);
     const recentDays = await getRecentTradingDays(env, today, 2);
     const prevDay = recentDays.length >= 2 ? recentDays[recentDays.length - 2] : null;
     if (prevDay) {
       const prevStocks = await readAuctionWatchlistForDate(env, prevDay);
       const existingCodes = new Set(ladderConstituents.map(c => c.code));
-      const extraStocks = prevStocks.filter(s => s.code && !existingCodes.has(s.code));
+      const extraStocks = prevStocks.filter(s => {
+        const code = s.code || codeMap[s.name] || '';
+        return code && !existingCodes.has(code);
+      }).map(s => ({ name: s.name, code: s.code || codeMap[s.name] || '' }));
       if (extraStocks.length > 0) {
-        logs.push('前一日额外股票(打标签/观察组): ' + extraStocks.length + ' 只，合并到抓取名单');
+        logs.push('前一日额外股票(打标签/观察组): ' + extraStocks.length + ' 只（stockcodemap 补 code ' +
+          extraStocks.filter(s => s.code).length + ' 只），合并到抓取名单');
         constituents = ladderConstituents.concat(extraStocks);
       }
     }
@@ -52,9 +59,13 @@ async function fetchAndWriteWatchlist(env, today, logs) {
   // （ensureBoughtStocksForDate / ensureObservationStocks 从前日 stocksData 继承的打标签/观察组票，
   // 已推送到云端今日 watchlist，但不在前一日 watchlist 里，worker 只读前一日会漏掉）
   try {
+    const codeMap = await readStockCodeMap(env);
     const todayStocks = await readAuctionWatchlistForDate(env, today);
     const existingCodes = new Set(constituents.map(c => c.code));
-    const todayExtra = todayStocks.filter(s => s.code && !existingCodes.has(s.code));
+    const todayExtra = todayStocks.filter(s => {
+      const code = s.code || codeMap[s.name] || '';
+      return code && !existingCodes.has(code);
+    }).map(s => ({ name: s.name, code: s.code || codeMap[s.name] || '' }));
     if (todayExtra.length > 0) {
       logs.push('今日 watchlist 额外股票(前端提前继承): ' + todayExtra.length + ' 只，合并到抓取名单');
       constituents = constituents.concat(todayExtra);

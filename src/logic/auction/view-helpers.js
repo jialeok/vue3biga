@@ -180,11 +180,29 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   const _existingNames = new Set(auctionList.map(function(s) { return s && s.stock ? s.stock.trim() : ''; }));
   const _injectNames = new Set();
   const _injectedRows = [];
+  // [OBS-DATA 2026-08-15] 观察组空壳行回填当天真实数据：worker 9:25 已把观察组股票
+  // （前一日 watchlist 合并进抓取名单）的数据写入 market_metrics，pullAuctionFromTable
+  // 会把 market_metrics 的影子行合并进 _auctionMemCache[date]。注入观察组行时若缓存里有
+  // 同名行（非 obsAutoAdded），复用其 volume/yestVolume/note/changePct，避免观察组显示空白。
+  const _auctionDayRows = (getAuctionData()[currentDate] || []);
+  const _auctionDayRowMap = new Map();
+  _auctionDayRows.forEach(function(r) {
+    if (r && r.stock) {
+      const k = r.stock.trim();
+      if (!_auctionDayRowMap.has(k)) _auctionDayRowMap.set(k, r);
+    }
+  });
   function _maybeInject(n) {
     if (!n) return;
     if (_existingNames.has(n) || _injectNames.has(n)) return;
     _injectNames.add(n);
-    _injectedRows.push({ stock: n, code: getStockCode(n), volume: '', yestVolume: '', note: '', obsAutoAdded: true });
+    const dayRow = _auctionDayRowMap.get(n);
+    if (dayRow && dayRow.obsAutoAdded !== true) {
+      // worker/手动已抓到该股票当天数据：保留真实数据，仅补观察组身份标记（视图层不落库）
+      _injectedRows.push(Object.assign({}, dayRow, { obsAutoAdded: true }));
+    } else {
+      _injectedRows.push({ stock: n, code: getStockCode(n), volume: '', yestVolume: '', note: '', obsAutoAdded: true });
+    }
   }
   // [OBS-FIX 2026-08-15 v3] 观察组完整继承恢复：无论当天是否已抓取真实数据，都把
   // 「前一日竞昨高光 + obsBought」中不在当日列表的股票注入为观察组预览空壳行（蚂蚁线上观察组分栏）。

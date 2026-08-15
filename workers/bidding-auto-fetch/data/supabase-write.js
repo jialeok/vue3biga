@@ -49,5 +49,24 @@ export async function readAuctionWatchlistForDate(env, date) {
   const resp = await fetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) return [];
   const data = await resp.json();
-  return (data || []).map(r => ({ name: r.stock, code: r.code })).filter(s => s.name && s.code);
+  // 【FIX 2026-08-15】不再过滤 code 为空的行：观察组/打标签股票在前一日 watchlist 里可能没有 code
+  // （worker 从不写 code 到这些行，code 只在 stockcodemap 表），过滤掉会导致观察组股票不被抓取、
+  // 当天 market_metrics 无数据 → 观察组显示空白。code 由调用方（fetchAndWriteWatchlist）查 stockcodemap 补充。
+  return (data || []).map(r => ({ name: (r.stock || '').trim(), code: r.code || '' })).filter(s => s.name);
+}
+
+// [FIX 2026-08-15] 读取股票名称→代码映射表（stockcodemap），为 watchlist 里 code 为空的
+// 观察组/打标签股票补充 code（worker 的 numcat 抓取按 code 查询，无 code 无法抓数据）。
+export async function readStockCodeMap(env) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stockcodemap?select=stock,code';
+  const resp = await fetch(url, { headers: sbHeaders(env) });
+  if (!resp.ok) return {};
+  const data = await resp.json();
+  const map = {};
+  (data || []).forEach(r => {
+    const name = (r.stock || '').trim();
+    const code = (r.code || '').trim();
+    if (name && code && !map[name]) map[name] = code;
+  });
+  return map;
 }
