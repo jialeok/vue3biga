@@ -142,9 +142,9 @@
         </div>
 
         <div v-if="filteredObsItems.length > 0" class="auction-group-label auction-obs-group-label">观察组</div>
-        <template v-for="(item, idx) in filteredObsItems" :key="item.index" v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.index)]">
+        <template v-for="(item, idx) in filteredObsItems" :key="item.index" v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.stock)]">
           <div :class="item.itemClass" :data-index="item.index" :data-stock="item.stock || ''" @click="onToggleSelect(item.index)">
-            <div :class="item.numberClass" @click.stop="onExpandTrend(item.index)" @dblclick.stop>{{ idx + 1 }}</div>
+            <div :class="item.numberClass" @click.stop="onExpandTrend(item.stock)" @dblclick.stop>{{ idx + 1 }}</div>
             <div :class="item.stockClass"
                  :data-stock="item.stock"
                  :data-note="item.note || ''"
@@ -166,8 +166,8 @@
                  @contextmenu.prevent>{{ item.yestVolumeDisplay }}</div>
             <div :class="item.ratioClass" :data-index="item.index" @dblclick.stop>{{ item.ratio }}<span v-if="item.ratioArrow" :style="{ color: item.ratioArrow === '⬆' ? '#ef4444' : '#10b981' }">{{ item.ratioArrow }}</span></div>
           </div>
-          <div v-if="expandedSet.has(item.index)" class="auction-trend-panel" @dblclick.stop>
-            <template v-if="trendHistory[item.index]">
+          <div v-if="expandedSet.has(item.stock)" class="auction-trend-panel" @dblclick.stop>
+            <template v-if="trendHistory[item.stock]">
               <div class="auction-daily-metrics">
                 <template v-for="m in dailyMetricsList(item.stock)" :key="m.label">
                   <span class="adm-item"><b>{{ m.label }}</b>：{{ m.value }}</span>
@@ -176,33 +176,33 @@
               <div class="trend-chart-item">
                 <div class="trend-chart-label trend-chart-label-with-stats">
                   <span>竞价量(万) 近5日</span>
-                  <span v-if="trendHistory[item.index].diff != null" style="color:#2563eb; font-weight:600;">差值 {{ trendHistory[item.index].diff }}</span>
-                  <span v-if="trendHistory[item.index].jingRatio != null" style="color:#6366f1; font-weight:600;">今/昨比 {{ trendHistory[item.index].jingRatio }}</span>
+                  <span v-if="trendHistory[item.stock].diff != null" style="color:#2563eb; font-weight:600;">差值 {{ trendHistory[item.stock].diff }}</span>
+                  <span v-if="trendHistory[item.stock].jingRatio != null" style="color:#6366f1; font-weight:600;">今/昨比 {{ trendHistory[item.stock].jingRatio }}</span>
                 </div>
-                <TrendChart :points="trendHistory[item.index].volume" color="#6366f1" />
+                <TrendChart :points="trendHistory[item.stock].volume" color="#6366f1" />
               </div>
               <div class="trend-chart-item">
                 <div class="trend-chart-label trend-chart-label-with-stats">
                   <span>昨日成交量(万) 近5日</span>
-                  <span v-if="trendHistory[item.index].yestRatio != null" style="color:#10b981; font-weight:600;">昨/前比 {{ trendHistory[item.index].yestRatio }}</span>
+                  <span v-if="trendHistory[item.stock].yestRatio != null" style="color:#10b981; font-weight:600;">昨/前比 {{ trendHistory[item.stock].yestRatio }}</span>
                 </div>
-                <TrendChart :points="trendHistory[item.index].yestVolume" color="#10b981" />
+                <TrendChart :points="trendHistory[item.stock].yestVolume" color="#10b981" />
               </div>
-              <div class="trend-chart-item" v-if="trendHistory[item.index].aucPctChg.some(p => p.value !== null)">
+              <div class="trend-chart-item" v-if="trendHistory[item.stock].aucPctChg.some(p => p.value !== null)">
                 <div class="trend-chart-label">竞价涨幅(%) 近5日</div>
-                <TrendChart :points="trendHistory[item.index].aucPctChg" color="#f59e0b" :percent="true" />
+                <TrendChart :points="trendHistory[item.stock].aucPctChg" color="#f59e0b" :percent="true" />
               </div>
-              <div class="trend-chart-item" v-if="trendHistory[item.index].changePct.some(p => p.value !== null)">
+              <div class="trend-chart-item" v-if="trendHistory[item.stock].changePct.some(p => p.value !== null)">
                 <div class="trend-chart-label">涨幅(%) 近5日</div>
-                <TrendChart :points="trendHistory[item.index].changePct" color="#64748b" :percent="true" />
+                <TrendChart :points="trendHistory[item.stock].changePct" color="#64748b" :percent="true" />
               </div>
             </template>
           </div>
         </template>
         <div v-if="showObsSeparator" class="auction-obs-separator"></div>
-        <template v-for="(item, idx) in filteredRegularItems" :key="item.index" v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.index)]">
+        <template v-for="(item, idx) in filteredRegularItems" :key="item.index" v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.stock)]">
           <div :class="item.itemClass" :data-index="item.index" :data-stock="item.stock || ''" @click="onToggleSelect(item.index)">
-            <div :class="item.numberClass" @click.stop="onExpandTrend(item.index)" @dblclick.stop>{{ filteredObsItems.length + idx + 1 }}</div>
+            <div :class="item.numberClass" @click.stop="onExpandTrend(item.stock)" @dblclick.stop>{{ filteredObsItems.length + idx + 1 }}</div>
             <div :class="item.stockClass"
                  :data-stock="item.stock"
                  :data-note="item.note || ''"
@@ -224,8 +224,8 @@
                  @contextmenu.prevent>{{ item.yestVolumeDisplay }}</div>
             <div :class="item.ratioClass" :data-index="item.index" @dblclick.stop>{{ item.ratio }}<span v-if="item.ratioArrow" :style="{ color: item.ratioArrow === '⬆' ? '#ef4444' : '#10b981' }">{{ item.ratioArrow }}</span></div>
           </div>
-          <div v-if="expandedSet.has(item.index)" class="auction-trend-panel" @dblclick.stop>
-            <template v-if="trendHistory[item.index]">
+          <div v-if="expandedSet.has(item.stock)" class="auction-trend-panel" @dblclick.stop>
+            <template v-if="trendHistory[item.stock]">
               <div class="auction-daily-metrics">
                 <template v-for="m in dailyMetricsList(item.stock)" :key="m.label">
                   <span class="adm-item"><b>{{ m.label }}</b>：{{ m.value }}</span>
@@ -234,25 +234,25 @@
               <div class="trend-chart-item">
                 <div class="trend-chart-label trend-chart-label-with-stats">
                   <span>竞价量(万) 近5日</span>
-                  <span v-if="trendHistory[item.index].diff != null" style="color:#2563eb; font-weight:600;">差值 {{ trendHistory[item.index].diff }}</span>
-                  <span v-if="trendHistory[item.index].jingRatio != null" style="color:#6366f1; font-weight:600;">今/昨比 {{ trendHistory[item.index].jingRatio }}</span>
+                  <span v-if="trendHistory[item.stock].diff != null" style="color:#2563eb; font-weight:600;">差值 {{ trendHistory[item.stock].diff }}</span>
+                  <span v-if="trendHistory[item.stock].jingRatio != null" style="color:#6366f1; font-weight:600;">今/昨比 {{ trendHistory[item.stock].jingRatio }}</span>
                 </div>
-                <TrendChart :points="trendHistory[item.index].volume" color="#6366f1" />
+                <TrendChart :points="trendHistory[item.stock].volume" color="#6366f1" />
               </div>
               <div class="trend-chart-item">
                 <div class="trend-chart-label trend-chart-label-with-stats">
                   <span>昨日成交量(万) 近5日</span>
-                  <span v-if="trendHistory[item.index].yestRatio != null" style="color:#10b981; font-weight:600;">昨/前比 {{ trendHistory[item.index].yestRatio }}</span>
+                  <span v-if="trendHistory[item.stock].yestRatio != null" style="color:#10b981; font-weight:600;">昨/前比 {{ trendHistory[item.stock].yestRatio }}</span>
                 </div>
-                <TrendChart :points="trendHistory[item.index].yestVolume" color="#10b981" />
+                <TrendChart :points="trendHistory[item.stock].yestVolume" color="#10b981" />
               </div>
-              <div class="trend-chart-item" v-if="trendHistory[item.index].aucPctChg.some(p => p.value !== null)">
+              <div class="trend-chart-item" v-if="trendHistory[item.stock].aucPctChg.some(p => p.value !== null)">
                 <div class="trend-chart-label">竞价涨幅(%) 近5日</div>
-                <TrendChart :points="trendHistory[item.index].aucPctChg" color="#f59e0b" :percent="true" />
+                <TrendChart :points="trendHistory[item.stock].aucPctChg" color="#f59e0b" :percent="true" />
               </div>
-              <div class="trend-chart-item" v-if="trendHistory[item.index].changePct.some(p => p.value !== null)">
+              <div class="trend-chart-item" v-if="trendHistory[item.stock].changePct.some(p => p.value !== null)">
                 <div class="trend-chart-label">涨幅(%) 近5日</div>
-                <TrendChart :points="trendHistory[item.index].changePct" color="#64748b" :percent="true" />
+                <TrendChart :points="trendHistory[item.stock].changePct" color="#64748b" :percent="true" />
               </div>
             </template>
           </div>
@@ -504,6 +504,9 @@ const sortState = reactive({
 });
 const expandedSet = ref(new Set());
 const trendHistory = ref({});
+// [FIX 2026-08-17] 展开状态 key 用股票名而非位置 index：翻页/刷新后 viewData 重算会导致
+// index 漂移，v-memo 复用的旧闭包携带旧 index 会 find 落空 → 序号点击"展不开"。
+// 股票名是稳定标识，永不漂移。expandedSet = Set<股票名>，trendHistory = { 股票名: {...} }
 const longPressMenuRef = ref(null);
 const coreTopicModalRef = ref(null);
 const editModalRef = ref(null);
@@ -1153,10 +1156,11 @@ function expandAll() {
   const newHistory = {};
   allItems.forEach(item => {
     if (item && item.stock) {
-      newSet.add(item.index);
-      const history = getAuctionStockHistory(item.stock.trim(), uiStore.currentDate, 5, 'auction');
+      const name = item.stock.trim();
+      newSet.add(name);
+      const history = getAuctionStockHistory(name, uiStore.currentDate, 5, 'auction');
       const stats = _computeTrendStats(history);
-      newHistory[item.index] = {
+      newHistory[name] = {
         volume: history.map(h => ({ date: h.date, value: h.volume })),
         yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
         changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
@@ -1194,7 +1198,7 @@ function _computeTrendStats(history) {
   return { jingRatio, yestRatio, diff };
 }
 
-async function loadTrendHistory(index, stockName) {
+async function loadTrendHistory(stockName) {
   const name = (stockName || '').trim();
   if (!name) return;
   // 先用内存缓存即时出图：保证点击序号后面板立即展开（不依赖网络，根治"展开空白/像没展开"）
@@ -1202,7 +1206,7 @@ async function loadTrendHistory(index, stockName) {
     const stats = _computeTrendStats(history);
     trendHistory.value = {
       ...trendHistory.value,
-      [index]: {
+      [name]: {
         volume: history.map(h => ({ date: h.date, value: h.volume })),
         yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
         changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
@@ -1257,7 +1261,7 @@ function switchPage(page) {
   //  - 防抖：切页后立刻点序号不应被上一次点击的 300ms 窗口误吞（§24/§25 页面生命周期整洁）
   //  - toast：position:fixed 悬浮在页面根，切页后若不收起会盖住第一页序号列，点击序号变成点 toast（"展不开"）
   _lastExpandClickTs = 0;
-  _lastExpandIndex = -1;
+  _lastExpandStock = '';
   closeNotePopup();
 }
 function onSwipeStart(e) {
@@ -1461,25 +1465,29 @@ function closeNotePopup() {
 }
 
 // [FIX 2026-08-16] 序号双击防抖：双击会触发两次 click（展开→收起），用户误以为"被冻住"。
-// 300ms 内的「同一行」第二次点击忽略（浏览器 dblclick 的两击间隔 ~250ms），保证双击序号稳定展开趋势图；
-// 不同行快速点击互不影响（按 index 分别防抖，杜绝"点A行后300ms内点B行没反应"）。
+// 300ms 内的「同一只股票」第二次点击忽略（浏览器 dblclick 的两击间隔 ~250ms），保证双击序号稳定展开趋势图；
+// 不同股票快速点击互不影响（按股票名分别防抖，杜绝"点A行后300ms内点B行没反应"）。
+// [FIX 2026-08-17] key 从位置 index 改为股票名：viewData 重算导致 index 漂移时，
+// 旧闭包携带旧 index 会 find 落空 → 序号"展不开"；股票名稳定，点击即命中（§17/§23 稳定渲染）。
 let _lastExpandClickTs = 0;
-let _lastExpandIndex = -1;
-function onExpandTrend(index) {
+let _lastExpandStock = '';
+function onExpandTrend(stockName) {
+  const name = (stockName || '').trim();
+  if (!name) return;
   const now = Date.now();
-  if (index === _lastExpandIndex && now - _lastExpandClickTs < 300) return;
+  if (name === _lastExpandStock && now - _lastExpandClickTs < 300) return;
   _lastExpandClickTs = now;
-  _lastExpandIndex = index;
+  _lastExpandStock = name;
   const newSet = new Set(expandedSet.value);
-  if (newSet.has(index)) {
-    newSet.delete(index);
+  if (newSet.has(name)) {
+    newSet.delete(name);
     const newHistory = { ...trendHistory.value };
-    delete newHistory[index];
+    delete newHistory[name];
     trendHistory.value = newHistory;
   } else {
-    newSet.add(index);
-    const item = viewData.value.items.find(it => it.index === index);
-    if (item && item.stock) loadTrendHistory(index, item.stock);
+    newSet.add(name);
+    const item = viewData.value.items.find(it => it.stock && it.stock.trim() === name);
+    if (item && item.stock) loadTrendHistory(name);
   }
   expandedSet.value = newSet;
 }
