@@ -148,6 +148,7 @@
             <div :class="item.stockClass"
                  :data-stock="item.stock"
                  :data-note="item.note || ''"
+                 @dblclick.stop
                  @contextmenu.prevent="onLongPress(item.stock)"
                  @touchstart.passive="startLongPress(item.stock)"
                  @touchend="cancelLongPress"
@@ -205,6 +206,7 @@
             <div :class="item.stockClass"
                  :data-stock="item.stock"
                  :data-note="item.note || ''"
+                 @dblclick.stop
                  @contextmenu.prevent="onLongPress(item.stock)"
                  @touchstart.passive="startLongPress(item.stock)"
                  @touchend="cancelLongPress"
@@ -1363,7 +1365,24 @@ let notePopupScrollCleanup = null;
 
 function onYestClick(item, event) {
   if (!item) return;
-  const note = getDisplayNote(item) || '';
+  let note = getDisplayNote(item) || '';
+  // [FIX 2026-08-16] 统一英文标点：中文逗号/顿号/分号 → 英文逗号，括号统一英文（与第二页题材格式一致）
+  note = note.replace(/[，、;；]/g, ',').replace(/[（]/g, '(').replace(/[）]/g, ')');
+  // [FIX 2026-08-16] 题材补全：行内 topics 为空时（早盘竞价行只存涨幅，题材在共享题材库），
+  // 回退查 getStockHistoryTopics，与第二页题材分组显示一致（同 getTopicsDisplay 口径）。
+  if (!note.includes('(') && item && item.stock) {
+    try {
+      const histTopics = getStockHistoryTopics(item.stock);
+      if (histTopics) {
+        const cleanTopics = String(histTopics).replace(/[()（）]/g, '').replace(/[，、;；]/g, ',');
+        if (cleanTopics.trim()) {
+          // 保留涨幅前缀（若有），末尾补题材：-2.6%(机器人,人工智能,AI应用)
+          const pctMatch = note.match(/^([+-]?\d+\.?\d*%)/);
+          note = (pctMatch ? pctMatch[1] : note.replace(/[()（），,]/g, '').trim()) + '(' + cleanTopics + ')';
+        }
+      }
+    } catch (e) {}
+  }
   if (!note.trim()) return;
   // 已显示同一行 → 点击关闭（切换）
   if (notePopup.value && notePopupText.value === note) { closeNotePopup(); return; }
@@ -1371,11 +1390,13 @@ function onYestClick(item, event) {
   if (!el) return;
   const rect = el.getBoundingClientRect();
   notePopupText.value = note;
+  // [FIX 2026-08-16] 居中：left 指向元素水平中心 + translateX(-50%) 自动按内容宽度居中，无需先量宽
   notePopupStyle.value = {
-    left: Math.max(4, Math.min(rect.left + rect.width / 2 - 60, window.innerWidth - 124)) + 'px',
-    top: (rect.bottom + 4) + 'px',
+    left: (rect.left + rect.width / 2) + 'px',
+    top: (rect.bottom + 6) + 'px',
     position: 'fixed',
-    maxWidth: '220px'
+    transform: 'translateX(-50%)',
+    maxWidth: '240px'
   };
   notePopup.value = true;
   // 滚动关闭（捕获阶段，看板滚动即收起）
