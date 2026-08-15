@@ -74,7 +74,7 @@ import { state } from '../logic/app-state.js';
                 state._cloudTopicsCache = await pullStockTopicsFromCloud();
                 console.log('题材库加载完成:', Object.keys(state._cloudTopicsCache).length, '只股票');
             } catch (e) {
-                console.warn('window.loadCloudTopics 失败，回退到本地扫描:', e.message);
+                console.warn('loadCloudTopics 失败，回退到本地扫描:', e.message);
                 state._cloudTopicsCache = null;
             }
         }

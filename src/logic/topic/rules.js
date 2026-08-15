@@ -162,7 +162,7 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
                 
                 return appearDays;
             } catch (e) {
-                console.error('window.getTopicRankCountThisWeek error:', e);
+                console.error('getTopicRankCountThisWeek error:', e);
                 return 0;
             }
         }
@@ -429,7 +429,7 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
 
             const __tgTotal = performance.now() - __tgT0;
             if (__tgTotal > 50) {
-                _dbgLog('[PERF-SEG] window.getTopicGroups 耗时' + __tgTotal.toFixed(1) + 'ms（共' + auctionList.length + '只股票）：getCoreTopics(localStorage)=' + (__tgAfterCore - __tgT0).toFixed(1) + 'ms，window.buildTopicCache=' + (__tgAfterBuild - __tgAfterCore).toFixed(1) + 'ms，历史题材回退=' + __tgHistoryFallbackTime.toFixed(1) + 'ms（' + __tgHistoryFallbackCalls + '只触发回退，均值' + (__tgHistoryFallbackTime / Math.max(1, __tgHistoryFallbackCalls)).toFixed(2) + 'ms/只），主循环及排序剩余=' + (__tgTotal - (__tgAfterBuild - __tgT0) - __tgHistoryFallbackTime).toFixed(1) + 'ms');
+                _dbgLog('[PERF-SEG] getTopicGroups 耗时' + __tgTotal.toFixed(1) + 'ms（共' + auctionList.length + '只股票）：getCoreTopics(localStorage)=' + (__tgAfterCore - __tgT0).toFixed(1) + 'ms，buildTopicCache=' + (__tgAfterBuild - __tgAfterCore).toFixed(1) + 'ms，历史题材回退=' + __tgHistoryFallbackTime.toFixed(1) + 'ms（' + __tgHistoryFallbackCalls + '只触发回退，均值' + (__tgHistoryFallbackTime / Math.max(1, __tgHistoryFallbackCalls)).toFixed(2) + 'ms/只），主循环及排序剩余=' + (__tgTotal - (__tgAfterBuild - __tgT0) - __tgHistoryFallbackTime).toFixed(1) + 'ms');
             }
             _topicGroupsFp = __fp;
             _topicGroupsCache = validGroups;

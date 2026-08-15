@@ -204,7 +204,7 @@ export async function pullAuctionFromTable() {
             // 通过 guard API 按日期写入，保留未在云端返回的本地日期（日期隔离）
             Object.keys(cloudByDate).forEach(function(d) {
                 const rows = Object.values(cloudByDate[d]);
-                setAuctionDateData(d, rows, 'window.pullAuctionFromTable');
+                setAuctionDateData(d, rows, 'pullAuctionFromTable');
                 // 方案2：覆盖该日期的正式成员索引（未在云端返回的日期保留原索引）
                 state._auctionWatchlistIndex[d] = newWatchlistIndex[d] || new Set();
                 // 返回值只含正式成员行，供调用方做长度检查
@@ -228,7 +228,7 @@ export async function pullAuctionFromTable() {
                     }
                 });
             });
-            _dbgLog('[AUCTION-WRITE] window.pullAuctionFromTable cloudDates=' + Object.keys(cloudByDate).length + ' preservedLocalDates=' + (Object.keys(state._auctionMemCache).length - Object.keys(cloudByDate).length));
+            _dbgLog('[AUCTION-WRITE] pullAuctionFromTable cloudDates=' + Object.keys(cloudByDate).length + ' preservedLocalDates=' + (Object.keys(state._auctionMemCache).length - Object.keys(cloudByDate).length));
             return result;
         }
 

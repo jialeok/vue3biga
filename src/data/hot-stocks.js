@@ -222,7 +222,7 @@ export function _mergeHotCloudToLocal(oldList, cloudRows) {
                         _unchanged++;
                     }
                 });
-                _dbgLog('[PERF-FIX] window.loadHotStocksFromCloud 响应式写入：删除' + _removed + '/变化' + _changed + '/未变跳过' + _unchanged + '，diff+写入耗时=' + (performance.now() - _t0).toFixed(1) + 'ms');
+                _dbgLog('[PERF-FIX] loadHotStocksFromCloud 响应式写入：删除' + _removed + '/变化' + _changed + '/未变跳过' + _unchanged + '，diff+写入耗时=' + (performance.now() - _t0).toFixed(1) + 'ms');
             } else {
                 state._hotAuctionData = result;
             }
@@ -329,7 +329,7 @@ export function _mergeHotCloudToLocal(oldList, cloudRows) {
                 var tasks = [];
                 if (need.stocks) {
                     tasks.push(loadHotStocksFromCloud().catch(function(e) {
-                        console.warn('Realtime window.loadHotStocksFromCloud 失败:', e);
+                        console.warn('Realtime loadHotStocksFromCloud 失败:', e);
                     }));
                 }
                 if (need.highlights) {

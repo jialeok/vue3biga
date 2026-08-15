@@ -36,7 +36,7 @@ import { state } from '../logic/app-state.js';
                 state._scMapCache = await pullStockCodeMapFromCloud();
                 console.log('stockcodemap 加载完成:', Object.keys(state._scMapCache).length, '只股票');
             } catch (e) {
-                console.warn('window.loadCloudStockCodeMap 失败:', e && e.message);
+                console.warn('loadCloudStockCodeMap 失败:', e && e.message);
                 if (!state._scMapCache) state._scMapCache = {};
             }
         }

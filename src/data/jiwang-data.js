@@ -186,7 +186,7 @@ import { subscribeRecentMulti } from './duiban-sync.js';
             state._jiwangPushTimers[date] = setTimeout(function() {
                 delete state._jiwangPushTimers[date];
                 pushJiwangToCloud(date).catch(function(e) {
-                    console.warn('window.pushJiwangToCloud 失败:', e);
+                    console.warn('pushJiwangToCloud 失败:', e);
                     const detail = (e && (e.message || e.details || e.hint || e.code)) || String(e);
                     _dbgLog('scheduleJiwangPush: ' + date + ' 推送失败: ' + detail);
                     _emit('ui:toast', { type: 'warning', msg: '⚠️ 记忘看板云端同步失败，本次修改未保存！原因: ' + detail, duration: 10000 });
@@ -207,7 +207,7 @@ import { subscribeRecentMulti } from './duiban-sync.js';
             return pushJiwangToCloud(date).then(function() {
                 if (successMsg) _emit('ui:toast', { type: 'success', msg: successMsg });
             }).catch(function(e) {
-                console.warn('window.pushJiwangNow 失败:', e);
+                console.warn('pushJiwangNow 失败:', e);
                 const detail = (e && (e.message || e.details || e.hint || e.code)) || String(e);
                 _dbgLog('pushJiwangNow: ' + date + ' 推送失败: ' + detail);
                 _emit('ui:toast', { type: 'warning', msg: '⚠️ 记忘看板云端同步失败，本次修改未保存！原因: ' + detail, duration: 10000 });

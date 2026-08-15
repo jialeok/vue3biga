@@ -171,7 +171,7 @@ export function _moduleKey(name) {
             if (!state.allData) {
                 if (typeof _dbgLog === 'function') {
                     state._allDataRebuildCount = (state._allDataRebuildCount || 0) + 1;
-                    _dbgLog('[RANK-CACHE] window.loadAllData 重建 state.allData（第' + state._allDataRebuildCount + '次）。注：各域 _xxxMemCache 引用不变，rank 经 state._rankMemCache 保持稳定，不受 allData=null 连坐；仅当某日期数组被原地替换时该日期缓存失效）｜来源:' + (new Error().stack || '').split('\n').slice(2, 4).join(' <- '));
+                    _dbgLog('[RANK-CACHE] loadAllData 重建 state.allData（第' + state._allDataRebuildCount + '次）。注：各域 _xxxMemCache 引用不变，rank 经 state._rankMemCache 保持稳定，不受 allData=null 连坐；仅当某日期数组被原地替换时该日期缓存失效）｜来源:' + (new Error().stack || '').split('\n').slice(2, 4).join(' <- '));
                 }
                 if (!localStorage.getItem(_moduleKey('_migrated'))) {
                     state._migrateFromV41();

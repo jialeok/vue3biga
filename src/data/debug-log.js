@@ -68,7 +68,7 @@ export function _dbgFlushToSession() {
             const now = performance.now();
             if (now - _renderAuctionLastLogTs > 300) {
                 _renderAuctionLastLogTs = now;
-                _dbgLog('[PERF] window.renderAuction() 累计调用 ' + _renderAuctionCallCount + ' 次（来源: ' + caller + '），stocksDataVersion=' + (typeof window !== 'undefined' && _getAuctionStore() ? _getAuctionStore().stocksDataVersion : '?'));
+                _dbgLog('[PERF] renderAuction() 累计调用 ' + _renderAuctionCallCount + ' 次（来源: ' + caller + '），stocksDataVersion=' + (typeof window !== 'undefined' && _getAuctionStore() ? _getAuctionStore().stocksDataVersion : '?'));
             }
         }
 

@@ -99,7 +99,7 @@ import { useUiStore } from '../../stores/uiStore.js';
             const _removeRatio = _cloudTotal > 0 ? (toRemove.length / _cloudTotal) : 0;
             const _suspiciousWipe = _cloudTotal > 0 && _removeRatio > 0.6;
             if (_suspiciousWipe) {
-                _dbgLog('[SYNC-GUARD] ⛔ window.syncAuctionListForDate date=' + date +
+                _dbgLog('[SYNC-GUARD] ⛔ syncAuctionListForDate date=' + date +
                     ' 疑似本地快照不完整，已跳过本次批量删除！云端共' + _cloudTotal +
                     '只，本地仅' + localStocks.size + '只，拟移除' + toRemove.length +
                     '只（比例' + Math.round(_removeRatio * 100) + '%）。' +
@@ -108,7 +108,7 @@ import { useUiStore } from '../../stores/uiStore.js';
                 return;
             }
             if (toRemove.length > 0) {
-                _dbgLog('[SYNC-GUARD] window.syncAuctionListForDate date=' + date + ' 正常删除 ' +
+                _dbgLog('[SYNC-GUARD] syncAuctionListForDate date=' + date + ' 正常删除 ' +
                     toRemove.length + ' 只（云端' + _cloudTotal + '只 → 本地' + localStocks.size +
                     '只）：' + toRemove.join('、'));
                 const { error: rmErr } = await sb.from('auction_watchlist')
@@ -160,7 +160,7 @@ import { useUiStore } from '../../stores/uiStore.js';
                 if (updErr) throw updErr;
             }
 
-            _dbgLog('[SYNC-GUARD] window.syncAuctionListForDate date=' + date + ' 完成：云端' + _cloudTotal +
+            _dbgLog('[SYNC-GUARD] syncAuctionListForDate date=' + date + ' 完成：云端' + _cloudTotal +
                 '只 → 本地' + localStocks.size + '只（删除' + toRemove.length + ' / 新增' + newStocks.length +
                 ' / 更新状态' + existingStocks.length + '）');
             // §6：同步完成后更新本地正式成员索引——仅含正式成员（排除 obsAutoAdded 观察组），与「总数量」口径一致
@@ -171,7 +171,7 @@ import { useUiStore } from '../../stores/uiStore.js';
         // 拆表后：hot_stocks 没有 in_watchlist 列，每行天然是正式成员；
         // 云端有但本地无的股票直接物理删除，不再置 in_watchlist=false。
         export async function syncHotStocksListForDate(date) {
-            _openHotAuctionShield(); // 计数器式屏蔽窗口：与 window.patchHotFieldBatch 并发时互不干扰
+            _openHotAuctionShield(); // 计数器式屏蔽窗口：与 patchHotFieldBatch 并发时互不干扰
             try {
             const sb = getSupabase();
             const localList = (getGroupData('hot')[date] || []).filter(function(s) { return s && s.stock; });
@@ -194,7 +194,7 @@ import { useUiStore } from '../../stores/uiStore.js';
             const _removeRatioHot = _cloudTotalHot > 0 ? (toRemove.length / _cloudTotalHot) : 0;
             const _suspiciousWipeHot = _cloudTotalHot > 0 && _removeRatioHot > 0.6;
             if (_suspiciousWipeHot) {
-                _dbgLog('[SYNC-GUARD] ⛔ window.syncHotStocksListForDate date=' + date +
+                _dbgLog('[SYNC-GUARD] ⛔ syncHotStocksListForDate date=' + date +
                     ' 疑似本地快照不完整，已跳过本次批量删除！云端共' + _cloudTotalHot +
                     '只，本地仅' + localStocks.size + '只，拟移除' + toRemove.length +
                     '只（比例' + Math.round(_removeRatioHot * 100) + '%）。' +
@@ -202,7 +202,7 @@ import { useUiStore } from '../../stores/uiStore.js';
                     '。若该日期确实需要清空，请手动操作确认；本次不做任何改动。');
             } else {
             if (toRemove.length > 0) {
-                _dbgLog('[SYNC-GUARD] window.syncHotStocksListForDate date=' + date + ' 正常删除 ' +
+                _dbgLog('[SYNC-GUARD] syncHotStocksListForDate date=' + date + ' 正常删除 ' +
                     toRemove.length + ' 只（云端' + _cloudTotalHot + '只 → 本地' + localStocks.size +
                     '只）：' + toRemove.join('、'));
                 const { error: rmErr } = await sb.from('hot_stocks')
@@ -278,7 +278,7 @@ import { useUiStore } from '../../stores/uiStore.js';
                     await new Promise(function(r) { setTimeout(r, 100); });
                 }
                 if (!state._hotAuctionTableAvailable && !state._marketMetricsTableAvailable) {
-                    console.warn('window.pushHotStocksDataToCloud 放弃：hot_stocks 与 market_metrics 表 5 秒内均未就绪，数据未写入云端。日期:', date);
+                    console.warn('pushHotStocksDataToCloud 放弃：hot_stocks 与 market_metrics 表 5 秒内均未就绪，数据未写入云端。日期:', date);
                     return;
                 }
             }
@@ -383,7 +383,7 @@ import { useUiStore } from '../../stores/uiStore.js';
             // 1. 脏日期：全量同步（增删股票）
             for (let i = 0; i < dirtyDates.length; i++) {
                 try { await syncAuctionListForDate(dirtyDates[i]); }
-                catch(e) { _dbgLog('[AUCTION-ERR] window.syncAuctionListForDate date=' + dirtyDates[i] + ' ' + (e && e.message)); }
+                catch(e) { _dbgLog('[AUCTION-ERR] syncAuctionListForDate date=' + dirtyDates[i] + ' ' + (e && e.message)); }
             }
 
             // 说明：曾经这里还有一个"当前日期：仅当状态签名变化时才推送"的兜底分支，
@@ -468,7 +468,7 @@ import { useUiStore } from '../../stores/uiStore.js';
                 };
                 mergedRows.push(mergedRow);
             });
-            mergeAuctionDateRows(date, mergedRows, 'window.pushAuctionDataToCloud');
+            mergeAuctionDateRows(date, mergedRows, 'pushAuctionDataToCloud');
 
             // 更新状态签名（导入后状态可能变了）
             if (date === useUiStore().currentDate) {
@@ -626,7 +626,7 @@ import { useUiStore } from '../../stores/uiStore.js';
                                  so: s.sold || false, f: s.fixed || false };
                     }));
                 } catch(tableErr) {
-                    _dbgLog('[AUCTION-ERR] window.pullAuctionFromTable ' + (tableErr && tableErr.message));
+                    _dbgLog('[AUCTION-ERR] pullAuctionFromTable ' + (tableErr && tableErr.message));
                 }
 
                 // pullAuctionFromTable 加载了所有日期的全量快照到 _auctionMemCache，
@@ -646,7 +646,7 @@ import { useUiStore } from '../../stores/uiStore.js';
                         _emit('auction-refresh');
                     }
                 } catch(e) {
-                    _dbgLog('[AUCTION-ERR] window.reconcileAuctionWatchlistFromLocalStorage ' + (e && e.message || e));
+                    _dbgLog('[AUCTION-ERR] reconcileAuctionWatchlistFromLocalStorage ' + (e && e.message || e));
                 }
 
                 // 一次性标签清洗（stockApp_v42_tag_cleanse_v1）：云端拉取完成后执行，
@@ -733,7 +733,7 @@ import { useUiStore } from '../../stores/uiStore.js';
 
                 _dbgLog('[PULL] 云端数据同步成功');
             } catch (e) {
-                _dbgLog('[AUCTION-ERR] window.pullFromCloud ' + (e && e.message || e));
+                _dbgLog('[AUCTION-ERR] pullFromCloud ' + (e && e.message || e));
             }
         }
 
@@ -745,7 +745,7 @@ import { useUiStore } from '../../stores/uiStore.js';
                 const stockCount = Object.keys(state.allData.stocks || {}).reduce((n, d) => n + ((state.allData.stocks[d]||[]).length), 0);
                 // 如果本地完全没有数据，跳过推送，防止把空数据覆盖云端
                 if (stockCount === 0 && Object.keys(state.allData.jiwang || {}).length === 0) {
-                    _dbgLog && _dbgLog('window.pushToCloud 跳过: 本地无数据，不覆盖云端');
+                    _dbgLog && _dbgLog('pushToCloud 跳过: 本地无数据，不覆盖云端');
                     return;
                 }
                 // §8 合规：summaries / hasFumianTopics 不再扫描 localStorage；
@@ -813,11 +813,11 @@ import { useUiStore } from '../../stores/uiStore.js';
                 setTimeout(function() { state._justPushed = false; }, 5000);
                 // auction 数据同步到独立表（按列归属更新，不覆盖抓取程序的行情列）
                 // 脏日期标记在 pushAuctionToCloud 内部清空
-                try { await pushAuctionToCloud(); } catch(e) { console.warn('window.pushAuctionToCloud 失败:', e); _dbgLog('[PUSH-ERR] window.pushAuctionToCloud ' + (e && e.message || e)); }
+                try { await pushAuctionToCloud(); } catch(e) { console.warn('pushAuctionToCloud 失败:', e); _dbgLog('[PUSH-ERR] pushAuctionToCloud ' + (e && e.message || e)); }
                 // bidding 数据同步到独立表
-                try { await pushBiddingToCloud(useUiStore().currentDate); } catch(e) { console.warn('window.pushBiddingToCloud 失败:', e); }
+                try { await pushBiddingToCloud(useUiStore().currentDate); } catch(e) { console.warn('pushBiddingToCloud 失败:', e); }
             } catch (e) {
-                console.error('window.pushToCloud 失败:', e);
+                console.error('pushToCloud 失败:', e);
             }
         }
 

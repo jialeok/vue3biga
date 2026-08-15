@@ -114,7 +114,7 @@ import { setAuctionDateData } from './auction-data.js';
                     .upsert({ id: 'session', data: { _session_token: token }, updated_at: new Date().toISOString() });
                 if (error) throw error;
             } catch (e) {
-                console.error('window.writeSessionToken 失败:', e);
+                console.error('writeSessionToken 失败:', e);
             }
         }
 
@@ -130,7 +130,7 @@ import { setAuctionDateData } from './auction-data.js';
                 if (error) throw error; // 包括"session 行不存在"的情况，走 catch 返回 undefined，不阻断登录
                 return (data && data.data && data.data._session_token) || null;
             } catch (e) {
-                console.warn('window.readSessionToken 失败（不阻断登录）:', e && e.message);
+                console.warn('readSessionToken 失败（不阻断登录）:', e && e.message);
                 return undefined; // undefined 表示读取失败/无该行，区别于 null（云端 token 字段为空）
             }
         }
@@ -222,7 +222,7 @@ import { setAuctionDateData } from './auction-data.js';
                     tasks = tasks.concat(dates.map(function(d) {
                         if (typeof pullAuctionMarketDataForDate === 'function') {
                             return pullAuctionMarketDataForDate(d, {realtime:true}).catch(function(e) {
-                                _dbgLog('[AUCTION-ERR] realtime window.pullAuctionMarketDataForDate ' + (e && e.message));
+                                _dbgLog('[AUCTION-ERR] realtime pullAuctionMarketDataForDate ' + (e && e.message));
                             });
                         }
                         return Promise.resolve();
@@ -284,7 +284,7 @@ import { setAuctionDateData } from './auction-data.js';
                     .subscribe();
                 console.log('Auction Realtime 订阅已启动（auction_watchlist + market_metrics）');
             } catch (e) {
-                _dbgLog('[AUCTION-ERR] window.startAuctionRealtime 订阅失败 ' + (e && e.message || e));
+                _dbgLog('[AUCTION-ERR] startAuctionRealtime 订阅失败 ' + (e && e.message || e));
             }
         }
 

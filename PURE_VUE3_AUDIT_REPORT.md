@@ -35,7 +35,9 @@
 | `.vue` 文件 `window.` 实际引用 | ✅  | 0 处（剩余为注释/字符串）                |
 | `configureServer` 自定义中间件 | ✅  | vite.config.js 为标准配置          |
 
-### ❌ 违反项（2 处）
+### ✅ 已修复（原 ❌ 违反项 2 处）
+
+> **修复状态（2026-08-16）**：两处红线违规均已在 commit `1bcaec0`（P0-2 / P0-3）根治并通过 R2 验收。当前全 src 已无 `Object.defineProperty(window,...)` 业务别名挂载、无 logic 层 `document.getElementById` 实际代码（仅余 1 处说明性注释）。下方为原始审计描述，保留作溯源。
 
 1. **`src/stores/authStore.js:51-87` — 7 处 `Object.defineProperty(window, ...)` 登录态别名挂载**
    - 挂载 `_sessionToken`/`_realtimeChannel`/`unlocked`/`_justPushed`/`_justPushedAuction`/`_justPushedAuctionCounter`/`_justPushedAuctionTimer`
@@ -45,7 +47,7 @@
    - `document.getElementById('syncStatus').textContent = v`
    - **违反"Logic 不操作 DOM"**（§3/§4 依赖方向）。且 `#syncStatus` 是 LoginOverlay.vue 的 Vue 响应式元素（绑定 `statusText`），logic 直接写 textContent 会绕过 Vue 响应式、与 Vue 状态双写冲突。
 
-> 另有 34 处 `window.` 出现在日志/console 字符串字面量中（如 `window.syncAuctionListForDate`），非实际代码调用，不影响合规判定，但建议后续清理。
+> 另有 34 处（现涨至 45 处）`window.` 出现在日志/console 字符串字面量中（如 `window.syncAuctionListForDate`），非实际代码调用，不影响合规判定。已于 2026-08-16 全部清理：仅剥离 `_dbgLog`/`console.*` 字符串标签里的 `window.` 前缀（10 个 .js 文件、约 30 处），注释与真实向后兼容挂载（`window.showDebugLog`、`window._emit/_on/_off`）保留未动；`vite build` 0 错误 0 警告。
 
 ---
 
@@ -85,14 +87,11 @@
 1. **`src/logic/workflows/auction-sync.js` — 云端业务数据写回 localStorage** ✅ **已完成（ab5f481）**
    - 9 个 blob 字段（stocks/auction/bidding/rank/multi/hotspot/pattern/tagTitles/duibanData/…/summaries/scoreSettings）的 pull→push 暂存由 localStorage 改为模块内存 `_cloudBlobExtras`；语义零变化、重启由下次 pull 重建、不丢数据。
    - 复核（本次 5 智能体之一）：grep 确认剩余 localStorage key 均属 §8 允许类（holidays/tradingDays 无云表兜底读、`__migrated`/`lastEditedDate_v42` 一次性标志、`scoreSettings_*` UI 偏好、`obsEnsured_*`/`boughtEnsured_*` 运行时标记），业务数据 0 写入。
-
 2. **`src/stores/auctionTagStore.js` — 标签快照写 localStorage** ✅ **已完成（本次提交）**
    - `saveTagsToStorage` 经核查本就是故意留空的 no-op（满足 §8「标签禁存 localStorage」）；本次删除该 no-op 函数 + 4 个调用点（:79/:95/:105/:115），**保留** `loadTagsFromStorage` 只读回退（§8 允许永不写回）。
    - §11 覆盖风险随之消除：根本不写，损坏快照不会被 `{}` 覆盖。grep 确认文件内 0 处 `localStorage.setItem`。
-
 3. **`src/logic/scope/helpers.js` — 撤销快照写 localStorage** ✅ **已完成（127eeee F3）**
    - 单日竞价/热门数据撤销快照由 localStorage 改为模块级 `const _undoSnapshotStore = new Map()`（同会话有效、重启即失效，§8 临时缓存豁免）。复核（本次 5 智能体之一）：grep 确认 0 处 `localStorage` 实际调用，保存/读取均走 Map。
-
 4. **`saveModule` 未排除 jiwang（潜在落盘）** ✅ **已完成（本次提交）**
    - 报告原写 app-core.js 已过时——`saveModule` 实际在 `src/logic/shared/core-shared.js`（app-core 仅 re-export）。已在 `core-shared.js:79` 补 `if (name === 'jiwang') return;`，堵塞 `stockApp_v42_jiwang` 的 localStorage 落盘路径；同文件 `saveData`（:106）原本已排除 jiwang。
 
@@ -186,6 +185,8 @@
 | **主包未拆 vendor**           | 主 bundle 410KB（gzip 132KB）未做 vendor 拆分/按需优化                                                                   | 首屏加载           |
 | **依赖锁死在区间下界**             | vue 3.4.0 / pinia 2.2.0 / vite 5.4.21 / supabase-js 2.45.0，lockfile 冻结在最低版本                                   | 缺失 bug 修复      |
 | **MIGRATION_TASKLIST 过时** | 仍把已删除的 RankBoard/HotspotBoard/TagTitlesBoard 当现存视图；模块数 134/187 与现 212 不符；条目停在 2026-08-15                      | 文档误导           |
+
+
 
 ---
 
@@ -292,4 +293,3 @@
 - ✅ **建表 SQL 修复**（commit `1fefbd3`）：修正 `comment on table` 语法错误（PostgreSQL 42601）+ 加 policy 幂等保护（`db/_E1_RUN_ALL_CREATE_TABLES.sql` 可反复 Run）
 - ✅ **auction_duiban 孤儿写收敛 + `_domGet` 空桩清理**（commit `b899553`，8 files +28/-128）：删 duiban-sync 死函数、hotspot 两粘贴函数迁 `rawText`、auction.js 死变量清理；node --check 8 文件全过、vite build 0 错 0 警（216 modules）
 - 📌 **用户侧待办（非代码）**：① 在 Supabase 执行 `db/_E1_RUN_ALL_CREATE_TABLES.sql` 建 9 表（用户已跑通）；② 浏览器回归点一遍（DashboardView 切日期/周末不重建、Realtime 不重复订阅、撤销快照仅会话内有效）；③ 确认 hotspot 粘贴调用的 Vue 入口已把粘贴内容传入 `rawText` 参数
-
