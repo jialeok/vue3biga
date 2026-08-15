@@ -3,6 +3,10 @@
 // 读取统一走 Data 层 getter（getStocksData / getJiwangData / getEtfBoardData / getRankData），
 // 这些 getter 内部读 state._xxxMemCache；state 经 WX-01 改为 reactive 后，
 // 在本文件函数内读取会被 Vue computed 自动追踪，数据刷新时看板自动重算。
+// 注意（周末/月统计「没有数据」根因修复）：每日盈亏与账户余额的权威来源是
+// jiwang_data.stats（StatsBoard 圆形统计经 §S-01 writeStats 写入），而非 stocks 表的
+// soldRecords（该表在云端已不存在，getStocksData 读不到任何盈亏）。故 computeStats /
+// buildProfitPoints 优先读 jiwang.stats.profit / stats.balance，soldRecords 仅作空值回退。
 import { getStocksData, getJiwangData } from '../../data/supabase-client.js';
 import { getEtfBoardData } from '../../data/etf-board-data.js';
 import { getRankData } from '../app-core.js';
@@ -17,6 +21,7 @@ export function computeStats(dates) {
   };
   const stocksData = getStocksData();
   const jiwangData = getJiwangData();
+  let latestBalance = null; // 区间内最新的账户余额快照（stats.balance）
   dates.forEach(d => {
     if (isTradingDay(d)) {
       r.tradingDays++;
@@ -30,18 +35,27 @@ export function computeStats(dates) {
         else if (dayJiwang.chushou === '出手错了') r.chushouWrong++;
       }
     }
-    const list = stocksData[d] || [];
-    list.forEach(s => {
-      if (s.soldRecords) {
-        s.soldRecords.forEach(rec => {
-          const p = parseFloat(rec.profit) || 0;
-          if (p >= 0) r.totalProfit += p;
-          else r.totalLoss += Math.abs(p);
-        });
-      }
-    });
+    // 每日盈亏：优先 jiwang.stats.profit（StatsBoard 圆形统计记录的当日盈亏，§S-01 权威源），
+    // 仅当该字段为空时回退到个股卖出记录 soldRecords.profit（避免双源重复累加，§6 数据保全）。
+    const dayStats = (dayJiwang && dayJiwang.stats) || null;
+    let dayProfit = 0;
+    const jpRaw = dayStats ? dayStats.profit : undefined;
+    if (jpRaw !== undefined && jpRaw !== null && jpRaw !== '') {
+      dayProfit += parseFloat(jpRaw) || 0;
+    } else {
+      (stocksData[d] || []).forEach(s => {
+        (s.soldRecords || []).forEach(rec => { dayProfit += parseFloat(rec.profit) || 0; });
+      });
+    }
+    if (dayProfit > 0) r.totalProfit += dayProfit;
+    else if (dayProfit < 0) r.totalLoss += Math.abs(dayProfit);
+    // 账户余额：取区间内最新的 stats.balance（该日缺失则不更新 latestBalance）
+    if (dayStats && dayStats.balance !== undefined && dayStats.balance !== null && dayStats.balance !== '') {
+      const b = parseFloat(dayStats.balance);
+      if (!isNaN(b)) latestBalance = b;
+    }
   });
-  r.balance = r.totalProfit - r.totalLoss;
+  r.balance = latestBalance !== null ? latestBalance : (r.totalProfit - r.totalLoss);
   r.emptyWinRate = r.emptyRight + r.emptyWrong > 0 ? Math.round(r.emptyRight / (r.emptyRight + r.emptyWrong) * 100) : 0;
   r.chushouWinRate = r.chushouRight + r.chushouWrong > 0 ? Math.round(r.chushouRight / (r.chushouRight + r.chushouWrong) * 100) : 0;
   return r;
@@ -97,20 +111,43 @@ export function computeRecordStats(dates) {
 }
 
 // 构建 TrendChart 所需的 points：{ date, value }（按时间升序）
+// 每日盈亏来自 jiwang.stats.profit（§S-01 权威源，soldRecords 仅作回退）；
+// 账户余额曲线来自 jiwang.stats.balance，按时间顺序 carry-forward 最近一次已知余额。
 export function buildProfitPoints(getDates) {
   const dates = getDates();
   const stocksData = getStocksData();
+  const jiwangData = getJiwangData();
   const profitPoints = [];
   const balancePoints = [];
-  let cum = 0;
-  dates.slice().reverse().forEach(d => {
+  const asc = dates.slice().reverse();
+  // 先定位区间内首个有效余额，作为 carry-forward 起点，避免曲线从 0 起跳
+  let lastBalance = null;
+  for (const d of asc) {
+    const st = (jiwangData[d] && jiwangData[d].stats) || null;
+    if (st && st.balance !== undefined && st.balance !== null && st.balance !== '') {
+      const b = parseFloat(st.balance);
+      if (!isNaN(b)) { lastBalance = b; break; }
+    }
+  }
+  if (lastBalance === null) lastBalance = 0;
+  asc.forEach(d => {
+    const dayJiwang = jiwangData[d];
+    const dayStats = (dayJiwang && dayJiwang.stats) || null;
     let dayProfit = 0;
-    (stocksData[d] || []).forEach(s => {
-      (s.soldRecords || []).forEach(r => { dayProfit += parseFloat(r.profit) || 0; });
-    });
+    const jpRaw = dayStats ? dayStats.profit : undefined;
+    if (jpRaw !== undefined && jpRaw !== null && jpRaw !== '') {
+      dayProfit += parseFloat(jpRaw) || 0;
+    } else {
+      (stocksData[d] || []).forEach(s => {
+        (s.soldRecords || []).forEach(r => { dayProfit += parseFloat(r.profit) || 0; });
+      });
+    }
     profitPoints.push({ date: d, value: dayProfit });
-    cum += dayProfit;
-    balancePoints.push({ date: d, value: cum });
+    if (dayStats && dayStats.balance !== undefined && dayStats.balance !== null && dayStats.balance !== '') {
+      const b = parseFloat(dayStats.balance);
+      if (!isNaN(b)) lastBalance = b;
+    }
+    balancePoints.push({ date: d, value: lastBalance });
   });
   return { profitPoints, balancePoints };
 }
