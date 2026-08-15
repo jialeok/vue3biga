@@ -156,7 +156,7 @@
                  @mousedown="startLongPress(item.stock)"
                  @mouseup="cancelLongPress"
                  @mouseleave="cancelLongPress">
-              <span class="auction-stock-text">{{ item.stock }}</span>
+              <span class="auction-stock-text">{{ item.stock }}<span v-if="item.obsFormalStar" class="auction-obs-formal-star">*</span></span>
               <AuctionBadge :item="item" :ctx="{}" :tag-state="item" />
             </div>
             <div class="auction-volume">{{ item.volumeDisplay }}</div>
@@ -211,7 +211,7 @@
                  @mousedown="startLongPress(item.stock)"
                  @mouseup="cancelLongPress"
                  @mouseleave="cancelLongPress">
-              <span class="auction-stock-text">{{ item.stock }}</span>
+              <span class="auction-stock-text">{{ item.stock }}<span v-if="item.obsFormalStar" class="auction-obs-formal-star">*</span></span>
               <AuctionBadge :item="item" :ctx="{}" :tag-state="item" />
             </div>
             <div class="auction-volume">{{ item.volumeDisplay }}</div>

@@ -2067,6 +2067,15 @@
             position: relative;
         }
 
+        /* 双身份股票（昨日竞昨高光观察组 ∩ 今日正式列表）星号标记 */
+        .auction-obs-formal-star {
+            color: #f59e0b;
+            font-weight: 700;
+            margin-left: 2px;
+            font-size: 14px;
+            vertical-align: middle;
+        }
+
         .auction-volume {
             flex: 1;
             font-size: 13px;

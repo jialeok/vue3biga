@@ -1,4 +1,4 @@
-﻿import { _setCoreTopicsFns } from './topic/rules.js';
+import { _setCoreTopicsFns } from './topic/rules.js';
 import { _emit } from '../stores/eventBus.js';
 import { getPreviousTradingDay } from './date/trading-day-helpers.js';
 import { state } from './app-state.js';
@@ -240,17 +240,29 @@ function computeAuctionCounts(date) {
   const total = list.length;
   if (total === 0) return null;
   let rise = 0;
+  let judged = 0; // 有涨跌依据的股票数（note 或 changePct 任一有值）
   list.forEach(function (item) {
     const note = item.note || '';
-    if (note.includes('涨停')) { rise++; return; }
-    if (note.includes('跌停')) return;
+    if (note.includes('涨停')) { rise++; judged++; return; }
+    if (note.includes('跌停')) { judged++; return; }
     const m = note.match(/-?\d+\.?\d*%/);
     if (m) {
+      judged++;
       const v = parseFloat(m[0]);
       if (v > 0) rise++;
+      return;
+    }
+    // 回退：note 无涨跌信息时，用 changePct / change_pct 字段判断（worker 抓取的涨跌幅存在此字段）
+    const pct = item.changePct != null ? item.changePct : item.change_pct;
+    if (pct !== undefined && pct !== null && String(pct).trim() !== '') {
+      judged++;
+      const v = parseFloat(String(pct));
+      if (!isNaN(v) && v > 0) rise++;
     }
   });
-  const fall = total - rise;
+  // 有依据的股票才参与涨跌判定；无任何依据的行（纯观察组壳/无数据）不计入涨也不计入跌，
+  // 跌数 = total − 涨数 − 无依据数（与看板"跌 = 总 − 涨"口径一致，但不再把无数据行误判为跌）。
+  const fall = total - rise - (total - judged);
   return { total: total, rise: rise, fall: fall, die_zhangbi: fall + ':' + rise };
 }
 

@@ -4,6 +4,7 @@ import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlig
 import { getAuctionStockHistory, ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagState, _buildTagStateCache } from '../tagTitles/rules.js';
 import { getThreeDayJingDieSet } from './sort-rules-extra.js';
 import { getStockCode } from '../../data/stock-code-map.js';
+import { _getAuctionWatchlistSet } from '../../data/watchlist-and-metrics.js';
 import { getNumericVolume, getStocksData } from '../../data/supabase-client.js';
 import { state } from '../app-state.js';
 import { useAuctionStore } from '../../stores/auctionStore.js';
@@ -113,6 +114,12 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   const volumeDisplay = rawItem.volume ? Math.round(parseFloat(rawItem.volume)) : '-';
   const yestVolumeDisplay = rawItem.yestVolume ? Math.round(parseFloat(rawItem.yestVolume)) : '-';
 
+  // §6/双身份标记：该股票既是「前一日竞昨高光（次日观察组）」，又同时位于今日正式列表
+  // （今日 worker 自动获取的最近多板成分股）。用户需求：正式名单中这类股票旁加 * 号，
+  // 以便分辨「它是观察组来源，但今天确实在正式列表里」——统计总数时它正常计入正式成员。
+  const isFormalToday = ctx.isFormalToday ? ctx.isFormalToday(stockName) : false;
+  const isObsFromPrev = ctx.isObsMember ? ctx.isObsMember(stockName) : false;
+
   return {
     index,
     stock: stockName,
@@ -133,7 +140,11 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     selected: isSelected,
     confirmedSold: isConfirmedSold,
     todayChoice: _getAuctionTag(ctx.date, stockName),
-    isGray
+    isGray,
+    // 双身份：昨日观察组来源 ∩ 今日正式列表 → 股票名旁加 *（用户可分辨）
+    obsFormalStar: isObsFromPrev && isFormalToday,
+    // 观察组来源（无论今日是否正式，供视图分组/样式使用）
+    isObsFromPrev
   };
 }
 
@@ -452,6 +463,12 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   const ctx = {
     dataSource, date: currentDate, confirmedSoldSet: _confirmedSoldSet,
     isObsMember: _isObsMember,
+    // 今日正式列表判定（worker 自动获取的最近多板成分股，含代码映射/手动新增的正式成员）。
+    // 与统计口径 getAuctionBoardList（_auctionWatchlistIndex 过滤）保持一致，避免「显示星号」与「计入总数」两套标准。
+    isFormalToday: function(name) {
+      if (!name) return false;
+      return _getAuctionWatchlistSet(currentDate).has(name.trim());
+    },
     prevAuctionList,
     prevAuctionMap: _prevMap,
     tagStateCache: _buildTagStateCache(currentDate),
