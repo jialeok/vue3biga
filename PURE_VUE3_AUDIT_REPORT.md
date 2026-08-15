@@ -153,8 +153,10 @@
 |---|---|---|
 | **numcat-proxy / fuyao-proxy 源码缺失** | `src/data/api/*-proxy.js` 调用 `supabase.co/functions/v1/numcat-proxy` 和 `fuyao-proxy`，但 `supabase/functions/` 下只有 bidding-a——**两个 Edge Function 源码都不在仓库**（人工部署） | 无法重建/审计/回滚；前端 6+ 处抓取依赖 |
 | **9 个表无建表脚本** | 代码用 21 个表，但 `bidding_data`/`jiwang_data`/`stockcodemap`/`stock_topics`/`core_topics`/`user_data`/`daily_highlights`/`hot_stocks_highlights`/`hot_stock_trends` 在 db/*.sql、workers、supabase 中**均无 CREATE TABLE** | **数据库 schema 无法从仓库重建** |
-| **auction_duiban 双真相** | DuibanBoard 读 `recent_multi_data`，但 `auction_duiban` 表被写从不读（只写不读的孤儿表）；`recalcDuibanFromAuction` 又从竞价列表推导覆盖写回 | §6 多真相残留 |
-| **废弃表** | `auction_etf`/`auction_etf_comment` 已废弃（0 行）、`auction_bidding_template` 只写不读 | 仓库/线上脏数据 |
+| **auction_duiban 双真相** | DuibanBoard 读 `recent_multi_data`，但 `auction_duiban` 表被写从不读（只写不读的孤儿表）；`recalcDuibanFromAuction` 又从竞价列表推导覆盖写回（MIGRATION_TASKLIST 自认"recent_multi_data 才是 live 对标表，auction_duiban 为迁移遗留双真相"） | §6 多真相残留 |
+| **4 张单向表无 Realtime（§31 缺口）** | `auction_duiban`（只写）、`auction_bidding_template`（写无读）、`topic_fumian`（写无订阅 → 多端负面题材不同步）、`core_topics`（写无订阅）——写入后无 Realtime 通知 | §31 Realtime 一致性 |
+| **废弃表** | `auction_etf`/`auction_etf_comment` 已废弃（0 行，SQL 头注释引用的 etf-sync.js/etf-comment-sync.js 文件不存在）、`auction_bidding_template` 只写不读 | 仓库/线上脏数据 |
+| **11 个 SQL 无文档** | db/ 17 个 SQL 中仅 6 个在 MIGRATION_TASKLIST 提及，其余 11 个（含 auction_metrics/dashboards/emotion/remaining_boards/cron/rename 系列等）无文档说明 | 迁移不可审计 |
 | **worker B 曾有 `logs` 未定义 bug** | `emotion-workflow.js:84` 在数据完整性分支用未定义 `logs` 变量 → 触发时 ReferenceError 致情绪数据不落库（**已修复**，见附注） | 已修复，需重新部署 worker B |
 | **Worker 部署靠手动** | 无 CI/CD，worker 需手动用 `_bundled/` 更新 | 部署易遗漏 |
 | **README 为空** | 只有 "# biga"，无部署/架构说明 | 接手成本高 |
