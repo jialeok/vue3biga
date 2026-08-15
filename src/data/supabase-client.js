@@ -1,4 +1,4 @@
-﻿import { _setGetSupabaseFn } from './auction-data.js';
+import { _setGetSupabaseFn } from './auction-data.js';
 import { _setGetStocksDataFn } from './session-and-shield.js';
 ﻿import { createClient } from '@supabase/supabase-js';
 import { useAuctionStore } from '../stores/auctionStore.js';
@@ -162,9 +162,10 @@ export function _moduleKey(name) {
         // ============================================================
         export function loadAllData() {
             if (state.allData && state._allDataLastRebuildAt && (Date.now() - state._allDataLastRebuildAt < 500)) {
-                if (typeof _dbgLog === 'function') {
-                    _dbgLog('[RANK-CACHE] window.loadAllData 500ms内短路，避免重复重建 state.allData');
-                }
+                // [FIX 2026-08-16] §33 性能：500ms 短路是高频热路径（第二页每个题材组渲染都会走
+                // getRankAppearText → getTopicRankCountThisWeek → getLast5TradingDays → isTradingDay
+                // → getHolidays/getTradingDays → loadAllData），每次调用都 _dbgLog 会刷屏并拖死主线程。
+                // 短路属正常缓存命中，不再打日志；仅真实重建（下方）保留日志。
                 return state.allData;
             }
             if (!state.allData) {

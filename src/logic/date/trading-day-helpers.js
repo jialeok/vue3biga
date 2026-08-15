@@ -1,19 +1,38 @@
-﻿import { loadAllData } from '../../data/supabase-client.js';
+import { loadAllData } from '../../data/supabase-client.js';
 let _getLocalTodayStrFn = null;
 export function _setGetLocalTodayStr(fn) { _getLocalTodayStrFn = fn; }
 
 const _prevTdMemo = new Map();
 
+// [FIX 2026-08-16] §33 性能：getHolidays/getTradingDays 原来每次都调 loadAllData()，
+// 而 loadAllData 是 500ms 短路热路径。第二页每个题材组渲染 → getRankAppearText →
+// getTopicRankCountThisWeek → getLast5TradingDays → isTradingDay（内部调 getHolidays +
+// getTradingDays）→ 一次渲染数百次 loadAllData 调用，是 RANK-CACHE 刷屏与主线程卡死主因。
+// 改为按 allData 引用缓存：引用未变（未重建）时直接返回缓存数组，零重复开销；
+// 重建（引用变化）时自动取新数组。与 §6 allData=内存缓存、重建换引用的语义一致。
+let _holidaysRef = null;
+let _holidaysCache = null;
+let _tradingDaysRef = null;
+let _tradingDaysCache = null;
+
 export function getHolidays() {
   const data = loadAllData();
-  if (!data.holidays) data.holidays = [];
-  return data.holidays;
+  if (data !== _holidaysRef) {
+    _holidaysRef = data;
+    if (!data.holidays) data.holidays = [];
+    _holidaysCache = data.holidays;
+  }
+  return _holidaysCache;
 }
 
 export function getTradingDays() {
   const data = loadAllData();
-  if (!data.tradingDays) data.tradingDays = [];
-  return data.tradingDays;
+  if (data !== _tradingDaysRef) {
+    _tradingDaysRef = data;
+    if (!data.tradingDays) data.tradingDays = [];
+    _tradingDaysCache = data.tradingDays;
+  }
+  return _tradingDaysCache;
 }
 
 export function isAutoHoliday(dateStr) {

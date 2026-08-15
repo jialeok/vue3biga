@@ -1,4 +1,4 @@
-﻿import { useAuctionStore } from '../stores/auctionStore.js';
+import { useAuctionStore } from '../stores/auctionStore.js';
 import { state } from '../logic/app-state.js';
         // ============================================================
         // 云同步调试日志：手机上没有控制台，出问题时只能靠这个环形缓冲区
@@ -34,21 +34,12 @@ export function _dbgFlushToSession() {
             _dbgLogBuffer.push(line);
             if (_dbgLogBuffer.length > 200) _dbgLogBuffer.shift();
             _dbgFlushToSession();
+            // [FIX 2026-08-16] §33 性能：移除「每条日志 fetch('/event') 转发调试服务器」遗留实验代码。
+            // 该转发让每条 _dbgLog 都发一个网络请求，高频路径（如 loadAllData 500ms 短路日志）下
+            // 一次渲染可触发数百条日志 + 数百个 fetch，DevTools 打开时 console.log 同步慢输出
+            // 直接卡死主线程（表现为"打开控制台就点不动、关掉才能操作"）。
+            // 日志仍完整写入 sessionStorage 环形缓冲（window.showDebugLog() 可查）。
             console.log(line);
-            // #region debug-point Z:forward-to-debug-server
-            try {
-                if (typeof window === 'undefined') return;
-                state._debugServerQueue = state._debugServerQueue || [];
-                state._debugServerQueue.push({ sessionId: 'auction-cross-date-leak', runId: 'post-fix', hypothesisId: 'Z', location: location.href, msg: line, ts: Date.now() });
-                if (!state._debugServerTimer) {
-                    state._debugServerTimer = setInterval(function () {
-                        if (!state._debugServerQueue || !state._debugServerQueue.length) return;
-                        var batch = state._debugServerQueue.splice(0, state._debugServerQueue.length);
-                        fetch('/event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(batch.length === 1 ? batch[0] : batch), keepalive: true }).catch(function () {});
-                    }, 500);
-                }
-            } catch (e) {}
-            // #endregion
         }
 
         // ============================================================
