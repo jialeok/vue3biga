@@ -1,4 +1,4 @@
-﻿import { state } from './app-state.js';
+import { state } from './app-state.js';
 import { _bindApi } from './app-core-api.js';
 import { showToast } from '../composables/useToast.js';
 import { fuyaoApiGet, tickerToThscode, LADDER_THSCODE } from '../data/api/fuyao-proxy.js';
@@ -25,7 +25,7 @@ import { getMostRecentTradingDay, getPreviousTradingDay, isTradingDay } from './
 // §16 域拆分：纯日期工具已迁至 ./date/date-helpers.js（import 供本模块内部调用，re-export 供外部调用点零破坏）
 import { getWeekday, getPreviousDate, getNextDate, _shiftDateStr, buildYesterdayListFromToday } from './date/date-helpers.js';
 export { getWeekday, getPreviousDate, getNextDate, _shiftDateStr, buildYesterdayListFromToday } from './date/date-helpers.js';
-import { _domGet, _domQuery, _domSetColor, _domSetText, _domSetValue, _getCommentInputValue, _readTrackEditFormData, _restoreStockCardExpand, closeCommentModal, closeHotEditModal, closeTrackEditModal, copyAllTopicStocks, copyTopicStocks, expandAllAuctionTrendPanels, expandAllAuctionTrendPanelsP2, getNthPreviousTradingDay, handleFileImport, jumpToAuctionPage1, jumpToAuctionPage2, openAuctionEdit, openAuctionNoteEditFromPage2, openCoreTopicModal, openHotEdit, recalcDuibanFromAuction, renderAuction, renderAuctionForm, renderBidding, renderComment, renderDuiban, renderEmotionBoard, renderEtf, renderHotForm, renderHotspot, renderJiwang, renderList, renderMulti, renderPattern, renderRank, resetExpansionStateOnDateSwitch, restoreExpandedAuctionTrendPanels, restoreExpandedTopicGroupsP2, saveAuction, setApiStatus, setStockCodeMapStatus, setStockCodeMapStatusHot, showAuctionBuyPrompt, showAuctionDiagReport, showAuctionNoteInput, showAuctionNotePopup, showHint, showHotDiagReport, showNumcatChoiceModal, toggleAuctionBoard, toggleAuctionRowSelect, toggleAuctionSortHelp, toggleStrengthSort, toggleTopicGroupTrendPanels, updateCloudSyncUI } from './ui-bridge.js';
+import { _domGet, _domQuery, getNthPreviousTradingDay, recalcDuibanFromAuction, renderAuction, renderBidding, renderDuiban, renderEmotionBoard, renderEtf, renderHotForm, renderHotspot, renderJiwang, renderList, renderMulti, renderPattern, renderRank, resetExpansionStateOnDateSwitch, setApiStatus, showNumcatChoiceModal } from './ui-bridge.js';
 import { pullFromCloud, pushAuctionCodeToCloud, pushHotStocksDataToCloud, pushToCloud, syncAuctionListForDate, syncCloseChunk, syncHotStocksListForDate } from './workflows/auction-sync.js';
 import { useAuctionStore, _bindUiFns } from '../stores/auctionStore.js';
 import { initAuctionTags } from '../stores/auctionTagStore.js';
@@ -41,7 +41,7 @@ import { getPatternData } from './pattern/pattern.js';
 import { getTagTitlesData } from './tagTitles/tagTitles.js';
 import { markJiwangDirty, getTodayJiwang } from './jiwang/jiwang.js';
 import { searchTickerCodeByName, autoCompleteMissingStockCodes, importStockCodeMap, extractCodeFromFuyaoItem, getStockHistoryTopics, replaceConceptFromPaste } from './stocks/stocks.js';
-import { getAuctionData, getTodayAuction, getTodayGroupList, markAuctionDirty, patchAuctionField, patchAuctionFieldBatch, _sanitizeAuctionPatch, _splitAuctionPatch, _mergeAuctionPatchLocal, clearAuctionDateData, deleteAuctionDateData, mergeAuctionDateRows, clearAllAuctionDates, repairAuctionInWatchlistForDate, reconcileAuctionWatchlistFromLocalStorage, reconcileAuctionWatchlist, backupAuctionData, rollbackAuctionData, importAuctionFromPaste, parseVolumeOnlyText, splitHistoryFillLine, importAuctionHistoryFill, fetchLadderConstituentsMain, fetchDayVolumes, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs, _fillTodayYesterdayVolumeFromThsImpl, fillYesterdayYesterdayVolumeFromThs, _fillYesterdayYesterdayVolumeFromThsImpl, fetchChangePctFromThs, _fetchChangePctFromThsImpl, fillAuctionHistoryGapPctFromThs, fillAuctionHistoryGapYestVolumeFromThs, fillYesterdayAuctionFromNumcat, fetchTodayAuctionFromNumcat, fetchAllAuctionFromNumcat, fetchThreeDaysAuctionFromNumcat, fetchFiveDaysAuctionFromNumcat, fillTopicsFromNumcat, fetchMonitorWarningFromNumcat, fetchAuctionFromNumcat, runAuctionApiDiagnostics, AUCTION_WATCHLIST_FIELDS, AUCTION_METRICS_FIELDS, AUCTION_PATCHABLE_FIELDS, _auctionFirstClearDumped } from './auction/auction.js';
+import { getAuctionData, getTodayAuction, getTodayGroupList, markAuctionDirty, patchAuctionField, patchAuctionFieldBatch, _sanitizeAuctionPatch, _splitAuctionPatch, _mergeAuctionPatchLocal, clearAuctionDateData, deleteAuctionDateData, mergeAuctionDateRows, clearAllAuctionDates, repairAuctionInWatchlistForDate, reconcileAuctionWatchlistFromLocalStorage, reconcileAuctionWatchlist, backupAuctionData, rollbackAuctionData, importAuctionFromPaste, parseVolumeOnlyText, splitHistoryFillLine, importAuctionHistoryFill, fetchLadderConstituentsMain, fetchDayVolumes, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs, _fillTodayYesterdayVolumeFromThsImpl, fillYesterdayYesterdayVolumeFromThs, _fillYesterdayYesterdayVolumeFromThsImpl, fetchChangePctFromThs, _fetchChangePctFromThsImpl, fillAuctionHistoryGapPctFromThs, fillAuctionHistoryGapYestVolumeFromThs, fillYesterdayAuctionFromNumcat, fetchTodayAuctionFromNumcat, fetchAllAuctionFromNumcat, fetchThreeDaysAuctionFromNumcat, fetchFiveDaysAuctionFromNumcat, fillTopicsFromNumcat, fetchMonitorWarningFromNumcat, fetchAuctionFromNumcat, AUCTION_WATCHLIST_FIELDS, AUCTION_METRICS_FIELDS, AUCTION_PATCHABLE_FIELDS, _auctionFirstClearDumped } from './auction/auction.js';
 import { getHotspotData, getHotAuctionData, _openHotAuctionShield, _closeHotAuctionShield, _sanitizeHotPatch, _splitHotPatch, _mergeHotPatchLocal, patchHotField, patchHotFieldBatch, backupHotStocksData, importHotFromPaste, replaceHotConceptFromPaste, HOT_WATCHLIST_FIELDS, HOT_METRICS_FIELDS, HOT_PATCHABLE_FIELDS } from './hotspot/hotspot.js';
 export function _getAuctionStore() { try { return useAuctionStore(); } catch { return null; } }
 // 重构（Phase 5 彻底）：导入期（Pinia 尚未激活）安全读取当前日期，避免模块顶层求值抛错。
@@ -189,7 +189,6 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
 
         // 手动拉取云端数据（点击云朵图标触发）
         export async function manualPullCloud() {
-            updateCloudSyncUI('syncing');
             try {
                 await pullFromCloud();
                 // §6：allData 为内存 cache（非真相源），此处为重建入口：清空后由 loadAllData() 重建。
@@ -200,14 +199,12 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
                 renderDuiban();
                 renderEmotionBoard();
                 if (typeof renderEtf === 'function') renderEtf();
-                updateCloudSyncUI('synced');
             // 预加载云端题材库（非阻塞，完成后重建缓存并刷新第二页）
             loadCloudTopics().then(function() { invalidateTopicCache(); buildTopicCache(); renderAuction(); }).catch(function() {});
             // 重新加载云端股票代码映射
             loadCloudStockCodeMap().then(function() { if (typeof renderAuction === 'function') renderAuction(); }).catch(function() {});
             } catch (e) {
                 _dbgLog('[AUCTION-ERR] manualPullCloud ' + (e && e.message || e));
-                updateCloudSyncUI('offline');
             }
         }
 
@@ -217,7 +214,6 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
         export function scheduleCloudPush() {
             clearTimeout(state._pushDebounceTimer);
             state._pushDebounceTimer = setTimeout(pushToCloud, 2000);
-            updateCloudSyncUI('syncing');
         }
 
         // 记录"确实发生过增删股票操作"的 auction 日期。
@@ -493,60 +489,7 @@ function _uiDateSafe() { try { return useUiStore().currentDate; } catch (e) { re
 
 
 
-        // 保存评论
-        export function saveComment() {
-            const comment = _getCommentInputValue();
-            const stats = getStats();
-            stats.comment = comment;
-            markJiwangDirty(useUiStore().currentDate);
-            saveData();
-            renderComment();
-            closeCommentModal();
-            pushJiwangNow(useUiStore().currentDate, '✅ 评论已保存并同步到云端');
-        }
 
-
-        // 当前编辑追踪记录的股票标识
-        state.currentTrackEditId = null;
-
-
-
-
-
-        // 保存追踪记录编辑
-        export function saveTrackEdit() {
-            if (!state.currentTrackEditId) return;
-            
-            let stockIndex = -1;
-            const data = getTodayData();
-            
-            stockIndex = data.findIndex(s => String(s.id) === String(state.currentTrackEditId));
-            if (stockIndex === -1) {
-                stockIndex = data.findIndex(s => s.name === state.currentTrackEditId);
-            }
-            
-            if (stockIndex === -1) {
-                showToast('❌ 未找到股票数据');
-                return;
-            }
-            
-            const trackData = _readTrackEditFormData();
-            const expandedStockId = state.currentTrackEditId;
-            
-            // §6：state.allData.stocks[date] 此处为内存缓存别名（非真相源），真相经 getStocksData() / state._stocksMemCache。
-            //     仅原地写 track 字段，不改读值行为；本函数仅在 allData 重建完成后被触发（allData=null 期间不会调用）。
-            if (!state.allData.stocks[useUiStore().currentDate]) {
-                state.allData.stocks[useUiStore().currentDate] = [];
-            }
-            state.allData.stocks[useUiStore().currentDate][stockIndex].track = trackData;
-            
-            saveData();
-            renderList();
-            
-            _restoreStockCardExpand(expandedStockId);
-            closeTrackEditModal();
-            showToast('✅ 追踪记录已保存！');
-        }
 
         // 获取前一天/后一天日期（已迁至 ./date/date-helpers.js）
 
@@ -804,7 +747,9 @@ state._guardAssertDate = _guardAssertDate;
 
 _bindApi({ getCurrentDate, getAuctionData, getGroupData, scheduleCloudPush, markAuctionDirty, saveData, getTodayAuction, getNextTradingDay, getHotAuctionData, saveModule, patchAuctionFieldBatch, reconcileAuctionWatchlistFromLocalStorage, mergeAuctionDateRows, _openHotAuctionShield, _closeHotAuctionShield, getStockHistoryTopics, getRankData, getTagTitlesData, getTodayJiwang, getTodayGroupList, markJiwangDirty, replaceHotConceptFromPaste, importAuctionFromPaste, replaceConceptFromPaste, importHotFromPaste });
 
-_bindUiFns({ showAuctionNoteInput, showAuctionNotePopup, toggleAuctionRowSelect, copyAllTopicStocks, copyTopicStocks, expandAllAuctionTrendPanels, expandAllAuctionTrendPanelsP2, jumpToAuctionPage1, jumpToAuctionPage2, openAuctionNoteEditFromPage2, openCoreTopicModal, restoreExpandedAuctionTrendPanels, restoreExpandedTopicGroupsP2, showAuctionBuyPrompt, toggleAuctionSortHelp, toggleTopicGroupTrendPanels, openAuctionEdit, openHotEdit, renderAuction, toggleAuctionBoard, toggleStrengthSort });
+// [FIX 2026-08-15] _bindUiFns 仅保留真实实现（renderAuction → auction-refresh 事件）；
+// 原绑定的 toggleStrengthSort 等一批空桩对应 store action 已删除（Vue 组件走本地实现，§16）。
+_bindUiFns({ renderAuction });
 
 _initAuctionMemCache();
 
@@ -817,7 +762,7 @@ export { markJiwangDirty, getTodayJiwang } from './jiwang/jiwang.js';
 export { searchTickerCodeByName, autoCompleteMissingStockCodes, importStockCodeMap, extractCodeFromFuyaoItem, getStockHistoryTopics, replaceConceptFromPaste } from './stocks/stocks.js';
 
 // §16 域拆分：auction 域函数已迁出至 ./auction/auction.js
-export { getAuctionData, getTodayAuction, getTodayGroupList, markAuctionDirty, patchAuctionField, patchAuctionFieldBatch, _sanitizeAuctionPatch, _splitAuctionPatch, _mergeAuctionPatchLocal, clearAuctionDateData, deleteAuctionDateData, mergeAuctionDateRows, clearAllAuctionDates, repairAuctionInWatchlistForDate, reconcileAuctionWatchlistFromLocalStorage, reconcileAuctionWatchlist, backupAuctionData, rollbackAuctionData, importAuctionFromPaste, parseVolumeOnlyText, splitHistoryFillLine, importAuctionHistoryFill, fetchLadderConstituentsMain, fetchDayVolumes, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs, _fillTodayYesterdayVolumeFromThsImpl, fillYesterdayYesterdayVolumeFromThs, _fillYesterdayYesterdayVolumeFromThsImpl, fetchChangePctFromThs, _fetchChangePctFromThsImpl, fillAuctionHistoryGapPctFromThs, fillAuctionHistoryGapYestVolumeFromThs, fillYesterdayAuctionFromNumcat, fetchTodayAuctionFromNumcat, fetchAllAuctionFromNumcat, fetchThreeDaysAuctionFromNumcat, fetchFiveDaysAuctionFromNumcat, fillTopicsFromNumcat, fetchMonitorWarningFromNumcat, fetchAuctionFromNumcat, runAuctionApiDiagnostics, AUCTION_WATCHLIST_FIELDS, AUCTION_METRICS_FIELDS, AUCTION_PATCHABLE_FIELDS, _auctionFirstClearDumped } from './auction/auction.js';
+export { getAuctionData, getTodayAuction, getTodayGroupList, markAuctionDirty, patchAuctionField, patchAuctionFieldBatch, _sanitizeAuctionPatch, _splitAuctionPatch, _mergeAuctionPatchLocal, clearAuctionDateData, deleteAuctionDateData, mergeAuctionDateRows, clearAllAuctionDates, repairAuctionInWatchlistForDate, reconcileAuctionWatchlistFromLocalStorage, reconcileAuctionWatchlist, backupAuctionData, rollbackAuctionData, importAuctionFromPaste, parseVolumeOnlyText, splitHistoryFillLine, importAuctionHistoryFill, fetchLadderConstituentsMain, fetchDayVolumes, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs, _fillTodayYesterdayVolumeFromThsImpl, fillYesterdayYesterdayVolumeFromThs, _fillYesterdayYesterdayVolumeFromThsImpl, fetchChangePctFromThs, _fetchChangePctFromThsImpl, fillAuctionHistoryGapPctFromThs, fillAuctionHistoryGapYestVolumeFromThs, fillYesterdayAuctionFromNumcat, fetchTodayAuctionFromNumcat, fetchAllAuctionFromNumcat, fetchThreeDaysAuctionFromNumcat, fetchFiveDaysAuctionFromNumcat, fillTopicsFromNumcat, fetchMonitorWarningFromNumcat, fetchAuctionFromNumcat, AUCTION_WATCHLIST_FIELDS, AUCTION_METRICS_FIELDS, AUCTION_PATCHABLE_FIELDS, _auctionFirstClearDumped } from './auction/auction.js';
 
 // §16 域拆分：hotspot 域函数已迁出至 ./hotspot/hotspot.js
 export { getHotspotData, getHotAuctionData, _openHotAuctionShield, _closeHotAuctionShield, _sanitizeHotPatch, _splitHotPatch, _mergeHotPatchLocal, patchHotField, patchHotFieldBatch, backupHotStocksData, importHotFromPaste, replaceHotConceptFromPaste, HOT_WATCHLIST_FIELDS, HOT_METRICS_FIELDS, HOT_PATCHABLE_FIELDS } from './hotspot/hotspot.js';

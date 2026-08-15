@@ -1,4 +1,4 @@
-﻿// auction-sync.js — 云端拉取/推送调度（从 app-core.js 抽离）
+// auction-sync.js — 云端拉取/推送调度（从 app-core.js 抽离）
 // 逻辑层 workflow：编排 data/ 层的 supabase 读写 + 本地缓存同步
 
         // 批量更新某日期所有股票的状态列（主程序拥有：selected/obs_auto_added）
@@ -22,7 +22,7 @@ import { pullAuctionFromTable } from '../../data/auction-data.js';
 import { _signalCache } from '../auction/sort-rules.js';
 import { pullBiddingFromTable, pushBiddingToCloud } from '../../data/bidding-data.js';
 import { pullJiwangFromTable } from '../../data/jiwang-data.js';
-import { updateCloudSyncUI, recalcDuibanFromAuction } from '../ui-bridge.js';
+import { recalcDuibanFromAuction } from '../ui-bridge.js';
 import { _openAuctionShield, _closeAuctionShield } from '../../data/session-and-shield.js';
 import { syncStockTopicsFromAuction } from '../auction/stock-sync.js';
 import { useUiStore } from '../../stores/uiStore.js';
@@ -731,7 +731,6 @@ import { useUiStore } from '../../stores/uiStore.js';
         }
 
         export async function pushToCloud() {
-            updateCloudSyncUI('syncing');
             try {
                 // 复用 exportData 的数据收集逻辑
                 loadAllData();
@@ -740,7 +739,6 @@ import { useUiStore } from '../../stores/uiStore.js';
                 // 如果本地完全没有数据，跳过推送，防止把空数据覆盖云端
                 if (stockCount === 0 && Object.keys(state.allData.jiwang || {}).length === 0) {
                     _dbgLog && _dbgLog('window.pushToCloud 跳过: 本地无数据，不覆盖云端');
-                    updateCloudSyncUI('synced');
                     return;
                 }
                 const summaries = {};
@@ -821,10 +819,8 @@ import { useUiStore } from '../../stores/uiStore.js';
                 try { await pushAuctionToCloud(); } catch(e) { console.warn('window.pushAuctionToCloud 失败:', e); _dbgLog('[PUSH-ERR] window.pushAuctionToCloud ' + (e && e.message || e)); }
                 // bidding 数据同步到独立表
                 try { await pushBiddingToCloud(useUiStore().currentDate); } catch(e) { console.warn('window.pushBiddingToCloud 失败:', e); }
-                updateCloudSyncUI('synced');
             } catch (e) {
                 console.error('window.pushToCloud 失败:', e);
-                updateCloudSyncUI('offline');
             }
         }
 

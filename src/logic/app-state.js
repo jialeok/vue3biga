@@ -121,8 +121,6 @@ export const state = reactive({
     _coreTopicsPushingToCloud: false,
     _topicRankByDateCache: null,
     currentTrackEditId: null,
-    _aiVisionTarget: null,
-    _aiVisionImages: [],
     isStrengthSortEnabled: false,
     defaultCoreTopics: [
         { name: 'AI应用', synonyms: ['人工智能', 'AI', 'AI算力', '空间计算'] },

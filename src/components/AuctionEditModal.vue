@@ -15,7 +15,6 @@
           <div class="paste-btns">
             <button @click="onPasteImport" class="btn btn-import">导入数据</button>
             <button @click="onReplaceConcept" class="btn btn-concept">替换概念</button>
-            <button @click="onAiVision" class="btn btn-vision">📷 AI识图</button>
           </div>
           <span v-if="pasteStatus" class="inline-status">{{ pasteStatus }}</span>
         </div>
@@ -96,16 +95,6 @@
           <span class="api-status-line" :class="statusCls('numcatApiStatus')">{{ statusMsg('numcatApiStatus') }}</span>
         </div>
 
-        <!-- 接口诊断 -->
-        <div class="api-section api-diag">
-          <div class="api-section-header">
-            <span class="api-section-title">接口诊断</span>
-            <span class="api-section-tag">独立运行</span>
-          </div>
-          <button @click="onRunDiag" class="btn btn-diag" :disabled="busyKey === 'diag'">{{ busyKey === 'diag' ? '诊断中...' : '🔍 运行诊断' }}</button>
-          <span class="api-status-line" :class="statusCls('auctionDiagStatus')">{{ statusMsg('auctionDiagStatus') }}</span>
-        </div>
-
         <!-- 表单行 -->
         <div class="rank-form-scroll-container">
           <div v-for="(row, idx) in editRows" :key="idx" class="auction-form-row">
@@ -145,10 +134,9 @@ import {
   fillAuctionHistoryGapPctFromThs,
   fetchTodayAuctionFromNumcat, fetchAllAuctionFromNumcat, fetchFiveDaysAuctionFromNumcat,
   fillYesterdayAuctionFromNumcat, fillTopicsFromNumcat, fetchMonitorWarningFromNumcat,
-  runAuctionApiDiagnostics, rollbackAuctionData, repairAuctionInWatchlistForDate,
+  rollbackAuctionData, repairAuctionInWatchlistForDate,
   patchAuctionFieldBatch, markAuctionDirty, scheduleCloudPush
 } from '../logic/app-core.js';
-import { openAiVisionModal } from '../logic/workflows/ai-vision-import.js';
 import { parseNoteToFields } from '../logic/note/helpers.js';
 import { syncStockTopicsFromAuction } from '../logic/auction/stock-sync.js';
 import auctionStore from '../stores/auctionStore.js';
@@ -385,10 +373,6 @@ function onReplaceConcept() {
   });
 }
 
-function onAiVision() {
-  openAiVisionModal();
-}
-
 function onImportCodeMap() {
   if (!codeMapText.value.trim()) {
     codeMapStatus.value = '请先粘贴映射数据（格式：股票名[TAB]代码）';
@@ -429,20 +413,6 @@ function onHistoryFill() {
     console.error('历史填充失败:', e);
     historyStatus.value = '失败: ' + (e && e.message ? e.message : String(e));
   });
-}
-
-function onRunDiag() {
-  if (busyKey.value) return;
-  busyKey.value = 'diag';
-  activeElId.value = 'auctionDiagStatus';
-  if (apiStatusMap.auctionDiagStatus) delete apiStatusMap.auctionDiagStatus;
-  Promise.resolve().then(() => runAuctionApiDiagnostics())
-    .catch(e => {
-      console.error('诊断异常:', e);
-      apiStatusMap.auctionDiagStatus = { msg: '❌ ' + (e && e.message ? e.message : String(e)), ok: false, ts: Date.now() };
-    });
-  if (busyTimer) clearTimeout(busyTimer);
-  busyTimer = setTimeout(() => { busyKey.value = ''; activeElId.value = ''; }, 60000);
 }
 
 function onRollback() {

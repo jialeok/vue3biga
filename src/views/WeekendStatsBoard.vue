@@ -171,15 +171,21 @@
         </div>
       </div>
     </div>
+
+    <!-- [FIX 2026-08-15] 周/月总结编辑：原 openWeekendSummaryModal 为空桩导致点击无反应，
+         改为本地 Vue EditModal + stats-logic.writeStats 持久化（同 StatsBoard 评论模式，§4/§8/§10）。 -->
+    <EditModal v-model="editModalActive" :title="editModalTitle" show-clear clear-text="清空" @save="saveEdit" @clear="clearEdit">
+      <textarea v-model="editDraft" style="width:100%;min-height:160px;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;resize:vertical;box-sizing:border-box;" placeholder="输入内容..."></textarea>
+    </EditModal>
   </div>
 </template>
 
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { getJiwangData } from '../data/supabase-client.js';
 import { useUiStore } from '../stores/uiStore.js';
 import { isTradingDay } from '../logic/date/trading-day-helpers.js';
-import { useScoreCalculation } from '../composables/useScoreCalculation.js';
+import { readStats, writeStats } from '../logic/stats/stats-logic.js';
 import {
   computeStats,
   computeTopStocks,
@@ -191,18 +197,88 @@ import {
 // 不再在 .vue 内联（原 parseLocalDate / getWeekDates / formatDate 已搬出）。
 import { parseLocalDate, getWeekDates, formatDate } from '../logic/stats/weekend-logic.js';
 import TrendChart from '../components/TrendChart.vue';
+import EditModal from '../components/EditModal.vue';
+import { showToast } from '../composables/useToast.js';
 
 const uiStore = useUiStore();
-const { openWeekendSummary, openWeekendReview } = useScoreCalculation();
 
 const topStocksExpanded = ref(false);
-// [已知缺口] summaryText / reviewText / experienceText / planText 仍为空 ref。
-// openWeekendSummary / openWeekendReview 经 modal → Logic → Data 持久化，但 modal 链路尚未回填这些字段
-// （openWeekendSummaryModal 为空实现），故此处恒为空、显示「点击输入」占位。保留不阻塞，待 modal 接入后自然会填值。
-const summaryText = ref('');
-const reviewText = ref('');
-const experienceText = ref('');
-const planText = ref('');
+// [FIX 2026-08-15] 周/月总结编辑本地化：summaryText/reviewText/experienceText/planText
+// 从 jiwang stats 读取（readStats），点击经本地 EditModal → writeStats 持久化（§4/§8/§10）。
+// 字段约定：weekSummary（周六总结）/ weekReview（周日回顾）/ weekExperience（周日经验）/ weekPlan（周日计划）。
+const summaryStats = readStats(uiStore.currentDate || '');
+const summaryText = ref(summaryStats.weekSummary || '');
+const reviewText = ref(summaryStats.weekReview || '');
+const experienceText = ref(summaryStats.weekExperience || '');
+const planText = ref(summaryStats.weekPlan || '');
+// [FIX 2026-08-15] 日期切换时重新从 stats 加载总结文本（看板可能复用而不重新挂载，§17/§24）
+watch(() => uiStore.currentDate, () => {
+  const s = readStats(uiStore.currentDate || '');
+  summaryText.value = s.weekSummary || '';
+  reviewText.value = s.weekReview || '';
+  experienceText.value = s.weekExperience || '';
+  planText.value = s.weekPlan || '';
+});
+
+// 编辑弹窗状态：editField 标记当前编辑字段
+const editModalActive = ref(false);
+const editModalTitle = ref('');
+const editDraft = ref('');
+let editField = '';
+
+function openSummaryEdit() {
+  editField = 'weekSummary';
+  editModalTitle.value = '本周总结心得';
+  editDraft.value = summaryText.value;
+  editModalActive.value = true;
+}
+function openReviewEdit() {
+  editField = 'weekReview';
+  editModalTitle.value = '本周回顾';
+  editDraft.value = reviewText.value;
+  editModalActive.value = true;
+}
+function openExperienceEdit() {
+  editField = 'weekExperience';
+  editModalTitle.value = '经验总结';
+  editDraft.value = experienceText.value;
+  editModalActive.value = true;
+}
+function openPlanEdit() {
+  editField = 'weekPlan';
+  editModalTitle.value = '下周计划';
+  editDraft.value = planText.value;
+  editModalActive.value = true;
+}
+async function saveEdit() {
+  const val = editDraft.value.trim();
+  const patch = {};
+  patch[editField] = val;
+  try {
+    await writeStats(uiStore.currentDate, patch, '✅ 已保存并同步到云端');
+    if (editField === 'weekSummary') summaryText.value = val;
+    else if (editField === 'weekReview') reviewText.value = val;
+    else if (editField === 'weekExperience') experienceText.value = val;
+    else if (editField === 'weekPlan') planText.value = val;
+    editModalActive.value = false;
+  } catch (e) {
+    showToast('保存失败：' + (e && e.message ? e.message : '未知错误'));
+  }
+}
+async function clearEdit() {
+  const patch = {};
+  patch[editField] = '';
+  try {
+    await writeStats(uiStore.currentDate, patch, '✅ 已清空并同步到云端');
+    if (editField === 'weekSummary') summaryText.value = '';
+    else if (editField === 'weekReview') reviewText.value = '';
+    else if (editField === 'weekExperience') experienceText.value = '';
+    else if (editField === 'weekPlan') planText.value = '';
+    editModalActive.value = false;
+  } catch (e) {
+    showToast('清空失败：' + (e && e.message ? e.message : '未知错误'));
+  }
+}
 
 // 响应式根：uiStore.currentDate 变化 → 所有依赖它的 computed 自动重算（架构规范 §17）。
 // DashboardView 按日期切换挂载本板子，切换后 currentDate 变化即驱动重算，无需额外 watch。
@@ -262,12 +338,6 @@ const duibanPerformance = computed(() => []);
 const recordStats = computed(() => computeRecordStats(getWeekDates(currentDate.value)));
 
 function toggleTopStocks() { topStocksExpanded.value = !topStocksExpanded.value; }
-// WX-02：复用既有 modal 链路（useScoreCalculation.openWeekendSummary / openWeekendReview），
-// 移除 window.prompt()；总结经 modal → Logic → Data 持久化（遵循架构规范 §8 / §10）。
-function openSummaryEdit() { openWeekendSummary(); }
-function openReviewEdit() { openWeekendReview(); }
-function openExperienceEdit() { openWeekendReview(); }
-function openPlanEdit() { openWeekendReview(); }
 
 // W-03：复用 <TrendChart> 组件替代自绘 canvas（遵循 §30 图表性能规范）。
 // buildProfitPoints(getDates) 内部调用 getDates() 取日期数组；getWeekDates 现需 base 参数，

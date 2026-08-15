@@ -1,6 +1,5 @@
-﻿
+
 import { renderConsecutiveUp as _calcConsecutiveUp } from '../logic/tagTitles/helpers.js';
-import { openMonthlySummaryModal, openWeekendReviewModal, openWeekendSummaryModal, showLastWeekStats, showMonthlyStats, showWeeklyStats } from '../logic/ui-bridge.js';
 import { ref } from 'vue';
 import { getTodayJiwang, getGroupData, getTodayGroupList, saveData } from '../logic/app-core-api.js';
 import { getTopicGroups } from '../logic/topic/rules.js';
@@ -98,9 +97,8 @@ export function useScoreCalculation() {
       _emitAllRefresh();
     }
   }
-  function openWeekendSummary() { if (typeof openWeekendSummaryModal === 'function') openWeekendSummaryModal(); }
-  function openWeekendReview() { if (typeof openWeekendReviewModal === 'function') openWeekendReviewModal(); }
-  function openMonthlySummary() { if (typeof openMonthlySummaryModal === 'function') openMonthlySummaryModal(); }
+  // [FIX 2026-08-15] 周/月总结编辑已由 WeekendStatsBoard/MonthlyStatsBoard 本地 EditModal 实现
+  // （readStats + writeStats，§4/§8/§10），此处不再暴露调用 ui-bridge 空桩的入口。
 
   return {
     consecutiveUp,
@@ -109,8 +107,5 @@ export function useScoreCalculation() {
     showWeekly,
     showLastWeek,
     showMonthly,
-    openWeekendSummary,
-    openWeekendReview,
-    openMonthlySummary,
   };
 }

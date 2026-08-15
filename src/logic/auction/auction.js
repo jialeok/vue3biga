@@ -22,7 +22,7 @@ import { _backupScopeData, _mergePatchLocal, _patchScopeField, _sanitizePatch, _
 import { _getLocalTodayStr, deriveAuctionTagState } from '../tagTitles/rules.js';
 import { getMostRecentTradingDay, getPreviousTradingDay, isTradingDay } from '../date/trading-day-helpers.js';
 import { getWeekday, getPreviousDate, getNextDate, _shiftDateStr, buildYesterdayListFromToday } from '../date/date-helpers.js';
-import { _domGet, _domQuery, _domSetColor, _domSetText, _domSetValue, _getCommentInputValue, _readTrackEditFormData, _restoreStockCardExpand, closeCommentModal, closeHotEditModal, closeTrackEditModal, copyAllTopicStocks, copyTopicStocks, expandAllAuctionTrendPanels, expandAllAuctionTrendPanelsP2, getNthPreviousTradingDay, handleFileImport, jumpToAuctionPage1, jumpToAuctionPage2, openAuctionEdit, openAuctionNoteEditFromPage2, openCoreTopicModal, openHotEdit, recalcDuibanFromAuction, renderAuction, renderAuctionForm, renderBidding, renderComment, renderDuiban, renderEmotionBoard, renderEtf, renderHotForm, renderHotspot, renderJiwang, renderList, renderMulti, renderPattern, renderRank, resetExpansionStateOnDateSwitch, restoreExpandedAuctionTrendPanels, restoreExpandedTopicGroupsP2, saveAuction, setApiStatus, setStockCodeMapStatus, setStockCodeMapStatusHot, showAuctionBuyPrompt, showAuctionDiagReport, showAuctionNoteInput, showAuctionNotePopup, showHint, showHotDiagReport, showNumcatChoiceModal, toggleAuctionBoard, toggleAuctionRowSelect, toggleAuctionSortHelp, toggleStrengthSort, toggleTopicGroupTrendPanels, updateCloudSyncUI } from '../ui-bridge.js';
+import { _domGet, _domQuery, getNthPreviousTradingDay, recalcDuibanFromAuction, renderAuction, renderBidding, renderDuiban, renderEmotionBoard, renderEtf, renderHotForm, renderHotspot, renderJiwang, renderList, renderMulti, renderPattern, renderRank, resetExpansionStateOnDateSwitch, setApiStatus, showNumcatChoiceModal } from '../ui-bridge.js';
 import { pullFromCloud, pushAuctionCodeToCloud, pushHotStocksDataToCloud, pushToCloud, syncAuctionListForDate, syncCloseChunk, syncHotStocksListForDate } from '../workflows/auction-sync.js';
 import { useAuctionStore, _bindUiFns } from '../../stores/auctionStore.js';
 import { initAuctionTags } from '../../stores/auctionTagStore.js';
@@ -395,8 +395,7 @@ export function rollbackAuctionData() {
 
     // 刷新页面显示
     renderAuction();
-    renderAuctionForm();
-    showHint('已撤回早盘竞价数据');
+    showToast('✅ 已撤回早盘竞价数据');
     return true;
 }
 
@@ -1161,7 +1160,6 @@ export async function fetchLadderConstituentsMain(btn) {
         // 界面上正显示的另一天，等于用错误日期的内容覆盖了正确的渲染，容易造成
         // "看着是这天的数据、其实是那天的"的混淆——所以此时只提示、不刷新视图。
         if (useUiStore().currentDate === targetDate) {
-            renderAuctionForm();
             renderAuction();
             renderList();
             setApiStatus('thsApiStatus', '✅ 已获取 ' + newList.length + ' 只最近多板股票', true);
@@ -1404,7 +1402,6 @@ export async function fillYesterdayVolumeFromThs(btn) {
         }
 
         // 刷新表单和看板
-        renderAuctionForm();
         renderAuction();
         renderList();
 
@@ -1486,7 +1483,6 @@ export async function _fillTodayYesterdayVolumeFromThsImpl(btn, overwrite) {
             patchAuctionFieldBatch(today, todayYestVolPatches).catch(function(e) { _dbgLog('[AUCTION-ERR] patchAuctionFieldBatch today yest_volume ' + (e && e.message || e)); });
         }
 
-        renderAuctionForm();
         renderAuction();
         renderList();
 
@@ -1595,7 +1591,6 @@ export async function _fillYesterdayYesterdayVolumeFromThsImpl(btn, overwrite) {
             patchAuctionFieldBatch(yesterday, yesterdayPatches).catch(function(e) { _dbgLog('[AUCTION-ERR] patchAuctionFieldBatch yesterday ' + (e && e.message || e)); });
         }
 
-        renderAuctionForm();
         renderAuction();
         renderList();
 
@@ -1717,7 +1712,6 @@ export async function _fetchChangePctFromThsImpl(btn, overwrite) {
         auctionData[today] = todayList;
         saveModule('auction');
         invalidateTopicCache();
-        renderAuctionForm();
         renderAuction();
         renderList();
 
@@ -1924,7 +1918,6 @@ export async function fillAuctionHistoryGapPctFromThs(btn, mode) {
             });
         }
 
-        renderAuctionForm();
         renderAuction();
 
         _dbgLog('[AUCTION-BTN] 历史断点涨幅(' + modeLabel + ') 写入汇总 | 已写入股票=' + filledStocks +
@@ -2107,7 +2100,6 @@ export async function fillAuctionHistoryGapYestVolumeFromThs(btn) {
             });
         }
 
-        renderAuctionForm();
         renderAuction();
 
         _dbgLog('[AUCTION-BTN] 历史断点昨日成交量 写入汇总 | 已写入股票=' + filledStocks +
@@ -2311,7 +2303,6 @@ export async function fetchFiveDaysAuctionFromNumcat(btn) {
                 _dbgLog('[AUCTION-ERR] patchAuctionFieldBatch ' + dateStr + ' ' + (e && e.message || e));
             });
         });
-        renderAuctionForm();
         renderAuction();
         renderList();
         const patchCounts = dates.map(function(d) { return (patchesByDate[d] || []).length; });
@@ -2913,7 +2904,6 @@ export async function fetchAuctionFromNumcat(btn, opts) {
             patchAuctionFieldBatch(dayBefore, dayBeforePatches).catch(function(e) { _dbgLog('[AUCTION-ERR] patchAuctionFieldBatch dayBefore ' + (e && e.message || e)); });
         }
 
-        renderAuctionForm();
         renderAuction();
         renderList();
 
@@ -2944,344 +2934,6 @@ export async function fetchAuctionFromNumcat(btn, opts) {
     }
 }
 
-export async function runAuctionApiDiagnostics() {
-    const lines = [];
-    const push = function(s) { lines.push(s); };
-    const now = new Date();
-
-    push('===== 早盘竞价 接口诊断报告 =====');
-    push('生成时间：' + now.toLocaleString('zh-CN', { hour12: false }));
-    push('');
-
-    try {
-        const sysToday = (typeof _getLocalTodayStr === 'function') ? _getLocalTodayStr() : '';
-        const today = useUiStore().currentDate;
-        const viewDate = today;
-        const yesterday = getPreviousTradingDay(today);
-        const dayBefore = yesterday ? getPreviousTradingDay(yesterday) : null;
-        const dateOffsetNote = (sysToday && viewDate !== sysToday)
-            ? (viewDate > sysToday ? '【⚠️ 当前查看的是未来日期，尚未到交易日】' : '【当前查看的是历史日期】')
-            : '';
-        push('【交易日】系统今天(sysToday)=' + (sysToday || '（无法确定）') + '　当前查看日期(viewDate)=' + viewDate + '　' + dateOffsetNote);
-        push('　　　　  上一交易日(yesterday)=' + (yesterday || '（无法确定）'));
-        push('　　　　  前两交易日(dayBefore)=' + (dayBefore || '（无法确定）'));
-        push('');
-
-        const auctionData = getAuctionData();
-        const scMap = state._scMapCache || {};
-
-        // ---- 今日列表体检 ----
-        // 方案2：用 _auctionWatchlistIndex 判断正式成员，影子记录 = 不在索引里的行
-        const _diagTodayWset = _getAuctionWatchlistSet(today);
-        const todayListRaw = (auctionData[today] || []).filter(function(s) { return s && s.stock; });
-        const todayList = todayListRaw.filter(function(s) { return _diagTodayWset.has(s.stock.trim()); });
-        const todayShadowCount = todayListRaw.filter(function(s) { return !_diagTodayWset.has(s.stock.trim()); }).length;
-        push('【今日列表 ' + today + '】正式列表 ' + todayList.length + ' 只（原始 ' + todayListRaw.length + ' 只 | 影子记录 ' + todayShadowCount + ' 只）');
-        let todayVolMiss = 0, todayYestMiss = 0, todayCodeMiss = 0;
-        todayList.forEach(function(s) {
-            const code = (s.code || scMap[s.stock.trim()] || '').trim();
-            if (!code) todayCodeMiss++;
-            if (getNumericVolume(s.volume) === null) todayVolMiss++;
-            if (getNumericVolume(s.yestVolume) === null) todayYestMiss++;
-        });
-        push('　　缺代码映射：' + todayCodeMiss + ' 只');
-        push('　　缺竞价量(volume)：' + todayVolMiss + ' 只');
-        push('　　缺成交量(yestVolume)：' + todayYestMiss + ' 只');
-        push('　　逐只明细（股票 | 代码 | volume竞价量 | yestVolume成交量 | 涨幅）：');
-        todayList.forEach(function(s) {
-            const code = (s.code || scMap[s.stock.trim()] || '').trim() || '(无)';
-            push('　　  ' + s.stock + ' | ' + code + ' | vol=' + (s.volume || '(空)') +
-                 ' | yest=' + (s.yestVolume || '(空)') + ' | pct=' + (s.changePct || '(空)'));
-        });
-        push('');
-
-        // ---- 观察组自动继承排查 ----
-        // 🔍[调试] 专门排查"今日列表里凭空多出的股票"是否来自 ensureObservationStocks
-        // （观察组自动继承：把上一交易日"竞/昨"高光达标股票自动加入今日列表）。
-        // 逐一对照：今日正式列表里带 obsAutoAdded=true 标记的股票 vs 现在实时重新计算一遍
-        // 上一交易日"竞/昨"高光集合，两者是否一致；不一致就说明标记是历史遗留、或计算口径变了。
-        push('【观察组自动继承排查（window.ensureObservationStocks）】');
-        try {
-            const obsMarkedRows = todayList.filter(function(s) { return s && s.obsAutoAdded === true; });
-            push('　　今日正式列表中带 obsAutoAdded=true 标记的股票：' + obsMarkedRows.length + ' 只');
-            if (obsMarkedRows.length > 0) {
-                obsMarkedRows.forEach(function(s) {
-                    push('　　  ' + s.stock + ' | pct=' + (s.changePct || '(空)') + ' | volume=' + (s.volume || '(空)'));
-                });
-            }
-
-            if (yesterday && typeof getJingYestHighlightSetForDate === 'function') {
-                const rawMap = (typeof getJingYestStocksForDate === 'function') ? getJingYestStocksForDate(yesterday) : null;
-                const highlightSetNow = getJingYestHighlightSetForDate(yesterday);
-                push('　　现在重新计算 ' + yesterday + ' 的"竞/昨"高光集合（平行 + diff > 0）：');
-                push('　　　过滤前(Tier0) 共 ' + (rawMap ? rawMap.size : 0) + ' 只');
-                if (rawMap && rawMap.size > 0) {
-                    rawMap.forEach(function(info, name) {
-                        push('　　　　' + name + ' | diff=' + (info && info.diff) + ' | digitGap=' + (info && info.digitGap));
-                    });
-                }
-                push('　　　过滤后(diff>0，即观察组应继承的名单) 共 ' + (highlightSetNow ? highlightSetNow.size : 0) + ' 只：' +
-                     (highlightSetNow && highlightSetNow.size > 0 ? [...highlightSetNow].join('、') : '(无)'));
-
-                // 对照：标记为obsAutoAdded的股票，哪些不在"现在重算"的高光集合里（说明是历史遗留/口径变化）
-                const markedNames = new Set(obsMarkedRows.map(function(s) { return s.stock.trim(); }));
-                const staleMarked = [...markedNames].filter(function(n) { return !highlightSetNow || !highlightSetNow.has(n); });
-                const missingFromMarked = highlightSetNow ? [...highlightSetNow].filter(function(n) { return !markedNames.has(n); }) : [];
-                push('　　带标记但不在"现在重算"高光集合里的股票（' + staleMarked.length + ' 只，疑似历史遗留/口径已变化）：' +
-                     (staleMarked.length > 0 ? staleMarked.join('、') : '(无)'));
-                push('　　在"现在重算"高光集合里但今日列表未标记obsAutoAdded的股票（' + missingFromMarked.length + ' 只，可能是人工已加入或其它路径加入）：' +
-                     (missingFromMarked.length > 0 ? missingFromMarked.join('、') : '(无)'));
-            } else {
-                push('　　（无法重新计算：yesterday 未确定，或 getJingYestHighlightSetForDate 不存在）');
-            }
-
-            // localStorage 里记录的 obsAutoAdded_今日 集合，与内存里实际带标记的股票对照
-            try {
-                const lsObsAutoAdded = new Set(JSON.parse(localStorage.getItem('obsAutoAdded_' + today) || '[]'));
-                push('　　localStorage[obsAutoAdded_' + today + '] 记录：' + lsObsAutoAdded.size + ' 只：' +
-                     (lsObsAutoAdded.size > 0 ? [...lsObsAutoAdded].join('、') : '(无)'));
-                push('　　localStorage[obsEnsured_' + today + ']（是否已跑过防重复标记）：' + (localStorage.getItem('obsEnsured_' + today) || '(未设置)'));
-            } catch (e) {
-                push('　　读取 localStorage obsAutoAdded 记录失败：' + e.message);
-            }
-        } catch (e) {
-            push('　　观察组自动继承排查异常：' + e.message);
-        }
-        push('');
-
-        // ---- 买入继承排查（ensureBoughtStocksForDate）----
-        // 🔍[调试] 追踪"昨日买/持未卖 → 今日进入观察组显示持"的完整链路。
-        // 对照两个数据源：getStocksData（股票列表页，权威来源）vs auctionData（竞价看板）。
-        // 若某股票只在 auctionData 里有 bought=true 而 stocksData 没有，ensureBoughtStocksForDate
-        // 读不到它，就不会补入今日观察组——这正是"昨日买未卖但今日没进观察组"的常见成因。
-        push('【买入继承排查（window.ensureBoughtStocksForDate）】');
-        try {
-            const _stocksData = (typeof getStocksData === 'function') ? getStocksData() : {};
-            const _prevTags = (yesterday && _stocksData[yesterday]) || [];
-            push('　　getStocksData[' + (yesterday || '?') + '] 共 ' + _prevTags.length + ' 条');
-            const _sdHolding = _prevTags.filter(function(s) { return s && s.name && s.sold !== true && (s.bought === true || s.hold === true); });
-            push('　　其中 bought/hold 未卖 共 ' + _sdHolding.length + ' 只：');
-            _sdHolding.forEach(function(s) {
-                push('　　  ' + (s.name || '').trim() + ' | bought=' + (s.bought === true) + ' | hold=' + (s.hold === true) + ' | sold=' + (s.sold === true));
-            });
-
-            const _aucPrev = (yesterday && auctionData[yesterday]) ? auctionData[yesterday] : [];
-            const _aucBoughtNames = _aucPrev.filter(function(s) { return s && s.bought === true && s.sold !== true; }).map(function(s) { return (s.stock || '').trim(); }).filter(Boolean);
-            push('　　对照 auctionData[' + (yesterday || '?') + '] bought=true未卖 共 ' + _aucBoughtNames.length + ' 只：' + (_aucBoughtNames.length > 0 ? _aucBoughtNames.join('、') : '(无)'));
-            const _leak = _aucBoughtNames.filter(function(n) { return !_sdHolding.some(function(s) { return (s.name || '').trim() === n; }); });
-            push('　　⚠️ 竞价看板有买但 stocksData 未记录（会丢失继承）共 ' + _leak.length + ' 只：' + (_leak.length > 0 ? _leak.join('、') : '(无)'));
-
-            try {
-                push('　　localStorage[obsBought_' + today + '] = ' + (localStorage.getItem('obsBought_' + today) || '(未设置)'));
-                push('　　localStorage[boughtEnsured_' + today + '] = ' + (localStorage.getItem('boughtEnsured_' + today) || '(未设置)'));
-                push('　　localStorage[obsAutoAdded_' + today + '] = ' + (localStorage.getItem('obsAutoAdded_' + today) || '(未设置)'));
-            } catch (e2) {
-                push('　　读取 localStorage 失败：' + e2.message);
-            }
-
-            // 今日 auctionData 中所有 obsAutoAdded=true 的股票快照（即继承补入的结果）
-            const _todayAuto = (auctionData[today] || []).filter(function(s) { return s && s.obsAutoAdded === true; });
-            push('　　今日 auctionData[' + today + '] 中 obsAutoAdded=true 共 ' + _todayAuto.length + ' 只：');
-            _todayAuto.forEach(function(s) {
-                push('　　  ' + (s.stock || '') + ' | bought=' + (s.bought === true) + ' | selected=' + (s.selected === true) + ' | sold=' + (s.sold === true));
-            });
-
-            // holdingNames 股票在今日 auctionData 的字段快照——坐实"在数据里但是影子记录被过滤"
-            const _holdingInToday = _sdHolding.map(function(s) { return (s.name || '').trim(); }).filter(Boolean);
-            const _todayRows = auctionData[today] || [];
-            push('　　holdingNames 股票在今日 auctionData[' + today + '] 的字段快照：');
-            _holdingInToday.forEach(function(n) {
-                const r = _todayRows.find(function(s) { return s && s.stock && s.stock.trim() === n; });
-                if (!r) {
-                    push('　　  ' + n + ' → ❌ 不在今日 auctionData（缺失，会被补入）');
-                } else {
-                    const _isFormal = _diagTodayWset.has(n);
-                    push('　　  ' + n + ' | isFormal=' + _isFormal + ' | obsAutoAdded=' + (r.obsAutoAdded === true) + ' | selected=' + (r.selected === true) + ' | bought=' + (r.bought === true) + ' | sold=' + (r.sold === true) + (!_isFormal ? ' → ⚠️ 影子记录被渲染层过滤' : ''));
-                }
-            });
-        } catch (e) {
-            push('　　买入继承排查异常：' + (e && e.message ? e.message : String(e)));
-        }
-        push('');
-
-        // ---- 🔍[调试] 最近一次"猫抓补全"请求的原始返回快照 ----
-        // 需要先点一次"猫抓补全"按钮，再点"运行诊断"，此段才有数据。
-        // 直接展示猫抓接口这次对每只股票原始返回了什么（auc_pct_chg 有没有给），
-        // 不再需要事后翻云端历史记录推理，一次性坐实涨幅缺失的真正原因。
-        push('【最近一次猫抓补全请求快照（lastNumcatFillDebug）】');
-        try {
-            const rawDebug = localStorage.getItem('lastNumcatFillDebug_' + today);
-            if (!rawDebug) {
-                push('　　（无记录：本次诊断前尚未点击过"猫抓补全"按钮，或该功能是刚更新的旧版本未生成记录）');
-            } else {
-                const dbg = JSON.parse(rawDebug);
-                push('　　请求时间：' + dbg.requestedAt);
-                push('　　overwrite模式：' + dbg.overwrite);
-                push('　　请求的股票代码总数：' + dbg.requestedCodesCount);
-                push('　　接口返回的原始记录总数（含昨日）：' + dbg.apiRawItemsCount);
-                push('　　接口返回中"今天"这个交易日的原始记录 ' + (dbg.apiRawItemsForToday || []).length + ' 条：');
-                (dbg.apiRawItemsForToday || []).forEach(function(r) {
-                    push('　　　[原始] symbol=' + r.symbol + ' name=' + r.name + ' tradedate=' + r.tradedate +
-                         ' auc_vol=' + r.auc_vol + ' auc_pct_chg=' + (r.auc_pct_chg === undefined ? '(字段不存在)' : (r.auc_pct_chg === null || r.auc_pct_chg === '' ? '(空值)' : r.auc_pct_chg)));
-                });
-                push('　　逐只处理结果（fillLog，仅"今天"这一轮，共 ' + (dbg.fillLog || []).length + ' 条）：');
-                (dbg.fillLog || []).forEach(function(f) {
-                    if (f.hadDayData === false) {
-                        push('　　　✗ ' + f.stock + '(' + (f.code || '无代码') + ') | 未命中接口返回 | 原因：' + f.reasonNotWritten);
-                    } else if (f.skippedReason) {
-                        push('　　　- ' + f.stock + '(' + f.code + ') | 跳过：' + f.skippedReason + ' | 接口本次是否有这只股票的数据：' + f.hadDayData);
-                    } else {
-                        push('　　　' + (f.pctWrittenThisTime ? '✓' : '△') + ' ' + f.stock + '(' + f.code + ') | 接口返回auc_pct_chg=' +
-                             (f.apiReturnedPct === null ? '(空)' : f.apiReturnedPct) + ' | 接口返回auc_vol=' + f.apiReturnedVol +
-                             ' | 本次是否写入涨幅=' + f.pctWrittenThisTime + ' | 写入后changePct=' + (f.changePctAfter || '(空)') +
-                             (f.reasonNotWritten ? ' | 未写入原因：' + f.reasonNotWritten : ''));
-                    }
-                });
-                // 专项对照：把这份快照里"接口未返回auc_pct_chg"的股票单独列出来，
-                // 直接对应截图里"看起来凭空多出来"的那几只，一眼就能看出是否是同一批。
-                const noApiPct = (dbg.fillLog || []).filter(function(f) { return f.hadDayData === true && !f.apiReturnedPct; });
-                push('　　★ 本次请求中，接口命中了股票但未返回auc_pct_chg（即涨幅字段本次确实是接口没给）的股票共 ' + noApiPct.length + ' 只：');
-                if (noApiPct.length > 0) {
-                    push('　　　' + noApiPct.map(function(f) { return f.stock; }).join('、'));
-                }
-            }
-        } catch (e) {
-            push('　　读取猫抓请求快照异常：' + (e && e.message ? e.message : String(e)));
-        }
-        push('');
-
-        // ---- 对比日列表体检 ----
-        // 方案2：用 _auctionWatchlistIndex 判断正式成员；对比日同时展示正式列表和全部数据
-        const _diagYestWset = yesterday ? _getAuctionWatchlistSet(yesterday) : new Set();
-        const yesterdayListRaw = yesterday ? (auctionData[yesterday] || []).filter(function(s) { return s && s.stock; }) : [];
-        const yesterdayList = yesterdayListRaw.filter(function(s) { return _diagYestWset.has(s.stock.trim()); });
-        const yShadowCount = yesterdayListRaw.filter(function(s) { return !_diagYestWset.has(s.stock.trim()); }).length;
-        push('【对比日列表 ' + (yesterday || '') + '】正式列表 ' + yesterdayList.length + ' 只（原始 ' + yesterdayListRaw.length + ' 只 | 影子记录 ' + yShadowCount + ' 只）');
-        let yVolMiss = 0, yYestMiss = 0;
-        yesterdayList.forEach(function(s) {
-            if (getNumericVolume(s.volume) === null) yVolMiss++;
-            if (getNumericVolume(s.yestVolume) === null) yYestMiss++;
-        });
-        push('　　缺竞价量(volume)：' + yVolMiss + ' 只');
-        push('　　缺成交量(yestVolume)：' + yYestMiss + ' 只');
-        push('　　逐只明细（股票 | volume竞价量 | yestVolume成交量）：');
-        yesterdayList.forEach(function(s) {
-            push('　　  ' + s.stock + ' | vol=' + (s.volume || '(空)') + ' | yest=' + (s.yestVolume || '(空)'));
-        });
-        push('');
-
-        // ---- 保存路径体检 ----
-        push('【保存路径】');
-        push('　　saveModule 函数存在：' + (typeof saveModule === 'function'));
-        push('　　saveAuction 函数存在（表单提交绑定）：' + (typeof saveAuction === 'function'));
-        const formEl = _domGet('auctionForm');
-        push('　　#auctionForm 表单元素存在：' + (!!formEl));
-        push('　　#auctionForm onsubmit 绑定：' + (formEl && formEl.getAttribute('onsubmit') || '（未找到）'));
-        try {
-            const raw = localStorage.getItem('stockApp_v42_auction');
-            push('　　localStorage[stockApp_v42_auction] 存在：' + (raw !== null) + '，长度=' + (raw ? raw.length : 0));
-            if (raw) {
-                const parsed = JSON.parse(raw);
-                const todayInLS = (parsed[today] || []).length;
-                // [DATE-CLARIFY] auction 模块已改为纯云端 auction_watchlist + market_metrics + 内存缓存，
-                // 正常使用时不再向 stockApp_v42_auction 写入；该 key 仅保留旧数据供迁移/对账。
-                push('　　localStorage 中 ' + today + ' 的股票数：' + todayInLS +
-                     (todayInLS === todayList.length
-                         ? '（与内存一致 ✅）'
-                         : '（与内存不一致，但属正常 ⚠️：auction 已拆分到云端 auction_watchlist / market_metrics 表，本地 key 不再更新；内存=' + todayList.length + '）'));
-            } else {
-                push('　　localStorage 中 ' + today + ' 的股票数：0（auction 已拆分到云端 auction_watchlist / market_metrics 表，本地 key 不再写入；内存=' + todayList.length + '）');
-            }
-        } catch (e) {
-            push('　　localStorage 读取失败：' + e.message);
-        }
-        push('　　云端表 auction_watchlist 可用(state._auctionTableAvailable)：' + state._auctionTableAvailable + '，market_metrics 可用(state._marketMetricsTableAvailable)：' + state._marketMetricsTableAvailable);
-        push('　　_syncState（云同步状态）：' + (state._syncState || '未知'));
-        push('');
-
-        // ---- 趋势图数据源体检 ----
-        push('【趋势图数据源 state._auctionMemCache】');
-        const todayCache = state._auctionMemCache[today] || [];
-        const yestCache = yesterday ? (state._auctionMemCache[yesterday] || []) : [];
-        push('　　' + today + ' 快照行数：' + todayCache.length);
-        push('　　' + (yesterday || '') + ' 快照行数：' + yestCache.length);
-        if (todayList.length > 0) {
-            const sample = todayList[0];
-            const cacheRow = todayCache.find(function(r) { return r.stock === sample.stock; });
-            push('　　抽样核对「' + sample.stock + '」：');
-            push('　　　内存 volume=' + (sample.volume || '(空)') + ' / 快照 volume=' + (cacheRow ? (cacheRow.volume || '(空)') : '（快照中无此股票）'));
-            push('　　　内存 yestVolume=' + (sample.yestVolume || '(空)') + ' / 快照 yest_volume=' + (cacheRow ? (cacheRow.yest_volume || '(空)') : '（快照中无此股票）'));
-            if (cacheRow && ((cacheRow.volume || '') !== (sample.volume || '') || (cacheRow.yest_volume || '') !== (sample.yestVolume || ''))) {
-                push('　　　⚠️ 内存与趋势图快照不一致，趋势图可能显示旧值，建议重新进入该 tab 或等待下次云端同步');
-            }
-        }
-        push('');
-
-        // [BUG-FIX 2026-07-26] 新增：对比日 vs 当天 竞价量对比，
-        // 帮助诊断"对比日和当天竞价量数值相同"的问题
-        push('【对比日 vs 当天 竞价量对比（诊断数值相同问题）】');
-        if (!yesterday) {
-            push('　　无法计算对比日（getPreviousTradingDay 返回空）');
-        } else if (todayList.length === 0) {
-            push('　　当日列表为空，无法对比');
-        } else {
-            let sameVolCount = 0;
-            let bothHaveVol = 0;
-            let todayOnlyVol = 0;
-            let yestOnlyVol = 0;
-            let neitherVol = 0;
-            const sameVolStocks = [];
-            todayList.forEach(function(s) {
-                const tVol = getStockHistoryValue(today, s.stock, 'volume', 'auction');
-                const yVol = getStockHistoryValue(yesterday, s.stock, 'volume', 'auction');
-                if (tVol !== null && yVol !== null) {
-                    bothHaveVol++;
-                    if (tVol === yVol) {
-                        sameVolCount++;
-                        if (sameVolStocks.length < 5) sameVolStocks.push(s.stock + '(都=' + tVol + ')');
-                    }
-                } else if (tVol !== null && yVol === null) {
-                    todayOnlyVol++;
-                } else if (tVol === null && yVol !== null) {
-                    yestOnlyVol++;
-                } else {
-                    neitherVol++;
-                }
-            });
-            push('　　当天有竞价量、对比日也有：' + bothHaveVol + ' 只');
-            push('　　当天有、对比日无：' + todayOnlyVol + ' 只');
-            push('　　当天无、对比日有：' + yestOnlyVol + ' 只');
-            push('　　两天都无：' + neitherVol + ' 只');
-            push('　　★ 两天竞价量相同的股票：' + sameVolCount + ' 只' + (sameVolStocks.length > 0 ? '（抽样：' + sameVolStocks.join('、') + '）' : ''));
-            if (sameVolCount > 0) {
-                push('　　　⚠️ 数值相同可能原因：');
-                push('　　　　1. API 确实返回了相同值（小盘股竞价量可能稳定）');
-                push('　　　　2. 之前的"覆盖"操作写入了相同值');
-                push('　　　　3. 云端 auction_watchlist / market_metrics 两个日期存的 volume 相同');
-                push('　　　建议：点击猫抓"全竞价量"重新抓取覆盖（需代理正常工作）');
-            }
-        }
-        push('');
-
-        // ---- Realtime / 防抖 / 推送屏蔽窗口 体检 ----
-        push('【Realtime 与推送状态】');
-        push('　　state._justPushedAuction（是否处于"刚推送、屏蔽自身回显"窗口内）：' + state._justPushedAuction);
-        push('　　state._auctionRealtimeTimer 是否有待执行的防抖拉取：' + (state._auctionRealtimeTimer !== null));
-        push('　　说明：若两次点击补全按钮之间，state._justPushedAuction 曾经变回 false 且触发了云端拉取，');
-        push('　　　　 云端当时若还没有另一字段的最新值，理论上会覆盖本地——本次已修复为');
-        push('　　　　「云端有效值才覆盖，否则保留本地」，若仍复现请把本报告完整复制发出。');
-        push('');
-
-        push('===== 报告结束 =====');
-    } catch (e) {
-        push('');
-        push('❌ 诊断过程出错：' + (e && e.message ? e.message : String(e)));
-        if (e && e.stack) push(e.stack);
-    }
-
-    showAuctionDiagReport(lines.join('\n'));
-    setApiStatus('auctionDiagStatus', '✅ 诊断完成，请复制报告发给开发者', true);
-}
 
 export const AUCTION_WATCHLIST_FIELDS = ['note', 'topics', 'source', 'obs_auto_added', 'selected', 'bought', 'sold', 'fixed', 'code'];
 

@@ -29,17 +29,9 @@ export function setApiStatus(elId, msg, isOk) {
 }
 export function _domGet() { return null; }
 export function _domQuery() { return null; }
-export function _domSetText() {}
-export function _domSetColor() {}
-export function _domSetValue() {}
-export function _domSetDisplay() {}
 export function _domValue() { return ''; }
 export function _domCreate() { return null; }
-export function _domAddEventListener() {}
-export function _domAddEventListenerDoc() {}
 export function _getCommentInputValue() { return ''; }
-export function renderComment() {}
-export function closeCommentModal() {}
 export function _readTrackEditFormData() { return {}; }
 export function renderHotForm() { _emit('auction-refresh'); }
 // 覆盖/补全 选择弹窗（Vue 化）：取代原 window.confirm 系统 UI。
@@ -68,21 +60,8 @@ export function resolveNumcatChoice(overwrite) {
     numcatChoice.cancelSignal++;
   }
 }
-export function updateCloudSyncUI() {}
-
-export function showHotDiagReport() {}
-export function showAuctionDiagReport() {}
-export function closeTrackEditModal() {}
-export function closeHotEditModal() {}
-export function _restoreStockCardExpand() {}
-export function setStockCodeMapStatus() {}
-export function setStockCodeMapStatusHot() {}
-export function openAuctionEdit() {}
-export function openHotEdit() {}
-export function openTrackEdit() {}
 
 export function renderAuction() { _emit('auction-refresh'); }
-export function renderAuctionForm() {}
 export async function saveAuction() {}
 export async function pullCoreTopicsFromCloud() {
   const sb = getSupabase();
@@ -107,11 +86,8 @@ export async function pushCoreTopicsToCloud(topics) {
   if (insErr) throw insErr;
 }
 _setCoreTopicsFns(pullCoreTopicsFromCloud, pushCoreTopicsToCloud);
-export function toggleAuctionBoard() {}
 export function toggleStrengthSort() {}
 
-export function toggleAuctionTrendPanel() {}
-export function toggleAuctionTrendPanelP2() {}
 export function resetExpansionStateOnDateSwitch() {}
 export function getAuctionTagState(stockName, date) {
   const d = date || useUiStore().currentDate;
@@ -121,16 +97,9 @@ export function getAuctionTagState(stockName, date) {
 }
 export function copyAllTopicStocks() {}
 export function copyTopicStocks() {}
-export function expandAllAuctionTrendPanels() {}
-export function expandAllAuctionTrendPanelsP2() {}
-export function jumpToAuctionPage1() {}
-export function jumpToAuctionPage2() {}
 export function openAuctionNoteEditFromPage2() {}
 export function openCoreTopicModal() {}
-export function restoreExpandedAuctionTrendPanels() {}
 export function restoreExpandedTopicGroupsP2() {}
-export function showAuctionBuyPrompt() {}
-export function toggleAuctionSortHelp() {}
 export function toggleTopicGroupTrendPanels() {}
 const _starTagCache = new Map();
 export function clearStarTagCache() { _starTagCache.clear(); }
@@ -201,9 +170,6 @@ export function getStockProfitStatus(stockName, stocksData) {
   return result;
 }
 
-export function showAuctionNoteInput() {}
-export function showAuctionNotePopup() {}
-export function toggleAuctionRowSelect() {}
 
 export function renderBidding() { _emit('bidding-refresh'); }
 export function getTodayDuiban() {
@@ -352,23 +318,8 @@ export function renderPattern() { _emit('board-refresh'); }
 export function renderRank() { _emit('board-refresh'); }
 
 export function autoCalculateRecentMultiScore() { return _autoCalcRecentMultiScore(); }
-export function autoCalculateSectorEtfScore() {}
-export function autoCalculateTopicDirectionScore() {}
-export function openMonthlySummaryModal() {}
-export function openWeekendReviewModal() {}
-export function openWeekendSummaryModal() {}
 export function renderConsecutiveUp() { return _renderConsecutiveUp(); }
-export function showLastWeekStats() {}
-export function showMonthlyStats() {}
-export function showWeeklyStats() {}
 export { getTodayTagTitles, getYesterdayDate, getTagTitlesByDate, getPreviousTradingDayWithData, getTodayBidding };
 
 export function renderList() { _emit('stocks-refresh'); }
-export function showHint() {}
-export function handleFileImport() {}
 export function formatDate(d) { return d || ''; }
-export function editStock() {}
-export function copyToTomorrow() {}
-export function copyToDate() {}
-export function deleteStock() {}
-export function openSoldEdit() {}

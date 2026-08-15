@@ -143,15 +143,21 @@
         </div>
       </div>
     </div>
+
+    <!-- [FIX 2026-08-15] 月总结编辑：原 openMonthlySummaryModal 为空桩导致点击无反应，
+         改为本地 Vue EditModal + stats-logic.writeStats 持久化（同 StatsBoard 评论模式，§4/§8/§10）。 -->
+    <EditModal v-model="editModalActive" title="本月总结心得" show-clear clear-text="清空" @save="saveEdit" @clear="clearEdit">
+      <textarea v-model="editDraft" style="width:100%;min-height:160px;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;resize:vertical;box-sizing:border-box;" placeholder="输入内容..."></textarea>
+    </EditModal>
   </div>
 </template>
 
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { getJiwangData } from '../data/supabase-client.js';
 import { useUiStore } from '../stores/uiStore.js';
 import { isTradingDay } from '../logic/date/trading-day-helpers.js';
-import { useScoreCalculation } from '../composables/useScoreCalculation.js';
+import { readStats, writeStats } from '../logic/stats/stats-logic.js';
 import {
   computeStats,
   computeTopStocks,
@@ -162,14 +168,47 @@ import {
 // §2/§4/§15：月日期与聚合纯函数下沉 Logic 层（monthly-logic.js）
 import { getMonthDates, computeDuibanPerformance, formatDate } from '../logic/stats/monthly-logic.js';
 import TrendChart from '../components/TrendChart.vue';
+import EditModal from '../components/EditModal.vue';
+import { showToast } from '../composables/useToast.js';
 
 const uiStore = useUiStore();
-const { openMonthlySummary } = useScoreCalculation();
 
 const topStocksExpanded = ref(false);
-// §10/§11：summaryText 仍为 ref('')，是已知缺口（openMonthlySummary 经 modal → Logic → Data 持久化，
-// 但当前 modal 为空实现，summaryText 尚未回填）。保留并标注，不阻塞本次重构。
-const summaryText = ref('');
+// [FIX 2026-08-15] 月总结编辑本地化：summaryText 从 jiwang stats 读取，点击经本地 EditModal → writeStats 持久化。
+// 字段约定：monthlySummary（月总结）。
+const summaryStats = readStats(uiStore.currentDate || '');
+const summaryText = ref(summaryStats.monthlySummary || '');
+// [FIX 2026-08-15] 日期切换时重新从 stats 加载月总结文本（§17/§24）
+watch(() => uiStore.currentDate, () => {
+  const s = readStats(uiStore.currentDate || '');
+  summaryText.value = s.monthlySummary || '';
+});
+
+const editModalActive = ref(false);
+const editDraft = ref('');
+function openSummaryEdit() {
+  editDraft.value = summaryText.value;
+  editModalActive.value = true;
+}
+async function saveEdit() {
+  const val = editDraft.value.trim();
+  try {
+    await writeStats(uiStore.currentDate, { monthlySummary: val }, '✅ 已保存并同步到云端');
+    summaryText.value = val;
+    editModalActive.value = false;
+  } catch (e) {
+    showToast('保存失败：' + (e && e.message ? e.message : '未知错误'));
+  }
+}
+async function clearEdit() {
+  try {
+    await writeStats(uiStore.currentDate, { monthlySummary: '' }, '✅ 已清空并同步到云端');
+    summaryText.value = '';
+    editModalActive.value = false;
+  } catch (e) {
+    showToast('清空失败：' + (e && e.message ? e.message : '未知错误'));
+  }
+}
 
 // 响应式根：依赖 uiStore.currentDate（Pinia 响应式），DashboardView 按日期切换挂载后随日期重算。
 // 所有 computed 均以 currentDate 为依赖根，无需额外 watch（§17/§26 日期切换响应式边界）。
@@ -247,10 +286,6 @@ const recordStats = computed(() => {
 });
 
 function toggleTopStocks() { topStocksExpanded.value = !topStocksExpanded.value; }
-// WX-02：复用既有 modal 链路（useScoreCalculation.openMonthlySummary），
-// 移除 window.prompt()；总结经 modal → Logic → Data 持久化（遵循架构规范 §8 / §10）。
-// 已知缺口：openMonthlySummaryModal 当前为空实现（ui-bridge.js），summaryText 恒为 '' 是待接入缺口，不阻塞本次修复。
-function openSummaryEdit() { openMonthlySummary(); }
 
 // W-03：复用 <TrendChart> 组件替代自绘 canvas（遵循 §30 图表性能规范）。
 // 防御性包裹：buildProfitPoints 内部若抛错（B 类 getter 异常），降级为空数组，避免整块看板空白。
