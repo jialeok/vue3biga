@@ -9,7 +9,6 @@
         // 拆表后：只写 auction_watchlist，该表没有 in_watchlist 列（每行天然是正式成员）。
 import { getSupabase, getStocksData, loadAllData } from '../../data/supabase-client.js';
 import { saveFumianTopics } from '../../data/fumian-sync.js';
-import { saveDuibanData } from '../../data/duiban-sync.js';
 import { saveEtfBoardComment } from '../../data/etf-board-data.js';
 import { saveBiddingTemplate } from '../../data/bidding-template-sync.js';
 import { _dbgLog } from '../../data/debug-log.js';
@@ -547,8 +546,10 @@ import { useUiStore } from '../../stores/uiStore.js';
                 localStorage.setItem('stockApp_' + DV + '__migrated', '1');
 
                 // 其余散落 key
-                // §8 收口：duibanData 已双写 Supabase（saveDuibanData → duiban 表）；stockEtfComment 已并入 Supabase early_etf_data.comment 列（saveEtfBoardComment）；
+                // §8 收口：stockEtfComment 已并入 Supabase early_etf_data.comment 列（saveEtfBoardComment）；
                 // biddingDefaultTemplate_v41 已双写 Supabase（saveBiddingTemplate）；coreTopics 另有云端路径 topic-rules.js（getCoreTopics）。
+                // duibanData 不再双写 auction_duiban 表：该表为迁移遗留孤儿表（loadDuibanData 全代码 0 调用方，
+                // DuibanBoard 实际读 recent_multi_data），收敛为只经 user_data blob(_cloudBlobExtras) 暂存，不再写孤儿表。
                 // 上述字段以及 duibanComment/copiedStocksData/summaries 的「pull→push 暂存」已从 localStorage 改为模块内存 _cloudBlobExtras（见顶部声明），
                 // 不再把业务数据写进 localStorage；云端双写保留作为 fail-soft 冗余真相源，绝不丢数据。
                 const extraKeys = ['duibanData', 'duibanComment', 'stockEtfComment',
@@ -559,8 +560,7 @@ import { useUiStore } from '../../stores/uiStore.js';
                         _cloudBlobExtras[key] = cloudObj[key];
                         // §8 双写：新增云端 Supabase（fire-and-forget，内部 try/catch 已 fail-soft）
                         try {
-                            if (key === 'duibanData') saveDuibanData(cloudObj[key]);
-                            else if (key === 'stockEtfComment') {
+                            if (key === 'stockEtfComment') {
                                 const cmts = cloudObj[key];
                                 if (cmts && typeof cmts === 'object') {
                                     Object.keys(cmts).forEach(d => saveEtfBoardComment(d, cmts[d]));

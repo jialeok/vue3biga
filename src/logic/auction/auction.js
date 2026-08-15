@@ -22,11 +22,11 @@ import { _backupScopeData, _mergePatchLocal, _patchScopeField, _sanitizePatch, _
 import { _getLocalTodayStr, deriveAuctionTagState } from '../tagTitles/rules.js';
 import { getMostRecentTradingDay, getPreviousTradingDay, isTradingDay } from '../date/trading-day-helpers.js';
 import { getWeekday, getPreviousDate, getNextDate, _shiftDateStr, buildYesterdayListFromToday } from '../date/date-helpers.js';
-import { _domGet, _domQuery, getNthPreviousTradingDay, recalcDuibanFromAuction, renderAuction, renderBidding, renderDuiban, renderEmotionBoard, renderEtf, renderHotForm, renderHotspot, renderJiwang, renderList, renderMulti, renderPattern, renderRank, resetExpansionStateOnDateSwitch, setApiStatus, showNumcatChoiceModal } from '../ui-bridge.js';
+import { getNthPreviousTradingDay, recalcDuibanFromAuction, renderAuction, renderBidding, renderDuiban, renderEmotionBoard, renderEtf, renderHotForm, renderHotspot, renderJiwang, renderList, renderMulti, renderPattern, renderRank, resetExpansionStateOnDateSwitch, setApiStatus, showNumcatChoiceModal } from '../ui-bridge.js';
 // §6 单真相边界说明：recalcDuibanFromAuction（定义于 ui-bridge.js）只写 recent_multi_data
-// —— 这是 DuibanBoard 的 live 唯一真相源。auction_duiban 是迁移遗留的孤儿表：仅由
-// duiban-sync.js 的 saveDuibanData（触发于 auction-sync.js 的 §8 收口回写）写入、从不被读取，
-// 不在本模块处理。收敛该双真相需改 duiban-sync.js / auction-sync.js（非本文件可编辑范围）。
+// —— 这是 DuibanBoard 的 live 唯一真相源。auction_duiban 为迁移遗留孤儿表，已收敛：
+// duiban-sync.js 的 saveDuibanData/loadDuibanData（0 调用方）已移除，auction-sync.js 不再向其双写；
+// 该表停止写入，仅保留 Supabase 表结构（数据不丢），不在本模块处理。
 import { pullFromCloud, pushAuctionCodeToCloud, pushHotStocksDataToCloud, pushToCloud, syncAuctionListForDate, syncCloseChunk, syncHotStocksListForDate } from '../workflows/auction-sync.js';
 import { useAuctionStore, _bindUiFns } from '../../stores/auctionStore.js';
 import { initAuctionTags } from '../../stores/auctionTagStore.js';
@@ -979,7 +979,6 @@ export async function importAuctionHistoryFill(rawText, targetDate, colType) {
 }
 
 export async function fetchLadderConstituentsMain(btn) {
-    const statusEl = _domGet('thsApiStatus');
     // 锁定"点击那一刻"的日期，全程只认这一个值，杜绝异步等待期间日期漂移
     const targetDate = _getAuctionStore() ? _getAuctionStore().currentDate : useUiStore().currentDate;
     _dbgLog('[AUCTION-WRITE] fetchLadderConstituentsMain targetDate=' + targetDate);
@@ -1253,7 +1252,6 @@ export async function fetchDayVolumes(codes, dayStr) {
 }
 
 export async function fillYesterdayVolumeFromThs(btn) {
-    const statusEl = _domGet('thsApiStatus');
     setBtnLoading(btn, true);
     try {
         const today = useUiStore().currentDate;

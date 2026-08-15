@@ -27,8 +27,6 @@ export function setApiStatus(elId, msg, isOk) {
   if (!elId) return;
   apiStatusMap[elId] = { msg: String(msg || ''), ok: !!isOk, ts: Date.now() };
 }
-export function _domGet() { return null; }
-export function _domQuery() { return null; }
 export function renderHotForm() { _emit('auction-refresh'); }
 // 覆盖/补全 选择弹窗（Vue 化）：取代原 window.confirm 系统 UI。
 // 调用方（同花顺/猫抓各补全类按钮）依赖它拿到 overwrite 开关才继续执行。

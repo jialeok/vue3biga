@@ -22,7 +22,7 @@ import { _backupScopeData, _mergePatchLocal, _patchScopeField, _sanitizePatch, _
 import { _getLocalTodayStr, deriveAuctionTagState } from '../tagTitles/rules.js';
 import { getMostRecentTradingDay, getPreviousTradingDay, isTradingDay } from '../date/trading-day-helpers.js';
 import { getWeekday, getPreviousDate, getNextDate, _shiftDateStr, buildYesterdayListFromToday } from '../date/date-helpers.js';
-import { _domGet, _domQuery, getNthPreviousTradingDay, recalcDuibanFromAuction, renderAuction, renderBidding, renderDuiban, renderEmotionBoard, renderEtf, renderHotForm, renderHotspot, renderJiwang, renderList, renderMulti, renderPattern, renderRank, resetExpansionStateOnDateSwitch, setApiStatus, showNumcatChoiceModal } from '../ui-bridge.js';
+import { getNthPreviousTradingDay, recalcDuibanFromAuction, renderAuction, renderBidding, renderDuiban, renderEmotionBoard, renderEtf, renderHotForm, renderHotspot, renderJiwang, renderList, renderMulti, renderPattern, renderRank, resetExpansionStateOnDateSwitch, setApiStatus, showNumcatChoiceModal } from '../ui-bridge.js';
 import { pullFromCloud, pushAuctionCodeToCloud, pushHotStocksDataToCloud, pushToCloud, syncAuctionListForDate, syncCloseChunk, syncHotStocksListForDate } from '../workflows/auction-sync.js';
 import { useAuctionStore, _bindUiFns } from '../../stores/auctionStore.js';
 import { initAuctionTags } from '../../stores/auctionTagStore.js';
@@ -183,19 +183,10 @@ export function backupHotStocksData(type, date) {
     });
 }
 
-export function importHotFromPaste() {
-    const textarea = _domGet('hotPasteInput');
-    const rawText = textarea ? textarea.value : '';
-    const pasteText = rawText.trim();
+export function importHotFromPaste(rawText) {
+    const pasteText = (rawText || '').trim();
     if (!pasteText) {
-        const status = _domGet('hotImportStatus');
-        if (status) {
-            status.textContent = '请先粘贴数据！';
-            status.style.color = '#dc2626';
-        } else {
-            console.warn('[importHotFromPaste] 缺失 DOM 元素 hotImportStatus，无法展示状态');
-        }
-        textarea && textarea.focus();
+        console.warn('[importHotFromPaste] 未收到粘贴文本（rawText 为空）');
         return;
     }
     backupHotStocksData('import');
@@ -287,13 +278,7 @@ export function importHotFromPaste() {
     });
 
     if (fullDataList.length === 0 && noteList.length === 0) {
-        const status = _domGet('hotImportStatus');
-        if (status) {
-            status.textContent = '未能解析到有效数据！';
-            status.style.color = '#dc2626';
-        } else {
-            console.warn('[importHotFromPaste] 缺失 DOM 元素 hotImportStatus，无法展示状态');
-        }
+        console.warn('[importHotFromPaste] 未能解析到有效数据！');
         return;
     }
 
@@ -435,40 +420,21 @@ export function importHotFromPaste() {
             });
         });
     })();
-    const pasteInput = _domGet('hotPasteInput');
-    if (pasteInput) pasteInput.value = '';
-    const statusEl = _domGet('hotImportStatus');
     let statusMsg = '✅ ';
     if (fullDataCount > 0) statusMsg += `新增${fullDataCount}条`;
     if (fullDataUpdateCount > 0) statusMsg += ` 更新${fullDataUpdateCount}条`;
     if (noteUpdateCount > 0) statusMsg += ` 更新注释${noteUpdateCount}条`;
     if (noteNewCount > 0) statusMsg += ` 新增注释${noteNewCount}条`;
-    if (statusEl) {
-        statusEl.textContent = statusMsg;
-        statusEl.style.color = '#059669';
-    } else {
-        console.warn('[importHotFromPaste] 缺失 DOM 元素 hotImportStatus，无法展示状态');
-    }
+    console.log('[importHotFromPaste] ' + statusMsg);
     // 刷新表单和前台（不调 renderList/recalcDuibanFromAuction/syncCloseChunk）
     setTimeout(() => renderHotForm(), 0);
     setTimeout(() => renderAuction('hot'), 20);
-    const submitBtn = _domQuery('#hotForm .submit-btn');
-    if (submitBtn) submitBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
-export function replaceHotConceptFromPaste() {
-    const textarea = _domGet('hotPasteInput');
-    const rawText = textarea ? textarea.value : '';
-    const pasteText = rawText.trim();
+export function replaceHotConceptFromPaste(rawText) {
+    const pasteText = (rawText || '').trim();
     if (!pasteText) {
-        const status = _domGet('hotImportStatus');
-        if (status) {
-            status.textContent = '请先粘贴数据！';
-            status.style.color = '#dc2626';
-        } else {
-            console.warn('[replaceHotConceptFromPaste] 缺失 DOM 元素 hotImportStatus，无法展示状态');
-        }
-        textarea && textarea.focus();
+        console.warn('[replaceHotConceptFromPaste] 未收到粘贴文本（rawText 为空）');
         return;
     }
     const lines = pasteText.split(/\r?\n/);
@@ -541,19 +507,9 @@ export function replaceHotConceptFromPaste() {
         renderHotForm();
         renderAuction('hot');
     }
-    const pasteInput = _domGet('hotPasteInput');
-    if (pasteInput) pasteInput.value = '';
-    const statusEl = _domGet('hotImportStatus');
     let statusMsg = '✅ 替换了 ' + replaceCount + ' 条概念';
     if (notFoundCount > 0) statusMsg += '，未找到: ' + notFoundStocks.slice(0, 3).join(', ') + (notFoundCount > 3 ? '...' : '');
-    if (statusEl) {
-        statusEl.textContent = statusMsg;
-        statusEl.style.color = replaceCount > 0 ? '#059669' : '#dc2626';
-    } else {
-        console.warn('[replaceHotConceptFromPaste] 缺失 DOM 元素 hotImportStatus，无法展示状态');
-    }
-    const submitBtn = _domQuery('#hotForm .submit-btn');
-    if (submitBtn) submitBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    console.log('[replaceHotConceptFromPaste] ' + statusMsg);
 }
 
 export const HOT_WATCHLIST_FIELDS = ['note', 'topics', 'selected', 'bought', 'sold', 'fixed', 'code'];
