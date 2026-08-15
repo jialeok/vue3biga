@@ -1,5 +1,6 @@
 import { reactive, watch } from 'vue';
 import { getSupabase } from '../data/supabase-client.js';
+import { loadEtfBoardByDate, saveEtfBoardRow } from '../data/etf-board-data.js';
 import { useUiStore } from '../stores/uiStore.js';
 import { showToast, showWarningToast } from './useToast.js';
 
@@ -48,16 +49,15 @@ async function loadEarlyEtf(date) {
   if (!date) return;
   boardState.loadingEtf = true;
   try {
-    const sb = getSupabase();
-    const { data, error } = await sb
-      .from('early_etf_data')
-      .select('*')
-      .eq('date', date)
-      .maybeSingle();
-    if (error) throw error;
-    boardState.earlyEtf = data || null;
+    const row = await loadEtfBoardByDate(date);
+    if (row === null) {
+      // 读取失败或确实无数据：仅记录；若确为「无数据」才置空，若疑似异常则保留 boardState.earlyEtf 原值（§11 不要把读取失败伪装成空去触发删除）
+      console.warn('[Board] loadEarlyEtf 无数据或失败 date=' + date);
+      boardState.earlyEtf = row; // row 为 null 表示云端确实没有该日期
+    } else {
+      boardState.earlyEtf = row;
+    }
   } catch (e) {
-    boardState.lastError = 'ETF 加载失败: ' + (e.message || e);
     console.warn('[Board] loadEarlyEtf error:', e);
   } finally {
     boardState.loadingEtf = false;
@@ -106,32 +106,20 @@ async function saveEarlyEtf(payload) {
   if (!date) return { error: '无当前日期' };
   boardState.savingEtf = true;
   try {
-    const sb = getSupabase();
-    const row = {
+    const { ok, error, data } = await saveEtfBoardRow({
       date,
-      shuliang: payload.shuliang || '',
-      die_count: payload.die_count ?? null,
-      zhang_count: payload.zhang_count ?? null,
-      die_zhangbi: payload.die_zhangbi || '',
-      jingtu: payload.jingtu || '',
-      tushi: payload.tushi || '',
-      comment: payload.comment || '',
+      shuliang: payload.shuliang,
+      die_count: payload.die_count,
+      zhang_count: payload.zhang_count,
+      die_zhangbi: payload.die_zhangbi,
+      jingtu: payload.jingtu,
+      tushi: payload.tushi,
+      comment: payload.comment,
       sector_etf_close: payload.sector_etf_close ?? boardState.earlyEtf?.sector_etf_close ?? null,
-      sector_etf_synced_at: payload.sector_etf_synced_at ?? boardState.earlyEtf?.sector_etf_synced_at ?? null,
-      updated_at: formatNowIso()
-    };
-    const { data, error } = await sb
-      .from('early_etf_data')
-      .upsert(row, { onConflict: 'date' })
-      .select()
-      .single();
-    if (error) throw error;
-    if (data && data.tushi !== row.tushi) {
-      await sb.from('early_etf_data').update({ tushi: row.tushi, updated_at: row.updated_at }).eq('date', date);
-      data.tushi = row.tushi;
-    }
-    boardState.earlyEtf = data;
-    return { data, error: null };
+      sector_etf_synced_at: payload.sector_etf_synced_at ?? boardState.earlyEtf?.sector_etf_synced_at ?? null
+    });
+    if (ok && data) boardState.earlyEtf = data;
+    return { data: ok ? data : null, error: ok ? null : error };
   } catch (e) {
     boardState.lastError = 'ETF 保存失败: ' + (e.message || e);
     return { error: e };

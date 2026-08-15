@@ -18,6 +18,7 @@ import {
 } from '../auction-sort-rules.js';
 import { getThreeDayJingDieSet } from '../sort-rules-extra.js';
 import { deriveAuctionTagState } from '../tag-rules.js';
+import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 
 const rowCache = new Map(); // key: `${dataSource}|${index}` -> { sig, item }
 let lastGlobalFingerprint = '';
@@ -46,7 +47,8 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
   try { par = setToSortedStr(getParallelStocksForDate(date, dataSource)); } catch (e) { par = ''; }
   try { three = mapToStr(getThreeDayJingDieSet(date, dataSource)); } catch (e) { three = ''; }
   try {
-    const tags = JSON.parse(localStorage.getItem('auctionBoardTags') || '{}');
+    // §6/§8：标签唯一真相 = auctionTagStore（云端），不再直接读 localStorage
+    const tags = useAuctionTagStore().tags;
     const sold = [];
     Object.keys(tags).forEach((d) => {
       if (d > date) return;

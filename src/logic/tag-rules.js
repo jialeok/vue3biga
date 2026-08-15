@@ -7,15 +7,17 @@ import { getPreviousTradingDay, isTradingDay } from './trading-day-helpers.js';
 import { getStockCode } from '../data/stock-code-map.js';
 import { getAuctionData, scheduleCloudPush, markAuctionDirty } from './app-core-api.js';
 import { state } from './app-state.js';
+import { useAuctionTagStore } from '../stores/auctionTagStore.js';
 
-        // [REFACTOR 2026-08-14] 竞价看板标签独立于 stocksData，从 auctionBoardTags localStorage 读
+        // [REFACTOR 2026-08-15] 标签真相收敛到 auctionTagStore（云端），不再直接读 localStorage（§6/§8 修复双真相）
         let _auctionTagsCache = null;
         let _auctionTagsCacheTime = 0;
         function _getAuctionTags() {
             const now = Date.now();
             if (_auctionTagsCache && now - _auctionTagsCacheTime < 3000) return _auctionTagsCache;
             try {
-                _auctionTagsCache = JSON.parse(localStorage.getItem('auctionBoardTags') || '{}');
+                // 单一真相源：auctionTagStore.tags（云端合并后的标签结构 {date:{stock:tag}}）
+                _auctionTagsCache = useAuctionTagStore().tags;
             } catch (e) {
                 _auctionTagsCache = {};
             }
@@ -202,7 +204,7 @@ import { state } from './app-state.js';
             // 前一日竞昨高光集（决定观察组/常规组归属）
             const prevObsSet = getJingYestHighlightSetForDate(prevDay);
 
-            // [REFACTOR 2026-08-14] 从 auctionBoardTags 读标签，不读 stocksData
+            // [REFACTOR 2026-08-15] 从 auctionTagStore（云端标签真相）读标签，不读 stocksData
             const prevDayTags = _getAuctionTags()[prevDay] || {};
             const taggedNames = Object.keys(prevDayTags).filter(function(n) { return prevDayTags[n]; });
 

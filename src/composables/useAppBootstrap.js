@@ -11,7 +11,8 @@ import { loadCoreTopicsFromCloud } from '../logic/topic-rules.js';
 import { pullFromCloud } from '../logic/workflows/auction-sync.js';
 import { initApp, getCurrentDate } from '../logic/app-core.js';
 import { migrateAuctionToTable, migrateAuctionDataToNewTables } from '../data/legacy-migration.js';
-import { loadAllData, hydrateEtfData } from '../data/supabase-client.js';
+import { loadAllData } from '../data/supabase-client.js';
+import { hydrateEtfBoardData } from '../data/etf-board-data.js';
 import { loadFumianTopics } from '../data/fumian-sync.js';
 import { _emit, _on } from '../stores/eventBus.js';
 import { _dbgLog } from '../data/debug-log.js';
@@ -114,7 +115,7 @@ export function useAppBootstrap(loginRef) {
     loadHotStocksFromCloud().then(() => _emit('auction-refresh')).catch(e => console.warn('hot_stocks:', e.message));
     pullBiddingForDate(getCurrentDate()).then(() => _emit('bidding-refresh')).catch(e => _dbgLog('[BIDDING] 首屏快速加载失败 ' + (e && e.message || e)));
     loadCoreTopicsFromCloud().then(() => _emit('auction-refresh')).catch(e => console.warn('core_topics:', e && e.message || e));
-    hydrateEtfData().then(() => _emit('etf-refresh')).catch(e => _dbgLog('[ETF] 启动 hydrate 失败: ' + (e && e.message || e)));
+    hydrateEtfBoardData().then(() => _emit('etf-refresh')).catch(e => _dbgLog('[ETF] 启动 hydrate 失败: ' + (e && e.message || e)));
     loadFumianTopics().then(() => _emit('etf-refresh')).catch(e => _dbgLog('[FUMIAN] 启动 hydrate 失败: ' + (e && e.message || e)));
 
     pullFromCloud().then(() => {

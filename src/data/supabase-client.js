@@ -6,7 +6,6 @@ import { state } from '../logic/app-state.js';
         import { _dbgLog } from './debug-log.js';
         import { normalizeAuctionNotes } from './auction-data.js';
         import { syncStocksDataToStore } from './session-and-shield.js';
-        import { loadEtfData } from './etf-sync.js';
 
         state.allData = null; // §6：置空仅为触发下方内存缓存重建入口；allData 是 CACHE（非真相源），请勿当 DB 读。
         // §6：rank 缓存经 state._rankMemCache 单独持有（与 allData 解耦），此处 allData=null 不会连坐 rank 缓存；安全。
@@ -242,32 +241,6 @@ export function _moduleKey(name) {
         _setGetStocksDataFn(getStocksData);
         export function getJiwangData() { const d = loadAllData(); return d ? d.jiwang : {}; }
         export function getBiddingData() { const d = loadAllData(); return (d && d.bidding) || {}; }
-        // §8 已上云：真相源 = Supabase auction_etf；内存缓存 _etfCache 由 hydrateEtfData() 启动拉取填充。
-        // 冷启动兜底：_etfCache 未填充（或云端返回空）前，返回 localStorage 旧值，避免切换瞬间旧数据丢失。
-        let _etfCache = null;
-        // _etfHydrated：标记云端 hydrate 是否已尝试过（成功或失败），用于区分
-        // 「冷启动尚未拉取」与「已 hydrate 且云端确实为空」两种 _etfCache 为 null 的情况。
-        let _etfHydrated = false;
-        export function getEtfData() {
-            // 已 hydrate 且有云端数据：优先返回内存缓存（真实云端真相）。
-            if (_etfCache) return _etfCache;
-            // 仅在「从未 hydrate」的冷启动场景下临时回退 localStorage 旧值避免闪烁；
-            // 一旦 hydrate 完成（即使云端返回空），不再返回陈旧 localStorage 值（§8）。
-            if (!_etfHydrated) {
-                try { return JSON.parse(localStorage.getItem('stockEtfData') || '{}'); }
-                catch (e) { return {}; }
-            }
-            return {};
-        }
-        export async function hydrateEtfData() {
-            try {
-                const c = await loadEtfData();
-                _etfHydrated = true; // hydrate 已成功取得云端结果（无论是否为空），标记完成
-                if (c && Object.keys(c).length) _etfCache = c;
-            } catch (e) {
-                // hydrate 失败时保持 _etfHydrated=false，继续回退 localStorage（fail-soft，不丢数据）
-                console.error('[etf] hydrate 失败：', e && e.message);
-            }
-        }
+        // §6 板块ETF 已收敛到 early_etf_data（唯一真相源），统一经 data/etf-board-data.js 读写；getEtfData/hydrateEtfData 已删除。
         export function getBiddingDirtyDates() { return state._biddingDirtyDates; }
         export function getBiddingPushInFlight() { return state._biddingPushInFlight; }

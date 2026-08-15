@@ -8,15 +8,14 @@ import { getSupabase } from '../data/supabase-client.js';
 import { renderConsecutiveUp as _renderConsecutiveUp, autoCalculateRecentMultiScore as _autoCalcRecentMultiScore, getTodayTagTitles, getYesterdayDate, getTagTitlesByDate, getPreviousTradingDayWithData, getTodayBidding } from './tag-titles-helpers.js';
 import { reactive } from 'vue';
 import { useUiStore } from '../stores/uiStore.js';
+import { useAuctionTagStore } from '../stores/auctionTagStore.js';
 
 function _noop() {}
 
 function _getAuctionTag(date, stockName) {
   if (!date || !stockName) return null;
-  try {
-    const tags = JSON.parse(localStorage.getItem('auctionBoardTags') || '{}'); // 合规：读本地快照兜底（§8 允许，非唯一真相），同步源为 auctionTagStore（Supabase）
-    return (tags[date] && tags[date][stockName.trim()]) || null;
-  } catch { return null; }
+  // §6/§8：标签唯一真相 = auctionTagStore（云端），不再直接读 localStorage
+  return useAuctionTagStore().getTagState(date, stockName);
 }
 
 export const apiStatusMap = reactive({});

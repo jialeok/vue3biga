@@ -7,16 +7,15 @@ import { getStockCode } from '../data/stock-code-map.js';
 import { getNumericVolume, getStocksData } from '../data/supabase-client.js';
 import { state } from './app-state.js';
 import { useAuctionStore } from '../stores/auctionStore.js';
+import { useAuctionTagStore } from '../stores/auctionTagStore.js';
 import { getAuctionTagState } from './ui-bridge.js';
 import { getDisplayNote } from './note-helpers.js';
 import { useUiStore } from '../stores/uiStore.js';
 
 function _getAuctionTag(date, stockName) {
   if (!date || !stockName) return null;
-  try {
-    const tags = JSON.parse(localStorage.getItem('auctionBoardTags') || '{}'); // §8：读本地快照兜底（非唯一真相），同步源为 auctionTagStore（Supabase）
-    return (tags[date] && tags[date][stockName.trim()]) || null;
-  } catch { return null; }
+  // §6/§8：标签唯一真相 = auctionTagStore（云端），不再直接读 localStorage
+  return useAuctionTagStore().getTagState(date, stockName);
 }
 
 function _enrichAuctionItem(rawItem, index, ctx) {
@@ -408,11 +407,12 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     }
   }
 
-  // [REFACTOR 2026-08-14] 从 auctionBoardTags 读已卖出集合，不读 stocksData
+  // [REFACTOR 2026-08-15] 从 auctionTagStore（云端标签真相）读已卖出集合，不读 stocksData
   const _confirmedSoldSet = (function() {
     const result = new Set();
     try {
-      const tags = JSON.parse(localStorage.getItem('auctionBoardTags') || '{}'); // 合规：读本地快照兜底（§8 允许，非唯一真相），同步源为 auctionTagStore（Supabase）
+      // §6/§8：标签唯一真相 = auctionTagStore（云端）
+      const tags = useAuctionTagStore().tags;
       Object.keys(tags).forEach(function(d) {
         if (d > currentDate) return;
         const dayTags = tags[d] || {};

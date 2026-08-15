@@ -10,7 +10,7 @@
 import { getSupabase, getStocksData, loadAllData } from '../../data/supabase-client.js';
 import { saveFumianTopics } from '../../data/fumian-sync.js';
 import { saveDuibanData } from '../../data/duiban-sync.js';
-import { saveEtfComment } from '../../data/etf-comment-sync.js';
+import { saveEtfBoardComment } from '../../data/etf-board-data.js';
 import { saveBiddingTemplate } from '../../data/bidding-template-sync.js';
 import { _dbgLog } from '../../data/debug-log.js';
 import { _emit } from '../../stores/eventBus.js';
@@ -540,7 +540,7 @@ import { useUiStore } from '../../stores/uiStore.js';
                 localStorage.setItem('stockApp_' + DV + '__migrated', '1');
 
                 // 其余散落 key
-                // §8 收口：duibanData 已双写 Supabase（saveDuibanData → duiban 表）；stockEtfComment 已双写 Supabase（saveEtfComment 独立表）；
+                // §8 收口：duibanData 已双写 Supabase（saveDuibanData → duiban 表）；stockEtfComment 已并入 Supabase early_etf_data.comment 列（saveEtfBoardComment）；
                 // biddingDefaultTemplate_v41 已双写 Supabase（saveBiddingTemplate）。三者仍保留下方 localStorage 兜底（fail-soft 降级，绝不丢数据）。
                 // （过渡：duibanComment / copiedStocksData 暂无确认云端路径，按 §8 保留 localStorage 兜底；coreTopics 已另有云端路径 topic-rules.js。）
                 const extraKeys = ['duibanData', 'duibanComment', 'stockEtfComment',
@@ -551,7 +551,12 @@ import { useUiStore } from '../../stores/uiStore.js';
                         // §8 双写：保留 localStorage 兜底 + 新增云端 Supabase（fire-and-forget，内部 try/catch 已 fail-soft）
                         try {
                             if (key === 'duibanData') saveDuibanData(cloudObj[key]);
-                            else if (key === 'stockEtfComment') saveEtfComment(cloudObj[key]);
+                            else if (key === 'stockEtfComment') {
+                                const cmts = cloudObj[key];
+                                if (cmts && typeof cmts === 'object') {
+                                    Object.keys(cmts).forEach(d => saveEtfBoardComment(d, cmts[d]));
+                                }
+                            }
                             else if (key === 'biddingDefaultTemplate_v41') saveBiddingTemplate(cloudObj[key]);
                         } catch (e) { console.error('[auction-sync] §8 双写异常(' + key + ')：', e && e.message); }
                     }

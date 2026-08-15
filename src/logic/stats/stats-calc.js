@@ -1,9 +1,10 @@
 // 统计看板业务规则（盈亏/胜率/聚合）—— 从 WeekendStatsBoard / MonthlyStatsBoard 抽出，
 // 避免业务规则内联在 .vue（违反架构规范 §3.1 / §4）。
-// 读取统一走 Data 层 getter（getStocksData / getJiwangData / getEtfData / getRankData），
+// 读取统一走 Data 层 getter（getStocksData / getJiwangData / getEtfBoardData / getRankData），
 // 这些 getter 内部读 state._xxxMemCache；state 经 WX-01 改为 reactive 后，
 // 在本文件函数内读取会被 Vue computed 自动追踪，数据刷新时看板自动重算。
-import { getStocksData, getJiwangData, getEtfData } from '../../data/supabase-client.js';
+import { getStocksData, getJiwangData } from '../../data/supabase-client.js';
+import { getEtfBoardData } from '../../data/etf-board-data.js';
 import { getRankData } from '../app-core.js';
 import { isTradingDay } from '../trading-day-helpers.js';
 
@@ -61,7 +62,7 @@ export function computeTopStocks(dates) {
 }
 
 export function computeTopEtfs(dates) {
-  const etfData = getEtfData() || {};
+  const etfData = getEtfBoardData() || {};
   const counts = {};
   dates.forEach(d => {
     const dayEtf = etfData[d];

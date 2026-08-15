@@ -1,11 +1,11 @@
 import { autoCalculateRecentMultiScore } from './tag-titles-helpers.js';
 import { getKxianTypeByClose } from './jiwang-helpers.js';
 import { getNextTradingDay } from './trading-day-helpers.js';
-import { getBiddingData, getJiwangData, getStocksData, getEtfData } from '../data/supabase-client.js';
+import { getBiddingData, getJiwangData, getStocksData } from '../data/supabase-client.js';
+import { getEtfBoardData, saveEtfBoardRow } from '../data/etf-board-data.js';
 import { saveData, markJiwangDirty } from './app-core-api.js';
 import { pushJiwangNow } from '../data/jiwang-data.js';
 import { fuyaoApiGet } from '../data/api/fuyao-proxy.js';
-import { saveEtfData } from '../data/etf-sync.js';
 import { _emit } from '../stores/eventBus.js';
 import { _dbgLog } from '../data/debug-log.js';
 import { useUiStore } from '../stores/uiStore.js';
@@ -17,7 +17,7 @@ export async function syncSectorEtfZhangNum(zhangNum) {
   const uiStore = useUiStore();
   const currentDate = uiStore.currentDate;
 
-  const etfData = getEtfData();
+  const etfData = getEtfBoardData();
   let todayEtf = etfData[currentDate];
 
   if (!todayEtf || todayEtf.length === 0) {
@@ -29,9 +29,15 @@ export async function syncSectorEtfZhangNum(zhangNum) {
   const total = parseInt(firstEtf.shuliang) || 48;
   const dieValue = total - zhangNum;
   firstEtf.dieZhangbi = dieValue + ':' + zhangNum;
-  etfData[currentDate] = todayEtf;
-  // §8 已上云：stockEtfData 真相源 = Supabase auction_etf（saveEtfData 双写）；已移除 localStorage 写入，localStorage 仅作冷启动兜底读取（见 getEtfData / hydrateEtfData）。
-  try { await saveEtfData(etfData); } catch (e) { console.error('[SECTOR-ETF] 上云异常：', e && e.message); }
+  // §6 收敛：板块ETF 唯一真相源 = early_etf_data；写入该行（按 date upsert），不再写空表 auction_etf。
+  const res = await saveEtfBoardRow({
+    date: currentDate,
+    shuliang: firstEtf.shuliang,
+    dieZhangbi: firstEtf.dieZhangbi,
+    jingtu: firstEtf.jingtu || '',
+    tushi: firstEtf.tushi || ''
+  });
+  if (!res.ok) console.error('[SECTOR-ETF] 上云失败：', res.error && res.error.message);
 
   _dbgLog('[SECTOR-ETF] 同步到ETF看板: 总 ' + total + ', 涨 ' + zhangNum + ', 跌:涨 = ' + firstEtf.dieZhangbi);
 
