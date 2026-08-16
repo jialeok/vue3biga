@@ -4,20 +4,52 @@
     <div class="section-history-header">
       <span class="section-history-title">历史数据补录模式</span>
       <label class="toggle-switch">
-        <input type="checkbox" v-model="modal.historyOpen">
-        <span class="toggle-slider"></span>
+        <input
+          v-model="modal.historyOpen"
+          type="checkbox"
+        >
+        <span class="toggle-slider" />
       </label>
     </div>
-    <div v-if="modal.historyOpen" class="section-history-body">
-      <div class="section-history-hint">只补空值；股票需在当前列表中存在才会补录；三列自动补两项，两列按右侧类型补一项；支持空格或TAB分隔</div>
-      <div class="history-controls">
-        <input type="date" v-model="modal.historyDate" class="history-date">
-        <label class="history-radio"><input type="radio" v-model="modal.historyColType" value="volume"> 竞价量</label>
-        <label class="history-radio"><input type="radio" v-model="modal.historyColType" value="yestVolume"> 昨日成交量</label>
+    <div
+      v-if="modal.historyOpen"
+      class="section-history-body"
+    >
+      <div class="section-history-hint">
+        只补空值；股票需在当前列表中存在才会补录；三列自动补两项，两列按右侧类型补一项；支持空格或TAB分隔
       </div>
-      <textarea v-model="modal.historyText" placeholder="三列：股票名称 竞价量 昨日成交量&#10;两列：股票名称 数字（按上方选择类型补录）&#10;空格或TAB分隔均可" class="history-textarea"></textarea>
-      <button @click="modal.onHistoryFill" class="btn btn-history-fill">补录历史数据</button>
-      <span v-if="modal.historyStatus" class="inline-status">{{ modal.historyStatus }}</span>
+      <div class="history-controls">
+        <input
+          v-model="modal.historyDate"
+          type="date"
+          class="history-date"
+        >
+        <label class="history-radio"><input
+          v-model="modal.historyColType"
+          type="radio"
+          value="volume"
+        > 竞价量</label>
+        <label class="history-radio"><input
+          v-model="modal.historyColType"
+          type="radio"
+          value="yestVolume"
+        > 昨日成交量</label>
+      </div>
+      <textarea
+        v-model="modal.historyText"
+        placeholder="三列：股票名称 竞价量 昨日成交量&#10;两列：股票名称 数字（按上方选择类型补录）&#10;空格或TAB分隔均可"
+        class="history-textarea"
+      />
+      <button
+        class="btn btn-history-fill"
+        @click="modal.onHistoryFill"
+      >
+        补录历史数据
+      </button>
+      <span
+        v-if="modal.historyStatus"
+        class="inline-status"
+      >{{ modal.historyStatus }}</span>
     </div>
   </div>
 </template>

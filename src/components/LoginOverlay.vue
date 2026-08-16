@@ -1,8 +1,14 @@
 <template>
   <!-- 密码遮罩：未解锁时覆盖整个应用 -->
-  <div v-if="passwordVisible" id="passwordOverlay" class="login-overlay">
+  <div
+    v-if="passwordVisible"
+    id="passwordOverlay"
+    class="login-overlay"
+  >
     <div class="login-panel">
-      <div class="login-title">请输入密码</div>
+      <div class="login-title">
+        请输入密码
+      </div>
       <input
         id="pwdInput"
         ref="pwdInputRef"
@@ -11,21 +17,49 @@
         class="login-input"
         placeholder="密码"
         @keyup.enter="checkPassword"
-      />
-      <div id="pwdError" class="login-error">{{ errorMsg }}</div>
-      <div id="syncStatus" class="login-status" :style="{ color: statusColor }">{{ statusText }}</div>
-      <button class="login-btn" :disabled="loading" @click="checkPassword">
+      >
+      <div
+        id="pwdError"
+        class="login-error"
+      >
+        {{ errorMsg }}
+      </div>
+      <div
+        id="syncStatus"
+        class="login-status"
+        :style="{ color: statusColor }"
+      >
+        {{ statusText }}
+      </div>
+      <button
+        class="login-btn"
+        :disabled="loading"
+        @click="checkPassword"
+      >
         {{ loading ? '登录中...' : '登录' }}
       </button>
     </div>
   </div>
 
   <!-- 被踢下线遮罩 -->
-  <div v-if="kickedVisible" id="kickedOverlay" class="login-overlay">
+  <div
+    v-if="kickedVisible"
+    id="kickedOverlay"
+    class="login-overlay"
+  >
     <div class="login-panel">
-      <div class="login-title">⚠ 账号在另一处登录</div>
-      <div class="login-desc">本会话已被下线，请重新登录</div>
-      <button class="login-btn" @click="reloginFromKicked">重新登录</button>
+      <div class="login-title">
+        ⚠ 账号在另一处登录
+      </div>
+      <div class="login-desc">
+        本会话已被下线，请重新登录
+      </div>
+      <button
+        class="login-btn"
+        @click="reloginFromKicked"
+      >
+        重新登录
+      </button>
     </div>
   </div>
 </template>

@@ -1,12 +1,29 @@
 <template>
   <!-- 粘贴区 -->
   <div class="section-paste">
-    <textarea v-model="modal.pasteText" placeholder="从 Excel 复制后直接粘贴到这里&#10;格式1：股票名称[TAB]竞价量[TAB]昨日成交量&#10;格式2：股票名称[TAB]涨幅[TAB]概念（注释叠加）&#10;格式3：股票名称[TAB]涨幅 或 概念&#10;格式4：股票名称 涨幅%" class="paste-textarea"></textarea>
+    <textarea
+      v-model="modal.pasteText"
+      placeholder="从 Excel 复制后直接粘贴到这里&#10;格式1：股票名称[TAB]竞价量[TAB]昨日成交量&#10;格式2：股票名称[TAB]涨幅[TAB]概念（注释叠加）&#10;格式3：股票名称[TAB]涨幅 或 概念&#10;格式4：股票名称 涨幅%"
+      class="paste-textarea"
+    />
     <div class="paste-btns">
-      <button @click="modal.onPasteImport" class="btn btn-import">导入数据</button>
-      <button @click="modal.onReplaceConcept" class="btn btn-concept">替换概念</button>
+      <button
+        class="btn btn-import"
+        @click="modal.onPasteImport"
+      >
+        导入数据
+      </button>
+      <button
+        class="btn btn-concept"
+        @click="modal.onReplaceConcept"
+      >
+        替换概念
+      </button>
     </div>
-    <span v-if="modal.pasteStatus" class="inline-status">{{ modal.pasteStatus }}</span>
+    <span
+      v-if="modal.pasteStatus"
+      class="inline-status"
+    >{{ modal.pasteStatus }}</span>
   </div>
 </template>
 

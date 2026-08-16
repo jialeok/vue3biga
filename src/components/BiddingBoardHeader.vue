@@ -1,8 +1,15 @@
 <!-- BiddingBoardHeader.vue — 竞价变化看板头部（标题 + 折叠按钮） -->
 <template>
-  <div class="bidding-header" @click="toggleExpand">
-    <div class="bidding-title">竞价变化</div>
-    <div class="bidding-toggle-btn">{{ expanded ? '▲' : '▼' }}</div>
+  <div
+    class="bidding-header"
+    @click="toggleExpand"
+  >
+    <div class="bidding-title">
+      竞价变化
+    </div>
+    <div class="bidding-toggle-btn">
+      {{ expanded ? '▲' : '▼' }}
+    </div>
   </div>
 </template>
 

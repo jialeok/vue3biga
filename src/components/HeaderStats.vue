@@ -1,16 +1,40 @@
 <template>
   <div class="circle-stats-bar">
-    <div class="circle-card" :class="profitCardClass" @dblclick="$emit('edit')">
-      <div class="circle-label">今日盈亏</div>
-      <div class="circle-value">{{ profitDisplay }}</div>
+    <div
+      class="circle-card"
+      :class="profitCardClass"
+      @dblclick="$emit('edit')"
+    >
+      <div class="circle-label">
+        今日盈亏
+      </div>
+      <div class="circle-value">
+        {{ profitDisplay }}
+      </div>
     </div>
-    <div class="circle-card" :class="gainCardClass" @dblclick="$emit('edit')">
-      <div class="circle-label">账户涨幅</div>
-      <div class="circle-value">{{ gainDisplay }}</div>
+    <div
+      class="circle-card"
+      :class="gainCardClass"
+      @dblclick="$emit('edit')"
+    >
+      <div class="circle-label">
+        账户涨幅
+      </div>
+      <div class="circle-value">
+        {{ gainDisplay }}
+      </div>
     </div>
-    <div class="circle-card" :class="balanceCardClass" @dblclick="$emit('edit')">
-      <div class="circle-label">账户余额</div>
-      <div class="circle-value">{{ balanceDisplay }}</div>
+    <div
+      class="circle-card"
+      :class="balanceCardClass"
+      @dblclick="$emit('edit')"
+    >
+      <div class="circle-label">
+        账户余额
+      </div>
+      <div class="circle-value">
+        {{ balanceDisplay }}
+      </div>
     </div>
   </div>
 </template>

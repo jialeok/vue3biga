@@ -18,9 +18,18 @@
       <span class="col-name">{{ row.name }}</span>
       <span class="col-time915">{{ row.time915 || '-' }}</span>
       <span class="col-time920">{{ row.time920 || '-' }}</span>
-      <span class="col-time925" :class="duibanTime925Class(row)">{{ row.time925 || '-' }}</span>
-      <span class="col-change" :class="changeTagClass(row.change)">{{ row.change || '-' }}</span>
-      <span class="col-close" :class="changeClass(row.close)">{{ formatClose(row.close, row.name) }}</span>
+      <span
+        class="col-time925"
+        :class="duibanTime925Class(row)"
+      >{{ row.time925 || '-' }}</span>
+      <span
+        class="col-change"
+        :class="changeTagClass(row.change)"
+      >{{ row.change || '-' }}</span>
+      <span
+        class="col-close"
+        :class="changeClass(row.close)"
+      >{{ formatClose(row.close, row.name) }}</span>
     </div>
   </div>
 </template>

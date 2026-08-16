@@ -1,24 +1,64 @@
 <template>
-  <div class="container" id="gestureArea">
+  <div
+    id="gestureArea"
+    class="container"
+  >
     <!-- 日期导航 -->
     <div class="date-nav">
-      <button class="nav-btn" @click="goToPrevDay">‹</button>
-      <div class="date-selector" @click="openDatePicker">
-        <div class="date-text">{{ currentDate }}</div>
+      <button
+        class="nav-btn"
+        @click="goToPrevDay"
+      >
+        ‹
+      </button>
+      <div
+        class="date-selector"
+        @click="openDatePicker"
+      >
+        <div class="date-text">
+          {{ currentDate }}
+        </div>
         <div style="font-size:11px;margin-top:4px">
           <span>{{ weekdayText }}</span>
           <span class="market-status market-open">市</span>
         </div>
       </div>
-      <button class="nav-btn" @click="goToNextDay">›</button>
-      <button class="today-btn" @click="goToday">今天</button>
+      <button
+        class="nav-btn"
+        @click="goToNextDay"
+      >
+        ›
+      </button>
+      <button
+        class="today-btn"
+        @click="goToday"
+      >
+        今天
+      </button>
     </div>
 
     <!-- 统计导航栏（模式看板上方） -->
     <div class="stats-nav-bar">
-      <button class="stats-nav-btn weekly" :class="{ active: boardView === 'weekly' }" @click="statsView.setMode('weekly')">本周统计</button>
-      <button class="stats-nav-btn monthly" :class="{ active: boardView === 'monthly' }" @click="statsView.setMode('monthly')">本月统计</button>
-      <button class="stats-nav-btn back-current" @click="goToday">返回当前</button>
+      <button
+        class="stats-nav-btn weekly"
+        :class="{ active: boardView === 'weekly' }"
+        @click="statsView.setMode('weekly')"
+      >
+        本周统计
+      </button>
+      <button
+        class="stats-nav-btn monthly"
+        :class="{ active: boardView === 'monthly' }"
+        @click="statsView.setMode('monthly')"
+      >
+        本月统计
+      </button>
+      <button
+        class="stats-nav-btn back-current"
+        @click="goToday"
+      >
+        返回当前
+      </button>
     </div>
 
     <PatternBoard />
@@ -33,7 +73,10 @@
     <AuctionBoard v-show="boardView === 'trading'" />
     <DuibanBoard v-show="boardView === 'trading'" />
     <EtfBoard v-show="boardView === 'trading'" />
-    <HomeStocksView ref="stocksRef" v-show="boardView === 'trading'" />
+    <HomeStocksView
+      v-show="boardView === 'trading'"
+      ref="stocksRef"
+    />
 
     <WeekendStatsBoard v-show="boardView === 'weekly'" />
     <MonthlyStatsBoard v-show="boardView === 'monthly'" />
@@ -41,34 +84,102 @@
     <!-- 底部操作栏 -->
     <div class="bottom-bar">
       <div style="display:flex;align-items:center">
-        <button class="icon-btn" @click="onExport">📤</button>
-        <span style="font-size:16px;margin-left:10px;cursor:pointer;" @click="onPullCloud">☁️</span>
-        <button class="icon-btn" style="margin-left:20px" @click="onImport">📥</button>
-        <button class="date-nav-btn" style="margin-left:30px" @click="goToPrevTradingDay">◀</button>
-        <button class="date-nav-btn" style="margin-left:18px" @click="goToNextTradingDay">▶</button>
+        <button
+          class="icon-btn"
+          @click="onExport"
+        >
+          📤
+        </button>
+        <span
+          style="font-size:16px;margin-left:10px;cursor:pointer;"
+          @click="onPullCloud"
+        >☁️</span>
+        <button
+          class="icon-btn"
+          style="margin-left:20px"
+          @click="onImport"
+        >
+          📥
+        </button>
+        <button
+          class="date-nav-btn"
+          style="margin-left:30px"
+          @click="goToPrevTradingDay"
+        >
+          ◀
+        </button>
+        <button
+          class="date-nav-btn"
+          style="margin-left:18px"
+          @click="goToNextTradingDay"
+        >
+          ▶
+        </button>
       </div>
-      <button class="fab" style="margin-left:auto" @click="onAddStock">+</button>
+      <button
+        class="fab"
+        style="margin-left:auto"
+        @click="onAddStock"
+      >
+        +
+      </button>
     </div>
 
-    <EditModal v-model="datePickerActive" title="选择日期" :show-actions="false">
+    <EditModal
+      v-model="datePickerActive"
+      title="选择日期"
+      :show-actions="false"
+    >
       <div class="date-picker-section">
         <div class="date-picker-nav">
-          <button @click="prevPickerMonth">‹</button>
+          <button @click="prevPickerMonth">
+            ‹
+          </button>
           <span class="picker-month-title">{{ pickerYear }}年{{ pickerMonth + 1 }}月</span>
-          <button @click="nextPickerMonth">›</button>
+          <button @click="nextPickerMonth">
+            ›
+          </button>
         </div>
         <!-- 旧版 7 列日历：星期表头 + 圆形日期格（normal-day/weekend/holiday/selected/empty） -->
         <div class="date-picker-calendar">
-          <template v-for="cell in pickerDays" :key="cell.key">
-            <div v-if="cell.type === 'header'" class="calendar-header">{{ cell.label }}</div>
-            <div v-else-if="cell.type === 'empty'" class="calendar-day empty"></div>
-            <div v-else class="calendar-day" :class="cell.cls" @click="selectPickerDate(cell.key)">{{ cell.label }}</div>
+          <template
+            v-for="cell in pickerDays"
+            :key="cell.key"
+          >
+            <div
+              v-if="cell.type === 'header'"
+              class="calendar-header"
+            >
+              {{ cell.label }}
+            </div>
+            <div
+              v-else-if="cell.type === 'empty'"
+              class="calendar-day empty"
+            />
+            <div
+              v-else
+              class="calendar-day"
+              :class="cell.cls"
+              @click="selectPickerDate(cell.key)"
+            >
+              {{ cell.label }}
+            </div>
           </template>
         </div>
         <div class="date-picker-actions">
-          <button @click="pickerGoToday">今天</button>
-          <button class="holiday-toggle-btn" :class="{ 'is-holiday': pickerHolidayLabel === '取消假期' }" @click="togglePickerHoliday">{{ pickerHolidayLabel }}</button>
-          <button @click="datePickerActive = false">取消</button>
+          <button @click="pickerGoToday">
+            今天
+          </button>
+          <button
+            class="holiday-toggle-btn"
+            :class="{ 'is-holiday': pickerHolidayLabel === '取消假期' }"
+            @click="togglePickerHoliday"
+          >
+            {{ pickerHolidayLabel }}
+          </button>
+          <button @click="datePickerActive = false">
+            取消
+          </button>
         </div>
       </div>
     </EditModal>

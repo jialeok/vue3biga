@@ -1,18 +1,45 @@
 <template>
   <Teleport to="body">
-    <div v-if="modelValue" class="edit-modal-backdrop" @click.self="$emit('update:modelValue', false)">
+    <div
+      v-if="modelValue"
+      class="edit-modal-backdrop"
+      @click.self="$emit('update:modelValue', false)"
+    >
       <div class="edit-modal-panel">
-        <div class="edit-modal-header">{{ title }}</div>
+        <div class="edit-modal-header">
+          {{ title }}
+        </div>
         <div class="edit-modal-body">
           <slot />
         </div>
-        <div v-if="showActions" class="edit-modal-actions">
-          <button class="btn-save" :disabled="saving" @click="$emit('save')">
-            <span v-if="saving" class="btn-spinner"></span>
+        <div
+          v-if="showActions"
+          class="edit-modal-actions"
+        >
+          <button
+            class="btn-save"
+            :disabled="saving"
+            @click="$emit('save')"
+          >
+            <span
+              v-if="saving"
+              class="btn-spinner"
+            />
             <span>{{ saveLabel() }}</span>
           </button>
-          <button v-if="showClear" :class="clearClass" @click="$emit('clear')">{{ clearText }}</button>
-          <button class="btn-cancel" @click="$emit('update:modelValue', false)">{{ cancelText }}</button>
+          <button
+            v-if="showClear"
+            :class="clearClass"
+            @click="$emit('clear')"
+          >
+            {{ clearText }}
+          </button>
+          <button
+            class="btn-cancel"
+            @click="$emit('update:modelValue', false)"
+          >
+            {{ cancelText }}
+          </button>
         </div>
       </div>
     </div>

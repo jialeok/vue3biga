@@ -22,7 +22,7 @@ import { _backupScopeData, _mergePatchLocal, _patchScopeField, _sanitizePatch, _
 import { _getLocalTodayStr, deriveAuctionTagState } from '../tagTitles/rules.js';
 import { getMostRecentTradingDay, getPreviousTradingDay, isTradingDay } from '../date/trading-day-helpers.js';
 import { getWeekday, getPreviousDate, getNextDate, _shiftDateStr, buildYesterdayListFromToday } from '../date/date-helpers.js';
-import { getNthPreviousTradingDay, recalcDuibanFromAuction, renderAuction, renderBidding, renderDuiban, renderEmotionBoard, renderEtf, renderHotForm, renderHotspot, renderJiwang, renderList, renderMulti, renderPattern, renderRank, resetExpansionStateOnDateSwitch, setApiStatus, showNumcatChoiceModal } from '../ui-bridge.js';
+import { getNthPreviousTradingDay, recalcDuibanFromAuction, renderAuction, renderBidding, renderDuiban, renderEmotionBoard, renderEtf, renderHotForm, renderHotspot, renderJiwang, renderList, renderMulti, renderPattern, renderRank, setApiStatus, showNumcatChoiceModal } from '../ui-bridge.js';
 // §6 单真相边界说明：recalcDuibanFromAuction（定义于 ui-bridge.js）只写 recent_multi_data
 // —— 这是 DuibanBoard 的 live 唯一真相源。auction_duiban 为迁移遗留孤儿表，已收敛：
 // duiban-sync.js 的 saveDuibanData/loadDuibanData（0 调用方）已移除，auction-sync.js 不再向其双写；

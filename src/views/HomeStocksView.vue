@@ -1,16 +1,33 @@
 <template>
-  <div v-if="loading" class="loading-state trading-day-element">
-    <div class="loading-icon">⏳</div>
-    <div class="loading-title">加载中...</div>
+  <div
+    v-if="loading"
+    class="loading-state trading-day-element"
+  >
+    <div class="loading-icon">
+      ⏳
+    </div>
+    <div class="loading-title">
+      加载中...
+    </div>
   </div>
 
   <HomeStocksSummary v-if="!loading" />
   <HomeStocksList v-if="!loading" />
 
-  <div v-if="!loading && sortedList.length === 0" class="empty-state trading-day-element" style="display:block">
-    <div class="empty-icon">📈</div>
-    <div class="empty-title">暂无股票记录</div>
-    <div class="empty-desc">点击下方 + 按钮添加第一条记录</div>
+  <div
+    v-if="!loading && sortedList.length === 0"
+    class="empty-state trading-day-element"
+    style="display:block"
+  >
+    <div class="empty-icon">
+      📈
+    </div>
+    <div class="empty-title">
+      暂无股票记录
+    </div>
+    <div class="empty-desc">
+      点击下方 + 按钮添加第一条记录
+    </div>
   </div>
 
   <HomeStocksEditModal />

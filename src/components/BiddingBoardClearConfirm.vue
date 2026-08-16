@@ -1,13 +1,35 @@
 <!-- BiddingBoardClearConfirm.vue — 清除确认弹层（Teleport 到 body） -->
 <template>
   <Teleport to="body">
-    <div v-if="clearConfirmActive" class="clear-confirm-overlay" @click="clearConfirmActive = false">
-      <div class="clear-confirm-panel" @click.stop>
-        <div class="clear-confirm-title">确定要清除所有数据吗？</div>
-        <div class="clear-confirm-desc">将保留第一列（要盯项目）的内容，清除其他所有列的数据。</div>
+    <div
+      v-if="clearConfirmActive"
+      class="clear-confirm-overlay"
+      @click="clearConfirmActive = false"
+    >
+      <div
+        class="clear-confirm-panel"
+        @click.stop
+      >
+        <div class="clear-confirm-title">
+          确定要清除所有数据吗？
+        </div>
+        <div class="clear-confirm-desc">
+          将保留第一列（要盯项目）的内容，清除其他所有列的数据。
+        </div>
         <div class="clear-confirm-actions">
-          <button class="btn-confirm-clear" @click="confirmClearData" :disabled="clearing">{{ clearing ? '清除中...' : '确定清除' }}</button>
-          <button class="btn-cancel-clear" @click="clearConfirmActive = false">取消</button>
+          <button
+            class="btn-confirm-clear"
+            :disabled="clearing"
+            @click="confirmClearData"
+          >
+            {{ clearing ? '清除中...' : '确定清除' }}
+          </button>
+          <button
+            class="btn-cancel-clear"
+            @click="clearConfirmActive = false"
+          >
+            取消
+          </button>
         </div>
       </div>
     </div>

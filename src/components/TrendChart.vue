@@ -1,27 +1,54 @@
 <template>
-  <svg :viewBox="`0 0 ${width} ${height + 12}`" style="width:100%; height:auto; display:block;">
+  <svg
+    :viewBox="`0 0 ${width} ${height + 12}`"
+    style="width:100%; height:auto; display:block;"
+  >
     <line
       v-if="zeroLine"
-      :x1="zeroLine.x1" :y1="zeroLine.y1" :x2="zeroLine.x2" :y2="zeroLine.y2"
-      stroke="#cbd5e1" stroke-width="1" stroke-dasharray="2,2"
+      :x1="zeroLine.x1"
+      :y1="zeroLine.y1"
+      :x2="zeroLine.x2"
+      :y2="zeroLine.y2"
+      stroke="#cbd5e1"
+      stroke-width="1"
+      stroke-dasharray="2,2"
     />
     <path
-      v-for="(d, i) in pathDs" :key="'p' + i"
-      :d="d" fill="none" :stroke="color" stroke-width="2"
-      stroke-linecap="round" stroke-linejoin="round"
+      v-for="(d, i) in pathDs"
+      :key="'p' + i"
+      :d="d"
+      fill="none"
+      :stroke="color"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
     />
     <circle
-      v-for="(dot, i) in dots" :key="'d' + i"
-      :cx="dot.cx" :cy="dot.cy" r="2.6" :fill="dot.color"
+      v-for="(dot, i) in dots"
+      :key="'d' + i"
+      :cx="dot.cx"
+      :cy="dot.cy"
+      r="2.6"
+      :fill="dot.color"
     />
     <text
-      v-for="(lbl, i) in valueLabels" :key="'v' + i"
-      :x="lbl.x" :y="lbl.y" font-size="9" :fill="lbl.color"
-      text-anchor="middle" font-weight="600"
+      v-for="(lbl, i) in valueLabels"
+      :key="'v' + i"
+      :x="lbl.x"
+      :y="lbl.y"
+      font-size="9"
+      :fill="lbl.color"
+      text-anchor="middle"
+      font-weight="600"
     >{{ lbl.text }}</text>
     <text
-      v-for="(lbl, i) in dateLabels" :key="'dt' + i"
-      :x="lbl.x" :y="lbl.y" font-size="8.5" fill="#94a3b8" text-anchor="middle"
+      v-for="(lbl, i) in dateLabels"
+      :key="'dt' + i"
+      :x="lbl.x"
+      :y="lbl.y"
+      font-size="8.5"
+      fill="#94a3b8"
+      text-anchor="middle"
     >{{ lbl.text }}</text>
   </svg>
 </template>

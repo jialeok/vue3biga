@@ -23,7 +23,7 @@ import { getMostRecentTradingDay, getPreviousTradingDay, isTradingDay } from './
 // §16 域拆分：纯日期工具已迁至 ./date/date-helpers.js（import 供本模块内部调用，re-export 供外部调用点零破坏）
 import { getWeekday, getPreviousDate, getNextDate, _shiftDateStr, buildYesterdayListFromToday } from './date/date-helpers.js';
 export { getPreviousDate, getNextDate } from './date/date-helpers.js';
-import { getNthPreviousTradingDay, recalcDuibanFromAuction, renderAuction, renderBidding, renderDuiban, renderEmotionBoard, renderEtf, renderHotForm, renderHotspot, renderJiwang, renderList, renderMulti, renderPattern, renderRank, resetExpansionStateOnDateSwitch, setApiStatus, showNumcatChoiceModal } from './ui-bridge.js';
+import { getNthPreviousTradingDay, recalcDuibanFromAuction, renderAuction, renderBidding, renderDuiban, renderEmotionBoard, renderEtf, renderHotForm, renderHotspot, renderJiwang, renderList, renderMulti, renderPattern, renderRank, setApiStatus, showNumcatChoiceModal } from './ui-bridge.js';
 import { pullFromCloud, pushAuctionCodeToCloud, pushHotStocksDataToCloud, pushToCloud, syncAuctionListForDate, syncCloseChunk, syncHotStocksListForDate } from './workflows/auction-sync.js';
 import { useAuctionStore, _bindUiFns } from '../stores/auctionStore.js';
 import { initAuctionTags } from '../stores/auctionTagStore.js';
@@ -298,10 +298,6 @@ export function _uiDateSafe() { try { return useUiStore().currentDate; } catch (
             useUiStore().currentDate = newDate;
             if (typeof _getAuctionStore() !== 'undefined' && _getAuctionStore()) {
                 _getAuctionStore().currentDate = newDate;
-            }
-            // [DATE-SWITCH] 切换日期时重置展开状态，避免上一日期的展开/全部展开开关带到新日期
-            if (typeof resetExpansionStateOnDateSwitch === 'function') {
-                resetExpansionStateOnDateSwitch();
             }
         }
         export function getCurrentDate() { return useUiStore().currentDate; }

@@ -3,16 +3,42 @@
   纯物理重组：模板与逻辑来自 src/views/AuctionBoard.vue，经 inject('auctionBoard') 共享同一 composable 实例。
 -->
 <template>
-  <div v-if="currentPage === 3" class="auction-scroll-container auction-page-4">
-    <div v-if="page4DisplayStocks.length === 0" class="auction-copied-placeholder">暂无复制的股票<br>请从第三页复制题材股票</div>
+  <div
+    v-if="currentPage === 3"
+    class="auction-scroll-container auction-page-4"
+  >
+    <div
+      v-if="page4DisplayStocks.length === 0"
+      class="auction-copied-placeholder"
+    >
+      暂无复制的股票<br>请从第三页复制题材股票
+    </div>
     <div v-else>
-      <div v-for="(stock, idx) in page4DisplayStocks" :key="stock.name + '-' + idx" class="auction-copied-row">
+      <div
+        v-for="(stock, idx) in page4DisplayStocks"
+        :key="stock.name + '-' + idx"
+        class="auction-copied-row"
+      >
         <span class="auction-copied-stock">{{ stock.name }}</span>
         <span class="auction-copied-topic">{{ stock.topic }}</span>
-        <span :class="['auction-copied-ratio', { highlight: stock.ratio >= 10, 'highlight-light': stock.ratio >= 4.5 && stock.ratio < 10 }]">{{ stock.ratio }}%<span v-if="stock.arrow === '⬆'" style="color:#ef4444;">⬆</span><span v-if="stock.arrow === '⬇'" style="color:#10b981;">⬇</span></span>
-        <span class="auction-copied-delete" @click.stop="deleteCopiedStock(stock.originalIndex)">✕</span>
+        <span :class="['auction-copied-ratio', { highlight: stock.ratio >= 10, 'highlight-light': stock.ratio >= 4.5 && stock.ratio < 10 }]">{{ stock.ratio }}%<span
+          v-if="stock.arrow === '⬆'"
+          style="color:#ef4444;"
+        >⬆</span><span
+          v-if="stock.arrow === '⬇'"
+          style="color:#10b981;"
+        >⬇</span></span>
+        <span
+          class="auction-copied-delete"
+          @click.stop="deleteCopiedStock(stock.originalIndex)"
+        >✕</span>
       </div>
-      <div class="auction-clear-all-btn" @click="clearAllCopiedStocks">全部清除</div>
+      <div
+        class="auction-clear-all-btn"
+        @click="clearAllCopiedStocks"
+      >
+        全部清除
+      </div>
     </div>
   </div>
 </template>

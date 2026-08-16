@@ -1,31 +1,97 @@
 <!-- BiddingBoardEditModal.vue — 竞价变化后台编辑弹窗（含抓取按钮 + 编辑行） -->
 <template>
-  <EditModal v-model="modalActive" title="编辑竞价变化" :show-clear="true" save-text="保存" :saving="saving" clear-class="btn-clear-gray" @save="save" @clear="clearData">
-    <div class="bidding-edit-desc">记录竞价变化数据（固定 7 行，行名不可编辑）</div>
+  <EditModal
+    v-model="modalActive"
+    title="编辑竞价变化"
+    :show-clear="true"
+    save-text="保存"
+    :saving="saving"
+    clear-class="btn-clear-gray"
+    @save="save"
+    @clear="clearData"
+  >
+    <div class="bidding-edit-desc">
+      记录竞价变化数据（固定 7 行，行名不可编辑）
+    </div>
     <div class="bidding-fetch-row">
-      <button type="button" class="btn-fetch-snapshot" @click="fetchSnapshot" :disabled="fetchLoading">{{ fetchLoading ? '⏳ 抓取中...' : '📡 抓取当前时段数据' }}</button>
-      <span v-if="fetchStatus" class="bidding-fetch-status">{{ fetchStatus }}</span>
+      <button
+        type="button"
+        class="btn-fetch-snapshot"
+        :disabled="fetchLoading"
+        @click="fetchSnapshot"
+      >
+        {{ fetchLoading ? '⏳ 抓取中...' : '📡 抓取当前时段数据' }}
+      </button>
+      <span
+        v-if="fetchStatus"
+        class="bidding-fetch-status"
+      >{{ fetchStatus }}</span>
     </div>
     <div class="bidding-edit-rows">
-      <div v-for="(row, idx) in editRows" :key="idx" class="bidding-edit-row" :class="{ 'bidding-edit-row-time26': row.name === '最近多板%time26' }">
+      <div
+        v-for="(row, idx) in editRows"
+        :key="idx"
+        class="bidding-edit-row"
+        :class="{ 'bidding-edit-row-time26': row.name === '最近多板%time26' }"
+      >
         <template v-if="row.name === '最近多板%time26'">
           <div class="bidding-edit-row-time26-line">
-            <input :value="row.name" readonly class="bidding-edit-name-readonly-line" />
-            <input v-model="row.time925" placeholder="9:26" @input="onInputChange(row)" />
-            <input :value="row.change" placeholder="增减" readonly class="bidding-row-change" :class="changeTagClass(row.change)" />
-            <span class="bidding-edit-empty-cell"></span>
+            <input
+              :value="row.name"
+              readonly
+              class="bidding-edit-name-readonly-line"
+            >
+            <input
+              v-model="row.time925"
+              placeholder="9:26"
+              @input="onInputChange(row)"
+            >
+            <input
+              :value="row.change"
+              placeholder="增减"
+              readonly
+              class="bidding-row-change"
+              :class="changeTagClass(row.change)"
+            >
+            <span class="bidding-edit-empty-cell" />
           </div>
         </template>
         <template v-else>
           <div class="bidding-edit-row-top">
-            <input :value="row.name" readonly class="bidding-edit-name bidding-edit-name-readonly" />
+            <input
+              :value="row.name"
+              readonly
+              class="bidding-edit-name bidding-edit-name-readonly"
+            >
           </div>
           <div class="bidding-edit-row-bottom">
-            <input v-model="row.time915" placeholder="9:15" @input="onInputChange(row)" />
-            <input v-model="row.time920" placeholder="9:20" @input="onInputChange(row)" />
-            <input v-model="row.time925" placeholder="9:25" @input="onInputChange(row)" />
-            <input :value="row.change" placeholder="增减" readonly class="bidding-row-change" :class="changeTagClass(row.change)" />
-            <input v-model="row.close" placeholder="收盘" @input="onInputChange(row)" />
+            <input
+              v-model="row.time915"
+              placeholder="9:15"
+              @input="onInputChange(row)"
+            >
+            <input
+              v-model="row.time920"
+              placeholder="9:20"
+              @input="onInputChange(row)"
+            >
+            <input
+              v-model="row.time925"
+              placeholder="9:25"
+              @input="onInputChange(row)"
+            >
+            <input
+              :value="row.change"
+              placeholder="增减"
+              readonly
+              class="bidding-row-change"
+              :class="changeTagClass(row.change)"
+            >
+            <input
+              v-model="row.close"
+              placeholder="收盘"
+              @input="onInputChange(row)"
+            >
           </div>
         </template>
       </div>

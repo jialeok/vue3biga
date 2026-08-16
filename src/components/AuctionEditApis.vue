@@ -6,14 +6,20 @@
       <span class="api-section-tag">883410.TI · fuyao-proxy</span>
     </div>
     <div class="api-grid">
-      <button v-for="b in modal.thsButtons" :key="b.key"
-        @click="modal.runBackend(b.fn, b.key, 'thsApiStatus')"
+      <button
+        v-for="b in modal.thsButtons"
+        :key="b.key"
         :class="['btn', 'btn-ths', { 'btn-ths-wide': b.wide }]"
-        :disabled="modal.busyKey === b.key">
+        :disabled="modal.busyKey === b.key"
+        @click="modal.runBackend(b.fn, b.key, 'thsApiStatus')"
+      >
         {{ busyBtnLabel(b) }}
       </button>
     </div>
-    <span class="api-status-line" :class="modal.statusCls('thsApiStatus')">{{ modal.statusMsg('thsApiStatus') }}</span>
+    <span
+      class="api-status-line"
+      :class="modal.statusCls('thsApiStatus')"
+    >{{ modal.statusMsg('thsApiStatus') }}</span>
   </div>
 
   <!-- 猫抓接口 -->
@@ -23,14 +29,20 @@
       <span class="api-section-tag">免费额度每日10次</span>
     </div>
     <div class="api-grid">
-      <button v-for="b in modal.numcatButtons" :key="b.key"
-        @click="modal.runBackend(b.fn, b.key, 'numcatApiStatus')"
+      <button
+        v-for="b in modal.numcatButtons"
+        :key="b.key"
         :class="['btn', 'btn-numcat', { 'btn-numcat-wide': b.wide }]"
-        :disabled="modal.busyKey === b.key">
+        :disabled="modal.busyKey === b.key"
+        @click="modal.runBackend(b.fn, b.key, 'numcatApiStatus')"
+      >
         {{ busyBtnLabel(b) }}
       </button>
     </div>
-    <span class="api-status-line" :class="modal.statusCls('numcatApiStatus')">{{ modal.statusMsg('numcatApiStatus') }}</span>
+    <span
+      class="api-status-line"
+      :class="modal.statusCls('numcatApiStatus')"
+    >{{ modal.statusMsg('numcatApiStatus') }}</span>
   </div>
 </template>
 

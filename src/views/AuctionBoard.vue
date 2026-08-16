@@ -13,26 +13,49 @@
   refresh / toggleSort / expandAll / collapseAll（签名不变）。
 -->
 <template>
-  <div class="auction-board trading-day-element" :class="{ collapsed: !expanded }" data-source="auction">
-    <div class="auction-header" @click="toggleBoard" style="cursor:pointer">
+  <div
+    class="auction-board trading-day-element"
+    :class="{ collapsed: !expanded }"
+    data-source="auction"
+  >
+    <div
+      class="auction-header"
+      style="cursor:pointer"
+      @click="toggleBoard"
+    >
       <div>
         <div class="auction-title">
           <span>早盘竞价</span>
           <span style="margin-left: 8px; font-weight: 600;">强度：<span style="color: #ffffff;">{{ todayStrengthText }}</span></span>
         </div>
-        <div class="auction-subtitle"></div>
+        <div class="auction-subtitle" />
       </div>
       <div class="auction-header-right">
         <div class="auction-page-indicator">
-          <span v-for="p in 4" :key="p" class="page-dot" :class="{ active: currentPage === p - 1 }" @click.stop="switchPage(p - 1)"></span>
+          <span
+            v-for="p in 4"
+            :key="p"
+            class="page-dot"
+            :class="{ active: currentPage === p - 1 }"
+            @click.stop="switchPage(p - 1)"
+          />
         </div>
-        <div class="auction-toggle-btn">{{ expanded ? '▲' : '▼' }}</div>
+        <div class="auction-toggle-btn">
+          {{ expanded ? '▲' : '▼' }}
+        </div>
       </div>
     </div>
-    <div v-show="expanded" class="auction-swipe-container"
-         @touchstart.passive="onSwipeStart"
-         @touchend.passive="onSwipeEnd">
-      <div v-if="currentPage === 0" class="auction-scroll-container" @dblclick="openEditModal">
+    <div
+      v-show="expanded"
+      class="auction-swipe-container"
+      @touchstart.passive="onSwipeStart"
+      @touchend.passive="onSwipeEnd"
+    >
+      <div
+        v-if="currentPage === 0"
+        class="auction-scroll-container"
+        @dblclick="openEditModal"
+      >
         <AuctionBoardToolbar />
         <AuctionBoardTable />
       </div>
@@ -47,12 +70,32 @@
 
     <!-- [FIX 2026-08-16] 昨成交量单击 → 黑色小 toast 显示涨幅+题材（贴数值下方，点击/滚动关闭）；
          竞价量双击 → 涨幅题材编辑弹窗（替代原双击股票名 prompt）。 -->
-    <div v-if="notePopup" class="auction-note-popup" :style="notePopupStyle" @click="closeNotePopup">{{ notePopupText }}</div>
+    <div
+      v-if="notePopup"
+      class="auction-note-popup"
+      :style="notePopupStyle"
+      @click="closeNotePopup"
+    >
+      {{ notePopupText }}
+    </div>
 
-    <EditModal v-model="volumeNoteModalActive" title="编辑涨幅与题材" show-clear clear-text="清空" @save="saveVolumeNote" @clear="clearVolumeNote">
-      <div style="font-size:12px;color:#6b7280;margin-bottom:8px;">格式：涨幅(题材1,题材2)，如 2.6%(机器人,人工智能,AI应用)</div>
-      <input v-model="volumeNoteDraft" placeholder="如 2.6%(机器人,人工智能,AI应用)" class="volume-note-input"
-             style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;box-sizing:border-box;" />
+    <EditModal
+      v-model="volumeNoteModalActive"
+      title="编辑涨幅与题材"
+      show-clear
+      clear-text="清空"
+      @save="saveVolumeNote"
+      @clear="clearVolumeNote"
+    >
+      <div style="font-size:12px;color:#6b7280;margin-bottom:8px;">
+        格式：涨幅(题材1,题材2)，如 2.6%(机器人,人工智能,AI应用)
+      </div>
+      <input
+        v-model="volumeNoteDraft"
+        placeholder="如 2.6%(机器人,人工智能,AI应用)"
+        class="volume-note-input"
+        style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;box-sizing:border-box;"
+      >
     </EditModal>
   </div>
 </template>

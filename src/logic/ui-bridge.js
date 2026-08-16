@@ -80,7 +80,6 @@ export async function pushCoreTopicsToCloud(topics) {
 }
 _setCoreTopicsFns(pullCoreTopicsFromCloud, pushCoreTopicsToCloud);
 
-export function resetExpansionStateOnDateSwitch() {}
 export function getAuctionTagState(stockName, date) {
   const d = date || useUiStore().currentDate;
   const prevDay = getPreviousTradingDay(d);

@@ -1,12 +1,33 @@
 <template>
   <!-- 表单行 -->
   <div class="rank-form-scroll-container">
-    <div v-for="(row, idx) in modal.editRows" :key="idx" class="auction-form-row">
+    <div
+      v-for="(row, idx) in modal.editRows"
+      :key="idx"
+      class="auction-form-row"
+    >
       <span class="rank-form-number">{{ idx + 1 }}</span>
-      <input v-model="row.stock" placeholder="股票名称" class="form-input auction-form-stock-input">
-      <input v-model="row.volume" placeholder="竞价量(万股)" class="form-input auction-form-volume-input">
-      <input v-model="row.yestVolume" placeholder="昨日成交量(万股)" class="form-input auction-form-yest-input">
-      <button @click="modal.removeRow(idx)" class="remove-rank-btn">×</button>
+      <input
+        v-model="row.stock"
+        placeholder="股票名称"
+        class="form-input auction-form-stock-input"
+      >
+      <input
+        v-model="row.volume"
+        placeholder="竞价量(万股)"
+        class="form-input auction-form-volume-input"
+      >
+      <input
+        v-model="row.yestVolume"
+        placeholder="昨日成交量(万股)"
+        class="form-input auction-form-yest-input"
+      >
+      <button
+        class="remove-rank-btn"
+        @click="modal.removeRow(idx)"
+      >
+        ×
+      </button>
     </div>
   </div>
 </template>

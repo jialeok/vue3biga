@@ -4,18 +4,43 @@
     <div class="section-codemap-header">
       <span class="section-codemap-title">股票代码映射（供抓取程序读取）</span>
       <label class="toggle-switch">
-        <input type="checkbox" v-model="modal.codeMapOpen">
-        <span class="toggle-slider"></span>
+        <input
+          v-model="modal.codeMapOpen"
+          type="checkbox"
+        >
+        <span class="toggle-slider" />
       </label>
     </div>
-    <div v-if="modal.codeMapOpen" class="section-codemap-body">
-      <div class="section-codemap-hint">两列：股票名称[TAB]股票代码（如 贵州茅台[TAB]600519）。存为「名称→代码」映射，前台不显示代码，仅供抓取程序读取。同名覆盖，长期复用。</div>
-      <textarea v-model="modal.codeMapText" placeholder="贵州茅台&#9;600519&#10;平安银行&#9;000001&#10;..." class="codemap-textarea"></textarea>
-      <div class="codemap-btns">
-        <button @click="modal.onImportCodeMap" class="btn btn-codemap-import">导入代码映射</button>
-        <button @click="modal.onAutoCompleteCode" class="btn btn-codemap-auto">自动补全代码</button>
+    <div
+      v-if="modal.codeMapOpen"
+      class="section-codemap-body"
+    >
+      <div class="section-codemap-hint">
+        两列：股票名称[TAB]股票代码（如 贵州茅台[TAB]600519）。存为「名称→代码」映射，前台不显示代码，仅供抓取程序读取。同名覆盖，长期复用。
       </div>
-      <span v-if="modal.codeMapStatus" class="inline-status">{{ modal.codeMapStatus }}</span>
+      <textarea
+        v-model="modal.codeMapText"
+        placeholder="贵州茅台&#9;600519&#10;平安银行&#9;000001&#10;..."
+        class="codemap-textarea"
+      />
+      <div class="codemap-btns">
+        <button
+          class="btn btn-codemap-import"
+          @click="modal.onImportCodeMap"
+        >
+          导入代码映射
+        </button>
+        <button
+          class="btn btn-codemap-auto"
+          @click="modal.onAutoCompleteCode"
+        >
+          自动补全代码
+        </button>
+      </div>
+      <span
+        v-if="modal.codeMapStatus"
+        class="inline-status"
+      >{{ modal.codeMapStatus }}</span>
     </div>
   </div>
 </template>

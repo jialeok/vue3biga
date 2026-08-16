@@ -6,9 +6,15 @@
   save/clearData/fetchSnapshot/runDiagnostics）对外保留不变。
 -->
 <template>
-  <div class="bidding-board trading-day-element" :class="{ minimized: !expanded }">
+  <div
+    class="bidding-board trading-day-element"
+    :class="{ minimized: !expanded }"
+  >
     <BiddingBoardHeader />
-    <div class="bidding-content" @dblclick="openEdit">
+    <div
+      class="bidding-content"
+      @dblclick="openEdit"
+    >
       <BiddingBoardList />
     </div>
     <BiddingBoardEditModal />

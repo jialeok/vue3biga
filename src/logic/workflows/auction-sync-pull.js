@@ -212,9 +212,7 @@ import { _cloudBlobExtras } from './auction-sync-helpers.js';
                     // 带回来，这段代码会把本地这条已保存的数据直接删掉——即"明明保存成功，
                     // 一下拉刷新就变空白"。
                     // 现在改为：只用 tableJiwang 里实际返回的日期去覆盖/更新本地缓存，
-                    // 云端这次没返回的日期一律保留本地原值，不做任何删除——真正的删除
-                    // 场景（用户主动清空当天数据）由 deleteJiwangFromCloud() 单独处理，
-                    // 不需要也不应该依赖这里的"全量拉取"来清理。
+                    // 云端这次没返回的日期一律保留本地原值，不做任何删除。
                     const pendingDates = new Set();
                     if (state._jiwangDirtyDates) state._jiwangDirtyDates.forEach(function(d) { pendingDates.add(d); });
                     if (state._jiwangPushTimers) Object.keys(state._jiwangPushTimers).forEach(function(d) { pendingDates.add(d); });

@@ -1,70 +1,179 @@
 <template>
   <div class="etf-board trading-day-element">
-  <div :class="kind + '-header'" @dblclick.stop="openEdit">
-    <div>
-      <div :class="kind + '-title'">{{ title }}</div>
-      <div :class="kind + '-subtitle'"></div>
-    </div>
-  </div>
-  <div :class="kind + '-content'" @dblclick.stop="openEdit">
-    <div :class="kind + '-scroll-container'">
-      <div :class="kind + '-header-row'">
-        <div :class="kind + '-header-item ' + kind + '-header-shuliang'">总数量</div>
-        <div :class="kind + '-header-item ' + kind + '-header-dieZhangbi'">跌涨比</div>
-        <div :class="kind + '-header-item ' + kind + '-header-jingtu'">竞符合数</div>
-        <div :class="kind + '-header-item ' + kind + '-header-tushi'">图示</div>
+    <div
+      :class="kind + '-header'"
+      @dblclick.stop="openEdit"
+    >
+      <div>
+        <div :class="kind + '-title'">
+          {{ title }}
+        </div>
+        <div :class="kind + '-subtitle'" />
       </div>
-      <div v-if="!hasData" :class="kind + '-empty'">暂无数据，点击添加...</div>
-      <div v-else :class="kind + '-row'">
-        <div :class="kind + '-item ' + kind + '-item-shuliang'">{{ data?.shuliang || '' }}</div>
-        <div :class="kind + '-item ' + kind + '-item-dieZhangbi'">{{ data?.die_zhangbi || '' }}</div>
-        <div :class="kind + '-item ' + kind + '-item-jingtu'">{{ data?.jingtu || '' }}</div>
-        <div :class="kind + '-item ' + kind + '-item-tushi'">
-          <a v-if="isTushiLink(data?.tushi)" :href="data.tushi" target="_blank" @click.stop>{{ tushiLinkText(data.tushi) }}</a>
-          <template v-else>{{ data?.tushi || '' }}</template>
+    </div>
+    <div
+      :class="kind + '-content'"
+      @dblclick.stop="openEdit"
+    >
+      <div :class="kind + '-scroll-container'">
+        <div :class="kind + '-header-row'">
+          <div :class="kind + '-header-item ' + kind + '-header-shuliang'">
+            总数量
+          </div>
+          <div :class="kind + '-header-item ' + kind + '-header-dieZhangbi'">
+            跌涨比
+          </div>
+          <div :class="kind + '-header-item ' + kind + '-header-jingtu'">
+            竞符合数
+          </div>
+          <div :class="kind + '-header-item ' + kind + '-header-tushi'">
+            图示
+          </div>
+        </div>
+        <div
+          v-if="!hasData"
+          :class="kind + '-empty'"
+        >
+          暂无数据，点击添加...
+        </div>
+        <div
+          v-else
+          :class="kind + '-row'"
+        >
+          <div :class="kind + '-item ' + kind + '-item-shuliang'">
+            {{ data?.shuliang || '' }}
+          </div>
+          <div :class="kind + '-item ' + kind + '-item-dieZhangbi'">
+            {{ data?.die_zhangbi || '' }}
+          </div>
+          <div :class="kind + '-item ' + kind + '-item-jingtu'">
+            {{ data?.jingtu || '' }}
+          </div>
+          <div :class="kind + '-item ' + kind + '-item-tushi'">
+            <a
+              v-if="isTushiLink(data?.tushi)"
+              :href="data.tushi"
+              target="_blank"
+              @click.stop
+            >{{ tushiLinkText(data.tushi) }}</a>
+            <template v-else>
+              {{ data?.tushi || '' }}
+            </template>
+          </div>
         </div>
       </div>
     </div>
-  </div>
-  <div :class="kind + '-comment-display'" @click.stop="openEdit">
-    <span v-if="!data || !data.comment" :class="kind + '-comment-placeholder'">暂无评论，点击添加...</span>
-    <span v-else>{{ data.comment }}</span>
-  </div>
+    <div
+      :class="kind + '-comment-display'"
+      @click.stop="openEdit"
+    >
+      <span
+        v-if="!data || !data.comment"
+        :class="kind + '-comment-placeholder'"
+      >暂无评论，点击添加...</span>
+      <span v-else>{{ data.comment }}</span>
+    </div>
 
-  <div v-if="showModal" class="board-modal-backdrop" @click.self="showModal = false">
-    <div class="board-modal">
-      <div class="board-modal-header">编辑 {{ title }}</div>
-      <div class="board-modal-body">
-        <div class="board-form-row">
-          <span class="board-form-label">总数量</span>
-          <input class="board-input" type="text" inputmode="numeric" v-model="form.shuliang" @input="updateFromTotal" placeholder="总数量">
+    <div
+      v-if="showModal"
+      class="board-modal-backdrop"
+      @click.self="showModal = false"
+    >
+      <div class="board-modal">
+        <div class="board-modal-header">
+          编辑 {{ title }}
         </div>
-        <div class="board-form-row">
-          <span class="board-form-label">跌 : 涨</span>
-          <input class="board-input" type="text" inputmode="numeric" v-model="form.die" @input="updateFromDie" placeholder="跌" style="flex:1">
-          <span style="color:#94a3b8">:</span>
-          <input class="board-input" type="text" inputmode="numeric" v-model="form.zhang" @input="updateFromZhang" placeholder="涨" style="flex:1">
+        <div class="board-modal-body">
+          <div class="board-form-row">
+            <span class="board-form-label">总数量</span>
+            <input
+              v-model="form.shuliang"
+              class="board-input"
+              type="text"
+              inputmode="numeric"
+              placeholder="总数量"
+              @input="updateFromTotal"
+            >
+          </div>
+          <div class="board-form-row">
+            <span class="board-form-label">跌 : 涨</span>
+            <input
+              v-model="form.die"
+              class="board-input"
+              type="text"
+              inputmode="numeric"
+              placeholder="跌"
+              style="flex:1"
+              @input="updateFromDie"
+            >
+            <span style="color:#94a3b8">:</span>
+            <input
+              v-model="form.zhang"
+              class="board-input"
+              type="text"
+              inputmode="numeric"
+              placeholder="涨"
+              style="flex:1"
+              @input="updateFromZhang"
+            >
+          </div>
+          <div class="board-form-row">
+            <span class="board-form-label">竞符合数</span>
+            <input
+              v-model="form.jingtu"
+              class="board-input"
+              type="text"
+              placeholder="竞符合数"
+            >
+          </div>
+          <div class="board-form-row">
+            <span class="board-form-label">图示</span>
+            <input
+              v-model="form.tushi"
+              class="board-input"
+              type="text"
+              placeholder="石墨链接/图示"
+              autocomplete="off"
+              spellcheck="false"
+            >
+          </div>
+          <div
+            class="board-form-row"
+            style="flex-direction:column;align-items:flex-start;gap:4px"
+          >
+            <span
+              class="board-form-label"
+              style="width:auto"
+            >评论</span>
+            <textarea
+              v-model="form.comment"
+              class="board-input"
+              rows="4"
+              placeholder="输入评论..."
+            />
+          </div>
+          <div class="board-hint">
+            总数量默认 {{ defaultTotal }}，输入涨/跌或总数会自动计算另一方。
+          </div>
         </div>
-        <div class="board-form-row">
-          <span class="board-form-label">竞符合数</span>
-          <input class="board-input" type="text" v-model="form.jingtu" placeholder="竞符合数">
+        <div class="board-modal-footer">
+          <button
+            class="board-btn board-btn-primary"
+            :disabled="saving"
+            @click="submit"
+          >
+            {{ saving ? '保存中...' : '保存' }}
+          </button>
+          <button
+            class="board-btn"
+            style="background:#f1f5f9;color:#475569"
+            @click="showModal = false"
+          >
+            取消
+          </button>
         </div>
-        <div class="board-form-row">
-          <span class="board-form-label">图示</span>
-          <input class="board-input" type="text" v-model="form.tushi" placeholder="石墨链接/图示" autocomplete="off" spellcheck="false">
-        </div>
-        <div class="board-form-row" style="flex-direction:column;align-items:flex-start;gap:4px">
-          <span class="board-form-label" style="width:auto">评论</span>
-          <textarea class="board-input" v-model="form.comment" rows="4" placeholder="输入评论..."></textarea>
-        </div>
-        <div class="board-hint">总数量默认 {{ defaultTotal }}，输入涨/跌或总数会自动计算另一方。</div>
-      </div>
-      <div class="board-modal-footer">
-        <button class="board-btn board-btn-primary" :disabled="saving" @click="submit">{{ saving ? '保存中...' : '保存' }}</button>
-        <button class="board-btn" style="background:#f1f5f9;color:#475569" @click="showModal = false">取消</button>
       </div>
     </div>
-  </div>
   </div>
 </template>
 

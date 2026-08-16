@@ -1,41 +1,130 @@
 <template>
-  <div id="emotionBoard" class="emotion-board">
-    <div class="emotion-header" @click="toggleExpand">
+  <div
+    id="emotionBoard"
+    class="emotion-board"
+  >
+    <div
+      class="emotion-header"
+      @click="toggleExpand"
+    >
       <span class="emotion-title">情绪看板</span>
-      <span class="emotion-summary" id="emotionSummary">{{ summaryText }}</span>
-      <span class="emotion-toggle-btn" id="emotionToggleBtn">{{ toggleArrow }}</span>
+      <span
+        id="emotionSummary"
+        class="emotion-summary"
+      >{{ summaryText }}</span>
+      <span
+        id="emotionToggleBtn"
+        class="emotion-toggle-btn"
+      >{{ toggleArrow }}</span>
     </div>
-      <div id="emotionContent" class="emotion-content" v-show="expanded">
-      <div v-if="fallbackDate" class="emotion-fallback-hint">数据未更新至 {{ uiStore.currentDate }}，显示最近可用：{{ fallbackDate }}</div>
-      <div v-if="error" class="emotion-error-hint">加载失败：{{ error }}（请重试）</div>
-      <div id="emotionVolumeLine" class="emotion-volume-line">
-        <template v-for="(part, idx) in volumeParts" :key="idx">
+    <div
+      v-show="expanded"
+      id="emotionContent"
+      class="emotion-content"
+    >
+      <div
+        v-if="fallbackDate"
+        class="emotion-fallback-hint"
+      >
+        数据未更新至 {{ uiStore.currentDate }}，显示最近可用：{{ fallbackDate }}
+      </div>
+      <div
+        v-if="error"
+        class="emotion-error-hint"
+      >
+        加载失败：{{ error }}（请重试）
+      </div>
+      <div
+        id="emotionVolumeLine"
+        class="emotion-volume-line"
+      >
+        <template
+          v-for="(part, idx) in volumeParts"
+          :key="idx"
+        >
           <span>
             {{ part.label }}
-            <span class="emv-val" :style="part.valueStyle">{{ part.valueText }}</span>
-            <span v-if="part.hasRefresh" class="emotion-refresh-btn" title="刷新预测量能" @click.stop="refreshPredictVol">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
+            <span
+              class="emv-val"
+              :style="part.valueStyle"
+            >{{ part.valueText }}</span>
+            <span
+              v-if="part.hasRefresh"
+              class="emotion-refresh-btn"
+              title="刷新预测量能"
+              @click.stop="refreshPredictVol"
+            >
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              ><path d="M23 4v6h-6M1 20v-6h6M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" /></svg>
             </span>
           </span>
-          <span v-if="idx < volumeParts.length - 1" class="emotion-sep">/</span>
+          <span
+            v-if="idx < volumeParts.length - 1"
+            class="emotion-sep"
+          >/</span>
         </template>
         <span v-if="volumeParts.length === 0">量能数据未抓取</span>
       </div>
-      <div id="emotionList" class="emotion-list">
-        <div v-for="cfg in rowConfigs" :key="cfg.key" class="emotion-row">
-          <div class="emotion-row-header" @click="toggleRow(cfg.key)">
-            <div class="emotion-row-title">{{ cfg.title }}</div>
-            <div class="emotion-row-value" :class="rowValueClass(cfg)">
+      <div
+        id="emotionList"
+        class="emotion-list"
+      >
+        <div
+          v-for="cfg in rowConfigs"
+          :key="cfg.key"
+          class="emotion-row"
+        >
+          <div
+            class="emotion-row-header"
+            @click="toggleRow(cfg.key)"
+          >
+            <div class="emotion-row-title">
+              {{ cfg.title }}
+            </div>
+            <div
+              class="emotion-row-value"
+              :class="rowValueClass(cfg)"
+            >
               <span>{{ rowValueText(cfg) }}</span>
-              <span v-if="!rowIsMissing(cfg)" class="unit">{{ cfg.unit }}</span>
-              <span v-if="rowExtraValue(cfg) !== null" class="row-extra" style="color:#6b7280;font-weight:500;font-size:12px;margin-left:4px;">/ {{ rowExtraValue(cfg).toFixed(1) }}%</span>
+              <span
+                v-if="!rowIsMissing(cfg)"
+                class="unit"
+              >{{ cfg.unit }}</span>
+              <span
+                v-if="rowExtraValue(cfg) !== null"
+                class="row-extra"
+                style="color:#6b7280;font-weight:500;font-size:12px;margin-left:4px;"
+              >/ {{ rowExtraValue(cfg).toFixed(1) }}%</span>
             </div>
           </div>
-          <div class="emotion-trend-panel" :class="{ show: expandedRows.has(cfg.key) }">
+          <div
+            class="emotion-trend-panel"
+            :class="{ show: expandedRows.has(cfg.key) }"
+          >
             <template v-if="cfg.hasTrend">
-              <div class="emotion-trend-title">{{ cfg.title }} 近5日</div>
-              <div v-if="!trendPoints(cfg).length" style="font-size:11px;color:#94a3b8;padding:6px;">暂无趋势数据</div>
-              <TrendChart v-else :points="trendPoints(cfg)" color="#f59e0b" :percent="false" />
+              <div class="emotion-trend-title">
+                {{ cfg.title }} 近5日
+              </div>
+              <div
+                v-if="!trendPoints(cfg).length"
+                style="font-size:11px;color:#94a3b8;padding:6px;"
+              >
+                暂无趋势数据
+              </div>
+              <TrendChart
+                v-else
+                :points="trendPoints(cfg)"
+                color="#f59e0b"
+                :percent="false"
+              />
             </template>
           </div>
         </div>

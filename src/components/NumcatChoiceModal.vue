@@ -1,22 +1,47 @@
 <template>
   <Teleport to="body">
     <transition name="numcat-fade">
-      <div v-if="numcatChoice.visible" class="numcat-choice-mask" @click.self="cancel">
-        <div class="numcat-choice-card" role="dialog" aria-modal="true">
-          <div class="numcat-choice-icon">⚖️</div>
-          <div class="numcat-choice-title">{{ numcatChoice.title }}</div>
-          <div class="numcat-choice-desc">请选择本次数据的写入模式：</div>
+      <div
+        v-if="numcatChoice.visible"
+        class="numcat-choice-mask"
+        @click.self="cancel"
+      >
+        <div
+          class="numcat-choice-card"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div class="numcat-choice-icon">
+            ⚖️
+          </div>
+          <div class="numcat-choice-title">
+            {{ numcatChoice.title }}
+          </div>
+          <div class="numcat-choice-desc">
+            请选择本次数据的写入模式：
+          </div>
           <div class="numcat-choice-actions">
-            <button class="numcat-choice-btn overwrite" @click="resolve(true)">
+            <button
+              class="numcat-choice-btn overwrite"
+              @click="resolve(true)"
+            >
               <span class="numcat-choice-btn-title">覆盖模式</span>
               <span class="numcat-choice-btn-sub">覆盖已有值</span>
             </button>
-            <button class="numcat-choice-btn fill" @click="resolve(false)">
+            <button
+              class="numcat-choice-btn fill"
+              @click="resolve(false)"
+            >
               <span class="numcat-choice-btn-title">补全模式</span>
               <span class="numcat-choice-btn-sub">仅填充空值</span>
             </button>
           </div>
-          <button class="numcat-choice-cancel" @click="cancel">取消</button>
+          <button
+            class="numcat-choice-cancel"
+            @click="cancel"
+          >
+            取消
+          </button>
         </div>
       </div>
     </transition>

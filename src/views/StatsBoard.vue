@@ -7,28 +7,70 @@
     <div class="market-stage-inner">
       <!-- 第一行：行情阶段选择框 + 仓位选择框 -->
       <div class="first-row-layout">
-        <div class="layout-item" style="flex: 1;">
+        <div
+          class="layout-item"
+          style="flex: 1;"
+        >
           <div class="market-stage-selector">
-            <select class="market-stage-select" v-model="marketStage">
-              <option value="">空仓行情</option>
-              <option value="轮动行情">轮动行情</option>
-              <option value="主线行情">主线行情</option>
-              <option value="主跌行情">主跌行情</option>
-              <option value="主升行情">主升行情</option>
-              <option value="超跌反弹">超跌反弹</option>
-              <option value="抢购高潮">抢购高潮</option>
+            <select
+              v-model="marketStage"
+              class="market-stage-select"
+            >
+              <option value="">
+                空仓行情
+              </option>
+              <option value="轮动行情">
+                轮动行情
+              </option>
+              <option value="主线行情">
+                主线行情
+              </option>
+              <option value="主跌行情">
+                主跌行情
+              </option>
+              <option value="主升行情">
+                主升行情
+              </option>
+              <option value="超跌反弹">
+                超跌反弹
+              </option>
+              <option value="抢购高潮">
+                抢购高潮
+              </option>
             </select>
           </div>
         </div>
-        <div class="layout-item" style="flex: 1;">
-          <div class="market-stage-selector" style="padding: 0 5px;">
-            <select class="market-stage-select" v-model="position" style="width: calc(100% + 5px);">
-              <option value="">请选择</option>
-              <option value="全仓">全仓</option>
-              <option value="二分之一仓">二分之一仓</option>
-              <option value="三分之一仓">三分之一仓</option>
-              <option value="三分之二仓">三分之二仓</option>
-              <option value="空仓">空仓</option>
+        <div
+          class="layout-item"
+          style="flex: 1;"
+        >
+          <div
+            class="market-stage-selector"
+            style="padding: 0 5px;"
+          >
+            <select
+              v-model="position"
+              class="market-stage-select"
+              style="width: calc(100% + 5px);"
+            >
+              <option value="">
+                请选择
+              </option>
+              <option value="全仓">
+                全仓
+              </option>
+              <option value="二分之一仓">
+                二分之一仓
+              </option>
+              <option value="三分之一仓">
+                三分之一仓
+              </option>
+              <option value="三分之二仓">
+                三分之二仓
+              </option>
+              <option value="空仓">
+                空仓
+              </option>
             </select>
           </div>
         </div>
@@ -37,37 +79,69 @@
       <!-- 第二行：三个复选框 -->
       <!-- 第三行：三个圆形统计卡片 -->
       <div class="second-row-layout">
-        <HeaderStats :profit="profit" :gain="gain" :balance="balance" @edit="openCircleEdit" />
+        <HeaderStats
+          :profit="profit"
+          :gain="gain"
+          :balance="balance"
+          @edit="openCircleEdit"
+        />
       </div>
     </div>
 
     <!-- 评论区 -->
-    <div class="comment-board" @dblclick="openCommentEdit">
+    <div
+      class="comment-board"
+      @dblclick="openCommentEdit"
+    >
       <div class="comment-content">
-        <div v-if="comment" style="white-space: pre-wrap;">{{ comment }}</div>
-        <div v-else class="comment-placeholder">暂无评论，双击添加...</div>
+        <div
+          v-if="comment"
+          style="white-space: pre-wrap;"
+        >
+          {{ comment }}
+        </div>
+        <div
+          v-else
+          class="comment-placeholder"
+        >
+          暂无评论，双击添加...
+        </div>
       </div>
     </div>
 
     <!-- 编辑圆形统计弹窗 -->
-    <EditModal v-model="circleModalActive" title="编辑圆形统计" :show-clear="true" @save="saveCircleStats" @clear="clearCircleStats">
+    <EditModal
+      v-model="circleModalActive"
+      title="编辑圆形统计"
+      :show-clear="true"
+      @save="saveCircleStats"
+      @clear="clearCircleStats"
+    >
       <div class="stats-form-row">
         <label>今日盈亏</label>
-        <input v-model.number="circleForm.profit" />
+        <input v-model.number="circleForm.profit">
       </div>
       <div class="stats-form-row">
         <label>账户涨幅(%)</label>
-        <input v-model.number="circleForm.gain" />
+        <input v-model.number="circleForm.gain">
       </div>
       <div class="stats-form-row">
         <label>账户余额</label>
-        <input v-model.number="circleForm.balance" />
+        <input v-model.number="circleForm.balance">
       </div>
     </EditModal>
 
     <!-- 编辑评论弹窗 -->
-    <EditModal v-model="commentModalActive" title="编辑评论" @save="saveComment">
-      <textarea v-model="commentDraft" style="width:100%;min-height:120px;padding:8px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;resize:vertical;" placeholder="输入评论..."></textarea>
+    <EditModal
+      v-model="commentModalActive"
+      title="编辑评论"
+      @save="saveComment"
+    >
+      <textarea
+        v-model="commentDraft"
+        style="width:100%;min-height:120px;padding:8px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;resize:vertical;"
+        placeholder="输入评论..."
+      />
     </EditModal>
   </div>
 </template>

@@ -1,13 +1,53 @@
 <template>
   <!-- 底部操作按钮（随内容一起滚动） -->
-  <button @click="modal.addRow" class="add-rank-btn">+ 添加新行</button>
-  <button @click="modal.save" class="submit-btn save">保存</button>
-  <button @click="modal.onRollback" class="submit-btn rollback">撤回</button>
-  <button @click="modal.onClearConcepts" class="submit-btn clear-concept">清除题材</button>
-  <button @click="modal.onClearText" class="submit-btn clear-text">清除文字</button>
-  <button @click="modal.onClearNotes" class="submit-btn clear-note">清除注释</button>
-  <button @click="modal.clearAllRows" class="submit-btn clear-all">清空所有行</button>
-  <button @click="modal.onRepair" class="submit-btn repair">🔧 恢复本日数据</button>
+  <button
+    class="add-rank-btn"
+    @click="modal.addRow"
+  >
+    + 添加新行
+  </button>
+  <button
+    class="submit-btn save"
+    @click="modal.save"
+  >
+    保存
+  </button>
+  <button
+    class="submit-btn rollback"
+    @click="modal.onRollback"
+  >
+    撤回
+  </button>
+  <button
+    class="submit-btn clear-concept"
+    @click="modal.onClearConcepts"
+  >
+    清除题材
+  </button>
+  <button
+    class="submit-btn clear-text"
+    @click="modal.onClearText"
+  >
+    清除文字
+  </button>
+  <button
+    class="submit-btn clear-note"
+    @click="modal.onClearNotes"
+  >
+    清除注释
+  </button>
+  <button
+    class="submit-btn clear-all"
+    @click="modal.clearAllRows"
+  >
+    清空所有行
+  </button>
+  <button
+    class="submit-btn repair"
+    @click="modal.onRepair"
+  >
+    🔧 恢复本日数据
+  </button>
 </template>
 
 <script setup>

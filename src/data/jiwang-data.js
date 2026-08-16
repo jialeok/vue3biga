@@ -129,7 +129,7 @@ import { subscribeRecentMulti } from './duiban-sync.js';
             const item = jiwangData[date];
             if (!item) {
                 _dbgLog('pushJiwangToCloud: ' + date + ' 本地无数据，跳过（可能已被清空）');
-                return; // 本地这天没有数据（可能已被清空），交给 window.deleteJiwangFromCloud 处理
+                return; // 本地这天没有数据，跳过（无需删除云端行）
             }
             state._justPushedJiwang = true;
             setTimeout(function() { state._justPushedJiwang = false; }, 5000);
@@ -212,16 +212,6 @@ import { subscribeRecentMulti } from './duiban-sync.js';
                 _dbgLog('pushJiwangNow: ' + date + ' 推送失败: ' + detail);
                 _emit('ui:toast', { type: 'warning', msg: '⚠️ 记忘看板云端同步失败，本次修改未保存！原因: ' + detail, duration: 10000 });
             });
-        }
-
-        // 删除某天的 jiwang 云端行（例如清空复盘数据时）
-        export async function deleteJiwangFromCloud(date) {
-            if (!date) return;
-            state._justPushedJiwang = true;
-            setTimeout(function() { state._justPushedJiwang = false; }, 5000);
-            const sb = getSupabase();
-            const { error } = await sb.from('jiwang_data').delete().eq('date', date);
-            if (error) throw error;
         }
 
         // 一次性迁移：将本地旧快照（stockApp_v42_jiwang）灌入 jiwang_data 表

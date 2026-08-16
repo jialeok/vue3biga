@@ -1,13 +1,32 @@
 <template>
   <Teleport to="body">
-    <div v-if="visible" class="debug-log-overlay" @click.self="close">
+    <div
+      v-if="visible"
+      class="debug-log-overlay"
+      @click.self="close"
+    >
       <div class="debug-log-panel">
         <div class="debug-log-header">
           <span class="debug-log-title">同步调试日志</span>
           <div class="debug-log-actions">
-            <button class="debug-log-btn btn-copy" @click="copy">复制</button>
-            <button class="debug-log-btn btn-clear" @click="clear">清空</button>
-            <button class="debug-log-btn btn-close" @click="close">关闭</button>
+            <button
+              class="debug-log-btn btn-copy"
+              @click="copy"
+            >
+              复制
+            </button>
+            <button
+              class="debug-log-btn btn-clear"
+              @click="clear"
+            >
+              清空
+            </button>
+            <button
+              class="debug-log-btn btn-close"
+              @click="close"
+            >
+              关闭
+            </button>
           </div>
         </div>
         <pre class="debug-log-content">{{ displayLines }}</pre>

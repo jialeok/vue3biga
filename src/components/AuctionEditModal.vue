@@ -1,12 +1,22 @@
 <template>
   <Teleport to="body">
-    <div v-if="modal.visible" class="auction-edit-overlay" @click.self="modal.close">
+    <div
+      v-if="modal.visible"
+      class="auction-edit-overlay"
+      @click.self="modal.close"
+    >
       <div class="auction-edit-modal">
-
         <!-- 头部（随内容一起滚动） -->
         <div class="modal-header">
-          <div class="auction-edit-title">编辑最近多板早盘竞价</div>
-          <button class="close-btn" @click="modal.close">×</button>
+          <div class="auction-edit-title">
+            编辑最近多板早盘竞价
+          </div>
+          <button
+            class="close-btn"
+            @click="modal.close"
+          >
+            ×
+          </button>
         </div>
 
         <!-- 各区块拆分到子组件，逻辑统一来自 useAuctionEditModal（provide/inject 共享） -->
@@ -16,7 +26,6 @@
         <AuctionEditApis />
         <AuctionEditFormRows />
         <AuctionEditActions />
-
       </div>
     </div>
   </Teleport>

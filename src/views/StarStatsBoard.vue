@@ -10,21 +10,48 @@
     </div>
     <div v-if="hasData">
       <div class="star-stats-donut-wrap">
-        <svg class="star-stats-donut-svg" :viewBox="`0 0 ${size} ${size}`">
-          <circle v-for="(arc, i) in arcs" :key="i"
-                  :cx="cx" :cy="cy" :r="radius"
-                  fill="none"
-                  :stroke="arc.color"
-                  :stroke-width="strokeWidth"
-                  :stroke-dasharray="arc.dashArray"
-                  :stroke-dashoffset="arc.dashOffset"
-                  :transform="arcTransform(arc)" />
-          <text :x="cx" :y="cy - 4" text-anchor="middle" class="star-stats-donut-center-value" :style="{ fill: centerColor }">{{ strengthText }}</text>
-          <text :x="cx" :y="cy + 16" text-anchor="middle" class="star-stats-donut-center-label" :style="{ fill: centerColor }">{{ centerLabel }}</text>
+        <svg
+          class="star-stats-donut-svg"
+          :viewBox="`0 0 ${size} ${size}`"
+        >
+          <circle
+            v-for="(arc, i) in arcs"
+            :key="i"
+            :cx="cx"
+            :cy="cy"
+            :r="radius"
+            fill="none"
+            :stroke="arc.color"
+            :stroke-width="strokeWidth"
+            :stroke-dasharray="arc.dashArray"
+            :stroke-dashoffset="arc.dashOffset"
+            :transform="arcTransform(arc)"
+          />
+          <text
+            :x="cx"
+            :y="cy - 4"
+            text-anchor="middle"
+            class="star-stats-donut-center-value"
+            :style="{ fill: centerColor }"
+          >{{ strengthText }}</text>
+          <text
+            :x="cx"
+            :y="cy + 16"
+            text-anchor="middle"
+            class="star-stats-donut-center-label"
+            :style="{ fill: centerColor }"
+          >{{ centerLabel }}</text>
         </svg>
         <div class="star-stats-legend">
-          <div v-for="c in categories" :key="c.key" class="star-stats-legend-item">
-            <span class="star-stats-legend-dot" :style="{ background: c.color }"></span>
+          <div
+            v-for="c in categories"
+            :key="c.key"
+            class="star-stats-legend-item"
+          >
+            <span
+              class="star-stats-legend-dot"
+              :style="{ background: c.color }"
+            />
             <span>{{ c.label }}</span>
             <span class="star-stats-legend-value">{{ c.count }}（{{ c.percent }}%）</span>
           </div>
@@ -32,30 +59,58 @@
       </div>
       <div class="star-stats-summary">
         <div class="star-stats-summary-item">
-          <div class="star-stats-summary-label">题材数量</div>
-          <div class="star-stats-summary-value">{{ topicCount }}</div>
+          <div class="star-stats-summary-label">
+            题材数量
+          </div>
+          <div class="star-stats-summary-value">
+            {{ topicCount }}
+          </div>
         </div>
         <div class="star-stats-summary-item">
-          <div class="star-stats-summary-label">个股数量</div>
-          <div class="star-stats-summary-value">{{ stockCountText }}</div>
+          <div class="star-stats-summary-label">
+            个股数量
+          </div>
+          <div class="star-stats-summary-value">
+            {{ stockCountText }}
+          </div>
         </div>
         <div class="star-stats-summary-item">
-          <div class="star-stats-summary-label">个股总数最多题材</div>
-          <div class="star-stats-summary-value topic-name">{{ maxStockTopic || '-' }}</div>
+          <div class="star-stats-summary-label">
+            个股总数最多题材
+          </div>
+          <div class="star-stats-summary-value topic-name">
+            {{ maxStockTopic || '-' }}
+          </div>
         </div>
       </div>
-      <div class="star-stats-divider"></div>
+      <div class="star-stats-divider" />
       <div class="star-stats-bars">
-        <div v-for="c in categories" :key="c.key" class="star-stats-bar-row">
-          <div class="star-stats-bar-label">{{ c.label }}</div>
-          <div class="star-stats-bar-track">
-            <div class="star-stats-bar-fill" :style="{ width: c.barWidth + '%', background: c.color }"></div>
+        <div
+          v-for="c in categories"
+          :key="c.key"
+          class="star-stats-bar-row"
+        >
+          <div class="star-stats-bar-label">
+            {{ c.label }}
           </div>
-          <div class="star-stats-bar-value">{{ c.count }}</div>
+          <div class="star-stats-bar-track">
+            <div
+              class="star-stats-bar-fill"
+              :style="{ width: c.barWidth + '%', background: c.color }"
+            />
+          </div>
+          <div class="star-stats-bar-value">
+            {{ c.count }}
+          </div>
         </div>
       </div>
     </div>
-    <div v-else class="star-stats-empty">暂无星变化数据</div>
+    <div
+      v-else
+      class="star-stats-empty"
+    >
+      暂无星变化数据
+    </div>
   </div>
 </template>
 

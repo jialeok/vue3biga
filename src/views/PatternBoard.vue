@@ -1,30 +1,81 @@
 <template>
-  <div class="pattern-board trading-day-element" :class="{ minimized: !expanded }">
-  <div class="pattern-header" @click="toggleExpand">
-    <div class="pattern-title">模式
-      <div class="pattern-tags">
-        <div v-if="pattern.update" class="pattern-tag update">更新</div>
-        <div v-if="pattern.keep" class="pattern-tag keep">坚守</div>
+  <div
+    class="pattern-board trading-day-element"
+    :class="{ minimized: !expanded }"
+  >
+    <div
+      class="pattern-header"
+      @click="toggleExpand"
+    >
+      <div class="pattern-title">
+        模式
+        <div class="pattern-tags">
+          <div
+            v-if="pattern.update"
+            class="pattern-tag update"
+          >
+            更新
+          </div>
+          <div
+            v-if="pattern.keep"
+            class="pattern-tag keep"
+          >
+            坚守
+          </div>
+        </div>
+      </div>
+      <div class="pattern-toggle-btn">
+        {{ toggleArrow }}
       </div>
     </div>
-    <div class="pattern-toggle-btn">{{ toggleArrow }}</div>
-  </div>
-  <div class="pattern-content" @click="startEdit">
-    <div v-if="patternHasContent" style="white-space: pre-wrap;">{{ pattern.content }}</div>
-    <div v-else class="pattern-placeholder">暂无模式心得，点击添加...</div>
-  </div>
+    <div
+      class="pattern-content"
+      @click="startEdit"
+    >
+      <div
+        v-if="patternHasContent"
+        style="white-space: pre-wrap;"
+      >
+        {{ pattern.content }}
+      </div>
+      <div
+        v-else
+        class="pattern-placeholder"
+      >
+        暂无模式心得，点击添加...
+      </div>
+    </div>
   </div>
 
-  <EditModal v-model="editing" title="编辑模式" @save="save">
-    <div style="font-size:12px;color:#64748b;margin-bottom:12px">记录当日模式完善心得</div>
-    <textarea v-model="draftContent" placeholder="输入模式完善心得..." rows="6" style="width:100%;padding:12px;border:1px solid #e2e8f0;border-radius:12px;font-size:15px;box-sizing:border-box;resize:vertical"></textarea>
+  <EditModal
+    v-model="editing"
+    title="编辑模式"
+    @save="save"
+  >
+    <div style="font-size:12px;color:#64748b;margin-bottom:12px">
+      记录当日模式完善心得
+    </div>
+    <textarea
+      v-model="draftContent"
+      placeholder="输入模式完善心得..."
+      rows="6"
+      style="width:100%;padding:12px;border:1px solid #e2e8f0;border-radius:12px;font-size:15px;box-sizing:border-box;resize:vertical"
+    />
     <div style="display:flex;gap:8px;margin:14px 0;flex-wrap:wrap">
       <div style="flex:1;display:flex;align-items:center;gap:6px;padding:10px;border-radius:12px;background:rgba(59,130,246,0.05)">
-        <input type="checkbox" v-model="draftUpdate" style="width:18px;height:18px">
+        <input
+          v-model="draftUpdate"
+          type="checkbox"
+          style="width:18px;height:18px"
+        >
         <span style="font-size:13px;color:#3b82f6;font-weight:600">更新</span>
       </div>
       <div style="flex:1;display:flex;align-items:center;gap:6px;padding:10px;border-radius:12px;background:rgba(16,185,129,0.05)">
-        <input type="checkbox" v-model="draftKeep" style="width:18px;height:18px">
+        <input
+          v-model="draftKeep"
+          type="checkbox"
+          style="width:18px;height:18px"
+        >
         <span style="font-size:13px;color:#059669;font-weight:600">坚守</span>
       </div>
     </div>

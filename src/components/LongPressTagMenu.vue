@@ -1,9 +1,15 @@
 <template>
   <!-- 长按标签菜单：从 showAuctionBuyPrompt 迁移，纯 Vue 路径替代原 document.createElement -->
   <Teleport to="body">
-    <div v-if="visible" class="long-press-overlay" @click.self="close">
+    <div
+      v-if="visible"
+      class="long-press-overlay"
+      @click.self="close"
+    >
       <div class="long-press-panel">
-        <div class="long-press-title">{{ stockName }}</div>
+        <div class="long-press-title">
+          {{ stockName }}
+        </div>
         <button
           v-for="b in buttons"
           :key="b.tag || 'cancel'"
@@ -11,8 +17,15 @@
           :class="{ active: currentChoice === b.tag }"
           :style="btnStyle(b)"
           @click="onSelect(b)"
-        >{{ b.label }}<span v-if="currentChoice === b.tag"> ✓</span></button>
-        <button class="long-press-close-btn" @click="close">关闭</button>
+        >
+          {{ b.label }}<span v-if="currentChoice === b.tag"> ✓</span>
+        </button>
+        <button
+          class="long-press-close-btn"
+          @click="close"
+        >
+          关闭
+        </button>
       </div>
     </div>
   </Teleport>
