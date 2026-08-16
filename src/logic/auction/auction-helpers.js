@@ -17,6 +17,7 @@ import { _addAuctionWatchlistMember, _extractWatchlistNamesFromRows, _getAuction
 import { getJingYestHighlightSetForDate, getJingYestStocksForDate } from './sort-rules.js';
 import { syncStockCloseFromAuction, syncStockTopicsFromAuction } from './stock-sync.js';
 import { getStats } from '../jiwang/helpers.js';
+import { getStockHistoryTopics } from '../stocks/stocks.js';
 import { buildNoteFromFields, cleanTopicsForDisplay, parseNoteToFields } from '../note/helpers.js';
 import { _backupScopeData, _mergePatchLocal, _patchScopeField, _sanitizePatch, _splitPatch } from '../scope/helpers.js';
 import { _getLocalTodayStr, deriveAuctionTagState } from '../tagTitles/rules.js';

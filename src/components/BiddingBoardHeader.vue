@@ -30,6 +30,6 @@ const { expanded, toggleExpand } = board;
   cursor: pointer;
   user-select: none;
 }
-.bidding-title { font-size: 14px; font-weight: 600; color: #1f2937; }
-.bidding-toggle-btn { font-size: 12px; color: #6b7280; }
+.bidding-title { font-size: 14px; font-weight: 600; color: #ffffff; }
+.bidding-toggle-btn { font-size: 12px; color: #ffffff; }
 </style>
