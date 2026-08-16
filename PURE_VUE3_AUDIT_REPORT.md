@@ -274,9 +274,9 @@
 | --- | --- | --- |
 | P3 优化 | 依赖版本升级（vue/pinia/vite/supabase-js 锁区间下界） | 非缺陷；本机 npm 全量 reify 被 safe-delete 守卫拦截无法安全验证，延后至 CI/环境解锁后升级 |
 | P3 文档债 | MIGRATION_TASKLIST 刷新 | 仍列已删视图、模块数过时；重写 148KB 有错漏风险，列为待刷新 |
-| 部署侧 | 4 张单向表无 Realtime（auction_duiban / auction_bidding_template / topic_fumian / core_topics） | 写入后无实时通知，需补 Realtime 或接受最终一致 |
-| 部署侧 | 废弃表清理（auction_etf / auction_etf_comment / auction_bidding_template） | 仓库/线上脏数据，待确认后 DROP |
-| 部署侧 | 11 个 SQL 无文档 | db/ 30 个 SQL 中部分未在 MIGRATION_TASKLIST 登记 |
+| 部署侧 | 单向表 Realtime（**实查仅 `core_topics` 缺**，其余 3 张为孤儿/只写不读，Realtime 无意义） | 实测：`auction_duiban`/`topic_fumian` src 零引用（孤儿）；`auction_bidding_template` 只写不读；唯 `core_topics` 被 ui-bridge 活跃读写。**代码侧已落地**：`startCoreTopicsRealtime/stopCoreTopicsRealtime` 已加入 `stock-topics.js`（订阅 `core_topics` 的 postgres_changes，回调经 `rules.js#refreshCoreTopicsFromCloud` 重拉+清题材分组指纹缓存+`_emit('auction-refresh')`），并在 `watchlist-and-metrics.js#startSessionPoll/stopSessionPoll` 与 stock_topics 题材库订阅并列启停（§31 配对 removeChannel，vite build GREEN 269 模块）。**剩余（配置侧·你）**：Supabase 控制台为 `core_topics` 表开启 Realtime 发布。其余 3 张无需处理 |
+| 部署侧 | 废弃/孤儿表清理（**已纠正误标**） | **`auction_bidding_template` 不是废弃表**（被 `saveBiddingTemplate()` 活跃写入，归类为「只写不读/半孤儿」）；真正废弃的是 `auction_etf`/`auction_etf_comment`（0 行孤儿，权威源已迁 `early_etf_data`）。**清理脚本已由我写好并留存 `db/cleanup_auction_etf.sql` / `cleanup_auction_etf_comment.sql` / `cleanup_auction_bidding_template.sql`（带验证步骤、幂等安全）。剩余动作 = 你在 Supabase 控制台执行 DROP（需你的库权限/确认），非代码代理可代执行** |
+| 部署侧 | SQL 文档（**原报"11 个"有误，实为 21 个未在 MIGRATION_TASKLIST 登记**） | db/ 共 30 个 SQL，原仅 9 个登记。**已由我补全 `db/README.md` 全量索引**（30 个逐一标注 live/孤儿/只写/迁移状态 + 清理脚本须知 + 编码乱码问题）。MIGRATION_TASKLIST 148KB 重写风险高，改用独立 `db/README.md` 承载，不再动它 |
 | 部署侧 | Worker 部署靠手动 | 无 CI/CD，需手动用 `_bundled/` 更新 |
 | 部署侧 | worker B 需重新部署 | emotion-workflow.js:84 `logs` bug 已修并已重打包 `_bundled/bidding-board-worker-b.js`，**需运维重新部署 worker B** |
 | 用户侧 | Supabase 建表 SQL 执行 | `db/_E1_RUN_ALL_CREATE_TABLES.sql` 需在 Supabase 执行（用户已跑通） |

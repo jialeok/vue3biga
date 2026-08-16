@@ -1,4 +1,5 @@
 import { _dbgLog } from '../../data/debug-log.js';
+import { _emit } from '../../stores/eventBus.js';
 import { getPreviousTradingDay, isTradingDay } from '../date/trading-day-helpers.js';
 import { buildTopicCache } from '../../data/stock-topics.js';
 import { getStockHistoryTopics, getRankData } from '../app-core-api.js';
@@ -45,6 +46,19 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
         export function getCoreTopics() {
             if (_coreTopicsMemCache && _coreTopicsMemCache.length > 0) return _coreTopicsMemCache;
             return state.defaultCoreTopics || [];
+        }
+
+        // core_topics 表 Realtime 回调入口：重拉云端核心词 → 刷新内存缓存与题材分组指纹缓存 → 通知 UI 重渲染。
+        // 由 stock-topics.js 的 startCoreTopicsRealtime 在 postgres_changes 触发时调用（运行时调用，不涉模块顶层求值，安全）。
+        export async function refreshCoreTopicsFromCloud() {
+            try {
+                await loadCoreTopicsFromCloud();   // 重拉云端 core_topics → 刷新 _coreTopicsMemCache
+                _topicGroupsFp = null;             // 题材分组指纹缓存失效（核心词变了分组结果会变）
+                _topicGroupsCache = null;
+                _emit('auction-refresh');          // 通知第二页题材分类等 UI 重渲染
+            } catch (e) {
+                _dbgLog('[AUCTION-ERR] core_topics Realtime 刷新失败: ' + (e && e.message || e));
+            }
         }
 
         export function saveCoreTopics(topics) {

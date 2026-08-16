@@ -4,6 +4,7 @@ import { state } from '../logic/app-state.js';
         // 从 stock_topics 表全量读取，返回 {stockName: Set(topics)}
         import { getSupabase } from './supabase-client.js';
         import { _dbgLog } from './debug-log.js';
+        import { refreshCoreTopicsFromCloud } from '../logic/topic/rules.js';
 
         export async function pullStockTopicsFromCloud() {
             const sb = getSupabase();
@@ -105,6 +106,34 @@ import { state } from '../logic/app-state.js';
             if (state._stockTopicsChannel) {
                 try { getSupabase().removeChannel(state._stockTopicsChannel); } catch(e) {}
                 state._stockTopicsChannel = null;
+            }
+        }
+
+        // core_topics 表的 Realtime 订阅（§31 合规：start 先 stop 幂等，stop 配对 removeChannel）。
+        // 与 stock_topics 题材库订阅并列：核心词（core_topics）被多端编辑后，实时刷新第二页题材分组。
+        export function startCoreTopicsRealtime() {
+            stopCoreTopicsRealtime();
+            try {
+                const sb = getSupabase();
+                if (!sb) return;
+                state._coreTopicsChannel = sb
+                    .channel('core_topics_changes')
+                    .on('postgres_changes', {
+                        event: '*', schema: 'public', table: 'core_topics'
+                    }, function() {
+                        refreshCoreTopicsFromCloud().catch(function(e) {
+                            _dbgLog('[AUCTION-ERR] core_topics Realtime 回调失败 ' + (e && e.message || e));
+                        });
+                    })
+                    .subscribe();
+                console.log('core_topics Realtime 订阅已启动');
+            } catch (e) { _dbgLog('[AUCTION-ERR] core_topics Realtime 订阅失败 ' + (e && e.message || e)); }
+        }
+
+        export function stopCoreTopicsRealtime() {
+            if (state._coreTopicsChannel) {
+                try { getSupabase().removeChannel(state._coreTopicsChannel); } catch(e) {}
+                state._coreTopicsChannel = null;
             }
         }
 
