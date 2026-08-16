@@ -69,7 +69,7 @@
         :data-index="item.index"
         :data-note="item.note || ''"
         @click.stop="onYestClick(item, $event)"
-        @dblclick.stop="openBackend"
+        @dblclick.stop="openEditModal()"
         @contextmenu.prevent
       >
         {{ item.yestVolumeDisplay }}
@@ -214,7 +214,7 @@
         :data-index="item.index"
         :data-note="item.note || ''"
         @click.stop="onYestClick(item, $event)"
-        @dblclick.stop="openBackend"
+        @dblclick.stop="openEditModal()"
         @contextmenu.prevent
       >
         {{ item.yestVolumeDisplay }}
