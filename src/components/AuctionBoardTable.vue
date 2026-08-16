@@ -54,11 +54,11 @@
           </div>
           <TrendChart :points="trendHistory[item.stock].yestVolume" color="#10b981" />
         </div>
-        <div class="trend-chart-item" v-if="trendHistory[item.stock].aucPctChg.some(p => p.value !== null)">
+        <div class="trend-chart-item" v-if="aucPctHasData(item.stock)">
           <div class="trend-chart-label">竞价涨幅(%) 近5日</div>
           <TrendChart :points="trendHistory[item.stock].aucPctChg" color="#f59e0b" :percent="true" />
         </div>
-        <div class="trend-chart-item" v-if="trendHistory[item.stock].changePct.some(p => p.value !== null)">
+        <div class="trend-chart-item" v-if="changePctHasData(item.stock)">
           <div class="trend-chart-label">涨幅(%) 近5日</div>
           <TrendChart :points="trendHistory[item.stock].changePct" color="#64748b" :percent="true" />
         </div>
@@ -112,11 +112,11 @@
           </div>
           <TrendChart :points="trendHistory[item.stock].yestVolume" color="#10b981" />
         </div>
-        <div class="trend-chart-item" v-if="trendHistory[item.stock].aucPctChg.some(p => p.value !== null)">
+        <div class="trend-chart-item" v-if="aucPctHasData(item.stock)">
           <div class="trend-chart-label">竞价涨幅(%) 近5日</div>
           <TrendChart :points="trendHistory[item.stock].aucPctChg" color="#f59e0b" :percent="true" />
         </div>
-        <div class="trend-chart-item" v-if="trendHistory[item.stock].changePct.some(p => p.value !== null)">
+        <div class="trend-chart-item" v-if="changePctHasData(item.stock)">
           <div class="trend-chart-label">涨幅(%) 近5日</div>
           <TrendChart :points="trendHistory[item.stock].changePct" color="#64748b" :percent="true" />
         </div>
@@ -148,6 +148,14 @@ const {
   onYestClick, closeNotePopup, onExpandTrend, startLongPress, cancelLongPress, onLongPress, onAuctionRefresh,
   fetchLadderConstituentsMain, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs,
   fillYesterdayYesterdayVolumeFromThs, fetchChangePctFromThs, fetchTodayAuctionFromNumcat,
-  fetchAllAuctionFromNumcat, fetchThreeDaysAuctionFromNumcat, fillTopicsFromNumcat
+  fetchAllAuctionFromNumcat,   fetchThreeDaysAuctionFromNumcat, fillTopicsFromNumcat
 } = board;
+
+// § 模板重构：趋势图显示判定内联箭头函数抽取为方法（渲染结果 100% 不变）
+function aucPctHasData(stock) {
+  return trendHistory.value[stock].aucPctChg.some(p => p.value !== null);
+}
+function changePctHasData(stock) {
+  return trendHistory.value[stock].changePct.some(p => p.value !== null);
+}
 </script>

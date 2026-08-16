@@ -74,7 +74,7 @@
       </div>
       <div class="info-item">
         <div class="info-label">相关题材</div>
-        <div class="xgcaiti-value">{{ stock.xgcaiti ? stock.xgcaiti.replace(/[()]/g, '') : '-' }}</div>
+        <div class="xgcaiti-value">{{ xgcaitiDisplay(stock) }}</div>
       </div>
     </div>
     <div class="stock-actions" :class="{ expanded: expandedActionsId === stock.id }" :id="'actions-' + stock.id">
@@ -90,7 +90,7 @@
       <div v-for="record in soldRecordsReversed(stock)" :key="record.date"
            style="font-size:12px;line-height:1.8;font-weight:500;"
            :style="{ color: profitColor(record.profit) }">
-        {{ record.date }} {{ typeText(record.type) }}{{ profitText(record.profit) }}{{ (parseFloat(record.profit) >= 0 ? '+' : '') + record.profit }} {{ stocksPercentDisplay(record.percent) }}
+        {{ record.date }} {{ typeText(record.type) }}{{ profitText(record.profit) }}{{ profitSigned(record) }} {{ stocksPercentDisplay(record.percent) }}
       </div>
     </div>
     <div v-else
@@ -153,4 +153,12 @@ const {
   remarkDisplay,
   trackItems
 } = useStockDisplay();
+
+function xgcaitiDisplay(stock) {
+  return stock.xgcaiti ? stock.xgcaiti.replace(/[()]/g, '') : '-';
+}
+
+function profitSigned(record) {
+  return (parseFloat(record.profit) >= 0 ? '+' : '') + record.profit;
+}
 </script>

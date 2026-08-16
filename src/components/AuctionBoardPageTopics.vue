@@ -106,11 +106,11 @@
                 </div>
                 <TrendChart :points="p2TrendHistory[group.topic + '|' + stock.stock].yestVolume" color="#10b981" />
               </div>
-              <div class="trend-chart-item" v-if="p2TrendHistory[group.topic + '|' + stock.stock].aucPctChg.some(p => p.value !== null)">
+              <div class="trend-chart-item" v-if="p2AucPctHasData(group.topic, stock.stock)">
                 <div class="trend-chart-label">竞价涨幅(%) 近5日</div>
                 <TrendChart :points="p2TrendHistory[group.topic + '|' + stock.stock].aucPctChg" color="#f59e0b" :percent="true" />
               </div>
-              <div class="trend-chart-item" v-if="p2TrendHistory[group.topic + '|' + stock.stock].changePct.some(p => p.value !== null)">
+              <div class="trend-chart-item" v-if="p2ChangePctHasData(group.topic, stock.stock)">
                 <div class="trend-chart-label">涨幅(%) 近5日</div>
                 <TrendChart :points="p2TrendHistory[group.topic + '|' + stock.stock].changePct" color="#64748b" :percent="true" />
               </div>
@@ -148,6 +148,14 @@ const {
   onYestClick, closeNotePopup, onExpandTrend, startLongPress, cancelLongPress, onLongPress, onAuctionRefresh,
   fetchLadderConstituentsMain, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs,
   fillYesterdayYesterdayVolumeFromThs, fetchChangePctFromThs, fetchTodayAuctionFromNumcat,
-  fetchAllAuctionFromNumcat, fetchThreeDaysAuctionFromNumcat, fillTopicsFromNumcat
+  fetchAllAuctionFromNumcat,   fetchThreeDaysAuctionFromNumcat, fillTopicsFromNumcat
 } = board;
+
+// § 模板重构：趋势图显示判定内联箭头函数抽取为方法（渲染结果 100% 不变）
+function p2AucPctHasData(topic, stockName) {
+  return p2TrendHistory.value[topic + '|' + stockName].aucPctChg.some(p => p.value !== null);
+}
+function p2ChangePctHasData(topic, stockName) {
+  return p2TrendHistory.value[topic + '|' + stockName].changePct.some(p => p.value !== null);
+}
 </script>

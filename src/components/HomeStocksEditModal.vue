@@ -44,8 +44,8 @@
       </div>
       <div class="edit-nextday">
         <span class="edit-nextday-label">次日预测</span>
-        <button type="button" :class="['nextday-pill', { active: editForm.nextDay === 'up' }]" @click="editForm.nextDay = editForm.nextDay === 'up' ? '' : 'up'">📈 次日涨</button>
-        <button type="button" :class="['nextday-pill', { active: editForm.nextDay === 'down' }]" @click="editForm.nextDay = editForm.nextDay === 'down' ? '' : 'down'">📉 次日跌</button>
+        <button type="button" :class="['nextday-pill', { active: editForm.nextDay === 'up' }]" @click="toggleNextDay('up')">📈 次日涨</button>
+        <button type="button" :class="['nextday-pill', { active: editForm.nextDay === 'down' }]" @click="toggleNextDay('down')">📉 次日跌</button>
       </div>
     </div>
   </EditModal>
@@ -56,4 +56,8 @@ import EditModal from './EditModal.vue';
 import { useHomeStocksState } from '../composables/useHomeStocksState.js';
 
 const { editModalActive, editModalTitle, editForm, saveEditModal } = useHomeStocksState();
+
+function toggleNextDay(target) {
+  editForm.nextDay = editForm.nextDay === target ? '' : target;
+}
 </script>

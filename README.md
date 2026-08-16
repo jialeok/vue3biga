@@ -30,6 +30,13 @@ npm run build      # 产物输出到 dist/
 npm run preview    # 本地预览构建产物
 ```
 
+## 代码质量（Lint / Test）
+
+- 项目已引入 ESLint（`eslint` + `eslint-plugin-vue`）与 Vitest 作为 devDependencies；
+- `npm run lint` 运行代码检查（ESLint + `vue3-recommended` 规则集）；
+- `npm run test` 运行单元测试（Vitest，优先覆盖纯逻辑模块）；
+- 单元测试文件以 `*.test.js` 命名，放在被测模块同目录或 `src/__tests__/`。
+
 ## 部署说明
 
 - **前端**：`npm run build` 后部署 `dist/` 到静态托管（Pages / 对象存储）。

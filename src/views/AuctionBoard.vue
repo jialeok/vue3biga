@@ -18,7 +18,7 @@
       <div>
         <div class="auction-title">
           <span>早盘竞价</span>
-          <span style="margin-left: 8px; font-weight: 600;">强度：<span style="color: #ffffff;">{{ viewData.stats && viewData.stats.todayStrength != null ? viewData.stats.todayStrength + '%' : '-' }}</span></span>
+          <span style="margin-left: 8px; font-weight: 600;">强度：<span style="color: #ffffff;">{{ todayStrengthText }}</span></span>
         </div>
         <div class="auction-subtitle"></div>
       </div>
@@ -58,7 +58,7 @@
 </template>
 
 <script setup>
-import { provide, defineExpose } from 'vue';
+import { provide, defineExpose, computed } from 'vue';
 import { useAuctionBoard } from '../composables/useAuctionBoard.js';
 import AuctionBoardToolbar from '../components/AuctionBoardToolbar.vue';
 import AuctionBoardTable from '../components/AuctionBoardTable.vue';
@@ -81,6 +81,13 @@ const {
   notePopup, notePopupStyle, notePopupText, closeNotePopup,
   volumeNoteModalActive, volumeNoteDraft, saveVolumeNote, clearVolumeNote
 } = board;
+
+// § 模板重构：强度显示复杂条件链抽取为 computed（渲染结果 100% 不变）
+const todayStrengthText = computed(() => {
+  return viewData.value.stats && viewData.value.stats.todayStrength != null
+    ? viewData.value.stats.todayStrength + '%'
+    : '-';
+});
 
 // §16 受保护契约：外部（如 DashboardView）可能以 ref 调用以下方法，签名保持不变。
 defineExpose({

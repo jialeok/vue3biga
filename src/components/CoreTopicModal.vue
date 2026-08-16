@@ -18,7 +18,7 @@
         <div v-for="(core, index) in coreTopics" :key="core.name" style="display: flex; align-items: center; padding: 10px; border: 1px solid #e2e8f0; border-radius: 6px; margin-bottom: 8px; background: #fafafa;">
           <div style="flex: 1;">
             <div style="font-weight: 600; color: #1f2937; font-size: 14px;">{{ core.name }}</div>
-            <div style="font-size: 12px; color: #6b7280; margin-top: 4px;">同义词：{{ core.synonyms && core.synonyms.length > 0 ? core.synonyms.join('、') : '无' }}</div>
+            <div style="font-size: 12px; color: #6b7280; margin-top: 4px;">同义词：{{ synonymsText(core) }}</div>
           </div>
           <button type="button" @click="editCoreTopic(index)" style="padding: 4px 8px; font-size: 12px; background: #e0e7ff; color: #4f46e5; border: none; border-radius: 4px; cursor: pointer; margin-right: 4px;">编辑</button>
           <button type="button" @click="deleteCoreTopic(index)" style="padding: 4px 8px; font-size: 12px; background: #fee2e2; color: #dc2626; border: none; border-radius: 4px; cursor: pointer;">删除</button>
@@ -124,6 +124,11 @@ function resetCoreTopics() {
   if (!confirm('确定恢复默认核心词？当前设置将被覆盖。')) return;
   saveCoreTopics(state.defaultCoreTopics || []);
   refreshList();
+}
+
+// 同义词展示：原为模板内联「&& + .join() + 三元」逻辑，抽取后渲染不变
+function synonymsText(core) {
+  return core.synonyms && core.synonyms.length > 0 ? core.synonyms.join('、') : '无';
 }
 
 defineExpose({ open, close });

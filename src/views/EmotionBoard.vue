@@ -3,7 +3,7 @@
     <div class="emotion-header" @click="toggleExpand">
       <span class="emotion-title">情绪看板</span>
       <span class="emotion-summary" id="emotionSummary">{{ summaryText }}</span>
-      <span class="emotion-toggle-btn" id="emotionToggleBtn">{{ expanded ? '▲' : '▼' }}</span>
+      <span class="emotion-toggle-btn" id="emotionToggleBtn">{{ toggleArrow }}</span>
     </div>
       <div id="emotionContent" class="emotion-content" v-show="expanded">
       <div v-if="fallbackDate" class="emotion-fallback-hint">数据未更新至 {{ uiStore.currentDate }}，显示最近可用：{{ fallbackDate }}</div>
@@ -70,6 +70,8 @@ const data = ref(null);
 const error = ref(null);
 const expandedRows = ref(new Set());
 const refreshing = ref(false);
+
+const toggleArrow = computed(() => expanded.value ? '▲' : '▼');
 
 const rowConfigs = computed(() => EMOTION_ROW_CONFIG);
 const metrics = computed(() => (data.value && data.value.metrics) || {});

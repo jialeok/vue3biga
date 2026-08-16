@@ -70,7 +70,7 @@
         </div>
         <div class="info-item">
           <div class="info-label">相关题材</div>
-          <div class="xgcaiti-value">{{ stock.xgcaiti ? stock.xgcaiti.replace(/[()]/g, '') : '-' }}</div>
+          <div class="xgcaiti-value">{{ xgcaitiText(stock) }}</div>
         </div>
       </slot>
     </div>
@@ -87,7 +87,7 @@
       <div v-for="record in soldRecordsReversed" :key="record.date"
            style="font-size:12px;line-height:1.8;font-weight:500;"
            :style="{ color: profitColor(record.profit) }">
-        {{ record.date }} {{ typeText(record.type) }}{{ profitText(record.profit) }}{{ (parseFloat(record.profit) >= 0 ? '+' : '') + record.profit }} {{ percentDisplay(record.percent) }}
+        {{ record.date }} {{ typeText(record.type) }}{{ profitText(record.profit) }}{{ signedProfit(record.profit) }} {{ percentDisplay(record.percent) }}
       </div>
     </div>
   </div>
@@ -210,5 +210,11 @@ function typeText(type) { return type === '部分卖' ? '部分卖' : (type === 
 function percentDisplay(percent) {
   if (!percent && percent !== 0) return '';
   return (parseFloat(percent) >= 0 ? '+' : '') + percent + '%';
+}
+function xgcaitiText(stock) {
+  return stock.xgcaiti ? stock.xgcaiti.replace(/[()]/g, '') : '-';
+}
+function signedProfit(profit) {
+  return (parseFloat(profit) >= 0 ? '+' : '') + profit;
 }
 </script>

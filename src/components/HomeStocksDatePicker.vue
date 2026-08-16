@@ -3,7 +3,7 @@
     <div class="date-picker-section">
       <div class="date-picker-nav">
         <button @click="prevPickerMonth">‹</button>
-        <span>{{ pickerYear }}-{{ String(pickerMonth + 1).padStart(2, '0') }}</span>
+        <span>{{ pickerYear }}-{{ pickerMonthLabel }}</span>
         <button @click="nextPickerMonth">›</button>
       </div>
       <div class="date-picker-grid">
@@ -23,6 +23,7 @@
 </template>
 
 <script setup>
+import { computed } from 'vue';
 import EditModal from './EditModal.vue';
 import { useHomeStocksState } from '../composables/useHomeStocksState.js';
 
@@ -37,4 +38,6 @@ const {
   selectPickerDate,
   pickerGoToday
 } = useHomeStocksState();
+
+const pickerMonthLabel = computed(() => String(pickerMonth.value + 1).padStart(2, '0'));
 </script>

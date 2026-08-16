@@ -8,7 +8,7 @@
     <div v-for="topicItem in page3Data.topics" :key="topicItem.topic" class="auction-topic-history-group">
       <div class="auction-topic-history-title">
         <span>{{ topicItem.topic }}</span>
-        <span class="auction-topic-copy-btns" v-if="topicItem.data.some(d => d.date === uiStore.currentDate && d.hasData)">
+        <span class="auction-topic-copy-btns" v-if="topicHasTodayData(topicItem)">
           <span class="auction-topic-copy-btn" @click.stop="copyAllTopicStocks(topicItem.topic)">全复制</span>
           <span class="auction-topic-copy-btn" @click.stop="copyTopicStocks(topicItem.topic, 5)">复制5%</span>
           <span class="auction-topic-copy-btn" @click.stop="copyTopicStocks(topicItem.topic, 2)">复制2%</span>
@@ -74,6 +74,11 @@ const {
   onYestClick, closeNotePopup, onExpandTrend, startLongPress, cancelLongPress, onLongPress, onAuctionRefresh,
   fetchLadderConstituentsMain, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs,
   fillYesterdayYesterdayVolumeFromThs, fetchChangePctFromThs, fetchTodayAuctionFromNumcat,
-  fetchAllAuctionFromNumcat, fetchThreeDaysAuctionFromNumcat, fillTopicsFromNumcat
+  fetchAllAuctionFromNumcat,   fetchThreeDaysAuctionFromNumcat, fillTopicsFromNumcat
 } = board;
+
+// § 模板重构：复制按钮可见性内联箭头函数抽取为方法（渲染结果 100% 不变）
+function topicHasTodayData(topicItem) {
+  return topicItem.data.some(d => d.date === uiStore.currentDate && d.hasData);
+}
 </script>

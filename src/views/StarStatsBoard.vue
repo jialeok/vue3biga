@@ -18,7 +18,7 @@
                   :stroke-width="strokeWidth"
                   :stroke-dasharray="arc.dashArray"
                   :stroke-dashoffset="arc.dashOffset"
-                  :transform="`rotate(${-90 + arc.startAngle} ${cx} ${cy})`" />
+                  :transform="arcTransform(arc)" />
           <text :x="cx" :y="cy - 4" text-anchor="middle" class="star-stats-donut-center-value" :style="{ fill: centerColor }">{{ strengthText }}</text>
           <text :x="cx" :y="cy + 16" text-anchor="middle" class="star-stats-donut-center-label" :style="{ fill: centerColor }">{{ centerLabel }}</text>
         </svg>
@@ -102,6 +102,10 @@ const arcs = computed(() => {
     return arc;
   });
 });
+
+function arcTransform(arc) {
+  return `rotate(${-90 + arc.startAngle} ${cx} ${cy})`;
+}
 
 const colorMap = {
   xianian: { color: '#94a3b8', label: '星无' },

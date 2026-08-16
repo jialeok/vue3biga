@@ -7,7 +7,7 @@
     <div class="auction-toggle-item">
       <span class="auction-toggle-label">全部展开</span>
       <label class="auction-toggle-switch">
-        <input type="checkbox" @change="($event.target.checked ? expandAll : collapseAll)()" />
+        <input type="checkbox" @change="onExpandAllChange" />
         <span class="auction-toggle-slider"></span>
       </label>
     </div>
@@ -57,8 +57,8 @@
     </div>
   </div>
   <div class="auction-highratio-stat">
-    <span style="font-weight:700;color:#dc2626;">竞昨数：{{ viewData.stats && viewData.stats.jingYestCount || '-' }}</span>
-    <span style="display:inline-block;width:28px;"></span>竞放量数：<span style="font-weight:700;">{{ viewData.stats && viewData.stats.highRatioCount || '-' }}</span>
+    <span style="font-weight:700;color:#dc2626;">竞昨数：{{ jingYestCountText }}</span>
+    <span style="display:inline-block;width:28px;"></span>竞放量数：<span style="font-weight:700;">{{ highRatioCountText }}</span>
   </div>
   <div class="auction-header-row" @click="onHeaderClick" style="cursor:pointer">
     <div class="auction-header-item auction-header-number">序号</div>
@@ -83,8 +83,8 @@
         <button class="backend-btn backend-btn-ths" @click="runBackend(fillYesterdayYesterdayVolumeFromThs)">昨昨量</button>
         <button class="backend-btn backend-btn-ths" @click="runBackend(fetchChangePctFromThs)">涨幅抓取</button>
       </div>
-      <div class="backend-status" :style="{ color: (apiStatusMap['thsApiStatus'] || {}).ok ? '#059669' : '#dc2626' }">
-        {{ (apiStatusMap['thsApiStatus'] || {}).msg || '' }}
+      <div class="backend-status" :style="{ color: thsStatus.ok ? '#059669' : '#dc2626' }">
+        {{ thsStatus.msg || '' }}
       </div>
     </div>
     <div class="backend-block backend-block-numcat">
@@ -98,8 +98,8 @@
         <button class="backend-btn backend-btn-numcat" @click="runBackend(fetchThreeDaysAuctionFromNumcat)">三日竞价</button>
         <button class="backend-btn backend-btn-numcat" @click="runBackend(fillTopicsFromNumcat)">题材填充</button>
       </div>
-      <div class="backend-status" :style="{ color: (apiStatusMap['numcatApiStatus'] || {}).ok ? '#059669' : '#dc2626' }">
-        {{ (apiStatusMap['numcatApiStatus'] || {}).msg || '' }}
+      <div class="backend-status" :style="{ color: numcatStatus.ok ? '#059669' : '#dc2626' }">
+        {{ numcatStatus.msg || '' }}
       </div>
     </div>
     <div class="backend-block backend-block-import">
@@ -116,7 +116,7 @@
 </template>
 
 <script setup>
-import { inject } from 'vue';
+import { inject, computed } from 'vue';
 import { apiStatusMap } from '../logic/ui-bridge.js';
 const board = inject('auctionBoard');
 const {
@@ -139,4 +139,14 @@ const {
   fillYesterdayYesterdayVolumeFromThs, fetchChangePctFromThs, fetchTodayAuctionFromNumcat,
   fetchAllAuctionFromNumcat, fetchThreeDaysAuctionFromNumcat, fillTopicsFromNumcat
 } = board;
+
+// § 模板重构：内联条件链 / 状态访问抽取（渲染结果 100% 不变）
+const jingYestCountText = computed(() => (viewData.value.stats && viewData.value.stats.jingYestCount) || '-');
+const highRatioCountText = computed(() => (viewData.value.stats && viewData.value.stats.highRatioCount) || '-');
+const thsStatus = computed(() => apiStatusMap['thsApiStatus'] || {});
+const numcatStatus = computed(() => apiStatusMap['numcatApiStatus'] || {});
+function onExpandAllChange(e) {
+  if (e.target.checked) expandAll();
+  else collapseAll();
+}
 </script>

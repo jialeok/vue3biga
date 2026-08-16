@@ -1,5 +1,5 @@
 <template>
-  <EditModal v-model="trackEditModalActive" :title="'📌 编辑追踪记录 - ' + trackEditStockName" @save="saveTrackEditModal">
+  <EditModal v-model="trackEditModalActive" :title="trackEditTitle" @save="saveTrackEditModal">
     <div class="track-edit-list">
       <div v-for="(row, idx) in editingTrackRows" :key="idx" class="track-edit-row">
         <div class="track-edit-date">
@@ -18,6 +18,7 @@
 </template>
 
 <script setup>
+import { computed } from 'vue';
 import EditModal from './EditModal.vue';
 import { useHomeStocksState } from '../composables/useHomeStocksState.js';
 
@@ -30,4 +31,6 @@ const {
   onTrackContentInput,
   saveTrackEditModal
 } = useHomeStocksState();
+
+const trackEditTitle = computed(() => '📌 编辑追踪记录 - ' + trackEditStockName.value);
 </script>

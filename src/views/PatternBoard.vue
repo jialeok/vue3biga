@@ -7,10 +7,10 @@
         <div v-if="pattern.keep" class="pattern-tag keep">坚守</div>
       </div>
     </div>
-    <div class="pattern-toggle-btn">{{ expanded ? '▲' : '▼' }}</div>
+    <div class="pattern-toggle-btn">{{ toggleArrow }}</div>
   </div>
   <div class="pattern-content" @click="startEdit">
-    <div v-if="pattern.content && pattern.content.trim()" style="white-space: pre-wrap;">{{ pattern.content }}</div>
+    <div v-if="patternHasContent" style="white-space: pre-wrap;">{{ pattern.content }}</div>
     <div v-else class="pattern-placeholder">暂无模式心得，点击添加...</div>
   </div>
   </div>
@@ -52,6 +52,8 @@ const draftKeep = ref(false);
 const patternStore = getPatternStore();
 const currentDate = computed(() => uiStore.currentDate || getCurrentDate());
 const pattern = computed(() => patternStore.byDate[currentDate.value] || { content: '', update: false, keep: false });
+const toggleArrow = computed(() => expanded.value ? '▲' : '▼');
+const patternHasContent = computed(() => !!(pattern.value.content && pattern.value.content.trim()));
 
 // 加载当日模式：优先当日缓存；若当日为空且前一日带 update/keep，则预填并持久化（保留原 loadTodayPattern 语义）。
 function ensureTodayPattern() {

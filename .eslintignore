@@ -1,0 +1,9 @@
+# 诱饵副本目录（只读，勿动源码）——排除 lint 扫描
+_graphtest
+newbigamain没彻底拆分最新原始文件
+
+# 构建产物
+dist
+
+# 依赖（eslint 默认已忽略，显式声明以防万一）
+node_modules

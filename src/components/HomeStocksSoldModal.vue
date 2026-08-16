@@ -1,5 +1,5 @@
 <template>
-  <EditModal v-model="soldEditModalActive" :title="'💰 ' + soldEditStockName + ' - 卖出记录'" @save="saveSoldEditModal">
+  <EditModal v-model="soldEditModalActive" :title="soldEditTitle" @save="saveSoldEditModal">
     <div class="track-edit-list">
       <div v-for="(row, idx) in editingSoldRows" :key="row.id" class="track-edit-row sold-edit-row">
         <div class="sold-row-head">
@@ -35,6 +35,7 @@
 </template>
 
 <script setup>
+import { computed } from 'vue';
 import EditModal from './EditModal.vue';
 import { useHomeStocksState } from '../composables/useHomeStocksState.js';
 
@@ -46,4 +47,6 @@ const {
   removeSoldRow,
   saveSoldEditModal
 } = useHomeStocksState();
+
+const soldEditTitle = computed(() => '💰 ' + soldEditStockName.value + ' - 卖出记录');
 </script>

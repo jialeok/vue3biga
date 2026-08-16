@@ -9,7 +9,7 @@
         <div v-if="showActions" class="edit-modal-actions">
           <button class="btn-save" :disabled="saving" @click="$emit('save')">
             <span v-if="saving" class="btn-spinner"></span>
-            <span>{{ saving ? '保存中...' : saveText }}</span>
+            <span>{{ saveLabel() }}</span>
           </button>
           <button v-if="showClear" :class="clearClass" @click="$emit('clear')">{{ clearText }}</button>
           <button class="btn-cancel" @click="$emit('update:modelValue', false)">{{ cancelText }}</button>
@@ -20,7 +20,7 @@
 </template>
 
 <script setup>
-defineProps({
+const props = defineProps({
   modelValue: { type: Boolean, default: false },
   title: { type: String, default: '编辑' },
   showActions: { type: Boolean, default: true },
@@ -35,6 +35,11 @@ defineProps({
 });
 
 defineEmits(['update:modelValue', 'save', 'clear']);
+
+// 保存按钮文案：处理中显示「保存中...」，否则显示 saveText（原为模板内联三元，渲染不变）
+function saveLabel() {
+  return props.saving ? '保存中...' : props.saveText;
+}
 </script>
 
 <style scoped>

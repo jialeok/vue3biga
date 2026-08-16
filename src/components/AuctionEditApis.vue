@@ -10,7 +10,7 @@
         @click="modal.runBackend(b.fn, b.key, 'thsApiStatus')"
         :class="['btn', 'btn-ths', { 'btn-ths-wide': b.wide }]"
         :disabled="modal.busyKey === b.key">
-        {{ modal.busyKey === b.key ? '处理中...' : b.label }}
+        {{ busyBtnLabel(b) }}
       </button>
     </div>
     <span class="api-status-line" :class="modal.statusCls('thsApiStatus')">{{ modal.statusMsg('thsApiStatus') }}</span>
@@ -27,7 +27,7 @@
         @click="modal.runBackend(b.fn, b.key, 'numcatApiStatus')"
         :class="['btn', 'btn-numcat', { 'btn-numcat-wide': b.wide }]"
         :disabled="modal.busyKey === b.key">
-        {{ modal.busyKey === b.key ? '处理中...' : b.label }}
+        {{ busyBtnLabel(b) }}
       </button>
     </div>
     <span class="api-status-line" :class="modal.statusCls('numcatApiStatus')">{{ modal.statusMsg('numcatApiStatus') }}</span>
@@ -37,6 +37,11 @@
 <script setup>
 import { inject } from 'vue';
 const modal = inject('auctionEditModal');
+
+// 按钮文案：忙碌时显示「处理中...」，否则显示标签（原为模板内联三元，渲染不变）
+function busyBtnLabel(b) {
+  return modal.busyKey === b.key ? '处理中...' : b.label;
+}
 </script>
 
 <style scoped>
