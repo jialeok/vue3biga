@@ -326,30 +326,20 @@
         </div>
       </div>
 
-      <!-- 7. 每日盈亏曲线图 -->
+      <!-- 7. 每日盈亏曲线图（独立组件：MonthProfitCurve，可横向滑动查看整月） -->
       <div class="weekend-section">
         <div class="weekend-section-title">
           📈 每日盈亏曲线
         </div>
-        <div class="profit-chart-container">
-          <TrendChart
-            :points="profitPoints"
-            color="#dc2626"
-          />
-        </div>
+        <MonthProfitCurve />
       </div>
 
-      <!-- 8. 账户余额曲线图 -->
+      <!-- 8. 账户余额曲线图（独立组件：MonthBalanceCurve，可横向滑动查看整月） -->
       <div class="weekend-section">
         <div class="weekend-section-title">
           💳 账户余额曲线
         </div>
-        <div class="profit-chart-container">
-          <TrendChart
-            :points="balancePoints"
-            color="#2563eb"
-          />
-        </div>
+        <MonthBalanceCurve />
       </div>
 
       <!-- 9. 本月总结心得 -->
@@ -404,11 +394,11 @@ import {
   computeTopStocks,
   computeTopEtfs,
   computeRecordStats,
-  buildProfitPoints,
 } from '../logic/stats/stats-calc.js';
 // §2/§4/§15：月日期与聚合纯函数下沉 Logic 层（monthly-logic.js）
 import { getMonthDates, computeDuibanPerformance, formatDate } from '../logic/stats/monthly-logic.js';
-import TrendChart from '../components/TrendChart.vue';
+import MonthProfitCurve from '../components/MonthProfitCurve.vue';
+import MonthBalanceCurve from '../components/MonthBalanceCurve.vue';
 import EditModal from '../components/EditModal.vue';
 import { showToast } from '../composables/useToast.js';
 
@@ -528,16 +518,7 @@ const recordStats = computed(() => {
 
 function toggleTopStocks() { topStocksExpanded.value = !topStocksExpanded.value; }
 
-// W-03：复用 <TrendChart> 组件替代自绘 canvas（遵循 §30 图表性能规范）。
-// 防御性包裹：buildProfitPoints 内部若抛错（B 类 getter 异常），降级为空数组，避免整块看板空白。
-// buildProfitPoints 期望接收一个「返回日期数组的函数」(getDates())，故用 thunk 包裹，
-// 在 computed 求值期读取 currentDate.value → 保持响应式依赖（§17）。
-const profitPoints = computed(() => {
-  try { return buildProfitPoints(() => getMonthDates(currentDate.value)).profitPoints; }
-  catch (e) { console.error('[MonthlyStats] buildProfitPoints(profit) 失败:', e); return []; }
-});
-const balancePoints = computed(() => {
-  try { return buildProfitPoints(() => getMonthDates(currentDate.value)).balancePoints; }
-  catch (e) { console.error('[MonthlyStats] buildProfitPoints(balance) 失败:', e); return []; }
-});
+// [FEAT 2026-08-17] 每日盈亏 / 账户余额 两条曲线已拆分为独立组件
+// （MonthProfitCurve / MonthBalanceCurve），各自持有数据源 computed，便于后期分别扩展。
+// 本看板不再直接调用 buildProfitPoints / 渲染 TrendChart。
 </script>

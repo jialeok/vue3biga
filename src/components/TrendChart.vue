@@ -59,10 +59,21 @@ import { computed } from 'vue';
 const props = defineProps({
   points: { type: Array, default: () => [] },
   color: { type: String, default: '#f59e0b' },
-  percent: { type: Boolean, default: false }
+  percent: { type: Boolean, default: false },
+  // [FEAT 2026-08-17] 每点水平间距（px）。不传或 <=0 时使用原固定宽度 320（向后兼容周统计等）。
+  // 传较大值（如 44）时，宽度随点数动态增长，配合外层 overflow-x:auto 容器实现横向滑动，
+  // 解决月统计「天数多→文字密麻看不清」的问题（用户需求）。
+  pointSpacing: { type: Number, default: 0 }
 });
 
-const width = 320;
+// 动态宽度：有 pointSpacing 时按点数计算，否则保持原 320 固定宽（§15 向后兼容）。
+const isDynamic = computed(() => props.pointSpacing > 0);
+const dynamicWidth = computed(() => {
+  if (!isDynamic.value) return 320;
+  const n = props.points.length;
+  return Math.max(320, paddingX * 2 + props.pointSpacing * Math.max(n - 1, 1));
+});
+const width = computed(() => dynamicWidth.value);
 const height = 56;
 const paddingX = 28;
 const paddingTop = 16;
@@ -81,7 +92,7 @@ const maxVAdj = computed(() => isPercent.value ? Math.max(maxV.value, 0) : maxV.
 const range = computed(() => (maxVAdj.value - minV.value) || 1);
 
 const n = computed(() => props.points.length);
-const stepX = computed(() => (width - paddingX * 2) / (n.value - 1 || 1));
+const stepX = computed(() => (width.value - paddingX * 2) / (n.value - 1 || 1));
 
 const coords = computed(() => {
   return props.points.map((p, i) => {
@@ -98,7 +109,7 @@ const zeroLine = computed(() => {
   return {
     x1: paddingX.toFixed(1),
     y1: zeroY.toFixed(1),
-    x2: (width - paddingX).toFixed(1),
+    x2: (width.value - paddingX).toFixed(1),
     y2: zeroY.toFixed(1)
   };
 });

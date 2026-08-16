@@ -245,6 +245,19 @@
             height: 100%;
         }
 
+        /* [FEAT 2026-08-17] 月统计曲线横向滑动容器：
+           曲线宽度随天数动态增长（TrendChart pointSpacing），外层 overflow-x:auto 可左右滑动查看整月。
+           周统计天数少，内容不超宽，滚动条不出现，行为不变。 */
+        .profit-chart-scroll {
+            width: 100%;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            background: #f8fafc;
+            border-radius: 8px;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+
         .weekend-section-title {
             font-size: 13px;
             font-weight: 600;
