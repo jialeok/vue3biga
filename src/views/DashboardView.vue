@@ -346,8 +346,11 @@ const pickerDays = computed(() => {
     const dow = new Date(dateStr + 'T00:00:00').getDay();
     const isWeekend = dow === 0 || dow === 6;
     const isHoliday = holSet.has(dateStr);
-    // 自动识别非交易日：非假期、非周末、不在交易日列表、且落在最近一年内（与旧 isAutoHoliday 等价）
-    const autoHoliday = !isHoliday && !isWeekend && !tdSet.has(dateStr) && dateStr >= oneYearAgo && dateStr <= todayLocal;
+    // [FIX 2026-08-17] autoHoliday 着色：仅用于「回顾性」辅助标红——过去一年里用户未记录的休市日。
+    // 修复：① 不含今天及未来（今天数据尚未录入，未记录≠休市，不应自动标红，符合用户『没点就不应标红』）；
+    //       ② 补 tradingDays 为空保护（与 trading-day-helpers.isAutoHoliday 一致，避免整年误标红）。
+    const autoHoliday = !isHoliday && !isWeekend && !tdSet.has(dateStr)
+      && tdSet.size > 0 && dateStr >= oneYearAgo && dateStr < todayLocal;
     let cls = 'normal-day';
     if (dateStr === selected) cls = 'selected';
     else if (isHoliday || autoHoliday) cls = 'holiday';
