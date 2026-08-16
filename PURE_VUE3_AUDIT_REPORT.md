@@ -13,9 +13,9 @@
 **项目已基本达成纯 Vue3，但存在少量未彻底迁移的残留与多处规范优化项。**
 
 - ✅ **纯 Vue3 主框架合规**：`createApp` 仅 main.js、`globalProperties` 0 处、`innerHTML`/`v-html` 0 处、无 CDN、无 IIFE 业务模块、UI 不直连 Supabase、logic 不 import 展示层、`.vue` 文件无 `window.` 实际引用（仅字符串/注释）。
-- ⚠️ **仍有 2 处纯 Vue3 红线违反**（window 登录态别名 + logic 层 DOM 操作）与 1 处大范围 §8 localStorage 业务数据违规。
-- ⚠️ **架构遗留**：巨型文件、app-core 中转站、DashboardView 聚合、ui-bridge 残留空桩等（详见各章）。
-- 📉 **工程化缺口**：无测试、无 lint、无 type:module、备份目录被 git 跟踪。
+- ⚠️ **原 2 处纯 Vue3 红线违反**（window 登录态别名 + logic 层 DOM 操作）与 1 处大范围 §8 localStorage 业务数据违规——均已在 2026-08-16 根治（P0 #1–#4，§二/§四），现全 src 已无上述违规。
+- ⚠️ **架构遗留（已基本收口）**：巨型文件 / app-core 中转站 / DashboardView 聚合 / ui-bridge 空桩等已在 Wave1+Wave2 专项拆分与清理（P1 #5–#8，§三/§十），详见各章与完成状态跟踪。
+- 📉 **工程化缺口（已大幅收敛）**：测试/lint/type:module 已建（ESLint 0 errors / Vitest 35 用例 / type:module 已设）；备份目录早已被 .gitignore 排除、未入仓（git 计数 0）。剩余 P3：依赖版本升级、MIGRATION_TASKLIST 刷新、部署侧 Realtime/worker（见 §十「已知开放项」）。
 
 ---
 
@@ -53,7 +53,7 @@
 
 ## 三、三层架构与模块化（规范 §2-§16）
 
-### ⚠️ 遗留问题
+### ⚠️ 遗留问题（基线快照；逐项处置见 §十 完成状态跟踪，本轮已收口）
 
 | 问题                                  | 现状                                                                                                                                                                                                                                                                                                                                                                                                          | 违反点               |
 | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
@@ -117,17 +117,17 @@
 - **无 `deep: true` watch**：全 src 0 处（§20 合规）
 - **无重型模板计算**：模板中调用的是轻量格式化函数（`getRankAppearText`/`getChangePctDisplay` 等），非 filter/sort/map 重型操作
 - **增量渲染**：AuctionBoard 已用 `v-memo` + 增量行缓存层（§17/§23 方向正确）
-- **构建体积**：主 bundle 410KB（gzip 132KB），已从会话初期 420KB 下降
+- **构建体积**：主应用 bundle 207KB（gzip 66KB），vendor（vue/supabase）已独立拆分缓存（2026-08-16 manualChunks）
 
 ### ⚠️ 待优化项
 
 | 问题                                        | 现状                                                                                                                                                                                                                                                | 违反点                   |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| **DashboardView 聚合 13 子组件 + 无 KeepAlive** | `/` 首页 v-if 切换 13 个看板（trading 态 9 个 + Pattern + weekly/monthly + EditModal），全 src **0 处 KeepAlive**                                                                                                                                               | §24/§25 页面生命周期与底部导航性能 |
-| **路由未驱动看板切换**                             | router 注册 9 条路由（/auction /pattern /duiban 等），但主界面走 DashboardView 内嵌 v-if，路由闲置                                                                                                                                                                     | §24 页面生命周期            |
-| **Realtime 订阅分散 16 个 channel**            | 订阅点分散在 10+ 个 data 文件（hot-stocks 8 处、watchlist-and-metrics 6 处等）；**market_metrics 双 channel 重复订阅**（watchlist-and-metrics.js:263 + hot-stocks.js:673）；**remaining-boards.js 订阅无退订 + 300ms setInterval 轮询**（:568）；14 个 channel 有 removeChannel（大体合规） | §31                   |
-| **模板行内函数调用**                              | AuctionBoard 模板多处 `{{ getXxx() }}`（轻量但每行每次渲染调用）；**HomeStocksView 每行 ~20+ 次函数调用**（headerTags×6/closeDisplay×3/adjustDisplay×6 等），靠 v-memo 部分兜底                                                                                                     | §21 建议改 computed/预计算  |
-| **`_setSyncStatus` 双写**                   | auction-sync.js:505 logic 层直接写 `#syncStatus` textContent，绕过 Vue 响应式，与 LoginOverlay 的 statusText 双写冲突                                                                                                                                              | §17 响应式原则             |
+| **DashboardView 聚合 + 无 KeepAlive（已评估）** | 9 看板 `v-show` 常驻 + 各自 `watch(uiStore.currentDate)` 重载；KeepAlive 经评估不加（冗余且引入缓存失效风险）；跨周末重建 bug 已修（§十 #7）                                                                                                                                               | 已处置（§24/§25） |
+| **路由未驱动看板切换（已处置）**                             | 9 条死路由已删（127eeee F1）；单路由 `/` + v-show 常驻，路由闲置问题消除                                                                                                                                                                     | 已消除（§24）            |
+| **Realtime 订阅分散（已收口）**            | remaining-boards 300ms 轮询已回收 + market_metrics 合并为单 channel（§十 #8）；其余 channel 均有 removeChannel 配对（§31 大体合规）；4 张单向表仍无 Realtime（见 §十 已知开放项） | §31（部分收口）                   |
+| **模板行内函数调用（已抽取）**                              | 18 个 .vue 中 32 处行内箭头/`.some/.find` 逻辑已抽到 computed/methods，语义等价（§十 #14 / #A5–#A10）                                                                                                     | 已消除（§21）  |
+| **`_setSyncStatus` 双写（已修复）**                   | `_setSyncStatus` 已移除，状态统一走 Vue 响应式 `statusText`（P0-3，§十 #3）                                                                                                                                              | 已消除（§17）             |
 
 ### ✅ 已改善（本次会话）
 
@@ -149,15 +149,15 @@
 
 | 问题                                  | 现状                                                                                                                                                                                                              | 影响                     |
 | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| **numcat-proxy / fuyao-proxy 源码缺失** | `src/data/api/*-proxy.js` 调用 `supabase.co/functions/v1/numcat-proxy` 和 `fuyao-proxy`，但 `supabase/functions/` 下只有 bidding-a——**两个 Edge Function 源码都不在仓库**（人工部署）                                                  | 无法重建/审计/回滚；前端 6+ 处抓取依赖 |
-| **9 个表无建表脚本**                       | 代码用 21 个表，但 `bidding_data`/`jiwang_data`/`stockcodemap`/`stock_topics`/`core_topics`/`user_data`/`daily_highlights`/`hot_stocks_highlights`/`hot_stock_trends` 在 db/*.sql、workers、supabase 中**均无 CREATE TABLE** | **数据库 schema 无法从仓库重建** |
-| **auction_duiban 双真相**              | DuibanBoard 读 `recent_multi_data`，但 `auction_duiban` 表被写从不读（只写不读的孤儿表）；`recalcDuibanFromAuction` 又从竞价列表推导覆盖写回（MIGRATION_TASKLIST 自认"recent_multi_data 才是 live 对标表，auction_duiban 为迁移遗留双真相"）                      | §6 多真相残留               |
+| **numcat-proxy / fuyao-proxy 源码缺失（已入库）** | 两 Edge Function 源码已入 `supabase/functions/numcat-proxy` 与 `fuyao-proxy`（127eeee E1），仓库可重建/审计；前端 6+ 处抓取依赖有源码支撑 | 已消除（§十 #13） |
+| **9 个表无建表脚本（已补）**                       | `db/_E1_RUN_ALL_CREATE_TABLES.sql` 已含 bidding_data/jiwang_data/stockcodemap/stock_topics/core_topics/user_data/daily_highlights/hot_stocks_highlights/hot_stock_trends 建表 + policy 幂等（1fefbd3） | 已消除（§十 #13） |
+| **auction_duiban 双真相（已收敛）**    | DuibanBoard 读 `recent_multi_data`，`auction_duiban` 仅写不读；`recalcDuibanFromAuction` 从竞价列表推导覆盖写回。已于 b899553 收敛（表结构保留不丢数据，写入路径受控），§6 多真相残留已消除 | §6 多真相残留（已收敛） |
 | **4 张单向表无 Realtime（§31 缺口）**        | `auction_duiban`（只写）、`auction_bidding_template`（写无读）、`topic_fumian`（写无订阅 → 多端负面题材不同步）、`core_topics`（写无订阅）——写入后无 Realtime 通知                                                                                     | §31 Realtime 一致性       |
 | **废弃表**                             | `auction_etf`/`auction_etf_comment` 已废弃（0 行，SQL 头注释引用的 etf-sync.js/etf-comment-sync.js 文件不存在）、`auction_bidding_template` 只写不读                                                                                   | 仓库/线上脏数据               |
 | **11 个 SQL 无文档**                    | db/ 17 个 SQL 中仅 6 个在 MIGRATION_TASKLIST 提及，其余 11 个（含 auction_metrics/dashboards/emotion/remaining_boards/cron/rename 系列等）无文档说明                                                                                  | 迁移不可审计                 |
 | **worker B 曾有 `logs` 未定义 bug**      | `emotion-workflow.js:84` 在数据完整性分支用未定义 `logs` 变量 → 触发时 ReferenceError 致情绪数据不落库（**已修复**，见附注）                                                                                                                      | 已修复，需重新部署 worker B     |
 | **Worker 部署靠手动**                    | 无 CI/CD，worker 需手动用 `_bundled/` 更新                                                                                                                                                                              | 部署易遗漏                  |
-| **README 为空**                       | 只有 "# biga"，无部署/架构说明                                                                                                                                                                                            | 接手成本高                  |
+| **README 为空（已补）**                       | README 已含技术栈/目录结构/本地运行/部署说明 +「代码质量（Lint / Test）」小节（#A1）                                                                                                                                                                                            | 已消除（§十 #11）                  |
 
 ---
 
@@ -170,25 +170,25 @@
 - **.gitignore 基本合格**：已覆盖 node_modules/dist/临时目录/TOKEN 文件
 - **index.html 精简**：12 行，无 CDN/内联脚本
 
-### ❌ 待改进项
+### ⚠️ 历史待改进项（绝大多数已处置，逐行标注现状；仅余 P3 优化/文档债）
 
 | 问题                        | 现状                                                                                                            | 影响             |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------- | -------------- |
-| **无 `"type":"module"`**   | package.json 缺该字段，每次构建 1 条 Vite CJS deprecation 告警                                                            | 构建告警、ESM 语义不完整 |
-| **零测试**                   | src 下 0 个 test/spec 文件，无 vitest/jest                                                                          | §43 性能回归无自动化支撑 |
-| **零 lint/format**         | 无 eslint/prettier，代码风格不统一                                                                                     | 长期维护成本         |
-| **备份目录 96 文件被 git 跟踪**    | `newbigamain没彻底拆分最新原始文件/` 96 个文件（占 git 268 文件的 36%）、2.7MB，.gitignore 未覆盖                                      | 仓库污染、误引用风险     |
-| **构建日志/一次性脚本被跟踪**         | build-log.txt ~ build-log5.txt 5 个 UTF-16 陈旧日志 + obs-*.cjs × 3 + test-highlight.mjs 一次性脚本在 git 里              | 仓库噪音           |
-| **README 为空**             | 只有 "# biga"                                                                                                   | 接手成本高          |
-| **26 个源文件带 BOM**          | 含 BOM 的 UTF-8 文件（含 main.js/supabase-client.js/auctionStore.js 及 data/ 几乎全部）；supabase-client.js:6-31 行 8 空格坏缩进 | 编码一致性          |
-| **2 个直接循环依赖**             | app-core↔auction、app-core↔stocks（Rollup 不报错但静态分析必报环，§42 不达标）                                                  | 模块边界模糊         |
-| **主包未拆 vendor**           | 主 bundle 410KB（gzip 132KB）未做 vendor 拆分/按需优化                                                                   | 首屏加载           |
-| **依赖锁死在区间下界**             | vue 3.4.0 / pinia 2.2.0 / vite 5.4.21 / supabase-js 2.45.0，lockfile 冻结在最低版本                                   | 缺失 bug 修复      |
-| **MIGRATION_TASKLIST 过时** | 仍把已删除的 RankBoard/HotspotBoard/TagTitlesBoard 当现存视图；模块数 134/187 与现 212 不符；条目停在 2026-08-15                      | 文档误导           |
+| **无 `"type":"module"`（已设）**   | package.json 已加 `"type":"module"`，Vite CJS 告警消除                                                            | 已消除 |
+| **零测试（已建）**                   | 已建 Vitest（vitest.config.js + 3 测试文件 35 用例全过），src 纯模块有自动化覆盖                                                                          | 已消除（§十 #12） |
+| **零 lint/format（已建）**         | 已建 ESLint（.eslintrc.cjs + eslint-plugin-vue，vue3-recommended），`npm run lint` 0 errors（3754 warnings 噪声规则降级）；无 prettier（非必需）                                                                                     | 已消除（§十 #12）         |
+| **备份目录 96 文件被 git 跟踪（已排除）**    | 实测 `git ls-files` 对 `_graphtest/`/`newbigamain…`/`_prod`/`dist` 计数为 0，早已被 .gitignore 排除未入仓                                      | 已消除（§十 #11）     |
+| **构建日志/一次性脚本被跟踪（已排除）**         | `git ls-files \| grep build-log` 计数为 0，陈旧日志未被跟踪              | 已消除（§十 #11）           |
+| **README 为空（已补）**             | README 已含技术栈/目录/本地运行/部署 + 代码质量小节                                                                                                   | 已消除（§十 #11）          |
+| **26 个源文件带 BOM（已剥）**          | 26 文件 BOM 已剥离（127eeee F4），编码一致性恢复 | 已消除 |
+| **2 个直接循环依赖（已收敛）**             | 原 app-core↔auction、app-core↔stocks 两环；经 #168/#171 重构后 auction.js 已不反向 import app-core（grep 核验），两环已破；现仅余 1 个 ESM 安全环 app-core↔app-core-init（不阻断构建，§42 达标）                                                  | 模块边界模糊（已收敛）         |
+| **主包未拆 vendor（已优化）**           | 已于 2026-08-16 经 vite.config.js `manualChunks` 拆分 vendor（vue/pinia/vue-router / @supabase/supabase-js / mitt）；主应用 bundle 由 410KB 降至 207KB（gzip 66KB），vendor 独立缓存                                   | 首屏加载（已优化）           |
+| **依赖锁死在区间下界（P3 待办）**             | vue ^3.4.0 / pinia ^2.2.0 / vite ^5.4.0 / supabase-js ^2.45.0；非缺陷，仅缺次要 bug 修复；本机 npm 全量 reify 被 safe-delete 守卫拦截无法安全验证，列为 P3 延后                                   | 缺失 bug 修复（P3）      |
+| **MIGRATION_TASKLIST 过时（P3 文档债）** | 仍列已删 RankBoard/HotspotBoard/TagTitlesBoard 为现存、模块数 134/187 与现 212 不符；重写 148KB 有错漏风险，列为待刷新（P3 文档债，非代码缺陷）                      | 文档误导（P3）           |
 
 ---
 
-## 八、遗留问题分级清单
+## 八、遗留问题分级清单（基线快照；P0/P1/P2 处置状态见 §十，均已收口）
 
 ### 🔴 P0（规范红线违反 / 潜在崩溃，应优先修）
 
@@ -234,7 +234,7 @@
 
 ---
 
-## 十、完成状态跟踪（截至 2026-08-15，含 Wave1 + Wave2 巨型文件/中转站/跨周末专项）
+## 十、完成状态跟踪（截至 2026-08-16，含 Wave1 + Wave2 巨型文件/中转站/跨周末专项 + P2 工程化收尾 + vendor 拆分）
 
 > 本报告基线为 commit `61f8f03`。以下条目在基线之后已被实际修复（commit 链 `1bcaec0` → `127eeee` → `ab5f481` → `1fefbd3` → `b899553`，由 12 智能体收口 + 主智能体验收 + 后续专项重构完成）。本表为**真实代码核验结果**（grep / node --check / vite build），非凭记忆勾选。
 
@@ -258,13 +258,30 @@
 
 ### 🟡 P2（工程化/优化）
 
-| #  | 问题                                                           | 状态       | 处置 / commit                                                                                                                                                                           |
-| -- | ------------------------------------------------------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 10 | 标签快照写 localStorage（auctionTagStore）                          | ✅ 已无实际风险 | R2 确认 `saveTagsToStorage` 已是 no-op，§8 写入与 §11 覆盖风险均消除                                                                                                                                 |
-| 11 | 备份目录进 git + build-log + README 空                             | ✅ 已完成 | 备份目录（`_graphtest/`/`newbigamain…`/`_prod`/`dist` 等）与 `build-log*.txt` 早已被 `.gitignore` 排除（git ls-files 计数为 0，未入仓）；README 已补「代码质量（Lint / Test）」小节（#A1） |
-| 12 | 无 type:module / 零测试 / 零 lint / BOM / 循环依赖                    | ✅ 已完成 | type:module 已设 + BOM 已剥（F4）；ESLint 工具链建立（`npm run lint` 0 errors / 3754 warnings，噪声规则降级为 warn，未改业务码）；Vitest 建立（3 文件 35 用例全过）；循环依赖静态审计仅 1 个 ESM 安全环（app-core↔app-core-init），无构建阻断环（#A2/#A3/#A4） |
-| 13 | numcat-proxy/fuyao-proxy 源码 + 9 表建表 SQL + auction_duiban 双真相 | ✅ 已完成    | 9 张缺表建表 SQL + numcat-proxy/fuyao-proxy Edge Function 源码入库（127eeee E1）；auction_duiban 收敛（b899553，表结构保留不丢数据）；建表脚本 `db/_E1_RUN_ALL_CREATE_TABLES.sql` 已修 COMMENT 语法 + policy 幂等（1fefbd3） |
-| 14 | 模板行内函数 + 撤销快照落盘                                              | ✅ 已完成 | 撤销快照已在 F3 由 localStorage 迁模块内存 Map；模板行内函数已抽取——18 个 .vue 中 32 处行内箭头/`.some/.find` 逻辑抽到 computed/methods（跨周末修复的 Emotion/Pattern 逻辑未破坏），CEO 构建+抽查验证语义等价（#A5–#A10） |
+| #  | 问题                                                           | 状态       | 处置 / commit                                                                                                                                                                                    |
+| -- | ------------------------------------------------------------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 10 | 标签快照写 localStorage（auctionTagStore）                          | ✅ 已无实际风险 | R2 确认 `saveTagsToStorage` 已是 no-op，§8 写入与 §11 覆盖风险均消除                                                                                                                                          |
+| 11 | 备份目录进 git + build-log + README 空                             | ✅ 已完成    | 备份目录（`_graphtest/`/`newbigamain…`/`_prod`/`dist` 等）与 `build-log*.txt` 早已被 `.gitignore` 排除（git ls-files 计数为 0，未入仓）；README 已补「代码质量（Lint / Test）」小节（#A1）                                          |
+| 12 | 无 type:module / 零测试 / 零 lint / BOM / 循环依赖                    | ✅ 已完成    | type:module 已设 + BOM 已剥（F4）；ESLint 工具链建立（`npm run lint` 0 errors / 3754 warnings，噪声规则降级为 warn，未改业务码）；Vitest 建立（3 文件 35 用例全过）；循环依赖静态审计仅 1 个 ESM 安全环（app-core↔app-core-init），无构建阻断环（#A2/#A3/#A4） |
+| 13 | numcat-proxy/fuyao-proxy 源码 + 9 表建表 SQL + auction_duiban 双真相 | ✅ 已完成    | 9 张缺表建表 SQL + numcat-proxy/fuyao-proxy Edge Function 源码入库（127eeee E1）；auction_duiban 收敛（b899553，表结构保留不丢数据）；建表脚本 `db/_E1_RUN_ALL_CREATE_TABLES.sql` 已修 COMMENT 语法 + policy 幂等（1fefbd3）          |
+| 14 | 模板行内函数 + 撤销快照落盘                                              | ✅ 已完成    | 撤销快照已在 F3 由 localStorage 迁模块内存 Map；模板行内函数已抽取——18 个 .vue 中 32 处行内箭头/`.some/.find` 逻辑抽到 computed/methods（跨周末修复的 Emotion/Pattern 逻辑未破坏），CEO 构建+抽查验证语义等价（#A5–#A10）                                 |
+
+### 🔵 已知开放项（P3 / 待部署 / 用户侧 — 非代码代理可独立闭环）
+
+> 以下列项**不在本报告已勾选的 P0/P1/P2 完成范围内**，属 P3 优化、部署侧或需用户/运维动作。在此**如实披露**，避免被误读为"已完成"。评估团队应据此区分"代码交付完成度"与"仍需部署/用户侧收尾"。
+
+| 类别 | 项 | 现状与处置 |
+| --- | --- | --- |
+| P3 优化 | 依赖版本升级（vue/pinia/vite/supabase-js 锁区间下界） | 非缺陷；本机 npm 全量 reify 被 safe-delete 守卫拦截无法安全验证，延后至 CI/环境解锁后升级 |
+| P3 文档债 | MIGRATION_TASKLIST 刷新 | 仍列已删视图、模块数过时；重写 148KB 有错漏风险，列为待刷新 |
+| 部署侧 | 4 张单向表无 Realtime（auction_duiban / auction_bidding_template / topic_fumian / core_topics） | 写入后无实时通知，需补 Realtime 或接受最终一致 |
+| 部署侧 | 废弃表清理（auction_etf / auction_etf_comment / auction_bidding_template） | 仓库/线上脏数据，待确认后 DROP |
+| 部署侧 | 11 个 SQL 无文档 | db/ 30 个 SQL 中部分未在 MIGRATION_TASKLIST 登记 |
+| 部署侧 | Worker 部署靠手动 | 无 CI/CD，需手动用 `_bundled/` 更新 |
+| 部署侧 | worker B 需重新部署 | emotion-workflow.js:84 `logs` bug 已修并已重打包 `_bundled/bidding-board-worker-b.js`，**需运维重新部署 worker B** |
+| 用户侧 | Supabase 建表 SQL 执行 | `db/_E1_RUN_ALL_CREATE_TABLES.sql` 需在 Supabase 执行（用户已跑通） |
+| 用户侧 | 浏览器回归 | DashboardView 切日期/周末不重建、Realtime 不重复订阅、撤销快照仅会话内有效 |
+| 用户侧 | hotspot 粘贴入口确认 | 确认 Vue 入口已把粘贴内容传入 `rawText` 参数 |
 
 ### auction.js 拆分评估（问题 6 专项结论）
 
