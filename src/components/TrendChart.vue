@@ -1,7 +1,7 @@
 <template>
   <svg
     :viewBox="`0 0 ${width} ${height + 12}`"
-    style="width:100%; height:auto; display:block;"
+    :style="svgStyle"
   >
     <line
       v-if="zeroLine"
@@ -28,7 +28,7 @@
       :key="'d' + i"
       :cx="dot.cx"
       :cy="dot.cy"
-      r="2.6"
+      :r="dotRadius"
       :fill="dot.color"
     />
     <text
@@ -36,7 +36,7 @@
       :key="'v' + i"
       :x="lbl.x"
       :y="lbl.y"
-      font-size="9"
+      :font-size="valueFont"
       :fill="lbl.color"
       text-anchor="middle"
       font-weight="600"
@@ -46,7 +46,7 @@
       :key="'dt' + i"
       :x="lbl.x"
       :y="lbl.y"
-      font-size="8.5"
+      :font-size="dateFont"
       fill="#94a3b8"
       text-anchor="middle"
     >{{ lbl.text }}</text>
@@ -61,9 +61,14 @@ const props = defineProps({
   color: { type: String, default: '#f59e0b' },
   percent: { type: Boolean, default: false },
   // [FEAT 2026-08-17] 每点水平间距（px）。不传或 <=0 时使用原固定宽度 320（向后兼容周统计等）。
-  // 传较大值（如 44）时，宽度随点数动态增长，配合外层 overflow-x:auto 容器实现横向滑动，
+  // 传较大值（如 60）时，宽度随点数动态增长，配合外层 overflow-x:auto 容器实现横向滑动，
   // 解决月统计「天数多→文字密麻看不清」的问题（用户需求）。
-  pointSpacing: { type: Number, default: 0 }
+  pointSpacing: { type: Number, default: 0 },
+  // [FEAT 2026-08-17] 图表高度（px）。月统计传更大值（如 120）让曲线更高更清晰；
+  // 周统计用默认 56 保持原紧凑样式（§15 向后兼容、§18 响应式边界）。
+  height: { type: Number, default: 56 },
+  // [FEAT 2026-08-17] 数据点半径（px）。月统计传更大值（如 4）让点更醒目。
+  dotRadius: { type: Number, default: 3 },
 });
 
 // 动态宽度：有 pointSpacing 时按点数计算，否则保持原 320 固定宽（§15 向后兼容）。
@@ -74,10 +79,23 @@ const dynamicWidth = computed(() => {
   return Math.max(320, paddingX * 2 + props.pointSpacing * Math.max(n - 1, 1));
 });
 const width = computed(() => dynamicWidth.value);
-const height = 56;
+const height = computed(() => props.height);
 const paddingX = 28;
 const paddingTop = 16;
 const paddingBottom = 8;
+
+// [FIX 2026-08-17] 动态（月统计）模式：SVG 按真实像素宽渲染（width:${width}px），
+// 让外层 overflow-x:auto 容器出现横向滚动，而非被 width:100% 压扁成全部挤在一屏
+// （此前「太小看不清/显示全部」的根因）。非动态（周统计）模式保持 width:100% 自适应，无滚动。
+const svgStyle = computed(() =>
+  isDynamic.value
+    ? `width:${width.value}px; height:auto; display:block;`
+    : 'width:100%; height:auto; display:block;'
+);
+
+// 字号随高度放大：月统计（高图）用更大字号提升可读性；周统计（矮图）回退默认值，避免拥挤。
+const valueFont = computed(() => (props.height >= 100 ? 11 : 9));
+const dateFont = computed(() => (props.height >= 100 ? 10 : 8.5));
 
 const isPercent = computed(() => props.percent);
 
@@ -98,14 +116,14 @@ const coords = computed(() => {
   return props.points.map((p, i) => {
     const x = paddingX + stepX.value * i;
     if (p.value === null) return { x, y: null };
-    const y = paddingTop + (height - paddingTop - paddingBottom) * (1 - (p.value - minV.value) / range.value);
+    const y = paddingTop + (height.value - paddingTop - paddingBottom) * (1 - (p.value - minV.value) / range.value);
     return { x: x.toFixed(1), y: y.toFixed(1) };
   });
 });
 
 const zeroLine = computed(() => {
   if (!isPercent.value || minV.value >= 0 || maxVAdj.value <= 0) return null;
-  const zeroY = paddingTop + (height - paddingTop - paddingBottom) * (1 - (0 - minV.value) / range.value);
+  const zeroY = paddingTop + (height.value - paddingTop - paddingBottom) * (1 - (0 - minV.value) / range.value);
   return {
     x1: paddingX.toFixed(1),
     y1: zeroY.toFixed(1),
@@ -171,7 +189,7 @@ const dateLabels = computed(() => {
   return coords.value.map((c, i) => {
     const parts = (props.points[i].date || '').split('-');
     const text = parts.length >= 3 ? parts[1] + '-' + parts[2] : '';
-    return { x: c.x, y: String(height + 2), text };
+    return { x: c.x, y: String(height.value + 2), text };
   });
 });
 </script>

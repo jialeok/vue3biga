@@ -159,7 +159,10 @@ export function buildProfitPoints(getDates) {
   const jiwangData = getJiwangData() || {};
   const profitPoints = [];
   const balancePoints = [];
-  const asc = dates.slice().reverse();
+  // [FIX 2026-08-17] dates 已是升序（如 8/1..8/31），此处保持升序，
+  // 使曲线左=最早、右=最晚（修复此前 .reverse() 导致日期画反的根因）。
+  // 余额 carry-forward 起点 = 区间内「最早」的有效余额，顺序正确。
+  const asc = dates.slice();
   // 先定位区间内首个有效余额，作为 carry-forward 起点，避免曲线从 0 起跳
   let lastBalance = null;
   for (const d of asc) {
