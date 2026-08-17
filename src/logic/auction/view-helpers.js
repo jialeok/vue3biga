@@ -165,24 +165,11 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   const prevDate = getPreviousTradingDay(currentDate);
 
-  // [OBS-FIX 2026-08-17] 观察组继承口径统一：观察组 = 前一日【渲染列表内】竞昨高光，
-  // 而非「全市场竞昨全集」。全市场全集包含大量不在用户列表的股票（影子行/注入壳），
-  // 会导致观察组数量 > 前一日用户看到的蓝色高光数（8/14 全集21 vs 高光18）。
-  // 渲染列表 = 前一日正式列表(watchlist+obsAutoAdded) ∪ 前一日观察组注入壳(前前日竞昨全集)。
-  // 观察组、竞昨数标、蓝色高光三者口径统一为「渲染列表 ∩ 竞昨全集」（§17/§23 单一真相）。
-  const _prevFormalNames = new Set(
-    (getTodayGroupList(prevDate, dataSource) || [])
-      .map(function(s) { return s && s.stock ? s.stock.trim() : ''; })
-      .filter(Boolean)
-  );
-  const _prevPrevDate = getPreviousTradingDay(prevDate);
-  const _prevPrevJingYest = _prevPrevDate ? getJingYestHighlightSetForDate(_prevPrevDate, dataSource) : new Set();
-  const _prevRenderNames = new Set(_prevFormalNames);
-  if (_prevPrevJingYest) _prevPrevJingYest.forEach(n => _prevRenderNames.add(n));
-  const _obsStocksAll = getJingYestHighlightSetForDate(prevDate, dataSource);
-  const _obsStocks = new Set(
-    [...(_obsStocksAll || [])].filter(n => _prevRenderNames.has(n))
-  );
+  // [OBS-FIX 2026-08-17] 观察组 = 前一日「竞昨高光全集」直接继承，与当天 9:25 名单无关。
+  // getJingYestHighlightSetForDate 本身已修（sort-rules.js）：只算当日正式名单内（9:25 拉取的
+  // watchlist 成员），排除 market_metrics 影子行 → 8/14 竞昨=16 只、8/17 观察组=16 只，
+  // 竞昨数/蓝色高光/观察组三者一致（§17/§23 单一真相）。
+  const _obsStocks = getJingYestHighlightSetForDate(prevDate, dataSource);
   const _obsBoughtSet = new Set(JSON.parse(localStorage.getItem('obsBought_' + currentDate) || '[]')); // 合规：防重复/调试标记（§8 允许）
   const _isObsMember = function(name) {
     if (!name) return false;

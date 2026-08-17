@@ -5,7 +5,7 @@ import { getJingYestHighlightSetForDate } from '../auction/sort-rules.js';
 import { getPreviousTradingDay, isTradingDay } from '../date/trading-day-helpers.js';
 
 import { getStockCode } from '../../data/stock-code-map.js';
-import { getAuctionData, getTodayGroupList, scheduleCloudPush, markAuctionDirty } from '../app-core-api.js';
+import { getAuctionData, scheduleCloudPush, markAuctionDirty } from '../app-core-api.js';
 import { state } from '../app-state.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 
@@ -107,9 +107,9 @@ import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
             _dbgLog('[OBS-ENSURE] === 调用开始 === date=' + date + ' prevDay=' + prevDay);
 
             // 上一交易日"竞/昨"实际高光（蓝色高光）达标股票，口径与界面显示、"竞/昨数"统计保持一致。
-            // [FIX 2026-08-17] 观察组只继承「前一日渲染列表内」竞昨高光（与 view-helpers 视图注入同口径）：
-            // 全市场竞昨全集含不在用户列表的股票（8/14 全集21 vs 高光18），直接继承会多出用户没见过的股票。
-            // 渲染列表 = 前一日正式列表(watchlist+obsAutoAdded) ∪ 前一日观察组注入壳(前前日竞昨全集)。
+            // [FIX 2026-08-17] getJingYestHighlightSetForDate 已修（sort-rules.js）：只算当日正式名单
+            // （9:25 拉取的 watchlist 成员）内竞昨，排除 market_metrics 影子行 → 全集即观察组应继承数量，
+            // 不再需要额外过滤（8/14 竞昨=16 → 8/17 观察组=16）。
             const obsStocksRaw = getJingYestHighlightSetForDate(prevDay);
             if (!obsStocksRaw || obsStocksRaw.size === 0) {
                 // 数据未就绪时不设标记，等待下次渲染重试（数据加载完成后快照缓存会有值）
@@ -118,17 +118,8 @@ import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
             }
             _dbgLog('[OBS-ENSURE] prevDay=' + prevDay + ' 高光集合 ' + obsStocksRaw.size + ' 只：' + [...obsStocksRaw].join('、'));
 
-            // 观察组 = 前一日渲染列表内符合竞昨条件的股票（平行+差值>0），与手动买卖标签无关（含已卖出）。
-            const _prevFormalNames = new Set(
-                (getTodayGroupList(prevDay) || [])
-                    .map(function(s) { return s && s.stock ? s.stock.trim() : ''; })
-                    .filter(Boolean)
-            );
-            const _prevPrevDay = getPreviousTradingDay(prevDay);
-            const _prevPrevJingYest = _prevPrevDay ? getJingYestHighlightSetForDate(_prevPrevDay) : new Set();
-            const _prevRenderNames = new Set(_prevFormalNames);
-            if (_prevPrevJingYest) _prevPrevJingYest.forEach(function(n) { _prevRenderNames.add(n); });
-            const obsStocks = new Set([...obsStocksRaw].filter(function(n) { return _prevRenderNames.has(n); }));
+            // 观察组 = 前一日正式竞昨高光全集（平行+差值>0，只含 9:25 名单内股票），与手动买卖标签无关（含已卖出）。
+            const obsStocks = new Set(obsStocksRaw);
 
             const auctionData = getAuctionData();
             const dayList = auctionData[date] || [];

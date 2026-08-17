@@ -13,7 +13,7 @@ import { state } from '../app-state.js';
         }
         import { getGroupData } from '../app-core-api.js';
         import { getNumericVolume } from '../../data/supabase-client.js';
-        import { getStockHistoryValue, _histRowMapFor } from '../../data/watchlist-and-metrics.js';
+        import { getStockHistoryValue, _histRowMapFor, _getAuctionWatchlistSet } from '../../data/watchlist-and-metrics.js';
         import { _dbgLogVerbose } from '../../data/debug-log.js';
 
         import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
@@ -82,6 +82,13 @@ import { state } from '../app-state.js';
             const todayList = auctionData[dateStr] || [];
             const t1Date = getPreviousTradingDay(dateStr);
 
+            // [FIX 2026-08-17] 竞昨/平行只算「当日正式名单（9:25 拉取的 watchlist 成员）」内的股票。
+            // todayList 是 _auctionMemCache[date] = watchlist + market_metrics 影子行合并；
+            // 影子行（不在正式索引、由 numcat 抓到的数据）参与计算会把竞昨全集撑大
+            // （8/14 全集 21 含 5 只影子股 → 观察组错误继承 21），且与"竞昨数/蓝色高光"口径打架。
+            // 正式成员身份 = _getAuctionWatchlistSet(dateStr)（§6 唯一真相，含手动新增，不含 obs 壳）。
+            const _formalSet = _getAuctionWatchlistSet(dateStr);
+
             const stockNames = new Set();
             todayList.forEach(item => {
                 if (!item || !item.stock) return;
@@ -91,6 +98,8 @@ import { state } from '../app-state.js';
                 // 一旦被回填竞价量就会被误算成当天竞昨高光，进而反向继承进后一天观察组，形成"越传越多"的反馈环。
                 // 排除后，前一天高光集合在任意时间重算都保持稳定，观察组数量才能与"前一天竞昨高光"严格一致。
                 if (item.obsAutoAdded === true) return;
+                // [FIX 2026-08-17] 跳过不在正式名单的影子行（market_metrics 独有、非 watchlist 成员）
+                if (!_formalSet.has(name)) return;
 
                 const todayVolume = getNumericVolume(item.volume);
                 // T的yestVolume字段 = T-1交易日自身的总成交量
@@ -146,6 +155,10 @@ import { state } from '../app-state.js';
             const todayList = auctionData[dateStr] || [];
             const t1Date = getPreviousTradingDay(dateStr);
 
+            // [FIX 2026-08-17] 与 getParallelStocksForDate 同口径：只算当日正式名单内股票，
+            // 排除 market_metrics 影子行，保证竞昨高光（diff>0）不被影子股撑大。
+            const _formalSet = _getAuctionWatchlistSet(dateStr);
+
             const infoMap = new Map();
             todayList.forEach(item => {
                 if (!item || !item.stock) return;
@@ -153,6 +166,8 @@ import { state } from '../app-state.js';
 
                 // [OBS-FIX 2026-08-14] 与 getParallelStocksForDate 同步排除继承空壳行，保证竞昨高光口径一致。
                 if (item.obsAutoAdded === true) return;
+                // [FIX 2026-08-17] 排除不在正式名单的影子行（与 getParallelStocksForDate 一致）
+                if (!_formalSet.has(name)) return;
 
                 // 今/昨比：今日竞价量 / T-1竞价量（T-1数据从全量快照缓存查询，含非自选股）
                 const todayVolume = getNumericVolume(item.volume);
