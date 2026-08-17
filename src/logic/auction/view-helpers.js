@@ -470,19 +470,12 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   let obsIndices, regularIndices, hiddenObsIndices;
   if (sortState.byThreeDayJingDie) {
-    // [THREE-DAY 2026-08-17] 镜像「竞昨」观察组处理：
-    // ① 折叠观察组（obsIndices=[]）→ 模板不再渲染观察组区块与蚂蚁线；
-    // ② 隐藏「不在今日正式列表(9:25 官方抓取)」的观察组票（只显示当天正式列表），其余进单一列表；
-    // ③ 由上方 three-day 排序分支把 dd≥2 达标股排前、同档按 changePct 降序。
-    // 注意：今日命中判定用正式列表集 _getAuctionWatchlistSet，不能用 jingYestHighlightSet（那是竞昨专属高亮集）。
-    hiddenObsIndices = [];
-    _obsIndicesRaw.forEach(i => {
-      const stockName = renderList[i].stock.trim();
-      const isOfficialToday = _getAuctionWatchlistSet(currentDate).has(stockName);
-      if (!isOfficialToday) hiddenObsIndices.push(i);
-    });
+    // [THREE-DAY 2026-08-17] 三天竞跌模式：折叠观察组（obsIndices=[]）→ 模板不再渲染观察组区块与蚂蚁线；
+    // 所有股票（含不在今日正式列表的观察组票）进单一列表 → 总数与默认一致（90），不隐藏、不增不减（§6 唯一数据源=9:25 列表）。
+    // 排序由上方 three-day 分支处理：dd≥2 达标置顶、同档按 changePct 降序。
     obsIndices = [];
-    regularIndices = renderOrder.filter(i => hiddenObsIndices.indexOf(i) < 0);
+    regularIndices = renderOrder.slice();
+    hiddenObsIndices = [];
   } else if (jingYestToggleChecked) {
     hiddenObsIndices = [];
     _obsIndicesRaw.forEach(i => {
@@ -525,6 +518,13 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   const fullOrder = obsIndices.concat(regularIndices);
   const items = fullOrder.map((i, pos) => _enrichAuctionItem(renderList[i], i, ctx)).filter(Boolean);
 
+  // [THREE-DAY 2026-08-17] 列表组成统计：正式成员 / 观察组 / 交集（既观察组又正式），供界面"?"核对。
+  // 正式成员 = 9:25 官方列表（_getAuctionWatchlistSet，不含 obs）；观察组 = 前一日竞昨高光全集（_obsStocks）。
+  const _formalSet = _getAuctionWatchlistSet(currentDate);
+  const _obsSet = _obsStocks || new Set();
+  let _overlapCount = 0;
+  _obsSet.forEach(function(n) { if (_formalSet.has(n)) _overlapCount++; });
+
   return {
     date: currentDate,
     dataSource,
@@ -542,7 +542,11 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       // [FIX 2026-08-17] 竞/昨数口径统一为「渲染列表 ∩ 当日竞昨全集」（与蓝色高光完全一致）。
       // 原先只统计 auctionList（正式列表）→ 8/14 显示 16，而蓝色高光（含观察组注入壳）显示 18，
       // 两者对不上（用户反馈）。渲染列表 = 正式列表 + 观察组注入壳，二者同源判定，数字必然一致。
-      jingYestCount: renderList.filter(it => it && it.stock && jingYestHighlightSet && jingYestHighlightSet.has(it.stock.trim())).length
+      jingYestCount: renderList.filter(it => it && it.stock && jingYestHighlightSet && jingYestHighlightSet.has(it.stock.trim())).length,
+      // [THREE-DAY 2026-08-17] 列表组成：正式成员 / 观察组 / 交集（既观察组又正式）。
+      formalCount: _formalSet.size,
+      obsCount: _obsSet.size,
+      overlapCount: _overlapCount
     }
   };
 }

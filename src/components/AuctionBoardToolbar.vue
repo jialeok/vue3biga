@@ -83,9 +83,30 @@
       </label>
     </div>
   </div>
-  <div class="auction-highratio-stat">
+  <div
+    class="auction-highratio-stat"
+    style="position:relative;"
+  >
     <span style="font-weight:700;color:#dc2626;">竞昨数：{{ jingYestCountText }}</span>
     <span style="display:inline-block;width:28px;" />竞放量数：<span style="font-weight:700;">{{ highRatioCountText }}</span>
+    <span
+      class="auction-listinfo-q"
+      style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;margin-left:10px;border-radius:50%;background:#e2e8f0;color:#475569;font-size:11px;font-weight:700;cursor:pointer;user-select:none;"
+      title="查看列表组成说明"
+      @click="toggleListInfo"
+    >?</span>
+    <div
+      v-if="showListInfo"
+      class="auction-listinfo-pop"
+      style="position:absolute;top:26px;left:0;z-index:60;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;font-size:12px;color:#334155;box-shadow:0 6px 20px rgba(0,0,0,0.12);min-width:232px;line-height:1.9;"
+    >
+      <div>今日正式成员：<b>{{ listInfo.formalCount }}</b> 只</div>
+      <div>当日观察组：<b>{{ listInfo.obsCount }}</b> 只</div>
+      <div>交集（既是观察组又是正式）：<b>{{ listInfo.overlapCount }}</b> 只</div>
+      <div style="color:#94a3b8;font-size:11px;margin-top:6px;border-top:1px solid #f1f5f9;padding-top:6px;">
+        列表总数 = 正式 + 观察组非交集 = <b>{{ listInfo.totalDisplay }}</b> 只
+      </div>
+    </div>
   </div>
   <div
     class="auction-header-row"
@@ -236,7 +257,7 @@
 </template>
 
 <script setup>
-import { inject, computed } from 'vue';
+import { inject, computed, ref } from 'vue';
 import { apiStatusMap } from '../logic/ui-bridge.js';
 const board = inject('auctionBoard');
 const {
@@ -263,6 +284,17 @@ const {
 // § 模板重构：内联条件链 / 状态访问抽取（渲染结果 100% 不变）
 const jingYestCountText = computed(() => (viewData.value.stats && viewData.value.stats.jingYestCount) || '-');
 const highRatioCountText = computed(() => (viewData.value.stats && viewData.value.stats.highRatioCount) || '-');
+
+// [THREE-DAY 2026-08-17] 列表组成"?"说明浮层：正式成员 / 观察组 / 交集，点击展开再点收起。
+const showListInfo = ref(false);
+function toggleListInfo() { showListInfo.value = !showListInfo.value; }
+const listInfo = computed(() => {
+  const s = (viewData.value && viewData.value.stats) || {};
+  const formal = s.formalCount || 0;
+  const obs = s.obsCount || 0;
+  const overlap = s.overlapCount || 0;
+  return { formalCount: formal, obsCount: obs, overlapCount: overlap, totalDisplay: formal + (obs - overlap) };
+});
 const thsStatus = computed(() => apiStatusMap['thsApiStatus'] || {});
 const numcatStatus = computed(() => apiStatusMap['numcatApiStatus'] || {});
 function onExpandAllChange(e) {
