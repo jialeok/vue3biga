@@ -71,7 +71,13 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   const isJingYestMatch = ctx.jingYestToggleChecked && ctx.jingYestHighlightSet && stockName && ctx.jingYestHighlightSet.has(stockName);
   const isParallelMatch = ctx.sortByParallelEnabled && !ctx.jingYestToggleChecked && stockName && ctx.parallelStocksToday && ctx.parallelStocksToday.has(stockName);
   const isHighRatioMatch = ctx.sortByRatioEnabled && stockName && ctx.highRatioToday && ctx.highRatioToday.stockNames && ctx.highRatioToday.stockNames.has(stockName);
-  const isThreeDayJingDieMatch = ctx.sortByThreeDayJingDieEnabled && ctx.threeDayJingDieSet && stockName && (ctx.threeDayJingDieSet.get(stockName) || 0) >= 2;
+  // [THREE-DAY 2026-08-17] 绿色高光（三天竞跌）条件收紧：dd≥2 且「当天竞价涨幅 changePct ≥ 0」才有资格点亮。
+  // 涨幅为负（今天仍在下跌，下跌中继）不点亮绿色高光，避免被误判为「止跌/企稳反转」信号。
+  // 排序口径不变（上方 three-day 分支：dd≥2 置顶、同档按 changePct 降序）。
+  const _tdPctRaw = rawItem.changePct || '';
+  const _tdPctNum = parseFloat(String(_tdPctRaw).replace('%', ''));
+  const _tdPctVal = isFinite(_tdPctNum) ? _tdPctNum : null;
+  const isThreeDayJingDieMatch = ctx.sortByThreeDayJingDieEnabled && ctx.threeDayJingDieSet && stockName && (ctx.threeDayJingDieSet.get(stockName) || 0) >= 2 && _tdPctVal !== null && _tdPctVal >= 0;
   if (isJingYestMatch) {
     itemClass += ' jing-yest-match';
   } else if (isParallelMatch) {
