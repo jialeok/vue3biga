@@ -1,5 +1,5 @@
 // ===== bidding-board-worker-b — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-08-17 12:45:24
+// 生成时间: 2026-08-17 13:53:29
 // 注意: 此文件由 _bundle-workers.ps1 自动生成，请勿手动编辑
 
 // ────── bidding-board-worker-b/config.js ──────

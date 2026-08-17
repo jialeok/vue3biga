@@ -2,18 +2,14 @@ name = "bidding-auto-fetch"
 main = "bidding-auto-fetch/index.js"
 compatibility_date = "2025-07-29"
 
-# 北京时间 9:25 = UTC 01:25（工作日周一到周五 = 2-6）
-# 北京时间 16:00 = UTC 08:00（工作日周一到周五 = 2-6）
-# ⚠️ Cloudflare 星期编号：1=周日, 2=周一, ..., 6=周五, 7=周六
-#    工作日必须用 2-6，不能用 1-5（1-5 = 周日到周四，周五会漏掉！）
-[triggers]
-crons = ["25 1 * * 2-6", "0 8 * * 2-6"]
+# 鍖椾含鏃堕棿 9:25 = UTC 01:25锛堝伐浣滄棩鍛ㄤ竴鍒板懆浜?= 2-6锛?# 鍖椾含鏃堕棿 16:00 = UTC 08:00锛堝伐浣滄棩鍛ㄤ竴鍒板懆浜?= 2-6锛?# 鈿狅笍 Cloudflare 鏄熸湡缂栧彿锛?=鍛ㄦ棩, 2=鍛ㄤ竴, ..., 6=鍛ㄤ簲, 7=鍛ㄥ叚
+#    宸ヤ綔鏃ュ繀椤荤敤 2-6锛屼笉鑳界敤 1-5锛?-5 = 鍛ㄦ棩鍒板懆鍥涳紝鍛ㄤ簲浼氭紡鎺夛紒锛?[triggers]
+crons = ["25 1 * * 2-6"]
 
 [vars]
 TZ = "Asia/Shanghai"
 
-# 敏感变量请通过 wrangler secret 设置：
-#   wrangler secret put NUMCAT_API_KEY --config wrangler.bidding-auto-fetch.toml
+# 鏁忔劅鍙橀噺璇烽€氳繃 wrangler secret 璁剧疆锛?#   wrangler secret put NUMCAT_API_KEY --config wrangler.bidding-auto-fetch.toml
 #   wrangler secret put SUPABASE_SERVICE_ROLE_KEY --config wrangler.bidding-auto-fetch.toml
 #   wrangler secret put SUPABASE_ANON_KEY --config wrangler.bidding-auto-fetch.toml
 #   wrangler secret put FUYAO_API_KEY_HISTORY --config wrangler.bidding-auto-fetch.toml

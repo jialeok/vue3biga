@@ -1,7 +1,9 @@
 // index.js — bidding-auto-fetch Worker 入口
+// [FIX 2026-08-17] 收盘涨幅覆盖已迁移到 Supabase Edge Function auction-close-fetch
+// （pg_cron 16:00 触发），本 worker 不再承担 close 涨幅覆盖，只保留 morning 抓取。
+// 原 runClose 导入与调度已移除；close-workflow.js 保留为历史参考，不再被调用。
 import { beijingNow } from '../../_shared-source/date-utils.js';
 import { runMorning } from './logic/morning-workflow.js';
-import { runClose } from './logic/close-workflow.js';
 
 function jsonResponse(obj, status) {
   return new Response(JSON.stringify(obj, null, 2), {
@@ -18,8 +20,6 @@ function autoPoint() {
   const mins = d.getUTCHours() * 60 + d.getUTCMinutes();
   // 9:25 ~ 9:40 → morning
   if (mins >= 9 * 60 + 25 && mins < 9 * 60 + 40) return 'morning';
-  // 15:00 之后 → close
-  if (mins >= 15 * 60) return 'close';
   return null;
 }
 
@@ -30,10 +30,8 @@ function cronToPoint(cronExpr) {
   const min = parts[0], hour = parts[1];
   const key = min + ' ' + hour;
   // 01:25 UTC = 09:25 北京时间 → morning
-  // 08:00 UTC = 16:00 北京时间 → close
   const MAP = {
     '25 1': 'morning',
-    '0 8': 'close',
   };
   return MAP[key] || null;
 }
@@ -55,15 +53,6 @@ export default {
           })
           .catch(e => console.error('[auto-fetch] morning error:', e.message))
       );
-    } else if (point === 'close') {
-      ctx.waitUntil(
-        runClose(env)
-          .then(result => {
-            console.log('[auto-fetch] runClose 完成 ok=' + result.ok);
-            console.log('[auto-fetch] runClose 完整日志:', JSON.stringify(result.logs || []));
-          })
-          .catch(e => console.error('[auto-fetch] close error:', e.message))
-      );
     }
   },
 
@@ -83,14 +72,14 @@ export default {
       if (point === 'auto') {
         point = autoPoint();
         if (!point) {
-          return jsonResponse({ ok: false, error: '当前北京时间不在任何抓取时段（9:25~9:40=morning, 15:00后=close）' });
+          return jsonResponse({ ok: false, error: '当前北京时间不在抓取时段（9:25~9:40=morning）' });
         }
       }
-      if (!['morning', 'close'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|auto' });
+      if (!['morning'].includes(point)) {
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|auto（close 已迁移到 Supabase auction-close-fetch）' });
       }
       try {
-        const result = point === 'morning' ? await runMorning(env) : await runClose(env);
+        const result = await runMorning(env);
         return jsonResponse(result, result.ok ? 200 : 500);
       } catch (e) {
         return jsonResponse({ ok: false, error: e.message, stack: e.stack }, 500);
