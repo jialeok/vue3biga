@@ -10,6 +10,15 @@ import { getNumericVolume } from '../data/supabase-client.js';
 import { getDigitCount } from '../logic/auction/sort-rules.js';
 import { _dbgLog } from '../data/debug-log.js';
 
+// 三天竞跌「当天竞价涨幅」提取（与 view-helpers.js 口径一致）：
+// 专用字段 auc_pct_chg（五日竞价涨幅），绝不读 changePct/change_pct（会被「获取涨幅」改写为常规涨幅）。
+function _getThreeDayAuctionPct(rawItem) {
+  if (!rawItem) return null;
+  const raw = rawItem.auc_pct_chg || rawItem.aucPctChg || rawItem.changePct || rawItem.change_pct || '';
+  const num = parseFloat(String(raw).replace('%', '').replace('+', ''));
+  return isFinite(num) ? num : null;
+}
+
 // ============================================================
 // Composable: useAuctionSort
 // ------------------------------------------------------------
@@ -93,9 +102,8 @@ export function useAuctionSort() {
                 const it = auctionList[idx];
                 const nm = it && it.stock ? it.stock.trim() : '';
                 const dd = nm && threeDayJingDieSet ? (threeDayJingDieSet.get(nm) || 0) : 0;
-                const pctRaw = it ? (it.changePct || '') : '';
-                const pctNum = parseFloat(String(pctRaw).replace('%', ''));
-                const pctVal = isFinite(pctNum) ? pctNum : null;
+                // 同档排序按「当天竞价涨幅 auc_pct_chg」由高到低（专项字段，与绿光口径一致）
+                const pctVal = _getThreeDayAuctionPct(it);
                 const isQualified = dd >= 2;
                 return { idx, pos, isQualified, pctVal };
             }).sort((a, b) => {
@@ -212,9 +220,8 @@ export function useAuctionSort() {
             return stocks.map((s, pos) => {
                 const nm = s.stock ? s.stock.trim() : '';
                 const dd = nm && threeDayJingDieSet ? (threeDayJingDieSet.get(nm) || 0) : 0;
-                const pctRaw = s.changePct || '';
-                const pctNum = parseFloat(String(pctRaw).replace('%', ''));
-                const pctVal = isFinite(pctNum) ? pctNum : null;
+                // 同档排序按「当天竞价涨幅 auc_pct_chg」由高到低（专项字段，与绿光口径一致）
+                const pctVal = _getThreeDayAuctionPct(s);
                 const isQualified = dd >= 2;
                 return { s, pos, isQualified, pctVal };
             }).sort((a, b) => {

@@ -19,6 +19,19 @@ function _getAuctionTag(date, stockName) {
   return useAuctionTagStore().getTagState(date, stockName);
 }
 
+// ===== 三天竞跌独立逻辑（仅「连跌三天」toggle 开启时生效，与其它高光/排序逻辑完全隔离）=====
+// 资格条件：连续竞跌天数 dd≥2（getThreeDayJingDieSet，基于「竞价量」递减，与涨幅无关）
+// 排序：达标(dd≥2)整体置顶；同档内按「当天竞价涨幅」由高到低
+// 绿色高光：dd≥2 且 当天竞价涨幅 ≥ 0（止跌/企稳/反转）才点亮；下跌中继(竞价涨幅<0)不点亮
+// 竞价涨幅取值：专用字段 auc_pct_chg（五日竞价涨幅），绝不读 changePct/change_pct ——
+//   后者会被「获取涨幅」(fuyao 快照 price_change_ratio_pct) 改写为当日常规涨幅，导致误判。
+function _getThreeDayAuctionPct(rawItem) {
+  if (!rawItem) return null;
+  const raw = rawItem.auc_pct_chg || rawItem.aucPctChg || rawItem.changePct || rawItem.change_pct || '';
+  const num = parseFloat(String(raw).replace('%', '').replace('+', ''));
+  return isFinite(num) ? num : null;
+}
+
 function _enrichAuctionItem(rawItem, index, ctx) {
   if (!rawItem) return null;
   const stockName = rawItem.stock ? rawItem.stock.trim() : '';
@@ -71,13 +84,11 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   const isJingYestMatch = ctx.jingYestToggleChecked && ctx.jingYestHighlightSet && stockName && ctx.jingYestHighlightSet.has(stockName);
   const isParallelMatch = ctx.sortByParallelEnabled && !ctx.jingYestToggleChecked && stockName && ctx.parallelStocksToday && ctx.parallelStocksToday.has(stockName);
   const isHighRatioMatch = ctx.sortByRatioEnabled && stockName && ctx.highRatioToday && ctx.highRatioToday.stockNames && ctx.highRatioToday.stockNames.has(stockName);
-  // [THREE-DAY 2026-08-17] 绿色高光（三天竞跌）条件收紧：dd≥2 且「当天竞价涨幅 changePct ≥ 0」才有资格点亮。
-  // 涨幅为负（今天仍在下跌，下跌中继）不点亮绿色高光，避免被误判为「止跌/企稳反转」信号。
-  // 排序口径不变（上方 three-day 分支：dd≥2 置顶、同档按 changePct 降序）。
-  const _tdPctRaw = rawItem.changePct || '';
-  const _tdPctNum = parseFloat(String(_tdPctRaw).replace('%', ''));
-  const _tdPctVal = isFinite(_tdPctNum) ? _tdPctNum : null;
-  const isThreeDayJingDieMatch = ctx.sortByThreeDayJingDieEnabled && ctx.threeDayJingDieSet && stockName && (ctx.threeDayJingDieSet.get(stockName) || 0) >= 2 && _tdPctVal !== null && _tdPctVal >= 0;
+  // [THREE-DAY 2026-08-17-v2] 三天竞跌绿色高光：独立逻辑，仅 toggle 开启时生效。
+  // 竞价涨幅取自专用字段 auc_pct_chg（避免被「获取涨幅」改写为常规涨幅而误判）。
+  // dd≥2 且 当天竞价涨幅 ≥ 0（止跌/企稳/反转）才点亮绿色高光；下跌中继(竞价涨幅<0)不点亮。
+  const _todayAucPct = _getThreeDayAuctionPct(rawItem);
+  const isThreeDayJingDieMatch = ctx.sortByThreeDayJingDieEnabled && ctx.threeDayJingDieSet && stockName && (ctx.threeDayJingDieSet.get(stockName) || 0) >= 2 && _todayAucPct !== null && _todayAucPct >= 0;
   if (isJingYestMatch) {
     itemClass += ' jing-yest-match';
   } else if (isParallelMatch) {
@@ -385,15 +396,14 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   } else if (sortState.byThreeDayJingDie) {
     // [THREE-DAY 2026-08-17] 排序规则：
     //   1) 符合条件（连续竞跌天数 dd≥2）整体排在前面；
-    //   2) 同档内按「当天竞价涨幅 changePct」由高到低（之前是竞价量比值 jr，已废弃）。
+    //   2) 同档内按「当天竞价涨幅 auc_pct_chg」由高到低（专用竞价涨幅字段，与绿光口径一致；之前是竞价量比值 jr，已废弃）。
     const threeDayJingDieSet = getThreeDayJingDieSet(currentDate, dataSource);
     renderOrder = renderOrder.map((idx, pos) => {
       const it = renderList[idx];
       const stockName = it && it.stock ? it.stock.trim() : '';
       const dd = stockName && threeDayJingDieSet ? (threeDayJingDieSet.get(stockName) || 0) : 0;
-      const pctRaw = it ? (it.changePct || '') : '';
-      const pctNum = parseFloat(String(pctRaw).replace('%', ''));
-      const pctVal = isFinite(pctNum) ? pctNum : null;
+      // 同档排序按「当天竞价涨幅 auc_pct_chg」由高到低（专项字段，与绿光口径一致）
+      const pctVal = _getThreeDayAuctionPct(it);
       const isQualified = dd >= 2;
       return { idx, pos, isQualified, pctVal };
     }).sort((a, b) => {
@@ -478,7 +488,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   if (sortState.byThreeDayJingDie) {
     // [THREE-DAY 2026-08-17] 三天竞跌模式：折叠观察组（obsIndices=[]）→ 模板不再渲染观察组区块与蚂蚁线；
     // 所有股票（含不在今日正式列表的观察组票）进单一列表 → 总数与默认一致（90），不隐藏、不增不减（§6 唯一数据源=9:25 列表）。
-    // 排序由上方 three-day 分支处理：dd≥2 达标置顶、同档按 changePct 降序。
+    // 排序由上方 three-day 分支处理：dd≥2 达标置顶、同档按 auc_pct_chg（竞价涨幅）降序。
     obsIndices = [];
     regularIndices = renderOrder.slice();
     hiddenObsIndices = [];
