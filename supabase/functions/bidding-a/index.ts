@@ -721,12 +721,14 @@ Deno.serve(async (req) => {
   const url = new URL(req.url);
   const p = url.pathname;
 
-  if (p === '/health') {
+  // [FIX 2026-08-17] Supabase Edge Function 的 pathname 带前缀 /functions/v1/bidding-a，
+  // 用 endsWith 兼容（本地 Deno 直接跑则是 /health、/fetch、/），否则路由分支永远命不中。
+  if (p.endsWith('/health')) {
     return new Response(JSON.stringify({ ok: true, service: 'bidding-a', worker: 'A' }), { headers: { 'Content-Type': 'application/json' } });
   }
 
-  // 处理函数入口：/fetch 或根路径都接受
-  const isFetch = (p === '/fetch' || p === '/' || p === '');
+  // 处理函数入口：/fetch 或根路径都接受（兼容有无前缀）
+  const isFetch = p === '/' || p === '' || p.endsWith('/fetch') || p.endsWith('/bidding-a') || p.endsWith('/bidding-a/');
   if (isFetch) {
     const token = url.searchParams.get('token') || '';
     const expected = Deno.env.get('FETCH_TOKEN');

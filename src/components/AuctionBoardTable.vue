@@ -15,7 +15,7 @@
     v-if="filteredObsItems.length > 0"
     class="auction-group-label auction-obs-group-label"
   >
-    观察组
+    {{ sortState.byThreeDayJingDie ? '三天竞跌达标' : '观察组' }}
   </div>
   <template
     v-for="(item, idx) in filteredObsItems"

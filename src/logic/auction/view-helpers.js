@@ -377,20 +377,25 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       return b.jr - a.jr;
     }).map(x => x.idx);
   } else if (sortState.byThreeDayJingDie) {
+    // [THREE-DAY 2026-08-17] 排序规则：
+    //   1) 符合条件（连续竞跌天数 dd≥2）整体排在前面；
+    //   2) 同档内按「当天竞价涨幅 changePct」由高到低（之前是竞价量比值 jr，已废弃）。
     const threeDayJingDieSet = getThreeDayJingDieSet(currentDate, dataSource);
     renderOrder = renderOrder.map((idx, pos) => {
-      const stockName = renderList[idx] && renderList[idx].stock ? renderList[idx].stock.trim() : '';
+      const it = renderList[idx];
+      const stockName = it && it.stock ? it.stock.trim() : '';
       const dd = stockName && threeDayJingDieSet ? (threeDayJingDieSet.get(stockName) || 0) : 0;
-      const vol = renderList[idx] ? (parseFloat(renderList[idx].volume) || 0) : 0;
-      const yvol = renderList[idx] ? (parseFloat(renderList[idx].yestVolume) || 0) : 0;
-      const jr = (vol > 0 && yvol > 0) ? (vol / yvol) : null;
-      return { idx, pos, dd, jr };
+      const pctRaw = it ? (it.changePct || '') : '';
+      const pctNum = parseFloat(String(pctRaw).replace('%', ''));
+      const pctVal = isFinite(pctNum) ? pctNum : null;
+      const isQualified = dd >= 2;
+      return { idx, pos, isQualified, pctVal };
     }).sort((a, b) => {
-      if (a.dd !== b.dd) return b.dd - a.dd;
-      if (a.jr === null && b.jr === null) return a.pos - b.pos;
-      if (a.jr === null) return 1;
-      if (b.jr === null) return -1;
-      return a.jr - b.jr;
+      if (a.isQualified !== b.isQualified) return a.isQualified ? -1 : 1;
+      if (a.pctVal === null && b.pctVal === null) return a.pos - b.pos;
+      if (a.pctVal === null) return 1;
+      if (b.pctVal === null) return -1;
+      return b.pctVal - a.pctVal;
     }).map(x => x.idx);
   } else if (sortState.byParallel) {
     if (sortState.byJingYest) {
@@ -459,8 +464,20 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // 此处直接复用，确保「观察组归属口径」与「视图注入空壳行」完全一致（单一真相，杜绝两套定义分叉）。
   const _obsIndicesRaw = renderOrder.filter(i => renderList[i] && renderList[i].stock && _isObsMember(renderList[i].stock.trim()));
 
+  // [THREE-DAY 2026-08-17] 三天竞跌模式下，分组口径改为「达标(dd≥2)置顶 / 未达标在后」，
+  // 不再按观察组/常规组分隔（解决"观察组永远排在前面"的问题）。真实 obs 身份仍由每行 itemClass/obsFormalStar 标记。
+  const _threeDayJingDieSet = sortState.byThreeDayJingDie ? getThreeDayJingDieSet(currentDate, dataSource) : null;
+
   let obsIndices, regularIndices, hiddenObsIndices;
-  if (jingYestToggleChecked) {
+  if (sortState.byThreeDayJingDie) {
+    obsIndices = renderOrder.filter(i => {
+      const nm = renderList[i] && renderList[i].stock ? renderList[i].stock.trim() : '';
+      const dd = nm && _threeDayJingDieSet ? (_threeDayJingDieSet.get(nm) || 0) : 0;
+      return dd >= 2;
+    });
+    regularIndices = renderOrder.filter(i => obsIndices.indexOf(i) < 0);
+    hiddenObsIndices = [];
+  } else if (jingYestToggleChecked) {
     hiddenObsIndices = [];
     _obsIndicesRaw.forEach(i => {
       const stockName = renderList[i].stock.trim();
@@ -477,8 +494,6 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     regularIndices = renderOrder.filter(i => obsIndices.indexOf(i) < 0);
     hiddenObsIndices = [];
   }
-
-  const _threeDayJingDieSet = sortState.byThreeDayJingDie ? getThreeDayJingDieSet(currentDate, dataSource) : null;
 
   const ctx = {
     dataSource, date: currentDate, confirmedSoldSet: _confirmedSoldSet,

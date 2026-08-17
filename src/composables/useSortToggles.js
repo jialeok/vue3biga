@@ -90,18 +90,20 @@ export function useAuctionSort() {
 
         if (sortState.byThreeDayJingDie) {
             return renderOrder.map((idx, pos) => {
-                const nm = auctionList[idx] && auctionList[idx].stock ? auctionList[idx].stock.trim() : '';
+                const it = auctionList[idx];
+                const nm = it && it.stock ? it.stock.trim() : '';
                 const dd = nm && threeDayJingDieSet ? (threeDayJingDieSet.get(nm) || 0) : 0;
-                const vol = auctionList[idx] ? (parseFloat(auctionList[idx].volume) || 0) : 0;
-                const yvol = auctionList[idx] ? (parseFloat(auctionList[idx].yestVolume) || 0) : 0;
-                const jr = (vol > 0 && yvol > 0) ? (vol / yvol) : null;
-                return { idx, pos, dd, jr };
+                const pctRaw = it ? (it.changePct || '') : '';
+                const pctNum = parseFloat(String(pctRaw).replace('%', ''));
+                const pctVal = isFinite(pctNum) ? pctNum : null;
+                const isQualified = dd >= 2;
+                return { idx, pos, isQualified, pctVal };
             }).sort((a, b) => {
-                if (a.dd !== b.dd) return b.dd - a.dd;
-                if (a.jr === null && b.jr === null) return a.pos - b.pos;
-                if (a.jr === null) return 1;
-                if (b.jr === null) return -1;
-                return a.jr - b.jr;
+                if (a.isQualified !== b.isQualified) return a.isQualified ? -1 : 1;
+                if (a.pctVal === null && b.pctVal === null) return a.pos - b.pos;
+                if (a.pctVal === null) return 1;
+                if (b.pctVal === null) return -1;
+                return b.pctVal - a.pctVal;
             }).map(x => x.idx);
         }
 
@@ -210,16 +212,17 @@ export function useAuctionSort() {
             return stocks.map((s, pos) => {
                 const nm = s.stock ? s.stock.trim() : '';
                 const dd = nm && threeDayJingDieSet ? (threeDayJingDieSet.get(nm) || 0) : 0;
-                const vol = parseFloat(s.volume) || 0;
-                const yvol = parseFloat(s.yestVolume) || 0;
-                const jr = (vol > 0 && yvol > 0) ? (vol / yvol) : null;
-                return { s, pos, dd, jr };
+                const pctRaw = s.changePct || '';
+                const pctNum = parseFloat(String(pctRaw).replace('%', ''));
+                const pctVal = isFinite(pctNum) ? pctNum : null;
+                const isQualified = dd >= 2;
+                return { s, pos, isQualified, pctVal };
             }).sort((a, b) => {
-                if (a.dd !== b.dd) return b.dd - a.dd;
-                if (a.jr === null && b.jr === null) return a.pos - b.pos;
-                if (a.jr === null) return 1;
-                if (b.jr === null) return -1;
-                return a.jr - b.jr;
+                if (a.isQualified !== b.isQualified) return a.isQualified ? -1 : 1;
+                if (a.pctVal === null && b.pctVal === null) return a.pos - b.pos;
+                if (a.pctVal === null) return 1;
+                if (b.pctVal === null) return -1;
+                return b.pctVal - a.pctVal;
             }).map(x => x.s);
         }
 
