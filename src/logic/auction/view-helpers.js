@@ -470,13 +470,19 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   let obsIndices, regularIndices, hiddenObsIndices;
   if (sortState.byThreeDayJingDie) {
-    obsIndices = renderOrder.filter(i => {
-      const nm = renderList[i] && renderList[i].stock ? renderList[i].stock.trim() : '';
-      const dd = nm && _threeDayJingDieSet ? (_threeDayJingDieSet.get(nm) || 0) : 0;
-      return dd >= 2;
-    });
-    regularIndices = renderOrder.filter(i => obsIndices.indexOf(i) < 0);
+    // [THREE-DAY 2026-08-17] 镜像「竞昨」观察组处理：
+    // ① 折叠观察组（obsIndices=[]）→ 模板不再渲染观察组区块与蚂蚁线；
+    // ② 隐藏「不在今日正式列表(9:25 官方抓取)」的观察组票（只显示当天正式列表），其余进单一列表；
+    // ③ 由上方 three-day 排序分支把 dd≥2 达标股排前、同档按 changePct 降序。
+    // 注意：今日命中判定用正式列表集 _getAuctionWatchlistSet，不能用 jingYestHighlightSet（那是竞昨专属高亮集）。
     hiddenObsIndices = [];
+    _obsIndicesRaw.forEach(i => {
+      const stockName = renderList[i].stock.trim();
+      const isOfficialToday = _getAuctionWatchlistSet(currentDate).has(stockName);
+      if (!isOfficialToday) hiddenObsIndices.push(i);
+    });
+    obsIndices = [];
+    regularIndices = renderOrder.filter(i => hiddenObsIndices.indexOf(i) < 0);
   } else if (jingYestToggleChecked) {
     hiddenObsIndices = [];
     _obsIndicesRaw.forEach(i => {
