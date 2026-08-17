@@ -1009,6 +1009,13 @@ export function useAuctionBoard() {
   function onAuctionRefresh() {
     if (uiStore.currentDate) prepareAuctionData(uiStore.currentDate);
     refresh();
+    // [FIX 2026-08-17] 数据刷新后重算「已展开」的趋势图：获取涨幅/导入等操作后
+    // renderAuction() 只刷新表格，trendHistory 是独立缓存，已展开的图会停留在旧快照
+    // （表现为"提示成功但趋势图当天没更新"）。这里只重算当前已展开的股票，不重置展开状态。
+    const expandedStocks = Array.from(expandedSet.value || []);
+    expandedStocks.forEach(function(name) {
+      if (name && trendHistory.value[name]) loadTrendHistory(name);
+    });
   }
 
   return {
