@@ -518,13 +518,6 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   const fullOrder = obsIndices.concat(regularIndices);
   const items = fullOrder.map((i, pos) => _enrichAuctionItem(renderList[i], i, ctx)).filter(Boolean);
 
-  // [THREE-DAY 2026-08-17] 列表组成统计：正式成员 / 观察组 / 交集（既观察组又正式），供界面"?"核对。
-  // 正式成员 = 9:25 官方列表（_getAuctionWatchlistSet，不含 obs）；观察组 = 前一日竞昨高光全集（_obsStocks）。
-  const _formalSet = _getAuctionWatchlistSet(currentDate);
-  const _obsSet = _obsStocks || new Set();
-  let _overlapCount = 0;
-  _obsSet.forEach(function(n) { if (_formalSet.has(n)) _overlapCount++; });
-
   return {
     date: currentDate,
     dataSource,
@@ -542,11 +535,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       // [FIX 2026-08-17] 竞/昨数口径统一为「渲染列表 ∩ 当日竞昨全集」（与蓝色高光完全一致）。
       // 原先只统计 auctionList（正式列表）→ 8/14 显示 16，而蓝色高光（含观察组注入壳）显示 18，
       // 两者对不上（用户反馈）。渲染列表 = 正式列表 + 观察组注入壳，二者同源判定，数字必然一致。
-      jingYestCount: renderList.filter(it => it && it.stock && jingYestHighlightSet && jingYestHighlightSet.has(it.stock.trim())).length,
-      // [THREE-DAY 2026-08-17] 列表组成：正式成员 / 观察组 / 交集（既观察组又正式）。
-      formalCount: _formalSet.size,
-      obsCount: _obsSet.size,
-      overlapCount: _overlapCount
+      jingYestCount: renderList.filter(it => it && it.stock && jingYestHighlightSet && jingYestHighlightSet.has(it.stock.trim())).length
     }
   };
 }

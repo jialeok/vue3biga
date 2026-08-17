@@ -5,9 +5,29 @@
       @dblclick.stop="openEdit"
     >
       <div>
-        <div :class="kind + '-title'">
-          {{ title }}
+      <div
+        :class="kind + '-title'"
+        style="position:relative;display:inline-flex;align-items:center;gap:6px;"
+      >
+        {{ title }}
+        <span
+          class="duiban-info-q"
+          title="查看列表组成说明"
+          @click.stop="toggleListInfo"
+        >?</span>
+        <div
+          v-if="showListInfo"
+          class="duiban-listinfo-pop"
+          @click.stop
+        >
+          <div>今日正式成员：<b>{{ listInfo.formalCount }}</b> 只</div>
+          <div>当日观察组：<b>{{ listInfo.obsCount }}</b> 只</div>
+          <div>交集（既是观察组又是正式）：<b>{{ listInfo.overlapCount }}</b> 只</div>
+          <div class="duiban-listinfo-foot">
+            列表总数 = 正式 + 观察组非交集 = <b>{{ listInfo.totalDisplay }}</b> 只
+          </div>
         </div>
+      </div>
         <div :class="kind + '-subtitle'" />
       </div>
     </div>
@@ -192,12 +212,31 @@ import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useBoardData } from '../composables/useBoardData.js';
 import { parseDieZhangbi, buildDieZhangbi } from '../logic/board/helpers.js';
 import { subscribeRecentMulti } from '../data/duiban-sync.js';
+import { _getAuctionWatchlistSet } from '../data/watchlist-and-metrics.js';
+import { getJingYestHighlightSetForDate } from '../logic/auction/sort-rules.js';
+import { getPreviousTradingDay } from '../logic/date/trading-day-helpers.js';
 
 const { boardState, loadRecentMulti, saveRecentMulti, toast, warnToast } = useBoardData();
 
 const title = '最近多板';
 const kind = 'duiban';
 const defaultTotal = 56;
+
+// [RECENT-MULTI 2026-08-17] 标题栏"?"说明浮层：列表组成（正式/观察组/交集/总数），点击展开再点收起。
+// 数字同源取自竞价看板唯一真相：正式成员 = 9:25 官方列表（_getAuctionWatchlistSet），观察组 = 前一日竞昨高光全集。
+const showListInfo = ref(false);
+function toggleListInfo() { showListInfo.value = !showListInfo.value; }
+const listInfo = computed(() => {
+  const cur = boardState.currentDate;
+  const formalSet = cur ? _getAuctionWatchlistSet(cur) : new Set();
+  const prev = cur ? getPreviousTradingDay(cur) : null;
+  const obsSet = prev ? getJingYestHighlightSetForDate(prev) : new Set();
+  let overlap = 0;
+  obsSet.forEach(n => { if (formalSet.has(n)) overlap++; });
+  const formal = formalSet.size;
+  const obs = obsSet.size;
+  return { formalCount: formal, obsCount: obs, overlapCount: overlap, totalDisplay: formal + obs - overlap };
+});
 
 const showModal = ref(false);
 const data = computed(() => boardState.recentMulti);
@@ -360,4 +399,9 @@ defineExpose({ openEdit, refresh });
 .board-btn-danger { background: #ef4444; color: #fff; }
 .board-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .board-hint { font-size: 11px; color: #94a3b8; margin-top: 4px; }
+.duiban-info-q { display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:#e2e8f0;color:#475569;font-size:10px;font-weight:700;cursor:pointer;user-select:none; }
+.duiban-info-q:hover { background:#cbd5e1; }
+.duiban-listinfo-pop { position:absolute;top:22px;left:0;z-index:80;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;font-size:12px;color:#334155;box-shadow:0 6px 20px rgba(0,0,0,0.12);min-width:240px;line-height:1.9; }
+.duiban-listinfo-pop b { color:#0f172a; }
+.duiban-listinfo-foot { color:#94a3b8;font-size:11px;margin-top:6px;border-top:1px solid #f1f5f9;padding-top:6px; }
 </style>
