@@ -154,6 +154,8 @@ import { useUiStore } from '../stores/uiStore.js';
 // [S-01] StatsBoard 经 Logic 层（src/logic/stats/）受控读写 jiwang.stats，不再直接原地改 allData.jiwang
 import { writeStats } from '../logic/stats/stats-logic.js';
 import { getJiwangData } from '../data/supabase-client.js';
+// [ACC-PREMIUM] 今日盈亏 ↔ 竞价变化账号溢价收盘 双向同步：圆形统计保存时镜像回 bidding_data。
+import { syncProfitToBiddingCloseMirror } from '../logic/bidding/helpers.js';
 
 const uiStore = useUiStore();
 
@@ -213,6 +215,8 @@ async function saveCircleStats() {
     gain: circleForm.gain,
     balance: circleForm.balance,
   }, '✅ 圆形统计已保存并同步到云端');
+  // [ACC-PREMIUM] 今日盈亏 → 竞价变化账号溢价收盘 镜像（持久化一致；前台展示由响应式 profitSource 实时跟随）。
+  syncProfitToBiddingCloseMirror(uiStore.currentDate, circleForm.profit);
   circleModalActive.value = false;
 }
 

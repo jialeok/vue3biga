@@ -12,6 +12,22 @@ import { useUiStore } from '../../stores/uiStore.js';
 
 export { autoCalculateRecentMultiScore };
 
+// [ACC-PREMIUM] 账户溢价收盘 ↔ 圆形统计今日盈亏 双向同步镜像：
+// 把 stats.profit 镜像回 bidding_data 的「账号溢价」行 close（保持持久化一致；
+// 展示侧已改为直接读 stats.profit，本镜像仅为诊断/遗留读取一致性）。
+export function syncProfitToBiddingCloseMirror(date, profit) {
+  if (!date) return;
+  const biddingData = getBiddingData();
+  if (!biddingData[date]) biddingData[date] = [];
+  let row = biddingData[date].find(r => r && r.name === '账号溢价');
+  if (!row) {
+    row = { name: '账号溢价' };
+    biddingData[date].push(row);
+  }
+  row.close = (profit === '' || profit === undefined || profit === null) ? '' : String(profit);
+  saveData();
+}
+
 export async function syncSectorEtfZhangNum(zhangNum) {
   zhangNum = parseInt(zhangNum) || 0;
   const uiStore = useUiStore();

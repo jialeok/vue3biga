@@ -95,9 +95,13 @@ export function useBiddingBoard() {
     return n + '%';
   }
 
-  // 收盘列单位：昨日资金前十 / 板块ETF 类为「红盘家数」，单位用「红」而非「%」；其余行沿用 %（当前逻辑正确）。
+  // 收盘列单位：账号溢价用「元」；昨日资金前十 / 板块ETF 类为「红盘家数」，单位用「红」而非「%」；其余行沿用 %（当前逻辑正确）。
   function formatClose(v, name) {
     if (!v && v !== 0) return '-';
+    if (name === '账号溢价') {
+      const n = parseFloat(v);
+      return (isNaN(n) ? v : n) + '元';
+    }
     if (name === '昨日资金前十' || (name && name.indexOf('板块ETF') === 0)) {
       const n = parseFloat(v);
       return (isNaN(n) ? v : n) + '红';
@@ -114,7 +118,7 @@ export function useBiddingBoard() {
         if (r && r.name) existingMap.set(r.name.toString().trim(), r);
       });
     }
-    return BIDDING_ROW_ORDER.map(name => {
+    const result = BIDDING_ROW_ORDER.map(name => {
       const row = existingMap.get(name);
       if (!row) return { name, time915: '', time920: '', time925: '', change: '', close: '' };
       return {
@@ -126,10 +130,34 @@ export function useBiddingBoard() {
         close: row.close || ''
       };
     });
+    // [ACC-PREMIUM] 账号溢价收盘以「圆形统计今日盈亏 stats.profit」为唯一真相源（双向同步）：
+    // 表格展示直接读 profit，避免 bidding_data.close 与 stats.profit 两套值不一致。
+    const premiumRow = result.find(r => r.name === '账号溢价');
+    if (premiumRow) {
+      const j = getJiwangData();
+      const sd = j && j[uiStore.currentDate] && j[uiStore.currentDate].stats;
+      const p = sd && sd.profit;
+      premiumRow.close = (p !== undefined && p !== '' && p !== null) ? p : '';
+    }
+    return result;
   }
 
   function render() {
     biddingRows.value = getTodayBidding();
+  }
+
+  // [ACC-PREMIUM] 今日盈亏（stats.profit）响应式派生源：圆形统计与账号溢价收盘共用同一真相源。
+  const profitSource = computed(() => {
+    const j = getJiwangData();
+    const sd = j && j[uiStore.currentDate] && j[uiStore.currentDate].stats;
+    const p = sd && sd.profit;
+    return (p !== undefined && p !== '' && p !== null) ? p : '';
+  });
+
+  function syncEditRowsProfit() {
+    if (!editRows.value || !editRows.value.length) return;
+    const premium = editRows.value.find(r => r.name === '账号溢价');
+    if (premium) premium.close = profitSource.value;
   }
 
   function openEdit() {
@@ -425,6 +453,12 @@ export function useBiddingBoard() {
   });
 
   watch(() => uiStore.currentDate, () => { render(); });
+
+  // [ACC-PREMIUM] 今日盈亏变化（圆形统计后台编辑保存 / 竞价变化前台输入）→ 竞价变化表格（前台）与编辑弹窗（后台）实时跟随。
+  watch(profitSource, () => {
+    render();
+    syncEditRowsProfit();
+  });
 
   return {
     // 响应式状态
