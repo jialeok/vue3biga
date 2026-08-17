@@ -495,6 +495,216 @@ async function runDuobanSecond(source) {
   return { ok, date, point: 't0926', written: upsertPayload, row: duobanResult, writeError };
 }
 
+// ----------------------------- 收盘涨幅覆盖（合并自 auction-close-fetch） -----------------------------
+// [FIX 2026-08-17] 收盘（16:00）自动抓取当天「最近多板」成分股涨幅并覆盖 market_metrics.change_pct。
+// 原为独立 Edge Function auction-close-fetch，用户要求合并进 bidding-a（不新建函数/不重复设 Secrets）。
+// 由 pg_cron 北京时间 16:00 触发 point=auction-close；逻辑与原 close-workflow.js 1:1：
+//   读当日 auction_watchlist → fuyao snapshot 批量拉收盘涨幅 → 只覆盖 market_metrics change_pct。
+// 注意：与 point=close（竞价变化看板 bidding_data 收盘）是两回事，路由独立。
+
+function tickerToThscode(code) {
+  const c = String(code).trim();
+  if (!/^\d{6}$/.test(c)) return '';
+  if (c.startsWith('6') || c.startsWith('9')) return c + '.SH';
+  if (c.startsWith('4') || c.startsWith('8')) return c + '.BJ';
+  return c + '.SZ';
+}
+
+function applySnapshotItem(it, code, result, stats) {
+  const pct = it.price_change_ratio_pct;
+  if (pct === null || pct === undefined || pct === '') { stats.emptyField++; return; }
+  const n = Number(pct);
+  if (isNaN(n)) { stats.emptyField++; return; }
+  let ratio = n;
+  const priceChange = it.price_change !== undefined && it.price_change !== null ? Number(it.price_change) : null;
+  const curr = it.current_price !== undefined && it.current_price !== null ? Number(it.current_price) : null;
+  const prev = it.prev_close !== undefined && it.prev_close !== null ? Number(it.prev_close) : null;
+  const isActuallyDown = (priceChange !== null && priceChange < 0) || (curr !== null && prev !== null && curr < prev);
+  if (isActuallyDown && ratio > 0) ratio = -ratio;
+  result[code] = (ratio >= 0 ? '+' : '') + ratio.toFixed(2) + '%';
+}
+
+// fuyao snapshot 批量获取收盘涨幅 → { pctMap: { code: pctStr }, stats: {...} }
+async function fetchSnapshotChangePct(codes) {
+  const result = {};
+  const stats = {
+    totalInput: codes.length, batchOk: 0, batchFail: 0,
+    singleOk: 0, singleFail: 0, itemsReturned: 0,
+    emptyField: 0, notMatched: 0, success: 0,
+  };
+  const batchSize = 40;
+  for (let i = 0; i < codes.length; i += batchSize) {
+    const chunk = codes.slice(i, i + batchSize);
+    const thscodes = chunk.map(c => tickerToThscode(c)).filter(Boolean).join(',');
+    if (!thscodes) continue;
+    let data;
+    try {
+      data = await fuyaoGet('/api/a-share/prices/snapshot', { thscodes: thscodes });
+      stats.batchOk++;
+    } catch (batchErr) {
+      stats.batchFail++;
+      console.warn('snapshot 批量失败，降级逐只:', batchErr.message);
+      for (const code of chunk) {
+        const thscode = tickerToThscode(code);
+        if (!thscode) continue;
+        try {
+          const d1 = await fuyaoGet('/api/a-share/prices/snapshot', { thscodes: thscode });
+          stats.singleOk++;
+          const items1 = (d1 && d1.item) || [];
+          stats.itemsReturned += items1.length;
+          items1.forEach(it => applySnapshotItem(it, code, result, stats));
+        } catch (e1) { stats.singleFail++; }
+      }
+      continue;
+    }
+    const items = (data && data.item) || [];
+    stats.itemsReturned += items.length;
+    const codeSet = new Set(chunk);
+    items.forEach(it => {
+      const tcode = String(it.thscode || '').replace(/\..*$/, '');
+      if (tcode && codeSet.has(tcode)) applySnapshotItem(it, tcode, result, stats);
+      else stats.notMatched++;
+    });
+  }
+  stats.success = Object.keys(result).length;
+  return { pctMap: result, stats };
+}
+
+async function readAuctionWatchlist(date) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?date=eq.' + encodeURIComponent(date) +
+    '&select=stock,code&limit=1000';
+  const resp = await fetch(url, { headers: sbHeaders() });
+  if (!resp.ok) throw new Error('读取 auction_watchlist 失败: HTTP ' + resp.status);
+  return await resp.json();
+}
+
+async function upsertMarketMetricsRows(rows) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?on_conflict=date%2Cstock%2Cscope';
+  // 优先 service role（写权限最稳），回退 anon（与 bidding-a 现有写 bidding_data 同路径）
+  const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_ANON_KEY') || '';
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'apikey': key,
+      'Authorization': 'Bearer ' + key,
+      'Content-Type': 'application/json',
+      'Prefer': 'resolution=merge-duplicates',
+    },
+    body: JSON.stringify(rows),
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error('upsert market_metrics 失败: HTTP ' + resp.status + ' ' + text.slice(0, 300));
+  }
+}
+
+async function runAuctionCloseFetch(source) {
+  const logs = [];
+  const today = beijingToday();
+  const logBase = { run_date: today, time_point: 'auction-close', source: source || 'cron', job: 'auction-close-fetch', worker: 'edge' };
+  logs.push('today=' + today);
+
+  if (!(await isTradingDay())) {
+    logs.push('非交易日，跳过');
+    await writeLog(Object.assign(logBase, { ok: false, detail: { skipped: '非交易日' } }));
+    return { ok: false, today, skipped: true, reason: '非交易日', logs };
+  }
+
+  // 1. 读取当日 auction_watchlist
+  logs.push('步骤1：读取当日 auction_watchlist...');
+  let watchlist;
+  try {
+    watchlist = await readAuctionWatchlist(today);
+  } catch (e) {
+    logs.push('读取 auction_watchlist 失败: ' + e.message);
+    await writeLog(Object.assign(logBase, { ok: false, detail: { error: e.message } }));
+    return { ok: false, today, error: '读取 auction_watchlist 失败: ' + e.message, logs };
+  }
+  logs.push('auction_watchlist 读取 ' + watchlist.length + ' 只');
+  if (watchlist.length === 0) {
+    logs.push('❌ 当日 auction_watchlist 为空（9:25 morning 可能未成功写入），无法覆盖涨幅');
+    await writeLog(Object.assign(logBase, { ok: false, detail: { error: '当日列表为空' } }));
+    return { ok: false, today, error: '当日 auction_watchlist 为空', skipped: true, reason: '当日列表为空', logs };
+  }
+
+  // 2. fuyao snapshot 批量获取收盘涨幅 + 覆盖率不足重试
+  const codes = watchlist.map(w => w.code).filter(Boolean);
+  const COVERAGE_THRESHOLD = 0.5;
+  const RETRY_DELAYS_SEC = [60, 120];
+  let snapshotResult = await fetchSnapshotChangePct(codes);
+  let pctMap = snapshotResult.pctMap;
+  let stats = snapshotResult.stats;
+  let coverage = codes.length > 0 ? stats.success / codes.length : 0;
+  logs.push('步骤2：调用 fuyao snapshot 获取收盘涨幅...');
+  logs.push('snapshot 第1次: success=' + stats.success + '/' + codes.length +
+    ' (覆盖率 ' + (coverage * 100).toFixed(1) + '%)' +
+    ' batchOk=' + stats.batchOk + ' batchFail=' + stats.batchFail +
+    ' singleOk=' + stats.singleOk + ' singleFail=' + stats.singleFail +
+    ' itemsReturned=' + stats.itemsReturned + ' emptyField=' + stats.emptyField + ' notMatched=' + stats.notMatched);
+
+  for (let attempt = 0; attempt < RETRY_DELAYS_SEC.length && coverage < COVERAGE_THRESHOLD; attempt++) {
+    const waitSec = RETRY_DELAYS_SEC[attempt];
+    logs.push('⏳ snapshot 覆盖率 ' + (coverage * 100).toFixed(1) + '% 低于阈值，' + waitSec + '秒后重试第' + (attempt + 1) + '次...');
+    await new Promise(r => setTimeout(r, waitSec * 1000));
+    try {
+      const retryResult = await fetchSnapshotChangePct(codes);
+      const retryCoverage = codes.length > 0 ? retryResult.stats.success / codes.length : 0;
+      logs.push('snapshot 第' + (attempt + 2) + '次: success=' + retryResult.stats.success + '/' + codes.length +
+        ' (覆盖率 ' + (retryCoverage * 100).toFixed(1) + '%)');
+      if (retryResult.stats.success > stats.success) {
+        pctMap = retryResult.pctMap;
+        stats = retryResult.stats;
+        coverage = retryCoverage;
+        logs.push('✅ 重试结果更好，采用重试结果 (success=' + stats.success + ')');
+      } else {
+        logs.push('第' + (attempt + 1) + '次重试结果未改善 (success=' + retryResult.stats.success + ')');
+      }
+    } catch (e) { logs.push('第' + (attempt + 1) + '次重试请求失败: ' + e.message); }
+  }
+
+  if (stats.success === 0) {
+    logs.push('❌ snapshot 接口未返回任何涨幅（可能接口故障/限流/收盘数据未结算）');
+    await writeLog(Object.assign(logBase, { ok: false, detail: { error: 'snapshot 无数据', stats } }));
+    return { ok: false, today, error: 'snapshot 接口未返回任何涨幅数据', stocksCount: watchlist.length, snapshotStats: stats, logs };
+  }
+
+  // 3. 写入 market_metrics（只覆盖 change_pct）
+  logs.push('步骤3：写入 market_metrics change_pct...');
+  const nowIso = new Date().toISOString();
+  const metricsRows = watchlist.filter(w => w.code && pctMap[w.code]).map(w => ({
+    date: today,
+    stock: w.stock,
+    code: w.code,
+    change_pct: pctMap[w.code],
+    scope: 'auction',
+    source: 'worker',
+    updated_at: nowIso,
+    updated_by: 'bidding-a-auction-close',
+  }));
+
+  let writeError = null;
+  try {
+    await upsertMarketMetricsRows(metricsRows);
+    logs.push('market_metrics 写入 ' + metricsRows.length + ' 行 change_pct');
+  } catch (e) {
+    writeError = e.message;
+    logs.push('写入 market_metrics 失败: ' + e.message);
+    await writeLog(Object.assign(logBase, { ok: false, detail: { error: writeError } }));
+    return { ok: false, today, error: '写入 market_metrics 失败: ' + writeError, logs };
+  }
+
+  const uncoveredCount = watchlist.length - metricsRows.length;
+  if (coverage < COVERAGE_THRESHOLD) logs.push('⚠️ 覆盖率低 ' + (coverage * 100).toFixed(1) + '%');
+  if (uncoveredCount > 0) logs.push('未覆盖 ' + uncoveredCount + ' 只（可能停牌/接口未返回）');
+  const completenessSummary = uncoveredCount === 0 ? '✅ 涨幅覆盖完整 ' + metricsRows.length + '/' + watchlist.length
+    : '⚠️ 覆盖 ' + metricsRows.length + '/' + watchlist.length + '（未覆盖 ' + uncoveredCount + ' 只）';
+  logs.push('数据完整性汇总: ' + completenessSummary);
+
+  await writeLog(Object.assign(logBase, { ok: true, detail: { pctUpdated: metricsRows.length, coverage, stats, completenessSummary } }));
+  logs.push('完成: 收盘涨幅覆盖 ' + metricsRows.length + ' 只');
+  return { ok: true, today, stocksCount: watchlist.length, pctUpdated: metricsRows.length, coverage, snapshotStats: stats, completenessSummary, logs };
+}
+
 // ----------------------------- 入口路由 -----------------------------
 function autoPoint() {
   const d = beijingNow();
@@ -528,8 +738,13 @@ Deno.serve(async (req) => {
       point = autoPoint();
       if (!point) return new Response(JSON.stringify({ ok: false, error: '当前北京时间不在任何抓取时段' }), { headers: { 'Content-Type': 'application/json' } });
     }
+    // [FIX 2026-08-17] 收盘涨幅覆盖（market_metrics）路由：与竞价看板 close（bidding_data）独立。
+    if (point === 'auction-close') {
+      const result = await runAuctionCloseFetch('http');
+      return new Response(JSON.stringify(result, null, 2), { headers: { 'Content-Type': 'application/json' } });
+    }
     if (!POINT_TO_COLUMN[point]) {
-      return new Response(JSON.stringify({ ok: false, error: 'point 必须是 t0915|t0920|t0925|t0926|close|auto' }), { headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ ok: false, error: 'point 必须是 t0915|t0920|t0925|t0926|close|auction-close|auto' }), { headers: { 'Content-Type': 'application/json' } });
     }
     let result;
     if (point === 't0926') result = await runDuobanSecond('http');
