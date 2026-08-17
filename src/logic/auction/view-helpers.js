@@ -165,11 +165,24 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   const prevDate = getPreviousTradingDay(currentDate);
 
-  // [OBS-FIX 2026-08-14] 观察组归属（前一日竞昨高光 + 观察组标签继承）在顶部统一计算，
-  // 并据此在「渲染列表」中注入空壳行，保证「观察组(蚂蚁线上)数量 == 前一日竞昨高光数」严格成立。
-  // 关键：视图层注入不写入 auctionData、不触发云端推送——历史锁定(ensureObservationStocks 对历史日期提前返回)
-  // 只防止「改写云端」，但视图必须始终如实呈现继承结果，否则历史日期观察组会丢失本该继承的股票（表现为 8/12 少了3只）。
-  const _obsStocks = getJingYestHighlightSetForDate(prevDate, dataSource);
+  // [OBS-FIX 2026-08-17] 观察组继承口径统一：观察组 = 前一日【渲染列表内】竞昨高光，
+  // 而非「全市场竞昨全集」。全市场全集包含大量不在用户列表的股票（影子行/注入壳），
+  // 会导致观察组数量 > 前一日用户看到的蓝色高光数（8/14 全集21 vs 高光18）。
+  // 渲染列表 = 前一日正式列表(watchlist+obsAutoAdded) ∪ 前一日观察组注入壳(前前日竞昨全集)。
+  // 观察组、竞昨数标、蓝色高光三者口径统一为「渲染列表 ∩ 竞昨全集」（§17/§23 单一真相）。
+  const _prevFormalNames = new Set(
+    (getTodayGroupList(prevDate, dataSource) || [])
+      .map(function(s) { return s && s.stock ? s.stock.trim() : ''; })
+      .filter(Boolean)
+  );
+  const _prevPrevDate = getPreviousTradingDay(prevDate);
+  const _prevPrevJingYest = _prevPrevDate ? getJingYestHighlightSetForDate(_prevPrevDate, dataSource) : new Set();
+  const _prevRenderNames = new Set(_prevFormalNames);
+  if (_prevPrevJingYest) _prevPrevJingYest.forEach(n => _prevRenderNames.add(n));
+  const _obsStocksAll = getJingYestHighlightSetForDate(prevDate, dataSource);
+  const _obsStocks = new Set(
+    [...(_obsStocksAll || [])].filter(n => _prevRenderNames.has(n))
+  );
   const _obsBoughtSet = new Set(JSON.parse(localStorage.getItem('obsBought_' + currentDate) || '[]')); // 合规：防重复/调试标记（§8 允许）
   const _isObsMember = function(name) {
     if (!name) return false;
@@ -518,9 +531,10 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       strongCount,
       totalCount,
       highRatioCount: highRatioToday.count,
-      // 竞/昨数：统计「当前列表里实际符合竞昨条件的股票数」（与页面蓝色高光一致），
-      // 而非全市场竞昨全集（全市场集会包含大量不在用户自选列表里的股票，造成黄色条与蓝色高光对不上）。
-      jingYestCount: auctionList.filter(it => it && it.stock && jingYestHighlightSet && jingYestHighlightSet.has(it.stock.trim())).length
+      // [FIX 2026-08-17] 竞/昨数口径统一为「渲染列表 ∩ 当日竞昨全集」（与蓝色高光完全一致）。
+      // 原先只统计 auctionList（正式列表）→ 8/14 显示 16，而蓝色高光（含观察组注入壳）显示 18，
+      // 两者对不上（用户反馈）。渲染列表 = 正式列表 + 观察组注入壳，二者同源判定，数字必然一致。
+      jingYestCount: renderList.filter(it => it && it.stock && jingYestHighlightSet && jingYestHighlightSet.has(it.stock.trim())).length
     }
   };
 }
