@@ -1,5 +1,5 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-08-16 00:39:35
+// 生成时间: 2026-08-17 12:45:23
 // 注意: 此文件由 _bundle-workers.ps1 自动生成，请勿手动编辑
 
 // ────── _shared-source/date-utils.js ──────
