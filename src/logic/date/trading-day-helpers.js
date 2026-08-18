@@ -45,7 +45,11 @@ export function isAutoHoliday(dateStr) {
     d.setFullYear(d.getFullYear() - 1);
     return d.toISOString().slice(0, 10);
   })();
-  return dateStr >= oneYearAgo && dateStr <= today;
+  // [FIX 2026-08-18] autoHoliday 仅用于「回顾性」兜底——过去一年里用户未记录的休市日。
+  // 不含今天及未来：今天数据尚未录入，未记录≠休市，否则早上打开应用会把当天误判为
+  // 假期 → isWeekend(今天)=true → useStatsView.boardView='weekly' → 显示周末统计看板。
+  // 与 DashboardView.vue 行 353 日历着色逻辑（dateStr < todayLocal）保持一致。
+  return dateStr >= oneYearAgo && dateStr < today;
 }
 
 export function isTradingDay(dateStr) {
