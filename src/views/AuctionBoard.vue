@@ -156,6 +156,9 @@ defineExpose({
   border-top: 1.5px dashed #cbd5e1;
 }
 .auction-row.obs-row { background: #f0f9ff; }
+/* [FEAT 2026-08-18] 双击表头搜索 → 匹配行整行黄色高光（覆盖行状态色/obs-row/hover，§17 响应式驱动） */
+.auction-row.auction-row-highlight { background: #fef08a !important; }
+.auction-row.auction-row-highlight:hover { background: #fde047 !important; }
 /* 行状态用左竖线表示，不用整行背景色 */
 .auction-item.sold {
   background: none !important;

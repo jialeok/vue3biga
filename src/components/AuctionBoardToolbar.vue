@@ -87,10 +87,11 @@
     <span style="font-weight:700;color:#dc2626;">竞昨数：{{ jingYestCountText }}</span>
     <span style="display:inline-block;width:28px;" />竞放量数：<span style="font-weight:700;">{{ highRatioCountText }}</span>
   </div>
+  <AuctionHeaderSearch />
   <div
     class="auction-header-row"
     style="cursor:pointer"
-    @click="onHeaderClick"
+    @dblclick.stop="onHeaderDblClick"
   >
     <div class="auction-header-item auction-header-number">
       序号
@@ -107,18 +108,6 @@
     <div class="auction-header-item auction-header-ratio">
       占比
     </div>
-  </div>
-  <div
-    v-if="searchActive"
-    class="auction-search-container"
-  >
-    <input
-      v-model="searchKeyword"
-      type="text"
-      class="auction-search-input"
-      placeholder="输入股票名称搜索..."
-      @click.stop
-    >
   </div>
   <div
     v-if="showBackend"
@@ -238,6 +227,7 @@
 <script setup>
 import { inject, computed } from 'vue';
 import { apiStatusMap } from '../logic/ui-bridge.js';
+import AuctionHeaderSearch from './AuctionHeaderSearch.vue';
 const board = inject('auctionBoard');
 const {
   uiStore, auctionStore, sortState, expandedSet, trendHistory, longPressMenuRef, coreTopicModalRef, editModalRef,
@@ -250,7 +240,7 @@ const {
   toggleBoard, getStockStyle, getTopicRowClass, toggleSort2, toggleStrengthSort, toggleGroupExpand,
   p2ToggleExpandAll, loadP2TrendHistory, loadP2TrendHistoryChunked, toggleP2Trend, getLastNTradingDays,
   loadCopiedStocks, saveCopiedStocks, copyAllTopicStocks, copyTopicStocks, deleteCopiedStock, clearAllCopiedStocks,
-  openBackend, openEditModal, openCoreTopicModal, onHeaderClick, refresh, toggleSort, expandAll, collapseAll,
+  openBackend, openEditModal, openCoreTopicModal, onHeaderClick, onHeaderDblClick, refresh, toggleSort, expandAll, collapseAll,
   _computeTrendStats, loadTrendHistory, dailyAuctionMetrics, dailyMetricsList, switchPage,
   onSwipeStart, onSwipeEnd, handleSwipe, runBackend, onImportPaste, onReplaceConcept, onHistoryFill,
   onToggleSelect, onEditVolumeNote, _persistVolumeNote, saveVolumeNote, clearVolumeNote,

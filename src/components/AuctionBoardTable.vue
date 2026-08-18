@@ -20,10 +20,10 @@
   <template
     v-for="(item, idx) in filteredObsItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.stock)]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.stock), highlightStockSet.has(item.stock)]"
   >
     <div
-      :class="item.itemClass"
+      :class="[item.itemClass, highlightStockSet.has(item.stock) ? 'auction-row-highlight' : '']"
       :data-index="item.index"
       :data-stock="item.stock || ''"
       @click="onToggleSelect(item.index)"
@@ -165,10 +165,10 @@
   <template
     v-for="(item, idx) in filteredRegularItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.stock)]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.stock), highlightStockSet.has(item.stock)]"
   >
     <div
-      :class="item.itemClass"
+      :class="[item.itemClass, highlightStockSet.has(item.stock) ? 'auction-row-highlight' : '']"
       :data-index="item.index"
       :data-stock="item.stock || ''"
       @click="onToggleSelect(item.index)"
@@ -313,7 +313,7 @@ const board = inject('auctionBoard');
 const {
   uiStore, auctionStore, sortState, expandedSet, trendHistory, longPressMenuRef, coreTopicModalRef, editModalRef,
   viewData, currentPage, showBackend, expanded, topicGroups, itemsByIndex, obsItems, regularItems, allItems,
-  searchActive, searchKeyword, filteredItems, filteredObsItems, filteredRegularItems, showObsSeparator,
+  searchActive, searchKeyword, filteredItems, filteredObsItems, filteredRegularItems, showObsSeparator, highlightStockSet,
   sortState2, isStrengthSortEnabled, p2ExpandedSet, p2TrendHistory, p2ExpandedTopics, p2ExpandAll,
   p2StockTopicCount, p2HighRatioInfo, p2JingYestSet, p2ParallelSet, p2JingYestCount, p2HighRatioCount,
   sortedTopicGroups, page3Data, copiedStocks, page4DisplayStocks, backendLoading,

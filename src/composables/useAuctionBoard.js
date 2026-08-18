@@ -118,6 +118,12 @@ export function useAuctionBoard() {
   const searchActive = ref(false);
   const searchKeyword = ref('');
 
+  // [FEAT 2026-08-18] §3/§6 双击表头 → 表头上方搜索框，输入股票名称 → 匹配行整行黄色高光。
+  // headerSearchActive 控制搜索框显隐；highlightStockSet 存匹配的股票名集合（行高光唯一真相源）。
+  // 与旧 searchActive/searchKeyword 过滤搜索解耦，互不影响（§18 状态隔离）。
+  const headerSearchActive = ref(false);
+  const highlightStockSet = ref(new Set());
+
   const filteredItems = computed(() => {
     if (!searchKeyword.value.trim()) return allItems.value;
     const kw = searchKeyword.value.trim().toLowerCase();
@@ -601,6 +607,12 @@ export function useAuctionBoard() {
     if (!searchActive.value) searchKeyword.value = '';
   }
 
+  // [FEAT 2026-08-18] 双击表头切换高光搜索框；关闭时清空高光集合（§17 响应式驱动 UI）。
+  function onHeaderDblClick() {
+    headerSearchActive.value = !headerSearchActive.value;
+    if (!headerSearchActive.value) highlightStockSet.value = new Set();
+  }
+
   function refresh() {
     auctionStore.bumpDataVersion('auction');
   }
@@ -1038,6 +1050,8 @@ export function useAuctionBoard() {
     allItems,
     searchActive,
     searchKeyword,
+    headerSearchActive,
+    highlightStockSet,
     filteredItems,
     filteredObsItems,
     filteredRegularItems,
@@ -1085,6 +1099,7 @@ export function useAuctionBoard() {
     openEditModal,
     openCoreTopicModal,
     onHeaderClick,
+    onHeaderDblClick,
     refresh,
     toggleSort,
     expandAll,
