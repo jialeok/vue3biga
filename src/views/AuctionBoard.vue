@@ -156,9 +156,7 @@ defineExpose({
   border-top: 1.5px dashed #cbd5e1;
 }
 .auction-row.obs-row { background: #f0f9ff; }
-/* [FEAT 2026-08-18] 双击表头搜索 → 匹配行整行黄色高光（覆盖行状态色/obs-row/hover，§17 响应式驱动） */
-.auction-row.auction-row-highlight { background: #fef08a !important; }
-.auction-row.auction-row-highlight:hover { background: #fde047 !important; }
+
 /* 行状态用左竖线表示，不用整行背景色 */
 .auction-item.sold {
   background: none !important;
@@ -184,6 +182,10 @@ defineExpose({
 .auction-item.parallel-match { box-shadow: inset 4px 0 0 #10b981; }
 .auction-item.jing-yest-match { box-shadow: inset 4px 0 0 #3b82f6; }
 .auction-item.three-day-jing-die { box-shadow: inset 4px 0 0 #059669; }
+/* [FEAT 2026-08-18] 双击表头搜索 → 匹配行整行黄色高光。
+   行 div 类为 auction-item（非 auction-row）；放在状态类之后确保覆盖 sold/bought/selected 等（同特异性同 important，后定义胜出）。 */
+.auction-item.auction-row-highlight { background: #fef08a !important; }
+.auction-item.auction-row-highlight:hover { background: #fde047 !important; }
 /* 股票名称列作为 badge 的定位父级。
    - position:relative 让内部 absolute 的 badge-group 相对它定位。
    - 不再用 padding-right 预留角标空间(那会撑宽名称列、挤动后面四列)。

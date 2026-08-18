@@ -59,13 +59,7 @@ function onInput() {
     if (item.stock && item.stock.toLowerCase().includes(kw)) matched.add(item.stock);
   }
   highlightStockSet.value = matched;
-  // 匹配后实时滚动到第一个高光行视野中央（UI 视觉定位，非业务逻辑，§17 响应式驱动后 nextTick 操作 DOM）。
-  if (matched.size > 0) {
-    nextTick(() => {
-      const el = document.querySelector('.auction-row.auction-row-highlight');
-      if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    });
-  }
+
 }
 
 watch(headerSearchActive, (v) => {
@@ -86,8 +80,8 @@ watch(headerSearchActive, (v) => {
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  background: #fef9c3;
-  border-bottom: 1px solid #fde047;
+  background: #f1f5f9;
+  border-bottom: 1px solid #cbd5e1;
   position: sticky;
   top: 0;
   z-index: 2;
@@ -95,7 +89,7 @@ watch(headerSearchActive, (v) => {
 .auction-header-search-input {
   flex: 1;
   padding: 6px 10px;
-  border: 1px solid #facc15;
+  border: 1px solid #cbd5e1;
   border-radius: 6px;
   font-size: 13px;
   outline: none;
@@ -103,12 +97,12 @@ watch(headerSearchActive, (v) => {
   color: #1f2937;
 }
 .auction-header-search-input:focus {
-  border-color: #ca8a04;
-  box-shadow: 0 0 0 2px rgba(234, 179, 8, 0.25);
+  border-color: #64748b;
+  box-shadow: 0 0 0 2px rgba(100, 116, 139, 0.2);
 }
 .auction-header-search-count {
   font-size: 12px;
-  color: #854d0e;
+  color: #64748b;
   font-weight: 600;
   white-space: nowrap;
 }

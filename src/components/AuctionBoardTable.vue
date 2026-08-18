@@ -20,10 +20,10 @@
   <template
     v-for="(item, idx) in filteredObsItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.stock), highlightStockSet.has(item.stock)]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.stock)]"
   >
     <div
-      :class="[item.itemClass, highlightStockSet.has(item.stock) ? 'auction-row-highlight' : '']"
+      :class="item.itemClass"
       :data-index="item.index"
       :data-stock="item.stock || ''"
       @click="onToggleSelect(item.index)"
@@ -165,10 +165,10 @@
   <template
     v-for="(item, idx) in filteredRegularItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.stock), highlightStockSet.has(item.stock)]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.stock)]"
   >
     <div
-      :class="[item.itemClass, highlightStockSet.has(item.stock) ? 'auction-row-highlight' : '']"
+      :class="item.itemClass"
       :data-index="item.index"
       :data-stock="item.stock || ''"
       @click="onToggleSelect(item.index)"
@@ -306,7 +306,7 @@
 </template>
 
 <script setup>
-import { inject } from 'vue';
+import { inject, watch, nextTick } from 'vue';
 import AuctionBadge from './AuctionBadge.vue';
 import TrendChart from './TrendChart.vue';
 const board = inject('auctionBoard');
@@ -338,4 +338,25 @@ function aucPctHasData(stock) {
 function changePctHasData(stock) {
   return trendHistory.value[stock].changePct.some(p => p.value !== null);
 }
+
+// [FEAT 2026-08-18] 表头搜索高光：watch highlightStockSet 直接操作行 DOM 加/移除高光类 + 滚动定位。
+// 不走 :class 响应式（v-memo 对 ref(Set).has() 追踪不可靠），改用 watch + DOM 确定生效。
+// §17 UI 操作自己渲染的 DOM（行由本组件 v-for 渲染），非业务逻辑；数据变化后重新加高光避免 v-memo 重渲染覆盖。
+function applyHighlight() {
+  nextTick(() => {
+    const s = highlightStockSet.value;
+    const rows = document.querySelectorAll('.auction-item[data-stock]');
+    rows.forEach(row => {
+      const stock = row.getAttribute('data-stock') || '';
+      if (s.has(stock)) row.classList.add('auction-row-highlight');
+      else row.classList.remove('auction-row-highlight');
+    });
+    if (s.size > 0) {
+      const first = document.querySelector('.auction-item.auction-row-highlight');
+      if (first) first.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  });
+}
+watch(highlightStockSet, applyHighlight);
+watch(viewData, () => { if (highlightStockSet.value.size > 0) applyHighlight(); });
 </script>
