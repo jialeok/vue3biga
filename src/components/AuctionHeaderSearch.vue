@@ -16,7 +16,7 @@
       v-model="keyword"
       type="text"
       class="auction-header-search-input"
-      placeholder="输入股票名称，匹配行整行黄色高光..."
+      placeholder="模糊搜索股票名称，匹配行整行黄色高光并滚动定位..."
       @click.stop
       @dblclick.stop
       @input="onInput"
@@ -50,6 +50,7 @@ function onInput() {
     highlightStockSet.value = new Set();
     return;
   }
+  // [FEAT 2026-08-18] 模糊匹配：子串包含（includes）——输入"沃"/"光电"/"电"均可命中"沃格光电"。
   const matched = new Set();
   for (const item of obsItems.value) {
     if (item.stock && item.stock.toLowerCase().includes(kw)) matched.add(item.stock);
@@ -58,6 +59,13 @@ function onInput() {
     if (item.stock && item.stock.toLowerCase().includes(kw)) matched.add(item.stock);
   }
   highlightStockSet.value = matched;
+  // 匹配后实时滚动到第一个高光行视野中央（UI 视觉定位，非业务逻辑，§17 响应式驱动后 nextTick 操作 DOM）。
+  if (matched.size > 0) {
+    nextTick(() => {
+      const el = document.querySelector('.auction-row.auction-row-highlight');
+      if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    });
+  }
 }
 
 watch(headerSearchActive, (v) => {
