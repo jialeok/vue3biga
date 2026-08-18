@@ -182,10 +182,11 @@ defineExpose({
 .auction-item.parallel-match { box-shadow: inset 4px 0 0 #10b981; }
 .auction-item.jing-yest-match { box-shadow: inset 4px 0 0 #3b82f6; }
 .auction-item.three-day-jing-die { box-shadow: inset 4px 0 0 #059669; }
-/* [FEAT 2026-08-18] 双击表头搜索 → 匹配行整行黄色高光。
-   行 div 类为 auction-item（非 auction-row）；放在状态类之后确保覆盖 sold/bought/selected 等（同特异性同 important，后定义胜出）。 */
-.auction-item.auction-row-highlight { background: #fef08a !important; }
-.auction-item.auction-row-highlight:hover { background: #fde047 !important; }
+/* [FEAT 2026-08-18] 双击表头搜索 → 匹配行外框圈选（不要背景色，只要低调灰色外框）。
+   行 div 类为 auction-item；用 box-shadow inset 模拟内边框，不影响布局、不被相邻行遮挡；
+   放在状态类之后确保覆盖 sold/bought/selected 等的 box-shadow（同特异性同 important，后定义胜出）。 */
+.auction-item.auction-row-highlight { box-shadow: inset 0 0 0 2px #64748b !important; }
+.auction-item.auction-row-highlight:hover { box-shadow: inset 0 0 0 2px #475569 !important; }
 /* 股票名称列作为 badge 的定位父级。
    - position:relative 让内部 absolute 的 badge-group 相对它定位。
    - 不再用 padding-right 预留角标空间(那会撑宽名称列、挤动后面四列)。

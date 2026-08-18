@@ -16,7 +16,7 @@
       v-model="keyword"
       type="text"
       class="auction-header-search-input"
-      placeholder="模糊搜索股票名称，匹配行整行黄色高光并滚动定位..."
+      placeholder="模糊搜索股票名称，匹配行外框圈选并滚动定位..."
       @click.stop
       @dblclick.stop
       @input="onInput"
@@ -33,7 +33,7 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, watch } from 'vue';
+import { ref, computed, nextTick, watch, onMounted, onBeforeUnmount } from 'vue';
 import { inject } from 'vue';
 
 const board = inject('auctionBoard');
@@ -72,6 +72,15 @@ watch(headerSearchActive, (v) => {
     highlightStockSet.value = new Set();
   }
 });
+
+// [FEAT 2026-08-18] click outside 关闭：搜索框打开后，单击框外任意位置即关闭（无需双击表头）。
+// 搜索框根 div / input 均有 @click.stop 阻止冒泡，故框内点击不会触发 document click；框外点击触发关闭。
+function onDocClick() {
+  if (!headerSearchActive.value) return;
+  headerSearchActive.value = false;
+}
+onMounted(() => document.addEventListener('click', onDocClick));
+onBeforeUnmount(() => document.removeEventListener('click', onDocClick));
 </script>
 
 <style scoped>
