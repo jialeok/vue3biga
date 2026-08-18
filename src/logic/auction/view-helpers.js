@@ -354,27 +354,24 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     }).map(x => x.idx);
 
   } else if (sortState.byJingYest) {
+    // [FIX 2026-08-18] 同档排序改为按「当天竞价涨幅 auc_pct_chg」由高到低（与三天竞跌口径一致）。
+    //   分档条件不变：tier0=竞昨高光(平行+diff>0) / tier1=仅平行 / tier2=其它（与三天竞跌的"连续竞跌"条件不同）。
+    //   原 digitGap+diff 排序键废弃，改用 _getThreeDayAuctionPct（专用竞价涨幅字段，与绿光口径一致）。
     const parallelStockNamesForSort = getParallelStocksForDate(currentDate, dataSource);
-    const allRatioDiffInfo = getRatioDiffInfoForDate(currentDate, dataSource);
     renderOrder = renderOrder.map((idx, pos) => {
-      const stockName = renderList[idx] && renderList[idx].stock ? renderList[idx].stock.trim() : '';
+      const it = renderList[idx];
+      const stockName = it && it.stock ? it.stock.trim() : '';
       const isParallel = parallelStockNamesForSort.has(stockName);
       const isHighlight = stockName && jingYestHighlightSet && jingYestHighlightSet.has(stockName);
       const tier = isHighlight ? 0 : (isParallel ? 1 : 2);
-      const fallbackInfo = (tier === 0 || tier === 1) ? allRatioDiffInfo.get(stockName) : null;
-      const diff = fallbackInfo ? fallbackInfo.diff : null;
-      const digitGap = fallbackInfo ? fallbackInfo.digitGap : null;
-      return { idx, pos, diff, digitGap, tier };
+      const pctVal = _getThreeDayAuctionPct(it);
+      return { idx, pos, tier, pctVal };
     }).sort((a, b) => {
       if (a.tier !== b.tier) return a.tier - b.tier;
-      if (a.tier === 0 || a.tier === 1) {
-        if (a.digitGap === null && b.digitGap === null) return a.pos - b.pos;
-        if (a.digitGap === null) return 1;
-        if (b.digitGap === null) return -1;
-        if (a.digitGap !== b.digitGap) return a.digitGap - b.digitGap;
-        return b.diff - a.diff;
-      }
-      return a.pos - b.pos;
+      if (a.pctVal === null && b.pctVal === null) return a.pos - b.pos;
+      if (a.pctVal === null) return 1;
+      if (b.pctVal === null) return -1;
+      return b.pctVal - a.pctVal;
     }).map(x => x.idx);
 
   } else if (sortState.byJingYestRatio) {
