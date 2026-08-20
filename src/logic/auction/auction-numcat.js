@@ -75,6 +75,7 @@ export async function fetchFiveDaysAuctionFromNumcat(btn) {
     setBtnLoading(btn, true);
     try {
         const today = useUiStore().currentDate;
+        const sysToday = _getLocalTodayStr();
         const dates = [today];
         let d = today;
         for (let i = 0; i < 4; i++) {
@@ -177,6 +178,9 @@ export async function fetchFiveDaysAuctionFromNumcat(btn) {
         const patchesByDate = {};
         dates.forEach(function(dateStr) {
             const ymd = dateStr.replace(/-/g, '');
+            // [FIX 2026-08-20] 历史日期（< 系统今天）用全覆盖模式：重新抓取覆盖，
+            // 避免"只补空"漏掉已有错误值（如 '0'）或过时数据；系统今天保持只补空，避免覆盖实时值
+            const isHistDay = dateStr < sysToday;
             const dayData = aucByDate[ymd] || {};
             const dayPct = pctByDate[ymd] || {};
             let dayList = (auctionData[dateStr] || []).slice();
@@ -195,7 +199,7 @@ export async function fetchFiveDaysAuctionFromNumcat(btn) {
                 const entry = dayData[code];
                 let changed = false;
                 const patch = { stock: s.stock };
-                if (entry.vol && getNumericVolume(s.volume) === null) {
+                if (entry.vol && (isHistDay || getNumericVolume(s.volume) === null)) {
                     s.volume = entry.vol;
                     patch.volume = s.volume;
                     filledVolCount++;
@@ -209,15 +213,15 @@ export async function fetchFiveDaysAuctionFromNumcat(btn) {
                 }
                 // [FIX 2026-08-20] 竞价涨幅专用字段 auc_pct_chg：来自 daily_auc 接口，
                 // 供「五日竞价涨幅」趋势图与排序使用（view-helpers/useSortToggles 优先读此字段）。
-                // 只补空值，不覆盖已有值（与原 change_pct 补全策略一致）。
-                if (entry.pct && !((s.aucPctChg || '').trim())) {
+                // 历史日期全覆盖；系统今天只补空值，不覆盖已有值。
+                if (entry.pct && (isHistDay || !((s.aucPctChg || '').trim()))) {
                     s.aucPctChg = entry.pct;
                     patch.auc_pct_chg = s.aucPctChg;
                     filledAucPctCount++;
                     changed = true;
                 }
                 // 收盘涨幅 change_pct：来自 daily 接口，向后兼容保留（部分老逻辑仍读 changePct/change_pct）
-                if (dayPct[code] && !((s.changePct || '').trim())) {
+                if (dayPct[code] && (isHistDay || !((s.changePct || '').trim()))) {
                     s.changePct = dayPct[code];
                     s.note = buildNoteFromFields(s.changePct, s.topics);
                     patch.change_pct = s.changePct;
@@ -239,7 +243,8 @@ export async function fetchFiveDaysAuctionFromNumcat(btn) {
         renderAuction();
         renderList();
         const patchCounts = dates.map(function(d) { return (patchesByDate[d] || []).length; });
-        const resultText = '✅ 连抓' + dates.length + '天完成：竞价量+' + filledVolCount + ' / 昨成交量(反推)+' + filledYestVolCount + ' / 竞价涨幅+' + filledAucPctCount + ' / 收盘涨幅+' + filledPctCount +
+        const modeHint = (today < sysToday) ? '【历史全覆盖】' : '【今天补空+历史覆盖】';
+        const resultText = modeHint + ' 连抓' + dates.length + '天完成：竞价量+' + filledVolCount + ' / 昨成交量(反推)+' + filledYestVolCount + ' / 竞价涨幅+' + filledAucPctCount + ' / 收盘涨幅+' + filledPctCount +
             '（各日只数：' + patchCounts.join('/') + '），跳过 ' + skippedCount + ' 只无数据';
         setApiStatus('numcatApiStatus', resultText, true);
     } catch (err) {

@@ -258,7 +258,15 @@ import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
                 // （obsAutoAdded 不为 true 且 volume/yest_volume 皆空且来源=手动/常规继承）。
                 // 这些不是当天抓取的真股票，会污染常规组、造成"五天数据不全"的伪股票。
                 // 仅移除无数据壳；已有真实数据的行（无论来源）一律保留，绝不误删真股票。
-                if (!wasObs && _noData(row) && (row.source === 'manual' || row.regularAutoAdded === true)) {
+                // [FIX 2026-08-20] 进一步保护：即使 volume/yest_volume 空，只要行有竞价涨幅/收盘涨幅/
+                // 题材/买卖标记等任一业务字段，就视为有数据保留，避免连抓补全后误删有涨幅但暂无量 的行。
+                if (!wasObs && _noData(row)
+                    && !((row.changePct || '').trim())
+                    && !((row.aucPctChg || '').trim())
+                    && !((row.note || '').trim())
+                    && !((row.topics || '').trim())
+                    && !row.bought && !row.sold && !row.fixed
+                    && (row.source === 'manual' || row.regularAutoAdded === true)) {
                     _removeIdx.push(idx);
                 }
             });
