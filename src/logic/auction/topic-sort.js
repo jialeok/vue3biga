@@ -50,65 +50,102 @@ export function getStockTopicsDisplay(item) {
     return arr.length > 0 ? arr.join(',') : '-';
 }
 
+// === 题材 toggle 分组排序：复用「第二页题材分类」(getTopicGroups) 的同一套核心词匹配口径 ===
+// 旧实现的坑：sortByTopicCountStable / sortByTopicWithinTiers 按「单只股票拥有的题材【数量】」排序
+// （一只股有 3 个题材就排前面），与用户要的「题材【分组】」完全不是一回事。
+// 新实现按「题材分组」排序：属于同一题材的股票聚到一起，哪个题材股票多哪个排前面，
+// "其它"(无题材 / 未匹配核心词 / 组<2只) 一律置底；主排序档位(tier)顺序不变——高光/达标档(tier0)整体在最上。
+
+import { getTopicGroups, getCoreTopics, matchTopicToCore } from '../topic/rules.js';
+
 /**
- * 稳定叠加排序：按题材数量降序，同数量保持原顺序（pos 兜底）。
- * 在主排序 renderOrder 基础上做二次排序，不破坏同数量内的主排序结果。
- * 注意：本函数是「全局」重排，会跨档位混合，仅用于无分层概念的主排序（数据/环比/平行/默认）。
- * 有分层概念的主排序（竞/昨、竞/昨占比、三天竞跌）请使用 sortByTopicWithinTiers。
- * @param {number[]} renderOrder - 主排序后的索引数组
- * @param {object[]} renderList - 完整行列表（renderOrder 的索引指向此数组）
- * @returns {number[]} 重排后的索引数组
+ * 取「股票名 → 主题材」映射，复用第二页 getTopicGroups 的分类结果。
+ * 一只股票可能同时命中多个核心题材（被分入多个组），这里取它在分组数组里【第一次出现】的组为主题材，
+ * 保证首页排序时每只股票只落在一个题材组里（首页是单列，无法像第二页那样同时出现在多个分节）。
+ * @param {object[]} auctionList - 当日完整列表（getTodayGroupList 返回，与第二页一致）
+ * @returns {Map<string,string>} stockName(trim) → 主题材(core name 或 '其它')
  */
-export function sortByTopicCountStable(renderOrder, renderList) {
-    if (!renderOrder || renderOrder.length === 0) return renderOrder;
-    return renderOrder.map((idx, pos) => ({
-        idx: idx,
-        pos: pos,
-        count: getStockTopicCount(renderList[idx])
-    })).sort((a, b) => {
-        if (b.count !== a.count) return b.count - a.count;
-        return a.pos - b.pos;
-    }).map(x => x.idx);
+export function getPrimaryTopicMap(auctionList) {
+    const map = new Map();
+    if (!auctionList || auctionList.length === 0) return map;
+    const groups = getTopicGroups(auctionList);
+    for (const g of groups) {
+        if (!g.stocks) continue;
+        for (const s of g.stocks) {
+            const nm = s && s.stock ? String(s.stock).trim() : '';
+            if (nm && !map.has(nm)) map.set(nm, g.topic);
+        }
+    }
+    return map;
 }
 
 /**
- * 档位内叠加排序：在各主排序档位（tier）内部按题材数量降序排序，
- * 但**保持档位顺序不变**——竞昨高光/达标（tier0）永远在最上，普通档位在其后。
- *
- * 这是修复「打开题材开关后，高光被按题材数量拉到普通股票中间」的核心逻辑：
- * 用户希望「先排高光的，再排其它的，高光的保持在上面不变」，即高光档位整体置顶，
- * 仅在档位内部按题材数量（多者在前）微调顺序，绝不跨档位移动。
+ * 单只股票的主题材（兜底分类）：用于不在 auctionList 内的注入行（如观察组壳行）。
+ * 按核心词匹配，取第一个命中的核心词为主题材；无题材/未命中 → '其它'。
+ * 与第一页 getTopicGroups 的多组归并口径一致（都走 matchTopicToCore）。
+ * @param {object} item
+ * @returns {string}
+ */
+export function classifyStockPrimaryTopic(item) {
+    const topics = getStockTopicArr(item);
+    if (topics.length === 0) return '其它';
+    const cores = getCoreTopics();
+    for (const topic of topics) {
+        const matched = matchTopicToCore(topic, cores);
+        if (matched && matched.length > 0) return matched[0];
+    }
+    return '其它';
+}
+
+/**
+ * 题材分组叠加排序（核心修复逻辑）。
+ * 在各主排序档位(tier)内部，按「题材分组」重排：
+ *   - 取出本档位内每只股票的主题材(primaryTopicOf)；
+ *   - 统计本档位内各题材组的股票数，按【组大小降序】排列题材组；
+ *   - "其它"组永远排在本档位最末；
+ *   - 同一题材组内部，保持主排序的相对顺序(pos 兜底，稳定)。
+ * 档位(tier)顺序本身不变：tier0(高光/达标)整体在最上，tier1/tier2 依次在后。
  *
  * @param {number[]} renderOrder - 主排序后的索引数组（已分好档位）
- * @param {object[]} renderList - 完整行列表（renderOrder 的索引指向此数组）
- * @param {(idx:number)=>number} tierFn - 给定 renderList 索引，返回其主排序档位（0=最高档）
- * @returns {number[]} 重排后的索引数组（档位顺序不变，档位内按题材数量降序、稳定）
+ * @param {object[]} renderList - 完整行列表
+ * @param {(idx:number)=>number} tierFn - 给定 renderList 索引，返回主排序档位(0=最高档)
+ * @param {(idx:number)=>string} primaryTopicOf - 给定 renderList 索引，返回主题材(与第二页分类一致)
+ * @returns {number[]} 重排后的索引数组
  */
-export function sortByTopicWithinTiers(renderOrder, renderList, tierFn) {
+export function sortByTopicGroups(renderOrder, renderList, tierFn, primaryTopicOf) {
     if (!renderOrder || renderOrder.length === 0) return renderOrder;
-    if (typeof tierFn !== 'function') return renderOrder;
-    // 计算最大档位，建立分组数组
-    let maxTier = 0;
-    for (const idx of renderOrder) {
-        const t = tierFn(idx);
-        if (t > maxTier) maxTier = t;
-    }
-    const groups = [];
-    for (let t = 0; t <= maxTier; t++) groups.push([]);
+    if (typeof tierFn !== 'function' || typeof primaryTopicOf !== 'function') return renderOrder;
+
+    // 1) 按档位分组
+    const tierGroups = new Map();
     renderOrder.forEach((idx, pos) => {
         const t = tierFn(idx);
-        if (t < 0 || t > maxTier) return;
-        groups[t].push({ idx, pos, count: getStockTopicCount(renderList[idx]) });
+        if (!tierGroups.has(t)) tierGroups.set(t, []);
+        tierGroups.get(t).push({ idx, pos, topic: primaryTopicOf(idx) });
     });
+
     const out = [];
-    for (const group of groups) {
-        if (!group || group.length === 0) continue;
-        // 档位内按题材数量降序；同数量保持主排序相对顺序（pos 兜底）
-        group.sort((a, b) => {
-            if (b.count !== a.count) return b.count - a.count;
-            return a.pos - b.pos;
+    // 2) 档位从小到大（tier0 在最上）
+    [...tierGroups.keys()].sort((a, b) => a - b).forEach(t => {
+        const arr = tierGroups.get(t);
+        // 本档位内各题材组的股票数
+        const sizeMap = new Map();
+        for (const x of arr) sizeMap.set(x.topic, (sizeMap.get(x.topic) || 0) + 1);
+        // 题材组去重后排序：真实题材按组大小降序；"其它"永远最末
+        const topics = [...new Set(arr.map(x => x.topic))];
+        topics.sort((a, b) => {
+            if (a === '其它') return 1;
+            if (b === '其它') return -1;
+            const d = (sizeMap.get(b) || 0) - (sizeMap.get(a) || 0);
+            if (d !== 0) return d;
+            return a < b ? -1 : (a > b ? 1 : 0);
         });
-        for (const x of group) out.push(x.idx);
-    }
+        // 3) 按题材组顺序输出，组内保持主排序相对顺序（稳定）
+        for (const tp of topics) {
+            for (const x of arr) {
+                if (x.topic === tp) out.push(x.idx);
+            }
+        }
+    });
     return out;
 }

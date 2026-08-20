@@ -12,7 +12,7 @@ import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 import { getAuctionTagState } from '../ui-bridge.js';
 import { getDisplayNote } from '../note/helpers.js';
 import { useUiStore } from '../../stores/uiStore.js';
-import { getStockTopicCount, getStockTopicsDisplay, sortByTopicCountStable, sortByTopicWithinTiers } from './topic-sort.js';
+import { getStockTopicCount, getStockTopicsDisplay, getPrimaryTopicMap, classifyStockPrimaryTopic, sortByTopicGroups } from './topic-sort.js';
 
 function _getAuctionTag(date, stockName) {
   if (!date || !stockName) return null;
@@ -460,13 +460,13 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     }
   }
 
-  // [FEAT 2026-08-20] 题材 toggle：联动辅助叠加排序。
-  // 按主排序是否有「分层（tier）」概念分两种行为：
-  //   ① 有分层的主排序（竞/昨、竞/昨占比、三天竞跌）：高光/达标档位（tier0）必须整体置顶，
-  //      仅在档位【内部】按题材数量做稳定二次排序（题材多的排前），绝不把高光拉到普通股票中间。
-  //   ② 无分层的主排序（数据/环比/平行/默认）：无档位概念，直接全局按题材数量稳定排序。
-  // 修复点：原先不论主排序是否分层都全局重排，导致竞昨高光被题材数量少的普通股挤到后面。
-  // 用户需求：打开竞昨(占比)/三天竞跌 + 题材 时，「先排高光的，再排其它的，高光保持在上面不变」。
+  // [FEAT 2026-08-20 v2] 题材 toggle：联动辅助叠加排序（按题材【分组】，非按单只股票题材数量）。
+  // 复用第二页题材分类(getTopicGroups) 的同一套核心词匹配口径：把同题材股票聚到一起，
+  // 哪个题材股票多哪个排前面，"其它"(无题材/未匹配核心词/组<2只) 置底。
+  // 主排序档位(tier)顺序保持不变——竞昨高光/达标(tier0)整体置顶，档位【内部】再按题材组大小降序。
+  // 覆盖 竞/昨、竞/昨占比、三天竞跌（分层）与 数据/环比/平行/默认（单层，等同全局分组）。
+  // 修复点：v1 按「单只股票题材数量」排序（一只股题材多就排前），与用户要的「题材分组」不符；
+  //       现改为与第二页一致的主题材分组，高光档位整体仍置顶、组内按题材聚并组大者居前。
 
   // 三天竞跌达标集合：提前算一次，下方档位解析与分组逻辑复用（避免重复计算）。
   const threeDayJingDieSet = sortState.byThreeDayJingDie ? getThreeDayJingDieSet(currentDate, dataSource) : null;
@@ -494,13 +494,16 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   }
 
   if (sortState.byTopic) {
-    if (sortState.byJingYest || sortState.byJingYestRatio || sortState.byThreeDayJingDie) {
-      // 分层主排序：档位顺序不变，档位内按题材数量降序
-      renderOrder = sortByTopicWithinTiers(renderOrder, renderList, resolveTopicTier);
-    } else {
-      // 无分层主排序：全局稳定按题材数量排序（原行为）
-      renderOrder = sortByTopicCountStable(renderOrder, renderList);
-    }
+    // 题材 toggle：复用第二页题材分类，按题材分组排序（组大者居前、"其它"置底、档位顺序不变）。
+    const primaryTopicMap = getPrimaryTopicMap(auctionList);
+    const primaryTopicOf = (idx) => {
+      const it = renderList[idx];
+      const nm = it && it.stock ? String(it.stock).trim() : '';
+      if (nm && primaryTopicMap.has(nm)) return primaryTopicMap.get(nm);
+      // 兜底：注入行（如观察组壳行）不在 auctionList 内时，按核心词单独匹配一次
+      return classifyStockPrimaryTopic(it);
+    };
+    renderOrder = sortByTopicGroups(renderOrder, renderList, resolveTopicTier, primaryTopicOf);
   }
 
   // [REFACTOR 2026-08-15] 从 auctionTagStore（云端标签真相）读已卖出集合，不读 stocksData
