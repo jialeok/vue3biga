@@ -981,7 +981,7 @@ export async function importAuctionHistoryFill(rawText, targetDate, colType) {
 // ===== 域常量（§16，原 auction.js 2909-2915）=====
 export const AUCTION_WATCHLIST_FIELDS = ['note', 'topics', 'source', 'obs_auto_added', 'selected', 'bought', 'sold', 'fixed', 'code'];
 
-export const AUCTION_METRICS_FIELDS = ['volume', 'yest_volume', 'change_pct', 'time930', 'seal_count', 'code'];
+export const AUCTION_METRICS_FIELDS = ['volume', 'yest_volume', 'change_pct', 'auc_pct_chg', 'time930', 'seal_count', 'code'];
 
 export const AUCTION_PATCHABLE_FIELDS = AUCTION_WATCHLIST_FIELDS.concat(AUCTION_METRICS_FIELDS.filter(function(f) { return AUCTION_WATCHLIST_FIELDS.indexOf(f) < 0; }));
 

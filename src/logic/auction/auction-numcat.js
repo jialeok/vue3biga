@@ -112,7 +112,7 @@ export async function fetchFiveDaysAuctionFromNumcat(btn) {
         const endYMD = dates[0].replace(/-/g, '');
         const params = { symbols: symbols, startdate: startYMD, enddate: endYMD };
         setApiStatus('numcatApiStatus', '正在请求猫抓接口（' + allCodesSet.size + ' 只股票，连抓' + dates.length + '天，竞价量+昨成交量+涨幅）...', true);
-        const fields = 'symbol,name,tradedate,auc_vol,auc_to_pre_vol_pct';
+        const fields = 'symbol,name,tradedate,auc_vol,auc_to_pre_vol_pct,auc_pct_chg';
         const result = await numcatApiPost('daily_auc', fields, params);
         const fieldList = result.fields || [];
         const items = result.items || [];
@@ -120,6 +120,7 @@ export async function fetchFiveDaysAuctionFromNumcat(btn) {
         const tradedateIdx = fieldList.indexOf('tradedate');
         const aucVolIdx = fieldList.indexOf('auc_vol');
         const ratioIdx = fieldList.indexOf('auc_to_pre_vol_pct');
+        const aucPctIdx = fieldList.indexOf('auc_pct_chg');
         if (symbolIdx < 0 || tradedateIdx < 0 || aucVolIdx < 0) {
             setApiStatus('numcatApiStatus', '❌ 返回数据字段不完整', false);
             return;
@@ -143,6 +144,14 @@ export async function fetchFiveDaysAuctionFromNumcat(btn) {
                     }
                 }
             }
+            // [FIX 2026-08-20] 解析竞价涨幅 auc_pct_chg（专用字段，供「五日竞价涨幅」趋势图与排序使用）
+            if (aucPctIdx >= 0) {
+                const rawPct = row[aucPctIdx];
+                if (rawPct !== null && rawPct !== undefined && rawPct !== '') {
+                    const n = Number(rawPct);
+                    if (!isNaN(n)) entry.pct = (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+                }
+            }
             aucByDate[tradedate][code] = entry;
         });
         const dailyResult = await numcatApiPost('daily', 'symbol,tradedate,pct_chg', params);
@@ -164,7 +173,7 @@ export async function fetchFiveDaysAuctionFromNumcat(btn) {
                 if (!isNaN(n)) pctByDate[tradedate][code] = (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
             });
         }
-        let filledVolCount = 0, filledYestVolCount = 0, filledPctCount = 0, skippedCount = 0;
+        let filledVolCount = 0, filledYestVolCount = 0, filledPctCount = 0, filledAucPctCount = 0, skippedCount = 0;
         const patchesByDate = {};
         dates.forEach(function(dateStr) {
             const ymd = dateStr.replace(/-/g, '');
@@ -198,6 +207,16 @@ export async function fetchFiveDaysAuctionFromNumcat(btn) {
                     filledYestVolCount++;
                     changed = true;
                 }
+                // [FIX 2026-08-20] 竞价涨幅专用字段 auc_pct_chg：来自 daily_auc 接口，
+                // 供「五日竞价涨幅」趋势图与排序使用（view-helpers/useSortToggles 优先读此字段）。
+                // 只补空值，不覆盖已有值（与原 change_pct 补全策略一致）。
+                if (entry.pct && !((s.aucPctChg || '').trim())) {
+                    s.aucPctChg = entry.pct;
+                    patch.auc_pct_chg = s.aucPctChg;
+                    filledAucPctCount++;
+                    changed = true;
+                }
+                // 收盘涨幅 change_pct：来自 daily 接口，向后兼容保留（部分老逻辑仍读 changePct/change_pct）
                 if (dayPct[code] && !((s.changePct || '').trim())) {
                     s.changePct = dayPct[code];
                     s.note = buildNoteFromFields(s.changePct, s.topics);
@@ -220,7 +239,7 @@ export async function fetchFiveDaysAuctionFromNumcat(btn) {
         renderAuction();
         renderList();
         const patchCounts = dates.map(function(d) { return (patchesByDate[d] || []).length; });
-        const resultText = '✅ 连抓' + dates.length + '天完成：竞价量+' + filledVolCount + ' / 昨成交量(反推)+' + filledYestVolCount + ' / 涨幅+' + filledPctCount +
+        const resultText = '✅ 连抓' + dates.length + '天完成：竞价量+' + filledVolCount + ' / 昨成交量(反推)+' + filledYestVolCount + ' / 竞价涨幅+' + filledAucPctCount + ' / 收盘涨幅+' + filledPctCount +
             '（各日只数：' + patchCounts.join('/') + '），跳过 ' + skippedCount + ' 只无数据';
         setApiStatus('numcatApiStatus', resultText, true);
     } catch (err) {
@@ -647,6 +666,7 @@ export async function fetchAuctionFromNumcat(btn, opts) {
         // overwrite=false：已有值就跳过（补全模式）
         let filledVolumeCount = 0;
         let filledPctCount = 0;
+        let filledAucPctCount = 0;
         let skippedCount = 0;
         // 阶段二 B 改造：收集字段级 patch，结束时调用 patchAuctionFieldBatch 上报，
         // 只携带本次猫抓真正改动的字段（volume，以及今天的 change_pct/note），
@@ -670,6 +690,7 @@ export async function fetchAuctionFromNumcat(btn, opts) {
                 const dayEntry = hasDayData ? dayData[code] : null;
                 let volWritten = false;
                 let pctWritten = false;
+                let aucPctWritten = false;
                 let skipReason = '';
 
                 if (hasDayData) {
@@ -681,6 +702,14 @@ export async function fetchAuctionFromNumcat(btn, opts) {
                     }
                     // 涨幅：仅今天(fillPct=true)且接口返回了pct时处理
                     if (fillPct && dayEntry.pct) {
+                        // [FIX 2026-08-20] 竞价涨幅专用字段 auc_pct_chg：供「五日竞价涨幅」趋势图与排序使用
+                        // （view-helpers/useSortToggles 优先读此字段，避免被「获取涨幅」改写为常规涨幅而误判）
+                        const needAucPct = overwrite || !((s.aucPctChg || '').trim());
+                        if (needAucPct) {
+                            s.aucPctChg = dayEntry.pct;
+                            aucPctWritten = true;
+                        }
+                        // change_pct：向后兼容保留（部分老逻辑仍读 changePct/change_pct；今天会被 fuyao 快照覆盖为常规涨幅）
                         const needPct = overwrite || !((s.changePct || '').trim());
                         if (needPct) {
                             s.changePct = dayEntry.pct;
@@ -693,15 +722,17 @@ export async function fetchAuctionFromNumcat(btn, opts) {
                 }
 
                 // 只有真正发生改动时才生成 patch，避免字段级同步污染
-                if (volWritten || pctWritten) {
+                if (volWritten || pctWritten || aucPctWritten) {
                     const patch = { stock: s.stock };
                     if (volWritten) patch.volume = s.volume;
+                    if (aucPctWritten) patch.auc_pct_chg = s.aucPctChg;
                     if (pctWritten) {
                         patch.change_pct = s.changePct;
                         patch.note = s.note;
                     }
                     patchesArr.push(patch);
                     if (volWritten) filledVolumeCount++;
+                    if (aucPctWritten) filledAucPctCount++;
                     if (pctWritten) filledPctCount++;
                 } else if (!hasDayData) {
                     skippedCount++; // 接口无该股票数据，覆盖/补全模式下都跳过
@@ -716,7 +747,9 @@ export async function fetchAuctionFromNumcat(btn, opts) {
                         apiReturnedRawPct: dayEntry ? dayEntry.rawPct : undefined,
                         volWrittenThisTime: volWritten,
                         pctWrittenThisTime: pctWritten,
+                        aucPctWrittenThisTime: aucPctWritten,
                         changePctAfter: s.changePct || '',
+                        aucPctChgAfter: s.aucPctChg || '',
                         volumeAfter: s.volume || '',
                         reasonNotWritten: skipReason || (
                             !dayEntry ? '接口返回结果里无该股票' : (
@@ -824,7 +857,7 @@ export async function fetchAuctionFromNumcat(btn, opts) {
         // 三天模式显示分天结果，两天/单日保持原文案
         let resultText;
         if (opts.fillDayBefore) {
-            resultText = '✅ 连抓三天完成：竞价量+' + filledVolumeCount + ' / 涨幅+' + filledPctCount +
+            resultText = '✅ 连抓三天完成：竞价量+' + filledVolumeCount + ' / 竞价涨幅+' + filledAucPctCount + ' / 涨幅+' + filledPctCount +
                 '（今日' + todayPatches.length + ' / 昨日' + yesterdayPatches.length + ' / 前日' + dayBeforePatches.length + ' 只），跳过 ' + skippedCount + ' 只无数据';
             if (dayBeforeListWasEmpty) resultText += '（前日列表已用今日列表作为基础，新股票落影子记录）';
         } else {
@@ -833,7 +866,7 @@ export async function fetchAuctionFromNumcat(btn, opts) {
             const yesterdayNote = (needYesterday && yesterdayListWasEmpty)
                 ? '（对比日列表已用今日列表 ' + todayList.length + ' 只作为基础）'
                 : '';
-            resultText = '✅ ' + mode + action + '：竞价量 ' + filledVolumeCount + ' / 涨幅 ' + filledPctCount + '，跳过 ' + skippedCount + ' 只无数据' + yesterdayNote;
+            resultText = '✅ ' + mode + action + '：竞价量 ' + filledVolumeCount + ' / 竞价涨幅 ' + filledAucPctCount + ' / 涨幅 ' + filledPctCount + '，跳过 ' + skippedCount + ' 只无数据' + yesterdayNote;
         }
         setApiStatus('numcatApiStatus', resultText, true);
     } catch (err) {
