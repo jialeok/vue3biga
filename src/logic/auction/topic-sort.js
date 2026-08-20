@@ -149,3 +149,51 @@ export function sortByTopicGroups(renderOrder, renderList, tierFn, primaryTopicO
     });
     return out;
 }
+
+// === 题材背景配色（纯表现层，仅题材 toggle 下使用）===
+// 非常浅的同类色：不同题材分配不同浅色，让同一题材聚在一起时形成统一浅色带，视觉更清晰。
+// 仅对「成员数 >= minCount」的真实题材上色；"其它"(无题材/未匹配核心词/组<2只) 与不足 minCount 的题材不上色。
+const TOPIC_BG_PALETTE = [
+    '#ffe3e3', // 浅红
+    '#fff4d6', // 浅黄
+    '#e3f5d6', // 浅绿
+    '#d6ecff', // 浅蓝
+    '#f3e1ff', // 浅紫
+    '#ffe1ef', // 浅粉
+    '#dffaf3', // 浅青
+    '#f7e1d6', // 浅橙
+    '#e6e1ff', // 薰衣草
+    '#e1fff0', // 薄荷
+    '#fff0e1', // 蜜桃
+    '#d9f2ff', // 天蓝
+    '#ffe9d6', // 杏色
+    '#eef0d6'  // 橄榄
+];
+
+/**
+ * 题材背景色映射：给定「股票名 → 主题材」映射，仅对成员数 >= minCount 的【真实题材】分配浅色背景。
+ * "其它" 与 成员不足 minCount 的题材不上色（Map 中不存在该 key，UI 取到即空）。
+ * 组越大的题材分配越靠前的调色板颜色（区分度更高）；同大小时按题材名稳定排序，保证每次渲染颜色一致。
+ *
+ * 该映射属于纯表现数据，由 Logic 层算好后随 item 透出给 UI（§15 独立业务模块，不污染业务数据）。
+ *
+ * @param {Map<string,string>} primaryTopicMap - stockName(trim) → 主题材（来自 getPrimaryTopicMap）
+ * @param {number} minCount - 题材成员最小数（默认 2，即「两只以上才标记」）
+ * @returns {Map<string,string>} 题材名(core) → 浅色背景（'其它'/不足 minCount 的不在 Map 中）
+ */
+export function buildTopicColorMap(primaryTopicMap, minCount = 2) {
+    const counts = new Map();
+    if (primaryTopicMap) {
+        for (const topic of primaryTopicMap.values()) {
+            counts.set(topic, (counts.get(topic) || 0) + 1);
+        }
+    }
+    const eligible = [...counts.entries()]
+        .filter(([topic, c]) => topic !== '其它' && c >= minCount)
+        .sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    const map = new Map();
+    eligible.forEach(([topic], i) => {
+        map.set(topic, TOPIC_BG_PALETTE[i % TOPIC_BG_PALETTE.length]);
+    });
+    return map;
+}

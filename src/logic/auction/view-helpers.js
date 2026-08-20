@@ -12,7 +12,7 @@ import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 import { getAuctionTagState } from '../ui-bridge.js';
 import { getDisplayNote } from '../note/helpers.js';
 import { useUiStore } from '../../stores/uiStore.js';
-import { getStockTopicCount, getStockTopicsDisplay, getPrimaryTopicMap, classifyStockPrimaryTopic, sortByTopicGroups } from './topic-sort.js';
+import { getStockTopicCount, getStockTopicsDisplay, getPrimaryTopicMap, classifyStockPrimaryTopic, sortByTopicGroups, buildTopicColorMap } from './topic-sort.js';
 
 function _getAuctionTag(date, stockName) {
   if (!date || !stockName) return null;
@@ -493,6 +493,10 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     return 0;
   }
 
+  // 题材背景色映射：仅在 byTopic 开启时计算，供下方 enrich 步骤给每行附上浅色背景。
+  // 不同题材不同浅色、仅成员>=2 的真实题材上色、"其它"不上色（详细口径见 buildTopicColorMap）。
+  let topicColorMap = null;
+  let primaryTopicOfForColor = null;
   if (sortState.byTopic) {
     // 题材 toggle：复用第二页题材分类，按题材分组排序（组大者居前、"其它"置底、档位顺序不变）。
     const primaryTopicMap = getPrimaryTopicMap(auctionList);
@@ -504,6 +508,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       return classifyStockPrimaryTopic(it);
     };
     renderOrder = sortByTopicGroups(renderOrder, renderList, resolveTopicTier, primaryTopicOf);
+    // 题材组配色：仅成员>=2 的真实题材上浅色，不同题材不同色，"其它"不上色
+    topicColorMap = buildTopicColorMap(primaryTopicMap, 2);
+    primaryTopicOfForColor = primaryTopicOf;
   }
 
   // [REFACTOR 2026-08-15] 从 auctionTagStore（云端标签真相）读已卖出集合，不读 stocksData
@@ -579,7 +586,19 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     threeDayJingDieSet: threeDayJingDieSet
   };
   const fullOrder = obsIndices.concat(regularIndices);
-  const items = fullOrder.map((i, pos) => _enrichAuctionItem(renderList[i], i, ctx)).filter(Boolean);
+  const items = fullOrder.map((i, pos) => {
+    const it = _enrichAuctionItem(renderList[i], i, ctx);
+    if (it) {
+      // 题材 toggle 开启时，给每行附上所属题材的浅色背景（未匹配/不足两只的题材为空 → 不上色）
+      if (topicColorMap && primaryTopicOfForColor) {
+        const tp = primaryTopicOfForColor(i);
+        it.topicBg = (tp && topicColorMap.has(tp)) ? topicColorMap.get(tp) : '';
+      } else {
+        it.topicBg = '';
+      }
+    }
+    return it;
+  }).filter(Boolean);
 
   return {
     date: currentDate,

@@ -20,10 +20,11 @@
   <template
     v-for="(item, idx) in filteredObsItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, expandedSet.has(item.stock), sortState.byTopic]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic]"
   >
     <div
       :class="item.itemClass"
+      :style="item.topicBg ? { background: item.topicBg } : null"
       :data-index="item.index"
       :data-stock="item.stock || ''"
       @click="onToggleSelect(item.index)"
@@ -173,10 +174,11 @@
   <template
     v-for="(item, idx) in filteredRegularItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, expandedSet.has(item.stock), sortState.byTopic]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic]"
   >
     <div
       :class="item.itemClass"
+      :style="item.topicBg ? { background: item.topicBg } : null"
       :data-index="item.index"
       :data-stock="item.stock || ''"
       @click="onToggleSelect(item.index)"
