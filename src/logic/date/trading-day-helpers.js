@@ -1,6 +1,4 @@
 import { loadAllData } from '../../data/supabase-client.js';
-let _getLocalTodayStrFn = null;
-export function _setGetLocalTodayStr(fn) { _getLocalTodayStrFn = fn; }
 
 const _prevTdMemo = new Map();
 
@@ -35,32 +33,16 @@ export function getTradingDays() {
   return _tradingDaysCache;
 }
 
-export function isAutoHoliday(dateStr) {
-  const tradingDays = getTradingDays();
-  if (tradingDays.includes(dateStr)) return false;
-  if (tradingDays.length === 0) return false;
-  const today = _getLocalTodayStrFn();
-  const oneYearAgo = (function() {
-    const d = new Date(today + 'T00:00:00');
-    d.setFullYear(d.getFullYear() - 1);
-    return d.toISOString().slice(0, 10);
-  })();
-  // [FIX 2026-08-18] autoHoliday 仅用于「回顾性」兜底——过去一年里用户未记录的休市日。
-  // 不含今天及未来：今天数据尚未录入，未记录≠休市，否则早上打开应用会把当天误判为
-  // 假期 → isWeekend(今天)=true → useStatsView.boardView='weekly' → 显示周末统计看板。
-  // 与 DashboardView.vue 行 353 日历着色逻辑（dateStr < todayLocal）保持一致。
-  return dateStr >= oneYearAgo && dateStr < today;
-}
-
 export function isTradingDay(dateStr) {
   const date = new Date(dateStr + 'T00:00:00');
   const dayOfWeek = date.getDay();
   if (dayOfWeek === 0 || dayOfWeek === 6) return false;
   const holidays = getHolidays();
   if (holidays.includes(dateStr)) return false;
-  const tradingDays = getTradingDays();
-  if (tradingDays.includes(dateStr)) return true;
-  if (isAutoHoliday(dateStr)) return false;
+  // [FIX 2026-08-21] 移除 autoHoliday 推断：过去未在 tradingDays 登记的 weekday 一律当假期是错的
+  // （tradingDays 仅由用户手动 toggleHoliday 写入，无工作流自动登记"所有交易日"）。正确规则：
+  // weekday 默认真实交易日，只有显式在 holidays 里的才是假期。否则 0 点真实时钟滚日后，昨天越过
+  // date<today 边界被误判假期标红，并导致日期导航跳过昨天、统计看板误切周末板。
   return true;
 }
 
@@ -173,7 +155,8 @@ export function toggleHoliday(dateStr) {
 }
 
 export function getMostRecentTradingDay() {
-  const todayStr = _getLocalTodayStrFn();
+  const d0 = new Date();
+  const todayStr = `${d0.getFullYear()}-${String(d0.getMonth() + 1).padStart(2, '0')}-${String(d0.getDate()).padStart(2, '0')}`;
   if (isTradingDay(todayStr)) return todayStr;
   let d = new Date(todayStr + 'T00:00:00');
   for (let i = 0; i < 60; i++) {

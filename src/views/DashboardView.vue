@@ -189,7 +189,7 @@
 <script setup>
 import { ref, computed, watch, onUnmounted } from 'vue';
 import { setCurrentDate, saveData } from '../logic/app-core.js';
-import { getPreviousTradingDay, getNextTradingDay, getPreviousCalendarDay, getNextCalendarDay, getMostRecentTradingDay, getHolidays, getTradingDays, isTradingDay, toggleHoliday } from '../logic/date/trading-day-helpers.js';
+import { getPreviousTradingDay, getNextTradingDay, getPreviousCalendarDay, getNextCalendarDay, getMostRecentTradingDay, getHolidays, isTradingDay, toggleHoliday } from '../logic/date/trading-day-helpers.js';
 import { _emit } from '../stores/eventBus.js';
 import { useUiStore } from '../stores/uiStore.js';
 import { showToast } from '../composables/useToast.js';
@@ -306,33 +306,21 @@ const pickerYear = ref(2026);
 const pickerMonth = ref(0);
 const pickerSelected = ref('');
 
-// [PERF] 本地今日，仅用于自动识别非交易日（与旧 isAutoHoliday 一致）
-function _localTodayStr() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
+  const pickerDays = computed(() => {
+    void holidayTick.value; // 假期状态切换后强制重算日历着色
+    const year = pickerYear.value;
+    const month = pickerMonth.value;
+    const selected = pickerSelected.value || uiStore.currentDate;
 
-const pickerDays = computed(() => {
-  void holidayTick.value; // 假期状态切换后强制重算日历着色
-  const year = pickerYear.value;
-  const month = pickerMonth.value;
-  const selected = pickerSelected.value || uiStore.currentDate;
+    // [PERF] 一次性取值并转 Set，逐日 O(1) 查询。
+    // [A4-03/§8] holidays / tradingDays 是非业务的「交易日历参考缓存」（localStorage 配置模块，
+    // 无云端同步，见 trading-day-helpers.toggleHoliday 注释），不属于用户业务数据，按 §8 允许保留本地，
+    // 仅用于日历着色与交易日推算，不可当作业务真相源。
+    // [FIX 2026-08-21] 日历着色不再做 autoHoliday 推断：未在 tradingDays 登记的 weekday 一律当假期标红是错的
+    // （tradingDays 仅手动写入）。规则简化为：显式 holidays=红(假期)，周末=灰，其余 weekday=普通(白)。
+    const holSet = new Set(getHolidays());
 
-  // [PERF] 一次性取值并转 Set，逐日 O(1) 查询。
-  // 旧版 getHolidays()/isAutoHoliday() 逐日调用 loadAllData()，一个月约 32 次数据读取，是卡顿根因。
-  // [A4-03/§8] holidays / tradingDays 是非业务的「交易日历参考缓存」（localStorage 配置模块，
-  // 无云端同步，见 trading-day-helpers.toggleHoliday 注释），不属于用户业务数据，按 §8 允许保留本地，
-  // 仅用于日历着色与交易日推算，不可当作业务真相源。
-  const holSet = new Set(getHolidays());
-  const tdSet = new Set(getTradingDays());
-  const todayLocal = _localTodayStr();
-  const oneYearAgo = (() => {
-    const d = new Date(todayLocal + 'T00:00:00');
-    d.setFullYear(d.getFullYear() - 1);
-    return d.toISOString().slice(0, 10);
-  })();
-
-  const weekDays = ['日', '一', '二', '三', '四', '五', '六'];
+    const weekDays = ['日', '一', '二', '三', '四', '五', '六'];
   const cells = [];
   weekDays.forEach((w) => cells.push({ key: 'h-' + w, type: 'header', label: w }));
 
@@ -346,14 +334,9 @@ const pickerDays = computed(() => {
     const dow = new Date(dateStr + 'T00:00:00').getDay();
     const isWeekend = dow === 0 || dow === 6;
     const isHoliday = holSet.has(dateStr);
-    // [FIX 2026-08-17] autoHoliday 着色：仅用于「回顾性」辅助标红——过去一年里用户未记录的休市日。
-    // 修复：① 不含今天及未来（今天数据尚未录入，未记录≠休市，不应自动标红，符合用户『没点就不应标红』）；
-    //       ② 补 tradingDays 为空保护（与 trading-day-helpers.isAutoHoliday 一致，避免整年误标红）。
-    const autoHoliday = !isHoliday && !isWeekend && !tdSet.has(dateStr)
-      && tdSet.size > 0 && dateStr >= oneYearAgo && dateStr < todayLocal;
     let cls = 'normal-day';
     if (dateStr === selected) cls = 'selected';
-    else if (isHoliday || autoHoliday) cls = 'holiday';
+    else if (isHoliday) cls = 'holiday';
     else if (isWeekend) cls = 'weekend';
     cells.push({ key: dateStr, type: 'day', label: day, cls });
   }

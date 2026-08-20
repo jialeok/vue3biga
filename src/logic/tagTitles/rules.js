@@ -1,4 +1,3 @@
-import { _setGetLocalTodayStr } from '../date/trading-day-helpers.js';
 import { _dbgLog, _dbgLogVerbose } from '../../data/debug-log.js';
 import { getStockHistoryValue, _isAuctionWatchlistStock } from '../../data/watchlist-and-metrics.js';
 import { getJingYestHighlightSetForDate } from '../auction/sort-rules.js';
@@ -80,7 +79,6 @@ import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
             const day = String(now.getDate()).padStart(2, '0');
             return `${year}-${month}-${day}`;
         }
-        _setGetLocalTodayStr(_getLocalTodayStr);
 
         // 前一天"竞/昨"实际高光（蓝色高光）达标股票，自动带入当天观察组（早盘竞价 tab 专属）：
         // 与 ensureBoughtStocksForDate 平行，但继承的是"前一天竞昨高光集合"而非"买卖标签"。
