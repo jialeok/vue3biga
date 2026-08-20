@@ -60,14 +60,7 @@ export function extractTopics(note) {
         const splitTopics = content.split(/[+，、,;；]/).map(t => t.trim()).filter(t => t);
         topics = topics.concat(splitTopics);
     });
-    topics = topics.filter(function(t) {
-        if (!t) return false;
-        if (/^题材\d+$/.test(t)) return false;
-        if (/^\d+$/.test(t)) return false;
-        if (t.length < 2) return false;
-        if (t === '---' || t === '其它' || t === '其他') return false;
-        return true;
-    });
+    topics = topics.filter(isValidTopic);
     var _seen = new Set();
     var _deduped = [];
     topics.forEach(function(t) {
@@ -75,4 +68,28 @@ export function extractTopics(note) {
         if (!_seen.has(key)) { _seen.add(key); _deduped.push(t); }
     });
     return _deduped;
+}
+
+/**
+ * 判断单条题材文本是否为「有效的真实题材」，供展示/分组清洗统一使用。
+ * 过滤规则（与历史清洗口径一致）：
+ *   - 空 / 纯空白
+ *   - 开盘啦 API 编号占位符「题材\d+」（如 题材33 / 题材34 / 题材19，非真实分类）
+ *   - 纯数字
+ *   - 长度 < 2（单字无意义）
+ *   - 占位词 '---' / '其它' / '其他'
+ * 该函数是单条题材的权威清洗口径，extractTopics 与各兜底分支都应复用它，
+ * 避免某条路径漏过滤导致「题材33」这类字样泄漏到界面。
+ * @param {string} topic
+ * @returns {boolean}
+ */
+export function isValidTopic(topic) {
+    if (!topic || typeof topic !== 'string') return false;
+    const t = topic.trim();
+    if (!t) return false;
+    if (/^题材\d+$/.test(t)) return false;
+    if (/^\d+$/.test(t)) return false;
+    if (t.length < 2) return false;
+    if (t === '---' || t === '其它' || t === '其他') return false;
+    return true;
 }

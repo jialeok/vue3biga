@@ -4,7 +4,7 @@
 // 在主排序完成后按「题材数量」做稳定叠加排序（题材多的排前，同数量内保持主排序顺序）。
 // 本模块只含纯函数，无副作用、不依赖响应式状态，供 view-helpers.js 排序分支与 _enrichAuctionItem 调用。
 
-import { extractTopics, getDisplayNote } from '../note/helpers.js';
+import { extractTopics, getDisplayNote, isValidTopic } from '../note/helpers.js';
 import { getStockHistoryTopics } from '../stocks/stocks.js';
 
 /**
@@ -20,15 +20,22 @@ export function getStockTopicArr(item) {
     let arr = extractTopics(note);
     if (arr.length === 0 && item.topics) {
         const topicsStr = Array.isArray(item.topics) ? item.topics.join(',') : String(item.topics);
-        arr = topicsStr.split(/[，、,;；]/).map(t => t.trim()).filter(t => t.length >= 2);
+        arr = topicsStr.split(/[，、,;；]/).map(t => t.trim()).filter(isValidTopic);
     }
     if (arr.length === 0 && item.stock) {
         const hist = getStockHistoryTopics(item.stock.trim());
         if (hist) {
-            arr = hist.replace(/[()（）]/g, '').split(/[，、,;；]/).map(t => t.trim()).filter(t => t.length >= 2);
+            arr = hist.replace(/[()（）]/g, '').split(/[，、,;；]/).map(t => t.trim()).filter(isValidTopic);
         }
     }
-    return arr;
+    // 去重（与 extractTopics 一致，避免展示重复题材名）
+    const seen = new Set();
+    const deduped = [];
+    arr.forEach(t => {
+        const key = t.replace(/\s+/g, '').toLowerCase();
+        if (!seen.has(key)) { seen.add(key); deduped.push(t); }
+    });
+    return deduped;
 }
 
 /**
