@@ -404,6 +404,8 @@
         .auction-header-volume { flex: 1; text-align: center; }
         .auction-header-yest { flex: 1; text-align: center; font-size: 11px; }
         .auction-header-ratio { flex: 0.5; text-align: center; }
+        /* [FEAT 2026-08-20] 题材 toggle：表头题材列，占原 竞价量+昨量+占比 三列空间（flex 1+1+0.5=2.5） */
+        .auction-header-topic { flex: 2.5; text-align: left; padding-left: 4px; }
 
         .strength-sort-active {
             color: #ef4444;
@@ -545,6 +547,18 @@
             color: #374151;
             padding: 8px 6px;
             text-align: center;
+        }
+
+        /* [FEAT 2026-08-20] 题材 toggle：行题材单元格，占原 竞价量+昨量+占比 三列空间 */
+        .auction-topic-cell {
+            flex: 2.5;
+            font-size: 12px;
+            color: #374151;
+            padding: 8px 6px;
+            text-align: left;
+            white-space: normal;
+            word-break: break-all;
+            line-height: 1.4;
         }
 
         .auction-ratio.highlight {

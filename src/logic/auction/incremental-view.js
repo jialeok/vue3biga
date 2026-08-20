@@ -67,6 +67,7 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
     'byJingYest=' + (s.byJingYest ? 1 : 0),
     'byJingYestRatio=' + (s.byJingYestRatio ? 1 : 0),
     'byThreeDayJingDie=' + (s.byThreeDayJingDie ? 1 : 0),
+    'byTopic=' + (s.byTopic ? 1 : 0),
     'high=' + high,
     'jing=' + jing,
     'par=' + par,
@@ -93,7 +94,7 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume) {
     item.todayChoice, // AuctionBadge 渲染「买→/卖→」等当日选项，必须纳入签名避免陈旧
     date,
     s.byData ? 1 : 0, s.byRatio ? 1 : 0, s.byParallel ? 1 : 0,
-    s.byJingYest ? 1 : 0, s.byJingYestRatio ? 1 : 0, s.byThreeDayJingDie ? 1 : 0,
+    s.byJingYest ? 1 : 0, s.byJingYestRatio ? 1 : 0, s.byThreeDayJingDie ? 1 : 0, s.byTopic ? 1 : 0,
     prevVolume, prevYestVolume,
     sold ? 1 : 0, bought ? 1 : 0, selected ? 1 : 0
   ].join('|');

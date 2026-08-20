@@ -82,6 +82,7 @@
         <span class="auction-toggle-slider" />
       </label>
     </div>
+    <AuctionBoardTopicToggle />
   </div>
   <div class="auction-highratio-stat">
     <span style="font-weight:700;color:#dc2626;">竞昨数：{{ jingYestCountText }}</span>
@@ -99,14 +100,22 @@
     <div class="auction-header-item auction-header-stock">
       股票名称
     </div>
-    <div class="auction-header-item auction-header-volume">
-      竞价量(万)
-    </div>
-    <div class="auction-header-item auction-header-yest">
-      昨成交量(万)
-    </div>
-    <div class="auction-header-item auction-header-ratio">
-      占比
+    <template v-if="!sortState.byTopic">
+      <div class="auction-header-item auction-header-volume">
+        竞价量(万)
+      </div>
+      <div class="auction-header-item auction-header-yest">
+        昨成交量(万)
+      </div>
+      <div class="auction-header-item auction-header-ratio">
+        占比
+      </div>
+    </template>
+    <div
+      v-else
+      class="auction-header-item auction-header-topic"
+    >
+      题材
     </div>
   </div>
   <div
@@ -228,6 +237,7 @@
 import { inject, computed } from 'vue';
 import { apiStatusMap } from '../logic/ui-bridge.js';
 import AuctionHeaderSearch from './AuctionHeaderSearch.vue';
+import AuctionBoardTopicToggle from './AuctionBoardTopicToggle.vue';
 const board = inject('auctionBoard');
 const {
   uiStore, auctionStore, sortState, expandedSet, trendHistory, longPressMenuRef, coreTopicModalRef, editModalRef,

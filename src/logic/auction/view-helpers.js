@@ -12,6 +12,7 @@ import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 import { getAuctionTagState } from '../ui-bridge.js';
 import { getDisplayNote } from '../note/helpers.js';
 import { useUiStore } from '../../stores/uiStore.js';
+import { getStockTopicCount, getStockTopicsDisplay, sortByTopicCountStable } from './topic-sort.js';
 
 function _getAuctionTag(date, stockName) {
   if (!date || !stockName) return null;
@@ -161,7 +162,10 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     // 双身份：昨日观察组来源 ∩ 今日正式列表 → 股票名旁加 *（用户可分辨）
     obsFormalStar: isObsFromPrev && isFormalToday,
     // 观察组来源（无论今日是否正式，供视图分组/样式使用）
-    isObsFromPrev
+    isObsFromPrev,
+    // [FEAT 2026-08-20] 题材 toggle：题材数量（供排序）与题材展示文本（供题材列显示）
+    topicCount: getStockTopicCount(rawItem),
+    topicsDisplay: getStockTopicsDisplay(rawItem)
   };
 }
 
@@ -454,6 +458,14 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
         return a.pos - b.pos;
       }).map(x => x.idx);
     }
+  }
+
+  // [FEAT 2026-08-20] 题材 toggle：联动辅助叠加排序。
+  // 在主排序（竞昨/竞昨占比/三天竞跌等）完成后，按题材数量做稳定二次排序：
+  // 题材多的排前，同题材数量内保持主排序顺序（sortByTopicCountStable 用 pos 兜底）。
+  // 无主 toggle 开启时，renderOrder 为默认顺序，叠加后即按题材数量排序。
+  if (sortState.byTopic) {
+    renderOrder = sortByTopicCountStable(renderOrder, renderList);
   }
 
   // [REFACTOR 2026-08-15] 从 auctionTagStore（云端标签真相）读已卖出集合，不读 stocksData

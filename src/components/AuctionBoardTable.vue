@@ -20,7 +20,7 @@
   <template
     v-for="(item, idx) in filteredObsItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.stock)]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, expandedSet.has(item.stock), sortState.byTopic]"
   >
     <div
       :class="item.itemClass"
@@ -58,31 +58,39 @@
           :tag-state="item"
         />
       </div>
+      <template v-if="!sortState.byTopic">
+        <div
+          class="auction-volume"
+          @dblclick.stop="onEditVolumeNote(item.index)"
+        >
+          {{ item.volumeDisplay }}
+        </div>
+        <div
+          :class="item.yestColorClass"
+          :data-index="item.index"
+          :data-note="item.note || ''"
+          @click.stop="onYestClick(item, $event)"
+          @dblclick.stop="openEditModal()"
+          @contextmenu.prevent
+        >
+          {{ item.yestVolumeDisplay }}
+        </div>
+        <div
+          :class="item.ratioClass"
+          :data-index="item.index"
+          @dblclick.stop
+        >
+          {{ item.ratio }}<span
+            v-if="item.ratioArrow"
+            :style="{ color: item.ratioArrow === '⬆' ? '#ef4444' : '#10b981' }"
+          >{{ item.ratioArrow }}</span>
+        </div>
+      </template>
       <div
-        class="auction-volume"
-        @dblclick.stop="onEditVolumeNote(item.index)"
+        v-else
+        class="auction-topic-cell"
       >
-        {{ item.volumeDisplay }}
-      </div>
-      <div
-        :class="item.yestColorClass"
-        :data-index="item.index"
-        :data-note="item.note || ''"
-        @click.stop="onYestClick(item, $event)"
-        @dblclick.stop="openEditModal()"
-        @contextmenu.prevent
-      >
-        {{ item.yestVolumeDisplay }}
-      </div>
-      <div
-        :class="item.ratioClass"
-        :data-index="item.index"
-        @dblclick.stop
-      >
-        {{ item.ratio }}<span
-          v-if="item.ratioArrow"
-          :style="{ color: item.ratioArrow === '⬆' ? '#ef4444' : '#10b981' }"
-        >{{ item.ratioArrow }}</span>
+        {{ item.topicsDisplay }}
       </div>
     </div>
     <div
@@ -165,7 +173,7 @@
   <template
     v-for="(item, idx) in filteredRegularItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, expandedSet.has(item.stock)]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, expandedSet.has(item.stock), sortState.byTopic]"
   >
     <div
       :class="item.itemClass"
@@ -203,33 +211,42 @@
           :tag-state="item"
         />
       </div>
+      <template v-if="!sortState.byTopic">
+        <div
+          class="auction-volume"
+          @dblclick.stop="onEditVolumeNote(item.index)"
+        >
+          {{ item.volumeDisplay }}
+        </div>
+        <div
+          :class="item.yestColorClass"
+          :data-index="item.index"
+          :data-note="item.note || ''"
+          @click.stop="onYestClick(item, $event)"
+          @dblclick.stop="openEditModal()"
+          @contextmenu.prevent
+        >
+          {{ item.yestVolumeDisplay }}
+        </div>
+        <div
+          :class="item.ratioClass"
+          :data-index="item.index"
+          @dblclick.stop
+        >
+          {{ item.ratio }}<span
+            v-if="item.ratioArrow"
+            :style="{ color: item.ratioArrow === '⬆' ? '#ef4444' : '#10b981' }"
+          >{{ item.ratioArrow }}</span>
+        </div>
+      </template>
       <div
-        class="auction-volume"
-        @dblclick.stop="onEditVolumeNote(item.index)"
+        v-else
+        class="auction-topic-cell"
       >
-        {{ item.volumeDisplay }}
-      </div>
-      <div
-        :class="item.yestColorClass"
-        :data-index="item.index"
-        :data-note="item.note || ''"
-        @click.stop="onYestClick(item, $event)"
-        @dblclick.stop="openEditModal()"
-        @contextmenu.prevent
-      >
-        {{ item.yestVolumeDisplay }}
-      </div>
-      <div
-        :class="item.ratioClass"
-        :data-index="item.index"
-        @dblclick.stop
-      >
-        {{ item.ratio }}<span
-          v-if="item.ratioArrow"
-          :style="{ color: item.ratioArrow === '⬆' ? '#ef4444' : '#10b981' }"
-        >{{ item.ratioArrow }}</span>
+        {{ item.topicsDisplay }}
       </div>
     </div>
+
     <div
       v-if="expandedSet.has(item.stock)"
       class="auction-trend-panel"

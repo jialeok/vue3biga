@@ -55,7 +55,8 @@ export function useAuctionBoard() {
     byParallel: false,
     byJingYest: false,
     byJingYestRatio: false,
-    byThreeDayJingDie: false
+    byThreeDayJingDie: false,
+    byTopic: false
   });
   const expandedSet = ref(new Set());
   const trendHistory = ref({});
@@ -70,7 +71,7 @@ export function useAuctionBoard() {
     void auctionStore.dataVersions['auction'];
     void uiStore.currentDate;
     void sortState.byData; void sortState.byRatio; void sortState.byParallel;
-    void sortState.byJingYest; void sortState.byJingYestRatio; void sortState.byThreeDayJingDie;
+    void sortState.byJingYest; void sortState.byJingYestRatio; void sortState.byThreeDayJingDie; void sortState.byTopic;
     // A3-01：经增量行缓存层，单格编辑只重新派生变化的行（logic/auction/incremental-view.js）
     return computeAuctionViewDataIncremental('auction', sortState);
   });
@@ -655,6 +656,7 @@ export function useAuctionBoard() {
       s.byJingYest = sortState.byJingYest;
       s.byJingYestRatio = sortState.byJingYestRatio;
       s.byThreeDayJingDie = sortState.byThreeDayJingDie;
+      s.byTopic = sortState.byTopic;
     }
     refresh();
   }
