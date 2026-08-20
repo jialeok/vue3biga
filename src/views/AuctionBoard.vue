@@ -157,27 +157,30 @@ defineExpose({
 }
 .auction-row.obs-row { background: #f0f9ff; }
 
-/* 行状态用左竖线表示，不用整行背景色 */
+/* 行标签状态（买/卖/选中）只用「左侧色条 + 文字色」表达，背景色一律交给行内 style
+   （题材分组高光底色 / item.topicBg）。禁止用 background:!important 覆盖行内背景——
+   否则标记买/卖后题材分组高光底色会被强制清空，正是「加标签后高光消失」的根因。
+   竞昨/竞昨占比/三天竞跌的高光（box-shadow 左竖条）本就独立于标签，互不影响。 */
 .auction-item.sold {
-  background: none !important;
+  background: transparent;
   border-left: 3px solid #9ca3af;
 }
-.auction-item.sold:hover { background: #f3f4f6 !important; }
+.auction-item.sold:hover { background: #f3f4f6; }
 .auction-item.bought {
-  background: none !important;
+  background: transparent;
   border-left: 3px solid #ef4444;
 }
-.auction-item.bought:hover { background: #fee2e2 !important; }
+.auction-item.bought:hover { background: #fee2e2; }
 .auction-item.selected {
-  background: none !important;
+  background: transparent;
   border-left: 3px solid #8b5cf6;
 }
-.auction-item.selected:hover { background: #f3e8ff !important; }
+.auction-item.selected:hover { background: #f3e8ff; }
 .auction-item.manual-selected {
-  background: none !important;
+  background: transparent;
   border-left: 3px solid #f97316;
 }
-.auction-item.manual-selected:hover { background: #ffedd5 !important; }
+.auction-item.manual-selected:hover { background: #ffedd5; }
 .auction-item.high-ratio { box-shadow: inset 4px 0 0 #f59e0b; }
 .auction-item.parallel-match { box-shadow: inset 4px 0 0 #10b981; }
 .auction-item.jing-yest-match { box-shadow: inset 4px 0 0 #3b82f6; }
