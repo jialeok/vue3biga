@@ -12,7 +12,7 @@ import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 import { getAuctionTagState } from '../ui-bridge.js';
 import { getDisplayNote } from '../note/helpers.js';
 import { useUiStore } from '../../stores/uiStore.js';
-import { getStockTopicCount, getStockTopicsDisplay, sortByTopicCountStable } from './topic-sort.js';
+import { getStockTopicCount, getStockTopicsDisplay, sortByTopicCountStable, sortByTopicWithinTiers } from './topic-sort.js';
 
 function _getAuctionTag(date, stockName) {
   if (!date || !stockName) return null;
@@ -461,11 +461,46 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   }
 
   // [FEAT 2026-08-20] 题材 toggle：联动辅助叠加排序。
-  // 在主排序（竞昨/竞昨占比/三天竞跌等）完成后，按题材数量做稳定二次排序：
-  // 题材多的排前，同题材数量内保持主排序顺序（sortByTopicCountStable 用 pos 兜底）。
-  // 无主 toggle 开启时，renderOrder 为默认顺序，叠加后即按题材数量排序。
+  // 按主排序是否有「分层（tier）」概念分两种行为：
+  //   ① 有分层的主排序（竞/昨、竞/昨占比、三天竞跌）：高光/达标档位（tier0）必须整体置顶，
+  //      仅在档位【内部】按题材数量做稳定二次排序（题材多的排前），绝不把高光拉到普通股票中间。
+  //   ② 无分层的主排序（数据/环比/平行/默认）：无档位概念，直接全局按题材数量稳定排序。
+  // 修复点：原先不论主排序是否分层都全局重排，导致竞昨高光被题材数量少的普通股挤到后面。
+  // 用户需求：打开竞昨(占比)/三天竞跌 + 题材 时，「先排高光的，再排其它的，高光保持在上面不变」。
+
+  // 三天竞跌达标集合：提前算一次，下方档位解析与分组逻辑复用（避免重复计算）。
+  const threeDayJingDieSet = sortState.byThreeDayJingDie ? getThreeDayJingDieSet(currentDate, dataSource) : null;
+
+  // 主排序档位解析：给定 renderList 索引，返回其档位（0=最高档/高光或达标）。
+  // 必须与上方各主排序分支的 tier 口径完全一致，否则档位边界错位。
+  function resolveTopicTier(idx) {
+    const it = renderList[idx];
+    const nm = it && it.stock ? it.stock.trim() : '';
+    if (sortState.byThreeDayJingDie) {
+      const dd = nm && threeDayJingDieSet ? (threeDayJingDieSet.get(nm) || 0) : 0;
+      return dd >= 2 ? 0 : 1;
+    }
+    if (sortState.byJingYestRatio) {
+      const ih = nm && jingYestHighlightSet && jingYestHighlightSet.has(nm);
+      return ih ? 0 : 1;
+    }
+    if (sortState.byJingYest) {
+      const ih = nm && jingYestHighlightSet && jingYestHighlightSet.has(nm);
+      const ip = nm && parallelStocksToday && parallelStocksToday.has(nm);
+      return ih ? 0 : (ip ? 1 : 2);
+    }
+    // 其它主排序（环比/平行/数据/默认）无分层概念，统一单档
+    return 0;
+  }
+
   if (sortState.byTopic) {
-    renderOrder = sortByTopicCountStable(renderOrder, renderList);
+    if (sortState.byJingYest || sortState.byJingYestRatio || sortState.byThreeDayJingDie) {
+      // 分层主排序：档位顺序不变，档位内按题材数量降序
+      renderOrder = sortByTopicWithinTiers(renderOrder, renderList, resolveTopicTier);
+    } else {
+      // 无分层主排序：全局稳定按题材数量排序（原行为）
+      renderOrder = sortByTopicCountStable(renderOrder, renderList);
+    }
   }
 
   // [REFACTOR 2026-08-15] 从 auctionTagStore（云端标签真相）读已卖出集合，不读 stocksData
@@ -491,7 +526,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   // [THREE-DAY 2026-08-17] 三天竞跌模式下，分组口径改为「达标(dd≥2)置顶 / 未达标在后」，
   // 不再按观察组/常规组分隔（解决"观察组永远排在前面"的问题）。真实 obs 身份仍由每行 itemClass/obsFormalStar 标记。
-  const _threeDayJingDieSet = sortState.byThreeDayJingDie ? getThreeDayJingDieSet(currentDate, dataSource) : null;
+  // 注意：threeDayJingDieSet 已在上方题材分支前统一计算并复用，此处不再重复声明。
 
   let obsIndices, regularIndices, hiddenObsIndices;
   if (sortState.byThreeDayJingDie) {
@@ -538,7 +573,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     sortByRatioEnabled: sortState.byRatio,
     highRatioToday,
     sortByThreeDayJingDieEnabled: sortState.byThreeDayJingDie,
-    threeDayJingDieSet: _threeDayJingDieSet
+    threeDayJingDieSet: threeDayJingDieSet
   };
   const fullOrder = obsIndices.concat(regularIndices);
   const items = fullOrder.map((i, pos) => _enrichAuctionItem(renderList[i], i, ctx)).filter(Boolean);
