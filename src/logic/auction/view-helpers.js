@@ -477,8 +477,17 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     const it = renderList[idx];
     const nm = it && it.stock ? it.stock.trim() : '';
     if (sortState.byThreeDayJingDie) {
+      // [FIX 2026-08-20] 高光档(tier0) = 绿色高光口径：连续竞跌 dd≥2 且 当天竞价涨幅≥0（止跌/企稳/反转）。
+      // 下跌中继(dd≥2 但 竞价涨幅<0 或缺失)不点亮绿光 → 视为「其它」归入 tier1，
+      // 否则题材分组会把绿光高光与下跌中继按题材打散混在一起（用户反馈的「高光很分散」）。
+      // 此口径与 _enrichAuctionItem 中的 isThreeDayJingDieMatch 完全一致。
       const dd = nm && threeDayJingDieSet ? (threeDayJingDieSet.get(nm) || 0) : 0;
-      return dd >= 2 ? 0 : 1;
+      if (dd >= 2) {
+        const pct = _getThreeDayAuctionPct(it);
+        const isGreen = pct !== null && pct >= 0;
+        return isGreen ? 0 : 1;
+      }
+      return 1;
     }
     if (sortState.byJingYestRatio) {
       const ih = nm && jingYestHighlightSet && jingYestHighlightSet.has(nm);
