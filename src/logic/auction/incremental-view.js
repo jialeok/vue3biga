@@ -91,6 +91,7 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume) {
     item.volume,
     item.yestVolume,
     item.note,
+    item.topics,
     item.todayChoice, // AuctionBadge 渲染「买→/卖→」等当日选项，必须纳入签名避免陈旧
     date,
     s.byData ? 1 : 0, s.byRatio ? 1 : 0, s.byParallel ? 1 : 0,
