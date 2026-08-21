@@ -471,7 +471,15 @@ export async function importAuctionFromPaste(rawText) {
     const lines = pasteText.split(/\r?\n/);
     const auctionData = getAuctionData();
     const existingList = auctionData[targetDate] || [];
-    
+
+    // [FIX 2026-08-21] 当日已存在的股票名集合，用于「补全题材/涨幅」路径的守卫：
+    // 只允许更新当日列表里已有的股票，禁止把不在当日列表的股票（如昨天的票、名字不一致的笔误票）
+    // 当新股票 push 进当日，否则会污染当日列表（只数暴涨、竞昨比对串味）。
+    // 对齐 importAuctionHistoryFill 的 currentStockSet「不允许导入无关股票」规则。
+    const currentStockSet = new Set(
+        existingList.map(item => (item && item.stock ? item.stock.trim() : '')).filter(Boolean)
+    );
+
     let fullDataList = [];
     let noteList = [];
     let hasFullData = false;
@@ -597,6 +605,7 @@ export async function importAuctionFromPaste(rawText) {
     let fullDataUpdateCount = 0;
     let noteUpdateCount = 0;
     let noteNewCount = 0;
+    let noteSkippedCount = 0;   // [FIX 2026-08-21] 不在当日列表、被跳过不新增的股票数
 
     fullDataList.forEach(dataItem => {
         const existingIndex = auctionList.findIndex(
@@ -632,6 +641,13 @@ export async function importAuctionFromPaste(rawText) {
             };
             fullDataUpdateCount++;
         } else {
+            // [FIX 2026-08-21] 当日已有数据时，禁止把不在当日列表的股票（如昨天的票）当新行加入，
+            // 否则会污染当日列表。仅在「当日尚无任何数据」的初次整表导入场景下允许新增。
+            // （题材/涨幅补充路径已由 currentStockSet 守卫，这里是 3 列整表导入路径的对应保护。）
+            if (existingList.length > 0 && !currentStockSet.has(dataItem.stock.trim())) {
+                noteSkippedCount++;
+                return;
+            }
             const historyTopics = getStockHistoryTopics(dataItem.stock);
             var parsedHist = parseNoteToFields(historyTopics);
             auctionList.push({
@@ -704,7 +720,14 @@ export async function importAuctionFromPaste(rawText) {
             );
             noteUpdateCount++;
         } else {
-            // 新股票，使用导入的字段+历史题材
+            // [FIX 2026-08-21] 补全题材/涨幅路径：只更新当日已存在的股票。
+            // 不在当日列表的股票（昨天的票、名字不一致的笔误票）一律跳过，绝不新增到当日，
+            // 避免污染当日列表（只数暴涨、竞昨比对串味）。
+            if (!currentStockSet.has(noteItem.stock.trim())) {
+                noteSkippedCount++;
+                return;
+            }
+            // 新股票（当日已存在但首次带题材/涨幅），使用导入的字段+历史题材
             var finalChangePct = newChangePct || historyParsed.changePct;
             var finalTopics = noteItem.topics || '';
             // 合并历史题材
@@ -805,6 +828,8 @@ export async function importAuctionFromPaste(rawText) {
     if (fullDataUpdateCount > 0) statusMsg += ` 更新${fullDataUpdateCount}条`;
     if (noteUpdateCount > 0) statusMsg += ` 更新注释${noteUpdateCount}条`;
     if (noteNewCount > 0) statusMsg += ` 新增注释${noteNewCount}条`;
+    // [FIX 2026-08-21] 反馈被跳过的「不在当日列表」的股票数，让用户知道哪些没被导入
+    if (noteSkippedCount > 0) statusMsg += ` 跳过非当日股票${noteSkippedCount}只(未新增)`;
 
     // 异步分批同步收盘涨幅（每帧30条），避免主线程卡死导致 localStorage 写入失败
     setTimeout(syncCloseChunk, 60);
