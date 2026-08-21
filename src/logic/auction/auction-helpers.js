@@ -35,6 +35,13 @@ import { useUiStore } from '../../stores/uiStore.js';
 import { getGroupData, _dumpAuctionSnapshot, _guardStack, _getAuctionStore, _guardAssertDate, saveModule, setBtnLoading, scheduleCloudPush } from '../shared/core-shared.js';
 // §P1-6：纯函数 parseVolumeOnlyText / splitHistoryFillLine 已抽取到 ./auction-helpers.js（行为等价）。
 
+// [FIX 2026-08-21b] 股票名归一化（全角字母/数字→半角）：开盘啦/同花顺数据源用全角（深华发Ａ），
+// 用户粘贴/手输多为半角（深华发A）。导入匹配统一走归一化，避免同一只票因名字变体被当成两只
+// 重复入库（实发案例：2026-08-21 深华发A / 深华发Ａ 双行污染）。
+export function _normStockName(s) {
+    return String(s || '').trim().replace(/[Ａ-Ｚａ-ｚ０-９]/g, function(c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); });
+}
+
 // ===== auction 域「纯工具/辅助函数簇」：物理拆分自 auction.js（§16），函数体逐字迁移，未改实现 =====
 export async function repairAuctionInWatchlistForDate(dateArg) {
     const date = dateArg || useUiStore().currentDate;
@@ -476,8 +483,12 @@ export async function importAuctionFromPaste(rawText) {
     // 只允许更新当日列表里已有的股票，禁止把不在当日列表的股票（如昨天的票、名字不一致的笔误票）
     // 当新股票 push 进当日，否则会污染当日列表（只数暴涨、竞昨比对串味）。
     // 对齐 importAuctionHistoryFill 的 currentStockSet「不允许导入无关股票」规则。
+    // [FIX 2026-08-21b] 名字归一化匹配（全角→半角）：开盘啦/同花顺源常给 深华发Ａ（全角Ａ），
+    // 用户粘贴或手工输入多为 深华发A（半角A）。若按精确名匹配，同一只票会被当成两只，
+    // 半角变体被当作"新股票"重复入库（实发案例：2026-08-21 深华发A/深华发Ａ 双行）。
+    // 故守卫集与匹配统一走归一化后的名字。
     const currentStockSet = new Set(
-        existingList.map(item => (item && item.stock ? item.stock.trim() : '')).filter(Boolean)
+        existingList.map(item => (item && item.stock ? _normStockName(item.stock) : '')).filter(Boolean)
     );
 
     let fullDataList = [];
@@ -608,8 +619,9 @@ export async function importAuctionFromPaste(rawText) {
     let noteSkippedCount = 0;   // [FIX 2026-08-21] 不在当日列表、被跳过不新增的股票数
 
     fullDataList.forEach(dataItem => {
+        // [FIX 2026-08-21b] 归一化匹配：深华发Ａ(全角) 与 深华发A(半角) 视为同一只票
         const existingIndex = auctionList.findIndex(
-            item => item.stock && item.stock.trim() === dataItem.stock
+            item => item.stock && _normStockName(item.stock) === _normStockName(dataItem.stock)
         );
         if (existingIndex >= 0) {
             var existingNote = auctionList[existingIndex].note || '';
@@ -644,7 +656,7 @@ export async function importAuctionFromPaste(rawText) {
             // [FIX 2026-08-21] 当日已有数据时，禁止把不在当日列表的股票（如昨天的票）当新行加入，
             // 否则会污染当日列表。仅在「当日尚无任何数据」的初次整表导入场景下允许新增。
             // （题材/涨幅补充路径已由 currentStockSet 守卫，这里是 3 列整表导入路径的对应保护。）
-            if (existingList.length > 0 && !currentStockSet.has(dataItem.stock.trim())) {
+            if (existingList.length > 0 && !currentStockSet.has(_normStockName(dataItem.stock))) {
                 noteSkippedCount++;
                 return;
             }
@@ -661,8 +673,9 @@ export async function importAuctionFromPaste(rawText) {
     });
 
     noteList.forEach(noteItem => {
+        // [FIX 2026-08-21b] 归一化匹配：全角/半角名字变体视为同一只票
         const existingIndex = auctionList.findIndex(
-            item => item.stock && item.stock.trim() === noteItem.stock
+            item => item.stock && _normStockName(item.stock) === _normStockName(noteItem.stock)
         );
         
         // 获取历史题材
@@ -723,7 +736,7 @@ export async function importAuctionFromPaste(rawText) {
             // [FIX 2026-08-21] 补全题材/涨幅路径：只更新当日已存在的股票。
             // 不在当日列表的股票（昨天的票、名字不一致的笔误票）一律跳过，绝不新增到当日，
             // 避免污染当日列表（只数暴涨、竞昨比对串味）。
-            if (!currentStockSet.has(noteItem.stock.trim())) {
+            if (!currentStockSet.has(_normStockName(noteItem.stock))) {
                 noteSkippedCount++;
                 return;
             }
@@ -869,7 +882,8 @@ export async function importAuctionHistoryFill(rawText, targetDate, colType) {
     const auctionData = getAuctionData();
     const targetList = [...(auctionData[targetDate] || [])];
     // 股票是否存在的判断依据：当前正在查看的日期的早盘竞价列表（固定的股票列表，不可新增/删除）
-    const currentStockSet = new Set(getTodayAuction().map(item => item.stock && item.stock.trim()).filter(Boolean));
+    // [FIX 2026-08-21b] 归一化匹配（全角→半角），避免 深华发Ａ/深华发A 变体绕过守卫
+    const currentStockSet = new Set(getTodayAuction().map(item => item.stock && _normStockName(item.stock)).filter(Boolean));
 
     let filledCount = 0;     // 成功补齐的字段数（三列格式里补两个字段算两次）
     let addedCount = 0;      // 目标日期记录里原本没有该股票的数据记录，新增了一条
@@ -896,13 +910,14 @@ export async function importAuctionHistoryFill(rawText, targetDate, colType) {
         }
 
         // 股票必须存在于当前列表（currentDate），否则视为无关股票，直接跳过
-        if (!currentStockSet.has(stock)) {
+        if (!currentStockSet.has(_normStockName(stock))) {
             skippedNotInCurrent++;
             return;
         }
 
         // 查找目标日期的数据记录里是否已有该股票；没有的话新建一条只含数值的记录
-        let existingIndex = targetList.findIndex(item => item.stock && item.stock.trim() === stock);
+        // [FIX 2026-08-21b] 归一化匹配，避免名字变体重复建行
+        let existingIndex = targetList.findIndex(item => item.stock && _normStockName(item.stock) === _normStockName(stock));
         let isNewRecord = false;
         if (existingIndex < 0) {
             // 方案2：行对象不携带 in_watchlist，通过 _addAuctionWatchlistMember 登记为正式成员

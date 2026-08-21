@@ -63,7 +63,16 @@ import { _cloudBlobExtras } from './auction-sync-helpers.js';
             // §6：同步时推送「当日全部行」（含 obsAutoAdded 观察组），不依赖已被排除 obs 的索引，
             // 否则观察组行会被判为「本地已删除」而从云端 auction_watchlist 物理删除（数据丢失）。
             // 索引(_auctionWatchlistIndex)仅用于「总数量」计数，须保持只含正式成员。
-            const localList = (getAuctionData()[date] || []).filter(function(s) { return s && s.stock; });
+            // [FIX 2026-08-21] 影子行复活闭环修复：本地列表里除正式成员/观察组外，还可能有
+            // market_metrics(scope='auction) 的**影子行**（pullAuctionMarketDataForDate 影子分支
+            // 写入，行上 source 常为 'worker'）。旧逻辑把影子行也当正式成员 upsert 进
+            // auction_watchlist——用户在前端删除一只股票后，它的 metrics 行仍在，下次任意编辑
+            // 触发本函数同步时，影子行被"复活"成正式成员重新入库（2026-08-21 实发：当日 47 只
+            // 涨到 122 只，删了又回来）。修复：插入/更新只允许 正式成员索引 ∪ 观察组行。
+            const _formalSet = _getAuctionWatchlistSet(date);
+            const localList = (getAuctionData()[date] || []).filter(function(s) {
+                return s && s.stock && (s.obsAutoAdded || _formalSet.has(s.stock.trim()));
+            });
             const localStocks = new Set(localList.map(function(s) { return s.stock.trim(); }));
 
             // 读取云端 auction_watchlist 该日期已有股票
