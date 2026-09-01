@@ -421,6 +421,9 @@ const diezhangOptions = ['1:2', '1:3', '1:4', '2:1', '1:1', '2:3', '3:1', '3:2',
 const allGuanchaOptions = ['最近多板过程', '最近多板结果', '板块ETF过程', '两个过程'];
 // 旧版过程结果为固定四项（结果为正/负/过程递增/递减）
 const allGuochengOptions = ['结果为正', '结果为负', '过程递增', '过程递减'];
+// [JIWANG 2026-09-01] 过程结果选项按观察语义拆分：结果类观察只给正/负，过程类观察只给递增/递减
+const resultGuochengOptions = ['结果为正', '结果为负'];
+const processGuochengOptions = ['过程递增', '过程递减'];
 const allChushouOptions = ['出手对了', '出手错了', '空仓对了', '空仓错了'];
 
 const form = reactive({
@@ -570,6 +573,10 @@ function openEdit() {
   form.guancha = d.guancha || '';
   onGuanchaChange();
   form.guochengJieguo = d.guochengJieguo || '';
+  // [JIWANG 2026-09-01] 若已存过程结果与当前观察语义不符（旧数据串档），清空以免下拉显示无效项
+  if (form.guochengJieguo && guochengOptions.value.indexOf(form.guochengJieguo) < 0) {
+    form.guochengJieguo = '';
+  }
 
   const shouguJieguo = d.shouguJieguo || '';
   if (shouguJieguo.includes(':')) {
@@ -593,11 +600,11 @@ function openEdit() {
 
 function onDiezhangChange() {}
 function onJujiaoChange() {
-  // 旧版过程结果为固定选项，不随观察联动变化
-  guochengOptions.value = allGuochengOptions;
+  // [JIWANG 2026-09-01] 过程结果选项由「观察」联动决定（见 onGuanchaChange），不在此固定为四项
   if (form.jujiao === '谁增做谁') updateGuanchaOptions('all');
   else if (form.jujiao === '最近多板') { form.whoIncrease = ''; updateGuanchaOptions('duoban'); }
   else if (form.jujiao === '板块ETF') { form.whoIncrease = ''; updateGuanchaOptions('etf'); }
+  onGuanchaChange(); // 重新按当前观察同步过程结果可选项
 }
 function onWhoIncreaseChange() {
   const v = form.whoIncrease;
@@ -612,9 +619,20 @@ function updateGuanchaOptions(type) {
   else if (type === 'etf') guanchaOptions.value = ['板块ETF过程'];
   else guanchaOptions.value = allGuanchaOptions;
 }
+function getGuochengOptionsByGuancha(guancha) {
+  // [JIWANG 2026-09-01] 过程结果选项随「观察」联动：
+  //   观察名含「结果」→ 仅 结果为正/结果为负；含「过程」→ 仅 过程递增/过程递减；其它（含未选）回退全部四项。
+  if (guancha && guancha.includes('结果')) return resultGuochengOptions;
+  if (guancha && guancha.includes('过程')) return processGuochengOptions;
+  return allGuochengOptions;
+}
 function onGuanchaChange() {
-  // 旧版过程结果固定四项，不随观察变化
-  guochengOptions.value = allGuochengOptions;
+  // [JIWANG 2026-09-01] 过程结果随观察联动：结果类观察只给正/负，过程类观察只给递增/递减
+  guochengOptions.value = getGuochengOptionsByGuancha(form.guancha);
+  // 切换观察后，若已选过程结果不在新选项内则清空，避免串档保存
+  if (form.guochengJieguo && guochengOptions.value.indexOf(form.guochengJieguo) < 0) {
+    form.guochengJieguo = '';
+  }
 }
 function onJielunChange() {
   const v = form.jielun;
