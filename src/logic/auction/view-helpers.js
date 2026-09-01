@@ -583,6 +583,21 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     obsIndices = [];
     regularIndices = renderOrder.slice();
     hiddenObsIndices = [];
+  } else if (sortState.byWeakStrong) {
+    // [WEAK-STRONG 2026-09-01] 参考「竞昨」toggle 的显示方式：折叠观察组区块（obsIndices=[]），
+    // 不单独成块；弱转强达标（weakStrongSet 命中）的观察组票并入主列表，由上方 byWeakStrong 排序分支统一置顶。
+    // 未达标且非买入继承的观察组壳 → 隐藏（与竞昨口径一致），避免噪声、确保「高光」真正排在最前。
+    hiddenObsIndices = [];
+    _obsIndicesRaw.forEach(i => {
+      const stockName = renderList[i].stock.trim();
+      const matchesWeakStrong = weakStrongSet && weakStrongSet.has(stockName);
+      const item = renderList[i];
+      const hasTodayData = item && ((item.volume || '').toString().trim() !== '' || (item.yestVolume || '').toString().trim() !== '');
+      const isBoughtInherited = _obsBoughtSet.has(stockName) && hasTodayData;
+      if (!matchesWeakStrong && !isBoughtInherited) hiddenObsIndices.push(i);
+    });
+    obsIndices = [];
+    regularIndices = renderOrder.filter(i => hiddenObsIndices.indexOf(i) < 0);
   } else if (jingYestToggleChecked) {
     hiddenObsIndices = [];
     _obsIndicesRaw.forEach(i => {
