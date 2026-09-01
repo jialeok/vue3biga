@@ -67,9 +67,16 @@
         // 不再在同步 computed 内做 fire-and-forget hydrate——那依赖脆弱的模块缓存响应式重算，不可靠（实测恒空）。
         // 这是与「五日竞价涨幅」趋势图(loadTrendHistory)一致的显式异步加载模式。
         export const weakStrongSetRef = ref(null); // Map<name, downStreak> | null（仅 toggle 开启时有值）
+        // [WEAK-STRONG 2026-09-01] 第二档集合：仅满足「竞价转向」(上交易日<=0 且 当日>=0) 但不满足「连跌>=2」的票。
+        // 排序时排在高光(连跌+转向)之后、其余票之前；不点亮高光。
+        export const weakStrongTurnSetRef = ref(null); // Map<name, todayAuc> | null
 
         export function getWeakStrongSet(dateStr, dataSource = 'auction') {
             return weakStrongSetRef.value;
+        }
+
+        export function getWeakStrongTurnSet(dateStr, dataSource = 'auction') {
+            return weakStrongTurnSetRef.value;
         }
 
         let _wsLoadingPromise = null;
@@ -80,16 +87,17 @@
                     const auctionData = getGroupData(dataSource);
                     const todayList = auctionData[dateStr] || [];
                     // 条件②：当日竞价涨幅（专用字段 auc_pct_chg）必须 >= 0（非负即视为转强，含 0%；弱转强要求当天竞价不再为负）
-                    const candidates = [];
+                    const candidates = []; // { name, todayAuc }
                     todayList.forEach(item => {
                         if (!item || !item.stock) return;
                         const name = item.stock.trim();
                         const todayAuc = _parseAucPct(item.auc_pct_chg != null ? item.auc_pct_chg : item.aucPctChg);
                         if (todayAuc === null || todayAuc < 0) return; // 当天竞价涨幅必须 >= 0
-                        candidates.push(name);
+                        candidates.push({ name, todayAuc });
                     });
                     if (candidates.length === 0) {
                         weakStrongSetRef.value = new Map();
+                        weakStrongTurnSetRef.value = new Map();
                         return;
                     }
                     // 历史：批量拉取前 4 个交易日（T-1..T-4，不含当日快照）的 change_pct + auc_pct_chg（一次 in 查询，避免逐股 hydrate）
@@ -103,20 +111,29 @@
                     }
                     const hist = dates.length ? await getAuctionChangePctHistory(dates, dataSource) : new Map();
                     const t1Map = dates.length ? (hist.get(dates[0]) || new Map()) : new Map(); // T-1 的 auc 映射（dates[0] = T-1）
-                    const result = new Map();
-                    for (const name of candidates) {
-                        // 条件①：前 4 交易日「五日涨幅」连续跌天数 >= 2（不含当日快照）
-                        const downStreak = _countConsecutiveDown(name, dates, hist);
-                        if (downStreak < 2) continue;
+                    const result = new Map();        // 高光：条件①(连跌>=2) + 条件②(竞价转向) 同时达标
+                    const turnSet = new Map();       // 第二档：仅条件②(竞价转向) 达标、条件①(连跌>=2) 未达标
+                    for (const c of candidates) {
+                        const name = c.name;
+                        const todayAuc = c.todayAuc;
                         // 条件②：上交易日竞价涨幅（auc_pct_chg T-1）必须 <= 0（前一天仍弱，含 0%）；缺失按不达标
                         const t1Entry = t1Map.get(name);
                         const prevAuc = t1Entry ? t1Entry.auc : null;
-                        if (prevAuc === null || prevAuc > 0) continue;
-                        result.set(name, downStreak); // 连跌天数(>=2) 同时满足竞价转向 → 弱转强达标
+                        const cond2 = prevAuc !== null && prevAuc <= 0;
+                        if (!cond2) continue; // 竞价未转向（上交易日>0 或缺失）→ 非高光非转向，归第三档（底部）
+                        // 条件①：前 4 交易日「五日涨幅」连续跌天数 >= 2（不含当日快照）
+                        const downStreak = _countConsecutiveDown(name, dates, hist);
+                        if (downStreak >= 2) {
+                            result.set(name, downStreak); // 连跌(>=2) + 竞价转向 → 弱转强高光（第一档）
+                        } else {
+                            turnSet.set(name, todayAuc); // 仅竞价转向（未连跌>=2）→ 第二档（高光之后）
+                        }
                     }
                     weakStrongSetRef.value = result;
+                    weakStrongTurnSetRef.value = turnSet;
                 } catch (e) {
                     weakStrongSetRef.value = new Map();
+                    weakStrongTurnSetRef.value = new Map();
                 } finally {
                     _wsLoadingPromise = null;
                 }

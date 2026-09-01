@@ -2,7 +2,7 @@ import { getTodayGroupList, getGroupData, getAuctionData } from '../app-core-api
 import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
 import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlightSetForDate, getDigitCount, getRatioDiffInfoForDate } from './sort-rules.js';
 import { ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagState, _buildTagStateCache } from '../tagTitles/rules.js';
-import { getThreeDayJingDieSet, getWeakStrongSet } from './sort-rules-extra.js';
+import { getThreeDayJingDieSet, getWeakStrongSet, getWeakStrongTurnSet } from './sort-rules-extra.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 import { _getAuctionWatchlistSet } from '../../data/watchlist-and-metrics.js';
 import { getNumericVolume, getStocksData } from '../../data/supabase-client.js';
@@ -266,6 +266,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   // [WEAK-STRONG 2026-09-01] 弱转强达标集合（连跌天数>=1 且 竞价涨幅>=0）；仅该 toggle 开启时计算。
   const weakStrongSet = sortState.byWeakStrong ? getWeakStrongSet(currentDate, dataSource) : null;
+  const weakStrongTurnSet = sortState.byWeakStrong ? getWeakStrongTurnSet(currentDate, dataSource) : null;
 
   const _prevMap = new Map();
   if (prevAuctionList.length > 0) {
@@ -325,27 +326,39 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   let renderOrder = renderList.map((_, idx) => idx);
 
   if (sortState.byWeakStrong) {
-            // [WEAK-STRONG 2026-09-01] 弱转强：五日涨幅连跌天数(changePct<=0，0% 算跌)>=2（不含当日快照）
-            //   + 竞价涨幅「转向」(上交易日 auc_pct_chg<=0 且 当日 auc_pct_chg>0)，两条件必须同时满足。
-            //   排序：达标整体置顶；同档按连跌天数由高到低（4>3>2…）；同日连跌下按「当日竞价涨幅」由高到低。
-            //   仅「连跌>=2 且 竞价转向」才点亮高光；上交易日竞价涨幅>0（前一天未弱）或当日<=0（未转强）均不达标。
+            // [WEAK-STRONG 2026-09-01] 弱转强三档排序：
+            //   tier0 高光 = 连跌天数>=2(条件①) 且 竞价转向(上交易日<=0 且 当日>=0，条件②)，两条件同时满足；
+            //   tier1 第二档 = 仅竞价转向(条件②) 达标、连跌未达>=2（不点亮高光）；
+            //   tier2 其余 = 竞价未转向（上交易日>0 或缺失）或当日<0，排在最末。
+            //   同档内：tier0 按连跌天数由高到低、同日按「当日竞价涨幅」由高到低；tier1 按「当日竞价涨幅」由高到低；tier2 保持原序。
     renderOrder = renderOrder.map((idx, pos) => {
       const it = renderList[idx];
       const stockName = it && it.stock ? it.stock.trim() : '';
-      const isQualified = !!(weakStrongSet && weakStrongSet.has(stockName));
-      const downStreak = isQualified ? weakStrongSet.get(stockName) : 0;
+      const isHighlight = !!(weakStrongSet && weakStrongSet.has(stockName)); // tier0
+      const isTurn = !isHighlight && !!(weakStrongTurnSet && weakStrongTurnSet.has(stockName)); // tier1
+      const tier = isHighlight ? 0 : (isTurn ? 1 : 2);
+      const downStreak = isHighlight ? weakStrongSet.get(stockName) : 0;
       const todayAuc = _getThreeDayAuctionPct(it);
-      return { idx, pos, isQualified, downStreak, todayAuc };
+      return { idx, pos, tier, isHighlight, isTurn, downStreak, todayAuc };
     }).sort((a, b) => {
-      if (a.isQualified !== b.isQualified) return a.isQualified ? -1 : 1;
-      if (a.isQualified) {
+      if (a.tier !== b.tier) return a.tier - b.tier;
+      if (a.tier === 0) {
         if (b.downStreak !== a.downStreak) return b.downStreak - a.downStreak;
         if (a.todayAuc === null && b.todayAuc === null) return a.pos - b.pos;
         if (a.todayAuc === null) return 1;
         if (b.todayAuc === null) return -1;
         if (b.todayAuc !== a.todayAuc) return b.todayAuc - a.todayAuc;
+        return a.pos - b.pos;
       }
-      return a.pos - b.pos;
+      if (a.tier === 1) {
+        // 第二档：仅竞价转向，按「当日竞价涨幅」由高到低（转得越猛越靠前）
+        if (a.todayAuc === null && b.todayAuc === null) return a.pos - b.pos;
+        if (a.todayAuc === null) return 1;
+        if (b.todayAuc === null) return -1;
+        if (b.todayAuc !== a.todayAuc) return b.todayAuc - a.todayAuc;
+        return a.pos - b.pos;
+      }
+      return a.pos - b.pos; // tier2 保持原序
     }).map(x => x.idx);
   } else if (sortState.byRatio) {
     const highRatioStocksForSort = getHighRatioStocksForDate(currentDate, dataSource);
@@ -585,12 +598,12 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     hiddenObsIndices = [];
   } else if (sortState.byWeakStrong) {
     // [WEAK-STRONG 2026-09-01] 参考「竞昨」toggle 的显示方式：折叠观察组区块（obsIndices=[]），
-    // 不单独成块；弱转强达标（weakStrongSet 命中）的观察组票并入主列表，由上方 byWeakStrong 排序分支统一置顶。
-    // 未达标且非买入继承的观察组壳 → 隐藏（与竞昨口径一致），避免噪声、确保「高光」真正排在最前。
+    // 不单独成块；弱转强达标（weakStrongSet 命中）或仅竞价转向（weakStrongTurnSet 命中）的观察组票并入主列表，
+    // 由上方 byWeakStrong 排序分支统一排到前列（高光置顶、竞价转向次之）。其余未达标且非买入继承的观察组壳 → 隐藏。
     hiddenObsIndices = [];
     _obsIndicesRaw.forEach(i => {
       const stockName = renderList[i].stock.trim();
-      const matchesWeakStrong = weakStrongSet && weakStrongSet.has(stockName);
+      const matchesWeakStrong = (weakStrongSet && weakStrongSet.has(stockName)) || (weakStrongTurnSet && weakStrongTurnSet.has(stockName));
       const item = renderList[i];
       const hasTodayData = item && ((item.volume || '').toString().trim() !== '' || (item.yestVolume || '').toString().trim() !== '');
       const isBoughtInherited = _obsBoughtSet.has(stockName) && hasTodayData;
