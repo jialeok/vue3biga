@@ -55,7 +55,7 @@
 
         // ===== 弱转强（2026-09-01）=====
         // 定义（两条件必须同时满足）：
-        //   ① 前 4 个交易日「五日涨幅(changePct)」连续跌天数 >= 1（不含当日快照：当日 change_pct 为盘前快照、收盘后才有真实值）；
+        //   ① 前 4 个交易日「五日涨幅(changePct)」连续跌天数 >= 2（不含当日快照；至少连续 2 个交易日下跌才算“连跌”，单日下跌不算弱转强）；
         //      “跌”定义：changePct <= 0（0% 视为跌，0% 是真实值非空数值）；从最近的前一交易日往回数，遇 changePct>0 中断。
         //   ② 当日竞价涨幅（专用字段 auc_pct_chg）>= 0（止跌/企稳/反转信号）。
         // 返回 Map<股票名称, 连跌天数>，仅含「弱转强」达标股票。
@@ -101,7 +101,7 @@
                     const result = new Map();
                     for (const name of candidates) {
                         const downStreak = _countConsecutiveDown(name, dates, hist);
-                        if (downStreak >= 1) result.set(name, downStreak);
+                        if (downStreak >= 2) result.set(name, downStreak); // 至少连续 2 天下跌才算“连跌”
                     }
                     weakStrongSetRef.value = result;
                 } catch (e) {
