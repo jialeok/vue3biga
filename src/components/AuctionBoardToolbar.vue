@@ -15,7 +15,7 @@
       </label>
     </div>
     <div class="auction-toggle-item">
-      <span class="auction-toggle-label">弱转强<span class="auction-toggle-badge">高光</span></span>
+      <span class="auction-toggle-label">弱转强</span>
       <label class="auction-toggle-switch">
         <input
           type="checkbox"

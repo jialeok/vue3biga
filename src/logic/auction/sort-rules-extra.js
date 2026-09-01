@@ -4,7 +4,7 @@
         // 返回 Map<股票名称, 下跌天数>。
         import { getGroupData } from '../app-core-api.js';
         import { getNumericVolume } from '../../data/supabase-client.js';
-        import { getStockHistoryValue } from '../../data/watchlist-and-metrics.js';
+        import { getStockHistoryValue, hydrateStockHistoryRow } from '../../data/watchlist-and-metrics.js';
         import { _signalCache, _signalFpFor } from './sort-rules.js';
         import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
         import { getAuctionStockHistory } from '../tagTitles/rules.js';
@@ -73,6 +73,20 @@
             const MAX_DAYS = 5;
             const auctionData = getGroupData(dataSource);
             const todayList = auctionData[dateStr] || [];
+            // [WEAK-STRONG 2026-09-01 FIX] 早盘竞价仅拉当日数据，过去交易日的 change_pct 需按需 hydrate。
+            // 此处 fire-and-forget 触发补水（含去重），state 为 reactive，hydrate 完成后会触发 viewData 重算，
+            // 从而自然刷新「弱转强」排序与高光。不同步 await，避免阻塞渲染。
+            todayList.forEach(item => {
+                if (!item || !item.stock) return;
+                const name = item.stock.trim();
+                let d = dateStr;
+                for (let i = 0; i < MAX_DAYS; i++) {
+                    const prev = getPreviousTradingDay(d);
+                    if (!prev) break;
+                    hydrateStockHistoryRow(prev, name, dataSource);
+                    d = prev;
+                }
+            });
             const result = new Map();
             todayList.forEach(item => {
                 if (!item || !item.stock) return;
@@ -102,12 +116,19 @@
         }
 
         // 从最近交易日往回数，连续「五日涨幅(changePct)<0」的天数（最多 MAX_DAYS 天）。
+        // [WEAK-STRONG 2026-09-01 FIX] 早盘竞价 9:25 当日涨幅尚未产生（change_pct 为 null）→ 前置缺失应「跳过」而非「中断」，
+        // 否则所有股票连跌天数都会被 null 归零、弱转强集合恒空。已开始连跌后中途缺失才视为中断。
         function _getConsecutiveDownDays(name, dateStr, dataSource, maxDays) {
             const history = getAuctionStockHistory(name, dateStr, maxDays, dataSource); // 正序：早→晚
             let streak = 0;
+            let started = false;
             for (let i = history.length - 1; i >= 0; i--) {
                 const v = _parseChangePct(history[i].changePct);
-                if (v === null) break; // 缺失 → 无法确认连跌，停止
+                if (v === null) {
+                    if (!started) continue; // 前置缺失（如当日涨幅未产生）→ 跳过不计入连跌
+                    break; // 已开始连跌后遇缺失 → 连跌中断（保守）
+                }
+                started = true;
                 if (v < 0) streak++;
                 else break; // 涨幅>=0 → 连跌中断
             }

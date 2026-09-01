@@ -76,7 +76,7 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
   ].join('|');
 }
 
-function computeRowSig(item, sortState, date, prevVolume, prevYestVolume) {
+function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToken) {
   const stockName = (item.stock || '').trim();
   let sold = false, bought = false, selected = false;
   try {
@@ -96,6 +96,7 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume) {
     date,
     s.byWeakStrong ? 1 : 0, s.byRatio ? 1 : 0, s.byParallel ? 1 : 0,
     s.byJingYest ? 1 : 0, s.byJingYestRatio ? 1 : 0, s.byThreeDayJingDie ? 1 : 0, s.byTopic ? 1 : 0,
+    'ws=' + (wsToken || 0), // [WEAK-STRONG 2026-09-01] 弱转强达标档(连跌天数)变化需触发该行重派生，否则高光 class 被增量缓存陈旧复用
     prevVolume, prevYestVolume,
     sold ? 1 : 0, bought ? 1 : 0, selected ? 1 : 0
   ].join('|');
@@ -118,12 +119,14 @@ export function computeAuctionViewDataIncremental(dataSource, sortState) {
   }
 
   const items = result.items || [];
+  const wsSet = result.weakStrongSet;
   const next = new Array(items.length);
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     const stockName = (item.stock || '').trim();
     const prev = stockName ? prevMap.get(stockName) : null;
-    const sig = computeRowSig(item, sortState, date, prev ? prev.volume : '', prev ? prev.yestVolume : '');
+    const wsTok = (sortState && sortState.byWeakStrong && wsSet && stockName) ? (wsSet.get(stockName) || 0) : 0;
+    const sig = computeRowSig(item, sortState, date, prev ? prev.volume : '', prev ? prev.yestVolume : '', wsTok);
     const key = dataSource + '|' + item.index;
     const cached = rowCache.get(key);
     if (cached && cached.sig === sig) {

@@ -647,6 +647,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     obsIndices,
     regularIndices,
     hiddenObsIndices,
+    weakStrongSet,
     stats: {
       todayStrength,
       yesterdayStrength,
