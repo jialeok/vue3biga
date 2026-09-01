@@ -185,6 +185,7 @@ defineExpose({
 .auction-item.parallel-match { box-shadow: inset 4px 0 0 #10b981; }
 .auction-item.jing-yest-match { box-shadow: inset 4px 0 0 #3b82f6; }
 .auction-item.three-day-jing-die { box-shadow: inset 4px 0 0 #059669; }
+.auction-item.weak-strong { box-shadow: inset 4px 0 0 #f59e0b; }
 /* [FEAT 2026-08-18] 双击表头搜索 → 匹配行外框圈选（不要背景色，只要低调灰色外框）。
    行 div 类为 auction-item；用 box-shadow inset 模拟内边框，不影响布局、不被相邻行遮挡；
    放在状态类之后确保覆盖 sold/bought/selected 等的 box-shadow（同特异性同 important，后定义胜出）。 */
@@ -584,6 +585,7 @@ defineExpose({
 .auction-topic-row.parallel-match { box-shadow: inset 4px 0 0 #10b981; }
 .auction-topic-row.jing-yest-match { box-shadow: inset 4px 0 0 #3b82f6; }
 .auction-topic-row.three-day-jing-die { box-shadow: inset 4px 0 0 #059669; }
+.auction-topic-row.weak-strong { box-shadow: inset 4px 0 0 #f59e0b; }
 .auction-topic-stock {
   flex: 0 0 75px;
   font-size: 13px;

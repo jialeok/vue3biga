@@ -30,8 +30,8 @@ export function safeCall(fn, ...args) {
 
 function createSortState() {
   return {
-    auction: { byData: false, byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false },
-    hot: { byData: false, byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false }
+    auction: { byWeakStrong: false, byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false },
+    hot: { byWeakStrong: false, byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false }
   };
 }
 

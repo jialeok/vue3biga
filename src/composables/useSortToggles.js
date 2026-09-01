@@ -39,7 +39,7 @@ export function useAuctionSort() {
         const jingYestHighlightSet = jingYest;
         const threeDayJingDieSet = threeDayJingDie;
 
-        if (sortState.byData) {
+        if (sortState.byWeakStrong) {
             return renderOrder.map((idx) => ({
                 idx,
                 c: auctionList[idx] && auctionList[idx].stock

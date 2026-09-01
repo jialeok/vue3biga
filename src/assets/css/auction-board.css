@@ -140,6 +140,20 @@
             white-space: nowrap;
         }
 
+        /* 弱转强 toggle 的「高光」标记 */
+        .auction-toggle-badge {
+            display: inline-block;
+            margin-left: 4px;
+            padding: 0 5px;
+            font-size: 10px;
+            line-height: 16px;
+            color: #fff;
+            background: #f59e0b;
+            border-radius: 8px;
+            vertical-align: middle;
+            font-weight: 600;
+        }
+
         .auction-toggle-switch {
             position: relative;
             display: inline-block;
@@ -673,6 +687,17 @@
 
         .auction-content.three-day-jing-die-enabled .auction-item.three-day-jing-die:hover {
             background: rgba(5, 150, 105, 0.12);
+        }
+
+        /* 弱转强达标行：左侧琥珀色边框，仅在「弱转强」开关打开时显示（容器 .weak-strong-enabled 控制）。 */
+        .auction-content.weak-strong-enabled .auction-item.weak-strong,
+        .auction-content.weak-strong-enabled .auction-topic-row.weak-strong {
+            box-shadow: inset 4px 0 0 #f59e0b;
+        }
+
+        .auction-content.weak-strong-enabled .auction-item.weak-strong:hover,
+        .auction-item.weak-strong:hover {
+            background: rgba(245, 158, 11, 0.12);
         }
 
         .auction-highratio-stat {

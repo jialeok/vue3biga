@@ -15,12 +15,12 @@
       </label>
     </div>
     <div class="auction-toggle-item">
-      <span class="auction-toggle-label">数据</span>
+      <span class="auction-toggle-label">弱转强<span class="auction-toggle-badge">高光</span></span>
       <label class="auction-toggle-switch">
         <input
           type="checkbox"
-          :checked="sortState.byData"
-          @change="toggleSort('byData')"
+          :checked="sortState.byWeakStrong"
+          @change="toggleSort('byWeakStrong')"
         >
         <span class="auction-toggle-slider" />
       </label>

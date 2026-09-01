@@ -1,8 +1,8 @@
 import { getTodayGroupList, getGroupData, getAuctionData } from '../app-core-api.js';
 import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
 import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlightSetForDate, getDigitCount, getRatioDiffInfoForDate } from './sort-rules.js';
-import { getAuctionStockHistory, ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagState, _buildTagStateCache } from '../tagTitles/rules.js';
-import { getThreeDayJingDieSet } from './sort-rules-extra.js';
+import { ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagState, _buildTagStateCache } from '../tagTitles/rules.js';
+import { getThreeDayJingDieSet, getWeakStrongSet } from './sort-rules-extra.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 import { _getAuctionWatchlistSet } from '../../data/watchlist-and-metrics.js';
 import { getNumericVolume, getStocksData } from '../../data/supabase-client.js';
@@ -90,12 +90,16 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   // dd≥2 且 当天竞价涨幅 ≥ 0（止跌/企稳/反转）才点亮绿色高光；下跌中继(竞价涨幅<0)不点亮。
   const _todayAucPct = _getThreeDayAuctionPct(rawItem);
   const isThreeDayJingDieMatch = ctx.sortByThreeDayJingDieEnabled && ctx.threeDayJingDieSet && stockName && (ctx.threeDayJingDieSet.get(stockName) || 0) >= 2 && _todayAucPct !== null && _todayAucPct >= 0;
+  // [WEAK-STRONG 2026-09-01] 弱转强高光：仅「弱转强」toggle 开启且该股达标（连跌天数>=1 且 竞价涨幅>=0）。
+  const isWeakStrongMatch = ctx.sortByWeakStrongEnabled && ctx.weakStrongSet && stockName && ctx.weakStrongSet.has(stockName);
   if (isJingYestMatch) {
     itemClass += ' jing-yest-match';
   } else if (isParallelMatch) {
     itemClass += ' parallel-match';
   } else if (isThreeDayJingDieMatch) {
     itemClass += ' three-day-jing-die';
+  } else if (isWeakStrongMatch) {
+    itemClass += ' weak-strong';
   } else if (isHighRatioMatch) {
     itemClass += ' high-ratio';
   }
@@ -249,9 +253,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   } else {
     try {
       const store = useAuctionStore();
-      sortState = store && store.sortState ? store.sortState[_p] : { byData: false, byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false };
+      sortState = store && store.sortState ? store.sortState[_p] : { byWeakStrong: false, byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false };
     } catch {
-      sortState = { byData: false, byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false };
+      sortState = { byWeakStrong: false, byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false };
     }
   }
 
@@ -259,6 +263,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   const jingYestHighlightSet = getJingYestHighlightSetForDate(currentDate, dataSource);
   const parallelStocksToday = getParallelStocksForDate(currentDate, dataSource);
   const jingYestToggleChecked = sortState.byJingYest || sortState.byJingYestRatio;
+
+  // [WEAK-STRONG 2026-09-01] 弱转强达标集合（连跌天数>=1 且 竞价涨幅>=0）；仅该 toggle 开启时计算。
+  const weakStrongSet = sortState.byWeakStrong ? getWeakStrongSet(currentDate, dataSource) : null;
 
   const _prevMap = new Map();
   if (prevAuctionList.length > 0) {
@@ -317,14 +324,29 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   let renderOrder = renderList.map((_, idx) => idx);
 
-  if (sortState.byData) {
-    const dataCountCache = renderOrder.map(idx => {
+  if (sortState.byWeakStrong) {
+    // [WEAK-STRONG 2026-09-01] 弱转强：五日涨幅连续跌天数 + 当日竞价涨幅>=0（两条件必须同时满足）。
+    //   排序：达标（连跌天数>=1 且 竞价涨幅>=0）整体置顶；同档按连跌天数由高到低（5>4>3…）；
+    //   同日连跌天数下按「当日竞价涨幅 auc_pct_chg」由高到低（竞价涨幅越高越靠前）。
+    //   竞价涨幅<0 的下跌中继不达标 → 不置顶、不点亮高光。
+    renderOrder = renderOrder.map((idx, pos) => {
       const it = renderList[idx];
-      if (!it || !it.stock) return 0;
-      const history = getAuctionStockHistory(it.stock.trim(), currentDate, 5, dataSource);
-      return history.filter(h => h.volume !== null || h.yestVolume !== null).length;
-    });
-    renderOrder = renderOrder.map((idx, pos) => ({ idx, count: dataCountCache[pos] })).sort((a, b) => b.count - a.count).map(x => x.idx);
+      const stockName = it && it.stock ? it.stock.trim() : '';
+      const isQualified = !!(weakStrongSet && weakStrongSet.has(stockName));
+      const downStreak = isQualified ? weakStrongSet.get(stockName) : 0;
+      const todayAuc = _getThreeDayAuctionPct(it);
+      return { idx, pos, isQualified, downStreak, todayAuc };
+    }).sort((a, b) => {
+      if (a.isQualified !== b.isQualified) return a.isQualified ? -1 : 1;
+      if (a.isQualified) {
+        if (b.downStreak !== a.downStreak) return b.downStreak - a.downStreak;
+        if (a.todayAuc === null && b.todayAuc === null) return a.pos - b.pos;
+        if (a.todayAuc === null) return 1;
+        if (b.todayAuc === null) return -1;
+        if (b.todayAuc !== a.todayAuc) return b.todayAuc - a.todayAuc;
+      }
+      return a.pos - b.pos;
+    }).map(x => x.idx);
   } else if (sortState.byRatio) {
     const highRatioStocksForSort = getHighRatioStocksForDate(currentDate, dataSource);
     const prevDayList = prevDate ? (getGroupData(dataSource)[prevDate] || []) : [];
@@ -489,6 +511,12 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       }
       return 1;
     }
+    if (sortState.byWeakStrong) {
+      // [WEAK-STRONG 2026-09-01] 高光档(tier0)=弱转强达标（连跌天数>=1 且 竞价涨幅>=0），否则 tier1。
+      // 与 _enrichAuctionItem 中 isWeakStrongMatch 口径一致。
+      const ws = nm && weakStrongSet ? weakStrongSet.has(nm) : false;
+      return ws ? 0 : 1;
+    }
     if (sortState.byJingYestRatio) {
       const ih = nm && jingYestHighlightSet && jingYestHighlightSet.has(nm);
       return ih ? 0 : 1;
@@ -592,7 +620,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     sortByRatioEnabled: sortState.byRatio,
     highRatioToday,
     sortByThreeDayJingDieEnabled: sortState.byThreeDayJingDie,
-    threeDayJingDieSet: threeDayJingDieSet
+    threeDayJingDieSet: threeDayJingDieSet,
+    sortByWeakStrongEnabled: sortState.byWeakStrong,
+    weakStrongSet: weakStrongSet
   };
   const fullOrder = obsIndices.concat(regularIndices);
   const items = fullOrder.map((i, pos) => {

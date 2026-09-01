@@ -7,6 +7,7 @@
         import { getStockHistoryValue } from '../../data/watchlist-and-metrics.js';
         import { _signalCache, _signalFpFor } from './sort-rules.js';
         import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
+        import { getAuctionStockHistory } from '../tagTitles/rules.js';
 
         export function getThreeDayJingDieSet(dateStr, dataSource='auction') {
             const __k = 'tdjd|' + (dataSource || 'auction') + '|' + dateStr;
@@ -50,4 +51,65 @@
             });
             if (__sc && __fp !== null && result.size > 0) __sc[__k] = { fp: __fp, value: result };
             return result;
+        }
+
+        // ===== 弱转强（2026-09-01）=====
+        // 定义（两条件必须同时满足）：
+        //   ① 五日涨幅(changePct)连续跌天数 >= 1（从最近交易日往回数，连续为负的天数）；
+        //   ② 当日竞价涨幅（专用字段 auc_pct_chg）>= 0（止跌/企稳/反转信号）。
+        // 返回 Map<股票名称, 连跌天数>，仅含「弱转强」达标股票。
+        // 连跌天数口径：基于 getAuctionStockHistory 的每日 changePct（五日涨幅），从今天往回数
+        //   连续 changePct<0 的天数；遇到 >=0 或字段缺失即停止（保守：缺失不计入连跌）。
+        //   绝不读 auc_pct_chg 算连跌——连跌看「五日涨幅」、竞价涨幅是单独的 ② 条件。
+        export function getWeakStrongSet(dateStr, dataSource='auction') {
+            const __k = 'ws|' + (dataSource || 'auction') + '|' + dateStr;
+            const __sc = _signalCache;
+            let __fp = null;
+            if (__sc && _signalFpFor) {
+                __fp = _signalFpFor(dateStr, dataSource);
+                const __e = __sc[__k];
+                if (__e && __e.fp === __fp) return __e.value;
+            }
+            const MAX_DAYS = 5;
+            const auctionData = getGroupData(dataSource);
+            const todayList = auctionData[dateStr] || [];
+            const result = new Map();
+            todayList.forEach(item => {
+                if (!item || !item.stock) return;
+                const name = item.stock.trim();
+                // 条件②：当日竞价涨幅（专用字段 auc_pct_chg）必须 >= 0
+                const todayAuc = _parseWeakStrongAucPct(item);
+                if (todayAuc === null || todayAuc < 0) return;
+                // 条件①：五日涨幅连续跌天数 >= 1
+                const downStreak = _getConsecutiveDownDays(name, dateStr, dataSource, MAX_DAYS);
+                if (downStreak >= 1) result.set(name, downStreak);
+            });
+            if (__sc && __fp !== null && result.size > 0) __sc[__k] = { fp: __fp, value: result };
+            return result;
+        }
+
+        function _parseWeakStrongAucPct(rawItem) {
+            if (!rawItem) return null;
+            const raw = rawItem.auc_pct_chg || rawItem.aucPctChg || rawItem.changePct || rawItem.change_pct || '';
+            const num = parseFloat(String(raw).replace('%', '').replace('+', ''));
+            return isFinite(num) ? num : null;
+        }
+
+        function _parseChangePct(raw) {
+            if (raw === null || raw === undefined) return null;
+            const num = parseFloat(String(raw).replace('%', '').replace('+', ''));
+            return isFinite(num) ? num : null;
+        }
+
+        // 从最近交易日往回数，连续「五日涨幅(changePct)<0」的天数（最多 MAX_DAYS 天）。
+        function _getConsecutiveDownDays(name, dateStr, dataSource, maxDays) {
+            const history = getAuctionStockHistory(name, dateStr, maxDays, dataSource); // 正序：早→晚
+            let streak = 0;
+            for (let i = history.length - 1; i >= 0; i--) {
+                const v = _parseChangePct(history[i].changePct);
+                if (v === null) break; // 缺失 → 无法确认连跌，停止
+                if (v < 0) streak++;
+                else break; // 涨幅>=0 → 连跌中断
+            }
+            return streak;
         }

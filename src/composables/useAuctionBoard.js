@@ -50,7 +50,7 @@ export function useAuctionBoard() {
 
 
   const sortState = reactive({
-    byData: false,
+    byWeakStrong: false,
     byRatio: false,
     byParallel: false,
     byJingYest: false,
@@ -70,7 +70,7 @@ export function useAuctionBoard() {
   const viewData = computed(() => {
     void auctionStore.dataVersions['auction'];
     void uiStore.currentDate;
-    void sortState.byData; void sortState.byRatio; void sortState.byParallel;
+    void sortState.byWeakStrong; void sortState.byRatio; void sortState.byParallel;
     void sortState.byJingYest; void sortState.byJingYestRatio; void sortState.byThreeDayJingDie; void sortState.byTopic;
     // A3-01：经增量行缓存层，单格编辑只重新派生变化的行（logic/auction/incremental-view.js）
     return computeAuctionViewDataIncremental('auction', sortState);
@@ -621,24 +621,24 @@ export function useAuctionBoard() {
   function toggleSort(key) {
     sortState[key] = !sortState[key];
     if (sortState[key]) {
-      if (key === 'byData') {
+      if (key === 'byWeakStrong') {
         sortState.byRatio = false; sortState.byParallel = false;
         sortState.byJingYest = false; sortState.byJingYestRatio = false; sortState.byThreeDayJingDie = false;
       } else if (key === 'byRatio') {
-        sortState.byData = false; sortState.byParallel = false;
+        sortState.byWeakStrong = false; sortState.byParallel = false;
         sortState.byJingYest = false; sortState.byJingYestRatio = false; sortState.byThreeDayJingDie = false;
       } else if (key === 'byParallel') {
-        sortState.byData = false; sortState.byRatio = false;
+        sortState.byWeakStrong = false; sortState.byRatio = false;
         sortState.byThreeDayJingDie = false;
       } else if (key === 'byJingYest') {
-        sortState.byData = false; sortState.byRatio = false;
+        sortState.byWeakStrong = false; sortState.byRatio = false;
         sortState.byJingYestRatio = false; sortState.byThreeDayJingDie = false;
         sortState.byParallel = true;
       } else if (key === 'byJingYestRatio') {
-        sortState.byData = false; sortState.byRatio = false; sortState.byParallel = false;
+        sortState.byWeakStrong = false; sortState.byRatio = false; sortState.byParallel = false;
         sortState.byJingYest = false; sortState.byThreeDayJingDie = false;
       } else if (key === 'byThreeDayJingDie') {
-        sortState.byData = false; sortState.byRatio = false; sortState.byParallel = false;
+        sortState.byWeakStrong = false; sortState.byRatio = false; sortState.byParallel = false;
         sortState.byJingYest = false; sortState.byJingYestRatio = false;
       }
     } else {
@@ -650,7 +650,7 @@ export function useAuctionBoard() {
     }
     if (auctionStore.sortState && auctionStore.sortState['auction']) {
       const s = auctionStore.sortState['auction'];
-      s.byData = sortState.byData;
+      s.byWeakStrong = sortState.byWeakStrong;
       s.byRatio = sortState.byRatio;
       s.byParallel = sortState.byParallel;
       s.byJingYest = sortState.byJingYest;
