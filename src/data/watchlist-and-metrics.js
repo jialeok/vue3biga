@@ -557,29 +557,40 @@ import { setAuctionDateData } from './auction-data.js';
             }
         }
 
-        // [WEAK-STRONG 2026-09-01] 批量读取若干交易日的「五日涨幅(change_pct)」历史，供「弱转强」信号计算。
+        // [WEAK-STRONG 2026-09-01] 批量读取若干交易日的「五日涨幅(change_pct)」+「竞价涨幅(auc_pct_chg)」历史，供「弱转强」信号计算。
         // 一次 in('date', dates) 查询覆盖全部股票，避免逐股 hydrate 产生几十~几百次请求（§17/§22 性能红线）。
-        // 返回 Map<date, Map<stockName, number>>；缺失/非法值不入表（保守：不计入连跌）。
+        // 返回 Map<date, Map<stockName, {cp:number|null, auc:number|null}>>；缺失/非法值记 null（保守：不计入连跌/不计入竞价转向）。
         export async function getAuctionChangePctHistory(dates, dataSource = 'auction') {
             const sb = getSupabase();
             if (!sb || !dates || !dates.length) return new Map();
             try {
                 const { data, error } = await sb
                     .from('market_metrics')
-                    .select('date, stock, change_pct')
+                    .select('date, stock, change_pct, auc_pct_chg')
                     .eq('scope', dataSource)
                     .in('date', dates);
                 if (error || !data) return new Map();
                 const m = new Map();
                 for (const r of data) {
                     if (!r.stock) continue;
-                    const raw = r.change_pct;
-                    if (raw == null || String(raw).trim() === '') continue;
-                    const num = parseFloat(String(raw).replace('%', '').replace('+', ''));
-                    if (isNaN(num)) continue;
+                    const name = String(r.stock).trim();
+                    // change_pct（五日涨幅）：缺失/非法记 null（不参与连跌判定，保守）
+                    const rawCp = r.change_pct;
+                    let cp = null;
+                    if (rawCp != null && String(rawCp).trim() !== '') {
+                        const n = parseFloat(String(rawCp).replace('%', '').replace('+', ''));
+                        cp = isNaN(n) ? null : n;
+                    }
+                    // auc_pct_chg（竞价涨幅）：缺失/非法记 null（用于「弱转强」竞价转向判定）
+                    const rawAuc = r.auc_pct_chg;
+                    let auc = null;
+                    if (rawAuc != null && String(rawAuc).trim() !== '') {
+                        const n = parseFloat(String(rawAuc).replace('%', '').replace('+', ''));
+                        auc = isNaN(n) ? null : n;
+                    }
                     const d = r.date;
                     if (!m.has(d)) m.set(d, new Map());
-                    m.get(d).set(String(r.stock).trim(), num);
+                    m.get(d).set(name, { cp, auc });
                 }
                 return m;
             } catch (e) {

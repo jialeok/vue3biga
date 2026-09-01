@@ -90,7 +90,7 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   // dd≥2 且 当天竞价涨幅 ≥ 0（止跌/企稳/反转）才点亮绿色高光；下跌中继(竞价涨幅<0)不点亮。
   const _todayAucPct = _getThreeDayAuctionPct(rawItem);
   const isThreeDayJingDieMatch = ctx.sortByThreeDayJingDieEnabled && ctx.threeDayJingDieSet && stockName && (ctx.threeDayJingDieSet.get(stockName) || 0) >= 2 && _todayAucPct !== null && _todayAucPct >= 0;
-  // [WEAK-STRONG 2026-09-01] 弱转强高光：仅「弱转强」toggle 开启且该股达标（连跌天数>=1 且 竞价涨幅>=0）。
+  // [WEAK-STRONG 2026-09-01] 弱转强高光：仅「弱转强」toggle 开启且该股达标（五日涨幅连跌天数>=2 且 上交易日竞价涨幅<=0 且 当日竞价涨幅>0）。
   const isWeakStrongMatch = ctx.sortByWeakStrongEnabled && ctx.weakStrongSet && stockName && ctx.weakStrongSet.has(stockName);
   if (isJingYestMatch) {
     itemClass += ' jing-yest-match';
@@ -325,10 +325,10 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   let renderOrder = renderList.map((_, idx) => idx);
 
   if (sortState.byWeakStrong) {
-    // [WEAK-STRONG 2026-09-01] 弱转强：前 4 个交易日「五日涨幅」连续跌天数(changePct<=0，0% 算跌)>=2 + 当日竞价涨幅>=0（两条件必须同时满足；不含当日涨幅快照）。
-    //   排序：达标（连跌天数>=2 且 竞价涨幅>=0）整体置顶；同档按连跌天数由高到低（4>3>2…）；单日下跌不算弱转强。
-    //   同日连跌天数下按「当日竞价涨幅 auc_pct_chg」由高到低（竞价涨幅越高越靠前）。
-    //   竞价涨幅<0 的下跌中继不达标 → 不置顶、不点亮高光。
+            // [WEAK-STRONG 2026-09-01] 弱转强：五日涨幅连跌天数(changePct<=0，0% 算跌)>=2（不含当日快照）
+            //   + 竞价涨幅「转向」(上交易日 auc_pct_chg<=0 且 当日 auc_pct_chg>0)，两条件必须同时满足。
+            //   排序：达标整体置顶；同档按连跌天数由高到低（4>3>2…）；同日连跌下按「当日竞价涨幅」由高到低。
+            //   仅「连跌>=2 且 竞价转向」才点亮高光；上交易日竞价涨幅>0（前一天未弱）或当日<=0（未转强）均不达标。
     renderOrder = renderOrder.map((idx, pos) => {
       const it = renderList[idx];
       const stockName = it && it.stock ? it.stock.trim() : '';
@@ -512,7 +512,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       return 1;
     }
     if (sortState.byWeakStrong) {
-      // [WEAK-STRONG 2026-09-01] 高光档(tier0)=弱转强达标（连跌天数>=1 且 竞价涨幅>=0），否则 tier1。
+      // [WEAK-STRONG 2026-09-01] 高光档(tier0)=弱转强达标（连跌天数>=2 且 上交易日竞价涨幅<=0 且 当日竞价涨幅>0），否则 tier1。
       // 与 _enrichAuctionItem 中 isWeakStrongMatch 口径一致。
       const ws = nm && weakStrongSet ? weakStrongSet.has(nm) : false;
       return ws ? 0 : 1;
