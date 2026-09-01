@@ -557,3 +557,33 @@ import { setAuctionDateData } from './auction-data.js';
             }
         }
 
+        // [WEAK-STRONG 2026-09-01] 批量读取若干交易日的「五日涨幅(change_pct)」历史，供「弱转强」信号计算。
+        // 一次 in('date', dates) 查询覆盖全部股票，避免逐股 hydrate 产生几十~几百次请求（§17/§22 性能红线）。
+        // 返回 Map<date, Map<stockName, number>>；缺失/非法值不入表（保守：不计入连跌）。
+        export async function getAuctionChangePctHistory(dates, dataSource = 'auction') {
+            const sb = getSupabase();
+            if (!sb || !dates || !dates.length) return new Map();
+            try {
+                const { data, error } = await sb
+                    .from('market_metrics')
+                    .select('date, stock, change_pct')
+                    .eq('scope', dataSource)
+                    .in('date', dates);
+                if (error || !data) return new Map();
+                const m = new Map();
+                for (const r of data) {
+                    if (!r.stock) continue;
+                    const raw = r.change_pct;
+                    if (raw == null || String(raw).trim() === '') continue;
+                    const num = parseFloat(String(raw).replace('%', '').replace('+', ''));
+                    if (isNaN(num)) continue;
+                    const d = r.date;
+                    if (!m.has(d)) m.set(d, new Map());
+                    m.get(d).set(String(r.stock).trim(), num);
+                }
+                return m;
+            } catch (e) {
+                return new Map();
+            }
+        }
+

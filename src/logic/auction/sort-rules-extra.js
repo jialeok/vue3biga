@@ -2,12 +2,12 @@
         // 最多看 5 天（T..T-5 共 6 个数据点）。
         // 若序列全等（无严格递减），天数为 0。
         // 返回 Map<股票名称, 下跌天数>。
+        import { ref } from 'vue';
         import { getGroupData } from '../app-core-api.js';
         import { getNumericVolume } from '../../data/supabase-client.js';
-        import { getStockHistoryValue, hydrateStockHistoryRow } from '../../data/watchlist-and-metrics.js';
+        import { getStockHistoryValue, getAuctionChangePctHistory } from '../../data/watchlist-and-metrics.js';
         import { _signalCache, _signalFpFor } from './sort-rules.js';
         import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
-        import { getAuctionStockHistory } from '../tagTitles/rules.js';
 
         export function getThreeDayJingDieSet(dateStr, dataSource='auction') {
             const __k = 'tdjd|' + (dataSource || 'auction') + '|' + dateStr;
@@ -58,48 +58,58 @@
         //   ① 五日涨幅(changePct)连续跌天数 >= 1（从最近交易日往回数，连续为负的天数）；
         //   ② 当日竞价涨幅（专用字段 auc_pct_chg）>= 0（止跌/企稳/反转信号）。
         // 返回 Map<股票名称, 连跌天数>，仅含「弱转强」达标股票。
-        // 连跌天数口径：基于 getAuctionStockHistory 的每日 changePct（五日涨幅），从今天往回数
-        //   连续 changePct<0 的天数；遇到 >=0 或字段缺失即停止（保守：缺失不计入连跌）。
-        //   绝不读 auc_pct_chg 算连跌——连跌看「五日涨幅」、竞价涨幅是单独的 ② 条件。
-        export function getWeakStrongSet(dateStr, dataSource='auction') {
-            const __k = 'ws|' + (dataSource || 'auction') + '|' + dateStr;
-            const __sc = _signalCache;
-            let __fp = null;
-            if (__sc && _signalFpFor) {
-                __fp = _signalFpFor(dateStr, dataSource);
-                const __e = __sc[__k];
-                if (__e && __e.fp === __fp) return __e.value;
-            }
-            const MAX_DAYS = 5;
-            const auctionData = getGroupData(dataSource);
-            const todayList = auctionData[dateStr] || [];
-            // [WEAK-STRONG 2026-09-01 FIX] 早盘竞价仅拉当日数据，过去交易日的 change_pct 需按需 hydrate。
-            // 此处 fire-and-forget 触发补水（含去重），state 为 reactive，hydrate 完成后会触发 viewData 重算，
-            // 从而自然刷新「弱转强」排序与高光。不同步 await，避免阻塞渲染。
-            todayList.forEach(item => {
-                if (!item || !item.stock) return;
-                const name = item.stock.trim();
-                let d = dateStr;
-                for (let i = 0; i < MAX_DAYS; i++) {
-                    const prev = getPreviousTradingDay(d);
-                    if (!prev) break;
-                    hydrateStockHistoryRow(prev, name, dataSource);
-                    d = prev;
+        // 注意：本集合由 loadWeakStrongSet（异步批量拉取历史 change_pct 后写入 weakStrongSetRef）驱动，
+        // 不再在同步 computed 内做 fire-and-forget hydrate——那依赖脆弱的模块缓存响应式重算，不可靠（实测恒空）。
+        // 这是与「五日竞价涨幅」趋势图(loadTrendHistory)一致的显式异步加载模式。
+        export const weakStrongSetRef = ref(null); // Map<name, downStreak> | null（仅 toggle 开启时有值）
+
+        export function getWeakStrongSet(dateStr, dataSource = 'auction') {
+            return weakStrongSetRef.value;
+        }
+
+        let _wsLoadingPromise = null;
+        export function loadWeakStrongSet(dateStr, dataSource = 'auction') {
+            if (_wsLoadingPromise) return _wsLoadingPromise;
+            _wsLoadingPromise = (async () => {
+                try {
+                    const auctionData = getGroupData(dataSource);
+                    const todayList = auctionData[dateStr] || [];
+                    // 条件②：当日竞价涨幅（专用字段 auc_pct_chg）>= 0
+                    const candidates = [];
+                    todayList.forEach(item => {
+                        if (!item || !item.stock) return;
+                        const name = item.stock.trim();
+                        const todayAuc = _parseWeakStrongAucPct(item);
+                        if (todayAuc === null || todayAuc < 0) return;
+                        candidates.push(name);
+                    });
+                    if (candidates.length === 0) {
+                        weakStrongSetRef.value = new Map();
+                        return;
+                    }
+                    // 条件①：批量拉取过去 5 个交易日的 change_pct（一次 in 查询，避免逐股 hydrate）
+                    const dates = [];
+                    let d = dateStr;
+                    for (let i = 0; i < 5; i++) {
+                        const p = getPreviousTradingDay(d);
+                        if (!p) break;
+                        dates.push(p);
+                        d = p;
+                    }
+                    const hist = dates.length ? await getAuctionChangePctHistory(dates, dataSource) : new Map();
+                    const result = new Map();
+                    for (const name of candidates) {
+                        const downStreak = _countConsecutiveDown(name, dates, hist);
+                        if (downStreak >= 1) result.set(name, downStreak);
+                    }
+                    weakStrongSetRef.value = result;
+                } catch (e) {
+                    weakStrongSetRef.value = new Map();
+                } finally {
+                    _wsLoadingPromise = null;
                 }
-            });
-            const result = new Map();
-            todayList.forEach(item => {
-                if (!item || !item.stock) return;
-                const name = item.stock.trim();
-                // 条件②：当日竞价涨幅（专用字段 auc_pct_chg）必须 >= 0
-                const todayAuc = _parseWeakStrongAucPct(item);
-                if (todayAuc === null || todayAuc < 0) return;
-                // 条件①：五日涨幅连续跌天数 >= 1
-                const downStreak = _getConsecutiveDownDays(name, dateStr, dataSource, MAX_DAYS);
-                if (downStreak >= 1) result.set(name, downStreak);
-            });
-            if (__sc && __fp !== null && result.size > 0) __sc[__k] = { fp: __fp, value: result };
-            return result;
+            })();
+            return _wsLoadingPromise;
         }
 
         function _parseWeakStrongAucPct(rawItem) {
@@ -109,24 +119,17 @@
             return isFinite(num) ? num : null;
         }
 
-        function _parseChangePct(raw) {
-            if (raw === null || raw === undefined) return null;
-            const num = parseFloat(String(raw).replace('%', '').replace('+', ''));
-            return isFinite(num) ? num : null;
-        }
-
-        // 从最近交易日往回数，连续「五日涨幅(changePct)<0」的天数（最多 MAX_DAYS 天）。
-        // [WEAK-STRONG 2026-09-01 FIX] 早盘竞价 9:25 当日涨幅尚未产生（change_pct 为 null）→ 前置缺失应「跳过」而非「中断」，
-        // 否则所有股票连跌天数都会被 null 归零、弱转强集合恒空。已开始连跌后中途缺失才视为中断。
-        function _getConsecutiveDownDays(name, dateStr, dataSource, maxDays) {
-            const history = getAuctionStockHistory(name, dateStr, maxDays, dataSource); // 正序：早→晚
+        // 基于批量拉取的 hist（Map<date, Map<stock, num>>）从最近交易日往回数连续「changePct<0」的天数。
+        // 前置缺失（如当日/近交易日 change_pct 尚未产生）跳过不计连跌；已开始连跌后遇缺失视为中断（保守）。
+        function _countConsecutiveDown(name, dates, hist) {
             let streak = 0;
             let started = false;
-            for (let i = history.length - 1; i >= 0; i--) {
-                const v = _parseChangePct(history[i].changePct);
-                if (v === null) {
-                    if (!started) continue; // 前置缺失（如当日涨幅未产生）→ 跳过不计入连跌
-                    break; // 已开始连跌后遇缺失 → 连跌中断（保守）
+            for (let i = 0; i < dates.length; i++) {
+                const dayMap = hist.get(dates[i]);
+                const v = dayMap ? dayMap.get(name) : undefined;
+                if (v === undefined || v === null) {
+                    if (!started) continue; // 前置缺失 → 跳过
+                    break; // 已开始连跌后中断
                 }
                 started = true;
                 if (v < 0) streak++;

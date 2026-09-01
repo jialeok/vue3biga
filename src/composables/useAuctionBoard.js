@@ -21,6 +21,7 @@ import { getTopicGroups, getTopicRankCountThisWeek } from '../logic/topic/rules.
 import { getDisplayNote, parseNoteToFields, extractTopics } from '../logic/note/helpers.js';
 import { getPreviousTradingDay, isTradingDay } from '../logic/date/trading-day-helpers.js';
 import { getHighRatioStocksForDate, getJingYestHighlightSetForDate, getParallelStocksForDate } from '../logic/auction/sort-rules.js';
+import { loadWeakStrongSet, weakStrongSetRef } from '../logic/auction/sort-rules-extra.js';
 import { syncStockCloseFromAuction, syncStockTopicsFromAuction } from '../logic/auction/stock-sync.js';
 import { getStockCode } from '../data/stock-code-map.js';
 import { pushStockTopicsToCloud } from '../data/stock-topics.js';
@@ -43,6 +44,9 @@ import {
     _normalizeNotePunct,
     _buildFullNoteWithTopics
 } from '../composables/auction-board-helpers.js';
+
+// [WEAK-STRONG 2026-09-01] 弱转强集合异步加载 watch 仅挂载一次（useAuctionBoard 可能被多组件调用）。
+let _wsWatchBound = false;
 
 export function useAuctionBoard() {
   const uiStore = useUiStore();
@@ -75,6 +79,25 @@ export function useAuctionBoard() {
     // A3-01：经增量行缓存层，单格编辑只重新派生变化的行（logic/auction/incremental-view.js）
     return computeAuctionViewDataIncremental('auction', sortState);
   });
+
+  // [WEAK-STRONG 2026-09-01] 弱转强集合异步加载：toggle 开启或日期变化时，批量拉取过去 5 个交易日
+  // 的 change_pct 历史写入 weakStrongSetRef（reactive ref）；viewData 依赖该 ref，自动刷新排序与高光。
+  // 关闭时清空，避免陈旧数据污染其它 toggle。显式异步加载（与 loadTrendHistory 一致）替代脆弱的
+  // 同步 computed 内 fire-and-forget hydrate 模式。
+  if (!_wsWatchBound) {
+    _wsWatchBound = true;
+    watch(
+      () => [sortState.byWeakStrong, uiStore.currentDate],
+      async () => {
+        if (sortState.byWeakStrong) {
+          await loadWeakStrongSet(uiStore.currentDate, 'auction');
+        } else {
+          weakStrongSetRef.value = null;
+        }
+      },
+      { immediate: true }
+    );
+  }
 
   const currentPage = ref(0);
   const showBackend = ref(false);
