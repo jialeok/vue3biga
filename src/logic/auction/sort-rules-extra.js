@@ -58,8 +58,9 @@
         //   ① 前 4 个交易日「五日涨幅(changePct)」连续跌天数 >= 2（不含当日快照；至少连续 2 个交易日下跌才算“连跌”，单日下跌不算弱转强）；
         //      “跌”定义：changePct <= 0（0% 视为跌，0% 是真实值非空数值）；从最近的前一交易日往回数，遇 changePct>0 中断。
         //   ② 竞价涨幅「转向」信号（弱转强核心）：上交易日竞价涨幅（auc_pct_chg T-1）<= 0
-        //      （前一天仍弱：含 0%）且 当日竞价涨幅（auc_pct_chg T）> 0（当天转强：严格为正）。
-        //      例：T-1=-1% 且 T=+2% → 达标；T-1=+1% 且 T=+2% → 不达标（前一天未弱）。
+        //      （前一天仍弱：含 0%）且 当日竞价涨幅（auc_pct_chg T）>= 0（当天转强：非负即视为转强，含 0%）。
+        //      例：T-1=-1% 且 T=+2% → 达标；T-1=-2% 且 T=0% → 达标（当天从负转正）；T-1=0% 且 T=+2% → 达标；
+        //          T-1=+1% 且 T=+2% → 不达标（前一天未弱）。
         //      竞价涨幅取值严格用专用字段 auc_pct_chg（绝不读 changePct/change_pct，避免被“获取涨幅”快照改写误判）。
         // 返回 Map<股票名称, 连跌天数>，仅含「弱转强」达标股票。
         // 注意：本集合由 loadWeakStrongSet（异步批量拉取历史 change_pct 后写入 weakStrongSetRef）驱动，
@@ -78,13 +79,13 @@
                 try {
                     const auctionData = getGroupData(dataSource);
                     const todayList = auctionData[dateStr] || [];
-                    // 条件②：当日竞价涨幅（专用字段 auc_pct_chg）必须 > 0（严格为正：弱转强要求当天竞价转强）
+                    // 条件②：当日竞价涨幅（专用字段 auc_pct_chg）必须 >= 0（非负即视为转强，含 0%；弱转强要求当天竞价不再为负）
                     const candidates = [];
                     todayList.forEach(item => {
                         if (!item || !item.stock) return;
                         const name = item.stock.trim();
                         const todayAuc = _parseAucPct(item.auc_pct_chg != null ? item.auc_pct_chg : item.aucPctChg);
-                        if (todayAuc === null || todayAuc <= 0) return; // 当天竞价涨幅必须 > 0
+                        if (todayAuc === null || todayAuc < 0) return; // 当天竞价涨幅必须 >= 0
                         candidates.push(name);
                     });
                     if (candidates.length === 0) {
