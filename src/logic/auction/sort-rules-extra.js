@@ -55,7 +55,8 @@
 
         // ===== 弱转强（2026-09-01）=====
         // 定义（两条件必须同时满足）：
-        //   ① 五日涨幅(changePct)连续跌天数 >= 1（从最近交易日往回数，连续为负的天数）；
+        //   ① 前 4 个交易日「五日涨幅(changePct)」连续跌天数 >= 1（不含当日快照：当日 change_pct 为盘前快照、收盘后才有真实值）；
+        //      “跌”定义：changePct <= 0（0% 视为跌，0% 是真实值非空数值）；从最近的前一交易日往回数，遇 changePct>0 中断。
         //   ② 当日竞价涨幅（专用字段 auc_pct_chg）>= 0（止跌/企稳/反转信号）。
         // 返回 Map<股票名称, 连跌天数>，仅含「弱转强」达标股票。
         // 注意：本集合由 loadWeakStrongSet（异步批量拉取历史 change_pct 后写入 weakStrongSetRef）驱动，
@@ -87,10 +88,10 @@
                         weakStrongSetRef.value = new Map();
                         return;
                     }
-                    // 条件①：批量拉取过去 5 个交易日的 change_pct（一次 in 查询，避免逐股 hydrate）
+                    // 条件①：批量拉取前 4 个交易日（T-1..T-4，不含当日快照）的 change_pct（一次 in 查询，避免逐股 hydrate）
                     const dates = [];
                     let d = dateStr;
-                    for (let i = 0; i < 5; i++) {
+                    for (let i = 0; i < 4; i++) {
                         const p = getPreviousTradingDay(d);
                         if (!p) break;
                         dates.push(p);
@@ -119,21 +120,16 @@
             return isFinite(num) ? num : null;
         }
 
-        // 基于批量拉取的 hist（Map<date, Map<stock, num>>）从最近交易日往回数连续「changePct<0」的天数。
-        // 前置缺失（如当日/近交易日 change_pct 尚未产生）跳过不计连跌；已开始连跌后遇缺失视为中断（保守）。
+        // 基于批量拉取的 hist（Map<date, Map<stock, num>>）从最近的前一交易日(T-1)往回数连续「changePct<=0」的天数。
+        // “跌”含 0%（0% 是真实值，非空缺）；遇 changePct>0 或数据缺失(null/undefined) 即中断（保守，不臆测缺失为跌）。
         function _countConsecutiveDown(name, dates, hist) {
             let streak = 0;
-            let started = false;
             for (let i = 0; i < dates.length; i++) {
                 const dayMap = hist.get(dates[i]);
                 const v = dayMap ? dayMap.get(name) : undefined;
-                if (v === undefined || v === null) {
-                    if (!started) continue; // 前置缺失 → 跳过
-                    break; // 已开始连跌后中断
-                }
-                started = true;
-                if (v < 0) streak++;
-                else break; // 涨幅>=0 → 连跌中断
+                if (v === undefined || v === null) break; // 数据缺失 → 无法确认连跌，中断
+                if (v <= 0) streak++;                       // 跌（含 0%）
+                else break;                                 // 涨幅>0 → 连跌中断
             }
             return streak;
         }

@@ -80,7 +80,7 @@ export function useAuctionBoard() {
     return computeAuctionViewDataIncremental('auction', sortState);
   });
 
-  // [WEAK-STRONG 2026-09-01] 弱转强集合异步加载：toggle 开启或日期变化时，批量拉取过去 5 个交易日
+  // [WEAK-STRONG 2026-09-01] 弱转强集合异步加载：toggle 开启或日期变化时，批量拉取前 4 个交易日(T-1..T-4，不含当日快照)
   // 的 change_pct 历史写入 weakStrongSetRef（reactive ref）；viewData 依赖该 ref，自动刷新排序与高光。
   // 关闭时清空，避免陈旧数据污染其它 toggle。显式异步加载（与 loadTrendHistory 一致）替代脆弱的
   // 同步 computed 内 fire-and-forget hydrate 模式。

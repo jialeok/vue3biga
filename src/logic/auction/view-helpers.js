@@ -325,8 +325,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   let renderOrder = renderList.map((_, idx) => idx);
 
   if (sortState.byWeakStrong) {
-    // [WEAK-STRONG 2026-09-01] 弱转强：五日涨幅连续跌天数 + 当日竞价涨幅>=0（两条件必须同时满足）。
-    //   排序：达标（连跌天数>=1 且 竞价涨幅>=0）整体置顶；同档按连跌天数由高到低（5>4>3…）；
+    // [WEAK-STRONG 2026-09-01] 弱转强：前 4 个交易日「五日涨幅」连续跌天数(changePct<=0，0% 算跌) + 当日竞价涨幅>=0（两条件必须同时满足；不含当日涨幅快照）。
+    //   排序：达标（连跌天数>=1 且 竞价涨幅>=0）整体置顶；同档按连跌天数由高到低（4>3>2…）；
     //   同日连跌天数下按「当日竞价涨幅 auc_pct_chg」由高到低（竞价涨幅越高越靠前）。
     //   竞价涨幅<0 的下跌中继不达标 → 不置顶、不点亮高光。
     renderOrder = renderOrder.map((idx, pos) => {
