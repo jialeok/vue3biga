@@ -117,6 +117,19 @@ function localIsTradingDay(dateStr) {
   return !KNOWN_HOLIDAYS.has(dateStr);
 }
 
+// [OBS-FIX 2026-09-03] 取 dateStr 之前最近的交易日（工作日且非已知节假日），最多回溯 10 天。
+// 用于收盘涨幅覆盖时一并覆盖「观察组」：观察组 = 前一日竞昨高光 ⊆ 前一日 auction_watchlist，
+// 与 morning-workflow 的抓取口径（当日成分股 ∪ 前一日 watchlist 额外股）保持一致。
+function beijingPrevTradingDay(dateStr) {
+  const base = new Date(dateStr + 'T00:00:00Z').getTime();
+  for (let i = 1; i <= 10; i++) {
+    const t = new Date(base - i * 24 * 3600 * 1000);
+    const s = t.getUTCFullYear() + '-' + String(t.getUTCMonth() + 1).padStart(2, '0') + '-' + String(t.getUTCDate()).padStart(2, '0');
+    if (!isWeekend(s) && !KNOWN_HOLIDAYS.has(s)) return s;
+  }
+  return null;
+}
+
 // ----------------------------- 同花顺(fuyao)接口 -----------------------------
 async function fuyaoGet(path, params) {
   const url = new URL('https://fuyao.aicubes.cn' + path);
@@ -647,6 +660,40 @@ async function runAuctionCloseFetch(source) {
     logs.push('❌ 当日 auction_watchlist 为空（9:25 morning 可能未成功写入），无法覆盖涨幅');
     await writeLog(Object.assign(logBase, { ok: false, detail: { error: '当日列表为空' } }));
     return { ok: false, today, error: '当日 auction_watchlist 为空', skipped: true, reason: '当日列表为空', logs };
+  }
+
+  // 1b. [OBS-FIX 2026-09-03] 一并覆盖「观察组」股票。
+  // 观察组 = 前一日竞昨高光，它们不在当日 auction_watchlist 里，只读当日表会导致观察组的
+  // market_metrics.change_pct 永远停在 9:25 快照，收盘后五日涨幅趋势图不更新（常规组却能更新）。
+  // 与 morning-workflow 抓取口径对齐：morning 抓的是「当日成分股 ∪ 前一日 watchlist 额外股」，
+  // 收盘覆盖也覆盖同样的集合，才能把被 9:25 快照覆盖到的股票全部用收盘值覆盖。
+  // 前一日独有的股票只写入 market_metrics（影子行），不写 auction_watchlist，
+  // 前端 getTodayGroupList 会过滤掉影子行 → 不进当日列表、不计入总数/涨跌比，无副作用。
+  const prevDay = beijingPrevTradingDay(today);
+  if (prevDay) {
+    try {
+      const prevRows = await readAuctionWatchlist(prevDay);
+      const byStock = {};
+      watchlist.forEach(function(w) { if (w && w.stock) byStock[w.stock.trim()] = w; });
+      let added = 0;
+      prevRows.forEach(function(w) {
+        if (!w || !w.stock) return;
+        const key = w.stock.trim();
+        if (byStock[key]) return; // 当日已有 → 以当日行（含当日 code/状态）为准
+        byStock[key] = w;
+        added++;
+      });
+      if (added > 0) {
+        const merged = Object.keys(byStock).map(function(k) { return byStock[k]; });
+        logs.push('观察组补齐：合并前一日(' + prevDay + ') auction_watchlist 额外 ' + added +
+          ' 只（观察组候选），覆盖总数 ' + watchlist.length + ' → ' + merged.length);
+        watchlist = merged;
+      } else {
+        logs.push('观察组补齐：前一日(' + prevDay + ')无额外股票（已全部包含在当日列表）');
+      }
+    } catch (e) {
+      logs.push('读取前一日 auction_watchlist 失败（本次仅覆盖当日列表）: ' + e.message);
+    }
   }
 
   // 2. fuyao snapshot 批量获取收盘涨幅 + 覆盖率不足重试
