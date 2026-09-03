@@ -575,7 +575,29 @@ async function readAuctionWatchlist(date) {
     '&select=stock,code&limit=1000';
   const resp = await fetch(url, { headers: sbHeaders() });
   if (!resp.ok) throw new Error('读取 auction_watchlist 失败: HTTP ' + resp.status);
-  return await resp.json();
+  const rows = await resp.json();
+  // [OBS-FIX 2026-09-03] 观察组行可能 code 为空（本地 stockcodemap 未覆盖该名），收盘快照需按 code 调 fuyao，
+  // 故从 stockcodemap 补全缺码行，确保观察组也能被收盘涨幅覆盖（与常规组一致）。
+  const missingCode = (rows || []).filter(function(r) { return r && r.stock && (!r.code || String(r.code).trim() === ''); });
+  if (missingCode.length > 0) {
+    try {
+      const names = missingCode.map(function(r) { return r.stock.trim(); });
+      const mapUrl = CONFIG.SUPABASE_URL + '/rest/v1/stockcodemap?stock=in.(' +
+        encodeURIComponent(JSON.stringify(names)) + ')&select=stock,code';
+      const mapResp = await fetch(mapUrl, { headers: sbHeaders() });
+      if (mapResp.ok) {
+        const mapRows = await mapResp.json();
+        const codeByStock = {};
+        (mapRows || []).forEach(function(m) { if (m && m.stock && m.code) codeByStock[String(m.stock).trim()] = String(m.code).trim(); });
+        rows.forEach(function(r) {
+          if (r && r.stock && (!r.code || String(r.code).trim() === '') && codeByStock[String(r.stock).trim()]) {
+            r.code = codeByStock[String(r.stock).trim()];
+          }
+        });
+      }
+    } catch (e) { console.warn('stockcodemap 补码失败（保留空码）:', e.message); }
+  }
+  return rows;
 }
 
 async function upsertMarketMetricsRows(rows) {

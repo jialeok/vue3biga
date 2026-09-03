@@ -133,10 +133,12 @@ import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
             let hasNew = false;
             const _beforeLen = dayList.length;
 
-            // [OBS-FIX 2026-08-14 v2] 仅当当天列表为空（未抓取日）才注入 obs 壳并持久化；
-            // 已抓取的历史/今天日期不再注入，避免云端累积无数据 obs 壳（影子记录）。
-            const _dayHasRealData = dayList.some(function(r) { return r && !(r.volume === undefined || r.volume === null || r.volume === ''); });
-            if (!alreadyEnsured && !_dayHasRealData) {
+            // [OBS-FIX 2026-09-03] 观察组必须持久化到云端 auction_watchlist（带 code），否则 16:00 收盘涨幅覆盖
+            // （bidding-a 的 auction-close）读不到它们，观察组五日涨幅趋势图收盘后不会更新（与常规组不一致）。
+            // 旧逻辑「当天已有真实数据就不注入 obs 壳」会导致 app 在 9:25 之后才打开时观察组股票从不被落库，
+            // 收盘 cron 永远覆盖不到——这是观察组涨幅不更新的根因。改为：只要尚未 ensure 且不在当日列表就补入
+            // （空量由收盘快照/历史趋势补水填充，且不登记正式成员索引，不影响总数量计数）。
+            if (!alreadyEnsured) {
                 obsStocks.forEach(function(name) {
                     if (!existingNames.has(name)) {
                         // 不在当日列表中 → 自动添加为观察组（空壳行，待抓取/手动补量）。§6：观察组不登记正式成员索引。
