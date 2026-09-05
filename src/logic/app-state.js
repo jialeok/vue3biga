@@ -66,7 +66,8 @@ export const state = reactive({
     _dbgLogBuffer: [],
     _debugServerQueue: [],
     _debugServerTimer: null,
-    _expandedAuctionStocksByGroup: {},
+    // _expandedAuctionStocksByGroup 已于 2026-09-06 移除：展开态不再跨 toggle 保留，且改由
+    // useAuctionBoard 的 expandedSet / p2ExpandedSet 单一持有。勿再恢复此字段。
     _guardAssertDate: null,
     _guardStack: [],
     _highlightsChannel: null,

@@ -58,8 +58,10 @@ export const useAuctionStore = defineStore('auction', {
     hotAuctionData: {},
 
     // UI 状态
-    expandedStocks: new Set(),
-    p2ExpandedTopics: new Set(),
+    // [CLEANUP 2026-09-06] expandedStocks / p2ExpandedTopics 两个展开态镜像已移除：展开状态改由
+    // useAuctionBoard 的 expandedSet / p2ExpandedSet 单一持有（§6 单一真相），且按新需求不再跨
+    // toggle 保留（toggle 开/关一律默认收起）。此前 store 里的这两个 Set 无任何读写方，属于
+    // 会误导后人的第二套"展开态真相源"。
     highlightStock: '',
     highlightKeyword: '',
 
@@ -103,18 +105,9 @@ export const useAuctionStore = defineStore('auction', {
     },
 
     // --- 展开/收起 ---
-    toggleTrendPanel(stockName) {
-      if (!stockName) return;
-      const set = this.expandedStocks;
-      if (set.has(stockName)) set.delete(stockName); else set.add(stockName);
-    },
-
-    toggleP2Topic(topic) {
-      if (!topic) return;
-      const key = tabKey() + '|' + topic;
-      const set = this.p2ExpandedTopics;
-      if (set.has(key)) set.delete(key); else set.add(key);
-    },
+    // [CLEANUP 2026-09-06] toggleTrendPanel / toggleP2Topic 已随 expandedStocks、
+    // p2ExpandedTopics 一并移除（零调用者）。展开/收起统一走 useAuctionBoard 的
+    // onExpandTrend / expandAll / collapseAll / toggleGroupExpand / toggleP2ExpandAll。
 
     setExpandAll(value, page) {
       if (page === 2) this.expandAllP2 = !!value;
@@ -146,8 +139,6 @@ export const useAuctionStore = defineStore('auction', {
     setDate(date) {
       useUiStore().currentDate = date || '';
       this.currentDate = date || '';
-      this.expandedStocks.clear();
-      this.p2ExpandedTopics.clear();
       this.highlightStock = '';
       this.highlightKeyword = '';
       this.sortState = createSortState();

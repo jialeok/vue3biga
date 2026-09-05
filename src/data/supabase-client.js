@@ -1,7 +1,6 @@
 import { _setGetSupabaseFn } from './auction-data.js';
 import { _setGetStocksDataFn } from './session-and-shield.js';
 ﻿import { createClient } from '@supabase/supabase-js';
-import { useAuctionStore } from '../stores/auctionStore.js';
 import { state } from '../logic/app-state.js';
         import { _dbgLog } from './debug-log.js';
         import { normalizeAuctionNotes } from './auction-data.js';
@@ -21,33 +20,11 @@ import { state } from '../logic/app-state.js';
         state._biddingDirtyDates = new Set();
         state._topicCache = null;
         state._topicCacheBuilt = false;
-        // 记录用户手动展开的股票（按股票名），用于 renderAuction 重新渲染后恢复展开状态。
-        // 按分组（auction / hot）各自独立存储：此前两个tab共用同一个Set，会导致在一个tab
-        // 点开的股票，若在另一个tab恰好同名，切换tab时被莫名展开；且共用同一个"最多记忆8个"
-        // 上限时，在一个tab点得多了还会把另一个tab里已展开的悄悄挤掉——这正是"热门股票tab
-        // 交互感觉不一样/展开状态莫名其妙"的原因。
-        state._expandedAuctionStocksByGroup = { auction: new Set(), hot: new Set() };
-        // 按分组取对应的展开状态 Set；传入 'hot' 得到热门股票分组的，其余（包括 'auction' 或
-        // currentGroup 变量）都得到早盘竞价分组的。
-        function _getAuctionStore() { try { return useAuctionStore(); } catch { return null; } }
-export function _getExpandedStocksSet(dataSource) {
-            const key = dataSource === 'hot' ? 'hot' : 'auction';
-            return state._expandedAuctionStocksByGroup[key];
-        }
-
-        // 将 _expandedAuctionStocksByGroup 同步到 Vue store，保持响应式路径与 DOM 路径一致。
-        // 用内容级 diff 同步（而非整体换引用），相同内容不触发响应式，避免递归循环。
-        export function _syncExpandedStocksToStore(dataSource) {
-            if (typeof _getAuctionStore() === 'undefined' || !_getAuctionStore()) return;
-            try {
-                const key = dataSource === 'hot' ? 'hot' : 'auction';
-                const sourceSet = state._expandedAuctionStocksByGroup[key];
-                const storeSet = _getAuctionStore().expandedStocks;
-                if (!(storeSet instanceof Set)) { _getAuctionStore().expandedStocks = new Set(sourceSet); return; }
-                storeSet.forEach(function(item) { if (!sourceSet.has(item)) storeSet.delete(item); });
-                sourceSet.forEach(function(item) { if (!storeSet.has(item)) storeSet.add(item); });
-            } catch (e) {}
-        }
+        // [CLEANUP 2026-09-06] 已移除「记忆手动展开股票」的 state._expandedAuctionStocksByGroup
+        // 及其配套 _getExpandedStocksSet / _syncExpandedStocksToStore。原因：需求改为「展开态不跨
+        // toggle 保留」（任何排序 toggle 的开/关都默认收起），这套"重新渲染后恢复展开状态"的机制
+        // 与新语义直接冲突；且纯 Vue3 路径下它已零调用者——模板只读 composable 的 expandedSet。
+        // 保留它只会让后人误以为还存在第二套展开态真相源（违反 §6 单一真相）。勿再恢复。
 
         // ============================================================
         // Supabase 云同步配置

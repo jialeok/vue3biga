@@ -299,6 +299,13 @@ export function useAuctionBoard() {
         sortState2.byParallel = false;
       }
     }
+    // [FIX 2026-09-06] 同第一页 toggleSort：任何第二页排序 toggle 的开/关动作都把展开态重置为收起
+    // （分组展开 + 个股趋势面板 + 趋势缓存）。p2ExpandAll 必须一并置 false——该复选框在模板里有
+    // :checked 回显（AuctionBoardPageTopics.vue），不同步会出现「勾选着全部展开但内容已收起」的错位。
+    p2ExpandedSet.value = new Set();
+    p2TrendHistory.value = {};
+    p2ExpandedTopics.value = new Set();
+    p2ExpandAll.value = false;
   }
   function toggleStrengthSort() {
     isStrengthSortEnabled.value = !isStrengthSortEnabled.value;
@@ -681,6 +688,12 @@ export function useAuctionBoard() {
       s.byThreeDayJingDie = sortState.byThreeDayJingDie;
       s.byTopic = sortState.byTopic;
     }
+    // [FIX 2026-09-06] 展开态不跨 toggle 保留：任何排序 toggle 的「开」或「关」动作，都把展开面板
+    // 重置为收起。需求——关闭 toggle 时收起；再次打开时也必须是收起，而不是恢复上一次的展开集合。
+    // 展开态是纯 UI 状态（§34），不落库、不记忆；用户手动点股票名/序号仍可随时展开（onExpandTrend），
+    // 但下一次 toggle 动作又会回到默认收起。trendHistory 同步清空，避免留存已收起股票的趋势缓存。
+    expandedSet.value = new Set();
+    trendHistory.value = {};
     refresh();
   }
 
