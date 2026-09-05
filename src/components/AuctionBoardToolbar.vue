@@ -26,7 +26,7 @@
       </label>
     </div>
     <div class="auction-toggle-item">
-      <span class="auction-toggle-label">环比</span>
+      <span class="auction-toggle-label">量比抢筹</span>
       <label class="auction-toggle-switch">
         <input
           type="checkbox"

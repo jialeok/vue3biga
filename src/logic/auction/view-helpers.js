@@ -1,11 +1,12 @@
 import { getTodayGroupList, getGroupData, getAuctionData } from '../app-core-api.js';
 import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
-import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlightSetForDate, getDigitCount, getRatioDiffInfoForDate } from './sort-rules.js';
+// 注：getDigitCount / getNumericVolume 原为「环比」旧口径（今/昨比 + 位数差）服务，
+// 2026-09-05 环比重构为「量比抢筹」后已无引用，故从 import 中移除（避免 dead code）。
+import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlightSetForDate, getRatioDiffInfoForDate } from './sort-rules.js';
 import { ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagState, _buildTagStateCache } from '../tagTitles/rules.js';
-import { getThreeDayJingDieSet, getWeakStrongSet, getWeakStrongTurnSet } from './sort-rules-extra.js';
+import { getThreeDayJingDieSet, getWeakStrongSet, getWeakStrongTurnSet, getVolGrabSet } from './sort-rules-extra.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 import { _getAuctionWatchlistSet } from '../../data/watchlist-and-metrics.js';
-import { getNumericVolume, getStocksData } from '../../data/supabase-client.js';
 import { state } from '../app-state.js';
 import { useAuctionStore } from '../../stores/auctionStore.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
@@ -84,7 +85,10 @@ function _enrichAuctionItem(rawItem, index, ctx) {
 
   const isJingYestMatch = ctx.jingYestToggleChecked && ctx.jingYestHighlightSet && stockName && ctx.jingYestHighlightSet.has(stockName);
   const isParallelMatch = ctx.sortByParallelEnabled && !ctx.jingYestToggleChecked && stockName && ctx.parallelStocksToday && ctx.parallelStocksToday.has(stockName);
-  const isHighRatioMatch = ctx.sortByRatioEnabled && stockName && ctx.highRatioToday && ctx.highRatioToday.stockNames && ctx.highRatioToday.stockNames.has(stockName);
+  // [VOL-GRAB 2026-09-05] 量比抢筹高光（原「环比」重构）：竞价量比(auc_vol_ratio) >= 10 且 抢筹幅度(open_bid_pct) > 1
+  // 两条件同时满足才点亮；与 byRatio 排序分支共用 ctx.volGrabSet（单一真相，杜绝排序与高光两套口径）。
+  // 旧口径（今/昨比 >= 1.5 的 highRatioToday）仅保留给「竞放量数」常驻统计，不再参与高光。
+  const isHighRatioMatch = ctx.sortByRatioEnabled && stockName && ctx.volGrabSet && ctx.volGrabSet.has(stockName);
   // [THREE-DAY 2026-08-17-v2] 三天竞跌绿色高光：独立逻辑，仅 toggle 开启时生效。
   // 竞价涨幅取自专用字段 auc_pct_chg（避免被「获取涨幅」改写为常规涨幅而误判）。
   // dd≥2 且 当天竞价涨幅 ≥ 0（止跌/企稳/反转）才点亮绿色高光；下跌中继(竞价涨幅<0)不点亮。
@@ -268,6 +272,10 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   const weakStrongSet = sortState.byWeakStrong ? getWeakStrongSet(currentDate, dataSource) : null;
   const weakStrongTurnSet = sortState.byWeakStrong ? getWeakStrongTurnSet(currentDate, dataSource) : null;
 
+  // [VOL-GRAB 2026-09-05] 量比抢筹达标集合（竞价量比>=10 且 抢筹幅度>1）；仅该 toggle 开启时计算。
+  // 排序与高光判定共用这一份结果，避免两处口径分叉。
+  const volGrabSet = sortState.byRatio ? getVolGrabSet(currentDate, dataSource) : null;
+
   const _prevMap = new Map();
   if (prevAuctionList.length > 0) {
     for (const p of prevAuctionList) {
@@ -361,33 +369,21 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       return a.pos - b.pos; // tier2 保持原序
     }).map(x => x.idx);
   } else if (sortState.byRatio) {
-    const highRatioStocksForSort = getHighRatioStocksForDate(currentDate, dataSource);
-    const prevDayList = prevDate ? (getGroupData(dataSource)[prevDate] || []) : [];
-    const _prevDayMap = new Map();
-    for (const p of prevDayList) { if (p && p.stock) _prevDayMap.set(p.stock.trim(), p); }
+    // [VOL-GRAB 2026-09-05] 量比抢筹（原「环比」toggle 重构后的排序规则）：
+    //   达标 = 竞价量比(auc_vol_ratio) >= 10 且 抢筹幅度(open_bid_pct) > 1 —— 两条件【同时】满足才高光置顶；
+    //   达标组内按「竞价量比」降序，量比相同则按「抢筹幅度」降序（抢得越猛越靠前）；
+    //   未达标（任一条件不满足或字段缺失）保持原序排在其后。
+    //   注：原环比的「今/昨比 >= 1.5 + 位数差」口径已废弃；「竞放量数」(highRatioToday) 是常驻统计，
+    //   与 toggle 开关无关，保持原样不动，避免误伤既有展示。
     renderOrder = renderOrder.map((idx, pos) => {
-      const it = renderList[idx];
-      const stockName = it && it.stock ? it.stock.trim() : '';
-      const todayVolume = it ? getNumericVolume(it.volume) : null;
-      const yestVolume = it ? getNumericVolume(it.yestVolume) : null;
-      let ratio = null;
-      if (todayVolume !== null && todayVolume !== 0) {
-        const prevItem = _prevDayMap.get(stockName);
-        const prevVolume = prevItem ? getNumericVolume(prevItem.volume) : null;
-        if (prevVolume !== null && prevVolume !== 0) ratio = todayVolume / prevVolume;
-      }
-      const digitGap = (todayVolume !== null && yestVolume !== null) ? Math.abs(getDigitCount(todayVolume) - getDigitCount(yestVolume)) : null;
-      const isHighRatio = stockName && highRatioStocksForSort.stockNames.has(stockName);
-      const tier = isHighRatio ? 0 : (ratio !== null ? 1 : 2);
-      return { idx, pos, ratio, digitGap, tier };
+      const stockName = renderList[idx] && renderList[idx].stock ? renderList[idx].stock.trim() : '';
+      const g = stockName && volGrabSet ? volGrabSet.get(stockName) : null;
+      return { idx, pos, qualified: !!g, volRatio: g ? g.volRatio : null, bidPct: g ? g.bidPct : null };
     }).sort((a, b) => {
-      if (a.tier !== b.tier) return a.tier - b.tier;
-      if (a.tier === 0 || a.tier === 1) {
-        if (a.digitGap === null && b.digitGap === null) return a.pos - b.pos;
-        if (a.digitGap === null) return 1;
-        if (b.digitGap === null) return -1;
-        if (a.digitGap !== b.digitGap) return a.digitGap - b.digitGap;
-        return b.ratio - a.ratio;
+      if (a.qualified !== b.qualified) return a.qualified ? -1 : 1;
+      if (a.qualified) {
+        if (b.volRatio !== a.volRatio) return b.volRatio - a.volRatio; // 竞价量比降序
+        if (b.bidPct !== a.bidPct) return b.bidPct - a.bidPct;         // 同量比 → 抢筹幅度降序
       }
       return a.pos - b.pos;
     }).map(x => x.idx);
@@ -539,7 +535,13 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       const ip = nm && parallelStocksToday && parallelStocksToday.has(nm);
       return ih ? 0 : (ip ? 1 : 2);
     }
-    // 其它主排序（环比/平行/数据/默认）无分层概念，统一单档
+    if (sortState.byRatio) {
+      // [VOL-GRAB 2026-09-05] 量比抢筹：达标档(tier0)=竞价量比>=10 且 抢筹幅度>1，否则 tier1。
+      // 与 _enrichAuctionItem 中 isHighRatioMatch 口径一致；题材 toggle 叠加时保证高光档仍整体置顶。
+      const vg = nm && volGrabSet ? volGrabSet.has(nm) : false;
+      return vg ? 0 : 1;
+    }
+    // 其它主排序（平行/数据/默认）无分层概念，统一单档
     return 0;
   }
 
@@ -611,6 +613,21 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     });
     obsIndices = [];
     regularIndices = renderOrder.filter(i => hiddenObsIndices.indexOf(i) < 0);
+  } else if (sortState.byRatio) {
+    // [VOL-GRAB 2026-09-05] 与「弱转强 / 竞昨」显示口径一致：折叠观察组区块（obsIndices=[]），
+    // 达标的观察组票并入主列表，由上方 byRatio 排序分支统一置顶；未达标且非买入继承的观察组壳隐藏，
+    // 否则整块观察组会渲染在高光票之前，导致「高光置顶」名不副实。
+    hiddenObsIndices = [];
+    _obsIndicesRaw.forEach(i => {
+      const stockName = renderList[i].stock.trim();
+      const isQualified = !!(volGrabSet && volGrabSet.has(stockName));
+      const item = renderList[i];
+      const hasTodayData = item && ((item.volume || '').toString().trim() !== '' || (item.yestVolume || '').toString().trim() !== '');
+      const isBoughtInherited = _obsBoughtSet.has(stockName) && hasTodayData;
+      if (!isQualified && !isBoughtInherited) hiddenObsIndices.push(i);
+    });
+    obsIndices = [];
+    regularIndices = renderOrder.filter(i => hiddenObsIndices.indexOf(i) < 0);
   } else if (jingYestToggleChecked) {
     hiddenObsIndices = [];
     _obsIndicesRaw.forEach(i => {
@@ -646,11 +663,13 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     sortByParallelEnabled: sortState.byParallel,
     parallelStocksToday,
     sortByRatioEnabled: sortState.byRatio,
-    highRatioToday,
+    // 注：highRatioToday（原环比的今/昨比>=1.5 集合）已从 ctx 移除——高光改由 volGrabSet 判定，
+    // 保留它只会误导后人以为高光仍走旧口径。它仅用于下方 stats.highRatioCount（「竞放量数」常驻统计）。
     sortByThreeDayJingDieEnabled: sortState.byThreeDayJingDie,
     threeDayJingDieSet: threeDayJingDieSet,
     sortByWeakStrongEnabled: sortState.byWeakStrong,
-    weakStrongSet: weakStrongSet
+    weakStrongSet: weakStrongSet,
+    volGrabSet: volGrabSet
   };
   const fullOrder = obsIndices.concat(regularIndices);
   const items = fullOrder.map((i, pos) => {
@@ -676,6 +695,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     regularIndices,
     hiddenObsIndices,
     weakStrongSet,
+    volGrabSet,
     stats: {
       todayStrength,
       yesterdayStrength,

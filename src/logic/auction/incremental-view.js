@@ -16,7 +16,7 @@ import {
   getJingYestHighlightSetForDate,
   getParallelStocksForDate
 } from './sort-rules.js';
-import { getThreeDayJingDieSet } from './sort-rules-extra.js';
+import { getThreeDayJingDieSet, getVolGrabSet } from './sort-rules-extra.js';
 import { deriveAuctionTagState } from '../tagTitles/rules.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 
@@ -35,14 +35,25 @@ function mapToStr(map) {
   map.forEach((v, k) => arr.push(k + ':' + v));
   return arr.sort().join(',');
 }
+// [VOL-GRAB 2026-09-05] 量比抢筹集合序列化为指纹串。
+// 值为 { volRatio, bidPct } 对象，直接用 mapToStr 会退化成 [object Object]，导致量比/抢筹数值变化
+// 无法被感知 → 行缓存不失效 → 高光 class 陈旧复用。必须把两个数值都写进指纹。
+function volGrabMapToStr(map) {
+  if (!map) return '';
+  const arr = [];
+  map.forEach((v, k) => arr.push(k + ':' + (v ? v.volRatio : '') + '/' + (v ? v.bidPct : '')));
+  return arr.sort().join(',');
+}
 
 function computeGlobalFingerprint(dataSource, date, sortState) {
   let high = '';
   let jing = '';
   let par = '';
   let three = '';
+  let vgrab = '';
   let confirmed = '';
   try { high = setToSortedStr(getHighRatioStocksForDate(date, dataSource).stockNames); } catch (e) { high = ''; }
+  try { vgrab = volGrabMapToStr(getVolGrabSet(date, dataSource)); } catch (e) { vgrab = ''; }
   try { jing = setToSortedStr(getJingYestHighlightSetForDate(date, dataSource)); } catch (e) { jing = ''; }
   try { par = setToSortedStr(getParallelStocksForDate(date, dataSource)); } catch (e) { par = ''; }
   try { three = mapToStr(getThreeDayJingDieSet(date, dataSource)); } catch (e) { three = ''; }
@@ -72,11 +83,12 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
     'jing=' + jing,
     'par=' + par,
     'three=' + three,
+    'vgrab=' + vgrab,
     'confirmed=' + confirmed
   ].join('|');
 }
 
-function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToken) {
+function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToken, vgToken) {
   const stockName = (item.stock || '').trim();
   let sold = false, bought = false, selected = false;
   try {
@@ -97,6 +109,7 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToke
     s.byWeakStrong ? 1 : 0, s.byRatio ? 1 : 0, s.byParallel ? 1 : 0,
     s.byJingYest ? 1 : 0, s.byJingYestRatio ? 1 : 0, s.byThreeDayJingDie ? 1 : 0, s.byTopic ? 1 : 0,
     'ws=' + (wsToken || 0), // [WEAK-STRONG 2026-09-01] 弱转强达标档(连跌天数)变化需触发该行重派生，否则高光 class 被增量缓存陈旧复用
+    'vg=' + (vgToken || 0), // [VOL-GRAB 2026-09-05] 量比抢筹达标状态(0/1)变化需触发该行重派生，否则高光 class 陈旧复用
     prevVolume, prevYestVolume,
     sold ? 1 : 0, bought ? 1 : 0, selected ? 1 : 0
   ].join('|');
@@ -120,13 +133,15 @@ export function computeAuctionViewDataIncremental(dataSource, sortState) {
 
   const items = result.items || [];
   const wsSet = result.weakStrongSet;
+  const vgSet = result.volGrabSet;
   const next = new Array(items.length);
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     const stockName = (item.stock || '').trim();
     const prev = stockName ? prevMap.get(stockName) : null;
     const wsTok = (sortState && sortState.byWeakStrong && wsSet && stockName) ? (wsSet.get(stockName) || 0) : 0;
-    const sig = computeRowSig(item, sortState, date, prev ? prev.volume : '', prev ? prev.yestVolume : '', wsTok);
+    const vgTok = (sortState && sortState.byRatio && vgSet && stockName && vgSet.has(stockName)) ? 1 : 0;
+    const sig = computeRowSig(item, sortState, date, prev ? prev.volume : '', prev ? prev.yestVolume : '', wsTok, vgTok);
     const key = dataSource + '|' + item.index;
     const cached = rowCache.get(key);
     if (cached && cached.sig === sig) {

@@ -164,3 +164,73 @@
             }
             return streak;
         }
+
+        // ============================================================
+        // [VOL-GRAB 2026-09-05] 量比抢筹（原「环比」toggle 重构后的排序/高光口径）
+        // 达标 = 两个条件【同时】满足（缺一不可）：
+        //   ① 竞价量比 auc_vol_ratio >= 10
+        //      —— 该字段是【倍数】不是百分数（库里存 "2.18" / "11.27" / "24.14"），UI 也不带 % 号，
+        //         因此阈值直接按数值 10 比较，切勿当成 10%（=0.1）比较，否则条件形同虚设。
+        //   ② 抢筹幅度 open_bid_pct > 1
+        //      —— 该字段是【百分数数值】（"1.34" 即 1.34%），严格大于 1（等于 1 不达标）。
+        // 数据来自 market_metrics，经 pullAuctionFromTable 合并进 getGroupData(dataSource)[date] 内存行，
+        // 纯内存读取、无新增网络请求；含 market_metrics 影子行，故观察组注入壳同样可命中（与弱转强口径一致）。
+        // 返回 Map<股票名称, { volRatio, bidPct }>，排序与高光判定共用同一份结果（§6 单一真相）。
+        // ============================================================
+        export const VOL_GRAB_MIN_VOL_RATIO = 10; // 竞价量比阈值（倍数，含等号）
+        export const VOL_GRAB_MIN_BID_PCT = 1;    // 抢筹幅度阈值（百分数数值，严格大于）
+
+        // 解析数字字符串为数值；null / 空串 / 非法值统一返回 null（区分「0」与「缺失」）。
+        function _parseMetricNum(raw) {
+            if (raw === null || raw === undefined) return null;
+            const s = String(raw).replace('%', '').replace('+', '').trim();
+            if (s === '') return null;
+            const n = parseFloat(s);
+            return isFinite(n) ? n : null;
+        }
+
+        // 独立指纹：_signalFpFor/_viewFpList 只覆盖 stock:volume:yestVolume:changePct，
+        // 不含 open_bid_pct / auc_vol_ratio；若复用会导致这两个字段更新时缓存不失效（陈旧高光）。
+        // 因此为量比抢筹单独构造指纹，不改动被竞昨/平行共用的 _viewFpList（避免波及既有口径）。
+        function _volGrabFpList(list) {
+            if (!list || !list.length) return '0';
+            let fp = list.length + '|';
+            for (let i = 0; i < list.length; i++) {
+                const it = list[i];
+                if (!it) { fp += '_,'; continue; }
+                fp += (it.stock || '') + ':' +
+                    (it.open_bid_pct === null || it.open_bid_pct === undefined ? '' : it.open_bid_pct) + ':' +
+                    (it.auc_vol_ratio === null || it.auc_vol_ratio === undefined ? '' : it.auc_vol_ratio) + ',';
+            }
+            return fp;
+        }
+
+        export function getVolGrabSet(dateStr, dataSource = 'auction') {
+            // [PERF-CORE] 指纹缓存：同一组输入数据在同帧/多次调用间直接复用结果（与 getHighRatioStocksForDate 同模式）
+            const __k = 'vg|' + (dataSource || 'auction') + '|' + dateStr;
+            const __sc = _signalCache;
+            let __fp = null;
+            if (__sc) {
+                const __gd = getGroupData(dataSource) || {};
+                __fp = _volGrabFpList(__gd[dateStr]);
+                const __e = __sc[__k];
+                if (__e && __e.fp === __fp) return __e.value;
+            }
+            const todayList = (getGroupData(dataSource) || {})[dateStr] || [];
+            const result = new Map();
+            todayList.forEach(item => {
+                if (!item || !item.stock) return;
+                const name = item.stock.trim();
+                if (!name) return;
+                // 云端/内存行为 snake_case；本地手工行可能是 camelCase，两者都兼容
+                const volRatio = _parseMetricNum(item.auc_vol_ratio !== undefined ? item.auc_vol_ratio : item.aucVolRatio);
+                const bidPct = _parseMetricNum(item.open_bid_pct !== undefined ? item.open_bid_pct : item.openBidPct);
+                // 任一字段缺失 → 无法确认达标，直接不达标（§：读取失败/缺失 ≠ 达标）
+                if (volRatio === null || bidPct === null) return;
+                if (volRatio < VOL_GRAB_MIN_VOL_RATIO) return;
+                if (!(bidPct > VOL_GRAB_MIN_BID_PCT)) return;
+                result.set(name, { volRatio: volRatio, bidPct: bidPct });
+            });
+            if (__sc && __fp !== null) __sc[__k] = { fp: __fp, value: result };
+            return result;
+        }
