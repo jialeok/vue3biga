@@ -43,9 +43,13 @@ import { state } from '../app-state.js';
             const prevList = prevDate ? (auctionData[prevDate] || []) : [];
             const prevMap = _histRowMapFor(prevList);
 
+            // [SHADOW-GUARD 2026-09-07] 与竞昨/平行同口径：只统计当日正式名单内的股票，
+            // 排除 market_metrics 影子行与观察组空壳，避免「竞放量数」被影子股撑大。
+            const _formalSet = _getAuctionWatchlistSet(dateStr);
+
             const stockNames = new Set();
             todayList.forEach(item => {
-                if (!item || !item.stock) return;
+                if (!_isFormalListRow(item, _formalSet)) return;
                 const todayVolume = getNumericVolume(item.volume);
                 if (todayVolume === null || todayVolume === 0) return;
                 const prevItem = prevMap.get(item.stock.trim());
@@ -72,6 +76,25 @@ import { state } from '../app-state.js';
         // 观察组语义 = 继承「昨日竞昨高光全集」，与当天名单无关。
         // 详见工作区根目录《OBS_口径警示说明.md》，改这里前必读。
         // ============================================================
+
+        // [SHADOW-GUARD 2026-09-07] 所有 toggle 判定集合共用的「行身份闸门」（§6 单一真相）。
+        // getGroupData()[date] = auction_watchlist 正式成员 + market_metrics 影子行 合并后的全量，
+        // 影子行是「不在当日 9:25 名单、但被 worker/收盘 cron 写入指标表」的股票（典型：前一日
+        // watchlist 里的观察组候选）。它们不该参与任何高光/排序/统计——7 日实测：收盘 cron 写入
+        // 影子行后，弱转强高光从 1 只涨到 8 只，而列表里根本看不到这些股票。
+        // 统一判定（与 getParallelStocksForDate 既有口径一致）：
+        //   ① 跳过观察组继承空壳（obsAutoAdded===true）：占位行参与计算会形成"越传越多"反馈环；
+        //   ② 必须在当日正式名单内（_getAuctionWatchlistSet）；
+        //   ③ 正式名单索引为空 = 尚未就绪，此时不按名单过滤（§10：未就绪 ≠ 空数据，不可静默清空）。
+        export function _isFormalListRow(item, formalSet) {
+            if (!item || !item.stock) return false;
+            if (item.obsAutoAdded === true) return false;
+            const name = item.stock.trim();
+            if (!name) return false;
+            if (formalSet && formalSet.size > 0 && !formalSet.has(name)) return false;
+            return true;
+        }
+
         // 判断"平行"条件：T日竞价量 > T-1交易日竞价量，且 T-1交易日成交量 > T-2交易日成交量
         // 两个条件都满足才算达标；任一环节断点/无数据都判定为不满足
         // 字段说明：某天记录里的"yestVolume"字段，代表的是"该天的前一交易日的总成交量"

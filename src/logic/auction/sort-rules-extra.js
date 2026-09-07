@@ -5,8 +5,8 @@
         import { ref } from 'vue';
         import { getGroupData } from '../app-core-api.js';
         import { getNumericVolume } from '../../data/supabase-client.js';
-        import { getStockHistoryValue, getAuctionChangePctHistory } from '../../data/watchlist-and-metrics.js';
-        import { _signalCache, _signalFpFor } from './sort-rules.js';
+        import { getStockHistoryValue, getAuctionChangePctHistory, _getAuctionWatchlistSet } from '../../data/watchlist-and-metrics.js';
+        import { _signalCache, _signalFpFor, _isFormalListRow } from './sort-rules.js';
         import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
 
         export function getThreeDayJingDieSet(dateStr, dataSource='auction') {
@@ -21,9 +21,11 @@
             const MAX_DAYS = 5;
             const auctionData = getGroupData(dataSource);
             const todayList = auctionData[dateStr] || [];
+            // [SHADOW-GUARD 2026-09-07] 与竞昨/平行同口径：只统计当日正式名单内的股票
+            const _formalSet = _getAuctionWatchlistSet(dateStr);
             const result = new Map();
             todayList.forEach(item => {
-                if (!item || !item.stock) return;
+                if (!_isFormalListRow(item, _formalSet)) return;
                 const name = item.stock.trim();
                 const vol0 = getNumericVolume(item.volume);
                 if (vol0 === null || vol0 <= 0) return;
@@ -86,10 +88,15 @@
                 try {
                     const auctionData = getGroupData(dataSource);
                     const todayList = auctionData[dateStr] || [];
+                    // [SHADOW-GUARD 2026-09-07] 与竞昨/平行同口径：只统计当日正式名单内的股票，
+                    // 排除 market_metrics 影子行与观察组空壳。影子行是收盘 cron / worker 写入指标表、
+                    // 但不在当日 9:25 名单的股票——它们混进来会让弱转强高光在收盘后凭空变多
+                    // （实测：收盘后 cron 写入影子行，高光从 1 只涨到 8 只，而列表里根本看不到它们）。
+                    const _formalSet = _getAuctionWatchlistSet(dateStr);
                     // 条件②：当日竞价涨幅（专用字段 auc_pct_chg）必须 >= 0（非负即视为转强，含 0%；弱转强要求当天竞价不再为负）
                     const candidates = []; // { name, todayAuc }
                     todayList.forEach(item => {
-                        if (!item || !item.stock) return;
+                        if (!_isFormalListRow(item, _formalSet)) return;
                         const name = item.stock.trim();
                         const todayAuc = _parseAucPct(item.auc_pct_chg != null ? item.auc_pct_chg : item.aucPctChg);
                         if (todayAuc === null || todayAuc < 0) return; // 当天竞价涨幅必须 >= 0
@@ -174,7 +181,9 @@
         //   ② 抢筹幅度 open_bid_pct > 1
         //      —— 该字段是【百分数数值】（"1.34" 即 1.34%），严格大于 1（等于 1 不达标）。
         // 数据来自 market_metrics，经 pullAuctionFromTable 合并进 getGroupData(dataSource)[date] 内存行，
-        // 纯内存读取、无新增网络请求；含 market_metrics 影子行，故观察组注入壳同样可命中（与弱转强口径一致）。
+        // 纯内存读取、无新增网络请求。
+        // ⚠️ 判定只认「当日正式名单」成员（_isFormalListRow）：market_metrics 影子行同样带完整竞价指标，
+        // 原注释"含影子行"会导致收盘 cron 写入影子行后高光数凭空变多（2026-09-07 修正）。
         // 返回 Map<股票名称, { volRatio, bidPct }>，排序与高光判定共用同一份结果（§6 单一真相）。
         // ============================================================
         export const VOL_GRAB_MIN_VOL_RATIO = 10; // 竞价量比阈值（倍数，含等号）
@@ -217,9 +226,12 @@
                 if (__e && __e.fp === __fp) return __e.value;
             }
             const todayList = (getGroupData(dataSource) || {})[dateStr] || [];
+            // [SHADOW-GUARD 2026-09-07] 与竞昨/平行同口径：只统计当日正式名单内的股票，
+            // 排除 market_metrics 影子行与观察组空壳（影子行有完整竞价指标，混入会虚增高光数）。
+            const _formalSet = _getAuctionWatchlistSet(dateStr);
             const result = new Map();
             todayList.forEach(item => {
-                if (!item || !item.stock) return;
+                if (!_isFormalListRow(item, _formalSet)) return;
                 const name = item.stock.trim();
                 if (!name) return;
                 // 云端/内存行为 snake_case；本地手工行可能是 camelCase，两者都兼容
@@ -231,6 +243,8 @@
                 if (!(bidPct > VOL_GRAB_MIN_BID_PCT)) return;
                 result.set(name, { volRatio: volRatio, bidPct: bidPct });
             });
-            if (__sc && __fp !== null) __sc[__k] = { fp: __fp, value: result };
+            // 空结果不缓存：可能是正式名单索引尚未就绪（size=0）导致，缓存空结果会锁住错误的 0
+            // （与 getParallelStocksForDate 同策略，§10：未就绪 ≠ 空数据）。
+            if (__sc && __fp !== null && result.size > 0) __sc[__k] = { fp: __fp, value: result };
             return result;
         }
