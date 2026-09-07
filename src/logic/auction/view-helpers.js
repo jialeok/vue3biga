@@ -586,6 +586,17 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // 此处直接复用，确保「观察组归属口径」与「视图注入空壳行」完全一致（单一真相，杜绝两套定义分叉）。
   const _obsIndicesRaw = renderOrder.filter(i => renderList[i] && renderList[i].stock && _isObsMember(renderList[i].stock.trim()));
 
+  // [OBS-STAR 2026-09-07] 正式成员豁免（双身份票 = UI 上打「*」的票：isObsMember && isFormalToday）。
+  // 这类票本质是当日 9:25 正式成员，只是同时带「昨日观察组来源」身份。此前折叠观察组的三个分支
+  // 把它们当成纯观察组壳：只要没命中该 toggle 的高光条件就 hidden → 正式成员从列表里凭空消失。
+  // 用户口径：打* 的票按正式成员对待——永不隐藏、照常参与高光判定，命中时与常规高光票一起排在最前
+  // （不单独给观察组做一套高光）。
+  const _isFormalTodayMember = function(name) {
+    if (!name) return false;
+    const s = _getAuctionWatchlistSet(currentDate);
+    return !!(s && s.has(String(name).trim()));
+  };
+
   // [THREE-DAY 2026-08-17] 三天竞跌模式下，分组口径改为「达标(dd≥2)置顶 / 未达标在后」，
   // 不再按观察组/常规组分隔（解决"观察组永远排在前面"的问题）。真实 obs 身份仍由每行 itemClass/obsFormalStar 标记。
   // 注意：threeDayJingDieSet 已在上方题材分支前统一计算并复用，此处不再重复声明。
@@ -609,7 +620,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       const item = renderList[i];
       const hasTodayData = item && ((item.volume || '').toString().trim() !== '' || (item.yestVolume || '').toString().trim() !== '');
       const isBoughtInherited = _obsBoughtSet.has(stockName) && hasTodayData;
-      if (!matchesWeakStrong && !isBoughtInherited) hiddenObsIndices.push(i);
+      // 打* 的正式成员永不隐藏（只按是否命中高光排先后），否则正式成员会从列表消失
+      if (!matchesWeakStrong && !isBoughtInherited && !_isFormalTodayMember(stockName)) hiddenObsIndices.push(i);
     });
     obsIndices = [];
     regularIndices = renderOrder.filter(i => hiddenObsIndices.indexOf(i) < 0);
@@ -624,7 +636,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       const item = renderList[i];
       const hasTodayData = item && ((item.volume || '').toString().trim() !== '' || (item.yestVolume || '').toString().trim() !== '');
       const isBoughtInherited = _obsBoughtSet.has(stockName) && hasTodayData;
-      if (!isQualified && !isBoughtInherited) hiddenObsIndices.push(i);
+      // 打* 的正式成员永不隐藏（同上，与弱转强分支口径一致）
+      if (!isQualified && !isBoughtInherited && !_isFormalTodayMember(stockName)) hiddenObsIndices.push(i);
     });
     obsIndices = [];
     regularIndices = renderOrder.filter(i => hiddenObsIndices.indexOf(i) < 0);
@@ -636,7 +649,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       const item = renderList[i];
       const hasTodayData = item && ((item.volume || '').toString().trim() !== '' || (item.yestVolume || '').toString().trim() !== '');
       const isBoughtInherited = _obsBoughtSet.has(stockName) && hasTodayData;
-      if (!matchesToday && !isBoughtInherited) hiddenObsIndices.push(i);
+      // 打* 的正式成员永不隐藏（同上，与弱转强分支口径一致）
+      if (!matchesToday && !isBoughtInherited && !_isFormalTodayMember(stockName)) hiddenObsIndices.push(i);
     });
     obsIndices = [];
     regularIndices = renderOrder.filter(i => hiddenObsIndices.indexOf(i) < 0);

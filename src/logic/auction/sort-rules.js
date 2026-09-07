@@ -83,15 +83,20 @@ import { state } from '../app-state.js';
         // watchlist 里的观察组候选）。它们不该参与任何高光/排序/统计——7 日实测：收盘 cron 写入
         // 影子行后，弱转强高光从 1 只涨到 8 只，而列表里根本看不到这些股票。
         // 统一判定（与 getParallelStocksForDate 既有口径一致）：
-        //   ① 跳过观察组继承空壳（obsAutoAdded===true）：占位行参与计算会形成"越传越多"反馈环；
-        //   ② 必须在当日正式名单内（_getAuctionWatchlistSet）；
-        //   ③ 正式名单索引为空 = 尚未就绪，此时不按名单过滤（§10：未就绪 ≠ 空数据，不可静默清空）。
+        //   ① 必须在当日正式名单内（_getAuctionWatchlistSet）——权威口径，优先级最高；
+        //   ② 正式名单索引为空 = 尚未就绪，此时退化为「排除观察组继承空壳」，
+        //      不按名单过滤（§10：未就绪 ≠ 空数据，不可静默清空）；
+        //   ③ 观察组继承空壳（obsAutoAdded===true）排除：占位行参与计算会形成"越传越多"反馈环。
+        // [OBS-STAR 2026-09-07] 注意 ① 必须优先于 ③：存在「双身份票」——既是昨日观察组来源
+        // （行上 obsAutoAdded=true 或被注入壳标记），又确实是当日 9:25 正式成员（UI 打「*」）。
+        // 用户口径：这类票按正式成员对待，必须参与高光/排序判定。若按旧顺序先判 obsAutoAdded，
+        // 它们会被无条件挡掉 → 打* 的票永远不高光。
         export function _isFormalListRow(item, formalSet) {
             if (!item || !item.stock) return false;
-            if (item.obsAutoAdded === true) return false;
             const name = item.stock.trim();
             if (!name) return false;
-            if (formalSet && formalSet.size > 0 && !formalSet.has(name)) return false;
+            if (formalSet && formalSet.size > 0) return formalSet.has(name);
+            if (item.obsAutoAdded === true) return false;
             return true;
         }
 
