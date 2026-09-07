@@ -1,6 +1,6 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-08-17 13:53:28
-// 注意: 此文件由 _bundle-workers.ps1 自动生成，请勿手动编辑
+// 生成时间: 2026-09-07 12:56:32
+// 注意: 此文件自动生成，请勿手动编辑
 
 // ────── _shared-source/date-utils.js ──────
 // date-utils.js — 北京时间日期工具（源文件，各 Worker 复制使用）
@@ -557,9 +557,41 @@ async function fetchAndWriteWatchlist(env, today, logs) {
     updated_at: nowIso,
     updated_by: 'auto-fetch-worker'
   }));
+  // 【9:25 名单锁定 2026-09-07】当日名单只允许由 9:25 那一轮抓取确定，窗口外绝不新增。
+  // 背景：最近多板成分股在盘中/收盘后会持续变多（更多票涨停晋级）。此前只要重复触发 morning
+  // （cron 重试或手动 /fetch?point=morning），就会用最新成分股再 upsert 一次，新股票被不断补进
+  // 当日名单 → 9/7 实测：09:25 写入 45 只，13:14 又补进 28 只，当日总数从 55 膨胀到 83。
+  // 用户口径：只要「9:25 拉取的最近多板个股列表」。因此：
+  //   · 9:25~9:40 窗口内 → 正常写入（新增 + 更新）；
+  //   · 窗口外          → 只更新已存在的行，跳过新出现的成分股（不改写当日名单）。
+  const nowBj = beijingNow();
+  const bjMinutes = nowBj.getUTCHours() * 60 + nowBj.getUTCMinutes();
+  const inMorningWindow = bjMinutes >= 9 * 60 + 25 && bjMinutes <= 9 * 60 + 40;
+  let rowsToWrite = watchlistRows;
+  if (!inMorningWindow) {
+    let existingNames = new Set();
+    try {
+      const existing = await readAuctionWatchlistForDate(env, today);
+      existingNames = new Set(existing.map(s => s.name));
+    } catch (e) {
+      logs.push('读取当日 watchlist 失败(非致命): ' + e.message);
+    }
+    if (existingNames.size === 0) {
+      // 兜底：当日名单为空说明 9:25 那轮根本没写成（没有"快照"可锁），此时允许全量写入，
+      // 否则当天会一直拿不到名单（§10：读取失败 / 空数据不能当成"今天没有股票"）。
+      logs.push('非 9:25 抓取窗口，但当日名单为空 → 视为 9:25 那轮未成功，允许全量写入 ' +
+        rowsToWrite.length + ' 行');
+    } else {
+      const before = rowsToWrite.length;
+      rowsToWrite = rowsToWrite.filter(r => existingNames.has(r.stock));
+      logs.push('非 9:25 抓取窗口（当前北京 ' + String(nowBj.getUTCHours()).padStart(2, '0') + ':' +
+        String(nowBj.getUTCMinutes()).padStart(2, '0') + '）：当日名单锁定为 9:25 快照，只更新已存在的 ' +
+        rowsToWrite.length + ' 行，跳过 ' + (before - rowsToWrite.length) + ' 只新成分股');
+    }
+  }
   try {
-    await upsertAuctionWatchlist(env, watchlistRows);
-    logs.push('auction_watchlist 写入 ' + watchlistRows.length + ' 行');
+    await upsertAuctionWatchlist(env, rowsToWrite);
+    logs.push('auction_watchlist 写入 ' + rowsToWrite.length + ' 行');
   } catch (e) {
     logs.push('写入 auction_watchlist 失败: ' + e.message);
     return { error: '写入 auction_watchlist 失败: ' + e.message };
