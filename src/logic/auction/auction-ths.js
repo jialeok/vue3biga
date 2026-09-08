@@ -115,8 +115,10 @@ export async function fetchLadderConstituentsMain(btn) {
         // 保留"观察组继承"进来、但不在本次最近多板新名单里的股票（例如汇得科技：
         // 昨日买入未卖，理应作为次日观察组继续展示，但它当天不在最近多板成分股里，
         // 之前"获取最近多板"整体覆盖会把这一行连带删掉）。
-        // 条件：existing 行是 obsAutoAdded=true（观察组自动补入，非用户手动导入的正式成分股）
-        // 且未被标记为已卖出，才补回；已卖出的不需要再观察，让它自然消失即可。
+        // 条件：existing 行是 obsAutoAdded=true（观察组自动补入，非用户手动导入的正式成分股）。
+        // [FEAT 2026-09-08] 旧逻辑会把「已卖出」的观察组股票直接丢弃（认为卖掉就不用再看），
+        // 与用户口径冲突：标签（买/卖/持有）是用户复盘买卖对错的观察名单，**卖出恰恰要看
+        // 卖得对不对**（次日是涨是跌），因此这里不再按 sold 过滤，一律保留。
         const newListNames = new Set(newList.map(function(r) { return r.stock; }));
         _dbgLogVerbose('[LADDER] 获取最近多板覆盖：新成分股 ' + newList.length + ' 只，保留观察组继承股中不在名单的');
         existingList.forEach(function(s) {
@@ -124,8 +126,6 @@ export async function fetchLadderConstituentsMain(btn) {
             const name = s.stock.trim();
             if (newListNames.has(name)) return;
             if (s.obsAutoAdded !== true) return; // 不是观察组继承来的，不额外保留
-            // 方案 B：标签不再写入行对象，用 deriveAuctionTagState 判断是否已卖出
-            const _ts3 = deriveAuctionTagState(name, targetDate);
             const row = applyLatestTag(name, {
                 stock: name,
                 code: s.code || '',
@@ -136,10 +136,6 @@ export async function fetchLadderConstituentsMain(btn) {
                 topics: s.topics || '',
                 obsAutoAdded: true
             });
-            if (_ts3.sold) {
-                _dbgLogVerbose('[LADDER] 丢弃(已卖) ' + name);
-                return; // 已卖出：不再保留到次日观察组
-            }
             _dbgLogVerbose('[LADDER] 保留(观察组继承) ' + name);
             newList.push(row);
         });

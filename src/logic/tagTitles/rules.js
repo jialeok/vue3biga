@@ -7,6 +7,7 @@ import { getStockCode } from '../../data/stock-code-map.js';
 import { getAuctionData, scheduleCloudPush, markAuctionDirty } from '../app-core-api.js';
 import { state } from '../app-state.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
+import { getCarryOverNamesForDate } from '../auction/tag-carryover.js';
 
         // [REFACTOR 2026-08-15] 标签真相收敛到 auctionTagStore（云端），不再直接读 localStorage（§6/§8 修复双真相）
         let _auctionTagsCache = null;
@@ -215,17 +216,31 @@ import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
             const prevDayTags = _getAuctionTags()[prevDay] || {};
             const taggedNames = Object.keys(prevDayTags).filter(function(n) { return prevDayTags[n]; });
 
+            // [FEAT 2026-09-08] 打过标签（买/卖/持有）的股票**一律**进次日观察组，不再要求它
+            // 同时命中「前一日竞昨高光」。产品口径：标签是用户复盘买卖对错的观察名单，
+            // 次日必须在列表里可见——哪怕它既不在次日 9:25 正式名单、也不在前一日竞昨高光集里
+            // （9/7 实测：9 只打标签票里有 7 只因此整只消失在 9/8 列表中）。
+            // 单一真相由 ../auction/tag-carryover.js 提供（worker/Edge Function 同为一套口径）。
+            const carryOverNames = getCarryOverNamesForDate(date);
+
             // 分两组继承
             const obsInherited = [];
             const regularInherited = [];
+            const _obsSeen = new Set();
             taggedNames.forEach(function(name) {
                 if (prevObsSet && prevObsSet.has(name)) {
-                    obsInherited.push(name);
+                    if (!_obsSeen.has(name)) { obsInherited.push(name); _obsSeen.add(name); }
                 } else {
                     regularInherited.push(name);
                 }
             });
-            _dbgLog('[BOUGHT-ENSURE] 观察组继承 ' + obsInherited.length + ' 只，常规组继承 ' + regularInherited.length + ' 只');
+            carryOverNames.forEach(function(name) {
+                if (_obsSeen.has(name)) return;
+                obsInherited.push(name);
+                _obsSeen.add(name);
+            });
+            _dbgLog('[BOUGHT-ENSURE] 观察组继承 ' + obsInherited.length + ' 只（含打标签继承 ' +
+                carryOverNames.size + ' 只），常规组继承 ' + regularInherited.length + ' 只');
 
             localStorage.setItem('obsBought_' + date, JSON.stringify(obsInherited)); // 合规：防重复/调试标记（§8 允许）
             localStorage.setItem('regularBought_' + date, JSON.stringify(regularInherited)); // 合规：防重复/调试标记（§8 允许）

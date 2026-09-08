@@ -55,6 +55,31 @@ export async function readAuctionWatchlistForDate(env, date) {
   return (data || []).map(r => ({ name: (r.stock || '').trim(), code: r.code || '' })).filter(s => s.name);
 }
 
+// [FEAT 2026-09-08] 读取指定日期的「打标签」股票（auction_board_tags：buy / sell / hold）。
+// 用户靠标签复盘买卖对错，这些股票次日必须出现在列表里且**有数据**。其中有一部分：
+//   · 不在最近多板成分股里；
+//   · 也不在前一日 auction_watchlist 里（例如用户是在「观察组空壳行」上打的标签，
+//     观察组空壳只存在于前端视图层、不落库）；
+// 只靠 watchlist 合并会漏掉它们（2026-09-08 实测：赤天化、沃华医药当天完全无数据）。
+// 因此直接读标签表补齐抓取名单。只并入「抓取名单（market_metrics）」，
+// 不写 auction_watchlist，不破坏「当日名单 = 9:25 快照」的锁定口径。
+export async function readAuctionTagsForDate(env, date) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_board_tags?date=eq.' + date +
+    '&select=stock,tag&limit=1000';
+  const resp = await fetch(url, { headers: sbHeaders(env) });
+  if (!resp.ok) return [];
+  const data = await resp.json();
+  const out = [];
+  const seen = new Set();
+  (data || []).forEach(r => {
+    const name = (r.stock || '').trim();
+    if (!name || !r.tag || seen.has(name)) return;
+    seen.add(name);
+    out.push({ name: name, tag: r.tag });
+  });
+  return out;
+}
+
 // [FIX 2026-08-15] 读取股票名称→代码映射表（stockcodemap），为 watchlist 里 code 为空的
 // 观察组/打标签股票补充 code（worker 的 numcat 抓取按 code 查询，无 code 无法抓数据）。
 export async function readStockCodeMap(env) {

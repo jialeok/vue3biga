@@ -4,7 +4,7 @@ import { localIsTradingDay } from '../../_shared-source/holidays.js';
 import { CONFIG } from '../config.js';
 import { fetchLadderConstituents, fetchHistoricalPctChg } from '../data/fuyao-api.js';
 import { numcatDailyAuc, numcatDaily } from '../data/numcat-api.js';
-import { upsertAuctionWatchlist, upsertMarketMetrics, readAuctionWatchlistForDate, readStockCodeMap } from '../data/supabase-write.js';
+import { upsertAuctionWatchlist, upsertMarketMetrics, readAuctionWatchlistForDate, readAuctionTagsForDate, readStockCodeMap } from '../data/supabase-write.js';
 import { getRecentTradingDays } from './holiday-check.js';
 
 // 1. 检查是否交易日
@@ -71,6 +71,40 @@ async function fetchAndWriteWatchlist(env, today, logs) {
       constituents = constituents.concat(todayExtra);
     }
   } catch (e) { logs.push('读取今日 watchlist 失败(非致命): ' + e.message); }
+
+  // [FEAT 2026-09-08] 合并「上一交易日打过标签（买/卖/持有）」的股票到抓取名单。
+  // 用户靠标签复盘买卖对错，这些票次日必须在列表里且有数据。watchlist 合并覆盖不到两种情况：
+  //   ① 用户是在「观察组空壳行」上打的标签——空壳只存在于前端视图层，不落库，
+  //      因此前一日/今日 auction_watchlist 里都没有它（9/8 实测：赤天化、沃华医药全天无数据）；
+  //   ② 前端尚未打开过次日页面，继承行还没推送到今日 watchlist。
+  // 直接读 auction_board_tags 是最稳的补齐方式。只并入 constituents（market_metrics 抓取名单），
+  // 不写 auction_watchlist → 不破坏「当日名单 = 9:25 快照」的锁定口径（§6）。
+  try {
+    const codeMap = await readStockCodeMap(env);
+    const recentDays2 = await getRecentTradingDays(env, today, 2);
+    const prevTagDay = recentDays2.length >= 2 ? recentDays2[recentDays2.length - 2] : null;
+    if (prevTagDay) {
+      const tagRows = await readAuctionTagsForDate(env, prevTagDay);
+      if (tagRows.length > 0) {
+        const existingNames = new Set(constituents.map(c => c.name));
+        const existingCodes = new Set(constituents.map(c => c.code));
+        const tagExtra = [];
+        tagRows.forEach(function(t) {
+          if (existingNames.has(t.name)) return;
+          const code = codeMap[t.name] || '';
+          if (!code || existingCodes.has(code)) return;
+          existingNames.add(t.name);
+          existingCodes.add(code);
+          tagExtra.push({ name: t.name, code: code });
+        });
+        if (tagExtra.length > 0) {
+          logs.push('前一日(' + prevTagDay + ')打标签股票(买/卖/持有): ' + tagExtra.length +
+            ' 只，合并到抓取名单（不写 watchlist）');
+          constituents = constituents.concat(tagExtra);
+        }
+      }
+    }
+  } catch (e) { logs.push('读取前一日打标签股票失败(非致命): ' + e.message); }
 
   // 【BUG-FIX】不写 volume/yest_volume/change_pct/note/topics 字段：
   // 这些字段的真实值由步骤4写入 market_metrics 表。如果这里把空串写进 watchlist，

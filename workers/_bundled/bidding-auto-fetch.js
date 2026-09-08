@@ -1,5 +1,5 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-09-07 12:56:32
+// 生成时间: 2026-09-08 09:17:36
 // 注意: 此文件自动生成，请勿手动编辑
 
 // ────── _shared-source/date-utils.js ──────
@@ -422,6 +422,31 @@ async function readAuctionWatchlistForDate(env, date) {
   return (data || []).map(r => ({ name: (r.stock || '').trim(), code: r.code || '' })).filter(s => s.name);
 }
 
+// [FEAT 2026-09-08] 读取指定日期的「打标签」股票（auction_board_tags：buy / sell / hold）。
+// 用户靠标签复盘买卖对错，这些股票次日必须出现在列表里且**有数据**。其中有一部分：
+//   · 不在最近多板成分股里；
+//   · 也不在前一日 auction_watchlist 里（例如用户是在「观察组空壳行」上打的标签，
+//     观察组空壳只存在于前端视图层、不落库）；
+// 只靠 watchlist 合并会漏掉它们（2026-09-08 实测：赤天化、沃华医药当天完全无数据）。
+// 因此直接读标签表补齐抓取名单。只并入「抓取名单（market_metrics）」，
+// 不写 auction_watchlist，不破坏「当日名单 = 9:25 快照」的锁定口径。
+async function readAuctionTagsForDate(env, date) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_board_tags?date=eq.' + date +
+    '&select=stock,tag&limit=1000';
+  const resp = await fetch(url, { headers: sbHeaders(env) });
+  if (!resp.ok) return [];
+  const data = await resp.json();
+  const out = [];
+  const seen = new Set();
+  (data || []).forEach(r => {
+    const name = (r.stock || '').trim();
+    if (!name || !r.tag || seen.has(name)) return;
+    seen.add(name);
+    out.push({ name: name, tag: r.tag });
+  });
+  return out;
+}
+
 // [FIX 2026-08-15] 读取股票名称→代码映射表（stockcodemap），为 watchlist 里 code 为空的
 // 观察组/打标签股票补充 code（worker 的 numcat 抓取按 code 查询，无 code 无法抓数据）。
 async function readStockCodeMap(env) {
@@ -541,6 +566,40 @@ async function fetchAndWriteWatchlist(env, today, logs) {
       constituents = constituents.concat(todayExtra);
     }
   } catch (e) { logs.push('读取今日 watchlist 失败(非致命): ' + e.message); }
+
+  // [FEAT 2026-09-08] 合并「上一交易日打过标签（买/卖/持有）」的股票到抓取名单。
+  // 用户靠标签复盘买卖对错，这些票次日必须在列表里且有数据。watchlist 合并覆盖不到两种情况：
+  //   ① 用户是在「观察组空壳行」上打的标签——空壳只存在于前端视图层，不落库，
+  //      因此前一日/今日 auction_watchlist 里都没有它（9/8 实测：赤天化、沃华医药全天无数据）；
+  //   ② 前端尚未打开过次日页面，继承行还没推送到今日 watchlist。
+  // 直接读 auction_board_tags 是最稳的补齐方式。只并入 constituents（market_metrics 抓取名单），
+  // 不写 auction_watchlist → 不破坏「当日名单 = 9:25 快照」的锁定口径（§6）。
+  try {
+    const codeMap = await readStockCodeMap(env);
+    const recentDays2 = await getRecentTradingDays(env, today, 2);
+    const prevTagDay = recentDays2.length >= 2 ? recentDays2[recentDays2.length - 2] : null;
+    if (prevTagDay) {
+      const tagRows = await readAuctionTagsForDate(env, prevTagDay);
+      if (tagRows.length > 0) {
+        const existingNames = new Set(constituents.map(c => c.name));
+        const existingCodes = new Set(constituents.map(c => c.code));
+        const tagExtra = [];
+        tagRows.forEach(function(t) {
+          if (existingNames.has(t.name)) return;
+          const code = codeMap[t.name] || '';
+          if (!code || existingCodes.has(code)) return;
+          existingNames.add(t.name);
+          existingCodes.add(code);
+          tagExtra.push({ name: t.name, code: code });
+        });
+        if (tagExtra.length > 0) {
+          logs.push('前一日(' + prevTagDay + ')打标签股票(买/卖/持有): ' + tagExtra.length +
+            ' 只，合并到抓取名单（不写 watchlist）');
+          constituents = constituents.concat(tagExtra);
+        }
+      }
+    }
+  } catch (e) { logs.push('读取前一日打标签股票失败(非致命): ' + e.message); }
 
   // 【BUG-FIX】不写 volume/yest_volume/change_pct/note/topics 字段：
   // 这些字段的真实值由步骤4写入 market_metrics 表。如果这里把空串写进 watchlist，

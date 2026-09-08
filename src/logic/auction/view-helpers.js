@@ -289,8 +289,25 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     }
   }
 
+  // [STATS-FIX 2026-09-08] 强度（涨跌比）只按「正式成员」计算，排除观察组(obsAutoAdded)行。
+  // 观察组是用户前一日打标签/竞昨高光继承来的复盘名单，不是当日 9:25 名单成员；空壳行
+  // volume/yestVolume 皆空 → hasDown 恒为 false，会被当成"强"计入分子，把强度虚高稀释
+  // （2026-09-03 曾因观察组落库导致统计回归，此处从口径上根治）。
+  // ⚠️ 双身份票（打*：观察组 ∩ 当日正式名单）按正式成员对待，仍计入强度；
+  // 只有「纯观察组」（不在正式成员索引里）才排除。
+  const _formalSet = _getAuctionWatchlistSet(currentDate) || new Set();
+  const _formalOnly = function(list) {
+    return (list || []).filter(function(r) {
+      if (!r || !r.stock) return false;
+      const n = r.stock.trim();
+      return _formalSet.has(n) || r.obsAutoAdded !== true;
+    });
+  };
+  const _statList = _formalOnly(auctionList);
+  const _prevStatList = _formalOnly(prevAuctionList);
+
   let strongCount = 0;
-  auctionList.forEach(item => {
+  _statList.forEach(item => {
     let hasDown = false;
     if (item.stock) {
       const prevItem = _prevMap.get(item.stock.trim());
@@ -306,13 +323,13 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     }
     if (!hasDown) strongCount++;
   });
-  const totalCount = auctionList.length;
+  const totalCount = _statList.length;
   const todayStrength = totalCount > 0 ? Math.round((strongCount / totalCount) * 100) : null;
 
   let yStrongCount = 0;
-  const yTotal = prevAuctionList.length;
+  const yTotal = _prevStatList.length;
   if (yTotal > 0) {
-    prevAuctionList.forEach(item => {
+    _prevStatList.forEach(item => {
       let hasDown = false;
       if (item.stock) {
         const pp = _prevPrevMap.get(item.stock.trim());

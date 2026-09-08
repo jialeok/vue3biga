@@ -613,6 +613,37 @@ async function readAuctionWatchlist(date) {
   return rows;
 }
 
+// [FEAT 2026-09-08] 读取指定日期打过标签（买/卖/持有）的股票，并尽量从 stockcodemap 补出 code。
+// 用途：收盘涨幅覆盖的名单 = 当日 watchlist ∪ 前一日 watchlist ∪ 前一日打标签股票。
+// 只写 market_metrics（影子行），不写 auction_watchlist → 不动 9:25 名单口径、不计入统计。
+async function readTaggedStocks(date) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_board_tags?date=eq.' + encodeURIComponent(date) +
+    '&select=stock,tag&limit=1000';
+  const resp = await fetch(url, { headers: sbHeaders() });
+  if (!resp.ok) return [];
+  const rows = await resp.json();
+  const names = [];
+  const seen = {};
+  (rows || []).forEach(function (r) {
+    const name = r && r.stock ? String(r.stock).trim() : '';
+    if (name && r.tag && !seen[name]) { seen[name] = true; names.push(name); }
+  });
+  if (names.length === 0) return [];
+  let codeByStock = {};
+  try {
+    const mapUrl = CONFIG.SUPABASE_URL + '/rest/v1/stockcodemap?stock=in.(' +
+      encodeURIComponent(JSON.stringify(names)) + ')&select=stock,code';
+    const mapResp = await fetch(mapUrl, { headers: sbHeaders() });
+    if (mapResp.ok) {
+      const mapRows = await mapResp.json();
+      (mapRows || []).forEach(function (m) {
+        if (m && m.stock && m.code) codeByStock[String(m.stock).trim()] = String(m.code).trim();
+      });
+    }
+  } catch (e) { console.warn('打标签股票补码失败:', e.message); }
+  return names.map(function (n) { return { stock: n, code: codeByStock[n] || '' }; }).filter(function (r) { return r.code; });
+}
+
 async function upsertMarketMetricsRows(rows) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?on_conflict=date%2Cstock%2Cscope';
   // 优先 service role（写权限最稳），回退 anon（与 bidding-a 现有写 bidding_data 同路径）
@@ -693,6 +724,31 @@ async function runAuctionCloseFetch(source) {
       }
     } catch (e) {
       logs.push('读取前一日 auction_watchlist 失败（本次仅覆盖当日列表）: ' + e.message);
+    }
+
+    // [FEAT 2026-09-08] 再并一遍前一日「打过标签（买/卖/持有）」的股票。
+    // 其中有些票既不在当日 watchlist、也不在前一日 watchlist（用户是在前端视图层的观察组
+    // 空壳行上打的标签，空壳不落库），只靠 watchlist 合并会漏掉 → 收盘涨幅永不更新。
+    try {
+      const taggedRows = await readTaggedStocks(prevDay);
+      const byStock2 = {};
+      watchlist.forEach(function (w) { if (w && w.stock) byStock2[w.stock.trim()] = w; });
+      let added2 = 0;
+      taggedRows.forEach(function (w) {
+        if (!w || !w.stock) return;
+        const key = w.stock.trim();
+        if (byStock2[key]) return;
+        byStock2[key] = w;
+        added2++;
+      });
+      if (added2 > 0) {
+        const merged2 = Object.keys(byStock2).map(function (k) { return byStock2[k]; });
+        logs.push('打标签补齐：合并前一日(' + prevDay + ') auction_board_tags 额外 ' + added2 +
+          ' 只，覆盖总数 ' + watchlist.length + ' → ' + merged2.length);
+        watchlist = merged2;
+      }
+    } catch (e) {
+      logs.push('读取前一日打标签股票失败（本次仅覆盖 watchlist 名单）: ' + e.message);
     }
   }
 
