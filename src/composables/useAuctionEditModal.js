@@ -5,7 +5,7 @@ import { ref, computed, watch, reactive } from 'vue';
 import { apiStatusMap, numcatChoice } from '../logic/ui-bridge.js';
 import {
   getTodayGroupList, saveData, getAuctionData,
-  importAuctionFromPaste, importAuctionHistoryFill,
+  importAuctionFromPaste, saveAuctionForm, importAuctionHistoryFill,
   replaceConceptFromPaste,
   importStockCodeMap, autoCompleteMissingStockCodes,
   fetchLadderConstituentsMain, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs,
@@ -119,13 +119,19 @@ export function useAuctionEditModal() {
     editRows.value = [{ stock: '', volume: '', yestVolume: '' }];
   }
 
+  // [FIX 2026-09-08] 旧实现对 getTodayGroupList() 的返回值做 length=0 + push：
+  // 该函数返回的是 filter() 出来的新数组，写不回 _auctionMemCache，导致后台表单
+  // 「保存」按钮长期无效（改完点保存什么都没发生）。写入收敛回 Logic 层 saveAuctionForm。
   function save() {
-    const list = getTodayGroupList('auction');
-    list.length = 0;
-    buildAuctionSaveList(editRows.value).forEach(row => {
-      list.push({ stock: row.stock, volume: row.volume, yestVolume: row.yestVolume });
-    });
-    saveData();
+    const rows = buildAuctionSaveList(editRows.value);
+    try {
+      saveAuctionForm(rows);
+      saveData();
+    } catch (e) {
+      console.error('保存失败:', e);
+      alert('保存失败：' + (e && e.message ? e.message : String(e)));
+      return;
+    }
     auctionStore.bumpDataVersion('auction');
     auctionStore.refresh();
     close();

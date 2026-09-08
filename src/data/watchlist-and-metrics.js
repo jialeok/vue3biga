@@ -57,6 +57,31 @@ import { setAuctionDateData } from './auction-data.js';
             const set = state._auctionWatchlistIndex[date];
             return !!(set && set.has(stockName.trim()));
         }
+        // 正式成员索引是否「已加载过」（区别于「加载过但为空」）。
+        // §10 红线：索引未就绪 ≠ 当日没有股票。判定批次/是否可按名单过滤前必须先问这个，
+        // 否则会把「还没拉取」误判成「今天没有正式成员」，进而静默清空当日名单。
+        export function _isAuctionWatchlistIndexReady(date) {
+            return !!(date && Object.prototype.hasOwnProperty.call(state._auctionWatchlistIndex, date));
+        }
+        // 【当日正式名单口径 · 单一真相 / 2026-09-08】
+        // 取某日期的「正式成员 + 观察组」行，**排除 market_metrics(scope='auction') 影子行**。
+        // 背景（9/8 事故）：pullAuctionMarketDataForDate 会把 market_metrics 的影子行按股票 union
+        // 合并进 _auctionMemCache[date]，导致 getAuctionData()[date] 明显多于当日正式名单
+        // （实测：正式名单 43 只 / 内存 68 只）。任何「以当日列表为基准」的业务（粘贴导入、
+        // 后台表单保存、统计）都必须走这里，否则影子行会被当成正式成员写回 auction_watchlist，
+        // 造成前台第一页数量虚增 + 脏数据持久化落库。
+        // §10：索引未就绪时不能按名单过滤（那会把数据静默清空），此时退化为返回原始列表。
+        export function _getAuctionFormalRowsForDate(date) {
+            const list = (state._auctionMemCache && state._auctionMemCache[date]) || [];
+            if (!_isAuctionWatchlistIndexReady(date)) {
+                return list.filter(function(r) { return r && r.stock; });
+            }
+            const wset = _getAuctionWatchlistSet(date);
+            return list.filter(function(r) {
+                if (!r || !r.stock) return false;
+                return wset.has(r.stock.trim()) || r.obsAutoAdded === true;
+            });
+        }
         // 整日期替换正式成员索引
         export function _setAuctionWatchlistForDate(date, stockNames) {
             if (!date) return;

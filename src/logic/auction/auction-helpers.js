@@ -13,7 +13,7 @@ import { loadCloudStockCodeMap, upsertStockCodeMap } from '../../data/stock-code
 import { buildTopicCache, invalidateTopicCache, loadCloudTopics, pushStockTopicsToCloud, scanDataSourceForTopics } from '../../data/stock-topics.js';
 import { _moduleKey, getJiwangData, getNumericVolume, getStocksData, getSupabase, loadAllData } from '../../data/supabase-client.js';
 import { remainingBoards } from '../../data/remaining-boards.js';
-import { _addAuctionWatchlistMember, _extractWatchlistNamesFromRows, _getAuctionWatchlistSet, _setAuctionWatchlistForDate, getStockHistoryValue } from '../../data/watchlist-and-metrics.js';
+import { _addAuctionWatchlistMember, _extractWatchlistNamesFromRows, _getAuctionWatchlistSet, _getAuctionFormalRowsForDate, _isAuctionWatchlistIndexReady, _setAuctionWatchlistForDate, getStockHistoryValue } from '../../data/watchlist-and-metrics.js';
 import { getJingYestHighlightSetForDate, getJingYestStocksForDate } from './sort-rules.js';
 import { syncStockCloseFromAuction, syncStockTopicsFromAuction } from './stock-sync.js';
 import { getStats } from '../jiwang/helpers.js';
@@ -443,7 +443,20 @@ export function getTodayGroupList(dataSource='auction') {
         _dbgLog('[AUCTION-DEBUG] getTodayGroupList(' + dataSource + ') currentDate=' + useUiStore().currentDate +
             ' 原始' + list.length + '条 → 正式列表' + result.length + '条，被过滤' + filteredOut.length + '条：' + filteredOut.join(', '));
     }
-    return result;
+    // [FIX 2026-09-08] Vue3 化时遗漏了原版（window.getTodayGroupList）末尾的这段清理：
+    // 去掉名称末尾多余「观」字的重复条目（旧版遗留的数据脏污，同一只票出现「XX」与「XX观」两行）。
+    // 缺失后，这类脏行会同时进入前台列表，导致股票总数/只数统计偏多。
+    const seenNames = new Set();
+    const cleaned = [];
+    for (let i = 0; i < result.length; i++) {
+        const name = result[i].stock.trim();
+        const cleanName = name.endsWith('观') ? name.slice(0, -1) : name;
+        if (seenNames.has(cleanName)) continue;
+        seenNames.add(cleanName);
+        if (name !== cleanName) result[i].stock = cleanName;
+        cleaned.push(result[i]);
+    }
+    return cleaned;
 }
 
 export async function importAuctionFromPaste(rawText) {
@@ -477,7 +490,20 @@ export async function importAuctionFromPaste(rawText) {
     // 兼容 \r\n（Excel/Windows换行）和 \n
     const lines = pasteText.split(/\r?\n/);
     const auctionData = getAuctionData();
-    const existingList = auctionData[targetDate] || [];
+    // 【正式名单口径 / 2026-09-08 事故修复】
+    // 旧代码直接取 auctionData[targetDate] 全量 —— 它含 pullAuctionMarketDataForDate 合并进来的
+    // market_metrics 影子行（9/8 实测：正式名单 43 只 / 内存全量 68 只）。用它做「当日已有股票」
+    // 基准会有两个后果：① 守卫集 currentStockSet 被影子行放大，非当日股票也能通过守卫；
+    // ② 下面 _setAuctionWatchlistForDate 把含影子的全量整批转正，syncAuctionListForDate 再把
+    // 这 25 只影子行物理写进 auction_watchlist → 前台第一页数量虚增 + 脏数据持久化。
+    // 这里统一走「正式成员 + 观察组」口径（排除影子行）。
+    const rawList = auctionData[targetDate] || [];
+    const existingList = _getAuctionFormalRowsForDate(targetDate);
+    if (rawList.length !== existingList.length) {
+        _dbgLog('[AUCTION-GUARD] importAuctionFromPaste date=' + targetDate + ' 内存' + rawList.length +
+            '行 → 正式名单口径' + existingList.length + '行（已排除 market_metrics 影子行 ' +
+            (rawList.length - existingList.length) + ' 只）');
+    }
 
     // [FIX 2026-08-21] 当日已存在的股票名集合，用于「补全题材/涨幅」路径的守卫：
     // 只允许更新当日列表里已有的股票，禁止把不在当日列表的股票（如昨天的票、名字不一致的笔误票）
@@ -611,12 +637,15 @@ export async function importAuctionFromPaste(rawText) {
         throw new Error('未能解析到有效数据！');
     }
 
-    let auctionList = [...existingList];
+    // 内存写回仍用全量（含影子行），避免把趋势图/竞价指标依赖的影子数据从内存抹掉；
+    // 但「是否属于当日正式名单」一律以 existingList 口径判断（见上）。
+    let auctionList = [...rawList];
     let fullDataCount = 0;
     let fullDataUpdateCount = 0;
     let noteUpdateCount = 0;
     let noteNewCount = 0;
     let noteSkippedCount = 0;   // [FIX 2026-08-21] 不在当日列表、被跳过不新增的股票数
+    const addedNames = [];      // [FIX 2026-09-08] 本次真正「新增进当日」的股票，用于精确维护名单索引
 
     fullDataList.forEach(dataItem => {
         // [FIX 2026-08-21b] 归一化匹配：深华发Ａ(全角) 与 深华发A(半角) 视为同一只票
@@ -668,6 +697,7 @@ export async function importAuctionFromPaste(rawText) {
                 changePct: dataItem.changePct || parsedHist.changePct,
                 topics: dataItem.topics || parsedHist.topics
             });
+            addedNames.push(dataItem.stock);
             fullDataCount++;
         }
     });
@@ -765,6 +795,7 @@ export async function importAuctionFromPaste(rawText) {
                 topics: finalTopics,
                 selected: false
             });
+            addedNames.push(noteItem.stock);
             noteNewCount++;
         }
     });
@@ -780,10 +811,32 @@ export async function importAuctionFromPaste(rawText) {
     // 方案 B：标签不再写入 auctionData 行，渲染时由 deriveAuctionTagState 实时派生。
 
     setAuctionDateData(targetDate, auctionList, 'importAuctionFromPaste');
-    // §6：粘贴导入全量覆盖，但观察组继承残留行(obsAutoAdded)不进正式成员索引（避免 87≠76）
-    _setAuctionWatchlistForDate(targetDate, auctionList
-        .filter(function(r) { return !(r && r.obsAutoAdded === true); })
-        .map(function(r) { return r && r.stock; }));
+    // 【正式名单口径 / 2026-09-08 事故根因修复】
+    // 旧代码：_setAuctionWatchlistForDate(targetDate, auctionList 全量.map(stock))
+    // —— auctionList 含 market_metrics 影子行，等于「粘贴一次就把全部影子行转正为正式成员」，
+    // 随后 syncAuctionListForDate 把转正结果物理写进 auction_watchlist（持久化脏数据），
+    // 前台 getTodayGroupList 按索引过滤后第一页数量从 43 暴涨到 68。
+    // 粘贴导入的定位是「给当日正式名单补字段」，不是「重定义当日名单」，故索引只做增量维护：
+    //   原正式成员索引 ∪ 本次真正新增的股票 − 观察组（obsAutoAdded 不进索引）。
+    // §10：索引未就绪时不能按名单过滤，此时以当日「正式口径行」兜底（与旧行为一致，保证
+    // 全新日期首次整表导入仍可用），并打日志提示。
+    (function() {
+        const _ready = _isAuctionWatchlistIndexReady(targetDate);
+        const _base = _ready
+            ? Array.from(_getAuctionWatchlistSet(targetDate))
+            : existingList.filter(function(r) { return r && r.stock && r.obsAutoAdded !== true; })
+                .map(function(r) { return r.stock.trim(); });
+        const _idx = new Set(_base);
+        addedNames.forEach(function(n) { if (n && String(n).trim()) _idx.add(String(n).trim()); });
+        if (!_ready) {
+            _dbgLog('[AUCTION-GUARD] importAuctionFromPaste date=' + targetDate +
+                ' 正式成员索引未就绪，本次以当日列表兜底重建索引（' + _idx.size + ' 只）');
+        } else if (addedNames.length > 0) {
+            _dbgLog('[AUCTION-GUARD] importAuctionFromPaste date=' + targetDate +
+                ' 名单索引增量维护：' + _base.length + ' → ' + _idx.size + '（新增：' + addedNames.join('、') + '）');
+        }
+        _setAuctionWatchlistForDate(targetDate, Array.from(_idx));
+    })();
     saveModule('auction');
     invalidateTopicCache();
     // 同步到 auction_watchlist + market_metrics（阶段二 C：改为字段级 patch）
@@ -848,6 +901,88 @@ export async function importAuctionFromPaste(rawText) {
     setTimeout(syncCloseChunk, 60);
 
     return statusMsg;
+}
+
+// ===== 后台「早盘竞价编辑模态框」表单保存（对齐原版 window.saveAuction 语义） =====
+// [FIX 2026-09-08] Vue3 化后的 useAuctionEditModal.save() 直接对 getTodayGroupList() 的返回值
+// 做 `list.length = 0` + push —— 而 getTodayGroupList 返回的是 filter() 出来的**新数组**，
+// 指向的根本不是 _auctionMemCache[date]，所以后台表单「保存」按钮自迁移后就是完全无效的
+// （改完点保存，数据一动不动）。按 §3.1/§4 把写入收敛回 Logic 层，UI 只负责调用。
+// 语义对齐原版 saveAuction：
+//   ① 表单里的行即新的正式成员（空名行忽略）；
+//   ② 保留市场指标字段（note/changePct/topics/selected/bought/sold/fixed），只覆盖 volume/yestVolume；
+//   ③ 保留 market_metrics 影子行（趋势图/历史查询依赖），只替换正式成员；
+//   ④ 正式成员索引按表单结果整日期替换（不含影子行、不含观察组继承行）。
+export function saveAuctionForm(rows) {
+    const targetDate = _getAuctionStore() ? _getAuctionStore().currentDate : useUiStore().currentDate;
+    if (!targetDate) throw new Error('无法确定要保存的日期！');
+    const sysToday = (typeof _getLocalTodayStr === 'function') ? _getLocalTodayStr() : '';
+    if (sysToday && targetDate > sysToday) {
+        _dbgLog('[DATE-WARN] saveAuctionForm 写入未来日期 targetDate=' + targetDate + ' sysToday=' + sysToday);
+    }
+    _dbgLog('[AUCTION-WRITE] saveAuctionForm targetDate=' + targetDate);
+
+    backupAuctionData('form-save');
+    buildTopicCache();
+
+    const inputRows = Array.isArray(rows) ? rows : [];
+    const existingList = _getAuctionFormalRowsForDate(targetDate);
+    const auctionList = [];
+    inputRows.forEach(function(row) {
+        if (!row || !row.stock || !String(row.stock).trim()) return;
+        const stock = String(row.stock).trim();
+        const existingItem = existingList.find(function(item) {
+            return item.stock && _normStockName(item.stock) === _normStockName(stock);
+        });
+        let note = existingItem ? (existingItem.note || '') : '';
+        let changePct = existingItem ? (existingItem.changePct || '') : '';
+        let topics = existingItem ? (existingItem.topics || '') : '';
+        if (!note && !changePct && !topics) {
+            const historyTopics = getStockHistoryTopics(stock);
+            note = historyTopics;
+            const parsed = parseNoteToFields(historyTopics);
+            changePct = parsed.changePct;
+            topics = parsed.topics;
+        }
+        auctionList.push({
+            ...(existingItem || {}),
+            stock: existingItem ? existingItem.stock : stock,
+            volume: row.volume || '',
+            yestVolume: row.yestVolume || '',
+            note: note,
+            changePct: changePct,
+            topics: topics,
+            selected: existingItem ? existingItem.selected : false,
+            bought: existingItem ? existingItem.bought : false,
+            sold: existingItem ? existingItem.sold : false,
+            fixed: existingItem ? existingItem.fixed : false
+        });
+    });
+
+    auctionList.sort(function(a, b) {
+        const ratioA = parseFloat(a.volume) / parseFloat(a.yestVolume) || 0;
+        const ratioB = parseFloat(b.volume) / parseFloat(b.yestVolume) || 0;
+        return ratioB - ratioA;
+    });
+
+    // 保留影子行（不在正式成员索引里的行）：直接整组替换会丢掉趋势图/历史依赖的指标数据
+    const rawRows = getGroupData('auction')[targetDate] || [];
+    const wset = _getAuctionWatchlistSet(targetDate);
+    const shadowRows = rawRows.filter(function(r) {
+        return r && r.stock && !wset.has(r.stock.trim()) && r.obsAutoAdded !== true;
+    });
+    // 观察组继承行不进索引但要在列表里可见，原版同样保留（它们由 obsAutoAdded 标记放行）
+    const obsRows = rawRows.filter(function(r) { return r && r.stock && r.obsAutoAdded === true; });
+
+    setAuctionDateData(targetDate, auctionList.concat(obsRows, shadowRows), 'saveAuctionForm');
+    _setAuctionWatchlistForDate(targetDate, auctionList.map(function(r) { return r && r.stock; }));
+
+    markAuctionDirty(targetDate);
+    scheduleCloudPush();
+    invalidateTopicCache();
+    try { recalcDuibanFromAuction(); } catch (e) { _dbgLog('[AUCTION-ERR] saveAuctionForm recalcDuiban ' + (e && e.message || e)); }
+
+    return { ok: true, date: targetDate, count: auctionList.length };
 }
 
 // §P1-6：原 export function parseVolumeOnlyText / splitHistoryFillLine 已迁至 ./auction-helpers.js。

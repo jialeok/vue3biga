@@ -25,6 +25,7 @@ export {
   getTodayAuction,
   getTodayGroupList,
   importAuctionFromPaste,
+  saveAuctionForm,
   importAuctionHistoryFill,
   parseVolumeOnlyText,
   splitHistoryFillLine,
