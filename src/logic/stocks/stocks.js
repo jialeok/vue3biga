@@ -10,6 +10,7 @@ import { pushHotTrendsToCloud } from '../../data/hot-stocks.js';
 import { pushJiwangNow, scheduleJiwangPush } from '../../data/jiwang-data.js';
 import { _closeAuctionShield, _openAuctionShield, _initAuctionMemCache } from '../../data/session-and-shield.js';
 import { loadCloudStockCodeMap, upsertStockCodeMap } from '../../data/stock-code-map.js';
+import { resolveCodesByNames } from '../../data/stock-code-resolver.js';
 import { buildTopicCache, invalidateTopicCache, loadCloudTopics, pushStockTopicsToCloud, scanDataSourceForTopics } from '../../data/stock-topics.js';
 import { _moduleKey, getJiwangData, getNumericVolume, getStocksData, getSupabase, loadAllData } from '../../data/supabase-client.js';
 import { remainingBoards } from '../../data/remaining-boards.js';
@@ -64,22 +65,33 @@ export function getStockHistoryTopics(stockName) {
 }
 
 export async function searchTickerCodeByName(name) {
-    if (!name) return '';
+    const target = name ? name.trim() : '';
+    if (!target) return '';
+    // [FIX 2026-09-09] 同花顺 /api/meta/tickers/search 只支持按【代码】反查：
+    // q=600371 → 返回 name='万向德农'；q=万向德农 → item 恒为空。
+    // 因此「按名称查代码」必须走宽基指数成分股反查（data/stock-code-resolver.js），
+    // 旧的 search 实现从未成功过，后台「自动补全代码」按钮形同虚设。
+    try {
+        const resolved = await resolveCodesByNames([target]);
+        if (resolved[target]) return resolved[target];
+    } catch (e) {
+        _dbgLog('[AUTO-CODE] 名称→代码解析 ' + target + ' 失败: ' + (e && e.message || e));
+    }
+    // 兜底：入参本身像代码时（用户粘贴了 600371 / 600371.SH），按代码反查确认
     try {
         const data = await fuyaoApiGet('/api/meta/tickers/search', {
-            q: name.trim(),
+            q: target.replace(/\.(SH|SZ|BJ)$/i, ''),
             asset_type: 'a-share',
             limit: 5
         });
         if (!data || !Array.isArray(data.item) || data.item.length === 0) return '';
-        const target = name.trim();
         const match = data.item.find(function(it) {
             return it && it.name && it.name.trim() === target;
         });
         const item = match || data.item[0];
         if (item && item.ticker) return String(item.ticker).trim();
     } catch (e) {
-        _dbgLog('[AUTO-CODE] 搜索 ' + name + ' 失败: ' + (e && e.message || e));
+        _dbgLog('[AUTO-CODE] 搜索 ' + target + ' 失败: ' + (e && e.message || e));
     }
     return '';
 }

@@ -2,6 +2,7 @@ import { state } from '../app-state.js';
 if (!state._auctionMemCache) state._auctionMemCache = {}; // §6.1：域缓存下沉，auction 域拥有 _auctionMemCache
 import { _bindApi } from '../app-core-api.js';
 import { showToast } from '../../composables/useToast.js';
+import { ensureAuctionCodeMapping } from './auction-fetch-helpers.js';
 import { fuyaoApiGet, tickerToThscode, LADDER_THSCODE } from '../../data/api/fuyao-proxy.js';
 import { numcatApiPost } from '../../data/api/numcat-proxy.js';
 import { normalizeAuctionNotes, pullAuctionFromTable, setAuctionDateData, _setInvalidateTopicCacheFn } from '../../data/auction-data.js';
@@ -326,6 +327,9 @@ export async function fillYesterdayVolumeFromThs(btn) {
         // yesterdayList 始终基于 todayList（当前显示的表格），保留 auctionData[yesterday] 原有同名股票的业务字段
         const yesterdayList = buildYesterdayListFromToday(todayList, auctionData, yesterday);
         const yesterdayListWasEmpty = (auctionData[yesterday] || []).length === 0;
+        // [FIX 2026-09-09] 抓取前自动补全缺失代码：观察组继承票/手动粘贴票常缺 stockcodemap 映射，
+        // 缺码会被下面的 collectCodes 直接跳过 → 表现为「点了按钮这只票没数据」。
+        await ensureAuctionCodeMapping(todayList);
         const scMap = state._scMapCache || {};
 
         // 收集需要查询的股票代码（today + yesterday 合并去重）
@@ -471,6 +475,9 @@ export async function _fillTodayYesterdayVolumeFromThsImpl(btn, overwrite) {
             setApiStatus('thsApiStatus', '❌ 当日列表为空，请先获取最近多板', false);
             return;
         }
+        // [FIX 2026-09-09] 抓取前自动补全缺失代码：观察组继承票/手动粘贴票常缺 stockcodemap 映射，
+        // 缺码会被下面的 collectCodes 直接跳过 → 表现为「点了按钮这只票没数据」。
+        await ensureAuctionCodeMapping(todayList);
         const scMap = state._scMapCache || {};
         const codeToName = {};
         todayList.forEach(function(s) {
@@ -550,6 +557,9 @@ export async function _fillYesterdayYesterdayVolumeFromThsImpl(btn, overwrite) {
         // yesterdayList 始终基于 todayList（当前显示的表格），保留 auctionData[yesterday] 原有同名股票的业务字段
         const yesterdayList = buildYesterdayListFromToday(todayList, auctionData, yesterday);
         const yesterdayListWasEmpty = (auctionData[yesterday] || []).length === 0;
+        // [FIX 2026-09-09] 抓取前自动补全缺失代码：观察组继承票/手动粘贴票常缺 stockcodemap 映射，
+        // 缺码会被下面的 collectCodes 直接跳过 → 表现为「点了按钮这只票没数据」。
+        await ensureAuctionCodeMapping(todayList);
         const scMap = state._scMapCache || {};
         const codeToName = {};
         yesterdayList.forEach(function(s) {
@@ -655,6 +665,9 @@ export async function _fetchChangePctFromThsImpl(btn, overwrite) {
         }
 
         // 收集 thscode
+        // [FIX 2026-09-09] 抓取前自动补全缺失代码：观察组继承票/手动粘贴票常缺 stockcodemap 映射，
+        // 缺码会被下面的 collectCodes 直接跳过 → 表现为「点了按钮这只票没数据」。
+        await ensureAuctionCodeMapping(todayList);
         const scMap = state._scMapCache || {};
         const stockMap = {}; // thscode -> stock 对象
         const thscodes = [];
@@ -777,6 +790,9 @@ export async function fillAuctionHistoryGapPctFromThs(btn, mode) {
             return;
         }
 
+        // [FIX 2026-09-09] 抓取前自动补全缺失代码：观察组继承票/手动粘贴票常缺 stockcodemap 映射，
+        // 缺码会被下面的 collectCodes 直接跳过 → 表现为「点了按钮这只票没数据」。
+        await ensureAuctionCodeMapping(todayList);
         const scMap = state._scMapCache || {};
         const windowDates = [];
         let d = today;
@@ -984,6 +1000,9 @@ export async function fillAuctionHistoryGapYestVolumeFromThs(btn) {
             return;
         }
 
+        // [FIX 2026-09-09] 抓取前自动补全缺失代码：观察组继承票/手动粘贴票常缺 stockcodemap 映射，
+        // 缺码会被下面的 collectCodes 直接跳过 → 表现为「点了按钮这只票没数据」。
+        await ensureAuctionCodeMapping(todayList);
         const scMap = state._scMapCache || {};
         const windowDates = [];
         let d = today;

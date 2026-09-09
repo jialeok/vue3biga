@@ -51,6 +51,13 @@ export async function numcatApiPost(apiname, fields, params, pathOverride) {
         throw new Error('numcat-proxy 返回非 JSON 响应：' + rawBody.slice(0, 100));
     }
     if (data.code !== 200) {
+        // [FIX 2026-09-09] 猫抓免费额度每天仅 10 次，用尽后所有猫抓类按钮都会失败。
+        // 此前只抛原始 message（"今日调用额度已用完"），用户无法判断是「代码坏了」还是「额度没了」，
+        // 也不知道替代方案 → 这里补上可执行的处置建议。
+        if (data.code === 403 || (data.message || '').indexOf('额度') >= 0) {
+            throw new Error('猫抓今日额度已用完（免费额度每天 10 次，北京时间 0 点重置）：' +
+                (data.message || '') + '。请改用「同花顺接口」组按钮，或明天再试。');
+        }
         throw new Error(data.message || ('numcat 接口错误 code=' + data.code));
     }
     return data.data;

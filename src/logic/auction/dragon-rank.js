@@ -30,13 +30,17 @@ import { loadCloudStockCodeMap } from '../../data/stock-code-map.js';
 import {
   readRangePctForDate,
   upsertRangePctRows,
-  fetchNumcatDailyPctRange
+  fetchNumcatDailyPctRange,
+  fetchFuyaoDailyPctRange
 } from '../../data/stock-range-pct.js';
 import { _dbgLog } from '../../data/debug-log.js';
+import { ensureAuctionCodeMapping } from './auction-fetch-helpers.js';
 
 export const DRAGON_RANGE_DAYS = 10;
 // 北京时间 15:00 之后，当天收盘涨幅已可覆盖早盘竞价涨幅 → 缓存视为过期需重算一次
 const CLOSE_COVER_HOUR = 15;
+// 同花顺兜底每会话每个日期最多走一次：猫抓额度用尽时避免每次渲染都发几十个请求
+const _fuyaoFallbackDates = new Set();
 
 // ===== 状态（模块级 ref，§7：不进 Pinia，遵循 weakStrongSetRef 同款 ref-driven 范式）=====
 const dragonState = ref({ date: '', map: new Map(), version: 0 });
@@ -193,6 +197,13 @@ async function _fetchAndCompute(date) {
       _dbgLog('[DRAGON] 代码映射加载失败: ' + (e && e.message || e));
     }
   }
+  // [FIX 2026-09-09] 缺代码的票永远算不出涨幅（9/9 万向德农即此因），先自动补一次
+  try {
+    const cm = await ensureAuctionCodeMapping(rows);
+    if (cm.filled > 0) scMap = state._scMapCache || scMap;
+  } catch (e) {
+    _dbgLog('[DRAGON] 自动补码失败: ' + (e && e.message || e));
+  }
 
   const codeOf = {};
   const codeSet = new Set();
@@ -209,7 +220,29 @@ async function _fetchAndCompute(date) {
 
   const startYmd = dates[dates.length - 1].replace(/-/g, '');
   const endYmd = dates[0].replace(/-/g, '');
-  const byCode = await fetchNumcatDailyPctRange(Array.from(codeSet).join(','), startYmd, endYmd);
+
+  // 主通道：猫抓 daily（1 次请求覆盖全部股票 × 10 日）
+  let byCode = null;
+  try {
+    byCode = await fetchNumcatDailyPctRange(Array.from(codeSet).join(','), startYmd, endYmd);
+  } catch (e) {
+    _dbgLog('[DRAGON] 猫抓 daily 不可用: ' + (e && e.message || e));
+  }
+  // 兜底通道：猫抓额度用尽 / 返回空 → 用同花顺收盘价自算日涨幅（不消耗猫抓额度）
+  let byName = null;
+  if ((!byCode || byCode.size === 0) && !_fuyaoFallbackDates.has(date)) {
+    _fuyaoFallbackDates.add(date);
+    _dbgLog('[DRAGON] 启用同花顺兜底计算 10 日涨幅（' + Object.keys(codeOf).length + ' 只）');
+    try {
+      byName = await fetchFuyaoDailyPctRange(
+        Object.keys(codeOf).map(function(n) { return { stock: n, code: codeOf[n] }; }),
+        dates
+      );
+      _dbgLog('[DRAGON] 同花顺兜底取到 ' + byName.size + ' 只');
+    } catch (e) {
+      _dbgLog('[DRAGON] 同花顺兜底失败: ' + (e && e.message || e));
+    }
+  }
 
   // 当天(T)涨幅口径（§用户口径）：
   //   - 15:00 前（盘中）：daily 的 T 值是「盘中实时涨幅」，不是竞价涨幅 → 必须用本地【竞价涨幅】占位；
@@ -224,7 +257,7 @@ async function _fetchAndCompute(date) {
     if (!name) return;
     const code = codeOf[name];
     if (!code) return;
-    const dayMap = byCode.get(code);
+    const dayMap = byName ? byName.get(name) : (byCode ? byCode.get(code) : null);
     const list = [];
     ascDates.forEach(function(d) {
       const ymd = d.replace(/-/g, '');

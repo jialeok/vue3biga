@@ -9,6 +9,7 @@
 
 import { getSupabase } from './supabase-client.js';
 import { numcatApiPost } from './api/numcat-proxy.js';
+import { fuyaoApiGet, tickerToThscode } from './api/fuyao-proxy.js';
 import { _dbgLog } from './debug-log.js';
 
 /**
@@ -104,4 +105,74 @@ export async function fetchNumcatDailyPctRange(symbols, startYmd, endYmd) {
         byCode.get(code).set(ymd, n);
     });
     return byCode;
+}
+
+/**
+ * 【兜底通道】同花顺 historical：按【收盘价】自己算窗口内每个交易日的涨幅。
+ *
+ * 为什么需要：猫抓 daily 免费额度每天只有 10 次，用尽后返回
+ * `{code:403, message:'今日调用额度已用完'}` —— 此时「10 日涨幅 / 龙头徽章」全线失效。
+ * 同花顺 fuyao 无每日额度限制，可作为等价替代（日涨幅 = 今日收盘 / 上一交易日收盘 - 1）。
+ *
+ * @param {Array<{stock:string, code:string}>} items 股票名 + 6 位代码
+ * @param {string[]} dates 需要的交易日（YYYY-MM-DD，顺序任意）
+ * @param {{concurrency?:number}} [opts]
+ * @returns {Promise<Map<string, Map<string, number>>>} 股票名 -> (YYYYMMDD -> 日涨幅%)
+ */
+export async function fetchFuyaoDailyPctRange(items, dates, opts) {
+    const list = (items || []).filter(function(it) { return it && it.stock && it.code; });
+    const ymdList = (dates || []).map(function(d) { return String(d).replace(/-/g, ''); }).filter(Boolean);
+    const out = new Map();
+    if (list.length === 0 || ymdList.length === 0) return out;
+
+    const sorted = ymdList.slice().sort();
+    const first = sorted[0];
+    const last = sorted[sorted.length - 1];
+    const _ymdToMs = function(ymd) {
+        return Date.parse(ymd.slice(0, 4) + '-' + ymd.slice(4, 6) + '-' + ymd.slice(6, 8) + 'T00:00:00+08:00');
+    };
+    // 起点前移 8 个自然日：窗口首日的涨幅需要「上一个交易日收盘价」作为基准
+    const startMs = _ymdToMs(first) - 8 * 86400000;
+    const endMs = _ymdToMs(last) + 2 * 86400000;
+    const wantSet = new Set(ymdList);
+    const conc = (opts && opts.concurrency) || 6;
+
+    for (let i = 0; i < list.length; i += conc) {
+        const batch = list.slice(i, i + conc);
+        await Promise.all(batch.map(async function(it) {
+            const name = String(it.stock).trim();
+            try {
+                const data = await fuyaoApiGet('/api/a-share/prices/historical', {
+                    thscode: tickerToThscode(it.code),
+                    interval: '1d',
+                    start: String(startMs),
+                    end: String(endMs),
+                    adjust: 'none'
+                });
+                const rows = (data && data.item) || [];
+                const series = [];
+                rows.forEach(function(r) {
+                    if (!r || r.date_ms == null || r.close_price == null) return;
+                    const ms = Number(r.date_ms);
+                    const close = Number(r.close_price);
+                    if (!isFinite(ms) || !isFinite(close) || close <= 0) return;
+                    // date_ms 是【北京时间午夜】→ 加 8h 后取 UTC 日期才是正确的交易日
+                    const ymd = new Date(ms + 8 * 3600 * 1000).toISOString().slice(0, 10).replace(/-/g, '');
+                    series.push({ ymd: ymd, close: close });
+                });
+                series.sort(function(a, b) { return a.ymd < b.ymd ? -1 : (a.ymd > b.ymd ? 1 : 0); });
+                const keep = new Map();
+                for (let k = 1; k < series.length; k++) {
+                    const prev = series[k - 1];
+                    const cur = series[k];
+                    if (!wantSet.has(cur.ymd)) continue;
+                    keep.set(cur.ymd, (cur.close / prev.close - 1) * 100);
+                }
+                if (keep.size > 0) out.set(name, keep);
+            } catch (e) {
+                _dbgLog('[DRAGON-FUYAO] ' + name + '(' + it.code + ') 历史K线失败: ' + (e && e.message || e));
+            }
+        }));
+    }
+    return out;
 }
