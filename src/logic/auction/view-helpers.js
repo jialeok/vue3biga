@@ -562,6 +562,17 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     return 0;
   }
 
+  // [TOPIC-MERGE 2026-09-09] 题材 toggle「单独开启」判定：没有任何主排序 toggle 参与时为真。
+  // 单独开启题材 = 用户只想按题材看当日全量（含观察组继承票），不再区分观察组/常规组两块；
+  // 一旦叠加任一主排序 toggle（弱转强/量比抢筹/平行/竞昨/竞昨占比/三天竞跌），
+  // 观察组与常规组的既有显示方式保持不变（下方分组分支的 else/各专属分支原逻辑不动）。
+  const topicOnlyMode = !!sortState.byTopic
+    && !sortState.byWeakStrong
+    && !sortState.byRatio
+    && !sortState.byParallel
+    && !jingYestToggleChecked
+    && !sortState.byThreeDayJingDie;
+
   // 题材背景色映射：仅在 byTopic 开启时计算，供下方 enrich 步骤给每行附上浅色背景。
   // 不同题材不同浅色、仅成员>=2 的真实题材上色、"其它"不上色（详细口径见 buildTopicColorMap）。
   let topicColorMap = null;
@@ -577,8 +588,20 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       return classifyStockPrimaryTopic(it);
     };
     renderOrder = sortByTopicGroups(renderOrder, renderList, resolveTopicTier, primaryTopicOf);
-    // 题材组配色：仅成员>=2 的真实题材上浅色，不同题材不同色，"其它"不上色
-    topicColorMap = buildTopicColorMap(primaryTopicMap, 2);
+    // 题材组配色：仅成员>=2 的真实题材上浅色，不同题材不同色，"其它"不上色。
+    // 融合模式（题材单独开启）下观察组行也要计入成组/上色，否则合并过来的观察组票拿不到背景色，
+    // 视觉上仍像"两拨"，与「融合成一个整体」的诉求不符；叠加主排序时维持原口径（只按正式列表成组）。
+    let _colorSourceMap = primaryTopicMap;
+    if (topicOnlyMode) {
+      _colorSourceMap = new Map(primaryTopicMap);
+      renderList.forEach(function(it) {
+        if (!it || !it.stock) return;
+        const nm = String(it.stock).trim();
+        if (!nm || _colorSourceMap.has(nm)) return;
+        _colorSourceMap.set(nm, classifyStockPrimaryTopic(it));
+      });
+    }
+    topicColorMap = buildTopicColorMap(_colorSourceMap, 2);
     primaryTopicOfForColor = primaryTopicOf;
   }
 
@@ -619,7 +642,16 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // 注意：threeDayJingDieSet 已在上方题材分支前统一计算并复用，此处不再重复声明。
 
   let obsIndices, regularIndices, hiddenObsIndices;
-  if (sortState.byThreeDayJingDie) {
+  if (topicOnlyMode) {
+    // [TOPIC-MERGE 2026-09-09] 题材单独开启：观察组与常规组融合为【单一列表】。
+    // - obsIndices=[] → 模板不再渲染观察组区块与蚂蚁线分隔（showObsSeparator 自动为 false）；
+    // - regularIndices = 完整 renderOrder → 观察组继承票一条不丢，只按题材分组聚在一起；
+    // - 排序已由上方 sortByTopicGroups 按「题材分组」处理（组大者居前、"其它"置底），
+    //   观察组票按其题材落进对应组别，不再单独成块。
+    obsIndices = [];
+    regularIndices = renderOrder.slice();
+    hiddenObsIndices = [];
+  } else if (sortState.byThreeDayJingDie) {
     // [THREE-DAY 2026-08-17] 三天竞跌模式：折叠观察组（obsIndices=[]）→ 模板不再渲染观察组区块与蚂蚁线；
     // 所有股票（含不在今日正式列表的观察组票）进单一列表 → 总数与默认一致（90），不隐藏、不增不减（§6 唯一数据源=9:25 列表）。
     // 排序由上方 three-day 分支处理：dd≥2 达标置顶、同档按 auc_pct_chg（竞价涨幅）降序。
