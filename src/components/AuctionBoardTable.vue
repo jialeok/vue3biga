@@ -20,7 +20,7 @@
   <template
     v-for="(item, idx) in filteredObsItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.isYiZi]"
   >
     <div
       :class="item.itemClass"
@@ -49,7 +49,11 @@
         @mouseup="cancelLongPress"
         @mouseleave="cancelLongPress"
       >
-        <span class="auction-stock-text">{{ item.stock }}<span
+        <span
+          class="auction-stock-text"
+          :class="{ 'yizi-limit': item.isYiZi }"
+          :title="item.isYiZi ? ('竞价一字（竞价涨幅 ' + (item.aucPctText || '-') + '）') : null"
+        >{{ item.stock }}<span
           v-if="item.obsFormalStar"
           class="auction-obs-formal-star"
         >*</span></span>
@@ -179,7 +183,7 @@
   <template
     v-for="(item, idx) in filteredRegularItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.isYiZi]"
   >
     <div
       :class="item.itemClass"
@@ -208,7 +212,11 @@
         @mouseup="cancelLongPress"
         @mouseleave="cancelLongPress"
       >
-        <span class="auction-stock-text">{{ item.stock }}<span
+        <span
+          class="auction-stock-text"
+          :class="{ 'yizi-limit': item.isYiZi }"
+          :title="item.isYiZi ? ('竞价一字（竞价涨幅 ' + (item.aucPctText || '-') + '）') : null"
+        >{{ item.stock }}<span
           v-if="item.obsFormalStar"
           class="auction-obs-formal-star"
         >*</span></span>

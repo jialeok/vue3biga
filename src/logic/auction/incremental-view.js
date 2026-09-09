@@ -113,6 +113,7 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToke
     s.byWeakStrong ? 1 : 0, s.byRatio ? 1 : 0, s.byParallel ? 1 : 0,
     s.byJingYest ? 1 : 0, s.byJingYestRatio ? 1 : 0, s.byThreeDayJingDie ? 1 : 0, s.byTopic ? 1 : 0,
     'ws=' + (wsToken || 0), // [WEAK-STRONG 2026-09-01] 弱转强达标档(连跌天数)变化需触发该行重派生，否则高光 class 被增量缓存陈旧复用
+    'yizi=' + (item.isYiZi ? 1 : 0), // [YIZI 2026-09-09] 竞价一字状态（竞价涨幅达标）变化需触发重派生，否则红线标记陈旧
     'vg=' + (vgToken || 0), // [VOL-GRAB 2026-09-05] 量比抢筹达标状态(0/1)变化需触发该行重派生，否则高光 class 陈旧复用
     prevVolume, prevYestVolume,
     sold ? 1 : 0, bought ? 1 : 0, selected ? 1 : 0

@@ -108,7 +108,9 @@ export function classifyStockPrimaryTopic(item) {
  * 题材分组叠加排序（核心修复逻辑）。
  * 在各主排序档位(tier)内部，按「题材分组」重排：
  *   - 取出本档位内每只股票的主题材(primaryTopicOf)；
- *   - 统计本档位内各题材组的股票数，按【组大小降序】排列题材组；
+ *   - 统计本档位内各题材组的股票数与【竞价一字】股票数；
+ *   - 题材组排序：先按【一字数量降序】（9:25 一字涨停越多的题材越强，排最前），
+ *     一字数量相同再按【组大小降序】（题材内股票多的排前），仍相同按题材名稳定排序；
  *   - "其它"组永远排在本档位最末；
  *   - 同一题材组内部，默认保持主排序的相对顺序(pos 兜底，稳定)；
  *     传入 rankFn 时改为【按 rankFn 升序】（龙头场景：龙一→龙二→龙三…），无排名的排在最后。
@@ -119,9 +121,10 @@ export function classifyStockPrimaryTopic(item) {
  * @param {(idx:number)=>number} tierFn - 给定 renderList 索引，返回主排序档位(0=最高档)
  * @param {(idx:number)=>string} primaryTopicOf - 给定 renderList 索引，返回主题材(与第二页分类一致)
  * @param {(idx:number)=>number|null} [rankFn] - 可选：组内排序依据（升序，越小越靠前；null/无效值视为"无排名"排最后）
+ * @param {(idx:number)=>boolean} [yiZiOf] - 可选：该行是否「竞价一字」（用于题材组间排序，缺省退化为纯组大小排序）
  * @returns {number[]} 重排后的索引数组
  */
-export function sortByTopicGroups(renderOrder, renderList, tierFn, primaryTopicOf, rankFn) {
+export function sortByTopicGroups(renderOrder, renderList, tierFn, primaryTopicOf, rankFn, yiZiOf) {
     if (!renderOrder || renderOrder.length === 0) return renderOrder;
     if (typeof tierFn !== 'function' || typeof primaryTopicOf !== 'function') return renderOrder;
     const _rankNum = function(v) {
@@ -140,14 +143,20 @@ export function sortByTopicGroups(renderOrder, renderList, tierFn, primaryTopicO
     // 2) 档位从小到大（tier0 在最上）
     [...tierGroups.keys()].sort((a, b) => a - b).forEach(t => {
         const arr = tierGroups.get(t);
-        // 本档位内各题材组的股票数
+        // 本档位内各题材组的股票数 / 竞价一字股票数
         const sizeMap = new Map();
-        for (const x of arr) sizeMap.set(x.topic, (sizeMap.get(x.topic) || 0) + 1);
-        // 题材组去重后排序：真实题材按组大小降序；"其它"永远最末
+        const yiZiMap = new Map();
+        for (const x of arr) {
+            sizeMap.set(x.topic, (sizeMap.get(x.topic) || 0) + 1);
+            if (yiZiOf && yiZiOf(x.idx)) yiZiMap.set(x.topic, (yiZiMap.get(x.topic) || 0) + 1);
+        }
+        // 题材组去重后排序：一字多的题材排最前 → 组大小降序 → 题材名稳定；"其它"永远最末
         const topics = [...new Set(arr.map(x => x.topic))];
         topics.sort((a, b) => {
             if (a === '其它') return 1;
             if (b === '其它') return -1;
+            const dz = (yiZiMap.get(b) || 0) - (yiZiMap.get(a) || 0);
+            if (dz !== 0) return dz;
             const d = (sizeMap.get(b) || 0) - (sizeMap.get(a) || 0);
             if (d !== 0) return d;
             return a < b ? -1 : (a > b ? 1 : 0);

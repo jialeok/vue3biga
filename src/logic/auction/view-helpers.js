@@ -14,6 +14,8 @@ import { getAuctionTagState } from '../ui-bridge.js';
 import { getDisplayNote } from '../note/helpers.js';
 import { useUiStore } from '../../stores/uiStore.js';
 import { getStockTopicCount, getStockTopicsDisplay, getPrimaryTopicMap, classifyStockPrimaryTopic, sortByTopicGroups, buildTopicColorMap } from './topic-sort.js';
+// [YIZI 2026-09-09] 竞价一字（竞价涨停）：行级红线标记 + 题材组间排序权重，单一真相在 limit-up.js。
+import { isAuctionYiZi, parseAucPct } from './limit-up.js';
 // [DRAGON 2026-09-09] 题材龙头（龙一/龙二…）：区间涨幅状态由 dragon-rank.js 异步加载后经模块级 ref 暴露，
 // 此处同步读取（与 weakStrongSetRef 同款 ref-driven 范式），题材 toggle 开启时才参与计算。
 import { getDragonRangePct, computeDragonRankMap } from './dragon-rank.js';
@@ -149,6 +151,15 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   const isFormalToday = ctx.isFormalToday ? ctx.isFormalToday(stockName) : false;
   const isObsFromPrev = ctx.isObsMember ? ctx.isObsMember(stockName) : false;
 
+  // [YIZI 2026-09-09] 竞价一字（竞价涨幅达到该股涨停幅度）→ 股票名下方红色下划线标记。
+  // 仅题材 toggle 开启时判定（与龙头徽章同一显示口径），避免无谓计算。
+  // 代码取行上 code 字段，缺则查内存代码映射；都缺时按主板 10% 兜底（limit-up.js 内处理）。
+  // 展示文本只认专用竞价涨幅字段 auc_pct_chg（changePct 会被「获取涨幅」改写成常规涨幅，不能混用）
+  const _aucPctNum = parseAucPct(rawItem.auc_pct_chg || rawItem.aucPctChg || '');
+  const _yiZiCode = rawItem.code || (stockName ? getStockCode(stockName) : '') || '';
+  const isYiZi = ctx.byTopic ? isAuctionYiZi(rawItem, _yiZiCode) : false;
+  const aucPctText = (_aucPctNum === null) ? '' : (_aucPctNum > 0 ? '+' : '') + _aucPctNum.toFixed(2) + '%';
+
   return {
     index,
     stock: stockName,
@@ -176,7 +187,10 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     isObsFromPrev,
     // [FEAT 2026-08-20] 题材 toggle：题材数量（供排序）与题材展示文本（供题材列显示）
     topicCount: getStockTopicCount(rawItem),
-    topicsDisplay: getStockTopicsDisplay(rawItem)
+    topicsDisplay: getStockTopicsDisplay(rawItem),
+    // [YIZI 2026-09-09] 竞价一字（竞价涨停）→ 股票名下红线；aucPctText 仅用于悬停提示
+    isYiZi,
+    aucPctText
   };
 }
 
@@ -615,6 +629,20 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       return classifyStockPrimaryTopic(it);
     };
     primaryTopicOfForColor = primaryTopicOf;
+
+    // [YIZI 2026-09-09] 题材组间排序权重：9:25 竞价一字（竞价涨停）数量越多的题材排越前。
+    // 判定只依赖行内 auc_pct_chg + 代码（内存映射），同步无请求；缺代码按主板 10% 兜底。
+    // 无一字时 yiZiMap 全为 0 → 退化为「按题材数量降序」的既有口径，行为不变。
+    const _yiZiCache = new Map();
+    const yiZiOf = function(idx) {
+      if (_yiZiCache.has(idx)) return _yiZiCache.get(idx);
+      const it = renderList[idx];
+      const nm = it && it.stock ? String(it.stock).trim() : '';
+      let v = false;
+      if (nm) v = isAuctionYiZi(it, (it.code || getStockCode(nm) || ''));
+      _yiZiCache.set(idx, v);
+      return v;
+    };
     // 题材组配色：仅成员>=2 的真实题材上浅色，不同题材不同色，"其它"不上色。
     // 融合模式（题材单独开启）下观察组行也要计入成组/上色，否则合并过来的观察组票拿不到背景色，
     // 视觉上仍像"两拨"，与「融合成一个整体」的诉求不符；叠加主排序时维持原口径（只按正式列表成组）。
@@ -647,7 +675,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
           const dk = nm ? dragonRankMap.get(nm) : null;
           return dk ? dk.rank : null;
         }
-        : null
+        : null,
+      yiZiOf
     );
   }
 
@@ -768,6 +797,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     },
     prevAuctionList,
     prevAuctionMap: _prevMap,
+    // [YIZI 2026-09-09] 题材 toggle 开关：竞价一字红线只在题材视图下计算/展示（与龙头徽章同一口径）
+    byTopic: !!sortState.byTopic,
     tagStateCache: _buildTagStateCache(currentDate),
     jingYestToggleChecked,
     jingYestHighlightSet,

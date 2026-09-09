@@ -489,6 +489,11 @@
             position: relative;
         }
 
+        /* 竞价一字（9:25 竞价涨幅达到涨停幅度）：股票名下方红色下滑线 */
+        .auction-stock-text.yizi-limit {
+            border-bottom: 2px solid #dc2626;
+        }
+
         /* 双身份股票（昨日竞昨高光观察组 ∩ 今日正式列表）星号标记 */
         .auction-obs-formal-star {
             color: #f59e0b;
