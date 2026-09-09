@@ -82,6 +82,33 @@ import { setAuctionDateData } from './auction-data.js';
                 return wset.has(r.stock.trim()) || r.obsAutoAdded === true;
             });
         }
+        // 【当日 9:25 正式名单成员判定 · 单一真相 / 2026-09-09】
+        // 语义：该股票是不是「当天 9:25 抓取的最近多板名单成员」（或用户手动新增的正式成分股）。
+        // 与 _getAuctionWatchlistSet 的区别——后者是「当日列表全集」，会包含观察组继承行，
+        // 不能直接用来判断"今天在不在正式名单里"（否则纯观察组票会被误判成双身份 → 误打 *、误享
+        // 折叠豁免、统计口径分叉）。
+        // 判定顺序（行对象优先于 Set，因为 obs 身份是行级属性、Set 里已经丢失了这个信息）：
+        //   ① 当日内存行里该股 obsAutoAdded === true → 它是继承来的观察组壳，不是 9:25 成员 → false
+        //   ② 否则看是否在正式成员索引里
+        // §10：索引未就绪时不能凭空判定为 false（会把整天数据判没），此时退化为「行本身非观察组」。
+        export function _isAuctionFormalMember(date, stockName) {
+            if (!date || !stockName) return false;
+            const name = String(stockName).trim();
+            if (!name) return false;
+            const list = (state._auctionMemCache && state._auctionMemCache[date]) || [];
+            let hasRow = false;
+            for (let i = 0; i < list.length; i++) {
+                const r = list[i];
+                if (!r || !r.stock) continue;
+                if (String(r.stock).trim() !== name) continue;
+                if (r.obsAutoAdded === true) return false;
+                hasRow = true;
+                break;
+            }
+            if (hasRow) return true;
+            if (!_isAuctionWatchlistIndexReady(date)) return false;
+            return _getAuctionWatchlistSet(date).has(name);
+        }
         // 整日期替换正式成员索引
         export function _setAuctionWatchlistForDate(date, stockNames) {
             if (!date) return;

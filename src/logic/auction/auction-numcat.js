@@ -257,14 +257,67 @@ export async function fetchFiveDaysAuctionFromNumcat(btn) {
     }
 }
 
+// [FIX 2026-09-09] 抓取名单口径（单一真相）：当日「正式成员 ∪ 观察组继承行」，排除 market_metrics 影子行。
+// 背景：观察组打标签继承票（如万向德农 9/9）不在 _getAuctionWatchlistSet 里，导致所有猫抓/题材/
+// 监管类按钮都把它过滤掉 → 全天无数据。观察组是用户复盘名单，必须能被抓到数据。
+function _isFetchTarget(s, wset) {
+    if (!s || !s.stock) return false;
+    const name = s.stock.trim();
+    if (!name) return false;
+    return wset.has(name) || s.obsAutoAdded === true;
+}
+
+// [FIX 2026-09-09] 抓取前自动补全缺失的股票代码（同花顺 tickers/search，不占猫抓额度）。
+// 背景：观察组继承票/手动粘贴票可能从未出现在「最近多板」成分股里，stockcodemap 无记录 →
+// 抓取时被"缺少代码映射"直接跳过，用户看到的就是"这只票整天没数据"。
+// 补到的代码会写回云端 stockcodemap（跨设备复用），补不到的保持跳过并在状态里点名提示。
+async function _autoFillMissingCodes(list) {
+    const scMap = state._scMapCache || {};
+    const missing = (list || []).filter(function(s) {
+        if (!s || !s.stock) return false;
+        return !((s.code || '').trim() || scMap[s.stock.trim()]);
+    });
+    if (missing.length === 0) return { filled: 0, failed: [] };
+    const pairs = [];
+    const failed = [];
+    for (const item of missing) {
+        const name = item.stock.trim();
+        let code = '';
+        try {
+            const data = await fuyaoApiGet('/api/meta/tickers/search', {
+                q: name, asset_type: 'a-share', limit: 5
+            });
+            const items = (data && Array.isArray(data.item)) ? data.item : [];
+            const hit = items.find(function(it) { return it && it.name && it.name.trim() === name; }) || items[0];
+            if (hit && hit.ticker) code = String(hit.ticker).trim();
+        } catch (e) {
+            _dbgLog('[AUTO-CODE] 搜索 ' + name + ' 失败: ' + (e && e.message || e));
+        }
+        if (code) {
+            scMap[name] = code;
+            item.code = code;
+            pairs.push({ stock: name, code: code });
+        } else {
+            failed.push(name);
+        }
+    }
+    if (pairs.length > 0) {
+        try { await upsertStockCodeMap(pairs); } catch (e) {
+            _dbgLog('[AUTO-CODE] upsertStockCodeMap 失败: ' + (e && e.message || e));
+        }
+    }
+    return { filled: pairs.length, failed: failed };
+}
+
 export async function fillTopicsFromNumcat(btn) {
     setBtnLoading(btn, true);
     try {
         const today = useUiStore().currentDate;
         // 方案2：用 _auctionWatchlistIndex 判断正式成员，只对正式成员补全题材
+        // [FIX 2026-09-09] 观察组继承行（obsAutoAdded）也要能补题材，否则打标签继承票永远空白。
         const _ftWset = _getAuctionWatchlistSet(today);
         const todayList = (getAuctionData()[today] || []).filter(function(s) {
-            return s && s.stock && _ftWset.has(s.stock.trim()) && !((s.topics || '').trim());
+            return _isFetchTarget(s, _ftWset) && !((s.topics || '').trim());
         });
 
         if (todayList.length === 0) {
@@ -279,6 +332,9 @@ export async function fillTopicsFromNumcat(btn) {
             try { await loadCloudStockCodeMap(); } catch (e) { _dbgLog('[NUMCAT-FIX] fillTopics 按需加载代码映射失败: ' + (e && e.message)); }
             scMap = state._scMapCache || {};
         }
+        // [FIX 2026-09-09] 抓取前自动补一次缺失代码（观察组继承票常缺映射，否则整天抓不到数据）
+        const _af = await _autoFillMissingCodes(todayList);
+        if (_af.filled > 0) scMap = state._scMapCache || scMap;
         const codes = [];
         const codeToStock = {};
         const noCodeNames = [];   // 因缺少代码映射而未能发起查询的股票（对应「股票+代码表无对应」）
@@ -298,6 +354,10 @@ export async function fillTopicsFromNumcat(btn) {
                 ? '❌ 没有可补全的股票（代码映射缺失，请先「设置-导入代码映射」或重新登录后重试）'
                 : '❌ 没有可补全的股票（缺少代码映射）', false);
             return;
+        }
+
+        if (_af.filled > 0) {
+            setApiStatus('numcatApiStatus', '✅ 自动补全 ' + _af.filled + ' 只股票代码映射', true);
         }
 
         setApiStatus('numcatApiStatus', '正在请求猫抓接口补全题材（' + codes.length + ' 只股票）...', true);
@@ -405,7 +465,7 @@ export async function fetchMonitorWarningFromNumcat(btn) {
         const today = useUiStore().currentDate;
         // 方案2：用 _auctionWatchlistIndex 判断正式成员，只查询正式成员的监管记录
         const _mwWset = _getAuctionWatchlistSet(today);
-        const fullList = (getAuctionData()[today] || []).filter(function(s) { return s && s.stock && _mwWset.has(s.stock.trim()); });
+        const fullList = (getAuctionData()[today] || []).filter(function(s) { return _isFetchTarget(s, _mwWset); });
 
         if (fullList.length === 0) {
             setApiStatus('numcatApiStatus', '❌ 当日列表为空，请先导入股票到表格', false);
@@ -547,6 +607,10 @@ export async function fetchAuctionFromNumcat(btn, opts) {
             setApiStatus('numcatApiStatus', '❌ 没有可补全的股票', false);
             return;
         }
+
+        // [FIX 2026-09-09] 抓取前自动补一次缺失代码（观察组继承票常缺映射 → 整天没数据）
+        const _afMain = await _autoFillMissingCodes(todayList);
+        if (_afMain.filled > 0) scMap = state._scMapCache || scMap;
 
         // 合并去重股票代码
         const allCodesSet = new Set();

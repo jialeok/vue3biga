@@ -6,7 +6,7 @@ import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlig
 import { ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagState, _buildTagStateCache } from '../tagTitles/rules.js';
 import { getThreeDayJingDieSet, getWeakStrongSet, getWeakStrongTurnSet, getVolGrabSet } from './sort-rules-extra.js';
 import { getStockCode } from '../../data/stock-code-map.js';
-import { _getAuctionWatchlistSet } from '../../data/watchlist-and-metrics.js';
+import { _getAuctionWatchlistSet, _isAuctionFormalMember } from '../../data/watchlist-and-metrics.js';
 import { state } from '../app-state.js';
 import { useAuctionStore } from '../../stores/auctionStore.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
@@ -677,10 +677,11 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // 把它们当成纯观察组壳：只要没命中该 toggle 的高光条件就 hidden → 正式成员从列表里凭空消失。
   // 用户口径：打* 的票按正式成员对待——永不隐藏、照常参与高光判定，命中时与常规高光票一起排在最前
   // （不单独给观察组做一套高光）。
+  // [FIX 2026-09-09] 原实现直接查 _getAuctionWatchlistSet（「当日列表全集」，含观察组继承行），
+  // 会把「纯观察组票」误判成今日正式成员 → 既让它享有"永不隐藏"豁免，又与打 * 口径分叉。
+  // 改走 Data 层单一真相 _isAuctionFormalMember（行级 obsAutoAdded 优先），与 ctx.isFormalToday 同源。
   const _isFormalTodayMember = function(name) {
-    if (!name) return false;
-    const s = _getAuctionWatchlistSet(currentDate);
-    return !!(s && s.has(String(name).trim()));
+    return _isAuctionFormalMember(currentDate, name);
   };
 
   // [THREE-DAY 2026-08-17] 三天竞跌模式下，分组口径改为「达标(dd≥2)置顶 / 未达标在后」，
@@ -759,10 +760,11 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     dataSource, date: currentDate, confirmedSoldSet: _confirmedSoldSet,
     isObsMember: _isObsMember,
     // 今日正式列表判定（worker 自动获取的最近多板成分股，含代码映射/手动新增的正式成员）。
-    // 与统计口径 getAuctionBoardList（_auctionWatchlistIndex 过滤）保持一致，避免「显示星号」与「计入总数」两套标准。
+    // [FIX 2026-09-09] 改走 _isAuctionFormalMember：观察组继承行（obsAutoAdded=true）不算今日正式成员，
+    // 否则「昨天打过标签、今天不在 9:25 名单」的票会被误打 *（万向德农 9/9 就是这种情况）。
+    // 与 _isFormalTodayMember（折叠豁免）同源，避免「显示星号」与「永不隐藏」两套标准。
     isFormalToday: function(name) {
-      if (!name) return false;
-      return _getAuctionWatchlistSet(currentDate).has(name.trim());
+      return _isAuctionFormalMember(currentDate, name);
     },
     prevAuctionList,
     prevAuctionMap: _prevMap,
