@@ -20,6 +20,7 @@
 | `create_bidding_fetch_log.sql` | `bidding_fetch_log` | ✅ live（抓取日志） |
 | `supabase_auction_board_tags.sql` | 竞价看板标签表 | ✅ live（§8 标签上云） |
 | `supabase_auction_metrics.sql` | 竞价行情指标表 | ✅ live |
+| `create_stock_range_pct.sql` | `stock_range_pct` | ✅ live（题材龙头：近 10 个交易日区间涨幅缓存，猫抓 daily 一次批量请求算出后存云，避免重复消耗每日 10 次额度） |
 | `supabase_bidding_t0925_cron.sql` | 9:25 竞价 cron 相关 | ✅ live（定时任务） |
 | `supabase_bidding_template.sql` | `auction_bidding_template` | ⚠️ **只写不读（半孤儿）**：`saveBiddingTemplate()` 仍在 upsert，但 `loadBiddingTemplate()` 全 src 0 调用方，读取走 localStorage。删除前必须先改代码（见 `cleanup_auction_bidding_template.sql`）。 |
 | `supabase_dashboards.sql` | 看板聚合相关 | ✅ live |

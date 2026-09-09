@@ -28,7 +28,10 @@ import { pushStockTopicsToCloud } from '../data/stock-topics.js';
 import { prepareAuctionData } from '../logic/auction/view-helpers.js';
 import { computeAuctionViewDataIncremental } from '../logic/auction/incremental-view.js';
 import { showToast } from '../composables/useToast.js';
-import { apiStatusMap } from '../logic/ui-bridge.js';
+import { apiStatusMap, setApiStatus } from '../logic/ui-bridge.js';
+import { setBtnLoading } from '../logic/shared/core-shared.js';
+// [DRAGON 2026-09-09] 题材龙头：10 日区间涨幅异步加载 + 龙头排名（Logic 层模块）
+import { ensureDragonRangePct, clearDragonRangePct, DRAGON_RANGE_DAYS } from '../logic/auction/dragon-rank.js';
 // §P1-6：展示层纯函数已抽取到 ../composables/auction-board-helpers.js（行为等价）。
 import {
     getStarSymbols,
@@ -47,6 +50,8 @@ import {
 
 // [WEAK-STRONG 2026-09-01] 弱转强集合异步加载 watch 仅挂载一次（useAuctionBoard 可能被多组件调用）。
 let _wsWatchBound = false;
+// [DRAGON 2026-09-09] 龙头区间涨幅 watch 同理只挂载一次。
+let _dragonWatchBound = false;
 
 export function useAuctionBoard() {
   const uiStore = useUiStore();
@@ -97,6 +102,41 @@ export function useAuctionBoard() {
       },
       { immediate: true }
     );
+  }
+
+  // [DRAGON 2026-09-09] 龙头（龙一/龙二…）= 同题材组内按「近10个交易日区间涨幅」降序。
+  // 只要题材 toggle 开着就加载（叠加其它 toggle 也一样，需求：标志常驻）；
+  // 关闭题材时清空，避免陈旧数据留在内存。加载失败必须可见（§10 禁止静默失败）。
+  if (!_dragonWatchBound) {
+    _dragonWatchBound = true;
+    watch(
+      () => [sortState.byTopic, uiStore.currentDate],
+      async () => {
+        if (!sortState.byTopic) { clearDragonRangePct(); return; }
+        try {
+          await ensureDragonRangePct(uiStore.currentDate);
+        } catch (e) {
+          console.warn('[DRAGON] 龙头区间涨幅加载失败:', e && e.message);
+          setApiStatus('numcatApiStatus', '❌ 龙头涨幅加载失败：' + (e && e.message || e), false);
+        }
+      },
+      { immediate: true }
+    );
+  }
+
+  // 后台「龙头涨幅」按钮：强制重算一次（消耗 1 次猫抓额度），用于收盘后手动刷新。
+  async function fetchDragonRangeFromNumcat(btn) {
+    setBtnLoading(btn, true);
+    try {
+      const map = await ensureDragonRangePct(uiStore.currentDate, { force: true });
+      let withData = 0;
+      if (map) map.forEach(v => { if (v && v.pct !== null && v.pct !== undefined) withData++; });
+      setApiStatus('numcatApiStatus', '✅ 龙头涨幅（近' + DRAGON_RANGE_DAYS + '个交易日区间）已刷新：' + withData + ' 只有数据', true);
+    } catch (e) {
+      setApiStatus('numcatApiStatus', '❌ ' + (e && e.message || e), false);
+    } finally {
+      setBtnLoading(btn, false);
+    }
   }
 
   const currentPage = ref(0);
@@ -1175,6 +1215,7 @@ export function useAuctionBoard() {
     fetchTodayAuctionFromNumcat,
     fetchAllAuctionFromNumcat,
     fetchThreeDaysAuctionFromNumcat,
-    fillTopicsFromNumcat
+    fillTopicsFromNumcat,
+    fetchDragonRangeFromNumcat
   };
 }

@@ -197,6 +197,12 @@
         >
           题材填充
         </button>
+        <button
+          class="backend-btn backend-btn-numcat"
+          @click="runBackend(fetchDragonRangeFromNumcat)"
+        >
+          龙头涨幅
+        </button>
       </div>
       <div
         class="backend-status"
@@ -257,7 +263,8 @@ const {
   onYestClick, closeNotePopup, onExpandTrend, startLongPress, cancelLongPress, onLongPress, onAuctionRefresh,
   fetchLadderConstituentsMain, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs,
   fillYesterdayYesterdayVolumeFromThs, fetchChangePctFromThs, fetchTodayAuctionFromNumcat,
-  fetchAllAuctionFromNumcat, fetchThreeDaysAuctionFromNumcat, fillTopicsFromNumcat
+  fetchAllAuctionFromNumcat, fetchThreeDaysAuctionFromNumcat, fillTopicsFromNumcat,
+  fetchDragonRangeFromNumcat
 } = board;
 
 // § 模板重构：内联条件链 / 状态访问抽取（渲染结果 100% 不变）

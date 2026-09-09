@@ -20,7 +20,7 @@
   <template
     v-for="(item, idx) in filteredObsItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct]"
   >
     <div
       :class="item.itemClass"
@@ -53,6 +53,11 @@
           v-if="item.obsFormalStar"
           class="auction-obs-formal-star"
         >*</span></span>
+        <AuctionDragonBadge
+          v-if="item.dragonRank > 0"
+          :rank="item.dragonRank"
+          :pct="item.dragonPct"
+        />
         <AuctionBadge
           :item="item"
           :ctx="{}"
@@ -174,7 +179,7 @@
   <template
     v-for="(item, idx) in filteredRegularItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct]"
   >
     <div
       :class="item.itemClass"
@@ -207,6 +212,11 @@
           v-if="item.obsFormalStar"
           class="auction-obs-formal-star"
         >*</span></span>
+        <AuctionDragonBadge
+          v-if="item.dragonRank > 0"
+          :rank="item.dragonRank"
+          :pct="item.dragonPct"
+        />
         <AuctionBadge
           :item="item"
           :ctx="{}"
@@ -327,6 +337,7 @@
 <script setup>
 import { inject, watch, nextTick } from 'vue';
 import AuctionBadge from './AuctionBadge.vue';
+import AuctionDragonBadge from './AuctionDragonBadge.vue';
 import TrendChart from './TrendChart.vue';
 const board = inject('auctionBoard');
 const {

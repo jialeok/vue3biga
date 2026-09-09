@@ -14,6 +14,9 @@ import { getAuctionTagState } from '../ui-bridge.js';
 import { getDisplayNote } from '../note/helpers.js';
 import { useUiStore } from '../../stores/uiStore.js';
 import { getStockTopicCount, getStockTopicsDisplay, getPrimaryTopicMap, classifyStockPrimaryTopic, sortByTopicGroups, buildTopicColorMap } from './topic-sort.js';
+// [DRAGON 2026-09-09] 题材龙头（龙一/龙二…）：区间涨幅状态由 dragon-rank.js 异步加载后经模块级 ref 暴露，
+// 此处同步读取（与 weakStrongSetRef 同款 ref-driven 范式），题材 toggle 开启时才参与计算。
+import { getDragonRangePct, computeDragonRankMap } from './dragon-rank.js';
 
 function _getAuctionTag(date, stockName) {
   if (!date || !stockName) return null;
@@ -735,6 +738,30 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     volGrabSet: volGrabSet
   };
   const fullOrder = obsIndices.concat(regularIndices);
+
+  // [DRAGON 2026-09-09] 龙头排名：只在题材 toggle 开启时计算（需求——只要题材开着标记就在，
+  // 无论是否叠加其它 toggle）。口径：同题材组（= 界面同颜色块：真实题材 且 成员>=2）内部，
+  // 按「近10个交易日区间涨幅」降序，最高=龙一。
+  // 数据来自 dragon-rank.js 的异步缓存（10日区间涨幅，猫抓 daily 一次批量请求 + 云端缓存省额度）；
+  // 未加载/无数据时 dragonRankMap 为 null → 行上不显示徽章，绝不阻塞渲染。
+  let dragonRankMap = null;
+  if (sortState.byTopic && primaryTopicOfForColor) {
+    const dragonPctMap = getDragonRangePct(currentDate);
+    if (dragonPctMap && dragonPctMap.size > 0) {
+      const dragonEntries = [];
+      fullOrder.forEach(function(i) {
+        const raw = renderList[i];
+        const nm = raw && raw.stock ? String(raw.stock).trim() : '';
+        if (!nm || !dragonPctMap.has(nm)) return;
+        const pct = dragonPctMap.get(nm).pct;
+        if (pct === null || pct === undefined || isNaN(pct)) return;
+        dragonEntries.push({ name: nm, topic: primaryTopicOfForColor(i), pct: pct });
+      });
+      const coloredTopics = topicColorMap ? new Set(topicColorMap.keys()) : null;
+      dragonRankMap = computeDragonRankMap(dragonEntries, { coloredTopics: coloredTopics, minGroupSize: 2 });
+    }
+  }
+
   const items = fullOrder.map((i, pos) => {
     const it = _enrichAuctionItem(renderList[i], i, ctx);
     if (it) {
@@ -745,6 +772,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       } else {
         it.topicBg = '';
       }
+      const dk = dragonRankMap ? dragonRankMap.get(it.stock) : null;
+      it.dragonRank = dk ? dk.rank : 0;
+      it.dragonPct = dk ? dk.pct : null;
     }
     return it;
   }).filter(Boolean);

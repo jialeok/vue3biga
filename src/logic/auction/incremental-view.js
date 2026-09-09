@@ -19,6 +19,9 @@ import {
 import { getThreeDayJingDieSet, getVolGrabSet } from './sort-rules-extra.js';
 import { deriveAuctionTagState } from '../tagTitles/rules.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
+// [DRAGON 2026-09-09] 龙头徽章依赖异步加载的 10 日区间涨幅，必须进全局指纹，
+// 否则数据到达后行缓存不失效 → 徽章不显示（或陈旧）。
+import { getDragonFingerprintToken } from './dragon-rank.js';
 
 const rowCache = new Map(); // key: `${dataSource}|${index}` -> { sig, item }
 let lastGlobalFingerprint = '';
@@ -84,6 +87,7 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
     'par=' + par,
     'three=' + three,
     'vgrab=' + vgrab,
+    'dragon=' + getDragonFingerprintToken(),
     'confirmed=' + confirmed
   ].join('|');
 }
