@@ -31,7 +31,7 @@ import { showToast } from '../composables/useToast.js';
 import { apiStatusMap, setApiStatus } from '../logic/ui-bridge.js';
 import { setBtnLoading } from '../logic/shared/core-shared.js';
 // [DRAGON 2026-09-09] 题材龙头：10 日区间涨幅异步加载 + 龙头排名（Logic 层模块）
-import { ensureDragonRangePct, clearDragonRangePct, DRAGON_RANGE_DAYS } from '../logic/auction/dragon-rank.js';
+import { ensureDragonRangePct, getDragonRangePct, getStockRangePct, DRAGON_RANGE_DAYS } from '../logic/auction/dragon-rank.js';
 // §P1-6：展示层纯函数已抽取到 ../composables/auction-board-helpers.js（行为等价）。
 import {
     getStarSymbols,
@@ -112,7 +112,9 @@ export function useAuctionBoard() {
     watch(
       () => [sortState.byTopic, uiStore.currentDate],
       async () => {
-        if (!sortState.byTopic) { clearDragonRangePct(); return; }
+        // ⚠️ 不再因「关闭题材」而清空：展开面板的「10日涨幅」同样依赖这份数据
+        // （与题材 toggle 是否开启无关）。数据按 date 键控，切日期时会被新日期覆盖。
+        if (!sortState.byTopic) return;
         try {
           await ensureDragonRangePct(uiStore.currentDate);
         } catch (e) {
@@ -830,11 +832,25 @@ export function useAuctionBoard() {
     };
   }
 
+  // 10 日区间涨幅展示文案：带符号两位小数；有效交易日不足 10 天时补 (n/10日)，便于核对数据准确性。
+  function formatRangePct(range) {
+    if (!range || range.pct === null || range.pct === undefined || isNaN(range.pct)) return '';
+    const txt = (range.pct >= 0 ? '+' : '') + Number(range.pct).toFixed(2) + '%';
+    const days = Number(range.days);
+    if (days > 0 && days < DRAGON_RANGE_DAYS) return txt + '(' + days + '/' + DRAGON_RANGE_DAYS + '日)';
+    return txt;
+  }
+
   function dailyMetricsList(stockName) {
     if (!stockName) return [];
     const m = dailyAuctionMetrics(stockName.trim());
     const list = [];
     if (m.umVol != null) list.push({ label: '未匹配量', value: m.umVol });
+    // [DRAGON 2026-09-09] 展开面板「第二行第二个」= 近 10 个交易日区间涨幅，用于核对龙头排名的原始数据。
+    // 读 Logic 层异步缓存（模块级 ref → 数据到位后自动驱动该行重渲染）；
+    // 未加载/无数据 → 该项直接不出现，绝不显示 0 或 '-' 伪装成"涨幅为 0"（§10 禁止静默误导）。
+    const rangePctText = formatRangePct(getStockRangePct(uiStore.currentDate, stockName));
+    if (rangePctText) list.push({ label: '10日涨幅', value: rangePctText });
     if (m.openBidPct != null) list.push({ label: '抢筹幅度', value: m.openBidPct });
     if (m.aucVolRatio != null) list.push({ label: '竞价量比', value: m.aucVolRatio });
     if (m.aucTurnover != null) list.push({ label: '真换手率', value: m.aucTurnover });
@@ -1057,8 +1073,21 @@ export function useAuctionBoard() {
       newSet.add(name);
       const item = viewData.value.items.find(it => it.stock && it.stock.trim() === name);
       if (item && item.stock) loadTrendHistory(name);
+      // 展开即按需补齐「10日涨幅」（云端 stock_range_pct 命中 → 0 猫抓额度）。
+      // 失败不阻塞展开，只提示（§10 禁止静默失败）。
+      ensureDragonOnExpand();
     }
     expandedSet.value = newSet;
+  }
+
+  // 展开面板要显示 10 日涨幅，故无论题材 toggle 是否开启都按需加载一次；
+  // 已加载（同日期）直接返回，不产生任何请求；单飞保证并发只发一次。
+  function ensureDragonOnExpand() {
+    const d = uiStore.currentDate;
+    if (!d || getDragonRangePct(d)) return;
+    ensureDragonRangePct(d).catch(function(e) {
+      console.warn('[DRAGON] 展开加载 10 日涨幅失败:', e && e.message);
+    });
   }
 
   function startLongPress(stockName) {

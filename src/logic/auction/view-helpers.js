@@ -580,6 +580,30 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // 不同题材不同浅色、仅成员>=2 的真实题材上色、"其它"不上色（详细口径见 buildTopicColorMap）。
   let topicColorMap = null;
   let primaryTopicOfForColor = null;
+
+  // [DRAGON 2026-09-09] 龙头排名：只在题材 toggle 开启时计算（需求——只要题材开着标记就在，
+  // 无论是否叠加其它 toggle）。口径：同题材组（= 界面同颜色块：真实题材 且 成员>=2）内部，
+  // 按「近10个交易日区间涨幅」降序，最高=龙一。
+  // 数据来自 dragon-rank.js 的异步缓存（10日区间涨幅，猫抓 daily 一次批量请求 + 云端缓存省额度）；
+  // 未加载/无数据时 dragonRankMap 为 null → 行上不显示徽章、组内保持原顺序，绝不阻塞渲染。
+  let dragonRankMap = null;
+  const _buildDragonRankMap = function(order) {
+    if (!sortState.byTopic || !primaryTopicOfForColor) return null;
+    const dragonPctMap = getDragonRangePct(currentDate);
+    if (!dragonPctMap || dragonPctMap.size === 0) return null;
+    const dragonEntries = [];
+    order.forEach(function(i) {
+      const raw = renderList[i];
+      const nm = raw && raw.stock ? String(raw.stock).trim() : '';
+      if (!nm || !dragonPctMap.has(nm)) return;
+      const pct = dragonPctMap.get(nm).pct;
+      if (pct === null || pct === undefined || isNaN(pct)) return;
+      dragonEntries.push({ name: nm, topic: primaryTopicOfForColor(i), pct: pct });
+    });
+    const coloredTopics = topicColorMap ? new Set(topicColorMap.keys()) : null;
+    return computeDragonRankMap(dragonEntries, { coloredTopics: coloredTopics, minGroupSize: 2 });
+  };
+
   if (sortState.byTopic) {
     // 题材 toggle：复用第二页题材分类，按题材分组排序（组大者居前、"其它"置底、档位顺序不变）。
     const primaryTopicMap = getPrimaryTopicMap(auctionList);
@@ -590,7 +614,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       // 兜底：注入行（如观察组壳行）不在 auctionList 内时，按核心词单独匹配一次
       return classifyStockPrimaryTopic(it);
     };
-    renderOrder = sortByTopicGroups(renderOrder, renderList, resolveTopicTier, primaryTopicOf);
+    primaryTopicOfForColor = primaryTopicOf;
     // 题材组配色：仅成员>=2 的真实题材上浅色，不同题材不同色，"其它"不上色。
     // 融合模式（题材单独开启）下观察组行也要计入成组/上色，否则合并过来的观察组票拿不到背景色，
     // 视觉上仍像"两拨"，与「融合成一个整体」的诉求不符；叠加主排序时维持原口径（只按正式列表成组）。
@@ -605,7 +629,26 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       });
     }
     topicColorMap = buildTopicColorMap(_colorSourceMap, 2);
-    primaryTopicOfForColor = primaryTopicOf;
+
+    // [DRAGON-SORT 2026-09-09] 题材【单独】开启时，同题材组内按龙头排名升序（龙一→龙二→龙三…）。
+    // 排名必须在排序【之前】算好，所以这里先基于「主排序后的完整 renderOrder」算一版：
+    // 该模式下 obsIndices=[] 且 regularIndices=renderOrder → fullOrder === renderOrder，与展示集合完全一致。
+    // 叠加主排序 toggle 时不传 rankFn，组内保持原有相对顺序（既有口径一行不动）。
+    if (topicOnlyMode) dragonRankMap = _buildDragonRankMap(renderOrder);
+    renderOrder = sortByTopicGroups(
+      renderOrder,
+      renderList,
+      resolveTopicTier,
+      primaryTopicOf,
+      topicOnlyMode && dragonRankMap
+        ? (idx) => {
+          const it = renderList[idx];
+          const nm = it && it.stock ? String(it.stock).trim() : '';
+          const dk = nm ? dragonRankMap.get(nm) : null;
+          return dk ? dk.rank : null;
+        }
+        : null
+    );
   }
 
   // [REFACTOR 2026-08-15] 从 auctionTagStore（云端标签真相）读已卖出集合，不读 stocksData
@@ -739,28 +782,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   };
   const fullOrder = obsIndices.concat(regularIndices);
 
-  // [DRAGON 2026-09-09] 龙头排名：只在题材 toggle 开启时计算（需求——只要题材开着标记就在，
-  // 无论是否叠加其它 toggle）。口径：同题材组（= 界面同颜色块：真实题材 且 成员>=2）内部，
-  // 按「近10个交易日区间涨幅」降序，最高=龙一。
-  // 数据来自 dragon-rank.js 的异步缓存（10日区间涨幅，猫抓 daily 一次批量请求 + 云端缓存省额度）；
-  // 未加载/无数据时 dragonRankMap 为 null → 行上不显示徽章，绝不阻塞渲染。
-  let dragonRankMap = null;
-  if (sortState.byTopic && primaryTopicOfForColor) {
-    const dragonPctMap = getDragonRangePct(currentDate);
-    if (dragonPctMap && dragonPctMap.size > 0) {
-      const dragonEntries = [];
-      fullOrder.forEach(function(i) {
-        const raw = renderList[i];
-        const nm = raw && raw.stock ? String(raw.stock).trim() : '';
-        if (!nm || !dragonPctMap.has(nm)) return;
-        const pct = dragonPctMap.get(nm).pct;
-        if (pct === null || pct === undefined || isNaN(pct)) return;
-        dragonEntries.push({ name: nm, topic: primaryTopicOfForColor(i), pct: pct });
-      });
-      const coloredTopics = topicColorMap ? new Set(topicColorMap.keys()) : null;
-      dragonRankMap = computeDragonRankMap(dragonEntries, { coloredTopics: coloredTopics, minGroupSize: 2 });
-    }
-  }
+  // 非「题材单独开启」时（叠加主排序 / 未开题材），fullOrder 可能与 renderOrder 不同
+  // （折叠观察组会剔除未命中行）→ 必须按【最终展示集合】重算一次排名，避免被隐藏的票占用龙一位次。
+  if (sortState.byTopic && !topicOnlyMode) dragonRankMap = _buildDragonRankMap(fullOrder);
 
   const items = fullOrder.map((i, pos) => {
     const it = _enrichAuctionItem(renderList[i], i, ctx);

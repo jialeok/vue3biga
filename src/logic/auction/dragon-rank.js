@@ -49,6 +49,21 @@ export function getDragonRangePct(date) {
   return s.map;
 }
 
+/**
+ * 单只股票的「近 10 个交易日区间涨幅」（供展开面板核对数据准确性）。
+ * 无数据 / 未加载 / 日期不匹配 → 返回 null（调用方必须据此【不显示该项】，
+ * 绝不能退化为 0 或 '-' 伪装成"涨幅为 0"，否则会误导用户核对结果）。
+ * @param {string} date
+ * @param {string} stockName
+ * @returns {{pct:number|null, days:number}|null}
+ */
+export function getStockRangePct(date, stockName) {
+  const map = getDragonRangePct(date);
+  if (!map || !stockName) return null;
+  const v = map.get(String(stockName).trim());
+  return v || null;
+}
+
 /** 增量渲染指纹令牌：龙头数据变化时必须让行缓存整体失效。 */
 export function getDragonFingerprintToken() {
   const s = dragonState.value;

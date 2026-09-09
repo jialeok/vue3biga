@@ -110,18 +110,23 @@ export function classifyStockPrimaryTopic(item) {
  *   - 取出本档位内每只股票的主题材(primaryTopicOf)；
  *   - 统计本档位内各题材组的股票数，按【组大小降序】排列题材组；
  *   - "其它"组永远排在本档位最末；
- *   - 同一题材组内部，保持主排序的相对顺序(pos 兜底，稳定)。
+ *   - 同一题材组内部，默认保持主排序的相对顺序(pos 兜底，稳定)；
+ *     传入 rankFn 时改为【按 rankFn 升序】（龙头场景：龙一→龙二→龙三…），无排名的排在最后。
  * 档位(tier)顺序本身不变：tier0(高光/达标)整体在最上，tier1/tier2 依次在后。
  *
  * @param {number[]} renderOrder - 主排序后的索引数组（已分好档位）
  * @param {object[]} renderList - 完整行列表
  * @param {(idx:number)=>number} tierFn - 给定 renderList 索引，返回主排序档位(0=最高档)
  * @param {(idx:number)=>string} primaryTopicOf - 给定 renderList 索引，返回主题材(与第二页分类一致)
+ * @param {(idx:number)=>number|null} [rankFn] - 可选：组内排序依据（升序，越小越靠前；null/无效值视为"无排名"排最后）
  * @returns {number[]} 重排后的索引数组
  */
-export function sortByTopicGroups(renderOrder, renderList, tierFn, primaryTopicOf) {
+export function sortByTopicGroups(renderOrder, renderList, tierFn, primaryTopicOf, rankFn) {
     if (!renderOrder || renderOrder.length === 0) return renderOrder;
     if (typeof tierFn !== 'function' || typeof primaryTopicOf !== 'function') return renderOrder;
+    const _rankNum = function(v) {
+        return (v === null || v === undefined || !isFinite(v)) ? Number.MAX_SAFE_INTEGER : v;
+    };
 
     // 1) 按档位分组
     const tierGroups = new Map();
@@ -147,11 +152,22 @@ export function sortByTopicGroups(renderOrder, renderList, tierFn, primaryTopicO
             if (d !== 0) return d;
             return a < b ? -1 : (a > b ? 1 : 0);
         });
-        // 3) 按题材组顺序输出，组内保持主排序相对顺序（稳定）
+        // 3) 按题材组顺序输出
         for (const tp of topics) {
+            const group = [];
             for (const x of arr) {
-                if (x.topic === tp) out.push(x.idx);
+                if (x.topic === tp) group.push(x);
             }
+            if (rankFn) {
+                // 组内按龙头排名升序（龙一最先）；无排名者置底并保持相对顺序
+                group.sort(function(a, b) {
+                    const ra = _rankNum(rankFn(a.idx));
+                    const rb = _rankNum(rankFn(b.idx));
+                    if (ra !== rb) return ra - rb;
+                    return a.pos - b.pos;
+                });
+            }
+            for (const x of group) out.push(x.idx);
         }
     });
     return out;
