@@ -43,6 +43,25 @@ export async function updateStockCodeMap(env, pairs) {
   // stockCodeMap 存在 localStorage，前端从 auction_watchlist 读取 code 回填
 }
 
+/**
+ * [PLAN-A 2026-09-10] 写入「近 10 个交易日区间涨幅」缓存（stock_range_pct，主键 date+stock）。
+ * 由 9:25 morning 那一次 numcat daily 请求算好后落库，前端只读云端、不再自行抓取。
+ * @param {Array<{date:string, stock:string, range_pct:string|null, days:number, updated_at:string}>} rows
+ */
+export async function upsertStockRangePct(env, rows) {
+  if (!rows || rows.length === 0) return;
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range_pct?on_conflict=date,stock';
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: Object.assign(sbHeaders(env), { 'Prefer': 'resolution=merge-duplicates, return=minimal' }),
+    body: JSON.stringify(rows)
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error('upsert stock_range_pct 失败: HTTP ' + resp.status + ': ' + text.slice(0, 300));
+  }
+}
+
 // [BUG-FIX] 读取指定日期的 auction_watchlist 股票列表，用于合并打标签/观察组股票到 worker 抓取名单
 export async function readAuctionWatchlistForDate(env, date) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?date=eq.' + date + '&select=stock,code';

@@ -4,7 +4,8 @@ import {
   parsePct,
   compoundPct,
   isAuctionLegActive,
-  resolveTDayPct
+  resolveTDayPct,
+  replaceTDayLeg
 } from './range-window.js';
 
 describe('parsePct 涨幅解析', () => {
@@ -96,5 +97,44 @@ describe('T 腿口径（龙一/龙二排名的关键）', () => {
   it('两者都没有 → null（该腿不参与，不补 0）', () => {
     expect(resolveTDayPct(false, false, null, '')).toBeNull();
     expect(resolveTDayPct(true, false, 5, null)).toBeNull();
+  });
+});
+
+// [方案A 2026-09-10] 9:25 worker 用竞价腿把区间涨幅算好落库，收盘后只换 T 腿（0 请求）。
+// 该换算直接决定「收盘后龙头排位」，一旦算错会系统性错排，必须有回归用例。
+describe('replaceTDayLeg 收盘后替换 T 腿', () => {
+  it('同一天九腿不变、只换 T 腿 → 等于用收盘腿重算的复利结果', () => {
+    const legs9 = [1.5, -2, 3.2, 0.8, -1.1, 4.0, -0.5, 2.2, 1.0]; // T-9..T-1
+    const auc = 6.66;   // 9:25 竞价涨幅（旧 T 腿）
+    const close = 10.02; // 收盘涨幅（新 T 腿）
+    const oldRange = compoundPct(legs9.concat([auc]));
+    const expectNew = compoundPct(legs9.concat([close]));
+    const got = replaceTDayLeg(oldRange, auc, close);
+    expect(got).toBeCloseTo(expectNew, 6);
+  });
+
+  it('旧 T 腿缺失（null/空）时按 0 处理（复利里 (1+0)=1，等价于不含 T 腿）', () => {
+    const legs9 = [2, 3, 1];
+    const oldRange = compoundPct(legs9); // 只算了 9 天
+    const got = replaceTDayLeg(oldRange, null, 5);
+    expect(got).toBeCloseTo(compoundPct(legs9.concat([5])), 6);
+    expect(replaceTDayLeg(oldRange, '', 5)).toBeCloseTo(compoundPct(legs9.concat([5])), 6);
+  });
+
+  it('竞价腿与收盘腿相同（一字板/停牌）→ 结果不变', () => {
+    const oldRange = 33.33;
+    expect(replaceTDayLeg(oldRange, 9.99, 9.99)).toBeCloseTo(33.33, 6);
+  });
+
+  it('新 T 腿取不到 → null（不返回原值，避免调用方误以为校正成功）', () => {
+    expect(replaceTDayLeg(12.5, 2.0, null)).toBeNull();
+    expect(replaceTDayLeg(12.5, 2.0, '')).toBeNull();
+    expect(replaceTDayLeg(null, 2.0, 5)).toBeNull();
+  });
+
+  it('支持字符串入参（云端 range_pct 是 text、tag 值是 "+1.23%"）', () => {
+    expect(replaceTDayLeg('+20.00', '+5.00%', '0')).toBeCloseTo(
+      ((1 + 20 / 100) / (1 + 5 / 100) - 1) * 100, 6
+    );
   });
 });

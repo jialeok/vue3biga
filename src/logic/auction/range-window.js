@@ -70,3 +70,31 @@ export function resolveTDayPct(isToday, afterClose, closePct, aucPct) {
   if (isToday && !afterClose) return a; // 今天未收盘：只有竞价涨幅可用
   return c !== null ? c : a;            // 已收盘/历史：收盘优先，取不到才退回竞价
 }
+
+/**
+ * 【替换当天(T)腿】已知「用旧 T 腿算出的区间涨幅」，求「换成新 T 腿后的区间涨幅」。
+ *
+ * 用途（方案A）：9:25 worker 用【竞价涨幅】做 T 腿把区间涨幅算好并落库；
+ * 收盘后 T 腿应改成【收盘涨幅】—— 区间涨幅是复利累乘，只需把 T 腿那一项换掉，
+ * 无需重新拉 9 天历史日线（0 额外请求）。
+ *
+ *   区间涨幅 = ∏(1+r) - 1 = prevAcc × (1 + tLeg) - 1
+ *   prevAcc        = (1 + rangePct) ÷ (1 + oldLeg)     ← 去掉旧 T 腿（oldLeg=0 时因数即 1）
+ *   新区间涨幅      = prevAcc × (1 + newLeg) - 1
+ *
+ * @param {*} rangePct 已存的区间涨幅（%）
+ * @param {*} oldLeg 旧的 T 腿涨幅（%）；null/0 表示当时不含 T 腿（等价于因数 1）
+ * @param {*} newLeg 新的 T 腿涨幅（%）
+ * @returns {number|null} 新区间涨幅（%）；任一必需入参不可用 → null（绝不伪造 0）
+ */
+export function replaceTDayLeg(rangePct, oldLeg, newLeg) {
+  const r = parsePct(rangePct);
+  const n = parsePct(newLeg);
+  if (r === null || n === null) return null;
+  const o = parsePct(oldLeg);
+  const oldFactor = 1 + (o === null ? 0 : o) / 100;
+  if (oldFactor === 0) return null; // 旧腿 -100%（理论不可能）→ 无法反解，放弃而不是给错值
+  const prevAcc = (1 + r / 100) / oldFactor;
+  const next = (prevAcc * (1 + n / 100) - 1) * 100;
+  return isFinite(next) ? next : null;
+}

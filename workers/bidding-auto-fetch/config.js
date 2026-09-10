@@ -14,6 +14,9 @@ export const CONFIG = {
   // numcat daily 接口（收盘涨幅 pct_chg）
   NUMCAT_DAILY_URL: 'https://numcat.net/api/reference-proxy/stock/daily',
   NUMCAT_RECENT_DAYS: 5,
+  // 说明：「近 10 个交易日区间涨幅」的窗口天数不在这里配置 ——
+  // 直接复用 src/logic/auction/range-window.js 的 RANGE_WINDOW_DAYS（前后端单一真相），
+  // 避免出现「前端窗口 10 天 / worker 窗口 5 天」的静默失配。见 logic/morning-workflow.js 步骤5。
 
   // fuyao snapshot 批量大小
   SNAPSHOT_BATCH_SIZE: 40,

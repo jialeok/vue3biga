@@ -4,8 +4,16 @@ import { localIsTradingDay } from '../../_shared-source/holidays.js';
 import { CONFIG } from '../config.js';
 import { fetchLadderConstituents, fetchHistoricalPctChg } from '../data/fuyao-api.js';
 import { numcatDailyAuc, numcatDaily } from '../data/numcat-api.js';
-import { upsertAuctionWatchlist, upsertMarketMetrics, readAuctionWatchlistForDate, readAuctionTagsForDate, readStockCodeMap } from '../data/supabase-write.js';
+import { upsertAuctionWatchlist, upsertMarketMetrics, upsertStockRangePct, readAuctionWatchlistForDate, readAuctionTagsForDate, readStockCodeMap } from '../data/supabase-write.js';
 import { getRecentTradingDays } from './holiday-check.js';
+// [PLAN-A 2026-09-10] 区间涨幅口径复用前端同一份纯函数（单一真相 §6）：
+// 窗口天数 / 复利累乘 / T 腿竞价占位判定 全部只此一份，前后端不会算出两个结果。
+// ⚠️ 跨目录引用会让 workers/_bundle.mjs 把该文件一并打进单文件产物（Cloudflare 复制粘贴部署），
+//    因此 src/logic/auction/range-window.js 必须保持「零 import 的纯函数」，不得引入 Vue / DOM 依赖。
+import { RANGE_WINDOW_DAYS, parsePct, compoundPct, isAuctionLegActive } from '../../../src/logic/auction/range-window.js';
+
+/** 与 range-window.RANGE_WINDOW_DAYS 同源；显式断言避免有人改动窗口天数后 worker 静默失配 */
+const RANGE_DAYS = RANGE_WINDOW_DAYS;
 
 // 1. 检查是否交易日
 function checkTradingDay(today, logs) {
@@ -372,24 +380,53 @@ function parseNumcatToMetrics(items, fields, constituents, logs) {
   return { metricsByDate, parsedCount, yestVolDerivedCount };
 }
 
-// 5. numcat daily 获取收盘涨幅（pct_chg），覆盖/补齐 daily_auc 的竞价涨幅
+// 5. numcat daily：① 历史日收盘涨幅（覆盖/补齐 daily_auc 的竞价涨幅）
+//                ② [PLAN-A 2026-09-10] 计算「近 10 个交易日区间涨幅」并落库 stock_range_pct
+//
+// [PLAN-A 背景] 10 日区间涨幅是「龙一/龙二」排名的唯一依据。改造前由前端在打开看板时现拉：
+//   · 猫抓额度用尽 → 逐只退回同花顺 K 线（实测 4.7 秒/只，64 只 ≈ 5 分钟）→ 用户等待一分钟以上；
+//   · 为了兜住「名单逐步到达」还叠了缺口补齐/重试/熔断等一大堆补偿逻辑。
+// 现在把「取数 + 计算 + 落库」全部前移到 9:25 这一次抓取：
+//   · 与历史涨幅合并共用【同一次】numcat daily 请求（窗口 5 天 → 10 天，请求数不变）；
+//   · 区间涨幅口径复用 src/logic/auction/range-window.js（纯函数，前后端单一真相）；
+//   · 前端只读 stock_range_pct，收盘后由 close-pct-cover 用收盘涨幅替换 T 腿（0 额外请求）。
 async function fetchAndMergeHistoricalPct(env, constituents, expectedDates, today, metricsByDate, logs) {
-  // 【改为 numcat daily API】替代 fuyao historical，更稳定快速，与前端 fetchFiveDaysAuctionFromNumcat 一致
   const numcatCoveredDates = new Set(Object.keys(metricsByDate));
   const historicalDates = expectedDates.filter(d => d < today).sort();
   const phantomDates = historicalDates.filter(d => !numcatCoveredDates.has(d));
   if (phantomDates.length > 0) {
     logs.push('⚠️ numcat daily_auc 完全未返回以下历史交易日（volume/yest_volume 本次无法补齐，change_pct 会尝试用 numcat daily 兜底）: ' + JSON.stringify(phantomDates));
   }
-  if (historicalDates.length === 0) {
-    logs.push('步骤5：无历史交易日，跳过 numcat daily 涨幅获取');
-    return { phantomDates };
+
+  // [PLAN-A] 区间涨幅窗口 [T-9, T]（升序）。天数直接取 range-window 的 RANGE_WINDOW_DAYS，
+  // 不在 config 里另设一份，避免「改了前端窗口天数、worker 还在用旧的」这种静默失配。
+  let rangeDates = [];
+  try {
+    rangeDates = await getRecentTradingDays(env, today, RANGE_DAYS);
+  } catch (e) {
+    logs.push('区间涨幅窗口交易日获取失败: ' + e.message);
+  }
+  if (rangeDates.length === 0 || rangeDates[rangeDates.length - 1] !== today) {
+    logs.push('⚠️ 区间涨幅窗口交易日历异常(' + JSON.stringify(rangeDates) + ')，回退为竞价窗口 ' + JSON.stringify(expectedDates));
+    rangeDates = expectedDates.slice();
+  }
+  rangeDates.sort();
+
+  // 一次请求覆盖「竞价窗口 ∪ 区间涨幅窗口」
+  const fetchDates = rangeDates.length > 0 ? rangeDates : historicalDates;
+  if (fetchDates.length === 0) {
+    logs.push('步骤5：无可用交易日，跳过 numcat daily 涨幅获取');
+    return { phantomDates, rangeRows: [] };
   }
 
-  logs.push('步骤5：numcat daily 获取 ' + historicalDates.length + ' 个历史交易日收盘涨幅...');
-  const startYMD = historicalDates[0].replace(/-/g, '');
-  const endYMD = historicalDates[historicalDates.length - 1].replace(/-/g, '');
+  logs.push('步骤5：numcat daily 获取 ' + fetchDates.length + ' 个交易日收盘涨幅（区间涨幅窗口 ' +
+    rangeDates.length + ' 天，历史日 change_pct 合并 ' + historicalDates.length + ' 天）...');
+  const startYMD = fetchDates[0].replace(/-/g, '');
+  const endYMD = fetchDates[fetchDates.length - 1].replace(/-/g, '');
   const symbols = constituents.map(c => c.code).join(',');
+
+  // code -> (YYYYMMDD -> 日涨幅 number)
+  const dailyByCode = {};
 
   try {
     const dailyData = await numcatDaily(env, symbols, startYMD, endYMD);
@@ -401,7 +438,7 @@ async function fetchAndMergeHistoricalPct(env, constituents, expectedDates, toda
 
     if (dSymIdx < 0 || dDateIdx < 0 || dPctIdx < 0) {
       logs.push('numcat daily 返回字段不完整: ' + JSON.stringify(dailyFields) + '，保留 daily_auc 竞价涨幅');
-      return { phantomDates };
+      return { phantomDates, rangeRows: [] };
     }
 
     const pctByDate = {};
@@ -417,11 +454,14 @@ async function fetchAndMergeHistoricalPct(env, constituents, expectedDates, toda
       if (isNaN(n)) return;
       if (!pctByDate[dateStr]) pctByDate[dateStr] = {};
       pctByDate[dateStr][code] = (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+      if (!dailyByCode[code]) dailyByCode[code] = {};
+      dailyByCode[code][dateStr.replace(/-/g, '')] = n;
       totalPctCount++;
     });
 
     logs.push('numcat daily 返回 ' + totalPctCount + ' 条涨幅数据，涉及 ' + Object.keys(pctByDate).length + ' 个交易日');
 
+    // ① 历史日 change_pct 合并（口径保持改造前不变：仍只用原竞价 5 日窗口的历史日）
     let mergedCount = 0;
     let phantomFilledCount = 0;
     historicalDates.forEach(d => {
@@ -442,10 +482,79 @@ async function fetchAndMergeHistoricalPct(env, constituents, expectedDates, toda
     });
     logs.push('历史涨幅合并 ' + mergedCount + ' 条' + (phantomFilledCount > 0 ? '，另外用 numcat daily 补齐了 daily_auc 完全缺失日期的涨幅 ' + phantomFilledCount + ' 条（这些行没有 volume/yest_volume）' : ''));
   } catch (e) {
-    logs.push('numcat daily 失败(保留 daily_auc 竞价涨幅): ' + e.message);
+    logs.push('numcat daily 失败(保留 daily_auc 竞价涨幅，区间涨幅本次不落库): ' + e.message);
+    return { phantomDates, rangeRows: [] };
   }
 
-  return { phantomDates };
+  // ② [PLAN-A] 计算区间涨幅 → stock_range_pct
+  const rangeRows = buildRangePctRows(constituents, rangeDates, dailyByCode, metricsByDate, today, logs);
+  return { phantomDates, rangeRows };
+}
+
+/**
+ * [PLAN-A] 计算「近 N 个交易日区间涨幅」行（供写入 stock_range_pct）。
+ * 口径与前端完全一致（复用 src/logic/auction/range-window.js）：
+ *   · 每天涨幅复利累乘 ∏(1+r)-1；
+ *   · 当天(T)腿：9:25 正常抓取时用【竞价涨幅】占位（收盘涨幅此刻物理上不存在）；
+ *     若本函数在北京 15:00 后被手动触发（补抓），则用当日收盘涨幅 —— 与前端 resolveTDayPct 同口径。
+ * @param {Array<{name:string, code:string}>} constituents
+ * @param {string[]} rangeDates 升序 [T-9 ... T]
+ * @param {Object} dailyByCode code -> (YYYYMMDD -> 日涨幅 number)
+ * @param {Object} metricsByDate 当日竞价解析结果（含 auc_pct_chg / change_pct）
+ * @param {string} today
+ * @param {string[]} logs
+ */
+function buildRangePctRows(constituents, rangeDates, dailyByCode, metricsByDate, today, logs) {
+  if (!rangeDates || rangeDates.length === 0) return [];
+
+  // 当天(T)腿的两个候选：竞价涨幅（9:25 口径）与当日开盘时的临时涨幅（本地调试/补抓口径）
+  const auctionPctByCode = {};
+  const changePctByCode = {};
+  (metricsByDate[today] || []).forEach(m => {
+    if (!m || !m.code) return;
+    const a = parsePct(m.auc_pct_chg);
+    if (a !== null) auctionPctByCode[m.code] = a;
+    const c = parsePct(m.change_pct);
+    if (c !== null) changePctByCode[m.code] = c;
+  });
+
+  const afterClose = beijingNow().getUTCHours() >= 15;
+  const useAuctionLeg = isAuctionLegActive(today, today, afterClose);
+
+  const rows = [];
+  const seen = new Set();
+  constituents.forEach(c => {
+    if (!c || !c.code || !c.name || seen.has(c.name)) return;
+    const dm = dailyByCode[c.code] || null;
+    const legs = [];
+    rangeDates.forEach(d => {
+      const ymd = d.replace(/-/g, '');
+      let v;
+      if (d === today) {
+        if (useAuctionLeg) {
+          v = auctionPctByCode[c.code];
+        } else {
+          v = dm && Object.prototype.hasOwnProperty.call(dm, ymd) ? dm[ymd] : changePctByCode[c.code];
+        }
+      } else {
+        v = dm && Object.prototype.hasOwnProperty.call(dm, ymd) ? dm[ymd] : null;
+      }
+      if (v !== null && v !== undefined && isFinite(v)) legs.push(v);
+    });
+    const pct = compoundPct(legs);
+    if (pct === null) return; // 一个交易日的涨幅都没有 → 不写空行（避免前端反复兜底抓取）
+    seen.add(c.name);
+    rows.push({
+      date: today,
+      stock: c.name,
+      range_pct: Number(pct).toFixed(2),
+      days: legs.length,
+      updated_at: new Date().toISOString()
+    });
+  });
+  logs.push('步骤5b：区间涨幅计算完成 ' + rows.length + '/' + constituents.length + ' 只（T 腿口径=' +
+    (useAuctionLeg ? '9:25 竞价涨幅' : '当日收盘涨幅') + '）');
+  return rows;
 }
 
 // 6. 分桶写入 market_metrics（按字段形状分桶，配合 missing=default 保留云端原值）
@@ -539,13 +648,29 @@ export async function runMorning(env) {
 
   const { metricsByDate, yestVolDerivedCount } = parseNumcatToMetrics(items, fields, constituents, logs);
 
-  const { phantomDates } = await fetchAndMergeHistoricalPct(env, constituents, expectedDates, today, metricsByDate, logs);
+  const { phantomDates, rangeRows } = await fetchAndMergeHistoricalPct(env, constituents, expectedDates, today, metricsByDate, logs);
 
   const { totalMetricsWritten, metricsWriteFailures, dateKeys } = await writeMarketMetricsBatched(env, metricsByDate, nowIso, logs);
 
+  // [PLAN-A 2026-09-10] 10 日区间涨幅落库（前端只读这张表，不再自行抓取）
+  let rangeWritten = 0;
+  let rangeWriteFailed = false;
+  if (rangeRows.length > 0) {
+    try {
+      await upsertStockRangePct(env, rangeRows);
+      rangeWritten = rangeRows.length;
+      logs.push('步骤6：stock_range_pct 写入 ' + rangeWritten + ' 行（近 ' + RANGE_DAYS + ' 个交易日区间涨幅）');
+    } catch (e) {
+      rangeWriteFailed = true;
+      logs.push('❌ stock_range_pct 写入失败(表未就绪/RLS 阻止/字段不符): ' + e.message);
+    }
+  } else {
+    logs.push('⚠️ 区间涨幅无结果可写（numcat daily 不可用或名单为空），本次 stock_range_pct 未更新');
+  }
+
   const { completenessSummary, todayMissing } = buildCompletenessSummary(today, missingDatesAfterNumcat, phantomDates, metricsWriteFailures, expectedDates, logs);
 
-  logs.push('完成: auction_watchlist ' + watchlistRows.length + ' 行, market_metrics ' + totalMetricsWritten + ' 行');
+  logs.push('完成: auction_watchlist ' + watchlistRows.length + ' 行, market_metrics ' + totalMetricsWritten + ' 行, stock_range_pct ' + rangeWritten + ' 行');
   return {
     ok: metricsWriteFailures === 0 || totalMetricsWritten > 0,
     today,
@@ -553,6 +678,8 @@ export async function runMorning(env) {
     numcatItems: items.length,
     metricsDates: dateKeys.length,
     metricsWritten: totalMetricsWritten,
+    rangeWritten: rangeWritten,
+    rangeWriteFailed: rangeWriteFailed,
     yestVolDerived: yestVolDerivedCount,
     metricsWriteFailures: metricsWriteFailures,
     expectedDates: expectedDates,

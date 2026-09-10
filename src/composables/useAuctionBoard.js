@@ -151,7 +151,10 @@ export function useAuctionBoard() {
         invalidateDragonRange(date);
         // 内存行的 changePct 已就地更新，bump 版本号让 viewData 重算（界面涨幅列/趋势图同步）
         refresh();
-        setApiStatus('numcatApiStatus', '✅ 收盘涨幅已覆盖 ' + res.updated + ' 只（来源=' + (res.source || '-') + '），龙头排位重算中…', true);
+        const bits = [];
+        if (res.updated) bits.push('收盘涨幅覆盖 ' + res.updated + ' 只（来源=' + (res.source || '-') + '）');
+        if (res.rangeFixed) bits.push('区间涨幅 T 腿校正 ' + res.rangeFixed + ' 只');
+        setApiStatus('numcatApiStatus', '✅ ' + bits.join('，') + '，龙头排位重算中…', true);
         // 无条件重算：展开面板的「10日涨幅」同样依赖这份数据（与题材 toggle 是否开启无关）
         await ensureDragonRangePct(date);
       }
@@ -172,7 +175,13 @@ export function useAuctionBoard() {
       { immediate: true }
     );
     if (_closeCoverTimer) clearInterval(_closeCoverTimer);
-    _closeCoverTimer = setInterval(function() { runCloseCover(uiStore.currentDate); }, CLOSE_COVER_POLL_MS);
+    _closeCoverTimer = setInterval(function() {
+      runCloseCover(uiStore.currentDate);
+      // 顺带自愈：页面早于 9:25 打开时云端还没有区间涨幅，定时重读一次（已加载则直接返回，无请求）
+      ensureDragonRangePct(uiStore.currentDate).catch(function(e) {
+        console.warn('[DRAGON] 定时重读 10 日涨幅失败:', e && e.message);
+      });
+    }, CLOSE_COVER_POLL_MS);
   }
 
   // 后台「龙头涨幅」按钮：强制重算一次（消耗 1 次猫抓额度），用于收盘后手动刷新。
