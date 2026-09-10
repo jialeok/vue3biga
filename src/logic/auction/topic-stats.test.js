@@ -87,7 +87,7 @@ describe('buildTopicStatsMap 题材分组统计', () => {
 });
 
 describe('formatTopicStatsLayout 两格两行布局', () => {
-  it('第一行 数量/一字/竞价高开；第二行 龙头/竞价/十日（红色加粗 strong）', () => {
+  it('第一行 数量/一字/竞价高开；第二行 龙头/竞价/十日（加粗 strong，竞价按涨跌着色）', () => {
     const lay = formatTopicStatsLayout({
       topic: '农业', count: 12, yiziCount: 2, highOpenCount: 8,
       leader: '万向德农', leaderAucPct: 2, leaderRangePct: 102
@@ -96,16 +96,19 @@ describe('formatTopicStatsLayout 两格两行布局', () => {
     expect(lay.row1.map(x => x.key)).toEqual(['count', 'yizi', 'high']);
     expect(lay.row2.map(x => x.key)).toEqual(['leader', 'lpct', 'lrng']);
     expect(lay.row1.find(x => x.key === 'high').value).toBe('8');
-    // [2026-09-10] 第二行（龙头行）三个数值统一红色加粗（strong=true），不再按涨跌分 tone
+    // 第二行（龙头行）三个数值统一「加粗强调」（strong=true）
     expect(lay.row2.find(x => x.key === 'leader').value).toBe('万向德农');
     expect(lay.row2.find(x => x.key === 'leader').strong).toBe(true);
+    // [2026-09-11] 「竞价」按当天竞价涨幅符号着色 → 输出 tone；龙头名与「十日」不带 tone
+    expect(lay.row2.find(x => x.key === 'leader').tone).toBeUndefined();
     // 竞价数值只保留 1 位小数
     expect(lay.row2.find(x => x.key === 'lpct').value).toBe('+2.0%');
     expect(lay.row2.find(x => x.key === 'lpct').strong).toBe(true);
-    expect(lay.row2.find(x => x.key === 'lpct').tone).toBeUndefined();
+    expect(lay.row2.find(x => x.key === 'lpct').tone).toBe('up'); // +2.0% → 红
     // 十日涨幅取整数（四舍五入）
     expect(lay.row2.find(x => x.key === 'lrng').value).toBe('+102%');
     expect(lay.row2.find(x => x.key === 'lrng').strong).toBe(true);
+    expect(lay.row2.find(x => x.key === 'lrng').tone).toBeUndefined();
   });
 
   it('[2026-09-10] 竞价 1 位小数四舍五入；十日取整四舍五入', () => {
@@ -115,6 +118,7 @@ describe('formatTopicStatsLayout 两格两行布局', () => {
       leader: 'X', leaderAucPct: -3.56, leaderRangePct: 46.81
     });
     expect(lay.row2.find(x => x.key === 'lpct').value).toBe('-3.6%');
+    expect(lay.row2.find(x => x.key === 'lpct').tone).toBe('down'); // 负 → 绿
     expect(lay.row2.find(x => x.key === 'lrng').value).toBe('+47%');
   });
 
@@ -131,16 +135,24 @@ describe('formatTopicStatsLayout 两格两行布局', () => {
     expect(formatTopicStatsLayout(null)).toBeNull();
   });
 
-  it('[2026-09-10] 下跌的龙头行同样统一红色加粗（strong，无 tone）', () => {
-    const lay = formatTopicStatsLayout({
+  it('[2026-09-11] 「竞价」按竞价涨幅符号着色：负→down(绿) / 零→flat(灰)；十日不跟着变色', () => {
+    const down = formatTopicStatsLayout({
       topic: 'T', count: 2, yiziCount: 0, highOpenCount: 0,
       leader: 'X', leaderAucPct: -3.5, leaderRangePct: -8
     });
-    expect(lay.row2.find(x => x.key === 'lpct').value).toBe('-3.5%');
-    expect(lay.row2.find(x => x.key === 'lpct').strong).toBe(true);
-    expect(lay.row2.find(x => x.key === 'lpct').tone).toBeUndefined();
-    expect(lay.row2.find(x => x.key === 'lrng').value).toBe('-8%');
-    expect(lay.row2.find(x => x.key === 'lrng').strong).toBe(true);
+    expect(down.row2.find(x => x.key === 'lpct').value).toBe('-3.5%');
+    expect(down.row2.find(x => x.key === 'lpct').strong).toBe(true);
+    expect(down.row2.find(x => x.key === 'lpct').tone).toBe('down');
+    expect(down.row2.find(x => x.key === 'lrng').value).toBe('-8%');
+    expect(down.row2.find(x => x.key === 'lrng').strong).toBe(true);
+    expect(down.row2.find(x => x.key === 'lrng').tone).toBeUndefined(); // 十日仍统一红色
+
+    const flat = formatTopicStatsLayout({
+      topic: 'T', count: 2, yiziCount: 0, highOpenCount: 1,
+      leader: 'X', leaderAucPct: 0, leaderRangePct: 10
+    });
+    expect(flat.row2.find(x => x.key === 'lpct').value).toBe('+0.0%');
+    expect(flat.row2.find(x => x.key === 'lpct').tone).toBe('flat'); // 恰为 0 → 灰（与缺失不同）
   });
 });
 

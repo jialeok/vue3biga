@@ -7,6 +7,8 @@
   排版契约（2026-09-10）：整条【隐形】分左右两格，中间与行间均无分隔线
     左格（窄）：题材名，字号更大更显眼
     右格（宽）：两行 —— 上行「数量 / 一字 / 竞价高开」，下行「龙头 / 竞价 / 十日」
+  [TOPIC-STATS-COLOR 2026-09-11] 下行「竞价」数值按【当天竞价涨幅】符号着色
+    （>0 红 / <0 绿 / =0 灰）；下行其余两段（龙头名、十日）保持统一红色加粗不变。
 
   ⚠️ 不要加左侧竖条 / 配色高光：与「卖」标签的灰黑色块视觉冲突，会看乱（用户明确要求去掉）。
   数据缺失的段（如次新股没有 10 日区间涨幅）在 Logic 层就不会产出，这里不补 0 / '-'（§10）。
@@ -36,7 +38,7 @@
           v-for="s in layout.row2"
           :key="s.key"
           class="ats-item"
-        ><b>{{ s.label }}</b><i :class="s.strong ? 'ats-strong' : null">{{ s.value }}</i></span>
+        ><b>{{ s.label }}</b><i :class="[s.strong ? 'ats-strong' : null, s.tone ? 'ats-' + s.tone : null]">{{ s.value }}</i></span>
       </div>
     </div>
   </div>
@@ -124,5 +126,20 @@ const layout = computed(() => formatTopicStatsLayout(props.stats));
 .ats-item > i.ats-strong {
   color: #dc2626;
   font-weight: 700;
+}
+
+/* [TOPIC-STATS-COLOR 2026-09-11] 第二行「竞价」数值改为跟随【当天竞价涨幅】符号着色：
+   >0 红 / <0 绿 / =0 灰（与龙头徽章同口径，涨红跌绿）。
+   只覆盖颜色、加粗强调不变；tone 由 Logic 层 topic-stats.js 给出，这里只做 class 映射（§21）。
+   ⚠️ 必须写在 .ats-strong 之后：两者特异性相同（0,2,1），靠书写顺序让 tone 覆盖红色。
+   龙头名与「十日」不带 tone，仍是上面的统一红色（用户 2026-09-10 口径未变）。 */
+.ats-item > i.ats-up {
+  color: #dc2626;
+}
+.ats-item > i.ats-down {
+  color: #059669;
+}
+.ats-item > i.ats-flat {
+  color: #94a3b8;
 }
 </style>

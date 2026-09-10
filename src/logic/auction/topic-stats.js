@@ -5,6 +5,7 @@
 //   - 每个题材（界面一个色块）上方一行小字，排版与展开面板「趋势图上方小字」一致，但背景色统一，
 //     方便视觉上把题材与题材分开；
 //   - 内容：题材名 / 数量 / 一字 / 竞价高开 / 龙头 / 龙头竞价涨幅 / 龙头十日涨幅；
+//     其中第二行「竞价」数值按当天竞价涨幅符号着色（>0 红 / <0 绿 / =0 灰，2026-09-11）；
 //   - 龙头 = 组内「近 10 个交易日区间涨幅」最高者（与龙一徽章同源）；
 //     组内全无区间涨幅（如次新股/刚进名单的新票）时退化为「竞价涨幅最高者」，
 //     此时【十日】段不显示——§10 禁止用 0 或 '-' 伪装成有数据。
@@ -107,7 +108,8 @@ export function buildTopicStatsMap(entries, opts) {
  * @param {object|null} stats
  * @returns {{topic:string, row1:Array<{key:string,label:string,value:string,tone?:string}>,
  *            row2:Array<{key:string,label:string,value:string,tone?:string}>}|null}
- *          tone: 'up' | 'down' | '' —— 用于涨红跌绿（A 股口径）
+ *          tone: 'up' | 'down' | 'flat' | '' —— 数值着色（A 股口径：>0 红 / <0 绿 / =0 灰）。
+ *                目前只有第二行「竞价」段输出 tone；'flat' = 有数据且恰为 0（无数据时该段不产出）。
  */
 export function formatTopicStatsLayout(stats) {
   if (!stats) return null;
@@ -122,7 +124,20 @@ export function formatTopicStatsLayout(stats) {
     //   这里刻意不输出 tone —— 用户要求龙头行一律红色，不再按涨跌分红绿。
     row2.push({ key: 'leader', label: '龙头', value: stats.leader, strong: true });
     const lp = _num(stats.leaderAucPct);
-    if (lp !== null) row2.push({ key: 'lpct', label: '竞价', value: _fmtPct1(lp), strong: true });
+    if (lp !== null) {
+      // [TOPIC-STATS-COLOR 2026-09-11] 「竞价」数值跟随【当天竞价涨幅】符号着色：
+      //   >0 红 / <0 绿 / =0 灰（与龙头徽章 AuctionDragonBadge 同口径，涨红跌绿）。
+      //   tone 是 UI 契约里早已定义的字段，此处首次启用；只影响颜色，加粗强调不变。
+      //   龙头名与「十日」**仍是统一红色**（2026-09-10 用户口径未变，不要顺手一起改）。
+      //   =0 用 'flat' 明确表达「有数据且为 0」；无数据时该段根本不产出（§10 不补 0）。
+      row2.push({
+        key: 'lpct',
+        label: '竞价',
+        value: _fmtPct1(lp),
+        strong: true,
+        tone: lp > 0 ? 'up' : (lp < 0 ? 'down' : 'flat')
+      });
+    }
     const lr = _num(stats.leaderRangePct);
     if (lr !== null) row2.push({ key: 'lrng', label: '十日', value: _fmtPctInt(lr), strong: true });
   }
