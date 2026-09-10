@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { buildTopicStatsMap, formatTopicStatsSegments, topicStatsSignature } from './topic-stats.js';
+import {
+  buildTopicStatsMap,
+  formatTopicStatsLayout,
+  topicStatsSignature,
+  TOPIC_STATS_MIN_GROUP
+} from './topic-stats.js';
 
 describe('buildTopicStatsMap 题材分组统计', () => {
   it('统计数量 / 一字 / 竞价高开（>=0 才算高开）', () => {
@@ -39,18 +44,40 @@ describe('buildTopicStatsMap 题材分组统计', () => {
     const s = buildTopicStatsMap(entries).get('T');
     expect(s.leader).toBe('新票');
     expect(s.leaderRangePct).toBeNull();
-    const seg = formatTopicStatsSegments(s);
-    expect(seg.some(x => x.key === 'leader')).toBe(true);
-    expect(seg.some(x => x.key === 'lrng')).toBe(false); // 不伪造十日涨幅（§10）
+    const lay = formatTopicStatsLayout(s);
+    expect(lay.row2.some(x => x.key === 'leader')).toBe(true);
+    expect(lay.row2.some(x => x.key === 'lrng')).toBe(false); // 不伪造十日涨幅（§10）
   });
 
-  it('题材为空 / 缺省 → 归入「其它」，可通过 includeOther 关闭', () => {
+  it('[2026-09-10] 只有一只股票的题材不产出统计条（避免列表变乱）', () => {
+    const entries = [
+      { topic: '农业', name: '独苗', isYiZi: true, aucPct: 5, rangePct: 20 },
+      { topic: '人工智能', name: 'A', aucPct: 1, rangePct: 3 },
+      { topic: '人工智能', name: 'B', aucPct: 2, rangePct: 9 }
+    ];
+    const m = buildTopicStatsMap(entries);
+    expect(m.has('农业')).toBe(false); // 单只 → 过滤掉
+    expect(m.has('人工智能')).toBe(true); // 两只 → 保留
+    expect(TOPIC_STATS_MIN_GROUP).toBe(2);
+  });
+
+  it('[2026-09-10] 「其它」默认不统计（与 buildTopicColorMap 配色口径一致）', () => {
     const entries = [
       { topic: '', name: 'A', aucPct: 1, rangePct: 1 },
       { topic: '其它', name: 'B', aucPct: 1, rangePct: 2 }
     ];
-    expect(buildTopicStatsMap(entries).has('其它')).toBe(true);
-    expect(buildTopicStatsMap(entries, { includeOther: false }).size).toBe(0);
+    expect(buildTopicStatsMap(entries).size).toBe(0);
+    expect(buildTopicStatsMap(entries, { includeOther: true }).has('其它')).toBe(true);
+  });
+
+  it('minGroupSize 可调（默认 2）', () => {
+    const entries = [
+      { topic: 'T', name: 'A', aucPct: 1, rangePct: 1 },
+      { topic: 'T', name: 'B', aucPct: 1, rangePct: 1 },
+      { topic: 'T', name: 'C', aucPct: 1, rangePct: 1 }
+    ];
+    expect(buildTopicStatsMap(entries, { minGroupSize: 3 }).has('T')).toBe(true);
+    expect(buildTopicStatsMap(entries, { minGroupSize: 4 }).has('T')).toBe(false);
   });
 
   it('空输入返回空 Map，不抛错', () => {
@@ -59,29 +86,43 @@ describe('buildTopicStatsMap 题材分组统计', () => {
   });
 });
 
-describe('formatTopicStatsSegments 输出片段', () => {
-  it('缺失段不产出；涨红跌绿 tone 正确', () => {
-    const seg = formatTopicStatsSegments({
+describe('formatTopicStatsLayout 两格两行布局', () => {
+  it('第一行 数量/一字/竞价高开；第二行 龙头/竞价/十日', () => {
+    const lay = formatTopicStatsLayout({
       topic: '农业', count: 12, yiziCount: 2, highOpenCount: 8,
       leader: '万向德农', leaderAucPct: 2, leaderRangePct: 102
     });
-    expect(seg.map(x => x.key)).toEqual(['topic', 'count', 'yizi', 'high', 'leader', 'lpct', 'lrng']);
-    expect(seg.find(x => x.key === 'lpct').value).toBe('+2.00%');
-    expect(seg.find(x => x.key === 'lpct').tone).toBe('up');
-    expect(seg.find(x => x.key === 'lrng').value).toBe('+102.00%');
+    expect(lay.topic).toBe('农业');
+    expect(lay.row1.map(x => x.key)).toEqual(['count', 'yizi', 'high']);
+    expect(lay.row2.map(x => x.key)).toEqual(['leader', 'lpct', 'lrng']);
+    expect(lay.row1.find(x => x.key === 'high').value).toBe('8');
+    expect(lay.row2.find(x => x.key === 'leader').value).toBe('万向德农');
+    expect(lay.row2.find(x => x.key === 'lpct').value).toBe('+2.00%');
+    expect(lay.row2.find(x => x.key === 'lpct').tone).toBe('up');
+    expect(lay.row2.find(x => x.key === 'lrng').value).toBe('+102.00%');
   });
 
-  it('stats 为 null → 空数组', () => {
-    expect(formatTopicStatsSegments(null)).toEqual([]);
+  it('无龙头时第二行为空数组（组件塌陷为单行）', () => {
+    const lay = formatTopicStatsLayout({
+      topic: 'T', count: 2, yiziCount: 0, highOpenCount: 1,
+      leader: '', leaderAucPct: null, leaderRangePct: null
+    });
+    expect(lay.row1.length).toBe(3);
+    expect(lay.row2).toEqual([]);
+  });
+
+  it('stats 为 null → null（父级 v-if 直接不渲染）', () => {
+    expect(formatTopicStatsLayout(null)).toBeNull();
   });
 
   it('tone 下跌为 down', () => {
-    const seg = formatTopicStatsSegments({
-      topic: 'T', count: 1, yiziCount: 0, highOpenCount: 0,
+    const lay = formatTopicStatsLayout({
+      topic: 'T', count: 2, yiziCount: 0, highOpenCount: 0,
       leader: 'X', leaderAucPct: -3.5, leaderRangePct: -8
     });
-    expect(seg.find(x => x.key === 'lpct').tone).toBe('down');
-    expect(seg.find(x => x.key === 'lpct').value).toBe('-3.50%');
+    expect(lay.row2.find(x => x.key === 'lpct').tone).toBe('down');
+    expect(lay.row2.find(x => x.key === 'lpct').value).toBe('-3.50%');
+    expect(lay.row2.find(x => x.key === 'lrng').tone).toBe('down');
   });
 });
 
