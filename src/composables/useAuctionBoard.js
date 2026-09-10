@@ -31,7 +31,10 @@ import { showToast } from '../composables/useToast.js';
 import { apiStatusMap, setApiStatus } from '../logic/ui-bridge.js';
 import { setBtnLoading } from '../logic/shared/core-shared.js';
 // [DRAGON 2026-09-09] 题材龙头：10 日区间涨幅异步加载 + 龙头排名（Logic 层模块）
-import { ensureDragonRangePct, getDragonRangePct, getStockRangePct, DRAGON_RANGE_DAYS } from '../logic/auction/dragon-rank.js';
+import { ensureDragonRangePct, getDragonRangePct, getStockRangePct, DRAGON_RANGE_DAYS, invalidateDragonRange } from '../logic/auction/dragon-rank.js';
+// [CLOSE-COVER 2026-09-10] 收盘后自动用【收盘涨幅】覆盖 9:25 竞价涨幅（此前该闭环只存在于
+// 从未执行过的 pg_cron，导致当天 change_pct 全天停留在竞价值）。
+import { ensureClosePctCovered, isCloseCoverWindow } from '../logic/auction/close-pct-cover.js';
 // §P1-6：展示层纯函数已抽取到 ../composables/auction-board-helpers.js（行为等价）。
 import {
     getStarSymbols,
@@ -52,6 +55,11 @@ import {
 let _wsWatchBound = false;
 // [DRAGON 2026-09-09] 龙头区间涨幅 watch 同理只挂载一次。
 let _dragonWatchBound = false;
+// [CLOSE-COVER 2026-09-10] 收盘覆盖 watch 与跨门槛轮询同样只挂载一次。
+let _closeCoverBound = false;
+let _closeCoverTimer = null;
+/** 收盘覆盖轮询间隔：5 分钟（页面长时间开着时，跨过 15:00 能自动触发一次，无需手动刷新） */
+const CLOSE_COVER_POLL_MS = 5 * 60 * 1000;
 
 export function useAuctionBoard() {
   const uiStore = useUiStore();
@@ -118,6 +126,9 @@ export function useAuctionBoard() {
         // （与题材 toggle 是否开启无关）。数据按 date 键控，切日期时会被新日期覆盖。
         if (!sortState.byTopic) return;
         try {
+          // [CLOSE-COVER] 先确保收盘涨幅已覆盖，再算龙头：否则 T 腿会读回 9:25 竞价副本，
+          // 龙头排位等于白算（仍是早上的顺序）。覆盖内部幂等，不会重复烧额度。
+          await runCloseCover(uiStore.currentDate);
           await ensureDragonRangePct(uiStore.currentDate);
         } catch (e) {
           console.warn('[DRAGON] 龙头区间涨幅加载失败:', e && e.message);
@@ -126,6 +137,42 @@ export function useAuctionBoard() {
       },
       { immediate: true }
     );
+  }
+
+  // [CLOSE-COVER 2026-09-10] 收盘涨幅自动覆盖 + 龙头排位重算。
+  // 触发时机：① 进入看板 / 切换日期 / 当日名单行数变化；② 每 5 分钟轮询一次，
+  // 让「页面一直开着」的用户跨过 15:00 后也能自动拿到收盘涨幅（§17 禁止靠手动刷新碰巧生效）。
+  async function runCloseCover(date) {
+    if (!date || !isCloseCoverWindow(date)) return { ok: false, skipped: true };
+    try {
+      const res = await ensureClosePctCovered(date);
+      if (res && res.ok && !res.skipped) {
+        // 覆盖成功 → 强制重算一次 10 日涨幅/龙头排位（T 腿从竞价口径换成收盘口径）
+        invalidateDragonRange(date);
+        // 内存行的 changePct 已就地更新，bump 版本号让 viewData 重算（界面涨幅列/趋势图同步）
+        refresh();
+        setApiStatus('numcatApiStatus', '✅ 收盘涨幅已覆盖 ' + res.updated + ' 只（来源=' + (res.source || '-') + '），龙头排位重算中…', true);
+        // 无条件重算：展开面板的「10日涨幅」同样依赖这份数据（与题材 toggle 是否开启无关）
+        await ensureDragonRangePct(date);
+      }
+      return res || { ok: false, skipped: true };
+    } catch (e) {
+      // §10 禁止静默失败：覆盖失败要让用户看见（数据仍是竞价涨幅，不能假装已更新）
+      console.warn('[CLOSE-COVER] 收盘涨幅覆盖失败:', e && e.message);
+      setApiStatus('numcatApiStatus', '❌ 收盘涨幅覆盖失败：' + (e && e.message || e), false);
+      return { ok: false, skipped: false, reason: e && e.message };
+    }
+  }
+
+  if (!_closeCoverBound) {
+    _closeCoverBound = true;
+    watch(
+      () => [uiStore.currentDate, (viewData.value && viewData.value.items ? viewData.value.items.length : 0)],
+      async () => { await runCloseCover(uiStore.currentDate); },
+      { immediate: true }
+    );
+    if (_closeCoverTimer) clearInterval(_closeCoverTimer);
+    _closeCoverTimer = setInterval(function() { runCloseCover(uiStore.currentDate); }, CLOSE_COVER_POLL_MS);
   }
 
   // 后台「龙头涨幅」按钮：强制重算一次（消耗 1 次猫抓额度），用于收盘后手动刷新。
@@ -1125,6 +1172,12 @@ export function useAuctionBoard() {
   onUnmounted(() => {
     cancelLongPress();
     _off('auction-refresh', onAuctionRefresh);
+    // [CLOSE-COVER] 清理跨门槛轮询，避免组件卸载后定时器泄漏（§31 生命周期）
+    if (_closeCoverTimer) {
+      clearInterval(_closeCoverTimer);
+      _closeCoverTimer = null;
+      _closeCoverBound = false;
+    }
   });
 
   function onAuctionRefresh() {

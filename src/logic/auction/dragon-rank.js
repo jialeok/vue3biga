@@ -58,6 +58,11 @@ const _apiFailedDates = new Set();
 // [FIX 2026-09-10] 缺口补齐按【股票名】标记（date|name）：名单是逐步到达的，按日期一次性标记
 // 会让后到的票永远补不上。每只票每会话最多尝试一次；force 刷新（后台按钮）会清空重新补。
 const _patchedNames = new Set();
+// [FIX 2026-09-10] 收盘涨幅覆盖完成后需要【强制重算一次】的日期。
+// 背景：stale 判定只看「缓存是否写于 15:00 前」，但如果 15:00 后重算时 change_pct 仍是
+// 9:25 竞价副本（脏值），算出的 T 腿依旧错，且之后缓存 updated_at 已 > 15:00 → 永不重算。
+// 收盘覆盖成功后显式登记一次，保证「收盘后再算一遍龙头排位」真正发生（每个日期只生效一次）。
+const _forceRecalcDates = new Set();
 
 // ===== 状态（模块级 ref，§7：不进 Pinia，遵循 weakStrongSetRef 同款 ref-driven 范式）=====
 // loadedAt：本次内存 map 的加载时刻（epoch ms）。用于「跨过 9:25 竞价快照 / 15:00 收盘门槛
@@ -97,6 +102,22 @@ export function getDragonFingerprintToken() {
 export function clearDragonRangePct() {
   if (dragonState.value.date === '' && dragonState.value.map.size === 0) return;
   dragonState.value = { date: '', map: new Map(), version: dragonState.value.version + 1, loadedAt: 0 };
+}
+
+/**
+ * [FIX 2026-09-10] 让指定日期的 10 日涨幅/龙头排位【强制重算一次】。
+ * 供「收盘涨幅覆盖」成功后调用：覆盖把 change_pct 从竞价值换成真实收盘值，
+ * T 腿口径随之变化，必须重算才能让龙一/龙二/龙三按收盘口径重新排位。
+ * 只影响下一次 ensureDragonRangePct(date)，用完即焚（不会重复烧额度）。
+ * @param {string} date
+ */
+export function invalidateDragonRange(date) {
+  if (!date) return;
+  _forceRecalcDates.add(date);
+  _apiFailedDates.delete(date);
+  _fuyaoFallbackDates.delete(date);
+  _patchedNames.forEach(function(k) { if (k.indexOf(date + '|') === 0) _patchedNames.delete(k); });
+  if (dragonState.value.date === date) clearDragonRangePct();
 }
 
 /**
@@ -246,6 +267,12 @@ async function _loadDragonRangePct(date, force) {
     stale = false;
     _dbgLog('[DRAGON] ' + date + ' 已确认取不到历史日 K 线，本次跳过整批重算（避免烧额度）');
   }
+  // [FIX 2026-09-10] 收盘覆盖后的强制重算（用完即焚）：优先级高于上面的额度保护，
+  // 否则「收盘后又算了一遍、但用的还是竞价 T 腿」的缓存会被永久冻结。
+  if (!force && _forceRecalcDates.has(date)) {
+    stale = true;
+    _forceRecalcDates.delete(date);
+  }
 
   if (!force && cloud.size > 0 && !stale) {
     const map = new Map();
@@ -309,7 +336,7 @@ function _currentMapOr(date, fallback) {
  * @param {string} date
  * @returns {object[]} 参与 10 日涨幅计算的行
  */
-function _resolveTargetRows(date) {
+export function getDragonTargetRows(date) {
   const byName = new Map();
   function _put(row) {
     if (!row || !row.stock) return;
@@ -371,7 +398,7 @@ function _resolveTargetRows(date) {
  */
 async function _patchMissingRangePct(date, map) {
   if (!date || !map) return;
-  const rows = _resolveTargetRows(date);
+  const rows = getDragonTargetRows(date);
   if (rows.length === 0) return; // 当日数据还没加载完 → 本次不标记，下次还有机会
 
   let scMap = state._scMapCache || {};
@@ -476,7 +503,7 @@ async function _patchMissingRangePct(date, map) {
 
 async function _fetchAndCompute(date) {
   const dates = getDragonWindowDates(date);
-  const rows = _resolveTargetRows(date);
+  const rows = getDragonTargetRows(date);
   if (rows.length === 0) return { rows: [], requested: 0, dates: dates };
 
   let scMap = state._scMapCache || {};
