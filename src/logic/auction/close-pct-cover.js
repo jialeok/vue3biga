@@ -26,6 +26,9 @@ import { readMarketMetricsForDate, upsertMarketMetricsRows } from '../../data/ma
 import { readRangePctForDate, upsertRangePctRows, fetchNumcatDailyPctRange, fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
 import { ensureAuctionCodeMapping } from './auction-fetch-helpers.js';
 import { getDragonTargetRows } from './dragon-rank.js';
+// 区间涨幅 T 腿口径单一真相（纯函数）。⚠️ 漏了这个 import 会让 _syncRangeTDay 抛
+// ReferenceError，而它被 try/catch 吞掉 → T 腿校正静默失效（2026-09-10 审查发现）。
+import { replaceTDayLeg } from './range-window.js';
 
 /** 北京时间 15:00 收盘（与 dragon-rank 的收盘门槛同口径，此处独立常量避免反向依赖） */
 export const CLOSE_COVER_HOUR = 15;
@@ -208,22 +211,30 @@ async function _runCover(date, force) {
                 numcatErr = e;
                 _dbgLog('[CLOSE-COVER] 猫抓 daily 不可用：' + (e && e.message || e));
             }
-            // 兜底：同花顺 K 线（逐只，较慢）——只在猫抓【报错/额度用尽】时才走。
-            // 若猫抓正常返回但今天的数据还没结算（空结果），同花顺同样取不到，直接等下一次重试，
-            // 避免每小时几十次无效的逐只 K 线请求（§32 禁止重复请求）。
-            if (freshPctByName.size === 0 && numcatErr) {
+            // 兜底：同花顺 K 线（逐只，较慢）——覆盖【猫抓没返回的那部分票】。
+            // [FIX 2026-09-10] 原实现只在「猫抓整体报错」时才兜底；实测猫抓对少数票
+            // （停牌/次新/代码映射缺失）当日不返回行，这些票的 change_pct 会永远停在竞价涨幅
+            // （9/10 实测 8/60 只）。改为按【缺失的票】补，且猫抓正常但当日未结算（整体空）时
+            // 不再走同花顺逐只（同花顺同样取不到），避免每小时几十次无效请求（§32）。
+            const missingTargets = targets.filter(function(t) { return !freshPctByName.has(t.name); });
+            if (missingTargets.length > 0 && (numcatErr || freshPctByName.size > 0)) {
                 try {
                     const byName = await fetchFuyaoDailyPctRange(
-                        targets.map(function(t) { return { stock: t.name, code: t.code }; }),
+                        missingTargets.map(function(t) { return { stock: t.name, code: t.code }; }),
                         [date],
                         { concurrency: 4 }
                     );
+                    let filled = 0;
                     if (byName && byName.size > 0) {
                         byName.forEach(function(dm, name) {
-                            if (dm && dm.has(ymd)) freshPctByName.set(name, dm.get(ymd));
+                            if (dm && dm.has(ymd) && !freshPctByName.has(name)) {
+                                freshPctByName.set(name, dm.get(ymd));
+                                filled++;
+                            }
                         });
-                        if (freshPctByName.size > 0) source = 'ths-kline';
                     }
+                    if (filled > 0) source = source ? (source + '+ths-kline') : 'ths-kline';
+                    _dbgLog('[CLOSE-COVER] 同花顺补齐缺失 ' + filled + '/' + missingTargets.length + ' 只');
                 } catch (e) {
                     _dbgLog('[CLOSE-COVER] 同花顺兜底失败：' + (e && e.message || e));
                 }

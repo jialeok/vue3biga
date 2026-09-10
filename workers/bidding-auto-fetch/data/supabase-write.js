@@ -62,6 +62,54 @@ export async function upsertStockRangePct(env, rows) {
   }
 }
 
+/**
+ * [CLOSE-COVER 2026-09-10] 读取某日 market_metrics 竞价行（收盘覆盖 + 区间涨幅 T 腿校正共用）。
+ * 返回 name + code + change_pct + auc_pct_chg，供：
+ *   ① 覆盖 change_pct 前判断是否已是收盘口径（updated_at >= 当日 15:00）；
+ *   ② T 腿校正反解旧腿（旧的 T 腿 = worker 早盘写入的 auc_pct_chg）。
+ * ⚠️ 读取失败必须抛错（§10：读取失败 ≠ 空数据），绝不能让收盘覆盖误判为「今天没有股票」。
+ */
+export async function readMarketMetricsForDate(env, date, scope) {
+  const sc = scope || 'auction';
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?date=eq.' + encodeURIComponent(date) +
+    '&scope=eq.' + encodeURIComponent(sc) +
+    '&select=stock,code,change_pct,auc_pct_chg,updated_at&limit=2000';
+  const resp = await fetch(url, { headers: sbHeaders(env) });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error('读取 market_metrics 失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
+  }
+  const data = await resp.json();
+  return (data || []).map(r => ({
+    name: (r.stock || '').trim(),
+    code: (r.code || '').trim(),
+    change_pct: r.change_pct === undefined ? '' : r.change_pct,
+    auc_pct_chg: r.auc_pct_chg === undefined ? '' : r.auc_pct_chg,
+    updated_at: r.updated_at || ''
+  })).filter(r => r.name);
+}
+
+/**
+ * [CLOSE-COVER 2026-09-10] 读取某日 stock_range_pct（近 10 个交易日区间涨幅缓存）。
+ * 收盘后需要把「当天(T)腿」从竞价口径换成收盘口径 —— 见 close-workflow.js 步骤 4。
+ */
+export async function readStockRangePctForDate(env, date) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range_pct?date=eq.' + encodeURIComponent(date) +
+    '&select=stock,range_pct,days,updated_at&limit=2000';
+  const resp = await fetch(url, { headers: sbHeaders(env) });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error('读取 stock_range_pct 失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
+  }
+  const data = await resp.json();
+  return (data || []).map(r => ({
+    stock: (r.stock || '').trim(),
+    range_pct: r.range_pct === undefined ? null : r.range_pct,
+    days: Number(r.days) || 0,
+    updated_at: r.updated_at || ''
+  })).filter(r => r.stock);
+}
+
 // [BUG-FIX] 读取指定日期的 auction_watchlist 股票列表，用于合并打标签/观察组股票到 worker 抓取名单
 export async function readAuctionWatchlistForDate(env, date) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?date=eq.' + date + '&select=stock,code';

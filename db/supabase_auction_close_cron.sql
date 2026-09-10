@@ -3,6 +3,15 @@
 -- 北京时间 16:00 调用 bidding-a Edge Function 的 point=auction-close，
 -- 自动抓取当天「最近多板」成分股涨幅并覆盖 market_metrics.change_pct。
 --
+-- ⚠️ [2026-09-10 审查结论] 本链路【从未成功执行过】，已不是主通道，可选执行 / 建议不执行：
+--   · 实测 bidding_fetch_log 中 time_point='auction-close' 的记录数为 0；
+--   · 手工触发 bidding-a?point=auction-close 返回 546（WORKER_RESOURCE_LIMIT）。
+--   收盘覆盖现已回归 Cloudflare Worker bidding-auto-fetch：
+--     cron "0 8 * * 2-6"（北京 16:00）→ runClose
+--     ① 覆盖 market_metrics.change_pct；② 校正 stock_range_pct 的当天(T)腿（0 额外请求）。
+--   见 workers/bidding-auto-fetch/logic/close-workflow.js 与 workers/wrangler-bidding-auto-fetch.toml。
+--   若仍保留本 pg_cron，也不冲突（两条路径都幂等），只是重复一次请求。
+--
 -- 说明：
 --   - 功能已合并进 bidding-a（不新建函数），URL 指向 bidding-a/fetch。
 --   - headers 带 apikey + Authorization（anon key = 有效 JWT）：

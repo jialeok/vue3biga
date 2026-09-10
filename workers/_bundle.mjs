@@ -11,11 +11,18 @@ if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 const IMPORT_RE = /^\s*import\s+(?:[\s\S]*?)\s+from\s+['"]([^'"]+)['"]\s*;?\s*$/gm;
 
 function stripAndClean(content) {
-  const lines = content.split(/\r?\n/);
+  // [FIX 2026-09-10] 用与 collect() 完全相同的规则【整体】删除 import 语句。
+  // 原实现是逐行判断 `^\s*import\s`，只能处理单行 import —— 遇到多行 import
+  //   import {
+  //     a, b
+  //   } from './x.js';
+  // 只会删掉第一行，剩下 `} from './x.js';` 残留在产物里 → 语法错误（且报错位置极难定位）。
+  IMPORT_RE.lastIndex = 0;
+  const src = content.replace(IMPORT_RE, '');
+  const lines = src.split(/\r?\n/);
   const out = [];
   for (const line of lines) {
-    if (/^\s*import\s+/.test(line)) continue;
-    let c = line
+    const c = line
       .replace(/^\s*export\s+async\s+function\s/, 'async function ')
       .replace(/^\s*export\s+function\s/, 'function ')
       .replace(/^\s*export\s+const\s/, 'const ')

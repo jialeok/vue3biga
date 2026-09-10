@@ -122,9 +122,10 @@ export function useAuctionBoard() {
       // 只在 toggle/日期变化时加载会让后到的股票永远缺 10 日涨幅（实测 9/10 60 行只有 11 行有数据）。
       () => [sortState.byTopic, uiStore.currentDate, (viewData.value && viewData.value.items ? viewData.value.items.length : 0)],
       async () => {
-        // ⚠️ 不再因「关闭题材」而清空：展开面板的「10日涨幅」同样依赖这份数据
+        // ⚠️ 不再因「关闭题材」而跳过加载：展开面板的「10日涨幅」同样依赖这份数据
         // （与题材 toggle 是否开启无关）。数据按 date 键控，切日期时会被新日期覆盖。
-        if (!sortState.byTopic) return;
+        // [FIX 2026-09-10] 原先这里 `if (!sortState.byTopic) return;` 会让「关闭题材 + 15:00 前
+        // 打开页面」的用户展开某只票看不到 10 日涨幅（要等 5 分钟轮询才补上），与下面的注释自相矛盾。
         try {
           // [CLOSE-COVER] 先确保收盘涨幅已覆盖，再算龙头：否则 T 腿会读回 9:25 竞价副本，
           // 龙头排位等于白算（仍是早上的顺序）。覆盖内部幂等，不会重复烧额度。

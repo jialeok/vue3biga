@@ -1,9 +1,81 @@
-// close-workflow.js — 收盘涨幅覆盖主流程
-import { beijingToday, isWeekend } from '../../_shared-source/date-utils.js';
+// close-workflow.js — 收盘涨幅覆盖主流程（runClose）
+//
+// 【为什么恢复这个流程 / 2026-09-10 审查结论】
+//   2026-08-17 把收盘覆盖从本 worker 挪到了 Supabase Edge Function（bidding-a?point=auction-close，
+//   pg_cron 16:00 触发），index.js 因此移除了 runClose 路由，本文件退化为「不再被调用的历史参考」。
+//   但实测该 pg_cron 链路【从未成功执行过】：
+//     · bidding_fetch_log 里 time_point='auction-close' 的记录数为 0；
+//     · 手工触发 bidding-a?point=auction-close 返回 546（WORKER_RESOURCE_LIMIT）。
+//   结果：当天 market_metrics.change_pct 全天停留在 9:25 竞价涨幅，龙头排位也按竞价口径排
+//   —— 这正是用户反复反馈的「收盘后还是只显示早盘竞价涨幅」。
+//   本 worker 的早盘 cron（北京 9:25）一直稳定运行，说明 Cloudflare 触发链路是可靠的，
+//   因此把收盘覆盖收回这里（与早盘同一个 worker、同一套凭据、同一条部署链路）。
+//
+// 【两个职责】
+//   ① 把 market_metrics.change_pct 从 9:25 竞价涨幅覆盖为真实收盘涨幅；
+//   ② [方案A] 把 stock_range_pct 的「当天(T)腿」从竞价口径换成收盘口径 —— 0 额外请求：
+//        prevAcc = 已存区间涨幅 ÷(1+竞价腿)，新区间涨幅 = prevAcc ×(1+收盘腿)。
+//        口径实现在 src/logic/auction/range-window.js（前后端单一真相，见 replaceTDayLeg）。
+//
+// 【幂等】re-run 安全：
+//   · change_pct：已是收盘口径（updated_at >= 当日 15:00）的行不再重写；
+//   · T 腿：校正后 updated_at 变成现在（> 15:00），下次运行自动跳过。
+
+import { beijingToday, isWeekend, compactToDateStr } from '../../_shared-source/date-utils.js';
 import { localIsTradingDay } from '../../_shared-source/holidays.js';
-import { CONFIG } from '../config.js';
+import { numcatDaily } from '../data/numcat-api.js';
 import { fetchSnapshotChangePct } from '../data/fuyao-api.js';
-import { sbHeaders, upsertMarketMetrics } from '../data/supabase-write.js';
+import {
+  upsertMarketMetrics,
+  upsertStockRangePct,
+  readMarketMetricsForDate,
+  readStockRangePctForDate
+} from '../data/supabase-write.js';
+// 区间涨幅 T 腿口径单一真相（纯函数，前端 close-pct-cover 共用同一份实现）
+// ⚠️ 单文件打包（_bundle.mjs）会把本文件与 range-window.js 拼进同一个作用域，
+//    因此这里【复用】range-window 的 parsePct，不再自己定义一份（同名会直接报重复声明）。
+import { replaceTDayLeg, parsePct } from '../../../src/logic/auction/range-window.js';
+
+/** 北京时间 15:00 收盘（与前端 close-pct-cover / dragon-rank 同口径） */
+const CLOSE_HOUR = 15;
+
+function _fmtClosePct(n) {
+  if (!isFinite(n)) return '';
+  return (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+}
+
+/** 该日收盘覆盖时刻（北京 15:00）对应的 UTC 时间戳 */
+function _closeCoverUtcMs(dateStr) {
+  const base = Date.parse(dateStr + 'T00:00:00Z');
+  if (Number.isNaN(base)) return NaN;
+  return base + (CLOSE_HOUR - 8) * 3600000;
+}
+
+/**
+ * 猫抓 daily 拉当日收盘涨幅 → Map<code, number>。
+ * 与早盘步骤5 同一个接口（symbol,tradedate,pct_chg），1 次请求覆盖全市场。
+ */
+async function fetchNumcatClosePct(env, codes, today) {
+  const ymd = today.replace(/-/g, '');
+  const symbols = codes.join(',');
+  const data = await numcatDaily(env, symbols, ymd, ymd);
+  const fields = (data && data.fields) || [];
+  const items = (data && data.items) || [];
+  const sIdx = fields.indexOf('symbol');
+  const dIdx = fields.indexOf('tradedate');
+  const pIdx = fields.indexOf('pct_chg');
+  const out = new Map();
+  if (sIdx < 0 || dIdx < 0 || pIdx < 0) return out;
+  items.forEach(row => {
+    const code = String(row[sIdx] || '').trim();
+    const d = compactToDateStr(String(row[dIdx] || '').trim());
+    const raw = row[pIdx];
+    if (!code || d !== today || raw === null || raw === undefined || raw === '') return;
+    const n = Number(raw);
+    if (!isNaN(n)) out.set(code, n);
+  });
+  return out;
+}
 
 export async function runClose(env) {
   const logs = [];
@@ -15,138 +87,168 @@ export async function runClose(env) {
     return { ok: true, today, skipped: true, reason: '非交易日', logs };
   }
 
-  // 1. 读取当日 auction_watchlist 获取股票列表
-  logs.push('步骤1：读取当日 auction_watchlist...');
-  const readUrl = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?date=eq.' + encodeURIComponent(today) + '&select=stock,code';
-  let watchlist;
+  // 1. 名单 + 旧 T 腿来源：market_metrics（早盘写入的行含 code / auc_pct_chg / change_pct）。
+  //    用 market_metrics 而不是 auction_watchlist，天然覆盖观察组 / 打标签票（早盘同样为它们写了指标行）。
+  logs.push('步骤1：读取当日 market_metrics...');
+  let metrics;
   try {
-    const resp = await fetch(readUrl, { headers: sbHeaders(env) });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => '');
-      throw new Error('HTTP ' + resp.status + ': ' + text.slice(0, 200));
-    }
-    watchlist = await resp.json();
+    metrics = await readMarketMetricsForDate(env, today, 'auction');
   } catch (e) {
-    logs.push('读取 auction_watchlist 失败: ' + e.message);
-    return { ok: false, today, error: '读取 auction_watchlist 失败: ' + e.message, logs };
+    logs.push('读取 market_metrics 失败: ' + e.message);
+    return { ok: false, today, error: '读取 market_metrics 失败: ' + e.message, logs };
   }
-  logs.push('auction_watchlist 读取 ' + watchlist.length + ' 只');
-
-  // 【FIX 2026-08-03 Bug1】watchlist 为空时明确报警返回 ok:false
-  if (watchlist.length === 0) {
-    logs.push('❌ 当日 auction_watchlist 为空，说明今早 morning cron 未成功写入 watchlist，close 无法覆盖涨幅');
-    logs.push('❌ 请检查今早 9:25 morning cron 是否触发、numcat/fuyao 接口是否正常');
-    return {
-      ok: false,
-      today,
-      error: '当日 auction_watchlist 为空（morning cron 可能未成功）',
-      skipped: true,
-      reason: '当日列表为空',
-      logs
-    };
+  logs.push('market_metrics 读取 ' + metrics.length + ' 只');
+  if (metrics.length === 0) {
+    logs.push('❌ 当日 market_metrics 为空（早盘 9:25 可能未成功），无法覆盖收盘涨幅');
+    return { ok: false, today, skipped: true, reason: '当日指标行为空', logs };
   }
 
-  // 2. fuyao snapshot 批量获取收盘涨幅
-  // 【FIX 2026-08-03 Bug2】覆盖率 < 50% 时延迟重试（60秒/120秒）
-  const codes = watchlist.map(w => w.code).filter(Boolean);
-  const COVERAGE_THRESHOLD = 0.5;
-  const RETRY_DELAYS_SEC = [60, 120];
+  const byName = new Map();
+  metrics.forEach(m => { if (!byName.has(m.name)) byName.set(m.name, m); });
+  const codes = Array.from(new Set(metrics.map(m => m.code).filter(Boolean)));
 
-  let snapshotResult = await fetchSnapshotChangePct(env, codes);
-  let pctMap = snapshotResult.pctMap;
-  let stats = snapshotResult.stats;
-  let coverage = codes.length > 0 ? stats.success / codes.length : 0;
-  logs.push('步骤2：调用 fuyao snapshot 获取收盘涨幅...');
-  logs.push('snapshot 第1次: success=' + stats.success + '/' + codes.length + ' (覆盖率 ' + (coverage * 100).toFixed(1) + '%)'
-    + ' batchOk=' + stats.batchOk + ' batchFail=' + stats.batchFail
-    + ' singleOk=' + stats.singleOk + ' singleFail=' + stats.singleFail
-    + ' itemsReturned=' + stats.itemsReturned
-    + ' emptyField=' + stats.emptyField + ' notMatched=' + stats.notMatched);
+  // 2. 收盘涨幅：猫抓 daily 主通道（1 次请求）→ 缺失的代码再用 fuyao snapshot 兜底
+  //    ⚠️ 兜底必须按【缺失的代码】补，而不是「猫抓整体失败才兜底」：
+  //    实测猫抓 daily 对少数票（停牌/次新/代码映射缺失）当日不返回行，若只做整体兜底，
+  //    这些票的 change_pct 会永远停在 9:25 竞价涨幅（9/10 实测 8 只，其中 2 只停牌属正常）。
+  const closeMs = _closeCoverUtcMs(today);
+  const pctByCode = new Map();
+  const sources = [];
+  logs.push('步骤2：获取收盘涨幅（' + codes.length + ' 个代码）...');
+  try {
+    const byCode = await fetchNumcatClosePct(env, codes, today);
+    byCode.forEach((v, k) => pctByCode.set(k, v));
+    if (pctByCode.size > 0) sources.push('numcat-daily');
+    logs.push('猫抓 daily 返回 ' + pctByCode.size + ' 只');
+  } catch (e) {
+    logs.push('猫抓 daily 不可用: ' + e.message);
+  }
 
-  for (let attempt = 0; attempt < RETRY_DELAYS_SEC.length && coverage < COVERAGE_THRESHOLD; attempt++) {
-    const waitSec = RETRY_DELAYS_SEC[attempt];
-    logs.push('⏳ snapshot 覆盖率 ' + (coverage * 100).toFixed(1) + '% 低于阈值 ' + (COVERAGE_THRESHOLD * 100) + '%，'
-      + waitSec + '秒后重试第' + (attempt + 1) + '次...');
-    await new Promise(r => setTimeout(r, waitSec * 1000));
+  const missingCodes = codes.filter(c => !pctByCode.has(c));
+  if (missingCodes.length > 0) {
     try {
-      const retryResult = await fetchSnapshotChangePct(env, codes);
-      const retryCoverage = codes.length > 0 ? retryResult.stats.success / codes.length : 0;
-      logs.push('snapshot 第' + (attempt + 2) + '次: success=' + retryResult.stats.success + '/' + codes.length
-        + ' (覆盖率 ' + (retryCoverage * 100).toFixed(1) + '%)'
-        + ' batchOk=' + retryResult.stats.batchOk + ' batchFail=' + retryResult.stats.batchFail
-        + ' singleOk=' + retryResult.stats.singleOk + ' singleFail=' + retryResult.stats.singleFail
-        + ' itemsReturned=' + retryResult.stats.itemsReturned
-        + ' emptyField=' + retryResult.stats.emptyField + ' notMatched=' + retryResult.stats.notMatched);
-      if (retryResult.stats.success > stats.success) {
-        pctMap = retryResult.pctMap;
-        stats = retryResult.stats;
-        coverage = retryCoverage;
-        logs.push('✅ 重试第' + (attempt + 1) + '次结果更好，采用重试结果 (success=' + stats.success + ')');
-      } else {
-        logs.push('第' + (attempt + 1) + '次重试结果未改善 (success=' + retryResult.stats.success + ')');
-      }
+      const snap = await fetchSnapshotChangePct(env, missingCodes);
+      let filled = 0;
+      Object.keys(snap.pctMap || {}).forEach(code => {
+        const n = parsePct(snap.pctMap[code]);
+        if (n !== null && !pctByCode.has(code)) { pctByCode.set(code, n); filled++; }
+      });
+      if (filled > 0) sources.push('fuyao-snapshot');
+      logs.push('fuyao snapshot 补齐缺失 ' + filled + '/' + missingCodes.length + ' 只');
     } catch (e) {
-      logs.push('第' + (attempt + 1) + '次重试请求失败: ' + e.message);
+      logs.push('fuyao snapshot 兜底失败: ' + e.message);
     }
   }
 
-  if (stats.success === 0) {
-    logs.push('❌ snapshot 接口未返回任何涨幅（可能接口故障/限流/收盘数据未结算），本次未覆盖任何涨幅');
-    return {
-      ok: false,
-      today,
-      error: 'snapshot 接口未返回任何涨幅数据',
-      stocksCount: watchlist.length,
-      snapshotStats: stats,
-      logs
-    };
+  const source = sources.join('+');
+  if (pctByCode.size === 0) {
+    logs.push('❌ 未能取到任何收盘涨幅（猫抓与同花顺均不可用 / 行情尚未结算），本次不覆盖');
+    return { ok: false, today, error: '未能取到任何收盘涨幅', source: source || '-', logs };
   }
+  logs.push('收盘涨幅来源=' + source + '，可用 ' + pctByCode.size + '/' + codes.length + ' 只');
 
-  if (coverage < COVERAGE_THRESHOLD) {
-    logs.push('⚠️ snapshot 覆盖率仅 ' + (coverage * 100).toFixed(1) + '%，部分股票涨幅未覆盖（可能停牌/接口部分失败），仍写入已获取的 ' + stats.success + ' 只');
-  } else {
-    logs.push('snapshot 覆盖率 ' + (coverage * 100).toFixed(1) + '%，正常');
-  }
-
-  // 3. 写入 market_metrics（只覆盖 change_pct）
+  // 3. 覆盖 market_metrics.change_pct（只带 change_pct + updated_*，不会抹掉 volume / auc_pct_chg 等竞价字段）
   logs.push('步骤3：写入 market_metrics change_pct...');
   const nowIso = new Date().toISOString();
-  const metricsRows = watchlist.filter(w => w.code && pctMap[w.code]).map(w => ({
-    date: today,
-    stock: w.stock,
-    code: w.code,
-    change_pct: pctMap[w.code],
-    scope: 'auction',
-    source: 'worker',
-    updated_at: nowIso,
-    updated_by: 'auto-fetch-worker-close'
-  }));
+  const metricRows = [];
+  metrics.forEach(m => {
+    if (!m.code) return;
+    if (!pctByCode.has(m.code)) return;
+    const pct = pctByCode.get(m.code);
+    // 幂等：已经是收盘口径（写于当日 15:00 之后）且值未变 → 跳过（省写入，不产生无意义 updated_at）
+    const t = m.updated_at ? Date.parse(m.updated_at) : NaN;
+    const prev = parsePct(m.change_pct);
+    if (!Number.isNaN(t) && t >= closeMs && prev !== null && Math.abs(prev - pct) < 1e-9) return;
+    metricRows.push({
+      date: today,
+      stock: m.name,
+      code: m.code,
+      change_pct: _fmtClosePct(pct),
+      scope: 'auction',
+      source: 'worker',
+      updated_at: nowIso,
+      updated_by: 'auto-fetch-worker-close'
+    });
+  });
 
-  try {
-    await upsertMarketMetrics(env, metricsRows);
-    logs.push('market_metrics 写入 ' + metricsRows.length + ' 行 change_pct');
-  } catch (e) {
-    logs.push('写入 market_metrics 失败: ' + e.message);
-    return { ok: false, today, error: '写入 market_metrics 失败: ' + e.message, logs };
+  let written = 0;
+  if (metricRows.length > 0) {
+    try {
+      await upsertMarketMetrics(env, metricRows);
+      written = metricRows.length;
+      logs.push('market_metrics 写入 ' + written + ' 行 change_pct');
+    } catch (e) {
+      logs.push('写入 market_metrics 失败: ' + e.message);
+      return { ok: false, today, error: '写入 market_metrics 失败: ' + e.message, logs };
+    }
+  } else {
+    logs.push('market_metrics 无需更新（已是收盘口径）');
   }
 
-  // 【FIX 2026-08-03】数据完整性汇总
-  const summaryParts = [];
-  if (coverage < COVERAGE_THRESHOLD) summaryParts.push('⚠️ snapshot 覆盖率低 ' + (coverage * 100).toFixed(1) + '%');
-  const uncoveredCount = watchlist.length - metricsRows.length;
-  if (uncoveredCount > 0) summaryParts.push('未覆盖 ' + uncoveredCount + ' 只（可能停牌/接口未返回）');
-  const completenessSummary = summaryParts.length > 0 ? summaryParts.join('；') : '✅ 涨幅覆盖完整 ' + metricsRows.length + '/' + watchlist.length;
-  logs.push('数据完整性汇总: ' + completenessSummary);
+  // 4. [方案A] 区间涨幅 T 腿口径校正（0 额外请求）
+  logs.push('步骤4：校正 stock_range_pct 的当天(T)腿...');
+  let rangeFixed = 0;
+  try {
+    rangeFixed = await syncRangeTDay(env, today, closeMs, byName, pctByCode, nowIso, logs);
+  } catch (e) {
+    logs.push('区间涨幅 T 腿校正失败（非致命）: ' + e.message);
+  }
 
-  logs.push('完成: 收盘涨幅覆盖 ' + metricsRows.length + ' 只');
+  const completenessSummary = '✅ 收盘覆盖 ' + written + '/' + metrics.length + ' 只（来源=' + source +
+    '），区间涨幅 T 腿校正 ' + rangeFixed + ' 只';
+  logs.push('数据完整性汇总: ' + completenessSummary);
+  logs.push('完成: 收盘涨幅覆盖 ' + written + ' 只, 区间涨幅 T 腿 ' + rangeFixed + ' 只');
   return {
     ok: true,
     today,
-    stocksCount: watchlist.length,
-    pctUpdated: metricsRows.length,
-    coverage: coverage,
-    snapshotStats: stats,
+    stocksCount: metrics.length,
+    pctUpdated: written,
+    rangeFixed: rangeFixed,
+    source: source,
     completenessSummary: completenessSummary,
     logs
   };
+}
+
+/**
+ * 【区间涨幅 T 腿口径校正 / 方案A】
+ * 早盘 worker 用【竞价涨幅】做 T 腿把区间涨幅算好并落库；收盘后 T 腿应改成【收盘涨幅】。
+ * 区间涨幅是复利累乘，只需把 T 腿那一项换掉，无需重新拉 9 天历史日线（0 额外请求）：
+ *   prevAcc = (1 + 已存区间涨幅) ÷ (1 + 竞价腿)
+ *   新区间涨幅 = prevAcc × (1 + 收盘腿) - 1
+ * 口径实现在 range-window.js#replaceTDayLeg（与前端 close-pct-cover 共用，单一真相）。
+ */
+async function syncRangeTDay(env, today, closeMs, byName, pctByCode, nowIso, logs) {
+  let rangeRows;
+  try {
+    rangeRows = await readStockRangePctForDate(env, today);
+  } catch (e) {
+    logs.push('读取 stock_range_pct 失败: ' + e.message);
+    return 0;
+  }
+  if (rangeRows.length === 0) {
+    logs.push('stock_range_pct 当日无行（早盘未写入？），跳过 T 腿校正');
+    return 0;
+  }
+
+  const out = [];
+  rangeRows.forEach(r => {
+    const t = r.updated_at ? Date.parse(r.updated_at) : NaN;
+    // 已是收盘口径（写于 15:00 之后）→ 不重复换算（幂等）
+    if (Number.isNaN(t) || !t || t >= closeMs) return;
+    const old = parsePct(r.range_pct);
+    if (old === null) return;
+    const m = byName.get(r.stock);
+    if (!m || !m.code) return;            // 没有代码 → 取不到收盘涨幅，保持现状
+    if (!pctByCode.has(m.code)) return;
+    const closePct = pctByCode.get(m.code);
+    const aucLeg = parsePct(m.auc_pct_chg); // 旧的 T 腿 = 早盘写入的竞价涨幅
+    const next = replaceTDayLeg(old, aucLeg, closePct);
+    if (next === null || !isFinite(next)) return;
+    out.push({ date: today, stock: r.stock, range_pct: Number(next).toFixed(2), days: r.days, updated_at: nowIso });
+  });
+
+  if (out.length === 0) return 0;
+  await upsertStockRangePct(env, out);
+  return out.length;
 }
