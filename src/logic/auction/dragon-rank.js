@@ -44,14 +44,24 @@ import { ensureAuctionCodeMapping } from './auction-fetch-helpers.js';
 export const DRAGON_RANGE_DAYS = 10;
 // 北京时间 15:00 之后，当天收盘涨幅已可覆盖早盘竞价涨幅 → 缓存视为过期需重算一次
 const CLOSE_COVER_HOUR = 15;
+// [FIX 2026-09-10] 北京时间 09:25 竞价快照。此前算好的缓存里「当天(T腿)」还没有竞价涨幅，
+// 若不标记过期重算，整个上午的「10日涨幅」窗口实际只有 9 天 → 龙头排名失真（P1）。
+const AUCTION_SNAPSHOT_HOUR = 9;
+const AUCTION_SNAPSHOT_MINUTE = 25;
 // 同花顺兜底每会话每个日期最多走一次：猫抓额度用尽时避免每次渲染都发几十个请求
 const _fuyaoFallbackDates = new Set();
+// [FIX 2026-09-10] 历史日 K 线整段取不到（猫抓额度尽 + 同花顺已兜过）的日期。
+// 这些日期不再重复发起整批请求，否则每次渲染一遍就烧一次额度。
+const _apiFailedDates = new Set();
 // [FIX 2026-09-10] 缺口补齐按【股票名】标记（date|name）：名单是逐步到达的，按日期一次性标记
 // 会让后到的票永远补不上。每只票每会话最多尝试一次；force 刷新（后台按钮）会清空重新补。
 const _patchedNames = new Set();
 
 // ===== 状态（模块级 ref，§7：不进 Pinia，遵循 weakStrongSetRef 同款 ref-driven 范式）=====
-const dragonState = ref({ date: '', map: new Map(), version: 0 });
+// loadedAt：本次内存 map 的加载时刻（epoch ms）。用于「跨过 9:25 竞价快照 / 15:00 收盘门槛
+// 后必须重算一次」的判定——已加载分支不能无条件直接返回，否则 9:20 打开页面算出的
+// 「9 天窗口」会一直用到收盘（当天竞价涨幅永远加不进去）。
+const dragonState = ref({ date: '', map: new Map(), version: 0, loadedAt: 0 });
 let _inflight = null; // { date, promise } 单飞保护
 
 /** 当前已加载的区间涨幅（仅当 date 匹配时有效，否则返回 null）。同步读取，供 view-helpers 用。 */
@@ -84,7 +94,26 @@ export function getDragonFingerprintToken() {
 
 export function clearDragonRangePct() {
   if (dragonState.value.date === '' && dragonState.value.map.size === 0) return;
-  dragonState.value = { date: '', map: new Map(), version: dragonState.value.version + 1 };
+  dragonState.value = { date: '', map: new Map(), version: dragonState.value.version + 1, loadedAt: 0 };
+}
+
+/**
+ * [FIX 2026-09-10] 「内存已加载」是否已跨过今天的时间门槛、需要完整重算一次：
+ *   - loadedAt 在 09:25 竞价快照【前】、现在已经过了 9:25 → 当天竞价腿可以补上了 → 重算；
+ *   - loadedAt 在 15:00 收盘【前】、现在已经过了 15:00 → 收盘涨幅可以覆盖竞价腿了 → 重算。
+ * 只对「系统今天」生效；历史日期算出后不再变。重算本身有云端 updated_at 自限，
+ * 不会每次调用都烧额度（见 _loadDragonRangePct 过期判定）。
+ * @returns {boolean} true = 需要走完整加载（stale 判定在 _loadDragonRangePct 内）
+ */
+function _needsSameDayRecompute(date, loadedAt) {
+  if (!loadedAt) return false;
+  if (date !== _getLocalTodayStr()) return false;
+  const now = Date.now();
+  const auctionMs = _auctionSnapshotUtcMs(date);
+  if (loadedAt < auctionMs && now >= auctionMs) return true;
+  const closeMs = _closeCoverUtcMs(date);
+  if (loadedAt < closeMs && now >= closeMs) return true;
+  return false;
 }
 
 /** 窗口日期（降序：[T, T-1, ... , T-9]，最多 10 个交易日） */
@@ -103,9 +132,32 @@ function _beijingHour() {
   return (new Date().getUTCHours() + 8) % 24;
 }
 
+/** 北京时间某时刻对应的 UTC 时间戳：hour/minute 传入的是【北京本地】时分 */
+function _beijingMs(dateStr, hour, minute) {
+  const base = Date.parse(dateStr + 'T00:00:00Z'); // 当日 UTC 00:00
+  // 北京 = UTC+8 → 北京时间 hh:mm 对应的 UTC 时刻 = 当日UTC 00:00 + (hh:mm - 8h)
+  return base + (hour - 8) * 3600000 + (minute || 0) * 60000;
+}
+
 /** 北京 15:00 对应的 UTC 时间戳（用于判断缓存是否早于收盘覆盖） */
 function _closeCoverUtcMs(dateStr) {
-  return Date.parse(dateStr + 'T07:00:00Z');
+  return _beijingMs(dateStr, CLOSE_COVER_HOUR, 0);
+}
+
+/** 北京 09:25 竞价快照对应的 UTC 时间戳 */
+function _auctionSnapshotUtcMs(dateStr) {
+  return _beijingMs(dateStr, AUCTION_SNAPSHOT_HOUR, AUCTION_SNAPSHOT_MINUTE);
+}
+
+/** 云端缓存里是否存在「早于某个时刻」的行（= 该时刻之前算出来的旧结果） */
+function _hasUpdatedBefore(cloud, ms) {
+  let found = false;
+  cloud.forEach(function(v) {
+    if (found) return;
+    const t = v && v.updatedAt ? Date.parse(v.updatedAt) : NaN;
+    if (!t || t < ms) found = true;
+  });
+  return found;
 }
 
 /** 复利累乘：日涨幅数组 → 区间涨幅(%) */
@@ -132,7 +184,10 @@ export async function ensureDragonRangePct(date, opts) {
   const force = !!(opts && opts.force);
   if (!date) return null;
   const cur = dragonState.value;
-  if (!force && cur.date === date && cur.map && cur.map.size > 0) {
+  // [FIX 2026-09-10] 已加载也要看是否跨过了 9:25 竞价快照 / 15:00 收盘门槛：
+  // 跨过则不能直接返回旧 map（9 天窗口缺当天竞价腿 / 缺收盘覆盖），必须走一次完整加载。
+  if (!force && cur.date === date && cur.map && cur.map.size > 0
+      && !_needsSameDayRecompute(date, cur.loadedAt)) {
     // [FIX 2026-09-10] 已加载过也要再补一次缺口：名单是逐步到达的（worker 写入 / 切日期后数据落地 /
     // 用户刷新），第一次计算时没在名单里的票会永远缺 10 日涨幅。这里只补「还没算出来的」，
     // 按股票名去重，不重复消耗额度。
@@ -152,9 +207,10 @@ export async function ensureDragonRangePct(date, opts) {
 }
 
 async function _loadDragonRangePct(date, force) {
-  // force（后台按钮）：清掉本会话的「已兜底 / 已补齐」标记，允许再补一次
+  // force（后台按钮）：清掉本会话的「已兜底 / 已补齐 / 已确认取不到」标记，允许再补一次
   if (force) {
     _fuyaoFallbackDates.delete(date);
+    _apiFailedDates.delete(date);
     _patchedNames.forEach(function(k) { if (k.indexOf(date + '|') === 0) _patchedNames.delete(k); });
   }
   // 1) 云端缓存（读取失败必须抛错，由调用方提示；不静默当空数据）
@@ -166,23 +222,35 @@ async function _loadDragonRangePct(date, force) {
     throw new Error('读取龙头涨幅缓存失败（表 stock_range_pct 是否已创建？执行 db/create_stock_range_pct.sql）：' + (e && e.message || e));
   }
 
-  // 2) 过期判定：仅「系统今天 + 已过 15:00 + 缓存早于 15:00」才需要重算
+  // 2) 过期判定（三段式，只对「系统今天」生效；历史日期算出后永不再变）：
+  //    a) 09:25 竞价快照后：缓存若是 9:25【之前】算的（当时当天竞价涨幅还没落库）→ 过期，
+  //       必须带上当天竞价腿重算一次，否则整个上午窗口只有 9 天、龙头排名失真；
+  //    b) 15:00 收盘后：缓存若是 15:00【之前】算的 → 过期，用收盘涨幅覆盖当天竞价腿重算；
+  //    c) 缓存为空 → 直接算。
+  //    重算后 updated_at 会被 upsert 刷新到「现在」，条件自然变为假 → 自限，不会重复烧额度。
   const sysToday = _getLocalTodayStr();
-  let stale = false;
-  if (date === sysToday && _beijingHour() >= CLOSE_COVER_HOUR) {
+  let stale = cloud.size === 0;
+  if (date === sysToday && cloud.size > 0) {
     const closeMs = _closeCoverUtcMs(date);
-    let hasOld = false;
-    cloud.forEach((v) => {
-      const t = v && v.updatedAt ? Date.parse(v.updatedAt) : NaN;
-      if (!t || t < closeMs) hasOld = true;
-    });
-    stale = hasOld || cloud.size === 0;
+    const auctionMs = _auctionSnapshotUtcMs(date);
+    if (_beijingHour() >= CLOSE_COVER_HOUR) {
+      if (_hasUpdatedBefore(cloud, closeMs)) stale = true;
+    } else if (Date.now() >= auctionMs) {
+      if (_hasUpdatedBefore(cloud, auctionMs)) stale = true;
+    }
+  }
+
+  // [FIX 2026-09-10] 本会话已确认「历史日 K 线整段取不到」→ 不再重复发起整批请求烧额度，
+  // 有旧缓存就继续用旧缓存展示（比没有强），没有就返回空并只报错一次。
+  if (stale && !force && _apiFailedDates.has(date)) {
+    stale = false;
+    _dbgLog('[DRAGON] ' + date + ' 已确认取不到历史日 K 线，本次跳过整批重算（避免烧额度）');
   }
 
   if (!force && cloud.size > 0 && !stale) {
     const map = new Map();
     cloud.forEach((v, k) => map.set(k, { pct: v.pct, days: v.days }));
-    dragonState.value = { date: date, map: map, version: dragonState.value.version + 1 };
+    dragonState.value = { date: date, map: map, version: dragonState.value.version + 1, loadedAt: Date.now() };
     // [FIX 2026-09-10] 云端缓存是【日期级】复用的：只要该日有任意一行就直接命中，
     // 于是历史上漏算的股票（当时缺代码 / 名单口径不含观察组）会被永久冻结成"没有 10 日涨幅"。
     // 这里做一次「缺谁补谁」的增量补齐（只走同花顺，不消耗猫抓额度）。
@@ -190,11 +258,20 @@ async function _loadDragonRangePct(date, force) {
     return _currentMapOr(date, map);
   }
 
-  // 3) 拉接口（一次请求覆盖全部股票 × 10 个交易日）
-  const computed = await _fetchAndCompute(date);
+  // 3) 拉接口（一次请求覆盖全部股票 × 10 个交易日）。
+  //    [FIX 2026-09-10] 整批取不到时必须抛错并标记该日期：否则会走到下面的回写分支，
+  //    把「只有当天竞价腿 1 天」的残缺结果当成功写进 stock_range_pct（日期级复用 → 永久冻结成错数据），
+  //    且每次渲染都会重试整批请求烧额度。_apiFailedDates 让本会话后续调用直接复用旧缓存/跳过。
+  let computed = null;
+  try {
+    computed = await _fetchAndCompute(date);
+  } catch (e) {
+    _apiFailedDates.add(date);
+    throw e;
+  }
   const map = new Map();
   computed.rows.forEach(r => map.set(r.stock, { pct: r.pct, days: r.days }));
-  dragonState.value = { date: date, map: map, version: dragonState.value.version + 1 };
+  dragonState.value = { date: date, map: map, version: dragonState.value.version + 1, loadedAt: Date.now() };
   // 主通道/兜底都可能漏掉个别票（猫抓该票无数据、代码刚补上等），同样做一次缺口补齐
   await _patchMissingRangePct(date, map);
   const _m = _currentMapOr(date, map);
@@ -380,7 +457,8 @@ async function _patchMissingRangePct(date, map) {
   }
   // 补进内存 Map 后必须让 ref 换新引用 + 版本号自增，否则展开面板/徽章读到的仍是旧快照（§17）
   const next = new Map(map);
-  dragonState.value = { date: date, map: next, version: dragonState.value.version + 1 };
+  // 局部补丁不刷新 loadedAt：整体加载时刻不变，门槛重算判定仍以整次加载为准
+  dragonState.value = { date: date, map: next, version: dragonState.value.version + 1, loadedAt: dragonState.value.loadedAt };
 }
 
 async function _fetchAndCompute(date) {
@@ -442,6 +520,13 @@ async function _fetchAndCompute(date) {
     } catch (e) {
       _dbgLog('[DRAGON] 同花顺兜底失败: ' + (e && e.message || e));
     }
+  }
+
+  // [FIX 2026-09-10] 双通道（猫抓 daily + 同花顺兜底）都取不到历史日 K 线 → 抛错，
+  // 由 _loadDragonRangePct 标记 _apiFailedDates 并上浮给调用方提示。
+  // 绝不能带着「只有 T 腿 1 天」的残缺 list 继续走回写（会永久污染云端缓存）。
+  if (codeSet.size > 0 && (!byCode || byCode.size === 0) && (!byName || byName.size === 0)) {
+    throw new Error('10日涨幅历史日 K 线整批取不到（猫抓与同花顺双通道均失败）');
   }
 
   // 当天(T)涨幅口径（§用户口径）：

@@ -117,11 +117,14 @@ export function formatTopicStatsLayout(stats) {
   row1.push({ key: 'yizi', label: '一字', value: String(stats.yiziCount || 0) });
   row1.push({ key: 'high', label: '竞价高开', value: String(stats.highOpenCount || 0) });
   if (stats.leader) {
-    row2.push({ key: 'leader', label: '龙头', value: stats.leader });
+    // [2026-09-10] 第二行（龙头行）三个数值统一「红色加粗」强调：
+    //   龙头竞价涨幅保留 1 位小数；龙头十日涨幅取整（四舍五入）。
+    //   这里刻意不输出 tone —— 用户要求龙头行一律红色，不再按涨跌分红绿。
+    row2.push({ key: 'leader', label: '龙头', value: stats.leader, strong: true });
     const lp = _num(stats.leaderAucPct);
-    if (lp !== null) row2.push({ key: 'lpct', label: '竞价', value: _fmtPct(lp), tone: _tone(lp) });
+    if (lp !== null) row2.push({ key: 'lpct', label: '竞价', value: _fmtPct1(lp), strong: true });
     const lr = _num(stats.leaderRangePct);
-    if (lr !== null) row2.push({ key: 'lrng', label: '十日', value: _fmtPct(lr), tone: _tone(lr) });
+    if (lr !== null) row2.push({ key: 'lrng', label: '十日', value: _fmtPctInt(lr), strong: true });
   }
   return { topic: stats.topic || '其它', row1: row1, row2: row2 };
 }
@@ -139,10 +142,10 @@ function _num(v) {
   return isFinite(n) ? n : null;
 }
 
-function _tone(n) {
-  return n > 0 ? 'up' : (n < 0 ? 'down' : '');
+function _fmtPct1(n) {
+  return (n >= 0 ? '+' : '') + Number(n).toFixed(1) + '%';
 }
 
-function _fmtPct(n) {
-  return (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%';
+function _fmtPctInt(n) {
+  return (n >= 0 ? '+' : '') + String(Math.round(n)) + '%';
 }

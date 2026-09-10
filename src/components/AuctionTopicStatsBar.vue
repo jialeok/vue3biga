@@ -26,17 +26,17 @@
           v-for="s in layout.row1"
           :key="s.key"
           class="ats-item"
-        ><b>{{ s.label }}</b><i :class="s.tone ? 'ats-' + s.tone : null">{{ s.value }}</i></span>
+        ><b>{{ s.label }}</b><i>{{ s.value }}</i></span>
       </div>
       <div
         v-if="layout.row2.length"
-        class="ats-line"
+        class="ats-line ats-line2"
       >
         <span
           v-for="s in layout.row2"
           :key="s.key"
           class="ats-item"
-        ><b>{{ s.label }}</b><i :class="s.tone ? 'ats-' + s.tone : null">{{ s.value }}</i></span>
+        ><b>{{ s.label }}</b><i :class="s.strong ? 'ats-strong' : null">{{ s.value }}</i></span>
       </div>
     </div>
   </div>
@@ -119,12 +119,10 @@ const layout = computed(() => formatTopicStatsLayout(props.stats));
   color: #334155;
 }
 
-/* A 股口径：涨红跌绿 */
-.ats-up {
+/* 第二行（龙头）：股票名 / 竞价 / 十日三个数值统一红色加粗强调。
+   [2026-09-10] 用户明确要求：第二行数值一律红色，不再按涨跌分红绿（ats-up/ats-down 已删）。 */
+.ats-item > i.ats-strong {
   color: #dc2626;
-}
-
-.ats-down {
-  color: #16a34a;
+  font-weight: 700;
 }
 </style>
