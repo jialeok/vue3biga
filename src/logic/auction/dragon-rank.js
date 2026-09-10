@@ -58,6 +58,14 @@ const _apiFailedDates = new Set();
 // [FIX 2026-09-10] 缺口补齐按【股票名】标记（date|name）：名单是逐步到达的，按日期一次性标记
 // 会让后到的票永远补不上。每只票每会话最多尝试一次；force 刷新（后台按钮）会清空重新补。
 const _patchedNames = new Set();
+// [PERF 2026-09-10] 缺口补齐的进行中标记（同一 date 同时只允许一个补齐任务）
+const _patchRunning = new Set();
+// [PERF 2026-09-10] 单轮补齐数量上限。
+// 背景：9/10 库里落了 24 行 days=1 的残缺值（早盘 11:07 只有竞价腿时写入的），
+// 一次全补 = 24 只逐只请求同花顺 → 用户要等几分钟才看到任何 10 日涨幅
+// （表现为「展开后十日涨幅不显示，过一会儿才出来」）。
+// 限制单轮上限，让首屏先用云端已有数据渲染，剩余在后续触发（名单变化/轮询）时继续补。
+const MAX_PATCH_PER_PASS = 12;
 // [FIX 2026-09-10] 收盘涨幅覆盖完成后需要【强制重算一次】的日期。
 // 背景：stale 判定只看「缓存是否写于 15:00 前」，但如果 15:00 后重算时 change_pct 仍是
 // 9:25 竞价副本（脏值），算出的 T 腿依旧错，且之后缓存 updated_at 已 > 15:00 → 永不重算。
@@ -206,7 +214,9 @@ export async function ensureDragonRangePct(date, opts) {
     // [FIX 2026-09-10] 已加载过也要再补一次缺口：名单是逐步到达的（worker 写入 / 切日期后数据落地 /
     // 用户刷新），第一次计算时没在名单里的票会永远缺 10 日涨幅。这里只补「还没算出来的」，
     // 按股票名去重，不重复消耗额度。
-    await _patchMissingRangePct(date, cur.map);
+    // [PERF 2026-09-10] 不 await：先让 UI 用云端已有数据渲染，缺口在后台增量补齐。
+    // 原来 await 会让「十日涨幅」等几十秒才出现（用户反馈：展开后不显示，过会儿才出来）。
+    _kickPatch(date, cur.map);
     return _currentMapOr(date, cur.map);
   }
   // 非强制：复用同一次进行中的请求（单飞，杜绝并发重复消耗额度）。
@@ -281,7 +291,8 @@ async function _loadDragonRangePct(date, force) {
     // [FIX 2026-09-10] 云端缓存是【日期级】复用的：只要该日有任意一行就直接命中，
     // 于是历史上漏算的股票（当时缺代码 / 名单口径不含观察组）会被永久冻结成"没有 10 日涨幅"。
     // 这里做一次「缺谁补谁」的增量补齐（只走同花顺，不消耗猫抓额度）。
-    await _patchMissingRangePct(date, map);
+    // [PERF 2026-09-10] 不 await，同上：先渲染，后台补。
+    _kickPatch(date, map);
     return _currentMapOr(date, map);
   }
 
@@ -300,7 +311,8 @@ async function _loadDragonRangePct(date, force) {
   computed.rows.forEach(r => map.set(r.stock, { pct: r.pct, days: r.days }));
   dragonState.value = { date: date, map: map, version: dragonState.value.version + 1, loadedAt: Date.now() };
   // 主通道/兜底都可能漏掉个别票（猫抓该票无数据、代码刚补上等），同样做一次缺口补齐
-  await _patchMissingRangePct(date, map);
+  // [PERF 2026-09-10] 不 await：整批结果已算出，先回写并渲染，个别缺口后台补。
+  _kickPatch(date, map);
   const _m = _currentMapOr(date, map);
 
   // 4) 回写云端（失败只提示，不阻断本次展示：内存已可用）
@@ -396,8 +408,32 @@ export function getDragonTargetRows(date) {
  * @param {string} date
  * @param {Map<string,{pct:number|null,days:number}>} map - 会被就地补全
  */
+/**
+ * 后台触发缺口补齐（不阻塞调用方）。
+ * §10 红线：失败不能静默 —— 这里捕获后必须打日志 + dbgLog，不能吞掉。
+ */
+function _kickPatch(date, map) {
+  if (!date || !map) return;
+  _patchMissingRangePct(date, map).catch(function(e) {
+    console.warn('[DRAGON] 缺口补齐失败:', e && e.message);
+    _dbgLog('[DRAGON] 缺口补齐异常: ' + (e && e.message || e));
+  });
+}
+
 async function _patchMissingRangePct(date, map) {
   if (!date || !map) return;
+  // 同一时刻只允许一个补齐任务：watch 会因名单逐步到达被触发多次，
+  // 并发补齐会让同花顺请求翻倍（§32 禁止重复请求）。
+  if (_patchRunning.has(date)) return;
+  _patchRunning.add(date);
+  try {
+    await _doPatchMissingRangePct(date, map);
+  } finally {
+    _patchRunning.delete(date);
+  }
+}
+
+async function _doPatchMissingRangePct(date, map) {
   const rows = getDragonTargetRows(date);
   if (rows.length === 0) return; // 当日数据还没加载完 → 本次不标记，下次还有机会
 
@@ -412,7 +448,7 @@ async function _patchMissingRangePct(date, map) {
     if (!cur || cur.pct === null || cur.pct === undefined || isNaN(cur.pct)) return true;
     return Number(cur.days || 0) < winLen;
   };
-  const missing = [];
+  let missing = [];
   rows.forEach(function(r) {
     if (!r || !r.stock) return;
     const name = String(r.stock).trim();
@@ -439,6 +475,12 @@ async function _patchMissingRangePct(date, map) {
       const code = _codeOf(r, name);
       if (code) missing.push({ row: r, name: name, code: code });
     });
+  }
+  // [PERF 2026-09-10] 单轮上限：超出的留在下一轮（名单变化 / 轮询会再次触发）。
+  // ⚠️ 只给【本轮真正要补的】打已尝试标记，未轮到的不能标记，否则永远补不上。
+  if (missing.length > MAX_PATCH_PER_PASS) {
+    _dbgLog('[DRAGON] ' + date + ' 待补 ' + missing.length + ' 只，本轮只补前 ' + MAX_PATCH_PER_PASS + ' 只（避免首屏等待过久）');
+    missing = missing.slice(0, MAX_PATCH_PER_PASS);
   }
   missing.forEach(function(x) { _patchedNames.add(date + '|' + x.name); });
   if (missing.length === 0) return;

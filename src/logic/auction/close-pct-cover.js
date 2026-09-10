@@ -79,10 +79,18 @@ function _needCover(cloudRow, aucPct) {
     if (!cloudRow) return true;
     const close = _parsePct(cloudRow.change_pct);
     if (close === null) return true;
+    const t = cloudRow.updated_at ? Date.parse(cloudRow.updated_at) : NaN;
+
+    // [PERF 2026-09-10] 时间判定优先于「与竞价相同」判定。
+    // 原顺序会把【一字板 / 停牌】的票误判为脏值：这类票收盘价确实等于 9:25 竞价价
+    // （如 桂林旅游 +9.99% 涨停、瑞尔特 +10.01%），change_pct 与 auc_pct_chg 相同是【合法的】。
+    // 结果每次刷新页面都会把这 11 只重新算一遍，永远覆盖不完 → 每次进看板都多跑一轮请求。
+    // 只要该行是 15:00【之后】写入的，就认定已是收盘口径，不再重复覆盖。
+    if (!Number.isNaN(t) && t >= _closeCoverUtcMs(cloudRow.date || '')) return false;
+    if (Number.isNaN(t) || !t) return true;
+
     const auc = _parsePct(aucPct);
     if (auc !== null && Math.abs(close - auc) < 1e-9) return true;
-    const t = cloudRow.updated_at ? Date.parse(cloudRow.updated_at) : NaN;
-    if (!t || Number.isNaN(t)) return true;
     return t < _closeCoverUtcMs(cloudRow.date || '');
 }
 

@@ -138,7 +138,15 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
     const startMs = _ymdToMs(first) - 20 * 86400000;
     const endMs = _ymdToMs(last) + 2 * 86400000;
     const wantSet = new Set(ymdList);
-    const conc = (opts && opts.concurrency) || 6;
+    // [PERF 2026-09-10] 并发度 6 → 3。
+    // 实测：该上游在【并发 4~6 时会返回被截断的少数几根 K 线】（单只串行探测始终正常）。
+    // 截断会触发下面的重试 → 每只跑满 3 次 → 请求量变成 3 倍、耗时反而更长。
+    // 降到 3 能大幅提高单次完整率，实测总耗时显著低于「高并发 + 反复重试」。
+    // §36：禁止用「不断重试」掩盖上游并发缺陷。
+    const conc = (opts && opts.concurrency) || 3;
+    // 熔断阈值：连续这么多只都取不到完整窗口 → 判定上游整体不可用，直接放弃剩余。
+    // 否则 24 只残缺票会各自跑满 3 次重试（= 72 次请求），页面卡死数分钟。
+    const CIRCUIT_LIMIT = 6;
 
     /**
      * 取一次 K 线并换算窗口内日涨幅。
@@ -182,9 +190,15 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
         return keep;
     };
 
+    // 熔断计数器（跨批次累计）
+    let consecutiveShort = 0;
+    let circuitOpen = false;
+
     for (let i = 0; i < list.length; i += conc) {
+        if (circuitOpen) break;
         const batch = list.slice(i, i + conc);
         await Promise.all(batch.map(async function(it) {
+            if (circuitOpen) return;
             const name = String(it.stock).trim();
             let best = null;
             try {
@@ -192,11 +206,26 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
                     const keep = await fetchOnce(it.code);
                     if (!best || keep.size > best.size) best = keep;
                     if (best.size >= wantSet.size) break; // 已覆盖整个窗口，无需再试
+                    // [PERF 2026-09-10] 0 根 = 代码错 / 长期停牌，重试不会有不同结果 → 立刻放弃。
+                    // 次新股 / 停牌股本就不足 10 天，这类票原本必然跑满 3 次，是主要的耗时来源。
+                    if (best.size === 0) break;
+                    // 退避：给上游喘息时间，避免并发重试再次触发截断（原来完全无间隔）。
+                    if (attempt < 2) await new Promise(function(r) { setTimeout(r, 300 * (attempt + 1)); });
                 }
             } catch (e) {
                 _dbgLog('[DRAGON-FUYAO] ' + name + '(' + it.code + ') 历史K线失败: ' + (e && e.message || e));
             }
             if (best && best.size > 0) out.set(name, best);
+
+            if (!best || best.size < wantSet.size) {
+                consecutiveShort++;
+                if (consecutiveShort >= CIRCUIT_LIMIT) {
+                    circuitOpen = true;
+                    _dbgLog('[DRAGON-FUYAO] 连续 ' + consecutiveShort + ' 只取不到完整窗口，判定上游不可用，熔断剩余请求');
+                }
+            } else {
+                consecutiveShort = 0;
+            }
         }));
     }
     return out;
