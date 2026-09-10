@@ -892,25 +892,37 @@ export async function fillAuctionHistoryGapPctFromThs(btn, mode) {
             const startMs = new Date(baseDate + 'T00:00:00').getTime();
             const endMs = new Date(today + 'T23:59:59').getTime();
             try {
-                const data = await fuyaoApiGet('/api/a-share/prices/historical', {
-                    thscode: tickerToThscode(info.code),
-                    interval: '1d',
-                    start: String(startMs),
-                    end: String(endMs),
-                    adjust: 'none'
-                });
-                const items = (data && data.item) || [];
-                const closeByDate = {};
-                items.forEach(function(it) {
-                    const dt = new Date(it.date_ms);
-                    const ds = dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0');
-                    if (typeof it.close_price === 'number') closeByDate[ds] = it.close_price;
-                });
+                // [FIX 2026-09-10] 上游 historical 在并发下偶发【返回被截断的少数几根 K 线】，
+                // 会让目标日的「前收 / 当日收」缺失，从而被误判成「该股没有数据」而漏写涨幅。
+                // 这里最多重试 3 次，取「缺失最少」的一次，重试耗尽才认命。
+                let closeByDate = null;
+                let missingDates = null;
+                for (let attempt = 0; attempt < 3; attempt++) {
+                    const data = await fuyaoApiGet('/api/a-share/prices/historical', {
+                        thscode: tickerToThscode(info.code),
+                        interval: '1d',
+                        start: String(startMs),
+                        end: String(endMs),
+                        // [FIX 2026-09-10] 前复权：本函数用 (c1-c0)/c0 自算涨跌幅，不复权价在除权除息日
+                        // 会出现「假暴跌」（送转/派息跳空）→ 会写入错误的 change_pct；前复权按同一因子缩放，
+                        // 日间比值即真实涨跌幅（与交易所口径一致）。
+                        adjust: 'forward'
+                    });
+                    const items = (data && data.item) || [];
+                    const closeMap = {};
+                    items.forEach(function(it) {
+                        const dt = new Date(it.date_ms);
+                        const ds = dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0');
+                        if (typeof it.close_price === 'number') closeMap[ds] = it.close_price;
+                    });
+                    const miss = info.gapDates.filter(function(gd) {
+                        const prev = getPreviousTradingDay(gd);
+                        return !closeMap[gd] || (prev && !closeMap[prev]);
+                    });
+                    if (!missingDates || miss.length < missingDates.length) { closeByDate = closeMap; missingDates = miss; }
+                    if (missingDates.length === 0) break;
+                }
                 const returnedDates = Object.keys(closeByDate).sort();
-                const missingDates = info.gapDates.filter(function(gd) {
-                    const prev = getPreviousTradingDay(gd);
-                    return !closeByDate[gd] || (prev && !closeByDate[prev]);
-                });
                 _dbgLog('[AUCTION-BTN] 历史断点涨幅(' + modeLabel + ') ' + name + '(' + info.code + ') 返回K线日期=' + returnedDates.join(',') +
                     ' | 目标日=' + info.gapDates.join(',') +
                     (missingDates.length > 0 ? ' | 缺失前收/当日收=' + missingDates.join(',') : ''));

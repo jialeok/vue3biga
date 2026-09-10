@@ -40,8 +40,10 @@ import {
 } from '../../data/stock-range-pct.js';
 import { _dbgLog } from '../../data/debug-log.js';
 import { ensureAuctionCodeMapping } from './auction-fetch-helpers.js';
+// [FIX 2026-09-10] 窗口与「当天(T)腿」口径抽到纯函数模块（单一真相，主通道/兜底/补齐共用）
+import { RANGE_WINDOW_DAYS, parsePct, compoundPct, resolveTDayPct, isAuctionLegActive } from './range-window.js';
 
-export const DRAGON_RANGE_DAYS = 10;
+export const DRAGON_RANGE_DAYS = RANGE_WINDOW_DAYS;
 // 北京时间 15:00 之后，当天收盘涨幅已可覆盖早盘竞价涨幅 → 缓存视为过期需重算一次
 const CLOSE_COVER_HOUR = 15;
 // [FIX 2026-09-10] 北京时间 09:25 竞价快照。此前算好的缓存里「当天(T腿)」还没有竞价涨幅，
@@ -98,21 +100,21 @@ export function clearDragonRangePct() {
 }
 
 /**
- * [FIX 2026-09-10] 「内存已加载」是否已跨过今天的时间门槛、需要完整重算一次：
- *   - loadedAt 在 09:25 竞价快照【前】、现在已经过了 9:25 → 当天竞价腿可以补上了 → 重算；
- *   - loadedAt 在 15:00 收盘【前】、现在已经过了 15:00 → 收盘涨幅可以覆盖竞价腿了 → 重算。
- * 只对「系统今天」生效；历史日期算出后不再变。重算本身有云端 updated_at 自限，
- * 不会每次调用都烧额度（见 _loadDragonRangePct 过期判定）。
+ * [FIX 2026-09-10] 「内存已加载」是否已跨过时间门槛、需要完整重算一次：
+ *   - loadedAt 在 15:00 收盘【前】、现在已经过了 15:00 → 收盘涨幅可以覆盖竞价腿了 → 重算；
+ *   - loadedAt 在 09:25 竞价快照【前】、现在已经过了 9:25（仅限系统今天）→ 当天竞价腿可补上 → 重算。
+ * 历史日期同样适用第一条：那天盘中加载过（竞价腿）→ 现在该日已收盘 → 重算成收盘口径。
+ * 重算本身有云端 updated_at 自限，不会每次调用都烧额度（见 _loadDragonRangePct 过期判定）。
  * @returns {boolean} true = 需要走完整加载（stale 判定在 _loadDragonRangePct 内）
  */
 function _needsSameDayRecompute(date, loadedAt) {
   if (!loadedAt) return false;
-  if (date !== _getLocalTodayStr()) return false;
   const now = Date.now();
-  const auctionMs = _auctionSnapshotUtcMs(date);
-  if (loadedAt < auctionMs && now >= auctionMs) return true;
   const closeMs = _closeCoverUtcMs(date);
   if (loadedAt < closeMs && now >= closeMs) return true;
+  if (date !== _getLocalTodayStr()) return false;
+  const auctionMs = _auctionSnapshotUtcMs(date);
+  if (loadedAt < auctionMs && now >= auctionMs) return true;
   return false;
 }
 
@@ -160,19 +162,11 @@ function _hasUpdatedBefore(cloud, ms) {
   return found;
 }
 
-/** 复利累乘：日涨幅数组 → 区间涨幅(%) */
-function _compoundPct(pctList) {
-  if (!pctList || pctList.length === 0) return null;
-  let acc = 1;
-  for (const p of pctList) acc *= (1 + p / 100);
-  return (acc - 1) * 100;
-}
+/** 复利累乘：日涨幅数组 → 区间涨幅(%) —— 实现在 range-window.js（单一真相），此处仅保留别名便于阅读 */
+const _compoundPct = compoundPct;
 
-function _parsePct(raw) {
-  if (raw === null || raw === undefined || raw === '') return null;
-  const n = Number(String(raw).replace('%', '').replace('+', ''));
-  return isFinite(n) ? n : null;
-}
+/** 涨幅解析 —— 实现在 range-window.js（单一真相） */
+const _parsePct = parsePct;
 
 /**
  * 异步加载某日的「10 日区间涨幅」（编排层：云端缓存 → 判定过期 → 猫抓一次 → 回写云端）。
@@ -227,16 +221,22 @@ async function _loadDragonRangePct(date, force) {
   //       必须带上当天竞价腿重算一次，否则整个上午窗口只有 9 天、龙头排名失真；
   //    b) 15:00 收盘后：缓存若是 15:00【之前】算的 → 过期，用收盘涨幅覆盖当天竞价腿重算；
   //    c) 缓存为空 → 直接算。
+  //    d) [FIX 2026-09-10] 历史日期：缓存若写于【该日收盘之前】（当时只有竞价腿、或名单还没到齐），
+  //       → 过期，补一次收盘口径。否则历史上「盘中打开过页面」的日期会永久保留竞价腿口径。
   //    重算后 updated_at 会被 upsert 刷新到「现在」，条件自然变为假 → 自限，不会重复烧额度。
   const sysToday = _getLocalTodayStr();
   let stale = cloud.size === 0;
-  if (date === sysToday && cloud.size > 0) {
+  if (cloud.size > 0) {
     const closeMs = _closeCoverUtcMs(date);
-    const auctionMs = _auctionSnapshotUtcMs(date);
-    if (_beijingHour() >= CLOSE_COVER_HOUR) {
+    if (date === sysToday) {
+      const auctionMs = _auctionSnapshotUtcMs(date);
+      if (_beijingHour() >= CLOSE_COVER_HOUR) {
+        if (_hasUpdatedBefore(cloud, closeMs)) stale = true;
+      } else if (Date.now() >= auctionMs) {
+        if (_hasUpdatedBefore(cloud, auctionMs)) stale = true;
+      }
+    } else if (date < sysToday) {
       if (_hasUpdatedBefore(cloud, closeMs)) stale = true;
-    } else if (Date.now() >= auctionMs) {
-      if (_hasUpdatedBefore(cloud, auctionMs)) stale = true;
     }
   }
 
@@ -376,14 +376,22 @@ async function _patchMissingRangePct(date, map) {
 
   let scMap = state._scMapCache || {};
   const _codeOf = function(r, name) { return String(r.code || scMap[name] || '').trim(); };
+  // [FIX 2026-09-10] 「需要补」不只看有没有值，还要看【天数够不够】：
+  //   主通道曾在并发下拿到被截断的 K 线 → 写入 days=1~9 的残缺区间涨幅。
+  //   这种值参与龙一/龙二排名时与其它票（10 天）不可比，必须用兜底通道重算一次。
+  //   重算结果天数更少时【不覆盖】（见下方保护），因此不会把好数据改坏。
+  const winLen = getDragonWindowDates(date).length;
+  const _insufficient = function(cur) {
+    if (!cur || cur.pct === null || cur.pct === undefined || isNaN(cur.pct)) return true;
+    return Number(cur.days || 0) < winLen;
+  };
   const missing = [];
   rows.forEach(function(r) {
     if (!r || !r.stock) return;
     const name = String(r.stock).trim();
     if (!name) return;
     if (_patchedNames.has(date + '|' + name)) return;
-    const cur = map.get(name);
-    if (cur && cur.pct !== null && cur.pct !== undefined && !isNaN(cur.pct)) return;
+    if (!_insufficient(map.get(name))) return;
     const code = _codeOf(r, name);
     if (!code) return; // 先记为待补码，下面统一补一次再判定
     missing.push({ row: r, name: name, code: code });
@@ -400,8 +408,7 @@ async function _patchMissingRangePct(date, map) {
       if (!r || !r.stock) return;
       const name = String(r.stock).trim();
       if (!name || _patchedNames.has(date + '|' + name)) return;
-      const cur = map.get(name);
-      if (cur && cur.pct !== null && cur.pct !== undefined && !isNaN(cur.pct)) return;
+      if (!_insufficient(map.get(name))) return;
       const code = _codeOf(r, name);
       if (code) missing.push({ row: r, name: name, code: code });
     });
@@ -412,6 +419,16 @@ async function _patchMissingRangePct(date, map) {
   const dates = getDragonWindowDates(date);
   const ascDates = dates.slice().reverse();
   const afterClose = _beijingHour() >= CLOSE_COVER_HOUR;
+  const sysToday = _getLocalTodayStr();
+  // [FIX 2026-09-10] T 腿口径单一真相：只有「今天 + 未收盘」才用竞价涨幅占位；
+  // 历史日期一律用收盘涨幅（历史日线已经有完整收盘价，用竞价腿会让区间涨幅系统性失真）。
+  const tLegPct = function(row, dayValue) {
+    if (isAuctionLegActive(date, sysToday, afterClose)) {
+      return _parsePct(row.auc_pct_chg || row.aucPctChg || '');
+    }
+    if (dayValue !== null && dayValue !== undefined) return dayValue;
+    return resolveTDayPct(false, afterClose, row.changePct || row.change_pct, row.auc_pct_chg || row.aucPctChg);
+  };
   let byName = null;
   try {
     byName = await fetchFuyaoDailyPctRange(
@@ -432,19 +449,15 @@ async function _patchMissingRangePct(date, map) {
     ascDates.forEach(function(d) {
       const ymd = d.replace(/-/g, '');
       let v = dayMap.has(ymd) ? dayMap.get(ymd) : null;
-      if (d === date) {
-        // 与主计算同口径：收盘后用收盘涨幅覆盖，盘中/历史日用竞价涨幅占位
-        if (afterClose) {
-          if (v === null) v = _parsePct(x.row.changePct || x.row.change_pct || '');
-          if (v === null) v = _parsePct(x.row.auc_pct_chg || x.row.aucPctChg || '');
-        } else {
-          v = _parsePct(x.row.auc_pct_chg || x.row.aucPctChg || '');
-        }
-      }
+      if (d === date) v = tLegPct(x.row, v);
       if (v !== null) list.push(v);
     });
     const pct = _compoundPct(list);
     if (pct === null) return;
+    // [FIX 2026-09-10] 不劣化保护：兜底重算出来的天数若比已有值更少，说明这次取到的 K 线更残缺，
+    // 直接丢弃（保留原值），绝不把已算好的 10 日涨幅换成 1~9 天的残缺值。
+    const prev = map.get(x.name);
+    if (prev && Number(prev.days || 0) > list.length) return;
     out.push({ stock: x.name, pct: pct, days: list.length });
     map.set(x.name, { pct: pct, days: list.length });
   });
@@ -529,11 +542,15 @@ async function _fetchAndCompute(date) {
     throw new Error('10日涨幅历史日 K 线整批取不到（猫抓与同花顺双通道均失败）');
   }
 
-  // 当天(T)涨幅口径（§用户口径）：
-  //   - 15:00 前（盘中）：daily 的 T 值是「盘中实时涨幅」，不是竞价涨幅 → 必须用本地【竞价涨幅】占位；
-  //   - 15:00 后（收盘）：daily 的 T 值已是【收盘涨幅】→ 用它覆盖，取不到再退回本地竞价涨幅/收盘涨幅。
-  // 其余历史日一律用 daily 的日涨幅。
+  // 当天(T)涨幅口径（§用户口径，实现在 range-window.js#isAuctionLegActive / resolveTDayPct）：
+  //   - 【系统今天】且 15:00 前（盘中）：日线的 T 值是「盘中实时涨幅」，不是竞价涨幅
+  //     → 必须用本地【9:25 竞价涨幅】占位；
+  //   - 【系统今天】15:00 后：日线 T 值已是【收盘涨幅】→ 用它；
+  //   - 【历史日期】：当天已完整走完 → 同样用【收盘涨幅】（绝不能再用竞价涨幅，
+  //     否则同一天内不同股票的腿口径混杂、区间涨幅与龙一排名系统性失真）。
   const afterClose = _beijingHour() >= CLOSE_COVER_HOUR;
+  const sysToday = _getLocalTodayStr();
+  const auctionLeg = isAuctionLegActive(date, sysToday, afterClose);
   const out = [];
   const ascDates = dates.slice().reverse(); // 升序 T-9 → T
   rows.forEach(function(r) {
@@ -548,12 +565,11 @@ async function _fetchAndCompute(date) {
       const ymd = d.replace(/-/g, '');
       let v = dayMap && dayMap.has(ymd) ? dayMap.get(ymd) : null;
       if (d === date) {
-        if (afterClose) {
-          if (v === null) v = _parsePct(r.changePct || r.change_pct || '');
-          if (v === null) v = _parsePct(r.auc_pct_chg || r.aucPctChg || '');
-        } else {
-          v = _parsePct(r.auc_pct_chg || r.aucPctChg || '');
-        }
+        v = auctionLeg
+          ? _parsePct(r.auc_pct_chg || r.aucPctChg || '')
+          : (v !== null && v !== undefined
+            ? v
+            : resolveTDayPct(false, afterClose, r.changePct || r.change_pct, r.auc_pct_chg || r.aucPctChg));
       }
       if (v !== null) list.push(v);
     });

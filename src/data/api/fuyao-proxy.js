@@ -74,6 +74,10 @@ export function tickerToThscode(ticker) {
     if (t.length !== 6) return t;
     if (t.charAt(0) === '6') return t + '.SH';
     if (t.charAt(0) === '0' || t.charAt(0) === '3') return t + '.SZ';
-    if (t.charAt(0) === '8' || t.charAt(0) === '4') return t + '.BJ';
+    if (t.charAt(0) === '8' || t.charAt(0) === '4') return t + '.BJ'; // 北交所 43/83/87/88 段
+    // [FIX 2026-09-10] 北交所 2024 起启用 920 号段，原先落到 .SZ → K 线恒空 →
+    // 该股 10 日涨幅/竞价指标全天缺失（花溪科技 920895 实测）。
+    if (t.slice(0, 2) === '92') return t + '.BJ';
+    if (t.charAt(0) === '9') return t + '.SH'; // 900xxx 沪市 B 股
     return t + '.SZ';
 }

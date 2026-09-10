@@ -131,47 +131,72 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
     const _ymdToMs = function(ymd) {
         return Date.parse(ymd.slice(0, 4) + '-' + ymd.slice(4, 6) + '-' + ymd.slice(6, 8) + 'T00:00:00+08:00');
     };
-    // 起点前移 8 个自然日：窗口首日的涨幅需要「上一个交易日收盘价」作为基准
-    const startMs = _ymdToMs(first) - 8 * 86400000;
+    // 起点前移 20 个自然日：窗口首日的涨幅需要「上一个交易日收盘价」作为基准。
+    // [FIX 2026-09-10] 原来只前移 8 个自然日，遇到长假（春节/国庆连休 8~9 天 + 周末）时
+    // 上一个交易日会落在窗口外 → 首日涨幅取不到 → 窗口只有 9 天（区间涨幅系统性偏低）。
+    // 同一次请求，多取几根 K 线不增加成本。
+    const startMs = _ymdToMs(first) - 20 * 86400000;
     const endMs = _ymdToMs(last) + 2 * 86400000;
     const wantSet = new Set(ymdList);
     const conc = (opts && opts.concurrency) || 6;
+
+    /**
+     * 取一次 K 线并换算窗口内日涨幅。
+     * [FIX 2026-09-10] 上游 historical 在并发下偶发【返回被截断的少数几根 K 线】，
+     * 若直接采信，会算出「只有 1~3 天」的残缺区间涨幅并写进 stock_range_pct
+     * （仍是日期级复用 → 长期污染，且同一屏内各票天数不同 → 龙一/龙二排名不可比）。
+     * 因此这里做「覆盖不足即重试」：直到取到覆盖整个窗口，或重试次数用尽（新票本身
+     * 交易日就少，重试仍会返回同样短的序列 → 不受影响，只是多 1~2 次请求）。
+     */
+    const fetchOnce = async function(code) {
+        const data = await fuyaoApiGet('/api/a-share/prices/historical', {
+            thscode: tickerToThscode(code),
+            interval: '1d',
+            start: String(startMs),
+            end: String(endMs),
+            // [FIX 2026-09-10] 必须用【前复权】：不复权收盘价在除权除息日会出现
+            // 「假暴跌」（送转/派息导致价格向下跳空），算出来的区间涨幅与交易所涨跌幅
+            // （猫抓 daily 的 pct_chg）不可比 → 同一题材内用不同通道算出的票排名会错乱。
+            // 前复权价按同一复权因子缩放，日间比值 = 真实涨幅（含分红送转），与涨跌幅口径一致。
+            adjust: 'forward'
+        });
+        const rows = (data && data.item) || [];
+        const series = [];
+        rows.forEach(function(r) {
+            if (!r || r.date_ms == null || r.close_price == null) return;
+            const ms = Number(r.date_ms);
+            const close = Number(r.close_price);
+            if (!isFinite(ms) || !isFinite(close) || close <= 0) return;
+            // date_ms 是【北京时间午夜】→ 加 8h 后取 UTC 日期才是正确的交易日
+            const ymd = new Date(ms + 8 * 3600 * 1000).toISOString().slice(0, 10).replace(/-/g, '');
+            series.push({ ymd: ymd, close: close });
+        });
+        series.sort(function(a, b) { return a.ymd < b.ymd ? -1 : (a.ymd > b.ymd ? 1 : 0); });
+        const keep = new Map();
+        for (let k = 1; k < series.length; k++) {
+            const prev = series[k - 1];
+            const cur = series[k];
+            if (!wantSet.has(cur.ymd)) continue;
+            keep.set(cur.ymd, (cur.close / prev.close - 1) * 100);
+        }
+        return keep;
+    };
 
     for (let i = 0; i < list.length; i += conc) {
         const batch = list.slice(i, i + conc);
         await Promise.all(batch.map(async function(it) {
             const name = String(it.stock).trim();
+            let best = null;
             try {
-                const data = await fuyaoApiGet('/api/a-share/prices/historical', {
-                    thscode: tickerToThscode(it.code),
-                    interval: '1d',
-                    start: String(startMs),
-                    end: String(endMs),
-                    adjust: 'none'
-                });
-                const rows = (data && data.item) || [];
-                const series = [];
-                rows.forEach(function(r) {
-                    if (!r || r.date_ms == null || r.close_price == null) return;
-                    const ms = Number(r.date_ms);
-                    const close = Number(r.close_price);
-                    if (!isFinite(ms) || !isFinite(close) || close <= 0) return;
-                    // date_ms 是【北京时间午夜】→ 加 8h 后取 UTC 日期才是正确的交易日
-                    const ymd = new Date(ms + 8 * 3600 * 1000).toISOString().slice(0, 10).replace(/-/g, '');
-                    series.push({ ymd: ymd, close: close });
-                });
-                series.sort(function(a, b) { return a.ymd < b.ymd ? -1 : (a.ymd > b.ymd ? 1 : 0); });
-                const keep = new Map();
-                for (let k = 1; k < series.length; k++) {
-                    const prev = series[k - 1];
-                    const cur = series[k];
-                    if (!wantSet.has(cur.ymd)) continue;
-                    keep.set(cur.ymd, (cur.close / prev.close - 1) * 100);
+                for (let attempt = 0; attempt < 3; attempt++) {
+                    const keep = await fetchOnce(it.code);
+                    if (!best || keep.size > best.size) best = keep;
+                    if (best.size >= wantSet.size) break; // 已覆盖整个窗口，无需再试
                 }
-                if (keep.size > 0) out.set(name, keep);
             } catch (e) {
                 _dbgLog('[DRAGON-FUYAO] ' + name + '(' + it.code + ') 历史K线失败: ' + (e && e.message || e));
             }
+            if (best && best.size > 0) out.set(name, best);
         }));
     }
     return out;
