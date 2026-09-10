@@ -10,7 +10,7 @@ import { getRecentTradingDays } from './holiday-check.js';
 // 窗口天数 / 复利累乘 / T 腿竞价占位判定 全部只此一份，前后端不会算出两个结果。
 // ⚠️ 跨目录引用会让 workers/_bundle.mjs 把该文件一并打进单文件产物（Cloudflare 复制粘贴部署），
 //    因此 src/logic/auction/range-window.js 必须保持「零 import 的纯函数」，不得引入 Vue / DOM 依赖。
-import { RANGE_WINDOW_DAYS, parsePct, compoundPct, isAuctionLegActive } from '../../../src/logic/auction/range-window.js';
+import { RANGE_WINDOW_DAYS, parsePct, buildRangeRows, isAuctionLegActive } from '../../../src/logic/auction/range-window.js';
 
 /** 与 range-window.RANGE_WINDOW_DAYS 同源；显式断言避免有人改动窗口天数后 worker 静默失配 */
 const RANGE_DAYS = RANGE_WINDOW_DAYS;
@@ -507,7 +507,7 @@ async function fetchAndMergeHistoricalPct(env, constituents, expectedDates, toda
 function buildRangePctRows(constituents, rangeDates, dailyByCode, metricsByDate, today, logs) {
   if (!rangeDates || rangeDates.length === 0) return [];
 
-  // 当天(T)腿的两个候选：竞价涨幅（9:25 口径）与当日开盘时的临时涨幅（本地调试/补抓口径）
+  // 当天(T)腿的两个候选：竞价涨幅（9:25 口径）与当日收盘涨幅（15:00 后手动补抓口径，缺失回退行内涨幅）
   const auctionPctByCode = {};
   const changePctByCode = {};
   (metricsByDate[today] || []).forEach(m => {
@@ -520,38 +520,31 @@ function buildRangePctRows(constituents, rangeDates, dailyByCode, metricsByDate,
 
   const afterClose = beijingNow().getUTCHours() >= 15;
   const useAuctionLeg = isAuctionLegActive(today, today, afterClose);
+  const tYmd = today.replace(/-/g, '');
 
-  const rows = [];
-  const seen = new Set();
+  // 只做「取 T 腿」这一步（口径由 useAuctionLeg 决定）；窗口/复利/组装全部交给 range-window.buildRangeRows
+  const tLegByCode = {};
   constituents.forEach(c => {
-    if (!c || !c.code || !c.name || seen.has(c.name)) return;
-    const dm = dailyByCode[c.code] || null;
-    const legs = [];
-    rangeDates.forEach(d => {
-      const ymd = d.replace(/-/g, '');
-      let v;
-      if (d === today) {
-        if (useAuctionLeg) {
-          v = auctionPctByCode[c.code];
-        } else {
-          v = dm && Object.prototype.hasOwnProperty.call(dm, ymd) ? dm[ymd] : changePctByCode[c.code];
-        }
-      } else {
-        v = dm && Object.prototype.hasOwnProperty.call(dm, ymd) ? dm[ymd] : null;
-      }
-      if (v !== null && v !== undefined && isFinite(v)) legs.push(v);
-    });
-    const pct = compoundPct(legs);
-    if (pct === null) return; // 一个交易日的涨幅都没有 → 不写空行（避免前端反复兜底抓取）
-    seen.add(c.name);
-    rows.push({
-      date: today,
-      stock: c.name,
-      range_pct: Number(pct).toFixed(2),
-      days: legs.length,
-      updated_at: new Date().toISOString()
-    });
+    if (!c || !c.code) return;
+    let v;
+    if (useAuctionLeg) {
+      v = auctionPctByCode[c.code];
+    } else {
+      const dm = dailyByCode[c.code];
+      v = dm && Object.prototype.hasOwnProperty.call(dm, tYmd) ? dm[tYmd] : changePctByCode[c.code];
+    }
+    if (v !== null && v !== undefined && isFinite(v)) tLegByCode[c.code] = Number(v);
   });
+
+  const built = buildRangeRows(constituents, rangeDates, dailyByCode, tLegByCode);
+  const nowIso = new Date().toISOString();
+  const rows = built.map(r => ({
+    date: today,
+    stock: r.stock,
+    range_pct: Number(r.pct).toFixed(2),
+    days: r.days,
+    updated_at: nowIso
+  }));
   logs.push('步骤5b：区间涨幅计算完成 ' + rows.length + '/' + constituents.length + ' 只（T 腿口径=' +
     (useAuctionLeg ? '9:25 竞价涨幅' : '当日收盘涨幅') + '）');
   return rows;

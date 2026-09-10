@@ -45,8 +45,15 @@ import { ensureAuctionCodeMapping } from './auction-fetch-helpers.js';
 import { RANGE_WINDOW_DAYS, parsePct, compoundPct, resolveTDayPct, isAuctionLegActive } from './range-window.js';
 
 export const DRAGON_RANGE_DAYS = RANGE_WINDOW_DAYS;
-/** 北京时间 15:00 之后，当天收盘涨幅已可覆盖早盘竞价涨幅 */
+/** 北京时间 15:00 之后，当天收盘涨幅已可覆盖早盘竞价涨幅（T 腿口径判定用） */
 const CLOSE_COVER_HOUR = 15;
+/**
+ * worker 收盘重算时刻（北京 16:00）+ 缓冲：此后云端的区间涨幅才是【权威收盘口径】。
+ * 用于判断内存快照是否需要在跨过 16:00 后重读一次 —— 页面在 15:0x 已自愈重读过的用户，
+ * 若不重读就拿不到 worker 16:00 的重算结果（§17 不能依赖用户手动刷新碰巧生效）。
+ */
+const WORKER_CLOSE_HOUR = 16;
+const WORKER_CLOSE_BUFFER_MIN = 5;
 /** 云端为空时的重试间隔：页面可能早于 9:25 打开，worker 写入后需要再读一次 */
 const EMPTY_RETRY_MS = 15 * 1000;
 /** 空缓存「主动重试」首次间隔 / 上限间隔 / 最大次数（指数退避，避免 worker 一直没写时空转） */
@@ -158,9 +165,12 @@ function _beijingMinutes() {
   return ((n.getUTCHours() + 8) % 24) * 60 + n.getUTCMinutes();
 }
 
-/** 北京 15:00 对应的 UTC 时间戳（用于判断内存缓存是否还是「竞价腿口径」） */
-function _closeCoverUtcMs(dateStr) {
-  return Date.parse(dateStr + 'T00:00:00Z') + (CLOSE_COVER_HOUR - 8) * 3600000;
+/** worker 收盘重算完成时刻（北京 16:05）对应的 UTC 时间戳 */
+function _authoritativeCloseUtcMs(dateStr) {
+  if (!dateStr) return NaN;
+  const base = Date.parse(dateStr + 'T00:00:00Z');
+  if (Number.isNaN(base)) return NaN;
+  return base + (WORKER_CLOSE_HOUR - 8) * 3600000 + WORKER_CLOSE_BUFFER_MIN * 60000;
 }
 
 /** 是否处于 worker 写入区间涨幅的时间窗（云端为空属正常，不该抢跑兜底） */
@@ -182,9 +192,10 @@ export async function ensureDragonRangePct(date, opts) {
   const cur = dragonState.value;
   if (!force && cur.date === date && cur.map) {
     const isEmpty = cur.map.size === 0;
-    // 需要重读的三种情况：收盘覆盖后登记过 / 内存是 15:00 前的竞价腿口径且现在已过收盘 / 云端为空且已过重试间隔
+    // 需要重读的三种情况：收盘覆盖后登记过 / 内存快照早于 worker 的 16:00 权威重算时刻 / 云端为空且已过重试间隔
+    const authMs = _authoritativeCloseUtcMs(date);
     const needReload = _reloadDates.has(date)
-      || (cur.loadedAt > 0 && cur.loadedAt < _closeCoverUtcMs(date) && Date.now() >= _closeCoverUtcMs(date))
+      || (cur.loadedAt > 0 && !Number.isNaN(authMs) && cur.loadedAt < authMs && Date.now() >= authMs)
       || (isEmpty && Date.now() - cur.loadedAt >= EMPTY_RETRY_MS);
     if (!needReload) return cur.map;
   }

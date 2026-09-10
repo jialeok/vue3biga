@@ -5,7 +5,8 @@ import {
   compoundPct,
   isAuctionLegActive,
   resolveTDayPct,
-  replaceTDayLeg
+  replaceTDayLeg,
+  buildRangeRows
 } from './range-window.js';
 
 describe('parsePct 涨幅解析', () => {
@@ -136,5 +137,67 @@ describe('replaceTDayLeg 收盘后替换 T 腿', () => {
     expect(replaceTDayLeg('+20.00', '+5.00%', '0')).toBeCloseTo(
       ((1 + 20 / 100) / (1 + 5 / 100) - 1) * 100, 6
     );
+  });
+});
+
+describe('buildRangeRows 组装区间涨幅行（worker 早盘/收盘共用）', () => {
+  const D = ['2026-08-27', '2026-08-28', '2026-08-31', '2026-09-01', '2026-09-02',
+    '2026-09-03', '2026-09-04', '2026-09-07', '2026-09-08', '2026-09-09'];
+  const targets = [{ name: '甲', code: '600001' }, { name: '乙', code: '600002' }];
+  // 甲：9 天历史 1% 每日；乙：缺 3 天历史
+  const dailyByCode = {
+    '600001': Object.fromEntries(D.slice(0, 9).map(d => [d.replace(/-/g, ''), 1])),
+    '600002': {
+      '20260827': 2, '20260828': 2, '20260831': 2, '20260901': 2,
+      '20260902': 2, '20260903': 2
+    }
+  };
+
+  it('10 天齐全 → 复利累乘，days=10', () => {
+    const rows = buildRangeRows(targets, D, dailyByCode, { '600001': 5, '600002': 0 });
+    const a = rows.find(r => r.stock === '甲');
+    expect(a.days).toBe(10);
+    expect(a.pct).toBeCloseTo(compoundPct(new Array(9).fill(1).concat([5])), 6);
+  });
+
+  it('历史缺天数 → days 如实反映，不补 0（禁伪造）', () => {
+    const rows = buildRangeRows(targets, D, dailyByCode, { '600001': 5, '600002': 0 });
+    const b = rows.find(r => r.stock === '乙');
+    expect(b.days).toBe(7); // 6 天历史 + 当天 1 天
+  });
+
+  it('当天(T)腿缺该股票 → 当天不计入（days 少 1），绝不当作 0%', () => {
+    const rows = buildRangeRows(targets, D, dailyByCode, { '600001': 5 });
+    const b = rows.find(r => r.stock === '乙');
+    expect(b.days).toBe(6); // 只有 6 天历史，当天那根腿缺失 → 不补 0
+    expect(b.pct).toBeCloseTo(compoundPct(new Array(6).fill(2)), 6);
+  });
+
+  it('一天数据都没有 → 不产出行（不写空行）', () => {
+    const rows = buildRangeRows([{ name: '丙', code: '600003' }], D, {}, {});
+    expect(rows).toEqual([]);
+  });
+
+  it('同名去重 / 缺码跳过', () => {
+    const rows = buildRangeRows(
+      [{ name: '甲', code: '600001' }, { name: '甲', code: '600001' }, { name: '丁', code: '' }],
+      D, dailyByCode, { '600001': 5 }
+    );
+    expect(rows).toHaveLength(1);
+  });
+
+  it('T 腿口径可切换（竞价 3% vs 收盘 6%）→ 只影响最后一个因数', () => {
+    const auc = buildRangeRows(targets, D, dailyByCode, { '600001': 3 });
+    const close = buildRangeRows(targets, D, dailyByCode, { '600001': 6 });
+    const a1 = auc.find(r => r.stock === '甲').pct;
+    const c1 = close.find(r => r.stock === '甲').pct;
+    expect(a1).not.toBeCloseTo(c1, 6);
+    expect(c1).toBeCloseTo(replaceTDayLeg(a1, 3, 6), 6); // 与「换腿」结果一致，两条路径同源
+  });
+
+  it('空窗口 / 空名单 → 空数组（不抛错）', () => {
+    expect(buildRangeRows(targets, [], dailyByCode, {})).toEqual([]);
+    expect(buildRangeRows([], D, dailyByCode, {})).toEqual([]);
+    expect(buildRangeRows(null, D, null, null)).toEqual([]);
   });
 });

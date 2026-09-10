@@ -2,7 +2,10 @@
 //
 // 为什么单独成模块：
 //   区间涨幅是「龙一/龙二排名」的唯一排序依据，口径一旦混用就会系统性失真（不是个别股票问题）。
-//   以下三条规则必须只有一份实现，所有计算路径（主通道 / 同花顺兜底 / 缺口补齐）共用：
+//   以下三条规则 + 「组装成行」必须只有一份实现，所有计算路径共用：
+//     · worker 早盘 9:25 首算（T 腿=竞价涨幅）→ buildRangeRows
+//     · worker 收盘 16:00 重算（T 腿=收盘涨幅）→ buildRangeRows
+//     · 前端兜底抓取 / 收盘 T 腿换算 → buildRangeRows / replaceTDayLeg
 //
 //   ① 窗口 = [T-9, T] 共 10 个交易日（含当天 T）；
 //   ② 区间涨幅 = 窗口内各日涨幅【复利累乘】∏(1+r) - 1（不是简单相加）；
@@ -69,6 +72,54 @@ export function resolveTDayPct(isToday, afterClose, closePct, aucPct) {
   const a = parsePct(aucPct);
   if (isToday && !afterClose) return a; // 今天未收盘：只有竞价涨幅可用
   return c !== null ? c : a;            // 已收盘/历史：收盘优先，取不到才退回竞价
+}
+
+/**
+ * 【组装区间涨幅行】「窗口 + 复利 + T 腿」三条规则的唯一实现（worker 早盘 / worker 收盘共用）。
+ *
+ * 调用方只负责「准备数据」：
+ *   · rangeDates  —— 升序交易日 [T-9 ... T]；
+ *   · dailyByCode —— code -> { YYYYMMDD: 日涨幅 }，历史日数据（当天由 tLegByCode 覆盖，此处可有可无）；
+ *   · tLegByCode  —— code -> 当天(T)腿涨跌幅（9:25 竞价涨幅 / 收盘涨幅，由调用方决定口径）。
+ * 本函数只做：逐日取腿 → 复利累乘 → 输出 { stock, code, pct, days }，不读写 state / 不发请求。
+ *
+ * ⚠️ tLegByCode 缺该股票时，当天那根腿【不参与】累乘（days 会少 1）——调用方应先按
+ *    「当天腿是否可得」筛掉目标，否则会算出「不含当天」的残缺区间涨幅。
+ *
+ * @param {Array<{name:string, code:string}>} targets 参与计算的股票（按 name 去重，先到先得）
+ * @param {string[]} rangeDates 升序交易日 ['YYYY-MM-DD', ...]
+ * @param {Object} dailyByCode code -> { YYYYMMDD: number }
+ * @param {Object} tLegByCode code -> number 当天(T)腿涨跌幅
+ * @returns {Array<{stock:string, code:string, pct:number, days:number}>}
+ */
+export function buildRangeRows(targets, rangeDates, dailyByCode, tLegByCode) {
+  const rows = [];
+  if (!targets || targets.length === 0 || !rangeDates || rangeDates.length === 0) return rows;
+  const tYmd = String(rangeDates[rangeDates.length - 1]).replace(/-/g, '');
+  const seen = new Set();
+  targets.forEach(function(t) {
+    if (!t || !t.code || !t.name) return;
+    const name = String(t.name).trim();
+    if (!name || seen.has(name)) return;
+    const dm = (dailyByCode && dailyByCode[t.code]) || null;
+    const legs = [];
+    rangeDates.forEach(function(d) {
+      const ymd = String(d).replace(/-/g, '');
+      let v;
+      if (ymd === tYmd) {
+        v = tLegByCode ? tLegByCode[t.code] : undefined;
+      } else {
+        v = dm && Object.prototype.hasOwnProperty.call(dm, ymd) ? dm[ymd] : null;
+      }
+      if (v === null || v === undefined || !isFinite(v)) return;
+      legs.push(Number(v));
+    });
+    const pct = compoundPct(legs);
+    if (pct === null) return; // 一个交易日都没有 → 不写空行（避免前端反复兜底抓取）
+    seen.add(name);
+    rows.push({ stock: name, code: t.code, pct: pct, days: legs.length });
+  });
+  return rows;
 }
 
 /**
