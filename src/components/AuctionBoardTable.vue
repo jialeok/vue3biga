@@ -20,8 +20,12 @@
   <template
     v-for="(item, idx) in filteredObsItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.isYiZi]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.isYiZi, item.topicStats]"
   >
+    <AuctionTopicStatsBar
+      v-if="item.topicStats"
+      :stats="item.topicStats"
+    />
     <div
       :class="item.itemClass"
       :style="item.topicBg ? { background: item.topicBg } : null"
@@ -183,8 +187,12 @@
   <template
     v-for="(item, idx) in filteredRegularItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.isYiZi]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.isYiZi, item.topicStats]"
   >
+    <AuctionTopicStatsBar
+      v-if="item.topicStats"
+      :stats="item.topicStats"
+    />
     <div
       :class="item.itemClass"
       :style="item.topicBg ? { background: item.topicBg } : null"
@@ -346,6 +354,7 @@
 import { inject, watch, nextTick } from 'vue';
 import AuctionBadge from './AuctionBadge.vue';
 import AuctionDragonBadge from './AuctionDragonBadge.vue';
+import AuctionTopicStatsBar from './AuctionTopicStatsBar.vue';
 import TrendChart from './TrendChart.vue';
 const board = inject('auctionBoard');
 const {

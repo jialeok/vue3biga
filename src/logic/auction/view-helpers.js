@@ -19,6 +19,8 @@ import { isAuctionYiZi, parseAucPct } from './limit-up.js';
 // [DRAGON 2026-09-09] 题材龙头（龙一/龙二…）：区间涨幅状态由 dragon-rank.js 异步加载后经模块级 ref 暴露，
 // 此处同步读取（与 weakStrongSetRef 同款 ref-driven 范式），题材 toggle 开启时才参与计算。
 import { getDragonRangePct, computeDragonRankMap } from './dragon-rank.js';
+// [TOPIC-STATS 2026-09-10] 题材块统计条（数量/一字/竞价高开/龙头…）：纯函数在 topic-stats.js
+import { buildTopicStatsMap } from './topic-stats.js';
 
 function _getAuctionTag(date, stockName) {
   if (!date || !stockName) return null;
@@ -594,6 +596,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // 不同题材不同浅色、仅成员>=2 的真实题材上色、"其它"不上色（详细口径见 buildTopicColorMap）。
   let topicColorMap = null;
   let primaryTopicOfForColor = null;
+  // [TOPIC-STATS 2026-09-10] 竞价一字判定函数（题材块内定义，提升到此处供统计条复用）
+  let yiZiOf = null;
 
   // [DRAGON 2026-09-09] 龙头排名：只在题材 toggle 开启时计算（需求——只要题材开着标记就在，
   // 无论是否叠加其它 toggle）。口径：同题材组（= 界面同颜色块：真实题材 且 成员>=2）内部，
@@ -633,8 +637,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     // [YIZI 2026-09-09] 题材组间排序权重：9:25 竞价一字（竞价涨停）数量越多的题材排越前。
     // 判定只依赖行内 auc_pct_chg + 代码（内存映射），同步无请求；缺代码按主板 10% 兜底。
     // 无一字时 yiZiMap 全为 0 → 退化为「按题材数量降序」的既有口径，行为不变。
+    // [TOPIC-STATS 2026-09-10] 统计条同样要数「一字」，故提升到外层作用域供两处复用（§6 单一真相）。
     const _yiZiCache = new Map();
-    const yiZiOf = function(idx) {
+    yiZiOf = function(idx) {
       if (_yiZiCache.has(idx)) return _yiZiCache.get(idx);
       const it = renderList[idx];
       const nm = it && it.stock ? String(it.stock).trim() : '';
@@ -819,9 +824,45 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // （折叠观察组会剔除未命中行）→ 必须按【最终展示集合】重算一次排名，避免被隐藏的票占用龙一位次。
   if (sortState.byTopic && !topicOnlyMode) dragonRankMap = _buildDragonRankMap(fullOrder);
 
+  // [TOPIC-STATS 2026-09-10] 题材【单独开启】时，为每个题材块算一行统计小字（数量/一字/竞价高开/龙头…）。
+  // 统计口径与 sortByTopicGroups 的分组【完全同源】（同一个 primaryTopicOf、同一个渲染集合 fullOrder），
+  // 杜绝"统计条数字和下面的行数对不上"。只在 topicOnlyMode 生效：叠加主排序时分组语义不同，不加。
+  let topicStatsMap = null;
+  if (topicOnlyMode && primaryTopicOfForColor) {
+    const _rangeMap = getDragonRangePct(currentDate);
+    const _entries = [];
+    fullOrder.forEach(function(i) {
+      const raw = renderList[i];
+      const nm = raw && raw.stock ? String(raw.stock).trim() : '';
+      if (!nm) return;
+      const rp = (_rangeMap && _rangeMap.has(nm)) ? _rangeMap.get(nm).pct : null;
+      _entries.push({
+        topic: primaryTopicOfForColor(i),
+        name: nm,
+        isYiZi: !!(yiZiOf && yiZiOf(i)),
+        aucPct: _getThreeDayAuctionPct(raw),
+        rangePct: (rp === undefined ? null : rp)
+      });
+    });
+    topicStatsMap = buildTopicStatsMap(_entries);
+  }
+  let _lastTopicKey = null;
+
   const items = fullOrder.map((i, pos) => {
     const it = _enrichAuctionItem(renderList[i], i, ctx);
     if (it) {
+      // 题材块【第一行】挂统计条（topicStats），其余行为 null —— 模板 v-if 渲染，不做任何计算（§21）
+      if (topicStatsMap && primaryTopicOfForColor) {
+        const tp = (primaryTopicOfForColor(i) || '其它').trim() || '其它';
+        if (tp !== _lastTopicKey) {
+          it.topicStats = topicStatsMap.get(tp) || null;
+          _lastTopicKey = tp;
+        } else {
+          it.topicStats = null;
+        }
+      } else {
+        it.topicStats = null;
+      }
       // 题材 toggle 开启时，给每行附上所属题材的浅色背景（未匹配/不足两只的题材为空 → 不上色）
       if (topicColorMap && primaryTopicOfForColor) {
         const tp = primaryTopicOfForColor(i);

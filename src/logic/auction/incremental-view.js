@@ -22,6 +22,8 @@ import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 // [DRAGON 2026-09-09] 龙头徽章依赖异步加载的 10 日区间涨幅，必须进全局指纹，
 // 否则数据到达后行缓存不失效 → 徽章不显示（或陈旧）。
 import { getDragonFingerprintToken } from './dragon-rank.js';
+// [TOPIC-STATS 2026-09-10] 题材块统计条签名（挂在组内首行上，需单独进 rowSig）
+import { topicStatsSignature } from './topic-stats.js';
 
 const rowCache = new Map(); // key: `${dataSource}|${index}` -> { sig, item }
 let lastGlobalFingerprint = '';
@@ -114,6 +116,9 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToke
     s.byJingYest ? 1 : 0, s.byJingYestRatio ? 1 : 0, s.byThreeDayJingDie ? 1 : 0, s.byTopic ? 1 : 0,
     'ws=' + (wsToken || 0), // [WEAK-STRONG 2026-09-01] 弱转强达标档(连跌天数)变化需触发该行重派生，否则高光 class 被增量缓存陈旧复用
     'yizi=' + (item.isYiZi ? 1 : 0), // [YIZI 2026-09-09] 竞价一字状态（竞价涨幅达标）变化需触发重派生，否则红线标记陈旧
+    // [TOPIC-STATS 2026-09-10] 题材块统计条挂在【该组第一行】上：组内任何一只票的一字/高开/龙头变化
+    // 都会改变统计数字，但首行自身的行内输入可能没变 → 必须单独入签名，否则统计条数字陈旧。
+    'ts=' + (item.topicStats ? topicStatsSignature(item.topicStats) : ''),
     'vg=' + (vgToken || 0), // [VOL-GRAB 2026-09-05] 量比抢筹达标状态(0/1)变化需触发该行重派生，否则高光 class 陈旧复用
     prevVolume, prevYestVolume,
     sold ? 1 : 0, bought ? 1 : 0, selected ? 1 : 0
