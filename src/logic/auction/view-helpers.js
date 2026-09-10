@@ -192,7 +192,13 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     topicsDisplay: getStockTopicsDisplay(rawItem),
     // [YIZI 2026-09-09] 竞价一字（竞价涨停）→ 股票名下红线；aucPctText 仅用于悬停提示
     isYiZi,
-    aucPctText
+    aucPctText,
+    // [DRAGON-COLOR 2026-09-11] 龙头徽章（龙一/龙二…）配色依据 = 当天竞价涨幅数值。
+    // 取值只认专用竞价涨幅字段 auc_pct_chg（与上方 _aucPctNum 同一个值，零额外计算、
+    // 无请求、不落库）：>0 红、<0 绿、=0 灰；null = 该股当日无竞价涨幅数据（按中性灰，不当 0 处理）。
+    // 绝不复用 changePct/change_pct —— 后者会被收盘覆盖改写成收盘涨幅，颜色会跟着收盘变，
+    // 与「跟随当天竞价涨幅」的需求不符。
+    aucPctNum: _aucPctNum
   };
 }
 

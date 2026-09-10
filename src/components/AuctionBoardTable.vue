@@ -20,7 +20,7 @@
   <template
     v-for="(item, idx) in filteredObsItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.isYiZi, item.topicStats]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats]"
   >
     <AuctionTopicStatsBar
       v-if="item.topicStats"
@@ -65,6 +65,7 @@
           v-if="item.dragonRank > 0"
           :rank="item.dragonRank"
           :pct="item.dragonPct"
+          :pct-chg="item.aucPctNum"
         />
         <AuctionBadge
           :item="item"
@@ -187,7 +188,7 @@
   <template
     v-for="(item, idx) in filteredRegularItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.isYiZi, item.topicStats]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats]"
   >
     <AuctionTopicStatsBar
       v-if="item.topicStats"
@@ -232,6 +233,7 @@
           v-if="item.dragonRank > 0"
           :rank="item.dragonRank"
           :pct="item.dragonPct"
+          :pct-chg="item.aucPctNum"
         />
         <AuctionBadge
           :item="item"
