@@ -110,7 +110,9 @@ export function useAuctionBoard() {
   if (!_dragonWatchBound) {
     _dragonWatchBound = true;
     watch(
-      () => [sortState.byTopic, uiStore.currentDate],
+      // [FIX 2026-09-10] 额外监听「当日渲染行数」：9:25 名单是逐步到达的，
+      // 只在 toggle/日期变化时加载会让后到的股票永远缺 10 日涨幅（实测 9/10 60 行只有 11 行有数据）。
+      () => [sortState.byTopic, uiStore.currentDate, (viewData.value && viewData.value.items ? viewData.value.items.length : 0)],
       async () => {
         // ⚠️ 不再因「关闭题材」而清空：展开面板的「10日涨幅」同样依赖这份数据
         // （与题材 toggle 是否开启无关）。数据按 date 键控，切日期时会被新日期覆盖。

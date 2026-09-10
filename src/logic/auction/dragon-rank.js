@@ -25,7 +25,12 @@ import { ref } from 'vue';
 import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
 import { _getLocalTodayStr } from '../tagTitles/rules.js';
 import { state } from '../app-state.js';
+import { getAuctionData } from '../app-core-api.js';
 import { _getAuctionFormalRowsForDate } from '../../data/watchlist-and-metrics.js';
+// [FIX 2026-09-09] 10 日涨幅目标名单必须覆盖「观察组继承票」，否则带 * 的票永远没有 10 日涨幅：
+// 观察组（打标签继承 / 前一日竞昨高光）只在视图层注入，既不在 _auctionMemCache 也不在 auction_watchlist。
+import { getJingYestHighlightSetForDate } from './sort-rules.js';
+import { getCarryOverNamesForDate } from './tag-carryover.js';
 import { loadCloudStockCodeMap } from '../../data/stock-code-map.js';
 import {
   readRangePctForDate,
@@ -41,6 +46,9 @@ export const DRAGON_RANGE_DAYS = 10;
 const CLOSE_COVER_HOUR = 15;
 // 同花顺兜底每会话每个日期最多走一次：猫抓额度用尽时避免每次渲染都发几十个请求
 const _fuyaoFallbackDates = new Set();
+// [FIX 2026-09-10] 缺口补齐按【股票名】标记（date|name）：名单是逐步到达的，按日期一次性标记
+// 会让后到的票永远补不上。每只票每会话最多尝试一次；force 刷新（后台按钮）会清空重新补。
+const _patchedNames = new Set();
 
 // ===== 状态（模块级 ref，§7：不进 Pinia，遵循 weakStrongSetRef 同款 ref-driven 范式）=====
 const dragonState = ref({ date: '', map: new Map(), version: 0 });
@@ -124,7 +132,13 @@ export async function ensureDragonRangePct(date, opts) {
   const force = !!(opts && opts.force);
   if (!date) return null;
   const cur = dragonState.value;
-  if (!force && cur.date === date && cur.map && cur.map.size > 0) return cur.map;
+  if (!force && cur.date === date && cur.map && cur.map.size > 0) {
+    // [FIX 2026-09-10] 已加载过也要再补一次缺口：名单是逐步到达的（worker 写入 / 切日期后数据落地 /
+    // 用户刷新），第一次计算时没在名单里的票会永远缺 10 日涨幅。这里只补「还没算出来的」，
+    // 按股票名去重，不重复消耗额度。
+    await _patchMissingRangePct(date, cur.map);
+    return _currentMapOr(date, cur.map);
+  }
   // 非强制：复用同一次进行中的请求（单飞，杜绝并发重复消耗额度）。
   // 强制（后台按钮）：用户显式要求重算，另起一次并接管 inflight（按钮本身有 backendLoading 防连点）。
   if (_inflight && _inflight.date === date && !force) return _inflight.promise;
@@ -138,6 +152,11 @@ export async function ensureDragonRangePct(date, opts) {
 }
 
 async function _loadDragonRangePct(date, force) {
+  // force（后台按钮）：清掉本会话的「已兜底 / 已补齐」标记，允许再补一次
+  if (force) {
+    _fuyaoFallbackDates.delete(date);
+    _patchedNames.forEach(function(k) { if (k.indexOf(date + '|') === 0) _patchedNames.delete(k); });
+  }
   // 1) 云端缓存（读取失败必须抛错，由调用方提示；不静默当空数据）
   let cloud = new Map();
   try {
@@ -164,7 +183,11 @@ async function _loadDragonRangePct(date, force) {
     const map = new Map();
     cloud.forEach((v, k) => map.set(k, { pct: v.pct, days: v.days }));
     dragonState.value = { date: date, map: map, version: dragonState.value.version + 1 };
-    return map;
+    // [FIX 2026-09-10] 云端缓存是【日期级】复用的：只要该日有任意一行就直接命中，
+    // 于是历史上漏算的股票（当时缺代码 / 名单口径不含观察组）会被永久冻结成"没有 10 日涨幅"。
+    // 这里做一次「缺谁补谁」的增量补齐（只走同花顺，不消耗猫抓额度）。
+    await _patchMissingRangePct(date, map);
+    return _currentMapOr(date, map);
   }
 
   // 3) 拉接口（一次请求覆盖全部股票 × 10 个交易日）
@@ -172,20 +195,197 @@ async function _loadDragonRangePct(date, force) {
   const map = new Map();
   computed.rows.forEach(r => map.set(r.stock, { pct: r.pct, days: r.days }));
   dragonState.value = { date: date, map: map, version: dragonState.value.version + 1 };
+  // 主通道/兜底都可能漏掉个别票（猫抓该票无数据、代码刚补上等），同样做一次缺口补齐
+  await _patchMissingRangePct(date, map);
+  const _m = _currentMapOr(date, map);
 
   // 4) 回写云端（失败只提示，不阻断本次展示：内存已可用）
+  _m.forEach(function(v, k) {
+    if (computed.rows.some(function(r) { return r.stock === k; })) return;
+    computed.rows.push({ stock: k, pct: v && v.pct !== undefined ? v.pct : null, days: v ? v.days : 0 });
+  });
   try {
     await upsertRangePctRows(date, computed.rows);
   } catch (e) {
     _dbgLog('[DRAGON] 写入 stock_range_pct 失败: ' + (e && e.message || e));
     throw new Error('龙头涨幅已算出但写云失败（下次会重新请求）：' + (e && e.message || e));
   }
-  return map;
+  return _m;
+}
+
+/** 缺口补齐可能已经把 ref 换成了新 Map，这里取「当前生效」的那一份（§6 单一真相） */
+function _currentMapOr(date, fallback) {
+  const s = dragonState.value;
+  return (s.date === date && s.map) ? s.map : fallback;
+}
+
+/**
+ * 【10 日涨幅目标名单 · 单一真相 / 2026-09-09】
+ * 取值集合必须等于「看板当天真正会渲染出来的行」，否则必然出现
+ * 「同一屏里有的股票有 10 日涨幅、有的没有」——用户反馈的带 * 票缺失就是这么来的：
+ *   ① 当日正式成员行（_getAuctionFormalRowsForDate，已排除 market_metrics 影子行）；
+ *   ② 观察组继承名：打标签继承（tag-carryover）+ 前一日竞昨高光（sort-rules）。
+ *      这两类只在视图层注入 renderList，不在 _auctionMemCache / auction_watchlist，
+ *      所以「昨天打过标签 / 前日高光、今天不在 9:25 名单」的票（界面带 *）过去永远算不到。
+ * 行数据优先取内存当日【全量】行（含 market_metrics 影子行，带 auc_pct_chg / code）；
+ * 取不到就只留股票名（代码由 ensureAuctionCodeMapping / scMap 兜底）。
+ * @param {string} date
+ * @returns {object[]} 参与 10 日涨幅计算的行
+ */
+function _resolveTargetRows(date) {
+  const byName = new Map();
+  function _put(row) {
+    if (!row || !row.stock) return;
+    const n = String(row.stock).trim();
+    if (n && !byName.has(n)) byName.set(n, row);
+  }
+  (_getAuctionFormalRowsForDate(date) || []).forEach(_put);
+
+  const extra = new Set();
+  try {
+    const carry = getCarryOverNamesForDate(date);
+    if (carry) carry.forEach(function(n) { if (n) extra.add(String(n).trim()); });
+  } catch (e) {
+    _dbgLog('[DRAGON] 打标签继承名读取失败: ' + (e && e.message || e));
+  }
+  try {
+    const prevDate = getPreviousTradingDay(date);
+    const set = prevDate ? getJingYestHighlightSetForDate(prevDate) : null;
+    if (set) set.forEach(function(n) { if (n) extra.add(String(n).trim()); });
+  } catch (e) {
+    _dbgLog('[DRAGON] 前一日竞昨高光读取失败: ' + (e && e.message || e));
+  }
+  if (extra.size === 0) return Array.from(byName.values());
+
+  // 内存当日全量行（含影子行）作为数据补齐来源：观察组继承票常被 worker 写过 market_metrics
+  const memByName = new Map();
+  try {
+    const g = getAuctionData();
+    ((g && g[date]) || []).forEach(function(r) {
+      if (!r || !r.stock) return;
+      const n = String(r.stock).trim();
+      if (n && !memByName.has(n)) memByName.set(n, r);
+    });
+  } catch (e) {
+    _dbgLog('[DRAGON] 当日内存行读取失败: ' + (e && e.message || e));
+  }
+  extra.forEach(function(n) {
+    if (!n || byName.has(n)) return;
+    byName.set(n, memByName.get(n) || { stock: n });
+  });
+  return Array.from(byName.values());
+}
+
+/**
+ * 【缺口补齐 / 2026-09-10】云端缓存已存在但覆盖不全时的「缺谁补谁」。
+ * 背景（用户实测）：stock_range_pct 的复用与过期判定都是【日期级】的——只要该日有任意一行
+ * 且未过期就直接命中，于是某次计算漏掉的股票会被永久冻结成"没有 10 日涨幅"。
+ * 真实成因有两种，都会造成「同一屏里有的票有、有的没有」：
+ *   ① 计算时名单还没加载全（9/10 实测：metrics 60 行，缓存只有 11 行）；
+ *   ② 该票当时缺股票代码（stockcodemap 无记录）→ 拿不到 K 线被跳过。
+ * 这里只对【缺失 / pct 为 null】的目标股票用同花顺重算（不消耗猫抓额度），
+ * 算完 upsert 回云端并并入内存 Map，跨设备同样生效。
+ *
+ * ⚠️ 标记粒度是【股票名】而不是【日期】：名单是逐步到达的（worker 9:25 写入、用户刷新、
+ * 切换日期后数据落地），若按日期一次性标记，名单后来变长的部分就再也补不上了。
+ * 每只票整个会话最多尝试一次，新出现的票仍有机会。
+ * @param {string} date
+ * @param {Map<string,{pct:number|null,days:number}>} map - 会被就地补全
+ */
+async function _patchMissingRangePct(date, map) {
+  if (!date || !map) return;
+  const rows = _resolveTargetRows(date);
+  if (rows.length === 0) return; // 当日数据还没加载完 → 本次不标记，下次还有机会
+
+  let scMap = state._scMapCache || {};
+  const _codeOf = function(r, name) { return String(r.code || scMap[name] || '').trim(); };
+  const missing = [];
+  rows.forEach(function(r) {
+    if (!r || !r.stock) return;
+    const name = String(r.stock).trim();
+    if (!name) return;
+    if (_patchedNames.has(date + '|' + name)) return;
+    const cur = map.get(name);
+    if (cur && cur.pct !== null && cur.pct !== undefined && !isNaN(cur.pct)) return;
+    const code = _codeOf(r, name);
+    if (!code) return; // 先记为待补码，下面统一补一次再判定
+    missing.push({ row: r, name: name, code: code });
+  });
+  if (missing.length === 0) {
+    // 全缺代码 → 尝试自动补码后重来一次（补不到就保持"无数据"，绝不伪造）
+    try {
+      const cm = await ensureAuctionCodeMapping(rows);
+      if (cm && cm.filled > 0) scMap = state._scMapCache || scMap;
+    } catch (e) {
+      _dbgLog('[DRAGON] 补齐前自动补码失败: ' + (e && e.message || e));
+    }
+    rows.forEach(function(r) {
+      if (!r || !r.stock) return;
+      const name = String(r.stock).trim();
+      if (!name || _patchedNames.has(date + '|' + name)) return;
+      const cur = map.get(name);
+      if (cur && cur.pct !== null && cur.pct !== undefined && !isNaN(cur.pct)) return;
+      const code = _codeOf(r, name);
+      if (code) missing.push({ row: r, name: name, code: code });
+    });
+  }
+  missing.forEach(function(x) { _patchedNames.add(date + '|' + x.name); });
+  if (missing.length === 0) return;
+
+  const dates = getDragonWindowDates(date);
+  const ascDates = dates.slice().reverse();
+  const afterClose = _beijingHour() >= CLOSE_COVER_HOUR;
+  let byName = null;
+  try {
+    byName = await fetchFuyaoDailyPctRange(
+      missing.map(function(x) { return { stock: x.name, code: x.code }; }),
+      dates
+    );
+  } catch (e) {
+    _dbgLog('[DRAGON] 缺口补齐同花顺请求失败: ' + (e && e.message || e));
+    return;
+  }
+  if (!byName || byName.size === 0) return;
+
+  const out = [];
+  missing.forEach(function(x) {
+    const dayMap = byName.get(x.name);
+    if (!dayMap) return;
+    const list = [];
+    ascDates.forEach(function(d) {
+      const ymd = d.replace(/-/g, '');
+      let v = dayMap.has(ymd) ? dayMap.get(ymd) : null;
+      if (d === date) {
+        // 与主计算同口径：收盘后用收盘涨幅覆盖，盘中/历史日用竞价涨幅占位
+        if (afterClose) {
+          if (v === null) v = _parsePct(x.row.changePct || x.row.change_pct || '');
+          if (v === null) v = _parsePct(x.row.auc_pct_chg || x.row.aucPctChg || '');
+        } else {
+          v = _parsePct(x.row.auc_pct_chg || x.row.aucPctChg || '');
+        }
+      }
+      if (v !== null) list.push(v);
+    });
+    const pct = _compoundPct(list);
+    if (pct === null) return;
+    out.push({ stock: x.name, pct: pct, days: list.length });
+    map.set(x.name, { pct: pct, days: list.length });
+  });
+  if (out.length === 0) return;
+  _dbgLog('[DRAGON] 缺口补齐 ' + out.length + '/' + missing.length + ' 只：' + out.map(function(r) { return r.stock; }).join('、'));
+  try {
+    await upsertRangePctRows(date, out);
+  } catch (e) {
+    _dbgLog('[DRAGON] 缺口补齐写云失败: ' + (e && e.message || e));
+  }
+  // 补进内存 Map 后必须让 ref 换新引用 + 版本号自增，否则展开面板/徽章读到的仍是旧快照（§17）
+  const next = new Map(map);
+  dragonState.value = { date: date, map: next, version: dragonState.value.version + 1 };
 }
 
 async function _fetchAndCompute(date) {
   const dates = getDragonWindowDates(date);
-  const rows = _getAuctionFormalRowsForDate(date) || [];
+  const rows = _resolveTargetRows(date);
   if (rows.length === 0) return { rows: [], requested: 0, dates: dates };
 
   let scMap = state._scMapCache || {};
