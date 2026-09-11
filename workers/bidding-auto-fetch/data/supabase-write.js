@@ -147,8 +147,37 @@ export async function readAuctionTagsForDate(env, date) {
   return out;
 }
 
+/**
+ * [LATENCY 2026-09-11] 按【股票名】精确查代码映射。
+ * 存在的理由：readStockCodeMap 全表读受 Supabase 单次 1000 行上限截断（实测表共 1005 行、
+ * 只回 1000 行），少部分名字会查不到 code；而全表分页读又要 6 次请求，放在 9:25 的关键路径上不划算。
+ * 因此主路径用一次全表读（覆盖绝大多数），剩余缺 code 的名字再用本函数按名精确补一次（1 次小请求）。
+ */
+export async function readStockCodeMapByNames(env, names) {
+  const clean = (names || []).map(n => String(n || '').trim()).filter(Boolean);
+  if (clean.length === 0) return {};
+  const uniq = Array.from(new Set(clean)).slice(0, 400);
+  const inList = uniq.map(n => '%22' + encodeURIComponent(n) + '%22').join(',');
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stockcodemap?select=stock,code&stock=in.(' + inList + ')';
+  try {
+    const resp = await fetch(url, { headers: sbHeaders(env) });
+    if (!resp.ok) return {};
+    const data = await resp.json();
+    const map = {};
+    (data || []).forEach(r => {
+      const name = (r.stock || '').trim();
+      const code = (r.code || '').trim();
+      if (name && code && !map[name]) map[name] = code;
+    });
+    return map;
+  } catch (e) {
+    return {};
+  }
+}
+
 // [FIX 2026-08-15] 读取股票名称→代码映射表（stockcodemap），为 watchlist 里 code 为空的
 // 观察组/打标签股票补充 code（worker 的 numcat 抓取按 code 查询，无 code 无法抓数据）。
+// ⚠️ 受 Supabase 单次 1000 行上限截断；缺漏由 readStockCodeMapByNames 按名补齐。
 export async function readStockCodeMap(env) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/stockcodemap?select=stock,code';
   const resp = await fetch(url, { headers: sbHeaders(env) });
