@@ -1,5 +1,5 @@
 // ===== bidding-board-worker-a — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-09-08 09:17:36
+// 生成时间: 2026-09-11 12:49:18
 // 注意: 此文件自动生成，请勿手动编辑
 
 // ────── bidding-board-worker-a/config.js ──────
@@ -135,7 +135,6 @@ function dateStrToMs(dateStr) {
 
 // ────── _shared-source/holidays.js ──────
 // holidays.js — 节假日表 + 本地交易日判断（源文件，各 Worker 复制使用）
-
 const KNOWN_HOLIDAYS = new Set([
   '2025-01-01', '2025-01-28', '2025-01-29', '2025-01-30', '2025-01-31',
   '2025-02-01', '2025-02-02', '2025-02-03', '2025-04-04', '2025-04-05',
@@ -156,7 +155,6 @@ function localIsTradingDay(dateStr) {
 
 // ────── bidding-board-worker-a/data/fuyao-api.js ──────
 // data/fuyao-api.js — fuyao 行情接口 + 交易日历
-
 async function fuyaoGet(env, path, params) {
   const url = new URL(CONFIG.FUYAO_BASE + path);
   for (const k in params) {
@@ -212,7 +210,6 @@ async function getIndexSnapshotPcts(env, thscodes) {
 
 // ────── bidding-board-worker-a/data/supabase-write.js ──────
 // data/supabase-write.js — Supabase 读写
-
 function sbHeaders(env) {
   return {
     'apikey': env.SUPABASE_ANON_KEY,
@@ -292,7 +289,6 @@ async function getTencentSnapshotPcts(thscodes) {
 
 // ────── bidding-board-worker-a/logic/bidding-calc.js ──────
 // logic/bidding-calc.js — 竞价变化计算
-
 function avgOf(numbers) {
   if (!numbers.length) return null;
   return numbers.reduce(function (a, b) { return a + b; }, 0) / numbers.length;
@@ -366,7 +362,6 @@ async function computeBiddingRows(env, point) {
 
 // ────── bidding-board-worker-a/logic/bidding-workflow.js ──────
 // logic/bidding-workflow.js — 竞价主流程
-
 async function runBidding(env, point, source) {
   const date = beijingToday();
   const column = POINT_TO_COLUMN[point];
@@ -499,7 +494,6 @@ async function runDuobanSecond(env, source) {
 
 // ────── bidding-board-worker-a/index.js ──────
 // index.js — bidding-board-worker-a 入口
-
 function autoPoint() {
   const d = beijingNow();
   const mins = d.getUTCHours() * 60 + d.getUTCMinutes();

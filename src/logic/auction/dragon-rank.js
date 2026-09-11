@@ -37,12 +37,16 @@ import { getCarryOverNamesForDate } from './tag-carryover.js';
 import {
   readRangePctForDate,
   upsertRangePctRows,
-  fetchNumcatDailyPctRange
+  fetchNumcatDailyPctRange,
+  fetchFuyaoDailyPctRange
 } from '../../data/stock-range-pct.js';
 import { _dbgLog } from '../../data/debug-log.js';
 import { ensureAuctionCodeMapping } from './auction-fetch-helpers.js';
 // 口径单一真相（纯函数，worker 与前端共用同一份实现）
-import { RANGE_WINDOW_DAYS, parsePct, compoundPct, resolveTDayPct, isAuctionLegActive } from './range-window.js';
+import {
+  RANGE_WINDOW_DAYS, parsePct, compoundPct, resolveTDayPct, isAuctionLegActive,
+  buildRangeRows, collectDailyLegs
+} from './range-window.js';
 
 export const DRAGON_RANGE_DAYS = RANGE_WINDOW_DAYS;
 /** 北京时间 15:00 之后，当天收盘涨幅已可覆盖早盘竞价涨幅（T 腿口径判定用） */
@@ -275,36 +279,107 @@ async function _load(date, force) {
   // 云端还没有这一天的数据（页面早于 9:25 打开 / worker 尚未写完）→ 安排一次有界重读
   if (map.size === 0) _scheduleEmptyRetry(date);
 
-  // 2) 云端缺票 → 一次猫抓 daily 兜底（覆盖「前日竞昨高光」等不在 worker 抓取名单里的票，
-  //    以及 worker 当天写入失败的情况）。云端非空时不抢跑 worker 的 9:25 写入。
+  // 2) 补齐「缺行 / 缺腿」的目标股票。三级链路，从「不花额度」到「花额度」：
   //    [RANGE-FULL-LEG 2026-09-11] 收盘后额外把「缺腿行」（days < 窗口交易日数）也纳入待补：
   //    这类行当时没拿到 T 腿（次日继承票常见），只有【整段重算】能修好，代数换腿会算错。
+  //    [LOCAL-RECOMPUTE 2026-09-11] 三级顺序（用户反馈「存起来了本地就能算」）：
+  //      ① 本地重算（0 请求）：内存里已存齐窗口的票直接重算 —— 猫抓额度用尽时这是唯一出路；
+  //      ② 猫抓 daily（1 请求）：补齐本地凑不出完整窗口的票（它能看到库里没有的历史日）；
+  //      ③ 本地残缺值兜底（0 请求）：猫抓也拿不到时，写「N 天真实累乘」而不是留着错值。
   const phase = _fallbackPhase();
-  const missing = _missingTargetRows(date, map, phase === 'close');
-  if (missing.length > 0 && _fallbackTried.get(date) !== phase && !(cloud.size === 0 && _inWorkerWindow(date))) {
-    _fallbackTried.set(date, phase);
-    let rows = [];
-    let err = null;
-    try {
-      rows = await _fetchRangeFor(date, missing);
-    } catch (e) {
-      err = e;
-      _dbgLog('[DRAGON] 缺票兜底抓取失败: ' + (e && e.message || e));
-    }
-    if (rows.length > 0) {
-      rows.forEach(function(r) { map.set(r.stock, { pct: r.pct, days: r.days }); });
+  const pending = _missingTargetRows(date, map, phase === 'close');
+  if (pending.length > 0 && !(cloud.size === 0 && _inWorkerWindow(date))) {
+    const expectedLegs = getDragonWindowDates(date).length;
+    const applied = new Set();
+
+    /** 统一落库：内存 map → 发布（驱动重渲染）→ 写云（失败只留痕，不影响本次展示） */
+    const _applyAssembly = async function(rows, stage) {
+      if (!rows || rows.length === 0) return;
+      rows.forEach(function(r) {
+        map.set(r.stock, { pct: r.pct, days: r.days });
+        applied.add(r.stock);
+      });
       _publish(date, map);
       try {
         await upsertRangePctRows(date, rows);
       } catch (e) {
-        // 内存已生效，写云失败只留痕（下次仍会重新读云端，不影响本次展示）
-        _dbgLog('[DRAGON] 兜底结果写云失败: ' + (e && e.message || e));
+        _dbgLog('[DRAGON] ' + stage + '结果写云失败: ' + (e && e.message || e));
       }
-      _dbgLog('[DRAGON] 缺票兜底补齐 ' + rows.length + '/' + missing.length + ' 只：' + rows.map(function(r) { return r.stock; }).join('、'));
-    } else if (cloud.size === 0) {
-      // 云端空 + 兜底也取不到 → 必须让用户看见（§10 禁止静默失败），不能显示成「今天没有 10 日涨幅」
-      throw err || new Error('10 日涨幅取不到（云端无缓存，猫抓 daily 也未返回数据）：' + date);
+      _dbgLog('[DRAGON] ' + stage + '补齐 ' + rows.length + ' 只：' +
+        rows.map(function(r) { return r.stock + '(' + Number(r.pct).toFixed(2) + '%/d' + r.days + ')'; }).join('、'));
+    };
+
+    // ---- ① 本地重算（0 请求）----
+    let assembled = [];
+    try {
+      assembled = _assembleRangeFromMemory(date, pending);
+    } catch (e) {
+      _dbgLog('[DRAGON] 本地重算失败（非致命）: ' + (e && e.message || e));
     }
+    const ready = assembled.filter(function(r) { return Number(r.days) >= expectedLegs; });
+    // 凑不满窗口的先扣在手里当兜底（②失败或没覆盖到时才用）
+    const lastResort = new Map();
+    assembled.forEach(function(r) {
+      if (Number(r.days) < expectedLegs) lastResort.set(r.stock, r);
+    });
+    await _applyAssembly(ready, '本地重算');
+
+    // ---- ② 权威抓取：猫抓 daily 主 → 同花顺 K 线补（都不依赖本地内存）----
+    const remain = pending.filter(function(r) {
+      return !applied.has(String((r && r.stock) || '').trim());
+    });
+    if (remain.length > 0 && _fallbackTried.get(date) !== phase) {
+      _fallbackTried.set(date, phase);
+      let err = null;
+      let rows = [];
+      try {
+        rows = await _fetchRangeFor(date, remain);
+      } catch (e) {
+        err = e;
+        _dbgLog('[DRAGON] 缺票兜底抓取失败: ' + (e && e.message || e));
+      }
+      await _applyAssembly(rows, '缺票兜底(猫抓)');
+
+      // 通道二：猫抓没覆盖到的（额度用尽 / 未结算 / 停牌股无行）走同花顺 K 线。
+      // 2026-09-11 实测：猫抓额度白天就耗尽，只靠通道一，缺腿行会一直错到第二天。
+      const stillRemain = remain.filter(function(r) {
+        return !applied.has(String((r && r.stock) || '').trim());
+      });
+      if (stillRemain.length > 0) {
+        try {
+          const rows2 = await _fetchRangeFromKline(date, stillRemain);
+          await _applyAssembly(rows2, '缺票兜底(同花顺K线)');
+        } catch (e) {
+          _dbgLog('[DRAGON] 同花顺 K 线兜底失败: ' + (e && e.message || e));
+        }
+      }
+
+      if (cloud.size === 0 && applied.size === 0) {
+        // 云端空 + 所有通道都取不到 → 必须让用户看见（§10 禁止静默失败），
+        // 不能显示成「今天没有 10 日涨幅」
+        throw err || new Error('10 日涨幅取不到（云端无缓存，猫抓 daily 与同花顺 K 线均未返回数据）：' + date);
+      }
+    }
+
+    // ---- ③ 本地残缺值兜底（0 请求）：只给「云端压根没有这一行」的票垫一个真实累乘值 ----
+    //   ⚠️ 为什么【不覆盖】云端已有的残缺行（2026-09-11 实测教训）：
+    //     `days` 只表示「累了几根腿」，不表示「累的是哪几天」。实测 百大集团：
+    //       · 云端残缺行 = 9 根腿（8/31~9/10，numcat 有 8/31 而我们的库没有）被代数换腿搞错；
+    //       · 本地重算    = 9 根腿（9/1~9/11，因为我们库里没有 8/31 这行）。
+    //     两者 days 相同、日期集合不同 → 「legs 不少于库内」并不能证明本地值更准
+    //     （实际本地 44.62% 离真值 42.29% 更远）。所以残缺行一律留给 ② 的权威重算
+    //     （猫抓 daily / 同花顺 K 线都能取到我们库里没有的历史日），两者都失败就保持原值
+    //     —— 宁缺勿错。
+    //     只有「云端完全没有这一行」时才用本地值垫底：那时权威通道已经失败过，
+    //     有值(且是真实累乘、UI 会标注 (N/10日)) 总好过整列空白。
+    const leftover = [];
+    remain.forEach(function(r) {
+      const n = String((r && r.stock) || '').trim();
+      if (applied.has(n) || cloud.has(n)) return;
+      const lr = lastResort.get(n);
+      if (lr) leftover.push({ stock: lr.stock, pct: lr.pct, days: lr.days });
+    });
+    await _applyAssembly(leftover, '本地重算(部分窗口)');
   }
   return dragonState.value.date === date && dragonState.value.map ? dragonState.value.map : map;
 }
@@ -346,6 +421,90 @@ function _missingTargetRows(date, map, includeIncomplete) {
     out.push(r);
   });
   return out;
+}
+
+/** 逐日收盘涨幅的字段别名（内存行同时存在 snake/camel 两种写法） */
+const CLOSE_PCT_KEYS = ['changePct', 'change_pct'];
+/** 9:25 竞价涨幅的字段别名 */
+const AUC_PCT_KEYS = ['auc_pct_chg', 'aucPctChg'];
+
+/** 从行里按候选键取第一个可解析的涨幅；都取不到 → null（§10 绝不用 0 顶替） */
+function _pctOf(row, keys) {
+  if (!row) return null;
+  for (let i = 0; i < keys.length; i++) {
+    const raw = row[keys[i]];
+    if (raw === null || raw === undefined || raw === '') continue;
+    const n = parsePct(raw);
+    if (n !== null) return n;
+  }
+  return null;
+}
+
+/**
+ * 【本地重算 · 0 请求 / LOCAL-RECOMPUTE 2026-09-11】
+ * 把「缺行 / 缺腿」的目标股票，用【已经拉进内存的逐日数据】重新组装成区间涨幅。
+ *
+ * 为什么需要它（用户反馈「数据自动获取后没存起来吗？存起来本地算也算得出」）：
+ *   区间涨幅的历史日腿其实早已落库（每天一行 market_metrics.change_pct），而首屏会把最近
+ *   30 个自然日整段拉进内存（auction-pull-window）。因此当 stock_range_pct 出现
+ *   「days < 窗口长度」的残缺行时，根本不必再去猫抓要数据 —— 直接拿内存里的逐日涨幅
+ *   + 已知的 T 腿重新 `buildRangeRows` 即可。好处：
+ *     · 0 额度消耗（猫抓每天只有 10 次，16:00 那次经常已用尽）；
+ *     · 不受「猫抓当日/近几日不给四要素或窗口」影响；
+ *     · 与 worker 口径完全一致（同一个 range-window.js，同一个组装实现）。
+ *
+ * ⚠️ 绝不使用 replaceTDayLeg（代数换腿）：残缺行里根本没有那根竞价 T 腿，反解必然算错
+ *    （2026-09-11 国芳集团 91.11% 事故）。这里走的是【重新组装】，不是换算。
+ *
+ * 内存里凑不满整个窗口时也会返回残缺结果（days < 窗口），由调用方决定是否作为兜底写入 ——
+ * 「9 天真实累乘」也远好过「代数反解出来的错值」，且 UI 会显示 `+x.xx%(9/10日)`。
+ *
+ * @param {string} date 看板日期 T
+ * @param {object[]} pendingRows 需要重算的目标行（来自 getDragonTargetRows 的子集）
+ * @returns {Array<{stock:string, pct:number, days:number}>}
+ */
+function _assembleRangeFromMemory(date, pendingRows) {
+  if (!date || !pendingRows || pendingRows.length === 0) return [];
+
+  // 升序窗口 [T-9 ... T]，与 worker / _fetchRangeFor 同一份日期口径
+  const ascDates = getDragonWindowDates(date).slice().reverse();
+
+  // 逐日建「股票名 → 当日行」索引。只取每天第一行（同日同名不会重复，双保险）。
+  const g = getAuctionData() || {};
+  const rowsByDate = new Map();
+  ascDates.forEach(function(d) {
+    const m = new Map();
+    const list = (g && g[d]) || [];
+    list.forEach(function(r) {
+      if (!r || !r.stock) return;
+      const n = String(r.stock).trim();
+      if (n && !m.has(n)) m.set(n, r);
+    });
+    rowsByDate.set(d, m);
+  });
+
+  const sysToday = _getLocalTodayStr();
+  const afterClose = _beijingMinutes() >= CLOSE_COVER_HOUR * 60;
+  const isToday = date === sysToday;
+
+  // 腿口径单一真相：T 腿 → resolveTDayPct（今天未收盘取竞价，其余取收盘）；
+  // 历史日 → 一律取收盘涨幅 change_pct（缺失才作罢，绝不补 0）。
+  function legOf(row, d) {
+    if (d === date) {
+      return resolveTDayPct(isToday, afterClose, _pctOf(row, CLOSE_PCT_KEYS), _pctOf(row, AUC_PCT_KEYS));
+    }
+    return _pctOf(row, CLOSE_PCT_KEYS);
+  }
+
+  const collected = collectDailyLegs(
+    pendingRows.map(function(r) {
+      return { name: String((r && r.stock) || '').trim(), code: (r && r.code) || '' };
+    }),
+    ascDates,
+    rowsByDate,
+    legOf
+  );
+  return buildRangeRows(collected.targets, ascDates, collected.dailyByCode, collected.tLegByCode);
 }
 
 /**
@@ -401,6 +560,81 @@ async function _fetchRangeFor(date, targetRows) {
     const pct = compoundPct(legs);
     if (pct === null) return;
     out.push({ stock: d.name, pct: pct, days: legs.length });
+  });
+  return out;
+}
+
+/**
+ * 【兜底抓取 · 通道二：同花顺 K 线】猫抓 daily 不可用（额度用尽 / 未结算）时用它补齐。
+ *
+ * [KLINE-FALLBACK 2026-09-11] 为什么必须有这一条：猫抓额度每天只有 10 次，
+ * 2026-09-11 实测白天就把额度用尽（返回 403「今日调用额度已用完」），于是：
+ *   · worker 16:00 的整段重算拿不到窗口 → 退化为「只换 T 腿」→ 缺腿行被跳过；
+ *   · 前端猫抓兜底同样打不通 → 7 只缺腿行的错值（国芳集团 91.11%）当天无法自愈。
+ * 同花顺 K 线没有每日额度限制（`close-pct-cover` 的收盘涨幅兜底早就用它），因此这里
+ * 把它接成「通道二」，让 10 日涨幅的修复【完全不依赖猫抓额度】。
+ *
+ * ⚠️ 与已删除的「前端逐只同花顺补齐」不同（那是给全部 64 只票每只 4.7s 的常规补齐，
+ *    是真的「加载一分钟」根因）：这里只跑【确实缺行/缺腿的少数票】，且只在猫抓通道
+ *    失败后触发、每阶段最多一次，`fetchFuyaoDailyPctRange` 自带并发 3 + 截断重试 + 熔断。
+ *
+ * @param {string} date
+ * @param {Array<object>} targetRows
+ * @returns {Promise<Array<{stock:string, pct:number, days:number}>>}
+ */
+async function _fetchRangeFromKline(date, targetRows) {
+  try {
+    await ensureAuctionCodeMapping(targetRows);
+  } catch (e) {
+    _dbgLog('[DRAGON] K 线兜底前自动补码失败: ' + (e && e.message || e));
+  }
+  const scMap = (state && state._scMapCache) || {};
+  const items = [];
+  targetRows.forEach(function(r) {
+    const name = String((r && r.stock) || '').trim();
+    if (!name) return;
+    const code = String((r && r.code) || scMap[name] || '').trim();
+    if (code) items.push({ stock: name, code: code });
+  });
+  if (items.length === 0) return [];
+
+  const dates = getDragonWindowDates(date);
+  const ascDates = dates.slice().reverse(); // 升序 [T-9 ... T]
+  // 同花顺 K 线取全窗口（含当天）：当天已收盘时 K 线里就有当天收盘价
+  const byName = await fetchFuyaoDailyPctRange(items, ascDates, { concurrency: 3 });
+  if (!byName || byName.size === 0) return [];
+
+  const sysToday = _getLocalTodayStr();
+  const afterClose = _beijingMinutes() >= CLOSE_COVER_HOUR * 60;
+  const isToday = date === sysToday;
+  const auctionLeg = isAuctionLegActive(date, sysToday, afterClose);
+  const tYmd = date.replace(/-/g, '');
+
+  const out = [];
+  targetRows.forEach(function(r) {
+    const name = String((r && r.stock) || '').trim();
+    const dayMap = byName.get(name);
+    if (!name || !dayMap) return;
+    const row = r || {};
+    const legs = [];
+    ascDates.forEach(function(d) {
+      const ymd = d.replace(/-/g, '');
+      let v = dayMap.has(ymd) ? dayMap.get(ymd) : null;
+      if (ymd === tYmd) {
+        // T 腿口径单一真相（与 _fetchRangeFor 完全一致）：
+        // 今天未收盘 → 竞价涨幅占位；否则收盘涨幅（K 线优先，缺失才回退行内涨幅）
+        v = auctionLeg
+          ? parsePct(row.auc_pct_chg || row.aucPctChg)
+          : resolveTDayPct(isToday, afterClose,
+              (v !== null && v !== undefined ? v : _pctOf(row, CLOSE_PCT_KEYS)),
+              _pctOf(row, AUC_PCT_KEYS));
+      }
+      if (v === null || v === undefined || !isFinite(v)) return;
+      legs.push(Number(v));
+    });
+    const pct = compoundPct(legs);
+    if (pct === null) return;
+    out.push({ stock: name, pct: pct, days: legs.length });
   });
   return out;
 }

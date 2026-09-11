@@ -894,9 +894,10 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
         isYiZi: !!it.isYiZi,
         aucPct: _getThreeDayAuctionPct(renderList[it.index]),
         rangePct: (rp === undefined ? null : rp),
-        // [CLOSE-COUNT / CLOSE-LIMIT 2026-09-11] 收盘口径下才带收盘涨幅/停板（否则为 null → 逻辑层不产出该段）
-        closePct: it.closePct,
-        closeLimit: it.closeLimit
+        // [CLOSE-COUNT 2026-09-11] 收盘口径下才带收盘涨幅（否则为 null → 逻辑层不产出该段）
+        // ⚠️ 不再传 closeLimit：统计条的「停板 N涨停M跌停」按用户要求已移除（太占地方），
+        //    停板只由股票名下蚂蚁线表达（见本文件 closeLimit 字段 + AuctionBoardTable）。
+        closePct: it.closePct
       };
     });
     topicStatsMap = buildTopicStatsMap(_entries);

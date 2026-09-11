@@ -6,7 +6,8 @@ import {
   isAuctionLegActive,
   resolveTDayPct,
   replaceTDayLeg,
-  buildRangeRows
+  buildRangeRows,
+  collectDailyLegs
 } from './range-window.js';
 
 describe('parsePct 涨幅解析', () => {
@@ -199,5 +200,93 @@ describe('buildRangeRows 组装区间涨幅行（worker 早盘/收盘共用）',
     expect(buildRangeRows(targets, [], dailyByCode, {})).toEqual([]);
     expect(buildRangeRows([], D, dailyByCode, {})).toEqual([]);
     expect(buildRangeRows(null, D, null, null)).toEqual([]);
+  });
+});
+
+describe('[LOCAL-RECOMPUTE 2026-09-11] collectDailyLegs 按日取腿（本地重算的数据准备）', () => {
+  // 升序窗口 [T-9 ... T]
+  const D = ['2026-08-31', '2026-09-01', '2026-09-02', '2026-09-03', '2026-09-04',
+    '2026-09-07', '2026-09-08', '2026-09-09', '2026-09-10', '2026-09-11'];
+  const T = '2026-09-11';
+
+  /** 造「某日一整行数据」：name -> { change_pct, auc_pct_chg } */
+  function mk(rows) {
+    const m = new Map();
+    Object.keys(rows).forEach(function(n) { m.set(n, rows[n]); });
+    return m;
+  }
+  /** 交易日 -> 当日行索引（模拟内存 getAuctionData()[date]） */
+  function mkByDate(perDate) {
+    const byDate = new Map();
+    D.forEach(function(d) { byDate.set(d, mk(perDate[d] || {})); });
+    return byDate;
+  }
+  // T 腿口径：历史日取收盘，当天取收盘（本用例都是「已收盘」场景）
+  const legOf = function(row, d) {
+    if (d === T) return resolveTDayPct(false, true, row.change_pct, row.auc_pct_chg);
+    return parsePct(row.change_pct);
+  };
+
+  it('库里 10 天齐全 → 组装出完整区间涨幅（这就是「存起来了本地就能算」）', () => {
+    const perDate = {};
+    D.forEach(function(d) { perDate[d] = { 国芳集团: { change_pct: '+10.00%', auc_pct_chg: '+2.00%' } }; });
+    const got = collectDailyLegs([{ name: '国芳集团', code: '601086' }], D, mkByDate(perDate), legOf);
+    expect(got.targets).toEqual([{ name: '国芳集团', code: '601086' }]);
+    expect(Object.keys(got.dailyByCode['601086'])).toHaveLength(9); // 9 个历史日
+    expect(got.tLegByCode['601086']).toBe(10);                     // 当天 T 腿单独放
+    // 交给「组装成行的唯一实现」→ 10 根腿
+    const rows = buildRangeRows(got.targets, D, got.dailyByCode, got.tLegByCode);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].days).toBe(10);
+    expect(rows[0].pct).toBeCloseTo(compoundPct(new Array(10).fill(10)), 6);
+  });
+
+  it('某一天库内没有这一行 → days 少 1（残缺但值是真的，绝不补 0）', () => {
+    const perDate = {};
+    D.forEach(function(d) { perDate[d] = { 百大集团: { change_pct: '+5.00%' } }; });
+    delete perDate['2026-08-31']; // 该股当天还没进名单
+    const got = collectDailyLegs([{ name: '百大集团', code: '600865' }], D, mkByDate(perDate), legOf);
+    const rows = buildRangeRows(got.targets, D, got.dailyByCode, got.tLegByCode);
+    expect(rows[0].days).toBe(9);
+    expect(rows[0].pct).toBeCloseTo(compoundPct(new Array(9).fill(5)), 6);
+  });
+
+  it('T 腿口径交给调用方：同一份数据，竞价腿与收盘腿结果不同', () => {
+    const perDate = {};
+    D.forEach(function(d) { perDate[d] = { A: { change_pct: '+6.00%', auc_pct_chg: '+2.00%' } }; });
+    const byDate = mkByDate(perDate);
+    const closeLeg = collectDailyLegs([{ name: 'A', code: '1' }], D, byDate,
+      function(row, d) { return d === T ? resolveTDayPct(false, true, row.change_pct, row.auc_pct_chg) : parsePct(row.change_pct); });
+    const aucLeg = collectDailyLegs([{ name: 'A', code: '1' }], D, byDate,
+      function(row, d) { return d === T ? resolveTDayPct(true, false, row.change_pct, row.auc_pct_chg) : parsePct(row.change_pct); });
+    expect(closeLeg.tLegByCode['1']).toBe(6);
+    expect(aucLeg.tLegByCode['1']).toBe(2);
+  });
+
+  it('缺 code 用「名字键」兜底，不会整只票丢掉', () => {
+    const perDate = {};
+    D.forEach(function(d) { perDate[d] = { 无码股: { change_pct: '+1.00%' } }; });
+    const got = collectDailyLegs([{ name: '无码股' }], D, mkByDate(perDate), legOf);
+    expect(got.targets[0].code).toBe('n:无码股');
+    const rows = buildRangeRows(got.targets, D, got.dailyByCode, got.tLegByCode);
+    expect(rows[0].days).toBe(10);
+  });
+
+  it('同名去重 / 该票一天数据都没有 → 不产出行', () => {
+    const perDate = {};
+    D.forEach(function(d) { perDate[d] = { 有数据: { change_pct: '+1.00%' } }; });
+    const got = collectDailyLegs(
+      [{ name: '有数据', code: '1' }, { name: '有数据', code: '1' }, { name: '没数据', code: '2' }],
+      D, mkByDate(perDate), legOf
+    );
+    expect(got.targets).toHaveLength(2); // 第二个「有数据」被去重
+    const rows = buildRangeRows(got.targets, D, got.dailyByCode, got.tLegByCode);
+    expect(rows.map(function(r) { return r.stock; })).toEqual(['有数据']);
+  });
+
+  it('空输入 → 空结果（不抛错）', () => {
+    const got = collectDailyLegs([], D, new Map(), legOf);
+    expect(got.targets).toEqual([]);
+    expect(buildRangeRows(got.targets, D, got.dailyByCode, got.tLegByCode)).toEqual([]);
   });
 });

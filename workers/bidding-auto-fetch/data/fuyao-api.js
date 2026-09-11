@@ -56,6 +56,10 @@ export async function fetchLadderConstituents(env) {
 function tickerToThscode(code) {
   const c = String(code).trim();
   if (!/^\d{6}$/.test(c)) return '';
+  // [FIX 2026-09-11] 北交所 2024 起启用 920 号段。必须【先于】`9 → .SH` 判断，
+  // 否则 920xxx 会被当成沪市 B 股 → K 线/快照恒空 → 该股区间涨幅与当日收盘涨幅全天缺失
+  // （与前端 src/data/api/fuyao-proxy.js 同口径修复）。
+  if (c.slice(0, 2) === '92') return c + '.BJ';
   if (c.startsWith('6') || c.startsWith('9')) return c + '.SH';
   if (c.startsWith('4') || c.startsWith('8')) return c + '.BJ';
   return c + '.SZ';
@@ -213,4 +217,102 @@ export async function fetchHistoricalPctChg(env, constituents, historicalDates) 
   }
 
   return { byDate: result, successCount, failCount };
+}
+
+/**
+ * [KLINE-FALLBACK 2026-09-11] 同花顺 K 线窗口涨幅（前复权）——供收盘区间涨幅「缺腿行」重算。
+ *
+ * 为什么需要：猫抓 daily 每天只有 10 次额度，收盘（16:00）时经常已被白天用尽 →
+ * 区间涨幅的「整段重算」拿不到 10 天窗口 → 只能退化为「只换 T 腿」，而
+ * 缺腿行（days < 窗口）根本无法修复（2026-09-11 实测 7 只错值，国芳集团 91.11%）。
+ * 同花顺 K 线【没有每日额度限制】（当日收盘涨幅兜底一直用它），因此这里提供窗口级
+ * K 线涨幅，让缺腿行重算完全不依赖猫抓额度。
+ *
+ * 口径与前端 src/data/stock-range-pct.js#fetchFuyaoDailyPctRange 完全一致：
+ *   · 前复权（不复权在除权除息日会出现假暴跌，与交易所涨跌幅不可比）；
+ *   · date_ms 是北京时间午夜 → 加 8h 取 UTC 日期才是正确交易日；
+ *   · 起点前移 20 自然日（窗口首日涨幅需要「上一交易日收盘价」，长假也够）；
+ *   · 并发固定 3（实测并发 4~6 会返回被截断的少数 K 线）+ 覆盖不足重试 + 熔断。
+ *
+ * @param {object} env
+ * @param {Array<{name:string, code:string}>} items
+ * @param {string[]} dates 需要的交易日（YYYY-MM-DD，顺序任意）
+ * @param {{concurrency?:number}} [opts]
+ * @returns {Promise<Map<string, Map<string, number>>>} name -> (YYYYMMDD -> 日涨幅%)
+ */
+export async function fetchFuyaoKlineWindowPct(env, items, dates, opts) {
+  const out = new Map();
+  const list = (items || []).filter(it => it && it.name && it.code);
+  const ymdList = (dates || []).map(d => String(d).replace(/-/g, '')).filter(Boolean);
+  if (list.length === 0 || ymdList.length === 0) return out;
+
+  const sorted = ymdList.slice().sort();
+  const toDash = y => y.slice(0, 4) + '-' + y.slice(4, 6) + '-' + y.slice(6, 8);
+  // 起点前移 20 个自然日：首日涨幅需要「上一个交易日收盘价」作为基准（抗长假）。
+  const startMs = dateStrToMs(toDash(sorted[0])) - 20 * 86400000;
+  const endMs = dateStrToMs(toDash(sorted[sorted.length - 1])) + 2 * 86400000;
+  const wantSet = new Set(ymdList);
+
+  // 并发度固定 3：该上游在并发 4~6 时会返回被截断的少数几根 K 线。
+  const conc = (opts && opts.concurrency) || 3;
+  // 熔断阈值：连续这么多只都取不到完整窗口 → 判定上游整体不可用，放弃剩余（避免跑满重试）。
+  const CIRCUIT_LIMIT = 6;
+  let consecutiveShort = 0;
+  let circuitOpen = false;
+
+  async function fetchOnce(code) {
+    const data = await fuyaoProxyGet(env, '/api/a-share/prices/historical', {
+      thscode: tickerToThscode(code),
+      interval: '1d',
+      start: String(startMs),
+      end: String(endMs),
+      adjust: 'forward'
+    });
+    const rows = (data && data.item) || [];
+    const series = [];
+    rows.forEach(r => {
+      if (!r || r.date_ms === null || r.date_ms === undefined || r.close_price === null || r.close_price === undefined) return;
+      const close = Number(r.close_price);
+      if (!isFinite(close) || close <= 0) return;
+      series.push({ ymd: msToDateStr(Number(r.date_ms)).replace(/-/g, ''), close: close });
+    });
+    series.sort((a, b) => (a.ymd < b.ymd ? -1 : (a.ymd > b.ymd ? 1 : 0)));
+    const keep = new Map();
+    for (let k = 1; k < series.length; k++) {
+      if (!wantSet.has(series[k].ymd)) continue;
+      const prev = series[k - 1].close;
+      if (!prev) continue;
+      keep.set(series[k].ymd, (series[k].close / prev - 1) * 100);
+    }
+    return keep;
+  }
+
+  for (let i = 0; i < list.length; i += conc) {
+    if (circuitOpen) break;
+    const batch = list.slice(i, i + conc);
+    await Promise.all(batch.map(async it => {
+      if (circuitOpen) return;
+      let best = null;
+      try {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const keep = await fetchOnce(it.code);
+          if (!best || keep.size > best.size) best = keep;
+          if (best.size >= wantSet.size) break; // 已覆盖整个窗口
+          if (best.size === 0) break;           // 代码错 / 长期停牌，重试无意义
+          if (attempt < 2) await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+        }
+      } catch (e) {
+        console.warn('K线窗口失败 ' + it.name + '(' + it.code + '): ' + e.message);
+      }
+      if (best && best.size > 0) out.set(String(it.name).trim(), best);
+      if (!best || best.size < wantSet.size) {
+        consecutiveShort++;
+        if (consecutiveShort >= CIRCUIT_LIMIT) circuitOpen = true;
+      } else {
+        consecutiveShort = 0;
+      }
+    }));
+  }
+
+  return out;
 }

@@ -1,5 +1,5 @@
 // ===== bidding-board-worker-b — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-09-08 09:17:36
+// 生成时间: 2026-09-11 12:49:18
 // 注意: 此文件自动生成，请勿手动编辑
 
 // ────── bidding-board-worker-b/config.js ──────
@@ -93,7 +93,6 @@ function dateStrToMs(dateStr) {
 
 // ────── _shared-source/holidays.js ──────
 // holidays.js — 节假日表 + 本地交易日判断（源文件，各 Worker 复制使用）
-
 const KNOWN_HOLIDAYS = new Set([
   '2025-01-01', '2025-01-28', '2025-01-29', '2025-01-30', '2025-01-31',
   '2025-02-01', '2025-02-02', '2025-02-03', '2025-04-04', '2025-04-05',
@@ -114,7 +113,6 @@ function localIsTradingDay(dateStr) {
 
 // ────── bidding-board-worker-b/data/fuyao-api.js ──────
 // data/fuyao-api.js — fuyao 行情接口 + 交易日历
-
 async function fuyaoGet(env, path, params) {
   const url = new URL(CONFIG.FUYAO_BASE + path);
   for (const k in params) {
@@ -196,7 +194,6 @@ function localGetNextTradingDay(dateStr) {
 
 // ────── bidding-board-worker-b/data/supabase-write.js ──────
 // data/supabase-write.js — Supabase 读写
-
 function sbHeaders(env) {
   return {
     'apikey': env.SUPABASE_ANON_KEY,
@@ -252,6 +249,9 @@ async function updateJiwangShouguJieguo(env, date, stats) {
 //         判断哪些是一字板（竞价/开盘涨幅达到涨停），计算数量填入 bidding_data 封单家数行 time925 列。
 //   原实现：NumCat emoindic-daily 的 owfd_0925_count 字段 — 不稳定（8/14 等日期接口计数类字段缺失，
 //         且 emoindic 是日级指标，9:25 时往往还没有当天数据 → findTodayItem 找不到 → 空白）。
+
+
+
 
 async function runSeal(env, source) {
   const date = beijingToday();
@@ -317,7 +317,6 @@ async function runSeal(env, source) {
 
 // ────── bidding-board-worker-b/data/numcat-api.js ──────
 // data/numcat-api.js — NumCat 情绪周期接口
-
 async function fetchNumCatEmotionFull(env) {
   const resp = await fetch(CONFIG.NUMCAT_URL, {
     method: 'POST',
@@ -415,7 +414,6 @@ async function fetchNumCatMarketStats(env) {
 
 // ────── bidding-board-worker-b/logic/emotion-workflow.js ──────
 // logic/emotion-workflow.js — 情绪看板逻辑
-
 async function runEmotion(env, source, sharedFull) {
   const date = beijingToday();
   const logBase = { run_date: date, time_point: 't0926', source: source || 'cron', job: 'emotion', worker: 'B' };
@@ -703,7 +701,6 @@ async function refreshEmotionPredictVol(env, source) {
 
 // ────── bidding-board-worker-b/logic/jiwang-workflow.js ──────
 // logic/jiwang-workflow.js — 记忘看板 + 收盘主流程
-
 async function runJiwang(env, source, sharedFull) {
   const date = beijingToday();
   const logBase = { run_date: date, time_point: 'close', source: source || 'cron', job: 'jiwang', worker: 'B' };
@@ -760,7 +757,6 @@ async function runClose(env, source) {
 
 // ────── bidding-board-worker-b/index.js ──────
 // index.js — bidding-board-worker-b 入口
-
 function autoPoint() {
   const d = beijingNow();
   const mins = d.getUTCHours() * 60 + d.getUTCMinutes();

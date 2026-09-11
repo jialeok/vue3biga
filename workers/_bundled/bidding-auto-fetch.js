@@ -1,5 +1,5 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-09-11 11:39:39
+// 生成时间: 2026-09-11 12:49:18
 // 注意: 此文件自动生成，请勿手动编辑
 
 // ────── _shared-source/date-utils.js ──────
@@ -153,6 +153,10 @@ async function fetchLadderConstituents(env) {
 function tickerToThscode(code) {
   const c = String(code).trim();
   if (!/^\d{6}$/.test(c)) return '';
+  // [FIX 2026-09-11] 北交所 2024 起启用 920 号段。必须【先于】`9 → .SH` 判断，
+  // 否则 920xxx 会被当成沪市 B 股 → K 线/快照恒空 → 该股区间涨幅与当日收盘涨幅全天缺失
+  // （与前端 src/data/api/fuyao-proxy.js 同口径修复）。
+  if (c.slice(0, 2) === '92') return c + '.BJ';
   if (c.startsWith('6') || c.startsWith('9')) return c + '.SH';
   if (c.startsWith('4') || c.startsWith('8')) return c + '.BJ';
   return c + '.SZ';
@@ -310,6 +314,104 @@ async function fetchHistoricalPctChg(env, constituents, historicalDates) {
   }
 
   return { byDate: result, successCount, failCount };
+}
+
+/**
+ * [KLINE-FALLBACK 2026-09-11] 同花顺 K 线窗口涨幅（前复权）——供收盘区间涨幅「缺腿行」重算。
+ *
+ * 为什么需要：猫抓 daily 每天只有 10 次额度，收盘（16:00）时经常已被白天用尽 →
+ * 区间涨幅的「整段重算」拿不到 10 天窗口 → 只能退化为「只换 T 腿」，而
+ * 缺腿行（days < 窗口）根本无法修复（2026-09-11 实测 7 只错值，国芳集团 91.11%）。
+ * 同花顺 K 线【没有每日额度限制】（当日收盘涨幅兜底一直用它），因此这里提供窗口级
+ * K 线涨幅，让缺腿行重算完全不依赖猫抓额度。
+ *
+ * 口径与前端 src/data/stock-range-pct.js#fetchFuyaoDailyPctRange 完全一致：
+ *   · 前复权（不复权在除权除息日会出现假暴跌，与交易所涨跌幅不可比）；
+ *   · date_ms 是北京时间午夜 → 加 8h 取 UTC 日期才是正确交易日；
+ *   · 起点前移 20 自然日（窗口首日涨幅需要「上一交易日收盘价」，长假也够）；
+ *   · 并发固定 3（实测并发 4~6 会返回被截断的少数 K 线）+ 覆盖不足重试 + 熔断。
+ *
+ * @param {object} env
+ * @param {Array<{name:string, code:string}>} items
+ * @param {string[]} dates 需要的交易日（YYYY-MM-DD，顺序任意）
+ * @param {{concurrency?:number}} [opts]
+ * @returns {Promise<Map<string, Map<string, number>>>} name -> (YYYYMMDD -> 日涨幅%)
+ */
+async function fetchFuyaoKlineWindowPct(env, items, dates, opts) {
+  const out = new Map();
+  const list = (items || []).filter(it => it && it.name && it.code);
+  const ymdList = (dates || []).map(d => String(d).replace(/-/g, '')).filter(Boolean);
+  if (list.length === 0 || ymdList.length === 0) return out;
+
+  const sorted = ymdList.slice().sort();
+  const toDash = y => y.slice(0, 4) + '-' + y.slice(4, 6) + '-' + y.slice(6, 8);
+  // 起点前移 20 个自然日：首日涨幅需要「上一个交易日收盘价」作为基准（抗长假）。
+  const startMs = dateStrToMs(toDash(sorted[0])) - 20 * 86400000;
+  const endMs = dateStrToMs(toDash(sorted[sorted.length - 1])) + 2 * 86400000;
+  const wantSet = new Set(ymdList);
+
+  // 并发度固定 3：该上游在并发 4~6 时会返回被截断的少数几根 K 线。
+  const conc = (opts && opts.concurrency) || 3;
+  // 熔断阈值：连续这么多只都取不到完整窗口 → 判定上游整体不可用，放弃剩余（避免跑满重试）。
+  const CIRCUIT_LIMIT = 6;
+  let consecutiveShort = 0;
+  let circuitOpen = false;
+
+  async function fetchOnce(code) {
+    const data = await fuyaoProxyGet(env, '/api/a-share/prices/historical', {
+      thscode: tickerToThscode(code),
+      interval: '1d',
+      start: String(startMs),
+      end: String(endMs),
+      adjust: 'forward'
+    });
+    const rows = (data && data.item) || [];
+    const series = [];
+    rows.forEach(r => {
+      if (!r || r.date_ms === null || r.date_ms === undefined || r.close_price === null || r.close_price === undefined) return;
+      const close = Number(r.close_price);
+      if (!isFinite(close) || close <= 0) return;
+      series.push({ ymd: msToDateStr(Number(r.date_ms)).replace(/-/g, ''), close: close });
+    });
+    series.sort((a, b) => (a.ymd < b.ymd ? -1 : (a.ymd > b.ymd ? 1 : 0)));
+    const keep = new Map();
+    for (let k = 1; k < series.length; k++) {
+      if (!wantSet.has(series[k].ymd)) continue;
+      const prev = series[k - 1].close;
+      if (!prev) continue;
+      keep.set(series[k].ymd, (series[k].close / prev - 1) * 100);
+    }
+    return keep;
+  }
+
+  for (let i = 0; i < list.length; i += conc) {
+    if (circuitOpen) break;
+    const batch = list.slice(i, i + conc);
+    await Promise.all(batch.map(async it => {
+      if (circuitOpen) return;
+      let best = null;
+      try {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const keep = await fetchOnce(it.code);
+          if (!best || keep.size > best.size) best = keep;
+          if (best.size >= wantSet.size) break; // 已覆盖整个窗口
+          if (best.size === 0) break;           // 代码错 / 长期停牌，重试无意义
+          if (attempt < 2) await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+        }
+      } catch (e) {
+        console.warn('K线窗口失败 ' + it.name + '(' + it.code + '): ' + e.message);
+      }
+      if (best && best.size > 0) out.set(String(it.name).trim(), best);
+      if (!best || best.size < wantSet.size) {
+        consecutiveShort++;
+        if (consecutiveShort >= CIRCUIT_LIMIT) circuitOpen = true;
+      } else {
+        consecutiveShort = 0;
+      }
+    }));
+  }
+
+  return out;
 }
 
 // ────── bidding-auto-fetch/data/numcat-api.js ──────
@@ -742,6 +844,57 @@ function buildRangeRows(targets, rangeDates, dailyByCode, tLegByCode) {
     rows.push({ stock: name, code: t.code, pct: pct, days: legs.length });
   });
   return rows;
+}
+
+/**
+ * 【按日取腿】把「每个交易日一整行数据」映射成组装区间涨幅所需的两张表。
+ *
+ * 用途（[LOCAL-RECOMPUTE 2026-09-11]）：区间涨幅的历史日数据其实【已经存在库里】
+ * （每天一行 market_metrics.change_pct，前端首屏就把最近 30 个自然日拉进内存了）。
+ * 所以当云端 stock_range_pct 出现「缺腿行」（days < 窗口长度）时，完全可以用内存里
+ * 已存的逐日涨幅【本地重新组装】出完整区间涨幅 —— **0 次猫抓请求**，不消耗额度，
+ * 也不受「猫抓当日不给数据 / 额度用尽」的影响。
+ *
+ * 纯函数：不读 state、不发请求、不碰 DOM（调用方负责把内存数据准备好传进来）。
+ *
+ * @param {Array<{name:string, code?:string}>} targets 参与计算的股票（按 name 去重，先到先得）
+ * @param {string[]} ascDates 升序交易日 ['YYYY-MM-DD', ...]，最后一项必须是 T
+ * @param {Map<string, Map<string, object>>} rowsByDate date -> (股票名 -> 当日行)
+ * @param {function(object, string): (number|null)} legOf (当日行, 日期) => 该日腿涨幅（%）
+ *        口径由调用方决定（单一真相仍是 resolveTDayPct / isAuctionLegActive）
+ * @returns {{targets:Array<{name:string, code:string}>, dailyByCode:Object, tLegByCode:Object}}
+ *          可直接喂给 buildRangeRows（组装成行的唯一实现）
+ */
+function collectDailyLegs(targets, ascDates, rowsByDate, legOf) {
+  const dailyByCode = Object.create(null);
+  const tLegByCode = Object.create(null);
+  const out = [];
+  if (!targets || targets.length === 0 || !ascDates || ascDates.length === 0) {
+    return { targets: out, dailyByCode: dailyByCode, tLegByCode: tLegByCode };
+  }
+  const tDate = ascDates[ascDates.length - 1];
+  const seen = new Set();
+  targets.forEach(function(t) {
+    if (!t || !t.name) return;
+    const name = String(t.name).trim();
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    // 缺 code 的票用「名字键」占位：buildRangeRows 只要求 key 稳定唯一，
+    // 有 code 时用 code（与 worker 同键），没 code 也不至于整只票被丢掉。
+    const key = t.code ? String(t.code) : ('n:' + name);
+    const dm = Object.create(null);
+    ascDates.forEach(function(d) {
+      const row = rowsByDate && rowsByDate.get(d) ? rowsByDate.get(d).get(name) : null;
+      if (!row) return;
+      const v = legOf ? legOf(row, d) : null;
+      if (v === null || v === undefined || !isFinite(v)) return;
+      if (d === tDate) tLegByCode[key] = Number(v);
+      else dm[String(d).replace(/-/g, '')] = Number(v);
+    });
+    dailyByCode[key] = dm;
+    out.push({ name: name, code: key });
+  });
+  return { targets: out, dailyByCode: dailyByCode, tLegByCode: tLegByCode };
 }
 
 /**
@@ -1889,6 +2042,11 @@ async function runMorning(env) {
 //     · 「仅不劣化才覆盖」：重算出的天数少于库内天数时不覆盖（防上游返回被截断的窗口污染数据）。
 //   猫抓不可用、只剩同花顺 snapshot 兜底当日涨幅时，退化为「只换 T 腿」（保留旧的 replaceTDayLeg 路径）。
 //
+// 【KLINE-FALLBACK 2026-09-11】猫抓额度（每天 10 次）在 16:00 常已用尽 → 整段重算拿不到窗口，
+//   于是「缺腿行」（days < 窗口，例：次日继承票当时没有 T 腿）永远修不好（实测 7 只错值，
+//   国芳集团 91.11%）。现在补一条【同花顺 K 线】通道（无额度限制）专门重算缺腿行，
+//   让区间涨幅的修复完全不依赖猫抓额度。缺腿行【绝不】做代数换腿。
+//
 // 【幂等】re-run 安全：change_pct 值相同不写；区间涨幅值/天数相同不写。
 
 
@@ -2136,8 +2294,12 @@ async function runClose(env, opts) {
  * ① 主通道（有 10 天窗口数据）：用 range-window.buildRangeRows 按 [T-9, T] 整段重算，
  *    与库内值比较 → 值/天数不同才写；天数变少则【不覆盖】（防上游返回被截断的窗口污染数据）。
  *    天然幂等，且能修复任何被冻结的错值。
+ * ①b [KLINE-FALLBACK 2026-09-11] 缺腿行专修（猫抓额度用尽时的唯一出路）：对库内
+ *    `days < 窗口` 的行，用同花顺 K 线（无额度限制）重新组装 [T-9, T] 整段 → 同样
+ *    「不劣化才覆盖」。没有它时这类行既不会被 ① 覆盖（猫抓拿不到窗口），也会被 ② 跳过。
  * ② 降级（猫抓不可用、当日涨幅来自同花顺 snapshot，没有历史窗口）：对库内仍是竞价口径
- *    （updated_at < 当日 15:00）且未在 ① 覆盖的行，用 replaceTDayLeg 换掉 T 腿。
+ *    （updated_at < 当日 15:00）且未在 ①/①b 覆盖的【完整行】，用 replaceTDayLeg 换掉 T 腿。
+ *    缺腿行（days < 窗口）绝不换腿（代数反解必然更错，见 RANGE-FULL-LEG）。
  *
  * @returns {Promise<number>} 实际写入的行数
  */
@@ -2191,6 +2353,75 @@ async function syncRangePct(env, today, closeMs, rangeDates, dailyByCode, pctByC
     logs.push('⚠️ 无 10 天窗口数据 → 区间涨幅退化为「只换 T 腿」');
   }
 
+  // ①b [KLINE-FALLBACK 2026-09-11] 缺腿行专修：猫抓窗口不可用时改用同花顺 K 线整段重算。
+  //   为什么必须单列这一步：① 依赖猫抓 daily（每天仅 10 次额度，16:00 常已用尽）；
+  //   ②（换腿）对缺腿行【主动跳过】（代数反解必然更错）。两者叠加 → 缺腿行永远修不好
+  //   （2026-09-11 实测 7 只：国芳集团 91.11% / 百大集团 43.67% …全部是昨日错值）。
+  //   同花顺 K 线无额度限制 → 用它对「库内 days < 窗口」的行重新组装，让修复不依赖猫抓。
+  //   只处理缺腿行（通常个位数），并发 3 + 重试 + 熔断在 fetchFuyaoKlineWindowPct 内部。
+  if (rangeDates.length > 0) {
+    const incomplete = [];
+    storedRows.forEach(r => {
+      if (touched.has(r.stock)) return;
+      const d = Number(r.days) || 0;
+      if (d <= 0 || d >= rangeDates.length) return; // 只修缺腿行（完整行已由 ①/② 负责）
+      const m = byName.get(r.stock);
+      if (!m || !m.code) return;
+      incomplete.push({ name: r.stock, code: m.code });
+    });
+    if (incomplete.length > 0) {
+      try {
+        const kByCode = await fetchFuyaoKlineWindowPct(env, incomplete, rangeDates, { concurrency: 3 });
+        const dailyByCode2 = {};
+        const tLegByCode2 = {};
+        const targets2 = [];
+        const tDash = today;
+        incomplete.forEach(t => {
+          const dm = kByCode.get(t.name);
+          if (!dm) return;
+          const hist = {};
+          rangeDates.forEach(d => {
+            if (d === tDash) return;
+            const ymd = String(d).replace(/-/g, '');
+            const v = dm.get(ymd);
+            if (v !== undefined && isFinite(v)) hist[ymd] = v;
+          });
+          dailyByCode2[t.code] = hist;
+          const tv = dm.get(String(tDash).replace(/-/g, ''));
+          if (tv !== undefined && isFinite(tv)) tLegByCode2[t.code] = tv;
+          targets2.push({ name: t.name, code: t.code });
+        });
+        let klineFixed = 0;
+        if (targets2.length > 0) {
+          const built2 = buildRangeRows(targets2, rangeDates, dailyByCode2, tLegByCode2);
+          built2.forEach(r => {
+            const old = stored.get(r.stock);
+            const newPct = Number(Number(r.pct).toFixed(2));
+            if (old) {
+              const oldPct = parsePct(old.range_pct);
+              const oldDays = Number(old.days) || 0;
+              if (oldDays > r.days) return; // 不劣化覆盖（K 线窗口也不全时宁可不写）
+              if (newPct !== null && oldPct !== null && Math.abs(oldPct - newPct) < PCT_EPS && oldDays === r.days) return;
+            }
+            out.push({
+              date: today,
+              stock: r.stock,
+              range_pct: newPct.toFixed(2),
+              days: r.days,
+              updated_at: nowIso
+            });
+            touched.add(r.stock);
+            klineFixed++;
+          });
+        }
+        logs.push('区间涨幅缺腿行 K 线重算：' + incomplete.length + ' 只缺腿，K 线返回 ' +
+          targets2.length + ' 只，修正 ' + klineFixed + ' 只');
+      } catch (e) {
+        logs.push('区间涨幅缺腿行 K 线重算失败（非致命）: ' + e.message);
+      }
+    }
+  }
+
   // ② 降级：只换 T 腿（仅处理 ① 未覆盖、且仍是竞价口径的行）
   let skippedIncomplete = 0;
   storedRows.forEach(r => {
@@ -2201,7 +2432,7 @@ async function syncRangePct(env, today, closeMs, rangeDates, dailyByCode, pctByC
     if (old === null) return;
     // [RANGE-FULL-LEG 2026-09-11] 缺腿行不做代数换算：replaceTDayLeg 假定「已存值含竞价 T 腿」，
     // 而缺腿行当时根本没进来 T 腿（days < 窗口）→ 换算只会算得更错（国芳 81.17% → 91.11%）。
-    // 这类行只能靠 ① 整段重算；① 本次不可用时宁可不写，绝不写入错值（§10）。
+    // 这类行只能靠整段重算：① 猫抓窗口 / ①b 同花顺 K 线窗口；两者都不可用时宁可不写（§10）。
     if (Number(r.days) < RANGE_WINDOW_DAYS) { skippedIncomplete++; return; }
     const m = byName.get(r.stock);
     if (!m || !m.code || !pctByCode.has(m.code)) return;
@@ -2218,12 +2449,12 @@ async function syncRangePct(env, today, closeMs, rangeDates, dailyByCode, pctByC
 
   if (out.length === 0) {
     logs.push('区间涨幅无需更新（已是收盘口径）' +
-      (skippedIncomplete > 0 ? '；另有 ' + skippedIncomplete + ' 个缺腿行因整段重算不可用而跳过（不写入错值，等待下次重算）' : ''));
+      (skippedIncomplete > 0 ? '；另有 ' + skippedIncomplete + ' 个缺腿行未做换腿（不写错值，待下次整段重算）' : ''));
     return 0;
   }
   if (skippedIncomplete > 0) {
     logs.push('⚠️ 有 ' + skippedIncomplete + ' 个缺腿行（days < ' + RANGE_WINDOW_DAYS +
-      '）未做换腿换算：需整段重算才能修好');
+      '）不做换腿换算：只能靠整段重算（猫抓窗口 / 同花顺 K 线）修好');
   }
   await upsertStockRangePct(env, out);
   return out.length;
