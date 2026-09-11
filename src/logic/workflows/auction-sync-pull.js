@@ -19,6 +19,31 @@ import { _openAuctionShield, _closeAuctionShield } from '../../data/session-and-
 import { syncStockTopicsFromAuction } from '../auction/stock-sync.js';
 import { useUiStore } from '../../stores/uiStore.js';
 import { _cloudBlobExtras } from './auction-sync-helpers.js';
+import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
+
+        // 更早历史的后台补齐：整个会话只做一次，且必须等首屏窗口拉完后再发起。
+        // §33：首屏加载与后续补齐分离；§10：失败只影响「更早的历史」，窗口内数据完好。
+        let _olderPullStarted = false;
+        function _scheduleOlderAuctionPull(sinceDate) {
+            if (_olderPullStarted) return;
+            _olderPullStarted = true;
+            // setTimeout(0) 让出主线程，不与首屏渲染/并发取页竞争（不用 rAF：后台标签页会被冻结）
+            setTimeout(function() {
+                pullAuctionFromTable({ untilDate: sinceDate })
+                    .then(function(older) {
+                        const n = older ? Object.keys(older).length : 0;
+                        if (n > 0) {
+                            // 历史快照就绪会改变竞昨/并行等信号结果，必须清信号缓存避免缓存命中旧的 0
+                            Object.keys(_signalCache).forEach(function(k) { delete _signalCache[k]; });
+                            _emit('auction-refresh');
+                        }
+                        _dbgLog('[AUCTION-PULL] 历史后台补齐完成：再载入 ' + n + ' 天（首屏未阻塞）');
+                    })
+                    .catch(function(e) {
+                        _dbgLog('[AUCTION-ERR] pullAuctionFromTable(older) ' + (e && e.message || e));
+                    });
+            }, 0);
+        }
 
         // ============================================================
         // 云端数据拉取（解锁后执行一次）
@@ -121,16 +146,14 @@ import { _cloudBlobExtras } from './auction-sync-helpers.js';
 
                 // 从 auction_watchlist + market_metrics 拉取 auction 数据（拆表后新增）
                 // 若新表不可用或为空，保留本地数据（不清空）
+                // 【改造前】await pullAuctionFromTable() 无条件全表拉三张表 = 23 次串行 HTTP ≈ 25~40 秒，
+                // 早盘 9:25 打开页面整段白屏。现在改为两阶段（详见 src/logic/auction/auction-pull-window.js）：
+                //   ① 阻塞：只拉最近 AUCTION_RECENT_WINDOW_DAYS 个自然日（覆盖趋势图/弱转强/竞昨全部诉求）
+                //   ② 后台：更早的历史在空闲时补齐，完成后再 emit 一次刷新
+                // 若新表不可用或为空，保留本地数据（不清空）
                 try {
-                    const tableAuction = await pullAuctionFromTable();
-                    // 阶段四 Bug 6 收尾修复：auction 已改为纯内存缓存（_auctionMemCache）+ 云端表，
-                    // 不再落 localStorage（Bug 4），也不需要 allData = null 重置——
-                    // pullAuctionFromTable 内部已原地清空+灌入 _auctionMemCache，
-                    // 而 allData.auction 即 _auctionMemCache（Bug 1+2），引用自动同步。
-                    if (Object.keys(tableAuction).length > 0) {
-                        // 数据已灌入 _auctionMemCache，无需额外动作
-                    }
-                    // 新表为空时：保留本地数据，不清空（可能是迁移未完成或表刚创建）
+                    const sinceDate = getAuctionRecentSinceDate();
+                    await pullAuctionFromTable({ sinceDate });
                     // 更新状态签名，避免 pull 后立即触发无意义的 push
                     // 方案2：状态签名只统计正式成员（用 _auctionWatchlistIndex 判断）
                     const _pullWset = _getAuctionWatchlistSet(useUiStore().currentDate);
@@ -139,6 +162,12 @@ import { _cloudBlobExtras } from './auction-sync-helpers.js';
                         return { s: s.stock, sel: s.selected || false, b: s.bought || false,
                                  so: s.sold || false, f: s.fixed || false };
                     }));
+                    const _recentDays = Object.keys(state._auctionMemCache || {}).filter(function(d) { return d >= sinceDate; }).length;
+                    _dbgLog('[AUCTION-PULL] 首屏窗口 sinceDate=' + sinceDate + ' 载入 ' + _recentDays + ' 天');
+
+                    // ② 更早的历史：后台补齐，绝不阻塞首屏。失败也不影响窗口内数据（§10 fail-soft）。
+                    // 用户若在补齐完成前切过去，由 ensureAuctionDateDataLoaded 按天补拉兜底。
+                    _scheduleOlderAuctionPull(sinceDate);
                 } catch(tableErr) {
                     _dbgLog('[AUCTION-ERR] pullAuctionFromTable ' + (tableErr && tableErr.message));
                 }

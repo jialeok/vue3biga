@@ -2,7 +2,7 @@
 // 将原来堆在 App.vue <script setup> 中的登录 / Migration / Realtime /
 // 股票同步 / 竞价同步 / 热点同步 / 数据迁移 / VisibilityChange 等引导逻辑
 // 统一收敛到此处，App.vue 仅保留模板与最小脚本。
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, watch } from 'vue';
 import { useAuthStore } from '../stores/authStore.js';
 import { startSessionPoll } from '../data/watchlist-and-metrics.js';
 import { pullDailyHighlights } from '../data/daily-highlights.js';
@@ -21,6 +21,11 @@ import { migrateJiwangToTable, pullJiwangForDate, pullJiwangFromTable } from '..
 import { showToast, showWarningToast } from './useToast.js';
 import { state } from '../logic/app-state.js';
 import { useUiStore } from '../stores/uiStore.js';
+import { startMorningSync } from '../logic/auction/morning-sync.js';
+import { ensureAuctionDateAndRefresh } from '../logic/auction/auction-pull-window.js';
+
+// 日期切换「按天补拉」的 watch 只挂一次（onLoginSuccess 可能被重复调用）
+let _dateLoaderWatchBound = false;
 
 // loginRef: App.vue 持有的 LoginOverlay 组件 ref，用于 forceLogout / showPassword 调用
 export function useAppBootstrap(loginRef) {
@@ -146,6 +151,21 @@ export function useAppBootstrap(loginRef) {
     // §A 类安全网：独立 hydrate jiwang_data 到 _jiwangMemCache（幂等，已填充则跳过，不重复请求）。
     hydrateJiwangAtStartup();
 
+    // §33 首屏与后续刷新分离：日期切到「窗口外」的历史日时按天补拉，
+    // 而不是启动就全表扫描三张大表（那是早盘白屏 25~40 秒的根因）。
+    // 只挂一次：onLoginSuccess 可能因重新登录被再次调用（EventBus 绑定），重复 watch 会重复请求。
+    if (!_dateLoaderWatchBound) {
+      _dateLoaderWatchBound = true;
+      watch(() => uiStore.currentDate, (v) => {
+        if (!v) return;
+        const cached = state._auctionMemCache && state._auctionMemCache[v];
+        if (Array.isArray(cached)) return; // 内存已有（后台补齐已覆盖 / 首屏窗口内）
+        ensureAuctionDateAndRefresh(v).catch(function (e) {
+          _dbgLog('[BOOTSTRAP] 按天补拉 ' + v + ' 失败: ' + (e && e.message || e));
+        });
+      });
+    }
+
     pullFromCloud().then(() => {
       state.allData = null; loadAllData();
       _emit('auction-refresh');
@@ -153,6 +173,9 @@ export function useAppBootstrap(loginRef) {
       _emit('bidding-refresh');
       _emit('board-refresh');
       _emit('jiwang-refresh');
+      // [MORNING-SYNC 2026-09-11] 早盘自愈：9:25 worker 写完当天数据要 3~5 分钟，
+      // 页面若更早打开就只能靠这一层把数据补回来（不再需要手点「连抓五天」）。
+      startMorningSync();
     }).catch(e => _dbgLog('[AUCTION-ERR] background pullFromCloud ' + (e && e.message || e)));
   }
 

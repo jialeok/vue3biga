@@ -865,14 +865,33 @@ export function useAuctionBoard() {
     };
     const history = getAuctionStockHistory(name, uiStore.currentDate, 5, 'auction');
     paint(history);
-    // 再按需补齐缺失的历史交易日（market_metrics 云端），补齐后重算刷新趋势图，使 5 日数据完整
+    // §33：先用内存缓存即时出图（点击序号后面板立即展开，不依赖网络）
+    paint(history);
+    // 再补齐缺失的历史交易日（market_metrics 云端）。
+    // ⚠️ [PERF 2026-09-11] 原实现用 for..await 逐日【串行】hydrate —— 展开一只股票最多 5 次
+    // 串行请求 ≈ 7.5s，用户感觉「点开要等半天」。改为：
+    //   ① 只补【缺数据】的日期（已有 volume/change_pct 的日直接跳过，hydrate 自身也会短路，
+    //      这里提前过滤是为了不再为它建立一个 await 位置）；
+    //   ② 剩下的并发补齐（Promise.all），墙钟时间从 Σ 降到 ~1 次请求；
+    //   ③ 补完统一重算一次（一次 paint 而不是每个 await 各 paint 一次，避免 5 次全量重渲染）。
     let hydrated = false;
-    for (const h of history) {
-      const ok = await hydrateStockHistoryRow(h.date, name, 'auction');
-      if (ok) hydrated = true;
+    // 只补真正缺数据的交易日：hydrateStockHistoryRow 自身的短路条件是
+    // 「该行 volume / change_pct 任一非空」，这里用同一口径预筛，避免为已就绪的日白建 await。
+    const pending = history
+        .filter(h => {
+            const hasVolume = h.volume != null && String(h.volume).trim() !== '';
+            const hasPct = h.changePct != null && String(h.changePct).trim() !== '';
+            return !hasVolume && !hasPct;
+        })
+        .map(h => h.date);
+    if (pending.length > 0) {
+        const results = await Promise.all(
+            pending.map(d => hydrateStockHistoryRow(d, name, 'auction').catch(() => false))
+        );
+        hydrated = results.some(Boolean);
     }
     if (hydrated) {
-      paint(getAuctionStockHistory(name, uiStore.currentDate, 5, 'auction'));
+        paint(getAuctionStockHistory(name, uiStore.currentDate, 5, 'auction'));
     }
   }
 
