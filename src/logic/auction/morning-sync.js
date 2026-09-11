@@ -34,6 +34,8 @@ const WINDOW_TO_MIN = 9 * 60 + 55;
 const RETRY_MS = 20 * 1000;
 /** 拿到数据后的确认间隔（看行数是否还在增长） */
 const CONFIRM_MS = 45 * 1000;
+/** 收盘时刻（北京 15:00 之后不再做任何早盘补救） */
+const CLOSE_HOUR_MIN = 15 * 60;
 /** 一轮窗口内最多拉取次数（防止异常情况下无限请求，§32） */
 const MAX_PULLS = 12;
 
@@ -41,6 +43,7 @@ let _started = false;
 let _timer = null;
 let _pullCount = 0;
 let _lastRowCount = -1;
+let _allowOnce = false;
 
 function _beijingMinutes() {
     const d = new Date();
@@ -76,9 +79,12 @@ async function _tick() {
     try {
         const today = beijingTodayStr();
         const mins = _beijingMinutes();
+        const allowOnce = _allowOnce;
+        _allowOnce = false; // 一次性豁免，用完即失效
 
-        // 窗口外：不再调度（早盘过了就彻底停下来，不留后台心跳）
-        if (mins < WINDOW_FROM_MIN || mins > WINDOW_TO_MIN) {
+        // 窗口外：不再调度（早盘过了就彻底停下来，不留后台心跳）。
+        // 唯一例外：启动时的「窗口后一次补救」（_allowOnce），用完即失效。
+        if (!allowOnce && (mins < WINDOW_FROM_MIN || mins > WINDOW_TO_MIN)) {
             _stop('已过自愈窗口（' + String(Math.floor(mins / 60)).padStart(2, '0') + ':' + String(mins % 60).padStart(2, '0') + '）');
             return;
         }
@@ -151,8 +157,20 @@ export function startMorningSync() {
         return;
     }
     const mins = _beijingMinutes();
-    if (mins > WINDOW_TO_MIN) {
-        _dbgLog('[MORNING-SYNC] 已过早盘窗口，不启动');
+    if (mins > WINDOW_TO_MIN && mins <= CLOSE_HOUR_MIN) {
+        // 页面开在窗口之后（如 10:30）：不轮询，但做【一次】补救拉取 ——
+        // 覆盖「worker 迟到」「页面晚开」这两种情况。拿不到就收手，不留心跳。
+        if (_todayDataArrived(today)) {
+            _dbgLog('[MORNING-SYNC] 当天数据已在内存，无需补救');
+            return;
+        }
+        _dbgLog('[MORNING-SYNC] 已过 9:55 窗口但当天无数据 → 做一次补救拉取');
+        _allowOnce = true;
+        _schedule(0);
+        return;
+    }
+    if (mins > CLOSE_HOUR_MIN) {
+        _dbgLog('[MORNING-SYNC] 已过收盘，不启动早盘自愈');
         return;
     }
     const delayMs = mins < WINDOW_FROM_MIN
@@ -170,4 +188,5 @@ export function _resetMorningSyncState() {
     _started = false;
     _pullCount = 0;
     _lastRowCount = -1;
+    _allowOnce = false;
 }
