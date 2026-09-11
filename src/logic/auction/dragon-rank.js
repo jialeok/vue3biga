@@ -70,8 +70,12 @@ const dragonState = ref({ date: '', map: new Map(), version: 0, loadedAt: 0 });
 let _inflight = null; // { date, promise } 单飞保护
 // 需要强制重读的日期（收盘覆盖写入了新的 T 腿后登记，用完即焚）
 const _reloadDates = new Set();
-// 已做过「缺票兜底抓取」的日期：每会话每个日期最多一次，避免反复烧猫抓额度
-const _fallbackTried = new Set();
+// 已做过「缺票兜底抓取」的日期 → 已尝试的阶段（'intraday' 盘中 / 'close' 收盘后）。
+// [RANGE-FULL-LEG 2026-09-11] 原来是一个 Set（每日期每会话最多一次）→ 9:26 那次尝试过后，
+// 收盘后即使发现某行「缺腿」（当日继承票 9:25 没拿到 T 腿）也不会再补，错值一直挂到第二天。
+// 现在改为「每阶段最多一次」：盘中最多 1 次（拿不到 T 腿时也可能只是白跑），收盘后最多再 1 次
+// （此时 T 腿一定取得到=收盘涨幅，重算结果即最终正确值）。有界：每日最多 2 次。
+const _fallbackTried = new Map();
 // 空缓存主动重试（一次性定时器，指数退避，拿到数据即停止）
 let _emptyRetryTimer = null;
 let _emptyRetryDelay = 0;
@@ -165,12 +169,42 @@ function _beijingMinutes() {
   return ((n.getUTCHours() + 8) % 24) * 60 + n.getUTCMinutes();
 }
 
+/**
+ * 兜底抓取的「阶段」：15:00 前 = 盘中（T 腿可能只能取到竞价涨幅，甚至取不到），
+ * 15:00 起 = 收盘（T 腿一定取得到收盘涨幅 → 重算结果即最终值）。
+ * 每阶段各允许一次兜底，避免盘中那次尝试把收盘后的自愈机会吃掉。
+ */
+function _fallbackPhase() {
+  return _beijingMinutes() >= CLOSE_COVER_HOUR * 60 ? 'close' : 'intraday';
+}
+
 /** worker 收盘重算完成时刻（北京 16:05）对应的 UTC 时间戳 */
 function _authoritativeCloseUtcMs(dateStr) {
   if (!dateStr) return NaN;
   const base = Date.parse(dateStr + 'T00:00:00Z');
   if (Number.isNaN(base)) return NaN;
   return base + (WORKER_CLOSE_HOUR - 8) * 3600000 + WORKER_CLOSE_BUFFER_MIN * 60000;
+}
+
+/**
+ * 该日的【收盘口径数据】是否已权威（供 view-helpers 给「收盘红绿 / 收盘停板」做闸门）。
+ *
+ * 为什么不能只用「北京 15:00」：15:00~16:00 之间 market_metrics.change_pct 很可能仍是
+ * 9:25 写入的【竞价副本】（前端 close-pct-cover 与 worker 16:00 才把它改成收盘值）。
+ * 用竞价数据当收盘结果去数「N红M绿」「涨停跌停」会系统性误导。
+ * 因此门槛统一取本模块既有的「worker 权威重算时刻 = 北京 16:05」：
+ *   · 历史日期 → true（次日早盘 worker 已把 change_pct 回填成收盘值）；
+ *   · 当天     → 需已过 16:05；
+ *   · 未来日期 → false。
+ * @param {string} date YYYY-MM-DD
+ * @returns {boolean}
+ */
+export function isAuthoritativeCloseReached(date) {
+  if (!date) return false;
+  const today = _getLocalTodayStr();
+  if (date < today) return true;
+  if (date > today) return false;
+  return Date.now() >= _authoritativeCloseUtcMs(date);
 }
 
 /** 是否处于 worker 写入区间涨幅的时间窗（云端为空属正常，不该抢跑兜底） */
@@ -243,9 +277,12 @@ async function _load(date, force) {
 
   // 2) 云端缺票 → 一次猫抓 daily 兜底（覆盖「前日竞昨高光」等不在 worker 抓取名单里的票，
   //    以及 worker 当天写入失败的情况）。云端非空时不抢跑 worker 的 9:25 写入。
-  const missing = _missingTargetRows(date, map);
-  if (missing.length > 0 && !_fallbackTried.has(date) && !(cloud.size === 0 && _inWorkerWindow(date))) {
-    _fallbackTried.add(date);
+  //    [RANGE-FULL-LEG 2026-09-11] 收盘后额外把「缺腿行」（days < 窗口交易日数）也纳入待补：
+  //    这类行当时没拿到 T 腿（次日继承票常见），只有【整段重算】能修好，代数换腿会算错。
+  const phase = _fallbackPhase();
+  const missing = _missingTargetRows(date, map, phase === 'close');
+  if (missing.length > 0 && _fallbackTried.get(date) !== phase && !(cloud.size === 0 && _inWorkerWindow(date))) {
+    _fallbackTried.set(date, phase);
     let rows = [];
     let err = null;
     try {
@@ -274,10 +311,18 @@ async function _load(date, force) {
 
 /**
  * 云端缺哪些目标股票（§6 名单单一真相见 getDragonTargetRows）。
- * ⚠️ 判定为「云端没有这一行」而不是「值为 null」：worker 写过的行即使涨幅为空也算已处理，
+ * ⚠️ 默认判定为「云端没有这一行」而不是「值为 null」：worker 写过的行即使涨幅为空也算已处理，
  * 否则会为了少数长期停牌/次新股反复发起兜底请求（§32 禁止重复请求）。
+ *
+ * [RANGE-FULL-LEG 2026-09-11] includeIncomplete=true 时，额外把「缺腿行」也算作待补：
+ *   days < 该日窗口交易日数 → 说明当时没拿到 T 腿（区间涨幅少累乘了一天，系统性偏低）。
+ *   仅收盘后（phase='close'）启用 —— 此时 T 腿必定取得到收盘涨幅，重算即最终正确值。
+ *   刻意不在盘中启用：盘中 T 腿可能同样取不到，重算会得到又一个缺腿行 → 白烧一次额度。
+ * @param {string} date
+ * @param {Map<string, {pct:number|null, days:number}>} map
+ * @param {boolean} [includeIncomplete]
  */
-function _missingTargetRows(date, map) {
+function _missingTargetRows(date, map, includeIncomplete) {
   let rows = [];
   try {
     rows = getDragonTargetRows(date) || [];
@@ -285,11 +330,18 @@ function _missingTargetRows(date, map) {
     _dbgLog('[DRAGON] 目标名单读取失败: ' + (e && e.message || e));
     return [];
   }
+  const expectedLegs = getDragonWindowDates(date).length;
   const out = [];
   const seen = new Set();
   rows.forEach(function(r) {
     const n = String((r && r.stock) || '').trim();
-    if (!n || seen.has(n) || map.has(n)) return;
+    if (!n || seen.has(n)) return;
+    const cur = map.get(n);
+    if (cur) {
+      // 已有行 → 仅当被显式要求「补齐缺腿」且该行确实缺腿时才重新抓
+      if (!includeIncomplete) return;
+      if (!(Number(cur.days) > 0 && Number(cur.days) < expectedLegs)) return;
+    }
     seen.add(n);
     out.push(r);
   });

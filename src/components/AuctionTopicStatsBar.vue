@@ -6,9 +6,12 @@
 
   排版契约（2026-09-10）：整条【隐形】分左右两格，中间与行间均无分隔线
     左格（窄）：题材名，字号更大更显眼
-    右格（宽）：两行 —— 上行「数量 / 一字 / 竞价高开」，下行「龙头 / 竞价 / 十日」
+    右格（宽）：两行 —— 上行「数量 / 一字 / 竞价高开 / 收盘 / 停板」，下行「龙头 / 竞价 / 十日」
   [TOPIC-STATS-COLOR 2026-09-11] 下行「竞价」数值按【当天竞价涨幅】符号着色
     （>0 红 / <0 绿 / =0 灰）；下行其余两段（龙头名、十日）保持统一红色加粗不变。
+  [CLOSE-COUNT 2026-09-11] 上行「收盘」= 同题材收盘涨跌家数（2红9绿，红字红、绿字绿）；
+    「停板」= 同题材收盘涨停/跌停家数。两者都只在收盘口径日期产出，且由 Logic 层决定是否产出。
+    多段拼接段由 Logic 层给出 parts（[{text,tone}]），本组件只做 v-for（§21 零计算）。
 
   ⚠️ 不要加左侧竖条 / 配色高光：与「卖」标签的灰黑色块视觉冲突，会看乱（用户明确要求去掉）。
   数据缺失的段（如次新股没有 10 日区间涨幅）在 Logic 层就不会产出，这里不补 0 / '-'（§10）。
@@ -28,7 +31,14 @@
           v-for="s in layout.row1"
           :key="s.key"
           class="ats-item"
-        ><b>{{ s.label }}</b><i>{{ s.value }}</i></span>
+        ><b>{{ s.label }}</b><i
+          v-if="s.parts"
+          class="ats-parts"
+        ><span
+          v-for="p in s.parts"
+          :key="p.text"
+          :class="'ats-tone-' + p.tone"
+        >{{ p.text }}</span></i><i v-else>{{ s.value }}</i></span>
       </div>
       <div
         v-if="layout.row2.length"
@@ -119,6 +129,23 @@ const layout = computed(() => formatTopicStatsLayout(props.stats));
   font-style: normal;
   font-weight: 600;
   color: #334155;
+}
+
+/* [CLOSE-COUNT 2026-09-11] 多段拼接值（如「2红9绿」/「1涨停2跌停」）：
+   每段自带 tone，颜色由 Logic 层给出，这里只做 class 映射（§21）。
+   与「卖」标签的灰黑色块无关；不引入任何底纹/色块，仅改文字颜色。 */
+.ats-item > i.ats-parts {
+  display: inline-flex;
+  gap: 3px;
+}
+.ats-item > i.ats-parts > .ats-tone-up {
+  color: #dc2626;
+}
+.ats-item > i.ats-parts > .ats-tone-down {
+  color: #059669;
+}
+.ats-item > i.ats-parts > .ats-tone-flat {
+  color: #94a3b8;
 }
 
 /* 第二行（龙头）：股票名 / 竞价 / 十日三个数值统一红色加粗强调。

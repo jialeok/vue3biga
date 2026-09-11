@@ -108,10 +108,17 @@ async function fetchNumcatDailyWindow(env, codes, rangeDates, today) {
   return { dailyByCode, pctByCode };
 }
 
-export async function runClose(env) {
+/**
+ * @param {object} env
+ * @param {{date?:string}} [opts] date='YYYY-MM-DD' 可指定要覆盖的交易日（默认=北京今天）。
+ *        用途：[REPAIR-DATE 2026-09-11] 手动修复历史某天（例如 9:25 写出过缺腿区间涨幅、
+ *        或当天收盘覆盖没跑成）。交易日闸门校验的是【该参数日期】而非当前时刻，
+ *        因此周末/盘后也能补修过去某一天。不传则完全保持原行为（= 补抓当天）。
+ */
+export async function runClose(env, opts) {
   const logs = [];
-  const today = beijingToday();
-  logs.push('today=' + today);
+  const today = (opts && opts.date) || beijingToday();
+  logs.push('today=' + today + (opts && opts.date ? '（手动指定日期）' : ''));
 
   if (isWeekend(today) || !localIsTradingDay(today)) {
     logs.push('非交易日，跳过');
@@ -333,12 +340,17 @@ async function syncRangePct(env, today, closeMs, rangeDates, dailyByCode, pctByC
   }
 
   // ② 降级：只换 T 腿（仅处理 ① 未覆盖、且仍是竞价口径的行）
+  let skippedIncomplete = 0;
   storedRows.forEach(r => {
     if (touched.has(r.stock)) return;
     const t = r.updated_at ? Date.parse(r.updated_at) : NaN;
     if (Number.isNaN(t) || !t || t >= closeMs) return; // 已是收盘口径 → 不动
     const old = parsePct(r.range_pct);
     if (old === null) return;
+    // [RANGE-FULL-LEG 2026-09-11] 缺腿行不做代数换算：replaceTDayLeg 假定「已存值含竞价 T 腿」，
+    // 而缺腿行当时根本没进来 T 腿（days < 窗口）→ 换算只会算得更错（国芳 81.17% → 91.11%）。
+    // 这类行只能靠 ① 整段重算；① 本次不可用时宁可不写，绝不写入错值（§10）。
+    if (Number(r.days) < RANGE_WINDOW_DAYS) { skippedIncomplete++; return; }
     const m = byName.get(r.stock);
     if (!m || !m.code || !pctByCode.has(m.code)) return;
     const next = replaceTDayLeg(old, parsePct(m.auc_pct_chg), pctByCode.get(m.code));
@@ -353,8 +365,13 @@ async function syncRangePct(env, today, closeMs, rangeDates, dailyByCode, pctByC
   });
 
   if (out.length === 0) {
-    logs.push('区间涨幅无需更新（已是收盘口径）');
+    logs.push('区间涨幅无需更新（已是收盘口径）' +
+      (skippedIncomplete > 0 ? '；另有 ' + skippedIncomplete + ' 个缺腿行因整段重算不可用而跳过（不写入错值，等待下次重算）' : ''));
     return 0;
+  }
+  if (skippedIncomplete > 0) {
+    logs.push('⚠️ 有 ' + skippedIncomplete + ' 个缺腿行（days < ' + RANGE_WINDOW_DAYS +
+      '）未做换腿换算：需整段重算才能修好');
   }
   await upsertStockRangePct(env, out);
   return out.length;

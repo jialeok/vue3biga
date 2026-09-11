@@ -120,6 +120,14 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToke
     // 否则增量缓存会复用旧行对象、徽章底色陈旧。注意不能用上方 yizi= 代替：yizi 只捕捉「跨过涨停线」
     // 的跳变，捕捉不到普通涨跌方向改变（如 +1.2% → -0.8% 两者都不是一字）。
     'auc=' + (item.aucPctNum === null || item.aucPctNum === undefined ? '' : item.aucPctNum),
+    // [CLOSE-LIMIT / CLOSE-COUNT 2026-09-11] 收盘停板标记（红/绿蚂蚁线）与收盘涨幅数值：
+    //   收盘覆盖会在 15:00~16:00 之间把 change_pct 从竞价副本改成收盘值，行内其它输入（volume/note…）
+    //   完全没变 → 不把这些派生值入签名，行缓存会继续复用「没有蚂蚁线」的旧行对象。
+    'cl=' + (item.closeLimit || ''),
+    'cp=' + (item.closePct === null || item.closePct === undefined ? '' : item.closePct),
+    // [TOPIC-SEQ 2026-09-11] 同题材组内序号：组内任何一只票增删/换题材都会改变本行的序号，
+    //   但本行自身的行内输入可以完全没变 → 必须单独入签名，否则序号陈旧。
+    'seq=' + (item.seqNo || 0),
     // [TOPIC-STATS 2026-09-10] 题材块统计条挂在【该组第一行】上：组内任何一只票的一字/高开/龙头变化
     // 都会改变统计数字，但首行自身的行内输入可能没变 → 必须单独入签名，否则统计条数字陈旧。
     'ts=' + (item.topicStats ? topicStatsSignature(item.topicStats) : ''),

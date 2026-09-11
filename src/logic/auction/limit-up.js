@@ -82,3 +82,32 @@ export function buildYiZiSet(list, codeOf) {
     });
     return set;
 }
+
+/**
+ * 【收盘】涨停 / 跌停判定（2026-09-11 新增，用于「收盘停板」蚂蚁线标记与同题材统计）。
+ *
+ * 与 isAuctionYiZi（竞价口径）严格区分：本函数只看【收盘涨幅】。
+ *   · 竞价一字 = 9:25 竞价报价就打在涨停价上（实线红线，盘中信号）；
+ *   · 收盘涨停 = 全天走完后收在涨停价（红色蚂蚁线，收盘结果）。
+ * 两者可以同时成立（竞价一字往往收在涨停），视觉上由调用方决定优先级，本模块只出判定。
+ *
+ * 涨停幅度复用 getLimitUpPct（按板块/ST），容差同样复用 EPS：
+ *   收盘涨停：pct + EPS >= +幅度（涨停价四舍五入到分 → 实测 +9.88% / +9.97% 都算涨停）
+ *   收盘跌停：pct - EPS <= -幅度（跌停同理，实测 -9.97% 算跌停）
+ *
+ * @param {*} closePct - 收盘涨幅：number 或 '+9.98%' / '-9.97%' 这类字符串
+ * @param {string} [code] - 6 位股票代码（缺省兜底主板 10%）
+ * @param {string} [stockName] - 股票名（用于 ST 判定）
+ * @returns {'up'|'down'|null} 'up'=收盘涨停 / 'down'=收盘跌停 / null=都不是或没有涨幅数据
+ *          ⚠️ 无数据一律返回 null，绝不把「没数据」当成「没涨停」以外的任何东西（§10）。
+ */
+export function getCloseLimitState(closePct, code, stockName) {
+    const pct = (typeof closePct === 'number')
+        ? (isFinite(closePct) ? closePct : null)
+        : parseAucPct(closePct);
+    if (pct === null) return null;
+    const limit = getLimitUpPct(code, stockName);
+    if (pct + EPS >= limit) return 'up';
+    if (pct - EPS <= -limit) return 'down';
+    return null;
+}

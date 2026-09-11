@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getLimitUpPct, parseAucPct, isAuctionYiZi, buildYiZiSet, isStStockName } from './limit-up.js';
+import { getLimitUpPct, parseAucPct, isAuctionYiZi, buildYiZiSet, isStStockName, getCloseLimitState } from './limit-up.js';
 
 describe('limit-up 涨停幅度', () => {
   it('主板 10% / ST 5%', () => {
@@ -69,5 +69,39 @@ describe('buildYiZiSet', () => {
     ];
     const set = buildYiZiSet(list);
     expect([...set].sort()).toEqual(['丙', '甲']);
+  });
+});
+
+describe('getCloseLimitState 收盘涨停/跌停判定（2026-09-11 新增）', () => {
+  it('主板：+10.02% 涨停 / -9.97% 跌停 / ±9.5% 都不是', () => {
+    expect(getCloseLimitState('+10.02%', '600865', '百大集团')).toBe('up');
+    expect(getCloseLimitState('-9.97%', '600865', '百大集团')).toBe('down');
+    expect(getCloseLimitState('+9.50%', '600865', '百大集团')).toBe(null);
+    expect(getCloseLimitState('-9.50%', '600865', '百大集团')).toBe(null);
+  });
+
+  it('四舍五入容差：+9.88%（低价股涨停价四舍五入所致）仍判涨停', () => {
+    expect(getCloseLimitState('+9.88%', '600000', '某某')).toBe('up');
+    expect(getCloseLimitState('-9.88%', '600000', '某某')).toBe('down');
+  });
+
+  it('创业板/科创板 20%、北交所 30%、ST 主板 5%', () => {
+    expect(getCloseLimitState('+20.00%', '300750', '宁德时代')).toBe('up');
+    expect(getCloseLimitState('+10.00%', '300750', '宁德时代')).toBe(null); // 10% 不是创业板涨停
+    expect(getCloseLimitState('+30.00%', '830799', '某某')).toBe('up');
+    expect(getCloseLimitState('+5.03%', '600000', '*ST某某')).toBe('up');
+    expect(getCloseLimitState('-5.03%', '600000', '*ST某某')).toBe('down');
+  });
+
+  it('接受 number 入参；0% 与无数据都返回 null（绝不把没数据当停板）', () => {
+    expect(getCloseLimitState(10.01, '600000', '某某')).toBe('up');
+    expect(getCloseLimitState(0, '600000', '某某')).toBe(null);
+    expect(getCloseLimitState('', '600000', '某某')).toBe(null);
+    expect(getCloseLimitState(null, '600000', '某某')).toBe(null);
+    expect(getCloseLimitState(undefined, '600000', '某某')).toBe(null);
+  });
+
+  it('缺代码按主板 10% 兜底', () => {
+    expect(getCloseLimitState('+10.00%', '', '某某')).toBe('up');
   });
 });

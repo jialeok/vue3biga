@@ -164,4 +164,75 @@ describe('topicStatsSignature 增量渲染签名', () => {
     expect(topicStatsSignature(base)).not.toBe(topicStatsSignature({ ...base, leader: 'B' }));
     expect(topicStatsSignature(null)).toBe('');
   });
+
+  it('[2026-09-11] 收盘红绿 / 停板计数变化必须让签名失效', () => {
+    const base = { topic: 'T', count: 3, yiziCount: 1, highOpenCount: 2, hasClose: true, redCount: 2, greenCount: 1, limitUpCount: 1, limitDownCount: 0, leader: 'A', leaderAucPct: 1, leaderRangePct: 5 };
+    expect(topicStatsSignature(base)).toBe(topicStatsSignature({ ...base }));
+    expect(topicStatsSignature(base)).not.toBe(topicStatsSignature({ ...base, redCount: 3 }));
+    expect(topicStatsSignature(base)).not.toBe(topicStatsSignature({ ...base, greenCount: 0 }));
+    expect(topicStatsSignature(base)).not.toBe(topicStatsSignature({ ...base, limitUpCount: 0 }));
+    expect(topicStatsSignature(base)).not.toBe(topicStatsSignature({ ...base, limitDownCount: 2 }));
+    expect(topicStatsSignature(base)).not.toBe(topicStatsSignature({ ...base, hasClose: false }));
+  });
+});
+
+describe('[2026-09-11] 收盘红绿 / 停板统计（同题材口径）', () => {
+  it('收盘涨幅 >0 计红、<0 计绿、=0 两边都不计；停板按 closeLimit 计数', () => {
+    const entries = [
+      { topic: '农业', name: 'A', aucPct: 1, closePct: 6.2, closeLimit: null },
+      { topic: '农业', name: 'B', aucPct: -1, closePct: -3.1, closeLimit: null },
+      { topic: '农业', name: 'C', aucPct: 0, closePct: 0, closeLimit: null },
+      { topic: '农业', name: 'D', aucPct: 2, closePct: 10.01, closeLimit: 'up' },
+      { topic: '农业', name: 'E', aucPct: -2, closePct: -9.98, closeLimit: 'down' }
+    ];
+    const s = buildTopicStatsMap(entries).get('农业');
+    expect(s.hasClose).toBe(true);
+    expect(s.redCount).toBe(2);   // A、D
+    expect(s.greenCount).toBe(2); // B、E
+    expect(s.limitUpCount).toBe(1);
+    expect(s.limitDownCount).toBe(1);
+  });
+
+  it('一个收盘涨幅都拿不到 → hasClose=false（早盘不产出该段，§10 不补 0）', () => {
+    const entries = [
+      { topic: 'T', name: 'A', aucPct: 1, closePct: null, closeLimit: null },
+      { topic: 'T', name: 'B', aucPct: -1, closePct: null, closeLimit: null }
+    ];
+    const s = buildTopicStatsMap(entries).get('T');
+    expect(s.hasClose).toBe(false);
+  });
+
+  it('布局：收盘段在「竞价高开」右侧，格式 N红M绿，红字 tone=up、绿字 tone=down', () => {
+    const lay = formatTopicStatsLayout({
+      topic: '农业', count: 11, yiziCount: 1, highOpenCount: 7,
+      hasClose: true, redCount: 2, greenCount: 9, limitUpCount: 3, limitDownCount: 1,
+      leader: '万向德农', leaderAucPct: 2, leaderRangePct: 102
+    });
+    expect(lay.row1.map(x => x.key)).toEqual(['count', 'yizi', 'high', 'close', 'limit']);
+    const close = lay.row1.find(x => x.key === 'close');
+    expect(close.value).toBeUndefined();
+    expect(close.parts).toEqual([
+      { text: '2红', tone: 'up' },
+      { text: '9绿', tone: 'down' }
+    ]);
+  });
+
+  it('布局：收盘段存在但没有停板 → 不产出「停板」段（不刷 0涨停0跌停）', () => {
+    const lay = formatTopicStatsLayout({
+      topic: 'T', count: 3, yiziCount: 0, highOpenCount: 1,
+      hasClose: true, redCount: 3, greenCount: 0, limitUpCount: 0, limitDownCount: 0,
+      leader: 'A', leaderAucPct: 1, leaderRangePct: 5
+    });
+    expect(lay.row1.map(x => x.key)).toEqual(['count', 'yizi', 'high', 'close']);
+    expect(lay.row1.find(x => x.key === 'limit')).toBeUndefined();
+  });
+
+  it('布局：hasClose=false → 收盘/停板两段都不产出（早盘保持原三列）', () => {
+    const lay = formatTopicStatsLayout({
+      topic: 'T', count: 3, yiziCount: 0, highOpenCount: 1, hasClose: false,
+      redCount: 0, greenCount: 0, limitUpCount: 0, limitDownCount: 0,
+      leader: 'A', leaderAucPct: 1, leaderRangePct: 5
+    });
+    expect(lay.row1.map(x => x.key)).toEqual(['count', 'yizi', 'high']);
+  });
 });

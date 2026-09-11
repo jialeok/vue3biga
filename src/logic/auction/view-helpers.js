@@ -15,10 +15,15 @@ import { getDisplayNote } from '../note/helpers.js';
 import { useUiStore } from '../../stores/uiStore.js';
 import { getStockTopicCount, getStockTopicsDisplay, getPrimaryTopicMap, classifyStockPrimaryTopic, sortByTopicGroups, buildTopicColorMap } from './topic-sort.js';
 // [YIZI 2026-09-09] 竞价一字（竞价涨停）：行级红线标记 + 题材组间排序权重，单一真相在 limit-up.js。
-import { isAuctionYiZi, parseAucPct } from './limit-up.js';
+// [CLOSE-LIMIT 2026-09-11] 同模块新增 getCloseLimitState：收盘涨停/跌停（蚂蚁线标记 + 题材统计）。
+import { isAuctionYiZi, parseAucPct, getCloseLimitState } from './limit-up.js';
+// [CLOSE-COUNT 2026-09-11] 「收盘口径」判定：题材统计条的收盘红绿/停板、行级收盘停板标记
+// 只在收盘【权威口径】下才成立 —— 早盘（乃至 15:00~16:00 之间）的 change_pct 还可能是
+// 9:25 写入的竞价副本，用它数红绿会把竞价方向当成收盘结果。
+// 判定复用 dragon-rank 的单一真相 isAuthoritativeCloseReached（北京 16:05），不另写一份时间逻辑（§6）。
+import { getDragonRangePct, computeDragonRankMap, isAuthoritativeCloseReached } from './dragon-rank.js';
 // [DRAGON 2026-09-09] 题材龙头（龙一/龙二…）：区间涨幅状态由 dragon-rank.js 异步加载后经模块级 ref 暴露，
 // 此处同步读取（与 weakStrongSetRef 同款 ref-driven 范式），题材 toggle 开启时才参与计算。
-import { getDragonRangePct, computeDragonRankMap } from './dragon-rank.js';
 // [TOPIC-STATS 2026-09-10] 题材块统计条（数量/一字/竞价高开/龙头…）：纯函数在 topic-stats.js
 import { buildTopicStatsMap } from './topic-stats.js';
 
@@ -162,6 +167,15 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   const isYiZi = ctx.byTopic ? isAuctionYiZi(rawItem, _yiZiCode) : false;
   const aucPctText = (_aucPctNum === null) ? '' : (_aucPctNum > 0 ? '+' : '') + _aucPctNum.toFixed(2) + '%';
 
+  // [CLOSE-COUNT / CLOSE-LIMIT 2026-09-11] 收盘涨幅 → 红绿 / 停板。
+  // 两个前提缺一不可：① 题材 toggle 开启（与竞价一字同一显示口径）；
+  // ② 该日已是收盘口径（ctx.closeWindow）—— 否则 change_pct 是 9:25 竞价副本，会误判。
+  // 展示文本只认专用收盘字段 changePct/change_pct（market_metrics(auction) 为权威，见 auction-data.js）。
+  const _closePct = ctx.closeWindow ? parseAucPct(rawItem.changePct || rawItem.change_pct || '') : null;
+  const closeLimit = (ctx.byTopic && ctx.closeWindow)
+    ? getCloseLimitState(_closePct, _yiZiCode, stockName)
+    : null;
+
   return {
     index,
     stock: stockName,
@@ -198,7 +212,15 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     // 无请求、不落库）：>0 红、<0 绿、=0 灰；null = 该股当日无竞价涨幅数据（按中性灰，不当 0 处理）。
     // 绝不复用 changePct/change_pct —— 后者会被收盘覆盖改写成收盘涨幅，颜色会跟着收盘变，
     // 与「跟随当天竞价涨幅」的需求不符。
-    aucPctNum: _aucPctNum
+    aucPctNum: _aucPctNum,
+    // [CLOSE-LIMIT 2026-09-11] 收盘涨停('up')/跌停('down') → 股票名下绿色/红色【蚂蚁线（虚线）】标记。
+    // null = 既非停板也没有收盘涨幅数据（不标记）。视觉优先级见 AuctionBoardTable：竞价一字实线优先。
+    closeLimit,
+    // [CLOSE-COUNT 2026-09-11] 收盘涨幅数值（仅收盘口径日期有值，否则 null），供题材统计条「2红9绿」计数。
+    closePct: _closePct,
+    // [TOPIC-SEQ 2026-09-11] 同题材组内序号（1 起）。只在「题材单独开启」时由调用方赋值；
+    // 其余模式保持 0 → 模板回退到原来的全局序号（行为完全不变）。
+    seqNo: 0
   };
 }
 
@@ -211,6 +233,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   dataSource = dataSource || 'auction';
   const _p = dataSource === 'hot' ? 'hot' : 'auction';
   const currentDate = useUiStore().currentDate;
+  // [CLOSE-COUNT 2026-09-11] 收盘口径门槛（当天 15:00 起 / 历史日期）。
+  // 收盘红绿统计与收盘停板标记都以它为闸门：早盘 change_pct 是竞价副本，不能当收盘结果用。
+  const closeWindow = isAuthoritativeCloseReached(currentDate);
 
   const auctionList = getTodayGroupList(dataSource);
   if (!auctionList || auctionList.length === 0) {
@@ -810,6 +835,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     prevAuctionMap: _prevMap,
     // [YIZI 2026-09-09] 题材 toggle 开关：竞价一字红线只在题材视图下计算/展示（与龙头徽章同一口径）
     byTopic: !!sortState.byTopic,
+    // [CLOSE-COUNT 2026-09-11] 该日是否已是收盘口径（当天 15:00 后 / 历史日期）。
+    // false 时收盘涨幅不可信（= 竞价副本）→ 收盘红绿/停板/蚂蚁线一律不产出（§10 不用竞价数据冒充收盘结果）。
+    closeWindow: closeWindow,
     tagStateCache: _buildTagStateCache(currentDate),
     jingYestToggleChecked,
     jingYestHighlightSet,
@@ -830,45 +858,17 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // （折叠观察组会剔除未命中行）→ 必须按【最终展示集合】重算一次排名，避免被隐藏的票占用龙一位次。
   if (sortState.byTopic && !topicOnlyMode) dragonRankMap = _buildDragonRankMap(fullOrder);
 
-  // [TOPIC-STATS 2026-09-10] 题材【单独开启】时，为每个题材块算一行统计小字（数量/一字/竞价高开/龙头…）。
+  // [TOPIC-STATS 2026-09-10] 题材【单独开启】时，为每个题材块算一行统计小字（数量/一字/竞价高开/…）。
   // 统计口径与 sortByTopicGroups 的分组【完全同源】（同一个 primaryTopicOf、同一个渲染集合 fullOrder），
   // 杜绝"统计条数字和下面的行数对不上"。只在 topicOnlyMode 生效：叠加主排序时分组语义不同，不加。
-  let topicStatsMap = null;
-  if (topicOnlyMode && primaryTopicOfForColor) {
-    const _rangeMap = getDragonRangePct(currentDate);
-    const _entries = [];
-    fullOrder.forEach(function(i) {
-      const raw = renderList[i];
-      const nm = raw && raw.stock ? String(raw.stock).trim() : '';
-      if (!nm) return;
-      const rp = (_rangeMap && _rangeMap.has(nm)) ? _rangeMap.get(nm).pct : null;
-      _entries.push({
-        topic: primaryTopicOfForColor(i),
-        name: nm,
-        isYiZi: !!(yiZiOf && yiZiOf(i)),
-        aucPct: _getThreeDayAuctionPct(raw),
-        rangePct: (rp === undefined ? null : rp)
-      });
-    });
-    topicStatsMap = buildTopicStatsMap(_entries);
-  }
-  let _lastTopicKey = null;
-
-  const items = fullOrder.map((i, pos) => {
+  //
+  // [TOPIC-SEQ 2026-09-11 重构] 统计条与「组内序号」都改为【在 items 上后置赋值】：
+  //   · items 的顺序 = fullOrder = 最终渲染顺序（与分组口径天然一致）；
+  //   · 每行已 enrich 好 isYiZi / aucPctNum / closePct / closeLimit，不必再重复解析一遍原始行；
+  //   · 顺带把「同题材组内序号 seqNo」算出来（跨题材重置，1 起）——模板回退全局序号的逻辑不变。
+  const items = fullOrder.map((i) => {
     const it = _enrichAuctionItem(renderList[i], i, ctx);
     if (it) {
-      // 题材块【第一行】挂统计条（topicStats），其余行为 null —— 模板 v-if 渲染，不做任何计算（§21）
-      if (topicStatsMap && primaryTopicOfForColor) {
-        const tp = (primaryTopicOfForColor(i) || '其它').trim() || '其它';
-        if (tp !== _lastTopicKey) {
-          it.topicStats = topicStatsMap.get(tp) || null;
-          _lastTopicKey = tp;
-        } else {
-          it.topicStats = null;
-        }
-      } else {
-        it.topicStats = null;
-      }
       // 题材 toggle 开启时，给每行附上所属题材的浅色背景（未匹配/不足两只的题材为空 → 不上色）
       if (topicColorMap && primaryTopicOfForColor) {
         const tp = primaryTopicOfForColor(i);
@@ -882,6 +882,45 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     }
     return it;
   }).filter(Boolean);
+
+  let topicStatsMap = null;
+  if (topicOnlyMode && primaryTopicOfForColor) {
+    const _rangeMap = getDragonRangePct(currentDate);
+    const _entries = items.map(function(it) {
+      const rp = (_rangeMap && _rangeMap.has(it.stock)) ? _rangeMap.get(it.stock).pct : null;
+      return {
+        topic: primaryTopicOfForColor(it.index),
+        name: it.stock,
+        isYiZi: !!it.isYiZi,
+        aucPct: _getThreeDayAuctionPct(renderList[it.index]),
+        rangePct: (rp === undefined ? null : rp),
+        // [CLOSE-COUNT / CLOSE-LIMIT 2026-09-11] 收盘口径下才带收盘涨幅/停板（否则为 null → 逻辑层不产出该段）
+        closePct: it.closePct,
+        closeLimit: it.closeLimit
+      };
+    });
+    topicStatsMap = buildTopicStatsMap(_entries);
+
+    // 统计条挂到每个题材块的【第一行】（其余行 null）；同时给出组内序号。
+    // 二者共用同一个「题材切换」判断，保证统计条所在行 === 序号从 1 重新开始的那一行。
+    let lastTopicKey = null;
+    let seqInTopic = 0;
+    items.forEach(function(it) {
+      const tp = (primaryTopicOfForColor(it.index) || '其它').trim() || '其它';
+      if (tp !== lastTopicKey) {
+        it.topicStats = topicStatsMap.get(tp) || null;
+        lastTopicKey = tp;
+        seqInTopic = 0;
+      } else {
+        it.topicStats = null;
+      }
+      seqInTopic++;
+      it.seqNo = seqInTopic;
+    });
+  } else {
+    // 非「题材单独开启」：不加统计条，序号保持 0 → 模板沿用原来的全局序号（行为不变）
+    items.forEach(function(it) { it.topicStats = null; it.seqNo = 0; });
+  }
 
   return {
     date: currentDate,

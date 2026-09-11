@@ -25,7 +25,9 @@ import { _dbgLog } from '../../data/debug-log.js';
 import { readMarketMetricsForDate, upsertMarketMetricsRows } from '../../data/market-metrics.js';
 import { readRangePctForDate, upsertRangePctRows, fetchNumcatDailyPctRange, fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
 import { ensureAuctionCodeMapping } from './auction-fetch-helpers.js';
-import { getDragonTargetRows } from './dragon-rank.js';
+// getDragonWindowDates：[RANGE-FULL-LEG 2026-09-11] T 腿换算的「行完整度」断言要用的窗口长度，
+// 与 dragon-rank 的兜底抓取、worker 的计算窗口同源（§6 单一真相），绝不在这里另算一份。
+import { getDragonTargetRows, getDragonWindowDates } from './dragon-rank.js';
 // 区间涨幅 T 腿口径单一真相（纯函数）。⚠️ 漏了这个 import 会让 _syncRangeTDay 抛
 // ReferenceError，而它被 try/catch 吞掉 → T 腿校正静默失效（2026-09-10 审查发现）。
 import { replaceTDayLeg } from './range-window.js';
@@ -321,6 +323,20 @@ async function _runCover(date, force) {
  *   新区间涨幅 = prevAcc × (1 + 收盘腿) - 1
  *
  * 幂等：只处理「写于该日 15:00 之前」的行（= 竞价腿口径）；校正后 updated_at 变成现在 → 不会重复换算。
+ *
+ * ⚠️【RANGE-FULL-LEG 2026-09-11 / 次日继承票 91% 未更新的事故根因】
+ *   本函数是「代数反解」：prevAcc = 已存区间 ÷ (1+竞价腿)，新区间 = prevAcc × (1+收盘腿)。
+ *   它有一个隐含前提：**已存的区间涨幅里【确实含有】那根竞价 T 腿**。
+ *   2026-09-11 实测该前提被打破：9:25 worker 对少数票（国芳集团 / 百大集团等次日继承来的
+ *   打标签票）**没有拿到当天 T 腿**，于是算出的区间涨幅只累乘了历史 9 天（days=9，国芳 81.17%）。
+ *   本函数照旧把「竞价腿」当作已包含并除出去 → 又乘上收盘腿，结果 91.11%（正确值应为 96.04%），
+ *   而且 updated_at 被刷新成收盘后 → worker 16:00 的降级通道认定「已是收盘口径」不再纠正，
+ *   错值被永久冻结（用户反馈的「停留着昨天数据 91%」）。
+ *   修法：换算前先断言【行是完整的】（days >= 窗口交易日数，即 T 腿当时确实进来了）。
+ *   缺腿行一律不换算，交给权威的「整段重算」：worker 16:00 的 buildRangeRows 全窗口重算、
+ *   或前端 dragon-rank 收盘后的一次性缺票兜底（见 dragon-rank._missingTargetRows）。
+ *   §10：绝不为了「看起来有值」而写入一个算错的数。
+ *
  * @returns {Promise<number>} 实际校正的行数
  */
 async function _syncRangeTDay(date, cloudByName, freshPctByName) {
@@ -335,6 +351,9 @@ async function _syncRangeTDay(date, cloudByName, freshPctByName) {
 
     const closeMs = _closeCoverUtcMs(date);
     if (Number.isNaN(closeMs)) return 0;
+    // 完整行门槛 = 该日窗口的交易日数（[T-9, T]）。缺腿行（days < 门槛）不做代数换算。
+    const expectedLegs = getDragonWindowDates(date).length;
+    let skippedIncomplete = 0;
     const out = [];
     rangeRows.forEach(function(v, name) {
         const t = v.updatedAt ? Date.parse(v.updatedAt) : NaN;
@@ -342,6 +361,8 @@ async function _syncRangeTDay(date, cloudByName, freshPctByName) {
         if (Number.isNaN(t) || !t || t >= closeMs) return;
         const old = v.pct;
         if (old === null || old === undefined || !isFinite(old)) return;
+        // 缺腿行：当时没拿到 T 腿 → 代数反解的前提不成立，绝不换算（避免把值算得更错并冻结）
+        if (Number(v.days) < expectedLegs) { skippedIncomplete++; return; }
 
         const m = cloudByName.get(name);
         // 优先用本次刚抓到的收盘涨幅；否则用云端 change_pct（必须是该日 15:00 之后写入的才可信）
@@ -359,6 +380,12 @@ async function _syncRangeTDay(date, cloudByName, freshPctByName) {
         if (next === null) return;
         out.push({ stock: name, pct: next, days: v.days });
     });
+    if (skippedIncomplete > 0) {
+        // 可观测性：这些票必须由权威整段重算补上（worker 16:00 / dragon-rank 收盘兜底），
+        // 否则用户看到的就是「缺腿 + 未换腿」的旧值。绝不能静默（§10）。
+        _dbgLog('[CLOSE-COVER] ' + date + ' 有 ' + skippedIncomplete +
+            ' 行 T 腿缺失（days < ' + expectedLegs + '），不做代数换算，等待权威整段重算');
+    }
     if (out.length === 0) return 0;
     try {
         await upsertRangePctRows(date, out);

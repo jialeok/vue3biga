@@ -20,7 +20,7 @@
   <template
     v-for="(item, idx) in filteredObsItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo, item.closeLimit, item.closePct]"
   >
     <AuctionTopicStatsBar
       v-if="item.topicStats"
@@ -38,7 +38,7 @@
         @click.stop="onExpandTrend(item.stock)"
         @dblclick.stop
       >
-        {{ idx + 1 }}
+        {{ item.seqNo || (idx + 1) }}
       </div>
       <div
         :class="item.stockClass"
@@ -55,8 +55,8 @@
       >
         <span
           class="auction-stock-text"
-          :class="{ 'yizi-limit': item.isYiZi }"
-          :title="item.isYiZi ? ('竞价一字（竞价涨幅 ' + (item.aucPctText || '-') + '）') : null"
+          :class="stockTextClass(item)"
+          :title="item.isYiZi ? ('竞价一字（竞价涨幅 ' + (item.aucPctText || '-') + '）') : (item.closeLimit ? (item.closeLimit === 'up' ? '收盘涨停' : '收盘跌停') : null)"
         >{{ item.stock }}<span
           v-if="item.obsFormalStar"
           class="auction-obs-formal-star"
@@ -188,7 +188,7 @@
   <template
     v-for="(item, idx) in filteredRegularItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo, item.closeLimit, item.closePct]"
   >
     <AuctionTopicStatsBar
       v-if="item.topicStats"
@@ -206,7 +206,7 @@
         @click.stop="onExpandTrend(item.stock)"
         @dblclick.stop
       >
-        {{ filteredObsItems.length + idx + 1 }}
+        {{ item.seqNo || (idx + 1) }}
       </div>
       <div
         :class="item.stockClass"
@@ -223,8 +223,8 @@
       >
         <span
           class="auction-stock-text"
-          :class="{ 'yizi-limit': item.isYiZi }"
-          :title="item.isYiZi ? ('竞价一字（竞价涨幅 ' + (item.aucPctText || '-') + '）') : null"
+          :class="stockTextClass(item)"
+          :title="item.isYiZi ? ('竞价一字（竞价涨幅 ' + (item.aucPctText || '-') + '）') : (item.closeLimit ? (item.closeLimit === 'up' ? '收盘涨停' : '收盘跌停') : null)"
         >{{ item.stock }}<span
           v-if="item.obsFormalStar"
           class="auction-obs-formal-star"
@@ -386,6 +386,19 @@ function aucPctHasData(stock) {
 }
 function changePctHasData(stock) {
   return trendHistory.value[stock].changePct.some(p => p.value !== null);
+}
+
+// [CLOSE-LIMIT 2026-09-11] 股票名下划线标记的 class（优先级在 Logic 层之外只保留「谁盖住谁」这一件事）：
+//   竞价一字 = 9:25 竞价就打在涨停价（实线红线，盘中信号）；
+//   收盘涨停/跌停 = 全天走完收在板价（红色/绿色蚂蚁线=虚线，收盘结果）。
+//   二者都作用在同一个 span 的 border-bottom 上，同时命中会互相覆盖 →
+//   这里做【显式互斥】：竞价一字优先（实线），不是一字时才画收盘停板蚂蚁线，绝不出现两条叠加。
+function stockTextClass(item) {
+  if (item.isYiZi) return { 'yizi-limit': true };
+  return {
+    'close-limit-up': item.closeLimit === 'up',
+    'close-limit-down': item.closeLimit === 'down'
+  };
 }
 
 // [FEAT 2026-08-18] 表头搜索高光：watch highlightStockSet 直接操作行 DOM 加/移除高光类 + 滚动定位。

@@ -649,7 +649,22 @@ function buildRangePctRows(constituents, rangeDates, dailyByCode, metricsByDate,
     if (v !== null && v !== undefined && isFinite(v)) tLegByCode[c.code] = Number(v);
   });
 
-  const built = buildRangeRows(constituents, rangeDates, dailyByCode, tLegByCode);
+  // [RANGE-FULL-LEG 2026-09-11 / 次日继承票「十日涨幅不更新」根因修复]
+  //   拿不到【当天 T 腿】的票一律【不写行】，而不是让 buildRangeRows 把它跳过 T 腿继续算。
+  //   原因：跳过 T 腿会产出一条 days=窗口-1 的「残缺行」，它看起来有涨幅却系统性偏低；
+  //   更糟的是前端 close-pct-cover 的 T 腿代数换腿会假定「已存值含竞价腿」而把它算得更错，
+  //   并刷新 updated_at 使 worker 16:00 的降级通道认定「已是收盘口径」→ 错值被永久冻结。
+  //   实测（2026-09-11）：国芳集团 只累乘历史 9 天 = 81.17%，换腿后 91.11%，正确应为 96.04%。
+  //   不写行是安全的：前端 dragon-rank「云端没有该行」的兜底会重算，worker 16:00 整段重算也会补上。
+  const eligibleTargets = [];
+  let noTLegCount = 0;
+  constituents.forEach(c => {
+    if (!c || !c.code) return;
+    if (tLegByCode[c.code] === undefined) { noTLegCount++; return; }
+    eligibleTargets.push(c);
+  });
+
+  const built = buildRangeRows(eligibleTargets, rangeDates, dailyByCode, tLegByCode);
   const nowIso = new Date().toISOString();
   const rows = built.map(r => ({
     date: today,
@@ -658,8 +673,9 @@ function buildRangePctRows(constituents, rangeDates, dailyByCode, metricsByDate,
     days: r.days,
     updated_at: nowIso
   }));
-  logs.push('步骤5b：区间涨幅计算完成 ' + rows.length + '/' + constituents.length + ' 只（T 腿口径=' +
-    (useAuctionLeg ? '9:25 竞价涨幅' : '当日收盘涨幅') + '）');
+  logs.push('步骤5b：区间涨幅计算完成 ' + rows.length + '/' + eligibleTargets.length + ' 只（T 腿口径=' +
+    (useAuctionLeg ? '9:25 竞价涨幅' : '当日收盘涨幅') + '）' +
+    (noTLegCount > 0 ? '；' + noTLegCount + ' 只无当天 T 腿 → 本次不写行（交由权威整段重算补齐）' : ''));
   return rows;
 }
 

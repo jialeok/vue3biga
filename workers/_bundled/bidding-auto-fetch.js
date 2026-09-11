@@ -1,5 +1,5 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-09-11 04:38:21
+// 生成时间: 2026-09-11 11:16:36
 // 注意: 此文件自动生成，请勿手动编辑
 
 // ────── _shared-source/date-utils.js ──────
@@ -1619,7 +1619,22 @@ function buildRangePctRows(constituents, rangeDates, dailyByCode, metricsByDate,
     if (v !== null && v !== undefined && isFinite(v)) tLegByCode[c.code] = Number(v);
   });
 
-  const built = buildRangeRows(constituents, rangeDates, dailyByCode, tLegByCode);
+  // [RANGE-FULL-LEG 2026-09-11 / 次日继承票「十日涨幅不更新」根因修复]
+  //   拿不到【当天 T 腿】的票一律【不写行】，而不是让 buildRangeRows 把它跳过 T 腿继续算。
+  //   原因：跳过 T 腿会产出一条 days=窗口-1 的「残缺行」，它看起来有涨幅却系统性偏低；
+  //   更糟的是前端 close-pct-cover 的 T 腿代数换腿会假定「已存值含竞价腿」而把它算得更错，
+  //   并刷新 updated_at 使 worker 16:00 的降级通道认定「已是收盘口径」→ 错值被永久冻结。
+  //   实测（2026-09-11）：国芳集团 只累乘历史 9 天 = 81.17%，换腿后 91.11%，正确应为 96.04%。
+  //   不写行是安全的：前端 dragon-rank「云端没有该行」的兜底会重算，worker 16:00 整段重算也会补上。
+  const eligibleTargets = [];
+  let noTLegCount = 0;
+  constituents.forEach(c => {
+    if (!c || !c.code) return;
+    if (tLegByCode[c.code] === undefined) { noTLegCount++; return; }
+    eligibleTargets.push(c);
+  });
+
+  const built = buildRangeRows(eligibleTargets, rangeDates, dailyByCode, tLegByCode);
   const nowIso = new Date().toISOString();
   const rows = built.map(r => ({
     date: today,
@@ -1628,8 +1643,9 @@ function buildRangePctRows(constituents, rangeDates, dailyByCode, metricsByDate,
     days: r.days,
     updated_at: nowIso
   }));
-  logs.push('步骤5b：区间涨幅计算完成 ' + rows.length + '/' + constituents.length + ' 只（T 腿口径=' +
-    (useAuctionLeg ? '9:25 竞价涨幅' : '当日收盘涨幅') + '）');
+  logs.push('步骤5b：区间涨幅计算完成 ' + rows.length + '/' + eligibleTargets.length + ' 只（T 腿口径=' +
+    (useAuctionLeg ? '9:25 竞价涨幅' : '当日收盘涨幅') + '）' +
+    (noTLegCount > 0 ? '；' + noTLegCount + ' 只无当天 T 腿 → 本次不写行（交由权威整段重算补齐）' : ''));
   return rows;
 }
 
@@ -1921,10 +1937,17 @@ async function fetchNumcatDailyWindow(env, codes, rangeDates, today) {
   return { dailyByCode, pctByCode };
 }
 
-async function runClose(env) {
+/**
+ * @param {object} env
+ * @param {{date?:string}} [opts] date='YYYY-MM-DD' 可指定要覆盖的交易日（默认=北京今天）。
+ *        用途：[REPAIR-DATE 2026-09-11] 手动修复历史某天（例如 9:25 写出过缺腿区间涨幅、
+ *        或当天收盘覆盖没跑成）。交易日闸门校验的是【该参数日期】而非当前时刻，
+ *        因此周末/盘后也能补修过去某一天。不传则完全保持原行为（= 补抓当天）。
+ */
+async function runClose(env, opts) {
   const logs = [];
-  const today = beijingToday();
-  logs.push('today=' + today);
+  const today = (opts && opts.date) || beijingToday();
+  logs.push('today=' + today + (opts && opts.date ? '（手动指定日期）' : ''));
 
   if (isWeekend(today) || !localIsTradingDay(today)) {
     logs.push('非交易日，跳过');
@@ -2146,12 +2169,17 @@ async function syncRangePct(env, today, closeMs, rangeDates, dailyByCode, pctByC
   }
 
   // ② 降级：只换 T 腿（仅处理 ① 未覆盖、且仍是竞价口径的行）
+  let skippedIncomplete = 0;
   storedRows.forEach(r => {
     if (touched.has(r.stock)) return;
     const t = r.updated_at ? Date.parse(r.updated_at) : NaN;
     if (Number.isNaN(t) || !t || t >= closeMs) return; // 已是收盘口径 → 不动
     const old = parsePct(r.range_pct);
     if (old === null) return;
+    // [RANGE-FULL-LEG 2026-09-11] 缺腿行不做代数换算：replaceTDayLeg 假定「已存值含竞价 T 腿」，
+    // 而缺腿行当时根本没进来 T 腿（days < 窗口）→ 换算只会算得更错（国芳 81.17% → 91.11%）。
+    // 这类行只能靠 ① 整段重算；① 本次不可用时宁可不写，绝不写入错值（§10）。
+    if (Number(r.days) < RANGE_WINDOW_DAYS) { skippedIncomplete++; return; }
     const m = byName.get(r.stock);
     if (!m || !m.code || !pctByCode.has(m.code)) return;
     const next = replaceTDayLeg(old, parsePct(m.auc_pct_chg), pctByCode.get(m.code));
@@ -2166,8 +2194,13 @@ async function syncRangePct(env, today, closeMs, rangeDates, dailyByCode, pctByC
   });
 
   if (out.length === 0) {
-    logs.push('区间涨幅无需更新（已是收盘口径）');
+    logs.push('区间涨幅无需更新（已是收盘口径）' +
+      (skippedIncomplete > 0 ? '；另有 ' + skippedIncomplete + ' 个缺腿行因整段重算不可用而跳过（不写入错值，等待下次重算）' : ''));
     return 0;
+  }
+  if (skippedIncomplete > 0) {
+    logs.push('⚠️ 有 ' + skippedIncomplete + ' 个缺腿行（days < ' + RANGE_WINDOW_DAYS +
+      '）未做换腿换算：需整段重算才能修好');
   }
   await upsertStockRangePct(env, out);
   return out.length;
@@ -2222,7 +2255,7 @@ function cronToPoint(cronExpr) {
   return MAP[key] || null;
 }
 
-async function dispatch(point, env, logs) {
+async function dispatch(point, env, logs, opts) {
   if (point === 'morning') {
     const result = await runMorning(env);
     console.log('[auto-fetch] runMorning 完成 ok=' + result.ok + ' completenessSummary=' + (result.completenessSummary || ''));
@@ -2230,8 +2263,10 @@ async function dispatch(point, env, logs) {
     return result;
   }
   if (point === 'close') {
-    const result = await runClose(env);
-    console.log('[auto-fetch] runClose 完成 ok=' + result.ok + ' completenessSummary=' + (result.completenessSummary || ''));
+    // [REPAIR-DATE 2026-09-11] 支持 ?date=YYYY-MM-DD 指定要覆盖/修复的交易日（默认北京今天）。
+    const result = await runClose(env, { date: opts && opts.date });
+    console.log('[auto-fetch] runClose 完成 ok=' + result.ok + ' today=' + (result.today || '') +
+      ' completenessSummary=' + (result.completenessSummary || ''));
     console.log('[auto-fetch] runClose 完整日志:', JSON.stringify(result.logs || []));
     return result;
   }
@@ -2276,10 +2311,10 @@ export default {
         }
       }
       if (!['morning', 'close', 'extras'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|auto' });
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日）' });
       }
       try {
-        const result = await dispatch(point, env, []);
+        const result = await dispatch(point, env, [], { date: url.searchParams.get('date') || '' });
         return jsonResponse(result, result.ok ? 200 : 500);
       } catch (e) {
         return jsonResponse({ ok: false, error: e.message, stack: e.stack }, 500);

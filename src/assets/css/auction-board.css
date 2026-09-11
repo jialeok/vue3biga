@@ -494,6 +494,18 @@
             border-bottom: 2px solid #dc2626;
         }
 
+        /* [CLOSE-LIMIT 2026-09-11] 收盘涨停 / 收盘跌停：股票名下方【蚂蚁线（虚线）】标记。
+           与上方「竞价一字」的实线红线是两件事（盘中信号 vs 收盘结果），刻意用虚线区分。
+           同一时刻只会生效一个：竞价一字优先，由 AuctionBoardTable.stockTextClass 显式互斥，
+           因此不会出现两条 border-bottom 叠加。涨红跌绿（A 股口径）。 */
+        .auction-stock-text.close-limit-up {
+            border-bottom: 2px dashed #dc2626;
+        }
+
+        .auction-stock-text.close-limit-down {
+            border-bottom: 2px dashed #059669;
+        }
+
         /* 双身份股票（昨日竞昨高光观察组 ∩ 今日正式列表）星号标记 */
         .auction-obs-formal-star {
             color: #f59e0b;

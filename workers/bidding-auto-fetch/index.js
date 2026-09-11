@@ -50,7 +50,7 @@ function cronToPoint(cronExpr) {
   return MAP[key] || null;
 }
 
-async function dispatch(point, env, logs) {
+async function dispatch(point, env, logs, opts) {
   if (point === 'morning') {
     const result = await runMorning(env);
     console.log('[auto-fetch] runMorning 完成 ok=' + result.ok + ' completenessSummary=' + (result.completenessSummary || ''));
@@ -58,8 +58,10 @@ async function dispatch(point, env, logs) {
     return result;
   }
   if (point === 'close') {
-    const result = await runClose(env);
-    console.log('[auto-fetch] runClose 完成 ok=' + result.ok + ' completenessSummary=' + (result.completenessSummary || ''));
+    // [REPAIR-DATE 2026-09-11] 支持 ?date=YYYY-MM-DD 指定要覆盖/修复的交易日（默认北京今天）。
+    const result = await runClose(env, { date: opts && opts.date });
+    console.log('[auto-fetch] runClose 完成 ok=' + result.ok + ' today=' + (result.today || '') +
+      ' completenessSummary=' + (result.completenessSummary || ''));
     console.log('[auto-fetch] runClose 完整日志:', JSON.stringify(result.logs || []));
     return result;
   }
@@ -104,10 +106,10 @@ export default {
         }
       }
       if (!['morning', 'close', 'extras'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|auto' });
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日）' });
       }
       try {
-        const result = await dispatch(point, env, []);
+        const result = await dispatch(point, env, [], { date: url.searchParams.get('date') || '' });
         return jsonResponse(result, result.ok ? 200 : 500);
       } catch (e) {
         return jsonResponse({ ok: false, error: e.message, stack: e.stack }, 500);
