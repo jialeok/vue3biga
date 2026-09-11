@@ -12,6 +12,8 @@
 import { beijingNow } from '../../_shared-source/date-utils.js';
 import { runMorning } from './logic/morning-workflow.js';
 import { runClose } from './logic/close-workflow.js';
+// [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏（可手动 /fetch?point=extras；16:00 close 也会自动跑）
+import { runAuctionExtrasPatch } from './logic/extras-workflow.js';
 
 function jsonResponse(obj, status) {
   return new Response(JSON.stringify(obj, null, 2), {
@@ -61,6 +63,12 @@ async function dispatch(point, env, logs) {
     console.log('[auto-fetch] runClose 完整日志:', JSON.stringify(result.logs || []));
     return result;
   }
+  if (point === 'extras') {
+    const result = await runAuctionExtrasPatch(env, {});
+    console.log('[auto-fetch] runAuctionExtrasPatch 完成 ok=' + result.ok + ' patched=' + (result.patched || 0));
+    console.log('[auto-fetch] runAuctionExtrasPatch 完整日志:', JSON.stringify(result.logs || []));
+    return result;
+  }
   console.error('[auto-fetch] 未知触发点:', point);
   return { ok: false, error: '未知触发点: ' + point };
 }
@@ -95,8 +103,8 @@ export default {
           return jsonResponse({ ok: false, error: '当前北京时间不在抓取时段（9:25~9:40=morning，15:00~16:30=close）' });
         }
       }
-      if (!['morning', 'close'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|auto' });
+      if (!['morning', 'close', 'extras'].includes(point)) {
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|auto' });
       }
       try {
         const result = await dispatch(point, env, []);

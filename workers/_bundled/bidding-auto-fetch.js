@@ -1,5 +1,5 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-09-11 03:35:16
+// 生成时间: 2026-09-11 04:38:21
 // 注意: 此文件自动生成，请勿手动编辑
 
 // ────── _shared-source/date-utils.js ──────
@@ -456,6 +456,32 @@ async function readMarketMetricsForDate(env, date, scope) {
 }
 
 /**
+ * [EXTRAS-PATCH 2026-09-11] 读取某日 market_metrics 竞价行的「竞价四要素」现状。
+ * 供 runAuctionExtrasPatch 判断哪些行还缺字段 —— 只补缺失的，不重复写已有值（幂等）。
+ * ⚠️ 读取失败必须抛错（§10：读取失败 ≠ 空数据）：否则会把「读不到」误判成「全都缺」，
+ *    进而用一次 numcat 的结果把历史值整体覆盖一遍。
+ */
+async function readMarketMetricsExtrasForDate(env, date) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?date=eq.' + encodeURIComponent(date) +
+    '&scope=eq.auction' +
+    '&select=stock,code,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover&limit=2000';
+  const resp = await fetch(url, { headers: sbHeaders(env) });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error('读取 market_metrics 四要素失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
+  }
+  const data = await resp.json();
+  return (data || []).map(r => ({
+    name: (r.stock || '').trim(),
+    code: (r.code || '').trim(),
+    um_vol: r.um_vol === undefined || r.um_vol === null ? '' : String(r.um_vol),
+    open_bid_pct: r.open_bid_pct === undefined || r.open_bid_pct === null ? '' : String(r.open_bid_pct),
+    auc_vol_ratio: r.auc_vol_ratio === undefined || r.auc_vol_ratio === null ? '' : String(r.auc_vol_ratio),
+    auc_turnover: r.auc_turnover === undefined || r.auc_turnover === null ? '' : String(r.auc_turnover)
+  })).filter(r => r.name);
+}
+
+/**
  * [CLOSE-COVER 2026-09-10] 读取某日 stock_range_pct（近 10 个交易日区间涨幅缓存）。
  * 收盘后需要把「当天(T)腿」从竞价口径换成收盘口径 —— 见 close-workflow.js 步骤 4。
  */
@@ -747,8 +773,215 @@ function replaceTDayLeg(rangePct, oldLeg, newLeg) {
 }
 
 
+// ────── bidding-auto-fetch/logic/extras-workflow.js ──────
+// extras-workflow.js — 「竞价四要素」补漏（runAuctionExtrasPatch）
+//
+// 【为什么要单独一个补漏任务 / 2026-09-11 取证结论】
+//   竞价四要素 = 未匹配量(um_vol) / 抢筹幅度(open_bid_pct) / 竞价量比(auc_vol_ratio) /
+//               真换手率(auc_turnover)，是趋势图右侧与「量比抢筹高光」的核心判据。
+//
+//   猫抓 daily_auc 对【当日】这一行**不返回**这四个字段的值，只返回
+//   auc_vol / auc_pct_chg / auc_to_pre_vol_pct；四要素要等这一天结算后才出现。
+//   取证（.tmpdiag/diag_last_write.mjs，全表 3692 行，只读）：
+//     · 9/11 同一轮写入（01:29:56~01:30:03）里：9/10 = 60/67 有四要素，9/11 = 0/67 全空；
+//     · 全表唯一「最后一个写入时刻 = 当天」的日期就是 9/11，它四要素为 0；
+//     · 8/07 起的每个历史日，四要素都是被【后续几天的窗口重刷】时才带上的。
+//   ⇒ 9:25 早盘永远拿不到「当天」的四要素，重试只是白等（还会顶穿 9:26 硬指标），
+//     必须有一个「结算后补写」的任务 —— 就是本文件。
+//
+// 【触发点】
+//   ① 北京 16:00 close 主流程末尾自动跑（复用既有 cron，不需要新增触发器）；
+//   ② 手动 /fetch?point=extras（想当天立刻看到 / 补历史缺口时用）。
+//
+// 【安全约束（§11 删除安全 / §10 静默失败）】
+//   · 只写这四个字段。upsert 用 resolution=merge-duplicates + missing=default，
+//     绝不会抹掉 volume / change_pct / auc_pct_chg / yest_volume；
+//   · 只有「库内该行四要素有缺失」且「numcat 本次给了非空值」才写 → 天然幂等，重复跑零副作用；
+//   · 读取失败必须抛错，绝不能被当成「全都缺」而整体覆盖；
+//   · 整体失败不致命，调用方 try/catch 后继续。
+
+
+
+
+
+// ⚠️ 单文件打包（workers/_bundle.mjs）会把所有模块拼进同一个作用域，
+//    顶层标识符必须全局唯一 —— 这里一律加 extras 前缀，避免与其它文件重名导致重复声明。
+const EXTRAS_FIELDS = ['um_vol', 'open_bid_pct', 'auc_vol_ratio', 'auc_turnover'];
+/** 单次 upsert 的行数（Supabase 单次请求不宜过大） */
+const EXTRAS_CHUNK = 400;
+
+function extrasIsEmpty(v) {
+  return v === null || v === undefined || String(v).trim() === '';
+}
+
+/** 未匹配量：numcat 给的是「手」，库内存「万手」（与 volume 同口径，÷100 取整） */
+function extrasFmtUmVol(v) {
+  const n = Number(v);
+  return isNaN(n) ? '' : String(Math.round(n / 100));
+}
+
+/** 其余三项都是百分数 / 倍数，统一保留 2 位小数 */
+function extrasFmt2(v) {
+  const n = Number(v);
+  return isNaN(n) ? '' : n.toFixed(2);
+}
+
+/**
+ * 补写竞价四要素。
+ * @param {object} env      worker env（需要 SUPABASE_* 与 NUMCAT_API_KEY）
+ * @param {object} [opts]   { days?: number, logs?: string[], dates?: string[] }
+ * @returns {Promise<{ok:boolean, today:string, patched:number, dates:string[], logs:string[]}>}
+ */
+async function runAuctionExtrasPatch(env, opts) {
+  const o = opts || {};
+  const logs = o.logs || [];
+  const today = beijingToday();
+  const days = Number(o.days) || RANGE_WINDOW_DAYS;
+  logs.push('[extras] 竞价四要素补漏开始 today=' + today);
+
+  // 1. 交易日窗口（默认 [T-9, T]，与早盘/收盘同一份交易日历）
+  let dates = Array.isArray(o.dates) && o.dates.length > 0 ? o.dates.slice() : [];
+  if (dates.length === 0) {
+    try {
+      dates = await getRecentTradingDays(env, today, days);
+    } catch (e) {
+      logs.push('[extras] 交易日历获取失败: ' + e.message);
+    }
+  }
+  if (dates.length === 0) {
+    logs.push('[extras] ⚠️ 无可用交易日，跳过');
+    return { ok: false, today, patched: 0, dates: [], logs, reason: '无可用交易日' };
+  }
+  dates.sort();
+  const startYMD = dates[0].replace(/-/g, '');
+  const endYMD = dates[dates.length - 1].replace(/-/g, '');
+
+  // 2. 读库内现状：只补「有缺失」的行（§10：读取失败必须抛错，不能当成全缺）
+  const existing = {};   // date -> Map(name -> row)
+  let missingTotal = 0;
+  for (const d of dates) {
+    let rows;
+    try {
+      rows = await readMarketMetricsExtrasForDate(env, d);
+    } catch (e) {
+      logs.push('[extras] ❌ 读取 ' + d + ' 失败（中断，避免误覆盖）: ' + e.message);
+      return { ok: false, today, patched: 0, dates: dates, logs, error: e.message };
+    }
+    const m = new Map();
+    rows.forEach(r => {
+      if (!m.has(r.name)) m.set(r.name, r);
+      if (EXTRAS_FIELDS.some(f => extrasIsEmpty(r[f]))) missingTotal++;
+    });
+    existing[d] = m;
+  }
+  logs.push('[extras] 窗口 ' + dates.length + ' 天，库内缺四要素的行 ' + missingTotal + ' 行');
+  if (missingTotal === 0) {
+    logs.push('[extras] ✅ 窗口内四要素已完整，无需补写');
+    return { ok: true, today, patched: 0, dates: dates, logs };
+  }
+
+  // 3. 一次 numcat daily_auc 拿整个窗口（请求数与「只拉今天」相同）
+  const codeSet = new Set();
+  dates.forEach(d => existing[d].forEach(r => { if (r.code) codeSet.add(r.code); }));
+  const codes = Array.from(codeSet);
+  if (codes.length === 0) {
+    logs.push('[extras] ⚠️ 库内无可用的股票代码，跳过');
+    return { ok: false, today, patched: 0, dates: dates, logs, reason: '无可用代码' };
+  }
+
+  let data;
+  try {
+    data = await numcatDailyAuc(env, codes.join(','), startYMD, endYMD);
+  } catch (e) {
+    logs.push('[extras] ❌ numcat daily_auc 失败: ' + e.message);
+    return { ok: false, today, patched: 0, dates: dates, logs, error: e.message };
+  }
+  const fields = (data && data.fields) || [];
+  const items = (data && data.items) || [];
+  const symI = fields.indexOf('symbol');
+  const dateI = fields.indexOf('tradedate');
+  const idx = {
+    um_vol: fields.indexOf('um_vol'),
+    open_bid_pct: fields.indexOf('open_bid_pct'),
+    auc_vol_ratio: fields.indexOf('auc_vol_ratio'),
+    auc_turnover: fields.indexOf('auc_turnover')
+  };
+  if (symI < 0 || dateI < 0) {
+    logs.push('[extras] ❌ numcat 返回字段不完整: ' + JSON.stringify(fields));
+    return { ok: false, today, patched: 0, dates: dates, logs, error: '字段不完整' };
+  }
+  if (EXTRAS_FIELDS.some(f => idx[f] < 0)) {
+    logs.push('[extras] ⚠️ numcat 本次未返回全部四要素字段: ' + JSON.stringify(idx));
+  }
+  logs.push('[extras] numcat 返回 ' + items.length + ' 行');
+
+  // 4. 只补「库内缺 + 本次有值」的行
+  const nowIso = new Date().toISOString();
+  const rows = [];
+  items.forEach(row => {
+    const code = String(row[symI] || '').trim();
+    const dateStr = compactToDateStr(String(row[dateI] || '').trim());
+    if (!code || !dateStr || !existing[dateStr]) return;
+
+    const byName = existing[dateStr];
+    // 同一 code 可能对应库内多行（理论上不会），这里全补
+    byName.forEach(cur => {
+      if (cur.code && cur.code !== code) return;
+      const patch = { date: dateStr, stock: cur.name, scope: 'auction' };
+      if (cur.code) patch.code = cur.code;
+      let any = false;
+      if (extrasIsEmpty(cur.um_vol) && idx.um_vol >= 0) {
+        const v = extrasFmtUmVol(row[idx.um_vol]);
+        if (v !== '') { patch.um_vol = v; any = true; }
+      }
+      if (extrasIsEmpty(cur.open_bid_pct) && idx.open_bid_pct >= 0) {
+        const v = extrasFmt2(row[idx.open_bid_pct]);
+        if (v !== '') { patch.open_bid_pct = v; any = true; }
+      }
+      if (extrasIsEmpty(cur.auc_vol_ratio) && idx.auc_vol_ratio >= 0) {
+        const v = extrasFmt2(row[idx.auc_vol_ratio]);
+        if (v !== '') { patch.auc_vol_ratio = v; any = true; }
+      }
+      if (extrasIsEmpty(cur.auc_turnover) && idx.auc_turnover >= 0) {
+        const v = extrasFmt2(row[idx.auc_turnover]);
+        if (v !== '') { patch.auc_turnover = v; any = true; }
+      }
+      if (!any) return;
+      patch.source = 'worker';
+      patch.updated_at = nowIso;
+      patch.updated_by = 'auto-fetch-worker-extras';
+      rows.push(patch);
+      // 补过之后就地标记，避免同一行被重复写入
+      EXTRAS_FIELDS.forEach(f => { if (patch[f] !== undefined) cur[f] = patch[f]; });
+    });
+  });
+
+  if (rows.length === 0) {
+    logs.push('[extras] ⚠️ numcat 本次未给出任何可补的四要素值（当日未结算时属正常，次日窗口重刷会自动补上）');
+    return { ok: true, today, patched: 0, dates: dates, logs };
+  }
+
+  // 5. 分批写入
+  let patched = 0;
+  for (let i = 0; i < rows.length; i += EXTRAS_CHUNK) {
+    const chunk = rows.slice(i, i + EXTRAS_CHUNK);
+    try {
+      await upsertMarketMetrics(env, chunk);
+      patched += chunk.length;
+    } catch (e) {
+      logs.push('[extras] ❌ 第 ' + (Math.floor(i / EXTRAS_CHUNK) + 1) + ' 批写入失败: ' + e.message);
+    }
+  }
+  logs.push('[extras] ✅ 补写 ' + patched + '/' + rows.length + ' 行竞价四要素');
+  return { ok: patched > 0, today, patched: patched, dates: dates, logs };
+}
+
+
 // ────── bidding-auto-fetch/logic/morning-workflow.js ──────
 // morning-workflow.js — 早盘竞价抓取主流程（runMorning 拆分为若干子函数）
+// [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏。早盘放在【最后】跑一次（不阻塞 P0/P1/P2）：
+// 猫抓对当日行通常不给四要素，但若为单日请求/结算较快而给了，就能在 9:26 前顺手落库；
+// 没给也零副作用（只补缺失值，写 0 行）。真正的兜底是 16:00 close 与次日窗口重刷。
 // [PLAN-A 2026-09-10] 区间涨幅口径复用前端同一份纯函数（单一真相 §6）：
 // 窗口天数 / 复利累乘 / T 腿竞价占位判定 全部只此一份，前后端不会算出两个结果。
 // ⚠️ 跨目录引用会让 workers/_bundle.mjs 把该文件一并打进单文件产物（Cloudflare 复制粘贴部署），
@@ -805,6 +1038,42 @@ async function recentTradingDays(cache, env, today, n) {
 
 function settled(p) {
   return p.then(function (v) { return { ok: true, v: v }; }, function (e) { return { ok: false, e: e }; });
+}
+
+// ---------------------------------------------------------------------------
+// [2026-09-11] 「竞价四要素」= 未匹配量 / 抢筹幅度 / 竞价量比 / 真换手率
+//   这四个是趋势图右侧展示的核心指标，也是「量比抢筹高光」的判据。
+//   ⚠️ 取证结论（.tmpdiag/diag_last_write.mjs）：猫抓 daily_auc 对【当日】这一行
+//      **不返回**这四个字段的值，只有 auc_vol / auc_pct_chg / auc_to_pre_vol_pct；
+//      四要素要等这一天结算后才出现（实际观测：次日早盘窗口重刷时自动补上）。
+//   因此 9:25 早盘**不能**等它们（等也等不到，还会顶穿 9:26 硬指标），
+//   改由 runAuctionExtrasPatch 在结算后补写（16:00 close 自动跑 / 手动 /fetch?point=extras）。
+// ---------------------------------------------------------------------------
+const AUCTION_EXTRA_FIELDS = ['um_vol', 'open_bid_pct', 'auc_vol_ratio', 'auc_turnover'];
+
+/**
+ * 判断某批 daily_auc 响应里「今天」的行是否已带竞价四要素。
+ * @returns {{ok:boolean, hasFields:boolean, filled:number, total:number}}
+ *   ok        = 今天至少有行，且至少 60% 的行带上了四要素（剩余少数可能是停牌/无竞价）
+ *   hasFields = numcat 本次响应里是否存在这四个字段（false 说明接口层就没给）
+ */
+function todayAuctionExtras(rows, flds, today) {
+  const list = rows || [];
+  const fs = flds || [];
+  const dateI = fs.indexOf('tradedate');
+  const idxs = AUCTION_EXTRA_FIELDS.map(f => fs.indexOf(f));
+  const hasFields = idxs.some(i => i >= 0);
+  const out = { ok: false, hasFields: hasFields, filled: 0, total: 0 };
+  if (dateI < 0) return out;
+  list.forEach(row => {
+    if (compactToDateStr(String(row[dateI] || '').trim()) !== today) return;
+    out.total++;
+    const filled = idxs.some(i => i >= 0 && row[i] !== null && row[i] !== undefined && String(row[i]).trim() !== '');
+    if (filled) out.filled++;
+  });
+  // 门槛 60%：允许少量停牌 / 无竞价成交的票天然为空，但绝不允许「整批为空」被当成正常
+  out.ok = out.total > 0 && hasFields && (out.filled / out.total) >= 0.6;
+  return out;
 }
 
 // 1. 检查是否交易日
@@ -999,15 +1268,21 @@ async function fetchNumcatWithRetry(env, constituents, today, cache, logs) {
     return { error: 'numcat 调用失败: ' + e.message };
   }
 
-  const fields = numcatData.fields || [];
+  // ⚠️ 必须 let：重试可能返回更完整的 fields（四要素后到），要整体替换
+  let fields = numcatData.fields || [];
   let items = numcatData.items || [];
   logs.push('numcat 返回 fields=' + JSON.stringify(fields) + ' items=' + items.length + '行');
 
   const dateIdxPre = fields.indexOf('tradedate');
-  const computeGotDates = (rows) => new Set(rows.map(row => compactToDateStr(String(row[dateIdxPre] || '').trim())).filter(Boolean));
+  const computeGotDates = (rows, flds) => {
+    const di = flds ? flds.indexOf('tradedate') : dateIdxPre;
+    if (di < 0) return new Set();
+    return new Set(rows.map(row => compactToDateStr(String(row[di] || '').trim())).filter(Boolean));
+  };
   let missingDatesAfterNumcat = [];
+  let curExtras = { ok: false, hasFields: false, filled: 0, total: 0 };
   if (dateIdxPre >= 0) {
-    let gotDates = computeGotDates(items);
+    let gotDates = computeGotDates(items, fields);
     let missingDates = expectedDates.filter(d => !gotDates.has(d));
     if (missingDates.length > 0) {
       logs.push('⚠️ numcat 缺失交易日: ' + JSON.stringify(missingDates));
@@ -1015,8 +1290,16 @@ async function fetchNumcatWithRetry(env, constituents, today, cache, logs) {
       logs.push('numcat 覆盖了全部 ' + expectedDates.length + ' 个预期交易日');
     }
 
-    // 【LATENCY 2026-09-11】今天缺失时的重试等待：20s+40s → 5s+8s+12s。
-    // 9:26 前必须拿到数据，60 秒的等待窗口直接把落库推到 09:26 之后（实测 9/10 = 09:26:18）。
+    // 【LATENCY 2026-09-11】重试等待 20s+40s → 5s+8s+12s。9:26 硬指标。
+    //
+    // ⚠️ 判据【只能】是「今天这个日期出现没」，绝不要把「竞价四要素是否就绪」塞进阻塞条件。
+    //    取证（2026-09-11，.tmpdiag/diag_last_write.mjs）：
+    //      · 同一轮写入（9/11 01:30:03）里 9/10 = 60/67 有四要素，9/11 = 0/67 全空；
+    //      · 全表唯一「最后一个写入时刻 = 当天」的日期就是 9/11，它四要素为 0；
+    //      · 8/07 起的每个历史日，四要素都是在【后续几天的窗口重刷】时才出现的。
+    //    ⇒ 猫抓 daily_auc 对【当日】这一行不返回 um_vol/open_bid_pct/auc_vol_ratio/auc_turnover，
+    //      它们要等这一天结算后才有。拿它当阻塞条件 = 每天白等 25s 且永远等不到，
+    //      反而把 P0 落库顶穿 9:26。四要素改由 P3 补漏任务负责（runAuctionExtrasPatch）。
     if (missingDates.includes(today)) {
       for (let attempt = 0; attempt < TODAY_RETRY_DELAYS_SEC.length && missingDates.includes(today); attempt++) {
         const waitSec = TODAY_RETRY_DELAYS_SEC[attempt];
@@ -1025,9 +1308,11 @@ async function fetchNumcatWithRetry(env, constituents, today, cache, logs) {
         try {
           const retryData = await numcatDailyAuc(env, symbols, startYMD, endYMD);
           const retryItems = retryData.items || [];
-          const retryGotDates = computeGotDates(retryItems);
+          const retryFields = retryData.fields && retryData.fields.length ? retryData.fields : fields;
+          const retryGotDates = computeGotDates(retryItems, retryFields);
           if (retryGotDates.has(today)) {
             items = retryItems;
+            fields = retryFields;
             gotDates = retryGotDates;
             missingDates = expectedDates.filter(d => !gotDates.has(d));
             logs.push('✅ 重试第' + (attempt + 1) + '次成功拿到今天数据，items=' + items.length + '行');
@@ -1041,6 +1326,15 @@ async function fetchNumcatWithRetry(env, constituents, today, cache, logs) {
       if (missingDates.includes(today)) {
         logs.push('❌ 重试后今天(' + today + ')数据仍缺失，本次不会写入今天的 market_metrics，需要手动补抓');
       }
+    }
+    // 四要素【只统计、不阻塞】。当日为空是猫抓的既定行为，不是故障；
+    // 补漏交给 runAuctionExtrasPatch（16:00 close 跑 / 手动 /fetch?point=extras）。
+    curExtras = todayAuctionExtras(items, fields, today);
+    if (!curExtras.ok) {
+      logs.push('ℹ️ 今天(' + today + ')的「竞价四要素」当日不可用（' + curExtras.filled + '/' + curExtras.total +
+        ' 只非空' + (curExtras.hasFields ? '' : '，且 numcat 本次未返回这些字段') +
+        '）——这是猫抓 daily_auc 对当日行的既定行为，P0 落库不受影响；' +
+        '四要素将在当天结算后由补漏任务写回（最迟次日早盘窗口重刷时自动补上）。');
     }
     missingDatesAfterNumcat = missingDates;
   }
@@ -1056,7 +1350,7 @@ async function fetchNumcatWithRetry(env, constituents, today, cache, logs) {
     return { error: 'numcat 返回字段不完整: ' + JSON.stringify(fields) };
   }
 
-  return { expectedDates, items, fields, symIdx, nameIdx, dateIdx, volIdx, pctIdx, ratioIdx, missingDatesAfterNumcat };
+  return { expectedDates, items, fields, symIdx, nameIdx, dateIdx, volIdx, pctIdx, ratioIdx, missingDatesAfterNumcat, extras: curExtras };
 }
 
 // 3b. [LATENCY 2026-09-11] numcat daily（收盘涨幅）独立成一步，与 daily_auc 并发发出。
@@ -1131,6 +1425,13 @@ function parseNumcatToMetrics(items, fields, constituents, logs) {
   const atrIdx = fields.indexOf('auc_turnover');
 
   logs.push('步骤4：解析数据...');
+  // [2026-09-11] numcat 若未返回竞价四要素字段，这里必须显式报警：
+  // 否则界面表现为「趋势图只有涨幅、四项竞价指标全空」，且日志里毫无痕迹，极难定位。
+  if (umIdx < 0 || obpIdx < 0 || avrIdx < 0 || atrIdx < 0) {
+    logs.push('⚠️ numcat daily_auc 未返回全部竞价四要素字段: ' + JSON.stringify({
+      um_vol: umIdx, open_bid_pct: obpIdx, auc_vol_ratio: avrIdx, auc_turnover: atrIdx
+    }) + '（idx=-1 表示该字段本次不存在）→ 这些字段本次留空');
+  }
   const codeToName = {};
   constituents.forEach(c => { codeToName[c.code] = c.name; });
 
@@ -1443,7 +1744,7 @@ async function runMorning(env) {
   if (numcatResult.error) {
     return { ok: false, today, error: numcatResult.error, logs };
   }
-  const { expectedDates, items, fields, missingDatesAfterNumcat } = numcatResult;
+  const { expectedDates, items, fields, missingDatesAfterNumcat, extras } = numcatResult;
 
   const { metricsByDate, yestVolDerivedCount } = parseNumcatToMetrics(items, fields, constituents, logs);
 
@@ -1476,6 +1777,19 @@ async function runMorning(env) {
   const histWrite = await writeMetricsForDates(env, metricsByDate, d => d !== today, nowIso, logs);
   mark('历史日 market_metrics 落库 ' + histWrite.totalMetricsWritten + ' 行');
 
+  // ---- P3 竞价四要素补漏（最后跑，绝不挡在 P0 前面）----
+  // 只在「早盘这次没拿到四要素」时才发请求，避免无谓消耗猫抓额度（10 次/天）。
+  let extrasPatched = 0;
+  if (extras && !extras.ok) {
+    try {
+      const ex = await runAuctionExtrasPatch(env, { logs: logs, dates: [today] });
+      extrasPatched = ex.patched || 0;
+    } catch (e) {
+      logs.push('竞价四要素补漏失败（非致命）: ' + e.message);
+    }
+    mark('竞价四要素补漏 ' + extrasPatched + ' 行');
+  }
+
   const metricsWriteFailures = todayWrite.metricsWriteFailures + histWrite.metricsWriteFailures;
   const totalMetricsWritten = todayWrite.totalMetricsWritten + histWrite.totalMetricsWritten;
   const dateKeys = todayWrite.dateKeys.concat(histWrite.dateKeys);
@@ -1499,6 +1813,9 @@ async function runMorning(env) {
     expectedDates: expectedDates,
     todayDataMissing: todayMissing,
     historicalDatesMissingFromNumcat: phantomDates,
+    // 竞价四要素在「当日」拿不到是猫抓的既定行为，这里只做可观测性上报，不影响 ok
+    auctionExtrasToday: (extras && extras.filled + '/' + extras.total) || '0/0',
+    extrasPatched: extrasPatched,
     completenessSummary: completenessSummary,
     logs
   };
@@ -1542,6 +1859,9 @@ async function runMorning(env) {
 
 
 
+
+// [EXTRAS-PATCH 2026-09-11] 竞价四要素（未匹配量/抢筹幅度/竞价量比/真换手率）补漏：
+// 猫抓 daily_auc 对【当日】行不返回这四个字段，必须等结算后补写 —— 16:00 正是最合适的时机。
 
 // 区间涨幅口径单一真相（纯函数，worker 早盘/收盘与前端共用同一份实现）
 // ⚠️ 单文件打包（_bundle.mjs）会把本文件与 range-window.js 拼进同一个作用域，
@@ -1735,16 +2055,29 @@ async function runClose(env) {
     logs.push('区间涨幅重算失败（非致命）: ' + e.message);
   }
 
+  // 6. [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏。
+  //    放在最后：① 16:00 当日已结算，猫抓这时才给四要素；② 它只写四个字段（merge 语义），
+  //    不影响前面的 change_pct 覆盖；③ 失败不致命 —— 最迟次日早盘窗口重刷也会自动补上。
+  logs.push('步骤5：补写竞价四要素（未匹配量/抢筹幅度/竞价量比/真换手率）...');
+  let extrasPatched = 0;
+  try {
+    const ex = await runAuctionExtrasPatch(env, { logs: logs, dates: rangeDates.length > 0 ? rangeDates : [today] });
+    extrasPatched = ex.patched || 0;
+  } catch (e) {
+    logs.push('竞价四要素补漏失败（非致命）: ' + e.message);
+  }
+
   const completenessSummary = '✅ 收盘覆盖 ' + written + '/' + metrics.length + ' 只（来源=' + source +
-    '），区间涨幅更新 ' + rangeFixed + ' 只';
+    '），区间涨幅更新 ' + rangeFixed + ' 只，竞价四要素补写 ' + extrasPatched + ' 行';
   logs.push('数据完整性汇总: ' + completenessSummary);
-  logs.push('完成: 收盘涨幅覆盖 ' + written + ' 只, 区间涨幅更新 ' + rangeFixed + ' 只');
+  logs.push('完成: 收盘涨幅覆盖 ' + written + ' 只, 区间涨幅更新 ' + rangeFixed + ' 只, 四要素补写 ' + extrasPatched + ' 行');
   return {
     ok: true,
     today,
     stocksCount: metrics.length,
     pctUpdated: written,
     rangeFixed: rangeFixed,
+    extrasPatched: extrasPatched,
     source: source,
     completenessSummary: completenessSummary,
     logs
@@ -1853,6 +2186,7 @@ async function syncRangePct(env, today, closeMs, rangeDates, dailyByCode, pctByC
 //   但实测该 pg_cron 链路从未成功执行过（bidding_fetch_log 里 auction-close 记录数为 0，
 //   手工触发返回 546），导致当天 change_pct 全天停留在竞价涨幅。
 //   本 worker 的早盘 cron 一直稳定，因此收盘也交回这里，不再依赖任何外部 cron。
+// [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏（可手动 /fetch?point=extras；16:00 close 也会自动跑）
 function jsonResponse(obj, status) {
   return new Response(JSON.stringify(obj, null, 2), {
     status: status || 200,
@@ -1901,6 +2235,12 @@ async function dispatch(point, env, logs) {
     console.log('[auto-fetch] runClose 完整日志:', JSON.stringify(result.logs || []));
     return result;
   }
+  if (point === 'extras') {
+    const result = await runAuctionExtrasPatch(env, {});
+    console.log('[auto-fetch] runAuctionExtrasPatch 完成 ok=' + result.ok + ' patched=' + (result.patched || 0));
+    console.log('[auto-fetch] runAuctionExtrasPatch 完整日志:', JSON.stringify(result.logs || []));
+    return result;
+  }
   console.error('[auto-fetch] 未知触发点:', point);
   return { ok: false, error: '未知触发点: ' + point };
 }
@@ -1935,8 +2275,8 @@ export default {
           return jsonResponse({ ok: false, error: '当前北京时间不在抓取时段（9:25~9:40=morning，15:00~16:30=close）' });
         }
       }
-      if (!['morning', 'close'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|auto' });
+      if (!['morning', 'close', 'extras'].includes(point)) {
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|auto' });
       }
       try {
         const result = await dispatch(point, env, []);

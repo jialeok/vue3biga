@@ -41,6 +41,9 @@ import {
   readStockRangePctForDate
 } from '../data/supabase-write.js';
 import { getRecentTradingDays } from './holiday-check.js';
+// [EXTRAS-PATCH 2026-09-11] 竞价四要素（未匹配量/抢筹幅度/竞价量比/真换手率）补漏：
+// 猫抓 daily_auc 对【当日】行不返回这四个字段，必须等结算后补写 —— 16:00 正是最合适的时机。
+import { runAuctionExtrasPatch } from './extras-workflow.js';
 // 区间涨幅口径单一真相（纯函数，worker 早盘/收盘与前端共用同一份实现）
 // ⚠️ 单文件打包（_bundle.mjs）会把本文件与 range-window.js 拼进同一个作用域，
 //    因此这里【复用】range-window 的 parsePct / RANGE_WINDOW_DAYS，不再自己定义一份
@@ -239,16 +242,29 @@ export async function runClose(env) {
     logs.push('区间涨幅重算失败（非致命）: ' + e.message);
   }
 
+  // 6. [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏。
+  //    放在最后：① 16:00 当日已结算，猫抓这时才给四要素；② 它只写四个字段（merge 语义），
+  //    不影响前面的 change_pct 覆盖；③ 失败不致命 —— 最迟次日早盘窗口重刷也会自动补上。
+  logs.push('步骤5：补写竞价四要素（未匹配量/抢筹幅度/竞价量比/真换手率）...');
+  let extrasPatched = 0;
+  try {
+    const ex = await runAuctionExtrasPatch(env, { logs: logs, dates: rangeDates.length > 0 ? rangeDates : [today] });
+    extrasPatched = ex.patched || 0;
+  } catch (e) {
+    logs.push('竞价四要素补漏失败（非致命）: ' + e.message);
+  }
+
   const completenessSummary = '✅ 收盘覆盖 ' + written + '/' + metrics.length + ' 只（来源=' + source +
-    '），区间涨幅更新 ' + rangeFixed + ' 只';
+    '），区间涨幅更新 ' + rangeFixed + ' 只，竞价四要素补写 ' + extrasPatched + ' 行';
   logs.push('数据完整性汇总: ' + completenessSummary);
-  logs.push('完成: 收盘涨幅覆盖 ' + written + ' 只, 区间涨幅更新 ' + rangeFixed + ' 只');
+  logs.push('完成: 收盘涨幅覆盖 ' + written + ' 只, 区间涨幅更新 ' + rangeFixed + ' 只, 四要素补写 ' + extrasPatched + ' 行');
   return {
     ok: true,
     today,
     stocksCount: metrics.length,
     pctUpdated: written,
     rangeFixed: rangeFixed,
+    extrasPatched: extrasPatched,
     source: source,
     completenessSummary: completenessSummary,
     logs

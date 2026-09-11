@@ -90,6 +90,32 @@ export async function readMarketMetricsForDate(env, date, scope) {
 }
 
 /**
+ * [EXTRAS-PATCH 2026-09-11] 读取某日 market_metrics 竞价行的「竞价四要素」现状。
+ * 供 runAuctionExtrasPatch 判断哪些行还缺字段 —— 只补缺失的，不重复写已有值（幂等）。
+ * ⚠️ 读取失败必须抛错（§10：读取失败 ≠ 空数据）：否则会把「读不到」误判成「全都缺」，
+ *    进而用一次 numcat 的结果把历史值整体覆盖一遍。
+ */
+export async function readMarketMetricsExtrasForDate(env, date) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?date=eq.' + encodeURIComponent(date) +
+    '&scope=eq.auction' +
+    '&select=stock,code,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover&limit=2000';
+  const resp = await fetch(url, { headers: sbHeaders(env) });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error('读取 market_metrics 四要素失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
+  }
+  const data = await resp.json();
+  return (data || []).map(r => ({
+    name: (r.stock || '').trim(),
+    code: (r.code || '').trim(),
+    um_vol: r.um_vol === undefined || r.um_vol === null ? '' : String(r.um_vol),
+    open_bid_pct: r.open_bid_pct === undefined || r.open_bid_pct === null ? '' : String(r.open_bid_pct),
+    auc_vol_ratio: r.auc_vol_ratio === undefined || r.auc_vol_ratio === null ? '' : String(r.auc_vol_ratio),
+    auc_turnover: r.auc_turnover === undefined || r.auc_turnover === null ? '' : String(r.auc_turnover)
+  })).filter(r => r.name);
+}
+
+/**
  * [CLOSE-COVER 2026-09-10] 读取某日 stock_range_pct（近 10 个交易日区间涨幅缓存）。
  * 收盘后需要把「当天(T)腿」从竞价口径换成收盘口径 —— 见 close-workflow.js 步骤 4。
  */
