@@ -823,8 +823,13 @@ export async function runMorning(env) {
   const histWrite = await writeMetricsForDates(env, metricsByDate, d => d !== today, nowIso, logs);
   mark('历史日 market_metrics 落库 ' + histWrite.totalMetricsWritten + ' 行');
 
-  // ---- P3 竞价四要素补漏（最后跑，绝不挡在 P0 前面）----
-  // 只在「早盘这次没拿到四要素」时才发请求，避免无谓消耗猫抓额度（10 次/天）。
+  // ---- P3 竞价四要素补漏（保留为「零请求」安全网，最后跑，绝不挡在 P0 前面）----
+  // [QUOTA 2026-09-11] 这一步以前带 dates:[today] 会真发一次猫抓请求，但猫抓对【当日】行
+  // 永远不返回四要素（取证结论见 extras-workflow.js 文件头）→ 100% 白烧 1 次额度/天
+  // （占日额度 1/10）。现在 runAuctionExtrasPatch 默认 includeToday=false：dates 只剩今天
+  // → 立即零请求返回，只留一条日志。今天能拿到的四要素在 P0 写入时就已经落库；
+  // 结算后的缺口由 16:00 close（自动排除今天）与次日早盘窗口重刷补齐。
+  // 保留这个调用点是刻意的：万一将来猫抓改了当日返回行为，这里会自动恢复补写能力。
   let extrasPatched = 0;
   if (extras && !extras.ok) {
     try {

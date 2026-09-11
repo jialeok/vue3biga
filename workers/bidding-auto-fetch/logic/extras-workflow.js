@@ -17,6 +17,12 @@
 //   ① 北京 16:00 close 主流程末尾自动跑（复用既有 cron，不需要新增触发器）；
 //   ② 手动 /fetch?point=extras（想当天立刻看到 / 补历史缺口时用）。
 //
+// [QUOTA 2026-09-11] 自动跑时【排除当前交易日】：猫抓「当天不给四要素」是既定行为，
+//   把今天算进待补集合的唯一效果 = 每天都白烧 1 次额度。实测：9/11 16:00 的补漏 patched=0，
+//   而当天 9/11 的四要素依旧是 0/67（查询 market_metrics 证实 updated_by=*-close 48 行全空）。
+//   现在只有「确实存在可补的历史缺口」才发 numcat 请求；窗口内全完整 → 零请求直接返回。
+//   手动调用传 includeToday:true 可保留「含今天」的旧行为（用于排查）。
+//
 // 【安全约束（§11 删除安全 / §10 静默失败）】
 //   · 只写这四个字段。upsert 用 resolution=merge-duplicates + missing=default，
 //     绝不会抹掉 volume / change_pct / auc_pct_chg / yest_volume；
@@ -55,7 +61,9 @@ function extrasFmt2(v) {
 /**
  * 补写竞价四要素。
  * @param {object} env      worker env（需要 SUPABASE_* 与 NUMCAT_API_KEY）
- * @param {object} [opts]   { days?: number, logs?: string[], dates?: string[] }
+ * @param {object} [opts]   { days?: number, logs?: string[], dates?: string[], includeToday?: boolean }
+ *        includeToday=false（默认）：自动跑时排除当前交易日 —— 当天四要素猫抓不给，
+ *        把它算进待补只会每天白烧一次额度（实测 9/11 16:00 patched=0 且当天仍 0/67）。
  * @returns {Promise<{ok:boolean, today:string, patched:number, dates:string[], logs:string[]}>}
  */
 export async function runAuctionExtrasPatch(env, opts) {
@@ -63,7 +71,8 @@ export async function runAuctionExtrasPatch(env, opts) {
   const logs = o.logs || [];
   const today = beijingToday();
   const days = Number(o.days) || RANGE_WINDOW_DAYS;
-  logs.push('[extras] 竞价四要素补漏开始 today=' + today);
+  const includeToday = !!o.includeToday;
+  logs.push('[extras] 竞价四要素补漏开始 today=' + today + (includeToday ? '（含今天）' : '（自动排除今天）'));
 
   // 1. 交易日窗口（默认 [T-9, T]，与早盘/收盘同一份交易日历）
   let dates = Array.isArray(o.dates) && o.dates.length > 0 ? o.dates.slice() : [];
@@ -79,6 +88,12 @@ export async function runAuctionExtrasPatch(env, opts) {
     return { ok: false, today, patched: 0, dates: [], logs, reason: '无可用交易日' };
   }
   dates.sort();
+  // [QUOTA 2026-09-11] 自动跑排除「今天」：当天四要素永远拿不到，见文件头说明。
+  if (!includeToday) dates = dates.filter(d => d !== today);
+  if (dates.length === 0) {
+    logs.push('[extras] ✅ 待补窗口内只剩当天（当天四要素猫抓不提供）→ 零请求直接返回');
+    return { ok: true, today, patched: 0, dates: [], logs, reason: '只剩当天' };
+  }
   const startYMD = dates[0].replace(/-/g, '');
   const endYMD = dates[dates.length - 1].replace(/-/g, '');
 

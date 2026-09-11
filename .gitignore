@@ -18,6 +18,10 @@ dist_old_*/
 # Temp files
 _window_matches.txt
 _window_tokens.txt
+# vite/vitest 配置转译产生的临时文件（每次构建都会重新生成）
+*.timestamp-*.mjs
+# 本地一次性诊断脚本（只读排查用，不随源码交付）
+.tmpdiag/
 
 # Local credential / token files (never commit)
 *TOKEN.txt

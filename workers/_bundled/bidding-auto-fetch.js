@@ -1,5 +1,5 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-09-11 11:16:36
+// 生成时间: 2026-09-11 11:39:39
 // 注意: 此文件自动生成，请勿手动编辑
 
 // ────── _shared-source/date-utils.js ──────
@@ -793,6 +793,12 @@ function replaceTDayLeg(rangePct, oldLeg, newLeg) {
 //   ① 北京 16:00 close 主流程末尾自动跑（复用既有 cron，不需要新增触发器）；
 //   ② 手动 /fetch?point=extras（想当天立刻看到 / 补历史缺口时用）。
 //
+// [QUOTA 2026-09-11] 自动跑时【排除当前交易日】：猫抓「当天不给四要素」是既定行为，
+//   把今天算进待补集合的唯一效果 = 每天都白烧 1 次额度。实测：9/11 16:00 的补漏 patched=0，
+//   而当天 9/11 的四要素依旧是 0/67（查询 market_metrics 证实 updated_by=*-close 48 行全空）。
+//   现在只有「确实存在可补的历史缺口」才发 numcat 请求；窗口内全完整 → 零请求直接返回。
+//   手动调用传 includeToday:true 可保留「含今天」的旧行为（用于排查）。
+//
 // 【安全约束（§11 删除安全 / §10 静默失败）】
 //   · 只写这四个字段。upsert 用 resolution=merge-duplicates + missing=default，
 //     绝不会抹掉 volume / change_pct / auc_pct_chg / yest_volume；
@@ -829,7 +835,9 @@ function extrasFmt2(v) {
 /**
  * 补写竞价四要素。
  * @param {object} env      worker env（需要 SUPABASE_* 与 NUMCAT_API_KEY）
- * @param {object} [opts]   { days?: number, logs?: string[], dates?: string[] }
+ * @param {object} [opts]   { days?: number, logs?: string[], dates?: string[], includeToday?: boolean }
+ *        includeToday=false（默认）：自动跑时排除当前交易日 —— 当天四要素猫抓不给，
+ *        把它算进待补只会每天白烧一次额度（实测 9/11 16:00 patched=0 且当天仍 0/67）。
  * @returns {Promise<{ok:boolean, today:string, patched:number, dates:string[], logs:string[]}>}
  */
 async function runAuctionExtrasPatch(env, opts) {
@@ -837,7 +845,8 @@ async function runAuctionExtrasPatch(env, opts) {
   const logs = o.logs || [];
   const today = beijingToday();
   const days = Number(o.days) || RANGE_WINDOW_DAYS;
-  logs.push('[extras] 竞价四要素补漏开始 today=' + today);
+  const includeToday = !!o.includeToday;
+  logs.push('[extras] 竞价四要素补漏开始 today=' + today + (includeToday ? '（含今天）' : '（自动排除今天）'));
 
   // 1. 交易日窗口（默认 [T-9, T]，与早盘/收盘同一份交易日历）
   let dates = Array.isArray(o.dates) && o.dates.length > 0 ? o.dates.slice() : [];
@@ -853,6 +862,12 @@ async function runAuctionExtrasPatch(env, opts) {
     return { ok: false, today, patched: 0, dates: [], logs, reason: '无可用交易日' };
   }
   dates.sort();
+  // [QUOTA 2026-09-11] 自动跑排除「今天」：当天四要素永远拿不到，见文件头说明。
+  if (!includeToday) dates = dates.filter(d => d !== today);
+  if (dates.length === 0) {
+    logs.push('[extras] ✅ 待补窗口内只剩当天（当天四要素猫抓不提供）→ 零请求直接返回');
+    return { ok: true, today, patched: 0, dates: [], logs, reason: '只剩当天' };
+  }
   const startYMD = dates[0].replace(/-/g, '');
   const endYMD = dates[dates.length - 1].replace(/-/g, '');
 
@@ -1793,8 +1808,13 @@ async function runMorning(env) {
   const histWrite = await writeMetricsForDates(env, metricsByDate, d => d !== today, nowIso, logs);
   mark('历史日 market_metrics 落库 ' + histWrite.totalMetricsWritten + ' 行');
 
-  // ---- P3 竞价四要素补漏（最后跑，绝不挡在 P0 前面）----
-  // 只在「早盘这次没拿到四要素」时才发请求，避免无谓消耗猫抓额度（10 次/天）。
+  // ---- P3 竞价四要素补漏（保留为「零请求」安全网，最后跑，绝不挡在 P0 前面）----
+  // [QUOTA 2026-09-11] 这一步以前带 dates:[today] 会真发一次猫抓请求，但猫抓对【当日】行
+  // 永远不返回四要素（取证结论见 extras-workflow.js 文件头）→ 100% 白烧 1 次额度/天
+  // （占日额度 1/10）。现在 runAuctionExtrasPatch 默认 includeToday=false：dates 只剩今天
+  // → 立即零请求返回，只留一条日志。今天能拿到的四要素在 P0 写入时就已经落库；
+  // 结算后的缺口由 16:00 close（自动排除今天）与次日早盘窗口重刷补齐。
+  // 保留这个调用点是刻意的：万一将来猫抓改了当日返回行为，这里会自动恢复补写能力。
   let extrasPatched = 0;
   if (extras && !extras.ok) {
     try {
@@ -2084,7 +2104,10 @@ async function runClose(env, opts) {
   logs.push('步骤5：补写竞价四要素（未匹配量/抢筹幅度/竞价量比/真换手率）...');
   let extrasPatched = 0;
   try {
-    const ex = await runAuctionExtrasPatch(env, { logs: logs, dates: rangeDates.length > 0 ? rangeDates : [today] });
+    // [QUOTA 2026-09-11] 只传窗口、不传 [today] 兜底：四要素补漏默认【排除当天】
+    // （猫抓对当日行不给这四个字段，算进待补集合只是白烧 1 次额度）。
+    // rangeDates 为空时交给函数自取默认窗口（同样是 [T-9,T] 再去掉今天）。
+    const ex = await runAuctionExtrasPatch(env, { logs: logs, dates: rangeDates });
     extrasPatched = ex.patched || 0;
   } catch (e) {
     logs.push('竞价四要素补漏失败（非致命）: ' + e.message);
@@ -2271,8 +2294,11 @@ async function dispatch(point, env, logs, opts) {
     return result;
   }
   if (point === 'extras') {
-    const result = await runAuctionExtrasPatch(env, {});
-    console.log('[auto-fetch] runAuctionExtrasPatch 完成 ok=' + result.ok + ' patched=' + (result.patched || 0));
+    // [QUOTA 2026-09-11] 默认排除当天（猫抓对当日行不给四要素，算进去只是白烧额度）。
+    // 想坚持「含当天」的旧行为用于排查时，手动加 &today=1。
+    const result = await runAuctionExtrasPatch(env, { includeToday: !!(opts && opts.includeToday) });
+    console.log('[auto-fetch] runAuctionExtrasPatch 完成 ok=' + result.ok + ' patched=' + (result.patched || 0) +
+      ' dates=' + JSON.stringify(result.dates || []));
     console.log('[auto-fetch] runAuctionExtrasPatch 完整日志:', JSON.stringify(result.logs || []));
     return result;
   }
@@ -2311,10 +2337,13 @@ export default {
         }
       }
       if (!['morning', 'close', 'extras'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日）' });
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天）' });
       }
       try {
-        const result = await dispatch(point, env, [], { date: url.searchParams.get('date') || '' });
+        const result = await dispatch(point, env, [], {
+          date: url.searchParams.get('date') || '',
+          includeToday: url.searchParams.get('today') === '1'
+        });
         return jsonResponse(result, result.ok ? 200 : 500);
       } catch (e) {
         return jsonResponse({ ok: false, error: e.message, stack: e.stack }, 500);

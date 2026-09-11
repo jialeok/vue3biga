@@ -66,8 +66,11 @@ async function dispatch(point, env, logs, opts) {
     return result;
   }
   if (point === 'extras') {
-    const result = await runAuctionExtrasPatch(env, {});
-    console.log('[auto-fetch] runAuctionExtrasPatch 完成 ok=' + result.ok + ' patched=' + (result.patched || 0));
+    // [QUOTA 2026-09-11] 默认排除当天（猫抓对当日行不给四要素，算进去只是白烧额度）。
+    // 想坚持「含当天」的旧行为用于排查时，手动加 &today=1。
+    const result = await runAuctionExtrasPatch(env, { includeToday: !!(opts && opts.includeToday) });
+    console.log('[auto-fetch] runAuctionExtrasPatch 完成 ok=' + result.ok + ' patched=' + (result.patched || 0) +
+      ' dates=' + JSON.stringify(result.dates || []));
     console.log('[auto-fetch] runAuctionExtrasPatch 完整日志:', JSON.stringify(result.logs || []));
     return result;
   }
@@ -106,10 +109,13 @@ export default {
         }
       }
       if (!['morning', 'close', 'extras'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日）' });
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天）' });
       }
       try {
-        const result = await dispatch(point, env, [], { date: url.searchParams.get('date') || '' });
+        const result = await dispatch(point, env, [], {
+          date: url.searchParams.get('date') || '',
+          includeToday: url.searchParams.get('today') === '1'
+        });
         return jsonResponse(result, result.ok ? 200 : 500);
       } catch (e) {
         return jsonResponse({ ok: false, error: e.message, stack: e.stack }, 500);
