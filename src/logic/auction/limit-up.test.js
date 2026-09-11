@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getLimitUpPct, parseAucPct, isAuctionYiZi, buildYiZiSet, isStStockName, getCloseLimitState } from './limit-up.js';
+import { getLimitUpPct, parseAucPct, isAuctionYiZi, buildYiZiSet, isStStockName, getCloseLimitState, getCloseNameTone } from './limit-up.js';
 
 describe('limit-up 涨停幅度', () => {
   it('主板 10% / ST 5%', () => {
@@ -103,5 +103,62 @@ describe('getCloseLimitState 收盘涨停/跌停判定（2026-09-11 新增）', 
 
   it('缺代码按主板 10% 兜底', () => {
     expect(getCloseLimitState('+10.00%', '', '某某')).toBe('up');
+  });
+});
+
+describe('getCloseNameTone 股票名字体颜色档位（2026-09-11 新增）', () => {
+  // 闸门就绪 = 题材模式 + 该日已是收盘口径（北京 16:05 起）
+  const READY = { byTopic: true, closeWindow: true };
+
+  it('收盘涨幅 > 0 → 红（up）', () => {
+    expect(getCloseNameTone(3.21, READY)).toBe('up');
+    expect(getCloseNameTone('+0.01%', READY)).toBe('up');
+    expect(getCloseNameTone('+10.00%', READY)).toBe('up');
+  });
+
+  it('收盘涨幅 < 0 → 绿（down）', () => {
+    expect(getCloseNameTone(-2.5, READY)).toBe('down');
+    expect(getCloseNameTone('-0.01%', READY)).toBe('down');
+    expect(getCloseNameTone('-9.97%', READY)).toBe('down');
+  });
+
+  it('平盘（= 0）→ null（保持默认色，不作红/绿）', () => {
+    expect(getCloseNameTone(0, READY)).toBe(null);
+    expect(getCloseNameTone('0', READY)).toBe(null);
+    expect(getCloseNameTone('0.00%', READY)).toBe(null);
+    expect(getCloseNameTone('-0', READY)).toBe(null);
+  });
+
+  it('无数据 → null（§10：绝不把「没数据」着色）', () => {
+    expect(getCloseNameTone(null, READY)).toBe(null);
+    expect(getCloseNameTone(undefined, READY)).toBe(null);
+    expect(getCloseNameTone('', READY)).toBe(null);
+    expect(getCloseNameTone('--', READY)).toBe(null);
+    expect(getCloseNameTone(NaN, READY)).toBe(null);
+    expect(getCloseNameTone(Infinity, READY)).toBe(null);
+  });
+
+  it('与停板判定相互独立：未涨停但上涨仍然上红色', () => {
+    // +3% 不是涨停（getCloseLimitState → null），但方向为涨 → 名字要红
+    expect(getCloseLimitState('+3.00%', '600000', '某某')).toBe(null);
+    expect(getCloseNameTone('+3.00%', READY)).toBe('up');
+  });
+
+  it('【核心需求】早盘未到收盘口径 → 一律不上色（change_pct 只是竞价副本）', () => {
+    // 竞价阶段哪怕涨幅 +9.9%（看起来是红的），也必须保持默认黑
+    expect(getCloseNameTone('+9.90%', { byTopic: true, closeWindow: false })).toBe(null);
+    expect(getCloseNameTone('-5.00%', { byTopic: true, closeWindow: false })).toBe(null);
+  });
+
+  it('非题材模式 → 不上色（与竞价一字 / 停板蚂蚁线同口径）', () => {
+    expect(getCloseNameTone('+3.00%', { byTopic: false, closeWindow: true })).toBe(null);
+    expect(getCloseNameTone('-3.00%', {})).toBe(null);
+  });
+
+  it('闸门内置：ctx 缺失/不完整 → 安全方向（不上色），绝不拿竞价副本冒充收盘', () => {
+    expect(getCloseNameTone('+9.90%')).toBe(null);
+    expect(getCloseNameTone('+9.90%', null)).toBe(null);
+    expect(getCloseNameTone('+9.90%', { byTopic: true })).toBe(null);
+    expect(getCloseNameTone('+9.90%', { closeWindow: true })).toBe(null);
   });
 });

@@ -20,7 +20,7 @@
   <template
     v-for="(item, idx) in filteredObsItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo, item.closeLimit, item.closePct]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo, item.closeLimit, item.closePct, item.closeNameTone]"
   >
     <AuctionTopicStatsBar
       v-if="item.topicStats"
@@ -188,7 +188,7 @@
   <template
     v-for="(item, idx) in filteredRegularItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo, item.closeLimit, item.closePct]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo, item.closeLimit, item.closePct, item.closeNameTone]"
   >
     <AuctionTopicStatsBar
       v-if="item.topicStats"
@@ -393,12 +393,21 @@ function changePctHasData(stock) {
 //   收盘涨停/跌停 = 全天走完收在板价（红色/绿色蚂蚁线=虚线，收盘结果）。
 //   二者都作用在同一个 span 的 border-bottom 上，同时命中会互相覆盖 →
 //   这里做【显式互斥】：竞价一字优先（实线），不是一字时才画收盘停板蚂蚁线，绝不出现两条叠加。
+// [CLOSE-NAME-COLOR 2026-09-11] 另外叠加「股票名字体颜色」：收盘涨幅 >0 红 / <0 绿（=0 或无数据不加类）。
+//   它作用于 color，与上面两个 border-bottom 类互不干扰，因此不参与互斥（可同时出现：
+//   例如收盘涨停 + 涨幅为正 → 红字 + 红蚂蚁线）。
 function stockTextClass(item) {
-  if (item.isYiZi) return { 'yizi-limit': true };
-  return {
-    'close-limit-up': item.closeLimit === 'up',
-    'close-limit-down': item.closeLimit === 'down'
-  };
+  const cls = {};
+  if (item.isYiZi) {
+    cls['yizi-limit'] = true;
+  } else {
+    cls['close-limit-up'] = item.closeLimit === 'up';
+    cls['close-limit-down'] = item.closeLimit === 'down';
+  }
+  // 档位由 Logic 层算好（view-helpers closeNameTone），这里只做「档位 → class 名」映射
+  if (item.closeNameTone === 'up') cls['close-name-up'] = true;
+  else if (item.closeNameTone === 'down') cls['close-name-down'] = true;
+  return cls;
 }
 
 // [FEAT 2026-08-18] 表头搜索高光：watch highlightStockSet 直接操作行 DOM 加/移除高光类 + 滚动定位。

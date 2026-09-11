@@ -111,3 +111,31 @@ export function getCloseLimitState(closePct, code, stockName) {
     if (pct - EPS <= -limit) return 'down';
     return null;
 }
+
+/**
+ * 【收盘】股票名字体颜色档位（2026-09-11 新增）。
+ *
+ * 需求：收盘涨幅 > 0 → 股票名红色；< 0 → 绿色；= 0 → 保持默认色（黑）；
+ *      早盘一律默认色（此时 change_pct 只是 9:25 竞价副本，不是收盘结果）。
+ * 与 getCloseLimitState（是否停板）是两件事：本函数只表「涨跌方向」，不看幅度阈值。
+ *
+ * ⚠️ 【闸门内置、缺省即不上色】—— 这是刻意的安全设计：
+ *    闸门条件（题材模式 + 该日已是收盘口径）必须写在函数里，而不是靠每个调用方记得加 if。
+ *    ctx 缺失 / byTopic=false / closeWindow=false 一律返回 null → 保持默认黑。
+ *    这样「忘了传 ctx」的后果是「不上色」（安全方向），绝不会变成「用竞价副本冒充收盘结果」。
+ *    closeWindow = isAuthoritativeCloseReached(date)（北京 16:05 起才为 true）。
+ *
+ * ⚠️ 无数据（null / '' / 非数）同样返回 null，绝不把「没数据」着色（§10）。
+ *
+ * @param {*} closePct - 收盘涨幅：number 或 '+1.23%' / '-2.34%' 这类字符串
+ * @param {{byTopic?:boolean, closeWindow?:boolean}} ctx - 显示闸门；缺任一项 → null
+ * @returns {'up'|'down'|null} 'up'=红（涨）/ 'down'=绿（跌）/ null=默认色（平盘 / 无数据 / 未到收盘口径）
+ */
+export function getCloseNameTone(closePct, ctx) {
+    if (!ctx || !ctx.byTopic || !ctx.closeWindow) return null;
+    const pct = (typeof closePct === 'number')
+        ? (isFinite(closePct) ? closePct : null)
+        : parseAucPct(closePct);
+    if (pct === null || pct === 0) return null;
+    return pct > 0 ? 'up' : 'down';
+}

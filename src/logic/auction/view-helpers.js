@@ -16,7 +16,8 @@ import { useUiStore } from '../../stores/uiStore.js';
 import { getStockTopicCount, getStockTopicsDisplay, getPrimaryTopicMap, classifyStockPrimaryTopic, sortByTopicGroups, buildTopicColorMap } from './topic-sort.js';
 // [YIZI 2026-09-09] 竞价一字（竞价涨停）：行级红线标记 + 题材组间排序权重，单一真相在 limit-up.js。
 // [CLOSE-LIMIT 2026-09-11] 同模块新增 getCloseLimitState：收盘涨停/跌停（蚂蚁线标记 + 题材统计）。
-import { isAuctionYiZi, parseAucPct, getCloseLimitState } from './limit-up.js';
+// [CLOSE-NAME-COLOR 2026-09-11] 同模块新增 getCloseNameTone：收盘涨幅 → 股票名字体颜色档位。
+import { isAuctionYiZi, parseAucPct, getCloseLimitState, getCloseNameTone } from './limit-up.js';
 // [CLOSE-COUNT 2026-09-11] 「收盘口径」判定：题材统计条的收盘红绿/停板、行级收盘停板标记
 // 只在收盘【权威口径】下才成立 —— 早盘（乃至 15:00~16:00 之间）的 change_pct 还可能是
 // 9:25 写入的竞价副本，用它数红绿会把竞价方向当成收盘结果。
@@ -176,6 +177,12 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     ? getCloseLimitState(_closePct, _yiZiCode, stockName)
     : null;
 
+  // [CLOSE-NAME-COLOR 2026-09-11] 收盘涨幅 → 股票名【字体颜色】档位（>0 红 / <0 绿 / =0 或无数值 → 默认黑）。
+  // 闸门条件与一字、停板完全同口径（题材 toggle 开启 + 该日已是收盘口径），但【判定写在函数内部】：
+  // 早盘 change_pct 是 9:25 竞价副本 → closeWindow=false → 恒为 null → 名字保持默认色，
+  // 收盘覆盖后（北京 16:05 起）自动出现颜色。只改字体颜色，不影响下方一字实线 / 停板蚂蚁线（border-bottom）。
+  const closeNameTone = getCloseNameTone(_closePct, { byTopic: ctx.byTopic, closeWindow: ctx.closeWindow });
+
   return {
     index,
     stock: stockName,
@@ -216,6 +223,9 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     // [CLOSE-LIMIT 2026-09-11] 收盘涨停('up')/跌停('down') → 股票名下绿色/红色【蚂蚁线（虚线）】标记。
     // null = 既非停板也没有收盘涨幅数据（不标记）。视觉优先级见 AuctionBoardTable：竞价一字实线优先。
     closeLimit,
+    // [CLOSE-NAME-COLOR 2026-09-11] 股票名字体颜色档位：'up'=红（收盘涨）/ 'down'=绿（收盘跌）/
+    // null=平盘、无数据、或未到收盘口径（保持默认黑）。模板只认这个字段，别在模板里再判符号。
+    closeNameTone,
     // [CLOSE-COUNT 2026-09-11] 收盘涨幅数值（仅收盘口径日期有值，否则 null），供题材统计条「2红9绿」计数。
     closePct: _closePct,
     // [TOPIC-SEQ 2026-09-11] 同题材组内序号（1 起）。只在「题材单独开启」时由调用方赋值；

@@ -125,6 +125,10 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToke
     //   完全没变 → 不把这些派生值入签名，行缓存会继续复用「没有蚂蚁线」的旧行对象。
     'cl=' + (item.closeLimit || ''),
     'cp=' + (item.closePct === null || item.closePct === undefined ? '' : item.closePct),
+    // [CLOSE-NAME-COLOR 2026-09-11] 股票名字体颜色档位（收盘涨幅符号）。虽然它由上方 cp= 派生、
+    //   且 byTopic 已在签名里，但模板会直接读它 → 按红线单独入签名，避免日后 tone 的来源/口径
+    //   变化时被增量缓存陈旧复用（cp= 只保证数值一致，不保证「读取口径」一致）。
+    'nt=' + (item.closeNameTone || ''),
     // [TOPIC-SEQ 2026-09-11] 同题材组内序号：组内任何一只票增删/换题材都会改变本行的序号，
     //   但本行自身的行内输入可以完全没变 → 必须单独入签名，否则序号陈旧。
     'seq=' + (item.seqNo || 0),

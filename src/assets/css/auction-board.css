@@ -506,6 +506,19 @@
             border-bottom: 2px dashed #059669;
         }
 
+        /* [CLOSE-NAME-COLOR 2026-09-11] 股票名字体颜色 = 收盘涨幅方向（>0 红 / <0 绿 / =0 或无数值保持默认 #1f2937）。
+           闸门在 Logic 层（view-helpers：ctx.byTopic && ctx.closeWindow），所以早盘 change_pct 是竞价副本时
+           不会加这两个类 → 名字保持默认色；收盘覆盖后（北京 16:05 起）自动上色。涨红跌绿（A 股口径）。
+           与上方一字实线 / 停板蚂蚁线是两个属性（color vs border-bottom），可同时出现、互不覆盖。
+           必须写在 .auction-stock-text 之后：同权重（0,2,0）靠顺序覆盖默认色。 */
+        .auction-stock-text.close-name-up {
+            color: #dc2626;
+        }
+
+        .auction-stock-text.close-name-down {
+            color: #059669;
+        }
+
         /* 双身份股票（昨日竞昨高光观察组 ∩ 今日正式列表）星号标记 */
         .auction-obs-formal-star {
             color: #f59e0b;
