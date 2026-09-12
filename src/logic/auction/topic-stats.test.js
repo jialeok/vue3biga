@@ -7,7 +7,7 @@ import {
 } from './topic-stats.js';
 
 describe('buildTopicStatsMap 题材分组统计', () => {
-  it('统计数量 / 一字 / 竞价高开（>=0 才算高开）', () => {
+  it('统计数量 / 一字 / 竞价高开（竞价涨幅 > 0 才算高开，=0 不算）', () => {
     const entries = [
       { topic: '农业', name: 'A', isYiZi: true, aucPct: 2.1, rangePct: 102 },
       { topic: '农业', name: 'B', isYiZi: true, aucPct: 0, rangePct: 30 },
@@ -18,10 +18,26 @@ describe('buildTopicStatsMap 题材分组统计', () => {
     const s = m.get('农业');
     expect(s.count).toBe(4);
     expect(s.yiziCount).toBe(2);
-    expect(s.highOpenCount).toBe(2); // 2.1 与 0 计入；-1.2 与 null 不计入
+    expect(s.highOpenCount).toBe(1); // 只有 2.1 计入；0（平开）、-1.2 与 null 都不计入
     expect(s.leader).toBe('A'); // 区间涨幅最高
     expect(s.leaderAucPct).toBe(2.1);
     expect(s.leaderRangePct).toBe(102);
+  });
+
+  it('【FIX 2026-09-12】竞价涨幅 = 0（平开）不计入「竞价高开」', () => {
+    const entries = [
+      { topic: 'T', name: '甲', aucPct: 0, rangePct: 1 },
+      { topic: 'T', name: '乙', aucPct: 0, rangePct: 2 }
+    ];
+    const s = buildTopicStatsMap(entries).get('T');
+    expect(s.count).toBe(2);
+    expect(s.highOpenCount).toBe(0); // 全是平开 → 高开数为 0
+    // 对照组：只要 > 0 就计入（哪怕 0.01）
+    const s2 = buildTopicStatsMap([
+      { topic: 'T', name: '甲', aucPct: 0, rangePct: 1 },
+      { topic: 'T', name: '乙', aucPct: 0.01, rangePct: 2 }
+    ]).get('T');
+    expect(s2.highOpenCount).toBe(1);
   });
 
   it('龙头 = 组内区间涨幅最高者；与排列顺序无关', () => {
