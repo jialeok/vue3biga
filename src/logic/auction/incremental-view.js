@@ -129,6 +129,11 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToke
     //   且 byTopic 已在签名里，但模板会直接读它 → 按红线单独入签名，避免日后 tone 的来源/口径
     //   变化时被增量缓存陈旧复用（cp= 只保证数值一致，不保证「读取口径」一致）。
     'nt=' + (item.closeNameTone || ''),
+    // [LIMIT-STREAK 2026-09-11] 趋势/连板标记文案（前 9 个历史交易日收盘涨幅派生，见 limit-streak.js）。
+    //   它不由本行行内输入（volume/note…）派生，而依赖「前若干日的历史日行」——
+    //   历史日数据在首屏整段拉入，但 worker 收盘覆盖 / 历史日回填会改写 change_pct → 连板状态可能变化，
+    //   行内输入却可以完全没变。必须单独入签名，否则行缓存会复用旧标记（陈旧）。
+    'ls=' + (item.streakLabel || ''),
     // [TOPIC-SEQ 2026-09-11] 同题材组内序号：组内任何一只票增删/换题材都会改变本行的序号，
     //   但本行自身的行内输入可以完全没变 → 必须单独入签名，否则序号陈旧。
     'seq=' + (item.seqNo || 0),

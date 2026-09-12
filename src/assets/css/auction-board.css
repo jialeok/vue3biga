@@ -528,6 +528,24 @@
             vertical-align: middle;
         }
 
+        /* [LIMIT-STREAK 2026-09-11] 趋势/连板标记（趋势 / 首板 / 二板 / 三板…）：股票名后的小灰标。
+           口径 = 前 9 个历史交易日（不含当天）的连续收盘涨停天数（见 limit-streak.js）。
+           统一灰色、9px、轻底无边框，占位压到最小；
+           刻意不用【实心深灰】—— 与「卖」标签色块（.badge-sell background:#6b7280）撞色。 */
+        .auction-streak-tag {
+            display: inline-block;
+            margin-left: 3px;
+            padding: 0 3px;
+            border-radius: 2px;
+            background: #e2e8f0;
+            color: #475569;
+            font-size: 9px;
+            font-weight: 600;
+            line-height: 12px;
+            vertical-align: 1px;
+            white-space: nowrap;
+        }
+
         .auction-volume {
             flex: 1;
             font-size: 13px;

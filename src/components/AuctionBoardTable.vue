@@ -20,7 +20,7 @@
   <template
     v-for="(item, idx) in filteredObsItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo, item.closeLimit, item.closePct, item.closeNameTone]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo, item.closeLimit, item.closePct, item.closeNameTone, item.streakLabel]"
   >
     <AuctionTopicStatsBar
       v-if="item.topicStats"
@@ -61,6 +61,13 @@
           v-if="item.obsFormalStar"
           class="auction-obs-formal-star"
         >*</span></span>
+        <!-- [LIMIT-STREAK 2026-09-11] 趋势/连板标记（趋势 / 首板 / 二板 / 三板…）：紧贴股票名后的灰色小标。
+             口径 = 前 9 个历史交易日（不含当天）的连续收盘涨停天数，Logic 层（view-helpers）算好文案， -->
+        <span
+          v-if="item.streakLabel"
+          class="auction-streak-tag"
+          :title="'前9个交易日连板状态：' + item.streakLabel"
+        >{{ item.streakLabel }}</span>
         <AuctionDragonBadge
           v-if="item.dragonRank > 0"
           :rank="item.dragonRank"
@@ -188,7 +195,7 @@
   <template
     v-for="(item, idx) in filteredRegularItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo, item.closeLimit, item.closePct, item.closeNameTone]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo, item.closeLimit, item.closePct, item.closeNameTone, item.streakLabel]"
   >
     <AuctionTopicStatsBar
       v-if="item.topicStats"
@@ -229,6 +236,13 @@
           v-if="item.obsFormalStar"
           class="auction-obs-formal-star"
         >*</span></span>
+        <!-- [LIMIT-STREAK 2026-09-11] 趋势/连板标记（趋势 / 首板 / 二板 / 三板…）：紧贴股票名后的灰色小标。
+             口径 = 前 9 个历史交易日（不含当天）的连续收盘涨停天数，Logic 层（view-helpers）算好文案， -->
+        <span
+          v-if="item.streakLabel"
+          class="auction-streak-tag"
+          :title="'前9个交易日连板状态：' + item.streakLabel"
+        >{{ item.streakLabel }}</span>
         <AuctionDragonBadge
           v-if="item.dragonRank > 0"
           :rank="item.dragonRank"

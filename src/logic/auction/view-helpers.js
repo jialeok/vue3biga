@@ -18,11 +18,15 @@ import { getStockTopicCount, getStockTopicsDisplay, getPrimaryTopicMap, classify
 // [CLOSE-LIMIT 2026-09-11] 同模块新增 getCloseLimitState：收盘涨停/跌停（蚂蚁线标记 + 题材统计）。
 // [CLOSE-NAME-COLOR 2026-09-11] 同模块新增 getCloseNameTone：收盘涨幅 → 股票名字体颜色档位。
 import { isAuctionYiZi, parseAucPct, getCloseLimitState, getCloseNameTone } from './limit-up.js';
+// [LIMIT-STREAK 2026-09-11] 趋势/连板标记（趋势 / 首板 / 二板 / 三板…）：只看【当天之前】的
+// 历史交易日收盘涨幅，逐日回看数连续涨停。判定单一真相在 limit-streak.js（纯函数），
+// 数据取内存已存的逐日 change_pct（首屏已整段拉入）→ 0 网络请求、0 猫抓额度。
+import { buildLimitStreakMap, STREAK_LOOKBACK_DAYS } from './limit-streak.js';
 // [CLOSE-COUNT 2026-09-11] 「收盘口径」判定：题材统计条的收盘红绿/停板、行级收盘停板标记
 // 只在收盘【权威口径】下才成立 —— 早盘（乃至 15:00~16:00 之间）的 change_pct 还可能是
 // 9:25 写入的竞价副本，用它数红绿会把竞价方向当成收盘结果。
 // 判定复用 dragon-rank 的单一真相 isAuthoritativeCloseReached（北京 16:05），不另写一份时间逻辑（§6）。
-import { getDragonRangePct, computeDragonRankMap, isAuthoritativeCloseReached } from './dragon-rank.js';
+import { getDragonRangePct, computeDragonRankMap, isAuthoritativeCloseReached, getDragonWindowDates } from './dragon-rank.js';
 // [DRAGON 2026-09-09] 题材龙头（龙一/龙二…）：区间涨幅状态由 dragon-rank.js 异步加载后经模块级 ref 暴露，
 // 此处同步读取（与 weakStrongSetRef 同款 ref-driven 范式），题材 toggle 开启时才参与计算。
 // [TOPIC-STATS 2026-09-10] 题材块统计条（数量/一字/竞价高开/龙头…）：纯函数在 topic-stats.js
@@ -45,6 +49,41 @@ function _getThreeDayAuctionPct(rawItem) {
   const raw = rawItem.auc_pct_chg || rawItem.aucPctChg || rawItem.changePct || rawItem.change_pct || '';
   const num = parseFloat(String(raw).replace('%', '').replace('+', ''));
   return isFinite(num) ? num : null;
+}
+
+/**
+ * [LIMIT-STREAK 2026-09-11] 构建「股票名 → 趋势/连板状态」映射（题材模式专用）。
+ *
+ * 回看窗口 = 该日 10 日区间窗口 [T-9, T] 【去掉当天 T】→ 降序 [T-1 … T-9]。
+ * 为什么排除当天：用户口径「当天早上的行情还没走完，参考意义不大」——T 的 change_pct 在
+ * 早盘只是 9:25 竞价副本，用它判连板会把「还没走完的一天」当成已收盘。
+ *
+ * 逐日行取自内存 getAuctionData()[d]（含 market_metrics 影子行，带 change_pct），
+ * 首屏 auction-pull-window 已把最近 30 个自然日整段拉入 → 本函数 0 网络请求、0 猫抓额度。
+ * 判定与组装全部交给纯函数 limit-streak.js（§6 单一真相，不在此处另写一份）。
+ *
+ * @param {string} date 看板日期 T
+ * @returns {Map<string, {streak:number, label:string}>}
+ */
+function _buildLimitStreakMap(date) {
+  if (!date) return new Map();
+  const win = getDragonWindowDates(date);           // 降序 [T, T-1, … T-9]
+  const descDates = win.slice(1, 1 + STREAK_LOOKBACK_DAYS); // 去掉 T → [T-1 … T-9]
+  if (descDates.length === 0) return new Map();
+  const g = getAuctionData() || {};
+  const rowsByDate = new Map();
+  descDates.forEach(function(d) {
+    const m = new Map();
+    ((g && g[d]) || []).forEach(function(r) {
+      if (!r || !r.stock) return;
+      const n = String(r.stock).trim();
+      if (n && !m.has(n)) m.set(n, r); // 同日同名只认第一行（与 dragon-rank 同款双保险）
+    });
+    rowsByDate.set(d, m);
+  });
+  return buildLimitStreakMap(descDates, rowsByDate, function(row, name) {
+    return (row && row.code) || getStockCode(name) || '';
+  });
 }
 
 function _enrichAuctionItem(rawItem, index, ctx) {
@@ -183,6 +222,14 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   // 收盘覆盖后（北京 16:05 起）自动出现颜色。只改字体颜色，不影响下方一字实线 / 停板蚂蚁线（border-bottom）。
   const closeNameTone = getCloseNameTone(_closePct, { byTopic: ctx.byTopic, closeWindow: ctx.closeWindow });
 
+  // [LIMIT-STREAK 2026-09-11] 趋势/连板标记（趋势 / 首板 / 二板 / 三板…）。
+  // 只在题材模式计算（与竞价一字 / 龙头徽章同一显示口径）；取值来自 ctx.limitStreakMap，
+  // 该映射在 computeAuctionViewData 里【预构建一次】（不是逐行现算），数据源 = 前 9 个历史交易日
+  // 收盘涨幅（不含当天，早盘也能算）。无历史数据 / 非题材模式 → ''（模板不渲染）。
+  // ⚠️ 不设 closeWindow 闸门：它只读【历史日】的权威收盘涨幅，早盘就该显示（这正是用户要的）。
+  const _streakEntry = (ctx.byTopic && ctx.limitStreakMap && stockName) ? ctx.limitStreakMap.get(stockName) : null;
+  const streakLabel = _streakEntry ? _streakEntry.label : '';
+
   return {
     index,
     stock: stockName,
@@ -226,6 +273,9 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     // [CLOSE-NAME-COLOR 2026-09-11] 股票名字体颜色档位：'up'=红（收盘涨）/ 'down'=绿（收盘跌）/
     // null=平盘、无数据、或未到收盘口径（保持默认黑）。模板只认这个字段，别在模板里再判符号。
     closeNameTone,
+    // [LIMIT-STREAK 2026-09-11] 趋势/连板标记文案：'趋势' / '首板' / '二板' / '三板' / …
+    // 由前 9 个历史交易日收盘涨幅派生（不含当天）。空串 = 非题材模式或无历史数据 → 模板不渲染。
+    streakLabel,
     // [CLOSE-COUNT 2026-09-11] 收盘涨幅数值（仅收盘口径日期有值，否则 null），供题材统计条「2红9绿」计数。
     closePct: _closePct,
     // [TOPIC-SEQ 2026-09-11] 同题材组内序号（1 起）。只在「题材单独开启」时由调用方赋值；
@@ -320,6 +370,19 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       sortState = store && store.sortState ? store.sortState[_p] : { byWeakStrong: false, byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false };
     } catch {
       sortState = { byWeakStrong: false, byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false };
+    }
+  }
+
+  // [LIMIT-STREAK 2026-09-11] 趋势/连板映射：只在题材模式计算（需求：「单独打开题材 toggle」看趋势/连板）。
+  // 预构建一次（不是逐行现算），供下方 ctx → _enrichAuctionItem 逐行读取。
+  // 失败不影响看板主体（纯展示派生值）：降级为「无标记」，但必须留痕，绝不静默（§10 精神）。
+  let limitStreakMap = null;
+  if (sortState.byTopic) {
+    try {
+      limitStreakMap = _buildLimitStreakMap(currentDate);
+    } catch (e) {
+      console.warn('[LIMIT-STREAK] 连板映射构建失败，本次不显示趋势/连板标记:', e);
+      limitStreakMap = new Map();
     }
   }
 
@@ -845,6 +908,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     prevAuctionMap: _prevMap,
     // [YIZI 2026-09-09] 题材 toggle 开关：竞价一字红线只在题材视图下计算/展示（与龙头徽章同一口径）
     byTopic: !!sortState.byTopic,
+    // [LIMIT-STREAK 2026-09-11] 趋势/连板映射（股票名 → {streak,label}）。仅题材模式构建；
+    // 非题材模式为 null → _enrichAuctionItem 里 streakLabel 恒为 ''（模板不渲染）。
+    limitStreakMap: limitStreakMap,
     // [CLOSE-COUNT 2026-09-11] 该日是否已是收盘口径（当天 15:00 后 / 历史日期）。
     // false 时收盘涨幅不可信（= 竞价副本）→ 收盘红绿/停板/蚂蚁线一律不产出（§10 不用竞价数据冒充收盘结果）。
     closeWindow: closeWindow,
