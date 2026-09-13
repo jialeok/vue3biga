@@ -63,7 +63,7 @@ export function getStockTopicsDisplay(item) {
 // 新实现按「题材分组」排序：属于同一题材的股票聚到一起，哪个题材股票多哪个排前面，
 // "其它"(无题材 / 未匹配核心词 / 组<2只) 一律置底；主排序档位(tier)顺序不变——高光/达标档(tier0)整体在最上。
 
-import { getTopicGroups, getCoreTopics, matchTopicToCore } from '../topic/rules.js';
+import { getTopicGroups, getGroupableCoreTopics, matchTopicToCore } from '../topic/rules.js';
 
 /**
  * 取「股票名 → 主题材」映射，复用第二页 getTopicGroups 的分类结果。
@@ -96,7 +96,8 @@ export function getPrimaryTopicMap(auctionList) {
 export function classifyStockPrimaryTopic(item) {
     const topics = getStockTopicArr(item);
     if (topics.length === 0) return '其它';
-    const cores = getCoreTopics();
+    // [ARCH-V3 §6] 与 getTopicGroups 共用同一份「可分组核心词」，伪题材不作为主题材
+    const cores = getGroupableCoreTopics();
     for (const topic of topics) {
         const matched = matchTopicToCore(topic, cores);
         if (matched && matched.length > 0) return matched[0];

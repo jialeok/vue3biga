@@ -48,6 +48,37 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
             return state.defaultCoreTopics || [];
         }
 
+        // ============ 伪题材（事件标记，不可作为题材分组） ============
+        // 背景：核心词表里混进了描述「事件」而非「行业/概念」的词（如 并购重组），
+        // 它会被当成题材建组，并把只有这类词的股票整个吸进组里，挤占该股票在真实题材里的名额。
+        // [ARCH-V3 §6] 黑名单必须是单一真相：原先 StarStatsBoard / ui-bridge / useAuctionBoard /
+        // auction-board-helpers 各自写死 '并购重组' 共 5 份，规则一改必漏改。
+        // 这里统一定义，消费端一律走 isPseudoTopic()，不再散落字面量。
+        export const PSEUDO_TOPICS = ['并购重组'];
+
+        /**
+         * 判断一个核心词/题材名是否为「伪题材」（不做题材分组，只作事件标记）。
+         * @param {string} name
+         * @returns {boolean}
+         */
+        export function isPseudoTopic(name) {
+            if (!name) return false;
+            return PSEUDO_TOPICS.indexOf(String(name).trim()) >= 0;
+        }
+
+        /**
+         * 取「可用于分组的核心词」= 云端/默认核心词 去掉伪题材。
+         * [ARCH-V3 §6] 只读派生，刻意不改 getCoreTopics() 本体：
+         *   ① 核心词管理弹窗仍需展示完整清单；
+         *   ② saveCoreTopics 回写云端必须保存完整清单，否则会静默删掉用户配置（违反 §10/§11）。
+         * @returns {Array<{name:string, synonyms?:string[]}>}
+         */
+        export function getGroupableCoreTopics() {
+            const all = getCoreTopics();
+            if (!all || all.length === 0) return [];
+            return all.filter(function(c) { return c && !isPseudoTopic(c.name); });
+        }
+
         // core_topics 表 Realtime 回调入口：重拉云端核心词 → 刷新内存缓存与题材分组指纹缓存 → 通知 UI 重渲染。
         // 由 stock-topics.js 的 startCoreTopicsRealtime 在 postgres_changes 触发时调用（运行时调用，不涉模块顶层求值，安全）。
         export async function refreshCoreTopicsFromCloud() {
@@ -242,7 +273,9 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
             const __fp = auctionList.length + '|' + auctionList.map(function(i) { return (i.stock||'') + ':' + (i.topics||''); }).join('\u00a7') + '|' + __coreFp;
             if (_topicGroupsFp === __fp && _topicGroupsCache) return _topicGroupsCache;
             const __tgT0 = performance.now();
-            const coreTopics = getCoreTopics();
+            // [ARCH-V3 §6] 分组只用「可分组核心词」：伪题材(并购重组)不建组、不参与 matchTopicToCore，
+            // 命中它的股票因此落到自己的其它真实题材组，没有任何真实题材时才进「其它」兜底组。
+            const coreTopics = getGroupableCoreTopics();
             const __tgAfterCore = performance.now();
             // 预构建历史题材缓存，供当日 note 为空时回退使用
             buildTopicCache();

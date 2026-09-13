@@ -3,7 +3,7 @@ import { _emit } from '../stores/eventBus.js';
 import { getPreviousTradingDay } from './date/trading-day-helpers.js';
 import { state } from './app-state.js';
 import { getAuctionData, getGroupData } from './app-core-api.js';
-import { getTopicGroups } from './topic/rules.js';
+import { getTopicGroups, isPseudoTopic } from './topic/rules.js';
 import { getSupabase, getBiddingData } from '../data/supabase-client.js';
 import { _getAuctionWatchlistSet } from '../data/watchlist-and-metrics.js';
 import { saveRecentMultiRow } from '../data/duiban-sync.js';
@@ -103,7 +103,8 @@ export function getStarTagsForStock(stockName) {
 
   const stockTopics = [];
   todayGroups.forEach(group => {
-    if (group.topic === '其它' || group.topic === '并购重组') return;
+    // [ARCH-V3 §6] 单一真相：伪题材黑名单统一走 rules.js#isPseudoTopic
+    if (group.topic === '其它' || isPseudoTopic(group.topic)) return;
     const hasStock = group.stocks.some(s => s.stock && s.stock.trim() === stockName.trim());
     if (!hasStock) return;
     const todayStarCount = group.starCount || 0;
@@ -115,7 +116,7 @@ export function getStarTagsForStock(stockName) {
 
   let maxStarTopic = null, maxStarCount = 0;
   todayGroups.forEach(group => {
-    if (group.topic === '其它' || group.topic === '并购重组') return;
+    if (group.topic === '其它' || isPseudoTopic(group.topic)) return;
     if ((group.starCount || 0) > maxStarCount) { maxStarCount = group.starCount || 0; maxStarTopic = group.topic; }
   });
 

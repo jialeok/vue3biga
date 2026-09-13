@@ -117,7 +117,7 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue';
 import { getTodayGroupList, getGroupData, getTodayJiwang } from '../logic/app-core.js';
-import { getTopicGroups } from '../logic/topic/rules.js';
+import { getTopicGroups, isPseudoTopic } from '../logic/topic/rules.js';
 import { getPreviousTradingDay } from '../logic/date/trading-day-helpers.js';
 import { useUiStore } from '../stores/uiStore.js';
 import { useAuctionStore } from '../stores/auctionStore.js';
@@ -203,7 +203,8 @@ function render() {
   let maxTopic = '';
 
   todayGroups.forEach(group => {
-    if (!group.topic || group.topic === '---' || group.topic === '其它' || group.topic === '并购重组') return;
+    // [ARCH-V3 §6] 单一真相：伪题材黑名单统一走 rules.js#isPseudoTopic
+    if (!group.topic || group.topic === '---' || group.topic === '其它' || isPseudoTopic(group.topic)) return;
     const todayStar = group.starCount || 0;
     const yGroup = yesterdayByTopic[group.topic];
     const yesterdayStar = yGroup ? (yGroup.starCount || 0) : 0;
@@ -218,7 +219,7 @@ function render() {
     if (sc > maxStockCount) { maxStockCount = sc; maxTopic = group.topic; }
   });
 
-  const validTopicCount = todayGroups.filter(g => g.topic && g.topic !== '---' && g.topic !== '其它' && g.topic !== '并购重组').length;
+  const validTopicCount = todayGroups.filter(g => g.topic && g.topic !== '---' && g.topic !== '其它' && !isPseudoTopic(g.topic)).length;
   topicCount.value = validTopicCount;
 
   const todayStockCount = todayAuction.length;

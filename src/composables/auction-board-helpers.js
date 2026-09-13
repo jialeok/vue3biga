@@ -6,7 +6,7 @@
 // 本模块不引入任何有状态/有副作用逻辑。
 
 import { getStockHistoryTopics } from '../logic/stocks/stocks.js';
-import { getTopicRankCountThisWeek } from '../logic/topic/rules.js';
+import { getTopicRankCountThisWeek, isPseudoTopic } from '../logic/topic/rules.js';
 
 /**
  * 把星数映射为展示符号：<=0 显示 "-"，>=6 显示 "N★"，否则重复 ★。
@@ -55,7 +55,8 @@ export function getChangePctDisplay(item) {
  * @returns {boolean}
  */
 export function canGroupExpand(topic) {
-    return topic !== '其它' && topic !== '并购重组';
+    // [ARCH-V3 §6] 单一真相：伪题材黑名单统一走 rules.js#isPseudoTopic
+    return topic !== '其它' && !isPseudoTopic(topic);
 }
 
 /**

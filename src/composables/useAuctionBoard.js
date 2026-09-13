@@ -17,7 +17,7 @@ import { saveData, getTodayGroupList, getGroupData, patchAuctionField, saveModul
 import { getAuctionStockHistory, deriveAuctionTagState } from '../logic/tagTitles/rules.js';
 import { hydrateStockHistoryRow } from '../data/watchlist-and-metrics.js';
 import { getStockHistoryValue } from '../data/watchlist-and-metrics.js';
-import { getTopicGroups, getTopicRankCountThisWeek } from '../logic/topic/rules.js';
+import { getTopicGroups, getTopicRankCountThisWeek, isPseudoTopic } from '../logic/topic/rules.js';
 import { getDisplayNote, parseNoteToFields, extractTopics } from '../logic/note/helpers.js';
 import { getPreviousTradingDay, isTradingDay } from '../logic/date/trading-day-helpers.js';
 import { getHighRatioStocksForDate, getJingYestHighlightSetForDate, getParallelStocksForDate } from '../logic/auction/sort-rules.js';
@@ -529,7 +529,8 @@ export function useAuctionBoard() {
       if (dayAuctionList.length === 0) return;
       const groups = getTopicGroups(dayAuctionList);
       groups.forEach(group => {
-        if (group.topic === '其它' || group.topic === '并购重组') return;
+        // [ARCH-V3 §6] 单一真相：伪题材黑名单统一走 rules.js#isPseudoTopic
+        if (group.topic === '其它' || isPseudoTopic(group.topic)) return;
         if (!allTopicData[group.topic]) allTopicData[group.topic] = [];
         let strongCount = 0, upCount = 0, downCount = 0;
         const prevDate = getPreviousTradingDay(dateStr);
