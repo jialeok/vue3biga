@@ -423,24 +423,39 @@ export function getTodayAuction() {
 }
 
 export function getTodayGroupList(dataSource='auction') {
-    const list = getGroupData(dataSource)[useUiStore().currentDate] || [];
+    const currentDate = useUiStore().currentDate;
+    const list = getGroupData(dataSource)[currentDate] || [];
     if (dataSource === 'hot') {
         // 方案2：_hotAuctionData 只从 hot_stocks 表加载正式成员，无需过滤
         return list.filter(function(r) { return r && r.stock; });
     }
     // auction 分组：正式成员 = _auctionWatchlistIndex（§6：只含正式成员，已排除 obsAutoAdded 观察组）。
     // 观察组(obsAutoAdded)虽不计入正式索引/总数量，但仍作为「观察组」显示在竞价看板（保留次日观察组继承功能）。
-    const watchlistSet = _getAuctionWatchlistSet(useUiStore().currentDate);
-    const result = list.filter(function(r) {
-        return r && r.stock && (watchlistSet.has(r.stock.trim()) || r.obsAutoAdded === true);
-    });
+    //
+    // 【§10 闸门 / 2026-09-13「导入后看板整块空白」根因修复】
+    // 索引未就绪 = 「还没拉到」或「拉取失败」，**不等于**「当日没有正式成员」。
+    // 旧实现在此无条件按名单过滤：_getAuctionWatchlistSet 返回空 Set（见 watchlist-and-metrics.js:53）
+    // → has() 恒 false → 只剩 obsAutoAdded 行 → 通常为空数组 → 早盘竞价看板/题材分组页整块空白。
+    // 降级口径与同模块 _getAuctionFormalRowsForDate（watchlist-and-metrics.js:74）完全一致：
+    // 退化为「原始列表（仅剔除无名行）」，宁可显示影子行也不静默清空。
+    const watchlistSet = _getAuctionWatchlistSet(currentDate);
+    const indexReady = _isAuctionWatchlistIndexReady(currentDate);
+    if (!indexReady && list.length > 0) {
+        _dbgLog('[AUCTION-GUARD] getTodayGroupList(' + dataSource + ') date=' + currentDate +
+            ' 正式成员索引未就绪 → §10 退化返回原始列表 ' + list.length + ' 行（不按名单过滤）');
+    }
+    const result = indexReady
+        ? list.filter(function(r) {
+            return r && r.stock && (watchlistSet.has(r.stock.trim()) || r.obsAutoAdded === true);
+        })
+        : list.filter(function(r) { return r && r.stock; });
     // [DEBUG-VUE-FIX 2026-07-25] 暴露"后台有导入记录、前台不显示"这类问题的
     // 第一手证据：原始条数 vs 实际渲染条数 vs 被过滤掉的影子记录名单。
     // 只在条数发生变化（有过滤发生）时打印，避免刷屏。
     if (list.length > 0 && result.length !== list.length) {
         const filteredOut = list.filter(function(r) { return !r || !r.stock || !watchlistSet.has(r.stock.trim()); })
             .map(function(r) { return (r && r.stock ? r.stock.trim() : '(无名)') + '[shadow]'; });
-        _dbgLog('[AUCTION-DEBUG] getTodayGroupList(' + dataSource + ') currentDate=' + useUiStore().currentDate +
+        _dbgLog('[AUCTION-DEBUG] getTodayGroupList(' + dataSource + ') currentDate=' + currentDate +
             ' 原始' + list.length + '条 → 正式列表' + result.length + '条，被过滤' + filteredOut.length + '条：' + filteredOut.join(', '));
     }
     // [FIX 2026-09-08] Vue3 化时遗漏了原版（window.getTodayGroupList）末尾的这段清理：

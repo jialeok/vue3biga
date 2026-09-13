@@ -14,6 +14,8 @@ _graphtest/
 dist/
 _dist_bak_old/
 dist_old_*/
+# 本机构建产物（safe-delete 垫片会拦截清空 dist，故用 _prod 中转后再 cp 到 dist）
+_prod/
 
 # Temp files
 _window_matches.txt

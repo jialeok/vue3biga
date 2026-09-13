@@ -362,11 +362,29 @@ import { setAuctionDateData } from './auction-data.js';
         // 拆表后：同时读取 auction_watchlist 与 market_metrics(scope='auction')，合并后整段替换 _auctionMemCache[date]。
         // 方案2：行对象不再携带 in_watchlist 字段；正式/影子身份由 _auctionWatchlistIndex[date] Set 独立维护。
         export async function pullAuctionMarketDataForDate(date, opts) {
-            if (!state._auctionTableAvailable && !state._marketMetricsTableAvailable) return;
+            if (!state._auctionTableAvailable && !state._marketMetricsTableAvailable) {
+                // 【§10】两张表都标记为不可用（启动早期 / 上次读取失败）→ 本次一次真实读取都没做。
+                // 此时绝不能静默 return：调用方（auction-pull-window.js#ensureAuctionDateDataLoaded）
+                // 会把这一天记忆成「已加载」，该日期就永久锁死在空白状态、再也不会重试。索引未就绪时抛错。
+                if (!_isAuctionWatchlistIndexReady(date)) {
+                    throw new Error('pullAuctionMarketDataForDate date=' + date +
+                        ' 两张表当前标记为不可用，本次未做任何读取（§10 不伪装成已加载）');
+                }
+                return;
+            }
             const sb = getSupabase();
             const cloudByStock = {};
             // 方案2：本次拉取该日期的正式成员索引（auction_watchlist 表天然只有正式成员）
             const newWatchlistSet = new Set();
+            // 【§10 / 2026-09-13「导入后看板整块空白」根因修复】两个查询各自的成功标记。
+            // 原实现把异常静默吞掉（只把 *_TableAvailable 置 false），随后无条件用 newWatchlistSet
+            // 覆盖正式成员索引。只要 auction_watchlist 这一条查询瞬时失败（限流/网络抖动），
+            // newWatchlistSet 就是空集，却被当成「该日期的正式名单」写入索引 →
+            // 索引处于「已就绪但为空」→ getTodayGroupList 按空名单过滤掉全部行 →
+            // 早盘竞价看板 / 题材分组页整块空白，而且因为索引已就绪不会自愈（只有硬刷新才行）。
+            // 现在区分「读取失败」与「确实为空」，任何情况下都不再用失败结果覆盖索引。
+            let watchlistReadOk = true;
+            let metricsReadOk = true;
 
             // 1) 读取 auction_watchlist（正式列表成员）
             try {
@@ -401,6 +419,8 @@ import { setAuctionDateData } from './auction-data.js';
                 state._auctionTableAvailable = true;
             } catch (e) {
                 state._auctionTableAvailable = false;
+                watchlistReadOk = false;
+                _dbgLog('[AUCTION-ERR] pullAuctionMarketDataForDate date=' + date + ' 读取 auction_watchlist 失败: ' + (e && e.message || e));
             }
 
             // 2) 读取 market_metrics(scope='auction')（影子记录/指标数据）
@@ -468,6 +488,8 @@ import { setAuctionDateData } from './auction-data.js';
                 state._marketMetricsTableAvailable = true;
             } catch (e) {
                 state._marketMetricsTableAvailable = false;
+                metricsReadOk = false;
+                _dbgLog('[AUCTION-ERR] pullAuctionMarketDataForDate date=' + date + ' 读取 market_metrics 失败: ' + (e && e.message || e));
             }
 
             // 3) 读取 market_metrics(scope='hot') 作为 yest_volume/volume/change_pct 的二级回退
@@ -499,7 +521,35 @@ import { setAuctionDateData } from './auction-data.js';
                 }
             } catch (e) { /* hot 回退失败不影响主流程 */ }
 
-            if (Object.keys(cloudByStock).length === 0) return;
+            // 【§10 读取失败 ≠ 空数据 / 2026-09-13 空白看板根因修复】
+            // 与 data/auction-data.js#pullAuctionFromTable（两查询全失败必须 throw）口径对齐。
+            if (!watchlistReadOk && !metricsReadOk) {
+                throw new Error('pullAuctionMarketDataForDate date=' + date +
+                    ' 读取失败：auction_watchlist 与 market_metrics 均失败（§10 绝不伪装成空数据）');
+            }
+
+            if (Object.keys(cloudByStock).length === 0) {
+                if (!watchlistReadOk) {
+                    // 正式名单读失败 → 绝不能写成「就绪但为空」。索引未就绪时抛错，让
+                    // ensureAuctionDateDataLoaded 不把它记忆成「已加载」，下次切到该日期还能重试。
+                    if (!_isAuctionWatchlistIndexReady(date)) {
+                        throw new Error('pullAuctionMarketDataForDate date=' + date +
+                            ' auction_watchlist 读取失败且正式成员索引未就绪（§10 不伪装成空名单）');
+                    }
+                    _dbgLog('[AUCTION-GUARD] pullAuctionMarketDataForDate date=' + date +
+                        ' 名单读取失败，保留既有正式成员索引 size=' + _getAuctionWatchlistSet(date).size);
+                    return;
+                }
+                // 两次读取都成功、但云端确实没有这一天的行 → 明确标记「已加载且为空」，
+                // 避免索引永久停在「未就绪」而让 getTodayGroupList 每次都走 §10 退化路径。
+                state._auctionWatchlistIndex[date] = newWatchlistSet;
+                return;
+            }
+
+            if (!watchlistReadOk) {
+                _dbgLog('[AUCTION-GUARD] ⚠️ pullAuctionMarketDataForDate date=' + date +
+                    ' auction_watchlist 读取失败 → 本次不写入正式成员索引（§10：读取失败 ≠ 空名单）');
+            }
 
             // 【Phase 4 病灶 D 根因修复】不再整段覆盖 _auctionMemCache[date]，改为按股票 union 合并：
             //  1) 以本地现有行打底（保留本地状态标记 / 本地独有股票 / 观察组继承股）；
@@ -540,7 +590,14 @@ import { setAuctionDateData } from './auction-data.js';
             }
             setAuctionDateData(date, normalizedRows, 'pullAuctionMarketDataForDate' + (opts && opts.realtime ? '(realtime)' : ''));
             // 方案2：替换该日期的正式成员索引（auction_watchlist 行 + 本地保留的观察组继承股票）
-            state._auctionWatchlistIndex[date] = newWatchlistSet;
+            // 【§10】仅当 auction_watchlist 这一条查询真的成功时才允许覆盖：失败时 newWatchlistSet
+            // 必然是空集，写入就等于「把当天名单清空」→ 看板整块空白（本次修复的核心）。
+            if (watchlistReadOk) {
+                state._auctionWatchlistIndex[date] = newWatchlistSet;
+            } else if (!_isAuctionWatchlistIndexReady(date)) {
+                // 名单读失败且此前从未就绪 → 保持「未就绪」，由 getTodayGroupList 的 §10 闸门放行原始列表
+                delete state._auctionWatchlistIndex[date];
+            }
 
             // 更新状态签名，避免 pull 后立即触发无意义的 push
             if (date === useUiStore().currentDate) {
