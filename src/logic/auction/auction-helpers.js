@@ -838,7 +838,11 @@ export async function importAuctionFromPaste(rawText) {
         _setAuctionWatchlistForDate(targetDate, Array.from(_idx));
     })();
     saveModule('auction');
+    // [PERF-FIX 2026-09-13] 失效后必须立即重建：原实现只 invalidate 不 build，
+    // 留下 _topicCacheBuilt=false 的中间态，之后模板逐行调用的 getStockHistoryTopics
+    // 会退回全量扫描路径（详见 stocks.js#getStockHistoryTopics）。此处重建一次即可消除。
     invalidateTopicCache();
+    buildTopicCache();
     // 同步到 auction_watchlist + market_metrics（阶段二 C：改为字段级 patch）
     // 粘贴导入是全量数据写入，覆盖所有业务字段；正式成员身份由 _auctionWatchlistIndex
     // 管理，syncAuctionListForDate 负责同步正式列表到云端 auction_watchlist
@@ -979,7 +983,11 @@ export function saveAuctionForm(rows) {
 
     markAuctionDirty(targetDate);
     scheduleCloudPush();
+    // [PERF-FIX 2026-09-13] 失效后必须立即重建：原实现只 invalidate 不 build，
+    // 留下 _topicCacheBuilt=false 的中间态，之后模板逐行调用的 getStockHistoryTopics
+    // 会退回全量扫描路径（详见 stocks.js#getStockHistoryTopics）。此处重建一次即可消除。
     invalidateTopicCache();
+    buildTopicCache();
     try { recalcDuibanFromAuction(); } catch (e) { _dbgLog('[AUCTION-ERR] saveAuctionForm recalcDuiban ' + (e && e.message || e)); }
 
     return { ok: true, date: targetDate, count: auctionList.length };
@@ -1138,7 +1146,11 @@ export async function importAuctionHistoryFill(rawText, targetDate, colType) {
 
     setAuctionDateData(targetDate, targetList, 'importAuctionHistoryFill');
     saveModule('auction');
+    // [PERF-FIX 2026-09-13] 失效后必须立即重建：原实现只 invalidate 不 build，
+    // 留下 _topicCacheBuilt=false 的中间态，之后模板逐行调用的 getStockHistoryTopics
+    // 会退回全量扫描路径（详见 stocks.js#getStockHistoryTopics）。此处重建一次即可消除。
     invalidateTopicCache();
+    buildTopicCache();
     // 阶段二 C：改用字段级 patch 上报，只携带 volume/yest_volume，不再整段推送。
     if (historyPatches.length > 0) {
         patchAuctionFieldBatch(targetDate, historyPatches).catch(function(e) { _dbgLog('[AUCTION-ERR] importAuctionHistoryFill patchAuctionFieldBatch ' + (e && e.message || e)); });

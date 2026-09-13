@@ -80,6 +80,13 @@ import { state } from '../logic/app-state.js';
             }
         }
 
+        // [PERF-FIX 2026-09-13] 批量导入防抖合并（§22：Realtime 短时多次变化必须批量合并后一次更新）。
+        // 原实现每条 postgres_changes 都立即「全量拉取整表 → invalidate → 全量重建 → emit 全局刷新」。
+        // 后台粘贴导入 N 只股票 = N 条变更 = N 次全量往返，主线程被反复占满（导入后翻页卡死元凶之一）。
+        // 改为 400ms 窗口内合并成一次，结果与逐条处理一致（终态相同）。
+        const STOCK_TOPICS_RELOAD_DEBOUNCE_MS = 400;
+        let _stockTopicsReloadTimer = null;
+
         // 启动 stock_topics 表的 Realtime 订阅
         export function startStockTopicsRealtime() {
             stopStockTopicsRealtime();
@@ -90,12 +97,16 @@ import { state } from '../logic/app-state.js';
                     .on('postgres_changes', {
                         event: '*', schema: 'public', table: 'stock_topics'
                     }, function(payload) {
-                        // 题材库变更，重新拉取云端题材并刷新第二页
-                        loadCloudTopics().then(function() {
-                            invalidateTopicCache();
-                            buildTopicCache();
-                            _emit('data:realtime-update', { boards: 'auction' });
-                        }).catch(function(e) { _dbgLog('[AUCTION-ERR] Stock topics Realtime 重建缓存 ' + (e && e.message || e)); });
+                        // 题材库变更，重新拉取云端题材并刷新第二页（同一批次合并为一次）
+                        if (_stockTopicsReloadTimer) clearTimeout(_stockTopicsReloadTimer);
+                        _stockTopicsReloadTimer = setTimeout(function() {
+                            _stockTopicsReloadTimer = null;
+                            loadCloudTopics().then(function() {
+                                invalidateTopicCache();
+                                buildTopicCache();
+                                _emit('data:realtime-update', { boards: 'auction' });
+                            }).catch(function(e) { _dbgLog('[AUCTION-ERR] Stock topics Realtime 重建缓存 ' + (e && e.message || e)); });
+                        }, STOCK_TOPICS_RELOAD_DEBOUNCE_MS);
                     })
                     .subscribe();
                 console.log('Stock topics Realtime 订阅已启动');
@@ -103,6 +114,10 @@ import { state } from '../logic/app-state.js';
         }
 
         export function stopStockTopicsRealtime() {
+            if (_stockTopicsReloadTimer) {
+                clearTimeout(_stockTopicsReloadTimer);
+                _stockTopicsReloadTimer = null;
+            }
             if (state._stockTopicsChannel) {
                 try { getSupabase().removeChannel(state._stockTopicsChannel); } catch(e) {}
                 state._stockTopicsChannel = null;
@@ -156,6 +171,9 @@ import { state } from '../logic/app-state.js';
                         });
                     }
                     if (item.note) {
+                        // [PERF-FIX 2026-09-13] 快路径：纯涨幅 note（如 "+3.2%"）无括号，
+                        // 直接跳过，避免对全部 ~4.17 万个单元格逐个跑正则（原实现主要开销）。
+                        if (item.note.indexOf('(') < 0) return;
                         const bracketMatches = item.note.match(/\([^)]+\)/g) || [];
                         bracketMatches.forEach(match => {
                             const topics = match.replace(/[()（）]/g, '').split(/[+，,，、;；]/).map(t => t.trim()).filter(t => t);

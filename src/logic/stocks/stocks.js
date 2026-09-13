@@ -32,6 +32,60 @@ import { getGroupData, _getAuctionStore, saveModule, scheduleCloudPush, saveData
 import { patchAuctionFieldBatch, getAuctionData, mergeAuctionDateRows, markAuctionDirty } from '../auction/auction.js';
 import { patchHotFieldBatch } from '../hotspot/hotspot.js';
 
+// [PERF-FIX 2026-09-13] 慢路径一次性索引（股票名 → 题材集合）。
+// 背景：本函数被模板**逐行**调用（composables/auction-board-helpers.js#getTopicsDisplay →
+// 第二页题材分组每行）。原实现在 _topicCache 未构建时，对每只股票各自全量扫描最近 66 天
+// （5/6 实测：66 天 × ~632 行 ≈ 4.17 万行/次），N 行即 N × 4.17 万次 →
+// 5/6 实测 71 行 ≈ 296 万次比较 + 正则，主线程被同步占满，翻页/题材 toggle 全部无响应。
+// 而 importAuctionFromPaste 末尾只 invalidateTopicCache() 不重建，恰好留下 _topicCacheBuilt=false
+// 的危险中间态 → 导入后首次进第二页必踩。
+// 修复：把 O(N × M) 降为 O(M + N) —— 慢路径改为一次性构建 (股票 → 题材) 索引后查表。
+// 语义与结果 100% 不变：同为最近 66 天窗口、不排除当天、同样取该股当日**首行**、同样括号解析与分隔符。
+const TOPIC_CACHE_DAYS = 66;
+let _slowTopicIndex = null;
+let _slowTopicIndexFp = '';
+
+function _buildSlowTopicIndex(auctionData) {
+    const allDates = Object.keys(auctionData).sort();
+    const recentDates = allDates.length > TOPIC_CACHE_DAYS
+        ? allDates.slice(-TOPIC_CACHE_DAYS)
+        : allDates;
+    const index = Object.create(null);
+    for (let i = 0; i < recentDates.length; i++) {
+        const dayList = auctionData[recentDates[i]] || [];
+        const seenInDay = new Set();     // 与原 find() 同语义：同一天同一只票只取首行
+        for (let k = 0; k < dayList.length; k++) {
+            const item = dayList[k];
+            if (!item || !item.stock) continue;
+            const name = item.stock.trim();
+            if (seenInDay.has(name)) continue;
+            if (!item.note) continue;
+            // 快路径：纯涨幅 note（如 "+3.2%"）无括号，直接跳过，避免对每个单元格跑正则
+            if (item.note.indexOf('(') < 0) continue;
+            const bracketMatches = item.note.match(/\([^)]+\)/g) || [];
+            if (bracketMatches.length === 0) continue;
+            seenInDay.add(name);
+            let set = index[name];
+            if (!set) { set = index[name] = new Set(); }
+            for (let m = 0; m < bracketMatches.length; m++) {
+                const topics = bracketMatches[m].replace(/[()]/g, '').split(/[,，、;；]/).map(t => t.trim()).filter(Boolean);
+                for (let t = 0; t < topics.length; t++) set.add(topics[t]);
+            }
+        }
+    }
+    return index;
+}
+
+// 指纹：数据形态（日期数/最后日期/总行数）+ 题材缓存版本号。
+// 版本号由 invalidateTopicCache() 自增，保证缓存失效后慢路径索引也一并重建，不会返回陈旧题材。
+function _slowTopicIndexFingerprint(auctionData) {
+    const ds = Object.keys(auctionData);
+    let rows = 0;
+    for (let i = 0; i < ds.length; i++) rows += ((auctionData[ds[i]] || []).length);
+    ds.sort();
+    return String(state._topicCacheVersion || 0) + '|' + ds.length + '|' + (ds[ds.length - 1] || '') + '|' + rows;
+}
+
 // §16 域拆分：stocks 域（原 app-core.js 迁出）
 export function getStockHistoryTopics(stockName) {
     if (!stockName) return '';
@@ -40,28 +94,16 @@ export function getStockHistoryTopics(stockName) {
         if (!topics || topics.size === 0) return '';
         return '(' + Array.from(topics).join('，') + ')';
     }
-    // 无缓存时只扫最近3个月
-    const TOPIC_CACHE_DAYS = 66;
+    // 无缓存：一次性构建索引后查表（不再逐股票全量扫描，见上方 [PERF-FIX 2026-09-13]）
     const auctionData = getAuctionData();
-    const allTopics = new Set();
-    const allDates = Object.keys(auctionData).sort();
-    const recentDates = allDates.length > TOPIC_CACHE_DAYS
-        ? allDates.slice(-TOPIC_CACHE_DAYS)
-        : allDates;
-    recentDates.forEach(date => {
-        // 不排除当天：与 buildTopicCache 保持一致
-        const dayList = auctionData[date] || [];
-        const stockItem = dayList.find(item => item.stock && item.stock.trim() === stockName.trim());
-        if (stockItem && stockItem.note) {
-            const bracketMatches = stockItem.note.match(/\([^)]+\)/g) || [];
-            bracketMatches.forEach(match => {
-                const topics = match.replace(/[()]/g, '').split(/[,，、;；]/).map(t => t.trim()).filter(t => t);
-                topics.forEach(t => allTopics.add(t));
-            });
-        }
-    });
-    if (allTopics.size === 0) return '';
-    return '(' + Array.from(allTopics).join('，') + ')';
+    const fp = _slowTopicIndexFingerprint(auctionData);
+    if (!_slowTopicIndex || _slowTopicIndexFp !== fp) {
+        _slowTopicIndex = _buildSlowTopicIndex(auctionData);
+        _slowTopicIndexFp = fp;
+    }
+    const hist = _slowTopicIndex[stockName.trim()];
+    if (!hist || hist.size === 0) return '';
+    return '(' + Array.from(hist).join('，') + ')';
 }
 
 export async function searchTickerCodeByName(name) {
