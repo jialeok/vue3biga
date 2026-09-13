@@ -269,8 +269,11 @@ export function _uiDateSafe() { try { return useUiStore().currentDate; } catch (
             } else {
                 setCurrentDate(_bt);
             }
-            // 触发原有的 DOMContentLoaded 逻辑（已绑定在页面底部）
-            if (typeof _appInit === "function") _appInit();
+            // [FIX 2026-09-14 §16] 此处原有 `if (typeof _appInit === "function") _appInit();`
+            // —— _appInit 是旧 index.html 内联脚本（src/ui/app-init.js）的 window 全局初始化函数，
+            // 随纯 Vue3 化已整体删除（全仓库仅剩这条 typeof 守卫 + 注释）。守卫求值恒 false，
+            // 属"半旧半新"的隐藏残留：留着会掩盖真实依赖关系，也让 no-undef 无法升级为 error。
+            // 这里直接删除死守卫；启动逻辑已由 initAppCore() + setCurrentDate() + initAuctionTags() 覆盖。
             // §8 合规：启动拉取云端竞价标签（Supabase 持久化真相，跨设备不丢）
             initAuctionTags();
         }

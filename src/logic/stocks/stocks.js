@@ -189,11 +189,13 @@ export async function autoCompleteMissingStockCodes(dataSource) {
     const msg = '代码补全：' + completed + ' 只成功，' + failed + ' 只失败';
     showToast(msg);
     try {
-        if (ds === 'hot') {
-            if (typeof renderHotStocks === 'function') renderHotStocks();
-        } else {
-            if (typeof renderAuction === 'function') renderAuction();
-        }
+        // [FIX 2026-09-14 §16] 原为：
+        //   if (ds === 'hot') { if (typeof renderHotStocks === 'function') renderHotStocks(); }
+        //   else { if (typeof renderAuction === 'function') renderAuction(); }
+        // renderHotStocks 是旧 window 全局渲染函数，已于 2026-08-15 的 hot 死代码清理中删除
+        // （ui-bridge.js 亦无此导出），该分支求值恒 false = 一直是空操作。
+        // 这里删除死守卫（不再保留"半旧半新"的隐藏状态），仅保留真实存在的窗口桥接渲染。
+        if (ds !== 'hot') renderAuction();
     } catch (e) {
         _dbgLog('[AUCTION-ERR] autoCompleteMissingStockCodes render ' + (e && e.message || e));
     }
@@ -279,15 +281,10 @@ export async function importStockCodeMap(rawText) {
     return `✅ 已导入 ${count} 条映射，${addedToAuction} 只已加入今日竞价列表`;
 }
 
-export function extractCodeFromFuyaoItem(item) {
-    if (!item) return '';
-    if (item.ticker) return String(item.ticker).trim();
-    if (item.thscode) {
-        const code = String(item.thscode).trim().replace(/\..*$/, '');
-        if (/^\d{6}$/.test(code)) return code;
-    }
-    return '';
-}
+// [FIX 2026-09-14] extractCodeFromFuyaoItem 已下沉到零依赖叶子模块 code-helpers.js
+// （原因：auction-ths.js 需要它，而从 auction-ths.js 反向 import 本文件会形成环形依赖）。
+// 这里保留同名再导出（barrel），外部 import 路径与身份零变化。
+export { extractCodeFromFuyaoItem } from './code-helpers.js';
 
 export async function replaceConceptFromPaste(rawText) {
     const targetDate = _getAuctionStore() ? _getAuctionStore().currentDate : useUiStore().currentDate;

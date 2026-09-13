@@ -156,7 +156,13 @@ export function useAppBootstrap(loginRef) {
     // 只挂一次：onLoginSuccess 可能因重新登录被再次调用（EventBus 绑定），重复 watch 会重复请求。
     if (!_dateLoaderWatchBound) {
       _dateLoaderWatchBound = true;
-      watch(() => uiStore.currentDate, (v) => {
+      // [FIX 2026-09-14] 原为裸 `uiStore.currentDate` —— 本文件从未声明/导入 uiStore（同名变量只在
+      // 各 .vue 里由 inject('auctionBoard') 解构而来），模块化后是**自由变量**，watch 首次求值即抛
+      // `ReferenceError: uiStore is not defined`，被 Vue errorHandler 记为 [APP ERROR]。
+      // 后果不只是报错：该 watch 是「首屏 30 天窗口之外的历史日按天补拉」的**唯一入口**
+      // （ensureAuctionDateAndRefresh 全项目仅此处调用），异常后 watch 失效且 _dateLoaderWatchBound
+      // 已置 true、永不再绑定 → 历史日补拉长期不生效。§6 单源：日期一律走 useUiStore()。
+      watch(() => useUiStore().currentDate, (v) => {
         if (!v) return;
         const cached = state._auctionMemCache && state._auctionMemCache[v];
         if (Array.isArray(cached)) return; // 内存已有（后台补齐已覆盖 / 首屏窗口内）

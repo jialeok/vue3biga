@@ -613,6 +613,11 @@ import { setAuctionDateData } from './auction-data.js';
         // ===== 历史趋势只读选择器已物理拆分至 watchlist-helpers.js =====
         // 原导出通过 barrel re-export 保留，外部 import 路径不变（零破坏，§16）。
         export { _histRowMapFor, _readHistoryValueFrom, getStockHistoryValue } from './watchlist-helpers.js';
+        // [FIX 2026-09-14] 上面是 `export ... from`（barrel 再导出）——它**不会**在本模块内创建本地绑定，
+        // 而 hydrateStockHistoryRow() 里又在直接调用 _histRowMapFor(...)，于是该函数一旦被调用就是
+        // `ReferenceError: _histRowMapFor is not defined`（趋势图历史补水的入口，属活跃路径）。
+        // 另需 import 一份本地绑定（与 re-export 互不影响，watchlist-helpers.js 是零回边叶子，无环）。
+        import { _histRowMapFor } from './watchlist-helpers.js';
 
         // 趋势图历史按需补水：某日行情缓存未命中（典型为「非当前交易日」的历史日，
         // pullAuctionMarketDataForDate 只拉当前日期）时，直接从 market_metrics 云端拉该 (date,stock)

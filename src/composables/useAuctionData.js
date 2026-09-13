@@ -17,6 +17,10 @@ import {
 } from '../logic/auction/sort-rules.js';
 import { _buildTagStateCache } from '../logic/tagTitles/rules.js';
 import { buildTopicCache } from '../data/stock-topics.js';
+// [FIX 2026-09-14] ensureTopicCache() 内直接调用 getDisplayNote / extractTopics，但本文件从未 import
+// 它们 → 一旦被调用即 `ReferenceError: getDisplayNote is not defined`。二者是纯函数（note 解析），
+// 来源与 useAuctionBoard.js / topic-sort.js / view-helpers.js 一致：logic/note/helpers.js。
+import { getDisplayNote, extractTopics } from '../logic/note/helpers.js';
 import { _dbgLog } from '../data/debug-log.js';
 import { getPreviousTradingDay } from '../logic/date/trading-day-helpers.js';
 

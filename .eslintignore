@@ -2,8 +2,18 @@
 _graphtest
 newbigamain没彻底拆分最新原始文件
 
-# 构建产物
+# 构建产物 / 本机中转目录（.gitignore 已忽略，lint 同样不应扫描：
+# 这些是打包后的单文件 bundle，会把 errors/warnings 计数彻底冲垮）
 dist
+dist_old_*
+_dist_bak_old
+_prod
+
+# 工作台内部状态 / 一次性脚本 / 上传中转
+.workbuddy
+.codeartsdoer
+.uploads
+.tmpdiag
 
 # 依赖（eslint 默认已忽略，显式声明以防万一）
 node_modules

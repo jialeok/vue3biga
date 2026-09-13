@@ -3,6 +3,10 @@ if (!state._auctionMemCache) state._auctionMemCache = {}; // §6.1：域缓存�
 import { _bindApi } from '../app-core-api.js';
 import { showToast } from '../../composables/useToast.js';
 import { ensureAuctionCodeMapping } from './auction-fetch-helpers.js';
+// [FIX 2026-09-14] 原代码在 fetchLadderConstituentsMain 里直接调用 extractCodeFromFuyaoItem()，
+// 但本文件从未 import 它 → 该分支必抛 `ReferenceError: extractCodeFromFuyaoItem is not defined`。
+// 从零依赖叶子模块引入（不走 stocks.js，避免环形依赖，详见 code-helpers.js 顶部说明）。
+import { extractCodeFromFuyaoItem } from '../stocks/code-helpers.js';
 import { fuyaoApiGet, tickerToThscode, LADDER_THSCODE } from '../../data/api/fuyao-proxy.js';
 import { numcatApiPost } from '../../data/api/numcat-proxy.js';
 import { normalizeAuctionNotes, pullAuctionFromTable, setAuctionDateData, _setInvalidateTopicCacheFn } from '../../data/auction-data.js';

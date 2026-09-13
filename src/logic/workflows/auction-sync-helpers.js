@@ -30,28 +30,46 @@ import { useUiStore } from '../../stores/uiStore.js';
         export const _cloudBlobExtras = {};
 
         // syncCloseChunk：把竞价笔记里的收盘涨幅/题材同步回 stocksData，最后统一保存并重算多板统计。
-        // syncIdx/itemsToSync/targetDate 为调用方（auction.js）注入的外部自由变量，本函数仅读取。
-        export function syncCloseChunk() {
-                const end = Math.min(syncIdx + 30, itemsToSync.length);
-                for (; syncIdx < end; syncIdx++) {
-                    const item = itemsToSync[syncIdx];
-                    const stocksData = getStocksData();
-                    if (stocksData[targetDate]) {
-                        const stock = stocksData[targetDate].find(s => s.name && s.name.trim() === item.stock.trim());
-                        if (stock) {
-                            const match = item.note.match(/^([+-]?\d+\.?\d*)%/);
-                            if (match) stock.close = match[1];
+        //
+        // [FIX 2026-09-14] 原实现把 syncIdx / itemsToSync / targetDate 当作「调用方注入的外部自由变量」
+        // 直接读取 —— ES Module 没有这种注入机制，这三个标识符在模块内**从未声明**，函数体第一行的
+        // `syncIdx + 30` 就抛 `ReferenceError: syncIdx is not defined`。
+        // 该缺陷自本函数被物理拆分出调用方作用域起即存在（git 追溯：1227506 时二者已分离），
+        // 后果 = 后台粘贴导入后「收盘涨幅回写 stocksData + 保存 + 重算多板」这条链路**从未执行过**
+        // （调用点 auction-helpers.js 是 `setTimeout(syncCloseChunk, 60)`，异常发生在定时器回调里，
+        // 不会冒泡到 UI，只在 Console 留下一条未捕获错误 → 长期静默失效）。
+        // §4/§6 修法：状态由调用方**显式传参**（itemsToSync = 本次要回写的行，targetDate = 目标日期），
+        // 分批状态收进本函数闭包，不再依赖任何外部作用域。
+        export function syncCloseChunk(itemsToSync, targetDate) {
+                const list = Array.isArray(itemsToSync) ? itemsToSync : [];
+                if (list.length === 0 || !targetDate) {
+                    _dbgLog('[AUCTION-GUARD] syncCloseChunk 跳过：itemsToSync=' + list.length + ' targetDate=' + targetDate);
+                    return;
+                }
+                let idx = 0;
+                function _step() {
+                    const end = Math.min(idx + 30, list.length);
+                    for (; idx < end; idx++) {
+                        const item = list[idx];
+                        if (!item || !item.stock) continue;
+                        const stocksData = getStocksData();
+                        if (stocksData[targetDate]) {
+                            const stock = stocksData[targetDate].find(s => s.name && s.name.trim() === item.stock.trim());
+                            if (stock) {
+                                const match = (item.note || '').match(/^([+-]?\d+\.?\d*)%/);
+                                if (match) stock.close = match[1];
+                            }
                         }
                     }
+                    if (idx < list.length) {
+                        setTimeout(_step, 0);
+                    } else {
+                        // 所有收盘涨幅同步完成，再同步题材，最后统一保存一次
+                        syncStockTopicsFromAuction();
+                        saveModule('stocks');
+                        // 涨跌幅可能已批量新增/覆盖，重新统计"最近多板"/早盘ETF的总数量和跌涨比
+                        recalcDuibanFromAuction(targetDate);
+                    }
                 }
-                if (syncIdx < itemsToSync.length) {
-                    setTimeout(syncCloseChunk, 0);
-                } else {
-                    // 所有收盘涨幅同步完成，再同步题材，最后统一保存一次
-                    syncStockTopicsFromAuction();
-                    saveModule('stocks');
-                    // 涨跌幅可能已批量新增/覆盖，重新统计"最近多板"/早盘ETF的总数量和跌涨比
-                    recalcDuibanFromAuction(targetDate);
-                }
+                _step();
             }
-            state._syncCloseChunk = syncCloseChunk;

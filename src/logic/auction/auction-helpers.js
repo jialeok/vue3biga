@@ -917,7 +917,12 @@ export async function importAuctionFromPaste(rawText) {
     if (noteSkippedCount > 0) statusMsg += ` 跳过非当日股票${noteSkippedCount}只(未新增)`;
 
     // 异步分批同步收盘涨幅（每帧30条），避免主线程卡死导致 localStorage 写入失败
-    setTimeout(syncCloseChunk, 60);
+    // [FIX 2026-09-14] syncCloseChunk 现要求显式传参：原实现把 syncIdx/itemsToSync/targetDate 当作
+    // 「调用方注入的外部自由变量」读取（ES Module 无此机制），拆分后必然 ReferenceError，
+    // 导致这条「收盘涨幅回写 stocksData → 同步题材 → 保存 → 重算多板」链路从未真正执行过。
+    // 这里把待同步行（auctionList 中带 note 的正式行）与目标日期按 §4 显式传入。
+    const itemsToSync = auctionList.filter(function(item) { return item && item.stock && item.note; });
+    setTimeout(function() { syncCloseChunk(itemsToSync, targetDate); }, 60);
 
     return statusMsg;
 }
