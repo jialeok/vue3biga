@@ -47,6 +47,9 @@ import { _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.
 // 补评选历史日时直接读云端权威区间涨幅（不碰 dragon-rank 的单日期状态，见 _computeAndPersist 注释）
 import { readRangePctForDate } from '../../data/stock-range-pct.js';
 import { getStockCode } from '../../data/stock-code-map.js';
+// [DRAGON-GROUP 2026-09-15] 补评选前把「前一交易日」的名单数据拉进内存（既有「按天补拉」入口，
+// 幂等 + 单飞 + 窗口内日期 no-op，§32 禁止重复请求）。历史数据必然可取 → 补算必须能成功。
+import { ensureAuctionDateDataLoaded } from './auction-pull-window.js';
 // [DRAGON-GROUP 2026-09-14] 评选判定下沉到【零依赖叶子】dragon-leader-pick.js（§I 解环 + §6 单一真相 + 可单测）。
 // 本文件只负责「池子组装 / 闸门 / 读写名册」，不再自己实现一遍「谁涨得最多」。
 import { pickTopicLeaders, buildTopicGroupsFromPool } from './dragon-leader-pick.js';
@@ -154,19 +157,8 @@ async function _load(date, force) {
   const cur = dragonGroupState.value;
   const stale = cur.date !== date;
 
-  // [DRAGON-GROUP 2026-09-14 · 龙头组消失] 先算好【展示日自己】的名册并落库。
-  //   · 它原本在函数末尾评选（供 D+1 展示），提前到这里**不改变语义**（幂等 + 单飞，见 _computeAndPersist）；
-  //   · 它的第二个用途：前一交易日名册**补不出来**时作为兜底 —— 保证「看板当天一定有龙头组」。
-  //     这正是用户实测诉求（9/14 必须有龙头组；清库后 9/11 名册为空 → 整块消失）。
-  let ownRows = [];
-  try {
-    ownRows = await _computeAndPersist(date, { isDisplayDate: true });
-  } catch (e) {
-    _dbgLog('[DRAGON-GROUP] ' + date + ' 评选/落库失败（不影响本次展示）: ' + (e && e.message || e));
-  }
-
   // 展示名册为空、且该评选日并非「已确认无龙头」→ 需要重读补齐。
-  //   为什么不能只看 stale（用户实测「9/14 龙头组整块不见」的成因之一）：
+  //   为什么不能只看 stale（用户实测「龙头组整块不见」的成因之一）：
   //     首屏加载中第一次读到的名册可能是空（数据尚未就绪），而 stale 之后恒为 false
   //     → 不再重读 → 即使数据到货，龙头组**整个会话都空**。needFill 让它在数据到货后自动补齐。
   //   ⚠️ 此处刻意**不加**「前一交易日名单已就绪」闸门：名册是云端既有事实，就绪与否都必须能读到并展示。
@@ -187,6 +179,18 @@ async function _load(date, force) {
     //   ③ 空名册有两种成因——「该日没有成员>=3 的题材」或「那天没人开页面」——两种都值得补算一次，
     //      算完若确实没有龙头，就登记为终局结论，不再反复重算。
     if (prevDate && rows.length === 0) {
+      // [DRAGON-GROUP 2026-09-15] 补评选前**先确保该历史日的名单数据已加载**（否则补算必白跑）。
+      //   评选的候选池与题材分组都建立在「该日正式名单」（getTodayGroupList）之上，而它在
+      //   `_isAuctionWatchlistIndexReady(prevDate)` 为 false 时会退化为原始列表（§10）→ 题材成员数虚低
+      //   → 一只龙头也选不出来（且刻意不登记终局，于是本次纯属白跑，只能等下轮重试）。
+      //   该日数据是【历史数据、必然可取】→ 走既有「按天补拉」入口把它拉进内存即可：
+      //   这次拉取会同时写回该日索引 ⇒ 紧随其后的评选必然拿到正确名单。
+      //   §32：该入口幂等 + 单飞；窗口内日期是 no-op（不会产生任何额外请求）。
+      try {
+        await ensureAuctionDateDataLoaded(prevDate);
+      } catch (e) {
+        _dbgLog('[DRAGON-GROUP] 补拉 ' + prevDate + ' 名单数据失败（本次不补评选）: ' + (e && e.message || e));
+      }
       try {
         const picked = await _computeAndPersist(prevDate, { isDisplayDate: false });
         if (picked && picked.length > 0) rows = picked;
@@ -195,27 +199,12 @@ async function _load(date, force) {
       }
     }
 
-    // [FALLBACK 2026-09-14 · 龙头组消失] 前一交易日名册**确实不可得**时（清库后该日从未有人开过页面 /
-    //   该日区间涨幅未落库 → 补评选也补不出来）→ 退化为「展示日自己的龙头」，宁有勿无。
-    //   不变量：看板当天永远有龙头组；一旦前一交易日的名册被补出来，下一次 _load 会自动切回设计口径
-    //   （「每天的龙头放到次日」）—— 因为那时的 `rows` 直接来自 prevDate，不再走这条兜底。
-    if (rows.length === 0) {
-      if (ownRows && ownRows.length > 0) {
-        rows = ownRows;                                   // 本轮刚刚评选出来的当日名册
-      } else {
-        try {
-          const own = await readDragonLeadersForDate(date); // 或上一轮已落库的当日名册
-          if (own && own.length > 0) rows = own;
-        } catch (e) {
-          _dbgLog('[DRAGON-GROUP] ' + date + ' 兜底读当日名册失败: ' + (e && e.message || e));
-        }
-      }
-      if (rows.length > 0) {
-        _dbgLog('[DRAGON-GROUP] ' + date + ' 前一交易日(' + prevDate + ')名册不可得 → 兜底显示当日龙头 ' +
-          rows.length + ' 只：' + rows.map(function(r) { return r.topic + '→' + r.stock; }).join('、'));
-      }
-    }
-
+    // ⛔ 刻意**不设**「补不出来就显示当日龙头」的兜底（2026-09-15 按用户要求删除）：
+    //   · 口径上它是错的 —— 龙头组的定义就是「上一交易日的龙头」，混进当日龙头 = 破坏唯一口径；
+    //   · 表现上它很乱 —— 用户实测「一个区块里混着两天的龙头，内容和顺序都不对」；
+    //   · 本文件顶部红线本就写着「不写任何回退/兼容分支」（§6），上一版加它是自违约定。
+    //   名册补不出来只有两种可能：① 该日数据确实取不到（会 loud 留痕，见上）；② 该日确实没有
+    //   成员>=3 的题材。两种情况下「空」都是正确结论，必须如实呈现空，而不是拿别的数据顶上。
     const map = new Map();
     rows.forEach(function(r) {
       if (!r || !r.stock) return;
@@ -226,9 +215,13 @@ async function _load(date, force) {
     _publish(date, map);
   }
 
-  // ---- ② 评选 + 落库 D 自己的名册 ----
-  // 已提前到函数开头（ownRows），此处不再重复调用：同一展示日的评选是幂等的（_resolvedDates / _persistInflight），
-  // 重复调用只会返回空数组，白跑一趟。保留注释仅作语义标记（本函数结束时 dragonGroupState 即 D 的展示名册）。
+  // ---- ② 评选 + 落库 D 自己的名册（best-effort：失败只留痕，绝不阻断看板渲染）----
+  // isDisplayDate: true → 复用 dragon-rank 已按当前展示日发布的区间涨幅（同一天，不会互相覆盖）。
+  try {
+    await _computeAndPersist(date, { isDisplayDate: true });
+  } catch (e) {
+    _dbgLog('[DRAGON-GROUP] 评选/落库失败（不影响本次展示）: ' + (e && e.message || e));
+  }
   return dragonGroupState.value.date === date ? dragonGroupState.value.map : null;
 }
 

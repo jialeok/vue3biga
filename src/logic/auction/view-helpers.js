@@ -343,11 +343,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // 展示日 D 的龙头组 = 名册中 date = prevTradingDay(D) 的行（=「每天的龙头放到次日」）。
   // null = 尚未加载/加载失败 → 本次不产生龙头组（绝不用空列表伪装成「今天没有龙头」，§10）；
   // 名册的【评选】唯一实现在 logic/auction/dragon-group.js，本文件只读不选（§6 单一真相）。
+  // 判定「某行是否属龙头组」只认 `_dragonMap.has(name)`（下文的区块抽取与排序都以名册为准，
+  // 不再另写一份判定函数 —— 旧版那个 _isDragonPrev 包装已随排序重写删除，§42 不留死代码）。
   const _dragonMap = getDragonLeadersForDisplay(currentDate);
-  const _isDragonPrev = function(name) {
-    if (!name || !_dragonMap) return false;
-    return _dragonMap.has(name);
-  };
   // 凡应属观察组但不在当日列表的股票，构造渲染用空壳行（与 ensureObservationStocks 形状一致，便于 _enrichAuctionItem 统一处理）。
   const _existingNames = new Set(auctionList.map(function(s) { return s && s.stock ? s.stock.trim() : ''; }));
   const _injectNames = new Set();
@@ -956,30 +954,39 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     //   ③ 龙头「昨日在正式列表、今日不在」时，其空壳行已在上方注入 → 一并进龙头组（需求 4）。
     // 仅在【题材 toggle 未开】时抽出：题材模式下列表按题材重排，龙头改用「组内标记」辨认（需求 4），
     // 否则会出现「龙头同时在龙头区块和题材组里」的重复（避免混乱）。
-    if (!sortState.byTopic && _dragonMap) {
-      dragonIndices = renderOrder.filter(function(i) {
-        const it = renderList[i];
-        return it && it.stock && _isDragonPrev(it.stock.trim());
+    if (!sortState.byTopic && _dragonMap && _dragonMap.size > 0) {
+      // 组内排序：按【十日区间涨幅】由高到低（需求：龙头组按十日涨幅降序）。
+      // [DRAGON-GROUP 2026-09-15] 排序真相改为【名册本身】——先按名册排序，再映射到渲染行索引：
+      //   旧写法是 `renderOrder.filter(命中) → 再 sort`，初始顺序取自 renderOrder，名册缺 pct 时
+      //   会整体退化成「注入行在原列表里的位置」= 看着像乱序（用户实测「排序不对」）。
+      //   现改为：① 名册按 pct 降序（缺失者殿后）→ ② 用 renderList 的 name→index 映射取行。
+      //   这样「区块顺序 == 名册顺序」是结构保证，与 renderOrder / 注入位置无关。
+      //   同幅 → 按题材名升序 → 按股票名升序（三级键，完全确定，不依赖插入顺序）。
+      const _idxByName = new Map();
+      renderList.forEach(function(row, i) {
+        const nm = row && row.stock ? String(row.stock).trim() : '';
+        if (nm && !_idxByName.has(nm)) _idxByName.set(nm, i);
       });
-      // 组内排序：按【十日区间涨幅】由高到低（需求：龙头组按十日涨幅降序），同幅保持原相对序（稳定排序）。
-      //   取值优先用名册记录的口径（= 区块行显示的 dragonGroupPct，同源）；名册缺 pct 时回退到
-      //   当前展示日已加载的区间涨幅（getDragonRangePct），保证排序在任何情况下都有效（不会退化成乱序）。
-      const _liveRange = getDragonRangePct(currentDate);
-      const _rank = function(i) {
-        const it = renderList[i];
-        const name = it && it.stock ? it.stock.trim() : '';
-        const meta = _dragonMap.get(name);
-        let p = meta ? meta.pct : null;
-        if (p === null || p === undefined || isNaN(p)) {
-          const lr = _liveRange ? _liveRange.get(name) : null;
-          p = lr ? lr.pct : null;
-        }
-        return (p === null || p === undefined || isNaN(p)) ? -Infinity : p;
-      };
-      dragonIndices = dragonIndices
-        .map(function(i, pos) { return { i: i, pos: pos, p: _rank(i) }; })
-        .sort(function(a, b) { return (b.p - a.p) || (a.pos - b.pos); })
-        .map(function(x) { return x.i; });
+      dragonIndices = Array.from(_dragonMap.entries())
+        .map(function(e) {
+          const v = e[1] ? e[1].pct : null;
+          const pct = (v === null || v === undefined || isNaN(Number(v))) ? null : Number(v);
+          return {
+            name: e[0],
+            topic: (e[1] && e[1].topic) || '',
+            pct: pct,
+            idx: _idxByName.has(e[0]) ? _idxByName.get(e[0]) : -1
+          };
+        })
+        .filter(function(x) { return x.idx >= 0; })
+        .sort(function(a, b) {
+          const pa = (a.pct === null) ? -Infinity : a.pct;
+          const pb = (b.pct === null) ? -Infinity : b.pct;
+          if (pb !== pa) return pb - pa;
+          if (a.topic !== b.topic) return a.topic < b.topic ? -1 : 1;
+          return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+        })
+        .map(function(x) { return x.idx; });
     }
     const _dragonSet = new Set(dragonIndices);
     obsIndices = _obsIndicesRaw.filter(function(i) { return !_dragonSet.has(i); }); // 去重：龙头不进观察组

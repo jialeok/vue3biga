@@ -563,6 +563,28 @@
             white-space: nowrap;
         }
 
+        /* [DRAGON-GROUP 2026-09-15] 龙头行的「十日区间涨幅」数值（= 龙头组区块的排序键）。
+           紧贴「龙」标之后，9px，涨红 / 跌绿 / 平灰（与 .dragon-badge / 全站口径一致：
+           涨=红、跌=绿）。仅默认模式渲染；题材模式由龙一/龙二徽章承担该数值。 */
+        .auction-dragon-pct {
+            display: inline-block;
+            margin-left: 3px;
+            font-size: 9px;
+            font-weight: 700;
+            line-height: 12px;
+            vertical-align: 1px;
+            white-space: nowrap;
+        }
+        .auction-dragon-pct.dragon-pct-up {
+            color: #dc2626;
+        }
+        .auction-dragon-pct.dragon-pct-down {
+            color: #059669;
+        }
+        .auction-dragon-pct.dragon-pct-flat {
+            color: #94a3b8;
+        }
+
         /* [DRAGON-GROUP 2026-09-14] 龙头组区块标题（第一页最上方，观察组之上）。 */
         .auction-dragon-group-label {
             color: #6d28d9;

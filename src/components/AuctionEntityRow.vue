@@ -72,6 +72,17 @@
         class="auction-dragon-tag"
         :title="dragonTagTitle(item)"
       >龙</span>
+      <!-- [DRAGON-GROUP 2026-09-15] 十日区间涨幅数值（= 龙头组区块的排序键）。
+           为什么要显示出来：默认模式下标准行只有 竞价量/昨成交量/占比 三列，十日涨幅原本只在
+           悬停提示里 → 「按十日涨幅由高到低」这件事无从核对（用户实测「排序不对」）。
+           故把排序键直接摆在行上：涨红 / 跌绿 / 平灰（与全站 dragon-badge 同一套国内看板惯例）。
+           只在默认模式显示；题材模式下那里已有龙一/龙二徽章带同一数值，避免重复。 -->
+      <span
+        v-if="item.isDragonGroupMember && !sortState.byTopic && dragonPctText(item)"
+        class="auction-dragon-pct"
+        :class="dragonPctClass(item)"
+        :title="'十日区间涨幅 ' + dragonPctText(item) + (item.dragonGroupTopic ? '（' + item.dragonGroupTopic + '）' : '')"
+      >{{ dragonPctText(item) }}</span>
       <AuctionDragonBadge
         v-if="item.dragonRank > 0"
         :rank="item.dragonRank"
@@ -237,6 +248,21 @@ function dragonTagTitle(item) {
   }
   if (item.dragonGroupFormalStar) bits.push('* 该龙头同时位于今日正式列表');
   return bits.join('｜');
+}
+
+// [DRAGON-GROUP 2026-09-15] 十日区间涨幅的显示文本 / 颜色档（空白串 = 无值 → 模板不渲染）。
+// 「无值」绝不当 0 显示（否则会与「涨幅为 0」混淆，§40 不猜数据）。
+function dragonPctText(item) {
+  const v = item ? item.dragonGroupPct : null;
+  if (v === null || v === undefined || isNaN(Number(v))) return '';
+  const n = Number(v);
+  return (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+}
+function dragonPctClass(item) {
+  const v = item ? item.dragonGroupPct : null;
+  if (v === null || v === undefined || isNaN(Number(v))) return {};
+  const n = Number(v);
+  return { 'dragon-pct-up': n > 0, 'dragon-pct-down': n < 0, 'dragon-pct-flat': n === 0 };
 }
 
 // [CLOSE-LIMIT 2026-09-11] 股票名下划线标记的 class（优先级在 Logic 层之外只保留「谁盖住谁」这一件事）：
