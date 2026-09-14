@@ -1,5 +1,5 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-09-14 02:43:55
+// 生成时间: 2026-09-14 03:54:22
 // 注意: 此文件自动生成，请勿手动编辑
 
 // ────── _shared-source/date-utils.js ──────
@@ -597,28 +597,32 @@ async function readMarketMetricsForDate(env, date, scope) {
 }
 
 /**
- * [EXTRAS-PATCH 2026-09-11] 读取某日 market_metrics 竞价行的「竞价四要素」现状。
+ * [EXTRAS-PATCH 2026-09-11] 读取某日 market_metrics 竞价行的「竞价四要素 + 竞价涨幅」现状。
  * 供 runAuctionExtrasPatch 判断哪些行还缺字段 —— 只补缺失的，不重复写已有值（幂等）。
  * ⚠️ 读取失败必须抛错（§10：读取失败 ≠ 空数据）：否则会把「读不到」误判成「全都缺」，
  *    进而用一次 numcat 的结果把历史值整体覆盖一遍。
+ * [AUCPCT-BACKFILL 2026-09-14] select 从四要素扩到含 auc_pct_chg：追溯创建的历史日行
+ *    会永久缺这一项（前端不在白名单、次日只覆盖 change_pct），导致趋势图五日竞价涨幅曲线空白。
  */
 async function readMarketMetricsExtrasForDate(env, date) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?date=eq.' + encodeURIComponent(date) +
     '&scope=eq.auction' +
-    '&select=stock,code,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover&limit=2000';
+    '&select=stock,code,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover,auc_pct_chg&limit=2000';
   const resp = await fetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     throw new Error('读取 market_metrics 四要素失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
   }
   const data = await resp.json();
+  const s = v => (v === undefined || v === null ? '' : String(v));
   return (data || []).map(r => ({
     name: (r.stock || '').trim(),
     code: (r.code || '').trim(),
-    um_vol: r.um_vol === undefined || r.um_vol === null ? '' : String(r.um_vol),
-    open_bid_pct: r.open_bid_pct === undefined || r.open_bid_pct === null ? '' : String(r.open_bid_pct),
-    auc_vol_ratio: r.auc_vol_ratio === undefined || r.auc_vol_ratio === null ? '' : String(r.auc_vol_ratio),
-    auc_turnover: r.auc_turnover === undefined || r.auc_turnover === null ? '' : String(r.auc_turnover)
+    um_vol: s(r.um_vol),
+    open_bid_pct: s(r.open_bid_pct),
+    auc_vol_ratio: s(r.auc_vol_ratio),
+    auc_turnover: s(r.auc_turnover),
+    auc_pct_chg: s(r.auc_pct_chg)
   })).filter(r => r.name);
 }
 
@@ -1043,6 +1047,15 @@ function replaceTDayLeg(rangePct, oldLeg, newLeg) {
 // ⚠️ 单文件打包（workers/_bundle.mjs）会把所有模块拼进同一个作用域，
 //    顶层标识符必须全局唯一 —— 这里一律加 extras 前缀，避免与其它文件重名导致重复声明。
 const EXTRAS_FIELDS = ['um_vol', 'open_bid_pct', 'auc_vol_ratio', 'auc_turnover'];
+// [AUCPCT-BACKFILL 2026-09-14] 补漏字段 = 竞价四要素 + auc_pct_chg（竞价涨幅）。
+//   为什么必须把 auc_pct_chg 也算进「缺口」：worker 的【窗口内历史日】行是追溯创建的
+//   （新进正式成员当天，顺带回填前几日的影子行）。那一次响应里若 auc_pct_chg 为空，
+//   这行就是【永久空洞】——① 前端写不了它（不在 AUCTION_METRICS_FIELDS 白名单）；
+//   ② 次日窗口重刷只会用 numcat daily 覆盖 change_pct（收盘涨幅），永远不碰 auc_pct_chg；
+//   ③ 结果就是趋势图「五日竞价涨幅」曲线前几腿永久空白（2026-09-14 实测：
+//   中新赛克/博敏电子/崇达技术/三孚股份/铭普光磁/九鼎新材/凯盛新能 9/8~9/11 全空）。
+//   猫抓对【已结算】的历史日是会返回 auc_pct_chg 的（同一次请求里就有），所以补漏成本为零。
+const EXTRAS_PATCH_FIELDS = EXTRAS_FIELDS.concat(['auc_pct_chg']);
 /** 单次 upsert 的行数（Supabase 单次请求不宜过大） */
 const EXTRAS_CHUNK = 400;
 
@@ -1128,13 +1141,13 @@ async function runAuctionExtrasPatch(env, opts) {
     const m = new Map();
     rows.forEach(r => {
       if (!m.has(r.name)) m.set(r.name, r);
-      if (EXTRAS_FIELDS.some(f => extrasIsEmpty(r[f]))) missingTotal++;
+      if (EXTRAS_PATCH_FIELDS.some(f => extrasIsEmpty(r[f]))) missingTotal++;
     });
     existing[d] = m;
   }
-  logs.push('[extras] 窗口 ' + dates.length + ' 天，库内缺四要素的行 ' + missingTotal + ' 行');
+  logs.push('[extras] 窗口 ' + dates.length + ' 天，库内缺「四要素/竞价涨幅」的行 ' + missingTotal + ' 行');
   if (missingTotal === 0) {
-    logs.push('[extras] ✅ 窗口内四要素已完整，无需补写');
+    logs.push('[extras] ✅ 窗口内四要素与竞价涨幅已完整，无需补写');
     return { ok: true, today, patched: 0, dates: dates, logs };
   }
 
@@ -1162,14 +1175,15 @@ async function runAuctionExtrasPatch(env, opts) {
     um_vol: fields.indexOf('um_vol'),
     open_bid_pct: fields.indexOf('open_bid_pct'),
     auc_vol_ratio: fields.indexOf('auc_vol_ratio'),
-    auc_turnover: fields.indexOf('auc_turnover')
+    auc_turnover: fields.indexOf('auc_turnover'),
+    auc_pct_chg: fields.indexOf('auc_pct_chg')
   };
   if (symI < 0 || dateI < 0) {
     logs.push('[extras] ❌ numcat 返回字段不完整: ' + JSON.stringify(fields));
     return { ok: false, today, patched: 0, dates: dates, logs, error: '字段不完整' };
   }
-  if (EXTRAS_FIELDS.some(f => idx[f] < 0)) {
-    logs.push('[extras] ⚠️ numcat 本次未返回全部四要素字段: ' + JSON.stringify(idx));
+  if (EXTRAS_PATCH_FIELDS.some(f => idx[f] < 0)) {
+    logs.push('[extras] ⚠️ numcat 本次未返回全部「四要素/竞价涨幅」字段: ' + JSON.stringify(idx));
   }
   logs.push('[extras] numcat 返回 ' + items.length + ' 行');
 
@@ -1204,18 +1218,24 @@ async function runAuctionExtrasPatch(env, opts) {
         const v = extrasFmt2(row[idx.auc_turnover]);
         if (v !== '') { patch.auc_turnover = v; any = true; }
       }
+      // [AUCPCT-BACKFILL 2026-09-14] 竞价涨幅：趋势图五日曲线的关键腿，缺了就是永久空白。
+      //   只补「库内为空 + 本次有值」；格式与 worker 早盘写入一致（带符号两位小数）。
+      if (extrasIsEmpty(cur.auc_pct_chg) && idx.auc_pct_chg >= 0) {
+        const v = extrasFmtSignedPct(row[idx.auc_pct_chg]);
+        if (v !== '') { patch.auc_pct_chg = v; any = true; }
+      }
       if (!any) return;
       patch.source = 'worker';
       patch.updated_at = nowIso;
       patch.updated_by = 'auto-fetch-worker-extras';
       rows.push(patch);
       // 补过之后就地标记，避免同一行被重复写入
-      EXTRAS_FIELDS.forEach(f => { if (patch[f] !== undefined) cur[f] = patch[f]; });
+      EXTRAS_PATCH_FIELDS.forEach(f => { if (patch[f] !== undefined) cur[f] = patch[f]; });
     });
   });
 
   if (rows.length === 0) {
-    logs.push('[extras] ⚠️ numcat 本次未给出任何可补的四要素值（当日未结算时属正常，次日窗口重刷会自动补上）');
+    logs.push('[extras] ⚠️ numcat 本次未给出任何可补的「四要素/竞价涨幅」值（当日未结算时属正常，次日窗口重刷会自动补上）');
     return { ok: true, today, patched: 0, dates: dates, logs };
   }
 
@@ -1230,7 +1250,7 @@ async function runAuctionExtrasPatch(env, opts) {
       logs.push('[extras] ❌ 第 ' + (Math.floor(i / EXTRAS_CHUNK) + 1) + ' 批写入失败: ' + e.message);
     }
   }
-  logs.push('[extras] ✅ 补写 ' + patched + '/' + rows.length + ' 行竞价四要素');
+  logs.push('[extras] ✅ 补写 ' + patched + '/' + rows.length + ' 行「四要素/竞价涨幅」');
   return { ok: patched > 0, today, patched: patched, dates: dates, logs };
 }
 
@@ -1818,6 +1838,17 @@ function parseNumcatToMetrics(items, fields, constituents, logs) {
   const atrIdx = fields.indexOf('auc_turnover');
 
   logs.push('步骤4：解析数据...');
+  // [AUCPCT-GUARD 2026-09-14] auc_pct_chg 缺失以前是【完全静默】的：
+  //   pctIdx<0 → changePctStr='' 且 aucPctChgStr='' → 当天 change_pct（=当日竞价副本）
+  //   与 auc_pct_chg 一起留空，趋势图「五日竞价涨幅」曲线上出现永久空洞，
+  //   而日志里连一行提示都没有（只有四要素那条 ⚠️，不含 auc_pct_chg）。
+  //   2026-09-14 实测：新进正式成员 9/8~9/11 的追溯行 auc_pct_chg 全空 → 用户看到前 4 腿空白。
+  //   这里必须显式报警（§10 禁止静默失败），补写交给 runAuctionExtrasPatch（已含 auc_pct_chg）。
+  if (pctIdx < 0) {
+    logs.push('❌ numcat daily_auc 未返回 auc_pct_chg 字段（idx=-1）→ 本次所有行的「竞价涨幅 / 当天 change_pct」' +
+      '会一起留空（趋势图五日竞价涨幅曲线出现空洞）。请检查猫抓返回字段是否被上游裁剪；' +
+      '缺口由 runAuctionExtrasPatch 在结算后补写（16:00 close 自动跑 / 手动 /fetch?point=extras）。');
+  }
   // [2026-09-11] numcat 若未返回竞价四要素字段，这里必须显式报警：
   // 否则界面表现为「趋势图只有涨幅、四项竞价指标全空」，且日志里毫无痕迹，极难定位。
   if (umIdx < 0 || obpIdx < 0 || avrIdx < 0 || atrIdx < 0) {

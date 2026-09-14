@@ -90,28 +90,32 @@ export async function readMarketMetricsForDate(env, date, scope) {
 }
 
 /**
- * [EXTRAS-PATCH 2026-09-11] 读取某日 market_metrics 竞价行的「竞价四要素」现状。
+ * [EXTRAS-PATCH 2026-09-11] 读取某日 market_metrics 竞价行的「竞价四要素 + 竞价涨幅」现状。
  * 供 runAuctionExtrasPatch 判断哪些行还缺字段 —— 只补缺失的，不重复写已有值（幂等）。
  * ⚠️ 读取失败必须抛错（§10：读取失败 ≠ 空数据）：否则会把「读不到」误判成「全都缺」，
  *    进而用一次 numcat 的结果把历史值整体覆盖一遍。
+ * [AUCPCT-BACKFILL 2026-09-14] select 从四要素扩到含 auc_pct_chg：追溯创建的历史日行
+ *    会永久缺这一项（前端不在白名单、次日只覆盖 change_pct），导致趋势图五日竞价涨幅曲线空白。
  */
 export async function readMarketMetricsExtrasForDate(env, date) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?date=eq.' + encodeURIComponent(date) +
     '&scope=eq.auction' +
-    '&select=stock,code,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover&limit=2000';
+    '&select=stock,code,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover,auc_pct_chg&limit=2000';
   const resp = await fetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     throw new Error('读取 market_metrics 四要素失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
   }
   const data = await resp.json();
+  const s = v => (v === undefined || v === null ? '' : String(v));
   return (data || []).map(r => ({
     name: (r.stock || '').trim(),
     code: (r.code || '').trim(),
-    um_vol: r.um_vol === undefined || r.um_vol === null ? '' : String(r.um_vol),
-    open_bid_pct: r.open_bid_pct === undefined || r.open_bid_pct === null ? '' : String(r.open_bid_pct),
-    auc_vol_ratio: r.auc_vol_ratio === undefined || r.auc_vol_ratio === null ? '' : String(r.auc_vol_ratio),
-    auc_turnover: r.auc_turnover === undefined || r.auc_turnover === null ? '' : String(r.auc_turnover)
+    um_vol: s(r.um_vol),
+    open_bid_pct: s(r.open_bid_pct),
+    auc_vol_ratio: s(r.auc_vol_ratio),
+    auc_turnover: s(r.auc_turnover),
+    auc_pct_chg: s(r.auc_pct_chg)
   })).filter(r => r.name);
 }
 

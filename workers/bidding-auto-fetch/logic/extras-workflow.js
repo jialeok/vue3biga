@@ -42,6 +42,15 @@ import { RANGE_WINDOW_DAYS } from '../../../src/logic/auction/range-window.js';
 // ⚠️ 单文件打包（workers/_bundle.mjs）会把所有模块拼进同一个作用域，
 //    顶层标识符必须全局唯一 —— 这里一律加 extras 前缀，避免与其它文件重名导致重复声明。
 const EXTRAS_FIELDS = ['um_vol', 'open_bid_pct', 'auc_vol_ratio', 'auc_turnover'];
+// [AUCPCT-BACKFILL 2026-09-14] 补漏字段 = 竞价四要素 + auc_pct_chg（竞价涨幅）。
+//   为什么必须把 auc_pct_chg 也算进「缺口」：worker 的【窗口内历史日】行是追溯创建的
+//   （新进正式成员当天，顺带回填前几日的影子行）。那一次响应里若 auc_pct_chg 为空，
+//   这行就是【永久空洞】——① 前端写不了它（不在 AUCTION_METRICS_FIELDS 白名单）；
+//   ② 次日窗口重刷只会用 numcat daily 覆盖 change_pct（收盘涨幅），永远不碰 auc_pct_chg；
+//   ③ 结果就是趋势图「五日竞价涨幅」曲线前几腿永久空白（2026-09-14 实测：
+//   中新赛克/博敏电子/崇达技术/三孚股份/铭普光磁/九鼎新材/凯盛新能 9/8~9/11 全空）。
+//   猫抓对【已结算】的历史日是会返回 auc_pct_chg 的（同一次请求里就有），所以补漏成本为零。
+const EXTRAS_PATCH_FIELDS = EXTRAS_FIELDS.concat(['auc_pct_chg']);
 /** 单次 upsert 的行数（Supabase 单次请求不宜过大） */
 const EXTRAS_CHUNK = 400;
 
@@ -127,13 +136,13 @@ export async function runAuctionExtrasPatch(env, opts) {
     const m = new Map();
     rows.forEach(r => {
       if (!m.has(r.name)) m.set(r.name, r);
-      if (EXTRAS_FIELDS.some(f => extrasIsEmpty(r[f]))) missingTotal++;
+      if (EXTRAS_PATCH_FIELDS.some(f => extrasIsEmpty(r[f]))) missingTotal++;
     });
     existing[d] = m;
   }
-  logs.push('[extras] 窗口 ' + dates.length + ' 天，库内缺四要素的行 ' + missingTotal + ' 行');
+  logs.push('[extras] 窗口 ' + dates.length + ' 天，库内缺「四要素/竞价涨幅」的行 ' + missingTotal + ' 行');
   if (missingTotal === 0) {
-    logs.push('[extras] ✅ 窗口内四要素已完整，无需补写');
+    logs.push('[extras] ✅ 窗口内四要素与竞价涨幅已完整，无需补写');
     return { ok: true, today, patched: 0, dates: dates, logs };
   }
 
@@ -161,14 +170,15 @@ export async function runAuctionExtrasPatch(env, opts) {
     um_vol: fields.indexOf('um_vol'),
     open_bid_pct: fields.indexOf('open_bid_pct'),
     auc_vol_ratio: fields.indexOf('auc_vol_ratio'),
-    auc_turnover: fields.indexOf('auc_turnover')
+    auc_turnover: fields.indexOf('auc_turnover'),
+    auc_pct_chg: fields.indexOf('auc_pct_chg')
   };
   if (symI < 0 || dateI < 0) {
     logs.push('[extras] ❌ numcat 返回字段不完整: ' + JSON.stringify(fields));
     return { ok: false, today, patched: 0, dates: dates, logs, error: '字段不完整' };
   }
-  if (EXTRAS_FIELDS.some(f => idx[f] < 0)) {
-    logs.push('[extras] ⚠️ numcat 本次未返回全部四要素字段: ' + JSON.stringify(idx));
+  if (EXTRAS_PATCH_FIELDS.some(f => idx[f] < 0)) {
+    logs.push('[extras] ⚠️ numcat 本次未返回全部「四要素/竞价涨幅」字段: ' + JSON.stringify(idx));
   }
   logs.push('[extras] numcat 返回 ' + items.length + ' 行');
 
@@ -203,18 +213,24 @@ export async function runAuctionExtrasPatch(env, opts) {
         const v = extrasFmt2(row[idx.auc_turnover]);
         if (v !== '') { patch.auc_turnover = v; any = true; }
       }
+      // [AUCPCT-BACKFILL 2026-09-14] 竞价涨幅：趋势图五日曲线的关键腿，缺了就是永久空白。
+      //   只补「库内为空 + 本次有值」；格式与 worker 早盘写入一致（带符号两位小数）。
+      if (extrasIsEmpty(cur.auc_pct_chg) && idx.auc_pct_chg >= 0) {
+        const v = extrasFmtSignedPct(row[idx.auc_pct_chg]);
+        if (v !== '') { patch.auc_pct_chg = v; any = true; }
+      }
       if (!any) return;
       patch.source = 'worker';
       patch.updated_at = nowIso;
       patch.updated_by = 'auto-fetch-worker-extras';
       rows.push(patch);
       // 补过之后就地标记，避免同一行被重复写入
-      EXTRAS_FIELDS.forEach(f => { if (patch[f] !== undefined) cur[f] = patch[f]; });
+      EXTRAS_PATCH_FIELDS.forEach(f => { if (patch[f] !== undefined) cur[f] = patch[f]; });
     });
   });
 
   if (rows.length === 0) {
-    logs.push('[extras] ⚠️ numcat 本次未给出任何可补的四要素值（当日未结算时属正常，次日窗口重刷会自动补上）');
+    logs.push('[extras] ⚠️ numcat 本次未给出任何可补的「四要素/竞价涨幅」值（当日未结算时属正常，次日窗口重刷会自动补上）');
     return { ok: true, today, patched: 0, dates: dates, logs };
   }
 
@@ -229,7 +245,7 @@ export async function runAuctionExtrasPatch(env, opts) {
       logs.push('[extras] ❌ 第 ' + (Math.floor(i / EXTRAS_CHUNK) + 1) + ' 批写入失败: ' + e.message);
     }
   }
-  logs.push('[extras] ✅ 补写 ' + patched + '/' + rows.length + ' 行竞价四要素');
+  logs.push('[extras] ✅ 补写 ' + patched + '/' + rows.length + ' 行「四要素/竞价涨幅」');
   return { ok: patched > 0, today, patched: patched, dates: dates, logs };
 }
 

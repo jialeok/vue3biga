@@ -455,6 +455,17 @@ function parseNumcatToMetrics(items, fields, constituents, logs) {
   const atrIdx = fields.indexOf('auc_turnover');
 
   logs.push('步骤4：解析数据...');
+  // [AUCPCT-GUARD 2026-09-14] auc_pct_chg 缺失以前是【完全静默】的：
+  //   pctIdx<0 → changePctStr='' 且 aucPctChgStr='' → 当天 change_pct（=当日竞价副本）
+  //   与 auc_pct_chg 一起留空，趋势图「五日竞价涨幅」曲线上出现永久空洞，
+  //   而日志里连一行提示都没有（只有四要素那条 ⚠️，不含 auc_pct_chg）。
+  //   2026-09-14 实测：新进正式成员 9/8~9/11 的追溯行 auc_pct_chg 全空 → 用户看到前 4 腿空白。
+  //   这里必须显式报警（§10 禁止静默失败），补写交给 runAuctionExtrasPatch（已含 auc_pct_chg）。
+  if (pctIdx < 0) {
+    logs.push('❌ numcat daily_auc 未返回 auc_pct_chg 字段（idx=-1）→ 本次所有行的「竞价涨幅 / 当天 change_pct」' +
+      '会一起留空（趋势图五日竞价涨幅曲线出现空洞）。请检查猫抓返回字段是否被上游裁剪；' +
+      '缺口由 runAuctionExtrasPatch 在结算后补写（16:00 close 自动跑 / 手动 /fetch?point=extras）。');
+  }
   // [2026-09-11] numcat 若未返回竞价四要素字段，这里必须显式报警：
   // 否则界面表现为「趋势图只有涨幅、四项竞价指标全空」，且日志里毫无痕迹，极难定位。
   if (umIdx < 0 || obpIdx < 0 || avrIdx < 0 || atrIdx < 0) {

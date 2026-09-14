@@ -71,6 +71,92 @@ describe('runAuctionExtrasPatch 额度安全', () => {
 });
 
 // ============================================================================
+// [AUCPCT-BACKFILL 2026-09-14] 追溯创建的历史行缺 auc_pct_chg → 必须由补漏补上
+//
+// 【为什么必须有这个测试】新进正式成员当天，worker 会顺带回填它前几日的【影子行】。
+//   那一次响应里若 auc_pct_chg 为空，这一行就是永久空洞：
+//     ① 前端写不了它（AUCTION_METRICS_FIELDS 白名单里没有 auc_pct_chg 之外的手段，
+//        且 auc_vol_ratio/auc_turnover 等四要素前端根本不在白名单）；
+//     ② 次日窗口重刷只覆盖 change_pct（收盘涨幅），永不碰 auc_pct_chg；
+//     ③ 表现 = 趋势图「五日竞价涨幅」曲线前 4 腿永久空白（2026-09-14 用户实测）。
+//   猫抓对【已结算】历史日是会返回 auc_pct_chg 的，所以这次补漏是零额外请求。
+// ============================================================================
+describe('runAuctionExtrasPatch 竞价涨幅(auc_pct_chg)补漏', () => {
+  function stub(routes) {
+    globalThis.fetch = (url, init) => {
+      const u = String(url);
+      const m = (init && init.method) || 'GET';
+      for (const r of routes) {
+        if (r.test(u, m)) return Promise.resolve(r.res(u, init));
+      }
+      throw new Error('未预期的请求: ' + m + ' ' + u);
+    };
+  }
+  const isMmGet = (u, m) => u.includes('/market_metrics') && m === 'GET';
+  const isMmPost = (u, m) => u.includes('/market_metrics') && m === 'POST';
+  const isNumcat = (u) => u.includes('daily_auc');
+
+  it('库内只有 auc_pct_chg 缺 → 同一次猫抓结果一并补写（不额外发请求）', async () => {
+    let posted = null;
+    let numcatCalls = 0;
+    stub([
+      {
+        test: isMmGet,
+        res: () => ({
+          ok: true, json: () => Promise.resolve([
+            // 四要素齐全、只有竞价涨幅缺（追溯创建的历史行就是这样）
+            { stock: '三孚股份', code: '603938', um_vol: '26', open_bid_pct: '0.00', auc_vol_ratio: '14.50', auc_turnover: '0.63', auc_pct_chg: '' }
+          ])
+        })
+      },
+      {
+        test: isNumcat,
+        res: () => {
+          numcatCalls++;
+          return {
+            ok: true, json: () => Promise.resolve({
+              code: 200, data: {
+                fields: ['symbol', 'name', 'tradedate', 'auc_vol', 'auc_pct_chg', 'auc_to_pre_vol_pct', 'um_vol', 'open_bid_pct', 'auc_vol_ratio', 'auc_turnover'],
+                items: [['603938', '三孚股份', '20260908', 8294, 10.0025, 6.8, 2551, 0, 14.5, 0.6291]]
+              }
+            })
+          };
+        }
+      },
+      { test: isMmPost, res: (u, init) => { posted = JSON.parse(init.body); return { ok: true, json: () => Promise.resolve([]) }; } }
+    ]);
+
+    const r = await runAuctionExtrasPatch({}, { dates: ['2026-09-08'] });
+
+    expect(r.patched).toBe(1);
+    expect(numcatCalls).toBe(1);
+    expect(posted).toHaveLength(1);
+    expect(posted[0].auc_pct_chg).toBe('+10.00%');   // 与 worker 早盘写入同格式（带符号两位小数）
+    expect(posted[0].um_vol).toBeUndefined();        // 库内已有 → 绝不覆盖
+    expect(posted[0].auc_vol_ratio).toBeUndefined();
+    expect(posted[0].change_pct).toBeUndefined();    // 收盘涨幅不归本任务管
+  });
+
+  it('四要素与竞价涨幅都完整 → 零请求返回（不烧额度）', async () => {
+    const calls = [];
+    globalThis.fetch = (...args) => {
+      calls.push(args[0]);
+      return Promise.resolve({
+        ok: true, json: () => Promise.resolve([
+          { stock: '三孚股份', code: '603938', um_vol: '26', open_bid_pct: '0.00', auc_vol_ratio: '14.50', auc_turnover: '0.63', auc_pct_chg: '+10.00%' }
+        ])
+      });
+    };
+
+    const r = await runAuctionExtrasPatch({}, { dates: ['2026-09-08'] });
+
+    expect(r.patched).toBe(0);
+    expect(calls).toHaveLength(1);                              // 只读了库内现状
+    expect(calls.some(u => String(u).includes('numcat'))).toBe(false);
+  });
+});
+
+// ============================================================================
 // [SNAPSHOT-EXTRAS 2026-09-14] 当日竞价字段补漏（同花顺快照）
 //
 // 【为什么必须有这个测试】9:25 早盘从猫抓拿不到【当天】的 auc_pct_chg / auc_vol_ratio /
