@@ -1,6 +1,10 @@
 <!--
-  AuctionBoardTable.vue — 早盘竞价第一页：观察组/正式组行列表 + 趋势展开面板。
+  AuctionBoardTable.vue — 早盘竞价第一页：龙头组 / 观察组 / 正式组行列表。
   纯物理重组：模板与逻辑来自 src/views/AuctionBoard.vue，经 inject('auctionBoard') 共享同一 composable 实例。
+
+  [DRAGON-GROUP 2026-09-14] 三个区块（龙头组 / 观察组 / 常规组）的行【全部由 AuctionEntityRow 渲染】，
+  保证行布局、列（竞价量 / 昨成交量 / 占比）、展开收起、四要素面板在三种分组下完全一致。
+  本组件只决定「每个区块有哪些 item、区块之间怎么分隔」。
 -->
 <template>
   <div
@@ -11,9 +15,9 @@
     暂无数据，双击打开后台
   </div>
 
-  <!-- [DRAGON-GROUP 2026-09-14] 龙头组：第一页最上方独立小区块（观察组之上），用蚂蚁线与观察组隔开。
+  <!-- [DRAGON-GROUP 2026-09-14] 龙头组：第一页最上方独立区块（观察组之上），用蚂蚁线与观察组隔开。
        数据/索引全部来自 Logic 层（viewData.dragonIndices）；题材模式下 dragonIndices=[] →
-       本区块自动不渲染，改用行内「龙」标记辨认（见下方股票名区域）。 -->
+       本区块自动不渲染，改用行内「龙」标记辨认。 -->
   <AuctionDragonGroup :items="filteredDragonItems" />
   <div
     v-if="showDragonSeparator"
@@ -31,178 +35,10 @@
     :key="item.index"
     v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo, item.closeLimit, item.closePct, item.closeNameTone, item.streakLabel, item.isDragonGroupMember, item.dragonGroupTopic, item.dragonGroupFormalStar, item.dragonGroupPct, item.obsFormalStar]"
   >
-    <AuctionTopicStatsBar
-      v-if="item.topicStats"
-      :stats="item.topicStats"
+    <AuctionEntityRow
+      :item="item"
+      :idx="idx"
     />
-    <div
-      :class="item.itemClass"
-      :style="item.topicBg ? { background: item.topicBg } : null"
-      :data-index="item.index"
-      :data-stock="item.stock || ''"
-      @click="onToggleSelect(item.index)"
-    >
-      <div
-        :class="item.numberClass"
-        @click.stop="onExpandTrend(item.stock)"
-        @dblclick.stop
-      >
-        {{ item.seqNo || (idx + 1) }}
-      </div>
-      <div
-        :class="item.stockClass"
-        :data-stock="item.stock"
-        :data-note="item.note || ''"
-        @dblclick.stop
-        @contextmenu.prevent="onLongPress(item.stock)"
-        @touchstart.passive="startLongPress(item.stock)"
-        @touchend="cancelLongPress"
-        @touchmove="cancelLongPress"
-        @mousedown="startLongPress(item.stock)"
-        @mouseup="cancelLongPress"
-        @mouseleave="cancelLongPress"
-      >
-        <span
-          class="auction-stock-text"
-          :class="stockTextClass(item)"
-          :title="item.isYiZi ? ('竞价一字（竞价涨幅 ' + (item.aucPctText || '-') + '）') : (item.closeLimit ? (item.closeLimit === 'up' ? '收盘涨停' : '收盘跌停') : null)"
-        >{{ item.stock }}<span
-          v-if="item.obsFormalStar || item.dragonGroupFormalStar"
-          class="auction-obs-formal-star"
-        >*</span></span>
-        <!-- [LIMIT-STREAK 2026-09-11] 趋势/连板标记（趋势 / 首板 / 二板 / 三板…）：紧贴股票名后的灰色小标。
-             口径 = 前 9 个历史交易日（不含当天）的连续收盘涨停天数，Logic 层（view-helpers）算好文案， -->
-        <span
-          v-if="item.streakLabel"
-          class="auction-streak-tag"
-          :title="'前9个交易日连板状态：' + item.streakLabel"
-        >{{ item.streakLabel }}</span>
-        <!-- [DRAGON-GROUP 2026-09-14] 龙头「组内标记」：题材 toggle 开启时不渲染独立龙头组区块
-             （列表按题材重排），改用名字后的「龙」小标就地辨认（需求 4）。悬停显示龙头的题材 + 十日涨幅。 -->
-        <span
-          v-if="sortState.byTopic && item.isDragonGroupMember"
-          class="auction-dragon-tag"
-          :title="dragonTagTitle(item)"
-        >龙</span>
-        <AuctionDragonBadge
-          v-if="item.dragonRank > 0"
-          :rank="item.dragonRank"
-          :pct="item.dragonPct"
-          :pct-chg="item.aucPctNum"
-        />
-        <AuctionBadge
-          :item="item"
-          :ctx="{}"
-          :tag-state="item"
-        />
-      </div>
-      <template v-if="!sortState.byTopic">
-        <div
-          class="auction-volume"
-          @dblclick.stop="onEditVolumeNote(item.index)"
-        >
-          {{ item.volumeDisplay }}
-        </div>
-        <div
-          :class="item.yestColorClass"
-          :data-index="item.index"
-          :data-note="item.note || ''"
-          @click.stop="onYestClick(item, $event)"
-          @dblclick.stop="openEditModal()"
-          @contextmenu.prevent
-        >
-          {{ item.yestVolumeDisplay }}
-        </div>
-        <div
-          :class="item.ratioClass"
-          :data-index="item.index"
-          @dblclick.stop
-        >
-          {{ item.ratio }}<span
-            v-if="item.ratioArrow"
-            :style="{ color: item.ratioArrow === '⬆' ? '#ef4444' : '#10b981' }"
-          >{{ item.ratioArrow }}</span>
-        </div>
-      </template>
-      <div
-        v-else
-        class="auction-topic-cell"
-      >
-        {{ item.topicsDisplay }}
-      </div>
-    </div>
-    <div
-      v-if="expandedSet.has(item.stock)"
-      class="auction-trend-panel"
-      @dblclick.stop
-    >
-      <template v-if="trendHistory[item.stock]">
-        <div class="auction-daily-metrics">
-          <template
-            v-for="m in dailyMetricsList(item.stock)"
-            :key="m.label"
-          >
-            <span class="adm-item"><b>{{ m.label }}</b>：{{ m.value }}</span>
-          </template>
-        </div>
-        <div class="trend-chart-item">
-          <div class="trend-chart-label trend-chart-label-with-stats">
-            <span>竞价量(万) 近5日</span>
-            <span
-              v-if="trendHistory[item.stock].diff != null"
-              style="color:#2563eb; font-weight:600;"
-            >差值 {{ trendHistory[item.stock].diff }}</span>
-            <span
-              v-if="trendHistory[item.stock].jingRatio != null"
-              style="color:#6366f1; font-weight:600;"
-            >今/昨比 {{ trendHistory[item.stock].jingRatio }}</span>
-          </div>
-          <TrendChart
-            :points="trendHistory[item.stock].volume"
-            color="#6366f1"
-          />
-        </div>
-        <div class="trend-chart-item">
-          <div class="trend-chart-label trend-chart-label-with-stats">
-            <span>昨日成交量(万) 近5日</span>
-            <span
-              v-if="trendHistory[item.stock].yestRatio != null"
-              style="color:#10b981; font-weight:600;"
-            >昨/前比 {{ trendHistory[item.stock].yestRatio }}</span>
-          </div>
-          <TrendChart
-            :points="trendHistory[item.stock].yestVolume"
-            color="#10b981"
-          />
-        </div>
-        <div
-          v-if="aucPctHasData(item.stock)"
-          class="trend-chart-item"
-        >
-          <div class="trend-chart-label">
-            竞价涨幅(%) 近5日
-          </div>
-          <TrendChart
-            :points="trendHistory[item.stock].aucPctChg"
-            color="#f59e0b"
-            :percent="true"
-          />
-        </div>
-        <div
-          v-if="changePctHasData(item.stock)"
-          class="trend-chart-item"
-        >
-          <div class="trend-chart-label">
-            涨幅(%) 近5日
-          </div>
-          <TrendChart
-            :points="trendHistory[item.stock].changePct"
-            color="#64748b"
-            :percent="true"
-          />
-        </div>
-      </template>
-    </div>
   </template>
   <div
     v-if="showObsSeparator"
@@ -213,272 +49,45 @@
     :key="item.index"
     v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo, item.closeLimit, item.closePct, item.closeNameTone, item.streakLabel, item.isDragonGroupMember, item.dragonGroupTopic, item.dragonGroupFormalStar, item.dragonGroupPct, item.obsFormalStar]"
   >
-    <AuctionTopicStatsBar
-      v-if="item.topicStats"
-      :stats="item.topicStats"
+    <AuctionEntityRow
+      :item="item"
+      :idx="idx"
     />
-    <div
-      :class="item.itemClass"
-      :style="item.topicBg ? { background: item.topicBg } : null"
-      :data-index="item.index"
-      :data-stock="item.stock || ''"
-      @click="onToggleSelect(item.index)"
-    >
-      <div
-        :class="item.numberClass"
-        @click.stop="onExpandTrend(item.stock)"
-        @dblclick.stop
-      >
-        {{ item.seqNo || (idx + 1) }}
-      </div>
-      <div
-        :class="item.stockClass"
-        :data-stock="item.stock"
-        :data-note="item.note || ''"
-        @dblclick.stop
-        @contextmenu.prevent="onLongPress(item.stock)"
-        @touchstart.passive="startLongPress(item.stock)"
-        @touchend="cancelLongPress"
-        @touchmove="cancelLongPress"
-        @mousedown="startLongPress(item.stock)"
-        @mouseup="cancelLongPress"
-        @mouseleave="cancelLongPress"
-      >
-        <span
-          class="auction-stock-text"
-          :class="stockTextClass(item)"
-          :title="item.isYiZi ? ('竞价一字（竞价涨幅 ' + (item.aucPctText || '-') + '）') : (item.closeLimit ? (item.closeLimit === 'up' ? '收盘涨停' : '收盘跌停') : null)"
-        >{{ item.stock }}<span
-          v-if="item.obsFormalStar || item.dragonGroupFormalStar"
-          class="auction-obs-formal-star"
-        >*</span></span>
-        <!-- [LIMIT-STREAK 2026-09-11] 趋势/连板标记（趋势 / 首板 / 二板 / 三板…）：紧贴股票名后的灰色小标。
-             口径 = 前 9 个历史交易日（不含当天）的连续收盘涨停天数，Logic 层（view-helpers）算好文案， -->
-        <span
-          v-if="item.streakLabel"
-          class="auction-streak-tag"
-          :title="'前9个交易日连板状态：' + item.streakLabel"
-        >{{ item.streakLabel }}</span>
-        <!-- [DRAGON-GROUP 2026-09-14] 龙头「组内标记」：题材 toggle 开启时不渲染独立龙头组区块
-             （列表按题材重排），改用名字后的「龙」小标就地辨认（需求 4）。悬停显示龙头的题材 + 十日涨幅。 -->
-        <span
-          v-if="sortState.byTopic && item.isDragonGroupMember"
-          class="auction-dragon-tag"
-          :title="dragonTagTitle(item)"
-        >龙</span>
-        <AuctionDragonBadge
-          v-if="item.dragonRank > 0"
-          :rank="item.dragonRank"
-          :pct="item.dragonPct"
-          :pct-chg="item.aucPctNum"
-        />
-        <AuctionBadge
-          :item="item"
-          :ctx="{}"
-          :tag-state="item"
-        />
-      </div>
-      <template v-if="!sortState.byTopic">
-        <div
-          class="auction-volume"
-          @dblclick.stop="onEditVolumeNote(item.index)"
-        >
-          {{ item.volumeDisplay }}
-        </div>
-        <div
-          :class="item.yestColorClass"
-          :data-index="item.index"
-          :data-note="item.note || ''"
-          @click.stop="onYestClick(item, $event)"
-          @dblclick.stop="openEditModal()"
-          @contextmenu.prevent
-        >
-          {{ item.yestVolumeDisplay }}
-        </div>
-        <div
-          :class="item.ratioClass"
-          :data-index="item.index"
-          @dblclick.stop
-        >
-          {{ item.ratio }}<span
-            v-if="item.ratioArrow"
-            :style="{ color: item.ratioArrow === '⬆' ? '#ef4444' : '#10b981' }"
-          >{{ item.ratioArrow }}</span>
-        </div>
-      </template>
-      <div
-        v-else
-        class="auction-topic-cell"
-      >
-        {{ item.topicsDisplay }}
-      </div>
-    </div>
-
-    <div
-      v-if="expandedSet.has(item.stock)"
-      class="auction-trend-panel"
-      @dblclick.stop
-    >
-      <template v-if="trendHistory[item.stock]">
-        <div class="auction-daily-metrics">
-          <template
-            v-for="m in dailyMetricsList(item.stock)"
-            :key="m.label"
-          >
-            <span class="adm-item"><b>{{ m.label }}</b>：{{ m.value }}</span>
-          </template>
-        </div>
-        <div class="trend-chart-item">
-          <div class="trend-chart-label trend-chart-label-with-stats">
-            <span>竞价量(万) 近5日</span>
-            <span
-              v-if="trendHistory[item.stock].diff != null"
-              style="color:#2563eb; font-weight:600;"
-            >差值 {{ trendHistory[item.stock].diff }}</span>
-            <span
-              v-if="trendHistory[item.stock].jingRatio != null"
-              style="color:#6366f1; font-weight:600;"
-            >今/昨比 {{ trendHistory[item.stock].jingRatio }}</span>
-          </div>
-          <TrendChart
-            :points="trendHistory[item.stock].volume"
-            color="#6366f1"
-          />
-        </div>
-        <div class="trend-chart-item">
-          <div class="trend-chart-label trend-chart-label-with-stats">
-            <span>昨日成交量(万) 近5日</span>
-            <span
-              v-if="trendHistory[item.stock].yestRatio != null"
-              style="color:#10b981; font-weight:600;"
-            >昨/前比 {{ trendHistory[item.stock].yestRatio }}</span>
-          </div>
-          <TrendChart
-            :points="trendHistory[item.stock].yestVolume"
-            color="#10b981"
-          />
-        </div>
-        <div
-          v-if="aucPctHasData(item.stock)"
-          class="trend-chart-item"
-        >
-          <div class="trend-chart-label">
-            竞价涨幅(%) 近5日
-          </div>
-          <TrendChart
-            :points="trendHistory[item.stock].aucPctChg"
-            color="#f59e0b"
-            :percent="true"
-          />
-        </div>
-        <div
-          v-if="changePctHasData(item.stock)"
-          class="trend-chart-item"
-        >
-          <div class="trend-chart-label">
-            涨幅(%) 近5日
-          </div>
-          <TrendChart
-            :points="trendHistory[item.stock].changePct"
-            color="#64748b"
-            :percent="true"
-          />
-        </div>
-      </template>
-    </div>
   </template>
 </template>
 
 <script setup>
 import { inject, watch, nextTick } from 'vue';
-import AuctionBadge from './AuctionBadge.vue';
-import AuctionDragonBadge from './AuctionDragonBadge.vue';
 import AuctionDragonGroup from './AuctionDragonGroup.vue';
-import AuctionTopicStatsBar from './AuctionTopicStatsBar.vue';
-import TrendChart from './TrendChart.vue';
+import AuctionEntityRow from './AuctionEntityRow.vue';
 const board = inject('auctionBoard');
+// 只解构本组件真正用到的东西：行本体（含展开面板、所有列、所有点击交互）已全部下沉到
+// AuctionEntityRow，三个区块在这里只决定「哪些 item、怎么分隔」。
+// 之前那份 90 项的大解构是「模板与行内联」时代的产物，行搬走后即为死代码（§42 不留 dead code）。
 const {
-  uiStore, auctionStore, sortState, expandedSet, trendHistory, longPressMenuRef, coreTopicModalRef, editModalRef,
-  viewData, currentPage, showBackend, expanded, topicGroups, itemsByIndex, obsItems, regularItems, allItems,
-  searchActive, searchKeyword, filteredItems, filteredObsItems, filteredRegularItems, filteredDragonItems,
-  showObsSeparator, showDragonSeparator, highlightStockSet,
-  sortState2, isStrengthSortEnabled, p2ExpandedSet, p2TrendHistory, p2ExpandedTopics, p2ExpandAll,
-  p2StockTopicCount, p2HighRatioInfo, p2JingYestSet, p2ParallelSet, p2JingYestCount, p2HighRatioCount,
-  sortedTopicGroups, page3Data, copiedStocks, page4DisplayStocks, backendLoading,
-  volumeNoteModalActive, volumeNoteDraft, notePopup, notePopupText, notePopupStyle,
-  toggleBoard, getStockStyle, getTopicRowClass, toggleSort2, toggleStrengthSort, toggleGroupExpand,
-  p2ToggleExpandAll, loadP2TrendHistory, loadP2TrendHistoryChunked, toggleP2Trend, getLastNTradingDays,
-  loadCopiedStocks, saveCopiedStocks, copyAllTopicStocks, copyTopicStocks, deleteCopiedStock, clearAllCopiedStocks,
-  openBackend, openEditModal, openCoreTopicModal, onHeaderClick, refresh, toggleSort, expandAll, collapseAll,
-  _computeTrendStats, loadTrendHistory, dailyAuctionMetrics, dailyMetricsList, switchPage,
-  onSwipeStart, onSwipeEnd, handleSwipe, runBackend, onImportPaste, onReplaceConcept, onHistoryFill,
-  onToggleSelect, onEditVolumeNote, _persistVolumeNote, saveVolumeNote, clearVolumeNote,
-  onYestClick, closeNotePopup, onExpandTrend, startLongPress, cancelLongPress, onLongPress, onAuctionRefresh,
-  fetchLadderConstituentsMain, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs,
-  fillYesterdayYesterdayVolumeFromThs, fetchChangePctFromThs, fetchTodayAuctionFromNumcat,
-  fetchAllAuctionFromNumcat,   fetchThreeDaysAuctionFromNumcat, fillTopicsFromNumcat
+  sortState, expandedSet, viewData,
+  filteredObsItems, filteredRegularItems, filteredDragonItems,
+  showObsSeparator, showDragonSeparator,
+  highlightStockSet, openBackend
 } = board;
 
-// § 模板重构：趋势图显示判定内联箭头函数抽取为方法（渲染结果 100% 不变）
-function aucPctHasData(stock) {
-  return trendHistory.value[stock].aucPctChg.some(p => p.value !== null);
-}
-function changePctHasData(stock) {
-  return trendHistory.value[stock].changePct.some(p => p.value !== null);
-}
-
-// [DRAGON-GROUP 2026-09-14] 题材模式下「龙」组内标记的悬停说明（龙头题材 + 十日区间涨幅）。
-// 纯展示格式化（非业务口径）：数值来自 Logic 层名册字段，统一用 dragonGroup* 前缀
-//（与另一套「题材内龙头排名」的 dragonRank/dragonPct 区分开，避免互相覆盖）。
-function dragonTagTitle(item) {
-  if (!item) return '';
-  const bits = ['龙头' + (item.dragonGroupTopic ? '（' + item.dragonGroupTopic + '）' : '')];
-  const v = item.dragonGroupPct;
-  if (v !== null && v !== undefined && !isNaN(Number(v))) {
-    bits.push('10日涨幅 ' + (Number(v) >= 0 ? '+' : '') + Number(v).toFixed(2) + '%');
-  }
-  if (item.dragonGroupFormalStar) bits.push('* 该龙头同时位于今日正式列表');
-  return bits.join('｜');
-}
-
-// [CLOSE-LIMIT 2026-09-11] 股票名下划线标记的 class（优先级在 Logic 层之外只保留「谁盖住谁」这一件事）：
-//   竞价一字 = 9:25 竞价就打在涨停价（实线红线，盘中信号）；
-//   收盘涨停/跌停 = 全天走完收在板价（红色/绿色蚂蚁线=虚线，收盘结果）。
-//   二者都作用在同一个 span 的 border-bottom 上，同时命中会互相覆盖 →
-//   这里做【显式互斥】：竞价一字优先（实线），不是一字时才画收盘停板蚂蚁线，绝不出现两条叠加。
-// [CLOSE-NAME-COLOR 2026-09-11] 另外叠加「股票名字体颜色」：收盘涨幅 >0 红 / <0 绿（=0 或无数据不加类）。
-//   它作用于 color，与上面两个 border-bottom 类互不干扰，因此不参与互斥（可同时出现：
-//   例如收盘涨停 + 涨幅为正 → 红字 + 红蚂蚁线）。
-function stockTextClass(item) {
-  const cls = {};
-  if (item.isYiZi) {
-    cls['yizi-limit'] = true;
-  } else {
-    cls['close-limit-up'] = item.closeLimit === 'up';
-    cls['close-limit-down'] = item.closeLimit === 'down';
-  }
-  // 档位由 Logic 层算好（view-helpers closeNameTone），这里只做「档位 → class 名」映射
-  if (item.closeNameTone === 'up') cls['close-name-up'] = true;
-  else if (item.closeNameTone === 'down') cls['close-name-down'] = true;
-  return cls;
-}
 
 // [FEAT 2026-08-18] 表头搜索高光：watch highlightStockSet 直接操作行 DOM 加/移除高光类 + 滚动定位。
 // 不走 :class 响应式（v-memo 对 ref(Set).has() 追踪不可靠），改用 watch + DOM 确定生效。
-// §17 UI 操作自己渲染的 DOM（行由本组件 v-for 渲染），非业务逻辑；数据变化后重新加高光避免 v-memo 重渲染覆盖。
+// §17 UI 操作自己渲染的 DOM（行由本组件渲染），非业务逻辑；数据变化后重新加高光避免 v-memo 重渲染覆盖。
+// [DRAGON-GROUP 2026-09-14] 龙头组的行已改为与观察组同款标准行（.auction-item），不再是独立胶囊，
+// 因此选择器只需扫 .auction-item[data-stock] 即可覆盖三个区块（原先额外扫 .dragon-chip 的说法已作废）。
 function applyHighlight() {
   nextTick(() => {
     const s = highlightStockSet.value;
-    // [DRAGON-GROUP 2026-09-14] 一并命中龙头组胶囊（.dragon-chip[data-stock]）——
-    // 龙头在默认模式下已从观察组/常规组抽出，只扫 .auction-item 会让搜索命中「无处发光」。
-    const rows = document.querySelectorAll('.auction-item[data-stock], .dragon-chip[data-stock]');
+    const rows = document.querySelectorAll('.auction-item[data-stock]');
     rows.forEach(row => {
       const stock = row.getAttribute('data-stock') || '';
       if (s.has(stock)) row.classList.add('auction-row-highlight');
       else row.classList.remove('auction-row-highlight');
     });
     if (s.size > 0) {
-      const first = document.querySelector('.auction-item.auction-row-highlight, .dragon-chip.auction-row-highlight');
+      const first = document.querySelector('.auction-item.auction-row-highlight');
       if (first) first.scrollIntoView({ block: 'center', behavior: 'smooth' });
     }
   });
