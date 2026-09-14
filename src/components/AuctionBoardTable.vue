@@ -11,6 +11,15 @@
     暂无数据，双击打开后台
   </div>
 
+  <!-- [DRAGON-GROUP 2026-09-14] 龙头组：第一页最上方独立小区块（观察组之上），用蚂蚁线与观察组隔开。
+       数据/索引全部来自 Logic 层（viewData.dragonIndices）；题材模式下 dragonIndices=[] →
+       本区块自动不渲染，改用行内「龙」标记辨认（见下方股票名区域）。 -->
+  <AuctionDragonGroup :items="filteredDragonItems" />
+  <div
+    v-if="showDragonSeparator"
+    class="auction-dragon-separator"
+  />
+
   <div
     v-if="filteredObsItems.length > 0"
     class="auction-group-label auction-obs-group-label"
@@ -20,7 +29,7 @@
   <template
     v-for="(item, idx) in filteredObsItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo, item.closeLimit, item.closePct, item.closeNameTone, item.streakLabel]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo, item.closeLimit, item.closePct, item.closeNameTone, item.streakLabel, item.isDragonGroupMember, item.dragonGroupTopic, item.dragonGroupFormalStar, item.dragonGroupPct, item.obsFormalStar]"
   >
     <AuctionTopicStatsBar
       v-if="item.topicStats"
@@ -58,7 +67,7 @@
           :class="stockTextClass(item)"
           :title="item.isYiZi ? ('竞价一字（竞价涨幅 ' + (item.aucPctText || '-') + '）') : (item.closeLimit ? (item.closeLimit === 'up' ? '收盘涨停' : '收盘跌停') : null)"
         >{{ item.stock }}<span
-          v-if="item.obsFormalStar"
+          v-if="item.obsFormalStar || item.dragonGroupFormalStar"
           class="auction-obs-formal-star"
         >*</span></span>
         <!-- [LIMIT-STREAK 2026-09-11] 趋势/连板标记（趋势 / 首板 / 二板 / 三板…）：紧贴股票名后的灰色小标。
@@ -68,6 +77,13 @@
           class="auction-streak-tag"
           :title="'前9个交易日连板状态：' + item.streakLabel"
         >{{ item.streakLabel }}</span>
+        <!-- [DRAGON-GROUP 2026-09-14] 龙头「组内标记」：题材 toggle 开启时不渲染独立龙头组区块
+             （列表按题材重排），改用名字后的「龙」小标就地辨认（需求 4）。悬停显示龙头的题材 + 十日涨幅。 -->
+        <span
+          v-if="sortState.byTopic && item.isDragonGroupMember"
+          class="auction-dragon-tag"
+          :title="dragonTagTitle(item)"
+        >龙</span>
         <AuctionDragonBadge
           v-if="item.dragonRank > 0"
           :rank="item.dragonRank"
@@ -195,7 +211,7 @@
   <template
     v-for="(item, idx) in filteredRegularItems"
     :key="item.index"
-    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo, item.closeLimit, item.closePct, item.closeNameTone, item.streakLabel]"
+    v-memo="[item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow, item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass, item.topicsDisplay, item.topicBg, expandedSet.has(item.stock), sortState.byTopic, item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo, item.closeLimit, item.closePct, item.closeNameTone, item.streakLabel, item.isDragonGroupMember, item.dragonGroupTopic, item.dragonGroupFormalStar, item.dragonGroupPct, item.obsFormalStar]"
   >
     <AuctionTopicStatsBar
       v-if="item.topicStats"
@@ -233,7 +249,7 @@
           :class="stockTextClass(item)"
           :title="item.isYiZi ? ('竞价一字（竞价涨幅 ' + (item.aucPctText || '-') + '）') : (item.closeLimit ? (item.closeLimit === 'up' ? '收盘涨停' : '收盘跌停') : null)"
         >{{ item.stock }}<span
-          v-if="item.obsFormalStar"
+          v-if="item.obsFormalStar || item.dragonGroupFormalStar"
           class="auction-obs-formal-star"
         >*</span></span>
         <!-- [LIMIT-STREAK 2026-09-11] 趋势/连板标记（趋势 / 首板 / 二板 / 三板…）：紧贴股票名后的灰色小标。
@@ -243,6 +259,13 @@
           class="auction-streak-tag"
           :title="'前9个交易日连板状态：' + item.streakLabel"
         >{{ item.streakLabel }}</span>
+        <!-- [DRAGON-GROUP 2026-09-14] 龙头「组内标记」：题材 toggle 开启时不渲染独立龙头组区块
+             （列表按题材重排），改用名字后的「龙」小标就地辨认（需求 4）。悬停显示龙头的题材 + 十日涨幅。 -->
+        <span
+          v-if="sortState.byTopic && item.isDragonGroupMember"
+          class="auction-dragon-tag"
+          :title="dragonTagTitle(item)"
+        >龙</span>
         <AuctionDragonBadge
           v-if="item.dragonRank > 0"
           :rank="item.dragonRank"
@@ -370,13 +393,15 @@
 import { inject, watch, nextTick } from 'vue';
 import AuctionBadge from './AuctionBadge.vue';
 import AuctionDragonBadge from './AuctionDragonBadge.vue';
+import AuctionDragonGroup from './AuctionDragonGroup.vue';
 import AuctionTopicStatsBar from './AuctionTopicStatsBar.vue';
 import TrendChart from './TrendChart.vue';
 const board = inject('auctionBoard');
 const {
   uiStore, auctionStore, sortState, expandedSet, trendHistory, longPressMenuRef, coreTopicModalRef, editModalRef,
   viewData, currentPage, showBackend, expanded, topicGroups, itemsByIndex, obsItems, regularItems, allItems,
-  searchActive, searchKeyword, filteredItems, filteredObsItems, filteredRegularItems, showObsSeparator, highlightStockSet,
+  searchActive, searchKeyword, filteredItems, filteredObsItems, filteredRegularItems, filteredDragonItems,
+  showObsSeparator, showDragonSeparator, highlightStockSet,
   sortState2, isStrengthSortEnabled, p2ExpandedSet, p2TrendHistory, p2ExpandedTopics, p2ExpandAll,
   p2StockTopicCount, p2HighRatioInfo, p2JingYestSet, p2ParallelSet, p2JingYestCount, p2HighRatioCount,
   sortedTopicGroups, page3Data, copiedStocks, page4DisplayStocks, backendLoading,
@@ -400,6 +425,20 @@ function aucPctHasData(stock) {
 }
 function changePctHasData(stock) {
   return trendHistory.value[stock].changePct.some(p => p.value !== null);
+}
+
+// [DRAGON-GROUP 2026-09-14] 题材模式下「龙」组内标记的悬停说明（龙头题材 + 十日区间涨幅）。
+// 纯展示格式化（非业务口径）：数值来自 Logic 层名册字段，统一用 dragonGroup* 前缀
+//（与另一套「题材内龙头排名」的 dragonRank/dragonPct 区分开，避免互相覆盖）。
+function dragonTagTitle(item) {
+  if (!item) return '';
+  const bits = ['龙头' + (item.dragonGroupTopic ? '（' + item.dragonGroupTopic + '）' : '')];
+  const v = item.dragonGroupPct;
+  if (v !== null && v !== undefined && !isNaN(Number(v))) {
+    bits.push('10日涨幅 ' + (Number(v) >= 0 ? '+' : '') + Number(v).toFixed(2) + '%');
+  }
+  if (item.dragonGroupFormalStar) bits.push('* 该龙头同时位于今日正式列表');
+  return bits.join('｜');
 }
 
 // [CLOSE-LIMIT 2026-09-11] 股票名下划线标记的 class（优先级在 Logic 层之外只保留「谁盖住谁」这一件事）：
@@ -430,14 +469,16 @@ function stockTextClass(item) {
 function applyHighlight() {
   nextTick(() => {
     const s = highlightStockSet.value;
-    const rows = document.querySelectorAll('.auction-item[data-stock]');
+    // [DRAGON-GROUP 2026-09-14] 一并命中龙头组胶囊（.dragon-chip[data-stock]）——
+    // 龙头在默认模式下已从观察组/常规组抽出，只扫 .auction-item 会让搜索命中「无处发光」。
+    const rows = document.querySelectorAll('.auction-item[data-stock], .dragon-chip[data-stock]');
     rows.forEach(row => {
       const stock = row.getAttribute('data-stock') || '';
       if (s.has(stock)) row.classList.add('auction-row-highlight');
       else row.classList.remove('auction-row-highlight');
     });
     if (s.size > 0) {
-      const first = document.querySelector('.auction-item.auction-row-highlight');
+      const first = document.querySelector('.auction-item.auction-row-highlight, .dragon-chip.auction-row-highlight');
       if (first) first.scrollIntoView({ block: 'center', behavior: 'smooth' });
     }
   });

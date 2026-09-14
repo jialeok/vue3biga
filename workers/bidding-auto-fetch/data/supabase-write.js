@@ -205,6 +205,38 @@ export async function readAuctionTagsForDate(env, date) {
 }
 
 /**
+ * [DRAGON-GROUP 2026-09-14] 读取某【评选日】的龙头名册（dragon_leaders）。
+ * 用途：9:25 抓取前，把「前一交易日评选出的龙头」并入抓取名单 → 保证龙头组数据的【完整获取】
+ *      （需求 2：包括龙头组在内，所有数据和正式列表一样都要自动、完整获取）。
+ * 口径：名册的评选/落库唯一实现在前端 Logic 层（logic/auction/dragon-group.js），worker 只读不选
+ *      —— 避免「前端算一套、worker 算一套」的第二真相源（§6）。
+ * 与 auction_watchlist / 打标签股票同款：只并入【抓取名单 constituents】，不写 auction_watchlist，
+ *      不破坏「当日名单 = 9:25 快照」的锁定口径。
+ * 失败返回 []（非致命：当次龙头数据缺失，但不该因此中断整轮早盘抓取）。
+ */
+export async function readDragonLeadersForDate(env, date) {
+  if (!date) return [];
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/dragon_leaders?date=eq.' + encodeURIComponent(date) +
+    '&select=stock,code,topic&limit=500';
+  try {
+    const resp = await fetch(url, { headers: sbHeaders(env) });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    const out = [];
+    const seen = new Set();
+    (data || []).forEach(r => {
+      const name = (r.stock || '').trim();
+      if (!name || seen.has(name)) return;
+      seen.add(name);
+      out.push({ name: name, code: r.code || '', topic: (r.topic || '').trim() });
+    });
+    return out;
+  } catch (e) {
+    return [];
+  }
+}
+
+/**
  * [LATENCY 2026-09-11] 按【股票名】精确查代码映射。
  * 存在的理由：readStockCodeMap 全表读受 Supabase 单次 1000 行上限截断（实测表共 1005 行、
  * 只回 1000 行），少部分名字会查不到 code；而全表分页读又要 6 次请求，放在 9:25 的关键路径上不划算。

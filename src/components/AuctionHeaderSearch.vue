@@ -37,7 +37,7 @@ import { ref, computed, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
 import { inject } from 'vue';
 
 const board = inject('auctionBoard');
-const { headerSearchActive, highlightStockSet, obsItems, regularItems } = board;
+const { headerSearchActive, highlightStockSet, obsItems, regularItems, dragonItems } = board;
 
 const keyword = ref('');
 const inputRef = ref(null);
@@ -52,6 +52,11 @@ function onInput() {
   }
   // [FEAT 2026-08-18] 模糊匹配：子串包含（includes）——输入"沃"/"光电"/"电"均可命中"沃格光电"。
   const matched = new Set();
+  // [DRAGON-GROUP 2026-09-14] 龙头组也参与匹配（默认模式下龙头已从观察组/常规组抽出，
+  // 只扫 obs/regular 会让搜到的龙头「计数有、但没有任何行发光」）。
+  for (const item of dragonItems.value) {
+    if (item.stock && item.stock.toLowerCase().includes(kw)) matched.add(item.stock);
+  }
   for (const item of obsItems.value) {
     if (item.stock && item.stock.toLowerCase().includes(kw)) matched.add(item.stock);
   }

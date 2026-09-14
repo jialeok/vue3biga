@@ -32,6 +32,9 @@ import { apiStatusMap, setApiStatus } from '../logic/ui-bridge.js';
 import { setBtnLoading } from '../logic/shared/core-shared.js';
 // [DRAGON 2026-09-09] 题材龙头：10 日区间涨幅异步加载 + 龙头排名（Logic 层模块）
 import { ensureDragonRangePct, getDragonRangePct, getStockRangePct, DRAGON_RANGE_DAYS, invalidateDragonRange } from '../logic/auction/dragon-rank.js';
+// [DRAGON-GROUP 2026-09-14] 龙头组：名册异步加载（展示日读 D-1 名册；条件满足时评选并落库当日名册）。
+// 唯一入口 ensureDragonGroup 内含单飞 + 会话幂等 + 收盘口径闸门，重复调用零副作用。
+import { ensureDragonGroup } from '../logic/auction/dragon-group.js';
 // [CLOSE-COVER 2026-09-10] 收盘后自动用【收盘涨幅】覆盖 9:25 竞价涨幅（此前该闭环只存在于
 // 从未执行过的 pg_cron，导致当天 change_pct 全天停留在竞价值）。
 import { ensureClosePctCovered, isCloseCoverWindow } from '../logic/auction/close-pct-cover.js';
@@ -131,6 +134,10 @@ export function useAuctionBoard() {
           // 龙头排位等于白算（仍是早上的顺序）。覆盖内部幂等，不会重复烧额度。
           await runCloseCover(uiStore.currentDate);
           await ensureDragonRangePct(uiStore.currentDate);
+          // [DRAGON-GROUP 2026-09-14] 龙头组：读「展示日 D 的龙头名册」（= D-1 评选结果），
+          // 并在收盘口径权威后【评选 + 落库 D 自己的名册】（供 D+1 展示）。
+          // 必须排在 ensureDragonRangePct 之后：评选依赖「近10日区间涨幅」，否则池子为空不评选。
+          ensureDragonGroupForDate(uiStore.currentDate);
         } catch (e) {
           console.warn('[DRAGON] 龙头区间涨幅加载失败:', e && e.message);
           setApiStatus('numcatApiStatus', '❌ 龙头涨幅加载失败：' + (e && e.message || e), false);
@@ -138,6 +145,16 @@ export function useAuctionBoard() {
       },
       { immediate: true }
     );
+  }
+
+  // [DRAGON-GROUP 2026-09-14] 龙头组加载/评选的唯一入口（幂等、单飞，见 logic/auction/dragon-group.js）。
+  // 读名册失败必须让用户看见（§10 禁止静默失败：不能把「读失败」显示成「今天没有龙头」）。
+  function ensureDragonGroupForDate(date) {
+    if (!date) return;
+    ensureDragonGroup(date).catch(function(e) {
+      console.warn('[DRAGON-GROUP] 龙头组加载/评选失败:', e && e.message);
+      setApiStatus('numcatApiStatus', '❌ 龙头组加载失败：' + (e && e.message || e), false);
+    });
   }
 
   // [CLOSE-COVER 2026-09-10] 收盘涨幅自动覆盖 + 龙头排位重算。
@@ -182,6 +199,9 @@ export function useAuctionBoard() {
       ensureDragonRangePct(uiStore.currentDate).catch(function(e) {
         console.warn('[DRAGON] 定时重读 10 日涨幅失败:', e && e.message);
       });
+      // [DRAGON-GROUP 2026-09-14] 同步自愈：页面早上打开时（未到收盘口径）只读了名册、没评选；
+      // 跨过 15:00 后定时器到这里就会补评选 + 落库（幂等：同一评选日每会话只写一次）。
+      ensureDragonGroupForDate(uiStore.currentDate);
     }, CLOSE_COVER_POLL_MS);
   }
 
@@ -231,13 +251,20 @@ export function useAuctionBoard() {
     const m = itemsByIndex.value;
     return viewData.value.obsIndices.map(i => m.get(i)).filter(Boolean);
   });
+  // [DRAGON-GROUP 2026-09-14] 龙头组 → 独立小组件（AuctionDragonGroup）渲染在第一页最上方。
+  // 与 obsItems 同款：只按 Logic 层给出的索引取行对象，组件不做任何业务判断。
+  const dragonItems = computed(() => {
+    if (!viewData.value.dragonIndices) return [];
+    const m = itemsByIndex.value;
+    return viewData.value.dragonIndices.map(i => m.get(i)).filter(Boolean);
+  });
   const regularItems = computed(() => {
     if (!viewData.value.regularIndices) return [];
     const m = itemsByIndex.value;
     return viewData.value.regularIndices.map(i => m.get(i)).filter(Boolean);
   });
   const allItems = computed(() => {
-    return [...obsItems.value, ...regularItems.value];
+    return [...dragonItems.value, ...obsItems.value, ...regularItems.value];
   });
 
   const searchActive = ref(false);
@@ -254,6 +281,11 @@ export function useAuctionBoard() {
     const kw = searchKeyword.value.trim().toLowerCase();
     return allItems.value.filter(item => item.stock && item.stock.toLowerCase().includes(kw));
   });
+  const filteredDragonItems = computed(() => {
+    if (!searchKeyword.value.trim()) return dragonItems.value;
+    const kw = searchKeyword.value.trim().toLowerCase();
+    return dragonItems.value.filter(item => item.stock && item.stock.toLowerCase().includes(kw));
+  });
   const filteredObsItems = computed(() => {
     if (!searchKeyword.value.trim()) return obsItems.value;
     const kw = searchKeyword.value.trim().toLowerCase();
@@ -265,6 +297,11 @@ export function useAuctionBoard() {
     return regularItems.value.filter(item => item.stock && item.stock.toLowerCase().includes(kw));
   });
   const showObsSeparator = computed(() => filteredObsItems.value.length > 0 && filteredRegularItems.value.length > 0);
+  // [DRAGON-GROUP 2026-09-14] 龙头组与下方（观察组/常规组）之间的蚂蚁线分隔：龙头区块非空且下方有内容时显示。
+  const showDragonSeparator = computed(() => {
+    return filteredDragonItems.value.length > 0
+      && (filteredObsItems.value.length + filteredRegularItems.value.length) > 0;
+  });
 
   // ===== 第二页（题材分组）状态与逻辑 =====
   const sortState2 = reactive({ byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false });
@@ -1239,6 +1276,7 @@ export function useAuctionBoard() {
     itemsByIndex,
     obsItems,
     regularItems,
+    dragonItems,
     allItems,
     searchActive,
     searchKeyword,
@@ -1247,7 +1285,9 @@ export function useAuctionBoard() {
     filteredItems,
     filteredObsItems,
     filteredRegularItems,
+    filteredDragonItems,
     showObsSeparator,
+    showDragonSeparator,
     sortState2,
     isStrengthSortEnabled,
     p2ExpandedSet,

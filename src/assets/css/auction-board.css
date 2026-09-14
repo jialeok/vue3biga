@@ -546,6 +546,35 @@
             white-space: nowrap;
         }
 
+        /* [DRAGON-GROUP 2026-09-14] 龙头「组内标记」：题材 toggle 开启时不渲染独立龙头组区块，
+           改用名字后的「龙」小标就地辨认（需求 4）。紫色系以区别于题材色块/一字红/停板绿；
+           占位与 .auction-streak-tag 同级（9px、无边框），确保「节省空间」。 */
+        .auction-dragon-tag {
+            display: inline-block;
+            margin-left: 3px;
+            padding: 0 3px;
+            border-radius: 2px;
+            background: #ede9fe;
+            color: #6d28d9;
+            font-size: 9px;
+            font-weight: 700;
+            line-height: 12px;
+            vertical-align: 1px;
+            white-space: nowrap;
+        }
+
+        /* [DRAGON-GROUP 2026-09-14] 龙头组区块标题（第一页最上方，观察组之上）。 */
+        .auction-dragon-group-label {
+            color: #6d28d9;
+        }
+
+        /* [DRAGON-GROUP 2026-09-14] 龙头组与下方（观察组/常规组）之间的蚂蚁线分隔。
+           与 .auction-obs-separator 同款虚线，视觉上「隔离开但仍属同一张表」。 */
+        .auction-dragon-separator {
+            margin: 2px 12px 8px;
+            border-top: 1.5px dashed #c4b5fd;
+        }
+
         .auction-volume {
             flex: 1;
             font-size: 13px;

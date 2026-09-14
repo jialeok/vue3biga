@@ -31,6 +31,11 @@ import { getDragonRangePct, computeDragonRankMap, isAuthoritativeCloseReached, g
 // 此处同步读取（与 weakStrongSetRef 同款 ref-driven 范式），题材 toggle 开启时才参与计算。
 // [TOPIC-STATS 2026-09-10] 题材块统计条（数量/一字/竞价高开/龙头…）：纯函数在 topic-stats.js
 import { buildTopicStatsMap } from './topic-stats.js';
+// [DRAGON-GROUP 2026-09-14] 龙头组（第一页【观察组上方】的独立区块）：名册由 logic/auction/dragon-group.js
+// 异步加载后经模块级 ref 暴露，此处【同步读取】（与 dragon-rank 同款 ref-driven 范式，绝不阻塞渲染）。
+// 名册是唯一真相（§6）：本文件只负责「读名册 → 注入空壳行 → 给出 dragonIndices → 观察组去重」，
+// 绝不在这里二次评选龙头（那样就是第二个真相源）。
+import { getDragonLeadersForDisplay } from './dragon-group.js';
 
 function _getAuctionTag(date, stockName) {
   if (!date || !stockName) return null;
@@ -197,6 +202,12 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   // 以便分辨「它是观察组来源，但今天确实在正式列表里」——统计总数时它正常计入正式成员。
   const isFormalToday = ctx.isFormalToday ? ctx.isFormalToday(stockName) : false;
   const isObsFromPrev = ctx.isObsMember ? ctx.isObsMember(stockName) : false;
+  // [DRAGON-GROUP 2026-09-14] 该股是否「前一交易日评选出的龙头」（展示日 D 的龙头组 = D-1 名册）。
+  // 只读 ctx.dragonMap（Logic 层 dragon-group.js 已算好并落库），此处不做任何评选（§6 单一真相）。
+  // ⚠️ 变量名刻意为 isLeaderFromPrev（对外字段 dragonGroup*）：与另一套「题材内龙头排名」
+  //（dragonRank/dragonPct）区分，后者由本函数之外的重写逻辑赋值，容易与本组字段互相覆盖。
+  const _dragonEntry = (ctx.dragonMap && stockName) ? ctx.dragonMap.get(stockName) : null;
+  const isLeaderFromPrev = !!_dragonEntry;
 
   // [YIZI 2026-09-09] 竞价一字（竞价涨幅达到该股涨停幅度）→ 股票名下方红色下划线标记。
   // 仅题材 toggle 开启时判定（与龙头徽章同一显示口径），避免无谓计算。
@@ -255,6 +266,18 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     obsFormalStar: isObsFromPrev && isFormalToday,
     // 观察组来源（无论今日是否正式，供视图分组/样式使用）
     isObsFromPrev,
+    // [DRAGON-GROUP 2026-09-14] 龙头组字段（全部只读名册，零额外计算、零请求）。
+    //   ⚠️ 命名刻意与「题材内龙头排名」区分开：dragonRank / dragonPct 属于另一套功能
+    //   （同题材组内按十日涨幅排龙一/龙二，见 dragon-rank.js，且 items 组装末尾会重写 dragonPct）。
+    //   本组字段一律以 dragonGroup* 前缀，避免被那步覆盖（曾因此出现过「龙头组十日涨幅全为空」）。
+    //   · isDragonGroupMember   → 龙头组区块抽取 / 题材模式「龙」组内标记的判定依据；
+    //   · dragonGroupFormalStar → 龙头 ∩ 今日正式列表 → 打 *（需求 4，与观察组 `*` 同一套「双身份」语义）；
+    //   · dragonGroupTopic / dragonGroupPct / dragonGroupSize → 区块显示「题材 + 十日涨幅 + 题材成员数」。
+    isDragonGroupMember: isLeaderFromPrev,
+    dragonGroupFormalStar: isLeaderFromPrev && isFormalToday,
+    dragonGroupTopic: _dragonEntry ? _dragonEntry.topic : '',
+    dragonGroupPct: _dragonEntry ? _dragonEntry.pct : null,
+    dragonGroupSize: _dragonEntry ? _dragonEntry.groupSize : 0,
     // [FEAT 2026-08-20] 题材 toggle：题材数量（供排序）与题材展示文本（供题材列显示）
     topicCount: getStockTopicCount(rawItem),
     topicsDisplay: getStockTopicsDisplay(rawItem),
@@ -299,7 +322,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   const auctionList = getTodayGroupList(dataSource);
   if (!auctionList || auctionList.length === 0) {
-    return { items: [], obsIndices: [], regularIndices: [], hiddenObsIndices: [], stats: { todayStrength: null, yesterdayStrength: null, strongCount: 0, totalCount: 0, highRatioCount: 0, jingYestCount: 0 }, rawCount: 0, date: currentDate, dataSource };
+    return { items: [], obsIndices: [], regularIndices: [], dragonIndices: [], hiddenObsIndices: [], stats: { todayStrength: null, yesterdayStrength: null, strongCount: 0, totalCount: 0, highRatioCount: 0, jingYestCount: 0 }, rawCount: 0, date: currentDate, dataSource };
   }
 
   const prevDate = getPreviousTradingDay(currentDate);
@@ -314,6 +337,16 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     if (!name) return false;
     if (_obsBoughtSet.has(name)) return true;
     return (_obsStocks && _obsStocks.has(name));
+  };
+
+  // [DRAGON-GROUP 2026-09-14] 龙头组名册（同步读，ref-driven —— 名册异步到货后本函数自动重算）。
+  // 展示日 D 的龙头组 = 名册中 date = prevTradingDay(D) 的行（=「每天的龙头放到次日」）。
+  // null = 尚未加载/加载失败 → 本次不产生龙头组（绝不用空列表伪装成「今天没有龙头」，§10）；
+  // 名册的【评选】唯一实现在 logic/auction/dragon-group.js，本文件只读不选（§6 单一真相）。
+  const _dragonMap = getDragonLeadersForDisplay(currentDate);
+  const _isDragonPrev = function(name) {
+    if (!name || !_dragonMap) return false;
+    return _dragonMap.has(name);
   };
   // 凡应属观察组但不在当日列表的股票，构造渲染用空壳行（与 ensureObservationStocks 形状一致，便于 _enrichAuctionItem 统一处理）。
   const _existingNames = new Set(auctionList.map(function(s) { return s && s.stock ? s.stock.trim() : ''; }));
@@ -353,6 +386,31 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   //  - 统计口径仍基于 auctionList + 正式成员索引（getAuctionBoardList 已过滤），注入壳不影响总数/涨跌比。
   if (_obsStocks) _obsStocks.forEach(_maybeInject);
   _obsBoughtSet.forEach(_maybeInject);
+
+  // [DRAGON-GROUP 2026-09-14] 龙头组空壳行注入（需求 4：龙头「昨日在正式列表中、今日不在」也要出现）。
+  // 与观察组注入同款：仅用于视图渲染，不写入 auctionData、不推云端（§6 不产生影子记录）。
+  // 已落库到 dragon_leaders 的只有「名字/题材/十日涨幅」，当日行情（volume/yestVolume/note）若云端
+  // 有同名行则复用（worker 9:25 会把龙头并入抓取名单 → market_metrics 有影子行），否则留空壳。
+  // 标记 dragonAutoAdded=true 仅用于可观测性/调试（渲染归属由 dragonIndices 决定，不依赖此标记）；
+  // 刻意【不设】obsAutoAdded —— 它不是观察组行，混用会让「观察组归属」出现第二个判据（§6）。
+  function _maybeInjectDragon(n, meta) {
+    if (!n) return;
+    if (_existingNames.has(n) || _injectNames.has(n)) return;
+    _injectNames.add(n);
+    const dayRow = _auctionDayRowMap.get(n);
+    if (dayRow && dayRow.obsAutoAdded !== true) {
+      _injectedRows.push(Object.assign({}, dayRow, { dragonAutoAdded: true }));
+    } else {
+      _injectedRows.push({
+        stock: n,
+        code: (meta && meta.code) || getStockCode(n),
+        volume: '', yestVolume: '', note: '',
+        dragonAutoAdded: true
+      });
+    }
+  }
+  if (_dragonMap) _dragonMap.forEach(function(meta, name) { _maybeInjectDragon(name, meta); });
+
   // renderList 仅服务于视图渲染；真实业务数据(auctionList)保持不变，统计口径仍基于 auctionList。
   const renderList = _injectedRows.length ? auctionList.concat(_injectedRows) : auctionList;
 
@@ -827,6 +885,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // 注意：threeDayJingDieSet 已在上方题材分支前统一计算并复用，此处不再重复声明。
 
   let obsIndices, regularIndices, hiddenObsIndices;
+  // [DRAGON-GROUP 2026-09-14] 龙头组索引：非空时模板在【观察组之上】渲染独立「龙头组」区块
+  // （与观察组用蚂蚁线隔开）。其余模式折叠为 [] → 龙头只按「组内标记」体现在原列表中。
+  let dragonIndices = [];
   if (topicOnlyMode) {
     // [TOPIC-MERGE 2026-09-09] 题材单独开启：观察组与常规组融合为【单一列表】。
     // - obsIndices=[] → 模板不再渲染观察组区块与蚂蚁线分隔（showObsSeparator 自动为 false）；
@@ -889,8 +950,35 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     obsIndices = [];
     regularIndices = renderOrder.filter(i => hiddenObsIndices.indexOf(i) < 0);
   } else {
-    obsIndices = _obsIndicesRaw;
-    regularIndices = renderOrder.filter(i => obsIndices.indexOf(i) < 0);
+    // [DRAGON-GROUP 2026-09-14] 默认/平行模式（观察组区块可见）：把龙头组抽到最上方独立区块。
+    //   ① 去重（需求 3）：一只票既是观察组又是龙头组 → 归龙头组，观察组里剔除（龙头组优先、排最前）；
+    //   ② 龙头同时位于今日正式列表 → 打 *（需求 4，`dragonGroupFormalStar`，与观察组 `*` 同一套语义）；
+    //   ③ 龙头「昨日在正式列表、今日不在」时，其空壳行已在上方注入 → 一并进龙头组（需求 4）。
+    // 仅在【题材 toggle 未开】时抽出：题材模式下列表按题材重排，龙头改用「组内标记」辨认（需求 4），
+    // 否则会出现「龙头同时在龙头区块和题材组里」的重复（避免混乱）。
+    if (!sortState.byTopic && _dragonMap) {
+      dragonIndices = renderOrder.filter(function(i) {
+        const it = renderList[i];
+        return it && it.stock && _isDragonPrev(it.stock.trim());
+      });
+      // 组内排序：按十日区间涨幅降序（龙头的强度依次呈现），同幅保持原相对序（稳定排序）。
+      const _rank = function(i) {
+        const it = renderList[i];
+        const meta = _dragonMap.get(it && it.stock ? it.stock.trim() : '');
+        const p = meta ? meta.pct : null;
+        return (p === null || p === undefined || isNaN(p)) ? -Infinity : p;
+      };
+      dragonIndices = dragonIndices
+        .map(function(i, pos) { return { i: i, pos: pos, p: _rank(i) }; })
+        .sort(function(a, b) { return (b.p - a.p) || (a.pos - b.pos); })
+        .map(function(x) { return x.i; });
+    }
+    const _dragonSet = new Set(dragonIndices);
+    obsIndices = _obsIndicesRaw.filter(function(i) { return !_dragonSet.has(i); }); // 去重：龙头不进观察组
+    const _obsSet = new Set(obsIndices);
+    regularIndices = renderOrder.filter(function(i) {
+      return !_dragonSet.has(i) && !_obsSet.has(i);
+    });
     hiddenObsIndices = [];
   }
 
@@ -904,6 +992,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     isFormalToday: function(name) {
       return _isAuctionFormalMember(currentDate, name);
     },
+    // [DRAGON-GROUP 2026-09-14] 龙头组名册（股票名 → {topic,pct,groupSize,code}）。null = 未加载。
+    // 供 _enrichAuctionItem 逐行读取（只读，不在 enrich 里评选 —— 单一真相在 dragon-group.js）。
+    dragonMap: _dragonMap,
     prevAuctionList,
     prevAuctionMap: _prevMap,
     // [YIZI 2026-09-09] 题材 toggle 开关：竞价一字红线只在题材视图下计算/展示（与龙头徽章同一口径）
@@ -928,7 +1019,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     weakStrongSet: weakStrongSet,
     volGrabSet: volGrabSet
   };
-  const fullOrder = obsIndices.concat(regularIndices);
+  // [DRAGON-GROUP 2026-09-14] 最终渲染顺序 = 龙头组 → 观察组 → 常规组（龙头组排最前，需求 3）。
+  const fullOrder = dragonIndices.concat(obsIndices).concat(regularIndices);
 
   // 非「题材单独开启」时（叠加主排序 / 未开题材），fullOrder 可能与 renderOrder 不同
   // （折叠观察组会剔除未命中行）→ 必须按【最终展示集合】重算一次排名，避免被隐藏的票占用龙一位次。
@@ -1006,6 +1098,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     items,
     obsIndices,
     regularIndices,
+    // [DRAGON-GROUP 2026-09-14] 龙头组索引（第一页最上方独立区块）。[] = 该模式/该日无龙头组区块。
+    dragonIndices,
     hiddenObsIndices,
     weakStrongSet,
     volGrabSet,

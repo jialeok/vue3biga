@@ -4,7 +4,7 @@ import { localIsTradingDay } from '../../_shared-source/holidays.js';
 import { CONFIG } from '../config.js';
 import { fetchLadderConstituents } from '../data/fuyao-api.js';
 import { numcatDailyAuc, numcatDaily } from '../data/numcat-api.js';
-import { upsertAuctionWatchlist, upsertMarketMetrics, upsertStockRangePct, readAuctionWatchlistForDate, readAuctionTagsForDate, readStockCodeMap, readStockCodeMapByNames } from '../data/supabase-write.js';
+import { upsertAuctionWatchlist, upsertMarketMetrics, upsertStockRangePct, readAuctionWatchlistForDate, readAuctionTagsForDate, readDragonLeadersForDate, readStockCodeMap, readStockCodeMapByNames } from '../data/supabase-write.js';
 import { getRecentTradingDays } from './holiday-check.js';
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏。早盘放在【最后】跑一次（不阻塞 P0/P1/P2）：
 // 猫抓对当日行通常不给四要素，但若为单日请求/结算较快而给了，就能在 9:26 前顺手落库；
@@ -144,11 +144,13 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
   const prevDay = recentDays.length >= 2 ? recentDays[recentDays.length - 2] : null;
 
   // 组B：三个名单来源并行（原来串行 3 次 + 中间夹着 2 次重复的代码表读取）
-  logs.push('步骤1b：并行读取 前日名单 / 今日名单 / 前日标签...');
-  const [prevWlRes, todayWlRes, tagRes] = await Promise.all([
+  logs.push('步骤1b：并行读取 前日名单 / 今日名单 / 前日标签 / 前日龙头...');
+  const [prevWlRes, todayWlRes, tagRes, dragonRes] = await Promise.all([
     settled(prevDay ? readAuctionWatchlistForDate(env, prevDay) : Promise.resolve([])),
     settled(readAuctionWatchlistForDate(env, today)),
-    settled(prevDay ? readAuctionTagsForDate(env, prevDay) : Promise.resolve([]))
+    settled(prevDay ? readAuctionTagsForDate(env, prevDay) : Promise.resolve([])),
+    // [DRAGON-GROUP 2026-09-14] 前一交易日评选出的龙头名册（供「龙头组数据完整获取」，需求 2）
+    settled(prevDay ? readDragonLeadersForDate(env, prevDay) : Promise.resolve([]))
   ]);
 
   let constituents = ladderConstituents;
@@ -210,7 +212,10 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
 
   // 组C：仍缺 code 的名字，按名精确补一次（全表读被 1000 行上限截断的兜底）
   // 注意：这里只补「名单里已经确定要抓」的名字，不补 watchlist 行本身的 code。
+  const dragonStocks = (dragonRes.ok && dragonRes.v) || [];
+  if (dragonRes.e) logs.push('读取前一交易日龙头名册失败(非致命): ' + dragonRes.e.message);
   const nameless = todayStocks.concat(prevWlRes.ok && prevWlRes.v ? prevWlRes.v : [])
+    .concat(dragonStocks)
     .map(s => s.name)
     .filter(n => n && !codeMap[n]);
   if (nameless.length > 0) {
@@ -234,6 +239,32 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
         constituents = constituents.concat(more);
         logs.push('补码后新增抓取标的: ' + more.length + ' 只');
       }
+    }
+  }
+
+  // [DRAGON-GROUP 2026-09-14] 合并「前一交易日评选出的龙头」到抓取名单（需求 2：龙头组数据要像正式列表一样
+  // 自动、完整获取）。放在组C【之后】执行：此时 codeMap 已被按名补码增强，龙头最不容易因缺 code 被漏掉。
+  // 与打标签股票同一处理：只并入 constituents（= market_metrics 抓取名单），不写 auction_watchlist
+  // → 不破坏「当日名单 = 9:25 快照」的锁定口径（§6）。
+  //
+  // ⚠️ 为什么必须并入：龙头可能「昨日在正式列表、今日不在」（需求 4）—— 它不在今天的成分股里，
+  //    若不并入，9:25 就不会为它抓当天行情 → 龙头组区块显示空白。名册由前端评选落库（逻辑唯一真相 §6）。
+  if (dragonStocks.length > 0) {
+    const existingNames = new Set(constituents.map(c => c.name));
+    const existingCodes = new Set(constituents.map(c => c.code));
+    const dragonExtra = [];
+    dragonStocks.forEach(function (d) {
+      if (!d || !d.name || existingNames.has(d.name)) return;
+      const code = d.code || codeMap[d.name] || '';
+      if (!code || existingCodes.has(code)) return;
+      existingNames.add(d.name);
+      existingCodes.add(code);
+      dragonExtra.push({ name: d.name, code: code });
+    });
+    if (dragonExtra.length > 0) {
+      logs.push('前一交易日(' + prevDay + ')龙头: ' + dragonExtra.length +
+        ' 只，合并到抓取名单（不写 watchlist）');
+      constituents = constituents.concat(dragonExtra);
     }
   }
 

@@ -22,6 +22,10 @@ import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 // [DRAGON 2026-09-09] 龙头徽章依赖异步加载的 10 日区间涨幅，必须进全局指纹，
 // 否则数据到达后行缓存不失效 → 徽章不显示（或陈旧）。
 import { getDragonFingerprintToken } from './dragon-rank.js';
+// [DRAGON-GROUP 2026-09-14] 龙头组名册同样异步加载：它决定「龙头组区块/组内『龙』标记」，且会
+// 改变行的分组归属（龙头从观察组/常规组抽到龙头组）。名册到货/切换日期必须让行缓存整体失效，
+// 否则增量缓存会复用旧行对象 → 龙头区块与「龙」标记陈旧（或该出现时没出现）。
+import { getDragonGroupFingerprintToken } from './dragon-group.js';
 // [TOPIC-STATS 2026-09-10] 题材块统计条签名（挂在组内首行上，需单独进 rowSig）
 import { topicStatsSignature } from './topic-stats.js';
 
@@ -90,6 +94,9 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
     'three=' + three,
     'vgrab=' + vgrab,
     'dragon=' + getDragonFingerprintToken(),
+    // [DRAGON-GROUP 2026-09-14] 龙头组名册签名（展示日 + 版本 + 条数）。它决定哪些行进龙头组区块、
+    // 以及「龙」组内标记的显隐 → 名册变化必须清空行缓存（与上方 dragon= 同款理由）。
+    'dgroup=' + getDragonGroupFingerprintToken(),
     'confirmed=' + confirmed
   ].join('|');
 }
