@@ -961,11 +961,19 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
         const it = renderList[i];
         return it && it.stock && _isDragonPrev(it.stock.trim());
       });
-      // 组内排序：按十日区间涨幅降序（龙头的强度依次呈现），同幅保持原相对序（稳定排序）。
+      // 组内排序：按【十日区间涨幅】由高到低（需求：龙头组按十日涨幅降序），同幅保持原相对序（稳定排序）。
+      //   取值优先用名册记录的口径（= 区块行显示的 dragonGroupPct，同源）；名册缺 pct 时回退到
+      //   当前展示日已加载的区间涨幅（getDragonRangePct），保证排序在任何情况下都有效（不会退化成乱序）。
+      const _liveRange = getDragonRangePct(currentDate);
       const _rank = function(i) {
         const it = renderList[i];
-        const meta = _dragonMap.get(it && it.stock ? it.stock.trim() : '');
-        const p = meta ? meta.pct : null;
+        const name = it && it.stock ? it.stock.trim() : '';
+        const meta = _dragonMap.get(name);
+        let p = meta ? meta.pct : null;
+        if (p === null || p === undefined || isNaN(p)) {
+          const lr = _liveRange ? _liveRange.get(name) : null;
+          p = lr ? lr.pct : null;
+        }
         return (p === null || p === undefined || isNaN(p)) ? -Infinity : p;
       };
       dragonIndices = dragonIndices

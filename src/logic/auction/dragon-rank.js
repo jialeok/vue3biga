@@ -248,6 +248,16 @@ export async function ensureDragonRangePct(date, opts) {
     _dbgLog('[DRAGON] 交易日历读取失败（放行）: ' + (e && e.message || e));
   }
   if (_isFuture || _isNonTrading) {
+    // [FIX 2026-09-14 · 切换交易日卡死] 幂等：同一个「未来日 / 非交易日」只发布一次空 Map。
+    //   原实现每次调用都执行 `_publish(date, new Map())` → dragonState.version 自增 →
+    //   getDragonFingerprintToken() 变化（见 incremental-view.js 的 'dragon=' 令牌）→ 全局指纹变化 →
+    //   rowCache.clear() + viewData 重算 → 观察 viewData.items.length 的 watch 再次进入本函数 →
+    //   每秒无限循环、界面（手机端/电脑端）卡死。实测：点底部小三角切到 2026-09-15 时，
+    //   [DRAGON] 「是未来日期」日志每秒刷屏、日期切不过去（用户 2026-09-14 反馈）。
+    //   现在：该日期已经登记为「空」时直接返回既有空 Map，绝不 bump version / 不触发重算
+    //   （§17：只在数据真正变化时才驱动重渲染）。
+    const _s = dragonState.value;
+    if (!force && _s.date === date && _s.map && _s.map.size === 0) return _s.map;
     _dbgLog('[DRAGON] ' + date + (_isFuture ? ' 是未来日期' : ' 非交易日') + ' → 不读不写、不产生区间涨幅');
     _publish(date, new Map());
     return new Map();
