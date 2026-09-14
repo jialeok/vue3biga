@@ -41,6 +41,9 @@ import { getPrimaryTopicMap, classifyStockPrimaryTopic } from './topic-sort.js';
 import { getJingYestHighlightSetForDate } from './sort-rules.js';
 import { getDragonRangePct, ensureDragonRangePct, isAuthoritativeCloseReached } from './dragon-rank.js';
 import { readDragonLeadersForDate, upsertDragonLeaders } from '../../data/dragon-leaders.js';
+// [DRAGON-GROUP 2026-09-14 · 龙头组消失] §10 就绪闸门：评选候选池依赖「该日正式名单」，
+// 索引未就绪（= 数据还没拉到）时不得评选、更不得登记「该日没有龙头」的终局结论。
+import { _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
 // 补评选历史日时直接读云端权威区间涨幅（不碰 dragon-rank 的单日期状态，见 _computeAndPersist 注释）
 import { readRangePctForDate } from '../../data/stock-range-pct.js';
 import { getStockCode } from '../../data/stock-code-map.js';
@@ -121,8 +124,21 @@ async function _load(date, force) {
   // 读取失败必须向上抛（§10）：绝不用空名册顶替「今天没有龙头」——
   // 由调用方 loud 记录并把该行留空，而不是显示成「龙头组为空」。
   const prevDate = getPreviousTradingDay(date);
-  const stale = dragonGroupState.value.date !== date;
-  if (force || stale) {
+  const cur = dragonGroupState.value;
+  const stale = cur.date !== date;
+  // [DRAGON-GROUP 2026-09-14 · 龙头组消失 · §10 就绪闸门]
+  //   只有「前一交易日的正式名单已就绪」才去读/补名册。未就绪 = 该日数据还没拉到（首屏加载中），
+  //   此时读名册与补评选都无意义：补评选会因候选池不完整而**误判「该日没有龙头」并永久登记**
+  //   （见 _computeAndPersist 的 §10 闸门）。未就绪时**不发布**（保持 null = 未加载）→ 保持 stale，
+  //   下一轮（数据到货后由 useAuctionBoard 的 items.length watch 触发）自然重试。
+  const prevReady = !prevDate || _isAuctionWatchlistIndexReady(prevDate);
+  // 展示名册为空、且该评选日并非「已确认无龙头」→ 需要重读补齐。
+  //   为什么不能只看 stale（这是用户实测「9/14 只有观察组、龙头组整块不见」的直接成因）：
+  //     首屏加载中第一次读到的名册可能是空（数据尚未就绪），而 stale 之后恒为 false
+  //     → 不再重读 → 即使数据到货，龙头组**整个会话都空**。needFill 让它在数据到货后自动补齐。
+  const needFill = !stale && prevDate && prevReady
+    && (!cur.map || cur.map.size === 0) && !_resolvedDates.has(prevDate);
+  if ((force || stale || needFill) && prevReady) {
     let rows = prevDate ? await readDragonLeadersForDate(prevDate) : [];   // 失败 → throw
 
     // ---- ①b 补评选（自愈）：前一交易日名册为空 → 就地评选 + 落库 ----
@@ -188,6 +204,19 @@ async function _computeAndPersist(date, opts) {
   // 收盘口径闸门：15:00~16:05 之间 change_pct 可能仍是 9:25 竞价副本，
   // 用它选出龙头会在 16:05 后被推翻（一个题材先写 A 再写 B）。统一等权威收盘口径。
   if (!isAuthoritativeCloseReached(date)) return [];
+
+  // [DRAGON-GROUP 2026-09-14 · 龙头组消失 · §10 就绪闸门] 正式名单未就绪 → 不评选、**不登记终局**。
+  //   候选池与题材分组都建立在「该日正式名单」（getTodayGroupList）之上；索引未就绪时它会**退化返回原始列表**
+  //   （含影子行 / 残缺），于是组内成员数虚低 → pickTopicLeaders 返回空 → 被误判成
+  //   「该日确实没有成员>=3 的题材」并**永久写进 _resolvedDates** → 该评选日整会话不再重算。
+  //   实测链（已用 REST 核实：dragon_leaders 对 9/11 = 0 行、stock_range_pct 对 9/11 = 47 行 days=10）：
+  //     首屏加载时 display=D 的 _load 立刻为 prevDate 补评选 → 此刻 prevDate 名单尚未就绪 → 误登记终局
+  //     → 之后数据到货也不再补 → 次日（display=D）龙头组永远为空（用户看到「只有观察组」）。
+  //   未就绪时返回空**但不登记**，由 _load 的 needFill 在数据到货后自动重试。
+  if (!_isAuctionWatchlistIndexReady(date)) {
+    _dbgLog('[DRAGON-GROUP] ' + date + ' 正式名单索引未就绪 → 本次不评选（数据到货后自动重试，不登记终局）');
+    return [];
+  }
 
   if (_resolvedDates.has(date)) return [];
   if (_persistInflight.has(date)) return _persistInflight.get(date);
