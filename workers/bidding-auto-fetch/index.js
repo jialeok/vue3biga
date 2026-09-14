@@ -13,7 +13,7 @@ import { beijingNow } from '../../_shared-source/date-utils.js';
 import { runMorning } from './logic/morning-workflow.js';
 import { runClose } from './logic/close-workflow.js';
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏（可手动 /fetch?point=extras；16:00 close 也会自动跑）
-import { runAuctionExtrasPatch } from './logic/extras-workflow.js';
+import { runAuctionExtrasPatch, runTodaySnapshotPatch } from './logic/extras-workflow.js';
 
 function jsonResponse(obj, status) {
   return new Response(JSON.stringify(obj, null, 2), {
@@ -50,11 +50,28 @@ function cronToPoint(cronExpr) {
   return MAP[key] || null;
 }
 
+/**
+ * [SNAPSHOT-EXTRAS 2026-09-14] 9:25 早盘 / 16:00 收盘主流程末尾，用同花顺快照补【当天】
+ * 的 auc_pct_chg / auc_vol_ratio / auc_turnover / volume（免费、0 猫抓额度）。
+ * 失败不致命：整段 try/catch，只留日志，绝不影响主流程结果。
+ */
+async function runSnapshotPatchSafely(env, result, tag) {
+  try {
+    const snap = await runTodaySnapshotPatch(env, {});
+    console.log('[auto-fetch] ' + tag + ' 快照补当日竞价字段: patched=' + snap.patched + ' 日志=' + JSON.stringify(snap.logs || []));
+    if (result && typeof result === 'object') result.snapshotPatch = snap;
+  } catch (e) {
+    console.error('[auto-fetch] ' + tag + ' 快照补当日竞价字段失败:', e && e.message);
+  }
+}
+
 async function dispatch(point, env, logs, opts) {
   if (point === 'morning') {
     const result = await runMorning(env);
     console.log('[auto-fetch] runMorning 完成 ok=' + result.ok + ' completenessSummary=' + (result.completenessSummary || ''));
     console.log('[auto-fetch] runMorning 完整日志:', JSON.stringify(result.logs || []));
+    // [SNAPSHOT-EXTRAS 2026-09-14] 9:25 竞价刚结束 → 立刻补当天三个竞价字段（趋势图/龙徽章/一字红线依赖它们）
+    await runSnapshotPatchSafely(env, result, 'morning');
     return result;
   }
   if (point === 'close') {
@@ -63,6 +80,16 @@ async function dispatch(point, env, logs, opts) {
     console.log('[auto-fetch] runClose 完成 ok=' + result.ok + ' today=' + (result.today || '') +
       ' completenessSummary=' + (result.completenessSummary || ''));
     console.log('[auto-fetch] runClose 完整日志:', JSON.stringify(result.logs || []));
+    // [SNAPSHOT-EXTRAS 2026-09-14] 收盘后再兜一次（防止 9:25 那次快照未终态 / 漏掉新进名单的票）
+    await runSnapshotPatchSafely(env, result, 'close');
+    return result;
+  }
+  if (point === 'snapshot') {
+    // [SNAPSHOT-EXTRAS 2026-09-14] 手动补当天竞价字段（排查用）
+    const result = await runTodaySnapshotPatch(env, { date: (opts && opts.date) || '' });
+    console.log('[auto-fetch] runTodaySnapshotPatch 完成 ok=' + result.ok + ' patched=' + result.patched +
+      ' today=' + (result.today || ''));
+    console.log('[auto-fetch] runTodaySnapshotPatch 完整日志:', JSON.stringify(result.logs || []));
     return result;
   }
   if (point === 'extras') {
@@ -108,8 +135,8 @@ export default {
           return jsonResponse({ ok: false, error: '当前北京时间不在抓取时段（9:25~9:40=morning，15:00~16:30=close）' });
         }
       }
-      if (!['morning', 'close', 'extras'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天）' });
+      if (!['morning', 'close', 'extras', 'snapshot'].includes(point)) {
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot 可附 &date=YYYY-MM-DD）' });
       }
       try {
         const result = await dispatch(point, env, [], {

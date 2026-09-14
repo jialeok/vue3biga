@@ -32,7 +32,10 @@
 
 import { beijingToday, compactToDateStr } from '../../_shared-source/date-utils.js';
 import { numcatDailyAuc } from '../data/numcat-api.js';
-import { upsertMarketMetrics, readMarketMetricsExtrasForDate } from '../data/supabase-write.js';
+import { fetchAuctionSnapshot } from '../data/fuyao-api.js';
+import {
+  upsertMarketMetrics, readMarketMetricsExtrasForDate, readMarketMetricsSnapshotFieldsForDate
+} from '../data/supabase-write.js';
 import { getRecentTradingDays } from './holiday-check.js';
 import { RANGE_WINDOW_DAYS } from '../../../src/logic/auction/range-window.js';
 
@@ -56,6 +59,19 @@ function extrasFmtUmVol(v) {
 function extrasFmt2(v) {
   const n = Number(v);
   return isNaN(n) ? '' : n.toFixed(2);
+}
+
+/** 严格数值化：null / undefined / 空串 → NaN（避免 Number(null)=0 被当成合法 0 值写库） */
+function extrasNum(v) {
+  if (v === null || v === undefined || String(v).trim() === '') return NaN;
+  const n = Number(v);
+  return isNaN(n) ? NaN : n;
+}
+
+/** 带符号百分比字符串，如 +4.66% / -1.20% */
+function extrasFmtSignedPct(v) {
+  const n = extrasNum(v);
+  return isNaN(n) ? '' : (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
 }
 
 /**
@@ -215,4 +231,139 @@ export async function runAuctionExtrasPatch(env, opts) {
   }
   logs.push('[extras] ✅ 补写 ' + patched + '/' + rows.length + ' 行竞价四要素');
   return { ok: patched > 0, today, patched: patched, dates: dates, logs };
+}
+
+// ============================================================================
+// [SNAPSHOT-EXTRAS 2026-09-14] 当日竞价字段补漏（同花顺快照，0 猫抓额度）
+//
+// 【为什么需要补这一条链路 / 2026-09-14 事故】
+//   9:25 早盘 worker 从猫抓 daily_auc 写入 market_metrics 时，【当天】这一行的
+//   auc_pct_chg / auc_vol_ratio / auc_turnover 拿不到（猫抓当日不给，要等结算后）。
+//   而 runAuctionExtrasPatch 默认又【排除今天】。两头一夹 → 当天这三个字段整天为空 →
+//   看板「题材 toggle」里每只股票的趋势图竞价涨幅是空的、展开面板的「竞价量比/真换手率」
+//   也没有、龙一/龙二徽章全部掉色、竞价一字板判不出实心红线（用户 2026-09-14 反馈）。
+//   同花顺 auction/snapshot 在 9:25 竞价结束后就能给【当天】终态值（免费、不限量）→ 用它补。
+//
+// 【安全约束】
+//   · 只补 4 个字段（auc_pct_chg / auc_vol_ratio / auc_turnover / volume），且只写「库内为空」的行；
+//   · um_vol / open_bid_pct 不在本接口能力内 → 不写（§40 不猜测）；
+//   · 写入前必须校验「快照服务端日期 == 目标日」+ data_status=final，否则整体拒绝（避免把上一交易日写到今天）；
+//   · 读取失败抛错中断，绝不把「读不到」当成「全都缺」（§10）；
+//   · 幂等：重复跑只补仍为空的行，已有值永不覆盖。
+// ============================================================================
+const SNAPSHOT_FIELDS = ['auc_pct_chg', 'auc_vol_ratio', 'auc_turnover', 'volume'];
+
+/**
+ * 用同花顺快照补「当天」竞价字段缺口。
+ * @param {object} env
+ * @param {{logs?:string[], date?:string}} [opts] date 缺省 = 北京今天（仅供排查时指定）
+ * @returns {Promise<{ok:boolean, today:string, patched:number, logs:string[]}>}
+ */
+export async function runTodaySnapshotPatch(env, opts) {
+  const o = opts || {};
+  const logs = o.logs || [];
+  const today = o.date || beijingToday();
+  logs.push('[snapshot] 当日竞价字段补漏开始 today=' + today);
+
+  // 1) 读库内现状（§10：读取失败必须抛错，不能当成全缺）
+  let rows;
+  try {
+    rows = await readMarketMetricsSnapshotFieldsForDate(env, today);
+  } catch (e) {
+    logs.push('[snapshot] ❌ 读取 ' + today + ' 失败（中断，避免误覆盖）: ' + e.message);
+    return { ok: false, today, patched: 0, logs, error: e.message };
+  }
+  if (rows.length === 0) {
+    logs.push('[snapshot] ⚠️ ' + today + ' 无竞价行（worker 尚未写入？）→ 跳过');
+    return { ok: false, today, patched: 0, logs, reason: '无行' };
+  }
+  const need = rows.filter(r => SNAPSHOT_FIELDS.some(f => extrasIsEmpty(r[f])) && /^\d{6}$/.test(r.code));
+  logs.push('[snapshot] 行数 ' + rows.length + '，其中缺字段 ' + need.length + ' 行');
+  if (need.length === 0) {
+    logs.push('[snapshot] ✅ 当日竞价字段已完整，无需补写');
+    return { ok: true, today, patched: 0, logs };
+  }
+
+  // 2) 一次快照批量拉全（≤100/批）
+  let snap;
+  try {
+    snap = await fetchAuctionSnapshot(env, need.map(r => r.code));
+  } catch (e) {
+    logs.push('[snapshot] ❌ 快照请求失败: ' + e.message);
+    return { ok: false, today, patched: 0, logs, error: e.message };
+  }
+
+  // 3) 日期闸门：快照只给「最近一个交易日」，服务端日期 ≠ 目标日 → 整体拒绝写入
+  for (let i = 0; i < snap.batches.length; i++) {
+    const b = snap.batches[i];
+    const ts = Number(b.timestamp);
+    if (!isFinite(ts) || ts <= 0) {
+      logs.push('[snapshot] ⚠️ 快照缺少可用 timestamp → 拒绝写入（无法确认是哪一天）');
+      return { ok: false, today, patched: 0, logs, reason: '无 timestamp' };
+    }
+    const stampDate = new Date(ts + 8 * 3600e3).toISOString().slice(0, 10);
+    if (stampDate !== today) {
+      logs.push('[snapshot] ⚠️ 快照服务端日期 ' + stampDate + ' ≠ 目标日 ' + today + ' → 拒绝写入（避免写错日）');
+      return { ok: false, today, patched: 0, logs, reason: '日期不符' };
+    }
+    if (b.data_status !== 'final') {
+      logs.push('[snapshot] ⚠️ 快照 data_status=' + b.data_status + '（非终态）→ 本次跳过');
+      return { ok: false, today, patched: 0, logs, reason: '非终态' };
+    }
+  }
+  const byCode = new Map();
+  snap.items.forEach(it => {
+    const t = String(it && it.ticker || '').trim();
+    if (t && !byCode.has(t)) byCode.set(t, it);
+  });
+
+  // 4) 只补「库内为空 + 本次有值」的行
+  const nowIso = new Date().toISOString();
+  const patchRows = [];
+  const seen = new Set();
+  for (let i = 0; i < need.length; i++) {
+    const r = need[i];
+    if (seen.has(r.name)) continue;
+    const it = byCode.get(r.code);
+    if (!it) continue;
+    const patch = {
+      date: today, stock: r.name, scope: 'auction', code: r.code,
+      source: 'worker', updated_at: nowIso, updated_by: 'auto-fetch-worker-snapshot'
+    };
+    let any = false;
+    if (extrasIsEmpty(r.auc_pct_chg)) {
+      const v = extrasFmtSignedPct(it.auction_pct);
+      if (v !== '') { patch.auc_pct_chg = v; any = true; }
+    }
+    if (extrasIsEmpty(r.auc_vol_ratio)) {
+      const v = extrasFmt2(extrasNum(it.auction_volume_ratio));
+      if (v !== '') { patch.auc_vol_ratio = v; any = true; }
+    }
+    if (extrasIsEmpty(r.auc_turnover)) {
+      const v = extrasFmt2(extrasNum(it.auction_turnover_pct));
+      if (v !== '') { patch.auc_turnover = v; any = true; }
+    }
+    if (extrasIsEmpty(r.volume)) {
+      const n = extrasNum(it.auction_volume);
+      if (!isNaN(n)) { patch.volume = String(Math.round(n / 100)); any = true; }
+    }
+    if (!any) continue;
+    seen.add(r.name);
+    patchRows.push(patch);
+  }
+
+  if (patchRows.length === 0) {
+    logs.push('[snapshot] ⚠️ 快照未给出任何可补值（当日竞价尚未终态时属正常）');
+    return { ok: true, today, patched: 0, logs };
+  }
+
+  // 5) 写入（merge-duplicates + missing=default → 绝不抹掉 change_pct / yest_volume 等）
+  try {
+    await upsertMarketMetrics(env, patchRows);
+  } catch (e) {
+    logs.push('[snapshot] ❌ 写入失败: ' + e.message);
+    return { ok: false, today, patched: 0, logs, error: e.message };
+  }
+  logs.push('[snapshot] ✅ 补写 ' + patchRows.length + ' 行当日竞价字段（auc_pct_chg/auc_vol_ratio/auc_turnover/volume）');
+  return { ok: true, today, patched: patchRows.length, logs };
 }

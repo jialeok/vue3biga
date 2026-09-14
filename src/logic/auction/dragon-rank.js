@@ -25,7 +25,7 @@
 // 红线（§10）：读取失败必须 throw，绝不返回空 Map 伪装成「没有数据」。
 
 import { ref } from 'vue';
-import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
+import { getPreviousTradingDay, isTradingDay } from '../date/trading-day-helpers.js';
 import { _getLocalTodayStr } from '../tagTitles/rules.js';
 import { state } from '../app-state.js';
 import { getAuctionData } from '../app-core-api.js';
@@ -227,6 +227,31 @@ function _inWorkerWindow(date) {
 export async function ensureDragonRangePct(date, opts) {
   const force = !!(opts && opts.force);
   if (!date) return null;
+  // [DATE-GATE 2026-09-14] 只对「今天或过去的交易日」加载/计算/落库。
+  //   为什么必须有这道闸门（实测事故，2026-09-14）：
+  //     看板允许「预览下一交易日」（见 rules.js#ensureObservationStocks 的历史锁定注释），
+  //     周末/盘后把日期切到未来那一天时，本函数会拿【当时内存里已有的历史日】去凑 [T-9, T]
+  //     —— 未来那天当然没有 T 腿 → 产出 days=窗口-1 的残缺值，并被第 ③ 步「本地残缺值兜底」
+  //     写进云端 stock_range_pct（日期 = 那个未来日）。等那一天真的到来，云端已经有这一行，
+  //     _missingTargetRows 因「云端已有该行」而不再重算 → 看板读到的就是【旧窗口】的值，
+  //     表现为「十日涨幅统计的是旧日期、龙头徽章掉色」（用户 2026-09-14 反馈）。
+  //   非交易日同理：周末预览也会落下一批 days=9 的脏行（实测 9/12、9/13 各有 4 行）。
+  //   直接发布「空 Map」而不是沿用上一天的缓存 → UI 明确地什么都不显示（§10 宁缺勿错）。
+  //   闸门口径与 close-pct-cover.js#isCloseCoverWindow 完全一致（§6：同一套日期合法性判定不写两份）。
+  const _today = _getLocalTodayStr();
+  const _isFuture = !!_today && date > _today;
+  let _isNonTrading = false;
+  try {
+    _isNonTrading = !isTradingDay(date);
+  } catch (e) {
+    // 交易日历读不到（localStorage 缺配置）→ 不因它阻断，只放行（宁可多算也不静默断功能）
+    _dbgLog('[DRAGON] 交易日历读取失败（放行）: ' + (e && e.message || e));
+  }
+  if (_isFuture || _isNonTrading) {
+    _dbgLog('[DRAGON] ' + date + (_isFuture ? ' 是未来日期' : ' 非交易日') + ' → 不读不写、不产生区间涨幅');
+    _publish(date, new Map());
+    return new Map();
+  }
   const cur = dragonState.value;
   if (!force && cur.date === date && cur.map) {
     const isEmpty = cur.map.size === 0;
@@ -292,14 +317,20 @@ async function _load(date, force) {
     const expectedLegs = getDragonWindowDates(date).length;
     const applied = new Set();
 
-    /** 统一落库：内存 map → 发布（驱动重渲染）→ 写云（失败只留痕，不影响本次展示） */
-    const _applyAssembly = async function(rows, stage) {
+    /** 把重算结果合并进内存 map（驱动重渲染），不落库 */
+    const _applyMemory = function(rows) {
       if (!rows || rows.length === 0) return;
       rows.forEach(function(r) {
         map.set(r.stock, { pct: r.pct, days: r.days });
         applied.add(r.stock);
       });
       _publish(date, map);
+    };
+
+    /** 统一落库：内存 map → 发布（驱动重渲染）→ 写云（失败只留痕，不影响本次展示） */
+    const _applyAssembly = async function(rows, stage) {
+      if (!rows || rows.length === 0) return;
+      _applyMemory(rows);
       try {
         await upsertRangePctRows(date, rows);
       } catch (e) {
@@ -372,6 +403,13 @@ async function _load(date, force) {
     //     —— 宁缺勿错。
     //     只有「云端完全没有这一行」时才用本地值垫底：那时权威通道已经失败过，
     //     有值(且是真实累乘、UI 会标注 (N/10日)) 总好过整列空白。
+    //
+    //   🔴 [NO-PARTIAL-WRITE 2026-09-14] 但垫底值【只进内存、绝不写云】—— 与 worker
+    //      （morning-workflow.buildRangePctRows）「拿不到当天 T 腿一律不写行」口径对齐（§6 单一真相）。
+    //      实测事故：前端把 days=9 的残缺行写进云端后，云端从此「有这一行」→ `_missingTargetRows`
+    //      不会再把它列为待补 → 残缺值被永久冻结；比它更早的 9/12、9/13（周末）那批行更是直接
+    //      把「未来日期」也写了进去。残缺值写云 = 用一个系统性偏低的值污染按【日期级】复用的缓存，
+    //      代价远大于「本次会话这一列空白」。
     const leftover = [];
     remain.forEach(function(r) {
       const n = String((r && r.stock) || '').trim();
@@ -379,7 +417,11 @@ async function _load(date, force) {
       const lr = lastResort.get(n);
       if (lr) leftover.push({ stock: lr.stock, pct: lr.pct, days: lr.days });
     });
-    await _applyAssembly(leftover, '本地重算(部分窗口)');
+    if (leftover.length > 0) {
+      _applyMemory(leftover);
+      _dbgLog('[DRAGON] 本地重算(部分窗口) 仅内存展示 ' + leftover.length + ' 只（days<窗口，按 §6 不写云，等权威整段重算）：' +
+        leftover.map(function(r) { return r.stock + '(/d' + r.days + ')'; }).join('、'));
+    }
   }
   return dragonState.value.date === date && dragonState.value.map ? dragonState.value.map : map;
 }

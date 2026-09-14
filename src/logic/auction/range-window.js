@@ -11,6 +11,12 @@
 //   ② 区间涨幅 = 窗口内各日涨幅【复利累乘】∏(1+r) - 1（不是简单相加）；
 //   ③ 当天(T)腿口径：
 //        - 仅当「看板日期 = 系统今天」且「未到 15:00 收盘」→ 用 9:25 竞价涨幅占位（当日尚未走完）；
+//          ⚠️ [T-LEG-FALLBACK 2026-09-14] 当日【竞价涨幅字段缺失】时退回「当日行内涨幅」(change_pct)，
+//             绝不因此把 T 腿整根丢掉。缘由：9:25 之后 change_pct 写的就是当天的竞价副本
+//             （worker P0 写入的 auc_pct_chg 值），盘中/收盘后则是当日实时/收盘涨幅 —— 两种都
+//             比「缺一根腿、days=窗口-1 的系统性偏低值」更接近真值；丢掉 T 腿才是真正的错。
+//             （实测 2026-09-14：market_metrics 当日 auc_pct_chg 全空，导致 46 行区间涨幅
+//               days=9 = 只累到昨天，看板把「旧窗口」当成今天的十日涨幅。）
 //        - 其余情况（今天已收盘 / 历史日期）→ 一律用当日【收盘涨幅】。
 //      ⚠️ 历史日期若误用竞价涨幅，等于把「已经完整走完的一天」当成只走了竞价，区间涨幅与龙一
 //         排名会系统性偏低；而且 stock_range_pct 是按【日期级】复用的——同一天不同股票的腿口径
@@ -70,7 +76,11 @@ export function isAuctionLegActive(date, sysToday, afterClose) {
 export function resolveTDayPct(isToday, afterClose, closePct, aucPct) {
   const c = parsePct(closePct);
   const a = parsePct(aucPct);
-  if (isToday && !afterClose) return a; // 今天未收盘：只有竞价涨幅可用
+  if (isToday && !afterClose) {
+    // [T-LEG-FALLBACK 2026-09-14] 竞价腿优先；缺失时退回当日行内涨幅 —— 见文件头 ③ 的说明。
+    // 区分「竞价腿确实缺失」与「竞价腿真的是 0%」：a===null 才算缺失，0 是合法涨幅且优先。
+    return a !== null ? a : c;
+  }
   return c !== null ? c : a;            // 已收盘/历史：收盘优先，取不到才退回竞价
 }
 

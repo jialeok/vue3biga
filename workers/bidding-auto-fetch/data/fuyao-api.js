@@ -143,6 +143,45 @@ export async function fetchSnapshotChangePct(env, codes) {
   return { pctMap: result, stats };
 }
 
+/**
+ * [SNAPSHOT-EXTRAS 2026-09-14] 同花顺「集合竞价快照」（免费、不限累计次数、单次 ≤100 个代码、stage=final）。
+ *
+ * 为什么需要：猫抓 daily_auc 对【当日】行不返回 auc_pct_chg / auc_vol_ratio / auc_turnover
+ *   （要等结算后才出现），worker 又默认把今天排除在补漏之外 → 9:25~收盘这一整天，看板的
+ *   「竞价量比 / 真换手率 / 当日竞价涨幅」全空、龙头徽章掉色、竞价一字红线判不出。
+ *   本接口在 9:25 竞价一结束就能拿到【当天】终态数据，用它把当日缺口补上，0 猫抓额度消耗。
+ *
+ * ⚠️ 只返回「最近一个交易日」（滚动窗口：当天收盘后 → 下一交易日开盘前）；周末/节假日调用返回上一交易日终态。
+ *    因此调用方必须先用 timestamp 校验「服务端日期 == 目标日」，否则拒绝写入（避免把上一日数据写到今天）。
+ * ⚠️ um_vol / open_bid_pct 不在此接口能力内：snapshot.auction_unmatched 带符号，与库内 um_vol
+ *    （从不出现负值）语义不同源 → 按 §40「不凭猜测改数据库」留空，仍由次日 numcat 补漏负责。
+ *    量纲换算已交叉验证（见 backups/同花顺官方接口竞价能力核查_2026-09-13.md）：
+ *      volume ← round(auction_volume/100)（手→万股）｜auc_pct_chg ← auction_pct
+ *      auc_vol_ratio ← auction_volume_ratio ｜auc_turnover ← auction_turnover_pct
+ *
+ * @param {object} env
+ * @param {string[]} codes 6 位股票代码
+ * @returns {Promise<{items:object[], batches:Array<{timestamp:number, auction_phase:string, data_status:string}>}>}
+ */
+export async function fetchAuctionSnapshot(env, codes) {
+  const items = [];
+  const batches = [];
+  const list = Array.from(new Set((codes || []).map(c => String(c).trim()).filter(c => /^\d{6}$/.test(c))));
+  for (let i = 0; i < list.length; i += 100) {
+    const thscodes = list.slice(i, i + 100).map(c => tickerToThscode(c)).filter(Boolean).join(',');
+    if (!thscodes) continue;
+    const data = await fuyaoProxyGet(env, '/api/a-share/auction/snapshot', { thscodes: thscodes, stage: 'final' });
+    batches.push({
+      timestamp: data && data.timestamp,
+      auction_phase: data && data.auction_phase,
+      data_status: data && data.data_status
+    });
+    const arr = (data && data.item) || [];
+    for (let k = 0; k < arr.length; k++) items.push(arr[k]);
+  }
+  return { items: items, batches: batches };
+}
+
 // 直连 fuyao（用新账号 key，绕过 supabase proxy）
 async function fuyaoDirectHistorical(env, thscode, startMs, endMs) {
   const apiKey = env.FUYAO_API_KEY_HISTORY || env.FUYAO_API_KEY;

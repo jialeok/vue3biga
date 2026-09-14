@@ -116,6 +116,33 @@ export async function readMarketMetricsExtrasForDate(env, date) {
 }
 
 /**
+ * [SNAPSHOT-EXTRAS 2026-09-14] 读取某日竞价行「同花顺快照可补字段」的现状：
+ *   auc_pct_chg / auc_vol_ratio / auc_turnover / volume。
+ * 供 runTodaySnapshotPatch 判断哪些行还缺字段 —— 只补缺失、不覆盖已有（幂等）。
+ * ⚠️ 读取失败必须抛错（§10：读取失败 ≠ 空数据）：否则会把「读不到」误判成「全都缺」。
+ */
+export async function readMarketMetricsSnapshotFieldsForDate(env, date) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?date=eq.' + encodeURIComponent(date) +
+    '&scope=eq.auction' +
+    '&select=stock,code,auc_pct_chg,auc_vol_ratio,auc_turnover,volume&limit=2000';
+  const resp = await fetch(url, { headers: sbHeaders(env) });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error('读取 market_metrics 快照字段失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
+  }
+  const data = await resp.json();
+  const pick = (v) => (v === undefined || v === null ? '' : String(v));
+  return (data || []).map(r => ({
+    name: (r.stock || '').trim(),
+    code: (r.code || '').trim(),
+    auc_pct_chg: pick(r.auc_pct_chg),
+    auc_vol_ratio: pick(r.auc_vol_ratio),
+    auc_turnover: pick(r.auc_turnover),
+    volume: pick(r.volume)
+  })).filter(r => r.name);
+}
+
+/**
  * [CLOSE-COVER 2026-09-10] 读取某日 stock_range_pct（近 10 个交易日区间涨幅缓存）。
  * 收盘后需要把「当天(T)腿」从竞价口径换成收盘口径 —— 见 close-workflow.js 步骤 4。
  */
