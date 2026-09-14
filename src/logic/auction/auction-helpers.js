@@ -422,8 +422,12 @@ export function getTodayAuction() {
     return list.filter(function(r) { return r && r.stock && watchlistSet.has(r.stock.trim()); });
 }
 
-export function getTodayGroupList(dataSource='auction') {
-    const currentDate = useUiStore().currentDate;
+// [DRAGON-GROUP 2026-09-14] 新增可选 date 参数（默认 = 当前展示日，行为与原先完全一致）：
+//   「龙头组」评选需要按【评选日】取同一份正式列表来做题材分组（题材 toggle 用的就是这个列表），
+//   补评选历史日时不能再取「今天」的列表 —— 否则历史日的题材分类会拿今天的数据算（口径必错）。
+// 单一实现：不另写一份「按日期取正式列表」，避免「同一判定写两份」（§6）。
+export function getTodayGroupList(dataSource='auction', date) {
+    const currentDate = date || useUiStore().currentDate;
     const list = getGroupData(dataSource)[currentDate] || [];
     if (dataSource === 'hot') {
         // 方案2：_hotAuctionData 只从 hot_stocks 表加载正式成员，无需过滤

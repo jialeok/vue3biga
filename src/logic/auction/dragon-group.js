@@ -6,6 +6,16 @@
 //   · 龙头【落库】到 dragon_leaders，键 = 评选日 date（= 选出它的那一天 T）；
 //   · 看板看某日 D 时，龙头组 = 名册中 date = prevTradingDay(D) 的行 —— 即「每天的龙头放到次日」。
 //
+// ============================ 按哪个口径分题材（2026-09-14 修正）============================
+//   【必须】用「单独打开题材 toggle」时的分类，而不是第二页题材分类。二者对同一只股票给出的归属不同：
+//     · 第二页 getTopicGroups：一只票命中的所有核心词都建组 → 同一只票同时出现在【多个】题材里；
+//     · 题材 toggle（getPrimaryTopicMap + classifyStockPrimaryTopic）：一只票只落在一个题材组里
+//       （首页是单列，无法像第二页那样同时出现在多个分节）。
+//   用户实测投诉：9/11 题材 toggle 里「大消费」龙一=国芳集团 96.04%、龙二=桂林旅游 60.23%，
+//   但 9/14 的龙头组里桂林旅游也在 —— 因为按第二页口径它另属某个题材并当上了那个题材的龙头，
+//   于是「一个题材只有一只龙头」被破坏、龙头组里冒出多余的人。
+//   → 评选改为复用题材 toggle 的同一套分类函数（§6 单一真相，不另写一份）。
+//
 // ============================ 为什么必须落库 ============================
 //   ① §6 单一真相：只算一次、只存一份。前端展示（次日龙头组）与 worker 9:25 抓取名单
 //      共用同一份名册 —— 否则「前端算一套、worker 算一套」必分叉，规则一改就漏改。
@@ -23,8 +33,11 @@
 
 import { ref } from 'vue';
 import { getPreviousTradingDay, isTradingDay } from '../date/trading-day-helpers.js';
-import { getGroupData } from '../app-core-api.js';
-import { getTopicGroups } from '../topic/rules.js';
+import { getTodayGroupList } from '../app-core-api.js';
+// [DRAGON-GROUP 2026-09-14] 题材归属改用【题材 toggle 同款】分类函数（getPrimaryTopicMap /
+// classifyStockPrimaryTopic）；不再 import getTopicGroups —— 那是第二页题材分类的口径
+// （一只票可属多个题材），用它选龙头会选出「一个题材多只龙头 / 一只票当别的题材的龙头」。
+import { getPrimaryTopicMap, classifyStockPrimaryTopic } from './topic-sort.js';
 import { getJingYestHighlightSetForDate } from './sort-rules.js';
 import { getDragonRangePct, ensureDragonRangePct, isAuthoritativeCloseReached } from './dragon-rank.js';
 import { readDragonLeadersForDate, upsertDragonLeaders } from '../../data/dragon-leaders.js';
@@ -33,7 +46,7 @@ import { readRangePctForDate } from '../../data/stock-range-pct.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 // [DRAGON-GROUP 2026-09-14] 评选判定下沉到【零依赖叶子】dragon-leader-pick.js（§I 解环 + §6 单一真相 + 可单测）。
 // 本文件只负责「池子组装 / 闸门 / 读写名册」，不再自己实现一遍「谁涨得最多」。
-import { pickTopicLeaders } from './dragon-leader-pick.js';
+import { pickTopicLeaders, buildTopicGroupsFromPool } from './dragon-leader-pick.js';
 import { _getLocalTodayStr } from '../tagTitles/rules.js';
 import { _dbgLog } from '../../data/debug-log.js';
 
@@ -207,7 +220,8 @@ async function _computeAndPersist(date, opts) {
       _dbgLog('[DRAGON-GROUP] ' + date + ' 候选池为空 → 本次不评选');
       return [];
     }
-    const groups = getTopicGroups(list);
+    // 题材分组 = 题材 toggle 的口径（见 _groupByPrimaryTopic 注释）：一只票只归一个题材
+    const groups = _groupByPrimaryTopic(date, list);
     const picked = pickTopicLeaders(groups, rp, DRAGON_GROUP_MIN_SIZE, getStockCode);
     if (picked.length === 0) {
       _resolvedDates.add(date);          // 终局结论：该日确实没有「成员>=3」的题材 → 不再重算
@@ -229,13 +243,47 @@ async function _computeAndPersist(date, opts) {
 }
 
 /**
+ * 把候选池按【主题材】分组 —— 与「单独打开题材 toggle」时看到的分类【逐字同源】。
+ *
+ * 为什么不能直接拿 getTopicGroups 的输出分组（上一版的错，用户实测投诉）：
+ *   getTopicGroups 是【第二页题材分类】的口径：一只股票命中的所有核心词都会建组，
+ *   同一只票同时出现在多个题材里。用它评选 → 一只票可能当上「它并不属于的那个题材」的龙头，
+ *   于是次日龙头组里冒出多余的人（需求是「一个题材只有一只龙头」）。
+ * 现改为复用题材 toggle 的两步分类（与 view-helpers#primaryTopicOf 完全同序）：
+ *   ① 该日【正式列表】→ getPrimaryTopicMap：一只票只落在「第一个包含它的题材组」里
+ *      （首页是单列，只可能落一个题材）；
+ *   ② 池中不在正式列表内的行（观察组继承壳行）→ classifyStockPrimaryTopic 兜底（同一个兜底）。
+ * 另外排掉 '其它'：它不是题材，题材 toggle 侧也不给它上色、不排龙一，因此不评它的龙头。
+ *
+ * ⚠️ 分组用的正式列表必须按【评选日 date】取（getTodayGroupList 的第二个参数），
+ *    否则补评选历史日时会拿「今天」的名单去分类，口径必错。
+ *
+ * @param {string} date 评选日 T
+ * @param {object[]} pool 候选池行（_buildPool 输出）
+ * @returns {Array<{topic:string, stocks:Array<{stock:string, code:string}>}>} 供 pickTopicLeaders 使用
+ */
+function _groupByPrimaryTopic(date, pool) {
+  const formalList = getTodayGroupList('auction', date);
+  const primaryMap = getPrimaryTopicMap(formalList);
+  // 与 view-helpers#primaryTopicOf 同序：先查映射；未命中（= 注入壳行）再按核心词单独匹配一次
+  const resolveTopic = function(row) {
+    const nm = row && row.stock ? String(row.stock).trim() : '';
+    if (!nm) return '';
+    return primaryMap.get(nm) || classifyStockPrimaryTopic(row) || '其它';
+  };
+  // 纯函数在零依赖叶子里（§I），这里只负责注入「题材归属解析器」（§6 单一真相）
+  return buildTopicGroupsFromPool(pool, resolveTopic, getStockCode);
+}
+
+/**
  * 评选候选池 = 当日【全列表】：
- *   ① 当日 auction_watchlist 行（正式成员 + 已落库的观察组行）；
+ *   ① 当日正式列表（getTodayGroupList：正式成员 + 已落库的观察组行）★ 与题材 toggle 同一个来源；
  *   ② 前一日「竞昨高光」继承票（= 观察组主来源，可能只在视图层存在、未落库）；
  *   ③ 前一日打标签买入继承票（obsBought_<date>，与 view-helpers 同源同口径）。
+ * 三者合起来 === 题材 toggle 渲染时的 renderList，因此「题材成员数」与 toggle 看到的分组一致。
  * 口径必须与 view-helpers#computeAuctionViewData 的观察组归属保持一致（§6 同一判定不写两份）。
  * @param {string} date
- * @returns {object[]} 供 getTopicGroups 分组的行（至少含 stock；尽量带上 note/topics）
+ * @returns {object[]} 供 _groupByPrimaryTopic 分组的行（至少含 stock；尽量带上 note/topics）
  */
 function _buildPool(date) {
   const byName = new Map();
@@ -244,7 +292,11 @@ function _buildPool(date) {
     const n = String(row.stock).trim();
     if (n && !byName.has(n)) byName.set(n, row);
   }
-  const dayList = (getGroupData('auction') || {})[date] || [];
+  // [DRAGON-GROUP 2026-09-14] 起点从「该日原始数据（含影子行）」改为「该日正式列表」：
+  //   原始列表会把「既不在当日名单、也不是观察组行」的影子记录也算作题材成员，
+  //   导致某个题材的成员数被抬高（可能凑够 3 只而 toggle 里其实只有 2 只）→ 多选出一只龙头。
+  //   改用 getTodayGroupList 后与题材 toggle 的 auctionList 完全一致（§10 索引未就绪时同样退化为原始列表）。
+  const dayList = getTodayGroupList('auction', date);
   dayList.forEach(_put);
 
   const prevDate = getPreviousTradingDay(date);

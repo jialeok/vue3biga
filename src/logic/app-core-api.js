@@ -22,7 +22,7 @@ export function getStockHistoryTopics(stockName) { return _fns.getStockHistoryTo
 export function getRankData() { return _fns.getRankData(); }
 export function getTagTitlesData() { return _fns.getTagTitlesData(); }
 export function getTodayJiwang() { return _fns.getTodayJiwang(); }
-export function getTodayGroupList(ds) { return _fns.getTodayGroupList(ds); }
+export function getTodayGroupList(ds, date) { return _fns.getTodayGroupList(ds, date); }
 export function markJiwangDirty(date) { return _fns.markJiwangDirty(date); }
 export function replaceHotConceptFromPaste(...args) { return _fns.replaceHotConceptFromPaste(...args); }
 export function importAuctionFromPaste(...args) { return _fns.importAuctionFromPaste(...args); }

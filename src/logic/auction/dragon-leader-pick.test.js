@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pickTopicLeaders } from './dragon-leader-pick.js';
+import { pickTopicLeaders, buildTopicGroupsFromPool } from './dragon-leader-pick.js';
 
 // 便捷构造：股票名 → {pct}
 function rp(entries) {
@@ -72,5 +72,65 @@ describe('pickTopicLeaders 龙头评选（题材成员>=3 选区间涨幅最高�
   it('非法输入（undefined / 空 stocks）不抛错', () => {
     expect(pickTopicLeaders(null, rp({}), 3, () => '')).toEqual([]);
     expect(pickTopicLeaders([{ topic: 'T' }, null], rp({}), 3, () => '')).toEqual([]);
+  });
+});
+
+// ============================================================================
+// 2026-09-14 回归：分组口径必须与「单独打开题材 toggle」一致
+// 用户实测：9/11 题材 toggle 里「大消费」龙一=国芳集团 96.04%、龙二=桂林旅游 60.23%，
+// 但 9/14 龙头组里桂林旅游也在 —— 因为旧实现用【第二页】口径分组（一只票可属多个题材），
+// 桂林旅游另属某个题材并当上了那个题材的龙头。修正后：一只票只归一个主题材 → 一个题材只有一只龙头。
+// ============================================================================
+describe('buildTopicGroupsFromPool 分组口径（一只票只归一个题材 / 不评"其它"）', () => {
+  const pool = [
+    { stock: '国芳集团', code: 'SH600086' },
+    { stock: '桂林旅游', code: 'SH600976' },
+    { stock: '大消费甲' },
+    { stock: '无题材乙' }
+  ];
+  // 模拟题材 toggle 的归属解析：桂林旅游虽然也命中"旅游"，但主题材是"大消费"（只归一个）
+  const topicByStock = { 国芳集团: '大消费', 桂林旅游: '大消费', 大消费甲: '大消费', 无题材乙: '其它' };
+  const resolveTopic = (row) => topicByStock[row.stock] || '其它';
+
+  it('用户实测场景：大消费只产出唯一一只龙头（国芳集团），桂林旅游不入选', () => {
+    const groups = buildTopicGroupsFromPool(pool, resolveTopic, () => 'FB');
+    expect(groups).toHaveLength(1);                 // '其它' 不建组
+    expect(groups[0].topic).toBe('大消费');
+    expect(groups[0].stocks.map(s => s.stock)).toEqual(['国芳集团', '桂林旅游', '大消费甲']);
+
+    const picked = pickTopicLeaders(groups, rp({ 国芳集团: 96.04, 桂林旅游: 60.23, 大消费甲: 12 }), 3, () => '');
+    expect(picked).toHaveLength(1);
+    expect(picked[0].topic).toBe('大消费');
+    expect(picked[0].stock).toBe('国芳集团');       // ← 修好的关键断言
+    expect(picked[0].pct).toBe(96.04);
+  });
+
+  it('"其它" 不参与评选（它不是题材）', () => {
+    const onlyOther = [{ stock: 'A' }, { stock: 'B' }, { stock: 'C' }];
+    const groups = buildTopicGroupsFromPool(onlyOther, () => '其它', () => '');
+    expect(groups).toEqual([]);
+    expect(pickTopicLeaders(groups, rp({ A: 99, B: 98, C: 97 }), 3, () => '')).toEqual([]);
+  });
+
+  it('同名只保留一次（双保险），空行/无名行被丢弃', () => {
+    const messy = [{ stock: '甲' }, { stock: ' 甲 ' }, { stock: '   ' }, null, { noStock: 1 }, { stock: '乙' }];
+    const groups = buildTopicGroupsFromPool(messy, () => 'T', () => '');
+    expect(groups).toHaveLength(1);
+    expect(groups[0].stocks.map(s => s.stock)).toEqual(['甲', '乙']);
+  });
+
+  it('code 取值：行上自带优先，缺失用兜底解析', () => {
+    const groups = buildTopicGroupsFromPool([{ stock: '甲', code: 'OWN' }, { stock: '乙' }], () => 'T', () => 'FB');
+    expect(groups[0].stocks).toEqual([{ stock: '甲', code: 'OWN' }, { stock: '乙', code: 'FB' }]);
+  });
+
+  it('无解析器 / 空池 → 返回空分组（宁缺勿错，不瞎猜题材）', () => {
+    expect(buildTopicGroupsFromPool(pool, null, () => '')).toEqual([]);
+    expect(buildTopicGroupsFromPool([], () => 'T', () => '')).toEqual([]);
+    expect(buildTopicGroupsFromPool(null, () => 'T', () => '')).toEqual([]);
+  });
+
+  it('解析器返回空串 → 丢弃（不建空名题材组）', () => {
+    expect(buildTopicGroupsFromPool([{ stock: '甲' }], () => '', () => '')).toEqual([]);
   });
 });
