@@ -168,15 +168,22 @@ export async function readStockRangePctForDate(env, date) {
 }
 
 // [BUG-FIX] 读取指定日期的 auction_watchlist 股票列表，用于合并打标签/观察组股票到 worker 抓取名单
+// [9:25-LOCK 2026-09-15] 额外返回 obs_auto_added：调用方判断「9:25 那轮是否已成功落库」时，
+//   必须【排除观察组壳行】——壳行是前端打开页面时自己写的（source=manual），
+//   若把它当成「名单已存在」，worker 重跑就会一行都不写（2026-09-15 P0 修复现场实测）。
 export async function readAuctionWatchlistForDate(env, date) {
-  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?date=eq.' + date + '&select=stock,code';
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?date=eq.' + date + '&select=stock,code,obs_auto_added';
   const resp = await fetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) return [];
   const data = await resp.json();
   // 【FIX 2026-08-15】不再过滤 code 为空的行：观察组/打标签股票在前一日 watchlist 里可能没有 code
   // （worker 从不写 code 到这些行，code 只在 stockcodemap 表），过滤掉会导致观察组股票不被抓取、
   // 当天 market_metrics 无数据 → 观察组显示空白。code 由调用方（fetchAndWriteWatchlist）查 stockcodemap 补充。
-  return (data || []).map(r => ({ name: (r.stock || '').trim(), code: r.code || '' })).filter(s => s.name);
+  return (data || []).map(r => ({
+    name: (r.stock || '').trim(),
+    code: r.code || '',
+    obs_auto_added: !!r.obs_auto_added
+  })).filter(s => s.name);
 }
 
 // [FEAT 2026-09-08] 读取指定日期的「打标签」股票（auction_board_tags：buy / sell / hold）。

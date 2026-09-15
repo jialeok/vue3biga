@@ -2,6 +2,41 @@
 import { msToDateStr, dateStrToMs, normalizeDate } from '../../_shared-source/date-utils.js';
 import { CONFIG } from '../config.js';
 
+/**
+ * [RETRY 2026-09-15] 上游「全局请求限流」重试。
+ *
+ * 事故背景（2026-09-15 P0）：9:25 早盘那一轮，P0-① 的第一个请求（883410 成分股）撞上
+ * fuyao 的 `code=429 Global request rate limit exceeded`，**没有任何重试** →
+ * fetchAndWriteWatchlist 直接 `return { error }` → runMorning 整轮 return：
+ * auction_watchlist / market_metrics / stock_range_pct **一张表都没写**，
+ * 用户 9:25~9:39 打开看板「第一页全空、无法操作」。
+ *
+ * 实测该限流是**突发性**的：同一接口相邻两次调用一次 200、一次 429，
+ * 退避 1~2 秒后即可恢复。因此对「可重试错误」做短退避重试，硬指标（9:26 落库）内可承受。
+ *
+ * 总预算：0.9 + 1.8 + 3.6 ≈ 6.3s（4 次尝试）。仍有兜底降级（见 morning-workflow）。
+ */
+async function retryFuyao(fn, attempts, label) {
+  const n = attempts || 4;
+  let lastErr;
+  for (let i = 0; i < n; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      const msg = String((e && e.message) || '');
+      // 只重试「上游瞬时」类错误；业务性错误（如 thscode 不存在）重试无意义
+      const retriable = /429|rate limit|5\d\d|timeout|timed out|aborted|network|fetch failed|ECONN/i.test(msg);
+      if (!retriable || i === n - 1) break;
+      const wait = 900 * Math.pow(2, i);
+      console.warn('[FUYAO-RETRY] ' + (label || '') + ' 第' + (i + 1) + '次失败：' + msg.slice(0, 120) +
+        ' → ' + wait + 'ms 后重试');
+      await new Promise(r => setTimeout(r, wait));
+    }
+  }
+  throw lastErr;
+}
+
 async function fuyaoProxyGet(env, path, params) {
   const authKey = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_ANON_KEY;
   const url = new URL(CONFIG.FUYAO_PROXY_BASE);
@@ -22,35 +57,42 @@ async function fuyaoProxyGet(env, path, params) {
 }
 
 // 调 fuyao 交易日历，返回最近 N 天交易日列表（升序）
+// [RETRY 2026-09-15] 交易日历是 P0-①/P1/P2 的公共前置，429 会让窗口算不出来 → 必须重试。
 export async function fuyaoCalendarTradingDays(env) {
-  const authKey = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_ANON_KEY;
-  const url = new URL(CONFIG.FUYAO_PROXY_BASE);
-  url.searchParams.set('path', '/api/a-share/calendar/trading-days');
-  const resp = await fetch(url.toString(), { headers: { 'Authorization': 'Bearer ' + authKey } });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    throw new Error('fuyao calendar HTTP ' + resp.status + ': ' + text.slice(0, 200));
-  }
-  const json = await resp.json();
-  if (json.code !== 0) throw new Error('fuyao calendar 错误: ' + (json.message || 'code=' + json.code));
-  const items = (json.data && json.data.item) || [];
-  return items.map(it => normalizeDate(it.date)).filter(Boolean).sort();
+  return retryFuyao(async () => {
+    const authKey = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_ANON_KEY;
+    const url = new URL(CONFIG.FUYAO_PROXY_BASE);
+    url.searchParams.set('path', '/api/a-share/calendar/trading-days');
+    const resp = await fetch(url.toString(), { headers: { 'Authorization': 'Bearer ' + authKey } });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error('fuyao calendar HTTP ' + resp.status + ': ' + text.slice(0, 200));
+    }
+    const json = await resp.json();
+    if (json.code !== 0) throw new Error('fuyao calendar 错误 code=' + json.code + ': ' + (json.message || ''));
+    const items = (json.data && json.data.item) || [];
+    return items.map(it => normalizeDate(it.date)).filter(Boolean).sort();
+  }, 4, 'calendar/trading-days');
 }
 
 // 获取最近多板成分股 → [{ name, code }]
+// [RETRY 2026-09-15] ★ 这是 9:25 早盘 P0-① 的【第一个】请求，也是本次 P0 事故的引爆点：
+//   它 429 一次就会让整轮早盘抓取中断（一张表都不写）。这里必须重试。
 export async function fetchLadderConstituents(env) {
-  const data = await fuyaoProxyGet(env, '/api/a-share-index/constituents/ths-stock-list', { thscode: CONFIG.LADDER_THSCODE });
-  const items = (data && data.item) || [];
-  return items.map(it => {
-    const name = (it.name || '').trim();
-    let code = '';
-    if (it.ticker) code = String(it.ticker).trim();
-    else if (it.thscode) {
-      const c = String(it.thscode).trim().replace(/\..*$/, '');
-      if (/^\d{6}$/.test(c)) code = c;
-    }
-    return { name, code };
-  }).filter(s => s.name && s.code);
+  return retryFuyao(async () => {
+    const data = await fuyaoProxyGet(env, '/api/a-share-index/constituents/ths-stock-list', { thscode: CONFIG.LADDER_THSCODE });
+    const items = (data && data.item) || [];
+    return items.map(it => {
+      const name = (it.name || '').trim();
+      let code = '';
+      if (it.ticker) code = String(it.ticker).trim();
+      else if (it.thscode) {
+        const c = String(it.thscode).trim().replace(/\..*$/, '');
+        if (/^\d{6}$/.test(c)) code = c;
+      }
+      return { name, code };
+    }).filter(s => s.name && s.code);
+  }, 4, 'constituents/ths-stock-list(883410)');
 }
 
 function tickerToThscode(code) {

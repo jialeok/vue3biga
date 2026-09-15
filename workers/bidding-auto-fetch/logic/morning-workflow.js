@@ -128,15 +128,23 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
     settled(recentTradingDays(cache, env, today, 2))
   ]);
 
+  // [DEGRADE 2026-09-15] 名单源（883410 成分股）失败【绝不】中断整轮早盘抓取。
+  //
+  //   事故（2026-09-15）：9:25 那一轮，本请求撞上 fuyao `429 Global request rate limit exceeded`，
+  //   旧代码 `return { error }` → runMorning 直接返回 → auction_watchlist / market_metrics /
+  //   stock_range_pct **一张表都没写** → 用户 9:25~9:39 看板「第一页全空、无法买卖操作」。
+  //
+  //   新行为：降级为「前一日名单 ∪ 打标签股票 ∪ 龙头名册」（三者都来自 Supabase，不依赖 fuyao）
+  //   继续跑完 P0-②③ / P1 / P2，保证【当天的竞价数据仍能落库】——看板不空白是最高优先级。
+  //   ⚠️ 降级时【不写】auction_watchlist：名册拿不到就绝不伪造一份残缺的「当日名单」（§10 宁缺勿错）。
+  let ladderDegraded = false;
+  const ladderConstituents = ladderRes.ok ? (ladderRes.v || []) : [];
   if (!ladderRes.ok) {
-    logs.push('获取成分股失败: ' + ladderRes.e.message);
-    return { error: '获取成分股失败: ' + ladderRes.e.message };
+    ladderDegraded = true;
+    logs.push('⚠️ 883410 成分股获取失败（已重试）: ' + ladderRes.e.message +
+      ' → 【降级】改用「前一日名单 ∪ 打标签 ∪ 龙头名册」继续抓取，不中断整轮早盘流程');
   }
-  const ladderConstituents = ladderRes.v || [];
-  logs.push('成分股数量: ' + ladderConstituents.length);
-  if (ladderConstituents.length === 0) {
-    return { error: '883410 成分股为空' };
-  }
+  logs.push('成分股数量: ' + ladderConstituents.length + (ladderDegraded ? '（⬇️ 降级模式：名单源不可用）' : ''));
 
   const codeMap = (codeMapRes.ok && codeMapRes.v) || {};
   if (!codeMapRes.ok) logs.push('读取 stockcodemap 失败(非致命): ' + codeMapRes.e.message);
@@ -268,6 +276,19 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
     }
   }
 
+  // [DEGRADE 2026-09-15] 降级后仍要求「有可抓取的标的」，否则整轮无从下手（§10 读失败≠空）
+  if (constituents.length === 0) {
+    return { error: '抓取名单为空：883410 成分股不可用，且前一日名单/打标签/龙头名册均无可用标的' };
+  }
+
+  // [DEGRADE 2026-09-15] 降级模式下【不写】auction_watchlist：拿不到 883410 名册，就绝不伪造
+  //   一份残缺的「当日名单」（§10 宁缺勿错）。当天的竞价数据（market_metrics / 区间涨幅）
+  //   仍会照常落库 → 看板不空白；名单由后续重跑（/fetch?point=morning）补写。
+  if (ladderDegraded) {
+    logs.push('步骤2：⬇️ 降级模式 → 跳过 auction_watchlist 名单落库（避免写入残缺名单）');
+    return { constituents, watchlistRows: [], nowIso: new Date().toISOString(), ladderDegraded: true };
+  }
+
   // 【BUG-FIX】不写 volume/yest_volume/change_pct/note/topics 字段：
   // 这些字段的真实值由步骤4写入 market_metrics 表。
   logs.push('步骤2：写入 auction_watchlist...');
@@ -287,10 +308,13 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
   const inMorningWindow = bjMinutes >= 9 * 60 + 25 && bjMinutes <= 9 * 60 + 40;
   let rowsToWrite = watchlistRows;
   if (!inMorningWindow) {
-    // 今日名单在组B里已经读过，直接复用，不再多打一次请求
-    let existingNames = new Set(todayStocks.map(s => s.name));
+    // [9:25-LOCK 2026-09-15] 只把【正式成员】当作「名单已存在」。
+    //   观察组壳行（obs_auto_added=true，前端打开页面时自己写的 source=manual）必须排除，
+    //   否则「9:25 那轮没成功」会被误判成「已成功」→ 重跑时 rowsToWrite 被过滤成 0 行，
+    //   名单永远补不回来（2026-09-15 P0 修复现场实测：当日仅有 8 行观察组壳行）。
+    let existingNames = new Set(todayStocks.filter(s => !s.obs_auto_added).map(s => s.name));
     if (existingNames.size === 0) {
-      logs.push('非 9:25 抓取窗口，但当日名单为空 → 视为 9:25 那轮未成功，允许全量写入 ' +
+      logs.push('非 9:25 抓取窗口，但当日【正式名单】为空（观察组壳行不算）→ 视为 9:25 那轮未成功，允许全量写入 ' +
         rowsToWrite.length + ' 行');
     } else {
       const before = rowsToWrite.length;
@@ -817,8 +841,8 @@ export async function runMorning(env) {
   if (watchlistResult.error) {
     return { ok: false, today, error: watchlistResult.error, logs };
   }
-  const { constituents, watchlistRows, nowIso } = watchlistResult;
-  mark('名单落库');
+  const { constituents, watchlistRows, nowIso, ladderDegraded } = watchlistResult;
+  mark('名单落库' + (ladderDegraded ? '（⬇️ 降级：名单源不可用）' : ''));
 
   // ---- P0-② 竞价 daily_auc 与 收盘 daily【并发】（两者互不依赖）----
   const [numcatResult, dailyResult] = await Promise.all([
@@ -888,6 +912,11 @@ export async function runMorning(env) {
   const dateKeys = todayWrite.dateKeys.concat(histWrite.dateKeys);
 
   const { completenessSummary, todayMissing } = buildCompletenessSummary(today, missingDatesAfterNumcat, phantomDates, metricsWriteFailures, expectedDates, logs);
+  if (ladderDegraded) {
+    logs.push('⬇️ 本轮为降级运行：883410 名单源不可用，当日 auction_watchlist 名单未落库；' +
+      '竞价数据已按「前一日名单 ∪ 打标签 ∪ 龙头名册」正常落库。' +
+      '请在 9:25~9:40 之外手动重跑 /fetch?point=morning 补写正式名单。');
+  }
 
   logs.push('完成: auction_watchlist ' + watchlistRows.length + ' 行, market_metrics ' + totalMetricsWritten + ' 行, stock_range_pct ' + rangeWritten + ' 行');
   return {
@@ -909,7 +938,8 @@ export async function runMorning(env) {
     // 竞价四要素在「当日」拿不到是猫抓的既定行为，这里只做可观测性上报，不影响 ok
     auctionExtrasToday: (extras && extras.filled + '/' + extras.total) || '0/0',
     extrasPatched: extrasPatched,
-    completenessSummary: completenessSummary,
+    ladderDegraded: !!ladderDegraded,
+    completenessSummary: (ladderDegraded ? '⬇️ 降级运行（名单源不可用，名单未落库）；' : '') + completenessSummary,
     logs
   };
 }
