@@ -80,3 +80,35 @@ export async function upsertDragonLeaders(date, rows) {
     if (error) throw error;
     return payload.length;
 }
+
+/**
+ * 删除某评选日里【已过期】的题材行（§11 删除安全：小范围、按主题名精确匹配、有结果验证）。
+ *
+ * 为什么需要它：
+ *   主键是 (date,topic)，upsert **只增不删**。若某次评选因数据不全少算/算错，
+ *   旧行会永久残留（实测：9/15 只写出 1 行，9/16 整天只显示 1 只龙头）。
+ *   收盘后重算出权威结果时，必须把「这一次没选出来的题材」的旧行清掉，表才等于真相。
+ *
+ * 安全约束（调用方必须保证）：
+ *   · topics 由**本次健康的权威评选结果**反推得出（不在结果里的题材），不是"猜"出来的；
+ *   · topics 为空 → 直接返回 0，**绝不做"清空整个 date"** 这种危险操作；
+ *   · 带 .select() 回读受影响行 → 返回真实删除条数，调用方可校验。
+ *
+ * @param {string} date 评选日 YYYY-MM-DD
+ * @param {string[]} topics 要删除的题材名（精确匹配）
+ * @returns {Promise<number>} 实际删除行数
+ */
+export async function deleteDragonLeadersForDate(date, topics) {
+    if (!date || !Array.isArray(topics) || topics.length === 0) return 0;
+    const list = topics.map(function(t) { return String(t).trim(); }).filter(Boolean);
+    if (list.length === 0) return 0;
+    const sb = getSupabase();
+    const { data, error } = await sb
+        .from('dragon_leaders')
+        .delete()
+        .eq('date', date)
+        .in('topic', list)
+        .select('topic');
+    if (error) throw error;
+    return (data || []).length;
+}

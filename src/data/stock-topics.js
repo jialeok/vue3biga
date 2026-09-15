@@ -80,6 +80,39 @@ import { state } from '../logic/app-state.js';
             }
         }
 
+        // ===== 题材库就绪判定（§10：读取失败 ≠ 空）=====
+        // 供【产出结论型】业务在「题材分类结果不可信」时拒绝落库（见 logic/auction/dragon-group.js 的龙头评选）。
+        //
+        // 为什么必须有这道闸门（实测事故 2026-09-15 · 龙头组只剩 1 只）：
+        //   `loadCloudTopics()` 是登录后的【异步】步骤；而题材分类的常规路径是
+        //   「当日 note/topics 为空 → 回退共享题材库（getStockHistoryTopics）」——
+        //   实测当天 39 只正式成员里有 33 只的 topics 字段为空，即绝大多数股票只能靠这份库分类。
+        //   若评选发生在题材库到货【之前】，这些股票会全部落「其它」→ 每个题材都凑不够 3 只
+        //   → 写出「只有 1 只龙头」的残缺名册；而主键 (date,topic) 让它被永久冻结。
+        //   实测对比（同一份 9/15 数据）：题材库未就绪 → 39 只里 33 只落「其它」；
+        //                              题材库就绪 → 只有 2 只落「其它」，4 个题材达到评选门槛。
+        export function isTopicLibraryReady() {
+            return !!(state._cloudTopicsCache && Object.keys(state._cloudTopicsCache).length > 0);
+        }
+
+        /**
+         * 确保共享题材库已加载（仅在未就绪时发起一次全量拉取；幂等，已就绪则 0 请求）。
+         * ⚠️ 重新加载后必须【立刻】重建题材缓存：invalidateTopicCache() 会把 _topicCacheBuilt 置 false，
+         *    若不同步 buildTopicCache()，后续读取会落在「已失效但未重建」的中间态（§22 的同类坑）。
+         * @returns {Promise<boolean>} 题材库是否可用
+         */
+        export async function ensureTopicLibraryLoaded() {
+            if (isTopicLibraryReady()) return true;
+            try {
+                await loadCloudTopics();
+            } catch (e) {
+                _dbgLog('[TOPIC-LIB] 题材库加载失败: ' + (e && e.message || e));
+            }
+            invalidateTopicCache();
+            buildTopicCache();
+            return isTopicLibraryReady();
+        }
+
         // [PERF-FIX 2026-09-13] 批量导入防抖合并（§22：Realtime 短时多次变化必须批量合并后一次更新）。
         // 原实现每条 postgres_changes 都立即「全量拉取整表 → invalidate → 全量重建 → emit 全局刷新」。
         // 后台粘贴导入 N 只股票 = N 条变更 = N 次全量往返，主线程被反复占满（导入后翻页卡死元凶之一）。

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pickTopicLeaders, buildTopicGroupsFromPool } from './dragon-leader-pick.js';
+import { pickTopicLeaders, buildTopicGroupsFromPool, planRosterReconcile } from './dragon-leader-pick.js';
 
 // 便捷构造：股票名 → {pct}
 function rp(entries) {
@@ -132,5 +132,75 @@ describe('buildTopicGroupsFromPool 分组口径（一只票只归一个题材 / 
 
   it('解析器返回空串 → 丢弃（不建空名题材组）', () => {
     expect(buildTopicGroupsFromPool([{ stock: '甲' }], () => '', () => '')).toEqual([]);
+  });
+});
+
+// ============================================================================
+// 2026-09-15 回归：名册「整表对齐」的删除判定
+// 用户实测：9/15 那次评选因共享题材库未就绪，把 33/39 只股票误分到「其它」→ 只写出 1 行
+// （AI应用→桂林旅游）；而 dragon_leaders 主键 (date,topic) + upsert「只增不删」
+//   + 「名册非空即视为已评选」⇒ 这行残缺被永久冻结，9/16 整天只显示 1 只龙头。
+// 修法：权威评选后必须清掉「本次已不成立（成员数 < 3）」的题材行（小范围、精确匹配，§11）。
+// ============================================================================
+describe('planRosterReconcile 整表对齐（删过期题材行 / 一致则零写入）', () => {
+  const row = (topic, stock, rangePct, groupSize) => ({ topic, stock, rangePct, groupSize });
+
+  it('【核心回归】残缺名册（只剩 1 题材）→ 清掉已不成立的旧题材行', () => {
+    const existing = [
+      row('AI应用', '桂林旅游', 52.18, 3),
+      row('农业', '新农开发', 19.22, 9),      // ← 本次分组里成员已不足门槛（分类退化时代的残留）
+      row('化工', '九鼎新材', 34.04, 4)
+    ];
+    const picked = [{ topic: 'AI应用', stock: '桂林旅游', pct: 52.18, groupSize: 3 }];
+    const plan = planRosterReconcile(existing, picked, new Set(['AI应用']));
+    expect(plan.expired.slice().sort()).toEqual(['农业', '化工'].sort());
+    expect(plan.unchanged).toBe(false);
+  });
+
+  it('【§10】成员数够但暂时查不到区间涨幅的题材 → 保留旧行，绝不当成「没有龙头」删掉', () => {
+    const existing = [row('半导体', '崇达技术', 43.18, 6)];
+    // 本次 半导体 仍然达门槛（在 qualifyingTopics 里），只是这一轮 pick 没产出（涨幅值缺失）
+    const plan = planRosterReconcile(existing, [], new Set(['半导体']));
+    expect(plan.expired).toEqual([]);         // ← 关键：不删
+    expect(plan.unchanged).toBe(false);       // 行数不一致 → 仍需走写路径（但不会删）
+  });
+
+  it('名册与本次结果逐字段一致 → unchanged（零写入，避免每次开看板刷 updated_at）', () => {
+    const existing = [
+      row('农业', '新农开发', 19.22, 9),
+      row('AI应用', '上海电影', 27.45, 3)
+    ];
+    const picked = [
+      { topic: 'AI应用', stock: '上海电影', pct: 27.45, groupSize: 3 },
+      { topic: '农业', stock: '新农开发', pct: 19.22, groupSize: 9 }
+    ];
+    const plan = planRosterReconcile(existing, picked, new Set(['农业', 'AI应用']));
+    expect(plan.expired).toEqual([]);
+    expect(plan.unchanged).toBe(true);
+  });
+
+  it('同题材换龙头 / 涨幅变化 / 成员数变化 → 均判为需写入', () => {
+    const base = [row('农业', '新农开发', 19.22, 9)];
+    const quals = new Set(['农业']);
+    expect(planRosterReconcile(base, [{ topic: '农业', stock: '百大集团', pct: 36.83, groupSize: 9 }], quals).unchanged).toBe(false);
+    expect(planRosterReconcile(base, [{ topic: '农业', stock: '新农开发', pct: 20.00, groupSize: 9 }], quals).unchanged).toBe(false);
+    expect(planRosterReconcile(base, [{ topic: '农业', stock: '新农开发', pct: 19.22, groupSize: 10 }], quals).unchanged).toBe(false);
+    // 云端 range_pct 是 text（可能形如 "+19.22"），与数值 19.22 视为相同（<0.005 容差）→ 不写
+    expect(planRosterReconcile([row('农业', '新农开发', '19.22', 9)], [{ topic: '农业', stock: '新农开发', pct: 19.22, groupSize: 9 }], quals).unchanged).toBe(true);
+  });
+
+  it('空名册 + 空结果 → unchanged（无龙头且本来就没有 → 不必写）', () => {
+    expect(planRosterReconcile([], [], new Set())).toEqual({ expired: [], unchanged: true });
+  });
+
+  it('名册为空但本次选出了龙头 → 需写入', () => {
+    const plan = planRosterReconcile([], [{ topic: '农业', stock: '甲', pct: 5, groupSize: 3 }], new Set(['农业']));
+    expect(plan.expired).toEqual([]);
+    expect(plan.unchanged).toBe(false);
+  });
+
+  it('非法输入（null/undefined/缺 qualifyingTopics）不抛错', () => {
+    expect(planRosterReconcile(null, null, null)).toEqual({ expired: [], unchanged: true });
+    expect(planRosterReconcile(undefined, [{ topic: 'T', stock: '甲', pct: 1, groupSize: 3 }], undefined)).toEqual({ expired: [], unchanged: false });
   });
 });

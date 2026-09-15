@@ -87,3 +87,54 @@ export function pickTopicLeaders(groups, rpMap, minSize, resolveCode) {
   });
   return picked;
 }
+
+/**
+ * 算出「名册整表对齐」要做什么（纯函数：不触云端、无副作用，见 dragon-group.js#_reconcileRoster）。
+ *
+ * 背景（实测事故 2026-09-15 → 9/16 龙头组只剩 1 只）：
+ *   dragon_leaders 主键是 (date, topic)，落库用的是 upsert ⇒ **只增不删**。
+ *   一旦某次评选因输入不全（如共享题材库尚未就绪 → 绝大多数票落「其它」）只算出 1 行，
+ *   这行残缺就会永久留在表里；而「名册非空 ⇒ 视为该日已评选」还会让补评选再也不触发
+ *   → 残缺被永久冻结，次日看板一整天只显示那 1 只龙头。
+ *   ⇒ 权威评选之后必须把「本次已不成立」的题材行清掉，表才等于真相。
+ *
+ * 删除范围刻意收窄到「本次分组里成员数 < 门槛」的题材（§10 宁缺勿错）：
+ *   · 「成员数够、但暂时查不到区间涨幅」的题材 **保留旧行** —— 那是数据未到（会重试），
+ *     不是「这个题材没有龙头」的结论，删了就再也回不来了；
+ *   · 旧名册读不到时调用方会跳过删除（不知道删哪几行）。
+ *
+ * @param {Array<{topic:string,stock:string,rangePct:number|null,groupSize:number}>} existing 云端现有名册行
+ * @param {Array<{topic:string,stock:string,pct:number|null,groupSize:number}>} picked 本次权威评选结果
+ * @param {Set<string>} qualifyingTopics 本次「成员数达门槛」的题材集合
+ * @returns {{expired:string[], unchanged:boolean}}
+ *   · expired   = 要从云端删掉的题材名（精确匹配）
+ *   · unchanged = 名册与本次结果逐字段一致 → 调用方应直接返回、不做任何写入（幂等，零网络往返）
+ */
+export function planRosterReconcile(existing, picked, qualifyingTopics) {
+  const ex = Array.isArray(existing) ? existing : [];
+  const pk = Array.isArray(picked) ? picked : [];
+  const quals = (qualifyingTopics instanceof Set) ? qualifyingTopics : new Set();
+
+  const expired = ex
+    .filter(function(r) { return r && r.topic && !quals.has(String(r.topic).trim()); })
+    .map(function(r) { return String(r.topic).trim(); });
+
+  let unchanged = (expired.length === 0) && (ex.length === pk.length);
+  if (unchanged) {
+    const byTopic = new Map();
+    ex.forEach(function(r) { byTopic.set(String(r.topic).trim(), r); });
+    for (let i = 0; i < pk.length; i++) {
+      const np = pk[i];
+      const old = byTopic.get(String(np.topic).trim());
+      if (!old) { unchanged = false; break; }
+      if (String(old.stock).trim() !== String(np.stock).trim()) { unchanged = false; break; }
+      const oldPct = (old.rangePct === null || old.rangePct === undefined) ? null : Number(old.rangePct);
+      const newPct = (np.pct === null || np.pct === undefined) ? null : Number(np.pct);
+      const samePct = (oldPct === null && newPct === null) ||
+                      (oldPct !== null && newPct !== null && Math.abs(oldPct - newPct) < 0.005);
+      if (!samePct) { unchanged = false; break; }
+      if ((Number(old.groupSize) || 0) !== (Number(np.groupSize) || 0)) { unchanged = false; break; }
+    }
+  }
+  return { expired: expired, unchanged: unchanged };
+}
