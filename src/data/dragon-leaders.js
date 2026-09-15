@@ -93,6 +93,8 @@ export async function upsertDragonLeaders(date, rows) {
  *   · topics 由**本次健康的权威评选结果**反推得出（不在结果里的题材），不是"猜"出来的；
  *   · topics 为空 → 直接返回 0，**绝不做"清空整个 date"** 这种危险操作；
  *   · 带 .select() 回读受影响行 → 返回真实删除条数，调用方可校验。
+ *     （实测：PostgREST 的 DELETE 只有在 `Prefer: return=representation` 下才回读被删行；
+ *      supabase-js 的 `.delete().select()` 会自动带上 —— 用 curl/fetch 裸测时别被 204 空体误导。）
  *
  * @param {string} date 评选日 YYYY-MM-DD
  * @param {string[]} topics 要删除的题材名（精确匹配）
