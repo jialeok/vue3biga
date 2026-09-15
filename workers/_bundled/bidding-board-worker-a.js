@@ -1,6 +1,13 @@
 // ===== bidding-board-worker-a — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-09-15 02:17:52
+// 生成时间: 2026-09-15 05:13:39
 // 注意: 此文件自动生成，请勿手动编辑
+//
+// ⚠️ 部署自检（粘贴前务必做完这三步）:
+//   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
+//      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
+//      （实测行号 = 旧文件行数 + 8）。
+//   2) 粘贴后核对编辑器总行数 = 564（少了=没粘全，约翻倍=粘重了）。
+//   3) Ctrl+F 搜「function beijingNow」→ 必须恰好 1 处。
 
 // ────── bidding-board-worker-a/config.js ──────
 // config.js — bidding-board-worker-a 配置
