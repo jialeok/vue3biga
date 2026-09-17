@@ -1,0 +1,306 @@
+        /* 涨跌停看板（独立看板，类名统一 limit- 前缀，不与其它看板混用） */
+        .limit-board {
+            margin: 0 15px 10px;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        }
+
+        .limit-header {
+            padding: 10px 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            background: linear-gradient(135deg, #f43f5e, #be123c);
+            transition: background 0.2s;
+        }
+
+        .limit-header:hover {
+            background: linear-gradient(135deg, #e11d48, #9f1239);
+        }
+
+        .limit-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #ffffff;
+            white-space: nowrap;
+        }
+
+        .limit-summary {
+            flex: 1;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.95);
+            text-align: right;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .limit-import-entry {
+            flex-shrink: 0;
+            padding: 2px 8px;
+            font-size: 11px;
+            color: #ffffff;
+            border: 1px solid rgba(255, 255, 255, 0.55);
+            border-radius: 10px;
+            white-space: nowrap;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .limit-import-entry:hover {
+            background: rgba(255, 255, 255, 0.18);
+        }
+
+        .limit-toggle-btn {
+            width: 24px;
+            height: 24px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.9);
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.2);
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .limit-content {
+            padding: 10px 12px;
+            background: #ffffff;
+        }
+
+        .limit-error,
+        .limit-warn {
+            margin-bottom: 8px;
+            padding: 6px 10px;
+            font-size: 11px;
+            border-radius: 8px;
+        }
+
+        .limit-error {
+            color: #b91c1c;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+        }
+
+        .limit-warn {
+            color: #92400e;
+            background: #fef3c7;
+            border: 1px solid #fde68a;
+        }
+
+        .limit-retry {
+            color: #2563eb;
+            text-decoration: underline;
+            cursor: pointer;
+        }
+
+        .limit-empty {
+            padding: 14px 6px;
+            font-size: 12px;
+            color: #94a3b8;
+            text-align: center;
+        }
+
+        .limit-section-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 2px 8px;
+            font-size: 13px;
+            font-weight: 700;
+            color: #0f172a;
+        }
+
+        .limit-section-title.down {
+            color: #15803d;
+        }
+
+        .limit-section-title.up {
+            color: #b91c1c;
+        }
+
+        .limit-section-count {
+            font-size: 11px;
+            font-weight: 500;
+            color: #64748b;
+        }
+
+        /* 蚂蚁线：跌停板与涨停板之间的分隔（行进虚线） */
+        .limit-antline {
+            height: 2px;
+            margin: 12px 0;
+            background-image: repeating-linear-gradient(90deg, #94a3b8 0 5px, transparent 5px 10px);
+            background-size: 10px 2px;
+            background-repeat: repeat-x;
+            animation: limitAnts 1s linear infinite;
+        }
+
+        @keyframes limitAnts {
+            from { background-position: 0 0; }
+            to { background-position: 10px 0; }
+        }
+
+        .limit-head-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 2px 6px 4px;
+            font-size: 10px;
+            color: #94a3b8;
+            border-bottom: 1px solid #f1f5f9;
+        }
+
+        .limit-topic-bar {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin: 8px 0 2px;
+            padding: 5px 8px;
+            background: #f1f5f9;
+            border-radius: 8px;
+            font-size: 12px;
+        }
+
+        .limit-topic-name {
+            font-weight: 700;
+            color: #0f172a;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 46%;
+        }
+
+        .limit-topic-count {
+            font-size: 11px;
+            color: #64748b;
+            white-space: nowrap;
+        }
+
+        .limit-topic-range {
+            flex: 1;
+            text-align: right;
+            font-size: 11px;
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .limit-topic-range .limit-topic-range-lb {
+            color: #94a3b8;
+            font-weight: 400;
+            margin-right: 4px;
+        }
+
+        .limit-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px;
+            font-size: 12px;
+            border-bottom: 1px solid #f8fafc;
+        }
+
+        .limit-row:last-child {
+            border-bottom: none;
+        }
+
+        .limit-row.is-leader {
+            background: #fff7f7;
+        }
+
+        .limit-seq {
+            flex: 0 0 16px;
+            text-align: center;
+            font-size: 10px;
+            color: #94a3b8;
+        }
+
+        .limit-name {
+            flex: 0 0 66px;
+            font-weight: 600;
+            color: #0f172a;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .limit-name.leader {
+            color: #dc2626;
+        }
+
+        .limit-continue {
+            flex: 0 0 46px;
+            font-size: 11px;
+            color: #7c3aed;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .limit-topics {
+            flex: 1;
+            min-width: 0;
+            font-size: 11px;
+            color: #475569;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .limit-range {
+            flex: 0 0 82px;
+            text-align: right;
+            font-size: 11px;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+
+        .limit-leader-badge {
+            flex: 0 0 auto;
+            padding: 0 5px;
+            font-size: 10px;
+            color: #dc2626;
+            background: #fee2e2;
+            border: 1px solid #fecaca;
+            border-radius: 8px;
+            white-space: nowrap;
+        }
+
+        /* 十日涨幅方向配色（涨红跌绿，与项目约定一致） */
+        .tone-up { color: #dc2626; }
+        .tone-down { color: #16a34a; }
+        .tone-flat { color: #64748b; }
+
+        .limit-import-hint {
+            font-size: 11px;
+            color: #64748b;
+            margin-bottom: 8px;
+            line-height: 1.7;
+        }
+
+        .limit-import-textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            font-size: 13px;
+            box-sizing: border-box;
+            resize: vertical;
+            font-family: inherit;
+        }
+
+        .limit-import-result {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #334155;
+            line-height: 1.7;
+        }

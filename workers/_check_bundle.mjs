@@ -111,6 +111,18 @@ export const MUST_BE_UNIQUE = [
   'dispatch', 'jsonResponse', 'CONFIG', 'fetchLadderConstituents', 'numcatDailyAuc',
 ];
 
+/**
+ * ⚠️ 已知局限（2026-09-15 实测，勿踩）：本扫描器的字符串状态机【不识别正则字面量】。
+ *    源码里只要出现「正则内含引号」，例如 `s.replace(/"/g, '')`，扫描器会从那个 `"` 起
+ *    误入「双引号字符串」状态并长期失步 —— 其后所有顶层声明都扫不到，于是出包体检把
+ *    一堆本来存在的标识符报成「缺必需标识符」（`_bundle.mjs` 的 Expect 会直接失败）。
+ *    · 症状：`❌ <worker> 体检不通过：缺必需标识符: runMorning, runClose, dispatch ...`
+ *      而实际代码明明有这些函数、`node --check` 也通过。
+ *    · 处置：把 worker 源码里的 `/"/g` 改写成 `split('"').join('')` 这类不含引号的正则写法。
+ *    · 方向性：该失步只会「漏扫 → 误报缺标识符 → 拒绝出包」，属于【fail-safe】，
+ *      不会让带顶层重名的产物溜出去；但也意味着它是"宁可错杀"，排查时先怀疑这条。
+ */
+
 /** 纯函数体检：不做 node --check（避免递归子进程开销由调用方决定）
  *  @param src 打包产物源码
  *  @param expect 必须存在的顶层标识符（不同 worker 各不相同；传 [] 表示只查重名/残留）

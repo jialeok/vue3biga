@@ -93,6 +93,7 @@ export function useAppBootstrap(loginRef) {
       else if (b === 'jiwang') _emit('jiwang-refresh');
       else if (b === 'bidding') _emit('bidding-refresh');
       else if (b === 'hot') _emit('stocks-refresh');
+      else if (b === 'limitpool') _emit('limit-refresh');
       else if (b === 'marketStage') _emit('bidding-refresh');
     });
 

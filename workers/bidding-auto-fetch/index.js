@@ -1,8 +1,9 @@
 // index.js — bidding-auto-fetch Worker 入口
 //
-// 两个触发点（同一条 Cloudflare 部署链路）：
-//   · 北京 9:25  → morning：抓竞价数据 + 计算 10 日区间涨幅落库；
-//   · 北京 16:00  → close  ：用收盘涨幅覆盖 9:25 竞价涨幅 + 校正区间涨幅 T 腿。
+// 三个触发点（同一条 Cloudflare 部署链路）：
+//   · 北京 9:25  → morning  ：抓竞价数据 + 计算 10 日区间涨幅落库；
+//   · 北京 15:40 → limitpool：抓同花顺涨停池 / 跌停池 → limit_pool（「涨跌停」看板数据源）；
+//   · 北京 16:00 → close    ：用收盘涨幅覆盖 9:25 竞价涨幅 + 校正区间涨幅 T 腿。
 //
 // [FIX 2026-09-10] 收盘覆盖「回归本 worker」。
 //   2026-08-17 曾把 close 挪到 Supabase Edge Function（bidding-a?point=auction-close，pg_cron 16:00），
@@ -14,6 +15,8 @@ import { runMorning } from './logic/morning-workflow.js';
 import { runClose } from './logic/close-workflow.js';
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏（可手动 /fetch?point=extras；16:00 close 也会自动跑）
 import { runAuctionExtrasPatch, runTodaySnapshotPatch } from './logic/extras-workflow.js';
+// [LIMIT-POOL 2026-09-15] 「涨跌停」看板数据源：北京 15:40 抓同花顺涨停池 / 跌停池 → limit_pool
+import { runLimitPool } from './logic/limit-pool-workflow.js';
 
 function jsonResponse(obj, status) {
   return new Response(JSON.stringify(obj, null, 2), {
@@ -43,9 +46,11 @@ function cronToPoint(cronExpr) {
   const key = min + ' ' + hour;
   // 01:25 UTC = 09:25 北京时间 → morning
   // 08:00 UTC = 16:00 北京时间 → close（收盘涨幅覆盖）
+  // 07:40 UTC = 15:40 北京时间 → limitpool（涨跌停池抓取）
   const MAP = {
     '25 1': 'morning',
-    '0 8': 'close'
+    '0 8': 'close',
+    '40 7': 'limitpool'
   };
   return MAP[key] || null;
 }
@@ -101,6 +106,16 @@ async function dispatch(point, env, logs, opts) {
     console.log('[auto-fetch] runAuctionExtrasPatch 完整日志:', JSON.stringify(result.logs || []));
     return result;
   }
+  if (point === 'limitpool') {
+    // [LIMIT-POOL 2026-09-15] 涨跌停池：北京 15:40 抓涨停池 + 跌停池 → limit_pool。
+    // 支持 ?date=YYYY-MM-DD 手动补抓历史某日（上游支持 date_ms）。
+    const result = await runLimitPool(env, { date: opts && opts.date });
+    console.log('[auto-fetch] runLimitPool 完成 ok=' + result.ok + ' today=' + (result.today || '') +
+      ' up=' + (result.upCount || 0) + ' down=' + (result.downCount || 0) +
+      ' completenessSummary=' + (result.completenessSummary || ''));
+    console.log('[auto-fetch] runLimitPool 完整日志:', JSON.stringify(result.logs || []));
+    return result;
+  }
   console.error('[auto-fetch] 未知触发点:', point);
   return { ok: false, error: '未知触发点: ' + point };
 }
@@ -135,8 +150,8 @@ export default {
           return jsonResponse({ ok: false, error: '当前北京时间不在抓取时段（9:25~9:40=morning，15:00~16:30=close）' });
         }
       }
-      if (!['morning', 'close', 'extras', 'snapshot'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot 可附 &date=YYYY-MM-DD）' });
+      if (!['morning', 'close', 'extras', 'snapshot', 'limitpool'].includes(point)) {
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|limitpool|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot 可附 &date=YYYY-MM-DD；limitpool 可附 &date=YYYY-MM-DD）' });
       }
       try {
         const result = await dispatch(point, env, [], {

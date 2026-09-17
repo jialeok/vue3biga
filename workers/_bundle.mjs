@@ -59,7 +59,7 @@ const workers = [
   {
     Name: 'bidding-auto-fetch', Dir: 'bidding-auto-fetch',
     // 早盘 worker 的核心顶层标识符 —— 缺一个就说明拼接漏了模块，必须拦下
-    Expect: ['beijingNow', 'beijingToday', 'runMorning', 'runClose', 'dispatch',
+    Expect: ['beijingNow', 'beijingToday', 'runMorning', 'runClose', 'runLimitPool', 'dispatch',
       'jsonResponse', 'CONFIG', 'fetchLadderConstituents', 'numcatDailyAuc'],
   },
   { Name: 'bidding-board-worker-a', Dir: 'bidding-board-worker-a', Expect: [] },

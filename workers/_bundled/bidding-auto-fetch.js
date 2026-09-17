@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-09-15 05:13:39
+// 生成时间: 2026-09-17 09:15:53
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 3020（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 3327（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 必须恰好 1 处。
 
 // ────── _shared-source/date-utils.js ──────
@@ -404,6 +404,133 @@ async function fetchHistoricalPctChg(env, constituents, historicalDates) {
   return { byDate: result, successCount, failCount };
 }
 
+// ===== 涨跌停池（「涨跌停」看板数据源）=====
+// 上游：fuyao「涨停池 / 跌停池」两个 special-data 接口（date_ms = 北京当日午夜的 epoch ms）。
+// 口径与前端 src/data/limit-pool.js 完全一致（同一张表 limit_pool、同一套字段映射），
+// 保证「worker 抓的」与「前端自愈抓的」写进库里的行结构完全相同（§6 单一真相）。
+const LIMIT_UP_PATH = '/api/a-share/special-data/limit-up-pool';
+const LIMIT_DOWN_PATH = '/api/a-share/special-data/limit-down-pool';
+// 上游文档：size ∈ 1..200
+const LIMIT_POOL_PAGE_SIZE = 200;
+// 分页安全上限（单日池子真实规模数十~数百只；仅用于防上游 pagination 异常导致死循环）
+const LIMIT_POOL_MAX_PAGES = 10;
+
+/** 涨幅数值 → 库内统一文本口径（与 market_metrics.change_pct 一致）；无法解析 → null（绝不用 0 顶替） */
+function limitPoolPctText(raw) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  if (!isFinite(n)) return null;
+  return (n >= 0 ? '+' : '') + n.toFixed(2);
+}
+
+/** 数值字段归一：非有限值 → null */
+function limitPoolNum(raw) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  return isFinite(n) ? n : null;
+}
+
+/** 文本字段归一：空串/空白 → null */
+function limitPoolText(raw) {
+  if (raw === null || raw === undefined) return null;
+  const s = String(raw).trim();
+  return s ? s : null;
+}
+
+/**
+ * 上游 item → limit_pool 入库行。
+ * 涨停池有 limit_up_time / continue_day_text / seal_money 等；跌停池换成 first/last_limit_time + turnover。
+ */
+function limitPoolRow(it, board, date, nowIso) {
+  const isUp = board === 'up';
+  const code = String(it.ticker || it.thscode || '').trim().replace(/\..*$/, '');
+  const name = String(it.name || '').trim();
+  if (!name) return null;
+  return {
+    date: date,
+    board: board,
+    stock: name,
+    code: /^\d{6}$/.test(code) ? code : null,
+    thscode: limitPoolText(it.thscode),
+    price: limitPoolNum(it.last_price),
+    change_pct: limitPoolPctText(it.price_change_ratio_pct),
+    limit_time: isUp ? limitPoolText(it.limit_up_time) : limitPoolText(it.first_limit_time),
+    last_limit_time: isUp ? null : limitPoolText(it.last_limit_time),
+    reason: isUp ? limitPoolText(it.limit_up_reason) : null,
+    continue_text: isUp ? limitPoolText(it.continue_day_text) : null,
+    continue_cnt: isUp ? limitPoolNum(it.continue_day_cnt) : null,
+    seal_money: isUp ? limitPoolNum(it.seal_money) : null,
+    max_seal_money: isUp ? limitPoolNum(it.max_seal_money) : null,
+    turnover_ratio: isUp ? null : limitPoolNum(it.turnover_ratio_pct),
+    updated_at: nowIso
+  };
+}
+
+/**
+ * 分页拉一个池的全部条目（上游 size 上限 200）。
+ * 每个分页请求都走 retryFuyao（该上游限流是突发性的，见本文件顶部 RETRY 说明）。
+ *
+ * @returns {Promise<{items:object[], total:number, complete:boolean}>}
+ *   complete=false 表示「返回条目数 < 上游声明的 total」→ 调用方【不得】据此删除旧行（§11 删除安全）。
+ */
+async function fetchLimitPoolBoardPages(env, path, dateMs) {
+  const items = [];
+  let total = -1;
+  let complete = false;
+  for (let page = 1; page <= LIMIT_POOL_MAX_PAGES; page++) {
+    const data = await retryFuyao(
+      () => fuyaoProxyGet(env, path, { date_ms: dateMs, page: page, size: LIMIT_POOL_PAGE_SIZE }),
+      3, path + ' page' + page
+    );
+    const arr = (data && data.item) || [];
+    arr.forEach(it => { if (it && it.name) items.push(it); });
+    const pg = (data && data.pagination) || null;
+    total = pg && typeof pg.total === 'number' ? pg.total : items.length;
+    if (arr.length === 0) { complete = true; break; }
+    if (items.length >= total) { complete = true; break; }
+    if (pg && page >= pg.pages) { complete = items.length >= total; break; }
+  }
+  return { items: items, total: total < 0 ? items.length : total, complete: complete };
+}
+
+/**
+ * 抓取某交易日的涨停池 + 跌停池。
+ *
+ * ⚠️ 两个池【都要成功】才返回：任一失败直接 throw，调用方据此放弃写入
+ *    （宁可保持旧快照，也不写出「只有涨停、没有跌停」的半张表）。
+ *
+ * @param {object} env
+ * @param {string} date YYYY-MM-DD
+ * @returns {Promise<{date:string, up:object[], down:object[], upTotal:number, downTotal:number,
+ *                    upComplete:boolean, downComplete:boolean}>}
+ */
+async function fetchLimitPoolSnapshot(env, date) {
+  if (!date) throw new Error('limit-pool: 缺少日期');
+  const dateMs = dateStrToMs(date);
+  if (!isFinite(dateMs)) throw new Error('limit-pool: 日期非法 ' + date);
+  const nowIso = new Date().toISOString();
+
+  const upRes = await fetchLimitPoolBoardPages(env, LIMIT_UP_PATH, dateMs);
+  const downRes = await fetchLimitPoolBoardPages(env, LIMIT_DOWN_PATH, dateMs);
+
+  const up = upRes.items.map(it => limitPoolRow(it, 'up', date, nowIso)).filter(Boolean);
+  const down = downRes.items.map(it => limitPoolRow(it, 'down', date, nowIso)).filter(Boolean);
+
+  console.log('[LIMIT-POOL] 抓取 ' + date + '：涨停 ' + up.length + '/' + upRes.total +
+    (upRes.complete ? '（完整）' : '（不完整）') + ' 只，跌停 ' + down.length + '/' + downRes.total +
+    (downRes.complete ? '（完整）' : '（不完整）') + ' 只');
+
+  return {
+    date: date,
+    up: up,
+    down: down,
+    upTotal: upRes.total,
+    downTotal: downRes.total,
+    upComplete: upRes.complete,
+    downComplete: downRes.complete
+  };
+}
+
 /**
  * [KLINE-FALLBACK 2026-09-11] 同花顺 K 线窗口涨幅（前复权）——供收盘区间涨幅「缺腿行」重算。
  *
@@ -723,8 +850,7 @@ async function readStockRangePctForDate(env, date) {
   })).filter(r => r.stock);
 }
 
-// [BUG-FIX] 读取指定日期的 auction_watchlist 股票列表，用于合并打标签/观察组股票到 worker 抓取名单
-// [9:25-LOCK 2026-09-15] 额外返回 obs_auto_added：调用方判断「9:25 那轮是否已成功落库」时，
+// [BUG-FIX] 读取指定日期的 auction_watchlist 股票列表，用于合并打标签/观察组股票到 worker 抓取名单// [9:25-LOCK 2026-09-15] 额外返回 obs_auto_added：调用方判断「9:25 那轮是否已成功落库」时，
 //   必须【排除观察组壳行】——壳行是前端打开页面时自己写的（source=manual），
 //   若把它当成「名单已存在」，worker 重跑就会一行都不写（2026-09-15 P0 修复现场实测）。
 async function readAuctionWatchlistForDate(env, date) {
@@ -842,6 +968,69 @@ async function readStockCodeMap(env) {
     if (name && code && !map[name]) map[name] = code;
   });
   return map;
+}
+
+/**
+ * [LIMIT-POOL 2026-09-15] 写入「涨跌停池」行（limit_pool，主键 date+board+stock → 幂等覆盖）。
+ * 由 15:40 的 limitpool 触发点写入；前端打开看板时若当日为空也会自愈补抓同一张表。
+ * @param {Array<object>} rows
+ * @returns {Promise<number>} 写入行数
+ */
+async function upsertLimitPoolRows(env, rows) {
+  const payload = (rows || []).filter(r => r && r.date && r.board && r.stock);
+  if (payload.length === 0) return 0;
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/limit_pool?on_conflict=date,board,stock';
+  // 分批：PostgREST 单次不宜过大（涨停+跌停合计可达数百行）
+  const chunk = 500;
+  for (let i = 0; i < payload.length; i += chunk) {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: Object.assign(sbHeaders(env), { 'Prefer': 'resolution=merge-duplicates, return=minimal' }),
+      body: JSON.stringify(payload.slice(i, i + chunk))
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error('upsert limit_pool 失败: HTTP ' + resp.status + ': ' + text.slice(0, 300));
+    }
+  }
+  return payload.length;
+}
+
+/**
+ * [LIMIT-POOL 2026-09-15] 删除某日某板「已不在本次快照中」的旧行（§11 删除安全）。
+ *
+ * 安全约束（调用方必须保证）：
+ *   · keepStocks 来自【本次权威抓取结果】，且该次抓取必须被判定为【完整】（upComplete/downComplete）；
+ *     抓取不完整时【禁止调用本函数】—— 否则会把「没抓到」当成「已退池」而误删真数据；
+ *   · keepStocks 为空 ⇒ 本次该板确实是 0 只（强势日没有跌停）→ 删除该板该日全部行，这是正确结果；
+ *   · 只按 (date, board) 限定范围，绝不触碰其它日期。
+ *
+ * ⚠️ PostgREST 的 DELETE 必须带 `Prefer: return=representation` 才会回读被删行；
+ *    否则返回空数组，无法校验实际删除条数（见 2026-09-15 的 PostgREST 排查记录）。
+ *
+ * @returns {Promise<number>} 实际删除行数
+ */
+async function deleteStaleLimitPool(env, date, board, keepStocks) {
+  if (!date || !board) return 0;
+  const keep = (keepStocks || []).map(s => String(s).trim()).filter(Boolean);
+  let url = CONFIG.SUPABASE_URL + '/rest/v1/limit_pool?date=eq.' + encodeURIComponent(date) +
+    '&board=eq.' + encodeURIComponent(board);
+  if (keep.length > 0) {
+    // ⚠️ 这里刻意【不用】含引号的正则（如 /"/g）：_check_bundle.mjs 的顶层声明扫描器没有
+    //    正则字面量状态，遇到 /"/ 会误入「双引号字符串」状态并一直失步 → 其后所有顶层声明
+    //    都读不到，出包体检会误报「缺必需标识符」。用 split/join 表达同一语义，保持体检可信。
+    url += '&stock=not.in.(' + keep.map(s => '"' + s.split('"').join('') + '"').join(',') + ')';
+  }
+  const resp = await fetch(url, {
+    method: 'DELETE',
+    headers: Object.assign(sbHeaders(env), { 'Prefer': 'return=representation' })
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error('delete limit_pool 失败: HTTP ' + resp.status + ': ' + text.slice(0, 300));
+  }
+  const data = await resp.json().catch(() => []);
+  return (data || []).length;
 }
 
 // ────── bidding-auto-fetch/logic/holiday-check.js ──────
@@ -2866,12 +3055,117 @@ async function syncRangePct(env, today, closeMs, rangeDates, dailyByCode, pctByC
 }
 
 
+// ────── bidding-auto-fetch/logic/limit-pool-workflow.js ──────
+// limit-pool-workflow.js — 「涨跌停」看板数据抓取主流程（runLimitPool）
+//
+// 触发点：每个交易日【北京 15:40】（Cloudflare cron 07:40 UTC = 15:40 北京）。
+//   为什么是 15:40 而不是 15:00：收盘瞬间上游的涨停/跌停池仍在变动（最后一笔成交、
+//   跌停打开又被砸回等），等 40 分钟拿到的是终态快照；且 15:40 已完全避开收盘并发高峰。
+//
+// 职责（单一）：抓 涨停池 + 跌停池 → 整日对齐写入 limit_pool。
+//   不做题材分组、不选龙头 —— 那些是【派生视图】（池 + 共享题材库 + 十日涨幅），
+//   由前端 logic/limitpool 在渲染时计算。落库只会多出第二个真相源（题材库变更后会陈旧冻结）。
+//
+// 幂等：主键 (date, board, stock) upsert 覆盖；重跑同一日结果相同 → 不产生无意义变更。
+//
+// §11 删除安全：只有当某板抓取被判定为【完整】时才清理该板「本次已不在池中」的旧行；
+//     抓取不完整（items < 上游 total）时【只 upsert、不删除】—— 宁可多留旧行，也不误删真数据。
+// §10 未就绪 ≠ 没有：两池皆空 → 视为上游尚未结算，不写库、不删除，返回 ok:false 交人工/下次重试。
+
+
+
+
+const BOARD_UP = 'up';
+const BOARD_DOWN = 'down';
+
+/**
+ * @param {object} env
+ * @param {{date?:string}} [opts] date='YYYY-MM-DD' 可指定要抓取的交易日（默认=北京今天）。
+ *        用途：手动补抓历史某天（上游支持 date_ms）。
+ */
+async function runLimitPool(env, opts) {
+  const logs = [];
+  const today = (opts && opts.date) || beijingToday();
+  logs.push('today=' + today + (opts && opts.date ? '（手动指定日期）' : ''));
+
+  if (isWeekend(today) || !localIsTradingDay(today)) {
+    logs.push('非交易日，跳过');
+    return { ok: true, today, skipped: true, reason: '非交易日', logs };
+  }
+
+  // 1. 抓取（两个池要么都成功，要么直接失败）
+  logs.push('步骤1：抓取同花顺涨停池 / 跌停池...');
+  let snap;
+  try {
+    snap = await fetchLimitPoolSnapshot(env, today);
+  } catch (e) {
+    logs.push('抓取失败: ' + (e && e.message || e));
+    return { ok: false, today, error: '抓取失败: ' + (e && e.message || e), logs };
+  }
+  logs.push('涨停 ' + snap.up.length + ' 只，跌停 ' + snap.down.length + ' 只');
+
+  // 2. 两池皆空 → 上游未就绪（或极端行情），不写库（§10：未就绪 ≠ 没有）
+  if (snap.up.length === 0 && snap.down.length === 0) {
+    logs.push('❌ 两池皆空 → 判定上游未结算/未就绪，本次不写库（避免清空已有快照）');
+    return { ok: false, today, error: '上游两池皆空（可能尚未结算）', logs };
+  }
+
+  // 3. 整日对齐写入：先 upsert（本次结果全部就位）→ 再删旧行（本次已不在池中的）
+  logs.push('步骤2：写入 limit_pool...');
+  let written = 0;
+  try {
+    written = await upsertLimitPoolRows(env, snap.up.concat(snap.down));
+  } catch (e) {
+    logs.push('写入失败: ' + (e && e.message || e));
+    return { ok: false, today, error: '写入 limit_pool 失败: ' + (e && e.message || e), logs };
+  }
+
+  logs.push('步骤3：清理该日已退池的旧行...');
+  let deletedUp = 0;
+  let deletedDown = 0;
+  if (snap.upComplete) {
+    try {
+      deletedUp = await deleteStaleLimitPool(env, today, BOARD_UP, snap.up.map(r => r.stock));
+    } catch (e) {
+      logs.push('清理涨停旧行失败（非致命）: ' + (e && e.message || e));
+    }
+  } else {
+    logs.push('⚠️ 涨停池抓取不完整（' + snap.up.length + '/' + snap.upTotal + '）→ 跳过旧行清理（不误删）');
+  }
+  if (snap.downComplete) {
+    try {
+      deletedDown = await deleteStaleLimitPool(env, today, BOARD_DOWN, snap.down.map(r => r.stock));
+    } catch (e) {
+      logs.push('清理跌停旧行失败（非致命）: ' + (e && e.message || e));
+    }
+  } else {
+    logs.push('⚠️ 跌停池抓取不完整（' + snap.down.length + '/' + snap.downTotal + '）→ 跳过旧行清理（不误删）');
+  }
+
+  const completenessSummary = '✅ 涨跌停池写入 ' + written + ' 行（涨停 ' + snap.up.length +
+    ' / 跌停 ' + snap.down.length + '），清理退池旧行 涨停 ' + deletedUp + ' / 跌停 ' + deletedDown;
+  logs.push('数据完整性汇总: ' + completenessSummary);
+  return {
+    ok: true,
+    today,
+    upCount: snap.up.length,
+    downCount: snap.down.length,
+    written: written,
+    deletedUp: deletedUp,
+    deletedDown: deletedDown,
+    completenessSummary: completenessSummary,
+    logs
+  };
+}
+
+
 // ────── bidding-auto-fetch/index.js ──────
 // index.js — bidding-auto-fetch Worker 入口
 //
-// 两个触发点（同一条 Cloudflare 部署链路）：
-//   · 北京 9:25  → morning：抓竞价数据 + 计算 10 日区间涨幅落库；
-//   · 北京 16:00  → close  ：用收盘涨幅覆盖 9:25 竞价涨幅 + 校正区间涨幅 T 腿。
+// 三个触发点（同一条 Cloudflare 部署链路）：
+//   · 北京 9:25  → morning  ：抓竞价数据 + 计算 10 日区间涨幅落库；
+//   · 北京 15:40 → limitpool：抓同花顺涨停池 / 跌停池 → limit_pool（「涨跌停」看板数据源）；
+//   · 北京 16:00 → close    ：用收盘涨幅覆盖 9:25 竞价涨幅 + 校正区间涨幅 T 腿。
 //
 // [FIX 2026-09-10] 收盘覆盖「回归本 worker」。
 //   2026-08-17 曾把 close 挪到 Supabase Edge Function（bidding-a?point=auction-close，pg_cron 16:00），
@@ -2879,6 +3173,7 @@ async function syncRangePct(env, today, closeMs, rangeDates, dailyByCode, pctByC
 //   手工触发返回 546），导致当天 change_pct 全天停留在竞价涨幅。
 //   本 worker 的早盘 cron 一直稳定，因此收盘也交回这里，不再依赖任何外部 cron。
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏（可手动 /fetch?point=extras；16:00 close 也会自动跑）
+// [LIMIT-POOL 2026-09-15] 「涨跌停」看板数据源：北京 15:40 抓同花顺涨停池 / 跌停池 → limit_pool
 function jsonResponse(obj, status) {
   return new Response(JSON.stringify(obj, null, 2), {
     status: status || 200,
@@ -2907,9 +3202,11 @@ function cronToPoint(cronExpr) {
   const key = min + ' ' + hour;
   // 01:25 UTC = 09:25 北京时间 → morning
   // 08:00 UTC = 16:00 北京时间 → close（收盘涨幅覆盖）
+  // 07:40 UTC = 15:40 北京时间 → limitpool（涨跌停池抓取）
   const MAP = {
     '25 1': 'morning',
-    '0 8': 'close'
+    '0 8': 'close',
+    '40 7': 'limitpool'
   };
   return MAP[key] || null;
 }
@@ -2965,6 +3262,16 @@ async function dispatch(point, env, logs, opts) {
     console.log('[auto-fetch] runAuctionExtrasPatch 完整日志:', JSON.stringify(result.logs || []));
     return result;
   }
+  if (point === 'limitpool') {
+    // [LIMIT-POOL 2026-09-15] 涨跌停池：北京 15:40 抓涨停池 + 跌停池 → limit_pool。
+    // 支持 ?date=YYYY-MM-DD 手动补抓历史某日（上游支持 date_ms）。
+    const result = await runLimitPool(env, { date: opts && opts.date });
+    console.log('[auto-fetch] runLimitPool 完成 ok=' + result.ok + ' today=' + (result.today || '') +
+      ' up=' + (result.upCount || 0) + ' down=' + (result.downCount || 0) +
+      ' completenessSummary=' + (result.completenessSummary || ''));
+    console.log('[auto-fetch] runLimitPool 完整日志:', JSON.stringify(result.logs || []));
+    return result;
+  }
   console.error('[auto-fetch] 未知触发点:', point);
   return { ok: false, error: '未知触发点: ' + point };
 }
@@ -2999,8 +3306,8 @@ export default {
           return jsonResponse({ ok: false, error: '当前北京时间不在抓取时段（9:25~9:40=morning，15:00~16:30=close）' });
         }
       }
-      if (!['morning', 'close', 'extras', 'snapshot'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot 可附 &date=YYYY-MM-DD）' });
+      if (!['morning', 'close', 'extras', 'snapshot', 'limitpool'].includes(point)) {
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|limitpool|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot 可附 &date=YYYY-MM-DD；limitpool 可附 &date=YYYY-MM-DD）' });
       }
       try {
         const result = await dispatch(point, env, [], {

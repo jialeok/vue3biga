@@ -167,8 +167,7 @@ export async function readStockRangePctForDate(env, date) {
   })).filter(r => r.stock);
 }
 
-// [BUG-FIX] 读取指定日期的 auction_watchlist 股票列表，用于合并打标签/观察组股票到 worker 抓取名单
-// [9:25-LOCK 2026-09-15] 额外返回 obs_auto_added：调用方判断「9:25 那轮是否已成功落库」时，
+// [BUG-FIX] 读取指定日期的 auction_watchlist 股票列表，用于合并打标签/观察组股票到 worker 抓取名单// [9:25-LOCK 2026-09-15] 额外返回 obs_auto_added：调用方判断「9:25 那轮是否已成功落库」时，
 //   必须【排除观察组壳行】——壳行是前端打开页面时自己写的（source=manual），
 //   若把它当成「名单已存在」，worker 重跑就会一行都不写（2026-09-15 P0 修复现场实测）。
 export async function readAuctionWatchlistForDate(env, date) {
@@ -286,4 +285,67 @@ export async function readStockCodeMap(env) {
     if (name && code && !map[name]) map[name] = code;
   });
   return map;
+}
+
+/**
+ * [LIMIT-POOL 2026-09-15] 写入「涨跌停池」行（limit_pool，主键 date+board+stock → 幂等覆盖）。
+ * 由 15:40 的 limitpool 触发点写入；前端打开看板时若当日为空也会自愈补抓同一张表。
+ * @param {Array<object>} rows
+ * @returns {Promise<number>} 写入行数
+ */
+export async function upsertLimitPoolRows(env, rows) {
+  const payload = (rows || []).filter(r => r && r.date && r.board && r.stock);
+  if (payload.length === 0) return 0;
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/limit_pool?on_conflict=date,board,stock';
+  // 分批：PostgREST 单次不宜过大（涨停+跌停合计可达数百行）
+  const chunk = 500;
+  for (let i = 0; i < payload.length; i += chunk) {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: Object.assign(sbHeaders(env), { 'Prefer': 'resolution=merge-duplicates, return=minimal' }),
+      body: JSON.stringify(payload.slice(i, i + chunk))
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error('upsert limit_pool 失败: HTTP ' + resp.status + ': ' + text.slice(0, 300));
+    }
+  }
+  return payload.length;
+}
+
+/**
+ * [LIMIT-POOL 2026-09-15] 删除某日某板「已不在本次快照中」的旧行（§11 删除安全）。
+ *
+ * 安全约束（调用方必须保证）：
+ *   · keepStocks 来自【本次权威抓取结果】，且该次抓取必须被判定为【完整】（upComplete/downComplete）；
+ *     抓取不完整时【禁止调用本函数】—— 否则会把「没抓到」当成「已退池」而误删真数据；
+ *   · keepStocks 为空 ⇒ 本次该板确实是 0 只（强势日没有跌停）→ 删除该板该日全部行，这是正确结果；
+ *   · 只按 (date, board) 限定范围，绝不触碰其它日期。
+ *
+ * ⚠️ PostgREST 的 DELETE 必须带 `Prefer: return=representation` 才会回读被删行；
+ *    否则返回空数组，无法校验实际删除条数（见 2026-09-15 的 PostgREST 排查记录）。
+ *
+ * @returns {Promise<number>} 实际删除行数
+ */
+export async function deleteStaleLimitPool(env, date, board, keepStocks) {
+  if (!date || !board) return 0;
+  const keep = (keepStocks || []).map(s => String(s).trim()).filter(Boolean);
+  let url = CONFIG.SUPABASE_URL + '/rest/v1/limit_pool?date=eq.' + encodeURIComponent(date) +
+    '&board=eq.' + encodeURIComponent(board);
+  if (keep.length > 0) {
+    // ⚠️ 这里刻意【不用】含引号的正则（如 /"/g）：_check_bundle.mjs 的顶层声明扫描器没有
+    //    正则字面量状态，遇到 /"/ 会误入「双引号字符串」状态并一直失步 → 其后所有顶层声明
+    //    都读不到，出包体检会误报「缺必需标识符」。用 split/join 表达同一语义，保持体检可信。
+    url += '&stock=not.in.(' + keep.map(s => '"' + s.split('"').join('') + '"').join(',') + ')';
+  }
+  const resp = await fetch(url, {
+    method: 'DELETE',
+    headers: Object.assign(sbHeaders(env), { 'Prefer': 'return=representation' })
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error('delete limit_pool 失败: HTTP ' + resp.status + ': ' + text.slice(0, 300));
+  }
+  const data = await resp.json().catch(() => []);
+  return (data || []).length;
 }

@@ -70,6 +70,8 @@
     <StatsBoard v-show="boardView === 'trading'" />
     <StarStatsBoard v-show="boardView === 'trading'" />
     <EmotionBoard v-show="boardView === 'trading'" />
+    <!-- 「涨跌停」看板：独立看板组件（在情绪看板之下、早盘竞价看板之上） -->
+    <LimitBoard v-show="boardView === 'trading'" />
     <AuctionBoard v-show="boardView === 'trading'" />
     <DuibanBoard v-show="boardView === 'trading'" />
     <EtfBoard v-show="boardView === 'trading'" />
@@ -202,6 +204,7 @@ import DuibanBoard from './DuibanBoard.vue';
 import EtfBoard from './EtfBoard.vue';
 import JiwangBoard from './JiwangBoard.vue';
 import EmotionBoard from './EmotionBoard.vue';
+import LimitBoard from './LimitBoard.vue';
 import StatsBoard from './StatsBoard.vue';
 import StarStatsBoard from './StarStatsBoard.vue';
 import WeekendStatsBoard from './WeekendStatsBoard.vue';
