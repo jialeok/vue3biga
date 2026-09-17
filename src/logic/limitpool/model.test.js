@@ -136,11 +136,14 @@ describe('buildTopicBlocks 题材分块', () => {
         expect(JSON.stringify(rows)).toBe(snapshot);
     });
 
-    it('透传 topicsText（编排层预置的全题材文本），供行内展示；缺省为空串', () => {
-        const withTopics = rows.map(r => ({ ...r, topicsText: '题材' + r.stock }));
+    it('题材展示文本：英文逗号分隔（省空间）；无题材 → "-"（与早盘竞价看板同一口径）', () => {
+        const withTopics = rows.map(r => ({ ...r, topicsText: '题材' + r.stock + '，算力' }));
         const blocks = buildTopicBlocks(withTopics, primaryMap, fallback, () => ({ pct: 1, days: 10 }));
-        expect(blocks[0].stocks.every(s => s.topicsText.indexOf('题材') === 0)).toBe(true);
+        const b = blocks[0]; // B题材块 = 乙、丙（组内原相对顺序）
+        expect(b.stocks.map(s => s.topicsDisplay)).toEqual(['题材乙,算力', '题材丙,算力']);
+        // 绝不出现全角逗号：那正是「白占半行」的元凶
+        expect(b.stocks.every(s => s.topicsDisplay.indexOf('，') < 0)).toBe(true);
         const noTopics = buildTopicBlocks(rows, primaryMap, fallback, () => ({ pct: 1, days: 10 }));
-        expect(noTopics[0].stocks.every(s => s.topicsText === '')).toBe(true);
+        expect(noTopics[0].stocks.every(s => s.topicsDisplay === '-')).toBe(true);
     });
 });

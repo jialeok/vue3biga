@@ -7,7 +7,7 @@
 //   · 组排序 = topic-sort.js#sortByTopicGroups（与早盘竞价第一页「题材 toggle」完全同一套组序规则）
 //   · 题材文本清洗 = note/helpers.js#isValidTopic
 
-import { sortByTopicGroups } from '../auction/topic-sort.js';
+import { sortByTopicGroups, getStockTopicsDisplay } from '../auction/topic-sort.js';
 import { isValidTopic } from '../note/helpers.js';
 import { RANGE_WINDOW_DAYS } from '../auction/range-window.js';
 
@@ -183,8 +183,11 @@ export function buildTopicBlocks(rows, primaryMap, fallbackFn, rangePctOf) {
                 code: x.row.code || '',
                 changePct: x.row.changePct || '',
                 continueText: x.row.continueText || '',
-                // 该股在共享题材库里的全题材文本（由编排层 _buildBlocks 预置；缺省 '-'）
-                topicsText: x.row.topicsText || '',
+                // 全题材展示文本（英文逗号分隔，无题材 → '-'）：由编排层预置的原始题材文本经
+                // topic-sort.js#getStockTopicsDisplay 归一 —— 与早盘竞价看板「题材单元格」同一口径。
+                // 为什么必须用英文逗号：全角「，」宽约一个汉字，一票多题材时白占近半行；
+                // 英文「,」只有半宽。题材是本看板的主角列，宽度全留给它。
+                topicsDisplay: getStockTopicsDisplay({ stock: x.row.stock, topics: x.row.topicsText }),
                 reason: x.row.reason || '',
                 limitTime: x.row.limitTime || '',
                 sealMoney: x.row.sealMoney === null || x.row.sealMoney === undefined ? null : x.row.sealMoney,

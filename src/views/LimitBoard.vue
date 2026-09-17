@@ -6,7 +6,10 @@
     · 单页、无 toggle；股票按题材分类（复用早盘竞价「题材 toggle」同一套分组/组序口径）
     · 上=跌停板，下=涨停板，中间用蚂蚁线分隔
     · 题材条：题材名称 + 题材数量 + 十日涨幅（该题材龙头股的十日涨幅）
-    · 股票行：序号 + 股票名称 + 连板（首板/二板…）+ 题材 + 十日涨幅；十日涨幅最高者为龙头（红标）
+    · 股票行：序号 + [股票名称 + 龙头小标 + 连板小标] + 题材 + 十日涨幅；十日涨幅最高者为龙头
+    · 空间优先（2026-09-17 改版）：所有标一律 9px 小字、紧贴股票名（参照早盘竞价看板的
+      龙一/龙二徽章与连板小标），龙头标放在【股票名称之后】；题材是主角列 —— 吃满剩余宽度、
+      用英文逗号分隔、允许折行、完整展示，⛔ 不再用省略号截断
     · 手动粘贴导入题材的后台入口（写入【共享题材库】，与早盘竞价看板互通）
 
   分层：本文件只有模板与调用；全部业务在 logic/limitpool/*，数据在 data/limit-pool.js。
@@ -108,12 +111,12 @@
             </div>
 
             <template v-else>
+              <!-- 列图例（9px 单行，只为说明列义；本身不占宽度，宽度都让给题材列） -->
               <div class="limit-head-row">
-                <span style="flex:0 0 16px;text-align:center">#</span>
-                <span style="flex:0 0 66px">股票名称</span>
-                <span style="flex:0 0 46px">{{ sec.key === 'up' ? '连板' : '跌停时间' }}</span>
-                <span style="flex:1">题材</span>
-                <span style="flex:0 0 82px;text-align:right">十日涨幅</span>
+                <span class="limit-head-seq">#</span>
+                <span class="limit-head-name">股票 / {{ sec.key === 'up' ? '连板' : '跌停时间' }}</span>
+                <span class="limit-head-topics">题材（全部，逗号分隔）</span>
+                <span class="limit-head-range">十日涨幅</span>
               </div>
 
               <div
@@ -127,13 +130,7 @@
                   <span
                     class="limit-topic-range"
                     :class="toneClass(block.leaderPct)"
-                  >
-                    <span
-                      v-if="block.hasLeader"
-                      class="limit-topic-range-lb"
-                    >龙头 {{ block.leaderStock }}</span>
-                    十日 {{ formatRangePctText(block) }}
-                  </span>
+                  >十日 {{ formatRangePctText(block) }}</span>
                 </div>
 
                 <div
@@ -143,20 +140,31 @@
                   :class="{ 'is-leader': stock.isLeader }"
                 >
                   <span class="limit-seq">{{ stock.seq }}</span>
-                  <span
-                    class="limit-name"
-                    :class="{ leader: stock.isLeader }"
-                  >{{ stock.stock }}</span>
-                  <span class="limit-continue">{{ continueText(stock) }}</span>
-                  <span class="limit-topics">{{ topicsText(stock) }}</span>
+                  <!-- 名称块 = 股票名 → 龙头标 → 连板标，三段紧贴、整体不换行。
+                       标一律 9px 小字（与早盘竞价看板 .dragon-badge / .auction-streak-tag 同级占位），
+                       宽度随内容伸缩、不占固定列 —— 省下的宽度全部留给右侧题材列。 -->
+                  <span class="limit-name-block">
+                    <span
+                      class="limit-name"
+                      :class="{ leader: stock.isLeader }"
+                    >{{ stock.stock }}</span>
+                    <span
+                      v-if="stock.isLeader"
+                      class="limit-leader-badge"
+                      title="本题材内十日涨幅最高 → 该题材龙头"
+                    >龙头</span>
+                    <span
+                      v-if="continueText(stock)"
+                      class="limit-continue-tag"
+                      :title="sec.key === 'up' ? '连板' : '首次跌停时间'"
+                    >{{ continueText(stock) }}</span>
+                  </span>
+                  <!-- 题材（主角列）：完整展示、允许折行，⛔ 不做省略号截断 -->
+                  <span class="limit-topics">{{ stock.topicsDisplay }}</span>
                   <span
                     class="limit-range"
                     :class="rangeClass(stock)"
                   >{{ rangeText(stock) }}</span>
-                  <span
-                    v-if="stock.isLeader"
-                    class="limit-leader-badge"
-                  >龙头</span>
                 </div>
               </div>
             </template>
@@ -218,8 +226,7 @@ const {
   rangeText,
   rangeClass,
   toneClass,
-  continueText,
-  topicsText
+  continueText
 } = useLimitBoard();
 
 // 题材条上的十日涨幅（该题材龙头的十日涨幅）

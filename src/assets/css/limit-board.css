@@ -71,7 +71,8 @@
         }
 
         .limit-content {
-            padding: 10px 12px;
+            /* 收窄内边距：横向省下的宽度直接变成题材列的可视宽度 */
+            padding: 8px 10px;
             background: #ffffff;
         }
 
@@ -111,9 +112,9 @@
         .limit-section-title {
             display: flex;
             align-items: center;
-            gap: 8px;
-            padding: 4px 2px 8px;
-            font-size: 13px;
+            gap: 6px;
+            padding: 2px 2px 6px;
+            font-size: 12px;
             font-weight: 700;
             color: #0f172a;
         }
@@ -147,65 +148,85 @@
             to { background-position: 10px 0; }
         }
 
+        /* 列图例：9px 单行。flex 宽度规则与 .limit-row 一一对应，语义即列义（本身不占宽度） */
         .limit-head-row {
             display: flex;
             align-items: center;
-            gap: 6px;
-            padding: 2px 6px 4px;
-            font-size: 10px;
+            gap: 4px;
+            padding: 1px 4px 3px;
+            font-size: 9px;
             color: #94a3b8;
             border-bottom: 1px solid #f1f5f9;
+        }
+
+        .limit-head-seq {
+            flex: 0 0 14px;
+            text-align: center;
+        }
+
+        .limit-head-name {
+            flex: 0 0 auto;
+        }
+
+        .limit-head-topics {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .limit-head-range {
+            flex: 0 0 auto;
+            text-align: right;
         }
 
         .limit-topic-bar {
             display: flex;
             align-items: center;
             gap: 6px;
-            margin: 8px 0 2px;
-            padding: 5px 8px;
+            margin: 6px 0 2px;
+            padding: 3px 6px;
             background: #f1f5f9;
-            border-radius: 8px;
-            font-size: 12px;
+            border-radius: 6px;
+            font-size: 11px;
+            line-height: 15px;
         }
 
+        /* 题材名：不再预留 46% 宽度并截断（核心题材名本身很短，截断只会白丢信息） */
         .limit-topic-name {
+            flex: 0 1 auto;
+            min-width: 0;
             font-weight: 700;
             color: #0f172a;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            max-width: 46%;
         }
 
         .limit-topic-count {
-            font-size: 11px;
+            flex: 0 0 auto;
+            font-size: 10px;
             color: #64748b;
             white-space: nowrap;
         }
 
+        /* 十日涨幅（= 该题材龙头股的口径）：推到最右，永不参与截断 */
         .limit-topic-range {
-            flex: 1;
-            text-align: right;
-            font-size: 11px;
+            flex: 0 0 auto;
+            margin-left: auto;
+            font-size: 10px;
             font-weight: 600;
             white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
         }
 
-        .limit-topic-range .limit-topic-range-lb {
-            color: #94a3b8;
-            font-weight: 400;
-            margin-right: 4px;
-        }
-
+        /* 股票行：单行 flex。左「名称块」随内容伸缩，右「十日涨幅」随内容定宽，
+           中间「题材」= flex:1 且可折行 → 剩余宽度全部归它（本看板的主角列）。 */
         .limit-row {
             display: flex;
-            align-items: center;
-            gap: 6px;
-            padding: 6px;
+            align-items: flex-start;
+            gap: 4px;
+            padding: 5px 4px;
             font-size: 12px;
-            border-bottom: 1px solid #f8fafc;
+            line-height: 16px;
+            border-bottom: 1px solid #f1f5f9;
         }
 
         .limit-row:last-child {
@@ -217,17 +238,28 @@
         }
 
         .limit-seq {
-            flex: 0 0 16px;
+            flex: 0 0 14px;
             text-align: center;
-            font-size: 10px;
+            font-size: 9px;
             color: #94a3b8;
         }
 
+        /* 名称块：股票名 + 龙头标 + 连板标，三段紧贴、整体不换行。
+           flex 0 1 auto —— 正常宽度随内容（远比原来的固定 66px 省），仅极端长名才收缩。 */
+        .limit-name-block {
+            flex: 0 1 auto;
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            white-space: nowrap;
+        }
+
         .limit-name {
-            flex: 0 0 66px;
+            flex: 0 1 auto;
+            min-width: 0;
             font-weight: 600;
             color: #0f172a;
-            white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
@@ -236,42 +268,54 @@
             color: #dc2626;
         }
 
-        .limit-continue {
-            flex: 0 0 46px;
-            font-size: 11px;
-            color: #7c3aed;
+        /* 龙头标：9px 实心小标，紧贴【股票名之后】（与早盘竞价看板 .dragon-badge 同级占位） */
+        .limit-leader-badge {
+            flex: 0 0 auto;
+            padding: 0 3px;
+            border-radius: 2px;
+            font-size: 9px;
+            font-weight: 600;
+            line-height: 12px;
+            color: #ffffff;
+            background: #dc2626;
             white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
         }
 
+        /* 连板（首板/2连板…）/ 跌停时间：9px 轻底小标（与早盘竞价看板 .auction-streak-tag 同级占位），
+           不再单独占一列固定宽度；无值时模板不渲染（不会出现 '-' 占位）。 */
+        .limit-continue-tag {
+            flex: 0 0 auto;
+            padding: 0 3px;
+            border-radius: 2px;
+            font-size: 9px;
+            font-weight: 600;
+            line-height: 12px;
+            color: #475569;
+            background: #e2e8f0;
+            white-space: nowrap;
+        }
+
+        /* 题材（主角列）：吃满剩余宽度；完整展示 + 允许折行（一票多题材可占多行）。
+           ⛔ 绝不再用 white-space:nowrap + text-overflow:ellipsis —— 那正是「题材看不完」的成因。
+           keep-all：禁止在 CJK 字符之间断行 ⇒ 换行只发生在英文逗号处，
+           绝不把「云计算」劈成「云计／算」；overflow-wrap 仅在万不得已（单个题材名超宽）时才破词。 */
         .limit-topics {
             flex: 1;
             min-width: 0;
             font-size: 11px;
             color: #475569;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            white-space: normal;
+            word-break: keep-all;
+            overflow-wrap: break-word;
         }
 
+        /* 十日涨幅：宽度随内容（含 `(7/10日)` 的缺腿值不再被裁），右对齐便于纵向对比 */
         .limit-range {
-            flex: 0 0 82px;
+            flex: 0 0 auto;
             text-align: right;
             font-size: 11px;
             font-weight: 600;
             font-variant-numeric: tabular-nums;
-            white-space: nowrap;
-        }
-
-        .limit-leader-badge {
-            flex: 0 0 auto;
-            padding: 0 5px;
-            font-size: 10px;
-            color: #dc2626;
-            background: #fee2e2;
-            border: 1px solid #fecaca;
-            border-radius: 8px;
             white-space: nowrap;
         }
 

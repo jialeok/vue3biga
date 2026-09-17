@@ -19,7 +19,7 @@ import {
     isPoolFetchTimeReached,
     importTopicsFromPaste
 } from '../logic/limitpool/limit-pool.js';
-import { formatRangePct, rangeTone, formatSealMoney } from '../logic/limitpool/model.js';
+import { formatRangePct, rangeTone } from '../logic/limitpool/model.js';
 
 export function useLimitBoard() {
     const uiStore = useUiStore();
@@ -116,15 +116,10 @@ export function useLimitBoard() {
     function toneClass(pct) {
         return 'tone-' + rangeTone(pct);
     }
-    function sealText(row) {
-        return formatSealMoney(row && row.sealMoney);
-    }
+    // 连板 / 跌停时间的行内小标文案：无值返回空串（模板据空串决定不渲染该标，绝不显示 '-' 占位）
     function continueText(row) {
-        if (!row) return '-';
-        return row.continueText || row.limitTime || '-';
-    }
-    function topicsText(row) {
-        return (row && row.topicsText) || '-';
+        if (!row) return '';
+        return row.continueText || row.limitTime || '';
     }
 
     function onRealtimeUpdate(payload) {
@@ -164,8 +159,6 @@ export function useLimitBoard() {
         rangeText,
         rangeClass,
         toneClass,
-        sealText,
-        continueText,
-        topicsText
+        continueText
     };
 }
