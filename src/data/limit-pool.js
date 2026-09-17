@@ -4,8 +4,8 @@
 //   · 读：按【交易日 date】读该日的涨停板 / 跌停板全量股票池（「涨跌停」看板唯一数据来源）；
 //   · 写：整日对齐式写入（replaceLimitPoolForDate）—— 先 upsert 本次结果，再清掉该日该板
 //         「本次已不在池中」的旧行，让表 = 当日快照真相；
-//   · 抓：同花顺 fuyao 涨停池 / 跌停池（供前端自愈；worker 15:40 也走同一上游）；
-//   · 订阅：limit_pool 的 Realtime（worker / 他端写完后，本端看板自动刷新）。
+//   · 抓：同花顺 fuyao 涨停池 / 跌停池（供前端自愈；Edge Function limit-pool-fetch 15:40 走同一上游）；
+//   · 订阅：limit_pool 的 Realtime（15:40 抓取端 / 他端写完后，本端看板自动刷新）。
 //
 // 红线（§10）：读取失败必须 throw，绝不能返回空数组伪装成「今天没有涨跌停」。
 // 红线（§8）：本表是云端业务数据，禁止用 localStorage 兜底。
@@ -270,10 +270,10 @@ export async function replaceLimitPoolForDate(snapshot) {
 }
 
 // ===== Realtime 订阅（§31：单模块持有 channel，start 先 stop 保证幂等，stop 配对 removeChannel）=====
-// 复用既有订阅模式的唯一目的：worker 15:40 写完后，已打开看板的设备无需手动刷新即可看到当天涨跌停池。
+// 复用既有订阅模式的唯一目的：15:40（limit-pool-fetch）写完后，已打开看板的设备无需手动刷新即可看到当天涨跌停池。
 let _limitPoolChannel = null;
 let _limitPoolReloadTimer = null;
-// [PERF] 批量写入（worker 整日对齐 = 上百条变更）必须合并成一次刷新（§22 批量合并）。
+// [PERF] 批量写入（整日对齐 = 上百条变更）必须合并成一次刷新（§22 批量合并）。
 const LIMIT_POOL_RELOAD_DEBOUNCE_MS = 500;
 
 export function startLimitPoolRealtime() {

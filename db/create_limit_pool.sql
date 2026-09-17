@@ -5,7 +5,8 @@
 -- 上游：同花顺 fuyao
 --   · 涨停池 GET /api/a-share/special-data/limit-up-pool
 --   · 跌停池 GET /api/a-share/special-data/limit-down-pool
---   抓取执行者：① worker bidding-auto-fetch 每个交易日【北京 15:40】自动抓（主）
+--   抓取执行者：① Supabase Edge Function limit-pool-fetch 每个交易日【北京 15:40】自动抓（主）
+--              （独立函数、独立同花顺小号，由 pg_cron 触发 → db/supabase_limit_pool_cron.sql）
 --              ② 前端「涨跌停」看板打开时若当日缺数据且已过 15:40 → 自愈补抓（兜底）
 --
 -- 【产品口径】
@@ -66,7 +67,7 @@ create policy "allow_all_limit_pool"
 -- 按日期查询某天整池（看板主查询：date + board）
 create index if not exists idx_limit_pool_date_board on limit_pool(date, board);
 
--- Realtime：worker 15:40 写完后，已打开看板的其它设备自动刷新（§31 需配套订阅，见 data/limit-pool.js）
+-- Realtime：15:40（limit-pool-fetch）写完后，已打开看板的其它设备自动刷新（§31 需配套订阅，见 data/limit-pool.js）
 do $$
 begin
   if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then

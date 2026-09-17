@@ -197,7 +197,7 @@ import { setAuctionDateData } from './auction-data.js';
             startStockCodeMapRealtime(); // 同时启动 stockcodemap 表的 Realtime 订阅（股票代码映射唯一真相源）
             startBiddingRealtime(); // 同时启动 bidding_data 表的 Realtime 订阅（竞价变化看板）
             startJiwangRealtime(); // 同时启动 jiwang_data 表的 Realtime 订阅（记忘看板）
-            startLimitPoolRealtime(); // 同时启动 limit_pool 表的 Realtime 订阅（涨跌停看板；worker 15:40 写完后自动刷新）
+            startLimitPoolRealtime(); // 同时启动 limit_pool 表的 Realtime 订阅（涨跌停看板；15:40 limit-pool-fetch 写完后自动刷新）
             startHighlightsRealtime(); // 同时启动 daily_highlights 表的 Realtime 订阅（竞/昨高光）
             startHotStocksRealtime(); // 同时启动 hot_stocks / market_metrics(scope=hot) 的 Realtime 订阅（共享影子记录：喂题材缓存与趋势二级市场回退）
             startHotHighlightsRealtime(); // 同时启动 hot_stocks_highlights 的 Realtime 订阅（共享竞/昨高光影子数据）
