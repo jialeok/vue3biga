@@ -3,12 +3,11 @@ main = "bidding-auto-fetch/index.js"
 compatibility_date = "2025-07-29"
 
 # 北京时间 9:25  = UTC 01:25（工作日 周一~周五 = Cloudflare 2-6）
-# 北京时间 15:40 = UTC 07:40（工作日 周一~周五 = Cloudflare 2-6）→ 涨跌停池抓取（涨跌停看板）
 # 北京时间 16:00 = UTC 08:00（工作日 周一~周五 = Cloudflare 2-6）→ 收盘涨幅覆盖
 # ⚠️ Cloudflare 星期编号：1=周日, 2=周一, ..., 6=周五, 7=周六
 #    工作日必须用 2-6，不能用 1-5（1-5 = 周日到周四，周五会漏掉！）
 [triggers]
-crons = ["25 1 * * 2-6", "40 7 * * 2-6", "0 8 * * 2-6"]
+crons = ["25 1 * * 2-6", "0 8 * * 2-6"]
 
 [vars]
 TZ = "Asia/Shanghai"
