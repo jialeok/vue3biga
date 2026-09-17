@@ -27,6 +27,28 @@ const POOL_PAGE_SIZE = 200;
 const POOL_MAX_PAGES = 10;
 
 /**
+ * 把 PostgREST 的「找不到表」原文翻译成「该干什么」。
+ *
+ * 现场（2026-09-17 真实发生）：看板红字
+ *   `Could not find the table 'public.limit_pool' in the schema cache`
+ * —— 这不是「读数方法不对」，就是【表还没建】（PGRST205 / 42P01）。
+ * 直接把它翻成一句可执行的指引，省掉一整轮猜测。
+ * ⚠️ 仍然 throw（§10：读取失败必须抛出），只是把原因说清楚，绝不退化成空数组。
+ *
+ * @param {*} e supabase-js 抛出的 error
+ * @returns {Error}
+ */
+function _explainDbError(e) {
+    const raw = (e && e.message) || String(e || '');
+    const t = raw.toLowerCase();
+    if (t.indexOf('could not find the table') >= 0 || t.indexOf('in the schema cache') >= 0 ||
+        t.indexOf('does not exist') >= 0 || t.indexOf('pgrst205') >= 0 || t.indexOf('42p01') >= 0) {
+        return new Error('limit_pool 表不存在：请在 Supabase Dashboard → SQL Editor 执行 db/create_limit_pool.sql 建表（原文：' + raw + '）');
+    }
+    return e instanceof Error ? e : new Error(raw);
+}
+
+/**
  * 涨幅数值 → 库内统一文本口径（与 market_metrics.change_pct / stock_range_pct.range_pct 一致）。
  * 无法解析时返回 null（绝不用 0 顶替 —— 0 是一个真实涨幅）。
  * @param {*} raw
@@ -169,7 +191,7 @@ export async function readLimitPoolForDate(date) {
             .select('date,board,stock,code,thscode,price,change_pct,limit_time,last_limit_time,reason,continue_text,continue_cnt,seal_money,max_seal_money,turnover_ratio,updated_at')
             .eq('date', date)
             .range(from, from + pageSize - 1);
-        if (error) throw error;
+        if (error) throw _explainDbError(error);
         if (!data || data.length === 0) break;
         all.push(...data);
         if (data.length < pageSize) break;
@@ -215,7 +237,7 @@ export async function upsertLimitPoolRows(rows) {
         const { error } = await sb
             .from('limit_pool')
             .upsert(payload.slice(i, i + chunk), { onConflict: 'date,board,stock' });
-        if (error) throw error;
+        if (error) throw _explainDbError(error);
     }
     return payload.length;
 }
@@ -241,7 +263,7 @@ export async function deleteStaleLimitPoolRows(date, board, keepStocks) {
     let q = sb.from('limit_pool').delete().eq('date', date).eq('board', board);
     if (keep.length > 0) q = q.not('stock', 'in', '(' + keep.map(function(s) { return '"' + s.replace(/"/g, '') + '"'; }).join(',') + ')');
     const { data, error } = await q.select('stock');
-    if (error) throw error;
+    if (error) throw _explainDbError(error);
     return (data || []).length;
 }
 

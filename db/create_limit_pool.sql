@@ -79,3 +79,12 @@ begin
     end if;
   end if;
 end $$;
+
+-- 让 PostgREST 立刻刷新 schema cache。
+-- 症状对照：若前端红字 `Could not find the table 'public.limit_pool' in the schema cache`
+-- （PGRST205），99% 是【本文件还没执行过】——那不是一个「调用/读数方式」问题，
+-- 就是这张表不存在。若确实执行过本文件却仍报这句，再跑下面这行刷新缓存。
+notify pgrst, 'reload schema';
+
+-- 自检（执行完后跑一遍，应返回两行 up / down，或空表也算「已建好」）：
+-- select board, count(*) from limit_pool group by board;

@@ -10,15 +10,22 @@
 --    两个函数各有独立 URL / 独立令牌 / 独立同花顺 key（小号）。
 --
 -- 前置（必须先做完，否则 job 会稳定失败）：
+--   0) ★ 在 SQL Editor 执行 db/create_limit_pool.sql 建 limit_pool 表。
+--        漏这一步的报错长相是（前端红字）：
+--        `Could not find the table 'public.limit_pool' in the schema cache`（PGRST205）
+--        —— 这不是「调用方法不对」，就是表还不存在。
 --   1) 已部署 Edge Function limit-pool-fetch
 --      （Dashboard → Functions → 新建，粘贴 supabase/functions/limit-pool-fetch/index.ts）；
---   2) 该函数设置里【关闭 Verify JWT】；
---   3) 该函数 Secrets 里设置：FUYAO_API_KEY_LIMITPOOL（另一个同花顺小号）、
+--   2) Secrets 里设置：FUYAO_API_KEY_LIMITPOOL（另一个同花顺小号）、
 --      LIMIT_POOL_FETCH_TOKEN（未设置则回退复用 FETCH_TOKEN）；
---   4) 已执行 db/create_limit_pool.sql（建表 + RLS + Realtime）。
---   自检：浏览器直接开
+--   3) Verify JWT 开或关都能跑本 cron（下面的 net.http_post 带 anon 的 apikey + Authorization，
+--      平台鉴权直接通过）；只有想用浏览器直接开 /health、/probe 时才需要关掉它。
+--   自检（出问题先开这两个，按顺序）：
 --     https://tonqfgeyxnnwicjopshn.supabase.co/functions/v1/limit-pool-fetch/health
---   应看到 fuyaoKeySource=FUYAO_API_KEY_LIMITPOOL（若显示「回退」说明小号 Secret 没配上）。
+--     https://tonqfgeyxnnwicjopshn.supabase.co/functions/v1/limit-pool-fetch/probe?token=123456
+--       /health → 看 fuyaoKeySource 是不是 FUYAO_API_KEY_LIMITPOOL（显示回退 = 小号没配上）
+--       /probe  → 对「小号/主号」两把 key 各打一次最小上游请求，回显 HTTP 状态 / 耗时 / 上游业务码
+--                 + 顺带探 limit_pool 表在不在。上游正常耗时应在 1~5 秒。
 --
 -- 时区：Supabase 数据库默认时区 UTC。
 --   北京时间 15:40 = UTC 07:40 → '40 7'
@@ -45,7 +52,7 @@ select cron.schedule('limit-pool-15-40', '40 7 * * 1-5', $$
     url     := 'https://tonqfgeyxnnwicjopshn.supabase.co/functions/v1/limit-pool-fetch/fetch?point=limitpool&token=123456',
     headers := '{"Content-Type":"application/json","apikey":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRvbnFmZ2V5eG5ud2ljam9wc2huIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NjY3NzEsImV4cCI6MjA5NDI0Mjc3MX0.el-W10JIjr9iQXEKNxV7nLNdhZfOQp6waTY7ZSH27Jg","Authorization":"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRvbnFmZ2V5eG5ud2ljam9wc2huIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NjY3NzEsImV4cCI6MjA5NDI0Mjc3MX0.el-W10JIjr9iQXEKNxV7nLNdhZfOQp6waTY7ZSH27Jg"}'::jsonb,
     body    := '{}'::jsonb,
-    timeout_milliseconds := 60000
+    timeout_milliseconds := 120000
   );
 $$);
 
@@ -55,7 +62,7 @@ select cron.schedule('limit-pool-retry-16-10', '10 8 * * 1-5', $$
     url     := 'https://tonqfgeyxnnwicjopshn.supabase.co/functions/v1/limit-pool-fetch/fetch?point=limitpool&token=123456',
     headers := '{"Content-Type":"application/json","apikey":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRvbnFmZ2V5eG5ud2ljam9wc2huIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NjY3NzEsImV4cCI6MjA5NDI0Mjc3MX0.el-W10JIjr9iQXEKNxV7nLNdhZfOQp6waTY7ZSH27Jg","Authorization":"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRvbnFmZ2V5eG5ud2ljam9wc2huIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NjY3NzEsImV4cCI6MjA5NDI0Mjc3MX0.el-W10JIjr9iQXEKNxV7nLNdhZfOQp6waTY7ZSH27Jg"}'::jsonb,
     body    := '{}'::jsonb,
-    timeout_milliseconds := 60000
+    timeout_milliseconds := 120000
   );
 $$);
 
