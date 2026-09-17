@@ -7,7 +7,7 @@
 //   · 组排序 = topic-sort.js#sortByTopicGroups（与早盘竞价第一页「题材 toggle」完全同一套组序规则）
 //   · 题材文本清洗 = note/helpers.js#isValidTopic
 
-import { sortByTopicGroups, getStockTopicsDisplay } from '../auction/topic-sort.js';
+import { sortByTopicGroups, getStockTopicArr, getStockTopicsDisplay } from '../auction/topic-sort.js';
 import { isValidTopic } from '../note/helpers.js';
 import { RANGE_WINDOW_DAYS } from '../auction/range-window.js';
 
@@ -178,6 +178,8 @@ export function buildTopicBlocks(rows, primaryMap, fallbackFn, rangePctOf) {
         b.count = b.stocks.length;
         // 序号（1 起）+ 是否龙头（组内十日涨幅最高者）
         b.stocks = b.stocks.map(function(x, i) {
+            // 题材判据的唯一入参形状（展示与「无题材」判定【共用同一份输入】，口径不可能分叉）
+            const topicInput = { stock: x.row.stock, topics: x.row.topicsText };
             return {
                 stock: x.row.stock,
                 code: x.row.code || '',
@@ -187,7 +189,11 @@ export function buildTopicBlocks(rows, primaryMap, fallbackFn, rangePctOf) {
                 // topic-sort.js#getStockTopicsDisplay 归一 —— 与早盘竞价看板「题材单元格」同一口径。
                 // 为什么必须用英文逗号：全角「，」宽约一个汉字，一票多题材时白占近半行；
                 // 英文「,」只有半宽。题材是本看板的主角列，宽度全留给它。
-                topicsDisplay: getStockTopicsDisplay({ stock: x.row.stock, topics: x.row.topicsText }),
+                topicsDisplay: getStockTopicsDisplay(topicInput),
+                // 是否【有题材】= 同一次 getStockTopicArr 的非空判定 —— 与上面的 '-' 显示同源：
+                // topicsDisplay === '-' ⇔ hasTopic === false，绝不自造第二套「无题材」口径。
+                // 供「无题材」toggle 过滤（filterNoTopicBlocks）与人工补题材用。
+                hasTopic: getStockTopicArr(topicInput).length > 0,
                 reason: x.row.reason || '',
                 limitTime: x.row.limitTime || '',
                 sealMoney: x.row.sealMoney === null || x.row.sealMoney === undefined ? null : x.row.sealMoney,
@@ -200,6 +206,41 @@ export function buildTopicBlocks(rows, primaryMap, fallbackFn, rangePctOf) {
     });
 
     return blocks;
+}
+
+/**
+ * 「无题材」视图过滤（纯函数）：只留没有题材的股票（供人工统一补题材时截图）。
+ *
+ * 规则（全部是「结构不变、只裁行」的纯变换，不改动入参）：
+ *   · 逐个分块保留 `hasTopic === false` 的行；裁完后变空的分块直接丢弃；
+ *   · 序号在【裁完后的行集合】上从 1 重排 —— 截图上序号连续，不留空洞；
+ *   · ⛔ 该视图下【一律不选龙头】：龙头是「某题材内十日涨幅最高」的派生概念，
+ *     一只没有题材的股票不存在所属题材组，给它挂龙头标会凭空造出一个错误的题材结论；
+ *   · 分块的 count 同步为裁完后的行数（题材条上的「N只」与真实可见行数一致）。
+ *
+ * @param {Array<object>} blocks buildTopicBlocks 的输出
+ * @returns {Array<object>} 新的分块数组（可能为空数组）
+ */
+export function filterNoTopicBlocks(blocks) {
+    const list = Array.isArray(blocks) ? blocks : [];
+    const out = [];
+    list.forEach(function(b) {
+        if (!b) return;
+        const rows = (b.stocks || []).filter(function(s) { return s && !s.hasTopic; });
+        if (rows.length === 0) return;
+        out.push({
+            topic: b.topic,
+            count: rows.length,
+            hasLeader: false,
+            leaderStock: '',
+            leaderPct: null,
+            leaderDays: 0,
+            stocks: rows.map(function(s, i) {
+                return Object.assign({}, s, { seq: i + 1, isLeader: false });
+            })
+        });
+    });
+    return out;
 }
 
 /**

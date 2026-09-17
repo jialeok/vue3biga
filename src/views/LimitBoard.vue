@@ -3,13 +3,16 @@
 
   需求对应：
     · 每个交易日收盘后 15:40 自动抓取同花顺涨停板 / 跌停板（Supabase Edge Function limit-pool-fetch + pg_cron；前端打开看板时自愈补齐）
-    · 单页、无 toggle；股票按题材分类（复用早盘竞价「题材 toggle」同一套分组/组序口径）
+    · 单页；股票按题材分类（复用早盘竞价「题材 toggle」同一套分组/组序口径）
     · 上=跌停板，下=涨停板，中间用蚂蚁线分隔
-    · 题材条：题材名称 + 题材数量 + 十日涨幅（该题材龙头股的十日涨幅）
+    · 题材条：只有「题材名称 + 题材数量」——⛔ 不再带十日涨幅（每只股票行尾已各自标了十日涨幅，
+      题材条上再标一次纯属冗余，删掉后题材条更短更清爽）
     · 股票行：序号 + [股票名称 + 龙头小标 + 连板小标] + 题材 + 十日涨幅；十日涨幅最高者为龙头
     · 空间优先（2026-09-17 改版）：所有标一律 9px 小字、紧贴股票名（参照早盘竞价看板的
       龙一/龙二徽章与连板小标），龙头标放在【股票名称之后】；题材是主角列 —— 吃满剩余宽度、
       用英文逗号分隔、允许折行、完整展示，⛔ 不再用省略号截断
+    · 「无题材」开关（默认关、无记忆）：只显示没有题材的股票，便于截图后统一补题材；
+      样式与早盘竞价看板 toggle 同款（28×16 switch），随日期切换自动归位
     · 手动粘贴导入题材的后台入口（写入【共享题材库】，与早盘竞价看板互通）
 
   分层：本文件只有模板与调用；全部业务在 logic/limitpool/*，数据在 data/limit-pool.js。
@@ -83,6 +86,25 @@
           {{ rangeHint }}
         </div>
 
+        <!-- 「无题材」过滤开关（与早盘竞价看板同款紧凑 switch）。默认关、无记忆，
+             随日期切换自动归位；题材库未就绪时不可用（§10 未就绪 ≠ 空）。 -->
+        <div
+          v-if="noTopicAvailable"
+          class="limit-toolbar"
+        >
+          <div class="limit-toggle-item">
+            <span class="limit-toggle-label">无题材</span>
+            <label class="limit-toggle-switch">
+              <input
+                type="checkbox"
+                :checked="noTopicView"
+                @change="toggleNoTopic"
+              >
+              <span class="limit-toggle-slider" />
+            </label>
+          </div>
+        </div>
+
         <template
           v-for="(sec, si) in sections"
           :key="sec.key"
@@ -109,6 +131,12 @@
             >
               当日无{{ sec.key === 'down' ? '跌停' : '涨停' }}
             </div>
+            <div
+              v-else-if="sec.blocks.length === 0"
+              class="limit-empty"
+            >
+              {{ sec.emptyText }}
+            </div>
 
             <template v-else>
               <!-- 列图例（9px 单行，只为说明列义；本身不占宽度，宽度都让给题材列） -->
@@ -127,10 +155,6 @@
                 <div class="limit-topic-bar">
                   <span class="limit-topic-name">【{{ block.topic }}】</span>
                   <span class="limit-topic-count">{{ block.count }}只</span>
-                  <span
-                    class="limit-topic-range"
-                    :class="toneClass(block.leaderPct)"
-                  >十日 {{ formatRangePctText(block) }}</span>
                 </div>
 
                 <div
@@ -204,7 +228,6 @@
 <script setup>
 import EditModal from '../components/EditModal.vue';
 import { useLimitBoard } from '../composables/useLimitBoard.js';
-import { formatRangePct } from '../logic/limitpool/model.js';
 
 const {
   state,
@@ -215,6 +238,9 @@ const {
   fetchTimeHint,
   rangeHint,
   sections,
+  noTopicAvailable,
+  noTopicView,
+  toggleNoTopic,
   importOpen,
   importText,
   importSaving,
@@ -225,14 +251,8 @@ const {
   doImport,
   rangeText,
   rangeClass,
-  toneClass,
   continueText
 } = useLimitBoard();
-
-// 题材条上的十日涨幅（该题材龙头的十日涨幅）
-function formatRangePctText(block) {
-  return formatRangePct(block.leaderPct, block.leaderDays);
-}
 
 defineExpose({ refresh });
 </script>

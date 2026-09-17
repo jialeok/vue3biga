@@ -4,6 +4,7 @@ import { describe, it, expect } from 'vitest';
 import {
     parseTopicPaste,
     buildTopicBlocks,
+    filterNoTopicBlocks,
     formatRangePct,
     rangeTone,
     formatSealMoney,
@@ -145,5 +146,56 @@ describe('buildTopicBlocks 题材分块', () => {
         expect(b.stocks.every(s => s.topicsDisplay.indexOf('，') < 0)).toBe(true);
         const noTopics = buildTopicBlocks(rows, primaryMap, fallback, () => ({ pct: 1, days: 10 }));
         expect(noTopics[0].stocks.every(s => s.topicsDisplay === '-')).toBe(true);
+    });
+
+    it('hasTopic 与 topicsDisplay 同源："-" ⇔ hasTopic=false', () => {
+        const withTopics = rows.map(r => ({ ...r, topicsText: '题材' + r.stock }));
+        const blocks = buildTopicBlocks(withTopics, primaryMap, fallback, () => ({ pct: 1, days: 10 }));
+        const all = blocks.reduce((acc, b) => acc.concat(b.stocks), []);
+        all.forEach(s => {
+            expect(s.hasTopic).toBe(s.topicsDisplay !== '-');
+        });
+    });
+});
+
+describe('filterNoTopicBlocks 无题材视图过滤', () => {
+    const rows = [
+        { stock: '甲', topicsText: '算力' },
+        { stock: '乙', topicsText: '' },
+        { stock: '丙', topicsText: '' }
+    ];
+    const fallback = () => OTHER_TOPIC;
+    const rangeOf = (r) => ({ pct: r.stock === '乙' ? 30 : 10, days: 10 });
+    // 全部落进「其它」块（无 primaryMap）→ 块内 pct 降序：乙(30) 甲(10) 丙(10)
+    const blocks = buildTopicBlocks(rows, new Map(), fallback, rangeOf);
+
+    it('只留有题材缺失的行；序号重排；空块丢弃', () => {
+        const out = filterNoTopicBlocks(blocks);
+        expect(out.length).toBe(1);
+        expect(out[0].topic).toBe(OTHER_TOPIC);
+        expect(out[0].stocks.map(s => s.stock)).toEqual(['乙', '丙']);
+        expect(out[0].stocks.map(s => s.seq)).toEqual([1, 2]);
+        expect(out[0].count).toBe(2);
+    });
+
+    it('该视图下一律不选龙头（无题材 ⇒ 不存在「题材内」的龙头）', () => {
+        const out = filterNoTopicBlocks(blocks);
+        expect(out[0].hasLeader).toBe(false);
+        expect(out[0].leaderStock).toBe('');
+        expect(out[0].leaderPct).toBe(null);
+        expect(out[0].stocks.every(s => s.isLeader === false)).toBe(true);
+    });
+
+    it('不改动入参；全都有题材 / 空输入 → 空数组', () => {
+        const snapshot = JSON.stringify(blocks);
+        filterNoTopicBlocks(blocks);
+        expect(JSON.stringify(blocks)).toBe(snapshot);
+
+        const allTopic = buildTopicBlocks(
+            rows.map(r => ({ ...r, topicsText: '算力' })), new Map(), fallback, rangeOf
+        );
+        expect(filterNoTopicBlocks(allTopic)).toEqual([]);
+        expect(filterNoTopicBlocks([])).toEqual([]);
+        expect(filterNoTopicBlocks(null)).toEqual([]);
     });
 });

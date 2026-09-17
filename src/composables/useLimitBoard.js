@@ -19,7 +19,7 @@ import {
     isPoolFetchTimeReached,
     importTopicsFromPaste
 } from '../logic/limitpool/limit-pool.js';
-import { formatRangePct, rangeTone } from '../logic/limitpool/model.js';
+import { formatRangePct, rangeTone, filterNoTopicBlocks } from '../logic/limitpool/model.js';
 
 export function useLimitBoard() {
     const uiStore = useUiStore();
@@ -30,6 +30,19 @@ export function useLimitBoard() {
     const importText = ref('');
     const importSaving = ref(false);
     const importResult = ref('');
+
+    // ===== 「无题材」过滤开关（§34 UI 状态分离：纯展示态，默认关、无记忆）=====
+    // 只改「看到哪些行」，不改任何数据、不发请求、不写库。
+    // ⛔ 不落 localStorage（§8：localStorage 禁存业务/UI 配置）、不进全局 store（§6 单一真相）；
+    //    随日期切换自动归位 false（见文件末尾 watch(currentDate)）→ 天然满足「翻页/切日即重置」。
+    const showNoTopic = ref(false);
+    // 题材库就绪才可信：未就绪时所有股票都会显示 '-'，此时把「读不到题材」当成「没有题材」
+    // 会引导用户去给【已有题材】的股票重复补题材（§10 未就绪 ≠ 空）→ 未就绪时开关不可用。
+    const noTopicAvailable = computed(() => state.topicLibraryReady === true);
+    const noTopicView = computed(() => showNoTopic.value && noTopicAvailable.value);
+    function toggleNoTopic() {
+        showNoTopic.value = !showNoTopic.value;
+    }
 
     const currentDate = computed(() => uiStore.currentDate);
     const toggleArrow = computed(() => (expanded.value ? '▲' : '▼'));
@@ -57,10 +70,26 @@ export function useLimitBoard() {
     });
 
     // 分屏结构：跌停板在上、涨停板在下（顺序即需求，UI 不参与业务判断）
-    const sections = computed(() => ([
-        { key: 'down', title: '跌停板', count: state.downCount, blocks: state.downBlocks },
-        { key: 'up', title: '涨停板', count: state.upCount, blocks: state.upBlocks }
-    ]));
+    // 「无题材」开关打开时，仅对分块行做一次过滤（filterNoTopicBlocks 为纯函数，不改 state）：
+    // 分板总只数（count）保持「当日真实涨跌停只数」不变 —— 那是关于这一天的事实，不随视图变。
+    // 过滤后本板一行都不剩时，用 emptyText 如实说明「本板股票都有题材」（而不是伪装成「当日无涨停」）。
+    const sections = computed(() => {
+        const filtering = noTopicView.value;
+        const build = function(key, title, count, blocks) {
+            const shown = filtering ? filterNoTopicBlocks(blocks) : blocks;
+            return {
+                key: key,
+                title: title,
+                count: count,
+                blocks: shown,
+                emptyText: filtering && shown.length === 0 ? '本板股票均有题材' : ''
+            };
+        };
+        return [
+            build('down', '跌停板', state.downCount, state.downBlocks),
+            build('up', '涨停板', state.upCount, state.upBlocks)
+        ];
+    });
 
     function toggleExpand() {
         expanded.value = !expanded.value;
@@ -113,9 +142,6 @@ export function useLimitBoard() {
     function rangeClass(row) {
         return 'tone-' + rangeTone(row && row.rangePct);
     }
-    function toneClass(pct) {
-        return 'tone-' + rangeTone(pct);
-    }
     // 连板 / 跌停时间的行内小标文案：无值返回空串（模板据空串决定不渲染该标，绝不显示 '-' 占位）
     function continueText(row) {
         if (!row) return '';
@@ -137,7 +163,11 @@ export function useLimitBoard() {
     });
 
     // §6 单源：日期切换一律由 uiStore.currentDate 驱动（不额外维护本地日期副本）
-    watch(currentDate, function() { refresh(); });
+    // 「无题材」开关随日期切换归位（无记忆）—— 新的一天是全新的一池股票，旧筛选态会误导。
+    watch(currentDate, function() {
+        showNoTopic.value = false;
+        refresh();
+    });
 
     return {
         state,
@@ -148,6 +178,9 @@ export function useLimitBoard() {
         fetchTimeHint,
         rangeHint,
         sections,
+        noTopicAvailable,
+        noTopicView,
+        toggleNoTopic,
         importOpen,
         importText,
         importSaving,
@@ -158,7 +191,6 @@ export function useLimitBoard() {
         doImport,
         rangeText,
         rangeClass,
-        toneClass,
         continueText
     };
 }
