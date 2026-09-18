@@ -89,9 +89,9 @@ export const yiziBoardState = reactive({
     themeFromXgb: 0,
     themeFromLib: 0,
     themeNone: 0,
-    // ★ 2026-09-18 需求 1：本次加载往【共享题材库】自动补进了几只股票的题材（0 = 没什么可补）。
-    // 只用于「可解释性」提示（用户想知道「是不是真的自动补上了」），⛔ 不参与任何计算。
-    topicAutoFilled: 0,
+    // ★ 2026-09-18 需求 1：本次加载往【共享题材库】自动补进了几只股票的题材 ——
+    //    ⛔ 不在这里存：它是全应用唯一真相，由 logic/topics/topic-sync.js 的响应式计数持有，
+    //    UI 侧用 getAutoFilledForDate(date) 读（§6 单一真相；副本会陈旧，理由见 topic-sync.js）。
     // 十日涨幅覆盖情况（块内排序 + 选龙头的度量，覆盖不全时 UI 要如实提示）
     rangeReady: false,
     rangeError: '',
@@ -187,7 +187,6 @@ function _publishEmpty(date, extra) {
     yiziBoardState.themeFromXgb = 0;
     yiziBoardState.themeFromLib = 0;
     yiziBoardState.themeNone = 0;
-    yiziBoardState.topicAutoFilled = 0;
     yiziBoardState.rangeCovered = 0;
     yiziBoardState.stRemoved = 0;
     yiziBoardState.phase = '';
@@ -414,15 +413,11 @@ async function _load(date, force) {
         //
         // 时机：必须在 ⑦ enrich（`_libraryTopics` 读库）之前 —— 这样本次回填的题材
         // 立刻就能被同一屏的「题材库来源」统计认到，用户能看到「自动补了几只」的效果。
+        // 📌 这里【不接收】回填只数：提示由 UI 直接读 topic-sync 的响应式单一真相
+        //    （getAutoFilledForDate），⛔ 不在本看板留副本（会陈旧）。
         try {
-            const syncRes = await syncYiziTopicsIntoLibrary(date, { rows: rawRows });
-            // ⚠️ 取 dateFilled（本会话内【该日期】累计）而不是 filled（本次调用）：
-            //    回填只在**第一个加载本日期的看板**里真正发生，相邻的另一个看板随后加载时命中会话去重、
-            //    filled 恒为 0 → 用它做提示会让用户以为「没补上」。
-            //    ⛔ 也不能用跨日期的全局累计 —— 那会让切日期后数字不动、与当前所见对不上。
-            if (isLatest()) yiziBoardState.topicAutoFilled = (syncRes && syncRes.dateFilled) || 0;
+            await syncYiziTopicsIntoLibrary(date, { rows: rawRows });
         } catch (e) {
-            if (isLatest()) yiziBoardState.topicAutoFilled = 0;
             _dbgLog('[AUCTION-YIZI] ' + date + ' 题材自动回填异常（不影响看板）: ' + (e && e.message || e));
         }
         if (!isLatest()) return;

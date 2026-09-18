@@ -65,9 +65,10 @@ export const limitBoardState = reactive({
     updatedAt: '',
     // 题材库就绪态：未就绪 → 题材分组不可信（UI 需要提示；但不落库，所以只是提示）
     topicLibraryReady: true,
-    // ★ 2026-09-18 需求 1：本次加载从「竞价一字」快照自动补进共享题材库的只数（0 = 没什么可补）。
-    // 只用于可解释性提示（让用户确认「真的自动补上了」），⛔ 不参与任何计算。
-    topicAutoFilled: 0,
+    // ★ 2026-09-18 需求 1：题材自动回填的只数**不存在这里** —— 它是全应用唯一真相，
+    //    由 logic/topics/topic-sync.js 的响应式计数持有，UI 侧用 getAutoFilledForDate(date) 读。
+    //    ⛔ 曾经在这里放过一份副本 `topicAutoFilled`，实测会陈旧（本板那次回填中止、另一板随后补上时，
+    //       副本永久停在 0 → 界面显示「没自动补」，与事实相反）→ 已按 §6 单一真相删除。
     // 十日涨幅覆盖情况
     rangeReady: false,
     rangeError: '',
@@ -141,7 +142,6 @@ function _publishEmpty(date, extra) {
     limitBoardState.hasSnapshot = false;
     limitBoardState.updatedAt = '';
     limitBoardState.rangeCovered = 0;
-    limitBoardState.topicAutoFilled = 0;
     if (extra && extra.error !== undefined) limitBoardState.error = extra.error;
 }
 
@@ -294,14 +294,11 @@ async function _load(date, force) {
         //   「读云端已有 → 合并 → 写回」前提是库已加载，否则会把云端已有读成空集而覆盖丢数据）。
         // ⚠️ 幂等：同一天本会话只跑一次（模块内去重）；重复打开看板不会反复写库。
         // ⛔ 失败绝不写 error、绝不阻断 —— 自动补题材是**增强**，涨跌停看板本身的数据不依赖它。
+        // 📌 这里【不接收】回填只数：提示由 UI 直接读 topic-sync 的响应式单一真相
+        //    （getAutoFilledForDate），⛔ 不在本看板留副本（会陈旧，理由见 state 声明处）。
         try {
-            const syncRes = await syncYiziTopicsIntoLibrary(date);
-            // ⚠️ dateFilled（本会话内【该日期】累计），不是 filled（本次调用）——
-            //    一字看板通常先加载并已完成当天的回填，本板随后加载时 filled 恒为 0；
-            //    用该日期的累计值才能如实告诉用户「这一天自动补了多少只」。理由详见 topic-sync.js。
-            limitBoardState.topicAutoFilled = (syncRes && syncRes.dateFilled) || 0;
+            await syncYiziTopicsIntoLibrary(date);
         } catch (e) {
-            limitBoardState.topicAutoFilled = 0;
             _dbgLog('[LIMIT-POOL] ' + date + ' 题材自动回填异常（不影响看板）: ' + (e && e.message || e));
         }
 

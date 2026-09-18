@@ -19,6 +19,9 @@ import {
     isPoolFetchTimeReached,
     importTopicsFromPaste
 } from '../logic/limitpool/limit-pool.js';
+// ★ 需求 1（§6 单一真相）：题材自动回填只数从 topic-sync 的响应式计数直接读，
+//    ⛔ 不再经看板 state 转抄一份（副本会在「本板回填中止、另一板随后补上」时陈旧）。
+import { getAutoFilledForDate } from '../logic/topics/topic-sync.js';
 import { formatRangePct, rangeTone, filterNoTopicBlocks } from '../logic/limitpool/model.js';
 
 export function useLimitBoard() {
@@ -64,9 +67,12 @@ export function useLimitBoard() {
     // ★ 2026-09-18 需求 1：题材自动回填提示。
     // 「竞价一字」接口自带题材 → 加载时「只补空缺」写进共享题材库 → 本看板自动拿到，
     // 不必再手动粘贴导入。只在真的补了才提示（=0 时静默）。
+    // ⚠️ 只数取 state.date（= 当前**已发布**的那一天，与屏上行数据同一天），
+    //    从 topic-sync 读（响应式单一真相）→ 另一个看板先补上时本板也会立刻显示，
+    //    与「谁先加载」无关。⛔ 不读 state 里的副本（曾经的陈旧根因）。
     const topicAutoFillHint = computed(() => {
         if (!hasAnyData.value) return '';
-        const n = state.topicAutoFilled || 0;
+        const n = getAutoFilledForDate(state.date) || 0;
         if (n <= 0) return '';
         return '已自动为 ' + n + ' 只股票补全题材（取自一字接口 → 写入共享题材库，三个看板共享；只补空缺、不覆盖已有题材）';
     });

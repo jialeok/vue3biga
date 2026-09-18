@@ -30,6 +30,7 @@
 // ⚠️ 额度说明：本模块【只消费已落库的快照】，不调任何上游接口 → **零猫抓额度消耗**。
 //    一字快照由 Edge Function auction-yizi-fetch 在北京 9:25 落库，这里只是把它自带的题材搬进题库。
 
+import { reactive } from 'vue';
 import { _dbgLog } from '../../data/debug-log.js';
 import { readAuctionYiziForDate } from '../../data/auction-yizi.js';
 import {
@@ -55,11 +56,34 @@ let _inflight = null;
 // ⚠️ 必须【按日期】分开记，不能只留一个全局累计：
 //   否则在 09-18 上会显示「已自动为 38 只…」——那 38 只其实是看 09-17 时补的，
 //   日期切换后数字不动 = 与当前所见对不上（本项目对「数字必须可解释」的要求）。
-const _filledByDate = Object.create(null);
+//
+// ★ 2026-09-18（第 5 轮复核）：本表做成【响应式】，并作为全应用**唯一真相**（§6）——
+//   三个看板（竞价一字 / 涨跌停 / 早盘竞价）都通过 getAutoFilledForDate() 读它，
+//   ⛔ 不再各自在 state 里留一份副本。理由（实测 2026-09-15 事故）：
+//   副本只在「本看板自己那次 _load 真的走到回填那一步」时被写入；若那次回填因故中止
+//   （读 auction_yizi 失败 / 题材库未就绪），而**另一个看板随后补上了**，
+//   副本会永久停在 0 → 界面显示「没自动补」→ **与事实相反**（而这正是用户判断
+//   「还要不要手动导入」的依据）。响应式化之后，任何一处写入都会被所有读取方立刻看到，
+//   与「谁先加载、谁先走完」彻底解耦。
+const _filledByDate = reactive({});
 
 /** 该日期在本会话内累计补进库的只数（0 = 本会话没为这一天补过，或确实没什么可补） */
 function _filledOf(date) {
     return (date && _filledByDate[date]) || 0;
+}
+
+/**
+ * 取「本会话为某日期自动补进共享题材库的只数」—— 供 UI 提示读取（★ 需求 1 的可解释性）。
+ *
+ * ⚠️ 响应式读取：写入方（本模块 _sync 成功后）写完后，调用方的 computed 会自动重算。
+ * ⛔ 看板/组合式不要再把结果抄进自己的 state —— 那就是第二份真相，会陈旧
+ *    （实测 2026-09-15：涨跌停看板的副本停在 0，而当天其实已自动补了 49 只）。
+ *
+ * @param {string} date YYYY-MM-DD
+ * @returns {number} 只数（0 = 本会话为这一天确实没补过任何一只）
+ */
+export function getAutoFilledForDate(date) {
+    return _filledOf(date);
 }
 
 /**
@@ -76,11 +100,9 @@ function _filledOf(date) {
  *                    skippedHasTopics?:number, filled?:number, failed?:number, filledNames?:string[],
  *                    dateFilled:number}>}
  *          · `filled`     = **本次调用**真正写进库的只数（命中会话去重时为 0）；
- *          · `dateFilled` = **该日期在本会话内累计**写进库的只数 —— 界面提示请用这个。
- *            原因①：回填只在第一个加载本日期的看板里发生，另一个看板随后加载拿到 filled=0，
- *                   若用 filled 做提示，用户会以为「没生效」；
- *            原因②：按**日期**分开记而不是全局累计 —— 否则切到别的日期后数字不动，
- *                   与用户当前看到的这一天对不上。
+ *          · `dateFilled` = **该日期在本会话内累计**写进库的只数（= getAutoFilledForDate(date)）。
+ *            ⚠️ 仅供调用方**记日志/自行判断**；界面提示请直接 `getAutoFilledForDate(date)`
+ *               （响应式单一真相，见该函数注释），⛔ 不要再抄进看板 state。
  *          ⚠️ 返回值只用于日志/可选提示，⛔ 任何 reason 都不得升级成看板级 error
  *          （本模块失败 = 「这次没自动补」，不是「看板坏了」）。
  */
