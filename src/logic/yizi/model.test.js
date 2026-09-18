@@ -1,6 +1,11 @@
 // model.test.js — 「竞价一字」看板纯函数模型层的回归测试
 // 覆盖：题材文本切分与「接口→题材库」三级优先、题材分块（组序 / 组内序 / 龙头 / 其它置底 /
-//       不改入参 / 无封单额不选龙头）、「无题材」视图过滤、封单额与竞价涨幅的展示分档。
+//       不改入参 / 无十日涨幅不选龙头）、封单额双时点口径（9:20 / 9:25）、
+//       ST 判据与剔除、「无题材」视图过滤、展示分档（封单额 / 十日涨幅）。
+//
+// ⚠️ 这批用例里「封单额时点」的样本数据【取自 2026-09-18 线上库的真实行】
+//    （中材科技 = 13 个时点全有；丽尚国潮 = 只有 9:15 一笔），
+//    目的就是锁死「fa_0925l / fa_0920f 大多为空」这个真实形态下的取值行为。
 import { describe, it, expect } from 'vitest';
 import {
     splitThemeText,
@@ -9,25 +14,30 @@ import {
     buildYiziBlocks,
     filterYiziNoTopicBlocks,
     formatSealMoney,
-    formatAucPct,
+    sealMoneyAt,
     sealTone,
-    aucTone,
+    isStStock,
+    dropStRows,
     yiziSignature,
     isBoardDateAligned,
+    SEAL_920,
+    SEAL_925,
     OTHER_TOPIC
 } from './model.js';
+import { formatRangePct, rangeTone } from '../auction/range-display.js';
 
 /** 造一行「库行」：默认只给必要字段，个别用例再覆盖 */
-function row(stock, topicsText, sealMoney, extra) {
+function row(stock, topicsText, rangePct, extra) {
     return Object.assign({
         stock: stock,
         code: '000000',
         topicsText: topicsText,
-        sealMoney: sealMoney === undefined ? null : sealMoney,
-        aucPct: '',
-        aucTurnover: null,
+        rangePct: rangePct === undefined ? null : rangePct,
+        rangeDays: (rangePct === undefined || rangePct === null) ? 0 : 10,
+        fa: {},
         faCount: 0,
         faFirst: '',
+        continueText: '',
         themeSource: '',
         isSt: false
     }, extra || {});
@@ -95,13 +105,113 @@ describe('resolveYiziTopics 题材来源三级优先（接口 kpl → 接口 xgb
     });
 });
 
-describe('buildYiziBlocks 题材分块', () => {
+describe('sealMoneyAt 封单额的双时点口径（9:20 / 9:25，⛔ 不看 9:15）', () => {
+    it('无任何封单证据 → null（⛔ 不伪造 0）', () => {
+        expect(sealMoneyAt({ fa: {} }, SEAL_920)).toBe(null);
+        expect(sealMoneyAt({ fa: {} }, SEAL_925)).toBe(null);
+        expect(sealMoneyAt(null, SEAL_925)).toBe(null);
+        expect(sealMoneyAt({ fa: null }, SEAL_925)).toBe(null);
+    });
+
+    it('真实形态①：只有 9:15 一笔（丽尚国潮 682812）→ 两个时点都取到它', () => {
+        // 线上事实：121 只一字票里 fa_0915 有值 92 只，而 fa_0925l 只有 8 只。
+        // 「9:25 口径」在语义上是「9:25 那一刻挂在涨停价上的封单」——没有再成交就沿用最近一笔。
+        const r = { fa: { fa_0915: 682812, fa_0916: null, fa_0920f: null, fa_0925l: null } };
+        expect(sealMoneyAt(r, SEAL_920)).toBe(682812);
+        expect(sealMoneyAt(r, SEAL_925)).toBe(682812);
+    });
+
+    it('真实形态②：13 个时点全有（中材科技）→ 9:20 取 fa_0920f、9:25 取 fa_0925l', () => {
+        const r = {
+            fa: {
+                fa_0915: 403119096, fa_0916: 403119096, fa_0917: 403119096, fa_0918: 403119096,
+                fa_0919: 403119096, fa_0920: 403119096, fa_0920f: 403119096,
+                fa_0921: 403119096, fa_0922: 403119096, fa_0923: 403119096, fa_0924: 403119096,
+                fa_0925: 2251723680, fa_0925l: 2251723680
+            }
+        };
+        expect(sealMoneyAt(r, SEAL_920)).toBe(403119096);
+        expect(sealMoneyAt(r, SEAL_925)).toBe(2251723680);
+    });
+
+    it('9:20 之后才封上 → 9:20 口径为 null，9:25 口径取得到（⛔ 不把后来的值倒灌进早时点）', () => {
+        const r = { fa: { fa_0921: 1e8, fa_0925l: 2e8 } };
+        expect(sealMoneyAt(r, SEAL_920)).toBe(null);
+        expect(sealMoneyAt(r, SEAL_925)).toBe(2e8);
+    });
+
+    it('9:25 口径 = 库里 seal_money 的口径（时间上最后一笔非空）', () => {
+        // 华瓷股份：9:24 之后就没了 → 9:25 口径应回退到 fa_0924
+        const r = { fa: { fa_0915: 1e7, fa_0920f: 20242872, fa_0921: 20242872, fa_0922: 20242872, fa_0923: 20242872, fa_0924: 35293806 } };
+        expect(sealMoneyAt(r, SEAL_925)).toBe(35293806);
+        expect(sealMoneyAt(r, SEAL_920)).toBe(20242872);
+    });
+
+    it('同一时刻多列：后缀 l 晚于无后缀，f 也晚于无后缀（fa_0925l > fa_0925）', () => {
+        expect(sealMoneyAt({ fa: { fa_0925: 1e8, fa_0925l: 2e8 } }, SEAL_925)).toBe(2e8);
+        expect(sealMoneyAt({ fa: { fa_0925l: 2e8, fa_0925: 1e8 } }, SEAL_925)).toBe(2e8);
+        expect(sealMoneyAt({ fa: { fa_0920: 1e8, fa_0920f: 2e8 } }, SEAL_920)).toBe(2e8);
+    });
+
+    it('取值不依赖对象的 key 顺序（只用列名里的时刻 + 后缀判定）', () => {
+        const a = { fa: { fa_0925l: 2e8, fa_0915: 1e7, fa_0920f: 5e7 } };
+        const b = { fa: { fa_0915: 1e7, fa_0920f: 5e7, fa_0925l: 2e8 } };
+        expect(sealMoneyAt(a, SEAL_925)).toBe(2e8);
+        expect(sealMoneyAt(b, SEAL_925)).toBe(2e8);
+        expect(sealMoneyAt(a, SEAL_920)).toBe(5e7);
+        expect(sealMoneyAt(b, SEAL_920)).toBe(5e7);
+    });
+
+    it('不认识的列名被忽略（⛔ 不猜）；非有限值当作无证据', () => {
+        const r = { fa: { fa_nope: 1e9, fa_0915: NaN, fa_0918: Infinity, fa_0920f: 3e7 } };
+        expect(sealMoneyAt(r, SEAL_920)).toBe(3e7);
+    });
+});
+
+describe('isStStock / dropStRows ST 判据与剔除', () => {
+    it('isSt === true → 是 ST（上游标注，权威）', () => {
+        expect(isStStock({ stock: '某某股份', isSt: true })).toBe(true);
+    });
+
+    it('简称自带 ST / *ST → 是 ST（is_st 缺失时的兜底）', () => {
+        expect(isStStock({ stock: 'ST巨轮', isSt: null })).toBe(true);
+        expect(isStStock({ stock: '*ST新材', isSt: null })).toBe(true);
+        expect(isStStock({ stock: 'st某某', isSt: undefined })).toBe(true);
+    });
+
+    it('§10：is_st 为 null 且简称不带 ST → 不算 ST（⛔ 不无依据地剔行）', () => {
+        expect(isStStock({ stock: '兆易创新', isSt: null })).toBe(false);
+        expect(isStStock({ stock: '兆易创新', isSt: undefined })).toBe(false);
+        expect(isStStock({ stock: '兆易创新', isSt: false })).toBe(false);
+    });
+
+    it('dropStRows：剔除 ST 并如实返回只数，不改动入参', () => {
+        const rows = [
+            { stock: '兆易创新', isSt: false },
+            { stock: '*ST英飞', isSt: true },
+            { stock: '通力科技', isSt: false },
+            { stock: 'ST巨轮', isSt: null }
+        ];
+        const snapshot = JSON.stringify(rows);
+        const out = dropStRows(rows);
+        expect(out.rows.map(r => r.stock)).toEqual(['兆易创新', '通力科技']);
+        expect(out.removed).toBe(2);
+        expect(JSON.stringify(rows)).toBe(snapshot);
+    });
+
+    it('dropStRows：空输入 / 非数组 → 空结果、0 剔除', () => {
+        expect(dropStRows([])).toEqual({ rows: [], removed: 0 });
+        expect(dropStRows(null)).toEqual({ rows: [], removed: 0 });
+    });
+});
+
+describe('buildYiziBlocks 题材分块（块内度量 = 十日涨幅，与涨跌停看板同口径）', () => {
     it('组序：同题材聚块 → 组大者前 → 「其它」置底', () => {
         const rows = [
-            row('A', '存储芯片', 1e8),
-            row('B', '白酒', 2e8),
-            row('C', '存储芯片', 3e8),
-            row('D', '', 9e8)               // 无题材 → 其它
+            row('A', '存储芯片', 5),
+            row('B', '白酒', 8),
+            row('C', '存储芯片', 12),
+            row('D', '', 30)                // 无题材 → 其它
         ];
         const primaryMap = mapOf([['A', '存储芯片'], ['B', '白酒'], ['C', '存储芯片']]);
         const blocks = buildYiziBlocks(rows, primaryMap, FALLBACK_OTHER);
@@ -113,11 +223,11 @@ describe('buildYiziBlocks 题材分块', () => {
         expect(blocks[2].count).toBe(1);
     });
 
-    it('块内按封单额降序 → 序号连续 → 龙头 = 块内封单额最大者（非首行原顺序）', () => {
+    it('块内按十日涨幅降序 → 序号连续 → 龙头 = 块内涨幅最高者（非首行原顺序）', () => {
         const rows = [
-            row('A', '存储芯片', 1e8),
-            row('B', '存储芯片', 5e8),
-            row('C', '存储芯片', 3e8)
+            row('A', '存储芯片', 3.1),
+            row('B', '存储芯片', 22.5),
+            row('C', '存储芯片', 11.0)
         ];
         const primaryMap = mapOf([['A', '存储芯片'], ['B', '存储芯片'], ['C', '存储芯片']]);
         const blocks = buildYiziBlocks(rows, primaryMap, FALLBACK_OTHER);
@@ -125,73 +235,87 @@ describe('buildYiziBlocks 题材分块', () => {
         const b = blocks[0];
         expect(b.stocks.map(s => s.stock)).toEqual(['B', 'C', 'A']);
         expect(b.stocks.map(s => s.seq)).toEqual([1, 2, 3]);
-        expect(b.stocks.map(s => s.sealMoney)).toEqual([5e8, 3e8, 1e8]);
+        expect(b.stocks.map(s => s.rangePct)).toEqual([22.5, 11.0, 3.1]);
         expect(b.hasLeader).toBe(true);
         expect(b.leaderStock).toBe('B');
-        expect(b.leaderMetric).toBe(5e8);
-        expect(b.leaderSeal).toBe(5e8);
+        expect(b.leaderMetric).toBe(22.5);
+        expect(b.leaderRangePct).toBe(22.5);
         expect(b.stocks[0].isLeader).toBe(true);
         expect(b.stocks[1].isLeader).toBe(false);
     });
 
-    it('无封单额的行置底并保持相对顺序，且不被选为龙头', () => {
+    it('封单额【不参与】排序/选龙头（切「9点20」不会改龙头）', () => {
+        const rows = [
+            row('A', '存储芯片', 3.1, { fa: { fa_0915: 9e8 } }),
+            row('B', '存储芯片', 22.5, { fa: { fa_0915: 1e7 } })
+        ];
+        const pm = mapOf([['A', '存储芯片'], ['B', '存储芯片']]);
+        const b = buildYiziBlocks(rows, pm, FALLBACK_OTHER)[0];
+        // 封单额 A 远大于 B，但龙头仍按十日涨幅取 B
+        expect(b.leaderStock).toBe('B');
+        expect(b.stocks.map(s => s.stock)).toEqual(['B', 'A']);
+    });
+
+    it('无十日涨幅的行置底并保持相对顺序，且不被选为龙头', () => {
         const rows = [
             row('A', '存储芯片', null),
-            row('B', '存储芯片', 2e8),
+            row('B', '存储芯片', 12),
             row('C', '存储芯片', null)
         ];
         const primaryMap = mapOf([['A', '存储芯片'], ['B', '存储芯片'], ['C', '存储芯片']]);
         const b = buildYiziBlocks(rows, primaryMap, FALLBACK_OTHER)[0];
         expect(b.stocks.map(s => s.stock)).toEqual(['B', 'A', 'C']);
         expect(b.leaderStock).toBe('B');
-        expect(b.stocks[0].sealMoney).toBe(2e8);
-        expect(b.stocks[1].sealMoney).toBe(null);
+        expect(b.stocks[0].rangePct).toBe(12);
+        expect(b.stocks[1].rangePct).toBe(null);
     });
 
-    it('整块都没有封单额 → 不选龙头（⛔ 绝不硬点一个）', () => {
+    it('整块都没有十日涨幅 → 不选龙头（⛔ 绝不硬点一个）', () => {
         const rows = [row('A', '存储芯片', null), row('B', '存储芯片', null)];
         const primaryMap = mapOf([['A', '存储芯片'], ['B', '存储芯片']]);
         const b = buildYiziBlocks(rows, primaryMap, FALLBACK_OTHER)[0];
         expect(b.hasLeader).toBe(false);
         expect(b.leaderStock).toBe('');
-        expect(b.leaderSeal).toBe(null);
+        expect(b.leaderRangePct).toBe(null);
         expect(b.stocks.every(s => !s.isLeader)).toBe(true);
     });
 
-    it('派生展示字段随行透出（sealText / aucTone / themeSourceLabel / faCount / isSt）', () => {
-        const rows = [row('A', '存储芯片', 3.2e8, {
-            aucPct: '+10.02', faCount: 5, faFirst: '09:15', themeSource: 'kpl', isSt: true
+    it('派生展示字段随行透出（双时点封单额 / 十日涨幅文本 / 连板 / 题材来源）', () => {
+        const rows = [row('中材科技', '存储芯片', 22.5, {
+            fa: { fa_0915: 403119096, fa_0920f: 403119096, fa_0925l: 2251723680 },
+            faCount: 13, faFirst: '09:15', continueText: '二板', themeSource: 'kpl'
         })];
-        const primaryMap = mapOf([['A', '存储芯片']]);
+        const primaryMap = mapOf([['中材科技', '存储芯片']]);
         const s = buildYiziBlocks(rows, primaryMap, FALLBACK_OTHER)[0].stocks[0];
-        expect(s.sealText).toBe('3.20亿');
-        expect(s.sealTone).toBe('strong');
-        expect(s.aucPct).toBe('+10.02');
-        expect(s.aucTone).toBe('up');
+        expect(s.seal920).toBe(403119096);
+        expect(s.seal920Text).toBe('4.03亿');
+        expect(s.seal920Tone).toBe('strong');
+        expect(s.seal925).toBe(2251723680);
+        expect(s.seal925Text).toBe('22.52亿');
+        expect(s.seal925Tone).toBe('strong');
+        expect(s.rangePct).toBe(22.5);
+        expect(s.rangeDays).toBe(10);
+        expect(s.rangeText).toBe('+22.50%');
+        expect(s.rangeTone).toBe('up');
+        expect(s.continueText).toBe('二板');
         expect(s.themeSource).toBe('kpl');
         expect(s.themeSourceLabel).toBe('开盘啦');
-        expect(s.faCount).toBe(5);
+        expect(s.faCount).toBe(13);
         expect(s.faFirst).toBe('09:15');
-        expect(s.isSt).toBe(true);
-        // 名称里没有 ST 字样 → 需要挂 ST 小标
-        expect(s.stTag).toBe(true);
     });
 
-    it('ST 小标去冗余：简称自带 ST/*ST 时不再重复挂标（isSt 仍为 true）', () => {
-        const pm = mapOf([['ST巨轮', '机器人']]);
-        const s = buildYiziBlocks([row('ST巨轮', '机器人', 1e8, { isSt: true })], pm, FALLBACK_OTHER)[0].stocks[0];
-        expect(s.isSt).toBe(true);
-        expect(s.stTag).toBe(false);
-        const s2 = buildYiziBlocks([row('*ST新材', '机器人', 1e8, { isSt: true })], pm, FALLBACK_OTHER)[0].stocks[0];
-        expect(s2.stTag).toBe(false);
-        // 非 ST 股：两个都是 false
-        const s3 = buildYiziBlocks([row('兆易创新', '机器人', 1e8, { isSt: false })], pm, FALLBACK_OTHER)[0].stocks[0];
-        expect(s3.isSt).toBe(false);
-        expect(s3.stTag).toBe(false);
+    it('只给 9:15 一笔时：两个时点文本相同，且不渲染成「无封单」', () => {
+        const rows = [row('丽尚国潮', '白酒', -3.2, { fa: { fa_0915: 682812 } })];
+        const pm = mapOf([['丽尚国潮', '白酒']]);
+        const s = buildYiziBlocks(rows, pm, FALLBACK_OTHER)[0].stocks[0];
+        expect(s.seal920Text).toBe('68万');
+        expect(s.seal925Text).toBe('68万');
+        expect(s.rangeText).toBe('-3.20%');
+        expect(s.rangeTone).toBe('down');
     });
 
     it('题材展示用英文逗号且与「有无题材」同源：无题材 → "-" 且 hasTopic=false', () => {
-        const rows = [row('A', '存储芯片,AI应用', 1e8), row('B', '', 2e8)];
+        const rows = [row('A', '存储芯片,AI应用', 5), row('B', '', 8)];
         const primaryMap = mapOf([['A', '存储芯片']]);
         const blocks = buildYiziBlocks(rows, primaryMap, FALLBACK_OTHER);
         const a = blocks[0].stocks.find(s => s.stock === 'A');
@@ -204,7 +328,7 @@ describe('buildYiziBlocks 题材分块', () => {
     });
 
     it('不改动入参（纯函数）', () => {
-        const rows = [row('A', '存储芯片', 1e8), row('B', '白酒', 2e8)];
+        const rows = [row('A', '存储芯片', 5), row('B', '白酒', 8)];
         const snapshot = JSON.stringify(rows);
         const pm = mapOf([['A', '存储芯片'], ['B', '白酒']]);
         buildYiziBlocks(rows, pm, FALLBACK_OTHER);
@@ -220,10 +344,10 @@ describe('buildYiziBlocks 题材分块', () => {
 describe('filterYiziNoTopicBlocks「无题材」视图过滤', () => {
     function sample() {
         const rows = [
-            row('A', '存储芯片', 5e8),
-            row('B', '', 3e8),
-            row('C', '', 1e8),
-            row('D', '白酒', 2e8)
+            row('A', '存储芯片', 25),
+            row('B', '', 13),
+            row('C', '', 11),
+            row('D', '白酒', 20)
         ];
         const primaryMap = mapOf([['A', '存储芯片'], ['D', '白酒']]);
         return buildYiziBlocks(rows, primaryMap, FALLBACK_OTHER);
@@ -242,12 +366,12 @@ describe('filterYiziNoTopicBlocks「无题材」视图过滤', () => {
         const out = filterYiziNoTopicBlocks(sample());
         expect(out[0].hasLeader).toBe(false);
         expect(out[0].leaderStock).toBe('');
-        expect(out[0].leaderSeal).toBe(null);
+        expect(out[0].leaderRangePct).toBe(null);
         expect(out[0].stocks.every(s => !s.isLeader)).toBe(true);
     });
 
     it('没有无题材股票 → 返回空数组', () => {
-        const rows = [row('A', '存储芯片', 1e8)];
+        const rows = [row('A', '存储芯片', 5)];
         const blocks = buildYiziBlocks(rows, mapOf([['A', '存储芯片']]), FALLBACK_OTHER);
         expect(filterYiziNoTopicBlocks(blocks)).toEqual([]);
     });
@@ -263,38 +387,60 @@ describe('展示口径', () => {
         expect(formatSealMoney(NaN)).toBe('');
     });
 
-    it('formatAucPct：空 → "-"，否则原样（库内已是 "+10.02" 文本口径）', () => {
-        expect(formatAucPct('+10.02')).toBe('+10.02');
-        expect(formatAucPct('')).toBe('-');
-        expect(formatAucPct(null)).toBe('-');
-    });
-
-    it('aucTone 涨红跌绿（+10.02 → up / -3.10 → down / 空 → flat）', () => {
-        expect(aucTone('+10.02')).toBe('up');
-        expect(aucTone('-3.10')).toBe('down');
-        expect(aucTone('+0.00')).toBe('flat');
-        expect(aucTone('')).toBe('flat');
-        expect(aucTone(null)).toBe('flat');
-    });
-
     it('sealTone：≥1亿 → strong；>0 且 <1亿 → normal；无值/0 → flat', () => {
         expect(sealTone(1e8)).toBe('strong');
         expect(sealTone(9.9e7)).toBe('normal');
         expect(sealTone(0)).toBe('flat');
         expect(sealTone(null)).toBe('flat');
     });
+
+    it('formatRangePct：满窗 → "+12.34%"；缺腿 → 带 "(7/10日)"；无值 → "-"（⛔ 不补 0）', () => {
+        expect(formatRangePct(12.34, 10)).toBe('+12.34%');
+        expect(formatRangePct(-3.1, 10)).toBe('-3.10%');
+        expect(formatRangePct(12.34, 7)).toBe('+12.34%(7/10日)');
+        expect(formatRangePct(0, 10)).toBe('+0.00%');
+        expect(formatRangePct(null, 0)).toBe('-');
+        expect(formatRangePct(undefined, 10)).toBe('-');
+        expect(formatRangePct(NaN, 10)).toBe('-');
+    });
+
+    it('rangeTone 涨红跌绿（>0 up / <0 down / 0 与无值 flat）', () => {
+        expect(rangeTone(12.34)).toBe('up');
+        expect(rangeTone(-3.1)).toBe('down');
+        expect(rangeTone(0)).toBe('flat');
+        expect(rangeTone(null)).toBe('flat');
+    });
 });
 
 describe('yiziSignature 内容指纹', () => {
-    it('同内容同指纹；封单额/题材变化 → 指纹变化（保证「变了才发布」）', () => {
-        const pm = mapOf([['A', '存储芯片']]);
-        const s1 = yiziSignature(buildYiziBlocks([row('A', '存储芯片', 1e8)], pm, FALLBACK_OTHER), '2026-09-18');
-        const s2 = yiziSignature(buildYiziBlocks([row('A', '存储芯片', 1e8)], pm, FALLBACK_OTHER), '2026-09-18');
-        const s3 = yiziSignature(buildYiziBlocks([row('A', '存储芯片', 2e8)], pm, FALLBACK_OTHER), '2026-09-18');
-        const s4 = yiziSignature(buildYiziBlocks([row('A', '存储芯片', 1e8)], pm, FALLBACK_OTHER), '2026-09-17');
-        expect(s1).toBe(s2);
-        expect(s1).not.toBe(s3);
-        expect(s1).not.toBe(s4);
+    const pm = mapOf([['A', '存储芯片']]);
+    const sig = function(r, date) {
+        return yiziSignature(buildYiziBlocks([r], pm, FALLBACK_OTHER), date || '2026-09-18');
+    };
+
+    it('同内容同指纹；日期变化 → 指纹变化', () => {
+        const r = row('A', '存储芯片', 12, { fa: { fa_0915: 1e8 } });
+        expect(sig(r)).toBe(sig(row('A', '存储芯片', 12, { fa: { fa_0915: 1e8 } })));
+        expect(sig(r)).not.toBe(sig(r, '2026-09-17'));
+    });
+
+    it('十日涨幅变化 → 指纹变化（块内排序/龙头会随之改变）', () => {
+        expect(sig(row('A', '存储芯片', 12))).not.toBe(sig(row('A', '存储芯片', 13)));
+    });
+
+    it('连板标变化 → 指纹变化', () => {
+        const a = row('A', '存储芯片', 12, { continueText: '首板' });
+        const b = row('A', '存储芯片', 12, { continueText: '二板' });
+        expect(sig(a)).not.toBe(sig(b));
+    });
+
+    it('任一时点的封单额变化 → 指纹变化（保证切 toggle 不会看到陈旧值）', () => {
+        const base = { fa_0915: 1e8, fa_0920f: 2e8, fa_0925l: 3e8 };
+        const s0 = sig(row('A', '存储芯片', 12, { fa: Object.assign({}, base) }));
+        const s1 = sig(row('A', '存储芯片', 12, { fa: Object.assign({}, base, { fa_0920f: 2.5e8 }) }));
+        const s2 = sig(row('A', '存储芯片', 12, { fa: Object.assign({}, base, { fa_0925l: 3.5e8 }) }));
+        expect(s0).not.toBe(s1);
+        expect(s0).not.toBe(s2);
     });
 });
 

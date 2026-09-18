@@ -23,7 +23,9 @@ import { _dbgLog } from '../../data/debug-log.js';
 import { _emit } from '../../stores/eventBus.js';
 import { isTradingDay } from '../date/trading-day-helpers.js';
 import { getDragonWindowDates } from '../auction/dragon-rank.js';
-import { buildRangeRows } from '../auction/range-window.js';
+// §6 单一真相：「十日涨幅取值 + 缺失票用同花顺 K 线补算」与「竞价一字」看板共用同一份实现
+// （logic/auction/range-fill.js），两个看板对同一只票必须算出同一个十日涨幅。
+import { makeRangePctOf, getRangeFill } from '../auction/range-fill.js';
 import { getPrimaryTopicMap, classifyStockPrimaryTopic } from '../auction/topic-sort.js';
 import { getStockHistoryTopics } from '../stocks/stocks.js';
 import {
@@ -33,7 +35,7 @@ import {
     BOARD_UP,
     BOARD_DOWN
 } from '../../data/limit-pool.js';
-import { readRangePctForDate, fetchFuyaoDailyPctRange, upsertRangePctRows } from '../../data/stock-range-pct.js';
+import { readRangePctForDate } from '../../data/stock-range-pct.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 import {
     isTopicLibraryReady,
@@ -69,8 +71,6 @@ export const limitBoardState = reactive({
 
 // 本会话已经尝试过自愈抓取的日期（避免反复打上游）
 const _fetchAttempted = new Set();
-// 本会话已经尝试过补齐十日涨幅的日期
-const _rangeFillAttempted = new Set();
 // 单飞：同一日期同一时刻只跑一次加载
 let _inflight = null;
 
@@ -137,90 +137,10 @@ function _publishEmpty(date, extra) {
     if (extra && extra.error !== undefined) limitBoardState.error = extra.error;
 }
 
-/**
- * 用池行组出「个股 → 十日涨幅」的取值函数。
- * @param {Map<string,{pct:number|null,days:number}>} rangeMap 云端 stock_range_pct
- * @param {Map<string,{pct:number|null,days:number}>} localMap 本次会话本地补算（含缺腿值，仅供展示）
- */
-function _makeRangePctOf(rangeMap, localMap) {
-    return function(row) {
-        const nm = row && row.stock ? String(row.stock).trim() : '';
-        if (!nm) return null;
-        if (rangeMap && rangeMap.has(nm)) return rangeMap.get(nm);
-        if (localMap && localMap.has(nm)) return localMap.get(nm);
-        return null;
-    };
-}
+// 「个股 → 十日涨幅」取值函数与「缺失票补算」已抽到 logic/auction/range-fill.js（§6 单一真相），
+// 本看板与「竞价一字」看板共用同一份实现；此处不再保留第二份。
 
-/**
- * 前端补算「池内缺失」的十日涨幅（同花顺 K 线，0 猫抓额度）。
- *
- * 口径完全复用 range-window.js（窗口 [T-9,T] + 复利累乘 + 查表取腿）：
- *   · 只对「云端 stock_range_pct 没有该股票」的池内票补；
- *   · ⛔ 只有【满窗(days === 窗口长度)】的行才写云（NO-PARTIAL-WRITE，残缺行会按日期级复用地污染排名）；
- *   · 缺腿的值只留在本地供展示（UI 会显示 `N/10日`），下次仍可被更完整的数据覆盖。
- *
- * 失败只记日志（fail-soft）：十日涨幅缺失 → 显示 '-'，绝不影响涨跌停池本身的展示。
- *
- * @returns {Promise<Map<string,{pct:number|null,days:number}>>} 本地补算结果（含缺腿值）
- */
-async function _fillMissingRangePct(date, rows, rangeMap) {
-    const localMap = new Map();
-    const missing = [];
-    const seen = new Set();
-    rows.forEach(function(r) {
-        const nm = r && r.stock ? String(r.stock).trim() : '';
-        if (!nm || seen.has(nm)) return;
-        seen.add(nm);
-        if (rangeMap && rangeMap.has(nm)) return;
-        const code = _codeOf(r);
-        if (!code) return;
-        missing.push({ stock: nm, code: code });
-    });
-    if (missing.length === 0) return localMap;
-
-    const winDesc = getDragonWindowDates(date);
-    if (!winDesc || winDesc.length === 0) return localMap;
-    const winAsc = winDesc.slice().reverse();          // buildRangeRows 要求升序，最后一项 = T
-    const windowLen = winAsc.length;
-    const tYmd = String(date).replace(/-/g, '');
-
-    _dbgLog('[LIMIT-POOL] ' + date + ' 十日涨幅缺失 ' + missing.length + ' 只 → 用同花顺 K 线补算');
-    const pctMap = await fetchFuyaoDailyPctRange(missing, winAsc, { concurrency: 3 });
-
-    const targets = [];
-    const dailyByCode = Object.create(null);
-    const tLegByCode = Object.create(null);
-    missing.forEach(function(it) {
-        const m = pctMap.get(it.stock);
-        if (!m || m.size === 0) return;
-        const dm = Object.create(null);
-        m.forEach(function(v, ymd) {
-            if (ymd === tYmd) tLegByCode[it.code] = v;
-            else dm[ymd] = v;
-        });
-        dailyByCode[it.code] = dm;
-        targets.push({ name: it.stock, code: it.code });
-    });
-
-    const computed = buildRangeRows(targets, winAsc, dailyByCode, tLegByCode);
-    const fullRows = [];
-    computed.forEach(function(r) {
-        localMap.set(r.stock, { pct: r.pct, days: r.days });
-        if (r.days === windowLen) fullRows.push({ stock: r.stock, pct: r.pct, days: r.days });
-    });
-
-    if (fullRows.length > 0) {
-        try {
-            await upsertRangePctRows(date, fullRows);
-            _dbgLog('[LIMIT-POOL] ' + date + ' 十日涨幅补算并落库 ' + fullRows.length +
-                ' 行（满窗 ' + windowLen + ' 日），本地另持残缺值 ' + (localMap.size - fullRows.length) + ' 条');
-        } catch (e) {
-            _dbgLog('[LIMIT-POOL] 十日涨幅落库失败（不影响展示）: ' + (e && e.message || e));
-        }
-    }
-    return localMap;
-}
+// _fillMissingRangePct 已抽到 logic/auction/range-fill.js#fillMissingRangePct（§6 单一真相）。
 
 /** 把池行 + 十日涨幅 + 题材 → 分块结构（含龙头） */
 function _buildBlocks(date, rows, rangeMap, localMap) {
@@ -238,7 +158,7 @@ function _buildBlocks(date, rows, rangeMap, localMap) {
     // 整表分类（题材 toggle 同款一票归一）→ 单票兜底；两者都是既有单一真相
     const primaryMap = getPrimaryTopicMap(topicRows);
     const fallbackFn = function(row) { return classifyStockPrimaryTopic(row); };
-    const rangePctOf = _makeRangePctOf(rangeMap, localMap);
+    const rangePctOf = makeRangePctOf(rangeMap, localMap);
     void date;
     return buildTopicBlocks(enriched, primaryMap, fallbackFn, rangePctOf);
 }
@@ -327,12 +247,19 @@ async function _load(date, force) {
             _dbgLog('[LIMIT-POOL] ' + date + ' 读 stock_range_pct 失败: ' + (e && e.message || e));
         }
 
-        // ⑤ 缺失的十日涨幅：本会话每个日期只补算一次（fail-soft）
+        // ⑤ 缺失的十日涨幅：按股票增量补算（fail-soft；getRangeFill 自带会话内缓存与单飞，
+        //    已补过的票不再重复打上游，缺腿的值也不会因为「第二次打开」而消失）
         let localMap = new Map();
-        if (rangeReady && !_rangeFillAttempted.has(date)) {
-            _rangeFillAttempted.add(date);
+        if (rangeReady) {
             try {
-                localMap = await _fillMissingRangePct(date, rows, rangeMap);
+                localMap = await getRangeFill({
+                    date: date,
+                    rows: rows,
+                    rangeMap: rangeMap,
+                    codeOf: _codeOf,
+                    windowDates: getDragonWindowDates(date),
+                    tag: '[LIMIT-POOL]'
+                });
             } catch (e) {
                 _dbgLog('[LIMIT-POOL] ' + date + ' 十日涨幅补算失败: ' + (e && e.message || e));
             }

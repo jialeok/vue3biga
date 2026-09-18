@@ -1,17 +1,23 @@
 export function parseNoteToFields(note) {
-    if (!note) return { changePct: '', topics: '' };
+    if (!note && note !== 0) return { changePct: '', topics: '' };
+    // [FIX 2026-09-18] 强制转字符串：本函数是多个看板共用的入口，历史上只被喂过字符串，
+    // 但只要有一个调用方把「涨幅」当成 number 传进来（竞价一字的十日涨幅就踩过），
+    // 下面第一行 `note.match(…)` 就会抛 `t.match is not a function` ——
+    // 报错信息完全看不出是「传了数字」，且会被上层 catch 成一个看板整体加载失败。
+    // 在这里收口成字符串，等价于「按文本处理」，对所有既有字符串入参零行为变化。
+    const text = String(note);
     var changePct = '';
-    var pctMatch = note.match(/([+-]?\d+\.?\d*%)/);
+    var pctMatch = text.match(/([+-]?\d+\.?\d*%)/);
     if (pctMatch) {
         changePct = pctMatch[1];
-    } else if (note.includes('涨停')) {
+    } else if (text.includes('涨停')) {
         changePct = '涨停';
-    } else if (note.includes('跌停')) {
+    } else if (text.includes('跌停')) {
         changePct = '跌停';
-    } else if (note.includes('停牌')) {
+    } else if (text.includes('停牌')) {
         changePct = '停牌';
     }
-    var bracketMatches = note.match(/[(（]([^)）]+)[)）]/g) || [];
+    var bracketMatches = text.match(/[(（]([^)）]+)[)）]/g) || [];
     var topics = bracketMatches.map(function(m) {
         return m.replace(/[()（）]/g, '');
     }).join(',').replace(/[，、;；]/g, ',');
@@ -19,8 +25,8 @@ export function parseNoteToFields(note) {
 }
 
 export function cleanTopicsForDisplay(topics) {
-    if (!topics) return '';
-    return topics.split(/[+，,，、;；]/).map(function(t) { return t.trim(); }).filter(function(t) {
+    if (!topics && topics !== 0) return '';
+    return String(topics).split(/[+，,，、;；]/).map(function(t) { return t.trim(); }).filter(function(t) {
         if (!t) return false;
         if (/^题材\d+$/.test(t)) return false;
         if (/^\d+$/.test(t)) return false;
@@ -30,7 +36,10 @@ export function cleanTopicsForDisplay(topics) {
 }
 
 export function buildNoteFromFields(changePct, topics) {
-    var note = changePct || '';
+    // [FIX 2026-09-18] 必须保证返回值是【字符串】：下面 `note += …` 只在 cleanTopics 非空时执行，
+    // 所以当 changePct 是 number 且 topics 为空时，旧实现会原样返回那个 number，
+    // 让 getDisplayNote → extractTopics 一路把数字当字符串用而崩溃。这里收口。
+    var note = String(changePct === null || changePct === undefined ? '' : changePct);
     var cleanTopics = cleanTopicsForDisplay(topics);
     if (cleanTopics) {
         note += '(' + cleanTopics + ')';
@@ -52,8 +61,8 @@ export function getDisplayNote(item) {
 }
 
 export function extractTopics(note) {
-    if (!note) return [];
-    const matches = note.match(/[(（]([^)）]+)[)）]/g) || [];
+    if (!note && note !== 0) return [];
+    const matches = String(note).match(/[(（]([^)）]+)[)）]/g) || [];
     let topics = [];
     matches.forEach(m => {
         const content = m.replace(/[()（）]/g, '');

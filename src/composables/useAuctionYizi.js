@@ -5,8 +5,10 @@
 //   · 把「日期切换 / 看板刷新事件 / Realtime 通知」统一收敛为一次 loadYiziBoard；
 //   · 手动粘贴导入题材 → 调 logic 的 importYiziTopicsFromPaste（写共享题材库，三看板互通）。
 //
-// ⛔ 本文件不含任何业务判定（不判交易日、不选龙头、不解析题材优先级、不拼 SortKey）——
+// ⛔ 本文件不含任何业务判定（不判交易日、不选龙头、不解析题材优先级、不算封单额口径、不拼 SortKey）——
 //    所有规则都在 logic 层；UI 只负责「展示 + 触发」。
+// ✅ 唯一属于 UI 的判断：「9点20」toggle 决定【封单额这一列显示哪个时点的值】——
+//    两个时点的文本逻辑层都已算好，这里只做一个取值选择，不改任何数据、不触发任何重算/请求。
 // ⛔ 不做任何数据兜底：状态为空就渲染空，读失败就渲染失败（§10 读失败 ≠ 空）。
 
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
@@ -19,7 +21,7 @@ import {
     isYiziFetchTimeReached,
     importYiziTopicsFromPaste
 } from '../logic/yizi/yizi-board.js';
-import { filterYiziNoTopicBlocks, formatAucPct, isBoardDateAligned } from '../logic/yizi/model.js';
+import { filterYiziNoTopicBlocks, isBoardDateAligned } from '../logic/yizi/model.js';
 
 export function useAuctionYizi() {
     const uiStore = useUiStore();
@@ -42,6 +44,18 @@ export function useAuctionYizi() {
     const noTopicView = computed(() => showNoTopic.value && noTopicAvailable.value);
     function toggleNoTopic() {
         showNoTopic.value = !showNoTopic.value;
+    }
+
+    // ===== 「9点20」封单额时点开关（§34 UI 状态分离：纯展示态，默认关、无记忆）=====
+    // 语义（★ 用户指定）：
+    //   · 默认【关】→ 封单额列显示 **9:25** 口径（9:25 才是真一字板，这是重点，所以默认看它）
+    //   · 打开     → 封单额列显示 **9:20** 口径（9:20 起不可撤单，看这段的封单更真）
+    // 两个时点的值在 Logic 层已一次算好（row.seal920Text / row.seal925Text），
+    // 因此切 toggle 只换一个显示值：⛔ 不重算分块、不重选龙头、不发请求、不写库。
+    const show920 = ref(false);
+    const sealPointLabel = computed(() => (show920.value ? '9:20' : '9:25'));
+    function toggle920() {
+        show920.value = !show920.value;
     }
 
     const currentDate = computed(() => uiStore.currentDate);
@@ -72,9 +86,17 @@ export function useAuctionYizi() {
         return isYiziFetchTimeReached(d) ? '' : '当日一字数据将在 9:25 自动抓取';
     });
 
+    // 加载中的文案：把「在等什么」说清楚 —— 首次打开要用同花顺 K 线补算几十只票的十日涨幅，
+    // 没有阶段反馈时用户会以为看板卡死（这是「打不到数据」与「在加载」被混淆的常见成因）。
+    const loadingHint = computed(() => {
+        if (state.phase === 'range') return '加载中…（正在补算十日涨幅，首次稍慢）';
+        if (state.phase === 'group') return '加载中…（正在按题材分组）';
+        return '加载中…';
+    });
+
     // 空态文案（唯一的空态出口）：区分「正在加载这一天」/「等到 9:25」/「这一天确实没有」
     const emptyText = computed(() => {
-        if (state.loading || !stateDateAligned.value) return '加载中…';
+        if (state.loading || !stateDateAligned.value) return loadingHint.value;
         return fetchTimeHint.value || '暂无竞价一字数据';
     });
 
@@ -86,6 +108,23 @@ export function useAuctionYizi() {
         if (state.themeNone > 0) out.push('有 ' + state.themeNone + ' 只暂无题材（开「无题材」可筛出来，截图后手动导入）');
         if (state.themeFromLib > 0) out.push('其中 ' + state.themeFromLib + ' 只题材取自共享题材库（接口未返回题材）');
         return out;
+    });
+
+    // 十日涨幅覆盖提示：覆盖不全时，块内排序/龙头判据会受影响 → 必须如实告知（⛔ 不假装完整）
+    const rangeHint = computed(() => {
+        if (!hasAnyData.value) return '';
+        if (!state.rangeReady) return '';
+        if (state.rangeCovered < state.count) {
+            return '十日涨幅覆盖 ' + state.rangeCovered + '/' + state.count + ' 只（缺失的票不参与龙头评选）';
+        }
+        return '';
+    });
+
+    // ST 剔除提示：剔除是「看板口径」，但用户必须知道剔了几只，
+    // 否则会把「今天一字很少」误读成行情弱（实际上是自己要求不看 ST）。
+    const stHint = computed(() => {
+        if (!state.stRemoved) return '';
+        return '已按设置剔除 ' + state.stRemoved + ' 只 ST 股票';
     });
 
     // 分屏结构：一字池只有一块 —— 用与涨跌停看板同形的 sections 数组承载，
@@ -149,14 +188,36 @@ export function useAuctionYizi() {
         }
     }
 
-    // ===== 展示辅助（全部转发 logic 纯函数，UI 不自造口径）=====
-    function aucText(row) {
-        return formatAucPct(row && row.aucPct);
-    }
-    /** 封单额展示文本（logic 已算好）；无值时显示 '-' 而不是空白，便于对齐阅读 */
+    // ===== 展示辅助（全部转发 logic 纯函数 / 读 logic 已算好的字段，UI 不自造口径）=====
+    /** 封单额展示文本：按「9点20」toggle 在当前时点的值；无值显示 '-' 而不是空白，便于对齐阅读 */
     function sealText(row) {
-        const t = (row && row.sealText) || '';
+        if (!row) return '-';
+        const t = show920.value ? row.seal920Text : row.seal925Text;
         return t || '-';
+    }
+    /** 封单额强弱分档的样式类（同样按时点切换） */
+    function sealClass(row) {
+        if (!row) return 'yizi-seal-flat';
+        const tone = show920.value ? row.seal920Tone : row.seal925Tone;
+        return 'yizi-seal-' + (tone || 'flat');
+    }
+    /** 封单额列的 tooltip：把口径讲清楚（是哪个时点、证据强度多少） */
+    function sealTitle(row) {
+        if (!row) return '';
+        const point = show920.value ? '9:20' : '9:25';
+        const cnt = row.faCount ? ('；截至 9:25 有封单证据的时点共 ' + row.faCount + ' 个') : '';
+        const first = row.faFirst ? ('；首次封上涨停价 ' + row.faFirst) : '';
+        return point + ' 口径封单额（截至该时点最后一笔）' + cnt + first;
+    }
+    function rangeText(row) {
+        return (row && row.rangeText) || '-';
+    }
+    function rangeClass(row) {
+        return 'yizi-range-' + ((row && row.rangeTone) || 'flat');
+    }
+    // 连板（首板/二板/三板…）行内小标文案：无值返回空串（模板据空串决定不渲染该标，绝不显示 '-' 占位）
+    function continueText(row) {
+        return (row && row.continueText) || '';
     }
 
     function onRealtimeUpdate(payload) {
@@ -174,9 +235,10 @@ export function useAuctionYizi() {
     });
 
     // §6 单源：日期切换一律由 uiStore.currentDate 驱动（不额外维护本地日期副本）
-    // 「无题材」开关随日期切换归位（无记忆）—— 新的一天是全新的一池股票，旧筛选态会误导。
+    // 两个 toggle 都随日期切换归位（无记忆）—— 新的一天是全新的一池股票，旧筛选/时点态会误导。
     watch(currentDate, function() {
         showNoTopic.value = false;
+        show920.value = false;
         refresh();
     });
 
@@ -189,10 +251,15 @@ export function useAuctionYizi() {
         fetchTimeHint,
         emptyText,
         themeHints,
+        rangeHint,
+        stHint,
         sections,
         noTopicAvailable,
         noTopicView,
         toggleNoTopic,
+        show920,
+        sealPointLabel,
+        toggle920,
         importOpen,
         importText,
         importSaving,
@@ -201,7 +268,11 @@ export function useAuctionYizi() {
         refresh,
         openImport,
         doImport,
-        aucText,
-        sealText
+        sealText,
+        sealClass,
+        sealTitle,
+        rangeText,
+        rangeClass,
+        continueText
     };
 }

@@ -287,7 +287,7 @@
             color: #94a3b8;
         }
 
-        /* 名称块：股票名 + 龙头标 + ST 标，三段紧贴、整体不换行 */
+        /* 名称块：股票名 + 龙头标 + 连板标，三段紧贴、整体不换行 */
         .yizi-name-block {
             flex: 0 1 auto;
             min-width: 0;
@@ -323,21 +323,9 @@
             white-space: nowrap;
         }
 
-        /* ST 标：9px 轻底小标（ST 涨停为 5%，仍属一字，只做提示） */
-        .yizi-st-tag {
-            flex: 0 0 auto;
-            padding: 0 3px;
-            border-radius: 2px;
-            font-size: 9px;
-            font-weight: 600;
-            line-height: 12px;
-            color: #b45309;
-            background: #fef3c7;
-            white-space: nowrap;
-        }
-
-        /* 首次封上时刻：9px 轻底小标；无值时模板不渲染（不会出现 '-' 占位） */
-        .yizi-fa-tag {
+        /* 连板标（首板/二板/三板…）：9px 轻底小标；无值时模板不渲染（不会出现 '-' 占位）。
+           样式与涨跌停看板 .limit-continue-tag 完全一致 —— 用户要求「标签布局按照涨跌停看板的来」。 */
+        .yizi-continue-tag {
             flex: 0 0 auto;
             padding: 0 3px;
             border-radius: 2px;
@@ -347,6 +335,17 @@
             color: #475569;
             background: #e2e8f0;
             white-space: nowrap;
+        }
+
+        /* 说明型提示（比 .yizi-warn 轻）：用于「已剔除 N 只 ST」这类口径说明，不是问题告警 */
+        .yizi-note {
+            margin-bottom: 6px;
+            padding: 4px 10px;
+            font-size: 11px;
+            color: #475569;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
         }
 
         /* 题材（主角列）：吃满剩余宽度；完整展示 + 允许折行（一票多题材可占多行）。
@@ -362,7 +361,7 @@
             overflow-wrap: break-word;
         }
 
-        /* 度量列：封单额（主）+ 竞价涨幅（次）**同基线并排、单行**。
+        /* 度量列：封单额（9:20 / 9:25 由 toggle 切）+ 十日涨幅 **同基线并排、单行**。
            ⛔ 不做上下两行堆叠 —— 那会把每行撑成 2 倍高（一票单题材时白多占一行），
            与本项目「能省一行就省一行」的取向冲突。min-width 保证各行两小列纵向对齐。 */
         .yizi-metric {
@@ -382,12 +381,12 @@
             font-weight: 700;
         }
 
-        /* 竞价涨幅 = 该股涨停幅度（ST 5% / 主板 10% / 创业板 20% / 北交所 30%）→ 有信息量，保留 */
-        .yizi-auc {
-            min-width: 36px;
+        /* 十日涨幅：块内排序 / 龙头判据。样式与涨跌停看板 .limit-range 一致 */
+        .yizi-range {
+            min-width: 44px;
             text-align: right;
-            font-size: 9px;
-            font-weight: 500;
+            font-size: 11px;
+            font-weight: 600;
         }
 
         /* 封单额强弱分档：≥1 亿 → 深红加粗；其余 → 常规深灰（⛔ 不把「没数据」渲染成「封单弱」） */
@@ -396,10 +395,18 @@
         .yizi-seal-normal { color: #334155; }
         .yizi-seal-flat { color: #cbd5e1; }
 
-        /* 竞价涨幅方向配色（涨红跌绿，与项目约定一致；同样带 yizi- 前缀避免串色） */
-        .yizi-auc-up { color: #dc2626; }
-        .yizi-auc-down { color: #16a34a; }
-        .yizi-auc-flat { color: #94a3b8; }
+        /* 十日涨幅方向配色（涨红跌绿，与项目约定一致；同样带 yizi- 前缀避免串色） */
+        .yizi-range-up { color: #dc2626; }
+        .yizi-range-down { color: #16a34a; }
+        .yizi-range-flat { color: #94a3b8; }
+
+        /* 开关条上的当前时点提示（「9:25口径」/「9:20口径」）——
+           让用户一眼知道封单额列现在看的是哪一个时刻，不必回忆 toggle 是开还是关 */
+        .yizi-point-hint {
+            font-size: 10px;
+            color: #94a3b8;
+            white-space: nowrap;
+        }
 
         .yizi-import-hint {
             font-size: 11px;

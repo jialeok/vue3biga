@@ -78,3 +78,48 @@ describe('note/helpers：extractTopics 提取去重题材', () => {
     expect(extractTopics('')).toEqual([]);
   });
 });
+
+// [REGRESSION 2026-09-18] 「涨幅传成数字」曾把整个看板打崩
+//   事故：竞价一字看板把数值 rangePct(number) 塞进 changePct →
+//   getDisplayNote 组装 note 时（该股无题材，`note += …` 不执行）note 保持为 number →
+//   extractTopics 里 `note.match(…)` 抛 `t.match is not a function` →
+//   被上层 catch 成「看板加载失败」，一行都不渲染。
+//   这批用例钉住：这些函数对【数字入参】必须按文本处理，绝不抛错、绝不把数字当返回值。
+describe('note/helpers：数字入参必须按文本处理（防 t.match is not a function）', () => {
+  it('buildNoteFromFields 的 changePct 是数字且无题材时，仍返回字符串', () => {
+    const out = buildNoteFromFields(12.34, '');
+    expect(typeof out).toBe('string');
+    expect(out).toBe('12.34');
+  });
+
+  it('buildNoteFromFields 的 changePct 是数字且有题材时，正常拼前缀', () => {
+    expect(buildNoteFromFields(12.34, 'AI')).toBe('12.34(AI)');
+  });
+
+  it('getDisplayNote 遇数字 changePct 无题材时返回字符串，不返回数字', () => {
+    const out = getDisplayNote({ changePct: 12.34, topics: '' });
+    expect(typeof out).toBe('string');
+    expect(out).toBe('12.34');
+  });
+
+  it('extractTopics 遇数字不抛错，且能提出括号里的题材', () => {
+    expect(() => extractTopics(12.34)).not.toThrow();
+    expect(extractTopics(12.34)).toEqual([]);
+  });
+
+  it('parseNoteToFields 遇数字不抛错', () => {
+    expect(() => parseNoteToFields(12.34)).not.toThrow();
+    expect(parseNoteToFields(12.34)).toEqual({ changePct: '', topics: '' });
+  });
+
+  it('cleanTopicsForDisplay 遇数字不抛错', () => {
+    expect(() => cleanTopicsForDisplay(12.34)).not.toThrow();
+    expect(cleanTopicsForDisplay(12.34)).toBe('12.34');
+  });
+
+  it('端到端：数字 changePct → getDisplayNote → extractTopics 全链路不崩', () => {
+    const note = getDisplayNote({ changePct: 20, topics: '机器人' });
+    expect(typeof note).toBe('string');
+    expect(extractTopics(note)).toEqual(['机器人']);
+  });
+});

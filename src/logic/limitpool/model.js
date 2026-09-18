@@ -16,7 +16,6 @@
 //   · 组序     = topic-sort.js#sortByTopicGroups（与早盘竞价第一页「题材 toggle」同一套组序规则）
 //   · 题材文本 = topic-sort.js#getStockTopicsDisplay（与竞价看板题材单元格同口径）
 
-import { RANGE_WINDOW_DAYS } from '../auction/range-window.js';
 import {
     OTHER_TOPIC,
     buildTopicBlocks as buildTopicBlocksCore,
@@ -25,8 +24,12 @@ import {
     formatSealMoney
 } from '../topics/topic-block.js';
 
+// 十日涨幅展示口径（文本 / 涨跌方向）的唯一实现在 logic/auction/range-display.js，
+// 与「竞价一字」看板共用（§6 单一真相）；此处直通再导出，使既有 import 路径零改动。
+import { formatRangePct, rangeTone } from '../auction/range-display.js';
+
 // 共享核心的直通导出（签名与语义都在共享模块里定义）
-export { OTHER_TOPIC, parseTopicPaste, formatSealMoney };
+export { OTHER_TOPIC, parseTopicPaste, formatSealMoney, formatRangePct, rangeTone };
 
 /**
  * 把一行池数据 + 十日涨幅，按题材切成「看板分块」结构。
@@ -77,33 +80,4 @@ export function filterNoTopicBlocks(blocks) {
     return out;
 }
 
-/**
- * 十日涨幅展示文本（唯一口径）。
- *   · 无数据 → '-'（⛔ 禁止补 0：0% 是一个真实涨幅）
- *   · 满窗   → '+12.34%'
- *   · 缺腿   → '+12.34%(7/10日)'（与早盘竞价看板同一约定，明示「这只票窗口不全」）
- * @param {number|null} pct
- * @param {number} days
- * @param {number} [windowDays]
- * @returns {string}
- */
-export function formatRangePct(pct, days, windowDays) {
-    const win = windowDays || RANGE_WINDOW_DAYS;
-    if (pct === null || pct === undefined || !isFinite(pct)) return '-';
-    const txt = (pct >= 0 ? '+' : '') + Number(pct).toFixed(2) + '%';
-    const d = isFinite(days) ? Number(days) : 0;
-    if (d > 0 && d < win) return txt + '(' + d + '/' + win + '日)';
-    return txt;
-}
-
-/**
- * 十日涨幅涨跌方向（用于配色：涨红跌绿，与项目约定一致）。
- * @param {number|null} pct
- * @returns {'up'|'down'|'flat'}
- */
-export function rangeTone(pct) {
-    if (pct === null || pct === undefined || !isFinite(pct)) return 'flat';
-    if (pct > 0) return 'up';
-    if (pct < 0) return 'down';
-    return 'flat';
-}
+// formatRangePct / rangeTone 已抽到 logic/auction/range-display.js（见上方 import 的直通再导出）。

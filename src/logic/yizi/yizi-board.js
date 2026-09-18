@@ -1,32 +1,46 @@
 // yizi-board.js — 「竞价一字」看板的 Logic 层（业务规则 / 编排 / 协调，§4）
 //
 // 架构位置：UI（views/AuctionYiziBoard.vue + composables/useAuctionYizi.js）
-//          → 本模块（加载 / 题材解析与分组 / 选龙头 / 粘贴导入）
-//          → Data（data/auction-yizi.js、data/stock-topics.js、data/stock-code-map.js）
-//          → Supabase
+//          → 本模块（加载 / 题材解析与分组 / 十日涨幅 / 连板 / ST 剔除 / 选龙头 / 粘贴导入）
+//          → Data（data/auction-yizi.js、data/stock-range-pct.js、data/limit-pool.js、
+//                  data/stock-topics.js、data/stock-code-map.js）
+//          → Supabase / 同花顺 fuyao
 //
-// 数据链（两条腿，全部是既有单一真相，不新增第二套口径）：
+// 数据链（四条腿，全部是既有单一真相，不新增第二套口径）：
 //   ① 竞价一字快照 ← auction_yizi 表（Supabase Edge Function auction-yizi-fetch
 //        每交易日【北京 09:25】抓猫抓数据 daily_auc_fd 落库，由 pg_cron 触发；
 //        ⚠️ 本看板【不做前端自愈抓取】：9:15~9:25 的竞价快照有强时效性，
 //           前端补抓必然发生在错过窗口之后，无意义且会多烧一份小号额度）
-//   ② 题材归属 ← 三级优先：接口自带 开盘啦(theme_names_kpl) → 选股宝(theme_names_xgb)
+//   ② 十日涨幅  ← stock_range_pct 表（缺的票先走【猫抓 daily 批量】1 次请求补齐，
+//                  失败才退回同花顺 K 线；走 logic/auction/range-fill.js，
+//                  与「涨跌停」看板【共用同一份实现】；十日涨幅 = 块内排序 + 选龙头的度量）
+//   ③ 连板标    ← limit_pool 表（同花顺涨停池落库）：T-1 的连板数 +1 = T 日一字板的连板档位
+//                  （复用语义：一字板在 9:25 就已封上涨停价 ⇒ T 日必然涨停）
+//   ④ 题材归属 ← 三级优先：接口自带 开盘啦(theme_names_kpl) → 选股宝(theme_names_xgb)
 //        → 共享题材库 stock_topics（与涨跌停看板 / 早盘竞价看板同一张表，手动导入互通）
 //
 // 红线：
 //   §10  读取失败 ≠ 空。读失败 → error 有值 + 显示提示，绝不渲染成「今天没有一字」。
+//        连板标/十日涨幅属于「附加信息」：读失败只让对应列显示 '-'，⛔ 绝不因此丢行或落库。
 //   §17  只在数据真正变化时发布（内容指纹比对），避免无意义重渲染。
-//   §6   选龙头【不落库】：这是「快照 + 题材库」的派生视图，落库会立刻多出第二个真相源
+//   §6   选龙头【不落库】：这是「快照 + 题材库 + 十日涨幅」的派生视图，落库会立刻多出第二个真相源
 //        （题材库稍后变更就会让它变陈旧、被永久冻结）。
 //   §8   本看板的任何业务/UI 状态都不落 localStorage。
+//   §26  日期切换时，迟到的旧请求一律丢弃（_loadSeq 序号闸门）。
 
 import { reactive } from 'vue';
 import { _dbgLog } from '../../data/debug-log.js';
 import { _emit } from '../../stores/eventBus.js';
-import { isTradingDay } from '../date/trading-day-helpers.js';
+import { isTradingDay, getPreviousTradingDay } from '../date/trading-day-helpers.js';
 import { getPrimaryTopicMap, classifyStockPrimaryTopic } from '../auction/topic-sort.js';
 import { getStockHistoryTopics } from '../stocks/stocks.js';
+import { getStreakLabel } from '../auction/limit-streak.js';
+import { getDragonWindowDates } from '../auction/dragon-rank.js';
+// §6 单一真相：「十日涨幅取值 + 缺失票用同花顺 K 线补算」与「涨跌停」看板共用同一份实现
+import { makeRangePctOf, getRangeFill } from '../auction/range-fill.js';
 import { readAuctionYiziForDate } from '../../data/auction-yizi.js';
+import { readRangePctForDate } from '../../data/stock-range-pct.js';
+import { readLimitPoolForDate, BOARD_UP } from '../../data/limit-pool.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 import {
     isTopicLibraryReady,
@@ -39,16 +53,21 @@ import {
     buildYiziBlocks,
     resolveYiziTopics,
     parseTopicPaste,
-    yiziSignature
+    yiziSignature,
+    dropStRows
 } from './model.js';
 
 // ===== 看板状态（本模块唯一的响应式真相，供 composable/UI 读取）=====
 export const yiziBoardState = reactive({
     date: '',
     loading: false,
+    // 加载阶段（仅用于「加载中…」文案，让用户知道在等什么 —— 首次补算十日涨幅可能偏慢）：
+    // '' | 'read'（读快照/题材库/涨幅缓存）| 'range'（用同花顺 K 线补算缺失的十日涨幅）| 'group'（分块选龙头）
+    phase: '',
     error: '',
     // 分组结果（题材块，顺序即共享核心的组序：组大者前 → 题材名 → 「其它」置底）
     blocks: [],
+    // 池子只数（= 剔除 ST 之后、看板真正展示的只数）
     count: 0,
     // 该日云端是否确实存在快照（false 且 error 为空 = 该日确实没有抓取记录）
     hasSnapshot: false,
@@ -60,6 +79,12 @@ export const yiziBoardState = reactive({
     themeFromXgb: 0,
     themeFromLib: 0,
     themeNone: 0,
+    // 十日涨幅覆盖情况（块内排序 + 选龙头的度量，覆盖不全时 UI 要如实提示）
+    rangeReady: false,
+    rangeError: '',
+    rangeCovered: 0,
+    // 当日快照里被剔除的 ST 只数（⛔ 必须让用户看见，否则会被误读成「当天一字很少」）
+    stRemoved: 0,
     // 内容指纹：仅用于「变了才发布」
     signature: ''
 });
@@ -72,6 +97,9 @@ let _inflight = null;
 // 迟到的旧请求一律丢弃 —— 否则「09-17 的慢请求」会比「09-14 的快请求」晚回来，
 // 把 09-14 的页面覆盖成 09-17 的数据（§26 日期切换 / §23 数据集切换：新日期必须整体换源）。
 let _loadSeq = 0;
+
+// 本会话已经尝试过「读涨跌停池拿连板标」的日期（连板标是附加信息，失败不值得重试）
+const _streakAttempted = new Set();
 
 function _pad2(n) { return String(n).padStart(2, '0'); }
 
@@ -139,43 +167,132 @@ function _publishEmpty(date, extra) {
     yiziBoardState.themeFromXgb = 0;
     yiziBoardState.themeFromLib = 0;
     yiziBoardState.themeNone = 0;
+    yiziBoardState.rangeCovered = 0;
+    yiziBoardState.stRemoved = 0;
+    yiziBoardState.phase = '';
     if (extra && extra.error !== undefined) yiziBoardState.error = extra.error;
 }
 
+// ============================================================================
+// 连板标（首板 / 二板 / 三板…）
+// ============================================================================
+
 /**
- * 行 + 题材 → 分块结构（含龙头）。
+ * 组「股票名 → 连板文案」映射（0 猫抓额度，只读既有的 limit_pool 表）。
  *
- * 题材解析走 model.resolveYiziTopics 的三级优先（接口 kpl → 接口 xgb → 共享题材库），
- * 解析结果写回行的 topicsText，随后由共享核心统一做「展示 / 无题材判定」。
+ * 口径：一字板在 9:25 就已封上涨停价 ⇒ T 日必属涨停 ⇒
+ *       **T 日连板数 = 前一交易日(T-1) 的连续涨停天数 + 1**。
+ * 因此主通道读 T-1 的涨停池；T-1 那一行在池里 → cnt+1；不在池里 → 首板（1）。
  *
- * @param {object[]} rows data/auction-yizi.js 读出的行
+ * T-1 池子缺失时的兜底：若 T 日自己的涨停池已有该票（收盘后 15:40 抓过），
+ * 直接用它的 cnt（该日连续涨停天数，无需 +1）。
+ *
+ * §10 边界（很重要）：
+ *   · 读库失败 → 直接抛给调用方（catch 后只记日志，不阻断看板）；
+ *   · 池子读到了但【一条涨停都没有】且 T-1 是交易日 ⇒ 判定为「数据缺失」，
+ *     一律【不出连板标】—— ⛔ 绝不把「没数据」猜成「全都是首板」。
+ *
+ * @param {string} date YYYY-MM-DD
+ * @param {object[]} rows 一字池行
+ * @returns {Promise<Map<string,string>>} 股票名 → '首板' | '二板' | …（无依据的票不进 Map）
+ */
+async function _buildStreakMap(date, rows) {
+    const out = new Map();
+    const names = new Set();
+    (rows || []).forEach(function(r) {
+        const nm = r && r.stock ? String(r.stock).trim() : '';
+        if (nm) names.add(nm);
+    });
+    if (names.size === 0) return out;
+
+    const prev = getPreviousTradingDay(date);
+    let prevPool = [];
+    if (prev) {
+        const pool = await readLimitPoolForDate(prev);
+        prevPool = pool.filter(function(r) { return r && r.board === BOARD_UP; });
+    }
+
+    if (prevPool.length > 0) {
+        const inPrev = new Map();
+        prevPool.forEach(function(r) {
+            const nm = String(r.stock || '').trim();
+            if (!nm || inPrev.has(nm)) return;
+            const cnt = isFinite(r.continueCnt) ? Number(r.continueCnt) : null;
+            if (cnt !== null) inPrev.set(nm, cnt);
+        });
+        names.forEach(function(nm) {
+            // T-1 在涨停池 → T 日 = cnt+1 板
+            if (inPrev.has(nm)) { out.set(nm, getStreakLabel(inPrev.get(nm) + 1)); return; }
+            // T-1 不在涨停池 → 连板链在 T-1 断开 → T 日涨停 = 首板
+            out.set(nm, getStreakLabel(1));
+        });
+        return out;
+    }
+
+    // T-1 池子为空：要么 T-1 不是交易日，要么那一日的数据没抓到（§10 缺失 ≠ 没有）
+    let prevTrading = false;
+    try { prevTrading = !!prev && isTradingDay(prev); } catch (e) { prevTrading = false; }
+    if (prevTrading) {
+        _dbgLog('[AUCTION-YIZI] ' + prev + ' 涨停池无数据 → 连板标跳过（不猜成首板）');
+    }
+
+    // 兜底：该日自己的涨停池（收盘后已抓过）→ 直接取该日连续涨停天数
+    const todayPool = await readLimitPoolForDate(date);
+    const upToday = todayPool.filter(function(r) { return r && r.board === BOARD_UP; });
+    upToday.forEach(function(r) {
+        const nm = String(r.stock || '').trim();
+        if (!nm || !names.has(nm) || out.has(nm)) return;
+        const cnt = isFinite(r.continueCnt) ? Number(r.continueCnt) : null;
+        if (cnt !== null && cnt > 0) out.set(nm, getStreakLabel(cnt));
+    });
+    return out;
+}
+
+// ============================================================================
+// 分块
+// ============================================================================
+
+/**
+ * 行 + 题材 + 十日涨幅 + 连板标 → 分块结构（含龙头）。
+ *
+ * @param {object[]} rows 已 enrich 的行（含 topicsText / themeSource / rangePct / rangeDays / continueText）
  * @returns {{blocks: Array<object>, stats: {kpl:number,xgb:number,lib:number,none:number}}}
  */
 export function buildBlocksFromRows(rows) {
     const stats = { kpl: 0, xgb: 0, lib: 0, none: 0 };
-    const enriched = (rows || []).map(function(r) {
-        const res = resolveYiziTopics(r, _libraryTopics(r.stock));
-        if (res.source === 'kpl') stats.kpl++;
-        else if (res.source === 'xgb') stats.xgb++;
-        else if (res.source === 'lib') stats.lib++;
+    const list = rows || [];
+    list.forEach(function(r) {
+        const src = r && r.themeSource;
+        if (src === 'kpl') stats.kpl++;
+        else if (src === 'xgb') stats.xgb++;
+        else if (src === 'lib') stats.lib++;
         else stats.none++;
-        return Object.assign({}, r, { topicsText: res.text, themeSource: res.source });
     });
-    if (enriched.length === 0) return { blocks: [], stats: stats };
+    if (list.length === 0) return { blocks: [], stats: stats };
 
     // 整表分类（题材 toggle 同款一票归一）→ 单票兜底；两者都是既有单一真相。
     // ⚠️ 这里必须传【已解析好的题材文本】而不是库里的原始字段，
     //    否则「接口无题材、要靠共享库兜底」的票会被判成无题材（分组与展示就分叉了）。
-    const topicRows = enriched.map(function(r) {
+    const topicRows = list.map(function(r) {
         return {
             stock: r.stock,
-            changePct: r.aucPct || '',
+            // ⚠️ 这里【必须传字符串】。`changePct` 在这一行的语义是「行内涨幅的展示文本」，
+            //    只会被 note/helpers.js#getDisplayNote 拼成 `${changePct}(题材…)` 的前缀，
+            //    ⛔ 从不参与任何数值计算。
+            //    2026-09-18 实测事故：曾把它填成本看板的数值 rangePct(number)，
+            //    于是「该股无题材」时 buildNoteFromFields 的 `note += …` 不执行 →
+            //    note 保持为 number → extractTopics 里 `note.match(…)` 直接抛
+            //    `t.match is not a function`，整个看板加载失败（一个错值炸掉整块板）。
+            //    本看板的排序/龙头度量是 rangePct（由 buildYiziBlocks 的 metricOf 传入），
+            //    与这个展示前缀无关，因此这里保持空串即可。
+            changePct: '',
+            // 与「竞价一字」的度量口径对齐（本看板的排序/龙头依据 = 十日涨幅）
             topics: r.topicsText
         };
     });
     const primaryMap = getPrimaryTopicMap(topicRows);
     const fallbackFn = function(row) { return classifyStockPrimaryTopic(row); };
-    return { blocks: buildYiziBlocks(enriched, primaryMap, fallbackFn), stats: stats };
+    return { blocks: buildYiziBlocks(list, primaryMap, fallbackFn), stats: stats };
 }
 
 /**
@@ -201,7 +318,9 @@ async function _load(date, force) {
     // 「迟到的旧请求」判据：序号不再是最新 → 本次结果已过期，禁止写任何状态
     const isLatest = function() { return mySeq === _loadSeq; };
     yiziBoardState.loading = true;
+    yiziBoardState.phase = 'read';
     yiziBoardState.error = '';
+    yiziBoardState.rangeError = '';
     try {
         // ① 非交易日：明确呈现空（上游也不会有数据），不读不写
         let trading = true;
@@ -217,14 +336,21 @@ async function _load(date, force) {
         }
 
         // ② 读云端快照（§10：读失败必须抛，绝不伪装成空）
-        const rows = await readAuctionYiziForDate(date);
+        const rawRows = await readAuctionYiziForDate(date);
         if (!isLatest()) return;
+
+        // ③ 剔除 ST（★ 用户指定：本看板不出现 ST）。
+        //    ⛔ 表里照旧保留 ST 行（快照真相），这里只是展示口径 —— 但必须计入 stRemoved 让用户看见。
+        const dropped = dropStRows(rawRows);
+        const rows = dropped.rows;
+        yiziBoardState.stRemoved = dropped.removed;
         if (rows.length === 0) {
             _publishEmpty(date, { error: '' });
+            yiziBoardState.stRemoved = dropped.removed;
             return;
         }
 
-        // ③ 题材库就绪闸门（幂等；未就绪 → 只提示，不落库，所以不会冻结任何结论）
+        // ④ 题材库就绪闸门（幂等；未就绪 → 只提示，不落库，所以不会冻结任何结论）
         let libReady = isTopicLibraryReady();
         if (!libReady) {
             try {
@@ -236,18 +362,82 @@ async function _load(date, force) {
         if (!isLatest()) return;
         yiziBoardState.topicLibraryReady = libReady;
 
-        // ④ 分组 + 选龙头
-        const built = buildBlocksFromRows(rows);
+        // ⑤ 十日涨幅（块内排序 + 选龙头的度量）。
+        //    读失败 → 不假装为 0，标记 rangeError 让 UI 提示；补算失败 → fail-soft（显示 '-'）。
+        let rangeMap = new Map();
+        let rangeReady = true;
+        try {
+            rangeMap = await readRangePctForDate(date);
+        } catch (e) {
+            rangeReady = false;
+            yiziBoardState.rangeError = '十日涨幅读取失败：' + (e && e.message || e);
+            _dbgLog('[AUCTION-YIZI] ' + date + ' 读 stock_range_pct 失败: ' + (e && e.message || e));
+        }
+        if (!isLatest()) return;
+
+        let localMap = new Map();
+        if (rangeReady) {
+            // getRangeFill = 会话内缓存 + 单飞 + 增量补：
+            // 已补过的票直接命中缓存（⛔ 不能每次现补 —— 缺腿的行不会回写云端，
+            // 那样同一天第二次打开时这些票的十日涨幅会变成 '-'）。
+            yiziBoardState.phase = 'range';
+            try {
+                localMap = await getRangeFill({
+                    date: date,
+                    rows: rows,
+                    rangeMap: rangeMap,
+                    codeOf: codeOfYiziRow,
+                    windowDates: getDragonWindowDates(date),
+                    // T 腿（当天那根）口径：今天未收盘时用快照里的【竞价涨幅】占位 ——
+                    // 一字板在 9:25 已封上涨停价，竞价涨幅就是它当天的真实起步，
+                    // 与「涨跌停」看板（dragon-rank / worker P0）同口径。
+                    aucPctOf: function(r) { return r && r.aucPct; },
+                    tag: '[AUCTION-YIZI]'
+                });
+            } catch (e) {
+                _dbgLog('[AUCTION-YIZI] ' + date + ' 十日涨幅补算失败: ' + (e && e.message || e));
+            }
+        }
+        if (!isLatest()) return;
+
+        // ⑥ 连板标（附加信息，fail-soft：失败只是不出标，绝不影响池子本身）
+        let streakMap = new Map();
+        if (!_streakAttempted.has(date)) {
+            _streakAttempted.add(date);
+            try {
+                streakMap = await _buildStreakMap(date, rows);
+            } catch (e) {
+                _dbgLog('[AUCTION-YIZI] ' + date + ' 连板标读取失败（不影响展示）: ' + (e && e.message || e));
+            }
+        }
+        if (!isLatest()) return;
+
+        // ⑦ 逐行 enrich：题材解析（三级优先）→ 十日涨幅 → 连板标
+        const rangePctOf = makeRangePctOf(rangeMap, localMap);
+        const enriched = rows.map(function(r) {
+            const res = resolveYiziTopics(r, _libraryTopics(r.stock));
+            const rg = rangePctOf(r);
+            return Object.assign({}, r, {
+                topicsText: res.text,
+                themeSource: res.source,
+                rangePct: rg ? rg.pct : null,
+                rangeDays: rg ? rg.days : 0,
+                continueText: streakMap.get(r.stock) || ''
+            });
+        });
+
+        // ⑧ 分组 + 选龙头
+        yiziBoardState.phase = 'group';
+        const built = buildBlocksFromRows(enriched);
         const sig = yiziSignature(built.blocks, date);
         if (!isLatest()) return;
         if (!force && yiziBoardState.signature === sig) {
             // 内容一致：只更新轻量字段，不重放分块（§17）
             yiziBoardState.loading = false;
             yiziBoardState.date = date;
-            yiziBoardState.themeFromKpl = built.stats.kpl;
-            yiziBoardState.themeFromXgb = built.stats.xgb;
-            yiziBoardState.themeFromLib = built.stats.lib;
-            yiziBoardState.themeNone = built.stats.none;
+            _publishLightStats(built.stats, rows, rangeMap, localMap);
+            yiziBoardState.rangeReady = rangeReady;
+            yiziBoardState.stRemoved = dropped.removed;
             return;
         }
         yiziBoardState.signature = sig;
@@ -259,10 +449,9 @@ async function _load(date, force) {
         yiziBoardState.count = rows.length;
         yiziBoardState.hasSnapshot = true;
         yiziBoardState.updatedAt = (rows[0] && rows[0].updatedAt) || '';
-        yiziBoardState.themeFromKpl = built.stats.kpl;
-        yiziBoardState.themeFromXgb = built.stats.xgb;
-        yiziBoardState.themeFromLib = built.stats.lib;
-        yiziBoardState.themeNone = built.stats.none;
+        _publishLightStats(built.stats, rows, rangeMap, localMap);
+        yiziBoardState.rangeReady = rangeReady;
+        yiziBoardState.stRemoved = dropped.removed;
     } catch (e) {
         if (!isLatest()) return;
         yiziBoardState.error = '竞价一字看板加载失败：' + (e && e.message || e);
@@ -270,8 +459,28 @@ async function _load(date, force) {
     } finally {
         // 只有最新请求才有权把 loading 置回 false：
         // 否则「早发出的慢请求」会让后发请求的加载中提示提前消失（表现为状态错位）。
-        if (isLatest()) yiziBoardState.loading = false;
+        if (isLatest()) {
+            yiziBoardState.loading = false;
+            yiziBoardState.phase = '';
+        }
     }
+}
+
+/** 题材来源统计 + 十日涨幅覆盖度（两者都是「关于这一天的事实」，与视图过滤无关） */
+function _publishLightStats(stats, rows, rangeMap, localMap) {
+    yiziBoardState.themeFromKpl = stats.kpl;
+    yiziBoardState.themeFromXgb = stats.xgb;
+    yiziBoardState.themeFromLib = stats.lib;
+    yiziBoardState.themeNone = stats.none;
+    const seen = new Set();
+    let n = 0;
+    (rows || []).forEach(function(r) {
+        const nm = r && r.stock ? String(r.stock).trim() : '';
+        if (!nm || seen.has(nm)) return;
+        seen.add(nm);
+        if ((rangeMap && rangeMap.has(nm)) || (localMap && localMap.has(nm))) n++;
+    });
+    yiziBoardState.rangeCovered = n;
 }
 
 /**

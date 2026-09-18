@@ -116,7 +116,9 @@ export async function fetchNumcatDailyPctRange(symbols, startYmd, endYmd) {
  *
  * @param {Array<{stock:string, code:string}>} items 股票名 + 6 位代码
  * @param {string[]} dates 需要的交易日（YYYY-MM-DD，顺序任意）
- * @param {{concurrency?:number}} [opts]
+ * @param {{concurrency?:number, onProgress?:(done:number,total:number)=>void}} [opts]
+ *        onProgress：每补完一只票回调一次（供 UI 显示「正在补算 N/M」——
+ *        本函数可能要跑几十秒，没有进度反馈时用户会以为看板卡死）
  * @returns {Promise<Map<string, Map<string, number>>>} 股票名 -> (YYYYMMDD -> 日涨幅%)
  */
 export async function fetchFuyaoDailyPctRange(items, dates, opts) {
@@ -187,12 +189,16 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
             if (!wantSet.has(cur.ymd)) continue;
             keep.set(cur.ymd, (cur.close / prev.close - 1) * 100);
         }
-        return keep;
+        // 首根 K 线（用于判定「该票在窗口期才开始有数据」= 次新股 / 长期停牌复牌）
+        return { keep: keep, firstYmd: series.length > 0 ? series[0].ymd : '' };
     };
 
     // 熔断计数器（跨批次累计）
     let consecutiveShort = 0;
     let circuitOpen = false;
+    // 进度回调：每补完一只票上报一次（UI 显示「正在补算 N/M」用）
+    const onProgress = (opts && typeof opts.onProgress === 'function') ? opts.onProgress : null;
+    let done = 0;
 
     for (let i = 0; i < list.length; i += conc) {
         if (circuitOpen) break;
@@ -201,13 +207,22 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
             if (circuitOpen) return;
             const name = String(it.stock).trim();
             let best = null;
+            // 「窗口期才开始有 K 线」= 次新股 / 长期停牌复牌：
+            // 这类票【永远不可能凑满窗口】，重试只会白等 2 轮退避（300+600ms）。
+            // 实测（2026-09-18，110 只一字票补算）这是主要耗时来源 —— 见下方 [PERF] 注释。
+            let listingShort = false;
             try {
                 for (let attempt = 0; attempt < 3; attempt++) {
-                    const keep = await fetchOnce(it.code);
+                    const got = await fetchOnce(it.code);
+                    const keep = got.keep;
                     if (!best || keep.size > best.size) best = keep;
                     if (best.size >= wantSet.size) break; // 已覆盖整个窗口，无需再试
+                    // [PERF 2026-09-18] 首根 K 线落在窗口首日（或之后）⇒ 窗口前它没有交易，
+                    // 再重试也只会返回同样短的序列 → 立刻放弃（省下 2 次请求 + 0.9s 退避）。
+                    // ⚠️ 与「上游并发截断」区分：截断时请求范围前移了 20 个自然日，
+                    //    返回的 series 首日会【早于】窗口首日 → 不会命中本分支，仍会重试。
+                    if (got.firstYmd && got.firstYmd >= sorted[0]) { listingShort = true; break; }
                     // [PERF 2026-09-10] 0 根 = 代码错 / 长期停牌，重试不会有不同结果 → 立刻放弃。
-                    // 次新股 / 停牌股本就不足 10 天，这类票原本必然跑满 3 次，是主要的耗时来源。
                     if (best.size === 0) break;
                     // 退避：给上游喘息时间，避免并发重试再次触发截断（原来完全无间隔）。
                     if (attempt < 2) await new Promise(function(r) { setTimeout(r, 300 * (attempt + 1)); });
@@ -218,14 +233,21 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
             if (best && best.size > 0) out.set(name, best);
 
             if (!best || best.size < wantSet.size) {
-                consecutiveShort++;
-                if (consecutiveShort >= CIRCUIT_LIMIT) {
-                    circuitOpen = true;
-                    _dbgLog('[DRAGON-FUYAO] 连续 ' + consecutiveShort + ' 只取不到完整窗口，判定上游不可用，熔断剩余请求');
+                // 次新/长期停牌本来就不满窗 → 不计入熔断计数（否则会误判「上游整体不可用」而掐掉剩余票）
+                if (listingShort) {
+                    consecutiveShort = 0;
+                } else {
+                    consecutiveShort++;
+                    if (consecutiveShort >= CIRCUIT_LIMIT) {
+                        circuitOpen = true;
+                        _dbgLog('[DRAGON-FUYAO] 连续 ' + consecutiveShort + ' 只取不到完整窗口，判定上游不可用，熔断剩余请求');
+                    }
                 }
             } else {
                 consecutiveShort = 0;
             }
+            done++;
+            if (onProgress) onProgress(done, list.length);
         }));
     }
     return out;

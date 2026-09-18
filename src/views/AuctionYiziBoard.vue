@@ -7,10 +7,14 @@
     · 定时：每交易日【北京 09:25】自动抓取（函数内部轮询截止 09:25:55，绝不越过 09:26），
            走 Supabase（独立 Edge Function auction-yizi-fetch + 独立 pg_cron）
     · 独立：独立函数 / 独立令牌 / 独立 key / 独立表 auction_yizi / 独立日志，绝不与既有看板混用
-    · 布局：与「涨跌停」看板基本一致（题材分块 + 题材条 + 股票行 + 列图例 + 无题材开关 + 导入入口）
+    · 布局：与「涨跌停」看板基本一致（题材分块 + 题材条 + 股票行 + 列图例 + 开关 + 导入入口）
     · 题材：接口自带 开盘啦(theme_names_kpl) → 选股宝(theme_names_xgb) → 共享题材库 stock_topics
            → 无（显示 '-'，可用「无题材」开关筛出后手动导入，与涨跌停看板同一份共享库）
-    · 一字票按题材分好类；题材按块展示，块内按【9:25 封单额】降序，第一名 = 该题材龙头
+    · 封单额：只看 9:20 与 9:25 两个时点（「9点20」开关切换，默认关 = 9:25）；
+             9:15 不再作为独立展示时点。口径见 logic/yizi/model.js 第二节。
+    · 排序/龙头：块内按【十日涨幅】降序，第一名 = 该题材龙头（与涨跌停看板同一口径）
+    · 连板标：首板 / 二板 / 三板…（读涨跌停池 T-1 连板数 +1）
+    · ST：本看板【不出现】ST 股票（剔除只数会在看板上如实提示）
 
   分层：本文件只有模板与调用；全部业务在 logic/yizi/*，数据在 data/auction-yizi.js。
 -->
@@ -55,6 +59,12 @@
           @click.stop="refresh"
         >重试</span>）
       </div>
+      <div
+        v-if="state.rangeError"
+        class="yizi-warn"
+      >
+        {{ state.rangeError }}
+      </div>
 
       <!-- 空态：唯一出口走 emptyText（区分「正在加载这一天」/「等到 9:25」/「这一天确实没有」）。
            ⛔ 日期未对齐时绝不渲染另一天的行 —— 那是把上一天的一字池冒充成这一天。 -->
@@ -74,14 +84,41 @@
         >
           {{ hint }}
         </div>
-
-        <!-- 「无题材」过滤开关（与早盘竞价 / 涨跌停看板同款紧凑 switch）。默认关、无记忆，
-             随日期切换自动归位；题材库未就绪时不可用（§10 未就绪 ≠ 空）。 -->
         <div
-          v-if="noTopicAvailable"
-          class="yizi-toolbar"
+          v-if="rangeHint"
+          class="yizi-warn"
         >
+          {{ rangeHint }}
+        </div>
+        <div
+          v-if="stHint"
+          class="yizi-note"
+        >
+          {{ stHint }}
+        </div>
+
+        <!-- 开关条：「9点20」封单额时点 + 「无题材」过滤。
+             两者都是纯展示态：默认关、无记忆、随日期切换归位；⛔ 不落 localStorage、不进全局 store。 -->
+        <div class="yizi-toolbar">
           <div class="yizi-toggle-item">
+            <span class="yizi-toggle-label">9点20</span>
+            <label
+              class="yizi-toggle-switch"
+              title="打开后封单额显示 9:20 口径（9:20 起不可撤单）；关闭显示 9:25 口径（默认）"
+            >
+              <input
+                type="checkbox"
+                :checked="show920"
+                @change="toggle920"
+              >
+              <span class="yizi-toggle-slider" />
+            </label>
+            <span class="yizi-point-hint">{{ sealPointLabel }}口径</span>
+          </div>
+          <div
+            v-if="noTopicAvailable"
+            class="yizi-toggle-item"
+          >
             <span class="yizi-toggle-label">无题材</span>
             <label class="yizi-toggle-switch">
               <input
@@ -121,9 +158,9 @@
               <!-- 列图例（9px 单行，只为说明列义；本身不占宽度，宽度都让给题材列） -->
               <div class="yizi-head-row">
                 <span class="yizi-head-seq">#</span>
-                <span class="yizi-head-name">股票 / 首封</span>
+                <span class="yizi-head-name">股票 / 连板</span>
                 <span class="yizi-head-topics">题材（全部，逗号分隔）</span>
-                <span class="yizi-head-metric">封单额 / 竞价</span>
+                <span class="yizi-head-metric">封单额 · 十日涨幅</span>
               </div>
 
               <div
@@ -143,8 +180,8 @@
                   :class="{ 'is-leader': stock.isLeader }"
                 >
                   <span class="yizi-seq">{{ stock.seq }}</span>
-                  <!-- 名称块 = 股票名 → 龙头标 → ST标 → 首封时刻标，四段紧贴、整体不换行。
-                       标一律 9px 小字（与早盘竞价看板 .dragon-badge / 涨跌停看板 .limit-leader-badge 同级占位），
+                  <!-- 名称块 = 股票名 → 龙头标 → 连板标，三段紧贴、整体不换行。
+                       标一律 9px 小字（与涨跌停看板 .limit-leader-badge / .limit-continue-tag 同级占位），
                        宽度随内容伸缩、不占固定列 —— 省下的宽度全部留给右侧题材列。 -->
                   <span class="yizi-name-block">
                     <span
@@ -155,36 +192,31 @@
                     <span
                       v-if="stock.isLeader"
                       class="yizi-leader-badge"
-                      title="本题材内 9:25 封单额最大 → 该题材龙头"
+                      title="本题材内十日涨幅最高 → 该题材龙头"
                     >龙头</span>
                     <span
-                      v-if="stock.stTag"
-                      class="yizi-st-tag"
-                      title="ST 股票（涨停幅度 5%，仍属一字）"
-                    >ST</span>
-                    <span
-                      v-if="stock.faFirst"
-                      class="yizi-fa-tag"
-                      :title="'首次封上涨停价的时刻（有封单证据的时点共 ' + stock.faCount + ' 个）'"
-                    >{{ stock.faFirst }}</span>
+                      v-if="continueText(stock)"
+                      class="yizi-continue-tag"
+                      title="连板档位（按前一交易日连续涨停数递推）"
+                    >{{ continueText(stock) }}</span>
                   </span>
                   <!-- 题材（主角列）：完整展示、允许折行，⛔ 不做省略号截断 -->
                   <span
                     class="yizi-topics"
                     :title="stock.themeSource ? ('题材来源：' + stock.themeSourceLabel) : '题材来源：无（可手动导入）'"
                   >{{ stock.topicsDisplay }}</span>
-                  <!-- 度量列：封单额（主，块内排序依据）+ 竞价涨幅（次） -->
+                  <!-- 度量列：封单额（按时点开关切换）+ 十日涨幅（块内排序 / 龙头判据） -->
                   <span class="yizi-metric">
                     <span
                       class="yizi-seal"
-                      :class="'yizi-seal-' + stock.sealTone"
-                      :title="'9:25 口径封单额（块内排序依据）'"
+                      :class="sealClass(stock)"
+                      :title="sealTitle(stock)"
                     >{{ sealText(stock) }}</span>
                     <span
-                      class="yizi-auc"
-                      :class="'yizi-auc-' + stock.aucTone"
-                      title="竞价涨幅"
-                    >{{ aucText(stock) }}</span>
+                      class="yizi-range"
+                      :class="rangeClass(stock)"
+                      title="近 10 个交易日区间涨幅（块内排序 / 龙头判据）"
+                    >{{ rangeText(stock) }}</span>
                   </span>
                 </div>
               </div>
@@ -235,10 +267,15 @@ const {
   summaryText,
   emptyText,
   themeHints,
+  rangeHint,
+  stHint,
   sections,
   noTopicAvailable,
   noTopicView,
   toggleNoTopic,
+  show920,
+  sealPointLabel,
+  toggle920,
   importOpen,
   importText,
   importSaving,
@@ -247,8 +284,12 @@ const {
   refresh,
   openImport,
   doImport,
-  aucText,
-  sealText
+  sealText,
+  sealClass,
+  sealTitle,
+  rangeText,
+  rangeClass,
+  continueText
 } = useAuctionYizi();
 
 defineExpose({ refresh });
