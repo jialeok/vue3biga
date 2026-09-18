@@ -61,6 +61,16 @@ export function useLimitBoard() {
         return isPoolFetchTimeReached(d) ? '' : '当日数据将在收盘后 15:40 自动抓取';
     });
 
+    // ★ 2026-09-18 需求 1：题材自动回填提示。
+    // 「竞价一字」接口自带题材 → 加载时「只补空缺」写进共享题材库 → 本看板自动拿到，
+    // 不必再手动粘贴导入。只在真的补了才提示（=0 时静默）。
+    const topicAutoFillHint = computed(() => {
+        if (!hasAnyData.value) return '';
+        const n = state.topicAutoFilled || 0;
+        if (n <= 0) return '';
+        return '已自动为 ' + n + ' 只股票补全题材（取自一字接口 → 写入共享题材库，三个看板共享；只补空缺、不覆盖已有题材）';
+    });
+
     // 十日涨幅覆盖提示（有池子但覆盖不全时，让用户知道涨幅列可能显示 '-'）
     const rangeHint = computed(() => {
         if (!hasAnyData.value) return '';
@@ -176,6 +186,7 @@ export function useLimitBoard() {
         hasAnyData,
         summaryText,
         fetchTimeHint,
+        topicAutoFillHint,
         rangeHint,
         sections,
         noTopicAvailable,

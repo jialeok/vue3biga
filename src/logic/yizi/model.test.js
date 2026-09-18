@@ -19,6 +19,8 @@ import {
     formatSealMoney,
     sealMoneyAt,
     sealTone,
+    formatSealMoneyDelta,
+    sealDeltaTone,
     isStStock,
     dropStRows,
     isYiziRow,
@@ -290,6 +292,92 @@ describe('sealMoneyAt 封单额的双时点口径（9:20 / 9:25，⛔ 不看 9:1
     it('不认识的列名被忽略（⛔ 不猜）；非有限值当作无证据', () => {
         const r = { fa: { fa_nope: 1e9, fa_0915: NaN, fa_0918: Infinity, fa_0920f: 3e7 } };
         expect(sealMoneyAt(r, SEAL_920)).toBe(3e7);
+    });
+});
+
+// ★ 2026-09-18 需求变更：打开「9点25」toggle 后，度量列从「十日涨幅」换成
+//   「9:25−9:20 封单额变化量 + 9:25 封单额」。变化量是本看板的质量信号：
+//   9:20~9:25 不可撤单，这 5 分钟加单 = 抢筹坚决，撤单 = 心虚（次日易开板）。
+describe('formatSealMoneyDelta 封单额变化量（带符号 / 0 是有效结论 / 算不出就留空）', () => {
+    it('无值 / 非有限值 → 空串（⛔ 不伪造 0，UI 会显示 -）', () => {
+        expect(formatSealMoneyDelta(null)).toBe('');
+        expect(formatSealMoneyDelta(undefined)).toBe('');
+        expect(formatSealMoneyDelta(NaN)).toBe('');
+        expect(formatSealMoneyDelta(Infinity)).toBe('');
+        expect(formatSealMoneyDelta(-Infinity)).toBe('');
+        expect(formatSealMoneyDelta('abc')).toBe('');   // isFinite('abc') === false
+    });
+
+    it('⛔ 变化量 0 必须显示「0」，不是空串（0 = 两档一致，是有效结论）', () => {
+        expect(formatSealMoneyDelta(0)).toBe('0');
+        expect(formatSealMoneyDelta(-0)).toBe('0');
+    });
+
+    it('真实形态（中材科技 09-18）：9:20 = 4.03亿 → 9:25 = 22.52亿 ⇒ +18.49亿', () => {
+        // 与上面 sealMoneyAt 用例同一份线上数据，两个函数必须能串起来用
+        const d0920 = 403119096;
+        const d0925 = 2251723680;
+        expect(formatSealMoneyDelta(d0925 - d0920)).toBe('+18.49亿');
+    });
+
+    it('减少（撤单）→ 负号 + 亿档', () => {
+        expect(formatSealMoneyDelta(-2251723680)).toBe('-22.52亿');
+        expect(formatSealMoneyDelta(-1e8)).toBe('-1.00亿');
+    });
+
+    it('亿以下走「万」档（整数），并与 formatSealMoney 同量级观感', () => {
+        expect(formatSealMoneyDelta(35e6)).toBe('+3500万');
+        expect(formatSealMoneyDelta(-12e6)).toBe('-1200万');
+        expect(formatSealMoneyDelta(1e4)).toBe('+1万');
+    });
+
+    it('⚠️ abs < 1万 走「元」档：不许出现「+0万」（有变化却显示 0 = 自相矛盾）', () => {
+        expect(formatSealMoneyDelta(4321)).toBe('+4321元');
+        expect(formatSealMoneyDelta(-4321)).toBe('-4321元');
+        expect(formatSealMoneyDelta(1)).toBe('+1元');
+        // 回归锁：这一档任何值都不得渲染成 0 或 0万
+        [1, 999, 4321, 4999, 9999].forEach((v) => {
+            const t = formatSealMoneyDelta(v);
+            expect(t).not.toBe('0');
+            expect(t.indexOf('0万')).toBe(-1);
+        });
+    });
+
+    it('符号方向正确（增量红 / 减量绿的判据就是它）', () => {
+        expect(formatSealMoneyDelta(1).charAt(0)).toBe('+');
+        expect(formatSealMoneyDelta(-1).charAt(0)).toBe('-');
+    });
+});
+
+describe('sealDeltaTone 变化量色调（★ 中国股市：增 = 红 up，减 = 绿 down）', () => {
+    it('增 → up，减 → down', () => {
+        expect(sealDeltaTone(1)).toBe('up');
+        expect(sealDeltaTone(1.85e9)).toBe('up');
+        expect(sealDeltaTone(-1)).toBe('down');
+        expect(sealDeltaTone(-1.85e9)).toBe('down');
+    });
+
+    it('0 → flat（两档一致，既非红也非绿）', () => {
+        expect(sealDeltaTone(0)).toBe('flat');
+    });
+
+    it('无值 / 非有限值 → flat（⛔ 与 0 共用中性格，但文本侧区分：空串 vs \'0\'）', () => {
+        expect(sealDeltaTone(null)).toBe('flat');
+        expect(sealDeltaTone(undefined)).toBe('flat');
+        expect(sealDeltaTone(NaN)).toBe('flat');
+        // 这一条是「算不出来 ≠ 没变化」的可观测证据：色调相同但文本不同
+        expect([sealDeltaTone(null), formatSealMoneyDelta(null)]).toEqual(['flat', '']);
+        expect([sealDeltaTone(0), formatSealMoneyDelta(0)]).toEqual(['flat', '0']);
+    });
+
+    it('与 formatSealMoneyDelta 的符号始终一致（不会出现「文本是 + 但颜色是绿」）', () => {
+        [-1e9, -1e4, -1, 0, 1, 1e4, 1e9].forEach((v) => {
+            const tone = sealDeltaTone(v);
+            const txt = formatSealMoneyDelta(v);
+            if (v === 0) { expect(tone).toBe('flat'); expect(txt).toBe('0'); return; }
+            expect(tone).toBe(v > 0 ? 'up' : 'down');
+            expect(txt.charAt(0)).toBe(v > 0 ? '+' : '-');
+        });
     });
 });
 

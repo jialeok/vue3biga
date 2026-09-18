@@ -45,6 +45,10 @@ import {
     buildTopicCache
 } from '../../data/stock-topics.js';
 import { buildTopicBlocks, parseTopicPaste } from './model.js';
+// ★ 2026-09-18 需求 1：「竞价一字」的接口自带题材会自动回填进共享题材库（只补空缺、不覆盖），
+//   本看板在这里触发一次，用户即使不打开一字看板也能拿到自动补的题材，
+//   从而不必再手动粘贴导入。失败静默（只记日志）——「这次没自动补」≠「看板坏了」。
+import { syncYiziTopicsIntoLibrary } from '../topics/topic-sync.js';
 
 // ===== 看板状态（本模块唯一的响应式真相，供 composable/UI 读取）=====
 export const limitBoardState = reactive({
@@ -61,6 +65,9 @@ export const limitBoardState = reactive({
     updatedAt: '',
     // 题材库就绪态：未就绪 → 题材分组不可信（UI 需要提示；但不落库，所以只是提示）
     topicLibraryReady: true,
+    // ★ 2026-09-18 需求 1：本次加载从「竞价一字」快照自动补进共享题材库的只数（0 = 没什么可补）。
+    // 只用于可解释性提示（让用户确认「真的自动补上了」），⛔ 不参与任何计算。
+    topicAutoFilled: 0,
     // 十日涨幅覆盖情况
     rangeReady: false,
     rangeError: '',
@@ -134,6 +141,7 @@ function _publishEmpty(date, extra) {
     limitBoardState.hasSnapshot = false;
     limitBoardState.updatedAt = '';
     limitBoardState.rangeCovered = 0;
+    limitBoardState.topicAutoFilled = 0;
     if (extra && extra.error !== undefined) limitBoardState.error = extra.error;
 }
 
@@ -275,6 +283,27 @@ async function _load(date, force) {
             }
         }
         limitBoardState.topicLibraryReady = libReady;
+
+        // ⑥-b ★ 需求 1（2026-09-18）：先尝试从「竞价一字」快照自动补题材进共享库，再分组。
+        //
+        // 为什么必须【在 ⑦ 之前】：
+        //   `_buildBlocks` 的题材取自 `_libraryTopics`（读共享库）→ 若回填放在分组之后，
+        //   本次补进来的题材要等下一次刷新才生效（用户看到「导入没用」的延迟感）。
+        //
+        // 为什么可以在这里做：库已就绪（⑥ 刚做过闸门）→ 写回安全（pushStockTopicsToCloud 的
+        //   「读云端已有 → 合并 → 写回」前提是库已加载，否则会把云端已有读成空集而覆盖丢数据）。
+        // ⚠️ 幂等：同一天本会话只跑一次（模块内去重）；重复打开看板不会反复写库。
+        // ⛔ 失败绝不写 error、绝不阻断 —— 自动补题材是**增强**，涨跌停看板本身的数据不依赖它。
+        try {
+            const syncRes = await syncYiziTopicsIntoLibrary(date);
+            // ⚠️ sessionFilled（本会话累计），不是 filled（本次调用）——
+            //    一字看板通常先加载并已完成回填，本板随后加载时 filled 恒为 0；
+            //    用累计值才能如实告诉用户「总共自动补了多少只」。理由详见 topic-sync.js。
+            limitBoardState.topicAutoFilled = (syncRes && syncRes.sessionFilled) || 0;
+        } catch (e) {
+            limitBoardState.topicAutoFilled = 0;
+            _dbgLog('[LIMIT-POOL] ' + date + ' 题材自动回填异常（不影响看板）: ' + (e && e.message || e));
+        }
 
         // ⑦ 分组 + 选龙头
         const upRows = rows.filter(function(r) { return r.board === BOARD_UP; });

@@ -119,10 +119,20 @@ export function themeSourceLabel(source) {
 //   顺带满足用户「9:15 的那个数据不要」：fa_0915 不再作为独立展示时点，
 //   只在「截至 9:20」的序列里当最后兜底（9:20 之前没再成交的票，其 9:20 值才是 9:15 那笔）。
 
-/** 9:20 时点（含 fa_0920f = 9:20 后首笔） */
+/** 9:20 时点（含 fa_0920f = 9:20 后首笔）—— ★ 2026-09-18 起 = toggle【未打开】时的默认口径 */
 export const SEAL_920 = '09:20';
-/** 9:25 时点（含 fa_0925l = 9:25 后末笔） */
+/** 9:25 时点（含 fa_0925l = 9:25 后末笔）—— ★ 2026-09-18 起 = toggle【打开】时的口径 */
 export const SEAL_925 = '09:25';
+
+// ★ 2026-09-18 需求变更（用户原话）：
+//   「把上面那个9点20分的 toggle 改成9点25分的，当我没打开时是9点20分一字板的股票数据，
+//     打开后是9点25分一字板的数据」
+//   ⇒ 与上一版【相反】：上一版默认关 = 9:25；现在 **默认关 = 9:20**、**打开 = 9:25**。
+//
+//   ⚠️ 只翻「默认态」与「显示格式」，【判据与股票池完全不变】：
+//     一字判据仍是「9:25 竞价涨幅达涨停幅度」（第三节），池子仍是同一批票。
+//     两个时点看的是**同一批一字股**在两个时刻的封单额 —— 只有这样，
+//     「9:25 对比 9:20 的变化量」才有意义（不同股票集合之间谈不上「变化」）。
 
 /**
  * 解析一个 fa_* 列名 → 时刻 + 后缀。
@@ -184,6 +194,58 @@ export function sealMoneyAt(row, hhmm) {
 export function sealTone(money) {
     if (money === null || money === undefined || !isFinite(money) || money === 0) return 'flat';
     return Math.abs(money) >= 1e8 ? 'strong' : 'normal';
+}
+
+// ============================================================================
+// 二·补、封单额【变化量】（★ 2026-09-18 用户新增：9:25 对比 9:20）
+// ============================================================================
+//
+// 用户原话：「20亿是9:25分对比9点20分的封单额变化数量（**增加用红色，减少用绿色**）」，
+// 并给了行尾格式「股票名称 9:25 +20亿 60亿」。
+// ⇒ 变化量在「打开 9点25」态显示，与 9:25 绝对额并排。
+//
+// 业务含义：竞价 9:20~9:25 是**不可撤单**阶段，这 5 分钟里封单是**加**还是**撤**，
+// 是判断一字板硬度最直接的信号 —— 加单 = 抢筹坚决，撤单 = 心虚（次日容易开板）。
+// 所以「变化量」不是装饰数字，是本看板打开 toggle 后的**主角**。
+
+/**
+ * 封单额【变化量】的展示文本（9:25 − 9:20，★ 用户指定格式 `+20亿`）。
+ *
+ * 与 formatSealMoney 的差别只有两点，都是「变化量」语义才需要、绝对值不需要的：
+ *   · **必须带符号** —— `+`（增加）/ `-`（减少）就是这条信息的主体，丢了就没意义；
+ *   · **0 要显示** —— 绝对值 0 表示「没有封单」，而变化量 0 表示「两档一致」这个**有效结论**，
+ *     ⛔ 不能像 formatSealMoney 那样返回空串。
+ * 任一档缺失（无法相减）→ 返回空串，由 UI 显示 `-`（§10：算不出来就不编，绝不伪造 0）。
+ *
+ * @param {number|null} delta 9:25 封单额 − 9:20 封单额（元）
+ * @returns {string} 形如 '+3.20亿' / '-8500万' / '+4321元'（小额档）/ '0'；无法计算 → ''
+ */
+export function formatSealMoneyDelta(delta) {
+    if (delta === null || delta === undefined || !isFinite(delta)) return '';
+    // ★ 变化量 = 0 是【有效结论】（两档封单完全一致），必须显式渲染成 '0'。
+    //   ⛔ 不能沿用 formatSealMoney 的「0 → 空串」——那会让「没有变化」显示成「没有数据」。
+    if (delta === 0) return '0';
+    const abs = Math.abs(delta);
+    const sign = delta > 0 ? '+' : '-';
+    // 分档与 formatSealMoney 一致（亿 / 万），保证「同一笔金额的单值与变化量看着是同一量级」
+    if (abs >= 1e8) return sign + (abs / 1e8).toFixed(2) + '亿';
+    if (abs >= 1e4) return sign + (abs / 1e4).toFixed(0) + '万';
+    // ⚠️ abs < 1万 的兜底档（2026-09-18 补）：
+    //    若沿用「万」档，`(4321/1e4).toFixed(0)` = '0' → 页面会出现 **红色的「+0万」**，
+    //    「有变化」被显示成「0」，自相矛盾且看不出方向。这一档直接给「元」，
+    //    宁可字面长一点，也不能让数值与颜色互相打脸。
+    return sign + abs.toFixed(0) + '元';
+}
+
+/**
+ * 封单额变化量的色调（★ 中国股市习惯：增加 = 红、减少 = 绿）。
+ * 无值 / 0 → 'flat'（灰）——⛔ 不把「算不出来」渲染成「没变化」，两者含义完全不同。
+ * @param {number|null} delta
+ * @returns {'up'|'down'|'flat'}
+ */
+export function sealDeltaTone(delta) {
+    if (delta === null || delta === undefined || !isFinite(delta) || delta === 0) return 'flat';
+    return delta > 0 ? 'up' : 'down';
 }
 
 // ============================================================================
@@ -363,6 +425,8 @@ export function buildYiziBlocks(rows, primaryMap, fallbackFn) {
         extraOf: function(row) {
             const s920 = sealMoneyAt(row, SEAL_920);
             const s925 = sealMoneyAt(row, SEAL_925);
+            // 变化量只在【两档都有值】时才成立：缺一档就无法相减 → null（§10 不伪造 0）
+            const sealDelta = (s920 !== null && s925 !== null) ? (s925 - s920) : null;
             const pct = row && row.rangePct;
             const days = (row && row.rangeDays) || 0;
             return {
@@ -373,15 +437,22 @@ export function buildYiziBlocks(rows, primaryMap, fallbackFn) {
                 seal925: s925,
                 seal925Text: formatSealMoney(s925),
                 seal925Tone: sealTone(s925),
+                // ---- 封单额变化量（★ 用户新增：9:25 − 9:20；增加红 / 减少绿）
+                //      业务含义：9:20~9:25 不可撤单，这 5 分钟是【加单】还是【撤单】，
+                //      是一字板硬度最直接的信号（加单=抢筹坚决，撤单=次日易开板）。
+                //      ⛔ 两档缺一 → null → UI 显示 '-'，绝不拿单档当「没变化」。
+                sealDelta: sealDelta,
+                sealDeltaText: formatSealMoneyDelta(sealDelta),
+                sealDeltaTone: sealDeltaTone(sealDelta),
                 // ---- 十日涨幅展示（块内排序/龙头判据已由共享核心写入 base.rangePct / base.rangeDays）
                 rangeText: formatRangePct(pct, days),
                 rangeTone: rangeTone(pct),
                 // ---- 连板小标（首板/二板/三板…）：由编排层读涨跌停池 +1 得到；无依据时为空串（模板不渲染）
                 continueText: (row && row.continueText) || '',
-                // ---- 首封时刻（★ 用户指定：标在【股票名称后面】，与简称同行紧贴）
-                //      数据来自库列 fa_first（Edge Function 用 FA_SEQ 按时间升序取首个非空，
-                //      语义 = 「首次封上涨停价的时刻」；09-18 的 8 只真一字全部是 09:15）。
-                //      ⛔ 无值时给空串 → 模板不渲染该标（绝不显示 '-' 占位）。
+                // ---- 首封时刻（库列 fa_first）—— ⚠️ 2026-09-18 起【不再占行内位置】：
+                //      用户明确「股票名后面应该显示当前时点（9:20 / 9:25），不是 9:15」，
+                //      于是行内那个位置让给「时点标」（纯 UI 态，见 useAuctionYizi#pointTagText），
+                //      首封时刻降级为【悬停提示】（faFirst / firstTimeText 两处都保留，信息不丢）。
                 firstTimeText: (row && row.faFirst) || '',
                 // ---- 封单证据强度（仅用于 title 提示，不占列宽）
                 faCount: (row && row.faCount) ? Number(row.faCount) : 0,
@@ -419,7 +490,7 @@ export function filterYiziNoTopicBlocks(blocks) {
 /**
  * 分块内容指纹：只有内容真正变化时才让编排层重放状态，避免无意义重渲染。
  * 选取的字段都是「会影响界面/结论」的字段：题材块序、块大小、龙头、每行的十日涨幅/连板/题材。
- * ⚠️ 两个时点的封单额都要进指纹：任一变化都必须重放（否则切 toggle 会看到陈旧值）。
+ * ⚠️ 两个时点的封单额 **+ 两者之差** 都要进指纹：任一变化都必须重放（否则切 toggle 会看到陈旧值）。
  * @param {Array<object>} blocks
  * @param {string} date
  * @returns {string}
@@ -435,6 +506,7 @@ export function yiziSignature(blocks, date) {
                         ':' + (s.firstTimeText || '') +
                         ':' + (s.seal920 === null || s.seal920 === undefined ? '' : s.seal920) +
                         ':' + (s.seal925 === null || s.seal925 === undefined ? '' : s.seal925) +
+                        ':' + (s.sealDelta === null || s.sealDelta === undefined ? '' : s.sealDelta) +
                         ':' + s.topicsDisplay;
                 }).join(',') + ']';
         }).join('||');

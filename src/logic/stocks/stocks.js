@@ -11,7 +11,8 @@ import { pushJiwangNow, scheduleJiwangPush } from '../../data/jiwang-data.js';
 import { _closeAuctionShield, _openAuctionShield, _initAuctionMemCache } from '../../data/session-and-shield.js';
 import { loadCloudStockCodeMap, upsertStockCodeMap } from '../../data/stock-code-map.js';
 import { resolveCodesByNames } from '../../data/stock-code-resolver.js';
-import { buildTopicCache, invalidateTopicCache, loadCloudTopics, pushStockTopicsToCloud, scanDataSourceForTopics } from '../../data/stock-topics.js';
+import { buildTopicCache, invalidateTopicCache, loadCloudTopics, pushStockTopicsToCloud, scanDataSourceForTopics, lookupTopicsByName, buildNormalizedTopicIndex } from '../../data/stock-topics.js';
+import { normalizeStockName } from '../topics/stock-name.js';
 import { _moduleKey, getJiwangData, getNumericVolume, getStocksData, getSupabase, loadAllData } from '../../data/supabase-client.js';
 import { remainingBoards } from '../../data/remaining-boards.js';
 import { _addAuctionWatchlistMember, _extractWatchlistNamesFromRows, _getAuctionWatchlistSet, _setAuctionWatchlistForDate, getStockHistoryValue } from '../../data/watchlist-and-metrics.js';
@@ -43,6 +44,8 @@ import { patchHotFieldBatch } from '../hotspot/hotspot.js';
 // 语义与结果 100% 不变：同为最近 66 天窗口、不排除当天、同样取该股当日**首行**、同样括号解析与分隔符。
 const TOPIC_CACHE_DAYS = 66;
 let _slowTopicIndex = null;
+// ★ 2026-09-18：慢路径的【归一化别名索引】（与 _slowTopicIndex 同一次构建，见 getStockHistoryTopics）
+let _slowTopicIndexNorm = null;
 let _slowTopicIndexFp = '';
 
 function _buildSlowTopicIndex(auctionData) {
@@ -87,10 +90,18 @@ function _slowTopicIndexFingerprint(auctionData) {
 }
 
 // §16 域拆分：stocks 域（原 app-core.js 迁出）
+//
+// ★ 2026-09-18：两条路径都加了【归一化兜底】（精确优先 → 归一化）。
+//   事故形态：名单里写 `七 匹 狼` / `万  科Ａ` / `远 望 谷`，库里存的是
+//   规范化写法 → 精确匹配 miss → 看板显示「无题材」→ 用户以为库里没有，
+//   又去手动导入一遍（用户原话：「这样我就不用那么麻烦去手动复制粘贴导入了」）。
+//   归一化实现 = logic/topics/stock-name.js#normalizeStockName（去空白 + 全角→半角 + 大写），
+//   索引构建 = data/stock-topics.js#buildNormalizedTopicIndex（纯增量，原索引不动）。
 export function getStockHistoryTopics(stockName) {
     if (!stockName) return '';
+    const key = stockName.trim();
     if (state._topicCacheBuilt && state._topicCache) {
-        const topics = state._topicCache[stockName.trim()];
+        const topics = lookupTopicsByName(key);
         if (!topics || topics.size === 0) return '';
         return '(' + Array.from(topics).join('，') + ')';
     }
@@ -99,11 +110,16 @@ export function getStockHistoryTopics(stockName) {
     const fp = _slowTopicIndexFingerprint(auctionData);
     if (!_slowTopicIndex || _slowTopicIndexFp !== fp) {
         _slowTopicIndex = _buildSlowTopicIndex(auctionData);
+        // 别名索引与慢路径索引同生共死（指纹不变就不重建，两个索引口径始终一致）
+        _slowTopicIndexNorm = buildNormalizedTopicIndex(_slowTopicIndex);
         _slowTopicIndexFp = fp;
     }
-    const hist = _slowTopicIndex[stockName.trim()];
-    if (!hist || hist.size === 0) return '';
-    return '(' + Array.from(hist).join('，') + ')';
+    const hist = _slowTopicIndex[key];
+    if (hist && hist.size > 0) return '(' + Array.from(hist).join('，') + ')';
+    const nk = normalizeStockName(key);
+    const norm = (nk && _slowTopicIndexNorm) ? _slowTopicIndexNorm[nk] : null;
+    if (!norm || norm.size === 0) return '';
+    return '(' + Array.from(norm).join('，') + ')';
 }
 
 export async function searchTickerCodeByName(name) {

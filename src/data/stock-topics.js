@@ -5,6 +5,9 @@ import { state } from '../logic/app-state.js';
         import { getSupabase } from './supabase-client.js';
         import { _dbgLog } from './debug-log.js';
         import { refreshCoreTopicsFromCloud } from '../logic/topic/rules.js';
+        // ★ 2026-09-18：题材库的「归一化别名索引」用 —— 见下方 buildNormalizedTopicIndex 的事故说明。
+        //   纯函数叶子（logic/topics/stock-name.js），无反向依赖，不会造成循环导入。
+        import { normalizeStockName } from '../logic/topics/stock-name.js';
 
         export async function pullStockTopicsFromCloud() {
             const sb = getSupabase();
@@ -54,9 +57,13 @@ import { state } from '../logic/app-state.js';
             const row = {
                 stock: trimmedName,
                 topics: topicsStr,
-                code: code || '',
                 updated_at: new Date().toISOString()
             };
+            // ★ 2026-09-18：code 为空时【整列不出现在 payload 里】，而不是写 `code: ''`。
+            //   原因：本函数走 upsert(onConflict:'stock')，对**已存在**的行就是 UPDATE；
+            //   若入参没带代码（如自动回填的调用方拿不到代码），写 `''` 会把库里已有的好代码**清空**。
+            //   省略该列 = 不动这一列。带了代码时行为与以前完全一致。
+            if (code) row.code = code;
             const { error } = await sb.from('stock_topics')
                 .upsert(row, { onConflict: 'stock' });
             if (error) throw error;
@@ -66,6 +73,15 @@ import { state } from '../logic/app-state.js';
             state._cloudTopicsCache[trimmedName] = new Set(mergedTopics);
             if (state._topicCacheBuilt && state._topicCache) {
                 state._topicCache[trimmedName] = new Set(mergedTopics);
+                // ★ 别名索引同步累加（与上面这行同语义：并集、不清空、不覆盖已有题材）。
+                //    ⛔ 不能只删 key 等重建 —— 这里不触发重建，删了就永远查不到（静默丢题材）。
+                const nk = normalizeStockName(trimmedName);
+                if (nk) {
+                    if (!state._topicCacheNorm) state._topicCacheNorm = Object.create(null);
+                    let bucket = state._topicCacheNorm[nk];
+                    if (!bucket) { bucket = state._topicCacheNorm[nk] = new Set(); }
+                    mergedTopics.forEach(function(t) { bucket.add(t); });
+                }
             }
         }
 
@@ -93,6 +109,36 @@ import { state } from '../logic/app-state.js';
         //                              题材库就绪 → 只有 2 只落「其它」，4 个题材达到评选门槛。
         export function isTopicLibraryReady() {
             return !!(state._cloudTopicsCache && Object.keys(state._cloudTopicsCache).length > 0);
+        }
+
+        /**
+         * 题材库是否【已从云端拉取过】（哪怕是「拉到了但确实是空的」）。
+         *
+         * 与 isTopicLibraryReady() 的区别（这两个判据用途不同，⛔ 不要混用）：
+         *   · isTopicLibraryReady()  → 「题材分类结果可信吗？」为空即不可信 → 拒绝产出结论（龙头评选等）；
+         *   · isCloudTopicsLoaded()  → 「现在写回题材库安全吗？」
+         *     写回走 pushStockTopicsToCloud（读云端已有 → 合并 → 写回）。
+         *     `_cloudTopicsCache` 为 **null** 表示【还没拉过】→ 合并会把「云端已有」读成空集 →
+         *     写回时**覆盖掉线上已有题材**（真实数据丢失）。此时必须拒绝写。
+         *     而 `{}`（拉过、确实是空的）→ 合并结果正确，可以放心写（否则全新库永远填不进东西）。
+         *
+         * @returns {boolean}
+         */
+        export function isCloudTopicsLoaded() {
+            return !!state._cloudTopicsCache;
+        }
+
+        /**
+         * 取一份【云端题材库的归一化别名索引快照】`{归一化名: Set(题材)}`。
+         *
+         * 用途：批量判断「这批股票在库里已有题材吗」（如 logic/topics/topic-sync.js 的
+         * 「只补空缺、不覆盖」闸门）。调用方在**循环外取一次**共用，避免逐行重建 O(N) 索引。
+         *
+         * @returns {object|null} 未加载（=null，⛔ 与「加载到空库」严格区分）时返回 null
+         */
+        export function snapshotNormalizedLibraryIndex() {
+            if (!state._cloudTopicsCache) return null;
+            return buildNormalizedTopicIndex(state._cloudTopicsCache);
         }
 
         /**
@@ -217,6 +263,62 @@ import { state } from '../logic/app-state.js';
             });
         }
 
+        // ===== ★ 归一化别名索引（2026-09-18 新增，修「明明库里有题材却显示无题材」）=====
+        //
+        // 事故形态（同一个库、同一只票、两条链路给出不同写法）：
+        //   当日名单（涨停池 / 猫抓 / 同花顺）       共享题材库 stock_topics
+        //   七 匹 狼                              七匹狼
+        //   万  科Ａ                              万科A
+        //   远 望 谷                              远望谷
+        //   → `state._topicCache[名称]` 精确匹配失败 → 看板判「无题材」→
+        //     用户以为库里没这只票 → 手动重复导入（正是用户抱怨「那么麻烦」的一部分根因）。
+        //
+        // 为什么用【别名索引】而不是直接改原索引的键：
+        //   原索引 `_topicCache` 的键还被别处（含展示用的原始名）依赖，改键会牵动展示口径；
+        //   别名索引是**纯增量**——原索引一个键都不动，只在精确查不到时多查一次归一化表。
+        //   对库里 1131 只里名称本就规范的绝大多数（实测 1128 只）零影响，只救回格式变体。
+        //
+        // ⚠️ 归一化只在【查不到】时启用（精确优先）：万一真有两只股票归一化后同名（理论上不存在），
+        //    精确命中那一路会先返回，不会把两只票的题材混在一起。
+        //
+        // @param {object} cache 形如 { 股票名: Set<题材> }（_topicCache / 慢路径索引同构）
+        // @returns {object} 形如 { 归一化名: Set<题材> }（同名合并为并集 —— 同一只票的不同写法）
+        export function buildNormalizedTopicIndex(cache) {
+            const idx = Object.create(null);
+            if (!cache) return idx;
+            Object.keys(cache).forEach(function(name) {
+                const set = cache[name];
+                if (!set || set.size === 0) return;
+                const key = normalizeStockName(name);
+                if (!key) return;
+                let bucket = idx[key];
+                if (!bucket) { bucket = idx[key] = new Set(); }
+                set.forEach(function(t) { bucket.add(t); });
+            });
+            return idx;
+        }
+
+        /**
+         * 按股票名读题材（精确优先 → 归一化兜底）。读不到返回 null（⛔ 不返回空 Set 冒充「这只票没题材」）。
+         *
+         * ⚠️ 只在 `_topicCache` 已构建时走这条路；未构建请走慢路径（见 logic/stocks/stocks.js）。
+         *
+         * @param {string} stockName
+         * @returns {Set<string>|null}
+         */
+        export function lookupTopicsByName(stockName) {
+            if (!stockName) return null;
+            const key = String(stockName).trim();
+            if (!key) return null;
+            if (!state._topicCacheBuilt || !state._topicCache) return null;
+            const exact = state._topicCache[key];
+            if (exact && exact.size > 0) return exact;
+            const nk = normalizeStockName(key);
+            const norm = (nk && state._topicCacheNorm) ? state._topicCacheNorm[nk] : null;
+            if (norm && norm.size > 0) return norm;
+            return null;
+        }
+
         export function buildTopicCache() {
             if (state._topicCacheBuilt && state._topicCache) return state._topicCache;
             state._topicCache = {};
@@ -233,12 +335,19 @@ import { state } from '../logic/app-state.js';
             const TOPIC_CACHE_DAYS = 66;
             scanDataSourceForTopics(state._auctionMemCache || {});
             scanDataSourceForTopics(state._hotAuctionData || {});
+            // ⚠️ 别名索引必须在 `_topicCache` **全部填完之后**再建（含上面两个 scanDateSource 的写入），
+            //    否则只索引到云端库那一半，从历史 note 解析出来的题材享受不到归一化兜底。
+            state._topicCacheNorm = buildNormalizedTopicIndex(state._topicCache);
             state._topicCacheBuilt = true;
             return state._topicCache;
         }
 
         export function invalidateTopicCache() {
             state._topicCache = null;
+            // ⚠️ 归一化别名索引必须【一起失效】。
+            //    漏掉它 = 留着上一版数据的别名索引 → 后续精确查不到时用归一化兜底，
+            //    会把【陈旧题材】返回给调用方（比读失败更隐蔽的一类错值，§22）。
+            state._topicCacheNorm = null;
             state._topicCacheBuilt = false;
             state._topicCacheVersion = (state._topicCacheVersion || 0) + 1;
             state._topicCacheInvalidateCount = (state._topicCacheInvalidateCount || 0) + 1;

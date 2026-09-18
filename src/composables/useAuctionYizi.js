@@ -7,8 +7,10 @@
 //
 // ⛔ 本文件不含任何业务判定（不判交易日、不选龙头、不解析题材优先级、不算封单额口径、不拼 SortKey）——
 //    所有规则都在 logic 层；UI 只负责「展示 + 触发」。
-// ✅ 唯一属于 UI 的判断：「9点20」toggle 决定【封单额这一列显示哪个时点的值】——
-//    两个时点的文本逻辑层都已算好，这里只做一个取值选择，不改任何数据、不触发任何重算/请求。
+// ✅ 唯一属于 UI 的判断：「9点25」toggle 决定【封单额列显示哪个时点的值 + 是否显示变化量】——
+//    两个时点与两者之差的文本逻辑层都已算好，这里只做取值选择，不改任何数据、不触发任何重算/请求。
+//    默认关 = 9:20 口径（度量列 `封单额(9:20) · 十日涨幅`）；
+//    打开   = 9:25 口径（度量列 `变化(较9:20) · 封单额(9:25)`，并隐藏十日涨幅）。
 // ⛔ 不做任何数据兜底：状态为空就渲染空，读失败就渲染失败（§10 读失败 ≠ 空）。
 
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
@@ -46,26 +48,35 @@ export function useAuctionYizi() {
         showNoTopic.value = !showNoTopic.value;
     }
 
-    // ===== 「9点20」封单额时点开关（§34 UI 状态分离：纯展示态，默认关、无记忆）=====
-    // 语义（★ 用户指定）：
-    //   · 默认【关】→ 封单额列显示 **9:25** 口径（9:25 才是真一字板，这是重点，所以默认看它）
-    //   · 打开     → 封单额列显示 **9:20** 口径（9:20 起不可撤单，看这段的封单更真）
-    // 两个时点的值在 Logic 层已一次算好（row.seal920Text / row.seal925Text），
-    // 因此切 toggle 只换一个显示值：⛔ 不重算分块、不重选龙头、不发请求、不写库。
-    //
-    // ★ 2026-09-15 修正（用户：「toggle 前面是 9点20，后面是 9点25，什么意思，非常混乱，
-    //   只保留一个 9点20 的就可以」）：
-    //   开关旁边**只留一个「9点20」**，不再并排显示「9:25 口径」那一串（两个时点并排出现
-    //   会让人以为它们各自是一个开关）。
-    //   「现在是哪个时点」只在一处呈现 = 表头那列「封单额(9:20 / 9:25)」→ 唯一、不歧义。
-    //   数据本身在修正一字判据后必然有变化（09-18 的 8 只真一字 **8/8 都 9:20 ≠ 9:25**），
-    //   之前「打开后一点变化都没有」是因为旧判据把 121 行非一字票混进来、
-    //   它们只有 fa_0915 一笔，两个时点自然取到同一个值。
-    const show920 = ref(false);
-    /** 当前生效的封单额时点（供表头显示，UI 唯一呈现「现在是哪个时点」的地方） */
-    const sealPointLabel = computed(() => (show920.value ? '9:20' : '9:25'));
-    function toggle920() {
-        show920.value = !show920.value;
+    // ===== 「9点25」封单额时点开关（§34 UI 状态分离：纯展示态，默认关、无记忆）=====
+    // ★ 2026-09-18 需求变更（用户原话）：
+    //   「把上面那个9点20分的 toggle 改成9点25分的，当我没打开时是9点20分一字板的股票数据，
+    //     打开后是9点25分一字板的数据」
+    //   语义（与上一版【相反】）：
+    //     · 默认【关】→ **9:20 口径**：度量列 = `封单额(9:20) · 十日涨幅`（与原先形态一致）
+    //     · 打开     → **9:25 口径**：度量列 = `变化量 · 封单额(9:25)`，
+    //                  且**隐藏十日涨幅**（用户指定），行内时点标随之显示 9:25
+    //   两个时点的值 + 两者之差在 Logic 层都已算好（row.seal920Text / seal925Text / sealDeltaText），
+    //   因此切 toggle 只换显示值：⛔ 不重算分块、不重选龙头、不发请求、不写库。
+    //   ⚠️ 判据与股票池不变（仍是同一批一字股）——「变化量」正是建立在同一批票的两个时点上。
+    const show925 = ref(false);
+    /**
+     * 当前生效的封单额时点（供表头与行内「时点标」显示）。
+     * ★ 用户明确要求行内那个位置显示的是【当前时点】而不是首封时刻：
+     *   「9:25分对应的竞价时间点（现在打开只显示9:15分，没打开9点25toggle时应该显示的是9:20）」
+     */
+    const sealPointLabel = computed(() => (show925.value ? '9:25' : '9:20'));
+    /** 行内时点标（股票名后面那一格）—— 与表头同源，保证两处永远一致 */
+    const pointTagText = computed(() => (show925.value ? '9:25' : '9:20'));
+    /**
+     * 度量列表头：未打开 = `封单额(9:20) · 十日涨幅`；打开 = `变化(较9:20) · 封单额(9:25)`。
+     * ⛔ 时点只在「表头 + 行内标」两处呈现，开关旁不再重复写时点（.yizi-point-hint 已删）。
+     */
+    const metricHeadText = computed(() => (show925.value
+        ? '变化(较9:20) · 封单额(9:25)'
+        : '封单额(9:20) · 十日涨幅'));
+    function toggle925() {
+        show925.value = !show925.value;
     }
 
     const currentDate = computed(() => uiStore.currentDate);
@@ -118,6 +129,17 @@ export function useAuctionYizi() {
         if (state.themeNone > 0) out.push('有 ' + state.themeNone + ' 只暂无题材（开「无题材」可筛出来，截图后手动导入）');
         if (state.themeFromLib > 0) out.push('其中 ' + state.themeFromLib + ' 只题材取自共享题材库（接口未返回题材）');
         return out;
+    });
+
+    // ★ 2026-09-18 需求 1：题材自动回填提示。
+    // 本看板的接口自带题材（开盘啦/选股宝），加载时会「只补空缺」地把它们写进共享题材库，
+    // 于是「涨跌停」「早盘竞价」两个看板不需要再手动粘贴导入。
+    // 只在真的补了才提示（=0 时静默）—— 这是「可解释性」，不是状态。
+    const topicAutoFillHint = computed(() => {
+        if (!hasAnyData.value) return '';
+        const n = state.topicAutoFilled || 0;
+        if (n <= 0) return '';
+        return '已自动为 ' + n + ' 只股票补全题材（取自一字接口 → 写入共享题材库，三个看板共享；只补空缺、不覆盖已有题材）';
     });
 
     // 十日涨幅覆盖提示：覆盖不全时，块内排序/龙头判据会受影响 → 必须如实告知（⛔ 不假装完整）
@@ -215,23 +237,44 @@ export function useAuctionYizi() {
     /** 封单额展示文本：按「9点20」toggle 在当前时点的值；无值显示 '-' 而不是空白，便于对齐阅读 */
     function sealText(row) {
         if (!row) return '-';
-        const t = show920.value ? row.seal920Text : row.seal925Text;
+        const t = show925.value ? row.seal925Text : row.seal920Text;
         return t || '-';
     }
     /** 封单额强弱分档的样式类（同样按时点切换） */
     function sealClass(row) {
         if (!row) return 'yizi-seal-flat';
-        const tone = show920.value ? row.seal920Tone : row.seal925Tone;
+        const tone = show925.value ? row.seal925Tone : row.seal920Tone;
         return 'yizi-seal-' + (tone || 'flat');
     }
-    /** 封单额列的 tooltip：把口径讲清楚（是哪个时点、证据强度多少） */
+    /**
+     * 封单额【变化量】文本（9:25 − 9:20）。★ 只在「打开 9点25」态展示。
+     * 两档缺一 → Logic 层给空串 → 这里出 '-'（§10：算不出来就不编，绝不补 0）。
+     */
+    function sealDeltaText(row) {
+        if (!row) return '-';
+        return row.sealDeltaText || '-';
+    }
+    /** 变化量色调（★ 中国习惯：增加红 / 减少绿 / 0 与无值灰） */
+    function sealDeltaClass(row) {
+        return 'yizi-delta-' + ((row && row.sealDeltaTone) || 'flat');
+    }
+    /** 封单额列的 tooltip：把口径讲清楚（哪个时点、证据强度、首封时刻） */
     function sealTitle(row) {
         if (!row) return '';
-        const point = show920.value ? '9:20' : '9:25';
+        const point = show925.value ? '9:25' : '9:20';
         const cnt = row.faCount ? ('；竞价期间封在涨停价的时点共 ' + row.faCount + ' 个') : '';
         const first = row.faFirst ? ('；首次封上涨停价 ' + row.faFirst) : '';
-        return point + ' 口径封单额（= 该时点的 ' + (show920.value ? 'fa_0920f 首笔' : 'fa_0925l 末笔') +
+        return point + ' 口径封单额（= 该时点的 ' + (show925.value ? 'fa_0925l 末笔' : 'fa_0920f 首笔') +
             '；无该字段时回退到该时点前最后一笔）' + cnt + first;
+    }
+    /** 变化量列的 tooltip：把方向含义讲清楚（加单 = 抢筹，撤单 = 心虚） */
+    function sealDeltaTitle(row) {
+        if (!row) return '';
+        const d = row.sealDelta;
+        if (d === null || d === undefined || !isFinite(d)) return '9:20 与 9:25 有一档缺值，无法计算变化量';
+        if (d > 0) return '9:20 → 9:25 封单额【增加】（这 5 分钟不可撤单，加单 = 抢筹坚决）';
+        if (d < 0) return '9:20 → 9:25 封单额【减少】（这 5 分钟不可撤单，撤单 = 次日易开板）';
+        return '9:20 与 9:25 封单额一致';
     }
     function rangeText(row) {
         return (row && row.rangeText) || '-';
@@ -243,7 +286,8 @@ export function useAuctionYizi() {
     function continueText(row) {
         return (row && row.continueText) || '';
     }
-    // 首封时刻（★ 用户指定：标在【股票名称后面】，如 09:15）：同样无值返回空串 → 模板不渲染
+    // 首封时刻（09:15）：⚠️ 2026-09-18 起【不再占行内位置】—— 用户要求那一格显示「当前时点」，
+    // 首封时刻降级为悬停提示（已由 sealTitle 拼进 title）。无值返回空串 → 提示里自然不出现。
     function firstTimeText(row) {
         return (row && row.firstTimeText) || '';
     }
@@ -266,7 +310,7 @@ export function useAuctionYizi() {
     // 两个 toggle 都随日期切换归位（无记忆）—— 新的一天是全新的一池股票，旧筛选/时点态会误导。
     watch(currentDate, function() {
         showNoTopic.value = false;
-        show920.value = false;
+        show925.value = false;
         refresh();
     });
 
@@ -279,6 +323,7 @@ export function useAuctionYizi() {
         fetchTimeHint,
         emptyText,
         themeHints,
+        topicAutoFillHint,
         rangeHint,
         stHint,
         yiziFilterHint,
@@ -286,9 +331,11 @@ export function useAuctionYizi() {
         noTopicAvailable,
         noTopicView,
         toggleNoTopic,
-        show920,
+        show925,
         sealPointLabel,
-        toggle920,
+        pointTagText,
+        metricHeadText,
+        toggle925,
         importOpen,
         importText,
         importSaving,
@@ -300,6 +347,9 @@ export function useAuctionYizi() {
         sealText,
         sealClass,
         sealTitle,
+        sealDeltaText,
+        sealDeltaClass,
+        sealDeltaTitle,
         rangeText,
         rangeClass,
         continueText,

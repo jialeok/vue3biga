@@ -85,6 +85,15 @@
         >
           {{ rangeHint }}
         </div>
+        <!-- ★ 需求 1（2026-09-18）：题材自动回填提示（说明型，不是告警）。
+             本看板的题材来自共享题材库；库里的空缺由「竞价一字」接口自动补齐，
+             用户看到这条就知道不必再手动粘贴导入了。 -->
+        <div
+          v-if="topicAutoFillHint"
+          class="limit-note"
+        >
+          {{ topicAutoFillHint }}
+        </div>
 
         <!-- 「无题材」过滤开关（与早盘竞价看板同款紧凑 switch）。默认关、无记忆，
              随日期切换自动归位；题材库未就绪时不可用（§10 未就绪 ≠ 空）。 -->
@@ -236,6 +245,7 @@ const {
   hasAnyData,
   summaryText,
   fetchTimeHint,
+  topicAutoFillHint,
   rangeHint,
   sections,
   noTopicAvailable,

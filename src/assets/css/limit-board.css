@@ -96,6 +96,18 @@
             border: 1px solid #fde68a;
         }
 
+        /* 说明型提示（比 .limit-warn 轻）：用于「已自动补 N 只题材」这类口径说明，不是问题告警。
+           与一字看板的 .yizi-note 同视觉（两个看板并排展示，样式必须一致，§34 UI 与业务分离）。 */
+        .limit-note {
+            margin-bottom: 6px;
+            padding: 4px 10px;
+            font-size: 11px;
+            color: #475569;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+        }
+
         .limit-retry {
             color: #2563eb;
             text-decoration: underline;

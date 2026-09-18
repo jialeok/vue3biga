@@ -19,6 +19,8 @@ import { state } from '../logic/app-state.js';
         // 记录有本地待推送编辑的 bidding 日期（保存开始时加入，推送结束时移除）。
         state._biddingDirtyDates = new Set();
         state._topicCache = null;
+        // ★ 归一化别名索引与 _topicCache 是同一份数据的两套键，必须同生共死（§22）
+        state._topicCacheNorm = null;
         state._topicCacheBuilt = false;
         // [CLEANUP 2026-09-06] 已移除「记忆手动展开股票」的 state._expandedAuctionStocksByGroup
         // 及其配套 _getExpandedStocksSet / _syncExpandedStocksToStore。原因：需求改为「展开态不跨

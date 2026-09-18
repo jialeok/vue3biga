@@ -10,15 +10,19 @@
     · 布局：与「涨跌停」看板基本一致（题材分块 + 题材条 + 股票行 + 列图例 + 开关 + 导入入口）
     · 题材：接口自带 开盘啦(theme_names_kpl) → 选股宝(theme_names_xgb) → 共享题材库 stock_topics
            → 无（显示 '-'，可用「无题材」开关筛出后手动导入，与涨跌停看板同一份共享库）
-    · 封单额：只看 9:20 与 9:25 两个时点（「9点20」开关切换，默认关 = 9:25）；
+    · 封单额：只看 9:20 与 9:25 两个时点（「9点25」开关切换，**默认关 = 9:20**）；
              9:15 不再作为独立展示时点。口径见 logic/yizi/model.js 第二节。
-             「现在是哪个时点」只在表头「封单额(9:20/9:25)」一处呈现（开关旁不重复写时点）。
+             · 未打开 = 9:20 口径：度量列 `封单额(9:20) · 十日涨幅`，行内时点标 `9:20`
+             · 打开   = 9:25 口径：度量列 `变化(较9:20) · 封单额(9:25)`，行内时点标 `9:25`，
+                       且**隐藏十日涨幅**；变化量增红 / 减绿
+                       （9:20~9:25 不可撤单，这段里加单 = 抢筹坚决、撤单 = 次日易开板）
     · 一字判据：9:25 竞价涨幅 ≈ 涨停幅度（= 「一字就是涨停」）——
              与「早盘竞价看板」的红线下划线共用 logic/auction/limit-up.js#isAuctionYiZi。
              口径不符的行会被剔除，且剔除只数如实提示（⛔ 不静默丢）。
     · 排序/龙头：块内按【十日涨幅】降序，第一名 = 该题材龙头（与涨跌停看板同一口径）
     · 连板标：首板 / 二板 / 三板…（读涨跌停池 T-1 连板数 +1）
-    · 首封时刻：标在【股票名称后面】（如 09:15）；无值不渲染该标
+    · 行内时点标：股票名后面显示【当前时点】9:20 / 9:25（不再是首封时刻 09:15 —— 用户明确要求）；
+                 首封时刻降级为悬停提示（title），信息不丢
     · ST：本看板【不出现】ST 股票（剔除只数会在看板上如实提示）
     · 导入题材：只写共享题材库 stock_topics，⛔ 不会增减本看板的股票只数
 
@@ -110,24 +114,34 @@
         >
           {{ yiziFilterHint }}
         </div>
+        <!-- ★ 需求 1（2026-09-18）：题材自动回填提示。
+             本看板的接口自带题材，加载时会「只补空缺」写进共享题材库 ——
+             用户看到这条就知道「涨跌停看板不用再手动导入了」，而不是靠猜。 -->
+        <div
+          v-if="topicAutoFillHint"
+          class="yizi-note"
+        >
+          {{ topicAutoFillHint }}
+        </div>
 
-        <!-- 开关条：「9点20」封单额时点 + 「无题材」过滤。
+        <!-- 开关条：「9点25」封单额时点 + 「无题材」过滤。
              两者都是纯展示态：默认关、无记忆、随日期切换归位；⛔ 不落 localStorage、不进全局 store。
-             ★ 开关旁【只留一个「9点20」】——「现在是哪个时点」只由右侧表头「封单额(9:20/9:25)」呈现，
-               不再在开关旁并排写「9:25口径」（两个时点并排出现会让人以为是两个开关）。 -->
+             ★ 默认关 = 9:20 口径（度量列含十日涨幅）；打开 = 9:25 口径（变化量 + 9:25 封单额，隐藏十日涨幅）。
+             ★ 开关旁【只留一个「9点25」】——「现在是哪个时点」由右侧表头 + 行内时点标呈现，
+               不再在开关旁并排写第二个时点（并排出现会让人以为是两个开关）。 -->
         <div class="yizi-toolbar">
           <div class="yizi-toggle-item">
-            <span class="yizi-toggle-label">9点20</span>
+            <span class="yizi-toggle-label">9点25</span>
             <label
               class="yizi-toggle-switch"
-              :title="show920
-                ? '已打开：封单额列显示 9:20 口径（fa_0920f，9:20 后首笔）。关闭则显示 9:25 口径。'
-                : '未打开：封单额列显示 9:25 口径（fa_0925l，9:25 后末笔）。打开则显示 9:20 口径。'"
+              :title="show925
+                ? '已打开：显示 9:25 口径（fa_0925l 末笔）+ 9:25 对比 9:20 的封单额变化量（增红/减绿），并隐藏十日涨幅。'
+                : '未打开：显示 9:20 口径（fa_0920f 首笔）+ 十日涨幅。打开则改为 9:25 口径与变化量。'"
             >
               <input
                 type="checkbox"
-                :checked="show920"
-                @change="toggle920"
+                :checked="show925"
+                @change="toggle925"
               >
               <span class="yizi-toggle-slider" />
             </label>
@@ -173,12 +187,13 @@
 
             <template v-else>
               <!-- 列图例（9px 单行，只为说明列义；本身不占宽度，宽度都让给题材列）。
-                   「封单额(9:20/9:25)」= 时点开关的唯一呈现处：开关旁不再重复写时点。 -->
+                   度量列表头随 toggle 切换：未打开 `封单额(9:20) · 十日涨幅`
+                   / 打开 `变化(较9:20) · 封单额(9:25)`。开关旁不重复写时点。 -->
               <div class="yizi-head-row">
                 <span class="yizi-head-seq">#</span>
-                <span class="yizi-head-name">股票 / 首封 / 连板</span>
+                <span class="yizi-head-name">股票 / 时点 / 连板</span>
                 <span class="yizi-head-topics">题材（全部，逗号分隔）</span>
-                <span class="yizi-head-metric">封单额({{ sealPointLabel }}) · 十日涨幅</span>
+                <span class="yizi-head-metric">{{ metricHeadText }}</span>
               </div>
 
               <div
@@ -198,7 +213,7 @@
                   :class="{ 'is-leader': stock.isLeader }"
                 >
                   <span class="yizi-seq">{{ stock.seq }}</span>
-                  <!-- 名称块 = 股票名 → 首封时刻 → 龙头标 → 连板标，四段紧贴、整体不换行。
+                  <!-- 名称块 = 股票名 → 时点标(9:20/9:25) → 龙头标 → 连板标，四段紧贴、整体不换行。
                        标一律 9px 小字（与涨跌停看板 .limit-leader-badge / .limit-continue-tag 同级占位），
                        宽度随内容伸缩、不占固定列 —— 省下的宽度全部留给右侧题材列。 -->
                   <span class="yizi-name-block">
@@ -207,11 +222,15 @@
                       :class="{ leader: stock.isLeader }"
                       :title="stock.themeSource ? ('题材来源：' + stock.themeSourceLabel) : ''"
                     >{{ stock.stock }}</span>
+                    <!-- 行内时点标（★ 2026-09-18 起 = 【当前时点】9:20 / 9:25，不再是首封时刻）。
+                         用户原话：「9:25分对应的竞价时间点（现在打开只显示9:15分，
+                         没打开9点25toggle时应该显示的是9:20）」。
+                         首封时刻没有丢 —— 它挪进了悬停提示（title），信息不丢、不占宽度。 -->
                     <span
-                      v-if="firstTimeText(stock)"
                       class="yizi-time-tag"
-                      title="首次封上涨停价的时刻（库列 fa_first）"
-                    >{{ firstTimeText(stock) }}</span>
+                      :title="'当前显示的是 ' + pointTagText + ' 时点数据' +
+                        (firstTimeText(stock) ? ('；该股首次封上涨停价 ' + firstTimeText(stock)) : '')"
+                    >{{ pointTagText }}</span>
                     <span
                       v-if="stock.isLeader"
                       class="yizi-leader-badge"
@@ -230,12 +249,23 @@
                   >{{ stock.topicsDisplay }}</span>
                   <!-- 度量列：封单额（按时点开关切换）+ 十日涨幅（块内排序 / 龙头判据） -->
                   <span class="yizi-metric">
+                    <!-- 打开「9点25」态：先显示【变化量】（9:25 − 9:20，增红 / 减绿），
+                         再显示 9:25 封单额，并【隐藏十日涨幅】（★ 用户指定）。
+                         9:20~9:25 是不可撤单阶段，这段里加单还是撤单 = 一字板硬度最直接的信号。 -->
+                    <span
+                      v-if="show925"
+                      class="yizi-delta"
+                      :class="sealDeltaClass(stock)"
+                      :title="sealDeltaTitle(stock)"
+                    >{{ sealDeltaText(stock) }}</span>
                     <span
                       class="yizi-seal"
                       :class="sealClass(stock)"
                       :title="sealTitle(stock)"
                     >{{ sealText(stock) }}</span>
+                    <!-- 十日涨幅：仅【未打开】时显示。⚠️ 它始终是块内排序与龙头判据（与是否显示无关）。 -->
                     <span
+                      v-if="!show925"
                       class="yizi-range"
                       :class="rangeClass(stock)"
                       title="近 10 个交易日区间涨幅（块内排序 / 龙头判据）"
@@ -291,6 +321,7 @@ const {
   summaryText,
   emptyText,
   themeHints,
+  topicAutoFillHint,
   rangeHint,
   stHint,
   yiziFilterHint,
@@ -298,9 +329,13 @@ const {
   noTopicAvailable,
   noTopicView,
   toggleNoTopic,
-  show920,
-  sealPointLabel,
-  toggle920,
+  show925,
+  pointTagText,
+  metricHeadText,
+  toggle925,
+  sealDeltaText,
+  sealDeltaClass,
+  sealDeltaTitle,
   importOpen,
   importText,
   importSaving,

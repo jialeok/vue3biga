@@ -62,6 +62,10 @@ import {
     dropStRows,
     filterYiziRows
 } from './model.js';
+// ★ 2026-09-18 需求 1：把本看板接口自带的题材【自动回填】进共享题材库，
+//   这样「涨跌停」看板不用再手动粘贴导入（用户原话：「我就不用那么麻烦去手动复制粘贴导入了」）。
+//   ⚠️ 写的是同一张 stock_topics（§6），所以三个看板都受益；只补空缺、不覆盖、不写空。
+import { syncYiziTopicsIntoLibrary } from '../topics/topic-sync.js';
 
 // ===== 看板状态（本模块唯一的响应式真相，供 composable/UI 读取）=====
 export const yiziBoardState = reactive({
@@ -85,6 +89,9 @@ export const yiziBoardState = reactive({
     themeFromXgb: 0,
     themeFromLib: 0,
     themeNone: 0,
+    // ★ 2026-09-18 需求 1：本次加载往【共享题材库】自动补进了几只股票的题材（0 = 没什么可补）。
+    // 只用于「可解释性」提示（用户想知道「是不是真的自动补上了」），⛔ 不参与任何计算。
+    topicAutoFilled: 0,
     // 十日涨幅覆盖情况（块内排序 + 选龙头的度量，覆盖不全时 UI 要如实提示）
     rangeReady: false,
     rangeError: '',
@@ -180,6 +187,7 @@ function _publishEmpty(date, extra) {
     yiziBoardState.themeFromXgb = 0;
     yiziBoardState.themeFromLib = 0;
     yiziBoardState.themeNone = 0;
+    yiziBoardState.topicAutoFilled = 0;
     yiziBoardState.rangeCovered = 0;
     yiziBoardState.stRemoved = 0;
     yiziBoardState.phase = '';
@@ -394,6 +402,29 @@ async function _load(date, force) {
         }
         if (!isLatest()) return;
         yiziBoardState.topicLibraryReady = libReady;
+
+        // ④-b ★ 需求 1（2026-09-18）：把本看板接口自带的题材自动回填进【共享题材库】。
+        //
+        // 为什么放在这里（而不是每次刷新都做）：
+        //   · 数据来源是本看板**已经读到的** rawRows → 通过 opts.rows 传进去，**零额外查询**；
+        //   · 写入是「只补空缺」（库里已有题材的股票一律跳过，⛔ 绝不覆盖用户手动导入/修正的结果），
+        //     且同一日期本会话只跑一次（模块内幂等）；
+        //   · ⛔ 这一步失败【绝不】影响看板：本模块返回 ok:false 时只记日志，
+        //     连 error 都不写（「这次没自动补」≠「看板坏了」，§20 增强不阻断主流程）。
+        //
+        // 时机：必须在 ⑦ enrich（`_libraryTopics` 读库）之前 —— 这样本次回填的题材
+        // 立刻就能被同一屏的「题材库来源」统计认到，用户能看到「自动补了几只」的效果。
+        try {
+            const syncRes = await syncYiziTopicsIntoLibrary(date, { rows: rawRows });
+            // ⚠️ 取 sessionFilled（本会话累计）而不是 filled（本次调用）：
+            //    回填只在**第一个加载的看板**里真正发生，相邻的另一个看板随后加载时命中会话去重、
+            //    filled 恒为 0 → 用它做提示会让用户以为「没补上」。累计值两个看板读到的是同一个真数。
+            if (isLatest()) yiziBoardState.topicAutoFilled = (syncRes && syncRes.sessionFilled) || 0;
+        } catch (e) {
+            if (isLatest()) yiziBoardState.topicAutoFilled = 0;
+            _dbgLog('[AUCTION-YIZI] ' + date + ' 题材自动回填异常（不影响看板）: ' + (e && e.message || e));
+        }
+        if (!isLatest()) return;
 
         // ⑤ 十日涨幅（块内排序 + 选龙头的度量）。
         //    读失败 → 不假装为 0，标记 rangeError 让 UI 提示；补算失败 → fail-soft（显示 '-'）。

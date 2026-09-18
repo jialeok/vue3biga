@@ -27,6 +27,8 @@ export const state = reactive({
     _hotAuctionData: null,
     _syncState: null,
     _topicCache: null,
+    // ★ 2026-09-18：题材库的归一化别名索引 {归一化名: Set(题材)}（见 data/stock-topics.js）
+    _topicCacheNorm: null,
     _topicCacheBuilt: false,
     _justPushedAuction: false,
     _auctionWatchlistShadowIndex: {},
