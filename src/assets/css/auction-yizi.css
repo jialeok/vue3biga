@@ -337,6 +337,21 @@
             white-space: nowrap;
         }
 
+        /* 首封时刻标（09:15 起封上涨停价）：紧贴【股票名之后】，与龙头/连板标同级 9px。
+           ★ 用户指定：「之前还有时间点标记在股票后面（股票名称后面有涨停时间）」→ 恢复该标。
+           颜色用琥珀色，与龙头标（红底实心）/连板标（灰底）都不撞色；无值时模板不渲染。 */
+        .yizi-time-tag {
+            flex: 0 0 auto;
+            padding: 0 3px;
+            border-radius: 2px;
+            font-size: 9px;
+            font-weight: 600;
+            line-height: 12px;
+            color: #b45309;
+            background: #fef3c7;
+            white-space: nowrap;
+        }
+
         /* 说明型提示（比 .yizi-warn 轻）：用于「已剔除 N 只 ST」这类口径说明，不是问题告警 */
         .yizi-note {
             margin-bottom: 6px;
@@ -402,11 +417,9 @@
 
         /* 开关条上的当前时点提示（「9:25口径」/「9:20口径」）——
            让用户一眼知道封单额列现在看的是哪一个时刻，不必回忆 toggle 是开还是关 */
-        .yizi-point-hint {
-            font-size: 10px;
-            color: #94a3b8;
-            white-space: nowrap;
-        }
+        /* ⛔ 已删除 .yizi-point-hint：开关旁不再并排写「9:25口径」那一串
+           （用户反馈「toggle 前面是 9点20，后面是 9点25，非常混乱」）。
+           「现在是哪个时点」只由表头「封单额(9:20/9:25)」一处呈现。 */
 
         .yizi-import-hint {
             font-size: 11px;

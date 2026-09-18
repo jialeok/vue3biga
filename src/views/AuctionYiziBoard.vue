@@ -12,9 +12,15 @@
            → 无（显示 '-'，可用「无题材」开关筛出后手动导入，与涨跌停看板同一份共享库）
     · 封单额：只看 9:20 与 9:25 两个时点（「9点20」开关切换，默认关 = 9:25）；
              9:15 不再作为独立展示时点。口径见 logic/yizi/model.js 第二节。
+             「现在是哪个时点」只在表头「封单额(9:20/9:25)」一处呈现（开关旁不重复写时点）。
+    · 一字判据：9:25 竞价涨幅 ≈ 涨停幅度（= 「一字就是涨停」）——
+             与「早盘竞价看板」的红线下划线共用 logic/auction/limit-up.js#isAuctionYiZi。
+             口径不符的行会被剔除，且剔除只数如实提示（⛔ 不静默丢）。
     · 排序/龙头：块内按【十日涨幅】降序，第一名 = 该题材龙头（与涨跌停看板同一口径）
     · 连板标：首板 / 二板 / 三板…（读涨跌停池 T-1 连板数 +1）
+    · 首封时刻：标在【股票名称后面】（如 09:15）；无值不渲染该标
     · ST：本看板【不出现】ST 股票（剔除只数会在看板上如实提示）
+    · 导入题材：只写共享题材库 stock_topics，⛔ 不会增减本看板的股票只数
 
   分层：本文件只有模板与调用；全部业务在 logic/yizi/*，数据在 data/auction-yizi.js。
 -->
@@ -96,15 +102,27 @@
         >
           {{ stHint }}
         </div>
+        <!-- 一字口径剔除提示：把「表里有多少行被按判据剔掉」如实说出来 ——
+             ⛔ 不提示的话，用户只会看到「今天只有 8 只」而不知道另外 113 行为什么不见了。 -->
+        <div
+          v-if="yiziFilterHint"
+          class="yizi-note"
+        >
+          {{ yiziFilterHint }}
+        </div>
 
         <!-- 开关条：「9点20」封单额时点 + 「无题材」过滤。
-             两者都是纯展示态：默认关、无记忆、随日期切换归位；⛔ 不落 localStorage、不进全局 store。 -->
+             两者都是纯展示态：默认关、无记忆、随日期切换归位；⛔ 不落 localStorage、不进全局 store。
+             ★ 开关旁【只留一个「9点20」】——「现在是哪个时点」只由右侧表头「封单额(9:20/9:25)」呈现，
+               不再在开关旁并排写「9:25口径」（两个时点并排出现会让人以为是两个开关）。 -->
         <div class="yizi-toolbar">
           <div class="yizi-toggle-item">
             <span class="yizi-toggle-label">9点20</span>
             <label
               class="yizi-toggle-switch"
-              title="打开后封单额显示 9:20 口径（9:20 起不可撤单）；关闭显示 9:25 口径（默认）"
+              :title="show920
+                ? '已打开：封单额列显示 9:20 口径（fa_0920f，9:20 后首笔）。关闭则显示 9:25 口径。'
+                : '未打开：封单额列显示 9:25 口径（fa_0925l，9:25 后末笔）。打开则显示 9:20 口径。'"
             >
               <input
                 type="checkbox"
@@ -113,7 +131,6 @@
               >
               <span class="yizi-toggle-slider" />
             </label>
-            <span class="yizi-point-hint">{{ sealPointLabel }}口径</span>
           </div>
           <div
             v-if="noTopicAvailable"
@@ -155,12 +172,13 @@
             </div>
 
             <template v-else>
-              <!-- 列图例（9px 单行，只为说明列义；本身不占宽度，宽度都让给题材列） -->
+              <!-- 列图例（9px 单行，只为说明列义；本身不占宽度，宽度都让给题材列）。
+                   「封单额(9:20/9:25)」= 时点开关的唯一呈现处：开关旁不再重复写时点。 -->
               <div class="yizi-head-row">
                 <span class="yizi-head-seq">#</span>
-                <span class="yizi-head-name">股票 / 连板</span>
+                <span class="yizi-head-name">股票 / 首封 / 连板</span>
                 <span class="yizi-head-topics">题材（全部，逗号分隔）</span>
-                <span class="yizi-head-metric">封单额 · 十日涨幅</span>
+                <span class="yizi-head-metric">封单额({{ sealPointLabel }}) · 十日涨幅</span>
               </div>
 
               <div
@@ -180,7 +198,7 @@
                   :class="{ 'is-leader': stock.isLeader }"
                 >
                   <span class="yizi-seq">{{ stock.seq }}</span>
-                  <!-- 名称块 = 股票名 → 龙头标 → 连板标，三段紧贴、整体不换行。
+                  <!-- 名称块 = 股票名 → 首封时刻 → 龙头标 → 连板标，四段紧贴、整体不换行。
                        标一律 9px 小字（与涨跌停看板 .limit-leader-badge / .limit-continue-tag 同级占位），
                        宽度随内容伸缩、不占固定列 —— 省下的宽度全部留给右侧题材列。 -->
                   <span class="yizi-name-block">
@@ -189,6 +207,11 @@
                       :class="{ leader: stock.isLeader }"
                       :title="stock.themeSource ? ('题材来源：' + stock.themeSourceLabel) : ''"
                     >{{ stock.stock }}</span>
+                    <span
+                      v-if="firstTimeText(stock)"
+                      class="yizi-time-tag"
+                      title="首次封上涨停价的时刻（库列 fa_first）"
+                    >{{ firstTimeText(stock) }}</span>
                     <span
                       v-if="stock.isLeader"
                       class="yizi-leader-badge"
@@ -237,7 +260,8 @@
         每行一只股票：<b>股票名 [代码] 题材1 题材2 …</b><br>
         支持空格 / 逗号 / 顿号 / 竖线 分隔；同一股票多行会合并去重；<br>
         写入后与涨跌停看板、早盘竞价看板<b>共享同一题材库</b>（三看板互通）；<br>
-        导入的题材会在「接口未返回题材」时自动作为该股题材来源（优先级排在接口之后）。
+        导入的题材会在「接口未返回题材」时自动作为该股题材来源（优先级排在接口之后）。<br>
+        <b>⚠️ 导入题材只写题材库，<u>不会增减本看板的股票只数</u></b>（只数只由「竞价一字」抓取结果决定）。
       </div>
       <textarea
         v-model="importText"
@@ -269,6 +293,7 @@ const {
   themeHints,
   rangeHint,
   stHint,
+  yiziFilterHint,
   sections,
   noTopicAvailable,
   noTopicView,
@@ -289,7 +314,8 @@ const {
   sealTitle,
   rangeText,
   rangeClass,
-  continueText
+  continueText,
+  firstTimeText
 } = useAuctionYizi();
 
 defineExpose({ refresh });

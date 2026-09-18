@@ -1,11 +1,14 @@
 // model.test.js — 「竞价一字」看板纯函数模型层的回归测试
-// 覆盖：题材文本切分与「接口→题材库」三级优先、题材分块（组序 / 组内序 / 龙头 / 其它置底 /
-//       不改入参 / 无十日涨幅不选龙头）、封单额双时点口径（9:20 / 9:25）、
-//       ST 判据与剔除、「无题材」视图过滤、展示分档（封单额 / 十日涨幅）。
+// 覆盖：一字口径闸门（竞价涨幅 ≈ 涨停幅度）、题材文本切分与「接口→题材库」三级优先、
+//       题材分块（组序 / 组内序 / 龙头 / 其它置底 / 不改入参 / 无十日涨幅不选龙头）、
+//       封单额双时点口径（9:20 / 9:25）、ST 判据与剔除、「无题材」视图过滤、
+//       展示分档（封单额 / 十日涨幅）。
 //
-// ⚠️ 这批用例里「封单额时点」的样本数据【取自 2026-09-18 线上库的真实行】
-//    （中材科技 = 13 个时点全有；丽尚国潮 = 只有 9:15 一笔），
-//    目的就是锁死「fa_0925l / fa_0920f 大多为空」这个真实形态下的取值行为。
+// ⚠️ 封单额时点用例的样本【取自 2026-09-18 线上库的真实行】：
+//    · 真一字（经纬股份 / 中材科技）= 13 个 fa_* 时点全有，9:20 与 9:25 取到不同值；
+//    · 非一字（丽尚国潮，竞价 -0.24%）= 只有 fa_0915 一笔 —— 它是【旧判据的误收样本】，
+//      现已被口径闸门剔除（见「一字口径闸门」用例组）。
+//    这样锁死的是真实形态，而不是想象的形态。
 import { describe, it, expect } from 'vitest';
 import {
     splitThemeText,
@@ -18,6 +21,9 @@ import {
     sealTone,
     isStStock,
     dropStRows,
+    isYiziRow,
+    filterYiziRows,
+    limitGapText,
     yiziSignature,
     isBoardDateAligned,
     SEAL_920,
@@ -49,6 +55,125 @@ function mapOf(pairs) {
 }
 
 const FALLBACK_OTHER = function() { return OTHER_TOPIC; };
+
+// ============================================================================
+// 一字口径闸门（★ 2026-09-15 修正）
+// 判据 = 9:25 竞价涨幅 ≈ 涨停幅度（复用 logic/auction/limit-up.js#isAuctionYiZi）
+// 事故背景：旧判据「9:15~9:25 存在任一非空 fa_*」把 09-18 的 121 行全当一字
+//          （剔除 8 只 ST 后看板显示 113 只），而其中只有 8 行竞价涨幅达涨停幅度；
+//          同日 limit_pool 涨停仅 77 只 ⇒ 一字 ⊆ 涨停 ⇒ 113 根本不可能。
+// ============================================================================
+describe('isYiziRow 一字判据（竞价涨幅 ≈ 涨停幅度）', () => {
+    it('主板竞价涨停 → 一字', () => {
+        expect(isYiziRow({ stock: '百通能源', code: '001376', aucPct: '+9.99' })).toBe(true);
+        expect(isYiziRow({ stock: '中晶科技', code: '003026', aucPct: '+10.00' })).toBe(true);
+    });
+    it('容差内也算（涨停价四舍五入到分）：9.94% / 10.10% 都算', () => {
+        expect(isYiziRow({ stock: '华纺股份', code: '600448', aucPct: '+9.94' })).toBe(true);
+        expect(isYiziRow({ stock: '华软科技', code: '002453', aucPct: '+10.10' })).toBe(true);
+    });
+    it('创业板 / 科创板按 20% 判定', () => {
+        expect(isYiziRow({ stock: '经纬股份', code: '301390', aucPct: '+20.00' })).toBe(true);
+        expect(isYiziRow({ stock: '某创业板票', code: '300001', aucPct: '+10.00' })).toBe(false);
+    });
+    it('北交所按 30% 判定', () => {
+        expect(isYiziRow({ stock: '某北交所票', code: '830001', aucPct: '+30.00' })).toBe(true);
+        expect(isYiziRow({ stock: '某北交所票', code: '830001', aucPct: '+20.00' })).toBe(false);
+    });
+    it('⛔ 旧判据的误收样本必须被剔除（9:15 挂过涨停价买单又撤单）', () => {
+        expect(isYiziRow({ stock: '丽尚国潮', code: '600738', aucPct: '-0.24' })).toBe(false);
+        expect(isYiziRow({ stock: '凯旺科技', code: '301182', aucPct: '0.00' })).toBe(false);
+        // 上海物贸 +9.28%：离涨停差 0.72pp —— 是「被剔掉的行里最接近涨停的」，仍然不算一字
+        expect(isYiziRow({ stock: '上海物贸', code: '600822', aucPct: '+9.28' })).toBe(false);
+    });
+    it('§10 竞价涨幅缺失 / 无股票名 → 不是一字（不猜）', () => {
+        expect(isYiziRow({ stock: '缺涨幅', code: '600000', aucPct: '' })).toBe(false);
+        expect(isYiziRow({ stock: '缺涨幅', code: '600000' })).toBe(false);
+        expect(isYiziRow(null)).toBe(false);
+        expect(isYiziRow({ code: '600000', aucPct: '+10' })).toBe(false);
+    });
+});
+
+describe('filterYiziRows 口径闸门（剔除只数必须可解释）', () => {
+    const rows = [
+        { stock: '百通能源', code: '001376', aucPct: '+9.99' },   // 一字
+        { stock: '经纬股份', code: '301390', aucPct: '+20.00' },  // 一字（创业板 20%）
+        { stock: '上海物贸', code: '600822', aucPct: '+9.28' },   // 未达幅度
+        { stock: '丽尚国潮', code: '600738', aucPct: '-0.24' },   // 未达幅度
+        { stock: '缺涨幅', code: '600000', aucPct: '' }            // 无法判定
+    ];
+    it('只留真一字，并按「未达幅度 / 缺涨幅」分类计数', () => {
+        const r = filterYiziRows(rows);
+        expect(r.kept).toBe(2);
+        expect(r.rows.map(function(x) { return x.stock; })).toEqual(['百通能源', '经纬股份']);
+        expect(r.droppedNotLimit).toBe(2);
+        expect(r.droppedNoPct).toBe(1);
+        expect(r.removed).toBe(3);
+    });
+    it('不改入参（纯函数）', () => {
+        const before = rows.length;
+        filterYiziRows(rows);
+        expect(rows.length).toBe(before);
+    });
+    it('空 / 非数组输入 → 全 0，不抛错', () => {
+        const r = filterYiziRows(null);
+        expect(r.kept).toBe(0);
+        expect(r.removed).toBe(0);
+        expect(r.rows).toEqual([]);
+    });
+    it('★ 09-18 形态回归：121 行形态 → 闸门后只剩 8 只（不是 113 只）', () => {
+        const eight = [
+            { stock: '经纬股份', code: '301390', aucPct: '+20.00' },
+            { stock: '福龙马', code: '603686', aucPct: '+10.03' },
+            { stock: '中晶科技', code: '003026', aucPct: '+10.00' },
+            { stock: '中材科技', code: '002080', aucPct: '+10.00' },
+            { stock: '内蒙新华', code: '603230', aucPct: '+10.04' },
+            { stock: '百通能源', code: '001376', aucPct: '+9.99' },
+            { stock: '华软科技', code: '002453', aucPct: '+10.10' },
+            { stock: '华纺股份', code: '600448', aucPct: '+9.94' }
+        ];
+        const noise = [];
+        for (let i = 0; i < 87; i++) noise.push({ stock: '小涨' + i, code: '60000' + (i % 10), aucPct: '+' + ((i % 30) / 10) });
+        for (let i = 0; i < 23; i++) noise.push({ stock: '平跌' + i, code: '00000' + (i % 10), aucPct: '-0.24' });
+        const r = filterYiziRows(eight.concat(noise));
+        expect(r.kept).toBe(8);
+        expect(r.removed).toBe(110);
+        expect(r.droppedNoPct).toBe(0);
+    });
+});
+
+describe('limitGapText 可解释文本（只用于提示 / 排查）', () => {
+    it('返回「竞价涨幅 / 涨停幅度」', () => {
+        expect(limitGapText({ stock: '上海物贸', code: '600822', aucPct: '+9.28' })).toBe('+9.28% / 限10%');
+        expect(limitGapText({ stock: '经纬股份', code: '301390', aucPct: '+20.00' })).toBe('+20.00% / 限20%');
+    });
+    it('无涨幅 → 空串（不伪造 0%）', () => {
+        expect(limitGapText({ stock: 'x', code: '600000', aucPct: '' })).toBe('');
+    });
+});
+
+describe('buildYiziBlocks 行内派生字段（模板直接读，缺一个就静默不渲染 —— 必须有回归）', () => {
+    it('首封时刻 firstTimeText 必须透出（P3 回归：该字段缺失 = 股票名后面的时间标凭空消失）', () => {
+        const rows = [row('福龙马', '汽车', 12.76, { faFirst: '09:15' })];
+        const blocks = buildYiziBlocks(rows, mapOf([['福龙马', '汽车']]), FALLBACK_OTHER);
+        expect(blocks[0].stocks[0].firstTimeText).toBe('09:15');
+    });
+    it('无 faFirst → 空串（模板据空串不渲染，⛔ 不显示 0 / 占位）', () => {
+        const rows = [row('某票', '汽车', null, { faFirst: '' })];
+        const blocks = buildYiziBlocks(rows, mapOf([['某票', '汽车']]), FALLBACK_OTHER);
+        expect(blocks[0].stocks[0].firstTimeText).toBe('');
+    });
+    it('两个时点封单额都算好（切 toggle 只换显示值，⛔ 不重算分块）', () => {
+        const fa = { fa_0915: 1000, fa_0920f: 2000000, fa_0925l: 300000000 };
+        const rows = [row('某票', '汽车', 5, { fa: fa, faCount: 3, faFirst: '09:15' })];
+        const blocks = buildYiziBlocks(rows, mapOf([['某票', '汽车']]), FALLBACK_OTHER);
+        const s = blocks[0].stocks[0];
+        expect(s.seal920).toBe(2000000);
+        expect(s.seal925).toBe(300000000);
+        expect(s.seal920Text).toBe('200万');
+        expect(s.seal925Text).toBe('3.00亿');
+    });
+});
 
 describe('splitThemeText 题材文本切分', () => {
     it('按中英文顿号/逗号/分号/竖线切开并 trim', () => {

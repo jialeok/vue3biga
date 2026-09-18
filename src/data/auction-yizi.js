@@ -92,6 +92,10 @@ export async function readAuctionYiziForDate(date) {
             .from('auction_yizi')
             .select(SELECT_COLUMNS.join(','))
             .eq('date', date)
+            // ⚠️ 分页必须带【确定性排序】：PostgREST 在没有 ORDER BY 时不保证分页间行序稳定，
+            //    同一行可能在两页里各出现一次、另一行被跳过（池子 >1000 只时才会触发）。
+            //    按 stock 排序即可（同日 stock 唯一：表主键是 date+stock）。
+            .order('stock', { ascending: true })
             .range(from, from + pageSize - 1);
         if (error) throw _explainDbError(error);
         if (!data || data.length === 0) break;

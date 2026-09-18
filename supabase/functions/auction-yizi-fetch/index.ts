@@ -37,14 +37,30 @@
 //   由前端 src/logic/yizi/ 在渲染时用「快照 + 共享题材库 stock_topics」计算。
 //   落库只会多出第二个真相源（题材库稍后变更即让结论陈旧冻结）。
 //
-// ── 「一字」判据（关键，别用错）────────────────────────────────────────────
-//   上游 params 不传 symbols ⇒ 默认返回【全市场】标的，其中绝大多数票的
-//   fa_*（封单额）是 null。fa_* 的语义是「该时点上，匹配价 = 涨停价的竞价金额」，
-//   所以：**9:15~9:25 之间存在任一非空 fa_* = 该票当时确实封在涨停价 = 一字**。
-//   全空 = 9:25 前从未封上涨停价 → 不是一字 → 丢弃，并在响应里回显
-//   droppedNoFa 计数（便于当场核对「上游到底返回了多少行、丢掉多少」）。
-//   ⚠️ 本判据不依赖「上游有没有帮我过滤」：无论上游返回全市场还是只返回一字，
-//      结果都相同 —— 因此它是安全的（不需要猜上游行为）。
+// ── 「一字」判据（★ 2026-09-15 已修正，务必读）──────────────────────────────
+//   上游 params 不传 symbols ⇒ 默认返回【全市场】标的。
+//
+//   ❌ 旧判据（错的，已废弃）：「9:15~9:25 之间存在任一非空 fa_*」。
+//      错在 fa_* 的语义只是「该时点上，匹配价 = 涨停价的竞价金额」——
+//      **9:15~9:20 期间挂的涨停价买单是可以随时撤单的**（9:20 之后才不可撤）。
+//      于是「9:15 挂过一笔涨停价买单、随后撤掉」的票全被当成一字收了进来。
+//      现场：2026-09-18 全市场返回的 121 行里，按竞价涨幅看只有 8 行达涨停幅度，
+//      另外 87 行只小涨 0~3%、23 行平盘或下跌（如 丽尚国潮 -0.24% / *ST景谷 0.00%）——
+//      而同日 limit_pool 的涨停只有 77 只，**一字板 ⊆ 涨停板 ⇒ 121 只根本不可能**。
+//
+//   ✅ 新判据（正确）：「9:25 集合竞价结束时的竞价涨幅（auc_pct_chg）达到该股涨停幅度」。
+//      语义上等价于「开盘价 = 涨停价」——竞价报价就打在涨停价上，这才是「竞价一字」。
+//      涨停幅度按板块（A 股现行规则）：主板 10% / 主板 ST 5% / 创业板与科创板 20% / 北交所 30%；
+//      容差 EPS=0.15pp 吸收「涨停价由前收×(1+幅度) 四舍五入到分」造成的 9.98% / 10.02% 误差。
+//      竞价涨幅缺失/无法解析 → **丢弃并单独计数**（§10：无法判定 ≠ 不是一字，所以要能被看见）。
+//
+//   ⚠️ 判据的【唯一真相】在前端 src/logic/auction/limit-up.js（getLimitUpPct / isAuctionYiZi），
+//      早盘竞价看板的「竞价一字红线」也在用同一份。
+//      Supabase Edge Function 只能 bundle 函数目录内的文件，**无法 import 仓库 src/**，
+//      因此这里保留一份等价实现（见下方 LIMIT_PCT_* + getLimitUpPct + isAuctionYiZi）。
+//      ⛔ 改任何一边都必须同步另一边 —— 两处不一致会让「表里存什么」与「看板显示什么」分叉。
+//      前端在读取后还会再闸一次（见 src/logic/yizi/model.js#filterYiziRows），
+//      所以即使本函数未重新部署，看板口径仍然是正确的。
 //
 // ── 9:25~09:26 窗口（⛔ 绝不越过 09:26）──────────────────────────────────
 //   pg_cron 在北京 09:25:00 触发（UTC 01:25，见 db/supabase_auction_yizi_cron.sql）。
@@ -301,6 +317,57 @@ function boolOrNull(raw: unknown): boolean | null {
 }
 
 /**
+ * 解析竞价涨幅 → number|null。
+ * 兼容上游可能返回的三种形态：number（10.03）/ 数字字符串（'+10.03'、'-0.24'、'10.03%'）。
+ * ⛔ 解析不出来返回 null（绝不退化成 0 —— 0 是真实涨幅，会把「没数据」混成「平盘」）。
+ */
+function parsePctNum(raw: unknown): number | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const s = String(raw).replace(/[%\s]/g, '').replace(/^\+/, '').replace(/[−—]/g, '-');
+  if (!s) return null;
+  const n = Number(s);
+  return isFinite(n) ? n : null;
+}
+
+// ── 涨停幅度（按板块）：与 src/logic/auction/limit-up.js 的常量保持同值 ──
+const LIMIT_MAIN = 10;    // 主板（60 / 00 / 01 开头）
+const LIMIT_ST = 5;       // 主板 ST / *ST
+const LIMIT_GROWTH = 20;  // 创业板（30x）/ 科创板（68x）；ST 同样 20
+const LIMIT_BJ = 30;      // 北交所（43 / 83 / 87 / 88 / 92 开头）
+// 容差：涨停价 = round(前收 × (1+幅度), 2)，实际涨幅常见 9.98% / 10.02% → 不能严格 >=
+const EPS = 0.15;
+
+/** 股票名是否 ST（与前端 isStStockName 同口径） */
+function isStStockName(name: string): boolean {
+  if (!name) return false;
+  return /\*?\s*ST/i.test(String(name));
+}
+
+/**
+ * 取涨停幅度（%）——只依赖代码与股票名，不做任何请求。
+ * ⚠️ 必须与 src/logic/auction/limit-up.js#getLimitUpPct 完全一致（改了要同步）。
+ * 代码缺失 → 按主板 10% 兜底（绝大多数标的所在板块），⛔ 不因缺代码就判成 0。
+ */
+function getLimitUpPct(code: string, name: string): number {
+  const c = String(code || '').replace(/\D/g, '');
+  if (!c) return isStStockName(name) ? LIMIT_ST : LIMIT_MAIN;
+  if (/^(43|83|87|88|92)/.test(c)) return LIMIT_BJ;
+  if (/^(30|68)/.test(c)) return LIMIT_GROWTH;
+  if (/^(60|00|01)/.test(c)) return isStStockName(name) ? LIMIT_ST : LIMIT_MAIN;
+  return isStStockName(name) ? LIMIT_ST : LIMIT_MAIN;
+}
+
+/**
+ * 「竞价一字」判定（★ 本函数的唯一入库判据）。
+ *   竞价涨幅 + EPS >= 涨停幅度 ⇒ 9:25 竞价报价就打在涨停价上 ⇒ 一字。
+ * ⚠️ 必须与 src/logic/auction/limit-up.js#isAuctionYiZi 完全一致（改了要同步）。
+ */
+function isAuctionYiZiPct(pct: number | null, code: string, name: string): boolean {
+  if (pct === null) return false;
+  return pct + EPS >= getLimitUpPct(code, name);
+}
+
+/**
  * 封单额字段的【时间顺序】（用于算「首次封上时刻」与「9:25 口径封单额」）。
  * 顺序依据猫爪文档语义：
  *   fa_0915          9:15 后第一笔（隔夜封单额）
@@ -431,7 +498,10 @@ type YiziRow = Record<string, unknown>;
 type MapResult = {
   rows: YiziRow[];
   total: number;
-  droppedNoFa: number;
+  /** 竞价涨幅未达涨停幅度 → 不是一字（★ 新判据的主丢弃项） */
+  droppedNotLimit: number;
+  /** 其中「竞价涨幅缺失/无法解析 → 无法判定」的只数（§10：不猜，但必须能被看见） */
+  droppedNoPct: number;
   droppedNoName: number;
   droppedDateMismatch: number;
   dateSeen: string[];
@@ -459,7 +529,7 @@ function makeGetter(fields: string[], row: unknown): (name: string) => unknown {
  * @returns null = 该行不可用（无名称 / 不是一字 / 日期不符），由调用方按类别计数
  */
 function yiziRow(fields: string[], rawRow: unknown, reqDate: string, nowIso: string, counters: {
-  noFa: number; noName: number; dateMismatch: number; dateSeen: string[];
+  notLimit: number; noPct: number; noName: number; dateMismatch: number; dateSeen: string[];
 }): YiziRow | null {
   const get = makeGetter(fields, rawRow);
   const name = textOrNull(get('name'));
@@ -471,7 +541,21 @@ function yiziRow(fields: string[], rawRow: unknown, reqDate: string, nowIso: str
     if (rowDate !== reqDate) { counters.dateMismatch++; return null; }
   }
 
-  // 封单额证据链（单位：元），null = 该时点没有「匹配价 = 涨停价」的成交
+  const symbol = textOrNull(get('symbol'));
+  const codeRaw = String(symbol || '').replace(/\..*$/, '').trim();
+  const code = /^\d{6}$/.test(codeRaw) ? codeRaw : null;
+
+  // ⭐⭐「一字」判据（★ 2026-09-15 修正）：9:25 竞价涨幅达到该股涨停幅度。
+  //    ⛔ 不再是「存在任一非空 fa_*」—— 9:20 前的涨停价买单可撤单，那个判据会收进大量非一字票。
+  const aucPctNum = parsePctNum(get('auc_pct_chg'));
+  if (!isAuctionYiZiPct(aucPctNum, code || '', name)) {
+    counters.notLimit++;
+    if (aucPctNum === null) counters.noPct++;   // 无法判定：单独计数，便于排查上游字段缺失
+    return null;
+  }
+
+  // 封单额证据链（单位：元），null = 该时点没有「匹配价 = 涨停价」的成交。
+  // ⚠️ 这是【展示数据】，不参与上面的一字判据。
   const fa: Record<string, number | null> = {};
   let faCount = 0;
   let firstLabel: string | null = null;
@@ -486,13 +570,6 @@ function yiziRow(fields: string[], rawRow: unknown, reqDate: string, nowIso: str
       sealMoney = v;                                        // 持续覆盖 → 循环结束即「时间上最后一笔非空」
     }
   }
-
-  // ⭐「一字」判据：9:15~9:25 之间存在任一非空 fa_* = 当时确实封在涨停价
-  if (faCount === 0) { counters.noFa++; return null; }
-
-  const symbol = textOrNull(get('symbol'));
-  const codeRaw = String(symbol || '').replace(/\..*$/, '').trim();
-  const code = /^\d{6}$/.test(codeRaw) ? codeRaw : null;
 
   const out: YiziRow = {
     date: reqDate,
@@ -520,7 +597,7 @@ function yiziRow(fields: string[], rawRow: unknown, reqDate: string, nowIso: str
 /** 把一次上游返回的 items 全量映射为入库行（含丢弃分类计数） */
 function mapRows(fields: string[], items: unknown[], reqDate: string): MapResult {
   const nowIso = new Date().toISOString();
-  const counters = { noFa: 0, noName: 0, dateMismatch: 0, dateSeen: [] as string[] };
+  const counters = { notLimit: 0, noPct: 0, noName: 0, dateMismatch: 0, dateSeen: [] as string[] };
   const rows: YiziRow[] = [];
   for (let i = 0; i < items.length; i++) {
     const r = yiziRow(fields, items[i], reqDate, nowIso, counters);
@@ -529,7 +606,8 @@ function mapRows(fields: string[], items: unknown[], reqDate: string): MapResult
   return {
     rows: rows,
     total: items.length,
-    droppedNoFa: counters.noFa,
+    droppedNotLimit: counters.notLimit,
+    droppedNoPct: counters.noPct,
     droppedNoName: counters.noName,
     droppedDateMismatch: counters.dateMismatch,
     dateSeen: counters.dateSeen,
@@ -773,8 +851,9 @@ async function runAuctionYizi(opts?: FetchOpts): Promise<Record<string, unknown>
       // 请求成功但没有一字行：可能上游还没生成当日数据（也可能今天真没有一字）
       notReadySeen = true;
       roundEmpty = true;
-      logs.push('第 ' + attempts + ' 轮：上游返回 ' + snapshot.total + ' 行，但无一字证据（droppedNoFa=' +
-        snapshot.droppedNoFa + (snapshot.dateSeen.length ? '，返回日期=' + snapshot.dateSeen.join('/') : '') +
+      logs.push('第 ' + attempts + ' 轮：上游返回 ' + snapshot.total + ' 行，但无一字（未达涨停幅度 ' +
+        snapshot.droppedNotLimit + '，其中缺竞价涨幅 ' + snapshot.droppedNoPct +
+        (snapshot.dateSeen.length ? '；返回日期=' + snapshot.dateSeen.join('/') : '') +
         '）→ 判定未就绪，等待下一轮');
     }
 
@@ -793,7 +872,8 @@ async function runAuctionYizi(opts?: FetchOpts): Promise<Record<string, unknown>
   // 6) 未就绪 → 不写库、不删除（§10 未就绪 ≠ 没有）
   if (!snapshot || !used || snapshot.rows.length === 0) {
     const errMsg = snapshot
-      ? '上游未返回一字数据（回合数=' + attempts + '，最后返回 ' + snapshot.total + ' 行 / droppedNoFa=' + snapshot.droppedNoFa +
+      ? '上游未返回一字数据（回合数=' + attempts + '，最后返回 ' + snapshot.total + ' 行 / 未达涨停幅度 ' +
+        snapshot.droppedNotLimit + '（其中缺竞价涨幅 ' + snapshot.droppedNoPct + '）' +
         '）→ 判定未就绪，本次不写库'
       : '抓取失败: ' + (lastErrMsg || '未知错误');
     logs.push('❌ ' + errMsg);
@@ -812,7 +892,8 @@ async function runAuctionYizi(opts?: FetchOpts): Promise<Record<string, unknown>
 
   const ready = true;
   const completeness = '上游 ' + snapshot.total + ' 行 → 一字 ' + snapshot.rows.length +
-    ' 行（丢弃无封单证据 ' + snapshot.droppedNoFa + ' / 无名称 ' + snapshot.droppedNoName +
+    ' 行（判据=竞价涨幅达涨停幅度；丢弃未达幅度 ' + snapshot.droppedNotLimit +
+    '（其中缺竞价涨幅 ' + snapshot.droppedNoPct + '）/ 无名称 ' + snapshot.droppedNoName +
     ' / 日期不符 ' + snapshot.droppedDateMismatch + '）';
   logs.push('步骤2：就绪判定通过（第 ' + attempts + ' 轮拿到数据，共耗时 ' + elapsedMs + 'ms）—— ' + completeness);
 
@@ -842,7 +923,8 @@ async function runAuctionYizi(opts?: FetchOpts): Promise<Record<string, unknown>
   await writeLog(Object.assign({}, logBase, { ok: true, detail: {
     written: written, deleted: deleted,
     upstreamRows: snapshot.total, yiziRows: snapshot.rows.length,
-    droppedNoFa: snapshot.droppedNoFa, droppedNoName: snapshot.droppedNoName,
+    droppedNotLimit: snapshot.droppedNotLimit, droppedNoPct: snapshot.droppedNoPct,
+    droppedNoName: snapshot.droppedNoName,
     droppedDateMismatch: snapshot.droppedDateMismatch,
     datesSeen: snapshot.dateSeen,
     attempts: attempts, elapsedMs: elapsedMs, lateBySec: lateBySec,
@@ -855,7 +937,8 @@ async function runAuctionYizi(opts?: FetchOpts): Promise<Record<string, unknown>
     deleted: deleted,
     upstreamRows: snapshot.total,
     yiziRows: snapshot.rows.length,
-    droppedNoFa: snapshot.droppedNoFa,
+    droppedNotLimit: snapshot.droppedNotLimit,
+    droppedNoPct: snapshot.droppedNoPct,
     droppedNoName: snapshot.droppedNoName,
     droppedDateMismatch: snapshot.droppedDateMismatch,
     datesSeen: snapshot.dateSeen,
@@ -949,7 +1032,8 @@ async function runProbe(symbolsOverride?: string): Promise<Record<string, unknow
         item.fields = raw.fields;
         item.fieldsMissing = CONFIG.FIELDS.filter((f) => raw.fields.indexOf(f) < 0);
         item.yiziRows = mapped.rows.length;
-        item.droppedNoFa = mapped.droppedNoFa;
+        item.droppedNotLimit = mapped.droppedNotLimit;
+        item.droppedNoPct = mapped.droppedNoPct;
         item.datesSeen = mapped.dateSeen;
         item.sampleRaw = raw.items[0] || null;
         item.sampleMapped = first ? {

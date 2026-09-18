@@ -52,7 +52,17 @@ export function useAuctionYizi() {
     //   · 打开     → 封单额列显示 **9:20** 口径（9:20 起不可撤单，看这段的封单更真）
     // 两个时点的值在 Logic 层已一次算好（row.seal920Text / row.seal925Text），
     // 因此切 toggle 只换一个显示值：⛔ 不重算分块、不重选龙头、不发请求、不写库。
+    //
+    // ★ 2026-09-15 修正（用户：「toggle 前面是 9点20，后面是 9点25，什么意思，非常混乱，
+    //   只保留一个 9点20 的就可以」）：
+    //   开关旁边**只留一个「9点20」**，不再并排显示「9:25 口径」那一串（两个时点并排出现
+    //   会让人以为它们各自是一个开关）。
+    //   「现在是哪个时点」只在一处呈现 = 表头那列「封单额(9:20 / 9:25)」→ 唯一、不歧义。
+    //   数据本身在修正一字判据后必然有变化（09-18 的 8 只真一字 **8/8 都 9:20 ≠ 9:25**），
+    //   之前「打开后一点变化都没有」是因为旧判据把 121 行非一字票混进来、
+    //   它们只有 fa_0915 一笔，两个时点自然取到同一个值。
     const show920 = ref(false);
+    /** 当前生效的封单额时点（供表头显示，UI 唯一呈现「现在是哪个时点」的地方） */
     const sealPointLabel = computed(() => (show920.value ? '9:20' : '9:25'));
     function toggle920() {
         show920.value = !show920.value;
@@ -125,6 +135,19 @@ export function useAuctionYizi() {
     const stHint = computed(() => {
         if (!state.stRemoved) return '';
         return '已按设置剔除 ' + state.stRemoved + ' 只 ST 股票';
+    });
+
+    // 一字口径剔除提示（★ 2026-09-15 新增）。
+    // 「竞价一字」的判据 = 9:25 竞价涨幅 ≈ 涨停幅度（= 用户说的「一字就是涨停」）。
+    // 表里若有旧判据留下的非一字行（9:20 前挂过涨停价买单又撤掉），这里会被剔除 —— 
+    // ⛔ 必须把只数说出来：否则用户只会看到「今天只有 8 只」，却无从知道另外 113 行为什么不见了。
+    const yiziFilterHint = computed(() => {
+        if (!state.yiziRemoved) return '';
+        const noPct = state.yiziRemovedNoPct || 0;
+        const notLimit = state.yiziRemoved - noPct;
+        return '已按「一字 = 竞价涨幅达涨停幅度」口径剔除 ' + state.yiziRemoved + ' 只非一字' +
+            (notLimit > 0 ? '（其中 ' + notLimit + ' 只竞价涨幅未达涨停幅度）' : '') +
+            (noPct > 0 ? '（其中 ' + noPct + ' 只缺竞价涨幅、无法判定）' : '');
     });
 
     // 分屏结构：一字池只有一块 —— 用与涨跌停看板同形的 sections 数组承载，
@@ -205,9 +228,10 @@ export function useAuctionYizi() {
     function sealTitle(row) {
         if (!row) return '';
         const point = show920.value ? '9:20' : '9:25';
-        const cnt = row.faCount ? ('；截至 9:25 有封单证据的时点共 ' + row.faCount + ' 个') : '';
+        const cnt = row.faCount ? ('；竞价期间封在涨停价的时点共 ' + row.faCount + ' 个') : '';
         const first = row.faFirst ? ('；首次封上涨停价 ' + row.faFirst) : '';
-        return point + ' 口径封单额（截至该时点最后一笔）' + cnt + first;
+        return point + ' 口径封单额（= 该时点的 ' + (show920.value ? 'fa_0920f 首笔' : 'fa_0925l 末笔') +
+            '；无该字段时回退到该时点前最后一笔）' + cnt + first;
     }
     function rangeText(row) {
         return (row && row.rangeText) || '-';
@@ -218,6 +242,10 @@ export function useAuctionYizi() {
     // 连板（首板/二板/三板…）行内小标文案：无值返回空串（模板据空串决定不渲染该标，绝不显示 '-' 占位）
     function continueText(row) {
         return (row && row.continueText) || '';
+    }
+    // 首封时刻（★ 用户指定：标在【股票名称后面】，如 09:15）：同样无值返回空串 → 模板不渲染
+    function firstTimeText(row) {
+        return (row && row.firstTimeText) || '';
     }
 
     function onRealtimeUpdate(payload) {
@@ -253,6 +281,7 @@ export function useAuctionYizi() {
         themeHints,
         rangeHint,
         stHint,
+        yiziFilterHint,
         sections,
         noTopicAvailable,
         noTopicView,
@@ -273,6 +302,7 @@ export function useAuctionYizi() {
         sealTitle,
         rangeText,
         rangeClass,
-        continueText
+        continueText,
+        firstTimeText
     };
 }

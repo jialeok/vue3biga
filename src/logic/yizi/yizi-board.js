@@ -27,6 +27,11 @@
 //        （题材库稍后变更就会让它变陈旧、被永久冻结）。
 //   §8   本看板的任何业务/UI 状态都不落 localStorage。
 //   §26  日期切换时，迟到的旧请求一律丢弃（_loadSeq 序号闸门）。
+//   ★ 一字判据（2026-09-15 修正）：「竞价一字」= 9:25 竞价涨幅 ≈ 涨停幅度
+//        （logic/auction/limit-up.js#isAuctionYiZi，与早盘竞价看板的红线下划线同一份实现）。
+//        ⛔ 曾经的判据「9:15~9:25 存在任一非空 fa_*」是错的 —— 9:20 前挂的涨停价买单可撤单，
+//        于是「挂过又撤掉」的票全被收进来（09-18 表里 121 行里真一字只有 8 只，看板却显示 113 只）。
+//        Edge Function 已同步修正；本文件在读取后再闸一次（脏行不会被后端修正自动清掉）。
 
 import { reactive } from 'vue';
 import { _dbgLog } from '../../data/debug-log.js';
@@ -54,7 +59,8 @@ import {
     resolveYiziTopics,
     parseTopicPaste,
     yiziSignature,
-    dropStRows
+    dropStRows,
+    filterYiziRows
 } from './model.js';
 
 // ===== 看板状态（本模块唯一的响应式真相，供 composable/UI 读取）=====
@@ -85,6 +91,13 @@ export const yiziBoardState = reactive({
     rangeCovered: 0,
     // 当日快照里被剔除的 ST 只数（⛔ 必须让用户看见，否则会被误读成「当天一字很少」）
     stRemoved: 0,
+    // 当日快照里【口径不符】被剔除的行数（★ 2026-09-15 新增）。
+    // 「竞价一字」的唯一判据是「竞价涨幅 ≈ 涨停幅度」（logic/auction/limit-up.js#isAuctionYiZi）；
+    // 表里若残留了旧判据（任一非空 fa_*）收进来的非一字行，这里如实剔除并计数 ——
+    // ⛔ 绝不静默剔除：只数必须呈现，否则用户会把「口径剔除」误读成「当天一字很少」。
+    yiziRemoved: 0,
+    // 其中「竞价涨幅缺失/无法解析 → 无法判定」的只数（§10：不猜，但也不悄悄扔掉不说）
+    yiziRemovedNoPct: 0,
     // 内容指纹：仅用于「变了才发布」
     signature: ''
 });
@@ -339,14 +352,34 @@ async function _load(date, force) {
         const rawRows = await readAuctionYiziForDate(date);
         if (!isLatest()) return;
 
+        // ③-0 ★ 一字口径闸门（2026-09-15 修正）：只留「竞价涨幅 ≈ 涨停幅度」的行。
+        //      为什么必须有这一道：表里的历史行是【旧判据】落下的 ——
+        //      旧判据「9:15~9:25 存在任一非空 fa_*」会把「9:20 前挂过涨停价买单又撤掉」的票
+        //      也当成一字（09-18 实测 121 行里只有 8 行是真一字，看板却显示 113 只）。
+        //      Edge Function 的判据已同步修正，但它只对【未来抓取】生效；已落库的脏行不会被它清掉，
+        //      所以这里再闸一次 —— 判据来源仍是同一个 isAuctionYiZi，不是第二套口径。
+        //      ⛔ 剔除只数如实记录（yiziRemoved / yiziRemovedNoPct），绝不静默。
+        const gated = filterYiziRows(rawRows);
+        yiziBoardState.yiziRemoved = gated.removed;
+        yiziBoardState.yiziRemovedNoPct = gated.droppedNoPct;
+        if (gated.removed > 0) {
+            _dbgLog('[AUCTION-YIZI] ' + date + ' 口径剔除 ' + gated.removed + ' 行（未达涨停幅度 ' +
+                gated.droppedNotLimit + ' / 缺竞价涨幅 ' + gated.droppedNoPct + '），表内原 ' + rawRows.length + ' 行');
+        }
+
         // ③ 剔除 ST（★ 用户指定：本看板不出现 ST）。
         //    ⛔ 表里照旧保留 ST 行（快照真相），这里只是展示口径 —— 但必须计入 stRemoved 让用户看见。
-        const dropped = dropStRows(rawRows);
+        const dropped = dropStRows(gated.rows);
         const rows = dropped.rows;
         yiziBoardState.stRemoved = dropped.removed;
         if (rows.length === 0) {
             _publishEmpty(date, { error: '' });
             yiziBoardState.stRemoved = dropped.removed;
+            // ⚠️ _publishEmpty 会把口径剔除只数一并归零，这里必须还原：
+            //    「表里有 121 行、但没有一行是真一字」这件事恰恰是最需要告诉用户的
+            //    （否则他会看到「暂无数据」并以为抓取坏了）。§10：未就绪 ≠ 没有，脏数据 ≠ 没有。
+            yiziBoardState.yiziRemoved = gated.removed;
+            yiziBoardState.yiziRemovedNoPct = gated.droppedNoPct;
             return;
         }
 
@@ -497,18 +530,50 @@ export async function rebuildYiziGrouping(date) {
  * 与涨跌停看板 / 早盘竞价看板同一张表、同一套「累加去重、不覆盖」规则（pushStockTopicsToCloud），
  * 因此三个看板的题材天然互通：这里导的题材，另两个看板立刻可用；反之亦然。
  *
+ * ── ⚠️ 先明确一件事（2026-09-15 用户提问：「导入题材是不是有问题，导致股票数量变多」）──
+ *   **本函数【不可能】改变本看板的股票只数。** 看板只数的唯一链路是：
+ *     state.count ← 本文件 rows.length ← data/auction-yizi.js#readAuctionYiziForDate(auction_yizi)
+ *   而本函数只调 pushStockTopicsToCloud 写 `stock_topics`（题材库），
+ *   ⛔ 从不写 `auction_yizi`（全仓只有 Edge Function 与 db/yizi-backfill.mjs 写它）。
+ *   导入后确实会走一次整板重载（loadYiziBoard force），但重读的还是同一张 auction_yizi。
+ *   用户当天看到「数量变多」的真凶是【一字判据】把非一字票收进了表里（见文件头 ★ 判据说明）——
+ *   导入只是恰好触发了一次重载，让本来就错的表内容第一次显示出来。
+ *   为了让这件事可核对，下面会把「本次导入的票里有几只在当前看板池内」一并回报。
+ *
  * @param {string} text 粘贴文本
- * @returns {Promise<{ok:boolean, imported:number, skipped:number, failed:number, message:string}>}
+ * @returns {Promise<{ok:boolean, imported:number, skipped:number, failed:number, inPool:number, message:string}>}
  */
 export async function importYiziTopicsFromPaste(text) {
     const parsed = parseTopicPaste(text);
     if (parsed.rows.length === 0) {
-        return { ok: false, imported: 0, skipped: parsed.skipped, failed: 0, message: '没有解析到有效的「股票 + 题材」行' };
+        return { ok: false, imported: 0, skipped: parsed.skipped, failed: 0, inPool: 0, message: '没有解析到有效的「股票 + 题材」行' };
     }
+
+    // ★ 写库前必须先确保题材库已加载。
+    //   原因（真实数据丢失路径）：pushStockTopicsToCloud 是「读云端已有 → 合并本次 → 写回」，
+    //   它读的是 state._cloudTopicsCache。若题材库尚未加载（缓存为空/为 null），
+    //   「云端已有」会被读成空集 → 写回时就**用本次这一批题材覆盖掉线上已有的题材**（丢数据）。
+    //   导入是低频人工操作，这里多等一次加载完全可接受；失败也不阻断（只是提示风险）。
+    try {
+        await ensureTopicLibraryLoaded();
+    } catch (e) {
+        _dbgLog('[AUCTION-YIZI] 导入前加载题材库失败（继续导入，但可能覆盖线上已有题材）: ' + (e && e.message || e));
+    }
+
+    // 当前看板池内的股票名集合（用于回报「本次导入的票有多少真属于本板」）
+    const poolNames = new Set();
+    (yiziBoardState.blocks || []).forEach(function(b) {
+        (b.stocks || []).forEach(function(s) {
+            if (s && s.stock) poolNames.add(String(s.stock).trim());
+        });
+    });
+
     let imported = 0;
     let failed = 0;
+    let inPool = 0;
     for (const row of parsed.rows) {
         const code = row.code || getStockCode(row.stock) || '';
+        if (poolNames.has(String(row.stock).trim())) inPool++;
         try {
             await pushStockTopicsToCloud(row.stock, row.topics, code);
             imported++;
@@ -526,8 +591,10 @@ export async function importYiziTopicsFromPaste(text) {
     const date = yiziBoardState.date;
     if (date) await loadYiziBoard(date, { force: true });
     const message = '题材导入完成：成功 ' + imported + ' 只，失败 ' + failed + ' 只' +
-        (parsed.skipped > 0 ? '，跳过 ' + parsed.skipped + ' 行（无有效题材）' : '');
-    return { ok: imported > 0, imported: imported, skipped: parsed.skipped, failed: failed, message: message };
+        (parsed.skipped > 0 ? '，跳过 ' + parsed.skipped + ' 行（无有效题材）' : '') +
+        (poolNames.size > 0 ? '（其中 ' + inPool + ' 只在本看板当前一字池内，其余只影响其它看板；' +
+            '导入不会改变本看板的股票只数）' : '');
+    return { ok: imported > 0, imported: imported, skipped: parsed.skipped, failed: failed, inPool: inPool, message: message };
 }
 
 // ===== Realtime 回调入口（channel 由 data/auction-yizi.js 持有）=====
