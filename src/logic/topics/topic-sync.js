@@ -47,12 +47,20 @@ import { resolveYiziTopics } from '../yizi/model.js';
 const _syncedDates = new Set();
 // 单飞：同一天同一时刻只跑一次
 let _inflight = null;
-// 本会话【累计】补进共享库的只数。
+// 本会话内【按日期】累计补进共享库的只数：{ 'YYYY-MM-DD': n }
 // 为什么需要它（而不是只用单次 filled）：
-//   回填只在第一个加载的看板里真正发生；另一个看板随后加载时命中 `_syncedDates` 去重 →
-//   拿到 filled=0 → 界面上什么也不显示。用户关心「有没有自动补上」，所以把结果记成
-//   会话累计，任何看板、任何时刻读到的都是同一个真实数字（⛔ 不是每块板各算一遍）。
-let _sessionFilled = 0;
+//   回填只在**第一个加载该日期的看板**里真正发生；相邻的另一个看板随后加载时命中
+//   `_syncedDates` 去重 → 拿到 filled=0 → 界面上什么都不显示。用户关心「有没有自动补上」，
+//   所以把结果按日期记下来，同一天的任何看板读到的都是同一个真数（⛔ 不是每块板各算一遍）。
+// ⚠️ 必须【按日期】分开记，不能只留一个全局累计：
+//   否则在 09-18 上会显示「已自动为 38 只…」——那 38 只其实是看 09-17 时补的，
+//   日期切换后数字不动 = 与当前所见对不上（本项目对「数字必须可解释」的要求）。
+const _filledByDate = Object.create(null);
+
+/** 该日期在本会话内累计补进库的只数（0 = 本会话没为这一天补过，或确实没什么可补） */
+function _filledOf(date) {
+    return (date && _filledByDate[date]) || 0;
+}
 
 /**
  * 把某日「竞价一字」快照里接口自带的题材，自动补进共享题材库（**只补空缺、不覆盖、不写空**）。
@@ -66,21 +74,23 @@ let _sessionFilled = 0;
  *          不要传已加工过的展示行。
  * @returns {Promise<{ok:boolean, reason:string, date?:string, scanned?:number, withTopics?:number,
  *                    skippedHasTopics?:number, filled?:number, failed?:number, filledNames?:string[],
- *                    sessionFilled:number}>}
- *          · `filled`        = **本次调用**真正写进库的只数（命中会话去重时为 0）；
- *          · `sessionFilled` = **本会话累计**写进库的只数 —— 界面提示请用这个。
- *            原因：回填只在第一个加载的看板里发生，另一个看板随后加载拿到 filled=0，
- *            若用 filled 做提示，用户会以为「没生效」。
+ *                    dateFilled:number}>}
+ *          · `filled`     = **本次调用**真正写进库的只数（命中会话去重时为 0）；
+ *          · `dateFilled` = **该日期在本会话内累计**写进库的只数 —— 界面提示请用这个。
+ *            原因①：回填只在第一个加载本日期的看板里发生，另一个看板随后加载拿到 filled=0，
+ *                   若用 filled 做提示，用户会以为「没生效」；
+ *            原因②：按**日期**分开记而不是全局累计 —— 否则切到别的日期后数字不动，
+ *                   与用户当前看到的这一天对不上。
  *          ⚠️ 返回值只用于日志/可选提示，⛔ 任何 reason 都不得升级成看板级 error
  *          （本模块失败 = 「这次没自动补」，不是「看板坏了」）。
  */
 export async function syncYiziTopicsIntoLibrary(date, opts) {
     const force = !!(opts && opts.force);
-    if (!date) return { ok: false, reason: 'no-date', filled: 0, sessionFilled: _sessionFilled };
+    if (!date) return { ok: false, reason: 'no-date', filled: 0, dateFilled: _filledOf(date) };
     const presetRows = (opts && opts.rows) || null;
     if (!force && _syncedDates.has(date)) {
         // 本日已跑过：本次 filled 当然是 0，但**累计值照旧返回** —— 界面上要能显示「补了多少」
-        return { ok: true, reason: 'already-synced', date: date, filled: 0, sessionFilled: _sessionFilled };
+        return { ok: true, reason: 'already-synced', date: date, filled: 0, dateFilled: _filledOf(date) };
     }
     if (_inflight && _inflight.date === date) return _inflight.promise;
     const p = _sync(date, presetRows).finally(function() {
@@ -106,7 +116,7 @@ async function _sync(date, presetRows) {
     }
     if (!isCloudTopicsLoaded()) {
         _dbgLog('[TOPIC-SYNC] ' + date + ' 题材库未成功加载 → 放弃自动回填（避免覆盖线上已有题材）');
-        return { ok: false, reason: 'library-not-loaded', filled: 0, sessionFilled: _sessionFilled };
+        return { ok: false, reason: 'library-not-loaded', filled: 0, dateFilled: _filledOf(date) };
     }
 
     // ② 读一字快照（§10：失败如实回报「读失败」，⛔ 不伪装成「没有可补的」）
@@ -117,7 +127,7 @@ async function _sync(date, presetRows) {
             rows = await readAuctionYiziForDate(date);
         } catch (e) {
             _dbgLog('[TOPIC-SYNC] ' + date + ' 读 auction_yizi 失败，本次不自动回填: ' + (e && e.message || e));
-            return { ok: false, reason: 'read-failed', date: date, filled: 0, sessionFilled: _sessionFilled };
+            return { ok: false, reason: 'read-failed', date: date, filled: 0, dateFilled: _filledOf(date) };
         }
     }
 
@@ -169,7 +179,7 @@ async function _sync(date, presetRows) {
 
     // 记成「已同步」（含 filled=0：那也是有效结论 —— 接口这天的题材库里都有了）
     _syncedDates.add(date);
-    _sessionFilled += filled;
+    _filledByDate[date] = _filledOf(date) + filled;
 
     if (filled > 0) {
         _dbgLog('[TOPIC-SYNC] ' + date + ' 自动回填题材 ' + filled + ' 只' +
@@ -186,6 +196,6 @@ async function _sync(date, presetRows) {
         filled: filled,
         failed: failed,
         filledNames: filledNames,
-        sessionFilled: _sessionFilled
+        dateFilled: _filledOf(date)
     };
 }

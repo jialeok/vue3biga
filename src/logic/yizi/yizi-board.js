@@ -416,10 +416,11 @@ async function _load(date, force) {
         // 立刻就能被同一屏的「题材库来源」统计认到，用户能看到「自动补了几只」的效果。
         try {
             const syncRes = await syncYiziTopicsIntoLibrary(date, { rows: rawRows });
-            // ⚠️ 取 sessionFilled（本会话累计）而不是 filled（本次调用）：
-            //    回填只在**第一个加载的看板**里真正发生，相邻的另一个看板随后加载时命中会话去重、
-            //    filled 恒为 0 → 用它做提示会让用户以为「没补上」。累计值两个看板读到的是同一个真数。
-            if (isLatest()) yiziBoardState.topicAutoFilled = (syncRes && syncRes.sessionFilled) || 0;
+            // ⚠️ 取 dateFilled（本会话内【该日期】累计）而不是 filled（本次调用）：
+            //    回填只在**第一个加载本日期的看板**里真正发生，相邻的另一个看板随后加载时命中会话去重、
+            //    filled 恒为 0 → 用它做提示会让用户以为「没补上」。
+            //    ⛔ 也不能用跨日期的全局累计 —— 那会让切日期后数字不动、与当前所见对不上。
+            if (isLatest()) yiziBoardState.topicAutoFilled = (syncRes && syncRes.dateFilled) || 0;
         } catch (e) {
             if (isLatest()) yiziBoardState.topicAutoFilled = 0;
             _dbgLog('[AUCTION-YIZI] ' + date + ' 题材自动回填异常（不影响看板）: ' + (e && e.message || e));

@@ -296,10 +296,10 @@ async function _load(date, force) {
         // ⛔ 失败绝不写 error、绝不阻断 —— 自动补题材是**增强**，涨跌停看板本身的数据不依赖它。
         try {
             const syncRes = await syncYiziTopicsIntoLibrary(date);
-            // ⚠️ sessionFilled（本会话累计），不是 filled（本次调用）——
-            //    一字看板通常先加载并已完成回填，本板随后加载时 filled 恒为 0；
-            //    用累计值才能如实告诉用户「总共自动补了多少只」。理由详见 topic-sync.js。
-            limitBoardState.topicAutoFilled = (syncRes && syncRes.sessionFilled) || 0;
+            // ⚠️ dateFilled（本会话内【该日期】累计），不是 filled（本次调用）——
+            //    一字看板通常先加载并已完成当天的回填，本板随后加载时 filled 恒为 0；
+            //    用该日期的累计值才能如实告诉用户「这一天自动补了多少只」。理由详见 topic-sync.js。
+            limitBoardState.topicAutoFilled = (syncRes && syncRes.dateFilled) || 0;
         } catch (e) {
             limitBoardState.topicAutoFilled = 0;
             _dbgLog('[LIMIT-POOL] ' + date + ' 题材自动回填异常（不影响看板）: ' + (e && e.message || e));
