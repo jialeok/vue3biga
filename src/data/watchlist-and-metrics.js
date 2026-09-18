@@ -13,6 +13,7 @@ import { startStockCodeMapRealtime, stopStockCodeMapRealtime } from './stock-cod
 import { startBiddingRealtime, stopBiddingRealtime } from './bidding-data.js';
 import { startJiwangRealtime, stopJiwangRealtime } from './jiwang-data.js';
 import { startLimitPoolRealtime, stopLimitPoolRealtime } from './limit-pool.js';
+import { startAuctionYiziRealtime, stopAuctionYiziRealtime } from './auction-yizi.js';
 import { startHighlightsRealtime, stopHighlightsRealtime, pullDailyHighlights } from './daily-highlights.js';
 import { startHotStocksRealtime, stopHotStocksRealtime, startHotHighlightsRealtime, stopHotHighlightsRealtime, startHotTrendsRealtime, stopHotTrendsRealtime, triggerHotMetricsRealtimeReload } from './hot-stocks.js';
 import { setAuctionDateData } from './auction-data.js';
@@ -198,6 +199,7 @@ import { setAuctionDateData } from './auction-data.js';
             startBiddingRealtime(); // 同时启动 bidding_data 表的 Realtime 订阅（竞价变化看板）
             startJiwangRealtime(); // 同时启动 jiwang_data 表的 Realtime 订阅（记忘看板）
             startLimitPoolRealtime(); // 同时启动 limit_pool 表的 Realtime 订阅（涨跌停看板；15:40 limit-pool-fetch 写完后自动刷新）
+            startAuctionYiziRealtime(); // 同时启动 auction_yizi 表的 Realtime 订阅（竞价一字看板；9:25 auction-yizi-fetch 写完后自动刷新；独立小号函数，与竞价看板无关）
             startHighlightsRealtime(); // 同时启动 daily_highlights 表的 Realtime 订阅（竞/昨高光）
             startHotStocksRealtime(); // 同时启动 hot_stocks / market_metrics(scope=hot) 的 Realtime 订阅（共享影子记录：喂题材缓存与趋势二级市场回退）
             startHotHighlightsRealtime(); // 同时启动 hot_stocks_highlights 的 Realtime 订阅（共享竞/昨高光影子数据）
@@ -247,6 +249,7 @@ import { setAuctionDateData } from './auction-data.js';
             stopBiddingRealtime();
             stopJiwangRealtime();
             stopLimitPoolRealtime();
+            stopAuctionYiziRealtime();
             stopHighlightsRealtime();
             stopHotStocksRealtime();
             stopHotHighlightsRealtime();

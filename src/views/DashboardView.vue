@@ -72,6 +72,10 @@
     <EmotionBoard v-show="boardView === 'trading'" />
     <!-- 「涨跌停」看板：独立看板组件（在情绪看板之下、早盘竞价看板之上） -->
     <LimitBoard v-show="boardView === 'trading'" />
+    <!-- 「竞价一字」看板：独立看板组件（在涨跌停看板之下、早盘竞价看板之上；
+         数据来自猫抓数据【另一只小号】的 daily_auc_fd，独立 Edge Function auction-yizi-fetch
+         每交易日北京 09:25 抓取，与早盘竞价看板彻底解耦） -->
+    <AuctionYiziBoard v-show="boardView === 'trading'" />
     <AuctionBoard v-show="boardView === 'trading'" />
     <DuibanBoard v-show="boardView === 'trading'" />
     <EtfBoard v-show="boardView === 'trading'" />
@@ -205,6 +209,7 @@ import EtfBoard from './EtfBoard.vue';
 import JiwangBoard from './JiwangBoard.vue';
 import EmotionBoard from './EmotionBoard.vue';
 import LimitBoard from './LimitBoard.vue';
+import AuctionYiziBoard from './AuctionYiziBoard.vue';
 import StatsBoard from './StatsBoard.vue';
 import StarStatsBoard from './StarStatsBoard.vue';
 import WeekendStatsBoard from './WeekendStatsBoard.vue';

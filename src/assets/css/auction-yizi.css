@@ -1,0 +1,427 @@
+        /* 竞价一字看板（独立看板，类名统一 yizi- 前缀，不与其它看板混用）
+           布局与「涨跌停」看板基本一致（题材分块 + 题材条 + 股票行 + 列图例 + 无题材开关 + 导入入口），
+           配色刻意区别于相邻的涨跌停看板（玫红）与早盘竞价看板（紫）：本板用深红（一字 = 强涨停语义）。 */
+        .yizi-board {
+            margin: 0 15px 10px;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        }
+
+        .yizi-board.minimized {
+            margin-bottom: 10px;
+        }
+
+        .yizi-header {
+            padding: 10px 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            background: linear-gradient(135deg, #dc2626, #991b1b);
+            transition: background 0.2s;
+        }
+
+        .yizi-header:hover {
+            background: linear-gradient(135deg, #b91c1c, #7f1d1d);
+        }
+
+        .yizi-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #ffffff;
+            white-space: nowrap;
+        }
+
+        .yizi-summary {
+            flex: 1;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.95);
+            text-align: right;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .yizi-import-entry {
+            flex-shrink: 0;
+            padding: 2px 8px;
+            font-size: 11px;
+            color: #ffffff;
+            border: 1px solid rgba(255, 255, 255, 0.55);
+            border-radius: 10px;
+            white-space: nowrap;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .yizi-import-entry:hover {
+            background: rgba(255, 255, 255, 0.18);
+        }
+
+        .yizi-toggle-btn {
+            width: 24px;
+            height: 24px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.9);
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.2);
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .yizi-content {
+            /* 收窄内边距：横向省下的宽度直接变成题材列的可视宽度 */
+            padding: 8px 10px;
+            background: #ffffff;
+        }
+
+        .yizi-error,
+        .yizi-warn {
+            margin-bottom: 8px;
+            padding: 6px 10px;
+            font-size: 11px;
+            border-radius: 8px;
+        }
+
+        .yizi-error {
+            color: #b91c1c;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+        }
+
+        .yizi-warn {
+            color: #92400e;
+            background: #fef3c7;
+            border: 1px solid #fde68a;
+        }
+
+        .yizi-retry {
+            color: #2563eb;
+            text-decoration: underline;
+            cursor: pointer;
+        }
+
+        .yizi-empty {
+            padding: 14px 6px;
+            font-size: 12px;
+            color: #94a3b8;
+            text-align: center;
+        }
+
+        .yizi-section-title {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 2px 2px 6px;
+            font-size: 12px;
+            font-weight: 700;
+            color: #991b1b;
+        }
+
+        .yizi-section-count {
+            font-size: 11px;
+            font-weight: 500;
+            color: #64748b;
+        }
+
+        /* 列图例：9px 单行。flex 宽度规则与 .yizi-row 一一对应，语义即列义（本身不占宽度） */
+        .yizi-head-row {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 1px 4px 3px;
+            font-size: 9px;
+            color: #94a3b8;
+            border-bottom: 1px solid #f1f5f9;
+        }
+
+        .yizi-head-seq {
+            flex: 0 0 14px;
+            text-align: center;
+        }
+
+        .yizi-head-name {
+            flex: 0 0 auto;
+        }
+
+        .yizi-head-topics {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .yizi-head-metric {
+            flex: 0 0 auto;
+            text-align: right;
+        }
+
+        .yizi-topic-bar {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin: 6px 0 2px;
+            padding: 3px 6px;
+            background: #f1f5f9;
+            border-radius: 6px;
+            font-size: 11px;
+            line-height: 15px;
+        }
+
+        .yizi-topic-name {
+            flex: 0 1 auto;
+            min-width: 0;
+            font-weight: 700;
+            color: #0f172a;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .yizi-topic-count {
+            flex: 0 0 auto;
+            font-size: 10px;
+            color: #64748b;
+            white-space: nowrap;
+        }
+
+        /* ===== 「无题材」过滤开关：与早盘竞价 / 涨跌停看板同款紧凑 switch（28×16） ===== */
+        .yizi-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 4px;
+            padding: 1px 2px 5px;
+            border-bottom: 1px solid #f1f5f9;
+        }
+
+        .yizi-toggle-item {
+            display: flex;
+            align-items: center;
+            gap: 3px;
+        }
+
+        .yizi-toggle-label {
+            font-size: 10.5px;
+            color: #6d28d9;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        .yizi-toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 28px;
+            height: 16px;
+            flex-shrink: 0;
+        }
+
+        .yizi-toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .yizi-toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #cbd5e1;
+            transition: 0.2s;
+            border-radius: 16px;
+        }
+
+        .yizi-toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 12px;
+            width: 12px;
+            left: 2px;
+            bottom: 2px;
+            background-color: #ffffff;
+            transition: 0.2s;
+            border-radius: 50%;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+        }
+
+        .yizi-toggle-switch input:checked + .yizi-toggle-slider {
+            background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+        }
+
+        .yizi-toggle-switch input:checked + .yizi-toggle-slider:before {
+            transform: translateX(12px);
+        }
+
+        /* 股票行：单行 flex。左「名称块」随内容伸缩，右「封单额/竞价涨幅」随内容定宽，
+           中间「题材」= flex:1 且可折行 → 剩余宽度全部归它（本看板的主角列）。 */
+        .yizi-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 4px;
+            padding: 5px 4px;
+            font-size: 12px;
+            line-height: 16px;
+            border-bottom: 1px solid #f1f5f9;
+        }
+
+        .yizi-row:last-child {
+            border-bottom: none;
+        }
+
+        .yizi-row.is-leader {
+            background: #fff7f7;
+        }
+
+        .yizi-seq {
+            flex: 0 0 14px;
+            text-align: center;
+            font-size: 9px;
+            color: #94a3b8;
+        }
+
+        /* 名称块：股票名 + 龙头标 + ST 标，三段紧贴、整体不换行 */
+        .yizi-name-block {
+            flex: 0 1 auto;
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            white-space: nowrap;
+        }
+
+        .yizi-name {
+            flex: 0 1 auto;
+            min-width: 0;
+            font-weight: 600;
+            color: #0f172a;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .yizi-name.leader {
+            color: #dc2626;
+        }
+
+        /* 龙头标：9px 实心小标，紧贴【股票名之后】 */
+        .yizi-leader-badge {
+            flex: 0 0 auto;
+            padding: 0 3px;
+            border-radius: 2px;
+            font-size: 9px;
+            font-weight: 600;
+            line-height: 12px;
+            color: #ffffff;
+            background: #dc2626;
+            white-space: nowrap;
+        }
+
+        /* ST 标：9px 轻底小标（ST 涨停为 5%，仍属一字，只做提示） */
+        .yizi-st-tag {
+            flex: 0 0 auto;
+            padding: 0 3px;
+            border-radius: 2px;
+            font-size: 9px;
+            font-weight: 600;
+            line-height: 12px;
+            color: #b45309;
+            background: #fef3c7;
+            white-space: nowrap;
+        }
+
+        /* 首次封上时刻：9px 轻底小标；无值时模板不渲染（不会出现 '-' 占位） */
+        .yizi-fa-tag {
+            flex: 0 0 auto;
+            padding: 0 3px;
+            border-radius: 2px;
+            font-size: 9px;
+            font-weight: 600;
+            line-height: 12px;
+            color: #475569;
+            background: #e2e8f0;
+            white-space: nowrap;
+        }
+
+        /* 题材（主角列）：吃满剩余宽度；完整展示 + 允许折行（一票多题材可占多行）。
+           ⛔ 绝不用 white-space:nowrap + text-overflow:ellipsis —— 那正是「题材看不完」的成因。
+           keep-all：禁止在 CJK 字符之间断行 ⇒ 换行只发生在英文逗号处。 */
+        .yizi-topics {
+            flex: 1;
+            min-width: 0;
+            font-size: 11px;
+            color: #475569;
+            white-space: normal;
+            word-break: keep-all;
+            overflow-wrap: break-word;
+        }
+
+        /* 度量列：封单额（主）+ 竞价涨幅（次）**同基线并排、单行**。
+           ⛔ 不做上下两行堆叠 —— 那会把每行撑成 2 倍高（一票单题材时白多占一行），
+           与本项目「能省一行就省一行」的取向冲突。min-width 保证各行两小列纵向对齐。 */
+        .yizi-metric {
+            flex: 0 0 auto;
+            display: flex;
+            align-items: baseline;
+            gap: 4px;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+
+        .yizi-seal {
+            min-width: 46px;
+            text-align: right;
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        /* 竞价涨幅 = 该股涨停幅度（ST 5% / 主板 10% / 创业板 20% / 北交所 30%）→ 有信息量，保留 */
+        .yizi-auc {
+            min-width: 36px;
+            text-align: right;
+            font-size: 9px;
+            font-weight: 500;
+        }
+
+        /* 封单额强弱分档：≥1 亿 → 深红加粗；其余 → 常规深灰（⛔ 不把「没数据」渲染成「封单弱」） */
+        /* ⚠️ 一律带 yizi- 前缀：CSS 是全局的，`seal-flat` / `tone-flat` 这类通用名会串改其它看板的配色 */
+        .yizi-seal-strong { color: #b91c1c; }
+        .yizi-seal-normal { color: #334155; }
+        .yizi-seal-flat { color: #cbd5e1; }
+
+        /* 竞价涨幅方向配色（涨红跌绿，与项目约定一致；同样带 yizi- 前缀避免串色） */
+        .yizi-auc-up { color: #dc2626; }
+        .yizi-auc-down { color: #16a34a; }
+        .yizi-auc-flat { color: #94a3b8; }
+
+        .yizi-import-hint {
+            font-size: 11px;
+            color: #64748b;
+            margin-bottom: 8px;
+            line-height: 1.7;
+        }
+
+        .yizi-import-textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            font-size: 13px;
+            box-sizing: border-box;
+            resize: vertical;
+            font-family: inherit;
+        }
+
+        .yizi-import-result {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #334155;
+            line-height: 1.7;
+        }
