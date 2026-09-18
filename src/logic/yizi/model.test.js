@@ -13,6 +13,7 @@ import {
     sealTone,
     aucTone,
     yiziSignature,
+    isBoardDateAligned,
     OTHER_TOPIC
 } from './model.js';
 
@@ -294,5 +295,23 @@ describe('yiziSignature 内容指纹', () => {
         expect(s1).toBe(s2);
         expect(s1).not.toBe(s3);
         expect(s1).not.toBe(s4);
+    });
+});
+
+describe('isBoardDateAligned 日期对齐判据（§26 切日，防空窗期显示上一天的行）', () => {
+    it('同一日期 → true（这一天的快照可渲染）', () => {
+        expect(isBoardDateAligned('2026-09-17', '2026-09-17')).toBe(true);
+    });
+
+    it('日期不一致 → false（调用方据此显示「加载中」，⛔ 不得渲染另一天的行）', () => {
+        // 真实事故形态：页头已切到 09-14，状态里仍是 09-17 的 129 只
+        expect(isBoardDateAligned('2026-09-17', '2026-09-14')).toBe(false);
+    });
+
+    it('任一侧为空 → false（初始态 / 状态未就绪都不算对齐，不冒险渲染）', () => {
+        expect(isBoardDateAligned('', '2026-09-17')).toBe(false);
+        expect(isBoardDateAligned('2026-09-17', '')).toBe(false);
+        expect(isBoardDateAligned(null, '2026-09-17')).toBe(false);
+        expect(isBoardDateAligned(undefined, undefined)).toBe(false);
     });
 });

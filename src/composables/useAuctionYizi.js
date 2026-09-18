@@ -19,7 +19,7 @@ import {
     isYiziFetchTimeReached,
     importYiziTopicsFromPaste
 } from '../logic/yizi/yizi-board.js';
-import { filterYiziNoTopicBlocks, formatAucPct } from '../logic/yizi/model.js';
+import { filterYiziNoTopicBlocks, formatAucPct, isBoardDateAligned } from '../logic/yizi/model.js';
 
 export function useAuctionYizi() {
     const uiStore = useUiStore();
@@ -46,11 +46,20 @@ export function useAuctionYizi() {
 
     const currentDate = computed(() => uiStore.currentDate);
     const toggleArrow = computed(() => (expanded.value ? '▲' : '▼'));
-    const hasAnyData = computed(() => state.count > 0);
+
+    // ===== §26 日期切换：状态必须「属于当前选中日」才可渲染 =====
+    // 切换日期后新日期的云端读取需要时间。在这个窗口里 state.blocks/count 仍是上一天的内容
+    // （编排层只在加载成功后才整体改写），而页头日期已经变了 —— 此时按 count>0 渲染，
+    // 就会把【上一天的一字池】当成【这一天的一字池】展示（实测出现「页头 09-14、正文 09-17 的 129 只」）。
+    // 因此：日期不对齐 ⇒ 一律按「还没准备好」处理（显示加载中），⛔ 绝不显示另一天的行。
+    // 注意这不是 §10 的「读取失败当空」：读失败仍走 state.error 分支并原样抛错。
+    const stateDateAligned = computed(() => isBoardDateAligned(state.date, currentDate.value));
+    const hasAnyData = computed(() => state.count > 0 && stateDateAligned.value);
 
     const summaryText = computed(() => {
         if (state.error && !hasAnyData.value) return '加载失败';
-        if (!hasAnyData.value) return state.loading ? '加载中…' : '暂无数据';
+        // 日期未对齐 = 这一天的数据还没到（与「这一天没有」是两回事，不能写成暂无数据）
+        if (!hasAnyData.value) return (state.loading || !stateDateAligned.value) ? '加载中…' : '暂无数据';
         return '一字 ' + state.count + ' 只';
     });
 
@@ -58,7 +67,15 @@ export function useAuctionYizi() {
     const fetchTimeHint = computed(() => {
         const d = currentDate.value;
         if (!d || hasAnyData.value || state.error) return '';
+        // 日期还没对齐 = 这一天的数据尚在加载，不适用「等 9:25」提示
+        if (!stateDateAligned.value) return '';
         return isYiziFetchTimeReached(d) ? '' : '当日一字数据将在 9:25 自动抓取';
+    });
+
+    // 空态文案（唯一的空态出口）：区分「正在加载这一天」/「等到 9:25」/「这一天确实没有」
+    const emptyText = computed(() => {
+        if (state.loading || !stateDateAligned.value) return '加载中…';
+        return fetchTimeHint.value || '暂无竞价一字数据';
     });
 
     // 题材来源提示（可解释性）：只在「有票靠库兜底」或「完全没题材」时才提示 —— 这两种情况
@@ -170,6 +187,7 @@ export function useAuctionYizi() {
         hasAnyData,
         summaryText,
         fetchTimeHint,
+        emptyText,
         themeHints,
         sections,
         noTopicAvailable,

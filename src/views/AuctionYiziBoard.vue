@@ -56,17 +56,13 @@
         >重试</span>）
       </div>
 
+      <!-- 空态：唯一出口走 emptyText（区分「正在加载这一天」/「等到 9:25」/「这一天确实没有」）。
+           ⛔ 日期未对齐时绝不渲染另一天的行 —— 那是把上一天的一字池冒充成这一天。 -->
       <div
-        v-if="state.loading && !hasAnyData"
+        v-if="!hasAnyData"
         class="yizi-empty"
       >
-        加载中…
-      </div>
-      <div
-        v-else-if="!hasAnyData"
-        class="yizi-empty"
-      >
-        {{ fetchTimeHint || '暂无竞价一字数据' }}
+        {{ emptyText }}
       </div>
 
       <template v-else>
@@ -237,7 +233,7 @@ const {
   toggleArrow,
   hasAnyData,
   summaryText,
-  fetchTimeHint,
+  emptyText,
   themeHints,
   sections,
   noTopicAvailable,

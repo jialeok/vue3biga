@@ -67,6 +67,12 @@ export const yiziBoardState = reactive({
 // 单飞：同一日期同一时刻只跑一次加载
 let _inflight = null;
 
+// 加载序号（单调递增）：日期快速切换时会有多个加载同时在飞，
+// 它们**完成顺序不确定**。只有序号 === 当前序号的请求才允许写状态，
+// 迟到的旧请求一律丢弃 —— 否则「09-17 的慢请求」会比「09-14 的快请求」晚回来，
+// 把 09-14 的页面覆盖成 09-17 的数据（§26 日期切换 / §23 数据集切换：新日期必须整体换源）。
+let _loadSeq = 0;
+
 function _pad2(n) { return String(n).padStart(2, '0'); }
 
 /** 北京「今天」YYYY-MM-DD（与 workers/_shared-source/date-utils.js#beijingToday 同口径） */
@@ -191,6 +197,9 @@ export async function loadYiziBoard(date, opts) {
 }
 
 async function _load(date, force) {
+    const mySeq = ++_loadSeq;
+    // 「迟到的旧请求」判据：序号不再是最新 → 本次结果已过期，禁止写任何状态
+    const isLatest = function() { return mySeq === _loadSeq; };
     yiziBoardState.loading = true;
     yiziBoardState.error = '';
     try {
@@ -201,6 +210,7 @@ async function _load(date, force) {
         } catch (e) {
             _dbgLog('[AUCTION-YIZI] 交易日历读取失败（放行）: ' + (e && e.message || e));
         }
+        if (!isLatest()) return;
         if (!trading) {
             _publishEmpty(date);
             return;
@@ -208,6 +218,7 @@ async function _load(date, force) {
 
         // ② 读云端快照（§10：读失败必须抛，绝不伪装成空）
         const rows = await readAuctionYiziForDate(date);
+        if (!isLatest()) return;
         if (rows.length === 0) {
             _publishEmpty(date, { error: '' });
             return;
@@ -222,11 +233,13 @@ async function _load(date, force) {
                 _dbgLog('[AUCTION-YIZI] 题材库加载失败: ' + (e && e.message || e));
             }
         }
+        if (!isLatest()) return;
         yiziBoardState.topicLibraryReady = libReady;
 
         // ④ 分组 + 选龙头
         const built = buildBlocksFromRows(rows);
         const sig = yiziSignature(built.blocks, date);
+        if (!isLatest()) return;
         if (!force && yiziBoardState.signature === sig) {
             // 内容一致：只更新轻量字段，不重放分块（§17）
             yiziBoardState.loading = false;
@@ -238,6 +251,9 @@ async function _load(date, force) {
             return;
         }
         yiziBoardState.signature = sig;
+        // ⚠️ 下面四个字段（date / blocks / count / hasSnapshot）必须【一起】赋值：
+        //    UI 用 state.date === 选中日期 判定这份快照是否属于当前日，
+        //    中间态出现「date 已换、blocks 未换」会被判成过期而闪一下加载中。
         yiziBoardState.date = date;
         yiziBoardState.blocks = built.blocks;
         yiziBoardState.count = rows.length;
@@ -248,10 +264,13 @@ async function _load(date, force) {
         yiziBoardState.themeFromLib = built.stats.lib;
         yiziBoardState.themeNone = built.stats.none;
     } catch (e) {
+        if (!isLatest()) return;
         yiziBoardState.error = '竞价一字看板加载失败：' + (e && e.message || e);
         _dbgLog('[AUCTION-YIZI] ' + date + ' 加载失败: ' + (e && e.message || e));
     } finally {
-        yiziBoardState.loading = false;
+        // 只有最新请求才有权把 loading 置回 false：
+        // 否则「早发出的慢请求」会让后发请求的加载中提示提前消失（表现为状态错位）。
+        if (isLatest()) yiziBoardState.loading = false;
     }
 }
 

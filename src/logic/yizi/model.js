@@ -216,3 +216,32 @@ export function yiziSignature(blocks, date) {
     };
     return String(date || '') + '||YIZI||' + one(blocks);
 }
+
+// ============================================================================
+// 五、看板状态与日期的对齐判据（§26 日期切换 / §23 数据集切换）
+// ============================================================================
+
+/**
+ * 看板状态里的快照日期，是否与 UI 当前选中的日期一致。
+ *
+ * 为什么需要这个判据（真实事故形态，2026-09-18 浏览器实测）：
+ *   切换日期后，新日期的加载需要一次云端读取。在这个「还没回来」的窗口里，
+ *   `yiziBoardState.blocks / count` **仍然是上一天的内容**，而页头日期已经是新的一天。
+ *   若直接按 `count > 0` 渲染，就会把【上一天的一字池】当成【这一天的一字池】显示出来
+ *   —— 实测出现「页头 09-14、正文却是 09-17 的 129 只」。这比显示「加载中」严重得多：
+ *   用户会据此得出「这一页的数据不对」的结论，且看不出是没加载完。
+ *
+ * 因此：**只有日期对齐时，快照才可被当作这一天的真相**；
+ * 日期不对齐一律视为「还没准备好」→ UI 显示加载中，⛔ 绝不显示另一天的行。
+ *
+ * ⚠️ 与 §10 不冲突：这**不是**把「读取失败」当成「空」——读取失败走 error 分支（保持 throw）；
+ *    这里处理的是「数据还没到」这个独立的中间态。
+ *
+ * @param {string} stateDate   yiziBoardState.date（快照所属日期）
+ * @param {string} currentDate uiStore.currentDate（UI 当前选中日期）
+ * @returns {boolean} true = 状态属于当前选中日，可渲染
+ */
+export function isBoardDateAligned(stateDate, currentDate) {
+    return !!stateDate && !!currentDate && String(stateDate) === String(currentDate);
+}
+
