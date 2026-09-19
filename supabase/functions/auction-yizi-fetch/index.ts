@@ -705,18 +705,48 @@ async function deleteStaleAuctionYizi(date: string, keepStocks: string[]): Promi
   return ((data as unknown[]) || []).length;
 }
 
-/** 运行日志写入 bidding_fetch_log（与 bidding-a / limit-pool-fetch 同一张表，便于统一排查）。失败忽略。 */
+/**
+ * 运行日志写入 bidding_fetch_log（与 bidding-a / limit-pool-fetch 同一张表，便于统一排查）。
+ *
+ * 🔴🔴 2026-09-20 修正（查出来的真 bug，不是"少一条日志"那么简单）：
+ *   本函数以前 **不检查 resp.ok** —— 而 payload 里带的 `worker` 列在表上**根本不存在**，
+ *   PostgREST 回的是 `42703 column bidding_fetch_log.worker does not exist`，
+ *   被 try/catch 之外的静默路径吞掉（只有网络异常才会进 catch）⇒ **本函数一行日志都没写进去过**。
+ *   后果不只是"没日志"：**趋势路由的「每日预算(6)」与「90 秒冷却」两道额度闸门以本表为唯一依据**
+ *   （`readTrendLogStats`）⇒ 实测 `time_point=eq.yizi-trend` 恒为空 ⇒ **这两道闸门永久失效**，
+ *   小号额度只剩「缺口驱动 + 09:20~09:30 保护窗口」兜着。
+ *   ⇒ 现在：① 遇到「列不存在」**把该列摘掉重试**（最多摘 3 个，兼容将来再加列）；
+ *         ② 真正的失败把 PostgREST 原文打到 `console.error`（Edge 日志里看得见）；
+ *         ③ 无论如何**绝不阻断业务**（日志是附属物，失败只记不抛）。
+ */
 async function writeLog(entry: Record<string, unknown>): Promise<void> {
-  try {
-    await fetch(CONFIG.SUPABASE_URL + '/rest/v1/bidding_fetch_log', {
-      method: 'POST',
-      headers: sbHeaders({ 'Prefer': 'return=minimal' }),
-      body: JSON.stringify(entry),
-      signal: timeoutSignal(10000),
-    });
-  } catch (e) {
-    console.error('写 bidding_fetch_log 失败（已忽略）:', (e as Error)?.message);
+  const payload: Record<string, unknown> = Object.assign({}, entry);   // 浅拷贝：摘列不动调用方的对象
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const resp = await fetch(CONFIG.SUPABASE_URL + '/rest/v1/bidding_fetch_log', {
+        method: 'POST',
+        headers: sbHeaders({ 'Prefer': 'return=minimal' }),
+        body: JSON.stringify(payload),
+        signal: timeoutSignal(10000),
+      });
+      if (resp.ok) return;
+      const text = await resp.text().catch(() => '');
+      // PostgREST 的「列不存在」两种原文：`column <table>.<col> does not exist` / Could not find the '<col>' column
+      const m = text.match(/column\s+\w+\.([A-Za-z_][A-Za-z0-9_]*)\s+does not exist/) ||
+                text.match(/Could not find the '([A-Za-z_][A-Za-z0-9_]*)' column/);
+      const bad = m && m[1];
+      if (bad && Object.prototype.hasOwnProperty.call(payload, bad)) {
+        delete payload[bad];
+        continue;
+      }
+      console.error('写 bidding_fetch_log 失败（HTTP ' + resp.status + '，已忽略）:', text.slice(0, 300));
+      return;
+    } catch (e) {
+      console.error('写 bidding_fetch_log 失败（已忽略）:', (e as Error)?.message);
+      return;
+    }
   }
+  console.error('写 bidding_fetch_log 连续摘列 3 次仍失败（已忽略）：', JSON.stringify(payload).slice(0, 300));
 }
 
 // ----------------------------- 主流程 -----------------------------
@@ -744,7 +774,6 @@ async function runAuctionYizi(opts?: FetchOpts): Promise<Record<string, unknown>
     time_point: 'yizi-0925',
     source: (opts && opts.source) || 'cron',
     job: 'auction-yizi-fetch',
-    worker: 'edge-auction-yizi',
   };
 
   // 1) 交易日闸门（手动指定日期 → 视为补抓，不受闸门限制）
@@ -1483,7 +1512,6 @@ async function runTrend(opts?: { date?: string; window?: number; stocks?: string
     time_point: 'yizi-trend',
     source: 'trend',
     job: TREND.LOG_JOB,
-    worker: 'edge-auction-yizi',
     ok: ok,
     detail: {
       requests: requests,

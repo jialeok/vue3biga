@@ -33,8 +33,23 @@ import { _dbgLog } from '../../data/debug-log.js';
 import { getDragonWindowDates } from '../auction/dragon-rank.js';
 import { readYiziTrendForDates, fetchYiziTrendFromEdge, mapTrendRow } from '../../data/yizi-trend.js';
 
-/** 趋势窗口长度（近 N 个交易日，含 T 日）——与早盘竞价看板的「近5日」同口径 */
-export const YIZI_TREND_WINDOW = 5;
+/**
+ * 趋势窗口长度（近 N 个交易日，含 T 日）。
+ *
+ * 🔴 2026-09-20 由 5 改为 10（用户实测反馈：「9-18 经纬股份涨幅只有最近两天的」）。
+ *   · 旧窗口 5 天 = [09-14 … 09-18]，而该股 09-10~09-16 因控制权变更停牌
+ *     ⇒ 09-14/15/16 三天上游没有数据 ⇒ 5 天窗口里只剩 09-17/09-18 两个点。
+ *   · ⚠️ 关键：**真正有数据的 09-07/08/09 落在窗口之外**，所以「只补库」不会改善观感 ——
+ *     必须同时把窗口扩到 10 天，补回来的数据才显示得出来。
+ *   ⇒ 扩到 10 天的三个理由：
+ *     ① 与「十日涨幅」的窗口 [T-9,T] **完全对齐**（图与主度量同一个分母，不再两套日历）；
+ *     ② 与 `db/create_yizi_trend.sql` 里 cron 的 `window=10` 一致（本来就取 10 天落库）；
+ *     ③ **不多烧一分额度** —— /trend 是「整窗口 = 竞价腿 1 次 + K 线腿 1 次」，
+ *        5 天与 10 天都是 2 次请求。
+ *   ⚠️ 「早盘竞价看板」仍是近 5 日：两看板的趋势窗口**口径独立、互不影响**
+ *      （那边没有「十日涨幅」这个主度量，不需要 10 天）。
+ */
+export const YIZI_TREND_WINDOW = 10;
 
 // ===== 本模块唯一的响应式真相（供 composable/UI 读取）=====
 export const yiziTrendState = reactive({

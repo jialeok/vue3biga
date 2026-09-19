@@ -351,7 +351,7 @@ export function useAuctionYizi() {
         if (!s || !s[leg]) return false;
         return s[leg].some(function(p) { return p.value !== null; });
     }
-    /** 这只股票近 5 日一条数据都没有（面板里改为显示一句说明，而不是 4 张空图） */
+    /** 这只股票近 10 日一条数据都没有（面板里改为显示一句说明，而不是 4 张空图） */
     function trendEmpty(stockName) {
         return !trendHasLeg(stockName, 'volume') && !trendHasLeg(stockName, 'yestVolume') &&
             !trendHasLeg(stockName, 'aucPctChg') && !trendHasLeg(stockName, 'changePct');
