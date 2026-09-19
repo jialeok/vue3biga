@@ -13,7 +13,7 @@
 //           前端补抓必然发生在错过窗口之后，无意义且会多烧一份小号额度）
 //   ② 十日涨幅  ← stock_range_pct 表（缺的票补算，走 logic/auction/range-fill.js，
 //                  与「涨跌停」看板【共用同一份实现口径】；十日涨幅 = 块内排序 + 选龙头的度量）
-//                  🔴 但【通道一的数据源是本看板自己的小号】（2026-09-20 修正）：
+//                  🔴 但【通道一的数据源是本看板自己的小号】（2026-09-19 修正）：
 //                     先读 yizi_trend（0 请求）→ 有缺口才调 /trend（自带 5 道额度闸门）→
 //                     再退回同花顺 K 线（0 猫抓额度）。
 //                     ⛔ 绝不使用 stock-range-pct.js 的 numcat 通道（= 主账号 = 早盘竞价的额度）。
@@ -50,7 +50,7 @@ import { getDragonWindowDates } from '../auction/dragon-rank.js';
 import { makeRangePctOf, getRangeFill } from '../auction/range-fill.js';
 import { readAuctionYiziForDate } from '../../data/auction-yizi.js';
 import { readRangePctForDate } from '../../data/stock-range-pct.js';
-// 🔴 十日涨幅【通道一的数据源】= 本看板自己的小号（2026-09-20 修正额度归属）：
+// 🔴 十日涨幅【通道一的数据源】= 本看板自己的小号（2026-09-19 修正额度归属）：
 //    先读 yizi_trend 缓存（0 上游请求），有缺口才调 /trend（自带 5 道额度闸门）。
 //    ⛔ 绝不能沿用 stock-range-pct.js#fetchNumcatDailyPctRange —— 那条走 numcat-proxy=【主账号】，
 //    是早盘竞价的额度（用户明确要求两个自动获取的账号互不侵占额度）。

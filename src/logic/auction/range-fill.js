@@ -11,7 +11,7 @@
 //   ② 补算【通道一 · 逐日涨幅批量】—— ★ 主通道
 //   ③ 补算【通道二 · 同花顺 K 线】—— 仅在通道一失败（额度用尽 / 403）时兜底
 //
-// 🔴🔴 通道一的【额度归属】必须由调用方显式决定（2026-09-20 修正）：
+// 🔴🔴 通道一的【额度归属】必须由调用方显式决定（2026-09-19 修正）：
 //   · 缺省实现 `fetchNumcatDailyPctRange` → `numcat-proxy` → **主账号 NUMCAT_API_KEY**
 //     ⇒ 这是【早盘竞价看板】的额度，**竞价一字看板禁止使用**。
 //   · 竞价一字必须传 `opts.fetchDailyRange` = `data/yizi-trend.js#fetchYiziDailyPctRange`
@@ -186,7 +186,7 @@ export function makeRangePctOf(rangeMap, localMap) {
  * 1 次请求即可覆盖全部股票 × 10 个交易日（实测 121 只 × 10 天 = 1200 行 / 1732ms）。
  * 额度极省：整批只算 1 次调用。
  *
- * 🔴 **额度归属（2026-09-20 修正，⛔ 别再改回单一通道）**：
+ * 🔴 **额度归属（2026-09-19 修正，⛔ 别再改回单一通道）**：
  *   缺省实现 `fetchNumcatDailyPctRange` 打的是 `numcat-proxy` → **主账号 NUMCAT_API_KEY**。
  *   这条腿只允许【早盘竞价 / 涨跌停】使用 —— 它们的额度与主账号同源。
  *   **竞价一字看板必须传入自己的 `fetchDailyRange`**（走本看板小号，
