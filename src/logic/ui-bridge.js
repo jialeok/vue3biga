@@ -68,15 +68,47 @@ export async function pullCoreTopicsFromCloud() {
     return { name: row.name, synonyms: Array.isArray(syns) ? syns : [] };
   });
 }
+// 把核心词列表全量同步到云端 core_topics（表 PK = name，见 db/create_core_topics.sql）。
+//
+// 【改动 §11 合规】★ 2026-09-18 修「删掉的核心词自己复活 / 删了没反应」：
+//   旧实现 = `delete().neq('name','___never___')`（整表清空）→ `insert(rows)`。两个致命后果：
+//   ① 清空与插入之间存在窗口。此时任何读到空表的路径都会命中
+//      `loadCoreTopicsFromCloud` 的「云端为空 → 推送默认核心词」分支（rules.js），
+//      ⇒ 用户刚删的词被默认词库【整批复活】，表现为「删除没变化」。
+//   ② 整表清空属 §11 明令禁止的「无差别全清」：一次误调用就等于清掉用户全部核心词配置，不可逆。
+//   现在改为：读现有 name 列表 → 只对【本地确实没有的差集】按 name 精确删除 → 其余逐行 upsert。
+//   没有明确要删的名字就一个都不删；删除规模有界、目标明确、可审计。
+//
+// @param {Array<{name:string, synonyms?:string[]}>} topics
+// @returns {Promise<{ok:boolean, kept:number, deleted:number}>} 供调用方 toast（§10）
 export async function pushCoreTopicsToCloud(topics) {
   const sb = getSupabase();
-  if (!sb) return;
-  const { error: delErr } = await sb.from('core_topics').delete().neq('name', '___never___');
-  if (delErr) throw delErr;
-  if (!topics || topics.length === 0) return;
-  const rows = topics.map(t => ({ name: t.name, synonyms: JSON.stringify(t.synonyms || []), updated_at: new Date().toISOString() }));
-  const { error: insErr } = await sb.from('core_topics').insert(rows);
-  if (insErr) throw insErr;
+  if (!sb) throw new Error('Supabase 未就绪，无法同步核心词');
+  const list = (Array.isArray(topics) ? topics : [])
+    .filter(t => t && typeof t.name === 'string' && t.name.trim())
+    .map(t => ({
+      name: t.name.trim(),
+      synonyms: JSON.stringify(t.synonyms || []),
+      updated_at: new Date().toISOString()
+    }));
+
+  // 读云端现有 name，算「要删的差集」
+  const { data: existing, error: selErr } = await sb.from('core_topics').select('name');
+  if (selErr) throw selErr;
+  const keepNames = new Set(list.map(r => r.name));
+  const toDelete = (existing || [])
+    .map(r => (r ? r.name : null))
+    .filter(n => n && !keepNames.has(n));
+  if (toDelete.length > 0) {
+    const { error: delErr } = await sb.from('core_topics').delete().in('name', toDelete);
+    if (delErr) throw delErr;
+  }
+
+  if (list.length > 0) {
+    const { error: insErr } = await sb.from('core_topics').upsert(list, { onConflict: 'name' });
+    if (insErr) throw insErr;
+  }
+  return { ok: true, kept: list.length, deleted: toDelete.length };
 }
 _setCoreTopicsFns(pullCoreTopicsFromCloud, pushCoreTopicsToCloud);
 

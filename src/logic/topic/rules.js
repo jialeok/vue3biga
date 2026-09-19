@@ -11,6 +11,30 @@ let _pushCoreTopicsToCloudFn = null;
 export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pull; _pushCoreTopicsToCloudFn = push; }
 
         let _coreTopicsMemCache = null;
+
+        // ===== core_topics 写入队列（§6 单一真相 + §10 失败必须可见）=================
+        // 所有对云端 core_topics 的写入都必须经过这里，⛔ 禁止任何地方直接调 _pushCoreTopicsToCloudFn。
+        // 理由（★ 2026-09-18 修「删除核心词没反应 / 前台却像成功」的根因）：
+        //   旧实现是 `if (!state._coreTopicsPushingToCloud) { …推送… }` —— 当上一次推送还在飞行中时，
+        //   后来的保存被【直接跳过】：不排队、不报错、也不通知调用方。云端因此保留旧值，
+        //   界面只靠本地内存看着像成功，一刷新 / 一次重拉就「恢复原样」。
+        // 现语义：串行单飞、绝不丢、最后一次写入胜出；返回 Promise 供 UI await 后反馈成败。
+        let _coreTopicsPushChain = Promise.resolve();
+        function _queueCoreTopicsPush(list) {
+            const snapshot = Array.isArray(list) ? list.slice() : [];
+            state._coreTopicsPushingToCloud = true;
+            const p = _coreTopicsPushChain
+                // 前一次失败不阻塞后续（各自失败已由各自调用方反馈），这里只做链路复位
+                .catch(function() {})
+                .then(function() { return _pushCoreTopicsToCloudFn(snapshot); })
+                .finally(function() {
+                    // 只有当自己是队尾时才清标志；若已被更新的保存接管，交给它清
+                    if (_coreTopicsPushChain === p) state._coreTopicsPushingToCloud = false;
+                });
+            _coreTopicsPushChain = p;
+            return p;
+        }
+
         export async function loadCoreTopicsFromCloud() {
             try {
                 const cloudTopics = await _pullCoreTopicsFromCloudFn();
@@ -20,10 +44,9 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
                     if (defaultTopics.length > 0) {
                         _coreTopicsMemCache = defaultTopics;
                         _dbgLog('[CORE-TOPICS] 云端 core_topics 表为空，推送默认 ' + defaultTopics.length + ' 个核心词到云端');
-                        state._coreTopicsPushingToCloud = true;
-                        _pushCoreTopicsToCloudFn(defaultTopics).catch(function(e) {
+                        _queueCoreTopicsPush(defaultTopics).catch(function(e) {
                             _dbgLog('[AUCTION-ERR] core_topics 初始化推送失败: ' + (e && e.message || e));
-                        }).finally(function() { state._coreTopicsPushingToCloud = false; });
+                        });
                     }
                     return;
                 }
@@ -92,15 +115,15 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
             }
         }
 
+        // 保存核心词 = 更新内存缓存（题材分组立即生效）+ 排队写云端（§6 单一真相落在云端）。
+        // 返回 Promise：UI 必须 await 它，成功给成功提示、失败给错误提示并回滚列表（§10）。
+        // 注意 `_topicGroupsCache` 也要清：分组指纹里已含核心词，但显式清掉更稳（§22 不留中间态）。
         export function saveCoreTopics(topics) {
-            _coreTopicsMemCache = topics;
+            const snapshot = Array.isArray(topics) ? topics.slice() : [];
+            _coreTopicsMemCache = snapshot;
             _topicGroupsFp = null;
-            if (!state._coreTopicsPushingToCloud) {
-                state._coreTopicsPushingToCloud = true;
-                _pushCoreTopicsToCloudFn(topics).catch(function(e) {
-                    _dbgLog('[AUCTION-ERR] core_topics 推送失败: ' + (e && e.message || e));
-                }).finally(function() { state._coreTopicsPushingToCloud = false; });
-            }
+            _topicGroupsCache = null;
+            return _queueCoreTopicsPush(snapshot);
         }
 
         // 获取最近5个交易日列表（从当前日期往前推，排除周末和假期）

@@ -6,7 +6,7 @@ import { ref, computed, reactive, watch, onMounted, onUnmounted } from 'vue';
 import { useUiStore } from '../stores/uiStore.js';
 import { useAuctionStore } from '../stores/auctionStore.js';
 import { _on, _off } from '../stores/eventBus.js';
-import { saveData, getTodayGroupList, getGroupData, patchAuctionField, saveModule,
+import { saveData, getTodayGroupList, getGroupData, patchAuctionField, patchAuctionFieldBatch, getAuctionData, saveModule,
   fetchLadderConstituentsMain, fillYesterdayVolumeFromThs, fillTodayYesterdayVolumeFromThs,
   fillYesterdayYesterdayVolumeFromThs, fetchChangePctFromThs,
   fetchTodayAuctionFromNumcat, fetchAllAuctionFromNumcat,
@@ -27,7 +27,7 @@ import { getStockCode } from '../data/stock-code-map.js';
 import { pushStockTopicsToCloud } from '../data/stock-topics.js';
 import { prepareAuctionData } from '../logic/auction/view-helpers.js';
 import { computeAuctionViewDataIncremental } from '../logic/auction/incremental-view.js';
-import { showToast } from '../composables/useToast.js';
+import { showToast, showWarningToast } from '../composables/useToast.js';
 import { apiStatusMap, setApiStatus } from '../logic/ui-bridge.js';
 import { setBtnLoading } from '../logic/shared/core-shared.js';
 // [DRAGON 2026-09-09] 题材龙头：10 日区间涨幅异步加载 + 龙头排名（Logic 层模块）
@@ -1081,33 +1081,135 @@ export function useAuctionBoard() {
     volumeNoteModalActive.value = true;
   }
 
-  function _persistVolumeNote(normalizedNote) {
+  // [FIX 2026-09-18] 题材编辑写入口径重构（修「删了又恢复 / 涨跌停不同步 / 历史未来日期不生效」）。
+  //
+  // 唯一真相：跨看板共享题材库 stock_topics（§6）。三条读取路径都汇到这里：
+  //   · 早盘竞价看板第二页        → item.topics，缺省回退 getStockHistoryTopics
+  //   · 涨跌停看板 limit-pool.js  → getStockHistoryTopics(121 行)
+  //   · 竞价一字看板 yizi-board.js → getStockHistoryTopics(134 行)
+  // ⇒ 只要共享库写对了，三个看板同时正确；共享库没写对，改本地怎么改都是白改。
+  //
+  // 三步（顺序不许颠倒）：
+  //   ① 写共享库（replace 语义，可真删）—— 失败即整体失败：回滚本地显示 + toast 报错（§10）。
+  //      旧实现是 merge 语义（物理上删不掉，见 stock-topics.js 顶部事故说明）＋ .catch(console.warn)
+  //      静默吞错，双重致命：删了等于没删，且失败时界面还显示成功。
+  //   ② 把新题材铺到【所有出现过该股票的日期】的 topics 列（历史 + 当前 + 未来），
+  //      满足「不管历史日期还是未来日期都按最终修改显示」——
+  //      历史日期的 note 里可能内嵌旧题材，但 getDisplayNote 在 topics 非空时优先用 topics 字段，
+  //      所以只覆盖 topics 列即可让显示与分组同步跟上。
+  //      ⚠️ 这些日期【只写 topics 列】：绝不写 note / change_pct。
+  //      历史日期的 change_pct 是当日真实竞价涨幅，写它会直接污染十日涨幅等派生指标（§M 红线）。
+  //   ③ 当前日期额外写 note/change_pct（用户编辑的就是这一天的显示内容）。
+  async function _persistVolumeNote(normalizedNote) {
     if (volumeNoteIndex < 0) return;
     const auctionList = getTodayGroupList('auction');
     const item = auctionList[volumeNoteIndex];
     if (!item) return;
-    item.note = normalizedNote;
+    const stockName = item.stock;
     const parsed = parseNoteToFields(normalizedNote);
+    const topicsArr = extractTopics(normalizedNote);
+    const topicsStr = topicsArr.join(',');
+
+    // 旧值快照：云端写失败时回滚本地显示，避免留下「界面已改、云端没改」的假成功（§10）
+    const prev = { note: item.note, changePct: item.changePct, topics: item.topics };
+
+    // 先落本地：即时反馈（云端确认后再定稿；失败则回滚）
+    item.note = normalizedNote;
     item.changePct = parsed.changePct;
     item.topics = parsed.topics;
     saveData();
     refresh();
 
-    patchAuctionField(uiStore.currentDate, item.stock, {
-      note: normalizedNote,
-      change_pct: parsed.changePct,
-      topics: parsed.topics
-    }).catch(e => console.warn('patchAuctionField note 失败:', e));
-
-    const stockName = item.stock;
-    syncStockCloseFromAuction(stockName, normalizedNote, uiStore.currentDate);
-
-    const topicsArr = extractTopics(normalizedNote);
+    // ── ① 写共享题材库（replace：本次传入即最终结果，可真删题材）──────────────────
     const stockCode = getStockCode(stockName) || item.code || '';
-    pushStockTopicsToCloud(stockName, topicsArr, stockCode).catch(e => console.warn('pushStockTopicsToCloud 失败:', e));
+    try {
+      const res = await pushStockTopicsToCloud(stockName, topicsArr, stockCode, { mode: 'replace' });
+      if (res && res.skipped === 'empty-topics-guard') {
+        showWarningToast('⚠️ 题材已清空，但未写入共享题材库：共享库不允许整只清空（会影响三个看板与全部历史日期）。', 6000);
+      }
+    } catch (e) {
+      item.note = prev.note;
+      item.changePct = prev.changePct;
+      item.topics = prev.topics;
+      saveData();
+      refresh();
+      console.error('[TOPIC-SAVE] 共享题材库写入失败:', e);
+      showWarningToast('❌ 题材保存失败，已回滚显示：' + (e && e.message ? e.message : '未知错误'), 8000);
+      return;
+    }
 
+    // ── ② 铺到所有「行内自带题材」的日期（只写 topics 列）────────────────────────
+    // 题材被清空时不铺（避免把其它日期的题材一起抹掉；共享库也有同样的空值护栏）
+    if (topicsArr.length > 0) {
+      await _syncTopicsAcrossDates(stockName, topicsStr);
+    }
+
+    // ── ③ 当前日期额外写 note + change_pct ────────────────────────────────
+    try {
+      const r = await patchAuctionField(uiStore.currentDate, stockName, {
+        note: normalizedNote,
+        change_pct: parsed.changePct,
+        topics: parsed.topics
+      });
+      if (r && r.ok === false) throw (r.error || new Error('patch 返回失败'));
+    } catch (e) {
+      console.error('[TOPIC-SAVE] 当日备注同步云端失败:', e);
+      showWarningToast('⚠️ 当日备注同步云端失败：' + (e && e.message ? e.message : '未知错误'), 6000);
+    }
+
+    syncStockCloseFromAuction(stockName, normalizedNote, uiStore.currentDate);
     syncStockTopicsFromAuction(uiStore.currentDate);
     saveModule('stocks');
+    showToast('✅ 题材已保存并同步到三个看板');
+  }
+
+  // 把某只股票的题材写进【其它日期】的 topics 列（跨日期单一真相的落地动作）。
+  //
+  // 只挑「该日期该行本来就带题材」且「题材内容确实不同」的日期，理由三条：
+  //   ① 显示口径：行内 topics 非空时 getDisplayNote 优先用它（不回退共享库）⇒ 不覆盖就显示旧题材；
+  //      行内 topics 为空的行（影子行 / 无题材行）显示本就会回退共享库，
+  //      而共享库已在第 ① 步改好 ⇒ 无需、也不该再给这些行发写请求。
+  //      实测依据：09-18 的「桂林旅游」就是影子行（`[AUCTION-DEBUG] …桂林旅游[shadow]`），
+  //      而 patchAuctionFieldBatch 对非正式成员【不写 watchlist 字段】，发了也是空转。
+  //   ② 性能：不筛的话要对内存里 20~30 个日期各发一次请求；筛完通常只剩个位数。
+  //   ③ 安全：只写 topics 列，绝不触碰 note / change_pct ——
+  //      历史日期的 change_pct 是当日真实竞价涨幅，写它会污染十日涨幅等派生指标（§M 红线）。
+  //
+  // @param {string} stockName
+  // @param {string} topicsStr 目标题材（英文逗号分隔）
+  async function _syncTopicsAcrossDates(stockName, topicsStr) {
+    const nameTrim = stockName ? String(stockName).trim() : '';
+    if (!nameTrim) return;
+    const curDate = uiStore.currentDate;
+    // 归一化成「去重 + 排序」再比较，避免仅顺序不同就误判为需要改写
+    const normKey = function (s) {
+      return Array.from(new Set(String(s || '').split(/[+，,，、;；]/).map(function (t) { return t.trim(); }).filter(function (t) { return t; })))
+        .sort().join('|');
+    };
+    const targetKey = normKey(topicsStr);
+    if (!targetKey) return;
+    const allData = getAuctionData() || {};
+    const dates = Object.keys(allData).filter(function (d) {
+      if (d === curDate) return false;   // 当前日期由第 ③ 步一并写 note/change_pct，不重复发
+      const row = (allData[d] || []).find(function (r) {
+        return r && r.stock && r.stock.trim() === nameTrim;
+      });
+      if (!row) return false;
+      const curKey = normKey(row.topics);
+      return curKey !== '' && curKey !== targetKey;
+    });
+    if (dates.length === 0) return;
+    // patchAuctionFieldBatch 内部把错误收成 {ok:false,error} 而不抛出，两条路都要接住
+    const results = await Promise.all(dates.map(function (d) {
+      return patchAuctionFieldBatch(d, [{ stock: nameTrim, topics: topicsStr }])
+        .then(function (r) { return { date: d, ok: !(r && r.ok === false), error: r && r.error }; })
+        .catch(function (e) { return { date: d, ok: false, error: e }; });
+    }));
+    const failed = results.filter(function (r) { return !r.ok; });
+    if (failed.length > 0) {
+      console.error('[TOPIC-SAVE] 部分日期题材同步失败:', failed);
+      showWarningToast('⚠️ ' + failed.length + '/' + dates.length + ' 个日期的题材同步失败（当前日期已保存）', 6000);
+    }
   }
 
 

@@ -3,8 +3,13 @@
 --          src/logic/topic/rules.js（初始化推送默认核心词）
 -- 写入字段对齐代码 src/logic/ui-bridge.js：
 --   SELECT：name,synonyms,updated_at
---   pushCoreTopicsToCloud：先 delete().neq('name','___never___') 清空，再 insert({ name, synonyms, updated_at })
+--   pushCoreTopicsToCloud：读现有 name → 对【差集】delete().in('name', toDelete)
+--                          → 其余 upsert({name,synonyms,updated_at}, onConflict:'name')
+--   ⚠️ 2026-09-18 起不再使用 delete().neq('name','___never___') 整表清空 + insert：
+--      属 §11 红线（无差别全清），且「清空↔插入」窗口会让 rules.js 的
+--      「云端为空 → 推送默认核心词」分支把用户刚删掉的核心词整批复活。
 --   说明：synonyms 由代码 JSON.stringify(数组) 写入、JSON.parse 读出 → 以 text 存 JSON 字符串
+--   写入队列：src/logic/topic/rules.js#_queueCoreTopicsPush（串行单飞，UI 可 await 拿成败）
 -- 注意：本 SQL 需在 Supabase 项目里手动执行一次。
 -- ⚠ TODO: 代码从不订阅 core_topics 的 Realtime（审计 §31 标注"写无订阅"），
 --   因此下方 Realtime 发布块默认保留但不强制；如需多端同步核心词可启用。

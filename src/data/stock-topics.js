@@ -37,21 +37,59 @@ import { state } from '../logic/app-state.js';
 
         // 把单只股票的题材写入云端 stock_topics 表（按 stock 维度，跨日期共享）
         // 用户在主程序编辑题材后调用，确保下次打开主程序时能从 stock_topics 表读到
-        // 规则确认：新旧题材合并累加，同名去重，全部保留，不设数量上限——
-        // 一只股票完全可能同时归属好几个题材分类（第二页题材分类要看全部），
-        // 不能用"这次传入的"直接替换掉之前已经攒下的题材。
-        export async function pushStockTopicsToCloud(stockName, topicsArray, code) {
-            if (!stockName) return;
+        //
+        // 【两种语义，调用方必须显式选择】★ 2026-09-18 修「删掉的题材过一会儿又自己恢复」
+        //   · merge（默认）：新旧题材【并集累加】、只增不减。
+        //       适用于「只补空缺、不覆盖」的自动回填/抓取链路（§22 保留原语义，零行为变化）。
+        //   · replace（opts.mode === 'replace'）：以本次传入的题材为【最终结果】，可真删。
+        //       适用于用户在编辑框里显式增删题材（双击竞价量列 → 个股修改题材）。
+        //
+        //   ⚠️ 事故根因（必读，别再改回单一 merge）：
+        //      原实现只有 merge 语义 —— 删掉「人工智能」时 newTopics 里确实没有它，
+        //      但 existingSet 仍留着它 → 写回云端还是「旅游,人工智能,大消费」。
+        //      涨跌停看板（limit-pool.js）、竞价一字看板（yizi-board.js）都走
+        //      getStockHistoryTopics 读这张表 ⇒ 表现为「怎么删都删不掉，只有早盘竞价自己看着变了」。
+        //      且 buildTopicCache 是「先用 cloud 填、再 scan 历史只 add 不覆盖」，
+        //      任何一次缓存重建都会把旧题材加回来 ⇒ 表现为「过一会儿又恢复了」。
+        //
+        //   一只股票完全可能同时归属好几个题材分类（第二页题材分类要看全部），不设数量上限。
+        //
+        // @param {string} stockName
+        // @param {string[]} topicsArray 题材名数组
+        // @param {string} [code] 股票代码；为空则 payload 不带 code 列（不动库里已有代码）
+        // @param {{mode?: 'merge'|'replace'}} [opts] 写入语义，默认 merge
+        // @returns {Promise<{ok:boolean, mode:string, topics:string[], skipped?:string}>}
+        export async function pushStockTopicsToCloud(stockName, topicsArray, code, opts) {
+            if (!stockName) return { ok: false, mode: 'skip', topics: [], skipped: 'no-stock' };
             const sb = getSupabase();
+            if (!sb) throw new Error('Supabase 未就绪，无法写入共享题材库');
             const trimmedName = stockName.trim();
             const newTopics = (topicsArray || []).filter(t => t && t.trim()).map(t => t.trim());
+            const replaceMode = !!(opts && opts.mode === 'replace');
 
-            // 先取云端/本地缓存里该股票已有的题材，与本次新题材合并去重
-            const existingSet = (state._cloudTopicsCache && state._cloudTopicsCache[trimmedName])
-                ? new Set(state._cloudTopicsCache[trimmedName])
-                : new Set();
-            newTopics.forEach(function(t) { existingSet.add(t); });
-            const mergedTopics = Array.from(existingSet);
+            // §11 删除护栏：replace 模式收到空题材时【拒绝写】。
+            //   语义澄清：编辑框里把括号内容清空 = 「清掉这一行的题材显示」，
+            //   【不等于】「把这只股票从跨看板共享题材库里抹掉」——
+            //   后者影响面覆盖三看板 + 全部历史日期，属不可逆的整列清空，
+            //   必须由专门入口（带二次确认）执行，不能由一次清空编辑触发。
+            if (replaceMode && newTopics.length === 0) {
+                _dbgLog('[TOPIC-LIB] replace 模式收到空题材，拒绝清空共享库: ' + trimmedName);
+                return { ok: false, mode: 'replace', topics: [], skipped: 'empty-topics-guard' };
+            }
+
+            // 计算最终题材列表
+            let mergedTopics;
+            if (replaceMode) {
+                // 替换：本次传入即最终结果（去重保序），可真删
+                mergedTopics = Array.from(new Set(newTopics));
+            } else {
+                // 合并：取云端/本地缓存里该股票已有的题材，与本次新题材求并集
+                const existingSet = (state._cloudTopicsCache && state._cloudTopicsCache[trimmedName])
+                    ? new Set(state._cloudTopicsCache[trimmedName])
+                    : new Set();
+                newTopics.forEach(function(t) { existingSet.add(t); });
+                mergedTopics = Array.from(existingSet);
+            }
             const topicsStr = mergedTopics.join(',');
 
             const row = {
@@ -73,16 +111,25 @@ import { state } from '../logic/app-state.js';
             state._cloudTopicsCache[trimmedName] = new Set(mergedTopics);
             if (state._topicCacheBuilt && state._topicCache) {
                 state._topicCache[trimmedName] = new Set(mergedTopics);
-                // ★ 别名索引同步累加（与上面这行同语义：并集、不清空、不覆盖已有题材）。
-                //    ⛔ 不能只删 key 等重建 —— 这里不触发重建，删了就永远查不到（静默丢题材）。
-                const nk = normalizeStockName(trimmedName);
-                if (nk) {
-                    if (!state._topicCacheNorm) state._topicCacheNorm = Object.create(null);
-                    let bucket = state._topicCacheNorm[nk];
-                    if (!bucket) { bucket = state._topicCacheNorm[nk] = new Set(); }
-                    mergedTopics.forEach(function(t) { bucket.add(t); });
+                if (replaceMode) {
+                    // 替换语义必须【整体重建别名索引】。原因：原实现只对 bucket 做 add，
+                    // 被删掉的题材会永远留在归一化表里 → 名称变体（如「万  科Ａ」/「七 匹 狼」）
+                    // 仍能查到旧题材，而精确名那一路已经查不到了 ⇒ 同一个库两种答案（§6 破）。
+                    // 全量重建 O(N)（~1100 只），只在用户手动编辑题材时触发，代价可忽略。
+                    state._topicCacheNorm = buildNormalizedTopicIndex(state._topicCache);
+                } else {
+                    // ★ 别名索引同步累加（与上面这行同语义：并集、不清空、不覆盖已有题材）。
+                    //    ⛔ 不能只删 key 等重建 —— 这里不触发重建，删了就永远查不到（静默丢题材）。
+                    const nk = normalizeStockName(trimmedName);
+                    if (nk) {
+                        if (!state._topicCacheNorm) state._topicCacheNorm = Object.create(null);
+                        let bucket = state._topicCacheNorm[nk];
+                        if (!bucket) { bucket = state._topicCacheNorm[nk] = new Set(); }
+                        mergedTopics.forEach(function(t) { bucket.add(t); });
+                    }
                 }
             }
+            return { ok: true, mode: replaceMode ? 'replace' : 'merge', topics: mergedTopics };
         }
 
         // 从云端加载题材库到内存缓存（非阻塞，失败只打日志）
