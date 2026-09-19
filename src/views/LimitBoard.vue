@@ -175,11 +175,13 @@
                   <span class="limit-seq">{{ stock.seq }}</span>
                   <!-- 名称块 = 股票名 → 龙头标 → 连板标，三段紧贴、整体不换行。
                        标一律 9px 小字（与早盘竞价看板 .dragon-badge / .auction-streak-tag 同级占位），
-                       宽度随内容伸缩、不占固定列 —— 省下的宽度全部留给右侧题材列。 -->
+                       宽度随内容伸缩、不占固定列 —— 省下的宽度全部留给右侧题材列。
+                       名称配色（2026-09-19）：涨停板内一律红、跌停板内一律绿 —— 用 tone-up / tone-down
+                       两个既有色调类（与十日涨幅同一套色值），class 只随所在分节走，不新增任何状态。 -->
                   <span class="limit-name-block">
                     <span
                       class="limit-name"
-                      :class="{ leader: stock.isLeader }"
+                      :class="[sec.key === 'up' ? 'tone-up' : 'tone-down', { leader: stock.isLeader }]"
                     >{{ stock.stock }}</span>
                     <span
                       v-if="stock.isLeader"

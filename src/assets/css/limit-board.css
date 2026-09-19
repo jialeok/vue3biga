@@ -341,6 +341,20 @@
             color: #dc2626;
         }
 
+        /* 股票名称方向配色（2026-09-19 需求：涨停板股票名红、跌停板股票名绿，便于一眼分辨两板）。
+           色值与下方 .tone-up / .tone-down（十日涨幅配色：「涨红跌绿」）完全一致，全站同一套口径。
+           ⚠️ 选择器必须写成 .limit-name.tone-X 双重类：它要【盖过】上面的 .limit-name.leader
+              （两者同为 0,2,0 权重，靠位置在后者取胜）—— 因为跌停板里的龙头名也必须是绿的，
+              否则「一片绿里冒一根红线」反而更难辨认；龙头身份仍由红色「龙头」小标 + 整行浅红底标识，信息不丢。
+           模板侧只用 `sec.key === 'up' ? 'tone-up' : 'tone-down'` 绑定，⛔ 不引入任何新状态/新字段。 */
+        .limit-name.tone-up {
+            color: #dc2626;
+        }
+
+        .limit-name.tone-down {
+            color: #16a34a;
+        }
+
         /* 龙头标：9px 实心小标，紧贴【股票名之后】（与早盘竞价看板 .dragon-badge 同级占位） */
         .limit-leader-badge {
             flex: 0 0 auto;
