@@ -31,11 +31,14 @@
 //   ⚠️ 专线是 http 明文 + 非标准端口，Supabase/Deno 侧可能不放行 → 失败就自动
 //      落到下一个候选，不需要你手工改代码。
 //
-// ── 职责（单一）────────────────────────────────────────────────────────────
-//   抓 daily_auc_fd → 只保留「真一字」的行 → 整日对齐写入 auction_yizi。
-//   不做题材分组、不选龙头、不解析题材文本 —— 那些是【派生视图】，
-//   由前端 src/logic/yizi/ 在渲染时用「快照 + 共享题材库 stock_topics」计算。
-//   落库只会多出第二个真相源（题材库稍后变更即让结论陈旧冻结）。
+// ── 职责（两个路由，写入两张【完全不同】的表，⛔ 绝不混用）──────────────────
+//   ① 9:25 腿（/fetch，要 token）：抓 daily_auc_fd → 只保留「真一字」的行 →
+//      整日对齐写入 **auction_yizi**（看板的池子真相）。不做题材分组、不选龙头、
+//      不解析题材文本 —— 那些是【派生视图】，由前端 src/logic/yizi/ 在渲染时用
+//      「快照 + 共享题材库 stock_topics」计算。落库只会多出第二个真相源。
+//   ② 趋势腿（/trend，不校验 token）：抓 daily_auc + daily（另两个 apiname）→
+//      四条腿写 **yizi_trend**（趋势面板的缓存，只补缺口、从不删除）。
+//      详见文件下方「趋势（trend）」章节。⛔ 这条腿绝不碰 auction_yizi。
 //
 // ── 「一字」判据（★ 2026-09-15 已修正，务必读）──────────────────────────────
 //   上游 params 不传 symbols ⇒ 默认返回【全市场】标的。
@@ -958,6 +961,564 @@ async function runAuctionYizi(opts?: FetchOpts): Promise<Record<string, unknown>
   };
 }
 
+// ============================================================================
+// 趋势（trend）—— 「近 N 个交易日」的四条腿 → yizi_trend 缓存表
+// ============================================================================
+//
+// 【这个路由是干什么的】
+//   「竞价一字」看板的每行可以点开一个趋势面板，和「早盘竞价」看板一样显示 4 条曲线：
+//     竞价量 / 昨日成交量 / 竞价涨幅 / 涨幅（「十日涨幅」由前端从 stock_range_pct 直接读，
+//     不走本路由，所以这里只有 4 条腿）。
+//
+// ── ⚠️ 与 9:25 那条腿【完全分开】，⛔ 绝不混用 ─────────────────────────────
+//   9:25 自动抓取用的是 `daily_auc_fd`（判「竞价一字」的口径），本路由用的是**另外两个 apiname**：
+//     · `daily_auc` —— 竞价腿：按 (symbols × 日期区间) 一次拿回
+//                      auc_vol(手) / auc_pct_chg / auc_to_pre_vol_pct
+//     · `daily`     —— K 线腿：同形态一次拿回 pct_chg（当日涨幅）
+//   两支都走【竞价一字小号】的 key（NUMCAT_API_KEY_YIZI）；主账号兜底默认关闭，
+//   与 9:25 腿同一策略 —— 小号失败宁可失败，也不悄悄烧早盘竞价看板的额度。
+//   ⛔ 本路由【不碰】auction_yizi（不写、不删），只写 yizi_trend 这一张缓存表。
+//
+// ── 单位口径（必须与既有实现一致，⛔ 不要另立一套）─────────────────────────
+//   auc_vol(手) → 展示「竞价量(万)」= /100     （同 workers/bidding-auto-fetch/logic/morning-workflow.js#551）
+//   yest_volume(万) = auc_vol(手) / auc_to_pre_vol_pct   （同该文件 #567 的「反推」口径）
+//   auc_pct_chg        = 竞价涨幅（daily_auc）
+//   change_pct         = 当日涨幅（daily 的 pct_chg）
+//   ⛔ 任一腿解析不出来 → 该格写 null / 不写行（§10 不拿 0 顶替「没数据」）。
+//
+// ── 额度保护（★ 小号每天只有 10 次；9:25 自动抓取优先，五道闸门）────────────
+//   ① 缺口驱动：只有「窗口里确实缺某一天的数据」才发请求；已齐 → 0 请求直接回缓存；
+//   ② 时间闸门：北京 09:20~09:30【一律不补拉】—— 结构性保护 9:25 自动抓取，
+//      ⛔ 不靠「相信调用方守规矩」，而是这段时间内物理上不发上游请求；
+//   ③ 冷却：距上一次趋势抓取 < 90 秒 → 本轮跳过（防展开连点把额度打光）；
+//   ④ 预算：本日趋势请求数 ≥ AUCTION_YIZI_TREND_MAX_REQ（默认 6）→ 跳过并如实提示；
+//   ⑤ 请求形态：整窗口 1 次请求（symbols × startdate~enddate），⛔ 不是「每天一次」。
+//   ⛔ 任一闸门触发都【不写库、不删除】，只回既有缓存 + 明确 note（skipped 字段）。
+//
+// ── §11 删除安全 ────────────────────────────────────────────────────────────
+//   本路由【从不删除】yizi_trend 的任何行，只 upsert 缺口（merge-duplicates）。
+//   因此「上游没返回」只会让某些格子保持缺失（前端显示 '-'），绝不会把已有历史抹掉。
+//
+// ── 为什么落库（而不是每次展开现拉）─────────────────────────────────────────
+//   前端展开一次就现拉 = 每天 N 次 × 每窗口 2 次请求 ⇒ 必然把 9:25 抓取饿死。
+//   落库后：每个交易日只多 1 个日期，且跨设备 / 跨会话 0 消耗。
+//
+// ── 手动调用（排查 / 补某日）───────────────────────────────────────────────
+//   GET /functions/v1/auction-yizi-fetch/trend?date=2026-09-18&window=5
+//       ↑ 不传 symbols 时，服务端直接用 auction_yizi(date) 的池子当目标
+//   GET ...&symbols=600000,000001&stocks=浦发银行,平安银行   ← 显式指定（与 symbols 按下标对齐）
+//   GET ...&force=1    ← 忽略「缓存已齐」短路（仍受 ②③④ 三道闸门约束）
+//   ⚠️ 本路由与 /health 同级【不校验 token】：它是浏览器端只读缓存入口，
+//      额度由上面 5 道闸门保护，且从不删除任何数据（numcat-proxy / fuyao-proxy 亦然）。
+
+const TREND = {
+  /** 趋势窗口（近 N 个交易日，含 T 日） */
+  WINDOW: Number(Deno.env.get('AUCTION_YIZI_TREND_WINDOW') || 5),
+  /** 单次请求最多带多少只（上游 symbols 长度的保守上限） */
+  MAX_SYMBOLS: Number(Deno.env.get('AUCTION_YIZI_TREND_MAX_SYMBOLS') || 300),
+  /** 本日趋势上游请求数预算（小号每天 10 次，9:25 自动抓取优先） */
+  MAX_REQUESTS_PER_DAY: Number(Deno.env.get('AUCTION_YIZI_TREND_MAX_REQ') || 6),
+  /** 两次趋势抓取之间的最小间隔（毫秒），防连点 */
+  COOLDOWN_MS: Number(Deno.env.get('AUCTION_YIZI_TREND_COOLDOWN_MS') || 90000),
+  /** ★ 9:25 抓取保护窗口（北京 HH:MM:SS）：其间【一律不发上游请求】 */
+  PROTECT_START: (Deno.env.get('AUCTION_YIZI_TREND_PROTECT_START') || '09:20:00').trim(),
+  PROTECT_END: (Deno.env.get('AUCTION_YIZI_TREND_PROTECT_END') || '09:30:00').trim(),
+  /** 竞价腿请求字段（顺序即上游 items 的位置顺序） */
+  AUC_FIELDS: ['symbol', 'name', 'tradedate', 'auc_vol', 'auc_pct_chg', 'auc_to_pre_vol_pct'],
+  /** K 线腿请求字段 */
+  DAILY_FIELDS: ['symbol', 'tradedate', 'pct_chg'],
+  TABLE: 'yizi_trend',
+  LOG_JOB: 'auction-yizi-trend',
+};
+
+/** 目标股票（股票名 / 6 位代码） */
+type Pair = { stock: string; code: string };
+
+/**
+ * 'a,b,c' → ['a','b','c']（去空项）。
+ * ⛔ 刻意不用正则切分（也不在本文档里写正则字面量，免得里面的结束符提前闭合注释）：
+ *    本文件的体检脚本对正则字面量不友好，见 REFERENCE §N 末。
+ */
+function splitList(raw: string): string[] {
+  return String(raw || '').split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * 近 N 个交易日（含 endDate，升序返回 = 旧 → 新）。
+ * ⚠️ 只用本地日历（与 9:25 腿同一份 KNOWN_HOLIDAYS，⛔ 不额外交请求换交易日历）。
+ * 若 endDate 本身不是交易日（周末/节假日），窗口自然向前滚到最近 N 个交易日。
+ */
+function recentTradingDays(endDate: string, n: number): string[] {
+  const out: string[] = [];
+  const d = new Date(endDate + 'T00:00:00Z');
+  let guard = 0;
+  while (out.length < n && guard < 400) {
+    guard++;
+    const iso = d.toISOString().slice(0, 10);
+    if (localIsTradingDay(iso)) out.push(iso);
+    d.setUTCDate(d.getUTCDate() - 1);
+  }
+  return out.reverse();
+}
+
+/**
+ * 上游端点变形：把 `daily_auc_fd` 那段路径换成别的 apiname。
+ *   · 公网 reference-proxy 是【按 URL 路径】分发（.../stock/daily_auc_fd）→ 必须换路径；
+ *   · 专线 .../api 是【按 body 里的 apiname】分发 → 端点原样不动。
+ * ⛔ 用 split/join 而不是正则字面量：本文件的体检脚本对正则字面量不友好（见 REFERENCE §N 末）。
+ */
+function endpointForApiname(ep: string, apiname: string): string {
+  return ep.indexOf('daily_auc_fd') >= 0 ? ep.split('daily_auc_fd').join(apiname) : ep;
+}
+
+/**
+ * 通用上游请求（apiname / fields / params 全部由调用方给）。
+ *
+ * ⚠️ 刻意与 numcatFetchRaw 分开：
+ *   那个函数是 9:25 自动抓取的咽喉（params 固定 tradedate、apiname 固定 daily_auc_fd），
+ *   本函数服务趋势腿。两者共用的是**上游契约**（POST {apiname,apikey,fields,params}），
+ *   ⛔ 但绝不共用代码 —— 免得改趋势把每天 9:25 的落库搞挂。
+ *   解析口径（包裹形态、错误码）与 numcatFetchRaw 逐字一致。
+ */
+async function numcatPostRaw(
+  endpoint: string, key: string, apiname: string, fields: string[], params: Record<string, unknown>,
+): Promise<RawSnapshot> {
+  if (!key) throw numcatErr('猫抓小号 key 未配置（请设置 Secrets: ' + KEY_PRIMARY + '）', undefined, undefined, undefined, endpoint);
+  const body = { apiname: apiname, apikey: key, fields: fields.join(','), params: params };
+  const t0 = Date.now();
+  let resp: Response;
+  try {
+    resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: timeoutSignal(CONFIG.REQUEST_TIMEOUT_MS),
+    });
+  } catch (e) {
+    const msg = (e as Error)?.message || String(e);
+    throw numcatErr('上游请求未拿到响应（' + CONFIG.REQUEST_TIMEOUT_MS + 'ms 超时 / DNS / 端口不通）: ' + msg,
+      undefined, Date.now() - t0, undefined, endpoint);
+  }
+  const elapsedMs = Date.now() - t0;
+  const text = await resp.text();
+  let json: Record<string, unknown>;
+  try {
+    json = JSON.parse(text) as Record<string, unknown>;
+  } catch (_e) {
+    throw numcatErr('上游返回非 JSON: HTTP ' + resp.status + ' ' + text.slice(0, 200), resp.status, elapsedMs, undefined, endpoint);
+  }
+  const code = typeof json.code === 'number' ? json.code : (resp.ok ? 200 : resp.status);
+  if (!resp.ok) {
+    throw numcatErr('上游 HTTP ' + resp.status + ': ' + String(json.message || text.slice(0, 200)), resp.status, elapsedMs, code, endpoint);
+  }
+  if (code !== 200) {
+    throw numcatErr('上游业务码 code=' + code + ' ' + String(json.message || ''), resp.status, elapsedMs, code, endpoint);
+  }
+  let payload: Record<string, unknown> = (json.data && typeof json.data === 'object' && !Array.isArray(json.data))
+    ? json.data as Record<string, unknown>
+    : json;
+  if (!Array.isArray(payload.items) && Array.isArray(payload.results)) {
+    const list = payload.results as Array<Record<string, unknown>>;
+    const hit = list.find((r) => r && r.code === 200 && r.data) || list[0];
+    if (hit && hit.data && typeof hit.data === 'object') payload = hit.data as Record<string, unknown>;
+  }
+  const f = Array.isArray(payload.fields) ? (payload.fields as unknown[]).map((x) => String(x)) : [];
+  const items = Array.isArray(payload.items) ? payload.items as unknown[] : [];
+  return { fields: f, items: items, endpoint: endpoint, elapsedMs: elapsedMs };
+}
+
+/** 归一「股票名 / 代码」两串（按下标对齐；只认 6 位纯数字代码，⛔ 不猜） */
+function normPairs(stocks: string[], symbols: string[]): Pair[] {
+  const out: Pair[] = [];
+  const seen: Record<string, boolean> = {};
+  const n = Math.max(stocks.length, symbols.length);
+  for (let i = 0; i < n; i++) {
+    const code = String(symbols[i] || '').replace(/\D/g, '');
+    const stock = String(stocks[i] || '').trim();
+    const k = code || stock;
+    if (!k || seen[k]) continue;
+    seen[k] = true;
+    out.push({ stock: stock, code: /^\d{6}$/.test(code) ? code : '' });
+  }
+  return out;
+}
+
+/**
+ * 取某日 auction_yizi 的池子（股票名 + 代码）当趋势目标。
+ * 好处：浏览器端不必把池子传上来 —— 服务端读的就是「这一天真正的一字池」，
+ * ⛔ 单一真相（同一张 auction_yizi），不会出现「前端传的名单与库不一致」。
+ */
+async function readYiziPool(date: string): Promise<Pair[]> {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_yizi?date=eq.' + encodeURIComponent(date) + '&select=stock,code&limit=2000';
+  const resp = await fetch(url, { headers: sbHeaders({ 'Prefer': 'return=minimal' }), signal: timeoutSignal(15000) });
+  const text = await resp.text();
+  if (!resp.ok) {
+    throw new Error(sbErrHint('读 auction_yizi 取池失败: HTTP ' + resp.status + ': ' + text.slice(0, 200), text));
+  }
+  let data: unknown;
+  try { data = JSON.parse(text); } catch (_e) { throw new Error('读 auction_yizi 返回非 JSON: ' + text.slice(0, 200)); }
+  const list = Array.isArray(data) ? data as Array<Record<string, unknown>> : [];
+  const out: Pair[] = [];
+  const seen: Record<string, boolean> = {};
+  list.forEach((r) => {
+    const stock = String((r && r.stock) || '').trim();
+    if (!stock || seen[stock]) return;
+    seen[stock] = true;
+    const code = String((r && r.code) || '').replace(/\D/g, '');
+    out.push({ stock: stock, code: /^\d{6}$/.test(code) ? code : '' });
+  });
+  return out;
+}
+
+/** 读某几个交易日的趋势缓存行（表很小：只存被请求过的池子股票） */
+async function readTrendRows(dates: string[]): Promise<Record<string, unknown>[]> {
+  if (!dates || dates.length === 0) return [];
+  const list = dates.map((d) => '"' + String(d).split('"').join('') + '"').join(',');
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/' + TREND.TABLE +
+    '?date=in.(' + list + ')' +
+    '&select=date,stock,code,auc_vol,auc_pct_chg,yest_volume,change_pct,source,updated_at&limit=20000';
+  const resp = await fetch(url, { headers: sbHeaders({ 'Prefer': 'return=minimal' }), signal: timeoutSignal(20000) });
+  const text = await resp.text();
+  if (!resp.ok) {
+    throw new Error(sbErrHint('读 ' + TREND.TABLE + ' 失败: HTTP ' + resp.status + ': ' + text.slice(0, 300), text));
+  }
+  let data: unknown;
+  try { data = JSON.parse(text); } catch (_e) { throw new Error('读 ' + TREND.TABLE + ' 返回非 JSON: ' + text.slice(0, 200)); }
+  return Array.isArray(data) ? data as Array<Record<string, unknown>> : [];
+}
+
+/**
+ * 写 yizi_trend（主键 date+stock → 幂等覆盖）。
+ * ⚠️ 只提交本次拿到的列：PostgREST 的 merge-duplicates 只更新 payload 里出现的列，
+ *    因此「K 线腿后写」不会把竞价腿已经写好的 auc_vol / yest_volume 抹成 null。
+ */
+async function upsertTrendRows(rows: Record<string, unknown>[]): Promise<number> {
+  const payload = (rows || []).filter((r) => r && r.date && r.stock);
+  if (payload.length === 0) return 0;
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/' + TREND.TABLE + '?on_conflict=date%2Cstock';
+  for (let i = 0; i < payload.length; i += CONFIG.WRITE_CHUNK) {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: sbHeaders({ 'Prefer': 'resolution=merge-duplicates, return=minimal' }),
+      body: JSON.stringify(payload.slice(i, i + CONFIG.WRITE_CHUNK)),
+      signal: timeoutSignal(30000),
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error(sbErrHint('upsert ' + TREND.TABLE + ' 失败: HTTP ' + resp.status + ': ' + text.slice(0, 300), text));
+    }
+  }
+  return payload.length;
+}
+
+/**
+ * 上游行 → yizi_trend 入库行（按腿裁剪列）。
+ *   · 日期不在窗口内 → 丢（⛔ 绝不给别的日期写行，否则会造出不存在的交易日）
+ *   · 竞价腿：auc_vol 为 null → 不写（§10 不补 0）；yest_volume 由 auc_to_pre_vol_pct 反推
+ *   · K 线腿：pct_chg 解析不出 → 不写
+ *   · 股票名优先用【调用方给的 nameByCode】（与 auction_yizi 同名 → 前端按名 join 一定命中），
+ *     取不到才用上游 name
+ */
+function mapTrendLegRows(
+  apiname: string, cols: string[], items: unknown[], windowDates: string[], nameByCode: Record<string, string>,
+): Record<string, unknown>[] {
+  const want: Record<string, boolean> = {};
+  for (let i = 0; i < windowDates.length; i++) want[windowDates[i]] = true;
+  const nowIso = new Date().toISOString();
+  const out: Record<string, unknown>[] = [];
+  const seen: Record<string, boolean> = {};
+  for (let i = 0; i < items.length; i++) {
+    const get = makeGetter(cols, items[i]);
+    const rowIso = ymdToIso(get('tradedate'));
+    if (!rowIso || !want[rowIso]) continue;
+    const codeRaw = String(textOrNull(get('symbol')) || '').replace(/\..*$/, '').trim();
+    const code = /^\d{6}$/.test(codeRaw) ? codeRaw : '';
+    const stock = (code && nameByCode[code]) ? nameByCode[code] : (textOrNull(get('name')) || '');
+    if (!stock) continue;
+    const key = rowIso + '|' + stock;
+    if (seen[key]) continue;
+    const base: Record<string, unknown> = {
+      date: rowIso, stock: stock, code: code || null, source: 'numcat', updated_at: nowIso,
+    };
+    if (apiname === 'daily_auc') {
+      const aucVol = numOrNull(get('auc_vol'));
+      if (aucVol === null) continue;
+      const ratio = numOrNull(get('auc_to_pre_vol_pct'));
+      base.auc_vol = aucVol;
+      base.auc_pct_chg = numPctText(get('auc_pct_chg'));
+      // yest_volume(万) = auc_vol(手) / auc_to_pre_vol_pct（比值 ≤ 0 或缺失 → null，⛔ 不编）
+      base.yest_volume = (ratio !== null && ratio > 0) ? Math.round(aucVol / ratio) : null;
+    } else {
+      const pct = numPctText(get('pct_chg'));
+      if (pct === null) continue;
+      base.change_pct = pct;
+    }
+    seen[key] = true;
+    out.push(base);
+  }
+  return out;
+}
+
+/**
+ * 打一条腿（竞价腿 / K 线腿）：候选端点 × 候选 key，第一个成功的即被采用。
+ * ⚠️ 每腿**整窗口一次请求**（symbols + startdate~enddate），⛔ 不是「每天一次」——
+ *    这是额度的关键：5 天窗口 = 1 次请求，而不是 5 次。
+ * ⚠️ 只打一轮（retryNumcat times=1）：趋势是补缺口，失败下一轮再来；重试会翻倍烧额度。
+ * ⚠️ 写入失败【不再试下一个端点】（表不存在时那是白烧额度），直接返回 ok:false。
+ */
+async function fetchTrendLeg(
+  apiname: string, fields: string[], params: Record<string, unknown>,
+  windowDates: string[], nameByCode: Record<string, string>, logs: string[],
+): Promise<Record<string, unknown>> {
+  const endpoints = buildEndpoints();
+  const keys = configuredKeys();
+  let requests = 0;
+  let lastErr = '';
+  for (let e = 0; e < endpoints.length; e++) {
+    const ep = endpointForApiname(endpoints[e], apiname);
+    for (let k = 0; k < keys.length; k++) {
+      const keyRef = keys[k];
+      const label = apiname + '[ep=' + ep + ',key=' + keyRef.name + ']';
+      requests++;
+      const t0 = Date.now();
+      let raw: RawSnapshot;
+      try {
+        raw = await retryNumcat(() => numcatPostRaw(ep, keyRef.key, apiname, fields, params), 1, label, logs);
+      } catch (err) {
+        lastErr = (err as Error)?.message || String(err);
+        logs.push('❌ ' + label + ' 失败（' + (Date.now() - t0) + 'ms）: ' + lastErr);
+        if (k + 1 < keys.length) logs.push('→ 换下一把 key（' + keys[k + 1].name + '）继续试');
+        continue;
+      }
+      // 上游偶尔不回 fields ⇒ 退化为「按请求顺序」取值（items 本就是按请求 fields 排的）
+      const cols = raw.fields.length > 0 ? raw.fields : fields;
+      const rows = mapTrendLegRows(apiname, cols, raw.items, windowDates, nameByCode);
+      logs.push('✅ ' + label + ' 返回 ' + raw.items.length + ' 行（' + raw.elapsedMs + 'ms）→ 组装 ' + rows.length + ' 行');
+      try {
+        const written = await upsertTrendRows(rows);
+        logs.push('写入 ' + TREND.TABLE + ' ' + written + ' 行（merge-duplicates，幂等）');
+        return { ok: true, requests: requests, written: written, upstreamRows: raw.items.length, endpoint: ep, keySource: keyRef.name, elapsedMs: raw.elapsedMs };
+      } catch (werr) {
+        const msg = (werr as Error)?.message || String(werr);
+        logs.push('写入 ' + TREND.TABLE + ' 失败: ' + msg);
+        return { ok: false, requests: requests, written: 0, upstreamRows: raw.items.length, endpoint: ep, keySource: keyRef.name, error: msg };
+      }
+    }
+  }
+  return { ok: false, requests: requests, written: 0, error: lastErr || '所有端点 × key 组合均失败' };
+}
+
+/**
+ * 读「本日趋势抓取」的日志统计，用作预算 / 冷却依据。
+ * ⚠️ 读失败【不阻断】（返回 0 → 相当于闸门放行）：宁可多花一次额度，
+ *    也不能因为日志表读不到就把趋势图永久锁死。§10 的「读失败 ≠ 空」在这里体现为
+ *    「读失败 → 不下『已超额』的错误结论」。
+ */
+async function readTrendLogStats(runDate: string): Promise<{ entries: number; requests: number; lastAt: string }> {
+  const out = { entries: 0, requests: 0, lastAt: '' };
+  try {
+    const url = CONFIG.SUPABASE_URL + '/rest/v1/bidding_fetch_log?select=created_at,detail' +
+      '&job=eq.' + encodeURIComponent(TREND.LOG_JOB) +
+      '&run_date=eq.' + encodeURIComponent(runDate) +
+      '&order=created_at.desc&limit=60';
+    const resp = await fetch(url, { headers: sbHeaders({ 'Prefer': 'return=minimal' }), signal: timeoutSignal(12000) });
+    if (!resp.ok) return out;
+    const data = await resp.json().catch(() => []);
+    const list = Array.isArray(data) ? data as Array<Record<string, unknown>> : [];
+    out.entries = list.length;
+    if (list.length > 0) out.lastAt = String(list[0].created_at || '');
+    for (let i = 0; i < list.length; i++) {
+      const d = list[i] && list[i].detail;
+      if (d && typeof d === 'object') {
+        const n = (d as Record<string, unknown>).requests;
+        if (typeof n === 'number' && isFinite(n)) out.requests += n;
+      }
+    }
+  } catch (_e) { /* 见函数头注释：读不到日志不放行也不阻断 */ }
+  return out;
+}
+
+/**
+ * 趋势主流程：读缓存 → 判缺口 → 过五道闸门 → （必要时）打两条腿 → 回读 → 返回。
+ * 返回结构永远包含 rows（库里真实存的行），⛔ 即使上游全挂，前端也能画出已有部分。
+ */
+async function runTrend(opts?: { date?: string; window?: number; stocks?: string[]; symbols?: string[]; force?: boolean }): Promise<Record<string, unknown>> {
+  const logs: string[] = [];
+  const date = ((opts && opts.date) || beijingToday()).trim();
+  const windowN = Math.max(1, Math.min(15, Math.floor((opts && opts.window) || TREND.WINDOW) || TREND.WINDOW));
+  const windowDates = recentTradingDays(date, windowN);
+  const force = !!(opts && opts.force);
+
+  logs.push('趋势：T=' + date + ' window=' + windowN + ' → 窗口 ' + windowDates.join(' , ') +
+    '（北京 ' + beijingHMS() + '）');
+
+  // 1) 目标股票：调用方给了就用它的（浏览器按名 join 更稳），没给就取 auction_yizi 的池子
+  let pairs = normPairs((opts && opts.stocks) || [], (opts && opts.symbols) || []);
+  let poolSource = 'query';
+  if (pairs.length === 0) {
+    poolSource = 'auction_yizi';
+    try {
+      pairs = await readYiziPool(date);
+      logs.push('未指定 stocks/symbols → 取 auction_yizi(' + date + ') 池子：' + pairs.length + ' 只');
+    } catch (e) {
+      logs.push('读 auction_yizi 取池失败: ' + ((e as Error)?.message || String(e)));
+    }
+  }
+  const nameByCode: Record<string, string> = {};
+  pairs.forEach((p) => { if (p.code && p.stock) nameByCode[p.code] = p.stock; });
+  const codes = pairs.map((p) => p.code).filter(Boolean);
+
+  // 2) 读缓存（§10：读失败如实回传 tableError，⛔ 不伪装成「没有数据」）
+  let cacheRows: Record<string, unknown>[] = [];
+  let tableError = '';
+  try {
+    cacheRows = await readTrendRows(windowDates);
+  } catch (e) {
+    tableError = (e as Error)?.message || String(e);
+    logs.push('读 ' + TREND.TABLE + ' 失败：' + tableError);
+  }
+
+  // 3) 缺口判定（有名字按名字，只有代码就按代码）
+  const hasCol = function(pair: Pair, d: string, col: string): boolean {
+    for (let i = 0; i < cacheRows.length; i++) {
+      const r = cacheRows[i];
+      if (String(r.date) !== d) continue;
+      if (r[col] === null || r[col] === undefined) continue;
+      if (pair.stock) {
+        if (String(r.stock).trim() === pair.stock) return true;
+      } else if (pair.code && String(r.code || '') === pair.code) {
+        return true;
+      }
+    }
+    return false;
+  };
+  const gapAuc = pairs.filter((p) => windowDates.some((d) => !hasCol(p, d, 'auc_vol')));
+  const gapDaily = pairs.filter((p) => windowDates.some((d) => !hasCol(p, d, 'change_pct')));
+  const needFetch = (gapAuc.length > 0 || gapDaily.length > 0);
+  // force=1（排查用）：把「缓存已齐」也当成缺 → 强制整窗重取。
+  // ⛔ 但它【不豁免】下面的保护窗口 / 预算 / 冷却三道闸门 —— 否则「排查」会把额度打光。
+  const missingAuc = force ? pairs : gapAuc;
+  const missingDaily = force ? pairs : gapDaily;
+
+  // 4) 五道闸门
+  let skipped = '';
+  if (pairs.length === 0) skipped = 'no-pool';
+  else if (codes.length === 0) skipped = 'no-code';
+  else if (!force && !needFetch) skipped = 'cache-complete';
+  // 只有「真可能发请求」时才去读日志当预算/冷却依据（否则白读一次库）
+  const stats = skipped ? { entries: 0, requests: 0, lastAt: '' } : await readTrendLogStats(date);
+  if (!skipped) {
+    const nowSec = hmsToSec(beijingHMS());
+    const gs = hmsToSec(TREND.PROTECT_START);
+    const ge = hmsToSec(TREND.PROTECT_END);
+    if (isFinite(gs) && isFinite(ge) && nowSec >= gs && nowSec < ge) {
+      skipped = 'protect-window';
+      logs.push('⏸ 北京 ' + beijingHMS() + ' 落在 9:25 抓取保护窗口 ' + TREND.PROTECT_START + '~' + TREND.PROTECT_END +
+        ' → 本轮不补拉（结构性保护小号额度，绝不与 9:25 自动抓取抢）');
+    } else if (stats.requests >= TREND.MAX_REQUESTS_PER_DAY) {
+      skipped = 'budget';
+      logs.push('⏸ 本日趋势请求已达上限（' + stats.requests + '/' + TREND.MAX_REQUESTS_PER_DAY + '）→ 只回缓存');
+    } else if (stats.lastAt && (Date.now() - Date.parse(stats.lastAt)) < TREND.COOLDOWN_MS) {
+      skipped = 'cooldown';
+      logs.push('⏸ 距上次趋势抓取不足 ' + Math.round(TREND.COOLDOWN_MS / 1000) + ' 秒 → 只回缓存（防展开连点把额度打光）');
+    }
+  }
+
+  // 5) 抓取（只有确实缺、且没被闸门拦下）
+  let requests = 0;
+  const fetched: Record<string, unknown> = { auc: null, daily: null, written: 0 };
+  if (skipped) {
+    logs.push('本轮跳过抓取：' + skipped);
+  } else {
+    const startYmd = isoToYmd(windowDates[0]);
+    const endYmd = isoToYmd(windowDates[windowDates.length - 1]);
+    const sym = pairs.filter((p) => p.code).slice(0, TREND.MAX_SYMBOLS).map((p) => p.code).join(',');
+    logs.push('目标 ' + pairs.length + ' 只（带代码 ' + codes.length + ' 只），窗口 ' + startYmd + '~' + endYmd +
+      '，缺口：竞价腿 ' + missingAuc.length + ' 只 / K线腿 ' + missingDaily.length + ' 只');
+    if (missingAuc.length > 0) {
+      const leg = await fetchTrendLeg('daily_auc', TREND.AUC_FIELDS,
+        { symbols: sym, startdate: startYmd, enddate: endYmd }, windowDates, nameByCode, logs);
+      requests += Number(leg.requests) || 0;
+      fetched.auc = leg;
+      fetched.written = (Number(fetched.written) || 0) + (Number(leg.written) || 0);
+    }
+    if (missingDaily.length > 0) {
+      const leg = await fetchTrendLeg('daily', TREND.DAILY_FIELDS,
+        { symbols: sym, startdate: startYmd, enddate: endYmd }, windowDates, nameByCode, logs);
+      requests += Number(leg.requests) || 0;
+      fetched.daily = leg;
+      fetched.written = (Number(fetched.written) || 0) + (Number(leg.written) || 0);
+    }
+    if (requests === 0) logs.push('⚠️ 有缺口但一个请求都没发出去（key 未配置？）');
+  }
+
+  // 6) 回读：返回「库里真实存了什么」，而不是「我以为我写了什么」
+  let rows: Record<string, unknown>[] = cacheRows;
+  if (requests > 0) {
+    try { rows = await readTrendRows(windowDates); }
+    catch (e) { logs.push('回读 ' + TREND.TABLE + ' 失败（返回本轮写入前的缓存）: ' + ((e as Error)?.message || String(e))); }
+  }
+  const poolNames: Record<string, boolean> = {};
+  const poolCodes: Record<string, boolean> = {};
+  pairs.forEach((p) => { if (p.stock) poolNames[p.stock] = true; if (p.code) poolCodes[p.code] = true; });
+  const outRows = rows.filter((r) => {
+    const nm = String((r && r.stock) || '').trim();
+    const cd = String((r && r.code) || '');
+    return (nm && poolNames[nm]) || (cd && poolCodes[cd]);
+  });
+
+  const ok = !tableError;
+  // 7) 写日志（下一轮拿它当预算 / 冷却依据）
+  await writeLog({
+    run_date: date,
+    time_point: 'yizi-trend',
+    source: 'trend',
+    job: TREND.LOG_JOB,
+    worker: 'edge-auction-yizi',
+    ok: ok,
+    detail: {
+      requests: requests,
+      written: Number(fetched.written) || 0,
+      skipped: skipped,
+      pool: pairs.length,
+      missingAuc: missingAuc.length,
+      missingDaily: missingDaily.length,
+      window: windowDates,
+      tableError: tableError || null,
+    },
+  });
+
+  return {
+    ok: ok,
+    date: date,
+    window: windowDates,
+    windowDays: windowDates.length,
+    tableError: tableError || null,
+    table: TREND.TABLE,
+    poolSource: poolSource,
+    poolSize: pairs.length,
+    rows: outRows,
+    fetched: fetched,
+    requests: requests,
+    skipped: skipped,
+    budget: { usedRequests: stats.requests + requests, cap: TREND.MAX_REQUESTS_PER_DAY },
+    guards: {
+      protectStart: TREND.PROTECT_START,
+      protectEnd: TREND.PROTECT_END,
+      cooldownMs: TREND.COOLDOWN_MS,
+      nowBeijing: beijingHMS(),
+    },
+    legs: {
+      auc: 'daily_auc（竞价量 auc_vol / 竞价涨幅 auc_pct_chg / 昨日成交量 = auc_vol ÷ auc_to_pre_vol_pct）',
+      daily: 'daily（涨幅 pct_chg）',
+    },
+    hint: '四腿中「十日涨幅」由前端从 stock_range_pct 直接读，不走本路由。' +
+      '本路由从不删除任何行，只补缺口；北京 ' + TREND.PROTECT_START + '~' + TREND.PROTECT_END +
+      ' 保护窗口内一律不补拉（不与 9:25 自动抓取抢小号额度）。',
+    logs: logs,
+  };
+}
+
 // ----------------------------- 上游体检（probe） -----------------------------
 /**
  * 【出问题先开这个】对「每个端点 × 每把 key」各打一次【真实】上游请求，
@@ -1132,13 +1693,51 @@ Deno.serve(async (req: Request) => {
       tokenSource: tokenSource(),
       schedule: '每个交易日北京 09:25（pg_cron，见 db/supabase_auction_yizi_cron.sql；函数内部轮询到 09:25:55，绝不越过 09:26）',
       table: 'auction_yizi（先执行 db/create_auction_yizi.sql 建表）',
+      trend: {
+        route: '/trend?date=YYYY-MM-DD&window=5（★ 浏览器端只读缓存入口，不校验 token）',
+        table: 'yizi_trend（先执行 db/create_yizi_trend.sql 建表）',
+        legs: {
+          auc: 'daily_auc（竞价量 auc_vol / 竞价涨幅 auc_pct_chg / 昨日成交量 = auc_vol ÷ auc_to_pre_vol_pct）',
+          daily: 'daily（涨幅 pct_chg）',
+        },
+        quotaGuard: {
+          protectWindowBeijing: TREND.PROTECT_START + '~' + TREND.PROTECT_END + '（其间一律不补拉，保护 9:25 自动抓取）',
+          cooldownMs: TREND.COOLDOWN_MS,
+          maxRequestsPerDay: TREND.MAX_REQUESTS_PER_DAY,
+          window: TREND.WINDOW,
+        },
+        note: '从不删除任何行，只补缺口；⛔ 不碰 auction_yizi；key 仍是本函数的小号（NUMCAT_API_KEY_YIZI）',
+      },
       nextStep: '排查上游/端点/key/表 请开 /probe?token=…（可加 &symbols=000001,600000 做轻量探测）',
     });
   }
 
   const isFetch = p === '/' || p === '' || p.endsWith('/fetch') ||
-    p.endsWith('/probe') || p.endsWith('/auction-yizi-fetch') || p.endsWith('/auction-yizi-fetch/');
+    p.endsWith('/probe') || p.endsWith('/trend') || p.endsWith('/auction-yizi-fetch') || p.endsWith('/auction-yizi-fetch/');
   if (!isFetch) return new Response('auction-yizi-fetch', { status: 200 });
+
+  // ---- 趋势端点（★ 在 token 闸门【之前】）----------------------------------
+  // 为什么放在 token 之前：它是【浏览器端的只读缓存入口】——前端展开趋势面板时会调用它。
+  // 与 /health 同级不校验 token（理由见文件上方「趋势」章节末尾：额度由 5 道闸门保护 + 从不删除数据）。
+  // ⛔ 它绝不碰 auction_yizi，也绝不影响 9:25 那条腿；9:25 的 /fetch 与 /probe 仍然要 token。
+  if (p.endsWith('/trend') || url.searchParams.get('point') === 'trend') {
+    const rawDate = (url.searchParams.get('date') || '').trim();
+    if (rawDate && !/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+      return json({ ok: false, error: 'date 必须形如 YYYY-MM-DD' }, 400);
+    }
+    const winRaw = Number(url.searchParams.get('window') || 0);
+    try {
+      return json(await runTrend({
+        date: rawDate,
+        window: (winRaw > 0 && isFinite(winRaw)) ? winRaw : undefined,
+        stocks: splitList(url.searchParams.get('stocks') || ''),
+        symbols: splitList(url.searchParams.get('symbols') || ''),
+        force: url.searchParams.get('force') === '1',
+      }));
+    } catch (e) {
+      return json({ ok: false, error: (e as Error)?.message || String(e), stack: (e as Error)?.stack }, 500);
+    }
+  }
 
   const token = url.searchParams.get('token') || '';
   const et = expectedToken();

@@ -464,3 +464,73 @@
             color: #334155;
             line-height: 1.7;
         }
+
+        /* ==========================================================================
+           趋势面板（★ 2026-09-18 新增：与「早盘竞价看板」同形的展开趋势图）
+           结构对应关系（AuctionBoard.vue 的 .auction-trend-panel 家族 → 本板同形）：
+             .auction-trend-panel   → .yizi-trend-panel
+             .auction-daily-metrics → .yizi-trend-metrics / .adm-item → .yizi-trend-metric-item
+             .trend-chart-item      → .yizi-trend-chart-item
+             .trend-chart-label     → .yizi-trend-chart-label
+           ⚠️ 一律带 yizi- 前缀：CSS 是全局的，用 .trend-chart-item 这种通用名会串改
+              早盘竞价 / 涨跌停看板的样式（§34「UI 与业务分离」之外的另一个坑：全局类名串板）。
+           ========================================================================== */
+
+        /* 序号 = 趋势面板开关（点它展开/收起）。收起时显示 ▶、展开时 ▼，让「可点」这件事可见。 */
+        .yizi-seq.is-clickable {
+            cursor: pointer;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .yizi-seq.is-clickable:hover {
+            color: #dc2626;
+        }
+
+        .yizi-trend-panel {
+            /* 与股票行同宽的一整块（在 <template v-for> 里作为行的兄弟节点渲染，不破坏 .yizi-row 的 flex） */
+            padding: 6px 8px 8px;
+            background: #f8fafc;
+            border-top: 1px dashed #e2e8f0;
+            margin-bottom: 2px;
+        }
+
+        /* 面板顶部：当前值汇总（含十日涨幅）。与曲线同源，⛔ 不另算一遍口径。 */
+        .yizi-trend-metrics {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px 14px;
+            padding: 2px 2px 6px;
+            margin-bottom: 4px;
+            border-bottom: 1px dashed #e5e7eb;
+            font-size: 11px;
+            color: #475569;
+            line-height: 1.4;
+        }
+
+        .yizi-trend-metric-item {
+            white-space: nowrap;
+        }
+
+        .yizi-trend-metric-item > b {
+            color: #334155;
+            font-weight: 600;
+        }
+
+        .yizi-trend-chart-item {
+            margin-bottom: 4px;
+        }
+
+        .yizi-trend-chart-label {
+            font-size: 10px;
+            color: #94a3b8;
+            margin-bottom: 2px;
+        }
+
+        /* 「一条数据都没有」时的说明行（⛔ 不画 4 张全是 '--' 的空图） */
+        .yizi-trend-empty,
+        .yizi-trend-loading {
+            padding: 6px 2px;
+            font-size: 11px;
+            color: #94a3b8;
+        }

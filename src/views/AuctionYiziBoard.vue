@@ -123,6 +123,22 @@
         >
           {{ topicAutoFillHint }}
         </div>
+        <!-- ★ 趋势（近5日折线）的板级提示（唯一出口）：
+             · 接口/读库失败 → 红字警告（§10：失败必须可见，⛔ 不静默成「没有历史」）；
+             · 本轮的说明（缓存已齐 / 9:25 保护窗口内不补拉 / 某条腿补拉失败）→ 灰底说明。
+             ⛔ 不在每个展开面板里重复打印同一句话（8 个面板 = 8 遍噪声）。 -->
+        <div
+          v-if="trendErrorText"
+          class="yizi-error"
+        >
+          {{ trendErrorText }}
+        </div>
+        <div
+          v-else-if="trendNoteText"
+          class="yizi-note"
+        >
+          {{ trendNoteText }}
+        </div>
 
         <!-- 开关条：「9点25」封单额时点 + 「无题材」过滤。
              两者都是纯展示态：默认关、无记忆、随日期切换归位；⛔ 不落 localStorage、不进全局 store。
@@ -206,72 +222,170 @@
                   <span class="yizi-topic-count">{{ block.count }}只</span>
                 </div>
 
-                <div
+                <template
                   v-for="stock in block.stocks"
                   :key="block.topic + '-' + stock.stock"
-                  class="yizi-row"
-                  :class="{ 'is-leader': stock.isLeader }"
                 >
-                  <span class="yizi-seq">{{ stock.seq }}</span>
-                  <!-- 名称块 = 股票名 → 时点标(9:20/9:25) → 龙头标 → 连板标，四段紧贴、整体不换行。
-                       标一律 9px 小字（与涨跌停看板 .limit-leader-badge / .limit-continue-tag 同级占位），
-                       宽度随内容伸缩、不占固定列 —— 省下的宽度全部留给右侧题材列。 -->
-                  <span class="yizi-name-block">
+                  <div
+                    class="yizi-row"
+                    :class="{ 'is-leader': stock.isLeader }"
+                  >
+                    <!-- 序号 = 趋势面板开关（与早盘竞价看板同一交互：点序号展开）
+                         ★ 2026-09-18：用户要求「和早盘竞价看板一样，点击可以展开」。 -->
                     <span
-                      class="yizi-name"
-                      :class="{ leader: stock.isLeader }"
-                      :title="stock.themeSource ? ('题材来源：' + stock.themeSourceLabel) : ''"
-                    >{{ stock.stock }}</span>
-                    <!-- 行内时点标（★ 2026-09-18 起 = 【当前时点】9:20 / 9:25，不再是首封时刻）。
-                         用户原话：「9:25分对应的竞价时间点（现在打开只显示9:15分，
-                         没打开9点25toggle时应该显示的是9:20）」。
-                         首封时刻没有丢 —— 它挪进了悬停提示（title），信息不丢、不占宽度。 -->
+                      class="yizi-seq is-clickable"
+                      title="点击展开该股近 5 日趋势（竞价量 / 昨日成交量 / 竞价涨幅 / 涨幅）"
+                      @click.stop="toggleYiziTrend(stock.stock)"
+                    >{{ trendExpanded.has(stock.stock) ? '▼' : '▶' }}{{ stock.seq }}</span>
+                    <!-- 名称块 = 股票名 → 时点标(9:20/9:25) → 龙头标 → 连板标，四段紧贴、整体不换行。
+                         标一律 9px 小字（与涨跌停看板 .limit-leader-badge / .limit-continue-tag 同级占位），
+                         宽度随内容伸缩、不占固定列 —— 省下的宽度全部留给右侧题材列。 -->
+                    <span class="yizi-name-block">
+                      <span
+                        class="yizi-name"
+                        :class="{ leader: stock.isLeader }"
+                        :title="stock.themeSource ? ('题材来源：' + stock.themeSourceLabel) : ''"
+                      >{{ stock.stock }}</span>
+                      <!-- 行内时点标（★ 2026-09-18 起 = 【当前时点】9:20 / 9:25，不再是首封时刻）。
+                           用户原话：「9:25分对应的竞价时间点（现在打开只显示9:15分，
+                           没打开9点25toggle时应该显示的是9:20）」。
+                           首封时刻没有丢 —— 它挪进了悬停提示（title），信息不丢、不占宽度。 -->
+                      <span
+                        class="yizi-time-tag"
+                        :title="'当前显示的是 ' + pointTagText + ' 时点数据' +
+                          (firstTimeText(stock) ? ('；该股首次封上涨停价 ' + firstTimeText(stock)) : '')"
+                      >{{ pointTagText }}</span>
+                      <span
+                        v-if="stock.isLeader"
+                        class="yizi-leader-badge"
+                        title="本题材内十日涨幅最高 → 该题材龙头"
+                      >龙头</span>
+                      <span
+                        v-if="continueText(stock)"
+                        class="yizi-continue-tag"
+                        title="连板档位（按前一交易日连续涨停数递推）"
+                      >{{ continueText(stock) }}</span>
+                    </span>
+                    <!-- 题材（主角列）：完整展示、允许折行，⛔ 不做省略号截断 -->
                     <span
-                      class="yizi-time-tag"
-                      :title="'当前显示的是 ' + pointTagText + ' 时点数据' +
-                        (firstTimeText(stock) ? ('；该股首次封上涨停价 ' + firstTimeText(stock)) : '')"
-                    >{{ pointTagText }}</span>
-                    <span
-                      v-if="stock.isLeader"
-                      class="yizi-leader-badge"
-                      title="本题材内十日涨幅最高 → 该题材龙头"
-                    >龙头</span>
-                    <span
-                      v-if="continueText(stock)"
-                      class="yizi-continue-tag"
-                      title="连板档位（按前一交易日连续涨停数递推）"
-                    >{{ continueText(stock) }}</span>
-                  </span>
-                  <!-- 题材（主角列）：完整展示、允许折行，⛔ 不做省略号截断 -->
-                  <span
-                    class="yizi-topics"
-                    :title="stock.themeSource ? ('题材来源：' + stock.themeSourceLabel) : '题材来源：无（可手动导入）'"
-                  >{{ stock.topicsDisplay }}</span>
-                  <!-- 度量列：封单额（按时点开关切换）+ 十日涨幅（块内排序 / 龙头判据） -->
-                  <span class="yizi-metric">
-                    <!-- 打开「9点25」态：先显示【变化量】（9:25 − 9:20，增红 / 减绿），
-                         再显示 9:25 封单额，并【隐藏十日涨幅】（★ 用户指定）。
-                         9:20~9:25 是不可撤单阶段，这段里加单还是撤单 = 一字板硬度最直接的信号。 -->
-                    <span
-                      v-if="show925"
-                      class="yizi-delta"
-                      :class="sealDeltaClass(stock)"
-                      :title="sealDeltaTitle(stock)"
-                    >{{ sealDeltaText(stock) }}</span>
-                    <span
-                      class="yizi-seal"
-                      :class="sealClass(stock)"
-                      :title="sealTitle(stock)"
-                    >{{ sealText(stock) }}</span>
-                    <!-- 十日涨幅：仅【未打开】时显示。⚠️ 它始终是块内排序与龙头判据（与是否显示无关）。 -->
-                    <span
-                      v-if="!show925"
-                      class="yizi-range"
-                      :class="rangeClass(stock)"
-                      title="近 10 个交易日区间涨幅（块内排序 / 龙头判据）"
-                    >{{ rangeText(stock) }}</span>
-                  </span>
-                </div>
+                      class="yizi-topics"
+                      :title="stock.themeSource ? ('题材来源：' + stock.themeSourceLabel) : '题材来源：无（可手动导入）'"
+                    >{{ stock.topicsDisplay }}</span>
+                    <!-- 度量列：封单额（按时点开关切换）+ 十日涨幅（块内排序 / 龙头判据） -->
+                    <span class="yizi-metric">
+                      <!-- 打开「9点25」态：先显示【变化量】（9:25 − 9:20，增红 / 减绿），
+                           再显示 9:25 封单额，并【隐藏十日涨幅】（★ 用户指定）。
+                           9:20~9:25 是不可撤单阶段，这段里加单还是撤单 = 一字板硬度最直接的信号。 -->
+                      <span
+                        v-if="show925"
+                        class="yizi-delta"
+                        :class="sealDeltaClass(stock)"
+                        :title="sealDeltaTitle(stock)"
+                      >{{ sealDeltaText(stock) }}</span>
+                      <span
+                        class="yizi-seal"
+                        :class="sealClass(stock)"
+                        :title="sealTitle(stock)"
+                      >{{ sealText(stock) }}</span>
+                      <!-- 十日涨幅：仅【未打开】时显示。⚠️ 它始终是块内排序与龙头判据（与是否显示无关）。 -->
+                      <span
+                        v-if="!show925"
+                        class="yizi-range"
+                        :class="rangeClass(stock)"
+                        title="近 10 个交易日区间涨幅（块内排序 / 龙头判据）"
+                      >{{ rangeText(stock) }}</span>
+                    </span>
+                  </div>
+
+                  <!-- ================= 趋势面板（★ 2026-09-18 新增）=================
+                       与「早盘竞价看板」同形：顶部一行当前值汇总（含十日涨幅），下面 4 张近 5 日折线。
+                       ⛔ 数据通道完全独立：Edge /trend（竞价一字小号），与早盘竞价的 numcat-proxy 无关。
+                       §34：面板本身是纯展示，所有数值都由 Logic 纯函数算好（composable 的 trendMap）。
+                       §26：trendExpanded 随日期切换归位；trendMap 仅在「日期对齐」时才有内容。 -->
+                  <div
+                    v-if="trendExpanded.has(stock.stock)"
+                    class="yizi-trend-panel"
+                    @dblclick.stop
+                  >
+                    <div class="yizi-trend-metrics">
+                      <!-- 十日涨幅 = 该行既有字段（stock_range_pct），不是趋势缓存的一部分；
+                           色调与行内度量列同源（rangeClass / rangeText）→ 两处永远一致。 -->
+                      <span class="yizi-trend-metric-item">
+                        <b>十日涨幅</b>：<span :class="rangeClass(stock)">{{ rangeText(stock) }}</span>
+                      </span>
+                      <span
+                        v-for="m in trendMetrics(stock.stock)"
+                        :key="m.label"
+                        class="yizi-trend-metric-item"
+                      ><b>{{ m.label }}</b>：{{ m.value }}</span>
+                    </div>
+
+                    <!-- 加载中：只在「这一天的趋势还没到」时显示（已有缓存 = 立刻出图，不闪） -->
+                    <div
+                      v-if="trendLoading && trendEmpty(stock.stock)"
+                      class="yizi-trend-loading"
+                    >
+                      加载中…（正在取近 5 日趋势）
+                    </div>
+                    <!-- 一条数据都没有：给一句说明，⛔ 不画 4 张全是 '--' 的空图 -->
+                    <div
+                      v-else-if="trendEmpty(stock.stock)"
+                      class="yizi-trend-empty"
+                    >
+                      {{ trendLoading ? '加载中…' : '近 5 日暂无趋势数据（9:25 抓取完成后自动补）' }}
+                    </div>
+
+                    <template v-else>
+                      <div class="yizi-trend-chart-item">
+                        <div class="yizi-trend-chart-label">
+                          竞价量(万) 近5日
+                        </div>
+                        <TrendChart
+                          :points="trendMap[stock.stock].volume"
+                          color="#6366f1"
+                        />
+                      </div>
+                      <div
+                        v-if="trendHasLeg(stock.stock, 'yestVolume')"
+                        class="yizi-trend-chart-item"
+                      >
+                        <div class="yizi-trend-chart-label">
+                          昨日成交量(万) 近5日
+                        </div>
+                        <TrendChart
+                          :points="trendMap[stock.stock].yestVolume"
+                          color="#10b981"
+                        />
+                      </div>
+                      <div
+                        v-if="trendHasLeg(stock.stock, 'aucPctChg')"
+                        class="yizi-trend-chart-item"
+                      >
+                        <div class="yizi-trend-chart-label">
+                          竞价涨幅(%) 近5日
+                        </div>
+                        <TrendChart
+                          :points="trendMap[stock.stock].aucPctChg"
+                          color="#f59e0b"
+                          :percent="true"
+                        />
+                      </div>
+                      <div
+                        v-if="trendHasLeg(stock.stock, 'changePct')"
+                        class="yizi-trend-chart-item"
+                      >
+                        <div class="yizi-trend-chart-label">
+                          涨幅(%) 近5日
+                        </div>
+                        <TrendChart
+                          :points="trendMap[stock.stock].changePct"
+                          color="#64748b"
+                          :percent="true"
+                        />
+                      </div>
+                    </template>
+                  </div>
+                </template>
               </div>
             </template>
           </div>
@@ -311,6 +425,8 @@
 
 <script setup>
 import EditModal from '../components/EditModal.vue';
+// 趋势曲线：与「早盘竞价看板」同一个展示组件（纯 SVG 折线，props: points/color/percent）
+import TrendChart from '../components/TrendChart.vue';
 import { useAuctionYizi } from '../composables/useAuctionYizi.js';
 
 const {
@@ -350,7 +466,16 @@ const {
   rangeText,
   rangeClass,
   continueText,
-  firstTimeText
+  firstTimeText,
+  trendExpanded,
+  trendMap,
+  trendLoading,
+  trendErrorText,
+  trendNoteText,
+  trendMetrics,
+  trendHasLeg,
+  trendEmpty,
+  toggleYiziTrend
 } = useAuctionYizi();
 
 defineExpose({ refresh });

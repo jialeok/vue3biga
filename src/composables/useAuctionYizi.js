@@ -16,6 +16,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useUiStore } from '../stores/uiStore.js';
 import { _on, _off } from '../stores/eventBus.js';
+import { _dbgLog } from '../data/debug-log.js';
 import { showToast, showWarningToast } from './useToast.js';
 import {
     yiziBoardState,
@@ -24,6 +25,14 @@ import {
     importYiziTopicsFromPaste
 } from '../logic/yizi/yizi-board.js';
 import { filterYiziNoTopicBlocks, isBoardDateAligned } from '../logic/yizi/model.js';
+// ★ 趋势面板（2026-09-18 新增）：与「早盘竞价看板」同形的展开趋势图（竞价量/昨日成交量/竞价涨幅/涨幅）。
+//   ⚠️ 取数通道【完全独立】：走 Edge Function auction-yizi-fetch 的 /trend 路由 + 竞价一字小号，
+//      ⛔ 与早盘竞价看板的 numcat-proxy（主账号）毫无关系，绝不混用（见 logic/yizi/yizi-trend.js 头注）。
+//   · loadYiziTrend      = Logic 编排（窗口/会话缓存/单飞/缺口补拉/失败可见）
+//   · yiziTrendState     = 该模块的响应式真相（rows/windowDates/loading/error/note）
+//   · buildYiziTrendSeries / trendMetricItems = 纯函数（行 → 四条曲线 / 面板汇总），可单测见 trend-model.test.js
+import { loadYiziTrend, yiziTrendState } from '../logic/yizi/yizi-trend.js';
+import { buildYiziTrendSeries, trendMetricItems } from '../logic/yizi/trend-model.js';
 // ★ 需求 1（§6 单一真相）：题材自动回填只数从 topic-sync 的响应式计数直接读，
 //    ⛔ 不再经看板 state 转抄一份（副本会在「本板回填中止、另一板随后补上」时陈旧）。
 import { getAutoFilledForDate } from '../logic/topics/topic-sync.js';
@@ -297,6 +306,97 @@ export function useAuctionYizi() {
         return (row && row.firstTimeText) || '';
     }
 
+    // ===== 个股趋势面板（★ 2026-09-18 新增：与「早盘竞价看板」同形的展开趋势图）=====
+    // 需求原话：「我想添加趋势图和早盘竞价看板一样，点击可以展开，有竞价量，昨日成交量，
+    //          竞价涨幅，涨幅，还有十日涨幅。注意这是独立的，用的是竞价一字看板那个小号的猫抓数据接口。」
+    //
+    // 交互：点行首序号（.yizi-seq）展开/收起该股的 4 张趋势图；「十日涨幅」不走趋势通道，
+    //      直接在面板顶部显示该行的当前值（rangeText，与行内度量列同源）。
+    //
+    // §34 UI 状态分离：展开态是本组件内的 ref（Set<股票名>），
+    //   ⛔ 不落 localStorage（§8）、不进全局 store（§6）、不进 Logic 的响应式状态；
+    //   随日期切换自动归位（见文件末尾 watch(currentDate)）→ 天然满足「切日即重置」。
+    // §22 懒加载：只在**第一次展开**时才去取（额度只有 10 次/天，绝不能看板一打开就无条件补拉）。
+    const trendExpanded = ref(new Set());
+    const trendExpandedCount = computed(() => trendExpanded.value.size);
+    // §26 日期对齐：趋势行也必须属于「当前选中的那一天」才可渲染 ——
+    //   否则切日期后新数据还没回来时，会把上一天的曲线画在这一天的面板上。
+    const trendDateAligned = computed(() => isBoardDateAligned(yiziTrendState.date, currentDate.value));
+    /**
+     * 股票名 → 四条曲线（纯函数 buildYiziTrendSeries 的结果）。
+     * ⚠️ 池内**每只**股票都会有一个条目（哪怕一条数据都没有 = 全 null），
+     *    这样模板里 trendMap[name] 恒存在，面板不必到处判空。
+     */
+    const trendMap = computed(() => {
+        const out = {};
+        const names = {};
+        (yiziTrendState.rows || []).forEach(function(r) { if (r && r.stock) names[r.stock] = true; });
+        (state.blocks || []).forEach(function(b) {
+            (b.stocks || []).forEach(function(s) { if (s && s.stock) names[s.stock] = true; });
+        });
+        if (!trendDateAligned.value) return out;
+        Object.keys(names).forEach(function(n) {
+            out[n] = buildYiziTrendSeries(yiziTrendState.rows, yiziTrendState.windowDates, n);
+        });
+        return out;
+    });
+    /** 面板顶部汇总（与曲线同源；无数据时为空数组 → 模板不渲染该行） */
+    function trendMetrics(stockName) {
+        const s = trendMap.value[String(stockName || '').trim()];
+        return s ? trendMetricItems(s) : [];
+    }
+    /** 该腿是否有任一点 → 决定是否渲染那张图（全是 -- 的图是纯噪声） */
+    function trendHasLeg(stockName, leg) {
+        const s = trendMap.value[String(stockName || '').trim()];
+        if (!s || !s[leg]) return false;
+        return s[leg].some(function(p) { return p.value !== null; });
+    }
+    /** 这只股票近 5 日一条数据都没有（面板里改为显示一句说明，而不是 4 张空图） */
+    function trendEmpty(stockName) {
+        return !trendHasLeg(stockName, 'volume') && !trendHasLeg(stockName, 'yestVolume') &&
+            !trendHasLeg(stockName, 'aucPctChg') && !trendHasLeg(stockName, 'changePct');
+    }
+    const trendLoading = computed(() => yiziTrendState.loading);
+    /**
+     * 板级提示（唯一出口）：接口失败 → 红字警告；有说明（缓存已齐/保护窗口/某腿失败）→ 灰底说明。
+     * ⛔ 不在每行面板里重复打印（同一句话在 8 个面板里出现 8 次 = 噪声）。
+     */
+    const trendErrorText = computed(() => {
+        if (!yiziTrendState.error) return '';
+        return '趋势：' + yiziTrendState.error;
+    });
+    const trendNoteText = computed(() => {
+        if (yiziTrendState.error) return '';
+        if (trendExpandedCount.value === 0) return '';
+        return yiziTrendState.note ? ('趋势：' + yiziTrendState.note) : '';
+    });
+
+    /**
+     * 展开 / 收起某只股票的趋势面板（点序号触发）。
+     * 展开时按需懒加载这一天的趋势（Logic 内部有会话缓存 + 单飞，重复展开不会重复打接口）。
+     */
+    function toggleYiziTrend(stockName) {
+        const name = String(stockName || '').trim();
+        if (!name) return;
+        const set = new Set(trendExpanded.value);
+        if (set.has(name)) {
+            set.delete(name);
+            trendExpanded.value = set;
+            return;
+        }
+        set.add(name);
+        trendExpanded.value = set;
+        const d = currentDate.value;
+        if (!d) return;
+        // 已经为这一天拿过（且没出错）→ 不必再打接口：
+        //   Logic 的 loadYiziTrend 自己也会命中会话缓存，这里只是省掉一次无谓的 await。
+        if (yiziTrendState.date === d && !yiziTrendState.error) return;
+        loadYiziTrend(d).catch(function(e) {
+            // Logic 内部已把失败写进 yiziTrendState.error（§10 可见）；这里只兜未预期的异常。
+            _dbgLog('[AUCTION-YIZI] 趋势加载异常: ' + (e && e.message || e));
+        });
+    }
+
     function onRealtimeUpdate(payload) {
         if (!payload || !payload.boards || payload.boards === 'all' || payload.boards === 'yizi') refresh();
     }
@@ -313,9 +413,12 @@ export function useAuctionYizi() {
 
     // §6 单源：日期切换一律由 uiStore.currentDate 驱动（不额外维护本地日期副本）
     // 两个 toggle 都随日期切换归位（无记忆）—— 新的一天是全新的一池股票，旧筛选/时点态会误导。
+    // ★ 趋势展开态同理归位：切日期后池子整体换人，上一池展开的那几只在这里已不存在，
+    //   留着只会让「下一池刚好同名」的票莫名展开（§34 纯展示态，随日期重置，无记忆）。
     watch(currentDate, function() {
         showNoTopic.value = false;
         show925.value = false;
+        trendExpanded.value = new Set();
         refresh();
     });
 
@@ -358,6 +461,16 @@ export function useAuctionYizi() {
         rangeText,
         rangeClass,
         continueText,
-        firstTimeText
+        firstTimeText,
+        // ===== 趋势面板（★ 2026-09-18 新增）=====
+        trendExpanded,
+        trendMap,
+        trendLoading,
+        trendErrorText,
+        trendNoteText,
+        trendMetrics,
+        trendHasLeg,
+        trendEmpty,
+        toggleYiziTrend
     };
 }
