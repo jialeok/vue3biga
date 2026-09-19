@@ -28,6 +28,9 @@ import {
     formatSealMoney
 } from '../topics/topic-block.js';
 import { formatRangePct, rangeTone } from '../auction/range-display.js';
+// 🔴 窗口长度必须来自单一真相（range-window.js），⛔ 绝不在这里写死 10：
+//    它是「排名资格（rankMinDays）」与「满窗判定（NO-PARTIAL-WRITE）」共用的同一个数。
+import { RANGE_WINDOW_DAYS } from '../auction/range-window.js';
 import { isValidTopic } from '../note/helpers.js';
 // ★ 一字判据的【唯一真相】：与「早盘竞价看板」的竞价一字红线标记同一份实现
 //   （logic/auction/limit-up.js#isAuctionYiZi + getLimitUpPct + parseAucPct）
@@ -422,6 +425,13 @@ export function buildYiziBlocks(rows, primaryMap, fallbackFn) {
         },
         metricKey: 'rangePct',
         metricDaysKey: 'rangeDays',
+        // 🔴 排名资格（2026-09-20 新增）：窗口不足 10 个交易日的【残缺值】不参与块内排序与选龙头，
+        //    但行内照旧显示它自己的十日涨幅文本（如 "50.29%(5/10日)"）——
+        //    用户要的是「不参与排名」，不是「看不到值」。
+        //    依据：区间涨幅是复利累乘，窗口天数不同的两个值【不可比】；让 5/10 日的残缺值
+        //    与满窗值同尺排序，会凭空抢走题材龙头，把「这个题材今天谁是龙头」整体带偏。
+        //    实测触发场景（2026-09-18）：经纬股份因筹划控制权变更停牌 5 个交易日 → 5/10 日。
+        rankMinDays: RANGE_WINDOW_DAYS,
         extraOf: function(row) {
             const s920 = sealMoneyAt(row, SEAL_920);
             const s925 = sealMoneyAt(row, SEAL_925);

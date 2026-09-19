@@ -11,9 +11,14 @@
 //        每交易日【北京 09:25】抓猫抓数据 daily_auc_fd 落库，由 pg_cron 触发；
 //        ⚠️ 本看板【不做前端自愈抓取】：9:15~9:25 的竞价快照有强时效性，
 //           前端补抓必然发生在错过窗口之后，无意义且会多烧一份小号额度）
-//   ② 十日涨幅  ← stock_range_pct 表（缺的票先走【猫抓 daily 批量】1 次请求补齐，
-//                  失败才退回同花顺 K 线；走 logic/auction/range-fill.js，
-//                  与「涨跌停」看板【共用同一份实现】；十日涨幅 = 块内排序 + 选龙头的度量）
+//   ② 十日涨幅  ← stock_range_pct 表（缺的票补算，走 logic/auction/range-fill.js，
+//                  与「涨跌停」看板【共用同一份实现口径】；十日涨幅 = 块内排序 + 选龙头的度量）
+//                  🔴 但【通道一的数据源是本看板自己的小号】（2026-09-20 修正）：
+//                     先读 yizi_trend（0 请求）→ 有缺口才调 /trend（自带 5 道额度闸门）→
+//                     再退回同花顺 K 线（0 猫抓额度）。
+//                     ⛔ 绝不使用 stock-range-pct.js 的 numcat 通道（= 主账号 = 早盘竞价的额度）。
+//                  ⚠️ 只把【满窗】的值回写 stock_range_pct（NO-PARTIAL-WRITE）；
+//                     残缺窗口（停牌 / 次新）只本地展示，⛔ 不落库。
 //   ③ 连板标    ← limit_pool 表（同花顺涨停池落库）：T-1 的连板数 +1 = T 日一字板的连板档位
 //                  （复用语义：一字板在 9:25 就已封上涨停价 ⇒ T 日必然涨停）
 //   ④ 题材归属 ← 三级优先：接口自带 开盘啦(theme_names_kpl) → 选股宝(theme_names_xgb)
@@ -45,6 +50,11 @@ import { getDragonWindowDates } from '../auction/dragon-rank.js';
 import { makeRangePctOf, getRangeFill } from '../auction/range-fill.js';
 import { readAuctionYiziForDate } from '../../data/auction-yizi.js';
 import { readRangePctForDate } from '../../data/stock-range-pct.js';
+// 🔴 十日涨幅【通道一的数据源】= 本看板自己的小号（2026-09-20 修正额度归属）：
+//    先读 yizi_trend 缓存（0 上游请求），有缺口才调 /trend（自带 5 道额度闸门）。
+//    ⛔ 绝不能沿用 stock-range-pct.js#fetchNumcatDailyPctRange —— 那条走 numcat-proxy=【主账号】，
+//    是早盘竞价的额度（用户明确要求两个自动获取的账号互不侵占额度）。
+import { fetchYiziDailyPctRange } from '../../data/yizi-trend.js';
 import { readLimitPoolForDate, BOARD_UP } from '../../data/limit-pool.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 import {
@@ -452,6 +462,9 @@ async function _load(date, force) {
                     // 一字板在 9:25 已封上涨停价，竞价涨幅就是它当天的真实起步，
                     // 与「涨跌停」看板（dragon-rank / worker P0）同口径。
                     aucPctOf: function(r) { return r && r.aucPct; },
+                    // 🔴 通道一的数据源必须显式指定为【本看板小号】：
+                    //    不传就会退回 numcat-proxy（主账号）⇒ 偷烧早盘竞价的额度。
+                    fetchDailyRange: fetchYiziDailyPctRange,
                     tag: '[AUCTION-YIZI]'
                 });
             } catch (e) {

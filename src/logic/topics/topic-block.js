@@ -86,6 +86,14 @@ function _poolOrder(rows, topicAt) {
  * @param {(row:object)=>({pct:number|null, days:number}|null)} opts.metricOf 度量取值
  * @param {string} opts.metricKey 度量写在行内的字段名（涨跌停='rangePct'；竞价一字='sealMoney'）
  * @param {string} [opts.metricDaysKey] 度量天数写在行内的字段名（不传则不写）
+ * @param {number} [opts.rankMinDays] 🔴 排名资格下限（0/不传 = 不过滤，行为与旧版完全一致）：
+ *        度量天数 `days < rankMinDays` 的行【不参与块内排序与选龙头】，但**照旧展示它的度量值**。
+ *        为什么必须有：区间涨幅是「复利累乘」，窗口天数不同的两个值**不可比** ——
+ *        停牌 / 次新的残缺窗口（如 5/10 日）若与满窗值同尺排序，会凭空抢走题材龙头，
+ *        把「今天这个题材谁是龙头」这个结论整体带偏（实测 2026-09-18 经纬股份：
+ *        因筹划控制权变更停牌 5 天 → 5/10 日 → 残缺值可参与排序）。
+ *        口径依据：range-fill.js「残缺行不参与龙头评选」+ range-window.js 的
+ *        「同屏各票天数不同 → 龙一/龙二排名不可比」。
  * @param {(row:object)=>(object|undefined)} [opts.extraOf] 追加本看板特有的展示字段
  * @returns {Array<{topic:string, count:number, hasLeader:boolean, leaderStock:string,
  *   leaderMetric:number|null, leaderDays:number, stocks:Array<object>}>}
@@ -100,6 +108,7 @@ export function buildTopicBlocks(rows, opts) {
     const metricOf = typeof o.metricOf === 'function' ? o.metricOf : function() { return null; };
     const metricKey = o.metricKey || 'metric';
     const metricDaysKey = o.metricDaysKey || '';
+    const rankMinDays = (o.rankMinDays && isFinite(o.rankMinDays) && o.rankMinDays > 0) ? Number(o.rankMinDays) : 0;
     const extraOf = typeof o.extraOf === 'function' ? o.extraOf : null;
 
     const topicAt = function(idx) { return _topicOf(primaryMap, list[idx], fallbackFn); };
@@ -118,27 +127,34 @@ export function buildTopicBlocks(rows, opts) {
     });
 
     // 2) 块内按度量降序排 → 序号即度量排名；无有效值的置底并保持原相对顺序
+    //    ⚠️「展示值 value」与「排名值 rankValue」必须分开：
+    //       窗口不足 rankMinDays 的行【照旧显示它的度量】，但 rankValue = null ⇒ 置底、不选龙头。
+    //       ⛔ 绝不能用「把 value 置 null」来实现 —— 那会顺手把行内的十日涨幅也抹成 '-'，
+    //          而用户要的是「不参与排名」，不是「看不到值」。
     const out = [];
     blocks.forEach(function(b) {
         const scored = b.rows.map(function(r, i) {
             const mv = metricOf(r);
             const value = mv && mv.pct !== null && mv.pct !== undefined && isFinite(mv.pct) ? Number(mv.pct) : null;
+            const days = mv && isFinite(mv.days) ? Number(mv.days) : 0;
+            const eligible = value !== null && (rankMinDays === 0 || days >= rankMinDays);
             return {
                 row: r,
                 value: value,
-                days: mv && isFinite(mv.days) ? Number(mv.days) : 0,
-                pos: i
+                days: days,
+                pos: i,
+                rankValue: eligible ? value : null
             };
         });
         scored.sort(function(a, c) {
-            const av = a.value === null ? -Infinity : a.value;
-            const cv = c.value === null ? -Infinity : c.value;
+            const av = a.rankValue === null ? -Infinity : a.rankValue;
+            const cv = c.rankValue === null ? -Infinity : c.rankValue;
             if (cv !== av) return cv - av;
             return a.pos - c.pos;
         });
 
         const head = scored[0];
-        const hasLeader = !!(head && head.value !== null);
+        const hasLeader = !!(head && head.rankValue !== null);
 
         const stocks = scored.map(function(x, i) {
             // 题材判据的唯一入参形状（展示与「无题材」判定【共用同一份输入】，口径不可能分叉）

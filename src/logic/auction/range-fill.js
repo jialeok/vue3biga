@@ -8,8 +8,19 @@
 //
 // 数据链（两条腿 + 补算两个通道）：
 //   ① 云端缓存 stock_range_pct（跨设备共享，命中即用，0 请求）
-//   ② 补算【通道一 · 猫抓 daily 批量】—— ★ 主通道
+//   ② 补算【通道一 · 逐日涨幅批量】—— ★ 主通道
 //   ③ 补算【通道二 · 同花顺 K 线】—— 仅在通道一失败（额度用尽 / 403）时兜底
+//
+// 🔴🔴 通道一的【额度归属】必须由调用方显式决定（2026-09-20 修正）：
+//   · 缺省实现 `fetchNumcatDailyPctRange` → `numcat-proxy` → **主账号 NUMCAT_API_KEY**
+//     ⇒ 这是【早盘竞价看板】的额度，**竞价一字看板禁止使用**。
+//   · 竞价一字必须传 `opts.fetchDailyRange` = `data/yizi-trend.js#fetchYiziDailyPctRange`
+//     （走本看板小号：先读 yizi_trend 缓存，0 请求；有缺口才调 /trend，自带 5 道额度闸门）。
+//   · 用户原话（2026-09-19）：「如果竞价一字看板的额度用完了，就不要用早盘竞价的那个主账号额度，
+//     因为早盘竞价那个额度是主要的功能，如果占用就会影响到我买卖股票效果，
+//     这两个自动获取的账户要不影响额度。」
+//   ⇒ 结论：**「共用一套口径代码」不等于「共用一把 key」**。三个看板共用本模块的
+//     窗口/复利/T 腿/落库口径，但**各用自己的数据通道**，额度互不侵占。
 //
 // 口径完全复用 range-window.js（窗口 [T-9,T] + 复利累乘 + T 腿 resolveTDayPct），不另算一套。
 //
@@ -175,17 +186,28 @@ export function makeRangePctOf(rangeMap, localMap) {
  * 1 次请求即可覆盖全部股票 × 10 个交易日（实测 121 只 × 10 天 = 1200 行 / 1732ms）。
  * 额度极省：整批只算 1 次调用。
  *
+ * 🔴 **额度归属（2026-09-20 修正，⛔ 别再改回单一通道）**：
+ *   缺省实现 `fetchNumcatDailyPctRange` 打的是 `numcat-proxy` → **主账号 NUMCAT_API_KEY**。
+ *   这条腿只允许【早盘竞价 / 涨跌停】使用 —— 它们的额度与主账号同源。
+ *   **竞价一字看板必须传入自己的 `fetchDailyRange`**（走本看板小号，
+ *   见 `data/yizi-trend.js#fetchYiziDailyPctRange`），否则就是在偷烧早盘竞价的额度：
+ *   用户原话「如果竞价一字看板的额度用完了，就不要用早盘竞价的那个主账号额度……
+ *   这两个自动获取的账户要不影响额度」。
+ *
  * @param {Array<{stock:string, code:string, row:object}>} missing 缺票（已按股票名去重）
  * @param {string[]} winAsc 升序窗口 ['YYYY-MM-DD', …]，最后一项 = T
  * @param {string} date 区间结束日 T
  * @param {(row:object)=>(*)} [aucPctOf] 取「当日竞价涨幅」的回调（今天未收盘时作 T 腿）
+ * @param {(symbols:string, startYmd:string, endYmd:string)=>(Promise<Map>)} [fetchDailyRange]
+ *        逐日涨幅的数据源（缺省 = 主账号 numcat-proxy；竞价一字必须显式传入小号通道）
  * @returns {Promise<{targets:Array, dailyByCode:Object, tLegByCode:Object}|null>}
  *          接口失败 / 返回空 → null（由调用方决定是否走兜底通道）
  */
-async function _collectLegsViaNumcat(missing, winAsc, date, aucPctOf) {
+async function _collectLegsViaNumcat(missing, winAsc, date, aucPctOf, fetchDailyRange) {
     const startYmd = String(winAsc[0]).replace(/-/g, '');
     const endYmd = String(winAsc[winAsc.length - 1]).replace(/-/g, '');
-    const byCode = await fetchNumcatDailyPctRange(
+    const fetchFn = typeof fetchDailyRange === 'function' ? fetchDailyRange : fetchNumcatDailyPctRange;
+    const byCode = await fetchFn(
         missing.map(function(it) { return it.code; }).join(','),
         startYmd,
         endYmd
@@ -308,6 +330,9 @@ export async function fillMissingRangePct(opts) {
     const tried = o.tried;
     const codeOf = typeof o.codeOf === 'function' ? o.codeOf : function(r) { return (r && r.code) || ''; };
     const aucPctOf = typeof o.aucPctOf === 'function' ? o.aucPctOf : null;
+    // 🔴 通道一的数据源：缺省走主账号（numcat-proxy）。【竞价一字看板必须传自己的小号通道】
+    //    —— 见 data/yizi-trend.js#fetchYiziDailyPctRange 与本节头部的「额度归属」说明。
+    const fetchDailyRange = typeof o.fetchDailyRange === 'function' ? o.fetchDailyRange : null;
     const winDesc = o.windowDates;
 
     const missing = [];
@@ -329,22 +354,24 @@ export async function fillMissingRangePct(opts) {
     const winAsc = winDesc.slice().reverse();          // buildRangeRows 要求升序，最后一项 = T
     const windowLen = winAsc.length;
 
-    _dbgLog(tag + ' ' + o.date + ' 十日涨幅缺失 ' + missing.length + ' 只 → 通道一（猫抓 daily 批量）');
+    _dbgLog(tag + ' ' + o.date + ' 十日涨幅缺失 ' + missing.length + ' 只 → 通道一（逐日涨幅批量）');
 
-    // ---- 通道一：猫抓 daily 批量（1 次请求覆盖全部缺票 × 整个窗口）----
+    // ---- 通道一：逐日涨幅批量（1 次请求覆盖全部缺票 × 整个窗口）----
+    // ⚠️ 日志刻意不写「猫抓」二字：数据源是可注入的 —— 早盘竞价/涨跌停走主账号（numcat-proxy），
+    //    竞价一字走自己的小号（yizi_trend）。写死名字会让排查时误判是谁在烧额度。
     let legs = null;
     const tChan1 = Date.now();
     try {
         legs = await _withTimeout(
-            _collectLegsViaNumcat(missing, winAsc, o.date, aucPctOf),
+            _collectLegsViaNumcat(missing, winAsc, o.date, aucPctOf, fetchDailyRange),
             NUMCAT_TIMEOUT_MS,
-            '通道一（猫抓 daily 批量）'
+            '通道一（逐日涨幅批量）'
         );
         _dbgLog(tag + ' ' + o.date + ' 通道一耗时 ' + (Date.now() - tChan1) + 'ms');
     } catch (e) {
         // 额度用尽（403）/ 网络异常 / 超时 —— 不阻断，转通道二。
         // fail-soft 只记日志（§10：读失败由调用方处理，本模块只负责「补」）。
-        _dbgLog(tag + ' 通道一（猫抓 daily）不可用，转同花顺 K 线兜底（耗时 ' +
+        _dbgLog(tag + ' 通道一（逐日涨幅批量）不可用，转同花顺 K 线兜底（耗时 ' +
             (Date.now() - tChan1) + 'ms）: ' + (e && e.message || e));
     }
 

@@ -184,3 +184,130 @@ export async function fetchYiziTrendFromEdge(opts) {
     }
     return json;
 }
+
+// ============================================================================
+// 【竞价一字专用 · 十日涨幅的数据通道】（2026-09-20 新增）
+// ============================================================================
+//
+// 🔴 为什么必须单独有一条通道（用户 2026-09-19 明确要求）：
+//   「如果竞价一字看板的额度用完了，就不要用早盘竞价的那个主账号额度，因为早盘竞价那个额度是主要的
+//     功能，如果占用就会影响到我买卖股票效果，这两个自动获取的账户要不影响额度。」
+//
+//   原先「十日涨幅」缺票补算复用的是 `range-fill.js` 的通道一
+//   → `stock-range-pct.js#fetchNumcatDailyPctRange` → `numcat-proxy`
+//   → **主账号 NUMCAT_API_KEY** ⇒ 竞价一字缺票时烧的正是早盘竞价的额度。**这就是违规点。**
+//
+//   本函数把竞价一字的通道一整体搬回【本看板自己的小号】：
+//     ① 先读库 `yizi_trend.change_pct`（= 小号 `daily` 的 pct_chg 落库值）⇒ **0 上游请求**；
+//     ② 只有确有缺口时，才调 `/trend` 补一次 —— 同一个 Edge Function、同一把小号，
+//        自带 5 道额度闸门（缺口驱动 / 09:20~09:30 保护窗口 / 90 秒冷却 / 每日预算 / 整窗口 1 请求），
+//        补完再读库。
+//   ⇒ 两个看板【额度彻底隔离】：小号打光了也只是「这次补不齐」（显示 '-'），
+//     ⛔ 绝不会偷偷去烧主账号。
+//
+// 返回形状与 `fetchNumcatDailyPctRange` **逐字一致**（code -> (YYYYMMDD -> pct)），
+// 因此 `range-fill.js` 只需换数据源 —— 窗口 / 复利 / T 腿 / 落库四道口径【一行都不用改】。
+
+/** 'YYYYMMDD' 或 'YYYY-MM-DD' → 'YYYY-MM-DD'；非法 → '' */
+function _toIsoDate(ymd) {
+    const s = String(ymd || '').replace(/-/g, '').trim();
+    if (s.length !== 8 || !/^\d{8}$/.test(s)) return '';
+    return s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8);
+}
+
+/**
+ * 涨幅文本 → number|null。
+ * ⛔ 绝不把「没有数据」当成 0 —— 0 是一个真实涨幅（停牌日上游真的会回 auc_vol=0）。
+ * ⚠️ 刻意在本层自己实现而不是 import logic/auction/range-window.js#parsePct：
+ *    Data 层不得依赖 Logic 层（§2 依赖方向 UI → Logic → Data → Backend）。
+ *    口径与 range-window.js#parsePct 保持一致，改一处必须同步另一处。
+ */
+function _parsePctText(raw) {
+    if (raw === null || raw === undefined || raw === '') return null;
+    if (typeof raw === 'number') return isFinite(raw) ? raw : null;
+    const n = Number(String(raw).replace('%', '').replace('+', ''));
+    return isFinite(n) ? n : null;
+}
+
+/**
+ * 闭区间内的自然日列表（含首尾）。
+ * ⚠️ 只用来「把交易日窗口翻译成 PostgREST 的日期区间」，不承担交易日历职责 ——
+ *    非交易日查不到行是正常的（库里本来就没有那些天）。
+ */
+function _calendarDays(startIso, endIso) {
+    const out = [];
+    const s = Date.parse(startIso + 'T00:00:00Z');
+    const e = Date.parse(endIso + 'T00:00:00Z');
+    if (!isFinite(s) || !isFinite(e) || e < s) return out;
+    for (let ms = s; ms <= e && out.length < 40; ms += 86400000) {
+        out.push(new Date(ms).toISOString().slice(0, 10));
+    }
+    return out;
+}
+
+/**
+ * 【竞价一字专用 · 十日涨幅通道】用本看板小号的 `yizi_trend` 组装「逐日涨幅」。
+ *
+ * 与 `fetchNumcatDailyPctRange` 的唯一区别 = 数据来源（小号 vs 主账号）；
+ * 返回的 Map 形状、键（6 位代码）、值（日涨幅 %，YYYYMMDD 键）完全一致。
+ *
+ * @param {string} symbols 逗号分隔的 6 位代码
+ * @param {string} startYmd 窗口起始（含）YYYYMMDD
+ * @param {string} endYmd 窗口结束（含 = T）YYYYMMDD
+ * @param {{date?:string, window?:number, allowEdge?:boolean}} [opts]
+ *        date = 区间结束日 T（透传给 /trend）；window = 需要的交易日数（默认 10）；
+ *        allowEdge === false 时【只读库、绝不触发上游】（排查 / 验证用）。
+ * @returns {Promise<Map<string, Map<string, number>>>} code -> (YYYYMMDD -> pct)
+ * @throws 读库失败时抛错（§10：读取失败必须 throw，绝不返回空 Map 伪装成「没有数据」）
+ */
+export async function fetchYiziDailyPctRange(symbols, startYmd, endYmd, opts) {
+    const o = opts || {};
+    const codes = String(symbols || '')
+        .split(',')
+        .map(function(s) { return String(s).trim(); })
+        .filter(Boolean);
+    const startIso = _toIsoDate(startYmd);
+    const endIso = _toIsoDate(endYmd);
+    const byCode = new Map();
+    if (codes.length === 0 || !startIso || !endIso) return byCode;
+
+    const dates = _calendarDays(startIso, endIso);
+    if (dates.length === 0) return byCode;
+    const dateSet = new Set(codes);
+
+    const accumulate = function(rows) {
+        (rows || []).forEach(function(r) {
+            const code = String((r && r.code) || '').trim();
+            if (!code || !dateSet.has(code)) return;
+            const pct = _parsePctText(r.changePct);
+            if (pct === null) return;
+            const ymd = String((r && r.date) || '').replace(/-/g, '');
+            if (!ymd) return;
+            if (!byCode.has(code)) byCode.set(code, new Map());
+            byCode.get(code).set(ymd, pct);
+        });
+    };
+
+    // ① 先读库（0 上游请求）—— 这是常态路径：每天 09:35 的 cron 已经把窗口铺好了
+    accumulate(await readYiziTrendForDates(dates));
+
+    // ② 仍有缺口 → 调 /trend 补一次（小号，自带全部额度闸门），再读库。
+    //    允许少 1 天：T 腿由 range-fill 的 aucPctOf（快照竞价涨幅）负责，不依赖本通道。
+    const wantDays = Math.max(1, Number(o.window) || 10);
+    const complete = codes.every(function(c) {
+        const m = byCode.get(c);
+        return !!m && m.size >= wantDays - 1;
+    });
+    if (!complete && o.allowEdge !== false) {
+        try {
+            await fetchYiziTrendFromEdge({ date: o.date || endIso, window: wantDays });
+            accumulate(await readYiziTrendForDates(dates));
+        } catch (e) {
+            // fail-soft：补腿失败只是「这次补不齐」——range-fill 会按缺腿处理（⛔ 不阻断看板）。
+            // §10：这里吞掉异常是【刻意的】，因为调用方 range-fill 已经对「拿不到腿」有完整兜底；
+            //      但必须留日志，否则又会变成「静默失效」。
+            _dbgLog('[YIZI-TREND] 十日涨幅补腿失败（不影响看板）: ' + ((e && e.message) || e));
+        }
+    }
+    return byCode;
+}

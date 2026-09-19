@@ -13,14 +13,17 @@
 --
 -- 【为什么需要落库缓存】
 --   · 小号猫抓额度每天只有 10 次，9:25 的自动抓取还要占 1~2 次；
---   · 趋势要「近 5 个交易日」，若每次展开面板都现拉 = 每天 N 次 × 2 次请求 ⇒ 必然把 9:25 抓取饿死；
+--   · 趋势要「近 5 个交易日」、十日涨幅要「近 10 个交易日」，若每次打开看板都现拉
+--     = 每天 N 次 × 2 次请求 ⇒ 必然把 9:25 抓取饿死；
 --   · 落库后：每个交易日只新增 1 个日期，摊薄到 2 次/天封顶，且跨设备 / 跨会话 0 消耗。
+--   · 🔴 2026-09-20 起本表【一表两用】：change_pct 同时供「趋势图」与「十日涨幅（通道一）」使用
+--     ⇒ 竞价一字算十日涨幅时是【纯读库、0 上游请求】，彻底不必碰早盘竞价的主账号额度。
 --
 -- 【两条腿的请求形态（★ 额度关键：整窗口 = 1 次请求，⛔ 不是「每天一次」）】
 --   竞价腿 daily_auc：params { symbols:'c1,c2,…', startdate:'YYYYMMDD', enddate:'YYYYMMDD' }
 --                     → 一次拿回「窗口内每一天 × 每一只」的 auc_vol / auc_pct_chg / auc_to_pre_vol_pct
 --   K 线腿 daily    ：同形态 → 一次拿回窗口内每一天的 pct_chg
---   ⇒ 5 天窗口 = 2 次请求（两腿各 1 次），而不是 10 次。
+--   ⇒ 10 天窗口 = 2 次请求（两腿各 1 次），而不是 20 次。
 --
 -- 【为什么本表不需要「全市场」】
 --   因为竞价腿是「按窗口 + 按股票」一次抓回来的：某只股票第一次被请求时，它**整个窗口**的
@@ -86,14 +89,23 @@ create index if not exists idx_yizi_trend_code on yizi_trend(code);
 notify pgrst, 'reload schema';
 
 -- ---------------------------------------------------------------------------
--- 定时补腿（可选但强烈推荐）：每个交易日北京 09:35 调一次 /trend
---   为什么放在 09:35：9:25 那条腿（auction-yizi-fetch /fetch）在北京 09:25:00~09:25:55
---   跑完 → 池子此刻已经落库 → /trend 读 auction_yizi(date) 直接就能拿到目标股票，
---   于是「用户第一次展开趋势面板」= 0 上游请求（纯读缓存，秒开）。
---   ⚠️ 另一条 cron（9:25 抓池子）见 db/supabase_auction_yizi_cron.sql，⛔ 两条必须错开：
---      /trend 自带 09:20~09:30 保护窗口，其间即使被调也【不会发上游请求】。
+-- 定时补腿（每个交易日北京 09:35 调一次 /trend）—— ★ 本看板【唯一的自动数据任务】
+--   为什么放在 09:35（而不是 9:25 那一分钟）：
+--     ① 9:25 那条腿（auction-yizi-fetch /fetch）在北京 09:25:00~09:25:55 跑完 → 池子此刻才落库；
+--        早于它跑，/trend 读 auction_yizi(date) 会读到空池子（等于白烧 1 次小号额度）。
+--     ② /trend 自带【北京 09:20~09:30 上游禁用窗口】（保护 9:25 快照抓取），其间调用一律不发上游。
+--     ⇒ 09:35 是本看板能自动取数的最早安全时刻，**仍是同一个交易日**，不影响「当天数据当天落库」。
+--   为什么 window=10（2026-09-20 由 5 改为 10）：
+--     · yizi_trend.change_pct 现在【一表两用】：既画趋势图（取最近 5 天），
+--       又是本看板「十日涨幅」通道一的数据源（window=10 才覆盖得下 [T-9, T]）。
+--     · 好处：竞价一字算十日涨幅时 **0 上游请求** —— 直接读这张表，⛔ 不必再去打
+--       numcat-proxy（那是早盘竞价的主账号额度，用户明确要求两个账号额度互不侵占）。
+--     · 代价：每天 2 次请求（两腿各 1 次，整窗口一次抓回），远低于 /trend 的每日预算 6。
+--   ⚠️ 另一条 cron（9:25 抓池子）见 db/supabase_auction_yizi_cron.sql，⛔ 两条必须错开。
 --   幂等：cron.schedule 对同名 job 是【更新语义】⇒ 重复执行不会产生重复 job。
 --   想下线 / 暂停：见文末自检区。
+--   🔴 生效方式：本文件是 SQL 脚本，改完必须【在 SQL Editor 重新执行一次】
+--      （同名的 cron.schedule 会被更新为新窗口，不会产生重复 job）。
 -- ---------------------------------------------------------------------------
 create extension if not exists pg_cron;
 create extension if not exists pg_net;
@@ -103,7 +115,7 @@ create extension if not exists pg_net;
 --   仍带上 apikey/Authorization 是为了兼容「Verify JWT = 开」的函数（平台鉴权直接通过）。
 select cron.schedule('yizi-trend-0935', '35 1 * * 1-5', $$
   select net.http_post(
-    url     := 'https://tonqfgeyxnnwicjopshn.supabase.co/functions/v1/auction-yizi-fetch/trend?window=5',
+    url     := 'https://tonqfgeyxnnwicjopshn.supabase.co/functions/v1/auction-yizi-fetch/trend?window=10',
     headers := '{"Content-Type":"application/json","apikey":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRvbnFmZ2V5eG5ud2ljam9wc2huIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NjY3NzEsImV4cCI6MjA5NDI0Mjc3MX0.el-W10JIjr9iQXEKNxV7nLNdhZfOQp6waTY7ZSH27Jg","Authorization":"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRvbnFmZ2V5eG5ud2ljam9wc2huIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NjY3NzEsImV4cCI6MjA5NDI0Mjc3MX0.el-W10JIjr9iQXEKNxV7nLNdhZfOQp6waTY7ZSH27Jg"}'::jsonb,
     body    := '{}'::jsonb,
     -- 两条腿各 1 次请求（25s 超时/次）+ 读表 → 30 秒足够；超时也只是少补一次，下次展开会再补。
