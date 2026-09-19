@@ -8,6 +8,12 @@ import { state } from '../logic/app-state.js';
         // ★ 2026-09-18：题材库的「归一化别名索引」用 —— 见下方 buildNormalizedTopicIndex 的事故说明。
         //   纯函数叶子（logic/topics/stock-name.js），无反向依赖，不会造成循环导入。
         import { normalizeStockName } from '../logic/topics/stock-name.js';
+        // ★ 2026-09-19：判「共享库里这只票的题材算不算【真实题材】」复用 note 层唯一那份判据
+        //   （logic/note/helpers.js#isValidTopic：剔掉「题材35」这类占位编号、纯数字、单字符、
+        //   「其它/---」等伪题材）。⛔ 不要在这里另写一份正则 —— 两处口径一旦不一致，
+        //   「库里的题材算不算数」与「note 里的题材算不算数」就会给出不同答案（§6 破）。
+        //   纯函数叶子（无任何 import），不会造成循环导入。
+        import { isValidTopic } from '../logic/note/helpers.js';
 
         export async function pullStockTopicsFromCloud() {
             const sb = getSupabase();
@@ -189,6 +195,71 @@ import { state } from '../logic/app-state.js';
         }
 
         /**
+         * 取一份「共享题材库里**已有权威题材**的股票名索引」`{exact:Set, norm:Set}`。
+         *
+         * 用途：给「从历史 note 反推题材」这条链路做闸门 —— 库里有权威题材的股票，
+         * 一律以库为准，不再用历史 note 反推（详见 scanDataSourceForTopics 的注释）。
+         *
+         * 「权威」的判据（两层，缺一不可）：
+         *   ① 该股票在 `_cloudTopicsCache` 里有键，且题材集合非空；
+         *   ② 集合里**至少有一个真实题材**（`isValidTopic`）。只有「题材20/题材21」这类占位编号的
+         *      条目**不算权威** —— 那种条目本身没有信息量，若让它把历史 note 反推挡掉，
+         *      反而会让本来能显示的题材消失（实测 2026-09-19：1392 只库里约 8 只属此类）。
+         *
+         * §10 语义：库**没拉过**（`_cloudTopicsCache === null`）→ 返回空索引 = 「谁都不权威」
+         *   → 所有股票继续走历史 note 反推（行为与改动前完全一致，不会把看板清空）。
+         *
+         * @returns {{exact:Set<string>, norm:Set<string>}} exact=原名，norm=归一化名（别名兜底）
+         */
+        export function snapshotAuthoritativeLibraryIndex() {
+            const idx = { exact: new Set(), norm: new Set() };
+            if (!state._cloudTopicsCache) return idx;
+            Object.keys(state._cloudTopicsCache).forEach(function(name) {
+                const set = state._cloudTopicsCache[name];
+                if (!set || set.size === 0) return;
+                let hasRealTopic = false;
+                set.forEach(function(t) { if (!hasRealTopic && isValidTopic(t)) hasRealTopic = true; });
+                if (!hasRealTopic) return;
+                idx.exact.add(name);
+                const nk = normalizeStockName(name);
+                if (nk) idx.norm.add(nk);
+            });
+            return idx;
+        }
+
+        /** 该股票在共享库里是否已有【权威题材】（= 应当以库为准、不再用历史 note 反推） */
+        export function isLibraryAuthoritativeFor(stockName, authIdx) {
+            if (!stockName) return false;
+            const idx = authIdx || snapshotAuthoritativeLibraryIndex();
+            const key = String(stockName).trim();
+            if (!key) return false;
+            if (idx.exact.has(key)) return true;
+            const nk = normalizeStockName(key);
+            return !!(nk && idx.norm.has(nk));
+        }
+
+        /**
+         * 把共享题材库铺进「{股票名: Set(题材)}」形状的索引**底座**。
+         *
+         * §6 单一真相：`buildTopicCache`（快路径）与 `stocks.js#_buildSlowTopicIndex`（慢路径）
+         * 必须**同序同源** —— 都是「先用共享库铺底，再用历史 note 只补空缺」。
+         * ⛔ 不要在两边各写一份铺底循环：两处顺序一旦分叉，同一个库会给出两种答案。
+         *
+         * @param {object} index 目标索引（原地写入）
+         * @returns {object} 同一个对象（便于链式书写）
+         */
+        export function seedTopicIndexFromLibrary(index) {
+            if (!index || !state._cloudTopicsCache) return index;
+            Object.keys(state._cloudTopicsCache).forEach(function(name) {
+                const topics = state._cloudTopicsCache[name];
+                if (topics && topics.size > 0) {
+                    index[name] = new Set(topics);
+                }
+            });
+            return index;
+        }
+
+        /**
          * 确保共享题材库已加载（仅在未就绪时发起一次全量拉取；幂等，已就绪则 0 请求）。
          * ⚠️ 重新加载后必须【立刻】重建题材缓存：invalidateTopicCache() 会把 _topicCacheBuilt 置 false，
          *    若不同步 buildTopicCache()，后续读取会落在「已失效但未重建」的中间态（§22 的同类坑）。
@@ -279,17 +350,50 @@ import { state } from '../logic/app-state.js';
         }
 
         // ===== 题材缓存管理（从 logic/app-core.js 移至 data 层）=====
+        // 其中「从历史数据反推题材」= 共享库的【兜底】，不是第二真相：
+        //
+        // 🔴🔴 2026-09-19 修「题材在早盘竞价里删掉了，涨跌停/竞价一字看板还显示；过一会儿又自己回来」：
+        //
+        //   事故现场（用户原话）：
+        //     「9月15日桂林旅游的涨停板看板没有和早盘竞价看板的桂林旅游题材同步，我在早盘竞价
+        //       看板那里改了桂林旅游把人工智能去掉了，但是涨跌停看板那里还显示」
+        //   实测数据（云端只读核查）：
+        //     stock_topics.桂林旅游 = 「旅游,大消费」（写入时间 2026-09-19，即用户那次编辑已**写对了**）；
+        //     auction_watchlist 的 **2026-09-09** 行 note 仍为 `+9.99%(旅游，人工智能)`。
+        //   根因：本函数在「共享库已铺好」之后，又对每一行 note 的括号内容做**只增不减**的并入
+        //     （`state._topicCache[name].add(t)`）⇒ 库里明明已经删掉的「人工智能」，被 09-09 那条
+        //     **历史 note**（历史文本是当时的真实记录，不会因为今天的编辑而消失）重新加回内存缓存。
+        //     而涨跌停看板、竞价一字看板的题材都走 `getStockHistoryTopics` → `_topicCache`
+        //     ⇒ 表现就是「怎么删都删不掉 / 过一会儿（缓存重建）又恢复」。
+        //     ⚠️ 与「写入端 merge 语义删不掉」是**两个独立病灶**：写入端已在 77f2028 修好（replace 语义），
+        //       这里补的是【读取端】——只修写入端，读取端仍会把旧题材捞回来，等于没修。
+        //
+        //   ✅ 修法（§6 单一真相）：共享题材库是跨看板题材的**唯一权威来源**；
+        //      「从历史 note 反推」降级为**只对库里还没有的股票**生效的兜底。
+        //      判据实现见 snapshotAuthoritativeLibraryIndex()（要求库里至少有一个真实题材，
+        //      纯占位条目如「题材20」不在此列，避免误伤）。
+        //
+        //   ⚠️ 代价（有意接受，写下来免得后人当成 Bug 再改回去）：
+        //      当历史 note 里存在「库里没有的真实题材」时，该题材不再显示 —— 这正是「用户删掉的题材
+        //      不许复活」的必然代价。实测影响面（2026-07-11~09-19 全量 + 1392 只题库）：
+        //      492 只「库里有权威题材」的股票中，仅 **8 只**会少显示 1~4 个次要题材（约 1.6%），
+        //      其余「库无该股 / 库只有占位题材」的股票**行为完全不变**。
+        //      这 8 只在用户下次编辑该股题材时会自愈（编辑会以本次题材为准整表写回共享库）。
         export function scanDataSourceForTopics(dataSource) {
             const TOPIC_CACHE_DAYS = 66;
             const allDates = Object.keys(dataSource).sort();
             const recentDates = allDates.length > TOPIC_CACHE_DAYS
                 ? allDates.slice(-TOPIC_CACHE_DAYS)
                 : allDates;
+            // 库权威索引：整轮只建一次（O(库规模)），不要在逐行里反复算
+            const authIdx = snapshotAuthoritativeLibraryIndex();
             recentDates.forEach(date => {
                 const dayList = dataSource[date] || [];
                 dayList.forEach(item => {
                     if (!item.stock) return;
                     const name = item.stock.trim();
+                    // 🔴 库权威闸门：共享库已有该股题材 ⇒ 历史 note 不再参与（否则删掉的题材必复活）
+                    if (isLibraryAuthoritativeFor(name, authIdx)) return;
                     if (!state._topicCache[name]) state._topicCache[name] = new Set();
                     if (item.topics) {
                         item.topics.split(/[+，,，、;；]/).forEach(t => {
@@ -370,16 +474,12 @@ import { state } from '../logic/app-state.js';
             if (state._topicCacheBuilt && state._topicCache) return state._topicCache;
             state._topicCache = {};
 
-            if (state._cloudTopicsCache) {
-                Object.keys(state._cloudTopicsCache).forEach(function(name) {
-                    const topics = state._cloudTopicsCache[name];
-                    if (topics && topics.size > 0) {
-                        state._topicCache[name] = new Set(topics);
-                    }
-                });
-            }
+            // 第一步：共享库铺底（§6 权威来源）。与慢路径 _buildSlowTopicIndex 同源同序，见 seedTopicIndexFromLibrary。
+            seedTopicIndexFromLibrary(state._topicCache);
 
             const TOPIC_CACHE_DAYS = 66;
+            // 第二步：只对「共享库还没有的股票」用历史 note 兜底（库有权威题材的会被闸门直接跳过，
+            // 否则历史 note 里删不掉的旧题材会把库里的结果又加回来 —— 见 scanDataSourceForTopics 的注释）。
             scanDataSourceForTopics(state._auctionMemCache || {});
             scanDataSourceForTopics(state._hotAuctionData || {});
             // ⚠️ 别名索引必须在 `_topicCache` **全部填完之后**再建（含上面两个 scanDateSource 的写入），

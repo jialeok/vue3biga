@@ -17,7 +17,7 @@ import { _addAuctionWatchlistMember, _extractWatchlistNamesFromRows, _getAuction
 import { getJingYestHighlightSetForDate, getJingYestStocksForDate } from './sort-rules.js';
 import { syncStockCloseFromAuction, syncStockTopicsFromAuction } from './stock-sync.js';
 import { getStats } from '../jiwang/helpers.js';
-import { buildNoteFromFields, cleanTopicsForDisplay, parseNoteToFields } from '../note/helpers.js';
+import { buildNoteFromFields, cleanTopicsForDisplay, parseNoteToFields, isValidTopic } from '../note/helpers.js';
 import { _backupScopeData, _mergePatchLocal, _patchScopeField, _sanitizePatch, _splitPatch } from '../scope/helpers.js';
 import { _getLocalTodayStr, deriveAuctionTagState } from '../tagTitles/rules.js';
 import { getMostRecentTradingDay, getPreviousTradingDay, isTradingDay } from '../date/trading-day-helpers.js';
@@ -348,13 +348,12 @@ export async function fillTopicsFromNumcat(btn) {
             }
             // 全部保留题材，不再截断为前3个（一只股票可能同时属于多个题材分类）
             // [BUG-FIX 2026-07-26] 过滤掉开盘啦返回的"题材35/题材36"等编号条目
-            const topicList = themeNames.split(/[，、,;；]/).map(function(t) { return t.trim(); }).filter(function(t) {
-                if (!t) return false;
-                if (/^题材\d+$/.test(t)) return false;   // 题材35 / 题材36
-                if (/^\d+$/.test(t)) return false;     // 纯数字
-                if (t.length < 2) return false;        // 单字符
-                return true;
-            });
+            // [DEDUP 2026-09-19] 判据收敛到 note 层唯一那份 isValidTopic（§6：一个口径只有一处定义）。
+            //   旧实现在这里内联了「题材N / 纯数字 / 单字符」三条正则 —— 与 isValidTopic 重复，
+            //   且「共享题材库里的题材算不算真实题材（data/stock-topics.js#snapshotAuthoritativeLibraryIndex）」
+            //   现在也要用同一判据；两处一旦分叉，就会出现「写库时过滤、判权威时不过滤」的错位。
+            //   行为差异（有意）：额外拒绝 '---' / '其它' / '其他' 这三个伪题材，不再写进共享库。
+            const topicList = themeNames.split(/[，、,;；]/).map(function(t) { return t.trim(); }).filter(isValidTopic);
             if (topicList.length === 0) {
                 emptyThemeCount++;
                 return;

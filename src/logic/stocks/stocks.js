@@ -11,7 +11,7 @@ import { pushJiwangNow, scheduleJiwangPush } from '../../data/jiwang-data.js';
 import { _closeAuctionShield, _openAuctionShield, _initAuctionMemCache } from '../../data/session-and-shield.js';
 import { loadCloudStockCodeMap, upsertStockCodeMap } from '../../data/stock-code-map.js';
 import { resolveCodesByNames } from '../../data/stock-code-resolver.js';
-import { buildTopicCache, invalidateTopicCache, loadCloudTopics, pushStockTopicsToCloud, scanDataSourceForTopics, lookupTopicsByName, buildNormalizedTopicIndex } from '../../data/stock-topics.js';
+import { buildTopicCache, invalidateTopicCache, loadCloudTopics, pushStockTopicsToCloud, scanDataSourceForTopics, lookupTopicsByName, buildNormalizedTopicIndex, seedTopicIndexFromLibrary, snapshotAuthoritativeLibraryIndex, isLibraryAuthoritativeFor } from '../../data/stock-topics.js';
 import { normalizeStockName } from '../topics/stock-name.js';
 import { _moduleKey, getJiwangData, getNumericVolume, getStocksData, getSupabase, loadAllData } from '../../data/supabase-client.js';
 import { remainingBoards } from '../../data/remaining-boards.js';
@@ -41,7 +41,12 @@ import { patchHotFieldBatch } from '../hotspot/hotspot.js';
 // 而 importAuctionFromPaste 末尾只 invalidateTopicCache() 不重建，恰好留下 _topicCacheBuilt=false
 // 的危险中间态 → 导入后首次进第二页必踩。
 // 修复：把 O(N × M) 降为 O(M + N) —— 慢路径改为一次性构建 (股票 → 题材) 索引后查表。
-// 语义与结果 100% 不变：同为最近 66 天窗口、不排除当天、同样取该股当日**首行**、同样括号解析与分隔符。
+// 语义与结果：同为最近 66 天窗口、不排除当天、同样取该股当日**首行**、同样括号解析与分隔符。
+//
+// ★ 2026-09-19 起本索引**不再是「纯 note 反推」**（唯一的一处口径变化，故作废上面「100% 不变」的说法）：
+//   与快路径 buildTopicCache 对齐为「① 共享题材库铺底 ② 历史 note 只补库里没有的股票」。
+//   原因：题库权威化修复（见 data/stock-topics.js#scanDataSourceForTopics 的事故说明）要求两条路径
+//   同源同序，否则「_topicCache 已构建」与「未构建」两种状态下同一个库会给出两个答案。
 const TOPIC_CACHE_DAYS = 66;
 let _slowTopicIndex = null;
 // ★ 2026-09-18：慢路径的【归一化别名索引】（与 _slowTopicIndex 同一次构建，见 getStockHistoryTopics）
@@ -54,6 +59,11 @@ function _buildSlowTopicIndex(auctionData) {
         ? allDates.slice(-TOPIC_CACHE_DAYS)
         : allDates;
     const index = Object.create(null);
+    // ★ 2026-09-19：与快路径 buildTopicCache **同源同序** ——
+    //   ① 先铺共享题材库（§6 权威来源）；② 再用历史 note 只给「库里还没有的股票」补空缺。
+    //   改动前这里只做 ②、完全无视共享库 ⇒ 与快路径两种口径（同一个库两个答案，§6 破）。
+    seedTopicIndexFromLibrary(index);
+    const authIdx = snapshotAuthoritativeLibraryIndex();
     for (let i = 0; i < recentDates.length; i++) {
         const dayList = auctionData[recentDates[i]] || [];
         const seenInDay = new Set();     // 与原 find() 同语义：同一天同一只票只取首行
@@ -61,6 +71,9 @@ function _buildSlowTopicIndex(auctionData) {
             const item = dayList[k];
             if (!item || !item.stock) continue;
             const name = item.stock.trim();
+            // 🔴 库权威闸门（同 scanDataSourceForTopics）：库里有权威题材 ⇒ 历史 note 不参与，
+            //    否则历史 note 里已被用户删掉的旧题材会在这里被加回来（涨跌停/一字看板显示错）。
+            if (isLibraryAuthoritativeFor(name, authIdx)) continue;
             if (seenInDay.has(name)) continue;
             if (!item.note) continue;
             // 快路径：纯涨幅 note（如 "+3.2%"）无括号，直接跳过，避免对每个单元格跑正则
