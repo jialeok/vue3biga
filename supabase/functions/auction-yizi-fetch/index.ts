@@ -634,12 +634,21 @@ function sbHeaders(extra?: Record<string, string>): Record<string, string> {
  * 把 PostgREST 的「找不到表」原文翻译成「该干什么」。
  * 典型现场：红字 `Could not find the table 'public.auction_yizi' in the schema cache`
  * —— 它不是「调用方法不对」，就是【表还没建】（PGRST205 / 42P01）。
+ *
+ * 🔴 本函数服务【两张表】（auction_yizi 与趋势缓存 yizi_trend），所以建表提示必须跟着表名走。
+ *    2026-09-19 实测事故：趋势表没建时，提示却指向 `create_auction_yizi.sql`
+ *    （因为原来把 auction_yizi 的提示写死了）⇒ 用户照做也建不出 yizi_trend，
+ *    「部署了但还是不行」的排查被再带偏一次。这里改为【从 PostgREST 原文里认表名】，
+ *    调用方无需改动（原文里一定带 `public.<表名>`）。
  */
 function sbErrHint(msg: string, raw: string): string {
   const t = (raw || '').toLowerCase();
   if (t.includes('could not find the table') || t.includes('in the schema cache') ||
     t.includes('does not exist') || t.includes('42p01') || t.includes('pgrst205')) {
-    return msg + '  → 【auction_yizi 表不存在】请在 Supabase Dashboard → SQL Editor 执行 db/create_auction_yizi.sql 建表（本仓库 db/ 目录）。';
+    const isTrend = t.includes(TREND.TABLE.toLowerCase());
+    const table = isTrend ? TREND.TABLE : 'auction_yizi';
+    const sql = isTrend ? 'db/create_yizi_trend.sql' : 'db/create_auction_yizi.sql';
+    return msg + '  → 【' + table + ' 表不存在】请在 Supabase Dashboard → SQL Editor 执行 ' + sql + ' 建表（本仓库 db/ 目录）。';
   }
   return msg;
 }
@@ -1662,13 +1671,46 @@ function tokenSource(): string {
   return expectedToken() ? 'FETCH_TOKEN(回退)' : '未配置';
 }
 
+// ---------------------------------------------------------------------------
+// CORS
+//
+// 本函数有【浏览器端】入口（`/trend` 只读趋势缓存、`/health` 体检），且浏览器调用时必须带
+// `apikey` / `Authorization` 头（非 CORS 简单请求）⇒ 浏览器一定先发 **OPTIONS 预检**。
+//
+// ⛔ 缺这段的后果（2026-09-19 实测事故）：预检拿不到 `Access-Control-Allow-Origin`，
+//    浏览器把真实请求整个拦掉，前端 `fetch` 抛 TypeError（浏览器出于安全【不会】告诉脚本原因），
+//    于是被前端误报成「auction-yizi-fetch Edge Function 未部署」——
+//    用户明明已经部署成功（/health 的 trend 块都在），排查方向被彻底带偏。
+// 🔴 反面参照：本函数此前【没有】CORS；而同项目的 numcat-proxy / fuyao-proxy（同为浏览器端入口）
+//    线上是带 CORS 的（OPTIONS → 204 + `Access-Control-Allow-Origin: *`）。
+//    ⇒ 以后新增「给浏览器调的 Edge Function 路由」，CORS 是**必备件**，不是可选项。
+// ⚠️ 与 Web 的「简单请求」无关：只要带了 apikey 这类自定义头，就必须过预检。
+const CORS_HEADERS: Record<string, string> = {
+  // 不带 cookie 凭证（鉴权走请求头里的 anon key / token），所以用 * 即可
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  // 浏览器实际会带 apikey / authorization / content-type ⇒ 必须逐个列出（不能用 *，* 对头名无效）
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, apikey, x-client-info, x-supabase-api-version',
+  'Access-Control-Max-Age': '86400',
+};
+
 function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body, null, 2), { status, headers: { 'Content-Type': 'application/json' } });
+  return new Response(JSON.stringify(body, null, 2), {
+    status,
+    headers: Object.assign({ 'Content-Type': 'application/json' }, CORS_HEADERS),
+  });
 }
 
 Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
   const p = url.pathname;
+
+  // CORS 预检：必须在【任何业务分支之前】直接回 204（无 body）。
+  // ⚠️ 不能让它落到下面的路由里 —— OPTIONS 不带 date 参数，会被当成业务请求回 400/200，
+  //    那样响应里同样缺 CORS 头，预检依旧失败（这正是本次事故的现场）。
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  }
 
   // Supabase Edge Function 的 pathname 带前缀 /functions/v1/auction-yizi-fetch，用 endsWith 兼容
   if (p.endsWith('/health')) {

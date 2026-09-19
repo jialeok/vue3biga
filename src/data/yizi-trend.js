@@ -49,8 +49,16 @@ function _explainTrendError(raw) {
         t.indexOf('does not exist') >= 0 || t.indexOf('pgrst205') >= 0 || t.indexOf('42p01') >= 0) {
         return new Error('yizi_trend 表不存在：请在 Supabase Dashboard → SQL Editor 执行 db/create_yizi_trend.sql 建表（原文：' + msg + '）');
     }
-    if (t.indexOf('functions/v1/auction-yizi-fetch') >= 0 || t.indexOf('fetch failed') >= 0) {
-        return new Error('趋势接口请求失败（网络层）：' + msg + '。请确认 auction-yizi-fetch Edge Function 已部署');
+    if (t.indexOf('请求 /trend 失败') >= 0 || t.indexOf('functions/v1/auction-yizi-fetch') >= 0 ||
+        t.indexOf('fetch failed') >= 0) {
+        // 🔴 浏览器里 fetch 抛错是【没有原因信息】的（跨域被拦、断网、超时长得一模一样），
+        //    所以这里不能只写「请确认已部署」—— 2026-09-19 的事故就是这么把用户带偏的：
+        //    他明明部署成功了，却只看到「请确认已部署」，而真因是「函数没回 CORS 头 + 表没建」。
+        return new Error('趋势接口不可达：' + msg +
+            '。三种可能（按概率）：' +
+            '① 【跨域被拦】函数对 OPTIONS 预检必须回 Access-Control-Allow-Origin（2026-09-19 已修，需重新部署该函数）；' +
+            '② Edge Function 未部署 / 部署到了别的项目；' +
+            '③ 网络或代理不通、请求超时');
     }
     return raw instanceof Error ? raw : new Error(msg);
 }
@@ -135,23 +143,31 @@ export async function readYiziTrendForDates(dates, opts) {
 export async function fetchYiziTrendFromEdge(opts) {
     const date = (opts && opts.date) ? String(opts.date).trim() : '';
     const win = (opts && opts.window) ? Number(opts.window) : 0;
+    // 🔴 超时闸门（§R2 红线：所有上游调用都必须有超时）：接口挂死时绝不能让面板永久「加载中」。
+    //    （Edge 侧补腿最坏要等上游 2×?s，给它 15s 已经足够宽松；超时按失败处理，UI 用已有缓存渲染。）
+    const timeoutMs = (opts && Number(opts.timeoutMs) > 0) ? Number(opts.timeoutMs) : 15000;
     const url = new URL(EDGE_TREND_URL);
     if (date) url.searchParams.set('date', date);
     if (win > 0 && isFinite(win)) url.searchParams.set('window', String(win));
 
     let resp;
+    const ctl = new AbortController();
+    const timer = setTimeout(function() { ctl.abort(); }, timeoutMs);
     try {
         resp = await fetch(url.toString(), {
             method: 'GET',
             headers: {
                 'apikey': SUPABASE_ANON_KEY,
                 'Authorization': 'Bearer ' + SUPABASE_ANON_KEY
-            }
+            },
+            signal: ctl.signal
         });
     } catch (e) {
         const msg = (e && e.message) || String(e);
-        _dbgLog('[YIZI-TREND] 趋势接口网络失败: ' + msg);
+        _dbgLog('[YIZI-TREND] 趋势接口请求失败: ' + msg);
         throw _explainTrendError('请求 /trend 失败（' + msg + '）；functions/v1/auction-yizi-fetch');
+    } finally {
+        clearTimeout(timer);
     }
 
     const text = await resp.text();

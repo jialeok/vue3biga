@@ -163,6 +163,9 @@ async function _sync(date, presetRows) {
     let failed = 0;
     const filledNames = [];
 
+    // ① 先按原顺序判定「哪些票真的需要写」——判断依据仍是同一份 libIndex，
+    //    语义与单线程版本【逐字一致】（§11 只补空缺、绝不覆盖；同一天同一只票不重复写）。
+    const pending = [];
     for (let i = 0; i < rows.length; i++) {
         const r = rows[i];
         if (!r || !r.stock) continue;
@@ -183,20 +186,42 @@ async function _sync(date, presetRows) {
         const topics = String(res.text).split(',').map(function(t) { return t.trim(); }).filter(Boolean);
         if (topics.length === 0) continue;
 
-        try {
-            await pushStockTopicsToCloud(r.stock, topics, r.code || '');
-            filled++;
-            filledNames.push(r.stock);
-            // 就地更新本地索引：同一只票不会在一天里出现两次（表主键 date+stock），
-            // 这里只是让「本次循环内的判断依据」与库里的真实状态保持同步（避免重复写）。
-            if (nk) {
-                if (!libIndex[nk]) libIndex[nk] = new Set();
-                topics.forEach(function(t) { libIndex[nk].add(t); });
-            }
-        } catch (e) {
-            failed++;
-            _dbgLog('[TOPIC-SYNC] ' + date + ' 回填失败 ' + r.stock + ': ' + (e && e.message || e));
+        pending.push({ stock: r.stock, topics: topics, code: r.code || '' });
+        // 就地更新本地索引：同一只票不会在一天里出现两次（表主键 date+stock），
+        // 这里只是让「本次循环内的判断依据」与库里的真实状态保持同步（避免重复写）。
+        if (nk) {
+            if (!libIndex[nk]) libIndex[nk] = new Set();
+            topics.forEach(function(t) { libIndex[nk].add(t); });
         }
+    }
+
+    // ② 落库：★ 2026-09-19 性能修正 —— 从「逐个 await」改为【有界并发】。
+    //    原因：原实现把 N 次 Supabase 往返串行化。首次加载某一天时（库里缺题材的票多，
+    //    例如涨跌停池 77 只里缺 30 只）就是 30 次首尾相接的写入 ——
+    //    这是看板首屏可感延迟的来源之一（两块板都会 await 本函数）。
+    //    ⚠️ 只有「写」这一步并发；「要不要写」已在上面的循环里按原顺序判定完毕，
+    //       所以上面全部红线（只补空缺 / 不覆盖 / 不写空 / 同日不重复写）一字未改。
+    //    并发度取 4：与 §F / §H 的既有约定一致（全项目网络并发都取 4~6 档）。
+    const WRITE_CONCURRENCY = 4;
+    let cursor = 0;
+    async function _writeWorker() {
+        while (cursor < pending.length) {
+            const it = pending[cursor++];
+            try {
+                await pushStockTopicsToCloud(it.stock, it.topics, it.code);
+                filled++;
+                filledNames.push(it.stock);
+            } catch (e) {
+                failed++;
+                _dbgLog('[TOPIC-SYNC] ' + date + ' 回填失败 ' + it.stock + ': ' + (e && e.message || e));
+            }
+        }
+    }
+    if (pending.length > 0) {
+        const workers = [];
+        const n = Math.min(WRITE_CONCURRENCY, pending.length);
+        for (let k = 0; k < n; k++) workers.push(_writeWorker());
+        await Promise.all(workers);
     }
 
     // 记成「已同步」（含 filled=0：那也是有效结论 —— 接口这天的题材库里都有了）

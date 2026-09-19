@@ -17,6 +17,11 @@
 //        趋势是附加信息，失败只让面板显示提示 + 断点，池子照常渲染。
 //   §6/§34 本模块【不持有任何视图状态】：展开态、开关态都在 composable（组件内 ref）。
 //        yiziTrendState 里只有「关于这一天的事实」：窗口日期、行、加载中、错误、说明。
+//   ★ 库优先（2026-09-19 改）：`yizi_trend` 是【跨设备持久化缓存】，所以【先直读库】，
+//        窗口已齐就 0 请求直接渲染；只有「窗口里有整日没有行」时才调 Edge /trend 补缺口。
+//        ⛔ 不要改回「Edge 优先、库兜底」—— 那样每次打开面板 / 刷新页面都要先等一次接口往返
+//        （用户原话：「趋势图数据要存起来，不用每次打开都要加载一次」）。
+//        Edge 仍然是本表的【唯一写入者】（只 upsert 缺口、从不删，§11）。
 //   §22  单飞 + 会话缓存：同一天同一瞬间只跑一次；已成功拉过的日期直接命中缓存，不再打接口。
 //   §26  切日期：结果回来时先校验它仍是【最新一次请求】的日期，迟到的旧请求一律丢弃。
 //   §11  本模块【不删除任何数据】（只读库 + 调补腿；写入者是 Edge Function，且只 upsert 缺口）。
@@ -146,7 +151,7 @@ export async function loadYiziTrend(date, opts) {
 async function _load(date, force) {
     // 会话缓存命中：这一天已经成功拉过一次 → 直接复用（0 网络请求）。
     // ⚠️ 不要求 yiziTrendState.date 已是这一天 —— 用户「切走再切回来」时也应命中缓存，
-    //    否则每次来回都会白打一次接口（虽然 Edge 侧会因为「缓存已齐」0 上游请求，但没必要）。
+    //    否则每次来回都会白打一次接口。⛔ 只有 force 才跳过缓存。
     if (!force && _cache.has(date)) {
         const cached = _cache.get(date);
         yiziTrendState.date = date;
@@ -172,44 +177,66 @@ async function _load(date, force) {
     let rows = [];
     let note = '';
     let source = '';
+    let dbError = '';
+    let edgeError = '';
+
     try {
-        let payload = null;
-        let edgeError = '';
+        // ── ① 【库优先】直读 Supabase 的 yizi_trend（跨设备持久化缓存）────────────────
+        // 为什么必须是这一步先走：趋势行一旦落库就是【长期有效】的业务数据，
+        // 打开面板 / 刷新页面 99% 的情况只是「再读一次库」（PostgREST 百毫秒级），
+        // ⛔ 没有任何理由每次都去调 Edge（网络往返 + 上游额度 + 可能被额度闸门挡住）。
+        // 🔴 旧实现是「Edge 优先、库只做兜底」，于是每次打开都要先等一次接口往返 ——
+        //    用户原话「趋势图数据要存起来，不用每次打开都要加载一次」说的就是这个。
         try {
-            // 主通道：Edge /trend —— 它自己会读缓存 + 只在缺缺口时补腿（额度闸门都在它里面）
-            payload = await fetchYiziTrendFromEdge({ date: date, window: YIZI_TREND_WINDOW });
+            rows = await readYiziTrendForDates(windowDates);
+            source = 'db';
         } catch (e) {
-            edgeError = (e && e.message) || String(e);
-            _dbgLog('[AUCTION-YIZI] ' + date + ' 调趋势接口失败（回退直读库）: ' + edgeError);
+            dbError = (e && e.message) || String(e);
+            _dbgLog('[AUCTION-YIZI] ' + date + ' 读 yizi_trend 失败: ' + dbError);
         }
         if (!isLatest()) return null;
 
-        if (payload) {
-            // ★ 窗口以 Edge 为准：它才知道「近 N 个交易日」真正是哪几天（前端那份只是本地日历推算）
-            if (Array.isArray(payload.window) && payload.window.length > 0) {
-                windowDates = payload.window.map(function(d) { return String(d); });
-            }
-            rows = (payload.rows || []).map(mapTrendRow);
-            note = _noteOf(payload);
-            source = 'edge';
-        } else {
-            // Edge 不可用（未部署 / 表没建 / 网络）→ 回退直读库：
-            // 趋势是附加信息，能救回「至少看到已有缓存」就值得救；但接口的失败必须照样说出来。
+        // ── ② 缺口判定：窗口里【整日没有行】= 缓存不完整（首次打开 / 池子换新 / 有几天没补过）
+        //     ⇒ 才去调 Edge 补缺口（它自带 5 道额度闸门，且只 upsert、从不删，§11）。
+        //     窗口已齐 ⇒ 本轮 0 请求，直接渲染（这就是「打开就出图」的关键）。
+        const covered = new Set();
+        rows.forEach(function(r) { if (r && r.date) covered.add(r.date); });
+        const gaps = windowDates.filter(function(d) { return !covered.has(d); });
+
+        if (gaps.length > 0 || force) {
             try {
-                rows = await readYiziTrendForDates(windowDates);
-                source = 'db';
-            } catch (e) {
+                // Edge 侧自己会「读缓存 + 只补缺口」，返回的 rows 是补完之后该窗口的全部行。
+                const payload = await fetchYiziTrendFromEdge({ date: date, window: YIZI_TREND_WINDOW });
                 if (!isLatest()) return null;
-                yiziTrendState.error = '趋势读取失败：' + ((e && e.message) || String(e));
+                // 窗口以 Edge 为准：它才知道「近 N 个交易日」真正是哪几天（前端那份只是本地日历推算）
+                if (Array.isArray(payload.window) && payload.window.length > 0) {
+                    windowDates = payload.window.map(function(d) { return String(d); });
+                }
+                rows = (payload.rows || []).map(mapTrendRow);
+                note = _noteOf(payload);
+                source = 'edge';
+            } catch (e) {
+                edgeError = (e && e.message) || String(e);
+                _dbgLog('[AUCTION-YIZI] ' + date + ' 调趋势接口失败（改用已有缓存渲染）: ' + edgeError);
             }
             if (!isLatest()) return null;
-            if (edgeError) {
-                yiziTrendState.error = '趋势接口失败：' + edgeError +
-                    (rows.length > 0 ? '（已回退直读库缓存，可能不是最新）' : '');
-            }
+        } else {
+            note = SKIP_TEXT['cache-complete'];
         }
 
-        if (!isLatest()) return null;
+        // ── ③ §10 失败必须可见 —— 而且【两个原因都要说出来】──────────────────────
+        // 🔴 旧实现：库错误先写进 error，随后被 Edge 错误整条【覆盖】⇒
+        //    用户只看到「趋势接口失败…请确认 auction-yizi-fetch 已部署」，
+        //    完全看不到「yizi_trend 表还没建」这个真因（2026-09-19 事故现场：
+        //    用户明明部署好了 TS，却被提示「没部署」，方向被彻底带偏）。
+        const errBits = [];
+        if (dbError) errBits.push('读趋势缓存失败：' + dbError);
+        if (edgeError) {
+            errBits.push('趋势接口失败：' + edgeError +
+                (rows.length > 0 ? '（已用已有缓存渲染，可能不是最新）' : ''));
+        }
+        yiziTrendState.error = errBits.join('；');
+
         yiziTrendState.windowDates = windowDates;
         yiziTrendState.rows = rows;
         yiziTrendState.note = note;
@@ -223,7 +250,7 @@ async function _load(date, force) {
             note: note,
             source: source
         };
-        // 只有在「确实拿到了这一天的行」或「确认该日为空且没报错」时才进会话缓存：
+        // 只有在「确实没报错」时才进会话缓存：
         // ⛔ 出错时不缓存，否则下一次展开会被缓存短路，永远等不到重试。
         if (!yiziTrendState.error) _cache.set(date, entry);
         return entry;

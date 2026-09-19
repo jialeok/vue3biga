@@ -4,10 +4,12 @@
 --         src/logic/yizi/trend-model.js（纯函数：组装 5 日序列）
 --         src/views/AuctionYiziBoard.vue（展开面板，4 张 TrendChart）
 -- 写入者：Supabase Edge Function auction-yizi-fetch 的 /trend 路由（⛔ 前端绝不直连上游）
--- 上游  ：猫抓【竞价一字同一只小号】的两条腿
---         ① 竞价腿 daily_auc_fd → auc_vol(手) / auc_pct_chg   （每个窗口日 1 次请求，全市场）
---         ② K 线腿  daily        → pct_chg / volume            （窗口区间 1 次请求）
---           ↳ daily 在小号上不可用时会回落同花顺（0 额度），source 列会如实标出来源
+-- 上游  ：猫抓【竞价一字同一只小号】（NUMCAT_API_KEY_YIZI）上的【另外两个 apiname】——
+--         ⛔ 不是 9:25 快照用的 daily_auc_fd（那个端点只支持【单日 tradedate】，取不了区间）
+--         ① 竞价腿 daily_auc → auc_vol(手) / auc_pct_chg / auc_to_pre_vol_pct
+--         ② K 线腿  daily     → pct_chg
+--         两条腿都是「窗口内**全部股票** = 1 次请求」（params: symbols + startdate + enddate）
+--         ⇒ 注意：换的是 **apiname、不是 key** —— 仍然是那只小号（用户明确要求「不要搞混了」）
 --
 -- 【为什么需要落库缓存】
 --   · 小号猫抓额度每天只有 10 次，9:25 的自动抓取还要占 1~2 次；

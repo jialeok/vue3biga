@@ -109,6 +109,43 @@ function _withTimeout(p, ms, label) {
 }
 
 /**
+ * 通道二的【等待预算】（ms）：到点就不等了，先把看板渲染出来。
+ *
+ * 为什么需要（2026-09-19 用户反馈「竞价一字看板响应有些慢」的真凶）：
+ *   通道二是【逐只】同花顺 K 线（单只均摊 ~5s）。涨跌停池 77 只时会因为
+ *   `KLINE_FALLBACK_MAX=20` 直接放弃（快），但**竞价一字池在「一字口径闸门」之后通常只剩个位数只**
+ *   ⇒ 数量上「合法」（≤20），于是 8 只 × 5s ≈ **40s 原样卡在首屏**。
+ *   这条路只在【通道一失败】时才走到（猫抓额度用尽 / 403 / 超时），但那种时段用户会觉得
+ *   看板「打不开」。
+ *
+ * 取舍（明确记录，便于回退）：预算到点即放弃等待 ⇒ 本轮这些票的十日涨幅显示 `'-'`
+ *   （看板照旧有 `rangeCovered / rangeHint` 如实提示「缺 N 只、不参与龙头评选」），
+ *   ⛔ 不再让看板白等几十秒。**通道一（猫抓 daily 批量，1 次请求 ≈2s）不受任何影响，仍是主通道。**
+ *   若希望「宁可慢也要补全」，只需把本值调大（或设为 0 = 不限，退回旧行为）。
+ */
+const KLINE_BUDGET_MS = 12000;
+
+/**
+ * 给 Promise 套一个「等待预算」：到点返回 null（不 reject，调用方按「本轮拿不到」处理）。
+ * ⚠️ 预算到点后原 Promise **仍在后台跑**（它自己还有 KLINE_TIMEOUT_MS 兜底），
+ *    结果会被丢弃 —— 因此这里必须挂一个空 catch，否则会产生 unhandledrejection 噪声。
+ * @param {Promise} p
+ * @param {number} ms 0 / 负数 = 不限（退回 await 原行为）
+ * @returns {Promise<*|null>}
+ */
+function _raceBudget(p, ms) {
+    if (!(ms > 0)) return p;
+    p.catch(function() {});
+    let timer = null;
+    const guard = new Promise(function(resolve) {
+        timer = setTimeout(function() { resolve(null); }, ms);
+    });
+    return Promise.race([p, guard]).finally(function() {
+        if (timer) clearTimeout(timer);
+    });
+}
+
+/**
  * 用「云端缓存 + 本地补算」组出「行 → {pct, days}」的取值函数。
  *
  * 优先级：云端缓存 > 本地补算（云端是跨设备共享的权威缓存，本地只是本次会话的临时值）。
@@ -296,19 +333,22 @@ export async function fillMissingRangePct(opts) {
 
     // ---- 通道一：猫抓 daily 批量（1 次请求覆盖全部缺票 × 整个窗口）----
     let legs = null;
+    const tChan1 = Date.now();
     try {
         legs = await _withTimeout(
             _collectLegsViaNumcat(missing, winAsc, o.date, aucPctOf),
             NUMCAT_TIMEOUT_MS,
             '通道一（猫抓 daily 批量）'
         );
+        _dbgLog(tag + ' ' + o.date + ' 通道一耗时 ' + (Date.now() - tChan1) + 'ms');
     } catch (e) {
         // 额度用尽（403）/ 网络异常 / 超时 —— 不阻断，转通道二。
         // fail-soft 只记日志（§10：读失败由调用方处理，本模块只负责「补」）。
-        _dbgLog(tag + ' 通道一（猫抓 daily）不可用，转同花顺 K 线兜底: ' + (e && e.message || e));
+        _dbgLog(tag + ' 通道一（猫抓 daily）不可用，转同花顺 K 线兜底（耗时 ' +
+            (Date.now() - tChan1) + 'ms）: ' + (e && e.message || e));
     }
 
-    // ---- 通道二：同花顺 K 线（仅兜底，且限制规模）----
+    // ---- 通道二：同花顺 K 线（仅兜底，且限制规模 + 限等待预算）----
     if (!legs || legs.targets.length === 0) {
         if (missing.length > KLINE_FALLBACK_MAX) {
             _dbgLog(tag + ' 通道一不可用且缺票 ' + missing.length + ' 只 > 上限 ' + KLINE_FALLBACK_MAX +
@@ -316,12 +356,25 @@ export async function fillMissingRangePct(opts) {
                 '结果：这些票的十日涨幅显示 "-"，不参与龙头评选。');
             return localMap;
         }
+        const tChan2 = Date.now();
         try {
-            legs = await _withTimeout(
-                _collectLegsViaKline(missing, winAsc, o.date, aucPctOf, o.concurrency || 3),
-                KLINE_TIMEOUT_MS,
-                '通道二（同花顺 K 线）'
+            // ★ 2026-09-19：再套一层「等待预算」。KLINE_TIMEOUT_MS(45s) 是「硬上限」，
+            //   而这里问的是「用户愿意为附加信息等多久」——答案是个位数秒。
+            //   ⇒ 到点即放弃等待，看板立刻渲染（缺的票显示 '-'，有 rangeHint 如实提示）。
+            legs = await _raceBudget(
+                _withTimeout(
+                    _collectLegsViaKline(missing, winAsc, o.date, aucPctOf, o.concurrency || 3),
+                    KLINE_TIMEOUT_MS,
+                    '通道二（同花顺 K 线）'
+                ),
+                KLINE_BUDGET_MS
             );
+            if (!legs) {
+                _dbgLog(tag + ' ' + o.date + ' 通道二（同花顺 K 线）超过等待预算 ' + KLINE_BUDGET_MS +
+                    'ms → 本轮不再等待：这些票的十日涨幅显示 "-"（不参与龙头评选）');
+            } else {
+                _dbgLog(tag + ' ' + o.date + ' 通道二耗时 ' + (Date.now() - tChan2) + 'ms');
+            }
         } catch (e) {
             _dbgLog(tag + ' 通道二（同花顺 K 线）也失败: ' + (e && e.message || e));
         }
