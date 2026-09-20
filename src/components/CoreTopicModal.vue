@@ -1,10 +1,13 @@
 <!-- CoreTopicModal.vue — 核心词管理（§4 不用原生 alert/confirm；§10 保存必须返回可见结果）
      2026-09-18 改造要点：
-       ① 增 / 删 / 改 / 恢复默认 全部 await 云端结果 → 成功 showToast、失败 showWarningToast 并【回滚列表】。
+       ① 增 / 删 / 改 全部 await 云端结果 → 成功 showToast、失败 showWarningToast 并【回滚列表】。
           旧实现是 fire-and-forget：saveCoreTopics 不返回任何东西，界面靠本地内存看着像成功，
           云端失败（或被队列跳过）时用户完全无感 ⇒ 表现为「删了没反应 / 前台像成功」。
-       ② 删除、恢复默认改为组件内确认弹层，去掉原生 confirm/alert（原生弹窗会阻塞主线程且样式割裂）。
-       ③ 全程 saving 态：写云端期间按钮禁用并显示「保存中…」，避免连点产生并发写。 -->
+       ② 删除改为组件内确认弹层，去掉原生 confirm/alert（原生弹窗会阻塞主线程且样式割裂）。
+       ③ 全程 saving 态：写云端期间按钮禁用并显示「保存中…」，避免连点产生并发写。
+     2026-09-20 变更：【恢复默认】按钮与功能已移除 —— 题材分类已整理完毕，该操作会用默认词库
+       整份覆盖自定义配置并同步云端（不可撤销），误触一次的修复成本远高于收益。
+       其余功能（添加 / 编辑 / 删除 / 完成 / 云端写入与失败回滚）一行未动。 -->
 <template>
   <div
     v-if="visible"
@@ -103,15 +106,10 @@
           </button>
         </div>
       </div>
+      <!-- ⚠️ 2026-09-20 移除【恢复默认】按钮：题材分类已整理完毕，该按钮会用默认词库整份覆盖
+           自定义配置并同步云端（不可撤销）→ 误触一次就要花很久修复，风险远大于收益。
+           其余功能（添加 / 编辑 / 删除 / 完成）一个都未改动。 -->
       <div style="margin-top: 16px; display: flex; gap: 8px;">
-        <button
-          type="button"
-          :disabled="saving"
-          style="padding: 8px 16px; font-size: 13px; background: linear-gradient(135deg, #6b7280, #4b5563); color: #fff; border: none; border-radius: 4px; cursor: pointer;"
-          @click="resetCoreTopics"
-        >
-          恢复默认
-        </button>
         <button
           type="button"
           style="padding: 8px 16px; font-size: 13px; background: linear-gradient(135deg, #0ea5e9, #0284c7); color: #fff; border: none; border-radius: 4px; cursor: pointer;"
@@ -224,7 +222,10 @@
 <script setup>
 import { ref } from 'vue';
 import { getCoreTopics, saveCoreTopics } from '../logic/topic/rules.js';
-import { state } from '../logic/app-state.js';
+// ⚠️ 原 `import { state } from '../logic/app-state.js'` 随「恢复默认」一起移除：
+//    它是本文件里唯一用到 state.defaultCoreTopics 的地方，留下即 dead code（§42）。
+//    ⛔ 不要删 logic/app-state.js 里的 defaultCoreTopics 本身 —— 它仍是 logic/topic/rules.js
+//    在云端读不到核心词时的兜底默认词库，删了会让所有看板的题材分类直接失效。
 import { _emit } from '../stores/eventBus.js';
 import { showToast, showWarningToast } from '../composables/useToast.js';
 
@@ -339,18 +340,6 @@ function deleteCoreTopic(index) {
     }
   );
 }
-function resetCoreTopics() {
-  askConfirm(
-    '确定恢复默认核心词？',
-    '当前自定义的核心词配置将被默认词库覆盖，并同步到云端（此操作不可撤销）。',
-    '确定恢复',
-    async () => {
-      const defaults = (state.defaultCoreTopics || []).slice();
-      await commit(defaults, '✅ 已恢复默认核心词（' + defaults.length + ' 个）');
-    }
-  );
-}
-
 function askConfirm(title, desc, okText, onOk) {
   confirmState.value = { visible: true, title, desc, okText, onOk };
 }
