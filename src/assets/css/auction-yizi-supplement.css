@@ -1,0 +1,437 @@
+        /* ==========================================================================
+           「早盘竞价 · 补竞价一字」补充区（★ 2026-09-20 新增）
+           归属：早盘竞价看板（挂在表头 X 位的开关 + 列表末尾的补充区）。
+           数据：竞价一字看板自己的库 / 自己的猫抓小号趋势通道，与早盘竞价相互独立（只是同屏显示）。
+
+           ⚠️ 类名一律 `auction-yizi-sup-` 前缀（本板 + 一字板三重隔离）：
+               · 早盘竞价的类名是 .auction-*，一字板的类名是 .yizi-*（见 auction-yizi.css 头注）；
+               · CSS 是全局的，本功能区两边都不复用，将来改任一边都不会串改另两个看板。
+           ========================================================================== */
+
+        /* ===== 表头 X 位的「补竞价一字」开关 =====
+           ⚠️ 绝对定位（不是表头的第 4 个 flex 项）：表头三列（0.4 / 1.2 / 2.5）与数据行的三列
+              是两套独立 flex 容器，加第 4 项会把表头三列一起压窄 → 表头与数据列错位。
+              绝对定位让它脱离 flex 流：既不破坏列对齐，又真的落在 sticky 表头这一行里。
+              （.auction-header-row 是 position:sticky = 已定位元素，天然是其绝对子元素的包含块。） */
+        .auction-yizi-sup-toggle {
+            position: absolute;
+            right: 4px;
+            top: 0;
+            bottom: 0;
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            padding: 0 4px;
+        }
+
+        .auction-yizi-sup-toggle-label {
+            font-size: 10.5px;
+            color: #6d28d9;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        /* 与 .auction-toggle-switch / .yizi-toggle-switch 同规格（28×16），三处观感一致 */
+        .auction-yizi-sup-toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 28px;
+            height: 16px;
+            flex-shrink: 0;
+        }
+
+        .auction-yizi-sup-toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .auction-yizi-sup-toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #cbd5e1;
+            transition: 0.2s;
+            border-radius: 16px;
+        }
+
+        .auction-yizi-sup-toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 12px;
+            width: 12px;
+            left: 2px;
+            bottom: 2px;
+            background-color: #ffffff;
+            transition: 0.2s;
+            border-radius: 50%;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+        }
+
+        .auction-yizi-sup-toggle-switch input:checked + .auction-yizi-sup-toggle-slider {
+            background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+        }
+
+        .auction-yizi-sup-toggle-switch input:checked + .auction-yizi-sup-toggle-slider:before {
+            transform: translateX(12px);
+        }
+
+        /* ===== 补充区容器：与上方列表用一条红线隔开，明确「这是补进来的一段」 ===== */
+        .auction-yizi-sup {
+            margin-top: 8px;
+            padding: 6px 8px 8px;
+            background: #fffbfb;
+            border-top: 2px solid #fecaca;
+        }
+
+        .auction-yizi-sup-head {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 2px 2px 4px;
+        }
+
+        .auction-yizi-sup-title {
+            flex: 0 0 auto;
+            font-size: 12px;
+            font-weight: 700;
+            color: #991b1b;
+            white-space: nowrap;
+        }
+
+        .auction-yizi-sup-summary {
+            flex: 1;
+            min-width: 0;
+            font-size: 11px;
+            color: #64748b;
+            text-align: right;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* 数据来源说明（可解释性：让用户一眼看懂「这段跟早盘竞价无关」） */
+        .auction-yizi-sup-note {
+            margin-bottom: 6px;
+            padding: 4px 8px;
+            font-size: 10px;
+            line-height: 1.5;
+            color: #7c2d12;
+            background: #fff7ed;
+            border: 1px solid #fed7aa;
+            border-radius: 6px;
+        }
+
+        .auction-yizi-sup-error {
+            margin-bottom: 6px;
+            padding: 6px 10px;
+            font-size: 11px;
+            color: #b91c1c;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            border-radius: 8px;
+        }
+
+        .auction-yizi-sup-retry {
+            color: #2563eb;
+            text-decoration: underline;
+            cursor: pointer;
+        }
+
+        .auction-yizi-sup-empty {
+            padding: 12px 6px;
+            font-size: 12px;
+            color: #94a3b8;
+            text-align: center;
+        }
+
+        /* 加载中比「确实没有」略深一点，便于一眼区分（§10 未就绪 ≠ 没有） */
+        .auction-yizi-sup-empty.is-loading {
+            color: #64748b;
+        }
+
+        /* 整块都在早盘竞价列表里时的一句话（不渲染任何行，但主题材条保留 → 热度照样看得见） */
+        .auction-yizi-sup-empty-inline {
+            padding: 4px 4px 6px;
+            font-size: 10.5px;
+            color: #94a3b8;
+        }
+
+        .auction-yizi-sup-trend-note {
+            margin-top: 4px;
+            padding: 4px 10px;
+            font-size: 11px;
+            color: #475569;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+        }
+
+        /* ===== 列图例：9px 单行，flex 宽度规则与 .auction-yizi-sup-row 一一对应 ===== */
+        .auction-yizi-sup-legend {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 1px 4px 3px;
+            font-size: 9px;
+            color: #94a3b8;
+            border-bottom: 1px solid #f1f5f9;
+        }
+
+        .auction-yizi-sup-legend-seq {
+            flex: 0 0 14px;
+            text-align: center;
+        }
+
+        .auction-yizi-sup-legend-name {
+            flex: 0 0 auto;
+        }
+
+        .auction-yizi-sup-legend-topics {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .auction-yizi-sup-legend-metric {
+            flex: 0 0 auto;
+            text-align: right;
+        }
+
+        /* ===== 题材条：底部这段用玫红底，与上方列表的题材条一眼区分开 ===== */
+        .auction-yizi-sup-group {
+            margin-bottom: 2px;
+        }
+
+        .auction-yizi-sup-bar {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin: 6px 0 2px;
+            padding: 3px 6px;
+            background: #fee2e2;
+            border-radius: 6px;
+            font-size: 11px;
+            line-height: 15px;
+        }
+
+        .auction-yizi-sup-topic-name {
+            flex: 0 1 auto;
+            min-width: 0;
+            font-weight: 700;
+            color: #7f1d1d;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .auction-yizi-sup-topic-count {
+            flex: 0 0 auto;
+            font-size: 10px;
+            font-weight: 600;
+            color: #7f1d1d;
+            white-space: nowrap;
+        }
+
+        /* 「另有 N 只在列表中」——差额必须写出来，否则用户会把被排除的几只误读成「这个题材一字少」 */
+        .auction-yizi-sup-topic-inlist {
+            flex: 0 1 auto;
+            min-width: 0;
+            font-size: 10px;
+            color: #9a3412;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* ===== 行：与「竞价一字」看板的 .yizi-row 同规格（名称块随内容伸缩，题材吃满剩余宽度） ===== */
+        .auction-yizi-sup-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 4px;
+            padding: 5px 4px;
+            font-size: 12px;
+            line-height: 16px;
+            border-bottom: 1px solid #f1f5f9;
+        }
+
+        .auction-yizi-sup-row:last-child {
+            border-bottom: none;
+        }
+
+        .auction-yizi-sup-row.is-leader {
+            background: #fff7f7;
+        }
+
+        .auction-yizi-sup-seq {
+            flex: 0 0 14px;
+            text-align: center;
+            font-size: 9px;
+            color: #94a3b8;
+        }
+
+        /* 序号 = 趋势面板开关（▶ 收起 / ▼ 展开，让「可点」这件事可见） */
+        .auction-yizi-sup-seq.is-clickable {
+            cursor: pointer;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .auction-yizi-sup-seq.is-clickable:hover {
+            color: #dc2626;
+        }
+
+        .auction-yizi-sup-name-block {
+            flex: 0 1 auto;
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            white-space: nowrap;
+        }
+
+        .auction-yizi-sup-name {
+            flex: 0 1 auto;
+            min-width: 0;
+            font-weight: 600;
+            color: #0f172a;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .auction-yizi-sup-name.leader {
+            color: #dc2626;
+        }
+
+        .auction-yizi-sup-time-tag {
+            flex: 0 0 auto;
+            padding: 0 3px;
+            border-radius: 2px;
+            font-size: 9px;
+            font-weight: 600;
+            line-height: 12px;
+            color: #b45309;
+            background: #fef3c7;
+            white-space: nowrap;
+        }
+
+        .auction-yizi-sup-leader-badge {
+            flex: 0 0 auto;
+            padding: 0 3px;
+            border-radius: 2px;
+            font-size: 9px;
+            font-weight: 600;
+            line-height: 12px;
+            color: #ffffff;
+            background: #dc2626;
+            white-space: nowrap;
+        }
+
+        .auction-yizi-sup-continue-tag {
+            flex: 0 0 auto;
+            padding: 0 3px;
+            border-radius: 2px;
+            font-size: 9px;
+            font-weight: 600;
+            line-height: 12px;
+            color: #475569;
+            background: #e2e8f0;
+            white-space: nowrap;
+        }
+
+        /* 题材（主角列）：完整展示 + 允许折行。⛔ 绝不 nowrap + ellipsis —— 那正是「题材看不完」的成因。
+           keep-all：禁止 CJK 字符之间断行 ⇒ 换行只发生在英文逗号处。 */
+        .auction-yizi-sup-topics {
+            flex: 1;
+            min-width: 0;
+            font-size: 11px;
+            color: #475569;
+            white-space: normal;
+            word-break: keep-all;
+            overflow-wrap: break-word;
+        }
+
+        /* 度量列：封单额(9:20) + 十日涨幅 同基线并排、单行（⛔ 不上下堆叠，避免每行撑成两行高） */
+        .auction-yizi-sup-metric {
+            flex: 0 0 auto;
+            display: flex;
+            align-items: baseline;
+            gap: 4px;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+
+        .auction-yizi-sup-seal {
+            min-width: 46px;
+            text-align: right;
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        .auction-yizi-sup-range {
+            min-width: 44px;
+            text-align: right;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        /* 封单额强弱分档（与一字板 .yizi-seal-* 同色；⛔ 不带通用类名，避免串板） */
+        .auction-yizi-sup-seal-strong { color: #b91c1c; }
+        .auction-yizi-sup-seal-normal { color: #334155; }
+        .auction-yizi-sup-seal-flat { color: #cbd5e1; }
+
+        /* 十日涨幅方向（涨红跌绿，项目约定） */
+        .auction-yizi-sup-range-up { color: #dc2626; }
+        .auction-yizi-sup-range-down { color: #16a34a; }
+        .auction-yizi-sup-range-flat { color: #94a3b8; }
+
+        /* ===== 趋势面板（与一字板 .yizi-trend-* 同形；数据通道也是竞价一字自己的） ===== */
+        .auction-yizi-sup-trend-panel {
+            padding: 6px 8px 8px;
+            background: #f8fafc;
+            border-top: 1px dashed #e2e8f0;
+            margin-bottom: 2px;
+        }
+
+        .auction-yizi-sup-trend-metrics {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px 14px;
+            padding: 2px 2px 6px;
+            margin-bottom: 4px;
+            border-bottom: 1px dashed #e5e7eb;
+            font-size: 11px;
+            color: #475569;
+            line-height: 1.4;
+        }
+
+        .auction-yizi-sup-trend-metric-item {
+            white-space: nowrap;
+        }
+
+        .auction-yizi-sup-trend-metric-item > b {
+            color: #334155;
+            font-weight: 600;
+        }
+
+        .auction-yizi-sup-trend-chart-item {
+            margin-bottom: 4px;
+        }
+
+        .auction-yizi-sup-trend-chart-label {
+            font-size: 10px;
+            color: #94a3b8;
+            margin-bottom: 2px;
+        }
+
+        /* 「一条数据都没有」时的说明行（⛔ 不画 4 张全是 '--' 的空图） */
+        .auction-yizi-sup-trend-empty,
+        .auction-yizi-sup-trend-loading {
+            padding: 6px 2px;
+            font-size: 11px;
+            color: #94a3b8;
+        }

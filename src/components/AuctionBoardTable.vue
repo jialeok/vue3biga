@@ -54,12 +54,19 @@
       :idx="idx"
     />
   </template>
+
+  <!-- ★ 2026-09-20「补竞价一字」补充区（显示层，独立组件，§15）：
+       只在「单独开题材 toggle + 补竞价一字开关打开」时渲染（开关在表头 X 位）。
+       数据来自竞价一字看板自己的库 / 自己的趋势通道；本组件 ⛔ 不改上面任何一行
+       （不动 item / 排序 / 高光 / 分隔线），关掉开关立即恢复原样。 -->
+  <AuctionYiziSupplementPanel />
 </template>
 
 <script setup>
 import { inject, watch, nextTick } from 'vue';
 import AuctionDragonGroup from './AuctionDragonGroup.vue';
 import AuctionEntityRow from './AuctionEntityRow.vue';
+import AuctionYiziSupplementPanel from './AuctionYiziSupplementPanel.vue';
 const board = inject('auctionBoard');
 // 只解构本组件真正用到的东西：行本体（含展开面板、所有列、所有点击交互）已全部下沉到
 // AuctionEntityRow，三个区块在这里只决定「哪些 item、怎么分隔」。

@@ -103,6 +103,7 @@
 <script setup>
 import { provide, defineExpose, computed } from 'vue';
 import { useAuctionBoard } from '../composables/useAuctionBoard.js';
+import { useAuctionYiziSupplement } from '../composables/useAuctionYiziSupplement.js';
 import AuctionBoardToolbar from '../components/AuctionBoardToolbar.vue';
 import AuctionBoardTable from '../components/AuctionBoardTable.vue';
 import AuctionBoardPageTopics from '../components/AuctionBoardPageTopics.vue';
@@ -116,6 +117,12 @@ import EditModal from '../components/EditModal.vue';
 // §P1-7 组合式逻辑统一在本根组件初始化一次，provide 给所有子组件共享同一响应式实例。
 const board = useAuctionBoard();
 provide('auctionBoard', board);
+// ★ 2026-09-20「补竞价一字」：显示层新功能，独立组合式 + 独立组件（§15 独立业务模块，
+//   不把开关态/展开态塞进 useAuctionBoard，避免与早盘竞价自己的状态混在一起）。
+//   它只【读】早盘竞价的列表名（用于去重）与题材 toggle 态，⛔ 不改早盘竞价的任何数据与逻辑。
+//   ⚠️ 显式传 board：Vue 的 inject 只看父级 provides，本层自己 provide 的东西 inject 不到。
+const yiziSupplement = useAuctionYiziSupplement(board);
+provide('auctionYiziSupplement', yiziSupplement);
 
 // 根模板直接引用的最小集合（其余由子组件经 inject 使用，保持行为一致）。
 const {

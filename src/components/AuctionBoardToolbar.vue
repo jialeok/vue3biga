@@ -117,6 +117,11 @@
     >
       题材
     </div>
+    <!-- ★ 2026-09-20「补竞价一字」开关（= 用户说的表头 X 位）：
+         只在题材 toggle 打开时出现；打开后把「竞价一字」看板的一字板股票按题材补到列表末尾。
+         ⚠️ 本组件用绝对定位（见 auction-yizi-supplement.css）：不参与表头这行的 flex 换算，
+            否则表头三列会被同步压窄 → 表头文字与下面数据列整体错位。 -->
+    <AuctionYiziSupplementToggle />
   </div>
   <div
     v-if="showBackend"
@@ -244,6 +249,7 @@ import { inject, computed } from 'vue';
 import { apiStatusMap } from '../logic/ui-bridge.js';
 import AuctionHeaderSearch from './AuctionHeaderSearch.vue';
 import AuctionBoardTopicToggle from './AuctionBoardTopicToggle.vue';
+import AuctionYiziSupplementToggle from './AuctionYiziSupplementToggle.vue';
 const board = inject('auctionBoard');
 const {
   uiStore, auctionStore, sortState, expandedSet, trendHistory, longPressMenuRef, coreTopicModalRef, editModalRef,
