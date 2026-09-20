@@ -29,6 +29,9 @@ import { filterYiziNoTopicBlocks, isBoardDateAligned } from '../logic/yizi/model
 //   ⚠️ 取数通道【完全独立】：走 Edge Function auction-yizi-fetch 的 /trend 路由 + 竞价一字小号，
 //      ⛔ 与早盘竞价看板的 numcat-proxy（主账号）毫无关系，绝不混用（见 logic/yizi/yizi-trend.js 头注）。
 //   · loadYiziTrend      = Logic 编排（窗口/会话缓存/单飞/缺口补拉/失败可见）
+//       🔴 窗口是【两个数】，且都由 Logic 内部拿捏（本层与 UI ⛔ 不要自己算）：
+//          显示 = 近 5 日（YIZI_TREND_WINDOW，与早盘竞价同观感）/ 存储 = 近 10 日（YIZI_TREND_STORE_WINDOW，喂十日涨幅）。
+//          所以 state.windowDates / state.rows 恒为 **5 个交易日** 那一段。
 //   · yiziTrendState     = 该模块的响应式真相（rows/windowDates/loading/error/note）
 //   · buildYiziTrendSeries / trendMetricItems = 纯函数（行 → 四条曲线 / 面板汇总），可单测见 trend-model.test.js
 import { loadYiziTrend, yiziTrendState } from '../logic/yizi/yizi-trend.js';
@@ -351,7 +354,7 @@ export function useAuctionYizi() {
         if (!s || !s[leg]) return false;
         return s[leg].some(function(p) { return p.value !== null; });
     }
-    /** 这只股票近 10 日一条数据都没有（面板里改为显示一句说明，而不是 4 张空图） */
+    /** 这只股票近 5 日（显示窗口）一条数据都没有（面板里改为显示一句说明，而不是 4 张空图） */
     function trendEmpty(stockName) {
         return !trendHasLeg(stockName, 'volume') && !trendHasLeg(stockName, 'yestVolume') &&
             !trendHasLeg(stockName, 'aucPctChg') && !trendHasLeg(stockName, 'changePct');

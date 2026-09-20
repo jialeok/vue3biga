@@ -34,30 +34,43 @@ import { getDragonWindowDates } from '../auction/dragon-rank.js';
 import { readYiziTrendForDates, fetchYiziTrendFromEdge, mapTrendRow } from '../../data/yizi-trend.js';
 
 /**
- * 趋势窗口长度（近 N 个交易日，含 T 日）。
+ * 🔴 趋势窗口 = **两个数**，⛔ 不要再合成一个（2026-09-20 第二次定案，用户原话：
+ *   「趋势图我要求和早盘竞价一样显示五日的，**存起来是十日的**」）。
  *
- * 🔴 2026-09-20 由 5 改为 10（用户实测反馈：「9-18 经纬股份涨幅只有最近两天的」）。
- *   · 旧窗口 5 天 = [09-14 … 09-18]，而该股 09-10~09-16 因控制权变更停牌
- *     ⇒ 09-14/15/16 三天上游没有数据 ⇒ 5 天窗口里只剩 09-17/09-18 两个点。
- *   · ⚠️ 关键：**真正有数据的 09-07/08/09 落在窗口之外**，所以「只补库」不会改善观感 ——
- *     必须同时把窗口扩到 10 天，补回来的数据才显示得出来。
- *   ⇒ 扩到 10 天的三个理由：
- *     ① 与「十日涨幅」的窗口 [T-9,T] **完全对齐**（图与主度量同一个分母，不再两套日历）；
- *     ② 与 `db/create_yizi_trend.sql` 里 cron 的 `window=10` 一致（本来就取 10 天落库）；
- *     ③ **不多烧一分额度** —— /trend 是「整窗口 = 竞价腿 1 次 + K 线腿 1 次」，
- *        5 天与 10 天都是 2 次请求。
- *   ⚠️ 「早盘竞价看板」仍是近 5 日：两看板的趋势窗口**口径独立、互不影响**
- *      （那边没有「十日涨幅」这个主度量，不需要 10 天）。
+ *   · `YIZI_TREND_WINDOW`       = 5  → **显示窗口**（画几条点）
+ *   · `YIZI_TREND_STORE_WINDOW` = 10 → **存储/补腿窗口**（读库、划缺口、调 /trend、落库）
+ *
+ * 为什么必须拆开：
+ *   ① **观感**：`TrendChart` 是固定宽度 320px 按点数均分 —— 5 点 ≈ 66px/点（疏朗，与早盘竞价一致），
+ *      10 点 ≈ 29px/点（拥挤）。更要命的是 10 天窗口会把**上一周的停牌/无数据日**一起拖进画面，
+ *      中段出现一大片 `--` ⇒ 用户看到的就是「**数据有很多断点**」（本轮实测反馈）。
+ *   ② **正确性**：「十日涨幅」的分母是 `[T-9, T]`，cron 也是 `window=10`
+ *      ⇒ **必须继续存 10 天**，否则十日涨幅会从 10 根腿静默掉到 5 根腿（§U9 的教训）。
+ *   ⇒ 一句话：**读 10 天、补 10 天、存 10 天，只画最后 5 天。**
+ *
+ * ⚠️ 额度与窗口长度**无关**：/trend 是「整窗口 = 竞价腿 1 次 + K 线腿 1 次」= **恒 2 次**
+ *   ⇒ ⛔ 别把「改成 5 天」当成省额度的手段（它的唯一目的是观感 + 与早盘竞价对齐）。
  */
-export const YIZI_TREND_WINDOW = 10;
+export const YIZI_TREND_WINDOW = 5;
+
+/**
+ * 存储窗口（近 N 个交易日，含 T 日）：**读库 / 划缺口 / 调 /trend / 落库**都用它。
+ * 🔴 它只决定「存多少」，⛔ 不决定「画多少」（画多少 = `YIZI_TREND_WINDOW`）。
+ * 与 「十日涨幅」的 `RANGE_WINDOW_DAYS` 同分母 ⇒ 两个数必须一起改（§6 单一真相）。
+ */
+export const YIZI_TREND_STORE_WINDOW = 10;
 
 // ===== 本模块唯一的响应式真相（供 composable/UI 读取）=====
 export const yiziTrendState = reactive({
     /** 这批趋势行属于哪一天（UI 用它做「日期对齐」判据，⛔ 不对齐不许渲染） */
     date: '',
-    /** 窗口交易日（升序，旧 → 新）：曲线点的顺序与日期轴一律以它为准 */
+    /**
+     * **显示窗口**交易日（升序，旧 → 新）：曲线点的顺序与日期轴一律以它为准。
+     * 🔴 长度 = `YIZI_TREND_WINDOW`（5），⛔ 不是存储窗口（10）——
+     *    库里多出来的那 5 天只喂「十日涨幅」，不进这里（§6 不给 UI 第二份更长的真相）。
+     */
     windowDates: [],
-    /** 趋势行（Data 层 mapTrendRow 的形状；可能为空数组 = 该窗口确实还没有缓存） */
+    /** 趋势行（Data 层 mapTrendRow 的形状；⚠️ 与 windowDates 同长同区间；可能为空数组 = 该窗口确实还没有缓存） */
     rows: [],
     loading: false,
     /** 读失败 / 接口失败（§10 必须让用户看见；空串 = 没出错） */
@@ -87,20 +100,25 @@ const SKIP_TEXT = {
 };
 
 /**
- * 趋势窗口（升序：旧 → 新）。
+ * 交易日窗口（升序：旧 → 新）。
  *
  * 主通道 = 与「十日涨幅」同一个交易日日历（§6 单一真相：getDragonWindowDates 取前 N 个再翻正序），
  * 这样「趋势图的 X 轴」与「十日涨幅的分母」永远是同一批交易日，不会出现两套日历。
  * 兜底 = 只按周末回退（不认节假日）：宁可在窗口里多带一个非交易日（读库自然是空），
  * 也绝不因为交易日历没加载出来就把整块趋势图变成「加载失败」。
  *
+ * ⚠️ `getDragonWindowDates` 本身**最多返回 10 个交易日** ⇒ 本函数最多也只能要 10 个；
+ *    ⛔ 别指望用它取 20 天（要更长窗口得先扩 dragon 日历，那是另一件事）。
+ *
  * @param {string} date YYYY-MM-DD
+ * @param {number} [count] 要几个交易日；缺省 = 存储窗口（10）。**显示窗口（5）靠调用方传 5**。
  * @returns {string[]} 升序交易日
  */
-function _windowDatesFor(date) {
+function _windowDatesFor(date, count) {
+    const want = (count && isFinite(count) && count > 0) ? Number(count) : YIZI_TREND_STORE_WINDOW;
     try {
         const desc = getDragonWindowDates(date);   // [T, T-1, …] 降序，最多 10 个交易日
-        const take = (desc || []).slice(0, YIZI_TREND_WINDOW).filter(Boolean);
+        const take = (desc || []).slice(0, want).filter(Boolean);
         if (take.length > 0) return take.slice().reverse();
     } catch (e) {
         _dbgLog('[AUCTION-YIZI] 趋势窗口计算失败（回退按自然日）: ' + (e && e.message || e));
@@ -108,7 +126,7 @@ function _windowDatesFor(date) {
     const out = [];
     const d = new Date(date + 'T00:00:00Z');
     let guard = 0;
-    while (out.length < YIZI_TREND_WINDOW && guard < 90) {
+    while (out.length < want && guard < 90) {
         guard++;
         const wd = d.getUTCDay();
         if (wd !== 0 && wd !== 6) out.push(d.toISOString().slice(0, 10));
@@ -148,6 +166,11 @@ function _noteOf(payload) {
  * ⚠️ 这是「懒加载」：只在用户**第一次展开**某只股票的趋势面板时调用（+ 可选的 09:35 定时预热）。
  *    理由见 db/create_yizi_trend.sql：额度只有 10 次/天，绝不能在看板一打开就无条件补拉。
  *
+ * 🔴 「读 10 天、画 5 天」的边界全在本函数内：
+ *    · 读库 / 划缺口 / 调 /trend 用 **存储窗口（10）** ⇒ 十日涨幅的原料永远是满的；
+ *    · 返回并写进 `yiziTrendState` 的 `windowDates` / `rows` 只有 **显示窗口（5）**。
+ *    ⇒ 调用方（composable / UI）**不需要知道有 10 天这件事**，照旧按 state 画即可。
+ *
  * @param {string} date YYYY-MM-DD
  * @param {{force?:boolean}} [opts] force = 忽略会话缓存重新拉（手动刷新用）
  * @returns {Promise<{date:string, windowDates:string[], rows:Array<object>, note:string, source:string}|null>}
@@ -183,12 +206,19 @@ async function _load(date, force) {
 
     yiziTrendState.loading = true;
     yiziTrendState.date = date;
-    yiziTrendState.windowDates = _windowDatesFor(date);
+    // 🔴 两个窗口（口径见文件顶部常量注释）：
+    //    · 存储窗口（10）= `storeDates` → 读库 / 划缺口 / 调 /trend 都用它（保证十日涨幅的原料齐）
+    //    · 显示窗口（5） = 存储窗口的**末尾 5 天**（末尾即 T）→ 真正画出来、写进 state 的
+    //    ⛔ 千万别把这两个合成一个：合了就会出现上一轮的两种病（画 5 天→十日涨幅缺腿 / 画 10 天→满屏断点）。
+    let storeDates = _windowDatesFor(date, YIZI_TREND_STORE_WINDOW);
+    let windowDates = storeDates.slice(-YIZI_TREND_WINDOW);
+    // 先把 X 轴摆成显示窗口（5），避免「先渲染 10 个点、数据回来后跳成 5 个点」的闪烁
+    yiziTrendState.windowDates = windowDates;
     yiziTrendState.error = '';
     yiziTrendState.note = '';
     yiziTrendState.source = '';
 
-    let windowDates = yiziTrendState.windowDates;
+    let storeRows = [];
     let rows = [];
     let note = '';
     let source = '';
@@ -203,7 +233,7 @@ async function _load(date, force) {
         // 🔴 旧实现是「Edge 优先、库只做兜底」，于是每次打开都要先等一次接口往返 ——
         //    用户原话「趋势图数据要存起来，不用每次打开都要加载一次」说的就是这个。
         try {
-            rows = await readYiziTrendForDates(windowDates);
+            storeRows = await readYiziTrendForDates(storeDates);
             source = 'db';
         } catch (e) {
             dbError = (e && e.message) || String(e);
@@ -211,23 +241,27 @@ async function _load(date, force) {
         }
         if (!isLatest()) return null;
 
-        // ── ② 缺口判定：窗口里【整日没有行】= 缓存不完整（首次打开 / 池子换新 / 有几天没补过）
-        //     ⇒ 才去调 Edge 补缺口（它自带 5 道额度闸门，且只 upsert、从不删，§11）。
-        //     窗口已齐 ⇒ 本轮 0 请求，直接渲染（这就是「打开就出图」的关键）。
+        // ── ② 缺口判定：**按存储窗口（10 天）判**，⛔ 不是按显示窗口（5 天）────────────
+        //    为什么必须按 10 天判：【十日涨幅】要吃 [T-9,T] 的逐日涨幅，只要这 10 天里有
+        //    「整日没有行」就该去补。若按 5 天判，会出现「图看着齐了、十日涨幅却悄悄掉腿」
+        //    （§U9 实测：补库不配套扩窗口 ⇒ 历史日期静默降级 10 根腿 → 5 根腿）。
+        //    判据仍是「**整日没有行**」：值为 null 不算缺口 —— 停牌/无数据日上游本来就没有，
+        //    补一万次也补不出来，⛔ 不能让它变成「每次打开都打一次接口」。
         const covered = new Set();
-        rows.forEach(function(r) { if (r && r.date) covered.add(r.date); });
-        const gaps = windowDates.filter(function(d) { return !covered.has(d); });
+        storeRows.forEach(function(r) { if (r && r.date) covered.add(r.date); });
+        const gaps = storeDates.filter(function(d) { return !covered.has(d); });
 
         if (gaps.length > 0 || force) {
             try {
-                // Edge 侧自己会「读缓存 + 只补缺口」，返回的 rows 是补完之后该窗口的全部行。
-                const payload = await fetchYiziTrendFromEdge({ date: date, window: YIZI_TREND_WINDOW });
+                // Edge 侧自己会「读缓存 + 只补缺口」，返回的 rows 是补完之后**存储窗口**的全部行。
+                // 🔴 这里必须传存储窗口（10）：传 5 会让库里第 6~10 天永远补不上（十日涨幅随之少腿）。
+                const payload = await fetchYiziTrendFromEdge({ date: date, window: YIZI_TREND_STORE_WINDOW });
                 if (!isLatest()) return null;
                 // 窗口以 Edge 为准：它才知道「近 N 个交易日」真正是哪几天（前端那份只是本地日历推算）
                 if (Array.isArray(payload.window) && payload.window.length > 0) {
-                    windowDates = payload.window.map(function(d) { return String(d); });
+                    storeDates = payload.window.map(function(d) { return String(d); });
                 }
-                rows = (payload.rows || []).map(mapTrendRow);
+                storeRows = (payload.rows || []).map(mapTrendRow);
                 note = _noteOf(payload);
                 source = 'edge';
             } catch (e) {
@@ -238,6 +272,13 @@ async function _load(date, force) {
         } else {
             note = SKIP_TEXT['cache-complete'];
         }
+
+        // ── ②' 收敛到【显示窗口】：屏上画 5 天，state 里也只留这 5 天 ─────────────────
+        //    §6：state 不保留「比屏上更长」的第二份真相。多出来的那 5 天只服务于
+        //    十日涨幅（它自己直读库，不经过这里）与「下次打开不必再补」。
+        windowDates = storeDates.slice(-YIZI_TREND_WINDOW);
+        const dispSet = new Set(windowDates);
+        rows = storeRows.filter(function(r) { return r && dispSet.has(r.date); });
 
         // ── ③ §10 失败必须可见 —— 而且【两个原因都要说出来】──────────────────────
         // 🔴 旧实现：库错误先写进 error，随后被 Edge 错误整条【覆盖】⇒

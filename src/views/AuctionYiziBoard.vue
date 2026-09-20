@@ -123,7 +123,7 @@
         >
           {{ topicAutoFillHint }}
         </div>
-        <!-- ★ 趋势（近10日折线）的板级提示（唯一出口）：
+        <!-- ★ 趋势（近5日折线）的板级提示（唯一出口）：
              · 接口/读库失败 → 红字警告（§10：失败必须可见，⛔ 不静默成「没有历史」）；
              · 本轮的说明（缓存已齐 / 9:25 保护窗口内不补拉 / 某条腿补拉失败）→ 灰底说明。
              ⛔ 不在每个展开面板里重复打印同一句话（8 个面板 = 8 遍噪声）。 -->
@@ -234,7 +234,7 @@
                          ★ 2026-09-18：用户要求「和早盘竞价看板一样，点击可以展开」。 -->
                     <span
                       class="yizi-seq is-clickable"
-                      title="点击展开该股近 10 日趋势（竞价量 / 昨日成交量 / 竞价涨幅 / 涨幅）"
+                      title="点击展开该股近 5 日趋势（竞价量 / 昨日成交量 / 竞价涨幅 / 涨幅）"
                       @click.stop="toggleYiziTrend(stock.stock)"
                     >{{ trendExpanded.has(stock.stock) ? '▼' : '▶' }}{{ stock.seq }}</span>
                     <!-- 名称块 = 股票名 → 时点标(9:20/9:25) → 龙头标 → 连板标，四段紧贴、整体不换行。
@@ -299,10 +299,13 @@
 
                   <!-- ================= 趋势面板（★ 2026-09-18 新增）=================
                        顶部一行当前值汇总（含十日涨幅），下面 4 张折线。
-                       ⚠️ 窗口 = **近 10 个交易日**（2026-09-20 由 5 扩到 10）：与「十日涨幅」的
-                       [T-9,T] 同一分母，且与 cron 的 window=10 一致。⛔ 不是照抄早盘竞价的近 5 日 ——
-                       那边没有十日涨幅这个主度量，两看板的趋势窗口口径**各自独立**。
-                       ⛔ 数据通道完全独立：Edge /trend（竞价一字小号），与早盘竞价的 numcat-proxy 无关。
+                       🔴 窗口（2026-09-20 第二次定案，用户原话「和早盘竞价一样显示五日的，**存起来是十日的**」）：
+                         · **画 = 近 5 个交易日**（与早盘竞价看板逐字一致的观感；点距 ~66px 而不是 29px，
+                           也避免把上周的停牌/无数据日拖进画面 ⇒ 中段不再出现一大片 `--` 断点）。
+                         · **存 = 近 10 个交易日**（[T-9,T]，喂「十日涨幅」；cron / Edge 都是 window=10）。
+                         ⇒ 这个「读 10 画 5」的拆分**全在 Logic 层**（logic/yizi/yizi-trend.js 的
+                           YIZI_TREND_WINDOW / YIZI_TREND_STORE_WINDOW），本组件只按 state 画，⛔ 不要在这里再算窗口。
+                         ⛔ 数据通道完全独立：Edge /trend（竞价一字小号），与早盘竞价的 numcat-proxy 无关。
                        §34：面板本身是纯展示，所有数值都由 Logic 纯函数算好（composable 的 trendMap）。
                        §26：trendExpanded 随日期切换归位；trendMap 仅在「日期对齐」时才有内容。 -->
                   <div
@@ -328,20 +331,20 @@
                       v-if="trendLoading && trendEmpty(stock.stock)"
                       class="yizi-trend-loading"
                     >
-                      加载中…（正在取近 10 日趋势）
+                      加载中…（正在取近 5 日趋势）
                     </div>
                     <!-- 一条数据都没有：给一句说明，⛔ 不画 4 张全是 '--' 的空图 -->
                     <div
                       v-else-if="trendEmpty(stock.stock)"
                       class="yizi-trend-empty"
                     >
-                      {{ trendLoading ? '加载中…' : '近 10 日暂无趋势数据（9:25 抓取完成后自动补）' }}
+                      {{ trendLoading ? '加载中…' : '近 5 日暂无趋势数据（9:25 抓取完成后自动补）' }}
                     </div>
 
                     <template v-else>
                       <div class="yizi-trend-chart-item">
                         <div class="yizi-trend-chart-label">
-                          竞价量(万) 近10日
+                          竞价量(万) 近5日
                         </div>
                         <TrendChart
                           :points="trendMap[stock.stock].volume"
@@ -353,7 +356,7 @@
                         class="yizi-trend-chart-item"
                       >
                         <div class="yizi-trend-chart-label">
-                          昨日成交量(万) 近10日
+                          昨日成交量(万) 近5日
                         </div>
                         <TrendChart
                           :points="trendMap[stock.stock].yestVolume"
@@ -365,7 +368,7 @@
                         class="yizi-trend-chart-item"
                       >
                         <div class="yizi-trend-chart-label">
-                          竞价涨幅(%) 近10日
+                          竞价涨幅(%) 近5日
                         </div>
                         <TrendChart
                           :points="trendMap[stock.stock].aucPctChg"
@@ -378,7 +381,7 @@
                         class="yizi-trend-chart-item"
                       >
                         <div class="yizi-trend-chart-label">
-                          涨幅(%) 近10日
+                          涨幅(%) 近5日
                         </div>
                         <TrendChart
                           :points="trendMap[stock.stock].changePct"
