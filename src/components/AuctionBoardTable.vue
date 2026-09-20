@@ -138,21 +138,27 @@ const {
 //
 // 每个元素只带「渲染要用的东西」：kind（尾段说明 / 原有行 / 补入行）+ key + 预先算好的 memo 数组，
 // 模板因此零业务计算（§21），也不需要把 28 项指纹在模板里写两份。
+//
+// [YIZI-SUP v3 2026-09-20] 每段的 `entries` 已经是「原有行与补入行按题材内十日涨幅合并排名后的
+// 最终序列、序号 1..N 也已重排」（见 logic/auction/yizi-supplement.js#_mergeSegmentEntries），
+// 本组件只负责把它展平成一条渲染列表，⛔ 不再做任何排序/取号。
 const displayRows = computed(() => {
   if (!yiziSupActive.value) return null;   // 开关关着 / 非题材单独模式 → 走原有循环
   const out = [];
   (yiziSegments.value || []).forEach(function(seg) {
     const segKey = seg.key;
-    const sups = seg.sups || [];
+    const entries = seg.entries || [];
     // 「未并入」尾段：主行为空，只有一行说明 + 补入行（题材不在当日列表里，无处可融）
     if (seg.isOrphan) {
-      out.push({ kind: 'tail', key: 'tail:' + segKey, count: sups.length, memo: [segKey, sups.length] });
+      out.push({ kind: 'tail', key: 'tail:' + segKey, count: entries.length, memo: [segKey, entries.length] });
     }
-    (seg.rows || []).forEach(function(item, idx) {
-      // idx 只在 item.seqNo 缺失时作回退显示；题材单独模式下 seqNo 恒 ≥1（见 view-helpers），故不影响显示
-      out.push({ kind: 'row', key: 'r' + item.index, item: item, idx: idx, memo: rowMemo(item) });
-    });
-    sups.forEach(function(s) {
+    entries.forEach(function(entry, idx) {
+      if (entry.kind === 'row') {
+        // idx 只在 item.seqNo 缺失时作回退显示；题材单独模式下 seqNo 恒 ≥1（见 view-helpers），故不影响显示
+        out.push({ kind: 'row', key: 'r' + entry.item.index, item: entry.item, idx: idx, memo: rowMemo(entry.item) });
+        return;
+      }
+      const s = entry.sup;
       // 补入行的 memo：内容字段 + 本功能区自己的展示态（展开态 / 曲线到货）——
       // 与 AuctionEntityRow 把 expandedSet/trendHistory 放进 memo 完全同一个理由：
       // 漏掉它们 → 点序号展开趋势时整行不重渲染。
@@ -161,8 +167,7 @@ const displayRows = computed(() => {
         key: 's' + segKey + '-' + s.stock + '-' + s.mergedTopic,
         stock: s,
         memo: [
-          s.stock, s.seq, s.mergedTopic, s.isLeader, s.continueText,
-          s.seal920Text, s.seal920Tone, s.rangeText, s.rangeTone,
+          s.stock, s.seq, s.mergedTopic, s.continueText, s.topicsDisplay, s.topicBg,
           yiziTrendExpanded.value.has(s.stock), yiziTrendLoading.value, yiziTrendMap.value
         ]
       });

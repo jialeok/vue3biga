@@ -1,131 +1,123 @@
 <!--
-  AuctionYiziSupplementRow.vue — 「补竞价一字」补入的一行（含展开后的 4 张趋势图）
+  AuctionYiziSupplementRow.vue — 「补竞价一字」补入的一行（+ 展开后的近 5 日趋势面板）
 
-  ★ 2026-09-20 修正：本行不再出现在底部一块「补充区」里，而是【按题材并入早盘竞价对应题材组的组内末尾】，
-    因此列宽与早盘竞价行对齐（序号 0.4 / 股票名 1.2 / 其余 2.5 —— 与 .auction-number / .auction-stock-name /
-    .auction-topic-cell 同值），让「同一题材组」在视觉上仍是一整段；并用「补」小标记标明它是补进来的。
+  ★ 2026-09-20 v3 修正（用户原话：「位置对了，但是显示还没对，你就按照早盘竞价的显示方式来就可以，
+    序号，股票名称，标签，题材，只有这四个……字体字样也要和列表统一起来，包括显示的效果，
+    比如收盘后股票名称颜色变化，涨停一字有下面的实线下滑线等，都要统一的。
+    竞价一字的那些封单额在 UI 这里不要显示了，还有后面那个十日涨幅也要隐藏起来」）
 
-  对应关系（「竞价一字」看板的行 → 本组件）：
-    .yizi-row                → .auction-yizi-sup-row
-    .yizi-seq (点它展开)      → .auction-yizi-sup-seq
-    .yizi-name-block / -name → .auction-yizi-sup-name-block / -name
-    .yizi-time-tag           → .auction-yizi-sup-time-tag
-    .yizi-leader-badge       → .auction-yizi-sup-leader-badge
-    .yizi-continue-tag       → .auction-yizi-sup-continue-tag
-    .yizi-topics             → .auction-yizi-sup-topics
-    .yizi-metric / -seal / -range → .auction-yizi-sup-metric / -seal / -range
-    .yizi-trend-panel 一族    → .auction-yizi-sup-trend-* 一族
+  ⇒ 本行的实现方式就是【把早盘竞价行的 DOM 与类名原样搬过来】，只渲染四列：
+      .auction-item    → 行本体（flex 布局、hover 底色、行内左侧标记位）
+      .auction-number  → 序号（点它展开趋势；字号/颜色/内边距与原有行逐像素同源）
+      .auction-stock-name + .auction-stock-text → 股票名称（**字体、字号、颜色、下划线全部继承**
+                        早盘竞价的样式 → 竞价一字 red 实线下划线 = .auction-stock-text.yizi-limit）
+      .auction-topic-cell → 题材（12px / 允许折行 / 同列宽 flex:2.5）
+    「标签」= 名称后的小标：连板标(.auction-streak-tag) + 「补」标(.auction-yizi-sup-added)。
 
-  ⚠️ 为什么整行都换前缀、不复用 .yizi-* ：
-     `auction-yizi.css` 头注写得很清楚 —— CSS 是全局的，一字板的类名一旦被两个看板共用，
-     将来改任何一个都会串改另一个（早盘竞价板历史上就被通用类名串改过）。
-     本组件属于【早盘竞价看板】，因此用自己的 `auction-yizi-sup-` 前缀，与两边都隔离。
+  ⚠️ 为什么【复用早盘竞价的类名】而不是继续用自己的一套前缀：
+     CSS 是全局的，用户要的正是「字体字样/显示效果与列表统一」。字体、行高、下划线、hover
+     这些东西如果在本组件里再抄一份，日后早盘竞价改一次字号这里就会悄悄不一致（正是本次返工的原因）。
+     本组件因此只保留两个**自有**类名：
+       · .auction-yizi-sup-item — 行左侧那道紫色竖条（「这行是补进来的」的唯一视觉差异，用 inset
+         box-shadow 实现，不占列宽、不挤动对齐）；
+       · .auction-yizi-sup-added — 「补」小标记。
 
-  §3 纯展示组件：只读 props.stock（Logic 纯函数搬运好的展示字段）+ inject('auctionYiziSupplement')
-  的状态与回调；⛔ 不计算任何业务口径（十日涨幅 / 龙头 / 封单额全部直接渲染既有文本）。
+  ⛔ 本行不显示：封单额（9:20/9:25/变化量）、十日涨幅列、9:20 时点标、首封时刻。
+     需要看封单额请去「竞价一字」看板（那边口径更全）——本功能只是显示层借用它的股票。
+
+  🌐 数据独立性（用户明确要求「两个看板互不干扰」）：
+      本行的股票与趋势曲线全部来自竞价一字看板自己的库 / 自己的猫抓小号（Edge /trend），
+      ⛔ 与早盘竞价的 numcat 主账号、与早盘竞价的趋势通道无关。
+      因此点序号展开的是【竞价一字自己的 4 张趋势图】，不会去查早盘竞价的数据。
+
+  §3 纯展示组件：只读 props.stock（Logic 纯函数已排好名次、赋好序号的显示对象）
+  + inject('auctionYiziSupplement') 的状态与回调；⛔ 不计算任何业务口径。
 -->
 <template>
   <div
-    class="auction-yizi-sup-row"
-    :class="{ 'is-leader': stock.isLeader }"
+    class="auction-item auction-yizi-sup-item"
+    :style="stock.topicBg ? { background: stock.topicBg } : null"
+    :data-stock="stock.stock"
+    @dblclick.stop
   >
-    <!-- 序号 = 趋势面板开关（与竞价一字看板、早盘竞价看板同一交互：点序号展开）
-         ⚠️ 序号是「该题材内十日涨幅排名」，跳号表示中间那几只已在早盘竞价列表里（不重排，排名是真话）
-         列宽 0.4 与早盘竞价行 .auction-number 同值 → 序号列与上方原有行严格对齐 -->
-    <span
-      class="auction-yizi-sup-seq is-clickable"
-      title="点击展开该股近 5 日趋势（竞价量 / 昨日成交量 / 竞价涨幅 / 涨幅）"
+    <!-- 序号 = **本题材组内按十日涨幅的排名**（与组内原有行合并排名后插到自己的排名位；
+         序号变了说明它在组里的位次真的变了，不是「一字看板自己的块内序号」）
+         点它展开该股近 5 日趋势（与早盘竞价、竞价一字看板同一交互：点序号展开） -->
+    <div
+      class="auction-number auction-trend-trigger"
+      :title="seqTitle"
       @click.stop="toggleTrend(stock.stock)"
-    >{{ trendExpanded.has(stock.stock) ? '▼' : '▶' }}{{ stock.seq }}</span>
-    <!-- 列宽 1.2 与 .auction-stock-name 同值 → 股票名列与上方原有行严格对齐 -->
-    <span class="auction-yizi-sup-name-block">
+      @dblclick.stop
+    >
+      {{ stock.seq }}
+    </div>
+    <div
+      class="auction-stock-name"
+      :data-stock="stock.stock"
+      :data-note="''"
+      :title="nameTitle"
+      @dblclick.stop
+    >
+      <!-- 字体/字号/颜色/下划线全部来自早盘竞价的样式：
+           竞价一字 → .yizi-limit 的红色实线下划线（与列表里的一字股长得一模一样） -->
+      <span class="auction-stock-text yizi-limit">{{ stock.stock }}</span>
+      <!-- 连板标（首板/二板/三板…）：与早盘竞价行内那个连板标同款同源（limit-streak） -->
       <span
-        class="auction-yizi-sup-name"
-        :class="{ leader: stock.isLeader }"
-      >{{ stock.stock }}</span>
-      <!-- ★ 补入小标记（用户要求「标注哪些是补进去的，有个小标记」）：
-           悬停说清「从哪来、为什么在这一组」——被并入的组名由 Logic 层写在 mergedTopic 上 -->
+        v-if="stock.continueText"
+        class="auction-streak-tag"
+        :title="'前9个交易日连板状态：' + stock.continueText"
+      >{{ stock.continueText }}</span>
+      <!-- ★「补」小标记：标明这一行不是早盘竞价的股票，而是从竞价一字看板按题材补进来的 -->
       <span
         class="auction-yizi-sup-added"
         :title="addedTitle"
       >补</span>
-      <!-- 封单额时点标：本补入行固定用「9:20 口径」（= 竞价一字看板的默认口径，切换开关在那边） -->
-      <span
-        class="auction-yizi-sup-time-tag"
-        :title="'本行封单额口径：9:20（竞价一字看板默认口径）' +
-          (stock.firstTimeText ? ('；该股首次封上涨停价 ' + stock.firstTimeText) : '')"
-      >9:20</span>
-      <span
-        v-if="stock.isLeader"
-        class="auction-yizi-sup-leader-badge"
-        title="本题材内十日涨幅最高 → 该题材龙头"
-      >龙头</span>
-      <span
-        v-if="stock.continueText"
-        class="auction-yizi-sup-continue-tag"
-        :title="'连板档位 ' + stock.continueText + '（按前一交易日连续涨停数递推）'"
-      >{{ stock.continueText }}</span>
-    </span>
-    <!-- 其余列（题材 + 封单额 + 十日涨幅）合占 2.5，与 .auction-topic-cell 同值：
-         补入行要展示的字段比原有行多，所以在这个宽度内再分成「题材(吃满) + 两个数值(定宽)」 -->
-    <span class="auction-yizi-sup-rest">
-      <!-- 题材（主角列）：完整展示、允许折行，⛔ 不做省略号截断 -->
-      <span
-        class="auction-yizi-sup-topics"
-        :title="stock.topicsDisplay"
-      >{{ stock.topicsDisplay }}</span>
-      <!-- 度量列：封单额(9:20) + 十日涨幅（与竞价一字看板「未打开 9点25」时的形态一致） -->
-      <span class="auction-yizi-sup-metric">
-        <span
-          class="auction-yizi-sup-seal"
-          :class="sealClass"
-          :title="sealTitle"
-        >{{ stock.seal920Text || '-' }}</span>
-        <span
-          class="auction-yizi-sup-range"
-          :class="rangeClass"
-          title="近 10 个交易日区间涨幅（一字看板块内排序 / 龙头判据）"
-        >{{ stock.rangeText || '-' }}</span>
-      </span>
-    </span>
+    </div>
+    <!-- 题材列：列宽与样式与 .auction-topic-cell 同源（完整展示、允许折行、不做省略号截断） -->
+    <div
+      class="auction-topic-cell"
+      :title="stock.topicsDisplay"
+    >
+      {{ stock.topicsDisplay }}
+    </div>
   </div>
 
-  <!-- ============ 趋势面板（与竞价一字看板同形、同数据通道）============
+  <!-- ============ 趋势面板（点序号展开；与早盘竞价的展开面板同一套类名 → 观感统一）============
        🔴 数据来自竞价一字自己的库 / 自己的猫抓小号（Edge /trend），⛔ 与早盘竞价的 numcat 主账号无关。
        §22 懒加载：点序号第一次展开时才取；§26 日期不对齐时 trendMap 为空 → 这里显示「暂无」。 -->
   <div
-    v-if="trendExpanded.has(stock.stock)"
-    class="auction-yizi-sup-trend-panel"
+    v-if="expanded"
+    class="auction-trend-panel"
     @dblclick.stop
     @click.stop
   >
-    <div class="auction-yizi-sup-trend-metrics">
-      <span class="auction-yizi-sup-trend-metric-item">
+    <div class="auction-daily-metrics">
+      <span class="adm-item">
         <b>十日涨幅</b>：<span :class="rangeClass">{{ stock.rangeText || '-' }}</span>
       </span>
       <span
         v-for="m in trendMetrics(stock.stock)"
         :key="m.label"
-        class="auction-yizi-sup-trend-metric-item"
+        class="adm-item"
       ><b>{{ m.label }}</b>：{{ m.value }}</span>
     </div>
 
     <div
       v-if="trendLoading && trendEmpty(stock.stock)"
-      class="auction-yizi-sup-trend-loading"
+      class="auction-yizi-sup-trend-note"
     >
       加载中…（正在取近 5 日趋势）
     </div>
     <div
       v-else-if="trendEmpty(stock.stock)"
-      class="auction-yizi-sup-trend-empty"
+      class="auction-yizi-sup-trend-note"
     >
-      {{ trendLoading ? '加载中…' : '近 5 日暂无趋势数据（9:25 抓取完成后自动补）' }}
+      近 5 日暂无趋势数据（9:25 抓取完成后自动补）
     </div>
 
     <template v-else>
-      <div class="auction-yizi-sup-trend-chart-item">
-        <div class="auction-yizi-sup-trend-chart-label">
+      <div class="trend-chart-item">
+        <div class="trend-chart-label">
           竞价量(万) 近5日
         </div>
         <TrendChart
@@ -135,9 +127,9 @@
       </div>
       <div
         v-if="trendHasLeg(stock.stock, 'yestVolume')"
-        class="auction-yizi-sup-trend-chart-item"
+        class="trend-chart-item"
       >
-        <div class="auction-yizi-sup-trend-chart-label">
+        <div class="trend-chart-label">
           昨日成交量(万) 近5日
         </div>
         <TrendChart
@@ -147,9 +139,9 @@
       </div>
       <div
         v-if="trendHasLeg(stock.stock, 'aucPctChg')"
-        class="auction-yizi-sup-trend-chart-item"
+        class="trend-chart-item"
       >
-        <div class="auction-yizi-sup-trend-chart-label">
+        <div class="trend-chart-label">
           竞价涨幅(%) 近5日
         </div>
         <TrendChart
@@ -160,9 +152,9 @@
       </div>
       <div
         v-if="trendHasLeg(stock.stock, 'changePct')"
-        class="auction-yizi-sup-trend-chart-item"
+        class="trend-chart-item"
       >
-        <div class="auction-yizi-sup-trend-chart-label">
+        <div class="trend-chart-label">
           涨幅(%) 近5日
         </div>
         <TrendChart
@@ -180,7 +172,8 @@ import { computed, inject } from 'vue';
 import TrendChart from './TrendChart.vue';
 
 const props = defineProps({
-  // mergeYiziIntoAuctionRows 产出的显示行（字段已全部是可直出文本 + mergedTopic）
+  // mergeYiziIntoAuctionRows 产出的补入行：{ stock, seq, mergedTopic, topicsDisplay,
+  // continueText, rankPct, rangeText, rangeTone, topicBg }
   stock: { type: Object, required: true }
 });
 
@@ -190,22 +183,27 @@ const {
   trendMetrics, trendHasLeg, trendEmpty, toggleTrend
 } = sup;
 
-// 色调档 → class 名（档位由一字看板算好，这里只做映射，§21 模板不做业务计算）
-const sealClass = computed(() => 'auction-yizi-sup-seal-' + ((props.stock && props.stock.seal920Tone) || 'flat'));
-const rangeClass = computed(() => 'auction-yizi-sup-range-' + ((props.stock && props.stock.rangeTone) || 'flat'));
+const expanded = computed(() => trendExpanded.value.has(props.stock.stock));
 
-// 悬停说明：把封单额口径与 9:25 的变化量都讲清楚（变化量不占列宽，但不丢信息）
-const sealTitle = computed(() => {
+// 十日涨幅方向的颜色档（涨红跌绿，项目约定）。档位由一字看板算好，这里只做「档位 → 类名」映射（§21）
+const rangeClass = computed(() => 'auction-yizi-sup-' + ((props.stock && props.stock.rangeTone) || 'flat'));
+
+const seqTitle = computed(function() {
   const s = props.stock || {};
-  let t = '9:20 口径封单额';
-  if (s.sealDeltaText) t += '；9:25 较 9:20 的变化量 ' + s.sealDeltaText;
-  return t;
+  return '序号 = 本题材组内按十日涨幅的排名（第 ' + s.seq + ' 名）'
+    + '；点击展开该股近 5 日趋势（数据来自竞价一字看板自己的库）';
+});
+
+const nameTitle = computed(function() {
+  const s = props.stock || {};
+  return '竞价一字（本行由「竞价一字」看板按题材【' + (s.mergedTopic || '无匹配题材组')
+    + '】补入，不在早盘竞价列表里；数据取自竞价一字看板自己的库）';
 });
 
 // 「补」标的悬停说明：讲清「从哪来、为什么在这一组」
 //   · 融进某题材组 → 说出组名（用户可核对「按题材融入」这件事真的发生了）；
 //   · 落在「未并入」尾段 → 说清是「当日列表里没有它的题材组」，⛔ 不含糊。
-const addedTitle = computed(() => {
+const addedTitle = computed(function() {
   const s = props.stock || {};
   if (s.mergedTopic) {
     return '本行由「竞价一字」看板按题材【' + s.mergedTopic + '】补入本组：'

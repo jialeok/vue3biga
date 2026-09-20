@@ -34,6 +34,11 @@ import { isBoardDateAligned } from '../logic/yizi/model.js';
 import { loadYiziTrend, yiziTrendState } from '../logic/yizi/yizi-trend.js';
 import { buildYiziTrendSeries, trendMetricItems } from '../logic/yizi/trend-model.js';
 import { getGroupableCoreTopics } from '../logic/topic/rules.js';
+// [YIZI-SUP v3 2026-09-20] 组内「合并排名」的**同一把尺子**：原有行的十日涨幅取自早盘竞价看板
+// 自己那份云端缓存（dragon-rank.js，worker 用 range-window 复利口径算出的近 10 交易日区间涨幅）。
+// ⚠️ 只读、不触发任何请求（该缓存由早盘竞价看板自己加载）→ §32 不新增网络开销；
+//    云端还没到 → 返回 null → 本功能区退化为「补入行接在组内末尾」（⛔ 不假装排过，§10）。
+import { getDragonRangePct } from '../logic/auction/dragon-rank.js';
 import { mergeYiziIntoAuctionRows, formatMergeSummary } from '../logic/auction/yizi-supplement.js';
 
 /** 融入结果为空时的占位（模板只读 segments/stats，不区分「没开」与「没数据」） */
@@ -103,12 +108,23 @@ export function useAuctionYiziSupplement(board) {
     // ===== 融入结果（纯函数产物，模板只做直出）=====
     // 落点序列 = filteredRegularItems（= 早盘竞价题材模式下【实际渲染的常规组行序】，含搜索过滤），
     // 因此补入行的位置与屏幕上的题材组完全对应；搜索时补入行会跟着可见的组走。
+    //
+    // [YIZI-SUP v3 2026-09-20] 合并排名的基准 = 原有行的十日涨幅（同一个数、同一张 stock_range_pct 表）：
+    //   补入行自带 rangePct；原有行这里从 dragon-rank 的云端缓存取。
+    //   ⚠️ 缓存未就绪 → pctOf = null → 不做合并排名（补入行接在组内末尾），序号不伪造（§10）。
     const merge = computed(() => {
         if (!active.value || !hasRows.value) return EMPTY_MERGE;
+        const pctMap = getDragonRangePct(currentDate.value);
+        const pctOf = pctMap
+            ? function(name) {
+                const v = pctMap.get(String(name === null || name === undefined ? '' : name).trim());
+                return v ? v.pct : null;
+            }
+            : null;
         return mergeYiziIntoAuctionRows(
             (filteredRegularItems && filteredRegularItems.value) || [],
             yiziBoardState.blocks,
-            { excludeNames: listStockNames.value, coreTopics: getGroupableCoreTopics() }
+            { excludeNames: listStockNames.value, coreTopics: getGroupableCoreTopics(), pctOf: pctOf }
         );
     });
     const segments = computed(() => merge.value.segments);

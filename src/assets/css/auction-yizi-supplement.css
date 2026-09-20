@@ -1,15 +1,16 @@
         /* ==========================================================================
-           「早盘竞价 · 补竞价一字」按题材融入（★ 2026-09-20 修正为「融入」版）
-           归属：早盘竞价看板（表头 X 位的开关 + 各题材组内末尾的补入行）。
+           「早盘竞价 · 补竞价一字」按题材融入（★ 2026-09-20 v3：四列 + 与列表同款外观）
+           归属：早盘竞价看板（表头 X 位的开关 + 各题材组内按十日涨幅排好位的补入行）。
            数据：竞价一字看板自己的库 / 自己的猫抓小号趋势通道，与早盘竞价相互独立（只是同屏显示）。
 
-           ⚠️ 类名一律 `auction-yizi-sup-` 前缀（本板 + 一字板三重隔离）：
-               · 早盘竞价的类名是 .auction-*，一字板的类名是 .yizi-*（见 auction-yizi.css 头注）；
-               · CSS 是全局的，本功能区两边都不复用，将来改任一边都不会串改另两个看板。
-
-           ⚠️ 列宽刻意与早盘竞价行【同值】（序号 0.4 / 股票名 1.2 / 其余 2.5）：
-               补入行现在是钻进「同一题材组」里的，列不对齐会看起来像插错地方。
-               参考：.auction-number{flex:0.4} / .auction-stock-name{flex:1.2} / .auction-topic-cell{flex:2.5}。
+           ⚠️ 本文件刻意【只留两处自有样式】：
+               · .auction-yizi-sup-item  — 补入行左侧那道紫竖条（唯一的视觉差异）
+               · .auction-yizi-sup-added — 「补」小标记
+           行的字体 / 字号 / 行高 / 列宽 / 下划线 / hover 全部复用早盘竞价的类名
+           （.auction-item / .auction-number / .auction-stock-name / .auction-stock-text /
+             .auction-topic-cell，见 auction-board.css 与 AuctionBoard.vue 的全局 style），
+           ⇒ 用户要的「字体字样与列表统一」是【结构保证】，不是靠两份样式抄得像。
+           ⛔ 其余 .auction-yizi-sup-* 前缀留给本功能区自己的控件（开关 / 状态行 / 尾段说明）。
            ========================================================================== */
 
         /* ===== 表头 X 位的「补竞价一字」开关 =====
@@ -154,178 +155,30 @@
             color: #64748b;
         }
 
-        /* ===== 补入行（★ 核心）=====
-           ⚠️ 自身 padding 为 0、列宽与 .auction-number / .auction-stock-name / .auction-topic-cell 同值，
-              让序号列与股票名列和上方原有行【严格对齐】；
-          ⚠️ 左侧竖条用 inset box-shadow 而不是 border-left：border 会挤掉 3px 内容宽度，
-              把列宽推偏（对齐就废了）。
-          ⚠️ 底色与原有行的题材浅色（topicBg）区分开：这里是「补进来的」，一眼可辨。 */
-        .auction-yizi-sup-row {
-            display: flex;
-            align-items: flex-start;
-            padding: 0;
-            font-size: 12px;
-            line-height: 16px;
-            background: #faf8ff;
-            border-bottom: 1px solid #ede9fe;
+        /* ===== 补入行（★ 核心）：唯一的两处自有样式 =====
+           ① 左侧紫竖条 —— 「这行是补进来的」的**唯一**视觉差异。
+              ⚠️ 用 inset box-shadow 而不是 border-left：border 会占掉 3px 内容宽度，
+                 把列宽推偏（列对齐就废了）；box-shadow inset 不参与布局。
+           ② 「补」标 —— 用户明确要求「标注哪些是补进去的，有个小标记」。
+           ⚠️ 行本体不在这里写任何 font/size/padding/背景色：全部继承 .auction-item 一族，
+              与早盘竞价的行逐像素同源（题材浅色底由模板的行内 style 给，与同组原有行同色）。 */
+        .auction-yizi-sup-item {
             box-shadow: inset 3px 0 0 #a78bfa;
         }
 
-        .auction-yizi-sup-row.is-leader {
-            background: #f6f2ff;
-        }
-
-        .auction-yizi-sup-seq {
-            flex: 0.4;
-            min-width: 0;
-            padding: 7px 2px;
-            text-align: center;
-            font-size: 10px;
-            color: #7c3aed;
-            font-variant-numeric: tabular-nums;
-        }
-
-        /* 序号 = 趋势面板开关（▶ 收起 / ▼ 展开，让「可点」这件事可见） */
-        .auction-yizi-sup-seq.is-clickable {
-            cursor: pointer;
-            user-select: none;
-            -webkit-user-select: none;
-            -webkit-tap-highlight-color: transparent;
-        }
-
-        .auction-yizi-sup-seq.is-clickable:hover {
-            color: #4c1d95;
-        }
-
-        .auction-yizi-sup-name-block {
-            flex: 1.2;
-            min-width: 0;
-            padding: 7px 2px 7px 4px;
-            display: flex;
-            align-items: center;
-            gap: 3px;
-            white-space: nowrap;
-        }
-
-        .auction-yizi-sup-name {
-            flex: 0 1 auto;
-            min-width: 0;
-            font-weight: 600;
-            color: #0f172a;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .auction-yizi-sup-name.leader {
-            color: #dc2626;
-        }
-
-        /* ★「补」小标记：本行不是早盘竞价的股票，而是从竞价一字看板按题材补进来的（用户要求「有个小标记」） */
         .auction-yizi-sup-added {
-            flex: 0 0 auto;
+            display: inline-block;
+            margin-left: 3px;
             padding: 0 3px;
             border-radius: 2px;
             font-size: 9px;
             font-weight: 700;
             line-height: 12px;
+            vertical-align: 1px;
             color: #ffffff;
             background: linear-gradient(135deg, #a78bfa, #7c3aed);
             white-space: nowrap;
         }
-
-        .auction-yizi-sup-time-tag {
-            flex: 0 0 auto;
-            padding: 0 3px;
-            border-radius: 2px;
-            font-size: 9px;
-            font-weight: 600;
-            line-height: 12px;
-            color: #b45309;
-            background: #fef3c7;
-            white-space: nowrap;
-        }
-
-        .auction-yizi-sup-leader-badge {
-            flex: 0 0 auto;
-            padding: 0 3px;
-            border-radius: 2px;
-            font-size: 9px;
-            font-weight: 600;
-            line-height: 12px;
-            color: #ffffff;
-            background: #dc2626;
-            white-space: nowrap;
-        }
-
-        .auction-yizi-sup-continue-tag {
-            flex: 0 0 auto;
-            padding: 0 3px;
-            border-radius: 2px;
-            font-size: 9px;
-            font-weight: 600;
-            line-height: 12px;
-            color: #475569;
-            background: #e2e8f0;
-            white-space: nowrap;
-        }
-
-        /* 其余列（题材 + 封单额 + 十日涨幅）合占 2.5（= .auction-topic-cell 同值），
-           内部再分「题材(吃满剩余) + 度量(定宽)」 */
-        .auction-yizi-sup-rest {
-            flex: 2.5;
-            min-width: 0;
-            padding: 7px 6px;
-            display: flex;
-            align-items: baseline;
-            gap: 6px;
-        }
-
-        /* 题材（主角列）：完整展示 + 允许折行。⛔ 绝不 nowrap + ellipsis —— 那正是「题材看不完」的成因。
-           keep-all：禁止 CJK 字符之间断行 ⇒ 换行只发生在英文逗号处。 */
-        .auction-yizi-sup-topics {
-            flex: 1;
-            min-width: 0;
-            font-size: 11px;
-            color: #475569;
-            white-space: normal;
-            word-break: keep-all;
-            overflow-wrap: break-word;
-        }
-
-        /* 度量列：封单额(9:20) + 十日涨幅 同基线并排、单行（⛔ 不上下堆叠，避免每行撑成两行高） */
-        .auction-yizi-sup-metric {
-            flex: 0 0 auto;
-            display: flex;
-            align-items: baseline;
-            gap: 4px;
-            text-align: right;
-            font-variant-numeric: tabular-nums;
-            white-space: nowrap;
-        }
-
-        .auction-yizi-sup-seal {
-            min-width: 42px;
-            text-align: right;
-            font-size: 11px;
-            font-weight: 700;
-        }
-
-        .auction-yizi-sup-range {
-            min-width: 40px;
-            text-align: right;
-            font-size: 11px;
-            font-weight: 600;
-        }
-
-        /* 封单额强弱分档（与一字板 .yizi-seal-* 同色；⛔ 不带通用类名，避免串板） */
-        .auction-yizi-sup-seal-strong { color: #b91c1c; }
-        .auction-yizi-sup-seal-normal { color: #334155; }
-        .auction-yizi-sup-seal-flat { color: #cbd5e1; }
-
-        /* 十日涨幅方向（涨红跌绿，项目约定） */
-        .auction-yizi-sup-range-up { color: #dc2626; }
-        .auction-yizi-sup-range-down { color: #16a34a; }
-        .auction-yizi-sup-range-flat { color: #94a3b8; }
 
         /* =====「未并入」尾段的一行头 =====
            为什么必须显示：题材在当日列表里没有对应分组的补入行无处可融，
@@ -367,49 +220,17 @@
             text-overflow: ellipsis;
         }
 
-        /* ===== 趋势面板（与一字板 .yizi-trend-* 同形；数据通道也是竞价一字自己的） ===== */
-        .auction-yizi-sup-trend-panel {
-            padding: 6px 8px 8px;
-            background: #f8fafc;
-            border-top: 1px dashed #e2e8f0;
-            border-bottom: 1px solid #ede9fe;
-            box-shadow: inset 3px 0 0 #c4b5fd;
-        }
-
-        .auction-yizi-sup-trend-metrics {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 4px 14px;
-            padding: 2px 2px 6px;
-            margin-bottom: 4px;
-            border-bottom: 1px dashed #e5e7eb;
-            font-size: 11px;
-            color: #475569;
-            line-height: 1.4;
-        }
-
-        .auction-yizi-sup-trend-metric-item {
-            white-space: nowrap;
-        }
-
-        .auction-yizi-sup-trend-metric-item > b {
-            color: #334155;
-            font-weight: 600;
-        }
-
-        .auction-yizi-sup-trend-chart-item {
-            margin-bottom: 4px;
-        }
-
-        .auction-yizi-sup-trend-chart-label {
-            font-size: 10px;
-            color: #94a3b8;
-            margin-bottom: 2px;
-        }
+        /* ===== 趋势面板里的两处自有样式 =====
+           面板本体 / 指标条 / 曲线标签全部复用早盘竞价的 .auction-trend-panel /
+           .auction-daily-metrics / .adm-item / .trend-chart-item / .trend-chart-label
+           （见 AuctionBoard.vue 的全局 style）→ 展开后的观感与列表完全一致。
+           这里只补：① 十日涨幅数值的涨跌色档（面板里保留，行内已按需求隐藏）；② 空/加载态说明行。 */
+        .auction-yizi-sup-up { color: #dc2626; }
+        .auction-yizi-sup-down { color: #059669; }
+        .auction-yizi-sup-flat { color: #94a3b8; }
 
         /* 「一条数据都没有」时的说明行（⛔ 不画 4 张全是 '--' 的空图） */
-        .auction-yizi-sup-trend-empty,
-        .auction-yizi-sup-trend-loading {
+        .auction-yizi-sup-trend-note {
             padding: 6px 2px;
             font-size: 11px;
             color: #94a3b8;
