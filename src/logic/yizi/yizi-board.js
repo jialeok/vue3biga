@@ -24,6 +24,19 @@
 //   ④ 题材归属 ← 三级优先：接口自带 开盘啦(theme_names_kpl) → 选股宝(theme_names_xgb)
 //        → 共享题材库 stock_topics（与涨跌停看板 / 早盘竞价看板同一张表，手动导入互通）
 //
+// ★★ 加载性能（2026-09-20 用户反馈「切历史日期时竞价一字比早盘竞价慢很多」的四条成因与对策）
+//   用户原话：「早盘竞价看板加载完了，竞价一字看板要等……早盘时间很宝贵，影响到判断时间」，
+//   而且它直接拖慢早盘竞价看板「题材 toggle → 补竞价一字 toggle」的可用时机。
+//   ① 串行 await 链：快照 → 涨幅缓存 → 补算 → 涨停池 → 题材回填，五趟往返排队相加
+//      ⇒ 改为【四条独立读同时起跑】（§32），并把「题材自动回填」移出关键路径（后台跑）。
+//   ② 主数据陪着附加信息一起等：十日涨幅 / 连板标只是附加信息，却压住了「今天有几只一字」
+//      ⇒ 首屏等待预算 FIRST_PAINT_BUDGET_MS：超预算先发布主数据，附加信息到了再补发一次
+//      （§33 Loading 范围必须与数据影响范围一致）。⛔ 预算内到齐仍只发布一次，行为与优化前一致。
+//   ③ 来回切历史日期每次都整日重读：历史快照是【已落库的既成事实】（只有 9:25 的 Edge 会写）
+//      ⇒ 会话内按日缓存 auction_yizi / stock_range_pct / 连板标结果，非 force 一律命中。
+//   ④ 日期切换误用 force：force = 「忽略缓存重读」，只该用于手动刷新 / Realtime / 导入后重算
+//      ⇒ 切日期改用非 force（数据集本来就换了，指纹必然不同，一定会重新发布）。
+//
 // 红线：
 //   §10  读取失败 ≠ 空。读失败 → error 有值 + 显示提示，绝不渲染成「今天没有一字」。
 //        连板标/十日涨幅属于「附加信息」：读失败只让对应列显示 '-'，⛔ 绝不因此丢行或落库。
@@ -131,6 +144,84 @@ let _loadSeq = 0;
 // 本会话已经尝试过「读涨跌停池拿连板标」的日期（连板标是附加信息，失败不值得重试）
 const _streakAttempted = new Set();
 
+// ============================================================================
+// 会话内【按日】缓存（§32 同一业务数据不重复请求 / §26 日期切换来回切不必重读）
+// ============================================================================
+// 为什么必须有（2026-09-20 用户反馈「切换历史日期时竞价一字比早盘竞价慢很多」的三条成因之一）：
+//   原本每次切日期都要把 auction_yizi / stock_range_pct 整日重读一遍，
+//   而历史日期的快照是【已落库的既成事实】（只有 9:25 的 Edge 会写，当天之外不会再变），
+//   重读既拿不到新东西，又让用户每次切日期都白等几趟往返。
+//
+// ⚠️ 缓存的【只是云端读回来的原始事实】，不是派生结论：
+//   · blocks / count / 龙头 这一类派生视图一律不缓存（⛔ 缓存派生 = 第二个真相源，§6）；
+//   · ⛔ force 一律不命中缓存（force 的语义就是「忽略缓存重读」：手动刷新 / Realtime /
+//     题材导入后重算 / 整日对齐 都走它，绝不会被缓存喂旧数据）；
+//   · 连板标原本「同一日期只尝试一次」，切走再切回时标会凭空消失 —— 改为按日缓存【结果】复用。
+//
+// 容量：一次只看一天，10 个日期足够覆盖来回切换；超出按插入序淘汰（LRU）。
+const _CACHE_MAX_DATES = 10;
+/** date -> rawRows（readAuctionYiziForDate 的返回） */
+const _snapshotCache = new Map();
+/** date -> Map<stock,{pct,days}>（readRangePctForDate 的返回） */
+const _rangeCloudCache = new Map();
+/** date -> Map<stock,连板文案> */
+const _streakCache = new Map();
+
+/** 写入并按插入序淘汰最久未用的日期（Map 保持插入序） */
+function _lruSet(map, key, value) {
+    map.delete(key);
+    map.set(key, value);
+    while (map.size > _CACHE_MAX_DATES) map.delete(map.keys().next().value);
+}
+
+/** force 加载：该日的缓存全部作废（读回来后会按最新结果回写） */
+function _invalidateDateCaches(date) {
+    _snapshotCache.delete(date);
+    _rangeCloudCache.delete(date);
+    _streakCache.delete(date);
+    // force 时允许重试连板标（原本「只尝试一次」会让手动刷新也拿不回失败的附加信息）
+    _streakAttempted.delete(date);
+}
+
+/**
+ * 包一层「永不 reject」的旁路 Promise。
+ *
+ * 用途：附加信息（十日涨幅云端缓存 / 涨停池 / 题材库）的读取失败属于 fail-soft，
+ * ⛔ 绝不能让它们把【主数据（一字池）】一起拖进 catch（§10 只要求主数据「读失败必须抛」）。
+ * @param {Promise} p
+ * @returns {Promise<{ok:boolean, value:*, error:*}>}
+ */
+function _settle(p) {
+    return Promise.resolve(p).then(
+        function(v) { return { ok: true, value: v }; },
+        function(e) { return { ok: false, value: null, error: e }; }
+    );
+}
+
+/**
+ * 【首屏等待预算】附加信息最多等这么久；到点先返回 null（原 Promise 继续跑，稍后可再 await）。
+ *
+ * 为什么（用户原话：「早盘竞价加载完了，竞价一字还在等……早盘时间很宝贵」）：
+ *   十日涨幅 / 连板标都是【附加信息】，而「今天有几只一字、分别属于什么题材」才是主数据。
+ *   ⛔ 让主数据陪着附加信息一起等（尤其历史日期缺涨幅时还要打上游补算）——
+ *      正是「早盘竞价看板早已出数、竞价一字还卡在加载中」的根因。
+ *   到点即先发布主数据（§33：Loading 范围必须与数据影响范围一致），附加信息随后补上再发一次。
+ *
+ * ⚠️ 预算内到齐 ⇒ 只发布一次，与优化前【逐行一致】（不会看到列表重排）。
+ */
+const FIRST_PAINT_BUDGET_MS = 800;
+
+function _withinBudget(p, ms) {
+    if (!(ms > 0)) return p;
+    let timer = null;
+    const guard = new Promise(function(resolve) {
+        timer = setTimeout(function() { resolve(null); }, ms);
+    });
+    return Promise.race([p, guard]).finally(function() {
+        if (timer) clearTimeout(timer);
+    });
+}
+
 function _pad2(n) { return String(n).padStart(2, '0'); }
 
 /** 北京「今天」YYYY-MM-DD（与 workers/_shared-source/date-utils.js#beijingToday 同口径） */
@@ -224,9 +315,11 @@ function _publishEmpty(date, extra) {
  *
  * @param {string} date YYYY-MM-DD
  * @param {object[]} rows 一字池行
+ * @param {Promise<{ok:boolean,value:*}>|null} [prevPoolSettled] 【已并发发起】的 T-1 涨停池读取
+ *        （由 _load 提前起跑，省掉一趟串行往返；null = 调用方未预取，本函数自己读）
  * @returns {Promise<Map<string,string>>} 股票名 → '首板' | '二板' | …（无依据的票不进 Map）
  */
-async function _buildStreakMap(date, rows) {
+async function _buildStreakMap(date, rows, prevPoolSettled) {
     const out = new Map();
     const names = new Set();
     (rows || []).forEach(function(r) {
@@ -237,7 +330,12 @@ async function _buildStreakMap(date, rows) {
 
     const prev = getPreviousTradingDay(date);
     let prevPool = [];
-    if (prev) {
+    if (prevPoolSettled) {
+        const r = await prevPoolSettled;
+        if (r && r.ok && Array.isArray(r.value)) {
+            prevPool = r.value.filter(function(x) { return x && x.board === BOARD_UP; });
+        }
+    } else if (prev) {
         const pool = await readLimitPoolForDate(prev);
         prevPool = pool.filter(function(r) { return r && r.board === BOARD_UP; });
     }
@@ -343,6 +441,142 @@ export async function loadYiziBoard(date, opts) {
     return p;
 }
 
+/**
+ * 【附加信息】十日涨幅 + 连板标的并行采集（与主数据完全解耦，失败一律 fail-soft）。
+ *
+ * ⛔ 这里只碰「附加信息」：十日涨幅影响块内排序 / 选龙头，连板标只是行内小标，
+ *    两者缺失都只让对应列显示 '-'，⛔ 绝不丢行、绝不阻断看板（§10 / §29 行边界）。
+ *
+ * @param {string} date
+ * @param {object[]} rows 已过闸（一字口径 + ST）的池行
+ * @param {Promise<{ok:boolean,value:*}>} pRangeCloud 已并发发起的 stock_range_pct 读取
+ * @param {Promise<{ok:boolean,value:*}>|null} pPrevPool 已并发发起的 T-1 涨停池读取
+ * @param {() => boolean} isLatest 本次加载是否仍是「最新日期」的请求
+ * @returns {Promise<{rangeMap:Map, localMap:Map, rangeReady:boolean, rangeError:string, streakMap:Map}>}
+ */
+async function _collectExtras(date, rows, pRangeCloud, pPrevPool, isLatest) {
+    // ---- 十日涨幅：云端缓存（已并发起跑，这里只是收结果）----
+    let rangeMap = new Map();
+    let rangeReady = true;
+    let rangeError = '';
+    const rc = await pRangeCloud;
+    if (rc && rc.ok && rc.value) {
+        rangeMap = rc.value;
+        _lruSet(_rangeCloudCache, date, rangeMap);
+    } else if (rc && !rc.ok) {
+        rangeReady = false;
+        rangeError = '十日涨幅读取失败：' + ((rc.error && rc.error.message) || rc.error);
+        _dbgLog('[AUCTION-YIZI] ' + date + ' 读 stock_range_pct 失败: ' + ((rc.error && rc.error.message) || rc.error));
+    }
+
+    // ---- 十日涨幅：缺失的票补算（getRangeFill = 会话缓存 + 单飞 + 增量补）----
+    let localMap = new Map();
+    if (rangeReady) {
+        if (isLatest()) yiziBoardState.phase = 'range';
+        try {
+            localMap = await getRangeFill({
+                date: date,
+                rows: rows,
+                rangeMap: rangeMap,
+                codeOf: codeOfYiziRow,
+                windowDates: getDragonWindowDates(date),
+                // T 腿（当天那根）口径：今天未收盘时用快照里的【竞价涨幅】占位 ——
+                // 一字板在 9:25 已封上涨停价，竞价涨幅就是它当天的真实起步，
+                // 与「涨跌停」看板（dragon-rank / worker P0）同口径。
+                aucPctOf: function(r) { return r && r.aucPct; },
+                // 🔴 通道一的数据源必须显式指定为【本看板小号】：
+                //    不传就会退回 numcat-proxy（主账号）⇒ 偷烧早盘竞价的额度。
+                fetchDailyRange: fetchYiziDailyPctRange,
+                tag: '[AUCTION-YIZI]'
+            });
+        } catch (e) {
+            _dbgLog('[AUCTION-YIZI] ' + date + ' 十日涨幅补算失败: ' + (e && e.message || e));
+        }
+    }
+
+    // ---- 连板标（附加信息，fail-soft：失败只是不出标，绝不影响池子本身）----
+    let streakMap = _streakCache.get(date) || null;
+    if (!streakMap && !_streakAttempted.has(date)) {
+        _streakAttempted.add(date);
+        try {
+            streakMap = await _buildStreakMap(date, rows, pPrevPool);
+            _lruSet(_streakCache, date, streakMap);
+        } catch (e) {
+            _dbgLog('[AUCTION-YIZI] ' + date + ' 连板标读取失败（不影响展示）: ' + (e && e.message || e));
+        }
+    }
+    return {
+        rangeMap: rangeMap,
+        localMap: localMap,
+        rangeReady: rangeReady,
+        rangeError: rangeError,
+        streakMap: streakMap || new Map()
+    };
+}
+
+/** 「附加信息还没到」时的占位（首屏发布用：十日涨幅/连板标一律为空，不做任何猜测） */
+function _emptyExtras() {
+    return { rangeMap: new Map(), localMap: new Map(), rangeReady: false, rangeError: '', streakMap: new Map() };
+}
+
+/**
+ * enrich + 分块 + 发布（唯一的发布出口，首屏与补全后走的是同一条路）。
+ *
+ * @param {string} date
+ * @param {object[]} rows 已过闸的池行
+ * @param {number} stRemoved 当日被剔除的 ST 只数
+ * @param {object} extras _collectExtras 的结果（或 _emptyExtras()）
+ * @param {boolean} force
+ * @param {() => boolean} isLatest
+ */
+function _publishBoard(date, rows, stRemoved, extras, force, isLatest) {
+    if (!isLatest()) return;
+    yiziBoardState.phase = 'group';
+    const ex = extras || _emptyExtras();
+    // ⑦ 逐行 enrich：题材解析（三级优先）→ 十日涨幅 → 连板标
+    const rangePctOf = makeRangePctOf(ex.rangeMap, ex.localMap);
+    const enriched = rows.map(function(r) {
+        const res = resolveYiziTopics(r, _libraryTopics(r.stock));
+        const rg = rangePctOf(r);
+        return Object.assign({}, r, {
+            topicsText: res.text,
+            themeSource: res.source,
+            rangePct: rg ? rg.pct : null,
+            rangeDays: rg ? rg.days : 0,
+            continueText: ex.streakMap.get(r.stock) || ''
+        });
+    });
+
+    // ⑧ 分组 + 选龙头
+    const built = buildBlocksFromRows(enriched);
+    const sig = yiziSignature(built.blocks, date);
+    if (!isLatest()) return;
+    if (!force && yiziBoardState.signature === sig) {
+        // 内容一致：只更新轻量字段，不重放分块（§17）
+        yiziBoardState.date = date;
+        _publishLightStats(built.stats, rows, ex.rangeMap, ex.localMap);
+        yiziBoardState.rangeReady = !!ex.rangeReady;
+        yiziBoardState.rangeError = ex.rangeError || '';
+        yiziBoardState.stRemoved = stRemoved;
+        yiziBoardState.loading = false;
+        return;
+    }
+    yiziBoardState.signature = sig;
+    // ⚠️ 下面四个字段（date / blocks / count / hasSnapshot）必须【一起】赋值：
+    //    UI 用 state.date === 选中日期 判定这份快照是否属于当前日，
+    //    中间态出现「date 已换、blocks 未换」会被判成过期而闪一下加载中。
+    yiziBoardState.date = date;
+    yiziBoardState.blocks = built.blocks;
+    yiziBoardState.count = rows.length;
+    yiziBoardState.hasSnapshot = true;
+    yiziBoardState.updatedAt = (rows[0] && rows[0].updatedAt) || '';
+    _publishLightStats(built.stats, rows, ex.rangeMap, ex.localMap);
+    yiziBoardState.rangeReady = !!ex.rangeReady;
+    yiziBoardState.rangeError = ex.rangeError || '';
+    yiziBoardState.stRemoved = stRemoved;
+    yiziBoardState.loading = false;
+}
+
 async function _load(date, force) {
     const mySeq = ++_loadSeq;
     // 「迟到的旧请求」判据：序号不再是最新 → 本次结果已过期，禁止写任何状态
@@ -364,10 +598,28 @@ async function _load(date, force) {
             _publishEmpty(date);
             return;
         }
+        if (force) _invalidateDateCaches(date);
 
-        // ② 读云端快照（§10：读失败必须抛，绝不伪装成空）
-        const rawRows = await readAuctionYiziForDate(date);
+        // ② ★ 四条彼此独立的读【同时起跑】（§32：同一业务数据的多趟往返不得串行排队）。
+        //    优化前它们是 快照 → 涨幅缓存 → 补算 → 涨停池 的串行 await 链，
+        //    每趟 150~400ms 累加起来就是「早盘竞价早已出数、竞价一字还在转」的成因之一。
+        //    ⚠️ 主数据（快照）失败必须抛（§10）；其余三趟是附加信息 → _settle 包成永不 reject。
+        const prevDay = getPreviousTradingDay(date);
+        const needStreak = !!prevDay && !_streakCache.has(date) && !_streakAttempted.has(date);
+        const pSnapshot = _snapshotCache.has(date)
+            ? Promise.resolve(_snapshotCache.get(date))
+            : readAuctionYiziForDate(date);
+        const pRangeCloud = _rangeCloudCache.has(date)
+            ? Promise.resolve({ ok: true, value: _rangeCloudCache.get(date) })
+            : _settle(readRangePctForDate(date));
+        const pPrevPool = needStreak ? _settle(readLimitPoolForDate(prevDay)) : null;
+        const pTopicLib = isTopicLibraryReady() ? null : _settle(ensureTopicLibraryLoaded());
+
+        const rawRows = await pSnapshot;
         if (!isLatest()) return;
+        // 历史日期的快照是【已落库的既成事实】（只有 9:25 的 Edge 会写）→ 按日缓存，
+        // 来回切历史日期时省掉这趟往返。force 读回来的也会回写（永远是最新的那份）。
+        _lruSet(_snapshotCache, date, rawRows);
 
         // ③-0 ★ 一字口径闸门（2026-09-15 修正）：只留「竞价涨幅 ≈ 涨停幅度」的行。
         //      为什么必须有这一道：表里的历史行是【旧判据】落下的 ——
@@ -401,130 +653,50 @@ async function _load(date, force) {
         }
 
         // ④ 题材库就绪闸门（幂等；未就绪 → 只提示，不落库，所以不会冻结任何结论）
-        let libReady = isTopicLibraryReady();
-        if (!libReady) {
-            try {
-                libReady = await ensureTopicLibraryLoaded();
-            } catch (e) {
-                _dbgLog('[AUCTION-YIZI] 题材库加载失败: ' + (e && e.message || e));
-            }
+        let libReady = true;
+        if (pTopicLib) {
+            const r = await pTopicLib;
+            libReady = !!(r && r.ok && r.value !== false);
+        } else {
+            libReady = isTopicLibraryReady();
         }
         if (!isLatest()) return;
         yiziBoardState.topicLibraryReady = libReady;
 
-        // ④-b ★ 需求 1（2026-09-18）：把本看板接口自带的题材自动回填进【共享题材库】。
+        // ④-b ★ 题材自动回填 → 【完全移出关键路径】（后台跑，不 await）。
         //
-        // 为什么放在这里（而不是每次刷新都做）：
-        //   · 数据来源是本看板**已经读到的** rawRows → 通过 opts.rows 传进去，**零额外查询**；
-        //   · 写入是「只补空缺」（库里已有题材的股票一律跳过，⛔ 绝不覆盖用户手动导入/修正的结果），
-        //     且同一日期本会话只跑一次（模块内幂等）；
-        //   · ⛔ 这一步失败【绝不】影响看板：本模块返回 ok:false 时只记日志，
-        //     连 error 都不写（「这次没自动补」≠「看板坏了」，§20 增强不阻断主流程）。
-        //
-        // 时机：必须在 ⑦ enrich（`_libraryTopics` 读库）之前 —— 这样本次回填的题材
-        // 立刻就能被同一屏的「题材库来源」统计认到，用户能看到「自动补了几只」的效果。
-        // 📌 这里【不接收】回填只数：提示由 UI 直接读 topic-sync 的响应式单一真相
-        //    （getAutoFilledForDate），⛔ 不在本看板留副本（会陈旧）。
-        try {
-            await syncYiziTopicsIntoLibrary(date, { rows: rawRows });
-        } catch (e) {
+        // 为什么可以安全地下放到后台（2026-09-20）：
+        //   本行题材是【三级优先】取的（接口自带 开盘啦 → 选股宝 → 共享库），
+        //   而回填写进共享库的恰恰就是「接口自带的那份题材」——
+        //   ⇒ 本板这些票的 topicsText / themeSource 无论回填与否都是同一结果（'kpl' / 'xgb'），
+        //     回填【只惠及其它两个看板】，对本板自己的显示没有任何影响。
+        //   旧实现把它 await 在 enrich 之前，于是「第一次打开某日」要等 N 次写库往返
+        //   才能看到第一行 —— 那正是「竞价一字比早盘竞价慢」的成因之一。
+        //   ⛔ 失败照旧只记日志（§20 增强不阻断主流程）。
+        syncYiziTopicsIntoLibrary(date, { rows: rawRows }).catch(function(e) {
             _dbgLog('[AUCTION-YIZI] ' + date + ' 题材自动回填异常（不影响看板）: ' + (e && e.message || e));
-        }
-        if (!isLatest()) return;
-
-        // ⑤ 十日涨幅（块内排序 + 选龙头的度量）。
-        //    读失败 → 不假装为 0，标记 rangeError 让 UI 提示；补算失败 → fail-soft（显示 '-'）。
-        let rangeMap = new Map();
-        let rangeReady = true;
-        try {
-            rangeMap = await readRangePctForDate(date);
-        } catch (e) {
-            rangeReady = false;
-            yiziBoardState.rangeError = '十日涨幅读取失败：' + (e && e.message || e);
-            _dbgLog('[AUCTION-YIZI] ' + date + ' 读 stock_range_pct 失败: ' + (e && e.message || e));
-        }
-        if (!isLatest()) return;
-
-        let localMap = new Map();
-        if (rangeReady) {
-            // getRangeFill = 会话内缓存 + 单飞 + 增量补：
-            // 已补过的票直接命中缓存（⛔ 不能每次现补 —— 缺腿的行不会回写云端，
-            // 那样同一天第二次打开时这些票的十日涨幅会变成 '-'）。
-            yiziBoardState.phase = 'range';
-            try {
-                localMap = await getRangeFill({
-                    date: date,
-                    rows: rows,
-                    rangeMap: rangeMap,
-                    codeOf: codeOfYiziRow,
-                    windowDates: getDragonWindowDates(date),
-                    // T 腿（当天那根）口径：今天未收盘时用快照里的【竞价涨幅】占位 ——
-                    // 一字板在 9:25 已封上涨停价，竞价涨幅就是它当天的真实起步，
-                    // 与「涨跌停」看板（dragon-rank / worker P0）同口径。
-                    aucPctOf: function(r) { return r && r.aucPct; },
-                    // 🔴 通道一的数据源必须显式指定为【本看板小号】：
-                    //    不传就会退回 numcat-proxy（主账号）⇒ 偷烧早盘竞价的额度。
-                    fetchDailyRange: fetchYiziDailyPctRange,
-                    tag: '[AUCTION-YIZI]'
-                });
-            } catch (e) {
-                _dbgLog('[AUCTION-YIZI] ' + date + ' 十日涨幅补算失败: ' + (e && e.message || e));
-            }
-        }
-        if (!isLatest()) return;
-
-        // ⑥ 连板标（附加信息，fail-soft：失败只是不出标，绝不影响池子本身）
-        let streakMap = new Map();
-        if (!_streakAttempted.has(date)) {
-            _streakAttempted.add(date);
-            try {
-                streakMap = await _buildStreakMap(date, rows);
-            } catch (e) {
-                _dbgLog('[AUCTION-YIZI] ' + date + ' 连板标读取失败（不影响展示）: ' + (e && e.message || e));
-            }
-        }
-        if (!isLatest()) return;
-
-        // ⑦ 逐行 enrich：题材解析（三级优先）→ 十日涨幅 → 连板标
-        const rangePctOf = makeRangePctOf(rangeMap, localMap);
-        const enriched = rows.map(function(r) {
-            const res = resolveYiziTopics(r, _libraryTopics(r.stock));
-            const rg = rangePctOf(r);
-            return Object.assign({}, r, {
-                topicsText: res.text,
-                themeSource: res.source,
-                rangePct: rg ? rg.pct : null,
-                rangeDays: rg ? rg.days : 0,
-                continueText: streakMap.get(r.stock) || ''
-            });
         });
-
-        // ⑧ 分组 + 选龙头
-        yiziBoardState.phase = 'group';
-        const built = buildBlocksFromRows(enriched);
-        const sig = yiziSignature(built.blocks, date);
         if (!isLatest()) return;
-        if (!force && yiziBoardState.signature === sig) {
-            // 内容一致：只更新轻量字段，不重放分块（§17）
-            yiziBoardState.loading = false;
-            yiziBoardState.date = date;
-            _publishLightStats(built.stats, rows, rangeMap, localMap);
-            yiziBoardState.rangeReady = rangeReady;
-            yiziBoardState.stRemoved = dropped.removed;
+
+        // ⑤ 附加信息（十日涨幅 + 连板标）并行采集，并给首屏一个等待预算：
+        //   · 预算内到齐 → 只发布一次（与优化前逐行一致，看不到任何重排）；
+        //   · 超时未到齐 → **先发布主数据**（一字池 + 题材分组），附加信息到了再补发一次
+        //     （§33：Loading 范围必须与数据影响范围一致）。
+        //     ⛔ 主数据不该陪着附加信息一起等 —— 早盘时间宝贵，「今天有几只一字」必须立刻可见，
+        //        也直接影响早盘竞价看板「补竞价一字」开关能否立刻用上。
+        const pExtras = _collectExtras(date, rows, pRangeCloud, pPrevPool, isLatest);
+        // 附加信息绝不允许把主数据的加载拖进 catch：真出现未预期异常时这里吞掉，
+        // extras 取到 null → _publishBoard 按「附加信息全空」发布（⛔ 不猜、不丢行，§10）。
+        pExtras.catch(function() {});
+        let extras = await _withinBudget(pExtras, FIRST_PAINT_BUDGET_MS);
+        if (extras) {
+            _publishBoard(date, rows, dropped.removed, extras, force, isLatest);
             return;
         }
-        yiziBoardState.signature = sig;
-        // ⚠️ 下面四个字段（date / blocks / count / hasSnapshot）必须【一起】赋值：
-        //    UI 用 state.date === 选中日期 判定这份快照是否属于当前日，
-        //    中间态出现「date 已换、blocks 未换」会被判成过期而闪一下加载中。
-        yiziBoardState.date = date;
-        yiziBoardState.blocks = built.blocks;
-        yiziBoardState.count = rows.length;
-        yiziBoardState.hasSnapshot = true;
-        yiziBoardState.updatedAt = (rows[0] && rows[0].updatedAt) || '';
-        _publishLightStats(built.stats, rows, rangeMap, localMap);
-        yiziBoardState.rangeReady = rangeReady;
-        yiziBoardState.stRemoved = dropped.removed;
+        _publishBoard(date, rows, dropped.removed, _emptyExtras(), force, isLatest);
+        extras = await pExtras;
+        if (!isLatest()) return;
+        _publishBoard(date, rows, dropped.removed, extras, force, isLatest);
     } catch (e) {
         if (!isLatest()) return;
         yiziBoardState.error = '竞价一字看板加载失败：' + (e && e.message || e);

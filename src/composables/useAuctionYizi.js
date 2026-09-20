@@ -434,7 +434,15 @@ export function useAuctionYizi() {
         showNoTopic.value = false;
         show925.value = false;
         trendExpanded.value = new Set();
-        refresh();
+        // ⛔ 日期切换【不再 force 重读】（2026-09-20 提速）：
+        //    force 的语义是「忽略会话缓存、整日重读」，只属于【手动刷新 / Realtime / 题材导入后重算】；
+        //    切日期本来就换了数据集（内容指纹必然不同，一定会重新发布），用 force 只会
+        //    白白作废 auction_yizi / stock_range_pct 的按日缓存 → 来回切历史日期每次都重读一遍。
+        const d = currentDate.value;
+        if (!d) return;
+        loadYiziBoard(d).catch(function(e) {
+            showWarningToast('竞价一字加载失败：' + (e && e.message || e));
+        });
     });
 
     return {
