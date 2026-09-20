@@ -24,6 +24,13 @@
 //   ④ 【缺口驱动】优先：/trend 自己会先读库判缺口，已齐就直接回 skipped='cache-complete'（0 上游请求）
 //      ⇒ 重复跑同一批日期【不重复消耗额度】，明天接着跑即可续补。
 //
+// 【锚点跳跃】为什么必须跳、不能一天一天挨着试（2026-09-20 修正）：
+//   一次 /trend?date=T&window=10 覆盖的是 [T-9, T] 共 10 个交易日，
+//   所以下一个「还有新东西可补」的锚点必然是 T-10，而不是 T-1。
+//   ⛔ 挨着试的后果：第 2 次调用落在上次的窗口里 ⇒ 回 cache-complete（0 收益、白等一个 95s 冷却），
+//      30 个交易日里永远只能铺到【最新那 10 天】，更早的 20 天永远补不上 —— 正是「趋势图断点」的残留。
+//   ✅ 于是：本次调用【真的补到 / 已齐】⇒ 索引直接 += WINDOW；该日【没有池子】⇒ 只 += 1（继续找有池的锚点）。
+//
 // 额度：猫抓免费档 10 次/天（北京 0 点重置），其中：
 //   · 每日 09:25 自动抓取固定占 1 次（最高优先级，谁也不许抢）；
 //   · Edge 的 /trend 另有【本日 6 次上游请求】预算闸门（budget.usedRequests / budget.cap 可见）；
@@ -140,9 +147,11 @@ async function main() {
   const failed = [];
   let stopReason = '';
 
-  for (let i = 0; i < dates.length; i++) {
+  // 🔴 索引是【手动推进】的（不是 i++）：补完一整个窗口后要跳过 WINDOW 个交易日，见文件头的「锚点跳跃」。
+  let i = 0;
+  while (i < dates.length) {
     const d = dates[i];
-    if (done.length >= MAX) { stopReason = '达到本次上限 ' + MAX + ' 天（留额度给明日 / 池子回填）'; break; }
+    if (done.length >= MAX) { stopReason = '达到本次上限 ' + MAX + ' 个锚点（留额度给明日 / 池子回填）'; break; }
     process.stdout.write('[' + (done.length + 1) + '/' + MAX + '] ' + d + ' … ');
     let r;
     try {
@@ -151,6 +160,7 @@ async function main() {
       console.log('❌ 请求异常: ' + (e && e.message ? e.message : e));
       if (isQuotaMsg(e && e.message)) { stopReason = '额度/限流 → 止损'; break; }
       failed.push(d);
+      i += 1;
       await sleep(GAP * 1000);
       continue;
     }
@@ -158,6 +168,7 @@ async function main() {
       console.log('❌ ' + r.__httpError);
       if (isQuotaMsg(r.__httpError)) { stopReason = '额度/限流 → 止损'; break; }
       failed.push(d);
+      i += 1;
       await sleep(GAP * 1000);
       continue;
     }
@@ -181,18 +192,21 @@ async function main() {
     if (skipped === 'no-pool' || skipped === 'no-code' || !r.poolSize) {
       console.log('⏭ 该日一字池为空（' + (skipped || 'no-pool') + '）→ 需先跑 db/yizi-backfill.mjs 补池子');
       noPool.push(d);
+      i += 1; // 池子空 ≠ 这一带没东西，继续逐个往前找有池的锚点
       await sleep(1000);
       continue;
     }
     if (skipped === 'cache-complete' || reqs === 0) {
       console.log('✅ 已齐（0 额度消耗）' + tag);
       complete.push(d);
+      i += WINDOW; // 这一窗已铺满，下一锚点跳到 10 个交易日之前
       await sleep(1000);
       continue;
     }
-    console.log('✅ 补到 ' + written + ' 行（' + tag + '）');
+    console.log('✅ 补到 ' + written + ' 行（' + tag + '）→ 下一锚点跳 ' + WINDOW + ' 个交易日');
     done.push(d);
-    if (i < dates.length - 1 && done.length < MAX) await sleep(GAP * 1000);
+    i += WINDOW;
+    if (done.length < MAX) await sleep(GAP * 1000);
   }
 
   console.log('\n===== 汇总 =====');
