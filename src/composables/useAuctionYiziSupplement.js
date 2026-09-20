@@ -2,9 +2,11 @@
 //
 // 需求（2026-09-20 修正后的口径）：
 //   在早盘竞价看板【单独开题材 toggle】后，表头 X 位出现「补竞价一字」开关（默认关）；
-//   打开 → 把竞价一字看板的一字板股票【按题材融入】下方列表【已经分好类的题材组】里
-//   （同组原有股票之后，带「补」小标记；同名的直接跳过，因为列表本身就有）；
-//   关闭 → 恢复成「只开题材 toggle」的原样。
+//   打开 → ① 把竞价一字看板的一字板股票【按题材融入】下方列表【已经分好类的题材组】里
+//   （同组原有股票按十日涨幅合并排名插位，带「补」小标记；同名的直接跳过，因为列表本身就有）；
+//          ② 【题材组重排】：补进来的竞价一字也计入题材的「一字数量」，一字最多的题材排最前，
+//             由多到少（logic/auction/yizi-topic-order.js，只动段间顺序，段内一个不动）；
+//   关闭 → 恢复成「只开题材 toggle」的原样（① ② 一起消失，既有排序/统计/序号零改动）。
 //
 // 🔴 本文件的三条红线：
 //   ① 只是显示层：⛔ 不碰早盘竞价的数据层 / 排序 / 高光 / 列表。`viewData` / `filteredRegularItems`
@@ -40,6 +42,11 @@ import { getGroupableCoreTopics } from '../logic/topic/rules.js';
 //    云端还没到 → 返回 null → 本功能区退化为「补入行接在组内末尾」（⛔ 不假装排过，§10）。
 import { getDragonRangePct } from '../logic/auction/dragon-rank.js';
 import { mergeYiziIntoAuctionRows, formatMergeSummary } from '../logic/auction/yizi-supplement.js';
+// [YIZI-SUP-TOPIC-ORDER 2026-09-20] 开关打开后的【题材组重排】：补进来的竞价一字也要算进
+// 题材的「一字数量」里，一字最多的题材排最前（用户口径）。
+// ⚠️ 只在【开关打开】这条渲染链路上被调用 —— 开关一关，segments 根本不产出、
+// 本模块也就不执行 ⇒ 「关闭即恢复只开题材 toggle 的原样」是结构性保证（⛔ 不是靠 if 记得还原）。
+import { sortSegmentsByYiziWeight } from '../logic/auction/yizi-topic-order.js';
 
 /** 融入结果为空时的占位（模板只读 segments/stats，不区分「没开」与「没数据」） */
 const EMPTY_MERGE = {
@@ -127,7 +134,10 @@ export function useAuctionYiziSupplement(board) {
             { excludeNames: listStockNames.value, coreTopics: getGroupableCoreTopics(), pctOf: pctOf }
         );
     });
-    const segments = computed(() => merge.value.segments);
+    // ★ 段【间】顺序按「一字权重（原有行一字数 + 补入行数）降序」重排（用户口径：
+    //   「补进来的一字也要算进去，一字多的题材排最前」）。段【内】顺序与序号完全不动 ——
+    //   那是 mergeYiziIntoAuctionRows 按十日涨幅合并排好、并已重排成 1..N 的最终序列。
+    const segments = computed(() => sortSegmentsByYiziWeight(merge.value.segments));
     const summaryText = computed(() => formatMergeSummary(merge.value.stats));
 
     // ===== 趋势面板（与竞价一字看板同一通道、同一纯函数）=====
