@@ -303,7 +303,13 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     closePct: _closePct,
     // [TOPIC-SEQ 2026-09-11] 同题材组内序号（1 起）。只在「题材单独开启」时由调用方赋值；
     // 其余模式保持 0 → 模板回退到原来的全局序号（行为完全不变）。
-    seqNo: 0
+    seqNo: 0,
+    // [YIZI-SUP 2026-09-20] 本行所属的题材组名（题材【单独】开启时由下方 items 后置赋值，
+    // 其余模式恒为 ''）。纯展示派生字段：⛔ 不参与排序、统计、缓存指纹以外的任何计算。
+    // 用途：「补竞价一字」要把竞价一字按题材【融入】对应题材组，必须知道每行属于哪一组；
+    // 分组边界是本题材分支内部算出来的（primaryTopicOfForColor），与其在 UI 侧用另一套算法
+    // 反推（§6 必然分叉），不如把既成事实原样标出来。
+    groupTopic: ''
   };
 }
 
@@ -1091,6 +1097,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     let seqInTopic = 0;
     items.forEach(function(it) {
       const tp = (primaryTopicOfForColor(it.index) || '其它').trim() || '其它';
+      // [YIZI-SUP 2026-09-20] 把「本行所属题材组」原样透出（值就是上面这个 tp，零额外计算）：
+      // 「补竞价一字」按题材融入时要定位到具体分组，见 _enrichAuctionItem 里 groupTopic 的说明。
+      it.groupTopic = tp;
       if (tp !== lastTopicKey) {
         it.topicStats = topicStatsMap.get(tp) || null;
         lastTopicKey = tp;
@@ -1103,7 +1112,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     });
   } else {
     // 非「题材单独开启」：不加统计条，序号保持 0 → 模板沿用原来的全局序号（行为不变）
-    items.forEach(function(it) { it.topicStats = null; it.seqNo = 0; });
+    items.forEach(function(it) { it.topicStats = null; it.seqNo = 0; it.groupTopic = ''; });
   }
 
   return {

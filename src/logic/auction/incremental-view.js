@@ -144,6 +144,11 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToke
     // [TOPIC-SEQ 2026-09-11] 同题材组内序号：组内任何一只票增删/换题材都会改变本行的序号，
     //   但本行自身的行内输入可以完全没变 → 必须单独入签名，否则序号陈旧。
     'seq=' + (item.seqNo || 0),
+    // [YIZI-SUP 2026-09-20] 所属题材组名（「补竞价一字」按题材融入的定位依据）：与 seq= / ts= 同款理由 ——
+    //   本行自身输入可以完全没变（volume/note… 一模一样），而它所属的题材组却变了
+    //   （同题材另一只票增删、或改题材后成组判定变化都会改分组归属），不入签名则增量缓存
+    //   会复用旧行对象 → 补进来的竞价一字会落进【错误的题材组】。
+    'gt=' + (item.groupTopic || ''),
     // [TOPIC-STATS 2026-09-10] 题材块统计条挂在【该组第一行】上：组内任何一只票的一字/高开/龙头变化
     // 都会改变统计数字，但首行自身的行内输入可能没变 → 必须单独入签名，否则统计条数字陈旧。
     'ts=' + (item.topicStats ? topicStatsSignature(item.topicStats) : ''),

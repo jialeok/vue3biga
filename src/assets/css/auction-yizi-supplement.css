@@ -1,11 +1,15 @@
         /* ==========================================================================
-           「早盘竞价 · 补竞价一字」补充区（★ 2026-09-20 新增）
-           归属：早盘竞价看板（挂在表头 X 位的开关 + 列表末尾的补充区）。
+           「早盘竞价 · 补竞价一字」按题材融入（★ 2026-09-20 修正为「融入」版）
+           归属：早盘竞价看板（表头 X 位的开关 + 各题材组内末尾的补入行）。
            数据：竞价一字看板自己的库 / 自己的猫抓小号趋势通道，与早盘竞价相互独立（只是同屏显示）。
 
            ⚠️ 类名一律 `auction-yizi-sup-` 前缀（本板 + 一字板三重隔离）：
                · 早盘竞价的类名是 .auction-*，一字板的类名是 .yizi-*（见 auction-yizi.css 头注）；
                · CSS 是全局的，本功能区两边都不复用，将来改任一边都不会串改另两个看板。
+
+           ⚠️ 列宽刻意与早盘竞价行【同值】（序号 0.4 / 股票名 1.2 / 其余 2.5）：
+               补入行现在是钻进「同一题材组」里的，列不对齐会看起来像插错地方。
+               参考：.auction-number{flex:0.4} / .auction-stock-name{flex:1.2} / .auction-topic-cell{flex:2.5}。
            ========================================================================== */
 
         /* ===== 表头 X 位的「补竞价一字」开关 =====
@@ -79,55 +83,53 @@
             transform: translateX(12px);
         }
 
-        /* ===== 补充区容器：与上方列表用一条红线隔开，明确「这是补进来的一段」 ===== */
-        .auction-yizi-sup {
-            margin-top: 8px;
-            padding: 6px 8px 8px;
-            background: #fffbfb;
-            border-top: 2px solid #fecaca;
+        /* ===== 状态 / 汇总一行（紧贴 sticky 表头之下）=====
+           存在意义：① §10 读失败必须可见；② 「未到 9:25 / 当天没有一字」要说清；
+                     ③ 正常时一行交代「一字 N 只 / 已并入 N 只 / …」，补入行数可核对。
+           ⛔ 只在开关打开时渲染（组件里 v-if="active"）→ 关掉开关这里一个像素都不占。 */
+        .auction-yizi-sup-status-wrap {
+            padding: 3px 8px 4px;
+            background: #faf9ff;
+            border-bottom: 1px solid #ede9fe;
         }
 
-        .auction-yizi-sup-head {
+        .auction-yizi-sup-status {
             display: flex;
             align-items: center;
             gap: 6px;
-            padding: 2px 2px 4px;
+            font-size: 10.5px;
+            line-height: 15px;
         }
 
-        .auction-yizi-sup-title {
+        .auction-yizi-sup-status-title {
             flex: 0 0 auto;
-            font-size: 12px;
             font-weight: 700;
-            color: #991b1b;
+            color: #6d28d9;
             white-space: nowrap;
         }
 
-        .auction-yizi-sup-summary {
+        .auction-yizi-sup-status-text {
             flex: 1;
             min-width: 0;
-            font-size: 11px;
             color: #64748b;
-            text-align: right;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
 
-        /* 数据来源说明（可解释性：让用户一眼看懂「这段跟早盘竞价无关」） */
-        .auction-yizi-sup-note {
-            margin-bottom: 6px;
-            padding: 4px 8px;
+        /* 趋势通道的提示 / 错误（与曲线同源，放在同一行里，不另占一块） */
+        .auction-yizi-sup-status-trend {
+            flex: 0 1 auto;
+            min-width: 0;
             font-size: 10px;
-            line-height: 1.5;
-            color: #7c2d12;
-            background: #fff7ed;
-            border: 1px solid #fed7aa;
-            border-radius: 6px;
+            color: #9a3412;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .auction-yizi-sup-error {
-            margin-bottom: 6px;
-            padding: 6px 10px;
+            padding: 5px 8px;
             font-size: 11px;
             color: #b91c1c;
             background: #fef2f2;
@@ -142,10 +144,9 @@
         }
 
         .auction-yizi-sup-empty {
-            padding: 12px 6px;
-            font-size: 12px;
+            padding: 5px 6px;
+            font-size: 11px;
             color: #94a3b8;
-            text-align: center;
         }
 
         /* 加载中比「确实没有」略深一点，便于一眼区分（§10 未就绪 ≠ 没有） */
@@ -153,123 +154,35 @@
             color: #64748b;
         }
 
-        /* 整块都在早盘竞价列表里时的一句话（不渲染任何行，但主题材条保留 → 热度照样看得见） */
-        .auction-yizi-sup-empty-inline {
-            padding: 4px 4px 6px;
-            font-size: 10.5px;
-            color: #94a3b8;
-        }
-
-        .auction-yizi-sup-trend-note {
-            margin-top: 4px;
-            padding: 4px 10px;
-            font-size: 11px;
-            color: #475569;
-            background: #f8fafc;
-            border: 1px solid #e2e8f0;
-            border-radius: 8px;
-        }
-
-        /* ===== 列图例：9px 单行，flex 宽度规则与 .auction-yizi-sup-row 一一对应 ===== */
-        .auction-yizi-sup-legend {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            padding: 1px 4px 3px;
-            font-size: 9px;
-            color: #94a3b8;
-            border-bottom: 1px solid #f1f5f9;
-        }
-
-        .auction-yizi-sup-legend-seq {
-            flex: 0 0 14px;
-            text-align: center;
-        }
-
-        .auction-yizi-sup-legend-name {
-            flex: 0 0 auto;
-        }
-
-        .auction-yizi-sup-legend-topics {
-            flex: 1;
-            min-width: 0;
-        }
-
-        .auction-yizi-sup-legend-metric {
-            flex: 0 0 auto;
-            text-align: right;
-        }
-
-        /* ===== 题材条：底部这段用玫红底，与上方列表的题材条一眼区分开 ===== */
-        .auction-yizi-sup-group {
-            margin-bottom: 2px;
-        }
-
-        .auction-yizi-sup-bar {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            margin: 6px 0 2px;
-            padding: 3px 6px;
-            background: #fee2e2;
-            border-radius: 6px;
-            font-size: 11px;
-            line-height: 15px;
-        }
-
-        .auction-yizi-sup-topic-name {
-            flex: 0 1 auto;
-            min-width: 0;
-            font-weight: 700;
-            color: #7f1d1d;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .auction-yizi-sup-topic-count {
-            flex: 0 0 auto;
-            font-size: 10px;
-            font-weight: 600;
-            color: #7f1d1d;
-            white-space: nowrap;
-        }
-
-        /* 「另有 N 只在列表中」——差额必须写出来，否则用户会把被排除的几只误读成「这个题材一字少」 */
-        .auction-yizi-sup-topic-inlist {
-            flex: 0 1 auto;
-            min-width: 0;
-            font-size: 10px;
-            color: #9a3412;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        /* ===== 行：与「竞价一字」看板的 .yizi-row 同规格（名称块随内容伸缩，题材吃满剩余宽度） ===== */
+        /* ===== 补入行（★ 核心）=====
+           ⚠️ 自身 padding 为 0、列宽与 .auction-number / .auction-stock-name / .auction-topic-cell 同值，
+              让序号列与股票名列和上方原有行【严格对齐】；
+          ⚠️ 左侧竖条用 inset box-shadow 而不是 border-left：border 会挤掉 3px 内容宽度，
+              把列宽推偏（对齐就废了）。
+          ⚠️ 底色与原有行的题材浅色（topicBg）区分开：这里是「补进来的」，一眼可辨。 */
         .auction-yizi-sup-row {
             display: flex;
             align-items: flex-start;
-            gap: 4px;
-            padding: 5px 4px;
+            padding: 0;
             font-size: 12px;
             line-height: 16px;
-            border-bottom: 1px solid #f1f5f9;
-        }
-
-        .auction-yizi-sup-row:last-child {
-            border-bottom: none;
+            background: #faf8ff;
+            border-bottom: 1px solid #ede9fe;
+            box-shadow: inset 3px 0 0 #a78bfa;
         }
 
         .auction-yizi-sup-row.is-leader {
-            background: #fff7f7;
+            background: #f6f2ff;
         }
 
         .auction-yizi-sup-seq {
-            flex: 0 0 14px;
+            flex: 0.4;
+            min-width: 0;
+            padding: 7px 2px;
             text-align: center;
-            font-size: 9px;
-            color: #94a3b8;
+            font-size: 10px;
+            color: #7c3aed;
+            font-variant-numeric: tabular-nums;
         }
 
         /* 序号 = 趋势面板开关（▶ 收起 / ▼ 展开，让「可点」这件事可见） */
@@ -281,12 +194,13 @@
         }
 
         .auction-yizi-sup-seq.is-clickable:hover {
-            color: #dc2626;
+            color: #4c1d95;
         }
 
         .auction-yizi-sup-name-block {
-            flex: 0 1 auto;
+            flex: 1.2;
             min-width: 0;
+            padding: 7px 2px 7px 4px;
             display: flex;
             align-items: center;
             gap: 3px;
@@ -304,6 +218,19 @@
 
         .auction-yizi-sup-name.leader {
             color: #dc2626;
+        }
+
+        /* ★「补」小标记：本行不是早盘竞价的股票，而是从竞价一字看板按题材补进来的（用户要求「有个小标记」） */
+        .auction-yizi-sup-added {
+            flex: 0 0 auto;
+            padding: 0 3px;
+            border-radius: 2px;
+            font-size: 9px;
+            font-weight: 700;
+            line-height: 12px;
+            color: #ffffff;
+            background: linear-gradient(135deg, #a78bfa, #7c3aed);
+            white-space: nowrap;
         }
 
         .auction-yizi-sup-time-tag {
@@ -342,6 +269,17 @@
             white-space: nowrap;
         }
 
+        /* 其余列（题材 + 封单额 + 十日涨幅）合占 2.5（= .auction-topic-cell 同值），
+           内部再分「题材(吃满剩余) + 度量(定宽)」 */
+        .auction-yizi-sup-rest {
+            flex: 2.5;
+            min-width: 0;
+            padding: 7px 6px;
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+        }
+
         /* 题材（主角列）：完整展示 + 允许折行。⛔ 绝不 nowrap + ellipsis —— 那正是「题材看不完」的成因。
            keep-all：禁止 CJK 字符之间断行 ⇒ 换行只发生在英文逗号处。 */
         .auction-yizi-sup-topics {
@@ -366,14 +304,14 @@
         }
 
         .auction-yizi-sup-seal {
-            min-width: 46px;
+            min-width: 42px;
             text-align: right;
             font-size: 11px;
             font-weight: 700;
         }
 
         .auction-yizi-sup-range {
-            min-width: 44px;
+            min-width: 40px;
             text-align: right;
             font-size: 11px;
             font-weight: 600;
@@ -389,12 +327,53 @@
         .auction-yizi-sup-range-down { color: #16a34a; }
         .auction-yizi-sup-range-flat { color: #94a3b8; }
 
+        /* =====「未并入」尾段的一行头 =====
+           为什么必须显示：题材在当日列表里没有对应分组的补入行无处可融，
+           ⛔ 静默丢掉等于篡改「哪个题材一字多」这个结论（§10）。这里给一行小字说清原因。 */
+        .auction-yizi-sup-tail-head {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin: 6px 0 2px;
+            padding: 3px 6px;
+            background: #fff7ed;
+            border-radius: 6px;
+            font-size: 10.5px;
+            line-height: 15px;
+        }
+
+        .auction-yizi-sup-tail-title {
+            flex: 0 0 auto;
+            font-weight: 700;
+            color: #9a3412;
+            white-space: nowrap;
+        }
+
+        .auction-yizi-sup-tail-count {
+            flex: 0 0 auto;
+            font-size: 10px;
+            font-weight: 600;
+            color: #9a3412;
+            white-space: nowrap;
+        }
+
+        .auction-yizi-sup-tail-hint {
+            flex: 1;
+            min-width: 0;
+            font-size: 10px;
+            color: #b45309;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
         /* ===== 趋势面板（与一字板 .yizi-trend-* 同形；数据通道也是竞价一字自己的） ===== */
         .auction-yizi-sup-trend-panel {
             padding: 6px 8px 8px;
             background: #f8fafc;
             border-top: 1px dashed #e2e8f0;
-            margin-bottom: 2px;
+            border-bottom: 1px solid #ede9fe;
+            box-shadow: inset 3px 0 0 #c4b5fd;
         }
 
         .auction-yizi-sup-trend-metrics {

@@ -1,28 +1,29 @@
-// useAuctionYiziSupplement.js — 「早盘竞价看板 · 补竞价一字」的 UI 组合式（§14 UI 瘦身）
+// useAuctionYiziSupplement.js — 「早盘竞价看板 · 补竞价一字（按题材融入）」的 UI 组合式（§14 UI 瘦身）
 //
-// 需求（用户原话要点）：
+// 需求（2026-09-20 修正后的口径）：
 //   在早盘竞价看板【单独开题材 toggle】后，表头 X 位出现「补竞价一字」开关（默认关）；
-//   打开 → 把竞价一字看板的一字板股票【按题材】补充到下方列表（同格式，可展开趋势图）；
+//   打开 → 把竞价一字看板的一字板股票【按题材融入】下方列表【已经分好类的题材组】里
+//   （同组原有股票之后，带「补」小标记；同名的直接跳过，因为列表本身就有）；
 //   关闭 → 恢复成「只开题材 toggle」的原样。
 //
 // 🔴 本文件的三条红线：
-//   ① 只是显示层：⛔ 不碰早盘竞价的数据层 / 排序 / 高光 / 列表（`viewData` 只被「读」一次，
-//      用来知道「哪些股票已经在列表里」，避免同一只票重复出现两次）；
+//   ① 只是显示层：⛔ 不碰早盘竞价的数据层 / 排序 / 高光 / 列表。`viewData` / `filteredRegularItems`
+//      只被「读」：前者用来知道「哪些股票已经在列表里」（避免同一只票重复补），后者是融入的落点序列；
 //   ② 数据只用竞价一字看板自己的真相（logic/yizi/yizi-board.js#yiziBoardState）+ 它自己的
 //      趋势通道（logic/yizi/yizi-trend.js，走竞价一字小号），⛔ 与早盘竞价的 numcat 主账号无关；
-//   ③ 本功能区全程【零写入、零新抓取】：一字池是 9:25 Edge 已落库的当日快照，
-//      这里只读它（`loadYiziBoard(date)` 不带 force = 廉价读库 + 单飞去重），
-//      趋势图沿用一字看板的懒加载（点序号才取，额度闸门在逻辑层）。
+//   ③ 全程【零写入、零新抓取】：一字池是 9:25 Edge 已落库的当日快照，这里只读它
+//      （`loadYiziBoard(date)` 不带 force = 廉价读库 + 单飞去重）；趋势图沿用一字看板的懒加载
+//      （点序号才取，额度闸门在逻辑层）。
 //
 // 架构位置（§2 UI → Logic → Data）：
-//   components/AuctionYiziSupplementToggle.vue / Panel.vue / Row.vue
+//   components/AuctionBoardTable.vue（融入序列渲染）+ AuctionYiziSupplement{Status,Row,Toggle}.vue
 //     → 本文件（UI/VM 状态：开关态 / 展开态 / 曲线装配 / 文案）
-//     → logic/auction/yizi-supplement.js（纯函数：分块 → 显示分组）
+//     → logic/auction/yizi-supplement.js（纯函数：按题材融入 → 分段序列）
 //     → logic/yizi/{yizi-board,yizi-trend,trend-model}.js（既有单一真相）
 //
-// §34 UI 状态分离：`on` 与 `trendExpanded` 都是本功能区自己的纯展示态，
-//   ⛔ 不落 localStorage（§8）、不进全局 store（§6）、不进 Logic 的响应式状态；
-//   题材 toggle 关掉 / 日期切换 → 自动归位（无记忆），天然满足「关闭即恢复原样」。
+// §34 UI 状态分离：`on` 与 `trendExpanded` 都是本功能区自己的纯展示态，⛔ 不落 localStorage（§8）、
+//   不进全局 store（§6）、不进 Logic 的响应式状态；题材 toggle 关掉 / 日期切换 → 自动归位（无记忆），
+//   天然满足「关闭即恢复原样」。
 // §10 读失败可见：一字池读失败 → errorText 原样呈现 + 可重试，⛔ 绝不显示成「当天没有一字」。
 
 import { ref, computed, watch } from 'vue';
@@ -32,26 +33,38 @@ import { yiziBoardState, loadYiziBoard, isYiziFetchTimeReached } from '../logic/
 import { isBoardDateAligned } from '../logic/yizi/model.js';
 import { loadYiziTrend, yiziTrendState } from '../logic/yizi/yizi-trend.js';
 import { buildYiziTrendSeries, trendMetricItems } from '../logic/yizi/trend-model.js';
-import { buildYiziSupplementGroups, summarizeSupplement } from '../logic/auction/yizi-supplement.js';
+import { getGroupableCoreTopics } from '../logic/topic/rules.js';
+import { mergeYiziIntoAuctionRows, formatMergeSummary } from '../logic/auction/yizi-supplement.js';
+
+/** 融入结果为空时的占位（模板只读 segments/stats，不区分「没开」与「没数据」） */
+const EMPTY_MERGE = {
+    segments: [],
+    stats: { yiziTotal: 0, mergedStocks: 0, mergedRows: 0, inListCount: 0, orphanCount: 0 }
+};
 
 /**
  * @param {object} board useAuctionBoard() 的返回值（早盘竞价看板的 composable 实例）
  *   ⚠️ 必须显式传入而不是 `inject('auctionBoard')`：Vue 的 inject 只看**父级** provides，
  *   本组合式在 AuctionBoard.vue（即 provide 的那一层）里被调用，自己 provide 的东西 inject 不到。
- * @returns {object} 供 AuctionYiziSupplementToggle / Panel / Row 使用的状态与回调
+ * @returns {object} 供 AuctionBoardTable / AuctionYiziSupplement{Status,Row,Toggle} 使用的状态与回调
  */
 export function useAuctionYiziSupplement(board) {
     const uiStore = useUiStore();
-    const sortState = board.sortState;
     const viewData = board.viewData;
+    const filteredRegularItems = board.filteredRegularItems;
 
     // ===== 开关态（§34 纯展示态：默认关、无记忆）=====
     const on = ref(false);
     const currentDate = computed(() => uiStore.currentDate);
 
-    // 本功能区只在【题材 toggle 开着】时才有意义（需求原话：「单独题材 toggle 后…添加一个」）。
-    // 题材 toggle 关掉 → 开关与面板一起消失，并自动归位（见文件末尾 watch）。
-    const visible = computed(() => !!sortState.byTopic);
+    // 本功能区只在【题材 toggle 单独开启】时才有意义（需求原话：「单独题材 toggle 后…添加一个」）。
+    // ⚠️ 判据刻意【不重算】topicOnlyMode（那是 view-helpers 的口径，这里再写一份必然分叉）：
+    //    直接看既成事实 —— Logic 层只在「题材单独开启」时给每行标 `groupTopic`（其余模式恒为 ''），
+    //    行上有组名 ⇒ 分组已成立 ⇒ 融入有落点。叠加主排序 / 未开题材 → 开关与补入行一起消失。
+    const visible = computed(() => {
+        const items = (viewData && viewData.value && viewData.value.items) || [];
+        return items.length > 0 && !!items[0].groupTopic;
+    });
     const active = computed(() => visible.value && on.value);
 
     // ===== 一字池的日期对齐 / 状态（§26 与 §10）=====
@@ -74,8 +87,8 @@ export function useAuctionYiziSupplement(board) {
     });
 
     // ===== 早盘竞价当前列表的股票名（只读一次，仅用于去重）=====
-    // 用途：用户要求「补充的竞价一字股票不是列表中的股票」。这里排除的是**该日完整列表**
-    // （不跟随搜索框变化）→ 补充区内容稳定，不会在输入搜索时忽增忽减。
+    // 用途：用户要求「补充的竞价一字股票不是列表中的股票」（重复的不用融进去）。
+    // 这里排除的是**该日完整列表**（不跟随搜索框变化）→ 融入结果稳定，不会在输入搜索时忽增忽减。
     // ⚠️ 只读、不写、不影响早盘竞价的任何展示（§34：视图互不干扰）。
     const listStockNames = computed(() => {
         const set = new Set();
@@ -87,27 +100,19 @@ export function useAuctionYiziSupplement(board) {
         return set;
     });
 
-    // ===== 补充区内容（纯函数产物，模板只做直出）=====
-    const groups = computed(() => {
-        if (!active.value || !hasRows.value) return [];
-        return buildYiziSupplementGroups(yiziBoardState.blocks, { excludeNames: listStockNames.value });
+    // ===== 融入结果（纯函数产物，模板只做直出）=====
+    // 落点序列 = filteredRegularItems（= 早盘竞价题材模式下【实际渲染的常规组行序】，含搜索过滤），
+    // 因此补入行的位置与屏幕上的题材组完全对应；搜索时补入行会跟着可见的组走。
+    const merge = computed(() => {
+        if (!active.value || !hasRows.value) return EMPTY_MERGE;
+        return mergeYiziIntoAuctionRows(
+            (filteredRegularItems && filteredRegularItems.value) || [],
+            yiziBoardState.blocks,
+            { excludeNames: listStockNames.value, coreTopics: getGroupableCoreTopics() }
+        );
     });
-    const summary = computed(() => summarizeSupplement(groups.value));
-    const summaryText = computed(() => {
-        const s = summary.value;
-        if (s.totalStockCount === 0) return '';
-        let t = '一字 ' + s.totalStockCount + ' 只 / ' + s.topicCount + ' 个题材';
-        if (s.inListCount > 0) {
-            t += '（补进来 ' + s.stockCount + ' 只，另 ' + s.inListCount + ' 只已在列表中）';
-        }
-        return t;
-    });
-    /** 题材条上的差额说明（count>0 时才有「另有」的说法；全在列表里则直说） */
-    function inListText(g) {
-        if (!g || !g.inListCount) return '';
-        if (g.count === 0) return '（全部已在列表中）';
-        return '（另有 ' + g.inListCount + ' 只在列表中）';
-    }
+    const segments = computed(() => merge.value.segments);
+    const summaryText = computed(() => formatMergeSummary(merge.value.stats));
 
     // ===== 趋势面板（与竞价一字看板同一通道、同一纯函数）=====
     // ⚠️ 取数通道完全独立于早盘竞价：Edge /trend（竞价一字小号）+ yizi_trend 表。
@@ -162,7 +167,7 @@ export function useAuctionYiziSupplement(board) {
         return out;
     }
 
-    /** 展开 / 收起某只股票的补充区趋势面板（点序号触发） */
+    /** 展开 / 收起某只股票的补入行趋势面板（点序号触发） */
     function toggleTrend(stockName) {
         const name = String(stockName || '').trim();
         if (!name) return;
@@ -209,7 +214,7 @@ export function useAuctionYiziSupplement(board) {
         });
     }
 
-    // §34 题材 toggle 关掉 → 本功能区整体归位（用户要的「关闭后恢复原样」）
+    // §34 题材 toggle 关掉（或切进叠加模式）→ 本功能区整体归位（用户要的「关闭后恢复原样」）
     watch(visible, function(v) {
         if (!v) {
             on.value = false;
@@ -235,10 +240,9 @@ export function useAuctionYiziSupplement(board) {
         emptyText,
         retry,
         summaryText,
-        inListText,
         currentDate,
-        // 内容
-        groups,
+        // 融入结果（模板逐字段直出）
+        segments,
         // 趋势面板
         trendExpanded,
         trendMap,

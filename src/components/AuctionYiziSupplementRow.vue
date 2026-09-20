@@ -1,5 +1,9 @@
 <!--
-  AuctionYiziSupplementRow.vue — 「补竞价一字」补充区的一行（含展开后的 4 张趋势图）
+  AuctionYiziSupplementRow.vue — 「补竞价一字」补入的一行（含展开后的 4 张趋势图）
+
+  ★ 2026-09-20 修正：本行不再出现在底部一块「补充区」里，而是【按题材并入早盘竞价对应题材组的组内末尾】，
+    因此列宽与早盘竞价行对齐（序号 0.4 / 股票名 1.2 / 其余 2.5 —— 与 .auction-number / .auction-stock-name /
+    .auction-topic-cell 同值），让「同一题材组」在视觉上仍是一整段；并用「补」小标记标明它是补进来的。
 
   对应关系（「竞价一字」看板的行 → 本组件）：
     .yizi-row                → .auction-yizi-sup-row
@@ -18,7 +22,7 @@
      本组件属于【早盘竞价看板】，因此用自己的 `auction-yizi-sup-` 前缀，与两边都隔离。
 
   §3 纯展示组件：只读 props.stock（Logic 纯函数搬运好的展示字段）+ inject('auctionYiziSupplement')
-  的状态与回调；⛔ 不计算任何业务口径（十日涨幅 / 龙头 / 峰单额全部直接渲染既有文本）。
+  的状态与回调；⛔ 不计算任何业务口径（十日涨幅 / 龙头 / 封单额全部直接渲染既有文本）。
 -->
 <template>
   <div
@@ -26,18 +30,26 @@
     :class="{ 'is-leader': stock.isLeader }"
   >
     <!-- 序号 = 趋势面板开关（与竞价一字看板、早盘竞价看板同一交互：点序号展开）
-         ⚠️ 序号是「该题材内十日涨幅排名」，跳号表示中间那几只已在早盘竞价列表里（不重排，排名是真话） -->
+         ⚠️ 序号是「该题材内十日涨幅排名」，跳号表示中间那几只已在早盘竞价列表里（不重排，排名是真话）
+         列宽 0.4 与早盘竞价行 .auction-number 同值 → 序号列与上方原有行严格对齐 -->
     <span
       class="auction-yizi-sup-seq is-clickable"
       title="点击展开该股近 5 日趋势（竞价量 / 昨日成交量 / 竞价涨幅 / 涨幅）"
       @click.stop="toggleTrend(stock.stock)"
     >{{ trendExpanded.has(stock.stock) ? '▼' : '▶' }}{{ stock.seq }}</span>
+    <!-- 列宽 1.2 与 .auction-stock-name 同值 → 股票名列与上方原有行严格对齐 -->
     <span class="auction-yizi-sup-name-block">
       <span
         class="auction-yizi-sup-name"
         :class="{ leader: stock.isLeader }"
       >{{ stock.stock }}</span>
-      <!-- 封单额时点标：本补充区固定用「9:20 口径」（= 竞价一字看板的默认口径，切换开关在那边） -->
+      <!-- ★ 补入小标记（用户要求「标注哪些是补进去的，有个小标记」）：
+           悬停说清「从哪来、为什么在这一组」——被并入的组名由 Logic 层写在 mergedTopic 上 -->
+      <span
+        class="auction-yizi-sup-added"
+        :title="addedTitle"
+      >补</span>
+      <!-- 封单额时点标：本补入行固定用「9:20 口径」（= 竞价一字看板的默认口径，切换开关在那边） -->
       <span
         class="auction-yizi-sup-time-tag"
         :title="'本行封单额口径：9:20（竞价一字看板默认口径）' +
@@ -54,23 +66,27 @@
         :title="'连板档位 ' + stock.continueText + '（按前一交易日连续涨停数递推）'"
       >{{ stock.continueText }}</span>
     </span>
-    <!-- 题材（主角列）：完整展示、允许折行，⛔ 不做省略号截断 -->
-    <span
-      class="auction-yizi-sup-topics"
-      :title="stock.topicsDisplay"
-    >{{ stock.topicsDisplay }}</span>
-    <!-- 度量列：封单额(9:20) + 十日涨幅（与竞价一字看板「未打开 9点25」时的形态一致） -->
-    <span class="auction-yizi-sup-metric">
+    <!-- 其余列（题材 + 封单额 + 十日涨幅）合占 2.5，与 .auction-topic-cell 同值：
+         补入行要展示的字段比原有行多，所以在这个宽度内再分成「题材(吃满) + 两个数值(定宽)」 -->
+    <span class="auction-yizi-sup-rest">
+      <!-- 题材（主角列）：完整展示、允许折行，⛔ 不做省略号截断 -->
       <span
-        class="auction-yizi-sup-seal"
-        :class="sealClass"
-        :title="sealTitle"
-      >{{ stock.seal920Text || '-' }}</span>
-      <span
-        class="auction-yizi-sup-range"
-        :class="rangeClass"
-        title="近 10 个交易日区间涨幅（一字看板块内排序 / 龙头判据）"
-      >{{ stock.rangeText || '-' }}</span>
+        class="auction-yizi-sup-topics"
+        :title="stock.topicsDisplay"
+      >{{ stock.topicsDisplay }}</span>
+      <!-- 度量列：封单额(9:20) + 十日涨幅（与竞价一字看板「未打开 9点25」时的形态一致） -->
+      <span class="auction-yizi-sup-metric">
+        <span
+          class="auction-yizi-sup-seal"
+          :class="sealClass"
+          :title="sealTitle"
+        >{{ stock.seal920Text || '-' }}</span>
+        <span
+          class="auction-yizi-sup-range"
+          :class="rangeClass"
+          title="近 10 个交易日区间涨幅（一字看板块内排序 / 龙头判据）"
+        >{{ stock.rangeText || '-' }}</span>
+      </span>
     </span>
   </div>
 
@@ -81,6 +97,7 @@
     v-if="trendExpanded.has(stock.stock)"
     class="auction-yizi-sup-trend-panel"
     @dblclick.stop
+    @click.stop
   >
     <div class="auction-yizi-sup-trend-metrics">
       <span class="auction-yizi-sup-trend-metric-item">
@@ -163,7 +180,7 @@ import { computed, inject } from 'vue';
 import TrendChart from './TrendChart.vue';
 
 const props = defineProps({
-  // buildYiziSupplementGroups 产出的显示行（字段已全部是可直出文本）
+  // mergeYiziIntoAuctionRows 产出的显示行（字段已全部是可直出文本 + mergedTopic）
   stock: { type: Object, required: true }
 });
 
@@ -183,5 +200,18 @@ const sealTitle = computed(() => {
   let t = '9:20 口径封单额';
   if (s.sealDeltaText) t += '；9:25 较 9:20 的变化量 ' + s.sealDeltaText;
   return t;
+});
+
+// 「补」标的悬停说明：讲清「从哪来、为什么在这一组」
+//   · 融进某题材组 → 说出组名（用户可核对「按题材融入」这件事真的发生了）；
+//   · 落在「未并入」尾段 → 说清是「当日列表里没有它的题材组」，⛔ 不含糊。
+const addedTitle = computed(() => {
+  const s = props.stock || {};
+  if (s.mergedTopic) {
+    return '本行由「竞价一字」看板按题材【' + s.mergedTopic + '】补入本组：'
+      + '它不在早盘竞价列表里，数据取自竞价一字看板自己的库（与早盘竞价的列表 / 排序无关）';
+  }
+  return '本行来自「竞价一字」看板：它的题材不在当日早盘竞价列表里，因此没有对应题材组可并入；'
+    + '列在这里供参考（数据同样来自竞价一字看板自己的库）';
 });
 </script>
