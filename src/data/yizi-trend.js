@@ -100,10 +100,32 @@ export function mapTrendRow(r) {
 }
 
 /**
+ * PostgREST 单次响应最多回多少行 = Supabase 的 `db-max-rows` 硬上限。
+ *
+ * 🔴 这是一个【静默截断】：HTTP 200、没有任何 error 字段，你写 limit=20000 也照样只回 1000 行。
+ *    而本表的读取形态天生超大 —— 「存储窗口 10 个交易日 × 池内上百只」实测 **1725 行**
+ *    （2026-09-20 现场：09-07~09-18 共 1725 行）⇒ 不分页必然丢掉一批。
+ *
+ * 🔴 更要命的是「丢哪一批」：前端按 `date asc` 排序读，被截掉的正好是**最后几天**
+ *    ——也就是趋势图真正要画的那 5 天。于是库里一行不少，用户看到的却是「趋势图有很多断点（数据不全）」。
+ *    2026-09-20 定位结论：**这不是上游没抓到，是读的时候被截断了**。
+ *
+ * ⛔ 结论：任何「多日 × 多股票」的读都必须分页（或按股票/代码收窄，
+ *    见 opts.stocks / opts.codes —— 两个更省的收窄手段）。⛔ 不要再相信 limit。
+ */
+const REST_PAGE_SIZE = 1000;
+/** 分页安全上限（1000 × 30 = 3 万行，远超本表业务量；防异常数据把循环拖死） */
+const REST_MAX_PAGES = 30;
+
+/**
  * 读一批交易日的趋势缓存行。
  *
  * @param {string[]} dates 交易日 YYYY-MM-DD（一般 = 近 N 个交易日窗口）
- * @param {{stocks?:string[]}} [opts] stocks 传入时只读这几只（不传 = 读该窗口全部行）
+ * @param {{stocks?:string[]|undefined, codes?:string[]|undefined}} [opts]
+ *        stocks 传入时只读这几只（股票名，与 auction_yizi.stock 同键）；
+ *        codes  传入时只读这几个 6 位代码（与 yizi_trend.code 同键）—— 十日涨幅通道用这个，
+ *       因为它手里只有代码，按代码收窄能把一次读从上千行降到几十行（见 fetchYiziDailyPctRange）。
+ *        两个都不传 = 读该窗口全部行（⚠️ 必须分页，见 REST_PAGE_SIZE）。
  * @returns {Promise<Array<object>>} 行数组（可能为空 = 云端确实还没有这些日期的趋势缓存）
  * @throws 读取失败时抛错（绝不静默返回空）
  */
@@ -111,27 +133,40 @@ export async function readYiziTrendForDates(dates, opts) {
     const list = (dates || []).map(function(d) { return String(d).trim(); }).filter(Boolean);
     if (list.length === 0) return [];
     const sb = getSupabase();
-    let q = sb.from(TABLE)
-        .select(SELECT_COLUMNS.join(','))
-        .in('date', list)
-        // ⚠️ 必须带【确定性排序】：PostgREST 无 ORDER BY 时不保证行序，分页/增量比对都会错位
-        .order('date', { ascending: true })
-        .order('stock', { ascending: true });
     const names = (opts && opts.stocks) ? opts.stocks.map(function(s) { return String(s).trim(); }).filter(Boolean) : [];
-    if (names.length > 0) q = q.in('stock', names);
-    const { data, error } = await q;
-    if (error) throw _explainTrendError(error);
-    return (data || [])
-        .filter(function(r) { return r && r.date && r.stock; })
-        .map(mapTrendRow);
+    const codes = (opts && opts.codes) ? opts.codes.map(function(c) { return String(c).trim(); }).filter(Boolean) : [];
+    const out = [];
+    // 🔴 必须分页：见 REST_PAGE_SIZE 的说明（不分页 = 静默丢行 = 趋势图断点）。
+    for (let page = 0; page < REST_MAX_PAGES; page++) {
+        const from = page * REST_PAGE_SIZE;
+        let q = sb.from(TABLE)
+            .select(SELECT_COLUMNS.join(','))
+            .in('date', list)
+            // ⚠️ 必须带【确定性排序】：PostgREST 无 ORDER BY 时不保证行序，分页会重复/漏行。
+            //    (date, stock) 是本表主键 ⇒ 是一个全序，翻页不会错位。
+            .order('date', { ascending: true })
+            .order('stock', { ascending: true })
+            .range(from, from + REST_PAGE_SIZE - 1);
+        if (names.length > 0) q = q.in('stock', names);
+        if (codes.length > 0) q = q.in('code', codes);
+        const { data, error } = await q;
+        if (error) throw _explainTrendError(error);
+        const rows = data || [];
+        out.push.apply(out, rows
+            .filter(function(r) { return r && r.date && r.stock; })
+            .map(mapTrendRow));
+        // 本页不满 = 已经是最后一页（不再多发一次「空页」请求）
+        if (rows.length < REST_PAGE_SIZE) break;
+    }
+    return out;
 }
 
 /**
  * 调 Edge Function 的趋势路由（补腿 / 读缓存）。
  *
  * ⚠️ 本路由【不校验 token】（与 /health 同级）：它是浏览器端的只读缓存入口，
- *    额度由 Edge 侧的 5 道闸门保护（缺口驱动 / 09:20~09:30 保护窗口 / 90 秒冷却 /
- *    每日请求预算 / 整窗口 1 次请求），且它【从不删除】任何数据。
+ *    额度由 Edge 侧的 6 道闸门保护（缺口驱动 / 09:20~09:30 保护窗口 / 90 秒冷却 /
+ *    每日请求预算 / 整窗口 1 次请求 / 上游额度止损），且它【从不删除】任何数据。
  *    因此这里只带 Supabase 的 anon key（与 numcat-proxy / fuyao-proxy 同一做法）。
  *
  * @param {{date?:string, window?:number}} [opts]
@@ -289,7 +324,9 @@ export async function fetchYiziDailyPctRange(symbols, startYmd, endYmd, opts) {
     };
 
     // ① 先读库（0 上游请求）—— 这是常态路径：每天 09:35 的 cron 已经把窗口铺好了
-    accumulate(await readYiziTrendForDates(dates));
+    //    ⚠️ 按【代码】收窄：本通道手里只有 code（没有股票名），
+    //       不收窄的话「14 个自然日 × 全池上百只」会一次读上千行 ⇒ 必须翻好几页（见 REST_PAGE_SIZE）。
+    accumulate(await readYiziTrendForDates(dates, { codes: codes }));
 
     // ② 仍有缺口 → 调 /trend 补一次（小号，自带全部额度闸门），再读库。
     //    允许少 1 天：T 腿由 range-fill 的 aucPctOf（快照竞价涨幅）负责，不依赖本通道。
@@ -301,7 +338,7 @@ export async function fetchYiziDailyPctRange(symbols, startYmd, endYmd, opts) {
     if (!complete && o.allowEdge !== false) {
         try {
             await fetchYiziTrendFromEdge({ date: o.date || endIso, window: wantDays });
-            accumulate(await readYiziTrendForDates(dates));
+            accumulate(await readYiziTrendForDates(dates, { codes: codes }));
         } catch (e) {
             // fail-soft：补腿失败只是「这次补不齐」——range-fill 会按缺腿处理（⛔ 不阻断看板）。
             // §10：这里吞掉异常是【刻意的】，因为调用方 range-fill 已经对「拿不到腿」有完整兜底；

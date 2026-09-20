@@ -18,10 +18,14 @@
 //   §6/§34 本模块【不持有任何视图状态】：展开态、开关态都在 composable（组件内 ref）。
 //        yiziTrendState 里只有「关于这一天的事实」：窗口日期、行、加载中、错误、说明。
 //   ★ 库优先（2026-09-19 改）：`yizi_trend` 是【跨设备持久化缓存】，所以【先直读库】，
-//        窗口已齐就 0 请求直接渲染；只有「窗口里有整日没有行」时才调 Edge /trend 补缺口。
+//        窗口已齐就 0 请求直接渲染；只有「窗口里有整日没有行 / 池内有股票整窗无行」时才调
+//        Edge /trend 补缺口（后一个判据 = 2026-09-20 新增的历史补数触发点）。
 //        ⛔ 不要改回「Edge 优先、库兜底」—— 那样每次打开面板 / 刷新页面都要先等一次接口往返
 //        （用户原话：「趋势图数据要存起来，不用每次打开都要加载一次」）。
 //        Edge 仍然是本表的【唯一写入者】（只 upsert 缺口、从不删，§11）。
+//   🔴 读库必须分页（2026-09-20）：PostgREST 单次响应上限 1000 行且【静默截断】，
+//        而存储窗口 10 天 × 池内上百只实测 1725 行 ⇒ 不分页就会丢掉最后几天
+//        （= 趋势图要画的 5 天）⇒ 用户看到「数据有很多断点」。详见 loadYiziTrend 的注释。
 //   §22  单飞 + 会话缓存：同一天同一瞬间只跑一次；已成功拉过的日期直接命中缓存，不再打接口。
 //   §26  切日期：结果回来时先校验它仍是【最新一次请求】的日期，迟到的旧请求一律丢弃。
 //   §11  本模块【不删除任何数据】（只读库 + 调补腿；写入者是 Edge Function，且只 upsert 缺口）。
@@ -145,6 +149,12 @@ function _noteOf(payload) {
     const bits = [];
     const skip = payload && payload.skipped;
     if (skip && SKIP_TEXT[skip]) bits.push(SKIP_TEXT[skip]);
+    // ★ 2026-09-20：小号额度耗尽（上游 code=403「今日调用额度已用完」）必须【说清楚】——
+    //    否则用户看到的就是「图上还是断点，但也没说为什么」，会误以为功能坏了。
+    //    ⛔ 也不会自动去烧主账号：那是早盘竞价的额度（用户明确要求两个账号互不侵占）。
+    if (payload && payload.quotaExhausted) {
+        bits.push('本看板小号今日额度已用完（上游 403），先展示已有缓存；额度次日 0 点重置后会自动继续补');
+    }
     const fetched = (payload && payload.fetched) || {};
     const legFail = function(leg, label) {
         if (leg && leg.ok === false) {
@@ -171,22 +181,37 @@ function _noteOf(payload) {
  *    · 返回并写进 `yiziTrendState` 的 `windowDates` / `rows` 只有 **显示窗口（5）**。
  *    ⇒ 调用方（composable / UI）**不需要知道有 10 天这件事**，照旧按 state 画即可。
  *
+ * 🔴 2026-09-20 断点事故（本轮修复）：用户报「09-18 趋势图数据有很多断点（数据不全）」。
+ *    真因不在抓取、也不在窗口长短，而在**读库被 PostgREST 静默截断**：
+ *    存储窗口 10 天 × 池内上百只 = 1725 行，而单次响应上限 1000 行（db-max-rows），
+ *    按 date 升序读 ⇒ 被砍掉的恰好是**最后几天**（= 趋势图要画的那几天）。
+ *    修法有三条，缺一条都还会复发：
+ *      ① Data 层分页（readYiziTrendForDates / Edge readTrendRows），见各自的 REST_PAGE_SIZE 注释；
+ *      ② 补完之后【回库重读】，⛔ 不再直接用 Edge 响应的 rows（它同样是 PostgREST 读出来的）；
+ *      ③ 缺口判据加上「池内有股票整窗无行」（见下方 ②），否则历史日期的池子永远是空心图。
+ *
  * @param {string} date YYYY-MM-DD
- * @param {{force?:boolean}} [opts] force = 忽略会话缓存重新拉（手动刷新用）
+ * @param {{force?:boolean, stocks?:string[]}} [opts] force = 忽略会话缓存重新拉（手动刷新用）；
+ *        stocks = **本日看板池的股票名**（composable 传入）。用途见下方 ② 的 (b) 判据：
+ *        「池里有股票在整个存储窗口一行都没有」= 它从来没被补过（历史日期的池子就是这样空心的）
+ *        ⇒ 这就是「用小号补历史数据」的触发点。⛔ 不传时退化为旧的「整日无行」判据（向后兼容）。
  * @returns {Promise<{date:string, windowDates:string[], rows:Array<object>, note:string, source:string}|null>}
  */
 export async function loadYiziTrend(date, opts) {
     const force = !!(opts && opts.force);
+    const stocks = (opts && Array.isArray(opts.stocks))
+        ? opts.stocks.map(function(s) { return String(s == null ? '' : s).trim(); }).filter(Boolean)
+        : [];
     if (!date) return null;
     if (_inflight && _inflight.date === date && !force) return _inflight.promise;
-    const p = _load(date, force).finally(function() {
+    const p = _load(date, force, stocks).finally(function() {
         if (_inflight && _inflight.date === date) _inflight = null;
     });
     _inflight = { date: date, promise: p };
     return p;
 }
 
-async function _load(date, force) {
+async function _load(date, force, stocks) {
     // 会话缓存命中：这一天已经成功拉过一次 → 直接复用（0 网络请求）。
     // ⚠️ 不要求 yiziTrendState.date 已是这一天 —— 用户「切走再切回来」时也应命中缓存，
     //    否则每次来回都会白打一次接口。⛔ 只有 force 才跳过缓存。
@@ -245,13 +270,29 @@ async function _load(date, force) {
         //    为什么必须按 10 天判：【十日涨幅】要吃 [T-9,T] 的逐日涨幅，只要这 10 天里有
         //    「整日没有行」就该去补。若按 5 天判，会出现「图看着齐了、十日涨幅却悄悄掉腿」
         //    （§U9 实测：补库不配套扩窗口 ⇒ 历史日期静默降级 10 根腿 → 5 根腿）。
-        //    判据仍是「**整日没有行**」：值为 null 不算缺口 —— 停牌/无数据日上游本来就没有，
-        //    补一万次也补不出来，⛔ 不能让它变成「每次打开都打一次接口」。
+        //
+        //    两个判据（★ 第二个是 2026-09-20 新增，历史日期空心图的根因）：
+        //    (a) 【整日无行】：窗口里有某一天一行都没有 → 一定要补（旧判据，保留）；
+        //    (b) 【池内整窗空】：看板当前池里有股票在**整个存储窗口**一行都没有
+        //        ⇒ 它从来没被补过（实测：09-10/09-14/09-15/09-16 的池子就是这么空心的，
+        //          09-18 的池子却全齐 —— 因为 /trend 只按「某个 T 的池子」补，谁看过谁才被补）
+        //        ⇒ 用户一展开，就自动去补这一池的历史。
+        //    ⛔ 刻意【不】把「某天某格为 null」当缺口：停牌 / 上游本就没有数据的日子
+        //       （实测 经纬股份 09-14~09-16 无当日涨幅 = 停牌），补一万次也补不出来，
+        //       判成缺口会让每次展开都白烧一次小号额度（预算只有 6 次/天）。§10：显示 '-' 就是诚实。
         const covered = new Set();
-        storeRows.forEach(function(r) { if (r && r.date) covered.add(r.date); });
+        const coveredPair = new Set();
+        storeRows.forEach(function(r) {
+            if (!r) return;
+            if (r.date) covered.add(r.date);
+            if (r.date && r.stock) coveredPair.add(r.date + '|' + r.stock);
+        });
         const gaps = storeDates.filter(function(d) { return !covered.has(d); });
+        const poolEmpty = (stocks || []).filter(function(s) {
+            return !storeDates.some(function(d) { return coveredPair.has(d + '|' + s); });
+        });
 
-        if (gaps.length > 0 || force) {
+        if (gaps.length > 0 || poolEmpty.length > 0 || force) {
             try {
                 // Edge 侧自己会「读缓存 + 只补缺口」，返回的 rows 是补完之后**存储窗口**的全部行。
                 // 🔴 这里必须传存储窗口（10）：传 5 会让库里第 6~10 天永远补不上（十日涨幅随之少腿）。
@@ -261,9 +302,21 @@ async function _load(date, force) {
                 if (Array.isArray(payload.window) && payload.window.length > 0) {
                     storeDates = payload.window.map(function(d) { return String(d); });
                 }
-                storeRows = (payload.rows || []).map(mapTrendRow);
                 note = _noteOf(payload);
                 source = 'edge';
+                // 🔴 补完之后【回库重读】，⛔ 不用 payload.rows —— 三条理由：
+                //    ① §6：库才是持久化真相，Edge 只是写入者（它写完的行也该从库里读回来核对）；
+                //    ② payload.rows 同样是 PostgREST 读出来的（Edge 内部 readTrendRows），
+                //       历史上被 1000 行上限截断过 ⇒ 直接用会把刚补齐的数据又截成残缺
+                //       （这正是 2026-09-20「补了还是断点」的成因）；
+                //    ③ 回读还能顺带确认「写入是否真的生效」，而不是相信响应里的 written 计数。
+                //    ⛔ 只在回读失败时才退回 payload.rows（fail-soft，绝不因回读失败就白屏）。
+                try {
+                    storeRows = await readYiziTrendForDates(storeDates);
+                } catch (e) {
+                    _dbgLog('[AUCTION-YIZI] ' + date + ' 补后回读 yizi_trend 失败（改用接口返回体）: ' + (e && e.message || e));
+                    storeRows = (payload.rows || []).map(mapTrendRow);
+                }
             } catch (e) {
                 edgeError = (e && e.message) || String(e);
                 _dbgLog('[AUCTION-YIZI] ' + date + ' 调趋势接口失败（改用已有缓存渲染）: ' + edgeError);

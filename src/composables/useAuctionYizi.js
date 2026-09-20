@@ -394,7 +394,19 @@ export function useAuctionYizi() {
         // 已经为这一天拿过（且没出错）→ 不必再打接口：
         //   Logic 的 loadYiziTrend 自己也会命中会话缓存，这里只是省掉一次无谓的 await。
         if (yiziTrendState.date === d && !yiziTrendState.error) return;
-        loadYiziTrend(d).catch(function(e) {
+        // 🔴 2026-09-20：把手上的【本日看板池】一并交给 Logic。
+        //    用途 = 缺口判据 (b)：池里有股票在**整个存储窗口**一行都没有 ⇒ 它从来没被补过
+        //    （历史日期的池子就是这么空心的）⇒ 这时才去调 /trend 用**本看板小号**补历史。
+        //    ⚠️ 只传名字，不发请求；真正打上游的仍是 Edge（五道额度闸门在那里）。
+        //    ⛔ 不要改成「每次展开都调接口」——那些停牌 / 上游无数据的日子补不出来，
+        //       白烧额度（小号只有 10 次/天，9:25 自动抓取优先）。
+        const poolNames = [];
+        (state.blocks || []).forEach(function(b) {
+            (b.stocks || []).forEach(function(s) {
+                if (s && s.stock) poolNames.push(String(s.stock).trim());
+            });
+        });
+        loadYiziTrend(d, { stocks: poolNames }).catch(function(e) {
             // Logic 内部已把失败写进 yiziTrendState.error（§10 可见）；这里只兜未预期的异常。
             _dbgLog('[AUCTION-YIZI] 趋势加载异常: ' + (e && e.message || e));
         });

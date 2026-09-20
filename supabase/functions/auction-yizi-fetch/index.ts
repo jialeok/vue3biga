@@ -474,6 +474,25 @@ async function numcatFetchRaw(endpoint: string, key: string, dateYmd: string): P
 }
 
 /** 重试包装：上游限流是突发性的；logs 传入时逐次记录失败明细（超时类问题靠这行定位） */
+/**
+ * 额度/限流类错误判据（★ 2026-09-20）。
+ *
+ * 上游用 **HTTP 200 + 业务码 code=403「今日调用额度已用完」** 表达额度耗尽 ——
+ * 它不是网络抖动：换端点、换 key、重试一万次，回来的还是同一个 403。
+ *
+ * 🔴 为什么必须识别它：本函数的两条腿都会「候选端点 × 候选 key 依次尝试」，
+ *    额度耗尽时如果不认这个错，一次 /trend 调用会把
+ *    「3 个端点 × 2 条腿 = 6 次」全部撞一遍（2026-09-20 11:26 实测日志）。
+ *    ⇒ 既白烧额度/时间，又把 6 次「失败请求」记进预算闸门（预算只有 6 次/天）。
+ *
+ * ⚠️ 口径与 db/yizi-backfill.mjs 的「铁律③：遇到额度/403/RATE_LIMIT 立即停止后续请求，
+ *    不 continue 白烧额度」**逐字一致** —— 那条铁律原先只落在本地脚本里，Edge 侧漏了。
+ */
+function isQuotaErr(msg: string): boolean {
+  return /额度|quota|RATE_LIMIT|请求次数超限|toomany/i.test(String(msg || '')) ||
+    /code=403/.test(String(msg || ''));
+}
+
 async function retryNumcat<T>(fn: () => Promise<T>, times: number, label: string, logs?: string[]): Promise<T> {
   let lastErr: unknown = null;
   for (let i = 1; i <= times; i++) {
@@ -651,6 +670,60 @@ function sbErrHint(msg: string, raw: string): string {
     return msg + '  → 【' + table + ' 表不存在】请在 Supabase Dashboard → SQL Editor 执行 ' + sql + ' 建表（本仓库 db/ 目录）。';
   }
   return msg;
+}
+
+/**
+ * 分页读 PostgREST（★ 2026-09-20 新增）。
+ *
+ * 🔴 为什么要它：PostgREST 单次响应最多回 `db-max-rows` 行（Supabase 默认 1000），
+ *    而且是【静默截断】—— HTTP 200、没有 error 字段，你写 `limit=20000` 也照样只回 1000 行。
+ *    趋势的读取形态天生超大：「存储窗口 10 个交易日 × 池内上百只」实测 **1725 行**
+ *    （2026-09-20 现场：2026-09-07~09-18）。旧的 `limit=20000` 是无效写法，实际只读到 1000 行，
+ *    于是造成两个后果（都是实测到的现场）：
+ *      ① 【缺口判定失真】`hasCol` 把「库里其实有、只是没读到」的行判成缺
+ *         ⇒ 每次展开都白打 2 次上游（日志 detail.missingAuc=121 / missingDaily=121，
+ *            明明已经补齐了还判成一只不缺）⇒ 小号每日预算（6 次）被无意义烧光；
+ *      ② 【响应被截断】返回给前端的 `rows` 只有 1000 行 ⇒ 趋势图断点。
+ *    ⛔ 分页必须配【确定性排序】（(date,stock) 是主键 = 全序），否则翻页会重复/漏行。
+ *
+ * @param url          已含 select/过滤/order 的完整 REST URL（本函数只追加 limit/offset）
+ * @param label        出错时的人话前缀（便于一眼看出是哪张表）
+ * @param pageSize     每页行数（= db-max-rows，别调大，调了也没用）
+ * @param maxPages     页数安全上限（防异常数据把循环拖死）
+ * @param timeoutMs    单页超时
+ */
+async function restReadPaged(
+  url: string, label: string, pageSize = 1000, maxPages = 30, timeoutMs = 20000,
+): Promise<Record<string, unknown>[]> {
+  const out: Record<string, unknown>[] = [];
+  const sep = url.indexOf('?') >= 0 ? '&' : '?';
+  for (let page = 0; page < maxPages; page++) {
+    const from = page * pageSize;
+    const pageUrl = url + sep + 'limit=' + pageSize + '&offset=' + from;
+    const resp = await fetch(pageUrl, {
+      headers: sbHeaders({
+        'Prefer': 'return=minimal',
+        'Range-Unit': 'items',
+        'Range': from + '-' + (from + pageSize - 1),
+      }),
+      signal: timeoutSignal(timeoutMs),
+    });
+    const text = await resp.text();
+    if (!resp.ok) {
+      throw new Error(sbErrHint(label + ' 失败: HTTP ' + resp.status + ': ' + text.slice(0, 300), text));
+    }
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch (_e) {
+      throw new Error(label + ' 返回非 JSON: ' + text.slice(0, 200));
+    }
+    const rows = Array.isArray(data) ? data as Record<string, unknown>[] : [];
+    for (let i = 0; i < rows.length; i++) out.push(rows[i]);
+    // 本页不满 = 已是最后一页（不再多发一次「空页」请求）
+    if (rows.length < pageSize) break;
+  }
+  return out;
 }
 
 /** 写入 auction_yizi（主键 date+stock → 幂等覆盖） */
@@ -1024,14 +1097,30 @@ async function runAuctionYizi(opts?: FetchOpts): Promise<Record<string, unknown>
 //   change_pct         = 当日涨幅（daily 的 pct_chg）
 //   ⛔ 任一腿解析不出来 → 该格写 null / 不写行（§10 不拿 0 顶替「没数据」）。
 //
-// ── 额度保护（★ 小号每天只有 10 次；9:25 自动抓取优先，五道闸门）────────────
+// ── 额度保护（★ 小号每天只有 10 次；9:25 自动抓取优先，六道闸门）────────────
 //   ① 缺口驱动：只有「窗口里确实缺某一天的数据」才发请求；已齐 → 0 请求直接回缓存；
 //   ② 时间闸门：北京 09:20~09:30【一律不补拉】—— 结构性保护 9:25 自动抓取，
 //      ⛔ 不靠「相信调用方守规矩」，而是这段时间内物理上不发上游请求；
 //   ③ 冷却：距上一次趋势抓取 < 90 秒 → 本轮跳过（防展开连点把额度打光）；
 //   ④ 预算：本日趋势请求数 ≥ AUCTION_YIZI_TREND_MAX_REQ（默认 6）→ 跳过并如实提示；
 //   ⑤ 请求形态：整窗口 1 次请求（symbols × startdate~enddate），⛔ 不是「每天一次」。
-//   ⛔ 任一闸门触发都【不写库、不删除】，只回既有缓存 + 明确 note（skipped 字段）。
+//   ⑥ 【上游额度止损】（★ 2026-09-20 新增）：上游用 code=403「今日调用额度已用完」表达额度耗尽，
+//      命中后【立即停止】—— 不再换端点、不再换 key、不再打第二条腿（见 isQuotaErr）。
+//      为什么必须有这道：候选端点是 3 个、腿是 2 条，不认这个错就会把「3×2=6 次」全撞一遍，
+//      既白烧时间/额度，又把 6 次失败请求记进预算（预算只有 6 次/天）。
+//   ⛔ 任一闸门触发都【不写库、不删除】，只回既有缓存 + 明确 note（skipped / quotaExhausted 字段）。
+//
+// ── 🔴 读表必须分页（2026-09-20 修复）──────────────────────────────────────
+//   PostgREST 单次响应上限 = db-max-rows（1000 行）且【静默截断】（HTTP 200、无 error）。
+//   本路由的读取形态是「窗口 10 天 × 池内上百只」实测 1725 行 ⇒ 旧的 `limit=20000` 实际只读到
+//   1000 行，造成两个现场故障（均已修，见 restReadPaged / readTrendRows 的注释）：
+//     ① 缺口判定失真 → 每次都白打 2 次上游，烧光小号每日预算；
+//     ② 响应 rows 被截断 → 前端趋势图断点。
+//
+// ── 历史日期的池子由谁补（2026-09-20 起）───────────────────────────────────
+//   本路由只按「某个 T 的池子」补（pool = auction_yizi(T)），所以历史上「谁被打开过谁才有数据」。
+//   前端 Logic 已加判据：「看板当前池里有股票在整个存储窗口一行都没有」⇒ 才来调本路由补这一池。
+//   ⇒ 用户翻开任一历史日期并展开趋势面板，就会自动用小号把这池的历史补上（仍是 2 次请求/池）。
 //
 // ── §11 删除安全 ────────────────────────────────────────────────────────────
 //   本路由【从不删除】yizi_trend 的任何行，只 upsert 缺口（merge-duplicates）。
@@ -1187,15 +1276,11 @@ function normPairs(stocks: string[], symbols: string[]): Pair[] {
  * ⛔ 单一真相（同一张 auction_yizi），不会出现「前端传的名单与库不一致」。
  */
 async function readYiziPool(date: string): Promise<Pair[]> {
-  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_yizi?date=eq.' + encodeURIComponent(date) + '&select=stock,code&limit=2000';
-  const resp = await fetch(url, { headers: sbHeaders({ 'Prefer': 'return=minimal' }), signal: timeoutSignal(15000) });
-  const text = await resp.text();
-  if (!resp.ok) {
-    throw new Error(sbErrHint('读 auction_yizi 取池失败: HTTP ' + resp.status + ': ' + text.slice(0, 200), text));
-  }
-  let data: unknown;
-  try { data = JSON.parse(text); } catch (_e) { throw new Error('读 auction_yizi 返回非 JSON: ' + text.slice(0, 200)); }
-  const list = Array.isArray(data) ? data as Array<Record<string, unknown>> : [];
+  // 🔴 2026-09-20：改走【分页读】。旧写法写的是 limit=2000，但 PostgREST 单次上限就是 1000 行，
+  //    超出部分被静默丢掉 ⇒ 池子一旦超过 1000 只就会漏股票（趋势腿只会补到读到的那些）。
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_yizi?date=eq.' + encodeURIComponent(date) +
+    '&select=stock,code&order=stock.asc';
+  const list = await restReadPaged(url, '读 auction_yizi 取池', 1000, 10, 15000);
   const out: Pair[] = [];
   const seen: Record<string, boolean> = {};
   list.forEach((r) => {
@@ -1208,21 +1293,25 @@ async function readYiziPool(date: string): Promise<Pair[]> {
   return out;
 }
 
-/** 读某几个交易日的趋势缓存行（表很小：只存被请求过的池子股票） */
+/**
+ * 读某几个交易日的趋势缓存行（表很小：只存被请求过的池子股票）。
+ *
+ * 🔴 2026-09-20：必须【分页读】。这里原来是 `limit=20000`，但 PostgREST 单次响应上限是
+ *    db-max-rows（1000 行）且【静默截断】⇒ 实际只读到 1000 行。窗口 10 天 × 池内上百只
+ *    实测 1725 行（09-07~09-18）⇒ 少读 700+ 行，造成两个实测后果：
+ *      · 缺口判定失真（把库里已有的行判成缺）→ 每次展开都白打 2 次上游，烧光小号每日预算
+ *        （日志里长这样：已经补齐了，detail.missingAuc / missingDaily 仍 = 池子只数）；
+ *      · 响应 rows 被截断 → 前端趋势图断点。
+ *    ⚠️ 必须带确定性排序：(date, stock) 是主键 = 全序，否则翻页会重复/漏行。
+ */
 async function readTrendRows(dates: string[]): Promise<Record<string, unknown>[]> {
   if (!dates || dates.length === 0) return [];
   const list = dates.map((d) => '"' + String(d).split('"').join('') + '"').join(',');
   const url = CONFIG.SUPABASE_URL + '/rest/v1/' + TREND.TABLE +
     '?date=in.(' + list + ')' +
-    '&select=date,stock,code,auc_vol,auc_pct_chg,yest_volume,change_pct,source,updated_at&limit=20000';
-  const resp = await fetch(url, { headers: sbHeaders({ 'Prefer': 'return=minimal' }), signal: timeoutSignal(20000) });
-  const text = await resp.text();
-  if (!resp.ok) {
-    throw new Error(sbErrHint('读 ' + TREND.TABLE + ' 失败: HTTP ' + resp.status + ': ' + text.slice(0, 300), text));
-  }
-  let data: unknown;
-  try { data = JSON.parse(text); } catch (_e) { throw new Error('读 ' + TREND.TABLE + ' 返回非 JSON: ' + text.slice(0, 200)); }
-  return Array.isArray(data) ? data as Array<Record<string, unknown>> : [];
+    '&select=date,stock,code,auc_vol,auc_pct_chg,yest_volume,change_pct,source,updated_at' +
+    '&order=date.asc,stock.asc';
+  return await restReadPaged(url, '读 ' + TREND.TABLE, 1000, 30, 20000);
 }
 
 /**
@@ -1325,6 +1414,15 @@ async function fetchTrendLeg(
       } catch (err) {
         lastErr = (err as Error)?.message || String(err);
         logs.push('❌ ' + label + ' 失败（' + (Date.now() - t0) + 'ms）: ' + lastErr);
+        // 🔴 额度止损（2026-09-20）：额度耗尽（上游 code=403「今日调用额度已用完」）时
+        //    【立即返回】，⛔ 不再换端点 / 换 key / 试第二条腿 —— 见 isQuotaErr 的说明。
+        if (isQuotaErr(lastErr)) {
+          logs.push('🛑 命中额度耗尽（code=403）→ 立即止损，不再换端点/换腿重试（额度重置后自动恢复）');
+          return {
+            ok: false, requests: requests, written: 0, error: lastErr,
+            quotaExhausted: true, endpoint: ep, keySource: keyRef.name,
+          };
+        }
         if (k + 1 < keys.length) logs.push('→ 换下一把 key（' + keys[k + 1].name + '）继续试');
         continue;
       }
@@ -1464,6 +1562,8 @@ async function runTrend(opts?: { date?: string; window?: number; stocks?: string
 
   // 5) 抓取（只有确实缺、且没被闸门拦下）
   let requests = 0;
+  /** 上游额度是否已耗尽（code=403）—— 命中后本轮不再打第二条腿 */
+  let quotaExhausted = false;
   const fetched: Record<string, unknown> = { auc: null, daily: null, written: 0 };
   if (skipped) {
     logs.push('本轮跳过抓取：' + skipped);
@@ -1479,13 +1579,19 @@ async function runTrend(opts?: { date?: string; window?: number; stocks?: string
       requests += Number(leg.requests) || 0;
       fetched.auc = leg;
       fetched.written = (Number(fetched.written) || 0) + (Number(leg.written) || 0);
+      // 🔴 竞价腿就撞到「额度已用完」⇒ 立刻不再打 K 线腿（同一个小号，同一天额度，必挂）
+      if (leg.quotaExhausted) quotaExhausted = true;
     }
-    if (missingDaily.length > 0) {
+    if (missingDaily.length > 0 && !quotaExhausted) {
       const leg = await fetchTrendLeg('daily', TREND.DAILY_FIELDS,
         { symbols: sym, startdate: startYmd, enddate: endYmd }, windowDates, nameByCode, logs);
       requests += Number(leg.requests) || 0;
       fetched.daily = leg;
       fetched.written = (Number(fetched.written) || 0) + (Number(leg.written) || 0);
+      if (leg.quotaExhausted) quotaExhausted = true;
+    }
+    if (quotaExhausted) {
+      logs.push('🛑 小号今日额度已用完 → 本轮只回既有缓存（⛔ 不重试、不换账号；次日 0 点额度重置后自动继续补）');
     }
     if (requests === 0) logs.push('⚠️ 有缺口但一个请求都没发出去（key 未配置？）');
   }
@@ -1517,6 +1623,7 @@ async function runTrend(opts?: { date?: string; window?: number; stocks?: string
       requests: requests,
       written: Number(fetched.written) || 0,
       skipped: skipped,
+      quotaExhausted: quotaExhausted,
       pool: pairs.length,
       missingAuc: missingAuc.length,
       missingDaily: missingDaily.length,
@@ -1538,6 +1645,8 @@ async function runTrend(opts?: { date?: string; window?: number; stocks?: string
     fetched: fetched,
     requests: requests,
     skipped: skipped,
+    /** ★ 2026-09-20：小号今日额度已用完（上游 code=403）—— 前端据此给用户一句人话提示 */
+    quotaExhausted: quotaExhausted,
     budget: { usedRequests: stats.requests + requests, cap: TREND.MAX_REQUESTS_PER_DAY },
     guards: {
       protectStart: TREND.PROTECT_START,
