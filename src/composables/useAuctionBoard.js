@@ -24,6 +24,8 @@ import { getHighRatioStocksForDate, getJingYestHighlightSetForDate, getParallelS
 import { loadWeakStrongSet, weakStrongSetRef } from '../logic/auction/sort-rules-extra.js';
 import { syncStockCloseFromAuction, syncStockTopicsFromAuction } from '../logic/auction/stock-sync.js';
 import { getStockCode } from '../data/stock-code-map.js';
+// [HIGH-LIMIT-BOARD 2026-09-21] 第二页题材列表的浅灰删除线：板块判定只用 Logic 层这一份（§6）
+import { isHighLimitBoard } from '../logic/auction/limit-up.js';
 import { pushStockTopicsToCloud } from '../data/stock-topics.js';
 import { prepareAuctionData } from '../logic/auction/view-helpers.js';
 import { computeAuctionViewDataIncremental } from '../logic/auction/incremental-view.js';
@@ -314,6 +316,14 @@ export function useAuctionBoard() {
   // §P1-6：getStarSymbols / extractChangeFromNote / getChangePctDisplay / canGroupExpand /
   // getRankAppearText / getTopicsDisplay 已迁至 ../composables/auction-board-helpers.js（同名 import）。
   function getStockStyle(stockName) {
+    // [HIGH-LIMIT-BOARD 2026-09-21] 科创板(688/689) / 创业板(300/301) / 北交所(43/83/87/88/92)
+    //   → 第二页题材列表同样画【浅灰色 + 删除线】，与第一页口径完全一致（同一份 Logic 判定）。
+    //   ⚠️ 必须 return 在题材数配色【之前】：安全提示压过「题材数 ≥3 标红」这类装饰色。
+    //   这里是内联 style（本来就是字符串），只能靠提前 return 实现「覆盖」，没有 CSS 权重可借。
+    //   代码缺失 → isHighLimitBoard=false → 不标（§40 不猜），照常走下面的题材数配色。
+    if (isHighLimitBoard(getStockCode(stockName) || '')) {
+      return 'color:#9ca3af;font-weight:500;text-decoration:line-through;';
+    }
     const cnt = p2StockTopicCount.value[stockName] || 1;
     if (cnt >= 3) return 'color:#ef4444;font-weight:500;';
     if (cnt === 2) return 'color:#1f2937;font-weight:500;';

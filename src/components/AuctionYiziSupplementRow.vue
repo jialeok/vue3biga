@@ -59,8 +59,13 @@
       @dblclick.stop
     >
       <!-- 字体/字号/颜色/下划线全部来自早盘竞价的样式：
-           竞价一字 → .yizi-limit 的红色实线下划线（与列表里的一字股长得一模一样） -->
-      <span class="auction-stock-text yizi-limit">{{ stock.stock }}</span>
+           竞价一字 → .yizi-limit 的红色实线下划线（与列表里的一字股长得一模一样）
+           [HIGH-LIMIT-BOARD 2026-09-21] 科创/创业/北交所 → 再叠一层浅灰删除线（避免误买），
+           与早盘竞价行的处理完全一致：它是安全提示，压过收盘红绿字色；下划线是 border-bottom，不冲突。 -->
+      <span
+        class="auction-stock-text yizi-limit"
+        :class="{ 'high-limit-board': isHighLimitBoard(props.stock.code) }"
+      >{{ stock.stock }}</span>
       <!-- 连板标（首板/二板/三板…）：与早盘竞价行内那个连板标同款同源（limit-streak） -->
       <span
         v-if="stock.continueText"
@@ -170,9 +175,11 @@
 <script setup>
 import { computed, inject } from 'vue';
 import TrendChart from './TrendChart.vue';
+// [HIGH-LIMIT-BOARD 2026-09-21] 板块判定只用 Logic 层这一份（与早盘竞价行同一函数，§6）
+import { isHighLimitBoard } from '../logic/auction/limit-up.js';
 
 const props = defineProps({
-  // mergeYiziIntoAuctionRows 产出的补入行：{ stock, seq, mergedTopic, topicsDisplay,
+  // mergeYiziIntoAuctionRows 产出的补入行：{ stock, code, seq, mergedTopic, topicsDisplay,
   // continueText, rankPct, rangeText, rangeTone, topicBg }
   stock: { type: Object, required: true }
 });

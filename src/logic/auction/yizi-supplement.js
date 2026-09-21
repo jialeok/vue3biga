@@ -57,6 +57,7 @@
 
 import { OTHER_TOPIC } from '../topics/topic-block.js';
 import { matchTopicToCore } from '../topic/rules.js';
+import { getStockCode } from '../../data/stock-code-map.js';
 
 /**
  * 归一化「排除名单」（= 早盘竞价当前列表里的股票名）。
@@ -143,6 +144,11 @@ function _coreSetOf(topicsDisplay, coreTopics) {
 function _toSupRow(s, name, fallbackSeq, mergedTopic, topicBg) {
     return {
         stock: name,
+        // [HIGH-LIMIT-BOARD 2026-09-21] 股票代码 → 供「科创/创业/北交所 = 浅灰删除线」判定。
+        //   取数口径与早盘竞价行【完全一致】（view-helpers：行 code → 内存代码映射 → 空，§6）；
+        //   补入行的一字行本身通常带 code，这里的 getStockCode 只是同一套兜底的第二级。
+        //   ⛔ 空串 = 真的没代码 → UI 不标（§40 不猜），绝不当主板。
+        code: s.code || (name ? getStockCode(name) : '') || '',
         // 序号：**由下方「组内合并排名」阶段赋值**（1 起）。初始值取一字板块内序号，
         // 仅在「未并入尾段」（无处可融、没有早盘竞价的题材组可比）时才会被直接沿用。
         seq: (isFinite(Number(s.seq)) && Number(s.seq) > 0) ? Number(s.seq) : fallbackSeq,

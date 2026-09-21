@@ -519,6 +519,17 @@
             color: #059669;
         }
 
+        /* [HIGH-LIMIT-BOARD 2026-09-21] 涨跌幅放开板 = 科创板(688/689) / 创业板(300/301) /
+           北交所(43/83/87/88/92)：涨跌幅是 20% / 30%，且都要额外交易权限 → 股票名画
+           【浅灰色 + 删除线】，一眼看出「这不是普通 10% 主板的票」，避免误买。
+           与 .close-name-up / .close-name-down 由 AuctionEntityRow#stockTextClass 显式互斥，
+           这里只需写在它们之后（同权重 0,2,0 靠顺序）即可保证不被红绿覆盖。
+           ⚠️ 只改 color / text-decoration：下方的一字实线、停板蚂蚁线是 border-bottom，照常保留。 */
+        .auction-stock-text.high-limit-board {
+            color: #9ca3af;
+            text-decoration: line-through;
+        }
+
         /* 双身份股票（昨日竞昨高光观察组 ∩ 今日正式列表）星号标记 */
         .auction-obs-formal-star {
             color: #f59e0b;

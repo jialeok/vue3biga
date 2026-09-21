@@ -281,6 +281,14 @@ function stockTextClass(item) {
     cls['close-limit-up'] = item.closeLimit === 'up';
     cls['close-limit-down'] = item.closeLimit === 'down';
   }
+  // [HIGH-LIMIT-BOARD 2026-09-21] 涨跌幅放开板（科创板 688/689、创业板 300/301、北交所 43/83/87/88/92）
+  //   → 股票名【浅灰色 + 删除线】，避免误买。它是安全提示，因此【压过】收盘红绿字色（显式互斥）：
+  //   否则「红字」会和「浅灰删除线」语义打架，用户反而看不清这是只 20%/30% 的票。
+  //   下方的一字实线 / 停板蚂蚁线是 border-bottom，与本类的 color 属性不冲突，故照常保留。
+  if (item.isHighLimitBoard) {
+    cls['high-limit-board'] = true;
+    return cls;
+  }
   // 档位由 Logic 层算好（view-helpers closeNameTone），这里只做「档位 → class 名」映射
   if (item.closeNameTone === 'up') cls['close-name-up'] = true;
   else if (item.closeNameTone === 'down') cls['close-name-down'] = true;

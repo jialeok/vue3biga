@@ -294,7 +294,7 @@ describe('mergeYiziIntoAuctionRows · 未并入尾段（§10 绝不静默丢弃�
 });
 
 describe('mergeYiziIntoAuctionRows · ★v3 补入行的字段口径（四列 + 面板，⛔ 不多带）', () => {
-  // 一字看板真实行带的全套字段（含封单额 / 首封时刻 / 时点标）——补入行只许留下面 9 个键
+  // 一字看板真实行带的全套字段（含封单额 / 首封时刻 / 时点标）——补入行只许留下面 10 个键
   const FULL = {
     seq: 3, isLeader: true, continueText: '三板',
     rangeText: '+50.29%(5/10日)', rangeTone: 'up', rangePct: 50.29,
@@ -309,7 +309,10 @@ describe('mergeYiziIntoAuctionRows · ★v3 补入行的字段口径（四列 + 
 
     // 白名单：新增字段会让本用例红掉（刻意的，防止封单额/时点标又悄悄溜回来）
     expect(Object.keys(sup)).toEqual([
-      'stock', 'seq', 'mergedTopic', 'topicsDisplay', 'continueText',
+      // [HIGH-LIMIT-BOARD 2026-09-21] `code` 是本次唯一新增键，⛔ 它【不是展示列】：
+      //   只作为「科创板/创业板/北交所 → 股票名浅灰删除线」的判定输入（与早盘竞价行同一判据，§6），
+      //   模板不渲染它、不占列宽。封单额 / 时点标 / 首封时刻 依旧一个都不许进。
+      'stock', 'code', 'seq', 'mergedTopic', 'topicsDisplay', 'continueText',
       'rankPct', 'rangeText', 'rangeTone', 'topicBg'
     ]);
     expect(sup.stock).toBe('甲');

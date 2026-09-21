@@ -17,7 +17,7 @@ import { getStockTopicCount, getStockTopicsDisplay, getPrimaryTopicMap, classify
 // [YIZI 2026-09-09] 竞价一字（竞价涨停）：行级红线标记 + 题材组间排序权重，单一真相在 limit-up.js。
 // [CLOSE-LIMIT 2026-09-11] 同模块新增 getCloseLimitState：收盘涨停/跌停（蚂蚁线标记 + 题材统计）。
 // [CLOSE-NAME-COLOR 2026-09-11] 同模块新增 getCloseNameTone：收盘涨幅 → 股票名字体颜色档位。
-import { isAuctionYiZi, parseAucPct, getCloseLimitState, getCloseNameTone } from './limit-up.js';
+import { isAuctionYiZi, parseAucPct, getCloseLimitState, getCloseNameTone, isHighLimitBoard } from './limit-up.js';
 // [LIMIT-STREAK 2026-09-11] 趋势/连板标记（趋势 / 首板 / 二板 / 三板…）：只看【当天之前】的
 // 历史交易日收盘涨幅，逐日回看数连续涨停。判定单一真相在 limit-streak.js（纯函数），
 // 数据取内存已存的逐日 change_pct（首屏已整段拉入）→ 0 网络请求、0 猫抓额度。
@@ -233,6 +233,14 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   // 收盘覆盖后（北京 16:05 起）自动出现颜色。只改字体颜色，不影响下方一字实线 / 停板蚂蚁线（border-bottom）。
   const closeNameTone = getCloseNameTone(_closePct, { byTopic: ctx.byTopic, closeWindow: ctx.closeWindow });
 
+  // [HIGH-LIMIT-BOARD 2026-09-21] 涨跌幅放开板（科创板 688/689、创业板 300/301、北交所 43/83/87/88/92）
+  //   → 股票名画【浅灰色删除线】，避免误买（20% / 30% 涨跌幅 + 需额外交易权限）。
+  //   代码口径与上方竞价一字【完全同源】（_yiZiCode：行 code → 内存代码映射 → 空），
+  //   ⛔ 不另起一套取代码逻辑（§6）。代码缺失 → false（不标，§40 不猜）。
+  //   ⚠️ 不加 byTopic / closeWindow 闸门：这是「这只票是什么板」的固有属性，
+  //      与「今天是早盘还是收盘」无关，任何模式、任何时间都该标出来（漏标 = 失去防误买的意义）。
+  const isHighLimit = isHighLimitBoard(_yiZiCode);
+
   // [LIMIT-STREAK 2026-09-11] 趋势/连板标记（趋势 / 首板 / 二板 / 三板…）。
   // 只在题材模式计算（与竞价一字 / 龙头徽章同一显示口径）；取值来自 ctx.limitStreakMap，
   // 该映射在 computeAuctionViewData 里【预构建一次】（不是逐行现算），数据源 = 前 9 个历史交易日
@@ -296,6 +304,9 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     // [CLOSE-NAME-COLOR 2026-09-11] 股票名字体颜色档位：'up'=红（收盘涨）/ 'down'=绿（收盘跌）/
     // null=平盘、无数据、或未到收盘口径（保持默认黑）。模板只认这个字段，别在模板里再判符号。
     closeNameTone,
+    // [HIGH-LIMIT-BOARD 2026-09-21] 涨跌幅放开板（科创 / 创业 / 北交所）→ 股票名浅灰色删除线。
+    //   与 closeNameTone（收盘红绿）在 UI 侧【互斥】：安全提示压过装饰色，见 AuctionEntityRow#stockTextClass。
+    isHighLimitBoard: isHighLimit,
     // [LIMIT-STREAK 2026-09-11] 趋势/连板标记文案：'趋势' / '首板' / '二板' / '三板' / …
     // 由前 9 个历史交易日收盘涨幅派生（不含当天）。空串 = 非题材模式或无历史数据 → 模板不渲染。
     streakLabel,

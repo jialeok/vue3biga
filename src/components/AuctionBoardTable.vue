@@ -169,7 +169,8 @@ const displayRows = computed(() => {
         key: 's' + segKey + '-' + s.stock + '-' + s.mergedTopic,
         stock: s,
         memo: [
-          s.stock, s.seq, s.mergedTopic, s.continueText, s.topicsDisplay, s.topicBg,
+          // [HIGH-LIMIT-BOARD 2026-09-21] s.code 决定浅灰删除线，漏进指纹 → 代码补上后行不重渲染
+          s.stock, s.code, s.seq, s.mergedTopic, s.continueText, s.topicsDisplay, s.topicBg,
           yiziTrendExpanded.value.has(s.stock), yiziTrendLoading.value, yiziTrendMap.value
         ]
       });
@@ -189,6 +190,8 @@ function rowMemo(item) {
     item.topicsDisplay, item.topicBg, expandedSet.value.has(item.stock), sortState.byTopic,
     item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo,
     item.closeLimit, item.closePct, item.closeNameTone, item.streakLabel,
+    // [HIGH-LIMIT-BOARD 2026-09-21] 科创/创业/北交所的浅灰删除线：漏进指纹 → 代码补上后行不重渲染
+    item.isHighLimitBoard,
     item.isDragonGroupMember, item.dragonGroupTopic, item.dragonGroupFormalStar,
     item.dragonGroupPct, item.obsFormalStar
   ];

@@ -1,5 +1,58 @@
 import { describe, it, expect } from 'vitest';
-import { getLimitUpPct, parseAucPct, isAuctionYiZi, buildYiZiSet, isStStockName, getCloseLimitState, getCloseNameTone } from './limit-up.js';
+import { getLimitUpPct, parseAucPct, isAuctionYiZi, buildYiZiSet, isStStockName, getCloseLimitState, getCloseNameTone, getBoardKind, isHighLimitBoard, BOARD_STAR, BOARD_GROWTH, BOARD_BJ, BOARD_MAIN, BOARD_UNKNOWN } from './limit-up.js';
+
+// [HIGH-LIMIT-BOARD 2026-09-21] 板块识别：早盘竞价列表「科创/创业/北交所 → 浅灰删除线」的判据。
+describe('getBoardKind 板块识别', () => {
+  it('科创板 688/689', () => {
+    expect(getBoardKind('688111')).toBe(BOARD_STAR);
+    expect(getBoardKind('689009')).toBe(BOARD_STAR);
+  });
+  it('创业板 300/301', () => {
+    expect(getBoardKind('300750')).toBe(BOARD_GROWTH);
+    expect(getBoardKind('301269')).toBe(BOARD_GROWTH);
+  });
+  it('北交所 43/83/87/88/92', () => {
+    ['430047', '830799', '872925', '880000', '920002'].forEach(c => {
+      expect(getBoardKind(c)).toBe(BOARD_BJ);
+    });
+  });
+  it('主板 60/00/01', () => {
+    expect(getBoardKind('600371')).toBe(BOARD_MAIN);
+    expect(getBoardKind('000001')).toBe(BOARD_MAIN);
+    expect(getBoardKind('001979')).toBe(BOARD_MAIN);
+  });
+  it('缺代码 / 非数字 → UNKNOWN（⛔ 不猜成主板）', () => {
+    expect(getBoardKind('')).toBe(BOARD_UNKNOWN);
+    expect(getBoardKind(null)).toBe(BOARD_UNKNOWN);
+    expect(getBoardKind(undefined)).toBe(BOARD_UNKNOWN);
+    expect(getBoardKind('abcdef')).toBe(BOARD_UNKNOWN);
+  });
+  it('带非数字字符也能识别（代码可能被写成 sh688111）', () => {
+    expect(getBoardKind('sh688111')).toBe(BOARD_STAR);
+    expect(getBoardKind('688 111')).toBe(BOARD_STAR);
+  });
+});
+
+describe('isHighLimitBoard 涨跌幅放开板', () => {
+  it('科创 / 创业 / 北交所 → true', () => {
+    ['688111', '689009', '300750', '301269', '830799', '920002'].forEach(c => {
+      expect(isHighLimitBoard(c)).toBe(true);
+    });
+  });
+  it('主板 → false', () => {
+    expect(isHighLimitBoard('600371')).toBe(false);
+    expect(isHighLimitBoard('000001')).toBe(false);
+  });
+  it('⚠️ 主板 ST（5%）不算放开板 —— 判据是板块，不是「涨跌幅≠10%」', () => {
+    expect(isHighLimitBoard('600371')).toBe(false);
+    expect(getLimitUpPct('600371', '*ST某某')).toBe(5); // 幅度确实是 5%，但板块仍是主板
+    expect(getBoardKind('600371')).toBe(BOARD_MAIN);
+  });
+  it('缺代码 → false（§40 不猜，宁可漏标也不乱标）', () => {
+    expect(isHighLimitBoard('')).toBe(false);
+    expect(isHighLimitBoard(null)).toBe(false);
+  });
+});
 
 describe('limit-up 涨停幅度', () => {
   it('主板 10% / ST 5%', () => {

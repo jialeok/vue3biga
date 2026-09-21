@@ -20,6 +20,50 @@ const LIMIT_BJ = 30;      // 北交所
 // 四舍五入容差：10.02%、9.98% 都算一字；9.5% 不算
 const EPS = 0.15;
 
+// ── 板块识别（2026-09-21 新增）──────────────────────────────────────────────
+// ⚠️ 唯一真相：代码前缀 → 板块。下面 getLimitUpPct 与 isHighLimitBoard 共用这一份表，
+//    ⛔ 任何地方都不要再手写一遍 /^(30|68)/ 这类前缀（§6 两套口径必然分叉）。
+// 前缀顺序与改造前 getLimitUpPct 里的判断顺序【逐条一致】，因此改造前后幅度判定 100% 等价。
+export const BOARD_BJ = 'bj';         // 北交所：43 / 83 / 87 / 88 / 92 → 30%
+export const BOARD_STAR = 'star';     // 科创板：688 / 689（68 段目前只有科创板）→ 20%
+export const BOARD_GROWTH = 'growth'; // 创业板：300 / 301（30 段目前只有创业板）→ 20%
+export const BOARD_MAIN = 'main';     // 沪主板 60 / 深主板 00 / 01 → 10%（ST 5%）
+export const BOARD_UNKNOWN = '';      // 代码缺失或不在以上任何段 → 不猜（§40）
+
+/**
+ * 股票代码 → 板块。只做纯字符串判定，不做任何请求。
+ * @param {string} code 6 位股票代码（可为空 / 可带非数字）
+ * @returns {string} BOARD_* 之一；代码缺失 → BOARD_UNKNOWN（⛔ 绝不猜成主板，§40）
+ */
+export function getBoardKind(code) {
+    const c = String(code || '').replace(/\D/g, '');
+    if (!c) return BOARD_UNKNOWN;
+    if (/^(43|83|87|88|92)/.test(c)) return BOARD_BJ;
+    if (/^68/.test(c)) return BOARD_STAR;
+    if (/^30/.test(c)) return BOARD_GROWTH;
+    if (/^(60|00|01)/.test(c)) return BOARD_MAIN;
+    return BOARD_UNKNOWN;
+}
+
+/**
+ * 【涨跌幅放开板】判定：科创板（688/689）/ 创业板（300/301）/ 北交所（43/83/87/88/92）。
+ *
+ * 用途（2026-09-21 用户要求）：早盘竞价列表把这类股票的【名字画浅灰色删除线】，
+ *   一眼看出「这不是普通 10% 主板的票」—— 这三档涨跌幅是 20% / 30%，且都需额外交易权限，
+ *   没权限的买不了、有权限的也要按另一套涨跌幅判断，最容易误买。
+ *
+ * ⚠️ 判据是【板块】，不是「涨跌幅 ≠ 10%」：主板 ST（5%）同样是「≠10%」，但不在需求范围内，
+ *    故刻意不含它 —— 用 getLimitUpPct 反推会把 ST 全标上，那是错的范围。
+ * ⚠️ 代码缺失 → false（不标）。宁可漏标，也不在没代码时凭股票名猜（§40）。
+ *
+ * @param {string} code 6 位股票代码
+ * @returns {boolean}
+ */
+export function isHighLimitBoard(code) {
+    const k = getBoardKind(code);
+    return k === BOARD_STAR || k === BOARD_GROWTH || k === BOARD_BJ;
+}
+
 /** 股票名是否 ST（含 *ST / ST / S*ST 等写法） */
 export function isStStockName(stockName) {
     if (!stockName) return false;
@@ -35,10 +79,14 @@ export function isStStockName(stockName) {
 export function getLimitUpPct(code, stockName) {
     const c = String(code || '').replace(/\D/g, '');
     if (!c) return isStStockName(stockName) ? LIMIT_ST : LIMIT_MAIN;
-    if (/^(43|83|87|88|92)/.test(c)) return LIMIT_BJ;          // 北交所
-    if (/^(30|68)/.test(c)) return LIMIT_GROWTH;               // 创业板 300/301，科创板 688/689
-    if (/^(60|00|01)/.test(c)) return isStStockName(stockName) ? LIMIT_ST : LIMIT_MAIN; // 沪主板/深主板
-    return isStStockName(stockName) ? LIMIT_ST : LIMIT_MAIN;
+    // 板块前缀表只在 getBoardKind 里存一份（§6）；这里只做「板块 → 幅度」映射。
+    switch (getBoardKind(c)) {
+        case BOARD_BJ: return LIMIT_BJ;
+        case BOARD_STAR:
+        case BOARD_GROWTH: return LIMIT_GROWTH;
+        // 主板 + 未知段：改造前这两支完全同码（都是「ST 5% 否则 10%」），行为不变
+        default: return isStStockName(stockName) ? LIMIT_ST : LIMIT_MAIN;
+    }
 }
 
 /** 解析竞价涨幅字符串（'+10.02%' / '-7.71%' / 10.02 / null）→ number|null。解析不出来返回 null（绝不退化成 0）。 */
