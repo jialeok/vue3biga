@@ -64,6 +64,25 @@ export function useLimitBoard() {
         return isPoolFetchTimeReached(d) ? '' : '当日数据将在收盘后 15:40 自动抓取';
     });
 
+    // ★ 2026-09-22 需求 1【次日继承】：屏幕上摆的是「上一个交易日」那一池时，必须说清楚。
+    //   ⛔ 这不是装饰性提示：把昨天收盘后的名单当成今天的去用，比显示「暂无数据」危险得多。
+    //   只继承一天（不会链式），且继承结果不落库 → 15:40 自动抓取一落地，这里自然消失。
+    const inheritHint = computed(() => {
+        const from = state.inheritedFrom;
+        if (!from || !hasAnyData.value) return '';
+        return '当日数据尚未抓取，当前显示【' + from + '】收盘后的涨跌停名单（原封不动照搬，只继承最近一个交易日；' +
+            '当日 15:40 自动抓取完成后立即换成最新名单）';
+    });
+
+    // ★ 2026-09-22 需求 2：竞价就涨停 / 跌停 → 股票名下方实心红 / 绿线的悬停说明。
+    //   无值（null）→ 不提示：那是「没打到板价」或「没有竞价涨幅数据」，两种情况都不该编一句话。
+    function aucLimitTitle(stock) {
+        const v = stock && stock.aucLimit;
+        if (v === 'up') return '竞价涨停：9:25 竞价涨幅已打在涨停价';
+        if (v === 'down') return '竞价跌停：9:25 竞价涨幅已打在跌停价';
+        return null;
+    }
+
     // ★ 2026-09-18 需求 1：题材自动回填提示。
     // 「竞价一字」接口自带题材 → 加载时「只补空缺」写进共享题材库 → 本看板自动拿到，
     // 不必再手动粘贴导入。只在真的补了才提示（=0 时静默）。
@@ -192,6 +211,7 @@ export function useLimitBoard() {
         hasAnyData,
         summaryText,
         fetchTimeHint,
+        inheritHint,
         topicAutoFillHint,
         rangeHint,
         sections,
@@ -208,6 +228,7 @@ export function useLimitBoard() {
         doImport,
         rangeText,
         rangeClass,
-        continueText
+        continueText,
+        aucLimitTitle
     };
 }

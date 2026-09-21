@@ -132,6 +132,45 @@ export function buildYiZiSet(list, codeOf) {
 }
 
 /**
+ * 【核心】某个涨幅是否触及该股的涨停 / 跌停（与「这个涨幅是竞价的还是收盘的」无关）。
+ *
+ * ⚠️ 竞价口径与收盘口径【刻意共用这一个核心】：涨跌停幅度只有一份口径（§6），
+ *    改一处两边同时生效；分成两份迟早会分叉（2026-09-22「涨跌停」看板要用竞价口径时验证过）。
+ *
+ * @param {*} pct 涨幅：number 或 '+9.98%' 这类字符串
+ * @param {string} [code] 6 位股票代码（缺省兜底主板 10%）
+ * @param {string} [stockName] 股票名（用于 ST 判定）
+ * @returns {'up'|'down'|null}
+ */
+export function getLimitStateByPct(pct, code, stockName) {
+    const n = (typeof pct === 'number')
+        ? (isFinite(pct) ? pct : null)
+        : parseAucPct(pct);
+    if (n === null) return null;
+    const limit = getLimitUpPct(code, stockName);
+    if (n + EPS >= limit) return 'up';
+    if (n - EPS <= -limit) return 'down';
+    return null;
+}
+
+/**
+ * 【竞价】涨停 / 跌停判定（2026-09-22 新增，「涨跌停」看板用）。
+ *
+ * 判据 = 9:25 集合竞价的涨幅（auc_pct_chg）是否打在该股的涨跌停价上：
+ *   · 'up'   → 竞价就涨停（含「竞价一字」这类一字板）
+ *   · 'down' → 竞价就跌停
+ *   · null   → 都没触及，**或没有竞价涨幅数据**（⛔ 绝不退化成 'up'/'down'，§10）
+ *
+ * @param {*} aucPct 竞价涨幅：number 或 '+10.02%' / '-9.97%' 这类字符串
+ * @param {string} [code] 6 位股票代码
+ * @param {string} [stockName] 股票名（用于 ST 判定）
+ * @returns {'up'|'down'|null}
+ */
+export function getAuctionLimitState(aucPct, code, stockName) {
+    return getLimitStateByPct(aucPct, code, stockName);
+}
+
+/**
  * 【收盘】涨停 / 跌停判定（2026-09-11 新增，用于「收盘停板」蚂蚁线标记与同题材统计）。
  *
  * 与 isAuctionYiZi（竞价口径）严格区分：本函数只看【收盘涨幅】。
@@ -150,14 +189,7 @@ export function buildYiZiSet(list, codeOf) {
  *          ⚠️ 无数据一律返回 null，绝不把「没数据」当成「没涨停」以外的任何东西（§10）。
  */
 export function getCloseLimitState(closePct, code, stockName) {
-    const pct = (typeof closePct === 'number')
-        ? (isFinite(closePct) ? closePct : null)
-        : parseAucPct(closePct);
-    if (pct === null) return null;
-    const limit = getLimitUpPct(code, stockName);
-    if (pct + EPS >= limit) return 'up';
-    if (pct - EPS <= -limit) return 'down';
-    return null;
+    return getLimitStateByPct(closePct, code, stockName);
 }
 
 /**

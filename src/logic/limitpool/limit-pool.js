@@ -21,7 +21,10 @@
 import { reactive } from 'vue';
 import { _dbgLog } from '../../data/debug-log.js';
 import { _emit } from '../../stores/eventBus.js';
-import { isTradingDay } from '../date/trading-day-helpers.js';
+import { isTradingDay, getPreviousTradingDay } from '../date/trading-day-helpers.js';
+// §6 单一真相：涨跌停幅度（主板 10% / ST 5% / 创业科创 20% / 北交所 30%）与「竞价是否打在板价上」
+// 的判定，全部复用「早盘竞价」看板那一份（logic/auction/limit-up.js），⛔ 不在本看板另起一套口径。
+import { getAuctionLimitState } from '../auction/limit-up.js';
 import { getDragonWindowDates } from '../auction/dragon-rank.js';
 // §6 单一真相：「十日涨幅取值 + 缺失票用同花顺 K 线补算」与「竞价一字」看板共用同一份实现
 // （logic/auction/range-fill.js），两个看板对同一只票必须算出同一个十日涨幅。
@@ -36,6 +39,9 @@ import {
     BOARD_DOWN
 } from '../../data/limit-pool.js';
 import { readRangePctForDate } from '../../data/stock-range-pct.js';
+// ★ 2026-09-22 需求 2：「竞价就涨停 / 竞价就跌停」的判据 = 9:25 竞价涨幅 auc_pct_chg，
+//   唯一落库处在 market_metrics(scope='auction')（与早盘竞价看板同一张表、同一个字段，§6）。
+import { readMarketMetricsForDate } from '../../data/market-metrics.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 import {
     isTopicLibraryReady,
@@ -63,6 +69,18 @@ export const limitBoardState = reactive({
     // 该日云端是否确实存在快照（false 且 error 为空 = 该日确实没有抓取记录）
     hasSnapshot: false,
     updatedAt: '',
+    // ★ 2026-09-22 需求 1【次日继承】：本屏行数据是【哪一天】的真实收盘抓取结果。
+    //   · inheritedFrom = ''   → 就是当天自己抓的（正常路径）
+    //   · inheritedFrom = 'D'  → 当天还没抓到，屏幕上摆的是 D 日收盘后那一池（原封不动照搬）
+    //   ⚠️ 只展示、不落库：继承结果【绝不写回 limit_pool】，
+    //      否则库里会混进「看起来是 D+1 的、其实是 D 的」行 → 下一次又被当成真实快照继承下去，
+    //      链式污染（D+2 借道 D+1 拿到 D）。不写库 ⇒ 库里每一行都是真实抓取 ⇒ 「只继承一天」是结构性保证。
+    inheritedFrom: '',
+    // 本屏行数据的真实归属日（= inheritedFrom || date）。竞价涨幅要按【这一天】取，
+    // 因为屏幕上的股票本来就是那一天的池子。
+    dataDate: '',
+    // 竞价涨幅读取失败时置位（只是「标不出下划线」，不阻断看板；⛔ 不静默，UI 会提示）
+    aucLimitError: '',
     // 题材库就绪态：未就绪 → 题材分组不可信（UI 需要提示；但不落库，所以只是提示）
     topicLibraryReady: true,
     // ★ 2026-09-18 需求 1：题材自动回填的只数**不存在这里** —— 它是全应用唯一真相，
@@ -116,6 +134,35 @@ export function isPoolFetchTimeReached(date) {
     return _beijingMinutes() >= POOL_FETCH_HOUR * 60 + POOL_FETCH_MIN;
 }
 
+/**
+ * ★ 2026-09-22 需求 1【次日继承】：当天还没抓到池子时，允许摆出「最近一个交易日」那一池。
+ *
+ * 口径（用户逐字定）：
+ *   ① 只继承【一天】：D+1 照搬 D；⛔ D+2 不能借道 D+1 去拿 D —— 那是错误继承。
+ *   ② 继承的是 D 日【收盘后抓取】的那一池，原封不动。
+ *   ③ D 日收盘自动抓取一落地，D+1 立刻换成真实数据（本函数返回 inherit=false 的反向过程，
+ *      由「当天读到了自己的行」自动完成 —— 不需要任何额外的清理动作）。
+ *
+ * ★★ 为什么【只继承一天】是一条结构性保证，而不是靠某个 if 记着：
+ *   继承结果**从不写回 limit_pool**（见 state.inheritedFrom 的头注）。
+ *   于是库里每一行都必然是某天 15:40 的真实抓取结果，不存在「继承来的行」。
+ *   ⇒ 回退时只看【严格最近一个交易日】= 最多一跳，物理上不可能链式。
+ *      就算 D+1 那天上游抓取失败、库里空着，D+2 也只会看到「D+1 没有」→ 显示空，
+ *      而不会滑到 D 去（这正是用户要的「不能无限继承」）。
+ *
+ * @param {string} date 目标交易日 YYYY-MM-DD
+ * @param {string} today 北京今天 YYYY-MM-DD
+ * @param {string|null} prevTradingDay getPreviousTradingDay(date)
+ * @returns {{inherit:boolean, from:string, reason:string}} reason 仅用于日志/排查
+ */
+export function planPoolInheritance(date, today, prevTradingDay) {
+    if (!date) return { inherit: false, from: '', reason: 'no-date' };
+    // 将来的日期：那天还没到，谈不上传承（否则「明天」会显示今天的池子，误导）
+    if (date > today) return { inherit: false, from: '', reason: 'future' };
+    if (!prevTradingDay) return { inherit: false, from: '', reason: 'no-prev-trading-day' };
+    return { inherit: true, from: prevTradingDay, reason: 'prev-trading-day' };
+}
+
 /** 共享题材库里该股票的题材（去掉括号，便于喂给分类函数） */
 function _libraryTopics(name) {
     const raw = getStockHistoryTopics(name);
@@ -142,6 +189,10 @@ function _publishEmpty(date, extra) {
     limitBoardState.hasSnapshot = false;
     limitBoardState.updatedAt = '';
     limitBoardState.rangeCovered = 0;
+    // 【次日继承】继承态必须跟着一起清 —— 否则「昨天继承、今天翻到一个空日子」会残留昨天的继承标记
+    limitBoardState.inheritedFrom = '';
+    limitBoardState.dataDate = '';
+    limitBoardState.aucLimitError = '';
     if (extra && extra.error !== undefined) limitBoardState.error = extra.error;
 }
 
@@ -171,15 +222,17 @@ function _buildBlocks(date, rows, rangeMap, localMap) {
     return buildTopicBlocks(enriched, primaryMap, fallbackFn, rangePctOf);
 }
 
-/** 内容指纹：变了才发布（§17） */
-function _signature(upBlocks, downBlocks, date) {
+/** 内容指纹：变了才发布（§17）。
+ *  ⚠️ 必须带上 dataDate：同样的分块内容可能来自「当天自己抓的」或「继承昨天的」，
+ *     这两种来源对用户是两件事（要不要显示继承提示），指纹相同会导致状态卡住不更新。 */
+function _signature(upBlocks, downBlocks, date, dataDate) {
     const one = function(blocks) {
         return blocks.map(function(b) {
             return b.topic + '#' + b.count + '#' + (b.leaderStock || '') + '#' + (b.leaderPct === null ? '' : b.leaderPct) +
                 '[' + b.stocks.map(function(s) { return s.stock + ':' + (s.rangePct === null ? '' : s.rangePct) + ':' + s.continueText; }).join(',') + ']';
         }).join('||');
     };
-    return date + '||UP||' + one(upBlocks) + '||DOWN||' + one(downBlocks);
+    return date + '|@' + dataDate + '||UP||' + one(upBlocks) + '||DOWN||' + one(downBlocks);
 }
 
 /**
@@ -239,20 +292,49 @@ async function _load(date, force) {
             }
         }
 
+        // ③-b ★ 2026-09-22 需求 1【次日继承】：当天真的没有（自愈也没抓到）→ 摆出【最近一个交易日】那一池。
+        //
+        //     ⛔ 关键：只做【读取时的一次性替身】，⛔ 绝不写回 limit_pool。
+        //        写回去的后果：库里出现「date=D+1 但内容其实是 D」的行 → 下一天又被当成真实快照
+        //        继承一次 → 链式污染（D+2 借道 D+1 拿到 D），正是用户点名的错误继承方式。
+        //        不写库 ⇒ 库里每一行都是真实抓取 ⇒ 回退最多一跳，物理上不可能链式。
+        //     ⛔ 读失败必须抛（§10）：readLimitPoolForDate 失败 ≠ 「那天没有涨跌停」，
+        //        抛给外层 catch 显示加载失败，绝不退化成空。
+        let dataDate = date;
+        let inheritedFrom = '';
+        if (rows.length === 0) {
+            const plan = planPoolInheritance(date, _beijingTodayStr(), getPreviousTradingDay(date));
+            if (plan.inherit) {
+                const prevRows = await readLimitPoolForDate(plan.from);
+                if (prevRows.length > 0) {
+                    rows = prevRows;
+                    dataDate = plan.from;
+                    inheritedFrom = plan.from;
+                    _dbgLog('[LIMIT-POOL] ' + date + ' 当日无池 → 继承 ' + plan.from +
+                        '（涨停 ' + prevRows.filter(function(r) { return r.board === BOARD_UP; }).length +
+                        ' 只，跌停 ' + prevRows.filter(function(r) { return r.board === BOARD_DOWN; }).length + ' 只；只展示不落库）');
+                } else {
+                    _dbgLog('[LIMIT-POOL] ' + date + ' 次日继承未命中：' + plan.from + ' 也没有池子 → 如实呈现空');
+                }
+            }
+        }
+
         if (rows.length === 0) {
             _publishEmpty(date, { error: limitBoardState.error });
             return;
         }
 
         // ④ 十日涨幅（读失败 → 不假装为 0，标记 rangeError 让 UI 提示）
+        //    ⚠️ 取【dataDate】：继承时屏幕上是 D 那一池，十日涨幅必须是「截至 D」的，
+        //       按 D+1 取会拿到一堆空值（那只票在 D+1 的快照里还没进过池）→ 整列 '-'。
         let rangeMap = new Map();
         let rangeReady = true;
         try {
-            rangeMap = await readRangePctForDate(date);
+            rangeMap = await readRangePctForDate(dataDate);
         } catch (e) {
             rangeReady = false;
             limitBoardState.rangeError = '十日涨幅读取失败：' + (e && e.message || e);
-            _dbgLog('[LIMIT-POOL] ' + date + ' 读 stock_range_pct 失败: ' + (e && e.message || e));
+            _dbgLog('[LIMIT-POOL] ' + dataDate + ' 读 stock_range_pct 失败: ' + (e && e.message || e));
         }
 
         // ⑤ 缺失的十日涨幅：按股票增量补算（fail-soft；getRangeFill 自带会话内缓存与单飞，
@@ -261,11 +343,11 @@ async function _load(date, force) {
         if (rangeReady) {
             try {
                 localMap = await getRangeFill({
-                    date: date,
+                    date: dataDate,
                     rows: rows,
                     rangeMap: rangeMap,
                     codeOf: _codeOf,
-                    windowDates: getDragonWindowDates(date),
+                    windowDates: getDragonWindowDates(dataDate),
                     tag: '[LIMIT-POOL]'
                 });
             } catch (e) {
@@ -302,23 +384,58 @@ async function _load(date, force) {
             _dbgLog('[LIMIT-POOL] ' + date + ' 题材自动回填异常（不影响看板）: ' + (e && e.message || e));
         }
 
+        // ⑥-c ★ 2026-09-22 需求 2：竞价就涨停 → 股票名下方【实心红线】；竞价就跌停 → 【实心绿线】。
+        //
+        //   判据 = dataDate 那天的 9:25 竞价涨幅（market_metrics.auc_pct_chg）是否打在该股涨跌停价上。
+        //   ⚠️ 取【dataDate】而不是 date：屏幕上的股票本来就是 dataDate 那一池，
+        //      拿「今天」的竞价涨幅去标「昨天」的涨停板 = 张冠李戴（§6：同一天、同一票、同一个值）。
+        //   ⚠️ 幅度口径复用 logic/auction/limit-up.js（与早盘竞价「竞价一字」同一把尺子），⛔ 不自造。
+        //   ⚠️ 覆盖面：market_metrics(auction) 是【早盘竞价自选列表】的指标表，不是全市场 ——
+        //      池子里不在自选列表的股票拿不到竞价涨幅 ⇒ 无标记（null），⛔ 绝不当成「不是一字」。
+        //      （不为此新增上游抓取：用户明确「获取股票数据不变」。）
+        let aucMap = new Map();
+        limitBoardState.aucLimitError = '';
+        try {
+            const metrics = await readMarketMetricsForDate(dataDate, 'auction');
+            metrics.forEach(function(m) {
+                const nm = m && m.stock ? String(m.stock).trim() : '';
+                if (nm) aucMap.set(nm, m.auc_pct_chg || '');
+            });
+        } catch (e) {
+            // fail-soft + 显式提示：拿不到竞价涨幅只是「标不出线」，池子本身依然可信；
+            // 但⛔ 绝不静默 —— 否则用户会以为「今天一只竞价一字都没有」（§10 无数据 ≠ 没有）。
+            limitBoardState.aucLimitError = '竞价涨幅读取失败，涨跌停看板的竞价标记暂不可用';
+            _dbgLog('[LIMIT-POOL] ' + dataDate + ' 读 market_metrics 失败: ' + (e && e.message || e));
+        }
+        rows = rows.map(function(r) {
+            const nm = r && r.stock ? String(r.stock).trim() : '';
+            const raw = nm ? aucMap.get(nm) : undefined;
+            if (raw === undefined || raw === null || raw === '') return r;
+            // ⛔ 用 Object.assign 产新对象：继承来的行是 Data 层读回的原对象，就地改会污染
+            return Object.assign({}, r, { aucLimit: getAuctionLimitState(raw, _codeOf(r), nm) });
+        });
+
         // ⑦ 分组 + 选龙头
         const upRows = rows.filter(function(r) { return r.board === BOARD_UP; });
         const downRows = rows.filter(function(r) { return r.board === BOARD_DOWN; });
         const upBlocks = _buildBlocks(date, upRows, rangeMap, localMap);
         const downBlocks = _buildBlocks(date, downRows, rangeMap, localMap);
 
-        const sig = _signature(upBlocks, downBlocks, date);
+        const sig = _signature(upBlocks, downBlocks, date, dataDate);
         if (!force && limitBoardState.signature === sig) {
             // 内容一致：只更新轻量字段，不重放分块（§17）
             limitBoardState.loading = false;
             limitBoardState.date = date;
+            limitBoardState.dataDate = dataDate;
+            limitBoardState.inheritedFrom = inheritedFrom;
             limitBoardState.rangeReady = rangeReady;
             limitBoardState.rangeCovered = _countCovered(rows, rangeMap, localMap);
             return;
         }
         limitBoardState.signature = sig;
         limitBoardState.date = date;
+        limitBoardState.dataDate = dataDate;
+        limitBoardState.inheritedFrom = inheritedFrom;
         limitBoardState.upBlocks = upBlocks;
         limitBoardState.downBlocks = downBlocks;
         limitBoardState.upCount = upRows.length;

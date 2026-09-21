@@ -1,5 +1,42 @@
 import { describe, it, expect } from 'vitest';
-import { getLimitUpPct, parseAucPct, isAuctionYiZi, buildYiZiSet, isStStockName, getCloseLimitState, getCloseNameTone, getBoardKind, isHighLimitBoard, BOARD_STAR, BOARD_GROWTH, BOARD_BJ, BOARD_MAIN, BOARD_UNKNOWN } from './limit-up.js';
+import { getLimitUpPct, parseAucPct, isAuctionYiZi, buildYiZiSet, isStStockName, getCloseLimitState, getCloseNameTone, getBoardKind, isHighLimitBoard, getAuctionLimitState, getLimitStateByPct, BOARD_STAR, BOARD_GROWTH, BOARD_BJ, BOARD_MAIN, BOARD_UNKNOWN } from './limit-up.js';
+
+// [2026-09-22] 涨跌停看板：「竞价就涨停 / 竞价就跌停」判定。
+// 与 getCloseLimitState 共用同一个核心（涨跌停幅度只有一份口径），这里锁住的是【竞价口径】的语义。
+describe('getAuctionLimitState 竞价涨停/跌停', () => {
+  it('竞价涨幅打到涨停 → up（含四舍五入容差）', () => {
+    expect(getAuctionLimitState('+10.02%', '600371', '万向德农')).toBe('up');
+    expect(getAuctionLimitState('+9.98%', '600371', '万向德农')).toBe('up');
+    expect(getAuctionLimitState(10, '600371', '万向德农')).toBe('up');
+  });
+  it('竞价涨幅打到跌停 → down', () => {
+    expect(getAuctionLimitState('-9.97%', '600371', '万向德农')).toBe('down');
+    expect(getAuctionLimitState(-10, '600371', '万向德农')).toBe('down');
+  });
+  it('没打到板价 → null（常规展示，不标记）', () => {
+    expect(getAuctionLimitState('+3.25%', '600371', '万向德农')).toBeNull();
+    expect(getAuctionLimitState('-2.10%', '600371', '万向德农')).toBeNull();
+    expect(getAuctionLimitState('0', '600371', '万向德农')).toBeNull();
+  });
+  it('⚠️ 无竞价涨幅数据 → null（⛔ 绝不退化成 up/down，§10）', () => {
+    expect(getAuctionLimitState('', '600371', '万向德农')).toBeNull();
+    expect(getAuctionLimitState(null, '600371', '万向德农')).toBeNull();
+    expect(getAuctionLimitState(undefined, '600371', '万向德农')).toBeNull();
+    expect(getAuctionLimitState('abc', '600371', '万向德农')).toBeNull();
+  });
+  it('按板块走各自的幅度（科创/创业 20%、北交所 30%）', () => {
+    expect(getAuctionLimitState('+12%', '688111', '金山办公')).toBeNull();   // 主板早涨停了，科创板还没到
+    expect(getAuctionLimitState('+20%', '688111', '金山办公')).toBe('up');
+    expect(getAuctionLimitState('+20%', '830799', '某某')).toBeNull();       // 北交所要 30%
+    expect(getAuctionLimitState('+30%', '830799', '某某')).toBe('up');
+    expect(getAuctionLimitState('-30%', '830799', '某某')).toBe('down');
+  });
+  it('与收盘口径共用同一个核心（改一处两边同时生效）', () => {
+    const args = ['+10.02%', '600371', '万向德农'];
+    expect(getAuctionLimitState(...args)).toBe(getCloseLimitState(...args));
+    expect(getLimitStateByPct(...args)).toBe('up');
+  });
+});
 
 // [HIGH-LIMIT-BOARD 2026-09-21] 板块识别：早盘竞价列表「科创/创业/北交所 → 浅灰删除线」的判据。
 describe('getBoardKind 板块识别', () => {

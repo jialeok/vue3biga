@@ -355,6 +355,20 @@
             color: #16a34a;
         }
 
+        /* ★ 2026-09-22 需求 2：竞价就涨停 → 股票名下方【实心红线】；竞价就跌停 → 【实心绿线】。
+           判据 = 9:25 竞价涨幅打在该股涨跌停价上（与早盘竞价看板「竞价一字」的 .yizi-limit
+           同一语义、同一色值，用户一眼能对上：那边是竞价一字，这边是「这一池里哪些竞价就板了」）。
+           ⚠️ 刻意用【实线】而不是收盘停板那种虚线蚂蚁线：竞价信号是「开盘就定了」，两种线形不许混。
+           ⚠️ 只动 border-bottom，与上面 .tone-up / .tone-down 的 color 是不同属性，互不覆盖。
+           色值取本看板自己的 tone-up / tone-down（与十日涨幅配色同一套）。 */
+        .limit-name.auc-limit-up {
+            border-bottom: 2px solid #dc2626;
+        }
+
+        .limit-name.auc-limit-down {
+            border-bottom: 2px solid #16a34a;
+        }
+
         /* 龙头标：9px 实心小标，紧贴【股票名之后】（与早盘竞价看板 .dragon-badge 同级占位） */
         .limit-leader-badge {
             flex: 0 0 auto;

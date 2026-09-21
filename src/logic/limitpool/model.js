@@ -56,7 +56,12 @@ export function buildTopicBlocks(rows, primaryMap, fallbackFn, rangePctOf) {
                 continueText: row.continueText || '',
                 reason: row.reason || '',
                 limitTime: row.limitTime || '',
-                sealMoney: row.sealMoney === null || row.sealMoney === undefined ? null : row.sealMoney
+                sealMoney: row.sealMoney === null || row.sealMoney === undefined ? null : row.sealMoney,
+                // ★ 2026-09-22 需求 2：竞价就涨停 'up' → 股票名下方实心红线；竞价就跌停 'down' → 实心绿线。
+                //   由 Logic 编排层（limit-pool.js ⑥-c）按 market_metrics 的竞价涨幅算好，本层只透传。
+                //   ⛔ null / undefined = 没打到板价【或没有竞价涨幅数据】→ 模板一律不标记，
+                //      绝不当成 'up'/'down'（§10 无数据 ≠ 没有）。
+                aucLimit: row.aucLimit || null
             };
         }
     });

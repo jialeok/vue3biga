@@ -88,6 +88,21 @@
         <!-- ★ 需求 1（2026-09-18）：题材自动回填提示（说明型，不是告警）。
              本看板的题材来自共享题材库；库里的空缺由「竞价一字」接口自动补齐，
              用户看到这条就知道不必再手动粘贴导入了。 -->
+        <!-- ★ 2026-09-22 需求 1【次日继承】：明确告诉用户「屏幕上这一池是哪一天的」。
+             ⛔ 必须显示：不显示的话，用户会把昨天收盘后的名单当成今天的名单去用（比空白更危险）。 -->
+        <div
+          v-if="inheritHint"
+          class="limit-note"
+        >
+          {{ inheritHint }}
+        </div>
+        <!-- 竞价涨幅读不到时如实提示（否则用户会以为「今天一只竞价一字都没有」） -->
+        <div
+          v-if="state.aucLimitError"
+          class="limit-warn"
+        >
+          {{ state.aucLimitError }}
+        </div>
         <div
           v-if="topicAutoFillHint"
           class="limit-note"
@@ -181,7 +196,12 @@
                   <span class="limit-name-block">
                     <span
                       class="limit-name"
-                      :class="[sec.key === 'up' ? 'tone-up' : 'tone-down', { leader: stock.isLeader }]"
+                      :class="[
+                        sec.key === 'up' ? 'tone-up' : 'tone-down',
+                        { leader: stock.isLeader },
+                        { 'auc-limit-up': stock.aucLimit === 'up', 'auc-limit-down': stock.aucLimit === 'down' }
+                      ]"
+                      :title="aucLimitTitle(stock)"
                     >{{ stock.stock }}</span>
                     <span
                       v-if="stock.isLeader"
@@ -247,6 +267,7 @@ const {
   hasAnyData,
   summaryText,
   fetchTimeHint,
+  inheritHint,
   topicAutoFillHint,
   rangeHint,
   sections,
@@ -263,7 +284,8 @@ const {
   doImport,
   rangeText,
   rangeClass,
-  continueText
+  continueText,
+  aucLimitTitle
 } = useLimitBoard();
 
 defineExpose({ refresh });
