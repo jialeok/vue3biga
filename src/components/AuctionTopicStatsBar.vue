@@ -18,56 +18,94 @@
   ⚠️ 不要加左侧竖条 / 配色高光：与「卖」标签的灰黑色块视觉冲突，会看乱（用户明确要求去掉）。
   数据缺失的段（如次新股没有 10 日区间涨幅）在 Logic 层就不会产出，这里不补 0 / '-'（§10）。
   单只股票的题材在 Logic 层就不产出统计对象 → 父级 v-if 直接不渲染。
+
+  [TOPIC-TREND 2026-09-20] 统计条【可点击】：点一下展开该题材的五日趋势（名次图 + 一字数量图），
+  再点一下收起；默认收起（省空间），与「点序号展开股票五日趋势图」同一交互。
+  · 展开态 / 序列全部来自 inject('auctionTopicTrend')（§6 单一真相），本组件不自建状态；
+  · 根节点改为 .ats-wrap：统计条 + 趋势面板上下堆叠，把 flex-basis:100% 移到 wrapper 上，
+    原来那条统计条自身的盒模型一行未改（宽度/背景/圆角/内边距全部保留）。
 -->
 <template>
   <div
     v-if="layout"
-    class="auction-topic-stats"
+    class="ats-wrap"
   >
-    <div class="ats-left">
-      {{ layout.topic }}
-    </div>
-    <div class="ats-right">
-      <div class="ats-line">
-        <span
-          v-for="s in layout.row1"
-          :key="s.key"
-          class="ats-item"
-        ><b>{{ s.label }}</b><i
-          v-if="s.parts"
-          class="ats-parts"
-        ><span
-          v-for="p in s.parts"
-          :key="p.text"
-          :class="'ats-tone-' + p.tone"
-        >{{ p.text }}</span></i><i v-else>{{ s.value }}</i></span>
+    <div
+      class="auction-topic-stats ats-clickable"
+      :class="{ 'ats-open': expanded }"
+      :title="expanded ? '收起五日趋势' : '展开五日趋势（名次 / 一字数量）'"
+      @click.stop="onToggle"
+      @dblclick.stop
+    >
+      <div class="ats-left">
+        {{ layout.topic }}
       </div>
-      <div
-        v-if="layout.row2.length"
-        class="ats-line ats-line2"
-      >
-        <span
-          v-for="s in layout.row2"
-          :key="s.key"
-          class="ats-item"
-        ><b>{{ s.label }}</b><i :class="[s.strong ? 'ats-strong' : null, s.tone ? 'ats-' + s.tone : null]">{{ s.value }}</i></span>
+      <div class="ats-right">
+        <div class="ats-line">
+          <span
+            v-for="s in layout.row1"
+            :key="s.key"
+            class="ats-item"
+          ><b>{{ s.label }}</b><i
+            v-if="s.parts"
+            class="ats-parts"
+          ><span
+            v-for="p in s.parts"
+            :key="p.text"
+            :class="'ats-tone-' + p.tone"
+          >{{ p.text }}</span></i><i v-else>{{ s.value }}</i></span>
+        </div>
+        <div
+          v-if="layout.row2.length"
+          class="ats-line ats-line2"
+        >
+          <span
+            v-for="s in layout.row2"
+            :key="s.key"
+            class="ats-item"
+          ><b>{{ s.label }}</b><i :class="[s.strong ? 'ats-strong' : null, s.tone ? 'ats-' + s.tone : null]">{{ s.value }}</i></span>
+        </div>
       </div>
+      <span class="ats-caret">{{ expanded ? '▲' : '▼' }}</span>
     </div>
+    <AuctionTopicTrendPanel
+      v-if="expanded"
+      :topic="layout.topic"
+    />
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue';
+import { computed, inject } from 'vue';
 import { formatTopicStatsLayout } from '../logic/auction/topic-stats.js';
+import AuctionTopicTrendPanel from './AuctionTopicTrendPanel.vue';
 
 const props = defineProps({
   stats: { type: Object, default: null }
 });
 
 const layout = computed(() => formatTopicStatsLayout(props.stats));
+
+// [TOPIC-TREND 2026-09-20] 五日趋势的展开态与序列（provide 在 AuctionBoard.vue，与看板同源）。
+const topicTrend = inject('auctionTopicTrend');
+const { isExpanded, toggle } = topicTrend;
+
+const expanded = computed(() => isExpanded(layout.value ? layout.value.topic : ''));
+
+function onToggle() {
+  if (!layout.value) return;
+  toggle(layout.value.topic);
+}
 </script>
 
 <style scoped>
+/* [TOPIC-TREND 2026-09-20] 统计条 + 趋势面板的包裹层：整块占满一行。
+   原来统计条自己的 flex-basis:100% 移到本层，统计条盒模型本身一行未改。 */
+.ats-wrap {
+  width: 100%;
+  flex-basis: 100%;
+}
+
 /* 统一浅灰底 + 上下留白，用于把相邻题材块分开；刻意【不做】左侧竖条/色块高光，
    避免与「卖」等灰黑标签色块混淆。左右两格是隐形划分，不画任何分隔线。 */
 .auction-topic-stats {
@@ -75,7 +113,6 @@ const layout = computed(() => formatTopicStatsLayout(props.stats));
   align-items: stretch;
   gap: 8px;
   width: 100%;
-  flex-basis: 100%;
   padding: 3px 6px;
   margin: 2px 0 1px;
   background: #f1f5f9;
@@ -83,6 +120,30 @@ const layout = computed(() => formatTopicStatsLayout(props.stats));
   font-size: 11px;
   line-height: 1.35;
   color: #475569;
+}
+
+/* [TOPIC-TREND 2026-09-20] 可点击：整条都是热区（与「点序号展开趋势图」同一手感）。
+   只加光标与 hover 底色，⛔ 不改字号/边距/配色，避免破坏「省空间」的既定排版。 */
+.ats-clickable {
+  cursor: pointer;
+  user-select: none;
+}
+.ats-clickable:hover {
+  background: #e8eef6;
+}
+/* 展开时把下圆角抹平，与下方趋势面板连成一块 */
+.ats-open {
+  border-radius: 2px 2px 0 0;
+  margin-bottom: 0;
+}
+
+/* 右侧展开/收起指示（▼ 收起 / ▲ 展开），极轻量，不抢统计数字的注意力 */
+.ats-caret {
+  flex: 0 0 auto;
+  align-self: center;
+  font-size: 9px;
+  line-height: 1;
+  color: #94a3b8;
 }
 
 /* 左格窄：题材名，字号更大更显眼 */

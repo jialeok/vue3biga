@@ -104,6 +104,7 @@
 import { provide, defineExpose, computed } from 'vue';
 import { useAuctionBoard } from '../composables/useAuctionBoard.js';
 import { useAuctionYiziSupplement } from '../composables/useAuctionYiziSupplement.js';
+import { useAuctionTopicTrend } from '../composables/useAuctionTopicTrend.js';
 import AuctionBoardToolbar from '../components/AuctionBoardToolbar.vue';
 import AuctionBoardTable from '../components/AuctionBoardTable.vue';
 import AuctionBoardPageTopics from '../components/AuctionBoardPageTopics.vue';
@@ -123,6 +124,11 @@ provide('auctionBoard', board);
 //   ⚠️ 显式传 board：Vue 的 inject 只看父级 provides，本层自己 provide 的东西 inject 不到。
 const yiziSupplement = useAuctionYiziSupplement(board);
 provide('auctionYiziSupplement', yiziSupplement);
+// [TOPIC-TREND 2026-09-20] 题材统计条 → 点击展开五日趋势（名次 + 一字数量）。
+//   同样是「显示层新功能、独立组合式 + 独立组件」（§15），⛔ 不把展开态塞进 useAuctionBoard。
+//   它只读内存里既有的逐日早盘竞价行（logic/auction/topic-trend.js），⛔ 零请求、零写入。
+const topicTrend = useAuctionTopicTrend(board);
+provide('auctionTopicTrend', topicTrend);
 
 // 根模板直接引用的最小集合（其余由子组件经 inject 使用，保持行为一致）。
 const {

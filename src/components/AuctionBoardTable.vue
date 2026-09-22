@@ -129,6 +129,12 @@ const {
   trendExpanded: yiziTrendExpanded, trendLoading: yiziTrendLoading, trendMap: yiziTrendMap
 } = inject('auctionYiziSupplement');
 
+// [TOPIC-TREND 2026-09-20] 题材统计条的五日趋势展开态（provide 在 AuctionBoard.vue）。
+// ⚠️ 只读：这里唯一要做的事是把它【塞进行级 v-memo 指纹】—— 与既有 expandedSet.has() 完全同一个理由：
+//    只变「展开态」而不变任何行内容时，v-memo 会跳过整行重渲染 → 点了统计条没反应。
+const topicTrend = inject('auctionTopicTrend');
+const topicTrendExpanded = topicTrend.expanded;
+
 // [YIZI-SUP 2026-09-20] 把「分段序列」展平成一条渲染列表。
 //
 // ★ 为什么必须展平（不是偷懒）：分段序列天然是两层 v-for（组 → 行），而 Vue 的 v-memo **在嵌套
@@ -193,7 +199,10 @@ function rowMemo(item) {
     // [HIGH-LIMIT-BOARD 2026-09-21] 科创/创业/北交所的浅灰删除线：漏进指纹 → 代码补上后行不重渲染
     item.isHighLimitBoard,
     item.isDragonGroupMember, item.dragonGroupTopic, item.dragonGroupFormalStar,
-    item.dragonGroupPct, item.obsFormalStar
+    item.dragonGroupPct, item.obsFormalStar,
+    // [TOPIC-TREND 2026-09-20] 题材统计条的五日趋势展开态：漏进指纹 → 点统计条整行不重渲染。
+    //   只对本行【带有统计条】时才有意义（统计条只在题材块第一行出现），其余行恒为 false。
+    item.topicStats ? topicTrendExpanded.value.has(item.topicStats.topic) : false
   ];
 }
 

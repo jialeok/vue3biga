@@ -69,6 +69,10 @@ const props = defineProps({
   height: { type: Number, default: 56 },
   // [FEAT 2026-08-17] 数据点半径（px）。月统计传更大值（如 4）让点更醒目。
   dotRadius: { type: Number, default: 3 },
+  // [TOPIC-TREND 2026-09-20] 纵轴反转：数值【越小】画得【越高】。
+  //   仅用于「名次」这类「小 = 强」的序列（第 1 名画在最上面），数值标签仍显示真实名次。
+  //   ⛔ 默认 false —— 既有调用方（竞价量/涨幅/…）行为一字节不变。
+  invert: { type: Boolean, default: false },
 });
 
 // 动态宽度：有 pointSpacing 时按点数计算，否则保持原 320 固定宽（§15 向后兼容）。
@@ -116,7 +120,12 @@ const coords = computed(() => {
   return props.points.map((p, i) => {
     const x = paddingX + stepX.value * i;
     if (p.value === null) return { x, y: null };
-    const y = paddingTop + (height.value - paddingTop - paddingBottom) * (1 - (p.value - minV.value) / range.value);
+    // t = 该值在 [minV, maxV] 里的归一化高度（0=最低，1=最高）。
+    // [TOPIC-TREND 2026-09-20] invert=true（名次）时 t 直接用 → 第 1 名落在最上方；
+    //   其余序列保持原样 1-t → 数值越大越靠上（既有全部调用方零影响）。
+    const t = (p.value - minV.value) / range.value;
+    const ratio = props.invert ? t : (1 - t);
+    const y = paddingTop + (height.value - paddingTop - paddingBottom) * ratio;
     return { x: x.toFixed(1), y: y.toFixed(1) };
   });
 });
