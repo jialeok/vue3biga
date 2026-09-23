@@ -63,8 +63,9 @@
            [HIGH-LIMIT-BOARD 2026-09-21] 科创/创业/北交所 → 再叠一层浅灰删除线（避免误买），
            与早盘竞价行的处理完全一致：它是安全提示，压过收盘红绿字色；下划线是 border-bottom，不冲突。 -->
       <span
-        class="auction-stock-text yizi-limit"
+        class="auction-stock-text yizi-limit not-formal-member"
         :class="{ 'high-limit-board': isHighLimitBoard(props.stock.code) }"
+        title="不在今日 9:25 早盘竞价正式名单（由「补竞价一字」补入），不计入题材统计"
       >{{ stock.stock }}</span>
       <!-- 连板标（首板/二板/三板…）：与早盘竞价行内那个连板标同款同源（limit-streak） -->
       <span
@@ -78,9 +79,11 @@
         :title="addedTitle"
       >补</span>
     </div>
-    <!-- 题材列：列宽与样式与 .auction-topic-cell 同源（完整展示、允许折行、不做省略号截断） -->
+    <!-- 题材列：列宽与样式与 .auction-topic-cell 同源（完整展示、允许折行、不做省略号截断）
+         [NOT-FORMAL 2026-09-23] 补入行恒不在今日 9:25 正式名单（该功能的前提：名单里已有的直接跳过），
+         题材名一起画灰，与早盘竞价行的「不在正式名单」口径一致 —— 灰色 = 不计入题材统计。 -->
     <div
-      class="auction-topic-cell"
+      class="auction-topic-cell not-formal-member"
       :title="stock.topicsDisplay"
     >
       {{ stock.topicsDisplay }}

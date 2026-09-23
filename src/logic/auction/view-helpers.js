@@ -6,7 +6,7 @@ import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlig
 import { ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagState, _buildTagStateCache } from '../tagTitles/rules.js';
 import { getThreeDayJingDieSet, getWeakStrongSet, getWeakStrongTurnSet, getVolGrabSet } from './sort-rules-extra.js';
 import { getStockCode } from '../../data/stock-code-map.js';
-import { _getAuctionWatchlistSet, _isAuctionFormalMember } from '../../data/watchlist-and-metrics.js';
+import { _getAuctionWatchlistSet, _isAuctionFormalMember, _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
 import { state } from '../app-state.js';
 import { useAuctionStore } from '../../stores/auctionStore.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
@@ -241,6 +241,14 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   //      与「今天是早盘还是收盘」无关，任何模式、任何时间都该标出来（漏标 = 失去防误买的意义）。
   const isHighLimit = isHighLimitBoard(_yiZiCode);
 
+  // [NOT-FORMAL 2026-09-23] 是否【当天 9:25 抓到的正式名单成员】。
+  //   判定唯一真相 = _isAuctionFormalMember（data/watchlist-and-metrics.js），本文件不另写一份。
+  //   不在正式名单的 = 观察组继承壳 / 影子行：它们【照常渲染】（次日观察组继承功能需要），
+  //   但 ① 不进任何统计（题材名次 / 一字数量 / 组大小）；② 股票名与题材画灰（UI 层）。
+  //   ⛔ §10：正式成员索引未就绪时**不得**判为「不在名单」（那会把还没拉到的数据整列表刷灰），
+  //      此时退化为 true（全部按正式成员处理）—— 判定与降级都在 ctx.isFormalListed 里（§6 单一真相）。
+  const isFormalMember = ctx.isFormalListed ? ctx.isFormalListed(stockName) : true;
+
   // [LIMIT-STREAK 2026-09-11] 趋势/连板标记（趋势 / 首板 / 二板 / 三板…）。
   // 只在题材模式计算（与竞价一字 / 龙头徽章同一显示口径）；取值来自 ctx.limitStreakMap，
   // 该映射在 computeAuctionViewData 里【预构建一次】（不是逐行现算），数据源 = 前 9 个历史交易日
@@ -307,6 +315,9 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     // [HIGH-LIMIT-BOARD 2026-09-21] 涨跌幅放开板（科创 / 创业 / 北交所）→ 股票名浅灰色删除线。
     //   与 closeNameTone（收盘红绿）在 UI 侧【互斥】：安全提示压过装饰色，见 AuctionEntityRow#stockTextClass。
     isHighLimitBoard: isHighLimit,
+    // [NOT-FORMAL 2026-09-23] 是否当天 9:25 正式名单成员（false = 观察组继承壳 / 影子行）。
+    //   ① 统计口径：题材名次 / 一字数量 / 组大小只算 true 的行；② UI：false → 股票名与题材画灰。
+    isFormalMember,
     // [LIMIT-STREAK 2026-09-11] 趋势/连板标记文案：'趋势' / '首板' / '二板' / '三板' / …
     // 由前 9 个历史交易日收盘涨幅派生（不含当天）。空串 = 非题材模式或无历史数据 → 模板不渲染。
     streakLabel,
@@ -838,7 +849,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
         _colorSourceMap.set(nm, classifyStockPrimaryTopic(it));
       });
     }
-    topicColorMap = buildTopicColorMap(_colorSourceMap, 2);
+    topicColorMap = buildTopicColorMap(_colorSourceMap, 2, _formalNames);
 
     // [DRAGON-SORT 2026-09-09] 题材【单独】开启时，同题材组内按龙头排名升序（龙一→龙二→龙三…）。
     // 排名必须在排序【之前】算好，所以这里先基于「主排序后的完整 renderOrder」算一版：
@@ -858,7 +869,16 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
           return dk ? dk.rank : null;
         }
         : null,
-      yiZiOf
+      yiZiOf,
+      // [NOT-FORMAL 2026-09-23] 题材组的「一字数 / 组大小」只数【当天 9:25 正式成员】。
+      //   观察组继承壳仍按题材落进对应组、照常渲染，但不贡献任何计数 ——
+      //   这样「组间排序依据 == 统计条数字 == 趋势图名次」三处同源，杜绝用户反馈的视觉/统计错位。
+      //   ⚠️ 这是第 7 个参数 countableOf，⛔ 不能顶掉第 6 个 yiZiOf（顶掉就完全没有一字权重了）。
+      (idx) => {
+        const it = renderList[idx];
+        const nm = it && it.stock ? String(it.stock).trim() : '';
+        return nm ? _formalNames.has(nm) : false;
+      }
     );
   }
 
@@ -1014,6 +1034,18 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     hiddenObsIndices = [];
   }
 
+  // [NOT-FORMAL 2026-09-23] 正式成员索引是否就绪（§10：未就绪 ≠ 当日没有正式成员）。
+  // 不就绪时 isFormalListed 一律返回 true —— 宁可「该灰的没灰」，也绝不把整列表刷成灰。
+  const _formalIndexReady = _isAuctionWatchlistIndexReady(currentDate);
+  // renderList 里「真正计入统计」的股票名集合（= 正式成员）。
+  // 只在这里算一次，供题材排序 / 题材配色 / 统计条 / 行着色四处共用（§6 单一真相、§19 不重复计算）。
+  const _formalNames = new Set();
+  renderList.forEach(function(it) {
+    const nm = it && it.stock ? String(it.stock).trim() : '';
+    if (!nm) return;
+    if (!_formalIndexReady || _isAuctionFormalMember(currentDate, nm)) _formalNames.add(nm);
+  });
+
   const ctx = {
     dataSource, date: currentDate, confirmedSoldSet: _confirmedSoldSet,
     isObsMember: _isObsMember,
@@ -1022,6 +1054,14 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     // 否则「昨天打过标签、今天不在 9:25 名单」的票会被误打 *（万向德农 9/9 就是这种情况）。
     // 与 _isFormalTodayMember（折叠豁免）同源，避免「显示星号」与「永不隐藏」两套标准。
     isFormalToday: function(name) {
+      return _isAuctionFormalMember(currentDate, name);
+    },
+    // [NOT-FORMAL 2026-09-23] 「是不是当天 9:25 正式成员」的**统计/着色**口径（与上面的 `*` 判定同源，
+    // 但多了 §10 降级）：正式成员索引未就绪 ⇒ 一律按「在名单」处理，⛔ 绝不把整列表判成非正式。
+    // 判据只有这一份，排序 / 统计条 / 题材配色 / 行着色全部走它（§6）。
+    formalIndexReady: _formalIndexReady,
+    isFormalListed: function(name) {
+      if (!_formalIndexReady) return true;
       return _isAuctionFormalMember(currentDate, name);
     },
     // [DRAGON-GROUP 2026-09-14] 龙头组名册（股票名 → {topic,pct,groupSize,code}）。null = 未加载。
@@ -1086,7 +1126,10 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   let topicStatsMap = null;
   if (topicOnlyMode && primaryTopicOfForColor) {
     const _rangeMap = getDragonRangePct(currentDate);
-    const _entries = items.map(function(it) {
+    // [NOT-FORMAL 2026-09-23] 只把【当天 9:25 正式成员】送进统计（用户口径：观察组继承壳不计数）。
+    //   与上方 sortByTopicGroups 的 countableOf、下方趋势图 collectTopicDayStats 完全同一口径 ——
+    //   三处同源才是「统计条数字 == 题材块顺序 == 趋势图名次」的结构性保证（不是靠三处各写一遍 if）。
+    const _entries = items.filter(function(it) { return it.isFormalMember; }).map(function(it) {
       const rp = (_rangeMap && _rangeMap.has(it.stock)) ? _rangeMap.get(it.stock).pct : null;
       return {
         topic: primaryTopicOfForColor(it.index),
@@ -1104,17 +1147,24 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
     // 统计条挂到每个题材块的【第一行】（其余行 null）；同时给出组内序号。
     // 二者共用同一个「题材切换」判断，保证统计条所在行 === 序号从 1 重新开始的那一行。
+    // [NOT-FORMAL 2026-09-23] 落点改为该块里【第一行正式成员】：块首若是观察组继承壳（灰色行），
+    //   统计条挂在它头上会让人以为是这一行的统计 —— 顺延到下一只正式成员行。
     let lastTopicKey = null;
     let seqInTopic = 0;
+    let statsAssigned = false;
     items.forEach(function(it) {
       const tp = (primaryTopicOfForColor(it.index) || '其它').trim() || '其它';
       // [YIZI-SUP 2026-09-20] 把「本行所属题材组」原样透出（值就是上面这个 tp，零额外计算）：
       // 「补竞价一字」按题材融入时要定位到具体分组，见 _enrichAuctionItem 里 groupTopic 的说明。
       it.groupTopic = tp;
       if (tp !== lastTopicKey) {
-        it.topicStats = topicStatsMap.get(tp) || null;
         lastTopicKey = tp;
         seqInTopic = 0;
+        statsAssigned = false;
+      }
+      if (!statsAssigned && it.isFormalMember) {
+        it.topicStats = topicStatsMap.get(tp) || null;
+        statsAssigned = true;
       } else {
         it.topicStats = null;
       }

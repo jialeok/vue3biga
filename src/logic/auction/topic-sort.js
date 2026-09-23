@@ -123,14 +123,23 @@ export function classifyStockPrimaryTopic(item) {
  * @param {(idx:number)=>string} primaryTopicOf - 给定 renderList 索引，返回主题材(与第二页分类一致)
  * @param {(idx:number)=>number|null} [rankFn] - 可选：组内排序依据（升序，越小越靠前；null/无效值视为"无排名"排最后）
  * @param {(idx:number)=>boolean} [yiZiOf] - 可选：该行是否「竞价一字」（用于题材组间排序，缺省退化为纯组大小排序）
+ * @param {(idx:number)=>boolean} [countableOf] - 可选：**计入统计**的行判定（true 才计入「组大小 / 一字数」）。
+ *       [NOT-FORMAL 2026-09-23] 题材名次与统计只认【当天 9:25 抓取的正式成员】：观察组继承壳、
+ *       补竞价一字补入行都不算（用户口径）。⛔ 它们**仍然按题材落进对应组并照常渲染**（只是不计数），
+ *       否则"视觉顺序 / 统计条数字 / 趋势图名次"三套口径就会各说各话（用户反馈的错位）。
+ *       不传 = 全部计入（既有行为，一行不变）。
  * @returns {number[]} 重排后的索引数组
  */
-export function sortByTopicGroups(renderOrder, renderList, tierFn, primaryTopicOf, rankFn, yiZiOf) {
-    if (!renderOrder || renderOrder.length === 0) return renderOrder;
-    if (typeof tierFn !== 'function' || typeof primaryTopicOf !== 'function') return renderOrder;
-    const _rankNum = function(v) {
-        return (v === null || v === undefined || !isFinite(v)) ? Number.MAX_SAFE_INTEGER : v;
-    };
+export function sortByTopicGroups(renderOrder, renderList, tierFn, primaryTopicOf, rankFn, yiZiOf, countableOf) {
+  if (!renderOrder || renderOrder.length === 0) return renderOrder;
+  if (typeof tierFn !== 'function' || typeof primaryTopicOf !== 'function') return renderOrder;
+  const _rankNum = function(v) {
+    return (v === null || v === undefined || !isFinite(v)) ? Number.MAX_SAFE_INTEGER : v;
+  };
+  // [NOT-FORMAL 2026-09-23] 默认全计入（向后兼容）；传了才按「正式成员」过滤
+  const _countable = typeof countableOf === 'function'
+    ? function(idx) { return !!countableOf(idx); }
+    : function() { return true; };
 
     // 1) 按档位分组
     const tierGroups = new Map();
@@ -148,6 +157,9 @@ export function sortByTopicGroups(renderOrder, renderList, tierFn, primaryTopicO
         const sizeMap = new Map();
         const yiZiMap = new Map();
         for (const x of arr) {
+            // [NOT-FORMAL 2026-09-23] 不计入的行（观察组继承壳等）仍在 arr 里参与【分组与渲染】，
+            // 只是不贡献组大小与一字数 —— 这样「排序依据 == 统计条数字 == 趋势图名次」三处同源。
+            if (!_countable(x.idx)) continue;
             sizeMap.set(x.topic, (sizeMap.get(x.topic) || 0) + 1);
             if (yiZiOf && yiZiOf(x.idx)) yiZiMap.set(x.topic, (yiZiMap.get(x.topic) || 0) + 1);
         }
@@ -212,13 +224,17 @@ const TOPIC_BG_PALETTE = [
  *
  * @param {Map<string,string>} primaryTopicMap - stockName(trim) → 主题材（来自 getPrimaryTopicMap）
  * @param {number} minCount - 题材成员最小数（默认 2，即「两只以上才标记」）
+ * @param {Set<string>} [countable] - 可选：只统计这些股票名（当日 9:25 正式成员）。
+ *       [NOT-FORMAL 2026-09-23] 与 sortByTopicGroups 的 countableOf 同一口径：正式成员不足 2 只的
+ *       题材不该上色，避免出现「有色块却没有统计条」的视觉错位。不传 = 全算（既有行为一行不变）。
  * @returns {Map<string,string>} 题材名(core) → 浅色背景（'其它'/不足 minCount 的不在 Map 中）
  */
-export function buildTopicColorMap(primaryTopicMap, minCount = 2) {
+export function buildTopicColorMap(primaryTopicMap, minCount = 2, countable) {
     const counts = new Map();
     if (primaryTopicMap) {
-        for (const topic of primaryTopicMap.values()) {
-            counts.set(topic, (counts.get(topic) || 0) + 1);
+        for (const entry of primaryTopicMap.entries()) {
+            if (countable && !countable.has(entry[0])) continue;
+            counts.set(entry[1], (counts.get(entry[1]) || 0) + 1);
         }
     }
     const eligible = [...counts.entries()]

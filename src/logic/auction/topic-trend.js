@@ -11,6 +11,14 @@
 //   「补竞价一字」的行来自竞价一字看板的 auction_yizi 快照（logic/auction/yizi-supplement.js），
 //   它们根本不在这个输入里 ⇒ 想算也算不进去。这是结构性排除，不是运行时过滤。
 //
+// [NOT-FORMAL 2026-09-23] ⛔ 只统计【当天 9:25 抓到的正式成员】（用户口径）：
+//   观察组继承壳（obsAutoAdded，屏幕上画灰的那些）不进名次、不进一字数。
+//   这三处必须同源，否则就是用户反馈的「视觉第 2、趋势图第 3」：
+//     · 屏幕上的题材块顺序（view-helpers#sortByTopicGroups 的 countableOf）
+//     · 题材统计条的数字（view-helpers#buildTopicStatsMap 的 entries）
+//     · 本文件的趋势图名次 / 一字数
+//   ⛔ 观察组壳【仍然渲染】在对应题材块里（次日继承功能需要），只是不贡献计数。
+//
 // 名次口径（与 sortByTopicGroups 同源，§6 单一真相）：
 //   ① 一字数量降序 → ② 组内股票数降序 → ③ 题材名升序；
 //   「其它」与「不足 2 只」的题材不参与名次（与 top-stats 的成组门槛 TOPIC_STATS_MIN_GROUP 同源）。
@@ -29,6 +37,10 @@ import { getPrimaryTopicMap, classifyStockPrimaryTopic } from './topic-sort.js';
 import { isAuctionYiZi } from './limit-up.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 import { getDragonWindowDates } from './dragon-rank.js';
+// [NOT-FORMAL 2026-09-23] 「是不是当天 9:25 抓到的正式成员」的唯一真相（§6）。
+// 趋势图的题材名次 / 一字数量与【屏幕上的题材块顺序、统计条数字】必须是同一口径，
+// 否则就是用户反馈的「AI应用 视觉第 2、趋势图第 3」这类错位 —— 判据只认这一份，不另写。
+import { _isAuctionFormalMember, _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
 
 /** 趋势窗口长度（交易日） */
 export const TOPIC_TREND_DAYS = 5;
@@ -152,6 +164,9 @@ export function collectTopicDayStats(date) {
   if (list.length === 0) return null;
 
   const pmap = getPrimaryTopicMap(list);
+  // §10：正式成员索引未就绪 = 「还没拉到」，⛔ 不等于「当天没有正式成员」。
+  //   此时不过滤（全部计入），宁可多算也不把整天判空。
+  const indexReady = _isAuctionWatchlistIndexReady(date);
   const entries = [];
   const seen = new Set();
   list.forEach(function(row) {
@@ -159,6 +174,9 @@ export function collectTopicDayStats(date) {
     const nm = String(row.stock).trim();
     if (!nm || seen.has(nm)) return;
     seen.add(nm);
+    // [NOT-FORMAL 2026-09-23] 只统计当天 9:25 的正式成员：观察组继承壳（obsAutoAdded）不进统计，
+    //   但它们在屏幕上仍按题材显示（灰色），与统计条 / 题材块顺序彻底同源。
+    if (indexReady && !_isAuctionFormalMember(date, nm)) return;
     const topic = pmap.has(nm) ? pmap.get(nm) : classifyStockPrimaryTopic(row);
     // 一字判定与 view-helpers#yiZiOf 同源：行 code → 内存代码映射 → 空（limit-up.js 内按主板兜底）
     const code = row.code || getStockCode(nm) || '';

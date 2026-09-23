@@ -141,6 +141,10 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToke
     //   历史日数据在首屏整段拉入，但 worker 收盘覆盖 / 历史日回填会改写 change_pct → 连板状态可能变化，
     //   行内输入却可以完全没变。必须单独入签名，否则行缓存会复用旧标记（陈旧）。
     'ls=' + (item.streakLabel || ''),
+    // [NOT-FORMAL 2026-09-23] 是否在今日 9:25 正式名单（决定股票名/题材黑 or 灰、是否计入题材统计）。
+    //   正式成员索引是【异步】到货的，而行内输入（volume/note/…）可以一模一样 → 不入签名的话
+    //   增量缓存会复用旧行对象，表现为「观察组继承票一直是黑的、且被算进了统计」。
+    'fm=' + (item.isFormalMember ? 1 : 0),
     // [TOPIC-SEQ 2026-09-11] 同题材组内序号：组内任何一只票增删/换题材都会改变本行的序号，
     //   但本行自身的行内输入可以完全没变 → 必须单独入签名，否则序号陈旧。
     'seq=' + (item.seqNo || 0),

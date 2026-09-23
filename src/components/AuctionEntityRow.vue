@@ -126,6 +126,8 @@
     <div
       v-else
       class="auction-topic-cell"
+      :class="{ 'not-formal-member': !item.isFormalMember }"
+      :title="item.isFormalMember ? null : '不在今日 9:25 正式名单（观察组继承），不计入题材统计'"
     >
       {{ item.topicsDisplay }}
     </div>
@@ -273,6 +275,11 @@ function dragonPctClass(item) {
 // [CLOSE-NAME-COLOR 2026-09-11] 另外叠加「股票名字体颜色」：收盘涨幅 >0 红 / <0 绿（=0 或无数据不加类）。
 //   它作用于 color，与上面两个 border-bottom 类互不干扰，因此不参与互斥（可同时出现：
 //   例如收盘涨停 + 涨幅为正 → 红字 + 红蚂蚁线）。
+// [NOT-FORMAL 2026-09-23] 不在今日 9:25 正式名单（观察组继承壳 / 影子行）→ 股票名画灰。
+//   这是「今天到底抓没抓到它」的身份提示，优先级【最高】：压过卖标签的灰、创业板的浅灰、收盘红绿字色。
+//   在正式名单里 → 名字一律回到常规黑（卖标签行与创业板行都按用户要求恢复黑色），
+//   创业板的【删除线】保留（防误买是安全提示，不能因为改颜色就丢了）。
+//   下方的一字实线 / 停板蚂蚁线是 border-bottom，与 color 属性不冲突，照常保留。
 function stockTextClass(item) {
   const cls = {};
   if (item.isYiZi) {
@@ -281,17 +288,24 @@ function stockTextClass(item) {
     cls['close-limit-up'] = item.closeLimit === 'up';
     cls['close-limit-down'] = item.closeLimit === 'down';
   }
-  // [HIGH-LIMIT-BOARD 2026-09-21] 涨跌幅放开板（科创板 688/689、创业板 300/301、北交所 43/83/87/88/92）
-  //   → 股票名【浅灰色 + 删除线】，避免误买。它是安全提示，因此【压过】收盘红绿字色（显式互斥）：
-  //   否则「红字」会和「浅灰删除线」语义打架，用户反而看不清这是只 20%/30% 的票。
-  //   下方的一字实线 / 停板蚂蚁线是 border-bottom，与本类的 color 属性不冲突，故照常保留。
-  if (item.isHighLimitBoard) {
-    cls['high-limit-board'] = true;
+  // ① 不在正式名单 → 灰（含创业板也灰），删除线照旧
+  if (!item.isFormalMember) {
+    cls['not-formal-member'] = true;
+    if (item.isHighLimitBoard) cls['high-limit-board'] = true;
     return cls;
   }
-  // 档位由 Logic 层算好（view-helpers closeNameTone），这里只做「档位 → class 名」映射
-  if (item.closeNameTone === 'up') cls['close-name-up'] = true;
-  else if (item.closeNameTone === 'down') cls['close-name-down'] = true;
+  // ② 在正式名单 → 常规黑；创业板保留删除线；其余按收盘涨跌上色（既有口径不变）。
+  //    ⚠️ formal-member 只在「没有收盘红绿」时才上：它与 .close-name-* 同权重，
+  //    无条件加会把收盘红绿字色一并压成黑（CSS 顺序在后面）。
+  if (item.isHighLimitBoard) {
+    cls['high-limit-board'] = true; // 删除线保留（防误买），浅灰由下方 formal-member 压成黑
+    cls['formal-member'] = true;
+    return cls;
+  }
+  if (item.closeNameTone === 'up') { cls['close-name-up'] = true; return cls; }
+  if (item.closeNameTone === 'down') { cls['close-name-down'] = true; return cls; }
+  // 常规黑：压过「卖」行父级 .auction-item.sold .auction-stock-name 的灰（用户口径：卖也恢复黑色）
+  cls['formal-member'] = true;
   return cls;
 }
 </script>

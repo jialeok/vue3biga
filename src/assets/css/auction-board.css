@@ -530,6 +530,25 @@
             text-decoration: line-through;
         }
 
+        /* [NOT-FORMAL 2026-09-23] 「在不在今日 9:25 正式名单」—— 身份色，优先级【最高】。
+           ① 在名单 → 常规黑：压过「卖」行的灰（.auction-item.sold .auction-stock-name）与
+              创业板的浅灰（.high-limit-board）—— 用户口径：卖/创业板在正式名单里都恢复黑色。
+           ② 不在名单（观察组继承壳）→ 灰：股票名与题材一起灰，一眼看出「今天没抓到它、且不计统计」。
+           ⚠️ 必须写在 .high-limit-board / .close-name-* 之后：同权重（0,2,0）靠顺序覆盖颜色。
+           ⚠️ 只改 color：.high-limit-board 的 text-decoration:line-through 仍保留（防误买是安全提示），
+              下方一字实线 / 停板蚂蚁线是 border-bottom，同样照常保留。 */
+        .auction-stock-text.formal-member {
+            color: #1f2937;
+        }
+        .auction-stock-text.not-formal-member {
+            color: #9ca3af;
+        }
+
+        /* 题材列同步：不在正式名单 → 题材文字一起灰（用户要求「包括题材」）。 */
+        .auction-topic-cell.not-formal-member {
+            color: #9ca3af;
+        }
+
         /* 双身份股票（昨日竞昨高光观察组 ∩ 今日正式列表）星号标记 */
         .auction-obs-formal-star {
             color: #f59e0b;

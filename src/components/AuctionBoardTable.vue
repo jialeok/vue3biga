@@ -198,6 +198,9 @@ function rowMemo(item) {
     item.closeLimit, item.closePct, item.closeNameTone, item.streakLabel,
     // [HIGH-LIMIT-BOARD 2026-09-21] 科创/创业/北交所的浅灰删除线：漏进指纹 → 代码补上后行不重渲染
     item.isHighLimitBoard,
+    // [NOT-FORMAL 2026-09-23] 是否在今日 9:25 正式名单（决定股票名/题材是黑还是灰）：
+    //   索引是异步到货的，行内输入（volume/note…）可能一个字都没变 → 不入指纹则整行颜色陈旧。
+    item.isFormalMember ? 1 : 0,
     item.isDragonGroupMember, item.dragonGroupTopic, item.dragonGroupFormalStar,
     item.dragonGroupPct, item.obsFormalStar,
     // [TOPIC-TREND 2026-09-20] 题材统计条的五日趋势展开态：漏进指纹 → 点统计条整行不重渲染。
