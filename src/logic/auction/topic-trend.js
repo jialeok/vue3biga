@@ -42,6 +42,8 @@ import { getDragonWindowDates } from './dragon-rank.js';
 // 否则就是用户反馈的「AI应用 视觉第 2、趋势图第 3」这类错位 ——
 // 所以这里【不再二次过滤】：list 本身就是 getTodayGroupList 的结果，与看板 auctionList 天然相等。
 // ⛔ 别把 _isAuctionFormalMember 加回来（它排除 obsAutoAdded 行，与看板口径不同 → 立刻错位）。
+import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
+import { getPrevSoldInheritedSet } from './inherited-sold.js';
 
 /** 趋势窗口长度（交易日） */
 export const TOPIC_TREND_DAYS = 5;
@@ -172,6 +174,10 @@ export function collectTopicDayStats(date) {
   //   （2026-09-23 会稽山 / 澳弘电子：看板里在题材组内、趋势里却被剔除 → 名次与视觉对不上）。
   //   §10：索引未就绪 = 「还没拉到」，⛔ 不等于「当天没有正式成员」——
   //        getTodayGroupList 此时退化为原始列表（全计入），宁可多算也不把整天判空。
+  // [INHERIT-SELL 2026-09-23] 与看板同源地剔除「昨日『卖』标签继承过来的复盘行」。
+  //   不剔 ⇒ 统计条说 5 只、趋势名次按 7 只算，立刻重现「视觉 / 统计错位」。
+  //   判据同样来自 logic/auction/inherited-sold.js（§6，绝不在本文件重写一遍）。
+  const _inheritSold = getPrevSoldInheritedSet(date, getPreviousTradingDay(date));
   const entries = [];
   const seen = new Set();
   list.forEach(function(row) {
@@ -179,6 +185,7 @@ export function collectTopicDayStats(date) {
     const nm = String(row.stock).trim();
     if (!nm || seen.has(nm)) return;
     seen.add(nm);
+    if (_inheritSold.has(nm)) return;
     const topic = pmap.has(nm) ? pmap.get(nm) : classifyStockPrimaryTopic(row);
     // 一字判定与 view-helpers#yiZiOf 同源：行 code → 内存代码映射 → 空（limit-up.js 内按主板兜底）
     const code = row.code || getStockCode(nm) || '';

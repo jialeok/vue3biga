@@ -36,6 +36,9 @@ import { buildTopicStatsMap } from './topic-stats.js';
 // 名册是唯一真相（§6）：本文件只负责「读名册 → 注入空壳行 → 给出 dragonIndices → 观察组去重」，
 // 绝不在这里二次评选龙头（那样就是第二个真相源）。
 import { getDragonLeadersForDisplay } from './dragon-group.js';
+// [INHERIT-SELL 2026-09-23] 「昨日『卖』标签继承过来的复盘行」判定抽成独立模块：
+// view-helpers（当天统计 + 着色）与 topic-trend（五日趋势）共用同一份判据（§6 单一真相）。
+import { getPrevSoldInheritedSet } from './inherited-sold.js';
 
 function _getAuctionTag(date, stockName) {
   if (!date || !stockName) return null;
@@ -460,12 +463,20 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   //   countableOf 回调会在排序过程中【同步执行】，而 const 存在 TDZ —— 声明写晚了就是
   //   "Cannot access '_listedNames' before initialization" ⇒ computeAuctionViewData 整体抛错，
   //   表现为「打开题材 toggle 却和没打开一样：无分组、无底色、无统计条」（2026-09-23 事故）。
+  //   [INHERIT-SELL] 唯一例外：昨日打过「卖」标签 → 继承过来的复盘行（不在正式成员索引里）
+  //     也不入列⇒ 画灰 + 不计数（当日"已卖出"，只剩复盘价值）。判据见 inherited-sold.js。
   //   §10：getTodayGroupList 在正式成员索引未就绪时退化为原始列表 → 此刻全算，
   //        ⛔ 绝不把整列表判成「不在列表」（不会整片刷灰）。
   const _listedNames = new Set();
+  // [INHERIT-SELL 2026-09-23] 剔除「昨日打过『卖』标签 → 继承过来的复盘行」（不在当天正式成员索引里）。
+  //   用户口径：这类票画灰 + 不计入统计，而昨日「买」标签继承的（仍在跟踪）保持原样。
+  //   判据收在 logic/auction/inherited-sold.js（§6），同五日趋势共用一份。
+  const _inheritSold = getPrevSoldInheritedSet(currentDate, prevDate);
   auctionList.forEach(function(it) {
     const nm = it && it.stock ? String(it.stock).trim() : '';
-    if (nm) _listedNames.add(nm);
+    if (!nm) return;
+    if (_inheritSold.has(nm)) return;
+    _listedNames.add(nm);
   });
 
   const auctionData = getGroupData(dataSource);
