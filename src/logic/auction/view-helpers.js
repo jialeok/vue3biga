@@ -440,6 +440,21 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // renderList 仅服务于视图渲染；真实业务数据(auctionList)保持不变，统计口径仍基于 auctionList。
   const renderList = _injectedRows.length ? auctionList.concat(_injectedRows) : auctionList;
 
+  // [NOT-FORMAL 2026-09-23] 「是不是当天 9:25 抓到的正式成员」—— 一份判据，四处共用
+  //   （题材排序 / 题材配色 / 题材统计条 / 行着色 + 五日趋势图）。
+  //   ⚠️⚠️ 必须声明在 renderList【之后】、题材排序分支【之前】：下面 sortByTopicGroups 的
+  //   countableOf 回调会在排序过程中【同步执行】，而 const 存在 TDZ —— 声明写晚了就是
+  //   "Cannot access '_formalNames' before initialization" ⇒ computeAuctionViewData 整体抛错，
+  //   表现为「打开题材 toggle 却和没打开一样：无分组、无底色、无统计条」（2026-09-23 事故）。
+  //   §10：正式成员索引未就绪 ⇒ 一律按「在名单」处理，⛔ 绝不把整列表判成非正式（不会整片刷灰）。
+  const _formalIndexReady = _isAuctionWatchlistIndexReady(currentDate);
+  const _formalNames = new Set();
+  renderList.forEach(function(it) {
+    const nm = it && it.stock ? String(it.stock).trim() : '';
+    if (!nm) return;
+    if (!_formalIndexReady || _isAuctionFormalMember(currentDate, nm)) _formalNames.add(nm);
+  });
+
   const auctionData = getGroupData(dataSource);
   const prevAuctionList = prevDate ? (auctionData[prevDate] || []) : [];
   const prevPrevDate = prevDate ? getPreviousTradingDay(prevDate) : null;
@@ -849,7 +864,11 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
         _colorSourceMap.set(nm, classifyStockPrimaryTopic(it));
       });
     }
-    topicColorMap = buildTopicColorMap(_colorSourceMap, 2, _formalNames);
+    // [NOT-FORMAL 2026-09-23] 题材【底色】刻意**不按正式成员过滤**（保留原口径）：
+    //   底色只是「这几只属于同一个题材」的视觉分组，观察组继承行确实渲染在该组里，
+    //   不给它们上色会让组看起来被腰斩。统计数字（统计条 / 趋势图 / 组间排序）才只数正式成员。
+    //   ⚠️ 别顺手把 _formalNames 加进来 —— 加过一次，用户反馈「题材组内的底色不见了」。
+    topicColorMap = buildTopicColorMap(_colorSourceMap, 2);
 
     // [DRAGON-SORT 2026-09-09] 题材【单独】开启时，同题材组内按龙头排名升序（龙一→龙二→龙三…）。
     // 排名必须在排序【之前】算好，所以这里先基于「主排序后的完整 renderOrder」算一版：
@@ -1034,17 +1053,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     hiddenObsIndices = [];
   }
 
-  // [NOT-FORMAL 2026-09-23] 正式成员索引是否就绪（§10：未就绪 ≠ 当日没有正式成员）。
-  // 不就绪时 isFormalListed 一律返回 true —— 宁可「该灰的没灰」，也绝不把整列表刷成灰。
-  const _formalIndexReady = _isAuctionWatchlistIndexReady(currentDate);
-  // renderList 里「真正计入统计」的股票名集合（= 正式成员）。
-  // 只在这里算一次，供题材排序 / 题材配色 / 统计条 / 行着色四处共用（§6 单一真相、§19 不重复计算）。
-  const _formalNames = new Set();
-  renderList.forEach(function(it) {
-    const nm = it && it.stock ? String(it.stock).trim() : '';
-    if (!nm) return;
-    if (!_formalIndexReady || _isAuctionFormalMember(currentDate, nm)) _formalNames.add(nm);
-  });
+  // 【_formalIndexReady / _formalNames 已上移到 renderList 定义之后 —— 那里才是它们唯一合法的位置：
+  //  题材排序分支（sortByTopicGroups 的 countableOf）会同步调用它们，声明写在下面会 TDZ 崩溃。】
 
   const ctx = {
     dataSource, date: currentDate, confirmedSoldSet: _confirmedSoldSet,
@@ -1061,8 +1071,13 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     // 判据只有这一份，排序 / 统计条 / 题材配色 / 行着色全部走它（§6）。
     formalIndexReady: _formalIndexReady,
     isFormalListed: function(name) {
+      // §10：索引未就绪 ⇒ 一律「在名单」，⛔ 绝不把整列表判成非正式（不会整片刷灰）。
       if (!_formalIndexReady) return true;
-      return _isAuctionFormalMember(currentDate, name);
+      const nm = String(name === null || name === undefined ? '' : name).trim();
+      if (!nm) return false;
+      // 查上面那份集合（O(1)）：⛔ 不再逐行跑 _isAuctionFormalMember —— 它是 O(当日行数)，
+      // 逐行调用 = O(n²)，题材模式下每次重算都要空转一遍。
+      return _formalNames.has(nm);
     },
     // [DRAGON-GROUP 2026-09-14] 龙头组名册（股票名 → {topic,pct,groupSize,code}）。null = 未加载。
     // 供 _enrichAuctionItem 逐行读取（只读，不在 enrich 里评选 —— 单一真相在 dragon-group.js）。

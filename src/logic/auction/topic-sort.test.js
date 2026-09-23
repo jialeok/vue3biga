@@ -115,13 +115,12 @@ describe('sortByTopicGroups countableOf（只统计正式成员）', () => {
   });
 });
 
-describe('buildTopicColorMap countable（与统计同口径）', () => {
-  it('正式成员不足 2 只的题材不上色（避免「有色块却没统计条」的错位）', () => {
+// [NOT-FORMAL 2026-09-23] 底色【不】按正式成员过滤（过滤过，用户反馈「题材组内的底色不见了」）。
+// 这条用例把「不足 2 只不上色」的既有门槛钉住，防止日后有人顺手改成按统计口径过滤。
+describe('buildTopicColorMap 门槛（不按正式成员过滤）', () => {
+  it('不足 2 只的题材不上色；达到 2 只就上色（含观察组继承行）', () => {
     const m = new Map([['甲', '芯片'], ['乙', '芯片'], ['丙', '农业']]);
-    // 不传 countable：芯片 2 只 → 上色；农业 1 只 → 不上色
     expect(buildTopicColorMap(m).has('芯片')).toBe(true);
     expect(buildTopicColorMap(m).has('农业')).toBe(false);
-    // 只算正式成员 {甲}：芯片只剩 1 只 → 不上色
-    expect(buildTopicColorMap(m, 2, new Set(['甲'])).has('芯片')).toBe(false);
   });
 });

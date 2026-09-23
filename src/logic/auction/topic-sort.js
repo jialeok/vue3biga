@@ -224,16 +224,16 @@ const TOPIC_BG_PALETTE = [
  *
  * @param {Map<string,string>} primaryTopicMap - stockName(trim) → 主题材（来自 getPrimaryTopicMap）
  * @param {number} minCount - 题材成员最小数（默认 2，即「两只以上才标记」）
- * @param {Set<string>} [countable] - 可选：只统计这些股票名（当日 9:25 正式成员）。
- *       [NOT-FORMAL 2026-09-23] 与 sortByTopicGroups 的 countableOf 同一口径：正式成员不足 2 只的
- *       题材不该上色，避免出现「有色块却没有统计条」的视觉错位。不传 = 全算（既有行为一行不变）。
  * @returns {Map<string,string>} 题材名(core) → 浅色背景（'其它'/不足 minCount 的不在 Map 中）
+ *
+ * [NOT-FORMAL 2026-09-23] ⚠️ 底色刻意**不按「正式成员」过滤**（曾试过，用户反馈「题材组内的底色不见了」）：
+ *   底色是「这几只属于同一个题材」的视觉分组，观察组继承行确实渲染在该组里，不给它们上色会让组被腰斩。
+ *   只有统计数字（统计条 / 趋势图 / 组间排序）才只数正式成员。别再给本函数加 countable 参数。
  */
-export function buildTopicColorMap(primaryTopicMap, minCount = 2, countable) {
+export function buildTopicColorMap(primaryTopicMap, minCount = 2) {
     const counts = new Map();
     if (primaryTopicMap) {
         for (const entry of primaryTopicMap.entries()) {
-            if (countable && !countable.has(entry[0])) continue;
             counts.set(entry[1], (counts.get(entry[1]) || 0) + 1);
         }
     }
