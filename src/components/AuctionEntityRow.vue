@@ -127,7 +127,7 @@
       v-else
       class="auction-topic-cell"
       :class="{ 'not-formal-member': !item.isFormalMember }"
-      :title="item.isFormalMember ? null : '不在今日 9:25 正式名单（观察组继承），不计入题材统计'"
+      :title="item.isFormalMember ? null : '不在今日正式列表（观察组/龙头继承行），不计入题材统计'"
     >
       {{ item.topicsDisplay }}
     </div>

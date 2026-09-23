@@ -37,10 +37,11 @@ import { getPrimaryTopicMap, classifyStockPrimaryTopic } from './topic-sort.js';
 import { isAuctionYiZi } from './limit-up.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 import { getDragonWindowDates } from './dragon-rank.js';
-// [NOT-FORMAL 2026-09-23] 「是不是当天 9:25 抓到的正式成员」的唯一真相（§6）。
-// 趋势图的题材名次 / 一字数量与【屏幕上的题材块顺序、统计条数字】必须是同一口径，
-// 否则就是用户反馈的「AI应用 视觉第 2、趋势图第 3」这类错位 —— 判据只认这一份，不另写。
-import { _isAuctionFormalMember, _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
+// [LISTED-TODAY 2026-09-23] 「当天正式列表」的唯一真相（§6）= getTodayGroupList（auction-helpers.js）。
+// 趋势图的题材名次 / 一字数量与【屏幕上的题材块顺序、统计条数字】必须是同一集合，
+// 否则就是用户反馈的「AI应用 视觉第 2、趋势图第 3」这类错位 ——
+// 所以这里【不再二次过滤】：list 本身就是 getTodayGroupList 的结果，与看板 auctionList 天然相等。
+// ⛔ 别把 _isAuctionFormalMember 加回来（它排除 obsAutoAdded 行，与看板口径不同 → 立刻错位）。
 
 /** 趋势窗口长度（交易日） */
 export const TOPIC_TREND_DAYS = 5;
@@ -164,9 +165,13 @@ export function collectTopicDayStats(date) {
   if (list.length === 0) return null;
 
   const pmap = getPrimaryTopicMap(list);
-  // §10：正式成员索引未就绪 = 「还没拉到」，⛔ 不等于「当天没有正式成员」。
-  //   此时不过滤（全部计入），宁可多算也不把整天判空。
-  const indexReady = _isAuctionWatchlistIndexReady(date);
+  // [LISTED-TODAY 2026-09-23] 统计集合 = getTodayGroupList(date)【本身】，不再二次过滤。
+  //   为什么不过滤：getTodayGroupList 已经是「当天正式列表」的唯一口径（含 obs 继承但真抓到数据的行、
+  //   不含 market_metrics 影子行），看板的 auctionList 就是它 ⇒ 两边集合天然相等。
+  //   ⛔ 别再叠一层 _isAuctionFormalMember：它排除 obsAutoAdded 行，会让「趋势名次」比看板少算几只
+  //   （2026-09-23 会稽山 / 澳弘电子：看板里在题材组内、趋势里却被剔除 → 名次与视觉对不上）。
+  //   §10：索引未就绪 = 「还没拉到」，⛔ 不等于「当天没有正式成员」——
+  //        getTodayGroupList 此时退化为原始列表（全计入），宁可多算也不把整天判空。
   const entries = [];
   const seen = new Set();
   list.forEach(function(row) {
@@ -174,9 +179,6 @@ export function collectTopicDayStats(date) {
     const nm = String(row.stock).trim();
     if (!nm || seen.has(nm)) return;
     seen.add(nm);
-    // [NOT-FORMAL 2026-09-23] 只统计当天 9:25 的正式成员：观察组继承壳（obsAutoAdded）不进统计，
-    //   但它们在屏幕上仍按题材显示（灰色），与统计条 / 题材块顺序彻底同源。
-    if (indexReady && !_isAuctionFormalMember(date, nm)) return;
     const topic = pmap.has(nm) ? pmap.get(nm) : classifyStockPrimaryTopic(row);
     // 一字判定与 view-helpers#yiZiOf 同源：行 code → 内存代码映射 → 空（limit-up.js 内按主板兜底）
     const code = row.code || getStockCode(nm) || '';

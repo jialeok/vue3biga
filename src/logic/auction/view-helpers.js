@@ -6,7 +6,7 @@ import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlig
 import { ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagState, _buildTagStateCache } from '../tagTitles/rules.js';
 import { getThreeDayJingDieSet, getWeakStrongSet, getWeakStrongTurnSet, getVolGrabSet } from './sort-rules-extra.js';
 import { getStockCode } from '../../data/stock-code-map.js';
-import { _getAuctionWatchlistSet, _isAuctionFormalMember, _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
+import { _getAuctionWatchlistSet, _isAuctionFormalMember } from '../../data/watchlist-and-metrics.js';
 import { state } from '../app-state.js';
 import { useAuctionStore } from '../../stores/auctionStore.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
@@ -241,12 +241,16 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   //      与「今天是早盘还是收盘」无关，任何模式、任何时间都该标出来（漏标 = 失去防误买的意义）。
   const isHighLimit = isHighLimitBoard(_yiZiCode);
 
-  // [NOT-FORMAL 2026-09-23] 是否【当天 9:25 抓到的正式名单成员】。
-  //   判定唯一真相 = _isAuctionFormalMember（data/watchlist-and-metrics.js），本文件不另写一份。
-  //   不在正式名单的 = 观察组继承壳 / 影子行：它们【照常渲染】（次日观察组继承功能需要），
-  //   但 ① 不进任何统计（题材名次 / 一字数量 / 组大小）；② 股票名与题材画灰（UI 层）。
-  //   ⛔ §10：正式成员索引未就绪时**不得**判为「不在名单」（那会把还没拉到的数据整列表刷灰），
-  //      此时退化为 true（全部按正式成员处理）—— 判定与降级都在 ctx.isFormalListed 里（§6 单一真相）。
+  // [LISTED-TODAY 2026-09-23] 是否【在当天正式列表里】（= auctionList / getTodayGroupList 的成员）。
+  //   判定唯一真相 = ctx.isFormalListed（由 computeAuctionViewData 一次性算出 _listedNames），
+  //   本函数不另写一份（§6）。
+  //   不在此列的 = 观察组 / 龙头【继承壳】（今天没抓到、由上方注入的空壳）+ 补竞价一字补入行：
+  //   它们【照常渲染】（次日观察组继承功能需要），但 ① 不进任何统计（题材名次 / 一字数量 / 组大小）；
+  //   ② 股票名与题材画灰（UI 层）。
+  //   ⚠️ 注意区分：obsAutoAdded 的继承行只要【今天真抓到数据】就在当天正式列表里（会稽山 / 澳弘电子
+  //      2026-09-23），不算「不在列表」—— 那是「打 * / 折叠豁免」的口径（_isAuctionFormalMember），别混。
+  //   ⛔ §10：正式成员索引未就绪时**不得**判为「不在列表」（那会把还没拉到的数据整列表刷灰），
+  //      此时 getTodayGroupList 退化为原始列表 ⇒ 全部在列（降级在数据源侧，本行无需再判）。
   const isFormalMember = ctx.isFormalListed ? ctx.isFormalListed(stockName) : true;
 
   // [LIMIT-STREAK 2026-09-11] 趋势/连板标记（趋势 / 首板 / 二板 / 三板…）。
@@ -440,19 +444,28 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // renderList 仅服务于视图渲染；真实业务数据(auctionList)保持不变，统计口径仍基于 auctionList。
   const renderList = _injectedRows.length ? auctionList.concat(_injectedRows) : auctionList;
 
-  // [NOT-FORMAL 2026-09-23] 「是不是当天 9:25 抓到的正式成员」—— 一份判据，四处共用
-  //   （题材排序 / 题材配色 / 题材统计条 / 行着色 + 五日趋势图）。
+  // [LISTED-TODAY 2026-09-23] 「在不在【当天正式列表】里」—— 一份判据，四处共用
+  //   （题材排序 / 题材统计条 / 题材配色 / 行着色 + 五日趋势图）。
+  //
+  //   ⚠️⚠️ 口径必须严格 = 本函数开头的 auctionList（= getTodayGroupList）：
+  //     · 它【含】obsAutoAdded 的观察组继承行 —— 会稽山 / 澳弘电子 2026-09-23 就是这种：
+  //       在 auction_watchlist 里带 obs_auto_added=true，但今天 9:25 真抓到了数据，
+  //       用户口径就是「它们在今天的正式列表里」（当日 61 行中 6 行属此类）。
+  //     · 它【不含】market_metrics 影子行（不在 watchlist 且非 obs 的行已被 getTodayGroupList 过滤）。
+  //   ⛔ 别再改用 _isAuctionFormalMember：它刻意【排除】obsAutoAdded 行，那是「打 * / 折叠豁免」的
+  //     口径（2026-09-09 万向德农修复），与「当天正式列表」不是一回事。拿它当统计判据会让
+  //     「显示在题材组里的行」与「统计数字」再次错位 —— 2026-09-23 会稽山 / 澳弘电子事故现场。
+  //
   //   ⚠️⚠️ 必须声明在 renderList【之后】、题材排序分支【之前】：下面 sortByTopicGroups 的
   //   countableOf 回调会在排序过程中【同步执行】，而 const 存在 TDZ —— 声明写晚了就是
-  //   "Cannot access '_formalNames' before initialization" ⇒ computeAuctionViewData 整体抛错，
+  //   "Cannot access '_listedNames' before initialization" ⇒ computeAuctionViewData 整体抛错，
   //   表现为「打开题材 toggle 却和没打开一样：无分组、无底色、无统计条」（2026-09-23 事故）。
-  //   §10：正式成员索引未就绪 ⇒ 一律按「在名单」处理，⛔ 绝不把整列表判成非正式（不会整片刷灰）。
-  const _formalIndexReady = _isAuctionWatchlistIndexReady(currentDate);
-  const _formalNames = new Set();
-  renderList.forEach(function(it) {
+  //   §10：getTodayGroupList 在正式成员索引未就绪时退化为原始列表 → 此刻全算，
+  //        ⛔ 绝不把整列表判成「不在列表」（不会整片刷灰）。
+  const _listedNames = new Set();
+  auctionList.forEach(function(it) {
     const nm = it && it.stock ? String(it.stock).trim() : '';
-    if (!nm) return;
-    if (!_formalIndexReady || _isAuctionFormalMember(currentDate, nm)) _formalNames.add(nm);
+    if (nm) _listedNames.add(nm);
   });
 
   const auctionData = getGroupData(dataSource);
@@ -867,7 +880,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     // [NOT-FORMAL 2026-09-23] 题材【底色】刻意**不按正式成员过滤**（保留原口径）：
     //   底色只是「这几只属于同一个题材」的视觉分组，观察组继承行确实渲染在该组里，
     //   不给它们上色会让组看起来被腰斩。统计数字（统计条 / 趋势图 / 组间排序）才只数正式成员。
-    //   ⚠️ 别顺手把 _formalNames 加进来 —— 加过一次，用户反馈「题材组内的底色不见了」。
+    //   ⚠️ 别顺手把 _listedNames 加进来 —— 加过一次，用户反馈「题材组内的底色不见了」。
     topicColorMap = buildTopicColorMap(_colorSourceMap, 2);
 
     // [DRAGON-SORT 2026-09-09] 题材【单独】开启时，同题材组内按龙头排名升序（龙一→龙二→龙三…）。
@@ -889,14 +902,15 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
         }
         : null,
       yiZiOf,
-      // [NOT-FORMAL 2026-09-23] 题材组的「一字数 / 组大小」只数【当天 9:25 正式成员】。
-      //   观察组继承壳仍按题材落进对应组、照常渲染，但不贡献任何计数 ——
-      //   这样「组间排序依据 == 统计条数字 == 趋势图名次」三处同源，杜绝用户反馈的视觉/统计错位。
+      // [LISTED-TODAY 2026-09-23] 题材组的「一字数 / 组大小」只数【当天正式列表 auctionList 的行】。
+      //   观察组 / 龙头【继承壳】（真正不在当天列表、由上方 _maybeInject* 注入的空壳）仍按题材落进
+      //   对应组、照常渲染，但不贡献任何计数；它们正是被画成灰色的行 —— 所以「看到的灰行 == 不计数」，
+      //   而「当天正式列表里的行（含 obs 继承但真抓到数据的）」既计数又不上灰，视觉与统计不再错位。
       //   ⚠️ 这是第 7 个参数 countableOf，⛔ 不能顶掉第 6 个 yiZiOf（顶掉就完全没有一字权重了）。
       (idx) => {
         const it = renderList[idx];
         const nm = it && it.stock ? String(it.stock).trim() : '';
-        return nm ? _formalNames.has(nm) : false;
+        return nm ? _listedNames.has(nm) : false;
       }
     );
   }
@@ -1053,8 +1067,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     hiddenObsIndices = [];
   }
 
-  // 【_formalIndexReady / _formalNames 已上移到 renderList 定义之后 —— 那里才是它们唯一合法的位置：
-  //  题材排序分支（sortByTopicGroups 的 countableOf）会同步调用它们，声明写在下面会 TDZ 崩溃。】
+  // 【_listedNames 已上移到 renderList 定义之后 —— 那里才是它唯一合法的位置：
+  //  题材排序分支（sortByTopicGroups 的 countableOf）会同步调用它，声明写在下面会 TDZ 崩溃。】
 
   const ctx = {
     dataSource, date: currentDate, confirmedSoldSet: _confirmedSoldSet,
@@ -1066,18 +1080,18 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     isFormalToday: function(name) {
       return _isAuctionFormalMember(currentDate, name);
     },
-    // [NOT-FORMAL 2026-09-23] 「是不是当天 9:25 正式成员」的**统计/着色**口径（与上面的 `*` 判定同源，
-    // 但多了 §10 降级）：正式成员索引未就绪 ⇒ 一律按「在名单」处理，⛔ 绝不把整列表判成非正式。
-    // 判据只有这一份，排序 / 统计条 / 题材配色 / 行着色全部走它（§6）。
-    formalIndexReady: _formalIndexReady,
+    // [LISTED-TODAY 2026-09-23] 「在不在当天正式列表里」的**统计/着色**口径。
+    //   ⛔ 与上面的 `isFormalToday`（打 * / 折叠豁免）是【两套口径】，不要合并：
+    //     · isFormalToday = _isAuctionFormalMember：排除 obsAutoAdded（万向德农 9/9 修复，用于 `*`）；
+    //     · isFormalListed = auctionList / getTodayGroupList 成员：含 obs 继承但今天真抓到数据的行。
+    //   用后者做统计判据，才能保证「显示在题材组里的行」与「统计数字 / 块顺序 / 趋势名次」不错位。
+    //   §10：索引未就绪时 getTodayGroupList 退化为原始列表 ⇒ 全在列，⛔ 绝不整片刷灰。
     isFormalListed: function(name) {
-      // §10：索引未就绪 ⇒ 一律「在名单」，⛔ 绝不把整列表判成非正式（不会整片刷灰）。
-      if (!_formalIndexReady) return true;
       const nm = String(name === null || name === undefined ? '' : name).trim();
       if (!nm) return false;
       // 查上面那份集合（O(1)）：⛔ 不再逐行跑 _isAuctionFormalMember —— 它是 O(当日行数)，
       // 逐行调用 = O(n²)，题材模式下每次重算都要空转一遍。
-      return _formalNames.has(nm);
+      return _listedNames.has(nm);
     },
     // [DRAGON-GROUP 2026-09-14] 龙头组名册（股票名 → {topic,pct,groupSize,code}）。null = 未加载。
     // 供 _enrichAuctionItem 逐行读取（只读，不在 enrich 里评选 —— 单一真相在 dragon-group.js）。
@@ -1141,7 +1155,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   let topicStatsMap = null;
   if (topicOnlyMode && primaryTopicOfForColor) {
     const _rangeMap = getDragonRangePct(currentDate);
-    // [NOT-FORMAL 2026-09-23] 只把【当天 9:25 正式成员】送进统计（用户口径：观察组继承壳不计数）。
+    // [LISTED-TODAY 2026-09-23] 只把【当天正式列表里的行】送进统计（观察组/龙头继承空壳不计数）。
     //   与上方 sortByTopicGroups 的 countableOf、下方趋势图 collectTopicDayStats 完全同一口径 ——
     //   三处同源才是「统计条数字 == 题材块顺序 == 趋势图名次」的结构性保证（不是靠三处各写一遍 if）。
     const _entries = items.filter(function(it) { return it.isFormalMember; }).map(function(it) {
@@ -1162,8 +1176,10 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
     // 统计条挂到每个题材块的【第一行】（其余行 null）；同时给出组内序号。
     // 二者共用同一个「题材切换」判断，保证统计条所在行 === 序号从 1 重新开始的那一行。
-    // [NOT-FORMAL 2026-09-23] 落点改为该块里【第一行正式成员】：块首若是观察组继承壳（灰色行），
-    //   统计条挂在它头上会让人以为是这一行的统计 —— 顺延到下一只正式成员行。
+    // ⚠️⚠️ 落点必须是块的【第一行】，⛔ 不能跳过灰色行去找「第一行正式成员」（2026-09-23 事故）：
+    //   统计条是整块的【表头】（flex-basis:100% 的整行），挂在第二行 ⇒ 第一行会渲染在统计条【上面】，
+    //   看起来就像"飘在题材组外面"。而块首恰恰常是龙一（rankFn 排第一）—— 会稽山 / 澳弘电子
+    //   作为各自题材的龙一，就是这样被挤出组外的。表头本来就属于整块，不属于某一行。
     let lastTopicKey = null;
     let seqInTopic = 0;
     let statsAssigned = false;
@@ -1177,7 +1193,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
         seqInTopic = 0;
         statsAssigned = false;
       }
-      if (!statsAssigned && it.isFormalMember) {
+      if (!statsAssigned) {
         it.topicStats = topicStatsMap.get(tp) || null;
         statsAssigned = true;
       } else {
