@@ -283,13 +283,24 @@
         /* [2026-09-24 用户要求] 行内各列必须【对齐】。
            用 CSS Grid 固定前几列宽度：序号 | 股票名 | 十日涨幅 | 题材/连板档 | 晋级。
            这样不管股票名多长、「高开/一字」标有没有，十日涨幅与题材/连板档都从同一条竖线开始；
-           末列 text-align:right 让三种晋级文案的右边缘也对齐（晋级永远在最右）。 */
+           末列 text-align:right 让三种晋级文案的右边缘也对齐（晋级永远在最右）。
+
+           [2026-09-25 用户反馈：题材被挤成竖排] 上一版前四列吃掉 302px，
+           手机 390px 视口下题材只剩 36px（≈3 字/行）→ 竖排。现按「各列真实需要多少」重排预算：
+             序号 18 + 股票名 104 + 十日涨幅 42 + 晋级 52 + 列间距 6×4 = 240px，
+             剩给题材：360px 屏 ≈ 68px / 375px ≈ 83px / 390px ≈ 98px（≈8~9 字/行，不再竖排）。
+           各列取值依据（写死是为了跨分组对齐，grid 的 fr 做不到 —— 每行是独立 grid）：
+             · 序号 18px  ：两位数字（二板以上最多几十只）够用
+             · 股票名 104px：4 字名(12px≈48) + 「高开」24 + 「一字」24 + 内部间距 6 ≈ 102
+                             （名字过长时只压名字自己出省略号，标必须完整可见）
+             · 十日涨幅 42px：formatRangePct 四舍五入到整数，最长约「+1234%」≈39px
+             · 晋级 52px ：「晋级成功」11px ≈ 44px，右对齐 */
         .lad-row {
             display: grid;
-            grid-template-columns: 22px 126px 54px minmax(0, 1fr) 68px;
+            grid-template-columns: 18px 104px 42px minmax(0, 1fr) 52px;
             align-items: baseline;
-            column-gap: 8px;
-            padding: 4px 0;
+            column-gap: 6px;
+            padding: 3px 0;
             font-size: 12px;
             color: #1f2937;
         }
@@ -306,7 +317,7 @@
         .lad-name-box {
             display: flex;
             align-items: baseline;
-            gap: 4px;
+            gap: 3px;
             min-width: 0;
             overflow: hidden;
             white-space: nowrap;
@@ -324,9 +335,10 @@
             font-weight: 600;
         }
 
-        /* 高开 / 低开 / 平开：与早盘竞价龙标底色同一套（涨红 / 跌绿 / 平灰） */
+        /* 高开 / 低开 / 平开：与早盘竞价龙标底色同一套（涨红 / 跌绿 / 平灰）。
+           内边距 4px→3px：整块省 2px×2 个标，直接让给题材列（§节省空间）。 */
         .lad-open-tag {
-            padding: 0 4px;
+            padding: 0 3px;
             font-size: 9px;
             line-height: 14px;
             font-weight: 600;
@@ -347,15 +359,15 @@
             background: #94a3b8;
         }
 
-        /* 竞价一字小标（与开平标同位，9px） */
+        /* 竞价一字小标（与开平标同位，9px）。
+           去掉 1px 描边（左右共省 2px）改用稍重的底色，既省空间又少一层视觉噪声。 */
         .lad-yizi-tag {
-            padding: 0 4px;
+            padding: 0 3px;
             font-size: 9px;
             line-height: 14px;
             font-weight: 600;
             color: #b91c1c;
-            background: #fff1f2;
-            border: 1px solid #fecdd3;
+            background: #fee2e2;
             border-radius: 4px;
             white-space: nowrap;
         }
@@ -367,11 +379,13 @@
             white-space: nowrap;
         }
 
-        /* 题材是主角列（与早盘竞价题材 toggle 同款）：吃满剩余宽度、允许折行、不截断 */
+        /* 题材是主角列（与早盘竞价题材 toggle 同款）：吃满剩余宽度、允许折行、不截断。
+           行高 1.35：折成两行时更紧凑，不再把整行撑高（§节省空间）。
+           ⚠️ 上一版题材只剩 36px 才出现「一字一行」的竖排；列宽预算已重排（见 .lad-row 注释）。 */
         .lad-topic {
             min-width: 0;
             font-size: 11px;
-            line-height: 1.4;
+            line-height: 1.35;
             color: #475569;
             word-break: break-all;
         }
