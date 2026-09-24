@@ -6,9 +6,11 @@
   做什么：把早盘竞价 9:25 自动抓到的股票里【二板及以上】的挑出来，按连板数分档整理，
           每行给「高开/低开/平开 + 十日涨幅 + 题材 + 晋级成功/失败」，点序号或股票名展开趋势图。
 
-  【题材连扳】开关（2026-09-24）：同一批 rows 换一种切法 —— 按【题材】分组看连板梯队完整性。
-          AI应用：四板 新华文轩 / 三板 新华传媒 / 二板 天威视讯 ⇒ 占 3 个连板层级 = 梯队完整；
-          只占 二板+三板 = 2 层同样算梯队；只占二板 = 单层。
+  【题材连扳】开关（2026-09-24）：位置在【内容区最上面】的工具栏里（与早盘竞价看板同款版式），
+          ⛔ 不在标题条里。同一批 rows 换一种切法 —— 按【题材】分组看连板梯队完整性：
+          必须【连续】的板数连在一起、且最长连续段 ≥ 3 档才算完整。
+          「二/三/四」= 连3档 ⇒ 完整；「三/四」= 连2档 ⇒ 未成梯队；
+          「二/四/五/六」⇒ 最长连续 4-5-6 = 3 档 ⇒ 完整。唯一判据 longestConsecutiveRun。
           该模式下题材列改显「四板/三板/二板」（整组已是同一题材，用不着再重复题材名）。
 
   ⛔ 数据全部【照搬早盘竞价】，不发请求、不落库、不消费猫抓额度（用户明确要求）：
@@ -36,22 +38,6 @@
       @click="toggleExpand"
     >
       <span class="ladder-title">连板天梯晋级</span>
-      <!-- 「题材连扳」开关：只切换【分组切法】（按连板档位 ⇄ 按题材看梯队），
-           数据是同一份 rows，⛔ 不重新取数。@click.stop：别把头部整条的展开/收起也触发了。 -->
-      <span
-        class="ladder-mode-item"
-        @click.stop
-      >
-        <span class="ladder-mode-label">题材连扳</span>
-        <label class="ladder-mode-switch">
-          <input
-            type="checkbox"
-            :checked="topicLadder"
-            @change="toggleTopicLadder"
-          >
-          <span class="ladder-mode-slider" />
-        </label>
-      </span>
       <span class="ladder-summary">{{ summaryText }}</span>
       <span class="ladder-toggle-btn">{{ toggleArrow }}</span>
     </div>
@@ -60,64 +46,84 @@
       v-show="expanded"
       class="ladder-body"
     >
-      <!-- §10：未就绪 / 失败必须可见，绝不显示成「今天没有连板股」的空看板 -->
-      <div
-        v-if="errorText"
-        class="ladder-error"
-      >
-        {{ errorText }}
-      </div>
-      <div
-        v-if="!ready"
-        class="ladder-empty"
-      >
-        {{ reasonText }}
+      <!-- 工具栏（与早盘竞价看板同款：内容区最上面一条浅紫底、右下角放 toggle 开关）：
+           「题材连扳」只切换【分组切法】（按连板档位 ⇄ 按题材看梯队），
+           数据是同一份 rows，⛔ 不重新取数、不发请求。 -->
+      <div class="ladder-toolbar">
+        <div class="ladder-mode-item">
+          <span class="ladder-mode-label">题材连扳</span>
+          <label class="ladder-mode-switch">
+            <input
+              type="checkbox"
+              :checked="topicLadder"
+              @change="toggleTopicLadder"
+            >
+            <span class="ladder-mode-slider" />
+          </label>
+        </div>
       </div>
 
-      <template v-if="ready">
-        <!-- 收盘口径未成立时的状态说明：否则用户会以为「待定」是坏掉了 -->
+      <!-- 工具栏之下的内容区（自带内边距，让工具栏能像早盘竞价那样左右通到卡片边缘） -->
+      <div class="ladder-content">
+        <!-- §10：未就绪 / 失败必须可见，绝不显示成「今天没有连板股」的空看板 -->
         <div
-          v-if="!closeReady"
-          class="ladder-note"
+          v-if="errorText"
+          class="ladder-error"
         >
-          早盘阶段：竞价一字先算晋级成功，其余等收盘覆盖涨幅后再定成败（显示「待定」）
+          {{ errorText }}
+        </div>
+        <div
+          v-if="!ready"
+          class="ladder-empty"
+        >
+          {{ reasonText }}
         </div>
 
-        <!-- 两种切法，同一份 rows：题材连扳 = 按题材看梯队完整性，否则 = 按连板档位看天梯 -->
-        <template v-if="topicLadder">
-          <LadderTopicGroup
-            v-for="g in topicGroups"
-            :key="g.topic"
-            :group="g"
-            :expanded-set="expandedSet"
-            :trend-history="trendHistory"
-            @toggle="toggleTrend"
-          />
+        <template v-if="ready">
+          <!-- 收盘口径未成立时的状态说明：否则用户会以为「待定」是坏掉了 -->
           <div
-            v-if="topicGroups.length === 0"
-            class="ladder-empty"
+            v-if="!closeReady"
+            class="ladder-note"
           >
-            当日没有二板及以上的股票
+            早盘阶段：竞价一字先算晋级成功，其余等收盘覆盖涨幅后再定成败（显示「待定」）
           </div>
-        </template>
 
-        <template v-else>
-          <LadderGroup
-            v-for="g in groups"
-            :key="g.streak"
-            :group="g"
-            :expanded-set="expandedSet"
-            :trend-history="trendHistory"
-            @toggle="toggleTrend"
-          />
-          <div
-            v-if="groups.length === 0"
-            class="ladder-empty"
-          >
-            当日没有二板及以上的股票
-          </div>
+          <!-- 两种切法，同一份 rows：题材连扳 = 按题材看梯队完整性，否则 = 按连板档位看天梯 -->
+          <template v-if="topicLadder">
+            <LadderTopicGroup
+              v-for="g in topicGroups"
+              :key="g.topic"
+              :group="g"
+              :expanded-set="expandedSet"
+              :trend-history="trendHistory"
+              @toggle="toggleTrend"
+            />
+            <div
+              v-if="topicGroups.length === 0"
+              class="ladder-empty"
+            >
+              当日没有二板及以上的股票
+            </div>
+          </template>
+
+          <template v-else>
+            <LadderGroup
+              v-for="g in groups"
+              :key="g.streak"
+              :group="g"
+              :expanded-set="expandedSet"
+              :trend-history="trendHistory"
+              @toggle="toggleTrend"
+            />
+            <div
+              v-if="groups.length === 0"
+              class="ladder-empty"
+            >
+              当日没有二板及以上的股票
+            </div>
+          </template>
         </template>
-      </template>
+      </div>
     </div>
   </div>
 </template>

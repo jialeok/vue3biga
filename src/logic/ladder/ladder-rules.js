@@ -101,11 +101,51 @@ export function getPromoteText(state) {
 }
 
 // ── 「题材连扳」模式（2026-09-24 需求）：按【题材】分组看「连板梯队的完整性」──
-// 例：AI应用 里同时出现了 四板 新华文轩 / 三板 新华传媒 / 二板 天威视讯
-//     ⇒ 该题材占了 3 个连板层级，梯队完整；只出现「二板 + 三板」= 2 层，同样算成梯队。
+//
+// ⚠️ 完整性 = 有【连续】的板数连在一起，且这段连续板数至少 3 档。
+//    只看「一共有几个不同层级」是不够的（旧实现就是只看层级数，已被用户否掉）。
+//
+// 用户口径（2026-09-24 原话整理）：
+//   · 二板 + 三板 + 四板            ⇒ 最长连续 3 档 ⇒ 完整
+//   · 三板 + 四板                    ⇒ 最长连续 2 档 ⇒ ⛔ 不完整（两个连在一起也不行）
+//   · 二板 + 三板 + 三板 + 四板      ⇒ 去重后 二/三/四 ⇒ 连续 3 档 ⇒ 完整
+//   · 四板 + 五板 + 六板             ⇒ 连续 3 档 ⇒ 完整
+//   · 二板 + 四板 + 五板 + 六板      ⇒ 最长连续 4/5/6 = 3 档 ⇒ 完整（不管多少只，连在一起就行）
+//   · 二板 + 四板                    ⇒ 没有任何连续段 ⇒ 不完整
 
-/** 算「成梯队」的最低层级数（用户口径：至少出现两个不同连板层级） */
-export const LADDER_MIN_LEVELS = 2;
+/** 算「成梯队」要求的最长【连续】板数（用户口径：连续 3 档才算梯队完整） */
+export const LADDER_MIN_RUN = 3;
+
+/**
+ * 最长连续板数：输入一组（可重复、可乱序的）连板数，返回最长「相邻 +1」连续段的长度。
+ *   [2,4,5,6] → 3（4/5/6）；[3,4] → 2；[2,3,4] → 3；[2,2,3,4] → 3（重复数先去重）
+ * ⛔ 这是「梯队是否完整」的唯一判据实现（§6），不要在别处再写一遍。
+ * @param {Iterable<number>|Array<number>} levels
+ * @returns {number} 最长连续段长度（空输入 → 0）
+ */
+export function longestConsecutiveRun(levels) {
+  const arr = (levels instanceof Set)
+    ? Array.from(levels)
+    : (Array.isArray(levels) ? levels.slice() : []);
+  const nums = [];
+  for (const v of arr) {
+    const n = Math.floor(Number(v));
+    if (isFinite(n) && nums.indexOf(n) < 0) nums.push(n);
+  }
+  if (nums.length === 0) return 0;
+  nums.sort(function(a, b) { return a - b; });
+  let best = 1;
+  let cur = 1;
+  for (let i = 1; i < nums.length; i++) {
+    if (nums[i] === nums[i - 1] + 1) {
+      cur++;
+      if (cur > best) best = cur;
+    } else {
+      cur = 1;
+    }
+  }
+  return best;
+}
 
 /**
  * 行对象组装（groupByStreak / groupByTopicLadder 共用，§6 单一实现）。
@@ -196,14 +236,17 @@ export function groupByStreak(rows, opts) {
 /**
  * 按【题材】分组看连板梯队（「题材连扳」toggle 打开时用）。
  *
- * 完整性怎么算：一个题材里出现了几个【不同的连板层级】就是几层 ——
- *   AI应用 有二板/三板/四板 ⇒ 3 层；只有二板+三板 ⇒ 2 层（也算成梯队）；只有二板 ⇒ 1 层（不成梯队）。
+ * 完整性判据（唯一实现 `longestConsecutiveRun`，§6）：
+ *   最长的【连续板数】≥ LADDER_MIN_RUN(3) ⇒ 梯队完整。
+ *   例：二/三/四 = 连续 3 档 ⇒ 完整；三/四 = 连续 2 档 ⇒ 不完整；
+ *       二/四/五/六 ⇒ 最长连续 4-5-6 = 3 档 ⇒ 完整。
  *
  * @param {Array} rows - 与 groupByStreak 同一份 rows
  * @param {{closeReady?:boolean, otherTopic?:string}} [opts]
- * @returns {Array<{topic:string, levelCount:number, levelText:string, isComplete:boolean,
- *                  completeText:string, count:number, rows:Array}>}
- *          题材排序：层级数降序 → 股票数降序 → 题材名（'其它'永远置底）；
+ * @returns {Array<{topic:string, levelCount:number, levelText:string, levelDetail:string,
+ *                  runLength:number, runText:string, isComplete:boolean, completeText:string,
+ *                  hintText:string, count:number, rows:Array}>}
+ *          题材排序：最长连续板数降序 → 层级数降序 → 股票数降序 → 题材名（'其它'永远置底）；
  *          题材内行序：连板数降序 → 十日涨幅降序（天梯从顶往下走）。
  */
 export function groupByTopicLadder(rows, opts) {
@@ -221,31 +264,40 @@ export function groupByTopicLadder(rows, opts) {
     byTopic.get(tp).push(r);
   });
 
-  // ② 每个题材：算层级数 + 组内按天梯顺序排
+  // ② 每个题材：算层级数 + 最长连续板数 + 组内按天梯顺序排
   const groups = [];
   byTopic.forEach(function(members, topic) {
     const levels = new Set();
     members.forEach(function(m) { levels.add(Math.floor(Number(m.streak))); });
     const sorted = _sortMembers(members);
     const levelList = Array.from(levels).sort(function(a, b) { return b - a; });
-    const isComplete = levels.size >= LADDER_MIN_LEVELS;
+    const levelDetail = levelList.map(function(s) { return getStreakLabel(s); }).join('/');
+    const runLength = longestConsecutiveRun(levels);
+    const isComplete = runLength >= LADDER_MIN_RUN;
+    const completeText = isComplete ? '梯队完整' : '未成梯队';
     groups.push({
       topic: topic,
       levelCount: levels.size,
-      levelText: levels.size + '层',
+      levelText: levels.size + '档',
       // 层级明细（四板/三板/二板）：给标题 hover 用，一眼看出这个题材占了哪几级
-      levelDetail: levelList.map(function(s) { return getStreakLabel(s); }).join('/'),
+      levelDetail: levelDetail,
+      runLength: runLength,
+      runText: '连' + runLength + '档',
       isComplete: isComplete,
-      completeText: isComplete ? '梯队完整' : '单层',
+      completeText: completeText,
+      // §21：hover 说明也在 Logic 层拼好，模板只渲染
+      hintText: topic + ' 有 ' + levels.size + ' 个连板档（' + levelDetail + '），'
+        + '最长连续 ' + runLength + ' 档（连续满 ' + LADDER_MIN_RUN + ' 档才算完整）',
       count: sorted.length,
       rows: sorted.map(function(m, i) { return _buildRow(m, i + 1, closeReady); })
     });
   });
 
-  // ③ 题材顺序：层级多的在前（梯队最完整的题材最值得先看）→ 股票数降序 → 题材名；「其它」置底
+  // ③ 题材顺序：连续板数多的在前（梯队最完整的题材最值得先看）→ 层级数 → 股票数 → 题材名；「其它」置底
   groups.sort(function(a, b) {
     if (a.topic === otherTopic && b.topic !== otherTopic) return 1;
     if (b.topic === otherTopic && a.topic !== otherTopic) return -1;
+    if (b.runLength !== a.runLength) return b.runLength - a.runLength;
     if (b.levelCount !== a.levelCount) return b.levelCount - a.levelCount;
     if (b.count !== a.count) return b.count - a.count;
     return a.topic < b.topic ? -1 : (a.topic > b.topic ? 1 : 0);

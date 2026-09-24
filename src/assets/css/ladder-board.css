@@ -65,21 +65,31 @@
             background: rgba(255, 255, 255, 0.2);
         }
 
-        /* ---- 「题材连扳」开关（与早盘竞价 toggle 同款 28×16 switch，配色改成适配紫色头部）---- */
+        /* ---- 工具栏（内容区最上面一条，与早盘竞价看板 .auction-toolbar 同款版式）----
+           [2026-09-24 用户要求] 「题材连扳」开关从标题条挪到内容区最上面，像早盘竞价一样：
+           浅紫底 + 下边框 + 靠右放置 28×16 switch（配色抄 .auction-toggle-*，浅底上用灰→紫）。 */
+        .ladder-toolbar {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            justify-items: end;
+            align-items: center;
+            gap: 4px;
+            padding: 8px 8px;
+            background: #f8f7ff;
+            border-bottom: 1px solid #ede9fe;
+        }
+
         .ladder-mode-item {
             display: flex;
             align-items: center;
             gap: 3px;
-            flex-shrink: 0;
         }
 
         .ladder-mode-label {
             font-size: 10.5px;
-            color: #ffffff;
+            color: #6d28d9;
             font-weight: 500;
             white-space: nowrap;
-            cursor: pointer;
-            user-select: none;
         }
 
         .ladder-mode-switch {
@@ -103,7 +113,7 @@
             left: 0;
             right: 0;
             bottom: 0;
-            background-color: rgba(255, 255, 255, 0.35);
+            background-color: #cbd5e1;
             transition: 0.2s;
             border-radius: 16px;
         }
@@ -122,16 +132,21 @@
         }
 
         .ladder-mode-switch input:checked + .ladder-mode-slider {
-            background: #c4b5fd;
+            background: linear-gradient(135deg, #8b5cf6, #7c3aed);
         }
 
         .ladder-mode-switch input:checked + .ladder-mode-slider:before {
             transform: translateX(12px);
         }
 
+        /* padding: 0 让上面的 .ladder-toolbar 能左右通到卡片边缘（同 .auction-content） */
         .ladder-body {
-            padding: 8px 10px 10px;
+            padding: 0;
             background: #ffffff;
+        }
+
+        .ladder-content {
+            padding: 8px 10px 10px;
         }
 
         /* §10：未就绪 / 失败用醒目告警色，绝不用「今天没有连板股」的灰字糊过去 */
@@ -169,7 +184,7 @@
             display: flex;
             align-items: center;
             gap: 6px;
-            padding: 3px 2px 5px;
+            padding: 3px 0 5px;
             border-bottom: 1px solid #f1f5f9;
         }
 
@@ -185,16 +200,21 @@
             color: #64748b;
         }
 
-        /* ---- 题材连扳模式：题材梯队条（题材名 + 层数 + 是否成梯队 + 只数）---- */
+        /* ---- 题材连扳模式：题材梯队条（题材名 + 档数 + 连续档数 + 是否成梯队 + 只数）----
+           完整性判据（2026-09-24 修正）：必须【连续】的板数连在一起、且最长连续段 ≥ 3 档。
+           例：二/三/四 ⇒ 连3档 ⇒ 梯队完整；三/四 ⇒ 连2档 ⇒ 未成梯队；
+               二/四/五/六 ⇒ 最长连续 4-5-6 = 3 档 ⇒ 梯队完整。 */
         .lad-topic-bar {
             display: flex;
             align-items: center;
             gap: 6px;
-            padding: 3px 2px 5px;
+            padding: 3px 0 5px;
             border-bottom: 1px solid #f1f5f9;
         }
 
         .lad-topic-label {
+            flex: 0 1 auto;
+            min-width: 0;
             font-size: 13px;
             font-weight: 700;
             color: #5b21b6;
@@ -203,35 +223,50 @@
             text-overflow: ellipsis;
         }
 
-        /* 层数 / 成梯队标记：成梯队用紫色实心（值得先看），单层用灰（还没走成梯队） */
+        /* 档数（有几个不同连板档）：中性灰紫小标，只作信息补充 */
         .lad-topic-levels {
             flex-shrink: 0;
             padding: 0 5px;
             font-size: 9px;
             line-height: 14px;
-            font-weight: 700;
-            color: #5b21b6;
-            background: #ede9fe;
-            border: 1px solid #ddd6fe;
+            font-weight: 600;
+            color: #7c3aed;
+            background: #f5f3ff;
+            border: 1px solid #ede9fe;
             border-radius: 4px;
             white-space: nowrap;
         }
 
-        .lad-topic-levels.complete {
+        /* 最长连续档数 = 完整性判据本身：达标用紫色实心（值得先看），不达标用灰 */
+        .lad-topic-run {
+            flex-shrink: 0;
+            padding: 0 5px;
+            font-size: 9px;
+            line-height: 14px;
+            font-weight: 700;
+            color: #64748b;
+            background: #f1f5f9;
+            border: 1px solid #e2e8f0;
+            border-radius: 4px;
+            white-space: nowrap;
+        }
+
+        .lad-topic-run.complete {
             color: #ffffff;
             background: #7c3aed;
             border-color: #7c3aed;
         }
 
+        /* 结论标：梯队完整 / 未成梯队 */
         .lad-topic-flag {
             flex-shrink: 0;
+            padding: 0 5px;
             font-size: 9px;
             line-height: 14px;
             font-weight: 600;
             color: #94a3b8;
             background: #f1f5f9;
             border-radius: 4px;
-            padding: 0 5px;
             white-space: nowrap;
         }
 
@@ -245,18 +280,21 @@
             border-bottom: 1px solid #f8fafc;
         }
 
+        /* [2026-09-24 用户要求] 行内各列必须【对齐】。
+           用 CSS Grid 固定前几列宽度：序号 | 股票名 | 十日涨幅 | 题材/连板档 | 晋级。
+           这样不管股票名多长、「高开/一字」标有没有，十日涨幅与题材/连板档都从同一条竖线开始；
+           末列 text-align:right 让三种晋级文案的右边缘也对齐（晋级永远在最右）。 */
         .lad-row {
-            display: flex;
+            display: grid;
+            grid-template-columns: 22px 126px 54px minmax(0, 1fr) 68px;
             align-items: baseline;
-            gap: 8px;
+            column-gap: 8px;
             padding: 4px 0;
             font-size: 12px;
             color: #1f2937;
         }
 
         .lad-seq {
-            width: 20px;
-            flex-shrink: 0;
             font-size: 11px;
             color: #94a3b8;
             text-align: right;
@@ -266,16 +304,23 @@
         }
 
         .lad-name-box {
-            flex-shrink: 0;
-            display: inline-flex;
+            display: flex;
             align-items: baseline;
             gap: 4px;
+            min-width: 0;
+            overflow: hidden;
             white-space: nowrap;
             cursor: pointer;
             -webkit-tap-highlight-color: transparent;
         }
 
+        /* 名字过长时只压缩名字自己（省略号），高开/一字标必须完整可见 */
         .lad-name {
+            flex: 0 1 auto;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
             font-weight: 600;
         }
 
@@ -316,16 +361,14 @@
         }
 
         .lad-pct {
-            flex-shrink: 0;
-            width: 46px;
             font-size: 11px;
             color: #b91c1c;
             text-align: right;
+            white-space: nowrap;
         }
 
         /* 题材是主角列（与早盘竞价题材 toggle 同款）：吃满剩余宽度、允许折行、不截断 */
         .lad-topic {
-            flex: 1 1 auto;
             min-width: 0;
             font-size: 11px;
             line-height: 1.4;
@@ -333,21 +376,21 @@
             word-break: break-all;
         }
 
-        /* 题材连扳模式下该列改显「四板 / 三板 / 二板」（与档位条同款紫色，梯队层级一眼可读） */
+        /* 题材连扳模式下该列改显「四板 / 三板 / 二板」（与档位条同款紫色，梯队层级一眼可读）。
+           ⚠️ 仍然吃满剩余宽度（不是 flex:0 0 auto）—— 否则晋级列会紧跟在连板档后面，
+              就跑到中间去了；固定右边缘才能让「晋级」始终在最右、且各列对齐。 */
         .lad-topic.is-streak {
-            flex: 0 0 auto;
-            min-width: 34px;
             font-weight: 700;
             color: #5b21b6;
             white-space: nowrap;
         }
 
-        /* 晋级：成功红 / 失败绿 / 待定灰 */
+        /* 晋级：成功红 / 失败绿 / 待定灰；右对齐 → 三种文案右边缘对齐（永远在最右一列） */
         .lad-promote {
-            flex-shrink: 0;
             font-size: 11px;
             font-weight: 600;
             white-space: nowrap;
+            text-align: right;
         }
 
         .lad-promote.promote-success {

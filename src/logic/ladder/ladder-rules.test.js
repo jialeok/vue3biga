@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 import {
   groupByStreak,
   groupByTopicLadder,
+  longestConsecutiveRun,
   getAucOpenKind,
   getAucOpenText,
   judgePromotion,
@@ -18,7 +19,7 @@ import {
   formatRangePct,
   hasSeriesData,
   LADDER_MIN_STREAK,
-  LADDER_MIN_LEVELS,
+  LADDER_MIN_RUN,
   AUC_OPEN_HIGH,
   AUC_OPEN_LOW,
   AUC_OPEN_FLAT,
@@ -174,12 +175,37 @@ describe('格式化与趋势序列', () => {
 });
 
 // ============================================================================
-// [题材连扳 2026-09-24] 按【题材】看连板梯队的完整性。
-// 用户原话：AI应用 里 四板 新华文轩 / 三板 新华传媒 / 二板 天威视讯 ⇒ 出现二板+三板+四板 = 3 层；
-//           只出现二板+三板 = 2 层，同样算成梯队。
+// [题材连扳 2026-09-24 修正] 梯队完整性 = 【连续】的板数连在一起，且最长连续段 ≥ 3 档。
+// 用户原话：AI应用 四板/三板/二板 ⇒ 连续 3 档 ⇒ 完整；
+//           房地产 三板/三板/四板 ⇒ 只有两个连在一起 ⇒ ⛔ 不完整；
+//           房地产 二板/三板/三板/四板 ⇒ 二三四连在一起 ⇒ 完整；
+//           二/四/五/六 ⇒ 4-5-6 三只连在一起 ⇒ 也叫梯队完整。
 // ============================================================================
+describe('longestConsecutiveRun（最长连续档数 = 完整性唯一判据）', () => {
+  it('二/三/四 → 3；三/四 → 2（两个连在一起不算）', () => {
+    expect(longestConsecutiveRun([2, 3, 4])).toBe(3);
+    expect(longestConsecutiveRun([3, 4])).toBe(2);
+  });
+
+  it('重复档位先去重：二/三/三/四 → 仍是 3', () => {
+    expect(longestConsecutiveRun([2, 3, 3, 4])).toBe(3);
+    expect(longestConsecutiveRun(new Set([2, 3, 3, 4]))).toBe(3);
+  });
+
+  it('二/四/五/六 → 最长连续段 4-5-6 = 3（不管中间缺了几档、有多少只）', () => {
+    expect(longestConsecutiveRun([2, 4, 5, 6])).toBe(3);
+    expect(longestConsecutiveRun([2, 4, 5, 6, 7])).toBe(4);
+  });
+
+  it('完全不相邻 → 1；空输入 → 0（§10 不缺数据时不瞎判）', () => {
+    expect(longestConsecutiveRun([2, 4])).toBe(1);
+    expect(longestConsecutiveRun([])).toBe(0);
+    expect(longestConsecutiveRun(null)).toBe(0);
+  });
+});
+
 describe('groupByTopicLadder（题材连扳梯队）', () => {
-  it('AI应用 占 二板/三板/四板 = 3 层 ⇒ 梯队完整', () => {
+  it('AI应用 占 二板/三板/四板 ⇒ 连续 3 档 ⇒ 梯队完整', () => {
     const groups = groupByTopicLadder([
       R('新华文轩', 4, 30, 2, false, null, 'AI应用'),
       R('新华传媒', 3, 20, 2, false, null, 'AI应用'),
@@ -188,30 +214,70 @@ describe('groupByTopicLadder（题材连扳梯队）', () => {
     expect(groups.length).toBe(1);
     expect(groups[0].topic).toBe('AI应用');
     expect(groups[0].levelCount).toBe(3);
-    expect(groups[0].levelText).toBe('3层');
+    expect(groups[0].levelText).toBe('3档');
     expect(groups[0].levelDetail).toBe('四板/三板/二板');
+    expect(groups[0].runLength).toBe(3);
+    expect(groups[0].runText).toBe('连3档');
     expect(groups[0].isComplete).toBe(true);
     expect(groups[0].completeText).toBe('梯队完整');
     expect(groups[0].count).toBe(3);
   });
 
-  it('只有二板 + 三板 = 2 层，也算成梯队（用户明确要的口径）', () => {
+  it('⛔ 房地产 三板/三板/四板 ⇒ 最长连续只有 2 档 ⇒ 未成梯队（两个连在一起也不行）', () => {
     const groups = groupByTopicLadder([
-      R('甲', 3, 10, 1, false, null, 'T1'),
-      R('乙', 2, 10, 1, false, null, 'T1')
+      R('甲', 4, 10, 1, false, null, '房地产'),
+      R('乙', 3, 10, 1, false, null, '房地产'),
+      R('丙', 3, 9, 1, false, null, '房地产')
     ], {});
-    expect(groups[0].levelCount).toBe(LADDER_MIN_LEVELS);
+    expect(groups[0].levelCount).toBe(2);
+    expect(groups[0].runLength).toBe(2);
+    expect(groups[0].runText).toBe('连2档');
+    expect(groups[0].isComplete).toBe(false);
+    expect(groups[0].completeText).toBe('未成梯队');
+    expect(groups[0].count).toBe(3);
+  });
+
+  it('房地产 二板/三板/三板/四板 ⇒ 二三四连在一起 ⇒ 梯队完整', () => {
+    const groups = groupByTopicLadder([
+      R('甲', 4, 10, 1, false, null, '房地产'),
+      R('乙', 3, 10, 1, false, null, '房地产'),
+      R('丙', 3, 9, 1, false, null, '房地产'),
+      R('丁', 2, 8, 1, false, null, '房地产')
+    ], {});
+    expect(groups[0].runLength).toBe(3);
+    expect(groups[0].isComplete).toBe(true);
+    expect(groups[0].completeText).toBe('梯队完整');
+  });
+
+  it('二/四/五/六 ⇒ 4-5-6 三只连在一起 ⇒ 也算梯队完整', () => {
+    const groups = groupByTopicLadder([
+      R('甲', 2, 10, 1, false, null, 'T1'),
+      R('乙', 4, 10, 1, false, null, 'T1'),
+      R('丙', 5, 10, 1, false, null, 'T1'),
+      R('丁', 6, 10, 1, false, null, 'T1')
+    ], {});
+    expect(groups[0].levelCount).toBe(4);
+    expect(groups[0].runLength).toBe(3);
     expect(groups[0].isComplete).toBe(true);
   });
 
-  it('只有二板 = 1 层 ⇒ 单层，不算成梯队（但照样显示出来）', () => {
+  it('二/四 完全不相邻 ⇒ 未成梯队', () => {
+    const groups = groupByTopicLadder([
+      R('甲', 4, 10, 1, false, null, 'T1'),
+      R('乙', 2, 10, 1, false, null, 'T1')
+    ], {});
+    expect(groups[0].runLength).toBe(1);
+    expect(groups[0].isComplete).toBe(false);
+  });
+
+  it('只有二板 ⇒ 连1档 ⇒ 未成梯队（但照样显示出来）', () => {
     const groups = groupByTopicLadder([
       R('甲', 2, 10, 1, false, null, 'T1'),
       R('乙', 2, 9, 1, false, null, 'T1')
     ], {});
     expect(groups[0].levelCount).toBe(1);
+    expect(groups[0].runLength).toBe(1);
     expect(groups[0].isComplete).toBe(false);
-    expect(groups[0].completeText).toBe('单层');
     expect(groups[0].count).toBe(2);
   });
 
@@ -226,16 +292,20 @@ describe('groupByTopicLadder（题材连扳梯队）', () => {
     expect(groups[0].rows.map(r => r.seq)).toEqual([1, 2, 3, 4]);
   });
 
-  it('题材排序：层级多的在前 → 股票数降序 → 题材名（"其它"永远置底）', () => {
+  it('题材排序：最长连续档数多的在前 → 档数 → 股票数 → 题材名（"其它"永远置底）', () => {
     const groups = groupByTopicLadder([
       R('a1', 2, 1, 1, false, null, '其它'),
-      R('a2', 3, 1, 1, false, null, '其它'),   // 其它：2 层，但必须排最后
-      R('b1', 2, 1, 1, false, null, 'T2'),     // T2：1 层
+      R('a2', 3, 1, 1, false, null, '其它'),   // 其它：连2档（比 T2 高），但必须排最后
+      R('b1', 2, 1, 1, false, null, 'T2'),     // T2：连1档
       R('c1', 2, 1, 1, false, null, 'T1'),
       R('c2', 3, 1, 1, false, null, 'T1'),
-      R('c3', 4, 1, 1, false, null, 'T1')      // T1：3 层 → 最前
+      R('c3', 4, 1, 1, false, null, 'T1')      // T1：连3档 → 最前
     ], {});
     expect(groups.map(g => g.topic)).toEqual(['T1', 'T2', '其它']);
+  });
+
+  it('最低门槛常量就是 3（连续 3 档才算梯队完整）', () => {
+    expect(LADDER_MIN_RUN).toBe(3);
   });
 
   it('首板 / 趋势不进题材梯队（与档位模式同一条入选门槛）', () => {
