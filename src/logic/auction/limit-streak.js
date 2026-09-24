@@ -20,6 +20,15 @@
 // 纯函数红线：不读 state、不发请求、不碰 DOM、不写库。
 
 import { getCloseLimitState, parseAucPct } from './limit-up.js';
+// [LADDER 2026-09-24] 下面 buildLimitStreakMapForDate 需要「按日期取历史逐日行」：
+//   · getDragonWindowDates  降序交易日窗口 [T, T-1 … T-9]（与十日涨幅同一份窗口，§6）
+//   · getAuctionData        内存里的逐日竞价行（首屏已整段拉入 → 0 请求、0 额度）
+//   · getStockCode          代码兜底（涨停幅度判定需要）
+// 依赖方向：limit-streak → dragon-rank / app-core-api / data（均为 Logic→Data 合法方向），
+// 且 dragon-rank 不反向依赖本文件，不产生循环。
+import { getDragonWindowDates } from './dragon-rank.js';
+import { getAuctionData } from '../app-core-api.js';
+import { getStockCode } from '../../data/stock-code-map.js';
 
 /** 回看的历史交易日根数（T-1 … T-9，不含当天 T）——与 10 日区间窗口 [T-9,T] 去掉 T 后天然重合 */
 export const STREAK_LOOKBACK_DAYS = 9;
@@ -92,20 +101,58 @@ function _closePctOf(row) {
  * @returns {Map<string, {streak:number, label:string}>}
  */
 export function buildLimitStreakMap(descDates, rowsByDate, codeOf) {
-    const out = new Map();
-    if (!Array.isArray(descDates) || descDates.length === 0 || !rowsByDate) return out;
-    const newestMap = rowsByDate.get(descDates[0]);
-    if (!newestMap) return out;
-    newestMap.forEach(function(row, name) {
-        if (!name) return;
-        const code = codeOf ? (codeOf(row, name) || '') : ((row && row.code) || '');
-        const pcts = descDates.map(function(d) {
-            const m = rowsByDate.get(d);
-            const r = m ? m.get(name) : null;
-            return r ? _closePctOf(r) : null;
-        });
-        const res = computeStreak(pcts, code, name);
-        if (res) out.set(name, res);
+  const out = new Map();
+  if (!Array.isArray(descDates) || descDates.length === 0 || !rowsByDate) return out;
+  const newestMap = rowsByDate.get(descDates[0]);
+  if (!newestMap) return out;
+  newestMap.forEach(function(row, name) {
+    if (!name) return;
+    const code = codeOf ? (codeOf(row, name) || '') : ((row && row.code) || '');
+    const pcts = descDates.map(function(d) {
+      const m = rowsByDate.get(d);
+      const r = m ? m.get(name) : null;
+      return r ? _closePctOf(r) : null;
     });
-    return out;
+    const res = computeStreak(pcts, code, name);
+    if (res) out.set(name, res);
+  });
+  return out;
+}
+
+/**
+ * [LADDER 2026-09-24] 按【看板日 T】直接取「股票名 → 连板状态」映射。
+ *
+ * 原实现是 view-helpers.js 的私有函数 _buildLimitStreakMap；「连板天梯」看板要同一份口径，
+ * 与其复制一份（迟早分叉：一个说二板一个说三板），不如搬到连板模块里共用（§6 单一真相）。
+ * 逻辑一字未改，只是换了归属地 + 从 private 变 export。
+ *
+ * 回看窗口 = 该日 10 日区间窗口 [T-9, T]【去掉当天 T】→ 降序 [T-1 … T-9]。
+ * 为什么排除当天：T 的 change_pct 在早盘只是 9:25 竞价副本，用它判连板会把「还没走完的一天」
+ * 当成已收盘。
+ *
+ * 逐日行取自内存 getAuctionData()[d]（含 market_metrics 影子行，带 change_pct），
+ * 首屏 auction-pull-window 已把最近 30 个自然日整段拉入 → 【0 网络请求、0 猫抓额度】。
+ *
+ * @param {string} date 看板日期 T
+ * @returns {Map<string, {streak:number, label:string}>}
+ */
+export function buildLimitStreakMapForDate(date) {
+  if (!date) return new Map();
+  const win = getDragonWindowDates(date);                  // 降序 [T, T-1, … T-9]
+  const descDates = win.slice(1, 1 + STREAK_LOOKBACK_DAYS); // 去掉 T → [T-1 … T-9]
+  if (descDates.length === 0) return new Map();
+  const g = getAuctionData() || {};
+  const rowsByDate = new Map();
+  descDates.forEach(function(d) {
+    const m = new Map();
+    ((g && g[d]) || []).forEach(function(r) {
+      if (!r || !r.stock) return;
+      const n = String(r.stock).trim();
+      if (n && !m.has(n)) m.set(n, r); // 同日同名只认第一行（与 dragon-rank 同款双保险）
+    });
+    rowsByDate.set(d, m);
+  });
+  return buildLimitStreakMap(descDates, rowsByDate, function(row, name) {
+    return (row && row.code) || getStockCode(name) || '';
+  });
 }

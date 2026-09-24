@@ -21,12 +21,14 @@ import { isAuctionYiZi, parseAucPct, getCloseLimitState, getCloseNameTone, isHig
 // [LIMIT-STREAK 2026-09-11] 趋势/连板标记（趋势 / 首板 / 二板 / 三板…）：只看【当天之前】的
 // 历史交易日收盘涨幅，逐日回看数连续涨停。判定单一真相在 limit-streak.js（纯函数），
 // 数据取内存已存的逐日 change_pct（首屏已整段拉入）→ 0 网络请求、0 猫抓额度。
-import { buildLimitStreakMap, STREAK_LOOKBACK_DAYS } from './limit-streak.js';
+// [LADDER 2026-09-24] 「按日期取连板映射」搬到 limit-streak.js 并导出：早盘竞价与「连板天梯」看板
+// 共用同一份口径（§6）。此前它是本文件的私有函数 _buildLimitStreakMap，复制一份必然分叉。
+import { buildLimitStreakMapForDate } from './limit-streak.js';
 // [CLOSE-COUNT 2026-09-11] 「收盘口径」判定：题材统计条的收盘红绿/停板、行级收盘停板标记
 // 只在收盘【权威口径】下才成立 —— 早盘（乃至 15:00~16:00 之间）的 change_pct 还可能是
 // 9:25 写入的竞价副本，用它数红绿会把竞价方向当成收盘结果。
 // 判定复用 dragon-rank 的单一真相 isAuthoritativeCloseReached（北京 16:05），不另写一份时间逻辑（§6）。
-import { getDragonRangePct, computeDragonRankMap, isAuthoritativeCloseReached, getDragonWindowDates } from './dragon-rank.js';
+import { getDragonRangePct, computeDragonRankMap, isAuthoritativeCloseReached } from './dragon-rank.js';
 // [DRAGON 2026-09-09] 题材龙头（龙一/龙二…）：区间涨幅状态由 dragon-rank.js 异步加载后经模块级 ref 暴露，
 // 此处同步读取（与 weakStrongSetRef 同款 ref-driven 范式），题材 toggle 开启时才参与计算。
 // [TOPIC-STATS 2026-09-10] 题材块统计条（数量/一字/竞价高开/龙头…）：纯函数在 topic-stats.js
@@ -57,41 +59,6 @@ function _getThreeDayAuctionPct(rawItem) {
   const raw = rawItem.auc_pct_chg || rawItem.aucPctChg || rawItem.changePct || rawItem.change_pct || '';
   const num = parseFloat(String(raw).replace('%', '').replace('+', ''));
   return isFinite(num) ? num : null;
-}
-
-/**
- * [LIMIT-STREAK 2026-09-11] 构建「股票名 → 趋势/连板状态」映射（题材模式专用）。
- *
- * 回看窗口 = 该日 10 日区间窗口 [T-9, T] 【去掉当天 T】→ 降序 [T-1 … T-9]。
- * 为什么排除当天：用户口径「当天早上的行情还没走完，参考意义不大」——T 的 change_pct 在
- * 早盘只是 9:25 竞价副本，用它判连板会把「还没走完的一天」当成已收盘。
- *
- * 逐日行取自内存 getAuctionData()[d]（含 market_metrics 影子行，带 change_pct），
- * 首屏 auction-pull-window 已把最近 30 个自然日整段拉入 → 本函数 0 网络请求、0 猫抓额度。
- * 判定与组装全部交给纯函数 limit-streak.js（§6 单一真相，不在此处另写一份）。
- *
- * @param {string} date 看板日期 T
- * @returns {Map<string, {streak:number, label:string}>}
- */
-function _buildLimitStreakMap(date) {
-  if (!date) return new Map();
-  const win = getDragonWindowDates(date);           // 降序 [T, T-1, … T-9]
-  const descDates = win.slice(1, 1 + STREAK_LOOKBACK_DAYS); // 去掉 T → [T-1 … T-9]
-  if (descDates.length === 0) return new Map();
-  const g = getAuctionData() || {};
-  const rowsByDate = new Map();
-  descDates.forEach(function(d) {
-    const m = new Map();
-    ((g && g[d]) || []).forEach(function(r) {
-      if (!r || !r.stock) return;
-      const n = String(r.stock).trim();
-      if (n && !m.has(n)) m.set(n, r); // 同日同名只认第一行（与 dragon-rank 同款双保险）
-    });
-    rowsByDate.set(d, m);
-  });
-  return buildLimitStreakMap(descDates, rowsByDate, function(row, name) {
-    return (row && row.code) || getStockCode(name) || '';
-  });
 }
 
 function _enrichAuctionItem(rawItem, index, ctx) {
@@ -502,7 +469,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   let limitStreakMap = null;
   if (sortState.byTopic) {
     try {
-      limitStreakMap = _buildLimitStreakMap(currentDate);
+      limitStreakMap = buildLimitStreakMapForDate(currentDate);
     } catch (e) {
       console.warn('[LIMIT-STREAK] 连板映射构建失败，本次不显示趋势/连板标记:', e);
       limitStreakMap = new Map();

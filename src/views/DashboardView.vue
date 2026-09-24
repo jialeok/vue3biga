@@ -72,6 +72,10 @@
     <EmotionBoard v-show="boardView === 'trading'" />
     <!-- 「涨跌停」看板：独立看板组件（在情绪看板之下、早盘竞价看板之上） -->
     <LimitBoard v-show="boardView === 'trading'" />
+    <!-- 「连板天梯晋级」看板：独立看板组件（在涨跌停看板【下面】、竞价一字看板【上面】）。
+         数据 100% 照搬早盘竞价（同一份内存数据，连板/竞价涨幅/一字/收盘停板/十日涨幅/题材
+         全部复用既有单一真相），不发请求、不落库 —— 收盘覆盖涨幅后晋级成败自动跟着翻。 -->
+    <LadderBoard v-show="boardView === 'trading'" />
     <!-- 「竞价一字」看板：独立看板组件（在涨跌停看板之下、早盘竞价看板之上；
          数据来自猫抓数据【另一只小号】的 daily_auc_fd，独立 Edge Function auction-yizi-fetch
          每交易日北京 09:25 抓取，与早盘竞价看板彻底解耦） -->
@@ -216,6 +220,7 @@ import EtfBoard from './EtfBoard.vue';
 import JiwangBoard from './JiwangBoard.vue';
 import EmotionBoard from './EmotionBoard.vue';
 import LimitBoard from './LimitBoard.vue';
+import LadderBoard from './LadderBoard.vue';
 import AuctionYiziBoard from './AuctionYiziBoard.vue';
 import StatsBoard from './StatsBoard.vue';
 import StarStatsBoard from './StarStatsBoard.vue';

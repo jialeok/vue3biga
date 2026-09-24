@@ -1,0 +1,253 @@
+        /* 连板天梯晋级看板（独立看板，类名统一 ladder- / lad- 前缀，⛔ 不蹭任何其它看板的前缀）
+           视觉与其它看板保持一致（同款圆角卡片 + 渐变头部），但类名完全独立：
+           任何一边改版都不会悄悄影响另一边。 */
+        .ladder-board {
+            margin: 0 15px 10px;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        }
+
+        .ladder-board.minimized .ladder-header {
+            border-radius: 15px;
+        }
+
+        .ladder-header {
+            padding: 10px 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            background: linear-gradient(135deg, #7c3aed, #5b21b6);
+            transition: background 0.2s;
+        }
+
+        .ladder-header:hover {
+            background: linear-gradient(135deg, #6d28d9, #4c1d95);
+        }
+
+        .ladder-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #ffffff;
+            white-space: nowrap;
+        }
+
+        .ladder-summary {
+            flex: 1;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.95);
+            text-align: right;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .ladder-toggle-btn {
+            width: 24px;
+            height: 24px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.9);
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.2);
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .ladder-body {
+            padding: 8px 10px 10px;
+            background: #ffffff;
+        }
+
+        /* §10：未就绪 / 失败用醒目告警色，绝不用「今天没有连板股」的灰字糊过去 */
+        .ladder-error {
+            margin: 4px 2px 8px;
+            padding: 6px 8px;
+            font-size: 12px;
+            color: #b91c1c;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            border-radius: 8px;
+        }
+
+        .ladder-empty {
+            padding: 12px 6px;
+            font-size: 12px;
+            color: #94a3b8;
+            text-align: center;
+        }
+
+        /* 状态说明（早盘阶段「待定」的由来），不是告警 */
+        .ladder-note {
+            margin: 2px 2px 6px;
+            font-size: 11px;
+            line-height: 1.5;
+            color: #64748b;
+        }
+
+        /* ---- 连板档位条：档位名 + 数量 ---- */
+        .lad-group {
+            margin-bottom: 8px;
+        }
+
+        .lad-group-bar {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 2px 5px;
+            border-bottom: 1px solid #f1f5f9;
+        }
+
+        .lad-group-label {
+            font-size: 13px;
+            font-weight: 700;
+            color: #5b21b6;
+        }
+
+        .lad-group-count {
+            font-size: 11px;
+            font-weight: 600;
+            color: #64748b;
+        }
+
+        /* ---- 行 ---- */
+        .lad-row-wrap {
+            border-bottom: 1px solid #f8fafc;
+        }
+
+        .lad-row {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            padding: 4px 0;
+            font-size: 12px;
+            color: #1f2937;
+        }
+
+        .lad-seq {
+            width: 20px;
+            flex-shrink: 0;
+            font-size: 11px;
+            color: #94a3b8;
+            text-align: right;
+            cursor: pointer;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .lad-name-box {
+            flex-shrink: 0;
+            display: inline-flex;
+            align-items: baseline;
+            gap: 4px;
+            white-space: nowrap;
+            cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .lad-name {
+            font-weight: 600;
+        }
+
+        /* 高开 / 低开 / 平开：与早盘竞价龙标底色同一套（涨红 / 跌绿 / 平灰） */
+        .lad-open-tag {
+            padding: 0 4px;
+            font-size: 9px;
+            line-height: 14px;
+            font-weight: 600;
+            color: #ffffff;
+            border-radius: 4px;
+            white-space: nowrap;
+        }
+
+        .lad-open-tag.open-high {
+            background: #dc2626;
+        }
+
+        .lad-open-tag.open-low {
+            background: #059669;
+        }
+
+        .lad-open-tag.open-flat {
+            background: #94a3b8;
+        }
+
+        /* 竞价一字小标（与开平标同位，9px） */
+        .lad-yizi-tag {
+            padding: 0 4px;
+            font-size: 9px;
+            line-height: 14px;
+            font-weight: 600;
+            color: #b91c1c;
+            background: #fff1f2;
+            border: 1px solid #fecdd3;
+            border-radius: 4px;
+            white-space: nowrap;
+        }
+
+        .lad-pct {
+            flex-shrink: 0;
+            width: 46px;
+            font-size: 11px;
+            color: #b91c1c;
+            text-align: right;
+        }
+
+        /* 题材是主角列（与早盘竞价题材 toggle 同款）：吃满剩余宽度、允许折行、不截断 */
+        .lad-topic {
+            flex: 1 1 auto;
+            min-width: 0;
+            font-size: 11px;
+            line-height: 1.4;
+            color: #475569;
+            word-break: break-all;
+        }
+
+        /* 晋级：成功红 / 失败绿 / 待定灰 */
+        .lad-promote {
+            flex-shrink: 0;
+            font-size: 11px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .lad-promote.promote-success {
+            color: #b91c1c;
+        }
+
+        .lad-promote.promote-fail {
+            color: #15803d;
+        }
+
+        .lad-promote.promote-pending {
+            color: #94a3b8;
+        }
+
+        /* ---- 展开的趋势面板 ---- */
+        .lad-trend-panel {
+            padding: 6px 4px 10px;
+            background: #f8fafc;
+            border-radius: 10px;
+        }
+
+        .lad-chart-item {
+            margin-bottom: 6px;
+        }
+
+        .lad-chart-label {
+            margin-bottom: 2px;
+            font-size: 10px;
+            color: #64748b;
+        }
+
+        .lad-trend-empty {
+            padding: 8px 4px;
+            font-size: 11px;
+            color: #94a3b8;
+        }
