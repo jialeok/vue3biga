@@ -1,0 +1,265 @@
+        /* 决策看板（独立看板，类名统一 decision- / dcb- 前缀，⛔ 不蹭任何其它看板的前缀）
+           视觉与其它看板保持一致（同款圆角卡片 + 渐变头部），但类名完全独立：
+           任何一边改版都不会悄悄影响另一边。 */
+        .decision-board {
+            margin: 0 15px 10px;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        }
+
+        .decision-board.minimized .decision-header {
+            border-radius: 15px;
+        }
+
+        .decision-header {
+            padding: 10px 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            background: linear-gradient(135deg, #334155, #0f172a);
+            transition: background 0.2s;
+        }
+
+        .decision-header:hover {
+            background: linear-gradient(135deg, #1e293b, #020617);
+        }
+
+        .decision-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #ffffff;
+            white-space: nowrap;
+        }
+
+        .decision-summary {
+            flex: 1;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.95);
+            text-align: right;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .decision-toggle-btn {
+            width: 24px;
+            height: 24px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.9);
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.2);
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .decision-body {
+            padding: 8px 10px 10px;
+            background: #ffffff;
+        }
+
+        /* §10：未就绪 / 失败必须看得见 —— 用醒目的告警色，绝不用「今天没有信号」的灰字糊过去 */
+        .decision-error {
+            margin: 4px 2px 8px;
+            padding: 6px 8px;
+            font-size: 12px;
+            color: #b91c1c;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            border-radius: 8px;
+        }
+
+        .decision-empty {
+            padding: 12px 6px;
+            font-size: 12px;
+            color: #94a3b8;
+            text-align: center;
+        }
+
+        .decision-section {
+            padding: 0 2px;
+        }
+
+        .decision-section-title {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 2px 2px 6px;
+            font-size: 12px;
+            font-weight: 700;
+            color: #0f172a;
+        }
+
+        /* 涨红跌绿（中国习惯）：买点 = 红，卖点 = 绿 */
+        .decision-section-title.buy {
+            color: #b91c1c;
+        }
+
+        .decision-section-title.sell {
+            color: #15803d;
+        }
+
+        /* 蚂蚁线：买点与卖点之间的分隔（与涨跌停看板同款行进虚线语言） */
+        .decision-sep {
+            height: 2px;
+            margin: 12px 0;
+            background-image: repeating-linear-gradient(90deg, #94a3b8 0 5px, transparent 5px 10px);
+            background-size: 10px 2px;
+            background-repeat: repeat-x;
+            animation: decisionAnts 1s linear infinite;
+        }
+
+        @keyframes decisionAnts {
+            from { background-position: 0 0; }
+            to { background-position: 10px 0; }
+        }
+
+        /* ---- 题材块（买点 / 卖点共用） ---- */
+        .dcb-block {
+            margin-bottom: 8px;
+            padding: 6px 8px;
+            background: #f8fafc;
+            border: 1px solid #eef2f7;
+            border-radius: 10px;
+        }
+
+        .dcb-block-head {
+            display: flex;
+            align-items: baseline;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .dcb-topic {
+            font-size: 13px;
+            font-weight: 700;
+            color: #0f172a;
+        }
+
+        .dcb-reason,
+        .dcb-reason-line {
+            font-size: 11px;
+            line-height: 1.5;
+            color: #475569;
+        }
+
+        .dcb-reason-line {
+            margin: 2px 0 4px;
+        }
+
+        .dcb-block-note {
+            margin-top: 4px;
+            font-size: 11px;
+            color: #b45309;
+        }
+
+        .dcb-row {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            padding: 3px 0;
+            font-size: 12px;
+            color: #1f2937;
+        }
+
+        .dcb-seq {
+            width: 18px;
+            flex-shrink: 0;
+            font-size: 11px;
+            color: #94a3b8;
+            text-align: right;
+        }
+
+        .dcb-name {
+            font-weight: 600;
+        }
+
+        /* 龙一 / 龙二 徽章：9px 小字，紧贴股票名（与早盘竞价龙一徽章同级占位） */
+        .dcb-dragon {
+            padding: 0 4px;
+            font-size: 9px;
+            line-height: 14px;
+            color: #b45309;
+            background: #fffbeb;
+            border: 1px solid #fde68a;
+            border-radius: 4px;
+            white-space: nowrap;
+        }
+
+        .dcb-pct {
+            font-size: 11px;
+            color: #b91c1c;
+        }
+
+        .dcb-position {
+            margin-left: auto;
+            font-size: 11px;
+            font-weight: 600;
+            color: #b91c1c;
+            white-space: nowrap;
+        }
+
+        .dcb-sell-at {
+            margin-left: auto;
+            font-size: 11px;
+            font-weight: 600;
+            color: #15803d;
+            white-space: nowrap;
+        }
+
+        /* ---- 灰色小问号 + 规则面板 ---- */
+        .dcb-rules {
+            position: relative;
+            flex-shrink: 0;
+            display: inline-flex;
+            align-items: center;
+        }
+
+        .dcb-rules-q {
+            width: 16px;
+            height: 16px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            color: #ffffff;
+            background: #94a3b8;
+            border-radius: 50%;
+            cursor: pointer;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .dcb-rules-q:hover {
+            background: #64748b;
+        }
+
+        /* 面板挂在头部里 —— 用绝对定位铺开，避免被 .decision-header 的 flex 挤变形 */
+        .dcb-rules-panel {
+            position: absolute;
+            top: 22px;
+            left: 0;
+            z-index: 30;
+            width: 300px;
+            max-width: 78vw;
+            padding: 8px 10px;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            box-shadow: 0 4px 12px rgba(15, 23, 42, 0.12);
+        }
+
+        .dcb-rules-line {
+            font-size: 11px;
+            line-height: 1.7;
+            color: #475569;
+            white-space: normal;
+            word-break: break-word;
+        }

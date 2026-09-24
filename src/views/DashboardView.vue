@@ -77,6 +77,12 @@
          每交易日北京 09:25 抓取，与早盘竞价看板彻底解耦） -->
     <AuctionYiziBoard v-show="boardView === 'trading'" />
     <AuctionBoard v-show="boardView === 'trading'" />
+    <!-- 「决策」看板：独立看板组件（紧跟在早盘竞价看板【下面】）
+         它不抓数据、不落库，只是把早盘竞价已有的题材分组 / 竞价一字 / 十日涨幅 /
+         昨日龙头名册 / 昨日买卖标签，按用户定的规则推演出「今天买什么、昨天买的什么时候卖」。
+         组件与样式全部独立（decision- / dcb- 前缀），⛔ 不复用任何其它看板的组件，
+         因此挂载在这里不会影响任何既有看板。 -->
+    <DecisionBoard v-show="boardView === 'trading'" />
     <DuibanBoard v-show="boardView === 'trading'" />
     <EtfBoard v-show="boardView === 'trading'" />
     <HomeStocksView
@@ -202,6 +208,7 @@ import { showToast } from '../composables/useToast.js';
 import EditModal from '../components/EditModal.vue';
 import HomeStocksView from './HomeStocksView.vue';
 import AuctionBoard from './AuctionBoard.vue';
+import DecisionBoard from './DecisionBoard.vue';
 import BiddingBoard from './BiddingBoard.vue';
 import PatternBoard from './PatternBoard.vue';
 import DuibanBoard from './DuibanBoard.vue';
