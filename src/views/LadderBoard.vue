@@ -6,6 +6,11 @@
   做什么：把早盘竞价 9:25 自动抓到的股票里【二板及以上】的挑出来，按连板数分档整理，
           每行给「高开/低开/平开 + 十日涨幅 + 题材 + 晋级成功/失败」，点序号或股票名展开趋势图。
 
+  【题材连扳】开关（2026-09-24）：同一批 rows 换一种切法 —— 按【题材】分组看连板梯队完整性。
+          AI应用：四板 新华文轩 / 三板 新华传媒 / 二板 天威视讯 ⇒ 占 3 个连板层级 = 梯队完整；
+          只占 二板+三板 = 2 层同样算梯队；只占二板 = 单层。
+          该模式下题材列改显「四板/三板/二板」（整组已是同一题材，用不着再重复题材名）。
+
   ⛔ 数据全部【照搬早盘竞价】，不发请求、不落库、不消费猫抓额度（用户明确要求）：
       早盘 9:25 那批数据 → 收盘覆盖涨幅后同一批数据自动变成真实收盘值 → 晋级成败随之翻转。
       因此本看板只是【显示层】：跟着早盘竞价走就能同步，不需要单独抓取任何东西。
@@ -31,6 +36,22 @@
       @click="toggleExpand"
     >
       <span class="ladder-title">连板天梯晋级</span>
+      <!-- 「题材连扳」开关：只切换【分组切法】（按连板档位 ⇄ 按题材看梯队），
+           数据是同一份 rows，⛔ 不重新取数。@click.stop：别把头部整条的展开/收起也触发了。 -->
+      <span
+        class="ladder-mode-item"
+        @click.stop
+      >
+        <span class="ladder-mode-label">题材连扳</span>
+        <label class="ladder-mode-switch">
+          <input
+            type="checkbox"
+            :checked="topicLadder"
+            @change="toggleTopicLadder"
+          >
+          <span class="ladder-mode-slider" />
+        </label>
+      </span>
       <span class="ladder-summary">{{ summaryText }}</span>
       <span class="ladder-toggle-btn">{{ toggleArrow }}</span>
     </div>
@@ -62,21 +83,40 @@
           早盘阶段：竞价一字先算晋级成功，其余等收盘覆盖涨幅后再定成败（显示「待定」）
         </div>
 
-        <LadderGroup
-          v-for="g in groups"
-          :key="g.streak"
-          :group="g"
-          :expanded-set="expandedSet"
-          :trend-history="trendHistory"
-          @toggle="toggleTrend"
-        />
+        <!-- 两种切法，同一份 rows：题材连扳 = 按题材看梯队完整性，否则 = 按连板档位看天梯 -->
+        <template v-if="topicLadder">
+          <LadderTopicGroup
+            v-for="g in topicGroups"
+            :key="g.topic"
+            :group="g"
+            :expanded-set="expandedSet"
+            :trend-history="trendHistory"
+            @toggle="toggleTrend"
+          />
+          <div
+            v-if="topicGroups.length === 0"
+            class="ladder-empty"
+          >
+            当日没有二板及以上的股票
+          </div>
+        </template>
 
-        <div
-          v-if="groups.length === 0"
-          class="ladder-empty"
-        >
-          当日没有二板及以上的股票
-        </div>
+        <template v-else>
+          <LadderGroup
+            v-for="g in groups"
+            :key="g.streak"
+            :group="g"
+            :expanded-set="expandedSet"
+            :trend-history="trendHistory"
+            @toggle="toggleTrend"
+          />
+          <div
+            v-if="groups.length === 0"
+            class="ladder-empty"
+          >
+            当日没有二板及以上的股票
+          </div>
+        </template>
       </template>
     </div>
   </div>
@@ -85,6 +125,7 @@
 <script setup>
 import { computed } from 'vue';
 import LadderGroup from '../components/ladder/LadderGroup.vue';
+import LadderTopicGroup from '../components/ladder/LadderTopicGroup.vue';
 import { useLadderBoard } from '../composables/useLadderBoard.js';
 
 // ⛔ 只调用一次组合式：重复调用会拿到【另一套 ref】，expose 出去的 refresh 就刷新不到本实例
@@ -97,13 +138,17 @@ const {
   ready,
   reasonText,
   groups,
+  topicGroups,
+  topicLadder,
   closeReady,
   summaryText,
   toggleExpand,
+  toggleTopicLadder,
   toggleTrend
 } = board;
 
-const toggleArrow = computed(() => (expanded.value ? '▾' : '▸'));
+// 与早盘竞价 / 涨跌停 / 竞价一字同款三角（实心 ▲/▼），别再各写一套
+const toggleArrow = computed(() => (expanded.value ? '▲' : '▼'));
 
 // 与其它看板同款契约（AuctionBoard / LimitBoard / DecisionBoard 都是 defineExpose({ refresh })）
 defineExpose({ refresh: board.refresh });

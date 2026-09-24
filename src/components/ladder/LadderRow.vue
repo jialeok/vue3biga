@@ -36,7 +36,10 @@
         >一字</span>
       </span>
       <span class="lad-pct">{{ pctText }}</span>
-      <span class="lad-topic">{{ row.topic || '—' }}</span>
+      <span
+        class="lad-topic"
+        :class="{ 'is-streak': colField === 'streak' }"
+      >{{ colText }}</span>
       <span
         class="lad-promote"
         :class="'promote-' + row.promote"
@@ -115,12 +118,20 @@ import { formatRangePct, hasSeriesData } from '../../logic/ladder/ladder-rules.j
 const props = defineProps({
   row: { type: Object, required: true },
   expanded: { type: Boolean, default: false },
-  trend: { type: Object, default: null }
+  trend: { type: Object, default: null },
+  // 题材列显示什么：'topic'=题材（默认，连板档位模式） / 'streak'=连板层级（题材连扳模式，
+  // 因为整组已经是同一个题材，该列让位给「四板/三板/二板」——正是用户要看的梯队）
+  colField: { type: String, default: 'topic' }
 });
 
 defineEmits(['toggle']);
 
 const pctText = computed(() => formatRangePct(props.row.pct));
+
+const colText = computed(function() {
+  if (props.colField === 'streak') return props.row.streakLabel || '—';
+  return props.row.topic || '—';
+});
 
 const openTitle = computed(function() {
   const v = props.row.aucPct;

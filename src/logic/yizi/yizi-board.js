@@ -55,7 +55,7 @@ import { reactive } from 'vue';
 import { _dbgLog } from '../../data/debug-log.js';
 import { _emit } from '../../stores/eventBus.js';
 import { isTradingDay, getPreviousTradingDay } from '../date/trading-day-helpers.js';
-import { getPrimaryTopicMap, classifyStockPrimaryTopic } from '../auction/topic-sort.js';
+import { getPrimaryTopicMap, classifyStockPrimaryTopic, buildTopicSizeMap } from '../auction/topic-sort.js';
 import { getStockHistoryTopics } from '../stocks/stocks.js';
 import { getStreakLabel } from '../auction/limit-streak.js';
 import { getDragonWindowDates } from '../auction/dragon-rank.js';
@@ -419,7 +419,8 @@ export function buildBlocksFromRows(rows) {
         };
     });
     const primaryMap = getPrimaryTopicMap(topicRows);
-    const fallbackFn = function(row) { return classifyStockPrimaryTopic(row); };
+    const primarySize = buildTopicSizeMap(primaryMap);
+    const fallbackFn = function(row) { return classifyStockPrimaryTopic(row, primarySize); };
     return { blocks: buildYiziBlocks(list, primaryMap, fallbackFn), stats: stats };
 }
 

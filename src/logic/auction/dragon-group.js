@@ -51,7 +51,7 @@ import { getTodayGroupList } from '../app-core-api.js';
 // [DRAGON-GROUP 2026-09-14] 题材归属改用【题材 toggle 同款】分类函数（getPrimaryTopicMap /
 // classifyStockPrimaryTopic）；不再 import getTopicGroups —— 那是第二页题材分类的口径
 // （一只票可属多个题材），用它选龙头会选出「一个题材多只龙头 / 一只票当别的题材的龙头」。
-import { getPrimaryTopicMap, classifyStockPrimaryTopic } from './topic-sort.js';
+import { getPrimaryTopicMap, classifyStockPrimaryTopic, buildTopicSizeMap } from './topic-sort.js';
 import { getJingYestHighlightSetForDate } from './sort-rules.js';
 import { getDragonRangePct, ensureDragonRangePct, isAuthoritativeCloseReached } from './dragon-rank.js';
 import { readDragonLeadersForDate, upsertDragonLeaders, deleteDragonLeadersForDate } from '../../data/dragon-leaders.js';
@@ -443,7 +443,8 @@ async function _reconcileRoster(date, picked, qualifyingTopics) {
  *   同一只票同时出现在多个题材里。用它评选 → 一只票可能当上「它并不属于的那个题材」的龙头，
  *   于是次日龙头组里冒出多余的人（需求是「一个题材只有一只龙头」）。
  * 现改为复用题材 toggle 的两步分类（与 view-helpers#primaryTopicOf 完全同序）：
- *   ① 该日【正式列表】→ getPrimaryTopicMap：一只票只落在「第一个包含它的题材组」里
+ *   ① 该日【正式列表】→ getPrimaryTopicMap：一只票只落在一个题材里，落哪个由
+ *      selectPrimaryTopic 裁决 —— 命中多个大类时【站队到当天股票数更多的那一边】
  *      （首页是单列，只可能落一个题材）；
  *   ② 池中不在正式列表内的行（观察组继承壳行）→ classifyStockPrimaryTopic 兜底（同一个兜底）。
  * 另外排掉 '其它'：它不是题材，题材 toggle 侧也不给它上色、不排龙一，因此不评它的龙头。
@@ -458,11 +459,12 @@ async function _reconcileRoster(date, picked, qualifyingTopics) {
 function _groupByPrimaryTopic(date, pool) {
   const formalList = getTodayGroupList('auction', date);
   const primaryMap = getPrimaryTopicMap(formalList);
+  const primarySize = buildTopicSizeMap(primaryMap);
   // 与 view-helpers#primaryTopicOf 同序：先查映射；未命中（= 注入壳行）再按核心词单独匹配一次
   const resolveTopic = function(row) {
     const nm = row && row.stock ? String(row.stock).trim() : '';
     if (!nm) return '';
-    return primaryMap.get(nm) || classifyStockPrimaryTopic(row) || '其它';
+    return primaryMap.get(nm) || classifyStockPrimaryTopic(row, primarySize) || '其它';
   };
   // 纯函数在零依赖叶子里（§I），这里只负责注入「题材归属解析器」（§6 单一真相）
   return buildTopicGroupsFromPool(pool, resolveTopic, getStockCode);

@@ -22,7 +22,7 @@ import { buildTrendSeries } from '../logic/ladder/ladder-rules.js';
 
 /** §10：任何一次计算失败都要【可见】，绝不静默成「今天没有连板股」 */
 function _empty(reason) {
-  return { ready: false, reason: reason, groups: [], total: 0, closeReady: false };
+  return { ready: false, reason: reason, groups: [], topicGroups: [], total: 0, closeReady: false };
 }
 
 export function useLadderBoard() {
@@ -33,6 +33,8 @@ export function useLadderBoard() {
   const expanded = ref(true);
   const expandedSet = ref(new Set());
   const trendHistory = ref({});
+  // 「题材连扳」开关（§34 纯展示态：只切换【分组切法】，不换数据源、不落 localStorage）
+  const topicLadder = ref(false);
 
   // 手动版本号：auction 数据刷新（getTodayGroupList / 内存逐日行都是非响应式缓存）后 bump，
   // 让下面的 computed 重跑一次（与早盘竞价 / 决策看板同一套路）。
@@ -57,16 +59,25 @@ export function useLadderBoard() {
   const ready = computed(() => !!data.value.ready);
   const reasonText = computed(() => (data.value.ready ? '' : (data.value.reason || '暂无数据')));
   const groups = computed(() => data.value.groups || []);
+  const topicGroups = computed(() => data.value.topicGroups || []);
   const total = computed(() => data.value.total || 0);
   const closeReady = computed(() => !!data.value.closeReady);
 
   const summaryText = computed(function() {
     if (!ready.value) return reasonText.value;
     if (total.value === 0) return '无二板及以上';
+    // 题材连扳模式：摘要说「几个题材有梯队」，与下面的分组顺序同源（§6）
+    if (topicLadder.value) {
+      const withLadder = topicGroups.value.filter(function(g) { return g.isComplete; });
+      return topicGroups.value.length + '个题材 · ' + withLadder.length + '个成梯队';
+    }
     return groups.value.map(function(g) { return g.label + g.count; }).join(' · ');
   });
 
   function toggleExpand() { expanded.value = !expanded.value; }
+
+  /** 「题材连扳」开关：只看板内切换显示切法，不重新取数（数据本来就是同一份 rows） */
+  function toggleTopicLadder() { topicLadder.value = !topicLadder.value; }
 
   /**
    * 展开 / 收起某只股票的趋势图（点序号或股票名）。
@@ -126,10 +137,13 @@ export function useLadderBoard() {
     ready,
     reasonText,
     groups,
+    topicGroups,
+    topicLadder,
     total,
     closeReady,
     summaryText,
     toggleExpand,
+    toggleTopicLadder,
     toggleTrend,
     collapseTrend,
     refresh

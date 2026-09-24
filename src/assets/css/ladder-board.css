@@ -45,6 +45,9 @@
             text-overflow: ellipsis;
         }
 
+        /* [TRIANGLE 2026-09-24] 与早盘竞价 .auction-toggle-btn【同尺寸同底色】
+           （24×24 圆底 + 12px 三角），并改用同一对实心三角 ▲/▼：
+           之前这里是 ▾/▸，和早盘竞价、涨跌停、竞价一字三个看板都不一样，用户看着别扭。 */
         .ladder-toggle-btn {
             width: 24px;
             height: 24px;
@@ -54,10 +57,76 @@
             justify-content: center;
             font-size: 12px;
             color: rgba(255, 255, 255, 0.9);
+            cursor: pointer;
             border-radius: 50%;
-            background: rgba(255, 255, 255, 0.2);
-            user-select: none;
+            transition: all 0.2s;
             -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        /* ---- 「题材连扳」开关（与早盘竞价 toggle 同款 28×16 switch，配色改成适配紫色头部）---- */
+        .ladder-mode-item {
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            flex-shrink: 0;
+        }
+
+        .ladder-mode-label {
+            font-size: 10.5px;
+            color: #ffffff;
+            font-weight: 500;
+            white-space: nowrap;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .ladder-mode-switch {
+            position: relative;
+            display: inline-block;
+            width: 28px;
+            height: 16px;
+            flex-shrink: 0;
+        }
+
+        .ladder-mode-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .ladder-mode-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(255, 255, 255, 0.35);
+            transition: 0.2s;
+            border-radius: 16px;
+        }
+
+        .ladder-mode-slider:before {
+            position: absolute;
+            content: "";
+            height: 12px;
+            width: 12px;
+            left: 2px;
+            bottom: 2px;
+            background-color: #ffffff;
+            transition: 0.2s;
+            border-radius: 50%;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+        }
+
+        .ladder-mode-switch input:checked + .ladder-mode-slider {
+            background: #c4b5fd;
+        }
+
+        .ladder-mode-switch input:checked + .ladder-mode-slider:before {
+            transform: translateX(12px);
         }
 
         .ladder-body {
@@ -114,6 +183,61 @@
             font-size: 11px;
             font-weight: 600;
             color: #64748b;
+        }
+
+        /* ---- 题材连扳模式：题材梯队条（题材名 + 层数 + 是否成梯队 + 只数）---- */
+        .lad-topic-bar {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 2px 5px;
+            border-bottom: 1px solid #f1f5f9;
+        }
+
+        .lad-topic-label {
+            font-size: 13px;
+            font-weight: 700;
+            color: #5b21b6;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* 层数 / 成梯队标记：成梯队用紫色实心（值得先看），单层用灰（还没走成梯队） */
+        .lad-topic-levels {
+            flex-shrink: 0;
+            padding: 0 5px;
+            font-size: 9px;
+            line-height: 14px;
+            font-weight: 700;
+            color: #5b21b6;
+            background: #ede9fe;
+            border: 1px solid #ddd6fe;
+            border-radius: 4px;
+            white-space: nowrap;
+        }
+
+        .lad-topic-levels.complete {
+            color: #ffffff;
+            background: #7c3aed;
+            border-color: #7c3aed;
+        }
+
+        .lad-topic-flag {
+            flex-shrink: 0;
+            font-size: 9px;
+            line-height: 14px;
+            font-weight: 600;
+            color: #94a3b8;
+            background: #f1f5f9;
+            border-radius: 4px;
+            padding: 0 5px;
+            white-space: nowrap;
+        }
+
+        .lad-topic-flag.complete {
+            color: #6d28d9;
+            background: #f5f3ff;
         }
 
         /* ---- 行 ---- */
@@ -207,6 +331,15 @@
             line-height: 1.4;
             color: #475569;
             word-break: break-all;
+        }
+
+        /* 题材连扳模式下该列改显「四板 / 三板 / 二板」（与档位条同款紫色，梯队层级一眼可读） */
+        .lad-topic.is-streak {
+            flex: 0 0 auto;
+            min-width: 34px;
+            font-weight: 700;
+            color: #5b21b6;
+            white-space: nowrap;
         }
 
         /* 晋级：成功红 / 失败绿 / 待定灰 */

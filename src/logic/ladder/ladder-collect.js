@@ -24,10 +24,10 @@ import { getDragonRangePct, isAuthoritativeCloseReached } from '../auction/drago
 import { getPrimaryTopicMap, classifyStockPrimaryTopic } from '../auction/topic-sort.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 import { _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
-import { groupByStreak, countLadder } from './ladder-rules.js';
+import { groupByStreak, groupByTopicLadder, countLadder } from './ladder-rules.js';
 
 function _notReady(reason) {
-  return { ready: false, reason: reason, groups: [], total: 0, closeReady: false };
+  return { ready: false, reason: reason, groups: [], topicGroups: [], total: 0, closeReady: false };
 }
 
 /**
@@ -86,11 +86,14 @@ export function collectLadderData(date) {
   });
 
   const groups = groupByStreak(rows, { closeReady: closeReady });
+  // 「题材连扳」模式：同一批 rows 换个切法（按题材看梯队完整性），⛔ 不重新采数据、口径完全同源
+  const topicGroups = groupByTopicLadder(rows, { closeReady: closeReady });
   return {
     ready: true,
     reason: '',
     date: date,
     groups: groups,
+    topicGroups: topicGroups,
     total: countLadder(groups),
     closeReady: closeReady
   };

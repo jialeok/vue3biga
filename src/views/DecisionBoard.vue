@@ -123,7 +123,8 @@ const {
 
 // 规则文案由 Logic 层产出（规则实现与规则说明同处一处，改规则不会只改一半）
 const rulesLines = buildRulesLines();
-const toggleArrow = computed(() => (expanded.value ? '▾' : '▸'));
+// 与早盘竞价 / 涨跌停 / 竞价一字同款三角（实心 ▲/▼），别再各写一套
+const toggleArrow = computed(() => (expanded.value ? '▲' : '▼'));
 
 // 与其它看板同款契约（AuctionBoard / LimitBoard 都是 defineExpose({ refresh })）
 defineExpose({ refresh: board.refresh });

@@ -100,6 +100,63 @@ export function getPromoteText(state) {
   return PROMOTE_TEXT[state] || '';
 }
 
+// ── 「题材连扳」模式（2026-09-24 需求）：按【题材】分组看「连板梯队的完整性」──
+// 例：AI应用 里同时出现了 四板 新华文轩 / 三板 新华传媒 / 二板 天威视讯
+//     ⇒ 该题材占了 3 个连板层级，梯队完整；只出现「二板 + 三板」= 2 层，同样算成梯队。
+
+/** 算「成梯队」的最低层级数（用户口径：至少出现两个不同连板层级） */
+export const LADDER_MIN_LEVELS = 2;
+
+/**
+ * 行对象组装（groupByStreak / groupByTopicLadder 共用，§6 单一实现）。
+ * @returns {object} 模板可直接渲染的一行
+ */
+function _buildRow(m, seq, closeReady) {
+  const s = Math.floor(Number(m.streak));
+  const openKind = getAucOpenKind(m.aucPct);
+  const promote = judgePromotion({
+    isYiZi: !!m.isYiZi,
+    closeLimit: m.closeLimit || null,
+    closeReady: closeReady
+  });
+  return {
+    seq: seq,
+    name: m.name,
+    streak: s,
+    streakLabel: getStreakLabel(s),
+    aucPct: _num(m.aucPct),
+    aucOpen: openKind,
+    aucOpenText: getAucOpenText(openKind),
+    pct: _num(m.pct),
+    topic: m.topic || '',
+    isYiZi: !!m.isYiZi,
+    promote: promote,
+    promoteText: getPromoteText(promote)
+  };
+}
+
+/** 档内排序：连板数降序 → 十日涨幅降序（缺失排最后）→ 股票名稳定 */
+function _sortMembers(arr) {
+  return arr.slice().sort(function(a, b) {
+    const sa = Math.floor(Number(a.streak));
+    const sb = Math.floor(Number(b.streak));
+    if (sa !== sb) return sb - sa;
+    const pa = _num(a.pct);
+    const pb = _num(b.pct);
+    const ra = (pa === null ? Number.MIN_SAFE_INTEGER : pa);
+    const rb = (pb === null ? Number.MIN_SAFE_INTEGER : pb);
+    if (ra !== rb) return rb - ra;
+    return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+  });
+}
+
+/** 题材组（或档位）内通用的「二板及以上」过滤器 */
+function _filterLadder(rows) {
+  return (rows || []).filter(function(r) {
+    return r && r.name && _num(r.streak) !== null && _num(r.streak) >= LADDER_MIN_STREAK;
+  });
+}
+
 /**
  * 按连板数分档（只保留二板及以上）。
  *
@@ -111,9 +168,7 @@ export function getPromoteText(state) {
  */
 export function groupByStreak(rows, opts) {
   const closeReady = !!(opts && opts.closeReady);
-  const list = (rows || []).filter(function(r) {
-    return r && r.name && _num(r.streak) !== null && _num(r.streak) >= LADDER_MIN_STREAK;
-  });
+  const list = _filterLadder(rows);
   if (list.length === 0) return [];
 
   const byStreak = new Map();
@@ -127,42 +182,74 @@ export function groupByStreak(rows, opts) {
   Array.from(byStreak.keys())
     .sort(function(a, b) { return b - a; })          // 高板在上
     .forEach(function(s) {
-      const members = byStreak.get(s).slice().sort(function(a, b) {
-        const pa = _num(a.pct);
-        const pb = _num(b.pct);
-        const ra = (pa === null ? Number.MIN_SAFE_INTEGER : pa);
-        const rb = (pb === null ? Number.MIN_SAFE_INTEGER : pb);
-        if (ra !== rb) return rb - ra;                // 十日涨幅降序
-        return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
-      });
+      const members = _sortMembers(byStreak.get(s));
       groups.push({
         streak: s,
         label: getStreakLabel(s),
         count: members.length,
-        rows: members.map(function(m, i) {
-          const openKind = getAucOpenKind(m.aucPct);
-          const promote = judgePromotion({
-            isYiZi: !!m.isYiZi,
-            closeLimit: m.closeLimit || null,
-            closeReady: closeReady
-          });
-          return {
-            seq: i + 1,
-            name: m.name,
-            streak: s,
-            streakLabel: getStreakLabel(s),
-            aucPct: _num(m.aucPct),
-            aucOpen: openKind,
-            aucOpenText: getAucOpenText(openKind),
-            pct: _num(m.pct),
-            topic: m.topic || '',
-            isYiZi: !!m.isYiZi,
-            promote: promote,
-            promoteText: getPromoteText(promote)
-          };
-        })
+        rows: members.map(function(m, i) { return _buildRow(m, i + 1, closeReady); })
       });
     });
+  return groups;
+}
+
+/**
+ * 按【题材】分组看连板梯队（「题材连扳」toggle 打开时用）。
+ *
+ * 完整性怎么算：一个题材里出现了几个【不同的连板层级】就是几层 ——
+ *   AI应用 有二板/三板/四板 ⇒ 3 层；只有二板+三板 ⇒ 2 层（也算成梯队）；只有二板 ⇒ 1 层（不成梯队）。
+ *
+ * @param {Array} rows - 与 groupByStreak 同一份 rows
+ * @param {{closeReady?:boolean, otherTopic?:string}} [opts]
+ * @returns {Array<{topic:string, levelCount:number, levelText:string, isComplete:boolean,
+ *                  completeText:string, count:number, rows:Array}>}
+ *          题材排序：层级数降序 → 股票数降序 → 题材名（'其它'永远置底）；
+ *          题材内行序：连板数降序 → 十日涨幅降序（天梯从顶往下走）。
+ */
+export function groupByTopicLadder(rows, opts) {
+  const o = opts || {};
+  const closeReady = !!o.closeReady;
+  const otherTopic = o.otherTopic || '其它';
+  const list = _filterLadder(rows);
+  if (list.length === 0) return [];
+
+  // ① 按题材归堆（一只票只落一个题材：与早盘竞价题材 toggle 同源的 getPrimaryTopicMap 已保证）
+  const byTopic = new Map();
+  list.forEach(function(r) {
+    const tp = r.topic || otherTopic;
+    if (!byTopic.has(tp)) byTopic.set(tp, []);
+    byTopic.get(tp).push(r);
+  });
+
+  // ② 每个题材：算层级数 + 组内按天梯顺序排
+  const groups = [];
+  byTopic.forEach(function(members, topic) {
+    const levels = new Set();
+    members.forEach(function(m) { levels.add(Math.floor(Number(m.streak))); });
+    const sorted = _sortMembers(members);
+    const levelList = Array.from(levels).sort(function(a, b) { return b - a; });
+    const isComplete = levels.size >= LADDER_MIN_LEVELS;
+    groups.push({
+      topic: topic,
+      levelCount: levels.size,
+      levelText: levels.size + '层',
+      // 层级明细（四板/三板/二板）：给标题 hover 用，一眼看出这个题材占了哪几级
+      levelDetail: levelList.map(function(s) { return getStreakLabel(s); }).join('/'),
+      isComplete: isComplete,
+      completeText: isComplete ? '梯队完整' : '单层',
+      count: sorted.length,
+      rows: sorted.map(function(m, i) { return _buildRow(m, i + 1, closeReady); })
+    });
+  });
+
+  // ③ 题材顺序：层级多的在前（梯队最完整的题材最值得先看）→ 股票数降序 → 题材名；「其它」置底
+  groups.sort(function(a, b) {
+    if (a.topic === otherTopic && b.topic !== otherTopic) return 1;
+    if (b.topic === otherTopic && a.topic !== otherTopic) return -1;
+    if (b.levelCount !== a.levelCount) return b.levelCount - a.levelCount;
+    if (b.count !== a.count) return b.count - a.count;
+    return a.topic < b.topic ? -1 : (a.topic > b.topic ? 1 : 0);
+  });
   return groups;
 }
 

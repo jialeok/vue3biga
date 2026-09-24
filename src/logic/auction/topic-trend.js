@@ -33,7 +33,7 @@
 //     ⛔ 不发请求、不写库、不碰 DOM。
 
 import { getTodayGroupList } from '../app-core-api.js';
-import { getPrimaryTopicMap, classifyStockPrimaryTopic } from './topic-sort.js';
+import { getPrimaryTopicMap, classifyStockPrimaryTopic, buildTopicSizeMap } from './topic-sort.js';
 import { isAuctionYiZi } from './limit-up.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 import { getDragonWindowDates } from './dragon-rank.js';
@@ -167,6 +167,7 @@ export function collectTopicDayStats(date) {
   if (list.length === 0) return null;
 
   const pmap = getPrimaryTopicMap(list);
+  const psize = buildTopicSizeMap(pmap);
   // [LISTED-TODAY 2026-09-23] 统计集合 = getTodayGroupList(date)【本身】，不再二次过滤。
   //   为什么不过滤：getTodayGroupList 已经是「当天正式列表」的唯一口径（含 obs 继承但真抓到数据的行、
   //   不含 market_metrics 影子行），看板的 auctionList 就是它 ⇒ 两边集合天然相等。
@@ -186,7 +187,7 @@ export function collectTopicDayStats(date) {
     if (!nm || seen.has(nm)) return;
     seen.add(nm);
     if (_inheritSold.has(nm)) return;
-    const topic = pmap.has(nm) ? pmap.get(nm) : classifyStockPrimaryTopic(row);
+    const topic = pmap.has(nm) ? pmap.get(nm) : classifyStockPrimaryTopic(row, psize);
     // 一字判定与 view-helpers#yiZiOf 同源：行 code → 内存代码映射 → 空（limit-up.js 内按主板兜底）
     const code = row.code || getStockCode(nm) || '';
     entries.push({ name: nm, topic: topic, isYiZi: isAuctionYiZi(row, code) });

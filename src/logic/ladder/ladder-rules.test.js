@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   groupByStreak,
+  groupByTopicLadder,
   getAucOpenKind,
   getAucOpenText,
   judgePromotion,
@@ -17,6 +18,7 @@ import {
   formatRangePct,
   hasSeriesData,
   LADDER_MIN_STREAK,
+  LADDER_MIN_LEVELS,
   AUC_OPEN_HIGH,
   AUC_OPEN_LOW,
   AUC_OPEN_FLAT,
@@ -168,5 +170,105 @@ describe('格式化与趋势序列', () => {
     expect(hasSeriesData([{ date: 'd', value: 1 }])).toBe(true);
     expect(hasSeriesData([{ date: 'd', value: null }])).toBe(false);
     expect(hasSeriesData(null)).toBe(false);
+  });
+});
+
+// ============================================================================
+// [题材连扳 2026-09-24] 按【题材】看连板梯队的完整性。
+// 用户原话：AI应用 里 四板 新华文轩 / 三板 新华传媒 / 二板 天威视讯 ⇒ 出现二板+三板+四板 = 3 层；
+//           只出现二板+三板 = 2 层，同样算成梯队。
+// ============================================================================
+describe('groupByTopicLadder（题材连扳梯队）', () => {
+  it('AI应用 占 二板/三板/四板 = 3 层 ⇒ 梯队完整', () => {
+    const groups = groupByTopicLadder([
+      R('新华文轩', 4, 30, 2, false, null, 'AI应用'),
+      R('新华传媒', 3, 20, 2, false, null, 'AI应用'),
+      R('天威视讯', 2, 10, 2, false, null, 'AI应用')
+    ], {});
+    expect(groups.length).toBe(1);
+    expect(groups[0].topic).toBe('AI应用');
+    expect(groups[0].levelCount).toBe(3);
+    expect(groups[0].levelText).toBe('3层');
+    expect(groups[0].levelDetail).toBe('四板/三板/二板');
+    expect(groups[0].isComplete).toBe(true);
+    expect(groups[0].completeText).toBe('梯队完整');
+    expect(groups[0].count).toBe(3);
+  });
+
+  it('只有二板 + 三板 = 2 层，也算成梯队（用户明确要的口径）', () => {
+    const groups = groupByTopicLadder([
+      R('甲', 3, 10, 1, false, null, 'T1'),
+      R('乙', 2, 10, 1, false, null, 'T1')
+    ], {});
+    expect(groups[0].levelCount).toBe(LADDER_MIN_LEVELS);
+    expect(groups[0].isComplete).toBe(true);
+  });
+
+  it('只有二板 = 1 层 ⇒ 单层，不算成梯队（但照样显示出来）', () => {
+    const groups = groupByTopicLadder([
+      R('甲', 2, 10, 1, false, null, 'T1'),
+      R('乙', 2, 9, 1, false, null, 'T1')
+    ], {});
+    expect(groups[0].levelCount).toBe(1);
+    expect(groups[0].isComplete).toBe(false);
+    expect(groups[0].completeText).toBe('单层');
+    expect(groups[0].count).toBe(2);
+  });
+
+  it('题材内按天梯顺序：连板数降序 → 十日涨幅降序', () => {
+    const groups = groupByTopicLadder([
+      R('二板弱', 2, 5, 1, false, null, 'T1'),
+      R('三板强', 3, 80, 1, false, null, 'T1'),
+      R('二板强', 2, 50, 1, false, null, 'T1'),
+      R('四板', 4, 1, 1, false, null, 'T1')
+    ], {});
+    expect(groups[0].rows.map(r => r.name)).toEqual(['四板', '三板强', '二板强', '二板弱']);
+    expect(groups[0].rows.map(r => r.seq)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('题材排序：层级多的在前 → 股票数降序 → 题材名（"其它"永远置底）', () => {
+    const groups = groupByTopicLadder([
+      R('a1', 2, 1, 1, false, null, '其它'),
+      R('a2', 3, 1, 1, false, null, '其它'),   // 其它：2 层，但必须排最后
+      R('b1', 2, 1, 1, false, null, 'T2'),     // T2：1 层
+      R('c1', 2, 1, 1, false, null, 'T1'),
+      R('c2', 3, 1, 1, false, null, 'T1'),
+      R('c3', 4, 1, 1, false, null, 'T1')      // T1：3 层 → 最前
+    ], {});
+    expect(groups.map(g => g.topic)).toEqual(['T1', 'T2', '其它']);
+  });
+
+  it('首板 / 趋势不进题材梯队（与档位模式同一条入选门槛）', () => {
+    const groups = groupByTopicLadder([
+      R('首板股', 1, 10, 1, false, null, 'T1'),
+      R('趋势股', 0, 10, 1, false, null, 'T1'),
+      R('二板股', 2, 10, 1, false, null, 'T1'),
+      R('三板股', 3, 10, 1, false, null, 'T1')
+    ], {});
+    expect(groups.length).toBe(1);
+    expect(groups[0].count).toBe(2);
+  });
+
+  it('与 groupByStreak 同源：同一批 rows 两种切法，股票总数不变', () => {
+    const rows = [
+      R('甲', 4, 30, 2, true, null, 'T1'),
+      R('乙', 3, 20, 2, false, null, 'T1'),
+      R('丙', 2, 10, 2, false, null, 'T2'),
+      R('丁', 2, 9, -1, false, null, 'T2')
+    ];
+    const byStreak = groupByStreak(rows, { closeReady: false });
+    const byTopic = groupByTopicLadder(rows, { closeReady: false });
+    const n1 = byStreak.reduce((n, g) => n + g.count, 0);
+    const n2 = byTopic.reduce((n, g) => n + g.count, 0);
+    expect(n1).toBe(4);
+    expect(n2).toBe(4);
+    // 竞价一字那只在两种切法里都是「晋级成功」（早盘阶段口径）
+    expect(byTopic[0].rows[0].promote).toBe(PROMOTE_SUCCESS);
+  });
+
+  it('§10 边界：空输入 / 无一只二板以上 → 空数组，绝不返回半成品分组', () => {
+    expect(groupByTopicLadder([], {})).toEqual([]);
+    expect(groupByTopicLadder(null, {})).toEqual([]);
+    expect(groupByTopicLadder([R('首板', 1, 1, 1, false, null, 'T1')], {})).toEqual([]);
   });
 });

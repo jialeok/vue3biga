@@ -13,7 +13,7 @@ import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 import { getAuctionTagState } from '../ui-bridge.js';
 import { getDisplayNote } from '../note/helpers.js';
 import { useUiStore } from '../../stores/uiStore.js';
-import { getStockTopicCount, getStockTopicsDisplay, getPrimaryTopicMap, classifyStockPrimaryTopic, sortByTopicGroups, buildTopicColorMap } from './topic-sort.js';
+import { getStockTopicCount, getStockTopicsDisplay, getPrimaryTopicMap, classifyStockPrimaryTopic, buildTopicSizeMap, sortByTopicGroups, buildTopicColorMap } from './topic-sort.js';
 // [YIZI 2026-09-09] 竞价一字（竞价涨停）：行级红线标记 + 题材组间排序权重，单一真相在 limit-up.js。
 // [CLOSE-LIMIT 2026-09-11] 同模块新增 getCloseLimitState：收盘涨停/跌停（蚂蚁线标记 + 题材统计）。
 // [CLOSE-NAME-COLOR 2026-09-11] 同模块新增 getCloseNameTone：收盘涨幅 → 股票名字体颜色档位。
@@ -819,12 +819,14 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   if (sortState.byTopic) {
     // 题材 toggle：复用第二页题材分类，按题材分组排序（组大者居前、"其它"置底、档位顺序不变）。
     const primaryTopicMap = getPrimaryTopicMap(auctionList);
+    // [MAJORITY-SIDE 2026-09-24] 兜底行也遵守「站队到数量多的一边」（与 getPrimaryTopicMap 同裁）
+    const primaryTopicSize = buildTopicSizeMap(primaryTopicMap);
     const primaryTopicOf = (idx) => {
       const it = renderList[idx];
       const nm = it && it.stock ? String(it.stock).trim() : '';
       if (nm && primaryTopicMap.has(nm)) return primaryTopicMap.get(nm);
       // 兜底：注入行（如观察组壳行）不在 auctionList 内时，按核心词单独匹配一次
-      return classifyStockPrimaryTopic(it);
+      return classifyStockPrimaryTopic(it, primaryTopicSize);
     };
     primaryTopicOfForColor = primaryTopicOf;
 
@@ -852,7 +854,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
         if (!it || !it.stock) return;
         const nm = String(it.stock).trim();
         if (!nm || _colorSourceMap.has(nm)) return;
-        _colorSourceMap.set(nm, classifyStockPrimaryTopic(it));
+        _colorSourceMap.set(nm, classifyStockPrimaryTopic(it, primaryTopicSize));
       });
     }
     // [NOT-FORMAL 2026-09-23] 题材【底色】刻意**不按正式成员过滤**（保留原口径）：

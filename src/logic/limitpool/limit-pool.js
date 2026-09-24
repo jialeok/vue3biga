@@ -29,7 +29,7 @@ import { getDragonWindowDates } from '../auction/dragon-rank.js';
 // §6 单一真相：「十日涨幅取值 + 缺失票用同花顺 K 线补算」与「竞价一字」看板共用同一份实现
 // （logic/auction/range-fill.js），两个看板对同一只票必须算出同一个十日涨幅。
 import { makeRangePctOf, getRangeFill } from '../auction/range-fill.js';
-import { getPrimaryTopicMap, classifyStockPrimaryTopic } from '../auction/topic-sort.js';
+import { getPrimaryTopicMap, classifyStockPrimaryTopic, buildTopicSizeMap } from '../auction/topic-sort.js';
 import { getStockHistoryTopics } from '../stocks/stocks.js';
 import {
     readLimitPoolForDate,
@@ -216,7 +216,8 @@ function _buildBlocks(date, rows, rangeMap, localMap) {
     });
     // 整表分类（题材 toggle 同款一票归一）→ 单票兜底；两者都是既有单一真相
     const primaryMap = getPrimaryTopicMap(topicRows);
-    const fallbackFn = function(row) { return classifyStockPrimaryTopic(row); };
+    const primarySize = buildTopicSizeMap(primaryMap);
+    const fallbackFn = function(row) { return classifyStockPrimaryTopic(row, primarySize); };
     const rangePctOf = makeRangePctOf(rangeMap, localMap);
     void date;
     return buildTopicBlocks(enriched, primaryMap, fallbackFn, rangePctOf);

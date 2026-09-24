@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { sortByTopicGroups, buildTopicColorMap } from './topic-sort.js';
+import {
+  sortByTopicGroups,
+  buildTopicColorMap,
+  selectPrimaryTopic,
+  buildTopicSizeMap,
+  OTHER_TOPIC
+} from './topic-sort.js';
 
 // 构造 3 个题材：AI(3 只，含 2 个一字)、农业(4 只，含 1 个一字)、电力(15 只，无一字)
 function setup() {
@@ -122,5 +128,69 @@ describe('buildTopicColorMap 门槛（不按正式成员过滤）', () => {
     const m = new Map([['甲', '芯片'], ['乙', '芯片'], ['丙', '农业']]);
     expect(buildTopicColorMap(m).has('芯片')).toBe(true);
     expect(buildTopicColorMap(m).has('农业')).toBe(false);
+  });
+});
+
+// ============================================================================
+// [MAJORITY-SIDE 2026-09-24] 一只股票当天同时命中多个大类题材时，【站队到数量多的那一边】。
+// 旧实现按「分组数组里第一次出现」站队 ⇒ 七匹狼(服装家纺/海峡两岸)被塞进人少的大消费、
+// 新华都(AI营销/AI应用/海峡两岸)被塞进人少的 AI应用。下面的用例把新口径钉死。
+// ============================================================================
+describe('selectPrimaryTopic（多题材股票站队到数量多的一边）', () => {
+  it('海峡两岸 11 只 > AI应用 6 只 ⇒ 新华都站队海峡两岸', () => {
+    const size = new Map([['AI应用', 6], ['海峡两岸', 11]]);
+    expect(selectPrimaryTopic(['AI营销', 'AI应用', '海峡两岸'], size, null)).toBe('海峡两岸');
+    expect(selectPrimaryTopic(['AI应用', '海峡两岸'], size, null)).toBe('海峡两岸');
+  });
+
+  it('顺序无关：候选数组谁先谁后，结果都一样（旧实现就是栽在这）', () => {
+    const size = new Map([['大消费', 4], ['海峡两岸', 11]]);
+    expect(selectPrimaryTopic(['大消费', '海峡两岸'], size, null)).toBe('海峡两岸');
+    expect(selectPrimaryTopic(['海峡两岸', '大消费'], size, null)).toBe('海峡两岸');
+  });
+
+  it('⛔ 真实题材压过「其它」：「其它」是兜底大杂烩，数量天然最大，绝不能靠数量赢', () => {
+    const size = new Map([['其它', 30], ['AI应用', 6]]);
+    expect(selectPrimaryTopic(['其它', 'AI应用'], size, null)).toBe('AI应用');
+    expect(selectPrimaryTopic(['AI应用', '其它'], size, null)).toBe('AI应用');
+  });
+
+  it('只有「其它」一个候选时才落到「其它」', () => {
+    const size = new Map([['其它', 30], ['AI应用', 6]]);
+    expect(selectPrimaryTopic(['其它'], size, null)).toBe(OTHER_TOPIC);
+  });
+
+  it('数量相同 → 按分组原顺序（星星数多的题材靠前）', () => {
+    const size = new Map([['甲题材', 5], ['乙题材', 5]]);
+    const order = new Map([['甲题材', 3], ['乙题材', 1]]);
+    expect(selectPrimaryTopic(['甲题材', '乙题材'], size, order)).toBe('乙题材');
+    expect(selectPrimaryTopic(['乙题材', '甲题材'], size, order)).toBe('乙题材');
+  });
+
+  it('数量与顺序都相同 → 按题材名字典序，保证每次渲染完全一致', () => {
+    const size = new Map([['T2', 5], ['T1', 5]]);
+    expect(selectPrimaryTopic(['T2', 'T1'], size, new Map())).toBe('T1');
+    expect(selectPrimaryTopic(['T1', 'T2'], size, new Map())).toBe('T1');
+  });
+
+  it('§10 边界：候选为空 / 无规模数据 → 不抛错，退回「其它」或第一个候选', () => {
+    expect(selectPrimaryTopic([], new Map(), null)).toBe(OTHER_TOPIC);
+    expect(selectPrimaryTopic(null, new Map(), null)).toBe(OTHER_TOPIC);
+    // 完全拿不到规模数据时退化为「取第一个候选」（既有行为，绝不炸）
+    expect(selectPrimaryTopic(['T3', 'T4'], null, null)).toBe('T3');
+  });
+});
+
+describe('buildTopicSizeMap（题材 → 当日股票数）', () => {
+  it('由「股票名 → 主题材」反推各题材的成员数，供兜底路径复用同一套站队规则', () => {
+    const m = new Map([['甲', '海峡两岸'], ['乙', '海峡两岸'], ['丙', 'AI应用']]);
+    const sizes = buildTopicSizeMap(m);
+    expect(sizes.get('海峡两岸')).toBe(2);
+    expect(sizes.get('AI应用')).toBe(1);
+  });
+
+  it('空映射 → 空结果，不抛错', () => {
+    expect(buildTopicSizeMap(null).size).toBe(0);
+    expect(buildTopicSizeMap(new Map()).size).toBe(0);
   });
 });

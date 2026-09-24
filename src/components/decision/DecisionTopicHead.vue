@@ -8,6 +8,7 @@
   排版（用户口径 2026-09-24，节约空间，全部挤在一行）：
       题材名称  ●1   数量：12   竞价一字：1
       └ 实心红色圆点里的数字 = 该题材今日排名（早盘竞价「题材 toggle」同一套组序）
+      └ 「竞价一字」后面的数字用红色（2026-09-24 用户要求）：一字 = 最强 / 买不到的那个信号
 
   §10：任何一项数据缺失都显示「—」而不是 0 —— 没数据 ≠ 没有。
   §21：本组件零业务计算，只做取值与占位符。
@@ -21,7 +22,7 @@
       :title="'题材排名第 ' + rank + ' 名（与早盘竞价题材组序同源）'"
     >{{ rank }}</span>
     <span class="dcb-meta">数量：{{ text(count) }}</span>
-    <span class="dcb-meta">竞价一字：{{ text(yizi) }}</span>
+    <span class="dcb-meta">竞价一字：<span class="dcb-meta-num">{{ text(yizi) }}</span></span>
   </div>
 </template>
 

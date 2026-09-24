@@ -17,7 +17,7 @@
 import { getTodayGroupList } from '../app-core-api.js';
 import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
 import { getStockCode } from '../../data/stock-code-map.js';
-import { getPrimaryTopicMap, classifyStockPrimaryTopic } from '../auction/topic-sort.js';
+import { getPrimaryTopicMap, classifyStockPrimaryTopic, buildTopicSizeMap } from '../auction/topic-sort.js';
 import { isAuctionYiZi, parseAucPct } from '../auction/limit-up.js';
 import { getDragonRangePct } from '../auction/dragon-rank.js';
 import { getDragonLeadersForDisplay } from '../auction/dragon-group.js';
@@ -78,6 +78,8 @@ export function collectDecisionData(date) {
 
   const inheritSold = getPrevSoldInheritedSet(date, prevDate);
   const pmap = getPrimaryTopicMap(list);
+  // [MAJORITY-SIDE 2026-09-24] 兜底行（不在正式列表内的注入行）也遵守「站队到数量多的一边」
+  const psize = buildTopicSizeMap(pmap);
 
   const rows = [];
   const byName = new Map();
@@ -87,7 +89,7 @@ export function collectDecisionData(date) {
     const nm = String(r.stock).trim();
     if (!nm || seen.has(nm)) return;
     seen.add(nm);
-    const topic = pmap.has(nm) ? pmap.get(nm) : classifyStockPrimaryTopic(r);
+    const topic = pmap.has(nm) ? pmap.get(nm) : classifyStockPrimaryTopic(r, psize);
     const rm = rangeMap.get(nm);
     const row = {
       name: nm,

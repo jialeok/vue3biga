@@ -65,10 +65,84 @@ export function getStockTopicsDisplay(item) {
 
 import { getTopicGroups, getGroupableCoreTopics, matchTopicToCore } from '../topic/rules.js';
 
+/** 「其它」组名（无题材 / 未命中核心词 / 组不足 2 只的兜底组） */
+export const OTHER_TOPIC = '其它';
+
+/**
+ * 「站队到数量多的那一边」——多题材股票的【唯一】归属判定规则（§6 单一真相）。
+ *
+ * 背景（用户 2026-09-24 原话）：一只股票当天同时命中两个大类题材时，旧实现按「分组数组里第一次出现」
+ * 站队 ⇒ 它经常被分到股票更少的那一边（例：七匹狼=服装家纺/海峡两岸 被塞进大消费；
+ * 新华都=AI营销/AI应用/海峡两岸 被塞进 AI应用）。用户口径是：站在【当天股票数更多】的那一边
+ * （海峡两岸 11 只 > AI应用 6 只 → 两只都归海峡两岸）；只属于 AI应用 的那几只仍留在 AI应用。
+ *
+ * 判定顺序（全部为稳定比较，绝不随机）：
+ *   ① 真实题材 优先于「其它」——「其它」是兜底兜出来的大杂烩，数量天然最大，
+ *      若让它参与「比大小」会把所有股票都吸进去（⛔ 曾经的坑）；
+ *   ② 同级别内按【当日该题材的股票数】降序（数量多的那一边赢）；
+ *   ③ 数量相同 → 按题材在 getTopicGroups 结果里的【原顺序】（星星数多的靠前）；
+ *   ④ 仍相同 → 题材名字典序，保证每次渲染结果完全一致。
+ *
+ * @param {string[]} topics - 该股票的候选题材（core name，可能含 '其它'）
+ * @param {Map<string,number>|Object} sizeOf - 题材 → 当日股票数（组内成员数）
+ * @param {Map<string,number>|Object} [orderOf] - 题材 → 分组原顺序（越小越靠前），可选
+ * @returns {string} 主题材；候选为空 → OTHER_TOPIC
+ */
+export function selectPrimaryTopic(topics, sizeOf, orderOf) {
+    const list = Array.isArray(topics) ? topics.filter(function(t) { return !!t; }) : [];
+    if (list.length === 0) return OTHER_TOPIC;
+    const _size = function(tp) {
+        if (!sizeOf) return 0;
+        const v = (sizeOf instanceof Map) ? sizeOf.get(tp) : sizeOf[tp];
+        return typeof v === 'number' ? v : 0;
+    };
+    const _order = function(tp) {
+        if (!orderOf) return Infinity;
+        const v = (orderOf instanceof Map) ? orderOf.get(tp) : orderOf[tp];
+        return typeof v === 'number' ? v : Infinity;
+    };
+    let best = list[0];
+    for (let i = 1; i < list.length; i++) {
+        const tp = list[i];
+        const aIsOther = (tp === OTHER_TOPIC) ? 1 : 0;
+        const bIsOther = (best === OTHER_TOPIC) ? 1 : 0;
+        if (aIsOther !== bIsOther) {
+            if (aIsOther < bIsOther) best = tp;          // 真实题材压过「其它」
+            continue;
+        }
+        const ds = _size(tp) - _size(best);
+        if (ds > 0) { best = tp; continue; }
+        if (ds < 0) continue;
+        const dox = _order(tp) - _order(best);
+        if (dox < 0) { best = tp; continue; }
+        if (dox > 0) continue;
+        if (tp < best) best = tp;                        // 字典序兜底，保证稳定
+    }
+    return best;
+}
+
+/**
+ * 由「股票名 → 主题材」映射反推「题材 → 当日股票数」。
+ * 供 classifyStockPrimaryTopic 兜底路径复用（让兜底也遵守「站队到数量多的一边」，§6）。
+ * @param {Map<string,string>} primaryMap
+ * @returns {Map<string,number>}
+ */
+export function buildTopicSizeMap(primaryMap) {
+    const sizes = new Map();
+    if (primaryMap) {
+        for (const entry of primaryMap.entries()) {
+            sizes.set(entry[1], (sizes.get(entry[1]) || 0) + 1);
+        }
+    }
+    return sizes;
+}
+
 /**
  * 取「股票名 → 主题材」映射，复用第二页 getTopicGroups 的分类结果。
- * 一只股票可能同时命中多个核心题材（被分入多个组），这里取它在分组数组里【第一次出现】的组为主题材，
- * 保证首页排序时每只股票只落在一个题材组里（首页是单列，无法像第二页那样同时出现在多个分节）。
+ *
+ * 一只股票可能同时命中多个核心题材（被分入多个组），⛔ 它【只能落在一个题材里】；
+ * 落哪个由 selectPrimaryTopic 统一裁决 = 【站队到当天股票数更多的那一边】。
+ *
  * @param {object[]} auctionList - 当日完整列表（getTodayGroupList 返回，与第二页一致）
  * @returns {Map<string,string>} stockName(trim) → 主题材(core name 或 '其它')
  */
@@ -76,33 +150,59 @@ export function getPrimaryTopicMap(auctionList) {
     const map = new Map();
     if (!auctionList || auctionList.length === 0) return map;
     const groups = getTopicGroups(auctionList);
-    for (const g of groups) {
-        if (!g.stocks) continue;
-        for (const s of g.stocks) {
+
+    // ① 题材规模（= 当日该题材的股票数）与原顺序 —— 供「站队」比较用
+    const sizeOf = new Map();
+    const orderOf = new Map();
+    groups.forEach(function(g, i) {
+        sizeOf.set(g.topic, g.stocks ? g.stocks.length : 0);
+        if (!orderOf.has(g.topic)) orderOf.set(g.topic, i);
+    });
+
+    // ② 收集「股票名 → 命中的所有题材」（去重，保持分组顺序）
+    const candidates = new Map();
+    groups.forEach(function(g) {
+        if (!g.stocks) return;
+        g.stocks.forEach(function(s) {
             const nm = s && s.stock ? String(s.stock).trim() : '';
-            if (nm && !map.has(nm)) map.set(nm, g.topic);
-        }
+            if (!nm) return;
+            if (!candidates.has(nm)) candidates.set(nm, []);
+            const arr = candidates.get(nm);
+            if (arr.indexOf(g.topic) < 0) arr.push(g.topic);
+        });
+    });
+
+    // ③ 每只股票只站一次队：站在数量多的那一边
+    for (const entry of candidates.entries()) {
+        map.set(entry[0], selectPrimaryTopic(entry[1], sizeOf, orderOf));
     }
     return map;
 }
 
 /**
  * 单只股票的主题材（兜底分类）：用于不在 auctionList 内的注入行（如观察组壳行）。
- * 按核心词匹配，取第一个命中的核心词为主题材；无题材/未命中 → '其它'。
- * 与第一页 getTopicGroups 的多组归并口径一致（都走 matchTopicToCore）。
+ * 按核心词匹配出全部命中的核心题材后，交给 selectPrimaryTopic 裁决（同样「站队数量多的一边」）；
+ * 无题材/未命中 → '其它'。与第一页 getTopicGroups 的多组归并口径一致（都走 matchTopicToCore）。
+ *
  * @param {object} item
+ * @param {Map<string,number>|Object} [sizeHint] - 可选：题材 → 当日股票数（来自 buildTopicSizeMap）。
+ *        传了才启用「数量多的一边」裁决；不传退化为「取第一个命中的核心词」（既有行为，一行不变）。
  * @returns {string}
  */
-export function classifyStockPrimaryTopic(item) {
+export function classifyStockPrimaryTopic(item, sizeHint) {
     const topics = getStockTopicArr(item);
-    if (topics.length === 0) return '其它';
+    if (topics.length === 0) return OTHER_TOPIC;
     // [ARCH-V3 §6] 与 getTopicGroups 共用同一份「可分组核心词」，伪题材不作为主题材
     const cores = getGroupableCoreTopics();
+    const matched = [];
     for (const topic of topics) {
-        const matched = matchTopicToCore(topic, cores);
-        if (matched && matched.length > 0) return matched[0];
+        const arr = matchTopicToCore(topic, cores);
+        if (!arr || arr.length === 0) continue;
+        arr.forEach(function(c) { if (matched.indexOf(c) < 0) matched.push(c); });
     }
-    return '其它';
+    if (matched.length === 0) return OTHER_TOPIC;
+    if (!sizeHint) return matched[0];
+    return selectPrimaryTopic(matched, sizeHint, null);
 }
 
 /**
@@ -238,7 +338,7 @@ export function buildTopicColorMap(primaryTopicMap, minCount = 2) {
         }
     }
     const eligible = [...counts.entries()]
-        .filter(([topic, c]) => topic !== '其它' && c >= minCount)
+        .filter(([topic, c]) => topic !== OTHER_TOPIC && c >= minCount)
         .sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
     const map = new Map();
     eligible.forEach(([topic], i) => {
