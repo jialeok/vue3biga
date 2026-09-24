@@ -130,34 +130,63 @@
             border-radius: 10px;
         }
 
+        /* 题材行（一行挤完，节约纵向空间）：题材名 ●排名 数量：n 竞价一字：n */
         .dcb-block-head {
             display: flex;
-            align-items: baseline;
-            flex-wrap: wrap;
-            gap: 8px;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
         }
 
+        /* 题材名可能被挤：优先压缩它自己，元信息不换行也不省略 */
         .dcb-topic {
+            flex: 0 1 auto;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
             font-size: 13px;
             font-weight: 700;
             color: #0f172a;
         }
 
-        .dcb-reason,
-        .dcb-reason-line {
+        /* 实心红色圆点，里面的白字 = 该题材今日排名 */
+        .dcb-rank-dot {
+            width: 16px;
+            height: 16px;
+            flex-shrink: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            font-weight: 700;
+            line-height: 1;
+            color: #ffffff;
+            background: #dc2626;
+            border-radius: 50%;
+        }
+
+        .dcb-meta {
+            flex-shrink: 0;
             font-size: 11px;
-            line-height: 1.5;
-            color: #475569;
+            color: #64748b;
         }
 
         .dcb-reason-line {
             margin: 2px 0 4px;
+            font-size: 11px;
+            line-height: 1.5;
+            color: #475569;
         }
 
         .dcb-block-note {
             margin-top: 4px;
             font-size: 11px;
             color: #b45309;
+        }
+
+        /* 未达买入门槛：用更强的告警色，和「提示」区分开 */
+        .dcb-block-note.unqualified {
+            color: #b91c1c;
         }
 
         .dcb-row {
@@ -198,12 +227,17 @@
             color: #b91c1c;
         }
 
+        /* 仓位建议：重仓 = 红（用力），轻仓 = 橙（减一档，一眼能分出重/轻） */
         .dcb-position {
             margin-left: auto;
             font-size: 11px;
             font-weight: 600;
             color: #b91c1c;
             white-space: nowrap;
+        }
+
+        .dcb-position.light {
+            color: #c2410c;
         }
 
         .dcb-sell-at {

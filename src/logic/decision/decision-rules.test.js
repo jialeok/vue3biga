@@ -13,17 +13,28 @@ import {
   rankDecisionTopics,
   rankDragons,
   pickBuyable,
+  pickLadder,
   buildBuyPlan,
   buildSellPlan,
+  buildRulesLines,
   formatRangePct,
   SELL_TIME_CLOSE,
   SELL_TIME_MIDDAY,
   POSITION_HEAVY,
   POSITION_LIGHT
 } from './decision-rules.js';
+import { getDragonLabel } from '../auction/dragon-rank.js';
 
-function E(name, topic, pct, isYizi, countable) {
-  return { name: name, topic: topic, pct: pct, isYizi: !!isYizi, countable: countable !== false };
+/** E(股票名, 题材, 十日涨幅, 是否竞价一字, 是否计入数量, 当日竞价涨幅%) */
+function E(name, topic, pct, isYizi, countable, aucPct) {
+  return {
+    name: name,
+    topic: topic,
+    pct: pct,
+    isYizi: !!isYizi,
+    countable: countable !== false,
+    aucPct: (aucPct === undefined || aucPct === null) ? null : aucPct
+  };
 }
 
 describe('rankDecisionTopics', () => {
@@ -101,6 +112,36 @@ describe('pickBuyable（跳过一字）', () => {
   });
 });
 
+describe('pickLadder（龙二～龙五的高开票 → 轻仓）', () => {
+  // 按十日涨幅排：一=龙一、二=龙二…六=龙六
+  const blocks = rankDecisionTopics([
+    E('一', 'T1', 90, false, true, 5),     // 龙一：不在龙二~龙五范围
+    E('二', 'T1', 80, true, true, 9),      // 龙二：竞价一字 → 买不进
+    E('三', 'T1', 70, false, true, 3),     // 龙三：高开 → 入选
+    E('四', 'T1', 60, false, true, -2),    // 龙四：低开（≤0）→ 淘汰
+    E('五', 'T1', 50, false, true, null),  // 龙五：缺竞价涨幅 → 计入 unknownCount，不入选
+    E('六', 'T1', 40, false, true, 8)      // 龙六：超出龙五 → 淘汰
+  ]);
+  const dragon = rankDragons(blocks);
+
+  it('只收「龙二到龙五 + 非一字 + 竞价涨幅>0」', () => {
+    const r = pickLadder(blocks[0], dragon, new Set(), POSITION_LIGHT);
+    expect(r.picks.map(p => p.name)).toEqual(['三']);
+    expect(r.picks[0].dragonLabel).toBe('龙三');
+    expect(r.picks[0].position).toBe(POSITION_LIGHT);
+  });
+
+  it('缺竞价涨幅 → 不当高开也不静默丢掉，如实记 unknownCount', () => {
+    const r = pickLadder(blocks[0], dragon, new Set(), POSITION_LIGHT);
+    expect(r.unknownCount).toBe(1);
+  });
+
+  it('已被重仓挑走的股票不会被重复选成轻仓', () => {
+    const r = pickLadder(blocks[0], dragon, new Set(['三']), POSITION_LIGHT);
+    expect(r.picks).toEqual([]);
+  });
+});
+
 describe('buildBuyPlan', () => {
   // T1：2 个一字（排名第一）；T2 / T3：0 个一字，各 2 只 → T2 排第二、T3 排第三
   const entries = [
@@ -113,23 +154,59 @@ describe('buildBuyPlan', () => {
     const blocks = rankDecisionTopics(entries);
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
     expect(plan.heavy.block.topic).toBe('T1');
+    expect(plan.heavy.mode).toBe('double');
     expect(plan.heavy.qualified).toBe(true);
     expect(plan.heavy.picks.map(p => p.name)).toEqual(['可买C', '可买D']);
     expect(plan.heavy.picks[0].position).toBe(POSITION_HEAVY);
+    expect(plan.heavy.picks[1].position).toBe(POSITION_HEAVY);
     expect(plan.light.block.topic).toBe('T2');
     expect(plan.light.picks.length).toBe(1);
     expect(plan.light.picks[0].position).toBe(POSITION_LIGHT);
   });
 
-  it('第 1 名题材一字不足 2 → 不给买入建议（qualified=false，picks 空）', () => {
+  it('第 1 名题材【只有 1 个一字】→ 龙一重仓 + 龙二~龙五高开票轻仓，序号连续', () => {
     const blocks = rankDecisionTopics([
-      E('a1', 'T1', 10, true), E('a2', 'T1', 9), E('a3', 'T1', 8),
+      E('A龙一', 'T1', 50, false, true, 4),   // 龙一 非一字 → 重仓
+      E('B一字', 'T1', 45, true, true, 10),   // 龙二 = 那唯一的一字 → 买不进
+      E('C龙三', 'T1', 40, false, true, 2),   // 龙三 高开 → 轻仓
+      E('D龙四', 'T1', 30, false, true, -3),  // 龙四 低开 → 不入选
+      E('E龙五', 'T1', 20, false, true, 1),   // 龙五 高开 → 轻仓
+      E('T2一', 'T2', 10), E('T2二', 'T2', 9)
+    ]);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy.mode).toBe('single');
+    expect(plan.heavy.qualified).toBe(true);
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['A龙一', 'C龙三', 'E龙五']);
+    expect(plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_LIGHT, POSITION_LIGHT]);
+    expect(plan.heavy.picks.map(p => p.seq)).toEqual([1, 2, 3]);
+    // 第 2 名题材那只仍然是轻仓、且独立成块
+    expect(plan.light.picks.length).toBe(1);
+    expect(plan.light.picks[0].position).toBe(POSITION_LIGHT);
+  });
+
+  it('缺竞价涨幅的股票不入选轻仓，但会如实说明有几只未纳入', () => {
+    const blocks = rankDecisionTopics([
+      E('A龙一', 'T1', 50, false, true, 4),
+      E('B一字', 'T1', 45, true, true, 10),
+      E('C缺', 'T1', 40, false, true, null),  // 缺竞价涨幅 → 不能当高开
+      E('D龙四', 'T1', 30, false, true, 2),
+      E('T2一', 'T2', 10), E('T2二', 'T2', 9)
+    ]);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['A龙一', 'D龙四']);
+    expect(plan.heavy.notes.join('｜')).toContain('缺竞价涨幅');
+    expect(plan.heavy.notes.join('｜')).toContain('1 只');
+  });
+
+  it('第 1 名题材一字 0 个 → 不达门槛，只展示数据不给建议', () => {
+    const blocks = rankDecisionTopics([
+      E('a1', 'T1', 10), E('a2', 'T1', 9), E('a3', 'T1', 8),
       E('b1', 'T2', 5), E('b2', 'T2', 4)
     ]);
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy.mode).toBe('none');
     expect(plan.heavy.qualified).toBe(false);
     expect(plan.heavy.picks.length).toBe(0);
-    expect(plan.heavy.reason).toContain('1个竞价一字');
     expect(plan.heavy.notQualifiedText).toContain('未达买入条件');
   });
 
@@ -201,6 +278,27 @@ describe('buildSellPlan', () => {
     );
     expect(plan[0].items[0].dragonLabel).toBe('龙三');
     expect(plan[0].items[0].seq).toBe(1);
+  });
+});
+
+describe('buildRulesLines（灰色问号里的规则说明）', () => {
+  const lines = buildRulesLines();
+
+  it('规则说明必须覆盖买点三档 + 卖点两档 + 题材行数据口径', () => {
+    const text = lines.join('\n');
+    expect(text).toContain('竞价一字 ≥ 2');                 // 第 1 名 · 双票重仓
+    expect(text).toContain('只有 1 个');                     // 第 1 名 · 龙一重仓
+    expect(text).toContain('竞价涨幅 > 0');                  // 龙二~龙五 高开轻仓
+    expect(text).toContain('龙二～龙五');
+    expect(text).toContain('排名第 2 的题材');               // 第 2 名 · 轻仓
+    expect(text).toContain(SELL_TIME_CLOSE);
+    expect(text).toContain(SELL_TIME_MIDDAY);
+    expect(text).toContain('实心红圆点');                    // 题材行的排名圆点说明
+  });
+
+  it('文案里的排名区间必须由 getDragonLabel 派生（避免两处分叉）', () => {
+    const text = lines.join('\n');
+    expect(text).toContain('【' + getDragonLabel(2) + '～' + getDragonLabel(5) + '】');
   });
 });
 

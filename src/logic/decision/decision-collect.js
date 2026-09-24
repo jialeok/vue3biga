@@ -18,7 +18,7 @@ import { getTodayGroupList } from '../app-core-api.js';
 import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 import { getPrimaryTopicMap, classifyStockPrimaryTopic } from '../auction/topic-sort.js';
-import { isAuctionYiZi } from '../auction/limit-up.js';
+import { isAuctionYiZi, parseAucPct } from '../auction/limit-up.js';
 import { getDragonRangePct } from '../auction/dragon-rank.js';
 import { getDragonLeadersForDisplay } from '../auction/dragon-group.js';
 import { getPrevSoldInheritedSet } from '../auction/inherited-sold.js';
@@ -93,6 +93,9 @@ export function collectDecisionData(date) {
       name: nm,
       topic: String(topic || '').trim(),
       isYizi: isAuctionYiZi(r, r.code || getStockCode(nm) || ''),
+      // 当日竞价涨幅（%）：null = 缺数据。解析器复用 limit-up.js#parseAucPct（§6 单一实现），
+      // 与早盘竞价「龙标红底 = 竞价涨幅>0」完全是同一个值 —— 决策看板说的是「买红色的那几只」。
+      aucPct: parseAucPct(r.auc_pct_chg || r.aucPctChg),
       pct: (rm && rm.pct !== undefined && rm.pct !== null) ? rm.pct : null,
       countable: !inheritSold.has(nm)
     };

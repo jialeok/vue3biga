@@ -6,8 +6,13 @@
 // ── 产品口径（2026-09-24 用户原话整理；后期还会继续完善，此处刻意做成可配置的常量）──
 //
 // 【买点】只看「排名第一 / 第二」两个题材（题材排名 = 早盘竞价「题材 toggle」的组序，同源）：
-//   · 第 1 名题材：竞价一字 ≥ 2 个 ⇒ 买【两只】——按题材内龙头排名（龙一→龙二→…）取
-//     【最靠前的两只非一字涨停】的股票（一字涨停买不进，必须跳过），建议【重仓】；
+//   · 第 1 名题材【竞价一字 ≥ 2 个】⇒ 题材最强，按题材内龙头排名（龙一→龙二→…）取
+//     【最靠前的两只非一字涨停】的股票（一字涨停买不进，必须跳过），两只都【重仓】；
+//   · 第 1 名题材【竞价一字只有 1 个】⇒ 题材强度打折，改打法：
+//       重仓【1 只】——按龙头顺序跳过一字取最靠前的那只（正常情况下就是龙一）；
+//       轻仓【龙二～龙五】里「非一字 且 竞价涨幅 > 0」的股票（高开才买）。
+//       ⚠️ 竞价涨幅缺失的行不算 > 0（§10：缺数据 ≠ 高开），会单独说明「几只缺竞价涨幅未纳入」；
+//   · 第 1 名题材【竞价一字 0 个】⇒ 未达门槛，不给买入建议；
 //   · 第 2 名题材：取【一只】最强的（同样按龙头顺序跳过一字），建议【轻仓】。
 //
 // 【卖点】候选 = 【昨日】打过「买」标签的股票：
@@ -25,11 +30,17 @@ import { computeDragonRankMap, getDragonLabel } from '../auction/dragon-rank.js'
 
 /** 题材成组门槛：与早盘竞价统计条（topic-stats.js#TOPIC_STATS_MIN_GROUP）同源 —— 不足 2 只不成题材 */
 export const DECISION_MIN_GROUP = 2;
-/** 第 1 名题材触发「重仓」所需的最少竞价一字数量（用户口径：两个或两个以上一字） */
+/** 第 1 名题材触发「双票重仓」所需的最少竞价一字数量（用户口径：两个或两个以上一字） */
 export const MIN_YIZI_HEAVY = 2;
+/** 第 1 名题材触发「龙一重仓 + 龙二～龙五轻仓」所需的最少竞价一字数量（用户口径：只有一个竞价一字） */
+export const MIN_YIZI_SINGLE = 1;
 /** 第 1 名题材取几只；第 2 名题材取几只 */
 export const PICK_COUNT_HEAVY = 2;
+export const PICK_COUNT_SINGLE = 1;
 export const PICK_COUNT_LIGHT = 1;
+/** 「龙二～龙五」的档位区间（用户口径：龙一到龙五里，龙一做重仓，龙二到龙五找高开的做轻仓） */
+export const LADDER_MIN_RANK = 2;
+export const LADDER_MAX_RANK = 5;
 /** 卖出时点 */
 export const SELL_TIME_MIDDAY = '11:20';
 export const SELL_TIME_CLOSE = '14:50';
@@ -57,10 +68,12 @@ function _topicRankMap(blocks) {
  * 刻意复用 sortByTopicGroups（早盘竞价就在用它），而不是在本文件另写一遍比较器：
  * 另写必然分叉，分叉就会出现「决策看板说第一、早盘竞价显示第二」的错位（§6 单一真相）。
  *
- * @param {Array<{name:string, topic:string, isYizi?:boolean, countable?:boolean, pct?:number|null}>} entries
+ * @param {Array<{name:string, topic:string, isYizi?:boolean, countable?:boolean,
+ *                pct?:number|null, aucPct?:number|null}>} entries
  *        countable=false 的行（如「昨日卖标签继承」的复盘行）不计入数量与一字数 —— 与早盘竞价一致。
+ *        aucPct = 当日竞价涨幅（%）；null = 缺数据（§10：不能当 0，也就不能当「高开」）。
  * @returns {Array<{rank:number, topic:string, count:number, yiziCount:number,
- *                  members:Array<{name:string, isYizi:boolean, pct:number|null}>}>}
+ *                  members:Array<{name:string, isYizi:boolean, pct:number|null, aucPct:number|null}>}>}
  *          已剔除「其它」与不足 DECISION_MIN_GROUP 的题材；按组序（一字多 → 人多 → 题材名）升序。
  */
 export function rankDecisionTopics(entries) {
@@ -90,7 +103,13 @@ export function rankDecisionTopics(entries) {
       blocks.push(cur);
     }
     const countable = list[i].countable !== false;
-    cur.members.push({ name: list[i].name, isYizi: !!list[i].isYizi, pct: _num(list[i].pct), countable: countable });
+    cur.members.push({
+      name: list[i].name,
+      isYizi: !!list[i].isYizi,
+      pct: _num(list[i].pct),
+      aucPct: _num(list[i].aucPct),
+      countable: countable
+    });
     if (countable) {
       cur.count++;
       if (list[i].isYizi) cur.yiziCount++;
@@ -122,7 +141,8 @@ export function rankDragons(blocks) {
 
 /**
  * 在一个题材块里挑「能买的」：按龙头排名升序，跳过【竞价一字】（一字买不进），取前 maxCount 只。
- * @returns {Array<{seq:number, name:string, dragonLabel:string, pct:number|null, position:string}>}
+ * @returns {Array<{seq:number, name:string, dragonLabel:string, dragonRank:number|null,
+ *                  pct:number|null, position:string}>}
  */
 export function pickBuyable(block, dragonMap, maxCount, position) {
   if (!block) return [];
@@ -141,15 +161,73 @@ export function pickBuyable(block, dragonMap, maxCount, position) {
     })
     .slice(0, maxCount);
 
-  return candidates.map(function(c, i) {
+  return _reseq(candidates.map(function(c) {
     return {
-      seq: i + 1,
       name: c.name,
       dragonLabel: c.rank ? getDragonLabel(c.rank) : '',
+      dragonRank: c.rank,
       pct: c.pct,
       position: position
     };
+  }));
+}
+
+/**
+ * 【龙二～龙五补票】第 1 名题材只有 1 个竞价一字时的【轻仓】候选。
+ *
+ * 口径（2026-09-24 用户）：”看龙二到龙五，除了竞价一字买不到外，买竞价涨幅大于 0 的
+ * （早盘竞价看板的龙标是红色的龙二到龙五的股票）”。
+ * 所谓「龙标是红色」= 早盘竞价 AuctionDragonBadge 的底色口径：竞价涨幅 > 0 → 红。
+ * 因此这里的判据就是 aucPct > 0，与那枚徽章同源，不再另写一个阈值（§6）。
+ *
+ * @param {object} block 题材块
+ * @param {Map} dragonMap 龙头排名
+ * @param {Set<string>} excludeNames 已被重仓挑走的股票（避免同一只既重仓又轻仓）
+ * @param {string} position 仓位文案
+ * @returns {{picks:Array, unknownCount:number}} unknownCount = 因【缺竞价涨幅】而无法判定的只数
+ *          （§10：它们不是「不高开」，如实报出来，不静默丢掉）
+ */
+export function pickLadder(block, dragonMap, excludeNames, position) {
+  if (!block) return { picks: [], unknownCount: 0 };
+  const dragon = dragonMap || new Map();
+  const exclude = excludeNames || new Set();
+  const hit = [];
+  let unknownCount = 0;
+
+  block.members.forEach(function(m) {
+    const d = dragon.get(m.name);
+    const rank = d ? d.rank : null;
+    if (rank === null) return;                                            // 没有十日涨幅 → 排不进龙二~龙五
+    if (rank < LADDER_MIN_RANK || rank > LADDER_MAX_RANK) return;         // 只看龙二到龙五
+    if (exclude.has(m.name)) return;
+    if (m.isYizi) return;                                                 // 一字买不进
+    if (m.aucPct === null || !isFinite(m.aucPct)) { unknownCount++; return; } // §10 缺竞价涨幅 ≠ 高开，也不等于不高开
+    if (m.aucPct <= 0) return;                                            // 只要高开
+    hit.push({ name: m.name, pct: m.pct, rank: rank });
   });
+
+  hit.sort(function(a, b) {
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+  });
+
+  return {
+    picks: _reseq(hit.map(function(c) {
+      return {
+        name: c.name,
+        dragonLabel: getDragonLabel(c.rank),
+        dragonRank: c.rank,
+        pct: c.pct,
+        position: position
+      };
+    })),
+    unknownCount: unknownCount
+  };
+}
+
+/** 重排序号（龙一在最前，序号从 1 连续；合并「重仓 + 轻仓」后必须重排，否则序号会重复） */
+function _reseq(picks) {
+  return picks.map(function(p, i) { p.seq = i + 1; return p; });
 }
 
 function _reasonBuy(block, rankWord) {
@@ -158,11 +236,66 @@ function _reasonBuy(block, rankWord) {
 }
 
 /**
+ * 第 1 名题材按【竞价一字数量】分三档给方案（唯一实现；后期改门槛只改这里）。
+ *  ⛔ 重仓 / 轻仓混在同一个题材块里（picks 按龙头顺序排列），序号连续：
+ *     用户要的格式是「序号｜名称（龙几）｜十日涨幅｜建议重仓/轻仓」，重仓轻仓在【行尾】区分，
+ *     没必要把同一题材拆成两个块、重复渲染一遍题材名和数据（不省空间反占空间）。
+ * @param {object} first 【第 1 名】题材块（调用方保证非空）
+ * @returns {{mode:string, qualified:boolean, picks:Array, notes:string[]}}
+ */
+function _buildFirstBlock(first, dragonMap) {
+  const base = {
+    block: first,
+    rankWord: '第一',
+    reason: _reasonBuy(first, '第一'),
+    mode: 'none',
+    qualified: false,
+    notQualifiedText: '',
+    picks: [],
+    notes: []
+  };
+  const yz = first.yiziCount;
+  if (yz >= MIN_YIZI_HEAVY) {
+    base.mode = 'double';
+    base.qualified = true;
+    base.picks = pickBuyable(first, dragonMap, PICK_COUNT_HEAVY, POSITION_HEAVY);
+    return base;
+  }
+  if (yz >= MIN_YIZI_SINGLE) {
+    base.mode = 'single';
+    base.qualified = true;
+    // 重仓：龙头顺序里跳过一字取最靠前的 1 只（正常情况下就是龙一；龙一是一字时自动落到下一只）
+    const head = pickBuyable(first, dragonMap, PICK_COUNT_SINGLE, POSITION_HEAVY);
+    const exclude = new Set(head.map(function(p) { return p.name; }));
+    const lad = pickLadder(first, dragonMap, exclude, POSITION_LIGHT);
+    base.picks = _reseq(head.concat(lad.picks).sort(function(a, b) {
+      const ra = (a.dragonRank === null ? Number.MAX_SAFE_INTEGER : a.dragonRank);
+      const rb = (b.dragonRank === null ? Number.MAX_SAFE_INTEGER : b.dragonRank);
+      if (ra !== rb) return ra - rb;
+      return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+    }));
+    if (lad.picks.length === 0) {
+      base.notes.push('龙二到龙五中没有「非一字 且 竞价涨幅>0」的股票，本档无轻仓票');
+    }
+    if (lad.unknownCount > 0) {
+      base.notes.push('另有 ' + lad.unknownCount + ' 只缺竞价涨幅，无法判定是否高开，未纳入（§10 不猜）');
+    }
+    return base;
+  }
+
+  base.mode = 'none';
+  base.qualified = false;
+  base.notQualifiedText = '该题材竞价一字为 0 个，未达买入条件';
+  return base;
+}
+
+/**
  * 生成买点计划。
  * @param {Array} blocks rankDecisionTopics 的返回
  * @param {Map} dragonMap rankDragons 的返回
  * @returns {{heavy:object|null, light:object|null}}
- *          block 里的 qualified=false 表示「未达一字门槛」——仍然展示题材与数字（§10 如实呈现），
+ *          heavy = 第 1 名题材的方案；light = 第 2 名题材的方案。
+ *          qualified=false 表示「未达一字门槛」——仍然展示题材与数字（§10 如实呈现），
  *          但 ⛔ 不给出买入建议（picks 为空），绝不拿不够格的数据冒充有效信号。
  */
 export function buildBuyPlan(blocks, dragonMap) {
@@ -170,27 +303,24 @@ export function buildBuyPlan(blocks, dragonMap) {
   const first = list.find(function(b) { return b.rank === 1; }) || null;
   const second = list.find(function(b) { return b.rank === 2; }) || null;
 
-  const heavy = first ? {
-    block: first,
-    rankWord: '第一',
-    reason: _reasonBuy(first, '第一'),
-    qualified: first.yiziCount >= MIN_YIZI_HEAVY,
-    notQualifiedText: '竞价一字不足 ' + MIN_YIZI_HEAVY + ' 个，未达买入条件',
-    picks: []
-  } : null;
-  if (heavy && heavy.qualified) heavy.picks = pickBuyable(first, dragonMap, PICK_COUNT_HEAVY, POSITION_HEAVY);
-
   // 第 2 名题材：用户只要求「选一只最强的、轻仓」，未设一字门槛（后期要加只需改这里）
   const light = second ? {
     block: second,
     rankWord: '第二',
     reason: _reasonBuy(second, '第二'),
+    mode: 'light',
     qualified: true,
     notQualifiedText: '',
-    picks: pickBuyable(second, dragonMap, PICK_COUNT_LIGHT, POSITION_LIGHT)
+    picks: pickBuyable(second, dragonMap, PICK_COUNT_LIGHT, POSITION_LIGHT),
+    notes: []
   } : null;
 
-  return { heavy: heavy, light: light };
+  return {
+    // ⛔ first 为空时必须返回 null：UI 用 v-if="buyHeavy" 判空，
+    //    返回空壳对象会让模板去读 block.block.topic 直接崩（当日没有成组题材时会走到这里）
+    heavy: first ? _buildFirstBlock(first, dragonMap) : null,
+    light: light
+  };
 }
 
 function _yiziWord(n) {
@@ -321,14 +451,22 @@ export function buildRulesLines() {
   return [
     '【买点】只看题材排名前二的题材（题材排名 = 早盘竞价「题材 toggle」的组序）：',
     '　① 排名第 1 的题材，竞价一字 ≥ ' + MIN_YIZI_HEAVY + ' 个 → 取最靠前的 ' + PICK_COUNT_HEAVY +
-      ' 只【非一字涨停】的股票（一字买不进，自动跳过），建议' + POSITION_HEAVY + '；',
-    '　② 排名第 2 的题材 → 取 ' + PICK_COUNT_LIGHT + ' 只最强的（同样按龙一→龙二顺序跳过一字），建议' + POSITION_LIGHT + '。',
+      ' 只【非一字涨停】的股票（一字买不进，自动跳过），两只都' + POSITION_HEAVY + '；',
+    '　② 排名第 1 的题材，竞价一字【只有 ' + MIN_YIZI_SINGLE + ' 个】→ ' + POSITION_HEAVY +
+      '买 ' + PICK_COUNT_SINGLE + ' 只（龙头顺序跳过一字，正常就是龙一）；',
+    '　　同时在【' + getDragonLabel(LADDER_MIN_RANK) + '～' + getDragonLabel(LADDER_MAX_RANK) +
+      '】里挑「非一字 且 竞价涨幅 > 0」的高开票做' + POSITION_LIGHT + '（= 早盘竞价里龙标为红色的那几只）；',
+    '　③ 排名第 1 的题材，竞价一字 0 个 → 不达买入条件，只展示数据、不给建议；',
+    '　④ 排名第 2 的题材 → 取 ' + PICK_COUNT_LIGHT + ' 只最强的（同样按龙头顺序跳过一字），' + POSITION_LIGHT + '。',
     '　龙一 / 龙二 = 题材内【十日涨幅】从高到低，与早盘竞价龙一徽章同一口径。',
+    '　重仓与轻仓混在同一个题材块里，序号连续，仓位写在每行行尾。',
+    '【题材行的数据】题材名右边依次是：实心红圆点（里面的数字 = 题材排名）｜数量：n（股票只数）｜竞价一字：n。',
     '【卖点】候选 = 昨日打过「买」标签的股票：',
     '　① 今日题材排第 1 或第 2 → ' + SELL_TIME_CLOSE + ' 卖（拿满一天）；',
     '　② 今日题材排名不在前二（含今日未成组）→ ' + SELL_TIME_MIDDAY + ' 卖（排名靠后，弱了早走）。',
     '　「昨日是龙头（十日涨幅最高）」会写进卖出理由 —— 典型场景：昨日的龙一今天掉出前二 → ' + SELL_TIME_MIDDAY + ' 卖。',
-    '说明：统计只数当日正式列表里的股票，「昨日卖标签继承」的复盘行不计入（与早盘竞价同一口径）。'
+    '说明：统计只数当日正式列表里的股票，「昨日卖标签继承」的复盘行不计入（与早盘竞价同一口径）；',
+    '　　　缺竞价涨幅的行不会当成「高开」，会如实说明有几只未纳入。'
   ];
 }
 
