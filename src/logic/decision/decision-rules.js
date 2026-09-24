@@ -17,10 +17,12 @@
 //
 // 【卖点】候选 = 【昨日】打过「买」标签的股票：
 //   · 今日题材排【第 1 或 第 2】名 ⇒ 14:50 卖（拿满一天）；
-//   · 今日题材排名【不在前二】⇒ 11:20 卖（排名靠后，弱了就早走）。
+//   · 今日题材排名【不在前二】⇒ 11:20 卖（排名靠后，弱了就早走）；
+//   · 例外（2026-09-24 用户口径）：今日题材【排第 2】且该题材【只有 1 个竞价一字】⇒ 题材强度打折，
+//     【只有龙一】能拿到尾盘（14:50 卖），【其余非龙一】11:20 卖。
+//     这一条会让同一个题材组里同时出现两种时点，所以时点是【逐行】算的，不是整组一个值。
 //     其中「昨日是龙头（十日涨幅最高）」是用户明确点出的典型情形，写在卖出理由里。
-//     ⚠️ 用户只明确了这两条；「不在前二 且 昨日非龙头」未明确 —— 暂按【排名靠后 = 11:20】处理，
-//        与另一分支同结果，不会给出互相矛盾的建议。要改只改 _decideSellTime 一处。
+//     ⚠️ 未覆盖的组合一律回落到上面的通用规则，不会给出互相矛盾的建议。要改只改 _decideSellTime 一处。
 //
 // 【§10 红线】任何一段数据缺失 → 该段【不产出】（返回空/不给出建议），
 //   绝不用 0 / '-' / 空字符串伪装成「有数据」。
@@ -238,7 +240,8 @@ function _reasonBuy(block, rankWord) {
 /**
  * 第 1 名题材按【竞价一字数量】分三档给方案（唯一实现；后期改门槛只改这里）。
  *  ⛔ 重仓 / 轻仓混在同一个题材块里（picks 按龙头顺序排列），序号连续：
- *     用户要的格式是「序号｜名称（龙几）｜十日涨幅｜建议重仓/轻仓」，重仓轻仓在【行尾】区分，
+ *     用户要的格式是「序号｜名称（龙几）｜十日涨幅｜重仓/轻仓」，重仓轻仓在【行尾】区分，
+ *     ⛔ 不再写「建议」二字（2026-09-24 用户要求：行尾直接就是结论）。
  *     没必要把同一题材拆成两个块、重复渲染一遍题材名和数据（不省空间反占空间）。
  * @param {object} first 【第 1 名】题材块（调用方保证非空）
  * @returns {{mode:string, qualified:boolean, picks:Array, notes:string[]}}
@@ -333,8 +336,25 @@ function _rankWord(rank) {
   return rank ? ('第' + rank + '名') : '';
 }
 
-/** 卖出时点决策（唯一实现；后期改规则只改这里） */
-function _decideSellTime(topicRank) {
+/**
+ * 卖出时点决策（唯一实现；后期改规则只改这里）。
+ *
+ * [2026-09-24 用户口径 · 第 2 名题材的例外]
+ *   题材【排名第 2】且该题材【只有 1 个竞价一字】⇒ 题材强度打折，只有【龙一】能拿到尾盘：
+ *       龙一  → 14:50 卖；
+ *       其余非龙一（含今日未排上龙头的）→ 11:20 卖。
+ *   ⚠️ 只适用于「第 2 名 + 恰好 1 个一字」这一个组合；其它组合仍走下面的通用规则。
+ *
+ * @param {number|null} topicRank 今日题材排名（null = 今日未成组）
+ * @param {{yiziCount?:number|null, isDragonOne?:boolean}} [opts]
+ *        isDragonOne = 该股是不是【今日】这个题材里的龙一（dragonRank === 1）
+ * @returns {string} 卖出时点
+ */
+function _decideSellTime(topicRank, opts) {
+  const o = opts || {};
+  if (topicRank === 2 && o.yiziCount === MIN_YIZI_SINGLE) {
+    return o.isDragonOne ? SELL_TIME_CLOSE : SELL_TIME_MIDDAY;
+  }
   return (topicRank === 1 || topicRank === 2) ? SELL_TIME_CLOSE : SELL_TIME_MIDDAY;
 }
 
@@ -369,18 +389,25 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames) {
     const key = tp || '（今日未成组）';
     if (!groups.has(key)) groups.set(key, []);
     const rank = rankMap.has(tp) ? rankMap.get(tp) : null;
+    const info = infoMap.get(tp);
     const d = dragon.get(r.name);
     const isPrevDragon = prevUnknown ? null : prevSet.has(r.name);
+    const dragonRank = d ? d.rank : null;
+    // 时点是【逐行】算的：第 2 名 + 只有 1 个一字时，龙一与非龙一时点不同，同一组里会同时出现两种
+    const sellAt = _decideSellTime(rank, {
+      yiziCount: info ? info.yiziCount : null,
+      isDragonOne: dragonRank === 1
+    });
     groups.get(key).push({
       name: r.name,
       topic: tp,
       topicRank: rank,
       isPrevDragon: isPrevDragon,
-      dragonLabel: d ? getDragonLabel(d.rank) : '',
-      dragonRank: d ? d.rank : null,
+      dragonLabel: dragonRank ? getDragonLabel(dragonRank) : '',
+      dragonRank: dragonRank,
       pct: _num(r.pct),
       inTodayList: !!r.inTodayList,
-      sellAt: _decideSellTime(rank)
+      sellAt: sellAt
     });
   });
 
@@ -402,14 +429,18 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames) {
       : (head.isPrevDragon ? '但昨日是龙头（十日涨幅最高）' : '昨日非龙头');
 
     let reason;
-    if (head.topicRank === 1 || head.topicRank === 2) {
+    if (head.topicRank === 2 && yizi === MIN_YIZI_SINGLE) {
+      // [2026-09-24] 第 2 名题材【只有 1 个竞价一字】→ 组内时点会分裂，理由必须把两种都说清
+      reason = '题材排在第一，第二，题材排第二，' + countText + '，该题材只有' + yizi + '个竞价一字涨停，' +
+        prevText + '，龙一' + SELL_TIME_CLOSE + '卖，其余非龙一' + SELL_TIME_MIDDAY + '卖';
+    } else if (head.topicRank === 1 || head.topicRank === 2) {
       reason = '题材排在第一，第二，题材排' + rankWord + '，' + countText + '，该题材' + yiziText +
         '，' + prevText +
-        '，建议' + SELL_TIME_CLOSE + '卖';
+        '，' + SELL_TIME_CLOSE + '卖';
     } else {
       reason = '题材排不在第一，第二' + (rankWord ? ('，排' + rankWord) : '') + '，' + countText +
         '，该题材' + yiziText + '，' + prevTextElse +
-        '，建议' + SELL_TIME_MIDDAY + '卖';
+        '，' + SELL_TIME_MIDDAY + '卖';
     }
 
     items.sort(function(a, b) {
@@ -456,14 +487,16 @@ export function buildRulesLines() {
       '买 ' + PICK_COUNT_SINGLE + ' 只（龙头顺序跳过一字，正常就是龙一）；',
     '　　同时在【' + getDragonLabel(LADDER_MIN_RANK) + '～' + getDragonLabel(LADDER_MAX_RANK) +
       '】里挑「非一字 且 竞价涨幅 > 0」的高开票做' + POSITION_LIGHT + '（= 早盘竞价里龙标为红色的那几只）；',
-    '　③ 排名第 1 的题材，竞价一字 0 个 → 不达买入条件，只展示数据、不给建议；',
+    '　③ 排名第 1 的题材，竞价一字 0 个 → 不达买入条件，只展示数据、不给出买卖点位；',
     '　④ 排名第 2 的题材 → 取 ' + PICK_COUNT_LIGHT + ' 只最强的（同样按龙头顺序跳过一字），' + POSITION_LIGHT + '。',
     '　龙一 / 龙二 = 题材内【十日涨幅】从高到低，与早盘竞价龙一徽章同一口径。',
     '　重仓与轻仓混在同一个题材块里，序号连续，仓位写在每行行尾。',
     '【题材行的数据】题材名右边依次是：实心红圆点（里面的数字 = 题材排名）｜数量：n（股票只数）｜竞价一字：n。',
-    '【卖点】候选 = 昨日打过「买」标签的股票：',
+    '【卖点】候选 = 昨日打过「买」标签的股票，卖出时点写在每行行尾：',
     '　① 今日题材排第 1 或第 2 → ' + SELL_TIME_CLOSE + ' 卖（拿满一天）；',
-    '　② 今日题材排名不在前二（含今日未成组）→ ' + SELL_TIME_MIDDAY + ' 卖（排名靠后，弱了早走）。',
+    '　② 今日题材排名不在前二（含今日未成组）→ ' + SELL_TIME_MIDDAY + ' 卖（排名靠后，弱了早走）；',
+    '　③ 例外：今日题材【排第 2】且该题材【只有 1 个竞价一字】→ 题材强度打折，',
+    '　　 【只有龙一】' + SELL_TIME_CLOSE + ' 卖，【其余非龙一】' + SELL_TIME_MIDDAY + ' 卖（同一组里会同时出现两种时点）。',
     '　「昨日是龙头（十日涨幅最高）」会写进卖出理由 —— 典型场景：昨日的龙一今天掉出前二 → ' + SELL_TIME_MIDDAY + ' 卖。',
     '说明：统计只数当日正式列表里的股票，「昨日卖标签继承」的复盘行不计入（与早盘竞价同一口径）；',
     '　　　缺竞价涨幅的行不会当成「高开」，会如实说明有几只未纳入。'

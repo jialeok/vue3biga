@@ -235,7 +235,7 @@ describe('buildSellPlan', () => {
     );
     expect(plan.map(g => g.topic)).toEqual(['T1', 'T2']);
     expect(plan[0].items[0].sellAt).toBe(SELL_TIME_CLOSE);
-    expect(plan[0].reason).toContain('建议14:50卖');
+    expect(plan[0].reason).toContain('14:50卖');
     expect(plan[1].items[0].sellAt).toBe(SELL_TIME_CLOSE);
   });
 
@@ -247,7 +247,55 @@ describe('buildSellPlan', () => {
     expect(plan[0].items[0].sellAt).toBe(SELL_TIME_MIDDAY);
     expect(plan[0].reason).toContain('题材排不在第一，第二');
     expect(plan[0].reason).toContain('但昨日是龙头（十日涨幅最高）');
-    expect(plan[0].reason).toContain('建议11:20卖');
+    expect(plan[0].reason).toContain('11:20卖');
+  });
+
+  // === [2026-09-24 例外] 题材排第 2 且只有 1 个竞价一字 → 组内时点分裂 ===
+  // T1：2 个一字 → 第 1 名；T2：1 个一字 → 第 2 名；T3：0 个一字 → 第 3 名
+  // T2 内按十日涨幅：榜一=龙一、一字那位=龙二、老三=龙三
+  const blocks2 = rankDecisionTopics([
+    E('T1甲', 'T1', 60, true), E('T1乙', 'T1', 55, true), E('T1丙', 'T1', 50),
+    E('T2榜一', 'T2', 40), E('T2一字', 'T2', 35, true), E('T2老三', 'T2', 30),
+    E('T3甲', 'T3', 20), E('T3乙', 'T3', 15)
+  ]);
+  const dragon2 = rankDragons(blocks2);
+
+  it('题材排第 2 且只有 1 个竞价一字 → 龙一 14:50 卖，其余非龙一 11:20 卖', () => {
+    const plan = buildSellPlan(
+      [{ name: 'T2榜一', topic: 'T2', pct: 40, inTodayList: true },
+       { name: 'T2老三', topic: 'T2', pct: 30, inTodayList: true }],
+      blocks2, dragon2, new Set()
+    );
+    expect(plan[0].topic).toBe('T2');
+    expect(plan[0].items[0].name).toBe('T2榜一');
+    expect(plan[0].items[0].dragonLabel).toBe('龙一');
+    expect(plan[0].items[0].sellAt).toBe(SELL_TIME_CLOSE);
+    expect(plan[0].items[1].name).toBe('T2老三');
+    expect(plan[0].items[1].sellAt).toBe(SELL_TIME_MIDDAY);
+  });
+
+  it('同上情形：卖出理由要同时写清「龙一 14:50 卖，其余非龙一 11:20 卖」', () => {
+    const plan = buildSellPlan(
+      [{ name: 'T2榜一', topic: 'T2', pct: 40, inTodayList: true }],
+      blocks2, dragon2, new Set()
+    );
+    expect(plan[0].reason).toContain('只有1个竞价一字涨停');
+    expect(plan[0].reason).toContain('龙一' + SELL_TIME_CLOSE + '卖，其余非龙一' + SELL_TIME_MIDDAY + '卖');
+  });
+
+  it('例外只在「第 2 名 + 恰好 1 个一字」生效：第 2 名有 2 个一字时整组仍 14:50', () => {
+    const blocks3 = rankDecisionTopics([
+      E('X1', 'X1', 60, true), E('X2', 'X1', 55, true), E('X3', 'X1', 50, true), // 3 个一字 → 第 1 名
+      E('Y1', 'Y2', 40, true), E('Y2', 'Y2', 35, true), E('Y3', 'Y2', 30)        // 2 个一字 → 第 2 名
+    ]);
+    const dragon3 = rankDragons(blocks3);
+    const plan = buildSellPlan(
+      [{ name: 'Y3', topic: 'Y2', pct: 30, inTodayList: true }],
+      blocks3, dragon3, new Set()
+    );
+    expect(plan[0].topicRank).toBe(2);
+    expect(plan[0].yiziCount).toBe(2);
+    expect(plan[0].items[0].sellAt).toBe(SELL_TIME_CLOSE); // 不满足例外条件 → 非龙一也拿到尾盘
   });
 
   it('今日不在列表（题材未成组）→ 11:20 卖，不抛错', () => {
@@ -284,7 +332,7 @@ describe('buildSellPlan', () => {
 describe('buildRulesLines（灰色问号里的规则说明）', () => {
   const lines = buildRulesLines();
 
-  it('规则说明必须覆盖买点三档 + 卖点两档 + 题材行数据口径', () => {
+  it('规则说明必须覆盖买点三档 + 卖点三档 + 题材行数据口径', () => {
     const text = lines.join('\n');
     expect(text).toContain('竞价一字 ≥ 2');                 // 第 1 名 · 双票重仓
     expect(text).toContain('只有 1 个');                     // 第 1 名 · 龙一重仓
@@ -294,6 +342,13 @@ describe('buildRulesLines（灰色问号里的规则说明）', () => {
     expect(text).toContain(SELL_TIME_CLOSE);
     expect(text).toContain(SELL_TIME_MIDDAY);
     expect(text).toContain('实心红圆点');                    // 题材行的排名圆点说明
+    expect(text).toContain('排第 2');                        // 第 2 名 + 只有 1 个一字的例外
+    expect(text).toContain('只有龙一');
+  });
+
+  it('规则文案里不再出现「建议」二字（用户要求：直接写重仓/轻仓、几点卖）', () => {
+    const text = lines.join('\n');
+    expect(text).not.toContain('建议');
   });
 
   it('文案里的排名区间必须由 getDragonLabel 派生（避免两处分叉）', () => {
