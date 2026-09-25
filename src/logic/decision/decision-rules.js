@@ -214,6 +214,61 @@ export function pickBuyable(block, dragonMap, maxCount, position) {
 }
 
 /**
+ * 【第 2 名题材 · 取「排名最靠前的那只竞价高开」】
+ *
+ * 口径（2026-09-26 用户）：第 2 名题材不再「按龙头顺序取第一名」（那样会选到低开的票，
+ *   实测 9/24 大消费 9 只里按名次取到了奥康国际（龙二、低开）），改为 ——
+ *   【按龙头顺序跳过一字，取排名最靠前的那只「竞价高开」的股票，只选 1 只，轻仓】。
+ *   例：龙一~龙八都低开、只有龙九高开 → 选龙九；
+ *       龙一~龙三低开、龙四高开、龙八也高开 → 选龙四（名次更靠前的那个）。
+ *
+ * 判据与早盘竞价「龙标红色 = 竞价涨幅 > 0」同源（aucPct > 0），不另写阈值（§6）；
+ * §10：竞价涨幅缺失 ≠ 高开，单独记 unknownCount 如实报出来，不静默丢掉。
+ *
+ * @param {object} block 题材块
+ * @param {Map} dragonMap 龙头排名
+ * @param {string} position 仓位文案
+ * @returns {{picks:Array, unknownCount:number, highOpenCount:number}}
+ */
+export function pickFirstHighOpen(block, dragonMap, position) {
+  if (!block) return { picks: [], unknownCount: 0, highOpenCount: 0 };
+  const dragon = dragonMap || new Map();
+  const cand = [];
+  let unknownCount = 0;
+
+  (block.members || []).forEach(function(m) {
+    if (m.countable === false) return;                       // 灰色复盘行不占龙位，也不选它
+    const d = dragon.get(m.name);
+    const rank = d ? d.rank : null;
+    if (rank === null) return;                               // 没有十日涨幅 → 排不进龙头顺序
+    if (m.isYizi) return;                                    // 一字买不进
+    const auc = _num(m.aucPct);
+    if (auc === null) { unknownCount++; return; }            // §10 缺竞价涨幅 ≠ 高开，也不等于不高开
+    if (auc <= 0) return;                                    // 只要高开
+    cand.push({ name: m.name, pct: _num(m.pct), rank: rank });
+  });
+
+  cand.sort(function(a, b) {
+    if (a.rank !== b.rank) return a.rank - b.rank;           // 龙头名次最靠前的优先
+    return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+  });
+
+  return {
+    picks: _reseq(cand.slice(0, PICK_COUNT_LIGHT).map(function(c) {
+      return {
+        name: c.name,
+        dragonLabel: getDragonLabel(c.rank),
+        dragonRank: c.rank,
+        pct: c.pct,
+        position: position
+      };
+    })),
+    unknownCount: unknownCount,
+    highOpenCount: cand.length
+  };
+}
+
+/**
  * 【龙二～龙五补票】第 1 名题材只有 1 个竞价一字时的【轻仓】候选。
  *
  * 口径（2026-09-24 用户）：”看龙二到龙五，除了竞价一字买不到外，买竞价涨幅大于 0 的
@@ -284,18 +339,24 @@ export function isSmallRiskyTopic(block) {
 /**
  * 【⑥ 兜底 · 龙一～龙五里挑「竞价高开」的两只】
  *
- * 口径（2026-09-25 用户）：题材股票数量最多的那个题材，在【龙一到龙五】里选【竞价高开】的两只 ——
- *   龙一固定占一个名额并【重仓】，另一个名额给【竞价涨幅最高】的那只，【轻仓】。
- *   （典型场景：龙一 +1%、龙二 −2%、龙三 +3.6%、龙四 0%、龙五 +6.5%
- *     → 高开的是龙一 / 龙三 / 龙五 → 取 龙一（重仓）+ 龙五（涨幅最高，轻仓））
+ * 口径（2026-09-25 用户，两次口径合并）：题材股票数量最多的那个题材，在【龙一到龙五】里
+ * 只挑【竞价高开】（竞价涨幅 > 0）的票，分两种情形：
  *
- * 排序规则刻意固定为「龙一优先 → 其余按竞价涨幅降序 → 龙头名次」，保证结果稳定可复现；
- * 龙一没高开时自然落到「涨幅最高的两只」，不另外造一套分支（§6 单一真相）。
+ *   ① 龙一【高开】→ 龙一占一个名额并【重仓】，另一个名额给【其余高开票里竞价涨幅最高】的那只【轻仓】。
+ *      例：龙一 +1%、龙二 −2%、龙三 +3.6%、龙四 0%、龙五 +6.5%
+ *          → 高开的 = 龙一 / 龙三 / 龙五 → 取 龙一（重仓）+ 龙五（涨幅最高，轻仓）。
+ *
+ *   ② 龙一【低开 / 平开 / 缺竞价涨幅】→ 【舍弃龙一】，只在【龙二 ~ 龙五】的高开票里选，
+ *      有两只以上高开时只取【竞价涨幅最高的两只】，【两只都轻仓】（龙一走弱就不再重仓）。
+ *      例：龙一 −6%、龙二 −2%、龙三 +3.6%、龙四 0%、龙五 +6.5%
+ *          → 高开的 = 龙三 / 龙五 → 取 龙五、龙三，都轻仓。
+ *
+ * 排序规则刻意固定为「竞价涨幅降序 → 龙头名次 → 股票名」，保证结果稳定可复现（不随机）。
  *
  * @param {object} block 题材块
  * @param {Map} dragonMap 龙头排名
  * @param {number} maxRank 只看龙一 ~ 第 maxRank 名
- * @param {number} maxCount 取几只（第 1 只重仓，其余轻仓）
+ * @param {number} maxCount 取几只（龙一高开时第 1 只重仓、其余轻仓；龙一不高开时【全部轻仓】）
  * @returns {{picks:Array, unknownCount:number, dragonOneHighOpen:boolean}}
  */
 export function pickTopDragonsByAuc(block, dragonMap, maxRank, maxCount) {
@@ -321,22 +382,27 @@ export function pickTopDragonsByAuc(block, dragonMap, maxRank, maxCount) {
   });
 
   hit.sort(function(a, b) {
-    const a1 = a.rank === 1 ? 0 : 1;
-    const b1 = b.rank === 1 ? 0 : 1;
-    if (a1 !== b1) return a1 - b1;                           // 龙一优先
-    if (b.auc !== a.auc) return b.auc - a.auc;               // 其余按竞价涨幅降序
-    if (a.rank !== b.rank) return a.rank - b.rank;
-    return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+    if (b.auc !== a.auc) return b.auc - a.auc;               // 先按【竞价涨幅】降序
+    if (a.rank !== b.rank) return a.rank - b.rank;           // 同涨幅 → 龙头名次靠前的优先
+    return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); // 仍相同 → 股票名，保证稳定
   });
 
+  const limit = maxCount || SMALL_TOPIC_PICK_COUNT;
+  // ① 龙一高开 → 龙一固定占第一个名额（重仓）+ 其余里涨幅最高的一只（轻仓）
+  // ② 龙一不高开 → 舍弃龙一，只取【龙二~龙五】里涨幅最高的 maxCount 只，全部轻仓
+  const dragonOne = hit.find(function(c) { return c.rank === 1; }) || null;
+  const chosen = dragonOne
+    ? [dragonOne].concat(hit.filter(function(c) { return c.rank !== 1; }).slice(0, limit - 1))
+    : hit.slice(0, limit);
+
   return {
-    picks: _reseq(hit.slice(0, maxCount || SMALL_TOPIC_PICK_COUNT).map(function(c, i) {
+    picks: _reseq(chosen.map(function(c, i) {
       return {
         name: c.name,
         dragonLabel: getDragonLabel(c.rank),
         dragonRank: c.rank,
         pct: c.pct,
-        position: i === 0 ? POSITION_HEAVY : POSITION_LIGHT
+        position: (dragonOne && i === 0) ? POSITION_HEAVY : POSITION_LIGHT
       };
     })),
     unknownCount: unknownCount,
@@ -732,7 +798,8 @@ export function buildSmallTopicPlan(auctionBlocks, dragonMap, opts) {
       if (picks.length === 0) {
         notes.push('龙一~龙五里没有「非一字 且 竞价高开」的股票 → 本题材不选票');
       } else if (!r.dragonOneHighOpen) {
-        notes.push('龙一未高开 → 改按【竞价涨幅】取最高的 ' + picks.length + ' 只');
+        notes.push('龙一未高开 → 【舍弃龙一】，只在龙二~龙五里按竞价涨幅取最高的 ' +
+          picks.length + ' 只，都' + POSITION_LIGHT);
       }
       if (r.unknownCount > 0) {
         notes.push('另有 ' + r.unknownCount + ' 只缺竞价涨幅，无法判定是否高开，未纳入（§10 不猜）');
@@ -751,7 +818,8 @@ export function buildSmallTopicPlan(auctionBlocks, dragonMap, opts) {
       rankWord: '',
       reason: idx === 0
         ? ('该题材在早盘竞价中股票数量最多（' + w.auctionCount + ' 只）→ 在龙一~龙五里取竞价高开的两只：' +
-           '龙一' + POSITION_HEAVY + ' + 竞价涨幅最高的一只' + POSITION_LIGHT)
+           '龙一高开则龙一' + POSITION_HEAVY + ' + 竞价涨幅最高的一只' + POSITION_LIGHT +
+           '；龙一不高开则舍弃龙一，取龙二~龙五里涨幅最高的两只，都' + POSITION_LIGHT)
         : ('该题材在早盘竞价中股票数量第二（' + w.auctionCount + ' 只）→ 只取龙一，' + POSITION_LIGHT),
       mode: 'smallTopic',
       qualified: picks.length > 0,
@@ -830,7 +898,21 @@ export function buildBuyPlan(blocks, dragonMap, opts) {
     };
   }
 
-  // 第 2 名题材：用户只要求「选一只最强的、轻仓」，未设一字门槛（后期要加只需改这里）
+  // 第 2 名题材：[2026-09-26 用户口径] 取【龙头顺序里最靠前的那只竞价高开】的股票，只 1 只、轻仓。
+  //   ⛔ 不再是「按龙头顺序取第一名」—— 那样会选到低开的票（9/24 大消费取到龙二奥康国际，低开）。
+  //   没有高开票 / 有票缺竞价涨幅都要如实说明（§10）。未设一字门槛（后期要加只需改这里）。
+  const lightNotes = [];
+  let lightPicks = [];
+  if (second) {
+    const r = pickFirstHighOpen(second, dragonMap, POSITION_LIGHT);
+    lightPicks = r.picks;
+    if (r.picks.length === 0) {
+      lightNotes.push('该题材没有「非一字 且 竞价高开」的股票 → 本档无轻仓票');
+    }
+    if (r.unknownCount > 0) {
+      lightNotes.push('另有 ' + r.unknownCount + ' 只缺竞价涨幅，无法判定是否高开，未纳入（§10 不猜）');
+    }
+  }
   const light = second ? {
     block: second,
     rankWord: '第二',
@@ -838,8 +920,8 @@ export function buildBuyPlan(blocks, dragonMap, opts) {
     mode: 'light',
     qualified: true,
     notQualifiedText: '',
-    picks: pickBuyable(second, dragonMap, PICK_COUNT_LIGHT, POSITION_LIGHT),
-    notes: []
+    picks: lightPicks,
+    notes: lightNotes
   } : null;
 
   return {
@@ -1015,7 +1097,9 @@ export function buildRulesLines() {
       '】里挑「非一字 且 竞价涨幅 > 0」的高开票做' + POSITION_LIGHT + '（= 早盘竞价里龙标为红色的那几只）；',
     '　③ 排名第 1 的题材，竞价一字 0 个 → 不达买入条件（题材排名就是按一字数排的，所以这等价于',
     '　　【全部题材】都没有一字 → 直接改走下面的 ⑤，不再只展示数据）；',
-    '　④ 排名第 2 的题材 → 取 ' + PICK_COUNT_LIGHT + ' 只最强的（同样按龙头顺序跳过一字），' + POSITION_LIGHT + '。',
+    '　④ 排名第 2 的题材 → 按龙头顺序跳过一字，取【名次最靠前的那只竞价高开】的股票 ' +
+      PICK_COUNT_LIGHT + ' 只，' + POSITION_LIGHT + '；',
+    '　　（龙一~龙八全低开、只有龙九高开 → 就选龙九；龙四与龙八都高开 → 选名次更靠前的龙四）。',
     '　⑤ 【无一字弱市】当日【全部题材】的竞价一字都是 0 个 → 改看【连板天梯 · 题材连扳】：',
     '　　取【股票数量最多】的题材（数量并列时，并列的题材【全都取】，每个都按同一规则选票）；',
     '　　每个入选题材只看它最靠前的两只（龙一 / 龙二），最终【只留竞价高开】的票：',
@@ -1028,8 +1112,9 @@ export function buildRulesLines() {
     '　　票太少却被一字撑起排名，多半是量化假强度，①②③④【都不适用】，改看【连板天梯 · 题材连扳】；',
     '　　　· 该题材在【早盘竞价】里的股票数【< ' + SMALL_TOPIC_MIN_AUCTION_COUNT + ' 只】→ 排除；',
     '　　　· 剩下的题材按【早盘竞价股票数】降序取前二；',
-    '　　　· 数量最多的题材：在【龙一~龙五】里取【竞价高开】的两只 → 龙一' + POSITION_HEAVY +
-      ' + 竞价涨幅最高的那只' + POSITION_LIGHT + '；',
+    '　　　· 数量最多的题材：在【龙一~龙五】里只取【竞价高开】的票 ——',
+    '　　　　龙一高开 → 龙一' + POSITION_HEAVY + ' + 竞价涨幅最高的那只' + POSITION_LIGHT + '；',
+    '　　　　龙一低开 / 平开 → 【舍弃龙一】，只在【龙二~龙五】里取竞价涨幅最高的两只，都' + POSITION_LIGHT + '；',
     '　　　· 数量第二的题材：只取【龙一】，' + POSITION_LIGHT + '。',
     '　龙一 / 龙二 = 题材内【十日涨幅】从高到低，与早盘竞价龙一徽章同一口径',
     '　（只在【当日正式列表】的股票里排：灰色名称 / 灰色题材的继承行不占龙位）。',

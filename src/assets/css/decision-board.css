@@ -1,12 +1,17 @@
         /* 决策看板（独立看板，类名统一 decision- / dcb- 前缀，⛔ 不蹭任何其它看板的前缀）
            视觉与其它看板保持一致（同款圆角卡片 + 渐变头部），但类名完全独立：
            任何一边改版都不会悄悄影响另一边。 */
+        /* [RULES-PANEL 2026-09-26] 规则面板原来被卡片裁掉右边：
+           .decision-board 为了圆角一直有 overflow:hidden，而面板是 absolute + 宽 300px，
+           从问号位置往右铺 → 超出卡片宽度就被裁。
+           改法：卡片改 overflow:visible（圆角改由头部 / 内容区各自承担），
+                 面板直接铺满头部左右内边距之间 → 永远在卡片内，多窄的屏都不会被裁。 */
         .decision-board {
             margin: 0 15px 10px;
             background: #ffffff;
             border: 1px solid #e2e8f0;
             border-radius: 16px;
-            overflow: hidden;
+            overflow: visible;
             box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
         }
 
@@ -17,6 +22,11 @@
         /* [2026-09-24 用户要求] 头部横条改【蓝色渐变】——原来是黑/深灰，看着压抑。
            取 2563eb → 1d4ed8 的蓝，与看板内「买=红 / 卖=绿」的语义色不冲突。 */
         .decision-header {
+            /* [RULES-PANEL 2026-09-26] ① position:relative —— 规则面板以【整条头部】定位
+               （不再以问号定位，问号在左侧会让面板铺不下）；
+               ② 卡片改 overflow:visible 后，头部的圆角必须自己承担。 */
+            position: relative;
+            border-radius: 15px 15px 0 0;
             padding: 10px 14px;
             display: flex;
             align-items: center;
@@ -67,6 +77,9 @@
         }
 
         .decision-body {
+            /* [RULES-PANEL 2026-09-26] 卡片改 overflow:visible 后，底部圆角由内容区自己收口 */
+            border-radius: 0 0 15px 15px;
+            overflow: hidden;
             padding: 8px 10px 10px;
             background: #ffffff;
         }
@@ -279,7 +292,8 @@
            这里把它往右推开 16px（叠加 .decision-header 的 8px gap = 约 24px，≈ 一个三角按钮的宽度），
            让「决策」标题周围留出一条纯展开区；面板是绝对定位，位移不影响它的展开位置。 */
         .dcb-rules {
-            position: relative;
+            /* [RULES-PANEL 2026-09-26] ⛔ 刻意【不设 position:relative】——
+               面板要以 .decision-header 为定位基准铺满整条头部，设了就会被钉在问号这里（右侧铺不开）。 */
             flex-shrink: 0;
             display: inline-flex;
             align-items: center;
@@ -305,14 +319,20 @@
             background: #64748b;
         }
 
-        /* 面板挂在头部里 —— 用绝对定位铺开，避免被 .decision-header 的 flex 挤变形 */
+        /* [RULES-PANEL 2026-09-26] 面板铺满【整条头部】的左右内边距之间
+           （left/right 都给值 + width:auto ⇒ 宽度随卡片自适应，窄屏也不会被裁掉右边）；
+           高度封顶 62vh 并可滚动 —— 规则已近 30 行，不封顶会顶出屏幕外看不见后半段。 */
         .dcb-rules-panel {
             position: absolute;
-            top: 22px;
-            left: 0;
+            top: calc(100% - 2px);
+            left: 10px;
+            right: 10px;
             z-index: 30;
-            width: 300px;
-            max-width: 78vw;
+            width: auto;
+            max-width: none;
+            max-height: 62vh;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
             padding: 8px 10px;
             background: #f8fafc;
             border: 1px solid #e2e8f0;
