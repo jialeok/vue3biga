@@ -57,6 +57,22 @@ export const NO_YIZI_MIN_TOPIC_COUNT = 3;
 /** 【无一字兜底】每个入选题材只看最靠前的两只（龙一 / 龙二） */
 export const NO_YIZI_PICK_COUNT = 2;
 
+// ===== [SMALL-TOPIC 2026-09-25]「题材太少 + 有 1~2 个一字」的高风险兜底 =====
+// 用户口径：早盘竞价题材 toggle 下，排名第 1 / 第 2 的题材如果【股票数量 ≤ 4 只】却【有 1~2 个竞价一字】，
+//   大概率是量化资金做出来的假强度（票太少、一字撑起来的排名），按常规规则选票【准确率很低】
+//   ⇒ 这种情况下【不用常规规则】，改看连板天梯晋级看板「题材连扳」的题材股票数量来定题材。
+/** 触发「高风险小题材」的题材股票数上限（≤ 4 只） */
+export const SMALL_TOPIC_MAX_COUNT = 4;
+/** 触发所需的一字数量区间（1 ~ 2 个） */
+export const SMALL_TOPIC_MIN_YIZI = 1;
+export const SMALL_TOPIC_MAX_YIZI = 2;
+/** 改用题材连扳后，该题材在【早盘竞价】里的股票总数至少要这么多只才入选（< 4 只 → 排除） */
+export const SMALL_TOPIC_MIN_AUCTION_COUNT = 4;
+/** 数量最多的题材：在【龙一 ~ 龙五】这个区间里挑 */
+export const SMALL_TOPIC_MAX_RANK = 5;
+/** 数量最多的题材挑几只（第 1 只重仓，其余轻仓） */
+export const SMALL_TOPIC_PICK_COUNT = 2;
+
 /** 卖出时点 */
 export const SELL_TIME_MIDDAY = '11:20';
 export const SELL_TIME_CLOSE = '14:50';
@@ -172,7 +188,8 @@ export function pickBuyable(block, dragonMap, maxCount, position) {
   if (!block) return [];
   const dragon = dragonMap || new Map();
   const candidates = block.members
-    .filter(function(m) { return !m.isYizi; })
+    // [NOT-FORMAL-DRAGON 2026-09-25] 灰色复盘行（countable=false）不占龙位，也就不该被选成买点
+    .filter(function(m) { return !m.isYizi && m.countable !== false; })
     .map(function(m) {
       const d = dragon.get(m.name);
       return { name: m.name, pct: m.pct, rank: d ? d.rank : null };
@@ -246,6 +263,84 @@ export function pickLadder(block, dragonMap, excludeNames, position) {
       };
     })),
     unknownCount: unknownCount
+  };
+}
+
+/**
+ * 【高风险小题材判定 · 2026-09-25 用户口径】
+ * 题材【股票数量 ≤ SMALL_TOPIC_MAX_COUNT 只】且【竞价一字 1~2 个】⇒ 疑似量化假强度，
+ * 常规规则（按一字多少排题材、再买龙一/龙二）准确率很低 → 改用⑥的兜底规则。
+ *
+ * @param {object} block rankDecisionTopics 的题材块（rank 1 / 2 的那两个）
+ * @returns {boolean}
+ */
+export function isSmallRiskyTopic(block) {
+  if (!block) return false;
+  const c = Number(block.count) || 0;
+  const y = Number(block.yiziCount) || 0;
+  return c > 0 && c <= SMALL_TOPIC_MAX_COUNT && y >= SMALL_TOPIC_MIN_YIZI && y <= SMALL_TOPIC_MAX_YIZI;
+}
+
+/**
+ * 【⑥ 兜底 · 龙一～龙五里挑「竞价高开」的两只】
+ *
+ * 口径（2026-09-25 用户）：题材股票数量最多的那个题材，在【龙一到龙五】里选【竞价高开】的两只 ——
+ *   龙一固定占一个名额并【重仓】，另一个名额给【竞价涨幅最高】的那只，【轻仓】。
+ *   （典型场景：龙一 +1%、龙二 −2%、龙三 +3.6%、龙四 0%、龙五 +6.5%
+ *     → 高开的是龙一 / 龙三 / 龙五 → 取 龙一（重仓）+ 龙五（涨幅最高，轻仓））
+ *
+ * 排序规则刻意固定为「龙一优先 → 其余按竞价涨幅降序 → 龙头名次」，保证结果稳定可复现；
+ * 龙一没高开时自然落到「涨幅最高的两只」，不另外造一套分支（§6 单一真相）。
+ *
+ * @param {object} block 题材块
+ * @param {Map} dragonMap 龙头排名
+ * @param {number} maxRank 只看龙一 ~ 第 maxRank 名
+ * @param {number} maxCount 取几只（第 1 只重仓，其余轻仓）
+ * @returns {{picks:Array, unknownCount:number, dragonOneHighOpen:boolean}}
+ */
+export function pickTopDragonsByAuc(block, dragonMap, maxRank, maxCount) {
+  if (!block) return { picks: [], unknownCount: 0, dragonOneHighOpen: false };
+  const dragon = dragonMap || new Map();
+  const top = maxRank || SMALL_TOPIC_MAX_RANK;
+  const hit = [];
+  let unknownCount = 0;
+  let dragonOneHighOpen = false;
+
+  (block.members || []).forEach(function(m) {
+    if (m.countable === false) return;                       // 灰色复盘行不占龙位，也不选它
+    const d = dragon.get(m.name);
+    const rank = d ? d.rank : null;
+    if (rank === null) return;                               // 没有十日涨幅 → 排不进龙一~龙五
+    if (rank < 1 || rank > top) return;
+    if (m.isYizi) return;                                    // 一字买不进
+    const auc = _num(m.aucPct);
+    if (auc === null) { unknownCount++; return; }            // §10 缺竞价涨幅 ≠ 高开，也不等于不高开
+    if (auc <= 0) return;                                    // 只要高开
+    if (rank === 1) dragonOneHighOpen = true;
+    hit.push({ name: m.name, pct: _num(m.pct), rank: rank, auc: auc });
+  });
+
+  hit.sort(function(a, b) {
+    const a1 = a.rank === 1 ? 0 : 1;
+    const b1 = b.rank === 1 ? 0 : 1;
+    if (a1 !== b1) return a1 - b1;                           // 龙一优先
+    if (b.auc !== a.auc) return b.auc - a.auc;               // 其余按竞价涨幅降序
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+  });
+
+  return {
+    picks: _reseq(hit.slice(0, maxCount || SMALL_TOPIC_PICK_COUNT).map(function(c, i) {
+      return {
+        name: c.name,
+        dragonLabel: getDragonLabel(c.rank),
+        dragonRank: c.rank,
+        pct: c.pct,
+        position: i === 0 ? POSITION_HEAVY : POSITION_LIGHT
+      };
+    })),
+    unknownCount: unknownCount,
+    dragonOneHighOpen: dragonOneHighOpen
   };
 }
 
@@ -545,6 +640,135 @@ export function buildNoYiziPlan(topicGroups, opts) {
 }
 
 /**
+ * 【⑥ 高风险小题材兜底 · 2026-09-25 用户口径】
+ *
+ * 触发条件（由 buildBuyPlan 判定）：早盘竞价题材 toggle 下，排名【第 1 或第 2】的题材
+ * 【股票数量 ≤ SMALL_TOPIC_MAX_COUNT 只】且【竞价一字 1~2 个】—— 票太少却被一字撑起排名，
+ * 多半是量化做出来的假强度，常规规则（按一字多少选题材 → 买龙一 / 龙二）准确率很低
+ * ⇒ 【不用常规规则】，改按下面这套来选：
+ *
+ *   ① 取【连板天梯 · 题材连扳】的题材分组（ladder-collect 同一份 0 请求结果，§6）；
+ *   ② 每个候选题材再看它在【早盘竞价】里的股票总数，
+ *      < SMALL_TOPIC_MIN_AUCTION_COUNT 只的【排除】（用户举例：AI应用早盘竞价只有 3 只 → 排除）；
+ *   ③ 剩下的题材按【早盘竞价股票总数】降序取前 2 个
+ *      （用户举例：电子/通信/算力 10 只 → 第一；电力新能源 4 只 → 第二）；
+ *   ④ 第 1 个题材（数量最多）：在【龙一 ~ 龙五】里挑【竞价高开】的两只 ——
+ *      龙一【重仓】，另一只给【竞价涨幅最高】的那只【轻仓】（一字买不进，自动跳过）；
+ *   ⑤ 第 2 个题材：只取【龙一】，【轻仓】（一字买不进时顺延到下一只）；
+ *   ⑥ 一个题材都筛不出来 → 【空仓】并如实说明（§10）。
+ *
+ * @param {Array<object>} auctionBlocks 早盘竞价题材块（rankDecisionTopics 的返回）
+ * @param {Map} dragonMap rankDragons 的返回
+ * @param {{ladderTopicGroups?:Array, ladderReady?:boolean, ladderReason?:string,
+ *          riskyTopics?:Array}} [opts]
+ * @returns {{mode:string, qualified:boolean, emptyText:string, hintText:string, blocks:Array, notes:string[]}}
+ */
+export function buildSmallTopicPlan(auctionBlocks, dragonMap, opts) {
+  const o = opts || {};
+  const dragon = dragonMap || new Map();
+
+  const out = {
+    mode: 'smallTopic',
+    qualified: false,
+    emptyText: '',
+    hintText: '题材股票数量过少（≤ ' + SMALL_TOPIC_MAX_COUNT + ' 只）却有 1~2 个竞价一字（疑似量化）→ ' +
+      '不按常规规则选票，改看连板天梯「题材连扳」：只保留早盘竞价里股票数 ≥ ' +
+      SMALL_TOPIC_MIN_AUCTION_COUNT + ' 只的题材，按股票数量取前二。',
+    blocks: [],
+    notes: []
+  };
+
+  const risky = o.riskyTopics || [];
+  if (risky.length > 0) {
+    out.notes.push('常规规则已跳过：' + risky.map(function(b) {
+      return b.topic + '（' + b.count + '只 / ' + b.yiziCount + '个一字）';
+    }).join('、') + ' —— 股票太少且有 1~2 个一字，疑似量化，准确率低');
+  }
+
+  // §10：连板数据没加载 = 「还没拉到」，绝不等于「今天没有连板梯队」
+  if (o.ladderReady === false) {
+    out.emptyText = '连板天梯数据未就绪' + (o.ladderReason ? '（' + o.ladderReason + '）' : '') +
+      '，无法按「小题材 + 一字」规则选票';
+    return out;
+  }
+
+  // ① + ② 题材连扳候选 → 用早盘竞价股票总数过滤（< 4 只排除）
+  const cands = [];
+  (o.ladderTopicGroups || []).forEach(function(g) {
+    if (!g || !g.topic || g.topic === OTHER) return;
+    const blk = _findAuctionBlock(auctionBlocks, g.topic);
+    if (!blk) return;
+    const n = Number(blk.count) || 0;
+    if (n < SMALL_TOPIC_MIN_AUCTION_COUNT) return;
+    cands.push({ topic: g.topic, auctionCount: n, ladderCount: Number(g.count) || 0, block: blk });
+  });
+  if (cands.length === 0) {
+    out.emptyText = '连板天梯「题材连扳」里没有「早盘竞价股票数 ≥ ' + SMALL_TOPIC_MIN_AUCTION_COUNT +
+      ' 只」的题材，无法按「小题材 + 一字」规则选票 → 【空仓】';
+    return out;
+  }
+
+  // ③ 按早盘竞价股票总数降序（同数 → 题材连扳数量降序 → 题材名），取前二
+  cands.sort(function(a, b) {
+    if (b.auctionCount !== a.auctionCount) return b.auctionCount - a.auctionCount;
+    if (b.ladderCount !== a.ladderCount) return b.ladderCount - a.ladderCount;
+    return a.topic < b.topic ? -1 : (a.topic > b.topic ? 1 : 0);
+  });
+  const winners = cands.slice(0, 2);
+  if (winners.length > 1) {
+    out.notes.push('题材连扳里按【早盘竞价股票数】排序：' + cands.map(function(c) {
+      return c.topic + ' ' + c.auctionCount + '只';
+    }).join('、'));
+  }
+
+  let totalPicks = 0;
+  winners.forEach(function(w, idx) {
+    const notes = [];
+    let picks = [];
+    if (idx === 0) {
+      // ④ 数量最多的题材：龙一~龙五 里挑竞价高开的两只（龙一重仓 + 涨幅最高的一只轻仓）
+      const r = pickTopDragonsByAuc(w.block, dragon, SMALL_TOPIC_MAX_RANK, SMALL_TOPIC_PICK_COUNT);
+      picks = r.picks;
+      if (picks.length === 0) {
+        notes.push('龙一~龙五里没有「非一字 且 竞价高开」的股票 → 本题材不选票');
+      } else if (!r.dragonOneHighOpen) {
+        notes.push('龙一未高开 → 改按【竞价涨幅】取最高的 ' + picks.length + ' 只');
+      }
+      if (r.unknownCount > 0) {
+        notes.push('另有 ' + r.unknownCount + ' 只缺竞价涨幅，无法判定是否高开，未纳入（§10 不猜）');
+      }
+    } else {
+      // ⑤ 数量第二的题材：只取龙一，轻仓（一字买不进时由 pickBuyable 自动顺延）
+      picks = pickBuyable(w.block, dragon, 1, POSITION_LIGHT);
+      if (picks.length === 0) {
+        notes.push('该题材没有可买的非一字股票 → 不选票');
+      }
+    }
+
+    totalPicks += picks.length;
+    out.blocks.push({
+      block: { topic: w.topic, rank: null, count: w.auctionCount, yiziCount: w.block.yiziCount || 0 },
+      rankWord: '',
+      reason: idx === 0
+        ? ('该题材在早盘竞价中股票数量最多（' + w.auctionCount + ' 只）→ 在龙一~龙五里取竞价高开的两只：' +
+           '龙一' + POSITION_HEAVY + ' + 竞价涨幅最高的一只' + POSITION_LIGHT)
+        : ('该题材在早盘竞价中股票数量第二（' + w.auctionCount + ' 只）→ 只取龙一，' + POSITION_LIGHT),
+      mode: 'smallTopic',
+      qualified: picks.length > 0,
+      notQualifiedText: '',
+      picks: picks,
+      notes: notes
+    });
+  });
+
+  out.qualified = totalPicks > 0;
+  if (!out.qualified) {
+    out.emptyText = '入选题材里没有可买的票 → 【空仓】';
+  }
+  return out;
+}
+
+/**
  * 生成买点计划。
  * @param {Array} blocks rankDecisionTopics 的返回
  * @param {Map} dragonMap rankDragons 的返回
@@ -552,9 +776,11 @@ export function buildNoYiziPlan(topicGroups, opts) {
  *        【无一字兜底】要用的连板天梯「题材连扳」分组（只有「全部题材一字 = 0」时才用得上；
  *        由 decision-collect 采集后传进来，本文件保持纯函数、不碰数据源）
  *        ⓘ 龙一 / 龙二的排名人群用的是 blocks 自身（早盘竞价题材组），无需额外传参
- * @returns {{heavy:object|null, light:object|null, noYizi:object|null}}
+ * @returns {{heavy:object|null, light:object|null, noYizi:object|null, smallTopic:object|null}}
  *          heavy = 第 1 名题材的方案；light = 第 2 名题材的方案；
- *          noYizi = 「全部题材竞价一字 = 0」时的弱市兜底方案（三者互斥：noYizi 非空时前两者必为 null）。
+ *          noYizi = 「全部题材竞价一字 = 0」时的弱市兜底方案；
+ *          smallTopic = 「第 1 / 第 2 名题材票太少却有 1~2 个一字」时的兜底方案（⑥）。
+ *          四者互斥：noYizi / smallTopic 任一非空时，heavy 与 light 必为 null。
  *          qualified=false 表示「未达一字门槛 / 太弱」——仍然展示题材与数字（§10 如实呈现），
  *          但 ⛔ 不给出买入建议（picks 为空），绝不拿不够格的数据冒充有效信号。
  */
@@ -562,16 +788,38 @@ export function buildBuyPlan(blocks, dragonMap, opts) {
   const list = blocks || [];
   const first = list.find(function(b) { return b.rank === 1; }) || null;
   const second = list.find(function(b) { return b.rank === 2; }) || null;
+  const o = opts || {};
+
+  // [SMALL-TOPIC 2026-09-25] 第 1 / 第 2 名题材是「票太少 + 有 1~2 个一字」的高风险小题材
+  //   ⇒ 常规规则准确率低，【不用常规规则】，改走 ⑥（题材连扳 + 早盘竞价股票数 ≥ 4 只过滤）。
+  //   ⛔ 即使连板天梯未就绪也【不退回】常规规则 —— 用户明确说这种情况下常规规则不符合，
+  //      退回等于又给一次错误的建议；如实报「未就绪」（§10）。
+  const risky = [];
+  if (isSmallRiskyTopic(first)) risky.push(first);
+  if (isSmallRiskyTopic(second)) risky.push(second);
+  if (risky.length > 0) {
+    return {
+      heavy: null,
+      light: null,
+      noYizi: null,
+      smallTopic: buildSmallTopicPlan(list, dragonMap, {
+        ladderTopicGroups: o.ladderTopicGroups || [],
+        ladderReady: o.ladderReady,
+        ladderReason: o.ladderReason,
+        riskyTopics: risky
+      })
+    };
+  }
 
   // [NO-YIZI 2026-09-25] 当日【所有题材】都没有竞价一字 → 弱市，改走「连板天梯 · 题材连扳」兜底规则。
   // ⛔ 判据是【全部题材的一字总数】，不是「第 1 名题材的一字数」：
   //    用户原话是「当天所有的题材都没有一字涨停的股票时」。
   const totalYizi = list.reduce(function(n, b) { return n + (Number(b.yiziCount) || 0); }, 0);
   if (list.length > 0 && totalYizi === 0) {
-    const o = opts || {};
     return {
       heavy: null,
       light: null,
+      smallTopic: null,
       noYizi: buildNoYiziPlan(o.ladderTopicGroups || [], {
         dragonMap: dragonMap,
         ladderReady: o.ladderReady,
@@ -599,7 +847,8 @@ export function buildBuyPlan(blocks, dragonMap, opts) {
     //    返回空壳对象会让模板去读 block.block.topic 直接崩（当日没有成组题材时会走到这里）
     heavy: first ? _buildFirstBlock(first, dragonMap) : null,
     light: light,
-    noYizi: null
+    noYizi: null,
+    smallTopic: null
   };
 }
 
@@ -774,6 +1023,14 @@ export function buildRulesLines() {
     '　　全部记【' + POSITION_LIGHT + '】（没有一字，强度打折）。',
     '　　题材连扳里股票最多的题材【不足 ' + NO_YIZI_MIN_TOPIC_COUNT + ' 只】→ 【空仓】（太弱，不参与）。',
     '　　缺竞价涨幅的票【不算高开】，会如实说明有几只未纳入（§10 不猜）。',
+    '　⑥ 【小题材 + 一字 = 高风险】排名【第 1 或第 2】的题材【股票数量 ≤ ' + SMALL_TOPIC_MAX_COUNT +
+      ' 只】且【竞价一字 ' + SMALL_TOPIC_MIN_YIZI + '~' + SMALL_TOPIC_MAX_YIZI + ' 个】：',
+    '　　票太少却被一字撑起排名，多半是量化假强度，①②③④【都不适用】，改看【连板天梯 · 题材连扳】；',
+    '　　　· 该题材在【早盘竞价】里的股票数【< ' + SMALL_TOPIC_MIN_AUCTION_COUNT + ' 只】→ 排除；',
+    '　　　· 剩下的题材按【早盘竞价股票数】降序取前二；',
+    '　　　· 数量最多的题材：在【龙一~龙五】里取【竞价高开】的两只 → 龙一' + POSITION_HEAVY +
+      ' + 竞价涨幅最高的那只' + POSITION_LIGHT + '；',
+    '　　　· 数量第二的题材：只取【龙一】，' + POSITION_LIGHT + '。',
     '　龙一 / 龙二 = 题材内【十日涨幅】从高到低，与早盘竞价龙一徽章同一口径',
     '　（只在【当日正式列表】的股票里排：灰色名称 / 灰色题材的继承行不占龙位）。',
     '　重仓与轻仓混在同一个题材块里，序号连续，仓位写在每行行尾。',

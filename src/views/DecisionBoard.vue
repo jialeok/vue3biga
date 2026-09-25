@@ -58,28 +58,30 @@
           <div class="decision-section-title buy">
             买点
           </div>
-          <!-- [NO-YIZI 2026-09-25] 当日全部题材竞价一字 0 个 → 弱市兜底：
-               改看连板天梯「题材连扳」，取股票数量最多的题材的龙一 / 龙二，只留竞价高开的票（全轻仓）。
+          <!-- [NO-YIZI 2026-09-25 / SMALL-TOPIC 2026-09-25] 两条兜底方案，结构相同 → 一处渲染：
+               ⑤ 当日全部题材竞价一字 0 个 → 改看连板天梯「题材连扳」取数量最多题材的龙一 / 龙二；
+               ⑥ 第 1 / 第 2 名题材票太少（≤4 只）却有 1~2 个一字 → 同样改看题材连扳，
+                  只保留早盘竞价里 ≥4 只的题材，按股票数取前二。
                与下面的常规档位互斥：有它就不走「第 1 / 第 2 名题材」。 -->
-          <template v-if="buyNoYizi">
+          <template v-if="buySpecial">
             <div class="dcb-noyizi-hint">
-              {{ buyNoYizi.hintText }}
+              {{ buySpecial.hintText }}
             </div>
             <div
-              v-for="(n, i) in buyNoYizi.notes"
+              v-for="(n, i) in buySpecial.notes"
               :key="'ny-note-' + i"
               class="dcb-block-note"
             >
               {{ n }}
             </div>
             <div
-              v-if="!buyNoYizi.qualified"
+              v-if="!buySpecial.qualified"
               class="dcb-block-note unqualified"
             >
-              {{ buyNoYizi.emptyText }}
+              {{ buySpecial.emptyText }}
             </div>
             <DecisionBuyBlock
-              v-for="b in buyNoYizi.blocks"
+              v-for="b in buySpecial.blocks"
               :key="'ny-' + b.block.topic"
               :block="b"
             />
@@ -145,7 +147,7 @@ const {
   reasonText,
   buyHeavy,
   buyLight,
-  buyNoYizi,
+  buySpecial,
   sellGroups,
   summaryText,
   toggleExpand

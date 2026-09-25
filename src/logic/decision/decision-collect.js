@@ -31,6 +31,7 @@ import { collectLadderData } from '../ladder/ladder-collect.js';
 import {
   rankDecisionTopics,
   rankDragons,
+  isSmallRiskyTopic,
   buildBuyPlan,
   buildSellPlan,
   SELL_TIME_MIDDAY,
@@ -42,7 +43,7 @@ function _notReady(reason) {
     ready: false,
     reason: reason,
     topics: [],
-    buy: { heavy: null, light: null, noYizi: null },
+    buy: { heavy: null, light: null, noYizi: null, smallTopic: null },
     sell: [],
     sellTimes: []
   };
@@ -135,10 +136,15 @@ export function collectDecisionData(date) {
 
   const dragonMap = rankDragons(topics);
 
-  // [NO-YIZI 2026-09-25] 只有「全部题材竞价一字 = 0」时才去采连板天梯分组（弱市兜底规则要用）。
+  // [NO-YIZI 2026-09-25] 只有下面两种情况才去采连板天梯分组（两条兜底规则要用）：
+  //   ① 「全部题材竞价一字 = 0」的弱市兜底；
+  //   ② [SMALL-TOPIC] 第 1 / 第 2 名题材是「票太少 + 有 1~2 个一字」的高风险小题材。
   // 平时不采 —— 白跑一次全量行的归堆没意义（§36 性能红线）。
+  const first = topics.find(function(b) { return b.rank === 1; }) || null;
+  const second = topics.find(function(b) { return b.rank === 2; }) || null;
   const totalYizi = topics.reduce(function(n, b) { return n + (Number(b.yiziCount) || 0); }, 0);
-  const ladder = totalYizi === 0 ? _ladderTopicGroups(date) : null;
+  const needLadder = totalYizi === 0 || isSmallRiskyTopic(first) || isSmallRiskyTopic(second);
+  const ladder = needLadder ? _ladderTopicGroups(date) : null;
   const buy = buildBuyPlan(topics, dragonMap, {
     ladderTopicGroups: ladder ? ladder.groups : [],
     ladderReady: ladder ? ladder.ready : false,

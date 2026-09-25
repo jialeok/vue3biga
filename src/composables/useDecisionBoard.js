@@ -20,7 +20,7 @@ function _empty(reason) {
     ready: false,
     reason: reason,
     topics: [],
-    buy: { heavy: null, light: null, noYizi: null },
+    buy: { heavy: null, light: null, noYizi: null, smallTopic: null },
     sell: [],
     sellTimes: []
   };
@@ -62,10 +62,15 @@ export function useDecisionBoard() {
   const buyLight = computed(() => (data.value.buy ? data.value.buy.light : null));
   // [NO-YIZI 2026-09-25] 「全部题材竞价一字 0 个」的弱市兜底方案；与 heavy / light 互斥
   const buyNoYizi = computed(() => (data.value.buy ? data.value.buy.noYizi : null));
+  // [SMALL-TOPIC 2026-09-25] 「第 1 / 第 2 名题材票太少却有 1~2 个一字」的高风险兜底方案；
+  // 与 noYizi 结构完全一致（{hintText, notes, emptyText, blocks}），因此 UI 合并成 buySpecial 一处渲染。
+  const buySmallTopic = computed(() => (data.value.buy ? data.value.buy.smallTopic : null));
+  /** 两条兜底方案共用同一段模板；与 heavy / light 互斥 */
+  const buySpecial = computed(() => buyNoYizi.value || buySmallTopic.value || null);
   const sellGroups = computed(() => data.value.sell || []);
 
   const buyCount = computed(function() {
-    const n = buyNoYizi.value;
+    const n = buySpecial.value;
     if (n) {
       return n.blocks.reduce(function(s, b) { return s + b.picks.length; }, 0);
     }
@@ -79,8 +84,8 @@ export function useDecisionBoard() {
 
   const summaryText = computed(function() {
     if (!ready.value) return reasonText.value;
-    // 弱市兜底判定为「太弱」→ 头部直接写【空仓】，比「无买卖信号」更贴合用户口径
-    const n = buyNoYizi.value;
+    // 兜底判定为「太弱」→ 头部直接写【空仓】，比「无买卖信号」更贴合用户口径
+    const n = buySpecial.value;
     if (n && !n.qualified && sellCount.value === 0) return '空仓（题材太弱）';
     if (buyCount.value === 0 && sellCount.value === 0) return '今日无买卖信号';
     return '买' + buyCount.value + ' 卖' + sellCount.value;
@@ -112,6 +117,8 @@ export function useDecisionBoard() {
     buyHeavy,
     buyLight,
     buyNoYizi,
+    buySmallTopic,
+    buySpecial,
     sellGroups,
     buyCount,
     sellCount,
