@@ -19,6 +19,7 @@ import {
   isSmallRiskyTopic,
   buildSmallTopicPlan,
   pickFirstHighOpen,
+  pickSecondTopicBuy,
   buildSellPlan,
   buildRulesLines,
   formatRangePct,
@@ -263,7 +264,8 @@ describe('buildBuyPlan', () => {
     const blocks = rankDecisionTopics(entries);
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
     expect(plan.heavy.reason).toBe('题材排第一，股票数量5只，2个竞价一字');
-    expect(plan.light.reason).toBe('题材排第二，股票数量2只，0个竞价一字');
+    expect(plan.light.reason).toContain('题材排第二，股票数量2只，0个竞价一字');
+    expect(plan.light.reason).toContain('龙一不是一字则直接买龙一');
   });
 });
 
@@ -641,6 +643,16 @@ describe('buildSmallTopicPlan（⑥ 改看题材连扳 + 早盘竞价股票数�
   });
 });
 
+// 第 1 名题材 X：5 只 + 1 个一字（⛔ 刻意 5 只，≤4 只会命中 ⑥ 小题材兜底；
+//   ⛔ 必须有 1 个一字，否则全部题材 0 一字 → 走 ⑤ 弱市兜底，就测不到第 2 名题材这一档）
+// 两个「第 2 名题材」用例组共用，故提到模块作用域。
+// ⛔ X 刻意给【2 个一字】：T 只有 1 个一字时才稳坐第 2 名（否则一字数打平会被 T 抢到第 1 名）
+const headTopic = [
+  E('X一字', 'X', 50, true, true, 10), E('X二', 'X', 40, true, true, 9),
+  E('X三', 'X', 30, false, true, 2), E('X四', 'X', 20, false, true, 3),
+  E('X五', 'X', 10, false, true, -1)
+];
+
 // === [2026-09-26] 第 2 名题材改选「名次最靠前的那只在竞价高开」 ===
 // 事故现场：9/24 大消费 9 只，按龙头顺序取第一名 → 取到奥康国际（龙二、低开）。
 describe('pickFirstHighOpen（第 2 名题材：名次最靠前的高开票）', () => {
@@ -683,33 +695,110 @@ describe('pickFirstHighOpen（第 2 名题材：名次最靠前的高开票）',
     expect(r.picks[0].dragonLabel).toBe('龙三');
   });
 
-  // 第 1 名题材 X：5 只 + 1 个一字（⛔ 刻意 5 只，≤4 只会命中 ⑥ 小题材兜底；
-  //   ⛔ 必须有 1 个一字，否则全部题材 0 一字 → 走 ⑤ 弱市兜底，就测不到第 2 名题材这一档）
-  const headTopic = [
-    E('X一字', 'X', 50, true, true, 10), E('X二', 'X', 40, false, true, 1),
-    E('X三', 'X', 30, false, true, 2), E('X四', 'X', 20, false, true, 3),
-    E('X五', 'X', 10, false, true, -1)
-  ];
-
-  it('全组没有高开票 → 不选票，并在块里如实说明（§10）', () => {
+  it('龙一是一字 → 回退：全组没有高开票 → 不选票，并在块里如实说明（§10）', () => {
     const blocks = rankDecisionTopics(headTopic.concat([
-      E('股1', 'T', 90, false, true, -1), E('股2', 'T', 80, false, true, -2)
+      // ⛔ T 必须凑够 5 只：≤4 只 + 1 个一字会被 ⑥ 小题材兜底截走，就测不到常规 ④
+      E('股1', 'T', 90, true, true, 10),    // 龙一 = 一字（买不进）→ 走回退规则
+      E('股2', 'T', 80, false, true, -1), E('股3', 'T', 70, false, true, -2),
+      E('股4', 'T', 60, false, true, -3), E('股5', 'T', 50, false, true, -4)
     ]));
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
     expect(plan.light.block.topic).toBe('T');
     expect(plan.light.picks.length).toBe(0);
+    expect(plan.light.notes.join('｜')).toContain('龙一是一字涨停（买不进）');
     expect(plan.light.notes.join('｜')).toContain('没有「非一字 且 竞价高开」的股票');
   });
 
-  it('缺竞价涨幅不算高开，如实说明有几只未纳入（§10 不猜）', () => {
+  it('龙一是一字 → 回退：缺竞价涨幅不算高开，如实说明有几只未纳入（§10 不猜）', () => {
     const blocks = rankDecisionTopics(headTopic.concat([
-      E('股1', 'T', 90, false, true, null),  // 缺竞价涨幅
-      E('股2', 'T', 80, false, true, 3)      // 高开 → 选它
+      E('股1', 'T', 90, true, true, 10),    // 龙一 = 一字（买不进）→ 走回退规则
+      E('股2', 'T', 80, false, true, null), // 缺竞价涨幅
+      E('股3', 'T', 70, false, true, 3),    // 高开 → 选它
+      E('股4', 'T', 60, false, true, -1), E('股5', 'T', 50, false, true, -2)
     ]));
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
     expect(plan.light.block.topic).toBe('T');
-    expect(plan.light.picks.map(p => p.name)).toEqual(['股2']);
+    expect(plan.light.picks.map(p => p.name)).toEqual(['股3']);
     expect(plan.light.notes.join('｜')).toContain('1 只缺竞价涨幅');
+  });
+});
+
+// === [2026-09-26] 第 2 名题材再补一条【优先规则】：龙一不是一字 → 直接买龙一 ===
+describe('pickSecondTopicBuy（第 2 名题材：龙一优先，龙一是一字才回退）', () => {
+  const secondTopic = (members) => {
+    const blocks = rankDecisionTopics(members);
+    return { blocks: blocks, blk: blocks.find(b => b.topic === 'T') };
+  };
+
+  it('龙一不是一字、且是【低开】→ 直接买龙一（不看竞价涨跌幅）', () => {
+    const { blocks, blk } = secondTopic(headTopic.concat([
+      E('股1', 'T', 90, false, true, -5),   // 龙一 低开
+      E('股2', 'T', 80, false, true, 6),    // 龙二 高开且涨幅更高，也不能抢龙一
+      E('股3', 'T', 70, false, true, 7)
+    ]));
+    const r = pickSecondTopicBuy(blk, rankDragons(blocks), POSITION_LIGHT);
+    expect(r.viaDragonOne).toBe(true);
+    expect(r.picks.map(p => p.name)).toEqual(['股1']);
+    expect(r.picks[0].dragonLabel).toBe('龙一');
+    expect(r.picks[0].position).toBe(POSITION_LIGHT);
+  });
+
+  it('龙一不是一字、竞价涨幅缺失 → 照样直接买龙一（不看竞价涨跌幅）', () => {
+    const { blocks, blk } = secondTopic(headTopic.concat([
+      E('股1', 'T', 90, false, true, null), // 龙一 缺竞价涨幅
+      E('股2', 'T', 80, false, true, 4)
+    ]));
+    const r = pickSecondTopicBuy(blk, rankDragons(blocks), POSITION_LIGHT);
+    expect(r.viaDragonOne).toBe(true);
+    expect(r.picks.map(p => p.name)).toEqual(['股1']);
+  });
+
+  it('龙一不是一字、本身就是高开 → 也是直接买龙一（规则不变形）', () => {
+    const { blocks, blk } = secondTopic(headTopic.concat([
+      E('股1', 'T', 90, false, true, 5),
+      E('股2', 'T', 80, false, true, 9)
+    ]));
+    const r = pickSecondTopicBuy(blk, rankDragons(blocks), POSITION_LIGHT);
+    expect(r.viaDragonOne).toBe(true);
+    expect(r.picks.map(p => p.name)).toEqual(['股1']);
+  });
+
+  it('龙一是一字（买不进）→ 回退：龙二低开、龙三高开、龙八高开 → 选名次更靠前的龙三', () => {
+    const { blocks, blk } = secondTopic(headTopic.concat([
+      E('股1', 'T', 90, true, true, 10),    // 龙一 = 一字
+      E('股2', 'T', 80, false, true, -1),   // 龙二 低开
+      E('股3', 'T', 70, false, true, 2),    // 龙三 高开 → 选它
+      E('股4', 'T', 60, false, true, -3), E('股5', 'T', 50, false, true, -4),
+      E('股6', 'T', 40, false, true, -5), E('股7', 'T', 30, false, true, -6),
+      E('股8', 'T', 20, false, true, 9)     // 龙八 高开且涨幅更高，但名次靠后
+    ]));
+    const r = pickSecondTopicBuy(blk, rankDragons(blocks), POSITION_LIGHT);
+    expect(r.viaDragonOne).toBe(false);
+    expect(r.dragonOneYizi).toBe(true);
+    expect(r.picks.map(p => p.name)).toEqual(['股3']);
+    expect(r.picks[0].dragonLabel).toBe('龙三');
+  });
+
+  it('题材内没有可判定的龙一（全是缺十日涨幅）→ 走回退规则', () => {
+    const { blocks, blk } = secondTopic(headTopic.concat([
+      E('股1', 'T', null, false, true, 5),
+      E('股2', 'T', null, false, true, 3)
+    ]));
+    const r = pickSecondTopicBuy(blk, rankDragons(blocks), POSITION_LIGHT);
+    expect(r.viaDragonOne).toBe(false);
+    expect(r.dragonOneYizi).toBe(false);
+    expect(r.picks.length).toBe(0);
+  });
+
+  it('buildBuyPlan 里落到 light 档：龙一低开也买龙一，并写明理由', () => {
+    const blocks = rankDecisionTopics(headTopic.concat([
+      E('股1', 'T', 90, false, true, -6),
+      E('股2', 'T', 80, false, true, 5)
+    ]));
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.light.block.topic).toBe('T');
+    expect(plan.light.picks.map(p => p.name)).toEqual(['股1']);
+    expect(plan.light.notes.join('｜')).toContain('直接买龙一');
   });
 });
 
