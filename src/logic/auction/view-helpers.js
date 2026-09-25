@@ -798,6 +798,18 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // 按「近10个交易日区间涨幅」降序，最高=龙一。
   // 数据来自 dragon-rank.js 的异步缓存（10日区间涨幅，猫抓 daily 一次批量请求 + 云端缓存省额度）；
   // 未加载/无数据时 dragonRankMap 为 null → 行上不显示徽章、组内保持原顺序，绝不阻塞渲染。
+  //
+  // [NOT-FORMAL-DRAGON 2026-09-25] 候选集必须 = 【当天正式列表】（_listedNames），与题材统计条 /
+  // 组间排序 / 行着色同源（§6 单一真相）。
+  //   为什么要这道过滤：renderList = auctionList + 注入行（观察组壳 / 龙头继承壳 / 补一字补入行），
+  //   注入行正是界面上「灰色股票名 + 灰色题材」的那些 —— 它们【不在当天正式列表里】，却同样能在
+  //   stock_range_pct 里查到十日涨幅。旧实现不过滤 ⇒ 灰行占掉龙一/龙二位次，把真龙一挤成龙二、
+  //   真龙二挤成龙三（用户 2026-09-25 反馈：9/16 电子/通信/算力 龙一被判成高开、
+  //   9/17 龙二被判成高开）。
+  //   ⚠️ 只过滤【龙位候选集】，不动 topicColorMap（底色）与渲染集合 —— 灰行仍照常渲染在组里，
+  //      只是不挂龙标、不占用名次（用户 2026-09-23 反馈「底色没了」的坑别再踩）。
+  //   §10：正式成员索引未就绪时 getTodayGroupList 退化为原始列表 → _listedNames 覆盖全量，
+  //       ⛔ 绝不把整列表判成「不在列表」（不会整片丢龙标）。
   let dragonRankMap = null;
   const _buildDragonRankMap = function(order) {
     if (!sortState.byTopic || !primaryTopicOfForColor) return null;
@@ -808,6 +820,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       const raw = renderList[i];
       const nm = raw && raw.stock ? String(raw.stock).trim() : '';
       if (!nm || !dragonPctMap.has(nm)) return;
+      if (!_listedNames.has(nm)) return;              // 灰行（不在当天正式列表）不占龙位
       const pct = dragonPctMap.get(nm).pct;
       if (pct === null || pct === undefined || isNaN(pct)) return;
       dragonEntries.push({ name: nm, topic: primaryTopicOfForColor(i), pct: pct });

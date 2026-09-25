@@ -139,6 +139,13 @@ export function rankDecisionTopics(entries) {
 
 /**
  * 题材内龙头排名（龙一 / 龙二 / …）—— 与早盘竞价龙一徽章同源（computeDragonRankMap）。
+ *
+ * [NOT-FORMAL-DRAGON 2026-09-25] 候选集 = 【计入统计的成员】：
+ *   · m.pct === null → 缺十日涨幅，排不进龙位（§10：绝不当 0 参与比较）；
+ *   · m.countable === false → 早盘竞价里画灰的行（如「昨日卖标签继承」的复盘行），
+ *     与题材数量 / 一字数的计数口径同源 —— 灰行不计数的同时也不该占龙位，
+ *     否则会出现「统计条说 5 只、龙一却是那只灰票」的错位（用户 2026-09-25 反馈的同类问题）。
+ *
  * @param {Array<object>} blocks rankDecisionTopics 的返回
  * @returns {Map<string,{rank:number, pct:number, topic:string, groupSize:number}>}
  */
@@ -149,6 +156,7 @@ export function rankDragons(blocks) {
     colored.add(b.topic);
     b.members.forEach(function(m) {
       if (m.pct === null) return;
+      if (m.countable === false) return;      // 灰色复盘行不占龙位（与计数口径同源）
       entries.push({ name: m.name, topic: b.topic, pct: m.pct });
     });
   });
@@ -323,6 +331,68 @@ function _isHighOpen(aucPct) {
 }
 
 /**
+ * 【龙头候选排序 · 2026-09-25】把一组行整理成「龙一 / 龙二 / …」有序候选（纯函数，本文件私有）。
+ *
+ * 排序依据的优先级（与早盘竞价龙标同一份排名，§6 单一真相）：
+ *   ① dragonMap 里的 rank（= computeDragonRankMap 的结果，早盘竞价行上那枚「龙一/龙二」徽章）；
+ *   ② 没有 rank 的（少数未进早盘竞价题材组的行）按【十日涨幅】降序排在有 rank 的后面；
+ *   ③ 仍相同 → 股票名，保证每次结果完全一致（不随机）。
+ *
+ * 剔除口径（与「题材数量 / 一字数」的计数口径同源）：
+ *   · 竞价一字 → 买不进，不占龙位；
+ *   · countable === false → 早盘竞价里画灰的行（昨日卖标签继承的复盘行）不占龙位；
+ *   · 十日涨幅缺失 → §10：绝不当 0 参与比较，直接排不进龙位。
+ *
+ * @param {Array<{name:string, pct:number|null, aucPct:number|null, isYiZi?:boolean,
+ *                countable?:boolean}>} rows
+ * @param {Map<string,{rank:number}>} dragon
+ * @returns {Array<{name:string, rank:number, pct:number|null, aucPct:number|null}>}
+ */
+function _rankCandidates(rows, dragon) {
+  const out = [];
+  (rows || []).forEach(function(r) {
+    if (!r || !r.name || r.isYiZi) return;                 // 一字买不进 → 不占龙位
+    if (r.countable === false) return;                     // 灰色复盘行不占龙位（与计数同源）
+    const pct = _num(r.pct);
+    if (pct === null) return;                              // §10：缺十日涨幅 → 排不进龙位
+    const d = dragon.get(r.name);
+    out.push({
+      name: r.name,
+      rank: (d && d.rank) ? d.rank : null,
+      pct: pct,
+      aucPct: _num(r.aucPct)
+    });
+  });
+  out.sort(function(a, b) {
+    const ra = (a.rank === null ? Number.MAX_SAFE_INTEGER : a.rank);
+    const rb = (b.rank === null ? Number.MAX_SAFE_INTEGER : b.rank);
+    if (ra !== rb) return ra - rb;
+    if (a.pct !== b.pct) return b.pct - a.pct;
+    return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+  });
+  return out.map(function(c, i) {
+    return { name: c.name, rank: c.rank || (i + 1), pct: c.pct, aucPct: c.aucPct };
+  });
+}
+
+/**
+ * 按题材名在【早盘竞价题材块】里找同名块。
+ * §6：龙一 / 龙二的排名人群必须与「早盘竞价龙标」完全一致 —— 题材连扳只负责决定
+ * 【选哪个题材】（数量最多），龙头名次本身仍归早盘竞价口径（否则同一题材会出现两套龙一）。
+ * @param {Array<object>} blocks rankDecisionTopics 的返回
+ * @param {string} topic
+ * @returns {object|null}
+ */
+function _findAuctionBlock(blocks, topic) {
+  const key = String(topic || '').trim();
+  if (!key || !blocks || blocks.length === 0) return null;
+  for (let i = 0; i < blocks.length; i++) {
+    if (String(blocks[i].topic || '').trim() === key) return blocks[i];
+  }
+  return null;
+}
+
+/**
  * 【无一字兜底买点 · 2026-09-25 用户口径】
  *
  * 触发条件（由 buildBuyPlan 判定）：当日【所有题材】的竞价一字都是 0 个 = 弱市。
@@ -331,6 +401,10 @@ function _isHighOpen(aucPct) {
  *   ② 取【股票数量最多】的题材 —— 数量并列时【并列的题材全都取】（用户举例：AI应用也是 3 只）；
  *   ③ 每个入选题材只看最靠前的两只（龙一 / 龙二），龙一 / 龙二 = 题材内【十日涨幅】排名
  *      （与早盘竞价龙一徽章同一口径 computeDragonRankMap）；
+ *      ⚠️ 排名人群是【该题材在早盘竞价里的全量成员】（opts.auctionTopicBlocks），
+ *         ⛔ 不是「题材连扳」那几只连板票的子集 —— 后者只是用来决定选哪个题材。
+ *         旧实现拿子集 ∩ 全量排名 ⇒ 题材真龙一（当天没连板）被跳过、名次整体前移
+ *         （2026-09-25 事故：9/16 电子/通信/算力 龙一被判成澳弘电子而非超声电子）；
  *   ④ 最终只留【竞价高开】的票：
  *        龙一低开 + 龙二高开 → 只买龙二；
  *        两只都高开           → 两只都买；
@@ -342,8 +416,11 @@ function _isHighOpen(aucPct) {
  * @param {Array<{topic:string, count:number,
  *                rows:Array<{name:string, pct:number|null, aucPct:number|null, isYiZi:boolean}>}>} topicGroups
  *        连板天梯「题材连扳」的分组（⛔ 直接由 ladder-collect 采集，与天梯看板显示完全一致）
- * @param {{dragonMap?:Map, ladderReady?:boolean, ladderReason?:string}} [opts]
+ * @param {{dragonMap?:Map, ladderReady?:boolean, ladderReason?:string,
+ *          auctionTopicBlocks?:Array}} [opts]
  *        ladderReady=false 表示连板数据没加载（§10：如实报「未就绪」，绝不退化成「今天没有连板股」）
+ *        auctionTopicBlocks = 早盘竞价的题材块（rankDecisionTopics 的返回）—— 龙一 / 龙二的
+ *        【排名人群】，⛔ 不传就只能退回「题材连扳」子集自排（会与早盘竞价龙标分叉）
  * @returns {{mode:string, qualified:boolean, emptyText:string, hintText:string, blocks:Array, notes:string[]}}
  */
 export function buildNoYiziPlan(topicGroups, opts) {
@@ -396,23 +473,10 @@ export function buildNoYiziPlan(topicGroups, opts) {
 
   let totalPicks = 0;
   winners.forEach(function(g) {
-    // ② 题材内按【龙头顺序】（龙一 → 龙二 → …）取最靠前的两只，一字跳过（买不进）
-    const cand = [];
-    (g.rows || []).forEach(function(r) {
-      if (!r || !r.name || r.isYiZi) return;
-      const d = dragon.get(r.name);
-      if (!d || !d.rank) return;                       // 没有十日涨幅 → 排不进龙一/龙二（§10）
-      cand.push({
-        name: r.name,
-        rank: d.rank,
-        pct: _num(r.pct),
-        aucPct: _num(r.aucPct)
-      });
-    });
-    cand.sort(function(a, b) {
-      if (a.rank !== b.rank) return a.rank - b.rank;
-      return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
-    });
+    // ② 龙一 / 龙二 = 该题材【在早盘竞价口径下】的龙头前两名（与早盘竞价龙标同一份排名）。
+    //    题材连扳只用来决定「选哪个题材」，不用来决定名次。找不到同名题材块才退回组内自排（§10 不猜）。
+    const blk = _findAuctionBlock(o.auctionTopicBlocks, g.topic);
+    const cand = _rankCandidates(blk ? blk.members : (g.rows || []), dragon);
     const top = cand.slice(0, NO_YIZI_PICK_COUNT);
     const d1 = top[0] || null;
     const d2 = top[1] || null;
@@ -420,6 +484,9 @@ export function buildNoYiziPlan(topicGroups, opts) {
     const notes = [];
     let picks = [];
     let unknownCount = 0;
+    if (!blk) {
+      notes.push('该题材在早盘竞价题材分组里没有同名题材 → 龙一 / 龙二 暂按「题材连扳」成员排名（§10 不猜）');
+    }
     if (d1 && d1.aucPct === null) unknownCount++;
     if (d2 && d2.aucPct === null) unknownCount++;
 
@@ -484,6 +551,7 @@ export function buildNoYiziPlan(topicGroups, opts) {
  * @param {{ladderTopicGroups?:Array, ladderReady?:boolean, ladderReason?:string}} [opts]
  *        【无一字兜底】要用的连板天梯「题材连扳」分组（只有「全部题材一字 = 0」时才用得上；
  *        由 decision-collect 采集后传进来，本文件保持纯函数、不碰数据源）
+ *        ⓘ 龙一 / 龙二的排名人群用的是 blocks 自身（早盘竞价题材组），无需额外传参
  * @returns {{heavy:object|null, light:object|null, noYizi:object|null}}
  *          heavy = 第 1 名题材的方案；light = 第 2 名题材的方案；
  *          noYizi = 「全部题材竞价一字 = 0」时的弱市兜底方案（三者互斥：noYizi 非空时前两者必为 null）。
@@ -507,7 +575,9 @@ export function buildBuyPlan(blocks, dragonMap, opts) {
       noYizi: buildNoYiziPlan(o.ladderTopicGroups || [], {
         dragonMap: dragonMap,
         ladderReady: o.ladderReady,
-        ladderReason: o.ladderReason
+        ladderReason: o.ladderReason,
+        // 龙一 / 龙二的排名人群 = 早盘竞价题材组（blocks 自身），⛔ 不是「题材连扳」的子集
+        auctionTopicBlocks: list
       })
     };
   }
@@ -704,7 +774,8 @@ export function buildRulesLines() {
     '　　全部记【' + POSITION_LIGHT + '】（没有一字，强度打折）。',
     '　　题材连扳里股票最多的题材【不足 ' + NO_YIZI_MIN_TOPIC_COUNT + ' 只】→ 【空仓】（太弱，不参与）。',
     '　　缺竞价涨幅的票【不算高开】，会如实说明有几只未纳入（§10 不猜）。',
-    '　龙一 / 龙二 = 题材内【十日涨幅】从高到低，与早盘竞价龙一徽章同一口径。',
+    '　龙一 / 龙二 = 题材内【十日涨幅】从高到低，与早盘竞价龙一徽章同一口径',
+    '　（只在【当日正式列表】的股票里排：灰色名称 / 灰色题材的继承行不占龙位）。',
     '　重仓与轻仓混在同一个题材块里，序号连续，仓位写在每行行尾。',
     '【题材行的数据】题材名右边依次是：实心红圆点（里面的数字 = 题材排名）｜数量：n（股票只数）｜竞价一字：n。',
     '【卖点】候选 = 昨日打过「买」标签的股票，卖出时点写在每行行尾：',

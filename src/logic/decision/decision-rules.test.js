@@ -95,6 +95,34 @@ describe('rankDecisionTopics', () => {
   });
 });
 
+// === [NOT-FORMAL-DRAGON 2026-09-25] 龙一 / 龙二 的位次口径 ===
+// 事故现场：9/16 电子/通信/算力 真龙一 = 超声电子（低开）、龙二 = 澳弘电子（高开），
+//   决策看板却把「高开的那只」判成龙一；9/17 真龙二 = 超声电子（低开）被判成高开。
+//   根因：龙位候选集没被「当日正式列表 / 计入统计的行」约束 ⇒ 灰行（继承壳、复盘行）
+//   占了名次，把真龙一 / 真龙二往后挤。
+describe('rankDragons（龙一 / 龙二 位次口径）', () => {
+  it('countable=false 的灰色复盘行【不占龙位】（与题材计数同源）', () => {
+    // 「复盘」十日涨幅最高，但它是昨日卖标签继承的复盘行 → 不计数、也不该当龙一
+    const blocks = rankDecisionTopics([
+      E('复盘', 'T1', 99, false, false), E('真龙一', 'T1', 30), E('真龙二', 'T1', 20)
+    ]);
+    const dragon = rankDragons(blocks);
+    expect(dragon.get('复盘')).toBeUndefined();
+    expect(dragon.get('真龙一').rank).toBe(1);
+    expect(dragon.get('真龙二').rank).toBe(2);
+  });
+
+  it('缺十日涨幅的行排不进龙位（§10 绝不当 0 参与比较）', () => {
+    const blocks = rankDecisionTopics([
+      E('缺涨幅', 'T1', null), E('甲', 'T1', 30), E('乙', 'T1', 20)
+    ]);
+    const dragon = rankDragons(blocks);
+    expect(dragon.get('缺涨幅')).toBeUndefined();
+    expect(dragon.get('甲').rank).toBe(1);
+    expect(dragon.get('乙').rank).toBe(2);
+  });
+});
+
 describe('pickBuyable（跳过一字）', () => {
   it('龙一是一字 → 跳过，买龙二 + 龙三', () => {
     const blocks = rankDecisionTopics([
@@ -358,6 +386,50 @@ describe('buildNoYiziPlan（连板天梯 · 题材连扳）', () => {
     expect(plan.blocks[0].reason).toContain('股票数量最多');
     expect(plan.blocks[0].reason).toContain('3 只');
     expect(plan.blocks[0].reason).toContain('竞价高开');
+  });
+
+  // === [NOT-FORMAL-DRAGON 2026-09-25] 龙一 / 龙二 的排名人群 = 早盘竞价题材组 ===
+  // 题材连扳（连板票子集）只负责决定【选哪个题材】；名次本身必须回到早盘竞价口径，
+  // 否则「真龙一当天没连板」就会被跳过，龙二被顶成龙一（9/16 电子/通信/算力 事故）。
+  it('龙一当天没连板（不在题材连扳里）也不能被跳过 → 名次仍按早盘竞价口径', () => {
+    // 题材连扳 T1 只有 B / C / D 三只连板票；真龙一 A 当天没连板，不在这个子集里
+    const groups = [G('T1', [['B', 20, 3], ['C', 10, 4], ['D', 5, -1]])];
+    const blocks = rankDecisionTopics([
+      E('A', 'T1', 30, false, true, -2),   // 龙一：低开
+      E('B', 'T1', 20, false, true, 3),    // 龙二：高开
+      E('C', 'T1', 10, false, true, 4),
+      E('D', 'T1', 5, false, true, -1)
+    ]);
+    const plan = buildNoYiziPlan(groups, {
+      dragonMap: rankDragons(blocks), ladderReady: true, auctionTopicBlocks: blocks
+    });
+    expect(plan.blocks[0].picks.map(p => p.name)).toEqual(['B']);   // 龙一低开 + 龙二高开 → 只买龙二
+    expect(plan.blocks[0].notes.join('｜')).toContain('龙二【竞价高开】');
+    expect(plan.blocks[0].notes.join('｜')).not.toContain('没有同名题材');
+  });
+
+  it('龙一高开 + 龙二低开 → 只买龙一（龙二是否在题材连扳里不影响名次）', () => {
+    const groups = [G('T1', [['A', 30, 5], ['C', 10, 4], ['D', 5, 3]])];
+    const blocks = rankDecisionTopics([
+      E('A', 'T1', 30, false, true, 5),    // 龙一：高开
+      E('B', 'T1', 20, false, true, -1),   // 龙二：低开（当天没连板，不在题材连扳里）
+      E('C', 'T1', 10, false, true, 4),
+      E('D', 'T1', 5, false, true, 3)
+    ]);
+    const plan = buildNoYiziPlan(groups, {
+      dragonMap: rankDragons(blocks), ladderReady: true, auctionTopicBlocks: blocks
+    });
+    expect(plan.blocks[0].picks.map(p => p.name)).toEqual(['A']);
+    expect(plan.blocks[0].notes.join('｜')).toContain('龙一【竞价高开】');
+  });
+
+  it('找不到同名题材块 → 退回「题材连扳」成员自排，并如实说明（§10 不猜）', () => {
+    const groups = [G('T9', [['A', 30, 5], ['B', 20, -1], ['C', 10, 2]])];
+    const plan = buildNoYiziPlan(groups, {
+      dragonMap: new Map(), ladderReady: true, auctionTopicBlocks: []
+    });
+    expect(plan.blocks[0].picks.map(p => p.name)).toEqual(['A']);
+    expect(plan.blocks[0].notes.join('｜')).toContain('没有同名题材');
   });
 });
 
