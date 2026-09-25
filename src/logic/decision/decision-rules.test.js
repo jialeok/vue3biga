@@ -15,9 +15,11 @@ import {
   pickBuyable,
   pickLadder,
   buildBuyPlan,
+  buildNoYiziPlan,
   buildSellPlan,
   buildRulesLines,
   formatRangePct,
+  NO_YIZI_MIN_TOPIC_COUNT,
   SELL_TIME_CLOSE,
   SELL_TIME_MIDDAY,
   POSITION_HEAVY,
@@ -198,16 +200,26 @@ describe('buildBuyPlan', () => {
     expect(plan.heavy.notes.join('｜')).toContain('1 只');
   });
 
-  it('第 1 名题材一字 0 个 → 不达门槛，只展示数据不给建议', () => {
+  it('【全部题材】一字 0 个 → 不走常规档位，改走弱市兜底（plan.noYizi）', () => {
     const blocks = rankDecisionTopics([
       E('a1', 'T1', 10), E('a2', 'T1', 9), E('a3', 'T1', 8),
       E('b1', 'T2', 5), E('b2', 'T2', 4)
     ]);
-    const plan = buildBuyPlan(blocks, rankDragons(blocks));
-    expect(plan.heavy.mode).toBe('none');
-    expect(plan.heavy.qualified).toBe(false);
-    expect(plan.heavy.picks.length).toBe(0);
-    expect(plan.heavy.notQualifiedText).toContain('未达买入条件');
+    const plan = buildBuyPlan(blocks, rankDragons(blocks), { ladderReady: true, ladderTopicGroups: [] });
+    expect(plan.heavy).toBe(null);
+    expect(plan.light).toBe(null);
+    expect(plan.noYizi).not.toBe(null);
+    expect(plan.noYizi.mode).toBe('noYizi');
+  });
+
+  it('只要有任何一个题材有一字 → 兜底方案必须为 null（两条规则互斥）', () => {
+    const blocks = rankDecisionTopics([
+      E('a1', 'T1', 10, true), E('a2', 'T1', 9), E('a3', 'T1', 8),
+      E('b1', 'T2', 5), E('b2', 'T2', 4)
+    ]);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks), { ladderReady: true, ladderTopicGroups: [] });
+    expect(plan.noYizi).toBe(null);
+    expect(plan.heavy).not.toBe(null);
   });
 
   it('理由文案：题材排第几 + 股票数量 + 一字数', () => {
@@ -215,6 +227,137 @@ describe('buildBuyPlan', () => {
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
     expect(plan.heavy.reason).toBe('题材排第一，股票数量4只，2个竞价一字');
     expect(plan.light.reason).toBe('题材排第二，股票数量2只，0个竞价一字');
+  });
+});
+
+// === [NO-YIZI 2026-09-25] 「全部题材竞价一字 0 个」的弱市兜底规则 ===
+describe('buildNoYiziPlan（连板天梯 · 题材连扳）', () => {
+  /** 造一个「题材连扳」分组：G(题材, [[名, 十日涨幅, 竞价涨幅%, 是否一字], ...]) */
+  function G(topic, rows) {
+    return {
+      topic: topic,
+      count: rows.length,
+      rows: rows.map(function(r) {
+        return { name: r[0], pct: r[1], aucPct: (r[2] === null ? null : r[2]), isYiZi: !!r[3] };
+      })
+    };
+  }
+  /** 造龙头排名：D(名1, 名2, ...) → 依次是龙一 / 龙二 / … */
+  function D() {
+    const m = new Map();
+    Array.prototype.slice.call(arguments).forEach(function(n, i) { m.set(n, { rank: i + 1 }); });
+    return m;
+  }
+
+  it('取【股票数量最多】的题材：龙一低开 + 龙二高开 → 只买龙二（轻仓）', () => {
+    const groups = [
+      G('T1', [['A', 30, -2], ['B', 20, 3], ['C', 10, 5]]),   // 3 只（最多）
+      G('T2', [['D', 9, 4], ['E', 8, 4]])                       // 2 只
+    ];
+    const plan = buildNoYiziPlan(groups, { dragonMap: D('A', 'B', 'C'), ladderReady: true });
+    expect(plan.blocks.length).toBe(1);
+    expect(plan.blocks[0].block.topic).toBe('T1');
+    expect(plan.blocks[0].block.count).toBe(3);
+    expect(plan.blocks[0].picks.map(p => p.name)).toEqual(['B']);
+    expect(plan.blocks[0].picks[0].dragonLabel).toBe('龙二');
+    expect(plan.blocks[0].picks[0].position).toBe(POSITION_LIGHT);
+    expect(plan.blocks[0].notes.join('｜')).toContain('只买高开的龙二');
+  });
+
+  it('龙一 / 龙二【都高开】→ 两只都买', () => {
+    const groups = [G('T1', [['A', 30, 2], ['B', 20, 5], ['C', 10, -1]])];
+    const plan = buildNoYiziPlan(groups, { dragonMap: D('A', 'B', 'C'), ladderReady: true });
+    expect(plan.blocks[0].picks.map(p => p.name)).toEqual(['A', 'B']);
+    expect(plan.blocks[0].picks.map(p => p.position)).toEqual([POSITION_LIGHT, POSITION_LIGHT]);
+    expect(plan.blocks[0].picks.map(p => p.seq)).toEqual([1, 2]);
+  });
+
+  it('龙一 / 龙二【都低开】→ 只买龙一', () => {
+    const groups = [G('T1', [['A', 30, -3], ['B', 20, -1], ['C', 10, 6]])];
+    const plan = buildNoYiziPlan(groups, { dragonMap: D('A', 'B', 'C'), ladderReady: true });
+    expect(plan.blocks[0].picks.map(p => p.name)).toEqual(['A']);
+    expect(plan.blocks[0].notes.join('｜')).toContain('只买龙一');
+  });
+
+  it('数量【并列】→ 并列的题材全都选票（用户举例：AI应用也是 3 只）', () => {
+    const groups = [
+      G('T1', [['A', 30, 2], ['B', 20, 2], ['C', 10, 2]]),
+      G('T2', [['D', 29, 4], ['E', 19, -1], ['F', 9, 4]]),
+      G('T3', [['G', 5, 9]])
+    ];
+    const plan = buildNoYiziPlan(groups, {
+      dragonMap: D('A', 'B', 'C', 'D', 'E', 'F', 'G'),
+      ladderReady: true
+    });
+    expect(plan.blocks.map(b => b.block.topic)).toEqual(['T1', 'T2']);
+    expect(plan.blocks[0].picks.map(p => p.name)).toEqual(['A', 'B']);  // 龙一 / 龙二 都高开 → 都买
+    expect(plan.blocks[1].picks.map(p => p.name)).toEqual(['D']);       // 龙一高开、龙二低开 → 只买龙一
+    expect(plan.notes.join('｜')).toContain('并列最多');
+  });
+
+  it('题材连扳里股票最多的题材【不足 ' + 3 + ' 只】→ 空仓（太弱）', () => {
+    const groups = [G('T1', [['A', 30, 5], ['B', 20, 5]])];
+    const plan = buildNoYiziPlan(groups, { dragonMap: D('A', 'B'), ladderReady: true });
+    expect(NO_YIZI_MIN_TOPIC_COUNT).toBe(3);
+    expect(plan.qualified).toBe(false);
+    expect(plan.blocks.length).toBe(0);
+    expect(plan.emptyText).toContain('空仓');
+    expect(plan.emptyText).toContain('不足 3 只');
+  });
+
+  it('连板天梯数据未就绪 → 如实报「未就绪」，⛔ 不退化成「今天没有连板梯队」', () => {
+    const plan = buildNoYiziPlan([], { dragonMap: new Map(), ladderReady: false, ladderReason: '连板数据尚未加载完成' });
+    expect(plan.qualified).toBe(false);
+    expect(plan.emptyText).toContain('未就绪');
+    expect(plan.emptyText).toContain('连板数据尚未加载完成');
+    expect(plan.emptyText).not.toContain('空仓');
+  });
+
+  it('缺竞价涨幅【不算高开】，并如实说明有几只未纳入（§10 不猜）', () => {
+    const groups = [G('T1', [['A', 30, null], ['B', 20, 3], ['C', 10, 1]])];
+    const plan = buildNoYiziPlan(groups, { dragonMap: D('A', 'B', 'C'), ladderReady: true });
+    expect(plan.blocks[0].picks.map(p => p.name)).toEqual(['B']);
+    expect(plan.blocks[0].notes.join('｜')).toContain('缺竞价涨幅');
+  });
+
+  it('题材里只有龙一（缺十日涨幅排不出龙二）→ 仍按规则只买龙一，不静默空手', () => {
+    const groups = [G('T1', [['A', 30, -1], ['无涨幅', null, 8], ['C', null, 8]])];
+    const plan = buildNoYiziPlan(groups, { dragonMap: D('A'), ladderReady: true });
+    expect(plan.blocks[0].picks.map(p => p.name)).toEqual(['A']);
+    expect(plan.blocks[0].notes.join('｜')).toContain('无龙二');
+  });
+
+  it('完全排不出龙一 / 龙二（全员缺十日涨幅）→ 不选票，如实说明', () => {
+    const groups = [G('T1', [['A', null, 5], ['B', null, 5], ['C', null, 5]])];
+    const plan = buildNoYiziPlan(groups, { dragonMap: new Map(), ladderReady: true });
+    expect(plan.qualified).toBe(false);
+    expect(plan.blocks[0].picks.length).toBe(0);
+    expect(plan.blocks[0].notes.join('｜')).toContain('缺十日涨幅');
+    expect(plan.emptyText).toContain('空仓');
+  });
+
+  it('「其它」题材不参与（与全局题材口径一致）', () => {
+    // 其它 有 4 只（最多）但被排除 → 最多的是 T1（3 只）
+    const groups = [
+      G('其它', [['X', 90, 9], ['Y', 80, 9], ['Z', 70, 9], ['W', 60, 9]]),
+      G('T1', [['A', 30, 2], ['B', 20, 2], ['C', 10, 2]])
+    ];
+    const plan = buildNoYiziPlan(groups, { dragonMap: D('A', 'B', 'C'), ladderReady: true });
+    expect(plan.blocks.map(b => b.block.topic)).toEqual(['T1']);
+  });
+
+  it('一字票买不进 → 直接跳过（龙一是一字时由后面的票顶上）', () => {
+    const groups = [G('T1', [['A', 30, 10, true], ['B', 20, 3], ['C', 10, 4]])];
+    const plan = buildNoYiziPlan(groups, { dragonMap: D('A', 'B', 'C'), ladderReady: true });
+    expect(plan.blocks[0].picks.map(p => p.name)).toEqual(['B', 'C']);
+  });
+
+  it('题材下面那行小字要写清「为什么选它」（数量最多 + 只买高开）', () => {
+    const groups = [G('T1', [['A', 30, 1], ['B', 20, 1], ['C', 10, 1]])];
+    const plan = buildNoYiziPlan(groups, { dragonMap: D('A', 'B', 'C'), ladderReady: true });
+    expect(plan.blocks[0].reason).toContain('股票数量最多');
+    expect(plan.blocks[0].reason).toContain('3 只');
+    expect(plan.blocks[0].reason).toContain('竞价高开');
   });
 });
 
@@ -344,6 +487,17 @@ describe('buildRulesLines（灰色问号里的规则说明）', () => {
     expect(text).toContain('实心红圆点');                    // 题材行的排名圆点说明
     expect(text).toContain('排第 2');                        // 第 2 名 + 只有 1 个一字的例外
     expect(text).toContain('只有龙一');
+  });
+
+  it('规则说明必须覆盖【无一字弱市兜底 ⑤】（连板天梯 · 题材连扳）', () => {
+    const text = lines.join('\n');
+    expect(text).toContain('连板天梯');
+    expect(text).toContain('股票数量最多');
+    expect(text).toContain('并列');
+    expect(text).toContain('两只都高开');
+    expect(text).toContain('两只都低开');
+    expect(text).toContain('空仓');
+    expect(text).toContain('不足 ' + NO_YIZI_MIN_TOPIC_COUNT + ' 只');
   });
 
   it('规则文案里不再出现「建议」二字（用户要求：直接写重仓/轻仓、几点卖）', () => {

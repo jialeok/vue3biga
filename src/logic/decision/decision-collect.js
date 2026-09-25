@@ -24,6 +24,10 @@ import { getDragonLeadersForDisplay } from '../auction/dragon-group.js';
 import { getPrevSoldInheritedSet } from '../auction/inherited-sold.js';
 import { _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
+// [NO-YIZI 2026-09-25] 「全部题材竞价一字 0 个」的弱市兜底要读【连板天梯 · 题材连扳】的分组。
+// ⛔ 直接复用 ladder-collect 的采集结果（0 请求、纯内存），而不是在这里另写一遍分组：
+//    另写必然与天梯看板显示分叉 —— 用户是照着天梯看板的题材数去数的（§6 单一真相）。
+import { collectLadderData } from '../ladder/ladder-collect.js';
 import {
   rankDecisionTopics,
   rankDragons,
@@ -34,7 +38,27 @@ import {
 } from './decision-rules.js';
 
 function _notReady(reason) {
-  return { ready: false, reason: reason, topics: [], buy: { heavy: null, light: null }, sell: [], sellTimes: [] };
+  return {
+    ready: false,
+    reason: reason,
+    topics: [],
+    buy: { heavy: null, light: null, noYizi: null },
+    sell: [],
+    sellTimes: []
+  };
+}
+
+/**
+ * 「连板天梯 · 题材连扳」的分组（只在【全部题材竞价一字 = 0】时才需要，懒采集）。
+ * §10：采集失败 / 未就绪必须原样上报，绝不能退化成「今天没有连板梯队」。
+ */
+function _ladderTopicGroups(date) {
+  try {
+    const d = collectLadderData(date);
+    return { ready: !!d.ready, groups: d.topicGroups || [], reason: d.ready ? '' : (d.reason || '') };
+  } catch (e) {
+    return { ready: false, groups: [], reason: (e && e.message) ? e.message : '连板天梯计算失败' };
+  }
 }
 
 /** 昨日打过「买」标签的股票名集合（标签只继承一天，所以只看【前一日】） */
@@ -110,7 +134,16 @@ export function collectDecisionData(date) {
   if (topics.length === 0) return _notReady('当日没有成组的题材（题材至少 2 只才成组）');
 
   const dragonMap = rankDragons(topics);
-  const buy = buildBuyPlan(topics, dragonMap);
+
+  // [NO-YIZI 2026-09-25] 只有「全部题材竞价一字 = 0」时才去采连板天梯分组（弱市兜底规则要用）。
+  // 平时不采 —— 白跑一次全量行的归堆没意义（§36 性能红线）。
+  const totalYizi = topics.reduce(function(n, b) { return n + (Number(b.yiziCount) || 0); }, 0);
+  const ladder = totalYizi === 0 ? _ladderTopicGroups(date) : null;
+  const buy = buildBuyPlan(topics, dragonMap, {
+    ladderTopicGroups: ladder ? ladder.groups : [],
+    ladderReady: ladder ? ladder.ready : false,
+    ladderReason: ladder ? ladder.reason : ''
+  });
 
   // 昨日龙头名册（= 前一交易日评选出的龙头）：Map<name,{topic,pct,groupSize,code}>
   // ⛔ 未加载时【传 null】而不是空 Set：空 Set 会让规则层把「还没拉到」判定成「昨日非龙头」（§10）。

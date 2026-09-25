@@ -58,20 +58,49 @@
           <div class="decision-section-title buy">
             买点
           </div>
-          <DecisionBuyBlock
-            v-if="buyHeavy"
-            :block="buyHeavy"
-          />
-          <DecisionBuyBlock
-            v-if="buyLight"
-            :block="buyLight"
-          />
-          <div
-            v-if="!buyHeavy && !buyLight"
-            class="decision-empty"
-          >
-            当日没有成组的题材，无法给出买点
-          </div>
+          <!-- [NO-YIZI 2026-09-25] 当日全部题材竞价一字 0 个 → 弱市兜底：
+               改看连板天梯「题材连扳」，取股票数量最多的题材的龙一 / 龙二，只留竞价高开的票（全轻仓）。
+               与下面的常规档位互斥：有它就不走「第 1 / 第 2 名题材」。 -->
+          <template v-if="buyNoYizi">
+            <div class="dcb-noyizi-hint">
+              {{ buyNoYizi.hintText }}
+            </div>
+            <div
+              v-for="(n, i) in buyNoYizi.notes"
+              :key="'ny-note-' + i"
+              class="dcb-block-note"
+            >
+              {{ n }}
+            </div>
+            <div
+              v-if="!buyNoYizi.qualified"
+              class="dcb-block-note unqualified"
+            >
+              {{ buyNoYizi.emptyText }}
+            </div>
+            <DecisionBuyBlock
+              v-for="b in buyNoYizi.blocks"
+              :key="'ny-' + b.block.topic"
+              :block="b"
+            />
+          </template>
+
+          <template v-else>
+            <DecisionBuyBlock
+              v-if="buyHeavy"
+              :block="buyHeavy"
+            />
+            <DecisionBuyBlock
+              v-if="buyLight"
+              :block="buyLight"
+            />
+            <div
+              v-if="!buyHeavy && !buyLight"
+              class="decision-empty"
+            >
+              当日没有成组的题材，无法给出买点
+            </div>
+          </template>
         </div>
 
         <!-- 蚂蚁线分隔（与早盘竞价观察组同款视觉语言） -->
@@ -116,6 +145,7 @@ const {
   reasonText,
   buyHeavy,
   buyLight,
+  buyNoYizi,
   sellGroups,
   summaryText,
   toggleExpand

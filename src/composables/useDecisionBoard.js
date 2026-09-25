@@ -16,7 +16,14 @@ import { collectDecisionData } from '../logic/decision/decision-collect.js';
 
 /** §10：任何一次计算失败都要【可见】，绝不静默成「今天没有信号」 */
 function _empty(reason) {
-  return { ready: false, reason: reason, topics: [], buy: { heavy: null, light: null }, sell: [], sellTimes: [] };
+  return {
+    ready: false,
+    reason: reason,
+    topics: [],
+    buy: { heavy: null, light: null, noYizi: null },
+    sell: [],
+    sellTimes: []
+  };
 }
 
 export function useDecisionBoard() {
@@ -53,9 +60,15 @@ export function useDecisionBoard() {
 
   const buyHeavy = computed(() => (data.value.buy ? data.value.buy.heavy : null));
   const buyLight = computed(() => (data.value.buy ? data.value.buy.light : null));
+  // [NO-YIZI 2026-09-25] 「全部题材竞价一字 0 个」的弱市兜底方案；与 heavy / light 互斥
+  const buyNoYizi = computed(() => (data.value.buy ? data.value.buy.noYizi : null));
   const sellGroups = computed(() => data.value.sell || []);
 
   const buyCount = computed(function() {
+    const n = buyNoYizi.value;
+    if (n) {
+      return n.blocks.reduce(function(s, b) { return s + b.picks.length; }, 0);
+    }
     const h = buyHeavy.value;
     const l = buyLight.value;
     return (h && h.qualified ? h.picks.length : 0) + (l ? l.picks.length : 0);
@@ -66,6 +79,9 @@ export function useDecisionBoard() {
 
   const summaryText = computed(function() {
     if (!ready.value) return reasonText.value;
+    // 弱市兜底判定为「太弱」→ 头部直接写【空仓】，比「无买卖信号」更贴合用户口径
+    const n = buyNoYizi.value;
+    if (n && !n.qualified && sellCount.value === 0) return '空仓（题材太弱）';
     if (buyCount.value === 0 && sellCount.value === 0) return '今日无买卖信号';
     return '买' + buyCount.value + ' 卖' + sellCount.value;
   });
@@ -95,6 +111,7 @@ export function useDecisionBoard() {
     reasonText,
     buyHeavy,
     buyLight,
+    buyNoYizi,
     sellGroups,
     buyCount,
     sellCount,

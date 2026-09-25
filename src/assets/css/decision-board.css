@@ -184,6 +184,19 @@
             font-weight: 700;
         }
 
+        /* [NO-YIZI 2026-09-25] 「全部题材竞价一字 0 个」弱市兜底的说明行 ——
+           用琥珀色的提示底，和常规题材块（灰底 #f8fafc）区分开：这条是【另一套规则】在起作用。 */
+        .dcb-noyizi-hint {
+            margin: 0 0 6px;
+            padding: 5px 8px;
+            font-size: 11px;
+            line-height: 1.5;
+            color: #92400e;
+            background: #fffbeb;
+            border: 1px solid #fde68a;
+            border-radius: 8px;
+        }
+
         .dcb-reason-line {
             margin: 2px 0 4px;
             font-size: 11px;
@@ -261,12 +274,16 @@
             white-space: nowrap;
         }
 
-        /* ---- 灰色小问号 + 规则面板 ---- */
+        /* ---- 灰色小问号 + 规则面板 ----
+           [2026-09-25 用户反馈] 问号原来紧贴「决策」两个字，想点横条展开/收起时老是误触到问号。
+           这里把它往右推开 16px（叠加 .decision-header 的 8px gap = 约 24px，≈ 一个三角按钮的宽度），
+           让「决策」标题周围留出一条纯展开区；面板是绝对定位，位移不影响它的展开位置。 */
         .dcb-rules {
             position: relative;
             flex-shrink: 0;
             display: inline-flex;
             align-items: center;
+            margin-left: 16px;
         }
 
         .dcb-rules-q {
