@@ -1028,16 +1028,21 @@ function _appendLowOpenDragonOneNote(blockObj) {
  *   ③ 谁的数量多就选谁；天梯那边更多 → 改成选天梯第一那个题材，仍按原规则选票。
  *      例（9/3）：第 2 名 = 大消费 7 只；天梯第一 = AI应用 4 只 → 回早盘竞价比：
  *      大消费 7 ＜ AI应用 10 ⇒ 改选 AI应用（若 AI应用 更少则沿用原规则）。
+ *   ⛔【同题材不重复入选（2026-09-26 用户口径）】若天梯第一的题材【已经】被前面的档位选中了
+ *     （9/8：第 1 名是大消费，天梯第一也还是大消费），这次对比【没有价值】→ 不做替换，
+ *     回到原来的第 2 名题材（农业）选龙一轻仓。
  * §10：连板天梯未就绪 → 如实说明「未做对比」，沿用原规则（绝不猜）。
  *
  * @param {Array} blocks 早盘竞价题材块（rankDecisionTopics 的返回）
  * @param {object} second 第 2 名题材块
  * @param {{ladderTopicGroups?:Array, ladderReady?:boolean, ladderReason?:string}} opts
+ * @param {Array<string>} [excludeTopics] 已经入选的题材名（⛔ 不允许重复出现在买点里）
  * @returns {{block:object|null, notes:string[], replaced:boolean}}
  */
-export function resolveSecondTopicByLadder(blocks, second, opts) {
+export function resolveSecondTopicByLadder(blocks, second, opts, excludeTopics) {
   const o = opts || {};
   const notes = [];
+  const used = new Set((excludeTopics || []).filter(Boolean).map(function(t) { return String(t).trim(); }));
   if (!second) return { block: null, notes: notes, replaced: false };
   if (o.ladderReady === false) {
     notes.push('连板天梯数据未就绪' + (o.ladderReason ? '（' + o.ladderReason + '）' : '') +
@@ -1056,6 +1061,12 @@ export function resolveSecondTopicByLadder(blocks, second, opts) {
              String(g.topic) < String(top.topic)) top = g;      // 并列 → 题材名稳定
   });
   if (!top || String(top.topic).trim() === String(second.topic).trim()) {
+    return { block: second, notes: notes, replaced: false };
+  }
+  // ⛔ 同题材不重复入选：天梯第一的题材已经在买点里了 → 这次对比没有价值，不做替换
+  if (used.has(String(top.topic).trim())) {
+    notes.push('连板天梯里数量最多的题材「' + top.topic + '」【已经在买点里了】→ 同题材不重复入选，' +
+      '本次对比无意义，沿用第 2 名题材「' + second.topic + '」');
     return { block: second, notes: notes, replaced: false };
   }
   const blk = _findAuctionBlock(blocks, top.topic);
@@ -1210,7 +1221,8 @@ export function buildBuyPlan(blocks, dragonMap, opts) {
   let lightBlock = second;
   let replaced = false;
   if (second && second.yiziCount === 1) {
-    const rs = resolveSecondTopicByLadder(list, second, o);
+    // ⛔ 已入选的题材（第 1 名题材）传进去：天梯第一若是它 → 不做替换（同题材不重复入选）
+    const rs = resolveSecondTopicByLadder(list, second, o, [first ? first.topic : null]);
     lightBlock = rs.block || second;
     replaced = rs.replaced;
     rs.notes.forEach(function(n) { lightNotes.push(n); });
@@ -1232,7 +1244,7 @@ export function buildBuyPlan(blocks, dragonMap, opts) {
       }
     }
   }
-  const light = lightBlock ? {
+  let light = lightBlock ? {
     block: lightBlock,
     rankWord: replaced ? '' : '第二',
     // 题材下面的小字说明带上 ④ 的两条先后规则，用户对照看板时能直接看到「为什么选它」
@@ -1244,10 +1256,17 @@ export function buildBuyPlan(blocks, dragonMap, opts) {
     picks: lightPicks,
     notes: lightNotes
   } : null;
-  _appendLowOpenDragonOneNote(light);
-
   const heavy = first ? _buildFirstBlock(first, dragonMap) : null;
   _appendLowOpenDragonOneNote(heavy);
+
+  // ⛔【同题材不重复入选（2026-09-26 用户口径）】买点里同一个题材只能出现一次：
+  //   若第 2 名题材（或替换后的题材）与第 1 名题材同名 → 这一档直接不出现（9/8 大消费重复出现的修复）。
+  if (heavy && light && String(heavy.block.topic).trim() === String(light.block.topic).trim()) {
+    lightNotes.push('与第 1 名题材同名为「' + light.block.topic + '」→ 同题材不重复入选，本档不出现');
+    light = null;
+  } else {
+    _appendLowOpenDragonOneNote(light);
+  }
 
   return {
     // ⛔ first 为空时必须返回 null：UI 用 v-if="buyHeavy" 判空，
@@ -1437,6 +1456,8 @@ export function buildRulesLines() {
     '　　　· 该题材【只有 1 个竞价一字】时先做【题材替换】：拿【连板天梯 · 题材连扳】里',
     '　　　　【股票数量最多】的题材，回到【早盘竞价】比两者股票数，谁多就选谁',
     '　　　　（9/3：第 2 名大消费 7 只 ＜ 天梯第一的 AI应用 10 只 → 改选 AI应用；否则沿用本题材）。',
+    '　⛔【同题材不重复入选】买点里同一个题材只出现一次：天梯第一的题材若【已经】被前面的档位',
+    '　　选中，这次对比没有价值 → 不做替换，回到原来的第 2 名题材（9/8 大消费重复出现的修复）。',
     '　⑤ 【无一字弱市】当日【全部题材】的竞价一字都是 0 个 → 先看【大题材】，再改看【题材连扳】：',
     '　　　· 第 1 / 第 2 名题材里有【股票数量 ≥ ' + BIG_TOPIC_MIN_COUNT + ' 只】的 → 每个都只取【龙一】' +
       POSITION_LIGHT + '（9/4：电子/通信/算力 17 只、AI应用 10 只 → 各取龙一）；',
@@ -1457,8 +1478,11 @@ export function buildRulesLines() {
     '　　　　龙一低开 / 平开 → 【舍弃龙一】，只在【龙二~龙五】里取竞价涨幅最高的两只，都' + POSITION_LIGHT + '；',
     '　　　· 数量第二的题材：只取【龙一】，' + POSITION_LIGHT + '。',
     '　龙一 / 龙二 = 题材内【十日涨幅】从高到低，与早盘竞价龙一徽章同一口径。',
-    '　【灰行（灰色名称 / 灰色题材 = 不在当日正式列表）】照常参与龙位与选票 —— 它们是同时期的龙头，',
-    '　　有参考价值（9/8 大消费龙一国芳集团就是灰行）；只是【不计入】题材数量 / 一字数（与早盘竞价统计条同口径）。',
+    '　【灰行（灰色名称 / 灰色题材 = 不在当日正式列表）】照常参与龙位与选票，也能被选中买点 ——',
+    '　　它们代表的是【老龙 / 观察组继承票】，有参考价值',
+    '　　（9/8 大消费龙一国芳集团、农业龙一万向德农都是灰行）；只是【不计入】题材数量 / 一字数',
+    '　　（与早盘竞价统计条同口径）。灰行来源与早盘竞价的注入行完全同源：竞昨高光继承 + 昨日买标签',
+    '　　继承 + 昨日龙头名册继承壳。',
     '　【「昨日卖标签继承」的复盘行】昨天已卖出 → 不占龙位、也不入选买点。',
     '　【低开龙一的提醒】龙一竞价低开时，请自行看它的竞价图形：若出现【跌停 L 形】→ 尾盘买',
     '　　（本看板没有分时数据、不做图形判断，只给这段文字提醒）。',

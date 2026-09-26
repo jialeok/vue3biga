@@ -22,6 +22,8 @@ import { isAuctionYiZi, parseAucPct } from '../auction/limit-up.js';
 import { getDragonRangePct } from '../auction/dragon-rank.js';
 import { getDragonLeadersForDisplay } from '../auction/dragon-group.js';
 import { getPrevSoldInheritedSet } from '../auction/inherited-sold.js';
+// [GRAY-DRAGON 2026-09-26] 灰行（不在当日正式列表的继承票）的观察组来源，与早盘竞价同款（§6）
+import { getJingYestHighlightSetForDate } from '../auction/sort-rules.js';
 import { _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 // [NO-YIZI 2026-09-25] 「全部题材竞价一字 0 个」的弱市兜底要读【连板天梯 · 题材连扳】的分组。
@@ -159,27 +161,54 @@ export function collectDecisionData(date) {
   });
 
   // [GRAY-DRAGON 2026-09-26] 灰行 = 早盘竞价里「灰色名称 + 灰色题材」的行 = 【不在当日正式列表】。
-  //   用户要求它们【也要计入买点决策】：9/8 第 1 名题材（大消费，2 个一字）的龙一是国芳集团，
-  //   它是昨天评选出来的龙头、今天不在正式列表 → 早盘竞价画灰，但确实是同期龙头、有参考价值。
-  //   ⛔ 只补【昨日龙头名册里的继承壳】：观察组 / 补一字的注入行噪声太大，用户没提，本次不加。
+  //   用户（两次）要求：灰行也要能进买点 —— 它们代表的是【老龙 / 观察组继承票】，有参考价值。
+  //   事故现场：9/8 第 1 名题材大消费的龙一 = 国芳集团（灰），第 2 名题材农业的龙一 = 万向德农（灰）。
+  //
+  //   ⛔ 上一版只补了【昨日龙头名册】一个来源，覆盖不到观察组继承票（万向德农就属于这一类）→ 没修全。
+  //      本次改成与 view-helpers#computeAuctionViewData 的注入行【三个来源完全同源】（§6 单一真相）：
+  //        ① 前一日「竞昨高光」继承票（观察组主来源）  getJingYestHighlightSetForDate(prevDate)
+  //        ② 前一日打标签买入继承票                    obsBought_<date>
+  //        ③ 昨日龙头名册继承壳                        getDragonLeadersForDisplay(date)
+  //      这与 dragon-group.js#_buildPool 的候选池口径也是同一套（只是它没导出，故在此按同一顺序复刻）。
+  //
   //   countable=false ⇒ 不进题材数量 / 一字数统计（与早盘竞价统计条同口径）；
   //   inheritSold=false ⇒ 参与龙位与选票（真正被排除的是「昨日卖标签继承」的复盘行）。
+  const _grayNames = new Set();
+  try {
+    const obs = prevDate ? getJingYestHighlightSetForDate(prevDate, 'auction') : null;
+    if (obs && typeof obs.forEach === 'function') {
+      obs.forEach(function(n) { if (n) _grayNames.add(String(n).trim()); });
+    }
+  } catch (e) {
+    // §10：读失败 ≠ 空集合。这里只影响灰行的【补充来源】，主池仍可用，故如实记日志不静默吞掉。
+    console.warn('[DECISION] 竞昨高光继承集读取失败，灰行来源缺失该部分', e);
+  }
+  try {
+    // 合规（§8）：obsBought_<date> 是「防重复 / 调试标记」型本地缓存，与 view-helpers 同源；
+    // 它不是业务真相源（业务真相 = auctionTagStore），仅用于还原观察组继承池。
+    const bought = JSON.parse(localStorage.getItem('obsBought_' + date) || '[]');
+    (bought || []).forEach(function(n) { if (n) _grayNames.add(String(n).trim()); });
+  } catch (e) { /* 无 localStorage / 解析失败 → 忽略该来源，不影响主池 */ }
   if (prevDragonMap) {
     Array.from(prevDragonMap.keys()).forEach(function(n) {
-      const nm = String(n || '').trim();
-      if (!nm || seen.has(nm)) return;
-      const rm = rangeMap.get(nm);
-      // §10：没有十日涨幅就排不进龙位，补进来只是噪声 → 不补
-      if (!rm || rm.pct === null || rm.pct === undefined) return;
-      if (inheritSold.has(nm)) return;               // 昨天已卖出 → 不补
-      seen.add(nm);
-      const meta = prevDragonMap.get(nm) || null;
-      const raw = _dayRowMap.get(nm) || { stock: nm, code: (meta && meta.code) || '' };
-      const row = _mkRow(nm, raw, false);
-      rows.push(row);
-      byName.set(nm, row);
+      if (n) _grayNames.add(String(n).trim());
     });
   }
+
+  _grayNames.forEach(function(n) {
+    const nm = String(n || '').trim();
+    if (!nm || seen.has(nm)) return;                // 已在正式列表里 → 不是灰行
+    const rm = rangeMap.get(nm);
+    // §10：没有十日涨幅就排不进龙位，补进来只是噪声 → 不补
+    if (!rm || rm.pct === null || rm.pct === undefined) return;
+    if (inheritSold.has(nm)) return;                // 昨天已卖出 → 不补
+    seen.add(nm);
+    const meta = prevDragonMap ? prevDragonMap.get(nm) : null;
+    const raw = _dayRowMap.get(nm) || { stock: nm, code: (meta && meta.code) || '' };
+    const row = _mkRow(nm, raw, false);
+    rows.push(row);
+    byName.set(nm, row);
+  });
   if (rows.length === 0) return _notReady('当日列表没有可用于决策的股票名');
 
   const topics = rankDecisionTopics(rows);

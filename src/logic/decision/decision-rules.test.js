@@ -941,6 +941,23 @@ describe('resolveSecondTopicByLadder（第 2 名题材数量对比）', () => {
     expect(rs.block.topic).toBe('A');
   });
 
+  it('天梯第一的题材【已经】入选过 → 同题材不重复，不做替换（9/8 大消费）', () => {
+    // 第 1 名 = A（2 个一字）；第 2 名 = B（1 个一字）；天梯第一也是 A
+    const blocks = rankDecisionTopics([
+      E('A一', 'A', 60, true), E('A二', 'A', 50, true), E('A三', 'A', 40),
+      E('A四', 'A', 30), E('A五', 'A', 20),
+      E('B一', 'B', 55, true), E('B二', 'B', 45), E('B三', 'B', 35),
+      E('B四', 'B', 25), E('B五', 'B', 15)
+    ]);
+    const second = blocks.find(b => b.topic === 'B');
+    const rs = resolveSecondTopicByLadder(blocks, second, {
+      ladderReady: true, ladderTopicGroups: [{ topic: 'A', count: 6 }]
+    }, ['A']);
+    expect(rs.replaced).toBe(false);
+    expect(rs.block.topic).toBe('B');
+    expect(rs.notes.join('｜')).toContain('同题材不重复入选');
+  });
+
   it('连板天梯未就绪 → 沿用第 2 名题材并如实说明（§10 不猜）', () => {
     const blocks = blocksOf(10);
     const second = blocks.find(b => b.topic === 'A');
@@ -978,6 +995,70 @@ describe('buildBigTopicPlan（无一字 · 大题材兜底）', () => {
     const plan = buildBuyPlan(blocks, rankDragons(blocks), { ladderReady: false });
     expect(plan.bigTopic).toBe(null);
     expect(plan.noYizi).not.toBe(null);
+  });
+});
+
+// === [2026-09-26] ⑦ 灰行（不在正式列表）也能被选进买点 ===
+describe('灰行参与选票（GRAY-DRAGON）', () => {
+  // T = 第 1 名（2 个一字，龙一是灰行「老龙」），X = 第 2 名（0 一字）
+  it('第 1 名题材的龙一是灰行 → 照常入选重仓（9/8 大消费 · 国芳集团）', () => {
+    const blocks = rankDecisionTopics([
+      E('老龙灰行', 'T', 96, false, false, 2),      // countable=false 灰行，十日涨幅最高 = 龙一
+      E('T一字一', 'T', 80, true), E('T一字二', 'T', 70, true),
+      E('T四', 'T', 60, false, true, 1), E('T五', 'T', 50, false, true, 0.5),
+      // ⛔ T 的正式成员必须 ≥5 只：≤4 只 + 2 个一字会被 ⑥ 小题材兜底截走
+      E('T六', 'T', 45, false, true, 0.2),
+      E('X一', 'X', 40), E('X二', 'X', 30)
+    ]);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy.picks[0].name).toBe('老龙灰行');
+    expect(plan.heavy.picks[0].position).toBe(POSITION_HEAVY);
+    // 数量统计仍然只数正式成员（灰行不计入）：共 6 只，其中灰行 1 只 → 5 只
+    expect(plan.heavy.block.count).toBe(5);
+  });
+
+  it('第 2 名题材的龙一是灰行 → 照常入选轻仓（9/8 农业 · 万向德农）', () => {
+    const blocks = rankDecisionTopics([
+      E('T一', 'T', 60, true), E('T二', 'T', 50, true), E('T三', 'T', 40),
+      E('T四', 'T', 30), E('T五', 'T', 20),
+      E('农业老龙', 'X', 82, false, false, -1),     // 灰行龙一（低开也照样入选，见 ④ 只提醒）
+      E('X二', 'X', 30), E('X三', 'X', 20)
+    ]);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.light.picks.map(p => p.name)).toEqual(['农业老龙']);
+    expect(plan.light.notes.join('｜')).toContain('直接买龙一');
+  });
+});
+
+// === [2026-09-26] 买点里同一个题材不能重复出现 ===
+describe('同题材不重复入选', () => {
+  it('第 2 名题材若与第 1 名同题材 → 该档不出现（买点里每个题材只出现一次）', () => {
+    const blocks = rankDecisionTopics([
+      E('A一', 'A', 60, true), E('A二', 'A', 50, true), E('A三', 'A', 40),
+      E('A四', 'A', 30), E('A五', 'A', 20)
+    ]);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks), {
+      // 天梯第一也是 A（已经在买点里）→ 不做替换
+      ladderReady: true, ladderTopicGroups: [{ topic: 'A', count: 6 }]
+    });
+    expect(plan.heavy).not.toBe(null);
+    expect(plan.light).toBe(null);
+  });
+
+  it('替换后与第 1 名同题材 → 直接丢弃这一档，不留重复题材', () => {
+    const blocks = rankDecisionTopics([
+      E('A一', 'A', 60, true), E('A二', 'A', 50, true), E('A三', 'A', 40),
+      E('A四', 'A', 30), E('A五', 'A', 20),
+      E('B一', 'B', 55, true), E('B二', 'B', 45), E('B三', 'B', 35),
+      E('B四', 'B', 25), E('B五', 'B', 15)
+    ]);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks), {
+      ladderReady: true, ladderTopicGroups: [{ topic: 'A', count: 6 }]
+    });
+    // 第 2 名 B 只有 1 个一字 → 会尝试替换成天梯第一 A，但 A 已入选 → 回到 B，两者不同名 → 保留
+    expect(plan.light).not.toBe(null);
+    expect(plan.light.block.topic).toBe('B');
+    expect(plan.light.notes.join('｜')).toContain('同题材不重复入选');
   });
 });
 
