@@ -14,7 +14,7 @@
 // §10 红线：数据没加载完 = 「还没拉到」，绝不等于「今天没有」。
 //   未就绪时返回 ready=false + 明确的 reason，由 UI 如实展示（⛔ 不许显示成「空看板」）。
 
-import { getTodayGroupList } from '../app-core-api.js';
+import { getTodayGroupList, getAuctionData } from '../app-core-api.js';
 import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 import { getPrimaryTopicMap, classifyStockPrimaryTopic, buildTopicSizeMap } from '../auction/topic-sort.js';
@@ -106,29 +106,80 @@ export function collectDecisionData(date) {
   // [MAJORITY-SIDE 2026-09-24] 兜底行（不在正式列表内的注入行）也遵守「站队到数量多的一边」
   const psize = buildTopicSizeMap(pmap);
 
+  // 昨日龙头名册（= 前一交易日评选出的龙头）：Map<name,{topic,pct,groupSize,code}>
+  // ⛔ 未加载时【传 null】而不是空 Set：空 Set 会让规则层把「还没拉到」判定成「昨日非龙头」（§10）。
+  // [GRAY-DRAGON 2026-09-26] 提前到这里：它同时还是【灰行】的来源（见下方 _pushGrayRows）。
+  const prevDragonMap = getDragonLeadersForDisplay(date);
+
+  // [GRAY-DRAGON 2026-09-26] 当日已抓到数据的行（含 market_metrics 影子行）→ 给灰行回填真实竞价涨幅。
+  // 与早盘竞价 view-helpers 的 _auctionDayRowMap 同一份数据来源（§6），⛔ 不另找一份。
+  const _dayRowMap = new Map();
+  try {
+    (getAuctionData()[date] || []).forEach(function(r) {
+      if (r && r.stock) {
+        const k = String(r.stock).trim();
+        if (k && !_dayRowMap.has(k)) _dayRowMap.set(k, r);
+      }
+    });
+  } catch (e) {
+    // §10：取不到就按「没有回填」处理（灰行竞价涨幅 = null），绝不抛给渲染层
+  }
+
   const rows = [];
   const byName = new Map();
   const seen = new Set();
+
+  /** 组装一行（正式列表行 / 灰行共用，保证口径一致） */
+  const _mkRow = function(nm, raw, countable) {
+    const code = (raw && (raw.code || raw.stockCode)) || getStockCode(nm) || '';
+    const topic = pmap.has(nm) ? pmap.get(nm) : classifyStockPrimaryTopic(raw || { stock: nm }, psize);
+    const rm = rangeMap.get(nm);
+    return {
+      name: nm,
+      topic: String(topic || '').trim(),
+      code: String(code || '').trim(),
+      isYizi: isAuctionYiZi(raw || { stock: nm }, code),
+      // 当日竞价涨幅（%）：null = 缺数据。解析器复用 limit-up.js#parseAucPct（§6 单一实现），
+      // 与早盘竞价「龙标红底 = 竞价涨幅>0」完全是同一个值 —— 决策看板说的是「买红色的那几只」。
+      aucPct: parseAucPct(raw ? (raw.auc_pct_chg || raw.aucPctChg) : null),
+      pct: (rm && rm.pct !== undefined && rm.pct !== null) ? rm.pct : null,
+      countable: countable,
+      inheritSold: inheritSold.has(nm)
+    };
+  };
+
   list.forEach(function(r) {
     if (!r || !r.stock) return;
     const nm = String(r.stock).trim();
     if (!nm || seen.has(nm)) return;
     seen.add(nm);
-    const topic = pmap.has(nm) ? pmap.get(nm) : classifyStockPrimaryTopic(r, psize);
-    const rm = rangeMap.get(nm);
-    const row = {
-      name: nm,
-      topic: String(topic || '').trim(),
-      isYizi: isAuctionYiZi(r, r.code || getStockCode(nm) || ''),
-      // 当日竞价涨幅（%）：null = 缺数据。解析器复用 limit-up.js#parseAucPct（§6 单一实现），
-      // 与早盘竞价「龙标红底 = 竞价涨幅>0」完全是同一个值 —— 决策看板说的是「买红色的那几只」。
-      aucPct: parseAucPct(r.auc_pct_chg || r.aucPctChg),
-      pct: (rm && rm.pct !== undefined && rm.pct !== null) ? rm.pct : null,
-      countable: !inheritSold.has(nm)
-    };
+    const row = _mkRow(nm, r, !inheritSold.has(nm));
     rows.push(row);
     byName.set(nm, row);
   });
+
+  // [GRAY-DRAGON 2026-09-26] 灰行 = 早盘竞价里「灰色名称 + 灰色题材」的行 = 【不在当日正式列表】。
+  //   用户要求它们【也要计入买点决策】：9/8 第 1 名题材（大消费，2 个一字）的龙一是国芳集团，
+  //   它是昨天评选出来的龙头、今天不在正式列表 → 早盘竞价画灰，但确实是同期龙头、有参考价值。
+  //   ⛔ 只补【昨日龙头名册里的继承壳】：观察组 / 补一字的注入行噪声太大，用户没提，本次不加。
+  //   countable=false ⇒ 不进题材数量 / 一字数统计（与早盘竞价统计条同口径）；
+  //   inheritSold=false ⇒ 参与龙位与选票（真正被排除的是「昨日卖标签继承」的复盘行）。
+  if (prevDragonMap) {
+    Array.from(prevDragonMap.keys()).forEach(function(n) {
+      const nm = String(n || '').trim();
+      if (!nm || seen.has(nm)) return;
+      const rm = rangeMap.get(nm);
+      // §10：没有十日涨幅就排不进龙位，补进来只是噪声 → 不补
+      if (!rm || rm.pct === null || rm.pct === undefined) return;
+      if (inheritSold.has(nm)) return;               // 昨天已卖出 → 不补
+      seen.add(nm);
+      const meta = prevDragonMap.get(nm) || null;
+      const raw = _dayRowMap.get(nm) || { stock: nm, code: (meta && meta.code) || '' };
+      const row = _mkRow(nm, raw, false);
+      rows.push(row);
+      byName.set(nm, row);
+    });
+  }
   if (rows.length === 0) return _notReady('当日列表没有可用于决策的股票名');
 
   const topics = rankDecisionTopics(rows);
@@ -143,7 +194,10 @@ export function collectDecisionData(date) {
   const first = topics.find(function(b) { return b.rank === 1; }) || null;
   const second = topics.find(function(b) { return b.rank === 2; }) || null;
   const totalYizi = topics.reduce(function(n, b) { return n + (Number(b.yiziCount) || 0); }, 0);
-  const needLadder = totalYizi === 0 || isSmallRiskyTopic(first) || isSmallRiskyTopic(second);
+  // ③ [LADDER-VS-SECOND 2026-09-26] 第 2 名题材【只有 1 个一字】时要跟「题材连扳数量第一」比数量
+  const needLadder = totalYizi === 0
+    || isSmallRiskyTopic(first) || isSmallRiskyTopic(second)
+    || (second && Number(second.yiziCount) === 1);
   const ladder = needLadder ? _ladderTopicGroups(date) : null;
   const buy = buildBuyPlan(topics, dragonMap, {
     ladderTopicGroups: ladder ? ladder.groups : [],
@@ -151,9 +205,7 @@ export function collectDecisionData(date) {
     ladderReason: ladder ? ladder.reason : ''
   });
 
-  // 昨日龙头名册（= 前一交易日评选出的龙头）：Map<name,{topic,pct,groupSize,code}>
-  // ⛔ 未加载时【传 null】而不是空 Set：空 Set 会让规则层把「还没拉到」判定成「昨日非龙头」（§10）。
-  const prevDragonMap = getDragonLeadersForDisplay(date);
+  // 昨日龙头名册已在上方取过（prevDragonMap）—— 灰行补齐也要用它，⛔ 不重复取第二次。
   const prevDragonNames = prevDragonMap ? new Set(Array.from(prevDragonMap.keys())) : null;
 
   const prevBought = _prevBoughtNames(prevDate);

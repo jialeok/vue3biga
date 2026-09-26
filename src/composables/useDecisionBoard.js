@@ -20,7 +20,7 @@ function _empty(reason) {
     ready: false,
     reason: reason,
     topics: [],
-    buy: { heavy: null, light: null, noYizi: null, smallTopic: null },
+    buy: { heavy: null, light: null, noYizi: null, smallTopic: null, bigTopic: null },
     sell: [],
     sellTimes: []
   };
@@ -65,8 +65,10 @@ export function useDecisionBoard() {
   // [SMALL-TOPIC 2026-09-25] 「第 1 / 第 2 名题材票太少却有 1~2 个一字」的高风险兜底方案；
   // 与 noYizi 结构完全一致（{hintText, notes, emptyText, blocks}），因此 UI 合并成 buySpecial 一处渲染。
   const buySmallTopic = computed(() => (data.value.buy ? data.value.buy.smallTopic : null));
-  /** 两条兜底方案共用同一段模板；与 heavy / light 互斥 */
-  const buySpecial = computed(() => buyNoYizi.value || buySmallTopic.value || null);
+  // [BIG-TOPIC 2026-09-26] 「全部题材无一字 + 有大题材（≥10 只）」的兜底方案；结构同上
+  const buyBigTopic = computed(() => (data.value.buy ? data.value.buy.bigTopic : null));
+  /** 三条兜底方案共用同一段模板；与 heavy / light 互斥 */
+  const buySpecial = computed(() => buyNoYizi.value || buySmallTopic.value || buyBigTopic.value || null);
   const sellGroups = computed(() => data.value.sell || []);
 
   const buyCount = computed(function() {
@@ -91,8 +93,18 @@ export function useDecisionBoard() {
     return '买' + buyCount.value + ' 卖' + sellCount.value;
   });
 
-  function toggleExpand() { expanded.value = !expanded.value; }
+  /**
+   * [2026-09-26 用户要求] 点看板条（三角）展开 / 收起时，【顺手把灰色问号的规则说明板收起】
+   *   —— 说明文字要跟着一起消失，否则收起后还悬一块面板很难看。
+   * ⛔ 只动纯展示态（§34），不碰任何业务数据。
+   */
+  function toggleExpand() {
+    expanded.value = !expanded.value;
+    rulesOpen.value = false;
+  }
   function toggleRules() { rulesOpen.value = !rulesOpen.value; }
+  /** 供规则面板自己上报开合（子组件无内部状态，开合真相在 composable 里，§6） */
+  function setRulesOpen(v) { rulesOpen.value = !!v; }
 
   /** 供父级在「刷新」时调用（与早盘竞价 / 涨跌停看板同款契约：defineExpose({ refresh })） */
   function refresh() { version.value++; errorText.value = ''; }
@@ -118,6 +130,7 @@ export function useDecisionBoard() {
     buyLight,
     buyNoYizi,
     buySmallTopic,
+    buyBigTopic,
     buySpecial,
     sellGroups,
     buyCount,
@@ -125,6 +138,7 @@ export function useDecisionBoard() {
     summaryText,
     toggleExpand,
     toggleRules,
+    setRulesOpen,
     refresh
   };
 }

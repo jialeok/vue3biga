@@ -29,7 +29,12 @@
       @click="toggleExpand"
     >
       <span class="decision-title">决策</span>
-      <DecisionRulesHint :lines="rulesLines" />
+      <!-- [2026-09-26] 规则面板开合受控于 rulesOpen：点本条（三角）收起看板时会一并收起面板 -->
+      <DecisionRulesHint
+        :lines="rulesLines"
+        :open="rulesOpen"
+        @update:open="setRulesOpen"
+      />
       <span class="decision-summary">{{ summaryText }}</span>
       <span class="decision-toggle-btn">{{ toggleArrow }}</span>
     </div>
@@ -142,6 +147,7 @@ import { buildRulesLines } from '../logic/decision/decision-rules.js';
 const board = useDecisionBoard();
 const {
   expanded,
+  rulesOpen,
   errorText,
   ready,
   reasonText,
@@ -150,7 +156,8 @@ const {
   buySpecial,
   sellGroups,
   summaryText,
-  toggleExpand
+  toggleExpand,
+  setRulesOpen
 } = board;
 
 // 规则文案由 Logic 层产出（规则实现与规则说明同处一处，改规则不会只改一半）

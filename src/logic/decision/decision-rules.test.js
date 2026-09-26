@@ -20,6 +20,9 @@ import {
   buildSmallTopicPlan,
   pickFirstHighOpen,
   pickSecondTopicBuy,
+  pickHeavyTwo,
+  resolveSecondTopicByLadder,
+  BIG_TOPIC_MIN_COUNT,
   buildSellPlan,
   buildRulesLines,
   formatRangePct,
@@ -32,13 +35,26 @@ import {
 import { getDragonLabel } from '../auction/dragon-rank.js';
 
 /** E(股票名, 题材, 十日涨幅, 是否竞价一字, 是否计入数量, 当日竞价涨幅%) */
-function E(name, topic, pct, isYizi, countable, aucPct) {
+/**
+ * 样本行构造。
+ * @param {string} name 股票名
+ * @param {string} topic 题材
+ * @param {number|null} pct 十日涨幅
+ * @param {boolean} [isYizi] 是否竞价一字
+ * @param {boolean} [countable] 是否计入题材数量（false = 早盘竞价里「灰色名称 / 灰色题材」的灰行）
+ * @param {number|null} [aucPct] 竞价涨幅
+ * @param {string} [code] 股票代码（判 20% / 30% 涨跌幅板用）
+ * @param {boolean} [inheritSold] 是否「昨日卖标签继承」的复盘行（⛔ 唯一【不参与】龙位与选票的行）
+ */
+function E(name, topic, pct, isYizi, countable, aucPct, code, inheritSold) {
   return {
     name: name,
     topic: topic,
     pct: pct,
     isYizi: !!isYizi,
     countable: countable !== false,
+    code: code || '',
+    inheritSold: inheritSold === true,
     aucPct: (aucPct === undefined || aucPct === null) ? null : aucPct
   };
 }
@@ -105,15 +121,27 @@ describe('rankDecisionTopics', () => {
 //   根因：龙位候选集没被「当日正式列表 / 计入统计的行」约束 ⇒ 灰行（继承壳、复盘行）
 //   占了名次，把真龙一 / 真龙二往后挤。
 describe('rankDragons（龙一 / 龙二 位次口径）', () => {
-  it('countable=false 的灰色复盘行【不占龙位】（与题材计数同源）', () => {
+  it('「昨日卖标签继承」的复盘行（inheritSold）【不占龙位】', () => {
     // 「复盘」十日涨幅最高，但它是昨日卖标签继承的复盘行 → 不计数、也不该当龙一
     const blocks = rankDecisionTopics([
-      E('复盘', 'T1', 99, false, false), E('真龙一', 'T1', 30), E('真龙二', 'T1', 20)
+      E('复盘', 'T1', 99, false, true, null, '', true), E('真龙一', 'T1', 30), E('真龙二', 'T1', 20)
     ]);
     const dragon = rankDragons(blocks);
     expect(dragon.get('复盘')).toBeUndefined();
     expect(dragon.get('真龙一').rank).toBe(1);
     expect(dragon.get('真龙二').rank).toBe(2);
+  });
+
+  // [GRAY-DRAGON 2026-09-26] 灰行 = 不在当日正式列表（早盘竞价画灰），用户要求【照常参与】龙位：
+  //   9/8 大消费的龙一国芳集团就是这种行 —— 它是同期龙头，有参考价值。
+  it('灰行（countable=false 但不是 inheritSold）【照常占龙位】', () => {
+    const blocks = rankDecisionTopics([
+      E('灰行龙头', 'T1', 99, false, false), E('正式一', 'T1', 30), E('正式二', 'T1', 20)
+    ]);
+    expect(blocks[0].count).toBe(2);                 // 数量 / 一字数仍只数正式成员
+    const dragon = rankDragons(blocks);
+    expect(dragon.get('灰行龙头').rank).toBe(1);
+    expect(dragon.get('正式一').rank).toBe(2);
   });
 
   it('缺十日涨幅的行排不进龙位（§10 绝不当 0 参与比较）', () => {
@@ -799,6 +827,188 @@ describe('pickSecondTopicBuy（第 2 名题材：龙一优先，龙一是一字�
     expect(plan.light.block.topic).toBe('T');
     expect(plan.light.picks.map(p => p.name)).toEqual(['股1']);
     expect(plan.light.notes.join('｜')).toContain('直接买龙一');
+  });
+});
+
+// === [2026-09-26] ① 第 1 名题材「2 个一字」：第二只按竞价涨幅选，卡位则共选 3 只 ===
+describe('pickHeavyTwo（第 1 名题材 · 卡位选票）', () => {
+  const mk = (members) => {
+    const blocks = rankDecisionTopics(members);
+    return { blocks: blocks, dragon: rankDragons(blocks), blk: blocks.find(b => b.topic === 'T') };
+  };
+
+  it('龙二涨幅 < 龙三涨幅（卡位）→ 龙一重仓 + 龙三重仓 + 龙二轻仓（共 3 只）', () => {
+    // 9/1 农业原型：龙二金健米业 +0.1%、龙三万向德农 +7.3%
+    const { dragon, blk } = mk([
+      E('股1', 'T', 90, false, true, 3),    // 龙一
+      E('股2', 'T', 80, false, true, 0.1),  // 龙二
+      E('股3', 'T', 70, false, true, 7.3),  // 龙三：涨幅最高 → 卡位
+      E('X1', 'X', 1), E('X2', 'X', 0)
+    ]);
+    const r = pickHeavyTwo(blk, dragon);
+    expect(r.jumped).toBe(true);
+    expect(r.picks.map(p => p.name)).toEqual(['股1', '股3', '股2']);
+    expect(r.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_HEAVY, POSITION_LIGHT]);
+  });
+
+  it('涨幅最高的恰好就是龙二 → 维持 2 只，都重仓', () => {
+    const { dragon, blk } = mk([
+      E('股1', 'T', 90, false, true, 1),
+      E('股2', 'T', 80, false, true, 5),    // 龙二同时是涨幅最高
+      E('股3', 'T', 70, false, true, 2),
+      E('X1', 'X', 1), E('X2', 'X', 0)
+    ]);
+    const r = pickHeavyTwo(blk, dragon);
+    expect(r.jumped).toBe(false);
+    expect(r.picks.map(p => p.name)).toEqual(['股1', '股2']);
+    expect(r.picks.every(p => p.position === POSITION_HEAVY)).toBe(true);
+  });
+
+  it('其余票全缺竞价涨幅 → 第二只退回按龙头名次取（§10 不猜）', () => {
+    const { dragon, blk } = mk([
+      E('股1', 'T', 90, false, true, 1),
+      E('股2', 'T', 80, false, true, null),
+      E('股3', 'T', 70, false, true, null),
+      E('X1', 'X', 1), E('X2', 'X', 0)
+    ]);
+    const r = pickHeavyTwo(blk, dragon);
+    expect(r.picks.map(p => p.name)).toEqual(['股1', '股2']);
+    expect(r.notes.join('｜')).toContain('缺竞价涨幅');
+  });
+});
+
+// === [2026-09-26] ③ 非龙一的创业板 / 科创板（20% 板）顺延下一位 ===
+describe('创业板 / 科创板顺延（GROWTH-BOARD）', () => {
+  const mk = (members) => {
+    const blocks = rankDecisionTopics(members);
+    return { blocks: blocks, dragon: rankDragons(blocks), blk: blocks.find(b => b.topic === 'T') };
+  };
+
+  it('龙二是创业板 → 跳过，往下取龙三（9/2 AI应用：龙五芒果超媒 → 改选龙六）', () => {
+    const { dragon, blk } = mk([
+      E('股1', 'T', 90, false, true, 1),
+      E('创业板票', 'T', 80, false, true, 9, '300413'),   // 龙二，20% 板 → 顺延
+      E('股3', 'T', 70, false, true, 2),
+      E('X1', 'X', 1), E('X2', 'X', 0)
+    ]);
+    const picks = pickBuyable(blk, dragon, 2, POSITION_HEAVY);
+    expect(picks.map(p => p.name)).toEqual(['股1', '股3']);
+  });
+
+  it('龙一自己是创业板也照选（龙一是最强票，不因板块被跳过）', () => {
+    const { dragon, blk } = mk([
+      E('创龙一', 'T', 90, false, true, 1, '300413'),
+      E('股2', 'T', 80, false, true, 5),
+      E('X1', 'X', 1), E('X2', 'X', 0)
+    ]);
+    const picks = pickBuyable(blk, dragon, 2, POSITION_HEAVY);
+    expect(picks.map(p => p.name)).toEqual(['创龙一', '股2']);
+  });
+});
+
+// === [2026-09-26] ⑤ 第 2 名题材 vs 连板天梯数量第一题材：比早盘竞价股票数 ===
+describe('resolveSecondTopicByLadder（第 2 名题材数量对比）', () => {
+  // X = 第 1 名（2 个一字）；A = 第 2 名（1 个一字，7 只）；B = 第 3 名（0 一字，10 只）
+  const bigTopic = 'B';
+  const blocksOf = (bCount) => {
+    const rows = [
+      E('X一', 'X', 50, true), E('X二', 'X', 40, true), E('X三', 'X', 30), E('X四', 'X', 20),
+      E('A一', 'A', 60, true), E('A二', 'A', 50), E('A三', 'A', 40), E('A四', 'A', 30),
+      E('A五', 'A', 20), E('A六', 'A', 10), E('A七', 'A', 5)
+    ];
+    for (let i = 1; i <= bCount; i++) rows.push(E('B' + i, bigTopic, 90 - i));
+    return rankDecisionTopics(rows);
+  };
+
+  it('天梯第一的题材在早盘竞价里更多 → 改选它（9/3 大消费 7 ＜ AI应用 10）', () => {
+    const blocks = blocksOf(10);
+    const second = blocks.find(b => b.topic === 'A');
+    const rs = resolveSecondTopicByLadder(blocks, second, {
+      ladderReady: true, ladderTopicGroups: [{ topic: bigTopic, count: 4 }]
+    });
+    expect(rs.replaced).toBe(true);
+    expect(rs.block.topic).toBe(bigTopic);
+    expect(rs.notes.join('｜')).toContain('改选');
+  });
+
+  it('天梯第一的题材在早盘竞价里更少 → 沿用第 2 名题材', () => {
+    const blocks = blocksOf(5);
+    const second = blocks.find(b => b.topic === 'A');
+    const rs = resolveSecondTopicByLadder(blocks, second, {
+      ladderReady: true, ladderTopicGroups: [{ topic: bigTopic, count: 4 }]
+    });
+    expect(rs.replaced).toBe(false);
+    expect(rs.block.topic).toBe('A');
+  });
+
+  it('连板天梯未就绪 → 沿用第 2 名题材并如实说明（§10 不猜）', () => {
+    const blocks = blocksOf(10);
+    const second = blocks.find(b => b.topic === 'A');
+    const rs = resolveSecondTopicByLadder(blocks, second, {
+      ladderReady: false, ladderReason: '未加载', ladderTopicGroups: []
+    });
+    expect(rs.replaced).toBe(false);
+    expect(rs.notes.join('｜')).toContain('未做「题材数量对比」');
+  });
+});
+
+// === [2026-09-26] ⑥ 无一字 + 大题材（≥10 只）→ 各取龙一轻仓 ===
+describe('buildBigTopicPlan（无一字 · 大题材兜底）', () => {
+  const rowsOf = (n1, n2) => {
+    const rows = [];
+    for (let i = 1; i <= n1; i++) rows.push(E('A' + i, 'A', 100 - i));
+    for (let i = 1; i <= n2; i++) rows.push(E('B' + i, 'B', 90 - i));
+    return rows;
+  };
+
+  it('全部题材 0 一字 + 两个题材都 ≥ 10 只 → 各取龙一轻仓（9/4：17 只 / 10 只）', () => {
+    const blocks = rankDecisionTopics(rowsOf(BIG_TOPIC_MIN_COUNT + 7, BIG_TOPIC_MIN_COUNT));
+    const plan = buildBuyPlan(blocks, rankDragons(blocks), { ladderReady: false });
+    expect(blocks[0].count).toBeGreaterThanOrEqual(BIG_TOPIC_MIN_COUNT);
+    expect(plan.bigTopic).not.toBe(null);
+    expect(plan.noYizi).toBe(null);
+    expect(plan.bigTopic.blocks.length).toBe(2);
+    expect(plan.bigTopic.blocks[0].picks.length).toBe(1);
+    expect(plan.bigTopic.blocks[0].picks[0].dragonLabel).toBe('龙一');
+    expect(plan.bigTopic.blocks[0].picks[0].position).toBe(POSITION_LIGHT);
+  });
+
+  it('不足 10 只 → 不走大题材，回到原来的「题材连扳」兜底', () => {
+    const blocks = rankDecisionTopics(rowsOf(5, 4));
+    const plan = buildBuyPlan(blocks, rankDragons(blocks), { ladderReady: false });
+    expect(plan.bigTopic).toBe(null);
+    expect(plan.noYizi).not.toBe(null);
+  });
+});
+
+// === [2026-09-26] ④ 龙一低开 → 只加「跌停 L 形 → 尾盘买」提醒文字 ===
+describe('低开龙一的 L 形提醒（只提醒、不改选票）', () => {
+  // T = 第 1 名（1 个一字，龙一不是一字）；X = 第 2 名（0 一字）
+  const lowOpenRows = (aucOfDragonOne) => [
+    E('龙头票', 'T', 90, false, true, aucOfDragonOne),
+    E('T一字', 'T', 80, true),
+    E('股3', 'T', 70, false, true, 3),
+    // ⛔ T 必须凑够 5 只：≤4 只 + 1 个一字会被 ⑥ 小题材兜底截走，就测不到常规档位
+    E('股4', 'T', 60, false, true, 1), E('股5', 'T', 50, false, true, 2),
+    E('X一', 'X', 50), E('X二', 'X', 40), E('X三', 'X', 30)
+  ];
+
+  it('龙一竞价低开 → 买点块里出现 L 形提醒，且选票结果不变', () => {
+    const blocks = rankDecisionTopics(lowOpenRows(-4));
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy).not.toBe(null);
+    const joined = (plan.heavy.notes || []).join('｜');
+    expect(joined).toContain('跌停 L 形');
+    expect(joined).toContain('尾盘买');
+    // 提醒不改结果：龙一仍然是重仓票
+    expect(plan.heavy.picks[0].name).toBe('龙头票');
+    expect(plan.heavy.picks[0].position).toBe(POSITION_HEAVY);
+  });
+
+  it('龙一高开 → 不出现该提醒', () => {
+    const blocks = rankDecisionTopics(lowOpenRows(4));
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect((plan.heavy.notes || []).join('｜')).not.toContain('跌停 L 形');
   });
 });
 
