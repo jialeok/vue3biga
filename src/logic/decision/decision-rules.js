@@ -116,7 +116,8 @@ function _topicRankMap(blocks) {
  *        countable=false 的行（早盘竞价里「灰色名称 + 灰色题材」= 不在当日正式列表）
  *          不计入数量与一字数 —— 与早盘竞价统计条同口径；
  *          ⛔ 但【2026-09-26 用户口径】它们照常参与龙位与选票（同时期龙头有参考价值），
- *             真正【不参与】的是 inheritSold=true 的「昨日卖标签继承」复盘行（昨天卖了今天不该再买）。
+ *             inheritSold=true = 「昨日卖标签继承」的行（早盘竞价里是灰色实心卖标签）：
+ *             ⛔ 2026-09-27 起【也照常参与】龙位与选票（9/8 国芳集团就是这种行，用户点名要它入选）。
  *        code = 股票代码（判 20%/30% 涨跌幅板用；缺失 → 不猜，§40）。
  *        aucPct = 当日竞价涨幅（%）；null = 缺数据（§10：不能当 0，也就不能当「高开」）。
  * @returns {Array<{rank:number, topic:string, count:number, yiziCount:number,
@@ -176,11 +177,14 @@ export function rankDecisionTopics(entries) {
  *
  * 候选集口径（2026-09-26 修订）：
  *   · m.pct === null → 缺十日涨幅，排不进龙位（§10：绝不当 0 参与比较）；
- *   · m.inheritSold === true → 「昨日卖标签继承」的复盘行不占龙位（昨天已卖出，今天不再买）；
  *   · ⛔ m.countable === false【不再排除】—— 那是早盘竞价里「灰色名称 + 灰色题材」的行
  *     （不在当日正式列表，但确实是同时期龙头，9/8 大消费龙一国芳集团就是这种行）。
  *     用户 2026-09-26 明确要求这类灰行【也要参与龙位与买点决策】，
  *     只是仍【不计入】题材数量 / 一字数（统计口径与早盘竞价统计条保持一致）。
+ *   · ⛔ m.inheritSold === true【同样不排除】（2026-09-27 修正）：「昨日卖标签继承」的行
+ *     在早盘竞价里也是画灰的（灰色实心卖标签），用户点名要它入选 ——
+ *     9/8 大消费龙一国芳集团正是「灰名 + 灰题材 + 灰色实心卖标签」，上一版把它过滤掉 ⇒ 没选进来。
+ *     ⛔ 结论：本看板【只用 countable 区分统计】，龙位与选票【不因任何灰行身份而排除】。
  *
  * @param {Array<object>} blocks rankDecisionTopics 的返回
  * @returns {Map<string,{rank:number, pct:number, topic:string, groupSize:number}>}
@@ -191,8 +195,7 @@ export function rankDragons(blocks) {
   (blocks || []).forEach(function(b) {
     colored.add(b.topic);
     b.members.forEach(function(m) {
-      if (m.pct === null) return;
-      if (m.inheritSold === true) return;     // 昨日已卖出的复盘行不占龙位
+      if (m.pct === null) return;             // §10：缺十日涨幅 → 排不进龙位
       entries.push({ name: m.name, topic: b.topic, pct: m.pct });
     });
   });
@@ -202,7 +205,9 @@ export function rankDragons(blocks) {
 /**
  * 题材块 → 可买候选（按龙头名次升序）。三处选票共用这一份候选（§6 单一真相）：
  *   · 竞价一字       → 买不进，剔除；
- *   · inheritSold    → 「昨日卖标签继承」的复盘行，剔除（昨天已卖出）；
+ *   · ⛔ 灰行【一律不剔除】：不在当日正式列表（countable=false）、昨日卖标签继承（inheritSold）
+ *     都照常参与 —— 用户 2026-09-26 / 09-27 两次点名要它们能入选（9/8 国芳集团、万向德农）。
+ *     灰行只影响【统计口径】（数量 / 一字数由 countable 决定），不影响龙位与选票。
  *   · 非龙一 + 20%/30% 涨跌幅板（创业板 / 科创板 / 北交所）→ 剔除，顺延下一位
  *     [GROWTH-BOARD 2026-09-26 用户口径]：9/2 AI应用 3 个一字，按名次取到龙五芒果超媒（创业板），
  *     它在后排且是 20% 板 ⇒ 往下移一位改选龙六（龙版传媒）。
@@ -217,7 +222,7 @@ function _buyCandidates(block, dragonMap) {
   if (!block) return [];
   const dragon = dragonMap || new Map();
   return (block.members || [])
-    .filter(function(m) { return !m.isYizi && m.inheritSold !== true; })
+    .filter(function(m) { return !m.isYizi; })          // 一字买不进；灰行一律保留
     .map(function(m) {
       const d = dragon.get(m.name);
       return {
@@ -338,7 +343,7 @@ export function pickFirstHighOpen(block, dragonMap, position) {
   let unknownCount = 0;
 
   (block.members || []).forEach(function(m) {
-    if (m.inheritSold === true) return;                      // 昨日已卖出的复盘行不占龙位，也不选它
+    // ⛔ 不再因「灰行 / 昨日卖标签继承」而剔除：它们照常参与龙位与选票（09-27 用户口径）
     const d = dragon.get(m.name);
     const rank = d ? d.rank : null;
     if (rank === null) return;                               // 没有十日涨幅 → 排不进龙头顺序
@@ -392,11 +397,10 @@ export function pickSecondTopicBuy(block, dragonMap, position) {
   }
   const dragon = dragonMap || new Map();
 
-  // 龙一 = 本题材块里龙头名次为 1、且是【计入统计】的成员（灰行不占龙位，也不选它）
+  // 龙一 = 本题材块里龙头名次为 1 的成员（⛔ 灰行 / 昨日卖标签继承的行也照常算，09-27 用户口径）
   const dragonOne = (block.members || []).find(function(m) {
-    if (m.inheritSold === true) return false;
     const d = dragon.get(m.name);
-    return !!d && d.rank === 1;
+    return !!(d && d.rank === 1);
   }) || null;
 
   // ① 龙一存在 且 不是一字 → 直接买龙一（不看竞价涨跌幅）
@@ -523,7 +527,7 @@ export function pickTopDragonsByAuc(block, dragonMap, maxRank, maxCount) {
   let dragonOneHighOpen = false;
 
   (block.members || []).forEach(function(m) {
-    if (m.inheritSold === true) return;                      // 昨日已卖出的复盘行不占龙位，也不选它
+    // ⛔ 不再因「灰行 / 昨日卖标签继承」而剔除：它们照常参与龙位与选票（09-27 用户口径）
     const d = dragon.get(m.name);
     const rank = d ? d.rank : null;
     if (rank === null) return;                               // 没有十日涨幅 → 排不进龙一~龙五
@@ -660,7 +664,7 @@ function _isHighOpen(aucPct) {
  *
  * 剔除口径（与「题材数量 / 一字数」的计数口径同源）：
  *   · 竞价一字 → 买不进，不占龙位；
- *   · inheritSold === true → 「昨日卖标签继承」的复盘行不占龙位（灰行本身照常参与，见上）；
+ *   · ⛔ inheritSold === true【不排除】：昨日卖标签继承的行也照常参与（09-27 用户口径）；
  *   · 十日涨幅缺失 → §10：绝不当 0 参与比较，直接排不进龙位。
  *
  * @param {Array<{name:string, pct:number|null, aucPct:number|null, isYiZi?:boolean,
@@ -672,7 +676,7 @@ function _rankCandidates(rows, dragon) {
   const out = [];
   (rows || []).forEach(function(r) {
     if (!r || !r.name || r.isYiZi) return;                 // 一字买不进 → 不占龙位
-    if (r.inheritSold === true) return;                    // 昨日已卖出的复盘行不占龙位
+    // ⛔ 不再因「灰行 / 昨日卖标签继承」而剔除（09-27 用户口径）
     const pct = _num(r.pct);
     if (pct === null) return;                              // §10：缺十日涨幅 → 排不进龙位
     const d = dragon.get(r.name);
@@ -1483,7 +1487,8 @@ export function buildRulesLines() {
     '　　（9/8 大消费龙一国芳集团、农业龙一万向德农都是灰行）；只是【不计入】题材数量 / 一字数',
     '　　（与早盘竞价统计条同口径）。灰行来源与早盘竞价的注入行完全同源：竞昨高光继承 + 昨日买标签',
     '　　继承 + 昨日龙头名册继承壳。',
-    '　【「昨日卖标签继承」的复盘行】昨天已卖出 → 不占龙位、也不入选买点。',
+    '　【「昨日卖标签继承」的行（灰色实心卖标签）】同样照常参与龙位与选票 —— 9/8 大消费龙一国芳集团',
+    '　　就是「灰名 + 灰题材 + 灰色实心卖标签」，它照样是龙一、照样入选买点。',
     '　【低开龙一的提醒】龙一竞价低开时，请自行看它的竞价图形：若出现【跌停 L 形】→ 尾盘买',
     '　　（本看板没有分时数据、不做图形判断，只给这段文字提醒）。',
     '　重仓与轻仓混在同一个题材块里，序号连续，仓位写在每行行尾。',

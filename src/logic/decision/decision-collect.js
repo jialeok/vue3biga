@@ -172,7 +172,8 @@ export function collectDecisionData(date) {
   //      这与 dragon-group.js#_buildPool 的候选池口径也是同一套（只是它没导出，故在此按同一顺序复刻）。
   //
   //   countable=false ⇒ 不进题材数量 / 一字数统计（与早盘竞价统计条同口径）；
-  //   inheritSold=false ⇒ 参与龙位与选票（真正被排除的是「昨日卖标签继承」的复盘行）。
+  //   龙位与选票【不因任何灰行身份而排除】—— 连「昨日卖标签继承」的行也照常参与
+  //   （2026-09-27 修正：9/8 大消费龙一国芳集团就是「灰名 + 灰题材 + 灰色实心卖标签」，用户要它入选）。
   const _grayNames = new Set();
   try {
     const obs = prevDate ? getJingYestHighlightSetForDate(prevDate, 'auction') : null;
@@ -201,7 +202,7 @@ export function collectDecisionData(date) {
     const rm = rangeMap.get(nm);
     // §10：没有十日涨幅就排不进龙位，补进来只是噪声 → 不补
     if (!rm || rm.pct === null || rm.pct === undefined) return;
-    if (inheritSold.has(nm)) return;                // 昨天已卖出 → 不补
+    // ⛔ 不再因「昨日卖标签继承」跳过（09-27 用户口径：这类灰行也要能入选买点）
     seen.add(nm);
     const meta = prevDragonMap ? prevDragonMap.get(nm) : null;
     const raw = _dayRowMap.get(nm) || { stock: nm, code: (meta && meta.code) || '' };

@@ -121,15 +121,17 @@ describe('rankDecisionTopics', () => {
 //   根因：龙位候选集没被「当日正式列表 / 计入统计的行」约束 ⇒ 灰行（继承壳、复盘行）
 //   占了名次，把真龙一 / 真龙二往后挤。
 describe('rankDragons（龙一 / 龙二 位次口径）', () => {
-  it('「昨日卖标签继承」的复盘行（inheritSold）【不占龙位】', () => {
-    // 「复盘」十日涨幅最高，但它是昨日卖标签继承的复盘行 → 不计数、也不该当龙一
+  // [2026-09-27 修正] 「昨日卖标签继承」的行（早盘竞价里是灰色实心卖标签）【照常占龙位】：
+  //   9/8 大消费龙一国芳集团就是这种行，上一版把它过滤掉 ⇒ 第一买点没选进来。
+  it('「昨日卖标签继承」的行（inheritSold）【照常占龙位】', () => {
     const blocks = rankDecisionTopics([
-      E('复盘', 'T1', 99, false, true, null, '', true), E('真龙一', 'T1', 30), E('真龙二', 'T1', 20)
+      // countable=false（统计不计它）+ inheritSold=true（昨日卖标签继承）——两者在采集层成对出现
+      E('卖标签继承', 'T1', 99, false, false, null, '', true), E('正式一', 'T1', 30), E('正式二', 'T1', 20)
     ]);
+    expect(blocks[0].count).toBe(2);                 // 统计仍只数正式成员
     const dragon = rankDragons(blocks);
-    expect(dragon.get('复盘')).toBeUndefined();
-    expect(dragon.get('真龙一').rank).toBe(1);
-    expect(dragon.get('真龙二').rank).toBe(2);
+    expect(dragon.get('卖标签继承').rank).toBe(1);
+    expect(dragon.get('正式一').rank).toBe(2);
   });
 
   // [GRAY-DRAGON 2026-09-26] 灰行 = 不在当日正式列表（早盘竞价画灰），用户要求【照常参与】龙位：
@@ -1014,6 +1016,26 @@ describe('灰行参与选票（GRAY-DRAGON）', () => {
     expect(plan.heavy.picks[0].name).toBe('老龙灰行');
     expect(plan.heavy.picks[0].position).toBe(POSITION_HEAVY);
     // 数量统计仍然只数正式成员（灰行不计入）：共 6 只，其中灰行 1 只 → 5 只
+    expect(plan.heavy.block.count).toBe(5);
+  });
+
+  // 9/8 大消费原型：龙一国芳集团（灰名 + 灰题材 + 灰色实心卖标签），龙二~龙五全是竞价一字
+  // （其中还有灰行的一字）→ 只能跳过一字，往下取龙六云南旅游。
+  it('龙一=卖标签继承的灰行 + 龙二~龙五全是一字 → 龙一重仓 + 龙六重仓（9/8 大消费）', () => {
+    const blocks = rankDecisionTopics([
+      E('国芳集团', 'T', 96, false, false, 2, '', true),   // 龙一：灰行 + 昨日卖标签继承
+      E('一字二', 'T', 80, true),
+      E('一字三', 'T', 70, true, false),                   // 灰行的一字，同样买不进
+      E('一字四', 'T', 60, true),
+      E('一字五', 'T', 50, true),
+      E('云南旅游', 'T', 40, false, true, 5),              // 龙六 → 选它
+      E('补充', 'T', 30, false, true, 1),                  // ⛔ 让正式成员凑够 5 只，避开 ⑥ 兜底
+      E('X一', 'X', 20), E('X二', 'X', 10)
+    ]);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['国芳集团', '云南旅游']);
+    expect(plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_HEAVY]);
+    // 统计口径不变：灰行不计入数量（正式成员 5 只）
     expect(plan.heavy.block.count).toBe(5);
   });
 
