@@ -799,17 +799,21 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // 数据来自 dragon-rank.js 的异步缓存（10日区间涨幅，猫抓 daily 一次批量请求 + 云端缓存省额度）；
   // 未加载/无数据时 dragonRankMap 为 null → 行上不显示徽章、组内保持原顺序，绝不阻塞渲染。
   //
-  // [NOT-FORMAL-DRAGON 2026-09-25] 候选集必须 = 【当天正式列表】（_listedNames），与题材统计条 /
-  // 组间排序 / 行着色同源（§6 单一真相）。
-  //   为什么要这道过滤：renderList = auctionList + 注入行（观察组壳 / 龙头继承壳 / 补一字补入行），
-  //   注入行正是界面上「灰色股票名 + 灰色题材」的那些 —— 它们【不在当天正式列表里】，却同样能在
-  //   stock_range_pct 里查到十日涨幅。旧实现不过滤 ⇒ 灰行占掉龙一/龙二位次，把真龙一挤成龙二、
-  //   真龙二挤成龙三（用户 2026-09-25 反馈：9/16 电子/通信/算力 龙一被判成高开、
-  //   9/17 龙二被判成高开）。
-  //   ⚠️ 只过滤【龙位候选集】，不动 topicColorMap（底色）与渲染集合 —— 灰行仍照常渲染在组里，
-  //      只是不挂龙标、不占用名次（用户 2026-09-23 反馈「底色没了」的坑别再踩）。
-  //   §10：正式成员索引未就绪时 getTodayGroupList 退化为原始列表 → _listedNames 覆盖全量，
-  //       ⛔ 绝不把整列表判成「不在列表」（不会整片丢龙标）。
+  // [GRAY-DRAGON 2026-09-26] 候选集 = 【renderList 全部行】，灰行照常参与同题材龙位排名。
+  //   renderList = auctionList + 注入行（观察组壳 / 龙头继承壳 / 补一字补入行）。注入行就是界面上
+  //   「灰色股票名 + 灰色题材」的那些 —— 它们【不在当天正式列表】，但同样能在 stock_range_pct 里
+  //   查到十日涨幅，用户要求【它们也要排龙一 / 龙二 / …】（9/8 国芳股份 96.45% 应为龙一，
+  //   沃华医药 / 爱仕达 / 百大集团 同理），只是【灰色名称 + 灰色题材保持不变】，
+  //   这样一眼仍能看出「它不在今天的正式列表里」。
+  //
+  //   ⛔ 这里【曾经】加过 `if (!_listedNames.has(nm)) return;` 的闸门（2026-09-25 修决策看板
+  //      9/16 / 9/17 龙位错位时误加的），结果是早盘竞价里灰行整片丢龙标 —— 本次移除。
+  //      那道闸门本来也修不到决策看板：决策看板的龙位走 decision-rules.js 自己的 rankDragons
+  //      （候选 = 它自己的题材块成员），【根本不读本文件的 dragonRankMap】。
+  //      ⇒ 教训：各看板是独立业务模块（§15），「某个看板要排除非正式成员」只能写在该看板自己的
+  //        规则里，⛔ 不能改早盘竞价共用的龙位函数（§6 单一真相 ≠ 让别的看板替我做过滤）。
+  //
+  //   §10：dragonPctMap 未加载 / 某行缺十日涨幅 → 该行不参与排名（不是当 0），绝不影响其它行。
   let dragonRankMap = null;
   const _buildDragonRankMap = function(order) {
     if (!sortState.byTopic || !primaryTopicOfForColor) return null;
@@ -820,7 +824,6 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       const raw = renderList[i];
       const nm = raw && raw.stock ? String(raw.stock).trim() : '';
       if (!nm || !dragonPctMap.has(nm)) return;
-      if (!_listedNames.has(nm)) return;              // 灰行（不在当天正式列表）不占龙位
       const pct = dragonPctMap.get(nm).pct;
       if (pct === null || pct === undefined || isNaN(pct)) return;
       dragonEntries.push({ name: nm, topic: primaryTopicOfForColor(i), pct: pct });
