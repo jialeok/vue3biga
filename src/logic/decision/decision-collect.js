@@ -185,10 +185,6 @@ export function collectDecisionData(date, opts) {
       // 当日竞价涨幅（%）：null = 缺数据。解析器复用 limit-up.js#parseAucPct（§6 单一实现），
       // 与早盘竞价「龙标红底 = 竞价涨幅>0」完全是同一个值 —— 决策看板说的是「买红色的那几只」。
       aucPct: parseAucPct(raw ? (raw.auc_pct_chg || raw.aucPctChg) : null),
-      // [LOSS-EFFECT 2026-09-27] 收盘涨幅（%）：null = 缺数据。
-      //   只用于「亏钱效应」的【收盘跌停】判据（getCloseLimitState）—— 复盘历史日才有值，
-      //   9:25 盘中决策时 change_pct 还没抓回来 → null → 不会用「今天的收盘」去污染盘中决策（§10）。
-      closePct: parseAucPct(raw ? (raw.change_pct || raw.changePct) : null),
       pct: (rm && rm.pct !== undefined && rm.pct !== null) ? rm.pct : null,
       countable: countable,
       inheritSold: inheritSold.has(nm)
