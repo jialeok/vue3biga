@@ -217,6 +217,14 @@
             color: #475569;
         }
 
+        /* 【规则编号】2026-09-27 用户口径：选票说明要标「规则几」，像法律条文一样能查出处。
+           编号由 Logic 层给出（RULE_NO），此处只负责视觉 —— ⛔ 不做任何判断（§21）。 */
+        .dcb-rule-no {
+            margin-left: 2px;
+            color: #1d4ed8;
+            font-weight: 600;
+        }
+
         .dcb-block-note {
             margin-top: 4px;
             font-size: 11px;

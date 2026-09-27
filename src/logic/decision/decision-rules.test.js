@@ -33,7 +33,10 @@ import {
   POSITION_LIGHT,
   HOLD_TAG,
   BUY_COUNT_MAX_SMALL,
-  BUY_COUNT_MAX_MID
+  BUY_COUNT_MAX_MID,
+  RULE_NO,
+  ruleTag,
+  DUAL_MAIN_MIN_COUNT
 } from './decision-rules.js';
 import { getDragonLabel } from '../auction/dragon-rank.js';
 
@@ -321,7 +324,9 @@ describe('buildBuyPlan', () => {
   it('理由文案：题材排第几 + 股票数量 + 一字数', () => {
     const blocks = rankDecisionTopics(entries);
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
-    expect(plan.heavy.reason).toBe('题材排第一，股票数量11只，2个竞价一字');
+    // ⛔ 2026-09-27：理由尾部会追加「→ 根据规则①」出处（用户要求像法律条文能查出处），故改用 toContain
+    expect(plan.heavy.reason).toContain('题材排第一，股票数量11只，2个竞价一字');
+    expect(plan.heavy.reason).toContain('根据规则' + RULE_NO.HEAVY_DOUBLE);
     expect(plan.light.reason).toContain('题材排第二，股票数量2只，0个竞价一字');
     expect(plan.light.reason).toContain('龙一不是一字则直接买龙一');
   });
@@ -1658,5 +1663,175 @@ describe('持有 / 加仓标记（HOLD）', () => {
     const plan2 = buildSellPlan(rows, blocks, dragon, new Set(), new Set());
     expect(plan2[0].items[0].holdTag).toBe('');
     expect(plan2[0].items[0].sellAt).toBe(SELL_TIME_CLOSE);
+  });
+});
+
+// === [2026-09-27] ⑨ 双主线竞争：两个大容量题材并存 → 比竞价高开率，谁高谁重仓 ===
+/**
+ * 9/10 真实形态（用户给的锚点）：
+ *   农业 11 只（龙一敦煌种业，2 个竞价一字）、竞价高开 5 只 = 45%；
+ *   大消费 10 只（龙一国芳集团，1 个竞价一字）、竞价高开 8 只 = 80%。
+ *   ⇒ 大消费龙一国芳集团【重仓】，农业龙一敦煌种业【轻仓】，各只选 1 只。
+ */
+function NONGYE_11() {
+  return [
+    E('敦煌种业', '农业', 53.49, false, true, -1.55, '600354'),   // 龙一（低开）
+    E('新农开发', '农业', 40, true, true, 10.05, '600359'),        // 一字 · 高开
+    E('农票H', '农业', 38, true, true, 9.99),                      // 一字 · 高开
+    E('中粮科技', '农业', 26, false, true, 6.71, '000930'),        // 高开
+    E('新赛股份', '农业', 30, false, true, 1.94, '600540'),        // 高开
+    E('亚盛集团', '农业', 28, false, true, 1.58, '600108'),        // 高开
+    E('泸天化', '农业', 24, false, true, -7.69, '000912'),
+    E('农票G', '农业', 20, false, true, -1),
+    E('农票I', '农业', 18, false, true, -2),
+    E('农票J', '农业', 16, false, true, -3),
+    E('农票K', '农业', 12, false, true, -4)
+  ];
+}
+function XIAOFEI_10() {
+  return [
+    E('国芳集团', '大消费', 99.34, false, true, -2.22, '601086'),  // 龙一（低开）
+    E('桂林旅游', '大消费', 50, true, true, 9.99, '000978'),       // 一字 · 高开
+    E('百大集团', '大消费', 18, false, true, 8.8, '600865'),
+    E('中百集团', '大消费', 30, false, true, 5.67, '000759'),
+    E('云南旅游', '大消费', 40, false, true, 4.83, '002059'),
+    E('会稽山', '大消费', 20, false, true, 3.79, '601579'),
+    E('海欣食品', '大消费', 12, false, true, 2.33, '002702'),
+    E('华天酒店', '大消费', 14, false, true, 2.1, '000428'),
+    E('安记食品', '大消费', 16, false, true, 0.83, '603696'),
+    E('红棉股份', '大消费', 10, false, true, -1, '000523')
+  ];
+}
+function plan0910() {
+  const blocks = rankDecisionTopics(NONGYE_11().concat(XIAOFEI_10()));
+  return { blocks: blocks, plan: buildBuyPlan(blocks, rankDragons(blocks)) };
+}
+
+describe('⑨ 双主线竞争：两个大题材并存 → 比竞价高开率（DUAL-MAIN）', () => {
+  it('先钉死事故现场：农业 11 只 2 一字（第 1 名）、大消费 10 只 1 一字（第 2 名）', () => {
+    const r = plan0910();
+    expect(r.blocks[0].topic).toBe('农业');
+    expect(r.blocks[0].count).toBe(11);
+    expect(r.blocks[0].yiziCount).toBe(2);
+    expect(r.blocks[1].topic).toBe('大消费');
+    expect(r.blocks[1].count).toBe(10);
+    expect(r.blocks[1].yiziCount).toBe(1);
+  });
+
+  it('9/10：大消费 80% ＞ 农业 45% ⇒ 大消费龙一国芳集团【重仓】、农业龙一敦煌种业【轻仓】', () => {
+    const r = plan0910();
+    // ⛔ 大消费虽然是【第 2 名】，但高开率更高 → 它才是重仓那一档
+    expect(r.plan.heavy.block.topic).toBe('大消费');
+    expect(r.plan.heavy.picks.map(p => p.name)).toEqual(['国芳集团']);
+    expect(r.plan.heavy.picks[0].position).toBe(POSITION_HEAVY);
+    expect(r.plan.light.block.topic).toBe('农业');
+    expect(r.plan.light.picks.map(p => p.name)).toEqual(['敦煌种业']);
+    expect(r.plan.light.picks[0].position).toBe(POSITION_LIGHT);
+  });
+
+  it('各【只选 1 只】（大容量题材并存不铺票）', () => {
+    const r = plan0910();
+    expect(r.plan.heavy.picks.length).toBe(1);
+    expect(r.plan.light.picks.length).toBe(1);
+  });
+
+  it('说明文字必须带【规则⑨】与两个题材的高开率，用户能直接核对', () => {
+    const r = plan0910();
+    const notes = r.plan.heavy.notes.join('｜');
+    expect(notes).toContain(ruleTag(RULE_NO.DUAL_MAIN));
+    expect(notes).toContain('80%');
+    expect(notes).toContain('45%');
+    expect(r.plan.heavy.reason).toContain('根据规则' + RULE_NO.DUAL_MAIN);
+    expect(r.plan.light.reason).toContain('根据规则' + RULE_NO.DUAL_MAIN);
+    expect(r.plan.heavy.ruleNo).toBe(RULE_NO.DUAL_MAIN);
+  });
+
+  it('第 2 名题材不够大（< ' + DUAL_MAIN_MIN_COUNT + ' 只）→ 本条不适用，回到常规档位', () => {
+    const rows = [];
+    for (let i = 1; i <= 11; i++) rows.push(E('农' + i, '农业', 90 - i, i <= 2, true, i <= 5 ? 3 : -1));
+    for (let i = 1; i <= 5; i++) rows.push(E('消' + i, '大消费', 80 - i, false, true, -1));
+    const blocks = rankDecisionTopics(rows);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(blocks[1].count).toBe(5);
+    expect(plan.heavy.block.topic).toBe('农业');
+    expect(plan.heavy.notes.join('｜')).not.toContain(ruleTag(RULE_NO.DUAL_MAIN));
+    expect(plan.heavy.ruleNo).toBe(RULE_NO.HEAVY_DOUBLE);
+  });
+
+  it('§10：某题材一只都没有竞价涨幅 → 高开率未知 → 无从比较 → 退回常规档位', () => {
+    const rows = NONGYE_11().concat(XIAOFEI_10()).map(function(r) {
+      return r.topic === '大消费' ? E(r.name, r.topic, r.pct, r.isYizi, true, null, r.code) : r;
+    });
+    const blocks = rankDecisionTopics(rows);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy.notes.join('｜')).not.toContain(ruleTag(RULE_NO.DUAL_MAIN));
+  });
+
+  it('高开率【完全相同】→ 维持原排名（第 1 名重仓），并如实说明', () => {
+    const rows = [];
+    for (let i = 1; i <= 11; i++) rows.push(E('农' + i, '农业', 90 - i, i <= 2, true, i <= 5 ? 3 : -1));
+    for (let i = 1; i <= 11; i++) rows.push(E('消' + i, '大消费', 80 - i, i === 1, true, i <= 5 ? 3 : -1));
+    const blocks = rankDecisionTopics(rows);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy.block.topic).toBe('农业');       // 并列 → 第 1 名胜出
+    expect(plan.heavy.notes.join('｜')).toContain('完全相同');
+  });
+});
+
+// === [2026-09-27] 说明文字必须标注规则编号（用户口径：像法律条文一样能查出处）===
+describe('规则编号标注（RULE-NO）', () => {
+  it('RULE_NO 每个编号唯一（编号一旦撞车，用户就分不清是哪条规则）', () => {
+    const vals = Object.keys(RULE_NO).map(k => RULE_NO[k]);
+    expect(new Set(vals).size).toBe(vals.length);
+  });
+
+  it('① 常规档位的理由与说明都带编号', () => {
+    // ⛔ T1 刻意 6 只：≤4 只 + 1~2 个一字会命中 ⑥「小题材 + 一字」兜底，被它截走就测不到常规档位
+    const blocks = rankDecisionTopics([
+      E('一字A', 'T1', 90, true, true, 10), E('一字B', 'T1', 80, true, true, 9.98),
+      E('票C', 'T1', 70, false, true, 8), E('票D', 'T1', 60, false, true, 7),
+      E('票E', 'T1', 50, false, true, 6), E('票F', 'T1', 40, false, true, 5),
+      E('T2一', 'T2', 30), E('T2二', 'T2', 20)
+    ]);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy.reason).toContain('根据规则' + RULE_NO.HEAVY_DOUBLE);
+    expect(plan.heavy.ruleNo).toBe(RULE_NO.HEAVY_DOUBLE);
+    expect(plan.light.reason).toContain('根据规则' + RULE_NO.SECOND);
+  });
+
+  it('⑦⑧⑩⑪ 的说明都带编号', () => {
+    // 12 只里只有 2 只高开（≈17% < 35%）→ ⑧；第 1 名题材 12 只 → ⑩ 不触发，改用 ⑦ 造一条
+    const rows = [
+      E('敦煌种业', '农业', 80, false, true, 3, '600354'),
+      E('跌停票', '农业', 70, false, true, -10, '000930'),         // 竞价一字跌停 → ⑦
+      E('一字A', '农业', 60, true, true, 10),
+      E('一字B', '农业', 55, true, true, 9.98)
+    ];
+    for (let i = 1; i <= 8; i++) rows.push(E('农票' + i, '农业', 50 - i, false, true, -1 - i));
+    const blocks = rankDecisionTopics(rows);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks), { prevBuyNames: new Set(['敦煌种业']) });
+    const notes = plan.heavy.notes.join('｜');
+    expect(notes).toContain(ruleTag(RULE_NO.LOSS_EFFECT));   // ⑦
+    expect(notes).toContain(ruleTag(RULE_NO.WEAK_OPEN));     // ⑧
+    expect(notes).toContain(ruleTag(RULE_NO.HOLD));          // ⑪
+  });
+
+  it('⑩ 买入只数的说明带编号', () => {
+    const blocks = rankDecisionTopics([
+      E('一字A', 'T1', 90, true, true, 10), E('一字B', 'T1', 80, true, true, 9.98),
+      E('票C', 'T1', 70, false, true, 8), E('票D', 'T1', 60, false, true, 7),
+      E('票E', 'T1', 50, false, true, 6), E('票F', 'T1', 40, false, true, 5),
+      E('T2一', 'T2', 30), E('T2二', 'T2', 20)
+    ]);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(blocks[0].count).toBe(6);
+    expect(plan.heavy.notes.join('｜')).toContain(ruleTag(RULE_NO.BUY_COUNT));
+  });
+
+  it('规则说明清单（灰色问号）里的编号与 RULE_NO 一致，且不重复', () => {
+    const text = buildRulesLines().join('\n');
+    expect(text).toContain('⑨ 【双主线竞争】');
+    expect(text).toContain('⑩ 【买入只数】');
+    expect(text).toContain('⑪ 【' + HOLD_TAG + '】');
   });
 });

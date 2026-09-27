@@ -19,9 +19,12 @@
       :count="block.block.count"
       :yizi="block.block.yiziCount"
     />
-    <!-- 第二行：选择理由 -->
+    <!-- 第二行：选择理由（理由里已含「根据规则N」；规则编号由 Logic 层给出，⛔ 模板零计算 §21） -->
     <div class="dcb-reason-line">
-      选择理由：{{ block.reason }}
+      选择理由：{{ block.reason }}<span
+        v-if="block.ruleNo"
+        class="dcb-rule-no"
+      >（规则{{ block.ruleNo }}）</span>
     </div>
     <!-- 第三行起：选中的股票（重仓 / 轻仓混排，序号连续） -->
     <div
