@@ -886,7 +886,17 @@ export function buildNoYiziPlan(topicGroups, opts) {
     totalPicks += picks.length;
     out.blocks.push({
       // 复用买点块的数据结构，让 UI 直接复用 DecisionBuyBlock（⛔ 不另写一套渲染）
-      block: { topic: g.topic, rank: null, count: Number(g.count) || 0, yiziCount: 0 },
+      // [WEAK-OPEN 2026-09-27] count / members 一律取【早盘竞价同名题材块】（§6 同源）：
+      //   ⑦ 亏钱效应、⑧ 弱势题材都是「分母 = block.count、分子 = block.members 里数出来的」，
+      //   两者必须来自同一份数据 —— 分母用连板天梯的只数、分子用早盘竞价的行，
+      //   会把高开率算成一个两边都不认的假数字。早盘竞价没有同名题材块时才退回天梯口径。
+      block: {
+        topic: g.topic,
+        rank: null,
+        count: blk ? (Number(blk.count) || 0) : (Number(g.count) || 0),
+        yiziCount: 0,
+        members: blk ? blk.members : (g.rows || [])
+      },
       rankWord: '',
       reason: '全部题材竞价一字 0 个；该题材在连板天梯「题材连扳」里股票数量最多（' +
         (Number(g.count) || 0) + ' 只），只买龙一 / 龙二中【竞价高开】的票',
@@ -1022,7 +1032,17 @@ export function buildSmallTopicPlan(auctionBlocks, dragonMap, opts) {
 
     totalPicks += picks.length;
     out.blocks.push({
-      block: { topic: w.topic, rank: null, count: w.auctionCount, yiziCount: w.block.yiziCount || 0 },
+      // [WEAK-OPEN 2026-09-27] members 必须带上：⑦⑧ 要在【早盘竞价题材块】的成员里数
+      //   「竞价一字跌停 / 竞价高开」的只数。上一版这里只给了 count，members 缺失 ⇒
+      //   `_applyWeakOpenRate` 走到 `members.length === 0` 直接 return ⇒ 弱势题材规则在
+      //   兜底方案里【永远不生效】（9/11 农业 12 只 / 3 只高开 = 25% 却照常选出 2 只）。
+      block: {
+        topic: w.topic,
+        rank: null,
+        count: w.auctionCount,
+        yiziCount: w.block.yiziCount || 0,
+        members: w.block.members || []
+      },
       rankWord: '',
       reason: idx === 0
         ? ('该题材在早盘竞价中股票数量最多（' + w.auctionCount + ' 只）→ 在龙一~龙五里取竞价高开的两只：' +
@@ -1164,23 +1184,27 @@ function _applyWeakOpenRate(blockObj) {
     return blockObj;
   }
 
-  // 分母刻意用【有数据的行数】而不是总行数：缺数据的行既不等于高开、也不等于没高开，
-  //   算进分母会把「数据不全」伪装成「没人高开」，从而误触发（§10）。
-  const rate = highCount / knownCount;
+  // ══ 分母 = 【题材股票总数 total】，不是「有数据的行数」══
+  // ⛔ 上一版用 knownCount 当分母，实战直接失效：
+  //    灰行（观察组 / 昨日龙头继承壳）在很多日期【拿不到 auc_pct_chg】→ aucPct = null，
+  //    于是 12 只的题材分母被缩成 7 只，3 只高开算成 43%（≥35%）→ 规则不触发。
+  //    用户口径是「12 只里只有 3 只高开 = 25%」，看的正是题材总数那一档（9/11 农业即此情形）。
+  //    缺数据的行按【没高开】计入分母 —— 9:25 看不到它高开，就不能把它算进题材强度（§10 不猜它是高开）。
+  const rate = highCount / total;
   const rateText = Math.round(rate * 100) + '%';
-  const base = '题材共 ' + total + ' 只（有竞价涨幅 ' + knownCount + ' 只），竞价高开 ' +
-    highCount + ' 只 = ' + rateText;
+  const base = '题材共 ' + total + ' 只，竞价高开 ' + highCount + ' 只 = ' + rateText;
+  const unknownTail = unknownCount > 0
+    ? '（另有 ' + unknownCount + ' 只缺竞价涨幅，按未高开计入分母，§10 不猜）'
+    : '';
+  // 没触发也把高开率写出来 —— 用户能直接核对「为什么还是常规档位」，不用猜
   if (rate >= WEAK_OPEN_RATE) {
-    if (unknownCount > 0) {
-      blockObj.notes = blockObj.notes || [];
-      blockObj.notes.push(base + '（≥ ' + Math.round(WEAK_OPEN_RATE * 100) +
-        '%）→ 未触发弱势题材规则；另有 ' + unknownCount + ' 只缺竞价涨幅，不计入（§10 不猜）');
-    }
+    blockObj.notes = blockObj.notes || [];
+    blockObj.notes.push(base + ' ≥ ' + Math.round(WEAK_OPEN_RATE * 100) +
+      '% → 高开率正常，弱势题材规则不生效' + unknownTail);
     return blockObj;
   }
-  let note = base + '（< ' + Math.round(WEAK_OPEN_RATE * 100) + '%）→ 题材虚胖（大部分票都不高开）';
-  if (unknownCount > 0) note += '；另有 ' + unknownCount + ' 只缺竞价涨幅，不计入（§10 不猜）';
-  return _collapseToDragonOneLight(blockObj, note);
+  return _collapseToDragonOneLight(blockObj,
+    base + ' < ' + Math.round(WEAK_OPEN_RATE * 100) + '% → 题材虚胖（大部分票都不高开）' + unknownTail);
 }
 
 /**
@@ -1236,14 +1260,24 @@ function _finishBuyBlock(blockObj, opts) {
 }
 
 /**
- * 兜底方案（无一字 / 小题材 / 大题材）的统一收口：逐块走【亏钱效应 + 持有标记】。
+ * 兜底方案（无一字 / 小题材 / 大题材）的统一收口：逐块走【亏钱效应 + 弱势题材 + 持有标记】。
  * ⛔ 这类方案【不走】_capPicksByTopicCount —— 用户口径「买入只数」只针对【第 1 名题材】
  *    （①②③④ 的常规档位），兜底方案本来就只取 1~2 只，再砍一次反而会空仓。
+ *
+ * [WEAK-OPEN 2026-09-27] ⑧ 弱势题材【必须在这里也走一遍】——
+ *   事故：9/11 农业 12 只、只有 3 只竞价高开（25% < 35%），用户预期「只选龙一敦煌种业轻仓」，
+ *   实际却选出了 2 只（敦煌种业 + 新农开发）。根因不是阈值、也不是分母：
+ *     当天【第 1 名题材 = 电力新能源（4 只 / 1 个一字）】命中「小题材高风险」，
+ *     buildBuyPlan 直接走 ⑥ 兜底方案（smallTopic），由「题材连扳里数量最多」挑中了农业，
+ *     而兜底方案走的是 _finishPlanBlocks —— 上一版这里【只调 _applyLossEffect】，
+ *     压根没调 _applyWeakOpenRate ⇒ ⑧ 在这条链路上从未生效过。
+ *   ⛔ 规则是「入选题材」的筛选条件，与它是被哪条规则选中的无关 —— 必须对所有买点块一视同仁。
  */
 function _finishPlanBlocks(planObj, opts) {
   if (!planObj || !planObj.blocks) return planObj;
   planObj.blocks.forEach(function(b) {
     _applyLossEffect(b);
+    _applyWeakOpenRate(b);
     _markHold(b, opts ? opts.prevBuyNames : null);
   });
   return planObj;

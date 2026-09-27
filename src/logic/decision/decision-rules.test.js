@@ -69,12 +69,17 @@ function E(name, topic, pct, isYizi, countable, aucPct, code, inheritSold) {
  *   而 ①②③④ 的常规档位用例原来【只有 5 只】（>4 只是为了避开 ⑥ 小题材兜底），
  *   不撑就会被砍成 1 只 → 常规档位根本测不到。
  *
- * 凑数票刻意设定为：非一字 + 计入数量 + 十日涨幅极低（排到龙位末尾，不影响龙一~龙五）
- *   + 【缺竞价涨幅】（既不参与「竞价涨幅最高」的竞争，也不会被算进 unknownCount）。
+ * 凑数票刻意设定为：非一字 + 计入数量 + 十日涨幅极低（排到龙位末尾，不影响龙一~龙五）。
+ *
+ * ⚠️ 竞价涨幅设为【+0.1（小高开）】而不是 null，是刻意的：
+ *    ⑧「弱势题材」规则的分母 = 题材股票总数，缺竞价涨幅的行按【未高开】计入分母。
+ *    凑数票若填 null，会把样例题材的高开率一路拉到 0%，于是每个 > 10 只的用例
+ *    都被⑧砍成「只买龙一轻仓」—— 那就测不到 ①②③④ 的常规档位了。
+ *    +0.1 又足够小，不会在 pickHeavyTwo 里抢走「竞价涨幅最高」那一只（真实票都 ≥ 1%）。
  */
 function FILLER(topic, n) {
   const out = [];
-  for (let i = 0; i < n; i++) out.push(E('凑' + topic + (i + 1), topic, -100 - i));
+  for (let i = 0; i < n; i++) out.push(E('凑' + topic + (i + 1), topic, -100 - i, false, true, 0.1));
   return out;
 }
 
@@ -232,8 +237,9 @@ describe('buildBuyPlan', () => {
   //    ② [BUY-COUNT 2026-09-27] ≤6 / ≤10 只会被「买入只数」规则砍成 1 / 2 只，
   //       同样测不到 ①②③④ 的完整档位 —— 所以这里补 6 只凑数票撑过 10 只。
   const entries = [
-    E('一字A', 'T1', 40, true), E('一字B', 'T1', 39, true), E('可买C', 'T1', 30), E('可买D', 'T1', 20),
-    E('可买E', 'T1', 5),
+    E('一字A', 'T1', 40, true, true, 10), E('一字B', 'T1', 39, true, true, 9.98),
+    E('可买C', 'T1', 30, false, true, 3), E('可买D', 'T1', 20, false, true, 2),
+    E('可买E', 'T1', 5, false, true, 1),
     // ⛔ T2 必须带 aucPct：第 2 名题材现在只选【竞价高开】的票，缺竞价涨幅 → 选不出来
     E('T2一', 'T2', 10, false, true, 2), E('T2二', 'T2', 9, false, true, -1),
     E('T3一', 'T3', 5), E('T3二', 'T3', 4)
@@ -1440,6 +1446,116 @@ describe('⑧ 弱势题材：大题材却没人高开（WEAK-OPEN）', () => {
     expect(plan.heavy.picks[0].position).toBe(POSITION_LIGHT);
     expect(plan.heavy.notes.join('｜')).toContain('竞价一字跌停');
     expect(plan.heavy.notes.join('｜')).toContain('题材虚胖');
+  });
+});
+
+// === [2026-09-27 事故回归] ⑧ 弱势题材【也必须覆盖兜底方案】 ===
+// 事故：9/11 农业 12 只、只有 3 只竞价高开（25% < 35%），用户预期「只选龙一敦煌种业轻仓」，
+//   实际却选出 2 只（敦煌种业 + 新农开发）。根因不是阈值、也不是分母口径：
+//   当天第 1 名题材 = 电力新能源（4 只 / 1 个一字）命中「高风险小题材」，
+//   buildBuyPlan 走 ⑥ 兜底（smallTopic）→ 由「题材连扳里数量最多」挑中农业，
+//   而兜底方案走的是 _finishPlanBlocks —— 上一版那里【只调了 _applyLossEffect】，
+//   ⑧ 在这条链路上从未被调用过 ⇒ 规则形同虚设。
+// ⛔ 规则是「入选题材」的筛选条件，与它是被哪条规则选中的无关 —— 所有买点块必须一视同仁。
+describe('⑧ 弱势题材也覆盖【兜底方案】（WEAK-OPEN · FALLBACK）', () => {
+  /** 造一个「题材连扳」分组 */
+  function LG(topic, n) { return { topic: topic, count: n, rows: [] }; }
+
+  /**
+   * 9/11 真实形态：
+   *   · 第 1 名题材 = 电力新能源（4 只 / 1 个一字）→ isSmallRiskyTopic ⇒ 走 ⑥ smallTopic 兜底；
+   *   · 题材连扳里数量最多的是农业（12 只）→ 兜底方案挑中农业；
+   *   · 农业 12 只里只有 3 只竞价高开（敦煌种业 +1.75 / 新农开发 +7.68 / 天禾股份 +1.59）= 25%。
+   */
+  function nongYe0911() {
+    const rows = [
+      E('闽东电力', '电力新能源', 39.92, true, true, 9.98, '000993'),
+      E('电票B', '电力新能源', 30, false, true, -1),
+      E('电票C', '电力新能源', 20, false, true, -2),
+      E('电票D', '电力新能源', 10, false, true, -3),
+      E('中新赛克', 'AI应用', 41.24, true, true, 10.01, '605398'),
+      E('A票B', 'AI应用', 20, false, true, -1),
+      E('A票C', 'AI应用', 10, false, true, -2),
+      E('敦煌种业', '农业', 33.61, false, true, 1.75, '600354'),
+      E('新农开发', '农业', 20, false, true, 7.68, '600359'),
+      E('天禾股份', '农业', 16, false, true, 1.59, '002999'),
+      E('金正大', '农业', 14, false, true, 0, '002470')
+    ];
+    ['农票E', '农票F', '农票G', '农票H', '农票I', '农票J', '农票K', '农票L'].forEach(function(n, i) {
+      rows.push(E(n, '农业', 12 - i, false, true, -1 - i * 0.5));
+    });
+    return rows;
+  }
+
+  function plan0911() {
+    const blocks = rankDecisionTopics(nongYe0911());
+    return {
+      blocks: blocks,
+      plan: buildBuyPlan(blocks, rankDragons(blocks), {
+        ladderTopicGroups: [LG('农业', 12), LG('电力新能源', 4), LG('AI应用', 3)],
+        ladderReady: true
+      })
+    };
+  }
+
+  it('确实是走 ⑥ 兜底方案挑中农业的（先钉死事故现场，别让回归测试测了个空）', () => {
+    const r = plan0911();
+    expect(r.plan.smallTopic).not.toBeNull();
+    expect(r.plan.heavy).toBeNull();
+    expect(r.plan.smallTopic.blocks.map(b => b.block.topic)).toEqual(['农业', '电力新能源']);
+    expect(r.blocks.find(b => b.topic === '农业').count).toBe(12);
+  });
+
+  it('9/11 农业 12 只 / 3 只高开（25%）→ 兜底块也只留【龙一敦煌种业】，且轻仓', () => {
+    const r = plan0911();
+    const nong = r.plan.smallTopic.blocks.find(b => b.block.topic === '农业');
+    expect(nong.block.count).toBe(12);
+    expect(nong.picks.map(p => p.name)).toEqual(['敦煌种业']);
+    expect(nong.picks[0].dragonLabel).toBe('龙一');
+    expect(nong.picks[0].position).toBe(POSITION_LIGHT);
+    const notes = nong.notes.join('｜');
+    expect(notes).toContain('题材虚胖');
+    expect(notes).toContain('25%');
+  });
+
+  it('兜底块【members 必须带上】：⑧ 靠它数高开只数，缺了就静默不生效', () => {
+    const r = plan0911();
+    r.plan.smallTopic.blocks.forEach(function(b) {
+      expect(Array.isArray(b.block.members)).toBe(true);
+      expect(b.block.members.length).toBeGreaterThan(0);
+    });
+  });
+
+  it('≤ 10 只的兜底块不受 ⑧ 影响（电力新能源 4 只照常选票）', () => {
+    const r = plan0911();
+    const dian = r.plan.smallTopic.blocks.find(b => b.block.topic === '电力新能源');
+    expect(dian.block.count).toBe(4);
+    expect(dian.notes.join('｜')).not.toContain('题材虚胖');
+    expect(dian.picks.length).toBeGreaterThan(0);
+  });
+
+  // ⓘ noYizi 只在第 1 / 第 2 名题材【都 < BIG_TOPIC_MIN_COUNT(10) 只】时才走得到，
+  //   所以 ⑧（要 > 10 只）在那条链路上天然不会命中；这里钉的是同一处修复的【另一半】：
+  //   ⑦ 亏钱效应此前也因为 members 缺失而在兜底方案里静默失效。
+  it('无一字兜底（noYizi）块同样带 members，⑦ 亏钱效应一样生效', () => {
+    const rows = [
+      E('农龙一', '农业', 60, false, true, 3, '600354'),
+      E('农龙二', '农业', 50, false, true, 5, '600359'),
+      E('农票3', '农业', 40, false, true, -10, '000930')      // 竞价一字跌停
+    ];
+    for (let i = 4; i <= 8; i++) rows.push(E('农票' + i, '农业', 40 - i, false, true, -1));
+    const blocks = rankDecisionTopics(rows);
+    expect(blocks[0].count).toBe(8);                          // < 10 ⇒ 不会先被「大题材兜底」截走
+    const plan = buildBuyPlan(blocks, rankDragons(blocks), {
+      ladderTopicGroups: [LG('农业', 8)],
+      ladderReady: true
+    });
+    expect(plan.noYizi).not.toBeNull();
+    const b0 = plan.noYizi.blocks[0];
+    expect(b0.block.members.length).toBe(8);
+    expect(b0.picks.map(p => p.name)).toEqual(['农龙一']);
+    expect(b0.picks[0].position).toBe(POSITION_LIGHT);
+    expect(b0.notes.join('｜')).toContain('竞价一字跌停');
   });
 });
 
