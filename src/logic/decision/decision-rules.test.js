@@ -48,8 +48,9 @@ import { getDragonLabel } from '../auction/dragon-rank.js';
  * @param {number|null} [aucPct] 竞价涨幅
  * @param {string} [code] 股票代码（判 20% / 30% 涨跌幅板用）
  * @param {boolean} [inheritSold] 是否「昨日卖标签继承」的复盘行（⛔ 唯一【不参与】龙位与选票的行）
+ * @param {number|null} [closePct] 收盘涨幅（%）：只用于「亏钱效应」的【收盘跌停】判据（复盘可见）
  */
-function E(name, topic, pct, isYizi, countable, aucPct, code, inheritSold) {
+function E(name, topic, pct, isYizi, countable, aucPct, code, inheritSold, closePct) {
   return {
     name: name,
     topic: topic,
@@ -58,7 +59,8 @@ function E(name, topic, pct, isYizi, countable, aucPct, code, inheritSold) {
     countable: countable !== false,
     code: code || '',
     inheritSold: inheritSold === true,
-    aucPct: (aucPct === undefined || aucPct === null) ? null : aucPct
+    aucPct: (aucPct === undefined || aucPct === null) ? null : aucPct,
+    closePct: (closePct === undefined || closePct === null) ? null : closePct
   };
 }
 
@@ -1360,6 +1362,62 @@ describe('亏钱效应（LOSS-EFFECT）', () => {
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
     expect(plan.heavy.notes.join('｜')).not.toContain('亏钱效应');
     expect(plan.heavy.picks[0].position).toBe(POSITION_HEAVY);
+  });
+});
+
+// === [2026-09-27 修复] 亏钱效应必须覆盖【收盘跌停】（9/10 农业 · 泸天化）===
+// 事故现场：9/10 当天全市场【没有任何一只】竞价打到跌停价（最深就是泸天化的 -7.69%），
+//   而泸天化【收盘 -10.00%】躺在跌停板里 —— 用户盯的就是这一档。
+//   只判「竞价」时这条规则在复盘日一半日期都失灵，必须补上收盘那一档。
+/**
+ * 9/10 农业 11 只原型（按真实数据摆位）：
+ *   龙一敦煌种业 / 龙二农业一字（那唯一的一字）/ 龙三泸天化（竞价 -7.69% 但收盘 -10.00%）/
+ *   龙四新赛股份 / 龙五亚盛集团 + 5 只真实票 + 6 只凑数 = 11 只。
+ * 未加亏钱效应时正好复现用户看到的结果：敦煌种业（重仓）+ 新赛股份 / 亚盛集团（轻仓）。
+ */
+function NONGYE0910(lutianhuaClose) {
+  return [
+    E('敦煌种业', '农业', 80, false, true, 3, '', false, -1.5),
+    E('农业一字', '农业', 75, true, true, 10, '', false, 10),
+    E('泸天化', '农业', 70, false, true, -7.69, '000912', false, lutianhuaClose),
+    E('新赛股份', '农业', 60, false, true, 2, '', false, 1.2),
+    E('亚盛集团', '农业', 55, false, true, 1.5, '', false, 0.8),
+    E('X一', 'X', 20), E('X二', 'X', 10)
+  ].concat(FILLER('农业', 6));
+}
+describe('亏钱效应 · 收盘跌停（LOSS-EFFECT / CLOSE）', () => {
+  it('先复现故障现场：不判收盘时，农业就是「敦煌种业 + 新赛股份 / 亚盛集团」3 只', () => {
+    const blocks = rankDecisionTopics(NONGYE0910(-9.0));   // 收盘大跌但没跌停
+    expect(blocks[0].count).toBe(11);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['敦煌种业', '新赛股份', '亚盛集团']);
+    expect(plan.heavy.notes.join('｜')).not.toContain('亏钱效应');
+  });
+
+  it('9/10 农业 11 只：泸天化【竞价没跌停、收盘 -10.00% 跌停】→ 只买敦煌种业（龙一、轻仓）', () => {
+    const blocks = rankDecisionTopics(NONGYE0910(-10.00));
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['敦煌种业']);
+    expect(plan.heavy.picks[0].dragonLabel).toBe('龙一');
+    expect(plan.heavy.picks[0].position).toBe(POSITION_LIGHT);
+    const notes = plan.heavy.notes.join('｜');
+    expect(notes).toContain('收盘跌停');
+    expect(notes).toContain('泸天化');
+  });
+
+  it('只是收盘大跌但【没跌停】→ 不触发', () => {
+    const blocks = rankDecisionTopics(NONGYE0910(-9.0));
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy.notes.join('｜')).not.toContain('亏钱效应');
+    expect(plan.heavy.picks[0].position).toBe(POSITION_HEAVY);
+    expect(plan.heavy.picks.length).toBe(3);
+  });
+
+  it('盘中实时决策（收盘涨幅还没抓回来 = null）→ 收盘判据自动失效，不污染当日决策', () => {
+    const blocks = rankDecisionTopics(NONGYE0910(null));
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy.notes.join('｜')).not.toContain('亏钱效应');
+    expect(plan.heavy.picks.length).toBe(3);   // 常规「龙一重仓 + 龙四 / 龙五轻仓」
   });
 });
 

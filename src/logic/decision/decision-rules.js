@@ -24,9 +24,12 @@
 //
 // 【亏钱效应 / 买入只数 / 持有标记（2026-09-27 用户口径）】三条【后置收口】规则，
 //   统一在 _finishBuyBlock 里按固定顺序执行（先砍票 → 再标仓位 → 最后标持有）：
-//   一 亏钱效应：入选题材里只要有【≥ 1 只竞价一字跌停】（9:25 竞价就打在跌停价上）
-//      ⇒ 题材内部出现亏钱效应 ⇒ 【只买龙一】且【只轻仓】（题材 > 10 只 / < 10 只都一样处理）。
-//      例：9/11 农业 12 只、9/10 农业 11 只 → 都只买敦煌种业（龙一、轻仓）。
+//   一 亏钱效应：入选题材里只要有【≥ 1 只跌停】⇒ 题材内部出现亏钱效应 ⇒ 【只买龙一】且【只轻仓】
+//      （题材 > 10 只 / < 10 只都一样处理）。「跌停」有两条并列判据（详见 _dianTingKind）：
+//        ⓵ 竞价一字跌停：9:25 竞价报价就打在跌停价上 —— 盘中实时决策唯一可信的那条；
+//        ⓶ 收盘跌停：全天走完收在跌停价上 —— 只有【复盘历史日】才有值（9:25 时还没数据）。
+//      例：9/11 农业 12 只（中粮科技竞价 -10.00%）→ 只买敦煌种业（龙一、轻仓）；
+//          9/10 农业 11 只（泸天化竞价 -7.69%、收盘 -10.00%）→ 同样只买敦煌种业（龙一、轻仓）。
 //   二 买入只数（只看【第 1 名题材】在早盘竞价里的股票数）：
 //        ≤ 6 只  → 最多买 1 只（9/18 AI应用 6 只）；
 //        ≤ 10 只 → 最多买 2 只（9/21 电子/通信/算力）；
@@ -54,7 +57,7 @@ import { getAucOpenKind, getAucOpenText } from '../ladder/ladder-rules.js';
 // 板块（创业板 / 科创板 / 北交所 = 20% / 30% 涨跌幅板）判定复用早盘竞价的唯一实现（§6）：
 // 早盘竞价给这类票画浅灰删除线用的就是 isHighLimitBoard，⛔ 本文件不另写 /^(30|68)/ 这类正则。
 // 竞价【跌停】同样复用 limit-up.js#getAuctionLimitState（涨跌停看板用的就是它），不另写阈值。
-import { isHighLimitBoard, getAuctionLimitState } from '../auction/limit-up.js';
+import { isHighLimitBoard, getAuctionLimitState, getCloseLimitState } from '../auction/limit-up.js';
 
 /** 题材成组门槛：与早盘竞价统计条（topic-stats.js#TOPIC_STATS_MIN_GROUP）同源 —— 不足 2 只不成题材 */
 export const DECISION_MIN_GROUP = 2;
@@ -187,6 +190,8 @@ export function rankDecisionTopics(entries) {
       isYizi: !!list[i].isYizi,
       pct: _num(list[i].pct),
       aucPct: _num(list[i].aucPct),
+      // [LOSS-EFFECT 2026-09-27] 收盘涨幅：只用于「亏钱效应」的【收盘跌停】判据
+      closePct: _num(list[i].closePct),
       code: String(list[i].code || '').trim(),
       countable: countable,
       inheritSold: list[i].inheritSold === true
@@ -1054,40 +1059,68 @@ function _appendLowOpenDragonOneNote(blockObj) {
 }
 
 /**
- * 【一 · 亏钱效应】本行是不是【竞价一字跌停】（9:25 竞价就打在跌停价上、还没开盘就跌停）。
- * 判定复用 limit-up.js#getAuctionLimitState（涨跌停看板用的同一份，§6）；
- * §10：竞价涨幅缺失 → false（不是跌停，也不是不跌停，只是不知道）。
+ * 【一 · 亏钱效应】两条【并列】判据，命中任意一条就算「这只票跌停了」。
+ *
+ * ⓵ 竞价一字跌停 = 9:25 集合竞价报价就打在跌停价上（**盘中 9:25 就能确定**，实时决策唯一可信的那条）。
+ *    判定复用 limit-up.js#getAuctionLimitState（涨跌停看板「竞价就跌停 → 实心绿线」同一份，§6）。
+ * ⓶ 收盘跌停   = 全天走完收在跌停价上（**只有复盘历史日才有值**）。
+ *    判定复用 limit-up.js#getCloseLimitState（§6）。
+ *
+ * ── 为什么必须两条都要？（2026-09-27 事故现场）──
+ *   9/10 农业：泸天化 **竞价 -7.69%（没到跌停）、收盘 -10.00%（跌停）**。
+ *   单看竞价，当天【全市场 86 只竞价数据里没有任何一只打到跌停价】→ 规则死活不触发；
+ *   而用户盯的就是「农业里有票跌停了」这件事，看的正是收盘那一档。
+ *   ⇒ 判据必须同时覆盖两档，否则「复盘套餐」里一半日期都失灵。
+ *
+ * ── 会不会用「今天的收盘」污染「今天的盘中决策」？不会。──
+ *   9:25 时 change_pct 还没抓回来（worker 收盘后才写），此刻 closePct = null
+ *   ⇒ ⓶ 自动不成立（§10：缺数据 ≠ 没跌停，也不许反过来猜），只有 ⓵ 能生效。
+ *
+ * §10 红线：两条都要求【有数据】才判定，缺数据的行一律不计。
+ *
+ * @returns {'auction'|'close'|''} '' = 没跌停 / 数据缺失
  */
-function _isAuctionDianTing(m) {
+function _dianTingKind(m) {
+  const code = (m && m.code) || '';
+  const name = (m && m.name) || '';
   const auc = _num(m && m.aucPct);
-  if (auc === null) return false;
-  return getAuctionLimitState(auc, (m && m.code) || '', (m && m.name) || '') === 'down';
+  if (auc !== null && getAuctionLimitState(auc, code, name) === 'down') return 'auction';
+  const close = _num(m && m.closePct);
+  if (close !== null && getCloseLimitState(close, code, name) === 'down') return 'close';
+  return '';
 }
 
 /**
  * 【一 · 亏钱效应（2026-09-27 用户口径）】
- *   入选题材在【早盘竞价】里只要有【≥ LOSS_EFFECT_MIN_DIAN_TING 只竞价一字跌停】
+ *   入选题材在【早盘竞价】里只要有【≥ LOSS_EFFECT_MIN_DIAN_TING 只跌停】（竞价一字跌停 / 收盘跌停）
  *   ⇒ 题材内部出现亏钱效应 ⇒ 【只买龙一】，且【只轻仓】。
- *   9/11 农业 12 只（本来取龙一重仓 + 龙二轻仓）→ 改只买敦煌种业（龙一轻仓）；
- *   9/10 农业 11 只（本来龙一重仓 + 龙二 / 龙三轻仓）→ 同样只买敦煌种业（龙一轻仓）。
+ *   9/11 农业 12 只：中粮科技竞价 -10.00%（竞价一字跌停）→ 只买敦煌种业（龙一轻仓）；
+ *   9/10 农业 11 只：泸天化收盘 -10.00%（收盘跌停）    → 同样只买敦煌种业（龙一轻仓）。
  * ⛔ 只砍票、不改排名：龙一还是那个龙一，只是不重仓、不补第二只。
  */
 function _applyLossEffect(blockObj) {
   if (!blockObj || !blockObj.block) return blockObj;
   const members = blockObj.block.members || [];
-  let n = 0;
-  members.forEach(function(m) { if (_isAuctionDianTing(m)) n++; });
-  if (n < LOSS_EFFECT_MIN_DIAN_TING) return blockObj;
+  const hits = [];                 // [{name, kind}]
+  members.forEach(function(m) {
+    const kind = _dianTingKind(m);
+    if (kind) hits.push({ name: m.name, kind: kind });
+  });
+  if (hits.length < LOSS_EFFECT_MIN_DIAN_TING) return blockObj;
+
+  const detail = hits.map(function(h) {
+    return h.name + '（' + (h.kind === 'auction' ? '竞价一字跌停' : '收盘跌停') + '）';
+  }).join('、');
 
   const picks = blockObj.picks || [];
   blockObj.notes = blockObj.notes || [];
   if (picks.length === 0) {
-    blockObj.notes.push('该题材有 ' + n + ' 只【竞价一字跌停】（亏钱效应）→ 本档不买');
+    blockObj.notes.push('该题材有 ' + hits.length + ' 只跌停【' + detail + '】（亏钱效应）→ 本档不买');
     return blockObj;
   }
   const keep = picks.find(function(p) { return p.dragonRank === 1; }) || picks[0];
   blockObj.picks = _reseq([Object.assign({}, keep, { position: POSITION_LIGHT })]);
-  blockObj.notes.push('该题材有 ' + n + ' 只【竞价一字跌停】（亏钱效应）→ 【只买龙一】，且' +
+  blockObj.notes.push('该题材有 ' + hits.length + ' 只跌停【' + detail + '】（亏钱效应）→ 【只买龙一】，且' +
     POSITION_LIGHT + '（题材共 ' + (Number(blockObj.block.count) || 0) + ' 只）');
   return blockObj;
 }
@@ -1638,10 +1671,13 @@ export function buildRulesLines() {
     '　　就是「灰名 + 灰题材 + 灰色实心卖标签」，它照样是龙一、照样入选买点。',
     '　【低开龙一的提醒】龙一竞价低开时，请自行看它的竞价图形：若出现【跌停 L 形】→ 尾盘买',
     '　　（本看板没有分时数据、不做图形判断，只给这段文字提醒）。',
-    '　⑦ 【亏钱效应】入选题材里只要有【≥ 1 只竞价一字跌停】（9:25 竞价就打在跌停价上）：',
-    '　　⇒ 题材内部出现亏钱效应 ⇒ 【只买龙一】，而且【只' + POSITION_LIGHT + '】',
-    '　　　（题材股票数 > 10 只 或 < 10 只，都一样处理）。',
-    '　　例：9/11 农业 12 只、9/10 农业 11 只 → 都只买敦煌种业（龙一、' + POSITION_LIGHT + '）。',
+    '　⑦ 【亏钱效应】入选题材里只要有【≥ 1 只跌停】⇒ 题材内部有亏钱效应：',
+    '　　【只买龙一】，而且【只' + POSITION_LIGHT + '】（题材股票数 > 10 只 或 < 10 只，都一样处理）。',
+    '　　「跌停」两条并列判据，命中任一即算：',
+    '　　　· 竞价一字跌停 —— 9:25 竞价报价就打在跌停价上（盘中 9:25 就能确定）；',
+    '　　　· 收盘跌停 —— 全天走完收在跌停价上（只有复盘历史日才有值，盘中不会误触发）。',
+    '　　例：9/11 农业 12 只（中粮科技竞价 -10.00%）、9/10 农业 11 只（泸天化收盘 -10.00%）',
+    '　　　 → 都只买敦煌种业（龙一、' + POSITION_LIGHT + '）。',
     '　⑧ 【买入只数】第 1 名题材按它在早盘竞价里的【股票数量】限制买几只：',
     '　　　· ≤ ' + BUY_COUNT_MAX_SMALL + ' 只 → 最多买 1 只（9/18 AI应用 6 只）；',
     '　　　· ≤ ' + BUY_COUNT_MAX_MID + ' 只 → 最多买 2 只（9/21 电子/通信/算力）；',
