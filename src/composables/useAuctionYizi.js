@@ -44,7 +44,9 @@ export function useAuctionYizi() {
     const uiStore = useUiStore();
     const state = yiziBoardState;
 
-    const expanded = ref(true);
+    // [DEFAULT-COLLAPSED 2026-09-28] 看板默认【收起】（用户口径：打开 / 刷新页面不用再手动一个个关）。
+    //   纯 UI 展示态（§34）；内容区是 v-show ⇒ 收起也照常跑 9:25 自动抓取与回填；⛔ 不要改回 true。
+    const expanded = ref(false);
     const importOpen = ref(false);
     const importText = ref('');
     const importSaving = ref(false);

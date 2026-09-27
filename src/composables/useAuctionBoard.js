@@ -224,6 +224,8 @@ export function useAuctionBoard() {
 
   const currentPage = ref(0);
   const showBackend = ref(false);
+  // [DEFAULT-COLLAPSED 2026-09-28] 看板默认【收起】（用户口径：打开 / 刷新页面不用再手动一个个关）。
+  //   纯 UI 展示态（§34）；内容区是 v-show ⇒ 收起不影响 9:25 抓取 / 刷新 / 重算；⛔ 不要改成 true。
   const expanded = ref(false);
   let swipeStartX = 0;
   let swipeEndX = 0;

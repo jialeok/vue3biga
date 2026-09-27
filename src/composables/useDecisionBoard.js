@@ -31,7 +31,9 @@ export function useDecisionBoard() {
   const currentDate = computed(() => uiStore.currentDate);
 
   // 纯展示态（§34）
-  const expanded = ref(true);
+  // [DEFAULT-COLLAPSED 2026-09-28] 看板默认【收起】（用户口径：打开 / 刷新页面不用再手动一个个关）。
+  //   内容区是 v-show ⇒ 收起不影响决策数据的计算与加载；⛔ 不要改回 true。
+  const expanded = ref(false);
   const rulesOpen = ref(false);
 
   // 手动版本号：auction 数据刷新（getTodayGroupList 读的是非响应式内存缓存）后 bump，

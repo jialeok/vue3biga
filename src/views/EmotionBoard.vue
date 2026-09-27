@@ -154,7 +154,9 @@ import { showToast } from '../composables/useToast.js';
 
 const uiStore = useUiStore();
 
-const expanded = ref(true);
+// [DEFAULT-COLLAPSED 2026-09-28] 看板默认【收起】（用户口径：打开 / 刷新页面不用再手动一个个关）。
+//   纯 UI 展示态（§34）；内容区是 v-show ⇒ 收起不影响情绪数据加载；⛔ 不要改回 true。
+const expanded = ref(false);
 const data = ref(null);
 const error = ref(null);
 const expandedRows = ref(new Set());

@@ -28,7 +28,11 @@ export function useLimitBoard() {
     const uiStore = useUiStore();
     const state = limitBoardState;
 
-    const expanded = ref(true);
+    // [DEFAULT-COLLAPSED 2026-09-28] 看板默认【收起】（用户口径：打开 / 刷新页面不用再手动一个个关）。
+    //   纯 UI 展示态（§34）：不落库、不进 store、不参与业务计算；
+    //   内容区是 v-show 而非 v-if ⇒ 收起也照常加载数据，不影响任何抓取 / 刷新逻辑。
+    //   ⛔ 不要改回 true。
+    const expanded = ref(false);
     const importOpen = ref(false);
     const importText = ref('');
     const importSaving = ref(false);
