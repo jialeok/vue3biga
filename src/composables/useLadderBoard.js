@@ -36,7 +36,10 @@ export function useLadderBoard() {
   const expandedSet = ref(new Set());
   const trendHistory = ref({});
   // 「题材连扳」开关（§34 纯展示态：只切换【分组切法】，不换数据源、不落 localStorage）
-  const topicLadder = ref(false);
+  // [TOPIC-ON-BY-DEFAULT 2026-09-28] 用户口径：「题材连扳」toggle 默认【打开】。
+  //   纯 UI 展示态（§34）：只切换分组切法，不换数据源、不落 localStorage；
+  //   ⛔ 该状态只在连板天梯内部消费（grep 确认无外部引用），不影响决策看板等其它看板。
+  const topicLadder = ref(true);
 
   // 手动版本号：auction 数据刷新（getTodayGroupList / 内存逐日行都是非响应式缓存）后 bump，
   // 让下面的 computed 重跑一次（与早盘竞价 / 决策看板同一套路）。

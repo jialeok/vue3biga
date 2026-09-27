@@ -78,7 +78,13 @@ export function useAuctionBoard() {
     byJingYest: false,
     byJingYestRatio: false,
     byThreeDayJingDie: false,
-    byTopic: false
+    // [TOPIC-ON-BY-DEFAULT 2026-09-28] 用户口径：早盘竞价打开/刷新后【题材 toggle 单独默认打开】
+    //   （其余排序 toggle 一律保持关闭 ⇒ 就是「单独打开题材」）。
+    //   ⛔ 这是本看板 composable 私有的 reactive（§34 纯 UI 展示态）：
+    //      只有 toggleSort() 才会回写 auctionStore.sortState['auction']，
+    //      因此改这里的初值【不会】影响涨跌停 / 决策 / 天梯等其它看板（它们要么传自己的
+    //      override、要么读 store 副本，而 store 副本仍是全 false）。
+    byTopic: true
   });
   const expandedSet = ref(new Set());
   const trendHistory = ref({});
