@@ -30,7 +30,10 @@ import {
   SELL_TIME_CLOSE,
   SELL_TIME_MIDDAY,
   POSITION_HEAVY,
-  POSITION_LIGHT
+  POSITION_LIGHT,
+  HOLD_TAG,
+  BUY_COUNT_MAX_SMALL,
+  BUY_COUNT_MAX_MID
 } from './decision-rules.js';
 import { getDragonLabel } from '../auction/dragon-rank.js';
 
@@ -57,6 +60,22 @@ function E(name, topic, pct, isYizi, countable, aucPct, code, inheritSold) {
     inheritSold: inheritSold === true,
     aucPct: (aucPct === undefined || aucPct === null) ? null : aucPct
   };
+}
+
+/**
+ * [BUY-COUNT 2026-09-27] 造 n 只「凑数票」把题材撑到 > 10 只。
+ *
+ * 为什么必须撑：新规则「第 1 名题材 ≤6 只最多买 1 只 / ≤10 只最多买 2 只」会砍票，
+ *   而 ①②③④ 的常规档位用例原来【只有 5 只】（>4 只是为了避开 ⑥ 小题材兜底），
+ *   不撑就会被砍成 1 只 → 常规档位根本测不到。
+ *
+ * 凑数票刻意设定为：非一字 + 计入数量 + 十日涨幅极低（排到龙位末尾，不影响龙一~龙五）
+ *   + 【缺竞价涨幅】（既不参与「竞价涨幅最高」的竞争，也不会被算进 unknownCount）。
+ */
+function FILLER(topic, n) {
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(E('凑' + topic + (i + 1), topic, -100 - i));
+  return out;
 }
 
 describe('rankDecisionTopics', () => {
@@ -207,15 +226,18 @@ describe('pickLadder（龙二～龙五的高开票 → 轻仓）', () => {
 });
 
 describe('buildBuyPlan', () => {
-  // T1：5 只、2 个一字（排名第一；⛔ 刻意 5 只 —— ≤4 只会命中 ⑥「小题材 + 一字」高风险兜底，
-  //    被它截走就测不到常规档位了）；T2 / T3：0 个一字，各 2 只 → T2 排第二、T3 排第三
+  // T1：11 只、2 个一字（排名第一）；T2 / T3：0 个一字，各 2 只 → T2 排第二、T3 排第三
+  // ⛔ T1 刻意撑到 11 只（> BUY_COUNT_MAX_MID）：
+  //    ① ≤4 只会命中 ⑥「小题材 + 一字」高风险兜底，被它截走就测不到常规档位；
+  //    ② [BUY-COUNT 2026-09-27] ≤6 / ≤10 只会被「买入只数」规则砍成 1 / 2 只，
+  //       同样测不到 ①②③④ 的完整档位 —— 所以这里补 6 只凑数票撑过 10 只。
   const entries = [
     E('一字A', 'T1', 40, true), E('一字B', 'T1', 39, true), E('可买C', 'T1', 30), E('可买D', 'T1', 20),
     E('可买E', 'T1', 5),
     // ⛔ T2 必须带 aucPct：第 2 名题材现在只选【竞价高开】的票，缺竞价涨幅 → 选不出来
     E('T2一', 'T2', 10, false, true, 2), E('T2二', 'T2', 9, false, true, -1),
     E('T3一', 'T3', 5), E('T3二', 'T3', 4)
-  ];
+  ].concat(FILLER('T1', 6));
 
   it('第 1 名题材一字≥2 → 重仓 2 只；第 2 名题材 → 轻仓 1 只', () => {
     const blocks = rankDecisionTopics(entries);
@@ -239,7 +261,7 @@ describe('buildBuyPlan', () => {
       E('D龙四', 'T1', 30, false, true, -3),  // 龙四 低开 → 不入选
       E('E龙五', 'T1', 20, false, true, 1),   // 龙五 高开 → 轻仓
       E('T2一', 'T2', 10, false, true, 3), E('T2二', 'T2', 9, false, true, -2)
-    ]);
+    ].concat(FILLER('T1', 6)));   // ⛔ 撑过 10 只，否则「买入只数」会砍成 2 只
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
     expect(plan.heavy.mode).toBe('single');
     expect(plan.heavy.qualified).toBe(true);
@@ -259,7 +281,7 @@ describe('buildBuyPlan', () => {
       E('D龙四', 'T1', 30, false, true, 2),
       E('E龙五', 'T1', 25, false, true, -1),  // ⛔ 第 5 只：让 T1 有 5 只，不命中 ⑥ 小题材兜底
       E('T2一', 'T2', 10), E('T2二', 'T2', 9)
-    ]);
+    ].concat(FILLER('T1', 6)));   // ⛔ 撑过 10 只，否则「买入只数」会砍成 1 只
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
     expect(plan.heavy.picks.map(p => p.name)).toEqual(['A龙一', 'D龙四']);
     expect(plan.heavy.notes.join('｜')).toContain('缺竞价涨幅');
@@ -293,7 +315,7 @@ describe('buildBuyPlan', () => {
   it('理由文案：题材排第几 + 股票数量 + 一字数', () => {
     const blocks = rankDecisionTopics(entries);
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
-    expect(plan.heavy.reason).toBe('题材排第一，股票数量5只，2个竞价一字');
+    expect(plan.heavy.reason).toBe('题材排第一，股票数量11只，2个竞价一字');
     expect(plan.light.reason).toContain('题材排第二，股票数量2只，0个竞价一字');
     expect(plan.light.reason).toContain('龙一不是一字则直接买龙一');
   });
@@ -1031,12 +1053,12 @@ describe('灰行参与选票（GRAY-DRAGON）', () => {
       E('云南旅游', 'T', 40, false, true, 5),              // 龙六 → 选它
       E('补充', 'T', 30, false, true, 1),                  // ⛔ 让正式成员凑够 5 只，避开 ⑥ 兜底
       E('X一', 'X', 20), E('X二', 'X', 10)
-    ]);
+    ].concat(FILLER('T', 6)));   // ⛔ 撑过 10 只，否则「买入只数」会把云南旅游砍掉
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
     expect(plan.heavy.picks.map(p => p.name)).toEqual(['国芳集团', '云南旅游']);
     expect(plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_HEAVY]);
-    // 统计口径不变：灰行不计入数量（正式成员 5 只）
-    expect(plan.heavy.block.count).toBe(5);
+    // 统计口径不变：灰行不计入数量（正式成员 = 5 只真实票 + 6 只凑数票 = 11 只）
+    expect(plan.heavy.block.count).toBe(11);
   });
 
   it('第 2 名题材的龙一是灰行 → 照常入选轻仓（9/8 农业 · 万向德农）', () => {
@@ -1274,5 +1296,171 @@ describe('formatRangePct', () => {
     expect(formatRangePct(null)).toBe('');
     expect(formatRangePct(undefined)).toBe('');
     expect(formatRangePct('')).toBe('');
+  });
+});
+
+// === [2026-09-27] 一 · 亏钱效应：题材里有【竞价一字跌停】 → 只买龙一 + 只轻仓 ===
+describe('亏钱效应（LOSS-EFFECT）', () => {
+  /**
+   * 农业原型：龙一敦煌种业（非一字）+ 2 个竞价一字 + 1 只竞价一字跌停（跌停票）。
+   * @param {number|null} dianTingAuc 跌停票的竞价涨幅（null = 缺数据，用来验证 §10）
+   */
+  const nongYe = (dianTingAuc, fillerN) => [
+    E('敦煌种业', '农业', 80, false, true, 3),      // 龙一
+    E('农业一字A', '农业', 70, true),
+    E('农业一字B', '农业', 65, true),
+    E('跌停票', '农业', 60, false, true, dianTingAuc),
+    E('农业五', '农业', 55, false, true, 4),
+    E('X一', 'X', 20), E('X二', 'X', 10)
+  ].concat(FILLER('农业', fillerN));
+
+  it('9/11 农业 12 只：有 1 只竞价一字跌停 → 只买敦煌种业（龙一、轻仓）', () => {
+    const rows = nongYe(-10, 7);                     // 5 只真实票 + 7 只凑数 = 12 只
+    const blocks = rankDecisionTopics(rows);
+    expect(blocks[0].count).toBe(12);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    // 不加亏钱效应时本来是「龙一重仓 + 龙二/龙三」，加了之后只剩龙一
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['敦煌种业']);
+    expect(plan.heavy.picks[0].dragonLabel).toBe('龙一');
+    expect(plan.heavy.picks[0].position).toBe(POSITION_LIGHT);
+    expect(plan.heavy.notes.join('｜')).toContain('亏钱效应');
+    expect(plan.heavy.notes.join('｜')).toContain('只买龙一');
+  });
+
+  it('9/10 农业 11 只（1 个一字 + 跌停票）→ 同样只买敦煌种业、轻仓', () => {
+    const rows = [
+      E('敦煌种业', '农业', 80, false, true, 3),
+      E('农业一字', '农业', 70, true),
+      E('跌停票', '农业', 60, false, true, -9.98),   // 主板跌停 -10%（容差内）
+      E('农业四', '农业', 55, false, true, 4),
+      E('农业五', '农业', 50, false, true, 2),
+      E('X一', 'X', 20), E('X二', 'X', 10)
+    ].concat(FILLER('农业', 6));                      // 5 + 6 = 11 只
+    const blocks = rankDecisionTopics(rows);
+    expect(blocks[0].count).toBe(11);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['敦煌种业']);
+    expect(plan.heavy.picks[0].position).toBe(POSITION_LIGHT);
+  });
+
+  it('题材里没有竞价一字跌停 → 不受影响（龙一仍然是重仓）', () => {
+    const rows = nongYe(-2, 7);                      // 只是低开，不是跌停
+    const blocks = rankDecisionTopics(rows);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy.notes.join('｜')).not.toContain('亏钱效应');
+    expect(plan.heavy.picks[0].name).toBe('敦煌种业');
+    expect(plan.heavy.picks[0].position).toBe(POSITION_HEAVY);
+    // 常规「①双票重仓」不受影响：龙一 + 涨幅最高的农业五（重仓）+ 名次第二的跌停票（轻仓，发生卡位）
+    expect(plan.heavy.picks.length).toBe(3);
+  });
+
+  it('§10：竞价涨幅缺失的票【不算】一字跌停，不触发亏钱效应', () => {
+    const rows = nongYe(null, 7);
+    const blocks = rankDecisionTopics(rows);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy.notes.join('｜')).not.toContain('亏钱效应');
+    expect(plan.heavy.picks[0].position).toBe(POSITION_HEAVY);
+  });
+});
+
+// === [2026-09-27] 二 · 买入只数：第 1 名题材按【早盘竞价股票数】限制买几只 ===
+describe('买入只数（BUY-COUNT）', () => {
+  it('9/18 AI应用 ≤ ' + BUY_COUNT_MAX_SMALL + ' 只 → 最多买 1 只', () => {
+    const blocks = rankDecisionTopics([
+      E('AI龙一', 'AI应用', 90, false, true, 5),
+      E('AI一字A', 'AI应用', 80, true),
+      E('AI一字B', 'AI应用', 70, true),
+      E('AI四', 'AI应用', 60, false, true, 3),
+      E('AI五', 'AI应用', 50, false, true, 2),
+      E('AI六', 'AI应用', 40, false, true, 1),
+      E('X一', 'X', 20), E('X二', 'X', 10)
+    ]);
+    expect(blocks[0].count).toBe(BUY_COUNT_MAX_SMALL);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    // 常规档位（2 个一字）本来是「龙一重仓 + 涨幅最高的那只重仓」= 2 只 → 被砍成 1 只
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['AI龙一']);
+    expect(plan.heavy.picks[0].position).toBe(POSITION_HEAVY);
+    expect(plan.heavy.notes.join('｜')).toContain('最多买 1 只');
+  });
+
+  it('9/21 电子/通信/算力 ≤ ' + BUY_COUNT_MAX_MID + ' 只 → 最多买 2 只', () => {
+    const blocks = rankDecisionTopics([
+      E('D龙一', '电子', 90, false, true, 5),
+      E('D一字', '电子', 80, true),
+      E('D龙三', '电子', 70, false, true, 4),
+      E('D龙四', '电子', 60, false, true, 3),
+      E('D龙五', '电子', 50, false, true, 2),
+      E('D龙六', '电子', 40, false, true, 1)
+    ].concat(FILLER('电子', 4)));                     // 6 + 4 = 10 只
+    expect(blocks[0].count).toBe(BUY_COUNT_MAX_MID);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    // 常规档位（1 个一字）本来是「龙一重仓 + 龙三/龙四/龙五 高开轻仓」= 4 只 → 被砍成 2 只
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['D龙一', 'D龙三']);
+    expect(plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_LIGHT]);
+    expect(plan.heavy.notes.join('｜')).toContain('最多买 2 只');
+  });
+
+  it('> ' + BUY_COUNT_MAX_MID + ' 只 → 按原规则，不砍票', () => {
+    const blocks = rankDecisionTopics([
+      E('D龙一', '电子', 90, false, true, 5),
+      E('D一字', '电子', 80, true),
+      E('D龙三', '电子', 70, false, true, 4),
+      E('D龙四', '电子', 60, false, true, 3),
+      E('D龙五', '电子', 50, false, true, 2),
+      E('D龙六', '电子', 40, false, true, 1)
+    ].concat(FILLER('电子', 5)));                     // 6 + 5 = 11 只
+    expect(blocks[0].count).toBe(BUY_COUNT_MAX_MID + 1);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy.picks.length).toBe(4);
+    expect(plan.heavy.notes.join('｜')).not.toContain('最多买');
+  });
+});
+
+// === [2026-09-27] 三 · 持有 / 加仓：上交易日也在买点里 → 强势股 ===
+describe('持有 / 加仓标记（HOLD）', () => {
+  const holdRows = () => [
+    E('强势票', 'T', 90, false, true, 5),
+    E('T一字A', 'T', 80, true),
+    E('T一字B', 'T', 70, true),
+    E('T四', 'T', 60, false, true, 1),
+    E('X一', 'X', 20), E('X二', 'X', 10)
+  ].concat(FILLER('T', 6));                            // 4 + 6 = 10 只以上，避开只数限制
+  const planOf = (prevBuyNames) => {
+    const blocks = rankDecisionTopics(holdRows());
+    return buildBuyPlan(blocks, rankDragons(blocks), { prevBuyNames: prevBuyNames });
+  };
+
+  it('上交易日也在买点里 → 行上标【持有 / 加仓】并写进说明', () => {
+    const plan = planOf(new Set(['强势票']));
+    expect(plan.heavy.picks[0].name).toBe('强势票');
+    expect(plan.heavy.picks[0].holdTag).toBe(HOLD_TAG);
+    expect(plan.heavy.picks[1].holdTag).toBeUndefined();
+    expect(plan.heavy.notes.join('｜')).toContain(HOLD_TAG);
+  });
+
+  it('昨天没选中 → 不标', () => {
+    const plan = planOf(new Set(['别的票']));
+    expect(plan.heavy.picks[0].holdTag).toBeUndefined();
+    expect(plan.heavy.notes.join('｜')).not.toContain(HOLD_TAG);
+  });
+
+  it('§10：昨天的买点没算出来（null）→ 一律不标（未知 ≠ 昨天没选中）', () => {
+    const plan = planOf(null);
+    expect(plan.heavy.picks[0].holdTag).toBeUndefined();
+    expect(plan.heavy.notes.join('｜')).not.toContain(HOLD_TAG);
+  });
+
+  it('卖点侧：今天又在买点里 → 标【持有 / 加仓】（UI 用它顶替卖出时点）', () => {
+    const blocks = rankDecisionTopics([
+      E('S龙一', 'S', 30, true), E('S龙二', 'S', 20, true), E('S三', 'S', 10),
+      E('W一', 'W', 9), E('W二', 'W', 8)
+    ]);
+    const dragon = rankDragons(blocks);
+    const rows = [{ name: 'S三', topic: 'S', pct: 10, inTodayList: true }];
+    const plan = buildSellPlan(rows, blocks, dragon, new Set(), new Set(['S三']));
+    expect(plan[0].items[0].holdTag).toBe(HOLD_TAG);
+    const plan2 = buildSellPlan(rows, blocks, dragon, new Set(), new Set());
+    expect(plan2[0].items[0].holdTag).toBe('');
+    expect(plan2[0].items[0].sellAt).toBe(SELL_TIME_CLOSE);
   });
 });

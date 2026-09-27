@@ -45,7 +45,7 @@ function _notReady(reason) {
     ready: false,
     reason: reason,
     topics: [],
-    buy: { heavy: null, light: null, noYizi: null, smallTopic: null },
+    buy: { heavy: null, light: null, noYizi: null, smallTopic: null, bigTopic: null },
     sell: [],
     sellTimes: []
   };
@@ -82,12 +82,53 @@ function _prevBoughtNames(prevDate) {
   return out;
 }
 
+/** 从买点方案里抽出全部股票名（heavy / light / 各兜底方案的 blocks 都算「买点列表」） */
+function _buyPlanNames(buy) {
+  const out = new Set();
+  if (!buy) return out;
+  ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopic'].forEach(function(k) {
+    const b = buy[k];
+    if (!b) return;
+    (b.picks || []).forEach(function(p) { if (p && p.name) out.add(p.name); });
+    (b.blocks || []).forEach(function(bb) {
+      (bb.picks || []).forEach(function(p) { if (p && p.name) out.add(p.name); });
+    });
+  });
+  return out;
+}
+
+/**
+ * 【三 · 持有 / 加仓】上一交易日的【买点】股票名集合。
+ *
+ * ⛔ 复用本文件自己的采集再算一遍前一天的决策，而不是另写一套「昨天买了什么」的规则（§6 单一真相）：
+ *    另写必然与买点规则分叉，分叉就会出现「昨天明明选了它，今天却没标持有」。
+ * ⛔ 只往回追【一层】（skipPrevBuy=true）：否则每天都要顺着交易日往前追整条链（§36 性能红线）。
+ *
+ * @param {string} prevDate 上一交易日
+ * @returns {Set<string>|null} null = 昨天的买点没算出来（§10：未知 ≠ 昨天一只都没选）
+ */
+function _prevBuyNames(prevDate) {
+  if (!prevDate) return null;
+  try {
+    const d = collectDecisionData(prevDate, { skipPrevBuy: true });
+    if (!d || !d.ready || !d.buy) return null;
+    return _buyPlanNames(d.buy);
+  } catch (e) {
+    // §10：算不出来 = 未知（null），⛔ 绝不退化成空 Set（那会被理解成「昨天一只都没选」）
+    console.warn('[DECISION] 上一交易日买点计算失败，【持有 / 加仓】标记按未知处理', e);
+    return null;
+  }
+}
+
 /**
  * 采集并计算某日的决策结论（同步：数据源全在内存里）。
  * @param {string} date 展示日 YYYY-MM-DD
+ * @param {{skipPrevBuy?:boolean}} [opts]
+ *        skipPrevBuy=true → 不往回算上一交易日的买点（内部递归用，防止无限往前追）
  * @returns {{ready:boolean, reason:string, topics:Array, buy:object, sell:Array}}
  */
-export function collectDecisionData(date) {
+export function collectDecisionData(date, opts) {
+  const skipPrevBuy = !!(opts && opts.skipPrevBuy);
   if (!date) return _notReady('未选择日期');
 
   const prevDate = getPreviousTradingDay(date);
@@ -229,10 +270,13 @@ export function collectDecisionData(date) {
     || isSmallRiskyTopic(first) || isSmallRiskyTopic(second)
     || (second && Number(second.yiziCount) === 1);
   const ladder = needLadder ? _ladderTopicGroups(date) : null;
+  // 【三 · 持有 / 加仓】上一交易日的买点股票名（null = 未知 → 规则层一律不标，§10 不猜）
+  const prevBuyNames = skipPrevBuy ? null : _prevBuyNames(prevDate);
   const buy = buildBuyPlan(topics, dragonMap, {
     ladderTopicGroups: ladder ? ladder.groups : [],
     ladderReady: ladder ? ladder.ready : false,
-    ladderReason: ladder ? ladder.reason : ''
+    ladderReason: ladder ? ladder.reason : '',
+    prevBuyNames: prevBuyNames
   });
 
   // 昨日龙头名册已在上方取过（prevDragonMap）—— 灰行补齐也要用它，⛔ 不重复取第二次。
@@ -250,7 +294,9 @@ export function collectDecisionData(date) {
       inTodayList: !!row
     });
   });
-  const sell = buildSellPlan(sellRows, topics, dragonMap, prevDragonNames);
+  // 【三 · 持有 / 加仓（卖点侧）】今天又在买点里的卖点候选 = 连续两天被选中 = 强势股，标【持有 / 加仓】
+  const todayBuyNames = _buyPlanNames(buy);
+  const sell = buildSellPlan(sellRows, topics, dragonMap, prevDragonNames, todayBuyNames);
 
   const sellTimes = [];
   sell.forEach(function(g) {

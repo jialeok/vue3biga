@@ -35,7 +35,15 @@
         class="dcb-dragon"
       >{{ it.dragonLabel }}</span>
       <span class="dcb-pct">{{ pctText(it.pct) }}</span>
-      <span class="dcb-sell-at">{{ it.sellAt }}卖</span>
+      <!-- 【三 · 持有 / 加仓】今天又在买点里 → 强势股，不按上面的时点卖（由 Logic 层标记，§21） -->
+      <span
+        v-if="it.holdTag"
+        class="dcb-hold"
+      >{{ it.holdTag }}</span>
+      <span
+        v-else
+        class="dcb-sell-at"
+      >{{ it.sellAt }}卖</span>
     </div>
   </div>
 </template>

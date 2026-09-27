@@ -287,6 +287,25 @@
             white-space: nowrap;
         }
 
+        /* 【三 · 持有 / 加仓（2026-09-27）】上交易日也在买点里 = 强势股 → 行尾换成这枚蓝色标签。
+           刻意用蓝底而不复用红/橙：它既不是「买几成仓」也不是「几点卖」，是第三种结论（继续拿）。
+           卖点侧它会【顶替】.dcb-sell-at 出现（v-else），所以同样带 margin-left:auto 靠右对齐。 */
+        .dcb-hold {
+            margin-left: auto;
+            padding: 1px 6px;
+            border-radius: 3px;
+            background: #1d4ed8;
+            color: #fff;
+            font-size: 10px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        /* 买点侧：仓位（重仓 / 轻仓）已经在行尾，持有标签紧跟其后，不再抢 margin-left:auto */
+        .dcb-position + .dcb-hold {
+            margin-left: 0;
+        }
+
         /* ---- 灰色小问号 + 规则面板 ----
            [2026-09-25 用户反馈] 问号原来紧贴「决策」两个字，想点横条展开/收起时老是误触到问号。
            这里把它往右推开 16px（叠加 .decision-header 的 8px gap = 约 24px，≈ 一个三角按钮的宽度），

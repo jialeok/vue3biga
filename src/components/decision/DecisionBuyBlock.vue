@@ -40,6 +40,11 @@
         class="dcb-position"
         :class="{ light: isLight(p.position) }"
       >{{ p.position }}</span>
+      <!-- 【三 · 持有 / 加仓】上交易日也在买点里 → 强势股（由 Logic 层标记，模板零计算 §21） -->
+      <span
+        v-if="p.holdTag"
+        class="dcb-hold"
+      >{{ p.holdTag }}</span>
     </div>
     <!-- 辅助说明：本档无轻仓票 / 有股票因缺竞价涨幅未纳入（§10 缺失必须可见，不能静默丢掉） -->
     <div
