@@ -1,5 +1,5 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-09-28 10:51:09
+// 生成时间: 2026-09-28 13:00:23
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
@@ -7,7 +7,7 @@
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
 //   2) 粘贴后核对编辑器总行数 = 3108（少了=没粘全，约翻倍=粘重了）。
-//   3) Ctrl+F 搜「function beijingNow」→ 必须恰好 1 处。
+//   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
 // date-utils.js — 北京时间日期工具（源文件，各 Worker 复制使用）

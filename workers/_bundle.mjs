@@ -87,7 +87,7 @@ for (const w of workers) {
     '//      若把本文件粘在旧代码下面，会报 Identifier \'beijingNow\' has already been declared',
     '//      （实测行号 = 旧文件行数 + 8）。',
     '//   2) 粘贴后核对编辑器总行数 = __TOTAL__（少了=没粘全，约翻倍=粘重了）。',
-    '//   3) Ctrl+F 搜「function beijingNow」→ 必须恰好 1 处。',
+    '//   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。',
     '',
   ];
 
