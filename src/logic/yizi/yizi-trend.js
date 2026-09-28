@@ -98,7 +98,10 @@ const SKIP_TEXT = {
     'cache-complete': '趋势缓存已齐（本轮 0 次上游请求）',
     'protect-window': '处于 09:20~09:30 的 9:25 抓取保护窗口，本轮不补拉（先用已有缓存）',
     'cooldown': '距上次补拉不足 90 秒，本轮只读缓存',
-    'budget': '本日趋势补拉次数已达上限，本轮只读缓存',
+    // ★ 2026-09-28：额度从「趋势腿单独 6 次」改成「整个看板每天共 2 次（/fetch 与 /trend 共用）」——
+    //   省下来的全留给早盘竞价看板的兜底（主账号用尽 → worker 退回同一把小号）。文案必须跟着改。
+    'budget': '竞价一字小号今日额度已用完（每天只留 2 次给本看板，其余留给早盘竞价），本轮只读缓存',
+    'budget-unknown': '读不到小号今日用量，为不误烧早盘竞价的额度，本轮只读缓存',
     'no-pool': '该日还没有一字池（9:25 抓取可能尚未完成），趋势暂时取不到',
     'no-code': '池内股票缺代码，无法补拉趋势'
 };
@@ -165,7 +168,8 @@ function _noteOf(payload) {
     legFail(fetched.daily, 'K线腿（涨幅）');
     const b = payload && payload.budget;
     if (b && b.cap > 0 && b.usedRequests >= b.cap) {
-        bits.push('本日趋势上游请求 ' + b.usedRequests + '/' + b.cap + '（已达上限，之后的展开只读缓存）');
+        bits.push('本日小号额度 ' + b.usedRequests + '/' + b.cap +
+            '（整块看板每天只留 ' + b.cap + ' 次，其余留给早盘竞价；之后的展开只读缓存）');
     }
     return bits.join('；');
 }

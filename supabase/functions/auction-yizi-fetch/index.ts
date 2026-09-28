@@ -78,6 +78,26 @@
 //     上游那一天的 9:25 快照是稳定的（fa_0925l 等字段是当日终值），补抓不会取到错值。
 //   · 手动补抓（带 ?date=）：跳过交易日闸门与窗口，只尝试一轮（不轮询）。
 //
+// ── ★★ 每日额度预算（2026-09-28，用户口径）────────────────────────────────
+//   用户原话：「竞价一字不是很重要，限制它最多两次，剩下的留给早盘竞价看板，
+//   这样确保早盘竞价看板的数据完整（包括十日涨幅 / 竞价量 / 昨日成交量 / 竞价涨幅 / 收盘涨幅）」。
+//
+//   为什么小号额度必须省着花：**早盘竞价 worker 的兜底链是小号**——
+//     主账号 NUMCAT_API_KEY 用尽 → worker 自动退回 NUMCAT_API_KEY_YIZI（就是本函数这把），
+//     而 worker 早盘一趟要打【两次】猫抓（daily_auc + daily）。
+//     竞价一字以前会「轮询 7 轮 × 3 个候选端点 × 每个重试 2 次」，实测单次调用打过 6 轮
+//     （09-25 / 09-28），足够在 09:25 当场把小号打光，把早盘竞价唯一的兜底掐死。
+//
+//   ⇒ 规则（改这里之前先读 CONFIG.DAILY_BUDGET 处的长注释）：
+//     · /fetch（9:25 抓池子）与 /trend（趋势腿）**共用**一把每日总预算 = 2 次；
+//     · /fetch 优先（它决定看板当天有没有数据）；正常的交易日它只花 1 次；
+//     · 北京 09:30 之前，手动补抓 / 趋势腿不得动用给 09:25 保留的 1 次（CONFIG.MORNING_KEEP），
+//       防止夜里跑回填把当天额度吃光 → 当天 09:25 抓不到 → 看板整天空白；
+//     · 预算用尽 → 【不发上游、不写库、不删除】，如实返回 skipped='budget'（§10 未就绪 ≠ 没有）；
+//     · 用量口径 = bidding_fetch_log 里 union(两条 job) 当天 detail.requests 之和，按北京自然日归日。
+//   ⚠️ 要回填历史时才临时放大 Secret AUCTION_YIZI_DAILY_BUDGET，补完【务必调回 2】。
+//   自检：GET /health → dailyBudget.leftToday 就是「今天还能打几次」。
+//
 // ── 幂等与安全 ─────────────────────────────────────────────────────────────
 //   · 主键 (date, stock) upsert 覆盖；重跑同一日结果相同 → 不产生无意义变更。
 //   · §11 删除安全：只有本轮被判定【就绪】(ready=true) 时才清理该日「本次已不在
@@ -144,6 +164,31 @@ const CONFIG = {
   POLL_MS: Number(Deno.env.get('AUCTION_YIZI_POLL_MS') || 8000),
   // 早到时的最长等待（防止把函数挂死；cron 准点触发时这个分支基本不走到）
   MAX_EARLY_WAIT_MS: Number(Deno.env.get('AUCTION_YIZI_MAX_EARLY_WAIT_MS') || 90000),
+
+  // ── ★★ 2026-09-28：小号【每日总预算】（跨路由共用的一把总闸门）──────────────
+  //   用户口径（原话）：「竞价一字不是很重要，限制它最多两次，剩下的留给早盘竞价看板，
+  //   这样确保早盘竞价看板的数据完整（包括十日涨幅 / 竞价量 / 昨日成交量 / 竞价涨幅 / 收盘涨幅）」。
+  //
+  //   为什么必须卡死：早盘竞价 worker 的兜底链 = NUMCAT_API_KEY（主账号）→ NUMCAT_API_KEY_YIZI（本小号），
+  //     而 worker 早盘一趟要打【两次】猫抓（daily_auc 写竞价量/昨日成交量/竞价涨幅 + daily 补十日涨幅）。
+  //     竞价一字以前是「轮询 7 轮 × 3 个候选端点 × 每个重试 2 次」——
+  //     实测单次调用就打过 6 轮（09-25 / 09-28），足够在 09:25 当场把小号打光，
+  //     把早盘竞价【唯一的兜底】掐死。⇒ 这就是本次要修的额度单点。
+  //
+  //   ⛔ 本预算同时约束 /fetch（9:25 抓池子）与 /trend（趋势腿）—— 只卡一条等于没卡。
+  //      计数口径 = bidding_fetch_log 里两条 job 当天的 detail.requests 之和（真实上游请求数），
+  //      按 created_at 的【北京自然日】归日（上游就是按北京 0 点重置的）。
+  //   ⚠️ 只有要回填历史时才临时调大（Secret AUCTION_YIZI_DAILY_BUDGET=10），补完【务必调回 2】。
+  DAILY_BUDGET: (function () {
+    const n = Number(Deno.env.get('AUCTION_YIZI_DAILY_BUDGET') || '2');
+    return isFinite(n) && n >= 0 ? Math.floor(n) : 2;
+  })(),
+
+  // ── ★★ 北京 09:30 之前给「09:25 自动抓取」保留的次数 ──────────────────────
+  //   防的是这条真实事故链：凌晨/夜间跑回填脚本 → 把小号当天额度吃光 →
+  //   当天 09:25 的池子抓不到 → 竞价一字整天空白（且再怎么重试也没额度）。
+  //   ⇒ 09:30 之前，手动补抓（带 ?date=）与趋势腿都不得动用这 N 次；09:30 之后自动释放。
+  MORNING_KEEP: 1,
 };
 
 // --------------------------- 上游端点候选 ---------------------------
@@ -483,7 +528,7 @@ async function numcatFetchRaw(endpoint: string, key: string, dateYmd: string): P
  * 🔴 为什么必须识别它：本函数的两条腿都会「候选端点 × 候选 key 依次尝试」，
  *    额度耗尽时如果不认这个错，一次 /trend 调用会把
  *    「3 个端点 × 2 条腿 = 6 次」全部撞一遍（2026-09-20 11:26 实测日志）。
- *    ⇒ 既白烧额度/时间，又把 6 次「失败请求」记进预算闸门（预算只有 6 次/天）。
+ *    ⇒ 既白烧额度/时间，又把「失败请求」记进预算闸门（2026-09-28 起预算只有 2 次/天，见 CONFIG.DAILY_BUDGET）。
  *
  * ⚠️ 口径与 db/yizi-backfill.mjs 的「铁律③：遇到额度/403/RATE_LIMIT 立即停止后续请求，
  *    不 continue 白烧额度」**逐字一致** —— 那条铁律原先只落在本地脚本里，Edge 侧漏了。
@@ -682,7 +727,7 @@ function sbErrHint(msg: string, raw: string): string {
  *    于是造成两个后果（都是实测到的现场）：
  *      ① 【缺口判定失真】`hasCol` 把「库里其实有、只是没读到」的行判成缺
  *         ⇒ 每次展开都白打 2 次上游（日志 detail.missingAuc=121 / missingDaily=121，
- *            明明已经补齐了还判成一只不缺）⇒ 小号每日预算（6 次）被无意义烧光；
+ *            明明已经补齐了还判成一只不缺）⇒ 小号每日预算被无意义烧光（2026-09-28 起只有 2 次/天）；
  *      ② 【响应被截断】返回给前端的 `rows` 只有 1000 行 ⇒ 趋势图断点。
  *    ⛔ 分页必须配【确定性排序】（(date,stock) 是主键 = 全序），否则翻页会重复/漏行。
  *
@@ -785,8 +830,9 @@ async function deleteStaleAuctionYizi(date: string, keepStocks: string[]): Promi
  *   本函数以前 **不检查 resp.ok** —— 而 payload 里带的 `worker` 列在表上**根本不存在**，
  *   PostgREST 回的是 `42703 column bidding_fetch_log.worker does not exist`，
  *   被 try/catch 之外的静默路径吞掉（只有网络异常才会进 catch）⇒ **本函数一行日志都没写进去过**。
- *   后果不只是"没日志"：**趋势路由的「每日预算(6)」与「90 秒冷却」两道额度闸门以本表为唯一依据**
- *   （`readTrendLogStats`）⇒ 实测 `time_point=eq.yizi-trend` 恒为空 ⇒ **这两道闸门永久失效**，
+ *   后果不只是"没日志"：**两条路由的「额度闸门（预算 / 冷却）」以本表为唯一依据**
+ *   （当时叫 `readTrendLogStats`，2026-09-28 起升级为 `readYiziUsedToday`：两条 job 一起数）
+ *   ⇒ 实测 `time_point=eq.yizi-trend` 恒为空 ⇒ **这两道闸门永久失效**，
  *   小号额度只剩「缺口驱动 + 09:20~09:30 保护窗口」兜着。
  *   ⇒ 现在：① 遇到「列不存在」**把该列摘掉重试**（最多摘 3 个，兼容将来再加列）；
  *         ② 真正的失败把 PostgREST 原文打到 `console.error`（Edge 日志里看得见）；
@@ -869,6 +915,38 @@ async function runAuctionYizi(opts?: FetchOpts): Promise<Record<string, unknown>
       ? '（⚠️ 已启用主账号兜底 NUMCAT_YIZI_KEY_FALLBACK=1）'
       : '（主账号兜底已关闭：本小号失败即失败，不烧主账号额度）'));
 
+  // 2.5) ★★ 小号每日总预算闸门（2026-09-28）—— 与 /trend 共用同一把预算
+  //   它只挡【发上游】这一步：读库 / 写日志 / 如实返回错误全都照做（§10 未就绪 ≠ 没有）。
+  const usage = await readYiziUsedToday();
+  const isAutoFetch = !manualDate;                       // cron 的 09:25 自动抓取 = 无 ?date=
+  const requestBudget = usage.ok
+    ? spendableRequests(usage.requests, isAutoFetch)
+    : CONFIG.DAILY_BUDGET;                              // 读不到用量 → 退化为「单次上限」，风险有界
+  if (usage.ok) {
+    logs.push('💰 小号当天已用 ' + usage.requests + ' 次 / 每日总预算 ' + CONFIG.DAILY_BUDGET +
+      ' 次 → 本次最多再打 ' + requestBudget + ' 次上游' +
+      (isAutoFetch ? '（自动抓取优先，不扣 09:30 前的保留额度）'
+        : '（含已扣的 09:30 前保留额度 ' + CONFIG.MORNING_KEEP + ' 次）'));
+  } else {
+    logs.push('⚠️ 读不到当天小号用量（bidding_fetch_log 不可读）→ 本次退化为「单次上限 ' +
+      CONFIG.DAILY_BUDGET + ' 次」执行；若是补抓，请自行确认今天还剩几次额度');
+  }
+  if (requestBudget <= 0) {
+    const msg = '竞价一字小号当日总预算已用尽（已用 ' + usage.requests + ' / 预算 ' + CONFIG.DAILY_BUDGET +
+      ' 次）→ 本次不发上游。⛔ 不写库、不删除（§10 未就绪 ≠ 没有）；额度留给早盘竞价看板兜底。' +
+      '要补历史请临时把 Secret AUCTION_YIZI_DAILY_BUDGET 调大，补完调回 ' + CONFIG.DAILY_BUDGET + '。';
+    logs.push('🛑 ' + msg);
+    await writeLog(Object.assign({}, logBase, { ok: false, detail: {
+      skipped: 'budget', requests: 0, attempts: 0,
+      usedToday: usage.requests, usageKnown: usage.ok, budget: CONFIG.DAILY_BUDGET, error: msg,
+    } }));
+    return {
+      ok: false, today: today, skipped: true, reason: 'budget',
+      usedToday: usage.requests, usageKnown: usage.ok, budget: CONFIG.DAILY_BUDGET,
+      error: msg, logs: logs,
+    };
+  }
+
   // 3) 9:25 窗口时间轴（北京秒数）
   const startSec = hmsToSec(CONFIG.WINDOW_START);
   const deadlineSec = hmsToSec(CONFIG.WINDOW_DEADLINE);
@@ -924,6 +1002,8 @@ async function runAuctionYizi(opts?: FetchOpts): Promise<Record<string, unknown>
   logs.push('步骤1：抓取上游 ' + CONFIG.APINAME + '（tradedate=' + dateYmd + '，不传 symbols ⇒ 全市场）...');
 
   let attempts = 0;
+  let reqSent = 0;                 // ★ 真实发出去的上游请求数（上限 = requestBudget，见 2.5 的预算闸门）
+  let budgetStopped = false;       // 是否是「被预算掐停」而非「到时间上限」
   let notReadySeen = false;
   let lastErrMsg = '';
   let used: Candidate | null = null;
@@ -931,16 +1011,27 @@ async function runAuctionYizi(opts?: FetchOpts): Promise<Record<string, unknown>
   let rawInfo: { itemCount: number; fieldNames: string[]; elapsedMs: number } | null = null;
 
   while (true) {
+    // ★ 预算闸门：没额度就【立刻停】，⛔ 不空转到 09:25:55
+    //   （空转没有任何好处：一次都不发就永远拿不到数据，只会让函数白挂 50 秒）
+    if (reqSent >= requestBudget) {
+      budgetStopped = true;
+      logs.push('🛑 本次可用额度已用完（已发 ' + reqSent + ' 次 / 本次上限 ' + requestBudget +
+        ' 次）→ 停止轮询（额度留给早盘竞价看板兜底）');
+      break;
+    }
     attempts++;
     let gotResponseThisRound = false;
     let roundEmpty = false;
 
     for (let i = 0; i < candidates.length; i++) {
+      if (reqSent >= requestBudget) break;   // 换端点 / 换 key 也要吃额度，没额度就不换
       const c = candidates[i];
+      // 剩余额度只够 1 次时【不重试】（否则重试会顶穿预算 —— 这就是本次修复的核心）
+      const retryTimes = (requestBudget - reqSent) >= CONFIG.RETRY_TIMES ? CONFIG.RETRY_TIMES : 1;
       try {
         const raw = await retryNumcat(
-          () => numcatFetchRaw(c.endpoint, c.keyRef.key, dateYmd),
-          CONFIG.RETRY_TIMES,
+          () => { reqSent++; return numcatFetchRaw(c.endpoint, c.keyRef.key, dateYmd); },
+          retryTimes,
           CONFIG.APINAME + '[ep=' + c.endpoint + ',key=' + c.keyRef.name + ']',
           logs,
         );
@@ -989,19 +1080,28 @@ async function runAuctionYizi(opts?: FetchOpts): Promise<Record<string, unknown>
       ? '上游未返回一字数据（回合数=' + attempts + '，最后返回 ' + snapshot.total + ' 行 / 未达涨停幅度 ' +
         snapshot.droppedNotLimit + '（其中缺竞价涨幅 ' + snapshot.droppedNoPct + '）' +
         '）→ 判定未就绪，本次不写库'
-      : '抓取失败: ' + (lastErrMsg || '未知错误');
+      : (budgetStopped
+        ? '抓取失败: 本次可用额度（' + requestBudget + ' 次）已全部用尽，上游一次都没成功返回' +
+          '（已用 ' + reqSent + ' 次；额度留给早盘竞价看板兜底，⛔ 不再重试）'
+        : '抓取失败: ' + (lastErrMsg || '未知错误'));
     logs.push('❌ ' + errMsg);
-    if (!snapshot && lastErrMsg) {
+    if (!snapshot && lastErrMsg && !budgetStopped) {
       logs.push('提示：若报错含「未拿到响应/超时」或 code≠200 → 先开 /probe 逐端点逐 key 体检' +
         '（很可能是小号 key 本身无效、未授权 daily_auc_fd，或专线端口在本平台不通）');
     }
     await writeLog(Object.assign({}, logBase, { ok: false, detail: {
       error: errMsg, attempts: attempts, elapsedMs: elapsedMs,
+      requests: reqSent, budget: CONFIG.DAILY_BUDGET, budgetLeft: requestBudget,
+      usedToday: usage.requests, usageKnown: usage.ok, budgetStopped: budgetStopped,
       notReadySeen: notReadySeen, lateBySec: lateBySec,
       keySource: used ? used.keyRef.name : null, endpoint: used ? used.endpoint : null,
       lastError: lastErrMsg || null,
     } }));
-    return { ok: false, today: today, error: errMsg, attempts: attempts, logs: logs };
+    return {
+      ok: false, today: today, error: errMsg, attempts: attempts,
+      requests: reqSent, usedToday: usage.requests, budgetKnown: usage.ok, budget: CONFIG.DAILY_BUDGET,
+      budgetStopped: budgetStopped, logs: logs,
+    };
   }
 
   const ready = true;
@@ -1042,6 +1142,8 @@ async function runAuctionYizi(opts?: FetchOpts): Promise<Record<string, unknown>
     droppedDateMismatch: snapshot.droppedDateMismatch,
     datesSeen: snapshot.dateSeen,
     attempts: attempts, elapsedMs: elapsedMs, lateBySec: lateBySec,
+    requests: reqSent, budget: CONFIG.DAILY_BUDGET, budgetLeft: requestBudget,
+    usedToday: usage.requests, usageKnown: usage.ok,
     keySource: used.keyRef.name, endpoint: used.endpoint,
   } }));
   return {
@@ -1059,6 +1161,11 @@ async function runAuctionYizi(opts?: FetchOpts): Promise<Record<string, unknown>
     attempts: attempts,
     elapsedMs: elapsedMs,
     lateBySec: lateBySec,
+    requests: reqSent,
+    budget: CONFIG.DAILY_BUDGET,
+    budgetLeft: requestBudget,
+    usedToday: usage.requests,
+    budgetKnown: usage.ok,
     keySource: used.keyRef.name,
     endpoint: used.endpoint,
     upstreamElapsedMs: rawInfo ? rawInfo.elapsedMs : null,
@@ -1097,17 +1204,23 @@ async function runAuctionYizi(opts?: FetchOpts): Promise<Record<string, unknown>
 //   change_pct         = 当日涨幅（daily 的 pct_chg）
 //   ⛔ 任一腿解析不出来 → 该格写 null / 不写行（§10 不拿 0 顶替「没数据」）。
 //
-// ── 额度保护（★ 小号每天只有 10 次；9:25 自动抓取优先，六道闸门）────────────
+// ── 额度保护（★ 小号每天只有 10 次；整个看板每天最多 CONFIG.DAILY_BUDGET=2 次）────
+//   ★★ 2026-09-28 口径变更（用户要求）：「竞价一字不是很重要，限制它最多两次，
+//      剩下的留给早盘竞价看板，确保早盘竞价的数据完整（十日涨幅/竞价量/昨日成交量/竞价涨幅/收盘涨幅）」。
+//      ⇒ 预算从「趋势腿单独 6 次」改成「/fetch + /trend 共用 2 次」，
+//        /fetch（9:25 抓池子）优先，日志留 1 次给 09:25 自动抓取（MORNING_KEEP，09:30 前生效）。
+//
 //   ① 缺口驱动：只有「窗口里确实缺某一天的数据」才发请求；已齐 → 0 请求直接回缓存；
 //   ② 时间闸门：北京 09:20~09:30【一律不补拉】—— 结构性保护 9:25 自动抓取，
 //      ⛔ 不靠「相信调用方守规矩」，而是这段时间内物理上不发上游请求；
 //   ③ 冷却：距上一次趋势抓取 < 90 秒 → 本轮跳过（防展开连点把额度打光）；
-//   ④ 预算：本日趋势请求数 ≥ AUCTION_YIZI_TREND_MAX_REQ（默认 6）→ 跳过并如实提示；
-//   ⑤ 请求形态：整窗口 1 次请求（symbols × startdate~enddate），⛔ 不是「每天一次」。
+//   ④ 额度：与 /fetch 共用 CONFIG.DAILY_BUDGET（每天 2 次）→ 没额度就跳过并如实提示 skipped='budget'；
+//      用量读不到（日志表抽风）→ skipped='budget-unknown'，同样只回缓存（§10 读失败 ≠ 空）；
+//   ⑤ 请求形态：整窗口 1 次请求（symbols × startdate~enddate），⛔ 不是「每天一次」；
+//      且单腿最多发 maxRequests 次（换端点 / 换 key 也吃额度，⛔ 不许顶穿预算）。
 //   ⑥ 【上游额度止损】（★ 2026-09-20 新增）：上游用 code=403「今日调用额度已用完」表达额度耗尽，
 //      命中后【立即停止】—— 不再换端点、不再换 key、不再打第二条腿（见 isQuotaErr）。
-//      为什么必须有这道：候选端点是 3 个、腿是 2 条，不认这个错就会把「3×2=6 次」全撞一遍，
-//      既白烧时间/额度，又把 6 次失败请求记进预算（预算只有 6 次/天）。
+//      为什么必须有这道：候选端点是 3 个、腿是 2 条，不认这个错就会把「3×2=6 次」全撞一遍。
 //   ⛔ 任一闸门触发都【不写库、不删除】，只回既有缓存 + 明确 note（skipped / quotaExhausted 字段）。
 //
 // ── 🔴 读表必须分页（2026-09-20 修复）──────────────────────────────────────
@@ -1143,8 +1256,11 @@ const TREND = {
   WINDOW: Number(Deno.env.get('AUCTION_YIZI_TREND_WINDOW') || 5),
   /** 单次请求最多带多少只（上游 symbols 长度的保守上限） */
   MAX_SYMBOLS: Number(Deno.env.get('AUCTION_YIZI_TREND_MAX_SYMBOLS') || 300),
-  /** 本日趋势上游请求数预算（小号每天 10 次，9:25 自动抓取优先） */
-  MAX_REQUESTS_PER_DAY: Number(Deno.env.get('AUCTION_YIZI_TREND_MAX_REQ') || 6),
+  // ⛔ 原来的 AUCTION_YIZI_TREND_MAX_REQ（默认 6）已【删除】：趋势腿不再自带预算，
+  //    改为与 /fetch 共用 CONFIG.DAILY_BUDGET 这一把【跨路由总闸门】（见 CONFIG 处的长注释）。
+  //    删它的原因：两条路由各算各的预算 ⇒ 09:25 的 /fetch 吃掉额度后趋势腿照样再打，
+  //    预算形同虚设，小号一天能被吃掉 7+6 次，把早盘竞价的兜底掐死。
+  //    临时要放宽请改 Secret AUCTION_YIZI_DAILY_BUDGET（补完调回 2）。
   /** 两次趋势抓取之间的最小间隔（毫秒），防连点 */
   COOLDOWN_MS: Number(Deno.env.get('AUCTION_YIZI_TREND_COOLDOWN_MS') || 90000),
   /** ★ 9:25 抓取保护窗口（北京 HH:MM:SS）：其间【一律不发上游请求】 */
@@ -1392,18 +1508,25 @@ function mapTrendLegRows(
  *    这是额度的关键：5 天窗口 = 1 次请求，而不是 5 次。
  * ⚠️ 只打一轮（retryNumcat times=1）：趋势是补缺口，失败下一轮再来；重试会翻倍烧额度。
  * ⚠️ 写入失败【不再试下一个端点】（表不存在时那是白烧额度），直接返回 ok:false。
+ * 🆕 2026-09-28：`maxRequests` = 本腿最多能发几次上游（由调用方按当日总预算算好传进来）。
+ *    默认 1 = 只试「第一个候选」，⛔ 不会因为「换端点 / 换 key」把预算顶穿。
+ *    这很关键：`候选端点 × 候选 key` 原本最坏能发 3 次，是预算外的一条漏口。
  */
 async function fetchTrendLeg(
   apiname: string, fields: string[], params: Record<string, unknown>,
   windowDates: string[], nameByCode: Record<string, string>, logs: string[],
+  maxRequests?: number,
 ): Promise<Record<string, unknown>> {
   const endpoints = buildEndpoints();
   const keys = configuredKeys();
+  const cap = Math.max(0, Math.floor(Number(maxRequests) || 0)) || 1;
   let requests = 0;
   let lastErr = '';
   for (let e = 0; e < endpoints.length; e++) {
+    if (requests >= cap) break;                       // ★ 预算闸门：没额度就不换端点
     const ep = endpointForApiname(endpoints[e], apiname);
     for (let k = 0; k < keys.length; k++) {
+      if (requests >= cap) break;                     // ★ 预算闸门：没额度就不换 key
       const keyRef = keys[k];
       const label = apiname + '[ep=' + ep + ',key=' + keyRef.name + ']';
       requests++;
@@ -1444,34 +1567,79 @@ async function fetchTrendLeg(
   return { ok: false, requests: requests, written: 0, error: lastErr || '所有端点 × key 组合均失败' };
 }
 
+/** ISO 时间戳 → 它的【北京日期】'YYYY-MM-DD'（额度按北京自然日重置，必须按这个归日） */
+function beijingDateOfIso(iso: string): string {
+  const t = Date.parse(String(iso || ''));
+  if (!isFinite(t)) return '';
+  const d = new Date(t + 8 * 3600 * 1000);
+  return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0');
+}
+
 /**
- * 读「本日趋势抓取」的日志统计，用作预算 / 冷却依据。
- * ⚠️ 读失败【不阻断】（返回 0 → 相当于闸门放行）：宁可多花一次额度，
- *    也不能因为日志表读不到就把趋势图永久锁死。§10 的「读失败 ≠ 空」在这里体现为
- *    「读失败 → 不下『已超额』的错误结论」。
+ * 读「小号今天已经打了几次上游」—— /fetch 与 /trend 共用的那把每日总预算（CONFIG.DAILY_BUDGET）的依据。
+ *
+ *   `ok`              用量是否真的读到了（⚠️ 不是「有没有额度」）
+ *   `requests`        今天已用的真实上游请求数
+ *   `lastTrendAt`     今天最近一次趋势腿的时间（给 90 秒冷却用）
+ *
+ * 🔴 为什么两条 job 必须一起数：预算是一把【跨路由】的总闸门。只数 /trend 的话，
+ *    09:25 的 /fetch 把额度吃掉后趋势腿照样会再打 —— 预算形同虚设（这正是改之前的病）。
+ *
+ * 🔴 为什么按 created_at 的北京日期归日，而【不是】按 run_date：
+ *    run_date 是「目标交易日」——补抓历史时它 ≠ 今天，而额度是【今天】消耗的。
+ *    混用会让「今晚补 5 天历史」完全不计入今天的用量，第二天 09:25 直接撞 403。
+ *
+ * 计数口径：detail.requests（真实上游请求数）。2026-09-28 之前的 /fetch 日志没有这个字段，
+ *   用 detail.attempts 兜底（= 轮数，成功时恰好等于请求数）。
+ *
+ * ⚠️ ok=false 必须被调用方当成「不知道」，⛔ 不能当成 0（§10 读失败 ≠ 空）：
+ *   当成 0 就会在日志表抽风时把额度当没花过 → 反复超额，把早盘竞价的兜底耗尽。
+ *   调用方的降级策略见各自调用点（/fetch 退化为单次上限；/trend 直接只回缓存）。
  */
-async function readTrendLogStats(runDate: string): Promise<{ entries: number; requests: number; lastAt: string }> {
-  const out = { entries: 0, requests: 0, lastAt: '' };
+async function readYiziUsedToday(): Promise<{ ok: boolean; requests: number; entries: number; lastTrendAt: string }> {
+  const out = { ok: false, requests: 0, entries: 0, lastTrendAt: '' };
+  const bjToday = beijingToday();
   try {
-    const url = CONFIG.SUPABASE_URL + '/rest/v1/bidding_fetch_log?select=created_at,detail' +
-      '&job=eq.' + encodeURIComponent(TREND.LOG_JOB) +
-      '&run_date=eq.' + encodeURIComponent(runDate) +
-      '&order=created_at.desc&limit=60';
+    const url = CONFIG.SUPABASE_URL + '/rest/v1/bidding_fetch_log?select=job,created_at,detail' +
+      '&job=in.(auction-yizi-fetch,' + encodeURIComponent(TREND.LOG_JOB) + ')' +
+      '&order=created_at.desc&limit=120';
     const resp = await fetch(url, { headers: sbHeaders({ 'Prefer': 'return=minimal' }), signal: timeoutSignal(12000) });
     if (!resp.ok) return out;
     const data = await resp.json().catch(() => []);
     const list = Array.isArray(data) ? data as Array<Record<string, unknown>> : [];
-    out.entries = list.length;
-    if (list.length > 0) out.lastAt = String(list[0].created_at || '');
     for (let i = 0; i < list.length; i++) {
-      const d = list[i] && list[i].detail;
-      if (d && typeof d === 'object') {
-        const n = (d as Record<string, unknown>).requests;
-        if (typeof n === 'number' && isFinite(n)) out.requests += n;
+      const row = list[i] || {};
+      if (beijingDateOfIso(String(row.created_at || '')) !== bjToday) continue;
+      out.entries++;
+      const d = (row.detail && typeof row.detail === 'object')
+        ? row.detail as Record<string, unknown> : {};
+      let n = Number(d.requests);
+      if (!isFinite(n) || n < 0) n = Number(d.attempts);          // 老日志兜底（见上方口径说明）
+      if (isFinite(n) && n > 0) out.requests += n;
+      // desc 序 ⇒ 第一条趋势日志就是最近一次
+      if (String(row.job) === TREND.LOG_JOB && !out.lastTrendAt && row.created_at) {
+        out.lastTrendAt = String(row.created_at);
       }
     }
-  } catch (_e) { /* 见函数头注释：读不到日志不放行也不阻断 */ }
+    out.ok = true;
+  } catch (_e) { /* ok 保持 false —— 由调用方决定降级策略，⛔ 不在这里冒充「已用 0 次」 */ }
   return out;
+}
+
+/**
+ * 本次调用真正能打几次上游 —— 两条路由共用同一段算术，⛔ 别各写一份（会漂）。
+ *
+ *   budget  = CONFIG.DAILY_BUDGET（每日总预算）
+ *   used    = 今天已用（readYiziUsedToday；ok=false 时由调用方决定传什么）
+ *   keep    = 北京 09:30 之前给「09:25 自动抓取」保留的次数（非自动路径才扣，见 CONFIG.MORNING_KEEP）
+ *
+ * @param isAutoFetch true = 09:25 的自动抓取（cron，无 ?date=）——它自己就是被保留的对象，不扣 keep
+ */
+function spendableRequests(usedToday: number, isAutoFetch: boolean): number {
+  const nowSec = hmsToSec(beijingHMS());
+  const morningKeepSec = 9 * 3600 + 30 * 60;
+  const keep = (!isAutoFetch && isFinite(nowSec) && nowSec < morningKeepSec) ? CONFIG.MORNING_KEEP : 0;
+  return Math.max(0, CONFIG.DAILY_BUDGET - usedToday - keep);
 }
 
 /**
@@ -1536,13 +1704,17 @@ async function runTrend(opts?: { date?: string; window?: number; stocks?: string
   const missingAuc = force ? pairs : gapAuc;
   const missingDaily = force ? pairs : gapDaily;
 
-  // 4) 五道闸门
+  // 4) 闸门（顺序：池子 → 缺口 → 保护窗口 → 额度 → 冷却）
   let skipped = '';
   if (pairs.length === 0) skipped = 'no-pool';
   else if (codes.length === 0) skipped = 'no-code';
   else if (!force && !needFetch) skipped = 'cache-complete';
-  // 只有「真可能发请求」时才去读日志当预算/冷却依据（否则白读一次库）
-  const stats = skipped ? { entries: 0, requests: 0, lastAt: '' } : await readTrendLogStats(date);
+  // 只有「真可能发请求」时才去读日志当额度/冷却依据（否则白读一次库）
+  const emptyUsage = { ok: true, requests: 0, entries: 0, lastTrendAt: '' };
+  const usage = skipped ? emptyUsage : await readYiziUsedToday();
+  // ★ 本次趋势腿能打几次：与 /fetch 共用 CONFIG.DAILY_BUDGET。
+  //   趋势腿不是「09:25 自动抓取」⇒ 要扣掉 09:30 前给它保留的那份（isAutoFetch=false）。
+  const legBudget = usage.ok ? spendableRequests(usage.requests, false) : 0;
   if (!skipped) {
     const nowSec = hmsToSec(beijingHMS());
     const gs = hmsToSec(TREND.PROTECT_START);
@@ -1551,10 +1723,15 @@ async function runTrend(opts?: { date?: string; window?: number; stocks?: string
       skipped = 'protect-window';
       logs.push('⏸ 北京 ' + beijingHMS() + ' 落在 9:25 抓取保护窗口 ' + TREND.PROTECT_START + '~' + TREND.PROTECT_END +
         ' → 本轮不补拉（结构性保护小号额度，绝不与 9:25 自动抓取抢）');
-    } else if (stats.requests >= TREND.MAX_REQUESTS_PER_DAY) {
+    } else if (!usage.ok) {
+      skipped = 'budget-unknown';
+      logs.push('⏸ 读不到当天小号用量（bidding_fetch_log 不可读）→ 只回缓存' +
+        '（§10 读失败 ≠ 空：宁可不补，也不冒险烧掉早盘竞价的兜底额度）');
+    } else if (legBudget <= 0) {
       skipped = 'budget';
-      logs.push('⏸ 本日趋势请求已达上限（' + stats.requests + '/' + TREND.MAX_REQUESTS_PER_DAY + '）→ 只回缓存');
-    } else if (stats.lastAt && (Date.now() - Date.parse(stats.lastAt)) < TREND.COOLDOWN_MS) {
+      logs.push('⏸ 竞价一字小号当日总预算已用尽/已保留（已用 ' + usage.requests + ' 次 / 预算 ' +
+        CONFIG.DAILY_BUDGET + ' 次，09:30 前为 09:25 自动抓取保留 ' + CONFIG.MORNING_KEEP + ' 次）→ 只回缓存');
+    } else if (usage.lastTrendAt && (Date.now() - Date.parse(usage.lastTrendAt)) < TREND.COOLDOWN_MS) {
       skipped = 'cooldown';
       logs.push('⏸ 距上次趋势抓取不足 ' + Math.round(TREND.COOLDOWN_MS / 1000) + ' 秒 → 只回缓存（防展开连点把额度打光）');
     }
@@ -1572,23 +1749,27 @@ async function runTrend(opts?: { date?: string; window?: number; stocks?: string
     const endYmd = isoToYmd(windowDates[windowDates.length - 1]);
     const sym = pairs.filter((p) => p.code).slice(0, TREND.MAX_SYMBOLS).map((p) => p.code).join(',');
     logs.push('目标 ' + pairs.length + ' 只（带代码 ' + codes.length + ' 只），窗口 ' + startYmd + '~' + endYmd +
-      '，缺口：竞价腿 ' + missingAuc.length + ' 只 / K线腿 ' + missingDaily.length + ' 只');
-    if (missingAuc.length > 0) {
+      '，缺口：竞价腿 ' + missingAuc.length + ' 只 / K线腿 ' + missingDaily.length + ' 只' +
+      '；本次额度 ' + legBudget + ' 次（预算 ' + CONFIG.DAILY_BUDGET + ' − 今天已用 ' + usage.requests + '）');
+    if (missingAuc.length > 0 && (legBudget - requests) >= 1) {
       const leg = await fetchTrendLeg('daily_auc', TREND.AUC_FIELDS,
-        { symbols: sym, startdate: startYmd, enddate: endYmd }, windowDates, nameByCode, logs);
+        { symbols: sym, startdate: startYmd, enddate: endYmd }, windowDates, nameByCode, logs, legBudget - requests);
       requests += Number(leg.requests) || 0;
       fetched.auc = leg;
       fetched.written = (Number(fetched.written) || 0) + (Number(leg.written) || 0);
       // 🔴 竞价腿就撞到「额度已用完」⇒ 立刻不再打 K 线腿（同一个小号，同一天额度，必挂）
       if (leg.quotaExhausted) quotaExhausted = true;
     }
-    if (missingDaily.length > 0 && !quotaExhausted) {
+    if (missingDaily.length > 0 && !quotaExhausted && (legBudget - requests) >= 1) {
       const leg = await fetchTrendLeg('daily', TREND.DAILY_FIELDS,
-        { symbols: sym, startdate: startYmd, enddate: endYmd }, windowDates, nameByCode, logs);
+        { symbols: sym, startdate: startYmd, enddate: endYmd }, windowDates, nameByCode, logs, legBudget - requests);
       requests += Number(leg.requests) || 0;
       fetched.daily = leg;
       fetched.written = (Number(fetched.written) || 0) + (Number(leg.written) || 0);
       if (leg.quotaExhausted) quotaExhausted = true;
+    } else if (missingDaily.length > 0 && !quotaExhausted) {
+      logs.push('⏸ K 线腿（涨幅）本轮没额度了（已用 ' + requests + '/' + legBudget +
+        '）→ 只补了竞价腿；额度优先留给早盘竞价看板兜底，下次再补');
     }
     if (quotaExhausted) {
       logs.push('🛑 小号今日额度已用完 → 本轮只回既有缓存（⛔ 不重试、不换账号；次日 0 点额度重置后自动继续补）');
@@ -1621,6 +1802,11 @@ async function runTrend(opts?: { date?: string; window?: number; stocks?: string
     ok: ok,
     detail: {
       requests: requests,
+      /** ★ 2026-09-28：/fetch 与 /trend 共用的每日总预算 → readYiziUsedToday 靠这两行计数 */
+      budget: CONFIG.DAILY_BUDGET,
+      legBudget: legBudget,
+      usedToday: usage.requests,
+      usageKnown: usage.ok,
       written: Number(fetched.written) || 0,
       skipped: skipped,
       quotaExhausted: quotaExhausted,
@@ -1647,7 +1833,7 @@ async function runTrend(opts?: { date?: string; window?: number; stocks?: string
     skipped: skipped,
     /** ★ 2026-09-20：小号今日额度已用完（上游 code=403）—— 前端据此给用户一句人话提示 */
     quotaExhausted: quotaExhausted,
-    budget: { usedRequests: stats.requests + requests, cap: TREND.MAX_REQUESTS_PER_DAY },
+    budget: { usedRequests: usage.requests + requests, cap: CONFIG.DAILY_BUDGET, legBudget: legBudget },
     guards: {
       protectStart: TREND.PROTECT_START,
       protectEnd: TREND.PROTECT_END,
@@ -1853,11 +2039,28 @@ Deno.serve(async (req: Request) => {
   if (p.endsWith('/health')) {
     const keys = configuredKeys();
     const eps = buildEndpoints();
+    // ★ 2026-09-28：把「今天还能打几次」直接回显出来（多一次只读查询；/health 本来就是排查入口）
+    const used = await readYiziUsedToday();
     return json({
       ok: true,
       service: 'auction-yizi-fetch',
       apiname: CONFIG.APINAME,
       board: '竞价一字（独立看板，与早盘竞价看板解耦）',
+      // ★★ 额度账（2026-09-28 用户口径：竞价一字每天最多 2 次，其余留给早盘竞价看板）
+      dailyBudget: {
+        cap: CONFIG.DAILY_BUDGET,
+        howToChange: 'Secret AUCTION_YIZI_DAILY_BUDGET（改大 = 临时放宽，⛔ 补完历史务必调回 ' + CONFIG.DAILY_BUDGET + '）',
+        morningKeep: CONFIG.MORNING_KEEP +
+          '（北京 09:30 前：手动补抓 / 趋势腿【不得动用】这几次 —— 留给当天 09:25 的自动抓取）',
+        countsBothJobs: ['auction-yizi-fetch', TREND.LOG_JOB] + '（/fetch 与 /trend 共用同一把预算）',
+        usedToday: used.ok ? used.requests : null,
+        usedTodayKnown: used.ok,
+        leftToday: used.ok ? Math.max(0, CONFIG.DAILY_BUDGET - used.requests) : null,
+        upstreamFreeTierPerDay: 10,
+        reservedForBiddingWorker: '上游免费档 10 次 − 竞价一字预算 ' + CONFIG.DAILY_BUDGET +
+          ' 次 = ' + Math.max(0, 10 - CONFIG.DAILY_BUDGET) +
+          ' 次【全留给早盘竞价看板的兜底】：主账号 NUMCAT_API_KEY 用尽 → worker 自动退回本小号',
+      },
       // 只回显「配没配 / 用了哪个变量名 / 掩码」，绝不回显密钥本身
       numcatKeySource: keys.length ? keys[0].name : '未配置',
       numcatKeyMasked: keys.length ? maskKey(keys[0].key) : '',
@@ -1882,12 +2085,15 @@ Deno.serve(async (req: Request) => {
         quotaGuard: {
           protectWindowBeijing: TREND.PROTECT_START + '~' + TREND.PROTECT_END + '（其间一律不补拉，保护 9:25 自动抓取）',
           cooldownMs: TREND.COOLDOWN_MS,
-          maxRequestsPerDay: TREND.MAX_REQUESTS_PER_DAY,
+          // ⛔ 不再是独立的 6 次预算：见顶部 dailyBudget（与 /fetch 共用一把总闸门）
+          dailyBudgetCap: CONFIG.DAILY_BUDGET,
           window: TREND.WINDOW,
         },
         note: '从不删除任何行，只补缺口；⛔ 不碰 auction_yizi；key 仍是本函数的小号（NUMCAT_API_KEY_YIZI）',
       },
-      nextStep: '排查上游/端点/key/表 请开 /probe?token=…（可加 &symbols=000001,600000 做轻量探测）',
+      nextStep: '排查上游/端点/key/表 请开 /probe?token=…（可加 &symbols=000001,600000 做轻量探测）' +
+        '　⚠️ 注意 /probe 会对「每个端点 × 每把 key」各打一次【真实】上游请求，' +
+        '且【不受 dailyBudget 约束】—— 它是排查工具，请别反复刷（会白烧小号额度）。',
     });
   }
 
