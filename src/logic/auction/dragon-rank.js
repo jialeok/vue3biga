@@ -74,6 +74,9 @@ const dragonState = ref({ date: '', map: new Map(), version: 0, loadedAt: 0 });
 let _inflight = null; // { date, promise } 单飞保护
 // 需要强制重读的日期（收盘覆盖写入了新的 T 腿后登记，用完即焚）
 const _reloadDates = new Set();
+// [QUOTA-GUARD 2026-09-28] 被「早盘 worker 抓取时段」挡下、待窗口过后再补的日期（用完即焚）。
+//   登记后 ensureDragonRangePct 才会把它算进 needReload（否则窗口过后没人再触发补齐）。
+const _guardedDates = new Set();
 // 已做过「缺票兜底抓取」的日期 → 已尝试的阶段（'intraday' 盘中 / 'close' 收盘后）。
 // [RANGE-FULL-LEG 2026-09-11] 原来是一个 Set（每日期每会话最多一次）→ 9:26 那次尝试过后，
 // 收盘后即使发现某行「缺腿」（当日继承票 9:25 没拿到 T 腿）也不会再补，错值一直挂到第二天。
@@ -211,11 +214,36 @@ export function isAuthoritativeCloseReached(date) {
   return Date.now() >= _authoritativeCloseUtcMs(date);
 }
 
-/** 是否处于 worker 写入区间涨幅的时间窗（云端为空属正常，不该抢跑兜底） */
-function _inWorkerWindow(date) {
+/**
+ * [QUOTA-GUARD 2026-09-28] 早盘「worker 抓取时段」：北京时间 9:00 ~ 9:45。
+ *
+ * 事故（2026-09-28，用户口径 + 数据指纹双重取证）：
+ *   ① worker（bidding-auto-fetch#morning-workflow）只在【9:25~9:40】打一次
+ *      numcat `daily_auc`，它负责写【当天】的竞价量 / 昨成交量 / 竞价涨幅；
+ *   ② 前端 channel-1 兜底（numcat `daily`，补十日涨幅）走的是**同一把 key**
+ *      —— 都经 numcat-proxy Edge Function，免费额度**每天仅 10 次**；
+ *   ③ 用户 9:24 打开页面 ⇒ 前端先把额度烧光 ⇒ worker 9:25 那一次 `daily_auc` 403
+ *      ⇒ 当天竞价字段【整体缺失】，且事后点「连抓五日」也只剩 403 可看。
+ *
+ * 为什么原有闸门挡不住：旧条件是 `!(cloud.size === 0 && _inWorkerWindow(date))`
+ *   —— 只在「云端 stock_range_pct 全空」时才让路。当天云端已有 7 行（非零）
+ *   ⇒ 闸门不生效 ⇒ 照样抢跑。而且 `_inWorkerWindow` 是 9:25 起，用户 9:24 打开
+ *   正好落在它的【前 1 分钟】，时间上也没盖住。
+ *
+ * 因此这里把时段前移到 9:00（盖住「提前打开页面」）、后延到 9:45（盖住 worker
+ * 9:40 收尾 + 两次调用之间的重试 sleep），且【不再看 cloud 是否为空】。
+ * 代价：这段时间内的十日涨幅不补齐（龙头徽章可能晚一点出现）——
+ *   与「当天竞价数据整体缺失」相比，这是明确的更优取舍（§32 禁止与 worker 抢额度）。
+ *   ⛔ force=true（后台手动按钮）不挡：那是用户知情下的主动花费。
+ */
+// 早于 worker 窗口【提前 25 分钟】就收口（北京 9:00）：用户实测会提前打开页面（9/28 是 9:24），
+// 而 worker 的窗口从 9:25 才开始 —— 只守 9:25 起等于没守。
+const MORNING_GUARD_LEAD_MIN = 25;
+function _inMorningGuard(date) {
   if (date !== _getLocalTodayStr()) return false;
   const mins = _beijingMinutes();
-  return mins >= WORKER_WRITE_FROM_MIN && mins <= WORKER_WRITE_TO_MIN;
+  const from = WORKER_WRITE_FROM_MIN - MORNING_GUARD_LEAD_MIN; // 北京 09:00
+  return mins >= from && mins <= WORKER_WRITE_TO_MIN;          // 北京 09:00 ~ 09:45
 }
 
 /**
@@ -267,7 +295,9 @@ export async function ensureDragonRangePct(date, opts) {
     const isEmpty = cur.map.size === 0;
     // 需要重读的三种情况：收盘覆盖后登记过 / 内存快照早于 worker 的 16:00 权威重算时刻 / 云端为空且已过重试间隔
     const authMs = _authoritativeCloseUtcMs(date);
-    const needReload = _reloadDates.has(date)
+    // [QUOTA-GUARD 2026-09-28] 被早盘时段挡下过的日期也算「需要重读」：
+    //   否则窗口一过就再没人触发补齐，十日涨幅会一直缺着（见 _inMorningGuard 注释）。
+    const needReload = _reloadDates.has(date) || _guardedDates.has(date)
       || (cur.loadedAt > 0 && !Number.isNaN(authMs) && cur.loadedAt < authMs && Date.now() >= authMs)
       || (isEmpty && Date.now() - cur.loadedAt >= EMPTY_RETRY_MS);
     if (!needReload) return cur.map;
@@ -323,7 +353,18 @@ async function _load(date, force) {
   //      ③ 本地残缺值兜底（0 请求）：猫抓也拿不到时，写「N 天真实累乘」而不是留着错值。
   const phase = _fallbackPhase();
   const pending = _missingTargetRows(date, map, phase === 'close');
-  if (pending.length > 0 && !(cloud.size === 0 && _inWorkerWindow(date))) {
+  // [QUOTA-GUARD 2026-09-28] 早盘 worker 抓取时段内，前端【一律不动用猫抓额度】
+  //   （旧条件要求 cloud.size===0 才让路，当天云端已有 7 行 ⇒ 挡不住 ⇒ 抢跑烧光额度。
+  //    详见 _inMorningGuard 注释）。force（后台手动按钮）不受此限。
+  const morningGuard = _inMorningGuard(date) && !force;
+  if (morningGuard && pending.length > 0) {
+    _guardedDates.add(date);
+    _dbgLog('[DRAGON] ' + date + ' 处于早盘 worker 抓取时段（北京 09:00~09:45）→ 本轮【不动用猫抓额度】，' +
+      '待 ' + pending.length + ' 只缺票留到窗口之后再补（§32 禁止与 worker 抢同一把 key 的 10 次/日额度）');
+  } else {
+    _guardedDates.delete(date);
+  }
+  if (pending.length > 0 && !morningGuard) {
     const expectedLegs = getDragonWindowDates(date).length;
     const applied = new Set();
 

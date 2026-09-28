@@ -629,16 +629,32 @@ import { setAuctionDateData } from './auction-data.js';
         // pullAuctionMarketDataForDate 只拉当前日期）时，直接从 market_metrics 云端拉该 (date,stock)
         // 并合并进内存缓存，使 getStockHistoryValue 后续能命中，趋势图显示真实 5 日数据。
         // 这是 §6 根治（缓存未 hydration 导致趋势空白），不是兼容补丁：只补缺失行，不动既有真相源。
+
+        // [FIX 2026-09-28] 趋势图要画的四列是 volume / yestVolume / changePct / aucPctChg，
+        //   其中【成交量与收盘涨幅】是主列，两列都在才算 hydrated。
+        //   事故：当天行只写进了 change_pct（同花顺涨幅快照），volume / auc_pct_chg 为空，
+        //   旧口径「volume / change_pct 任一非空即视为已 hydrated」直接短路返回
+        //   ⇒ 趋势图当天那格【永远补不回来】，用户只能看到涨幅、看不到量与竞价涨幅。
+        function _isTrendRowHydrated(row) {
+            if (!row) return false;
+            const _has = function (k) {
+                const v = row[k];
+                return v != null && String(v).trim() !== '';
+            };
+            return _has('volume') && _has('change_pct');
+        }
+        // 已经为 (date,stock) 试过一次仍未补齐的，不再反复请求（§32 禁止重复请求）。
+        // 数据真正到达时上面 _isTrendRowHydrated 会直接命中，不需要靠重试兜。
+        const _hydrateTriedKeys = new Set();
+
         export async function hydrateStockHistoryRow(date, stockName, dataSource = 'auction') {
             if (!date || !stockName) return null;
             const cache = dataSource === 'hot' ? state._hotFullRowCache : state._auctionMemCache;
             const rows = cache[date] || [];
             const found = _histRowMapFor(rows).get(stockName.trim());
-            // 缓存已有该股票的关键指标则无需再拉（volume / change_pct 任一非空即视为已 hydrated）
-            if (found && ((found.volume != null && String(found.volume).trim() !== '') ||
-                (found.change_pct != null && String(found.change_pct).trim() !== ''))) {
-                return found;
-            }
+            if (found && _isTrendRowHydrated(found)) return found;
+            const key = (dataSource || 'auction') + '|' + date + '|' + stockName.trim();
+            if (_hydrateTriedKeys.has(key)) return found || null;
             const sb = getSupabase();
             if (!sb) return null;
             try {
@@ -648,6 +664,8 @@ import { setAuctionDateData } from './auction-data.js';
                     .eq('scope', dataSource)
                     .eq('stock', stockName.trim())
                     .maybeSingle();
+                // 这一格已经真正请求过一次 → 登记，避免「永远缺字段」的行被反复请求（§32）
+                _hydrateTriedKeys.add(key);
                 if (error) return null;
                 if (!data) return null;
                 const mapped = {
