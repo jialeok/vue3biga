@@ -18,3 +18,10 @@ TZ = "Asia/Shanghai"
 #   wrangler secret put SUPABASE_ANON_KEY --config wrangler-bidding-auto-fetch.toml
 #   wrangler secret put FUYAO_API_KEY_HISTORY --config wrangler-bidding-auto-fetch.toml
 #   wrangler secret put FETCH_TOKEN --config wrangler-bidding-auto-fetch.toml
+#
+# [KEY-FALLBACK 2026-09-28] 早盘 9:25 数据兜底：主账号额度用尽 → 自动退回【小号】。
+#   用与「竞价一字」同一把小号（Supabase Secret 里叫 NUMCAT_API_KEY_YIZI），
+#   ⛔ 不设这一条 = 兜底静默关闭（仍能跑，但主账号一被烧光当天就没数据）。
+#   wrangler secret put NUMCAT_API_KEY_YIZI --config wrangler-bidding-auto-fetch.toml
+#   次日 9:25 的 worker 日志第一行会回显 key 候选链，用它确认兜底是否已生效：
+#     🔑 猫抓 key 候选链: NUMCAT_API_KEY(abcd***wxyz) → NUMCAT_API_KEY_YIZI(efgh***rstu)｜主账号额度用尽会自动退回小号

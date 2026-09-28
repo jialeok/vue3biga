@@ -3,7 +3,9 @@ import { beijingNow, beijingToday, isWeekend, compactToDateStr } from '../../_sh
 import { localIsTradingDay } from '../../_shared-source/holidays.js';
 import { CONFIG } from '../config.js';
 import { fetchLadderConstituents } from '../data/fuyao-api.js';
-import { numcatDailyAuc, numcatDaily } from '../data/numcat-api.js';
+// [KEY-FALLBACK 2026-09-28] configuredKeys/maskKey 只用于把「key 候选链」回显到日志：
+//   小号 Secret 没配时兜底会静默失效，必须在日志里一眼看见（§10 禁止静默失败）。
+import { numcatDailyAuc, numcatDaily, configuredKeys, maskKey } from '../data/numcat-api.js';
 import { upsertAuctionWatchlist, upsertMarketMetrics, upsertStockRangePct, readAuctionWatchlistForDate, readAuctionTagsForDate, readDragonLeadersForDate, readStockCodeMap, readStockCodeMapByNames } from '../data/supabase-write.js';
 import { getRecentTradingDays } from './holiday-check.js';
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏。早盘放在【最后】跑一次（不阻塞 P0/P1/P2）：
@@ -347,7 +349,8 @@ async function fetchNumcatWithRetry(env, constituents, today, cache, logs) {
   const symbols = constituents.map(c => c.code).join(',');
   let numcatData;
   try {
-    numcatData = await numcatDailyAuc(env, symbols, startYMD, endYMD);
+    // [KEY-FALLBACK 2026-09-28] 主账号额度用尽会自动退回小号（见 data/numcat-api.js 文件头）
+    numcatData = await numcatDailyAuc(env, symbols, startYMD, endYMD, logs);
   } catch (e) {
     logs.push('numcat 调用失败: ' + e.message);
     return { error: 'numcat 调用失败: ' + e.message };
@@ -391,7 +394,7 @@ async function fetchNumcatWithRetry(env, constituents, today, cache, logs) {
         logs.push('⏳ 今天(' + today + ')数据缺失，' + waitSec + '秒后重试第' + (attempt + 1) + '次...');
         await new Promise(r => setTimeout(r, waitSec * 1000));
         try {
-          const retryData = await numcatDailyAuc(env, symbols, startYMD, endYMD);
+          const retryData = await numcatDailyAuc(env, symbols, startYMD, endYMD, logs);
           const retryItems = retryData.items || [];
           const retryFields = retryData.fields && retryData.fields.length ? retryData.fields : fields;
           const retryGotDates = computeGotDates(retryItems, retryFields);
@@ -406,6 +409,12 @@ async function fetchNumcatWithRetry(env, constituents, today, cache, logs) {
           }
         } catch (e) {
           logs.push('第' + (attempt + 1) + '次重试请求失败: ' + e.message);
+          // [KEY-FALLBACK 2026-09-28] 主账号 + 小号**都**额度用尽 → 立即停止重试。
+          //   重试同样拿不到，而 TODAY_RETRY_DELAYS_SEC 加起来 25s，白等只会顶穿 9:26 硬指标。
+          if (e && e.quotaExhausted) {
+            logs.push('🛑 所有猫抓 key 当日额度均已用尽 → 不再重试（重试也拿不到，只会白等顶穿 9:26）');
+            break;
+          }
         }
       }
       if (missingDates.includes(today)) {
@@ -460,7 +469,8 @@ async function fetchDailyWindow(env, constituents, today, expectedDates, cache, 
   logs.push('步骤5：numcat daily ' + rangeDates.length + ' 天窗口（与 daily_auc 并发）...');
 
   try {
-    const dailyData = await numcatDaily(env, symbols, startYMD, endYMD);
+    // [KEY-FALLBACK 2026-09-28] 同上：主账号额度用尽会自动退回小号
+    const dailyData = await numcatDaily(env, symbols, startYMD, endYMD, logs);
     const dailyFields = dailyData.fields || [];
     const dailyItems = dailyData.items || [];
     const dSymIdx = dailyFields.indexOf('symbol');
@@ -832,6 +842,14 @@ export async function runMorning(env) {
   const today = beijingToday();
   const cache = createRunCache();
   logs.push('today=' + today);
+
+  // [KEY-FALLBACK 2026-09-28] 回显 key 候选链：主账号 → 小号。
+  //   小号 Secret 没配 = 兜底静默失效，必须在日志里一眼看见（§10 禁止静默失败）。
+  const _keys = configuredKeys(env);
+  logs.push('🔑 猫抓 key 候选链: ' + (_keys.length
+    ? _keys.map(k => k.name + '(' + maskKey(k.key) + ')').join(' → ') +
+      (_keys.length > 1 ? '｜主账号额度用尽会自动退回小号' : '｜⚠️ 只配了 1 把 key：主账号用尽则无兜底')
+    : '（无！请设置 Secret NUMCAT_API_KEY）'));
 
   const skipResult = checkTradingDay(today, logs);
   if (skipResult) return skipResult;

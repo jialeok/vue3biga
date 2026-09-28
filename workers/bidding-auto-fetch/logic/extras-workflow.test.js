@@ -126,7 +126,9 @@ describe('runAuctionExtrasPatch 竞价涨幅(auc_pct_chg)补漏', () => {
       { test: isMmPost, res: (u, init) => { posted = JSON.parse(init.body); return { ok: true, json: () => Promise.resolve([]) }; } }
     ]);
 
-    const r = await runAuctionExtrasPatch({}, { dates: ['2026-09-08'] });
+    // env 必须带至少一把 key：[KEY-FALLBACK 2026-09-28] 之后由 data/numcat-api.js#configuredKeys
+    //   统一取 key，一把都没配会【明确报错】而不是发出一个 apikey=undefined 的请求（§10 禁止静默失败）。
+    const r = await runAuctionExtrasPatch({ NUMCAT_API_KEY: 'test-main-key' }, { dates: ['2026-09-08'] });
 
     expect(r.patched).toBe(1);
     expect(numcatCalls).toBe(1);

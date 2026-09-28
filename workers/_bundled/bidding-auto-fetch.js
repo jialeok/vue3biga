@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-09-15 05:13:39
+// 生成时间: 2026-09-28 10:51:09
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 3020（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 3108（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 必须恰好 1 处。
 
 // ────── _shared-source/date-utils.js ──────
@@ -504,56 +504,140 @@ async function fetchFuyaoKlineWindowPct(env, items, dates, opts) {
 
 // ────── bidding-auto-fetch/data/numcat-api.js ──────
 // numcat-api.js — 猫抓 numcat daily_auc + daily 接口
-async function numcatDailyAuc(env, symbols, startDateYMD, endDateYMD) {
-  // 【FIX 2026-08-03】改用显式 startdate/enddate（YYYYMMDD），不再用 recentdays
-  const body = {
-    apiname: 'daily_auc',
-    apikey: env.NUMCAT_API_KEY,
-    fields: 'symbol,name,tradedate,auc_vol,auc_pct_chg,auc_to_pre_vol_pct,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover',
-    params: {
-      symbols: symbols,
-      startdate: startDateYMD,
-      enddate: endDateYMD
-    }
-  };
-  const resp = await fetch(CONFIG.NUMCAT_DAILY_AUC_URL, {
+//
+// ============================================================================
+// [KEY-FALLBACK 2026-09-28] 主账号额度用尽 → **自动退回小号**，保证 9:25 早盘竞价数据不缺席
+// ----------------------------------------------------------------------------
+// 用户硬指标：每个交易日 **9:25~9:26 早盘竞价看板数据必须完整**（盘前下单要看它，
+// 决策看板也依赖它）。而猫抓免费档**每天只有 10 次调用**，额度一旦被别人（前端抢跑 /
+// 其他看板兜底 / 手动按钮）花光，worker 9:25 的 daily_auc 就会拿到
+// `code=403 今日调用额度已用完` → 当天的 竞价量 / 昨成交量 / 竞价涨幅 整片为空、事后难补救。
+//
+// 因此构建【key 候选链】：NUMCAT_API_KEY（主账号）→ NUMCAT_API_KEY_YIZI（小号）。
+//   · 只有「额度类错误」才换 key（403 / 429 / 额度用尽 / 限流）——
+//     网络 / DNS / 超时这类错误换 key 也一样失败，只会白烧小号额度（§32 禁止无意义请求）。
+//   · 小号没配置（Cloudflare Secret 未设）→ 候选链只剩主账号，行为与改造前完全一致（零风险）。
+//   · 全部 key 都额度用尽 → 抛出的错误带 `quotaExhausted=true`，
+//     调用方据此【立即停止重试】（重试同样拿不到，白等 25s 只会顶穿 9:26 硬指标）。
+// ⚠️ 代价（刻意取舍）：退回小号会占用小号当天的额度（小号 = 竞价一字看板那把，10 次/天）。
+//    但小号只在「主账号已废」时才被动用，而用户口径是早盘竞价优先级最高。
+// ============================================================================
+/** 上游「额度用尽 / 限流」判定（HTTP 或业务码 403、429，或文案里明确说额度/限流） */
+function isQuotaError(msg) {
+  const s = String(msg || '');
+  if (!s) return false;
+  if (/code=403|code=429|HTTP 403|HTTP 429/.test(s)) return true;
+  if (s.indexOf('额度') >= 0) return true;
+  if (/RATE_LIMIT|rate limit/i.test(s)) return true;
+  return false;
+}
+
+/** 上游 key 候选链（按优先级）。缺哪个跳哪个；两把都没配 → 空数组 */
+function configuredKeys(env) {
+  const list = [];
+  const main = String((env && env.NUMCAT_API_KEY) || '').trim();
+  if (main) list.push({ name: 'NUMCAT_API_KEY', key: main });
+  const small = String((env && env.NUMCAT_API_KEY_YIZI) || '').trim();
+  if (small && small !== main) list.push({ name: 'NUMCAT_API_KEY_YIZI', key: small });
+  return list;
+}
+
+/** 掩码回显（排查用）：只用于确认「到底用的哪把 key」，绝不回显全量 */
+function maskKey(k) {
+  const s = String(k || '');
+  return s.length <= 8 ? '***' : s.slice(0, 4) + '***' + s.slice(-4);
+}
+
+/** 单次上游请求（单把 key）。额度类失败抛出的错误带 quotaExhausted 标记 */
+async function postOnce(url, key, apiname, fields, params) {
+  const body = { apiname: apiname, apikey: key, fields: fields, params: params };
+  const resp = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
-    throw new Error('numcat daily_auc HTTP ' + resp.status + ': ' + text.slice(0, 200));
+    const e = new Error('numcat ' + apiname + ' HTTP ' + resp.status + ': ' + text.slice(0, 200));
+    if (resp.status === 403 || resp.status === 429) e.quotaExhausted = true;
+    throw e;
   }
   const json = await resp.json();
-  if (json.code !== 200) throw new Error('numcat daily_auc 错误: ' + (json.message || JSON.stringify(json)));
+  if (json.code !== 200) {
+    const e = new Error('numcat ' + apiname + ' 错误: ' + (json.message || JSON.stringify(json)) +
+      '（上游 code=' + json.code + '）');
+    e.upstreamCode = json.code;
+    if (json.code === 403 || json.code === 429) e.quotaExhausted = true;
+    throw e;
+  }
   return json.data;
 }
 
-async function numcatDaily(env, symbols, startDateYMD, endDateYMD) {
-  const body = {
-    apiname: 'daily',
-    apikey: env.NUMCAT_API_KEY,
-    fields: 'symbol,tradedate,pct_chg',
-    params: {
-      symbols: symbols,
-      startdate: startDateYMD,
-      enddate: endDateYMD
-    }
-  };
-  const resp = await fetch(CONFIG.NUMCAT_DAILY_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    throw new Error('numcat daily HTTP ' + resp.status + ': ' + text.slice(0, 200));
+/**
+ * 按候选链请求上游：额度类错误自动换下一把 key。
+ * @param {object} env worker env（NUMCAT_API_KEY / NUMCAT_API_KEY_YIZI）
+ * @param {object} opt { apiname, url, fields, params, logs }
+ * @returns {Promise<{data:object, keyName:string}>}
+ * @throws 最后一把 key 的错误；若最后一次失败是额度类，错误会带 quotaExhausted=true
+ */
+async function postNumcat(env, opt) {
+  const o = opt || {};
+  const logs = Array.isArray(o.logs) ? o.logs : [];
+  const keys = configuredKeys(env);
+  if (keys.length === 0) {
+    throw new Error('numcat ' + o.apiname + ' 未配置 key（请设置 Secret NUMCAT_API_KEY）');
   }
-  const json = await resp.json();
-  if (json.code !== 200) throw new Error('numcat daily 错误: ' + (json.message || JSON.stringify(json)));
-  return json.data;
+  let lastErr = null;
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    try {
+      const data = await postOnce(o.url, k.key, o.apiname, o.fields, o.params);
+      if (i > 0) {
+        logs.push('✅ numcat ' + o.apiname + ' 已退回【小号 ' + k.name + '（' + maskKey(k.key) + '）】取数成功');
+      }
+      return { data: data, keyName: k.name };
+    } catch (e) {
+      lastErr = e;
+      logs.push('⚠️ numcat ' + o.apiname + ' key=' + k.name + '（' + maskKey(k.key) + '）失败: ' + e.message);
+      const hasNext = i + 1 < keys.length;
+      if (hasNext && e.quotaExhausted) {
+        logs.push('→ 主账号额度用尽，退回下一把 key（' + keys[i + 1].name + '）继续取数');
+        continue;
+      }
+      if (hasNext && !e.quotaExhausted) {
+        logs.push('→ 非额度类错误，不换 key（换 key 同样失败，只会白烧小号额度 §32）');
+      }
+      break;
+    }
+  }
+  throw lastErr;
 }
+
+/** 竞价数据（含当天）：竞价量 auc_vol / 竞价涨幅 auc_pct_chg / 反推昨成交量用的 auc_to_pre_vol_pct */
+async function numcatDailyAuc(env, symbols, startDateYMD, endDateYMD, logs) {
+  // 【FIX 2026-08-03】改用显式 startdate/enddate（YYYYMMDD），不再用 recentdays
+  const res = await postNumcat(env, {
+    apiname: 'daily_auc',
+    url: CONFIG.NUMCAT_DAILY_AUC_URL,
+    fields: 'symbol,name,tradedate,auc_vol,auc_pct_chg,auc_to_pre_vol_pct,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover',
+    params: { symbols: symbols, startdate: startDateYMD, enddate: endDateYMD },
+    logs: logs
+  });
+  return res.data;
+}
+
+/** 日线涨幅 pct_chg（10 日区间涨幅的历史腿） */
+async function numcatDaily(env, symbols, startDateYMD, endDateYMD, logs) {
+  const res = await postNumcat(env, {
+    apiname: 'daily',
+    url: CONFIG.NUMCAT_DAILY_URL,
+    fields: 'symbol,tradedate,pct_chg',
+    params: { symbols: symbols, startdate: startDateYMD, enddate: endDateYMD },
+    logs: logs
+  });
+  return res.data;
+}
+
 
 // ────── bidding-auto-fetch/data/supabase-write.js ──────
 // supabase-write.js — Supabase 写入接口
@@ -1126,12 +1210,6 @@ function replaceTDayLeg(rangePct, oldLeg, newLeg) {
 //   · 只有「库内该行四要素有缺失」且「numcat 本次给了非空值」才写 → 天然幂等，重复跑零副作用；
 //   · 读取失败必须抛错，绝不能被当成「全都缺」而整体覆盖；
 //   · 整体失败不致命，调用方 try/catch 后继续。
-
-
-
-
-
-
 // ⚠️ 单文件打包（workers/_bundle.mjs）会把所有模块拼进同一个作用域，
 //    顶层标识符必须全局唯一 —— 这里一律加 extras 前缀，避免与其它文件重名导致重复声明。
 const EXTRAS_FIELDS = ['um_vol', 'open_bid_pct', 'auc_vol_ratio', 'auc_turnover'];
@@ -1480,6 +1558,8 @@ async function runTodaySnapshotPatch(env, opts) {
 
 // ────── bidding-auto-fetch/logic/morning-workflow.js ──────
 // morning-workflow.js — 早盘竞价抓取主流程（runMorning 拆分为若干子函数）
+// [KEY-FALLBACK 2026-09-28] configuredKeys/maskKey 只用于把「key 候选链」回显到日志：
+//   小号 Secret 没配时兜底会静默失效，必须在日志里一眼看见（§10 禁止静默失败）。
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏。早盘放在【最后】跑一次（不阻塞 P0/P1/P2）：
 // 猫抓对当日行通常不给四要素，但若为单日请求/结算较快而给了，就能在 9:26 前顺手落库；
 // 没给也零副作用（只补缺失值，写 0 行）。真正的兜底是 16:00 close 与次日窗口重刷。
@@ -1818,7 +1898,8 @@ async function fetchNumcatWithRetry(env, constituents, today, cache, logs) {
   const symbols = constituents.map(c => c.code).join(',');
   let numcatData;
   try {
-    numcatData = await numcatDailyAuc(env, symbols, startYMD, endYMD);
+    // [KEY-FALLBACK 2026-09-28] 主账号额度用尽会自动退回小号（见 data/numcat-api.js 文件头）
+    numcatData = await numcatDailyAuc(env, symbols, startYMD, endYMD, logs);
   } catch (e) {
     logs.push('numcat 调用失败: ' + e.message);
     return { error: 'numcat 调用失败: ' + e.message };
@@ -1862,7 +1943,7 @@ async function fetchNumcatWithRetry(env, constituents, today, cache, logs) {
         logs.push('⏳ 今天(' + today + ')数据缺失，' + waitSec + '秒后重试第' + (attempt + 1) + '次...');
         await new Promise(r => setTimeout(r, waitSec * 1000));
         try {
-          const retryData = await numcatDailyAuc(env, symbols, startYMD, endYMD);
+          const retryData = await numcatDailyAuc(env, symbols, startYMD, endYMD, logs);
           const retryItems = retryData.items || [];
           const retryFields = retryData.fields && retryData.fields.length ? retryData.fields : fields;
           const retryGotDates = computeGotDates(retryItems, retryFields);
@@ -1877,6 +1958,12 @@ async function fetchNumcatWithRetry(env, constituents, today, cache, logs) {
           }
         } catch (e) {
           logs.push('第' + (attempt + 1) + '次重试请求失败: ' + e.message);
+          // [KEY-FALLBACK 2026-09-28] 主账号 + 小号**都**额度用尽 → 立即停止重试。
+          //   重试同样拿不到，而 TODAY_RETRY_DELAYS_SEC 加起来 25s，白等只会顶穿 9:26 硬指标。
+          if (e && e.quotaExhausted) {
+            logs.push('🛑 所有猫抓 key 当日额度均已用尽 → 不再重试（重试也拿不到，只会白等顶穿 9:26）');
+            break;
+          }
         }
       }
       if (missingDates.includes(today)) {
@@ -1931,7 +2018,8 @@ async function fetchDailyWindow(env, constituents, today, expectedDates, cache, 
   logs.push('步骤5：numcat daily ' + rangeDates.length + ' 天窗口（与 daily_auc 并发）...');
 
   try {
-    const dailyData = await numcatDaily(env, symbols, startYMD, endYMD);
+    // [KEY-FALLBACK 2026-09-28] 同上：主账号额度用尽会自动退回小号
+    const dailyData = await numcatDaily(env, symbols, startYMD, endYMD, logs);
     const dailyFields = dailyData.fields || [];
     const dailyItems = dailyData.items || [];
     const dSymIdx = dailyFields.indexOf('symbol');
@@ -2304,6 +2392,14 @@ async function runMorning(env) {
   const cache = createRunCache();
   logs.push('today=' + today);
 
+  // [KEY-FALLBACK 2026-09-28] 回显 key 候选链：主账号 → 小号。
+  //   小号 Secret 没配 = 兜底静默失效，必须在日志里一眼看见（§10 禁止静默失败）。
+  const _keys = configuredKeys(env);
+  logs.push('🔑 猫抓 key 候选链: ' + (_keys.length
+    ? _keys.map(k => k.name + '(' + maskKey(k.key) + ')').join(' → ') +
+      (_keys.length > 1 ? '｜主账号额度用尽会自动退回小号' : '｜⚠️ 只配了 1 把 key：主账号用尽则无兜底')
+    : '（无！请设置 Secret NUMCAT_API_KEY）'));
+
   const skipResult = checkTradingDay(today, logs);
   if (skipResult) return skipResult;
 
@@ -2453,20 +2549,12 @@ async function runMorning(env) {
 //   让区间涨幅的修复完全不依赖猫抓额度。缺腿行【绝不】做代数换腿。
 //
 // 【幂等】re-run 安全：change_pct 值相同不写；区间涨幅值/天数相同不写。
-
-
-
-
-
-
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素（未匹配量/抢筹幅度/竞价量比/真换手率）补漏：
 // 猫抓 daily_auc 对【当日】行不返回这四个字段，必须等结算后补写 —— 16:00 正是最合适的时机。
-
 // 区间涨幅口径单一真相（纯函数，worker 早盘/收盘与前端共用同一份实现）
 // ⚠️ 单文件打包（_bundle.mjs）会把本文件与 range-window.js 拼进同一个作用域，
 //    因此这里【复用】range-window 的 parsePct / RANGE_WINDOW_DAYS，不再自己定义一份
 //    （同名会直接报重复声明）。
-
 /** 北京时间 15:00 收盘（与前端 close-pct-cover / dragon-rank 同口径） */
 const CLOSE_HOUR = 15;
 /** 区间涨幅「值比较」的容差（range_pct 落库保留 2 位小数） */
