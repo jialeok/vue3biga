@@ -206,7 +206,9 @@ function biddingCurrentPoint() {
 function biddingGetTencentPcts(thscodes) {
   // [A2-03] 改为标准 fetch + 正则解析，移除 document.createElement('script') 注入与
   // window['v_'+code] 全局读写（§16 纯 Vue3 红线：禁止向 DOM/业务全局挂数据）。
-  // 解析方式对齐 workers/bidding-board-worker-a/data/tencent-api.js（项目既有的 §16 合规实现），抓取功能等价。
+  // 解析方式对齐 Supabase Edge Function 侧的腾讯行情实现
+  // （supabase/functions/bidding-a/index.ts 的 _tencentFetchOnce，与原 Cloudflare worker-a
+  //   的 data/tencent-api.js 同源；worker-a/b 已于 2026-09-29 下线，源码目录已删除）。
   return new Promise((resolve, reject) => {
     const tqCodes = thscodes.map(c => {
       const num = c.split('.')[0];
