@@ -313,10 +313,47 @@ const KNOWN_HOLIDAYS = new Set([
   '2026-01-01', '2026-01-02', '2026-02-17', '2026-02-18', '2026-02-19',
   '2026-02-20', '2026-02-21', '2026-02-22', '2026-02-23', '2026-04-05',
   '2026-04-06', '2026-05-01', '2026-05-02', '2026-05-03', '2026-05-04',
-  '2026-05-05', '2026-06-19', '2026-10-01', '2026-10-02', '2026-10-03',
-  '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08',
+  '2026-05-05', '2026-06-19',
+  // [FIX 2026-09-29] 补中秋 '2026-09-25'、删 '2026-10-08'（2025 段那条是对的，2025 年 10/9 才开市）。
+  //   本函数是三个副本之一（另两个：bidding-a、limit-pool-fetch），三份必须保持一致。
+  //   不修的话：9/25 照跑（烧小号额度 + 写脏数据）；10/8 被判非交易日 → 整轮 skip（竞价一字看板当天全空）。
+  '2026-09-25',
+  '2026-10-01', '2026-10-02', '2026-10-03',
+  '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07',
 ]);
+// ============================================================================
+// [TRADING-DAY 2026-09-29] 用户在前端顶栏标的假期（云端表 trading_day_overrides）
+//   —— 唯一能提前表达「国庆连休」这类未来假期的来源（fuyao 日历至多只能判到次日）。
+//   本函数【不调上游交易日历】（省小号配额），所以「用户设置」这一层对它是必需的，
+//   不能只靠硬编码表：表里写错一天，一整个交易日就没了。
+//   用法：handler 入口调一次 loadTradingDayOverrides()，之后 localIsTradingDay 自动先查它。
+//   ⚠️ 与 workers/_shared-source/trading-day.js 同源（Deno 无法 import，故内联；改动须同步）。
+//   读取失败保持 null = 该层弃权，继续用周末/硬编码表，绝不「读不到 → 当成空数据」（§10）。
+// ============================================================================
+let _overrideMap: Map<string, boolean> | null = null;
+
+async function loadTradingDayOverrides(): Promise<void> {
+  _overrideMap = null;
+  if (!CONFIG.SUPABASE_URL) return;
+  try {
+    const resp = await fetch(CONFIG.SUPABASE_URL + '/rest/v1/trading_day_overrides?select=date,is_holiday',
+      { headers: sbHeaders() });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const rows = await resp.json();
+    const m = new Map<string, boolean>();
+    (Array.isArray(rows) ? rows : []).forEach((r) => {
+      if (r && r.date) m.set(String(r.date), r.is_holiday === true);
+    });
+    _overrideMap = m;
+    console.log('[TRADING-DAY] 已加载交易日覆盖表 ' + m.size + ' 条（用户设置优先于本地日历）');
+  } catch (e) {
+    console.warn('[TRADING-DAY] 覆盖表读取失败（该层弃权，继续用本地日历）: ' + (e as Error)?.message);
+  }
+}
+
 function localIsTradingDay(dateStr: string): boolean {
+  // ① 用户显式设置最高优先（true=假期；false=显式取消假期，可压过硬编码表）
+  if (_overrideMap && _overrideMap.has(dateStr)) return !_overrideMap.get(dateStr);
   if (isWeekend(dateStr)) return false;
   return !KNOWN_HOLIDAYS.has(dateStr);
 }
@@ -2034,6 +2071,10 @@ Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
   }
+
+  // [TRADING-DAY 2026-09-29] 读一次用户假期覆盖表（失败只留痕，继续用本地日历）。
+  //   /health、/trend、/fetch、/probe 四个分支都共用这一份 —— handle 里任一交易日判定都依赖它。
+  await loadTradingDayOverrides();
 
   // Supabase Edge Function 的 pathname 带前缀 /functions/v1/auction-yizi-fetch，用 endsWith 兼容
   if (p.endsWith('/health')) {

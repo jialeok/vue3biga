@@ -109,10 +109,56 @@ const KNOWN_HOLIDAYS = new Set([
   '2026-01-01', '2026-01-02', '2026-02-17', '2026-02-18', '2026-02-19',
   '2026-02-20', '2026-02-21', '2026-02-22', '2026-02-23', '2026-04-05',
   '2026-04-06', '2026-05-01', '2026-05-02', '2026-05-03', '2026-05-04',
-  '2026-05-05', '2026-06-19', '2026-10-01', '2026-10-02', '2026-10-03',
-  '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08',
+  '2026-05-05', '2026-06-19',
+  // [FIX 2026-09-29] 这一段原来有两个错，每一个都会毁掉一整个交易日（与 workers/_shared-source/holidays.js
+  //   以及另两个 Edge Function（auction-yizi-fetch / limit-pool-fetch）的三份副本必须保持一致）：
+  //     ① 漏了中秋 '2026-09-25'（原来 6-19 直接跳到 10-01，整个 9 月没有任何假期）
+  //        ⇒ 休市日被当交易日跑：烧猫抓额度、写脏数据；
+  //     ② 多了 '2026-10-08'（疑似从 2025 年那段复制后没清理 —— 2025 年国庆中秋连休 10/1~10/8、
+  //        10/9 才开市，所以 2025 段里的 '2025-10-08' 是对的；而 2026 年中秋在 9/25 不与国庆连休，
+  //        国庆只放 10/1~10/7，10/8 就该开市）
+  //        ⇒ 开市日被判「非交易日」→ 本函数整轮 skip，当天竞价看板数据全空。
+  '2026-09-25',
+  '2026-10-01', '2026-10-02', '2026-10-03',
+  '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07',
 ]);
+// ============================================================================
+// [TRADING-DAY 2026-09-29] 用户在前端顶栏标的假期（云端表 trading_day_overrides）
+// ----------------------------------------------------------------------------
+// 为什么必须有：本地硬编码表无法表达「未来的假期」，fuyao 日历也至多只能判到次日
+//   ⇒「国庆 10/1~10/7 连休」只有用户提前标出来才判得准。
+// 用法：在 handler 入口调一次 loadTradingDayOverrides()；之后同步的 localIsTradingDay
+//   会自动先查它（签名不变，所有既有调用点自动受益）。
+// ⚠️ 与 workers/_shared-source/trading-day.js 同源。Edge Function 跑在 Deno，无法跨目录
+//    import workers/，故此处内联一份 —— **改动任一处必须同步另一处**。
+// 读取失败保持 null = 该层弃权（继续用周末/硬编码表），绝不「读不到 → 当成空数据」（§10）。
+// ============================================================================
+let _overrideMap = null;
+
+async function loadTradingDayOverrides() {
+  _overrideMap = null;
+  const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_ANON_KEY') || '';
+  if (!CONFIG.SUPABASE_URL || !key) return;
+  try {
+    const resp = await fetch(CONFIG.SUPABASE_URL + '/rest/v1/trading_day_overrides?select=date,is_holiday', {
+      headers: { 'apikey': key, 'Authorization': 'Bearer ' + key },
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const rows = await resp.json();
+    const m = new Map();
+    (Array.isArray(rows) ? rows : []).forEach(function (r) {
+      if (r && r.date) m.set(String(r.date), r.is_holiday === true);
+    });
+    _overrideMap = m;
+    console.log('[TRADING-DAY] 已加载交易日覆盖表 ' + m.size + ' 条（用户设置优先于本地日历）');
+  } catch (e) {
+    console.warn('[TRADING-DAY] 覆盖表读取失败（该层弃权，继续用本地日历）: ' + (e && e.message));
+  }
+}
+
 function localIsTradingDay(dateStr) {
+  // ① 用户显式设置最高优先（true=假期；false=显式取消假期，可压过硬编码表）
+  if (_overrideMap && _overrideMap.has(dateStr)) return !_overrideMap.get(dateStr);
   if (isWeekend(dateStr)) return false;
   return !KNOWN_HOLIDAYS.has(dateStr);
 }
@@ -142,16 +188,33 @@ async function fuyaoGet(path, params) {
   return data.data;
 }
 
+// [TRADING-DAY 2026-09-29] 三源合并判定，与 workers/_shared-source/trading-day.js 同源：
+//   ① 用户设置（最高优先）→ ② 周末 → ③ fuyao 日历（仅在其自身覆盖区间内下结论，区间外弃权）
+//   → ④ 本地硬编码表兜底。原来只有 ③→④ 两层，且 ③ 失败就退 ④（用户设置完全不在判据里）。
 async function isTradingDay() {
+  const today = beijingToday();
+  // ① 用户在前端顶栏标的假期最高优先 —— fuyao 看不到未来假期，只有它判得准国庆连休
+  if (_overrideMap && _overrideMap.has(today)) return !_overrideMap.get(today);
+  // ② 周末
+  if (isWeekend(today)) return false;
+  // ③ fuyao 日历：只在它自己声明的覆盖区间内下结论（日历可能被上游截断，
+  //    「日历里没有」不能一律当成「不是交易日」）
+  const todayCompact = today.replace(/-/g, '');
   try {
     const data = await fuyaoGet('/api/a-share/calendar/trading-days', {});
     const items = (data && data.item) || [];
-    const today = beijingToday().replace(/-/g, '');
-    return items.some(function (it) { return String(it.date) === today; });
+    const compact = items
+      .map(function (it) { return String(it.date || '').replace(/-/g, ''); })
+      .filter(function (s) { return /^\d{8}$/.test(s); })
+      .sort();
+    if (compact.length > 0 && todayCompact >= compact[0] && todayCompact <= compact[compact.length - 1]) {
+      return compact.indexOf(todayCompact) >= 0;
+    }
   } catch (e) {
-    console.warn('fuyao 交易日历失败，回退到本地日历:', e.message);
-    return localIsTradingDay(beijingToday());
+    console.warn('fuyao 交易日历失败（该层弃权，改用本地日历）:', e.message);
   }
+  // ④ 本地日历兜底
+  return localIsTradingDay(today);
 }
 
 async function getConstituentThscodes(indexThscode) {
@@ -860,6 +923,9 @@ Deno.serve(async (req) => {
     if (!expected || token !== expected) {
       return new Response(JSON.stringify({ ok: false, error: 'token 无效' }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
+    // [TRADING-DAY 2026-09-29] 读一次用户假期覆盖表（失败只留痕，继续用本地日历）。
+    //   必须在任何交易日判定之前 —— bidding_data 各腿与 auction-close 都依赖它。
+    await loadTradingDayOverrides();
     let point = url.searchParams.get('point') || 'auto';
     if (point === 'auto') {
       point = autoPoint();
