@@ -64,14 +64,10 @@ function Strip-And-Clean($content) {
     return ($result -join "`n")
 }
 
-# [REMOVED 2026-09-29] bidding-board-worker-a / -b 已下线。
-#   两个 Cloudflare Worker 均已停止运行，业务逻辑整体移植到 Supabase Edge Function
-#   （supabase/functions/bidding-a/index.ts）；源码目录、wrangler-a/b.toml 与 _bundled/ 产物均已删除。
-#   ⛔ 不要再把这两个加回来 —— 会重新生成两个没人部署的包，误导后续维护者。
-# ⚠️ 本脚本已被 workers/_bundle.mjs 取代（后者带出包体检 + 行数自检位 + 沙箱友好的路径解析）。
-#    这里保留只为兼容旧用法；任何新增改动都请改 _bundle.mjs。
 $workers = @(
-    @{ Name = "bidding-auto-fetch"; Dir = "bidding-auto-fetch" }
+    @{ Name = "bidding-auto-fetch"; Dir = "bidding-auto-fetch" },
+    @{ Name = "bidding-board-worker-a"; Dir = "bidding-board-worker-a" },
+    @{ Name = "bidding-board-worker-b"; Dir = "bidding-board-worker-b" }
 )
 
 foreach ($w in $workers) {

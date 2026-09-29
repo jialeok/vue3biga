@@ -68,14 +68,8 @@ const workers = [
       //      形如 `const X = '字面量';` 的纯值常量它扫不到（会误报「缺必需标识符」）。
       'resolveIsTradingDay', 'mergeTradingDay', 'fetchTradingDayOverrides'],
   },
-  // [REMOVED 2026-09-29] bidding-board-worker-a / -b 已下线。
-  //   两个 Cloudflare Worker 均已停止运行，业务逻辑整体移植到 Supabase Edge Function：
-  //     · worker-a（竞价变化/封单）→ supabase/functions/bidding-a/index.ts
-  //     · worker-b（情绪/集合竞价/封单）→ 同上（bidding-a 由 worker-a 移植而来，逻辑 1:1）
-  //   源码目录、wrangler-a/b.toml、以及 _bundled/ 下的两个产物都已删除（commit 随本次改动）。
-  //   ⛔ 不要再把它们加回这个数组 —— 那会重新生成两个没人部署的包，误导后续维护者。
-  //   ⚠️ Edge Function 不是打包产物：改 supabase/functions/*/index.ts 后直接部署，
-  //      见 workers/../supabase/functions/ 与技能 biga-trading-day-gate 的部署章节。
+  { Name: 'bidding-board-worker-a', Dir: 'bidding-board-worker-a', Expect: ['resolveIsTradingDay'] },
+  { Name: 'bidding-board-worker-b', Dir: 'bidding-board-worker-b', Expect: ['resolveIsTradingDay'] },
 ];
 
 const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
