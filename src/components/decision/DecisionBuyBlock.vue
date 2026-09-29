@@ -4,7 +4,7 @@
   排版（用户口径 2026-09-24 改版）：
     第一行：题材名称  ●1（实心红圆点 = 题材排名）  数量：n  竞价一字：n   ← 一行挤完，省空间
     第二行：选择理由：题材排第一，股票数量n只，m个竞价一字
-    第三行起：序号  股票名称（龙几）  十日涨幅  重仓 / 轻仓
+    第三行起：序号  股票名称（龙几）  十日涨幅  竞价涨幅（红底/绿底/灰底小徽标，2026-09-29）  重仓 / 轻仓
             重仓与轻仓【混排在同一块里】，序号连续，仓位写在行尾（不再拆两块重复题材名）。
 
   §21：本组件零业务计算 —— 排名 / 数量 / 一字数 / 理由 / 序号 / 龙几 / 涨幅 / 仓位
@@ -40,6 +40,14 @@
         class="dcb-dragon"
       >{{ p.dragonLabel }}</span>
       <span class="dcb-pct">{{ pctText(p.pct) }}</span>
+      <!-- [AUC-BADGE 2026-09-29] 竞价涨幅徽标：与【卖点】完全同款（同一个 .dcb-auc 类、同一份
+           formatAucPct + getAucOpenKind），金额与配色都在 Logic 层算好（§21 模板零计算）。
+           缺竞价涨幅 ⇒ aucPctText 为空串 ⇒ 整个徽标不渲染（§10 绝不用灰底伪装成「平开」）。 -->
+      <span
+        v-if="p.aucPctText"
+        class="dcb-auc"
+        :class="'dcb-auc-' + p.aucTone"
+      >{{ p.aucPctText }}</span>
       <span
         class="dcb-position"
         :class="{ light: isLight(p.position) }"

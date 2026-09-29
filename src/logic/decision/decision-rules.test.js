@@ -873,6 +873,59 @@ describe('pickSecondTopicBuy（第 2 名题材：龙一优先，龙一是一字�
   });
 });
 
+// === [2026-09-29] 买点行也挂【竞价涨幅】徽标（与卖点同款：涨红底 / 跌绿底 / 平灰底） ===
+// 位置：紧随「十日涨幅」之后。文本 / 配色全部由 Logic 层派生（§21 模板零计算），
+// 且必须走与卖点【同一份】formatAucPct + getAucOpenKind（§6），所以这里逐档钉死输出。
+describe('买点 · 竞价涨幅徽标（AUC-BADGE）', () => {
+  // 第 1 名题材 X（2 个一字）扛住排名 → 第 2 名题材 T 落到「龙一优先」档，
+  // 而那一档【不看竞价涨跌幅】都会买龙一 ⇒ 一个场景就能喂进任意 aucPct，逐档验证徽标。
+  const run = (aucPct) => {
+    const blocks = rankDecisionTopics(headTopic.concat([
+      E('股1', 'T', 90, false, true, aucPct),
+      E('股2', 'T', 80, false, true, 5)
+    ]));
+    return buildBuyPlan(blocks, rankDragons(blocks)).light.picks[0];
+  };
+
+  it('竞价高开 → 补 "+"、tone=high（UI 映射红底）', () => {
+    const p = run(2.35);
+    expect(p.aucPctText).toBe('+2.35%');
+    expect(p.aucTone).toBe('high');
+  });
+
+  it('竞价低开 → 带 "-"、tone=low（UI 映射绿底）', () => {
+    const p = run(-6);
+    expect(p.aucPctText).toBe('-6.00%');
+    expect(p.aucTone).toBe('low');
+  });
+
+  it('恰好平开 → 0.00%、tone=flat（UI 映射灰底）', () => {
+    const p = run(0);
+    expect(p.aucPctText).toBe('0.00%');
+    expect(p.aucTone).toBe('flat');
+  });
+
+  it('缺竞价涨幅 → 文本空串（模板 v-if 不渲染，§10 绝不补 0.00% 伪装成平开）', () => {
+    const p = run(null);
+    expect(p.aucPctText).toBe('');
+    expect(p.aucTone).toBe('');
+  });
+
+  it('第 1 名题材（重仓档）也带徽标 —— 两个收口函数都要覆盖，别只改了一个', () => {
+    // T1 撑到 6 只：>4 只避开 ⑥ 小题材兜底，又 ≤6 只 ⇒ 「买入只数」砍成 1 只（保留龙位最靠前那只）
+    const blocks = rankDecisionTopics([
+      E('一A', 'T1', 40, true, true, 10), E('一B', 'T1', 39, true, true, 9.98),
+      E('大A', 'T1', 30, false, true, 1.5), E('大B', 'T1', 20, false, true, -2)
+    ].concat(FILLER('T1', 2)));
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy.picks.length).toBe(1);
+    const p0 = plan.heavy.picks[0];
+    expect(p0.name).toBe('大A');
+    expect(p0.aucPctText).toBe('+1.50%');
+    expect(p0.aucTone).toBe('high');
+  });
+});
+
 // === [2026-09-26] ① 第 1 名题材「2 个一字」：第二只按竞价涨幅选，卡位则共选 3 只 ===
 describe('pickHeavyTwo（第 1 名题材 · 卡位选票）', () => {
   const mk = (members) => {

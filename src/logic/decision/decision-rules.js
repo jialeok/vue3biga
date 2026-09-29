@@ -62,6 +62,8 @@
 //     文本 = formatAucPct（与早盘竞价同一函数，2 位小数、正数补 '+'）；
 //     配色 = getAucOpenKind（竞价涨幅 > 0 红底 / < 0 绿底 / = 0 灰底，与全站「涨红跌绿」一致）；
 //     缺竞价涨幅（null）⇒ 不产标签，⛔ 绝不用灰色伪装成「平开」（§10）。
+//     ⚠️【买点】也挂同一枚徽标（同一个款式、同两个函数），由 _decorateAucBadge 在两处收口统一派生
+//       （_finishBuyBlock / _finishPlanBlocks）—— 如果哪天买点的行样式又改，记得两边一起看。
 //
 //   第二层 · 按【今日题材排名】的兜底时点（原规则，未被第一层覆盖时才显示在行尾）：
 //     · 今日题材排【第 1 或 第 2】名 ⇒ 14:50 卖（拿满一天）；
@@ -1199,6 +1201,29 @@ function _appendLowOpenDragonOneNote(blockObj) {
 }
 
 /**
+ * 【竞价涨幅徽标 2026-09-29 用户口径】买点行在「十日涨幅」后面也显示【竞价涨幅】标签，
+ * 样式与卖点完全一致（复用 formatAucPct + getAucOpenKind，§6 不另写格式化与配色）。
+ *
+ * ⛔ 用 block.members 反查 aucPct —— 买点的 picks 全部是从 members 里筛出来的（name 一一对应），
+ *   所以以后新增 / 调整选票规则时【不需要】在每个 picks 构造点补 aucPct 字段，只此一处收口
+ *   （同样的反查范式见上面的 _appendLowOpenDragonOneNote）。
+ * §10：members 里查不到该票 / 该票缺竞价涨幅 ⇒ 产空串，模板 v-if 直接不渲染，绝不补 0.00%。
+ */
+function _decorateAucBadge(blockObj) {
+  if (!blockObj || !blockObj.picks || blockObj.picks.length === 0) return blockObj;
+  const aucOf = new Map();
+  ((blockObj.block && blockObj.block.members) || []).forEach(function(m) {
+    if (m && m.name) aucOf.set(m.name, m.aucPct);
+  });
+  blockObj.picks.forEach(function(p) {
+    const n = _num(aucOf.get(p.name));
+    p.aucPctText = formatAucPct(n);
+    p.aucTone = getAucOpenKind(n) || '';
+  });
+  return blockObj;
+}
+
+/**
  * 【一 · 亏钱效应】本行是不是【竞价一字跌停】（9:25 集合竞价报价就打在跌停价上）。
  *
  * ══ 口径（2026-09-27 用户最终确认）══
@@ -1471,12 +1496,14 @@ function _markHold(blockObj, prevBuyNames) {
   return blockObj;
 }
 
-/** 买点块的统一收口：亏钱效应 → 弱势题材（高开率）→ 只数限制 → 持有标记（顺序固定，互不干扰） */
+/** 买点块的统一收口：亏钱效应 → 弱势题材（高开率）→ 只数限制 → 持有标记 → 竞价涨幅徽标（顺序固定，互不干扰） */
 function _finishBuyBlock(blockObj, opts) {
   _applyLossEffect(blockObj);
   _applyWeakOpenRate(blockObj);
   _capPicksByTopicCount(blockObj);
   _markHold(blockObj, opts ? opts.prevBuyNames : null);
+  // ⛔ 徽标必须【最后】派生：上面的砍票 / 改仓会重建 picks 数组，先派生会被丢掉
+  _decorateAucBadge(blockObj);
   return blockObj;
 }
 
@@ -1500,6 +1527,7 @@ function _finishPlanBlocks(planObj, opts) {
     _applyLossEffect(b);
     _applyWeakOpenRate(b);
     _markHold(b, opts ? opts.prevBuyNames : null);
+    _decorateAucBadge(b);          // 同上：徽标放最后，避免被上面的砍票重建 picks 时丢掉
   });
   return planObj;
 }
