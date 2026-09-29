@@ -20,7 +20,8 @@
       :count="group.count"
       :yizi="group.yiziCount"
     />
-    <div class="dcb-reason-line">
+    <!-- [COPY 2026-09-29] dcb-selectable：卖出说明文字允许长按选中复制 -->
+    <div class="dcb-reason-line dcb-selectable">
       卖出理由：{{ group.reason }}
     </div>
     <div

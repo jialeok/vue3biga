@@ -33,12 +33,25 @@ export function useAppBootstrap(loginRef) {
   const authStore = useAuthStore();
 
   function setupGlobalListeners() {
+    // [COPY 2026-09-29 用户要求] 决策看板的「说明类文字」（灰色问号展开的规则面板 + 内容区的
+    //   选择理由 / 提示 / 未就绪说明）要能【长按选中复制】，方便用户把原文发给 AI 核对。
+    //   挡路的是这里的两条全局拦截 + base.css 的 * { user-select:none }。
+    //   改法：白名单放行 —— 命中 .dcb-selectable（或其内部任意子节点）就不拦截；
+    //   ⛔ 其它区域行为【一字不改】（仍然禁止选中 / 长按菜单），
+    //      否则会波及早盘竞价的「长按股票名打标签」等既有手势（§6 只动该动的）。
+    // 事件 target 可能是文本节点 → 统一取元素再判 closest。
+    const _isCopyableTarget = function (target) {
+      const el = (target && target.nodeType === 3) ? target.parentElement : target;
+      return !!(el && el.closest && el.closest('.dcb-selectable'));
+    };
     document.addEventListener('contextmenu', function (e) {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return true;
+      if (_isCopyableTarget(e.target)) return true;
       e.preventDefault();
     });
     document.addEventListener('selectstart', function (e) {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return true;
+      if (_isCopyableTarget(e.target)) return true;
       e.preventDefault();
     });
   }

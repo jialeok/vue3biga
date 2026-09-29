@@ -374,3 +374,19 @@
             white-space: normal;
             word-break: break-word;
         }
+
+        /* [COPY 2026-09-29 用户要求] 「说明类文字」允许长按选中复制。
+           两条全局限制本来会挡住复制：
+             ① base.css 的 * { user-select: none }；
+             ② useAppBootstrap 里 document 上的 selectstart / contextmenu preventDefault。
+           这里用 .dcb-selectable 做【白名单类】：CSS 放行选区（含内部任意子节点），
+           JS 侧用同一个选择器放行（见 useAppBootstrap#_isCopyableTarget）。
+           ⛔ 只放行"文字选区"这一件事，不碰任何点击/长按手势；也不改这些文字本身的视觉。 */
+        .dcb-selectable,
+        .dcb-selectable * {
+            -webkit-user-select: text;
+            -moz-user-select: text;
+            -ms-user-select: text;
+            user-select: text;
+            -webkit-touch-callout: default;
+        }

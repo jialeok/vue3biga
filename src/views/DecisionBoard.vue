@@ -44,15 +44,16 @@
       class="decision-body"
     >
       <!-- §10：未就绪 / 失败必须可见，绝不显示成「今天没有信号」的空看板 -->
+      <!-- [COPY 2026-09-29] 未就绪 / 失败说明同样允许长按选中复制（方便整段发给 AI 排查） -->
       <div
         v-if="errorText"
-        class="decision-error"
+        class="decision-error dcb-selectable"
       >
         {{ errorText }}
       </div>
       <div
         v-if="!ready"
-        class="decision-empty"
+        class="decision-empty dcb-selectable"
       >
         {{ reasonText }}
       </div>
@@ -69,7 +70,8 @@
                   只保留早盘竞价里 ≥4 只的题材，按股票数取前二。
                与下面的常规档位互斥：有它就不走「第 1 / 第 2 名题材」。 -->
           <template v-if="buySpecial">
-            <div class="dcb-noyizi-hint">
+            <!-- [COPY 2026-09-29] dcb-selectable：兜底方案的说明文字允许长按选中复制 -->
+            <div class="dcb-noyizi-hint dcb-selectable">
               {{ buySpecial.hintText }}
             </div>
             <div
@@ -103,7 +105,7 @@
             />
             <div
               v-if="!buyHeavy && !buyLight"
-              class="decision-empty"
+              class="decision-empty dcb-selectable"
             >
               当日没有成组的题材，无法给出买点
             </div>
@@ -125,7 +127,7 @@
           />
           <div
             v-if="sellGroups.length === 0"
-            class="decision-empty"
+            class="decision-empty dcb-selectable"
           >
             昨日没有打「买」标签的股票，无需卖出
           </div>

@@ -20,7 +20,8 @@
       :yizi="block.block.yiziCount"
     />
     <!-- 第二行：选择理由（理由里已含「根据规则N」；规则编号由 Logic 层给出，⛔ 模板零计算 §21） -->
-    <div class="dcb-reason-line">
+    <!-- [COPY 2026-09-29] dcb-selectable：选票说明文字允许长按选中复制（见 decision-board.css） -->
+    <div class="dcb-reason-line dcb-selectable">
       选择理由：{{ block.reason }}<span
         v-if="block.ruleNo"
         class="dcb-rule-no"
@@ -49,24 +50,25 @@
         class="dcb-hold"
       >{{ p.holdTag }}</span>
     </div>
-    <!-- 辅助说明：本档无轻仓票 / 有股票因缺竞价涨幅未纳入（§10 缺失必须可见，不能静默丢掉） -->
+    <!-- 辅助说明：本档无轻仓票 / 有股票因缺竞价涨幅未纳入（§10 缺失必须可见，不能静默丢掉）
+         [COPY 2026-09-29] dcb-selectable：这几条说明同样允许长按选中复制 -->
     <div
       v-for="(n, i) in block.notes"
       :key="'note-' + i"
-      class="dcb-block-note"
+      class="dcb-block-note dcb-selectable"
     >
       {{ n }}
     </div>
     <!-- 未达门槛：如实说明（§10 不拿不够格的数据冒充有效信号） -->
     <div
       v-if="!block.qualified"
-      class="dcb-block-note unqualified"
+      class="dcb-block-note unqualified dcb-selectable"
     >
       {{ block.notQualifiedText }}
     </div>
     <div
       v-else-if="block.picks.length === 0"
-      class="dcb-block-note"
+      class="dcb-block-note dcb-selectable"
     >
       该题材没有可买的非一字股票
     </div>

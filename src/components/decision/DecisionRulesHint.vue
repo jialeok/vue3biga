@@ -17,9 +17,13 @@
       title="点击查看决策规则"
       @click.stop="emit('update:open', !open)"
     >?</span>
+    <!-- [COPY 2026-09-29] dcb-selectable = 白名单，允许长按选中复制规则原文（见 decision-board.css）。
+         @click.stop：面板在 .decision-header 里，而头部整条是「点一下收起看板」；
+         不拦住的话，长按选字松手会触发点击 → 看板与面板一起收起、刚选中的文字也没了。 -->
     <div
       v-show="open"
-      class="dcb-rules-panel"
+      class="dcb-rules-panel dcb-selectable"
+      @click.stop
     >
       <div
         v-for="(line, i) in lines"
