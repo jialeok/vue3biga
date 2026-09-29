@@ -3,7 +3,10 @@
 // 钉住三件事（后期改规则时先看这里）：
 //   ① 题材排名必须与早盘竞价「题材 toggle」同源（复用 sortByTopicGroups，不另写比较器）；
 //   ② 买点必须【跳过竞价一字】再按龙头顺序取（一字买不进）；
-//   ③ 卖点时点：题材排前二 → 14:50，否则 → 11:20。
+//   ③ 卖点时点（第二层 · 兜底）：题材排前二 → 14:50，否则 → 11:20；
+//   ④ 卖点细分（第一层 · 优先，[SELL-OPEN 2026-09-29]）：按【今日竞价涨幅】分三档 ——
+//      ≤ -3% → 盯盘（10:00 前定夺）｜(-3%, 0) → 开盘立刻出（❗危）｜(0, +3%) → 看分时（向上 11:20、走弱立刻）；
+//      未命中（≥ +3% / 平开 / 缺竞价涨幅）→ 不产提示，回落 ③ 的题材排名时点。
 //
 // ⚠️ 题材名刻意用 T1/T2/T3：组序的兜底比较是【题材名升序】，中文名按 Unicode 码点排
 //    （实测「丙」<「乙」，肉眼极易看错），用 ASCII 名才能让用例意图一目了然。
@@ -29,6 +32,11 @@ import {
   NO_YIZI_MIN_TOPIC_COUNT,
   SELL_TIME_CLOSE,
   SELL_TIME_MIDDAY,
+  SELL_DEEP_LOW,
+  SELL_MILD_HIGH,
+  SELL_TONE_DANGER,
+  SELL_TONE_WATCH,
+  SELL_TONE_PLAN,
   POSITION_HEAVY,
   POSITION_LIGHT,
   HOLD_TAG,
@@ -1259,6 +1267,92 @@ describe('buildSellPlan', () => {
   });
 });
 
+// === [SELL-OPEN 2026-09-29] 卖点按【今日竞价高低开】细分（第一层，优先于题材排名时点）===
+describe('卖点 · 竞价高低开细分（SELL-OPEN）', () => {
+  // T1 排第一（2 个一字）、T2 排第二 —— 兜底时点是 14:50 / 14:50
+  const blocks = rankDecisionTopics([
+    E('T1一', 'T1', 30, true), E('T1二', 'T1', 20, true), E('T1三', 'T1', 10),
+    E('T2一', 'T2', 9), E('T2二', 'T2', 8)
+  ]);
+  const dragon = rankDragons(blocks);
+
+  /** 造一只「昨日买了、今天要卖」的票，指定【今日竞价涨幅】 */
+  function sellRow(name, topic, aucPct) {
+    return { name: name, topic: topic, pct: 10, aucPct: aucPct, inTodayList: true };
+  }
+
+  it('深低开（≤ -3%）→ 盯盘「10:00 前定夺」，题材排第 1 的兜底时点仍是 14:50', () => {
+    const plan = buildSellPlan([sellRow('T1三', 'T1', -3)], blocks, dragon, new Set());
+    const it0 = plan[0].items[0];
+    expect(it0.sellHint.tone).toBe(SELL_TONE_WATCH);
+    expect(it0.sellHint.timeLabel).toContain('10:00');
+    expect(it0.sellHint.text).toContain('10:00 前看有没有反弹');
+    expect(it0.sellHint.text).toContain('反弹不起来');
+    // 规则不变：兜底 sellAt 照旧算出来（只是被提示顶替显示）
+    expect(it0.sellAt).toBe(SELL_TIME_CLOSE);
+  });
+
+  it('深低开边界：-5%（用户原话那一档）与 -3% 同档；-2.9% 不算深低开', () => {
+    const deep = buildSellPlan([sellRow('T1三', 'T1', -5)], blocks, dragon, new Set());
+    expect(deep[0].items[0].sellHint.tone).toBe(SELL_TONE_WATCH);
+    const mild = buildSellPlan([sellRow('T1三', 'T1', -2.9)], blocks, dragon, new Set());
+    expect(mild[0].items[0].sellHint.tone).toBe(SELL_TONE_DANGER);
+  });
+
+  it('小低开（-3% ~ 0）→ 开盘立刻出 + 「❗危」警示', () => {
+    const plan = buildSellPlan([sellRow('T1三', 'T1', -1.2)], blocks, dragon, new Set());
+    const it0 = plan[0].items[0];
+    expect(it0.sellHint.tone).toBe(SELL_TONE_DANGER);
+    expect(it0.sellHint.badge).toContain('危');
+    expect(it0.sellHint.timeLabel).toBe('开盘立刻出');
+    expect(it0.sellHint.text).toContain('立刻出');
+  });
+
+  it('小幅高开（0 ~ +3%）→ 看分时：向上拿到 11:20 卖、走弱立刻卖', () => {
+    const plan = buildSellPlan([sellRow('T1三', 'T1', 1.5)], blocks, dragon, new Set());
+    const it0 = plan[0].items[0];
+    expect(it0.sellHint.tone).toBe(SELL_TONE_PLAN);
+    expect(it0.sellHint.text).toContain('分时整体曲线');
+    expect(it0.sellHint.text).toContain(SELL_TIME_MIDDAY);
+    expect(it0.sellHint.text).toContain('立刻卖');
+  });
+
+  it('未命中三档（≥ +3% / 恰好平开 / 缺竞价涨幅）→ 不产提示，回落题材排名时点', () => {
+    [3, 5, 0, null].forEach(function(auc) {
+      const plan = buildSellPlan([sellRow('T1三', 'T1', auc)], blocks, dragon, new Set());
+      const it0 = plan[0].items[0];
+      expect(it0.sellHint).toBe(null);
+      expect(it0.sellAt).toBe(SELL_TIME_CLOSE);   // 题 1 → 14:50（原规则不变）
+    });
+  });
+
+  it('§10：缺竞价涨幅【不】退化成「平开」去套档（不产提示、不抛错）', () => {
+    const plan = buildSellPlan(
+      [{ name: 'T1三', topic: 'T1', pct: 10, inTodayList: true }],   // 完全没有 aucPct 字段
+      blocks, dragon, new Set()
+    );
+    expect(plan[0].items[0].aucPct).toBe(null);
+    expect(plan[0].items[0].sellHint).toBe(null);
+  });
+
+  it('今天又进买点（【持有 / 加仓】）→ 不产卖点提示（它本来就不卖）', () => {
+    const plan = buildSellPlan(
+      [sellRow('T1三', 'T1', -1.2)], blocks, dragon, new Set(), new Set(['T1三'])
+    );
+    const it0 = plan[0].items[0];
+    expect(it0.holdTag).toBe(HOLD_TAG);
+    expect(it0.sellHint).toBe(null);
+  });
+
+  it('档位阈值就是顶部常量本身（改档位只改常量，不散落字面量）', () => {
+    expect(SELL_DEEP_LOW).toBe(-3);
+    expect(SELL_MILD_HIGH).toBe(3);
+    expect(SELL_TONE_DANGER).toBe('danger');
+    expect(SELL_TONE_WATCH).toBe('watch');
+    expect(SELL_TONE_PLAN).toBe('plan');
+  });
+});
+
 describe('buildRulesLines（灰色问号里的规则说明）', () => {
   const lines = buildRulesLines();
 
@@ -1274,6 +1368,18 @@ describe('buildRulesLines（灰色问号里的规则说明）', () => {
     expect(text).toContain('实心红圆点');                    // 题材行的排名圆点说明
     expect(text).toContain('排第 2');                        // 第 2 名 + 只有 1 个一字的例外
     expect(text).toContain('只有龙一');
+  });
+
+  it('规则说明必须覆盖【卖点按今日竞价高低开细分】（SELL-OPEN 第一层）', () => {
+    const text = lines.join('\n');
+    expect(text).toContain('按今日竞价高低开细分');     // 第一层标题
+    expect(text).toContain('盯盘');                     // 深低开
+    expect(text).toContain('立刻出');                   // 小低开
+    expect(text).toContain('危');                       // 小低开的感叹号警示
+    expect(text).toContain('分时整体曲线');             // 小幅高开
+    expect(text).toContain('题材排名兜底时点');         // 第二层标题
+    expect(text).toContain(String(SELL_DEEP_LOW) + '%');
+    expect(text).toContain('+' + SELL_MILD_HIGH + '%');
   });
 
   it('规则说明必须覆盖【无一字弱市兜底 ⑤】（连板天梯 · 题材连扳）', () => {

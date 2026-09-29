@@ -291,6 +291,10 @@ export function collectDecisionData(date, opts) {
       name: nm,
       topic: row ? row.topic : '',
       pct: row ? row.pct : null,
+      // [SELL-OPEN 2026-09-29] 今日竞价涨幅：卖点【细分提示】的唯一依据
+      //   （深低开盯盘 / 小低开立刻出 / 小幅高开看分时）。row 不存在（今天不在任何池里）→ null，
+      //   规则层按「缺数据」处理，回落原题材排名时点（§10 不猜方向）。
+      aucPct: row ? row.aucPct : null,
       inTodayList: !!row
     });
   });
@@ -301,7 +305,10 @@ export function collectDecisionData(date, opts) {
   const sellTimes = [];
   sell.forEach(function(g) {
     g.items.forEach(function(it) {
-      if (sellTimes.indexOf(it.sellAt) < 0) sellTimes.push(it.sellAt);
+      // [SELL-OPEN 2026-09-29] 命中竞价高低开三档的行，时点以 sellHint.timeLabel 为准
+      //（如「盯盘 · 10:00 前」「开盘立刻出」），未命中才用题材排名的 sellAt。
+      const t = (it.sellHint && it.sellHint.timeLabel) ? it.sellHint.timeLabel : it.sellAt;
+      if (sellTimes.indexOf(t) < 0) sellTimes.push(t);
     });
   });
   sellTimes.sort();

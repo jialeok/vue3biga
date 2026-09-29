@@ -50,11 +50,20 @@
 //   ①~⑥ = 选题材 / 选票档位；⑦~⑪ = 对已入选买点的后置收口（⑨ 是档位级的「选谁重仓」）。
 //   ⛔ 编号只从本文件顶部的 RULE_NO 取（§6 单一真相），说明文字用 _note() / ruleTag() 生成。
 //
-// 【卖点】候选 = 【昨日】打过「买」标签的股票：
-//   · 今日题材排【第 1 或 第 2】名 ⇒ 14:50 卖（拿满一天）；
-//   · 今日题材排名【不在前二】⇒ 11:20 卖（排名靠后，弱了就早走）；
-//   · 例外（2026-09-24 用户口径）：今日题材【排第 2】且该题材【只有 1 个竞价一字】⇒ 题材强度打折，
-//     【只有龙一】能拿到尾盘（14:50 卖），【其余非龙一】11:20 卖。
+// 【卖点】候选 = 【昨日】打过「买」标签的股票。卖点分【两层】，先后关系如下：
+//
+//   第一层 · 按【今日竞价高低开】细分节奏（[SELL-OPEN 2026-09-29] 用户口径，优先）：
+//     竞价涨幅 ≤ -3%（深低开）        ⇒ 盯盘：10:00 前看有没有反弹，冲高就出；反弹不起来也出；
+//     -3% < 竞价涨幅 < 0（小低开）    ⇒ 开盘【立刻出】，行内打「❗危」警示；
+//     0 < 竞价涨幅 < +3%（小幅高开）  ⇒ 10:00 前看分时整体曲线：向上拿到 11:20 卖，走弱立刻卖。
+//     ⚠️ 未命中三档（≥ +3% / 恰好平开 / 缺竞价涨幅）⇒ 不提示，回落到第二层的题材排名时点。
+//     实现：_decideSellHint（⛔ 唯一实现；改细分档位只改这里 + 顶部常量）。
+//
+//   第二层 · 按【今日题材排名】的兜底时点（原规则，未被第一层覆盖时才显示在行尾）：
+//     · 今日题材排【第 1 或 第 2】名 ⇒ 14:50 卖（拿满一天）；
+//     · 今日题材排名【不在前二】⇒ 11:20 卖（排名靠后，弱了就早走）；
+//     · 例外（2026-09-24 用户口径）：今日题材【排第 2】且该题材【只有 1 个竞价一字】⇒ 题材强度打折，
+//       【只有龙一】能拿到尾盘（14:50 卖），【其余非龙一】11:20 卖。
 //     这一条会让同一个题材组里同时出现两种时点，所以时点是【逐行】算的，不是整组一个值。
 //     其中「昨日是龙头（十日涨幅最高）」是用户明确点出的典型情形，写在卖出理由里。
 //     ⚠️ 未覆盖的组合一律回落到上面的通用规则，不会给出互相矛盾的建议。要改只改 _decideSellTime 一处。
@@ -180,6 +189,28 @@ export const SMALL_TOPIC_PICK_COUNT = 2;
 /** 卖出时点 */
 export const SELL_TIME_MIDDAY = '11:20';
 export const SELL_TIME_CLOSE = '14:50';
+
+// ===== [SELL-OPEN 2026-09-29] 卖点按【今日竞价高低开】细分（用户口径）=====
+// 背景：用户反馈原来的「题材前二 → 14:50 / 否则 11:20」太模糊 —— 卖点其实取决于
+//   【今天这只票竞价怎么开】，而不是昨天它题材排第几。因此改成按今日竞价涨幅细分三档：
+//   ① 深低开（竞价涨幅 ≤ SELL_DEEP_LOW）→ 【盯盘】：10:00 前看有没有反弹，冲高就出；
+//        反弹不起来，10:00 也出（时点跟着时间走，不是一开盘就砸）。
+//   ② 小低开（SELL_DEEP_LOW < 竞价涨幅 < 0）→ 【开盘立刻出】，行内打「❗危」警示，别等反弹。
+//   ③ 小幅高开（0 < 竞价涨幅 < SELL_MILD_HIGH）→ 10:00 前看分时整体曲线：
+//        向上 → 拿到 SELL_TIME_MIDDAY 卖；走弱向下 → 立刻卖。
+//   ⚠️ 三档【未覆盖】的情形（竞价涨幅 ≥ SELL_MILD_HIGH / 恰好平开 / 缺竞价涨幅）⇒ 不产出提示，
+//     行尾仍按上面的题材排名规则显示 SELL_TIME_MIDDAY / SELL_TIME_CLOSE。
+//   ⚠️ §10：缺竞价涨幅 = 未知，⛔ 绝不退化成「平开」去套档，一律回落原规则。
+//   ⚠️ 用户原话里的「-5%」经确认与「-3% ~ -5%」合并为同一档（都走「深低开 · 盯盘」），
+//     因此深低开的唯一阈值就是 SELL_DEEP_LOW = -3。
+/** 深低开阈值：今日竞价涨幅【≤ 此值】⇒ 盯盘等反弹（10:00 前定夺） */
+export const SELL_DEEP_LOW = -3;
+/** 小幅高开上限：今日竞价涨幅在 (0, 此值) 之间 ⇒ 看分时决定（11:20 / 立刻） */
+export const SELL_MILD_HIGH = 3;
+/** 卖点提示语气（UI 只按 tone 做视觉映射，⛔ 不自己判断档位，§21） */
+export const SELL_TONE_DANGER = 'danger';   // 小低开 → 开盘立刻出（危）
+export const SELL_TONE_WATCH = 'watch';     // 深低开 → 盯盘等反弹（10:00 前定夺）
+export const SELL_TONE_PLAN = 'plan';       // 小幅高开 → 看分时（向上 11:20 / 走弱立刻）
 /** 仓位建议文案 */
 export const POSITION_HEAVY = '重仓';
 export const POSITION_LIGHT = '轻仓';
@@ -1804,6 +1835,50 @@ function _decideSellTime(topicRank, opts) {
 }
 
 /**
+ * 卖点提示（唯一实现）—— 按【今日竞价涨幅】细分卖出节奏（[SELL-OPEN 2026-09-29] 用户口径）。
+ *
+ * ⛔ 与 _decideSellTime（题材排名口径）【并存、不互相覆盖】：
+ *    命中三档 → 行尾改用这里的 timeLabel，并用 text 说明节奏；
+ *    未命中（≥ +SELL_MILD_HIGH / 恰好平开 / 缺竞价涨幅）→ 返回 null，行尾回落 11:20 / 14:50。
+ * @param {number|null} aucPct 今日竞价涨幅（%）；null / 非数 = 缺数据（§10 不猜方向）
+ * @returns {{tone:string, badge:string, timeLabel:string, text:string}|null}
+ */
+function _decideSellHint(aucPct) {
+  const n = _num(aucPct);
+  if (n === null) return null;                    // §10：缺数据 ⇒ 不产出提示，回落原规则
+  if (n <= SELL_DEEP_LOW) {
+    // 深低开：别在竞价割，先盯盘 —— 卖点跟着时间走（10:00 前定夺）
+    return {
+      tone: SELL_TONE_WATCH,
+      badge: '盯',
+      timeLabel: '盯盘 · 10:00 前',
+      text: '竞价深低开（≤ ' + SELL_DEEP_LOW + '%）：先盯盘别急着砸 —— 10:00 前看有没有反弹，' +
+        '冲高就出；反弹不起来，10:00 也出。'
+    };
+  }
+  if (n < 0) {
+    // 小低开：最弱的一档 —— 开盘就是最好的价，直接出
+    return {
+      tone: SELL_TONE_DANGER,
+      badge: '❗危',
+      timeLabel: '开盘立刻出',
+      text: '竞价小幅低开（' + SELL_DEEP_LOW + '% ~ 0）：开盘【立刻出】，不等反弹、不抱侥幸，别犹豫！'
+    };
+  }
+  if (n > 0 && n < SELL_MILD_HIGH) {
+    // 小幅高开：看分时定 —— 向上拿住，走弱撒手
+    return {
+      tone: SELL_TONE_PLAN,
+      badge: '观',
+      timeLabel: '看分时定',
+      text: '竞价小幅高开（0 ~ +' + SELL_MILD_HIGH + '%）：10:00 前看分时整体曲线 —— ' +
+        '向上就拿到 ' + SELL_TIME_MIDDAY + ' 卖；走弱向下立刻卖。'
+    };
+  }
+  return null;                                    // ≥ 3% / 平开 ⇒ 回落原题材排名规则
+}
+
+/**
  * 生成卖点计划。
  * @param {Array<{name:string, topic:string, pct:number|null, inTodayList:boolean}>} rows
  *        候选 = 昨日打过「买」标签的股票（topic 用【今日】的题材；不在今日列表时 topic 为空）
@@ -1847,6 +1922,10 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
       yiziCount: info ? info.yiziCount : null,
       isDragonOne: dragonRank === 1
     });
+    // 【三 · 持有 / 加仓】上交易日就在买点里（= 进得了卖点候选）+ 今天又在买点里 → 强势股
+    const holdTag = (todayBuyNames && todayBuyNames.has(r.name)) ? HOLD_TAG : '';
+    // 今日竞价涨幅（%）：卖点【细分提示】的唯一依据（[SELL-OPEN 2026-09-29]）；null = 缺数据
+    const aucPct = _num(r.aucPct);
     groups.get(key).push({
       name: r.name,
       topic: tp,
@@ -1855,10 +1934,14 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
       dragonLabel: dragonRank ? getDragonLabel(dragonRank) : '',
       dragonRank: dragonRank,
       pct: _num(r.pct),
+      aucPct: aucPct,
       inTodayList: !!r.inTodayList,
-      // 【三 · 持有 / 加仓】上交易日就在买点里（= 进得了卖点候选）+ 今天又在买点里 → 强势股
-      holdTag: (todayBuyNames && todayBuyNames.has(r.name)) ? HOLD_TAG : '',
-      sellAt: sellAt
+      holdTag: holdTag,
+      sellAt: sellAt,
+      // 今天要卖的【节奏提示】：深低开 → 盯盘 10:00 前定夺；小低开 → 开盘立刻出（危）；
+      // 小幅高开 → 看分时（向上 11:20 / 走弱立刻）。⛔ 标了【持有 / 加仓】的行不提示卖点
+      //（它本来就不按上面的时点卖）；未命中三档 → null（行尾回落 sellAt）。
+      sellHint: holdTag ? null : _decideSellHint(aucPct)
     });
   });
 
@@ -2014,7 +2097,14 @@ export function buildRulesLines() {
     '　重仓与轻仓混在同一个题材块里，序号连续，仓位写在每行行尾。',
     '　※ 每个题材块下面的「选择理由」与说明文字都会标【规则N】（如【规则⑨】），方便按条文逐条核对。',
     '【题材行的数据】题材名右边依次是：实心红圆点（里面的数字 = 题材排名）｜数量：n（股票只数）｜竞价一字：n。',
-    '【卖点】候选 = 昨日打过「买」标签的股票，卖出时点写在每行行尾：',
+    '【卖点】候选 = 昨日打过「买」标签的股票。卖点先看【今天这只票竞价开得怎么样】，再看题材排名：',
+    '　【第一层 · 按今日竞价高低开细分节奏】（命中就把行尾时点换成下面这句）：',
+    '　　· 竞价涨幅 ≤ ' + SELL_DEEP_LOW + '%（深低开）→ 【盯盘】：10:00 前看有没有反弹，冲高就出；反弹不起来，10:00 也出；',
+    '　　· ' + SELL_DEEP_LOW + '% ~ 0（小低开）→ 开盘【立刻出】，行内打「❗危」警示，不等反弹、别犹豫；',
+    '　　· 0 ~ +' + SELL_MILD_HIGH + '%（小幅高开）→ 10:00 前看分时整体曲线：向上就拿到 ' + SELL_TIME_MIDDAY +
+      ' 卖，走弱向下立刻卖；',
+    '　　· 其余（≥ +' + SELL_MILD_HIGH + '% / 平开 / 缺竞价涨幅）→ 不提示，按下面的题材排名时点（§10 缺数据不猜）。',
+    '　【第二层 · 题材排名兜底时点】（第一层没命中时，行尾才显示这个）：',
     '　① 今日题材排第 1 或第 2 → ' + SELL_TIME_CLOSE + ' 卖（拿满一天）；',
     '　② 今日题材排名不在前二（含今日未成组）→ ' + SELL_TIME_MIDDAY + ' 卖（排名靠后，弱了早走）；',
     '　③ 例外：今日题材【排第 2】且该题材【只有 1 个竞价一字】→ 题材强度打折，',
