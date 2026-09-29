@@ -97,6 +97,21 @@ export function parseAucPct(raw) {
 }
 
 /**
+ * 竞价涨幅【展示文本】（与 parseAucPct 配对：一个解析、一个格式化，§6 单一实现）。
+ * 口径与早盘竞价看板完全一致：正数补 '+'、固定 2 位小数（如 '+1.20%' / '-2.60%' / '0.00%'）。
+ *
+ * §10 红线：null / undefined / 非数（= 缺数据）一律返回【空串】，
+ *   ⛔ 绝不当成 0 —— 那会把「没查到」画成「平开」。
+ * @param {number|string|null} v 竞价涨幅（数字或已解析的字符串）
+ * @returns {string} 可展示文本；缺数据 → ''
+ */
+export function formatAucPct(v) {
+    const n = parseAucPct(v);
+    if (n === null) return '';
+    return (n > 0 ? '+' : '') + n.toFixed(2) + '%';
+}
+
+/**
  * 竞价一字判定：竞价涨幅是否达到该股涨停幅度。
  * 无竞价涨幅字段 → false（不做任何猜测，避免把"没数据"显示成一字）。
  * @param {object} item - 竞价行（含 stock / auc_pct_chg / code 等）

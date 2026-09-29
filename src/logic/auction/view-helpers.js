@@ -17,7 +17,7 @@ import { getStockTopicCount, getStockTopicsDisplay, getPrimaryTopicMap, classify
 // [YIZI 2026-09-09] 竞价一字（竞价涨停）：行级红线标记 + 题材组间排序权重，单一真相在 limit-up.js。
 // [CLOSE-LIMIT 2026-09-11] 同模块新增 getCloseLimitState：收盘涨停/跌停（蚂蚁线标记 + 题材统计）。
 // [CLOSE-NAME-COLOR 2026-09-11] 同模块新增 getCloseNameTone：收盘涨幅 → 股票名字体颜色档位。
-import { isAuctionYiZi, parseAucPct, getCloseLimitState, getCloseNameTone, isHighLimitBoard } from './limit-up.js';
+import { isAuctionYiZi, parseAucPct, formatAucPct, getCloseLimitState, getCloseNameTone, isHighLimitBoard } from './limit-up.js';
 // [LIMIT-STREAK 2026-09-11] 趋势/连板标记（趋势 / 首板 / 二板 / 三板…）：只看【当天之前】的
 // 历史交易日收盘涨幅，逐日回看数连续涨停。判定单一真相在 limit-streak.js（纯函数），
 // 数据取内存已存的逐日 change_pct（首屏已整段拉入）→ 0 网络请求、0 猫抓额度。
@@ -186,7 +186,9 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   const _aucPctNum = parseAucPct(rawItem.auc_pct_chg || rawItem.aucPctChg || '');
   const _yiZiCode = rawItem.code || (stockName ? getStockCode(stockName) : '') || '';
   const isYiZi = ctx.byTopic ? isAuctionYiZi(rawItem, _yiZiCode) : false;
-  const aucPctText = (_aucPctNum === null) ? '' : (_aucPctNum > 0 ? '+' : '') + _aucPctNum.toFixed(2) + '%';
+  // 格式化搬到 limit-up.js#formatAucPct（与 parseAucPct 配对，§6 单一实现）：
+  // 决策看板卖点行的「竞价涨幅」标签用的是同一个函数，⛔ 不再各处手写 toFixed(2)。
+  const aucPctText = formatAucPct(_aucPctNum);
 
   // [CLOSE-COUNT / CLOSE-LIMIT 2026-09-11] 收盘涨幅 → 红绿 / 停板。
   // 两个前提缺一不可：① 题材 toggle 开启（与竞价一字同一显示口径）；

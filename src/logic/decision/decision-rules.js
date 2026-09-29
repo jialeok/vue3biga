@@ -58,6 +58,10 @@
 //     0 < 竞价涨幅 < +3%（小幅高开）  ⇒ 10:00 前看分时整体曲线：向上拿到 11:20 卖，走弱立刻卖。
 //     ⚠️ 未命中三档（≥ +3% / 恰好平开 / 缺竞价涨幅）⇒ 不提示，回落到第二层的题材排名时点。
 //     实现：_decideSellHint（⛔ 唯一实现；改细分档位只改这里 + 顶部常量）。
+//   · 每行在「十日涨幅」后面再加一个【竞价涨幅】标签（[AUC-BADGE 2026-09-29] 用户口径）：
+//     文本 = formatAucPct（与早盘竞价同一函数，2 位小数、正数补 '+'）；
+//     配色 = getAucOpenKind（竞价涨幅 > 0 红底 / < 0 绿底 / = 0 灰底，与全站「涨红跌绿」一致）；
+//     缺竞价涨幅（null）⇒ 不产标签，⛔ 绝不用灰色伪装成「平开」（§10）。
 //
 //   第二层 · 按【今日题材排名】的兜底时点（原规则，未被第一层覆盖时才显示在行尾）：
 //     · 今日题材排【第 1 或 第 2】名 ⇒ 14:50 卖（拿满一天）；
@@ -78,7 +82,7 @@ import { getAucOpenKind, getAucOpenText, AUC_OPEN_HIGH } from '../ladder/ladder-
 // 板块（创业板 / 科创板 / 北交所 = 20% / 30% 涨跌幅板）判定复用早盘竞价的唯一实现（§6）：
 // 早盘竞价给这类票画浅灰删除线用的就是 isHighLimitBoard，⛔ 本文件不另写 /^(30|68)/ 这类正则。
 // 竞价【跌停】同样复用 limit-up.js#getAuctionLimitState（涨跌停看板用的就是它），不另写阈值。
-import { isHighLimitBoard, getAuctionLimitState } from '../auction/limit-up.js';
+import { isHighLimitBoard, getAuctionLimitState, formatAucPct } from '../auction/limit-up.js';
 
 /** 题材成组门槛：与早盘竞价统计条（topic-stats.js#TOPIC_STATS_MIN_GROUP）同源 —— 不足 2 只不成题材 */
 export const DECISION_MIN_GROUP = 2;
@@ -1935,6 +1939,12 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
       dragonRank: dragonRank,
       pct: _num(r.pct),
       aucPct: aucPct,
+      // [AUC-BADGE 2026-09-29 用户口径] 行内「竞价涨幅」标签：文本 + 配色档都由 Logic 层给（§21 模板零计算）。
+      //   文本 = formatAucPct（与早盘竞价同一函数，2 位小数、正数补 '+'）；
+      //   配色档复用连板天梯的 getAucOpenKind（high 红 / low 绿 / flat 灰），⛔ 不另写一套阈值（§6）；
+      //   null（缺竞价涨幅）→ tone = '' ⇒ 组件【不渲染】徽标（§10：不能把「没查到」画成「平开灰」）。
+      aucPctText: formatAucPct(aucPct),
+      aucTone: getAucOpenKind(aucPct) || '',
       inTodayList: !!r.inTodayList,
       holdTag: holdTag,
       sellAt: sellAt,
@@ -2098,6 +2108,8 @@ export function buildRulesLines() {
     '　※ 每个题材块下面的「选择理由」与说明文字都会标【规则N】（如【规则⑨】），方便按条文逐条核对。',
     '【题材行的数据】题材名右边依次是：实心红圆点（里面的数字 = 题材排名）｜数量：n（股票只数）｜竞价一字：n。',
     '【卖点】候选 = 昨日打过「买」标签的股票。卖点先看【今天这只票竞价开得怎么样】，再看题材排名：',
+    '　每行在「十日涨幅」右侧带一个【竞价涨幅】小标签（如 -2.60%）：涨 = 红底、跌 = 绿底、平 = 灰底；',
+    '　　该股今日没有竞价涨幅时不显示这个标签（§10 不把「没查到」画成「平开」）。',
     '　【第一层 · 按今日竞价高低开细分节奏】（命中就把行尾时点换成下面这句）：',
     '　　· 竞价涨幅 ≤ ' + SELL_DEEP_LOW + '%（深低开）→ 【盯盘】：10:00 前看有没有反弹，冲高就出；反弹不起来，10:00 也出；',
     '　　· ' + SELL_DEEP_LOW + '% ~ 0（小低开）→ 开盘【立刻出】，行内打「❗危」警示，不等反弹、别犹豫；',

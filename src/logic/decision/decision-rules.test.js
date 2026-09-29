@@ -1317,6 +1317,30 @@ describe('卖点 · 竞价高低开细分（SELL-OPEN）', () => {
     expect(it0.sellHint.text).toContain('立刻卖');
   });
 
+  // [AUC-BADGE 2026-09-29] 行内「竞价涨幅」标签：文本与配色档都必须由 Logic 层算好（模板零计算 §21）
+  it('行内竞价涨幅标签：文本固定 2 位小数，配色档 high / low / flat，缺数据整条不产', () => {
+    [
+      [1.2, '+1.20%', 'high'],     // 涨 → 红底
+      [-2.6, '-2.60%', 'low'],     // 跌 → 绿底
+      [0, '0.00%', 'flat'],        // 平 → 灰底
+      [null, '', '']               // §10 缺数据 → 空串 + 空档 ⇒ 组件不渲染，绝不当平开
+    ].forEach(function(c) {
+      const plan = buildSellPlan([sellRow('T1三', 'T1', c[0])], blocks, dragon, new Set());
+      const it0 = plan[0].items[0];
+      expect(it0.aucPctText).toBe(c[1]);
+      expect(it0.aucTone).toBe(c[2]);
+    });
+  });
+
+  it('竞价涨幅标签的配色档与「开平方向」同源：涨红 / 跌绿 / 平灰（涨红跌绿，国内惯例）', () => {
+    const up = buildSellPlan([sellRow('T1三', 'T1', 2)], blocks, dragon, new Set());
+    expect(up[0].items[0].aucTone).toBe('high');
+    const down = buildSellPlan([sellRow('T1三', 'T1', -2)], blocks, dragon, new Set());
+    expect(down[0].items[0].aucTone).toBe('low');
+    const flat = buildSellPlan([sellRow('T1三', 'T1', 0)], blocks, dragon, new Set());
+    expect(flat[0].items[0].aucTone).toBe('flat');
+  });
+
   it('未命中三档（≥ +3% / 恰好平开 / 缺竞价涨幅）→ 不产提示，回落题材排名时点', () => {
     [3, 5, 0, null].forEach(function(auc) {
       const plan = buildSellPlan([sellRow('T1三', 'T1', auc)], blocks, dragon, new Set());
@@ -1332,6 +1356,8 @@ describe('卖点 · 竞价高低开细分（SELL-OPEN）', () => {
       blocks, dragon, new Set()
     );
     expect(plan[0].items[0].aucPct).toBe(null);
+    expect(plan[0].items[0].aucPctText).toBe('');
+    expect(plan[0].items[0].aucTone).toBe('');
     expect(plan[0].items[0].sellHint).toBe(null);
   });
 
@@ -1380,6 +1406,15 @@ describe('buildRulesLines（灰色问号里的规则说明）', () => {
     expect(text).toContain('题材排名兜底时点');         // 第二层标题
     expect(text).toContain(String(SELL_DEEP_LOW) + '%');
     expect(text).toContain('+' + SELL_MILD_HIGH + '%');
+  });
+
+  it('规则说明必须覆盖【行内竞价涨幅标签】（涨红底 / 跌绿底 / 平灰底）', () => {
+    const text = lines.join('\n');
+    expect(text).toContain('【竞价涨幅】小标签');
+    expect(text).toContain('红底');
+    expect(text).toContain('绿底');
+    expect(text).toContain('灰底');
+    expect(text).toContain('不显示这个标签');          // §10 缺数据不画成平开
   });
 
   it('规则说明必须覆盖【无一字弱市兜底 ⑤】（连板天梯 · 题材连扳）', () => {

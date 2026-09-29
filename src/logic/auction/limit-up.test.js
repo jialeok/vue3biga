@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getLimitUpPct, parseAucPct, isAuctionYiZi, buildYiZiSet, isStStockName, getCloseLimitState, getCloseNameTone, getBoardKind, isHighLimitBoard, getAuctionLimitState, getLimitStateByPct, BOARD_STAR, BOARD_GROWTH, BOARD_BJ, BOARD_MAIN, BOARD_UNKNOWN } from './limit-up.js';
+import { getLimitUpPct, parseAucPct, formatAucPct, isAuctionYiZi, buildYiZiSet, isStStockName, getCloseLimitState, getCloseNameTone, getBoardKind, isHighLimitBoard, getAuctionLimitState, getLimitStateByPct, BOARD_STAR, BOARD_GROWTH, BOARD_BJ, BOARD_MAIN, BOARD_UNKNOWN } from './limit-up.js';
 
 // [2026-09-22] 涨跌停看板：「竞价就涨停 / 竞价就跌停」判定。
 // 与 getCloseLimitState 共用同一个核心（涨跌停幅度只有一份口径），这里锁住的是【竞价口径】的语义。
@@ -125,6 +125,32 @@ describe('parseAucPct', () => {
     expect(parseAucPct('')).toBe(null);
     expect(parseAucPct(null)).toBe(null);
     expect(parseAucPct('-')).toBe(null);
+  });
+});
+
+// [AUC-BADGE 2026-09-29] 竞价涨幅的【展示文本】：与 parseAucPct 配对（一个解析一个格式化，§6 单一实现）。
+// 原本散落在 view-helpers.js 里手写 toFixed(2)，现在抽到 limit-up.js —— 早盘竞价与决策看板共用同一份。
+describe('formatAucPct', () => {
+  it('正数补 +、固定 2 位小数（与早盘竞价看板同一口径）', () => {
+    expect(formatAucPct(1.2)).toBe('+1.20%');
+    expect(formatAucPct(10.02)).toBe('+10.02%');
+    expect(formatAucPct('+3.5%')).toBe('+3.50%');
+  });
+  it('负数保留 -、平开就是 0.00%（不带符号）', () => {
+    expect(formatAucPct(-2.6)).toBe('-2.60%');
+    expect(formatAucPct('-7.71%')).toBe('-7.71%');
+    expect(formatAucPct(0)).toBe('0.00%');
+  });
+  it('⚠️ §10：缺数据 → 空串（⛔ 绝不补成 0.00% 把「没查到」画成「平开」）', () => {
+    expect(formatAucPct(null)).toBe('');
+    expect(formatAucPct(undefined)).toBe('');
+    expect(formatAucPct('')).toBe('');
+    expect(formatAucPct('abc')).toBe('');
+    expect(formatAucPct(NaN)).toBe('');
+  });
+  it('与 parseAucPct 往返一致（parse → format 保持数值语义）', () => {
+    expect(formatAucPct(parseAucPct('-0.98%'))).toBe('-0.98%');
+    expect(formatAucPct(parseAucPct('+4.83%'))).toBe('+4.83%');
   });
 });
 

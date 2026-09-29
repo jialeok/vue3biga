@@ -277,6 +277,25 @@
             color: #b91c1c;
         }
 
+        /* ---- [AUC-BADGE 2026-09-29 用户口径] 卖点行里的「竞价涨幅」标签 ----
+           位置紧随「十日涨幅」，配色档由 Logic 层给（aucTone = high / low / flat），
+           CSS 只做视觉映射（§21 模板零判断）：涨 → 红底 / 跌 → 绿底 / 平 → 灰底，
+           与全站「涨红跌绿」同一口径；缺竞价涨幅时 Logic 不给文本，徽标整个不渲染（§10）。
+           ⛔ 类名一律带 dcb-auc- 前缀：CSS 是全局的，tone-up / tone-flat 这类通用名会串改其它看板的配色。 */
+        .dcb-auc {
+            padding: 0 4px;
+            font-size: 9px;
+            line-height: 14px;
+            border-radius: 4px;
+            color: #ffffff;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .dcb-auc-high { background-color: #dc2626; }   /* 竞价涨幅 > 0 → 红底 */
+        .dcb-auc-low { background-color: #16a34a; }    /* 竞价涨幅 < 0 → 绿底 */
+        .dcb-auc-flat { background-color: #64748b; }   /* 竞价涨幅 = 0 → 灰底 */
+
         /* 仓位建议：重仓 = 红（用力），轻仓 = 橙（减一档，一眼能分出重/轻） */
         .dcb-position {
             margin-left: auto;
