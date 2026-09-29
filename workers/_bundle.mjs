@@ -68,7 +68,11 @@ const workers = [
       //      形如 `const X = '字面量';` 的纯值常量它扫不到（会误报「缺必需标识符」）。
       'resolveIsTradingDay', 'mergeTradingDay', 'fetchTradingDayOverrides'],
   },
-  { Name: 'bidding-board-worker-a', Dir: 'bidding-board-worker-a', Expect: ['resolveIsTradingDay'] },
+  // [REMOVED 2026-09-29] bidding-board-worker-a 已下线删除（**用户确认**：逻辑已全部迁移到 Supabase，
+  //   云上已停跑）。替代实现 = `supabase/functions/bidding-a/index.ts`（探活 `/health` 返回
+  //   `{"ok":true,"service":"bidding-a","worker":"A"}`）。
+  //   ⛔ 不要再加回来：会重新生成一个没人部署的包，误导后续维护者。
+  //   ⚠️ 注意与 worker-b 区分 —— **worker-b 仍在 Cloudflare 上正常运行**，不要一起删。
   { Name: 'bidding-board-worker-b', Dir: 'bidding-board-worker-b', Expect: ['resolveIsTradingDay'] },
 ];
 

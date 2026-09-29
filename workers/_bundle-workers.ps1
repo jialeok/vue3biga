@@ -66,7 +66,9 @@ function Strip-And-Clean($content) {
 
 $workers = @(
     @{ Name = "bidding-auto-fetch"; Dir = "bidding-auto-fetch" },
-    @{ Name = "bidding-board-worker-a"; Dir = "bidding-board-worker-a" },
+    # [REMOVED 2026-09-29] bidding-board-worker-a 已下线删除（**用户确认**逻辑已全部迁移到 Supabase，
+    #   替代实现 = supabase/functions/bidding-a/index.ts）。⛔ 不要再加回来。
+    #   ⚠️ 保留 worker-b —— 它【仍在 Cloudflare 上正常运行】，不要一起删。
     @{ Name = "bidding-board-worker-b"; Dir = "bidding-board-worker-b" }
 )
 
