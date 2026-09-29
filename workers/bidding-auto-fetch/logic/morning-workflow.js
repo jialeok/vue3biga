@@ -1,8 +1,10 @@
 // morning-workflow.js — 早盘竞价抓取主流程（runMorning 拆分为若干子函数）
-import { beijingNow, beijingToday, isWeekend, compactToDateStr } from '../../_shared-source/date-utils.js';
-import { localIsTradingDay } from '../../_shared-source/holidays.js';
+import { beijingNow, beijingToday, compactToDateStr } from '../../_shared-source/date-utils.js';
+// [TRADING-DAY 2026-09-29] 交易日判定不再各写各的：统一走 _shared-source/trading-day.js。
+//   它把「用户在前端顶栏标的假期（Supabase 覆盖表）」放在最高优先级，其次才周末 / fuyao 日历 / 硬编码表。
+import { resolveIsTradingDay } from '../../_shared-source/trading-day.js';
 import { CONFIG } from '../config.js';
-import { fetchLadderConstituents } from '../data/fuyao-api.js';
+import { fetchLadderConstituents, fuyaoCalendarTradingDays } from '../data/fuyao-api.js';
 // [KEY-FALLBACK 2026-09-28] configuredKeys/maskKey 只用于把「key 候选链」回显到日志：
 //   小号 Secret 没配时兜底会静默失效，必须在日志里一眼看见（§10 禁止静默失败）。
 import { numcatDailyAuc, numcatDaily, configuredKeys, maskKey } from '../data/numcat-api.js';
@@ -109,8 +111,31 @@ function todayAuctionExtras(rows, flds, today) {
 }
 
 // 1. 检查是否交易日
-function checkTradingDay(today, logs) {
-  if (isWeekend(today) || !localIsTradingDay(today)) {
+// [TRADING-DAY 2026-09-29] 原实现是 `isWeekend(today) || !localIsTradingDay(today)` —— 只看
+//   workers/_shared-source/holidays.js 的硬编码表，连 fuyao 都不看。三个已发生的后果：
+//     ① 用户在前端顶栏标红的假期（只存在浏览器 localStorage）对 worker 【零影响】；
+//     ② 硬编码表漏了 9/25（中秋）→ 把休市日当交易日跑整轮，写出脏名单并把 9/25 算进
+//        「最近交易日」窗口 → 9/28 的 prevDay 错位；
+//     ③ 硬编码表多了 10/08 → 开市日被判「非交易日」→ 早盘 + 收盘两轮【整轮 skip】，
+//        当天四个趋势图与十日涨幅全空。
+//   现在改为三源合并（用户覆盖表 > 周末 > fuyao 日历 > 硬编码表），语义见 trading-day.js 文件头。
+async function checkTradingDay(env, today, logs) {
+  let fuyaoDates = null;
+  try {
+    fuyaoDates = await fuyaoCalendarTradingDays(env);
+  } catch (e) {
+    // §10：拿不到日历 ≠ 今天不是交易日 —— 该层弃权，继续用「用户设置 / 硬编码表」判。
+    logs.push('⚠️ fuyao 交易日历不可用（该层弃权，改用用户设置 / 硬编码表判定）: ' + (e && e.message));
+  }
+  const ok = await resolveIsTradingDay(
+    env,
+    CONFIG.SUPABASE_URL,
+    env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_ANON_KEY,
+    today,
+    fuyaoDates,
+    logs
+  );
+  if (!ok) {
     logs.push('非交易日，跳过');
     return { ok: true, today, skipped: true, reason: '非交易日', logs };
   }
@@ -851,7 +876,7 @@ export async function runMorning(env) {
       (_keys.length > 1 ? '｜主账号额度用尽会自动退回小号' : '｜⚠️ 只配了 1 把 key：主账号用尽则无兜底')
     : '（无！请设置 Secret NUMCAT_API_KEY）'));
 
-  const skipResult = checkTradingDay(today, logs);
+  const skipResult = await checkTradingDay(env, today, logs);
   if (skipResult) return skipResult;
 
   // ---- P0-① 名单（并行取数，写完即可让前端看到当天的票）----

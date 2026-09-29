@@ -129,7 +129,11 @@ export function isWeekend(dateStr) {
  * - 当前是假期 -> 切为交易日：从 holidays 移除，并显式加入 tradingDays 以覆盖自动识别（autoHoliday）。
  * - 当前是交易日 -> 切为假期：从 tradingDays 移除，加入 holidays。
  * 返回 'holiday' | 'trading' 表示切换后的状态。
- * 注意：holidays / tradingDays 是 localStorage 配置模块（与旧版一致，无云端同步），saveData() 负责落盘。
+ *
+ * [TRADING-DAY 2026-09-29] 本函数**只负责本地即时翻转**（保证 UI 零延迟）。
+ *   云端持久化由调用方在返回后调用 data/trading-day-overrides.js#saveTradingDayOverride 完成 ——
+ *   worker 读的是那张表，localStorage 对 worker 不可见（这也是 9/25、10/08 两次翻车的根因）。
+ *   ⚠️ 只调本函数、不落云端 = 用户标了假期但 worker 看不到。
  */
 export function toggleHoliday(dateStr) {
   if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
@@ -152,6 +156,33 @@ export function toggleHoliday(dateStr) {
   _prevTdMemo.clear();
   _nextTdMemo.clear();
   return isHol ? 'trading' : 'holiday';
+}
+
+/**
+ * [TRADING-DAY 2026-09-29] 用「交易日覆盖表」（云端）的结果重建本地假期缓存。
+ *
+ * 背景：holidays / tradingDays 过去只是 localStorage 里的一份副本，worker 读不到，于是
+ * 「用户标了假期但 worker 照跑」就成了必然。现在云端表才是用户意志的真相源（§6），
+ * 本函数负责把云端结果灌回内存缓存（localStorage 落盘仍由 saveData() 负责）。
+ *
+ * ⚠️ 必须清空 _prevTdMemo / _nextTdMemo：它们按【日期】记忆上一/下一交易日，
+ *    缓存键里虽然带了 holidays 引用做校验，但直接替换数组字面量时引用比较不足以覆盖全部路径，
+ *    显式清空最稳妥（否则日期导航会跳到一个已经被标成假期的日子）。
+ *
+ * @param {string[]} holidays 显式假期（日历标红）
+ * @param {string[]} tradingDays 显式取消的假期（= 强制交易日，压过硬编码表）
+ */
+export function replaceHolidayCaches(holidays, tradingDays) {
+  const data = loadAllData();
+  data.holidays = Array.isArray(holidays) ? holidays.slice() : [];
+  data.tradingDays = Array.isArray(tradingDays) ? tradingDays.slice() : [];
+  // 引用已换 → 逼 getHolidays/getTradingDays 下次调用重新取值（它们按 allData 引用做缓存）
+  _holidaysRef = null;
+  _holidaysCache = null;
+  _tradingDaysRef = null;
+  _tradingDaysCache = null;
+  _prevTdMemo.clear();
+  _nextTdMemo.clear();
 }
 
 export function getMostRecentTradingDay() {

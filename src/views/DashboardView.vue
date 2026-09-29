@@ -203,9 +203,12 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { setCurrentDate, saveData } from '../logic/app-core.js';
-import { getPreviousTradingDay, getNextTradingDay, getPreviousCalendarDay, getNextCalendarDay, getMostRecentTradingDay, getHolidays, isTradingDay, toggleHoliday } from '../logic/date/trading-day-helpers.js';
+import { getPreviousTradingDay, getNextTradingDay, getPreviousCalendarDay, getNextCalendarDay, getMostRecentTradingDay, getHolidays, isTradingDay, toggleHoliday, replaceHolidayCaches } from '../logic/date/trading-day-helpers.js';
+// [TRADING-DAY 2026-09-29] 假期设置必须落云端表 —— worker 只认 trading_day_overrides，
+// localStorage 里的 holidays 它读不到（这正是 9/25 中秋标了假期却照跑、10/08 开市日被整轮 skip 的根因）。
+import { pullTradingDayOverrides, saveTradingDayOverride } from '../data/trading-day-overrides.js';
 import { _emit } from '../stores/eventBus.js';
 import { useUiStore } from '../stores/uiStore.js';
 import { showToast } from '../composables/useToast.js';
@@ -269,12 +272,39 @@ const pickerHolidayLabel = computed(() => {
 function togglePickerHoliday() {
   const d = pickerSelected.value || uiStore.currentDate;
   if (!d) return;
+  // 本地先翻转：UI 零延迟（云端写入是异步的，绝不能挡住交互）
   const result = toggleHoliday(d);
   if (!result) return;
   saveData();
   holidayTick.value++;
   showToast(result === 'holiday' ? '已设为假期' : '已取消假期（设为交易日）');
+
+  // [TRADING-DAY 2026-09-29] 同步落云端覆盖表 —— worker 只认这张表（localStorage 它读不到）。
+  //   失败必须显式提示：否则用户以为标好了，实际 9:25 那轮 worker 照跑 / 照跳（§10 禁止静默失败）。
+  saveTradingDayOverride(d, result === 'holiday', 'frontend')
+    .catch((e) => {
+      const msg = (e && e.message) || '未知错误';
+      console.error('[TRADING-DAY] 假期设置落云端失败:', msg);
+      showToast('⚠️ 已在本机生效，但没能同步到云端：worker 可能读不到这个假期设置（' + msg + '）');
+    });
 }
+
+// [TRADING-DAY 2026-09-29] 启动时用云端覆盖表重建本地假期缓存：
+//   · 跨设备一致（换台电脑也能看到自己标过的假期，不再只活在这台机器的 localStorage 里）；
+//   · 把本功能上线前只存在 localStorage 的旧标注一次性迁移上云（见 pullTradingDayOverrides 的迁移保护）。
+// 失败时保留本地缓存不动（函数内部已记日志），不打扰用户。
+onMounted(async () => {
+  try {
+    const r = await pullTradingDayOverrides();
+    if (r.ok) {
+      replaceHolidayCaches(r.holidays, r.tradingDays);
+      saveData();
+      holidayTick.value++;
+    }
+  } catch (e) {
+    console.warn('[TRADING-DAY] 假期覆盖表同步失败（保留本地缓存）:', (e && e.message) || e);
+  }
+});
 
 // [A4-01] 移除日期切换的「8 路全量重算广播」。
 // 各看板（Auction/Jiwang/Stats/Bidding/HomeStocks/Emotion/StarStats）均自行
@@ -333,9 +363,12 @@ const pickerSelected = ref('');
     const selected = pickerSelected.value || uiStore.currentDate;
 
     // [PERF] 一次性取值并转 Set，逐日 O(1) 查询。
-    // [A4-03/§8] holidays / tradingDays 是非业务的「交易日历参考缓存」（localStorage 配置模块，
-    // 无云端同步，见 trading-day-helpers.toggleHoliday 注释），不属于用户业务数据，按 §8 允许保留本地，
-    // 仅用于日历着色与交易日推算，不可当作业务真相源。
+    // [A4-03/§8] holidays / tradingDays 是非业务的「交易日历参考缓存」，不属于用户业务数据，
+    // 按 §8 允许保留本地，仅用于日历着色与交易日推算，不可当作业务真相源。
+    // [TRADING-DAY 2026-09-29] 真相源已上移到 Supabase 的 trading_day_overrides 表 ——
+    // worker 只认那张表（localStorage 它读不到），本地这份是它的缓存副本，
+    // 由本组件挂载时的 pullTradingDayOverrides() → replaceHolidayCaches() 重建。
+    // 若某天看到「日历标红了但 worker 照跑」，先查云端表里有没有对应行。
     // [FIX 2026-08-21] 日历着色不再做 autoHoliday 推断：未在 tradingDays 登记的 weekday 一律当假期标红是错的
     // （tradingDays 仅手动写入）。规则简化为：显式 holidays=红(假期)，周末=灰，其余 weekday=普通(白)。
     const holSet = new Set(getHolidays());

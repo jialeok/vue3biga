@@ -1,6 +1,9 @@
 // data/fuyao-api.js — fuyao 行情接口 + 交易日历
-import { beijingToday, beijingTodayCompact, normalizeDate } from '../../_shared-source/date-utils.js';
-import { localIsTradingDay, KNOWN_HOLIDAYS } from '../../_shared-source/holidays.js';
+import { beijingToday, normalizeDate } from '../../_shared-source/date-utils.js';
+import { KNOWN_HOLIDAYS } from '../../_shared-source/holidays.js';
+// [TRADING-DAY 2026-09-29] 交易日判定统一走 _shared-source/trading-day.js
+//   （用户在前端顶栏标的假期 > 周末 > fuyao 日历 > 硬编码表），不再各写各的。
+import { resolveIsTradingDay } from '../../_shared-source/trading-day.js';
 import { CONFIG } from '../config.js';
 
 export async function fuyaoGet(env, path, params) {
@@ -15,15 +18,26 @@ export async function fuyaoGet(env, path, params) {
 }
 
 export async function isTradingDay(env) {
+  // [TRADING-DAY 2026-09-29] 原来是「fuyao 优先、失败回退硬编码表」，用户在前端标红的假期
+  //   完全不在判据里 → 国庆连休这类「未来假期」判不出来。现在统一走三源合并。
+  const today = beijingToday();
+  let fuyaoDates = null;
   try {
     const data = await fuyaoGet(env, '/api/a-share/calendar/trading-days', {});
     const items = (data && data.item) || [];
-    const today = beijingTodayCompact();
-    return items.some(function (it) { return String(it.date) === today; });
+    fuyaoDates = items.map(function (it) { return normalizeDate(it.date); }).filter(Boolean).sort();
   } catch (e) {
-    console.warn('fuyao 交易日历失败，回退到本地日历:', e.message);
-    return localIsTradingDay(beijingToday());
+    // §10：日历拿不到 ≠ 今天不是交易日 —— 该层弃权，继续用「用户设置 / 硬编码表」判。
+    console.warn('fuyao 交易日历失败（该层弃权，改用用户设置 / 硬编码表）:', e.message);
   }
+  return resolveIsTradingDay(
+    env,
+    CONFIG.SUPABASE_URL,
+    env.SUPABASE_ANON_KEY || env.SUPABASE_SERVICE_ROLE_KEY,
+    today,
+    fuyaoDates,
+    null
+  );
 }
 
 export async function getNextTradingDay(env, today) {

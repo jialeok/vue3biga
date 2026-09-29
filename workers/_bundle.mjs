@@ -60,10 +60,16 @@ const workers = [
     Name: 'bidding-auto-fetch', Dir: 'bidding-auto-fetch',
     // 早盘 worker 的核心顶层标识符 —— 缺一个就说明拼接漏了模块，必须拦下
     Expect: ['beijingNow', 'beijingToday', 'runMorning', 'runClose', 'dispatch',
-      'jsonResponse', 'CONFIG', 'fetchLadderConstituents', 'numcatDailyAuc'],
+      'jsonResponse', 'CONFIG', 'fetchLadderConstituents', 'numcatDailyAuc',
+      // [TRADING-DAY 2026-09-29] 交易日判定改为「用户设置 > 周末 > fuyao > 硬编码表」三源合并。
+      //   这几个标识符必须真的进包：漏了 = 用户在前端顶栏标的假期对 worker 依旧无效
+      //   （这正是 9/25、10/08 两次翻车的根因），必须在出包阶段就拦下。
+      //   ⚠️ 只能列【函数】声明：_check_bundle 的扫描器只在遇到 `{` / `(` 时才提交顶层声明，
+      //      形如 `const X = '字面量';` 的纯值常量它扫不到（会误报「缺必需标识符」）。
+      'resolveIsTradingDay', 'mergeTradingDay', 'fetchTradingDayOverrides'],
   },
-  { Name: 'bidding-board-worker-a', Dir: 'bidding-board-worker-a', Expect: [] },
-  { Name: 'bidding-board-worker-b', Dir: 'bidding-board-worker-b', Expect: [] },
+  { Name: 'bidding-board-worker-a', Dir: 'bidding-board-worker-a', Expect: ['resolveIsTradingDay'] },
+  { Name: 'bidding-board-worker-b', Dir: 'bidding-board-worker-b', Expect: ['resolveIsTradingDay'] },
 ];
 
 const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);

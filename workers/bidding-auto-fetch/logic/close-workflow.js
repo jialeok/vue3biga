@@ -35,10 +35,13 @@
 //
 // 【幂等】re-run 安全：change_pct 值相同不写；区间涨幅值/天数相同不写。
 
-import { beijingToday, isWeekend } from '../../_shared-source/date-utils.js';
-import { localIsTradingDay } from '../../_shared-source/holidays.js';
+import { beijingToday } from '../../_shared-source/date-utils.js';
+// [TRADING-DAY 2026-09-29] 交易日判定统一走 _shared-source/trading-day.js ——
+//   用户在前端顶栏标的假期最高优先，其次周末 / fuyao 日历 / 硬编码表。
+import { resolveIsTradingDay } from '../../_shared-source/trading-day.js';
+import { CONFIG } from '../config.js';
 import { numcatDaily } from '../data/numcat-api.js';
-import { fetchSnapshotChangePct, fetchFuyaoKlineWindowPct } from '../data/fuyao-api.js';
+import { fetchSnapshotChangePct, fetchFuyaoKlineWindowPct, fuyaoCalendarTradingDays } from '../data/fuyao-api.js';
 import {
   upsertMarketMetrics,
   upsertStockRangePct,
@@ -125,7 +128,25 @@ export async function runClose(env, opts) {
   const today = (opts && opts.date) || beijingToday();
   logs.push('today=' + today + (opts && opts.date ? '（手动指定日期）' : ''));
 
-  if (isWeekend(today) || !localIsTradingDay(today)) {
+  // [TRADING-DAY 2026-09-29] 原来是 `isWeekend(today) || !localIsTradingDay(today)` ——
+  //   只看硬编码表：用户在顶栏标的假期读不到，硬编码表多写一天就会把开市日整轮 skip。
+  //   改为三源合并（用户覆盖表 > 周末 > fuyao 日历 > 硬编码表）。
+  let fuyaoDates = null;
+  try {
+    fuyaoDates = await fuyaoCalendarTradingDays(env);
+  } catch (e) {
+    // §10：日历拿不到 ≠ 今天不是交易日 —— 该层弃权，继续用「用户设置 / 硬编码表」判。
+    logs.push('⚠️ fuyao 交易日历不可用（该层弃权，改用用户设置 / 硬编码表判定）: ' + (e && e.message));
+  }
+  const isTrading = await resolveIsTradingDay(
+    env,
+    CONFIG.SUPABASE_URL,
+    env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_ANON_KEY,
+    today,
+    fuyaoDates,
+    logs
+  );
+  if (!isTrading) {
     logs.push('非交易日，跳过');
     return { ok: true, today, skipped: true, reason: '非交易日', logs };
   }
