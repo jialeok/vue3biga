@@ -81,6 +81,10 @@ import { setAuctionDateData } from './auction-data.js';
             const wset = _getAuctionWatchlistSet(date);
             return list.filter(function(r) {
                 if (!r || !r.stock) return false;
+                // 【§6 影子行红线 · 2026-09-30 事故根因修复】market_metrics 影子行不是「当日列表成员」，
+                // 既不是正式成员、也不是观察组继承行（观察组身份的唯一权威 = 云端
+                // auction_watchlist.obs_auto_added）。此处与 auction-helpers.js#getTodayGroupList 同口径拦掉。
+                if (r.shadowRow === true) return false;
                 return wset.has(r.stock.trim()) || r.obsAutoAdded === true;
             });
         }
@@ -417,7 +421,12 @@ import { setAuctionDateData } from './auction-data.js';
                         selected: row.selected || false,
                         bought: row.bought || false,
                         sold: row.sold || false,
-                        fixed: row.fixed || false
+                        fixed: row.fixed || false,
+                        // 【§6 行身份 · 2026-09-30】来自 auction_watchlist 表 = 正式成员/观察组成员，
+                        // 显式写 false：本函数末尾的 union 合并是「云端同名段覆盖本地」，只有把 false
+                        // 也写进云端行，才能把本地可能残留的 shadowRow=true（该股后来被转正为正式成员）
+                        // 覆盖掉 —— 否则它会一直被 getTodayGroupList 误杀，直到硬刷新。
+                        shadowRow: false
                     };
                     // §6：obs_auto_added 观察股不计入正式成员索引（根因：87≠76）。索引只含正式成员。
                     if (!row.obs_auto_added) newWatchlistSet.add(key);
@@ -487,7 +496,19 @@ import { setAuctionDateData } from './auction-data.js';
                         open_bid_pct: row.open_bid_pct || '',
                         auc_vol_ratio: row.auc_vol_ratio || '',
                         auc_turnover: row.auc_turnover || '',
-                        source: row.source || 'manual'
+                        source: row.source || 'manual',
+                        // 【§6 影子行身份 · 2026-09-30 事故根因修复】
+                        // 本分支 = 「只在 market_metrics(scope='auction') 里、不在 auction_watchlist 里」的行，
+                        // 即【影子行】。影子行的身份必须显式记在行上，否则它在内存里只剩 `obsAutoAdded`
+                        // 一个可能被外部改写的布尔量 —— 而「观察组身份」的唯一权威是云端
+                        // auction_watchlist.obs_auto_added（见 tagTitles/rules.js#_addOne 与
+                        // auction-helpers.js#getTodayGroupList 的注释）。
+                        // 事故（2026-09-30）：会稽山 只是 9/30 的 metrics 影子行，却因落到
+                        // _addOne 的「已存在行」分支被打上 obsAutoAdded=true → getTodayGroupList 放行
+                        // → 计入「大消费」只数（4→5）→ 该题材不再命中 isSmallRiskyTopic（阈值恰为 4）
+                        // → 买点从「⑥小题材兜底 大亚圣象/新华文轩」翻转成常规 heavy/light
+                        // → 首屏推给用户的买点变成 会稽山 / 内蒙新华（用户据错买入）。
+                        shadowRow: true
                     };
                     // 注意：影子记录不加入 newWatchlistSet
                 });

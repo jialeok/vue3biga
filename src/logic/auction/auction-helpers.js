@@ -450,14 +450,33 @@ export function getTodayGroupList(dataSource='auction', date) {
     }
     const result = indexReady
         ? list.filter(function(r) {
-            return r && r.stock && (watchlistSet.has(r.stock.trim()) || r.obsAutoAdded === true);
+            if (!r || !r.stock) return false;
+            // 【§6 影子行红线 · 2026-09-30「会稽山/内蒙新华」错误买点根因修复】
+            // market_metrics(scope='auction') 的影子行（shadowRow=true）永远不进 auction 分组列表：
+            // 它们只供趋势图/指标读取，既不是 9:25 正式成员，也不是观察组继承行
+            // （观察组身份的唯一权威是云端 auction_watchlist.obs_auto_added）。
+            // 事故链条：影子行在内存里原本没有身份标记 → tagTitles/rules.js#_addOne 落到「已存在行」
+            // 分支时给它打上 obsAutoAdded=true（该标记本意只给观察组继承票）→ 这一行就冒充观察组
+            // 混进 auctionList → decision-collect 的 countable 只排除「昨日卖标签继承」、不排除观察组
+            // → 会稽山被计入「大消费」只数（4→5）→ isSmallRiskyTopic 的上限恰为 4，不再命中
+            // → 买点从「⑥小题材兜底：大亚圣象/新华文轩」翻转成常规 heavy/light：会稽山/内蒙新华。
+            if (r.shadowRow === true) return false;
+            return watchlistSet.has(r.stock.trim()) || r.obsAutoAdded === true;
         })
         : list.filter(function(r) { return r && r.stock; });
     // [DEBUG-VUE-FIX 2026-07-25] 暴露"后台有导入记录、前台不显示"这类问题的
     // 第一手证据：原始条数 vs 实际渲染条数 vs 被过滤掉的影子记录名单。
     // 只在条数发生变化（有过滤发生）时打印，避免刷屏。
     if (list.length > 0 && result.length !== list.length) {
-        const filteredOut = list.filter(function(r) { return !r || !r.stock || !watchlistSet.has(r.stock.trim()); })
+        // 【日志口径修正 · 2026-09-30】原实现用 `!watchlistSet.has(...)` 判「被过滤」，
+        // 与上面真正的过滤条件（`watchlistSet.has || obsAutoAdded === true`，且 shadowRow 一票否决）
+        // 不一致 —— 观察组继承行明明被保留了，日志却把它报成「被过滤」。排查 9/30 事故时
+        // 这条误导性日志差点让人以为「新华文轩被剔除了」。
+        const filteredOut = list.filter(function(r) {
+            if (!r || !r.stock) return true;
+            if (r.shadowRow === true) return true;
+            return !(watchlistSet.has(r.stock.trim()) || r.obsAutoAdded === true);
+        })
             .map(function(r) { return (r && r.stock ? r.stock.trim() : '(无名)') + '[shadow]'; });
         _dbgLog('[AUCTION-DEBUG] getTodayGroupList(' + dataSource + ') currentDate=' + currentDate +
             ' 原始' + list.length + '条 → 正式列表' + result.length + '条，被过滤' + filteredOut.length + '条：' + filteredOut.join(', '));

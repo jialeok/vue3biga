@@ -316,6 +316,16 @@ import { getCarryOverNamesForDate } from '../auction/tag-carryover.js';
             function _addOne(name, isObs) {
                 if (existingNames.has(name)) {
                     const row = _existingRowMap[name];
+                    // 【§6 影子行红线 · 2026-09-30「会稽山/内蒙新华」错误买点根因修复】
+                    // ⛔ 绝不给 market_metrics 影子行（shadowRow=true）打 obsAutoAdded/regularAutoAdded：
+                    //    影子行既不是当日正式成员、也不是「可继承进列表的观察组壳」——它在云端
+                    //    auction_watchlist 里根本没有行（patchAuctionFieldBatch 只对正式成员写 watchlistPatch），
+                    //    给它打标记只会造出一个「本地有标记、云端无行」的半身份行：
+                    //      · 该标记写不进云端 ⇒ 刷新后丢失 ⇒ 同一只票「时有时无」（9/30 用户看到的
+                    //        「先推荐会稽山、后自己恢复正常」正是这个半身份的显隐抖动）；
+                    //      · 却会被 getTodayGroupList 放行 ⇒ 计入题材只数 ⇒ 翻转买点（见 auction-helpers.js 同处注释）。
+                    //    需要观察的继承票请走下面的「新建行」分支（会真正落库为 obs 行）。
+                    if (row && row.shadowRow === true) return;
                     const _isFormal = _isAuctionWatchlistStock(date, name);
                     const flag = isObs ? 'obsAutoAdded' : 'regularAutoAdded';
                     if (row && (!_isFormal || row[flag] !== true)) {

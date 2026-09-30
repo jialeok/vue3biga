@@ -188,7 +188,10 @@ export async function pullAuctionFromTable(opts) {
                     selected: row.selected || false,
                     bought: row.bought || false,
                     sold: row.sold || false,
-                    fixed: row.fixed || false
+                    fixed: row.fixed || false,
+                    // 【§6 行身份 · 2026-09-30】来自 auction_watchlist 表 = 正式成员/观察组成员。
+                    // 与 watchlist-and-metrics.js 同口径显式写 false（影子行在该文件同名分支写 true）。
+                    shadowRow: false
                 };
                 if (!newWatchlistIndex[row.date]) newWatchlistIndex[row.date] = new Set();
                 // §6：obs_auto_added 观察股不计入正式成员索引
@@ -248,7 +251,13 @@ export async function pullAuctionFromTable(opts) {
                         open_bid_pct: row.open_bid_pct || '',
                         auc_vol_ratio: row.auc_vol_ratio || '',
                         auc_turnover: row.auc_turnover || '',
-                        source: row.source || 'manual'
+                        source: row.source || 'manual',
+                        // 【§6 影子行身份 · 2026-09-30 事故根因修复】
+                        // 与 watchlist-and-metrics.js#pullAuctionMarketDataForDate 的同名分支口径完全一致：
+                        // 「只在 market_metrics(scope='auction') 里、不在 auction_watchlist 里」的行 = 影子行，
+                        // 必须在行上显式留痕。影子行永远不是正式成员、也不该被当成观察组继承行显示/计数 ——
+                        // 观察组身份的唯一权威是云端 auction_watchlist.obs_auto_added。
+                        shadowRow: true
                     };
                     // 注意：影子记录不加入 newWatchlistIndex
             });
