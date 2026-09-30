@@ -1,0 +1,776 @@
+// ============================================================================
+// limit-pool-fetch — Supabase Edge Function (Deno)
+// 「涨跌停」看板数据源：每个交易日【北京 15:40】抓同花顺「涨停池 + 跌停池」→ limit_pool 表。
+//
+// ── 为什么是独立函数（而不是塞进 bidding-a / Cloudflare worker）─────────────
+//   ① 独立命名 = 独立接口面：不碰 bidding-a（竞价看板）的任何路由与 Secrets，
+//      两者的失败域、配额域、部署节奏彻底解耦（改这个不会把竞价看板搞挂）。
+//   ② 用【另一个同花顺小号】：本函数只读 FUYAO_API_KEY_LIMITPOOL，不消耗主账号配额。
+//   ③ 定时由【本项目的 pg_cron】触发（见 db/supabase_limit_pool_cron.sql），不依赖 Cloudflare。
+//
+// ── 职责（单一）────────────────────────────────────────────────────────────
+//   抓 涨停池 + 跌停池 → 整日对齐写入 limit_pool。
+//   不做题材分组、不选龙头、不算十日涨幅 —— 那些是【派生视图】，
+//   由前端 src/logic/limitpool/ 在渲染时用「池 + 共享题材库 + stock_range_pct」计算。
+//   落库只会多出第二个真相源（题材库稍后变更即让结论陈旧冻结）。
+//
+// ── 幂等与安全 ─────────────────────────────────────────────────────────────
+//   · 主键 (date, board, stock) upsert 覆盖；重跑同一日结果相同 → 不产生无意义变更。
+//   · §11 删除安全：只有某板抓取被判定【完整】时才清理该板「本次已不在池中」的旧行；
+//     抓取不完整（条目数 < 上游 pagination.total）时【只 upsert、不删除】—— 宁可多留旧行，
+//     也绝不把「没抓到」当成「已退池」而误删真数据。
+//   · §10 未就绪 ≠ 没有：两池皆空 → 判定上游尚未结算，不写库、不删除，返回 ok:false。
+//
+// ── 部署（二选一）──────────────────────────────────────────────────────────
+//   A. Dashboard：Functions → 新建 limit-pool-fetch → 粘贴本文件全部内容 → Deploy。
+//   B. CLI：supabase functions deploy limit-pool-fetch
+//          （本文件位置即 supabase/functions/limit-pool-fetch/index.ts）
+//   部署后必须做的四件事：
+//     ⚠️ 0) 【先建表】在 SQL Editor 执行 db/create_limit_pool.sql。
+//          漏这一步的报错长相是：
+//          `Could not find the table 'public.limit_pool' in the schema cache`（PGRST205）
+//          这不是「调用方法不对」，就是那张表还不存在（PostgREST 找不到表）。
+//     1) Secrets 里设置【另一个同花顺小号】的 key：FUYAO_API_KEY_LIMITPOOL
+//        （未设置时会回退主账号 FUYAO_API_KEY，响应里 keySource 会明确标出）；
+//     2) Secrets 里设置 LIMIT_POOL_FETCH_TOKEN（未设置时回退复用 FETCH_TOKEN）；
+//     3) Verify JWT：开或关都能跑 pg_cron（下面 db/supabase_limit_pool_cron.sql 里的
+//        net.http_post 会带 anon 的 apikey + Authorization，平台鉴权直接通过）。
+//        只有在你想【用浏览器直接打开 /health、/probe】时，才需要关掉它（建议关掉）。
+//        · CLI 部署：仓库根 supabase/config.toml 已声明本函数 verify_jwt=false
+//        · Dashboard 部署：【不读】config.toml，需在 Details 里手动关一次
+//        · 复测：不带任何认证头 GET /functions/v1/limit-pool-fetch/health
+//          200 = 已关闭；401 UNAUTHORIZED_NO_AUTH_HEADER = 仍开着
+//   最后执行 db/supabase_limit_pool_cron.sql 建立 pg_cron 定时（北京 15:40）。
+//
+// ── 手动触发（排查 / 补历史某日）────────────────────────────────────────────
+//   GET /functions/v1/limit-pool-fetch/health         ← 只看配置（不回显密钥）
+//   GET /functions/v1/limit-pool-fetch/probe?token=…  ← 【出问题先开这个】
+//        对「小号 / 主号」两把 key 各打一次最小的上游请求，回显 HTTP 状态 / 耗时 /
+//        上游业务码 / 返回片段 → 一眼看出是 key 坏了、上游慢、还是网络不通。
+//   GET /functions/v1/limit-pool-fetch/fetch?token=<TOKEN>&point=limitpool
+//   GET ...&date=2026-09-14        ← 补抓指定交易日（上游支持 date_ms）
+//
+// ── 小号不可用时的兜底 ─────────────────────────────────────────────────────
+//   若小号 key 抓不到（上游超时 / 401 / 限流），会自动改用主账号 FUYAO_API_KEY 再试一次，
+//   响应与日志里 keyFallbackUsed=true 明确标出。⛔ 不想让它碰主号 → 设 Secret
+//   FUYAO_KEY_FALLBACK=0 关掉兜底（此时小号失败就直接返回失败，不会消耗主号）。
+// ============================================================================
+
+// ----------------------------- 配置 -----------------------------
+const CONFIG = {
+  SUPABASE_URL: (Deno.env.get('SUPABASE_URL') || 'https://tonqfgeyxnnwicjopshn.supabase.co').replace(/\/$/, ''),
+  FUYAO_BASE_URL: (Deno.env.get('FUYAO_BASE_URL') || 'https://fuyao.aicubes.cn').replace(/\/$/, ''),
+
+  LIMIT_UP_PATH: '/api/a-share/special-data/limit-up-pool',
+  LIMIT_DOWN_PATH: '/api/a-share/special-data/limit-down-pool',
+  // 上游文档：size ∈ 1..200
+  PAGE_SIZE: 200,
+  // 分页安全上限（单日池子真实规模数十~数百只；仅用于防上游 pagination 异常导致死循环）
+  MAX_PAGES: 10,
+  // 单页抓取重试（上游限流是突发性的）
+  RETRY_TIMES: 3,
+  // 单次上游请求超时。实测上游正常 1.5~5 秒返回（2026-09-17 经 fuyao-proxy 实测：
+  // 涨停池 3.5s / 跌停池 1.3s），20 秒足够；超时会被原样报成 `Signal timed out.`
+  // —— 那种报错说明「请求根本没拿到响应」，与 key 是否正确无关，先开 /probe 看。
+  REQUEST_TIMEOUT_MS: Number(Deno.env.get('FUYAO_TIMEOUT_MS') || 20000),
+  // 落库分批（PostgREST 单次不宜过大；涨跌停合计可达数百行）
+  WRITE_CHUNK: 500,
+};
+
+const BOARD_UP = 'up';
+const BOARD_DOWN = 'down';
+
+// --------------------------- 日期 / 节假日 ---------------------------
+// ⚠️ 与 supabase/functions/bidding-a/index.ts 的 KNOWN_HOLIDAYS 保持同步。
+//    本函数【不】调同花顺交易日历接口（省小号配额）：只用本地日历判断，
+//    若遇调休/临时休市，手动 ?date= 补抓即可（补抓不受交易日闸门限制）。
+function beijingNow(): Date {
+  return new Date(Date.now() + 8 * 3600 * 1000);
+}
+function beijingToday(): string {
+  const d = beijingNow();
+  return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0');
+}
+function isWeekend(dateStr: string): boolean {
+  const day = new Date(dateStr + 'T00:00:00').getDay();
+  return day === 0 || day === 6;
+}
+const KNOWN_HOLIDAYS = new Set([
+  '2025-01-01', '2025-01-28', '2025-01-29', '2025-01-30', '2025-01-31',
+  '2025-02-01', '2025-02-02', '2025-02-03', '2025-04-04', '2025-04-05',
+  '2025-04-06', '2025-05-01', '2025-05-02', '2025-05-03', '2025-05-04',
+  '2025-05-05', '2025-06-02', '2025-10-01', '2025-10-02', '2025-10-03',
+  '2025-10-06', '2025-10-07', '2025-10-08',
+  '2026-01-01', '2026-01-02', '2026-02-17', '2026-02-18', '2026-02-19',
+  '2026-02-20', '2026-02-21', '2026-02-22', '2026-02-23', '2026-04-05',
+  '2026-04-06', '2026-05-01', '2026-05-02', '2026-05-03', '2026-05-04',
+  '2026-05-05', '2026-06-19',
+  // [FIX 2026-09-29] 补中秋 '2026-09-25'、删 '2026-10-08'（2025 段那条是对的，2025 年 10/9 才开市）。
+  //   本函数是三个副本之一（另两个：bidding-a、auction-yizi-fetch），三份必须保持一致。
+  //   不修的话：9/25 照跑（烧额度 + 写脏数据）；10/8 被判非交易日 → 整轮 skip（涨跌停看板当天全空）。
+  '2026-09-25',
+  '2026-10-01', '2026-10-02', '2026-10-03',
+  '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07',
+]);
+// ============================================================================
+// [TRADING-DAY 2026-09-29] 用户在前端顶栏标的假期（云端表 trading_day_overrides）
+//   —— 唯一能提前表达「国庆连休」这类未来假期的来源（fuyao 日历至多只能判到次日）。
+//   用法：handler 入口调一次 loadTradingDayOverrides()，之后 localIsTradingDay 自动先查它。
+//   ⚠️ 与 workers/_shared-source/trading-day.js 同源（Deno 无法 import，故内联；改动须同步）。
+//   读取失败保持 null = 该层弃权，继续用周末/硬编码表，绝不「读不到 → 当成空数据」（§10）。
+// ============================================================================
+let _overrideMap: Map<string, boolean> | null = null;
+
+async function loadTradingDayOverrides(): Promise<void> {
+  _overrideMap = null;
+  if (!CONFIG.SUPABASE_URL) return;
+  try {
+    const resp = await fetch(CONFIG.SUPABASE_URL + '/rest/v1/trading_day_overrides?select=date,is_holiday',
+      { headers: sbHeaders() });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const rows = await resp.json();
+    const m = new Map<string, boolean>();
+    (Array.isArray(rows) ? rows : []).forEach((r) => {
+      if (r && r.date) m.set(String(r.date), r.is_holiday === true);
+    });
+    _overrideMap = m;
+    console.log('[TRADING-DAY] 已加载交易日覆盖表 ' + m.size + ' 条（用户设置优先于本地日历）');
+  } catch (e) {
+    console.warn('[TRADING-DAY] 覆盖表读取失败（该层弃权，继续用本地日历）: ' + (e as Error)?.message);
+  }
+}
+
+function localIsTradingDay(dateStr: string): boolean {
+  // ① 用户显式设置最高优先（true=假期；false=显式取消假期，可压过硬编码表）
+  if (_overrideMap && _overrideMap.has(dateStr)) return !_overrideMap.get(dateStr);
+  if (isWeekend(dateStr)) return false;
+  return !KNOWN_HOLIDAYS.has(dateStr);
+}
+
+/** 日期字符串 → 当日 00:00（北京）的 epoch ms（上游 date_ms 口径） */
+function dateStrToMs(dateStr: string): number {
+  return Date.parse(dateStr + 'T00:00:00+08:00');
+}
+
+/** 带超时的 signal（AbortSignal.timeout 不可用时返回 undefined，退化为无超时） */
+function timeoutSignal(ms: number): AbortSignal | undefined {
+  try {
+    const t = (AbortSignal as unknown as { timeout?: (m: number) => AbortSignal }).timeout;
+    return typeof t === 'function' ? t.call(AbortSignal, ms) : undefined;
+  } catch (_e) {
+    return undefined;
+  }
+}
+
+// ----------------------------- 同花顺(fuyao)接口 -----------------------------
+// ⚠️ 全部在【请求时】读取 Deno.env，而不是模块加载时固化：
+//    避免冷启动期 env 尚未就绪时把 key 固化成空串（这类问题表现为「健康检查说没配、其实配了」）。
+// ⚠️ 一律 .trim()：Secret 从输入框粘贴时很容易带上尾随空格/换行，
+//    那会让请求头带着脏字符发出去 → 上游表现成「不响应/超时」，极难肉眼发现。
+type KeyRef = { name: string; key: string };
+
+const KEY_SMALL = 'FUYAO_API_KEY_LIMITPOOL';
+const KEY_MAIN = 'FUYAO_API_KEY';
+
+/** 已配置的 key（按优先级：小号 → 主号）；同一把 key 只留一条 */
+function configuredKeys(): KeyRef[] {
+  const small = (Deno.env.get(KEY_SMALL) || '').trim();
+  const main = (Deno.env.get(KEY_MAIN) || '').trim();
+  const list: KeyRef[] = [];
+  if (small) list.push({ name: KEY_SMALL, key: small });
+  if (main && main !== small) list.push({ name: KEY_MAIN, key: main });
+  return list;
+}
+
+/** 实际使用的 key：优先小号，没配小号才用主号 */
+function primaryKey(): KeyRef | null {
+  const list = configuredKeys();
+  return list.length > 0 ? list[0] : null;
+}
+
+/**
+ * 兜底 key：只在「配了小号 且 也配了主号 且 两把不同」时才有。
+ * ⛔ 设 FUYAO_KEY_FALLBACK=0 可关掉兜底（小号失败即失败，绝不碰主号配额）。
+ */
+function fallbackKey(): KeyRef | null {
+  const list = configuredKeys();
+  if (list.length < 2) return null;
+  if ((Deno.env.get('FUYAO_KEY_FALLBACK') || '1').trim() === '0') return null;
+  return { name: list[1].name + '(兜底)', key: list[1].key };
+}
+
+/** 掩码回显（排查用）：abcd***wxyz —— 只用于确认「是不是同一把 key」，绝不回显全量 */
+function maskKey(k: string): string {
+  if (!k) return '';
+  return k.length <= 8 ? '***' : k.slice(0, 4) + '***' + k.slice(-4);
+}
+
+/** 带诊断信息的上游错误：把 HTTP 状态与耗时挂在 error 上，便于日志一句话说清原因 */
+type FuyaoError = Error & { httpStatus?: number; elapsedMs?: number; code?: number };
+function fuyaoErr(msg: string, httpStatus?: number, elapsedMs?: number, code?: number): FuyaoError {
+  const e = new Error(msg) as FuyaoError;
+  e.httpStatus = httpStatus;
+  e.elapsedMs = elapsedMs;
+  e.code = code;
+  return e;
+}
+
+async function fuyaoGet(path: string, params: Record<string, string | number>, key: string): Promise<unknown> {
+  if (!key) throw fuyaoErr('同花顺 key 未配置（请设置 Secrets: ' + KEY_SMALL + '）');
+  const url = new URL(CONFIG.FUYAO_BASE_URL + path);
+  Object.keys(params).forEach((k) => {
+    const v = params[k];
+    if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+  });
+  const t0 = Date.now();
+  let resp: Response;
+  try {
+    resp = await fetch(url.toString(), {
+      headers: { 'X-api-key': key },
+      signal: timeoutSignal(CONFIG.REQUEST_TIMEOUT_MS),
+    });
+  } catch (e) {
+    const msg = (e as Error)?.message || String(e);
+    throw fuyaoErr('上游请求未拿到响应（' + CONFIG.REQUEST_TIMEOUT_MS + 'ms 超时或网络不通）: ' + msg, undefined, Date.now() - t0);
+  }
+  const elapsedMs = Date.now() - t0;
+  const text = await resp.text();
+  let data: { code?: number; message?: string; data?: unknown };
+  try {
+    data = JSON.parse(text) as typeof data;
+  } catch (_e) {
+    throw fuyaoErr('上游返回非 JSON: HTTP ' + resp.status + ' ' + text.slice(0, 200), resp.status, elapsedMs);
+  }
+  if (!resp.ok) {
+    throw fuyaoErr('上游 HTTP ' + resp.status + ': ' + (data?.message || text.slice(0, 200)), resp.status, elapsedMs, data?.code);
+  }
+  if (data.code !== 0) {
+    throw fuyaoErr('上游业务码 code=' + data.code + ' ' + (data.message || '') + '（HTTP ' + resp.status + '）', resp.status, elapsedMs, data.code);
+  }
+  return data.data;
+}
+
+/** 重试包装：上游限流是突发性的，3 次内基本都能过。logs 传入时逐次记录失败明细。 */
+async function retryFuyao<T>(fn: () => Promise<T>, times: number, label: string, logs?: string[]): Promise<T> {
+  let lastErr: unknown = null;
+  for (let i = 1; i <= times; i++) {
+    const t0 = Date.now();
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      // 每次失败都把「耗时 + 状态 + 原因」写进日志：超时类问题靠这一行定位，别只留最后一句
+      if (logs) {
+        const fe = e as FuyaoError;
+        logs.push(label + ' 第' + i + '/' + times + '次失败（' + (Date.now() - t0) + 'ms' +
+          (fe?.httpStatus !== undefined ? ' HTTP ' + fe.httpStatus : '') + '）: ' + ((e as Error)?.message || String(e)));
+      }
+      if (i < times) await new Promise((r) => setTimeout(r, 800 * i));
+    }
+  }
+  throw fuyaoErr(label + ' 重试 ' + times + ' 次仍失败: ' + ((lastErr as Error)?.message || String(lastErr)),
+    (lastErr as FuyaoError)?.httpStatus, (lastErr as FuyaoError)?.elapsedMs, (lastErr as FuyaoError)?.code);
+}
+
+// --------------------------- 字段归一（与前端同口径） ---------------------------
+/** 涨幅数值 → 库内统一文本口径；无法解析 → null（绝不用 0 顶替，0 是真实涨幅） */
+function limPctText(raw: unknown): string | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  if (!isFinite(n)) return null;
+  return (n >= 0 ? '+' : '') + n.toFixed(2);
+}
+/** 数值字段归一：非有限值 → null */
+function limNum(raw: unknown): number | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  return isFinite(n) ? n : null;
+}
+/** 文本字段归一：空串/空白 → null */
+function limText(raw: unknown): string | null {
+  if (raw === null || raw === undefined) return null;
+  const s = String(raw).trim();
+  return s ? s : null;
+}
+
+type PoolItem = Record<string, unknown>;
+
+/**
+ * 上游 item → limit_pool 入库行（字段映射与 src/data/limit-pool.js#_toRow 逐字段一致，
+ * 保证「Edge Function 写的」与「前端自愈写的」在库里行结构完全相同 —— §6 单一真相）。
+ */
+function limitPoolRow(it: PoolItem, board: string, date: string, nowIso: string): Record<string, unknown> | null {
+  const isUp = board === BOARD_UP;
+  const code = String(it.ticker || it.thscode || '').trim().replace(/\..*$/, '');
+  const name = String(it.name || '').trim();
+  if (!name) return null;
+  return {
+    date: date,
+    board: board,
+    stock: name,
+    code: /^\d{6}$/.test(code) ? code : null,
+    thscode: limText(it.thscode),
+    price: limNum(it.last_price),
+    change_pct: limPctText(it.price_change_ratio_pct),
+    // 涨停池：涨停时间；跌停池：首次跌停时间
+    limit_time: isUp ? limText(it.limit_up_time) : limText(it.first_limit_time),
+    last_limit_time: isUp ? null : limText(it.last_limit_time),
+    reason: isUp ? limText(it.limit_up_reason) : null,
+    continue_text: isUp ? limText(it.continue_day_text) : null,
+    continue_cnt: isUp ? limNum(it.continue_day_cnt) : null,
+    seal_money: isUp ? limNum(it.seal_money) : null,
+    max_seal_money: isUp ? limNum(it.max_seal_money) : null,
+    turnover_ratio: isUp ? null : limNum(it.turnover_ratio_pct),
+    updated_at: nowIso,
+  };
+}
+
+/**
+ * 分页拉一个池的全部条目。
+ * @param keyRef 用哪把 key（小号 / 主号）
+ * @param logs   诊断日志累加器（逐次失败的耗时与状态都记进去）
+ * @returns complete=false 表示「返回条目数 < 上游声明的 total」→ 调用方【不得】据此删除旧行。
+ */
+async function fetchLimitPoolBoardPages(path: string, dateMs: number, keyRef: KeyRef, logs: string[]): Promise<{ items: PoolItem[]; total: number; complete: boolean }> {
+  const items: PoolItem[] = [];
+  let total = -1;
+  let complete = false;
+  for (let page = 1; page <= CONFIG.MAX_PAGES; page++) {
+    const data = await retryFuyao(
+      () => fuyaoGet(path, { date_ms: dateMs, page: page, size: CONFIG.PAGE_SIZE }, keyRef.key),
+      CONFIG.RETRY_TIMES,
+      path + ' page' + page + '[key=' + keyRef.name + ']',
+      logs,
+    ) as { item?: PoolItem[]; pagination?: { total?: number; pages?: number } };
+    const arr = (data && data.item) || [];
+    arr.forEach((it) => { if (it && it.name) items.push(it); });
+    const pg = (data && data.pagination) || null;
+    total = pg && typeof pg.total === 'number' ? pg.total : items.length;
+    if (arr.length === 0) { complete = true; break; }
+    if (items.length >= total) { complete = true; break; }
+    if (pg && typeof pg.pages === 'number' && page >= pg.pages) { complete = items.length >= total; break; }
+  }
+  return { items: items, total: total < 0 ? items.length : total, complete: complete };
+}
+
+/**
+ * 抓取某交易日的涨停池 + 跌停池。
+ *
+ * ⚠️ 两个池【都要成功】才返回：任一失败直接 throw，调用方据此放弃写入
+ *    （宁可保持旧快照，也不写出「只有涨停、没有跌停」的半张表）。
+ */
+async function fetchLimitPoolSnapshot(date: string, keyRef: KeyRef, logs: string[]): Promise<{
+  date: string;
+  up: Record<string, unknown>[];
+  down: Record<string, unknown>[];
+  upTotal: number;
+  downTotal: number;
+  upComplete: boolean;
+  downComplete: boolean;
+}> {
+  if (!date) throw new Error('limit-pool: 缺少日期');
+  const dateMs = dateStrToMs(date);
+  if (!isFinite(dateMs)) throw new Error('limit-pool: 日期非法 ' + date);
+  const nowIso = new Date().toISOString();
+
+  const upRes = await fetchLimitPoolBoardPages(CONFIG.LIMIT_UP_PATH, dateMs, keyRef, logs);
+  const downRes = await fetchLimitPoolBoardPages(CONFIG.LIMIT_DOWN_PATH, dateMs, keyRef, logs);
+
+  const up = upRes.items.map((it) => limitPoolRow(it, BOARD_UP, date, nowIso)).filter(Boolean) as Record<string, unknown>[];
+  const down = downRes.items.map((it) => limitPoolRow(it, BOARD_DOWN, date, nowIso)).filter(Boolean) as Record<string, unknown>[];
+
+  return {
+    date: date,
+    up: up,
+    down: down,
+    upTotal: upRes.total,
+    downTotal: downRes.total,
+    upComplete: upRes.complete,
+    downComplete: downRes.complete,
+  };
+}
+
+// ----------------------------- Supabase 读写 -----------------------------
+function readKey(): string {
+  return Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_ANON_KEY') || '';
+}
+function sbHeaders(extra?: Record<string, string>): Record<string, string> {
+  const key = readKey();
+  return Object.assign({
+    'apikey': key,
+    'Authorization': 'Bearer ' + key,
+    'Content-Type': 'application/json',
+  }, extra || {});
+}
+
+/**
+ * 把 PostgREST 的「找不到表」原文翻译成「该干什么」。
+ *
+ * 最典型的现场（2026-09-17 真实发生）：前端红字
+ *   `Could not find the table 'public.limit_pool' in the schema cache`
+ * —— 它不是「调用方法不对」，就是【表还没建】（PGRST205 / 42P01）。
+ * 直接在报错里写清要去执行哪个 SQL，省掉一整轮猜测。
+ */
+function sbErrHint(msg: string, raw: string): string {
+  const t = (raw || '').toLowerCase();
+  if (t.includes('could not find the table') || t.includes('in the schema cache') ||
+    t.includes('does not exist') || t.includes('42p01') || t.includes('pgrst205')) {
+    return msg + '  → 【limit_pool 表不存在】请在 Supabase Dashboard → SQL Editor 执行 db/create_limit_pool.sql 建表（本仓库 db/ 目录）。';
+  }
+  return msg;
+}
+
+/** 写入 limit_pool（主键 date+board+stock → 幂等覆盖） */
+async function upsertLimitPoolRows(rows: Record<string, unknown>[]): Promise<number> {
+  const payload = (rows || []).filter((r) => r && r.date && r.board && r.stock);
+  if (payload.length === 0) return 0;
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/limit_pool?on_conflict=date%2Cboard%2Cstock';
+  for (let i = 0; i < payload.length; i += CONFIG.WRITE_CHUNK) {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: sbHeaders({ 'Prefer': 'resolution=merge-duplicates, return=minimal' }),
+      body: JSON.stringify(payload.slice(i, i + CONFIG.WRITE_CHUNK)),
+      signal: timeoutSignal(30000),
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error(sbErrHint('upsert limit_pool 失败: HTTP ' + resp.status + ': ' + text.slice(0, 300), text));
+    }
+  }
+  return payload.length;
+}
+
+/**
+ * 删除某日某板「已不在本次快照中」的旧行（§11 删除安全）。
+ *
+ * 安全约束（调用方必须保证）：
+ *   · keepStocks 来自【本次权威抓取结果】，且该次抓取必须被判定为【完整】；
+ *   · keepStocks 为空 ⇒ 本次该板确实是 0 只（强势日可以一只跌停都没有）→ 清空该板该日是正确的；
+ *   · 只按 (date, board) 限定范围，绝不触碰其它日期。
+ *
+ * ⚠️ PostgREST 的 DELETE 必须带 `Prefer: return=representation` 才会回读被删行；
+ *    否则返回空数组，无法校验实际删除条数。
+ */
+async function deleteStaleLimitPool(date: string, board: string, keepStocks: string[]): Promise<number> {
+  if (!date || !board) return 0;
+  const keep = (keepStocks || []).map((s) => String(s).trim()).filter(Boolean);
+  let url = CONFIG.SUPABASE_URL + '/rest/v1/limit_pool?date=eq.' + encodeURIComponent(date) +
+    '&board=eq.' + encodeURIComponent(board);
+  if (keep.length > 0) {
+    // 用 split/join 而非正则去引号：转义更直观、也不依赖正则字面量
+    url += '&stock=not.in.(' + keep.map((s) => '"' + s.split('"').join('') + '"').join(',') + ')';
+  }
+  const resp = await fetch(url, {
+    method: 'DELETE',
+    headers: sbHeaders({ 'Prefer': 'return=representation' }),
+    signal: timeoutSignal(30000),
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error(sbErrHint('delete limit_pool 失败: HTTP ' + resp.status + ': ' + text.slice(0, 300), text));
+  }
+  const data = await resp.json().catch(() => []);
+  return ((data as unknown[]) || []).length;
+}
+
+/** 运行日志写入 bidding_fetch_log（与 bidding-a 同一张表，便于统一排查）。失败忽略。 */
+async function writeLog(entry: Record<string, unknown>): Promise<void> {
+  try {
+    await fetch(CONFIG.SUPABASE_URL + '/rest/v1/bidding_fetch_log', {
+      method: 'POST',
+      headers: sbHeaders({ 'Prefer': 'return=minimal' }),
+      body: JSON.stringify(entry),
+      signal: timeoutSignal(10000),
+    });
+  } catch (e) {
+    console.error('写 bidding_fetch_log 失败（已忽略）:', (e as Error)?.message);
+  }
+}
+
+// ----------------------------- 主流程 -----------------------------
+/**
+ * 抓涨跌停池 → 整日对齐写入 limit_pool。
+ * @param {{date?: string, source?: string, force?: boolean}} [opts]
+ *   date  = 'YYYY-MM-DD' 指定要抓的交易日（默认北京今天）；指定日期视为人工补抓，跳过交易日闸门。
+ * @returns 结构化结果（含 logs，便于从响应直接看发生了什么）
+ */
+async function runLimitPool(opts?: { date?: string; source?: string }): Promise<Record<string, unknown>> {
+  const logs: string[] = [];
+  const manualDate = !!(opts && opts.date);
+  const today = (opts && opts.date) || beijingToday();
+  logs.push('date=' + today + (manualDate ? '（手动指定日期）' : '') + ' 上游基址=' + CONFIG.FUYAO_BASE_URL);
+  const logBase = { run_date: today, time_point: 'limitpool', source: (opts && opts.source) || 'cron', job: 'limit-pool-fetch', worker: 'edge-limitpool' };
+
+  // 1) 交易日闸门（手动指定日期 → 视为补抓，不受闸门限制）
+  if (!manualDate && !localIsTradingDay(today)) {
+    logs.push('非交易日，跳过');
+    await writeLog(Object.assign({}, logBase, { ok: false, detail: { skipped: '非交易日' } }));
+    return { ok: true, today: today, skipped: true, reason: '非交易日', logs: logs };
+  }
+  if (manualDate && !localIsTradingDay(today)) logs.push('⚠️ 该日按本地日历非交易日，仍按手动补抓执行');
+
+  // 2) 抓取：小号优先；小号抓不到且配了 enable 兜底 → 用主号再试一次
+  //    （两个池要么都成功，要么整体失败 —— 不在两把 key 之间拼半张表）
+  const primary = primaryKey();
+  if (!primary) {
+    const msg = '未配置同花顺 key（请设 Secrets: ' + KEY_SMALL + '）';
+    logs.push(msg);
+    await writeLog(Object.assign({}, logBase, { ok: false, detail: { error: msg } }));
+    return { ok: false, today: today, error: msg, logs: logs };
+  }
+  const candidates: KeyRef[] = [primary];
+  const fb = fallbackKey();
+  if (fb) candidates.push(fb);
+
+  logs.push('步骤1：抓取同花顺涨停池 / 跌停池...（候选 key：' + candidates.map((c) => c.name + '/' + maskKey(c.key)).join(' → ') + '）');
+  let snap: Awaited<ReturnType<typeof fetchLimitPoolSnapshot>> | null = null;
+  let usedKey: KeyRef | null = null;
+  let lastErrMsg = '';
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
+    const before = logs.length;
+    try {
+      snap = await fetchLimitPoolSnapshot(today, c, logs);
+      usedKey = c;
+      break;
+    } catch (e) {
+      lastErrMsg = (e as Error)?.message || String(e);
+      logs.push('用 ' + c.name + ' 抓取失败: ' + lastErrMsg);
+      if (i + 1 < candidates.length) {
+        logs.push('→ 小号不可用，自动改用 ' + candidates[i + 1].name + ' 兜底再试一次' +
+          '（关掉兜底：设 Secret FUYAO_KEY_FALLBACK=0）');
+      }
+      void before;
+    }
+  }
+  if (!snap || !usedKey) {
+    const hint = '；若报错含「未拿到响应/超时」→ 先开 /probe 逐把 key 体检（很可能是小号 key 本身无效或未授权）';
+    const msg = '抓取失败: ' + lastErrMsg + hint;
+    logs.push(msg);
+    await writeLog(Object.assign({}, logBase, { ok: false, detail: { error: lastErrMsg, keys: candidates.map((c) => c.name) } }));
+    return { ok: false, today: today, error: msg, logs: logs };
+  }
+  const keyFallbackUsed = usedKey.name !== primary.name;
+  logs.push('✅ 抓取成功，实际使用 key = ' + usedKey.name + '/' + maskKey(usedKey.key) +
+    (keyFallbackUsed ? '（⚠️ 主号兜底已启用：小号这把 key 不可用）' : ''));
+  logs.push('涨停 ' + snap.up.length + '/' + snap.upTotal + (snap.upComplete ? '（完整）' : '（不完整）') +
+    ' 只，跌停 ' + snap.down.length + '/' + snap.downTotal + (snap.downComplete ? '（完整）' : '（不完整）') + ' 只');
+
+  // 3) 两池皆空 → 上游未就绪（或极端行情），不写库、不删除（§10：未就绪 ≠ 没有）
+  if (snap.up.length === 0 && snap.down.length === 0) {
+    logs.push('❌ 两池皆空 → 判定上游未结算/未就绪，本次不写库（避免清空已有快照）');
+    await writeLog(Object.assign({}, logBase, { ok: false, detail: { error: '两池皆空（可能上游未就绪）' } }));
+    return { ok: false, today: today, error: '上游两池皆空（可能尚未结算）', logs: logs };
+  }
+
+  // 4) 整日对齐写入：先 upsert（本次结果全部就位）→ 再删旧行（本次已不在池中的）
+  logs.push('步骤2：写入 limit_pool...');
+  let written = 0;
+  try {
+    written = await upsertLimitPoolRows(snap.up.concat(snap.down));
+  } catch (e) {
+    const msg = (e as Error)?.message || String(e);
+    logs.push('写入失败: ' + msg);
+    await writeLog(Object.assign({}, logBase, { ok: false, detail: { error: msg } }));
+    return { ok: false, today: today, error: '写入 limit_pool 失败: ' + msg, logs: logs };
+  }
+
+  logs.push('步骤3：清理该日已退池的旧行...');
+  let deletedUp = 0;
+  let deletedDown = 0;
+  if (snap.upComplete) {
+    try { deletedUp = await deleteStaleLimitPool(today, BOARD_UP, snap.up.map((r) => String(r.stock))); }
+    catch (e) { logs.push('清理涨停旧行失败（非致命）: ' + ((e as Error)?.message || String(e))); }
+  } else {
+    logs.push('⚠️ 涨停池抓取不完整（' + snap.up.length + '/' + snap.upTotal + '）→ 跳过旧行清理（不误删）');
+  }
+  if (snap.downComplete) {
+    try { deletedDown = await deleteStaleLimitPool(today, BOARD_DOWN, snap.down.map((r) => String(r.stock))); }
+    catch (e) { logs.push('清理跌停旧行失败（非致命）: ' + ((e as Error)?.message || String(e))); }
+  } else {
+    logs.push('⚠️ 跌停池抓取不完整（' + snap.down.length + '/' + snap.downTotal + '）→ 跳过旧行清理（不误删）');
+  }
+
+  const completenessSummary = '✅ 涨跌停池写入 ' + written + ' 行（涨停 ' + snap.up.length +
+    ' / 跌停 ' + snap.down.length + '），清理退池旧行 涨停 ' + deletedUp + ' / 跌停 ' + deletedDown;
+  logs.push('数据完整性汇总: ' + completenessSummary);
+  await writeLog(Object.assign({}, logBase, { ok: true, detail: {
+    written: written, upCount: snap.up.length, downCount: snap.down.length,
+    upComplete: snap.upComplete, downComplete: snap.downComplete,
+    deletedUp: deletedUp, deletedDown: deletedDown,
+    keySource: usedKey.name, keyFallbackUsed: keyFallbackUsed,
+  } }));
+  return {
+    ok: true,
+    today: today,
+    upCount: snap.up.length,
+    downCount: snap.down.length,
+    upTotal: snap.upTotal,
+    downTotal: snap.downTotal,
+    upComplete: snap.upComplete,
+    downComplete: snap.downComplete,
+    written: written,
+    deletedUp: deletedUp,
+    deletedDown: deletedDown,
+    keySource: usedKey.name,
+    keyFallbackUsed: keyFallbackUsed,
+    completenessSummary: completenessSummary,
+    logs: logs,
+  };
+}
+
+// ----------------------------- 上游体检（probe） -----------------------------
+/**
+ * 【出问题先开这个】对每一把已配置的 key 打一次最小上游请求，回显
+ * HTTP 状态 / 耗时 / 上游业务码 / 返回片段。
+ *
+ * 用途：一眼区分三种完全不同的病因 ——
+ *   ① 上游超时（key 无效或未授权时，网关可能直接不响应）
+ *   ② 上游返回 401/403/限流（key 本身的问题，看 message）
+ *   ③ 上游 HTTP 200 且 code=0（key 没问题，问题在别处，比如表没建）
+ */
+async function runProbe(): Promise<Record<string, unknown>> {
+  const keys = configuredKeys();
+  const dateMs = dateStrToMs(beijingToday());
+  const results: Record<string, unknown>[] = [];
+
+  for (const k of keys) {
+    const item: Record<string, unknown> = { keyName: k.name, keyMasked: maskKey(k.key) };
+    // 用「交易日历」这个最轻的接口探 key 本身（与池子大小无关）
+    const t0 = Date.now();
+    try {
+      const data = await fuyaoGet('/api/a-share/calendar/trading-days', {}, k.key) as { item?: unknown[] };
+      item.calendar = { ok: true, elapsedMs: Date.now() - t0, itemCount: ((data && data.item) || []).length };
+    } catch (e) {
+      const fe = e as FuyaoError;
+      item.calendar = { ok: false, elapsedMs: fe.elapsedMs ?? (Date.now() - t0), httpStatus: fe.httpStatus, code: fe.code, error: fe.message };
+    }
+    // 再用「涨停池 size=1」探这个业务接口是否对该 key 开放
+    const t1 = Date.now();
+    try {
+      const data = await fuyaoGet(CONFIG.LIMIT_UP_PATH, { date_ms: dateMs, page: 1, size: 1 }, k.key) as {
+        item?: Record<string, unknown>[]; pagination?: { total?: number };
+      };
+      const first = (data && data.item && data.item[0]) || null;
+      item.limitUpPool = {
+        ok: true, elapsedMs: Date.now() - t1,
+        total: (data && data.pagination && data.pagination.total) ?? null,
+        sample: first ? { thscode: first.thscode, name: first.name, pct: first.price_change_ratio_pct } : null,
+      };
+    } catch (e) {
+      const fe = e as FuyaoError;
+      item.limitUpPool = { ok: false, elapsedMs: fe.elapsedMs ?? (Date.now() - t1), httpStatus: fe.httpStatus, code: fe.code, error: fe.message };
+    }
+    results.push(item);
+  }
+
+  // 顺带探一下「写库这条腿」通不通（表在不在）
+  const tableCheck: Record<string, unknown> = {};
+  try {
+    const resp = await fetch(CONFIG.SUPABASE_URL + '/rest/v1/limit_pool?select=date&limit=1', {
+      headers: sbHeaders({ 'Prefer': 'return=minimal' }),
+      signal: timeoutSignal(15000),
+    });
+    const text = await resp.text();
+    tableCheck.ok = resp.ok;
+    tableCheck.httpStatus = resp.status;
+    if (!resp.ok) tableCheck.error = sbErrHint('读 limit_pool 失败', text);
+  } catch (e) {
+    tableCheck.ok = false;
+    tableCheck.error = (e as Error)?.message || String(e);
+  }
+
+  return {
+    ok: true,
+    fuyaoBaseUrl: CONFIG.FUYAO_BASE_URL,
+    requestTimeoutMs: CONFIG.REQUEST_TIMEOUT_MS,
+    keysConfigured: keys.map((k) => k.name),
+    keys: results,
+    limitPoolTable: tableCheck,
+    hint: '上游耗时正常应在 1~5 秒内；若 limitUpPool.ok=false 且报「未拿到响应」，说明这把 key 上游不认（或账号无 special-data 权限）；若 limitPoolTable.ok=false，说明表还没建（执行 db/create_limit_pool.sql）。',
+  };
+}
+
+// ----------------------------- 入口路由 -----------------------------
+// 鉴权令牌：优先 LIMIT_POOL_FETCH_TOKEN（本函数专用），未配置时回退复用 FETCH_TOKEN，
+// 保证「多配一个 Secret 就能更干净，少配一个也能跑起来」，且绝不与 bidding-a 的路由互相影响。
+// 同样在请求时读取（见上方说明）。
+function expectedToken(): string {
+  return Deno.env.get('LIMIT_POOL_FETCH_TOKEN') || Deno.env.get('FETCH_TOKEN') || '';
+}
+function tokenSource(): string {
+  if (Deno.env.get('LIMIT_POOL_FETCH_TOKEN')) return 'LIMIT_POOL_FETCH_TOKEN';
+  return expectedToken() ? 'FETCH_TOKEN(回退)' : '未配置';
+}
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body, null, 2), { status, headers: { 'Content-Type': 'application/json' } });
+}
+
+Deno.serve(async (req: Request) => {
+  const url = new URL(req.url);
+  const p = url.pathname;
+
+  // Supabase Edge Function 的 pathname 带前缀 /functions/v1/limit-pool-fetch，用 endsWith 兼容
+  if (p.endsWith('/health')) {
+    const keys = configuredKeys();
+    return json({
+      ok: true,
+      service: 'limit-pool-fetch',
+      point: 'limitpool',
+      // 只回显「配没配 / 用了哪个变量名 / 掩码」，绝不回显密钥本身
+      fuyaoKeySource: primaryKey()?.name || '未配置',
+      fuyaoKeyMasked: keys.length ? maskKey(keys[0].key) : '',
+      fuyaoKeysConfigured: keys.map((k) => k.name),
+      fuyaoKeyFallbackEnabled: !!fallbackKey(),
+      fuyaoBaseUrl: CONFIG.FUYAO_BASE_URL,
+      requestTimeoutMs: CONFIG.REQUEST_TIMEOUT_MS,
+      tokenSource: tokenSource(),
+      schedule: '每个交易日北京 15:40（pg_cron，见 db/supabase_limit_pool_cron.sql）',
+      nextStep: '排查上游/key/表 请开 /probe?token=…',
+    });
+  }
+
+  const isFetch = p === '/' || p === '' || p.endsWith('/fetch') ||
+    p.endsWith('/probe') || p.endsWith('/limit-pool-fetch') || p.endsWith('/limit-pool-fetch/');
+  if (!isFetch) return new Response('limit-pool-fetch', { status: 200 });
+
+  const token = url.searchParams.get('token') || '';
+  const et = expectedToken();
+  if (!et || token !== et) {
+    return json({ ok: false, error: 'token 无效（请设置 Secrets: LIMIT_POOL_FETCH_TOKEN）' }, 403);
+  }
+
+  const point = url.searchParams.get('point') || (p.endsWith('/probe') ? 'probe' : 'limitpool');
+  if (point !== 'limitpool' && point !== 'auto' && point !== 'probe') {
+    return json({ ok: false, error: 'point 必须是 limitpool | auto | probe' }, 400);
+  }
+
+  // 上游体检：不需要 key 已配置（就是用来查 key 的）
+  if (point === 'probe') {
+    try {
+      return json(await runProbe());
+    } catch (e) {
+      return json({ ok: false, error: (e as Error)?.message || String(e), stack: (e as Error)?.stack }, 500);
+    }
+  }
+
+  if (!primaryKey()) {
+    return json({ ok: false, error: '同花顺 key 未配置（请设置 Secrets: ' + KEY_SMALL + '）' }, 500);
+  }
+
+  const date = url.searchParams.get('date') || '';
+  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return json({ ok: false, error: 'date 必须形如 YYYY-MM-DD' }, 400);
+  }
+
+  try {
+    // [TRADING-DAY 2026-09-29] 读一次用户假期覆盖表（失败只留痕，继续用本地日历）。
+    //   必须在 runLimitPool 的交易日闸门之前。
+    await loadTradingDayOverrides();
+    const result = await runLimitPool({ date: date, source: date ? 'http-backfill' : 'http' });
+    return json(result, result.ok ? 200 : 500);
+  } catch (e) {
+    return json({ ok: false, error: (e as Error)?.message || String(e), stack: (e as Error)?.stack }, 500);
+  }
+});
