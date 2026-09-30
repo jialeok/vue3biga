@@ -144,22 +144,41 @@ function _prevBoughtTopics(prevBought, byName) {
   return out;
 }
 
-/** 一个买点方案里【重仓 / 轻仓】两个主买点块的题材名集合（⛔ 不含弱市兜底方案 ⑤⑥ 的题材） */
-function _heavyLightTopics(buy) {
+/**
+ * 一个买点方案里【全部买点块】的题材名集合。
+ *
+ * [STREAK-ALL-BLOCKS 2026-09-30 用户口径修正] ⛔ 不要再收窄成「只取 heavy / light」：
+ *   计数范围必须与【展示范围】一致。上一版只取重仓 / 轻仓，结果 9/30 当天第 1/第 2 名题材
+ *   都是「票少 + 1 个一字」的高风险小题材 ⇒ 买点全部落在 ⑥ 兜底方案 ⇒
+ *   Ⓒ 入选次数整块看板一个都不显示（用户实测反馈，已用真实数据 100% 复现）。
+ *   现在覆盖 5 个买点槽位：heavy / light / noYizi⑤ / smallTopic⑥ / bigTopic。
+ *   —— 卖点侧【不在口径内】（卖点候选本来就是「昨天买过的票」，计入会把所有题材刷满、无区分度）。
+ *
+ * @param {object} buy buildBuyPlan 的返回值
+ * @returns {Set<string>} 该日买点里出现过的题材名（一天最多算一次，Set 天然去重）
+ */
+function _buyPointTopics(buy) {
   const out = new Set();
   if (!buy) return out;
-  [buy.heavy, buy.light].forEach(function(b) {
-    const t = (b && b.block) ? String(b.block.topic || '').trim() : '';
+  const _add = function(b) {
+    if (!b) return;
+    const t = b.block ? String(b.block.topic || '').trim() : '';
     if (t) out.add(t);
-  });
+    (b.blocks || []).forEach(function(bb) {
+      const tt = (bb && bb.block) ? String(bb.block.topic || '').trim() : '';
+      if (tt) out.add(tt);
+    });
+  };
+  ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopic'].forEach(function(k) { _add(buy[k]); });
   return out;
 }
 
 /**
  * 【⑬ 题材入选次数】过去（不含今日）窗口内——含今日共 TOPIC_STREAK_WINDOW 天 ——
- * 每个题材进入【重仓 / 轻仓】买点块的【天数】（同一题材一天最多算 1 次）。
+ * 每个题材进入【买点】的【天数】（同一题材一天最多算 1 次）。
  *
- * 实现口径（用户 2026-09-30 已确认）：窗口含今日、只数重仓 / 轻仓两个主买点块。
+ * 实现口径（用户 2026-09-30 已确认）：窗口含今日；数【全部买点块】（重仓 / 轻仓 /
+ * 弱市兜底⑤ / 小题材兜底⑥ / 大题材兜底）——见 _buyPointTopics 的口径修正注释。
  *
  * ⚠️ 成本与 §36：这里要沿着交易日往回重算 4 天（今天的这一次由主流程自己算）。
  *    每次重算是【纯内存组装】（无请求、不写库、不消费额度），且：
@@ -191,7 +210,7 @@ function _topicStreakPast(date) {
     try {
       // rangeOptional：历史日拿不到十日涨幅，但题材归属不需要它（见 collectDecisionData 的闸门注释）
       const rec = collectDecisionData(day, { skipPrevBuy: true, rangeOptional: true });
-      if (rec && rec.ready && rec.buy) set = _heavyLightTopics(rec.buy);
+      if (rec && rec.ready && rec.buy) set = _buyPointTopics(rec.buy);
     } catch (e) {
       console.warn('[DECISION] 题材入选次数：' + day + ' 重算失败 → 次数按未知处理', e);
       set = null;

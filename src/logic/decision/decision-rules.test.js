@@ -2087,7 +2087,7 @@ describe('昨天已买标记（PREV-BOUGHT，股票级）', () => {
     expect(buildBuyPlan(blocks, rankDragons(blocks)).heavy.streakTag).toBeUndefined();
   });
 
-  it('🔴 兜底方案（⑤⑥）的题材：标【昨有买入】但【不标】入选次数（用户口径：只数重仓 / 轻仓）', () => {
+  it('🔴 兜底方案（⑤⑥）的题材：【同样标】入选次数（计数范围 = 全部买点块）', () => {
     const big = [];
     for (let i = 1; i <= BIG_TOPIC_MIN_COUNT; i++) big.push(E('A' + i, 'A', 100 - i));
     for (let i = 1; i <= BIG_TOPIC_MIN_COUNT; i++) big.push(E('B' + i, 'B', 90 - i));
@@ -2103,7 +2103,64 @@ describe('昨天已买标记（PREV-BOUGHT，股票级）', () => {
     const b = plan.bigTopic.blocks.find((b) => b.block.topic === 'B');
     expect(a.prevBoughtTag).toBe(TOPIC_PREV_BOUGHT_TAG);      // ⑫ 兜底方案也标
     expect(b.prevBoughtTag).toBeUndefined();
-    // ⑬ 只数重仓 / 轻仓 ⇒ 兜底方案的题材一律不标
+    // [STREAK-ALL-BLOCKS 2026-09-30] ⑬ 数【全部买点块】⇒ 兜底方案的题材同样标
+    expect(a.streakTag).toBe('三次入选');                       // 过去 2 次 + 今天这一次
+    expect(b.streakTag).toBe('二次入选');                       // 过去 1 次 + 今天这一次
+  });
+
+  it('🔴 9/30 事故形态回归：买点全落 ⑥ 兜底方案 → 每一个兜底块的题材行都必须有入选次数', () => {
+    // 事故（用户 2026-09-30 反馈，已用真实 Supabase 数据 + 真实加载路径 100% 复现）：
+    //   当天第 1 名 AI应用（8 只 / 1 个一字）、第 2 名 大消费（4 只 / 1 个一字）都命中
+    //   「票少 + 1~2 个一字」⇒ buildBuyPlan 直接走 ⑥ 小题材兜底方案；
+    //   上一版 ⑬ 只在 _finishBuyBlock（heavy / light）里调 ⇒ 整块看板一个「N 次入选」都没有，
+    //   用户看到的正是「房地产（大亚圣象）标了昨有买入、没有一次入选」，
+    //   而房地产恰恰是当天第一次进买点，本该显示【一次入选】。
+    const rows = [];
+    // AI应用：8 只 / 1 个一字（龙一 竞价一字）—— 只数 > 4，本身不触发「高风险小题材」
+    rows.push(E('AI票一', 'AI应用', 40, true, true, 10.01));
+    for (let i = 2; i <= 8; i++) rows.push(E('AI票' + i, 'AI应用', 41 - i, false, true, -1));
+    // 大消费：4 只 / 1 个一字 —— count=4 ≤ SMALL_TOPIC_MAX_COUNT ⇒ 命中「高风险小题材」⇒ 走 ⑥
+    rows.push(E('消票一', '大消费', 30, true, true, 10.02));
+    for (let i = 2; i <= 4; i++) rows.push(E('消票' + i, '大消费', 31 - i, false, true, -1));
+    // 房地产：9 只 / 0 个一字 —— 大亚圣象（龙一）所在题材，与 9/30 真实数据同形态
+    rows.push(E('大亚圣象', '房地产', 20, false, true, 1.5));
+    for (let i = 2; i <= 9; i++) rows.push(E('房票' + i, '房地产', 21 - i, false, true, -1));
+    const blocks = rankDecisionTopics(rows);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks), {
+      ladderReady: true,
+      // ⑥ 兜底方案的题材来源 = 连板天梯里数量最多的题材（按早盘竞价股票数取前二）
+      ladderTopicGroups: [{ topic: '房地产', count: 6, rows: [] }, { topic: 'AI应用', count: 8, rows: [] }],
+      prevBoughtNames: new Set(['世联行']),
+      prevBoughtTopics: new Set(['房地产']),
+      // 房地产过去 4 天一次都没进过买点 ⇒ 今天 = 第一次
+      topicStreakPast: new Map([['AI应用', 1]])
+    });
+    // 先钉死事故现场：买点确实全在兜底方案里
+    expect(plan.heavy).toBe(null);
+    expect(plan.light).toBe(null);
+    const holder = plan.smallTopic || plan.noYizi || plan.bigTopic;
+    expect(holder).not.toBe(null);
+    const flat = holder.blocks || [];
+    expect(flat.map((x) => x.block.topic)).toEqual(['房地产', 'AI应用']);
+    // ① 每一个兜底块都要有 streakTag（⛔ 不允许再出现「有昨有买入、却没有入选次数」的块）
+    expect(flat.filter((x) => !x.streakTag).map((x) => (x.block || {}).topic)).toEqual([]);
+    // ② 房地产第一次进买点 ⇒ 【一次入选】（用户原话：「这个题材第一次入选进决策看板的买点中」）
+    const fang = flat.find((x) => x.block.topic === '房地产');
+    expect(fang.streakTag).toBe('一次入选');
+    expect(fang.prevBoughtTag).toBe(TOPIC_PREV_BOUGHT_TAG);   // ⑫ 与 ⑬ 并存，互不冲突
+    // ③ AI应用 过去进过 1 次 + 今天这一次 = 二次入选
+    const ai = flat.find((x) => x.block.topic === 'AI应用');
+    expect(ai.streakTag).toBe('二次入选');
+  });
+
+  it('§10：topicStreakPast = null 时兜底方案也不标（⛔ 不用偏低次数冒充）', () => {
+    const big = [];
+    for (let i = 1; i <= BIG_TOPIC_MIN_COUNT; i++) big.push(E('A' + i, 'A', 100 - i));
+    for (let i = 1; i <= BIG_TOPIC_MIN_COUNT; i++) big.push(E('B' + i, 'B', 90 - i));
+    const blocks = rankDecisionTopics(big);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks), {
+      ladderReady: true, ladderTopicGroups: [], topicStreakPast: null
+    });
     expect(plan.bigTopic.blocks.every((x) => x.streakTag === undefined)).toBe(true);
   });
 
