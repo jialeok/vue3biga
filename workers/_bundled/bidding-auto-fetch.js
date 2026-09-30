@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-09-29 14:14:01
+// 生成时间: 2026-09-30 03:09:28
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 3335（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 3624（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
@@ -128,6 +128,21 @@ function localIsTradingDay(dateStr) {
 /** 用户覆盖表（与 db/create_trading_day_overrides.sql 同名） */
 const TRADING_DAY_OVERRIDES_TABLE = 'trading_day_overrides';
 
+/**
+ * [TIMEOUT 2026-09-30] 带超时的 fetch（本模块专用，避免与 fuyao-api.js 的同名 helper 顶层冲突）。
+ * 见 fetchTradingDayOverrides 处的说明：本层在最前面被 await，绝不允许无限挂起。
+ */
+function fetchWithTimeoutMs(url, opts, timeoutMs) {
+  const base = opts || {};
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return fetch(url, Object.assign({}, base, { signal: AbortSignal.timeout(timeoutMs) }));
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
+  return fetch(url, Object.assign({}, base, { signal: ctrl.signal }))
+    .finally(function () { clearTimeout(timer); });
+}
+
 /** 覆盖表内存缓存有效期：一轮 worker 执行只读一次，跨请求也不会长期不刷新 */
 const OVERRIDE_CACHE_TTL_MS = 60 * 1000;
 let _overrideCache = null;
@@ -151,9 +166,11 @@ async function fetchTradingDayOverrides(baseUrl, key) {
   const now = Date.now();
   if (_overrideCache && (now - _overrideCacheAt) < OVERRIDE_CACHE_TTL_MS) return _overrideCache;
   const url = baseUrl + '/rest/v1/' + TRADING_DAY_OVERRIDES_TABLE + '?select=date,is_holiday';
-  const resp = await fetch(url, {
+  // [TIMEOUT 2026-09-30] 本模块在 9:25 早盘 P0 的【最前面】被 await（checkTradingDay），
+  //   没有超时的话一次挂起就会把整轮早盘推到 9:26 之后（§35 P1）。健康时实测 <300ms。
+  const resp = await fetchWithTimeoutMs(url, {
     headers: { 'apikey': key, 'Authorization': 'Bearer ' + key }
-  });
+  }, 8000);
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     throw new Error('读取 ' + TRADING_DAY_OVERRIDES_TABLE + ' 失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
@@ -260,6 +277,53 @@ const CONFIG = {
 // ────── bidding-auto-fetch/data/fuyao-api.js ──────
 // fuyao-api.js — 同花顺 fuyao 接口（proxy + 直连历史K线）
 /**
+ * ============================================================================
+ * [TIMEOUT 2026-09-30] 上游请求一律带【硬超时】—— 没有超时的 fetch 会吊死整轮早盘
+ * ----------------------------------------------------------------------------
+ * 事故（2026-09-30）：早盘竞价看板 9:26 打开时【正式成员 + 当日竞价数据全空】，
+ * 直到 9:30 才出现。取证（Supabase 落库时间戳，北京时间）：
+ *     · auction_watchlist 当日 39 行 created_at = 09:29:44.090（== 本轮 nowIso）
+ *     · market_metrics  当日 60 行 created_at = 09:29:46.022（== P0-③ 落库）
+ *   ⇒ 从 cron（09:25:00）到 P0-① 结束共 **284 秒**，而 P0-②③/P1/P2 全部写库动作
+ *     加起来只用了 **2.08 秒**。也就是说：不是算得慢，是 P0-① 被【一个上游吊住了】。
+ *
+ * P0-① 里唯一的两个网络依赖就是本文件的两次 fuyao-proxy 调用
+ *   （fetchLadderConstituents 取 883410 成分股 / fuyaoCalendarTradingDays 取交易日历），
+ * 健康时实测各 ≈2~2.5s，但 `fetch` **没有 timeout**：上游连接一旦挂起（限流排队 /
+ * TCP 半开 / 边缘函数冷启动叠加），单次请求可以吊几十秒；再乘 retryFuyao 的 4 次尝试
+ * 就是分钟级 —— 正好把 9:26 顶穿到 9:30。
+ *
+ * 同类事件并非孤例（market_metrics 当日首行落库时刻，北京时间）：
+ *   9/10 09:26:18 ❌ ｜ 9/11 09:29:56 ❌ ｜ 9/17 09:26:08 ❌
+ *   9/28 09:30:24 ❌ ｜ 9/30 09:29:46 ❌   ← 21 个交易日里 5 次顶穿 9:26
+ *
+ * 因此：① 每次 fetch 都有超时；② 重试有【总预算】，预算耗尽立刻放弃（照常走降级分支），
+ *       绝不允许「重试」把落库时间无限往后推。
+ * ============================================================================
+ */
+const FUYAO_CALL_TIMEOUT_MS = 4500;      // 单次请求超时（健康值 ≈2~2.5s 的 ~1.8 倍）
+const FUYAO_SLOW_CALL_TIMEOUT_MS = 10000; // 批量/历史类调用（快照、K线）——不在 9:26 关键路径上，给宽一点
+const FUYAO_RETRY_BUDGET_MS = 12000;     // 名册类调用总预算（含退避）
+const FUYAO_CALENDAR_TIMEOUT_MS = 3000;  // 交易日历单次超时（更紧，它本就有本地兜底）
+const FUYAO_CALENDAR_BUDGET_MS = 5000;   // 交易日历总预算
+
+/**
+ * 带超时的 fetch。Cloudflare Workers / Node18+ 都支持 AbortSignal.timeout；
+ * 老 runtime 退回 AbortController 手写计时器，保证「一定有超时」。
+ */
+function fetchWithTimeout(url, opts, timeoutMs) {
+  const ms = timeoutMs > 0 ? timeoutMs : FUYAO_CALL_TIMEOUT_MS;
+  const base = opts || {};
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return fetch(url, Object.assign({}, base, { signal: AbortSignal.timeout(ms) }));
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(function () { ctrl.abort(); }, ms);
+  return fetch(url, Object.assign({}, base, { signal: ctrl.signal }))
+    .finally(function () { clearTimeout(timer); });
+}
+
+/**
  * [RETRY 2026-09-15] 上游「全局请求限流」重试。
  *
  * 事故背景（2026-09-15 P0）：9:25 早盘那一轮，P0-① 的第一个请求（883410 成分股）撞上
@@ -271,21 +335,45 @@ const CONFIG = {
  * 实测该限流是**突发性**的：同一接口相邻两次调用一次 200、一次 429，
  * 退避 1~2 秒后即可恢复。因此对「可重试错误」做短退避重试，硬指标（9:26 落库）内可承受。
  *
- * 总预算：0.9 + 1.8 + 3.6 ≈ 6.3s（4 次尝试）。仍有兜底降级（见 morning-workflow）。
+ * [TIMEOUT 2026-09-30] 追加【总预算】与【动态单次超时】：
+ *   · `budgetMs` 用完后不再发起新尝试（含退避时间也计入预算）；
+ *   · 每次尝试的超时 = min(perCallMs, 预算剩余)，保证最坏耗时 ≤ budgetMs 量级。
+ *   这两条是 9/30 事故的正面修复：原来的「4 次尝试」在请求挂起时会变成 4 × 几十秒。
+ *
+ * @param {(ms:number)=>Promise<any>} fn 真正发请求的函数，接收「本次可用超时」
+ * @param {number} attempts 最多尝试次数
+ * @param {string} label 日志标签
+ * @param {number} budgetMs 总预算（毫秒）；0/未传 = 只按次数限制（老行为）
+ * @param {number} perCallMs 单次超时（毫秒）
  */
-async function retryFuyao(fn, attempts, label) {
+async function retryFuyao(fn, attempts, label, budgetMs, perCallMs) {
   const n = attempts || 4;
+  const budget = budgetMs > 0 ? budgetMs : 0;
+  const perCall = perCallMs > 0 ? perCallMs : FUYAO_CALL_TIMEOUT_MS;
+  const t0 = Date.now();
   let lastErr;
   for (let i = 0; i < n; i++) {
+    const used = Date.now() - t0;
+    if (budget > 0 && i > 0 && used >= budget) {
+      console.warn('[FUYAO-RETRY] ' + (label || '') + ' 重试总预算 ' + budget + 'ms 已用尽（已用 ' + used +
+        'ms，第' + i + '次尝试前放弃）→ 立即走降级');
+      break;
+    }
+    const callMs = budget > 0 ? Math.min(perCall, Math.max(300, budget - used)) : perCall;
     try {
-      return await fn();
+      return await fn(callMs);
     } catch (e) {
       lastErr = e;
       const msg = String((e && e.message) || '');
       // 只重试「上游瞬时」类错误；业务性错误（如 thscode 不存在）重试无意义
-      const retriable = /429|rate limit|5\d\d|timeout|timed out|aborted|network|fetch failed|ECONN/i.test(msg);
+      const retriable = /429|rate limit|5\d\d|timeout|timed out|abort|network|fetch failed|ECONN/i.test(msg);
       if (!retriable || i === n - 1) break;
       const wait = 900 * Math.pow(2, i);
+      if (budget > 0 && (Date.now() - t0) + wait >= budget) {
+        console.warn('[FUYAO-RETRY] ' + (label || '') + ' 第' + (i + 1) + '次失败：' + msg.slice(0, 120) +
+          ' → 退避 ' + wait + 'ms 会超出总预算，放弃重试');
+        break;
+      }
       console.warn('[FUYAO-RETRY] ' + (label || '') + ' 第' + (i + 1) + '次失败：' + msg.slice(0, 120) +
         ' → ' + wait + 'ms 后重试');
       await new Promise(r => setTimeout(r, wait));
@@ -294,7 +382,7 @@ async function retryFuyao(fn, attempts, label) {
   throw lastErr;
 }
 
-async function fuyaoProxyGet(env, path, params) {
+async function fuyaoProxyGet(env, path, params, timeoutMs) {
   const authKey = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_ANON_KEY;
   const url = new URL(CONFIG.FUYAO_PROXY_BASE);
   url.searchParams.set('path', path);
@@ -303,7 +391,8 @@ async function fuyaoProxyGet(env, path, params) {
       url.searchParams.set(k, params[k]);
     }
   }
-  const resp = await fetch(url.toString(), { headers: { 'Authorization': 'Bearer ' + authKey } });
+  // [TIMEOUT 2026-09-30] 每个上游调用都必须有上限，否则连接挂起会吊死整轮早盘
+  const resp = await fetchWithTimeout(url.toString(), { headers: { 'Authorization': 'Bearer ' + authKey } }, timeoutMs);
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     throw new Error('fuyao-proxy ' + path + ' HTTP ' + resp.status + ': ' + text.slice(0, 200));
@@ -315,12 +404,15 @@ async function fuyaoProxyGet(env, path, params) {
 
 // 调 fuyao 交易日历，返回最近 N 天交易日列表（升序）
 // [RETRY 2026-09-15] 交易日历是 P0-①/P1/P2 的公共前置，429 会让窗口算不出来 → 必须重试。
+// [TIMEOUT 2026-09-30] 但它是【可降级】前置：getRecentTradingDays / mergeTradingDay 都有
+//   本地硬编码表兜底，拿不到日历不会让任何一天数据变错，只会让「预期交易日窗口」粗一点。
+//   因此给它最小的预算（5s / 单次 3s）—— 它是 9/30 事故里最可能吊死整轮的那一个。
 async function fuyaoCalendarTradingDays(env) {
-  return retryFuyao(async () => {
+  return retryFuyao(async (callMs) => {
     const authKey = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_ANON_KEY;
     const url = new URL(CONFIG.FUYAO_PROXY_BASE);
     url.searchParams.set('path', '/api/a-share/calendar/trading-days');
-    const resp = await fetch(url.toString(), { headers: { 'Authorization': 'Bearer ' + authKey } });
+    const resp = await fetchWithTimeout(url.toString(), { headers: { 'Authorization': 'Bearer ' + authKey } }, callMs);
     if (!resp.ok) {
       const text = await resp.text().catch(() => '');
       throw new Error('fuyao calendar HTTP ' + resp.status + ': ' + text.slice(0, 200));
@@ -329,15 +421,19 @@ async function fuyaoCalendarTradingDays(env) {
     if (json.code !== 0) throw new Error('fuyao calendar 错误 code=' + json.code + ': ' + (json.message || ''));
     const items = (json.data && json.data.item) || [];
     return items.map(it => normalizeDate(it.date)).filter(Boolean).sort();
-  }, 4, 'calendar/trading-days');
+  }, 4, 'calendar/trading-days', FUYAO_CALENDAR_BUDGET_MS, FUYAO_CALENDAR_TIMEOUT_MS);
 }
 
 // 获取最近多板成分股 → [{ name, code }]
 // [RETRY 2026-09-15] ★ 这是 9:25 早盘 P0-① 的【第一个】请求，也是本次 P0 事故的引爆点：
 //   它 429 一次就会让整轮早盘抓取中断（一张表都不写）。这里必须重试。
+// [TIMEOUT 2026-09-30] 名册是 P0-① 的**不可降级**前置（拿不到就没有「正式成员」），
+//   所以给足 12s 总预算 / 单次 4.5s：既覆盖健康时的 2~2.5s，也保证最坏情况 ≤ 12s，
+//   让 P0-②③ 一定能在 9:26 前写完（见 morning-workflow.js 的 P0 硬截止）。
 async function fetchLadderConstituents(env) {
-  return retryFuyao(async () => {
-    const data = await fuyaoProxyGet(env, '/api/a-share-index/constituents/ths-stock-list', { thscode: CONFIG.LADDER_THSCODE });
+  return retryFuyao(async (callMs) => {
+    const data = await fuyaoProxyGet(env, '/api/a-share-index/constituents/ths-stock-list',
+      { thscode: CONFIG.LADDER_THSCODE }, callMs);
     const items = (data && data.item) || [];
     return items.map(it => {
       const name = (it.name || '').trim();
@@ -349,7 +445,7 @@ async function fetchLadderConstituents(env) {
       }
       return { name, code };
     }).filter(s => s.name && s.code);
-  }, 4, 'constituents/ths-stock-list(883410)');
+  }, 4, 'constituents/ths-stock-list(883410)', FUYAO_RETRY_BUDGET_MS, FUYAO_CALL_TIMEOUT_MS);
 }
 
 function tickerToThscode(code) {
@@ -406,7 +502,7 @@ async function fetchSnapshotChangePct(env, codes) {
     if (!thscodes) continue;
     let data;
     try {
-      data = await fuyaoProxyGet(env, '/api/a-share/prices/snapshot', { thscodes: thscodes });
+      data = await fuyaoProxyGet(env, '/api/a-share/prices/snapshot', { thscodes: thscodes }, FUYAO_SLOW_CALL_TIMEOUT_MS);
       stats.batchOk++;
     } catch (batchErr) {
       stats.batchFail++;
@@ -415,7 +511,7 @@ async function fetchSnapshotChangePct(env, codes) {
         const thscode = tickerToThscode(code);
         if (!thscode) continue;
         try {
-          const d1 = await fuyaoProxyGet(env, '/api/a-share/prices/snapshot', { thscodes: thscode });
+          const d1 = await fuyaoProxyGet(env, '/api/a-share/prices/snapshot', { thscodes: thscode }, FUYAO_SLOW_CALL_TIMEOUT_MS);
           stats.singleOk++;
           const items1 = (d1 && d1.item) || [];
           stats.itemsReturned += items1.length;
@@ -469,7 +565,7 @@ async function fetchAuctionSnapshot(env, codes) {
   for (let i = 0; i < list.length; i += 100) {
     const thscodes = list.slice(i, i + 100).map(c => tickerToThscode(c)).filter(Boolean).join(',');
     if (!thscodes) continue;
-    const data = await fuyaoProxyGet(env, '/api/a-share/auction/snapshot', { thscodes: thscodes, stage: 'final' });
+    const data = await fuyaoProxyGet(env, '/api/a-share/auction/snapshot', { thscodes: thscodes, stage: 'final' }, FUYAO_SLOW_CALL_TIMEOUT_MS);
     batches.push({
       timestamp: data && data.timestamp,
       auction_phase: data && data.auction_phase,
@@ -494,7 +590,8 @@ async function fuyaoDirectHistorical(env, thscode, startMs, endMs) {
   url.searchParams.set('end', String(endMs));
   url.searchParams.set('adjust', 'none');
   try {
-    const resp = await fetch(url.toString(), { headers: { 'X-api-key': apiKey } });
+    // [TIMEOUT 2026-09-30] 直连 fuyao 的历史 K 线原本没有超时，连接挂起会一直吊着
+    const resp = await fetchWithTimeout(url.toString(), { headers: { 'X-api-key': apiKey } }, FUYAO_SLOW_CALL_TIMEOUT_MS);
     const json = await resp.json();
     if (json.code !== 0) {
       return { thscode, error: 'fuyao historical code=' + json.code + ' ' + (json.message || '') };
@@ -605,7 +702,7 @@ async function fetchFuyaoKlineWindowPct(env, items, dates, opts) {
       start: String(startMs),
       end: String(endMs),
       adjust: 'forward'
-    });
+    }, FUYAO_SLOW_CALL_TIMEOUT_MS);
     const rows = (data && data.item) || [];
     const series = [];
     rows.forEach(r => {
@@ -702,13 +799,22 @@ function maskKey(k) {
 }
 
 /** 单次上游请求（单把 key）。额度类失败抛出的错误带 quotaExhausted 标记 */
+// [TIMEOUT 2026-09-30] 加硬超时：猫抓网络抖动时裸 fetch 会一直挂着，
+//   而本调用位于 9:25 P0 关键路径上（P0-②），挂一次就把落库顶穿 9:26。
+//   12s 对健康调用（实测 1~2s）绰绰有余；超时错误里带 timeout 关键字，
+//   会让 morning-workflow 的「今天数据缺失」重试逻辑正常接管。
+const NUMCAT_TIMEOUT_MS = 12000;
 async function postOnce(url, key, apiname, fields, params) {
   const body = { apiname: apiname, apikey: key, fields: fields, params: params };
-  const resp = await fetch(url, {
+  const opts = {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
-  });
+  };
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    opts.signal = AbortSignal.timeout(NUMCAT_TIMEOUT_MS);
+  }
+  const resp = await fetch(url, opts);
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     const e = new Error('numcat ' + apiname + ' HTTP ' + resp.status + ': ' + text.slice(0, 200));
@@ -803,10 +909,71 @@ function sbHeaders(env) {
   };
 }
 
+/**
+ * [TIMEOUT 2026-09-30] 所有 Supabase REST 调用统一加硬超时。
+ *
+ * P0（今天的数据）落库链路上，读（stockcodemap / 名单 / 标签 / 龙头）与写
+ * （auction_watchlist / market_metrics）都在 9:25~9:26 这 60 秒里，任何一次调用挂起
+ * 都等于当天看板空白。健康时这些调用实测 100~500ms，15s 的上限是 30 倍余量，
+ * 正常情况永远不会触发；一旦触发，宁可当次失败（已有降级/重试路径），也不无限等。
+ */
+const SB_REST_TIMEOUT_MS = 15000;
+function sbFetch(url, opts, timeoutMs) {
+  const ms = timeoutMs > 0 ? timeoutMs : SB_REST_TIMEOUT_MS;
+  const base = opts || {};
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return fetch(url, Object.assign({}, base, { signal: AbortSignal.timeout(ms) }));
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(function () { ctrl.abort(); }, ms);
+  return fetch(url, Object.assign({}, base, { signal: ctrl.signal }))
+    .finally(function () { clearTimeout(timer); });
+}
+
+/**
+ * [RUNLOG 2026-09-30] 把一轮 worker 运行的完整日志（含 ⏱ 埋点 / elapsedMs / P0 是否达标）
+ * 写入 bidding_fetch_log，供事后复盘。
+ *
+ * 为什么必须落库：2026-09-30 早盘竞价看板 9:26 无数据、9:30 才出现，
+ *   而 `bidding_fetch_log` 里 **一条 CF worker 记录都没有**（只有 auction-yizi-* 的
+ *   Edge Function 记录）—— 因为 runMorning 的埋点此前只 `console.log` 到 Cloudflare
+ *   Dashboard 日志，沙箱侧看不到。最后只能靠 auction_watchlist / market_metrics 的
+ *   created_at 反推「P0-① 花了 284 秒」，代价是几轮排查。
+ *   落库后，下次直接 `select detail->'logs' ... where job='bidding-auto-fetch'` 即可。
+ *
+ * ⚠️ 永不抛错：日志写入失败绝不能影响主流程（更不允许它拖慢 9:25 落库）。
+ * @param {object} env
+ * @param {{time_point:string, run_date?:string, ok?:boolean, detail:object}} entry
+ */
+async function writeRunLog(env, entry) {
+  const e = entry || {};
+  const row = {
+    job: 'bidding-auto-fetch',
+    run_date: e.run_date || '',
+    time_point: e.time_point || '',
+    source: 'cf-worker',
+    ok: e.ok === true,
+    detail: e.detail || {}
+  };
+  try {
+    const resp = await sbFetch(CONFIG.SUPABASE_URL + '/rest/v1/bidding_fetch_log', {
+      method: 'POST',
+      headers: Object.assign(sbHeaders(env), { 'Prefer': 'return=minimal' }),
+      body: JSON.stringify(row)
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      console.error('写 bidding_fetch_log 失败（已忽略）: HTTP ' + resp.status + ': ' + text.slice(0, 200));
+    }
+  } catch (err) {
+    console.error('写 bidding_fetch_log 失败（已忽略）:', err && err.message);
+  }
+}
+
 async function upsertAuctionWatchlist(env, rows) {
   if (!rows || rows.length === 0) return;
   const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?on_conflict=date,stock';
-  const resp = await fetch(url, {
+  const resp = await sbFetch(url, {
     method: 'POST',
     headers: Object.assign(sbHeaders(env), { 'Prefer': 'resolution=merge-duplicates, return=minimal' }),
     body: JSON.stringify(rows)
@@ -821,7 +988,7 @@ async function upsertMarketMetrics(env, rows) {
   if (!rows || rows.length === 0) return;
   const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?on_conflict=date,stock,scope';
   // 【FIX 2026-08-03】加 missing=default：批次里某一行没带某个字段时保留云端原值
-  const resp = await fetch(url, {
+  const resp = await sbFetch(url, {
     method: 'POST',
     headers: Object.assign(sbHeaders(env), { 'Prefer': 'resolution=merge-duplicates, missing=default, return=minimal' }),
     body: JSON.stringify(rows)
@@ -844,7 +1011,7 @@ async function updateStockCodeMap(env, pairs) {
 async function upsertStockRangePct(env, rows) {
   if (!rows || rows.length === 0) return;
   const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range_pct?on_conflict=date,stock';
-  const resp = await fetch(url, {
+  const resp = await sbFetch(url, {
     method: 'POST',
     headers: Object.assign(sbHeaders(env), { 'Prefer': 'resolution=merge-duplicates, return=minimal' }),
     body: JSON.stringify(rows)
@@ -867,7 +1034,7 @@ async function readMarketMetricsForDate(env, date, scope) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?date=eq.' + encodeURIComponent(date) +
     '&scope=eq.' + encodeURIComponent(sc) +
     '&select=stock,code,change_pct,auc_pct_chg,updated_at&limit=2000';
-  const resp = await fetch(url, { headers: sbHeaders(env) });
+  const resp = await sbFetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     throw new Error('读取 market_metrics 失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
@@ -894,7 +1061,7 @@ async function readMarketMetricsExtrasForDate(env, date) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?date=eq.' + encodeURIComponent(date) +
     '&scope=eq.auction' +
     '&select=stock,code,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover,auc_pct_chg&limit=2000';
-  const resp = await fetch(url, { headers: sbHeaders(env) });
+  const resp = await sbFetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     throw new Error('读取 market_metrics 四要素失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
@@ -922,7 +1089,7 @@ async function readMarketMetricsSnapshotFieldsForDate(env, date) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?date=eq.' + encodeURIComponent(date) +
     '&scope=eq.auction' +
     '&select=stock,code,auc_pct_chg,auc_vol_ratio,auc_turnover,volume&limit=2000';
-  const resp = await fetch(url, { headers: sbHeaders(env) });
+  const resp = await sbFetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     throw new Error('读取 market_metrics 快照字段失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
@@ -946,7 +1113,7 @@ async function readMarketMetricsSnapshotFieldsForDate(env, date) {
 async function readStockRangePctForDate(env, date) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range_pct?date=eq.' + encodeURIComponent(date) +
     '&select=stock,range_pct,days,updated_at&limit=2000';
-  const resp = await fetch(url, { headers: sbHeaders(env) });
+  const resp = await sbFetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     throw new Error('读取 stock_range_pct 失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
@@ -966,7 +1133,7 @@ async function readStockRangePctForDate(env, date) {
 //   若把它当成「名单已存在」，worker 重跑就会一行都不写（2026-09-15 P0 修复现场实测）。
 async function readAuctionWatchlistForDate(env, date) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?date=eq.' + date + '&select=stock,code,obs_auto_added';
-  const resp = await fetch(url, { headers: sbHeaders(env) });
+  const resp = await sbFetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) return [];
   const data = await resp.json();
   // 【FIX 2026-08-15】不再过滤 code 为空的行：观察组/打标签股票在前一日 watchlist 里可能没有 code
@@ -990,7 +1157,7 @@ async function readAuctionWatchlistForDate(env, date) {
 async function readAuctionTagsForDate(env, date) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_board_tags?date=eq.' + date +
     '&select=stock,tag&limit=1000';
-  const resp = await fetch(url, { headers: sbHeaders(env) });
+  const resp = await sbFetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) return [];
   const data = await resp.json();
   const out = [];
@@ -1019,7 +1186,7 @@ async function readDragonLeadersForDate(env, date) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/dragon_leaders?date=eq.' + encodeURIComponent(date) +
     '&select=stock,code,topic&limit=500';
   try {
-    const resp = await fetch(url, { headers: sbHeaders(env) });
+    const resp = await sbFetch(url, { headers: sbHeaders(env) });
     if (!resp.ok) return [];
     const data = await resp.json();
     const out = [];
@@ -1049,7 +1216,7 @@ async function readStockCodeMapByNames(env, names) {
   const inList = uniq.map(n => '%22' + encodeURIComponent(n) + '%22').join(',');
   const url = CONFIG.SUPABASE_URL + '/rest/v1/stockcodemap?select=stock,code&stock=in.(' + inList + ')';
   try {
-    const resp = await fetch(url, { headers: sbHeaders(env) });
+    const resp = await sbFetch(url, { headers: sbHeaders(env) });
     if (!resp.ok) return {};
     const data = await resp.json();
     const map = {};
@@ -1069,7 +1236,7 @@ async function readStockCodeMapByNames(env, names) {
 // ⚠️ 受 Supabase 单次 1000 行上限截断；缺漏由 readStockCodeMapByNames 按名补齐。
 async function readStockCodeMap(env) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/stockcodemap?select=stock,code';
-  const resp = await fetch(url, { headers: sbHeaders(env) });
+  const resp = await sbFetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) return {};
   const data = await resp.json();
   const map = {};
@@ -1780,21 +1947,68 @@ const RANGE_DAYS = RANGE_WINDOW_DAYS;
  *  不晚于 09:25:30 发出，给写入留出时间。 */
 const TODAY_RETRY_DELAYS_SEC = [5, 8, 12];
 
+// ============================================================================
+// [LATENCY 2026-09-30] P0 硬截止 —— 「等到什么时候就必须收手」
+// ----------------------------------------------------------------------------
+// 事故：2026-09-30 早盘竞价看板 9:26 打开时当天数据全空，9:30 才出现。
+// 取证（Supabase 落库时间戳，北京时间）：
+//     · auction_watchlist 当日 39 行 created_at = 09:29:44.090（== 本轮 nowIso，即 P0-① 结束）
+//     · market_metrics  当日 60 行 created_at = 09:29:46.022（== P0-③ 落库）
+//   ⇒ cron 09:25:00 → P0-① 结束共 **284 秒**；而 P0-②③/P1/P2 的全部写库只用了 **2.08 秒**。
+//   慢的不是计算，是 P0-① 里的上游请求挂起（两个 fuyao 调用原本没有超时，见 fuyao-api.js）。
+//
+// 同类顶穿并非孤例（market_metrics 当天首行落库时刻）：
+//   9/10 09:26:18 ｜ 9/11 09:29:56 ｜ 9/17 09:26:08 ｜ 9/28 09:30:24 ｜ 9/30 09:29:46
+//
+// 结构性根因：整条链路**没有截止时间** —— 任何一步（含重试退避）都可以无限往后推。
+// 因此这里给 P0（今天的数据）一个绝对上限：到点就用手上已有的数据落库，
+// 宁可少等一轮重试，也不许看板空白到 9:30。
+//
+// 预算（09:25:00 触发）：checkTradingDay + P0-① 约 ≤21s，P0-② 受此截止约束，P0-③ ≤2s
+//   ⇒ 最坏 09:25:45 前落库，给 9:26 留足余量。
+// ============================================================================
+const P0_DEADLINE_BJ_SEC = 9 * 3600 + 25 * 60 + 45;   // 09:25:45
+const P0_DEADLINE_LABEL = '09:25:45';
+/** 当前北京时间的「当日秒数」（0~86399）。beijingNow() 已做 +8h 位移，故取 UTC 分量 */
+function bjSecondsOfDay() {
+  const d = beijingNow();
+  return d.getUTCHours() * 3600 + d.getUTCMinutes() * 60 + d.getUTCSeconds();
+}
+/** 距离 P0 截止还剩多少毫秒（负数 = 已超时） */
+function p0DeadlineLeftMs() {
+  return (P0_DEADLINE_BJ_SEC - bjSecondsOfDay()) * 1000;
+}
+/** 北京时钟 HH:MM:SS，仅用于把埋点写得可读（落库日志里不必再自己换算 UTC） */
+function bjClock() {
+  const d = beijingNow();
+  return String(d.getUTCHours()).padStart(2, '0') + ':' +
+    String(d.getUTCMinutes()).padStart(2, '0') + ':' +
+    String(d.getUTCSeconds()).padStart(2, '0');
+}
+
 // ---------------------------------------------------------------------------
 // 单次 runMorning 内的轻量 memo：消除「同一份数据被串行请求 3~4 次」
 // ---------------------------------------------------------------------------
 function createRunCache() {
-  return { _tdAll: null, _tdPending: null };
+  return { _tdAll: null, _tdPending: null, _fuyaoDates: null };
 }
 
 /** 取截止 today（含）最近 n 个交易日。整轮只发一次交易日历请求（失败抛错时返回 []） */
 async function recentTradingDays(cache, env, today, n) {
   if (!cache._tdPending) {
-    cache._tdPending = getRecentTradingDays(env, today, RANGE_DAYS)
-      .catch(function (e) {
-        console.warn('[MORNING] getRecentTradingDays 失败:', e && e.message);
-        return [];
-      });
+    cache._tdPending = (async function () {
+      // [LATENCY 2026-09-30] checkTradingDay 已经取过一次 fuyao 日历 → 直接复用，
+      //   不再重复请求（§32 禁止无意义请求；也把 P0-① 的最坏耗时砍掉一轮 5s）。
+      //   ⚠️ 只在「确实拿到过日历」时复用；拿不到仍然回退 getRecentTradingDays 的本地推算。
+      if (cache._fuyaoDates && cache._fuyaoDates.length > 0) {
+        const upToToday = cache._fuyaoDates.filter(function (d) { return d <= today; });
+        if (upToToday.length > 0) return upToToday;
+      }
+      return await getRecentTradingDays(env, today, RANGE_DAYS);
+    })().catch(function (e) {
+      console.warn('[MORNING] getRecentTradingDays 失败:', e && e.message);
+      return [];
+    });
   }
   const all = await cache._tdPending;
   if (!all || all.length === 0) return [];
@@ -1850,10 +2064,13 @@ function todayAuctionExtras(rows, flds, today) {
 //     ③ 硬编码表多了 10/08 → 开市日被判「非交易日」→ 早盘 + 收盘两轮【整轮 skip】，
 //        当天四个趋势图与十日涨幅全空。
 //   现在改为三源合并（用户覆盖表 > 周末 > fuyao 日历 > 硬编码表），语义见 trading-day.js 文件头。
-async function checkTradingDay(env, today, logs) {
+// [LATENCY 2026-09-30] 多接一个 cache 参数：把这里取到的 fuyao 日历顺手存进本轮 memo，
+//   P0-① 的 recentTradingDays 直接复用，省掉一次上游请求（也少一次可能挂起的机会）。
+async function checkTradingDay(env, today, cache, logs) {
   let fuyaoDates = null;
   try {
     fuyaoDates = await fuyaoCalendarTradingDays(env);
+    if (cache && fuyaoDates && fuyaoDates.length > 0) cache._fuyaoDates = fuyaoDates;
   } catch (e) {
     // §10：拿不到日历 ≠ 今天不是交易日 —— 该层弃权，继续用「用户设置 / 硬编码表」判。
     logs.push('⚠️ fuyao 交易日历不可用（该层弃权，改用用户设置 / 硬编码表判定）: ' + (e && e.message));
@@ -2146,9 +2363,20 @@ async function fetchNumcatWithRetry(env, constituents, today, cache, logs) {
     //      反而把 P0 落库顶穿 9:26。四要素改由 P3 补漏任务负责（runAuctionExtrasPatch）。
     if (missingDates.includes(today)) {
       for (let attempt = 0; attempt < TODAY_RETRY_DELAYS_SEC.length && missingDates.includes(today); attempt++) {
+        // [LATENCY 2026-09-30] P0 硬截止：到点就用手上已有的数据落库，绝不再等。
+        //   下面是 9/30 事故的正面修复 —— 原来的循环只按「次数」限制，没有时间上限。
+        const leftMs = p0DeadlineLeftMs();
+        if (leftMs < 1500) {
+          logs.push('🛑 已到 P0 截止 ' + P0_DEADLINE_LABEL + '（剩余 ' + Math.round(leftMs) +
+            'ms）→ 停止等待今天数据，立即用现有数据落库（不再重试，避免顶穿 9:26）');
+          break;
+        }
         const waitSec = TODAY_RETRY_DELAYS_SEC[attempt];
-        logs.push('⏳ 今天(' + today + ')数据缺失，' + waitSec + '秒后重试第' + (attempt + 1) + '次...');
-        await new Promise(r => setTimeout(r, waitSec * 1000));
+        // 退避也不能越过截止时间：宁可缩短等待，也不许把落库推到 9:26 之后
+        const waitMs = Math.max(0, Math.min(waitSec * 1000, leftMs - 1500));
+        logs.push('⏳ 今天(' + today + ')数据缺失，' + Math.round(waitMs / 1000) + '秒后重试第' + (attempt + 1) +
+          '次...（P0 剩余 ' + Math.round(leftMs / 1000) + 's）');
+        await new Promise(r => setTimeout(r, waitMs));
         try {
           const retryData = await numcatDailyAuc(env, symbols, startYMD, endYMD, logs);
           const retryItems = retryData.items || [];
@@ -2594,10 +2822,13 @@ function buildCompletenessSummary(today, missingDatesAfterNumcat, phantomDates, 
 async function runMorning(env) {
   const logs = [];
   const _t0 = Date.now();
-  const mark = (label) => { logs.push('⏱ ' + label + ' +' + (Date.now() - _t0) + 'ms'); };
+  // [LATENCY 2026-09-30] 埋点带上北京时钟：这一步是给「落库日志」看的（见 index.js），
+  //   以后排查「9:26 为什么没数据」不用再从 created_at 反推 UTC 偏移。
+  const mark = (label) => { logs.push('⏱ ' + label + ' +' + (Date.now() - _t0) + 'ms @' + bjClock()); };
   const today = beijingToday();
   const cache = createRunCache();
-  logs.push('today=' + today);
+  logs.push('today=' + today + ' 启动@' + bjClock() + '（P0 硬截止 ' + P0_DEADLINE_LABEL + '，剩余 ' +
+    Math.round(p0DeadlineLeftMs() / 1000) + 's）');
 
   // [KEY-FALLBACK 2026-09-28] 回显 key 候选链：主账号 → 小号。
   //   小号 Secret 没配 = 兜底静默失效，必须在日志里一眼看见（§10 禁止静默失败）。
@@ -2607,7 +2838,7 @@ async function runMorning(env) {
       (_keys.length > 1 ? '｜主账号额度用尽会自动退回小号' : '｜⚠️ 只配了 1 把 key：主账号用尽则无兜底')
     : '（无！请设置 Secret NUMCAT_API_KEY）'));
 
-  const skipResult = await checkTradingDay(env, today, logs);
+  const skipResult = await checkTradingDay(env, today, cache, logs);
   if (skipResult) return skipResult;
 
   // ---- P0-① 名单（并行取数，写完即可让前端看到当天的票）----
@@ -2693,6 +2924,13 @@ async function runMorning(env) {
   }
 
   logs.push('完成: auction_watchlist ' + watchlistRows.length + ' 行, market_metrics ' + totalMetricsWritten + ' 行, stock_range_pct ' + rangeWritten + ' 行');
+  mark('全流程结束');
+  // [LATENCY 2026-09-30] 把「是否顶穿 9:26」直接算成布尔值放进结果，
+  //   由 index.js 落库到 bidding_fetch_log，排查时一眼可判（不用再换算 UTC）。
+  const p0Overrun = todayWrite.totalMetricsWritten > 0 && bjSecondsOfDay() > P0_DEADLINE_BJ_SEC;
+  logs.push(p0Overrun
+    ? '🔴 P0 落库时刻 ' + bjClock() + ' 已晚于硬截止 ' + P0_DEADLINE_LABEL + '（9:26 硬指标未达成）'
+    : '🟢 P0 落库时刻 ' + bjClock() + '（硬截止 ' + P0_DEADLINE_LABEL + '，达标）');
   return {
     ok: metricsWriteFailures === 0 || totalMetricsWritten > 0,
     today,
@@ -2702,6 +2940,8 @@ async function runMorning(env) {
     metricsWritten: totalMetricsWritten,
     todayMetricsWritten: todayWrite.totalMetricsWritten,
     elapsedMs: Date.now() - _t0,
+    p0Overrun: p0Overrun,
+    finishedAtBj: bjClock(),
     rangeWritten: rangeWritten,
     rangeWriteFailed: rangeWriteFailed,
     yestVolDerived: yestVolDerivedCount,
@@ -3194,6 +3434,8 @@ async function syncRangePct(env, today, closeMs, rangeDates, dailyByCode, pctByC
 //   手工触发返回 546），导致当天 change_pct 全天停留在竞价涨幅。
 //   本 worker 的早盘 cron 一直稳定，因此收盘也交回这里，不再依赖任何外部 cron。
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏（可手动 /fetch?point=extras；16:00 close 也会自动跑）
+// [RUNLOG 2026-09-30] 把每轮的完整日志（含 ⏱ 埋点）落库到 bidding_fetch_log，
+//   否则 CF Worker 的埋点只进 Cloudflare Dashboard，事后无法复盘「9:26 为什么没数据」。
 function jsonResponse(obj, status) {
   return new Response(JSON.stringify(obj, null, 2), {
     status: status || 200,
@@ -3244,11 +3486,38 @@ async function runSnapshotPatchSafely(env, result, tag) {
   }
 }
 
+/**
+ * [RUNLOG 2026-09-30] 把这一轮的运行结果落库到 bidding_fetch_log（含 ⏱ 埋点断点）。
+ * 只写日志表，失败静默（见 data/supabase-write.js#writeRunLog），绝不影响主流程。
+ */
+async function persistRunResult(env, point, result) {
+  const r = result || {};
+  await writeRunLog(env, {
+    time_point: point,
+    run_date: r.today || r.date || '',
+    ok: r.ok === true,
+    detail: {
+      elapsedMs: r.elapsedMs === undefined ? null : r.elapsedMs,
+      finishedAtBj: r.finishedAtBj || '',
+      p0Overrun: !!r.p0Overrun,
+      ladderDegraded: !!r.ladderDegraded,
+      todayDataMissing: !!r.todayDataMissing,
+      todayMetricsWritten: r.todayMetricsWritten === undefined ? null : r.todayMetricsWritten,
+      metricsWritten: r.metricsWritten === undefined ? null : r.metricsWritten,
+      rangeWritten: r.rangeWritten === undefined ? null : r.rangeWritten,
+      completenessSummary: r.completenessSummary || '',
+      logs: Array.isArray(r.logs) ? r.logs : []
+    }
+  });
+}
+
 async function dispatch(point, env, logs, opts) {
   if (point === 'morning') {
     const result = await runMorning(env);
     console.log('[auto-fetch] runMorning 完成 ok=' + result.ok + ' completenessSummary=' + (result.completenessSummary || ''));
     console.log('[auto-fetch] runMorning 完整日志:', JSON.stringify(result.logs || []));
+    // [RUNLOG 2026-09-30] 先落库再跑快照补漏：P0 时延证据要第一时间写下去
+    await persistRunResult(env, point, result);
     // [SNAPSHOT-EXTRAS 2026-09-14] 9:25 竞价刚结束 → 立刻补当天三个竞价字段（趋势图/龙徽章/一字红线依赖它们）
     await runSnapshotPatchSafely(env, result, 'morning');
     return result;
@@ -3259,6 +3528,7 @@ async function dispatch(point, env, logs, opts) {
     console.log('[auto-fetch] runClose 完成 ok=' + result.ok + ' today=' + (result.today || '') +
       ' completenessSummary=' + (result.completenessSummary || ''));
     console.log('[auto-fetch] runClose 完整日志:', JSON.stringify(result.logs || []));
+    await persistRunResult(env, point, result);
     // [SNAPSHOT-EXTRAS 2026-09-14] 收盘后再兜一次（防止 9:25 那次快照未终态 / 漏掉新进名单的票）
     await runSnapshotPatchSafely(env, result, 'close');
     return result;
@@ -3269,6 +3539,7 @@ async function dispatch(point, env, logs, opts) {
     console.log('[auto-fetch] runTodaySnapshotPatch 完成 ok=' + result.ok + ' patched=' + result.patched +
       ' today=' + (result.today || ''));
     console.log('[auto-fetch] runTodaySnapshotPatch 完整日志:', JSON.stringify(result.logs || []));
+    await persistRunResult(env, point, result);
     return result;
   }
   if (point === 'extras') {
@@ -3278,6 +3549,7 @@ async function dispatch(point, env, logs, opts) {
     console.log('[auto-fetch] runAuctionExtrasPatch 完成 ok=' + result.ok + ' patched=' + (result.patched || 0) +
       ' dates=' + JSON.stringify(result.dates || []));
     console.log('[auto-fetch] runAuctionExtrasPatch 完整日志:', JSON.stringify(result.logs || []));
+    await persistRunResult(env, point, result);
     return result;
   }
   console.error('[auto-fetch] 未知触发点:', point);
@@ -3292,7 +3564,17 @@ export default {
       return;
     }
     // 【FIX 2026-08-04】不管成功/失败，都把完整 logs 数组 console.log 出来
-    ctx.waitUntil(dispatch(point, env, []).catch(e => console.error('[auto-fetch] ' + point + ' error:', e.message)));
+    // [RUNLOG 2026-09-30] 失败也要落库：整轮抛错（如 P0-① 直接 return error）是最该留证据的情况，
+    //   以前只在 Cloudflare 控制台留一行 error，事后完全查不到。
+    ctx.waitUntil(dispatch(point, env, []).catch(async e => {
+      console.error('[auto-fetch] ' + point + ' error:', e.message);
+      await writeRunLog(env, {
+        time_point: point,
+        run_date: '',
+        ok: false,
+        detail: { error: (e && e.message) || String(e), stack: (e && e.stack) || '' }
+      });
+    }));
   },
 
   async fetch(request, env) {
@@ -3324,6 +3606,13 @@ export default {
         });
         return jsonResponse(result, result.ok ? 200 : 500);
       } catch (e) {
+        // [RUNLOG 2026-09-30] 手动触发失败同样落库
+        await writeRunLog(env, {
+          time_point: point,
+          run_date: url.searchParams.get('date') || '',
+          ok: false,
+          detail: { error: e.message, stack: e.stack, trigger: 'manual-fetch' }
+        });
         return jsonResponse({ ok: false, error: e.message, stack: e.stack }, 500);
       }
     }

@@ -14,6 +14,9 @@ import { runMorning } from './logic/morning-workflow.js';
 import { runClose } from './logic/close-workflow.js';
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏（可手动 /fetch?point=extras；16:00 close 也会自动跑）
 import { runAuctionExtrasPatch, runTodaySnapshotPatch } from './logic/extras-workflow.js';
+// [RUNLOG 2026-09-30] 把每轮的完整日志（含 ⏱ 埋点）落库到 bidding_fetch_log，
+//   否则 CF Worker 的埋点只进 Cloudflare Dashboard，事后无法复盘「9:26 为什么没数据」。
+import { writeRunLog } from './data/supabase-write.js';
 
 function jsonResponse(obj, status) {
   return new Response(JSON.stringify(obj, null, 2), {
@@ -65,11 +68,38 @@ async function runSnapshotPatchSafely(env, result, tag) {
   }
 }
 
+/**
+ * [RUNLOG 2026-09-30] 把这一轮的运行结果落库到 bidding_fetch_log（含 ⏱ 埋点断点）。
+ * 只写日志表，失败静默（见 data/supabase-write.js#writeRunLog），绝不影响主流程。
+ */
+async function persistRunResult(env, point, result) {
+  const r = result || {};
+  await writeRunLog(env, {
+    time_point: point,
+    run_date: r.today || r.date || '',
+    ok: r.ok === true,
+    detail: {
+      elapsedMs: r.elapsedMs === undefined ? null : r.elapsedMs,
+      finishedAtBj: r.finishedAtBj || '',
+      p0Overrun: !!r.p0Overrun,
+      ladderDegraded: !!r.ladderDegraded,
+      todayDataMissing: !!r.todayDataMissing,
+      todayMetricsWritten: r.todayMetricsWritten === undefined ? null : r.todayMetricsWritten,
+      metricsWritten: r.metricsWritten === undefined ? null : r.metricsWritten,
+      rangeWritten: r.rangeWritten === undefined ? null : r.rangeWritten,
+      completenessSummary: r.completenessSummary || '',
+      logs: Array.isArray(r.logs) ? r.logs : []
+    }
+  });
+}
+
 async function dispatch(point, env, logs, opts) {
   if (point === 'morning') {
     const result = await runMorning(env);
     console.log('[auto-fetch] runMorning 完成 ok=' + result.ok + ' completenessSummary=' + (result.completenessSummary || ''));
     console.log('[auto-fetch] runMorning 完整日志:', JSON.stringify(result.logs || []));
+    // [RUNLOG 2026-09-30] 先落库再跑快照补漏：P0 时延证据要第一时间写下去
+    await persistRunResult(env, point, result);
     // [SNAPSHOT-EXTRAS 2026-09-14] 9:25 竞价刚结束 → 立刻补当天三个竞价字段（趋势图/龙徽章/一字红线依赖它们）
     await runSnapshotPatchSafely(env, result, 'morning');
     return result;
@@ -80,6 +110,7 @@ async function dispatch(point, env, logs, opts) {
     console.log('[auto-fetch] runClose 完成 ok=' + result.ok + ' today=' + (result.today || '') +
       ' completenessSummary=' + (result.completenessSummary || ''));
     console.log('[auto-fetch] runClose 完整日志:', JSON.stringify(result.logs || []));
+    await persistRunResult(env, point, result);
     // [SNAPSHOT-EXTRAS 2026-09-14] 收盘后再兜一次（防止 9:25 那次快照未终态 / 漏掉新进名单的票）
     await runSnapshotPatchSafely(env, result, 'close');
     return result;
@@ -90,6 +121,7 @@ async function dispatch(point, env, logs, opts) {
     console.log('[auto-fetch] runTodaySnapshotPatch 完成 ok=' + result.ok + ' patched=' + result.patched +
       ' today=' + (result.today || ''));
     console.log('[auto-fetch] runTodaySnapshotPatch 完整日志:', JSON.stringify(result.logs || []));
+    await persistRunResult(env, point, result);
     return result;
   }
   if (point === 'extras') {
@@ -99,6 +131,7 @@ async function dispatch(point, env, logs, opts) {
     console.log('[auto-fetch] runAuctionExtrasPatch 完成 ok=' + result.ok + ' patched=' + (result.patched || 0) +
       ' dates=' + JSON.stringify(result.dates || []));
     console.log('[auto-fetch] runAuctionExtrasPatch 完整日志:', JSON.stringify(result.logs || []));
+    await persistRunResult(env, point, result);
     return result;
   }
   console.error('[auto-fetch] 未知触发点:', point);
@@ -113,7 +146,17 @@ export default {
       return;
     }
     // 【FIX 2026-08-04】不管成功/失败，都把完整 logs 数组 console.log 出来
-    ctx.waitUntil(dispatch(point, env, []).catch(e => console.error('[auto-fetch] ' + point + ' error:', e.message)));
+    // [RUNLOG 2026-09-30] 失败也要落库：整轮抛错（如 P0-① 直接 return error）是最该留证据的情况，
+    //   以前只在 Cloudflare 控制台留一行 error，事后完全查不到。
+    ctx.waitUntil(dispatch(point, env, []).catch(async e => {
+      console.error('[auto-fetch] ' + point + ' error:', e.message);
+      await writeRunLog(env, {
+        time_point: point,
+        run_date: '',
+        ok: false,
+        detail: { error: (e && e.message) || String(e), stack: (e && e.stack) || '' }
+      });
+    }));
   },
 
   async fetch(request, env) {
@@ -145,6 +188,13 @@ export default {
         });
         return jsonResponse(result, result.ok ? 200 : 500);
       } catch (e) {
+        // [RUNLOG 2026-09-30] 手动触发失败同样落库
+        await writeRunLog(env, {
+          time_point: point,
+          run_date: url.searchParams.get('date') || '',
+          ok: false,
+          detail: { error: e.message, stack: e.stack, trigger: 'manual-fetch' }
+        });
         return jsonResponse({ ok: false, error: e.message, stack: e.stack }, 500);
       }
     }

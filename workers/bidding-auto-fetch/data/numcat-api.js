@@ -46,13 +46,22 @@ export function maskKey(k) {
 }
 
 /** 单次上游请求（单把 key）。额度类失败抛出的错误带 quotaExhausted 标记 */
+// [TIMEOUT 2026-09-30] 加硬超时：猫抓网络抖动时裸 fetch 会一直挂着，
+//   而本调用位于 9:25 P0 关键路径上（P0-②），挂一次就把落库顶穿 9:26。
+//   12s 对健康调用（实测 1~2s）绰绰有余；超时错误里带 timeout 关键字，
+//   会让 morning-workflow 的「今天数据缺失」重试逻辑正常接管。
+const NUMCAT_TIMEOUT_MS = 12000;
 async function postOnce(url, key, apiname, fields, params) {
   const body = { apiname: apiname, apikey: key, fields: fields, params: params };
-  const resp = await fetch(url, {
+  const opts = {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
-  });
+  };
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    opts.signal = AbortSignal.timeout(NUMCAT_TIMEOUT_MS);
+  }
+  const resp = await fetch(url, opts);
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     const e = new Error('numcat ' + apiname + ' HTTP ' + resp.status + ': ' + text.slice(0, 200));

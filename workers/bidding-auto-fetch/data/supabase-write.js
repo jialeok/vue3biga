@@ -10,10 +10,71 @@ export function sbHeaders(env) {
   };
 }
 
+/**
+ * [TIMEOUT 2026-09-30] 所有 Supabase REST 调用统一加硬超时。
+ *
+ * P0（今天的数据）落库链路上，读（stockcodemap / 名单 / 标签 / 龙头）与写
+ * （auction_watchlist / market_metrics）都在 9:25~9:26 这 60 秒里，任何一次调用挂起
+ * 都等于当天看板空白。健康时这些调用实测 100~500ms，15s 的上限是 30 倍余量，
+ * 正常情况永远不会触发；一旦触发，宁可当次失败（已有降级/重试路径），也不无限等。
+ */
+const SB_REST_TIMEOUT_MS = 15000;
+function sbFetch(url, opts, timeoutMs) {
+  const ms = timeoutMs > 0 ? timeoutMs : SB_REST_TIMEOUT_MS;
+  const base = opts || {};
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return fetch(url, Object.assign({}, base, { signal: AbortSignal.timeout(ms) }));
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(function () { ctrl.abort(); }, ms);
+  return fetch(url, Object.assign({}, base, { signal: ctrl.signal }))
+    .finally(function () { clearTimeout(timer); });
+}
+
+/**
+ * [RUNLOG 2026-09-30] 把一轮 worker 运行的完整日志（含 ⏱ 埋点 / elapsedMs / P0 是否达标）
+ * 写入 bidding_fetch_log，供事后复盘。
+ *
+ * 为什么必须落库：2026-09-30 早盘竞价看板 9:26 无数据、9:30 才出现，
+ *   而 `bidding_fetch_log` 里 **一条 CF worker 记录都没有**（只有 auction-yizi-* 的
+ *   Edge Function 记录）—— 因为 runMorning 的埋点此前只 `console.log` 到 Cloudflare
+ *   Dashboard 日志，沙箱侧看不到。最后只能靠 auction_watchlist / market_metrics 的
+ *   created_at 反推「P0-① 花了 284 秒」，代价是几轮排查。
+ *   落库后，下次直接 `select detail->'logs' ... where job='bidding-auto-fetch'` 即可。
+ *
+ * ⚠️ 永不抛错：日志写入失败绝不能影响主流程（更不允许它拖慢 9:25 落库）。
+ * @param {object} env
+ * @param {{time_point:string, run_date?:string, ok?:boolean, detail:object}} entry
+ */
+export async function writeRunLog(env, entry) {
+  const e = entry || {};
+  const row = {
+    job: 'bidding-auto-fetch',
+    run_date: e.run_date || '',
+    time_point: e.time_point || '',
+    source: 'cf-worker',
+    ok: e.ok === true,
+    detail: e.detail || {}
+  };
+  try {
+    const resp = await sbFetch(CONFIG.SUPABASE_URL + '/rest/v1/bidding_fetch_log', {
+      method: 'POST',
+      headers: Object.assign(sbHeaders(env), { 'Prefer': 'return=minimal' }),
+      body: JSON.stringify(row)
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      console.error('写 bidding_fetch_log 失败（已忽略）: HTTP ' + resp.status + ': ' + text.slice(0, 200));
+    }
+  } catch (err) {
+    console.error('写 bidding_fetch_log 失败（已忽略）:', err && err.message);
+  }
+}
+
 export async function upsertAuctionWatchlist(env, rows) {
   if (!rows || rows.length === 0) return;
   const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?on_conflict=date,stock';
-  const resp = await fetch(url, {
+  const resp = await sbFetch(url, {
     method: 'POST',
     headers: Object.assign(sbHeaders(env), { 'Prefer': 'resolution=merge-duplicates, return=minimal' }),
     body: JSON.stringify(rows)
@@ -28,7 +89,7 @@ export async function upsertMarketMetrics(env, rows) {
   if (!rows || rows.length === 0) return;
   const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?on_conflict=date,stock,scope';
   // 【FIX 2026-08-03】加 missing=default：批次里某一行没带某个字段时保留云端原值
-  const resp = await fetch(url, {
+  const resp = await sbFetch(url, {
     method: 'POST',
     headers: Object.assign(sbHeaders(env), { 'Prefer': 'resolution=merge-duplicates, missing=default, return=minimal' }),
     body: JSON.stringify(rows)
@@ -51,7 +112,7 @@ export async function updateStockCodeMap(env, pairs) {
 export async function upsertStockRangePct(env, rows) {
   if (!rows || rows.length === 0) return;
   const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range_pct?on_conflict=date,stock';
-  const resp = await fetch(url, {
+  const resp = await sbFetch(url, {
     method: 'POST',
     headers: Object.assign(sbHeaders(env), { 'Prefer': 'resolution=merge-duplicates, return=minimal' }),
     body: JSON.stringify(rows)
@@ -74,7 +135,7 @@ export async function readMarketMetricsForDate(env, date, scope) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?date=eq.' + encodeURIComponent(date) +
     '&scope=eq.' + encodeURIComponent(sc) +
     '&select=stock,code,change_pct,auc_pct_chg,updated_at&limit=2000';
-  const resp = await fetch(url, { headers: sbHeaders(env) });
+  const resp = await sbFetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     throw new Error('读取 market_metrics 失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
@@ -101,7 +162,7 @@ export async function readMarketMetricsExtrasForDate(env, date) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?date=eq.' + encodeURIComponent(date) +
     '&scope=eq.auction' +
     '&select=stock,code,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover,auc_pct_chg&limit=2000';
-  const resp = await fetch(url, { headers: sbHeaders(env) });
+  const resp = await sbFetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     throw new Error('读取 market_metrics 四要素失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
@@ -129,7 +190,7 @@ export async function readMarketMetricsSnapshotFieldsForDate(env, date) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?date=eq.' + encodeURIComponent(date) +
     '&scope=eq.auction' +
     '&select=stock,code,auc_pct_chg,auc_vol_ratio,auc_turnover,volume&limit=2000';
-  const resp = await fetch(url, { headers: sbHeaders(env) });
+  const resp = await sbFetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     throw new Error('读取 market_metrics 快照字段失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
@@ -153,7 +214,7 @@ export async function readMarketMetricsSnapshotFieldsForDate(env, date) {
 export async function readStockRangePctForDate(env, date) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range_pct?date=eq.' + encodeURIComponent(date) +
     '&select=stock,range_pct,days,updated_at&limit=2000';
-  const resp = await fetch(url, { headers: sbHeaders(env) });
+  const resp = await sbFetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     throw new Error('读取 stock_range_pct 失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
@@ -173,7 +234,7 @@ export async function readStockRangePctForDate(env, date) {
 //   若把它当成「名单已存在」，worker 重跑就会一行都不写（2026-09-15 P0 修复现场实测）。
 export async function readAuctionWatchlistForDate(env, date) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?date=eq.' + date + '&select=stock,code,obs_auto_added';
-  const resp = await fetch(url, { headers: sbHeaders(env) });
+  const resp = await sbFetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) return [];
   const data = await resp.json();
   // 【FIX 2026-08-15】不再过滤 code 为空的行：观察组/打标签股票在前一日 watchlist 里可能没有 code
@@ -197,7 +258,7 @@ export async function readAuctionWatchlistForDate(env, date) {
 export async function readAuctionTagsForDate(env, date) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_board_tags?date=eq.' + date +
     '&select=stock,tag&limit=1000';
-  const resp = await fetch(url, { headers: sbHeaders(env) });
+  const resp = await sbFetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) return [];
   const data = await resp.json();
   const out = [];
@@ -226,7 +287,7 @@ export async function readDragonLeadersForDate(env, date) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/dragon_leaders?date=eq.' + encodeURIComponent(date) +
     '&select=stock,code,topic&limit=500';
   try {
-    const resp = await fetch(url, { headers: sbHeaders(env) });
+    const resp = await sbFetch(url, { headers: sbHeaders(env) });
     if (!resp.ok) return [];
     const data = await resp.json();
     const out = [];
@@ -256,7 +317,7 @@ export async function readStockCodeMapByNames(env, names) {
   const inList = uniq.map(n => '%22' + encodeURIComponent(n) + '%22').join(',');
   const url = CONFIG.SUPABASE_URL + '/rest/v1/stockcodemap?select=stock,code&stock=in.(' + inList + ')';
   try {
-    const resp = await fetch(url, { headers: sbHeaders(env) });
+    const resp = await sbFetch(url, { headers: sbHeaders(env) });
     if (!resp.ok) return {};
     const data = await resp.json();
     const map = {};
@@ -276,7 +337,7 @@ export async function readStockCodeMapByNames(env, names) {
 // ⚠️ 受 Supabase 单次 1000 行上限截断；缺漏由 readStockCodeMapByNames 按名补齐。
 export async function readStockCodeMap(env) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/stockcodemap?select=stock,code';
-  const resp = await fetch(url, { headers: sbHeaders(env) });
+  const resp = await sbFetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) return {};
   const data = await resp.json();
   const map = {};

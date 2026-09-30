@@ -1,12 +1,12 @@
 // ===== bidding-board-worker-b — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-09-29 14:14:01
+// 生成时间: 2026-09-30 03:09:28
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 1023（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 1040（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── bidding-board-worker-b/config.js ──────
@@ -170,6 +170,21 @@ function localIsTradingDay(dateStr) {
 /** 用户覆盖表（与 db/create_trading_day_overrides.sql 同名） */
 const TRADING_DAY_OVERRIDES_TABLE = 'trading_day_overrides';
 
+/**
+ * [TIMEOUT 2026-09-30] 带超时的 fetch（本模块专用，避免与 fuyao-api.js 的同名 helper 顶层冲突）。
+ * 见 fetchTradingDayOverrides 处的说明：本层在最前面被 await，绝不允许无限挂起。
+ */
+function fetchWithTimeoutMs(url, opts, timeoutMs) {
+  const base = opts || {};
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return fetch(url, Object.assign({}, base, { signal: AbortSignal.timeout(timeoutMs) }));
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
+  return fetch(url, Object.assign({}, base, { signal: ctrl.signal }))
+    .finally(function () { clearTimeout(timer); });
+}
+
 /** 覆盖表内存缓存有效期：一轮 worker 执行只读一次，跨请求也不会长期不刷新 */
 const OVERRIDE_CACHE_TTL_MS = 60 * 1000;
 let _overrideCache = null;
@@ -193,9 +208,11 @@ async function fetchTradingDayOverrides(baseUrl, key) {
   const now = Date.now();
   if (_overrideCache && (now - _overrideCacheAt) < OVERRIDE_CACHE_TTL_MS) return _overrideCache;
   const url = baseUrl + '/rest/v1/' + TRADING_DAY_OVERRIDES_TABLE + '?select=date,is_holiday';
-  const resp = await fetch(url, {
+  // [TIMEOUT 2026-09-30] 本模块在 9:25 早盘 P0 的【最前面】被 await（checkTradingDay），
+  //   没有超时的话一次挂起就会把整轮早盘推到 9:26 之后（§35 P1）。健康时实测 <300ms。
+  const resp = await fetchWithTimeoutMs(url, {
     headers: { 'apikey': key, 'Authorization': 'Bearer ' + key }
-  });
+  }, 8000);
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     throw new Error('读取 ' + TRADING_DAY_OVERRIDES_TABLE + ' 失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));

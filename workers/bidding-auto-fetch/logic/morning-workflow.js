@@ -49,21 +49,68 @@ const RANGE_DAYS = RANGE_WINDOW_DAYS;
  *  不晚于 09:25:30 发出，给写入留出时间。 */
 const TODAY_RETRY_DELAYS_SEC = [5, 8, 12];
 
+// ============================================================================
+// [LATENCY 2026-09-30] P0 硬截止 —— 「等到什么时候就必须收手」
+// ----------------------------------------------------------------------------
+// 事故：2026-09-30 早盘竞价看板 9:26 打开时当天数据全空，9:30 才出现。
+// 取证（Supabase 落库时间戳，北京时间）：
+//     · auction_watchlist 当日 39 行 created_at = 09:29:44.090（== 本轮 nowIso，即 P0-① 结束）
+//     · market_metrics  当日 60 行 created_at = 09:29:46.022（== P0-③ 落库）
+//   ⇒ cron 09:25:00 → P0-① 结束共 **284 秒**；而 P0-②③/P1/P2 的全部写库只用了 **2.08 秒**。
+//   慢的不是计算，是 P0-① 里的上游请求挂起（两个 fuyao 调用原本没有超时，见 fuyao-api.js）。
+//
+// 同类顶穿并非孤例（market_metrics 当天首行落库时刻）：
+//   9/10 09:26:18 ｜ 9/11 09:29:56 ｜ 9/17 09:26:08 ｜ 9/28 09:30:24 ｜ 9/30 09:29:46
+//
+// 结构性根因：整条链路**没有截止时间** —— 任何一步（含重试退避）都可以无限往后推。
+// 因此这里给 P0（今天的数据）一个绝对上限：到点就用手上已有的数据落库，
+// 宁可少等一轮重试，也不许看板空白到 9:30。
+//
+// 预算（09:25:00 触发）：checkTradingDay + P0-① 约 ≤21s，P0-② 受此截止约束，P0-③ ≤2s
+//   ⇒ 最坏 09:25:45 前落库，给 9:26 留足余量。
+// ============================================================================
+const P0_DEADLINE_BJ_SEC = 9 * 3600 + 25 * 60 + 45;   // 09:25:45
+const P0_DEADLINE_LABEL = '09:25:45';
+/** 当前北京时间的「当日秒数」（0~86399）。beijingNow() 已做 +8h 位移，故取 UTC 分量 */
+function bjSecondsOfDay() {
+  const d = beijingNow();
+  return d.getUTCHours() * 3600 + d.getUTCMinutes() * 60 + d.getUTCSeconds();
+}
+/** 距离 P0 截止还剩多少毫秒（负数 = 已超时） */
+function p0DeadlineLeftMs() {
+  return (P0_DEADLINE_BJ_SEC - bjSecondsOfDay()) * 1000;
+}
+/** 北京时钟 HH:MM:SS，仅用于把埋点写得可读（落库日志里不必再自己换算 UTC） */
+function bjClock() {
+  const d = beijingNow();
+  return String(d.getUTCHours()).padStart(2, '0') + ':' +
+    String(d.getUTCMinutes()).padStart(2, '0') + ':' +
+    String(d.getUTCSeconds()).padStart(2, '0');
+}
+
 // ---------------------------------------------------------------------------
 // 单次 runMorning 内的轻量 memo：消除「同一份数据被串行请求 3~4 次」
 // ---------------------------------------------------------------------------
 function createRunCache() {
-  return { _tdAll: null, _tdPending: null };
+  return { _tdAll: null, _tdPending: null, _fuyaoDates: null };
 }
 
 /** 取截止 today（含）最近 n 个交易日。整轮只发一次交易日历请求（失败抛错时返回 []） */
 async function recentTradingDays(cache, env, today, n) {
   if (!cache._tdPending) {
-    cache._tdPending = getRecentTradingDays(env, today, RANGE_DAYS)
-      .catch(function (e) {
-        console.warn('[MORNING] getRecentTradingDays 失败:', e && e.message);
-        return [];
-      });
+    cache._tdPending = (async function () {
+      // [LATENCY 2026-09-30] checkTradingDay 已经取过一次 fuyao 日历 → 直接复用，
+      //   不再重复请求（§32 禁止无意义请求；也把 P0-① 的最坏耗时砍掉一轮 5s）。
+      //   ⚠️ 只在「确实拿到过日历」时复用；拿不到仍然回退 getRecentTradingDays 的本地推算。
+      if (cache._fuyaoDates && cache._fuyaoDates.length > 0) {
+        const upToToday = cache._fuyaoDates.filter(function (d) { return d <= today; });
+        if (upToToday.length > 0) return upToToday;
+      }
+      return await getRecentTradingDays(env, today, RANGE_DAYS);
+    })().catch(function (e) {
+      console.warn('[MORNING] getRecentTradingDays 失败:', e && e.message);
+      return [];
+    });
   }
   const all = await cache._tdPending;
   if (!all || all.length === 0) return [];
@@ -119,10 +166,13 @@ function todayAuctionExtras(rows, flds, today) {
 //     ③ 硬编码表多了 10/08 → 开市日被判「非交易日」→ 早盘 + 收盘两轮【整轮 skip】，
 //        当天四个趋势图与十日涨幅全空。
 //   现在改为三源合并（用户覆盖表 > 周末 > fuyao 日历 > 硬编码表），语义见 trading-day.js 文件头。
-async function checkTradingDay(env, today, logs) {
+// [LATENCY 2026-09-30] 多接一个 cache 参数：把这里取到的 fuyao 日历顺手存进本轮 memo，
+//   P0-① 的 recentTradingDays 直接复用，省掉一次上游请求（也少一次可能挂起的机会）。
+async function checkTradingDay(env, today, cache, logs) {
   let fuyaoDates = null;
   try {
     fuyaoDates = await fuyaoCalendarTradingDays(env);
+    if (cache && fuyaoDates && fuyaoDates.length > 0) cache._fuyaoDates = fuyaoDates;
   } catch (e) {
     // §10：拿不到日历 ≠ 今天不是交易日 —— 该层弃权，继续用「用户设置 / 硬编码表」判。
     logs.push('⚠️ fuyao 交易日历不可用（该层弃权，改用用户设置 / 硬编码表判定）: ' + (e && e.message));
@@ -415,9 +465,20 @@ async function fetchNumcatWithRetry(env, constituents, today, cache, logs) {
     //      反而把 P0 落库顶穿 9:26。四要素改由 P3 补漏任务负责（runAuctionExtrasPatch）。
     if (missingDates.includes(today)) {
       for (let attempt = 0; attempt < TODAY_RETRY_DELAYS_SEC.length && missingDates.includes(today); attempt++) {
+        // [LATENCY 2026-09-30] P0 硬截止：到点就用手上已有的数据落库，绝不再等。
+        //   下面是 9/30 事故的正面修复 —— 原来的循环只按「次数」限制，没有时间上限。
+        const leftMs = p0DeadlineLeftMs();
+        if (leftMs < 1500) {
+          logs.push('🛑 已到 P0 截止 ' + P0_DEADLINE_LABEL + '（剩余 ' + Math.round(leftMs) +
+            'ms）→ 停止等待今天数据，立即用现有数据落库（不再重试，避免顶穿 9:26）');
+          break;
+        }
         const waitSec = TODAY_RETRY_DELAYS_SEC[attempt];
-        logs.push('⏳ 今天(' + today + ')数据缺失，' + waitSec + '秒后重试第' + (attempt + 1) + '次...');
-        await new Promise(r => setTimeout(r, waitSec * 1000));
+        // 退避也不能越过截止时间：宁可缩短等待，也不许把落库推到 9:26 之后
+        const waitMs = Math.max(0, Math.min(waitSec * 1000, leftMs - 1500));
+        logs.push('⏳ 今天(' + today + ')数据缺失，' + Math.round(waitMs / 1000) + '秒后重试第' + (attempt + 1) +
+          '次...（P0 剩余 ' + Math.round(leftMs / 1000) + 's）');
+        await new Promise(r => setTimeout(r, waitMs));
         try {
           const retryData = await numcatDailyAuc(env, symbols, startYMD, endYMD, logs);
           const retryItems = retryData.items || [];
@@ -863,10 +924,13 @@ function buildCompletenessSummary(today, missingDatesAfterNumcat, phantomDates, 
 export async function runMorning(env) {
   const logs = [];
   const _t0 = Date.now();
-  const mark = (label) => { logs.push('⏱ ' + label + ' +' + (Date.now() - _t0) + 'ms'); };
+  // [LATENCY 2026-09-30] 埋点带上北京时钟：这一步是给「落库日志」看的（见 index.js），
+  //   以后排查「9:26 为什么没数据」不用再从 created_at 反推 UTC 偏移。
+  const mark = (label) => { logs.push('⏱ ' + label + ' +' + (Date.now() - _t0) + 'ms @' + bjClock()); };
   const today = beijingToday();
   const cache = createRunCache();
-  logs.push('today=' + today);
+  logs.push('today=' + today + ' 启动@' + bjClock() + '（P0 硬截止 ' + P0_DEADLINE_LABEL + '，剩余 ' +
+    Math.round(p0DeadlineLeftMs() / 1000) + 's）');
 
   // [KEY-FALLBACK 2026-09-28] 回显 key 候选链：主账号 → 小号。
   //   小号 Secret 没配 = 兜底静默失效，必须在日志里一眼看见（§10 禁止静默失败）。
@@ -876,7 +940,7 @@ export async function runMorning(env) {
       (_keys.length > 1 ? '｜主账号额度用尽会自动退回小号' : '｜⚠️ 只配了 1 把 key：主账号用尽则无兜底')
     : '（无！请设置 Secret NUMCAT_API_KEY）'));
 
-  const skipResult = await checkTradingDay(env, today, logs);
+  const skipResult = await checkTradingDay(env, today, cache, logs);
   if (skipResult) return skipResult;
 
   // ---- P0-① 名单（并行取数，写完即可让前端看到当天的票）----
@@ -962,6 +1026,13 @@ export async function runMorning(env) {
   }
 
   logs.push('完成: auction_watchlist ' + watchlistRows.length + ' 行, market_metrics ' + totalMetricsWritten + ' 行, stock_range_pct ' + rangeWritten + ' 行');
+  mark('全流程结束');
+  // [LATENCY 2026-09-30] 把「是否顶穿 9:26」直接算成布尔值放进结果，
+  //   由 index.js 落库到 bidding_fetch_log，排查时一眼可判（不用再换算 UTC）。
+  const p0Overrun = todayWrite.totalMetricsWritten > 0 && bjSecondsOfDay() > P0_DEADLINE_BJ_SEC;
+  logs.push(p0Overrun
+    ? '🔴 P0 落库时刻 ' + bjClock() + ' 已晚于硬截止 ' + P0_DEADLINE_LABEL + '（9:26 硬指标未达成）'
+    : '🟢 P0 落库时刻 ' + bjClock() + '（硬截止 ' + P0_DEADLINE_LABEL + '，达标）');
   return {
     ok: metricsWriteFailures === 0 || totalMetricsWritten > 0,
     today,
@@ -971,6 +1042,8 @@ export async function runMorning(env) {
     metricsWritten: totalMetricsWritten,
     todayMetricsWritten: todayWrite.totalMetricsWritten,
     elapsedMs: Date.now() - _t0,
+    p0Overrun: p0Overrun,
+    finishedAtBj: bjClock(),
     rangeWritten: rangeWritten,
     rangeWriteFailed: rangeWriteFailed,
     yestVolDerived: yestVolDerivedCount,
