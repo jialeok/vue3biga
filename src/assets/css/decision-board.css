@@ -482,3 +482,64 @@
             user-select: text;
             -webkit-touch-callout: default;
         }
+
+        /* ---- [PREV-BOUGHT 2026-09-30 用户口径] 「昨天已买」题材标记 ----
+           位置：紧跟在「竞价一字：n」右边（DecisionTopicHead 内）。
+           配色用琥珀色 —— 与「红 = 竞价一字（强弱信号）」「蓝 = 规则编号」都区分开：
+           它表达的是【延续】（这个题材昨天已经买过），不是强弱。 */
+        .dcb-prev-bought {
+            flex-shrink: 0;
+            padding: 0 5px;
+            font-size: 10px;
+            line-height: 15px;
+            color: #92400e;
+            background: #fef3c7;
+            border: 1px solid #fde68a;
+            border-radius: 4px;
+            white-space: nowrap;
+        }
+
+        /* ---- [COMPACT 2026-09-30 用户口径] 「简洁」开关 ----
+           置于【内容区顶部】（与早盘竞价的筛选控件同一位置口径，⛔ 不放 header）。
+           纯 UI 态：不落 localStorage（§8）、不进全局 store（§34）。 */
+        .dcb-compact-bar {
+            display: flex;
+            justify-content: flex-end;
+            margin: 0 0 6px;
+        }
+
+        .dcb-compact-toggle {
+            padding: 2px 10px;
+            font-size: 11px;
+            line-height: 16px;
+            color: #475569;
+            background: #f1f5f9;
+            border: 1px solid #cbd5e1;
+            border-radius: 10px;
+            cursor: pointer;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .dcb-compact-toggle.on {
+            color: #ffffff;
+            background: #1d4ed8;
+            border-color: #1d4ed8;
+        }
+
+        /* ---- [COMPACT 2026-09-30] 简洁模式：只留【题材行 + 股票行 + 行内标签】----
+           隐藏的全部是【解释性文字】；明确保留的：
+             · .dcb-block-head（题材行）/ .dcb-row（股票行）及其行内标签
+               —— 龙几 / 十日涨幅 / 竞价涨幅徽标 / 重仓轻仓 / 持有加仓 / 几点卖 / 昨天已买
+             · .dcb-note-empty ——「这一块为什么没有股票」的说明。
+               若一并隐藏，就会剩下一行光秃秃的题材名，反而让人以为「没算出来」（§10 缺失必须可见），
+               所以用白名单排除，其余 .dcb-block-note 全部隐藏。
+             · .decision-error / .decision-empty —— §10 红线，本来就不在隐藏列表里。
+           ⛔ 用 CSS 隐藏而不是模板 v-if：模板分支越少越稳，本看板 DOM 量本来也很小。 */
+        .decision-board.dcb-compact .dcb-reason-line,
+        .decision-board.dcb-compact .dcb-noyizi-hint,
+        .decision-board.dcb-compact .dcb-sell-hint,
+        .decision-board.dcb-compact .dcb-rules,
+        .decision-board.dcb-compact .dcb-block-note:not(.dcb-note-empty) {
+            display: none;
+        }

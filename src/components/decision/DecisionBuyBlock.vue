@@ -18,6 +18,7 @@
       :rank="block.block.rank"
       :count="block.block.count"
       :yizi="block.block.yiziCount"
+      :prev-bought="block.block.prevBoughtTopic"
     />
     <!-- 第二行：选择理由（理由里已含「根据规则N」；规则编号由 Logic 层给出，⛔ 模板零计算 §21） -->
     <!-- [COPY 2026-09-29] dcb-selectable：选票说明文字允许长按选中复制（见 decision-board.css） -->
@@ -67,16 +68,19 @@
     >
       {{ n }}
     </div>
-    <!-- 未达门槛：如实说明（§10 不拿不够格的数据冒充有效信号） -->
+    <!-- 未达门槛：如实说明（§10 不拿不够格的数据冒充有效信号）
+         [COMPACT 2026-09-30] dcb-note-empty = 【简洁】模式下仍保留：
+         这类文字说明的是「这一块为什么没有股票」，全部隐藏会剩下一行光秃秃的题材名，
+         反而让人以为「没算出来」（§10）。其余说明性文字在简洁模式下隐藏。 -->
     <div
       v-if="!block.qualified"
-      class="dcb-block-note unqualified dcb-selectable"
+      class="dcb-block-note unqualified dcb-note-empty dcb-selectable"
     >
       {{ block.notQualifiedText }}
     </div>
     <div
       v-else-if="block.picks.length === 0"
-      class="dcb-block-note dcb-selectable"
+      class="dcb-block-note dcb-note-empty dcb-selectable"
     >
       该题材没有可买的非一字股票
     </div>

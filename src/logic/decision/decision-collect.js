@@ -302,6 +302,32 @@ export function collectDecisionData(date, opts) {
   const todayBuyNames = _buyPlanNames(buy);
   const sell = buildSellPlan(sellRows, topics, dragonMap, prevDragonNames, todayBuyNames);
 
+  // [PREV-BOUGHT 2026-09-30 用户口径] 「昨天已买」题材标注
+  //   定义 = 【卖点分组覆盖到的题材】。卖点的数据来源就是「昨日手动打了『买』标签的股票」
+  //   （见上方 _prevBoughtNames / sellRows）—— ⛔ 不另起一套数据源（§6 单一真相）。
+  //   在这里一次性把布尔字段写进【买点块 / 卖点组】对象，UI 直接读，模板零计算（§21）。
+  //   ⚠️ 昨日标签库未加载 ⇒ sell 为空 ⇒ 全部 false，UI 就不显示该标签
+  //      （§10：读不到 ≠ 昨天没买，宁可少标也不猜）。
+  const prevBoughtTopicSet = new Set();
+  sell.forEach(function(g) {
+    const t = String(g.topic || '').trim();
+    if (t) prevBoughtTopicSet.add(t);
+  });
+  const _markPrevBought = function(blk) {
+    if (!blk || !blk.block) return;
+    blk.block.prevBoughtTopic = prevBoughtTopicSet.has(String(blk.block.topic || '').trim());
+  };
+  // buy 的五个档位：heavy / light 是块本身，noYizi / smallTopic / bigTopic 是 { blocks: [...] }
+  ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopic'].forEach(function(k) {
+    const b = buy[k];
+    if (!b) return;
+    _markPrevBought(b);
+    (b.blocks || []).forEach(function(bb) { _markPrevBought(bb); });
+  });
+  sell.forEach(function(g) {
+    g.prevBoughtTopic = prevBoughtTopicSet.has(String(g.topic || '').trim());
+  });
+
   const sellTimes = [];
   sell.forEach(function(g) {
     g.items.forEach(function(it) {

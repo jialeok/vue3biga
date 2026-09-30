@@ -22,7 +22,7 @@
 <template>
   <div
     class="decision-board trading-day-element"
-    :class="{ minimized: !expanded }"
+    :class="{ minimized: !expanded, 'dcb-compact': compactOpen }"
   >
     <div
       class="decision-header"
@@ -43,6 +43,18 @@
       v-show="expanded"
       class="decision-body"
     >
+      <!-- [COMPACT 2026-09-30 用户口径] 「简洁」开关：置于【内容区顶部】
+           （与早盘竞价的筛选控件同一位置口径，不放进 header）。
+           打开后只留【题材行 + 股票行 + 行内标签】，隐藏解释性文字 ——
+           隐藏规则全部在 decision-board.css 的 .dcb-compact 里，模板不加 v-if 分支。
+           纯 UI 态（§34）：不落 localStorage（§8）、不进全局 store。 -->
+      <div class="dcb-compact-bar">
+        <span
+          class="dcb-compact-toggle"
+          :class="{ on: compactOpen }"
+          @click="toggleCompact"
+        >简洁</span>
+      </div>
       <!-- §10：未就绪 / 失败必须可见，绝不显示成「今天没有信号」的空看板 -->
       <!-- [COPY 2026-09-29] 未就绪 / 失败说明同样允许长按选中复制（方便整段发给 AI 排查） -->
       <div
@@ -83,7 +95,7 @@
             </div>
             <div
               v-if="!buySpecial.qualified"
-              class="dcb-block-note unqualified"
+              class="dcb-block-note unqualified dcb-note-empty"
             >
               {{ buySpecial.emptyText }}
             </div>
@@ -150,6 +162,7 @@ const board = useDecisionBoard();
 const {
   expanded,
   rulesOpen,
+  compactOpen,
   errorText,
   ready,
   reasonText,
@@ -159,6 +172,7 @@ const {
   sellGroups,
   summaryText,
   toggleExpand,
+  toggleCompact,
   setRulesOpen
 } = board;
 

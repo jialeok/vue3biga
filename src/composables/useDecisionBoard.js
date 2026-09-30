@@ -35,6 +35,12 @@ export function useDecisionBoard() {
   //   内容区是 v-show ⇒ 收起不影响决策数据的计算与加载；⛔ 不要改回 true。
   const expanded = ref(false);
   const rulesOpen = ref(false);
+  // [COMPACT 2026-09-30 用户口径] 「简洁」开关：打开后只留【题材行 + 股票行 + 行内标签】，
+  //   隐藏「选择理由 / 卖出理由 / 辅助说明 / 卖出节奏提示 / 规则问号」这些解释性文字。
+  //   §34：纯展示态 —— 不进 store、不落 localStorage（§8），与 expanded 同一口径；
+  //   §26：不随日期切换重置（这是显示偏好，不是「新一天的结论」）。
+  //   实际隐藏由 decision-board.css 的 .dcb-compact 规则完成，模板不加 v-if 分支（改动面最小）。
+  const compactOpen = ref(false);
 
   // 手动版本号：auction 数据刷新（getTodayGroupList 读的是非响应式内存缓存）后 bump，
   // 让下面的 computed 重跑一次。龙一/龙二（dragonState 是 ref）与标签（Pinia）本身是响应式的，
@@ -105,6 +111,8 @@ export function useDecisionBoard() {
     rulesOpen.value = false;
   }
   function toggleRules() { rulesOpen.value = !rulesOpen.value; }
+  /** [COMPACT 2026-09-30] 「简洁」开关：只切纯展示态，不碰任何业务数据（§34） */
+  function toggleCompact() { compactOpen.value = !compactOpen.value; }
   /** 供规则面板自己上报开合（子组件无内部状态，开合真相在 composable 里，§6） */
   function setRulesOpen(v) { rulesOpen.value = !!v; }
 
@@ -124,6 +132,7 @@ export function useDecisionBoard() {
   return {
     expanded,
     rulesOpen,
+    compactOpen,
     errorText,
     data,
     ready,
@@ -140,6 +149,7 @@ export function useDecisionBoard() {
     summaryText,
     toggleExpand,
     toggleRules,
+    toggleCompact,
     setRulesOpen,
     refresh
   };

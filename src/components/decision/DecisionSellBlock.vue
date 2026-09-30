@@ -30,6 +30,7 @@
       :rank="group.topicRank"
       :count="group.count"
       :yizi="group.yiziCount"
+      :prev-bought="group.prevBoughtTopic"
     />
     <!-- [COPY 2026-09-29] dcb-selectable：卖出说明文字允许长按选中复制 -->
     <div class="dcb-reason-line dcb-selectable">
