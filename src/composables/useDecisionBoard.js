@@ -40,7 +40,10 @@ export function useDecisionBoard() {
   //   §34：纯展示态 —— 不进 store、不落 localStorage（§8），与 expanded 同一口径；
   //   §26：不随日期切换重置（这是显示偏好，不是「新一天的结论」）。
   //   实际隐藏由 decision-board.css 的 .dcb-compact 规则完成，模板不加 v-if 分支（改动面最小）。
-  const compactOpen = ref(false);
+  // [COMPACT-DEFAULT 2026-09-30 用户口径] 默认 = 【打开】（用户原话：默认开简洁 toggle，
+  //   这样早盘就能快速浏览并买入或卖出）。⛔ 不要改回 false：
+  //   解释性文字在小屏幕上要滑很久，早盘根本来不及看；要细节就点一下「简洁」关掉。
+  const compactOpen = ref(true);
 
   // 手动版本号：auction 数据刷新（getTodayGroupList 读的是非响应式内存缓存）后 bump，
   // 让下面的 computed 重跑一次。龙一/龙二（dragonState 是 ref）与标签（Pinia）本身是响应式的，

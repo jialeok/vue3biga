@@ -40,6 +40,7 @@ import {
   POSITION_HEAVY,
   POSITION_LIGHT,
   HOLD_TAG,
+  PREV_BOUGHT_TAG,
   BUY_COUNT_MAX_SMALL,
   BUY_COUNT_MAX_MID,
   RULE_NO,
@@ -1857,6 +1858,104 @@ describe('持有 / 加仓标记（HOLD）', () => {
     const plan2 = buildSellPlan(rows, blocks, dragon, new Set(), new Set());
     expect(plan2[0].items[0].holdTag).toBe('');
     expect(plan2[0].items[0].sellAt).toBe(SELL_TIME_CLOSE);
+  });
+});
+
+// === [2026-09-30] ⑫ 昨天已买：股票级标记（只标在【买点】的股票行上；卖点侧一律不标）===
+describe('昨天已买标记（PREV-BOUGHT，股票级）', () => {
+  /** 把一个买点计划里所有档位的 picks 摊平（含兜底方案的 blocks） */
+  function allPicks(plan) {
+    const out = [];
+    ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopic'].forEach((k) => {
+      const b = plan[k];
+      if (!b) return;
+      (b.picks || []).forEach((p) => out.push(p));
+      (b.blocks || []).forEach((bb) => (bb.picks || []).forEach((p) => out.push(p)));
+    });
+    return out;
+  }
+
+  // ⚠️ 样本刻意让【同一题材 T】里既有「昨天买过」的、也有「昨天没买过」的 —— 这就是
+  //    2026-09-30 用户反馈的真实事故形态：9/29 的 buy 标签只有【世联行、新华文轩】，
+  //    地产链里的大亚圣象没买过，却被【整块】标上了「昨天已买」（因为当时按题材判）。
+  const rows = () => [
+    E('昨天买过的', 'T', 90, false, true, 5),   // 十日涨幅最高 → 龙一，必入选
+    E('昨天没买的', 'T', 85, false, true, 4),   // 龙二，同样入选
+    E('T一字A', 'T', 80, true),
+    E('T一字B', 'T', 70, true),
+    E('X一', 'X', 20), E('X二', 'X', 10)
+  ].concat(FILLER('T', 6));                     // 撑过 10 只，避开只数限制
+
+  const planOf = (prevBoughtNames) => {
+    const blocks = rankDecisionTopics(rows());
+    return buildBuyPlan(blocks, rankDragons(blocks), { prevBoughtNames: prevBoughtNames });
+  };
+
+  it('🔴 回归：同题材里【只有昨天真的买过的那只】被标，没买过的不会被带标', () => {
+    const plan = planOf(new Set(['昨天买过的']));
+    const picks = allPicks(plan);
+    // 打标集合必须恰好 = {昨天买过的}
+    expect(picks.filter((p) => p.prevBoughtTag === PREV_BOUGHT_TAG).map((p) => p.name))
+      .toEqual(['昨天买过的']);
+    // 且「昨天没买的」确实也在买点里（否则这条回归测的是空气）
+    expect(picks.map((p) => p.name)).toContain('昨天没买的');
+    picks.filter((p) => p.name === '昨天没买的').forEach((p) => {
+      expect(p.prevBoughtTag).toBeUndefined();
+    });
+    // 🔴 反派回归：⛔ 不许再往【题材块】上写任何「昨天已买」字段 ——
+    //    上一版正是 block.prevBoughtTopic 让「题材里有一只买过」变成「整块都买过」。
+    expect(plan.heavy.block.prevBoughtTopic).toBeUndefined();
+  });
+
+  it('说明文字里如实写出是哪几只（可追溯到个股）', () => {
+    const plan = planOf(new Set(['昨天买过的']));
+    expect(plan.heavy.notes.join('｜')).toContain(PREV_BOUGHT_TAG);
+    expect(plan.heavy.notes.join('｜')).toContain('昨天买过的');
+    expect(plan.heavy.notes.join('｜')).not.toContain('昨天没买的');
+  });
+
+  it('昨天一只都没买（空集）→ 一个都不标', () => {
+    const plan = planOf(new Set());
+    expect(allPicks(plan).some((p) => p.prevBoughtTag)).toBe(false);
+    expect(plan.heavy.notes.join('｜')).not.toContain(PREV_BOUGHT_TAG);
+  });
+
+  it('§10：昨天的标签没读到（null）→ 一律不标（未知 ≠ 昨天没买）', () => {
+    const plan = planOf(null);
+    expect(allPicks(plan).some((p) => p.prevBoughtTag)).toBe(false);
+    expect(plan.heavy.notes.join('｜')).not.toContain(PREV_BOUGHT_TAG);
+  });
+
+  it('兜底方案（无一字 · 大题材）里的票同样按【股票级】标', () => {
+    const big = [];
+    for (let i = 1; i <= BIG_TOPIC_MIN_COUNT; i++) big.push(E('A' + i, 'A', 100 - i));
+    for (let i = 1; i <= BIG_TOPIC_MIN_COUNT; i++) big.push(E('B' + i, 'B', 90 - i));
+    const blocks = rankDecisionTopics(big);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks), {
+      ladderReady: true, ladderTopicGroups: [], prevBoughtNames: new Set(['A1'])
+    });
+    expect(plan.bigTopic).not.toBe(null);
+    const picks = allPicks(plan);
+    expect(picks.filter((p) => p.prevBoughtTag === PREV_BOUGHT_TAG).map((p) => p.name)).toEqual(['A1']);
+  });
+
+  it('卖点侧【不标】：卖点候选本来就是昨天买过的股票，标了没有信息量（用户口径）', () => {
+    const blocks = rankDecisionTopics([
+      E('S龙一', 'S', 30, true), E('S龙二', 'S', 20, true), E('S三', 'S', 10),
+      E('W一', 'W', 9), E('W二', 'W', 8)
+    ]);
+    const dragon = rankDragons(blocks);
+    const sellRows = [{ name: 'S三', topic: 'S', pct: 10, inTodayList: true }];
+    const plan = buildSellPlan(sellRows, blocks, dragon, new Set(), new Set());
+    // 题材级（上一版的错误做法）与股票级都不能出现
+    expect(plan[0].prevBoughtTopic).toBeUndefined();
+    expect(plan[0].items[0].prevBoughtTag).toBeUndefined();
+  });
+
+  it('规则面板里有 ⑫ 这条（规则实现了就必须能逐条核对）', () => {
+    const text = buildRulesLines().join('\n');
+    expect(text).toContain(RULE_NO.PREV_BOUGHT);
+    expect(text).toContain(PREV_BOUGHT_TAG);
   });
 });
 

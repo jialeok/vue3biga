@@ -272,17 +272,21 @@ export function collectDecisionData(date, opts) {
   const ladder = needLadder ? _ladderTopicGroups(date) : null;
   // 【三 · 持有 / 加仓】上一交易日的买点股票名（null = 未知 → 规则层一律不标，§10 不猜）
   const prevBuyNames = skipPrevBuy ? null : _prevBuyNames(prevDate);
+  // 【⑫ 昨天已买】上一交易日【实际】打过「买」标签的股票名（§6：与卖点候选同一份数据源）。
+  //   ⛔ 股票级判据，逐只比名字（2026-09-30 修正：上一版按题材判，会把整块都标上，误导）。
+  //   在 buildBuyPlan 之前取：买点与卖点两边都要用它（一次采集、两处复用）。
+  const prevBought = _prevBoughtNames(prevDate);
   const buy = buildBuyPlan(topics, dragonMap, {
     ladderTopicGroups: ladder ? ladder.groups : [],
     ladderReady: ladder ? ladder.ready : false,
     ladderReason: ladder ? ladder.reason : '',
-    prevBuyNames: prevBuyNames
+    prevBuyNames: prevBuyNames,
+    prevBoughtNames: prevBought
   });
 
   // 昨日龙头名册已在上方取过（prevDragonMap）—— 灰行补齐也要用它，⛔ 不重复取第二次。
   const prevDragonNames = prevDragonMap ? new Set(Array.from(prevDragonMap.keys())) : null;
 
-  const prevBought = _prevBoughtNames(prevDate);
   const sellRows = [];
   prevBought.forEach(function(nm) {
     const row = byName.get(nm);
@@ -302,31 +306,13 @@ export function collectDecisionData(date, opts) {
   const todayBuyNames = _buyPlanNames(buy);
   const sell = buildSellPlan(sellRows, topics, dragonMap, prevDragonNames, todayBuyNames);
 
-  // [PREV-BOUGHT 2026-09-30 用户口径] 「昨天已买」题材标注
-  //   定义 = 【卖点分组覆盖到的题材】。卖点的数据来源就是「昨日手动打了『买』标签的股票」
-  //   （见上方 _prevBoughtNames / sellRows）—— ⛔ 不另起一套数据源（§6 单一真相）。
-  //   在这里一次性把布尔字段写进【买点块 / 卖点组】对象，UI 直接读，模板零计算（§21）。
-  //   ⚠️ 昨日标签库未加载 ⇒ sell 为空 ⇒ 全部 false，UI 就不显示该标签
-  //      （§10：读不到 ≠ 昨天没买，宁可少标也不猜）。
-  const prevBoughtTopicSet = new Set();
-  sell.forEach(function(g) {
-    const t = String(g.topic || '').trim();
-    if (t) prevBoughtTopicSet.add(t);
-  });
-  const _markPrevBought = function(blk) {
-    if (!blk || !blk.block) return;
-    blk.block.prevBoughtTopic = prevBoughtTopicSet.has(String(blk.block.topic || '').trim());
-  };
-  // buy 的五个档位：heavy / light 是块本身，noYizi / smallTopic / bigTopic 是 { blocks: [...] }
-  ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopic'].forEach(function(k) {
-    const b = buy[k];
-    if (!b) return;
-    _markPrevBought(b);
-    (b.blocks || []).forEach(function(bb) { _markPrevBought(bb); });
-  });
-  sell.forEach(function(g) {
-    g.prevBoughtTopic = prevBoughtTopicSet.has(String(g.topic || '').trim());
-  });
+  // [PREV-BOUGHT 2026-09-30 用户口径，同日修正] 「昨天已买」标记【股票级】，只标在【买点】的股票行上：
+  //   判据 = 该股票是否在 prevBought（= 昨日打过「买」标签的股票）里，由规则层逐只比名字（§21 模板零计算）。
+  //   ⛔ 这里【不再】做任何题材级标记：
+  //      · 买点侧上一版按题材判 ⇒「地产链」里只要有一只（世联行）买过，整块连【大亚圣象】都被标
+  //        「昨天已买」⇒ 用户 2026-09-30 反馈这是错的（真实数据：9/29 buy 标签只有世联行、新华文轩）。
+  //      · 卖点侧一律不标：卖点候选本来就是「昨天打过买标签的股票」，标了等于全标，没有信息量。
+  //   现在 prevBought 只作为 buildBuyPlan 的 opts 传下去，UI 直接读 pick.prevBoughtTag。
 
   const sellTimes = [];
   sell.forEach(function(g) {

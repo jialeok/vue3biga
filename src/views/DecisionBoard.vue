@@ -47,6 +47,8 @@
            （与早盘竞价的筛选控件同一位置口径，不放进 header）。
            打开后只留【题材行 + 股票行 + 行内标签】，隐藏解释性文字 ——
            隐藏规则全部在 decision-board.css 的 .dcb-compact 里，模板不加 v-if 分支。
+           ⚠️ [COMPACT-DEFAULT 2026-09-30 用户口径] 【默认就是打开的】（见 useDecisionBoard.js），
+           早盘直接看题材 + 股票就能下单；要看「选择理由 / 卖出节奏提示」就点一下关掉。
            纯 UI 态（§34）：不落 localStorage（§8）、不进全局 store。 -->
       <div class="dcb-compact-bar">
         <span

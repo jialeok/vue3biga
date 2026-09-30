@@ -25,12 +25,13 @@
 <template>
   <div class="dcb-block">
     <!-- 第一行：题材名 + 排名圆点 + 数量 + 竞价一字（今日数据；今日未成组时显示为「—」） -->
+    <!-- ⚠️ [PREV-BOUGHT 2026-09-30 用户口径] 这一块【不显示】「昨天已买」标记 ——
+         卖点候选本来就是「昨天打过买标签的股票」，挨个标等于全标，没有信息量（用户明确要求去掉）。 -->
     <DecisionTopicHead
       :topic="group.topic"
       :rank="group.topicRank"
       :count="group.count"
       :yizi="group.yiziCount"
-      :prev-bought="group.prevBoughtTopic"
     />
     <!-- [COPY 2026-09-29] dcb-selectable：卖出说明文字允许长按选中复制 -->
     <div class="dcb-reason-line dcb-selectable">

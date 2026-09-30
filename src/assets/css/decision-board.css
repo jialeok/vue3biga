@@ -483,18 +483,22 @@
             -webkit-touch-callout: default;
         }
 
-        /* ---- [PREV-BOUGHT 2026-09-30 用户口径] 「昨天已买」题材标记 ----
-           位置：紧跟在「竞价一字：n」右边（DecisionTopicHead 内）。
-           配色用琥珀色 —— 与「红 = 竞价一字（强弱信号）」「蓝 = 规则编号」都区分开：
-           它表达的是【延续】（这个题材昨天已经买过），不是强弱。 */
+        /* ---- [PREV-BOUGHT 2026-09-30 用户口径，同日修正为【股票级】] 「昨天已买」股票标记 ----
+           位置：紧跟在【股票名】右边（买点块的 .dcb-row 内，在「龙几」徽标【之前】）。
+           ⛔ 2026-09-30 修正：上一版它在【题材行】上（竞价一字右边），会把「题材里有一只买过」
+              显示成「这一整块都买过」⇒ 用户读成「大亚圣象昨天已买」= 错的。⛔ 不要再放回题材行。
+           ⛔ 卖点块【不用】这个类。
+           配色：实心琥珀（白字）—— 刻意与紧邻的「龙几」淡黄描边徽标、以及行尾的
+           重仓红 / 轻仓橙 / 持有蓝 都区分开：它说的是【延续】（你手上已经有它），不是强弱或仓位。 */
         .dcb-prev-bought {
             flex-shrink: 0;
             padding: 0 5px;
             font-size: 10px;
+            font-weight: 600;
             line-height: 15px;
-            color: #92400e;
-            background: #fef3c7;
-            border: 1px solid #fde68a;
+            color: #ffffff;
+            background: #b45309;
+            border: 1px solid #b45309;
             border-radius: 4px;
             white-space: nowrap;
         }

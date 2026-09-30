@@ -128,6 +128,26 @@ export const BUY_COUNT_MAX_MID = 10;
 /** 【持有 / 加仓】标记文案：上一个交易日也在买点里、今天又被选中 = 强势股 */
 export const HOLD_TAG = '持有 / 加仓';
 
+// ===== [PREV-BOUGHT 2026-09-30 用户口径，同日修正为【股票级】] 「昨天已买」标记 =====
+// 语义：这一只【股票】在上一交易日被打了「买」标签（= 用户手上已经有仓位）。
+//   ⛔ 与 HOLD_TAG 是两件事，别混：
+//      · HOLD_TAG  = 上一交易日的【买点方案】里也有它（系统【建议】买过）；
+//      · PREV_BOUGHT_TAG = 上一交易日用户【实际】打了「买」标签（用户【真的】买了）。
+//   两者可以同时出现；都不出现 = 没买过。
+//
+// 🔴 2026-09-30 事故与修正（用户反馈，真实数据：2026-09-29 的 buy 标签只有【世联行、新华文轩】2 只）：
+//   第一版把这个标记做成了【题材级】（block.prevBoughtTopic / group.prevBoughtTopic，
+//   在题材行「竞价一字：n」右边显示）。而它的判据是「卖出分组的题材」，于是：
+//     世联行（题材 地产链）昨天买过 → 买点里【整个地产链块】都被标「昨天已买」，
+//     可用户昨天并没有买这块里的大亚圣象 → 标签读起来像「大亚圣象昨天已买」= 错的；
+//     只有同样昨天买过的新华文轩（在块里）读起来是对的。
+//   ⇒ 用户口径修正：**改为【股票级】**，只标昨天真的打过「买」标签的那几只股票；
+//     并且【卖点一律不标】——卖点候选本来就是「昨天打过买标签的股票」，标了等于全标，没信息量。
+//
+//   ⛔ 用的人别再用「题材」去筛：题材里只要有一只买过，整块都会被误解成「都买过」。
+/** 【昨天已买】标记文案：该股票上一交易日被打过「买」标签（股票级，用户实际买入） */
+export const PREV_BOUGHT_TAG = '昨天已买';
+
 // ===== [WEAK-OPEN 2026-09-27] 大题材却没人高开 ⇒ 题材虚胖 → 只买龙一轻仓 =====
 // 用户口径（原话换算）：入选题材【股票总数 > 10 只】时，看里面【竞价高开】的有几只，
 //   占比【< 35%】⇒ 题材是虚胖的（票多但没人跟风），【只选龙一、轻仓】。
@@ -141,7 +161,7 @@ export const WEAK_OPEN_RATE = 0.35;
 // ===== [RULE-NO 2026-09-27] 规则编号（用户口径：说明文字要标「规则几」，像法律条文一样可追溯）=====
 // ⛔ 唯一真相：买点说明里出现的每一个规则编号都取自这里（§6），⛔ 不在 UI / 各处手写字面量
 //    —— 否则改了规则内容却漏改说明，用户照着旧编号提修改意见就对不上。
-// 编号体系（买点 ①~⑥ = 选题材 / 选票档位；⑦~⑪ = 对已入选买点的后置收口）：
+// 编号体系（买点 ①~⑥ = 选题材 / 选票档位；⑦~⑫ = 对已入选买点的后置收口）：
 export const RULE_NO = {
   HEAVY_DOUBLE: '①',   // 第 1 名题材 · 竞价一字 ≥ 2 → 卡位选票（含创业板 / 科创板顺延）
   HEAVY_SINGLE: '②',   // 第 1 名题材 · 竞价一字 = 1 → 龙一重仓 + 龙二~龙五高开轻仓
@@ -153,7 +173,8 @@ export const RULE_NO = {
   WEAK_OPEN: '⑧',      // 弱势题材：> 10 只 且 竞价高开率 < 35%
   DUAL_MAIN: '⑨',      // 【2026-09-27 新增】双主线竞争：第 1 / 第 2 名题材都 ≥ 10 只 → 比竞价高开率
   BUY_COUNT: '⑩',      // 买入只数（只看第 1 名题材的早盘竞价股票数）
-  HOLD: '⑪'            // 持有 / 加仓标记
+  HOLD: '⑪',           // 持有 / 加仓标记
+  PREV_BOUGHT: '⑫'     // 【昨天已买】标记（股票级：该股上一交易日打过「买」标签）
 };
 
 /** 规则编号 → 「【规则N】」前缀（说明文字统一从这里取，⛔ 不各处手写） */
@@ -1496,12 +1517,42 @@ function _markHold(blockObj, prevBuyNames) {
   return blockObj;
 }
 
-/** 买点块的统一收口：亏钱效应 → 弱势题材（高开率）→ 只数限制 → 持有标记 → 竞价涨幅徽标（顺序固定，互不干扰） */
+/**
+ * 【⑫ 昨天已买 标记（2026-09-30 用户口径，同日修正为【股票级】）】
+ *   该【股票】在上一交易日被打过「买」标签 ⇒ 用户手上已经有仓位 ⇒ 行内标【昨天已买】。
+ *
+ * ⛔ 只按【股票名】逐个判，绝不按题材判 —— 见 PREV_BOUGHT_TAG 上方的事故记录：
+ *    按题材判会把「题材里有一只买过」误读成「这一整块都买过」（9/30 大亚圣象 vs 新华文轩）。
+ * ⛔ 卖点侧【不标】：卖点候选本身就是「昨天打过买标签的股票」，标了等于全标，没有信息量。
+ * §10：集合为 null（昨天的标签没读到）→ 一律不标（未知 ≠ 昨天没买）。
+ *
+ * @param {object} blockObj 买点块（_finishBuyBlock / _finishPlanBlocks 的收口对象）
+ * @param {Set<string>|null} prevBoughtNames 上一交易日打过「买」标签的股票名集合
+ */
+function _markPrevBought(blockObj, prevBoughtNames) {
+  if (!blockObj || !prevBoughtNames || !blockObj.picks || blockObj.picks.length === 0) return blockObj;
+  const hits = [];
+  blockObj.picks.forEach(function(p) {
+    if (prevBoughtNames.has(p.name)) {
+      p.prevBoughtTag = PREV_BOUGHT_TAG;
+      hits.push(p.name);
+    }
+  });
+  if (hits.length > 0) {
+    blockObj.notes = blockObj.notes || [];
+    blockObj.notes.push(_note(RULE_NO.PREV_BOUGHT,
+      '【' + hits.join('、') + '】昨天打过「买」标签 → 标【' + PREV_BOUGHT_TAG + '】'));
+  }
+  return blockObj;
+}
+
+/** 买点块的统一收口：亏钱效应 → 弱势题材（高开率）→ 只数限制 → 持有标记 → 昨天已买 → 竞价涨幅徽标（顺序固定，互不干扰） */
 function _finishBuyBlock(blockObj, opts) {
   _applyLossEffect(blockObj);
   _applyWeakOpenRate(blockObj);
   _capPicksByTopicCount(blockObj);
   _markHold(blockObj, opts ? opts.prevBuyNames : null);
+  _markPrevBought(blockObj, opts ? opts.prevBoughtNames : null);
   // ⛔ 徽标必须【最后】派生：上面的砍票 / 改仓会重建 picks 数组，先派生会被丢掉
   _decorateAucBadge(blockObj);
   return blockObj;
@@ -1527,6 +1578,7 @@ function _finishPlanBlocks(planObj, opts) {
     _applyLossEffect(b);
     _applyWeakOpenRate(b);
     _markHold(b, opts ? opts.prevBuyNames : null);
+    _markPrevBought(b, opts ? opts.prevBoughtNames : null);
     _decorateAucBadge(b);          // 同上：徽标放最后，避免被上面的砍票重建 picks 时丢掉
   });
   return planObj;
@@ -1653,12 +1705,15 @@ export function buildBigTopicPlan(bigBlocks, dragonMap) {
  * @param {Array} blocks rankDecisionTopics 的返回
  * @param {Map} dragonMap rankDragons 的返回
  * @param {{ladderTopicGroups?:Array, ladderReady?:boolean, ladderReason?:string,
- *          prevBuyNames?:Set<string>|null}} [opts]
+ *          prevBuyNames?:Set<string>|null, prevBoughtNames?:Set<string>|null}} [opts]
  *        【无一字兜底】要用的连板天梯「题材连扳」分组（只有「全部题材一字 = 0」时才用得上；
  *        由 decision-collect 采集后传进来，本文件保持纯函数、不碰数据源）
  *        ⓘ 龙一 / 龙二的排名人群用的是 blocks 自身（早盘竞价题材组），无需额外传参
  *        prevBuyNames = 【上一个交易日】买点里的股票名集合；
  *          null / 不传 = 昨天的买点没算出来（§10：未知 ≠ 昨天没选中）→ 一律【不标持有】
+ *        prevBoughtNames = 【上一个交易日】打过「买」标签的股票名集合（用户【实际】买了的）；
+ *          null / 不传 = 昨天的标签没读到（§10：未知 ≠ 昨天没买）→ 一律【不标昨天已买】。
+ *          ⛔ 它是【股票级】判据（逐只比名字），⛔ 不要拿题材去比 —— 会把整块都标上。
  * @returns {{heavy:object|null, light:object|null, noYizi:object|null, smallTopic:object|null}}
  *          heavy = 第 1 名题材的方案；light = 第 2 名题材的方案；
  *          noYizi = 「全部题材竞价一字 = 0」时的弱市兜底方案；
@@ -2132,9 +2187,17 @@ export function buildRulesLines() {
     '　　只砍后面的票，【龙一 / 最靠前的那只一定保留】。',
     '　⑪ 【' + HOLD_TAG + '】上一交易日出现在【买点】里、今天又在买点里 → 强势股，行尾标【' +
       HOLD_TAG + '】（昨天的买点没算出来时【不标】，§10 不猜）。',
+    '　⑫ 【' + PREV_BOUGHT_TAG + '】这一只【股票】昨天被打过「买」标签 → 股票名右边标【' +
+      PREV_BOUGHT_TAG + '】（含义：你手上已经有它，可加可持）。',
+    '　　⚠️ 它是【逐只股票】判的，⛔ 不是看题材 —— 同一个题材里昨天【没买过】的股票不会被标上',
+    '　　　（2026-09-30 修正：上一版按题材判，题材里只要有一只买过就整块都标，会误导）。',
+    '　　⚠️ 与 ⑪ 的区别：⑪ 看的是【上一个交易日的买点方案】里有没有它（系统选出来的），',
+    '　　　⑫ 看的是【你昨天实际有没有打「买」标签】；两个是两回事，可以同时出现。',
     '　重仓与轻仓混在同一个题材块里，序号连续，仓位写在每行行尾。',
     '　※ 每个题材块下面的「选择理由」与说明文字都会标【规则N】（如【规则⑨】），方便按条文逐条核对。',
     '【题材行的数据】题材名右边依次是：实心红圆点（里面的数字 = 题材排名）｜数量：n（股票只数）｜竞价一字：n。',
+    '【股票行的数据】股票名右边依次是：龙几（龙一 / 龙二）｜十日涨幅｜竞价涨幅小标签；行尾是仓位（' +
+      POSITION_HEAVY + ' / ' + POSITION_LIGHT + '），再往右是【' + PREV_BOUGHT_TAG + '】/【' + HOLD_TAG + '】这类标记。',
     '【卖点】候选 = 昨日打过「买」标签的股票。卖点先看【今天这只票竞价开得怎么样】，再看题材排名：',
     '　每行在「十日涨幅」右侧带一个【竞价涨幅】小标签（如 -2.60%）：涨 = 红底、跌 = 绿底、平 = 灰底；',
     '　　该股今日没有竞价涨幅时不显示这个标签（§10 不把「没查到」画成「平开」）。',

@@ -4,7 +4,9 @@
   排版（用户口径 2026-09-24 改版）：
     第一行：题材名称  ●1（实心红圆点 = 题材排名）  数量：n  竞价一字：n   ← 一行挤完，省空间
     第二行：选择理由：题材排第一，股票数量n只，m个竞价一字
-    第三行起：序号  股票名称（龙几）  十日涨幅  竞价涨幅（红底/绿底/灰底小徽标，2026-09-29）  重仓 / 轻仓
+    第三行起：序号  股票名称 [昨天已买]（龙几）  十日涨幅  竞价涨幅（红底/绿底/灰底小徽标，2026-09-29）  重仓 / 轻仓
+            ⚠️ [PREV-BOUGHT 2026-09-30 修正] 「昨天已买」是【股票级】标记，紧跟股票名右边：
+               只有【这一只】昨天真被打过「买」标签才显示（同题材里没买过的不会跟着亮）。
             重仓与轻仓【混排在同一块里】，序号连续，仓位写在行尾（不再拆两块重复题材名）。
 
   §21：本组件零业务计算 —— 排名 / 数量 / 一字数 / 理由 / 序号 / 龙几 / 涨幅 / 仓位
@@ -18,7 +20,6 @@
       :rank="block.block.rank"
       :count="block.block.count"
       :yizi="block.block.yiziCount"
-      :prev-bought="block.block.prevBoughtTopic"
     />
     <!-- 第二行：选择理由（理由里已含「根据规则N」；规则编号由 Logic 层给出，⛔ 模板零计算 §21） -->
     <!-- [COPY 2026-09-29] dcb-selectable：选票说明文字允许长按选中复制（见 decision-board.css） -->
@@ -36,6 +37,17 @@
     >
       <span class="dcb-seq">{{ p.seq }}</span>
       <span class="dcb-name">{{ p.name }}</span>
+      <!-- [PREV-BOUGHT 2026-09-30 用户口径，同日修正为【股票级】] 「昨天已买」标记：
+           紧跟【股票名】右边 —— 它说的是【这一只】昨天被打过「买」标签（用户手上已有仓位），
+           ⛔ 不是「这个题材昨天买过」：同题材里没买过的股票不会被标上。
+           是否显示由 Logic 层逐只算好（pick.prevBoughtTag，见 decision-rules.js#_markPrevBought），
+           模板零计算（§21）；【简洁】模式下同样保留（标签保留）。
+           ⛔ 卖点侧不显示这个标记（卖点候选本来就是昨天买过的股票）。 -->
+      <span
+        v-if="p.prevBoughtTag"
+        class="dcb-prev-bought"
+        title="这一只在昨天被打过「买」标签（你手上已有仓位）"
+      >{{ p.prevBoughtTag }}</span>
       <span
         v-if="p.dragonLabel"
         class="dcb-dragon"
