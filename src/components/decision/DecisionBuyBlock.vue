@@ -4,9 +4,11 @@
   排版（用户口径 2026-09-24 改版）：
     第一行：题材名称  ●1（实心红圆点 = 题材排名）  数量：n  竞价一字：n   ← 一行挤完，省空间
     第二行：选择理由：题材排第一，股票数量n只，m个竞价一字
-    第三行起：序号  股票名称 [昨天已买]（龙几）  十日涨幅  竞价涨幅（红底/绿底/灰底小徽标，2026-09-29）  重仓 / 轻仓
+    第三行起：序号  股票名称 [昨天已买]（龙几）  十日涨幅  竞价涨幅（红底/绿底/灰底小徽标，2026-09-29）  重仓 / 轻仓 / 加仓
             ⚠️ [PREV-BOUGHT 2026-09-30 修正] 「昨天已买」是【股票级】标记，紧跟股票名右边：
                只有【这一只】昨天真被打过「买」标签才显示（同题材里没买过的不会跟着亮）。
+            ⚠️ [POSITION-ADD 2026-09-30 用户口径] 带【昨天已买】标的票，行尾仓位显示【加仓】
+               （≠ 重仓 / 轻仓：昨天已经买了，今天是往上加，不再重新建仓）。
             重仓与轻仓【混排在同一块里】，序号连续，仓位写在行尾（不再拆两块重复题材名）。
 
   §21：本组件零业务计算 —— 排名 / 数量 / 一字数 / 理由 / 序号 / 龙几 / 涨幅 / 仓位
@@ -61,9 +63,12 @@
         class="dcb-auc"
         :class="'dcb-auc-' + p.aucTone"
       >{{ p.aucPctText }}</span>
+      <!-- [POSITION-TONE 2026-09-30] 仓位（重仓 / 轻仓 / 加仓）：文案 + 配色档全部由 Logic 层给
+           （p.position / p.positionTone，§21 模板零计算、⛔ 不做 `=== '轻仓'` 这类比较）。
+           【加仓】= 这一只昨天已经被打过「买」标签（见上一行的 p.prevBoughtTag）。 -->
       <span
         class="dcb-position"
-        :class="{ light: isLight(p.position) }"
+        :class="'dcb-pos-' + p.positionTone"
       >{{ p.position }}</span>
       <!-- 【三 · 持有 / 加仓】上交易日也在买点里 → 强势股（由 Logic 层标记，模板零计算 §21） -->
       <span
@@ -101,7 +106,7 @@
 
 <script setup>
 import DecisionTopicHead from './DecisionTopicHead.vue';
-import { formatRangePct, POSITION_LIGHT } from '../../logic/decision/decision-rules.js';
+import { formatRangePct } from '../../logic/decision/decision-rules.js';
 
 defineProps({
   block: {
@@ -114,8 +119,6 @@ defineProps({
 function pctText(pct) {
   return formatRangePct(pct);
 }
-// 仓位判定走 Logic 层的常量，组件里不另复制一份文案做比较（§6）
-function isLight(position) {
-  return position === POSITION_LIGHT;
-}
+// ⛔ 此处【不再】做 `position === '轻仓'` 这类比较：配色档由 Logic 层的 p.positionTone 直接给出
+//    （§21 模板零判断）。新增「加仓」档时组件无需改动 —— 这正是上一版 isLight() 做不到的。
 </script>

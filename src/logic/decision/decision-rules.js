@@ -241,6 +241,26 @@ export const SELL_TONE_PLAN = 'plan';       // 小幅高开 → 看分时（向�
 /** 仓位建议文案 */
 export const POSITION_HEAVY = '重仓';
 export const POSITION_LIGHT = '轻仓';
+/**
+ * 【⑫ 加仓（2026-09-30 用户口径）】该股票昨天已经被打过「买」标签（用户手上已有仓位）⇒
+ *   仓位不再写「重仓 / 轻仓」，改写「加仓」—— 用户原话：「旁边那个（仓位）应该变成加仓，
+ *   这样更加知道那是昨天的票延续走强」。
+ *   ⚠️ 「重仓 / 轻仓」是【买多少】的建仓建议；「加仓」是【已有仓位再买】的动作，两者不同层，
+ *      所以对已持有的票直接换文案，而不是并列显示。
+ *   ⛔ 只在【买点】生效；卖点本来就没有仓位列，不受影响。
+ */
+export const POSITION_ADD = '加仓';
+/** 仓位配色档（§21：由 Logic 层给 tone，模板只做 `'dcb-pos-' + tone` 拼接，⛔ 不做比较） */
+export const POSITION_TONE_HEAVY = 'heavy';
+export const POSITION_TONE_LIGHT = 'light';
+export const POSITION_TONE_ADD = 'add';
+
+/** 仓位文案 → 配色档（模板零判断的唯一出口） */
+export function positionToneOf(position) {
+  if (position === POSITION_LIGHT) return POSITION_TONE_LIGHT;
+  if (position === POSITION_ADD) return POSITION_TONE_ADD;
+  return POSITION_TONE_HEAVY;
+}
 
 const OTHER = '其它';
 
@@ -1518,13 +1538,19 @@ function _markHold(blockObj, prevBuyNames) {
 }
 
 /**
- * 【⑫ 昨天已买 标记（2026-09-30 用户口径，同日修正为【股票级】）】
- *   该【股票】在上一交易日被打过「买」标签 ⇒ 用户手上已经有仓位 ⇒ 行内标【昨天已买】。
+ * 【⑫ 昨天已买 标记 + 加仓（2026-09-30 用户口径，同日修正为【股票级】）】
+ *   该【股票】在上一交易日被打过「买」标签 ⇒ 用户手上已经有仓位
+ *   ⇒ ① 行内标【昨天已买】；② 仓位文案由「重仓 / 轻仓」改写【加仓】。
  *
  * ⛔ 只按【股票名】逐个判，绝不按题材判 —— 见 PREV_BOUGHT_TAG 上方的事故记录：
  *    按题材判会把「题材里有一只买过」误读成「这一整块都买过」（9/30 大亚圣象 vs 新华文轩）。
  * ⛔ 卖点侧【不标】：卖点候选本身就是「昨天打过买标签的股票」，标了等于全标，没有信息量。
- * §10：集合为 null（昨天的标签没读到）→ 一律不标（未知 ≠ 昨天没买）。
+ * §10：集合为 null（昨天的标签没读到）→ 一律不标、仓位也【不改】（未知 ≠ 昨天没买）。
+ *
+ * ⚠️ 仓位改写对【重仓 / 轻仓】一视同仁（2026-09-30 用户明确选择）：
+ *    「重仓 / 轻仓」是【建多少仓】的建议；既然昨天已经买了，今天这一笔的动作就是【加仓】，
+ *    再写「重仓」会让人以为还要重新建仓。所以一律换文案，⛔ 不是并列追加。
+ *    ⇒ 因此这个函数必须在所有会改仓位的收口之后调用（见 _finishBuyBlock 的顺序注释）。
  *
  * @param {object} blockObj 买点块（_finishBuyBlock / _finishPlanBlocks 的收口对象）
  * @param {Set<string>|null} prevBoughtNames 上一交易日打过「买」标签的股票名集合
@@ -1535,24 +1561,41 @@ function _markPrevBought(blockObj, prevBoughtNames) {
   blockObj.picks.forEach(function(p) {
     if (prevBoughtNames.has(p.name)) {
       p.prevBoughtTag = PREV_BOUGHT_TAG;
+      p.position = POSITION_ADD;
       hits.push(p.name);
     }
   });
   if (hits.length > 0) {
     blockObj.notes = blockObj.notes || [];
     blockObj.notes.push(_note(RULE_NO.PREV_BOUGHT,
-      '【' + hits.join('、') + '】昨天打过「买」标签 → 标【' + PREV_BOUGHT_TAG + '】'));
+      '【' + hits.join('、') + '】昨天打过「买」标签 → 标【' + PREV_BOUGHT_TAG + '】，仓位改标【' +
+      POSITION_ADD + '】（昨天已有仓位，今天是往上加，不重新建仓）'));
   }
   return blockObj;
 }
 
-/** 买点块的统一收口：亏钱效应 → 弱势题材（高开率）→ 只数限制 → 持有标记 → 昨天已买 → 竞价涨幅徽标（顺序固定，互不干扰） */
+/**
+ * 【⑫ 仓位配色档】逐只把 position 映射成 tone，供模板直接拼接类名（§21 模板零计算）。
+ * ⛔ 必须排在 _markPrevBought 之后 —— 它会改写 position 文案，先派生会拿到旧的「轻仓」档。
+ */
+function _decoratePositionTone(blockObj) {
+  if (!blockObj || !blockObj.picks) return blockObj;
+  blockObj.picks.forEach(function(p) { p.positionTone = positionToneOf(p.position); });
+  return blockObj;
+}
+
+/**
+ * 买点块的统一收口（⛔ 顺序固定，互不干扰）：
+ *   亏钱效应 → 弱势题材（高开率）→ 只数限制 → 持有标记 → 昨天已买（会改 position）
+ *   → 仓位配色档（必须在其后）→ 竞价涨幅徽标（必须最后）
+ */
 function _finishBuyBlock(blockObj, opts) {
   _applyLossEffect(blockObj);
   _applyWeakOpenRate(blockObj);
   _capPicksByTopicCount(blockObj);
   _markHold(blockObj, opts ? opts.prevBuyNames : null);
   _markPrevBought(blockObj, opts ? opts.prevBoughtNames : null);
+  _decoratePositionTone(blockObj);
   // ⛔ 徽标必须【最后】派生：上面的砍票 / 改仓会重建 picks 数组，先派生会被丢掉
   _decorateAucBadge(blockObj);
   return blockObj;
@@ -1579,6 +1622,7 @@ function _finishPlanBlocks(planObj, opts) {
     _applyWeakOpenRate(b);
     _markHold(b, opts ? opts.prevBuyNames : null);
     _markPrevBought(b, opts ? opts.prevBoughtNames : null);
+    _decoratePositionTone(b);      // ⛔ 必须在 _markPrevBought 之后（它会改写 position 文案）
     _decorateAucBadge(b);          // 同上：徽标放最后，避免被上面的砍票重建 picks 时丢掉
   });
   return planObj;
@@ -2188,7 +2232,9 @@ export function buildRulesLines() {
     '　⑪ 【' + HOLD_TAG + '】上一交易日出现在【买点】里、今天又在买点里 → 强势股，行尾标【' +
       HOLD_TAG + '】（昨天的买点没算出来时【不标】，§10 不猜）。',
     '　⑫ 【' + PREV_BOUGHT_TAG + '】这一只【股票】昨天被打过「买」标签 → 股票名右边标【' +
-      PREV_BOUGHT_TAG + '】（含义：你手上已经有它，可加可持）。',
+      PREV_BOUGHT_TAG + '】，并且【仓位改标【' + POSITION_ADD + '】】',
+    '　　（昨天已经买了这一只，今天是往上加，不再重新建仓 ⇒「' + POSITION_HEAVY + ' / ' +
+      POSITION_LIGHT + '」一律换成「' + POSITION_ADD + '」）。',
     '　　⚠️ 它是【逐只股票】判的，⛔ 不是看题材 —— 同一个题材里昨天【没买过】的股票不会被标上',
     '　　　（2026-09-30 修正：上一版按题材判，题材里只要有一只买过就整块都标，会误导）。',
     '　　⚠️ 与 ⑪ 的区别：⑪ 看的是【上一个交易日的买点方案】里有没有它（系统选出来的），',
@@ -2196,8 +2242,9 @@ export function buildRulesLines() {
     '　重仓与轻仓混在同一个题材块里，序号连续，仓位写在每行行尾。',
     '　※ 每个题材块下面的「选择理由」与说明文字都会标【规则N】（如【规则⑨】），方便按条文逐条核对。',
     '【题材行的数据】题材名右边依次是：实心红圆点（里面的数字 = 题材排名）｜数量：n（股票只数）｜竞价一字：n。',
-    '【股票行的数据】股票名右边依次是：龙几（龙一 / 龙二）｜十日涨幅｜竞价涨幅小标签；行尾是仓位（' +
-      POSITION_HEAVY + ' / ' + POSITION_LIGHT + '），再往右是【' + PREV_BOUGHT_TAG + '】/【' + HOLD_TAG + '】这类标记。',
+    '【股票行的数据】股票名右边依次是：【' + PREV_BOUGHT_TAG + '】（有才显示）｜龙几（龙一 / 龙二）｜十日涨幅｜竞价涨幅小标签；',
+    '　　行尾是仓位（' + POSITION_HEAVY + ' / ' + POSITION_LIGHT + ' / ' + POSITION_ADD + '），再往右是【' +
+      HOLD_TAG + '】这类标记。',
     '【卖点】候选 = 昨日打过「买」标签的股票。卖点先看【今天这只票竞价开得怎么样】，再看题材排名：',
     '　每行在「十日涨幅」右侧带一个【竞价涨幅】小标签（如 -2.60%）：涨 = 红底、跌 = 绿底、平 = 灰底；',
     '　　该股今日没有竞价涨幅时不显示这个标签（§10 不把「没查到」画成「平开」）。',

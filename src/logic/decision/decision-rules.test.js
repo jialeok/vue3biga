@@ -39,6 +39,11 @@ import {
   SELL_TONE_PLAN,
   POSITION_HEAVY,
   POSITION_LIGHT,
+  POSITION_ADD,
+  POSITION_TONE_HEAVY,
+  POSITION_TONE_LIGHT,
+  POSITION_TONE_ADD,
+  positionToneOf,
   HOLD_TAG,
   PREV_BOUGHT_TAG,
   BUY_COUNT_MAX_SMALL,
@@ -1879,11 +1884,13 @@ describe('昨天已买标记（PREV-BOUGHT，股票级）', () => {
   //    2026-09-30 用户反馈的真实事故形态：9/29 的 buy 标签只有【世联行、新华文轩】，
   //    地产链里的大亚圣象没买过，却被【整块】标上了「昨天已买」（因为当时按题材判）。
   const rows = () => [
-    E('昨天买过的', 'T', 90, false, true, 5),   // 十日涨幅最高 → 龙一，必入选
-    E('昨天没买的', 'T', 85, false, true, 4),   // 龙二，同样入选
+    E('昨天买过的', 'T', 90, false, true, 5),   // 十日涨幅最高 → 龙一，必入选（重仓档）
+    E('昨天没买的', 'T', 85, false, true, 4),   // 龙二，同样入选（重仓档）
     E('T一字A', 'T', 80, true),
     E('T一字B', 'T', 70, true),
-    E('X一', 'X', 20), E('X二', 'X', 10)
+    // ⛔ X一 / X二 必须带竞价涨幅：第 2 名题材现在只选【竞价高开】的票（缺数据选不出来），
+    //    而「轻仓档」的用例要靠它 —— 见下面「轻仓也变加仓」那条。
+    E('X一', 'X', 20, false, true, 2), E('X二', 'X', 10, false, true, -1)
   ].concat(FILLER('T', 6));                     // 撑过 10 只，避开只数限制
 
   const planOf = (prevBoughtNames) => {
@@ -1914,16 +1921,62 @@ describe('昨天已买标记（PREV-BOUGHT，股票级）', () => {
     expect(plan.heavy.notes.join('｜')).not.toContain('昨天没买的');
   });
 
-  it('昨天一只都没买（空集）→ 一个都不标', () => {
+  it('昨天一只都没买（空集）→ 一个都不标，仓位也不改', () => {
     const plan = planOf(new Set());
-    expect(allPicks(plan).some((p) => p.prevBoughtTag)).toBe(false);
+    const picks = allPicks(plan);
+    expect(picks.some((p) => p.prevBoughtTag)).toBe(false);
+    expect(picks.some((p) => p.position === POSITION_ADD)).toBe(false);
+    expect(picks.every((p) => p.position === POSITION_HEAVY || p.position === POSITION_LIGHT)).toBe(true);
     expect(plan.heavy.notes.join('｜')).not.toContain(PREV_BOUGHT_TAG);
   });
 
-  it('§10：昨天的标签没读到（null）→ 一律不标（未知 ≠ 昨天没买）', () => {
+  it('§10：昨天的标签没读到（null）→ 一律不标，仓位也不改（未知 ≠ 昨天没买）', () => {
     const plan = planOf(null);
-    expect(allPicks(plan).some((p) => p.prevBoughtTag)).toBe(false);
+    const picks = allPicks(plan);
+    expect(picks.some((p) => p.prevBoughtTag)).toBe(false);
+    expect(picks.some((p) => p.position === POSITION_ADD)).toBe(false);
     expect(plan.heavy.notes.join('｜')).not.toContain(PREV_BOUGHT_TAG);
+  });
+
+  // ===== [POSITION-ADD 2026-09-30 用户口径] 带【昨天已买】标 ⇒ 仓位改标【加仓】 =====
+  // 用户原话：「买点被选出的股票那里如果标记昨天已买的标签，旁边那个轻仓应该变成加仓，
+  //           这样更加知道那是昨天的票延续走强」；随后明确选择「重仓、轻仓都变加仓」。
+  // 语义：「重仓 / 轻仓」是【建多少仓】的建议；昨天已经买了 ⇒ 今天这一笔的动作是【加仓】。
+  it('🔴 重仓的票带【昨天已买】⇒ 仓位改标【加仓】，配色档同步换成 add', () => {
+    const plan = planOf(new Set(['昨天买过的']));
+    const p = allPicks(plan).find((x) => x.name === '昨天买过的');
+    expect(p.prevBoughtTag).toBe(PREV_BOUGHT_TAG);
+    expect(p.position).toBe(POSITION_ADD);           // 原来是重仓
+    expect(p.positionTone).toBe(POSITION_TONE_ADD);  // ⛔ tone 必须一起换，否则 UI 还是红的
+  });
+
+  it('🔴 轻仓的票带【昨天已买】⇒ 仓位同样改标【加仓】', () => {
+    const plan = planOf(new Set(['X一']));           // X = 第 2 名题材 → 轻仓档
+    const light = allPicks(plan).find((x) => x.name === 'X一');
+    expect(light).toBeTruthy();                      // 先钉住「它确实在买点里」，否则是空测
+    expect(light.prevBoughtTag).toBe(PREV_BOUGHT_TAG);
+    expect(light.position).toBe(POSITION_ADD);
+    expect(light.positionTone).toBe(POSITION_TONE_ADD);
+  });
+
+  it('没被标的票保持原仓位，配色档也正确（重仓=heavy / 轻仓=light）', () => {
+    const picks = allPicks(planOf(new Set(['昨天买过的'])));
+    picks.filter((p) => p.name === '昨天没买的').forEach((p) => {
+      expect(p.position).toBe(POSITION_HEAVY);
+      expect(p.positionTone).toBe(POSITION_TONE_HEAVY);
+    });
+    picks.filter((p) => p.name === 'X一').forEach((p) => {
+      expect(p.position).toBe(POSITION_LIGHT);
+      expect(p.positionTone).toBe(POSITION_TONE_LIGHT);
+    });
+  });
+
+  it('positionToneOf：未知 / 缺值一律回落「重仓」档（⛔ 不会拼出空类名把样式丢掉）', () => {
+    expect(positionToneOf(POSITION_HEAVY)).toBe(POSITION_TONE_HEAVY);
+    expect(positionToneOf(POSITION_LIGHT)).toBe(POSITION_TONE_LIGHT);
+    expect(positionToneOf(POSITION_ADD)).toBe(POSITION_TONE_ADD);
+    expect(positionToneOf('')).toBe(POSITION_TONE_HEAVY);
+    expect(positionToneOf(undefined)).toBe(POSITION_TONE_HEAVY);
   });
 
   it('兜底方案（无一字 · 大题材）里的票同样按【股票级】标', () => {

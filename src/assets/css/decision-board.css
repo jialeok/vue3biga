@@ -296,7 +296,11 @@
         .dcb-auc-low { background-color: #16a34a; }    /* 竞价涨幅 < 0 → 绿底 */
         .dcb-auc-flat { background-color: #64748b; }   /* 竞价涨幅 = 0 → 灰底 */
 
-        /* 仓位建议：重仓 = 红（用力），轻仓 = 橙（减一档，一眼能分出重/轻） */
+        /* 仓位建议（§21：配色档由 Logic 层给 `p.positionTone`，模板只拼 `'dcb-pos-' + tone`）：
+           重仓 = 红（用力）｜轻仓 = 橙（减一档）｜加仓 = 紫（昨天已买过，今天是往上加，不重新建仓）。
+           ⛔ 类名一律带 dcb- 前缀（本项目 CSS 全局加载，`.light` 这种裸名会串改其它看板）。
+           ⚠️ 2026-09-30 之前是 `.dcb-position.light` 双类 + 模板里 `isLight()` 比较 ——
+              新增「加仓」档时那次写法必须同时改模板与 CSS，故改成 tone 驱动，模板零判断。 */
         .dcb-position {
             margin-left: auto;
             font-size: 11px;
@@ -305,9 +309,10 @@
             white-space: nowrap;
         }
 
-        .dcb-position.light {
-            color: #c2410c;
-        }
+        .dcb-position.dcb-pos-heavy { color: #b91c1c; }   /* 重仓 */
+        .dcb-position.dcb-pos-light { color: #c2410c; }   /* 轻仓 */
+        /* 加仓：刻意用紫色，与行内的「重仓红 / 轻仓橙」「持有蓝标」「昨天已买琥珀标」都区分开 */
+        .dcb-position.dcb-pos-add   { color: #7c3aed; }   /* 加仓（昨天已买） */
 
         .dcb-sell-at {
             margin-left: auto;
