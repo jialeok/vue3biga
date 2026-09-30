@@ -13,7 +13,16 @@
 // 部署（二选一）：
 //   A. Dashboard：Functions → 新建 bidding-a → 粘贴本文件全部内容。
 //   B. CLI：supabase functions deploy bidding-a  （本文件位置即 supabase/functions/bidding-a/index.ts）
-// 部署后务必在函数设置里【关闭 Verify JWT】（函数自身用 FETCH_TOKEN 鉴权）；
+// ⚠️ 【必须关闭平台 JWT 校验 Verify JWT】（函数自身用 FETCH_TOKEN 鉴权）：
+//    早盘 cron（db/supabase_bidding_t0925_cron.sql，9:25 起每 5 秒触发）的
+//    net.http_post 只带 Content-Type、【不带 apikey / Authorization】
+//    → 平台校验一旦开着，每次调用都 401，早盘竞价整条链路直接无数据。
+//    · CLI 部署：仓库根 supabase/config.toml 已声明 [functions.bidding-a] verify_jwt=false
+//    · Dashboard 部署：【不读】config.toml，需手动关一次
+//      （Edge Functions → bidding-a → Details → 关闭 "Enforce JWT Verification"）
+//    · 复测：不带任何认证头 GET /functions/v1/bidding-a/health
+//      200 或 403 即已关闭；401 UNAUTHORIZED_NO_AUTH_HEADER = 仍开着 ⚠️
+//    · 2026-09-30 实测线上状态：已关闭（health=200，root=403 token 无效）
 // 并在 Secrets 里设置：FUYAO_API_KEY、FETCH_TOKEN（SUPABASE_URL / SUPABASE_ANON_KEY 由平台自动注入）。
 // ============================================================================
 

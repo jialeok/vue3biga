@@ -35,7 +35,11 @@
 //     2) Secrets 里设置 LIMIT_POOL_FETCH_TOKEN（未设置时回退复用 FETCH_TOKEN）；
 //     3) Verify JWT：开或关都能跑 pg_cron（下面 db/supabase_limit_pool_cron.sql 里的
 //        net.http_post 会带 anon 的 apikey + Authorization，平台鉴权直接通过）。
-//        只有在你想【用浏览器直接打开 /health、/probe】时，才需要关掉它。
+//        只有在你想【用浏览器直接打开 /health、/probe】时，才需要关掉它（建议关掉）。
+//        · CLI 部署：仓库根 supabase/config.toml 已声明本函数 verify_jwt=false
+//        · Dashboard 部署：【不读】config.toml，需在 Details 里手动关一次
+//        · 复测：不带任何认证头 GET /functions/v1/limit-pool-fetch/health
+//          200 = 已关闭；401 UNAUTHORIZED_NO_AUTH_HEADER = 仍开着
 //   最后执行 db/supabase_limit_pool_cron.sql 建立 pg_cron 定时（北京 15:40）。
 //
 // ── 手动触发（排查 / 补历史某日）────────────────────────────────────────────

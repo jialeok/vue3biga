@@ -1,0 +1,60 @@
+# ============================================================================
+# Supabase 项目配置 —— 【要提交进 Git】，别加进 .gitignore
+#
+# 本文件声明的是【平台侧的部署开关】，不是函数代码。
+#   · CLI 部署（supabase functions deploy <name>）→ 会自动读取本文件 ✅
+#   · Dashboard 网页粘贴部署                      → 【不读】本文件，
+#     开关必须在网页上手动设置一次
+#     （Edge Functions → 选中函数 → Details → "Enforce JWT Verification"）
+#
+# ⚠️ 已知问题（supabase/cli#4059，2025-08）：CLI 对【已存在】的函数做更新部署时，
+#    verify_jwt 可能不被应用，Dashboard 里开关仍显示为开启。
+#    兜底做法：每次部署后按文件末尾的「部署后复测」验一次。
+# ============================================================================
+
+project_id = "tonqfgeyxnnwicjopshn"
+
+# ---------------------------------------------------------------------------
+# verify_jwt = false —— 关闭平台 JWT 校验
+# ---------------------------------------------------------------------------
+
+# 【必须关闭】早盘 cron（db/supabase_bidding_t0925_cron.sql，9:25 起每 5 秒触发）
+# 的 net.http_post 只带 Content-Type，【不带 apikey / Authorization】；
+# 平台校验一旦开着 → 每次调用都 401 → 早盘竞价整条链路直接无数据。
+[functions.bidding-a]
+verify_jwt = false
+
+# 【可开可关】对应 cron（db/supabase_auction_yizi_cron.sql）带了 anon 的
+# apikey + Authorization，开着校验也能正常跑；
+# 关掉的好处：能用浏览器直接打开 /health、/probe 排查。
+[functions.auction-yizi-fetch]
+verify_jwt = false
+
+# 【可开可关】同上，见 db/supabase_limit_pool_cron.sql。
+[functions.limit-pool-fetch]
+verify_jwt = false
+
+# ---------------------------------------------------------------------------
+# verify_jwt = true —— 保持平台 JWT 校验（默认值，显式写出防误改）
+# 这两个是给【前端】用 anon key 调的，anon key 本身就是合法 JWT，开着即可。
+# ---------------------------------------------------------------------------
+
+[functions.fuyao-proxy]
+verify_jwt = true
+
+[functions.numcat-proxy]
+verify_jwt = true
+
+# ============================================================================
+# 部署后复测（不用登录控制台，curl / 浏览器 / 任意 HTTP 客户端都行）
+#
+#   GET https://tonqfgeyxnnwicjopshn.supabase.co/functions/v1/bidding-a/health
+#
+#   200  {"ok":true,...}                    → 已关闭 ✅
+#   401  UNAUTHORIZED_NO_AUTH_HEADER        → 仍开着 ⚠️（早盘会没数据，去关掉）
+#   403  {"ok":false,"error":"token 无效"}  → 已关闭 ✅（已穿透平台校验，
+#                                             被函数自己的 token 校验拦下，正常）
+#
+# 2026-09-30 实测：bidding-a = 200 ✅ 已关闭；
+# auction-yizi-fetch / limit-pool-fetch / fuyao-proxy / numcat-proxy = 401（开启，符合预期）。
+# ============================================================================
