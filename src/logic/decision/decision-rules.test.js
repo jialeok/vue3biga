@@ -46,6 +46,9 @@ import {
   positionToneOf,
   HOLD_TAG,
   PREV_BOUGHT_TAG,
+  TOPIC_PREV_BOUGHT_TAG,
+  TOPIC_STREAK_WINDOW,
+  topicStreakText,
   BUY_COUNT_MAX_SMALL,
   BUY_COUNT_MAX_MID,
   RULE_NO,
@@ -2009,6 +2012,119 @@ describe('昨天已买标记（PREV-BOUGHT，股票级）', () => {
     const text = buildRulesLines().join('\n');
     expect(text).toContain(RULE_NO.PREV_BOUGHT);
     expect(text).toContain(PREV_BOUGHT_TAG);
+  });
+
+  // ===== [TOPIC-PREV-BOUGHT 2026-09-30 用户口径 · 第三版] 标记【回到题材行】=====
+  // 用户原话：「昨天已买应该是标注在题材名称旁那里（竞价一字右边）」；
+  // 并在 AskUserQuestion 里确认选【只标题材行】⇒ 题材级标记改用措辞【昨有买入】
+  // （⛔ 继续叫「昨天已买」又会被读成个股结论 —— 那正是同日的第一次事故形态）。
+  const topicPlanOf = (prevBoughtNames, prevBoughtTopics) => {
+    const blocks = rankDecisionTopics(rows());
+    return buildBuyPlan(blocks, rankDragons(blocks), {
+      prevBoughtNames: prevBoughtNames,
+      prevBoughtTopics: prevBoughtTopics
+    });
+  };
+
+  it('🔴 回归：题材行标【昨有买入】，且只按题材命中 —— 集合外的题材不标', () => {
+    const plan = topicPlanOf(new Set(['昨天买过的']), new Set(['T']));
+    expect(plan.heavy.block.topic).toBe('T');
+    expect(plan.heavy.prevBoughtTag).toBe(TOPIC_PREV_BOUGHT_TAG);
+    // 第 2 名题材 X 没在集合里 → 题材行不标
+    expect(plan.light.prevBoughtTag).toBeUndefined();
+  });
+
+  it('🔴 反派回归：题材行【不许】再挂「昨天已买」这个说法，旧字段名也不许复活', () => {
+    const plan = topicPlanOf(new Set(['昨天买过的']), new Set(['T']));
+    expect(plan.heavy.prevBoughtTag).not.toBe(PREV_BOUGHT_TAG);
+    expect(plan.heavy.block.prevBoughtTopic).toBeUndefined();
+    expect(plan.heavy.prevBoughtTopic).toBeUndefined();
+  });
+
+  it('§10：prevBoughtTopics = null / 空集 → 题材行一律不标（未知 ≠ 昨天没人买）', () => {
+    expect(topicPlanOf(new Set(['昨天买过的']), null).heavy.prevBoughtTag).toBeUndefined();
+    expect(topicPlanOf(new Set(['昨天买过的']), new Set()).heavy.prevBoughtTag).toBeUndefined();
+  });
+
+  it('🔴 回归（9/30 事故形态）：题材行有标时，同题材里【昨天没买过的那只】仍不改加仓', () => {
+    const plan = topicPlanOf(new Set(['昨天买过的']), new Set(['T']));
+    const picks = plan.heavy.picks;
+    expect(plan.heavy.prevBoughtTag).toBe(TOPIC_PREV_BOUGHT_TAG);   // 题材级：标了
+    expect(picks.find((p) => p.name === '昨天买过的').position).toBe(POSITION_ADD);
+    // ⛔ 这只在同一个题材块里，但昨天没买 → 【不许】跟着变加仓
+    expect(picks.find((p) => p.name === '昨天没买的').position).toBe(POSITION_HEAVY);
+  });
+
+  // ===== [TOPIC-STREAK 2026-09-30 用户口径] 题材入选次数（近 5 个交易日，含今日）=====
+  // 用户原话：「如果题材在五天内，第一次入选进入买点，题材行（竞价一字旁边）应该标上，
+  //           一次入选，二次入选，三次入选……，这样我就知道频率」。
+  it('topicStreakText：1~5 用中文序数；0 / 非法 → 空串（⛔ 不显示成「零次入选」）', () => {
+    expect(topicStreakText(1)).toBe('一次入选');
+    expect(topicStreakText(2)).toBe('二次入选');
+    expect(topicStreakText(3)).toBe('三次入选');
+    expect(topicStreakText(4)).toBe('四次入选');
+    expect(topicStreakText(5)).toBe('五次入选');
+    expect(topicStreakText(0)).toBe('');
+    expect(topicStreakText(null)).toBe('');
+    expect(topicStreakText(undefined)).toBe('');
+    expect(topicStreakText('x')).toBe('');
+  });
+
+  it('🔴 入选次数 = 过去窗口内次数 + 1（今天的这一块本身就是本次入选）', () => {
+    const blocks = rankDecisionTopics(rows());
+    const plan = buildBuyPlan(blocks, rankDragons(blocks), {
+      topicStreakPast: new Map([['T', 3]])        // 过去 4 个交易日里 T 进过 3 次
+    });
+    expect(plan.heavy.streakTag).toBe('四次入选');   // 3 + 今天这一次
+    // 第 2 名题材 X 过去没进过 → 今天是第一次
+    expect(plan.light.streakTag).toBe('一次入选');
+  });
+
+  it('§10：topicStreakPast = null（窗口内有历史日算不出来）→ 一律不标（⛔ 不用偏低次数冒充）', () => {
+    const blocks = rankDecisionTopics(rows());
+    expect(buildBuyPlan(blocks, rankDragons(blocks), { topicStreakPast: null }).heavy.streakTag)
+      .toBeUndefined();
+    expect(buildBuyPlan(blocks, rankDragons(blocks)).heavy.streakTag).toBeUndefined();
+  });
+
+  it('🔴 兜底方案（⑤⑥）的题材：标【昨有买入】但【不标】入选次数（用户口径：只数重仓 / 轻仓）', () => {
+    const big = [];
+    for (let i = 1; i <= BIG_TOPIC_MIN_COUNT; i++) big.push(E('A' + i, 'A', 100 - i));
+    for (let i = 1; i <= BIG_TOPIC_MIN_COUNT; i++) big.push(E('B' + i, 'B', 90 - i));
+    const blocks = rankDecisionTopics(big);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks), {
+      ladderReady: true, ladderTopicGroups: [],
+      prevBoughtNames: new Set(['A1']), prevBoughtTopics: new Set(['A']),
+      topicStreakPast: new Map([['A', 2], ['B', 1]])
+    });
+    expect(plan.bigTopic).not.toBe(null);
+    expect(plan.bigTopic.blocks.length).toBeGreaterThan(0);
+    const a = plan.bigTopic.blocks.find((b) => b.block.topic === 'A');
+    const b = plan.bigTopic.blocks.find((b) => b.block.topic === 'B');
+    expect(a.prevBoughtTag).toBe(TOPIC_PREV_BOUGHT_TAG);      // ⑫ 兜底方案也标
+    expect(b.prevBoughtTag).toBeUndefined();
+    // ⑬ 只数重仓 / 轻仓 ⇒ 兜底方案的题材一律不标
+    expect(plan.bigTopic.blocks.every((x) => x.streakTag === undefined)).toBe(true);
+  });
+
+  it('卖点侧不出现这两个题材行标记（⑫ / ⑬ 都是买点侧专有）', () => {
+    const blocks = rankDecisionTopics([
+      E('S龙一', 'S', 30, true), E('S龙二', 'S', 20, true), E('S三', 'S', 10),
+      E('W一', 'W', 9), E('W二', 'W', 8)
+    ]);
+    const plan = buildSellPlan(
+      [{ name: 'S三', topic: 'S', pct: 10, inTodayList: true }],
+      blocks, rankDragons(blocks), new Set(), new Set()
+    );
+    expect(plan[0].prevBoughtTag).toBeUndefined();
+    expect(plan[0].streakTag).toBeUndefined();
+  });
+
+  it('规则面板里有 ⑬ 这条，且 ⑫ / ⑬ 两个说法都能逐条核对', () => {
+    const text = buildRulesLines().join('\n');
+    expect(text).toContain(RULE_NO.TOPIC_STREAK);
+    expect(text).toContain(TOPIC_PREV_BOUGHT_TAG);
+    expect(text).toContain(String(TOPIC_STREAK_WINDOW));
   });
 });
 

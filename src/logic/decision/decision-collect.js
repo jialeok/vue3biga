@@ -36,6 +36,7 @@ import {
   isSmallRiskyTopic,
   buildBuyPlan,
   buildSellPlan,
+  TOPIC_STREAK_WINDOW,
   SELL_TIME_MIDDAY,
   SELL_TIME_CLOSE
 } from './decision-rules.js';
@@ -121,14 +122,99 @@ function _prevBuyNames(prevDate) {
 }
 
 /**
+ * 【⑫ 题材级 · 昨有买入】昨天买过的票【今天】落在哪些题材里。
+ *
+ * ⚠️ 用【今日的题材归属】（byName 里的 topic）而不是昨天的题材名：看板显示的是今天的题材块，
+ *    标签表达的是「今天这个题材在延续」，用同一份映射才不会出现「标签挂在一个今天不存在的题材上」。
+ *    与 _mkRow 的题材口径完全同源（§6）。
+ * §10：byName 缺人（今天不在任何池里）→ 该股不参与聚合；这不影响其它股票。
+ *
+ * @param {Set<string>} prevBought 上一交易日打过「买」标签的股票名集合
+ * @param {Map<string,object>} byName 今日 股票名 → 行（含 topic）
+ * @returns {Set<string>} 含「昨天有票买过」的题材名集合
+ */
+function _prevBoughtTopics(prevBought, byName) {
+  const out = new Set();
+  if (!prevBought || !byName) return out;
+  prevBought.forEach(function(nm) {
+    const row = byName.get(nm);
+    const t = row ? String(row.topic || '').trim() : '';
+    if (t) out.add(t);
+  });
+  return out;
+}
+
+/** 一个买点方案里【重仓 / 轻仓】两个主买点块的题材名集合（⛔ 不含弱市兜底方案 ⑤⑥ 的题材） */
+function _heavyLightTopics(buy) {
+  const out = new Set();
+  if (!buy) return out;
+  [buy.heavy, buy.light].forEach(function(b) {
+    const t = (b && b.block) ? String(b.block.topic || '').trim() : '';
+    if (t) out.add(t);
+  });
+  return out;
+}
+
+/**
+ * 【⑬ 题材入选次数】过去（不含今日）窗口内——含今日共 TOPIC_STREAK_WINDOW 天 ——
+ * 每个题材进入【重仓 / 轻仓】买点块的【天数】（同一题材一天最多算 1 次）。
+ *
+ * 实现口径（用户 2026-09-30 已确认）：窗口含今日、只数重仓 / 轻仓两个主买点块。
+ *
+ * ⚠️ 成本与 §36：这里要沿着交易日往回重算 4 天（今天的这一次由主流程自己算）。
+ *    每次重算是【纯内存组装】（无请求、不写库、不消费额度），且：
+ *    ① 只在【非 skipPrevBuy】的主流程里跑一次 ⇒ 内部递归不会再往下展开（否则指数爆炸）；
+ *    ② 只在买点方案真有必要（下面直接挂在 buildBuyPlan 之前）时才跑。
+ *    ⛔ 不要给它加「递归调用 collectDecisionData」的能力 —— 那正是 ① 要防的。
+ *
+ * §10 红线：窗口里【任意一天】算不出来（那天的列表 / 正式名单索引还没加载）⇒ 返回 null = 未知。
+ *    ⛔ 绝不返回一个「偏低的次数」—— 用户是拿它判题材频率的，少算一次就会误判。
+ *
+ * @param {string} date 展示日
+ * @returns {Map<string,number>|null} 题材名 → 过去窗口内入选天数（不含今日）；null = 未知
+ */
+function _topicStreakPast(date) {
+  if (!date) return null;
+  const days = [];
+  let d = date;
+  for (let i = 0; i < TOPIC_STREAK_WINDOW - 1; i++) {
+    d = getPreviousTradingDay(d);
+    if (!d) break;
+    days.push(d);
+  }
+  if (days.length < TOPIC_STREAK_WINDOW - 1) return null;   // 交易日历不完整 ⇒ 窗口不完整
+
+  const counts = new Map();
+  for (let i = 0; i < days.length; i++) {
+    const day = days[i];
+    let set = null;
+    try {
+      // rangeOptional：历史日拿不到十日涨幅，但题材归属不需要它（见 collectDecisionData 的闸门注释）
+      const rec = collectDecisionData(day, { skipPrevBuy: true, rangeOptional: true });
+      if (rec && rec.ready && rec.buy) set = _heavyLightTopics(rec.buy);
+    } catch (e) {
+      console.warn('[DECISION] 题材入选次数：' + day + ' 重算失败 → 次数按未知处理', e);
+      set = null;
+    }
+    if (!set) return null;                                  // §10：任一天未知 ⇒ 整体未知
+    set.forEach(function(t) { counts.set(t, (counts.get(t) || 0) + 1); });
+  }
+  return counts;
+}
+
+/**
  * 采集并计算某日的决策结论（同步：数据源全在内存里）。
  * @param {string} date 展示日 YYYY-MM-DD
- * @param {{skipPrevBuy?:boolean}} [opts]
+ * @param {{skipPrevBuy?:boolean, rangeOptional?:boolean}} [opts]
  *        skipPrevBuy=true → 不往回算上一交易日的买点（内部递归用，防止无限往前追）
+ *        rangeOptional=true → 【十日涨幅没加载也继续算】（§10 的例外，见下方闸门注释）。
+ *          只给「近 5 个交易日题材入选次数」的历史日重算用；⛔ UI 展示日【绝不要】传它 ——
+ *          那样会拿一份没有涨幅的数据去给出买卖点，等于 §10 红线。
  * @returns {{ready:boolean, reason:string, topics:Array, buy:object, sell:Array}}
  */
 export function collectDecisionData(date, opts) {
   const skipPrevBuy = !!(opts && opts.skipPrevBuy);
+  const rangeOptional = !!(opts && opts.rangeOptional);
   if (!date) return _notReady('未选择日期');
 
   const prevDate = getPreviousTradingDay(date);
@@ -141,8 +227,20 @@ export function collectDecisionData(date, opts) {
   if (!_isAuctionWatchlistIndexReady(date)) return _notReady('当日正式名单尚未加载完成，暂不给建议');
 
   // 十日涨幅是「龙一/龙二」的唯一依据：没加载 ⇒ 无法给出买卖建议（§10 不拿空数据冒充结论）
-  const rangeMap = getDragonRangePct(date);
-  if (!rangeMap || rangeMap.size === 0) return _notReady('十日涨幅 / 龙头数据尚未加载完成');
+  //
+  // [TOPIC-STREAK 2026-09-30] rangeOptional 的正当性（唯一的例外场景）：
+  //   「近 5 个交易日题材入选次数」要对【历史日】重算买点，但 getDragonRangePct 只持有一个日期
+  //   （dragonState.date === 当前展示日）⇒ 历史日必然拿不到涨幅 ⇒ 一律 _notReady ⇒ 功能没法做。
+  //   而【题材归属 / 名次 / 一字数】完全不需要涨幅（rankDecisionTopics 只看 name/topic/isYizi/countable），
+  //   涨幅只影响【题材内部选哪只票】（龙一 / 龙二）与 ⑨ 双主线的高开率比较 —— 都不改变
+  //   「哪个题材进了买点」这个结论。因此只取 heavy / light 的题材名时，涨幅缺失不影响正确性。
+  //   ⚠️ 代价：rangeOptional 下灰行（观察组继承票，需有十日涨幅才纳入）会被统一排除；
+  //      灰行 countable=false，本来就不进题材只数，故对题材结论无影响（见 _mkRow / 灰行注释）。
+  let rangeMap = getDragonRangePct(date);
+  if (!rangeMap || rangeMap.size === 0) {
+    if (!rangeOptional) return _notReady('十日涨幅 / 龙头数据尚未加载完成');
+    rangeMap = new Map();
+  }
 
   const inheritSold = getPrevSoldInheritedSet(date, prevDate);
   const pmap = getPrimaryTopicMap(list);
@@ -276,12 +374,21 @@ export function collectDecisionData(date, opts) {
   //   ⛔ 股票级判据，逐只比名字（2026-09-30 修正：上一版按题材判，会把整块都标上，误导）。
   //   在 buildBuyPlan 之前取：买点与卖点两边都要用它（一次采集、两处复用）。
   const prevBought = _prevBoughtNames(prevDate);
+  // 【⑫ 题材级 · 昨有买入】把上面这批股票【按今日题材】聚合（题材行标【昨有买入】）。
+  //   与上一行的股票级判据共用同一份 prevBought（§6：一处采集、两处复用，不会分叉）。
+  const prevBoughtTopics = _prevBoughtTopics(prevBought, byName);
+  // 【⑬ 题材入选次数】过去（不含今日）4 个交易日里每个题材进过买点几次；null = 窗口内有历史日未知。
+  //   ⛔ 只在主流程算：内部递归调用一律带 skipPrevBuy=true ⇒ topicStreakPast 恒为 null ⇒
+  //      不会再往下展开（否则 _topicStreakPast → collectDecisionData → _topicStreakPast … 指数爆炸）。
+  const topicStreakPast = skipPrevBuy ? null : _topicStreakPast(date);
   const buy = buildBuyPlan(topics, dragonMap, {
     ladderTopicGroups: ladder ? ladder.groups : [],
     ladderReady: ladder ? ladder.ready : false,
     ladderReason: ladder ? ladder.reason : '',
     prevBuyNames: prevBuyNames,
-    prevBoughtNames: prevBought
+    prevBoughtNames: prevBought,
+    prevBoughtTopics: prevBoughtTopics,
+    topicStreakPast: topicStreakPast
   });
 
   // 昨日龙头名册已在上方取过（prevDragonMap）—— 灰行补齐也要用它，⛔ 不重复取第二次。
@@ -306,13 +413,13 @@ export function collectDecisionData(date, opts) {
   const todayBuyNames = _buyPlanNames(buy);
   const sell = buildSellPlan(sellRows, topics, dragonMap, prevDragonNames, todayBuyNames);
 
-  // [PREV-BOUGHT 2026-09-30 用户口径，同日修正] 「昨天已买」标记【股票级】，只标在【买点】的股票行上：
-  //   判据 = 该股票是否在 prevBought（= 昨日打过「买」标签的股票）里，由规则层逐只比名字（§21 模板零计算）。
-  //   ⛔ 这里【不再】做任何题材级标记：
-  //      · 买点侧上一版按题材判 ⇒「地产链」里只要有一只（世联行）买过，整块连【大亚圣象】都被标
-  //        「昨天已买」⇒ 用户 2026-09-30 反馈这是错的（真实数据：9/29 buy 标签只有世联行、新华文轩）。
-  //      · 卖点侧一律不标：卖点候选本来就是「昨天打过买标签的股票」，标了等于全标，没有信息量。
-  //   现在 prevBought 只作为 buildBuyPlan 的 opts 传下去，UI 直接读 pick.prevBoughtTag。
+  // [PREV-BOUGHT 2026-09-30 用户口径，同日两次修正] 「昨天买过」这件事现在有【两个】落点：
+  //   · 题材行【昨有买入】(block.prevBoughtTag)：题材里【有】票昨天被打过「买」标签 ⇒ 题材在延续。
+  //     判据 = prevBoughtTopics（本文件按【今日题材】把 prevBought 聚合出来，见 _prevBoughtTopics）。
+  //   · 股票行【加仓】(pick.position)：这一只昨天真买过（判据 = prevBought，规则层逐只比名字）。
+  //     ⛔ 股票行【不再】显示任何「昨天已买」徽标（上一版在这里，用户反馈会被读成个股结论）。
+  //   · 卖点侧一律不标：卖点候选本来就是「昨天打过买标签的股票」，标了等于全标，没有信息量。
+  //   三条都在规则层收口（§21 模板零计算），UI 直接读上述字段。
 
   const sellTimes = [];
   sell.forEach(function(g) {
