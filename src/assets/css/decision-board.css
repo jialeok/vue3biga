@@ -643,6 +643,27 @@
             white-space: nowrap;
         }
 
+        /* ---- [MIN-3-PICKS 2026-10-02 用户口径] 题材行「候选题材」标记（规则⑥）----
+           位置：题材行内、「竞价一字：n」右边、「昨有买入」左边
+                 （用户原话「你可以这样写：候选题材：房地产」）。
+           语义：这是用来【补位 / 陪跑】的题材 —— 主线不足 3 只时按排名往下推出来的，
+                 或第 1 名已够 3 只时第 2 名降级来的；取票【降一档】且【一律轻仓】。
+           配色：靛蓝描边 + 淡靛蓝底（与量比同色系 #6366f1，因为它说的同样是「强弱程度」而非涨跌），
+                 ⛔ 刻意不用琥珀（那是「昨有买入」）、也不用淡紫（那是「N 次入选」）——
+                    三个题材级标记必须一眼可分。 */
+        .dcb-candidate {
+            flex-shrink: 0;
+            padding: 0 5px;
+            font-size: 10px;
+            font-weight: 600;
+            line-height: 15px;
+            color: #4338ca;
+            background: #eef2ff;
+            border: 1px solid #c7d2fe;
+            border-radius: 4px;
+            white-space: nowrap;
+        }
+
         /* ---- [COMPACT 2026-09-30 用户口径] 「简洁」开关 ----
            置于【内容区顶部】（与早盘竞价的筛选控件同一位置口径，⛔ 不放 header）。
            纯 UI 态：不落 localStorage（§8）、不进全局 store（§34）。 */

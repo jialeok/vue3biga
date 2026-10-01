@@ -84,12 +84,34 @@ function _prevBoughtNames(prevDate) {
 }
 
 /** 从买点方案里抽出全部股票名（heavy / light / 各兜底方案的 blocks 都算「买点列表」） */
+/**
+ * 【买点块清单 · 唯一实现（§6）】把一个买点计划里【所有】买点块摊平成一维数组。
+ *
+ * 覆盖：heavy（第 1 名）/ light（第 2 名）/ candidates[]（候选题材，2026-10-02 新增）/
+ *       noYizi / smallTopic / bigTopic（三个兜底槽位，新规下恒为 null，⛔ 键保留）。
+ *
+ * ⚠️ 为什么按【槽位列表 + 数组 + blocks 兜底】的写法遍历，而不是写死「heavy / light」：
+ *    口径一致性靠【结构】保证，而不是靠人记得改这里 —— 加回带 blocks 的方案、或新增候选数组时，
+ *    计数 / 派生范围不会【悄悄】变窄（2026-09-30 「入选次数整块看板不显示」的事故就是这么来的）。
+ *
+ * @param {object} buy buildBuyPlan 的返回值
+ * @returns {Array<object>} 买点块数组（已过滤 null）
+ */
+function _buyBlocksOf(buy) {
+  const out = [];
+  if (!buy) return out;
+  ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopic'].forEach(function(k) {
+    if (buy[k]) out.push(buy[k]);
+  });
+  // [MIN-3-PICKS 2026-10-02] 候选题材块 = 常规块结构（有 picks），只是标了 isCandidate
+  (buy.candidates || []).forEach(function(b) { if (b) out.push(b); });
+  return out;
+}
+
 function _buyPlanNames(buy) {
   const out = new Set();
   if (!buy) return out;
-  ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopic'].forEach(function(k) {
-    const b = buy[k];
-    if (!b) return;
+  _buyBlocksOf(buy).forEach(function(b) {
     (b.picks || []).forEach(function(p) { if (p && p.name) out.add(p.name); });
     (b.blocks || []).forEach(function(bb) {
       (bb.picks || []).forEach(function(p) { if (p && p.name) out.add(p.name); });
@@ -118,9 +140,7 @@ function _buyPlanNames(buy) {
 function _decorateVolRatioTrend(buy, sell, date) {
   if (!date) return;
   if (buy) {
-    ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopic'].forEach(function(k) {
-      const b = buy[k];
-      if (!b) return;
+    _buyBlocksOf(buy).forEach(function(b) {
       (b.picks || []).forEach(function(p) { decorateVolRatioFields(p, date, VOL_RATIO_TREND_DAYS); });
       (b.blocks || []).forEach(function(bb) {
         (bb.picks || []).forEach(function(p) { decorateVolRatioFields(p, date, VOL_RATIO_TREND_DAYS); });
@@ -205,7 +225,7 @@ function _buyPointTopics(buy) {
       if (tt) out.add(tt);
     });
   };
-  ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopic'].forEach(function(k) { _add(buy[k]); });
+  _buyBlocksOf(buy).forEach(function(b) { _add(b); });
   return out;
 }
 

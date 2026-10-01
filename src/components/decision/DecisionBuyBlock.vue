@@ -24,9 +24,10 @@
     <!-- 第一行：题材名 + 排名圆点 + 数量 + 竞价一字 + 题材标记（④ 昨有买入 / ⑤ 入选次数） -->
     <DecisionTopicHead
       :topic="block.block.topic"
-      :rank="block.block.rank"
+      :rank="block.pickRank || block.block.rank"
       :count="block.block.count"
       :yizi="block.block.yiziCount"
+      :candidate-tag="block.candidateTag"
       :prev-bought-tag="block.prevBoughtTag"
       :streak-tag="block.streakTag"
     />

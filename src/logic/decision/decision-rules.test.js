@@ -31,6 +31,10 @@ import {
   // [QUANT-PICK 2026-10-01] 新买点的两个核心实现
   resolvePickTier,
   pickByVolRatio,
+  // [MIN-3-PICKS 2026-10-02] 保底 3 只 + 候选题材
+  candidatePickCount,
+  DAILY_MIN_PICKS,
+  CANDIDATE_TAG,
   PICK_TIER_BIG_MIN,
   PICK_TIER_MID_MIN,
   PICK_TIER_MIN_COUNT,
@@ -105,10 +109,17 @@ function E(name, topic, pct, isYizi, countable, aucPct, code, inheritSold, volRa
  *
  * @param {string} topic 题材名
  * @param {number} n 要几只
+ * @param {boolean} [isYizi]
+ *        [MIN-3-PICKS 2026-10-02] 是否把凑数票构造成【竞价一字】。
+ *        ⚠️ 一字票【计入题材只数】（决定档位）但【买不到、不占选票名额】—— 这正是 9/30
+ *           用户举的 AI应用形态：8 只里新华传媒是一字 ⇒ 档位取 2 只、实际只买入 1 只。
+ *           用它就能造出「大档题材、可买只数不足」的样本，而不会把档位降下来。
  */
-function FILLER(topic, n) {
+function FILLER(topic, n, isYizi) {
   const out = [];
-  for (let i = 0; i < n; i++) out.push(E('凑' + topic + (i + 1), topic, -100 - i, false, true, 0.1));
+  for (let i = 0; i < n; i++) {
+    out.push(E('凑' + topic + (i + 1), topic, -100 - i, !!isYizi, true, 0.1));
+  }
   return out;
 }
 
@@ -295,11 +306,15 @@ describe('买点 · 竞价涨幅徽标（AUC-BADGE）', () => {
   });
 
   it('第 1 名题材（重仓档）也带徽标 —— ① / ② 两个入口都要覆盖，别只改了一个', () => {
-    // T1 = 4 只 ⇒ small 档（取 1 只、重仓）；两个一字买不进 ⇒ 只剩 大A / 大B，
-    // 且全部缺量比 ⇒ 走 §10 退路按龙头名次取 ⇒ 大A（十日涨幅最高）。
+    // T1 = 4 只 ⇒ small 档（取 1 只、重仓）；且全部缺量比 ⇒ 走 §10 退路按龙头名次取
+    // ⇒ 取名次第 1 的 大A（十日涨幅最高、非一字）。
+    // ⓘ [YIZI-OCCUPY 2026-10-02] 一字仍留在样本里（一A），用来确认它【不买入】；
+    //    ⛔ 别把 大A 的十日涨幅排在 一A 后面 —— 那样小档唯一的名额就被一字占掉，
+    //       picks 会是空的，这条就测不到徽标了（一字占名次、不递补）。
     const blocks = rankDecisionTopics([
-      E('一A', 'T1', 40, true, true, 10), E('一B', 'T1', 39, true, true, 9.98),
-      E('大A', 'T1', 30, false, true, 1.5), E('大B', 'T1', 20, false, true, -2)
+      E('一A', 'T1', 30, true, true, 10),
+      E('大A', 'T1', 40, false, true, 1.5), E('大B', 'T1', 20, false, true, -2),
+      E('大C', 'T1', 10, false, true, -3)
     ]);
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
     expect(plan.heavy.block.count).toBe(4);
@@ -331,9 +346,13 @@ describe('灰行参与选票（GRAY-DRAGON）', () => {
   });
 
   // 9/8 大消费原型：龙一国芳集团（灰名 + 灰题材 + 灰色实心卖标签），龙二~龙五全是竞价一字
-  // （其中还有灰行的一字）→ 只能跳过一字，往下取龙六云南旅游、龙七补充。
+  // （其中还有灰行的一字）。
   // ⭐ 新规下「只数」本身决定买几只：T 的正式成员 11 只 ⇒ 落到 big 档 ⇒ 取 3 只（前 2 重仓 + 第 3 轻仓）。
-  it('龙一=卖标签继承的灰行 + 龙二~龙五全是一字 → 跳过一字往下取（9/8 大消费）', () => {
+  // 🔴 [YIZI-OCCUPY 2026-10-02] 口径已改：一字【占名次、不买入、也不递补】。
+  //    大档取「名次前 3」= 国芳集团(龙一) + 一字二(龙二) + 一字三(龙三，灰行的一字)
+  //    ⇒ 后两个买不进且不让龙六/龙七递补 ⇒ 实际【只买入国芳集团 1 只】。
+  //    ⛔ 旧断言是 ['国芳集团','云南旅游','补充']（跳过一字往下补）—— 那是旧口径，已作废。
+  it('龙一=卖标签继承的灰行 + 龙二~龙五全是一字 → 一字占名次不递补（9/8 大消费）', () => {
     const blocks = rankDecisionTopics([
       E('国芳集团', 'T', 96, false, false, 2, '', true),   // 龙一：灰行 + 昨日卖标签继承
       E('一字二', 'T', 80, true),
@@ -346,9 +365,15 @@ describe('灰行参与选票（GRAY-DRAGON）', () => {
     ].concat(FILLER('T', 6)));   // 正式成员 = 5 + 6 = 11 只 ⇒ 大档（取 3 只）
     expect(blocks[0].count).toBe(11);
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
-    // 全部缺量比 ⇒ §10 退路：按龙头名次取前 3（一字买不进，自动跳过）⇒ 大档前二重仓 + 第三轻仓
-    expect(plan.heavy.picks.map(p => p.name)).toEqual(['国芳集团', '云南旅游', '补充']);
-    expect(plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_HEAVY, POSITION_LIGHT]);
+    // 全部缺量比 ⇒ §10 退路：按龙头名次取【前 3 名】= 国芳集团 + 一字二 + 一字三
+    // ⇒ 两个一字买不进、【也不递补】⇒ 实际买入 1 只（国芳集团），重仓
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['国芳集团']);
+    expect(plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY]);
+    // ⛔ 龙六 / 龙七 不许递补进来（递补 = 旧口径，会让「档位取 3 只」名存实亡）
+    expect(plan.heavy.picks.map(p => p.name)).not.toContain('云南旅游');
+    expect(plan.heavy.picks.map(p => p.name)).not.toContain('补充');
+    // §10 如实呈现：少给了必须在说明里写出原因（不然用户不知道为什么大档只买 1 只）
+    expect(plan.heavy.notes.join('｜')).toContain('竞价一字');
   });
 
   it('第 2 名题材的龙一是灰行 → 照常入选（9/8 农业 · 万向德农）', () => {
@@ -448,6 +473,35 @@ describe('resolvePickTier（题材数量 → 买几只 · §6 唯一实现）', 
   });
 });
 
+// === [MIN-3-PICKS 2026-10-02] 候选题材取几只 = 主线档位【降一档】===
+// 两个实例来自用户原话（⛔ 改这个函数前先拿这两个数对一遍）：
+//   · 大题材（≥10 只）作候选 → 主线本可取 3 只 ⇒ 候选取 **2 只**
+//     （用户原话「排名第二的题材作为候选题材（也是10只以上，选两只轻仓）」）；
+//   · 中档（7~9 只）作候选   → 主线本可取 2 只 ⇒ 候选取 **1 只**
+//     （用户原话「房地产 9 只 … 作为候选题材只能选一只凑够数 3 只 …
+//       只买竞价量比最高的深物业A，把深华发A 59.08 排除在外」）。
+describe('candidatePickCount（候选题材取几只 · 降一档）', () => {
+  it('大档 3 → 2、中档 2 → 1（用户 9/30 给的正是这两档）', () => {
+    expect(candidatePickCount(resolvePickTier(10))).toBe(2);
+    expect(candidatePickCount(resolvePickTier(12))).toBe(2);
+    expect(candidatePickCount(resolvePickTier(9))).toBe(1);
+    expect(candidatePickCount(resolvePickTier(7))).toBe(1);
+  });
+
+  it('小档 1 → 保底 1（⛔ 降一档不能降到 0，否则「往下推候选」这步白跑）', () => {
+    expect(candidatePickCount(resolvePickTier(4))).toBe(1);
+    expect(candidatePickCount(resolvePickTier(6))).toBe(1);
+  });
+
+  it('候选题材【永远】比主线少（或相等），⛔ 绝不能比主线取更多', () => {
+    [4, 5, 6, 7, 8, 9, 10, 15].forEach(function(n) {
+      const t = resolvePickTier(n);
+      expect(candidatePickCount(t)).toBeLessThanOrEqual(t.max);
+      expect(candidatePickCount(t)).toBeGreaterThanOrEqual(1);
+    });
+  });
+});
+
 describe('pickByVolRatio（按竞价量比降序取票 · §6 唯一实现）', () => {
   const mk = (members) => {
     const blocks = rankDecisionTopics(members);
@@ -472,14 +526,26 @@ describe('pickByVolRatio（按竞价量比降序取票 · §6 唯一实现）', 
     expect(r.picks.map(p => p.name)).not.toContain('龙一');
   });
 
-  it('竞价一字一律跳过：不占名额，也不参与量比排序（量比再大也买不进）', () => {
+  // 🔴 [YIZI-OCCUPY 2026-10-02 用户口径] 竞价一字【照常按量比占名次】，但【不买入、也不递补】。
+  //    口径来源是用户 9/30 亲自算的那笔账：AI应用 8 只中档取 2 只，
+  //    量比第 1 名新华传媒 158.66 是一字 ⇒ 买不进 ⇒ 【只买入】第 2 名新华文轩 19.66。
+  //    ⛔ 旧口径是「跳过一字、往下补第 3 名」，已被用户这笔账否掉。
+  it('竞价一字：占名次、不买入、也不递补（量比再大也买不进，但会把名额吃掉）', () => {
     const { blk, dragon } = mk([
       E('一字天量比', 'T', 90, true, true, 10, '', false, 999),
       E('甲', 'T', 80, false, true, 3, '', false, 1),
       E('乙', 'T', 70, false, true, 3, '', false, 2)
     ]);
     const r = pickByVolRatio(blk, dragon, 2, 2, RULE_NO.FIRST);
-    expect(r.picks.map(p => p.name)).toEqual(['乙', '甲']);
+    // 名次前 2 = 一字天量比(999) + 乙(2)；一字买不进 ⇒ 只买 乙；⛔ 甲(1) 不许递补进来
+    expect(r.picks.map(p => p.name)).toEqual(['乙']);
+    expect(r.slotCount).toBe(2);
+    expect(r.skippedNames).toEqual(['一字天量比']);
+    // 仓位名额发给【实际买入的票】⇒ 乙 是第 1 个买入的 ⇒ 重仓（第 1 名的一字不占仓位名额）
+    expect(r.picks.map(p => p.position)).toEqual([POSITION_HEAVY]);
+    // 反派：递补的甲⛔ 不许出现
+    expect(r.picks.map(p => p.name)).not.toContain('甲');
+    expect(r.notes.join('｜')).toContain('占名次不递补');
   });
 
   it('⭐ 创业板 / 科创板 / 北交所【照选】—— 不再因板块顺延下一位', () => {
@@ -589,32 +655,187 @@ describe('buildBuyPlan（新买点：排名前二题材 × 数量分档 × 竞�
     expect(r.plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY]);
   });
 
-  it('⭐ 1~3 只 → 该题材【不出票、空仓】，另一个题材照常出票', () => {
+  it('⭐ [MIN-3-PICKS] 1~3 只的题材【被剔除、不占名次】⇒ 后面的题材【递补】上来（9/30 农业形态）', () => {
+    // 9/30 实例（用户逐字给出）：农业平均竞价量比 71.22 排【第 1】，但数量只有 2 只 ⇒
+    //   「农业少于 3 只，所以排除它。因为不符合条件，所以变成了新能源汽车排第一、AI应用第二」。
+    //   ⛔ 所以决策看板里是【递补】，不是「第 1 名空缺、整天提示空仓」。
+    // 这里用 T1（3 只、量比 9/8/7）当「农业」，X（4 只、量比 1）当「新能源汽车」。
     const r = plan([
       E('甲', 'T1', 90, false, true, 3, '', false, 9),
       E('乙', 'T1', 80, false, true, 3, '', false, 8),
       E('丙', 'T1', 70, false, true, 3, '', false, 7)
     ].concat(XROWS(4, 1)));
+    // 早盘竞价的组序里 T1 仍然是第 1（量比 9/8/7 ＞ 1）—— ⛔ 决策看板【不改】这个排序
     expect(r.blocks.map(b => b.topic)).toEqual(['T1', 'X']);
-    // 第 1 名题材：3 只 ⇒ 空仓（不是「买 1 只」，也不是「整块不显示」）
-    expect(r.plan.heavy.qualified).toBe(false);
-    expect(r.plan.heavy.picks).toEqual([]);
-    expect(r.plan.heavy.notQualifiedText).toContain('空仓');
-    expect(r.plan.heavy.notQualifiedText).toContain(ruleTag(RULE_NO.FIRST));
-    // ⛔ 另一个题材照常出票（这才是用户口径「该题材不出票，另一个照常」）
-    expect(r.plan.light.qualified).toBe(true);
-    expect(r.plan.light.picks.map(p => p.name)).toEqual(['X1']);
+    // 决策看板里：T1（3 只）被剔除，X（4 只）递补成第 1 名
+    expect(r.plan.heavy.block.topic).toBe('X');
+    expect(r.plan.heavy.pickRank).toBe(1);       // ⛔ 圆点里显示的是【决策内】排名 = 1
+    expect(r.plan.heavy.block.rank).toBe(2);     // ⓘ 早盘竞价里的真实名次仍是 2（两个口径，别混）
+    expect(r.plan.heavy.qualified).toBe(true);
+    expect(r.plan.heavy.picks.map(p => p.name)).toEqual(['X1']);
+    expect(r.plan.heavy.picks[0].position).toBe(POSITION_HEAVY);
+    // 只有 1 个合格题材 ⇒ 没有第 2 名
+    expect(r.plan.light).toBe(null);
   });
 
   it('第 2 名题材用的是【同一套】分档规则（只差排名词与规则编号）', () => {
+    // ⚠️ 第 1 名【必须】选不满 3 只（这里 2 具名 + 3 凑数 = 5 只 ⇒ 小档 1 只），
+    //    否则第 2 名会被【降级】成候选题材（那是下一条用例，别混在一起测）。
     const r = plan([
       E('甲', 'T1', 90, false, true, 3, '', false, 9), E('乙', 'T1', 80, false, true, 3, '', false, 8)
-    ].concat(FILLER('T1', 8)).concat(XROWS(7, 1)));
+    ].concat(FILLER('T1', 3)).concat(XROWS(7, 1)));
+    expect(r.plan.heavy.picks.length).toBe(1);
     expect(r.plan.light.block.count).toBe(7);          // 7 只 ⇒ mid 档
     expect(r.plan.light.picks.length).toBe(2);
     expect(r.plan.light.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_LIGHT]);
     expect(r.plan.light.ruleNo).toBe(RULE_NO.SECOND);
+    expect(r.plan.light.isCandidate).toBe(false);
     expect(r.plan.light.reason).toContain('根据规则' + RULE_NO.SECOND);
+  });
+
+  it('⭐ [MIN-3-PICKS] 第 1 名已选够 3 只 ⇒ 第 2 名【降级为候选题材】（双主线：只选最强的）', () => {
+    // 用户原话：「如果大题材（数量多 10 只以上选三只）选排名第一的就可以了……
+    //   排名第二的题材作为候选题材（也是 10 只以上，选两只轻仓），
+    //   因为已经在排名第一的题材已经选够三只了，剩下那些都是候选题材。这种也相当于双主线。」
+    const r = plan([
+      E('甲', 'T1', 90, false, true, 3, '', false, 9), E('乙', 'T1', 80, false, true, 3, '', false, 8),
+      E('丙', 'T1', 70, false, true, 3, '', false, 7)
+    ].concat(FILLER('T1', 7)).concat(XROWS(12, 1)));     // T1 = 10 只；X = 12 只
+    expect(r.plan.heavy.block.count).toBe(10);
+    expect(r.plan.heavy.picks.length).toBe(3);
+    expect(r.plan.heavy.picks.map(p => p.position))
+      .toEqual([POSITION_HEAVY, POSITION_HEAVY, POSITION_LIGHT]);
+    // 第 2 名 12 只本是大档（可取 3 只）⇒ 降级后【降一档】取 2 只，且【全部轻仓】
+    expect(r.plan.light.block.count).toBe(12);
+    expect(r.plan.light.isCandidate).toBe(true);
+    expect(r.plan.light.candidateTag).toBe(CANDIDATE_TAG);
+    expect(r.plan.light.ruleNo).toBe(RULE_NO.CANDIDATE);
+    expect(r.plan.light.picks.length).toBe(2);
+    expect(r.plan.light.picks.every(p => p.position === POSITION_LIGHT)).toBe(true);
+    // ⛔ 被降级的第 2 名【同时】在 candidates 里 —— UI 用 buyCandidates 去重渲染，不画两遍
+    expect(r.plan.candidates.length).toBe(1);
+    expect(r.plan.candidates[0]).toBe(r.plan.light);
+  });
+
+  it('⭐⭐ [MIN-3-PICKS + YIZI-OCCUPY] 9/30 用户逐字给出的那一整天（四题材全链路）', () => {
+    // ⚠️ 本用例的每一个数字都来自用户 2026-10-02 的原话，⛔ 改规则前先拿这组数对一遍：
+    //   「农业平均竞价量比 71.22 排第一，数量 2（数量不达标排除）」
+    //   「新能源汽车 32.55 排第二，数量 4 … 只买一只重仓，竞价量比最高的是襄阳轴承 69.36」
+    //   「AI应用 28 排第三，数量 8 … 新华传媒竞价量比 158.66，竞价一字买不到，
+    //     新华文轩 19.66（竞价量比第二名），非竞价一字可以买 ⇒ 所以实际上只买新华文轩。重仓」
+    //   「还差一只 ⇒ 排名第三的房地产作候选 … 只买竞价量比最高的深物业A 79.13，
+    //     把深华发A 59.08 排除在外 … 候选题材：房地产」
+    const r = plan([
+      // 农业：量比最高（71.22）排【早盘第 1】，但只有 2 只 ⇒ 数量不达标 ⇒ 剔除、不占名次
+      E('农一', '农业', 95, false, true, 3, '', false, 71.22),
+      E('农二', '农业', 94, false, true, 3, '', false, 71.22),
+      // 新能源汽车：4 只 ⇒ 小档取 1 只（量比最高的襄阳轴承 69.36）
+      E('襄阳轴承', '新能源汽车', 90, false, true, 3, '', false, 69.36),
+      E('新二', '新能源汽车', 80, false, true, 3, '', false, 20),
+      E('新三', '新能源汽车', 70, false, true, 3, '', false, 15),
+      E('新四', '新能源汽车', 60, false, true, 3, '', false, 10),
+      // AI应用：8 只 ⇒ 中档取 2 只；但量比【第 1】的新华传媒 158.66 是【竞价一字】买不进
+      //   ⇒ 只买入量比【第 2】的新华文轩 19.66，且它是第 1 个买入的 ⇒ 重仓
+      E('新华传媒', 'AI应用', 55, true, true, 10, '', false, 158.66),
+      E('新华文轩', 'AI应用', 50, false, true, 3, '', false, 19.66),
+      E('AI三', 'AI应用', 45, false, true, 3, '', false, 5),
+      E('AI四', 'AI应用', 44, false, true, 3, '', false, 5),
+      E('AI五', 'AI应用', 43, false, true, 3, '', false, 5),
+      E('AI六', 'AI应用', 42, false, true, 3, '', false, 5),
+      E('AI七', 'AI应用', 41, false, true, 3, '', false, 5),
+      E('AI八', 'AI应用', 40, false, true, 3, '', false, 5),
+      // 房地产：9 只 ⇒ 主线只有 2 只 < 3 ⇒ 作【候选题材】降一档取 1 只（深物业A 79.13）轻仓
+      E('深物业A', '房地产', 15, false, true, 3, '', false, 79.13),
+      E('深华发A', '房地产', 14, false, true, 3, '', false, 59.08),
+      E('房三', '房地产', 13, false, true, 3, '', false, 1),
+      E('房四', '房地产', 12, false, true, 3, '', false, 1),
+      E('房五', '房地产', 11, false, true, 3, '', false, 1),
+      E('房六', '房地产', 10, false, true, 3, '', false, 1),
+      E('房七', '房地产', 9, false, true, 3, '', false, 1),
+      E('房八', '房地产', 8, false, true, 3, '', false, 1),
+      E('房九', '房地产', 7, false, true, 3, '', false, 1)
+    ]);
+    // 组序（平均量比）：农业 71.22 ＞ 新能源汽车 28.59 ＞ AI应用 26.04 ＞ 房地产 16.13
+    expect(r.blocks.map(b => b.topic)).toEqual(['农业', '新能源汽车', 'AI应用', '房地产']);
+    expect(r.blocks.map(b => b.count)).toEqual([2, 4, 8, 9]);
+
+    // ① 农业被剔除 ⇒【新能源汽车】递补成决策第 1（block.rank 仍是早盘真实名次 2）
+    expect(r.plan.heavy.block.topic).toBe('新能源汽车');
+    expect(r.plan.heavy.pickRank).toBe(1);
+    expect(r.plan.heavy.block.rank).toBe(2);
+    expect(r.plan.heavy.picks.map(p => p.name)).toEqual(['襄阳轴承']);
+    expect(r.plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY]);
+
+    // ② AI应用 为决策第 2：中档取 2 名，第 1 名新华传媒是一字 ⇒ 只买新华文轩 1 只、重仓
+    expect(r.plan.light.block.topic).toBe('AI应用');
+    expect(r.plan.light.pickRank).toBe(2);
+    expect(r.plan.light.isCandidate).toBe(false);
+    expect(r.plan.light.picks.map(p => p.name)).toEqual(['新华文轩']);
+    expect(r.plan.light.picks.map(p => p.position)).toEqual([POSITION_HEAVY]);
+    expect(r.plan.light.picks.map(p => p.name)).not.toContain('新华传媒');
+
+    // ③ 主线 1 + 1 = 2 只 < 3 ⇒ 往下推第 3 个合格题材【房地产】作候选：降一档取 1 只、轻仓
+    expect(r.plan.candidates.length).toBe(1);
+    const c = r.plan.candidates[0];
+    expect(c.block.topic).toBe('房地产');
+    expect(c.pickRank).toBe(3);
+    expect(c.isCandidate).toBe(true);
+    expect(c.candidateTag).toBe(CANDIDATE_TAG);
+    expect(c.ruleNo).toBe(RULE_NO.CANDIDATE);
+    expect(c.picks.map(p => p.name)).toEqual(['深物业A']);
+    expect(c.picks.every(p => p.position === POSITION_LIGHT)).toBe(true);
+    // ⛔ 深华发A（量比 59.08 第 2 高）被排除在外 —— 候选题材只取 1 只凑够 3
+    expect(c.picks.map(p => p.name)).not.toContain('深华发A');
+
+    // ④ 一天刚好 3 只（用户口径「我要求一天至少要选三只」）
+    const total = r.plan.heavy.picks.length + r.plan.light.picks.length +
+      r.plan.candidates.reduce((s, b) => s + b.picks.length, 0);
+    expect(total).toBe(DAILY_MIN_PICKS);
+  });
+
+  it('⭐⭐ [MIN-3-PICKS] 主线只有 2 只 ⇒ 往下推 1 个候选题材补到 3 只（房地产那种补位）', () => {
+    // 第 1 名 A（4 只 ⇒ 1 只）、第 2 名 B（4 只 ⇒ 1 只）= 2 只 < 3
+    // ⇒ 往下推第 3 名 C（9 只 ⇒ 中档降一档 = 1 只，轻仓），且只取量比最高的 C1
+    const r = plan([
+      E('A1', 'A', 90, false, true, 3, '', false, 90),
+      E('A2', 'A', 80, false, true, 3, '', false, 50),
+      E('A3', 'A', 70, false, true, 3, '', false, 50),
+      E('A4', 'A', 60, false, true, 3, '', false, 50),
+      E('B1', 'B', 50, false, true, 3, '', false, 80),
+      E('B2', 'B', 40, false, true, 3, '', false, 50),
+      E('B3', 'B', 30, false, true, 3, '', false, 50),
+      E('B4', 'B', 20, false, true, 3, '', false, 50),
+      E('C1', 'C', 15, false, true, 3, '', false, 79.13),   // ← 候选题材里量比最高 ⇒ 选中
+      E('C2', 'C', 14, false, true, 3, '', false, 59.08),   // ← 量比更低 ⇒ 被排除在外
+      E('C3', 'C', 13, false, true, 3, '', false, 1),
+      E('C4', 'C', 12, false, true, 3, '', false, 1),
+      E('C5', 'C', 11, false, true, 3, '', false, 1),
+      E('C6', 'C', 10, false, true, 3, '', false, 1),
+      E('C7', 'C', 9, false, true, 3, '', false, 1),
+      E('C8', 'C', 8, false, true, 3, '', false, 1),
+      E('C9', 'C', 7, false, true, 3, '', false, 1)
+    ]);
+    // 组序：A=(90+150)/4=60 ＞ B=(80+150)/4=57.5 ＞ C=(79.13+59.08+7)/9≈16.13
+    expect(r.blocks.map(b => b.topic)).toEqual(['A', 'B', 'C']);
+    expect(r.plan.heavy.picks.map(p => p.name)).toEqual(['A1']);
+    expect(r.plan.heavy.picks[0].position).toBe(POSITION_HEAVY);
+    expect(r.plan.light.picks.map(p => p.name)).toEqual(['B1']);
+    expect(r.plan.light.picks[0].position).toBe(POSITION_HEAVY);
+    // 主线 2 只 < 3 ⇒ 往下推 C
+    expect(r.plan.candidates.length).toBe(1);
+    const c = r.plan.candidates[0];
+    expect(c.block.topic).toBe('C');
+    expect(c.isCandidate).toBe(true);
+    expect(c.candidateTag).toBe(CANDIDATE_TAG);
+    expect(c.ruleNo).toBe(RULE_NO.CANDIDATE);
+    expect(c.pickRank).toBe(3);
+    // 中档（9 只）降一档 ⇒ 只取 1 只，且【轻仓】
+    expect(c.picks.map(p => p.name)).toEqual(['C1']);
+    expect(c.picks[0].position).toBe(POSITION_LIGHT);
+    // 合计正好 3 只
+    const total = r.plan.heavy.picks.length + r.plan.light.picks.length +
+      r.plan.candidates.reduce((s, b) => s + b.picks.length, 0);
+    expect(total).toBe(DAILY_MIN_PICKS);
   });
 
   it('⛔ 一字门槛已删除：题材【0 个竞价一字】照样按分档出票', () => {
@@ -976,13 +1197,17 @@ describe('formatRangePct', () => {
 
 // === [2026-09-27] 三 · 持有 / 加仓：上交易日也在买点里 → 强势股 ===
 describe('持有 / 加仓标记（HOLD）', () => {
+  // ⓘ [YIZI-OCCUPY 2026-10-02] 大档取【名次前 3】= 强势票 + T二字 + T一字B，
+  //    其中 T一字B 是一字 ⇒ 买不进 ⇒ 实际买入 2 只（强势票 / T二字）。
+  //    ⛔ 别把两个一字都排在名次前 3（那就只剩 1 只，picks[1] 会是 undefined，
+  //       本用例要的正是「第 2 只没被标」这个反面对照）。
   const holdRows = () => [
     E('强势票', 'T', 90, false, true, 5),
-    E('T一字A', 'T', 80, true),
+    E('T二字', 'T', 80, false, true, 2),
     E('T一字B', 'T', 70, true),
     E('T四', 'T', 60, false, true, 1),
     E('X一', 'X', 20), E('X二', 'X', 10)
-  ].concat(FILLER('T', 6));                            // 4 + 6 = 10 只以上，避开只数限制
+  ].concat(FILLER('T', 6));                            // 4 + 6 = 10 只，避开只数限制
   const planOf = (prevBuyNames) => {
     const blocks = rankDecisionTopics(holdRows());
     return buildBuyPlan(blocks, rankDragons(blocks), { prevBuyNames: prevBuyNames });
@@ -1029,6 +1254,8 @@ describe('昨天已买标记（PREV-BOUGHT，股票级）', () => {
    * 把一个买点计划里所有档位的 picks 摊平。
    * ⚠️ [QUANT-PICK 2026-10-01] 三个兜底键现在恒为 null（用户口径「不分弱势题材」），
    *    保留 5 槽位遍历是为了「以后真加回兜底方案时用例口径不会静默变窄」，⛔ 不是死代码。
+   * ⚠️ [MIN-3-PICKS 2026-10-02] 再加 candidates[] —— 候选题材的票也是【真实买点】，
+   *    漏掉它就会让「昨天已买标记」这类用例只在主线上测到、候选块里测不到（空测风险）。
    */
   function allPicks(plan) {
     const out = [];
@@ -1038,18 +1265,28 @@ describe('昨天已买标记（PREV-BOUGHT，股票级）', () => {
       (b.picks || []).forEach((p) => out.push(p));
       (b.blocks || []).forEach((bb) => (bb.picks || []).forEach((p) => out.push(p)));
     });
+    (plan.candidates || []).forEach((b) => {
+      if (!b || b === plan.light) return;   // light 降级成候选时它已在上面算过，⛔ 别重复计
+      (b.picks || []).forEach((p) => out.push(p));
+    });
     return out;
   }
 
   /** 档位与龙位是这套样本的前提，先钉住 —— 否则下面所有断言都可能测到空气 */
-  it('样本前提：T = 10 只（大档 3 只）｜X = 7 只（中档 2 只：1 重仓 + 1 轻仓）', () => {
+  it('样本前提：T = 10 只（大档，但 8 只一字 ⇒ 实选 2 只、均重仓）｜X = 7 只（中档 2 只：1 重仓 + 1 轻仓）', () => {
     const plan = buildBuyPlan(rankDecisionTopics(rows()), rankDragons(rankDecisionTopics(rows())));
     expect(plan.heavy.block.topic).toBe('T');
     expect(plan.heavy.block.count).toBe(10);
     expect(plan.heavy.picks.map((p) => p.name))
-      .toEqual(['昨天买过的', '昨天没买的', '凑T1']);
+      .toEqual(['昨天买过的', '昨天没买的']);
     expect(plan.heavy.picks.map((p) => p.position))
-      .toEqual([POSITION_HEAVY, POSITION_HEAVY, POSITION_LIGHT]);
+      .toEqual([POSITION_HEAVY, POSITION_HEAVY]);
+    // 🔴 [MIN-3-PICKS 2026-10-02] 主线只选出 2 只 < DAILY_MIN_PICKS(3) ⇒ 第 2 名【不降级】，
+    //    且主线 2 + 次线 2 = 4 只已够 3 ⇒ 不往下推候选题材。这两条钉住，
+    //    下面「X一 重仓 / X二 轻仓」的断言才有意义（否则测到的是候选块的轻仓票）。
+    expect(plan.heavy.picks.length).toBeLessThan(DAILY_MIN_PICKS);
+    expect(plan.light.isCandidate).toBe(false);
+    expect(plan.candidates.length).toBe(0);
     expect(plan.light.block.topic).toBe('X');
     expect(plan.light.block.count).toBe(7);
     expect(plan.light.picks.map((p) => p.name)).toEqual(['X一', 'X二']);
@@ -1061,8 +1298,19 @@ describe('昨天已买标记（PREV-BOUGHT，股票级）', () => {
   //    地产链里的大亚圣象没买过，却被【整块】标上了「昨天已买」（因为当时按题材判）。
   //
   // ⚠️ [QUANT-PICK 2026-10-01] 只数直接决定档位，所以两个题材的只数【刻意排开】：
-  //    T = 4 具名 + 6 凑数 = 10 只 ⇒ 大档（3 只：前二重仓 + 第 3 轻仓）→ 用来看「重仓也被标」；
+  //    T = 4 具名 + 6【一字】凑数 = 10 只 ⇒ 大档（本可取 3 只），但可买的只有
+  //        「昨天买过的 / 昨天没买的」2 只（其余 8 只全是竞价一字，一字买不到）
+  //        ⇒ 实选 2 只，且大档前 2 只都是【重仓】→ 用来看「重仓也被标」；
   //    X = 2 具名 + 5 凑数 = 7 只 ⇒ 中档（2 只：第 1 只重仓 + 第 2 只轻仓）→ 用来看「轻仓也被标」。
+  //
+  // 🔴 [MIN-3-PICKS 2026-10-02] 为什么要给 T 塞 6 个【一字】凑数票？
+  //    因为新规则「第 1 名选出 ≥3 只 ⇒ 第 2 名降级为候选题材（全部轻仓）」。
+  //    若 T 老老实实选出 3 只，X 就会被降级 ⇒ X一只剩 1 只且变轻仓，
+  //    下面所有「X一 重仓 / X二 轻仓」的断言全部失效（这些用例测的是【昨天已买标记】，
+  //    ⛔ 不该被选票档位规则牵连）。
+  //    用「一字凑数」把可买只数压到 2，档位仍是 big、重仓仍是前 2 只 —— 断言全部保住，
+  //    而且顺带覆盖了 9/30 用户举的真实形态（AI应用 8 只、新华传媒一字买不到 ⇒ 实际只买 1 只）。
+  //
   //    全部【不传竞价量比】⇒ 走 §10 退路「按龙头名次取票」，龙位顺序完全是确定的
   //    （X一 十日涨幅 20 > X二 10 > 凑数票 -100…），用例因此不依赖任何数字巧合。
   const rows = () => [
@@ -1071,7 +1319,7 @@ describe('昨天已买标记（PREV-BOUGHT，股票级）', () => {
     E('T一字A', 'T', 80, true),
     E('T一字B', 'T', 70, true),
     E('X一', 'X', 20, false, true, 2), E('X二', 'X', 10, false, true, -1)
-  ].concat(FILLER('T', 6)).concat(FILLER('X', 5));   // T→10 只（大档）｜X→7 只（中档）
+  ].concat(FILLER('T', 6, true)).concat(FILLER('X', 5));   // T→10 只（大档，可买 2）｜X→7 只（中档）
 
   const planOf = (prevBoughtNames) => {
     const blocks = rankDecisionTopics(rows());
@@ -1350,10 +1598,16 @@ describe('规则编号标注（RULE-NO）', () => {
       E('丙', 'T1', 70, false, true, 3, '', false, 7), E('丁', 'T1', 60, false, true, 3, '', false, 6),
       E('X1', 'X', 20, false, true, 1, '', false, 1), E('X2', 'X', 19, false, true, 1, '', false, 1),
       E('X3', 'X', 18, false, true, 1, '', false, 1), E('X4', 'X', 17, false, true, 1, '', false, 1)
-    ].concat(FILLER('T1', 6)));
+      // 🔴 [MIN-3-PICKS 2026-10-02] 凑数只数从 6 改成 3：T1 = 7 只 ⇒ 【中档 2 只】。
+      //    若仍凑到 10 只（大档 3 只），第 1 名就选够 DAILY_MIN_PICKS ⇒ 第 2 名【降级为候选题材】，
+      //    ruleNo 会变成 ⑥ 而不是 ② —— 本用例测的是「编号标注」，⛔ 不能顺带测降级
+      //    （降级另有专门用例）。中档 2 只 + 次线 1 只 = 3 只，刚好够保底，也不会触发往
+      //    下推候选题材。
+    ].concat(FILLER('T1', 3)));
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
     expect(plan.heavy.ruleNo).toBe(RULE_NO.FIRST);
     expect(plan.heavy.reason).toContain('根据规则' + RULE_NO.FIRST);
+    expect(plan.light.isCandidate).toBe(false);
     expect(plan.light.ruleNo).toBe(RULE_NO.SECOND);
     expect(plan.light.reason).toContain('根据规则' + RULE_NO.SECOND);
   });

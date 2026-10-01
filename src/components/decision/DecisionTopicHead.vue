@@ -6,8 +6,9 @@
   不构成「复用其它看板组件」——决策看板对外仍然零依赖。
 
   排版（用户口径 2026-09-24 / 09-30，节约空间，全部挤在一行）：
-      题材名称  ●1   数量：12   竞价一字：1  [昨有买入]  [三次入选]
-      └ 实心红色圆点里的数字 = 该题材今日排名（早盘竞价「题材 toggle」同一套组序）
+      题材名称  ●1   数量：12   竞价一字：1  [候选题材]  [昨有买入]  [三次入选]
+      └ 实心红色圆点里的数字 = 决策看板【内】的排名（数量不达标的题材已剔除、不占名次，
+        后面的题材递补上来；与早盘竞价「题材 toggle」同一套组序）
       └ 「竞价一字」后面的数字用红色（2026-09-24 用户要求）：一字 = 最强 / 买不到的那个信号
       └ 末尾两个标记是【买点侧专有】，由 DecisionBuyBlock 传入；卖点侧不传 ⇒ 都不显示。
 
@@ -30,10 +31,17 @@
     <span
       v-if="rank"
       class="dcb-rank-dot"
-      :title="'题材排名第 ' + rank + ' 名（与早盘竞价题材组序同源）'"
+      :title="'决策看板内排名第 ' + rank + '（数量不达标的题材已剔除、不占名次；与早盘竞价题材组序同源）'"
     >{{ rank }}</span>
     <span class="dcb-meta">数量：{{ text(count) }}</span>
     <span class="dcb-meta">竞价一字：<span class="dcb-meta-num">{{ text(yizi) }}</span></span>
+    <!-- [⑥ 候选题材 2026-10-02 用户口径] 用户原话「你可以这样写：候选题材：房地产」——
+         它在「竞价一字」右边，紧跟题材级标记之前；由 Logic 层给 candidateTag（⛔ 模板零计算）。 -->
+    <span
+      v-if="candidateTag"
+      class="dcb-candidate"
+      title="候选题材：用来补位 / 陪跑的题材（主线不足 3 只时往下推，或第 1 名已够 3 只时第 2 名降级）→ 降一档取票、一律轻仓"
+    >{{ candidateTag }}</span>
     <!-- [④ 题材级] 昨有买入：这个题材昨天有票被打过「买」标签（⛔ 不是「这一块都买过」） -->
     <span
       v-if="prevBoughtTag"
@@ -57,6 +65,8 @@ const props = defineProps({
   rank: { type: Number, default: null },
   count: { type: Number, default: null },
   yizi: { type: Number, default: null },
+  // [⑥ MIN-3-PICKS 2026-10-02] 候选题材标记（买点侧专有，Logic 层算好；卖点侧不传 ⇒ 不显示）
+  candidateTag: { type: String, default: '' },
   // [④/⑤] 题材级标记（买点侧专有，全部由 Logic 层算好；卖点侧不传 ⇒ 不显示）
   prevBoughtTag: { type: String, default: '' },
   streakTag: { type: String, default: '' }

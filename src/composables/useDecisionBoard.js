@@ -20,7 +20,7 @@ function _empty(reason) {
     ready: false,
     reason: reason,
     topics: [],
-    buy: { heavy: null, light: null, noYizi: null, smallTopic: null, bigTopic: null },
+    buy: { heavy: null, light: null, candidates: [], noYizi: null, smallTopic: null, bigTopic: null },
     sell: [],
     sellTimes: []
   };
@@ -89,6 +89,17 @@ export function useDecisionBoard() {
   /** 三条兜底方案共用同一段模板；与 heavy / light 互斥 */
   const buySpecial = computed(() => buyNoYizi.value || buySmallTopic.value || buyBigTopic.value || null);
   const sellGroups = computed(() => data.value.sell || []);
+  /**
+   * [MIN-3-PICKS 2026-10-02 用户口径]【候选题材】块数组。
+   * 来源两种：① 主线（第 1、2 名）票数不足 3 只 ⇒ 按题材排名往下推的补位题材；
+   *          ② 第 1 名题材已选出 3 只 ⇒ 第 2 名降级（= 双主线，只选最强的）。
+   * ⓘ 降级后的第 2 名【同时】出现在 buyLight 与 buyCandidates 里 —— 那是同一个对象引用，
+   *    渲染时由本数组【不再重复渲染】（模板里用 v-if 排除），只作为「它在候选里」的标记来源。
+   */
+  const buyCandidates = computed(
+    () => ((data.value.buy && data.value.buy.candidates) || [])
+      .filter((b) => b && b !== buyLight.value)      // ⛔ 已被降级成 light 的那块不再重复画一遍
+  );
 
   const buyCount = computed(function() {
     const n = buySpecial.value;
@@ -97,7 +108,13 @@ export function useDecisionBoard() {
     }
     const h = buyHeavy.value;
     const l = buyLight.value;
-    return (h && h.qualified ? h.picks.length : 0) + (l ? l.picks.length : 0);
+    const c = (data.value.buy && data.value.buy.candidates) || [];
+    // ⚠️ 降级成 light 的第 2 名块【在 candidates 里也有】，这里要按【去重后的块】计数，否则会算两遍
+    const candPick = c.reduce(function(s, b) {
+      if (!b || b === l) return s;
+      return s + (b.picks ? b.picks.length : 0);
+    }, 0);
+    return (h && h.qualified ? h.picks.length : 0) + (l ? l.picks.length : 0) + candPick;
   });
   const sellCount = computed(function() {
     return sellGroups.value.reduce(function(n, g) { return n + g.items.length; }, 0);
@@ -167,6 +184,8 @@ export function useDecisionBoard() {
     reasonText,
     buyHeavy,
     buyLight,
+    // [MIN-3-PICKS 2026-10-02] 候选题材（补位 / 降级），渲染在 light 之后
+    buyCandidates,
     buyNoYizi,
     buySmallTopic,
     buyBigTopic,

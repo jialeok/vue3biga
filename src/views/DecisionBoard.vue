@@ -117,6 +117,14 @@
               v-if="buyLight"
               :block="buyLight"
             />
+            <!-- [MIN-3-PICKS 2026-10-02 用户口径] 候选题材：主线不足 3 只时按题材排名往下推的补位块，
+                 以及「第 1 名已够 3 只」时被降级的第 2 名（双主线：只选最强的）。
+                 块结构与常规块完全一致，题材行会标【候选题材】（由 Logic 层给 candidateTag）。 -->
+            <DecisionBuyBlock
+              v-for="cb in buyCandidates"
+              :key="'cand-' + cb.block.topic"
+              :block="cb"
+            />
             <div
               v-if="!buyHeavy && !buyLight"
               class="decision-empty dcb-selectable"
@@ -176,6 +184,7 @@ const {
   reasonText,
   buyHeavy,
   buyLight,
+  buyCandidates,
   buySpecial,
   sellGroups,
   summaryText,
