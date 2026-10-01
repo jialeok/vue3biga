@@ -4,9 +4,15 @@
 //   - 只在【题材 toggle 单独开启】时显示（与 topicOnlyMode 同源：题材开且无其它主排序参与）；
 //   - 每个题材（界面一个色块）上方一行小字，排版与展开面板「趋势图上方小字」一致，但背景色统一，
 //     方便视觉上把题材与题材分开；
-//   - 内容：题材名 / 数量 / 一字 / 竞价高开 / 收盘(红绿) / 龙头 / 龙头竞价涨幅 / 龙头十日涨幅；
+//   - 内容：题材名 / 【平均竞价量比】 / 数量 / 一字 / 竞价高开 / 收盘(红绿) / 龙头 / 龙头竞价涨幅 / 龙头十日涨幅；
 //     其中第二行「竞价」数值按当天竞价涨幅符号着色（>0 红 / <0 绿 / =0 灰，2026-09-11）；
 //     第一行「收盘」= 同题材收盘涨跌数（>0 红 / <0 绿），只在【该日为收盘口径】时才产出（见 opts.hasClose）。
+//   - [AVG-VRATIO 2026-10-01 用户口径] 统计条【最上面一行】= 题材平均竞价量比（用户原话：
+//     「放到统计条的最上面一行，放在题材名称右边如，第一行 平均竞价量比：12」）。
+//     ⚠️⚠️ 它的【分母口径与上面全部统计项都不同】：平均量比要算进【列表上显示的每一行】，
+//     **不区分**灰行（不在今日 9:25 正式名单的观察组/继承行）与常规行（用户原话：「数量不分灰色和
+//     常规，只要显示在上面的都要算进去，这个和那个只算正式列表有区别要注意」）；
+//     而「数量 / 一字 / 竞价高开 / 收盘 / 龙头」仍旧【只算正式成员】。⛔ 不要"顺手统一"成同一口径。
 //     ⚠️ 2026-09-11 晚：曾在此处加过「停板 N涨停M跌停」段，用户反馈「太占地方」→ 已移除。
 //        收盘涨停/跌停仍然有标记，只是挪到了【股票名下方的蚂蚁线】（见 view-helpers closeLimit +
 //        AuctionBoardTable.stockTextClass），不再占用统计条空间。不要再把这段加回来。
@@ -29,17 +35,23 @@ export const TOPIC_STATS_MIN_GROUP = 2;
 /**
  * 按题材分组统计。
  * @param {Array<{topic:string, name:string, isYiZi?:boolean, aucPct?:number|null, rangePct?:number|null,
- *                closePct?:number|null}>} entries
+ *                closePct?:number|null, volRatio?:number|null, formal?:boolean}>} entries
  *        必须按【最终渲染顺序】传入（组内顺序无所谓，但组必须连续——与渲染一致才能保证 count 正确）
  *        closePct 只有在该日已是【收盘口径】时调用方才该填（否则传 null）：
  *        早盘 change_pct 只是竞价副本，用它数红绿会把竞价方向当成收盘结果（口径错误）。
+ *        volRatio 当日竞价量比（倍数）；formal=false 表示「不在今日正式名单」的灰行。
+ *        ⚠️ [AVG-VRATIO 2026-10-01] 调用方应传入【列表上显示的全部行】（含灰行），本函数自己按
+ *           formal 分流：计数类只算 formal !== false，平均量比的【分母不区分】。
  * @param {{minGroupSize?:number, includeOther?:boolean}} [opts]
- *        minGroupSize 默认 2：不足该数量的题材组直接不产出（调用方拿到 undefined → 不渲染统计条）；
+ *        minGroupSize 默认 2：不足该数量（指【正式成员】数量）的题材组直接不产出
+ *        （调用方拿到 undefined → 不渲染统计条）；
  *        includeOther 默认 false：「其它」不是真题材，与配色口径一致，不统计。
  * @returns {Map<string, {topic:string, count:number, yiziCount:number, highOpenCount:number,
  *                        hasClose:boolean, redCount:number, greenCount:number,
- *                        leader:string, leaderAucPct:number|null, leaderRangePct:number|null}>}
+ *                        leader:string, leaderAucPct:number|null, leaderRangePct:number|null,
+ *                        avgVolRatio:number|null}>}
  *          hasClose=false → redCount/greenCount 无意义（不要渲染）。
+ *          avgVolRatio=null → 该组一行量比都拿不到 → 布局层整行不产出（§10，⛔ 不显示 0.00）。
  */
 export function buildTopicStatsMap(entries, opts) {
   const out = new Map();
@@ -58,7 +70,10 @@ export function buildTopicStatsMap(entries, opts) {
 
   groups.forEach(function(arr, topic) {
     // 单只股票的题材（或未达门槛）不产出统计条 → 调用方 get 到 undefined → 不渲染
-    if (arr.length < minSize) return;
+    // [AVG-VRATIO 2026-10-01] ⚠️ 门槛只认【正式成员】：灰行再多也不算「成组」。
+    //   这与 buildTopicColorMap(minCount=2) 同源，也保证统计条不会因为混进灰行而凭空出现。
+    const formalArr = arr.filter(function(e) { return e.formal !== false; });
+    if (formalArr.length < minSize) return;
     let yizi = 0;
     let highOpen = 0;
     let closeKnown = 0;   // 有多少只拿得到收盘涨幅（= 有收盘口径数据）
@@ -69,7 +84,9 @@ export function buildTopicStatsMap(entries, opts) {
     let leaderRangePct = null;
     let leaderAucBest = null; // 区间涨幅全缺时的回退龙头
 
-    arr.forEach(function(e) {
+    // [AVG-VRATIO 2026-10-01] 计数类统计一律只走【正式成员】（口径与改造前完全一致）：
+    //   灰行（formal=false，观察组/龙头继承壳）照常显示在列表里，但不算进数量/一字/高开/收盘/龙头。
+    formalArr.forEach(function(e) {
       if (e.isYiZi) yizi++;
       const auc = _num(e.aucPct);
       // [FIX 2026-09-12] 「竞价高开」= 竞价涨幅【大于 0】才算；= 0（平开）**不计入**。
@@ -101,15 +118,26 @@ export function buildTopicStatsMap(entries, opts) {
 
     if (leader === '' && leaderAucBest !== null) {
       // 组内无任何区间涨幅数据（新票/次新股）：退化为竞价涨幅最高者，十日段留空
-      arr.forEach(function(e) {
+      formalArr.forEach(function(e) {
         if (leader !== '') return;
         if (_num(e.aucPct) === leaderAucBest) { leader = e.name; leaderAucPct = leaderAucBest; }
       });
     }
 
+    // [AVG-VRATIO 2026-10-01 用户口径] 平均竞价量比 —— ⚠️ 分母走【全组 arr（含灰行）】，
+    //   与上面的 formalArr 分流【刻意不同】：用户明确「数量不分灰色和常规，只要显示在上面的都要算进去，
+    //   这个和那个只算正式列表有区别要注意」。§10：缺量比的行不进分母（⛔ 绝不当 0），
+    //   一行都拿不到量比 ⇒ null ⇒ 布局层整行不产出（不显示 0.00 冒充「量比很小」）。
+    let ratioSum = 0;
+    let ratioN = 0;
+    arr.forEach(function(e) {
+      const r = _num(e.volRatio);
+      if (r !== null) { ratioSum += r; ratioN++; }
+    });
+
     out.set(topic, {
       topic: topic,
-      count: arr.length,
+      count: formalArr.length,
       yiziCount: yizi,
       highOpenCount: highOpen,
       hasClose: closeKnown > 0,
@@ -117,7 +145,8 @@ export function buildTopicStatsMap(entries, opts) {
       greenCount: green,
       leader: leader,
       leaderAucPct: leaderAucPct,
-      leaderRangePct: leaderRangePct
+      leaderRangePct: leaderRangePct,
+      avgVolRatio: ratioN > 0 ? (ratioSum / ratioN) : null
     });
   });
   return out;
@@ -128,10 +157,11 @@ export function buildTopicStatsMap(entries, opts) {
  *
  * 排版契约（2026-09-10）：整条【隐形】分左右两格，中间无分隔线：
  *   左格（窄）：题材名，字号更大更显眼；
- *   右格（宽）：上下两行
- *       第一行 —— 数量 / 一字 / 竞价高开 / 收盘(红绿)
- *       第二行 —— 龙头 / 竞价 / 十日
- *   ⚠️ 2026-09-11 晚：第一行原有的「停板 N涨停M跌停」段按用户要求【移除】（太占地方）。
+ *   右格（宽）：上中下三行
+ *       [AVG-VRATIO 2026-10-01] 第一行 —— 平均竞价量比（用户原话「第一行 平均竞价量比：12」）
+ *       第二行 —— 数量 / 一字 / 竞价高开 / 收盘(红绿)
+ *       第三行 —— 龙头 / 竞价 / 十日
+ *   ⚠️ 2026-09-11 晚：第二行原有的「停板 N涨停M跌停」段按用户要求【移除】（太占地方）。
  *      停板信息由「股票名下方红/绿蚂蚁线」承担，不要再往统计条里加回来。
  *
  * 缺失的段直接不产出（§10）；第二行整段没有内容时返回空数组，由组件自行塌陷为单行。
@@ -141,15 +171,27 @@ export function buildTopicStatsMap(entries, opts) {
  *   · parts  —— 多段拼接，每段自带 text + tone（如「2红9绿」= 红字红 + 绿字绿）
  * @param {object|null} stats
  * @returns {{topic:string,
+ *            avg: {key:string,label:string,value:string}|null,
  *            row1:Array<{key:string,label:string,value?:string,parts?:Array<{text:string,tone:string}>,tone?:string}>,
  *            row2:Array<{key:string,label:string,value:string,tone?:string}>}|null}
+ *          avg: 最上面一行的「平均竞价量比」；整组无量比数据 ⇒ null ⇒ 组件那一行不渲染（§10）。
  *          tone: 'up' | 'down' | 'flat' | '' —— 数值着色（A 股口径：>0 红 / <0 绿 / =0 灰）。
- *                目前只有第二行「竞价」段输出 tone；'flat' = 有数据且恰为 0（无数据时该段不产出）。
+ *                目前只有第三行「竞价」段输出 tone；'flat' = 有数据且恰为 0（无数据时该段不产出）。
  */
 export function formatTopicStatsLayout(stats) {
   if (!stats) return null;
   const row1 = [];
   const row2 = [];
+  // [AVG-VRATIO 2026-10-01 用户口径] 最上面一行：题材平均竞价量比。
+  //   量比是【倍数】不是百分比 ⇒ 保留 2 位小数，与全项目其它竞价量比展示同款口径
+  //   （decision/vol-ratio-trend.js 的 volRatioText、TrendChart 的 decimals=2）。
+  //   §10：null（整组一行都没量比）⇒ 不产出这一行，⛔ 绝不显示 0.00。
+  const avgRaw = _num(stats.avgVolRatio);
+  const avg = avgRaw === null ? null : {
+    key: 'avgVolRatio',
+    label: '平均竞价量比：',
+    value: avgRaw.toFixed(2)
+  };
   row1.push({ key: 'count', label: '数量', value: String(stats.count || 0) });
   row1.push({ key: 'yizi', label: '一字', value: String(stats.yiziCount || 0) });
   row1.push({ key: 'high', label: '竞价高开', value: String(stats.highOpenCount || 0) });
@@ -188,7 +230,7 @@ export function formatTopicStatsLayout(stats) {
     const lr = _num(stats.leaderRangePct);
     if (lr !== null) row2.push({ key: 'lrng', label: '十日', value: _fmtPctInt(lr), strong: true });
   }
-  return { topic: stats.topic || '其它', row1: row1, row2: row2 };
+  return { topic: stats.topic || '其它', avg: avg, row1: row1, row2: row2 };
 }
 
 /** 增量渲染指纹令牌：统计条内容变化时必须让「该组第一行」重派生 */
@@ -198,6 +240,10 @@ export function topicStatsSignature(stats) {
     // [CLOSE-COUNT 2026-09-11] 收盘红绿计数也必须入签名，否则收盘覆盖写入后
     // 统计条数字会被增量缓存陈旧复用（行内输入没变，但统计结果变了）。
     stats.hasClose ? 1 : 0, stats.redCount, stats.greenCount,
+    // [AVG-VRATIO 2026-10-01] 平均竞价量比必须入签名：它是【同题材所有行（含灰行）】的派生值，
+    //   却只挂在块的【第一行】上 —— 组内别的股票量比变了，块首行自己的输入可以一个字都没变
+    //   ⇒ 不入签名，块首行会复用旧对象、统计条上的均值陈旧。
+    _num(stats.avgVolRatio),
     stats.leader, _num(stats.leaderAucPct), _num(stats.leaderRangePct)].join(',');
 }
 

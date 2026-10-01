@@ -6,6 +6,9 @@ import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlig
 import { ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagState, _buildTagStateCache } from '../tagTitles/rules.js';
 import { getThreeDayJingDieSet, getWeakStrongSet, getWeakStrongTurnSet, getVolGrabSet } from './sort-rules-extra.js';
 import { getStockCode } from '../../data/stock-code-map.js';
+// [AVG-VRATIO 2026-10-01 用户口径] 题材统计条「平均竞价量比」的取值入口：
+//   内存只读选择器（market_metrics.auc_vol_ratio），与决策看板买点选票 / 早盘竞价展开面板同一字段（§6）。
+import { getStockHistoryValue } from '../../data/watchlist-helpers.js';
 import { _getAuctionWatchlistSet, _isAuctionFormalMember } from '../../data/watchlist-and-metrics.js';
 import { state } from '../app-state.js';
 import { useAuctionStore } from '../../stores/auctionStore.js';
@@ -59,6 +62,20 @@ function _getThreeDayAuctionPct(rawItem) {
   const raw = rawItem.auc_pct_chg || rawItem.aucPctChg || rawItem.changePct || rawItem.change_pct || '';
   const num = parseFloat(String(raw).replace('%', '').replace('+', ''));
   return isFinite(num) ? num : null;
+}
+
+// [AVG-VRATIO 2026-10-01 用户口径] 读某只股票【某日】的当日竞价量比（倍数，如 2.18）。
+//   数据源 = market_metrics(scope='auction').auc_vol_ratio 的内存缓存（Data 层只读选择器），
+//   与 decision/vol-ratio-trend.js（决策看板买点选票）、useAuctionBoard#dailyAuctionMetrics
+//   （早盘竞价展开面板那行「竞价量比」）【同一个字段】，§6 单一真相，⛔ 不另取一份。
+//   ⚠️ 云端存的是字符串（"2.18"），这里统一转数字；§10：缺值 / 空串 / 非数字 → null
+//      （⛔ 绝不当 0 —— 那会让「没抓到量比」变成「量比很小」，把题材均值拉低）。
+function _readAucVolRatio(date, stockName) {
+  if (!date || !stockName) return null;
+  const raw = getStockHistoryValue(date, String(stockName).trim(), 'aucVolRatio');
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  return isFinite(n) ? n : null;
 }
 
 function _enrichAuctionItem(rawItem, index, ctx) {
@@ -1153,10 +1170,18 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   let topicStatsMap = null;
   if (topicOnlyMode && primaryTopicOfForColor) {
     const _rangeMap = getDragonRangePct(currentDate);
-    // [LISTED-TODAY 2026-09-23] 只把【当天正式列表里的行】送进统计（观察组/龙头继承空壳不计数）。
-    //   与上方 sortByTopicGroups 的 countableOf、下方趋势图 collectTopicDayStats 完全同一口径 ——
-    //   三处同源才是「统计条数字 == 题材块顺序 == 趋势图名次」的结构性保证（不是靠三处各写一遍 if）。
-    const _entries = items.filter(function(it) { return it.isFormalMember; }).map(function(it) {
+    // [LISTED-TODAY 2026-09-23] 计数类统计（数量 / 一字 / 竞价高开 / 收盘 / 龙头）只认【当天正式列表里的行】
+    //   （观察组/龙头继承空壳不计数）—— 与上方 sortByTopicGroups 的 countableOf、下方趋势图
+    //   collectTopicDayStats 完全同一口径，是「统计条数字 == 题材块顺序 == 趋势图名次」的结构性保证
+    //   （不是靠三处各写一遍 if）。该口径【原样保留】，由 row.formal 标记交给 topic-stats.js 内部分流。
+    //
+    // 🔴 [AVG-VRATIO 2026-10-01 用户口径] 但「平均竞价量比」是【另一套分母】：用户明确要求
+    //   「数量不分灰色和常规，只要显示在上面的都要算进去，这个和那个只算正式列表有区别要注意」。
+    //   所以这里改为把【items 全部（= 最终渲染顺序 = 列表上真正显示的每一行，含灰行）】都送进去，
+    //   由 topic-stats.js 自己按 formal 分流：计数走正式成员、平均量比走全部行。
+    //   ⚠️ 成组门槛（不足 2 只正式成员的题材不出统计条）仍在 topic-stats.js 内部按 formal 判，
+    //      因此「哪些题材会出现统计条」与改造前【逐字一致】。
+    const _entries = items.map(function(it) {
       const rp = (_rangeMap && _rangeMap.has(it.stock)) ? _rangeMap.get(it.stock).pct : null;
       return {
         topic: primaryTopicOfForColor(it.index),
@@ -1167,7 +1192,12 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
         // [CLOSE-COUNT 2026-09-11] 收盘口径下才带收盘涨幅（否则为 null → 逻辑层不产出该段）
         // ⚠️ 不再传 closeLimit：统计条的「停板 N涨停M跌停」按用户要求已移除（太占地方），
         //    停板只由股票名下蚂蚁线表达（见本文件 closeLimit 字段 + AuctionBoardTable）。
-        closePct: it.closePct
+        closePct: it.closePct,
+        // [NOT-FORMAL 2026-09-23] 是否今日 9:25 正式名单成员（false = 灰行）。
+        //   计数类统计只看 true（口径不变）；[AVG-VRATIO 2026-10-01] 平均竞价量比【不分】。
+        formal: !!it.isFormalMember,
+        // [AVG-VRATIO 2026-10-01 用户口径] 当日竞价量比（倍数）→ 题材平均量比的分母/分子。
+        volRatio: _readAucVolRatio(currentDate, it.stock)
       };
     });
     topicStatsMap = buildTopicStatsMap(_entries);

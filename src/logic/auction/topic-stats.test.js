@@ -253,3 +253,105 @@ describe('[2026-09-11] 收盘红绿统计（同题材口径）', () => {
     expect(lay.row1.map(x => x.key)).toEqual(['count', 'yizi', 'high']);
   });
 });
+
+// ===== [AVG-VRATIO 2026-10-01 用户口径] 题材「平均竞价量比」 =====
+// 用户原话：「可以在早盘竞价看板的题材统计条那里添加题材中竞价量比平均值，可以算出题材强度……
+//   算法是把同题材所有的股票竞价量比的平均值算出来……（用的加起来除以数量，**数量不分灰色和常规**，
+//   只要显示在上面的都要算进去，**这个和那个只算正式列表有区别要注意**），就可以算出整个题材的平均值，
+//   放在题材名称右边如，第一行 平均竞价量比：12，第二行 数量 一字 竞价高开 收盘2红6绿（已有，保持不变）」
+// ⚠️ 两条红线：① 平均量比的分母【含灰行】，与「数量」的正式名单口径【刻意不同】；
+//             ② §10 —— 缺量比的行不进分母（⛔ 绝不当 0 去拉低均值），整组无量比 ⇒ 整行不产出。
+describe('[AVG-VRATIO 2026-10-01] 平均竞价量比', () => {
+  it('★分母含灰行：数量只算正式成员，平均量比把灰行也一起算进分母', () => {
+    const entries = [
+      { topic: 'T', name: '甲', aucPct: 3, rangePct: 10, volRatio: 10, formal: true },
+      { topic: 'T', name: '乙', aucPct: 2, rangePct: 9, volRatio: 20, formal: true },
+      // 灰行：不在今日正式名单（观察组/龙头继承壳）—— 照常显示在列表上
+      { topic: 'T', name: '丙', aucPct: 1, rangePct: 8, volRatio: 30, formal: false },
+      { topic: 'T', name: '丁', aucPct: 0, rangePct: 7, volRatio: 40, formal: false }
+    ];
+    const s = buildTopicStatsMap(entries).get('T');
+    expect(s.count).toBe(2);            // 数量：只算正式成员（口径不变）
+    expect(s.yiziCount).toBe(0);
+    // 平均量比：(10+20+30+40)/4 = 25 —— 分母是【4】（含 2 只灰行），不是 2
+    expect(s.avgVolRatio).toBe(25);
+  });
+
+  it('成组门槛仍只看【正式成员】：1 只正式 + 3 只灰 → 不出统计条（行为与改造前一致）', () => {
+    const entries = [
+      { topic: 'T', name: '甲', aucPct: 3, rangePct: 10, volRatio: 10, formal: true },
+      { topic: 'T', name: '乙', aucPct: 2, rangePct: 9, volRatio: 20, formal: false },
+      { topic: 'T', name: '丙', aucPct: 1, rangePct: 8, volRatio: 30, formal: false },
+      { topic: 'T', name: '丁', aucPct: 0, rangePct: 7, volRatio: 40, formal: false }
+    ];
+    expect(buildTopicStatsMap(entries).has('T')).toBe(false);
+    // 对照组：2 只正式 → 出条，均值仍然含全部 4 行
+    const s = buildTopicStatsMap([
+      { topic: 'T', name: '甲', aucPct: 3, rangePct: 10, volRatio: 10, formal: true },
+      { topic: 'T', name: '乙', aucPct: 2, rangePct: 9, volRatio: 20, formal: true },
+      { topic: 'T', name: '丙', aucPct: 1, rangePct: 8, volRatio: 30, formal: false },
+      { topic: 'T', name: '丁', aucPct: 0, rangePct: 7, volRatio: 40, formal: false }
+    ]).get('T');
+    expect(s.count).toBe(2);
+    expect(s.avgVolRatio).toBe(25);
+  });
+
+  it('§10：缺量比的行【不进分母】（⛔ 绝不当 0 去拉低均值），且 0 是有效值', () => {
+    const entries = [
+      { topic: 'T', name: '甲', aucPct: 3, rangePct: 1, volRatio: 10, formal: true },
+      { topic: 'T', name: '乙', aucPct: 2, rangePct: 2, volRatio: null, formal: true },   // 没抓到
+      { topic: 'T', name: '丙', aucPct: 1, rangePct: 3, volRatio: '', formal: true },     // 空串
+      { topic: 'T', name: '丁', aucPct: 0, rangePct: 4, volRatio: 20, formal: false }
+    ];
+    // (10 + 20) / 2 = 15 —— 缺值的甲/乙不参与，⛔ 不是 (10+0+0+20)/4 = 7.5
+    expect(buildTopicStatsMap(entries).get('T').avgVolRatio).toBe(15);
+    // 0 是【有效值】，与「没有数据」必须分开
+    const s0 = buildTopicStatsMap([
+      { topic: 'T', name: '甲', aucPct: 1, rangePct: 1, volRatio: 0, formal: true },
+      { topic: 'T', name: '乙', aucPct: 1, rangePct: 2, volRatio: 0, formal: true }
+    ]).get('T');
+    expect(s0.avgVolRatio).toBe(0);
+  });
+
+  it('§10：整组一行量比都拿不到 → avgVolRatio = null → 布局层这一行不产出', () => {
+    const entries = [
+      { topic: 'T', name: '甲', aucPct: 3, rangePct: 1, volRatio: null, formal: true },
+      { topic: 'T', name: '乙', aucPct: 2, rangePct: 2, formal: true } // 连字段都没有
+    ];
+    const s = buildTopicStatsMap(entries).get('T');
+    expect(s.avgVolRatio).toBeNull();
+    const lay = formatTopicStatsLayout(s);
+    expect(lay.avg).toBeNull();          // ⛔ 绝不显示 0.00 冒充「量比很小」
+    expect(lay.row1.length).toBe(3);     // 其余行不受影响
+  });
+
+  it('布局：avg 是【独立的最上面一行】，值保留 2 位小数（倍数口径）', () => {
+    const lay = formatTopicStatsLayout({
+      topic: '农业', count: 12, yiziCount: 2, highOpenCount: 8,
+      avgVolRatio: 12.345,
+      leader: '万向德农', leaderAucPct: 2, leaderRangePct: 102
+    });
+    expect(lay.avg).toEqual({ key: 'avgVolRatio', label: '平均竞价量比：', value: '12.35' });
+    // 原有两行的键与内容【一字未变】（用户口径：第二行/第三行保持不变）
+    expect(lay.row1.map(x => x.key)).toEqual(['count', 'yizi', 'high']);
+    expect(lay.row2.map(x => x.key)).toEqual(['leader', 'lpct', 'lrng']);
+  });
+
+  it('整数也补足 2 位小数（用户示例的 12 → 12.00），与全项目量比展示口径一致', () => {
+    const lay = formatTopicStatsLayout({
+      topic: 'T', count: 2, yiziCount: 0, highOpenCount: 0, avgVolRatio: 12
+    });
+    expect(lay.avg.value).toBe('12.00');
+  });
+
+  it('增量签名必须包含 avgVolRatio（否则块首行会复用旧对象、均值陈旧）', () => {
+    const base = {
+      topic: 'T', count: 2, yiziCount: 0, highOpenCount: 1, hasClose: false,
+      avgVolRatio: 12, leader: 'A', leaderAucPct: 1, leaderRangePct: 5
+    };
+    expect(topicStatsSignature(base)).toBe(topicStatsSignature({ ...base }));
+    expect(topicStatsSignature(base)).not.toBe(topicStatsSignature({ ...base, avgVolRatio: 13 }));
+    // null ↔ 有值 也必须让签名失效（整行从「不产出」变成「产出」）
+    expect(topicStatsSignature(base)).not.toBe(topicStatsSignature({ ...base, avgVolRatio: null }));
+  });
+});

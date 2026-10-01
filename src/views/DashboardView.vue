@@ -20,7 +20,14 @@
         </div>
         <div style="font-size:11px;margin-top:4px">
           <span>{{ weekdayText }}</span>
-          <span class="market-status market-open">市</span>
+          <!-- [MARKET-STATUS 2026-10-01] 原来是硬编码的绿色「市」，假期（含周末）也照显示，
+               与日历上标红的假期自相矛盾（用户反馈：日期标红了下边还写绿色的「市」）。
+               改为按 isTradingDay(currentDate) 派生：交易日 → 绿「市」；非交易日 → 红「休」。
+               红色样式复用 base.css 里早已存在的 .market-closed（红底红字），⛔ 不新增 CSS。 -->
+          <span
+            class="market-status"
+            :class="isTradingDayNow ? 'market-open' : 'market-closed'"
+          >{{ isTradingDayNow ? '市' : '休' }}</span>
         </div>
       </div>
       <button
@@ -235,10 +242,18 @@ import { useStatsView } from '../composables/useStatsView.js';
 const statsView = useStatsView();
 const boardView = statsView.boardView;
 
+// [WEEKEND-FIX 2026-10-01] 必须 immediate —— 否则「假期页面混着交易日看板」：
+//   直接落在周末/假期（App 打开时当前日期就是非交易日；或午夜自然翻页后重新加载）时，
+//   boardView 一上来就是 'weekly'，watch 不触发 ⇒ body 上永远没有 weekend-mode
+//   ⇒ weekend.css 的 `body.weekend-mode .trading-day-element { display:none !important }` 失效
+//   ⇒ 模式看板 / 最近多板 / 添加股票（HomeStocks）等整片照常显示；而「周末统计页」走的是
+//   v-show，反倒正常显示 —— 正是用户看到的「假期页面不标准、混着交易日看板」。
+//   ⚠️ 另有一层原因记录在此（本轮不动，仅备查）：DuibanBoard / HomeStocksView 的模板有【多个根节点】，
+//   加在它们身上的 v-show 会被 Vue 静默忽略（非元素根节点），只能靠 weekend-mode 这个 body class 隐藏。
 watch(boardView, (mode) => {
   if (mode && mode !== 'trading') document.body.classList.add('weekend-mode');
   else document.body.classList.remove('weekend-mode');
-});
+}, { immediate: true });
 
 // [A4-02] Dashboard 卸载时清理 weekend-mode 类，避免 document.body 残留样式（原只在 watch 内增删，缺卸载清理）。
 onUnmounted(() => {
@@ -260,6 +275,19 @@ const weekdayText = computed(() => {
 
 // [FEATURE] 假期双向切换：holidayTick 用于在非响应式的 allData.holidays/tradingDays（§6：allData 为内存 cache，非真相源）变更后强制重算
 const holidayTick = ref(0);
+
+// [MARKET-STATUS 2026-10-01] 日期下方「市 / 休」徽标的判据：当前日期是不是交易日。
+//   交易日 → 绿「市」；非交易日（显式假期 或 周六/周日）→ 红「休」。
+//   ⚠️ isTradingDay 读的是【非响应式】的 allData.holidays（§6：它只是内存 cache，真相源在
+//      Supabase 的 trading_day_overrides 表）⇒ 必须依赖 holidayTick，才能在「设为/取消假期」
+//      与挂载时云端覆盖表同步（replaceHolidayCaches）之后重算 —— 与 pickerHolidayLabel / pickerDays
+//      同一套 ref-driven 范式，⛔ 不要改成读某处 state。
+const isTradingDayNow = computed(() => {
+  void holidayTick.value;
+  const d = uiStore.currentDate;
+  if (!d) return true; // 日期未就绪的安全默认：按交易日显示（与 boardView 同一兜底取向）
+  return isTradingDay(d);
+});
 
 // 日期选择器内选中日期的假期切换按钮文案（描述"将要执行的动作"）
 const pickerHolidayLabel = computed(() => {
