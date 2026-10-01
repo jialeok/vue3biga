@@ -296,6 +296,55 @@
         .dcb-auc-low { background-color: #16a34a; }    /* 竞价涨幅 < 0 → 绿底 */
         .dcb-auc-flat { background-color: #64748b; }   /* 竞价涨幅 = 0 → 灰底 */
 
+        /* ---- [VRATIO-TREND 2026-10-01 用户口径] 竞价量比（auc_vol_ratio）近 5 日 ----
+           ① 行内徽标 .dcb-vratio：紧跟【竞价涨幅】右边。
+              刻意用【靛蓝】（= 下面趋势曲线的同色 #6366f1），与「竞价涨幅」的红/绿/灰三档语义色分开 ——
+              量比说的是【强弱程度】，不是【涨跌方向】，套同一组红绿会让人误读成涨跌幅。
+           ② 行下方趋势面板 .dcb-trend-panel / .dcb-trend-label：
+              视觉对齐早盘竞价看板的 .auction-trend-panel / .trend-chart-label（同一套留白与浅灰底）。
+              ⛔ 类名一律带 dcb- 前缀：CSS 是全局加载的，蹭 .trend-chart-* 这种通用名会串改其它看板。
+           ③ .dcb-trend-trigger：序号 / 股票名可点（展开、收起），给个手型提示。
+           缺当日量比 ⇒ Logic 层给空串 ⇒ 徽标整个不渲染（§10，绝不显示 0.00 冒充「量比很小」）。
+           ⚠️ 简洁模式（.dcb-compact）【不隐藏】本面板 —— 它是用户主动点开的量化数据，不是解释性文字。 */
+        .dcb-trend-trigger {
+            cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .dcb-vratio {
+            padding: 0 4px;
+            font-size: 9px;
+            line-height: 14px;
+            border-radius: 4px;
+            color: #ffffff;
+            background-color: #6366f1;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .dcb-trend-panel {
+            margin: 1px 0 5px 26px;   /* 26px = 序号宽 18 + 行内 gap 8 ⇒ 与股票名左对齐 */
+            padding: 6px 8px 4px;
+            background: #f9fafb;
+            border: 1px solid #eef2f7;
+            border-radius: 6px;
+            box-sizing: border-box;
+        }
+
+        .dcb-trend-label {
+            font-size: 10px;
+            color: #94a3b8;
+            margin-bottom: 2px;
+        }
+
+        /* 近 5 个交易日一条有效数据都没有时的说明行
+           （⛔ 不画满屏「--」，与竞价一字看板 .yizi-trend-empty 同款处理，§10 缺失要如实可见） */
+        .dcb-trend-empty {
+            padding: 6px 2px;
+            font-size: 11px;
+            color: #94a3b8;
+        }
+
         /* 仓位建议（§21：配色档由 Logic 层给 `p.positionTone`，模板只拼 `'dcb-pos-' + tone`）：
            重仓 = 红（用力）｜轻仓 = 橙（减一档）｜加仓 = 紫（昨天已买过，今天是往上加，不重新建仓）。
            ⛔ 类名一律带 dcb- 前缀（本项目 CSS 全局加载，`.light` 这种裸名会串改其它看板）。

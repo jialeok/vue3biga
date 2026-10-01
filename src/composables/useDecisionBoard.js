@@ -45,6 +45,14 @@ export function useDecisionBoard() {
   //   解释性文字在小屏幕上要滑很久，早盘根本来不及看；要细节就点一下「简洁」关掉。
   const compactOpen = ref(true);
 
+  // [VRATIO-TREND 2026-10-01 用户口径]「竞价量比 近 5 日」趋势面板的展开态：Set<股票名>。
+  //   为什么用 Set<名字>（而不是按下标）：翻页 / 刷新后列表重算会让下标漂移，
+  //   名字是稳定标识；与早盘竞价看板同款（useAuctionBoard#expandedSet）。
+  //   为什么换【引用】而不是原地 add/delete：只 shallow 比较，不做 deep watch（§20 红线）。
+  //   §34：纯展示态 —— 不进 store、不落 localStorage（§8）。
+  //   ⛔ 买点与卖点【共用同一份】：同一只票在两处是同一个开关（用户口径「点一下就展开/收起」）。
+  const trendOpenSet = ref(new Set());
+
   // 手动版本号：auction 数据刷新（getTodayGroupList 读的是非响应式内存缓存）后 bump，
   // 让下面的 computed 重跑一次。龙一/龙二（dragonState 是 ref）与标签（Pinia）本身是响应式的，
   // computed 会自动追踪 —— 只有「当日列表」需要这个手动信号（与早盘竞价看板同一套路）。
@@ -116,6 +124,18 @@ export function useDecisionBoard() {
   function toggleRules() { rulesOpen.value = !rulesOpen.value; }
   /** [COMPACT 2026-09-30] 「简洁」开关：只切纯展示态，不碰任何业务数据（§34） */
   function toggleCompact() { compactOpen.value = !compactOpen.value; }
+  /**
+   * [VRATIO-TREND 2026-10-01 用户口径] 点【序号 / 股票名】展开或收起该股的「竞价量比 近 5 日」趋势。
+   * §34：只动纯展示态，不碰任何业务数据、不发请求。
+   * @param {string} name 股票名（与 auction_watchlist.stock 同口径；空名直接忽略）
+   */
+  function toggleTrend(name) {
+    const key = String(name || '').trim();
+    if (!key) return;
+    const next = new Set(trendOpenSet.value);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    trendOpenSet.value = next; // 换引用 → 驱动重渲染（与 useAuctionBoard#onExpandTrend 同一范式）
+  }
   /** 供规则面板自己上报开合（子组件无内部状态，开合真相在 composable 里，§6） */
   function setRulesOpen(v) { rulesOpen.value = !!v; }
 
@@ -123,9 +143,12 @@ export function useDecisionBoard() {
   function refresh() { version.value++; errorText.value = ''; }
 
   // §26 日期切换 → 规则面板收起（新的一天是全新的结论，旧展开态会误导）
+  // [VRATIO-TREND 2026-10-01] 同理把「竞价量比」趋势面板一并收起 —— 换了日期整条曲线都换了，
+  //   留着展开态只会让人拿新日期的图去对旧结论。
   watch(currentDate, function() {
     rulesOpen.value = false;
     errorText.value = '';
+    trendOpenSet.value = new Set();
   });
 
   const _onRefresh = function() { refresh(); };
@@ -136,6 +159,8 @@ export function useDecisionBoard() {
     expanded,
     rulesOpen,
     compactOpen,
+    // [VRATIO-TREND 2026-10-01] 竞价量比趋势面板的展开态与开关（由 DecisionBoard.vue provide 给买卖点两个块组件）
+    trendOpenSet,
     errorText,
     data,
     ready,
@@ -153,6 +178,7 @@ export function useDecisionBoard() {
     toggleExpand,
     toggleRules,
     toggleCompact,
+    toggleTrend,
     setRulesOpen,
     refresh
   };

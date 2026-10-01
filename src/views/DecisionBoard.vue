@@ -152,7 +152,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue';
+import { computed, provide } from 'vue';
 import DecisionRulesHint from '../components/decision/DecisionRulesHint.vue';
 import DecisionBuyBlock from '../components/decision/DecisionBuyBlock.vue';
 import DecisionSellBlock from '../components/decision/DecisionSellBlock.vue';
@@ -161,6 +161,12 @@ import { buildRulesLines } from '../logic/decision/decision-rules.js';
 
 // ⛔ 只调用一次组合式：重复调用会拿到【另一套 ref】，expose 出去的 refresh 就刷新不到本实例上
 const board = useDecisionBoard();
+
+// [VRATIO-TREND 2026-10-01 用户口径] 把同一份 board 实例下发给【买点 / 卖点】两个块组件
+//   （它们用 inject('decisionBoard') 取 trendOpenSet / toggleTrend）——
+//   与早盘竞价看板「AuctionBoard.vue provide → AuctionEntityRow inject」同一范式：
+//   展开态只有一份（§6 单一真相），子组件不新建状态、不复制一份 board。
+provide('decisionBoard', board);
 const {
   expanded,
   rulesOpen,

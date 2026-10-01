@@ -40,6 +40,14 @@ import {
   SELL_TIME_MIDDAY,
   SELL_TIME_CLOSE
 } from './decision-rules.js';
+// [VRATIO-TREND 2026-10-01 用户口径] 「竞价量比（auc_vol_ratio）近 5 日」的取数与展示视图。
+//   为什么挂在这一层而不是 decision-rules：规则文件是【纯函数】（不读 state），
+//   而竞价量比要读内存真相（Data 层只读选择器）—— 本文件正是「读内存真相」的地方（§4）。
+//   ⛔ 只是把已算好的字段挂到 pick / item 上，不做任何业务判断（判断仍全在 decision-rules）。
+import {
+  VOL_RATIO_TREND_DAYS,
+  decorateVolRatioFields
+} from './vol-ratio-trend.js';
 
 function _notReady(reason) {
   return {
@@ -96,6 +104,40 @@ function _buyPlanNames(buy) {
     });
   });
   return out;
+}
+
+/**
+ * [VRATIO-TREND 2026-10-01 用户口径] 给买点 / 卖点的每一行挂上「竞价量比（auc_vol_ratio）」：
+ *   · `volRatioText`     行内徽标文案（如「量比 2.18」；缺值 → 空串 ⇒ 模板不渲染，§10）
+ *   · `volRatioTrend`    近 5 个交易日的点集（喂 TrendChart，点开行才画）
+ *   · `volRatioHasData`  有无有效点（false ⇒ 模板画一行「暂无数据」，⛔ 不画满屏 '--'）
+ *
+ * 为什么在这里收口（而不是在 decision-rules 里逐处构造）：
+ *   · 规则文件是纯函数、不许读 state；竞价量比必须读内存真相（Data 层只读选择器）；
+ *   · 买点有 5 个档（heavy/light + noYizi/smallTopic/bigTopic 的 blocks）、卖点有 N 组，
+ *     若在每个构造点各补一次，日后加档位必漏 —— 这里【一处遍历收口】，与 _buyPlanNames 同一范式。
+ *
+ * ⛔ 只挂展示字段，不改任何选票结论；⛔ 不发请求（近 30 自然日已在内存缓存里，§32）。
+ *
+ * @param {object} buy  buildBuyPlan 的返回
+ * @param {Array} sell  buildSellPlan 的返回
+ * @param {string} date 展示日（= 决策看板当前日期）
+ */
+function _decorateVolRatioTrend(buy, sell, date) {
+  if (!date) return;
+  if (buy) {
+    ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopic'].forEach(function(k) {
+      const b = buy[k];
+      if (!b) return;
+      (b.picks || []).forEach(function(p) { decorateVolRatioFields(p, date, VOL_RATIO_TREND_DAYS); });
+      (b.blocks || []).forEach(function(bb) {
+        (bb.picks || []).forEach(function(p) { decorateVolRatioFields(p, date, VOL_RATIO_TREND_DAYS); });
+      });
+    });
+  }
+  (sell || []).forEach(function(g) {
+    (g.items || []).forEach(function(it) { decorateVolRatioFields(it, date, VOL_RATIO_TREND_DAYS); });
+  });
 }
 
 /**
@@ -431,6 +473,11 @@ export function collectDecisionData(date, opts) {
   // 【三 · 持有 / 加仓（卖点侧）】今天又在买点里的卖点候选 = 连续两天被选中 = 强势股，标【持有 / 加仓】
   const todayBuyNames = _buyPlanNames(buy);
   const sell = buildSellPlan(sellRows, topics, dragonMap, prevDragonNames, todayBuyNames);
+
+  // [VRATIO-TREND 2026-10-01 用户口径] 给买点 / 卖点的每一行挂【竞价量比】的当日数值 + 近 5 日走势。
+  //   ⛔ skipPrevBuy（内部递归算历史日买点，只为了拿题材名 / 股票名）不挂：
+  //      那些结果不进 UI，挂了纯属白算（§36 不做无意义的重复计算）。
+  if (!skipPrevBuy) _decorateVolRatioTrend(buy, sell, date);
 
   // [PREV-BOUGHT 2026-09-30 用户口径，同日两次修正] 「昨天买过」这件事现在有【两个】落点：
   //   · 题材行【昨有买入】(block.prevBoughtTag)：题材里【有】票昨天被打过「买」标签 ⇒ 题材在延续。

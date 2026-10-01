@@ -73,6 +73,10 @@ const props = defineProps({
   //   仅用于「名次」这类「小 = 强」的序列（第 1 名画在最上面），数值标签仍显示真实名次。
   //   ⛔ 默认 false —— 既有调用方（竞价量/涨幅/…）行为一字节不变。
   invert: { type: Boolean, default: false },
+  // [VRATIO-TREND 2026-10-01] 数值标签的小数位。默认 0 = 原行为（Math.round 取整）。
+  //   为什么要它：竞价量比这类【倍数】序列的有效信息在小数上（2.18 被取整成 2 就废了）。
+  //   ⛔ 只影响非 percent 模式的标签文本；percent 模式仍是「+3.3%」格式，不受影响。
+  decimals: { type: Number, default: 0 },
 });
 
 // 动态宽度：有 pointSpacing 时按点数计算，否则保持原 320 固定宽（§15 向后兼容）。
@@ -186,7 +190,9 @@ const valueLabels = computed(() => {
       displayVal = (v > 0 ? '+' : '') + v.toFixed(1) + '%';
       labelColor = v > 0 ? '#dc2626' : (v < 0 ? '#16a34a' : '#64748b');
     } else {
-      displayVal = String(Math.round(p.value));
+      // [VRATIO-TREND 2026-10-01] decimals > 0 → 按指定小数位显示（竞价量比等倍数序列）；
+      //   decimals = 0（默认）→ 保持原 Math.round 取整，既有调用方零影响（§15 向后兼容）。
+      displayVal = props.decimals > 0 ? p.value.toFixed(props.decimals) : String(Math.round(p.value));
       labelColor = props.color;
     }
     result.push({ x: c.x, y: (parseFloat(c.y) - 6).toFixed(1), color: labelColor, text: displayVal });
