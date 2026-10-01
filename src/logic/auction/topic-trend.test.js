@@ -7,42 +7,55 @@ import {
 } from './topic-trend.js';
 
 describe('buildTopicDayStats 单日题材统计与名次', () => {
-  it('名次按「一字数量降序」，同字数按组大小降序', () => {
+  it('⭐ [RATIO-ORDER 2026-10-01] 名次按【平均竞价量比降序】，一字数量不再决定名次', () => {
     const m = buildTopicDayStats([
-      { topic: '芯片', name: 'A', isYiZi: true },
-      { topic: '芯片', name: 'B', isYiZi: true },
-      { topic: '农业', name: 'C', isYiZi: true },
-      { topic: '农业', name: 'D', isYiZi: false },
-      { topic: '通信', name: 'E', isYiZi: false },
-      { topic: '通信', name: 'F', isYiZi: false }
+      { topic: '芯片', name: 'A', isYiZi: true, volRatio: 2 },
+      { topic: '芯片', name: 'B', isYiZi: true, volRatio: 4 },  // 均值 3.0，且有 2 个一字
+      { topic: '农业', name: 'C', volRatio: 9 },                // 均值 4.5 ← 最高
+      { topic: '农业', name: 'D', volRatio: null },             // §10：缺值不进分母
+      { topic: '通信', name: 'E', volRatio: 1 },                // 均值 1.0
+      { topic: '通信', name: 'F', volRatio: null }
     ]);
-    expect(m.get('芯片').rank).toBe(1); // 2 只一字
-    expect(m.get('农业').rank).toBe(2); // 1 只一字
-    expect(m.get('通信').rank).toBe(3); // 0 只一字
+    expect(m.get('农业').rank).toBe(1); // 4.5
+    expect(m.get('芯片').rank).toBe(2); // 3.0 —— 即便它有 2 个一字也压不过量比更高的农业
+    expect(m.get('通信').rank).toBe(3); // 1.0
+    // 一字数量照常统计（统计条要显示），只是【不再参与名次】
     expect(m.get('芯片').yiziCount).toBe(2);
     expect(m.get('通信').yiziCount).toBe(0);
   });
 
-  it('一字数量相同时按组大小降序，仍相同按题材名升序', () => {
+  it('量比相同时按组大小降序，仍相同按题材名升序；一行量比都没有的题材置底', () => {
     const m = buildTopicDayStats([
-      { topic: '算力', name: 'A' },
-      { topic: '算力', name: 'B' },
-      { topic: '算力', name: 'C' },
-      { topic: '芯片', name: 'D' },
-      { topic: '芯片', name: 'E' }
+      { topic: '算力', name: 'A', volRatio: 5 },
+      { topic: '算力', name: 'B', volRatio: 5 },
+      { topic: '算力', name: 'C', volRatio: 5 },   // 均值 5.0，3 只
+      { topic: '芯片', name: 'D', volRatio: 5 },
+      { topic: '芯片', name: 'E', volRatio: 5 }    // 均值 5.0，2 只
     ]);
-    expect(m.get('算力').rank).toBe(1); // 3 只 > 2 只
+    expect(m.get('算力').rank).toBe(1); // 量比并列 → 组大的在前
     expect(m.get('芯片').rank).toBe(2);
 
-    // 同大小 → 题材名升序：'芯'(U+82AF) > '算'(U+7B97) ⇒ 算力在前
+    // 量比并列 + 组大小并列 → 题材名升序：'芯'(U+82AF) > '算'(U+7B97) ⇒ 算力在前
     const m2 = buildTopicDayStats([
-      { topic: '芯片', name: 'A' },
-      { topic: '芯片', name: 'B' },
-      { topic: '算力', name: 'C' },
-      { topic: '算力', name: 'D' }
+      { topic: '芯片', name: 'A', volRatio: 5 },
+      { topic: '芯片', name: 'B', volRatio: 5 },
+      { topic: '算力', name: 'C', volRatio: 5 },
+      { topic: '算力', name: 'D', volRatio: 5 }
     ]);
     expect(m2.get('算力').rank).toBe(1);
     expect(m2.get('芯片').rank).toBe(2);
+
+    // §10：一整组一行量比都拿不到 → 置底（⛔ 绝不当 0 —— 0.5 这种极小值也要排它前面）
+    const m3 = buildTopicDayStats([
+      { topic: '芯片', name: 'A', volRatio: null },
+      { topic: '芯片', name: 'B', volRatio: null },   // 均值 null
+      { topic: '农业', name: 'C', volRatio: 0.5 },    // 均值 0.5
+      { topic: '农业', name: 'D', volRatio: null }
+    ]);
+    expect(m3.get('农业').rank).toBe(1);
+    expect(m3.get('芯片').rank).toBe(2);
+    expect(m3.get('芯片').avgVolRatio).toBe(null);
+    expect(m3.get('农业').avgVolRatio).toBe(0.5);
   });
 
   it('「其它」与不足 2 只的题材不参与名次（与统计条成组门槛同源）', () => {

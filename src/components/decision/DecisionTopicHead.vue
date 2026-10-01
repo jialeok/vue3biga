@@ -17,7 +17,7 @@
         （「大亚圣象昨天已买」——可他昨天并没有买大亚圣象）⇒ 已把个股结论从这一行彻底撤掉
         （撤到行尾的【加仓】），并把题材级的说法改成措辞不同的【昨有买入】。
         ⛔ 不要再把「昨天已买」这四个字放回这一行。
-      · N 次入选（streakTag）—— 该题材在【含今日的最近 5 个交易日】里进过买点几次（规则⑬）。
+      · N 次入选（streakTag）—— 该题材在【含今日的最近 5 个交易日】里进过买点几次（规则⑤）。
         与【昨有买入】并存、互不冲突。
 
   §10：任何一项数据缺失都显示「—」而不是 0 —— 没数据 ≠ 没有。
@@ -34,13 +34,13 @@
     >{{ rank }}</span>
     <span class="dcb-meta">数量：{{ text(count) }}</span>
     <span class="dcb-meta">竞价一字：<span class="dcb-meta-num">{{ text(yizi) }}</span></span>
-    <!-- [⑫ 题材级] 昨有买入：这个题材昨天有票被打过「买」标签（⛔ 不是「这一块都买过」） -->
+    <!-- [④ 题材级] 昨有买入：这个题材昨天有票被打过「买」标签（⛔ 不是「这一块都买过」） -->
     <span
       v-if="prevBoughtTag"
       class="dcb-prev-bought"
       title="这个题材昨天有股票被打过「买」标签（题材在延续；哪一只昨天买过看行尾的加仓）"
     >{{ prevBoughtTag }}</span>
-    <!-- [⑬ 入选次数] 该题材在含今日的最近 5 个交易日里进过买点几次 -->
+    <!-- [⑤ 入选次数] 该题材在含今日的最近 5 个交易日里进过买点几次 -->
     <span
       v-if="streakTag"
       class="dcb-topic-streak"
@@ -57,7 +57,7 @@ const props = defineProps({
   rank: { type: Number, default: null },
   count: { type: Number, default: null },
   yizi: { type: Number, default: null },
-  // [⑫/⑬] 题材级标记（买点侧专有，全部由 Logic 层算好；卖点侧不传 ⇒ 不显示）
+  // [④/⑤] 题材级标记（买点侧专有，全部由 Logic 层算好；卖点侧不传 ⇒ 不显示）
   prevBoughtTag: { type: String, default: '' },
   streakTag: { type: String, default: '' }
 });

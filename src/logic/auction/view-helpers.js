@@ -805,6 +805,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   let primaryTopicOfForColor = null;
   // [TOPIC-STATS 2026-09-10] 竞价一字判定函数（题材块内定义，提升到此处供统计条复用）
   let yiZiOf = null;
+  // [RATIO-ORDER 2026-10-01] 题材量比取值函数（同上，在题材分支里赋值，题材组间排序用）
+  let volRatioOf = null;
 
   // [DRAGON 2026-09-09] 龙头排名：只在题材 toggle 开启时计算（需求——只要题材开着标记就在，
   // 无论是否叠加其它 toggle）。口径：同题材组（= 界面同颜色块：真实题材 且 成员>=2）内部，
@@ -873,6 +875,24 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       _yiZiCache.set(idx, v);
       return v;
     };
+
+    // ⭐ [RATIO-ORDER 2026-10-01 用户口径] 题材组【组间排序】依据 = 该题材的【平均竞价量比】。
+    //   用户原话：「以前单独打开题材 toggle，题材是按一字数量排序，我希望现在是按题材的平均竞价量比排序，
+    //   平均竞价量比高的题材排在前面。这样能分出排在第一和第二的题材」。
+    //   · 取值走 Data 层唯一适配点 getAucVolRatio（云端存字符串 → 数值），
+    //     与统计条第一行「平均竞价量比」【同一个来源同一个字段】（§6 单一真相）；
+    //   · ⚠️ 灰行（观察组 / 龙头继承壳）照常计入 —— 统计条那个数字的分母就「不分灰色和常规」，
+    //     排序必须用同一个分母，否则用户拿统计条的数字核不出来顺序（§10 不制造自相矛盾的口径）；
+    //   · §10：缺量比 → null（不进均值分母；整个题材一行都拿不到 → 该题材置底），⛔ 绝不当 0。
+    const _volRatioCache = new Map();
+    volRatioOf = function(idx) {
+      if (_volRatioCache.has(idx)) return _volRatioCache.get(idx);
+      const it = renderList[idx];
+      const nm = it && it.stock ? String(it.stock).trim() : '';
+      const v = nm ? getAucVolRatio(currentDate, nm) : null;
+      _volRatioCache.set(idx, v);
+      return v;
+    };
     // 题材组配色：仅成员>=2 的真实题材上浅色，不同题材不同色，"其它"不上色。
     // 融合模式（题材单独开启）下观察组行也要计入成组/上色，否则合并过来的观察组票拿不到背景色，
     // 视觉上仍像"两拨"，与「融合成一个整体」的诉求不符；叠加主排序时维持原口径（只按正式列表成组）。
@@ -920,7 +940,13 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
         const it = renderList[idx];
         const nm = it && it.stock ? String(it.stock).trim() : '';
         return nm ? _listedNames.has(nm) : false;
-      }
+      },
+      // ⭐ [RATIO-ORDER 2026-10-01 用户口径] 第 8 参 = 题材组的【组间排序口径】：
+      //   从「一字数量降序」改成「平均竞价量比降序」—— 这样题材能按强度分出名次，
+      //   决策看板「第 1 / 第 2 名题材」跟着同一把尺子走（决策那边 rankDecisionTopics 复用本函数，
+      //   §6 单一真相：改这里，两处一起变，绝不会出现「决策说第一、竞价显示第二」的错位）。
+      //   ⛔ 只有本调用点传它；涨跌停 / 一字看板 / 第二页题材块仍走默认的一字口径（各看板独立 §15）。
+      { by: 'volRatio', volRatioOf: volRatioOf }
     );
   }
 

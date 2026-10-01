@@ -26,14 +26,15 @@ import { getPrevSoldInheritedSet } from '../auction/inherited-sold.js';
 import { getJingYestHighlightSetForDate } from '../auction/sort-rules.js';
 import { _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
-// [NO-YIZI 2026-09-25] 「全部题材竞价一字 0 个」的弱市兜底要读【连板天梯 · 题材连扳】的分组。
-// ⛔ 直接复用 ladder-collect 的采集结果（0 请求、纯内存），而不是在这里另写一遍分组：
-//    另写必然与天梯看板显示分叉 —— 用户是照着天梯看板的题材数去数的（§6 单一真相）。
-import { collectLadderData } from '../ladder/ladder-collect.js';
+// [QUANT-PICK 2026-10-01 用户口径] ⛔ 本文件【不再采集连板天梯】——
+//   买点已整体改成「题材排名前二 × 按题材股票数量分档 × 按竞价量比选票」，
+//   原来那两条要靠天梯的兜底规则（⑤ 全部题材无一字 / ⑥ 高风险小题材）连同它们的
+//   ladderTopicGroups / ladderReady / ladderReason 三个参数一起删掉了（用户原话「不看连板天梯晋级看板了」）。
+//   ⇒ 因此这里不再 import collectLadderData，也删掉了 _ladderTopicGroups（§16 不留死代码）。
+//   ↩️ 恢复路径：`git revert` 本次提交。
 import {
   rankDecisionTopics,
   rankDragons,
-  isSmallRiskyTopic,
   buildBuyPlan,
   buildSellPlan,
   TOPIC_STREAK_WINDOW,
@@ -60,18 +61,9 @@ function _notReady(reason) {
   };
 }
 
-/**
- * 「连板天梯 · 题材连扳」的分组（只在【全部题材竞价一字 = 0】时才需要，懒采集）。
- * §10：采集失败 / 未就绪必须原样上报，绝不能退化成「今天没有连板梯队」。
- */
-function _ladderTopicGroups(date) {
-  try {
-    const d = collectLadderData(date);
-    return { ready: !!d.ready, groups: d.topicGroups || [], reason: d.ready ? '' : (d.reason || '') };
-  } catch (e) {
-    return { ready: false, groups: [], reason: (e && e.message) ? e.message : '连板天梯计算失败' };
-  }
-}
+// [QUANT-PICK 2026-10-01] 此处原有 _ladderTopicGroups(date)（懒采集「连板天梯 · 题材连扳」分组）。
+//   买点新规不再需要天梯，且【不看连板天梯晋级看板了】（用户原话）⇒ 整条采集链删除（§16 不留死代码）。
+//   ↩️ 恢复路径：git revert 本次提交。
 
 /** 昨日打过「买」标签的股票名集合（标签只继承一天，所以只看【前一日】） */
 function _prevBoughtNames(prevDate) {
@@ -164,7 +156,7 @@ function _prevBuyNames(prevDate) {
 }
 
 /**
- * 【⑫ 题材级 · 昨有买入】昨天买过的票【今天】落在哪些题材里。
+ * 【④ 题材级 · 昨有买入】昨天买过的票【今天】落在哪些题材里。
  *
  * ⚠️ 用【今日的题材归属】（byName 里的 topic）而不是昨天的题材名：看板显示的是今天的题材块，
  *    标签表达的是「今天这个题材在延续」，用同一份映射才不会出现「标签挂在一个今天不存在的题材上」。
@@ -189,11 +181,13 @@ function _prevBoughtTopics(prevBought, byName) {
 /**
  * 一个买点方案里【全部买点块】的题材名集合。
  *
- * [STREAK-ALL-BLOCKS 2026-09-30 用户口径修正] ⛔ 不要再收窄成「只取 heavy / light」：
+ * [STREAK-ALL-BLOCKS 2026-09-30 用户口径修正] ⛔ 不要再收窄成「只取重仓 / 轻仓」：
  *   计数范围必须与【展示范围】一致。上一版只取重仓 / 轻仓，结果 9/30 当天第 1/第 2 名题材
- *   都是「票少 + 1 个一字」的高风险小题材 ⇒ 买点全部落在 ⑥ 兜底方案 ⇒
+ *   都是「票少 + 1 个一字」的高风险小题材 ⇒ 买点全部落在兜底方案里 ⇒
  *   Ⓒ 入选次数整块看板一个都不显示（用户实测反馈，已用真实数据 100% 复现）。
- *   现在覆盖 5 个买点槽位：heavy / light / noYizi⑤ / smallTopic⑥ / bigTopic。
+ *   ⓘ 2026-10-01 起兜底方案已整体删除，买点只剩 heavy（第 1 名题材）/ light（第 2 名题材）两块；
+ *      本函数仍按【槽位列表 + blocks 兜底】的写法遍历 —— 这样万一日后重新加回带 blocks 的方案，
+ *      计数范围不会【悄悄】变窄（口径一致性靠结构保证，而不是靠人记得改这里）。
  *   —— 卖点侧【不在口径内】（卖点候选本来就是「昨天买过的票」，计入会把所有题材刷满、无区分度）。
  *
  * @param {object} buy buildBuyPlan 的返回值
@@ -216,11 +210,11 @@ function _buyPointTopics(buy) {
 }
 
 /**
- * 【⑬ 题材入选次数】过去（不含今日）窗口内——含今日共 TOPIC_STREAK_WINDOW 天 ——
+ * 【⑤ 题材入选次数】过去（不含今日）窗口内——含今日共 TOPIC_STREAK_WINDOW 天 ——
  * 每个题材进入【买点】的【天数】（同一题材一天最多算 1 次）。
  *
- * 实现口径（用户 2026-09-30 已确认）：窗口含今日；数【全部买点块】（重仓 / 轻仓 /
- * 弱市兜底⑤ / 小题材兜底⑥ / 大题材兜底）——见 _buyPointTopics 的口径修正注释。
+ * 实现口径（用户 2026-09-30 已确认）：窗口含今日；数【全部买点块】——
+ * 见 _buyPointTopics 的口径修正注释（2026-10-01 起买点只剩 第 1 / 第 2 名题材两块）。
  *
  * ⚠️ 成本与 §36：这里要沿着交易日往回重算 4 天（今天的这一次由主流程自己算）。
  *    每次重算是【纯内存组装】（无请求、不写库、不消费额度），且：
@@ -292,9 +286,9 @@ export function collectDecisionData(date, opts) {
   // [TOPIC-STREAK 2026-09-30] rangeOptional 的正当性（唯一的例外场景）：
   //   「近 5 个交易日题材入选次数」要对【历史日】重算买点，但 getDragonRangePct 只持有一个日期
   //   （dragonState.date === 当前展示日）⇒ 历史日必然拿不到涨幅 ⇒ 一律 _notReady ⇒ 功能没法做。
-  //   而【题材归属 / 名次 / 一字数】完全不需要涨幅（rankDecisionTopics 只看 name/topic/isYizi/countable），
-  //   涨幅只影响【题材内部选哪只票】（龙一 / 龙二）与 ⑨ 双主线的高开率比较 —— 都不改变
-  //   「哪个题材进了买点」这个结论。因此只取 heavy / light 的题材名时，涨幅缺失不影响正确性。
+  //   而【题材归属 / 名次 / 一字数】完全不需要涨幅（rankDecisionTopics 只看 name/topic/isYizi/
+  //   countable/aucVolRatio），涨幅只影响【题材内部的「龙几」标签】与「量比并列时的稳定次序」
+  //   —— 都不改变「哪个题材进了买点」这个结论。因此只取 heavy / light 的题材名时，涨幅缺失不影响正确性。
   //   ⚠️ 代价：rangeOptional 下灰行（观察组继承票，需有十日涨幅才纳入）会被统一排除；
   //      灰行 countable=false，本来就不进题材只数，故对题材结论无影响（见 _mkRow / 灰行注释）。
   let rangeMap = getDragonRangePct(date);
@@ -425,35 +419,23 @@ export function collectDecisionData(date, opts) {
 
   const dragonMap = rankDragons(topics);
 
-  // [NO-YIZI 2026-09-25] 只有下面两种情况才去采连板天梯分组（两条兜底规则要用）：
-  //   ① 「全部题材竞价一字 = 0」的弱市兜底；
-  //   ② [SMALL-TOPIC] 第 1 / 第 2 名题材是「票太少 + 有 1~2 个一字」的高风险小题材。
-  // 平时不采 —— 白跑一次全量行的归堆没意义（§36 性能红线）。
-  const first = topics.find(function(b) { return b.rank === 1; }) || null;
-  const second = topics.find(function(b) { return b.rank === 2; }) || null;
-  const totalYizi = topics.reduce(function(n, b) { return n + (Number(b.yiziCount) || 0); }, 0);
-  // ③ [LADDER-VS-SECOND 2026-09-26] 第 2 名题材【只有 1 个一字】时要跟「题材连扳数量第一」比数量
-  const needLadder = totalYizi === 0
-    || isSmallRiskyTopic(first) || isSmallRiskyTopic(second)
-    || (second && Number(second.yiziCount) === 1);
-  const ladder = needLadder ? _ladderTopicGroups(date) : null;
-  // 【三 · 持有 / 加仓】上一交易日的买点股票名（null = 未知 → 规则层一律不标，§10 不猜）
+  // [QUANT-PICK 2026-10-01 用户口径] ⛔ 连板天梯的采集（needLadder / _ladderTopicGroups）已删除：
+  //   新买点只用「题材排名前二 + 题材股票数量 + 竞价量比」三样，全部来自上面的 topics 本身，
+  //   不再需要「题材连扳」分组 ⇒ 每天少跑一次全量行归堆（§36 性能红线）。
+  // 【③ 持有 / 加仓】上一交易日的买点股票名（null = 未知 → 规则层一律不标，§10 不猜）
   const prevBuyNames = skipPrevBuy ? null : _prevBuyNames(prevDate);
-  // 【⑫ 昨天已买】上一交易日【实际】打过「买」标签的股票名（§6：与卖点候选同一份数据源）。
+  // 【④ 昨天已买】上一交易日【实际】打过「买」标签的股票名（§6：与卖点候选同一份数据源）。
   //   ⛔ 股票级判据，逐只比名字（2026-09-30 修正：上一版按题材判，会把整块都标上，误导）。
   //   在 buildBuyPlan 之前取：买点与卖点两边都要用它（一次采集、两处复用）。
   const prevBought = _prevBoughtNames(prevDate);
-  // 【⑫ 题材级 · 昨有买入】把上面这批股票【按今日题材】聚合（题材行标【昨有买入】）。
+  // 【④ 题材级 · 昨有买入】把上面这批股票【按今日题材】聚合（题材行标【昨有买入】）。
   //   与上一行的股票级判据共用同一份 prevBought（§6：一处采集、两处复用，不会分叉）。
   const prevBoughtTopics = _prevBoughtTopics(prevBought, byName);
-  // 【⑬ 题材入选次数】过去（不含今日）4 个交易日里每个题材进过买点几次；null = 窗口内有历史日未知。
+  // 【⑤ 题材入选次数】过去（不含今日）4 个交易日里每个题材进过买点几次；null = 窗口内有历史日未知。
   //   ⛔ 只在主流程算：内部递归调用一律带 skipPrevBuy=true ⇒ topicStreakPast 恒为 null ⇒
   //      不会再往下展开（否则 _topicStreakPast → collectDecisionData → _topicStreakPast … 指数爆炸）。
   const topicStreakPast = skipPrevBuy ? null : _topicStreakPast(date);
   const buy = buildBuyPlan(topics, dragonMap, {
-    ladderTopicGroups: ladder ? ladder.groups : [],
-    ladderReady: ladder ? ladder.ready : false,
-    ladderReason: ladder ? ladder.reason : '',
     prevBuyNames: prevBuyNames,
     prevBoughtNames: prevBought,
     prevBoughtTopics: prevBoughtTopics,

@@ -505,9 +505,12 @@ import { setAuctionDateData } from './auction-data.js';
                         // auction-helpers.js#getTodayGroupList 的注释）。
                         // 事故（2026-09-30）：会稽山 只是 9/30 的 metrics 影子行，却因落到
                         // _addOne 的「已存在行」分支被打上 obsAutoAdded=true → getTodayGroupList 放行
-                        // → 计入「大消费」只数（4→5）→ 该题材不再命中 isSmallRiskyTopic（阈值恰为 4）
-                        // → 买点从「⑥小题材兜底 大亚圣象/新华文轩」翻转成常规 heavy/light
-                        // → 首屏推给用户的买点变成 会稽山 / 内蒙新华（用户据错买入）。
+                        // → 计入「大消费」只数（4→5）→ 当天买点整块翻转 → 首屏推给用户的买点
+                        //   从「大亚圣象/新华文轩」变成「会稽山 / 内蒙新华」（用户据错买入）。
+                        //   ⚠️ 当时的机关是 ⑥小题材兜底（阈值恰为 4），该规则已于 2026-10-01 删除；
+                        //      但「题材只数」在新买点里【直接决定买几只】（≥10 → 3 只 / 7~9 → 2 只 /
+                        //      4~6 → 1 只 / ≤3 → 不出票），多算一只就可能跨档 ⇒ 本处的 shadowRow
+                        //      身份标记【继续保留】，它不是历史包袱。
                         shadowRow: true
                     };
                     // 注意：影子记录不加入 newWatchlistSet

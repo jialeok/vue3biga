@@ -1,7 +1,10 @@
 // topic-sort.js — 题材 toggle 专用排序/展示纯函数（§15 独立业务模块）
 //
 // 题材 toggle 是「联动辅助 toggle」：配合竞昨/竞昨占比/三天竞跌等主排序 toggle 使用，
-// 在主排序完成后按「题材数量」做稳定叠加排序（题材多的排前，同数量内保持主排序顺序）。
+// 在主排序完成后按「题材分组」做稳定叠加排序（同题材聚在一起，组间按下面的口径排）。
+// 组间口径有两档（见 sortByTopicGroups 的第 8 个参数）：
+//   · 默认 'yizi'     —— 一字数量降序 → 组大小降序 → 题材名（涨跌停 / 一字看板 / 第二页题材块都用它）；
+//   · 可选 'volRatio' —— 【平均竞价量比降序】→ 组大小降序 → 题材名（⭐ 只有早盘竞价题材 toggle 用）。
 // 本模块只含纯函数，无副作用、不依赖响应式状态，供 view-helpers.js 排序分支与 _enrichAuctionItem 调用。
 
 import { extractTopics, getDisplayNote, isValidTopic } from '../note/helpers.js';
@@ -210,8 +213,10 @@ export function classifyStockPrimaryTopic(item, sizeHint) {
  * 在各主排序档位(tier)内部，按「题材分组」重排：
  *   - 取出本档位内每只股票的主题材(primaryTopicOf)；
  *   - 统计本档位内各题材组的股票数与【竞价一字】股票数；
- *   - 题材组排序：先按【一字数量降序】（9:25 一字涨停越多的题材越强，排最前），
+ *   - 题材组排序（默认口径）：先按【一字数量降序】（9:25 一字涨停越多的题材越强，排最前），
  *     一字数量相同再按【组大小降序】（题材内股票多的排前），仍相同按题材名稳定排序；
+ *     ⭐ [RATIO-ORDER 2026-10-01] 传 topicOrder={by:'volRatio',…} 时改成【平均竞价量比降序】
+ *        （早盘竞价题材 toggle 用这一档；见下方参数说明）；
  *   - "其它"组永远排在本档位最末；
  *   - 同一题材组内部，默认保持主排序的相对顺序(pos 兜底，稳定)；
  *     传入 rankFn 时改为【按 rankFn 升序】（龙头场景：龙一→龙二→龙三…），无排名的排在最后。
@@ -228,9 +233,20 @@ export function classifyStockPrimaryTopic(item, sizeHint) {
  *       补竞价一字补入行都不算（用户口径）。⛔ 它们**仍然按题材落进对应组并照常渲染**（只是不计数），
  *       否则"视觉顺序 / 统计条数字 / 趋势图名次"三套口径就会各说各话（用户反馈的错位）。
  *       不传 = 全部计入（既有行为，一行不变）。
+ * @param {{by?:'yizi'|'volRatio', volRatioOf?:(idx:number)=>number|null}} [topicOrder]
+ *        ⭐ [RATIO-ORDER 2026-10-01 用户口径] 题材组的【组间排序依据】—— 可选，不传 = 既有行为（一字优先）。
+ *        用户原话：「以前单独打开题材 toggle，题材是按一字数量排序，我希望现在是按题材的【平均竞价量比】
+ *        排序，平均竞价量比高的题材排在前面。这样能分出排在第一和第二的题材」。
+ *        · by:'volRatio' + volRatioOf ⇒ 组间先比【该组平均竞价量比】（降序）；其余键不变（组大小 → 题材名）。
+ *        · ⚠️ 分母口径 = 本档位内该题材组的【全部渲染行】（**含灰行**），
+ *          与统计条 buildTopicStatsMap 的 avgVolRatio【同一个分母】—— 用户口径「数量不分灰色和常规，
+ *          只要显示在上面的都要算进去」。⛔ 不要改成只数正式成员，否则统计条显示的数字会和排序对不上。
+ *        · §10：一行量比都拿不到的题材 → 置底（⛔ 绝不当 0 参与比大小）。
+ *        · ⛔ 全局**只有早盘竞价题材 toggle** 传这个参数：涨跌停 / 一字看板 / 第二页题材块都依赖
+ *          「一字降序」这个既有口径，跟着变就是越界（各看板是独立业务模块 §15）。
  * @returns {number[]} 重排后的索引数组
  */
-export function sortByTopicGroups(renderOrder, renderList, tierFn, primaryTopicOf, rankFn, yiZiOf, countableOf) {
+export function sortByTopicGroups(renderOrder, renderList, tierFn, primaryTopicOf, rankFn, yiZiOf, countableOf, topicOrder) {
   if (!renderOrder || renderOrder.length === 0) return renderOrder;
   if (typeof tierFn !== 'function' || typeof primaryTopicOf !== 'function') return renderOrder;
   const _rankNum = function(v) {
@@ -240,6 +256,16 @@ export function sortByTopicGroups(renderOrder, renderList, tierFn, primaryTopicO
   const _countable = typeof countableOf === 'function'
     ? function(idx) { return !!countableOf(idx); }
     : function() { return true; };
+  // [RATIO-ORDER 2026-10-01] 组间排序口径：默认 'yizi'（既有行为）；早盘竞价题材 toggle 传 'volRatio'
+  const _byRatio = !!(topicOrder && topicOrder.by === 'volRatio' && typeof topicOrder.volRatioOf === 'function');
+  const _ratioOf = _byRatio ? topicOrder.volRatioOf : null;
+  /** 行 → 有效量比（§10：null / undefined / 空串 / 非数字 → null，⛔ 不当 0） */
+  const _ratioNum = function(idx) {
+    const v = _ratioOf(idx);
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return isFinite(n) ? n : null;
+  };
 
     // 1) 按档位分组
     const tierGroups = new Map();
@@ -256,20 +282,52 @@ export function sortByTopicGroups(renderOrder, renderList, tierFn, primaryTopicO
         // 本档位内各题材组的股票数 / 竞价一字股票数
         const sizeMap = new Map();
         const yiZiMap = new Map();
+        // [RATIO-ORDER 2026-10-01] 组内量比累加（仅 by:'volRatio' 时算）
+        const ratioSum = new Map();
+        const ratioN = new Map();
         for (const x of arr) {
+            // [RATIO-ORDER 2026-10-01] ⚠️ 量比均值【先于 countable 闸门】累加 —— 它的分母是
+            //   「本组全部渲染行（含灰行）」，与统计条 avgVolRatio 完全同一个口径（见参数说明）。
+            //   ⛔ 别把这个累加挪到 `if (!_countable)` 下面：那样灰行就被排除，统计条显示的数字
+            //      会与屏幕上的题材顺序对不上（用户正是拿那个数字核对顺序的）。
+            if (_byRatio) {
+                const r = _ratioNum(x.idx);
+                if (r !== null) {
+                    ratioSum.set(x.topic, (ratioSum.get(x.topic) || 0) + r);
+                    ratioN.set(x.topic, (ratioN.get(x.topic) || 0) + 1);
+                }
+            }
             // [NOT-FORMAL 2026-09-23] 不计入的行（观察组继承壳等）仍在 arr 里参与【分组与渲染】，
             // 只是不贡献组大小与一字数 —— 这样「排序依据 == 统计条数字 == 趋势图名次」三处同源。
             if (!_countable(x.idx)) continue;
             sizeMap.set(x.topic, (sizeMap.get(x.topic) || 0) + 1);
             if (yiZiOf && yiZiOf(x.idx)) yiZiMap.set(x.topic, (yiZiMap.get(x.topic) || 0) + 1);
         }
-        // 题材组去重后排序：一字多的题材排最前 → 组大小降序 → 题材名稳定；"其它"永远最末
+        /** 组平均竞价量比（本组一行量比都没有 → null，§10 置底） */
+        const _avgRatio = function(tp) {
+            const n = ratioN.get(tp) || 0;
+            if (n === 0) return null;
+            return ratioSum.get(tp) / n;
+        };
+        // 题材组去重后排序：
+        //   · 默认（yizi）：一字多的题材排最前 → 组大小降序 → 题材名稳定；
+        //   · [RATIO-ORDER 2026-10-01] volRatio：平均竞价量比降序 → 组大小降序 → 题材名稳定；
+        //   "其它"永远最末。
         const topics = [...new Set(arr.map(x => x.topic))];
         topics.sort((a, b) => {
             if (a === '其它') return 1;
             if (b === '其它') return -1;
-            const dz = (yiZiMap.get(b) || 0) - (yiZiMap.get(a) || 0);
-            if (dz !== 0) return dz;
+            if (_byRatio) {
+                const ra = _avgRatio(a);
+                const rb = _avgRatio(b);
+                // §10：没量比的题材【置底】，⛔ 绝不当 0 去比大小（那会让「没抓到」变成「量比很小」）
+                if (ra === null && rb !== null) return 1;
+                if (ra !== null && rb === null) return -1;
+                if (ra !== null && rb !== null && rb !== ra) return rb - ra;
+            } else {
+                const dz = (yiZiMap.get(b) || 0) - (yiZiMap.get(a) || 0);
+                if (dz !== 0) return dz;
+            }
             const d = (sizeMap.get(b) || 0) - (sizeMap.get(a) || 0);
             if (d !== 0) return d;
             return a < b ? -1 : (a > b ? 1 : 0);

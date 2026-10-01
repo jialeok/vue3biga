@@ -21,7 +21,7 @@
 -->
 <template>
   <div class="dcb-block">
-    <!-- 第一行：题材名 + 排名圆点 + 数量 + 竞价一字 + 题材标记（⑫ 昨有买入 / ⑬ 入选次数） -->
+    <!-- 第一行：题材名 + 排名圆点 + 数量 + 竞价一字 + 题材标记（④ 昨有买入 / ⑤ 入选次数） -->
     <DecisionTopicHead
       :topic="block.block.topic"
       :rank="block.block.rank"
@@ -83,7 +83,7 @@
         >{{ p.volRatioText }}</span>
         <!-- [POSITION-TONE 2026-09-30] 仓位（重仓 / 轻仓 / 加仓）：文案 + 配色档全部由 Logic 层给
              （p.position / p.positionTone，§21 模板零计算、⛔ 不做 `=== '轻仓'` 这类比较）。
-             【加仓】= 这一只昨天已经被打过「买」标签（规则⑫ 股票级效果）。 -->
+             【加仓】= 这一只昨天已经被打过「买」标签（规则④ 股票级效果）。 -->
         <span
           class="dcb-position"
           :class="'dcb-pos-' + p.positionTone"
@@ -174,5 +174,5 @@ function pctText(pct) {
 }
 // ⛔ 此处【不再】做 `position === '轻仓'` 这类比较：配色档由 Logic 层的 p.positionTone 直接给出
 //    （§21 模板零判断）。新增「加仓」档时组件无需改动 —— 这正是上一版 isLight() 做不到的。
-// ⛔ 也不做 `block.block.topic === ...` 之类的题材判断：⑫ / ⑬ 两个题材标记直接读 Logic 给的字符串。
+// ⛔ 也不做 `block.block.topic === ...` 之类的题材判断：④ / ⑤ 两个题材标记直接读 Logic 给的字符串。
 </script>

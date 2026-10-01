@@ -3,77 +3,65 @@
 // 本文件【只有纯函数】：不读 state、不发请求、不碰 DOM、不 import 任何 store。
 // 所有输入输出都是普通对象/数组 → 既方便单测，也保证后期加规则时只动这一个文件。
 //
-// ── 产品口径（2026-09-24 用户原话整理；后期还会继续完善，此处刻意做成可配置的常量）──
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [QUANT-PICK 2026-10-01 用户口径 · 买点整体重写] ★★
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话：「决策看板的规则你重新改造下……先看早盘竞价看板的题材按照竞价量比排序，
+//   选出排在第一和第二的题材，然后决策看板选票，也是按照竞价量比选。先不分龙一、龙二了
+//   （后面再做调整，现在先以竞价量比为主），还有不看连板天梯晋级看板了，也不分弱势题材，量化了。」
 //
-// 【买点】只看「排名第一 / 第二」两个题材（题材排名 = 早盘竞价「题材 toggle」的组序，同源）：
+// ── 新买点规则（唯一口径，代码与本段文字必须一致）──
 //
-//   ★ [VRATIO-PICK 2026-10-01 用户口径] 【选票的唯一依据 = 竞价量比】★
-//     用户原话：「决策看板买票的时候，看早盘竞价看板的竞价量比……竞价量比比较，量比越大，
-//       明天持续性越高，这五只中，选龙二和龙三（选两只重仓），不选龙一；又比如龙二量比 8.9 小，
-//       被量比大的龙三 20.5 卡位，对比就买龙三。」
-//     ⇒ ①②⑥ 三档统一改成【按竞价量比降序取前二、两只都重仓】
-//       （唯一实现 = pickTopTwoByVolRatio；① 的入口 = pickHeavyTwo）：
-//         例：龙一 5.6 / 龙二 8.9 / 龙三 20.5 / 龙四 5.4 / 龙五 7.9
-//           ⇒ 量比降序 龙三 20.5 ＞ 龙二 8.9 ＞ 龙五 7.9 ＞ 龙一 5.6 ＞ 龙四 5.4
-//           ⇒ 取前二 = 【龙三 + 龙二】，⛔ 龙一不选 ——【龙一不再保底】，量比小就是会被挤掉。
-//         数据来源 = market_metrics.auc_vol_ratio（= 早盘竞价看板展开面板那行「竞价量比」，§6 同一个值）。
-//       【卡位补偿】① 档保留：名次第二（龙二）被量比更大的票挤出前二 ⇒ 再补龙二【轻仓】（共 3 只）。
-//       【龙一特例】龙一【低开】且量比 > DRAGON_ONE_LOW_OPEN_MIN_VOL_RATIO(60) ⇒ 追加龙一【重仓】；
-//         它与卡位补偿同时成立时【龙一特例优先】，卡位补偿不再追加（上限 PICK_MAX_AFTER_SPECIAL = 3 只）。
-//       §10：缺量比的票【不参与】比大小、一律排在有量比的票之后（⛔ 绝不当 0）；整个题材都没量比
-//         ⇒ 退回【按龙头名次取前二】，并如实写进说明。
+//   第 0 步【题材排名】：早盘竞价「题材 toggle」的题材组序 —— 2026-10-01 起
+//     按【该题材的平均竞价量比】降序（原来的「一字数量降序」已作废，见 topic-sort.js#sortByTopicGroups）。
+//     ⛔ 决策看板【不另写一套排名】：rankDecisionTopics 直接复用 sortByTopicGroups（§6 单一真相），
+//        所以「屏幕上的题材顺序 == 决策排名 == 趋势图名次」三处必然同源。
 //
-//   · 第 1 名题材【竞价一字 ≥ 2 个】（①）⇒ 按上面的量比规则取前二（都重仓）+ 卡位补偿 + 龙一特例；
-//   · 第 1 名题材【竞价一字只有 1 个】（②）⇒【与 ① 完全同一套量比规则】
-//       （原「龙一重仓 + 龙二~龙五里竞价高开的股票全部轻仓」已作废）；
-//   · 第 1 名题材【竞价一字 0 个】⇒ 未达门槛，不给买入建议；
-//   · 第 2 名题材：取【一只】最强的（同样按龙头顺序跳过一字），建议【轻仓】——④ 未改，仍按
-//     「龙一不是一字就直接买龙一；龙一是字就取名次最靠前的高开票」。
-//   · 【无一字兜底（2026-09-25 用户口径）】当日【所有题材】的竞价一字都是 0 个 ⇒ 弱市，
-//     改看【连板天梯 · 题材连扳】：取【股票数量最多】的题材（数量并列时并列的都取），
-//     只在它的【龙一 / 龙二】里挑，最终只留【竞价高开】的票：
-//       龙一低开 + 龙二高开 → 只买龙二；两只都高开 → 两只都买；两只都低开 → 只买龙一。
-//     全部记【轻仓】（没有一字，强度打折）。
-//     题材连扳里股票最多的题材【不足 NO_YIZI_MIN_TOPIC_COUNT 只】⇒ 【空仓】（太弱，不参与）。
-//     ⚠️ 这条只在「全部题材一字 = 0」时生效；只要有任何一个题材有一字，就仍走上面的 ①～④。
+//   第 1 步【选题材】：取排名【第 1】与【第 2】的两个题材（也就是用户说的「排在第一和第二的题材」）。
+//     两个题材都拿不到 → 没有买点（如实呈现，不给建议）。
 //
-// ⚠️⚠️ 【2026-10-01 让位声明 · 务必先读】⚠️⚠️
-//   下面 ⑦ 亏钱效应 / ⑧ 弱势题材 / ⑨ 双主线竞争 / ⑩ 买入只数 这四条【都会改选票结果或仓位】，
-//   与上面的「按竞价量比取前二、两只都重仓」直接冲突。
-//   用户原话「你看有哪些规则和这个冲突，现在以这个新规为准，其它不涉及到的规则不变」，
-//   并在 AskUserQuestion 里确认「全部让位，新规优先：这 4 条不再改选票结果，只在说明文字里提示已触发」。
-//   ⇒ 四条【全部降级为纯提示】：判定逻辑照算、notes 照写，⛔ 但不再动 picks / position。
-//      ⑨ 更彻底：整个分支不再接管选票，只把对比说明挂到【第 1 名题材块】的 notes 上。
-//   想让它们重新生效 ⇒ `git revert` 本次提交；
-//   只恢复其中一条 ⇒ 见 _applyLossEffect / _applyWeakOpenRate / _capPicksByTopicCount /
-//      buildBuyPlan 里各自的 [VRATIO-PICK 2026-10-01 · 让位] 注释。
+//   第 2 步【看题材股票数量分档】—— 数量 = 该题材在早盘竞价里的股票只数（block.count，
+//     与早盘竞价统计条「数量：n」同一个数，§6 同源）：
+//       · ≥ 10 只        → 取 3 只：竞价量比前 2 只【重仓】+ 第 3 只【轻仓】
+//       · 7 ~ 9 只       → 取 2 只：竞价量比第 1 只【重仓】+ 第 2 只【轻仓】
+//       · 4 ~ 6 只       → 取 1 只：竞价量比最高那只【重仓】
+//       · 1 ~ 3 只       → 【该题材不出票、空仓】（另一个题材照常）
 //
-// 【亏钱效应 / 弱势题材 / 买入只数 / 持有标记（2026-09-27 用户口径）】四条【后置收口】规则，
-//   ⛔ 全部只用【9:25 竞价】那一瞬的数据 —— 用户是【早上做决策】的，收盘数据当时还不存在。
-//   统一在 _finishBuyBlock 里按固定顺序执行（先砍票 → 再限制只数 → 最后标持有）：
-//   ⑦ 亏钱效应：入选题材里只要有【≥ 1 只竞价一字跌停】（9:25 竞价就打在跌停价上；
-//      早盘竞价看板上 = 股票名下方那条【绿色实线】）⇒ 【只买龙一】且【只轻仓】
-//      （题材 > 10 只 / < 10 只都一样处理）。例：9/11 农业 12 只（中粮科技竞价 -10.00%）。
-//      ⛔ 曾短暂加过【收盘跌停】判据，被用户明确否掉：那是收盘才知道的事，早上看不到。
-//   ⑧ 弱势题材：入选题材【股票总数 > 10 只】且【竞价高开的占比 < 35%】⇒ 题材虚胖
-//      ⇒ 【只买龙一】且【只轻仓】。锚点：10 只里 3 只高开（30%）、12 只里 3 只高开（25%）都触发。
-//      ⛔ ≤ 10 只交给下面的「买入只数」管，两条刻意不重叠。
-//   ⑩ 买入只数（只看【第 1 名题材】在早盘竞价里的股票数）：
-//        ≤ 6 只  → 最多买 1 只（9/18 AI应用 6 只）；
-//        ≤ 10 只 → 最多买 2 只（9/21 电子/通信/算力）；
-//        > 10 只 → 按原规则（≥2 一字可取 2~3 只；1 一字可重仓 + 龙二~龙五高开轻仓）。
-//      ⛔ 只砍后面的票，龙一 / 最靠前的那只一定保留。
-//   ⑪ 持有 / 加仓：上一交易日在【买点】里、今天又在买点里 ⇒ 强势股 ⇒ 行尾标【持有 / 加仓】。
-//      §10：昨天的买点没算出来（null）⇒ 一律【不标】，绝不当成「昨天没选中」。
+//   第 3 步【题材内选票】：一律按【竞价量比】降序取前 N 只（N = 上面档位给的只数）。
+//       · 竞价一字【买不进】→ 一律跳过（不占名额、不参与排序）；
+//       · 创业板 / 科创板 / 北交所（20% / 30% 涨跌幅板）→ 【照选】，不因板块跳过；
+//       · 【不分龙一 / 龙二】—— 龙头名次只在「量比相同」或「全体缺量比」时作稳定次序用；
+//         行内的「龙几」标签照旧显示（标签不变）。
 //
-// 【⑨ 双主线竞争（2026-09-27 用户口径）】第 1 / 第 2 名题材【都 ≥ 10 只】时（大盘缩量、
-//   两个大容量题材在抢主线，【只有一个能活下来】）⇒ 不看 ①~④，改比两个题材的【竞价高开率】：
-//   高者龙一【重仓】、低者龙一【轻仓】，【各只选 1 只】。
-//   例（9/10）：农业 11 只 / 高开 5 只 = 45% ＜ 大消费 10 只 / 高开 8 只 = 80%
-//     ⇒ 大消费龙一国芳集团重仓、农业龙一敦煌种业轻仓。
+//   ⛔ 从此作废、并且【已从本文件删除】的旧规则（§16 不留死代码）：
+//        ① 一字 ≥ 2 / ② 一字 = 1 / ③ 一字 = 0 的档位门槛；
+//        ④ 第 2 名题材的「直接买龙一 / 取名次最靠前的高开票」与「题材替换」；
+//        ⑤ 全部题材无一字 → 连板天梯「题材连扳」兜底；
+//        ⑥ 高风险小题材兜底（票少 + 1~2 个一字）；
+//        ⑦ 亏钱效应（竞价一字跌停 → 只买龙一轻仓）；
+//        ⑧ 弱势题材（> 10 只且竞价高开率 < 35% → 只买龙一轻仓）；
+//        ⑨ 双主线竞争（第 1 / 第 2 名都 ≥ 10 只 → 比竞价高开率定重仓）；
+//        ⑩ 买入只数限制（≤ 6 只最多 1 只 / ≤ 10 只最多 2 只）；
+//        龙一特例（低开 + 量比 > 60 追加龙一重仓）与卡位补偿（龙二被挤掉补轻仓）。
+//      ⇒ 这些口径【都不再影响选票结果】。要恢复任意一条 ⇒ `git revert` 本次提交即可（历史实现原样在旧提交里）。
 //
-// 【规则编号（2026-09-27 用户口径）】买点说明文字必须标【规则N】，像法律条文一样能查出处：
-//   ①~⑥ = 选题材 / 选票档位；⑦~⑪ = 对已入选买点的后置收口（⑨ 是档位级的「选谁重仓」）。
+//   §10 红线（贯穿全程）：缺数据【绝不补 0 / 绝不当 0 参与比较】——
+//     缺竞价量比 → 不参与量比大小、一律排在有量比的票后面；整个题材都没量比 → 退回按龙头名次取，
+//     并在说明文字里写明这是退路。缺十日涨幅 → 排不进龙位（但照样能被量比选中）。
+//
+// ── 保留不变的部分 ──
+//
+//   ①【选票依据 = 竞价量比】数据来源 market_metrics(scope='auction').auc_vol_ratio，
+//      与早盘竞价看板展开面板那行「竞价量比」、以及买点行内徽标【同一个字段】。
+//   ②【后置标记】全部保留，语义不变（用户口径「标签不变」）：
+//        ③ 持有 / 加仓（上一交易日也在买点里 ⇒ 强势股）
+//        ④ 昨有买入（题材级，标在题材行）+ 加仓（股票级，改行尾仓位）
+//        ⑤ 入选次数（近 5 个交易日进过买点几次）
+//   ③【低开龙一提醒】龙一竞价低开时提示自行看竞价图形（跌停 L 形 → 尾盘买），纯文字提醒。
+//   ④【卖点】整体不变（用户口径「卖点先不变」）：候选 = 昨日打过「买」标签的股票，
+//      第一层按今日竞价高低开细分节奏，第二层按今日题材排名兜底。详见下方 _decideSellHint。
+//
+// 【规则编号】买点说明文字必须标【规则N】，像法律条文一样能查出处。
 //   ⛔ 编号只从本文件顶部的 RULE_NO 取（§6 单一真相），说明文字用 _note() / ruleTag() 生成。
 //
 // 【卖点】候选 = 【昨日】打过「买」标签的股票。卖点分【两层】，先后关系如下：
@@ -88,8 +76,6 @@
 //     文本 = formatAucPct（与早盘竞价同一函数，2 位小数、正数补 '+'）；
 //     配色 = getAucOpenKind（竞价涨幅 > 0 红底 / < 0 绿底 / = 0 灰底，与全站「涨红跌绿」一致）；
 //     缺竞价涨幅（null）⇒ 不产标签，⛔ 绝不用灰色伪装成「平开」（§10）。
-//     ⚠️【买点】也挂同一枚徽标（同一个款式、同两个函数），由 _decorateAucBadge 在两处收口统一派生
-//       （_finishBuyBlock / _finishPlanBlocks）—— 如果哪天买点的行样式又改，记得两边一起看。
 //
 //   第二层 · 按【今日题材排名】的兜底时点（原规则，未被第一层覆盖时才显示在行尾）：
 //     · 今日题材排【第 1 或 第 2】名 ⇒ 14:50 卖（拿满一天）；
@@ -106,79 +92,39 @@
 import { sortByTopicGroups } from '../auction/topic-sort.js';
 import { computeDragonRankMap, getDragonLabel } from '../auction/dragon-rank.js';
 // 竞价开平（高开 / 低开 / 平开）复用连板天梯的唯一实现，⛔ 不在本文件另写一套阈值与文案（§6）
-import { getAucOpenKind, getAucOpenText, AUC_OPEN_HIGH, AUC_OPEN_LOW } from '../ladder/ladder-rules.js';
-// 板块（创业板 / 科创板 / 北交所 = 20% / 30% 涨跌幅板）判定复用早盘竞价的唯一实现（§6）：
-// 早盘竞价给这类票画浅灰删除线用的就是 isHighLimitBoard，⛔ 本文件不另写 /^(30|68)/ 这类正则。
-// 竞价【跌停】同样复用 limit-up.js#getAuctionLimitState（涨跌停看板用的就是它），不另写阈值。
-import { isHighLimitBoard, getAuctionLimitState, formatAucPct } from '../auction/limit-up.js';
+import { getAucOpenKind } from '../ladder/ladder-rules.js';
+// 竞价涨幅格式化复用早盘竞价的唯一实现（§6）。
+import { formatAucPct } from '../auction/limit-up.js';
 
 /** 题材成组门槛：与早盘竞价统计条（topic-stats.js#TOPIC_STATS_MIN_GROUP）同源 —— 不足 2 只不成题材 */
 export const DECISION_MIN_GROUP = 2;
-/** 第 1 名题材触发「双票重仓」所需的最少竞价一字数量（用户口径：两个或两个以上一字） */
-export const MIN_YIZI_HEAVY = 2;
-/** 第 1 名题材触发「龙一重仓 + 龙二～龙五轻仓」所需的最少竞价一字数量（用户口径：只有一个竞价一字） */
-export const MIN_YIZI_SINGLE = 1;
-/** 第 1 名题材取几只；第 2 名题材取几只 */
-export const PICK_COUNT_HEAVY = 2;
-export const PICK_COUNT_SINGLE = 1;
-export const PICK_COUNT_LIGHT = 1;
 
-// ===== [VRATIO-PICK 2026-10-01 用户口径] 买点选票依据 = 【竞价量比】（取代原「竞价涨幅最高」）=====
-// 用户原话：「决策看板买票的时候，看早盘竞价看板的竞价量比……量比越大，明天持续性越高。
-//   这五只中，选龙二和龙三（选两只重仓），不选龙一」
-//   例：龙一 5.6 / 龙二 8.9 / 龙三 20.5 / 龙四 5.4 / 龙五 7.9
-//       ⇒ 按量比降序 = 龙三 20.5 ＞ 龙二 8.9 ＞ 龙五 7.9 ＞ 龙一 5.6 ＞ 龙四 5.4
-//       ⇒ 取前二 = 龙三、龙二（两只都重仓），⛔ 龙一量比小所以不选。
-//   数据来源 = market_metrics(scope='auction').auc_vol_ratio，
-//   与早盘竞价看板展开面板那行「竞价量比」、以及本看板行内徽标【同一个字段】（§6 单一真相）。
-//
-// 口径（AskUserQuestion 2026-10-01 用户逐项确认，⛔ 别自行改动）：
-//   · 适用档位：①（第 1 名 · 一字 ≥ 2）/ ②（第 1 名 · 一字 = 1）/ ⑥（小题材兜底）三档
-//     【统一】改成「按量比降序取前二、两只都重仓」—— 原 ② 的「龙二~龙五里竞价高开的全都要（轻仓）」
-//     与 ⑥ 的「按竞价涨幅降序」都作废；
-//   · 卡位补偿：仅【① 档】保留 —— 名次第二（龙二）若没进前二 ⇒ 再补龙二【轻仓】，一共 3 只
-//     （用户口径「保留卡位 3 只」，沿用原卡位思路，只是把判据从「涨幅最高」换成「量比最高」）；
-//   · 龙一特例：龙一【低开】且量比 > DRAGON_ONE_LOW_OPEN_MIN_VOL_RATIO ⇒ 追加龙一【重仓】
-//     （用户原话「龙一低开，竞价量比大于 60，可以买入，入选策略看板买点股票」）；
-//   · 只数上限 PICK_MAX_AFTER_SPECIAL：龙一特例与卡位补偿【同时】成立时【龙一特例优先】，
-//     卡位补偿不再追加 —— 并在说明文字里写明原因，用户能直接核对（用户口径「上限 3 只」）。
-//   · ⚠️ §10：缺竞价量比的票【不参与「量比更大」的比较】，一律排在有量比的后面（绝不当 0）；
-//     若全体都没有量比 ⇒ 退回【按龙头名次取前二】，并如实写进说明。
-/** 买点选票依据 = 【竞价量比】降序（2026-10-01 用户口径；①②⑥ 三档统一） */
-export const PICK_SORT_BY_VOL_RATIO = true;
-/** 【龙一特例】龙一【低开】时，竞价量比【大于】此值 ⇒ 追加龙一重仓（用户口径：60 倍） */
-export const DRAGON_ONE_LOW_OPEN_MIN_VOL_RATIO = 60;
-/** 一次买点最多选几只（龙一特例 + 卡位补偿同时成立时封顶；用户口径：3 只） */
-export const PICK_MAX_AFTER_SPECIAL = 3;
-/** 「龙二～龙五」的档位区间（用户口径：龙一到龙五里，龙一做重仓，龙二到龙五找高开的做轻仓） */
-export const LADDER_MIN_RANK = 2;
-export const LADDER_MAX_RANK = 5;
-/** 【无一字兜底】题材连扳里「股票数量最多」的题材至少要有这么多只；不足 ⇒ 太弱，空仓（用户口径） */
-export const NO_YIZI_MIN_TOPIC_COUNT = 3;
-/** 【无一字兜底】每个入选题材只看最靠前的两只（龙一 / 龙二） */
-export const NO_YIZI_PICK_COUNT = 2;
-/**
- * 【无一字 · 大题材兜底（2026-09-26 用户口径）】全部题材竞价一字 = 0 时：
- * 早盘竞价里【股票数量 ≥ 10 只】的题材（只看第 1 / 第 2 名）⇒ 选它的【龙一】轻仓。
- * 用户原话：9/4 电子/通信/算力 17 只、AI应用 10 只 → 各选这两个题材的龙一（哪个超过就选哪个）。
- * ⛔ 与 NO_YIZI_MIN_TOPIC_COUNT（题材连扳不足 3 只 → 空仓）是两条【并列】的规则：
- *    先判大题材，不满足才回到原来的「题材连扳」兜底 / 空仓。
- */
-export const BIG_TOPIC_MIN_COUNT = 10;
+// ===== [QUANT-PICK 2026-10-01 用户口径] 买点：题材股票数量 → 取几只 =====
+// 用户原话：「看数量，如果数量大于等于 10 买 3 只，竞价量比高的两只重仓，竞价量比较低的轻仓；
+//   同题材 7-9 只数量，可以买两只，竞价量比高的那只重仓，剩下那只轻仓；
+//   同题材 4-6 只数量，只买一只竞价量比高的，重仓。数量只有 1-3 只的不进入决策范围，空仓。」
+/** 题材股票数 ≥ 此值 ⇒ 取 3 只（量比前二重仓 + 第三轻仓） */
+export const PICK_TIER_BIG_MIN = 10;
+/** 题材股票数 ≥ 此值（且 < PICK_TIER_BIG_MIN）⇒ 取 2 只（第 1 只重仓 + 第 2 只轻仓） */
+export const PICK_TIER_MID_MIN = 7;
+/** 题材股票数 ≥ 此值（且 < PICK_TIER_MID_MIN）⇒ 取 1 只（重仓）；不足 ⇒ 该题材不出票 */
+export const PICK_TIER_MIN_COUNT = 4;
+/** 各档取几只 */
+export const PICK_COUNT_BIG = 3;
+export const PICK_COUNT_MID = 2;
+export const PICK_COUNT_MIN = 1;
+/** 各档里【重仓】几只（剩下的按量比顺序记轻仓） */
+export const PICK_HEAVY_BIG = 2;
+export const PICK_HEAVY_MID = 1;
+export const PICK_HEAVY_MIN = 1;
 
-// ===== [LOSS-EFFECT 2026-09-27]「题材里有竞价一字跌停」= 亏钱效应 =====
-// 用户口径（9/11 农业 12 只、9/10 农业 11 只）：看入选题材在【早盘竞价】里的那些票，
-//   只要有【≥1 只竞价一字跌停】（竞价就跌停，没开盘就跌停）⇒ 题材内部有亏钱效应，
-//   【只买龙一】，而且【只轻仓】（题材总数量 > 10 只 或 < 10 只都一样处理）。
-/** 触发「亏钱效应」所需的【竞价一字跌停】只数 */
-export const LOSS_EFFECT_MIN_DIAN_TING = 1;
+// ===== [TOPIC-ORDER 2026-10-01 用户口径] 题材排名依据 = 平均竞价量比（早盘竞价题材 toggle 同源）=====
+// 用户原话：「以前单独打开题材 toggle，题材是按一字数量排序，我希望现在是按题材的平均竞价量比排序，
+//   平均竞价量比高的题材排在前面。这样能分出排在第一和第二的题材」。
+// ⛔ 排名实现【不在本文件】—— 就是 topic-sort.js#sortByTopicGroups 的 topicOrder 档，
+//    rankDecisionTopics 与早盘竞价 view-helpers 传的是【同一个函数 + 同一个参数】（§6 单一真相）。
+// 量比取值 = market_metrics(scope='auction').auc_vol_ratio（云端存字符串如 "2.18"，规则层统一 _num 解析）。
 
-// ===== [BUY-COUNT 2026-09-27] 第 1 名题材的【买入只数】按题材股票数决定 =====
-// 用户口径（9/18 AI应用 6 只 → 只买 1 只；9/21 电子/通信/算力 ≤10 只 → 最多 2 只；> 10 只 → 原规则）
-/** 题材股票数 ≤ 这么多 → 最多买 1 只 */
-export const BUY_COUNT_MAX_SMALL = 6;
-/** 题材股票数 ≤ 这么多（且 > BUY_COUNT_MAX_SMALL）→ 最多买 2 只 */
-export const BUY_COUNT_MAX_MID = 10;
 /** 【持有 / 加仓】标记文案：上一个交易日也在买点里、今天又被选中 = 强势股 */
 export const HOLD_TAG = '持有 / 加仓';
 
@@ -225,9 +171,11 @@ export const TOPIC_PREV_BOUGHT_TAG = '昨有买入';
 //            一次入选，二次入选，三次入选……，这样我就知道频率」。
 // 口径（AskUserQuestion 已确认，2026-09-30 二次修正）：
 //   · 窗口 = 【含今日】的最近 5 个交易日；
-//   · 数【全部买点块】出现的题材：重仓 / 轻仓 / 弱市兜底⑤ / 小题材兜底⑥ / 大题材兜底。
+//   · 数【全部买点块】出现的题材：重仓 / 轻仓。
 //     🔴 上一版是「只数重仓/轻仓」，9/30 实测暴露：当天买点全在兜底方案里 ⇒ 整块看板无次数，
 //        而计数范围与展示范围不一致必然产生这种「看不见的标记」。详见 _markTopicStreak 注释。
+//     ⓘ 2026-10-01 起兜底方案已整体删除，买点只剩「第 1 / 第 2 名题材」两个块 ——
+//        计数范围与展示范围依旧一致（都是全部买点块），所以本口径不用再改。
 //   · 与【昨有买入】并存、互不冲突。
 /** 题材入选次数统计窗口：含【今日】的最近几个交易日 */
 export const TOPIC_STREAK_WINDOW = 5;
@@ -246,34 +194,18 @@ export function topicStreakText(n) {
   return cn + '次入选';
 }
 
-// ===== [WEAK-OPEN 2026-09-27] 大题材却没人高开 ⇒ 题材虚胖 → 只买龙一轻仓 =====
-// 用户口径（原话换算）：入选题材【股票总数 > 10 只】时，看里面【竞价高开】的有几只，
-//   占比【< 35%】⇒ 题材是虚胖的（票多但没人跟风），【只选龙一、轻仓】。
-//   锚点：10 只里只有 3 只高开（30%）→ 触发；12 只里只有 3 只高开（25%）→ 触发（9/11 农业的情形）。
-// ⛔ 刻意只在【> 10 只】生效：≤ 10 只由上面的「买入只数」（最多 1 / 2 只）管，两条不重叠。
-/** 触发「弱势题材」判定的题材股票数门槛：总数【大于】这么多才看高开率 */
-export const WEAK_OPEN_MIN_COUNT = 10;
-/** 竞价高开占比【小于】这个比例 ⇒ 题材虚胖，只买龙一轻仓 */
-export const WEAK_OPEN_RATE = 0.35;
-
-// ===== [RULE-NO 2026-09-27] 规则编号（用户口径：说明文字要标「规则几」，像法律条文一样可追溯）=====
+// ===== [RULE-NO 2026-09-27 用户口径，2026-10-01 重排] 规则编号 =====
+// 用户原话：说明文字要标「规则几」，像法律条文一样可追溯。
 // ⛔ 唯一真相：买点说明里出现的每一个规则编号都取自这里（§6），⛔ 不在 UI / 各处手写字面量
 //    —— 否则改了规则内容却漏改说明，用户照着旧编号提修改意见就对不上。
-// 编号体系（买点 ①~⑥ = 选题材 / 选票档位；⑦~⑬ = 对已入选买点的后置收口）：
+// 2026-10-01 重排说明：旧编号 ⑤~⑩（连板天梯兜底 / 小题材 / 亏钱效应 / 弱势题材 / 双主线 / 买入只数）
+//   对应的规则已整体删除，编号随之收起；保留的三条后置标记从 ⑪⑫⑬ 顺移到 ③④⑤。
 export const RULE_NO = {
-  HEAVY_DOUBLE: '①',   // 第 1 名题材 · 竞价一字 ≥ 2 → 卡位选票（含创业板 / 科创板顺延）
-  HEAVY_SINGLE: '②',   // 第 1 名题材 · 竞价一字 = 1 → 龙一重仓 + 龙二~龙五高开轻仓
-  HEAVY_NONE: '③',     // 第 1 名题材 · 竞价一字 = 0 → 不达买入条件（等价于全部题材无一字 → ⑤）
-  SECOND: '④',         // 第 2 名题材（含「题材替换」与「同题材不重复入选」）
-  NO_YIZI: '⑤',        // 全部题材无一字 → 大题材龙一 / 连板天梯题材连扳
-  SMALL_TOPIC: '⑥',    // 小题材（≤4 只）+ 1~2 个一字 = 高风险 → 改看题材连扳
-  LOSS_EFFECT: '⑦',    // 亏钱效应：入选题材有 ≥1 只竞价一字跌停
-  WEAK_OPEN: '⑧',      // 弱势题材：> 10 只 且 竞价高开率 < 35%
-  DUAL_MAIN: '⑨',      // 【2026-09-27 新增】双主线竞争：第 1 / 第 2 名题材都 ≥ 10 只 → 比竞价高开率
-  BUY_COUNT: '⑩',      // 买入只数（只看第 1 名题材的早盘竞价股票数）
-  HOLD: '⑪',           // 持有 / 加仓标记
-  PREV_BOUGHT: '⑫',    // 【昨有买入 / 加仓】标记（题材级聚合 + 股票级仓位改写）
-  TOPIC_STREAK: '⑬'    // 【入选次数】题材行标记（近 5 个交易日内进过买点几次）
+  FIRST: '①',          // 题材排名第 1 → 按【题材股票数量】分档、按【竞价量比】降序选票
+  SECOND: '②',         // 题材排名第 2 → 与 ① 完全同一套分档规则
+  HOLD: '③',           // 持有 / 加仓标记（上一交易日也在买点里）
+  PREV_BOUGHT: '④',    // 【昨有买入】题材行标记 + 【加仓】股票行仓位改写
+  TOPIC_STREAK: '⑤'    // 【入选次数】题材行标记（近 5 个交易日内进过买点几次）
 };
 
 /** 规则编号 → 「【规则N】」前缀（说明文字统一从这里取，⛔ 不各处手写） */
@@ -286,35 +218,15 @@ function _note(no, text) {
   return ruleTag(no) + text;
 }
 
-// ===== [DUAL-MAIN 2026-09-27] 两个【大容量题材并存】→ 比竞价高开率，谁高谁重仓 =====
-// 用户口径（9/10）：大盘缩量时第 1 / 第 2 名题材【都 ≥ 10 只】，两个题材在抢主线，
-//   【只有一个能活下来】⇒ 不看常规档位，直接比两个题材的【竞价高开率】：
-//     农业 11 只、5 只高开（45%）＜ 大消费 10 只、8 只高开（80%）
-//     ⇒ 大消费的龙一国芳集团【重仓】，农业的龙一敦煌种业【轻仓】，【各只选 1 只】。
-// ⛔ 高开率口径与 ⑧ 完全同一份实现（_calcOpenRate，§6）：分母 = 题材股票总数，
-//    缺竞价涨幅的行按【未高开】计入分母（§10 不猜它是高开）。
-/** 触发「双主线竞争」的题材股票数门槛（第 1 / 第 2 名题材【都】要 ≥ 这么多只） */
-export const DUAL_MAIN_MIN_COUNT = 10;
-
-// ===== [SMALL-TOPIC 2026-09-25]「题材太少 + 有 1~2 个一字」的高风险兜底 =====
-// 用户口径：早盘竞价题材 toggle 下，排名第 1 / 第 2 的题材如果【股票数量 ≤ 4 只】却【有 1~2 个竞价一字】，
-//   大概率是量化资金做出来的假强度（票太少、一字撑起来的排名），按常规规则选票【准确率很低】
-//   ⇒ 这种情况下【不用常规规则】，改看连板天梯晋级看板「题材连扳」的题材股票数量来定题材。
-/** 触发「高风险小题材」的题材股票数上限（≤ 4 只） */
-export const SMALL_TOPIC_MAX_COUNT = 4;
-/** 触发所需的一字数量区间（1 ~ 2 个） */
-export const SMALL_TOPIC_MIN_YIZI = 1;
-export const SMALL_TOPIC_MAX_YIZI = 2;
-/** 改用题材连扳后，该题材在【早盘竞价】里的股票总数至少要这么多只才入选（< 4 只 → 排除） */
-export const SMALL_TOPIC_MIN_AUCTION_COUNT = 4;
-/** 数量最多的题材：在【龙一 ~ 龙五】这个区间里挑 */
-export const SMALL_TOPIC_MAX_RANK = 5;
-/** 数量最多的题材挑几只（第 1 只重仓，其余轻仓） */
-export const SMALL_TOPIC_PICK_COUNT = 2;
-
 /** 卖出时点 */
 export const SELL_TIME_MIDDAY = '11:20';
 export const SELL_TIME_CLOSE = '14:50';
+/**
+ * 【卖点例外】第 2 名题材【只有 1 个竞价一字】时，题材强度打折 ⇒ 只有龙一能拿到尾盘。
+ * ⚠️ 2026-10-01 起这个常数【只服务于卖点】（买点的「一字门槛」已整体删除），
+ *    所以刻意不再叫 MIN_YIZI_SINGLE，免得后来人以为买点还在看一字数。
+ */
+export const SECOND_TOPIC_SINGLE_YIZI = 1;
 
 // ===== [SELL-OPEN 2026-09-29] 卖点按【今日竞价高低开】细分（用户口径）=====
 // 背景：用户反馈原来的「题材前二 → 14:50 / 否则 11:20」太模糊 —— 卖点其实取决于
@@ -341,7 +253,7 @@ export const SELL_TONE_PLAN = 'plan';       // 小幅高开 → 看分时（向�
 export const POSITION_HEAVY = '重仓';
 export const POSITION_LIGHT = '轻仓';
 /**
- * 【⑫ 加仓（2026-09-30 用户口径）】该股票昨天已经被打过「买」标签（用户手上已有仓位）⇒
+ * 【④ 加仓（2026-09-30 用户口径）】该股票昨天已经被打过「买」标签（用户手上已有仓位）⇒
  *   仓位不再写「重仓 / 轻仓」，改写「加仓」—— 用户原话：「旁边那个（仓位）应该变成加仓，
  *   这样更加知道那是昨天的票延续走强」。
  *   ⚠️ 「重仓 / 轻仓」是【买多少】的建仓建议；「加仓」是【已有仓位再买】的动作，两者不同层，
@@ -377,23 +289,79 @@ function _topicRankMap(blocks) {
 }
 
 /**
+ * 【题材股票数量 → 档位】（§6 唯一实现：买点的「取几只」只由这里决定）。
+ *
+ * 用户口径（2026-10-01）：
+ *   ≥ 10 只     → 3 只（量比前二重仓 + 第 3 只轻仓）
+ *   7 ~ 9 只    → 2 只（第 1 只重仓 + 第 2 只轻仓）
+ *   4 ~ 6 只    → 1 只（重仓）
+ *   1 ~ 3 只    → 不出票（空仓）
+ *
+ * ⚠️ 边界刻意不重叠：7~9 与 4~6 各自成档，10 是「大档」的闭区间下界 ——
+ *    与用户原话「大于等于 10」「7-9」「4-6」「1-3」逐字对应，⛔ 别自行改成 > 10 / ≥ 8 之类。
+ * §10：count 缺失 / 非法 → 按 0 处理 ⇒ 落到 'none' 档（不出票），
+ *      ⛔ 绝不因为「数字没读到」就假装它是一只大题材去铺票。
+ *
+ * @param {number|string|null} count 题材在早盘竞价里的股票只数（block.count）
+ * @returns {{tier:string, min:number, max:number, heavyCount:number, count:number, rangeText:string}}
+ *          tier = 'big' | 'mid' | 'small' | 'none'；max = 取几只；heavyCount = 其中几只重仓
+ */
+export function resolvePickTier(count) {
+  const n = _num(count);
+  const c = (n === null || n < 0) ? 0 : Math.floor(n);
+  if (c >= PICK_TIER_BIG_MIN) {
+    return {
+      tier: 'big', count: c, max: PICK_COUNT_BIG, heavyCount: PICK_HEAVY_BIG,
+      min: PICK_TIER_BIG_MIN,
+      rangeText: '≥ ' + PICK_TIER_BIG_MIN + ' 只'
+    };
+  }
+  if (c >= PICK_TIER_MID_MIN) {
+    return {
+      tier: 'mid', count: c, max: PICK_COUNT_MID, heavyCount: PICK_HEAVY_MID,
+      min: PICK_TIER_MID_MIN,
+      rangeText: PICK_TIER_MID_MIN + ' ~ ' + (PICK_TIER_BIG_MIN - 1) + ' 只'
+    };
+  }
+  if (c >= PICK_TIER_MIN_COUNT) {
+    return {
+      tier: 'small', count: c, max: PICK_COUNT_MIN, heavyCount: PICK_HEAVY_MIN,
+      min: PICK_TIER_MIN_COUNT,
+      rangeText: PICK_TIER_MIN_COUNT + ' ~ ' + (PICK_TIER_MID_MIN - 1) + ' 只'
+    };
+  }
+  return {
+    tier: 'none', count: c, max: 0, heavyCount: 0, min: 0,
+    rangeText: '不足 ' + PICK_TIER_MIN_COUNT + ' 只'
+  };
+}
+
+/**
  * 题材排名 —— 与早盘竞价「题材 toggle」【完全同一套组序口径】。
  * 刻意复用 sortByTopicGroups（早盘竞价就在用它），而不是在本文件另写一遍比较器：
  * 另写必然分叉，分叉就会出现「决策看板说第一、早盘竞价显示第二」的错位（§6 单一真相）。
  *
+ * ⭐ [TOPIC-ORDER 2026-10-01] 组序口径 = 【该题材的平均竞价量比】降序
+ *   （传 topicOrder={by:'volRatio', volRatioOf}），与早盘竞价 view-helpers 的调用点【同一个参数】
+ *   —— 这样「屏幕上的题材顺序 == 决策看板的题材排名 == 趋势图名次」三处必然一致。
+ *
  * @param {Array<{name:string, topic:string, isYizi?:boolean, countable?:boolean,
- *                inheritSold?:boolean, code?:string, pct?:number|null, aucPct?:number|null}>} entries
+ *                inheritSold?:boolean, code?:string, pct?:number|null, aucPct?:number|null,
+ *                aucVolRatio?:string|number|null}>} entries
  *        countable=false 的行（早盘竞价里「灰色名称 + 灰色题材」= 不在当日正式列表）
  *          不计入数量与一字数 —— 与早盘竞价统计条同口径；
- *          ⛔ 但【2026-09-26 用户口径】它们照常参与龙位与选票（同时期龙头有参考价值），
- *             inheritSold=true = 「昨日卖标签继承」的行（早盘竞价里是灰色实心卖标签）：
- *             ⛔ 2026-09-27 起【也照常参与】龙位与选票（9/8 国芳集团就是这种行，用户点名要它入选）。
- *        code = 股票代码（判 20%/30% 涨跌幅板用；缺失 → 不猜，§40）。
+ *          ⛔ 但它们照常参与【量比均值】与【选票】（§6 与统计条同一个分母：
+ *             「数量不分灰色和常规，只要显示在上面的都要算进去」）。
+ *          inheritSold=true = 「昨日卖标签继承」的行，同样照常参与。
+ *        code = 股票代码（判 20%/30% 涨跌幅板用；本文件现已不据此跳过，仅作数据留痕，§40）。
  *        aucPct = 当日竞价涨幅（%）；null = 缺数据（§10：不能当 0，也就不能当「高开」）。
+ *        aucVolRatio = 当日【竞价量比】原始值（云端字符串如 "2.18"）；缺值 → null（§10）。
  * @returns {Array<{rank:number, topic:string, count:number, yiziCount:number,
  *                  members:Array<{name:string, isYizi:boolean, pct:number|null, aucPct:number|null,
- *                                 code:string, countable:boolean, inheritSold:boolean}>}>}
- *          已剔除「其它」与不足 DECISION_MIN_GROUP 的题材；按组序（一字多 → 人多 → 题材名）升序。
+ *                                 aucVolRatio:number|null, code:string, countable:boolean,
+ *                                 inheritSold:boolean}>}>}
+ *          已剔除「其它」与不足 DECISION_MIN_GROUP 的题材；
+ *          按组序（平均竞价量比 → 组大小 → 题材名）升序。
  */
 export function rankDecisionTopics(entries) {
   const list = (entries || []).filter(function(e) { return e && e.name; });
@@ -410,7 +378,13 @@ export function rankDecisionTopics(entries) {
     topicOf,
     null,                                                      // 组内顺序在此不关心，下面按龙头重排
     function(i) { return !!list[i].isYizi; },
-    function(i) { return list[i].countable !== false; }
+    function(i) { return list[i].countable !== false; },
+    // ⭐ [TOPIC-ORDER 2026-10-01 用户口径] 第 8 参 = 题材组【组间排序口径】= 平均竞价量比降序。
+    //   ⛔ 这里的取值函数必须与早盘竞价 view-helpers 那份【语义完全一致】：
+    //      分子 = 该题材组内【所有拿到量比的行】的量比之和，分母 = 拿到量比的行数（含灰行），
+    //      一行都拿不到 ⇒ null（§10 置底，⛔ 不当 0）。sortByTopicGroups 内部就是这样累加的，
+    //      所以这里只需原样给出每行的量比原始值即可。
+    { by: 'volRatio', volRatioOf: function(i) { return list[i].aucVolRatio; } }
   );
 
   const blocks = [];
@@ -427,7 +401,7 @@ export function rankDecisionTopics(entries) {
       isYizi: !!list[i].isYizi,
       pct: _num(list[i].pct),
       aucPct: _num(list[i].aucPct),
-      // [VRATIO-PICK 2026-10-01] 当日【竞价量比】（倍数）—— ①②⑥ 三档选票的唯一依据。
+      // 当日【竞价量比】（倍数）—— 买点选票的唯一依据。
       //   由 decision-collect#_mkRow 从 market_metrics.auc_vol_ratio 原始值搬过来
       //   （云端存字符串如 "2.18"），这里统一用 _num 解析：缺值 / 空串 / 非数字 → null（§10）。
       aucVolRatio: _num(list[i].aucVolRatio),
@@ -449,16 +423,18 @@ export function rankDecisionTopics(entries) {
 /**
  * 题材内龙头排名（龙一 / 龙二 / …）—— 与早盘竞价龙一徽章同源（computeDragonRankMap）。
  *
+ * ⚠️ [QUANT-PICK 2026-10-01] 参数说明：新买点规则【不再按龙位选票】（一律按竞价量比），
+ *    这里的排名只剩两个用途：
+ *      ① 行内「龙几」标签（用户口径「标签不变」）；
+ *      ② 竞价量比相同（或全体缺量比）时的【稳定次序】兜底，保证结果可复现、不随机。
+ *
  * 候选集口径（2026-09-26 修订）：
  *   · m.pct === null → 缺十日涨幅，排不进龙位（§10：绝不当 0 参与比较）；
  *   · ⛔ m.countable === false【不再排除】—— 那是早盘竞价里「灰色名称 + 灰色题材」的行
  *     （不在当日正式列表，但确实是同时期龙头，9/8 大消费龙一国芳集团就是这种行）。
- *     用户 2026-09-26 明确要求这类灰行【也要参与龙位与买点决策】，
- *     只是仍【不计入】题材数量 / 一字数（统计口径与早盘竞价统计条保持一致）。
  *   · ⛔ m.inheritSold === true【同样不排除】（2026-09-27 修正）：「昨日卖标签继承」的行
- *     在早盘竞价里也是画灰的（灰色实心卖标签），用户点名要它入选 ——
- *     9/8 大消费龙一国芳集团正是「灰名 + 灰题材 + 灰色实心卖标签」，上一版把它过滤掉 ⇒ 没选进来。
- *     ⛔ 结论：本看板【只用 countable 区分统计】，龙位与选票【不因任何灰行身份而排除】。
+ *     在早盘竞价里也是画灰的（灰色实心卖标签），9/8 大消费龙一国芳集团正是这种。
+ *     ⛔ 结论：本看板【只用 countable 区分统计】，龙位【不因任何灰行身份而排除】。
  *
  * @param {Array<object>} blocks rankDecisionTopics 的返回
  * @returns {Map<string,{rank:number, pct:number, topic:string, groupSize:number}>}
@@ -477,20 +453,19 @@ export function rankDragons(blocks) {
 }
 
 /**
- * 题材块 → 可买候选（按龙头名次升序）。三处选票共用这一份候选（§6 单一真相）：
- *   · 竞价一字       → 买不进，剔除；
+ * 题材块 → 可买候选（按龙头名次升序）。买点选票【唯一】的候选来源（§6 单一真相）：
+ *   · 竞价一字 → 买不进，剔除（用户 2026-10-01 口径：仍跳过）；
  *   · ⛔ 灰行【一律不剔除】：不在当日正式列表（countable=false）、昨日卖标签继承（inheritSold）
- *     都照常参与 —— 用户 2026-09-26 / 09-27 两次点名要它们能入选（9/8 国芳集团、万向德农）。
- *     灰行只影响【统计口径】（数量 / 一字数由 countable 决定），不影响龙位与选票。
- *   · 非龙一 + 20%/30% 涨跌幅板（创业板 / 科创板 / 北交所）→ 剔除，顺延下一位
- *     [GROWTH-BOARD 2026-09-26 用户口径]：9/2 AI应用 3 个一字，按名次取到龙五芒果超媒（创业板），
- *     它在后排且是 20% 板 ⇒ 往下移一位改选龙六（龙版传媒）。
- *     ⛔ 龙一本身是 20% 板也照选（龙一是最强票，不因板块被跳过）。
- *     板块判定复用 limit-up.js#isHighLimitBoard（早盘竞价给这类票画删除线的就是它，§6 不另写正则）。
+ *     都照常参与 —— 用户两次点名要它们能入选（9/8 国芳集团、万向德农）。
+ *     灰行只影响【统计口径】（数量 / 一字数由 countable 决定），不影响选票。
+ *   · ⭐ [2026-10-01] ⛔ 不再因「非龙一 + 20%/30% 涨跌幅板」顺延 ——
+ *     用户口径「创业板 / 科创板 / 北交所【照选】，完全按量比」（AskUserQuestion 确认）。
+ *     因此本函数相对旧版【删掉了 isHighLimitBoard 过滤】。
  *
  * @param {object} block 题材块
  * @param {Map} dragonMap 龙头排名
- * @returns {Array<{name:string, pct:number|null, aucPct:number|null, rank:number|null, code:string}>}
+ * @returns {Array<{name:string, pct:number|null, aucPct:number|null,
+ *                  aucVolRatio:number|null, rank:number|null}>}
  */
 function _buyCandidates(block, dragonMap) {
   if (!block) return [];
@@ -503,15 +478,10 @@ function _buyCandidates(block, dragonMap) {
         name: m.name,
         pct: _num(m.pct),
         aucPct: _num(m.aucPct),
-        // [VRATIO-PICK 2026-10-01] 竞价量比（倍数）：三处选票函数共用这一份候选（§6），
-        // 所以只在这里透传一次，⛔ 不要在各自的选票函数里再各写一份取数。
+        // 竞价量比（倍数）：选票的唯一排序依据，只在这里透传一次（§6）
         aucVolRatio: _num(m.aucVolRatio),
-        code: m.code || '',
         rank: (d && d.rank) ? d.rank : null
       };
-    })
-    .filter(function(c) {                                  // [GROWTH-BOARD] 非龙一的 20%/30% 板顺延
-      return !(c.rank !== 1 && isHighLimitBoard(c.code));
     })
     .sort(function(a, b) {
       const ra = (a.rank === null ? Number.MAX_SAFE_INTEGER : a.rank);
@@ -531,7 +501,7 @@ function _toPick(c, position) {
   };
 }
 
-// ===== [VRATIO-PICK 2026-10-01 用户口径] 竞价量比选票（①②⑥ 三档共用，§6 单一实现）=====
+// ===== [QUANT-PICK 2026-10-01 用户口径] 竞价量比选票（唯一实现，§6）=====
 
 /** 竞价量比取值（§10：缺值 / 空串 / 非数字 → null，⛔ 绝不当 0 去比大小） */
 function _volRatioOf(c) {
@@ -545,7 +515,7 @@ function _volRatioOf(c) {
  *   ① 量比大者在前；
  *   ② §10：缺量比的票【不参与】「量比更大」的比较，一律排在有量比的票【后面】
  *      （⛔ 绝不当 0 —— 那会让「没抓到量比」变成「量比很小」，甚至把有数据的票顶下去）；
- *   ③ 量比相同（或都缺）→ 龙头名次靠前的优先；
+ *   ③ 量比相同（或都缺）→ 龙头名次靠前的优先（⛔ 只是稳定次序，不是选票依据）；
  *   ④ 仍相同 → 股票名，保证结果完全一致（不随机）。
  */
 function _cmpVolRatioDesc(a, b) {
@@ -572,371 +542,57 @@ function _ratioTextOfName(cands, name) {
 }
 
 /**
- * 【按竞价量比选票 · 唯一实现（§6）】量比降序取前二（都重仓）+ 龙一特例 + 卡位补偿。
+ * 【按竞价量比取票 · 唯一实现（§6）】
  *
- * ══ 口径（2026-10-01 用户口径，AskUserQuestion 逐项确认）══
- *   · ①②⑥ 三档统一：按【竞价量比】降序取前 PICK_COUNT_HEAVY(2) 只，【两只都重仓】；
- *   · 龙一特例：名次最靠前的那只（龙一）若【低开】且量比 > DRAGON_ONE_LOW_OPEN_MIN_VOL_RATIO(60)
- *     且它【没进前二】⇒ 追加龙一【重仓】（用户原话「龙一低开，竞价量比大于 60，可以买入」）；
- *   · 卡位补偿：名次第二（龙二）若没进前二 ⇒ 补龙二【轻仓】—— 但【龙一特例优先】：
- *     两者同时成立时只保留龙一特例，卡位补偿不再追加（上限 PICK_MAX_AFTER_SPECIAL = 3 只）。
+ * 口径（2026-10-01 用户口径）：
+ *   · 在题材块里按【竞价量比】降序取前 maxCount 只；
+ *   · 前 heavyCount 只记【重仓】，其余记【轻仓】；
+ *   · ⛔ 不分龙一 / 龙二（用户原话「先不分龙一，龙二了，现在先以竞价量比为主」）——
+ *     龙头名次只由 _cmpVolRatioDesc 在「量比并列」时当稳定次序用；
+ *   · ⛔ 没有「龙一特例」也没有「卡位补偿」（旧版 ① 档的两条附加规则已随本次重写删除）。
  *
- * ══ §10 红线 ══
- *   一只都没有量比 ⇒ 退回【按龙头名次取前二】，并如实写进说明（⛔ 绝不假装「量比都是 0」）。
+ * §10 红线：
+ *   · 缺量比的票排在有量比的票之后（由 _cmpVolRatioDesc 保证）；
+ *   · 【全体候选都缺量比】⇒ 退回【按龙头名次】取前 maxCount 只，并如实写进说明
+ *     （⛔ 绝不假装「量比都是 0」，也绝不再往下退回更弱的方案 —— 用户要的就是量化结果）。
  *
  * @param {object} block 题材块
  * @param {Map} dragonMap 龙头排名
- * @param {number|null} [maxRank] 只在【龙一 ~ 第 maxRank 名】里选（⑥ 传 5）；null / 不传 = 不限（①②）
- * @param {string} [ruleNo] 说明文字里引用的规则编号（默认 ①）
- * @returns {{picks:Array, notes:string[], jumped:boolean,
- *            dragonOneSpecial:boolean, byRankFallback:boolean}}
- *   jumped = 触发了「卡位补偿」（名次第二被量比挤出前二、又补了轻仓）
- *   dragonOneSpecial = 触发了「龙一低开 + 高量比」的追加
- *   byRankFallback = 全体缺量比 ⇒ 退回按名次取
+ * @param {number} maxCount 取几只（由 resolvePickTier 给出）
+ * @param {number} heavyCount 其中几只重仓
+ * @param {string} [ruleNo] 说明文字里引用的规则编号
+ * @returns {{picks:Array, notes:string[], byRankFallback:boolean}}
+ *          byRankFallback = 全体候选缺量比 ⇒ 本条是「按龙头名次」的退路（§10 不猜）
  */
-export function pickTopTwoByVolRatio(block, dragonMap, maxRank, ruleNo) {
+export function pickByVolRatio(block, dragonMap, maxCount, heavyCount, ruleNo) {
   const notes = [];
-  const no = ruleNo || RULE_NO.HEAVY_DOUBLE;
-  let cands = _buyCandidates(block, dragonMap);
-  const top = Number(maxRank) > 0 ? Math.floor(Number(maxRank)) : null;
-  if (top !== null) {
-    cands = cands.filter(function(c) { return c.rank !== null && c.rank >= 1 && c.rank <= top; });
-  }
-  if (cands.length === 0) {
-    return { picks: [], notes: notes, jumped: false, dragonOneSpecial: false, byRankFallback: false };
+  const no = ruleNo || RULE_NO.FIRST;
+  const limit = Number(maxCount) > 0 ? Math.floor(Number(maxCount)) : 0;
+  const heavyN = Math.max(0, Math.min(Number(heavyCount) || 0, limit));
+  const cands = _buyCandidates(block, dragonMap);
+  if (cands.length === 0 || limit === 0) {
+    return { picks: [], notes: notes, byRankFallback: false };
   }
 
-  const head = cands[0];                                  // 名次最靠前（龙一）
-  const second = cands.length > 1 ? cands[1] : null;      // 名次第二（龙二）
-  const withRatio = cands.filter(function(c) { return _volRatioOf(c) !== null; });
-
-  // §10：全体缺量比 ⇒ 退回按龙头名次取前二，并如实说明（⛔ 不改用 0 去排）
-  const byRankFallback = withRatio.length === 0;
+  const byRankFallback = cands.filter(function(c) { return _volRatioOf(c) !== null; }).length === 0;
   const ordered = byRankFallback ? cands.slice() : cands.slice().sort(_cmpVolRatioDesc);
-  const picks = ordered.slice(0, PICK_COUNT_HEAVY).map(function(c) { return _toPick(c, POSITION_HEAVY); });
-
-  if (picks.length > 0) {
-    const ratioText = picks.map(function(p) { return p.name + ' ' + _ratioTextOfName(cands, p.name); }).join(' ＞ ');
-    notes.push(_note(no, '按【竞价量比】降序取前 ' + picks.length + ' 只（' + ratioText + '）→ 全部' +
-      POSITION_HEAVY + (byRankFallback ? '；⚠️ 本题材全部缺竞价量比，本条是【按龙头名次】的退路（§10 不猜）' : '')));
-  }
-
-  // 龙一特例：低开 + 量比 > 60（低开抢筹）⇒ 追加龙一重仓
-  let dragonOneSpecial = false;
-  if (head && !picks.some(function(p) { return p.name === head.name; })) {
-    const r = _volRatioOf(head);
-    const kind = getAucOpenKind(_num(head.aucPct));
-    if (r !== null && r > DRAGON_ONE_LOW_OPEN_MIN_VOL_RATIO && kind === AUC_OPEN_LOW) {
-      picks.push(_toPick(head, POSITION_HEAVY));
-      dragonOneSpecial = true;
-      notes.push(_note(no, '【龙一特例】龙一「' + head.name + '」竞价【低开】' + _num(head.aucPct) +
-        '%，但竞价量比 ' + r + ' ＞ ' + DRAGON_ONE_LOW_OPEN_MIN_VOL_RATIO +
-        ' → 低开抢筹，追加龙一' + POSITION_HEAVY + '（按量比它本来排不进前二）'));
-    }
-  }
-
-  // 卡位补偿（⛔ 仅当龙一特例【未】触发 —— 用户口径：龙一特例优先，上限 3 只）
-  let jumped = false;
-  const secondMissed = !!second && !picks.some(function(p) { return p.name === second.name; });
-  if (!dragonOneSpecial && secondMissed && picks.length < PICK_MAX_AFTER_SPECIAL) {
-    jumped = true;
-    picks.push(_toPick(second, POSITION_LIGHT));
-    notes.push(_note(no, '名次第二的龙二「' + second.name + '」竞价量比 ' + _ratioTextOfName(cands, second.name) +
-      ' 被量比更大的票卡位、掉出前二 → 按【卡位补偿】补' + POSITION_LIGHT + '（共 ' + picks.length + ' 只）'));
-  } else if (dragonOneSpecial && secondMissed) {
-    notes.push(_note(no, '名次第二的「' + second.name + '」也掉出了前二，但已因【龙一低开抢筹】追加到 ' +
-      PICK_MAX_AFTER_SPECIAL + ' 只上限 → 不再补' + POSITION_LIGHT + '（用户口径：龙一特例优先）'));
-  }
-
-  return {
-    picks: _reseq(picks),
-    notes: notes,
-    jumped: jumped,
-    dragonOneSpecial: dragonOneSpecial,
-    byRankFallback: byRankFallback
-  };
-}
-
-/**
- * 【①② 第 1 名题材 · 按【竞价量比】选票】—— 2026-10-01 用户口径
- *
- * ⚠️ 本条取代了 2026-09-26 旧版的「龙一必选 + 第二只按【竞价涨幅最高】选、卡位时共 3 只」：
- *   用户原话「看早盘竞价看板的竞价量比……量比越大，明天持续性越高。这五只中，选龙二和龙三
- *   （选两只重仓），不选龙一」⇒ 【龙一不再保底】——一律按量比排序，量比小的龙一就是会被挤掉。
- *
- * 本体是 pickTopTwoByVolRatio（唯一实现，§6）—— 这里只固定「不限名次 + 用本档的规则编号」。
- *
- * @param {object} block 题材块
- * @param {Map} dragonMap 龙头排名
- * @param {string} [ruleNo] 说明文字引用的规则编号（① 档不传 / ② 档传 RULE_NO.HEAVY_SINGLE）
- * @returns {{picks:Array, notes:string[], jumped:boolean,
- *            dragonOneSpecial:boolean, byRankFallback:boolean}}
- */
-export function pickHeavyTwo(block, dragonMap, ruleNo) {
-  return pickTopTwoByVolRatio(block, dragonMap, null, ruleNo || RULE_NO.HEAVY_DOUBLE);
-}
-
-/**
- * 在一个题材块里挑「能买的」：按龙头排名升序，跳过【竞价一字】（一字买不进），取前 maxCount 只。
- * @returns {Array<{seq:number, name:string, dragonLabel:string, dragonRank:number|null,
- *                  pct:number|null, position:string}>}
- */
-export function pickBuyable(block, dragonMap, maxCount, position) {
-  const candidates = _buyCandidates(block, dragonMap).slice(0, maxCount || 1);
-  return _reseq(candidates.map(function(c) { return _toPick(c, position); }));
-}
-
-/**
- * 【第 2 名题材 · 取「排名最靠前的那只竞价高开」】
- *
- * 口径（2026-09-26 用户）：第 2 名题材不再「按龙头顺序取第一名」（那样会选到低开的票，
- *   实测 9/24 大消费 9 只里按名次取到了奥康国际（龙二、低开）），改为 ——
- *   【按龙头顺序跳过一字，取排名最靠前的那只「竞价高开」的股票，只选 1 只，轻仓】。
- *   例：龙一~龙八都低开、只有龙九高开 → 选龙九；
- *       龙一~龙三低开、龙四高开、龙八也高开 → 选龙四（名次更靠前的那个）。
- *
- * 判据与早盘竞价「龙标红色 = 竞价涨幅 > 0」同源（aucPct > 0），不另写阈值（§6）；
- * §10：竞价涨幅缺失 ≠ 高开，单独记 unknownCount 如实报出来，不静默丢掉。
- *
- * @param {object} block 题材块
- * @param {Map} dragonMap 龙头排名
- * @param {string} position 仓位文案
- * @returns {{picks:Array, unknownCount:number, highOpenCount:number}}
- */
-export function pickFirstHighOpen(block, dragonMap, position) {
-  if (!block) return { picks: [], unknownCount: 0, highOpenCount: 0 };
-  const dragon = dragonMap || new Map();
-  const cand = [];
-  let unknownCount = 0;
-
-  (block.members || []).forEach(function(m) {
-    // ⛔ 不再因「灰行 / 昨日卖标签继承」而剔除：它们照常参与龙位与选票（09-27 用户口径）
-    const d = dragon.get(m.name);
-    const rank = d ? d.rank : null;
-    if (rank === null) return;                               // 没有十日涨幅 → 排不进龙头顺序
-    if (m.isYizi) return;                                    // 一字买不进
-    const auc = _num(m.aucPct);
-    if (auc === null) { unknownCount++; return; }            // §10 缺竞价涨幅 ≠ 高开，也不等于不高开
-    if (auc <= 0) return;                                    // 只要高开
-    cand.push({ name: m.name, pct: _num(m.pct), rank: rank });
+  const picks = ordered.slice(0, limit).map(function(c, i) {
+    return _toPick(c, i < heavyN ? POSITION_HEAVY : POSITION_LIGHT);
   });
 
-  cand.sort(function(a, b) {
-    if (a.rank !== b.rank) return a.rank - b.rank;           // 龙头名次最靠前的优先
-    return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
-  });
+  const ratioText = picks.map(function(p) { return p.name + ' ' + _ratioTextOfName(cands, p.name); }).join(' ＞ ');
+  const posText = heavyN > 0
+    ? ('前 ' + heavyN + ' 只' + POSITION_HEAVY + (picks.length > heavyN
+      ? '、其余 ' + (picks.length - heavyN) + ' 只' + POSITION_LIGHT
+      : ''))
+    : (picks.length + ' 只' + POSITION_LIGHT);
+  notes.push(_note(no, '按【竞价量比】降序取前 ' + picks.length + ' 只（' + ratioText + '）→ ' + posText +
+    (byRankFallback ? '；⚠️ 本题材全部缺竞价量比，本条是【按龙头名次】的退路（§10 不猜）' : '')));
 
-  return {
-    picks: _reseq(cand.slice(0, PICK_COUNT_LIGHT).map(function(c) {
-      return {
-        name: c.name,
-        dragonLabel: getDragonLabel(c.rank),
-        dragonRank: c.rank,
-        pct: c.pct,
-        position: position
-      };
-    })),
-    unknownCount: unknownCount,
-    highOpenCount: cand.length
-  };
+  return { picks: _reseq(picks), notes: notes, byRankFallback: byRankFallback };
 }
 
-/**
- * 【第 2 名题材 · 选票总入口】（2026-09-26 用户口径，两条规则有先后）
- *
- *   ①【优先】龙一【不是】竞价一字（一字买不进，所以才看龙一）→ 【直接买龙一】，
- *      不看竞价涨跌幅（高开 / 低开 / 平开都买）。
- *   ② 龙一【是】竞价一字（或题材里根本没有可判定的龙一）→ 退回【pickFirstHighOpen】：
- *      按龙头顺序跳过一字，取【名次最靠前的那只竞价高开】的股票 1 只。
- *      例：龙一是字 → 龙一~龙三低开、龙四高开、龙八也高开 → 选龙四（名次优先，不是涨幅优先）。
- *
- * ⛔ 两条规则只覆盖【第 2 名题材】，① / ② / ③（第 1 名题材）不受影响（用户只对第 2 名提了这条）。
- *
- * @param {object} block 题材块
- * @param {Map} dragonMap 龙头排名
- * @param {string} position 仓位文案
- * @returns {{picks:Array, unknownCount:number, highOpenCount:number,
- *            viaDragonOne:boolean, dragonOneYizi:boolean}}
- */
-export function pickSecondTopicBuy(block, dragonMap, position) {
-  if (!block) {
-    return { picks: [], unknownCount: 0, highOpenCount: 0, viaDragonOne: false, dragonOneYizi: false };
-  }
-  const dragon = dragonMap || new Map();
-
-  // 龙一 = 本题材块里龙头名次为 1 的成员（⛔ 灰行 / 昨日卖标签继承的行也照常算，09-27 用户口径）
-  const dragonOne = (block.members || []).find(function(m) {
-    const d = dragon.get(m.name);
-    return !!(d && d.rank === 1);
-  }) || null;
-
-  // ① 龙一存在 且 不是一字 → 直接买龙一（不看竞价涨跌幅）
-  if (dragonOne && !dragonOne.isYizi) {
-    return {
-      picks: _reseq([{
-        name: dragonOne.name,
-        dragonLabel: getDragonLabel(1),
-        dragonRank: 1,
-        pct: _num(dragonOne.pct),
-        position: position
-      }]),
-      unknownCount: 0,
-      highOpenCount: 0,
-      viaDragonOne: true,
-      dragonOneYizi: false
-    };
-  }
-
-  // ② 龙一买不进（是一字）或排不出龙一 → 老规则：名次最靠前的那只高开票
-  const r = pickFirstHighOpen(block, dragonMap, position);
-  r.viaDragonOne = false;
-  r.dragonOneYizi = !!dragonOne;                 // true = 龙一是字才走的回退；false = 根本没有龙一
-  return r;
-}
-
-/**
- * 【龙二～龙五补票】第 1 名题材只有 1 个竞价一字时的【轻仓】候选。
- *
- * 口径（2026-09-24 用户）：”看龙二到龙五，除了竞价一字买不到外，买竞价涨幅大于 0 的
- * （早盘竞价看板的龙标是红色的龙二到龙五的股票）”。
- * 所谓「龙标是红色」= 早盘竞价 AuctionDragonBadge 的底色口径：竞价涨幅 > 0 → 红。
- * 因此这里的判据就是 aucPct > 0，与那枚徽章同源，不再另写一个阈值（§6）。
- *
- * @param {object} block 题材块
- * @param {Map} dragonMap 龙头排名
- * @param {Set<string>} excludeNames 已被重仓挑走的股票（避免同一只既重仓又轻仓）
- * @param {string} position 仓位文案
- * @returns {{picks:Array, unknownCount:number}} unknownCount = 因【缺竞价涨幅】而无法判定的只数
- *          （§10：它们不是「不高开」，如实报出来，不静默丢掉）
- */
-export function pickLadder(block, dragonMap, excludeNames, position) {
-  if (!block) return { picks: [], unknownCount: 0 };
-  const dragon = dragonMap || new Map();
-  const exclude = excludeNames || new Set();
-  const hit = [];
-  let unknownCount = 0;
-
-  block.members.forEach(function(m) {
-    const d = dragon.get(m.name);
-    const rank = d ? d.rank : null;
-    if (rank === null) return;                                            // 没有十日涨幅 → 排不进龙二~龙五
-    if (rank < LADDER_MIN_RANK || rank > LADDER_MAX_RANK) return;         // 只看龙二到龙五
-    if (exclude.has(m.name)) return;
-    if (m.isYizi) return;                                                 // 一字买不进
-    if (m.aucPct === null || !isFinite(m.aucPct)) { unknownCount++; return; } // §10 缺竞价涨幅 ≠ 高开，也不等于不高开
-    if (m.aucPct <= 0) return;                                            // 只要高开
-    hit.push({ name: m.name, pct: m.pct, rank: rank });
-  });
-
-  hit.sort(function(a, b) {
-    if (a.rank !== b.rank) return a.rank - b.rank;
-    return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
-  });
-
-  return {
-    picks: _reseq(hit.map(function(c) {
-      return {
-        name: c.name,
-        dragonLabel: getDragonLabel(c.rank),
-        dragonRank: c.rank,
-        pct: c.pct,
-        position: position
-      };
-    })),
-    unknownCount: unknownCount
-  };
-}
-
-/**
- * 【高风险小题材判定 · 2026-09-25 用户口径】
- * 题材【股票数量 ≤ SMALL_TOPIC_MAX_COUNT 只】且【竞价一字 1~2 个】⇒ 疑似量化假强度，
- * 常规规则（按一字多少排题材、再买龙一/龙二）准确率很低 → 改用⑥的兜底规则。
- *
- * @param {object} block rankDecisionTopics 的题材块（rank 1 / 2 的那两个）
- * @returns {boolean}
- */
-export function isSmallRiskyTopic(block) {
-  if (!block) return false;
-  const c = Number(block.count) || 0;
-  const y = Number(block.yiziCount) || 0;
-  return c > 0 && c <= SMALL_TOPIC_MAX_COUNT && y >= SMALL_TOPIC_MIN_YIZI && y <= SMALL_TOPIC_MAX_YIZI;
-}
-
-/**
- * 【⑥ 兜底 · 龙一～龙五里挑「竞价高开」的两只】
- *
- * 口径（2026-09-25 用户，两次口径合并）：题材股票数量最多的那个题材，在【龙一到龙五】里
- * 只挑【竞价高开】（竞价涨幅 > 0）的票，分两种情形：
- *
- *   ① 龙一【高开】→ 龙一占一个名额并【重仓】，另一个名额给【其余高开票里竞价涨幅最高】的那只【轻仓】。
- *      例：龙一 +1%、龙二 −2%、龙三 +3.6%、龙四 0%、龙五 +6.5%
- *          → 高开的 = 龙一 / 龙三 / 龙五 → 取 龙一（重仓）+ 龙五（涨幅最高，轻仓）。
- *
- *   ② 龙一【低开 / 平开 / 缺竞价涨幅】→ 【舍弃龙一】，只在【龙二 ~ 龙五】的高开票里选，
- *      有两只以上高开时只取【竞价涨幅最高的两只】，【两只都轻仓】（龙一走弱就不再重仓）。
- *      例：龙一 −6%、龙二 −2%、龙三 +3.6%、龙四 0%、龙五 +6.5%
- *          → 高开的 = 龙三 / 龙五 → 取 龙五、龙三，都轻仓。
- *
- * 排序规则刻意固定为「竞价涨幅降序 → 龙头名次 → 股票名」，保证结果稳定可复现（不随机）。
- *
- * @param {object} block 题材块
- * @param {Map} dragonMap 龙头排名
- * @param {number} maxRank 只看龙一 ~ 第 maxRank 名
- * @param {number} maxCount 取几只（龙一高开时第 1 只重仓、其余轻仓；龙一不高开时【全部轻仓】）
- * @returns {{picks:Array, unknownCount:number, dragonOneHighOpen:boolean}}
- */
-export function pickTopDragonsByAuc(block, dragonMap, maxRank, maxCount) {
-  if (!block) return { picks: [], unknownCount: 0, dragonOneHighOpen: false };
-  const dragon = dragonMap || new Map();
-  const top = maxRank || SMALL_TOPIC_MAX_RANK;
-  const hit = [];
-  let unknownCount = 0;
-  let dragonOneHighOpen = false;
-
-  (block.members || []).forEach(function(m) {
-    // ⛔ 不再因「灰行 / 昨日卖标签继承」而剔除：它们照常参与龙位与选票（09-27 用户口径）
-    const d = dragon.get(m.name);
-    const rank = d ? d.rank : null;
-    if (rank === null) return;                               // 没有十日涨幅 → 排不进龙一~龙五
-    if (rank < 1 || rank > top) return;
-    if (m.isYizi) return;                                    // 一字买不进
-    const auc = _num(m.aucPct);
-    if (auc === null) { unknownCount++; return; }            // §10 缺竞价涨幅 ≠ 高开，也不等于不高开
-    if (auc <= 0) return;                                    // 只要高开
-    if (rank === 1) dragonOneHighOpen = true;
-    hit.push({ name: m.name, pct: _num(m.pct), rank: rank, auc: auc });
-  });
-
-  hit.sort(function(a, b) {
-    if (b.auc !== a.auc) return b.auc - a.auc;               // 先按【竞价涨幅】降序
-    if (a.rank !== b.rank) return a.rank - b.rank;           // 同涨幅 → 龙头名次靠前的优先
-    return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); // 仍相同 → 股票名，保证稳定
-  });
-
-  const limit = maxCount || SMALL_TOPIC_PICK_COUNT;
-  // ① 龙一高开 → 龙一固定占第一个名额（重仓）+ 其余里涨幅最高的一只（轻仓）
-  // ② 龙一不高开 → 舍弃龙一，只取【龙二~龙五】里涨幅最高的 maxCount 只，全部轻仓
-  const dragonOne = hit.find(function(c) { return c.rank === 1; }) || null;
-  const chosen = dragonOne
-    ? [dragonOne].concat(hit.filter(function(c) { return c.rank !== 1; }).slice(0, limit - 1))
-    : hit.slice(0, limit);
-
-  return {
-    picks: _reseq(chosen.map(function(c, i) {
-      return {
-        name: c.name,
-        dragonLabel: getDragonLabel(c.rank),
-        dragonRank: c.rank,
-        pct: c.pct,
-        position: (dragonOne && i === 0) ? POSITION_HEAVY : POSITION_LIGHT
-      };
-    })),
-    unknownCount: unknownCount,
-    dragonOneHighOpen: dragonOneHighOpen
-  };
-}
-
-/** 重排序号（龙一在最前，序号从 1 连续；合并「重仓 + 轻仓」后必须重排，否则序号会重复） */
+/** 重排序号（序号从 1 连续；合并「重仓 + 轻仓」后必须重排，否则序号会重复） */
 function _reseq(picks) {
   return picks.map(function(p, i) { p.seq = i + 1; return p; });
 }
@@ -947,442 +603,73 @@ function _reasonBuy(block, rankWord) {
 }
 
 /**
- * 第 1 名题材按【竞价一字数量】分三档给方案（唯一实现；后期改门槛只改这里）。
- *  ⛔ 重仓 / 轻仓混在同一个题材块里（picks 按龙头顺序排列），序号连续：
- *     用户要的格式是「序号｜名称（龙几）｜十日涨幅｜重仓/轻仓」，重仓轻仓在【行尾】区分，
- *     ⛔ 不再写「建议」二字（2026-09-24 用户要求：行尾直接就是结论）。
- *     没必要把同一题材拆成两个块、重复渲染一遍题材名和数据（不省空间反占空间）。
- * @param {object} first 【第 1 名】题材块（调用方保证非空）
- * @returns {{mode:string, qualified:boolean, picks:Array, notes:string[]}}
+ * 【买点块构造 · 唯一实现（§6）】题材排名第 1 / 第 2 都用它 ——
+ * 差别只有「排名词」（第一 / 第二）与「规则编号」（① / ②），选票逻辑完全同一份。
+ *
+ * 流程：
+ *   ① resolvePickTier(block.count) 定档（≥10 → 3 只 / 7~9 → 2 只 / 4~6 → 1 只 / ≤3 → 不出票）；
+ *   ② 非 'none' 档 → pickByVolRatio 按竞价量比降序取票；
+ *   ③ 'none' 档 ⇒ qualified=false + notQualifiedText（UI 显示「本题材不出票」），picks 恒为空。
+ *
+ * ⚠️ 不会出现「有档位却一只都取不到就静默空着」的情况：
+ *    取不到（全是竞价一字 / 没有可买成员）会写进 notQualifiedText，如实说明原因（§10）。
+ *
+ * @param {object} block 题材块（rankDecisionTopics 的元素，含 count / yiziCount / members）
+ * @param {Map} dragonMap rankDragons 的返回
+ * @param {string} rankWord '第一' / '第二'
+ * @param {string} ruleNo RULE_NO.FIRST / RULE_NO.SECOND
+ * @returns {{block:object, rankWord:string, reason:string, mode:string, ruleNo:string,
+ *            qualified:boolean, notQualifiedText:string, picks:Array, notes:string[]}}
  */
-function _buildFirstBlock(first, dragonMap) {
+function _buildTopicBuyBlock(block, dragonMap, rankWord, ruleNo) {
+  const tier = resolvePickTier(block.count);
+  const head = _reasonBuy(block, rankWord) + '　→ 根据规则' + ruleNo + '：';
   const base = {
-    block: first,
-    rankWord: '第一',
-    reason: _reasonBuy(first, '第一'),
-    mode: 'none',
-    ruleNo: RULE_NO.HEAVY_NONE,
+    block: block,
+    rankWord: rankWord,
+    reason: '',
+    mode: tier.tier,
+    ruleNo: ruleNo,
     qualified: false,
     notQualifiedText: '',
     picks: [],
     notes: []
   };
-  const yz = first.yiziCount;
-  // [VRATIO-PICK 2026-10-01 用户口径] ①② 两档【统一】改成「按【竞价量比】降序取前二、两只都重仓」：
-  //   原 ① 的「龙一必选 + 第二只按【竞价涨幅最高】选」与 原 ② 的「龙一重仓 + 龙二~龙五竞价高开的全部轻仓」
-  //   都作废 —— 用户口径「量比越大，明天持续性越高」⇒ 一律按量比排，【龙一量比小就不选】。
-  //   两档剩下的差别只有【触发门槛】与【规则编号】（说明文字），选票逻辑是同一份（§6 单一实现）。
-  if (yz >= MIN_YIZI_HEAVY || yz >= MIN_YIZI_SINGLE) {
-    const isHeavy = yz >= MIN_YIZI_HEAVY;
-    base.mode = isHeavy ? 'double' : 'single';
-    base.ruleNo = isHeavy ? RULE_NO.HEAVY_DOUBLE : RULE_NO.HEAVY_SINGLE;
-    base.qualified = true;
-    const r = pickHeavyTwo(first, dragonMap, base.ruleNo);
-    base.picks = r.picks;
-    base.notes = base.notes.concat(r.notes);
-    // 说明文字带规则出处（用户口径：像法律条文一样能查到是哪一条）
-    base.reason = _reasonBuy(first, '第一') + '　→ 根据规则' + base.ruleNo + '：竞价一字 ' +
-      (isHeavy ? ('≥ ' + MIN_YIZI_HEAVY + ' 个') : ('只有 ' + MIN_YIZI_SINGLE + ' 个')) +
-      ' → 按【竞价量比】降序取前 ' + PICK_COUNT_HEAVY + ' 只，全部' + POSITION_HEAVY +
-      '（龙一量比小就不选；龙一低开且量比 ＞ ' + DRAGON_ONE_LOW_OPEN_MIN_VOL_RATIO + ' 则追加' +
-      (isHeavy ? '；龙二被量比更大的票卡位时补' + POSITION_LIGHT : '') + '）';
+
+  // ≤ 3 只：不进入决策范围（用户口径「数量只有 1-3 只的不进入决策范围，空仓」）
+  if (tier.tier === 'none') {
+    base.notQualifiedText = _note(ruleNo, '该题材股票数量只有 ' + tier.count + ' 只（' +
+      tier.rangeText + '）→ 不进入决策范围 → 【空仓】');
+    base.reason = head + '股票数量只有 ' + tier.count + ' 只（' + tier.rangeText + '）→ 空仓';
     return base;
   }
 
-  // ⚠️ 正常走不到这里：题材排名是按【一字数】排的（topic-sort#sortByTopicGroups），
-  //    所以「第 1 名题材一字 = 0」必然意味着【全部题材】都是 0 —— 那种日子 buildBuyPlan
-  //    已经先拦下来改走 ⑤（弱市兜底）了。留着它是为了以后有人改了排序口径却没同步改规则：
-  //    宁可显示「未达买入条件」，也绝不给出来路不明的建议。
-  base.mode = 'none';
-  base.ruleNo = RULE_NO.HEAVY_NONE;
-  base.qualified = false;
-  base.notQualifiedText = _note(RULE_NO.HEAVY_NONE, '该题材竞价一字为 0 个，未达买入条件');
+  // 'none' 以外：档位文字（① 大档 / ② 中档 / ③ 小档 —— 各自取几只、几只重仓）
+  const tierWord = tier.tier === 'big' ? '大档' : (tier.tier === 'mid' ? '中档' : '小档');
+  const tierText = '股票数量 ' + tier.count + ' 只（' + tier.rangeText + ' · ' + tierWord + '）→ 按【竞价量比】降序取前 ' +
+    tier.max + ' 只' + (tier.heavyCount > 0
+      ? '（前 ' + tier.heavyCount + ' 只' + POSITION_HEAVY +
+        (tier.max > tier.heavyCount ? ' + 其余 ' + (tier.max - tier.heavyCount) + ' 只' + POSITION_LIGHT : '')
+      : '');
+
+  const r = pickByVolRatio(block, dragonMap, tier.max, tier.heavyCount, ruleNo);
+  base.notes = base.notes.concat(r.notes);
+  base.qualified = r.picks.length > 0;
+  base.picks = r.picks;
+
+  if (base.qualified) {
+    base.reason = head + tierText;
+    if (r.picks.length < tier.max) {
+      // §10 如实呈现：档位要求取 N 只，但可买（非一字）的票不够 ⇒ 只能取到这么多，写清楚
+      base.notes.push(_note(ruleNo, '⚠️ 本档要求取 ' + tier.max + ' 只，但该题材可买（非竞价一字）的票只有 ' +
+        r.picks.length + ' 只 → 实际取 ' + r.picks.length + ' 只'));
+    }
+  } else {
+    base.notQualifiedText = _note(ruleNo, tierText +
+      '，但该题材【没有可买的票】（成员全部是竞价一字 / 没有成员）→ 本题材不出票');
+    base.reason = head + tierText + '，但没有可买的票 → 不出票';
+  }
   return base;
-}
-
-/** 开平文案；缺竞价涨幅（null）单列一类（§10：缺数据 ≠ 平开，不能混进「低开」） */
-function _openWord(aucPct) {
-  const kind = getAucOpenKind(aucPct);
-  return kind ? getAucOpenText(kind) : '缺竞价涨幅';
-}
-
-/** 是否【竞价高开】：只有明确 > 0 才算；null（缺数据）不算（§10） */
-function _isHighOpen(aucPct) {
-  const n = _num(aucPct);
-  return n !== null && n > 0;
-}
-
-/**
- * 【龙头候选排序 · 2026-09-25】把一组行整理成「龙一 / 龙二 / …」有序候选（纯函数，本文件私有）。
- *
- * 排序依据的优先级（与早盘竞价龙标同一份排名，§6 单一真相）：
- *   ① dragonMap 里的 rank（= computeDragonRankMap 的结果，早盘竞价行上那枚「龙一/龙二」徽章）；
- *   ② 没有 rank 的（少数未进早盘竞价题材组的行）按【十日涨幅】降序排在有 rank 的后面；
- *   ③ 仍相同 → 股票名，保证每次结果完全一致（不随机）。
- *
- * 剔除口径（与「题材数量 / 一字数」的计数口径同源）：
- *   · 竞价一字 → 买不进，不占龙位；
- *   · ⛔ inheritSold === true【不排除】：昨日卖标签继承的行也照常参与（09-27 用户口径）；
- *   · 十日涨幅缺失 → §10：绝不当 0 参与比较，直接排不进龙位。
- *
- * @param {Array<{name:string, pct:number|null, aucPct:number|null, isYiZi?:boolean,
- *                countable?:boolean}>} rows
- * @param {Map<string,{rank:number}>} dragon
- * @returns {Array<{name:string, rank:number, pct:number|null, aucPct:number|null}>}
- */
-function _rankCandidates(rows, dragon) {
-  const out = [];
-  (rows || []).forEach(function(r) {
-    if (!r || !r.name || r.isYiZi) return;                 // 一字买不进 → 不占龙位
-    // ⛔ 不再因「灰行 / 昨日卖标签继承」而剔除（09-27 用户口径）
-    const pct = _num(r.pct);
-    if (pct === null) return;                              // §10：缺十日涨幅 → 排不进龙位
-    const d = dragon.get(r.name);
-    out.push({
-      name: r.name,
-      rank: (d && d.rank) ? d.rank : null,
-      pct: pct,
-      aucPct: _num(r.aucPct)
-    });
-  });
-  out.sort(function(a, b) {
-    const ra = (a.rank === null ? Number.MAX_SAFE_INTEGER : a.rank);
-    const rb = (b.rank === null ? Number.MAX_SAFE_INTEGER : b.rank);
-    if (ra !== rb) return ra - rb;
-    if (a.pct !== b.pct) return b.pct - a.pct;
-    return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
-  });
-  return out.map(function(c, i) {
-    return { name: c.name, rank: c.rank || (i + 1), pct: c.pct, aucPct: c.aucPct };
-  });
-}
-
-/**
- * 按题材名在【早盘竞价题材块】里找同名块。
- * §6：龙一 / 龙二的排名人群必须与「早盘竞价龙标」完全一致 —— 题材连扳只负责决定
- * 【选哪个题材】（数量最多），龙头名次本身仍归早盘竞价口径（否则同一题材会出现两套龙一）。
- * @param {Array<object>} blocks rankDecisionTopics 的返回
- * @param {string} topic
- * @returns {object|null}
- */
-function _findAuctionBlock(blocks, topic) {
-  const key = String(topic || '').trim();
-  if (!key || !blocks || blocks.length === 0) return null;
-  for (let i = 0; i < blocks.length; i++) {
-    if (String(blocks[i].topic || '').trim() === key) return blocks[i];
-  }
-  return null;
-}
-
-/**
- * 【无一字兜底买点 · 2026-09-25 用户口径】
- *
- * 触发条件（由 buildBuyPlan 判定）：当日【所有题材】的竞价一字都是 0 个 = 弱市。
- * 选票口径：
- *   ① 看【连板天梯 · 题材连扳】（ladder-rules#groupByTopicLadder 的同一份分组，§6 单一真相）；
- *   ② 取【股票数量最多】的题材 —— 数量并列时【并列的题材全都取】（用户举例：AI应用也是 3 只）；
- *   ③ 每个入选题材只看最靠前的两只（龙一 / 龙二），龙一 / 龙二 = 题材内【十日涨幅】排名
- *      （与早盘竞价龙一徽章同一口径 computeDragonRankMap）；
- *      ⚠️ 排名人群是【该题材在早盘竞价里的全量成员】（opts.auctionTopicBlocks），
- *         ⛔ 不是「题材连扳」那几只连板票的子集 —— 后者只是用来决定选哪个题材。
- *         旧实现拿子集 ∩ 全量排名 ⇒ 题材真龙一（当天没连板）被跳过、名次整体前移
- *         （2026-09-25 事故：9/16 电子/通信/算力 龙一被判成澳弘电子而非超声电子）；
- *   ④ 最终只留【竞价高开】的票：
- *        龙一低开 + 龙二高开 → 只买龙二；
- *        两只都高开           → 两只都买；
- *        两只都低开           → 只买龙一；
- *      ⚠️ 竞价涨幅缺失不算高开，会单独说明（§10 不猜）；
- *   ⑤ 全部记【轻仓】（没有一字，强度打折）；
- *   ⑥ 股票最多的题材【不足 NO_YIZI_MIN_TOPIC_COUNT 只】→ 【空仓】（太弱，不参与）。
- *
- * @param {Array<{topic:string, count:number,
- *                rows:Array<{name:string, pct:number|null, aucPct:number|null, isYiZi:boolean}>}>} topicGroups
- *        连板天梯「题材连扳」的分组（⛔ 直接由 ladder-collect 采集，与天梯看板显示完全一致）
- * @param {{dragonMap?:Map, ladderReady?:boolean, ladderReason?:string,
- *          auctionTopicBlocks?:Array}} [opts]
- *        ladderReady=false 表示连板数据没加载（§10：如实报「未就绪」，绝不退化成「今天没有连板股」）
- *        auctionTopicBlocks = 早盘竞价的题材块（rankDecisionTopics 的返回）—— 龙一 / 龙二的
- *        【排名人群】，⛔ 不传就只能退回「题材连扳」子集自排（会与早盘竞价龙标分叉）
- * @returns {{mode:string, qualified:boolean, emptyText:string, hintText:string, blocks:Array, notes:string[]}}
- */
-export function buildNoYiziPlan(topicGroups, opts) {
-  const o = opts || {};
-  const dragon = o.dragonMap || new Map();
-
-  const out = {
-    mode: 'noYizi',
-    qualified: false,
-    emptyText: '',
-    hintText: '当日全部题材【竞价一字 0 个】→ 改看连板天梯「题材连扳」：' +
-      '取股票数量最多的题材的龙一 / 龙二，只留竞价高开的票，全部' + POSITION_LIGHT,
-    blocks: [],
-    notes: []
-  };
-
-  // §10：连板数据没加载 = 「还没拉到」，绝不等于「今天没有连板梯队」
-  if (o.ladderReady === false) {
-    out.emptyText = '连板天梯数据未就绪' + (o.ladderReason ? '（' + o.ladderReason + '）' : '') +
-      '，无法按「无一字」规则选票';
-    return out;
-  }
-
-  const groups = (topicGroups || []).filter(function(g) {
-    return g && g.topic && g.topic !== OTHER && (Number(g.count) || 0) > 0;
-  });
-  if (groups.length === 0) {
-    out.emptyText = '连板天梯「题材连扳」当日没有可用题材，无法按「无一字」规则选票 → 【空仓】';
-    return out;
-  }
-
-  // ① 股票数量最多的那个数量（并列取全部）
-  let maxCount = 0;
-  groups.forEach(function(g) {
-    const c = Number(g.count) || 0;
-    if (c > maxCount) maxCount = c;
-  });
-  // ⑥ 太弱 → 空仓（用户口径：最多只有 2 只就不参与）
-  if (maxCount < NO_YIZI_MIN_TOPIC_COUNT) {
-    out.emptyText = '题材连扳里股票最多的题材【只有 ' + maxCount + ' 只】（不足 ' +
-      NO_YIZI_MIN_TOPIC_COUNT + ' 只），强度太弱 → 【空仓】';
-    return out;
-  }
-
-  const winners = groups.filter(function(g) { return (Number(g.count) || 0) === maxCount; });
-  if (winners.length > 1) {
-    out.notes.push(_note(RULE_NO.NO_YIZI, '有 ' + winners.length + ' 个题材并列最多（' +
-      winners.map(function(g) { return g.topic; }).join('、') + '），每个都按同一规则选票'));
-  }
-
-  let totalPicks = 0;
-  winners.forEach(function(g) {
-    // ② 龙一 / 龙二 = 该题材【在早盘竞价口径下】的龙头前两名（与早盘竞价龙标同一份排名）。
-    //    题材连扳只用来决定「选哪个题材」，不用来决定名次。找不到同名题材块才退回组内自排（§10 不猜）。
-    const blk = _findAuctionBlock(o.auctionTopicBlocks, g.topic);
-    const cand = _rankCandidates(blk ? blk.members : (g.rows || []), dragon);
-    const top = cand.slice(0, NO_YIZI_PICK_COUNT);
-    const d1 = top[0] || null;
-    const d2 = top[1] || null;
-
-    const notes = [];
-    let picks = [];
-    let unknownCount = 0;
-    if (!blk) {
-      notes.push(_note(RULE_NO.NO_YIZI,
-        '该题材在早盘竞价题材分组里没有同名题材 → 龙一 / 龙二 暂按「题材连扳」成员排名（§10 不猜）'));
-    }
-    if (d1 && d1.aucPct === null) unknownCount++;
-    if (d2 && d2.aucPct === null) unknownCount++;
-
-    if (!d1) {
-      notes.push(_note(RULE_NO.NO_YIZI,
-        '该题材在连板梯队里没有能排进龙一 / 龙二的股票（缺十日涨幅 或 全是一字）→ 不选票（§10 不猜）'));
-    } else {
-      const h1 = _isHighOpen(d1.aucPct);
-      const h2 = _isHighOpen(d2 ? d2.aucPct : null);
-      if (h1 && h2) {
-        picks = [d1, d2];
-        notes.push(_note(RULE_NO.NO_YIZI, '龙一、龙二【都是竞价高开】→ 两只都买'));
-      } else if (h1) {
-        picks = [d1];
-        notes.push(_note(RULE_NO.NO_YIZI, '龙一【竞价高开】' +
-          (d2 ? ('，龙二' + _openWord(d2.aucPct)) : '，无龙二') + ' → 只买龙一'));
-      } else if (h2) {
-        picks = [d2];
-        notes.push(_note(RULE_NO.NO_YIZI,
-          '龙一' + _openWord(d1.aucPct) + '，龙二【竞价高开】→ 只买高开的龙二'));
-      } else {
-        picks = [d1];
-        notes.push(_note(RULE_NO.NO_YIZI, '龙一 / 龙二【都不是竞价高开】（' + _openWord(d1.aucPct) +
-          (d2 ? ('、' + _openWord(d2.aucPct)) : '、无龙二') + '）→ 按规则只买龙一'));
-      }
-    }
-    if (unknownCount > 0) {
-      notes.push(_note(RULE_NO.NO_YIZI,
-        '另有 ' + unknownCount + ' 只缺竞价涨幅，无法判定是否高开（§10 不猜）'));
-    }
-
-    totalPicks += picks.length;
-    out.blocks.push({
-      // 复用买点块的数据结构，让 UI 直接复用 DecisionBuyBlock（⛔ 不另写一套渲染）
-      // [WEAK-OPEN 2026-09-27] count / members 一律取【早盘竞价同名题材块】（§6 同源）：
-      //   ⑦ 亏钱效应、⑧ 弱势题材都是「分母 = block.count、分子 = block.members 里数出来的」，
-      //   两者必须来自同一份数据 —— 分母用连板天梯的只数、分子用早盘竞价的行，
-      //   会把高开率算成一个两边都不认的假数字。早盘竞价没有同名题材块时才退回天梯口径。
-      block: {
-        topic: g.topic,
-        rank: null,
-        count: blk ? (Number(blk.count) || 0) : (Number(g.count) || 0),
-        yiziCount: 0,
-        members: blk ? blk.members : (g.rows || [])
-      },
-      rankWord: '',
-      reason: '全部题材竞价一字 0 个；该题材在连板天梯「题材连扳」里股票数量最多（' +
-        (Number(g.count) || 0) + ' 只）　→ 根据规则' + RULE_NO.NO_YIZI +
-        '：只买龙一 / 龙二中【竞价高开】的票',
-      mode: 'noYizi',
-      ruleNo: RULE_NO.NO_YIZI,
-      qualified: true,
-      notQualifiedText: '',
-      picks: _reseq(picks.map(function(c) {
-        return {
-          name: c.name,
-          dragonLabel: getDragonLabel(c.rank),
-          dragonRank: c.rank,
-          pct: c.pct,
-          position: POSITION_LIGHT
-        };
-      })),
-      notes: notes
-    });
-  });
-
-  out.qualified = totalPicks > 0;
-  if (!out.qualified) {
-    out.emptyText = '股票数量最多的题材里没有可买的龙一 / 龙二 → 【空仓】';
-  }
-  return out;
-}
-
-/**
- * 【⑥ 高风险小题材兜底 · 2026-09-25 用户口径】
- *
- * 触发条件（由 buildBuyPlan 判定）：早盘竞价题材 toggle 下，排名【第 1 或第 2】的题材
- * 【股票数量 ≤ SMALL_TOPIC_MAX_COUNT 只】且【竞价一字 1~2 个】—— 票太少却被一字撑起排名，
- * 多半是量化做出来的假强度，常规规则（按一字多少选题材 → 买龙一 / 龙二）准确率很低
- * ⇒ 【不用常规规则】，改按下面这套来选：
- *
- *   ① 取【连板天梯 · 题材连扳】的题材分组（ladder-collect 同一份 0 请求结果，§6）；
- *   ② 每个候选题材再看它在【早盘竞价】里的股票总数，
- *      < SMALL_TOPIC_MIN_AUCTION_COUNT 只的【排除】（用户举例：AI应用早盘竞价只有 3 只 → 排除）；
- *   ③ 剩下的题材按【早盘竞价股票总数】降序取前 2 个
- *      （用户举例：电子/通信/算力 10 只 → 第一；电力新能源 4 只 → 第二）；
- *   ④ 第 1 个题材（数量最多）：在【龙一 ~ 龙五】里挑【竞价高开】的两只 ——
- *      龙一【重仓】，另一只给【竞价涨幅最高】的那只【轻仓】（一字买不进，自动跳过）；
- *   ⑤ 第 2 个题材：只取【龙一】，【轻仓】（一字买不进时顺延到下一只）；
- *   ⑥ 一个题材都筛不出来 → 【空仓】并如实说明（§10）。
- *
- * @param {Array<object>} auctionBlocks 早盘竞价题材块（rankDecisionTopics 的返回）
- * @param {Map} dragonMap rankDragons 的返回
- * @param {{ladderTopicGroups?:Array, ladderReady?:boolean, ladderReason?:string,
- *          riskyTopics?:Array}} [opts]
- * @returns {{mode:string, qualified:boolean, emptyText:string, hintText:string, blocks:Array, notes:string[]}}
- */
-export function buildSmallTopicPlan(auctionBlocks, dragonMap, opts) {
-  const o = opts || {};
-  const dragon = dragonMap || new Map();
-
-  const out = {
-    mode: 'smallTopic',
-    qualified: false,
-    emptyText: '',
-    hintText: '题材股票数量过少（≤ ' + SMALL_TOPIC_MAX_COUNT + ' 只）却有 1~2 个竞价一字（疑似量化）→ ' +
-      '不按常规规则选票，改看连板天梯「题材连扳」：只保留早盘竞价里股票数 ≥ ' +
-      SMALL_TOPIC_MIN_AUCTION_COUNT + ' 只的题材，按股票数量取前二。',
-    blocks: [],
-    notes: []
-  };
-
-  const risky = o.riskyTopics || [];
-  if (risky.length > 0) {
-    out.notes.push(_note(RULE_NO.SMALL_TOPIC, '常规规则已跳过：' + risky.map(function(b) {
-      return b.topic + '（' + b.count + '只 / ' + b.yiziCount + '个一字）';
-    }).join('、') + ' —— 股票太少且有 1~2 个一字，疑似量化，准确率低'));
-  }
-
-  // §10：连板数据没加载 = 「还没拉到」，绝不等于「今天没有连板梯队」
-  if (o.ladderReady === false) {
-    out.emptyText = '连板天梯数据未就绪' + (o.ladderReason ? '（' + o.ladderReason + '）' : '') +
-      '，无法按「小题材 + 一字」规则选票';
-    return out;
-  }
-
-  // ① + ② 题材连扳候选 → 用早盘竞价股票总数过滤（< 4 只排除）
-  const cands = [];
-  (o.ladderTopicGroups || []).forEach(function(g) {
-    if (!g || !g.topic || g.topic === OTHER) return;
-    const blk = _findAuctionBlock(auctionBlocks, g.topic);
-    if (!blk) return;
-    const n = Number(blk.count) || 0;
-    if (n < SMALL_TOPIC_MIN_AUCTION_COUNT) return;
-    cands.push({ topic: g.topic, auctionCount: n, ladderCount: Number(g.count) || 0, block: blk });
-  });
-  if (cands.length === 0) {
-    out.emptyText = '连板天梯「题材连扳」里没有「早盘竞价股票数 ≥ ' + SMALL_TOPIC_MIN_AUCTION_COUNT +
-      ' 只」的题材，无法按「小题材 + 一字」规则选票 → 【空仓】';
-    return out;
-  }
-
-  // ③ 按早盘竞价股票总数降序（同数 → 题材连扳数量降序 → 题材名），取前二
-  cands.sort(function(a, b) {
-    if (b.auctionCount !== a.auctionCount) return b.auctionCount - a.auctionCount;
-    if (b.ladderCount !== a.ladderCount) return b.ladderCount - a.ladderCount;
-    return a.topic < b.topic ? -1 : (a.topic > b.topic ? 1 : 0);
-  });
-  const winners = cands.slice(0, 2);
-  if (winners.length > 1) {
-    out.notes.push(_note(RULE_NO.SMALL_TOPIC, '题材连扳里按【早盘竞价股票数】排序：' + cands.map(function(c) {
-      return c.topic + ' ' + c.auctionCount + '只';
-    }).join('、')));
-  }
-
-  let totalPicks = 0;
-  winners.forEach(function(w, idx) {
-    const notes = [];
-    let picks = [];
-    if (idx === 0) {
-      // ④ 数量最多的题材：[VRATIO-PICK 2026-10-01 用户口径] 改成与 ① 完全同构 ——
-      //    在【龙一~龙五】里按【竞价量比】降序取前二、两只都重仓。
-      //    原「按竞价涨幅降序 + 龙一高开才重仓、龙一不高开则都轻仓」的口径整条作废。
-      const r = pickTopTwoByVolRatio(w.block, dragon, SMALL_TOPIC_MAX_RANK, RULE_NO.SMALL_TOPIC);
-      picks = r.picks;
-      if (picks.length === 0) {
-        notes.push(_note(RULE_NO.SMALL_TOPIC,
-          getDragonLabel(1) + '~' + getDragonLabel(SMALL_TOPIC_MAX_RANK) + '里没有可买的非一字股票 → 本题材不选票'));
-      }
-      r.notes.forEach(function(n) { notes.push(n); });
-    } else {
-      // ⑤ 数量第二的题材：只取龙一，轻仓（一字买不进时由 pickBuyable 自动顺延）
-      picks = pickBuyable(w.block, dragon, 1, POSITION_LIGHT);
-      if (picks.length === 0) {
-        notes.push(_note(RULE_NO.SMALL_TOPIC, '该题材没有可买的非一字股票 → 不选票'));
-      }
-    }
-
-    totalPicks += picks.length;
-    out.blocks.push({
-      // [WEAK-OPEN 2026-09-27] members 必须带上：⑦⑧ 要在【早盘竞价题材块】的成员里数
-      //   「竞价一字跌停 / 竞价高开」的只数。上一版这里只给了 count，members 缺失 ⇒
-      //   `_applyWeakOpenRate` 走到 `members.length === 0` 直接 return ⇒ 弱势题材规则在
-      //   兜底方案里【永远不生效】（9/11 农业 12 只 / 3 只高开 = 25% 却照常选出 2 只）。
-      block: {
-        topic: w.topic,
-        rank: null,
-        count: w.auctionCount,
-        yiziCount: w.block.yiziCount || 0,
-        members: w.block.members || []
-      },
-      rankWord: '',
-      reason: idx === 0
-        ? ('该题材在早盘竞价中股票数量最多（' + w.auctionCount + ' 只）　→ 根据规则' + RULE_NO.SMALL_TOPIC +
-           '：在' + getDragonLabel(1) + '~' + getDragonLabel(SMALL_TOPIC_MAX_RANK) +
-           '里按【竞价量比】降序取前 ' + SMALL_TOPIC_PICK_COUNT + ' 只，全部' + POSITION_HEAVY +
-           '（与 ① 同构：龙一量比小就不选；龙一低开且量比 ＞ ' + DRAGON_ONE_LOW_OPEN_MIN_VOL_RATIO + ' 则追加）')
-        : ('该题材在早盘竞价中股票数量第二（' + w.auctionCount + ' 只）　→ 根据规则' + RULE_NO.SMALL_TOPIC +
-           '：只取龙一，' + POSITION_LIGHT),
-      mode: 'smallTopic',
-      ruleNo: RULE_NO.SMALL_TOPIC,
-      qualified: picks.length > 0,
-      notQualifiedText: '',
-      picks: picks,
-      notes: notes
-    });
-  });
-
-  out.qualified = totalPicks > 0;
-  if (!out.qualified) {
-    out.emptyText = '入选题材里没有可买的票 → 【空仓】';
-  }
-  return out;
 }
 
 /**
@@ -1391,6 +678,8 @@ export function buildSmallTopicPlan(auctionBlocks, dragonMap, opts) {
  * 用户原话：龙一如果【低开】，要自己去观察它的【竞价图形】是不是【跌停 L 形】；
  *   是 L 形就【尾盘买】。（9/3 捷荣技术就是这种情形）
  * ⚠️ 竞价图形本看板拿不到（没有分时数据），所以这里【只加提醒文字】，⛔ 不改任何选票结果与仓位。
+ * ⓘ 2026-10-01 起买点不再按龙位选票，但行内仍显示「龙几」标签 ——
+ *   这里只对【恰好被选中、且名次为龙一】的票做提醒；没被选中就不提（没买就不需要这条）。
  *
  * @param {object} blockObj 买点块（block + picks + notes）
  */
@@ -1433,261 +722,7 @@ function _decorateAucBadge(blockObj) {
 }
 
 /**
- * 【一 · 亏钱效应】本行是不是【竞价一字跌停】（9:25 集合竞价报价就打在跌停价上）。
- *
- * ══ 口径（2026-09-27 用户最终确认）══
- *   这是早盘竞价看板上【股票名下方那条绿色实线】的股票 —— 与「竞价一字（涨停）」的红线严格对应，
- *   都是 9:25 那一刻就能确定的事实，所以这条规则可以放心用于【早上做决策】。
- *
- * ⛔ 曾误加过【收盘跌停】判据并被用户否掉：2026-09-10 泸天化竞价 -7.69%（没到跌停）、收盘 -10.00%，
- *   加了收盘判据会让 9/10 触发；但用户是【早上看盘做决策】的，收盘数据当时根本不存在，
- *   而且这类规则一加就会让「复盘日」大面积误触发 ⇒ 最终只保留竞价这一档。
- *   （9/10 因此会回到选出 3 只的常规结果 —— 这是正确结果，不是 bug。）
- *
- * 判定复用 limit-up.js#getAuctionLimitState（涨跌停看板同一份，§6 不另写阈值）；
- * §10：竞价涨幅缺失 → false（不是跌停，也不是不跌停，只是不知道）。
- */
-function _isAuctionDianTing(m) {
-  const auc = _num(m && m.aucPct);
-  if (auc === null) return false;
-  return getAuctionLimitState(auc, (m && m.code) || '', (m && m.name) || '') === 'down';
-}
-
-// [VRATIO-PICK 2026-10-01 用户口径 · 让位] 此处原有 _collapseToDragonOneLight()：
-//   ⑦ 亏钱效应 / ⑧ 弱势题材「砍成龙一轻仓」的统一执行器（只留龙一 + 仓位改轻仓）。
-//   两条规则均已降级为【纯提示】⇒ 执行器失去调用方，按 §16【不留死代码】删除。
-//   ↩️ 恢复路径：git revert 本次提交即可原样回到旧行为。
-
-/**
- * 【一 · 亏钱效应（2026-09-27 用户口径）】
- *   入选题材在【早盘竞价】里只要有【≥ LOSS_EFFECT_MIN_DIAN_TING 只竞价一字跌停】
- *   ⇒ 题材内部出现亏钱效应 ⇒ 【只买龙一】，且【只轻仓】（题材 > 10 只 / < 10 只都一样）。
- *   9/11 农业 12 只：中粮科技竞价 -10.00%（= 早盘竞价里的绿色实线）→ 只买敦煌种业（龙一、轻仓）。
- * ⛔ 只砍票、不改排名：龙一还是那个龙一，只是不重仓、不补第二只。
- */
-function _applyLossEffect(blockObj) {
-  if (!blockObj || !blockObj.block) return blockObj;
-  const members = blockObj.block.members || [];
-  const hits = [];
-  members.forEach(function(m) { if (_isAuctionDianTing(m)) hits.push(m.name); });
-  if (hits.length < LOSS_EFFECT_MIN_DIAN_TING) return blockObj;
-  // [VRATIO-PICK 2026-10-01 用户口径 · 让位] ⛔ 不再砍票 / 改仓位，只在说明里如实提示。
-  //   冲突点：原实现会把买点砍成「只买龙一 + 只轻仓」，与用户新规「按竞价量比取前二、两只都重仓」直接冲突。
-  //   用户原话「你看有哪些规则和这个冲突，现在以这个新规为准」+ AskUserQuestion 确认「全部让位，新规优先：
-  //   这 4 条不再改选票结果，只在说明文字里提示已触发」⇒ 本条降级为【纯提示】。
-  blockObj.notes = blockObj.notes || [];
-  blockObj.notes.push(_note(RULE_NO.LOSS_EFFECT, '该题材有 ' + hits.length + ' 只【竞价一字跌停】' +
-    hits.join('、') + '（亏钱效应；题材共 ' + (Number(blockObj.block.count) || 0) + ' 只）' +
-    '　⚠️ 按 2026-10-01 新规：本条【不再砍票、不改仓位】，仅作风险提示'));
-  return blockObj;
-}
-
-/**
- * 【竞价高开率 · 唯一实现（§6）】⑧ 弱势题材与 ⑨ 双主线竞争都用它，⛔ 不各写一份。
- *
- * 口径（2026-09-27 定稿）：
- *   · 分母 = 【题材股票总数 block.count】，⛔ 不是「有竞价涨幅数据的行数」；
- *   · 分子 = 成员里【竞价涨幅 > 0】的只数（判定复用 ladder-rules#getAucOpenKind，§6）；
- *   · 缺竞价涨幅的行【按未高开】计入分母 —— 9:25 看不到它高开，就不能把它算进题材强度（§10 不猜）。
- *
- * ⛔ 为什么分母必须是总数（事故复盘）：上一版用「有数据的行数」当分母，灰行（观察组 / 昨日龙头
- *    继承壳）在很多日期拿不到 auc_pct_chg ⇒ 12 只的题材分母被缩成 7 只，3 只高开算成 43%（≥35%）
- *    ⇒ 规则不触发。用户口径是「12 只里只有 3 只高开 = 25%」，看的正是题材总数那一档。
- *
- * @param {object} block 题材块（rankDecisionTopics 的元素：{count, members}）
- * @returns {{total:number, highCount:number, knownCount:number, unknownCount:number,
- *            rate:number|null}} rate = null ⇒ 高开率【未知】（一只都没有竞价涨幅，§10 不猜）
- */
-function _calcOpenRate(block) {
-  const total = Number(block && block.count) || 0;
-  const members = (block && block.members) || [];
-  let highCount = 0;
-  let knownCount = 0;
-  let unknownCount = 0;
-  members.forEach(function(m) {
-    const kind = getAucOpenKind(_num(m && m.aucPct));
-    if (kind === null) { unknownCount++; return; }
-    knownCount++;
-    if (kind === AUC_OPEN_HIGH) highCount++;
-  });
-  return {
-    total: total,
-    highCount: highCount,
-    knownCount: knownCount,
-    unknownCount: unknownCount,
-    rate: (knownCount === 0 || total <= 0) ? null : (highCount / total)
-  };
-}
-
-/** 高开率 → 「n 只 = p%（x/y）」的可核对文案（⑧ ⑨ 共用，⛔ 不各处拼字符串） */
-function _openRateText(r) {
-  const base = '竞价高开 ' + r.highCount + '/' + r.total + ' 只 = ' + Math.round(r.rate * 100) + '%';
-  return r.unknownCount > 0
-    ? base + '（另 ' + r.unknownCount + ' 只缺竞价涨幅，按未高开计入分母，§10 不猜）'
-    : base;
-}
-
-/**
- * 【⑧ 弱势题材（2026-09-27 用户口径）】题材越大却【没人高开】⇒ 题材是虚胖的，别重仓铺票：
- *   入选题材【股票总数 > WEAK_OPEN_MIN_COUNT(10) 只】且【竞价高开的股票占比 < WEAK_OPEN_RATE(35%)】
- *   ⇒ 【只买龙一】，且【只轻仓】。
- *
- *   用户原话换算的两个锚点：
- *     · 10 只里只有 3 只竞价高开（3/10 = 30% < 35%）→ 只买龙一轻仓；
- *     · 12 只里只有 3 只竞价高开（3/12 = 25% < 35%）→ 只买龙一轻仓（这就是 9/11 农业的情形）。
- *
- * ⛔ 只在【总数 > 10 只】时生效 —— ≤ 10 只由 ⑩「买入只数」（最多 1 / 2 只）管，
- *    两条规则刻意不重叠，避免同一题材被扣两次。
- * ⛔ 「高开」判定复用 ladder-rules#getAucOpenKind（连板天梯唯一的开平实现，§6）：> 0 = 高开，
- *    竞价涨幅缺失的行【不算高开】（§10 缺数据 ≠ 高开），但会在说明里如实报「几只缺竞价涨幅」。
- */
-function _applyWeakOpenRate(blockObj) {
-  if (!blockObj || !blockObj.block) return blockObj;
-  const block = blockObj.block;
-  const total = Number(block.count) || 0;
-  // ⛔ 只在【总数 > WEAK_OPEN_MIN_COUNT】时生效 —— ≤ 10 只由「买入只数」管，两条不重叠
-  if (total <= WEAK_OPEN_MIN_COUNT || (block.members || []).length === 0) return blockObj;
-
-  const r = _calcOpenRate(block);
-
-  // §10 红线：一只都没有竞价涨幅 ⇒ 「高开率」是未知，既不能算高也不能算低 ⇒ 不触发，如实说明
-  if (r.rate === null) {
-    blockObj.notes = blockObj.notes || [];
-    blockObj.notes.push(_note(RULE_NO.WEAK_OPEN,
-      '题材共 ' + total + ' 只，但全部缺竞价涨幅 → 无法判定竞价高开率，本条【不生效】（§10 不猜）'));
-    return blockObj;
-  }
-
-  const base = '题材共 ' + total + ' 只，' + _openRateText(r);
-  // 没触发也把高开率写出来 —— 用户能直接核对「为什么还是常规档位」，不用猜
-  if (r.rate >= WEAK_OPEN_RATE) {
-    blockObj.notes = blockObj.notes || [];
-    blockObj.notes.push(_note(RULE_NO.WEAK_OPEN,
-      base + ' ≥ ' + Math.round(WEAK_OPEN_RATE * 100) + '% → 高开率正常，本条不生效'));
-    return blockObj;
-  }
-  // [VRATIO-PICK 2026-10-01 用户口径 · 让位] ⛔ 不再砍票 / 改仓位，只在说明里如实提示。
-  //   冲突点：原实现把买点砍成「只买龙一 + 只轻仓」，与新规「按竞价量比取前二、两只都重仓」冲突。
-  //   用户原话「你看有哪些规则和这个冲突，现在以这个新规为准」+ AskUserQuestion 确认「全部让位，新规优先」。
-  blockObj.notes = blockObj.notes || [];
-  blockObj.notes.push(_note(RULE_NO.WEAK_OPEN, base + ' < ' + Math.round(WEAK_OPEN_RATE * 100) +
-    '% → 题材虚胖（大部分票都不高开）　⚠️ 按 2026-10-01 新规：本条【不再砍票、不改仓位】，仅作风险提示'));
-  return blockObj;
-}
-
-/**
- * 【⑨ 双主线竞争（2026-09-27 用户口径）】
- *
- * 场景：当日【第 1 名】与【第 2 名】题材【都 ≥ DUAL_MAIN_MIN_COUNT(10) 只】—— 两个大容量题材并存，
- *   在大盘缩量的日子里它们是在【抢同一条主线】，用户的判断是【只有一个能活下来】。
- *   ⇒ ⛔ 不按 ① / ②（按一字数选题材）走，改为直接比两个题材的【竞价高开率】：
- *        · 高开率【高】的那个题材 → 它的【龙一】【重仓】，只选 1 只；
- *        · 高开率【低】的那个题材 → 它的【龙一】【轻仓】，只选 1 只。
- *
- * 用户给的锚点（9/10）：
- *   农业 11 只、竞价高开 5 只 = 45% < 大消费 10 只、竞价高开 8 只 = 80%
- *   ⇒ 大消费龙一国芳集团【重仓】，农业龙一敦煌种业【轻仓】。
- *
- * ⛔ 只选【龙一】各 1 只，不再补第二只（大容量题材并存时铺票等于两边下注，违背「只有一个能活下来」）。
- * ⛔ 高开率口径复用 _calcOpenRate（与 ⑧ 同一份实现，§6）：分母 = 题材股票总数，
- *    缺竞价涨幅的行按【未高开】计入分母（§10 不猜）。
- * ⛔ 龙一是一字（买不进）时按龙头顺序顺延 —— 复用 pickBuyable，⛔ 不另写一遍跳过逻辑。
- *
- * §10 红线：任一个题材【一只都没有竞价涨幅】⇒ 高开率未知 ⇒ 【无从比较】⇒ 本条不触发
- *   （返回 null，由调用方退回 ①~④ 的常规档位），绝不拿 0% 去和其它题材比。
- *   高开率【完全相同】时维持原排名（第 1 名胜出），并在说明里如实写「两者相同」。
- *
- * @param {object} first 第 1 名题材块
- * @param {object} second 第 2 名题材块
- * @param {Map} dragonMap 龙头排名
- * @returns {{winner:object, loser:object, topNotes:string[]}|null} null = 本条不适用
- */
-export function buildDualMainPlan(first, second, dragonMap) {
-  if (!first || !second) return null;
-  const ca = Number(first.count) || 0;
-  const cb = Number(second.count) || 0;
-  // ① 两个题材【都】要 ≥ DUAL_MAIN_MIN_COUNT 只才算「双主线并存」
-  if (ca < DUAL_MAIN_MIN_COUNT || cb < DUAL_MAIN_MIN_COUNT) return null;
-
-  const ra = _calcOpenRate(first);
-  const rb = _calcOpenRate(second);
-  // §10：高开率未知 ⇒ 无从比较 ⇒ 不适用（绝不拿 null 当 0% 去比）
-  if (ra.rate === null || rb.rate === null) return null;
-
-  const isSecondWin = rb.rate > ra.rate;                 // 严格大于才换手；相等 → 维持原排名
-  const winner = isSecondWin ? second : first;
-  const loser = isSecondWin ? first : second;
-  const rw = isSecondWin ? rb : ra;
-  const rl = isSecondWin ? ra : rb;
-
-  const rateTextW = _openRateText(rw);
-  const rateTextL = _openRateText(rl);
-  const why = '两个题材都 ≥ ' + DUAL_MAIN_MIN_COUNT + ' 只（' + winner.topic + ' ' + winner.count +
-    ' 只 / ' + loser.topic + ' ' + loser.count + ' 只）→ 只有一个能活下来，比【竞价高开率】：' +
-    winner.topic + ' ' + rateTextW + '　＞　' + loser.topic + ' ' + rateTextL;
-  const tieNote = (ra.rate === rb.rate)
-    ? '（两者高开率【完全相同】）'
-    : '';
-
-  // [VRATIO-PICK 2026-10-01 用户口径 · 让位] winner / loser 两个块【不再用于选票与仓位】——
-  //   buildBuyPlan 只用下面的 topNotes 作为【提示】，选票一律回到 ①②（按竞价量比）。
-  //   ⛔ 保留 mkBlock 是为了不改动本导出函数的返回结构（外部若有用到仍能拿到对比结果），
-  //     但 reason 里【不再出现】「只选龙一 1 只 / 重仓 / 轻仓」这种会被当成结论的措辞。
-  const mkBlock = function(block, position, isWinner) {
-    const picks = pickBuyable(block, dragonMap, 1, position);
-    const notes = [];
-    if (picks.length === 0) notes.push(_note(RULE_NO.DUAL_MAIN, '该题材没有可买的非一字股票 → 本档不买'));
-    return {
-      block: block,
-      rankWord: _rankWord(block.rank),
-      // ⛔ 2026-10-01 起本条【已让位】：只描述高开率对比，⛔ 不再写成选票结论
-      reason: _reasonBuy(block, _rankWord(block.rank)) +
-        '　→ 根据规则' + RULE_NO.DUAL_MAIN +
-        '（2026-10-01 起已让位：只提示、不改选票）：竞价高开率' +
-        (isWinner ? '更高' : '更低') + '（' + (isWinner ? rateTextW : rateTextL) + '）',
-      mode: 'dualMain',
-      ruleNo: RULE_NO.DUAL_MAIN,
-      qualified: picks.length > 0,
-      notQualifiedText: '',
-      picks: picks,
-      notes: notes
-    };
-  };
-
-  return {
-    winner: mkBlock(winner, POSITION_HEAVY, true),
-    loser: mkBlock(loser, POSITION_LIGHT, false),
-    topNotes: [_note(RULE_NO.DUAL_MAIN, why + tieNote +
-      '　（原口径：高开率高者龙一' + POSITION_HEAVY + '、低者龙一' + POSITION_LIGHT +
-      '、各【只选 1 只】—— ⛔ 2026-10-01 起【已作废】，见下一条说明）')]
-  };
-}
-
-/**
- * 【二 · 买入只数（2026-09-27 用户口径）】第 1 名题材按【早盘竞价题材股票数】限制买几只：
- *   · ≤ BUY_COUNT_MAX_SMALL(6) 只 → 最多 1 只（9/18 AI应用 6 只）；
- *   · ≤ BUY_COUNT_MAX_MID(10) 只  → 最多 2 只（9/21 电子/通信/算力）；
- *   · > 10 只                     → 按原规则（≥2 一字可取 2~3 只；1 一字可重仓 + 龙二~龙五高开轻仓）。
- * ⛔ 只砍后面的票，龙一 / 最靠前的那只一定保留。
- */
-function _capPicksByTopicCount(blockObj) {
-  if (!blockObj || !blockObj.block || !blockObj.picks || blockObj.picks.length === 0) return blockObj;
-  const c = Number(blockObj.block.count) || 0;
-  let max = 0;
-  if (c > 0 && c <= BUY_COUNT_MAX_SMALL) max = 1;
-  else if (c <= BUY_COUNT_MAX_MID) max = 2;
-  if (max === 0 || blockObj.picks.length <= max) return blockObj;   // > 10 只 或 没超上限 → 不动
-  // [VRATIO-PICK 2026-10-01 用户口径 · 让位] ⛔ 不再砍票，只提示。
-  //   冲突点：本条在「题材 ≤ 6 只」时会把买点砍成 1 只，与用户新规「选两只重仓」直接冲突。
-  //   AskUserQuestion 确认「全部让位，新规优先：不再改选票结果，只在说明文字里提示已触发」。
-  blockObj.notes = blockObj.notes || [];
-  blockObj.notes.push(_note(RULE_NO.BUY_COUNT, '题材股票数量 ' + c + ' 只（≤ ' + max +
-    ' 只档）原本会限制为最多买 ' + max + ' 只　⚠️ 按 2026-10-01 新规：本条【不再砍票】，仅作提示'));
-  return blockObj;
-}
-
-/**
- * 【三 · 持有 / 加仓标记（2026-09-27 用户口径）】
+ * 【③ 持有 / 加仓标记（2026-09-27 用户口径）】
  *   上一交易日在【买点】里、今天又在买点里 ⇒ 强势股 ⇒ 标记【持有 / 加仓】。
  *   §10：前一天的数据没算出来（null）→ 不标记（绝不当成「昨天没选中」）。
  */
@@ -1709,7 +744,7 @@ function _markHold(blockObj, prevBuyNames) {
 }
 
 /**
- * 【⑫ 昨天已买 · 股票级效果（2026-09-30 用户口径，同日两次修正）】
+ * 【④ 昨天已买 · 股票级效果（2026-09-30 用户口径，同日两次修正）】
  *   该【股票】在上一交易日被打过「买」标签 ⇒ 用户手上已经有仓位
  *   ⇒ 仓位文案由「重仓 / 轻仓」改写【加仓】。
  *
@@ -1728,7 +763,7 @@ function _markHold(blockObj, prevBuyNames) {
  *    这里保留 p.prevBoughtTag 只作为【加仓的判据留痕】（说明文字 / 回归测试要用），
  *    ⛔ 组件里【不再渲染】它 —— 想让用户看见个股级信息，看行尾的【加仓】即可。
  *
- * @param {object} blockObj 买点块（_finishBuyBlock / _finishPlanBlocks 的收口对象）
+ * @param {object} blockObj 买点块（_finishBuyBlock 的收口对象）
  * @param {Set<string>|null} prevBoughtNames 上一交易日打过「买」标签的股票名集合
  */
 function _markPrevBought(blockObj, prevBoughtNames) {
@@ -1751,7 +786,7 @@ function _markPrevBought(blockObj, prevBoughtNames) {
 }
 
 /**
- * 【⑫ 题材级 · 昨有买入（TOPIC-PREV-BOUGHT 2026-09-30 用户口径）】
+ * 【④ 题材级 · 昨有买入（TOPIC-PREV-BOUGHT 2026-09-30 用户口径）】
  *   「这个题材昨天有票被打过「买」标签」⇒ 题材在延续 ⇒ 题材行（竞价一字右边）标【昨有买入】。
  *
  * ⚠️ 与 _markPrevBought 的区别（两个标记【并存】，语义不同，别合并）：
@@ -1774,22 +809,16 @@ function _markTopicPrevBought(blockObj, prevBoughtTopics) {
 }
 
 /**
- * 【⑬ 题材入选次数（TOPIC-STREAK 2026-09-30 用户口径）】
+ * 【⑤ 题材入选次数（TOPIC-STREAK 2026-09-30 用户口径）】
  *   题材行（竞价一字右边）标【一次入选 / 二次入选 / …】=「含今日在内的最近 5 个交易日」
  *   里该题材进过买点几次（用户口径：这样就知道频率）。
  *
  * 口径（[STREAK-ALL-BLOCKS 2026-09-30 用户口径修正] —— ⛔ 别再改回「只数重仓/轻仓」）：
- *   · 数【全部买点块】：重仓 / 轻仓 / 弱市兜底⑤ / 小题材兜底⑥ / 大题材兜底。
- *     因此本函数在 _finishBuyBlock（heavy / light / 双主线）与 _finishPlanBlocks（⑤⑥）里【都要】调。
+ *   · 数【全部买点块】—— 计数范围必须与【展示范围】一致。
+ *     🔴 旧版「只数重仓/轻仓」在「当天买点全落在兜底方案里」的日子会让整块看板没有次数（9/30 实测）。
+ *     2026-10-01 起兜底方案已整体删除，买点只剩 第 1 / 第 2 名题材 两个块，范围天然一致。
  *   · 本块就是【今天的】那一次 ⇒ 次数 = 过去窗口内的次数 + 1（必然是 ≥ 1）；
  *   · 与【昨有买入】并存、互不冲突。
- *
- * 🔴 为什么要改成「全部买点块」（用户 2026-09-30 实测反馈，已用真实数据 100% 复现）：
- *   上一版按「只数重仓/轻仓」实现，结果 9/30 当天【第 1 名 AI应用 / 第 2 名 大消费 都是
- *   「票少 + 1 个一字」的高风险小题材】⇒ 买点全部落在 ⑥ 小题材兜底方案里 ⇒
- *   整块看板一个「N 次入选」都不显示；用户看到的却是「房地产（大亚圣象）标了昨有买入、
- *   没有一次入选」——而房地产恰恰是当天【第一次】进买点，本该显示「一次入选」。
- *   根因 = 计数范围（heavy/light）与展示范围（兜底块全展示）不一致 ⇒ 口径必须统一到展示范围。
  * §10：pastCounts 为 null（窗口内有历史日算不出来）→ 一律【不标】，
  *       ⛔ 绝不拿「偏低但看起来正常」的数字冒充（那会让用户误判题材频率）。
  *
@@ -1807,7 +836,7 @@ function _markTopicStreak(blockObj, pastCounts) {
 }
 
 /**
- * 【⑫ 仓位配色档】逐只把 position 映射成 tone，供模板直接拼接类名（§21 模板零计算）。
+ * 【④ 仓位配色档】逐只把 position 映射成 tone，供模板直接拼接类名（§21 模板零计算）。
  * ⛔ 必须排在 _markPrevBought 之后 —— 它会改写 position 文案，先派生会拿到旧的「轻仓」档。
  */
 function _decoratePositionTone(blockObj) {
@@ -1818,352 +847,70 @@ function _decoratePositionTone(blockObj) {
 
 /**
  * 买点块的统一收口（⛔ 顺序固定，互不干扰）：
- *   【已让位 · 只提示不执行】亏钱效应 ⑦ → 弱势题材 ⑧（高开率）→ 只数限制 ⑩
- *     ⚠️ [VRATIO-PICK 2026-10-01 用户口径] 这三条【不再砍票、不再改仓位】，只在 notes 里写风险提示
- *        —— AskUserQuestion 确认「全部让位，新规优先」（选票一律按【竞价量比】前二）。
- *        仍然照常调用，是为了让「今天触发了哪条风控」这个信息照旧出现在看板上。
- *   【仍生效】持有标记 ⑪ → 昨天已买 ⑫（会改 position）
- *     → 题材行标记（昨有买入 ⑫ / 入选次数 ⑬）→ 仓位配色档（必须在其后）→ 竞价涨幅徽标（必须最后）
+ *   持有标记 ③ → 昨天已买 ④（会改 position）→ 题材行标记（昨有买入 ④ / 入选次数 ⑤）
+ *   → 仓位配色档（必须在其后）→ 竞价涨幅徽标（必须最后）。
+ *
+ * ⚠️ [QUANT-PICK 2026-10-01] 旧版这里还会按顺序走「亏钱效应 ⑦ → 弱势题材 ⑧ → 只数限制 ⑩」，
+ *    这三条已整体删除（用户口径「不分弱势题材，量化了」），所以收口现在只剩标记类动作，
+ *    ⛔ 收口【不再改 picks、不再砍票】—— 选票结果 = _buildTopicBuyBlock 的产出，一步到位。
  */
 function _finishBuyBlock(blockObj, opts) {
-  _applyLossEffect(blockObj);
-  _applyWeakOpenRate(blockObj);
-  _capPicksByTopicCount(blockObj);
   _markHold(blockObj, opts ? opts.prevBuyNames : null);
   _markPrevBought(blockObj, opts ? opts.prevBoughtNames : null);
   // ⚠️ 题材行标记与上面的个股标记互不干扰（一个写 blockObj.*，一个写 pick.*），先后无所谓
   _markTopicPrevBought(blockObj, opts ? opts.prevBoughtTopics : null);
   _markTopicStreak(blockObj, opts ? opts.topicStreakPast : null);
   _decoratePositionTone(blockObj);
-  // ⛔ 徽标必须【最后】派生：上面的砍票 / 改仓会重建 picks 数组，先派生会被丢掉
+  // ⛔ 徽标必须【最后】派生：上面的改仓会重建 picks 里的 position 文案，先派生会被丢掉
   _decorateAucBadge(blockObj);
   return blockObj;
 }
 
 /**
- * 兜底方案（无一字 / 小题材 / 大题材）的统一收口：逐块走【亏钱效应 + 弱势题材 + 持有标记】。
- * ⛔ 这类方案【不走】_capPicksByTopicCount —— 用户口径「买入只数」只针对【第 1 名题材】
- *    （①②③④ 的常规档位），兜底方案本来就只取 1~2 只，再砍一次反而会空仓。
+ * 【买点唯一入口】生成买点计划。
  *
- * [WEAK-OPEN 2026-09-27] ⑧ 弱势题材【必须在这里也走一遍】——
- *   事故：9/11 农业 12 只、只有 3 只竞价高开（25% < 35%），用户预期「只选龙一敦煌种业轻仓」，
- *   实际却选出了 2 只（敦煌种业 + 新农开发）。根因不是阈值、也不是分母：
- *     当天【第 1 名题材 = 电力新能源（4 只 / 1 个一字）】命中「小题材高风险」，
- *     buildBuyPlan 直接走 ⑥ 兜底方案（smallTopic），由「题材连扳里数量最多」挑中了农业，
- *     而兜底方案走的是 _finishPlanBlocks —— 上一版这里【只调 _applyLossEffect】，
- *     压根没调 _applyWeakOpenRate ⇒ ⑧ 在这条链路上从未生效过。
- *   ⛔ 规则是「入选题材」的筛选条件，与它是被哪条规则选中的无关 —— 必须对所有买点块一视同仁。
- */
-function _finishPlanBlocks(planObj, opts) {
-  if (!planObj || !planObj.blocks) return planObj;
-  planObj.blocks.forEach(function(b) {
-    _applyLossEffect(b);
-    _applyWeakOpenRate(b);
-    _markHold(b, opts ? opts.prevBuyNames : null);
-    _markPrevBought(b, opts ? opts.prevBoughtNames : null);
-    // [⑫ 题材级] 兜底方案的题材行同样标【昨有买入】—— 与「入选题材的筛选条件一视同仁」同一口径：
-    //   它说的是「这个题材昨天有票买过」，跟这个题材是被哪条规则选中的无关。
-    _markTopicPrevBought(b, opts ? opts.prevBoughtTopics : null);
-    // [⑬ 入选次数] 兜底方案的题材行【也要】标 —— [STREAK-ALL-BLOCKS 2026-09-30 用户口径修正]
-    //   上一版这里刻意不标，理由是「次数只数重仓/轻仓」；但那会让「当天买点全在兜底方案里」
-    //   的日子整块看板没有次数（9/30 实测），计数范围与展示范围不一致。现在统一为【全部买点块】。
-    _markTopicStreak(b, opts ? opts.topicStreakPast : null);
-    _decoratePositionTone(b);      // ⛔ 必须在 _markPrevBought 之后（它会改写 position 文案）
-    _decorateAucBadge(b);          // 同上：徽标放最后，避免被上面的砍票重建 picks 时丢掉
-  });
-  return planObj;
-}
-
-/**
- * 【⑤ 第 2 名题材 · 与「连板天梯数量第一题材」比早盘竞价股票数（2026-09-26 用户口径）】
+ * ⭐ [QUANT-PICK 2026-10-01 用户口径 · 重新改造] 流程只有三步：
+ *   ① 取题材排名【第 1】与【第 2】（排名 = 平均竞价量比降序，见 rankDecisionTopics）；
+ *   ② 各自按【题材股票数量】分档（resolvePickTier）；
+ *   ③ 档内按【竞价量比】降序取票（pickByVolRatio）—— 前 N 只重仓、其余轻仓。
+ *   ⛔ 没有兜底方案、没有题材替换、没有一字门槛、没有风控砍票：给不出来就是「不出票」，如实写在
+ *      notQualifiedText 里（§10）。
  *
- * 第 2 名题材（只有 1 个竞价一字）选票前，先做一次【题材替换】：
- *   ① 取【连板天梯 · 题材连扳】里【股票数量最多】的题材；
- *   ② 拿它回【早盘竞价】找同名题材块，比较两者的【早盘竞价股票数量】；
- *   ③ 谁的数量多就选谁；天梯那边更多 → 改成选天梯第一那个题材，仍按原规则选票。
- *      例（9/3）：第 2 名 = 大消费 7 只；天梯第一 = AI应用 4 只 → 回早盘竞价比：
- *      大消费 7 ＜ AI应用 10 ⇒ 改选 AI应用（若 AI应用 更少则沿用原规则）。
- *   ⛔【同题材不重复入选（2026-09-26 用户口径）】若天梯第一的题材【已经】被前面的档位选中了
- *     （9/8：第 1 名是大消费，天梯第一也还是大消费），这次对比【没有价值】→ 不做替换，
- *     回到原来的第 2 名题材（农业）选龙一轻仓。
- * §10：连板天梯未就绪 → 如实说明「未做对比」，沿用原规则（绝不猜）。
+ * ⚠️ 返回值里的 noYizi / smallTopic / bigTopic 【恒为 null】——
+ *    这是与 UI 的【结构契约】：DecisionBoard.vue 用 `buySpecial = noYizi || smallTopic || bigTopic`
+ *    合并渲染兜底面板（useDecisionBoard.js）。三个兜底规则已删除，面板自然永不出现，
+ *    ⛔ 但键必须留着，否则 composable / 模板要跟着改（用户口径「布局不变」）。
  *
- * @param {Array} blocks 早盘竞价题材块（rankDecisionTopics 的返回）
- * @param {object} second 第 2 名题材块
- * @param {{ladderTopicGroups?:Array, ladderReady?:boolean, ladderReason?:string}} opts
- * @param {Array<string>} [excludeTopics] 已经入选的题材名（⛔ 不允许重复出现在买点里）
- * @returns {{block:object|null, notes:string[], replaced:boolean}}
- */
-export function resolveSecondTopicByLadder(blocks, second, opts, excludeTopics) {
-  const o = opts || {};
-  const notes = [];
-  const used = new Set((excludeTopics || []).filter(Boolean).map(function(t) { return String(t).trim(); }));
-  if (!second) return { block: null, notes: notes, replaced: false };
-  if (o.ladderReady === false) {
-    notes.push(_note(RULE_NO.SECOND, '连板天梯数据未就绪' +
-      (o.ladderReason ? '（' + o.ladderReason + '）' : '') +
-      ' → 未做「题材数量对比」，沿用第 2 名题材（§10 不猜）'));
-    return { block: second, notes: notes, replaced: false };
-  }
-  const groups = (o.ladderTopicGroups || []).filter(function(g) {
-    return g && g.topic && g.topic !== OTHER && (Number(g.count) || 0) > 0;
-  });
-  if (groups.length === 0) return { block: second, notes: notes, replaced: false };
-
-  let top = null;
-  groups.forEach(function(g) {
-    if (!top || (Number(g.count) || 0) > (Number(top.count) || 0)) top = g;
-    else if ((Number(g.count) || 0) === (Number(top.count) || 0) &&
-             String(g.topic) < String(top.topic)) top = g;      // 并列 → 题材名稳定
-  });
-  if (!top || String(top.topic).trim() === String(second.topic).trim()) {
-    return { block: second, notes: notes, replaced: false };
-  }
-  // ⛔ 同题材不重复入选：天梯第一的题材已经在买点里了 → 这次对比没有价值，不做替换
-  if (used.has(String(top.topic).trim())) {
-    notes.push(_note(RULE_NO.SECOND, '连板天梯里数量最多的题材「' + top.topic +
-      '」【已经在买点里了】→ 同题材不重复入选，本次对比无意义，沿用第 2 名题材「' + second.topic + '」'));
-    return { block: second, notes: notes, replaced: false };
-  }
-  const blk = _findAuctionBlock(blocks, top.topic);
-  if (!blk) {
-    notes.push(_note(RULE_NO.SECOND, '连板天梯里数量最多的题材「' + top.topic +
-      '」在早盘竞价里没有同名题材 → 不做替换'));
-    return { block: second, notes: notes, replaced: false };
-  }
-  if (blk.count <= second.count) {
-    notes.push(_note(RULE_NO.SECOND, '已与连板天梯数量最多的题材「' + top.topic + '」对比早盘竞价股票数：' +
-      '本题材 ' + second.count + ' 只 ≥ ' + top.topic + ' ' + blk.count + ' 只 → 沿用本题材'));
-    return { block: second, notes: notes, replaced: false };
-  }
-  notes.push(_note(RULE_NO.SECOND, '连板天梯里数量最多的题材是「' + top.topic + '」（' + top.count + ' 只）；' +
-    '回到早盘竞价比股票数：' + top.topic + ' ' + blk.count + ' 只 ＞ 本题材「' + second.topic +
-    '」' + second.count + ' 只 → 改选【' + top.topic + '】'));
-  return { block: blk, notes: notes, replaced: true };
-}
-
-/**
- * 【⑥ 无一字 · 大题材兜底（2026-09-26 用户口径）】
- *
- * 触发：当日【全部题材竞价一字 = 0】，且第 1 / 第 2 名题材里有【股票数量 ≥ BIG_TOPIC_MIN_COUNT 只】的。
- * 选票：每个满足的大题材只取【龙一】一只，【轻仓】（没有一字，强度打折）。
- * ⛔ 这是【新增】的一条并列规则：原来的「题材连扳不足 3 只 → 空仓」保持不变，
- *    只是当大题材条件成立时【优先】走这里（9/4：电子/通信/算力 17 只、AI应用 10 只 → 各取龙一）。
- *
- * @param {Array<object>} bigBlocks 满足数量门槛的题材块（第 1 / 第 2 名里筛出来的）
- * @param {Map} dragonMap 龙头排名
- * @returns {{mode:string, qualified:boolean, emptyText:string, hintText:string, blocks:Array, notes:string[]}}
- */
-export function buildBigTopicPlan(bigBlocks, dragonMap) {
-  const out = {
-    mode: 'bigTopic',
-    qualified: false,
-    emptyText: '',
-    hintText: '当日全部题材【竞价一字 0 个】，但第 1 / 第 2 名题材里有【股票数量 ≥ ' +
-      BIG_TOPIC_MIN_COUNT + ' 只】的大题材 → 改选这些大题材的【龙一】（' + POSITION_LIGHT + '）',
-    blocks: [],
-    notes: []
-  };
-  let totalPicks = 0;
-  (bigBlocks || []).forEach(function(b) {
-    const picks = pickBuyable(b, dragonMap, 1, POSITION_LIGHT);
-    const notes = [];
-    if (picks.length === 0) notes.push(_note(RULE_NO.NO_YIZI, '该题材没有可买的非一字股票 → 不选票'));
-    totalPicks += picks.length;
-    const obj = {
-      block: b,
-      rankWord: '',
-      reason: '该题材在早盘竞价里有 ' + b.count + ' 只（≥ ' + BIG_TOPIC_MIN_COUNT +
-        ' 只），当日无竞价一字　→ 根据规则' + RULE_NO.NO_YIZI + '：只取龙一，' + POSITION_LIGHT,
-      mode: 'bigTopic',
-      ruleNo: RULE_NO.NO_YIZI,
-      qualified: picks.length > 0,
-      notQualifiedText: '',
-      picks: picks,
-      notes: notes
-    };
-    _appendLowOpenDragonOneNote(obj);
-    out.blocks.push(obj);
-  });
-  out.qualified = totalPicks > 0;
-  if (!out.qualified) out.emptyText = '大题材里没有可买的票 → 【空仓】';
-  return out;
-}
-
-/**
- * 生成买点计划。
  * @param {Array} blocks rankDecisionTopics 的返回
  * @param {Map} dragonMap rankDragons 的返回
- * @param {{ladderTopicGroups?:Array, ladderReady?:boolean, ladderReason?:string,
- *          prevBuyNames?:Set<string>|null, prevBoughtNames?:Set<string>|null,
+ * @param {{prevBuyNames?:Set<string>|null, prevBoughtNames?:Set<string>|null,
  *          prevBoughtTopics?:Set<string>|null, topicStreakPast?:Map<string,number>|null}} [opts]
- *        【无一字兜底】要用的连板天梯「题材连扳」分组（只有「全部题材一字 = 0」时才用得上；
- *        由 decision-collect 采集后传进来，本文件保持纯函数、不碰数据源）
- *        ⓘ 龙一 / 龙二的排名人群用的是 blocks 自身（早盘竞价题材组），无需额外传参
- *        prevBuyNames = 【上一个交易日】买点里的股票名集合；
- *          null / 不传 = 昨天的买点没算出来（§10：未知 ≠ 昨天没选中）→ 一律【不标持有】
- *        prevBoughtNames = 【上一个交易日】打过「买」标签的股票名集合（用户【实际】买了的）；
- *          null / 不传 = 昨天的标签没读到（§10：未知 ≠ 昨天没买）→ 一律【不标昨天已买】。
- *          ⛔ 它是【股票级】判据（逐只比名字），落成行尾的【加仓】。
- *        prevBoughtTopics = 【题材级】判据：昨天买过的票【今天】落在哪些题材里（§6：与看板显示的
- *          题材同一份映射）。命中 ⇒ 题材行标【昨有买入】。null / 不传 = 未知 → 不标。
- *        topicStreakPast = 题材名 → 过去（不含今日）窗口内进入买点的次数（数【全部买点块】）；
- *          命中 ⇒ 题材行标【N 次入选】（次数 = 本值 + 1）。null / 不传 = 窗口内有历史日算不出来
- *          → 一律不标（§10：⛔ 不用偏低的次数冒充真实频率）。
- * @returns {{heavy:object|null, light:object|null, noYizi:object|null, smallTopic:object|null}}
- *          heavy = 第 1 名题材的方案；light = 第 2 名题材的方案；
- *          noYizi = 「全部题材竞价一字 = 0」时的弱市兜底方案；
- *          smallTopic = 「第 1 / 第 2 名题材票太少却有 1~2 个一字」时的兜底方案（⑥）。
- *          四者互斥：noYizi / smallTopic 任一非空时，heavy 与 light 必为 null。
- *          qualified=false 表示「未达一字门槛 / 太弱」——仍然展示题材与数字（§10 如实呈现），
- *          但 ⛔ 不给出买入建议（picks 为空），绝不拿不够格的数据冒充有效信号。
+ *        ⓘ 纯标记用的数据（都不影响选票结论）。语义与 §10 口径见各 _mark* 函数：
+ *        prevBuyNames      = 【上一个交易日】买点里的股票名集合；null = 未知 → 一律不标持有
+ *        prevBoughtNames   = 【上一交易日】打过「买」标签的股票名集合（股票级 → 行尾【加仓】）
+ *        prevBoughtTopics  = 【题材级】判据：昨天买过的票【今日】落在哪些题材里 → 题材行【昨有买入】
+ *        topicStreakPast   = 题材名 → 过去（不含今日）窗口内进入买点的次数 → 题材行【N 次入选】
+ * @returns {{heavy:object|null, light:object|null,
+ *            noYizi:null, smallTopic:null, bigTopic:null}}
+ *          heavy = 第 1 名题材的买点块；light = 第 2 名题材的买点块；
+ *          qualified=false 表示「该题材不出票（数量 ≤ 3 / 没有可买的票）」—— 仍然展示题材与数字
+ *          （§10 如实呈现），但 ⛔ 不给买入建议（picks 为空）。
  */
 export function buildBuyPlan(blocks, dragonMap, opts) {
   const list = blocks || [];
+  const o = opts || {};
   const first = list.find(function(b) { return b.rank === 1; }) || null;
   const second = list.find(function(b) { return b.rank === 2; }) || null;
-  const o = opts || {};
 
-  // [SMALL-TOPIC 2026-09-25] 第 1 / 第 2 名题材是「票太少 + 有 1~2 个一字」的高风险小题材
-  //   ⇒ 常规规则准确率低，【不用常规规则】，改走 ⑥（题材连扳 + 早盘竞价股票数 ≥ 4 只过滤）。
-  //   ⛔ 即使连板天梯未就绪也【不退回】常规规则 —— 用户明确说这种情况下常规规则不符合，
-  //      退回等于又给一次错误的建议；如实报「未就绪」（§10）。
-  const risky = [];
-  if (isSmallRiskyTopic(first)) risky.push(first);
-  if (isSmallRiskyTopic(second)) risky.push(second);
-  if (risky.length > 0) {
-    return {
-      heavy: null,
-      light: null,
-      noYizi: null,
-      bigTopic: null,
-      // 【一 亏钱效应 / 三 持有标记】兜底方案的每个子块同样收口（⛔ 不套用「只数」限制）
-      smallTopic: _finishPlanBlocks(buildSmallTopicPlan(list, dragonMap, {
-        ladderTopicGroups: o.ladderTopicGroups || [],
-        ladderReady: o.ladderReady,
-        ladderReason: o.ladderReason,
-        riskyTopics: risky
-      }), o)
-    };
+  let heavy = null;
+  let light = null;
+  if (first) {
+    heavy = _finishBuyBlock(_buildTopicBuyBlock(first, dragonMap, '第一', RULE_NO.FIRST), o);
+    _appendLowOpenDragonOneNote(heavy);
   }
-
-  // [NO-YIZI 2026-09-25] 当日【所有题材】都没有竞价一字 → 弱市，改走「连板天梯 · 题材连扳」兜底规则。
-  // ⛔ 判据是【全部题材的一字总数】，不是「第 1 名题材的一字数」：
-  //    用户原话是「当天所有的题材都没有一字涨停的股票时」。
-  const totalYizi = list.reduce(function(n, b) { return n + (Number(b.yiziCount) || 0); }, 0);
-  if (list.length > 0 && totalYizi === 0) {
-    // [BIG-TOPIC 2026-09-26] 新增的并列规则【优先】：第 1 / 第 2 名题材里有【股票数 ≥ 10 只】的
-    //   大题材 → 选这些大题材的龙一（轻仓）。不满足才回到原来的「题材连扳 / 空仓」。
-    const bigs = [first, second].filter(function(b) {
-      return b && (Number(b.count) || 0) >= BIG_TOPIC_MIN_COUNT;
-    });
-    if (bigs.length > 0) {
-      return {
-        heavy: null,
-        light: null,
-        noYizi: null,
-        smallTopic: null,
-        bigTopic: _finishPlanBlocks(buildBigTopicPlan(bigs, dragonMap), o)
-      };
-    }
-    return {
-      heavy: null,
-      light: null,
-      smallTopic: null,
-      bigTopic: null,
-      noYizi: _finishPlanBlocks(buildNoYiziPlan(o.ladderTopicGroups || [], {
-        dragonMap: dragonMap,
-        ladderReady: o.ladderReady,
-        ladderReason: o.ladderReason,
-        // 龙一 / 龙二的排名人群 = 早盘竞价题材组（blocks 自身），⛔ 不是「题材连扳」的子集
-        auctionTopicBlocks: list
-      }), o)
-    };
-  }
-
-  // [DUAL-MAIN 2026-09-27] ⑨【双主线竞争】第 1 / 第 2 名题材【都 ≥ 10 只】→ 两个大容量题材在抢主线，
-  //   【只有一个能活下来】⇒ 不看 ①~④，改比【竞价高开率】：高者龙一重仓、低者龙一轻仓，各 1 只。
-  //   ⛔ 放在「全部题材无一字」之后：0 一字 = 弱市，没有主线可争，那日子归 ⑤ 管。
-  //   ⛔ 返回 null = 本条不适用（题材不够大 / 高开率未知）→ 继续走下面的常规档位。
-  // [VRATIO-PICK 2026-10-01 用户口径 · 让位] ⑨【双主线竞争】原本会【完全接管选票】——
-  //   比两个题材的竞价高开率 → 高者龙一重仓、低者龙一轻仓、各只选 1 只，
-  //   与用户新规「按【竞价量比】取前二、两只都重仓」直接冲突。
-  //   AskUserQuestion 确认「全部让位，新规优先」⇒ ⛔ 本条【不再决定选谁 / 什么仓位】，
-  //   只在【第 1 名题材块】的说明里如实提示它已触发；选票一律继续走下面的 ①②（按竞价量比）。
-  const dual = buildDualMainPlan(first, second, dragonMap);
-  const dualMainNotes = dual
-    ? dual.topNotes.concat([_note(RULE_NO.DUAL_MAIN,
-      '⚠️ 按 2026-10-01 新规：本条【不再决定选票与仓位】，仅作提示；买点一律按【竞价量比】前二执行')])
-    : null;
-
-  // 第 2 名题材：[2026-09-26 用户口径] 两条规则有先后 ——
-  //   ①【优先】龙一不是竞价一字 → 直接买龙一，不看竞价涨跌幅（一字才买不进，能买就买龙一）；
-  //   ② 龙一是一字（或排不出龙一）→ 取【名次最靠前的那只竞价高开】，只 1 只、轻仓。
-  //   没有高开票 / 有票缺竞价涨幅都要如实说明（§10）。
-  const lightNotes = [];
-  let lightPicks = [];
-  // ⑤【题材替换（2026-09-26 用户口径）】第 2 名题材【只有 1 个竞价一字】时，
-  //   先和「连板天梯 · 题材连扳」里数量最多的题材比【早盘竞价股票数】，谁多就选谁。
-  let lightBlock = second;
-  let replaced = false;
-  if (second && second.yiziCount === 1) {
-    // ⛔ 已入选的题材（第 1 名题材）传进去：天梯第一若是它 → 不做替换（同题材不重复入选）
-    const rs = resolveSecondTopicByLadder(list, second, o, [first ? first.topic : null]);
-    lightBlock = rs.block || second;
-    replaced = rs.replaced;
-    rs.notes.forEach(function(n) { lightNotes.push(n); });
-  }
-  if (lightBlock) {
-    const r = pickSecondTopicBuy(lightBlock, dragonMap, POSITION_LIGHT);
-    lightPicks = r.picks;
-    if (r.viaDragonOne) {
-      lightNotes.push(_note(RULE_NO.SECOND,
-        '龙一「' + r.picks[0].name + '」不是竞价一字 → 直接买龙一（不看竞价涨跌幅）'));
-    } else {
-      if (r.dragonOneYizi) {
-        lightNotes.push(_note(RULE_NO.SECOND,
-          '龙一是一字涨停（买不进）→ 跳过一字，取名次最靠前的「竞价高开」票'));
-      }
-      if (r.picks.length === 0) {
-        lightNotes.push(_note(RULE_NO.SECOND,
-          '该题材没有「非一字 且 竞价高开」的股票 → 本档无轻仓票'));
-      }
-      if (r.unknownCount > 0) {
-        lightNotes.push(_note(RULE_NO.SECOND,
-          '另有 ' + r.unknownCount + ' 只缺竞价涨幅，无法判定是否高开，未纳入（§10 不猜）'));
-      }
-    }
-  }
-  let light = lightBlock ? {
-    block: lightBlock,
-    rankWord: replaced ? '' : '第二',
-    // 题材下面的小字说明带上 ④ 的两条先后规则 + 规则编号，用户对照看板时能直接看到「为什么选它」
-    reason: _reasonBuy(lightBlock, replaced ? '' : '第二') +
-      '　→ 根据规则' + RULE_NO.SECOND + '：龙一不是一字则直接买龙一；' +
-      '龙一是一字则取名次最靠前的竞价高开票（都' + POSITION_LIGHT + '）',
-    mode: 'light',
-    ruleNo: RULE_NO.SECOND,
-    qualified: true,
-    notQualifiedText: '',
-    picks: lightPicks,
-    notes: lightNotes
-  } : null;
-  const heavy = first ? _buildFirstBlock(first, dragonMap) : null;
-  // ⑨ 已让位：把「双主线已触发」的提示挂在第 1 名题材块上（信息照旧可见，但不改选票结果）
-  if (heavy && dualMainNotes) heavy.notes = (heavy.notes || []).concat(dualMainNotes);
-  _appendLowOpenDragonOneNote(heavy);
-  // 【一 亏钱效应 / 二 只数 / 三 持有标记】统一收口（顺序固定：先砍票再标仓位）
-  _finishBuyBlock(heavy, o);
-
-  // ⛔【同题材不重复入选（2026-09-26 用户口径）】买点里同一个题材只能出现一次：
-  //   若第 2 名题材（或替换后的题材）与第 1 名题材同名 → 这一档直接不出现（9/8 大消费重复出现的修复）。
-  if (heavy && light && String(heavy.block.topic).trim() === String(light.block.topic).trim()) {
-    lightNotes.push(_note(RULE_NO.SECOND,
-      '与第 1 名题材同名为「' + light.block.topic + '」→ 同题材不重复入选，本档不出现'));
-    light = null;
-  } else {
+  if (second) {
+    light = _finishBuyBlock(_buildTopicBuyBlock(second, dragonMap, '第二', RULE_NO.SECOND), o);
     _appendLowOpenDragonOneNote(light);
-    _finishBuyBlock(light, o);
   }
 
   return {
@@ -2171,11 +918,10 @@ export function buildBuyPlan(blocks, dragonMap, opts) {
     //    返回空壳对象会让模板去读 block.block.topic 直接崩（当日没有成组题材时会走到这里）
     heavy: heavy,
     light: light,
+    // ⚠️ 兜底面板的结构契约（见函数头注释）：三个键必须保留，且新规下恒为 null
     noYizi: null,
     smallTopic: null,
-    bigTopic: null,
-    // ⑨ 已让位 ⇒ 不再单独产出买点块，只把对比说明带到第 1 名题材块的 notes 里
-    dualMainNotes: dualMainNotes
+    bigTopic: null
   };
 }
 
@@ -2205,7 +951,7 @@ function _rankWord(rank) {
  */
 function _decideSellTime(topicRank, opts) {
   const o = opts || {};
-  if (topicRank === 2 && o.yiziCount === MIN_YIZI_SINGLE) {
+  if (topicRank === 2 && o.yiziCount === SECOND_TOPIC_SINGLE_YIZI) {
     return o.isDragonOne ? SELL_TIME_CLOSE : SELL_TIME_MIDDAY;
   }
   return (topicRank === 1 || topicRank === 2) ? SELL_TIME_CLOSE : SELL_TIME_MIDDAY;
@@ -2270,7 +1016,7 @@ function _decideSellHint(aucPct) {
  *        ⓘ 能进卖点候选的股票【上交易日】必然在买点里（卖点候选 = 昨日打过「买」标签），
  *          所以「今天又出现在买点里」= 连续两天被选中 = 强势股 → 行尾标【持有 / 加仓】，不卖。
  * @returns {Array<{topic:string, topicRank:number|null, count:number|null, yiziCount:number|null,
- *                 卖点行... }>} 按题材分组，组内按龙头排名升序
+ *                  ...}>} 按题材分组，组内按龙头排名升序
  */
 export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuyNames) {
   if (!rows || rows.length === 0) return [];
@@ -2299,7 +1045,7 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
       yiziCount: info ? info.yiziCount : null,
       isDragonOne: dragonRank === 1
     });
-    // 【三 · 持有 / 加仓】上交易日就在买点里（= 进得了卖点候选）+ 今天又在买点里 → 强势股
+    // 【③ 持有 / 加仓】上交易日就在买点里（= 进得了卖点候选）+ 今天又在买点里 → 强势股
     const holdTag = (todayBuyNames && todayBuyNames.has(r.name)) ? HOLD_TAG : '';
     // 今日竞价涨幅（%）：卖点【细分提示】的唯一依据（[SELL-OPEN 2026-09-29]）；null = 缺数据
     const aucPct = _num(r.aucPct);
@@ -2346,7 +1092,7 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
       : (head.isPrevDragon ? '但昨日是龙头（十日涨幅最高）' : '昨日非龙头');
 
     let reason;
-    if (head.topicRank === 2 && yizi === MIN_YIZI_SINGLE) {
+    if (head.topicRank === 2 && yizi === SECOND_TOPIC_SINGLE_YIZI) {
       // [2026-09-24] 第 2 名题材【只有 1 个竞价一字】→ 组内时点会分裂，理由必须把两种都说清
       reason = '题材排在第一，第二，题材排第二，' + countText + '，该题材只有' + yizi + '个竞价一字涨停，' +
         prevText + '，龙一' + SELL_TIME_CLOSE + '卖，其余非龙一' + SELL_TIME_MIDDAY + '卖';
@@ -2397,116 +1143,71 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
  */
 export function buildRulesLines() {
   return [
-    '【买点】只看题材排名前二的题材（题材排名 = 早盘竞价「题材 toggle」的组序）：',
-    '　【选票的唯一依据 = 竞价量比（2026-10-01 新规）】一律按【竞价量比】降序取前 ' + PICK_COUNT_HEAVY +
-      ' 只、两只都' + POSITION_HEAVY + '；',
-    '　　量比越大 = 明天持续性越高（用户口径）。例：龙一 5.6 / 龙二 8.9 / 龙三 20.5 / 龙四 5.4 / 龙五 7.9',
-    '　　　⇒ 量比降序 = 龙三 20.5 ＞ 龙二 8.9 ＞ 龙五 7.9 ＞ 龙一 5.6 ＞ 龙四 5.4 ⇒ 选【龙三 + 龙二】，⛔ 不选龙一。',
-    '　　⚠️ 【龙一不再保底】：谁量比小谁被挤掉，龙一也一样 —— 这是本次新规最核心的变化。',
+    '【买点】只看题材排名前二的题材（题材排名 = 早盘竞价「题材 toggle」的组序，见第 0 步）：',
+    '　第 0 步【题材怎么排名】= 按题材的【平均竞价量比】降序（2026-10-01 新规，取代原来的「一字数量排序」）：',
+    '　　平均竞价量比高的题材排在前面 —— 这样能分出排在第一和第二的题材（用户口径）。',
+    '　　量比取自 market_metrics 的 auc_vol_ratio = 早盘竞价看板展开面板那行「竞价量比」，',
+    '　　　以及题材统计条上的「平均竞价量比」，是同一个值。',
+    '　　平均竞价量比 = 该题材里所有拿到量比的行（含灰行）的量比之和 ÷ 拿到量比的行数；',
+    '　　　一行都拿不到量比的题材置底（§10 不把「没查到」当成「量比很小」）。',
+    '　第 1 步【选题材】取排名【第 1】与【第 2】的两个题材，各自按下面同一套规则选票。',
+    '　第 2 步【选票的唯一依据 = 竞价量比】一律按【竞价量比】降序取票，量比越大 = 明天持续性越高（用户口径）。',
+    '　　例：龙一 5.6 / 龙二 8.9 / 龙三 20.5 / 龙四 5.4 / 龙五 7.9',
+    '　　　⇒ 量比降序 = 龙三 20.5 ＞ 龙二 8.9 ＞ 龙五 7.9 ＞ 龙一 5.6 ＞ 龙四 5.4 ⇒ 谁量大谁靠前。',
+    '　　⚠️【不保底龙一】：谁量比小谁排在后面，龙一也一样 ——【先不分龙一 / 龙二了】，只看量比。',
+    '　　⚠️【竞价一字买不进】→ 一律跳过，不占名额、也不参与量比排序。',
+    '　　⚠️【创业板 / 科创板 / 北交所】（20% / 30% 涨跌幅板）→【照选】，不因为板块而被顺延。',
     '　　⚠️ 缺竞价量比的票【不参与】量比大小的比较（§10 绝不当 0），一律排在有量比的票后面；',
-    '　　　　整个题材都没有量比 ⇒ 退回【按龙头名次取前二】，并在说明文字里写明为什么。',
-    '　　量比取自 market_metrics 的 auc_vol_ratio = 早盘竞价看板展开面板那行「竞价量比」（同一个值）。',
-    '　① 排名第 1 的题材，竞价一字 ≥ ' + MIN_YIZI_HEAVY + ' 个 → 按上面的量比规则取前二，都' + POSITION_HEAVY + '；',
-    '　　【卡位补偿】名次第二的龙二若被量比更大的票挤出前二 → 再补【龙二】' + POSITION_LIGHT +
-      '，一共选【3 只】；',
-    '　　【龙一特例】龙一竞价【低开】但量比 ＞ ' + DRAGON_ONE_LOW_OPEN_MIN_VOL_RATIO +
-      '（低开抢筹）⇒ 追加龙一' + POSITION_HEAVY + '（按量比它本来进不了前二）；',
-    '　　　⚠️ 龙一特例与卡位补偿同时成立 ⇒ 【龙一特例优先】，卡位补偿不再追加（最多 ' +
-      PICK_MAX_AFTER_SPECIAL + ' 只）。',
-    '　　非龙一 且 是【创业板 / 科创板 / 北交所】（20% / 30% 涨跌幅板）→ 顺延下一位（9/2 芒果超媒 → 改选龙版传媒）。',
-    '　② 排名第 1 的题材，竞价一字【只有 ' + MIN_YIZI_SINGLE + ' 个】→【与 ① 完全同一套量比规则】：',
-    '　　按量比降序取前二、两只都' + POSITION_HEAVY + '；',
-    '　　⛔ 原「' + getDragonLabel(LADDER_MIN_RANK) + '～' + getDragonLabel(LADDER_MAX_RANK) +
-      '里挑竞价高开票做' + POSITION_LIGHT + '」的口径已作废（那是按竞价涨幅选，不是量比）。',
-    '　③ 排名第 1 的题材，竞价一字 0 个 → 不达买入条件（题材排名就是按一字数排的，所以这等价于',
-    '　　【全部题材】都没有一字 → 直接改走下面的 ⑤，不再只展示数据）；',
-    '　④ 排名第 2 的题材 → 先看【龙一】，两条规则有先后：',
-    '　　　· 龙一【不是】竞价一字（一字才买不进）→ 【直接买龙一】' + PICK_COUNT_LIGHT + ' 只，' +
-      POSITION_LIGHT + '，不看竞价涨跌幅；',
-    '　　　· 龙一【是】竞价一字 → 按龙头顺序跳过一字，取【名次最靠前的那只竞价高开】的股票 ' +
-      PICK_COUNT_LIGHT + ' 只，' + POSITION_LIGHT + '；',
-    '　　　　（龙一~龙八全低开、只有龙九高开 → 就选龙九；龙四与龙八都高开 → 选名次更靠前的龙四）。',
-    '　　　· 该题材【只有 1 个竞价一字】时先做【题材替换】：拿【连板天梯 · 题材连扳】里',
-    '　　　　【股票数量最多】的题材，回到【早盘竞价】比两者股票数，谁多就选谁',
-    '　　　　（9/3：第 2 名大消费 7 只 ＜ 天梯第一的 AI应用 10 只 → 改选 AI应用；否则沿用本题材）。',
-    '　⛔【同题材不重复入选】买点里同一个题材只出现一次：天梯第一的题材若【已经】被前面的档位',
-    '　　选中，这次对比没有价值 → 不做替换，回到原来的第 2 名题材（9/8 大消费重复出现的修复）。',
-    '　⑤ 【无一字弱市】当日【全部题材】的竞价一字都是 0 个 → 先看【大题材】，再改看【题材连扳】：',
-    '　　　· 第 1 / 第 2 名题材里有【股票数量 ≥ ' + BIG_TOPIC_MIN_COUNT + ' 只】的 → 每个都只取【龙一】' +
-      POSITION_LIGHT + '（9/4：电子/通信/算力 17 只、AI应用 10 只 → 各取龙一）；',
-    '　　　· 否则改看【连板天梯 · 题材连扳】：',
-    '　　取【股票数量最多】的题材（数量并列时，并列的题材【全都取】，每个都按同一规则选票）；',
-    '　　每个入选题材只看它最靠前的两只（龙一 / 龙二），最终【只留竞价高开】的票：',
-    '　　　· 龙一低开 + 龙二高开 → 只买龙二；· 两只都高开 → 两只都买；· 两只都低开 → 只买龙一；',
-    '　　全部记【' + POSITION_LIGHT + '】（没有一字，强度打折）。',
-    '　　题材连扳里股票最多的题材【不足 ' + NO_YIZI_MIN_TOPIC_COUNT + ' 只】→ 【空仓】（太弱，不参与）。',
-    '　　缺竞价涨幅的票【不算高开】，会如实说明有几只未纳入（§10 不猜）。',
-    '　⑥ 【小题材 + 一字 = 高风险】排名【第 1 或第 2】的题材【股票数量 ≤ ' + SMALL_TOPIC_MAX_COUNT +
-      ' 只】且【竞价一字 ' + SMALL_TOPIC_MIN_YIZI + '~' + SMALL_TOPIC_MAX_YIZI + ' 个】：',
-    '　　票太少却被一字撑起排名，多半是量化假强度，①②③④【都不适用】，改看【连板天梯 · 题材连扳】；',
-    '　　　· 该题材在【早盘竞价】里的股票数【< ' + SMALL_TOPIC_MIN_AUCTION_COUNT + ' 只】→ 排除；',
-    '　　　· 剩下的题材按【早盘竞价股票数】降序取前二；',
-    '　　　· 数量最多的题材：在【' + getDragonLabel(1) + '~' + getDragonLabel(SMALL_TOPIC_MAX_RANK) +
-      '】里【按竞价量比降序取前二、两只都' + POSITION_HEAVY + '】',
-    '　　　　（与 ① 完全同构：龙一量比小就不选；龙一低开且量比 ＞ ' + DRAGON_ONE_LOW_OPEN_MIN_VOL_RATIO + ' 则追加）；',
-    '　　　　⛔ 原「只在竞价高开的票里挑、龙一高开才重仓、龙一不高开则两只都轻仓」的口径已作废。',
-    '　　　· 数量第二的题材：只取【龙一】，' + POSITION_LIGHT + '。',
-    '　龙一 / 龙二 = 题材内【十日涨幅】从高到低，与早盘竞价龙一徽章同一口径。',
-    '　【灰行（灰色名称 / 灰色题材 = 不在当日正式列表）】照常参与龙位与选票，也能被选中买点 ——',
+    '　　　　整个题材都没有量比 ⇒ 退回【按龙头名次取前几只】，并在说明文字里写明为什么。',
+    '　第 3 步【看题材股票数量定买几只】—— 数量 = 该题材在早盘竞价里的股票只数（= 题材行「数量：n」）：',
+    '　① 排名第 1 的题材：',
+    '　　　· ' + PICK_TIER_BIG_MIN + ' 只及以上 → 取【' + PICK_COUNT_BIG + ' 只】：竞价量比前 ' + PICK_HEAVY_BIG +
+      ' 只【' + POSITION_HEAVY + '】、第 ' + PICK_COUNT_BIG + ' 只【' + POSITION_LIGHT + '】；',
+    '　　　· ' + PICK_TIER_MID_MIN + ' ~ ' + (PICK_TIER_BIG_MIN - 1) + ' 只 → 取【' + PICK_COUNT_MID +
+      ' 只】：竞价量比第 1 只【' + POSITION_HEAVY + '】、第 ' + PICK_COUNT_MID + ' 只【' + POSITION_LIGHT + '】；',
+    '　　　· ' + PICK_TIER_MIN_COUNT + ' ~ ' + (PICK_TIER_MID_MIN - 1) + ' 只 → 取【' + PICK_COUNT_MIN +
+      ' 只】：竞价量比最高那只【' + POSITION_HEAVY + '】；',
+    '　　　· 1 ~ ' + (PICK_TIER_MIN_COUNT - 1) + ' 只 → 【不出票、空仓】（不进入决策范围，另一个题材照常）。',
+    '　② 排名第 2 的题材 → 与 ①【完全同一套】分档规则（同一个题材只出现一次，不会重复入选）。',
+    '　⛔ 已作废的旧规则（2026-10-01 起不再影响选票，代码已删除）：竞价一字门槛（原 ①②③）、',
+    '　　题材替换、连板天梯兜底（原 ⑤）、小题材兜底（原 ⑥）、亏钱效应（原 ⑦）、弱势题材（原 ⑧）、',
+    '　　双主线竞争（原 ⑨）、买入只数限制（原 ⑩）、龙一特例（低开 + 量比 > 60）、卡位补偿。',
+    '　　要看旧的实现 ⇒ `git revert` 本次提交即可原样恢复。',
+    '　【龙一 / 龙二】= 题材内【十日涨幅】从高到低，与早盘竞价龙一徽章同一口径；',
+    '　　现在【只用于行内「龙几」标签】与「竞价量比并列时的稳定次序」，⛔ 不再是选票依据。',
+    '　【灰行（灰色名称 / 灰色题材 = 不在当日正式列表）】照常参与量比均值与选票，也能被选中买点 ——',
     '　　它们代表的是【老龙 / 观察组继承票】，有参考价值',
     '　　（9/8 大消费龙一国芳集团、农业龙一万向德农都是灰行）；只是【不计入】题材数量 / 一字数',
     '　　（与早盘竞价统计条同口径）。灰行来源与早盘竞价的注入行完全同源：竞昨高光继承 + 昨日买标签',
     '　　继承 + 昨日龙头名册继承壳。',
-    '　【「昨日卖标签继承」的行（灰色实心卖标签）】同样照常参与龙位与选票 —— 9/8 大消费龙一国芳集团',
-    '　　就是「灰名 + 灰题材 + 灰色实心卖标签」，它照样是龙一、照样入选买点。',
-    '　【低开龙一的提醒】龙一竞价低开时，请自行看它的竞价图形：若出现【跌停 L 形】→ 尾盘买',
-    '　　（本看板没有分时数据、不做图形判断，只给这段文字提醒）。',
-    '　⑦ 【亏钱效应 · 2026-10-01 起已让位：只提示、不生效】入选题材里只要有【≥ 1 只竞价一字跌停】：',
-    '　　（9:25 竞价报价就打在跌停价上 = 早盘竞价里股票名下方那条【绿色实线】的股票）',
-    '　　⛔ 本条原本会砍成【只买龙一 + 只' + POSITION_LIGHT + '】，与「按竞价量比取前二」冲突 ⇒',
-    '　　　新规下【不再砍票、不再改仓位】，只在题材说明里提示「今天这只题材有亏钱效应」。',
-    '　　例：9/11 农业 12 只（中粮科技竞价 -10.00%）→ 现在只提示，买点照常按量比选票。',
-    '　⑧ 【弱势题材 · 2026-10-01 起已让位：只提示、不生效】入选题材【股票总数 > ' + WEAK_OPEN_MIN_COUNT + ' 只】、',
-    '　　且里头【竞价高开】的股票占比【< ' + Math.round(WEAK_OPEN_RATE * 100) + '%】⇒ 题材虚胖（票多但没人跟风）；',
-    '　　⛔ 本条原本会砍成【只买龙一 + 只' + POSITION_LIGHT + '】，与新规冲突 ⇒ 【不再砍票、不改仓位】，只提示。',
-    '　　例：10 只里只有 3 只高开（30%）、12 只里只有 3 只高开（25%）→ 都触发（仅提示）；',
-    '　　　 ≤ ' + WEAK_OPEN_MIN_COUNT + ' 只不看这条。',
-    '　　缺竞价涨幅的行【不算高开】，会在说明里如实报「几只缺」(§10 不猜)。',
-    '　⑨ 【双主线竞争 · 2026-10-01 起已让位：只提示、不生效】第 1 名与第 2 名题材【都 ≥ ' +
-      DUAL_MAIN_MIN_COUNT + ' 只】时（大盘缩量、两个大容量题材在抢主线）：',
-    '　　⛔ 本条原本会【完全接管选票】（比两个题材的竞价高开率 → 高者龙一重仓、低者龙一轻仓、各 1 只），',
-    '　　　与「按竞价量比取前二」冲突 ⇒ 新规下【不再决定选谁 / 什么仓位】，只在第 1 名题材块里提示一句。',
-    '　　高开率口径 = 【竞价高开只数 ÷ 题材股票总数】（与 ⑧ 同一份算法），现在仅用于提示文案；',
-    '　　某题材【一只都没有竞价涨幅】→ 高开率未知 → 连提示都不产出（§10 不猜）。',
-    '　⑩ 【买入只数 · 2026-10-01 起已让位：只提示、不生效】第 1 名题材按早盘竞价的【股票数量】限制只数：',
-    '　　　· ≤ ' + BUY_COUNT_MAX_SMALL + ' 只 → 原本最多买 1 只；· ≤ ' + BUY_COUNT_MAX_MID + ' 只 → 原本最多买 2 只。',
-    '　　⛔ 本条与「选两只重仓」直接冲突 ⇒ 新规下【不再砍票】，只在说明里提示「本题材票少」。',
-    '　⑪ 【' + HOLD_TAG + '】上一交易日出现在【买点】里、今天又在买点里 → 强势股，行尾标【' +
+    '　【「昨日卖标签继承」的行（灰色实心卖标签）】同样照常参与量比均值与选票 —— 9/8 大消费龙一国芳集团',
+    '　　就是「灰名 + 灰题材 + 灰色实心卖标签」，它照样照样能被选中。',
+    '　【低开龙一的提醒】被选中的票若正好是龙一、且竞价低开时，请自行看它的竞价图形：',
+    '　　若出现【跌停 L 形】→ 尾盘买（本看板没有分时数据、不做图形判断，只给这段文字提醒）。',
+    '　③ 【' + HOLD_TAG + '】上一交易日出现在【买点】里、今天又在买点里 → 强势股，行尾标【' +
       HOLD_TAG + '】（昨天的买点没算出来时【不标】，§10 不猜）。',
-    '　⑫ 【' + TOPIC_PREV_BOUGHT_TAG + '】= 【题材级】：题材行（竞价一字右边）出现它就表示',
+    '　④ 【' + TOPIC_PREV_BOUGHT_TAG + '】= 【题材级】：题材行（竞价一字右边）出现它就表示',
     '　　【这个题材昨天有票被打过「买」标签】⇒ 题材在延续。',
     '　　⚠️ ⛔ 它【不是】「这一整块里的股票昨天都买过」——同一个题材里昨天没买过的票不会因此被标',
     '　　　（2026-09-30 事故：上一版用「' + PREV_BOUGHT_TAG + '」这个说法放在题材行，用户读成了',
-    '　　　 个股结论「大亚圣象昨天已买」= 错的，所以本题材级的说法改成【' + TOPIC_PREV_BOUGHT_TAG + '】）。',
+    '　　　 个股结论「大亚圣象昨天已买」= 错的，所以题材级的说法改成【' + TOPIC_PREV_BOUGHT_TAG + '】）。',
     '　　⚠️ 逐只【股票级】的判断走行尾仓位：这一只昨天真的被打过「买」标签（' + PREV_BOUGHT_TAG + '）',
     '　　⇒ 仓位由「' + POSITION_HEAVY + ' / ' + POSITION_LIGHT + '」改标【' + POSITION_ADD +
       '】（昨天已有仓位，今天是往上加，不重新建仓）。',
-    '　　⚠️ 与 ⑪ 的区别：⑪ 看的是【上一个交易日的买点方案】里有没有它（系统选出来的），',
-    '　　　⑫ 看的是【你昨天实际有没有打「买」标签】；两个是两回事，可以同时出现。',
-    '　⑬ 【入选次数】题材行（竞价一字右边）标【一次入选 / 二次入选 / 三次入选…】=',
+    '　　⚠️ 与 ③ 的区别：③ 看的是【上一个交易日的买点方案】里有没有它（系统选出来的），',
+    '　　　④ 看的是【你昨天实际有没有打「买」标签】；两个是两回事，可以同时出现。',
+    '　⑤ 【入选次数】题材行（竞价一字右边）标【一次入选 / 二次入选 / 三次入选…】=',
     '　　这个题材在【含今日在内的最近 ' + TOPIC_STREAK_WINDOW + ' 个交易日】里进过买点几次。',
-    '　　次数越大 = 这个题材被反复选中、频率越高，越值得跟；与 ⑫ 的【' + TOPIC_PREV_BOUGHT_TAG +
+    '　　次数越大 = 这个题材被反复选中、频率越高，越值得跟；与 ④ 的【' + TOPIC_PREV_BOUGHT_TAG +
       '】并存、互不冲突。',
-    '　　数【全部买点块】里出现的题材：' + POSITION_HEAVY + ' / ' + POSITION_LIGHT +
-      ' / 弱市兜底方案 ⑤ / 小题材兜底方案 ⑥ / 大题材兜底。',
     '　　（同一个题材一天最多算一次。）',
     '　　窗口里只要有一天算不出来（那天的行情还没加载）⇒ 次数就是未知，一律【不标】',
     '　　（§10 绝不拿偏低的数字冒充，那会让你误判题材频率）。',
-    '　重仓与轻仓混在同一个题材块里，序号连续，仓位写在每行行尾。',
-    '　※ 每个题材块下面的「选择理由」与说明文字都会标【规则N】（如【规则⑨】），方便按条文逐条核对。',
+    '　重仓与轻仓混在同一个题材块里，序号连续（按竞价量比从高到低），仓位写在每行行尾。',
+    '　※ 每个题材块下面的「选择理由」与说明文字都会标【规则N】（如【规则②】），方便按条文逐条核对。',
     '【题材行的数据】题材名右边依次是：实心红圆点（里面的数字 = 题材排名）｜数量：n（股票只数）｜',
     '　　竞价一字：n｜【' + TOPIC_PREV_BOUGHT_TAG + '】（有才显示）｜【N 次入选】（有才显示）。',
-    '【股票行的数据】股票名右边依次是：龙几（龙一 / 龙二）｜十日涨幅｜竞价涨幅小标签；',
+    '【股票行的数据】股票名右边依次是：龙几（龙一 / 龙二）｜十日涨幅｜竞价涨幅小标签｜竞价量比；',
     '　　行尾是仓位（' + POSITION_HEAVY + ' / ' + POSITION_LIGHT + ' / ' + POSITION_ADD + '），再往右是【' +
       HOLD_TAG + '】这类标记。',
     '【卖点】候选 = 昨日打过「买」标签的股票。卖点先看【今天这只票竞价开得怎么样】，再看题材排名：',

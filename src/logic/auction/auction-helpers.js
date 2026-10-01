@@ -458,8 +458,11 @@ export function getTodayGroupList(dataSource='auction', date) {
             // 事故链条：影子行在内存里原本没有身份标记 → tagTitles/rules.js#_addOne 落到「已存在行」
             // 分支时给它打上 obsAutoAdded=true（该标记本意只给观察组继承票）→ 这一行就冒充观察组
             // 混进 auctionList → decision-collect 的 countable 只排除「昨日卖标签继承」、不排除观察组
-            // → 会稽山被计入「大消费」只数（4→5）→ isSmallRiskyTopic 的上限恰为 4，不再命中
-            // → 买点从「⑥小题材兜底：大亚圣象/新华文轩」翻转成常规 heavy/light：会稽山/内蒙新华。
+            // → 会稽山被计入「大消费」只数（4→5）→ 当天的买点整块翻转：从「大亚圣象/新华文轩」
+            //   变成「会稽山/内蒙新华」。当时翻转的机关是 ⑥小题材兜底（isSmallRiskyTopic 上限恰为 4），
+            //   ⚠️ ⑥ 这条规则已于 2026-10-01 删除，但【本题材只数被污染】这件事照样有害：
+            //      新买点用「题材只数」直接决定买几只（≥10 → 3 只 / 7~9 → 2 只 / 4~6 → 1 只 / ≤3 → 不出票），
+            //      多算一只就可能跨档、多买一只 ⇒ 本处的影子行过滤【继续保留、不能省】。
             if (r.shadowRow === true) return false;
             return watchlistSet.has(r.stock.trim()) || r.obsAutoAdded === true;
         })
