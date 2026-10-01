@@ -3,13 +3,14 @@
 // 需求（2026-09-20）：
 //   题材 toggle【单独】开启时，每个题材上方那条统计条可以点击：
 //     · 默认【收起】（省空间）；
-//     · 点一下展开 → 出现两张五日趋势图：上图 = 题材名次（1=最强），下图 = 每天的一字数量；
+//     · 点一下展开 → 出现三张五日趋势图：上图 = 题材名次（1=最强），中图 = 每天的一字数量，
+//       下图 = 每天的平均竞价量比（2026-10-01 用户追加，口径见 logic/auction/topic-trend.js 文件头）；
 //     · 再点一下收起。
 //   ⛔ 趋势里的「一字数量」只算当日早盘竞价列表自己的一字（同统计条口径），
 //      「补竞价一字」补进来的股票不算 —— 由 Logic 层结构性保证（见 logic/auction/topic-trend.js）。
 //
 // 架构位置（§2 UI → Logic → Data）：
-//   components/AuctionTopicStatsBar.vue（点击 + 收展）+ AuctionTopicTrendPanel.vue（两张图）
+//   components/AuctionTopicStatsBar.vue（点击 + 收展）+ AuctionTopicTrendPanel.vue（三张图）
 //     → 本文件（纯 UI 状态：展开集合 / 序列缓存 / 文案）
 //     → logic/auction/topic-trend.js（纯计算 + 只读内存的采集）
 //   ⛔ 不碰早盘竞价的数据层 / 排序 / 高光；⛔ 不发请求、不写库、不消费猫抓额度。

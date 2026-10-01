@@ -1,23 +1,39 @@
 // topic-trend.js — 题材统计条「五日趋势」的纯计算 + 单日统计采集（§15 独立业务模块）
 //
 // 需求（2026-09-20）：
-//   题材 toggle【单独】开启时，每个题材上方有统计条；点击统计条 → 展开【两张五日趋势图】：
+//   题材 toggle【单独】开启时，每个题材上方有统计条；点击统计条 → 展开五日趋势图（共三张，见下）：
 //     上图 = 该题材这五个交易日的【名次】（名次由「一字数量」决定，与现在题材组排序同一把尺子）；
 //     下图 = 该题材这五个交易日每天的【一字数量】。
 //   ⛔ 不计「补竞价一字」补进来的股票：那部分一字涨停数量不算。
+//
+// 需求追加（2026-10-01 下午 · 用户原话「把题材平均竞价量比也做一个五日趋势图放在题材条展开后显示，
+//   放在一字数量趋势图下方，方便我观察下题材强度变化」）：
+//   在一字数量图【下方】再挂第三张图 = 该题材每天【平均竞价量比】（= 统计条最上面那一行同口径）。
+//   口径：同题材当日【列表上全部行】的竞价量比（倍数）算术平均，§10 缺量比的行不进分母；
+//         整组一行都取不到量比 ⇒ 该点 null（断点），⛔ 不补 0.00。
+//   ⚠️⚠️ 与统计条第一行的【唯一已知差异】（已在真实数据上实测，见下）：统计条的口径还包含
+//     「不在当日列表、由视图注入的灰壳」（观察组壳 / 龙头继承壳）—— 那批行只在【当天】由
+//     view-helpers 现场注入，历史日期无法重建（龙头名册 dragon_leaders 是按展示日异步加载的，
+//     名册只保留当前展示日）。实测该批壳的数量：观察组壳 0 只/日（竞昨高光 ⊆ 前一日名单，
+//     隔夜基本不落榜），龙头继承壳 0~4 只/日（多数 0~2）。⇒ 最后一天的点通常与统计条一致，
+//     极少数情况会因某题材恰有一只龙头壳而略有出入。⛔ 不要为此在本文件里重建注入规则
+//     （那就是第二套口径，§6；而且重建出来仍与屏幕不完全一致）。
 //
 // ⛔⛔ 为什么「补竞价一字」天然被排除（不是靠 if 记得减掉）：
 //   本模块的输入只有【当日早盘竞价自己那份列表】（getTodayGroupList('auction', date)）。
 //   「补竞价一字」的行来自竞价一字看板的 auction_yizi 快照（logic/auction/yizi-supplement.js），
 //   它们根本不在这个输入里 ⇒ 想算也算不进去。这是结构性排除，不是运行时过滤。
 //
-// [NOT-FORMAL 2026-09-23] ⛔ 只统计【当天 9:25 抓到的正式成员】（用户口径）：
-//   观察组继承壳（obsAutoAdded，屏幕上画灰的那些）不进名次、不进一字数。
-//   这三处必须同源，否则就是用户反馈的「视觉第 2、趋势图第 3」：
+// [NOT-FORMAL 2026-09-23 · 2026-10-01 口径澄清] 参与统计的行 = 【当日列表】（getTodayGroupList），
+//   即「正式成员 + obsAutoAdded 观察组继承行（今天真抓到数据的那批）」，剔除昨日「卖」继承复盘行。
+//   · 不在当日列表的【视图注入灰壳】（观察组壳 / 龙头继承壳）= 靠输入集合【结构性】排除：
+//     它们由 view-helpers 现场注入 renderList，根本不是本模块输入的一部分（⛔ 不是靠某处 if 减掉）。
+//   · ⚠️ 别再引入 _isAuctionFormalMember 做过滤：它把 obsAutoAdded 继承行也排除掉，
+//     与看板 / 统计条口径不同，会立刻重现「视觉第 2、趋势图第 3」的错位（见下方 LISTED-TODAY 注释）。
+//   三处必须同源，否则就是用户反馈的这类错位：
 //     · 屏幕上的题材块顺序（view-helpers#sortByTopicGroups 的 countableOf）
 //     · 题材统计条的数字（view-helpers#buildTopicStatsMap 的 entries）
-//     · 本文件的趋势图名次 / 一字数
-//   ⛔ 观察组壳【仍然渲染】在对应题材块里（次日继承功能需要），只是不贡献计数。
+//     · 本文件的趋势图名次 / 一字数 / 平均竞价量比
 //
 // 名次口径（与 sortByTopicGroups 同源，§6 单一真相）：
 //   ① 一字数量降序 → ② 组内股票数降序 → ③ 题材名升序；
@@ -44,6 +60,10 @@ import { getDragonWindowDates } from './dragon-rank.js';
 // ⛔ 别把 _isAuctionFormalMember 加回来（它排除 obsAutoAdded 行，与看板口径不同 → 立刻错位）。
 import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
 import { getPrevSoldInheritedSet } from './inherited-sold.js';
+// [AVG-VRATIO-TREND 2026-10-01] 当日竞价量比（倍数）的数值读取器：Data 层只读选择器，
+//   与题材统计条最上面一行（view-helpers.js）【同一个值、同一份实现】（§6 单一真相）——
+//   ⛔ 绝不在这里再写一遍 Number() 适配。
+import { getAucVolRatio } from '../../data/watchlist-helpers.js';
 
 /** 趋势窗口长度（交易日） */
 export const TOPIC_TREND_DAYS = 5;
@@ -51,12 +71,16 @@ export const TOPIC_TREND_DAYS = 5;
 export const TOPIC_TREND_MIN_GROUP = 2;
 
 /**
- * 单日：按题材统计「股票数 / 一字数」并排名次。
+ * 单日：按题材统计「股票数 / 一字数 / 平均竞价量比」并排名次。
  *
- * @param {Array<{topic:string, name:string, isYiZi?:boolean}>} entries 当日参与统计的行（按名去重后的即可）
+ * @param {Array<{topic:string, name:string, isYiZi?:boolean, volRatio?:number|null}>} entries
+ *        当日参与统计的行（按名去重后的即可）= 当日列表行（含观察组继承行），与另两张图同一集合。
+ *        volRatio = 当日竞价量比（倍数）；[AVG-VRATIO-TREND 2026-10-01] 缺值传 null（§10，⛔ 不要传 0）
  * @param {{minGroupSize?:number}} [opts]
- * @returns {Map<string, {topic:string, size:number, yiziCount:number, rank:number}>}
+ * @returns {Map<string, {topic:string, size:number, yiziCount:number, rank:number, avgVolRatio:number|null}>}
  *          只含「非其它 + 成员数达标」的题材；rank 从 1 起（1 = 一字最多 / 最强）。
+ *          avgVolRatio：组内【有量比的行的量比均值】（分母不含缺值行）；一行都没有 ⇒ null
+ *          （UI 画断点，⛔ 不显示 0.00 —— 那会被读成「量比很小」）。
  */
 export function buildTopicDayStats(entries, opts) {
   const out = new Map();
@@ -70,12 +94,17 @@ export function buildTopicDayStats(entries, opts) {
     if (topic === '其它') return;               // 「其它」不是真题材，不参与名次
     let g = groups.get(topic);
     if (!g) {
-      g = { topic: topic, size: 0, yiziCount: 0 };
+      g = { topic: topic, size: 0, yiziCount: 0, ratioSum: 0, ratioN: 0 };
       groups.set(topic, g);
     }
     g.size++;
     // ⛔ 只认「当日早盘竞价列表里本来就一字」的行；补竞价一字的行不在 entries 里（见文件头说明）
     if (e.isYiZi) g.yiziCount++;
+    // [AVG-VRATIO-TREND 2026-10-01] 平均竞价量比：分母 = 组内【拿得到量比】的行数。
+    //   §10：缺量比的行【不进分母】（⛔ 绝不当 0 —— 会把「没抓到」变成「量比很小」，拉低均值）；
+    //   量比真的是 0 则是有效值，照常计入（与「一字数量为 0 照常输出」同一处理）。
+    const r = _toNum(e.volRatio);
+    if (r !== null) { g.ratioSum += r; g.ratioN++; }
   });
 
   const eligible = [];
@@ -92,21 +121,31 @@ export function buildTopicDayStats(entries, opts) {
   });
 
   eligible.forEach(function(g, i) {
-    out.set(g.topic, { topic: g.topic, size: g.size, yiziCount: g.yiziCount, rank: i + 1 });
+    out.set(g.topic, {
+      topic: g.topic,
+      size: g.size,
+      yiziCount: g.yiziCount,
+      rank: i + 1,
+      // [AVG-VRATIO-TREND 2026-10-01] 组内量比均值（分母 = 有量比的行数）；一行都没有 ⇒ null
+      avgVolRatio: g.ratioN > 0 ? (g.ratioSum / g.ratioN) : null
+    });
   });
   return out;
 }
 
 /**
- * 把「逐日统计」拼成两张趋势图所需的点序列。
+ * 把「逐日统计」拼成三张趋势图所需的点序列。
  *
  * @param {string} topic 题材名
  * @param {Array<{date:string, stats:Map|null}>} days 按时间【升序】（旧 → 新）
  * @returns {{topic:string, dates:string[],
  *            rankPoints:Array<{date:string,value:number|null}>,
  *            yiziPoints:Array<{date:string,value:number|null}>,
- *            hasRank:boolean, hasYizi:boolean, dayCount:number}}
+ *            ratioPoints:Array<{date:string,value:number|null}>,
+ *            hasRank:boolean, hasYizi:boolean, hasRatio:boolean, dayCount:number}}
  *          value=null = 该日无数据（UI 画 '--' 断点，⛔ 不补 0）。
+ *          [AVG-VRATIO-TREND 2026-10-01] ratioPoints = 每日题材平均竞价量比（倍数），
+ *            同样 null = 该日无数据 / 该组一行量比都没有 ⇒ 断点，⛔ 不补 0.00。
  */
 export function buildTopicTrendSeries(topic, days) {
   const name = String(topic || '').trim();
@@ -114,26 +153,31 @@ export function buildTopicTrendSeries(topic, days) {
   const dates = [];
   const rankPoints = [];
   const yiziPoints = [];
+  const ratioPoints = [];
   list.forEach(function(d) {
     const date = (d && d.date) ? d.date : '';
     dates.push(date);
     const stats = (d && d.stats) ? d.stats.get(name) : null;
     if (!stats) {
-      // §10：这一天没有该题材（或该日数据缺失）→ 两个序列都是 null，不是 0
+      // §10：这一天没有该题材（或该日数据缺失）→ 三个序列都是 null，不是 0
       rankPoints.push({ date: date, value: null });
       yiziPoints.push({ date: date, value: null });
+      ratioPoints.push({ date: date, value: null });
       return;
     }
     rankPoints.push({ date: date, value: stats.rank });
     yiziPoints.push({ date: date, value: stats.yiziCount });
+    ratioPoints.push({ date: date, value: _toNum(stats.avgVolRatio) });
   });
   return {
     topic: name,
     dates: dates,
     rankPoints: rankPoints,
     yiziPoints: yiziPoints,
+    ratioPoints: ratioPoints,
     hasRank: rankPoints.some(function(p) { return p.value !== null; }),
     hasYizi: yiziPoints.some(function(p) { return p.value !== null; }),
+    hasRatio: ratioPoints.some(function(p) { return p.value !== null; }),
     dayCount: list.length
   };
 }
@@ -190,7 +234,11 @@ export function collectTopicDayStats(date) {
     const topic = pmap.has(nm) ? pmap.get(nm) : classifyStockPrimaryTopic(row, psize);
     // 一字判定与 view-helpers#yiZiOf 同源：行 code → 内存代码映射 → 空（limit-up.js 内按主板兜底）
     const code = row.code || getStockCode(nm) || '';
-    entries.push({ name: nm, topic: topic, isYiZi: isAuctionYiZi(row, code) });
+    // [AVG-VRATIO-TREND 2026-10-01] 当日竞价量比（倍数）：与题材统计条第一行【同一个字段、同一个读取器】
+    //   （Data 层 getAucVolRatio，§6）。注意它读的是 market_metrics 的内存快照，与 row 是不是影子行无关 ——
+    //   这也正是「屏幕上的图」与「统计条」能对齐的原因（同一把尺子）。
+    //   §10：缺值 → null → 不进均值分母（⛔ 绝不补 0）。
+    entries.push({ name: nm, topic: topic, isYiZi: isAuctionYiZi(row, code), volRatio: getAucVolRatio(date, nm) });
   });
 
   const stats = buildTopicDayStats(entries);
@@ -203,7 +251,7 @@ export function collectTopicDayStats(date) {
 }
 
 /**
- * 采集【某个题材】的五日趋势（名次 + 一字数量）。
+ * 采集【某个题材】的五日趋势（名次 + 一字数量 + 平均竞价量比）。
  * @param {string} topic 题材名
  * @param {string} endDate 展示日（含），往前取 days 个交易日
  * @param {number} [days] 默认 TOPIC_TREND_DAYS(5)。⚠️ getDragonWindowDates 最多返回 10 个交易日
@@ -224,4 +272,16 @@ export function collectTopicTrendSeries(topic, endDate, days) {
 /** 清空单日缓存（日期切换 / 数据刷新后调用，§26 避免拿旧快照画新一天） */
 export function clearTopicTrendCache() {
   _dayCache.clear();
+}
+
+/**
+ * 宽松取数：null / undefined / '' / 非数字 → null（§10 缺数据 ≠ 0）。
+ * 与 view-helpers 的 _num、topic-stats.js 的 _num 同语义 —— 但那是各自模块的私有工具，
+ * 不在模块间共享（跨模块共享会把三个只读模块耦合成一个"工具库"，§18 边界更差）。
+ * 这里只服务本文件的均值累加，故自留一份。
+ */
+function _toNum(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return isFinite(n) ? n : null;
 }

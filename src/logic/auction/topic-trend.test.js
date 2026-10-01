@@ -117,3 +117,78 @@ describe('buildTopicTrendSeries 五日趋势点序列', () => {
     expect(TOPIC_TREND_DAYS).toBe(5);
   });
 });
+
+// [AVG-VRATIO-TREND 2026-10-01 用户追加] 「题材平均竞价量比」五日趋势
+//   口径 = 组内【有量比的当日列表行】的算术平均（§10 缺值不进分母、不补 0）；
+//   与统计条最上面那一行同源（同一个 Data 层读取器 getAucVolRatio）。
+describe('[AVG-VRATIO-TREND 2026-10-01] 平均竞价量比', () => {
+  it('按题材算出量比均值，分母只数「拿得到量比」的行', () => {
+    const m = buildTopicDayStats([
+      { topic: '农业', name: 'A1', volRatio: 10 },
+      { topic: '农业', name: 'A2', volRatio: 20 },
+      { topic: '农业', name: 'A3', volRatio: null },   // §10：缺值不进分母
+      { topic: '农业', name: 'A4' }                     // 完全没有该字段，同样不进分母
+    ]);
+    expect(m.get('农业').size).toBe(4);              // 组大小照旧按全部行算
+    expect(m.get('农业').avgVolRatio).toBe(15);      // (10 + 20) / 2，⛔ 不是 30/4
+  });
+
+  it('量比真的是 0 是有效值 —— 计入分母，不是「没数据」', () => {
+    const m = buildTopicDayStats([
+      { topic: '通信', name: 'B1', volRatio: 0 },
+      { topic: '通信', name: 'B2', volRatio: 12 }
+    ]);
+    expect(m.get('通信').avgVolRatio).toBe(6);       // (0 + 12) / 2，0 照常参与
+    expect(m.get('通信').avgVolRatio).not.toBeNull();
+  });
+
+  it('字符串量比照常解析（云端 auc_vol_ratio 存的是 "2.18" 这类字符串）', () => {
+    const m = buildTopicDayStats([
+      { topic: '芯片', name: 'C1', volRatio: '2.5' },
+      { topic: '芯片', name: 'C2', volRatio: '3.5' }
+    ]);
+    expect(m.get('芯片').avgVolRatio).toBe(3);
+  });
+
+  it('整组一行量比都拿不到 → avgVolRatio = null（§10，UI 整行不渲染而不是 0.00）', () => {
+    const m = buildTopicDayStats([
+      { topic: '电力', name: 'D1', volRatio: null },
+      { topic: '电力', name: 'D2', volRatio: null }
+    ]);
+    expect(m.get('电力').avgVolRatio).toBeNull();
+    expect(m.get('电力').size).toBe(2);              // 组还在（名次/一字数量照常）
+  });
+
+  it('五日序列：ratioPoints 按时间升序，某日没有该题材 → 该点 null（断点）', () => {
+    const d1 = new Map([['芯片', { topic: '芯片', size: 2, yiziCount: 1, rank: 2, avgVolRatio: 3.2 }]]);
+    const d2 = new Map([['芯片', { topic: '芯片', size: 3, yiziCount: 2, rank: 1, avgVolRatio: 9.5 }]]);
+    const other = new Map([['农业', { topic: '农业', size: 2, yiziCount: 1, rank: 1, avgVolRatio: 8 }]]);
+    const s = buildTopicTrendSeries('芯片', [
+      { date: '2026-09-24', stats: d1 },
+      { date: '2026-09-25', stats: null },      // 该日没拉到数据
+      { date: '2026-09-28', stats: other },     // 该日芯片未成组
+      { date: '2026-09-29', stats: d2 }
+    ]);
+    expect(s.dates).toEqual(['2026-09-24', '2026-09-25', '2026-09-28', '2026-09-29']);
+    expect(s.ratioPoints.map(p => p.value)).toEqual([3.2, null, null, 9.5]);
+    expect(s.hasRatio).toBe(true);
+  });
+
+  it('该日题材在、但整组无量比 → 该点 null（与「题材不在」同为断点，绝不补 0）', () => {
+    const noRatio = new Map([['芯片', { topic: '芯片', size: 2, yiziCount: 0, rank: 1, avgVolRatio: null }]]);
+    const s = buildTopicTrendSeries('芯片', [{ date: '2026-09-29', stats: noRatio }]);
+    expect(s.ratioPoints[0].value).toBeNull();
+    expect(s.hasRatio).toBe(false);          // ⇒ 面板整张图不渲染
+    expect(s.hasYizi).toBe(true);            // 但一字数量图照常画（0 是有效值）
+  });
+
+  it('5 天全部无量比 → hasRatio=false（面板不画这张图，也不画一条 0 的水平线）', () => {
+    const only = new Map([['芯片', { topic: '芯片', size: 2, yiziCount: 2, rank: 1, avgVolRatio: null }]]);
+    const s = buildTopicTrendSeries('芯片', [
+      { date: '2026-09-25', stats: only },
+      { date: '2026-09-28', stats: only }
+    ]);
+    expect(s.hasRatio).toBe(false);
+    expect(s.ratioPoints.every(p => p.value === null)).toBe(true);
+  });
+});

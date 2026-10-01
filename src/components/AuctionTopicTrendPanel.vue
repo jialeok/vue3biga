@@ -2,11 +2,14 @@
   AuctionTopicTrendPanel.vue — 题材统计条【展开后】的五日趋势面板（§3 纯展示组件 / §29 Row-Cell 边界）
 
   点题材统计条 → 本组件出现在统计条下方；再点统计条 → 收起（默认收起，省空间）。
-  两张图（与股票的五日趋势图同一套 TrendChart，§30 图表复用）：
+  三张图（与股票的五日趋势图同一套 TrendChart，§30 图表复用）：
     · 上图【题材名次】—— 该题材在这五个交易日里、题材 toggle 单独开启时的名次（1 = 最强）。
       名次由【一字数量】决定（与 sortByTopicGroups 同一把尺子：一字降序 → 组大小降序 → 题材名升序）。
       纵轴已反转（TrendChart 的 invert）：第 1 名画在最上面，「线往上走 = 名次变强」。
-    · 下图【一字数量】—— 该题材每天的一字只数，越往上越强。
+    · 中图【一字数量】—— 该题材每天的一字只数，越往上越强。
+    · 下图【平均竞价量比】——（2026-10-01 用户追加）该题材每天的平均竞价量比（倍数），
+      与统计条最上面那一行同口径；⚠️ 分母见 logic/auction/topic-trend.js 文件头的口径澄清。
+      线往上走 = 当天题材整体量比抬升（资金关注度↑）。
 
   ⛔ 不含「补竞价一字」补进来的股票：那部分一字涨停数量不算。
      这不是运行时过滤，而是结构性排除 —— 序列的输入只有当日早盘竞价自己的列表
@@ -30,7 +33,7 @@
     </div>
     <template v-else-if="series">
       <div
-        v-if="!series.hasRank && !series.hasYizi"
+        v-if="!series.hasRank && !series.hasYizi && !series.hasRatio"
         class="att-empty"
       >
         近{{ series.dayCount }}个交易日没有该题材的成组数据
@@ -65,6 +68,28 @@
             color="#dc2626"
             :height="46"
             :dot-radius="2.5"
+          />
+        </div>
+        <!-- [AVG-VRATIO-TREND 2026-10-01 用户追加] 第三张图：题材平均竞价量比（倍数）。
+             位置由用户指定：「放在一字数量趋势图下方」。
+             颜色 #ec4899 与全站「竞价量比」序列一致（早盘竞价展开面板的量比图同色，§30 视觉一致）。
+             decimals=2：量比是倍数，有效信息在小数上（2.18 取整成 2 就废了）；
+             §10：整组 5 天一行量比都取不到 ⇒ hasRatio=false ⇒ 整张图与标签都不渲染
+             （⛔ 不画一条 0.00 的水平线冒充「量比很低」）。 -->
+        <div
+          v-if="series.hasRatio"
+          class="att-chart"
+        >
+          <div class="att-label">
+            <span>平均竞价量比 近{{ series.dayCount }}日</span>
+            <span class="att-hint">倍数·越大越强</span>
+          </div>
+          <TrendChart
+            :points="series.ratioPoints"
+            color="#ec4899"
+            :height="46"
+            :dot-radius="2.5"
+            :decimals="2"
           />
         </div>
       </template>

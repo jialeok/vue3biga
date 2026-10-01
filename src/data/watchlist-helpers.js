@@ -97,3 +97,25 @@ export function getStockHistoryValue(date, stockName, field, dataSource='auction
         ' hotTrendsRows=' + ((state._hotTrendsCache && state._hotTrendsCache[date]) ? state._hotTrendsCache[date].length : 'null'));
     return null;
 }
+
+// [AVG-VRATIO 2026-10-01] 当日【竞价量比】的数值读取器 —— 字符串 → 数字的【唯一】适配点。
+//   数据源与上面 getStockHistoryValue 完全同源：market_metrics(scope='auction').auc_vol_ratio
+//   （云端存的是字符串，如 "2.18" / "13.01"，§6 同一个字段）。
+//
+//   ⛔ 为什么要收在这里（而不是各调用方各写一遍 Number()）：
+//     2026-10-01 起「竞价量比」被两处口径同时使用，两处必须【同一个值】，否则又是"同名两个数"：
+//       · logic/auction/view-helpers.js  —— 题材统计条最上面一行「平均竞价量比」；
+//       · logic/auction/topic-trend.js   —— 题材统计条展开后的五日趋势「平均竞价量比」。
+//     （decision 看板的量比趋势另有 logic/decision/vol-ratio-trend.js，同样读此字段。）
+//
+//   §10 红线：缺行 / 空串 / 非数字 → null，⛔ 绝不返回 0 ——
+//     0 是「量比确实是 0」的意思，会把「没抓到」变成「量比很小」，直接拉低题材均值。
+//   ⚠️ 与 _readHistoryValueFrom 的 'aucVolRatio' 分支配套：那边给原始字符串，这里给数字。
+export function getAucVolRatio(date, stockName) {
+    const name = stockName === null || stockName === undefined ? '' : String(stockName).trim();
+    if (!date || !name) return null;
+    const raw = getStockHistoryValue(date, name, 'aucVolRatio');
+    if (raw === null || raw === undefined || raw === '') return null;
+    const n = Number(raw);
+    return isFinite(n) ? n : null;
+}

@@ -6,9 +6,12 @@ import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlig
 import { ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagState, _buildTagStateCache } from '../tagTitles/rules.js';
 import { getThreeDayJingDieSet, getWeakStrongSet, getWeakStrongTurnSet, getVolGrabSet } from './sort-rules-extra.js';
 import { getStockCode } from '../../data/stock-code-map.js';
-// [AVG-VRATIO 2026-10-01 用户口径] 题材统计条「平均竞价量比」的取值入口：
-//   内存只读选择器（market_metrics.auc_vol_ratio），与决策看板买点选票 / 早盘竞价展开面板同一字段（§6）。
-import { getStockHistoryValue } from '../../data/watchlist-helpers.js';
+// [AVG-VRATIO 2026-10-01 用户口径] 题材统计条最上面一行「平均竞价量比」的取值入口：
+//   读某只股票【某日】的当日竞价量比（倍数，如 2.18）。
+//   ⚠️ 2026-10-01 下午：字符串→数字的适配点【收归 Data 层】getAucVolRatio（§6 单一真相）——
+//     同一口径现在有两个使用方（本文件的统计条 + topic-trend.js 的五日趋势图），
+//     各写一份 Number() 适配必然分叉。此处只负责"取哪个字段、什么时候取"。
+import { getAucVolRatio } from '../../data/watchlist-helpers.js';
 import { _getAuctionWatchlistSet, _isAuctionFormalMember } from '../../data/watchlist-and-metrics.js';
 import { state } from '../app-state.js';
 import { useAuctionStore } from '../../stores/auctionStore.js';
@@ -64,19 +67,10 @@ function _getThreeDayAuctionPct(rawItem) {
   return isFinite(num) ? num : null;
 }
 
-// [AVG-VRATIO 2026-10-01 用户口径] 读某只股票【某日】的当日竞价量比（倍数，如 2.18）。
-//   数据源 = market_metrics(scope='auction').auc_vol_ratio 的内存缓存（Data 层只读选择器），
-//   与 decision/vol-ratio-trend.js（决策看板买点选票）、useAuctionBoard#dailyAuctionMetrics
-//   （早盘竞价展开面板那行「竞价量比」）【同一个字段】，§6 单一真相，⛔ 不另取一份。
-//   ⚠️ 云端存的是字符串（"2.18"），这里统一转数字；§10：缺值 / 空串 / 非数字 → null
-//      （⛔ 绝不当 0 —— 那会让「没抓到量比」变成「量比很小」，把题材均值拉低）。
-function _readAucVolRatio(date, stockName) {
-  if (!date || !stockName) return null;
-  const raw = getStockHistoryValue(date, String(stockName).trim(), 'aucVolRatio');
-  if (raw === null || raw === undefined || raw === '') return null;
-  const n = Number(raw);
-  return isFinite(n) ? n : null;
-}
+// [AVG-VRATIO 2026-10-01] 当日竞价量比（倍数）的读取器已收归 Data 层 getAucVolRatio
+//   （market_metrics(scope='auction').auc_vol_ratio，字符串→数字唯一适配点，§6 / §10：
+//    缺值一律 null，⛔ 绝不当 0）。原先这里有一份私有副本 _readAucVolRatio，已删除 ——
+//    趋势图（topic-trend.js）要用同一个值，两份实现必然在某个边界上分叉。
 
 function _enrichAuctionItem(rawItem, index, ctx) {
   if (!rawItem) return null;
@@ -1197,7 +1191,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
         //   计数类统计只看 true（口径不变）；[AVG-VRATIO 2026-10-01] 平均竞价量比【不分】。
         formal: !!it.isFormalMember,
         // [AVG-VRATIO 2026-10-01 用户口径] 当日竞价量比（倍数）→ 题材平均量比的分母/分子。
-        volRatio: _readAucVolRatio(currentDate, it.stock)
+        volRatio: getAucVolRatio(currentDate, it.stock)
       };
     });
     topicStatsMap = buildTopicStatsMap(_entries);
