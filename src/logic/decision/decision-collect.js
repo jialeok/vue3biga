@@ -344,6 +344,14 @@ export function collectDecisionData(date, opts) {
       // 当日竞价涨幅（%）：null = 缺数据。解析器复用 limit-up.js#parseAucPct（§6 单一实现），
       // 与早盘竞价「龙标红底 = 竞价涨幅>0」完全是同一个值 —— 决策看板说的是「买红色的那几只」。
       aucPct: parseAucPct(raw ? (raw.auc_pct_chg || raw.aucPctChg) : null),
+      // [VRATIO-PICK 2026-10-01 用户口径] 当日【竞价量比】（倍数）：买点选票的新依据。
+      //   与早盘竞价看板展开面板那行「竞价量比」、以及本看板行内徽标完全是同一个字段
+      //   （market_metrics(scope='auction').auc_vol_ratio，§6 单一真相），⛔ 不另取一份。
+      //   ⛔ 这里只【搬运原始值】：云端存的是字符串（如 "2.18"），解析统一交给规则层的 _num
+      //      （与成员 pct / aucPct 同一处口径），保证「缺值 → null」的 §10 语义只写一遍。
+      aucVolRatio: raw
+        ? (raw.auc_vol_ratio !== undefined ? raw.auc_vol_ratio : raw.aucVolRatio)
+        : null,
       pct: (rm && rm.pct !== undefined && rm.pct !== null) ? rm.pct : null,
       countable: countable,
       inheritSold: inheritSold.has(nm)

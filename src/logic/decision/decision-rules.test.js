@@ -53,11 +53,16 @@ import {
   BUY_COUNT_MAX_MID,
   RULE_NO,
   ruleTag,
-  DUAL_MAIN_MIN_COUNT
+  DUAL_MAIN_MIN_COUNT,
+  // [VRATIO-PICK 2026-10-01 用户口径] 竞价量比选票
+  pickTopTwoByVolRatio,
+  PICK_SORT_BY_VOL_RATIO,
+  DRAGON_ONE_LOW_OPEN_MIN_VOL_RATIO,
+  PICK_MAX_AFTER_SPECIAL
 } from './decision-rules.js';
 import { getDragonLabel } from '../auction/dragon-rank.js';
 
-/** E(股票名, 题材, 十日涨幅, 是否竞价一字, 是否计入数量, 当日竞价涨幅%) */
+/** E(股票名, 题材, 十日涨幅, 是否竞价一字, 是否计入数量, 当日竞价涨幅%, 代码, 是否卖标签继承, 竞价量比) */
 /**
  * 样本行构造。
  * @param {string} name 股票名
@@ -68,8 +73,12 @@ import { getDragonLabel } from '../auction/dragon-rank.js';
  * @param {number|null} [aucPct] 竞价涨幅
  * @param {string} [code] 股票代码（判 20% / 30% 涨跌幅板用）
  * @param {boolean} [inheritSold] 是否「昨日卖标签继承」的复盘行（⛔ 唯一【不参与】龙位与选票的行）
+ * @param {number|null} [volRatio]
+ *        [VRATIO-PICK 2026-10-01] 当日【竞价量比】（倍数）= 买点选票的唯一依据。
+ *        ⚠️ 不传 / null = 【缺量比】（§10）—— 规则层会退回「按龙头名次取前二」并写进说明，
+ *           所以测「按量比选票」的用例【必须显式传这一项】，否则测到的是退路而不是主路径。
  */
-function E(name, topic, pct, isYizi, countable, aucPct, code, inheritSold) {
+function E(name, topic, pct, isYizi, countable, aucPct, code, inheritSold, volRatio) {
   return {
     name: name,
     topic: topic,
@@ -78,24 +87,28 @@ function E(name, topic, pct, isYizi, countable, aucPct, code, inheritSold) {
     countable: countable !== false,
     code: code || '',
     inheritSold: inheritSold === true,
-    aucPct: (aucPct === undefined || aucPct === null) ? null : aucPct
+    aucPct: (aucPct === undefined || aucPct === null) ? null : aucPct,
+    aucVolRatio: (volRatio === undefined || volRatio === null) ? null : volRatio
   };
 }
 
 /**
- * [BUY-COUNT 2026-09-27] 造 n 只「凑数票」把题材撑到 > 10 只。
+ * [BUY-COUNT 2026-09-27] 撑到 > 10 只的「凑数票」。
  *
- * 为什么必须撑：新规则「第 1 名题材 ≤6 只最多买 1 只 / ≤10 只最多买 2 只」会砍票，
- *   而 ①②③④ 的常规档位用例原来【只有 5 只】（>4 只是为了避开 ⑥ 小题材兜底），
- *   不撑就会被砍成 1 只 → 常规档位根本测不到。
+ * ⚠️ [VRATIO-PICK 2026-10-01 更新] 现在 ⑩「买入只数」已让位（只提示、不砍票），
+ *   所以「必须撑过 10 只」这条理由已不再成立；但撑票仍有个作用：
+ *   避开 ⑥「小题材 + 一字」高风险兜底（股票数 ≤ 4 只才会命中）。
+ *   ⛔ 保留这些凑数票是为了让老用例的题材形态不变，改动面最小。
  *
  * 凑数票刻意设定为：非一字 + 计入数量 + 十日涨幅极低（排到龙位末尾，不影响龙一~龙五）。
+ *
+ * ⚠️ 竞价量比一律【不传】（= null，§10 缺量比）⇒ 在新规下它们一律排在有量比的票【后面】，
+ *    不会抢走前二名额（选票依是竞价量比，不再是竞价涨幅）。
  *
  * ⚠️ 竞价涨幅设为【+0.1（小高开）】而不是 null，是刻意的：
  *    ⑧「弱势题材」规则的分母 = 题材股票总数，缺竞价涨幅的行按【未高开】计入分母。
  *    凑数票若填 null，会把样例题材的高开率一路拉到 0%，于是每个 > 10 只的用例
- *    都被⑧砍成「只买龙一轻仓」—— 那就测不到 ①②③④ 的常规档位了。
- *    +0.1 又足够小，不会在 pickHeavyTwo 里抢走「竞价涨幅最高」那一只（真实票都 ≥ 1%）。
+ *    都会在说明里多出一条 ⑧ 提示（现在只是提示、不改选票，但用例断言会被干扰）。
  */
 function FILLER(topic, n) {
   const out = [];
@@ -279,39 +292,40 @@ describe('buildBuyPlan', () => {
     expect(plan.light.picks[0].position).toBe(POSITION_LIGHT);
   });
 
-  it('第 1 名题材【只有 1 个一字】→ 龙一重仓 + 龙二~龙五高开票轻仓，序号连续', () => {
+  it('第 1 名题材【只有 1 个一字】→ 与 ① 同构：按竞价量比取前二、两只都重仓', () => {
     const blocks = rankDecisionTopics([
-      E('A龙一', 'T1', 50, false, true, 4),   // 龙一 非一字 → 重仓
-      E('B一字', 'T1', 45, true, true, 10),   // 龙二 = 那唯一的一字 → 买不进
-      E('C龙三', 'T1', 40, false, true, 2),   // 龙三 高开 → 轻仓
-      E('D龙四', 'T1', 30, false, true, -3),  // 龙四 低开 → 不入选
-      E('E龙五', 'T1', 20, false, true, 1),   // 龙五 高开 → 轻仓
+      E('A龙一', 'T1', 50, false, true, 4, '', false, 5),      // 龙一，量比 5
+      E('B一字', 'T1', 45, true, true, 10),                    // 龙二 = 那唯一的一字 → 买不进
+      E('C龙三', 'T1', 40, false, true, 2, '', false, 30),     // 量比 30 → 第 1
+      E('D龙四', 'T1', 30, false, true, -3, '', false, 2),     // 量比 2 → 第 4，落选
+      E('E龙五', 'T1', 20, false, true, 1, '', false, 20),     // 量比 20 → 第 2
       E('T2一', 'T2', 10, false, true, 3), E('T2二', 'T2', 9, false, true, -2)
-    ].concat(FILLER('T1', 6)));   // ⛔ 撑过 10 只，否则「买入只数」会砍成 2 只
+    ].concat(FILLER('T1', 6)));   // 凑数票量比为 null → 排在最后，不抢前二
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
     expect(plan.heavy.mode).toBe('single');
     expect(plan.heavy.qualified).toBe(true);
-    expect(plan.heavy.picks.map(p => p.name)).toEqual(['A龙一', 'C龙三', 'E龙五']);
-    expect(plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_LIGHT, POSITION_LIGHT]);
-    expect(plan.heavy.picks.map(p => p.seq)).toEqual([1, 2, 3]);
-    // 第 2 名题材那只仍然是轻仓、且独立成块
+    // 量比降序：C龙三 30 ＞ E龙五 20 ＞ A龙一 5 ＞ D龙四 2（凑数票缺量比排最后）
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['C龙三', 'E龙五']);
+    expect(plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_HEAVY]);
+    expect(plan.heavy.picks.map(p => p.seq)).toEqual([1, 2]);
+    // 第 2 名题材那只仍然是轻仓、且独立成块（④ 未改）
     expect(plan.light.picks.length).toBe(1);
     expect(plan.light.picks[0].position).toBe(POSITION_LIGHT);
   });
 
-  it('缺竞价涨幅的股票不入选轻仓，但会如实说明有几只未纳入', () => {
+  it('② 档判据已换成【竞价量比】：缺竞价涨幅不再被排除，只有【缺量比】才排到最后', () => {
     const blocks = rankDecisionTopics([
-      E('A龙一', 'T1', 50, false, true, 4),
+      E('A龙一', 'T1', 50, false, true, null, '', false, 5),   // 缺竞价涨幅，但有量比 5
       E('B一字', 'T1', 45, true, true, 10),
-      E('C缺', 'T1', 40, false, true, null),  // 缺竞价涨幅 → 不能当高开
-      E('D龙四', 'T1', 30, false, true, 2),
-      E('E龙五', 'T1', 25, false, true, -1),  // ⛔ 第 5 只：让 T1 有 5 只，不命中 ⑥ 小题材兜底
+      E('C缺', 'T1', 40, false, true, null, '', false, 30),    // 缺竞价涨幅 + 量比 30 → 照样入选
+      E('D龙四', 'T1', 30, false, true, 2, '', false, null),   // 有竞价涨幅，但缺量比 → 排最后
+      E('E龙五', 'T1', 25, false, true, -1, '', false, 20),
       E('T2一', 'T2', 10), E('T2二', 'T2', 9)
-    ].concat(FILLER('T1', 6)));   // ⛔ 撑过 10 只，否则「买入只数」会砍成 1 只
+    ].concat(FILLER('T1', 6)));
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
-    expect(plan.heavy.picks.map(p => p.name)).toEqual(['A龙一', 'D龙四']);
-    expect(plan.heavy.notes.join('｜')).toContain('缺竞价涨幅');
-    expect(plan.heavy.notes.join('｜')).toContain('1 只');
+    // 量比降序：C缺 30 ＞ E龙五 20 ＞ A龙一 5 ＞（D龙四缺量比 → 最后）
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['C缺', 'E龙五']);
+    expect(plan.heavy.picks.every(p => p.position === POSITION_HEAVY)).toBe(true);
   });
 
   it('【全部题材】一字 0 个 → 不走常规档位，改走弱市兜底（plan.noYizi）', () => {
@@ -561,12 +575,15 @@ describe('buildSmallTopicPlan（⑥ 改看题材连扳 + 早盘竞价股票数�
       E('电龙三', '电力新能源', 40, false, true, 3),
       E('电龙四', '电力新能源', 30, false, true, 0),
       // 电子/通信/算力：龙一 1%、龙二 -2%、龙三 3.6%、龙四 0%、龙五 6.5%（用户原例）
-      E('算龙一', '电子算力', 90, false, true, 1),
-      E('算龙二', '电子算力', 80, false, true, -2),
-      E('算龙三', '电子算力', 70, false, true, 3.6),
-      E('算龙四', '电子算力', 60, false, true, 0),
-      E('算龙五', '电子算力', 50, false, true, 6.5),
-      E('算龙六', '电子算力', 40, false, true, 8),
+      // [VRATIO-PICK 2026-10-01] 量比刻意用【用户原话给的那 5 个数】（5.6 / 8.9 / 20.5 / 5.4 / 7.9）：
+      //   降序 = 算龙三 20.5 ＞ 算龙二 8.9 ＞ 算龙五 7.9 ＞ 算龙一 5.6 ＞ 算龙四 5.4
+      //   ⇒ 取前二 = 算龙三 + 算龙二（⛔ 龙一不选），正好是用户举的那个例子。
+      E('算龙一', '电子算力', 90, false, true, 1, '', false, 5.6),
+      E('算龙二', '电子算力', 80, false, true, -2, '', false, 8.9),
+      E('算龙三', '电子算力', 70, false, true, 3.6, '', false, 20.5),
+      E('算龙四', '电子算力', 60, false, true, 0, '', false, 5.4),
+      E('算龙五', '电子算力', 50, false, true, 6.5, '', false, 7.9),
+      E('算龙六', '电子算力', 40, false, true, 8, '', false, 3),
       // AI应用 早盘竞价只有 3 只 → 应被排除
       E('A一', 'AI应用', 30), E('A二', 'AI应用', 20), E('A三', 'AI应用', 10)
     ]);
@@ -585,18 +602,20 @@ describe('buildSmallTopicPlan（⑥ 改看题材连扳 + 早盘竞价股票数�
     expect(plan.blocks.map(b => b.block.topic)).toEqual(['电子算力', '电力新能源']);
   });
 
-  it('数量最多的题材：龙一重仓 + 龙一~龙五里竞价涨幅最高的那只轻仓', () => {
+  it('数量最多的题材：在【龙一~龙五】里按竞价量比取前二、两只都重仓（与 ① 同构）', () => {
     const blocks = auctionBlocks();
     const plan = buildSmallTopicPlan(blocks, rankDragons(blocks), {
       ladderTopicGroups: [LG('电子算力', 3), LG('电力新能源', 3), LG('AI应用', 3)],
       ladderReady: true
     });
     const top = plan.blocks[0];
-    // 高开的是 龙一(+1) / 龙三(+3.6) / 龙五(+6.5) → 龙一优先重仓，其余按涨幅取最高 = 龙五
-    expect(top.picks.map(p => p.name)).toEqual(['算龙一', '算龙五']);
-    expect(top.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_LIGHT]);
-    expect(top.picks.map(p => p.dragonLabel)).toEqual(['龙一', '龙五']);
+    // 量比降序：算龙三 20.5 ＞ 算龙二 8.9 ＞ 算龙五 7.9 ＞ 算龙一 5.6 ＞ 算龙四 5.4
+    expect(top.picks.map(p => p.name)).toEqual(['算龙三', '算龙二']);
+    expect(top.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_HEAVY]);
+    expect(top.picks.map(p => p.dragonLabel)).toEqual(['龙三', '龙二']);
     expect(top.picks.map(p => p.seq)).toEqual([1, 2]);
+    // 名次第二（算龙二）本身就在前二里 → 不该触发卡位补偿
+    expect(top.notes.join('｜')).not.toContain('卡位补偿');
   });
 
   it('数量第二的题材：只取龙一，轻仓', () => {
@@ -612,72 +631,80 @@ describe('buildSmallTopicPlan（⑥ 改看题材连扳 + 早盘竞价股票数�
     expect(second.picks[0].dragonLabel).toBe('龙一');
   });
 
-  it('龙一【低开】→ 舍弃龙一，只在龙二~龙五里取竞价涨幅最高的两只，都轻仓', () => {
-    // 用户实例（龙一 −6%）：龙一 −6、龙二 −2、龙三 +3.6、龙四 0、龙五 +6.5 → 只取 龙五 + 龙三
+  it('不再看龙一开平高低：一律按【竞价量比】取前二（原「龙一低开就舍弃龙一」的口径已废）', () => {
+    // 用户实例（龙一 −6%）：龙一 −6、龙二 −2、龙三 +3.6、龙四 0、龙五 +6.5
     const blocks = rankDecisionTopics([
-      E('甲龙一', 'T1', 90, false, true, -6),
-      E('乙龙二', 'T1', 80, false, true, -2),
-      E('丙龙三', 'T1', 70, false, true, 3.6),
-      E('丁龙四', 'T1', 60, false, true, 0),
-      E('戊龙五', 'T1', 50, false, true, 6.5),
+      E('甲龙一', 'T1', 90, false, true, -6, '', false, 5.6),
+      E('乙龙二', 'T1', 80, false, true, -2, '', false, 8.9),
+      E('丙龙三', 'T1', 70, false, true, 3.6, '', false, 20.5),
+      E('丁龙四', 'T1', 60, false, true, 0, '', false, 5.4),
+      E('戊龙五', 'T1', 50, false, true, 6.5, '', false, 7.9),
       E('T2一', 'T2', 60), E('T2二', 'T2', 50)
     ]);
     const plan = buildSmallTopicPlan(blocks, rankDragons(blocks), {
       ladderTopicGroups: [LG('T1', 5), LG('T2', 2)], ladderReady: true
     });
     const top = plan.blocks[0];
-    expect(top.picks.map(p => p.name)).toEqual(['戊龙五', '丙龙三']);   // 按竞价涨幅降序
-    expect(top.picks.map(p => p.dragonLabel)).toEqual(['龙五', '龙三']);
-    expect(top.picks.map(p => p.position)).toEqual([POSITION_LIGHT, POSITION_LIGHT]);
-    expect(top.notes.join('｜')).toContain('舍弃龙一');
+    // 量比降序：丙龙三 20.5 ＞ 乙龙二 8.9 ＞ 戊龙五 7.9 ＞ 甲龙一 5.6 ＞ 丁龙四 5.4
+    expect(top.picks.map(p => p.name)).toEqual(['丙龙三', '乙龙二']);
+    expect(top.picks.map(p => p.dragonLabel)).toEqual(['龙三', '龙二']);
+    expect(top.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_HEAVY]);
+    expect(top.notes.join('｜')).not.toContain('舍弃龙一');
   });
 
-  it('龙一【平开（0%）】同样不算高开 → 舍弃龙一', () => {
+  it('开平高低一律不影响选票（原「不算高开就排除」的口径已废）→ 只看量比', () => {
     const blocks = rankDecisionTopics([
-      E('甲龙一', 'T1', 90, false, true, 0),
-      E('乙龙二', 'T1', 80, false, true, 5),
-      E('丙龙三', 'T1', 70, false, true, 3),
-      E('丁龙四', 'T1', 60, false, true, 1),
+      E('甲龙一', 'T1', 90, false, true, 0, '', false, 5),      // 平开
+      E('乙龙二', 'T1', 80, false, true, 5, '', false, 40),
+      E('丙龙三', 'T1', 70, false, true, 3, '', false, 3),
+      E('丁龙四', 'T1', 60, false, true, 1, '', false, 2),
       E('T2一', 'T2', 60), E('T2二', 'T2', 50)
     ]);
     const plan = buildSmallTopicPlan(blocks, rankDragons(blocks), {
       ladderTopicGroups: [LG('T1', 4), LG('T2', 2)], ladderReady: true
     });
-    expect(plan.blocks[0].picks.map(p => p.name)).toEqual(['乙龙二', '丙龙三']);
-    expect(plan.blocks[0].picks.map(p => p.position)).toEqual([POSITION_LIGHT, POSITION_LIGHT]);
-    expect(plan.blocks[0].notes.join('｜')).toContain('龙一未高开');
+    expect(plan.blocks[0].picks.map(p => p.name)).toEqual(['乙龙二', '甲龙一']);
+    expect(plan.blocks[0].picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_HEAVY]);
+    expect(plan.blocks[0].notes.join('｜')).not.toContain('龙一未高开');
   });
 
-  it('龙一【高开】→ 龙一重仓 + 其余里竞价涨幅最高的一只轻仓', () => {
+  it('⑥ 档同样套用【龙一特例】：龙一低开 + 量比 > 60 且没进前二 → 追加龙一重仓', () => {
     const blocks = rankDecisionTopics([
-      E('甲龙一', 'T1', 90, false, true, 1),     // 龙一 +1% 高开
-      E('乙龙二', 'T1', 80, false, true, 4),     // 涨幅比龙一高，但龙一高开时龙一固定重仓
-      E('丙龙三', 'T1', 70, false, true, 3.6),
-      E('丁龙四', 'T1', 60, false, true, 0),
-      E('戊龙五', 'T1', 50, false, true, 6.5),   // 其余里涨幅最高 → 轻仓
+      E('甲龙一', 'T1', 90, false, true, -2, '', false, 65),    // 低开 + 65 > 60
+      E('乙龙二', 'T1', 80, false, true, 4, '', false, 90),
+      E('丙龙三', 'T1', 70, false, true, 3, '', false, 80),
+      E('丁龙四', 'T1', 60, false, true, 1, '', false, 10),
       E('T2一', 'T2', 60), E('T2二', 'T2', 50)
     ]);
     const plan = buildSmallTopicPlan(blocks, rankDragons(blocks), {
-      ladderTopicGroups: [LG('T1', 5), LG('T2', 2)], ladderReady: true
+      ladderTopicGroups: [LG('T1', 4), LG('T2', 2)], ladderReady: true
     });
     const top = plan.blocks[0];
-    expect(top.picks.map(p => p.name)).toEqual(['甲龙一', '戊龙五']);
-    expect(top.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_LIGHT]);
+    expect(top.picks.map(p => p.name)).toEqual(['乙龙二', '丙龙三', '甲龙一']);
+    expect(top.picks.every(p => p.position === POSITION_HEAVY)).toBe(true);
+    expect(top.notes.join('｜')).toContain('龙一特例');
   });
 
-  it('一字买不进 → 跳过；缺竞价涨幅不算高开', () => {
+  it('一字买不进 → 跳过；缺量比的票排最后，且卡位补偿照样生效', () => {
+    // ⛔ 「名次第二」= 候选（已剔除一字）里名次最靠前的那两只，不是题材里的龙一/龙二。
+    //   甲龙一是一字（买不进）→ 候选里名次第一 = 乙龙二、名次第二 = 丙龙三。
+    //   要让卡位补偿触发，必须让【候选里的名次第二（丙龙三）】掉出量比前二。
     const blocks = rankDecisionTopics([
-      E('甲龙一', 'T1', 90, true, true, 10),     // 一字
-      E('乙龙二', 'T1', 80, false, true, null),  // 缺竞价涨幅
-      E('丙龙三', 'T1', 70, false, true, 4),
-      E('丁龙四', 'T1', 60, false, true, -2),    // 第 4 只：早盘竞价满 4 只才进得了 ⑥ 的候选
+      E('甲龙一', 'T1', 90, true, true, 10),                      // 一字 → 买不进
+      E('乙龙二', 'T1', 85, false, true, 2, '', false, 5),
+      E('丙龙三', 'T1', 80, false, true, null, '', false, null),   // 候选里名次第二，但缺量比 → 排最后
+      E('丁龙四', 'T1', 75, false, true, 3, '', false, 30),
+      E('戊龙五', 'T1', 70, false, true, -1, '', false, 20),
       E('T2一', 'T2', 60), E('T2二', 'T2', 50)
     ]);
     const plan = buildSmallTopicPlan(blocks, rankDragons(blocks), {
-      ladderTopicGroups: [LG('T1', 3), LG('T2', 2)], ladderReady: true
+      ladderTopicGroups: [LG('T1', 4), LG('T2', 2)], ladderReady: true
     });
-    expect(plan.blocks[0].picks.map(p => p.name)).toEqual(['丙龙三']);
-    expect(plan.blocks[0].notes.join('｜')).toContain('缺竞价涨幅');
+    // 量比降序：丁龙四 30 ＞ 戊龙五 20 ＞ 乙龙二 5 ＞（丙龙三缺量比 → 最后）
+    // 前二 = 丁龙四 + 戊龙五；候选名次第二的丙龙三掉出前二 → 卡位补偿补轻仓
+    expect(plan.blocks[0].picks.map(p => p.name)).toEqual(['丁龙四', '戊龙五', '丙龙三']);
+    expect(plan.blocks[0].picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_HEAVY, POSITION_LIGHT]);
+    expect(plan.blocks[0].notes.join('｜')).toContain('卡位补偿');
   });
 
   it('连板天梯未就绪 → 如实报「未就绪」，⛔ 不退回常规规则', () => {
@@ -920,14 +947,17 @@ describe('买点 · 竞价涨幅徽标（AUC-BADGE）', () => {
     expect(p.aucTone).toBe('');
   });
 
-  it('第 1 名题材（重仓档）也带徽标 —— 两个收口函数都要覆盖，别只改了一个', () => {
-    // T1 撑到 6 只：>4 只避开 ⑥ 小题材兜底，又 ≤6 只 ⇒ 「买入只数」砍成 1 只（保留龙位最靠前那只）
+  it('第 1 名题材（重仓档）也带徽标 —— ①② 两个入口都要覆盖，别只改了一个', () => {
+    // [VRATIO-PICK 2026-10-01] T1 = 6 只（>4 避开 ⑥ 小题材兜底）。
+    //   ⚠️ ⑩「买入只数」已让位 → 这里不再被砍成 1 只；6 只全部缺量比 ⇒ 退回按龙头名次取前二。
     const blocks = rankDecisionTopics([
       E('一A', 'T1', 40, true, true, 10), E('一B', 'T1', 39, true, true, 9.98),
       E('大A', 'T1', 30, false, true, 1.5), E('大B', 'T1', 20, false, true, -2)
     ].concat(FILLER('T1', 2)));
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
-    expect(plan.heavy.picks.length).toBe(1);
+    expect(plan.heavy.block.count).toBe(6);
+    expect(plan.heavy.notes.join('｜')).toContain(ruleTag(RULE_NO.BUY_COUNT));   // ⑩ 只提示、不砍票
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['大A', '大B']);          // 名次前二（一字买不进）
     const p0 = plan.heavy.picks[0];
     expect(p0.name).toBe('大A');
     expect(p0.aucPctText).toBe('+1.50%');
@@ -935,50 +965,148 @@ describe('买点 · 竞价涨幅徽标（AUC-BADGE）', () => {
   });
 });
 
-// === [2026-09-26] ① 第 1 名题材「2 个一字」：第二只按竞价涨幅选，卡位则共选 3 只 ===
-describe('pickHeavyTwo（第 1 名题材 · 卡位选票）', () => {
+// === [VRATIO-PICK 2026-10-01 用户口径] ①② 第 1 名题材：按【竞价量比】降序取前二（都重仓）===
+//   本条取代 2026-09-26 的「龙一必选 + 第二只按【竞价涨幅最高】、卡位时共 3 只」。
+//   用户原话：「看早盘竞价看板的竞价量比……量比越大，明天持续性越高。这五只中，选龙二和龙三
+//   （选两只重仓），不选龙一……龙一低开，竞价量比大于 60，可以买入。」
+describe('pickHeavyTwo / 按竞价量比选票（第 1 名题材）', () => {
   const mk = (members) => {
     const blocks = rankDecisionTopics(members);
     return { blocks: blocks, dragon: rankDragons(blocks), blk: blocks.find(b => b.topic === 'T') };
   };
+  // 用户原话给的 5 只原型：龙一 5.6 / 龙二 8.9 / 龙三 20.5 / 龙四 5.4 / 龙五 7.9
+  const USER_CASE = [
+    E('龙一', 'T', 100, false, true, 1, '', false, 5.6),
+    E('龙二', 'T', 90, false, true, 2, '', false, 8.9),
+    E('龙三', 'T', 80, false, true, 3, '', false, 20.5),
+    E('龙四', 'T', 70, false, true, 4, '', false, 5.4),
+    E('龙五', 'T', 60, false, true, 5, '', false, 7.9),
+    E('X1', 'X', 1), E('X2', 'X', 0)
+  ];
 
-  it('龙二涨幅 < 龙三涨幅（卡位）→ 龙一重仓 + 龙三重仓 + 龙二轻仓（共 3 只）', () => {
-    // 9/1 农业原型：龙二金健米业 +0.1%、龙三万向德农 +7.3%
+  it('★用户原型：量比降序取前二 = 龙三 + 龙二，⛔【不选龙一】，两只都重仓', () => {
+    // [VRATIO-PICK 2026-10-01] 选票依据已经换成竞价量比 —— 这个开关必须为 true，
+    //   它是「新规已生效」的总开关（§6：口径只有一处）。
+    expect(PICK_SORT_BY_VOL_RATIO).toBe(true);
+    const { dragon, blk } = mk(USER_CASE);
+    const r = pickHeavyTwo(blk, dragon);
+    expect(r.picks.map(p => p.name)).toEqual(['龙三', '龙二']);
+    expect(r.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_HEAVY]);
+    expect(r.picks.map(p => p.pct)).toEqual([80, 90]);          // 十日涨幅字段照旧带出来
+    expect(r.notes.join('｜')).toContain('20.5');
+    expect(r.notes.join('｜')).toContain('8.9');
+  });
+
+  // §6 单一实现：pickHeavyTwo 只是 pickTopTwoByVolRatio 的一个入口（不限名次 + 用 ① 的编号），
+  //   ⛔ 不允许 ①②⑥ 各自再写一份选票逻辑。
+  it('§6：pickHeavyTwo 与 pickTopTwoByVolRatio(…, null, ①) 结果完全一致', () => {
+    const { dragon, blk } = mk(USER_CASE);
+    const a = pickHeavyTwo(blk, dragon);
+    const b = pickTopTwoByVolRatio(blk, dragon, null, RULE_NO.HEAVY_DOUBLE);
+    expect(a.picks.map(p => p.name)).toEqual(b.picks.map(p => p.name));
+    expect(a.picks.map(p => p.position)).toEqual(b.picks.map(p => p.position));
+    expect(a.notes.join('｜')).toBe(b.notes.join('｜'));
+  });
+
+  it('② 档（传 HEAVY_SINGLE）与 ① 档是同一套量比规则，说明文字引用的是本档编号', () => {
+    const { dragon, blk } = mk(USER_CASE);
+    const r = pickHeavyTwo(blk, dragon, RULE_NO.HEAVY_SINGLE);
+    expect(r.picks.map(p => p.name)).toEqual(['龙三', '龙二']);
+    expect(r.notes.join('｜')).toContain(ruleTag(RULE_NO.HEAVY_SINGLE));
+  });
+
+  it('卡位补偿：名次第二（龙二）被量比更大的票挤出前二 → 补龙二轻仓（共 3 只）', () => {
     const { dragon, blk } = mk([
-      E('股1', 'T', 90, false, true, 3),    // 龙一
-      E('股2', 'T', 80, false, true, 0.1),  // 龙二
-      E('股3', 'T', 70, false, true, 7.3),  // 龙三：涨幅最高 → 卡位
+      E('龙一', 'T', 100, false, true, 1, '', false, 6),
+      E('龙二', 'T', 90, false, true, 2, '', false, 1),         // 名次第二，但量比最小 → 被卡位
+      E('龙三', 'T', 80, false, true, 3, '', false, 30),
+      E('龙四', 'T', 70, false, true, 4, '', false, 12),
       E('X1', 'X', 1), E('X2', 'X', 0)
     ]);
     const r = pickHeavyTwo(blk, dragon);
     expect(r.jumped).toBe(true);
-    expect(r.picks.map(p => p.name)).toEqual(['股1', '股3', '股2']);
+    expect(r.picks.map(p => p.name)).toEqual(['龙三', '龙四', '龙二']);
     expect(r.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_HEAVY, POSITION_LIGHT]);
+    expect(r.notes.join('｜')).toContain('卡位补偿');
   });
 
-  it('涨幅最高的恰好就是龙二 → 维持 2 只，都重仓', () => {
+  it('龙一特例：龙一【低开】+ 量比 > 60 且没进前二 → 追加龙一重仓（共 3 只）', () => {
+    const { dragon, blk } = mk([
+      E('龙一', 'T', 100, false, true, -2, '', false, 65),      // 低开 + 65 > 60，但被下面两只挤掉
+      E('龙二', 'T', 90, false, true, 3, '', false, 90),
+      E('龙三', 'T', 80, false, true, 4, '', false, 80),
+      E('X1', 'X', 1), E('X2', 'X', 0)
+    ]);
+    const r = pickHeavyTwo(blk, dragon);
+    expect(r.dragonOneSpecial).toBe(true);
+    expect(r.picks.map(p => p.name)).toEqual(['龙二', '龙三', '龙一']);
+    expect(r.picks.every(p => p.position === POSITION_HEAVY)).toBe(true);
+    expect(r.notes.join('｜')).toContain('龙一特例');
+  });
+
+  it('龙一【高开】时即使量比 > 60 也不触发特例（用户口径只点名「低开」）', () => {
+    const { dragon, blk } = mk([
+      E('龙一', 'T', 100, false, true, 2, '', false, 65),       // 高开 → 不触发
+      E('龙二', 'T', 90, false, true, 3, '', false, 90),
+      E('龙三', 'T', 80, false, true, 4, '', false, 80),
+      E('X1', 'X', 1), E('X2', 'X', 0)
+    ]);
+    const r = pickHeavyTwo(blk, dragon);
+    expect(r.dragonOneSpecial).toBe(false);
+    expect(r.picks.map(p => p.name)).toEqual(['龙二', '龙三']);
+  });
+
+  it('龙一【低开】但量比恰好 60 → 不触发（阈值是「大于 60」，不含边界）', () => {
+    const { dragon, blk } = mk([
+      E('龙一', 'T', 100, false, true, -2, '', false, 60),
+      E('龙二', 'T', 90, false, true, 3, '', false, 90),
+      E('龙三', 'T', 80, false, true, 4, '', false, 80),
+      E('X1', 'X', 1), E('X2', 'X', 0)
+    ]);
+    const r = pickHeavyTwo(blk, dragon);
+    expect(r.dragonOneSpecial).toBe(false);
+    expect(r.picks.map(p => p.name)).toEqual(['龙二', '龙三']);
+  });
+
+  it('上限 3 只且【龙一特例优先】：特例与卡位补偿同时成立 → 只保留龙一特例，卡位票不追加', () => {
+    const { dragon, blk } = mk([
+      E('龙一', 'T', 100, false, true, -2, '', false, 65),      // 低开 + 65 > 60 → 触发特例
+      E('龙二', 'T', 90, false, true, 3, '', false, 1),         // 名次第二、量比最小 → 本来会被卡位补偿
+      E('龙三', 'T', 80, false, true, 4, '', false, 90),
+      E('龙四', 'T', 70, false, true, 5, '', false, 80),
+      E('X1', 'X', 1), E('X2', 'X', 0)
+    ]);
+    const r = pickHeavyTwo(blk, dragon);
+    expect(r.dragonOneSpecial).toBe(true);
+    expect(r.jumped).toBe(false);
+    expect(r.picks.length).toBe(PICK_MAX_AFTER_SPECIAL);   // = 3 只上限
+    expect(r.picks.map(p => p.name)).toEqual(['龙三', '龙四', '龙一']);
+    expect(r.notes.join('｜')).toContain('不再补');
+  });
+
+  it('§10：整个题材都没量比 → 退回按龙头名次取前二，并如实说明（⛔ 绝不假装量比是 0）', () => {
     const { dragon, blk } = mk([
       E('股1', 'T', 90, false, true, 1),
-      E('股2', 'T', 80, false, true, 5),    // 龙二同时是涨幅最高
+      E('股2', 'T', 80, false, true, 5),
       E('股3', 'T', 70, false, true, 2),
       E('X1', 'X', 1), E('X2', 'X', 0)
     ]);
     const r = pickHeavyTwo(blk, dragon);
-    expect(r.jumped).toBe(false);
+    expect(r.byRankFallback).toBe(true);
     expect(r.picks.map(p => p.name)).toEqual(['股1', '股2']);
-    expect(r.picks.every(p => p.position === POSITION_HEAVY)).toBe(true);
+    expect(r.notes.join('｜')).toContain('缺竞价量比');
   });
 
-  it('其余票全缺竞价涨幅 → 第二只退回按龙头名次取（§10 不猜）', () => {
+  it('§10：只有部分票缺量比 → 缺量比的一律排在有量比的后面（⛔ 绝不当 0 去挤掉别人）', () => {
     const { dragon, blk } = mk([
-      E('股1', 'T', 90, false, true, 1),
-      E('股2', 'T', 80, false, true, null),
-      E('股3', 'T', 70, false, true, null),
+      E('股1', 'T', 90, false, true, 1, '', false, null),       // 名次第 1，但缺量比
+      E('股2', 'T', 80, false, true, 5, '', false, 0.5),
+      E('股3', 'T', 70, false, true, 2, '', false, 3),
       E('X1', 'X', 1), E('X2', 'X', 0)
     ]);
     const r = pickHeavyTwo(blk, dragon);
-    expect(r.picks.map(p => p.name)).toEqual(['股1', '股2']);
-    expect(r.notes.join('｜')).toContain('缺竞价涨幅');
+    expect(r.byRankFallback).toBe(false);
+    expect(r.picks.map(p => p.name)).toEqual(['股3', '股2']);
   });
 });
 
@@ -1446,16 +1574,39 @@ describe('buildRulesLines（灰色问号里的规则说明）', () => {
 
   it('规则说明必须覆盖买点三档 + 卖点三档 + 题材行数据口径', () => {
     const text = lines.join('\n');
-    expect(text).toContain('竞价一字 ≥ 2');                 // 第 1 名 · 双票重仓
-    expect(text).toContain('只有 1 个');                     // 第 1 名 · 龙一重仓
-    expect(text).toContain('竞价涨幅 > 0');                  // 龙二~龙五 高开轻仓
-    expect(text).toContain('龙二～龙五');
+    expect(text).toContain('竞价一字 ≥ 2');                 // 第 1 名 · 一字 ≥ 2
+    expect(text).toContain('只有 1 个');                     // 第 1 名 · 一字 = 1
     expect(text).toContain('排名第 2 的题材');               // 第 2 名 · 轻仓
     expect(text).toContain(SELL_TIME_CLOSE);
     expect(text).toContain(SELL_TIME_MIDDAY);
     expect(text).toContain('实心红圆点');                    // 题材行的排名圆点说明
     expect(text).toContain('排第 2');                        // 第 2 名 + 只有 1 个一字的例外
     expect(text).toContain('只有龙一');
+  });
+
+  // === [VRATIO-PICK 2026-10-01 用户口径] 规则说明必须同步量比新规（§6：规则与文案同处一处）===
+  it('规则说明必须写清【选票的唯一依据 = 竞价量比】+ 龙一不再保底 + 三档统一', () => {
+    const text = lines.join('\n');
+    expect(text).toContain('竞价量比');                      // 新规的核心字眼
+    expect(text).toContain('龙一不再保底');                  // 用户原话「不选龙一」
+    expect(text).toContain('龙一特例');                      // 龙一低开 + 量比 > 60
+    expect(text).toContain('卡位补偿');                      // 龙二被量比更大的票挤掉
+    expect(text).toContain(String(DRAGON_ONE_LOW_OPEN_MIN_VOL_RATIO));   // 60
+    // ⑥ 的选票范围（原话「龙一到龙五买两只」），且区间由 getDragonLabel 派生（§6 不分叉）
+    expect(text).toContain('【' + getDragonLabel(1) + '~' + getDragonLabel(5) + '】');
+    // ⛔ 已作废的旧口径不得再出现在说明里（否则用户会照着旧规则理解）
+    expect(text).not.toContain('竞价涨幅 > 0');              // 旧：龙二～龙五 按竞价涨幅高开轻仓
+  });
+
+  it('规则说明必须写明 ⑦⑧⑨⑩ 已【让位为只提示、不生效】', () => {
+    const text = lines.join('\n');
+    ['⑦', '⑧', '⑨', '⑩'].forEach(function(no) {
+      expect(text).toContain(no + ' 【');
+    });
+    expect(text).toContain('已让位：只提示、不生效');
+    // 被让位的四条各自要说明「原本会怎样」+「现在只提示」，用户才看得懂为什么没砍票
+    expect(text).toContain('原本会砍成');
+    expect(text).toContain('不再砍票');
   });
 
   it('规则说明必须覆盖【卖点按今日竞价高低开细分】（SELL-OPEN 第一层）', () => {
@@ -1497,7 +1648,10 @@ describe('buildRulesLines（灰色问号里的规则说明）', () => {
 
   it('文案里的排名区间必须由 getDragonLabel 派生（避免两处分叉）', () => {
     const text = lines.join('\n');
-    expect(text).toContain('【' + getDragonLabel(2) + '～' + getDragonLabel(5) + '】');
+    // ⑥ 的选票范围（龙一~龙五）—— 新规新增
+    expect(text).toContain('【' + getDragonLabel(1) + '~' + getDragonLabel(5) + '】');
+    // ② 里引用「已作废的旧区间」同样由 getDragonLabel 拼出，⛔ 不留硬编码的「龙二～龙五」
+    expect(text).toContain(getDragonLabel(2) + '～' + getDragonLabel(5) + '里');
   });
 });
 
@@ -1513,7 +1667,7 @@ describe('formatRangePct', () => {
   });
 });
 
-// === [2026-09-27] 一 · 亏钱效应：题材里有【竞价一字跌停】 → 只买龙一 + 只轻仓 ===
+// === [2026-09-27] 一 · 亏钱效应（2026-10-01 起【让位】：只提示、不砍票）===
 describe('亏钱效应（LOSS-EFFECT）', () => {
   /**
    * 农业原型：龙一敦煌种业（非一字）+ 2 个竞价一字 + 1 只竞价一字跌停（跌停票）。
@@ -1528,20 +1682,23 @@ describe('亏钱效应（LOSS-EFFECT）', () => {
     E('X一', 'X', 20), E('X二', 'X', 10)
   ].concat(FILLER('农业', fillerN));
 
-  it('9/11 农业 12 只：有 1 只竞价一字跌停 → 只买敦煌种业（龙一、轻仓）', () => {
+  it('★新规：9/11 农业 12 只、有 1 只竞价一字跌停 → 照常按量比选票，⛔ 不再砍成「只买龙一」', () => {
     const rows = nongYe(-10, 7);                     // 5 只真实票 + 7 只凑数 = 12 只
     const blocks = rankDecisionTopics(rows);
     expect(blocks[0].count).toBe(12);
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
-    // 不加亏钱效应时本来是「龙一重仓 + 龙二/龙三」，加了之后只剩龙一
-    expect(plan.heavy.picks.map(p => p.name)).toEqual(['敦煌种业']);
-    expect(plan.heavy.picks[0].dragonLabel).toBe('龙一');
-    expect(plan.heavy.picks[0].position).toBe(POSITION_LIGHT);
-    expect(plan.heavy.notes.join('｜')).toContain('亏钱效应');
-    expect(plan.heavy.notes.join('｜')).toContain('只买龙一');
+    // ⛔ 旧行为（2026-09-27）是砍成「只买敦煌种业 + 只轻仓」；
+    //   2026-10-01 新规起 ⑦ 只提示、不改选票 ⇒ 照常是按量比（这里全缺量比 → 退路：名次前二）
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['敦煌种业', '跌停票']);
+    expect(plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_HEAVY]);
+    const notes = plan.heavy.notes.join('｜');
+    expect(notes).toContain('亏钱效应');
+    expect(notes).toContain('竞价一字跌停');
+    expect(notes).toContain('不再砍票');       // 只提示的自我说明
+    expect(notes).not.toContain('只买龙一');    // ⛔ 旧结论不得再出现
   });
 
-  it('9/10 农业 11 只（1 个一字 + 跌停票）→ 同样只买敦煌种业、轻仓', () => {
+  it('★新规：9/10 农业 11 只（1 个一字 + 跌停票）→ 同样只提示，选票仍按量比前二', () => {
     const rows = [
       E('敦煌种业', '农业', 80, false, true, 3),
       E('农业一字', '农业', 70, true),
@@ -1553,19 +1710,32 @@ describe('亏钱效应（LOSS-EFFECT）', () => {
     const blocks = rankDecisionTopics(rows);
     expect(blocks[0].count).toBe(11);
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
-    expect(plan.heavy.picks.map(p => p.name)).toEqual(['敦煌种业']);
-    expect(plan.heavy.picks[0].position).toBe(POSITION_LIGHT);
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['敦煌种业', '跌停票']);
+    expect(plan.heavy.picks.every(p => p.position === POSITION_HEAVY)).toBe(true);
+    expect(plan.heavy.notes.join('｜')).toContain(ruleTag(RULE_NO.LOSS_EFFECT));
   });
 
-  it('题材里没有竞价一字跌停 → 不受影响（龙一仍然是重仓）', () => {
+  it('★新规：⑦ 触发与不触发时【选票结果完全一致】（只差一条提示）—— 这就是「让位」的定义', () => {
+    const of = (auc) => {
+      const blocks = rankDecisionTopics(nongYe(auc, 7));
+      return buildBuyPlan(blocks, rankDragons(blocks));
+    };
+    const hit = of(-10);        // ⑦ 触发（跌停票 -10）
+    const miss = of(-2);        // ⑦ 不触发（只是低开）
+    expect(hit.heavy.picks.map(p => p.name)).toEqual(miss.heavy.picks.map(p => p.name));
+    expect(hit.heavy.picks.map(p => p.position)).toEqual(miss.heavy.picks.map(p => p.position));
+    expect(miss.heavy.notes.join('｜')).not.toContain('亏钱效应');
+    expect(hit.heavy.notes.join('｜')).toContain('亏钱效应');
+  });
+
+  it('题材里没有竞价一字跌停 → 没有任何 ⑦ 说明，选票按量比前二', () => {
     const rows = nongYe(-2, 7);                      // 只是低开，不是跌停
     const blocks = rankDecisionTopics(rows);
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
     expect(plan.heavy.notes.join('｜')).not.toContain('亏钱效应');
     expect(plan.heavy.picks[0].name).toBe('敦煌种业');
     expect(plan.heavy.picks[0].position).toBe(POSITION_HEAVY);
-    // 常规「①双票重仓」不受影响：龙一 + 涨幅最高的农业五（重仓）+ 名次第二的跌停票（轻仓，发生卡位）
-    expect(plan.heavy.picks.length).toBe(3);
+    expect(plan.heavy.picks.length).toBe(2);
   });
 
   it('§10：竞价涨幅缺失的票【不算】一字跌停，不触发亏钱效应', () => {
@@ -1598,20 +1768,23 @@ function NONGYE12(extraHigh) {
   });
   return rows;
 }
-describe('⑧ 弱势题材：大题材却没人高开（WEAK-OPEN）', () => {
-  it('9/11 农业 12 只、只有 3 只竞价高开（25% < 35%）→ 只买敦煌种业（龙一、轻仓）', () => {
+describe('⑧ 弱势题材：大题材却没人高开（WEAK-OPEN · 2026-10-01 起只提示）', () => {
+  it('★新规：9/11 农业 12 只、只有 3 只竞价高开（25% < 35%）→ 只提示「题材虚胖」，⛔ 不再砍票', () => {
     const blocks = rankDecisionTopics(NONGYE12(0));
     expect(blocks[0].count).toBe(12);
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
-    expect(plan.heavy.picks.map(p => p.name)).toEqual(['敦煌种业']);
-    expect(plan.heavy.picks[0].dragonLabel).toBe('龙一');
-    expect(plan.heavy.picks[0].position).toBe(POSITION_LIGHT);
+    // ⛔ 旧行为是砍成「只买敦煌种业 + 只轻仓」；新规下 ⑧ 只提示 ⇒ 照常按量比取前二
+    //   （本样本全缺量比 → 退路：名次前二 = 敦煌种业 + 票C）
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['敦煌种业', '票C']);
+    expect(plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_HEAVY]);
     const notes = plan.heavy.notes.join('｜');
     expect(notes).toContain('题材虚胖');
     expect(notes).toContain('25%');
+    expect(notes).toContain('不再砍票');
+    expect(notes).not.toContain('只买龙一');
   });
 
-  it('12 只里 5 只高开（约 42% ≥ 35%）→ 不触发，回到常规「双票重仓」档位', () => {
+  it('12 只里 5 只高开（约 42% ≥ 35%）→ 高开率正常，⑧ 一条都不写', () => {
     const blocks = rankDecisionTopics(NONGYE12(2));
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
     expect(plan.heavy.notes.join('｜')).not.toContain('题材虚胖');
@@ -1644,27 +1817,32 @@ describe('⑧ 弱势题材：大题材却没人高开（WEAK-OPEN）', () => {
     expect(plan.heavy.notes.join('｜')).toContain('无法判定竞价高开率');
   });
 
-  it('亏钱效应与弱势题材同时命中时，只出一条「只买龙一轻仓」结论（不重复砍）', () => {
+  it('★新规：⑦ 与 ⑧ 同时命中 → 两条提示都在，但选票仍按量比（不再「重复砍」）', () => {
     const rows = NONGYE12(0).map(function(r) {
       return r.name === '票C' ? E(r.name, '农业', r.pct, false, true, -10, '000930') : r;
     });
     const blocks = rankDecisionTopics(rows);
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
-    expect(plan.heavy.picks.map(p => p.name)).toEqual(['敦煌种业']);
-    expect(plan.heavy.picks[0].position).toBe(POSITION_LIGHT);
-    expect(plan.heavy.notes.join('｜')).toContain('竞价一字跌停');
-    expect(plan.heavy.notes.join('｜')).toContain('题材虚胖');
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['敦煌种业', '票C']);
+    expect(plan.heavy.picks.every(p => p.position === POSITION_HEAVY)).toBe(true);
+    const notes = plan.heavy.notes.join('｜');
+    expect(notes).toContain('竞价一字跌停');   // ⑦
+    expect(notes).toContain('题材虚胖');       // ⑧
+    expect(notes).toContain(ruleTag(RULE_NO.LOSS_EFFECT));
+    expect(notes).toContain(ruleTag(RULE_NO.WEAK_OPEN));
   });
 });
 
 // === [2026-09-27 事故回归] ⑧ 弱势题材【也必须覆盖兜底方案】 ===
-// 事故：9/11 农业 12 只、只有 3 只竞价高开（25% < 35%），用户预期「只选龙一敦煌种业轻仓」，
+// 事故（2026-09-27）：9/11 农业 12 只、只有 3 只竞价高开（25% < 35%），用户预期「只选龙一敦煌种业轻仓」，
 //   实际却选出 2 只（敦煌种业 + 新农开发）。根因不是阈值、也不是分母口径：
 //   当天第 1 名题材 = 电力新能源（4 只 / 1 个一字）命中「高风险小题材」，
 //   buildBuyPlan 走 ⑥ 兜底（smallTopic）→ 由「题材连扳里数量最多」挑中农业，
 //   而兜底方案走的是 _finishPlanBlocks —— 上一版那里【只调了 _applyLossEffect】，
 //   ⑧ 在这条链路上从未被调用过 ⇒ 规则形同虚设。
 // ⛔ 规则是「入选题材」的筛选条件，与它是被哪条规则选中的无关 —— 所有买点块必须一视同仁。
+// ✅ [VRATIO-PICK 2026-10-01] ⑧ 已让位（只提示、不砍票）。「兜底块必须调到 ⑧」这条回归仍然有效 ——
+//   现在钉的是「兜底块的 notes 里出现了 ⑧ 的提示」，而不是「兜底块被砍成 1 只」。
 describe('⑧ 弱势题材也覆盖【兜底方案】（WEAK-OPEN · FALLBACK）', () => {
   /** 造一个「题材连扳」分组 */
   function LG(topic, n) { return { topic: topic, count: n, rows: [] }; }
@@ -1714,16 +1892,25 @@ describe('⑧ 弱势题材也覆盖【兜底方案】（WEAK-OPEN · FALLBACK）
     expect(r.blocks.find(b => b.topic === '农业').count).toBe(12);
   });
 
-  it('9/11 农业 12 只 / 3 只高开（25%）→ 兜底块也只留【龙一敦煌种业】，且轻仓', () => {
+  it('★新规：9/11 农业 12 只 / 3 只高开（25%）→ 兜底块照常按量比选前二，且 ⑧ 的提示确实落到了它身上', () => {
     const r = plan0911();
     const nong = r.plan.smallTopic.blocks.find(b => b.block.topic === '农业');
     expect(nong.block.count).toBe(12);
-    expect(nong.picks.map(p => p.name)).toEqual(['敦煌种业']);
-    expect(nong.picks[0].dragonLabel).toBe('龙一');
-    expect(nong.picks[0].position).toBe(POSITION_LIGHT);
+    // ⛔ 2026-09-27 的旧结论是「只留敦煌种业 1 只 + 轻仓」；
+    //   新规下 ⑥ 与 ① 同构（量比前二、都重仓）⇒ 这里全缺量比 → 退路：龙一 + 龙二
+    expect(nong.picks.map(p => p.name)).toEqual(['敦煌种业', '新农开发']);
+    expect(nong.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_HEAVY]);
     const notes = nong.notes.join('｜');
-    expect(notes).toContain('题材虚胖');
+    expect(notes).toContain('题材虚胖');       // ← 本条才是该回归测试的核心：⑧ 在兜底链路上必须跑到
     expect(notes).toContain('25%');
+    expect(notes).toContain('不再砍票');
+  });
+
+  it('⑧ 在兜底块里只提示、不改仓位（与 ① 档行为一致）', () => {
+    const r = plan0911();
+    const nong = r.plan.smallTopic.blocks.find(b => b.block.topic === '农业');
+    expect(nong.picks.every(p => p.position === POSITION_HEAVY)).toBe(true);
+    expect(nong.notes.join('｜')).not.toContain('只买龙一');
   });
 
   it('兜底块【members 必须带上】：⑧ 靠它数高开只数，缺了就静默不生效', () => {
@@ -1761,15 +1948,17 @@ describe('⑧ 弱势题材也覆盖【兜底方案】（WEAK-OPEN · FALLBACK）
     expect(plan.noYizi).not.toBeNull();
     const b0 = plan.noYizi.blocks[0];
     expect(b0.block.members.length).toBe(8);
-    expect(b0.picks.map(p => p.name)).toEqual(['农龙一']);
-    expect(b0.picks[0].position).toBe(POSITION_LIGHT);
+    // ⑤ 的口径【未受新规影响】：龙一 / 龙二【都竞价高开】⇒ 两只都买，都轻仓
+    expect(b0.picks.map(p => p.name)).toEqual(['农龙一', '农龙二']);
+    expect(b0.picks.map(p => p.position)).toEqual([POSITION_LIGHT, POSITION_LIGHT]);
+    // members 带对了 ⇒ ⑦ 才数得到那只竞价一字跌停（只提示、不砍票）
     expect(b0.notes.join('｜')).toContain('竞价一字跌停');
   });
 });
 
-// === [2026-09-27] 二 · 买入只数：第 1 名题材按【早盘竞价股票数】限制买几只 ===
+// === [2026-09-27] 二 · 买入只数（2026-10-01 起【让位】：只提示、不砍票）===
 describe('买入只数（BUY-COUNT）', () => {
-  it('9/18 AI应用 ≤ ' + BUY_COUNT_MAX_SMALL + ' 只 → 最多买 1 只', () => {
+  it('★新规：9/18 AI应用 ≤ ' + BUY_COUNT_MAX_SMALL + ' 只 → 只提示「最多买 1 只」，⛔ 不砍票（picks 仍 2 只）', () => {
     const blocks = rankDecisionTopics([
       E('AI龙一', 'AI应用', 90, false, true, 5),
       E('AI一字A', 'AI应用', 80, true),
@@ -1781,30 +1970,36 @@ describe('买入只数（BUY-COUNT）', () => {
     ]);
     expect(blocks[0].count).toBe(BUY_COUNT_MAX_SMALL);
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
-    // 常规档位（2 个一字）本来是「龙一重仓 + 涨幅最高的那只重仓」= 2 只 → 被砍成 1 只
-    expect(plan.heavy.picks.map(p => p.name)).toEqual(['AI龙一']);
-    expect(plan.heavy.picks[0].position).toBe(POSITION_HEAVY);
-    expect(plan.heavy.notes.join('｜')).toContain('最多买 1 只');
+    // ⛔ 旧行为是砍成 1 只（AI龙一）；新规下 ⑩ 只提示 ⇒ 量比（全缺 → 退路名次前二）取 2 只、都重仓
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['AI龙一', 'AI四']);
+    expect(plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_HEAVY]);
+    const notes = plan.heavy.notes.join('｜');
+    expect(notes).toContain('最多买 1 只');
+    expect(notes).toContain('不再砍票');
+    expect(notes).toContain(ruleTag(RULE_NO.BUY_COUNT));
   });
 
-  it('9/21 电子/通信/算力 ≤ ' + BUY_COUNT_MAX_MID + ' 只 → 最多买 2 只', () => {
+  it('★新规：9/21 电子 ≤ ' + BUY_COUNT_MAX_MID + ' 只、卡位补偿补出 3 只 → 只提示「最多买 2 只」', () => {
     const blocks = rankDecisionTopics([
-      E('D龙一', '电子', 90, false, true, 5),
+      E('D龙一', '电子', 90, false, true, 5, '', false, 5),
       E('D一字', '电子', 80, true),
-      E('D龙三', '电子', 70, false, true, 4),
-      E('D龙四', '电子', 60, false, true, 3),
-      E('D龙五', '电子', 50, false, true, 2),
-      E('D龙六', '电子', 40, false, true, 1)
+      E('D龙三', '电子', 70, false, true, 4, '', false, 1),    // 名次第二但量比最小 → 被卡位
+      E('D龙四', '电子', 60, false, true, 3, '', false, 30),
+      E('D龙五', '电子', 50, false, true, 2, '', false, 20),
+      E('D龙六', '电子', 40, false, true, 1, '', false, 2)
     ].concat(FILLER('电子', 4)));                     // 6 + 4 = 10 只
     expect(blocks[0].count).toBe(BUY_COUNT_MAX_MID);
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
-    // 常规档位（1 个一字）本来是「龙一重仓 + 龙三/龙四/龙五 高开轻仓」= 4 只 → 被砍成 2 只
-    expect(plan.heavy.picks.map(p => p.name)).toEqual(['D龙一', 'D龙三']);
-    expect(plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_LIGHT]);
-    expect(plan.heavy.notes.join('｜')).toContain('最多买 2 只');
+    // 量比降序：D龙四 30 ＞ D龙五 20 ＞ D龙一 5 ＞ D龙六 2 ⇒ 前二 = 龙四 + 龙五（都重仓）
+    // 名次第二的 D龙三被挤出 → 卡位补偿补轻仓 ⇒ 共 3 只（> 中档上限 2 只）
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['D龙四', 'D龙五', 'D龙三']);
+    expect(plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_HEAVY, POSITION_LIGHT]);
+    const notes = plan.heavy.notes.join('｜');
+    expect(notes).toContain('最多买 2 只');
+    expect(notes).toContain('不再砍票');
   });
 
-  it('> ' + BUY_COUNT_MAX_MID + ' 只 → 按原规则，不砍票', () => {
+  it('> ' + BUY_COUNT_MAX_MID + ' 只 → ⑩ 本条不适用，说明里一个字都不写', () => {
     const blocks = rankDecisionTopics([
       E('D龙一', '电子', 90, false, true, 5),
       E('D一字', '电子', 80, true),
@@ -1815,8 +2010,9 @@ describe('买入只数（BUY-COUNT）', () => {
     ].concat(FILLER('电子', 5)));                     // 6 + 5 = 11 只
     expect(blocks[0].count).toBe(BUY_COUNT_MAX_MID + 1);
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
-    expect(plan.heavy.picks.length).toBe(4);
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['D龙一', 'D龙三']);
     expect(plan.heavy.notes.join('｜')).not.toContain('最多买');
+    expect(plan.heavy.notes.join('｜')).not.toContain(ruleTag(RULE_NO.BUY_COUNT));
   });
 });
 
@@ -1919,9 +2115,14 @@ describe('昨天已买标记（PREV-BOUGHT，股票级）', () => {
 
   it('说明文字里如实写出是哪几只（可追溯到个股）', () => {
     const plan = planOf(new Set(['昨天买过的']));
-    expect(plan.heavy.notes.join('｜')).toContain(PREV_BOUGHT_TAG);
-    expect(plan.heavy.notes.join('｜')).toContain('昨天买过的');
-    expect(plan.heavy.notes.join('｜')).not.toContain('昨天没买的');
+    // ⚠️ [VRATIO-PICK 2026-10-01] ① 的量比说明本来就会把入选项逐个列出（含「昨天没买的」），
+    //    所以这里必须【只挑 ⑫ 那条说明】来断言 —— ⛔ 不能对整块 notes 做 not.toContain。
+    const prevNotes = (plan.heavy.notes || []).filter(function(n) {
+      return String(n).indexOf(PREV_BOUGHT_TAG) >= 0;
+    });
+    expect(prevNotes.length).toBeGreaterThan(0);
+    expect(prevNotes.join('｜')).toContain('昨天买过的');
+    expect(prevNotes.join('｜')).not.toContain('昨天没买的');
   });
 
   it('昨天一只都没买（空集）→ 一个都不标，仓位也不改', () => {
@@ -2226,7 +2427,7 @@ function plan0910() {
   return { blocks: blocks, plan: buildBuyPlan(blocks, rankDragons(blocks)) };
 }
 
-describe('⑨ 双主线竞争：两个大题材并存 → 比竞价高开率（DUAL-MAIN）', () => {
+describe('⑨ 双主线竞争（DUAL-MAIN · 2026-10-01 起让位：只提示、不改选票）', () => {
   it('先钉死事故现场：农业 11 只 2 一字（第 1 名）、大消费 10 只 1 一字（第 2 名）', () => {
     const r = plan0910();
     expect(r.blocks[0].topic).toBe('农业');
@@ -2237,32 +2438,45 @@ describe('⑨ 双主线竞争：两个大题材并存 → 比竞价高开率（D
     expect(r.blocks[1].yiziCount).toBe(1);
   });
 
-  it('9/10：大消费 80% ＞ 农业 45% ⇒ 大消费龙一国芳集团【重仓】、农业龙一敦煌种业【轻仓】', () => {
+  it('★新规：不再是「高开率高者龙一重仓」—— 第 1 名农业照常按量比取前二，大消费照常走 ④', () => {
     const r = plan0910();
-    // ⛔ 大消费虽然是【第 2 名】，但高开率更高 → 它才是重仓那一档
-    expect(r.plan.heavy.block.topic).toBe('大消费');
-    expect(r.plan.heavy.picks.map(p => p.name)).toEqual(['国芳集团']);
-    expect(r.plan.heavy.picks[0].position).toBe(POSITION_HEAVY);
-    expect(r.plan.light.block.topic).toBe('农业');
-    expect(r.plan.light.picks.map(p => p.name)).toEqual(['敦煌种业']);
+    // ⛔ 旧行为：大消费（第 2 名）高开率更高 ⇒ 它成了重仓那一档。
+    //   新规：⑨ 只提示 ⇒ heavy 仍是第 1 名题材（农业），选票按量比（全缺 → 退路名次前二）。
+    expect(r.plan.heavy.block.topic).toBe('农业');
+    expect(r.plan.heavy.picks.map(p => p.name)).toEqual(['敦煌种业', '新赛股份']);
+    expect(r.plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_HEAVY]);
+    // 第 2 名题材（大消费）仍走 ④「龙一不是一字 → 直接买龙一、轻仓」
+    expect(r.plan.light.block.topic).toBe('大消费');
+    expect(r.plan.light.picks.map(p => p.name)).toEqual(['国芳集团']);
     expect(r.plan.light.picks[0].position).toBe(POSITION_LIGHT);
   });
 
-  it('各【只选 1 只】（大容量题材并存不铺票）', () => {
+  it('★新规：⑨ 触发时选票结果与不触发时【完全一致】（只多一条提示）', () => {
+    // 把大消费缩到 9 只 ⇒ ⑨ 不适用（< 10 只），对比选票结果
+    const rows = NONGYE_11().concat(XIAOFEI_10().slice(0, 9));
+    const blocks = rankDecisionTopics(rows);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
     const r = plan0910();
-    expect(r.plan.heavy.picks.length).toBe(1);
-    expect(r.plan.light.picks.length).toBe(1);
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(r.plan.heavy.picks.map(p => p.name));
+    expect(plan.heavy.notes.join('｜')).not.toContain(ruleTag(RULE_NO.DUAL_MAIN));
+    expect(r.plan.heavy.notes.join('｜')).toContain(ruleTag(RULE_NO.DUAL_MAIN));
   });
 
-  it('说明文字必须带【规则⑨】与两个题材的高开率，用户能直接核对', () => {
+  it('说明文字必须带【规则⑨】与两个题材的高开率，并写明「仅作提示」', () => {
     const r = plan0910();
     const notes = r.plan.heavy.notes.join('｜');
     expect(notes).toContain(ruleTag(RULE_NO.DUAL_MAIN));
     expect(notes).toContain('80%');
     expect(notes).toContain('45%');
-    expect(r.plan.heavy.reason).toContain('根据规则' + RULE_NO.DUAL_MAIN);
-    expect(r.plan.light.reason).toContain('根据规则' + RULE_NO.DUAL_MAIN);
-    expect(r.plan.heavy.ruleNo).toBe(RULE_NO.DUAL_MAIN);
+    expect(notes).toContain('仅作提示');
+    // ⛔ 说明文字必须讲清「本条不再接管选票」，否则用户会以为高开率高者才是重仓
+    expect(notes).toContain('不再决定选票与仓位');
+    // ⛔ 旧的「高者重仓 / 低者轻仓」结论必须被显式标注作废，⛔ 不能光秃秃地留在文案里当结论
+    expect(notes).toContain('已作废');
+    // heavy 的规则编号仍是 ①（量比选票），不再是 ⑨
+    expect(r.plan.heavy.ruleNo).toBe(RULE_NO.HEAVY_DOUBLE);
+    expect(r.plan.heavy.reason).toContain('根据规则' + RULE_NO.HEAVY_DOUBLE);
+    expect(r.plan.light.reason).toContain('根据规则' + RULE_NO.SECOND);
   });
 
   it('第 2 名题材不够大（< ' + DUAL_MAIN_MIN_COUNT + ' 只）→ 本条不适用，回到常规档位', () => {
@@ -2286,14 +2500,15 @@ describe('⑨ 双主线竞争：两个大题材并存 → 比竞价高开率（D
     expect(plan.heavy.notes.join('｜')).not.toContain(ruleTag(RULE_NO.DUAL_MAIN));
   });
 
-  it('高开率【完全相同】→ 维持原排名（第 1 名重仓），并如实说明', () => {
+  it('高开率【完全相同】→ 维持原排名（heavy 仍是第 1 名），并如实说明', () => {
     const rows = [];
     for (let i = 1; i <= 11; i++) rows.push(E('农' + i, '农业', 90 - i, i <= 2, true, i <= 5 ? 3 : -1));
     for (let i = 1; i <= 11; i++) rows.push(E('消' + i, '大消费', 80 - i, i === 1, true, i <= 5 ? 3 : -1));
     const blocks = rankDecisionTopics(rows);
     const plan = buildBuyPlan(blocks, rankDragons(blocks));
-    expect(plan.heavy.block.topic).toBe('农业');       // 并列 → 第 1 名胜出
+    expect(plan.heavy.block.topic).toBe('农业');       // 并列 → 第 1 名胜出（heavy 就是第 1 名题材）
     expect(plan.heavy.notes.join('｜')).toContain('完全相同');
+    expect(plan.heavy.notes.join('｜')).toContain('已作废');   // 旧结论被明确标注作废
   });
 });
 
@@ -2349,8 +2564,13 @@ describe('规则编号标注（RULE-NO）', () => {
 
   it('规则说明清单（灰色问号）里的编号与 RULE_NO 一致，且不重复', () => {
     const text = buildRulesLines().join('\n');
-    expect(text).toContain('⑨ 【双主线竞争】');
-    expect(text).toContain('⑩ 【买入只数】');
+    // ⓘ ⑦⑧⑨⑩ 标题里带了「2026-10-01 起已让位」后缀 ⇒ 用前缀匹配，⛔ 不写死完整标题
+    expect(text).toContain('⑦ 【亏钱效应');
+    expect(text).toContain('⑧ 【弱势题材');
+    expect(text).toContain('⑨ 【双主线竞争');
+    expect(text).toContain('⑩ 【买入只数');
     expect(text).toContain('⑪ 【' + HOLD_TAG + '】');
+    expect(text).toContain(RULE_NO.PREV_BOUGHT + ' 【');       // ⑫
+    expect(text).toContain(RULE_NO.TOPIC_STREAK + ' 【');      // ⑬
   });
 });
