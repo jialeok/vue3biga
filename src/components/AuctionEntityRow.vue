@@ -176,6 +176,27 @@
           color="#10b981"
         />
       </div>
+      <!-- [VRATIO-TREND 2026-10-01 用户口径] 竞价量比（倍数）近 5 日趋势：
+           位置 = 【昨日成交量】与【竞价涨幅】之间（用户指定「竞价涨幅趋势图上方」）。
+           与上面四张图同一套结构（.trend-chart-item + .trend-chart-label + TrendChart），
+           ⇒ 观感自然统一，⛔ 不新增任何 CSS。
+           🔴 颜色刻意取【玫红 #ec4899】：上面四张已占用 靛蓝#6366f1 / 绿#10b981 / 橙#f59e0b / 灰#64748b，
+              再复用任一色都会与已有一张图混淆（量比是独立指标，不能看起来像「竞价量」的第二份）。
+           🔴 decimals=2：量比是【倍数】，有效信息在小数上（2.18 被取整成 2 就没法比强弱了）。
+           整条序列一个有效点都没有 ⇒ 不渲染整块（judge 在下方 volRatioHasData，§10 缺失不伪装）。 -->
+      <div
+        v-if="volRatioHasData(item.stock)"
+        class="trend-chart-item"
+      >
+        <div class="trend-chart-label">
+          竞价量比 近5日
+        </div>
+        <TrendChart
+          :points="trendHistory[item.stock].aucVolRatio"
+          color="#ec4899"
+          :decimals="2"
+        />
+      </div>
       <div
         v-if="aucPctHasData(item.stock)"
         class="trend-chart-item"
@@ -236,6 +257,13 @@ function aucPctHasData(stock) {
 }
 function changePctHasData(stock) {
   return trendHistory.value[stock].changePct.some(p => p.value !== null);
+}
+// [VRATIO-TREND 2026-10-01] 竞价量比序列同上：整条都没有有效点 → 整块不渲染。
+// 多一层 Array.isArray 防御：该字段是本轮新加的，若某条 trendHistory 快照来自旧结构则按「无数据」处理，
+// 绝不让一个缺失字段把整行渲染打断（§10 缺值可见，但不许崩）。
+function volRatioHasData(stock) {
+  const leg = trendHistory.value[stock].aucVolRatio;
+  return Array.isArray(leg) && leg.some(p => p.value !== null);
 }
 
 // [DRAGON-GROUP 2026-09-14] 龙头「龙」标的悬停说明（龙头题材 + 十日区间涨幅）。

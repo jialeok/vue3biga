@@ -511,6 +511,8 @@ export function useAuctionBoard() {
       yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
       changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
       aucPctChg: history.map(h => ({ date: h.date, value: h.aucPctChg !== undefined ? h.aucPctChg : null })),
+      // [VRATIO-TREND 2026-10-01] 竞价量比（倍数）：与上面四列同一份 history / 同一个 5 日窗口
+      aucVolRatio: history.map(h => ({ date: h.date, value: h.aucVolRatio !== undefined ? h.aucVolRatio : null })),
       ...stats
     };
   }
@@ -863,6 +865,8 @@ export function useAuctionBoard() {
           yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
           changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
           aucPctChg: history.map(h => ({ date: h.date, value: h.aucPctChg !== undefined ? h.aucPctChg : null })),
+          // [VRATIO-TREND 2026-10-01] 竞价量比（倍数）
+          aucVolRatio: history.map(h => ({ date: h.date, value: h.aucVolRatio !== undefined ? h.aucVolRatio : null })),
           ...stats
         };
       }
@@ -909,6 +913,8 @@ export function useAuctionBoard() {
           yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
           changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
           aucPctChg: history.map(h => ({ date: h.date, value: h.aucPctChg !== undefined ? h.aucPctChg : null })),
+          // [VRATIO-TREND 2026-10-01] 竞价量比（倍数）
+          aucVolRatio: history.map(h => ({ date: h.date, value: h.aucVolRatio !== undefined ? h.aucVolRatio : null })),
           ...stats
         }
       };

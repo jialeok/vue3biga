@@ -362,6 +362,14 @@ import { getCarryOverNamesForDate } from '../auction/tag-carryover.js';
         }
 
         export function getAuctionStockHistory(stockName, endDate, count, dataSource='auction') {
+            // [VRATIO-TREND 2026-10-01] 竞价量比：云端 auc_vol_ratio 存的是【字符串】（如 "2.18"），
+            // 而趋势图要拿它参与 y 轴计算与 toFixed(2) ⇒ 在 Logic 层统一转成【数字】再交给模板（§21 模板零计算）。
+            // 空串 / null / 非数字一律 null —— 绝不用 0 冒充「量比很小」（§10 缺值必须可见）。
+            const toNumOrNull = (v) => {
+                if (v === null || v === undefined || v === '') return null;
+                const n = Number(v);
+                return isNaN(n) ? null : n;
+            };
             const days = [];
             let d = endDate;
             for (let i = 0; i < count; i++) {
@@ -372,7 +380,9 @@ import { getCarryOverNamesForDate } from '../auction/tag-carryover.js';
                     volume: getStockHistoryValue(d, stockName, 'volume', dataSource),
                     yestVolume: getStockHistoryValue(d, stockName, 'yestVolume', dataSource),
                     changePct: getStockHistoryValue(d, stockName, 'changePct', dataSource),
-                    aucPctChg: getStockHistoryValue(d, stockName, 'aucPctChg', dataSource)
+                    aucPctChg: getStockHistoryValue(d, stockName, 'aucPctChg', dataSource),
+                    // 量比（倍数，非百分比）：与上面四列同源同窗口，取自 market_metrics.auc_vol_ratio
+                    aucVolRatio: toNumOrNull(getStockHistoryValue(d, stockName, 'aucVolRatio', dataSource))
                 });
                 d = getPreviousTradingDay(d);
             }

@@ -220,6 +220,21 @@
                   color="#10b981"
                 />
               </div>
+              <!-- [VRATIO-TREND 2026-10-01 用户口径] 竞价量比 近5日：位置与【第一页完全一致】
+                   （昨日成交量 与 竞价涨幅 之间），结构/配色/小数位也一致，⛔ 不新增 CSS。 -->
+              <div
+                v-if="p2VolRatioHasData(group.topic, stock.stock)"
+                class="trend-chart-item"
+              >
+                <div class="trend-chart-label">
+                  竞价量比 近5日
+                </div>
+                <TrendChart
+                  :points="p2TrendHistory[group.topic + '|' + stock.stock].aucVolRatio"
+                  color="#ec4899"
+                  :decimals="2"
+                />
+              </div>
               <div
                 v-if="p2AucPctHasData(group.topic, stock.stock)"
                 class="trend-chart-item"
@@ -289,5 +304,11 @@ function p2AucPctHasData(topic, stockName) {
 }
 function p2ChangePctHasData(topic, stockName) {
   return p2TrendHistory.value[topic + '|' + stockName].changePct.some(p => p.value !== null);
+}
+// [VRATIO-TREND 2026-10-01] 竞价量比：整条都没有有效点 → 整块不渲染。
+// 加 Array.isArray 防御（本轮新字段，旧快照缺它时按「无数据」处理，不让渲染崩）。
+function p2VolRatioHasData(topic, stockName) {
+  const leg = p2TrendHistory.value[topic + '|' + stockName].aucVolRatio;
+  return Array.isArray(leg) && leg.some(p => p.value !== null);
 }
 </script>
