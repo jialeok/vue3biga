@@ -2532,6 +2532,34 @@ export function buildRulesLines() {
 }
 
 /**
+ * [COPY-ALL 2026-10-01 用户要求] 规则面板「一键复制」用的纯文本 —— 一行一条，与面板里
+ * 逐行显示的内容【完全一致】（面板 v-for 出的是同一个 lines 数组，§6 同一来源）。
+ *
+ * 为什么把它放在 Logic 层而不是组件里：
+ *   ① 「怎么拼」是格式口径，只许定义一次；组件里再写一次 join 就是两处分叉的起点；
+ *   ② §21：组件只管渲染与交互，格式化的活儿归 Logic；
+ *   ③ 这里是纯函数，node 环境单测直接覆盖（本项目的测试不带 DOM）。
+ *
+ * ⛔ 绝不让 null / undefined / 空串混进结果：拼接规则一旦放松，复制出来的文本里就会出现
+ *    字面量 "undefined"，用户拿去核对规则时反而更懵（§10 宁可少一行，不给假内容）。
+ *     注意是【逐项过滤】而不是过滤整行里的空白 —— 规则正文里大量用全角空格（U+3000）做缩进，
+ *     那是排版的一部分，必须原样保留。
+ *     （注释里刻意不直接敲一个全角空格：会触发 eslint no-irregular-whitespace。）
+ */
+export function joinRulesLines(lines) {
+  const arr = Array.isArray(lines) ? lines : [];
+  const parts = [];
+  for (let i = 0; i < arr.length; i++) {
+    const v = arr[i];
+    if (v === null || v === undefined) continue;
+    const s = String(v);
+    if (s === '') continue;
+    parts.push(s);
+  }
+  return parts.join('\n');
+}
+
+/**
  * 数值 → 展示文本（§21：格式化在 Logic 层做完，模板只负责渲染）。
  * 缺失一律返回 ''（§10 绝不补 0 / '-'）。
  */

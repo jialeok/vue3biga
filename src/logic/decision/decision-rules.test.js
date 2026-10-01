@@ -28,6 +28,7 @@ import {
   BIG_TOPIC_MIN_COUNT,
   buildSellPlan,
   buildRulesLines,
+  joinRulesLines,
   formatRangePct,
   NO_YIZI_MIN_TOPIC_COUNT,
   SELL_TIME_CLOSE,
@@ -2572,5 +2573,54 @@ describe('规则编号标注（RULE-NO）', () => {
     expect(text).toContain('⑪ 【' + HOLD_TAG + '】');
     expect(text).toContain(RULE_NO.PREV_BOUGHT + ' 【');       // ⑫
     expect(text).toContain(RULE_NO.TOPIC_STREAK + ' 【');      // ⑬
+  });
+});
+
+// === [COPY-ALL 2026-10-01 用户要求] 规则面板「一键复制」的纯文本 ===
+// 复制出去的那段字，是用户拿去【核对规则对不对】的唯一凭据 ⇒ 必须与面板里逐行渲染的内容
+// 一字不差（同一个 lines 数组）。这里钉住三件事：① 逐行还原；② 不掺 undefined/null；
+// ③ 全角空格缩进不被吃掉（规则正文靠它分层，吃了就看不出层级了）。
+describe('joinRulesLines（一键复制的纯文本）', () => {
+  it('逐行还原 buildRulesLines()：行数一致、内容一字不差、顺序不变', () => {
+    const lines = buildRulesLines();
+    const back = joinRulesLines(lines).split('\n');
+    expect(back.length).toBe(lines.length);
+    expect(back).toEqual(lines);
+  });
+
+  it('复制文本里不得出现 undefined / null 字面量', () => {
+    const text = joinRulesLines(buildRulesLines());
+    expect(text).not.toContain('undefined');
+    expect(text).not.toContain('null');
+  });
+
+  it('保留全角空格缩进（⛔ 不能被 trim / 过滤掉）', () => {
+    const lines = buildRulesLines();
+    const text = joinRulesLines(lines);
+    const indented = lines.filter((l) => l.indexOf('　') === 0);
+    expect(indented.length).toBeGreaterThan(0);
+    indented.forEach((l) => {
+      expect(text).toContain(l);
+    });
+  });
+
+  it('坏输入不炸：null / undefined / 空串逐项跳过，其余照常拼接', () => {
+    expect(joinRulesLines(null)).toBe('');
+    expect(joinRulesLines(undefined)).toBe('');
+    expect(joinRulesLines([])).toBe('');
+    expect(joinRulesLines('不是数组')).toBe('');   // ⛔ 传字符串也当空处理，绝不按字符拆
+    expect(joinRulesLines(['A', null, 'B', undefined, '', 'C'])).toBe('A\nB\nC');
+  });
+
+  it('非字符串项按 String() 转换（数字行不丢，0 也是有效值）', () => {
+    expect(joinRulesLines(['A', 1, 0])).toBe('A\n1\n0');
+    expect(joinRulesLines([0])).toBe('0');
+  });
+
+  it('确实覆盖了整份规则：抽买点/卖点/股票行三段代表条文都能找到', () => {
+    const text = joinRulesLines(buildRulesLines());
+    expect(text).toContain('【买点】只看题材排名前二的题材');
+    expect(text).toContain('【卖点】候选 = 昨日打过「买」标签的股票');
+    expect(text).toContain('【股票行的数据】');
   });
 });

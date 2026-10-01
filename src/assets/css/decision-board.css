@@ -506,7 +506,11 @@
             max-height: 62vh;
             overflow-y: auto;
             -webkit-overflow-scrolling: touch;
-            padding: 8px 10px;
+            /* [COPY-ALL 2026-10-01] padding-top 由 8px 改 0：顶部留白改由 sticky 工具条
+               （.dcb-rules-bar）自己扛 —— 工具条 top:0 是相对【滚动视口】贴边的，
+               面板若还留着 8px 上内边距，滚动时内容会从工具条上方那条缝里露出来。
+               左右仍是 10px / 底部 8px，规则文字的可用宽度与位置【不变】。 */
+            padding: 0 10px 8px;
             background: #f8fafc;
             border: 1px solid #e2e8f0;
             border-radius: 10px;
@@ -519,6 +523,65 @@
             color: #475569;
             white-space: normal;
             word-break: break-word;
+        }
+
+        /* [COPY-ALL 2026-10-01 用户要求] 面板顶部工具条（粘住不滚走）+ 一键复制全部规则按钮。
+           为什么要 sticky：规则已近百行，而面板 max-height 62vh ⇒ 必然要滚；工具条若跟着滚，
+           用户得先把面板拉回顶部才点得到「复制」，这个按钮就等于白加。
+           负外边距 -10px 抵消面板的左右内边距 ⇒ 工具条与它的底部分割线横向铺满面板内部。 */
+        .dcb-rules-panel .dcb-rules-bar {
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin: 0 -10px 4px;
+            padding: 7px 10px 6px;
+            background: #f8fafc; /* 与面板同色：滚过去的规则正文被它盖住，不会从字缝里透出来 */
+            border-bottom: 1px solid #e2e8f0;
+            /* ⛔ 工具条自己「不可选」：面板挂着 .dcb-selectable（允许长按选规则原文），
+               而那条白名单写的是 `.dcb-selectable *`，会把【面板内所有子节点】一起放开选区。
+               它的优先级 (0,1,0) 与单类选择器打平 ⇒ 必须靠 .dcb-rules-panel 前缀提权才压得住，
+               否则按钮文字会被长按选中，点起来像在选字而不是点按钮。 */
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+        }
+
+        .dcb-rules-panel .dcb-rules-bar-title {
+            font-size: 11px;
+            font-weight: 600;
+            color: #64748b; /* 比规则正文（#475569）淡一档：它是标题，不是规则本身 */
+            letter-spacing: 0.5px;
+        }
+
+        .dcb-rules-panel .dcb-rules-copy {
+            flex-shrink: 0;
+            display: inline-flex;
+            align-items: center;
+            padding: 2px 9px;
+            font-size: 11px;
+            line-height: 1.6;
+            color: #2563eb; /* 取头部渐变的蓝（2563eb → 1d4ed8），与本看板同色系 */
+            background: #ffffff;
+            border: 1px solid #bfdbfe;
+            border-radius: 6px;
+            cursor: pointer;
+            white-space: nowrap;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .dcb-rules-panel .dcb-rules-copy:hover {
+            background: #eff6ff;
+            border-color: #93c5fd;
+        }
+
+        .dcb-rules-panel .dcb-rules-copy:active {
+            background: #dbeafe;
+            color: #1d4ed8;
         }
 
         /* [COPY 2026-09-29 用户要求] 「说明类文字」允许长按选中复制。
