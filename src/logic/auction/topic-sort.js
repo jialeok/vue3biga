@@ -23,12 +23,12 @@ export function getStockTopicArr(item) {
     let arr = extractTopics(note);
     if (arr.length === 0 && item.topics) {
         const topicsStr = Array.isArray(item.topics) ? item.topics.join(',') : String(item.topics);
-        arr = topicsStr.split(/[，、,;；]/).map(t => t.trim()).filter(isValidTopic);
+        arr = topicsStr.split(TOPIC_WORD_SEP_RE).map(t => t.trim()).filter(isValidTopic);
     }
     if (arr.length === 0 && item.stock) {
         const hist = getStockHistoryTopics(item.stock.trim());
         if (hist) {
-            arr = hist.replace(/[()（）]/g, '').split(/[，、,;；]/).map(t => t.trim()).filter(isValidTopic);
+            arr = hist.replace(/[()（）]/g, '').split(TOPIC_WORD_SEP_RE).map(t => t.trim()).filter(isValidTopic);
         }
     }
     // 去重（与 extractTopics 一致，避免展示重复题材名）
@@ -66,7 +66,10 @@ export function getStockTopicsDisplay(item) {
 // 新实现按「题材分组」排序：属于同一题材的股票聚到一起，哪个题材股票多哪个排前面，
 // "其它"(无题材 / 未匹配核心词 / 组<2只) 一律置底；主排序档位(tier)顺序不变——高光/达标档(tier0)整体在最上。
 
-import { getTopicGroups, getGroupableCoreTopics, matchTopicToCore } from '../topic/rules.js';
+// [TOPIC-SEP 2026-10-02] TOPIC_WORD_SEP_RE = 题材词分隔符的【唯一定义】（§6 单一真相）。
+//   ⛔ 本文件原先内联写死 /[，、,;；]/，与核心词弹窗那侧的 /[,，]/ 分叉 ⇒
+//      顿号粘贴的核心词被当成一整项、静默失效。现在两侧共用同一个常量。
+import { getTopicGroups, getGroupableCoreTopics, matchTopicToCore, TOPIC_WORD_SEP_RE } from '../topic/rules.js';
 
 /** 「其它」组名（无题材 / 未命中核心词 / 组不足 2 只的兜底组） */
 export const OTHER_TOPIC = '其它';

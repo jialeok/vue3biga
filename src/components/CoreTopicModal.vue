@@ -221,7 +221,9 @@
 
 <script setup>
 import { ref } from 'vue';
-import { getCoreTopics, saveCoreTopics } from '../logic/topic/rules.js';
+// [TOPIC-SEP 2026-10-02] splitTopicWords = 题材词拆分的【唯一实现】（§6 单一真相），
+//   本组件的 synonyms 输入必须与股票侧标签用同一套分隔符（含顿号），⛔ 不许再自己写正则。
+import { getCoreTopics, saveCoreTopics, splitTopicWords } from '../logic/topic/rules.js';
 // ⚠️ 原 `import { state } from '../logic/app-state.js'` 随「恢复默认」一起移除：
 //    它是本文件里唯一用到 state.defaultCoreTopics 的地方，留下即 dead code（§42）。
 //    ⛔ 不要删 logic/app-state.js 里的 defaultCoreTopics 本身 —— 它仍是 logic/topic/rules.js
@@ -254,10 +256,17 @@ function close() {
   _emit('auction-refresh');
 }
 
+/**
+ * 把编辑框里的一段文本拆成 synonyms 数组。
+ *
+ * 🔴 [TOPIC-SEP 2026-10-02] ⛔ 这里曾经自己写死 `/[,，]/`（只认两种逗号、不认【顿号】），
+ *    而股票侧标签拆分用的是 `/[,，、;；]/`（含顿号）—— 两侧口径不一致 ⇒
+ *    用户粘贴「工业互联网、智能制造、工业软件…」时被当成【一个整体】存进 synonyms，
+ *    而匹配是子串匹配，整串永远匹配不上 ⇒ 这些词静默失效（实测「工业4.0」正是这样坏的）。
+ *    现在统一复用 Logic 层唯一的 splitTopicWords（§6 单一真相），⛔ 别再在本组件里写正则。
+ */
 function splitSynonyms(text) {
-  const t = String(text == null ? '' : text).trim();
-  if (!t) return [];
-  return t.split(/[,，]/).map(s => s.trim()).filter(s => s);
+  return splitTopicWords(text);
 }
 
 /**

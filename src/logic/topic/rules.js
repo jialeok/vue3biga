@@ -58,8 +58,10 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
                     _coreTopicsMemCache = state.defaultCoreTopics;
                     return;
                 }
-                _coreTopicsMemCache = validCloud;
-                _dbgLog('[CORE-TOPICS] 从云端加载 ' + validCloud.length + ' 个核心词');
+                // [TOPIC-SEP 2026-10-02] 读入即自愈：把「顿号粘成一整串」的 synonym 拆开，
+                //   否则那些词会一直失效（详见上方 normalizeCoreTopics 的事故说明）。
+                _coreTopicsMemCache = normalizeCoreTopics(validCloud);
+                _dbgLog('[CORE-TOPICS] 从云端加载 ' + validCloud.length + ' 个核心词（已归一化 synonyms）');
             } catch (e) {
                 _dbgLog('[AUCTION-ERR] loadCoreTopicsFromCloud 失败: ' + (e && e.message || e));
                 _coreTopicsMemCache = state.defaultCoreTopics;
@@ -69,6 +71,69 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
         export function getCoreTopics() {
             if (_coreTopicsMemCache && _coreTopicsMemCache.length > 0) return _coreTopicsMemCache;
             return state.defaultCoreTopics || [];
+        }
+
+        // ============ [TOPIC-SEP 2026-10-02] 题材词分隔符 · §6 单一真相 ============
+        // 🔴 事故：核心词管理弹窗(CoreTopicModal)的 splitSynonyms 只认 [,，] 两种逗号，
+        //    而【股票侧】标签拆分(getStockTopicArr / auction-helpers 等 8 处)用的是 [,，、;；]（含【顿号】）。
+        //    两侧口径不一致 ⇒ 用户在弹窗里粘贴「工业互联网、智能制造、工业软件…」这种顿号文本时，
+        //    会被当成【一个整体】存进 synonyms。而匹配是子串匹配(topic.includes(synonym))，
+        //    整串永远匹配不上 ⇒ 这些词【静默全部失效】。
+        //    实测脏数据：核心词「工业4.0」的 synonyms[0] =
+        //      "工业互联网、智能制造、工业软件、数控机床、机器人、人形机器人、减速器、传感器、高端制造"
+        //      ⇒ 连「工业4.0」这个标签自身都匹配不到该核心词（只能靠同组的「机器人概念」间接进组）。
+        // ⛔ 从此分隔符只此一处定义，任何拆分题材词的地方都必须用它（组件也一样，不许再写死正则）。
+        export const TOPIC_WORD_SEP_RE = /[,，、;；]/;
+
+        /**
+         * 按统一分隔符把一段文本拆成题材词数组（去空白、去空串、去重，保持原顺序）。
+         * @param {string|null|undefined} text
+         * @returns {string[]}
+         */
+        export function splitTopicWords(text) {
+            const t = String(text === null || text === undefined ? '' : text).trim();
+            if (!t) return [];
+            const seen = new Set();
+            const out = [];
+            t.split(TOPIC_WORD_SEP_RE).forEach(function(s) {
+                const v = String(s || '').trim();
+                if (!v) return;
+                const key = v.toLowerCase();
+                if (seen.has(key)) return;
+                seen.add(key);
+                out.push(v);
+            });
+            return out;
+        }
+
+        /**
+         * 核心词表归一化（自愈脏数据）。
+         *
+         * 只做一件事：把【含分隔符却被当成一整项】的 synonym 拆开（并去重）。
+         * ⚠️ 为什么必须在【读取时】自愈，而不是等用户去弹窗里重新保存一次：
+         *    云端的脏数据已经存在，用户根本看不出它坏了（弹窗里 join(',') 显示出来就是一长串，
+        *    看起来"正常"）⇒ 不自愈的话，那些词会一直失效到有人手动重存为止。
+         *
+         * @param {Array<{name:string, synonyms:string[]}>|null} list
+         * @returns {Array<{name:string, synonyms:string[]}>}
+         */
+        export function normalizeCoreTopics(list) {
+            const arr = Array.isArray(list) ? list : [];
+            return arr.map(function(c) {
+                if (!c || typeof c.name !== 'string' || !c.name.trim()) return c;
+                const raw = Array.isArray(c.synonyms) ? c.synonyms : [];
+                const flat = [];
+                const seen = new Set();
+                raw.forEach(function(s) {
+                    splitTopicWords(s).forEach(function(v) {
+                        const key = v.toLowerCase();
+                        if (seen.has(key)) return;
+                        seen.add(key);
+                        flat.push(v);
+                    });
+                });
+                return { name: c.name, synonyms: flat };
+            });
         }
 
         // ============ 伪题材（事件标记，不可作为题材分组） ============
