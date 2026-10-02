@@ -5,12 +5,15 @@
   只写一份才能保证两边永远同步（§6 单一真相）；它是【本看板的组件】，
   不构成「复用其它看板组件」——决策看板对外仍然零依赖。
 
-  排版（用户口径 2026-09-24 / 09-30，节约空间，全部挤在一行）：
-      题材名称  ●1   数量：12   竞价一字：1  [候选题材]  [昨有买入]  [三次入选]
+  排版（用户口径 2026-09-24 / 09-30 一行挤完；2026-10-02 标记移到题材名前面）：
+      [候选题材]  [昨有买入]  [三次入选]  题材名称  ●1   数量：12   竞价一字：1
+      └ 三个题材级标记在最左（题材名【前面】）—— 原先在行尾，标签一多就把题材名
+        压缩成「AI...」甚至完全挤没（9/30「房地产」整块名字消失）⇒ 2026-10-02 用户要求
+        移到题材名前面，题材名不再参与压缩（CSS 同步：flex-wrap + 题材名 flex-shrink:0）。
       └ 实心红色圆点里的数字 = 决策看板【内】的排名（数量不达标的题材已剔除、不占名次，
         后面的题材递补上来；与早盘竞价「题材 toggle」同一套组序）
       └ 「竞价一字」后面的数字用红色（2026-09-24 用户要求）：一字 = 最强 / 买不到的那个信号
-      └ 末尾两个标记是【买点侧专有】，由 DecisionBuyBlock 传入；卖点侧不传 ⇒ 都不显示。
+      └ 行首三个标记是【买点侧专有】，由 DecisionBuyBlock 传入；卖点侧不传 ⇒ 都不显示。
 
   ⚠️ [TOPIC-TAGS 2026-09-30 用户口径] 题材行只允许出现这两个标记，措辞是刻意选的：
       · 昨有买入（prevBoughtTag）—— 【题材级】：这个题材昨天【有票】被打过「买」标签 = 题材在延续。
@@ -27,16 +30,9 @@
 -->
 <template>
   <div class="dcb-block-head">
-    <span class="dcb-topic">{{ topicText }}</span>
-    <span
-      v-if="rank"
-      class="dcb-rank-dot"
-      :title="'决策看板内排名第 ' + rank + '（数量不达标的题材已剔除、不占名次；与早盘竞价题材组序同源）'"
-    >{{ rank }}</span>
-    <span class="dcb-meta">数量：{{ text(count) }}</span>
-    <span class="dcb-meta">竞价一字：<span class="dcb-meta-num">{{ text(yizi) }}</span></span>
-    <!-- [⑥ 候选题材 2026-10-02 用户口径] 用户原话「你可以这样写：候选题材：房地产」——
-         它在「竞价一字」右边，紧跟题材级标记之前；由 Logic 层给 candidateTag（⛔ 模板零计算）。 -->
+    <!-- [UI 2026-10-02 用户口径] 三个题材级标记放到【题材名前面】（行首）。
+         原先它们挤在行尾，标签一多就把题材名压缩成「AI...」甚至完全挤没
+         （9/30「房地产」那块整个名字消失）⇒ 标记先占位、题材名不再参与压缩。 -->
     <span
       v-if="candidateTag"
       class="dcb-candidate"
@@ -54,6 +50,14 @@
       class="dcb-topic-streak"
       :title="'该题材在含今日的最近 5 个交易日里进入买点的次数（只数重仓 / 轻仓两个主买点块）'"
     >{{ streakTag }}</span>
+    <span class="dcb-topic">{{ topicText }}</span>
+    <span
+      v-if="rank"
+      class="dcb-rank-dot"
+      :title="'决策看板内排名第 ' + rank + '（数量不达标的题材已剔除、不占名次；与早盘竞价题材组序同源）'"
+    >{{ rank }}</span>
+    <span class="dcb-meta">数量：{{ text(count) }}</span>
+    <span class="dcb-meta">竞价一字：<span class="dcb-meta-num">{{ text(yizi) }}</span></span>
   </div>
 </template>
 
