@@ -28,6 +28,8 @@ import { getStockCode } from '../data/stock-code-map.js';
 import { isHighLimitBoard } from '../logic/auction/limit-up.js';
 import { pushStockTopicsToCloud } from '../data/stock-topics.js';
 import { prepareAuctionData } from '../logic/auction/view-helpers.js';
+// [TWO-MODES 2026-10-02 用户口径] 题材 / 一字两个 toggle 的排序口径词表（§6 唯一真相）
+import { TOPIC_ORDER_VOL_RATIO, TOPIC_ORDER_YIZI } from '../logic/auction/topic-sort.js';
 import { computeAuctionViewDataIncremental } from '../logic/auction/incremental-view.js';
 import { showToast, showWarningToast } from '../composables/useToast.js';
 import { apiStatusMap, setApiStatus } from '../logic/ui-bridge.js';
@@ -71,15 +73,23 @@ export function useAuctionBoard() {
   const auctionStore = useAuctionStore();
 
 
+  // [TWO-MODES 2026-10-02 用户口径] 第一页排序状态：`byParallel` 已删除（「平行」toggle 的开关位
+  //   被新的「一字」toggle 占用，平行并入「竞/昨」）；新增 `topicOrderBy` = 题材 / 一字两个 toggle
+  //   的排序口径（二者共用 byTopic，互斥是结构性的）。取值词表见 logic/auction/topic-sort.js。
   const sortState = reactive({
     byWeakStrong: false,
     byRatio: false,
-    byParallel: false,
     byJingYest: false,
     byJingYestRatio: false,
     byThreeDayJingDie: false,
-    byTopic: false
+    byTopic: false,
+    topicOrderBy: TOPIC_ORDER_VOL_RATIO
   });
+  // [TWO-MODES 2026-10-02 用户口径] 两个题材 toggle 的勾选态。
+  //   两个 toggle 共用 byTopic，靠 topicOrderBy 区分 ⇒ 勾选态必须在这里算好，
+  //   ⛔ 模板里不许出现 `sortState.byTopic && sortState.topicOrderBy === 'yizi'` 这类比较（§21 模板零计算）。
+  const yiziToggleOn = computed(() => !!sortState.byTopic && sortState.topicOrderBy === TOPIC_ORDER_YIZI);
+  const topicToggleOn = computed(() => !!sortState.byTopic && sortState.topicOrderBy !== TOPIC_ORDER_YIZI);
   const expandedSet = ref(new Set());
   const trendHistory = ref({});
   // [FIX 2026-08-17] 展开状态 key 用股票名而非位置 index：翻页/刷新后 viewData 重算会导致
@@ -92,8 +102,10 @@ export function useAuctionBoard() {
   const viewData = computed(() => {
     void auctionStore.dataVersions['auction'];
     void uiStore.currentDate;
-    void sortState.byWeakStrong; void sortState.byRatio; void sortState.byParallel;
+    void sortState.byWeakStrong; void sortState.byRatio;
     void sortState.byJingYest; void sortState.byJingYestRatio; void sortState.byThreeDayJingDie; void sortState.byTopic;
+    // [TWO-MODES 2026-10-02] 题材排序口径也进依赖：切「题材 / 一字」必须重算视图（顺序不同）
+    void sortState.topicOrderBy;
     // A3-01：经增量行缓存层，单格编辑只重新派生变化的行（logic/auction/incremental-view.js）
     return computeAuctionViewDataIncremental('auction', sortState);
   });
@@ -801,46 +813,27 @@ export function useAuctionBoard() {
     auctionStore.bumpDataVersion('auction');
   }
 
-  function toggleSort(key) {
-    sortState[key] = !sortState[key];
-    if (sortState[key]) {
-      if (key === 'byWeakStrong') {
-        sortState.byRatio = false; sortState.byParallel = false;
-        sortState.byJingYest = false; sortState.byJingYestRatio = false; sortState.byThreeDayJingDie = false;
-      } else if (key === 'byRatio') {
-        sortState.byWeakStrong = false; sortState.byParallel = false;
-        sortState.byJingYest = false; sortState.byJingYestRatio = false; sortState.byThreeDayJingDie = false;
-      } else if (key === 'byParallel') {
-        sortState.byWeakStrong = false; sortState.byRatio = false;
-        sortState.byThreeDayJingDie = false;
-      } else if (key === 'byJingYest') {
-        sortState.byWeakStrong = false; sortState.byRatio = false;
-        sortState.byJingYestRatio = false; sortState.byThreeDayJingDie = false;
-        sortState.byParallel = true;
-      } else if (key === 'byJingYestRatio') {
-        sortState.byWeakStrong = false; sortState.byRatio = false; sortState.byParallel = false;
-        sortState.byJingYest = false; sortState.byThreeDayJingDie = false;
-      } else if (key === 'byThreeDayJingDie') {
-        sortState.byWeakStrong = false; sortState.byRatio = false; sortState.byParallel = false;
-        sortState.byJingYest = false; sortState.byJingYestRatio = false;
-      }
-    } else {
-      if (key === 'byParallel') {
-        sortState.byJingYest = false; sortState.byJingYestRatio = false;
-      } else if (key === 'byJingYest') {
-        sortState.byParallel = false;
-      }
-    }
+  /**
+   * 把当前排序状态同步进 Pinia store（§6 单一真相：早盘竞价 / 决策看板 / 增量指纹都读这一份）。
+   * [TWO-MODES 2026-10-02] 提取成函数：现在有两个入口要写它（toggleSort 与 toggleTopicOrder），
+   *   ⛔ 别在两处各抄一遍 —— 漏同步一个键就会让「早盘竞价显示的顺序」与「决策看板算出的排名」分叉。
+   */
+  function _syncSortStateToStore() {
     if (auctionStore.sortState && auctionStore.sortState['auction']) {
       const s = auctionStore.sortState['auction'];
       s.byWeakStrong = sortState.byWeakStrong;
       s.byRatio = sortState.byRatio;
-      s.byParallel = sortState.byParallel;
       s.byJingYest = sortState.byJingYest;
       s.byJingYestRatio = sortState.byJingYestRatio;
       s.byThreeDayJingDie = sortState.byThreeDayJingDie;
       s.byTopic = sortState.byTopic;
+      // [TWO-MODES 2026-10-02] 题材排序口径（决策看板据它选买点模式，见 decision-mode.js）
+      s.topicOrderBy = sortState.topicOrderBy;
     }
+  }
+
+  /** 任何排序动作后统一收尾：清展开态 + 清趋势缓存 + 重算视图（原有行为，一次收口） */
+  function _afterSortChange() {
     // [FIX 2026-09-06] 展开态不跨 toggle 保留：任何排序 toggle 的「开」或「关」动作，都把展开面板
     // 重置为收起。需求——关闭 toggle 时收起；再次打开时也必须是收起，而不是恢复上一次的展开集合。
     // 展开态是纯 UI 状态（§34），不落库、不记忆；用户手动点股票名/序号仍可随时展开（onExpandTrend），
@@ -848,6 +841,65 @@ export function useAuctionBoard() {
     expandedSet.value = new Set();
     trendHistory.value = {};
     refresh();
+  }
+
+  /**
+   * [TWO-MODES 2026-10-02 用户口径]⭐题材 / 一字两个 toggle 的唯一入口（互斥由结构保证）。
+   *
+   * 用户原话：「把早盘竞价看板的『平行』toggle 改成『一字』……打开一字 toggle 后，显示也和单独
+   *   打开题材 toggle 一样，只是排序变了（一字数量多的排在前面）……这样两个 toggle 并存，互斥。」
+   *
+   * 实现：两个 toggle **共用同一个 `byTopic` 开关**，只用 `topicOrderBy` 区分口径 ——
+   *   所以「同时打开」在结构上不可能（⛔ 不需要手写互斥矩阵，也不会出现两个开关都亮的状态）。
+   *   显示行为（分组 / 表头 / 底色 / 龙头徽章 / 观察组合并）两边完全一致 ⇒ 正好满足
+   *   「显示也和单独打开题材 toggle 一样，只是排序变了」。
+   *
+   * 交互语义（与普通 toggle 一致）：
+   *   · 点当前【已生效】的那个 → 关闭（byTopic = false；topicOrderBy 保留，下次打开还是它）；
+   *   · 点另一个 / 当前是关 → 打开并切到该口径（另一个自然就关了）。
+   *
+   * @param {string} mode TOPIC_ORDER_VOL_RATIO（题材）| TOPIC_ORDER_YIZI（一字）
+   */
+  function toggleTopicOrder(mode) {
+    const want = (mode === TOPIC_ORDER_YIZI) ? TOPIC_ORDER_YIZI : TOPIC_ORDER_VOL_RATIO;
+    const isOn = !!sortState.byTopic && sortState.topicOrderBy === want;
+    if (isOn) {
+      sortState.byTopic = false;
+    } else {
+      sortState.byTopic = true;
+      sortState.topicOrderBy = want;
+    }
+    _syncSortStateToStore();
+    _afterSortChange();
+  }
+
+  function toggleSort(key) {
+    sortState[key] = !sortState[key];
+    if (sortState[key]) {
+      if (key === 'byWeakStrong') {
+        sortState.byRatio = false;
+        sortState.byJingYest = false; sortState.byJingYestRatio = false; sortState.byThreeDayJingDie = false;
+      } else if (key === 'byRatio') {
+        sortState.byWeakStrong = false;
+        sortState.byJingYest = false; sortState.byJingYestRatio = false; sortState.byThreeDayJingDie = false;
+      } else if (key === 'byJingYest') {
+        sortState.byWeakStrong = false; sortState.byRatio = false;
+        sortState.byJingYestRatio = false; sortState.byThreeDayJingDie = false;
+      } else if (key === 'byJingYestRatio') {
+        sortState.byWeakStrong = false; sortState.byRatio = false;
+        sortState.byJingYest = false; sortState.byThreeDayJingDie = false;
+      } else if (key === 'byThreeDayJingDie') {
+        sortState.byWeakStrong = false; sortState.byRatio = false;
+        sortState.byJingYest = false; sortState.byJingYestRatio = false;
+      }
+      // [TWO-MODES 2026-10-02] ⛔ 原 `byParallel` 的互斥分支（toogle 时强置 byParallel=true）已删除：
+      //   平行 toggle 不存在了，「平行」语义现在是「竞/昨」的一个 tier（见 view-helpers 的 tier 解析），
+      //   不再需要任何状态位跟着联动。
+      //   ⚠️ `byTopic` 也不走本函数 —— 两个题材 toggle 一律走 toggleTopicOrder（上面），
+      //      否则「题材 / 一字」的互斥与口径切换就没人维护了。
+    }
+    _syncSortStateToStore();
+    _afterSortChange();
   }
 
   function expandAll() {
@@ -1454,6 +1506,11 @@ export function useAuctionBoard() {
     onHeaderDblClick,
     refresh,
     toggleSort,
+    // [TWO-MODES 2026-10-02] 题材 / 一字两个 toggle 的唯一入口（互斥；口径见 topic-sort.js）
+    toggleTopicOrder,
+    // 两个题材 toggle 的勾选态（§21：模板只读，不做比较）
+    yiziToggleOn,
+    topicToggleOn,
     expandAll,
     collapseAll,
     _computeTrendStats,

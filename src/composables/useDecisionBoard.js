@@ -11,8 +11,12 @@
 
 import { ref, computed, watch, onUnmounted } from 'vue';
 import { useUiStore } from '../stores/uiStore.js';
+import { useAuctionStore } from '../stores/auctionStore.js';
 import { _on, _off } from '../stores/eventBus.js';
 import { collectDecisionData } from '../logic/decision/decision-collect.js';
+// [TWO-MODES 2026-10-02] 买点模式由早盘竞价的题材 / 一字 toggle 决定；
+//   ⛔ 判定与分派都在 Logic 层（decision-mode.js），复合式只负责「把 store 状态喂进去」（§14 瘦身）。
+import { resolveDecisionMode, buildRulesLines } from '../logic/decision/decision-mode.js';
 
 /** §10：任何一次计算失败都要【可见】，绝不静默成「今天没有信号」 */
 function _empty(reason) {
@@ -28,7 +32,29 @@ function _empty(reason) {
 
 export function useDecisionBoard() {
   const uiStore = useUiStore();
+  const auctionStore = useAuctionStore();
   const currentDate = computed(() => uiStore.currentDate);
+
+  /**
+   * [TWO-MODES 2026-10-02 用户口径] 当前买点模式 —— ★本看板唯一的模式来源★。
+   *
+   * 用户原话：「决策看板……只是逻辑要跟随早盘竞价看板的 toggle 变化，相当于两种方式。
+   *   其它看板不变。」⇒ 模式 = 早盘竞价第一页那两个题材 toggle 的口径：
+   *   · 一字 toggle 打开 → MODE_YIZI（老版完整规则）；
+   *   · 题材 toggle 打开 / 两个都关 → MODE_VOL_RATIO（现行规则）。
+   *
+   * ⚠️ 读的是 Pinia store（app 级、跨页面共享）而不是早盘竞价那套局部 reactive ——
+   *    早盘竞价的 toggleSort 每次都会把状态同步进 store（§6 单一真相），
+   *    所以这里既是【响应式】的（切 toggle 后本看板自动重算），也不需要跨页面通信。
+   * §10：store 还没初始化 / 形状不对 → resolveDecisionMode 内部回落 MODE_VOL_RATIO，绝不抛错。
+   */
+  const decisionMode = computed(function() {
+    const s = auctionStore && auctionStore.sortState ? auctionStore.sortState.auction : null;
+    return resolveDecisionMode(s);
+  });
+
+  // 规则面板文案：随模式切换（一字模式显示老版条文）。⛔ 只在 Logic 层生成（§6 实现与说明同处一处）。
+  const rulesLines = computed(() => buildRulesLines(decisionMode.value));
 
   // 纯展示态（§34）
   // [DEFAULT-COLLAPSED 2026-09-28] 看板默认【收起】（用户口径：打开 / 刷新页面不用再手动一个个关）。
@@ -65,7 +91,8 @@ export function useDecisionBoard() {
     const d = currentDate.value;
     if (!d) return _empty('未选择日期');
     try {
-      return collectDecisionData(d);
+      // [TWO-MODES 2026-10-02] 把当前模式传下去 —— 题材排名、买点规则、连板天梯采集全部跟着它走
+      return collectDecisionData(d, { mode: decisionMode.value });
     } catch (e) {
       // §10：计算失败必须可见，绝不能返回「空结果」伪装成「今天没有信号」
       errorText.value = '决策计算失败：' + (e && e.message ? e.message : String(e));
@@ -176,6 +203,10 @@ export function useDecisionBoard() {
     expanded,
     rulesOpen,
     compactOpen,
+    // [TWO-MODES 2026-10-02] 当前买点模式（由早盘竞价 toggle 决定）+ 与之配套的规则面板文案。
+    //   rulesLines 随模式切换 ⇒ 一字模式点开问号看到的是【老版条文】，量比模式看到现行条文。
+    decisionMode,
+    rulesLines,
     // [VRATIO-TREND 2026-10-01] 竞价量比趋势面板的展开态与开关（由 DecisionBoard.vue provide 给买卖点两个块组件）
     trendOpenSet,
     errorText,

@@ -2,7 +2,9 @@ import { getTodayGroupList, getGroupData, getAuctionData } from '../app-core-api
 import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
 // 注：getDigitCount / getNumericVolume 原为「环比」旧口径（今/昨比 + 位数差）服务，
 // 2026-09-05 环比重构为「量比抢筹」后已无引用，故从 import 中移除（避免 dead code）。
-import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlightSetForDate, getRatioDiffInfoForDate } from './sort-rules.js';
+// [TWO-MODES 2026-10-02] getRatioDiffInfoForDate 已随「平行」主排序分支（digitGap/diff 那套）
+// 一并删除——平行 toggle 被「一字」toggle 占用、平行并入竞/昨，该函数在本文件再无引用（§16）。
+import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlightSetForDate } from './sort-rules.js';
 import { ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagState, _buildTagStateCache } from '../tagTitles/rules.js';
 import { getThreeDayJingDieSet, getWeakStrongSet, getWeakStrongTurnSet, getVolGrabSet } from './sort-rules-extra.js';
 import { getStockCode } from '../../data/stock-code-map.js';
@@ -19,7 +21,7 @@ import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 import { getAuctionTagState } from '../ui-bridge.js';
 import { getDisplayNote } from '../note/helpers.js';
 import { useUiStore } from '../../stores/uiStore.js';
-import { getStockTopicCount, getStockTopicsDisplay, getPrimaryTopicMap, classifyStockPrimaryTopic, buildTopicSizeMap, sortByTopicGroups, buildTopicColorMap } from './topic-sort.js';
+import { getStockTopicCount, getStockTopicsDisplay, getPrimaryTopicMap, classifyStockPrimaryTopic, buildTopicSizeMap, sortByTopicGroups, buildTopicColorMap, TOPIC_ORDER_VOL_RATIO, TOPIC_ORDER_YIZI } from './topic-sort.js';
 // [YIZI 2026-09-09] 竞价一字（竞价涨停）：行级红线标记 + 题材组间排序权重，单一真相在 limit-up.js。
 // [CLOSE-LIMIT 2026-09-11] 同模块新增 getCloseLimitState：收盘涨停/跌停（蚂蚁线标记 + 题材统计）。
 // [CLOSE-NAME-COLOR 2026-09-11] 同模块新增 getCloseNameTone：收盘涨幅 → 股票名字体颜色档位。
@@ -122,7 +124,10 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   }
 
   const isJingYestMatch = ctx.jingYestToggleChecked && ctx.jingYestHighlightSet && stockName && ctx.jingYestHighlightSet.has(stockName);
-  const isParallelMatch = ctx.sortByParallelEnabled && !ctx.jingYestToggleChecked && stockName && ctx.parallelStocksToday && ctx.parallelStocksToday.has(stockName);
+  // [TWO-MODES 2026-10-02 用户口径] ⛔ 原来的 `isParallelMatch`（平行单独开启时的绿色左边条）已删除：
+  //   平行 toggle 已被「一字」toggle 占用，平行随之【并入竞/昨】（竞/昨 的 tier1 就是平行档）。
+  //   ⇒ 该分支在删掉开关后【永远不成立】，属于死代码（§16）；平行的绿色边条也随之取消。
+  //   用户在 AskUserQuestion 里明确选「保留现有『竞/昨』口径」，所以没有把这枚边条搬到竞/昨下面。
   // [VOL-GRAB 2026-09-05] 量比抢筹高光（原「环比」重构）：竞价量比(auc_vol_ratio) >= 10 且 抢筹幅度(open_bid_pct) > 1
   // 两条件同时满足才点亮；与 byRatio 排序分支共用 ctx.volGrabSet（单一真相，杜绝排序与高光两套口径）。
   // 旧口径（今/昨比 >= 1.5 的 highRatioToday）仅保留给「竞放量数」常驻统计，不再参与高光。
@@ -136,8 +141,6 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   const isWeakStrongMatch = ctx.sortByWeakStrongEnabled && ctx.weakStrongSet && stockName && ctx.weakStrongSet.has(stockName);
   if (isJingYestMatch) {
     itemClass += ' jing-yest-match';
-  } else if (isParallelMatch) {
-    itemClass += ' parallel-match';
   } else if (isThreeDayJingDieMatch) {
     itemClass += ' three-day-jing-die';
   } else if (isWeakStrongMatch) {
@@ -464,15 +467,18 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   const prevPrevDate = prevDate ? getPreviousTradingDay(prevDate) : null;
   const prevPrevAuctionList = prevPrevDate ? (auctionData[prevPrevDate] || []) : [];
 
+  // [TWO-MODES 2026-10-02] sortState 形状：`byParallel` 已删除（平行 toggle → 一字 toggle，
+  //   平行并入竞/昨），新增 `topicOrderBy`（题材 / 一字两个 toggle 的【排序口径】，见 topic-sort.js）。
+  //   ⚠️ 下面两处是【兜底默认值】：正常路径走到的是 store 里那一份（由 useAuctionBoard 维护）。
   let sortState;
   if (sortStateOverride) {
     sortState = sortStateOverride;
   } else {
     try {
       const store = useAuctionStore();
-      sortState = store && store.sortState ? store.sortState[_p] : { byWeakStrong: false, byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false };
+      sortState = store && store.sortState ? store.sortState[_p] : { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false, topicOrderBy: TOPIC_ORDER_VOL_RATIO };
     } catch {
-      sortState = { byWeakStrong: false, byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false };
+      sortState = { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false, topicOrderBy: TOPIC_ORDER_VOL_RATIO };
     }
   }
 
@@ -688,51 +694,15 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       if (b.pctVal === null) return -1;
       return b.pctVal - a.pctVal;
     }).map(x => x.idx);
-  } else if (sortState.byParallel) {
-    if (sortState.byJingYest) {
-      const parallelStockNamesForSort = getParallelStocksForDate(currentDate, dataSource);
-      const allRatioDiffInfo = getRatioDiffInfoForDate(currentDate, dataSource);
-      renderOrder = renderOrder.map((idx, pos) => {
-        const stockName = renderList[idx] && renderList[idx].stock ? renderList[idx].stock.trim() : '';
-        const isParallel = parallelStockNamesForSort.has(stockName);
-        const isHighlight = stockName && jingYestHighlightSet && jingYestHighlightSet.has(stockName);
-        const tier = isHighlight ? 0 : (isParallel ? 1 : 2);
-        const fallbackInfo = (tier === 0 || tier === 1) ? allRatioDiffInfo.get(stockName) : null;
-        const diff = fallbackInfo ? fallbackInfo.diff : null;
-        const digitGap = fallbackInfo ? fallbackInfo.digitGap : null;
-        return { idx, pos, diff, digitGap, tier };
-      }).sort((a, b) => {
-        if (a.tier !== b.tier) return a.tier - b.tier;
-        if (a.tier === 0 || a.tier === 1) {
-          if (a.digitGap === null && b.digitGap === null) return a.pos - b.pos;
-          if (a.digitGap === null) return 1;
-          if (b.digitGap === null) return -1;
-          if (a.digitGap !== b.digitGap) return a.digitGap - b.digitGap;
-          return b.diff - a.diff;
-        }
-        return a.pos - b.pos;
-      }).map(x => x.idx);
-    } else {
-      const parallelStockNames = getParallelStocksForDate(currentDate, dataSource);
-      const allRatioDiffInfoForParallel = getRatioDiffInfoForDate(currentDate, dataSource);
-      renderOrder = renderOrder.map((idx, pos) => {
-        const stockName = renderList[idx] && renderList[idx].stock ? renderList[idx].stock.trim() : '';
-        const qualifies = stockName && parallelStockNames.has(stockName);
-        const info = qualifies ? allRatioDiffInfoForParallel.get(stockName) : null;
-        return { idx, pos, qualifies, diff: info ? info.diff : null, digitGap: info ? info.digitGap : null };
-      }).sort((a, b) => {
-        if (a.qualifies !== b.qualifies) return a.qualifies ? -1 : 1;
-        if (a.qualifies) {
-          if (a.digitGap === null && b.digitGap === null) return a.pos - b.pos;
-          if (a.digitGap === null) return 1;
-          if (b.digitGap === null) return -1;
-          if (a.digitGap !== b.digitGap) return a.digitGap - b.digitGap;
-          return b.diff - a.diff;
-        }
-        return a.pos - b.pos;
-      }).map(x => x.idx);
-    }
   }
+  // [TWO-MODES 2026-10-02 用户口径] ⛔ 这里原有 `else if (sortState.byParallel)` 主排序分支（平行达标档
+  //   按 digitGap 升序 → diff 降序；内层还套了一个永远走不到的 `if (sortState.byJingYest)` 子分支）
+  //   —— 整段已删除（§16 不留死代码）：
+  //     · 平行 toggle 的开关位被「一字」toggle 占用，`byParallel` 从状态里移除；
+  //     · 平行随之【并入竞/昨】（竞/昨 的 tier0 = 平行+diff>0 高光、tier1 = 仅平行），
+  //       这一层排序本来就被上面 `else if (sortState.byJingYest)` 覆盖（它在链上更靠前）；
+  //     · 用户在 AskUserQuestion 里明确选了「保留现有『竞/昨』口径」，所以没有把 digitGap 排序搬过去。
+  //   ⛔ 想恢复旧行为 ⇒ `git revert` 引入本改动的那次提交。
 
   // [FEAT 2026-08-20 v2] 题材 toggle：联动辅助叠加排序（按题材【分组】，非按单只股票题材数量）。
   // 复用第二页题材分类(getTopicGroups) 的同一套核心词匹配口径：把同题材股票聚到一起，
@@ -790,12 +760,17 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   // [TOPIC-MERGE 2026-09-09] 题材 toggle「单独开启」判定：没有任何主排序 toggle 参与时为真。
   // 单独开启题材 = 用户只想按题材看当日全量（含观察组继承票），不再区分观察组/常规组两块；
-  // 一旦叠加任一主排序 toggle（弱转强/量比抢筹/平行/竞昨/竞昨占比/三天竞跌），
+  // 一旦叠加任一主排序 toggle（弱转强/量比抢筹/竞昨/竞昨占比/三天竞跌），
   // 观察组与常规组的既有显示方式保持不变（下方分组分支的 else/各专属分支原逻辑不动）。
+  //
+  // [TWO-MODES 2026-10-02] ⚠️ 这里【不再有】 `!sortState.byParallel` 那一项：
+  //   平行 toggle 已被「一字」toggle 占用，`byParallel` 从排序状态里整体移除（平行并入竞/昨）。
+  //   ⛔ 一字 toggle 走的是【同一个 byTopic 开关】（只是 topicOrderBy 不同），
+  //      所以它天然落在这个 topicOnlyMode 里 —— 这正是用户要的
+  //      「打开一字 toggle 后，显示也和单独打开题材 toggle 一样，只是排序变了」。
   const topicOnlyMode = !!sortState.byTopic
     && !sortState.byWeakStrong
     && !sortState.byRatio
-    && !sortState.byParallel
     && !jingYestToggleChecked
     && !sortState.byThreeDayJingDie;
 
@@ -941,12 +916,17 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
         const nm = it && it.stock ? String(it.stock).trim() : '';
         return nm ? _listedNames.has(nm) : false;
       },
-      // ⭐ [RATIO-ORDER 2026-10-01 用户口径] 第 8 参 = 题材组的【组间排序口径】：
-      //   从「一字数量降序」改成「平均竞价量比降序」—— 这样题材能按强度分出名次，
-      //   决策看板「第 1 / 第 2 名题材」跟着同一把尺子走（决策那边 rankDecisionTopics 复用本函数，
-      //   §6 单一真相：改这里，两处一起变，绝不会出现「决策说第一、竞价显示第二」的错位）。
+      // ⭐ [TWO-MODES 2026-10-02 用户口径] 第 8 参 = 题材组的【组间排序口径】—— **由 toggle 决定**：
+      //   · 题材 toggle（topicOrderBy = 'volRatio'，缺省）→ 平均竞价量比降序（2026-10-01 起的口径）；
+      //   · 一字 toggle（topicOrderBy = 'yizi'）         → **不传第 8 参** ⇒ 回到 sortByTopicGroups
+      //     的默认口径 = 【竞价一字数量降序】→ 组大小 → 题材名。这就是用户说的
+      //     「早期版本那个题材一字多的排在前面的逻辑」，⛔ 不是退回旧代码而是同一函数换口径。
+      //   两者【共用这一个调用点】，所以「屏幕顺序 == 决策看板题材排名 == 趋势图名次」三处必然同源
+      //   （决策侧 rankDecisionTopics 传的是同一个参数，§6 单一真相）。
       //   ⛔ 只有本调用点传它；涨跌停 / 一字看板 / 第二页题材块仍走默认的一字口径（各看板独立 §15）。
-      { by: 'volRatio', volRatioOf: volRatioOf }
+      sortState.topicOrderBy === TOPIC_ORDER_YIZI
+        ? undefined
+        : { by: TOPIC_ORDER_VOL_RATIO, volRatioOf: volRatioOf }
     );
   }
 
@@ -1144,7 +1124,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     tagStateCache: _buildTagStateCache(currentDate),
     jingYestToggleChecked,
     jingYestHighlightSet,
-    sortByParallelEnabled: sortState.byParallel,
+    // [TWO-MODES 2026-10-02] `sortByParallelEnabled` 已随平行 toggle 一并移除（平行并入竞/昨，
+    //   其唯一消费者 isParallelMatch 已删除）。`parallelStocksToday` 保留：竞/昨的 tier 计算还要用它。
     parallelStocksToday,
     sortByRatioEnabled: sortState.byRatio,
     // 注：highRatioToday（原环比的今/昨比>=1.5 集合）已从 ctx 移除——高光改由 volGrabSet 判定，

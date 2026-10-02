@@ -1,4 +1,10 @@
-// decision-rules.test.js — 「决策」看板规则回归用例
+// decision-rules.test.js — 「决策」看板【量比模式】规则回归用例
+//
+// ⚠️ [TWO-MODES 2026-10-02] 决策看板现在有【两套买点模式】，测试也分两份文件：
+//    · 本文件 = 量比模式（早盘竞价「题材」toggle）→ 现行三步买点；
+//    · decision-rules-legacy.test.js = 一字模式（早盘竞价「一字」toggle）→ 老版完整买点；
+//    · 分派点由 decision-mode.test.js 钉住（⛔ 不要在业务代码里再判一次模式）。
+//    卖点 / 后置标记 / 工具两模式共用，本文件覆盖的就是那一份实现。
 //
 // ⭐ [QUANT-PICK 2026-10-01 买点整体重写] 新买点只有三步，用例就围着这三步钉：
 //   ⓪ 题材排名 = 早盘竞价「题材 toggle」的组序（复用 sortByTopicGroups，不另写比较器），
@@ -25,7 +31,7 @@ import {
   rankDragons,
   buildBuyPlan,
   buildSellPlan,
-  buildRulesLines,
+  buildVolRatioRulesLines,
   joinRulesLines,
   formatRangePct,
   // [QUANT-PICK 2026-10-01] 新买点的两个核心实现
@@ -1102,8 +1108,8 @@ describe('卖点 · 竞价高低开细分（SELL-OPEN）', () => {
   });
 });
 
-describe('buildRulesLines（灰色问号里的规则说明）', () => {
-  const lines = buildRulesLines();
+describe('buildVolRatioRulesLines（灰色问号里的规则说明）', () => {
+  const lines = buildVolRatioRulesLines();
   const text = () => lines.join('\n');
 
   // === [QUANT-PICK 2026-10-01] 规则说明必须同步买点新规（§6：规则与文案同处一处）===
@@ -1450,7 +1456,7 @@ describe('昨天已买标记（PREV-BOUGHT，股票级）', () => {
   });
 
   it('规则面板里有 ⑫ 这条（规则实现了就必须能逐条核对）', () => {
-    const text = buildRulesLines().join('\n');
+    const text = buildVolRatioRulesLines().join('\n');
     expect(text).toContain(RULE_NO.PREV_BOUGHT);
     expect(text).toContain(PREV_BOUGHT_TAG);
   });
@@ -1571,7 +1577,7 @@ describe('昨天已买标记（PREV-BOUGHT，股票级）', () => {
   });
 
   it('规则面板里有 ⑬ 这条，且 ⑫ / ⑬ 两个说法都能逐条核对', () => {
-    const text = buildRulesLines().join('\n');
+    const text = buildVolRatioRulesLines().join('\n');
     expect(text).toContain(RULE_NO.TOPIC_STREAK);
     expect(text).toContain(TOPIC_PREV_BOUGHT_TAG);
     expect(text).toContain(String(TOPIC_STREAK_WINDOW));
@@ -1618,21 +1624,21 @@ describe('规则编号标注（RULE-NO）', () => {
 // 一字不差（同一个 lines 数组）。这里钉住三件事：① 逐行还原；② 不掺 undefined/null；
 // ③ 全角空格缩进不被吃掉（规则正文靠它分层，吃了就看不出层级了）。
 describe('joinRulesLines（一键复制的纯文本）', () => {
-  it('逐行还原 buildRulesLines()：行数一致、内容一字不差、顺序不变', () => {
-    const lines = buildRulesLines();
+  it('逐行还原 buildVolRatioRulesLines()：行数一致、内容一字不差、顺序不变', () => {
+    const lines = buildVolRatioRulesLines();
     const back = joinRulesLines(lines).split('\n');
     expect(back.length).toBe(lines.length);
     expect(back).toEqual(lines);
   });
 
   it('复制文本里不得出现 undefined / null 字面量', () => {
-    const text = joinRulesLines(buildRulesLines());
+    const text = joinRulesLines(buildVolRatioRulesLines());
     expect(text).not.toContain('undefined');
     expect(text).not.toContain('null');
   });
 
   it('保留全角空格缩进（⛔ 不能被 trim / 过滤掉）', () => {
-    const lines = buildRulesLines();
+    const lines = buildVolRatioRulesLines();
     const text = joinRulesLines(lines);
     const indented = lines.filter((l) => l.indexOf('　') === 0);
     expect(indented.length).toBeGreaterThan(0);
@@ -1655,7 +1661,7 @@ describe('joinRulesLines（一键复制的纯文本）', () => {
   });
 
   it('确实覆盖了整份规则：抽买点/卖点/股票行三段代表条文都能找到', () => {
-    const text = joinRulesLines(buildRulesLines());
+    const text = joinRulesLines(buildVolRatioRulesLines());
     expect(text).toContain('【买点】只看题材排名前二的题材');
     expect(text).toContain('【卖点】候选 = 昨日打过「买」标签的股票');
     expect(text).toContain('【股票行的数据】');
@@ -1825,7 +1831,7 @@ describe('[YIZI-ALL-CLEAR] 本档名次全被竞价一字占掉 → 往下补位
   });
 
   it('规则文案里写清了这条例外（用户在问号里能看到，不用猜）', () => {
-    const text = joinRulesLines(buildRulesLines());
+    const text = joinRulesLines(buildVolRatioRulesLines());
     expect(text).toContain('本档一只可买的都没有');
     expect(text).toContain('9/29 AI应用');
     // ⛔ 旧的「不递补」口径仍然在（两个口径并存，都要说清楚）

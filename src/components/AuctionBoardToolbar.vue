@@ -36,13 +36,19 @@
         <span class="auction-toggle-slider" />
       </label>
     </div>
+    <!-- ★ [TWO-MODES 2026-10-02 用户口径] 这个开关位原来是「平行」，现改名为「一字」：
+         打开后 = 题材视图（与「题材」toggle 显示完全一致）但题材【按竞价一字数量降序】排，
+         也就是「早期版本那个一字多的题材排在前面」的口径。
+         ⛔ 原来的「平行」已并入「竞/昨」（竞/昨 的 tier0 = 平行+diff>0 高光、tier1 = 仅平行），
+            不再有独立开关；所以这里不是新增，是【复用旧开关位】。
+         ⚠️ 与「题材」toggle 共用 sortState.byTopic，只以 topicOrderBy 区分 ⇒ 二者天然互斥。 -->
     <div class="auction-toggle-item">
-      <span class="auction-toggle-label">平行</span>
+      <span class="auction-toggle-label">一字</span>
       <label class="auction-toggle-switch">
         <input
           type="checkbox"
-          :checked="sortState.byParallel"
-          @change="toggleSort('byParallel')"
+          :checked="yiziToggleOn"
+          @change="toggleTopicOrder('yizi')"
         >
         <span class="auction-toggle-slider" />
       </label>
@@ -263,6 +269,8 @@ const {
   p2ToggleExpandAll, loadP2TrendHistory, loadP2TrendHistoryChunked, toggleP2Trend, getLastNTradingDays,
   loadCopiedStocks, saveCopiedStocks, copyAllTopicStocks, copyTopicStocks, deleteCopiedStock, clearAllCopiedStocks,
   openBackend, openEditModal, openCoreTopicModal, onHeaderClick, onHeaderDblClick, refresh, toggleSort, expandAll, collapseAll,
+  // [TWO-MODES 2026-10-02] 题材 / 一字两个 toggle 的口径切换入口 + 勾选态（互斥由 Logic 保证）
+  toggleTopicOrder, yiziToggleOn,
   _computeTrendStats, loadTrendHistory, dailyAuctionMetrics, dailyMetricsList, switchPage,
   onSwipeStart, onSwipeEnd, handleSwipe, runBackend, onImportPaste, onReplaceConcept, onHistoryFill,
   onToggleSelect, onEditVolumeNote, _persistVolumeNote, saveVolumeNote, clearVolumeNote,

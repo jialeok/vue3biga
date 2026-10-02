@@ -165,7 +165,6 @@ import DecisionRulesHint from '../components/decision/DecisionRulesHint.vue';
 import DecisionBuyBlock from '../components/decision/DecisionBuyBlock.vue';
 import DecisionSellBlock from '../components/decision/DecisionSellBlock.vue';
 import { useDecisionBoard } from '../composables/useDecisionBoard.js';
-import { buildRulesLines } from '../logic/decision/decision-rules.js';
 
 // ⛔ 只调用一次组合式：重复调用会拿到【另一套 ref】，expose 出去的 refresh 就刷新不到本实例上
 const board = useDecisionBoard();
@@ -188,13 +187,14 @@ const {
   buySpecial,
   sellGroups,
   summaryText,
+  // [TWO-MODES 2026-10-02] 规则文案由 Logic 层产出，并【随买点模式切换】（一字模式 = 老版条文）。
+  //   ⛔ 别再在这里直接调 buildRulesLines()：那样视图就得自己判模式，等于模式判定出现第二处。
+  rulesLines,
   toggleExpand,
   toggleCompact,
   setRulesOpen
 } = board;
 
-// 规则文案由 Logic 层产出（规则实现与规则说明同处一处，改规则不会只改一半）
-const rulesLines = buildRulesLines();
 // 与早盘竞价 / 涨跌停 / 竞价一字同款三角（实心 ▲/▼），别再各写一套
 const toggleArrow = computed(() => (expanded.value ? '▲' : '▼'));
 

@@ -195,7 +195,7 @@ defineExpose({
 }
 .auction-item.manual-selected:hover { background: #ffedd5; }
 .auction-item.high-ratio { box-shadow: inset 4px 0 0 #f59e0b; }
-.auction-item.parallel-match { box-shadow: inset 4px 0 0 #10b981; }
+/* [TWO-MODES 2026-10-02] ⛔ .auction-item.parallel-match 绿色边条已删（平行并入竞/昨，无 class 产出方，§16） */
 .auction-item.jing-yest-match { box-shadow: inset 4px 0 0 #3b82f6; }
 .auction-item.three-day-jing-die { box-shadow: inset 4px 0 0 #059669; }
 .auction-item.weak-strong { box-shadow: inset 4px 0 0 #f59e0b; }
@@ -595,7 +595,7 @@ defineExpose({
 .auction-topic-row.bought { background: #fee2e2; }
 .auction-topic-row.selected { background: #f3e8ff; }
 .auction-topic-row.high-ratio { box-shadow: inset 4px 0 0 #f59e0b; }
-.auction-topic-row.parallel-match { box-shadow: inset 4px 0 0 #10b981; }
+/* [TWO-MODES 2026-10-02] ⛔ .auction-topic-row.parallel-match 绿色边条已删（同 .auction-item.parallel-match，§16） */
 .auction-topic-row.jing-yest-match { box-shadow: inset 4px 0 0 #3b82f6; }
 .auction-topic-row.three-day-jing-die { box-shadow: inset 4px 0 0 #059669; }
 .auction-topic-row.weak-strong { box-shadow: inset 4px 0 0 #f59e0b; }

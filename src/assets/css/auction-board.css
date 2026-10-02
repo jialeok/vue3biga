@@ -771,16 +771,10 @@
             background: rgba(245, 158, 11, 0.12);
         }
 
-        /* 平行达标行（今日竞价量>T-1竞价量 且 T-1成交量>T-2成交量）：左侧绿色边框，仅在"平行"开关打开时显示，优先于竞放量高光。
-           显示受容器 .parallel-enabled 控制，避免开关关闭后行级 class 残留导致标记不消失。 */
-        .auction-content.parallel-enabled .auction-item.parallel-match,
-        .auction-content.parallel-enabled .auction-topic-row.parallel-match {
-            box-shadow: inset 4px 0 0 #10b981;
-        }
-
-        .auction-content.parallel-enabled .auction-item.parallel-match:hover {
-            background: rgba(16, 185, 129, 0.12);
-        }
+        /* [TWO-MODES 2026-10-02 用户口径] ⛔ 原「平行达标行」绿色边条已删除：
+           平行 toggle 的开关位被「一字」toggle 占用，平行随之【并入「竞/昨」】
+           （竞/昨 的 tier 解析里：tier0 = 高光、tier1 = 仅平行），
+           `parallel-match` 已无任何 class 产出方（`isParallelMatch` 分支已删）⇒ 死规则（§16）。 */
 
         /* 竞/昨达标行（平行条件基础上，今/昨比 > 昨/前比）：左侧蓝色边框，仅在"竞/昨"开关打开时显示，优先于平行高光。
            显示受容器 .jing-yest-enabled 控制，避免开关关闭后行级 class 残留导致标记不消失。 */
@@ -1391,10 +1385,7 @@
             box-shadow: inset 4px 0 0 #f59e0b;
         }
 
-        /* 平行达标行：左侧绿色边框，仅在"平行"开关打开时显示，优先于竞放量高光 */
-        .auction-topic-row.parallel-match {
-            box-shadow: inset 4px 0 0 #10b981;
-        }
+        /* [TWO-MODES 2026-10-02] ⛔ 原「平行达标行」绿色边条已删除（同上方 .parallel-enabled 段，§16 不留死代码） */
 
         /* 竞/昨达标行（平行条件基础上，今/昨比 > 昨/前比）：左侧蓝色边框，仅在"竞/昨"开关打开时显示，优先于平行高光 */
         .auction-topic-row.jing-yest-match {

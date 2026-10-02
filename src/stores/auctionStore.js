@@ -1,5 +1,7 @@
 import { useUiStore } from './uiStore.js';
 import { defineStore } from 'pinia';
+// [TWO-MODES 2026-10-02] 题材排序口径的合法值（⛔ 别在这里手写 'volRatio' / 'yizi' 字面量）
+import { TOPIC_ORDER_VOL_RATIO } from '../logic/auction/topic-sort.js';
 
 let _uiFns = {};
 export function _bindUiFns(fns) { _uiFns = fns; }
@@ -28,10 +30,22 @@ export function safeCall(fn, ...args) {
   return undefined;
 }
 
+/**
+ * 第一页（早盘竞价 / 热门股票）的排序开关。
+ * [TWO-MODES 2026-10-02 用户口径] 两处变化：
+ *   ① ⛔ 删掉 `byParallel`：原「平行」toggle 的开关位被新的「一字」toggle 占用，
+ *      平行随之并入「竞/昨」（竞/昨 的 tier0 = 平行+diff>0 高光、tier1 = 仅平行），
+ *      ⇒ 该键在页面 1 已无任何读写方（§16 不留死代码）。
+ *      ⚠️ 第二页（sortStateP2）的「平行」是另一套（p2ParallelSet 那个独立看板），不在本次改动范围。
+ *   ② 新增 `topicOrderBy` = 题材 / 一字两个 toggle 的【排序口径】，二者共用 `byTopic` 这个开关：
+ *      · TOPIC_ORDER_VOL_RATIO（默认）= 题材 toggle → 题材按平均竞价量比降序；
+ *      · TOPIC_ORDER_YIZI           = 一字 toggle → 题材按竞价一字数量降序。
+ *      ⇒ 互斥是【结构性的】（同一个 byTopic 键），⛔ 不需要在 toggle 里手写互斥矩阵。
+ */
 function createSortState() {
   return {
-    auction: { byWeakStrong: false, byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false },
-    hot: { byWeakStrong: false, byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false }
+    auction: { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false, topicOrderBy: TOPIC_ORDER_VOL_RATIO },
+    hot: { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false, topicOrderBy: TOPIC_ORDER_VOL_RATIO }
   };
 }
 
@@ -97,11 +111,11 @@ export const useAuctionStore = defineStore('auction', {
     // --- 排序 ---
     setSortState(page, key, value) {
       const t = tabKey();
-      if (page === 1 && this.sortState[t]) {
-        this.sortState[t][key] = !!value;
-      } else if (page === 2 && this.sortStateP2[t]) {
-        this.sortStateP2[t][key] = !!value;
-      }
+      const target = page === 1 ? this.sortState[t] : (page === 2 ? this.sortStateP2[t] : null);
+      if (!target) return;
+      // [TWO-MODES 2026-10-02] topicOrderBy 是【字符串枚举】而不是布尔开关，
+      //   ⛔ 不能再走下面那个 `!!value` 分支（会被压成 true/false，排序口径直接丢失）。
+      target[key] = (key === 'topicOrderBy') ? String(value) : !!value;
     },
 
     // --- 展开/收起 ---

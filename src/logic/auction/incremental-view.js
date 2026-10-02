@@ -9,6 +9,9 @@
 //   任何失配都回退到 computeAuctionViewData 的新鲜结果，不存在“看起来更新了实际没更新”的风险。
 
 import { computeAuctionViewData } from './view-helpers.js';
+// [TWO-MODES 2026-10-02] 题材排序口径（题材 toggle = 平均竞价量比 / 一字 toggle = 竞价一字数量）
+// 决定题材组的组间顺序 ⇒ 必须进指纹（全局 + 行级），否则切 toggle 时增量缓存会复用旧排序。
+import { TOPIC_ORDER_VOL_RATIO, TOPIC_ORDER_YIZI } from './topic-sort.js';
 import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
 import { getGroupData } from '../app-core-api.js';
 import {
@@ -83,7 +86,10 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
     'date=' + date,
     'byWeakStrong=' + (s.byWeakStrong ? 1 : 0),
     'byRatio=' + (s.byRatio ? 1 : 0),
-    'byParallel=' + (s.byParallel ? 1 : 0),
+    // [TWO-MODES 2026-10-02] 原 `byParallel=` 已删（平行 toggle → 一字 toggle、平行并入竞/昨）；
+    //   改成题材【排序口径】：它决定题材组的组间顺序 ⇒ 必须入签名，否则切「题材 / 一字」时
+    //   行缓存会复用旧顺序（用户会看到「打开了却还是原来的排法」）。
+    'topicOrderBy=' + (s.topicOrderBy === TOPIC_ORDER_YIZI ? TOPIC_ORDER_YIZI : TOPIC_ORDER_VOL_RATIO),
     'byJingYest=' + (s.byJingYest ? 1 : 0),
     'byJingYestRatio=' + (s.byJingYestRatio ? 1 : 0),
     'byThreeDayJingDie=' + (s.byThreeDayJingDie ? 1 : 0),
@@ -119,7 +125,10 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToke
     item.topics,
     item.todayChoice, // AuctionBadge 渲染「买→/卖→」等当日选项，必须纳入签名避免陈旧
     date,
-    s.byWeakStrong ? 1 : 0, s.byRatio ? 1 : 0, s.byParallel ? 1 : 0,
+    s.byWeakStrong ? 1 : 0, s.byRatio ? 1 : 0,
+    // [TWO-MODES 2026-10-02] 原 `s.byParallel ? 1 : 0` 已删（见 computeGlobalFingerprint 的注释），
+    //   换成题材排序口径 —— 它决定该行落在哪个题材组的哪个位置，属结构性输入，必须入行签名。
+    'tob=' + (s.topicOrderBy === TOPIC_ORDER_YIZI ? TOPIC_ORDER_YIZI : TOPIC_ORDER_VOL_RATIO),
     s.byJingYest ? 1 : 0, s.byJingYestRatio ? 1 : 0, s.byThreeDayJingDie ? 1 : 0, s.byTopic ? 1 : 0,
     'ws=' + (wsToken || 0), // [WEAK-STRONG 2026-09-01] 弱转强达标档(连跌天数)变化需触发该行重派生，否则高光 class 被增量缓存陈旧复用
     'yizi=' + (item.isYiZi ? 1 : 0), // [YIZI 2026-09-09] 竞价一字状态（竞价涨幅达标）变化需触发重派生，否则红线标记陈旧

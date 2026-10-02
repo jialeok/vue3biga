@@ -26,21 +26,25 @@ import { getPrevSoldInheritedSet } from '../auction/inherited-sold.js';
 import { getJingYestHighlightSetForDate } from '../auction/sort-rules.js';
 import { _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
-// [QUANT-PICK 2026-10-01 用户口径] ⛔ 本文件【不再采集连板天梯】——
-//   买点已整体改成「题材排名前二 × 按题材股票数量分档 × 按竞价量比选票」，
-//   原来那两条要靠天梯的兜底规则（⑤ 全部题材无一字 / ⑥ 高风险小题材）连同它们的
-//   ladderTopicGroups / ladderReady / ladderReason 三个参数一起删掉了（用户原话「不看连板天梯晋级看板了」）。
-//   ⇒ 因此这里不再 import collectLadderData，也删掉了 _ladderTopicGroups（§16 不留死代码）。
-//   ↩️ 恢复路径：`git revert` 本次提交。
+// [TWO-MODES 2026-10-02 用户口径] 买点分两套模式，由早盘竞价的题材 / 一字 toggle 决定
+//   （判据与分派都在 decision-mode.js，§6 单一真相）。两套模式对【本文件】的差别只有两处：
+//     ① 题材排名口径（rankDecisionTopics 的第 2 参 mode）—— 一字模式按一字数量排、量比模式按量比排；
+//     ② 买点规则（buildBuyPlan 的第 4 参 mode）—— 一字模式走老版完整规则，它要连板天梯数据。
+//   ⇒ 所以这里要按需把连板天梯「题材连扳」分组采集出来（[NO-YIZI 2026-09-25] 的老口径恢复）。
+//     与天梯看板显示的是【同一份采集结果】（0 请求、纯内存），⛔ 不在这里另写一遍分组：
+//     另写必然与天梯看板分叉 —— 用户是照着天梯看板的题材数去数的（§6 单一真相）。
+import { collectLadderData } from '../ladder/ladder-collect.js';
 import {
-  rankDecisionTopics,
   rankDragons,
-  buildBuyPlan,
   buildSellPlan,
   TOPIC_STREAK_WINDOW,
   SELL_TIME_MIDDAY,
-  SELL_TIME_CLOSE
+  SELL_TIME_CLOSE,
+  normalizeDecisionMode
 } from './decision-rules.js';
+// ⛔ 分模式的两件事【只从 decision-mode.js 取】（它再往下分派到 rules / rules-legacy）——
+//    本文件不许自己写 `mode === 'yizi' ? A : B`，否则就出现了第三处模式判定。
+import { rankDecisionTopics, buildBuyPlan, needsLadderData } from './decision-mode.js';
 // [VRATIO-TREND 2026-10-01 用户口径] 「竞价量比（auc_vol_ratio）近 5 日」的取数与展示视图。
 //   为什么挂在这一层而不是 decision-rules：规则文件是【纯函数】（不读 state），
 //   而竞价量比要读内存真相（Data 层只读选择器）—— 本文件正是「读内存真相」的地方（§4）。
@@ -55,15 +59,28 @@ function _notReady(reason) {
     ready: false,
     reason: reason,
     topics: [],
-    buy: { heavy: null, light: null, noYizi: null, smallTopic: null, bigTopic: null },
+    // ⚠️ 结构契约：六个键必须齐全（heavy / light / candidates / noYizi / smallTopic / bigTopic）。
+    //    candidates 是 2026-10-02 新增的候选题材槽位；一字模式恒为 []
+    //    （老版没有候选题材概念，但 UI 用 `buy.candidates || []` 兜底，给齐了更不容易踩空）。
+    buy: { heavy: null, light: null, candidates: [], noYizi: null, smallTopic: null, bigTopic: null },
     sell: [],
     sellTimes: []
   };
 }
 
-// [QUANT-PICK 2026-10-01] 此处原有 _ladderTopicGroups(date)（懒采集「连板天梯 · 题材连扳」分组）。
-//   买点新规不再需要天梯，且【不看连板天梯晋级看板了】（用户原话）⇒ 整条采集链删除（§16 不留死代码）。
-//   ↩️ 恢复路径：git revert 本次提交。
+// [NO-YIZI 2026-09-25] 「全部题材竞价一字 0 个」的弱市兜底要读【连板天梯 · 题材连扳】的分组。
+// [TWO-MODES 2026-10-02] 这条兜底只在【一字模式】的老版规则里存在（见 decision-mode.js#
+//   needsLadderData）⇒ 本函数只在一字模式 + 命中触发条件时才被调用，量比模式【完全不调用】
+//   （每天少跑一次全量行归堆，§36 性能红线）。
+// §10：采集失败 / 未就绪必须原样上报，绝不能退化成「今天没有连板梯队」。
+function _ladderTopicGroups(date) {
+  try {
+    const d = collectLadderData(date);
+    return { ready: !!d.ready, groups: d.topicGroups || [], reason: d.ready ? '' : (d.reason || '') };
+  } catch (e) {
+    return { ready: false, groups: [], reason: (e && e.message) ? e.message : '连板天梯计算失败' };
+  }
+}
 
 /** 昨日打过「买」标签的股票名集合（标签只继承一天，所以只看【前一日】） */
 function _prevBoughtNames(prevDate) {
@@ -159,13 +176,17 @@ function _decorateVolRatioTrend(buy, sell, date) {
  *    另写必然与买点规则分叉，分叉就会出现「昨天明明选了它，今天却没标持有」。
  * ⛔ 只往回追【一层】（skipPrevBuy=true）：否则每天都要顺着交易日往前追整条链（§36 性能红线）。
  *
+ * [TWO-MODES 2026-10-02] ⚠️ 必须【带上 mode】：昨天是用哪套规则选的票，要用同一套重算 ——
+ *   否则一字模式下会拿「量比模式选出来的昨天」去标【持有 / 加仓】，两边菜谱不同、标的必然错位。
+ *
  * @param {string} prevDate 上一交易日
+ * @param {string} mode 当前买点模式（MODE_VOL_RATIO / MODE_YIZI）
  * @returns {Set<string>|null} null = 昨天的买点没算出来（§10：未知 ≠ 昨天一只都没选）
  */
-function _prevBuyNames(prevDate) {
+function _prevBuyNames(prevDate, mode) {
   if (!prevDate) return null;
   try {
-    const d = collectDecisionData(prevDate, { skipPrevBuy: true });
+    const d = collectDecisionData(prevDate, { skipPrevBuy: true, mode: mode });
     if (!d || !d.ready || !d.buy) return null;
     return _buyPlanNames(d.buy);
   } catch (e) {
@@ -246,9 +267,13 @@ function _buyPointTopics(buy) {
  *    ⛔ 绝不返回一个「偏低的次数」—— 用户是拿它判题材频率的，少算一次就会误判。
  *
  * @param {string} date 展示日
+ * @param {string} mode 当前买点模式（MODE_VOL_RATIO / MODE_YIZI）
+ *        [TWO-MODES 2026-10-02] ⚠️ 必须带上：次数是「这个题材进过几次买点」，
+ *        而「进买点」本身是【分模式】的结论 —— 拿另一套规则重算会出现「一字模式里显示 3 次入选，
+ *        可那 3 次都是量比模式选出来的」这种无法解释的数字（用户正是拿次数判题材频率的，§10 不糊弄）。
  * @returns {Map<string,number>|null} 题材名 → 过去窗口内入选天数（不含今日）；null = 未知
  */
-function _topicStreakPast(date) {
+function _topicStreakPast(date, mode) {
   if (!date) return null;
   const days = [];
   let d = date;
@@ -265,7 +290,7 @@ function _topicStreakPast(date) {
     let set = null;
     try {
       // rangeOptional：历史日拿不到十日涨幅，但题材归属不需要它（见 collectDecisionData 的闸门注释）
-      const rec = collectDecisionData(day, { skipPrevBuy: true, rangeOptional: true });
+      const rec = collectDecisionData(day, { skipPrevBuy: true, rangeOptional: true, mode: mode });
       if (rec && rec.ready && rec.buy) set = _buyPointTopics(rec.buy);
     } catch (e) {
       console.warn('[DECISION] 题材入选次数：' + day + ' 重算失败 → 次数按未知处理', e);
@@ -280,16 +305,23 @@ function _topicStreakPast(date) {
 /**
  * 采集并计算某日的决策结论（同步：数据源全在内存里）。
  * @param {string} date 展示日 YYYY-MM-DD
- * @param {{skipPrevBuy?:boolean, rangeOptional?:boolean}} [opts]
+ * @param {{skipPrevBuy?:boolean, rangeOptional?:boolean, mode?:string}} [opts]
  *        skipPrevBuy=true → 不往回算上一交易日的买点（内部递归用，防止无限往前追）
  *        rangeOptional=true → 【十日涨幅没加载也继续算】（§10 的例外，见下方闸门注释）。
  *          只给「近 5 个交易日题材入选次数」的历史日重算用；⛔ UI 展示日【绝不要】传它 ——
  *          那样会拿一份没有涨幅的数据去给出买卖点，等于 §10 红线。
+ *        mode = 买点模式（MODE_VOL_RATIO / MODE_YIZI），默认 MODE_VOL_RATIO。
+ *          [TWO-MODES 2026-10-02] 由 useDecisionBoard 从早盘竞价的题材 / 一字 toggle 判定后传进来
+ *          （判定见 decision-mode.js#resolveDecisionMode）。⛔ 本文件不自己读 store ——
+ *          collect 是纯数据组装，模式属于「上游口径」，只接受入参。
+ *          ⚠️ 历史日重算（_prevBuyNames / _topicStreakPast）必须【原样转发同一个 mode】。
  * @returns {{ready:boolean, reason:string, topics:Array, buy:object, sell:Array}}
  */
 export function collectDecisionData(date, opts) {
   const skipPrevBuy = !!(opts && opts.skipPrevBuy);
   const rangeOptional = !!(opts && opts.rangeOptional);
+  // ⛔ 非法 / 缺失一律回落 MODE_VOL_RATIO（§10：绝不因为参数没传就抛错）
+  const mode = normalizeDecisionMode(opts && opts.mode);
   if (!date) return _notReady('未选择日期');
 
   const prevDate = getPreviousTradingDay(date);
@@ -434,16 +466,21 @@ export function collectDecisionData(date, opts) {
   });
   if (rows.length === 0) return _notReady('当日列表没有可用于决策的股票名');
 
-  const topics = rankDecisionTopics(rows);
+  const topics = rankDecisionTopics(rows, mode);
   if (topics.length === 0) return _notReady('当日没有成组的题材（题材至少 2 只才成组）');
 
   const dragonMap = rankDragons(topics);
 
-  // [QUANT-PICK 2026-10-01 用户口径] ⛔ 连板天梯的采集（needLadder / _ladderTopicGroups）已删除：
-  //   新买点只用「题材排名前二 + 题材股票数量 + 竞价量比」三样，全部来自上面的 topics 本身，
-  //   不再需要「题材连扳」分组 ⇒ 每天少跑一次全量行归堆（§36 性能红线）。
+  // [TWO-MODES 2026-10-02 / NO-YIZI 2026-09-25 恢复] 一字模式的【老版规则】里有两条兜底
+  //   （⑤ 全部题材无一字 / ⑥ 高风险小题材）以及第 2 名题材的「题材替换」，都要读
+  //   【连板天梯 · 题材连扳】的分组；量比模式【一律不采】（§36 性能红线）。
+  //   触发条件与老版 1:1（decision-mode.js#needsLadderData，§6 收口在一处）。
+  //   ⚠️ 这里是【懒采集】：不触发就不跑那次全量行归堆。
+  const needLadder = needsLadderData(topics, mode);
+  const ladder = needLadder ? _ladderTopicGroups(date) : null;
   // 【③ 持有 / 加仓】上一交易日的买点股票名（null = 未知 → 规则层一律不标，§10 不猜）
-  const prevBuyNames = skipPrevBuy ? null : _prevBuyNames(prevDate);
+  //   ⚠️ 带上 mode：昨天必须用【同一套规则】重算（两套菜谱不同，混用会标错票）
+  const prevBuyNames = skipPrevBuy ? null : _prevBuyNames(prevDate, mode);
   // 【④ 昨天已买】上一交易日【实际】打过「买」标签的股票名（§6：与卖点候选同一份数据源）。
   //   ⛔ 股票级判据，逐只比名字（2026-09-30 修正：上一版按题材判，会把整块都标上，误导）。
   //   在 buildBuyPlan 之前取：买点与卖点两边都要用它（一次采集、两处复用）。
@@ -454,13 +491,18 @@ export function collectDecisionData(date, opts) {
   // 【⑤ 题材入选次数】过去（不含今日）4 个交易日里每个题材进过买点几次；null = 窗口内有历史日未知。
   //   ⛔ 只在主流程算：内部递归调用一律带 skipPrevBuy=true ⇒ topicStreakPast 恒为 null ⇒
   //      不会再往下展开（否则 _topicStreakPast → collectDecisionData → _topicStreakPast … 指数爆炸）。
-  const topicStreakPast = skipPrevBuy ? null : _topicStreakPast(date);
+  //   ⚠️ 历史日同样要用【同一个 mode】重算（见 _topicStreakPast 的注释）
+  const topicStreakPast = skipPrevBuy ? null : _topicStreakPast(date, mode);
   const buy = buildBuyPlan(topics, dragonMap, {
+    // 一字模式（老版规则）才需要的连板天梯分组；量比模式下是 [] / false
+    ladderTopicGroups: ladder ? ladder.groups : [],
+    ladderReady: ladder ? ladder.ready : false,
+    ladderReason: ladder ? ladder.reason : '',
     prevBuyNames: prevBuyNames,
     prevBoughtNames: prevBought,
     prevBoughtTopics: prevBoughtTopics,
     topicStreakPast: topicStreakPast
-  });
+  }, mode);
 
   // 昨日龙头名册已在上方取过（prevDragonMap）—— 灰行补齐也要用它，⛔ 不重复取第二次。
   const prevDragonNames = prevDragonMap ? new Set(Array.from(prevDragonMap.keys())) : null;

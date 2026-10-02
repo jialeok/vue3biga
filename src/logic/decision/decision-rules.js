@@ -5,6 +5,7 @@
 //
 // ══════════════════════════════════════════════════════════════════════════════════════
 // ★★ [QUANT-PICK 2026-10-01 用户口径 · 买点整体重写] ★★
+// ★★ [TWO-MODES 2026-10-02 用户口径 · 两套买点并存，见下方 MODE_* 常量] ★★
 // ══════════════════════════════════════════════════════════════════════════════════════
 // 用户原话：「决策看板的规则你重新改造下……先看早盘竞价看板的题材按照竞价量比排序，
 //   选出排在第一和第二的题材，然后决策看板选票，也是按照竞价量比选。先不分龙一、龙二了
@@ -101,7 +102,7 @@
 // 【§10 红线】任何一段数据缺失 → 该段【不产出】（返回空/不给出建议），
 //   绝不用 0 / '-' / 空字符串伪装成「有数据」。
 
-import { sortByTopicGroups } from '../auction/topic-sort.js';
+import { sortByTopicGroups, TOPIC_ORDER_VOL_RATIO, TOPIC_ORDER_YIZI } from '../auction/topic-sort.js';
 import { computeDragonRankMap, getDragonLabel } from '../auction/dragon-rank.js';
 // 竞价开平（高开 / 低开 / 平开）复用连板天梯的唯一实现，⛔ 不在本文件另写一套阈值与文案（§6）
 import { getAucOpenKind } from '../ladder/ladder-rules.js';
@@ -110,6 +111,31 @@ import { formatAucPct } from '../auction/limit-up.js';
 
 /** 题材成组门槛：与早盘竞价统计条（topic-stats.js#TOPIC_STATS_MIN_GROUP）同源 —— 不足 2 只不成题材 */
 export const DECISION_MIN_GROUP = 2;
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [TWO-MODES 2026-10-02 用户口径 · 两套买点并存，由早盘竞价的 toggle 切换] ★★
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话：「把早盘竞价看板的平行 toggle 改成一字……打开一字 toggle 后，显示也和单独打开题材
+//   toggle 一样，只是排序变了（一字数量多的排前面）。我想两个版本我都要，这样能对比哪个功能
+//   比较好……现在的决策看板 UI 不变。只是逻辑要跟随早盘竞价看板的 toggle 变化，相当于两种方式。」
+//
+// ⇒ 两套【完全独立】的买点规则，同一个决策看板 UI 渲染哪一套，取决于早盘竞价的题材口径：
+//   · MODE_VOL_RATIO（题材 toggle）→ 本文件的规则（题材按平均竞价量比排名 + 按竞价量比选票）；
+//   · MODE_YIZI（一字 toggle）     → decision-rules-legacy.js 的【老版完整规则】
+//     （题材按竞价一字数量排名 + 一字门槛 / 题材替换 / 无一字兜底 / 小题材兜底 / 大题材 /
+//      双主线 / 亏钱效应 / 弱势题材 / 买入只数 等一整套）。
+//
+// ⛔ 本文件【不 import】legacy（否则成环）—— 分派统一在 decision-mode.js 一处（§6 单一真相）。
+// ⛔ 两套规则只在【买点】分叉：卖点、后置标记（持有 / 昨有买入 / 加仓 / 入选次数）、
+//    行内徽标、规则面板的卖点段，全部【共用同一份实现】，改一处两模式一起变。
+/** 买点模式①：题材 toggle —— 题材按【平均竞价量比】排名 + 按竞价量比选票（2026-10-01 起的现行规则） */
+export const MODE_VOL_RATIO = TOPIC_ORDER_VOL_RATIO;
+/** 买点模式②：一字 toggle —— 题材按【竞价一字数量】排名 + 老版完整规则（decision-rules-legacy.js） */
+export const MODE_YIZI = TOPIC_ORDER_YIZI;
+/** 模式合法值（§10：非法 / 缺失一律按 MODE_VOL_RATIO 处理，⛔ 绝不抛错） */
+export function normalizeDecisionMode(mode) {
+  return mode === MODE_YIZI ? MODE_YIZI : MODE_VOL_RATIO;
+}
 
 // ===== [QUANT-PICK 2026-10-01 用户口径] 买点：题材股票数量 → 取几只 =====
 // 用户原话：「看数量，如果数量大于等于 10 买 3 只，竞价量比高的两只重仓，竞价量比较低的轻仓；
@@ -389,6 +415,12 @@ export function candidatePickCount(tier) {
  *   （传 topicOrder={by:'volRatio', volRatioOf}），与早盘竞价 view-helpers 的调用点【同一个参数】
  *   —— 这样「屏幕上的题材顺序 == 决策看板的题材排名 == 趋势图名次」三处必然一致。
  *
+ * ⭐ [TWO-MODES 2026-10-02] 新增第 2 参 mode：**排名口径必须与早盘竞价当前那个 toggle 一模一样**，
+ *   否则会出现「早盘竞价按一字排、决策看板按量比排」的错位（用户正是拿屏幕顺序核对决策结果的）：
+ *     · MODE_VOL_RATIO（题材 toggle）→ 第 8 参 {by:'volRatio', volRatioOf}（默认，现行行为）；
+ *     · MODE_YIZI（一字 toggle）    → 第 8 参【不传】⇒ sortByTopicGroups 的默认口径 = 一字数量降序。
+ *   ⛔ 两种口径都【复用 sortByTopicGroups 这一个函数】，本文件绝不另写比较器（§6 单一真相）。
+ *
  * @param {Array<{name:string, topic:string, isYizi?:boolean, countable?:boolean,
  *                inheritSold?:boolean, code?:string, pct?:number|null, aucPct?:number|null,
  *                aucVolRatio?:string|number|null}>} entries
@@ -407,7 +439,7 @@ export function candidatePickCount(tier) {
  *          已剔除「其它」与不足 DECISION_MIN_GROUP 的题材；
  *          按组序（平均竞价量比 → 组大小 → 题材名）升序。
  */
-export function rankDecisionTopics(entries) {
+export function rankDecisionTopics(entries, mode) {
   const list = (entries || []).filter(function(e) { return e && e.name; });
   if (list.length === 0) return [];
 
@@ -428,7 +460,11 @@ export function rankDecisionTopics(entries) {
     //      分子 = 该题材组内【所有拿到量比的行】的量比之和，分母 = 拿到量比的行数（含灰行），
     //      一行都拿不到 ⇒ null（§10 置底，⛔ 不当 0）。sortByTopicGroups 内部就是这样累加的，
     //      所以这里只需原样给出每行的量比原始值即可。
-    { by: 'volRatio', volRatioOf: function(i) { return list[i].aucVolRatio; } }
+    // ⭐ [TWO-MODES 2026-10-02] 一字模式【不传】第 8 参 ⇒ 回到 sortByTopicGroups 的默认口径
+    //   （一字数量降序 → 组大小降序 → 题材名），与早盘竞价「一字 toggle」的调用点完全同参。
+    normalizeDecisionMode(mode) === MODE_YIZI
+      ? undefined
+      : { by: 'volRatio', volRatioOf: function(i) { return list[i].aucVolRatio; } }
   );
 
   const blocks = [];
@@ -880,8 +916,14 @@ function _decorateAucBadge(blockObj) {
  * 【③ 持有 / 加仓标记（2026-09-27 用户口径）】
  *   上一交易日在【买点】里、今天又在买点里 ⇒ 强势股 ⇒ 标记【持有 / 加仓】。
  *   §10：前一天的数据没算出来（null）→ 不标记（绝不当成「昨天没选中」）。
+ *
+ * ⚠️ [TWO-MODES 2026-10-02] 第 3 参 ruleNo 是【分模式】的：两套模式的规则编号体系不同
+ *    （量比模式 ③ / 一字模式 ⑪），⛔ 本函数不许写死 RULE_NO.HOLD 那一份 ——
+ *    否则一字模式的说明文字会显示「【规则③】持有 / 加仓」，与它自己的规则清单（⑪）对不上。
+ *    不传 → 用量比模式的编号（本模块内的调用点都不传）。
+ * @param {string} [ruleNo] 规则编号（一字模式传 legacy 的 RULE_NO.HOLD）
  */
-function _markHold(blockObj, prevBuyNames) {
+function _markHold(blockObj, prevBuyNames, ruleNo) {
   if (!blockObj || !prevBuyNames || !blockObj.picks || blockObj.picks.length === 0) return blockObj;
   const hits = [];
   blockObj.picks.forEach(function(p) {
@@ -892,7 +934,7 @@ function _markHold(blockObj, prevBuyNames) {
   });
   if (hits.length > 0) {
     blockObj.notes = blockObj.notes || [];
-    blockObj.notes.push(_note(RULE_NO.HOLD,
+    blockObj.notes.push(_note(ruleNo || RULE_NO.HOLD,
       '【' + hits.join('、') + '】上一个交易日也在买点里 → 强势股，可【' + HOLD_TAG + '】'));
   }
   return blockObj;
@@ -920,8 +962,10 @@ function _markHold(blockObj, prevBuyNames) {
  *
  * @param {object} blockObj 买点块（_finishBuyBlock 的收口对象）
  * @param {Set<string>|null} prevBoughtNames 上一交易日打过「买」标签的股票名集合
+ * @param {string} [ruleNo] 规则编号 —— [TWO-MODES 2026-10-02] 分模式（量比 ④ / 一字 ⑫），
+ *        理由同 _markHold：⛔ 不许写死本模块的 RULE_NO，否则一字模式的说明文字编号对不上。
  */
-function _markPrevBought(blockObj, prevBoughtNames) {
+function _markPrevBought(blockObj, prevBoughtNames, ruleNo) {
   if (!blockObj || !prevBoughtNames || !blockObj.picks || blockObj.picks.length === 0) return blockObj;
   const hits = [];
   blockObj.picks.forEach(function(p) {
@@ -933,7 +977,7 @@ function _markPrevBought(blockObj, prevBoughtNames) {
   });
   if (hits.length > 0) {
     blockObj.notes = blockObj.notes || [];
-    blockObj.notes.push(_note(RULE_NO.PREV_BOUGHT,
+    blockObj.notes.push(_note(ruleNo || RULE_NO.PREV_BOUGHT,
       '【' + hits.join('、') + '】' + PREV_BOUGHT_TAG + '（被打过「买」标签）→ 行尾仓位改标【' +
       POSITION_ADD + '】（昨天已有仓位，今天是往上加，不重新建仓）'));
   }
@@ -1366,7 +1410,16 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
  *    后期要加规则 —— 加完实现就在下面加一行说明，UI 一行都不用动。
  * @returns {string[]}
  */
-export function buildRulesLines() {
+export function buildVolRatioRulesLines() {
+  return _volRatioBuyRulesLines().concat(sellRulesLines());
+}
+
+/**
+ * 【量比模式 · 买点段】规则文案。
+ * ⛔ 与 legacy 模式的买点段【互不共用】（两套规则本来就不同），但【卖点段】必须共用
+ *    —— 见 sellRulesLines 的注释（§6 单一真相：卖点只有一套规则）。
+ */
+function _volRatioBuyRulesLines() {
   return [
     '【买点】只看题材排名前二的题材（题材排名 = 早盘竞价「题材 toggle」的组序，见第 0 步）：',
     '　第 0 步【题材怎么排名】= 按题材的【平均竞价量比】降序（2026-10-01 新规，取代原来的「一字数量排序」）：',
@@ -1462,7 +1515,23 @@ export function buildRulesLines() {
     '　　竞价一字：n｜【' + TOPIC_PREV_BOUGHT_TAG + '】（有才显示）｜【N 次入选】（有才显示）。',
     '【股票行的数据】股票名右边依次是：龙几（龙一 / 龙二）｜十日涨幅｜竞价涨幅小标签｜竞价量比；',
     '　　行尾是仓位（' + POSITION_HEAVY + ' / ' + POSITION_LIGHT + ' / ' + POSITION_ADD + '），再往右是【' +
-      HOLD_TAG + '】这类标记。',
+      HOLD_TAG + '】这类标记。'
+  ];
+}
+
+/**
+ * 【卖点段】规则文案 —— ★两套买点模式【共用同一份】★（§6 单一真相）。
+ *
+ * 为什么单独抽出来：卖点在两种模式下【完全一样】（[TWO-MODES 2026-10-02] 用户口径
+ *   「其它看板不变 / 只是逻辑要跟随 toggle 变化，相当于两种方式」—— 分叉的只有买点）。
+ *   如果让 legacy 模块自己再写一遍这段文字，两边就会各自漂移：
+ *   改了卖点档位只改一边 ⇒ 用户点开问号看到的条文与实际行为对不上，照着旧条文提意见。
+ *   ⇒ 所以量比模式的 `buildVolRatioRulesLines()` 与 legacy 模式的 `buildRulesLines()`
+ *     都必须【concat 本函数】，⛔ 不许各写一份。
+ * @returns {string[]}
+ */
+export function sellRulesLines() {
+  return [
     '【卖点】候选 = 昨日打过「买」标签的股票。卖点先看【今天这只票竞价开得怎么样】，再看题材排名：',
     '　每行在「十日涨幅」右侧带一个【竞价涨幅】小标签（如 -2.60%）：涨 = 红底、跌 = 绿底、平 = 灰底；',
     '　　该股今日没有竞价涨幅时不显示这个标签（§10 不把「没查到」画成「平开」）。',
@@ -1522,3 +1591,24 @@ export function formatRangePct(pct) {
   if (n === null) return '';
   return (n >= 0 ? '+' : '') + String(Math.round(n)) + '%';
 }
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ 跨模式共享的内部工具（[TWO-MODES 2026-10-02]）★★
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 下面这些函数【两种买点模式语义完全一致】（市值 / 仓位 / 标记 / 徽标 / 序号 / 龙头名字），
+// 旧版文件 2546c82 里它们与本文件的实现【逐字节相同】—— 所以刻意【只保留这一份】，
+// 由 decision-rules-legacy.js 原样 import 复用（§6 单一真相）。
+//
+// ⛔ 为什么必须共享而不是各写一份：
+//    · `_markTopicPrevBought` / `_markTopicStreak` / `_decorateAucBadge` 这些是【题材行与股票行
+//      的标记口径】—— 9/30 已经因为「计数范围与展示范围不一致」出过一次事故（整块看板不显示
+//      入选次数）。两条链路各写一份 ⇒ 必然再犯一次，且只在其中一种模式下暴露，更难查。
+//    · 卖点 / 徽标 / 加仓改写是与模式无关的，重复实现只会两边漂移。
+//
+// ⚠️ 这里的 export 只是为了让 legacy 模块 import；⛔ 业务代码（组件 / composable / collect）
+//    不许直接 import 这些下划线开头的函数 —— 它们是实现细节，改签名不会再给你留兼容层。
+export {
+  _num, _topicRankMap, _note, _toPick, _reseq, _reasonBuy, _rankWord,
+  _markHold, _markPrevBought, _markTopicPrevBought, _markTopicStreak,
+  _decoratePositionTone, _decorateAucBadge, _appendLowOpenDragonOneNote
+};

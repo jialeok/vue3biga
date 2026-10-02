@@ -74,6 +74,26 @@ import { getTopicGroups, getGroupableCoreTopics, matchTopicToCore, TOPIC_WORD_SE
 /** 「其它」组名（无题材 / 未命中核心词 / 组不足 2 只的兜底组） */
 export const OTHER_TOPIC = '其它';
 
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [TWO-MODES 2026-10-02 用户口径] 题材组的【组间排序口径】词表（§6 唯一真相）★★
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话：「把早盘竞价看板的平行 toggle 改成一字……打开一字 toggle 后，显示也和单独打开题材
+//   toggle 一样，只是排序变了（一字数量多的排在前面）……我想两个版本我都要，这样能对比哪个功能
+//   比较好……决策看板只是逻辑要跟随早盘竞价看板的 toggle 变化，相当于两种方式。」
+//
+// ⇒ 早盘竞价第一页有【两个互斥的题材 toggle】，共用同一个 sortState.byTopic 开关，
+//   只用这个「口径」字段区分（互斥是结构性的，⛔ 不需要在 toggle 里手写互斥矩阵）：
+//     · 题材 toggle → TOPIC_ORDER_VOL_RATIO（平均竞价量比降序）；
+//     · 一字 toggle → TOPIC_ORDER_YIZI（竞价一字数量降序）。
+//
+// ⛔ 这里同时是 `sortByTopicGroups` 第 8 参 topicOrder.by 的合法值、
+//    stores/auctionStore.js 里 sortState.topicOrderBy 的合法值、
+//    以及 decision-rules.js 的 MODE_* 别名来源 —— ⛔ 别在别处手写 'volRatio' / 'yizi' 字面量。
+/** 组间排序：该题材的【平均竞价量比】降序（题材 toggle；decision-rules.js = MODE_VOL_RATIO） */
+export const TOPIC_ORDER_VOL_RATIO = 'volRatio';
+/** 组间排序：该题材的【竞价一字数量】降序（一字 toggle；decision-rules.js = MODE_YIZI） */
+export const TOPIC_ORDER_YIZI = 'yizi';
+
 /**
  * 「站队到数量多的那一边」——多题材股票的【唯一】归属判定规则（§6 单一真相）。
  *
@@ -260,7 +280,8 @@ export function sortByTopicGroups(renderOrder, renderList, tierFn, primaryTopicO
     ? function(idx) { return !!countableOf(idx); }
     : function() { return true; };
   // [RATIO-ORDER 2026-10-01] 组间排序口径：默认 'yizi'（既有行为）；早盘竞价题材 toggle 传 'volRatio'
-  const _byRatio = !!(topicOrder && topicOrder.by === 'volRatio' && typeof topicOrder.volRatioOf === 'function');
+  // [TWO-MODES 2026-10-02] 取值改用本文件的 TOPIC_ORDER_* 常量（⛔ 不再手写字面量）
+  const _byRatio = !!(topicOrder && topicOrder.by === TOPIC_ORDER_VOL_RATIO && typeof topicOrder.volRatioOf === 'function');
   const _ratioOf = _byRatio ? topicOrder.volRatioOf : null;
   /** 行 → 有效量比（§10：null / undefined / 空串 / 非数字 → null，⛔ 不当 0） */
   const _ratioNum = function(idx) {
