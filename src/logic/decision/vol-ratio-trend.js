@@ -116,6 +116,64 @@ export function getVolRatioDir(stockName, endDate) {
 }
 
 
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [SELL-SURGE 2026-10-03 用户口径] 「今日竞价量比 ÷ 上一交易日竞价量比」的倍数 ★★
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话（9/30 案例）：「房地产的新世联（世联行），竞价跌幅 -9.97%，竞价量比增加 5 倍以上，
+//   这类就要耐心等待冲高，概率非常高，打标签【冲高就卖】」
+//
+// 实测核对（market_metrics.auc_vol_ratio）：
+//   世联行 9-29 = 3.95 → 9-30 = 24.45 ⇒ 24.45 / 3.95 = 6.19 倍（≥ 5）⇒ 命中本档。
+//
+// ⇒ 判据 = 【今日 ÷ 上一交易日】的倍数（⛔ 不是整数差 —— 整数差只回答「方向」，
+//    倍数才回答「放大了多少」；两者服务于不同规则，别混用）。
+//
+// §10：任一天缺值 / 为空 / 上一交易日量比为 0 或负数（除不出来）⇒ 返回 null（未知），
+//   ⛔ 绝不当成 1 倍（= 没变化）—— 「没查到」与「量比没放大」是两件事。
+/** 量比【暴增】倍数阈值：今日 ÷ 上一交易日 ≥ 此值 ⇒ 抢筹明显（用户口径「5 倍以上」） */
+export const VR_SURGE_TIMES = 5;
+
+/**
+ * 「今日 ÷ 上一交易日」竞价量比倍数（纯函数，可单测）。
+ * @param {*} today 今日原始值（字符串 / 数字 / null）
+ * @param {*} prev  上一交易日原始值
+ * @returns {number|null} 倍数（保留 2 位小数）；null = 缺数据 / 除不出来（§10 未知）
+ */
+export function compareVolRatioTimes(today, prev) {
+  const a = _toNum(today);
+  const b = _toNum(prev);
+  if (a === null || b === null || b <= 0) return null;
+  return Math.round((a / b) * 100) / 100;
+}
+
+/**
+ * 倍数是否达到【暴增】档（§6：阈值只从 VR_SURGE_TIMES 取，⛔ 不各处写死 5）。
+ * @param {number|null} times compareVolRatioTimes 的结果
+ * @returns {boolean} null / 非数 ⇒ false（§10 未知 ≠ 暴增）
+ */
+export function isVolRatioSurge(times) {
+  const t = Number(times);
+  if (!isFinite(t) || t <= 0) return false;
+  return t >= VR_SURGE_TIMES;
+}
+
+/**
+ * 取某只股票「今日 ÷ 上一交易日」的竞价量比倍数（读内存真相，§6 与 getVolRatioDir 同源同字段）。
+ * @param {string} stockName
+ * @param {string} endDate 展示日 YYYY-MM-DD
+ * @returns {number|null}
+ */
+export function getVolRatioTimes(stockName, endDate) {
+  const name = String(stockName || '').trim();
+  if (!name || !endDate) return null;
+  const prev = getPreviousTradingDay(endDate);
+  if (!prev) return null;
+  return compareVolRatioTimes(
+    getStockHistoryValue(endDate, name, 'aucVolRatio'),
+    getStockHistoryValue(prev, name, 'aucVolRatio')
+  );
+}
+
 /**
  * 字符串 → 数值；空串 / null / 非数字一律 → null（§10 缺数据 ≠ 0）。
  * @param {*} v

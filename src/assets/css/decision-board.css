@@ -251,6 +251,25 @@
             color: #b45309;
         }
 
+        /* [RULE-BOX 2026-10-03 用户口径] 买点【股票行下面】的每一条规则都【圈起来 + 浅底色】
+           （用户原话：「买点股票下面的每个规则都应该圈起来，加上浅底色，这样看着舒服些」）。
+           ⛔ 只作用于带 .dcb-note-box 的那些说明行（买点块），卖点块与看板级说明不受影响
+              —— 「改哪个看板就只动哪个看板」，别把全局样式一起改了。
+           配色沿用本看板既有的「琥珀提示」色系（与 .dcb-sell-hint.tone-watch 同一套，视觉连续）。 */
+        .dcb-block-note.dcb-note-box {
+            padding: 4px 7px;
+            border: 1px solid #fde68a;
+            border-radius: 6px;
+            background: #fffbeb;
+            line-height: 1.5;
+        }
+
+        /* 未达买入门槛：用更强的告警色（浅红底），和上面的琥珀「提示」区分开 */
+        .dcb-block-note.dcb-note-box.unqualified {
+            border-color: #fecaca;
+            background: #fef2f2;
+        }
+
         /* 未达买入门槛：用更强的告警色，和「提示」区分开 */
         .dcb-block-note.unqualified {
             color: #b91c1c;
@@ -396,8 +415,9 @@
 
         .dcb-position.dcb-pos-heavy { color: #b91c1c; }   /* 重仓 */
         .dcb-position.dcb-pos-light { color: #c2410c; }   /* 轻仓 */
-        /* 加仓：刻意用紫色，与行内的「重仓红 / 轻仓橙」「持有蓝标」「昨天已买琥珀标」都区分开 */
-        .dcb-position.dcb-pos-add   { color: #7c3aed; }   /* 加仓（昨天已买） */
+        /* [POSITION-HOLD 2026-10-03 用户口径] 文案由【加仓】改为【持有】，配色沿用同一支紫
+           —— 与行内的「重仓红 / 轻仓橙」「持有蓝标」「竞价买红标」都区分开。 */
+        .dcb-position.dcb-pos-hold  { color: #7c3aed; }   /* 持有（昨天已买，今天继续拿） */
 
         .dcb-sell-at {
             margin-left: auto;
@@ -446,6 +466,12 @@
 
         .dcb-action.dcb-action-swap {
             background: #7c3aed;
+        }
+
+        /* [BUY-NOW 2026-10-03 用户口径] 【竞价买】= 竞价量比【增强】（有人抢筹）→ 竞价就得买。
+           红色 = 「现在就动手」（比尾盘买的琥珀「等一等」更急），与先卖后买的紫、尾盘买的琥珀三档分明。 */
+        .dcb-action.dcb-action-now {
+            background: #dc2626;
         }
 
         /* 买点侧：仓位（和/或持有标签）已经在行里，动作徽标紧跟其后，不再抢 margin-left:auto */
@@ -501,6 +527,14 @@
             border: 1px solid #99f6e4;
         }
 
+        /* [SELL-SURGE 2026-10-03 用户口径] 深低开 + 竞价量比【暴增】（≥ 5 倍）→ 【冲高就卖】：
+           低位抢筹明显，耐心等冲高，冲高概率非常高 —— 紫色（比「盯盘」琥珀更乐观，比「立刻出」红不着急）。 */
+        .dcb-sell-hint.tone-surge {
+            color: #6d28d9;
+            background: #f5f3ff;
+            border: 1px solid #ddd6fe;
+        }
+
         /* 「❗危」感叹号警示徽标：只在 danger 档有徽标，另两档的「盯 / 观」是中性标注 */
         .dcb-sell-badge {
             flex-shrink: 0;
@@ -526,6 +560,11 @@
             background: #0d9488;
         }
 
+        /* [SELL-SURGE 2026-10-03] 「冲」徽标：紫色，与 hint 底色同色系 */
+        .dcb-sell-hint.tone-surge .dcb-sell-badge {
+            background: #7c3aed;
+        }
+
         /* 行尾时点跟着档位变色：绿（原规则）→ 红（立刻出）/ 琥珀（盯盘）/ 蓝（看分时）/ 青绿（尾盘卖·看好） */
         .dcb-sell-at.tone-danger {
             color: #dc2626;
@@ -541,6 +580,11 @@
 
         .dcb-sell-at.tone-hold {
             color: #0f766e;
+        }
+
+        /* [SELL-SURGE 2026-10-03] 行尾【冲高就卖】跟着变紫，与下面那行紫色提示同一色系 */
+        .dcb-sell-at.tone-surge {
+            color: #6d28d9;
         }
 
         /* ---- 灰色小问号 + 规则面板 ----

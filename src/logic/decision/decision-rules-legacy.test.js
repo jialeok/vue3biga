@@ -68,10 +68,10 @@ import {
   SELL_TONE_PLAN,
   POSITION_HEAVY,
   POSITION_LIGHT,
-  POSITION_ADD,
+  POSITION_HOLD,
   POSITION_TONE_HEAVY,
   POSITION_TONE_LIGHT,
-  POSITION_TONE_ADD,
+  POSITION_TONE_HOLD,
   HOLD_TAG,
   PREV_BOUGHT_TAG,
   TOPIC_PREV_BOUGHT_TAG,
@@ -1958,7 +1958,7 @@ describe('昨天已买标记（PREV-BOUGHT，股票级）', () => {
     const plan = planOf(new Set());
     const picks = allPicks(plan);
     expect(picks.some((p) => p.prevBoughtTag)).toBe(false);
-    expect(picks.some((p) => p.position === POSITION_ADD)).toBe(false);
+    expect(picks.some((p) => p.position === POSITION_HOLD)).toBe(false);
     expect(picks.every((p) => p.position === POSITION_HEAVY || p.position === POSITION_LIGHT)).toBe(true);
     expect(plan.heavy.notes.join('｜')).not.toContain(PREV_BOUGHT_TAG);
   });
@@ -1967,7 +1967,7 @@ describe('昨天已买标记（PREV-BOUGHT，股票级）', () => {
     const plan = planOf(null);
     const picks = allPicks(plan);
     expect(picks.some((p) => p.prevBoughtTag)).toBe(false);
-    expect(picks.some((p) => p.position === POSITION_ADD)).toBe(false);
+    expect(picks.some((p) => p.position === POSITION_HOLD)).toBe(false);
     expect(plan.heavy.notes.join('｜')).not.toContain(PREV_BOUGHT_TAG);
   });
 
@@ -1979,8 +1979,8 @@ describe('昨天已买标记（PREV-BOUGHT，股票级）', () => {
     const plan = planOf(new Set(['昨天买过的']));
     const p = allPicks(plan).find((x) => x.name === '昨天买过的');
     expect(p.prevBoughtTag).toBe(PREV_BOUGHT_TAG);
-    expect(p.position).toBe(POSITION_ADD);           // 原来是重仓
-    expect(p.positionTone).toBe(POSITION_TONE_ADD);  // ⛔ tone 必须一起换，否则 UI 还是红的
+    expect(p.position).toBe(POSITION_HOLD);           // 原来是重仓
+    expect(p.positionTone).toBe(POSITION_TONE_HOLD);  // ⛔ tone 必须一起换，否则 UI 还是红的
   });
 
   it('🔴 轻仓的票带【昨天已买】⇒ 仓位同样改标【加仓】', () => {
@@ -1988,8 +1988,8 @@ describe('昨天已买标记（PREV-BOUGHT，股票级）', () => {
     const light = allPicks(plan).find((x) => x.name === 'X一');
     expect(light).toBeTruthy();                      // 先钉住「它确实在买点里」，否则是空测
     expect(light.prevBoughtTag).toBe(PREV_BOUGHT_TAG);
-    expect(light.position).toBe(POSITION_ADD);
-    expect(light.positionTone).toBe(POSITION_TONE_ADD);
+    expect(light.position).toBe(POSITION_HOLD);
+    expect(light.positionTone).toBe(POSITION_TONE_HOLD);
   });
 
   it('没被标的票保持原仓位，配色档也正确（重仓=heavy / 轻仓=light）', () => {
@@ -2007,7 +2007,7 @@ describe('昨天已买标记（PREV-BOUGHT，股票级）', () => {
   it('positionToneOf：未知 / 缺值一律回落「重仓」档（⛔ 不会拼出空类名把样式丢掉）', () => {
     expect(positionToneOf(POSITION_HEAVY)).toBe(POSITION_TONE_HEAVY);
     expect(positionToneOf(POSITION_LIGHT)).toBe(POSITION_TONE_LIGHT);
-    expect(positionToneOf(POSITION_ADD)).toBe(POSITION_TONE_ADD);
+    expect(positionToneOf(POSITION_HOLD)).toBe(POSITION_TONE_HOLD);
     expect(positionToneOf('')).toBe(POSITION_TONE_HEAVY);
     expect(positionToneOf(undefined)).toBe(POSITION_TONE_HEAVY);
   });
@@ -2080,7 +2080,7 @@ describe('昨天已买标记（PREV-BOUGHT，股票级）', () => {
     const plan = topicPlanOf(new Set(['昨天买过的']), new Set(['T']));
     const picks = plan.heavy.picks;
     expect(plan.heavy.prevBoughtTag).toBe(TOPIC_PREV_BOUGHT_TAG);   // 题材级：标了
-    expect(picks.find((p) => p.name === '昨天买过的').position).toBe(POSITION_ADD);
+    expect(picks.find((p) => p.name === '昨天买过的').position).toBe(POSITION_HOLD);
     // ⛔ 这只在同一个题材块里，但昨天没买 → 【不许】跟着变加仓
     expect(picks.find((p) => p.name === '昨天没买的').position).toBe(POSITION_HEAVY);
   });

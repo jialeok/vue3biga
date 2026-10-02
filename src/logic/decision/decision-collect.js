@@ -53,7 +53,9 @@ import {
   VOL_RATIO_TREND_DAYS,
   decorateVolRatioFields,
   // [VR-COMPARE 2026-10-02 用户口径] 「今日 vs 上交易日」竞价量比方向：买点 / 卖点新档位的唯一依据。
-  getVolRatioDir
+  getVolRatioDir,
+  // [SELL-SURGE 2026-10-03 用户口径] 「今日 ÷ 上交易日」竞价量比倍数：卖点【冲高就卖】档的唯一依据。
+  getVolRatioTimes
 } from './vol-ratio-trend.js';
 
 function _notReady(reason) {
@@ -405,6 +407,10 @@ export function collectDecisionData(date, opts) {
       //      都要在 buildBuyPlan / buildSellPlan 里读它，晚了就只能事后补，业务判断会落到 collect 层（§4 破）。
       //   ⛔ 口径走 vol-ratio-trend#getVolRatioDir（与行内量比徽标同一函数，§6 单一真相）。
       volRatioDir: getVolRatioDir(nm, date),
+      // [SELL-SURGE 2026-10-03 用户口径] 今日 ÷ 上交易日的竞价量比【倍数】（null = 缺数据 / 除不出来）。
+      //   ⚠️ 与 volRatioDir 是【两个不同口径】：方向回答「强了还是弱了」（整数差），
+      //      倍数回答「放大了多少」（除法）。⛔ 别互相替代 —— 「增加 5 倍以上」只能靠倍数判。
+      volRatioTimes: getVolRatioTimes(nm, date),
       pct: (rm && rm.pct !== undefined && rm.pct !== null) ? rm.pct : null,
       countable: countable,
       inheritSold: inheritSold.has(nm)
@@ -530,6 +536,9 @@ export function collectDecisionData(date, opts) {
       //   卖点新档位（低开+量比下降 → 立刻出；高开+量比平 → 尾盘卖）的唯一依据。
       //   ⛔ 与行内量比徽标同一个口径函数（vol-ratio-trend#compareVolRatioDirection，§6 单一真相）。
       volRatioDir: row ? row.volRatioDir : getVolRatioDir(nm, date),
+      // [SELL-SURGE 2026-10-03 用户口径] 竞价量比倍数（今日 ÷ 上交易日）：
+      //   卖点【冲高就卖】档（深低开 + 量比放大 ≥ 5 倍）的唯一依据。null = 未知 ⇒ 该档不生效（§10）。
+      volRatioTimes: row ? row.volRatioTimes : getVolRatioTimes(nm, date),
       inTodayList: !!row
     });
   });

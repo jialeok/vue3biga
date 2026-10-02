@@ -112,6 +112,10 @@ import { formatAucPct } from '../auction/limit-up.js';
 //   （compareVolRatioDirection 的四舍五入整数差）。⛔ 本文件只 import 常量做比较，绝不另写一套阈值 ——
 //   否则「量比算不算下降」在徽标与规则两处会出现两个答案（§6 破）。
 import { VR_DIR_UP, VR_DIR_FLAT, VR_DIR_DOWN } from './vol-ratio-trend.js';
+// [SELL-SURGE 2026-10-03 用户口径] 「今日 ÷ 上交易日」竞价量比【倍数】的唯一口径也在 vol-ratio-trend.js。
+//   ⛔ 与上面那份方向常量是【两个不同口径】：方向 = 整数差（强/弱），倍数 = 除法（放大了多少）。
+//   阈值 VR_SURGE_TIMES 只在那边定义，本文件只 import 判定函数（§6 单一真相）。
+import { VR_SURGE_TIMES, isVolRatioSurge } from './vol-ratio-trend.js';
 
 /** 题材成组门槛：与早盘竞价统计条（topic-stats.js#TOPIC_STATS_MIN_GROUP）同源 —— 不足 2 只不成题材 */
 export const DECISION_MIN_GROUP = 2;
@@ -192,13 +196,20 @@ export const HOLD_TAG = '持有 / 加仓';
 // ⛔ 两个徽标【是新增的独立标记】，不替换行尾仓位（重仓 / 轻仓 / 加仓）——
 //   用户 AskUserQuestion 明确选「新增「尾盘买」徽标（不替换仓位）」。
 // ⛔ 只在【一字模式】的买点块上出现（本次改动限定「一字的买点规则」，其它模式不变）。
-/** 【尾盘买】徽标：弱票（竞价低开 + 量比下降）→ 当天优势不好，等尾盘再买（不追开盘） */
+/** 【尾盘买】徽标：竞价量比比上一交易日【下降】→ 当天优势不好，等尾盘再买（不追开盘） */
 export const BUY_LATE_TAG = '尾盘买';
-/** 【先卖后买】徽标：弱票 + 手上已有仓位（昨天买过）→ 开盘先卖掉，尾盘再买回来 */
+/** 【先卖后买】徽标：量比下降 + 手上已有仓位（昨天买过）→ 开盘先卖掉，尾盘再买回来 */
 export const SELL_FIRST_BUY_LATER_TAG = '先卖后买';
+/**
+ * 【竞价买】徽标 —— [BUY-NOW 2026-10-03 用户口径] 新增。
+ *   用户原话（9/30 案例）：「如果是竞价涨幅大于 0，竞价量比上升，这类股票应该打标签【竞价买】」
+ *   ⇒ 竞价量比比上一交易日【增强】= 有人抢筹 ⇒ 竞价就得买，等尾盘反而买不到 / 更贵。
+ */
+export const BUY_NOW_TAG = '竞价买';
 /** 徽标配色档（§21：由 Logic 层给，模板只拼 `'dcb-action-' + tone`，⛔ 不自己判断是哪个徽标） */
 export const BUY_ACTION_TONE_LATE = 'late';   // 尾盘买 → 琥珀（提醒：别追开盘）
 export const BUY_ACTION_TONE_SWAP = 'swap';   // 先卖后买 → 紫（两段动作，比单纯尾盘买更重）
+export const BUY_ACTION_TONE_NOW = 'now';     // [BUY-NOW 2026-10-03] 竞价买 → 红（增强 = 抢筹，立刻买）
 
 // ===== [PREV-BOUGHT 2026-09-30 用户口径，同日修正为【股票级】] 「昨天已买」标记 =====
 // 语义：这一只【股票】在上一交易日被打了「买」标签（= 用户手上已经有仓位）。
@@ -345,27 +356,43 @@ export const SELL_TONE_PLAN = 'plan';       // 小幅高开 → 看分时（向�
 // [VR-ACTION 2026-10-02 用户口径] 小幅高开 + 竞价量比【没走弱】（平 / 增强）→ 看好，尾盘卖。
 //   ⛔ 刻意与 plan（看分时）分开：plan 要求盘中盯分时，本档不用盯，是更确定的「拿满一天」。
 export const SELL_TONE_HOLD = 'hold';       // 小幅高开 + 量比平/增强 → 尾盘卖（看好）
+// [SELL-SURGE 2026-10-03 用户口径] 深低开 + 竞价量比【暴增】（今日 ÷ 上交易日 ≥ VR_SURGE_TIMES）→ 冲高就卖。
+//   用户原话（9/30 案例）：「房地产的新世联（世联行），竞价跌幅 -9.97%，竞价量比增加 5 倍以上，
+//   这类就要耐心等待冲高，概率非常高，打标签【冲高就卖】」
+//   实测核对：世联行 9-29 量比 3.95 → 9-30 24.45 = 6.19 倍 ≥ 5 ⇒ 命中。
+//   ⛔ 刻意与 watch（盯盘等反弹）分开：watch 是「反弹不起来 10:00 也出」，
+//     本档是量能爆发的深低开（抢筹明显）⇒ 更该耐心等冲高，不是急着割。
+export const SELL_TONE_SURGE = 'surge';
+/** [SELL-SURGE 2026-10-03 用户口径] 深低开 + 量比暴增档的行尾时点文案（用户原话「打标签【冲高就卖】」） */
+export const SELL_SURGE_LABEL = '冲高就卖';
 /** 仓位建议文案 */
 export const POSITION_HEAVY = '重仓';
 export const POSITION_LIGHT = '轻仓';
 /**
- * 【④ 加仓（2026-09-30 用户口径）】该股票昨天已经被打过「买」标签（用户手上已有仓位）⇒
- *   仓位不再写「重仓 / 轻仓」，改写「加仓」—— 用户原话：「旁边那个（仓位）应该变成加仓，
- *   这样更加知道那是昨天的票延续走强」。
- *   ⚠️ 「重仓 / 轻仓」是【买多少】的建仓建议；「加仓」是【已有仓位再买】的动作，两者不同层，
+ * 【④ 昨天已买 · 股票级效果（2026-09-30 用户口径；2026-10-03 文案改【持有】）】
+ *   该股票昨天已经被打过「买」标签（用户手上已有仓位）⇒
+ *   仓位不再写「重仓 / 轻仓」，改写「持有」。
+ *
+ *   ⚠️ 「重仓 / 轻仓」是【买多少】的建仓建议；「持有」是【已有仓位继续拿】的动作，两者不同层，
  *      所以对已持有的票直接换文案，而不是并列显示。
+ *
+ *   🔴 [POSITION-HOLD 2026-10-03 用户口径] 文案由【加仓】改为【持有】：
+ *     用户原话：「【规则⑫】【新华文轩】昨天已买…→ 行尾仓位改标【加仓】…应该把加仓变成持有，
+ *     其它不变。」（9/30 实测：新华文轩 9-29 被打过「买」标签）
+ *     ⚠️ 只改【文案】这一个词，判据（昨天打过「买」标签）与触发位置（买点行尾仓位）一律不动。
  *   ⛔ 只在【买点】生效；卖点本来就没有仓位列，不受影响。
  */
-export const POSITION_ADD = '加仓';
+export const POSITION_HOLD = '持有';
 /** 仓位配色档（§21：由 Logic 层给 tone，模板只做 `'dcb-pos-' + tone` 拼接，⛔ 不做比较） */
 export const POSITION_TONE_HEAVY = 'heavy';
 export const POSITION_TONE_LIGHT = 'light';
-export const POSITION_TONE_ADD = 'add';
+/** 昨天已买 → 紫色（与「重仓红 / 轻仓橙」区分；沿用 2026-09-30 加仓档的紫色，视觉连续） */
+export const POSITION_TONE_HOLD = 'hold';
 
 /** 仓位文案 → 配色档（模板零判断的唯一出口） */
 export function positionToneOf(position) {
   if (position === POSITION_LIGHT) return POSITION_TONE_LIGHT;
-  if (position === POSITION_ADD) return POSITION_TONE_ADD;
+  if (position === POSITION_HOLD) return POSITION_TONE_HOLD;
   return POSITION_TONE_HEAVY;
 }
 
@@ -1049,7 +1076,7 @@ function _markPrevBought(blockObj, prevBoughtNames, ruleNo) {
   blockObj.picks.forEach(function(p) {
     if (prevBoughtNames.has(p.name)) {
       p.prevBoughtTag = PREV_BOUGHT_TAG;      // 留痕（⛔ 不渲染）；加仓的判据
-      p.position = POSITION_ADD;
+      p.position = POSITION_HOLD;
       hits.push(p.name);
     }
   });
@@ -1057,7 +1084,7 @@ function _markPrevBought(blockObj, prevBoughtNames, ruleNo) {
     blockObj.notes = blockObj.notes || [];
     blockObj.notes.push(_note(ruleNo || RULE_NO.PREV_BOUGHT,
       '【' + hits.join('、') + '】' + PREV_BOUGHT_TAG + '（被打过「买」标签）→ 行尾仓位改标【' +
-      POSITION_ADD + '】（昨天已有仓位，今天是往上加，不重新建仓）'));
+      POSITION_HOLD + '】（昨天已有仓位，今天继续持有、不重新建仓）'));
   }
   return blockObj;
 }
@@ -1314,22 +1341,24 @@ function _decideSellTime(topicRank, opts) {
  *
  * 判定顺序（⛔ 顺序即优先级，别调）：
  *   ① 竞价涨幅缺失 → null（§10）
- *   ② 弱票（低开 + 量比下降，isWeakAucDay）→ 开盘立刻出（⛔ 覆盖深低开档）
- *   ③ 深低开（≤ SELL_DEEP_LOW）→ 盯盘 · 10:00 前
- *   ④ 小低开（SELL_DEEP_LOW ~ 0）→ 开盘立刻出
- *   ⑤ 小幅高开（0 ~ +SELL_MILD_HIGH）：
+ *   ② 弱票（低开 + 量比下降，isWeakAucDay）→ 开盘立刻出（⛔ 覆盖下面的深低开 / 冲高就卖档）
+ *   ③ 深低开（≤ SELL_DEEP_LOW）＋ 竞价量比【暴增】（≥ VR_SURGE_TIMES 倍）→ 冲高就卖（[SELL-SURGE 2026-10-03]）
+ *   ④ 深低开（≤ SELL_DEEP_LOW）→ 盯盘 · 10:00 前
+ *   ⑤ 小低开（SELL_DEEP_LOW ~ 0）→ 开盘立刻出
+ *   ⑥ 小幅高开（0 ~ +SELL_MILD_HIGH）：
  *        量比【没走弱】（平 / 增强）→ 尾盘卖（看好）；否则（下降 / 未知）→ 看分时定
- *   ⑥ 其余 → null
+ *   ⑦ 其余 → null
  *
  * @param {number|null} aucPct 今日竞价涨幅（%）；null / 非数 = 缺数据（§10 不猜方向）
  * @param {'up'|'flat'|'down'|''} [volRatioDir] 今日 vs 上交易日竞价量比方向（缺省 = 未知）
+ * @param {number|null} [volRatioTimes] 今日 ÷ 上交易日竞价量比【倍数】（缺省 = 未知 ⇒ 冲高就卖档不生效）
  * @returns {{tone:string, badge:string, timeLabel:string, text:string}|null}
  */
-function _decideSellHint(aucPct, volRatioDir) {
+function _decideSellHint(aucPct, volRatioDir, volRatioTimes) {
   const n = _num(aucPct);
   if (n === null) return null;                    // §10：缺数据 ⇒ 不产出提示，回落原规则
   const dir = String(volRatioDir || '');
-  // ② 弱票：低开 + 量比下降 ⇒ 两个指标同步走弱，一开盘就出（⛔ 覆盖下面的深低开盯盘档）
+  // ② 弱票：低开 + 量比下降 ⇒ 两个指标同步走弱，一开盘就出（⛔ 覆盖下面的深低开 / 冲高就卖档）
   if (isWeakAucDay(n, dir)) {
     return {
       tone: SELL_TONE_DANGER,
@@ -1339,8 +1368,22 @@ function _decideSellHint(aucPct, volRatioDir) {
         '开盘【立刻出】，不等反弹、不抱侥幸，别犹豫！'
     };
   }
+  // ③ 深低开 + 竞价量比【暴增】（≥ VR_SURGE_TIMES 倍）→ 冲高就卖（[SELL-SURGE 2026-10-03 用户口径]）
+  //    深低开却还有巨量在抢 ⇒ 不是「没人要」，是有人在低位接 ⇒ 冲高的概率非常高
+  //    ⇒ 别按普通深低开那样急着 10:00 前割，【耐心等冲高】，冲高那一刻再出（行尾标【冲高就卖】）。
+  //    §10：倍数未知（null）⇒ 本档【不生效】（不猜「放大了」），完整回落下面的深低开档。
+  if (n <= SELL_DEEP_LOW && isVolRatioSurge(volRatioTimes)) {
+    return {
+      tone: SELL_TONE_SURGE,
+      badge: '冲',
+      timeLabel: SELL_SURGE_LABEL,
+      text: '竞价深低开（' + formatAucPct(n) + '）＋ 竞价量比放大到上一交易日的 ' +
+        Number(volRatioTimes).toFixed(2) + ' 倍（≥ ' + VR_SURGE_TIMES + ' 倍）→ 低位抢筹明显，' +
+        '耐心等待冲高，【冲高就卖】，冲高的概率非常高。'
+    };
+  }
   if (n <= SELL_DEEP_LOW) {
-    // 深低开：别在竞价割，先盯盘 —— 卖点跟着时间走（10:00 前定夺）
+    // ④ 深低开：别在竞价割，先盯盘 —— 卖点跟着时间走（10:00 前定夺）
     return {
       tone: SELL_TONE_WATCH,
       badge: '盯',
@@ -1350,7 +1393,7 @@ function _decideSellHint(aucPct, volRatioDir) {
     };
   }
   if (n < 0) {
-    // 小低开：最弱的一档 —— 开盘就是最好的价，直接出
+    // ⑤ 小低开：最弱的一档 —— 开盘就是最好的价，直接出
     return {
       tone: SELL_TONE_DANGER,
       badge: '❗危',
@@ -1359,7 +1402,7 @@ function _decideSellHint(aucPct, volRatioDir) {
     };
   }
   if (n > 0 && n < SELL_MILD_HIGH) {
-    // 小幅高开：量比还没走弱（平 / 增强）⇒ 看好，直接拿到尾盘；
+    // ⑥ 小幅高开：量比还没走弱（平 / 增强）⇒ 看好，直接拿到尾盘；
     //   量比同步下降 / 未知 ⇒ 保持原样「看分时」（用户口径「按原来的不变」）。
     if (dir === VR_DIR_FLAT || dir === VR_DIR_UP) {
       return {
@@ -1391,6 +1434,8 @@ function _decideSellHint(aucPct, volRatioDir) {
  *        · aucPct   = 今日竞价涨幅（卖点细分提示的第一依据）
  *        · volRatioDir = 今日 vs 上交易日竞价量比方向（[VR-ACTION 2026-10-02] 第二依据，
  *          '' = 缺一天数据 / 未知 ⇒ 两条叠加规则都不生效，回落原档位，§10 不猜方向）
+ *        · volRatioTimes = 今日 ÷ 上交易日竞价量比【倍数】（[SELL-SURGE 2026-10-03] 第三依据，
+ *          null = 缺一天数据 / 除不出来 ⇒ 「冲高就卖」档不生效，回落原档位，§10 不猜倍数）
  * @param {Array} blocks rankDecisionTopics 的返回（用于查今日题材排名 / 数量 / 一字）
  * @param {Map} dragonMap 今日龙头排名（用于显示「龙几」）
  * @param {Set<string>|Map<string,any>|null} prevDragonNames 昨日龙头名册里的股票名（昨日龙一）；
@@ -1436,6 +1481,9 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
     // [VR-ACTION 2026-10-02] 今日 vs 上交易日竞价量比方向（口径唯一实现在 vol-ratio-trend，§6）。
     //   ⛔ 原样透传 decision-collect 在 sellRows 上挂好的值，本函数不重新计算、也不读 state。
     const volRatioDir = String(r.volRatioDir || '');
+    // [SELL-SURGE 2026-10-03 用户口径] 竞价量比【倍数】（今日 ÷ 上交易日）—— 卖点「冲高就卖」档的依据。
+    //   ⛔ 与 volRatioDir 是两个口径（方向 vs 倍数），别互相替代；null = 未知 ⇒ 该档不生效（§10 不猜）。
+    const volRatioTimes = (r.volRatioTimes === undefined || r.volRatioTimes === null) ? null : _num(r.volRatioTimes);
     const todayInBuy = !!(todayBuyNames && todayBuyNames.has(r.name));
     // 【③ 持有 / 加仓】上交易日就在买点里（= 进得了卖点候选）+ 今天又在买点里 → 强势股
     // 🔴 [VR-ACTION 2026-10-02 用户口径] 但若今天已经是【弱票】（低开 + 量比下降）⇒ 就【不是】强势股了，
@@ -1471,7 +1519,7 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
       // ⛔ 标了【持有 / 加仓】的行不提示卖点（它本来就不按上面的时点卖）；
       //   ⚠️ 但【先卖后买】的行【要】提示 —— 它的动作就是「先卖」，卖点提示正是它需要的那条。
       //   未命中各档 → null（行尾回落 sellAt）。
-      sellHint: holdTag ? null : _decideSellHint(aucPct, volRatioDir)
+      sellHint: holdTag ? null : _decideSellHint(aucPct, volRatioDir, volRatioTimes)
     });
   });
 
@@ -1630,8 +1678,8 @@ function _volRatioBuyRulesLines() {
     '　　　（2026-09-30 事故：上一版用「' + PREV_BOUGHT_TAG + '」这个说法放在题材行，用户读成了',
     '　　　 个股结论「大亚圣象昨天已买」= 错的，所以题材级的说法改成【' + TOPIC_PREV_BOUGHT_TAG + '】）。',
     '　　⚠️ 逐只【股票级】的判断走行尾仓位：这一只昨天真的被打过「买」标签（' + PREV_BOUGHT_TAG + '）',
-    '　　⇒ 仓位由「' + POSITION_HEAVY + ' / ' + POSITION_LIGHT + '」改标【' + POSITION_ADD +
-      '】（昨天已有仓位，今天是往上加，不重新建仓）。',
+    '　　⇒ 仓位由「' + POSITION_HEAVY + ' / ' + POSITION_LIGHT + '」改标【' + POSITION_HOLD +
+      '】（昨天已有仓位，今天继续持有、不重新建仓）。',
     '　　⚠️ 与 ③ 的区别：③ 看的是【上一个交易日的买点方案】里有没有它（系统选出来的），',
     '　　　④ 看的是【你昨天实际有没有打「买」标签】；两个是两回事，可以同时出现。',
     '　⑤ 【入选次数】题材行（竞价一字右边）标【一次入选 / 二次入选 / 三次入选…】=',
@@ -1648,7 +1696,7 @@ function _volRatioBuyRulesLines() {
     '【股票行的数据】股票名右边依次是：龙几（龙一 / 龙二）｜十日涨幅｜竞价涨幅小标签｜竞价量比；',
     '　　【竞价量比】小标签会显示与【上一交易日】相比的方向（两个值各自四舍五入到整数后作差）：',
     '　　　增强（差 ≥ +1）→ 整块【红底】带 ↑；下降（差 ≤ -1）→ 整块【绿底】带 ↓；基本平（差 = 0）或数据不全 → 靛蓝底不带箭头。',
-    '　　行尾是仓位（' + POSITION_HEAVY + ' / ' + POSITION_LIGHT + ' / ' + POSITION_ADD + '），再往右是【' +
+    '　　行尾是仓位（' + POSITION_HEAVY + ' / ' + POSITION_LIGHT + ' / ' + POSITION_HOLD + '），再往右是【' +
       HOLD_TAG + '】这类标记。'
   ];
 }
@@ -1677,7 +1725,9 @@ export function sellRulesLines() {
     '　【第一层 · 按今日竞价涨幅 + 竞价量比方向细分节奏】（命中就把行尾时点换成下面这句）：',
     '　　· 【弱票】竞价涨幅 < 0 且 竞价量比比上一交易日【下降】→ 开盘【立刻出】，行内打「❗危」警示；',
     '　　　⚠️ 这一条【覆盖】下面的深低开档 —— 低开 + 量比同步下降说明承接也没了，等反弹只会把亏损做大；',
-    '　　· ≤ ' + SELL_DEEP_LOW + '%（深低开，且量比【没】下降）→ 【盯盘】：10:00 前看有没有反弹，冲高就出；反弹不起来，10:00 也出；',
+    '　　· ≤ ' + SELL_DEEP_LOW + '%（深低开）＋ 竞价量比【暴增】（今日 ÷ 上一交易日 ≥ ' + VR_SURGE_TIMES +
+      ' 倍）→ 【' + SELL_SURGE_LABEL + '】：低位抢筹明显，耐心等冲高，冲高的概率非常高；',
+    '　　· ≤ ' + SELL_DEEP_LOW + '%（深低开，且量比【没】下降、也没暴增）→ 【盯盘】：10:00 前看有没有反弹，冲高就出；反弹不起来，10:00 也出；',
     '　　· ' + SELL_DEEP_LOW + '% ~ 0（小低开，且量比【没】下降）→ 开盘【立刻出】，行内打「❗危」警示，不等反弹、别犹豫；',
     '　　· 0 ~ +' + SELL_MILD_HIGH + '%（小幅高开）＋ 竞价量比【基本平 / 增强】→ 看好，不必盯分时，直接拿到 ' +
       SELL_TIME_CLOSE + '【尾盘卖】；',
