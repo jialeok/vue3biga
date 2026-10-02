@@ -619,15 +619,22 @@ function _ratioTextOfName(cands, name) {
  *   · 【全体候选都缺量比】⇒ 退回【按龙头名次】取前 maxCount 只，并如实写进说明
  *     （⛔ 绝不假装「量比都是 0」，也绝不再往下退回更弱的方案 —— 用户要的就是量化结果）。
  *
+ * 🔴 [YIZI-ALL-CLEAR 2026-10-02 用户口径 v2] 上面 ③ 的例外（9/29 用户截图反馈）：
+ *   小档（4~6 只）本档只取 1 只 ⇒ 若唯一名次被竞价一字占掉 ⇒ 整块题材「没有可买的票」。
+ *   用户原话「ai应用和新能源汽车有票啊，但是决策看板那里为什么没选出来，提示没有票？」
+ *   ⇒ 本档名次【全被一字占掉】时，继续往下取【可买的票】补位（最多 limit 只）；
+ *     只要名次里还有一只可买的，就【不补位】（9/30 AI应用 只买新华文轩的口径保持不变）。
+ *
  * @param {object} block 题材块
  * @param {Map} dragonMap 龙头排名
  * @param {number} maxCount 取几只（由 resolvePickTier 给出）
  * @param {number} heavyCount 其中几只重仓
  * @param {string} [ruleNo] 说明文字里引用的规则编号
  * @returns {{picks:Array, notes:string[], byRankFallback:boolean,
- *            slotCount:number, skippedNames:string[]}}
+ *            slotCount:number, skippedNames:string[], filledFromBelow:number}}
  *          byRankFallback = 全体候选缺量比 ⇒ 本条是「按龙头名次」的退路（§10 不猜）
  *          slotCount = 实际占掉的名额数（≤ maxCount）；skippedNames = 占名额但买不进的一字票名
+ *          filledFromBelow = 名次全被一字占掉后往下补到的票数（0 = 未触发）
  */
 export function pickByVolRatio(block, dragonMap, maxCount, heavyCount, ruleNo) {
   const notes = [];
@@ -648,7 +655,31 @@ export function pickByVolRatio(block, dragonMap, maxCount, heavyCount, ruleNo) {
   // ③ 其中的竞价一字【买不进且不递补】⇒ 剔除出买入名单
   const skippedNames = slots.filter(function(c) { return c.isYizi; })
     .map(function(c) { return c.name; });
-  const bought = slots.filter(function(c) { return !c.isYizi; });
+  let bought = slots.filter(function(c) { return !c.isYizi; });
+
+  // 🔴 [YIZI-ALL-CLEAR 2026-10-02 用户口径 v2] 【本档名次被竞价一字占满】的例外。
+  //
+  // 用户 2026-10-02 截图反馈（9/29）：AI应用（数量 6 ⇒ 小档，本档只取 1 只）与
+  //   新能源汽车（数量 4 ⇒ 小档）都提示「没有可买的票」，用户原话：
+  //   「ai应用和新能源汽车有票啊，但是决策看板那里为什么没选出来，提示没有票？」
+  //   根因：小档 limit=1 ⇒ slots 只有量比第一名；而那一名恰好是竞价一字 ⇒ bought 为空
+  //   ⇒ 整个题材出 0 只。可该题材明明还有别的能买的票（6 只里只有 1 只是一字）。
+  //
+  // 口径（⭐ 与 9/30 那笔账【并存不冲突】，⛔ 改之前必须同时对上这两个案例）：
+  //   ① 一字【照旧占名次、不递补】（9/30 口径不变）：AI应用 8 只取前 2 名 =
+  //      新华传媒(一字) + 新华文轩 ⇒ 有 1 只可买 ⇒ 【不触发】下面的补位 ⇒ 仍只买新华文轩 1 只。
+  //   ② 【本档一只可买的都没有】时（名次全被一字吃掉）⇒ 视为本档没有可用名次，
+  //      继续往下找【可买的票】补位，最多补到 limit 只（9/29 的 AI应用 / 新能源汽车走这条）。
+  //
+  // ⛔ 别改成「只要名次里有字就往下补」—— 那会把 9/30 的 AI应用 从 1 只变成 2 只，
+  //    与用户当时那笔账（仅买入新华文轩）直接矛盾。
+  // ⛔ 也别把它当成「一字不占名次」—— 一字照旧吃掉名次，只是不吃掉【整块题材】。
+  let filledFromBelow = 0;
+  if (bought.length === 0 && skippedNames.length > 0) {
+    const below = ordered.slice(limit).filter(function(c) { return !c.isYizi; }).slice(0, limit);
+    filledFromBelow = below.length;
+    bought = below;
+  }
   // ④ 仓位按【实际买入的票】顺序分配：前 heavyN 只重仓，其余轻仓
   const picks = bought.map(function(c, i) {
     return _toPick(c, i < heavyN ? POSITION_HEAVY : POSITION_LIGHT);
@@ -663,14 +694,21 @@ export function pickByVolRatio(block, dragonMap, maxCount, heavyCount, ruleNo) {
   notes.push(_note(no, '按【竞价量比】降序取前 ' + slots.length + ' 名（' + ratioText + '）→ ' + posText +
     (byRankFallback ? '；⚠️ 本题材全部缺竞价量比，本条是【按龙头名次】的退路（§10 不猜）' : '')));
   if (skippedNames.length > 0) {
-    notes.push(_note(no, '⚠️ 量比前 ' + slots.length + ' 名里有 ' + skippedNames.length +
-      ' 只是【竞价一字】（' + skippedNames.join('、') + '）→ 买不进，且【占名次不递补】' +
-      ' ⇒ 实际买入 ' + picks.length + ' 只'));
+    notes.push(_note(no, filledFromBelow > 0
+      // [YIZI-ALL-CLEAR] 名次全被一字占掉 ⇒ 走补位，如实说明补了几只（§10 不静默）
+      ? ('⚠️ 本档名次全被【竞价一字】占掉（' + skippedNames.join('、') +
+        '）→ 本档没有可用名次 ⇒ 继续往下取【可买的票】补位 ' + filledFromBelow +
+        ' 只（一字照旧占名次，但不会让整个题材一只都出不了）')
+      : ('⚠️ 量比前 ' + slots.length + ' 名里有 ' + skippedNames.length +
+        ' 只是【竞价一字】（' + skippedNames.join('、') + '）→ 买不进，且【占名次不递补】' +
+        ' ⇒ 实际买入 ' + picks.length + ' 只')));
   }
 
   return {
     picks: _reseq(picks), notes: notes, byRankFallback: byRankFallback,
-    slotCount: slots.length, skippedNames: skippedNames
+    slotCount: slots.length, skippedNames: skippedNames,
+    // [YIZI-ALL-CLEAR 2026-10-02] 本档名次全被一字占掉后，往下补位取到的票数（0 = 没触发）
+    filledFromBelow: filledFromBelow
   };
 }
 
@@ -773,9 +811,18 @@ function _buildTopicBuyBlock(block, dragonMap, rankWord, ruleNo, opts) {
         r.slotCount + ' 名 → 实际取 ' + r.picks.length + ' 只'));
     }
   } else {
+    // [YIZI-ALL-CLEAR 2026-10-02] 走到这里 = 【连往下补位都补不到】：本档名次全被一字占掉，
+    //   而且后面再没有非一字的成员（或本档可买只数本来就是 0）。
+    //   ⛔ 旧文案「成员全部是竞价一字」在「本档只取 1 只、而 6 只成员里只有 1 只是一字」时是错的
+    //      —— 9/29 用户正是被这句话误导（AI应用 6 只却提示「成员全部是竞价一字」）。
+    //   §10：原因必须如实写出来，不能糊成一句笼统的「没有成员」。
+    const yiziNames = (r.skippedNames || []);
+    const why = yiziNames.length > 0
+      ? ('本档名次全被【竞价一字】占掉（' + yiziNames.join('、') + '），后面再没有能买的成员')
+      : '本档没有成员';
     base.notQualifiedText = _note(ruleNo, tierText +
-      '，但该题材【没有可买的票】（成员全部是竞价一字 / 没有成员）→ 本题材不出票');
-    base.reason = head + tierText + '，但没有可买的票 → 不出票';
+      '，但该题材【没有可买的票】（' + why + '）→ 本题材不出票');
+    base.reason = head + tierText + '，但没有可买的票（' + why + '）→ 不出票';
   }
   return base;
 }
@@ -1344,6 +1391,12 @@ export function buildRulesLines() {
     '　　　　实例（9/30 AI应用 8 只 · 中档取 2 只）：量比第 1 名新华传媒 158.66 是一字 ⇒ 买不进；',
     '　　　　　第 2 名新华文轩 19.66 非一字 ⇒ 【只买入这一只】，且是重仓（重仓名额发给实际买入的票）。',
     '　　　　仓位同理：重仓名额按【实际买入的票】从前往后发，一字不占仓位名额。',
+    '　　⚠️【例外 · 本档一只可买的都没有】→ 名次被一字【全部吃光】时，往下补位（2026-10-02 口径）：',
+    '　　　　小档（4 ~ 6 只）本档只取 1 只 ⇒ 若这唯一的名次就是那只竞价一字 ⇒ 原先整块题材会',
+    '　　　　「一只都买不到」（9/29 AI应用 / 新能源汽车就是这种形态）⇒ 现在改为继续往下找',
+    '　　　　【量比最高的可买的票】把本档填满（最多补回本档应取的只数）。',
+    '　　　　实例（9/29 AI应用）：量比第 1 名新华传媒是一字、第 2 名新华文轩可买 ⇒ 选出新华文轩。',
+    '　　　　⛔ 只要名次里【还有一只可买的】，就照旧【不补位】（上面 9/30 那笔账保持不变）。',
     '　　⚠️【创业板 / 科创板 / 北交所】（20% / 30% 涨跌幅板）→【照选】，不因为板块而被顺延。',
     '　　⚠️ 缺竞价量比的票【不参与】量比大小的比较（§10 绝不当 0），一律排在有量比的票后面；',
     '　　　　整个题材都没有量比 ⇒ 退回【按龙头名次取前几只】，并在说明文字里写明为什么。',

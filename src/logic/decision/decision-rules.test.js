@@ -1661,3 +1661,174 @@ describe('joinRulesLines（一键复制的纯文本）', () => {
     expect(text).toContain('【股票行的数据】');
   });
 });
+
+// ============================================================================
+// ⭐ [YIZI-ALL-CLEAR 2026-10-02 用户口径 v2] 本档名次【全被竞价一字占掉】→ 往下补位
+//
+// 用户 2026-10-02 截图反馈（9/29）：AI应用（数量 6 ⇒ 小档 ⇒ 本档只取 1 只）与
+// 新能源汽车（数量 4 ⇒ 小档）都提示「没有可买的票」。原话：
+//   「9月29日，ai应用和新能源汽车有票啊，但是决策看板那里为什么没选出来，提示没有票？
+//    ai应用有9只包括灰行，新能源汽车有4只，你修复下，不是部分，是这类问题」
+//
+// 根因：小档 limit=1 ⇒ 唯一名次恰好是量比第一的竞价一字 ⇒ bought 为空 ⇒ 整块题材 0 只，
+//       可该题材明明还有别的能买的票（6 只里只有 1 只是一字）。
+//
+// ⭐ 新口径与【9/30 那笔账】【并存不冲突】—— 下面两组用例必须同时通过：
+//   ① 名次里【还有一只可买的】⇒ 不补位（9/30：AI应用 8 只取 2 名 = 一字 + 新华文轩
+//      ⇒ 仍【只买新华文轩 1 只】，⛔ 第 3 名不许递补）；
+//   ② 名次【全被一字占掉】⇒ 往下取可买的票补位（9/29：AI应用 / 新能源汽车 能出票）。
+//   ⛔ 别把 ① 也改成补位，也别把 ② 退回「不出票」—— 两个都是用户亲口口径。
+// ============================================================================
+describe('[YIZI-ALL-CLEAR] 本档名次全被竞价一字占掉 → 往下补位（9/29 用户截图反馈）', () => {
+  const mk = (members) => {
+    const blocks = rankDecisionTopics(members);
+    return { blocks: blocks, dragon: rankDragons(blocks), blk: blocks[0] };
+  };
+
+  it('⭐ 9/29 AI应用：小档 6 只、量比第一是竞价一字 → 必须选得出票（原先整块 0 只）', () => {
+    // 用户截图形态：AI应用 数量 6（4~6 ⇒ 小档，本档取 1 只）、竞价一字 1
+    // 量比：那一字最高（一字总是天量比）⇒ 唯一名次被它占掉 ⇒ 旧实现 bought 为空 ⇒ 不出票
+    const { blk, dragon } = mk([
+      E('新华传媒', 'T', 90, true, true, 10, '', false, 158.66),
+      E('新华文轩', 'T', 86, false, true, 3, '', false, 19.66),
+      E('内蒙新华', 'T', 80, false, true, 3, '', false, 12.4),
+      E('华媒控股', 'T', 75, false, true, 3, '', false, 9.1),
+      E('延华智能', 'T', 70, false, true, 3, '', false, 6.3),
+      E('天威视讯', 'T', 65, false, true, 3, '', false, 4.2)
+    ]);
+    expect(blk.count).toBe(6);
+    const r = pickByVolRatio(blk, dragon, 1, 1, RULE_NO.FIRST);
+    // ⭐ 补位：一字吃掉名次 ⇒ 往下取量比次高的【可买的票】
+    expect(r.picks.map(p => p.name)).toEqual(['新华文轩']);
+    expect(r.picks.map(p => p.position)).toEqual([POSITION_HEAVY]);
+    expect(r.slotCount).toBe(1);
+    expect(r.skippedNames).toEqual(['新华传媒']);
+    expect(r.filledFromBelow).toBe(1);
+    expect(r.notes.join('｜')).toContain('本档名次全被【竞价一字】占掉');
+  });
+
+  it('⭐ 9/29 新能源汽车：小档 4 只、量比第一是竞价一字 → 同样要选得出票', () => {
+    const { blk, dragon } = mk([
+      E('襄阳轴承', 'T', 90, true, true, 10, '', false, 88.0),
+      E('时代万恒', 'T', 82, false, true, 3, '', false, 21.5),
+      E('三羊马', 'T', 76, false, true, 3, '', false, 14.0),
+      E('华丽家族', 'T', 70, false, true, 3, '', false, 7.7)
+    ]);
+    expect(blk.count).toBe(4);
+    const r = pickByVolRatio(blk, dragon, 1, 1, RULE_NO.FIRST);
+    expect(r.picks.map(p => p.name)).toEqual(['时代万恒']);
+    expect(r.filledFromBelow).toBe(1);
+  });
+
+  it('🔴 反向回归【9/30 用户那笔账】：名次里还有 1 只可买的 ⇒ ⛔ 不补位，只买新华文轩', () => {
+    // AI应用 8 只 ⇒ 中档 ⇒ 本档取 2 只；量比第一 新华传媒(一字,158.66)、第二 新华文轩(19.66)
+    // 用户原话「……新华文轩非竞价一字可以买 ⇒ 所以实际上只买新华文轩。重仓」
+    const { blk, dragon } = mk([
+      E('新华传媒', 'T', 90, true, true, 10, '', false, 158.66),
+      E('新华文轩', 'T', 86, false, true, 3, '', false, 19.66),
+      E('第三名', 'T', 80, false, true, 3, '', false, 15.0),
+      E('第四名', 'T', 75, false, true, 3, '', false, 12.0),
+      E('第五名', 'T', 70, false, true, 3, '', false, 9.0),
+      E('第六名', 'T', 65, false, true, 3, '', false, 6.0),
+      E('第七名', 'T', 60, false, true, 3, '', false, 4.0),
+      E('第八名', 'T', 55, false, true, 3, '', false, 2.0)
+    ]);
+    expect(blk.count).toBe(8);
+    const r = pickByVolRatio(blk, dragon, 2, 2, RULE_NO.FIRST);
+    expect(r.picks.map(p => p.name)).toEqual(['新华文轩']);
+    expect(r.picks.map(p => p.position)).toEqual([POSITION_HEAVY]);
+    // ⛔ 没触发补位；第 3 名不许递补进来
+    expect(r.filledFromBelow).toBe(0);
+    expect(r.picks.map(p => p.name)).not.toContain('第三名');
+    expect(r.notes.join('｜')).toContain('占名次不递补');
+  });
+
+  it('大档（取 3 只）前 3 名全是一字 → 往下补到 3 只可买的，仓位按买入顺序分配', () => {
+    const { blk, dragon } = mk([
+      E('一1', 'T', 90, true, true, 10, '', false, 999),
+      E('一2', 'T', 89, true, true, 3, '', false, 888),
+      E('一3', 'T', 88, true, true, 3, '', false, 777),
+      E('可1', 'T', 87, false, true, 3, '', false, 10),
+      E('可2', 'T', 86, false, true, 3, '', false, 9),
+      E('可3', 'T', 85, false, true, 3, '', false, 8),
+      E('可4', 'T', 84, false, true, 3, '', false, 7),
+      E('可5', 'T', 83, false, true, 3, '', false, 6),
+      E('可6', 'T', 82, false, true, 3, '', false, 5),
+      E('可7', 'T', 81, false, true, 3, '', false, 4)
+    ]);
+    expect(blk.count).toBe(10);                 // ⇒ big 档：取 3 只、前 2 重仓
+    const r = pickByVolRatio(blk, dragon, 3, 2, RULE_NO.FIRST);
+    expect(r.picks.map(p => p.name)).toEqual(['可1', '可2', '可3']);
+    expect(r.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_HEAVY, POSITION_LIGHT]);
+    expect(r.filledFromBelow).toBe(3);
+    expect(r.skippedNames).toEqual(['一1', '一2', '一3']);
+  });
+
+  it('补位也补不到（全是竞价一字）→ 照旧不出票，且提示文案说清真实原因', () => {
+    const blocks = rankDecisionTopics([
+      E('一1', 'T', 90, true, true, 10, '', false, 999),
+      E('一2', 'T', 80, true, true, 3, '', false, 8),
+      E('一3', 'T', 70, true, true, 3, '', false, 7),
+      E('一4', 'T', 60, true, true, 3, '', false, 6)
+    ]);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy.qualified).toBe(false);
+    expect(plan.heavy.picks).toEqual([]);
+    // §10：原因必须写实 —— ⛔ 旧文案「成员全部是竞价一字」在「只有 1 只是一字」时是错的
+    expect(plan.heavy.notQualifiedText).toContain('本档名次全被【竞价一字】占掉');
+    expect(plan.heavy.notQualifiedText).toContain('一1');
+    expect(plan.heavy.notQualifiedText).not.toContain('成员全部是竞价一字');
+  });
+
+  it('一字【不在】名次里（量比第一本就可买）→ 不触发补位（防空转）', () => {
+    const { blk, dragon } = mk([
+      E('可买第一', 'T', 90, false, true, 3, '', false, 30),
+      E('一字靠后', 'T', 80, true, true, 3, '', false, 2),
+      E('可买三', 'T', 70, false, true, 3, '', false, 1),
+      E('可买四', 'T', 60, false, true, 3, '', false, 0.5)
+    ]);
+    const r = pickByVolRatio(blk, dragon, 1, 1, RULE_NO.FIRST);
+    expect(r.picks.map(p => p.name)).toEqual(['可买第一']);
+    expect(r.filledFromBelow).toBe(0);
+    expect(r.skippedNames).toEqual([]);
+  });
+
+  it('§10：全体缺量比 + 名次全被一字占掉 → 走龙头名次退路后同样补位', () => {
+    const { blk, dragon } = mk([
+      E('一1', 'T', 90, true),                      // 无量比、龙一
+      E('可买甲', 'T', 80, false, true, 3),          // 无量比、龙二
+      E('可买乙', 'T', 70, false, true, 3),
+      E('可买丙', 'T', 60, false, true, 3),
+      E('可买丁', 'T', 50, false, true, 3)
+    ]);
+    const r = pickByVolRatio(blk, dragon, 1, 1, RULE_NO.FIRST);
+    expect(r.byRankFallback).toBe(true);
+    expect(r.picks.map(p => p.name)).toEqual(['可买甲']);
+    expect(r.filledFromBelow).toBe(1);
+  });
+
+  it('端到端：小档题材（名次被一字占掉）在 buildBuyPlan 里能出票并计入票数', () => {
+    const blocks = rankDecisionTopics([
+      E('一字王', 'T', 90, true, true, 10, '', false, 158.66),
+      E('能买甲', 'T', 86, false, true, 3, '', false, 19.66),
+      E('能买乙', 'T', 80, false, true, 3, '', false, 12.4),
+      E('能买丙', 'T', 75, false, true, 3, '', false, 9.1),
+      E('能买丁', 'T', 70, false, true, 3, '', false, 6.3),
+      E('能买戊', 'T', 65, false, true, 3, '', false, 4.2),
+      E('X一', 'X', 40), E('X二', 'X', 30)          // 第 2 名题材只有 2 只 ⇒ 不进入决策范围
+    ]);
+    const plan = buildBuyPlan(blocks, rankDragons(blocks));
+    expect(plan.heavy.block.topic).toBe('T');
+    expect(plan.heavy.qualified).toBe(true);
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['能买甲']);
+    expect(plan.heavy.picks[0].position).toBe(POSITION_HEAVY);
+  });
+
+  it('规则文案里写清了这条例外（用户在问号里能看到，不用猜）', () => {
+    const text = joinRulesLines(buildRulesLines());
+    expect(text).toContain('本档一只可买的都没有');
+    expect(text).toContain('9/29 AI应用');
+    // ⛔ 旧的「不递补」口径仍然在（两个口径并存，都要说清楚）
+    expect(text).toContain('不买入、也不让后面的票递补');
+  });
+});
