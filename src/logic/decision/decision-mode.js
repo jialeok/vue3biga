@@ -7,9 +7,11 @@
 //   比较好，可以看出哪个效果更好，把利益最大化……现在的决策看板 UI 不变，比较完整了。
 //   只是逻辑要跟随早盘竞价看板的 toggle 变化，相当于两种方式。其它看板不变。」
 //
-// ⇒ 决策看板有【两套完全独立的买点规则】，由早盘竞价第一页那两个题材 toggle 决定用哪一套：
-//     · 题材 toggle（题 材 = 按平均竞价量比排名）→ MODE_VOL_RATIO → decision-rules.js
-//     · 一字 toggle（一 字 = 按竞价一字数量排名）→ MODE_YIZI      → decision-rules-legacy.js
+// ⇒ 决策看板有【两套完全独立的买点规则】，由【同一个口径字段】决定用哪一套：
+//     · 题材（按平均竞价量比排名）→ MODE_VOL_RATIO → decision-rules.js
+//     · 一字（按竞价一字数量排名）→ MODE_YIZI      → decision-rules-legacy.js
+//   这个字段被两个地方的开关共用（§6 单一真相，详见 resolveDecisionMode 的注释）：
+//     早盘竞价第一页的「题材 / 一字」toggle ↔ 决策看板的「切换选股」toggle。
 //
 // ── 为什么把分派放在【第三个文件】而不是塞进 decision-rules.js ─────────────────────────
 //   legacy 要复用 decision-rules.js 的共享件（领域词表 / 标记工具 / 卖点条文），
@@ -39,27 +41,38 @@ import {
 export { MODE_VOL_RATIO, MODE_YIZI, normalizeDecisionMode };
 
 /**
- * 早盘竞价的排序状态 → 决策看板的买点模式（§6 单一真相：模式只由这一处判定）。
+ * 排序状态 → 决策看板的买点模式（§6 单一真相：模式只由这一处判定）。
  *
- * 判据 = 早盘竞价第一页那两个题材 toggle 的口径字段（见 topic-sort.js#TOPIC_ORDER_*）：
- *   · 一字 toggle 打开（byTopic + topicOrderBy === 'yizi'）→ MODE_YIZI；
- *   · 其余一切情况（题材 toggle 打开 / 两个都关）→ MODE_VOL_RATIO。
+ * ══════════════════════════════════════════════════════════════════════════════════════
+ * ★★ [SWITCH-PICK 2026-10-02 用户口径] 判据只有【一个】字段：topicOrderBy ★★
+ * ══════════════════════════════════════════════════════════════════════════════════════
+ * 用户原话：「决策看板中，如果早盘竞价看板的题材 toggle 和一字 toggle 都不打开，决策看板
+ *   显示的买点默认是打开题材 toggle 的吗？如果这样，你在决策看板添加一个 toggle 名称叫
+ *   『切换选股』，默认不打开，显示的是一字 toggle 选股逻辑，打开切换选股 toggle，就是
+ *   题材（竞价量比）选股逻辑…… 早盘竞价保持不变。」+「两边同步、只有一个开关状态」。
  *
- * ⓘ 为什么「两个都关」也算量比模式：决策看板必须【永远给一个确定的口径】，
- *   不能因为用户没开 toggle 就空着（§10：不产出 = 用户以为今天没信号）。
- *   2026-10-02 之前决策看板本来就是这个口径，所以「没开任何题材 toggle」时保持现行行为，
- *   是唯一不会让老用户觉得「功能坏了」的选择（用户口径「其它看板不变」的同一精神）。
+ * ⇒ 同一格状态被两个地方的开关读写，⛔ 不是两套状态互相同步（那必然出现分叉）：
+ *     · 早盘竞价「题材 / 一字」toggle —— 走 useAuctionBoard#toggleTopicOrder（带 byTopic 开关）；
+ *     · 决策看板「切换选股」  toggle —— 走 useDecisionBoard#toggleSwitchPick（只改口径，不动 byTopic）。
+ *     · topicOrderBy === TOPIC_ORDER_YIZI（= MODE_YIZI）    → 一字口径  → 决策看板开关【关】
+ *     · topicOrderBy === TOPIC_ORDER_VOL_RATIO（= MODE_VOL_RATIO）→ 题材量比口径 → 决策看板开关【开】
  *
- * §10：入参缺失 / 形状不对 → 一律按 MODE_VOL_RATIO，⛔ 绝不抛错（本函数在 computed 里跑）。
+ * ⚠️ 为什么【不再看 byTopic】：byTopic 是「早盘竞价要不要按题材分组排序」的视图开关，
+ *   与「两种选股口径选哪个」是两件事。旧实现要求 byTopic 打开才认一字口径，于是
+ *   「两个 toggle 都关」时决策看板被迫回落量比 —— 正是用户要改掉的那个默认。
+ *   现在 byTopic 完全不参与判定 ⇒ 两 toggle 都关时，决策看板继续沿用 topicOrderBy 记住的口径
+ *   （默认 = 一字），决策看板那个「切换选股」开关成为这个口径的备用控制器。
  *
- * @param {{byTopic?:boolean, topicOrderBy?:string}|null} auctionSortState
+ * §10：入参缺失 / 形状不对 / 口径未知 → normalizeDecisionMode 回落 MODE_VOL_RATIO，
+ *   ⛔ 绝不抛错（本函数在 computed 里跑）。正常路径 store 一定有合法口径值。
+ *
+ * @param {{topicOrderBy?:string}|null} auctionSortState
  *        早盘竞价 store 的 sortState['auction']（useAuctionStore().sortState.auction）
  * @returns {string} MODE_VOL_RATIO | MODE_YIZI
  */
 export function resolveDecisionMode(auctionSortState) {
   const s = auctionSortState || {};
-  if (s.byTopic && normalizeDecisionMode(s.topicOrderBy) === MODE_YIZI) return MODE_YIZI;
-  return MODE_VOL_RATIO;
+  return normalizeDecisionMode(s.topicOrderBy);
 }
 
 /**

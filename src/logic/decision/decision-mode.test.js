@@ -75,28 +75,39 @@ const ENTRIES = [
   E('C五', 'TC', { pct: 10, vol: 5 })
 ];
 
-describe('resolveDecisionMode（早盘竞价排序状态 → 决策看板买点模式）', () => {
-  it('一字 toggle 打开（byTopic + topicOrderBy=yizi）→ 一字模式', () => {
-    expect(resolveDecisionMode({ byTopic: true, topicOrderBy: MODE_YIZI })).toBe(MODE_YIZI);
+describe('resolveDecisionMode（排序口径 → 决策看板买点模式）', () => {
+  it('一字口径（topicOrderBy=yizi）→ 一字模式', () => {
+    expect(resolveDecisionMode({ topicOrderBy: MODE_YIZI })).toBe(MODE_YIZI);
   });
 
-  it('题材 toggle 打开（byTopic + topicOrderBy=volRatio）→ 量比模式', () => {
-    expect(resolveDecisionMode({ byTopic: true, topicOrderBy: MODE_VOL_RATIO })).toBe(MODE_VOL_RATIO);
+  it('题材（量比）口径（topicOrderBy=volRatio）→ 量比模式', () => {
+    expect(resolveDecisionMode({ topicOrderBy: MODE_VOL_RATIO })).toBe(MODE_VOL_RATIO);
   });
 
-  it('两个题材 toggle 都关 → 量比模式（⛔ 决策看板必须永远有确定口径，不能空着）', () => {
-    // 要点：topicOrderBy 还留着 'yizi'（关闭 toggle 时【保留口径】供下次打开），
-    //   但 byTopic=false ⇒ 一字 toggle 并没生效 ⇒ 必须回落量比模式。
-    expect(resolveDecisionMode({ byTopic: false, topicOrderBy: MODE_YIZI })).toBe(MODE_VOL_RATIO);
+  // [SWITCH-PICK 2026-10-02 用户口径] 用户明确要求：早盘竞价两个题材 toggle 都【不打开】时，
+  //   决策看板不再被强行拉成量比口径 —— 它有自己的「切换选股」开关（默认关 = 一字），
+  //   与早盘竞价读写 store 里同一格，所以「两个都关」时模式【继续沿用口径值】。
+  it('[SWITCH-PICK] 两个题材 toggle 都关（byTopic=false）→ 模式【仍由口径决定】，不再回落量比', () => {
+    expect(resolveDecisionMode({ byTopic: false, topicOrderBy: MODE_YIZI })).toBe(MODE_YIZI);
+    expect(resolveDecisionMode({ byTopic: false, topicOrderBy: MODE_VOL_RATIO })).toBe(MODE_VOL_RATIO);
+  });
+
+  it('[SWITCH-PICK] byTopic 完全不参与判定（同口径下 byTopic 真假结果必须相同）', () => {
+    expect(resolveDecisionMode({ byTopic: true, topicOrderBy: MODE_YIZI }))
+      .toBe(resolveDecisionMode({ byTopic: false, topicOrderBy: MODE_YIZI }));
+    expect(resolveDecisionMode({ byTopic: true, topicOrderBy: MODE_VOL_RATIO }))
+      .toBe(resolveDecisionMode({ byTopic: false, topicOrderBy: MODE_VOL_RATIO }));
   });
 
   it('入参缺失 / 形状不对 / 未知口径 → 一律量比模式（§10 不抛错，本函数跑在 computed 里）', () => {
+    // ⓘ 这里回落量比是 normalizeDecisionMode 的既有契约（未知值 = 保守走现行规则）；
+    //   正常路径 store 一定有合法口径值，所以「缺省 = 一字」由 store 的初值保证，不靠本函数。
     expect(resolveDecisionMode(undefined)).toBe(MODE_VOL_RATIO);
     expect(resolveDecisionMode(null)).toBe(MODE_VOL_RATIO);
     expect(resolveDecisionMode({})).toBe(MODE_VOL_RATIO);
     expect(resolveDecisionMode({ byTopic: true })).toBe(MODE_VOL_RATIO);
-    expect(resolveDecisionMode({ byTopic: true, topicOrderBy: '字一' })).toBe(MODE_VOL_RATIO);
-    expect(resolveDecisionMode({ byTopic: true, topicOrderBy: 1 })).toBe(MODE_VOL_RATIO);
+    expect(resolveDecisionMode({ topicOrderBy: '字一' })).toBe(MODE_VOL_RATIO);
+    expect(resolveDecisionMode({ topicOrderBy: 1 })).toBe(MODE_VOL_RATIO);
   });
 });
 

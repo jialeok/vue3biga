@@ -76,6 +76,8 @@ export function useAuctionBoard() {
   // [TWO-MODES 2026-10-02 用户口径] 第一页排序状态：`byParallel` 已删除（「平行」toggle 的开关位
   //   被新的「一字」toggle 占用，平行并入「竞/昨」）；新增 `topicOrderBy` = 题材 / 一字两个 toggle
   //   的排序口径（二者共用 byTopic，互斥是结构性的）。取值词表见 logic/auction/topic-sort.js。
+  //   [SWITCH-PICK 2026-10-02] 默认口径 = 一字；初值必须与 auctionStore#createSortState 一致
+  //     （下面的 watch 会让它始终跟随 store，这里只是首帧对齐，免得首帧口径与 store 相反）。
   const sortState = reactive({
     byWeakStrong: false,
     byRatio: false,
@@ -83,7 +85,7 @@ export function useAuctionBoard() {
     byJingYestRatio: false,
     byThreeDayJingDie: false,
     byTopic: false,
-    topicOrderBy: TOPIC_ORDER_VOL_RATIO
+    topicOrderBy: TOPIC_ORDER_YIZI
   });
   // [TWO-MODES 2026-10-02 用户口径] 两个题材 toggle 的勾选态。
   //   两个 toggle 共用 byTopic，靠 topicOrderBy 区分 ⇒ 勾选态必须在这里算好，
@@ -844,6 +846,40 @@ export function useAuctionBoard() {
   }
 
   /**
+   * [SWITCH-PICK 2026-10-02 用户口径] ⭐决策看板「切换选股」→ 早盘竞价的【反向同步通道】。
+   *
+   * 用户原话：「在决策看板切『切换选股』会同步改早盘竞价的题材 / 一字 toggle（早盘竞价的
+   *   排序显示也会跟着变），反之亦然。只有一个开关状态。」
+   *
+   * ⓘ 为什么需要这个 watch：`sortState` 是本 composable 的【局部 reactive】，而它的两个消费者
+   *   在【兄弟组件】里（AuctionBoard / DecisionBoard 并列挂在 DashboardView 下，都是 v-show，
+   *   始终挂载）—— 兄弟之间 inject 不到对方的实例，所以只有 app 级 store 能当通信总线（§6）。
+   *   正向（早盘竞价 → store）已由 _syncSortStateToStore 完成；这里补上【反向】（store → 早盘竞价）。
+   *
+   * ⓘ 为什么不会打环：
+   *   · 早盘竞价自己点 toggle → 先改局部 → 写 store → 本 watch 触发 → 值【已经相等】⇒ 立刻 return；
+   *   · 决策看板改口径     → store 变  → 本 watch 触发 → 值不同 ⇒ 回写局部 + _afterSortChange()。
+   *
+   * ⚠️ 回写后走 _afterSortChange()（清展开态 + 重算视图）：口径变了，已展开行的位置会漂移，
+   *   ⛔ 别在这里另写一份收尾动作（与早盘竞价点 toggle 共用同一套，§6）。
+   * ⚠️ 只同步【口径】（topicOrderBy）。决策看板那个「切换选股」开关【不】动 byTopic ——
+   *   用户口径「早盘竞价保持不变」：早盘竞价的分组排序是否开启，只由用户点它自己的 toggle 决定。
+   */
+  watch(
+    function() {
+      return (auctionStore && auctionStore.sortState && auctionStore.sortState.auction)
+        ? auctionStore.sortState.auction.topicOrderBy
+        : null;
+    },
+    function(nv) {
+      const want = (nv === TOPIC_ORDER_YIZI) ? TOPIC_ORDER_YIZI : TOPIC_ORDER_VOL_RATIO;
+      if (sortState.topicOrderBy === want) return;   // 早盘竞价自己写的 → 已一致，⛔ 不再回头改 store
+      sortState.topicOrderBy = want;
+      _afterSortChange();
+    }
+  );
+
+  /**
    * [TWO-MODES 2026-10-02 用户口径]⭐题材 / 一字两个 toggle 的唯一入口（互斥由结构保证）。
    *
    * 用户原话：「把早盘竞价看板的『平行』toggle 改成『一字』……打开一字 toggle 后，显示也和单独
@@ -859,6 +895,10 @@ export function useAuctionBoard() {
    *   · 点另一个 / 当前是关 → 打开并切到该口径（另一个自然就关了）。
    *
    * @param {string} mode TOPIC_ORDER_VOL_RATIO（题材）| TOPIC_ORDER_YIZI（一字）
+   *
+   * ⓘ [SWITCH-PICK 2026-10-02] 本函数与决策看板的 toggleSwitchPick 改的是 store 里的【同一格】
+   *   （auctionStore.sortState.auction.topicOrderBy）⇒ 两处开关同源（§6 单一真相，不是两份状态互同步）。
+   *   ⚠️ 唯一差别：本函数会【开 / 关】早盘竞价的分组排序（byTopic），决策看板那个不动 byTopic。
    */
   function toggleTopicOrder(mode) {
     const want = (mode === TOPIC_ORDER_YIZI) ? TOPIC_ORDER_YIZI : TOPIC_ORDER_VOL_RATIO;

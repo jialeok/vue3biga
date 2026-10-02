@@ -691,6 +691,7 @@
            纯 UI 态：不落 localStorage（§8）、不进全局 store（§34）。 */
         .dcb-compact-bar {
             display: flex;
+            align-items: center;
             justify-content: flex-end;
             margin: 0 0 6px;
         }
@@ -712,6 +713,49 @@
             color: #ffffff;
             background: #1d4ed8;
             border-color: #1d4ed8;
+        }
+
+        /* ---- [SWITCH-PICK 2026-10-02 用户口径] 「切换选股」开关 ----
+           位置：同样在【内容区顶部】，与右边的「简洁」同处 .dcb-compact-bar 一行（一左一右）；
+                 用 margin-right:auto 把本组顶到左边，⛔ 不改 .dcb-compact-bar 的 flex-end
+                 （那是「简洁」原来的右对齐语义，改掉会让只有单元素时它跳到左边）。
+           语义：关（默认）= 一字选股 / 开 = 题材（竞价量比）选股 —— 与早盘竞价那两个题材 toggle
+                 读写 store 里同一格，所以本开关的亮灭与早盘竞价那两个【必然】一致（§6 单一真相）。
+           配色：琥珀系（#b45309）—— 与「简洁」的蓝（#1d4ed8）刻意区分：
+                 蓝色 = 显示偏好，琥珀 = 选股口径，两个开关同排时一眼可分，⛔ 别无脑抄成蓝色。
+           纯展示态开关（§34）：不落 localStorage（§8）、不进 store —— 状态真相在 store 的排序键里。 */
+        .dcb-switch-pick-wrap {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-right: auto;
+        }
+
+        .dcb-switch-pick {
+            padding: 2px 10px;
+            font-size: 11px;
+            line-height: 16px;
+            color: #92400e;
+            background: #fffbeb;
+            border: 1px solid #fcd34d;
+            border-radius: 10px;
+            cursor: pointer;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .dcb-switch-pick.on {
+            color: #ffffff;
+            background: #b45309;
+            border-color: #b45309;
+        }
+
+        /* 当前口径名（「一字」/「题材·竞价量比」）：淡灰小字，纯展示，不参与点击 */
+        .dcb-pick-mode {
+            font-size: 11px;
+            line-height: 16px;
+            color: #94a3b8;
+            user-select: none;
         }
 
         /* ---- [COMPACT 2026-09-30] 简洁模式：只留【题材行 + 股票行 + 行内标签】----

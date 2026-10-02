@@ -1,7 +1,7 @@
 import { useUiStore } from './uiStore.js';
 import { defineStore } from 'pinia';
 // [TWO-MODES 2026-10-02] 题材排序口径的合法值（⛔ 别在这里手写 'volRatio' / 'yizi' 字面量）
-import { TOPIC_ORDER_VOL_RATIO } from '../logic/auction/topic-sort.js';
+import { TOPIC_ORDER_YIZI } from '../logic/auction/topic-sort.js';
 
 let _uiFns = {};
 export function _bindUiFns(fns) { _uiFns = fns; }
@@ -38,14 +38,22 @@ export function safeCall(fn, ...args) {
  *      ⇒ 该键在页面 1 已无任何读写方（§16 不留死代码）。
  *      ⚠️ 第二页（sortStateP2）的「平行」是另一套（p2ParallelSet 那个独立看板），不在本次改动范围。
  *   ② 新增 `topicOrderBy` = 题材 / 一字两个 toggle 的【排序口径】，二者共用 `byTopic` 这个开关：
- *      · TOPIC_ORDER_VOL_RATIO（默认）= 题材 toggle → 题材按平均竞价量比降序；
- *      · TOPIC_ORDER_YIZI           = 一字 toggle → 题材按竞价一字数量降序。
+ *      · TOPIC_ORDER_YIZI（默认）  = 一字 toggle → 题材按竞价一字数量降序；
+ *      · TOPIC_ORDER_VOL_RATIO     = 题材 toggle → 题材按平均竞价量比降序。
  *      ⇒ 互斥是【结构性的】（同一个 byTopic 键），⛔ 不需要在 toggle 里手写互斥矩阵。
+ *   ③ [SWITCH-PICK 2026-10-02 用户口径] `topicOrderBy` 这个键【同时】是决策看板那个
+ *      「切换选股」toggle 的真相源 —— §6 单一真相：决策看板【没有自己的状态位】，
+ *      它只是换个视图读写同一格，所以「两边永远一致」是结构保证，⛔ 不需要互相同步的胶水：
+ *        · 早盘竞价「题材 / 一字」→ useAuctionBoard#toggleTopicOrder（额外带 byTopic 开关）；
+ *        · 决策看板「切换选股」   → useDecisionBoard#toggleSwitchPick（只改口径，不动 byTopic）。
+ *      ⚠️ 默认值取【一字】：用户口径「决策看板的『切换选股』默认不打开 = 一字选股逻辑」。
+ *        这【不会】改变早盘竞价的初始视图 —— 它的两个题材 toggle 还要 byTopic=true 才亮，
+ *        而 byTopic 默认仍是 false（⛔ 别把这一条也改成 true）。
  */
 function createSortState() {
   return {
-    auction: { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false, topicOrderBy: TOPIC_ORDER_VOL_RATIO },
-    hot: { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false, topicOrderBy: TOPIC_ORDER_VOL_RATIO }
+    auction: { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI },
+    hot: { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI }
   };
 }
 

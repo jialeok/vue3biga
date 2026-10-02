@@ -14,9 +14,12 @@ import { useUiStore } from '../stores/uiStore.js';
 import { useAuctionStore } from '../stores/auctionStore.js';
 import { _on, _off } from '../stores/eventBus.js';
 import { collectDecisionData } from '../logic/decision/decision-collect.js';
-// [TWO-MODES 2026-10-02] 买点模式由早盘竞价的题材 / 一字 toggle 决定；
+// [TWO-MODES 2026-10-02] 买点模式由题材 / 一字这个【排序口径】决定；
 //   ⛔ 判定与分派都在 Logic 层（decision-mode.js），复合式只负责「把 store 状态喂进去」（§14 瘦身）。
-import { resolveDecisionMode, buildRulesLines } from '../logic/decision/decision-mode.js';
+// [SWITCH-PICK 2026-10-02] 本看板的「切换选股」开关读写的也是同一格，所以模式常量从这里取。
+import {
+  resolveDecisionMode, buildRulesLines, MODE_VOL_RATIO, MODE_YIZI
+} from '../logic/decision/decision-mode.js';
 
 /** §10：任何一次计算失败都要【可见】，绝不静默成「今天没有信号」 */
 function _empty(reason) {
@@ -39,13 +42,17 @@ export function useDecisionBoard() {
    * [TWO-MODES 2026-10-02 用户口径] 当前买点模式 —— ★本看板唯一的模式来源★。
    *
    * 用户原话：「决策看板……只是逻辑要跟随早盘竞价看板的 toggle 变化，相当于两种方式。
-   *   其它看板不变。」⇒ 模式 = 早盘竞价第一页那两个题材 toggle 的口径：
-   *   · 一字 toggle 打开 → MODE_YIZI（老版完整规则）；
-   *   · 题材 toggle 打开 / 两个都关 → MODE_VOL_RATIO（现行规则）。
+   *   其它看板不变。」
+   *
+   * ⇒ 模式 = 【题材 / 一字这个排序口径】本身（store 里 sortState.auction.topicOrderBy）：
+   *   · TOPIC_ORDER_YIZI      → MODE_YIZI      → 一字口径（老版完整规则）；
+   *   · TOPIC_ORDER_VOL_RATIO → MODE_VOL_RATIO → 题材（平均竞价量比）口径（现行规则）。
    *
    * ⚠️ 读的是 Pinia store（app 级、跨页面共享）而不是早盘竞价那套局部 reactive ——
-   *    早盘竞价的 toggleSort 每次都会把状态同步进 store（§6 单一真相），
-   *    所以这里既是【响应式】的（切 toggle 后本看板自动重算），也不需要跨页面通信。
+   *    早盘竞价的 toggleSort / toggleTopicOrder 每次都会把状态同步进 store（§6 单一真相），
+   *    所以这里既是【响应式】的（任一边切开关后本看板自动重算），也不需要跨页面通信：
+   *    ① 早盘竞价点「题材 / 一字」 → 写 store → 本 computed 变；
+   *    ② 本看板点「切换选股」     → 写 store → 本 computed 变（useAuctionBoard 另有一条反向 watch）。
    * §10：store 还没初始化 / 形状不对 → resolveDecisionMode 内部回落 MODE_VOL_RATIO，绝不抛错。
    */
   const decisionMode = computed(function() {
@@ -55,6 +62,40 @@ export function useDecisionBoard() {
 
   // 规则面板文案：随模式切换（一字模式显示老版条文）。⛔ 只在 Logic 层生成（§6 实现与说明同处一处）。
   const rulesLines = computed(() => buildRulesLines(decisionMode.value));
+
+  /**
+   * [SWITCH-PICK 2026-10-02 用户口径] 「切换选股」开关 —— 勾选态 + 当前口径名（§21：模板只读）。
+   *
+   * 用户原话：「你在决策看板添加一个 toggle 名称叫『切换选股』，默认不打开，显示的是一字 toggle
+   *   选股逻辑，打开切换选股 toggle，就是题材（竞价量比）选股逻辑，这样方便些。早盘竞价保持不变。」
+   *   · 关（默认）= 一字选股       → decisionMode === MODE_YIZI
+   *   · 开        = 题材（量比）选股 → decisionMode === MODE_VOL_RATIO
+   *
+   * ⚠️ 它【不是】本看板自己的状态位，而是同一个 decisionMode 的另一个视图 ——
+   *   §6 单一真相：真相只有 store 那一格，早盘竞价的「题材 / 一字」与这里的「切换选股」
+   *   读写同一格 ⇒ 结构上不可能出现「早盘竞价说一字、决策看板说量比」的不一致。
+   */
+  const switchPickOn = computed(function() { return decisionMode.value === MODE_VOL_RATIO; });
+  /** 当前口径的中文名（纯展示：给开关旁边的小字用；⛔ 不把判断写进模板，§21） */
+  const pickModeText = computed(function() {
+    return switchPickOn.value ? '题材·竞价量比' : '一字';
+  });
+
+  /**
+   * 切「切换选股」：把口径写回 store 那一格 —— 早盘竞价的排序显示会跟着变
+   *   （useAuctionBoard 有一条反向 watch 监听同一格，见那处注释）。
+   *
+   * ⚠️ 只改【口径】，⛔ 不动 byTopic：用户口径「早盘竞价保持不变」，所以本看板不替用户决定
+   *   早盘竞价要不要按题材分组排序 —— 那是早盘竞价自己那两个 toggle 的事。
+   * ⛔ 不走 auctionStore.setSortState：那个 action 的第 1 参是早盘竞价的【分页】语义，
+   *   本看板借用会让人误以为决策看板也有分页；直接写这一格，与 useAuctionBoard#_syncSortStateToStore 同款。
+   */
+  function toggleSwitchPick() {
+    const s = (auctionStore && auctionStore.sortState) ? auctionStore.sortState.auction : null;
+    // §10：store 尚未就绪 → 什么都不做（decisionMode 已回落量比口径，UI 不会崩、也不会静默写坏状态）
+    if (!s) return;
+    s.topicOrderBy = switchPickOn.value ? MODE_YIZI : MODE_VOL_RATIO;
+  }
 
   // 纯展示态（§34）
   // [DEFAULT-COLLAPSED 2026-09-28] 看板默认【收起】（用户口径：打开 / 刷新页面不用再手动一个个关）。
@@ -203,10 +244,16 @@ export function useDecisionBoard() {
     expanded,
     rulesOpen,
     compactOpen,
-    // [TWO-MODES 2026-10-02] 当前买点模式（由早盘竞价 toggle 决定）+ 与之配套的规则面板文案。
+    // [TWO-MODES 2026-10-02] 当前买点模式（由题材 / 一字这个排序口径决定）+ 配套的规则面板文案。
     //   rulesLines 随模式切换 ⇒ 一字模式点开问号看到的是【老版条文】，量比模式看到现行条文。
     decisionMode,
     rulesLines,
+    // [SWITCH-PICK 2026-10-02 用户口径] 本看板的「切换选股」开关（关 = 一字 / 开 = 题材·量比）：
+    //   switchPickOn  = 开关勾选态（= 量比模式）；pickModeText = 旁边那行口径小字；
+    //   toggleSwitchPick = 唯一的写入方（写 store 那一格，早盘竞价跟着变）。
+    switchPickOn,
+    pickModeText,
+    toggleSwitchPick,
     // [VRATIO-TREND 2026-10-01] 竞价量比趋势面板的展开态与开关（由 DecisionBoard.vue provide 给买卖点两个块组件）
     trendOpenSet,
     errorText,

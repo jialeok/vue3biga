@@ -51,6 +51,20 @@
            早盘直接看题材 + 股票就能下单；要看「选择理由 / 卖出节奏提示」就点一下关掉。
            纯 UI 态（§34）：不落 localStorage（§8）、不进全局 store。 -->
       <div class="dcb-compact-bar">
+        <!-- [SWITCH-PICK 2026-10-02 用户口径] 「切换选股」：置于内容区【顶部】左侧（与右侧「简洁」一左一右），
+             与早盘竞价那两个「题材 / 一字」toggle 读写 store 里【同一格】⇒ 两边永远一致（§6 单一真相，
+             ⛔ 不是两份状态互相同步）。
+             关（默认）= 一字选股逻辑；开 = 题材（竞价量比）选股逻辑；旁边小字是当前口径名（纯展示）。
+             ⛔ 勾选态与口径名都在 composable 里算好传下来（§21 模板零计算）；
+             ⛔ 切换动作只走 toggleSwitchPick，别在模板里直接写 store。 -->
+        <span class="dcb-switch-pick-wrap">
+          <span
+            class="dcb-switch-pick"
+            :class="{ on: switchPickOn }"
+            @click="toggleSwitchPick"
+          >切换选股</span>
+          <span class="dcb-pick-mode">{{ pickModeText }}</span>
+        </span>
         <span
           class="dcb-compact-toggle"
           :class="{ on: compactOpen }"
@@ -190,6 +204,11 @@ const {
   // [TWO-MODES 2026-10-02] 规则文案由 Logic 层产出，并【随买点模式切换】（一字模式 = 老版条文）。
   //   ⛔ 别再在这里直接调 buildRulesLines()：那样视图就得自己判模式，等于模式判定出现第二处。
   rulesLines,
+  // [SWITCH-PICK 2026-10-02 用户口径] 本看板的「切换选股」开关（关 = 一字 / 开 = 题材·量比）：
+  //   switchPickOn = 勾选态、pickModeText = 口径小字、toggleSwitchPick = 唯一写入方。
+  switchPickOn,
+  pickModeText,
+  toggleSwitchPick,
   toggleExpand,
   toggleCompact,
   setRulesOpen

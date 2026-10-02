@@ -470,15 +470,17 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // [TWO-MODES 2026-10-02] sortState 形状：`byParallel` 已删除（平行 toggle → 一字 toggle，
   //   平行并入竞/昨），新增 `topicOrderBy`（题材 / 一字两个 toggle 的【排序口径】，见 topic-sort.js）。
   //   ⚠️ 下面两处是【兜底默认值】：正常路径走到的是 store 里那一份（由 useAuctionBoard 维护）。
+  //   [SWITCH-PICK 2026-10-02] 默认值 = 一字，必须与 auctionStore#createSortState 保持一致
+  //     （§6：同一份状态在两处的默认值不同，会让「store 读不到」这一瞬间的口径跳变）。
   let sortState;
   if (sortStateOverride) {
     sortState = sortStateOverride;
   } else {
     try {
       const store = useAuctionStore();
-      sortState = store && store.sortState ? store.sortState[_p] : { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false, topicOrderBy: TOPIC_ORDER_VOL_RATIO };
+      sortState = store && store.sortState ? store.sortState[_p] : { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI };
     } catch {
-      sortState = { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false, topicOrderBy: TOPIC_ORDER_VOL_RATIO };
+      sortState = { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI };
     }
   }
 
@@ -917,10 +919,11 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
         return nm ? _listedNames.has(nm) : false;
       },
       // ⭐ [TWO-MODES 2026-10-02 用户口径] 第 8 参 = 题材组的【组间排序口径】—— **由 toggle 决定**：
-      //   · 题材 toggle（topicOrderBy = 'volRatio'，缺省）→ 平均竞价量比降序（2026-10-01 起的口径）；
-      //   · 一字 toggle（topicOrderBy = 'yizi'）         → **不传第 8 参** ⇒ 回到 sortByTopicGroups
-      //     的默认口径 = 【竞价一字数量降序】→ 组大小 → 题材名。这就是用户说的
-      //     「早期版本那个题材一字多的排在前面的逻辑」，⛔ 不是退回旧代码而是同一函数换口径。
+      //   · 一字 toggle（topicOrderBy = 'yizi'，⚠️ 也是【缺省值】，见 auctionStore#createSortState）
+      //     → **不传第 8 参** ⇒ 回到 sortByTopicGroups 的默认口径 =
+      //     【竞价一字数量降序】→ 组大小 → 题材名。这就是用户说的「早期版本那个题材一字多的排在
+      //     前面的逻辑」，⛔ 不是退回旧代码而是同一函数换口径。
+      //   · 题材 toggle（topicOrderBy = 'volRatio'）→ 平均竞价量比降序（2026-10-01 起的口径）。
       //   两者【共用这一个调用点】，所以「屏幕顺序 == 决策看板题材排名 == 趋势图名次」三处必然同源
       //   （决策侧 rankDecisionTopics 传的是同一个参数，§6 单一真相）。
       //   ⛔ 只有本调用点传它；涨跌停 / 一字看板 / 第二页题材块仍走默认的一字口径（各看板独立 §15）。
