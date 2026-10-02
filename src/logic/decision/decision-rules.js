@@ -108,6 +108,10 @@ import { computeDragonRankMap, getDragonLabel } from '../auction/dragon-rank.js'
 import { getAucOpenKind } from '../ladder/ladder-rules.js';
 // 竞价涨幅格式化复用早盘竞价的唯一实现（§6）。
 import { formatAucPct } from '../auction/limit-up.js';
+// [VR-COMPARE 2026-10-02 用户口径] 「今日 vs 上交易日」竞价量比方向的【唯一口径】在 vol-ratio-trend.js
+//   （compareVolRatioDirection 的四舍五入整数差）。⛔ 本文件只 import 常量做比较，绝不另写一套阈值 ——
+//   否则「量比算不算下降」在徽标与规则两处会出现两个答案（§6 破）。
+import { VR_DIR_UP, VR_DIR_FLAT, VR_DIR_DOWN } from './vol-ratio-trend.js';
 
 /** 题材成组门槛：与早盘竞价统计条（topic-stats.js#TOPIC_STATS_MIN_GROUP）同源 —— 不足 2 只不成题材 */
 export const DECISION_MIN_GROUP = 2;
@@ -175,6 +179,26 @@ export const CANDIDATE_TAG = '候选题材';
 
 /** 【持有 / 加仓】标记文案：上一个交易日也在买点里、今天又被选中 = 强势股 */
 export const HOLD_TAG = '持有 / 加仓';
+
+// ===== [VR-ACTION 2026-10-02 用户口径] 竞价量比「减弱 → 该股当天节奏」的两个动作徽标 =====
+// 用户原话（9/3 案例）：
+//   · 「捷荣技术 竞价涨幅小于0，竞价量比当天比昨日下降，预测当天优势不是很好，所以应该【尾盘买】」
+//   · 「楚天龙 昨有买入，竞价涨幅小于0，竞价量比当天比昨日下降…应该是先卖后尾盘买。打上标签【先卖后买】」
+//   · 「现在打的是持有/加仓太笼统，如果这只股票是竞价涨幅大于0，竞价量比也增加，持有/加仓标签没问题」
+//
+// 判据（两处共用同一个「弱票」定义，见 decision-rules#isWeakAucDay）：
+//   弱票 = 今日竞价涨幅 < 0 【且】今日 vs 上交易日竞价量比【下降】（四舍五入整数差 ≤ -1）。
+//
+// ⛔ 两个徽标【是新增的独立标记】，不替换行尾仓位（重仓 / 轻仓 / 加仓）——
+//   用户 AskUserQuestion 明确选「新增「尾盘买」徽标（不替换仓位）」。
+// ⛔ 只在【一字模式】的买点块上出现（本次改动限定「一字的买点规则」，其它模式不变）。
+/** 【尾盘买】徽标：弱票（竞价低开 + 量比下降）→ 当天优势不好，等尾盘再买（不追开盘） */
+export const BUY_LATE_TAG = '尾盘买';
+/** 【先卖后买】徽标：弱票 + 手上已有仓位（昨天买过）→ 开盘先卖掉，尾盘再买回来 */
+export const SELL_FIRST_BUY_LATER_TAG = '先卖后买';
+/** 徽标配色档（§21：由 Logic 层给，模板只拼 `'dcb-action-' + tone`，⛔ 不自己判断是哪个徽标） */
+export const BUY_ACTION_TONE_LATE = 'late';   // 尾盘买 → 琥珀（提醒：别追开盘）
+export const BUY_ACTION_TONE_SWAP = 'swap';   // 先卖后买 → 紫（两段动作，比单纯尾盘买更重）
 
 // ===== [PREV-BOUGHT 2026-09-30 用户口径，同日修正为【股票级】] 「昨天已买」标记 =====
 // 语义：这一只【股票】在上一交易日被打了「买」标签（= 用户手上已经有仓位）。
@@ -292,6 +316,24 @@ export const SECOND_TOPIC_SINGLE_YIZI = 1;
 //   ⚠️ §10：缺竞价涨幅 = 未知，⛔ 绝不退化成「平开」去套档，一律回落原规则。
 //   ⚠️ 用户原话里的「-5%」经确认与「-3% ~ -5%」合并为同一档（都走「深低开 · 盯盘」），
 //     因此深低开的唯一阈值就是 SELL_DEEP_LOW = -3。
+//
+// ===== [VR-ACTION 2026-10-02 用户口径] 在高低开之上，再叠加【竞价量比 vs 上一交易日】=====
+// 用户原话（9/3 案例）：
+//   · 楚天龙「竞价涨幅低开小于0，竞价量比当天比昨日下降，开盘立刻卖（打上危标签）」
+//   · 香江控股「1. 竞价涨幅是负的（小于0），2. 竞价量比减少，从上交易日的 4.86 到当天的 2.78，
+//     四舍五入整数后相差…两个指标，说明要立刻出」 —— 且该股是【深低开档】，
+//     用户 AskUserQuestion 明确选「覆盖：低开+量比下降一律立刻出」
+//   · 龙版传媒「竞价涨幅大于0，竞价量比基本是平的，看好，尾盘卖」；
+//     并补充「如果当天的是 30，…而且是竞价量比下降，那就按原来的（立刻/看分时）不变」
+//   ⇒ 新增两条叠加规则：
+//     ⓐ 【低开 + 量比下降】→ 一律【开盘立刻出】（危），⛔ 【覆盖】原本的「深低开 → 盯盘」档。
+//        理由：原本深低开还留一线「等 10:00 反弹」的指望，但量比同步下降说明承接也没了，
+//        等反弹只是把亏损做大（香江控股就是这个组合）。
+//     ⓑ 【小幅高开 + 量比没走弱（基本平 / 增强）】→ 【尾盘卖】（看好）。
+//        理由：原规则对该档统一「看分时，向上 11:20 卖」，但量比没走弱就说明还没走弱
+//        （用户原话「差距不到…四舍五入基本是平的，说明还没走弱」）⇒ 不必盘中盯，直接拿到尾盘。
+//        ⛔ 量比【下降】时该档保持原样（看分时），用户原话「那就按原来的…不变」。
+//   ⚠️ 量比方向未知（''）⇒ 两条叠加规则都不生效，完全回落上面 ① ② ③ 的原逻辑（§10 不猜）。
 /** 深低开阈值：今日竞价涨幅【≤ 此值】⇒ 盯盘等反弹（10:00 前定夺） */
 export const SELL_DEEP_LOW = -3;
 /** 小幅高开上限：今日竞价涨幅在 (0, 此值) 之间 ⇒ 看分时决定（11:20 / 立刻） */
@@ -300,6 +342,9 @@ export const SELL_MILD_HIGH = 3;
 export const SELL_TONE_DANGER = 'danger';   // 小低开 → 开盘立刻出（危）
 export const SELL_TONE_WATCH = 'watch';     // 深低开 → 盯盘等反弹（10:00 前定夺）
 export const SELL_TONE_PLAN = 'plan';       // 小幅高开 → 看分时（向上 11:20 / 走弱立刻）
+// [VR-ACTION 2026-10-02 用户口径] 小幅高开 + 竞价量比【没走弱】（平 / 增强）→ 看好，尾盘卖。
+//   ⛔ 刻意与 plan（看分时）分开：plan 要求盘中盯分时，本档不用盯，是更确定的「拿满一天」。
+export const SELL_TONE_HOLD = 'hold';       // 小幅高开 + 量比平/增强 → 尾盘卖（看好）
 /** 仓位建议文案 */
 export const POSITION_HEAVY = '重仓';
 export const POSITION_LIGHT = '轻仓';
@@ -322,6 +367,31 @@ export function positionToneOf(position) {
   if (position === POSITION_LIGHT) return POSITION_TONE_LIGHT;
   if (position === POSITION_ADD) return POSITION_TONE_ADD;
   return POSITION_TONE_HEAVY;
+}
+
+/**
+ * 【弱票】判据 —— [VR-ACTION 2026-10-02 用户口径] ★唯一实现（§6）★。
+ *
+ * 定义：今日竞价涨幅 < 0 【且】今日 vs 上一交易日竞价量比【下降】（四舍五入整数差 ≤ -1）。
+ *
+ * 用户原话（9/3 案例）：
+ *   · 「捷荣技术 竞价涨幅小于0，竞价量比当天比昨日（上个交易日）下降，预测当天优势不是很好，所以应该尾盘买」
+ *   · 「楚天龙 竞价涨幅小于0，竞价量比当天比昨日下降…所以早上立刻卖，到尾盘再买回来」
+ *   · 「香江控股…1. 竞价涨幅是负的（小于0），2. 竞价量比减少…两个指标，说明要立刻出」
+ *   ⇒ 两个指标【同时】走弱才算弱票；只看其中一个都不算（用户原话「两个指标」）。
+ *
+ * ⚠️ 量比方向 ''（未知，§10）⇒【不算】下降 ⇒ 不是弱票（⛔ 未知不退化成「下降」，
+ *   否则缺一天数据的票会被一律劝「立刻卖」，那是最贵的误判）。
+ * ⚠️ 竞价涨幅 0（平开）⇒ 不是弱票（用户口径是「小于 0」）。
+ *
+ * @param {*} aucPct 今日竞价涨幅（%），null / 非数 = 缺数据
+ * @param {'up'|'flat'|'down'|''} volRatioDir 今日 vs 上交易日竞价量比方向
+ * @returns {boolean}
+ */
+export function isWeakAucDay(aucPct, volRatioDir) {
+  const n = _num(aucPct);
+  if (n === null || n >= 0) return false;
+  return volRatioDir === VR_DIR_DOWN;
 }
 
 const OTHER = '其它';
@@ -485,6 +555,11 @@ export function rankDecisionTopics(entries, mode) {
       //   由 decision-collect#_mkRow 从 market_metrics.auc_vol_ratio 原始值搬过来
       //   （云端存字符串如 "2.18"），这里统一用 _num 解析：缺值 / 空串 / 非数字 → null（§10）。
       aucVolRatio: _num(list[i].aucVolRatio),
+      // [VR-COMPARE 2026-10-02 用户口径] 今日 vs 上交易日的竞价量比方向（up / flat / down / ''）。
+      //   ⛔ 原样透传 decision-collect#_mkRow 算好的值（口径在 vol-ratio-trend，§6 单一真相），
+      //      本文件是纯函数、不读 state ⇒ 这里【只搬运】，不重新计算。
+      //   用途：买点量比标签的箭头/配色，以及「弱票 → 尾盘买 / 先卖后买」的判据。
+      volRatioDir: list[i].volRatioDir || '',
       code: String(list[i].code || '').trim(),
       countable: countable,
       inheritSold: list[i].inheritSold === true
@@ -908,6 +983,9 @@ function _decorateAucBadge(blockObj) {
     const n = _num(aucOf.get(p.name));
     p.aucPctText = formatAucPct(n);
     p.aucTone = getAucOpenKind(n) || '';
+    // [VR-ACTION 2026-10-02] 顺手把【数值】也落到 pick 上：买点「弱票 → 尾盘买 / 先卖后买」的判据
+    //   （isWeakAucDay）要读它。⛔ 不另写一遍 members 反查 —— 那份反查表只在这里建一次（§6）。
+    p.aucPct = n;
   });
   return blockObj;
 }
@@ -1227,17 +1305,40 @@ function _decideSellTime(topicRank, opts) {
 }
 
 /**
- * 卖点提示（唯一实现）—— 按【今日竞价涨幅】细分卖出节奏（[SELL-OPEN 2026-09-29] 用户口径）。
+ * 卖点提示（唯一实现）—— 按【今日竞价涨幅】细分卖出节奏（[SELL-OPEN 2026-09-29] 用户口径），
+ * 并叠加【今日 vs 上交易日竞价量比方向】（[VR-ACTION 2026-10-02] 用户口径，见上方常量块注释）。
  *
  * ⛔ 与 _decideSellTime（题材排名口径）【并存、不互相覆盖】：
- *    命中三档 → 行尾改用这里的 timeLabel，并用 text 说明节奏；
+ *    命中档位 → 行尾改用这里的 timeLabel，并用 text 说明节奏；
  *    未命中（≥ +SELL_MILD_HIGH / 恰好平开 / 缺竞价涨幅）→ 返回 null，行尾回落 11:20 / 14:50。
+ *
+ * 判定顺序（⛔ 顺序即优先级，别调）：
+ *   ① 竞价涨幅缺失 → null（§10）
+ *   ② 弱票（低开 + 量比下降，isWeakAucDay）→ 开盘立刻出（⛔ 覆盖深低开档）
+ *   ③ 深低开（≤ SELL_DEEP_LOW）→ 盯盘 · 10:00 前
+ *   ④ 小低开（SELL_DEEP_LOW ~ 0）→ 开盘立刻出
+ *   ⑤ 小幅高开（0 ~ +SELL_MILD_HIGH）：
+ *        量比【没走弱】（平 / 增强）→ 尾盘卖（看好）；否则（下降 / 未知）→ 看分时定
+ *   ⑥ 其余 → null
+ *
  * @param {number|null} aucPct 今日竞价涨幅（%）；null / 非数 = 缺数据（§10 不猜方向）
+ * @param {'up'|'flat'|'down'|''} [volRatioDir] 今日 vs 上交易日竞价量比方向（缺省 = 未知）
  * @returns {{tone:string, badge:string, timeLabel:string, text:string}|null}
  */
-function _decideSellHint(aucPct) {
+function _decideSellHint(aucPct, volRatioDir) {
   const n = _num(aucPct);
   if (n === null) return null;                    // §10：缺数据 ⇒ 不产出提示，回落原规则
+  const dir = String(volRatioDir || '');
+  // ② 弱票：低开 + 量比下降 ⇒ 两个指标同步走弱，一开盘就出（⛔ 覆盖下面的深低开盯盘档）
+  if (isWeakAucDay(n, dir)) {
+    return {
+      tone: SELL_TONE_DANGER,
+      badge: '❗危',
+      timeLabel: '开盘立刻出',
+      text: '竞价低开（' + formatAucPct(n) + '）＋ 竞价量比比上一交易日【下降】→ 两个指标同步走弱，' +
+        '开盘【立刻出】，不等反弹、不抱侥幸，别犹豫！'
+    };
+  }
   if (n <= SELL_DEEP_LOW) {
     // 深低开：别在竞价割，先盯盘 —— 卖点跟着时间走（10:00 前定夺）
     return {
@@ -1258,13 +1359,25 @@ function _decideSellHint(aucPct) {
     };
   }
   if (n > 0 && n < SELL_MILD_HIGH) {
+    // 小幅高开：量比还没走弱（平 / 增强）⇒ 看好，直接拿到尾盘；
+    //   量比同步下降 / 未知 ⇒ 保持原样「看分时」（用户口径「按原来的不变」）。
+    if (dir === VR_DIR_FLAT || dir === VR_DIR_UP) {
+      return {
+        tone: SELL_TONE_HOLD,
+        badge: '稳',
+        timeLabel: '尾盘卖 · ' + SELL_TIME_CLOSE,
+        text: '竞价小幅高开（0 ~ +' + SELL_MILD_HIGH + '%）＋ 竞价量比与上一交易日基本持平（未走弱）→ ' +
+          '看好，不必盘中盯分时，直接拿到 ' + SELL_TIME_CLOSE + '【尾盘卖】。'
+      };
+    }
     // 小幅高开：看分时定 —— 向上拿住，走弱撒手
     return {
       tone: SELL_TONE_PLAN,
       badge: '观',
       timeLabel: '看分时定',
       text: '竞价小幅高开（0 ~ +' + SELL_MILD_HIGH + '%）：10:00 前看分时整体曲线 —— ' +
-        '向上就拿到 ' + SELL_TIME_MIDDAY + ' 卖；走弱向下立刻卖。'
+        '向上就拿到 ' + SELL_TIME_MIDDAY + ' 卖；走弱向下立刻卖。' +
+        (dir === VR_DIR_DOWN ? '（本股竞价量比已比上一交易日下降，偏走弱，别恋战。）' : '')
     };
   }
   return null;                                    // ≥ 3% / 平开 ⇒ 回落原题材排名规则
@@ -1272,8 +1385,12 @@ function _decideSellHint(aucPct) {
 
 /**
  * 生成卖点计划。
- * @param {Array<{name:string, topic:string, pct:number|null, inTodayList:boolean}>} rows
+ * @param {Array<{name:string, topic:string, pct:number|null, inTodayList:boolean,
+ *                aucPct:number|null, volRatioDir:'up'|'flat'|'down'|''}>} rows
  *        候选 = 昨日打过「买」标签的股票（topic 用【今日】的题材；不在今日列表时 topic 为空）
+ *        · aucPct   = 今日竞价涨幅（卖点细分提示的第一依据）
+ *        · volRatioDir = 今日 vs 上交易日竞价量比方向（[VR-ACTION 2026-10-02] 第二依据，
+ *          '' = 缺一天数据 / 未知 ⇒ 两条叠加规则都不生效，回落原档位，§10 不猜方向）
  * @param {Array} blocks rankDecisionTopics 的返回（用于查今日题材排名 / 数量 / 一字）
  * @param {Map} dragonMap 今日龙头排名（用于显示「龙几」）
  * @param {Set<string>|Map<string,any>|null} prevDragonNames 昨日龙头名册里的股票名（昨日龙一）；
@@ -1314,10 +1431,19 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
       yiziCount: info ? info.yiziCount : null,
       isDragonOne: dragonRank === 1
     });
-    // 【③ 持有 / 加仓】上交易日就在买点里（= 进得了卖点候选）+ 今天又在买点里 → 强势股
-    const holdTag = (todayBuyNames && todayBuyNames.has(r.name)) ? HOLD_TAG : '';
     // 今日竞价涨幅（%）：卖点【细分提示】的唯一依据（[SELL-OPEN 2026-09-29]）；null = 缺数据
     const aucPct = _num(r.aucPct);
+    // [VR-ACTION 2026-10-02] 今日 vs 上交易日竞价量比方向（口径唯一实现在 vol-ratio-trend，§6）。
+    //   ⛔ 原样透传 decision-collect 在 sellRows 上挂好的值，本函数不重新计算、也不读 state。
+    const volRatioDir = String(r.volRatioDir || '');
+    const todayInBuy = !!(todayBuyNames && todayBuyNames.has(r.name));
+    // 【③ 持有 / 加仓】上交易日就在买点里（= 进得了卖点候选）+ 今天又在买点里 → 强势股
+    // 🔴 [VR-ACTION 2026-10-02 用户口径] 但若今天已经是【弱票】（低开 + 量比下降）⇒ 就【不是】强势股了，
+    //   改用【先卖后买】：开盘先把昨天的仓卖掉（立刻出），尾盘量比稳住了再买回来。
+    //   用户原话：「现在打的是持有/加仓太笼统 —— 如果这只股票是竞价涨幅大于0，竞价量比也增加，
+    //   持有/加仓标签没问题」（⇒ 反过来说：低开 + 量比下降时，这个标签就不对）。
+    const firstSellThenBuy = todayInBuy && isWeakAucDay(aucPct, volRatioDir);
+    const holdTag = (todayInBuy && !firstSellThenBuy) ? HOLD_TAG : '';
     groups.get(key).push({
       name: r.name,
       topic: tp,
@@ -1335,11 +1461,17 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
       aucTone: getAucOpenKind(aucPct) || '',
       inTodayList: !!r.inTodayList,
       holdTag: holdTag,
+      // [VR-ACTION 2026-10-02 用户口径] 【先卖后买】徽标（与 holdTag 互斥）：
+      //   今天又是弱票、又在买点里 ⇒ 开盘先卖，尾盘再买回来。文案 + 配色档都由 Logic 层给，模板零判断（§21）。
+      buyActionTag: firstSellThenBuy ? SELL_FIRST_BUY_LATER_TAG : '',
+      buyActionTone: firstSellThenBuy ? BUY_ACTION_TONE_SWAP : '',
       sellAt: sellAt,
-      // 今天要卖的【节奏提示】：深低开 → 盯盘 10:00 前定夺；小低开 → 开盘立刻出（危）；
-      // 小幅高开 → 看分时（向上 11:20 / 走弱立刻）。⛔ 标了【持有 / 加仓】的行不提示卖点
-      //（它本来就不按上面的时点卖）；未命中三档 → null（行尾回落 sellAt）。
-      sellHint: holdTag ? null : _decideSellHint(aucPct)
+      // 今天要卖的【节奏提示】：深低开 → 盯盘 10:00 前定夺；小低开（或低开+量比下降）→ 开盘立刻出（危）；
+      // 小幅高开 → 量比没走弱就拿尾盘，否则看分时（向上 11:20 / 走弱立刻）。
+      // ⛔ 标了【持有 / 加仓】的行不提示卖点（它本来就不按上面的时点卖）；
+      //   ⚠️ 但【先卖后买】的行【要】提示 —— 它的动作就是「先卖」，卖点提示正是它需要的那条。
+      //   未命中各档 → null（行尾回落 sellAt）。
+      sellHint: holdTag ? null : _decideSellHint(aucPct, volRatioDir)
     });
   });
 
@@ -1514,6 +1646,8 @@ function _volRatioBuyRulesLines() {
     '【题材行的数据】题材名右边依次是：实心红圆点（里面的数字 = 题材排名）｜数量：n（股票只数）｜',
     '　　竞价一字：n｜【' + TOPIC_PREV_BOUGHT_TAG + '】（有才显示）｜【N 次入选】（有才显示）。',
     '【股票行的数据】股票名右边依次是：龙几（龙一 / 龙二）｜十日涨幅｜竞价涨幅小标签｜竞价量比；',
+    '　　【竞价量比】小标签会显示与【上一交易日】相比的方向（两个值各自四舍五入到整数后作差）：',
+    '　　　增强（差 ≥ +1）→ 整块【红底】带 ↑；下降（差 ≤ -1）→ 整块【绿底】带 ↓；基本平（差 = 0）或数据不全 → 靛蓝底不带箭头。',
     '　　行尾是仓位（' + POSITION_HEAVY + ' / ' + POSITION_LIGHT + ' / ' + POSITION_ADD + '），再往右是【' +
       HOLD_TAG + '】这类标记。'
   ];
@@ -1532,14 +1666,23 @@ function _volRatioBuyRulesLines() {
  */
 export function sellRulesLines() {
   return [
-    '【卖点】候选 = 昨日打过「买」标签的股票。卖点先看【今天这只票竞价开得怎么样】，再看题材排名：',
+    '【卖点】候选 = 昨日打过「买」标签的股票。卖点先看【今天这只票竞价开得怎么样】＋【竞价量比有没有走弱】，再看题材排名：',
     '　每行在「十日涨幅」右侧带一个【竞价涨幅】小标签（如 -2.60%）：涨 = 红底、跌 = 绿底、平 = 灰底；',
     '　　该股今日没有竞价涨幅时不显示这个标签（§10 不把「没查到」画成「平开」）。',
-    '　【第一层 · 按今日竞价高低开细分节奏】（命中就把行尾时点换成下面这句）：',
-    '　　· 竞价涨幅 ≤ ' + SELL_DEEP_LOW + '%（深低开）→ 【盯盘】：10:00 前看有没有反弹，冲高就出；反弹不起来，10:00 也出；',
-    '　　· ' + SELL_DEEP_LOW + '% ~ 0（小低开）→ 开盘【立刻出】，行内打「❗危」警示，不等反弹、别犹豫；',
-    '　　· 0 ~ +' + SELL_MILD_HIGH + '%（小幅高开）→ 10:00 前看分时整体曲线：向上就拿到 ' + SELL_TIME_MIDDAY +
-      ' 卖，走弱向下立刻卖；',
+    '　紧跟着是【竞价量比】小标签（如 量比 2.78）；它还会显示与【上一交易日】相比的方向：',
+    '　　· 比上一交易日【增强】（两个值各自四舍五入到整数后，今天的更大）→ 标签整块【红底】、右边带 ↑；',
+    '　　· 比上一交易日【下降】（四舍五入后今天的更小）→ 标签整块【绿底】、右边带 ↓；',
+    '　　· 【基本平】（四舍五入后一样）或 数据不全 → 保持原来的靛蓝底、不带箭头（§10 不猜方向）。',
+    '　　（判据 = 两个值各自四舍五入到整数后作差：差 ≥ +1 增强 / = 0 基本平 / ≤ -1 下降，与【买点】段同一口径。）',
+    '　【第一层 · 按今日竞价涨幅 + 竞价量比方向细分节奏】（命中就把行尾时点换成下面这句）：',
+    '　　· 【弱票】竞价涨幅 < 0 且 竞价量比比上一交易日【下降】→ 开盘【立刻出】，行内打「❗危」警示；',
+    '　　　⚠️ 这一条【覆盖】下面的深低开档 —— 低开 + 量比同步下降说明承接也没了，等反弹只会把亏损做大；',
+    '　　· ≤ ' + SELL_DEEP_LOW + '%（深低开，且量比【没】下降）→ 【盯盘】：10:00 前看有没有反弹，冲高就出；反弹不起来，10:00 也出；',
+    '　　· ' + SELL_DEEP_LOW + '% ~ 0（小低开，且量比【没】下降）→ 开盘【立刻出】，行内打「❗危」警示，不等反弹、别犹豫；',
+    '　　· 0 ~ +' + SELL_MILD_HIGH + '%（小幅高开）＋ 竞价量比【基本平 / 增强】→ 看好，不必盯分时，直接拿到 ' +
+      SELL_TIME_CLOSE + '【尾盘卖】；',
+    '　　· 0 ~ +' + SELL_MILD_HIGH + '%（小幅高开）＋ 竞价量比【下降 / 未知】→ 10:00 前看分时整体曲线：向上就拿到 ' +
+      SELL_TIME_MIDDAY + ' 卖，走弱向下立刻卖；',
     '　　· 其余（≥ +' + SELL_MILD_HIGH + '% / 平开 / 缺竞价涨幅）→ 不提示，按下面的题材排名时点（§10 缺数据不猜）。',
     '　【第二层 · 题材排名兜底时点】（第一层没命中时，行尾才显示这个）：',
     '　① 今日题材排第 1 或第 2 → ' + SELL_TIME_CLOSE + ' 卖（拿满一天）；',
@@ -1548,6 +1691,10 @@ export function sellRulesLines() {
     '　　 【只有龙一】' + SELL_TIME_CLOSE + ' 卖，【其余非龙一】' + SELL_TIME_MIDDAY + ' 卖（同一组里会同时出现两种时点）。',
     '　④ 【' + HOLD_TAG + '】上交易日就在买点里、今天又出现在买点里 → 强势股，行尾标【' + HOLD_TAG + '】，',
     '　　不按上面的时点卖出（继续持有 / 加仓）。',
+    '　　⚠️ 但若今天它已经是【弱票】（竞价涨幅 < 0 且 竞价量比下降）⇒ 就不算强势股了，改标【' +
+      SELL_FIRST_BUY_LATER_TAG + '】：',
+    '　　　开盘先把昨天的仓卖掉，尾盘量比稳住了再买回来（用户口径：「' + HOLD_TAG + '」在低开 + 量比下降时太笼统）。',
+    '　　⚠️ 反过来，竞价涨幅 > 0 且 竞价量比【增强】时，【' + HOLD_TAG + '】才是对的（继续拿住 / 往上加）。',
     '　「昨日是龙头（十日涨幅最高）」会写进卖出理由 —— 典型场景：昨日的龙一今天掉出前二 → ' + SELL_TIME_MIDDAY + ' 卖。',
     '说明：统计只数当日正式列表里的股票，「昨日卖标签继承」的复盘行不计入（与早盘竞价同一口径）；',
     '　　　缺竞价涨幅的行不会当成「高开」，会如实说明有几只未纳入。'

@@ -1486,13 +1486,15 @@ describe('buildRulesLines（灰色问号里的规则说明）', () => {
     expect(text).toContain('只有龙一');
   });
 
-  it('规则说明必须覆盖【卖点按今日竞价高低开细分】（SELL-OPEN 第一层）', () => {
+  it('规则说明必须覆盖【卖点按今日竞价涨幅 + 竞价量比方向细分】（SELL-OPEN / VR-ACTION 第一层）', () => {
     const text = lines.join('\n');
-    expect(text).toContain('按今日竞价高低开细分');     // 第一层标题
-    expect(text).toContain('盯盘');                     // 深低开
-    expect(text).toContain('立刻出');                   // 小低开
-    expect(text).toContain('危');                       // 小低开的感叹号警示
-    expect(text).toContain('分时整体曲线');             // 小幅高开
+    expect(text).toContain('按今日竞价涨幅 + 竞价量比方向细分节奏');   // 第一层标题
+    expect(text).toContain('盯盘');                     // 深低开（量比没下降时）
+    expect(text).toContain('立刻出');                   // 小低开 / 弱票（低开 + 量比下降）
+    expect(text).toContain('危');                       // 感叹号警示
+    expect(text).toContain('分时整体曲线');             // 小幅高开 + 量比下降 / 未知（原规则）
+    expect(text).toContain('尾盘卖');                   // 小幅高开 + 量比没走弱（VR-ACTION 新档）
+    expect(text).toContain('覆盖');                     // 弱票【覆盖】深低开档（用户口径）
     expect(text).toContain('题材排名兜底时点');         // 第二层标题
     expect(text).toContain(String(SELL_DEEP_LOW) + '%');
     expect(text).toContain('+' + SELL_MILD_HIGH + '%');

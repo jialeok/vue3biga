@@ -342,6 +342,22 @@
             font-variant-numeric: tabular-nums;
         }
 
+        /* [VR-COMPARE 2026-10-02 用户口径] 量比标签里的方向箭头（在文字【右边】）。
+           用相对字号略放大 + 轻微上移，保证在小徽标里也看得清、且不撑高行高。 */
+        .dcb-vratio-arrow {
+            margin-left: 2px;
+            font-size: 10px;
+            font-weight: 700;
+            vertical-align: -1px;
+        }
+
+        /* 整标签配色（用户原话「整个标签绿色 / 整个标签红色」）：
+           量比【增强】= 红底 + ↑｜量比【下降】= 绿底 + ↓ —— 与全站「涨红跌绿」同一语义（红 = 强）。
+           ⛔ 基本平 / 方向未知保持上面的靛蓝底：那两档【既不增强也不下降】，
+              涂红或涂绿都会给出错误暗示（§10 不猜方向）。 */
+        .dcb-vratio-up   { background-color: #dc2626; }   /* 比上一交易日增强 */
+        .dcb-vratio-down { background-color: #16a34a; }   /* 比上一交易日下降 */
+
         .dcb-trend-panel {
             margin: 1px 0 5px 26px;   /* 26px = 序号宽 18 + 行内 gap 8 ⇒ 与股票名左对齐 */
             padding: 6px 8px 4px;
@@ -410,6 +426,37 @@
             margin-left: 0;
         }
 
+        /* ---- [VR-ACTION 2026-10-02 用户口径] 【尾盘买 / 先卖后买】动作徽标 ----
+           语义：弱票（竞价低开 + 竞价量比比上一交易日下降）的【当日节奏】——
+             · 尾盘买   → 手上没有，别追开盘，等尾盘再看；
+             · 先卖后买 → 手上已有（行尾是【加仓】），开盘先卖、尾盘再买回来。
+           ⛔ 它【不替换】行尾仓位（重仓 / 轻仓 / 加仓）—— 两枚徽标可同时出现（用户明确要求「新增」）。
+           配色：尾盘买 = 琥珀（提醒）｜先卖后买 = 紫（两段动作，与【加仓】同色系但不同位置）。
+           卖点侧它会【顶替】.dcb-hold 的位置出现，所以同样带 margin-left:auto 靠右对齐。 */
+        .dcb-action {
+            margin-left: auto;
+            padding: 1px 6px;
+            border-radius: 3px;
+            background: #d97706;
+            color: #fff;
+            font-size: 10px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .dcb-action.dcb-action-swap {
+            background: #7c3aed;
+        }
+
+        /* 买点侧：仓位（和/或持有标签）已经在行里，动作徽标紧跟其后，不再抢 margin-left:auto */
+        .dcb-position + .dcb-action {
+            margin-left: 0;
+        }
+
+        .dcb-action + .dcb-hold {
+            margin-left: 0;
+        }
+
         /* ---- [SELL-OPEN 2026-09-29] 卖出节奏提示（按今日竞价高低开细分）----
            tone 由 Logic 层给（danger / watch / plan），CSS 只做视觉映射，⛔ 不判断档位（§21）。
            提示整行独占（flex-basis:100%），所以在 .dcb-row 里换行显示、左对齐与行首齐平。 */
@@ -446,6 +493,14 @@
             border: 1px solid #bfdbfe;
         }
 
+        /* [VR-ACTION 2026-10-02 用户口径] 小幅高开 + 竞价量比【没走弱】（基本平 / 增强）→ 尾盘卖（看好）：
+           青绿色 —— 与 danger 红 / watch 琥珀 / plan 蓝 都区分开，表达「不用盯盘、拿住就行」。 */
+        .dcb-sell-hint.tone-hold {
+            color: #0f766e;
+            background: #f0fdfa;
+            border: 1px solid #99f6e4;
+        }
+
         /* 「❗危」感叹号警示徽标：只在 danger 档有徽标，另两档的「盯 / 观」是中性标注 */
         .dcb-sell-badge {
             flex-shrink: 0;
@@ -467,7 +522,11 @@
             background: #2563eb;
         }
 
-        /* 行尾时点跟着档位变色：绿（原规则）→ 红（立刻出）/ 琥珀（盯盘）/ 蓝（看分时） */
+        .dcb-sell-hint.tone-hold .dcb-sell-badge {
+            background: #0d9488;
+        }
+
+        /* 行尾时点跟着档位变色：绿（原规则）→ 红（立刻出）/ 琥珀（盯盘）/ 蓝（看分时）/ 青绿（尾盘卖·看好） */
         .dcb-sell-at.tone-danger {
             color: #dc2626;
         }
@@ -478,6 +537,10 @@
 
         .dcb-sell-at.tone-plan {
             color: #1d4ed8;
+        }
+
+        .dcb-sell-at.tone-hold {
+            color: #0f766e;
         }
 
         /* ---- 灰色小问号 + 规则面板 ----

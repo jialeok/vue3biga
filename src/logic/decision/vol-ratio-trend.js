@@ -26,6 +26,96 @@ import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
 /** 趋势图窗口：与早盘竞价看板趋势图保持一致（近 5 个交易日）。 */
 export const VOL_RATIO_TREND_DAYS = 5;
 
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [VR-COMPARE 2026-10-02 用户口径] 「今日竞价量比 vs 上一交易日」的方向判定 ★★
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话（9/3 案例）：「竞价量比当天比昨日（上个交易日）下降…预测当天优势不是很好」
+//   「上个交易日龙版传媒的竞价量比是 37.28，当天的是 36.71，差距不到 4，如果四舍五入基本是平的，
+//     说明还没走弱；如果当天的是 30，四舍五入（保留整数）也就救不了，而且是竞价量比下降，
+//     那就按原来的立刻出；但是差距不到 5 的话，就尾盘出」
+//   「香江控股…从上交易日的 4.86 到当天的 2.78，四舍五入整数后相差…两个指标，说明要立刻出」
+//
+// ⇒ 判据 = 【两个值各自四舍五入到整数后作差】（用户明确点名「四舍五入（保留整数）」）：
+//     差 ≥ +1 → 增强（UP）    差 = 0 → 基本平（FLAT）    差 ≤ -1 → 下降（DOWN）
+//
+// ⚠️ 为什么【必须用整数差、不能用「原始差 < 5」】：香江控股原始差只有 2.08（< 5），按原始差会被
+//   判成「平」，但用户明确说它「明显要立刻出」；而整数差 round(4.86)-round(2.78) = 5-3 = 2 ≤ -1
+//   → 下降，与用户口径一致。⇒ 阈值只能是「四舍五入后作差」，⛔ 不要改成原始差或百分比差。
+//
+// §10：任一天缺值 / 空串 / 非数字 → 返回空串（未知），⛔ 绝不当成「平」——
+//   「没查到」与「量比没变化」是两件事，判错方向会直接给出相反的买卖建议。
+/** 量比相对上一交易日【增强】（四舍五入整数差 ≥ +1） */
+export const VR_DIR_UP = 'up';
+/** 量比相对上一交易日【基本平】（四舍五入整数差 = 0） */
+export const VR_DIR_FLAT = 'flat';
+/** 量比相对上一交易日【下降】（四舍五入整数差 ≤ -1） */
+export const VR_DIR_DOWN = 'down';
+/** 方向 → 箭头符（UI 直接渲染，⛔ 模板不判断方向，§21） */
+export const VR_ARROW_UP = '↑';
+export const VR_ARROW_DOWN = '↓';
+
+/**
+ * 「今日 vs 上一交易日」竞价量比方向（纯函数，可单测）。
+ * @param {*} today 今日原始值（字符串 / 数字 / null）
+ * @param {*} prev  上一交易日原始值
+ * @returns {'up'|'flat'|'down'|''} 空串 = 缺数据（§10 未知，不猜方向）
+ */
+export function compareVolRatioDirection(today, prev) {
+  const a = _toNum(today);
+  const b = _toNum(prev);
+  if (a === null || b === null) return '';
+  const d = Math.round(a) - Math.round(b);
+  if (d > 0) return VR_DIR_UP;
+  if (d < 0) return VR_DIR_DOWN;
+  return VR_DIR_FLAT;
+}
+
+/** 方向 → 箭头符（UP ↑ / DOWN ↓ / 其余空串） */
+export function volRatioArrowOf(dir) {
+  if (dir === VR_DIR_UP) return VR_ARROW_UP;
+  if (dir === VR_DIR_DOWN) return VR_ARROW_DOWN;
+  return '';
+}
+
+/**
+ * 方向 → 量比标签的【配色档】（[VR-COMPARE 2026-10-02 用户口径]）。
+ *
+ * 用户原话：「竞价量比当天比昨日（上个交易日）下降…在量比标签里文字右边那里添加向下箭头，
+ *   【整个标签绿色】。如果竞价量比当天比昨日（上个交易日）增强，就是向上箭头，【整个标签红色】。」
+ * ⇒ 配色沿用全站「涨红跌绿」：增强 = 红 / 下降 = 绿。
+ *
+ * ⚠️ 与【竞价涨幅】徽标（aucTone 复用 getAucOpenKind）的语义【刻意相反】方向的判定依据不同：
+ *   竞价涨幅 >> 红 = 价格涨；量比 >> 红 = 量能【增强】。两者都符合「红 = 强 / 绿 = 弱」，⛔ 不是写反了。
+ * ⚠️ 未知（''）/ 基本平（flat）⇒ 返回空串 ⇒ 模板回落默认靛蓝底（§10：不猜方向，
+ *   也【不】给平档涂色 —— 用户口径里「平」既不是增强也不是下降，涂红/绿都会给错暗示）。
+ * @param {'up'|'flat'|'down'|''} dir
+ * @returns {'up'|'down'|''}
+ */
+export function volRatioToneOf(dir) {
+  if (dir === VR_DIR_UP) return VR_DIR_UP;
+  if (dir === VR_DIR_DOWN) return VR_DIR_DOWN;
+  return '';
+}
+
+/**
+ * 取某只股票「今日 vs 上一交易日」的竞价量比方向（读内存真相，§6 与 trend 同源同字段）。
+ * ⚠️ 交易日窗口走 getPreviousTradingDay（交易日历）⇒ 自动跳过假期 / 周末，与全站同一口径。
+ * @param {string} stockName
+ * @param {string} endDate 展示日 YYYY-MM-DD
+ * @returns {'up'|'flat'|'down'|''}
+ */
+export function getVolRatioDir(stockName, endDate) {
+  const name = String(stockName || '').trim();
+  if (!name || !endDate) return '';
+  const prev = getPreviousTradingDay(endDate);
+  if (!prev) return '';
+  return compareVolRatioDirection(
+    getStockHistoryValue(endDate, name, 'aucVolRatio'),
+    getStockHistoryValue(prev, name, 'aucVolRatio')
+  );
+}
+
+
 /**
  * 字符串 → 数值；空串 / null / 非数字一律 → null（§10 缺数据 ≠ 0）。
  * @param {*} v
@@ -107,5 +197,21 @@ export function decorateVolRatioFields(target, endDate, count) {
   target.volRatioTrend = view.points;
   target.volRatioHasData = view.hasData;
   target.volRatioText = view.text;
+  // [VR-COMPARE 2026-10-02] 方向 + 箭头：末点 = 今日、倒数第二点 = 上一交易日（trend 已按交易日历排好序）。
+  //   ⛔ 与 collect 在规则层之前挂的 volRatioDir 用的是【同一个】compareVolRatioDirection，
+  //     两处结果必然一致（§6 单一口径）；这里再算一次只是为了拿到 UI 要的箭头符。
+  const pts = view.points;
+  const todayP = pts.length >= 1 ? pts[pts.length - 1] : null;
+  const prevP = pts.length >= 2 ? pts[pts.length - 2] : null;
+  // ⚠️ 序列长度不足 2 时【不覆盖】上游已给的方向（上游可能是逐日查出来的，这里只是拿不到倒数第二点）
+  if (pts.length >= 2) {
+    target.volRatioDir = compareVolRatioDirection(todayP ? todayP.value : null, prevP ? prevP.value : null);
+  } else if (target.volRatioDir === undefined) {
+    target.volRatioDir = '';
+  }
+  target.volRatioArrow = volRatioArrowOf(target.volRatioDir);
+  // [VR-COMPARE 2026-10-02 用户口径] 整标签配色档：增强 → 红 / 下降 → 绿 / 平或未知 → 空串（回落靛蓝底）。
+  //   ⛔ 模板只做 `'dcb-vratio-' + tone` 拼接，不自己判方向（§21）。
+  target.volRatioTone = volRatioToneOf(target.volRatioDir);
   return target;
 }

@@ -51,7 +51,9 @@ import { rankDecisionTopics, buildBuyPlan, needsLadderData } from './decision-mo
 //   ⛔ 只是把已算好的字段挂到 pick / item 上，不做任何业务判断（判断仍全在 decision-rules）。
 import {
   VOL_RATIO_TREND_DAYS,
-  decorateVolRatioFields
+  decorateVolRatioFields,
+  // [VR-COMPARE 2026-10-02 用户口径] 「今日 vs 上交易日」竞价量比方向：买点 / 卖点新档位的唯一依据。
+  getVolRatioDir
 } from './vol-ratio-trend.js';
 
 function _notReady(reason) {
@@ -398,6 +400,11 @@ export function collectDecisionData(date, opts) {
       aucVolRatio: raw
         ? (raw.auc_vol_ratio !== undefined ? raw.auc_vol_ratio : raw.aucVolRatio)
         : null,
+      // [VR-COMPARE 2026-10-02 用户口径] 今日 vs 上交易日竞价量比方向（up / flat / down / ''）。
+      //   ⚠️ 必须在【规则层之前】挂好：买点（尾盘买 / 先卖后买）与卖点（立刻出 / 尾盘卖）
+      //      都要在 buildBuyPlan / buildSellPlan 里读它，晚了就只能事后补，业务判断会落到 collect 层（§4 破）。
+      //   ⛔ 口径走 vol-ratio-trend#getVolRatioDir（与行内量比徽标同一函数，§6 单一真相）。
+      volRatioDir: getVolRatioDir(nm, date),
       pct: (rm && rm.pct !== undefined && rm.pct !== null) ? rm.pct : null,
       countable: countable,
       inheritSold: inheritSold.has(nm)
@@ -519,6 +526,10 @@ export function collectDecisionData(date, opts) {
       //   （深低开盯盘 / 小低开立刻出 / 小幅高开看分时）。row 不存在（今天不在任何池里）→ null，
       //   规则层按「缺数据」处理，回落原题材排名时点（§10 不猜方向）。
       aucPct: row ? row.aucPct : null,
+      // [VR-COMPARE 2026-10-02 用户口径] 今日 vs 上交易日的竞价量比方向（up / flat / down / ''）；
+      //   卖点新档位（低开+量比下降 → 立刻出；高开+量比平 → 尾盘卖）的唯一依据。
+      //   ⛔ 与行内量比徽标同一个口径函数（vol-ratio-trend#compareVolRatioDirection，§6 单一真相）。
+      volRatioDir: row ? row.volRatioDir : getVolRatioDir(nm, date),
       inTodayList: !!row
     });
   });

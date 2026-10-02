@@ -52,6 +52,10 @@ import { OTHER_TOPIC } from '../auction/topic-sort.js';
 import {
   MODE_YIZI, normalizeDecisionMode,
   HOLD_TAG, PREV_BOUGHT_TAG, TOPIC_PREV_BOUGHT_TAG, TOPIC_STREAK_WINDOW,
+  // [VR-ACTION 2026-10-02 用户口径] 【尾盘买 / 先卖后买】两个动作徽标 + 唯一的「弱票」判据。
+  //   ⛔ 常量与判据都【只有一份】（在 decision-rules.js），本文件只 import 使用，⛔ 不另写一套阈值。
+  BUY_LATE_TAG, SELL_FIRST_BUY_LATER_TAG, isWeakAucDay,
+  BUY_ACTION_TONE_LATE, BUY_ACTION_TONE_SWAP,
   POSITION_HEAVY, POSITION_LIGHT, POSITION_ADD,
   sellRulesLines,
   _num, _note, _toPick, _reseq, _reasonBuy, _rankWord,
@@ -134,7 +138,9 @@ export const RULE_NO = {
   BUY_COUNT: '⑩',      // 买入只数（只看第 1 名题材的早盘竞价股票数）
   HOLD: '⑪',           // 持有 / 加仓标记
   PREV_BOUGHT: '⑫',    // 【昨有买入 / 加仓】标记（题材级聚合 + 股票级仓位改写）
-  TOPIC_STREAK: '⑬'    // 【入选次数】题材行标记（近 5 个交易日内进过买点几次）
+  TOPIC_STREAK: '⑬',   // 【入选次数】题材行标记（近 5 个交易日内进过买点几次）
+  // [VR-ACTION 2026-10-02 用户口径] 【尾盘买 / 先卖后买】：弱票（竞价低开 + 量比下降）的动作徽标
+  BUY_ACTION: '⑭'
 };
 
 // ===== [DUAL-MAIN 2026-09-27] 两个【大容量题材并存】→ 比竞价高开率，谁高谁重仓 =====
@@ -1211,9 +1217,68 @@ function _capPicksByTopicCount(blockObj) {
 }
 
 /**
+ * 【⑭ 尾盘买 / 先卖后买（[VR-ACTION 2026-10-02 用户口径]）】—— 一字模式买点块的动作徽标。
+ *
+ * 用户原话（9/3 案例）：
+ *   · 「捷荣技术 竞价涨幅小于0，竞价量比当天比昨日（上个交易日）下降，预测当天优势不是很好，
+ *     所以应该【尾盘买】」
+ *   · 「楚天龙 昨有买入，竞价涨幅小于0，竞价量比当天比昨日下降…应该是先卖后尾盘买。
+ *     打上标签【先卖后买】」
+ *
+ * 判据（⛔ 都在 decision-rules.js，本文件只调用，不另写阈值 §6）：
+ *   · 弱票 = isWeakAucDay(今日竞价涨幅, 量比方向) —— 竞价涨幅 < 0 【且】量比比上交易日【下降】；
+ *   · 手上已有仓位（p.prevBoughtTag，= 昨天真被打过「买」标签，行尾已改【加仓】）
+ *       → 【先卖后买】（开盘先卖、尾盘再买回）；否则 → 【尾盘买】（等尾盘再说，别追开盘）。
+ *
+ * ⚠️ 量比方向从 block.members 反查：本函数在【规则层】跑，而 pick 上的 volRatioDir 是 collect 层
+ *   _decorateVolRatioTrend 才挂的（那时规则早跑完了）⇒ 只能像 _decorateAucBadge 那样回 members 取。
+ *   两者判据同源（都来自 decision-collect#_mkRow 的 getVolRatioDir），§6 不会分叉。
+ * §10：缺竞价涨幅 / 缺一天量比（方向 '') ⇒ 一律【不标】（未知 ≠ 弱票，⛔ 绝不退化成「下降」）。
+ *
+ * ⛔ 必须排在 _markPrevBought（写 p.prevBoughtTag）与 _decorateAucBadge（写 p.aucPct）之后。
+ * @param {object} blockObj 买点块
+ */
+function _decorateBuyAction(blockObj) {
+  if (!blockObj || !blockObj.picks || blockObj.picks.length === 0) return blockObj;
+  const dirOf = new Map();
+  ((blockObj.block && blockObj.block.members) || []).forEach(function(m) {
+    if (m && m.name) dirOf.set(m.name, m.volRatioDir || '');
+  });
+  const late = [];
+  const firstSell = [];
+  blockObj.picks.forEach(function(p) {
+    if (!isWeakAucDay(p.aucPct, dirOf.get(p.name))) return;
+    if (p.prevBoughtTag) {
+      p.buyActionTag = SELL_FIRST_BUY_LATER_TAG;
+      p.buyActionTone = BUY_ACTION_TONE_SWAP;
+      firstSell.push(p.name);
+    } else {
+      p.buyActionTag = BUY_LATE_TAG;
+      p.buyActionTone = BUY_ACTION_TONE_LATE;
+      late.push(p.name);
+    }
+  });
+  if (late.length > 0 || firstSell.length > 0) {
+    blockObj.notes = blockObj.notes || [];
+    if (firstSell.length > 0) {
+      blockObj.notes.push(_note(RULE_NO.BUY_ACTION,
+        '【' + firstSell.join('、') + '】竞价低开 ＋ 竞价量比比上一交易日【下降】（弱票），' +
+        '而手上已有仓位 → 标【' + SELL_FIRST_BUY_LATER_TAG + '】：开盘先把昨天的仓卖掉，尾盘量比稳住了再买回来'));
+    }
+    if (late.length > 0) {
+      blockObj.notes.push(_note(RULE_NO.BUY_ACTION,
+        '【' + late.join('、') + '】竞价低开 ＋ 竞价量比比上一交易日【下降】（弱票）→ 当天优势不好，' +
+        '标【' + BUY_LATE_TAG + '】：别追开盘，等尾盘再看'));
+    }
+  }
+  return blockObj;
+}
+
+/**
  * 买点块的统一收口（⛔ 顺序固定，互不干扰）：
  *   亏钱效应 → 弱势题材（高开率）→ 只数限制 → 持有标记 → 昨天已买（会改 position）
- *   → 题材行标记（昨有买入 ⑫ / 入选次数 ⑬）→ 仓位配色档（必须在其后）→ 竞价涨幅徽标（必须最后）
+ *   → 题材行标记（昨有买入 ⑫ / 入选次数 ⑬）→ 仓位配色档（必须在其后）→ 竞价涨幅徽标
+ *   → 尾盘买 / 先卖后买 ⑭（必须最后：判据要读前面算好的 aucPct 与 prevBoughtTag）
  */
 function _finishBuyBlock(blockObj, opts) {
   _applyLossEffect(blockObj);
@@ -1229,6 +1294,9 @@ function _finishBuyBlock(blockObj, opts) {
   _decoratePositionTone(blockObj);
   // ⛔ 徽标必须【最后】派生：上面的砍票 / 改仓会重建 picks 数组，先派生会被丢掉
   _decorateAucBadge(blockObj);
+  // ⛔ [VR-ACTION] ⑭ 必须排在 _decorateAucBadge 之后（要读它落的 p.aucPct），
+  //   也必须在 _markPrevBought 之后（要读 p.prevBoughtTag）。
+  _decorateBuyAction(blockObj);
   return blockObj;
 }
 
@@ -1262,6 +1330,9 @@ function _finishPlanBlocks(planObj, opts) {
     _markTopicStreak(b, opts ? opts.topicStreakPast : null);
     _decoratePositionTone(b);      // ⛔ 必须在 _markPrevBought 之后（它会改写 position 文案）
     _decorateAucBadge(b);          // 同上：徽标放最后，避免被上面的砍票重建 picks 时丢掉
+    // [VR-ACTION 2026-10-02 ⑭] 尾盘买 / 先卖后买 —— 兜底方案的块同样要标（规则对【入选题材】
+    //   一视同仁，与 ⑧⑪⑫⑬ 同一口径），且必须排在 _decorateAucBadge / _markPrevBought 之后。
+    _decorateBuyAction(b);
   });
   return planObj;
 }
@@ -1696,11 +1767,23 @@ function _legacyBuyRulesLines() {
     '　　窗口里只要有一天算不出来（那天的行情还没加载）⇒ 次数就是未知，一律【不标】',
     '　　（§10 绝不拿偏低的数字冒充，那会让你误判题材频率）。',
     '　重仓与轻仓混在同一个题材块里，序号连续，仓位写在每行行尾。',
+    // [VR-ACTION 2026-10-02 用户口径] ⑭ 尾盘买 / 先卖后买
+    '　⑭ 【' + BUY_LATE_TAG + ' / ' + SELL_FIRST_BUY_LATER_TAG + '】= 竞价【低开】（涨幅 < 0）',
+    '　　＋ 竞价量比比上一交易日【下降】时的当日节奏提示：',
+    '　　· 手上【没有】这只票（行尾是 重仓 / 轻仓）→ 行内标【' + BUY_LATE_TAG +
+      '】：当天优势不好，别追开盘，等尾盘再看；',
+    '　　· 手上【已经有】（行尾已是【' + POSITION_ADD + '】= 昨天真被打过「买」标签）→ 行内标【' +
+      SELL_FIRST_BUY_LATER_TAG + '】：',
+    '　　　开盘先把昨天的仓卖掉，尾盘量比稳住了再买回来（用户口径：「' + HOLD_TAG + '」在这时太笼统）。',
+    '　　⚠️ 反过来，竞价涨幅 > 0 且 竞价量比【增强】⇒ 属于强票，不标这两个徽标（继续拿住 / 往上加）。',
+    '　　⚠️ 缺竞价涨幅、或缺一天量比（算不出方向）⇒ 一律不标（§10 未知 ≠ 弱票，绝不猜成「下降」）。',
     '　※ 每个题材块下面的「选择理由」与说明文字都会标【规则N】（如【规则⑨】），方便按条文逐条核对。',
     '【题材行的数据】题材名右边依次是：实心红圆点（里面的数字 = 题材排名）｜数量：n（股票只数）｜',
     '　　竞价一字：n｜【' + TOPIC_PREV_BOUGHT_TAG + '】（有才显示）｜【N 次入选】（有才显示）。',
-    '【股票行的数据】股票名右边依次是：龙几（龙一 / 龙二）｜十日涨幅｜竞价涨幅小标签；',
+    '【股票行的数据】股票名右边依次是：龙几（龙一 / 龙二）｜十日涨幅｜竞价涨幅小标签｜竞价量比小标签；',
+    '　　【竞价量比】小标签会显示与【上一交易日】相比的方向（两个值各自四舍五入到整数后作差）：',
+    '　　　增强（差 ≥ +1）→ 整块【红底】带 ↑；下降（差 ≤ -1）→ 整块【绿底】带 ↓；基本平（差 = 0）或数据不全 → 靛蓝底不带箭头。',
     '　　行尾是仓位（' + POSITION_HEAVY + ' / ' + POSITION_LIGHT + ' / ' + POSITION_ADD + '），再往右是【' +
-      HOLD_TAG + '】这类标记。',
+      BUY_LATE_TAG + '】【' + SELL_FIRST_BUY_LATER_TAG + '】【' + HOLD_TAG + '】这类标记。',
   ];
 }

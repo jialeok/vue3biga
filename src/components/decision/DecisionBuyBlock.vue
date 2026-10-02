@@ -6,7 +6,11 @@
             ← 一行挤完，省空间；末两个标记见 DecisionTopicHead 的注释（题材级，买点侧专有）
     第二行：选择理由：题材排第一，股票数量n只，m个竞价一字
     第三行起：序号  股票名称 （龙几）  十日涨幅  竞价涨幅（红底/绿底/灰底小徽标）
-              竞价量比（紫底小徽标，紧跟在竞价涨幅右边）  重仓 / 轻仓 / 加仓
+              竞价量比（小徽标，紧跟在竞价涨幅右边；标签内右侧带 ↑/↓ 箭头 = 与上一交易日相比的方向，
+                        增强红底 / 下降绿底 / 基本平或数据不全 = 靛蓝底不带箭头，[VR-COMPARE 2026-10-02]）
+              重仓 / 轻仓 / 加仓   [尾盘买] [先卖后买]（[VR-ACTION 2026-10-02] 规则⑭：
+                竞价低开 + 竞价量比比上一交易日下降 = 弱票 → 手上没有标【尾盘买】、
+                手上已有（行尾是【加仓】）标【先卖后买】；两个徽标都是【新增】的，⛔ 不替换仓位）
     行下方：  [VRATIO-TREND 2026-10-01 用户口径] 点【序号】或【股票名】展开 / 收起
               「竞价量比 近 5 日」趋势面板（默认收起，样式与早盘竞价看板的趋势图一致）
             ⚠️ [TOPIC-PREV-BOUGHT 2026-09-30 用户口径] 股票行【不再】出现任何「昨天已买」徽标 ——
@@ -76,12 +80,19 @@
         >{{ p.aucPctText }}</span>
         <!-- [VRATIO-TREND 2026-10-01 用户口径] 竞价量比数值：紧跟在【竞价涨幅】右边（用户指定位置）。
              文案由 Logic 层给（volRatioText，如「量比 2.18」），§21 模板零计算；
-             缺当日量比 ⇒ 空串 ⇒ 整个徽标不渲染（§10 绝不用 0.00 冒充「量比很小」）。 -->
+             缺当日量比 ⇒ 空串 ⇒ 整个徽标不渲染（§10 绝不用 0.00 冒充「量比很小」）。
+             [VR-COMPARE 2026-10-02 用户口径] 与上一交易日相比的方向也画在这个标签里：
+               增强 → 整块红底 + ↑；下降 → 整块绿底 + ↓；基本平 / 未知 → 靛蓝底、不带箭头。
+               ⛔ 方向、箭头、配色档全部由 Logic 层给（volRatioArrow / volRatioTone），模板只拼接。 -->
         <span
           v-if="p.volRatioText"
           class="dcb-vratio"
-          title="竞价量比（当日值；与早盘竞价看板趋势图里那行小字同一字段）"
-        >{{ p.volRatioText }}</span>
+          :class="p.volRatioTone ? ('dcb-vratio-' + p.volRatioTone) : ''"
+          title="竞价量比（当日值；与早盘竞价看板趋势图里那行小字同一字段）｜箭头 = 与上一交易日相比的方向"
+        >{{ p.volRatioText }}<span
+          v-if="p.volRatioArrow"
+          class="dcb-vratio-arrow"
+        >{{ p.volRatioArrow }}</span></span>
         <!-- [POSITION-TONE 2026-09-30] 仓位（重仓 / 轻仓 / 加仓）：文案 + 配色档全部由 Logic 层给
              （p.position / p.positionTone，§21 模板零计算、⛔ 不做 `=== '轻仓'` 这类比较）。
              【加仓】= 这一只昨天已经被打过「买」标签（规则④ 股票级效果）。 -->
@@ -89,6 +100,15 @@
           class="dcb-position"
           :class="'dcb-pos-' + p.positionTone"
         >{{ p.position }}</span>
+        <!-- [VR-ACTION 2026-10-02 用户口径 · 规则⑭] 弱票（竞价低开 + 竞价量比下降）的当日节奏：
+             【尾盘买】= 手上没有，等尾盘再买；【先卖后买】= 手上已有（行尾是【加仓】），开盘先卖、尾盘再买回。
+             ⛔ 文案与配色档都由 Logic 层给（buyActionTag / buyActionTone），模板零判断（§21）；
+               缺竞价涨幅或算不出量比方向 ⇒ Logic 不给标签 ⇒ 不渲染（§10 不猜）。 -->
+        <span
+          v-if="p.buyActionTag"
+          class="dcb-action"
+          :class="'dcb-action-' + p.buyActionTone"
+        >{{ p.buyActionTag }}</span>
         <!-- 【三 · 持有 / 加仓】上交易日也在买点里 → 强势股（由 Logic 层标记，模板零计算 §21） -->
         <span
           v-if="p.holdTag"
