@@ -424,7 +424,7 @@ export function collectDecisionData(date, opts) {
       // [SHARE-RULE 2026-10-03 用户口径] 当日【竞价占比】（%）= 当日竞价量 ÷ 昨日成交量。
       //   与早盘竞价第一页那个占比【同一个公式、同一份数据】（auction_watchlist 同一行的
       //   volume / yest_volume），只是【展示精度不同】：第一页 = 取整，本看板 = 保留 1 位小数。
-      //   买卖【时机】的唯一主判据（占比达标 → 竞价买 / 尾盘卖；不达标 → 尾盘买 / 竞价出）。
+      //   买卖【时机】的唯一主判据（占比达标 → 竞价买 / 尾盘卖；不达标 → 尾盘买 / 竞价卖）。
       //   ⛔ 只在这里算一次，规则层只搬运（§6 单一真相）；缺数据 → null（§10 绝不当 0）。
       aucShare: getAuctionShare(date, nm),
       pct: (rm && rm.pct !== undefined && rm.pct !== null) ? rm.pct : null,
@@ -557,7 +557,7 @@ export function collectDecisionData(date, opts) {
       // [SELL-SURGE 2026-10-03 用户口径] 竞价量比倍数（今日 ÷ 上交易日）：
       //   卖点【冲高就卖】档（深低开 + 量比放大 ≥ 5 倍）的唯一依据。null = 未知 ⇒ 该档不生效（§10）。
       volRatioTimes: row ? row.volRatioTimes : getVolRatioTimes(nm, date),
-      // [SHARE-RULE 2026-10-03 用户口径] 今日【竞价占比】（%）：卖点动作（尾盘卖 / 竞价出 / 持有）的唯一主判据。
+      // [SHARE-RULE 2026-10-03 用户口径] 今日【竞价占比】（%）：卖点动作（尾盘卖 / 竞价卖 / 持有）的唯一主判据。
       //   与买点用的是【同一个函数、同一份数据】（§6）；row 不存在（今天不在任何池里）⇒ 现场取一次，
       //   取不到 → null ⇒ 规则层回落旧口径（§10 不猜）。
       aucShare: row ? row.aucShare : getAuctionShare(date, nm),
@@ -584,7 +584,7 @@ export function collectDecisionData(date, opts) {
   const sellTimes = [];
   sell.forEach(function(g) {
     g.items.forEach(function(it) {
-      // [SHARE-RULE 2026-10-03] 占比给出动作标签时（持有 / 尾盘卖 / 竞价出），时点以它为准 ——
+      // [SHARE-RULE 2026-10-03] 占比给出动作标签时（持有 / 尾盘卖 / 竞价卖），时点以它为准 ——
       //   它是用户口径里的最终结论；sellHint / sellAt 只在占比缺数据时才轮到（旧口径让路）。
       const t = (it.sellActionTag)
         ? it.sellActionTag

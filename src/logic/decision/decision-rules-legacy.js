@@ -65,6 +65,9 @@ import {
   //   ⛔ 常量与判据都【只有一份】（在 decision-rules.js），本文件只 import 使用，⛔ 不另写一套阈值。
   // ⚠️ isWeakAucDay（低开 + 量比下降）是【卖点侧】的判据（§16：本文件不再使用它，已从 import 移除）。
   BUY_LATE_TAG, SELL_FIRST_BUY_LATER_TAG,
+  // [SHARE-PRIORITY 2026-10-04 用户口径] 【尾盘买（先卖后买）】复合徽标：占比不达标 + 昨天已买过 ⇒
+  //   买点行只留这一枚（⛔ 不再叠行尾【持有】）。常量同样只有一份（在 decision-rules.js）。
+  BUY_LATE_SWAP_TAG,
   // [BUY-NOW 2026-10-03 用户口径] 【竞价买】徽标（量比增强 → 竞价就买），同样只有一份常量。
   BUY_NOW_TAG,
   // ⚠️ [SHARE-RULE 2026-10-03] BUY_ACTION_TONE_LATE / SWAP / NOW 三个配色档的导入已删除 ——
@@ -1293,7 +1296,7 @@ function _finishBuyBlock(blockObj, opts) {
   _capPicksByTopicCount(blockObj);
   // ⚠️ 第 3 参必须传【本模块的】RULE_NO —— 老版编号体系是 ⑪⑫（量比模式是 ③④）。
   //   共享实现 default 用量比那份，不传就会写成「【规则③】持有」，与本文件的规则清单对不上。
-  _markHold(blockObj, opts ? opts.prevBuyNames : null, RULE_NO.HOLD);
+  _markHold(blockObj, opts ? opts.prevBuyNames : null, RULE_NO.HOLD, opts);
   _markPrevBought(blockObj, opts ? opts.prevBoughtNames : null, RULE_NO.PREV_BOUGHT);
   // ⚠️ 题材行标记与上面的个股标记互不干扰（一个写 blockObj.*，一个写 pick.*），先后无所谓
   _markTopicPrevBought(blockObj, opts ? opts.prevBoughtTopics : null);
@@ -1326,7 +1329,7 @@ function _finishPlanBlocks(planObj, opts) {
   planObj.blocks.forEach(function(b) {
     _applyLossEffect(b);
     _applyWeakOpenRate(b);
-    _markHold(b, opts ? opts.prevBuyNames : null, RULE_NO.HOLD);           // ⑪（同 _finishBuyBlock）
+    _markHold(b, opts ? opts.prevBuyNames : null, RULE_NO.HOLD, opts);            // ⑪（同 _finishBuyBlock）
     _markPrevBought(b, opts ? opts.prevBoughtNames : null, RULE_NO.PREV_BOUGHT);   // ⑫
     // [⑫ 题材级] 兜底方案的题材行同样标【昨有买入】—— 与「入选题材的筛选条件一视同仁」同一口径：
     //   它说的是「这个题材昨天有票买过」，跟这个题材是被哪条规则选中的无关。
@@ -1780,18 +1783,23 @@ function _legacyBuyRulesLines() {
     //   量比方向【降级为占比缺数据时的退路】）。⛔ 与量比模式（decision-rules.js 的 ⑦）
     //   是【同一份实现】（_decorateShareAction），只是编号不同 —— 两套模式对
     //   「什么时候买」必须给同一个答案（§6 单一真相）。
-    '　⑭ 【' + BUY_NOW_TAG + ' / ' + BUY_LATE_TAG + ' / ' + SELL_FIRST_BUY_LATER_TAG +
+    '　⑭ 【' + BUY_NOW_TAG + ' / ' + BUY_LATE_TAG + ' / ' + BUY_LATE_SWAP_TAG +
       '】= 按【竞价占比】决定今天什么时候买（2026-10-03 新规，占比说了算）：',
     '　　· 占比（%）= 【当日竞价量】÷【昨日成交量】×100，保留 1 位小数（如 0.0435 → 4.4%）；',
     '　　· 门槛：前排（今日或昨日【龙一 / 龙二】）→ ' + AUCTION_SHARE_FRONT_MIN + '%（标准 ' +
       AUCTION_SHARE_FRONT_STD + '% 容错 ' + AUCTION_SHARE_TOLERANCE + '%）；后排（其余）→ ' +
       AUCTION_SHARE_BACK_STD + '%；',
     '　　· 占比 ≥ 门槛 → 行内标【' + BUY_NOW_TAG + '】：占比够强，竞价就得下手，等尾盘反而更贵 / 买不到；',
-    '　　· 占比 < 门槛 → 行内标【' + BUY_LATE_TAG + '】：别追开盘，等尾盘再看。',
+    '　　· 占比 < 门槛 → 行内标【' + BUY_LATE_TAG + '】：别追开盘，等尾盘再看；',
+    '　　· 占比 < 门槛【且】这一只【昨天已经买过】（所以它同时在卖点里）→ 行内只留【' +
+      BUY_LATE_SWAP_TAG + '】，⛔ 行尾【不再写仓位「' + POSITION_HOLD + '】」（2026-10-04 用户口径）：',
+    '　　　开盘先按卖点的【竞价卖】把昨天的仓卖掉，尾盘再接回来（两句合起来 = 先卖后买）；',
+    '　　　⚠️ 留着【' + POSITION_HOLD + '】会被读成「拿着别动」，与「今天要卖」直接矛盾。',
     '　　⚠️ 【竞价涨幅】与【竞价量比】只是【辅助】—— 两者都涨也可能是「假强」，',
     '　　　配上占比（实打实的水量）才能确认；三者同向时确定性最高。',
     '　　（例：捷荣技术量比【下降】但占比 7.0% ≥ 3.5% → 照样【' + BUY_NOW_TAG +
-      '】；海登种业涨幅 +2.68% 但占比 0.15% < 2% → 【' + BUY_LATE_TAG + '】。）',
+      '】；海登种业涨幅 +2.68% 但占比 0.2% < 2% → 【' + BUY_LATE_TAG + '】；',
+    '　　　楚天龙 9/3 昨有买入、占比 2.5% < 3.5% → 【' + BUY_LATE_SWAP_TAG + '】。）',
     '　　⚠️ §10：占比算不出来（缺当日竞价量 / 缺昨日成交量）⇒ 本档【回落旧的量比方向口径】：',
     '　　　量比【增强】→ 【' + BUY_NOW_TAG + '】；量比【下降】＋ 手上没有 → 【' + BUY_LATE_TAG + '】；',
     '　　　量比【下降】＋ 手上已经有（行尾已是【' + POSITION_HOLD + '】）→ 【' + SELL_FIRST_BUY_LATER_TAG +
@@ -1809,7 +1817,7 @@ function _legacyBuyRulesLines() {
     '　　（这一项现在是【辅助】：占比有数据时由占比决定买点，占比缺数据时才轮到它。）',
     '　　行尾是仓位：' + POSITION_HEAVY + ' / ' + POSITION_LIGHT + ' = 今天新买建多少仓，' + POSITION_HOLD +
       ' = 昨天已买过、今天继续持有；',
-    '　　　再往右是 ⑭ 的【' + BUY_NOW_TAG + '】【' + BUY_LATE_TAG + '】【' + SELL_FIRST_BUY_LATER_TAG +
+    '　　　再往右是 ⑭ 的【' + BUY_NOW_TAG + '】【' + BUY_LATE_TAG + '】【' + BUY_LATE_SWAP_TAG +
       '】这类【今天什么时候买】的徽标，以及 ⑪ 的【' + HOLD_TAG + '】标记',
     '　　　（⑪ 的【' + HOLD_TAG + '】与行尾仓位【' + POSITION_HOLD + '】是同一枚词，同一行只写一次）。',
     '　【行下方还有一行说明文字】写清这一只为什么给上面的动作：占比数值、前排 / 后排门槛来源、',

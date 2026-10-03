@@ -10,8 +10,8 @@
 //   ⚠️ 与早盘竞价第一页那个占比【同一个公式】，但那一页是【四舍五入取整】——
 //      两处精度【刻意不同】，⛔ 不要去对齐（用户原话「那个是四舍五入算法，只取整数」）。
 //   门槛：前排（今日或昨日 龙一 / 龙二）→ 4% 容错 0.5% ⇒ 3.5%；后排（其余）→ 2%。
-//   买点：达标 → 竞价买；不达标 → 尾盘买。
-//   卖点：达标 → 尾盘卖；不达标 → 竞价出；今天又进买点 → 持有。
+//   买点：达标 → 竞价买；不达标 → 尾盘买（若昨天已买过 ⇒ 【尾盘买（先卖后买）】且清掉【持有】）。
+//   卖点：达标 → 尾盘卖（今天又进买点 ⇒ 持有）；不达标 → 竞价卖（进了买点也是竞价卖，不给持有）。
 //   §10：占比缺数据 → 回落旧的量比方向口径，并如实写进 actionNote（⛔ 不当 0）。
 
 import { describe, it, expect } from 'vitest';
@@ -25,6 +25,7 @@ import {
   resolveDragonScope,
   BUY_NOW_TAG,
   BUY_LATE_TAG,
+  BUY_LATE_SWAP_TAG,
   SELL_FIRST_BUY_LATER_TAG,
   SELL_LATE_TAG,
   SELL_OUT_TAG,
@@ -42,6 +43,9 @@ import {
   AUCTION_SHARE_FRONT_MIN,
   AUCTION_SHARE_BACK_STD
 } from './auction-share.js';
+// [SHARE-PRIORITY 2026-10-04] 一字模式（legacy）的规则文案也要带上新规 —— 两套模式共用同一份
+//   买卖时机实现（_decorateShareAction），条文必须一起更新，⛔ 不许只改量比模式那一份。
+import { buildRulesLines } from './decision-rules-legacy.js';
 import { VR_DIR_UP, VR_DIR_DOWN, VR_DIR_FLAT } from './vol-ratio-trend.js';
 
 /* ─────────────────────────── 桩数据 ─────────────────────────── */
@@ -117,6 +121,19 @@ function pickOf(plan, name) {
   const hit = all.filter(function(p) { return p.name === name; })[0];
   if (!hit) throw new Error('买点里没有 ' + name + '（本用例的桩数据没有把它选出来）');
   return hit;
+}
+
+/** 把买点计划里【所有块】的块级说明拼成一段（断言「不能出现自相矛盾的话」用） */
+function allBlockNotes(plan) {
+  const out = [];
+  ['heavy', 'light'].forEach(function(k) {
+    const b = plan[k];
+    if (b && b.notes) b.notes.forEach(function(n) { out.push(n); });
+  });
+  (plan.candidates || []).forEach(function(b) {
+    if (b && b.notes) b.notes.forEach(function(n) { out.push(n); });
+  });
+  return out.join('\n');
 }
 
 /** 从卖点计划里按名字取一行（⛔ 找不到会抛错） */
@@ -340,6 +357,44 @@ describe('★ 买点（占比说了算）：用户 8/31 · 9/1 · 9/2 的标注�
     const plan = buy(rows, { prevDragonNames: new Set(['别的股票']) });
     expect(pickOf(plan, '花溪科技').buyActionTag).toBe(BUY_LATE_TAG);
   });
+
+  it('⑧ 楚天龙 9/3（昨有买入 + 占比 2.5% 不达标）→ 只留【尾盘买（先卖后买）】，【持有】被去掉', () => {
+    // 用户原话：「少楚天龙，昨有买入，当天进去决策看板的买点，同时进入卖点……
+    //   占比2.5不达标……买点方面，提示尾盘买（已有，把持有去掉就可以），
+    //   改成只有「尾盘买（先卖后买）」」
+    const rows = [R('楚天龙', 'T1', 10, -3.36, 7.8, 2.5, VR_DIR_DOWN), ...F('T1', 3)];
+    const plan = buy(rows, {
+      prevBoughtNames: new Set(['楚天龙']),   // 昨有买入（⇒ 卖点里也有它）
+      prevBuyNames: new Set(['楚天龙'])       // ③ 会先标【持有】—— 必须被新规清掉
+    });
+    const p = pickOf(plan, '楚天龙');
+    expect(p.dragonRank).toBe(1);                       // 今日龙一 ⇒ 前排门槛 3.5% ⇒ 2.5% 不达标
+    expect(p.aucShareText).toBe('2.5%');
+    expect(p.aucSharePass).toBe(false);
+    expect(p.buyActionTag).toBe('尾盘买（先卖后买）');   // ⛔ 不是普通的【尾盘买】
+    expect(p.buyActionTag).toBe(BUY_LATE_SWAP_TAG);
+    expect(p.holdTag).toBe('');                          // ③ 的【持有】被清
+    expect(p.position).toBe('');                         // 行尾仓位【持有】也被清 ⇒ 整行只剩上面那一枚
+    expect(p.positionTone).toBe('');
+    expect(p.actionNote).toContain('先卖后买');
+    // ③ 的【持有】让路 ⇒ 块级说明也【不许】再写「强势股，可持有」（否则与行内打架）
+    const notes = allBlockNotes(plan);
+    expect(notes).not.toContain('强势股，可【' + HOLD_TAG + '】');
+    expect(notes).toContain('不算强势股');
+  });
+
+  it('⑧-反例：占比达标时【持有】照旧保留（花溪科技 9/2 3.6% 达标）', () => {
+    const rows = [R('花溪科技', 'T1', 10, -5.02, 50, 3.6, VR_DIR_DOWN), ...F('T1', 3)];
+    const plan = buy(rows, {
+      prevBoughtNames: new Set(['花溪科技']),
+      prevBuyNames: new Set(['花溪科技'])
+    });
+    const p = pickOf(plan, '花溪科技');
+    expect(p.buyActionTag).toBe(BUY_NOW_TAG);   // 达标 ⇒ 竞价买
+    expect(p.position).toBe('持有');             // ⛔ 这一档不受新规影响
+    // 达标 ⇒ ③ 照常标、块级说明照常写「可持有」
+    expect(allBlockNotes(plan)).toContain('强势股，可【' + HOLD_TAG + '】');
+  });
 });
 
 describe('买点：§10 占比缺数据 → 回落旧的量比方向口径（并如实写明）', () => {
@@ -456,7 +511,7 @@ describe('★ 卖点（占比说了算）：用户 9/1 · 9/2 的标注逐条复
     expect(it0.aucShareScopeText).toContain('后排');
   });
 
-  it('⑤ 华阳国际（龙三，非前排，占比 1.8% < 2%）→ 【竞价出】', () => {
+  it('⑤ 华阳国际（龙三，非前排，占比 1.8% < 2%）→ 【竞价卖】', () => {
     const rows = topic6(30, '华阳国际');        // pct 30 ⇒ 龙一？改造成龙三见下
     // 精确造龙三：两只比它高的
     const r = [
@@ -490,6 +545,108 @@ describe('★ 卖点（占比说了算）：用户 9/1 · 9/2 的标注逐条复
     expect(it0.sellActionTag).toBe(HOLD_TAG);
     expect(it0.buyActionTag).toBe('');        // ⛔ 用户明确「而不是先卖后买」
     expect(it0.sellHint).toBe(null);          // 占比有数据 ⇒ 旧口径让路
+  });
+
+  it('⑦ 楚天龙 9/3（龙一 / 占比 2.5% 不达标 + 今天又进买点）→ 【竞价卖】，⛔ 不给【持有】', () => {
+    // 用户原话：「占比2.5不达标。所以应该是竞价卖。同时它有进了买点那里。那就尾盘买。
+    //   ……卖点方面，提示持有标签，卖点方面的提示不是很具体，应该去掉持有。应该是这个标签，'竞价卖'」
+    // 补充口径（2026-10-04）：「因为它是龙一，按照占比3.5%的标准，它不合格」
+    const rows = [R('楚天龙', 'T1', 10, -3.36, 7.8, 2.5, VR_DIR_DOWN), ...F('T1', 3)];
+    const plan = sell(
+      [R('楚天龙', 'T1', 10, -3.36, 7.8, 2.5, VR_DIR_DOWN)],
+      {
+        memberRows: rows,
+        todayBuyNames: new Set(['楚天龙'])       // 同时进了买点 —— 旧实现会标【持有】
+      }
+    );
+    const it0 = itemOf(plan, '楚天龙');
+    expect(it0.dragonRank).toBe(1);              // 龙一 ⇒ 前排门槛 3.5%
+    expect(it0.aucSharePass).toBe(false);        // 2.5% < 3.5% ⇒ 不达标
+    expect(it0.sellActionTag).toBe('竞价卖');
+    expect(it0.sellActionTag).toBe(SELL_OUT_TAG);
+    expect(it0.sellActionTag).not.toBe(HOLD_TAG);
+    expect(it0.sellActionTone).toBe('out');
+    expect(it0.holdTag).toBe('');                // ⛔ 不再标【持有】
+    expect(it0.sellHint).toBe(null);             // 占比有数据 ⇒ 旧口径让路
+    expect(it0.actionNote).toContain('走弱');
+  });
+
+  it('⑦-反例：占比【达标】+ 今天又进买点 ⇒ 仍是【持有】（花溪科技 9/2 3.6%）—— 见上一条 ⑥', () => {
+    const rows = topic6(1, '甲');
+    const plan = sell(
+      [R('甲', 'T1', 1, -5.02, 50, 4.4, VR_DIR_DOWN)],
+      {
+        memberRows: rows,
+        prevDragonNames: new Set(['甲']),
+        todayBuyNames: new Set(['甲'])
+      }
+    );
+    expect(itemOf(plan, '甲').sellActionTag).toBe(HOLD_TAG);
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════════
+   ★ 9/3 楚天龙 · 「买点 + 卖点【同时存在】」的对照（用户原话逐条对齐）
+   用户原话（2026-10-03 与 2026-10-04 两次）：
+     「楚天龙，昨有买入，当天进去决策看板的买点，同时进入卖点，两个同时存在。……
+       占比2.5不达标。所以应该是竞价卖。同时它有进了买点那里。那就尾盘买。」
+     「把持有标签去掉，改成我要求的标签，逻辑不变的，后排选手占比要求大于2%没错啊，
+       我只说那个买点和卖点的持有标签，要去掉……因为它是龙一，按照占比3.5%的标准，
+       它不合格，它当天的占比显示只有2.5%，所以卖点那里，是竞价卖，
+       但是它又进了今天的买点，所以尾盘买（先卖后买）。」
+   ⛔ 本条只改【标签】—— 门槛（前排 3.5% / 后排 2%）、公式、精度一律不动。
+   ════════════════════════════════════════════════════════════════════════════════ */
+describe('★ 9/3 楚天龙：买点 + 卖点同时存在时的标签（逻辑不变，只去掉【持有】）', () => {
+  // 楚天龙 = 今日龙一 ⇒ 前排门槛 3.5%；占比 2.5% ⇒ 不达标
+  const ROWS = function() {
+    return [R('楚天龙', 'T1', 10, -3.36, 7.8, 2.5, VR_DIR_DOWN), ...F('T1', 3)];
+  };
+  const OPTS = function() {
+    return {
+      prevBoughtNames: new Set(['楚天龙']),   // 昨有买入 ⇒ 卖点候选里一定有它
+      prevBuyNames: new Set(['楚天龙'])       // 昨天也在买点里 ⇒ ③ 本来会标【持有】
+    };
+  };
+
+  it('买点行 → 只剩【尾盘买（先卖后买）】一枚（【持有】与行尾仓位都去掉）', () => {
+    const plan = buy(ROWS(), OPTS());
+    const p = pickOf(plan, '楚天龙');
+    expect(p.dragonRank).toBe(1);
+    expect(p.aucShareText).toBe('2.5%');
+    expect(p.aucSharePass).toBe(false);
+    expect(p.buyActionTag).toBe('尾盘买（先卖后买）');
+    expect(p.holdTag).toBe('');                 // ③ 的【持有】去掉
+    expect(p.position).toBe('');                // 行尾仓位【持有】去掉
+    expect(p.positionTone).toBe('');
+    // 块级说明也【不许】再说这一只「强势股，可持有」（否则与行内打架）
+    expect(allBlockNotes(plan)).not.toContain('强势股，可【' + HOLD_TAG + '】');
+  });
+
+  it('卖点行 → 【竞价卖】（不是【持有】）', () => {
+    const plan = sell(
+      [R('楚天龙', 'T1', 10, -3.36, 7.8, 2.5, VR_DIR_DOWN)],
+      { memberRows: ROWS(), todayBuyNames: new Set(['楚天龙']) }
+    );
+    const it0 = itemOf(plan, '楚天龙');
+    expect(it0.dragonRank).toBe(1);
+    expect(it0.aucShareText).toBe('2.5%');
+    expect(it0.sellActionTag).toBe('竞价卖');
+    expect(it0.sellActionTag).not.toBe(HOLD_TAG);
+    expect(it0.holdTag).toBe('');
+    expect(it0.sellHint).toBe(null);
+  });
+
+  it('只改标签：门槛与判定没动（前排仍是 3.5% / 后排仍是 2%，公式与精度不变）', () => {
+    expect(AUCTION_SHARE_FRONT_MIN).toBe(3.5);
+    expect(AUCTION_SHARE_BACK_STD).toBe(2);
+    expect(auctionShareThresholdOf(true)).toBe(3.5);
+    expect(auctionShareThresholdOf(false)).toBe(2);
+    expect(computeAuctionShare(25, 1000)).toBe(2.5);      // 25/1000 = 2.5%
+    expect(formatAuctionShare(2.5)).toBe('2.5%');
+    // 后排：2.6% ≥ 2% ⇒ 依然达标（用户口径「后排选手占比要求大于2%没错」）
+    expect(passesAuctionShare(2.6, false)).toBe(true);
+    // 前排：2.5% < 3.5% ⇒ 不达标（楚天龙就是这一档）
+    expect(passesAuctionShare(2.5, true)).toBe(false);
   });
 });
 
@@ -571,21 +728,33 @@ describe('卖点：行内展示字段', () => {
     expect(it0.actionNote).toContain(RULE_NO.SHARE);
   });
 
-  it('竞价出 → 配色档 out；持有 → 配色档 hold', () => {
+  it('配色档：不达标 → out（进了买点也是 out）；达标 + 进买点 → hold', () => {
     const manyRows = [
       R('高甲', 'T1', 30, 0.5, 1, 1.0), R('高乙', 'T1', 25, 0.5, 1, 1.0),
       R('高丙', 'T1', 20, 0.5, 1, 1.0), R('高丁', 'T1', 15, 0.5, 1, 1.0)
     ];
+    // 甲 = 龙五 ⇒ 后排，门槛 2% ⇒ 1.8% 不达标 ⇒ 竞价卖（out）
     const out = itemOf(sell(
       [R('甲', 'T1', 5, -1.3, 1, 1.8, VR_DIR_DOWN)],
       { memberRows: manyRows, prevDragonNames: new Set(['别的']) }
     ), '甲');
     expect(out.sellActionTone).toBe('out');
 
-    const hold = itemOf(sell(
+    // 🔴 [SHARE-PRIORITY 2026-10-04] 不达标 + 今天又进买点【也是 out】——
+    //   旧实现这一档给的是 hold，用户 9/3 楚天龙案例明确要求去掉【持有】。
+    const outToo = itemOf(sell(
       [R('甲', 'T1', 5, -1.3, 1, 1.8, VR_DIR_DOWN)],
       { memberRows: manyRows, prevDragonNames: new Set(['别的']), todayBuyNames: new Set(['甲']) }
     ), '甲');
+    expect(outToo.sellActionTag).toBe(SELL_OUT_TAG);
+    expect(outToo.sellActionTone).toBe('out');
+
+    // 换成【达标】的占比（2.6% ≥ 后排门槛 2%）⇒ 这一档才是 hold
+    const hold = itemOf(sell(
+      [R('甲', 'T1', 5, -1.3, 1, 2.6, VR_DIR_DOWN)],
+      { memberRows: manyRows, prevDragonNames: new Set(['别的']), todayBuyNames: new Set(['甲']) }
+    ), '甲');
+    expect(hold.sellActionTag).toBe(HOLD_TAG);
     expect(hold.sellActionTone).toBe('hold');
   });
 });
@@ -606,13 +775,28 @@ describe('规则文案：占比规则必须写进灰色问号面板（可一键�
     expect(lines).toContain(BUY_LATE_TAG);
     expect(lines).toContain(SELL_LATE_TAG);
     expect(lines).toContain(SELL_OUT_TAG);
+    expect(lines).toContain(BUY_LATE_SWAP_TAG);
   });
 
   it('用户给的案例数值也写进文案里（便于照着对账）', () => {
     const lines = buildVolRatioRulesLines().join('\n');
-    ['4.4%', '7.0%', '5.5%', '6.9%', '3.6%', '0.15%', '3.9%', '9.4%', '1.8%', '2.6%'].forEach(function(v) {
+    ['4.4%', '7.0%', '5.5%', '6.9%', '3.6%', '0.15%', '3.9%', '9.4%', '1.8%', '2.6%', '2.5%'].forEach(function(v) {
       expect(lines).toContain(v);
     });
+  });
+
+  it('9/3 楚天龙的新规（先卖后买）也写进文案里', () => {
+    const lines = buildVolRatioRulesLines().join('\n');
+    expect(lines).toContain('楚天龙 9/3');
+    expect(lines).toContain(BUY_LATE_SWAP_TAG);
+    // 买点段与卖点段都要写出「占比不达标 ⇒ 不给持有」这条
+    expect(lines).toContain('先卖后买');
+  });
+
+  it('legacy 模式（一字）的规则文案里也带上了【尾盘买（先卖后买）】', () => {
+    const lines = buildRulesLines().join('\n');
+    expect(lines).toContain(BUY_LATE_SWAP_TAG);
+    expect(lines).toContain('楚天龙 9/3');
   });
 
   it('一键复制逐行还原（加了分隔线后仍然一字不差）', () => {
