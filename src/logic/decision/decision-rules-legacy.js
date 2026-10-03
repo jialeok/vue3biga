@@ -43,9 +43,15 @@ import { getAucOpenKind, getAucOpenText, AUC_OPEN_HIGH } from '../ladder/ladder-
 import { isHighLimitBoard, getAuctionLimitState } from '../auction/limit-up.js';
 // 「其它」= 兜底题材名（无题材 / 未命中核心词 / 组不足 2 只），与早盘竞价同源（§6 不手写 '其它'）
 import { OTHER_TOPIC } from '../auction/topic-sort.js';
-// [BUY-NOW 2026-10-03 用户口径] 竞价量比【方向】常量（up / flat / down）—— 与 decision-rules.js 同一份
-//   （vol-ratio-trend.js），⛔ 本文件绝不另写「增强 / 下降」的判定（§6 单一真相）。
-import { VR_DIR_UP, VR_DIR_DOWN } from './vol-ratio-trend.js';
+// [BUY-NOW 2026-10-03 用户口径 → SHARE-RULE 2026-10-03 降级] 竞价量比【方向】常量。
+//   ⚠️ 2026-10-03 起买卖时机改以【竞价占比】为主判据（见文件头导入的 _decorateShareAction），
+//      「增强 / 下降」不再由本文件直接判定 ⇒ 这里的 VR_DIR_* 导入已删除（§16 不留死导入）。
+//      占比缺数据时的量比方向退路，由 _decorateShareAction 内部统一处理（§6 只此一份）。
+// [SHARE-RULE 2026-10-03 用户口径] 买卖时机的【唯一主判据】= 竞价占比（当日竞价量 ÷ 昨日成交量）。
+//   ⛔ 门槛常量与判定函数都【只有一份】（auction-share.js），本文件只 import 用于规则文案。
+import {
+  AUCTION_SHARE_FRONT_STD, AUCTION_SHARE_TOLERANCE, AUCTION_SHARE_FRONT_MIN, AUCTION_SHARE_BACK_STD
+} from './auction-share.js';
 // ══ 以下全部来自 decision-rules.js —— 两套模式【语义完全一致】的共享件，⛔ 刻意只保留一份 ══
 //    · 领域词表（仓位 / 标记文案 / 卖点时点阈值）：改一处两模式一起变；
 //    · 内部工具（_num / _note / _toPick / _reseq / _reasonBuy / _rankWord / _mark* / _decorate* /
@@ -61,14 +67,20 @@ import {
   BUY_LATE_TAG, SELL_FIRST_BUY_LATER_TAG,
   // [BUY-NOW 2026-10-03 用户口径] 【竞价买】徽标（量比增强 → 竞价就买），同样只有一份常量。
   BUY_NOW_TAG,
-  BUY_ACTION_TONE_LATE, BUY_ACTION_TONE_SWAP, BUY_ACTION_TONE_NOW,
+  // ⚠️ [SHARE-RULE 2026-10-03] BUY_ACTION_TONE_LATE / SWAP / NOW 三个配色档的导入已删除 ——
+  //   配色档现在由 _decorateShareAction（decision-rules.js）统一给，本文件不再直接写 buyActionTone。
+  //   （§16：不留死导入；否则 ESLint no-unused-vars 会报错。）
   // [POSITION-HOLD 2026-10-03 用户口径] ⑫ 的行尾仓位文案由【加仓】改为【持有】
   //   （decision-rules.js 里的常量已改名 POSITION_HOLD，判据与触发位置一律不变）。
   POSITION_HEAVY, POSITION_LIGHT, POSITION_HOLD,
   sellRulesLines,
   _num, _note, _toPick, _reseq, _reasonBuy, _rankWord,
   _markHold, _markPrevBought, _markTopicPrevBought, _markTopicStreak,
-  _decoratePositionTone, _decorateAucBadge, _appendLowOpenDragonOneNote
+  _decoratePositionTone, _decorateAucBadge, _appendLowOpenDragonOneNote,
+  // [SHARE-RULE 2026-10-03 用户口径] 买卖【时机】的新主判据（竞价占比 → 竞价买 / 尾盘买）的收口实现。
+  //   ⛔ 与量比模式【同一份】（在 decision-rules.js），本文件只调用 —— 两套模式的「什么时候买」
+  //      必须是同一个答案（§6 单一真相）。占比缺数据时它内部会回落下面那套旧的量比方向口径。
+  _decorateShareAction
 } from './decision-rules.js';
 
 // ⚠️ 本模块只服务一字模式：断言一下 mode 常量确实可用（⛔ 不是运行时开关，只是防止 import 写错时静默）
@@ -1253,54 +1265,20 @@ function _capPicksByTopicCount(blockObj) {
  * ⛔ 必须排在 _markPrevBought（写 p.prevBoughtTag）与 _decorateAucBadge（写 p.aucPct）之后。
  * @param {object} blockObj 买点块
  */
-function _decorateBuyAction(blockObj) {
+function _decorateBuyAction(blockObj, opts) {
   if (!blockObj || !blockObj.picks || blockObj.picks.length === 0) return blockObj;
-  const dirOf = new Map();
-  ((blockObj.block && blockObj.block.members) || []).forEach(function(m) {
-    if (m && m.name) dirOf.set(m.name, m.volRatioDir || '');
-  });
-  const now = [];      // 量比增强 → 竞价买
-  const late = [];     // 量比下降 → 尾盘买
-  const firstSell = []; // 量比下降 + 手上已有仓位 → 先卖后买
-  blockObj.picks.forEach(function(p) {
-    const dir = String(dirOf.get(p.name) || '');
-    if (dir === VR_DIR_UP) {
-      p.buyActionTag = BUY_NOW_TAG;
-      p.buyActionTone = BUY_ACTION_TONE_NOW;
-      now.push(p.name);
-      return;
-    }
-    if (dir === VR_DIR_DOWN) {
-      if (p.prevBoughtTag) {
-        p.buyActionTag = SELL_FIRST_BUY_LATER_TAG;
-        p.buyActionTone = BUY_ACTION_TONE_SWAP;
-        firstSell.push(p.name);
-      } else {
-        p.buyActionTag = BUY_LATE_TAG;
-        p.buyActionTone = BUY_ACTION_TONE_LATE;
-        late.push(p.name);
-      }
-    }
-  });
-  if (now.length > 0 || late.length > 0 || firstSell.length > 0) {
-    blockObj.notes = blockObj.notes || [];
-    if (now.length > 0) {
-      blockObj.notes.push(_note(RULE_NO.BUY_ACTION,
-        '【' + now.join('、') + '】竞价量比比上一交易日【增强】→ 有人在抢筹，' +
-        '标【' + BUY_NOW_TAG + '】：竞价就得买，等尾盘反而买不到 / 更贵'));
-    }
-    if (firstSell.length > 0) {
-      blockObj.notes.push(_note(RULE_NO.BUY_ACTION,
-        '【' + firstSell.join('、') + '】竞价量比比上一交易日【下降】（当天优势不好），' +
-        '而手上已有仓位 → 标【' + SELL_FIRST_BUY_LATER_TAG + '】：开盘先把昨天的仓卖掉，尾盘量比稳住了再买回来'));
-    }
-    if (late.length > 0) {
-      blockObj.notes.push(_note(RULE_NO.BUY_ACTION,
-        '【' + late.join('、') + '】竞价量比比上一交易日【下降】（当天优势不好）→ ' +
-        '标【' + BUY_LATE_TAG + '】：别追开盘，等尾盘再看'));
-    }
-  }
-  return blockObj;
+  // ── [SHARE-RULE 2026-10-03 用户口径] 主判据换成【竞价占比】（当日竞价量 ÷ 昨日成交量）──
+  //   占比 ≥ 门槛（前排 3.5% / 后排 2%）→ 竞价买；否则 → 尾盘买。
+  //   ⛔ 实现【不在这里】—— 与量比模式共用 decision-rules.js#_decorateShareAction 同一份，
+  //      两套模式的「什么时候买」必须是同一个答案（§6）。
+  //   ⚠️ 占比【缺数据】时，_decorateShareAction 内部会自动回落下面这段旧的「量比方向」口径：
+  //      量比增强 → 竞价买；量比下降 → 已有仓位则先卖后买、否则尾盘买；平 / 未知 → 不给标签。
+  //   ⇒ 下面这段旧实现（原 _decorateBuyAction 正文，2026-10-03 起降级为 §10 退路）已被上层包含，
+  //     本函数不再重复实现；保留旧口径的行为由 _decorateShareAction 内部的退路分支负责，
+  //     ⛔ 别在这里再写一遍（重复一份必然在「改一处漏一处」时只在一个模式下暴露）。
+  //   ⚠️ ruleNo 必须传【本模块的】⑭：老版编号体系是 ⑪⑫⑬⑭（量比模式是 ③④⑤⑥⑦），
+  //     不传就会写成「【规则⑦】」，与本文件的规则清单对不上（与 _markHold 同一套路）。
+  return _decorateShareAction(blockObj, Object.assign({ ruleNo: RULE_NO.BUY_ACTION }, opts || {}));
 }
 
 /**
@@ -1325,7 +1303,7 @@ function _finishBuyBlock(blockObj, opts) {
   _decorateAucBadge(blockObj);
   // ⛔ [VR-ACTION] ⑭ 必须排在 _decorateAucBadge 之后（要读它落的 p.aucPct），
   //   也必须在 _markPrevBought 之后（要读 p.prevBoughtTag）。
-  _decorateBuyAction(blockObj);
+  _decorateBuyAction(blockObj, opts);
   return blockObj;
 }
 
@@ -1361,7 +1339,7 @@ function _finishPlanBlocks(planObj, opts) {
     _decorateAucBadge(b);          // 同上：徽标放最后，避免被上面的砍票重建 picks 时丢掉
     // [VR-ACTION 2026-10-02 ⑭] 尾盘买 / 先卖后买 —— 兜底方案的块同样要标（规则对【入选题材】
     //   一视同仁，与 ⑧⑪⑫⑬ 同一口径），且必须排在 _decorateAucBadge / _markPrevBought 之后。
-    _decorateBuyAction(b);
+    _decorateBuyAction(b, opts);
   });
   return planObj;
 }
@@ -1798,29 +1776,43 @@ function _legacyBuyRulesLines() {
     '　　窗口里只要有一天算不出来（那天的行情还没加载）⇒ 次数就是未知，一律【不标】',
     '　　（§10 绝不拿偏低的数字冒充，那会让你误判题材频率）。',
     '　重仓与轻仓混在同一个题材块里，序号连续，仓位写在每行行尾。',
-    // [BUY-NOW 2026-10-03 用户口径] ⑭ 竞价买 / 尾盘买 / 先卖后买（判据改为【只看竞价量比方向】）
+    // [SHARE-RULE 2026-10-03 用户口径] ⑭ 竞价买 / 尾盘买（判据改为【以竞价占比为准】，
+    //   量比方向【降级为占比缺数据时的退路】）。⛔ 与量比模式（decision-rules.js 的 ⑦）
+    //   是【同一份实现】（_decorateShareAction），只是编号不同 —— 两套模式对
+    //   「什么时候买」必须给同一个答案（§6 单一真相）。
     '　⑭ 【' + BUY_NOW_TAG + ' / ' + BUY_LATE_TAG + ' / ' + SELL_FIRST_BUY_LATER_TAG +
-      '】= 按【竞价量比 vs 上一交易日】决定今天什么时候买：',
-    '　　· 量比【增强】→ 行内标【' + BUY_NOW_TAG + '】：有人在抢筹，竞价就得买，等尾盘反而买不到 / 更贵；',
-    '　　· 量比【下降】＋ 手上【没有】这只票（行尾是 重仓 / 轻仓）→ 行内标【' + BUY_LATE_TAG +
-      '】：当天优势不好，别追开盘，等尾盘再看；',
-    '　　· 量比【下降】＋ 手上【已经有】（行尾已是【' + POSITION_HOLD + '】= 昨天真被打过「买」标签）→ 行内标【' +
-      SELL_FIRST_BUY_LATER_TAG + '】：',
-    '　　　开盘先把昨天的仓卖掉，尾盘量比稳住了再买回来（量比下降时只标【' + HOLD_TAG +
-      '】太笼统，所以改标【' + SELL_FIRST_BUY_LATER_TAG + '】）。',
-    '　　⚠️ 判据【只看量比方向】，不再要求「竞价涨幅 < 0」—— 9/30 大亚圣象是【小幅高开 +0.31%】',
-    '　　　但量比从 38.37 掉到 7.90（暴跌），照样要标【' + BUY_LATE_TAG + '】（用户口径）。',
-    '　　⚠️ 量比【基本平】或【算不出方向】⇒ 一律不标（§10 未知 ≠ 增强，也 ≠ 下降，绝不猜）。',
+      '】= 按【竞价占比】决定今天什么时候买（2026-10-03 新规，占比说了算）：',
+    '　　· 占比（%）= 【当日竞价量】÷【昨日成交量】×100，保留 1 位小数（如 0.0435 → 4.4%）；',
+    '　　· 门槛：前排（今日或昨日【龙一 / 龙二】）→ ' + AUCTION_SHARE_FRONT_MIN + '%（标准 ' +
+      AUCTION_SHARE_FRONT_STD + '% 容错 ' + AUCTION_SHARE_TOLERANCE + '%）；后排（其余）→ ' +
+      AUCTION_SHARE_BACK_STD + '%；',
+    '　　· 占比 ≥ 门槛 → 行内标【' + BUY_NOW_TAG + '】：占比够强，竞价就得下手，等尾盘反而更贵 / 买不到；',
+    '　　· 占比 < 门槛 → 行内标【' + BUY_LATE_TAG + '】：别追开盘，等尾盘再看。',
+    '　　⚠️ 【竞价涨幅】与【竞价量比】只是【辅助】—— 两者都涨也可能是「假强」，',
+    '　　　配上占比（实打实的水量）才能确认；三者同向时确定性最高。',
+    '　　（例：捷荣技术量比【下降】但占比 7.0% ≥ 3.5% → 照样【' + BUY_NOW_TAG +
+      '】；海登种业涨幅 +2.68% 但占比 0.15% < 2% → 【' + BUY_LATE_TAG + '】。）',
+    '　　⚠️ §10：占比算不出来（缺当日竞价量 / 缺昨日成交量）⇒ 本档【回落旧的量比方向口径】：',
+    '　　　量比【增强】→ 【' + BUY_NOW_TAG + '】；量比【下降】＋ 手上没有 → 【' + BUY_LATE_TAG + '】；',
+    '　　　量比【下降】＋ 手上已经有（行尾已是【' + POSITION_HOLD + '】）→ 【' + SELL_FIRST_BUY_LATER_TAG +
+      '】：开盘先把昨天的仓卖掉，尾盘稳住了再买回来；',
+    '　　　量比【基本平】或方向未知 → 一律不标（⛔ 未知 ≠ 增强，也 ≠ 下降，绝不猜）。',
     '　※ 每个题材块下面的「选择理由」与说明文字都会标【规则N】（如【规则⑨】），方便按条文逐条核对。',
     '【题材行的数据】题材名右边依次是：实心红圆点（里面的数字 = 题材排名）｜数量：n（股票只数）｜',
     '　　竞价一字：n｜【' + TOPIC_PREV_BOUGHT_TAG + '】（有才显示）｜【N 次入选】（有才显示）。',
-    '【股票行的数据】股票名右边依次是：龙几（龙一 / 龙二）｜十日涨幅｜竞价涨幅小标签｜竞价量比小标签；',
+    '【股票行的数据】股票名右边依次是：龙几（龙一 / 龙二）｜十日涨幅｜竞价涨幅小标签｜竞价量比小标签｜占比小标签；',
+    '　　【占比】小标签 = 当日竞价量 ÷ 昨日成交量（保留 1 位小数），是 ⑭ 的主判据：',
+    '　　　≥ ' + AUCTION_SHARE_FRONT_STD + '% 红底 ｜ ≥ ' + AUCTION_SHARE_BACK_STD +
+      '% 琥珀底 ｜ 其余绿底；算不出来时不显示（§10 绝不画成 0.0%）。',
     '　　【竞价量比】小标签会显示与【上一交易日】相比的方向（两个值各自四舍五入到整数后作差）：',
     '　　　增强（差 ≥ +1）→ 整块【红底】带 ↑；下降（差 ≤ -1）→ 整块【绿底】带 ↓；基本平（差 = 0）或数据不全 → 靛蓝底不带箭头。',
+    '　　（这一项现在是【辅助】：占比有数据时由占比决定买点，占比缺数据时才轮到它。）',
     '　　行尾是仓位：' + POSITION_HEAVY + ' / ' + POSITION_LIGHT + ' = 今天新买建多少仓，' + POSITION_HOLD +
       ' = 昨天已买过、今天继续持有；',
-    '　　　再往右是【' + BUY_NOW_TAG + '】【' + BUY_LATE_TAG + '】【' + SELL_FIRST_BUY_LATER_TAG +
+    '　　　再往右是 ⑭ 的【' + BUY_NOW_TAG + '】【' + BUY_LATE_TAG + '】【' + SELL_FIRST_BUY_LATER_TAG +
       '】这类【今天什么时候买】的徽标，以及 ⑪ 的【' + HOLD_TAG + '】标记',
     '　　　（⑪ 的【' + HOLD_TAG + '】与行尾仓位【' + POSITION_HOLD + '】是同一枚词，同一行只写一次）。',
+    '　【行下方还有一行说明文字】写清这一只为什么给上面的动作：占比数值、前排 / 后排门槛来源、',
+    '　　以及作为辅助的竞价涨幅与量比方向（辅助不单独决定时机）。',
   ];
 }

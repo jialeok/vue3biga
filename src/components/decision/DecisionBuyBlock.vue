@@ -95,6 +95,19 @@
           v-if="p.volRatioArrow"
           class="dcb-vratio-arrow"
         >{{ p.volRatioArrow }}</span></span>
+        <!-- [SHARE-RULE 2026-10-03 用户口径] 竞价占比标签：紧跟在【竞价量比】右边（与卖点同款同位置）。
+             口径 = 当日竞价量 ÷ 昨日成交量，【保留 1 位小数】（用户原话「这样更准确」，
+             金健米业 0.0435 → 4.4%）。⚠️ 与早盘竞价第一页显示的那个占比【同一个公式】，
+             但那一页是四舍五入取整（用户原话「那个是四舍五入算法，只取整数」）—— 刻意不同，⛔ 别去对齐。
+             文案 / 配色档全部由 Logic 层给（aucShareText / aucShareTone，§21 模板零计算）；
+             缺数据 ⇒ 空串 ⇒ 整个徽标不渲染（§10 绝不显示 0.0%）。
+             ⛔ 类名带 dcb- 前缀：CSS 全局加载，通用名会串改早盘竞价看板。 -->
+        <span
+          v-if="p.aucShareText"
+          class="dcb-share"
+          :class="p.aucShareTone ? ('dcb-share-' + p.aucShareTone) : ''"
+          title="竞价占比 = 当日竞价量 ÷ 昨日成交量（保留 1 位小数）｜买卖时机的主判据：前排（龙一/龙二）门槛 3.5%、后排门槛 2%"
+        >占比 {{ p.aucShareText }}</span>
         <!-- [POSITION-TONE 2026-09-30（2026-10-03 文案改【持有】）] 仓位（重仓 / 轻仓 / 持有）：
              文案 + 配色档全部由 Logic 层给（p.position / p.positionTone，§21 模板零计算、
              ⛔ 不做 `=== '轻仓'` 这类比较）。
@@ -122,6 +135,15 @@
           v-if="p.holdTag"
           class="dcb-hold"
         >{{ p.holdTag }}</span>
+        <!-- [SHARE-RULE 2026-10-03 用户口径] 逐行【说明文字】：这一只为什么是竞价买 / 尾盘买 ——
+             写清占比数值、前排 / 后排门槛来源、以及作为辅助的竞价涨幅与量比方向。
+             文案整段由 Logic 层给（p.actionNote，§21 模板零计算），⛔ 组件不拼规则句子。 -->
+        <div
+          v-if="p.actionNote"
+          class="dcb-row-note dcb-selectable"
+        >
+          {{ p.actionNote }}
+        </div>
       </div>
       <!-- [VRATIO-TREND 2026-10-01] 竞价量比 近 5 个交易日趋势（默认收起，点序号 / 股票名才展开）。
            曲线组件复用 TrendChart（白底 / 折线 / 数值标签 / 日期轴，与早盘竞价趋势图同一套视觉）；

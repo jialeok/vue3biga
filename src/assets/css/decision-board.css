@@ -377,6 +377,29 @@
         .dcb-vratio-up   { background-color: #dc2626; }   /* 比上一交易日增强 */
         .dcb-vratio-down { background-color: #16a34a; }   /* 比上一交易日下降 */
 
+        /* ---- [SHARE-RULE 2026-10-03 用户口径] 竞价占比（当日竞价量 ÷ 昨日成交量）----
+           口径：保留 1 位小数（与早盘竞价第一页那个「取整」的占比刻意不同，⛔ 别去对齐）。
+           它是买卖【时机】的主判据 ⇒ 配色直接表达「这个数值有多强」，与门槛对应：
+             ≥ 前排标准 4%  → 红（完全达标，用户口径「更加确定」）
+             ≥ 后排标准 2%  → 琥珀（达到后排正常水平 / 前排的容错区）
+             其余（含 0.x%）→ 绿（水量不足）
+           ⛔ 缺数据 ⇒ Logic 层给空串 ⇒ 徽标不渲染，绝不显示 0.0%（§10）。
+           刻意不用靛蓝（那是量比的色）：占比是另一条判据，同色会被当成同一个指标。 */
+        .dcb-share {
+            padding: 0 4px;
+            font-size: 9px;
+            line-height: 14px;
+            border-radius: 4px;
+            color: #ffffff;
+            background-color: #dc2626;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .dcb-share-strong { background-color: #dc2626; }   /* ≥ 4%：完全达标 */
+        .dcb-share-meet   { background-color: #d97706; }   /* ≥ 2%：达到后排标准 */
+        .dcb-share-weak   { background-color: #16a34a; }   /* < 2%：水量不足 */
+
         .dcb-trend-panel {
             margin: 1px 0 5px 26px;   /* 26px = 序号宽 18 + 行内 gap 8 ⇒ 与股票名左对齐 */
             padding: 6px 8px 4px;
@@ -476,6 +499,24 @@
             background: #dc2626;
         }
 
+        /* [SHARE-RULE 2026-10-03 用户口径] 占比驱动的三档动作徽标（买点 / 卖点共用同一组类名）：
+             竞价出 → 绿（占比不到门槛 = 走弱，尽早出，别恋战）
+             尾盘卖 → 琥珀（占比达标 = 还没走弱，别急，拿到尾盘）
+             持有   → 蓝紫（今天又进买点 ⇒ 今天是要买 / 加，不是卖）
+           ⚠️ 与上面的 .dcb-action-now（红 = 立刻买）语义相反、颜色也刻意相反：
+             买点红 = 现在动手；卖点绿 = 现在离场 —— 沿用全站「涨红跌绿」的直觉。 */
+        .dcb-action.dcb-action-out {
+            background: #16a34a;
+        }
+
+        .dcb-action.dcb-action-selllate {
+            background: #d97706;
+        }
+
+        .dcb-action.dcb-action-hold {
+            background: #1d4ed8;
+        }
+
         /* 买点侧：仓位（和/或持有标签）已经在行里，动作徽标紧跟其后，不再抢 margin-left:auto */
         .dcb-position + .dcb-action {
             margin-left: 0;
@@ -498,6 +539,27 @@
             font-size: 10.5px;
             line-height: 1.5;
             border-radius: 6px;
+        }
+
+        /* ---- [SHARE-RULE 2026-10-03 用户口径] 逐行「为什么这么买卖」的说明文字 ----
+           用户原话「买点卖点说明文字要添加」。买点 / 卖点两处共用此一条：
+           写出占比数值、前排 / 后排门槛来源、以及作为辅助的竞价涨幅与量比方向。
+           整行独占（flex-basis:100%）⇒ 在 .dcb-row 里换行、与行首左对齐（26px = 序号宽 + gap）。
+           浅灰底 + 左边一条细竖线：属于「解释」层级，不能盖过上面的数据徽标。
+           ⚠️ 简洁模式（.dcb-compact）会隐藏解释性文字，但这条【保留】—— 它写的是判据本身，
+              藏了就等于「为什么给这个动作」无从核对（§10 理由必须可见）。 */
+        .dcb-row-note {
+            flex-basis: 100%;
+            margin: 1px 0 3px 26px;
+            padding: 3px 6px;
+            font-size: 10.5px;
+            line-height: 1.5;
+            color: #475569;
+            background: #f8fafc;
+            border-left: 2px solid #cbd5e1;
+            border-radius: 0 6px 6px 0;
+            box-sizing: border-box;
+            word-break: break-word;
         }
 
         /* 小低开 → 开盘立刻出：用最强告警色（与「❗危」徽标同色系） */

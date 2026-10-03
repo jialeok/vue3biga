@@ -57,6 +57,10 @@ import {
   // [SELL-SURGE 2026-10-03 用户口径] 「今日 ÷ 上交易日」竞价量比倍数：卖点【冲高就卖】档的唯一依据。
   getVolRatioTimes
 } from './vol-ratio-trend.js';
+// [SHARE-RULE 2026-10-03 用户口径] 竞价占比（当日竞价量 ÷ 昨日成交量）= 买卖时机的【主判据】。
+//   ⛔ 公式 / 门槛 / 展示精度 / 取数的唯一实现在 auction-share.js；本文件只负责【调一次并挂到行上】（§6）。
+//   §10：取不到（缺数据 / 昨日成交量为 0）→ null ⇒ 规则层回落旧口径，绝不补 0。
+import { getAuctionShare } from './auction-share.js';
 
 function _notReady(reason) {
   return {
@@ -362,6 +366,12 @@ export function collectDecisionData(date, opts) {
   // ⛔ 未加载时【传 null】而不是空 Set：空 Set 会让规则层把「还没拉到」判定成「昨日非龙头」（§10）。
   // [GRAY-DRAGON 2026-09-26] 提前到这里：它同时还是【灰行】的来源（见下方 _pushGrayRows）。
   const prevDragonMap = getDragonLeadersForDisplay(date);
+  // [SHARE-RULE 2026-10-03 用户口径] 昨日龙头名册的【名字集合】——「前排（龙一 / 龙二）」判定的第二条腿
+  //   （用户口径「昨日和今日龙一和龙二有容错率 0.5%」）。⛔ 名册未加载时【传 null】而不是空 Set：
+  //   空 Set 会让规则层把「还没拉到」判定成「昨日不是前排」（§10），从而给错门槛（3.5% 变 2%）。
+  //   ⚠️ [BOOT-GATE 顺序] 提前到这里是因为【买点】也要用它（_decorateShareAction 判门槛），
+  //      原来只在卖点前算一次，现在两处共用同一份（§6 一处采集、两处复用）。
+  const prevDragonNames = prevDragonMap ? new Set(Array.from(prevDragonMap.keys())) : null;
 
   // [GRAY-DRAGON 2026-09-26] 当日已抓到数据的行（含 market_metrics 影子行）→ 给灰行回填真实竞价涨幅。
   // 与早盘竞价 view-helpers 的 _auctionDayRowMap 同一份数据来源（§6），⛔ 不另找一份。
@@ -411,6 +421,12 @@ export function collectDecisionData(date, opts) {
       //   ⚠️ 与 volRatioDir 是【两个不同口径】：方向回答「强了还是弱了」（整数差），
       //      倍数回答「放大了多少」（除法）。⛔ 别互相替代 —— 「增加 5 倍以上」只能靠倍数判。
       volRatioTimes: getVolRatioTimes(nm, date),
+      // [SHARE-RULE 2026-10-03 用户口径] 当日【竞价占比】（%）= 当日竞价量 ÷ 昨日成交量。
+      //   与早盘竞价第一页那个占比【同一个公式、同一份数据】（auction_watchlist 同一行的
+      //   volume / yest_volume），只是【展示精度不同】：第一页 = 取整，本看板 = 保留 1 位小数。
+      //   买卖【时机】的唯一主判据（占比达标 → 竞价买 / 尾盘卖；不达标 → 尾盘买 / 竞价出）。
+      //   ⛔ 只在这里算一次，规则层只搬运（§6 单一真相）；缺数据 → null（§10 绝不当 0）。
+      aucShare: getAuctionShare(date, nm),
       pct: (rm && rm.pct !== undefined && rm.pct !== null) ? rm.pct : null,
       countable: countable,
       inheritSold: inheritSold.has(nm)
@@ -514,11 +530,13 @@ export function collectDecisionData(date, opts) {
     prevBuyNames: prevBuyNames,
     prevBoughtNames: prevBought,
     prevBoughtTopics: prevBoughtTopics,
-    topicStreakPast: topicStreakPast
+    topicStreakPast: topicStreakPast,
+    // [SHARE-RULE 2026-10-03 用户口径] 判「前排（龙一 / 龙二）」的第二条腿：昨日是否在龙头名册里。
+    //   null = 名册未加载 ⇒ 规则层只按今日龙位判，并在说明文字里写明「昨日名册未加载」（§10 不猜）。
+    prevDragonNames: prevDragonNames
   }, mode);
 
-  // 昨日龙头名册已在上方取过（prevDragonMap）—— 灰行补齐也要用它，⛔ 不重复取第二次。
-  const prevDragonNames = prevDragonMap ? new Set(Array.from(prevDragonMap.keys())) : null;
+  // 昨日龙头名册的名字集合已在【买点之前】算好（prevDragonNames）—— 买卖两侧共用同一份，⛔ 不重复取第二次。
 
   const sellRows = [];
   prevBought.forEach(function(nm) {
@@ -539,6 +557,10 @@ export function collectDecisionData(date, opts) {
       // [SELL-SURGE 2026-10-03 用户口径] 竞价量比倍数（今日 ÷ 上交易日）：
       //   卖点【冲高就卖】档（深低开 + 量比放大 ≥ 5 倍）的唯一依据。null = 未知 ⇒ 该档不生效（§10）。
       volRatioTimes: row ? row.volRatioTimes : getVolRatioTimes(nm, date),
+      // [SHARE-RULE 2026-10-03 用户口径] 今日【竞价占比】（%）：卖点动作（尾盘卖 / 竞价出 / 持有）的唯一主判据。
+      //   与买点用的是【同一个函数、同一份数据】（§6）；row 不存在（今天不在任何池里）⇒ 现场取一次，
+      //   取不到 → null ⇒ 规则层回落旧口径（§10 不猜）。
+      aucShare: row ? row.aucShare : getAuctionShare(date, nm),
       inTodayList: !!row
     });
   });
@@ -562,9 +584,11 @@ export function collectDecisionData(date, opts) {
   const sellTimes = [];
   sell.forEach(function(g) {
     g.items.forEach(function(it) {
-      // [SELL-OPEN 2026-09-29] 命中竞价高低开三档的行，时点以 sellHint.timeLabel 为准
-      //（如「盯盘 · 10:00 前」「开盘立刻出」），未命中才用题材排名的 sellAt。
-      const t = (it.sellHint && it.sellHint.timeLabel) ? it.sellHint.timeLabel : it.sellAt;
+      // [SHARE-RULE 2026-10-03] 占比给出动作标签时（持有 / 尾盘卖 / 竞价出），时点以它为准 ——
+      //   它是用户口径里的最终结论；sellHint / sellAt 只在占比缺数据时才轮到（旧口径让路）。
+      const t = (it.sellActionTag)
+        ? it.sellActionTag
+        : ((it.sellHint && it.sellHint.timeLabel) ? it.sellHint.timeLabel : it.sellAt);
       if (sellTimes.indexOf(t) < 0) sellTimes.push(t);
     });
   });

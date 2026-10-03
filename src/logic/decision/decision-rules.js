@@ -118,6 +118,13 @@ import { VR_DIR_UP, VR_DIR_FLAT, VR_DIR_DOWN } from './vol-ratio-trend.js';
 //   ⛔ 与上面那份方向常量是【两个不同口径】：方向 = 整数差（强/弱），倍数 = 除法（放大了多少）。
 //   阈值 VR_SURGE_TIMES 只在那边定义，本文件只 import 判定函数（§6 单一真相）。
 import { VR_SURGE_TIMES, isVolRatioSurge } from './vol-ratio-trend.js';
+// [SHARE-RULE 2026-10-03 用户口径] 竞价占比（竞价量 ÷ 昨日成交量）= 买卖点的【主判据】。
+//   ⛔ 公式 / 门槛 / 展示精度 / 取数的【唯一实现】都在 auction-share.js，
+//      本文件只 import 常量与判定函数 —— 绝不在这里写第二份算法（§6 单一真相）。
+import {
+  AUCTION_SHARE_FRONT_STD, AUCTION_SHARE_TOLERANCE, AUCTION_SHARE_FRONT_MIN, AUCTION_SHARE_BACK_STD,
+  formatAuctionShare, auctionShareThresholdOf, passesAuctionShare, auctionShareZoneOf
+} from './auction-share.js';
 
 /** 题材成组门槛：与早盘竞价统计条（topic-stats.js#TOPIC_STATS_MIN_GROUP）同源 —— 不足 2 只不成题材 */
 export const DECISION_MIN_GROUP = 2;
@@ -223,6 +230,82 @@ export const BUY_ACTION_TONE_LATE = 'late';   // 尾盘买 → 琥珀（提醒�
 export const BUY_ACTION_TONE_SWAP = 'swap';   // 先卖后买 → 紫（两段动作，比单纯尾盘买更重）
 export const BUY_ACTION_TONE_NOW = 'now';     // [BUY-NOW 2026-10-03] 竞价买 → 红（增强 = 抢筹，立刻买）
 
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [SHARE-RULE 2026-10-03 用户口径 · 买卖点改以【竞价占比】为唯一主判据] ★★
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户给了 8/31、9/1、9/2 三天共 11 个【已标注】案例（原文见 auction-share.js 文件头），
+// 结论是：**占比说了算，竞价涨幅 / 竞价量比只作辅助**。用户原话：
+//   「所以最主要看占比，前面那两个都涨，有时也没有用……如果是竞价买，像当天就一路下跌，
+//     即使明天涨，也得不偿失。只是说前面两个指标作为辅助，让占比更有确定性。」
+//   「占比占重要决策，只要占比完全符合条件，就可以大胆持有。」
+//   「以前那些买点或者卖点如果遇到冲突可以让路」⇒ 旧的量比方向口径【让路】，只当占比缺数据时的退路。
+//
+// ── 判定（买点与卖点【对称】，只差一个「动作词」────────────────────────────────────
+//   前排 = 今日龙一 / 龙二，【或】昨日在龙头名册里（用户口径「昨日和今日龙一和龙二」）
+//   后排 = 其余（含今日未成组的票）
+//
+//   买点：占比 ≥ 门槛 → 【竞价买】；否则 → 【尾盘买】
+//   卖点：占比 ≥ 门槛 → 【尾盘卖】（还没走弱，拿到尾盘）；否则 → 【竞价出】（开盘就走）
+//   卖点 · 该股今天又在买点里 → 【持有】（今天是要买 / 加，不是卖）
+//
+//   门槛见 auction-share.js：前排 4% 容错 0.5% ⇒ 3.5%；后排 2%。
+//   §10：占比缺数据（缺竞价量 / 缺昨日成交量 / 除不出来）⇒ 【回落旧口径】（量比方向那套），
+//        并在说明文字里如实写明「占比缺数据」，⛔ 绝不把「没抓到」当成「占比很低」。
+/** 【竞价出】卖点动作：占比不到门槛 ⇒ 开盘就走（用户案例：华阳国际 1.8%） */
+export const SELL_OUT_TAG = '竞价出';
+/** 【尾盘卖】卖点动作：占比达标 ⇒ 当天还有走强趋势，不必开盘慌着走，拿到尾盘 */
+export const SELL_LATE_TAG = '尾盘卖';
+/** 卖点动作配色档（§21：由 Logic 层给，模板只拼 `'dcb-action-' + tone`） */
+export const SELL_ACTION_TONE_OUT = 'out';    // 竞价出 → 绿（走弱，尽早出）
+export const SELL_ACTION_TONE_LATE = 'selllate'; // 尾盘卖 → 琥珀（还有机会，别急）
+
+/**
+ * 【前排 / 后排】判定（唯一实现，§6）—— 买点与卖点共用同一份判据。
+ *
+ * 用户口径：「昨日和今日龙一和龙二有容错率 0.5%」「龙三或者以下就不可以了太弱了，容错率很低」。
+ *   · 今日龙一 / 龙二（行内「龙几」标签 = dragonRank）→ 前排；
+ *   · 昨日在龙头名册里（previous trading day 的龙头组，见 getDragonLeadersForDisplay）→ 前排；
+ *     用户案例「花溪科技 昨有买入，昨日龙一……用昨日龙一容错率高的规则」「金健米业……
+ *     但是它昨天是龙一，龙一多条命」讲的正是这一条。
+ *   · 其余 → 后排。
+ *
+ * §10：isPrevDragon === null（昨日龙头名册尚未加载）⇒ **不能**当成「昨日不是前排」，
+ *   否则「还没拉到」会被伪装成「已经判定过后排」。此时只按今日龙位判，并返回
+ *   frontUnknown=true，让调用方在说明文字里写明「昨日名册未加载」。
+ *
+ * @param {number|null} dragonRank 今日题材内龙位（1 起；null = 未知）
+ * @param {boolean|null} isPrevDragon 昨日是否在龙头名册里（null = 名册未加载）
+ * @returns {{isFront:boolean, frontUnknown:boolean, byToday:boolean, byPrev:boolean}}
+ */
+export function resolveDragonScope(dragonRank, isPrevDragon) {
+  const byToday = (Number(dragonRank) === 1 || Number(dragonRank) === 2);
+  const byPrev = (isPrevDragon === true);
+  return {
+    isFront: byToday || byPrev,
+    frontUnknown: (isPrevDragon === null || isPrevDragon === undefined),
+    byToday: byToday,
+    byPrev: byPrev
+  };
+}
+
+/** 前 / 后排 + 门槛 → 人话（说明文字用；⛔ 只在 Logic 层拼一次，别在组件里拼） */
+function _scopeText(scope, isFront) {
+  const base = isFront ? '前排（龙一 / 龙二）' : '后排（非龙一 / 龙二）';
+  if (scope && scope.frontUnknown) return base + '〔昨日龙头名册未加载，只按今日龙位判定〕';
+  return base;
+}
+
+/** 门槛 → 人话（含容错来源，用户要求说明文字能查出处）。
+ *  ⛔ 门槛数值一律走 auctionShareThresholdOf（§6），不在这里自己写 3.5 / 2。 */
+function _thresholdText(isFront) {
+  const min = auctionShareThresholdOf(isFront);
+  if (isFront) {
+    return AUCTION_SHARE_FRONT_STD + '%（龙一 / 龙二容错 ' + AUCTION_SHARE_TOLERANCE +
+      '% ⇒ 门槛 ' + min + '%）';
+  }
+  return min + '%';
+}
+
 // ===== [PREV-BOUGHT 2026-09-30 用户口径，同日修正为【股票级】] 「昨天已买」标记 =====
 // 语义：这一只【股票】在上一交易日被打了「买」标签（= 用户手上已经有仓位）。
 //   ⛔ 与 HOLD_TAG 是两件事，别混：
@@ -303,7 +386,10 @@ export const RULE_NO = {
   TOPIC_STREAK: '⑤',   // 【入选次数】题材行标记（近 5 个交易日内进过买点几次）
   // [MIN-3-PICKS 2026-10-02] 候选题材：① 主线票数不足 3 只 ⇒ 按排名往下推；
   //                          ② 第 1 名题材已够 3 只 ⇒ 第 2 名降级（双主线：只选最强的）
-  CANDIDATE: '⑥'
+  CANDIDATE: '⑥',
+  // [SHARE-RULE 2026-10-03 用户口径] 买卖【时机】以竞价占比为准（竞价买 / 尾盘买 / 尾盘卖 / 竞价出）。
+  //   买点与卖点共用这一条 —— 用户给的三天案例里，买卖两侧用的是同一个占比判据。
+  SHARE: '⑦'
 };
 
 /** 规则编号 → 「【规则N】」前缀（说明文字统一从这里取，⛔ 不各处手写） */
@@ -599,6 +685,10 @@ export function rankDecisionTopics(entries, mode) {
       //      本文件是纯函数、不读 state ⇒ 这里【只搬运】，不重新计算。
       //   用途：买点量比标签的箭头/配色，以及「弱票 → 尾盘买 / 先卖后买」的判据。
       volRatioDir: list[i].volRatioDir || '',
+      // [SHARE-RULE 2026-10-03 用户口径] 竞价占比（%）：买卖【时机】的唯一主判据。
+      //   由 decision-collect#_mkRow 用 auction-share#computeAuctionShare 算好（公式唯一实现，§6），
+      //   本文件是纯函数、不读 state ⇒ 这里【只搬运】。缺值 → null（§10，⛔ 绝不当 0）。
+      aucShare: _num(list[i].aucShare),
       code: String(list[i].code || '').trim(),
       countable: countable,
       inheritSold: list[i].inheritSold === true
@@ -681,6 +771,9 @@ function _buyCandidates(block, dragonMap) {
         aucPct: _num(m.aucPct),
         // 竞价量比（倍数）：选票的唯一排序依据，只在这里透传一次（§6）
         aucVolRatio: _num(m.aucVolRatio),
+        // [SHARE-RULE 2026-10-03] 竞价占比（%）：买卖【时机】的主判据，由 collect 算好挂在 members 上
+        //   （公式唯一实现在 auction-share.js）。⛔ 这里只透传，不重算、也不补 0（§10）。
+        aucShare: _num(m.aucShare),
         isYizi: !!m.isYizi,
         rank: (d && d.rank) ? d.rank : null
       };
@@ -699,6 +792,8 @@ function _toPick(c, position) {
     dragonLabel: c.rank ? getDragonLabel(c.rank) : '',
     dragonRank: c.rank,
     pct: c.pct,
+    // [SHARE-RULE 2026-10-03] 竞价占比透传到 pick 上，供 _decorateShareAction 判买卖时机（§10：缺值 null）
+    aucShare: (c.aucShare === undefined ? null : c.aucShare),
     position: position
   };
 }
@@ -1016,17 +1111,131 @@ function _decorateAucBadge(blockObj) {
   if (!blockObj || !blockObj.picks || blockObj.picks.length === 0) return blockObj;
   const aucOf = new Map();
   ((blockObj.block && blockObj.block.members) || []).forEach(function(m) {
-    if (m && m.name) aucOf.set(m.name, m.aucPct);
+    if (m && m.name) aucOf.set(m.name, m);
   });
   blockObj.picks.forEach(function(p) {
-    const n = _num(aucOf.get(p.name));
+    const m = aucOf.get(p.name);
+    const n = _num(m ? m.aucPct : null);
     p.aucPctText = formatAucPct(n);
     p.aucTone = getAucOpenKind(n) || '';
     // [VR-ACTION 2026-10-02] 顺手把【数值】也落到 pick 上：买点「弱票 → 尾盘买 / 先卖后买」的判据
     //   （isWeakAucDay）要读它。⛔ 不另写一遍 members 反查 —— 那份反查表只在这里建一次（§6）。
     p.aucPct = n;
+    // [SHARE-RULE 2026-10-03] 同一次反查里把【占比】与【量比方向】也落到 pick 上：
+    //   前者是买卖时机的新主判据，后者是它缺数据时的退路。⛔ 都只从 members 取一次（§6 单一真相）。
+    p.aucShare = _num(m ? m.aucShare : null);
+    p.volRatioDir = (m && m.volRatioDir) ? m.volRatioDir : '';
   });
   return blockObj;
+}
+
+/**
+ * 【⑦ 买入时机：竞价买 / 尾盘买 —— [SHARE-RULE 2026-10-03 用户口径]】
+ *
+ * 判据 = 【竞价占比】（当日竞价量 ÷ 昨日成交量），门槛见 auction-share.js：
+ *   · 前排（今日或昨日 龙一 / 龙二）→ 4%，容错 0.5% ⇒ 3.5%；
+ *   · 后排（其余）→ 2%；
+ *   · 占比 ≥ 门槛 ⇒ 行尾标【竞价买】（占比够强，竞价就得下手，等尾盘反而更贵 / 买不到）；
+ *   · 占比 < 门槛 ⇒ 行尾标【尾盘买】（别追开盘，等尾盘再看）。
+ *
+ * 用户给的买点案例（本函数必须逐条对上，见 auction-share.test.js）：
+ *   金健米业 4.4%(龙一) → 竞价买 ｜ 花溪科技 4.4%(龙一) → 竞价买 ｜ 捷荣技术 7.0%(龙一) → 竞价买
+ *   楚天龙 5.5%(龙一) → 竞价买 ｜ 龙版传媒 6.9%(后排) → 竞价买 ｜ 花溪科技 3.6%(昨日龙一, 容错) → 竞价买
+ *   海登种业 0.2%(原始 0.15%, 龙七, 后排, 远不到 2%) → 尾盘买
+ *
+ * ⚠️ 竞价涨幅 / 竞价量比【降级为辅助】：不再单独决定时机，只写进说明文字供人复核
+ *   （用户原话「前面两个指标作为辅助，让占比更有确定性」）。
+ *
+ * §10 退路：占比缺数据（缺当日竞价量 / 缺昨日成交量）⇒ 回落【旧的量比方向口径】：
+ *   量比增强 → 竞价买；量比下降 → 已持仓则【先卖后买】、未持仓则【尾盘买】；平 / 未知 → 不给动作标签。
+ *   并在说明文字里如实写明「占比缺数据」——⛔ 绝不把「没抓到」当成「占比很低」。
+ *
+ * ⛔ 只改【动作标签】与说明文字，不碰仓位（重仓 / 轻仓 / 持有）与选票结果（用户口径「选票没问题」）。
+ *
+ * @param {object} blockObj 买点块（须已跑过 _decorateAucBadge，picks 上有 aucShare / volRatioDir / aucPct）
+ * @param {{prevDragonNames?:Set<string>|null, prevBoughtNames?:Set<string>|null}} [opts]
+ *        prevDragonNames = 昨日龙头名册（判「前排」的第二条腿；null = 未加载 ⇒ §10 只按今日龙位）
+ *        prevBoughtNames = 上一交易日打过「买」标签的股票名（仅用于 §10 退路的【先卖后买】）
+ */
+function _decorateShareAction(blockObj, opts) {
+  if (!blockObj || !blockObj.picks || blockObj.picks.length === 0) return blockObj;
+  const o = opts || {};
+  const prevDragon = o.prevDragonNames || null;
+  const prevBought = o.prevBoughtNames || null;
+  // ⚠️ [TWO-MODES] 规则编号【分模式】：量比模式是 ⑦，一字模式（legacy）是 ⑭ —— 由调用方传进来，
+  //   ⛔ 不许写死本模块那一份，否则一字模式的行内说明会显示「【规则⑦】」，与它的规则清单对不上
+  //   （与 _markHold / _markPrevBought 的 ruleNo 参数同一套路）。
+  const no = o.ruleNo || RULE_NO.SHARE;
+
+  blockObj.picks.forEach(function(p) {
+    const share = _num(p.aucShare);
+    const isPrevDragon = prevDragon ? prevDragon.has(p.name) : null;
+    const scope = resolveDragonScope(p.dragonRank, isPrevDragon);
+    const isFront = scope.isFront;
+    // ⛔ 达标判定走 auction-share 的唯一实现（§6）—— 别在这里自己写 `share >= 门槛`，
+    //    否则「门槛是多少」会分裂成两处，第 4 步改门槛时必漏一处。
+    const pass = passesAuctionShare(share, isFront);
+
+    // §21：占比的展示字段全部在 Logic 层算好，模板只渲染
+    p.aucShareText = formatAuctionShare(share);
+    p.aucShareTone = auctionShareZoneOf(share);
+    p.aucShareScopeText = _scopeText(scope, isFront);
+    p.aucShareThresholdText = _thresholdText(isFront);
+    p.aucSharePass = (share === null) ? null : pass;
+
+    const dir = String(p.volRatioDir || '');
+    const aucPct = _num(p.aucPct);
+    const weak = isWeakAucDay(aucPct, dir);
+
+    if (share !== null) {
+      // ── 新规：占比说了算 ──
+      p.buyActionTag = pass ? BUY_NOW_TAG : BUY_LATE_TAG;
+      p.buyActionTone = pass ? BUY_ACTION_TONE_NOW : BUY_ACTION_TONE_LATE;
+      p.actionNote = _note(no,
+        '竞价占比 ' + formatAuctionShare(share) + '（' + p.aucShareScopeText + '门槛 ' +
+        p.aucShareThresholdText + '）⇒ 占比' + (pass ? '达标' : '不达标') + '，' +
+        (pass ? '【' + BUY_NOW_TAG + '】：竞价就得下手，等尾盘反而更贵 / 买不到'
+              : '【' + BUY_LATE_TAG + '】：别追开盘，等尾盘再看') +
+        '。辅助验证：竞价涨幅 ' + formatAucPct(aucPct) +
+        '、竞价量比' + _dirWord(dir) + '（辅助，不单独决定时机）。');
+      return;
+    }
+
+    // ── §10 退路：占比缺数据 → 回落旧的「量比方向」口径，并如实说明 ──
+    if (dir === VR_DIR_UP) {
+      p.buyActionTag = BUY_NOW_TAG;
+      p.buyActionTone = BUY_ACTION_TONE_NOW;
+    } else if (dir === VR_DIR_DOWN) {
+      if (prevBought && prevBought.has(p.name)) {
+        p.buyActionTag = SELL_FIRST_BUY_LATER_TAG;
+        p.buyActionTone = BUY_ACTION_TONE_SWAP;
+      } else {
+        p.buyActionTag = BUY_LATE_TAG;
+        p.buyActionTone = BUY_ACTION_TONE_LATE;
+      }
+    } else {
+      p.buyActionTag = '';
+      p.buyActionTone = '';
+    }
+    p.actionNote = _note(no,
+      '⚠️ 竞价占比【缺数据】（缺当日竞价量 / 缺昨日成交量）⇒ 本行【回落旧的量比方向口径】：' +
+      '竞价量比' + _dirWord(dir) + (weak ? '（弱票）' : '') + ' ⇒ ' +
+      (p.buyActionTag ? ('【' + p.buyActionTag + '】') : '暂不给动作标签') +
+      '。⛔ 这不是「占比很低」，是没抓到数据（§10）。');
+  });
+  // ⚠️ 刻意【不往 block.notes 写任何一条】：这些结论现在都落在【逐行的 actionNote】上
+  //   （组件就渲染在该行正下方，用户一眼能看到「为什么是竞价买 / 尾盘买」）。
+  //   ⛔ 别再往块级说明里罗列股票名 —— 那会把「④ 昨有买入只提真的买过的那只」
+  //      这类可追溯性断言污染掉（9/30 事故的同型教训：说明文字提到的名字会被读成结论）。
+  return blockObj;
+}
+
+/** 量比方向 → 人话（说明文字用；'' = 未知，⛔ 绝不写成「平」） */
+function _dirWord(dir) {
+  if (dir === VR_DIR_UP) return '比上一交易日【增强】';
+  if (dir === VR_DIR_DOWN) return '比上一交易日【下降】';
+  if (dir === VR_DIR_FLAT) return '与上一交易日【基本持平】';
+  return '【方向未知】';
 }
 
 /**
@@ -1186,6 +1395,9 @@ function _finishBuyBlock(blockObj, opts) {
   _decoratePositionTone(blockObj);
   // ⛔ 徽标必须【最后】派生：上面的改仓会重建 picks 里的 position 文案，先派生会被丢掉
   _decorateAucBadge(blockObj);
+  // [SHARE-RULE 2026-10-03] 买卖【时机】标签（竞价买 / 尾盘买）必须排在 _decorateAucBadge【之后】——
+  //   它要读徽标那一步从 members 反查出来的 aucShare / volRatioDir / aucPct（§10 退路要用方向与涨幅）。
+  _decorateShareAction(blockObj, opts);
   return blockObj;
 }
 
@@ -1504,13 +1716,66 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
     //   ⛔ 与 volRatioDir 是两个口径（方向 vs 倍数），别互相替代；null = 未知 ⇒ 该档不生效（§10 不猜）。
     const volRatioTimes = (r.volRatioTimes === undefined || r.volRatioTimes === null) ? null : _num(r.volRatioTimes);
     const todayInBuy = !!(todayBuyNames && todayBuyNames.has(r.name));
-    // 【③ 持有】上交易日就在买点里（= 进得了卖点候选）+ 今天又在买点里 → 强势股
-    // 🔴 [VR-ACTION 2026-10-02 用户口径] 但若今天已经是【弱票】（低开 + 量比下降）⇒ 就【不是】强势股了，
-    //   改用【先卖后买】：开盘先把昨天的仓卖掉（立刻出），尾盘量比稳住了再买回来。
-    //   用户原话：「现在打的是持有/加仓太笼统 —— 如果这只股票是竞价涨幅大于0，竞价量比也增加，
-    //   持有/加仓标签没问题」（⇒ 反过来说：低开 + 量比下降时，这个标签就不对）。
-    const firstSellThenBuy = todayInBuy && isWeakAucDay(aucPct, volRatioDir);
-    const holdTag = (todayInBuy && !firstSellThenBuy) ? HOLD_TAG : '';
+    // ══ [SHARE-RULE 2026-10-03 用户口径] 卖点动作改以【竞价占比】为准（与买点同一份判据、同一套门槛）══
+    //   占比达标 → 【尾盘卖】（当天还有走强趋势，不必开盘慌着走）；
+    //   占比不达标 → 【竞价出】（开盘就走）。
+    //   用户给的卖点案例（本段必须逐条对上）：
+    //     金健米业 3.9%(昨日龙一, 容错) → 尾盘卖 ｜ 登海种业 2.6%(龙九) → 尾盘卖
+    //     捷荣技术 9.4%(昨日龙一) → 尾盘卖 ｜ 浙江世宝 2.6%(今日无题材=后排) → 尾盘卖
+    //     华阳国际 1.8%(龙三, 后排) → 竞价出 ｜ 花溪科技 3.6%(今日又进买点) → 持有
+    //   §10：占比缺数据 ⇒ 整段【回落旧口径】（持有 / 先卖后买 / 竞价高低开细分），并如实写进 actionNote。
+    const share = _num(r.aucShare);
+    const scope = resolveDragonScope(dragonRank, isPrevDragon);
+    const isFront = scope.isFront;
+    // ⛔ 达标判定走 auction-share 的唯一实现（§6）—— 别在这里自己写 `share >= 门槛`，
+    //    否则门槛口径会分裂成两处（第 4 步换门槛时必漏一处）。
+    const sharePass = (share === null) ? null : passesAuctionShare(share, isFront);
+
+    let holdTag = '';
+    let buyActionTag = '';
+    let buyActionTone = '';
+    let sellActionTag = '';
+    let sellActionTone = '';
+    let actionNote = '';
+
+    if (share !== null) {
+      // ── 新规：占比说了算（旧口径整体让路）──
+      if (todayInBuy) {
+        // 今天又进买点 ⇒ 今天是要买 / 加，不是卖 ⇒ 【持有】（用户案例：花溪科技 9/2）
+        sellActionTag = HOLD_TAG;
+        sellActionTone = 'hold';
+        actionNote = _note(RULE_NO.SHARE,
+          '竞价占比 ' + formatAuctionShare(share) + '（' + _scopeText(scope, isFront) + '门槛 ' +
+          _thresholdText(isFront) + '）⇒ 本股【今天又进了买点】→ 今天是要买 / 加，不是卖 → 【' +
+          HOLD_TAG + '】（而不是先卖后买）。辅助验证：竞价涨幅 ' + formatAucPct(aucPct) +
+          '、竞价量比' + _dirWord(volRatioDir) + '。');
+      } else {
+        sellActionTag = sharePass ? SELL_LATE_TAG : SELL_OUT_TAG;
+        sellActionTone = sharePass ? SELL_ACTION_TONE_LATE : SELL_ACTION_TONE_OUT;
+        actionNote = _note(RULE_NO.SHARE,
+          '竞价占比 ' + formatAuctionShare(share) + '（' + _scopeText(scope, isFront) + '门槛 ' +
+          _thresholdText(isFront) + '）⇒ 占比' + (sharePass ? '达标' : '不达标') + '，' +
+          (sharePass
+            ? '【' + SELL_LATE_TAG + '】：说明还没走弱、当天还有走强趋势，不必开盘慌着走，拿到尾盘'
+            : '【' + SELL_OUT_TAG + '】：占比不到门槛，开盘就走，别恋战') +
+          '。辅助验证：竞价涨幅 ' + formatAucPct(aucPct) + '、竞价量比' + _dirWord(volRatioDir) +
+          '（辅助，不单独决定时机）。');
+      }
+    } else {
+      // ── §10 退路：占比缺数据 ⇒ 完全回落旧口径（持有 / 先卖后买 / 竞价高低开细分）──
+      // 【③ 持有】上交易日就在买点里（= 进得了卖点候选）+ 今天又在买点里 → 强势股
+      // 🔴 [VR-ACTION 2026-10-02 用户口径] 但若今天已经是【弱票】（低开 + 量比下降）⇒ 就【不是】强势股了，
+      //   改用【先卖后买】：开盘先把昨天的仓卖掉（立刻出），尾盘量比稳住了再买回来。
+      const firstSellThenBuy = todayInBuy && isWeakAucDay(aucPct, volRatioDir);
+      holdTag = (todayInBuy && !firstSellThenBuy) ? HOLD_TAG : '';
+      buyActionTag = firstSellThenBuy ? SELL_FIRST_BUY_LATER_TAG : '';
+      buyActionTone = firstSellThenBuy ? BUY_ACTION_TONE_SWAP : '';
+      actionNote = _note(RULE_NO.SHARE,
+        '⚠️ 竞价占比【缺数据】（缺当日竞价量 / 缺昨日成交量）⇒ 本行【回落旧口径】' +
+        '（持有 / 先卖后买 / 竞价高低开细分）。⛔ 这不是「占比很低」，是没抓到数据（§10），' +
+        '不代表本股就走弱了。');
+    }
+
     groups.get(key).push({
       name: r.name,
       topic: tp,
@@ -1526,19 +1791,37 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
       //   null（缺竞价涨幅）→ tone = '' ⇒ 组件【不渲染】徽标（§10：不能把「没查到」画成「平开灰」）。
       aucPctText: formatAucPct(aucPct),
       aucTone: getAucOpenKind(aucPct) || '',
+      // [SHARE-RULE 2026-10-03] 竞价占比（%）：卖点的主判据。文案 / 配色档 / 门槛说明全在 Logic 层算好
+      //   （§21 模板零计算），缺值 ⇒ 空串 ⇒ 徽标整个不渲染（§10 绝不显示 0.0%）。
+      aucShare: share,
+      aucShareText: formatAuctionShare(share),
+      aucShareTone: auctionShareZoneOf(share),
+      aucShareScopeText: _scopeText(scope, isFront),
+      aucShareThresholdText: _thresholdText(isFront),
+      aucSharePass: sharePass,
       inTodayList: !!r.inTodayList,
       holdTag: holdTag,
+      // [SHARE-RULE 2026-10-03 用户口径] 卖点【动作】：持有 / 尾盘卖 / 竞价出。
+      //   ⛔ 占比缺数据时为空串 ⇒ 组件回落下面的 buyActionTag（先卖后买）/ sellHint / sellAt 旧口径。
+      sellActionTag: sellActionTag,
+      sellActionTone: sellActionTone,
       // [VR-ACTION 2026-10-02 用户口径] 【先卖后买】徽标（与 holdTag 互斥）：
       //   今天又是弱票、又在买点里 ⇒ 开盘先卖，尾盘再买回来。文案 + 配色档都由 Logic 层给，模板零判断（§21）。
-      buyActionTag: firstSellThenBuy ? SELL_FIRST_BUY_LATER_TAG : '',
-      buyActionTone: firstSellThenBuy ? BUY_ACTION_TONE_SWAP : '',
+      //   ⚠️ [SHARE-RULE 2026-10-03] 只在【占比缺数据】的退路里出现 —— 占比有数据时以占比结论为准。
+      buyActionTag: buyActionTag,
+      buyActionTone: buyActionTone,
       sellAt: sellAt,
+      // [SHARE-RULE 2026-10-03] 该行「为什么这么买卖」的说明文字（用户口径「买点卖点说明文字要添加」）。
+      actionNote: actionNote,
       // 今天要卖的【节奏提示】：深低开 → 盯盘 10:00 前定夺；小低开（或低开+量比下降）→ 开盘立刻出（危）；
       // 小幅高开 → 量比没走弱就拿尾盘，否则看分时（向上 11:20 / 走弱立刻）。
       // ⛔ 标了【持有】的行不提示卖点（它本来就不按上面的时点卖）；
       //   ⚠️ 但【先卖后买】的行【要】提示 —— 它的动作就是「先卖」，卖点提示正是它需要的那条。
       //   未命中各档 → null（行尾回落 sellAt）。
-      sellHint: holdTag ? null : _decideSellHint(aucPct, volRatioDir, volRatioTimes)
+      // 🔴 [SHARE-RULE 2026-10-03 用户口径] 【占比有数据】时一律置 null —— 用户口径「以新规则为准，
+      //   以前的买点卖点如果遇到冲突可以让路」：占比已经给出明确的「尾盘卖 / 竞价出」，
+      //   再叠一条「开盘立刻出 / 看分时」只会自相矛盾。旧的竞价高低开细分【只在占比缺数据时】生效。
+      sellHint: share !== null ? null : (holdTag ? null : _decideSellHint(aucPct, volRatioDir, volRatioTimes))
     });
   });
 
@@ -1719,7 +2002,40 @@ function _volRatioBuyRulesLines() {
     '　　　增强（差 ≥ +1）→ 整块【红底】带 ↑；下降（差 ≤ -1）→ 整块【绿底】带 ↓；基本平（差 = 0）或数据不全 → 靛蓝底不带箭头。',
     '　　行尾是仓位：' + POSITION_HEAVY + ' / ' + POSITION_LIGHT + ' = 今天新买建多少仓，' + POSITION_HOLD +
       ' = 昨天已买过、今天继续持有；',
-    '　　　（③ 的【' + HOLD_TAG + '】标记与行尾仓位【' + POSITION_HOLD + '】是同一枚词，同一行只写一次。）'
+    '　　　（③ 的【' + HOLD_TAG + '】标记与行尾仓位【' + POSITION_HOLD + '】是同一枚词，同一行只写一次。）',
+    '────────────────────────────────────────',
+    '════════ ' + ruleTag(RULE_NO.SHARE) + ' 【什么时候买 · 以竞价占比为准】' + ' ════════',
+    '　【竞价占比】是本看板买入 / 卖出的【主判据】（2026-10-03 用户口径，新规优先，旧口径让路）：',
+    '　　占比（%）= 【当日竞价量】÷【昨日成交量】×100，保留 1 位小数（如 0.0435 → 4.4%）。',
+    '　　⚠️ 与早盘竞价第一页显示的那个占比【同一个公式、同一份数据】，但那一页是【四舍五入取整】显示；',
+    '　　　本看板刻意更精确（保留 1 位小数），两处精度不同是【故意的】，⛔ 不要去对齐它们。',
+    '　【两个标准值】（行内「占比 x.x%」标签就是它）：',
+    '　　· 前排（今日或昨日【龙一 / 龙二】）→ 标准 ' + AUCTION_SHARE_FRONT_STD + '%，可容错 ' +
+      AUCTION_SHARE_TOLERANCE + '% ⇒ 实际门槛 ' + AUCTION_SHARE_FRONT_MIN + '%；',
+    '　　· 后排（其余，含今日没有题材归属的票）→ 标准 ' + AUCTION_SHARE_BACK_STD + '%。',
+    '　　标签配色 = 这个数值本身有多强：≥ ' + AUCTION_SHARE_FRONT_STD + '% 红底 ｜ ≥ ' +
+      AUCTION_SHARE_BACK_STD + '% 琥珀底 ｜ 其余绿底。',
+    '　【动作】占比 ≥ 门槛 → 行内标【' + BUY_NOW_TAG + '】：占比够强，竞价就得下手，等尾盘反而更贵 / 买不到；',
+    '　　　　　　占比 < 门槛 → 行内标【' + BUY_LATE_TAG + '】：别追开盘，等尾盘再看。',
+    '　【为什么用占比当主判据】竞价涨幅与竞价量比只是【辅助】：',
+    '　　两个都涨的时候如果是「假强」，当天一路下跌，即使明天涨也得失相当；',
+    '　　但配上占比就能确认（占比是实打实的水量），三者同向时确定性最高。',
+    '　【例子（用户给的验收案例，逐条可对）】',
+    '　　· 金健米业（昨日 / 今日龙一）涨幅 +0.17%、量比增强、占比 4.4% ≥ 3.5% → 【' + BUY_NOW_TAG + '】；',
+    '　　· 楚天龙（昨日 / 今日龙一）涨幅 +0.1%、量比增强、占比 5.5% ≥ 3.5% → 【' + BUY_NOW_TAG +
+      '】（三个指标全正向，确定性最高）；',
+    '　　· 海登种业（龙七 = 后排）涨幅 +2.68%、量比持平、占比 0.2%（原始 0.15%）< 2% → 【' +
+      BUY_LATE_TAG + '】；',
+    '　　· 捷荣技术（龙一）涨幅 +8.07%、量比【下降】、占比 7.0% ≥ 3.5% → 【' + BUY_NOW_TAG +
+      '】（量比下降不重要，占比说了算）；',
+    '　　· 龙版传媒（龙六 = 后排）涨幅 +1.46%、量比下降、占比 6.9% ≥ 2% → 【' + BUY_NOW_TAG +
+      '】（后排占比这么强，就该竞价买）；',
+    '　　· 花溪科技（昨日龙一）涨幅 -5.02%、量比下降、占比 3.6% ≥ 3.5% → 【' + BUY_NOW_TAG + '】',
+    '　　　（3.6% 不到前排标准 4%，但昨日龙一可用 0.5% 容错 ⇒ 门槛降到 3.5%）。',
+    '　【§10 缺失】占比算不出来（缺当日竞价量 / 缺昨日成交量）→ 本节【回落旧的量比方向口径】',
+    '　　（量比增强 → 竞价买；下降 → 已持仓标【' + SELL_FIRST_BUY_LATER_TAG + '】、未持仓标【' +
+      BUY_LATE_TAG + '】；平 / 未知 → 不给动作标签），',
+    '　　并在行下方【如实写明「占比缺数据」】——⛔ 这不是「占比很低」，是没抓到数据。'
   ];
 }
 
@@ -1736,7 +2052,34 @@ function _volRatioBuyRulesLines() {
  */
 export function sellRulesLines() {
   return [
-    '【卖点】候选 = 昨日打过「买」标签的股票。卖点先看【今天这只票竞价开得怎么样】＋【竞价量比有没有走弱】，再看题材排名：',
+    '【卖点】候选 = 昨日打过「买」标签的股票。',
+    '────────────────────────────────────────',
+    '════════ ' + ruleTag(RULE_NO.SHARE) + ' 【什么时候卖 · 以竞价占比为准】' + ' ════════',
+    '　与【买点】用的是【同一个指标、同一套门槛】（2026-10-03 用户口径，新规优先，旧口径让路）：',
+    '　　占比（%）= 【当日竞价量】÷【昨日成交量】×100，保留 1 位小数；',
+    '　　前排（今日或昨日【龙一 / 龙二】）门槛 ' + AUCTION_SHARE_FRONT_MIN + '%（标准 ' +
+      AUCTION_SHARE_FRONT_STD + '% 容错 ' + AUCTION_SHARE_TOLERANCE + '%）；后排门槛 ' +
+      AUCTION_SHARE_BACK_STD + '%。',
+    '　【动作】（行尾标签，只有三种）：',
+    '　　· 占比 ≥ 门槛 → 【' + SELL_LATE_TAG + '】：说明还没走弱、当天还有走强趋势，不必开盘慌着走，拿到尾盘；',
+    '　　· 占比 < 门槛 → 【' + SELL_OUT_TAG + '】：占比不到门槛，开盘就走，别恋战；',
+    '　　· 该股【今天又进了买点】→ 【' + HOLD_TAG + '】：今天是要买 / 加，不是卖（而不是先卖后买）。',
+    '　【例子（用户给的验收案例，逐条可对）】',
+    '　　· 金健米业（昨日龙一）涨幅 +0.08%、量比下降、占比 3.9% → 不到 4% 但昨日龙一可容错 0.5%',
+    '　　　⇒ 3.9% ≥ 3.5% → 【' + SELL_LATE_TAG + '】（当天还有走强趋势）；',
+    '　　· 登海种业（龙九 = 后排）涨幅 -0.28%、量比增强、占比 2.6% ≥ 2% → 【' + SELL_LATE_TAG + '】；',
+    '　　· 捷荣技术（昨日龙一）涨幅 -3.95%、量比下降、占比 9.4% ≥ 3.5% → 【' + SELL_LATE_TAG +
+      '】（前两个指标弱没关系，占比完全符合条件就大胆拿）；',
+    '　　· 浙江世宝（今日没有题材 = 后排）涨幅 -6.52%、量比增强、占比 2.6% ≥ 2% → 【' + SELL_LATE_TAG + '】；',
+    '　　· 华阳国际（龙三，非前排）涨幅 -1.3%、量比下降、占比 1.8% < 2% → 【' + SELL_OUT_TAG + '】；',
+    '　　· 花溪科技（今天又进买点）占比 3.6% → 【' + HOLD_TAG + '】。',
+    '　【§10 缺失】占比算不出来（缺当日竞价量 / 缺昨日成交量）→ 本节【整体回落下面的旧口径】',
+    '　　（' + HOLD_TAG + ' / ' + SELL_FIRST_BUY_LATER_TAG + ' / 竞价高低开细分），并在行下方如实写明「占比缺数据」。',
+    '　【行下方还有一行说明文字】写清这一只为什么给上面的动作：占比数值、前排 / 后排门槛来源、',
+    '　　以及作为辅助的竞价涨幅与量比方向（辅助不单独决定时机）。',
+    '────────────────────────────────────────',
+    '──────── 以下为【旧口径】，只在【占比缺数据】时生效（占比有数据时新规优先，旧规则让路）────────',
+    '　旧口径 = 先看【今天这只票竞价开得怎么样】＋【竞价量比有没有走弱】，再看题材排名：',
     '　每行在「十日涨幅」右侧带一个【竞价涨幅】小标签（如 -2.60%）：涨 = 红底、跌 = 绿底、平 = 灰底；',
     '　　该股今日没有竞价涨幅时不显示这个标签（§10 不把「没查到」画成「平开」）。',
     '　紧跟着是【竞价量比】小标签（如 量比 2.78）；它还会显示与【上一交易日】相比的方向：',
@@ -1830,5 +2173,9 @@ export function formatRangePct(pct) {
 export {
   _num, _topicRankMap, _note, _toPick, _reseq, _reasonBuy, _rankWord,
   _markHold, _markPrevBought, _markTopicPrevBought, _markTopicStreak,
-  _decoratePositionTone, _decorateAucBadge, _appendLowOpenDragonOneNote
+  _decoratePositionTone, _decorateAucBadge, _appendLowOpenDragonOneNote,
+  // [SHARE-RULE 2026-10-03 用户口径] 买卖【时机】（竞价买 / 尾盘买）的收口实现 ——
+  //   一字模式（decision-rules-legacy.js）的买点块【共用同一份】，⛔ 不在那边再写一套
+  //   （§6 单一真相：两套模式的「什么时候买」必须同一个答案）。
+  _decorateShareAction
 };

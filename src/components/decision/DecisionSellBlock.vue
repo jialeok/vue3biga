@@ -91,12 +91,34 @@
           v-if="it.volRatioArrow"
           class="dcb-vratio-arrow"
         >{{ it.volRatioArrow }}</span></span>
+        <!-- [SHARE-RULE 2026-10-03 用户口径] 竞价占比标签：与【买点】同款同位置（跟在竞价量比右边）。
+             口径 = 当日竞价量 ÷ 昨日成交量、保留 1 位小数；文案 / 配色档全在 Logic 层算好（§21）；
+             缺数据 ⇒ 空串 ⇒ 徽标不渲染（§10 绝不显示 0.0%）。 -->
+        <span
+          v-if="it.aucShareText"
+          class="dcb-share"
+          :class="it.aucShareTone ? ('dcb-share-' + it.aucShareTone) : ''"
+          title="竞价占比 = 当日竞价量 ÷ 昨日成交量（保留 1 位小数）｜卖点主判据：占比达标 → 尾盘卖；不达标 → 竞价出"
+        >占比 {{ it.aucShareText }}</span>
+        <!-- ══ [SHARE-RULE 2026-10-03 用户口径] 行尾【卖点动作】══════════════════════════════════
+             优先级（⛔ 顺序即优先级，别调）：
+               ① sellActionTag = 占比算出来的结论【持有 / 尾盘卖 / 竞价出】
+                  （占比 ≥ 门槛 → 尾盘卖；< 门槛 → 竞价出；该股今天又进买点 → 持有）；
+               ② buyActionTag = 【先卖后买】—— 只在【占比缺数据】的 §10 退路里才出现；
+               ③ holdTag = 【持有】—— 同上，退路专用；
+               ④ 兜底 = 旧的题材排名时点 / 竞价高低开细分（sellHint.timeLabel）。
+             文案与配色档全部由 Logic 层给（§21 模板零计算），⛔ 组件不做任何 === 比较。 -->
+        <span
+          v-if="it.sellActionTag"
+          class="dcb-action"
+          :class="'dcb-action-' + it.sellActionTone"
+        >{{ it.sellActionTag }}</span>
         <!-- [VR-ACTION 2026-10-02 用户口径] 【先卖后买】：今天又是弱票（竞价低开 + 量比下降）、
              又出现在买点里 ⇒ 不是「强势股」，开盘先把昨天的仓卖掉，尾盘量比稳住了再买回来。
-             ⛔ 与 holdTag 互斥（Logic 层只会给其中一个），所以两条合用一个 v-if / v-else-if 链，
+             ⛔ 与 holdTag 互斥（Logic 层只会给其中一个），所以这几条合用一个 v-if / v-else-if 链，
                保证行尾时点仍然落在最后的 v-else 上（否则链断掉、时点就不显示了）。 -->
         <span
-          v-if="it.buyActionTag"
+          v-else-if="it.buyActionTag"
           class="dcb-action"
           :class="'dcb-action-' + it.buyActionTone"
         >{{ it.buyActionTag }}</span>
@@ -114,8 +136,20 @@
           class="dcb-sell-at"
           :class="it.sellHint ? ('tone-' + it.sellHint.tone) : ''"
         >{{ it.sellHint ? it.sellHint.timeLabel : (it.sellAt + '卖') }}</span>
+        <!-- [SHARE-RULE 2026-10-03 用户口径] 逐行【说明文字】：这一只为什么是尾盘卖 / 竞价出 / 持有 ——
+             写清占比数值、前排 / 后排门槛来源、以及作为辅助的竞价涨幅与量比方向。
+             文案整段由 Logic 层给（it.actionNote，§21 模板零计算），⛔ 组件不拼规则句子。 -->
+        <div
+          v-if="it.actionNote"
+          class="dcb-row-note dcb-selectable"
+        >
+          {{ it.actionNote }}
+        </div>
         <!-- [SELL-OPEN 2026-09-29] 卖出节奏提示（按今日竞价高低开细分）：
              深低开 → 盯盘 10:00 前看反弹；小低开 → 开盘立刻出（❗危）；小幅高开 → 看分时。
+             ⚠️ [SHARE-RULE 2026-10-03 用户口径] 它【只在占比缺数据时】才出现 —— 占比已经给出
+               「尾盘卖 / 竞价出」的明确结论时，再叠一条「开盘立刻出 / 看分时」会自相矛盾
+               （用户原话「以新规则为准，以前那些买点或者卖点如果遇到冲突可以让路」）。
              文案 / 徽标 / tone 全部由 Logic 层给出，模板零计算（§21）；
              dcb-selectable = 允许长按选中复制（与买点说明同一口径）。 -->
         <div
