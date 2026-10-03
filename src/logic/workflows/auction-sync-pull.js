@@ -24,11 +24,32 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
         // 更早历史的后台补齐：整个会话只做一次，且必须等首屏窗口拉完后再发起。
         // §33：首屏加载与后续补齐分离；§10：失败只影响「更早的历史」，窗口内数据完好。
         let _olderPullStarted = false;
+
+        /**
+         * [BOOT-GATE 2026-10-03 用户反馈「为什么决策看板加载那么慢」] 后台补齐的【启动时机】。
+         *
+         * 🔴 【定位】（真实浏览器实测，证据：.tmpdiag/probe-boot-v4.json / boot-longtasks.json）
+         *   启动后 2 秒内并发 72 个请求，全程 125 个 Supabase 请求；其中 market_metrics 一个表
+         *   就 68 个分页请求（每页 1000 行），一直排到 22.5 秒才结束。
+         *   浏览器对单域名只有 ~6 条并发连接 ⇒ 首屏真正需要的「近 30 天窗口」那十来个请求
+         *   被这 68 个「更早历史」的分页请求堵在队列里，决策看板因此要等好几秒才有数据。
+         *   根因就在下面这行原来写的是 `setTimeout(…, 0)`：注释写着「不与首屏渲染/并发取页竞争」，
+         *   但 0ms 等于「立刻发起」，照样把连接池占满（§32 重复/并发请求红线的实际表现）。
+         *
+         * ✅ 【修法】把「更早历史」整体推到首屏确实画完之后再开始：
+         *   ① 先等 OLDER_PULL_DELAY_MS（默认 10s）—— 足够「窗口拉取（约 12 个请求）+ 首次渲染」完成；
+         *   ② 再等浏览器空闲（requestIdleCallback；不支持则直接执行）。
+         *   ⛔ 不改拉取范围 / 不改顺序 / 不碰任何写路径，只改「什么时候开始」。
+         *   ⛔ 正确性不受影响：窗口外的日期被切到时由 ensureAuctionDateDataLoaded 按天补拉兜底
+         *      （见 logic/auction/auction-pull-window.js），§10 失败不标记已加载、下次照样重试。
+         *   ⚠️ 不用 rAF（后台标签页会被冻结），也不用裸 requestIdleCallback（空闲来得太早、等于没推迟）。
+         */
+        const OLDER_PULL_DELAY_MS = 10000;
+
         function _scheduleOlderAuctionPull(sinceDate) {
             if (_olderPullStarted) return;
             _olderPullStarted = true;
-            // setTimeout(0) 让出主线程，不与首屏渲染/并发取页竞争（不用 rAF：后台标签页会被冻结）
-            setTimeout(function() {
+            const _runOlderPull = function() {
                 pullAuctionFromTable({ untilDate: sinceDate })
                     .then(function(older) {
                         const n = older ? Object.keys(older).length : 0;
@@ -42,7 +63,17 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
                     .catch(function(e) {
                         _dbgLog('[AUCTION-ERR] pullAuctionFromTable(older) ' + (e && e.message || e));
                     });
-            }, 0);
+            };
+            // 先让首屏独占连接池 OLDER_PULL_DELAY_MS，再挑浏览器空闲的时刻开始补齐。
+            setTimeout(function() {
+                if (typeof requestIdleCallback === 'function') {
+                    try {
+                        requestIdleCallback(_runOlderPull, { timeout: 5000 });
+                        return;
+                    } catch (e) { /* 降级到下面的直接执行 */ }
+                }
+                _runOlderPull();
+            }, OLDER_PULL_DELAY_MS);
         }
 
         // ============================================================

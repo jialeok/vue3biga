@@ -1256,6 +1256,30 @@ describe('持有 / 加仓标记（HOLD）', () => {
     expect(plan2[0].items[0].holdTag).toBe('');
     expect(plan2[0].items[0].sellAt).toBe(SELL_TIME_CLOSE);
   });
+
+  // 🔴 [HOLD-UNIFY 2026-10-03 用户口径] ③ 与 ④ 的文案统一成【持有】之后的【去重】契约。
+  //    两者同时命中时，行尾仓位已经是【持有】⇒ 不再输出第二枚【持有】（否则渲染成「持有 持有」）。
+  it('🔴 ③ 与 ④ 同时命中 → 行尾只留一个【持有】（holdTag 清空，说明文字两份都在）', () => {
+    const blocks = rankDecisionTopics(holdRows());
+    const plan = buildBuyPlan(blocks, rankDragons(blocks), {
+      prevBuyNames: new Set(['强势票']),      // ③ 上一个交易日的【买点方案】里有它
+      prevBoughtNames: new Set(['强势票'])    // ④ 上一个交易日真的被打过「买」标签
+    });
+    const p = plan.heavy.picks[0];
+    expect(p.name).toBe('强势票');
+    expect(p.position).toBe(POSITION_HOLD);   // ④ 把行尾仓位改成【持有】
+    expect(p.holdTag).toBe('');               // ⛔ ③ 那枚重复的【持有】被清掉
+    const notes = plan.heavy.notes.join('｜');
+    expect(notes).toContain('【规则' + RULE_NO.HOLD + '】');   // ③ 的说明仍在
+    expect(notes).toContain(HOLD_TAG);
+    expect(notes).toContain(PREV_BOUGHT_TAG);                 // ④ 的说明仍在
+  });
+
+  it('🔴 只有 ③ 命中（昨天在买点里、但你没买过）→ 标记照常给，不被去重误清', () => {
+    const plan = planOf(new Set(['强势票']));
+    expect(plan.heavy.picks[0].position).not.toBe(POSITION_HOLD);   // ④ 没命中 ⇒ 仓位不动
+    expect(plan.heavy.picks[0].holdTag).toBe(HOLD_TAG);
+  });
 });
 
 // === [2026-09-30] ⑫ 昨天已买：股票级标记（只标在【买点】的股票行上；卖点侧一律不标）===

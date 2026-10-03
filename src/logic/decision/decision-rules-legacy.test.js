@@ -1897,6 +1897,24 @@ describe('持有 / 加仓标记（HOLD）', () => {
     expect(plan2[0].items[0].holdTag).toBe('');
     expect(plan2[0].items[0].sellAt).toBe(SELL_TIME_CLOSE);
   });
+
+  // 🔴 [HOLD-UNIFY 2026-10-03 用户口径] ⑪ 与 ⑫ 文案统一成【持有】后的【去重】契约
+  //    （共享实现，与量比模式 ③④ 同一条：行尾已是【持有】就不再输出第二枚）。
+  it('🔴 ⑪ 与 ⑫ 同时命中 → 行尾只留一个【持有】（holdTag 清空，说明两份都在）', () => {
+    const blocks = rankDecisionTopics(holdRows());
+    const plan = buildBuyPlan(blocks, rankDragons(blocks), {
+      prevBuyNames: new Set(['强势票']),      // ⑪ 上交易日的【买点方案】里有它
+      prevBoughtNames: new Set(['强势票'])    // ⑫ 上交易日真的被打过「买」标签
+    });
+    const p = plan.heavy.picks[0];
+    expect(p.name).toBe('强势票');
+    expect(p.position).toBe(POSITION_HOLD);
+    expect(p.holdTag).toBe('');
+    const notes = plan.heavy.notes.join('｜');
+    expect(notes).toContain('【规则' + RULE_NO.HOLD + '】');
+    expect(notes).toContain(HOLD_TAG);
+    expect(notes).toContain(PREV_BOUGHT_TAG);
+  });
 });
 
 // === [2026-09-30] ⑫ 昨天已买：股票级标记（只标在【买点】的股票行上；卖点侧一律不标）===

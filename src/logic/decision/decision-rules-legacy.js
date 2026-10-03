@@ -144,8 +144,8 @@ export const RULE_NO = {
   WEAK_OPEN: '⑧',      // 弱势题材：> 10 只 且 竞价高开率 < 35%
   DUAL_MAIN: '⑨',      // 【2026-09-27 新增】双主线竞争：第 1 / 第 2 名题材都 ≥ 10 只 → 比竞价高开率
   BUY_COUNT: '⑩',      // 买入只数（只看第 1 名题材的早盘竞价股票数）
-  HOLD: '⑪',           // 持有 / 加仓标记
-  PREV_BOUGHT: '⑫',    // 【昨有买入 / 加仓】标记（题材级聚合 + 股票级仓位改写）
+  HOLD: '⑪',           // 持有标记
+  PREV_BOUGHT: '⑫',    // 【昨有买入 / 持有】标记（题材级聚合 + 股票级仓位改写）
   TOPIC_STREAK: '⑬',   // 【入选次数】题材行标记（近 5 个交易日内进过买点几次）
   // [VR-ACTION 2026-10-02 用户口径] 【尾盘买 / 先卖后买】：弱票（竞价低开 + 量比下降）的动作徽标
   BUY_ACTION: '⑭'
@@ -1314,7 +1314,7 @@ function _finishBuyBlock(blockObj, opts) {
   _applyWeakOpenRate(blockObj);
   _capPicksByTopicCount(blockObj);
   // ⚠️ 第 3 参必须传【本模块的】RULE_NO —— 老版编号体系是 ⑪⑫（量比模式是 ③④）。
-  //   共享实现 default 用量比那份，不传就会写成「【规则③】持有 / 加仓」，与本文件的规则清单对不上。
+  //   共享实现 default 用量比那份，不传就会写成「【规则③】持有」，与本文件的规则清单对不上。
   _markHold(blockObj, opts ? opts.prevBuyNames : null, RULE_NO.HOLD);
   _markPrevBought(blockObj, opts ? opts.prevBoughtNames : null, RULE_NO.PREV_BOUGHT);
   // ⚠️ 题材行标记与上面的个股标记互不干扰（一个写 blockObj.*，一个写 pick.*），先后无所谓
@@ -1776,6 +1776,8 @@ function _legacyBuyRulesLines() {
     '　　只砍后面的票，【龙一 / 最靠前的那只一定保留】。',
     '　⑪ 【' + HOLD_TAG + '】上一交易日出现在【买点】里、今天又在买点里 → 强势股，行尾标【' +
       HOLD_TAG + '】（昨天的买点没算出来时【不标】，§10 不猜）。',
+    '　　（若这一只同时命中 ⑫ —— 你昨天真的打过「买」标签 —— 行尾只写一次【' + HOLD_TAG +
+      '】，不重复渲染。）',
     '　⑫ 【' + TOPIC_PREV_BOUGHT_TAG + '】= 【题材级】：题材行（竞价一字右边）出现它就表示',
     '　　【这个题材昨天有票被打过「买」标签】⇒ 题材在延续。',
     '　　⚠️ ⛔ 它【不是】「这一整块里的股票昨天都买过」——同一个题材里昨天没买过的票不会因此被标',
@@ -1804,7 +1806,8 @@ function _legacyBuyRulesLines() {
       '】：当天优势不好，别追开盘，等尾盘再看；',
     '　　· 量比【下降】＋ 手上【已经有】（行尾已是【' + POSITION_HOLD + '】= 昨天真被打过「买」标签）→ 行内标【' +
       SELL_FIRST_BUY_LATER_TAG + '】：',
-    '　　　开盘先把昨天的仓卖掉，尾盘量比稳住了再买回来（用户口径：「' + HOLD_TAG + '」在这时太笼统）。',
+    '　　　开盘先把昨天的仓卖掉，尾盘量比稳住了再买回来（量比下降时只标【' + HOLD_TAG +
+      '】太笼统，所以改标【' + SELL_FIRST_BUY_LATER_TAG + '】）。',
     '　　⚠️ 判据【只看量比方向】，不再要求「竞价涨幅 < 0」—— 9/30 大亚圣象是【小幅高开 +0.31%】',
     '　　　但量比从 38.37 掉到 7.90（暴跌），照样要标【' + BUY_LATE_TAG + '】（用户口径）。',
     '　　⚠️ 量比【基本平】或【算不出方向】⇒ 一律不标（§10 未知 ≠ 增强，也 ≠ 下降，绝不猜）。',
@@ -1814,7 +1817,10 @@ function _legacyBuyRulesLines() {
     '【股票行的数据】股票名右边依次是：龙几（龙一 / 龙二）｜十日涨幅｜竞价涨幅小标签｜竞价量比小标签；',
     '　　【竞价量比】小标签会显示与【上一交易日】相比的方向（两个值各自四舍五入到整数后作差）：',
     '　　　增强（差 ≥ +1）→ 整块【红底】带 ↑；下降（差 ≤ -1）→ 整块【绿底】带 ↓；基本平（差 = 0）或数据不全 → 靛蓝底不带箭头。',
-    '　　行尾是仓位（' + POSITION_HEAVY + ' / ' + POSITION_LIGHT + ' / ' + POSITION_HOLD + '），再往右是【' +
-      BUY_NOW_TAG + '】【' + BUY_LATE_TAG + '】【' + SELL_FIRST_BUY_LATER_TAG + '】【' + HOLD_TAG + '】这类标记。',
+    '　　行尾是仓位：' + POSITION_HEAVY + ' / ' + POSITION_LIGHT + ' = 今天新买建多少仓，' + POSITION_HOLD +
+      ' = 昨天已买过、今天继续持有；',
+    '　　　再往右是【' + BUY_NOW_TAG + '】【' + BUY_LATE_TAG + '】【' + SELL_FIRST_BUY_LATER_TAG +
+      '】这类【今天什么时候买】的徽标，以及 ⑪ 的【' + HOLD_TAG + '】标记',
+    '　　　（⑪ 的【' + HOLD_TAG + '】与行尾仓位【' + POSITION_HOLD + '】是同一枚词，同一行只写一次）。',
   ];
 }
