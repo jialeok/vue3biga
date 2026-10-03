@@ -29,6 +29,9 @@ import {
   SELL_FIRST_BUY_LATER_TAG,
   SELL_LATE_TAG,
   SELL_OUT_TAG,
+  // [FOLLOW-DRAGON 2026-10-05 用户口径 · 9/9 国芳集团 + 安记食品] 同题材龙一限制（优先规则）
+  SELL_FOLLOW_DRAGON_TAG,
+  SELL_ACTION_TONE_FOLLOW,
   HOLD_TAG,
   RULE_NO
 } from './decision-rules.js';
@@ -647,6 +650,129 @@ describe('★ 9/3 楚天龙：买点 + 卖点同时存在时的标签（逻辑�
     expect(passesAuctionShare(2.6, false)).toBe(true);
     // 前排：2.5% < 3.5% ⇒ 不达标（楚天龙就是这一档）
     expect(passesAuctionShare(2.5, true)).toBe(false);
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════════
+   ★ [FOLLOW-DRAGON 2026-10-05 用户口径 · 9/9 国芳集团 + 安记食品] 同题材龙一限制
+   用户原话：「9月9日，决策看板，卖点，大消费题材，有两只票，一只是国芳集团，龙一（前排），
+     提示竞价卖（正确的），一只是安记食品，龙九（后排），提示尾盘卖（错误的，规则没有错，
+     但是还需要添加规则）。……如果同个题材前排倒下，后排是避免不了下跌的。因为他们是同类的。
+     相当于将军倒下了，士兵不会幸免。……应该和龙一绑定在一起，标签是'跟龙竞价卖'，
+     这样好区分点，也符合逻辑。……如果不是同题材，和原来一样……只是在原来规则⑦的基础上，
+     加上这条优先规则，规则⑦要让路。」
+   ⛔ 只加这一条优先规则 —— 门槛（前排 3.5% / 后排 2%）、公式、精度、其它规则一律不动。
+   ════════════════════════════════════════════════════════════════════════════════ */
+describe('★ 9/9 大消费：同题材龙一限制（优先规则，规则⑦让路）', () => {
+  // 9 只的「大消费」题材：国芳集团十日涨幅最高 ⇒ 龙一；安记食品最低 ⇒ 龙九。
+  // ⛔ 龙位由真实实现（rankDragons）算出来，不手搓中间态。
+  function daxfRows(guofangShare, anjiShare) {
+    const rows = [R('国芳集团', '大消费', 50, 0.8, 1, guofangShare)];
+    for (let i = 0; i < 7; i++) rows.push(R('大消费填充' + (i + 1), '大消费', 45 - i, 0.5, 1, 1.0));
+    rows.push(R('安记食品', '大消费', 5, -0.6, 1, anjiShare));
+    return rows;
+  }
+  // 卖点候选 = 昨日打过「买」标签的股票 ⇒ 这里就是国芳集团 + 安记食品两只
+  function daxfSell(guofangShare, anjiShare, opts) {
+    const o = opts || {};
+    return sell(
+      [
+        R('国芳集团', '大消费', 50, 0.8, 1, guofangShare),
+        R('安记食品', '大消费', 5, -0.6, 1, anjiShare)
+      ],
+      {
+        memberRows: o.memberRows || daxfRows(guofangShare, anjiShare),
+        prevDragonNames: o.prevDragonNames || new Set(['别的股票']),
+        todayBuyNames: o.todayBuyNames || null
+      }
+    );
+  }
+
+  it('① 国芳集团（龙一，占比 2.5% < 3.5%）→ 【竞价卖】（规则⑦自己的结论，不被优先规则改写）', () => {
+    const g = itemOf(daxfSell(2.5, 3.0), '国芳集团');
+    expect(g.dragonRank).toBe(1);
+    expect(g.aucShareText).toBe('2.5%');
+    expect(g.aucSharePass).toBe(false);
+    expect(g.sellActionTag).toBe(SELL_OUT_TAG);
+    expect(g.aucFollowDragon).toBe(false);       // ⛔ 龙一自己不是「跟龙」
+  });
+
+  it('② 安记食品（龙九，自己占比 3.0% 本来够【尾盘卖】）→ 改判【跟龙竞价卖】', () => {
+    const a = itemOf(daxfSell(2.5, 3.0), '安记食品');
+    expect(a.dragonRank).toBe(9);                // 龙九 = 后排
+    expect(a.aucSharePass).toBe(true);           // 自己的占比确实达标（规则没算错，只是要让路）
+    expect(a.sellActionTag).toBe(SELL_FOLLOW_DRAGON_TAG);
+    expect(a.sellActionTone).toBe(SELL_ACTION_TONE_FOLLOW);
+    expect(a.aucFollowDragon).toBe(true);
+    // 行下方说明文字要写清是哪只龙一倒了、以及「规则⑦让路」
+    expect(a.actionNote).toContain('国芳集团');
+    expect(a.actionNote).toContain('龙一');
+    expect(a.actionNote).toContain(RULE_NO.SHARE);
+    expect(a.sellHint).toBe(null);               // 占比有数据 ⇒ 旧口径让路
+  });
+
+  it('③ 优先于【持有】：安记食品同时进了今天的买点 ⇒ ⛔ 不给【持有】，仍【跟龙竞价卖】', () => {
+    const a = itemOf(daxfSell(2.5, 3.0, { todayBuyNames: new Set(['安记食品']) }), '安记食品');
+    expect(a.sellActionTag).toBe(SELL_FOLLOW_DRAGON_TAG);
+    expect(a.sellActionTag).not.toBe(HOLD_TAG);
+    expect(a.holdTag).toBe('');
+  });
+
+  it('④ 非同题材 ⇒ 和原来一样（别题材龙一没倒，本行仍【尾盘卖】）', () => {
+    const memberRows = daxfRows(2.5, 3.0).concat([
+      R('别龙一', '别的题材', 50, 0.5, 1, 5.0),   // 占比 5.0% ≥ 3.5% ⇒ 没倒 ⇒ 尾盘卖
+      R('别甲', '别的题材', 30, 0.5, 1, 1.0),
+      R('别后排', '别的题材', 5, 0.5, 1, 3.0)     // 龙三 ⇒ 后排，占比 3.0% ≥ 2% ⇒ 尾盘卖
+    ]);
+    const plan = sell(
+      [
+        R('国芳集团', '大消费', 50, 0.8, 1, 2.5),
+        R('安记食品', '大消费', 5, -0.6, 1, 3.0),
+        R('别龙一', '别的题材', 50, 0.5, 1, 5.0),
+        R('别后排', '别的题材', 5, 0.5, 1, 3.0)
+      ],
+      { memberRows: memberRows, prevDragonNames: new Set(['别的股票']) }
+    );
+    expect(itemOf(plan, '安记食品').sellActionTag).toBe(SELL_FOLLOW_DRAGON_TAG);
+    expect(itemOf(plan, '别龙一').sellActionTag).toBe(SELL_LATE_TAG);
+    expect(itemOf(plan, '别后排').sellActionTag).toBe(SELL_LATE_TAG);   // 跨题材 ⇒ 一个字不改
+  });
+
+  it('⑤ 龙一占比【达标】（没倒）⇒ 后排不跟，各判各的', () => {
+    const plan = daxfSell(5.0, 3.0);
+    expect(itemOf(plan, '国芳集团').sellActionTag).toBe(SELL_LATE_TAG);
+    expect(itemOf(plan, '安记食品').sellActionTag).toBe(SELL_LATE_TAG);
+    expect(itemOf(plan, '安记食品').aucFollowDragon).toBe(false);
+  });
+
+  it('⑥ §10：龙一占比【缺数据】⇒ 不算倒下，后排仍按规则⑦（【尾盘卖】）', () => {
+    const plan = daxfSell(null, 3.0);
+    expect(itemOf(plan, '安记食品').sellActionTag).toBe(SELL_LATE_TAG);
+    expect(itemOf(plan, '安记食品').aucFollowDragon).toBe(false);
+  });
+
+  it('⑦ 龙一【不在今天的卖点候选里】⇒ 不跟（看不到它的结论，就不替它下结论）', () => {
+    // memberRows 里国芳集团照旧是龙一、占比 2.5%（倒），但它【不出现在卖点候选】里
+    const plan = sell(
+      [R('安记食品', '大消费', 5, -0.6, 1, 3.0)],
+      { memberRows: daxfRows(2.5, 3.0), prevDragonNames: new Set(['别的股票']) }
+    );
+    const a = itemOf(plan, '安记食品');
+    expect(a.dragonRank).toBe(9);
+    expect(a.sellActionTag).toBe(SELL_LATE_TAG);
+    expect(a.aucFollowDragon).toBe(false);
+  });
+
+  it('⑧ 规则文案：优先规则与 9/9 案例都写进灰色问号面板（两套模式共用同一份卖点条文）', () => {
+    const lines = buildVolRatioRulesLines().join('\n');
+    expect(lines).toContain(SELL_FOLLOW_DRAGON_TAG);
+    expect(lines).toContain('9/9 大消费');
+    expect(lines).toContain('国芳集团');
+    expect(lines).toContain('安记食品');
+    expect(lines).toContain('让路');
+    expect(lines).toContain('将军');             // 用户原话的比喻，便于对照
+    // legacy（一字模式）的规则面板走同一个 sellRulesLines() ⇒ 也必须带上
+    expect(buildRulesLines().join('\n')).toContain(SELL_FOLLOW_DRAGON_TAG);
   });
 });
 
