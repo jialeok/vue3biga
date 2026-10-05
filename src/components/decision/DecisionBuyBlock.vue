@@ -106,7 +106,7 @@
           v-if="p.aucShareText"
           class="dcb-share"
           :class="p.aucShareTone ? ('dcb-share-' + p.aucShareTone) : ''"
-          title="竞价占比 = 当日竞价量 ÷ 昨日成交量（保留 1 位小数）｜买卖时机的主判据：前排（龙一/龙二）门槛 3.5%、后排门槛 2%"
+          title="竞价占比 = 当日竞价量 ÷ 昨日成交量（保留 1 位小数）｜买卖时机的主判据：龙头（今日龙一/昨日龙头）门槛 3.5%、其余（龙二及以下）门槛 2%"
         >占比 {{ p.aucShareText }}</span>
         <!-- [POSITION-TONE 2026-09-30（2026-10-03 文案改【持有】）] 仓位（重仓 / 轻仓 / 持有）：
              文案 + 配色档全部由 Logic 层给（p.position / p.positionTone，§21 模板零计算、
@@ -142,7 +142,7 @@
           class="dcb-hold"
         >{{ p.holdTag }}</span>
         <!-- [SHARE-RULE 2026-10-03 用户口径] 逐行【说明文字】：这一只为什么是竞价买 / 尾盘买 ——
-             写清占比数值、前排 / 后排门槛来源、以及作为辅助的竞价涨幅与量比方向。
+             写清占比数值、龙头 / 其余门槛来源、以及作为辅助的竞价涨幅与量比方向。
              文案整段由 Logic 层给（p.actionNote，§21 模板零计算），⛔ 组件不拼规则句子。 -->
         <div
           v-if="p.actionNote"

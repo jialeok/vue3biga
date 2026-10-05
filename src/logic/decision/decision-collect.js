@@ -366,9 +366,9 @@ export function collectDecisionData(date, opts) {
   // ⛔ 未加载时【传 null】而不是空 Set：空 Set 会让规则层把「还没拉到」判定成「昨日非龙头」（§10）。
   // [GRAY-DRAGON 2026-09-26] 提前到这里：它同时还是【灰行】的来源（见下方 _pushGrayRows）。
   const prevDragonMap = getDragonLeadersForDisplay(date);
-  // [SHARE-RULE 2026-10-03 用户口径] 昨日龙头名册的【名字集合】——「前排（龙一 / 龙二）」判定的第二条腿
-  //   （用户口径「昨日和今日龙一和龙二有容错率 0.5%」）。⛔ 名册未加载时【传 null】而不是空 Set：
-  //   空 Set 会让规则层把「还没拉到」判定成「昨日不是前排」（§10），从而给错门槛（3.5% 变 2%）。
+  // [SHARE-RULE 2026-10-03 用户口径 / DRAGON-TIER 2026-10-06] 昨日龙头名册的【名字集合】——「龙头」判定的
+  //   第二条腿（今日【龙一】是第一条腿）。⛔ 名册未加载时【传 null】而不是空 Set：
+  //   空 Set 会让规则层把「还没拉到」判定成「昨日非龙头」（§10），从而给错门槛（3.5% 变 2%）。
   //   ⚠️ [BOOT-GATE 顺序] 提前到这里是因为【买点】也要用它（_decorateShareAction 判门槛），
   //      原来只在卖点前算一次，现在两处共用同一份（§6 一处采集、两处复用）。
   const prevDragonNames = prevDragonMap ? new Set(Array.from(prevDragonMap.keys())) : null;
@@ -531,7 +531,7 @@ export function collectDecisionData(date, opts) {
     prevBoughtNames: prevBought,
     prevBoughtTopics: prevBoughtTopics,
     topicStreakPast: topicStreakPast,
-    // [SHARE-RULE 2026-10-03 用户口径] 判「前排（龙一 / 龙二）」的第二条腿：昨日是否在龙头名册里。
+    // [SHARE-RULE 2026-10-03 用户口径 / DRAGON-TIER 2026-10-06] 判「龙头」的第二条腿：昨日是否在龙头名册里。
     //   null = 名册未加载 ⇒ 规则层只按今日龙位判，并在说明文字里写明「昨日名册未加载」（§10 不猜）。
     prevDragonNames: prevDragonNames
   }, mode);

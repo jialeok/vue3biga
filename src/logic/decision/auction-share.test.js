@@ -9,9 +9,13 @@
 //   竞价占比（%）= 当日竞价量 ÷ 昨日成交量 × 100，【保留 1 位小数】（用户原话「这样更准确」）。
 //   ⚠️ 与早盘竞价第一页那个占比【同一个公式】，但那一页是【四舍五入取整】——
 //      两处精度【刻意不同】，⛔ 不要去对齐（用户原话「那个是四舍五入算法，只取整数」）。
-//   门槛：前排（今日或昨日 龙一 / 龙二）→ 4% 容错 0.5% ⇒ 3.5%；后排（其余）→ 2%。
+//   门槛：龙头（今日【龙一】，或昨日在龙头名册里）→ 4% 容错 0.5% ⇒ 3.5%；其余（龙二及以下）→ 2%。
+//     ⚠️ [DRAGON-TIER 2026-10-06 用户口径 · 9/8 翠微股份] 门槛【只分两级】，⛔ 龙二【不再】算龙头。
+//     ⚠️ 三分法（龙头 龙一 / 中军 龙二~龙四 / 后排 龙五及以下）只决定「跟不跟同题材龙一卖」，
+//        ⛔ 不参与门槛（龙头 > 中军 > 后排 是强度排序，不是门槛分档）。
 //   买点：达标 → 竞价买；不达标 → 尾盘买（若昨天已买过 ⇒ 【尾盘买（先卖后买）】且清掉【持有】）。
-//   卖点：达标 → 尾盘卖（今天又进买点 ⇒ 持有）；不达标 → 竞价卖（进了买点也是竞价卖，不给持有）。
+//   卖点：达标 → 尾盘卖（今天又进买点 ⇒ 持有）；不达标 + 今天又进买点 → 竞价卖（先卖后买）；
+//         不达标 + 今天没进买点 → 竞价卖（真的弱了）；同题材龙一倒下 ⇒ 中军/后排【跟龙竞价卖】。
 //   §10：占比缺数据 → 回落旧的量比方向口径，并如实写进 actionNote（⛔ 不当 0）。
 
 import { describe, it, expect } from 'vitest';
@@ -23,6 +27,8 @@ import {
   buildVolRatioRulesLines,
   joinRulesLines,
   resolveDragonScope,
+  // [DRAGON-TIER 2026-10-06 用户口径 · 9/8 翠微股份] 三分档（龙头 / 中军 / 后排）
+  dragonTierOf,
   BUY_NOW_TAG,
   BUY_LATE_TAG,
   BUY_LATE_SWAP_TAG,
@@ -208,7 +214,7 @@ describe('竞价占比：公式（当日竞价量 ÷ 昨日成交量，保留 1 
 });
 
 describe('竞价占比：门槛与强度档', () => {
-  it('两个标准值：前排 4%（容错 0.5% ⇒ 3.5%）/ 后排 2%', () => {
+  it('两个标准值：龙头（今日龙一 / 昨日龙头）4%（容错 0.5% ⇒ 3.5%）/ 其余（龙二及以下）2%', () => {
     expect(AUCTION_SHARE_FRONT_STD).toBe(4);
     expect(AUCTION_SHARE_TOLERANCE).toBe(0.5);
     expect(AUCTION_SHARE_FRONT_MIN).toBe(3.5);
@@ -217,7 +223,7 @@ describe('竞价占比：门槛与强度档', () => {
     expect(auctionShareThresholdOf(false)).toBe(2);
   });
 
-  it('达标判定：前排 3.5 起 / 后排 2 起；边界值取「≥」（含端点）', () => {
+  it('达标判定：龙头 3.5 起 / 其余 2 起；边界值取「≥」（含端点）', () => {
     expect(passesAuctionShare(3.5, true)).toBe(true);
     expect(passesAuctionShare(3.4, true)).toBe(false);
     expect(passesAuctionShare(3.4, false)).toBe(true);
@@ -249,28 +255,48 @@ describe('竞价占比：门槛与强度档', () => {
   });
 });
 
-describe('resolveDragonScope：前排 = 今日龙一/龙二 或 昨日在龙头名册里', () => {
-  it('今日龙一 / 龙二 → 前排', () => {
+describe('resolveDragonScope：龙头门槛 = 今日【龙一】或昨日在龙头名册里（⛔ 龙二不算）', () => {
+  it('⭐ [DRAGON-TIER 2026-10-06] 今日龙一 → 龙头（3.5%）；⚠️ 龙二【不】算龙头 ⇒ 走 2%', () => {
     expect(resolveDragonScope(1, false).isFront).toBe(true);
-    expect(resolveDragonScope(2, false).isFront).toBe(true);
+    // 🔴 用户原话（9/8 翠微股份龙二 2.6%）：「把龙二当作前排选手，占比要大于3.5，感觉准确不高」
+    //   ⇒ 龙二不再享受龙头门槛，一律 2%（2.6% ≥ 2% ⇒ 尾盘卖）。
+    expect(resolveDragonScope(2, false).isFront).toBe(false);
   });
 
-  it('今日龙三及以下 → 后排（用户口径「龙三或者以下就不可以了太弱了」）', () => {
+  it('今日龙三及以下 → 非龙头（2%）', () => {
     expect(resolveDragonScope(3, false).isFront).toBe(false);
+    expect(resolveDragonScope(4, false).isFront).toBe(false);
     expect(resolveDragonScope(9, false).isFront).toBe(false);
   });
 
-  it('昨日龙一 / 龙二（在龙头名册里）→ 即便今日不是前二也算前排', () => {
+  it('昨日龙头（在龙头名册里）→ 即便今日不是龙一也算龙头（用户 2026-10-06 明确保留「龙一多条命」）', () => {
+    expect(resolveDragonScope(2, true).isFront).toBe(true);
     expect(resolveDragonScope(5, true).isFront).toBe(true);
     expect(resolveDragonScope(9, true).isFront).toBe(true);
   });
 
-  it('§10：昨日名册未加载（null）→ 不算前排，但标记 frontUnknown 供说明文字如实写出', () => {
+  it('§10：昨日名册未加载（null）→ 不算龙头，但标记 frontUnknown 供说明文字如实写出', () => {
     const s = resolveDragonScope(5, null);
     expect(s.isFront).toBe(false);
     expect(s.frontUnknown).toBe(true);
-    // 今日前二仍然照常算前排
+    // 今日龙一仍然照常算龙头
     expect(resolveDragonScope(1, null).isFront).toBe(true);
+  });
+
+  it('三分档 dragonTierOf：龙一 = 龙头 ｜ 龙二~龙四 = 中军 ｜ 龙五及以下 / 未知 = 后排', () => {
+    // 用户原话：「龙头只有一个，那就是龙一。前排选手是龙二到龙四，
+    //   后排选手就是龙四以下（不包含龙四，比如龙五，龙六，龙七……）」
+    expect(dragonTierOf(1)).toBe('leader');
+    expect(dragonTierOf(2)).toBe('middle');
+    expect(dragonTierOf(3)).toBe('middle');
+    expect(dragonTierOf(4)).toBe('middle');
+    expect(dragonTierOf(5)).toBe('back');
+    expect(dragonTierOf(9)).toBe('back');
+    // §10：龙位未知 ⇒ 按最弱的后排处理（不猜它是中军）
+    expect(dragonTierOf(null)).toBe('back');
+    // ⛔ 三分档【只管跟不跟龙一】，与门槛完全两件事
+    expect(resolveDragonScope(2, false).isFront).toBe(false);   // 中军 ⇒ 门槛 2%
+    expect(resolveDragonScope(4, false).isFront).toBe(false);   // 中军 ⇒ 门槛 2%
   });
 });
 
@@ -344,7 +370,7 @@ describe('★ 买点（占比说了算）：用户 8/31 · 9/1 · 9/2 的标注�
   });
 
   it('⑦ 花溪科技 9/2（昨日龙一，今日非前二，占比 3.6% ≥ 3.5% 用容错）→ 【竞价买】', () => {
-    // 今日龙五 ⇒ 今日这一腿不算前排；靠【昨日龙头名册】那条腿拿 3.5% 的门槛
+    // 今日龙五 ⇒ 今日这一腿不算龙头；靠【昨日龙头名册】那条腿拿 3.5% 的门槛
     const high = [];
     for (let i = 0; i < 4; i++) high.push(R('高' + i, 'T1', 20 - i, 0.5, 1, 1.0));
     const rows = [...high, R('花溪科技', 'T1', 1, -5.02, 50, 3.6, VR_DIR_DOWN)];
@@ -355,11 +381,11 @@ describe('★ 买点（占比说了算）：用户 8/31 · 9/1 · 9/2 的标注�
     expect(p.aucShareThresholdText).toContain('3.5');   // 说明文字里必须写出容错后的门槛
   });
 
-  it('反例：3.6% 但【昨日不是前排】→ 后排门槛 2% 也过 ⇒ 仍是竞价买（换个更弱的数看差异）', () => {
+  it('反例：3.6% 但【昨日不是龙头】→ 其余门槛 2% 也过 ⇒ 仍是竞价买（换个更弱的数看差异）', () => {
     const high = [];
     for (let i = 0; i < 4; i++) high.push(R('高' + i, 'T1', 20 - i, 0.5, 1, 1.0));
     const rows = [...high, R('花溪科技', 'T1', 1, -5.02, 50, 1.8, VR_DIR_DOWN)];
-    // 非前排：门槛 2% ⇒ 1.8% 不达标 ⇒ 尾盘买
+    // 非龙头：门槛 2% ⇒ 1.8% 不达标 ⇒ 尾盘买
     const plan = buy(rows, { prevDragonNames: new Set(['别的股票']) });
     expect(pickOf(plan, '花溪科技').buyActionTag).toBe(BUY_LATE_TAG);
   });
@@ -374,7 +400,7 @@ describe('★ 买点（占比说了算）：用户 8/31 · 9/1 · 9/2 的标注�
       prevBuyNames: new Set(['楚天龙'])       // ③ 会先标【持有】—— 必须被新规清掉
     });
     const p = pickOf(plan, '楚天龙');
-    expect(p.dragonRank).toBe(1);                       // 今日龙一 ⇒ 前排门槛 3.5% ⇒ 2.5% 不达标
+    expect(p.dragonRank).toBe(1);                       // 今日龙一 ⇒ 龙头门槛 3.5% ⇒ 2.5% 不达标
     expect(p.aucShareText).toBe('2.5%');
     expect(p.aucSharePass).toBe(false);
     expect(p.buyActionTag).toBe('尾盘买（先卖后买）');   // ⛔ 不是普通的【尾盘买】
@@ -442,16 +468,17 @@ describe('买点：行内展示字段（§21 模板零计算）', () => {
     expect(p.aucShareText).toBe('4.4%');
     expect(p.aucShareTone).toBe('strong');
     expect(p.aucSharePass).toBe(true);
-    expect(p.aucShareScopeText).toContain('前排');
+    // [DRAGON-TIER 2026-10-06] 文案由「前排 / 后排」改为「龙头 / 非龙头」（只有龙一算龙头）
+    expect(p.aucShareScopeText).toContain('龙头');
     expect(p.aucShareThresholdText).toContain('3.5');
   });
 
-  it('后排的强度档与门槛文案', () => {
+  it('非龙头（龙二及以下）的强度档与门槛文案', () => {
     const high = [];
     for (let i = 0; i < 5; i++) high.push(R('高' + i, 'T1', 20 - i, 0.5, 1, 1.0));
     const p = pickOf(buy([...high, R('甲', 'T1', 1, 1, 50, 2.6, VR_DIR_UP)]), '甲');
     expect(p.aucShareTone).toBe('meet');
-    expect(p.aucShareScopeText).toContain('后排');
+    expect(p.aucShareScopeText).toContain('非龙头');
     expect(p.aucShareThresholdText).toContain('2');
   });
 
@@ -477,7 +504,7 @@ describe('★ 卖点（占比说了算）：用户 9/1 · 9/2 的标注逐条复
   }
 
   it('① 金健米业（昨日龙一，占比 3.9% ≥ 3.5% 容错）→ 【尾盘卖】', () => {
-    const rows = topic6(1, '金健米业');            // 今日龙六 ⇒ 靠「昨日龙一」拿前排门槛
+    const rows = topic6(1, '金健米业');            // 今日龙六 ⇒ 靠「昨日龙一」拿龙头门槛
     const plan = sell(
       [R('金健米业', 'T1', 1, 0.08, 1, 3.9, VR_DIR_DOWN)],
       { memberRows: rows, prevDragonNames: new Set(['金健米业']) }
@@ -513,11 +540,11 @@ describe('★ 卖点（占比说了算）：用户 9/1 · 9/2 的标注逐条复
     const plan = sell([R('浙江世宝', '', 1, -6.52, 6.62, 2.6, VR_DIR_UP)]);
     const it0 = itemOf(plan, '浙江世宝');
     expect(it0.sellActionTag).toBe(SELL_LATE_TAG);
-    expect(it0.dragonRank).toBe(null);          // 今日未成组 ⇒ 无龙位 ⇒ 后排
-    expect(it0.aucShareScopeText).toContain('后排');
+    expect(it0.dragonRank).toBe(null);          // 今日未成组 ⇒ 无龙位 ⇒ 非龙头（2% 门槛）
+    expect(it0.aucShareScopeText).toContain('非龙头');
   });
 
-  it('⑤ 华阳国际（龙三，非前排，占比 1.8% < 2%）→ 【竞价卖】', () => {
+  it('⑤ 华阳国际（龙三，非龙头，占比 1.8% < 2%）→ 【竞价卖】', () => {
     const rows = topic6(30, '华阳国际');        // pct 30 ⇒ 龙一？改造成龙三见下
     // 精确造龙三：两只比它高的
     const r = [
@@ -568,7 +595,7 @@ describe('★ 卖点（占比说了算）：用户 9/1 · 9/2 的标注逐条复
       }
     );
     const it0 = itemOf(plan, '楚天龙');
-    expect(it0.dragonRank).toBe(1);              // 龙一 ⇒ 前排门槛 3.5%
+    expect(it0.dragonRank).toBe(1);              // 龙一 ⇒ 龙头门槛 3.5%
     expect(it0.aucSharePass).toBe(false);        // 2.5% < 3.5% ⇒ 不达标
     expect(it0.sellActionTag).toBe(SELL_OUT_SWAP_TAG);
     expect(it0.sellActionTag).toBe('竞价卖（先卖后买）');
@@ -605,10 +632,10 @@ describe('★ 卖点（占比说了算）：用户 9/1 · 9/2 的标注逐条复
        我只说那个买点和卖点的持有标签，要去掉……因为它是龙一，按照占比3.5%的标准，
        它不合格，它当天的占比显示只有2.5%，所以卖点那里，是竞价卖，
        但是它又进了今天的买点，所以尾盘买（先卖后买）。」
-   ⛔ 本条只改【标签】—— 门槛（前排 3.5% / 后排 2%）、公式、精度一律不动。
+   ⛔ 本条只改【标签】—— 门槛（龙头 3.5% / 其余 2%）、公式、精度一律不动。
    ════════════════════════════════════════════════════════════════════════════════ */
 describe('★ 9/3 楚天龙：买点 + 卖点同时存在时的标签（逻辑不变，只去掉【持有】）', () => {
-  // 楚天龙 = 今日龙一 ⇒ 前排门槛 3.5%；占比 2.5% ⇒ 不达标
+  // 楚天龙 = 今日龙一 ⇒ 龙头门槛 3.5%；占比 2.5% ⇒ 不达标
   const ROWS = function() {
     return [R('楚天龙', 'T1', 10, -3.36, 7.8, 2.5, VR_DIR_DOWN), ...F('T1', 3)];
   };
@@ -650,7 +677,7 @@ describe('★ 9/3 楚天龙：买点 + 卖点同时存在时的标签（逻辑�
     expect(it0.sellHint).toBe(null);
   });
 
-  it('只改标签：门槛与判定没动（前排仍是 3.5% / 后排仍是 2%，公式与精度不变）', () => {
+  it('只改标签：门槛与判定没动（龙头仍是 3.5% / 其余仍是 2%，公式与精度不变）', () => {
     expect(AUCTION_SHARE_FRONT_MIN).toBe(3.5);
     expect(AUCTION_SHARE_BACK_STD).toBe(2);
     expect(auctionShareThresholdOf(true)).toBe(3.5);
@@ -659,7 +686,7 @@ describe('★ 9/3 楚天龙：买点 + 卖点同时存在时的标签（逻辑�
     expect(formatAuctionShare(2.5)).toBe('2.5%');
     // 后排：2.6% ≥ 2% ⇒ 依然达标（用户口径「后排选手占比要求大于2%没错」）
     expect(passesAuctionShare(2.6, false)).toBe(true);
-    // 前排：2.5% < 3.5% ⇒ 不达标（楚天龙就是这一档）
+    // 龙头：2.5% < 3.5% ⇒ 不达标（楚天龙就是这一档）
     expect(passesAuctionShare(2.5, true)).toBe(false);
   });
 });
@@ -672,7 +699,7 @@ describe('★ 9/3 楚天龙：买点 + 卖点同时存在时的标签（逻辑�
      相当于将军倒下了，士兵不会幸免。……应该和龙一绑定在一起，标签是'跟龙竞价卖'，
      这样好区分点，也符合逻辑。……如果不是同题材，和原来一样……只是在原来规则⑦的基础上，
      加上这条优先规则，规则⑦要让路。」
-   ⛔ 只加这一条优先规则 —— 门槛（前排 3.5% / 后排 2%）、公式、精度、其它规则一律不动。
+   ⛔ 只加这一条优先规则 —— 门槛（龙头 3.5% / 其余 2%）、公式、精度、其它规则一律不动。
    🔴 [DRAGON-SWAP 2026-10-06 补充] 本轮把「龙一倒下」的判据【收紧】为：
      龙一的卖点标签必须是【纯「竞价卖」】（= 占比不达标【且】龙一今天没进买点）。
      国芳集团 9/9 当天【没有】进买点 ⇒ 判据与下面的用例都不变；
@@ -737,7 +764,7 @@ describe('★ 9/9 大消费：同题材龙一限制（优先规则，规则⑦�
     const memberRows = daxfRows(2.5, 3.0).concat([
       R('别龙一', '别的题材', 50, 0.5, 1, 5.0),   // 占比 5.0% ≥ 3.5% ⇒ 没倒 ⇒ 尾盘卖
       R('别甲', '别的题材', 30, 0.5, 1, 1.0),
-      R('别后排', '别的题材', 5, 0.5, 1, 3.0)     // 龙三 ⇒ 后排，占比 3.0% ≥ 2% ⇒ 尾盘卖
+      R('别后排', '别的题材', 5, 0.5, 1, 3.0)     // 龙三 ⇒ 中军，占比 3.0% ≥ 2% ⇒ 尾盘卖
     ]);
     const plan = sell(
       [
@@ -807,9 +834,11 @@ describe('★ 9/9 大消费：同题材龙一限制（优先规则，规则⑦�
    ⇒ 唯一判据 = 【龙一今天有没有进买点】：
        进 ⇒ 它的标签带「（先卖后买）」⇒ 当天还看好 ⇒ 没倒下 ⇒ 后排【不跟】；
        没进 ⇒ 标签是纯【竞价卖】⇒ 真的弱了 ⇒ 后排【跟】。
-   ⛔ 门槛（前排 3.5% / 后排 2%）、公式、精度、选票一律不动。
+   ⛔ 门槛（龙头 3.5% / 其余 2%）、公式、精度、选票一律不动。
+   ⚠️ [DRAGON-TIER 2026-10-06] 本组里的「龙版传媒（龙四）」按三分法属【中军】，不是【后排】——
+      但它仍然【不跟】带（先卖后买）的龙一（中军跟随龙头走强），结论不变，只是叫法要分清。
    ════════════════════════════════════════════════════════════════════════════════ */
-describe('★ 9/3 楚天龙（龙一）+ 龙版传媒（龙四）：龙一「带不带（先卖后买）」决定后排跟不跟', () => {
+describe('★ 9/3 楚天龙（龙一）+ 龙版传媒（龙四 = 中军）：龙一「带不带（先卖后买）」决定谁跟', () => {
   // 同一个题材 T1：楚天龙十日涨幅最高 ⇒ 龙一；龙版传媒最低 ⇒ 龙四（后排）。
   // ⛔ 龙位由真实实现（rankDragons）算出来，不手搓中间态。
   function t1Rows() {
@@ -839,7 +868,7 @@ describe('★ 9/3 楚天龙（龙一）+ 龙版传媒（龙四）：龙一「带
 
   it('① 龙一楚天龙（占比 2.5% 不达标 + 今天又进买点）→ 【竞价卖（先卖后买）】', () => {
     const c = itemOf(s3(BOTH_IN_BUY), '楚天龙');
-    expect(c.dragonRank).toBe(1);                 // 龙一 ⇒ 前排门槛 3.5%
+    expect(c.dragonRank).toBe(1);                 // 龙一 ⇒ 龙头门槛 3.5%
     expect(c.aucSharePass).toBe(false);           // 2.5% < 3.5%
     expect(c.sellActionTag).toBe(SELL_OUT_SWAP_TAG);
     expect(c.sellActionTag).toBe('竞价卖（先卖后买）');
@@ -847,9 +876,9 @@ describe('★ 9/3 楚天龙（龙一）+ 龙版传媒（龙四）：龙一「带
     expect(c.sellActionTone).toBe('swap');        // 紫 —— 与买点侧【尾盘买（先卖后买）】配对
   });
 
-  it('② 龙版传媒（龙四 = 后排，占比 8.7% ≥ 2% 达标 + 今天又进买点）→ 【持有】（⛔ 不被跟龙带走）', () => {
+  it('② 龙版传媒（龙四 = 中军，占比 8.7% ≥ 2% 达标 + 今天又进买点）→ 【持有】（⛔ 不被跟龙带走）', () => {
     const m = itemOf(s3(BOTH_IN_BUY), '龙版传媒');
-    expect(m.dragonRank).toBe(4);                 // 龙四 ⇒ 后排，门槛 2%
+    expect(m.dragonRank).toBe(4);                 // 龙四 ⇒ 中军（三分法），门槛 2%（非龙头）
     expect(m.aucShareText).toBe('8.7%');
     expect(m.aucSharePass).toBe(true);            // 占比达标
     expect(m.sellActionTag).toBe(HOLD_TAG);       // 用户口径「龙版传媒的标签应该是持有」
@@ -857,8 +886,8 @@ describe('★ 9/3 楚天龙（龙一）+ 龙版传媒（龙四）：龙一「带
     expect(m.aucFollowDragon).toBe(false);        // ⛔ 不是「跟龙竞价卖」
   });
 
-  it('③ 反例（用户口径的另一半）：龙一【只有】纯【竞价卖】⇒ 后排跟着倒 ⇒ 【跟龙竞价卖】', () => {
-    // 楚天龙今天【没】进买点 ⇒ 标签是纯【竞价卖】= 真的弱了 ⇒ 将军倒下 ⇒ 后排跟卖
+  it('③ 反例（用户口径的另一半）：龙一【只有】纯【竞价卖】⇒ 中军+后排都跟着倒 ⇒ 【跟龙竞价卖】', () => {
+    // 楚天龙今天【没】进买点 ⇒ 标签是纯【竞价卖】= 真的弱了 ⇒ 将军倒下 ⇒ 中军+后排都跟卖
     const plan = s3(ONLY_MAIN_IN_BUY);
     const c = itemOf(plan, '楚天龙');
     expect(c.sellActionTag).toBe(SELL_OUT_TAG);           // 纯「竞价卖」（没有「（先卖后买）」）
@@ -888,6 +917,182 @@ describe('★ 9/3 楚天龙（龙一）+ 龙版传媒（龙四）：龙一「带
     expect(lines).toContain('成对');
     // legacy（一字模式）共用 sellRulesLines() ⇒ 也必须带上
     expect(buildRulesLines().join('\n')).toContain(SELL_OUT_SWAP_TAG);
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════════
+   ★ [DRAGON-TIER 2026-10-06 用户口径 · 9/8 翠微股份（龙二）]
+     「9月8日 决策看板，卖点，翠微股份龙二，-2.47%，量比10.35同比减少，占比2.6，
+       标签是竞价卖。现在问题把龙二当作前排选手，占比要大于3.5，感觉准确不高，
+       如果当作后排选手大于2%，即可满足尾盘卖（当天实际走强，符合实际情况）。」
+     「所以规则改下，龙头只有一个，那就是龙一。前排选手是龙二到龙四，
+       后排选手就是龙四以下（不包含龙四，比如龙五，龙六，龙七……）」
+   ⇒ 门槛【只分两级】：龙头（今日龙一 / 昨日龙头）3.5%；**龙二及以下一律 2%**。
+     龙二 2.6% ≥ 2% ⇒ 【尾盘卖】（⛔ 不再是【竞价卖】）。
+   ⛔ 公式 / 精度 / 龙位判定（rankDragons）一律不动，只动「谁走哪个门槛」。
+   ════════════════════════════════════════════════════════════════════════════════ */
+describe('★ 9/8 翠微股份（龙二）：门槛只分两级 —— 龙二及以下一律 2%', () => {
+  // 同一题材 T1：龙一票（占比达标 ⇒ 没倒）+ 翠微股份（龙二）+ 两只更弱的
+  function t1Rows(share) {
+    return [
+      R('龙一票', 'T1', 50, 0.5, 1, 5.0),                            // 龙一，占比 5.0% 达标
+      R('翠微股份', 'T1', 40, -2.47, 10.35, share, VR_DIR_DOWN),     // 龙二
+      R('后排甲', 'T1', 30, 0.5, 1, 1.0),
+      R('后排乙', 'T1', 20, 0.5, 1, 1.0)
+    ];
+  }
+  function s1(share) {
+    const rows = t1Rows(share);
+    return sell([rows[1]], { memberRows: rows, prevDragonNames: new Set(['别的股票']) });
+  }
+
+  it('① 翠微股份（龙二，占比 2.6% ≥ 2%）→ 【尾盘卖】（旧口径算前排、按 3.5% 会误判成【竞价卖】）', () => {
+    const c = itemOf(s1(2.6), '翠微股份');
+    expect(c.dragonRank).toBe(2);
+    expect(c.aucShareText).toBe('2.6%');
+    expect(c.aucSharePass).toBe(true);              // 走 2% 门槛 ⇒ 达标
+    expect(c.sellActionTag).toBe(SELL_LATE_TAG);
+    expect(c.aucShareThresholdText).toContain('2');  // 门槛文案写 2%
+    expect(c.aucShareScopeText).toContain('非龙头');  // 龙二 ⇒ 非龙头
+    expect(c.aucFollowDragon).toBe(false);           // 龙一没倒 ⇒ 不跟
+    expect(c.actionNote).toContain(SELL_LATE_TAG);
+  });
+
+  it('② ⛔ 龙二【不】享受 3.5% 门槛：同一只票、同一个 2.6%，只因龙位不同 ⇒ 结论不同', () => {
+    // 龙一（同一占比 2.6% < 3.5%）⇒ 不达标 ⇒ 【纯竞价卖】
+    const leader = itemOf(sell(
+      [R('甲', 'T1', 50, -2.47, 10.35, 2.6, VR_DIR_DOWN)],
+      { memberRows: [R('甲', 'T1', 50, -2.47, 10.35, 2.6, VR_DIR_DOWN), ...F('T1', 3)],
+        prevDragonNames: new Set(['别的股票']) }
+    ), '甲');
+    expect(leader.dragonRank).toBe(1);
+    expect(leader.aucSharePass).toBe(false);        // 龙头 3.5% ⇒ 2.6% 不达标
+    expect(leader.sellActionTag).toBe(SELL_OUT_TAG);
+    // 龙二（同一占比 2.6% ≥ 2%）⇒ 达标 ⇒ 【尾盘卖】
+    const middle = itemOf(s1(2.6), '翠微股份');
+    expect(middle.aucSharePass).toBe(true);
+    expect(middle.sellActionTag).toBe(SELL_LATE_TAG);
+  });
+
+  it('③ 三分档：龙二 / 龙三 / 龙四 = 中军；龙五及以下 = 后排', () => {
+    expect(dragonTierOf(2)).toBe('middle');
+    expect(dragonTierOf(3)).toBe('middle');
+    expect(dragonTierOf(4)).toBe('middle');
+    expect(dragonTierOf(5)).toBe('back');
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════════
+   ★ [DRAGON-TIER 2026-10-06 用户口径 · 9/9 国芳集团 + 安记食品 的进一步细分]
+     「……但是龙二到龙四都要听从龙一指挥，因为这是中军比较强势些（同题材中强度，
+       龙头大于中军大于后排，后排最弱），也就是那个龙一（龙头）竞价卖（先卖后买），
+       龙头没走弱（还有买），所以准确说中军（前排）一起跟着走强，但是后排（龙五到龙n）
+       选手由于龙一提示竞价卖，所以惊慌失措都要跌……中军跟着龙头买，后排跟着龙头卖要分清，
+       这个案例要分龙头（龙一），中军，后排，更加清晰。」
+   ⇒ 跟龙联动分三层：龙头（龙一）｜ 中军（龙二~龙四）｜ 后排（龙五及以下）
+       · 龙一【纯竞价卖】（真的弱了）          ⇒ 中军 + 后排【都跟】；
+       · 龙一【竞价卖（先卖后买）】（没走弱）  ⇒ 只有【后排】跟，中军按自己占比判。
+   ⛔ 门槛仍是【龙一 3.5% / 其余 2%】—— 三分法只管「跟不跟」，⛔ 不参与门槛。
+   ════════════════════════════════════════════════════════════════════════════════ */
+describe('★ 三分法跟龙：龙头（龙一）/ 中军（龙二~龙四）/ 后排（龙五及以下）', () => {
+  // 同一题材 T1 共 5 只：龙一 + 中军（龙二/龙三/龙四）+ 后排（龙五）。
+  // 中军与后排自己的占比都给 3.0%（≥ 2% 达标）⇒ 若「不跟」应各自判【尾盘卖】，
+  //   与【跟龙竞价卖】形成清晰对比（⛔ 不给 1.x% 那种「反正都不达标」的糊结果）。
+  function t1Rows(leaderShare) {
+    return [
+      R('龙一票', 'T1', 50, 0.5, 1, leaderShare),   // 龙一
+      R('中军二', 'T1', 40, 0.5, 1, 3.0),           // 龙二
+      R('中军三', 'T1', 30, 0.5, 1, 3.0),           // 龙三
+      R('中军四', 'T1', 20, 0.5, 1, 3.0),           // 龙四
+      R('后排五', 'T1', 10, 0.5, 1, 3.0)            // 龙五
+    ];
+  }
+  // 卖点候选 = 全部 5 只（龙一必须在候选里，才看得到它的结论）
+  function s1(leaderShare, todayBuyNames) {
+    const rows = t1Rows(leaderShare);
+    return sell(rows, {
+      memberRows: rows,
+      prevDragonNames: new Set(['别的股票']),
+      todayBuyNames: todayBuyNames || null
+    });
+  }
+  const LEADER_IN_BUY = new Set(['龙一票']);   // 龙一今天也进了买点 ⇒ 它带「（先卖后买）」，没走弱
+
+  it('① 先确认档位本身：龙二 / 龙三 / 龙四 = 中军，龙五 = 后排', () => {
+    const m = s1(2.5, null);
+    expect(itemOf(m, '中军二').dragonRank).toBe(2);
+    expect(itemOf(m, '中军三').dragonRank).toBe(3);
+    expect(itemOf(m, '中军四').dragonRank).toBe(4);
+    expect(itemOf(m, '后排五').dragonRank).toBe(5);
+    expect(dragonTierOf(itemOf(m, '中军二').dragonRank)).toBe('middle');
+    expect(dragonTierOf(itemOf(m, '后排五').dragonRank)).toBe('back');
+  });
+
+  it('② 龙一【竞价卖（先卖后买）】（2.5% 不达标 + 今天进买点）⇒ 只有【后排】跟，中军各判各的', () => {
+    const plan = s1(2.5, LEADER_IN_BUY);
+    const g = itemOf(plan, '龙一票');
+    expect(g.sellActionTag).toBe(SELL_OUT_SWAP_TAG);            // 龙一：竞价卖（先卖后买）
+    // 中军（龙二~龙四）：⛔ 不跟 —— 按自己占比 3.0% 达标 ⇒ 【尾盘卖】
+    ['中军二', '中军三', '中军四'].forEach(function(n) {
+      const it0 = itemOf(plan, n);
+      expect(it0.sellActionTag).toBe(SELL_LATE_TAG);
+      expect(it0.aucFollowDragon).toBe(false);
+    });
+    // 后排（龙五）：跟 —— 同一个占比 3.0%（本来够【尾盘卖】），仍改判【跟龙竞价卖】
+    const b = itemOf(plan, '后排五');
+    expect(b.sellActionTag).toBe(SELL_FOLLOW_DRAGON_TAG);
+    expect(b.aucFollowDragon).toBe(true);
+    expect(b.sellActionTone).toBe(SELL_ACTION_TONE_FOLLOW);
+  });
+
+  it('③ 龙一【纯竞价卖】（2.5% 不达标 + 今天没进买点）⇒ 中军 + 后排【都跟】', () => {
+    const plan = s1(2.5, null);
+    expect(itemOf(plan, '龙一票').sellActionTag).toBe(SELL_OUT_TAG);
+    ['中军二', '中军三', '中军四', '后排五'].forEach(function(n) {
+      const it0 = itemOf(plan, n);
+      expect(it0.sellActionTag).toBe(SELL_FOLLOW_DRAGON_TAG);
+      expect(it0.aucFollowDragon).toBe(true);
+    });
+  });
+
+  it('④ 唯一开关就是龙一那枚标签：其余输入一个不动，只翻转「龙一进没进买点」⇒ 中军翻面、后排始终跟', () => {
+    const withBuy = s1(2.5, LEADER_IN_BUY);   // 龙一 = 竞价卖（先卖后买）
+    const noBuy = s1(2.5, null);              // 龙一 = 纯竞价卖
+    expect(itemOf(withBuy, '龙一票').sellActionTag).toBe(SELL_OUT_SWAP_TAG);
+    expect(itemOf(noBuy, '龙一票').sellActionTag).toBe(SELL_OUT_TAG);
+    // 中军：withBuy 时不跟（尾盘卖）→ noBuy 时跟（跟龙竞价卖）
+    expect(itemOf(withBuy, '中军二').sellActionTag).toBe(SELL_LATE_TAG);
+    expect(itemOf(noBuy, '中军二').sellActionTag).toBe(SELL_FOLLOW_DRAGON_TAG);
+    // 后排：两种情形都跟
+    expect(itemOf(withBuy, '后排五').sellActionTag).toBe(SELL_FOLLOW_DRAGON_TAG);
+    expect(itemOf(noBuy, '后排五').sellActionTag).toBe(SELL_FOLLOW_DRAGON_TAG);
+    // 后排自己的占比一个字没变 ⇒ 差异只来自龙一那一枚标签
+    expect(itemOf(withBuy, '后排五').aucShareText).toBe(itemOf(noBuy, '后排五').aucShareText);
+  });
+
+  it('⑤ 龙一占比【达标】（没倒）⇒ 三层谁都不跟，各判各的', () => {
+    const plan = s1(5.0, null);              // 龙一 5.0% ≥ 3.5% ⇒ 没倒
+    expect(itemOf(plan, '龙一票').sellActionTag).toBe(SELL_LATE_TAG);
+    ['中军二', '中军三', '中军四', '后排五'].forEach(function(n) {
+      expect(itemOf(plan, n).sellActionTag).toBe(SELL_LATE_TAG);
+      expect(itemOf(plan, n).aucFollowDragon).toBe(false);
+    });
+  });
+
+  it('⑥ 中军的跟龙说明文字要写清「听龙一指挥」＋本股是【中军】', () => {
+    const plan = s1(2.5, null);
+    const n = itemOf(plan, '中军二');
+    expect(n.actionNote).toContain('龙一票');            // 哪只龙一倒了
+    expect(n.actionNote).toContain('中军');              // 本股档位
+    expect(n.actionNote).toContain(RULE_NO.SHARE);       // 规则⑦让路
+    expect(n.actionNote).toContain(SELL_FOLLOW_DRAGON_TAG);
+  });
+
+  it('⑦ 后排的跟龙说明文字写清【后排】最弱、龙一一提示就先慌', () => {
+    const plan = s1(2.5, LEADER_IN_BUY);
+    const b = itemOf(plan, '后排五');
+    expect(b.actionNote).toContain('后排');
+    expect(b.actionNote).toContain('龙一票');
   });
 });
 
@@ -992,7 +1197,7 @@ describe('卖点：行内展示字段', () => {
     expect(swapToo.sellActionTag).toBe(SELL_OUT_SWAP_TAG);
     expect(swapToo.sellActionTone).toBe('swap');
 
-    // 换成【达标】的占比（2.6% ≥ 后排门槛 2%）⇒ 这一档才是 hold
+    // 换成【达标】的占比（2.6% ≥ 其余门槛 2%）⇒ 这一档才是 hold
     const hold = itemOf(sell(
       [R('甲', 'T1', 5, -1.3, 1, 2.6, VR_DIR_DOWN)],
       { memberRows: manyRows, prevDragonNames: new Set(['别的']), todayBuyNames: new Set(['甲']) }

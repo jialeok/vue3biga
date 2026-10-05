@@ -1271,7 +1271,7 @@ function _capPicksByTopicCount(blockObj) {
 function _decorateBuyAction(blockObj, opts) {
   if (!blockObj || !blockObj.picks || blockObj.picks.length === 0) return blockObj;
   // ── [SHARE-RULE 2026-10-03 用户口径] 主判据换成【竞价占比】（当日竞价量 ÷ 昨日成交量）──
-  //   占比 ≥ 门槛（前排 3.5% / 后排 2%）→ 竞价买；否则 → 尾盘买。
+  //   占比 ≥ 门槛（龙头 3.5% / 其余 2%）→ 竞价买；否则 → 尾盘买。
   //   ⛔ 实现【不在这里】—— 与量比模式共用 decision-rules.js#_decorateShareAction 同一份，
   //      两套模式的「什么时候买」必须是同一个答案（§6）。
   //   ⚠️ 占比【缺数据】时，_decorateShareAction 内部会自动回落下面这段旧的「量比方向」口径：
@@ -1786,9 +1786,10 @@ function _legacyBuyRulesLines() {
     '　⑭ 【' + BUY_NOW_TAG + ' / ' + BUY_LATE_TAG + ' / ' + BUY_LATE_SWAP_TAG +
       '】= 按【竞价占比】决定今天什么时候买（2026-10-03 新规，占比说了算）：',
     '　　· 占比（%）= 【当日竞价量】÷【昨日成交量】×100，保留 1 位小数（如 0.0435 → 4.4%）；',
-    '　　· 门槛：前排（今日或昨日【龙一 / 龙二】）→ ' + AUCTION_SHARE_FRONT_MIN + '%（标准 ' +
-      AUCTION_SHARE_FRONT_STD + '% 容错 ' + AUCTION_SHARE_TOLERANCE + '%）；后排（其余）→ ' +
+    '　　· 门槛：龙头（今日【龙一】，或昨日在龙头名册里）→ ' + AUCTION_SHARE_FRONT_MIN + '%（标准 ' +
+      AUCTION_SHARE_FRONT_STD + '% 容错 ' + AUCTION_SHARE_TOLERANCE + '%）；其余（龙二及以下）→ ' +
       AUCTION_SHARE_BACK_STD + '%；',
+    '　　　⚠️ [DRAGON-TIER 2026-10-06 用户口径 · 翠微股份 9/8] 门槛【只分两级】，⛔ 龙二【不再】算龙头。',
     '　　· 占比 ≥ 门槛 → 行内标【' + BUY_NOW_TAG + '】：占比够强，竞价就得下手，等尾盘反而更贵 / 买不到；',
     '　　· 占比 < 门槛 → 行内标【' + BUY_LATE_TAG + '】：别追开盘，等尾盘再看；',
     '　　· 占比 < 门槛【且】这一只【昨天已经买过】（所以它同时在卖点里）→ 行内只留【' +
@@ -1820,7 +1821,7 @@ function _legacyBuyRulesLines() {
     '　　　再往右是 ⑭ 的【' + BUY_NOW_TAG + '】【' + BUY_LATE_TAG + '】【' + BUY_LATE_SWAP_TAG +
       '】这类【今天什么时候买】的徽标，以及 ⑪ 的【' + HOLD_TAG + '】标记',
     '　　　（⑪ 的【' + HOLD_TAG + '】与行尾仓位【' + POSITION_HOLD + '】是同一枚词，同一行只写一次）。',
-    '　【行下方还有一行说明文字】写清这一只为什么给上面的动作：占比数值、前排 / 后排门槛来源、',
+    '　【行下方还有一行说明文字】写清这一只为什么给上面的动作：占比数值、龙头 / 其余门槛来源、',
     '　　以及作为辅助的竞价涨幅与量比方向（辅助不单独决定时机）。',
   ];
 }
