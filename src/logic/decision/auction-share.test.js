@@ -29,6 +29,9 @@ import {
   SELL_FIRST_BUY_LATER_TAG,
   SELL_LATE_TAG,
   SELL_OUT_TAG,
+  // [DRAGON-SWAP 2026-10-06 用户口径 · 9/3 楚天龙] 【竞价卖（先卖后买）】—— 卖点侧与
+  //   【尾盘买（先卖后买）】成对；同时是【跟龙竞价卖】的刹车（龙一有它就说明当天还看好）。
+  SELL_OUT_SWAP_TAG,
   // [FOLLOW-DRAGON 2026-10-05 用户口径 · 9/9 国芳集团 + 安记食品] 同题材龙一限制（优先规则）
   SELL_FOLLOW_DRAGON_TAG,
   SELL_ACTION_TONE_FOLLOW,
@@ -550,10 +553,12 @@ describe('★ 卖点（占比说了算）：用户 9/1 · 9/2 的标注逐条复
     expect(it0.sellHint).toBe(null);          // 占比有数据 ⇒ 旧口径让路
   });
 
-  it('⑦ 楚天龙 9/3（龙一 / 占比 2.5% 不达标 + 今天又进买点）→ 【竞价卖】，⛔ 不给【持有】', () => {
-    // 用户原话：「占比2.5不达标。所以应该是竞价卖。同时它有进了买点那里。那就尾盘买。
-    //   ……卖点方面，提示持有标签，卖点方面的提示不是很具体，应该去掉持有。应该是这个标签，'竞价卖'」
-    // 补充口径（2026-10-04）：「因为它是龙一，按照占比3.5%的标准，它不合格」
+  it('⑦ 楚天龙 9/3（龙一 / 占比 2.5% 不达标 + 今天又进买点）→ 【竞价卖（先卖后买）】，⛔ 不给【持有】', () => {
+    // 用户原话（2026-10-03 / 10-04）：「占比2.5不达标。所以应该是竞价卖。……卖点方面，提示持有标签……
+    //   应该去掉持有。」「因为它是龙一，按照占比3.5%的标准，它不合格」
+    // 🔴 [DRAGON-SWAP 2026-10-06 进一步细化] 标签升级为【竞价卖（先卖后买）】——
+    //   用户原话：「在楚天龙卖点标签应该是'竞价卖（先卖后买）'，有这个标签后，说明当天这只票
+    //     还是是强的，没有倒下，龙版传媒就要标上'持有'，而不是现在的'竞价卖'。」
     const rows = [R('楚天龙', 'T1', 10, -3.36, 7.8, 2.5, VR_DIR_DOWN), ...F('T1', 3)];
     const plan = sell(
       [R('楚天龙', 'T1', 10, -3.36, 7.8, 2.5, VR_DIR_DOWN)],
@@ -565,13 +570,16 @@ describe('★ 卖点（占比说了算）：用户 9/1 · 9/2 的标注逐条复
     const it0 = itemOf(plan, '楚天龙');
     expect(it0.dragonRank).toBe(1);              // 龙一 ⇒ 前排门槛 3.5%
     expect(it0.aucSharePass).toBe(false);        // 2.5% < 3.5% ⇒ 不达标
-    expect(it0.sellActionTag).toBe('竞价卖');
-    expect(it0.sellActionTag).toBe(SELL_OUT_TAG);
+    expect(it0.sellActionTag).toBe(SELL_OUT_SWAP_TAG);
+    expect(it0.sellActionTag).toBe('竞价卖（先卖后买）');
+    expect(it0.sellActionTag).not.toBe(SELL_OUT_TAG);   // ⛔ 不是【纯竞价卖】
     expect(it0.sellActionTag).not.toBe(HOLD_TAG);
-    expect(it0.sellActionTone).toBe('out');
+    expect(it0.sellActionTone).toBe('swap');     // 紫 —— 与买点侧【尾盘买（先卖后买）】同一个类
     expect(it0.holdTag).toBe('');                // ⛔ 不再标【持有】
     expect(it0.sellHint).toBe(null);             // 占比有数据 ⇒ 旧口径让路
-    expect(it0.actionNote).toContain('走弱');
+    expect(it0.actionNote).toContain('先卖后买');
+    expect(it0.actionNote).toContain('不算「前排倒下」');
+    expect(it0.aucFollowDragon).toBe(false);     // 龙一自己不是「跟龙」
   });
 
   it('⑦-反例：占比【达标】+ 今天又进买点 ⇒ 仍是【持有】（花溪科技 9/2 3.6%）—— 见上一条 ⑥', () => {
@@ -625,7 +633,7 @@ describe('★ 9/3 楚天龙：买点 + 卖点同时存在时的标签（逻辑�
     expect(allBlockNotes(plan)).not.toContain('强势股，可【' + HOLD_TAG + '】');
   });
 
-  it('卖点行 → 【竞价卖】（不是【持有】）', () => {
+  it('卖点行 → 【竞价卖（先卖后买）】（不是【持有】，也不是【纯竞价卖】）', () => {
     const plan = sell(
       [R('楚天龙', 'T1', 10, -3.36, 7.8, 2.5, VR_DIR_DOWN)],
       { memberRows: ROWS(), todayBuyNames: new Set(['楚天龙']) }
@@ -633,8 +641,11 @@ describe('★ 9/3 楚天龙：买点 + 卖点同时存在时的标签（逻辑�
     const it0 = itemOf(plan, '楚天龙');
     expect(it0.dragonRank).toBe(1);
     expect(it0.aucShareText).toBe('2.5%');
-    expect(it0.sellActionTag).toBe('竞价卖');
+    // 与买点侧的【尾盘买（先卖后买）】成对：开盘先卖、尾盘接回
+    expect(it0.sellActionTag).toBe(SELL_OUT_SWAP_TAG);
     expect(it0.sellActionTag).not.toBe(HOLD_TAG);
+    expect(it0.sellActionTag).not.toBe(SELL_OUT_TAG);
+    expect(it0.sellActionTone).toBe('swap');
     expect(it0.holdTag).toBe('');
     expect(it0.sellHint).toBe(null);
   });
@@ -662,6 +673,10 @@ describe('★ 9/3 楚天龙：买点 + 卖点同时存在时的标签（逻辑�
      这样好区分点，也符合逻辑。……如果不是同题材，和原来一样……只是在原来规则⑦的基础上，
      加上这条优先规则，规则⑦要让路。」
    ⛔ 只加这一条优先规则 —— 门槛（前排 3.5% / 后排 2%）、公式、精度、其它规则一律不动。
+   🔴 [DRAGON-SWAP 2026-10-06 补充] 本轮把「龙一倒下」的判据【收紧】为：
+     龙一的卖点标签必须是【纯「竞价卖」】（= 占比不达标【且】龙一今天没进买点）。
+     国芳集团 9/9 当天【没有】进买点 ⇒ 判据与下面的用例都不变；
+     龙一带「（先卖后买）」的情形见下面 9/3 龙版传媒那一组用例。
    ════════════════════════════════════════════════════════════════════════════════ */
 describe('★ 9/9 大消费：同题材龙一限制（优先规则，规则⑦让路）', () => {
   // 9 只的「大消费」题材：国芳集团十日涨幅最高 ⇒ 龙一；安记食品最低 ⇒ 龙九。
@@ -776,6 +791,106 @@ describe('★ 9/9 大消费：同题材龙一限制（优先规则，规则⑦�
   });
 });
 
+/* ════════════════════════════════════════════════════════════════════════════════
+   ★ [DRAGON-SWAP 2026-10-06 用户口径 · 9/3 楚天龙（龙一）+ 龙版传媒（龙四）]
+     「9月3日的决策看板，龙版传媒卖点逻辑不对，因为它是龙四，占比8.7%是达标的，
+       龙一楚天龙，占比是2.5%，竞价卖，没错。但是买点上是的标签是尾盘买（先卖后买），
+       这个也没错，因为它今天也入选了买点。但是影响到后排选手决策的是龙一的"买"，
+       楚天龙作为龙一，后面还有标签先卖后买，说明当天还是看好的，不然不会买，
+       所以其实将军并没有倒下，所以这个不影响后排选手龙版传媒龙四。
+       龙版传媒的标签应该是持有。而不是竞价卖。如果龙一只有竞价卖，不是竞价卖（先卖后买），
+       那后排选手就可以那样标竞价卖。……
+       所以你要做的就是，在楚天龙卖点标签应该是'竞价卖（先卖后买）'，有这个标签后，
+       说明当天这只票还是是强的，没有倒下，龙版传媒就要标上'持有'，而不是现在的'竞价卖'，
+       如果龙一卖点标签只有竞价卖，那么没有那个'竞价卖（先卖后买）'的标签，说明真的弱了，
+       后排选手也会跟着倒下，就也就跟着'竞价卖'。」
+   ⇒ 唯一判据 = 【龙一今天有没有进买点】：
+       进 ⇒ 它的标签带「（先卖后买）」⇒ 当天还看好 ⇒ 没倒下 ⇒ 后排【不跟】；
+       没进 ⇒ 标签是纯【竞价卖】⇒ 真的弱了 ⇒ 后排【跟】。
+   ⛔ 门槛（前排 3.5% / 后排 2%）、公式、精度、选票一律不动。
+   ════════════════════════════════════════════════════════════════════════════════ */
+describe('★ 9/3 楚天龙（龙一）+ 龙版传媒（龙四）：龙一「带不带（先卖后买）」决定后排跟不跟', () => {
+  // 同一个题材 T1：楚天龙十日涨幅最高 ⇒ 龙一；龙版传媒最低 ⇒ 龙四（后排）。
+  // ⛔ 龙位由真实实现（rankDragons）算出来，不手搓中间态。
+  function t1Rows() {
+    return [
+      R('楚天龙', 'T1', 50, -3.36, 7.8, 2.5, VR_DIR_DOWN),
+      R('甲二', 'T1', 40, 0.5, 1, 1.0),
+      R('乙三', 'T1', 30, 0.5, 1, 1.0),
+      R('龙版传媒', 'T1', 20, 1.46, 37.28, 8.7, VR_DIR_DOWN)
+    ];
+  }
+  // 卖点候选 = 昨日打过「买」标签的股票 ⇒ 这里就是楚天龙 + 龙版传媒两只
+  function s3(todayBuyNames) {
+    return sell(
+      [
+        R('楚天龙', 'T1', 50, -3.36, 7.8, 2.5, VR_DIR_DOWN),
+        R('龙版传媒', 'T1', 20, 1.46, 37.28, 8.7, VR_DIR_DOWN)
+      ],
+      {
+        memberRows: t1Rows(),
+        prevDragonNames: new Set(['别的股票']),
+        todayBuyNames: todayBuyNames || null
+      }
+    );
+  }
+  const BOTH_IN_BUY = new Set(['楚天龙', '龙版传媒']);   // 两只今天都入选了买点
+  const ONLY_MAIN_IN_BUY = new Set(['龙版传媒']);        // 只有后排进了买点（龙一没进）
+
+  it('① 龙一楚天龙（占比 2.5% 不达标 + 今天又进买点）→ 【竞价卖（先卖后买）】', () => {
+    const c = itemOf(s3(BOTH_IN_BUY), '楚天龙');
+    expect(c.dragonRank).toBe(1);                 // 龙一 ⇒ 前排门槛 3.5%
+    expect(c.aucSharePass).toBe(false);           // 2.5% < 3.5%
+    expect(c.sellActionTag).toBe(SELL_OUT_SWAP_TAG);
+    expect(c.sellActionTag).toBe('竞价卖（先卖后买）');
+    expect(c.sellActionTag).not.toBe(SELL_OUT_TAG);   // ⛔ 不是【纯竞价卖】
+    expect(c.sellActionTone).toBe('swap');        // 紫 —— 与买点侧【尾盘买（先卖后买）】配对
+  });
+
+  it('② 龙版传媒（龙四 = 后排，占比 8.7% ≥ 2% 达标 + 今天又进买点）→ 【持有】（⛔ 不被跟龙带走）', () => {
+    const m = itemOf(s3(BOTH_IN_BUY), '龙版传媒');
+    expect(m.dragonRank).toBe(4);                 // 龙四 ⇒ 后排，门槛 2%
+    expect(m.aucShareText).toBe('8.7%');
+    expect(m.aucSharePass).toBe(true);            // 占比达标
+    expect(m.sellActionTag).toBe(HOLD_TAG);       // 用户口径「龙版传媒的标签应该是持有」
+    expect(m.sellActionTone).toBe('hold');
+    expect(m.aucFollowDragon).toBe(false);        // ⛔ 不是「跟龙竞价卖」
+  });
+
+  it('③ 反例（用户口径的另一半）：龙一【只有】纯【竞价卖】⇒ 后排跟着倒 ⇒ 【跟龙竞价卖】', () => {
+    // 楚天龙今天【没】进买点 ⇒ 标签是纯【竞价卖】= 真的弱了 ⇒ 将军倒下 ⇒ 后排跟卖
+    const plan = s3(ONLY_MAIN_IN_BUY);
+    const c = itemOf(plan, '楚天龙');
+    expect(c.sellActionTag).toBe(SELL_OUT_TAG);           // 纯「竞价卖」（没有「（先卖后买）」）
+    expect(c.actionNote).toContain('没有');               // 说明文字要写清「今天没进买点」
+    const m = itemOf(plan, '龙版传媒');
+    expect(m.sellActionTag).toBe(SELL_FOLLOW_DRAGON_TAG);
+    expect(m.aucFollowDragon).toBe(true);
+    expect(m.actionNote).toContain('楚天龙');             // 写清是哪只龙一倒了
+  });
+
+  it('④ 判据就是【龙一有没有进买点】这一条：其余输入完全相同，只翻转它 ⇒ 结论翻转', () => {
+    const withBuy = s3(BOTH_IN_BUY);
+    const noBuy = s3(ONLY_MAIN_IN_BUY);
+    expect(itemOf(withBuy, '龙版传媒').sellActionTag).toBe(HOLD_TAG);
+    expect(itemOf(noBuy, '龙版传媒').sellActionTag).toBe(SELL_FOLLOW_DRAGON_TAG);
+    // 后排自己的占比一个字没变 ⇒ 结论差异【只】来自龙一那一枚标签
+    expect(itemOf(withBuy, '龙版传媒').aucShareText).toBe(itemOf(noBuy, '龙版传媒').aucShareText);
+  });
+
+  it('⑤ 规则文案：新标签与 9/3 这个案例都写进灰色问号面板（两套模式共用同一份卖点条文）', () => {
+    const lines = buildVolRatioRulesLines().join('\n');
+    expect(lines).toContain(SELL_OUT_SWAP_TAG);
+    expect(lines).toContain('龙版传媒 9/3');
+    expect(lines).toContain('8.7%');
+    expect(lines).toContain('并没有');
+    // 买点段也要写出「卖点那边是对应的“竞价卖（先卖后买）”」
+    expect(lines).toContain('成对');
+    // legacy（一字模式）共用 sellRulesLines() ⇒ 也必须带上
+    expect(buildRulesLines().join('\n')).toContain(SELL_OUT_SWAP_TAG);
+  });
+});
+
 describe('卖点：§10 占比缺数据 → 整体回落旧口径', () => {
   it('占比有数据 ⇒ 旧的竞价高低开细分【不再出现】（新规优先，旧规则让路）', () => {
     const rows = [
@@ -854,26 +969,28 @@ describe('卖点：行内展示字段', () => {
     expect(it0.actionNote).toContain(RULE_NO.SHARE);
   });
 
-  it('配色档：不达标 → out（进了买点也是 out）；达标 + 进买点 → hold', () => {
+  it('配色档：不达标【没进买点】→ out；不达标【进了买点】→ swap；达标 + 进买点 → hold', () => {
     const manyRows = [
       R('高甲', 'T1', 30, 0.5, 1, 1.0), R('高乙', 'T1', 25, 0.5, 1, 1.0),
       R('高丙', 'T1', 20, 0.5, 1, 1.0), R('高丁', 'T1', 15, 0.5, 1, 1.0)
     ];
-    // 甲 = 龙五 ⇒ 后排，门槛 2% ⇒ 1.8% 不达标 ⇒ 竞价卖（out）
+    // 甲 = 龙五 ⇒ 后排，门槛 2% ⇒ 1.8% 不达标 + 没进买点 ⇒ 【纯竞价卖】（绿 out）
     const out = itemOf(sell(
       [R('甲', 'T1', 5, -1.3, 1, 1.8, VR_DIR_DOWN)],
       { memberRows: manyRows, prevDragonNames: new Set(['别的']) }
     ), '甲');
+    expect(out.sellActionTag).toBe(SELL_OUT_TAG);
     expect(out.sellActionTone).toBe('out');
 
-    // 🔴 [SHARE-PRIORITY 2026-10-04] 不达标 + 今天又进买点【也是 out】——
-    //   旧实现这一档给的是 hold，用户 9/3 楚天龙案例明确要求去掉【持有】。
-    const outToo = itemOf(sell(
+    // 🔴 [DRAGON-SWAP 2026-10-06] 不达标 + 今天又进买点 ⇒ 【竞价卖（先卖后买）】（紫 swap）——
+    //   与买点侧【尾盘买（先卖后买）】成对；⛔ 既不是 hold，也不是纯 SELL_OUT_TAG。
+    //   （2026-10-04 那一版给的是纯 out；用户 9/3 口径进一步细化。）
+    const swapToo = itemOf(sell(
       [R('甲', 'T1', 5, -1.3, 1, 1.8, VR_DIR_DOWN)],
       { memberRows: manyRows, prevDragonNames: new Set(['别的']), todayBuyNames: new Set(['甲']) }
     ), '甲');
-    expect(outToo.sellActionTag).toBe(SELL_OUT_TAG);
-    expect(outToo.sellActionTone).toBe('out');
+    expect(swapToo.sellActionTag).toBe(SELL_OUT_SWAP_TAG);
+    expect(swapToo.sellActionTone).toBe('swap');
 
     // 换成【达标】的占比（2.6% ≥ 后排门槛 2%）⇒ 这一档才是 hold
     const hold = itemOf(sell(

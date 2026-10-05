@@ -285,6 +285,31 @@ export const SELL_LATE_TAG = '尾盘卖';
 export const SELL_ACTION_TONE_OUT = 'out';    // 竞价卖 → 绿（走弱，尽早出）
 export const SELL_ACTION_TONE_LATE = 'selllate'; // 尾盘卖 → 琥珀（还有机会，别急）
 
+/**
+ * 【竞价卖（先卖后买）】卖点动作 —— [DRAGON-SWAP 2026-10-06 用户口径 · 9/3 楚天龙] 新增。
+ *
+ * 场景：占比【不达标】＋ 这一只【今天又进了买点】（⇒ 它昨天必然买过，所以同时也在卖点里）。
+ *   两边的动作合起来就是「先卖后买」：
+ *     · 买点：【尾盘买（先卖后买）】—— 尾盘再接回来（见 BUY_LATE_SWAP_TAG）；
+ *     · 卖点：本档【竞价卖（先卖后买）】—— 开盘先把昨天的仓卖掉。
+ * 用户原话：
+ *   「在楚天龙卖点标签应该是'竞价卖（先卖后买）'，有这个标签后，说明当天这只票还是是强的，
+ *     没有倒下，龙版传媒就要标上'持有'……如果龙一卖点标签只有竞价卖，那么没有那个
+ *     '竞价卖（先卖后买）'的标签，说明真的弱了，后排选手也会跟着倒下，也就跟着'竞价卖'。」
+ *
+ * 🔴 本档**同时是【跟龙竞价卖】的刹车**：龙一只要带「（先卖后买）」，就说明当天还看好
+ *   （不然不会买）⇒ 「将军并没有倒下」⇒ 同题材后排【不跟】，各按规则⑦自己判。
+ *   文案由两枚既有常量拼出来，⛔ 不再手抄一遍（§6）。
+ */
+export const SELL_OUT_SWAP_TAG = SELL_OUT_TAG + '（' + SELL_FIRST_BUY_LATER_TAG + '）';
+/**
+ * 卖点动作配色档：竞价卖（先卖后买）→ 紫。
+ * ⛔ 刻意与买点侧的【尾盘买（先卖后买）】用【同一个档位值】（同一个 CSS 类 .dcb-action-swap）——
+ *    它们是同一件事的两半（开盘先卖、尾盘接回），配色一致才能一眼认出「这只票今天先卖后买」。
+ *    值的定义只留一处（§6）：直接取 BUY_ACTION_TONE_SWAP，⛔ 别再写一遍字面量 'swap'。
+ */
+export const SELL_ACTION_TONE_SWAP = BUY_ACTION_TONE_SWAP;
+
 // ══════════════════════════════════════════════════════════════════════════════════════
 // ★★ [FOLLOW-DRAGON 2026-10-05 用户口径 · 同题材龙一限制] ★★
 // ══════════════════════════════════════════════════════════════════════════════════════
@@ -1256,13 +1281,16 @@ function _decorateShareAction(blockObj, opts) {
       // ── 新规：占比说了算 ──
       // 🔴 [SHARE-PRIORITY 2026-10-04 用户口径 · 楚天龙 9/3] 先判「先卖后买」这一档：
       //   占比【不达标】＋ 这一只【昨天真买过】⇒ 它今天必然同时出现在【卖点】里，
-      //   卖点那边给的是【竞价卖】（开盘先卖），买点这边就给【尾盘买（先卖后买）】（尾盘再接回）。
+      //   买点这边给【尾盘买（先卖后买）】（尾盘再接回），卖点那边给【竞价卖（先卖后买）】（开盘先卖）。
       //   ⛔ 这一档【不再标持有类标签】：行尾仓位【持有】与 ③ 的【持有】都清掉 ——
       //     用户原话「把持有去掉就可以，改成只有「尾盘买（先卖后买）」」。
-      //     ⚠️ 为什么必须清仓位：留着【持有】会被读成「不用卖」，与今天的【竞价卖】直接矛盾。
+      //     ⚠️ 为什么必须清仓位：留着【持有】会被读成「不用卖」，与今天的【竞价卖（先卖后买）】直接矛盾。
       //   §10：prevBought 为 null（昨天标签没读到）⇒ 不判这一档，按普通【尾盘买】给（未知 ≠ 昨天没买）。
       //   ⛔ 判据走 _isLateSwapPick 这一个函数（与 _markHold 共用，§6）—— 别在这里再写一遍条件，
       //      否则「哪算先卖后买」会分裂成两处，改门槛时必漏一处。
+      //   🔴 [DRAGON-SWAP 2026-10-06 用户口径 · 9/3 楚天龙] 卖点那边的对应标签已升级为
+      //     【竞价卖（先卖后买）】（此前是【竞价卖】）—— 两侧文案同步改，⛔ 不许只改一边。
+      //     用户原话：「在楚天龙卖点标签应该是'竞价卖（先卖后买）'」。
       const swapCase = _isLateSwapPick(p, { prevBoughtNames: prevBought, prevDragonNames: prevDragon });
       if (pass) {
         p.buyActionTag = BUY_NOW_TAG;
@@ -1284,7 +1312,7 @@ function _decorateShareAction(blockObj, opts) {
           ? '【' + BUY_NOW_TAG + '】：竞价就得下手，等尾盘反而更贵 / 买不到'
           : (swapCase
             ? '【' + BUY_LATE_SWAP_TAG + '】：这一只昨天已经买过（卖点里也有它）⇒ ' +
-              '开盘先按卖点的【' + SELL_OUT_TAG + '】把昨天的仓卖掉，尾盘再接回来；' +
+              '开盘先按卖点的【' + SELL_OUT_SWAP_TAG + '】把昨天的仓卖掉，尾盘再接回来；' +
               '所以本行【不再标持有】（⛔ 留着会被读成「不用卖」）'
             : '【' + BUY_LATE_TAG + '】：别追开盘，等尾盘再看')) +
         '。辅助验证：竞价涨幅 ' + formatAucPct(aucPct) +
@@ -1836,12 +1864,23 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
 
   const groups = new Map();
 
-  // ══ [FOLLOW-DRAGON 2026-10-05 用户口径 · 同题材龙一限制] 第 1 遍：找出「龙一已经倒下的题材」══
+  // ══ [FOLLOW-DRAGON 2026-10-05 用户口径 · 同题材龙一限制] 第 1 遍：找出「龙一真的倒下的题材」══
   //   「如果同个题材前排倒下，后排是避免不了下跌的……相当于将军倒下了，士兵不会幸免。」
-  //   判据 = 该题材【今日龙一】占比有数据且不达标 ⇒ 它已判【竞价卖】。
-  //   §10：龙一占比缺数据 / 龙一占比达标 / 该题材今天没有龙一 ⇒ 都不算「倒下」。
+  //   判据 = 该题材【今日龙一】的卖点标签是【纯「竞价卖」】—— 展开就是下面三条同时成立：
+  //     ① 占比有数据；② 占比不达标；③ 🔴 **它今天【没】进买点**。
+  //
+  //   🔴 [DRAGON-SWAP 2026-10-06 用户口径 · 9/3 楚天龙 vs 龙版传媒] 第 ③ 条是本次修正的核心：
+  //     「楚天龙作为龙一，后面还有标签先卖后买，说明当天还是看好的，不然不会买，
+  //       所以其实将军并没有倒下，所以这个不影响后排选手龙版传媒龙四。……
+  //       如果龙一只有竞价卖，不是竞价卖（先卖后买），那后排选手就可以那样标竞价卖。」
+  //     ⇒ 龙一占比不达标【但】它今天也在买点里时，卖点给的是【竞价卖（先卖后买）】，
+  //       这枚标签本身就说明「当天还看好」（否则不会买）⇒ **不算倒下**，后排各判各的。
+  //       （等价说法：只有【纯「竞价卖」】才是「真的弱了」。）
+  //
+  //   §10 不猜：龙一占比缺数据 / 龙一占比达标 / 该题材今天没有龙一 / 龙一不在卖点候选里
+  //     ⇒ 一律不算「倒下」（后面这条由「rows 里找不到那只龙一」自然覆盖）。
   //   ⛔ 只在【本函数内部】先用一遍 rows，不额外取数、不改 Data 层（§6 单一数据源）。
-  const fallenDragon = new Map();   // 题材 tp → { name, share }（那只倒下的今日龙一）
+  const fallenDragon = new Map();   // 题材 tp → { name, share }（那只真的倒下的今日龙一）
   rows.forEach(function(r) {
     const tp = String(r.topic || '').trim();
     if (!tp || fallenDragon.has(tp)) return;          // 未成组 ⇒ 无「同题材龙一」可言
@@ -1852,6 +1891,9 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
     const isPrevDragon = prevUnknown ? null : prevSet.has(r.name);
     const scope = resolveDragonScope(1, isPrevDragon);
     if (passesAuctionShare(share, scope.isFront)) return;  // 龙一占比达标 ⇒ 没倒，后排各判各的
+    // 🔴 第 ③ 条：龙一今天也进了买点 ⇒ 它的卖点标签是【竞价卖（先卖后买）】= 当天还看好
+    //   ⇒ 将军没倒下，后排不跟（用户口径见上方注释）。
+    if (todayBuyNames && todayBuyNames.has(r.name)) return;
     fallenDragon.set(tp, { name: r.name, share: share });
   });
 
@@ -1906,9 +1948,12 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
     if (share !== null) {
       // 🔴 [FOLLOW-DRAGON 2026-10-05 用户口径 · 9/9 国芳集团 + 安记食品] 【优先规则】同题材龙一限制：
       //   本条【优先】于下面的规则⑦（占比判定），规则⑦【让路】。
-      //   同题材的今日龙一已判【竞价卖】（占比不达标）⇒ 该题材其余所有票一律【跟龙竞价卖】，
-      //   ⛔ 不再看它自己的占比，也⛔ 不因为「今天又进买点」而给【持有】——
-      //     前排都倒了，后排是同类、避免不了跟跌（将军倒下，士兵难幸免）。
+      //   同题材的今日龙一【真的倒下了】(它的卖点标签是【纯「竞价卖」】—— 判据见上面第 1 遍)
+      //   ⇒ 该题材其余所有票一律【跟龙竞价卖】，⛔ 不再看它自己的占比，
+      //     也⛔ 不因为「今天又进买点」而给【持有】—— 前排都倒了，后排同类、避免不了跟跌
+      //     （将军倒下，士兵难幸免）。
+      //   🔴 [DRAGON-SWAP 2026-10-06] 「真的倒下了」的判据已收紧：龙一若【今天也在买点里】
+      //     （卖点给的是【竞价卖（先卖后买）】）⇒ 当天还看好 ⇒ 不算倒下 ⇒ 后排【不跟】。
       //   ⛔ 那只龙一自己不受这条约束（fallenDragon.name 是本行 ⇒ 走下面的规则⑦）。
       const fd = fallenDragon.get(tp);
       if (fd && fd.name !== r.name) {
@@ -1917,7 +1962,8 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
         sellActionTone = SELL_ACTION_TONE_FOLLOW;
         actionNote = _note(RULE_NO.SHARE,
           '同题材【今日龙一 ' + fd.name + '】竞价占比 ' + formatAuctionShare(fd.share) +
-          '（前排门槛 ' + _thresholdText(true) + '）不达标 ⇒ 已判【' + SELL_OUT_TAG + '】。' +
+          '（前排门槛 ' + _thresholdText(true) + '）不达标、且它今天【没有】进买点 ' +
+          '⇒ 它自己的卖点标签是【' + SELL_OUT_TAG + '】（真的弱了）。' +
           '同题材前排倒下，后排是同类、避免不了跟着跌（将军倒下，士兵难幸免）⇒ ' +
           '本股虽自身占比 ' + formatAuctionShare(share) + '（' + _scopeText(scope, isFront) +
           '门槛 ' + _thresholdText(isFront) + '）' + (sharePass ? '达标' : '不达标') +
@@ -1928,12 +1974,11 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
         // ── 规则⑦（占比说了算，旧口径整体让路）────────────────────────────────────
         // 🔴 [SHARE-PRIORITY 2026-10-04 用户口径 · 楚天龙 9/3] 【持有】只在占比【达标】时才给：
         //   占比达标 + 今天又进买点 ⇒ 它是强势股，今天是要买 / 加，不是卖 ⇒ 【持有】；
-        //   占比【不达标】+ 今天又进买点 ⇒ 它今天【走弱了】，不能当成强势股拿住 ⇒ 【竞价卖】
+        //   占比【不达标】+ 今天又进买点 ⇒ 不能当成强势股拿住 ⇒ 走下面的【竞价卖（先卖后买）】
         //     （用户原话：「占比2.5不达标。所以应该是竞价卖……卖点方面，提示持有标签……
-        //       应该去掉持有。应该是这个标签，'竞价卖'」）。
-        //   ⛔ 之前是「只要今天又进买点就标持有」，会把「走弱要卖」错判成「拿着别动」——
-        //     买点那一行同步给【尾盘买（先卖后买）】，两句合起来才是完整的「先卖后买」。
-        // ⚠️ [FOLLOW-DRAGON 2026-10-05] 上面那条【优先规则】命中时，本节三条【都不走】。
+        //       应该去掉持有。」—— 去掉【持有】这一条至今有效，只是动作词后来细化了）。
+        //   ⛔ 之前是「只要今天又进买点就标持有」，会把「走弱要卖」错判成「拿着别动」。
+        // ⚠️ [FOLLOW-DRAGON 2026-10-05] 上面那条【优先规则】命中时，规则⑦这几档【都不走】。
         // 强势股：今天是要买 / 加，不是卖（用户案例：花溪科技 9/2 占比 3.6% 达标）
         sellActionTag = HOLD_TAG;
         sellActionTone = 'hold';
@@ -1942,21 +1987,42 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
           _thresholdText(isFront) + '）⇒ 占比达标，且本股【今天又进了买点】→ 今天是要买 / 加，' +
           '不是卖 → 【' + HOLD_TAG + '】（而不是先卖后买）。辅助验证：竞价涨幅 ' +
           formatAucPct(aucPct) + '、竞价量比' + _dirWord(volRatioDir) + '。');
-      } else {
-        sellActionTag = sharePass ? SELL_LATE_TAG : SELL_OUT_TAG;
-        sellActionTone = sharePass ? SELL_ACTION_TONE_LATE : SELL_ACTION_TONE_OUT;
+      } else if (sharePass) {
+        sellActionTag = SELL_LATE_TAG;
+        sellActionTone = SELL_ACTION_TONE_LATE;
         actionNote = _note(RULE_NO.SHARE,
           '竞价占比 ' + formatAuctionShare(share) + '（' + _scopeText(scope, isFront) + '门槛 ' +
-          _thresholdText(isFront) + '）⇒ 占比' + (sharePass ? '达标' : '不达标') + '，' +
-          (sharePass
-            ? '【' + SELL_LATE_TAG + '】：说明还没走弱、当天还有走强趋势，不必开盘慌着走，拿到尾盘'
-            : '【' + SELL_OUT_TAG + '】：占比不到门槛，开盘就走，别恋战' +
-              (todayInBuy
-                ? '；它今天同时也在【买点】里，但占比不达标 = 今天走弱了，' +
-                  '⛔ 不按「强势股」标【' + HOLD_TAG + '】—— 买点那边给的是【' + BUY_LATE_SWAP_TAG +
-                  '】，两句合起来就是先卖后买'
-                : '')) +
-          '。辅助验证：竞价涨幅 ' + formatAucPct(aucPct) + '、竞价量比' + _dirWord(volRatioDir) +
+          _thresholdText(isFront) + '）⇒ 占比达标，' +
+          '【' + SELL_LATE_TAG + '】：说明还没走弱、当天还有走强趋势，不必开盘慌着走，拿到尾盘。' +
+          '辅助验证：竞价涨幅 ' + formatAucPct(aucPct) + '、竞价量比' + _dirWord(volRatioDir) +
+          '（辅助，不单独决定时机）。');
+      } else if (todayInBuy) {
+        // 🔴 [DRAGON-SWAP 2026-10-06 用户口径 · 9/3 楚天龙] 占比【不达标】但今天【又进买点】
+        //   ⇒ 【竞价卖（先卖后买）】：开盘先把昨天的仓卖掉（按卖点），尾盘再接回来（按买点）。
+        //   用户原话：「在楚天龙卖点标签应该是'竞价卖（先卖后买）'，有这个标签后，
+        //     说明当天这只票还是是强的，没有倒下，龙版传媒就要标上'持有'……
+        //     如果龙一卖点标签只有竞价卖，那么没有那个'竞价卖（先卖后买）'的标签，
+        //     说明真的弱了，后排选手也会跟着倒下，也就跟着'竞价卖'。」
+        //   ⚠️ 这枚标签同时是【同题材龙一限制】的刹车：带上它 ⇒ 不算「倒下了」（见上面第 1 遍）。
+        sellActionTag = SELL_OUT_SWAP_TAG;
+        sellActionTone = SELL_ACTION_TONE_SWAP;
+        actionNote = _note(RULE_NO.SHARE,
+          '竞价占比 ' + formatAuctionShare(share) + '（' + _scopeText(scope, isFront) + '门槛 ' +
+          _thresholdText(isFront) + '）不达标 ⇒ 开盘先把昨天的仓卖掉；' +
+          '但本股【今天又进了买点】（买点那边给的是【' + BUY_LATE_SWAP_TAG + '】）⇒ 尾盘再接回来，' +
+          '所以卖点这边标【' + SELL_OUT_SWAP_TAG + '】—— 两句合起来就是先卖后买。' +
+          '⚠️ 有这枚标签就说明【当天还是看好的】（不然不会买）⇒ 本股【不算「前排倒下」】，' +
+          '同题材后排不因它跟跌。辅助验证：竞价涨幅 ' + formatAucPct(aucPct) +
+          '、竞价量比' + _dirWord(volRatioDir) + '（辅助，不单独决定时机）。');
+      } else {
+        sellActionTag = SELL_OUT_TAG;
+        sellActionTone = SELL_ACTION_TONE_OUT;
+        actionNote = _note(RULE_NO.SHARE,
+          '竞价占比 ' + formatAuctionShare(share) + '（' + _scopeText(scope, isFront) + '门槛 ' +
+          _thresholdText(isFront) + '）⇒ 占比不达标，' +
+          '【' + SELL_OUT_TAG + '】：占比不到门槛，开盘就走，别恋战。' +
+          '（本股今天【没有】进买点 ⇒ 就是「真的弱了」，不是先卖后买。）' +
+          '辅助验证：竞价涨幅 ' + formatAucPct(aucPct) + '、竞价量比' + _dirWord(volRatioDir) +
           '（辅助，不单独决定时机）。');
       }
     } else {
@@ -1999,10 +2065,14 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
       aucSharePass: sharePass,
       inTodayList: !!r.inTodayList,
       holdTag: holdTag,
-      // [SHARE-RULE 2026-10-03 用户口径] 卖点【动作】：持有 / 尾盘卖 / 竞价卖。
+      // [SHARE-RULE 2026-10-03 用户口径] 卖点【动作】（共五档）：
+      //   持有 / 尾盘卖 / 竞价卖 / 竞价卖（先卖后买） / 跟龙竞价卖。
       //   ⛔ 占比缺数据时为空串 ⇒ 组件回落下面的 buyActionTag（先卖后买）/ sellHint / sellAt 旧口径。
-      //   🔴 [FOLLOW-DRAGON 2026-10-05 用户口径] 新增第四档【跟龙竞价卖】：
-      //     同题材今日龙一已判【竞价卖】⇒ 本行跟卖（本档【优先】于规则⑦）。见 aucFollowDragon。
+      //   🔴 [DRAGON-SWAP 2026-10-06 用户口径] 新增【竞价卖（先卖后买）】：
+      //     占比不达标 + 今天又进买点 ⇒ 开盘先卖、尾盘再接回来（买点侧对称给【尾盘买（先卖后买）】）；
+      //     它同时是【跟龙竞价卖】的刹车 —— 龙一带上它 ⇒ 不算倒下 ⇒ 后排不跟。
+      //   🔴 [FOLLOW-DRAGON 2026-10-05 用户口径] 新增【跟龙竞价卖】：
+      //     同题材今日龙一【真的倒下】（卖点标签是纯【竞价卖】）⇒ 本行跟卖（本档【优先】于规则⑦）。
       sellActionTag: sellActionTag,
       sellActionTone: sellActionTone,
       // [FOLLOW-DRAGON 2026-10-05] 本行是不是「跟龙竞价卖」（被同题材龙一带下去，不是自己走弱）。
@@ -2222,8 +2292,11 @@ function _volRatioBuyRulesLines() {
     '　　　　　　占比 < 门槛 → 行内标【' + BUY_LATE_TAG + '】：别追开盘，等尾盘再看。',
     '　【例外 · 先卖后买】（2026-10-04 用户口径）：占比 < 门槛【且】这一只【昨天已经买过】（所以它同时也在卖点里）',
     '　　　⇒ 本行只留一枚【' + BUY_LATE_SWAP_TAG + '】，⛔ 行尾【不再写仓位「' + HOLD_TAG + '」】：',
-    '　　　开盘先按卖点的【' + SELL_OUT_TAG + '】把昨天的仓卖掉，尾盘再接回来（两句合起来 = 先卖后买）。',
-    '　　　⚠️ 留着【' + HOLD_TAG + '】会被读成「拿着别动」，与今天的【' + SELL_OUT_TAG + '】自相矛盾。',
+    '　　　开盘先按卖点的【' + SELL_OUT_SWAP_TAG + '】把昨天的仓卖掉，尾盘再接回来（两句合起来 = 先卖后买）。',
+    '　　　⚠️ 留着【' + HOLD_TAG + '】会被读成「拿着别动」，与今天的【' + SELL_OUT_SWAP_TAG + '】自相矛盾。',
+    '　　　🔴 [DRAGON-SWAP 2026-10-06 用户口径] 卖点那边对应的标签就是【' + SELL_OUT_SWAP_TAG + '】；',
+    '　　　　本行（买点）与它【成对出现】。⚠️ 这一对标签还说明【当天仍然看好】（不然不会买回来）——',
+    '　　　　所以同题材后排【不会】因为这枚票而跟跌（见卖点段的【优先规则 · 同题材龙一限制】）。',
     '　　　（占比【达标】时不受本例外影响，照常【' + BUY_NOW_TAG + '】+【' + HOLD_TAG + '】。）',
     '　【为什么用占比当主判据】竞价涨幅与竞价量比只是【辅助】：',
     '　　两个都涨的时候如果是「假强」，当天一路下跌，即使明天涨也得失相当；',
@@ -2241,7 +2314,8 @@ function _volRatioBuyRulesLines() {
     '　　· 花溪科技（昨日龙一）涨幅 -5.02%、量比下降、占比 3.6% ≥ 3.5% → 【' + BUY_NOW_TAG + '】',
     '　　　（3.6% 不到前排标准 4%，但昨日龙一可用 0.5% 容错 ⇒ 门槛降到 3.5%）。',
     '　　· 楚天龙 9/3（昨有买入，同时进买点 + 卖点）涨幅 -3.36%、量比下降、占比 2.5% < 3.5%',
-    '　　　⇒ 【' + BUY_LATE_SWAP_TAG + '】（只剩这一枚，不再标【' + HOLD_TAG + '】）。',
+    '　　　⇒ 【' + BUY_LATE_SWAP_TAG + '】（只剩这一枚，不再标【' + HOLD_TAG + '】）；',
+    '　　　　卖点那边同步是【' + SELL_OUT_SWAP_TAG + '】—— 两条成对读，就是「开盘先卖、尾盘再接回来」。',
     '　【§10 缺失】占比算不出来（缺当日竞价量 / 缺昨日成交量）→ 本节【回落旧的量比方向口径】',
     '　　（量比增强 → 竞价买；下降 → 已持仓标【' + SELL_FIRST_BUY_LATER_TAG + '】、未持仓标【' +
       BUY_LATE_TAG + '】；平 / 未知 → 不给动作标签），',
@@ -2270,27 +2344,41 @@ export function sellRulesLines() {
     '　　前排（今日或昨日【龙一 / 龙二】）门槛 ' + AUCTION_SHARE_FRONT_MIN + '%（标准 ' +
       AUCTION_SHARE_FRONT_STD + '% 容错 ' + AUCTION_SHARE_TOLERANCE + '%）；后排门槛 ' +
       AUCTION_SHARE_BACK_STD + '%。',
-    '　【动作】（行尾标签，共四种；第四种【' + SELL_FOLLOW_DRAGON_TAG + '】是下面的【优先规则】）：',
+    '　【动作】（行尾标签，共五种；后两种【' + SELL_OUT_SWAP_TAG + '】【' + SELL_FOLLOW_DRAGON_TAG +
+      '】见下面两条补充规则）：',
     '　　· 占比 ≥ 门槛【且】该股没进今天的买点 → 【' + SELL_LATE_TAG +
       '】：说明还没走弱、当天还有走强趋势，不必开盘慌着走，拿到尾盘；',
     '　　· 占比 ≥ 门槛【且】该股【今天又进了买点】→ 【' + HOLD_TAG + '】：它是强势股，今天是要买 / 加，不是卖；',
-    '　　· 占比 < 门槛 → 【' + SELL_OUT_TAG + '】：占比不到门槛，开盘就走，别恋战。',
-    '　　　🔴 2026-10-04 用户口径：这一档【不看】它今天有没有进买点 —— 进了也是【' + SELL_OUT_TAG + '】。',
-    '　　　　用户原话（楚天龙 9/3）：「占比2.5不达标。所以应该是竞价卖……卖点方面，提示持有标签……应该去掉持有。」',
-    '　　　　理由：占比不达标 = 今天走弱了，不能因为「又进买点」就当强势股拿住；',
-    '　　　　此时买点那一行给的是【' + BUY_LATE_SWAP_TAG + '】，两边合起来 = 先卖后买。',
-    '　🔴 【优先规则 · 同题材龙一限制】（2026-10-05 用户口径）—— ⛔ 本条【优先】于上面三种动作，',
-    '　　命中时上面三种【全部让路】（用户原话「只是在原来规则' + RULE_NO.SHARE + '的基础上，加上这条优先规则，规则' +
+    '　　· 占比 < 门槛【且】该股【没进今天的买点】→ 【' + SELL_OUT_TAG + '】：占比不到门槛，开盘就走，别恋战；',
+    '　　· 占比 < 门槛【且】该股【今天又进了买点】→ 【' + SELL_OUT_SWAP_TAG +
+      '】：开盘先把昨天的仓卖掉，尾盘按买点再接回来。',
+    '　　　🔴 [DRAGON-SWAP 2026-10-06 用户口径 · 楚天龙 9/3] 这一档是本次新增：',
+    '　　　　用户原话：「在楚天龙卖点标签应该是「' + SELL_OUT_SWAP_TAG + '」，有这个标签后，说明当天这只票',
+    '　　　　还是是强的，没有倒下，龙版传媒就要标上「' + HOLD_TAG + '」，而不是现在的「' + SELL_OUT_TAG + '」。」',
+    '　　　　理由：它今天还能被买回来 ⇒ 当天并没有被真正放弃；只有【纯「' + SELL_OUT_TAG +
+      '」】才是「真的弱了」。',
+    '　　　（⚠️ 2026-10-04 那一版的写法是「不达标一律【' + SELL_OUT_TAG + '】，不看有没有进买点」；',
+    '　　　　本轮按用户口径细化：进了买点就带上「（' + SELL_FIRST_BUY_LATER_TAG + '）」，与买点侧【' +
+      BUY_LATE_SWAP_TAG + '】配成一对。）',
+    '　🔴 【优先规则 · 同题材龙一限制】（2026-10-05 用户口径）—— ⛔ 本条【优先】于上面四种动作，',
+    '　　命中时上面四种【全部让路】（用户原话「只是在原来规则' + RULE_NO.SHARE + '的基础上，加上这条优先规则，规则' +
       RULE_NO.SHARE + '要让路」）：',
-    '　　· 同一题材里，只要【今日龙一】的占比不达标（⇒ 它已判【' + SELL_OUT_TAG + '】），',
+    '　　· 同一题材里，只要【今日龙一】的卖点标签是【纯「' + SELL_OUT_TAG + '」】，',
     '　　　该题材【其余所有票】一律改判【' + SELL_FOLLOW_DRAGON_TAG + '】—— ⛔ 不再看它自己的占比，',
     '　　　⛔ 也不因为「今天又进买点」而给【' + HOLD_TAG + '】。',
     '　　· 理由（用户原话）：「如果同个题材前排倒下，后排是避免不了下跌的。因为他们是同类的。',
     '　　　相当于将军倒下了，士兵不会幸免。」—— 后排跟龙一绑定，好区分、也符合逻辑。',
-    '　　· §10【不跟】的三种情形（后排仍按上面三种动作各自判定）：',
+    '　　· 🔴 [DRAGON-SWAP 2026-10-06 用户口径] 【什么才算「龙一倒下」】—— 只有【纯「' + SELL_OUT_TAG +
+      '」】才算：',
+    '　　　　龙一占比不达标，【但】它今天也在买点里（标签是【' + SELL_OUT_SWAP_TAG + '】）',
+    '　　　　⇒ 说明当天【还是看好的】（不然不会买回来）⇒ 将军【并没有】倒下 ⇒ 后排【不跟】。',
+    '　　　　用户原话：「楚天龙作为龙一，后面还有标签先卖后买，说明当天还是看好的，不然不会买，',
+    '　　　　所以其实将军并没有倒下，所以这个不影响后排选手龙版传媒龙四。」',
+    '　　· §10【不跟】的四种情形（后排仍按上面四种动作各自判定）：',
     '　　　① 龙一占比【算不出来】⇒ 不知道它倒没倒，不替它下结论；',
     '　　　② 龙一占比【达标】⇒ 它给的是【' + SELL_LATE_TAG + '】（没倒），后排各判各的；',
-    '　　　③ 该题材的【龙一不在今天的卖点候选里】⇒ 看不到它的结论，就不跟。',
+    '　　　③ 龙一卖点标签是【' + SELL_OUT_SWAP_TAG + '】⇒ 当天还看好（没倒），后排各判各的；',
+    '　　　④ 该题材的【龙一不在今天的卖点候选里】⇒ 看不到它的结论，就不跟。',
     '　　· 非同一题材的行【完全不变】（用户原话「如果不是同题材，和原来一样」）。',
     '　【例子（用户给的验收案例，逐条可对）】',
     '　　· 金健米业（昨日龙一）涨幅 +0.08%、量比下降、占比 3.9% → 不到 4% 但昨日龙一可容错 0.5%',
@@ -2301,9 +2389,15 @@ export function sellRulesLines() {
     '　　· 浙江世宝（今日没有题材 = 后排）涨幅 -6.52%、量比增强、占比 2.6% ≥ 2% → 【' + SELL_LATE_TAG + '】；',
     '　　· 华阳国际（龙三，非前排）涨幅 -1.3%、量比下降、占比 1.8% < 2% → 【' + SELL_OUT_TAG + '】；',
     '　　· 花溪科技 9/2（今天又进买点，占比 3.6% 达标）→ 【' + HOLD_TAG + '】；',
-    '　　· 楚天龙 9/3（昨有买入、同时进买点，占比 2.5% 不达标）→ 【' + SELL_OUT_TAG +
-      '】（⛔ 不标【' + HOLD_TAG + '】）。',
-    '　　· 9/9 大消费（优先规则）：国芳集团（龙一）占比不达标 → 【' + SELL_OUT_TAG + '】；',
+    '　　· 楚天龙 9/3（昨有买入、同时进买点 + 卖点，占比 2.5% 不达标）→ 【' + SELL_OUT_SWAP_TAG +
+      '】',
+    '　　　（⛔ 不标【' + HOLD_TAG + '】；买点那边是【' + BUY_LATE_SWAP_TAG + '】，两句成对 = 先卖后买）。',
+    '　　· 龙版传媒 9/3（龙四 = 后排，占比 8.7% ≥ 2% 达标，今天又进买点）→ 【' + HOLD_TAG + '】；',
+    '　　　为什么【没】被【' + SELL_FOLLOW_DRAGON_TAG + '】带走：同题材龙一楚天龙的标签是【' +
+      SELL_OUT_SWAP_TAG + '】',
+    '　　　（= 当天还看好，将军没倒下）⇒ 上面的【优先规则】不生效，本行按自己占比判 ⇒ 【' + HOLD_TAG + '】。',
+    '　　· 9/9 大消费（优先规则生效）：国芳集团（龙一）占比不达标、且它今天【没】进买点',
+    '　　　⇒ 标签是【纯「' + SELL_OUT_TAG + '」】= 真的弱了 ⇒ 同题材后排跟卖；',
     '　　　安记食品（龙九）自己的占比本来够【' + SELL_LATE_TAG + '】，但同题材龙一已倒 ⇒ 改判【' +
       SELL_FOLLOW_DRAGON_TAG + '】。',
     '　【§10 缺失】占比算不出来（缺当日竞价量 / 缺昨日成交量）→ 本节【整体回落下面的旧口径】',
