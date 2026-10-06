@@ -117,6 +117,52 @@ export function getVolRatioDir(stockName, endDate) {
 
 
 // ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [DIVE-BUY 2026-10-07 用户口径 · 爱仕达 9/7] 「今日竞价量比 － 上一交易日」的【整数差】★★
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话：「中军选手竞价涨幅超过 7%……竞价量比比上个交易日多 30（一般不超过 20，这是个硬指标，
+//   同比减少都不符合）……所以应该打上标签「下杀买（竞价异常）」」。
+//
+// ⇒ 判据口径与上面的【方向】（compareVolRatioDirection）【逐字节同源】：两个值各自四舍五入到整数
+//   后再作差（用户 2026-10-02 明确点名「四舍五入（保留整数）」）。⛔ 不要改成「原始差」——
+//   那样 101.89 vs 71.90 与 101.10 vs 71.90 会给出不同结论，与徽标上那个 ↑/↓ 的判断分叉（§6）。
+//
+// 与「倍数」（§SELL-SURGE）的区别：方向/差值回答「强了多少」，倍数回答「放大了几倍」——
+//   三个口径各有用途，⛔ 不许互相替代（判据见 decision-rules#_isDiveBuyPick 的 ②）。
+//
+// §10：任一天缺值 / 空串 / 非数字 ⇒ 返回 null（未知），⛔ 绝不当成 0 参与比较 ——
+//   「没查到」与「量比没增加」是两件事，后者会直接把「下杀买」判丢。
+/**
+ * 「今日 － 上一交易日」竞价量比【整数差】（纯函数，可单测）。
+ * @param {*} today 今日原始值（字符串 / 数字 / null）
+ * @param {*} prev  上一交易日原始值
+ * @returns {number|null} 四舍五入后的整数差；null = 缺数据（§10 未知，不猜）
+ */
+export function compareVolRatioDelta(today, prev) {
+  const a = _toNum(today);
+  const b = _toNum(prev);
+  if (a === null || b === null) return null;
+  return Math.round(a) - Math.round(b);
+}
+
+/**
+ * 取某只股票「今日 － 上一交易日」的竞价量比整数差（读内存真相，§6 与 getVolRatioDir 同源同字段）。
+ * ⚠️ 交易日窗口走 getPreviousTradingDay（交易日历）⇒ 自动跳过假期 / 周末，与全站同一口径。
+ * @param {string} stockName
+ * @param {string} endDate 展示日 YYYY-MM-DD
+ * @returns {number|null} null = 缺一天数据（§10 不猜）
+ */
+export function getVolRatioDelta(stockName, endDate) {
+  const name = String(stockName || '').trim();
+  if (!name || !endDate) return null;
+  const prev = getPreviousTradingDay(endDate);
+  if (!prev) return null;
+  return compareVolRatioDelta(
+    getStockHistoryValue(endDate, name, 'aucVolRatio'),
+    getStockHistoryValue(prev, name, 'aucVolRatio')
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════
 // ★★ [SELL-SURGE 2026-10-03 用户口径] 「今日竞价量比 ÷ 上一交易日竞价量比」的倍数 ★★
 // ══════════════════════════════════════════════════════════════════════════════════════
 // 用户原话（9/30 案例）：「房地产的新世联（世联行），竞价跌幅 -9.97%，竞价量比增加 5 倍以上，

@@ -55,7 +55,11 @@ import {
   // [VR-COMPARE 2026-10-02 用户口径] 「今日 vs 上交易日」竞价量比方向：买点 / 卖点新档位的唯一依据。
   getVolRatioDir,
   // [SELL-SURGE 2026-10-03 用户口径] 「今日 ÷ 上交易日」竞价量比倍数：卖点【冲高就卖】档的唯一依据。
-  getVolRatioTimes
+  getVolRatioTimes,
+  // [DIVE-BUY 2026-10-07 用户口径 · 爱仕达 9/7] 「今日 － 上交易日」竞价量比【整数差】：
+  //   买点【下杀买（竞价异常）】档的硬指标之一（用户口径「比上个交易日多 30」）。
+  //   ⛔ 与 volRatioDir（方向）/ volRatioTimes（倍数）是【三个不同口径】，别互相替代（§6）。
+  getVolRatioDelta
 } from './vol-ratio-trend.js';
 // [SHARE-RULE 2026-10-03 用户口径] 竞价占比（当日竞价量 ÷ 昨日成交量）= 买卖时机的【主判据】。
 //   ⛔ 公式 / 门槛 / 展示精度 / 取数的唯一实现在 auction-share.js；本文件只负责【调一次并挂到行上】（§6）。
@@ -421,6 +425,10 @@ export function collectDecisionData(date, opts) {
       //   ⚠️ 与 volRatioDir 是【两个不同口径】：方向回答「强了还是弱了」（整数差），
       //      倍数回答「放大了多少」（除法）。⛔ 别互相替代 —— 「增加 5 倍以上」只能靠倍数判。
       volRatioTimes: getVolRatioTimes(nm, date),
+      // [DIVE-BUY 2026-10-07 用户口径 · 爱仕达 9/7] 今日 vs 上交易日竞价量比的【整数差】（四舍五入后作差）。
+      //   买点【下杀买（竞价异常）】的三项硬指标之一（用户口径「比上个交易日多 30」）。
+      //   ⛔ 与 volRatioDir（方向）、volRatioTimes（倍数）是三个口径，谁都别替代谁；缺一天 → null（§10 不猜）。
+      volRatioDelta: getVolRatioDelta(nm, date),
       // [SHARE-RULE 2026-10-03 用户口径] 当日【竞价占比】（%）= 当日竞价量 ÷ 昨日成交量。
       //   与早盘竞价第一页那个占比【同一个公式、同一份数据】（auction_watchlist 同一行的
       //   volume / yest_volume），只是【展示精度不同】：第一页 = 取整，本看板 = 保留 1 位小数。

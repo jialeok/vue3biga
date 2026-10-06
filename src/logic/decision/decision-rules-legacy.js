@@ -70,6 +70,10 @@ import {
   BUY_LATE_SWAP_TAG,
   // [BUY-NOW 2026-10-03 用户口径] 【竞价买】徽标（量比增强 → 竞价就买），同样只有一份常量。
   BUY_NOW_TAG,
+  // [DIVE-BUY 2026-10-07 用户口径 · 爱仕达 9/7] 【下杀买（竞价异常）】+ 三个「正面异常」阈值：
+  //   动作标签由共享的 _decorateShareAction（decision-rules.js）统一给，⛔ 本文件不判；
+  //   这里 import 只为了写【规则文案】（§6：阈值只有一份，⛔ 不在文案里手抄 7 / 30 / 20）。
+  BUY_DIVE_TAG, DIVE_AUC_PCT_MIN, DIVE_VOL_RATIO_DELTA_MIN, DIVE_SHARE_MIN,
   // ⚠️ [SHARE-RULE 2026-10-03] BUY_ACTION_TONE_LATE / SWAP / NOW 三个配色档的导入已删除 ——
   //   配色档现在由 _decorateShareAction（decision-rules.js）统一给，本文件不再直接写 buyActionTone。
   //   （§16：不留死导入；否则 ESLint no-unused-vars 会报错。）
@@ -1783,7 +1787,7 @@ function _legacyBuyRulesLines() {
     //   量比方向【降级为占比缺数据时的退路】）。⛔ 与量比模式（decision-rules.js 的 ⑦）
     //   是【同一份实现】（_decorateShareAction），只是编号不同 —— 两套模式对
     //   「什么时候买」必须给同一个答案（§6 单一真相）。
-    '　⑭ 【' + BUY_NOW_TAG + ' / ' + BUY_LATE_TAG + ' / ' + BUY_LATE_SWAP_TAG +
+    '　⑭ 【' + BUY_NOW_TAG + ' / ' + BUY_LATE_TAG + ' / ' + BUY_LATE_SWAP_TAG + ' / ' + BUY_DIVE_TAG +
       '】= 按【竞价占比】决定今天什么时候买（2026-10-03 新规，占比说了算）：',
     '　　· 占比（%）= 【当日竞价量】÷【昨日成交量】×100，保留 1 位小数（如 0.0435 → 4.4%）；',
     '　　· 门槛：龙头（今日【龙一】，或昨日在龙头名册里）→ ' + AUCTION_SHARE_FRONT_MIN + '%（标准 ' +
@@ -1796,6 +1800,12 @@ function _legacyBuyRulesLines() {
       BUY_LATE_SWAP_TAG + '】，⛔ 行尾【不再写仓位「' + POSITION_HOLD + '】」（2026-10-04 用户口径）：',
     '　　　开盘先按卖点的【竞价卖】把昨天的仓卖掉，尾盘再接回来（两句合起来 = 先卖后买）；',
     '　　　⚠️ 留着【' + POSITION_HOLD + '】会被读成「拿着别动」，与「今天要卖」直接矛盾。',
+    '　　⚠️ 【' + BUY_DIVE_TAG + '】（2026-10-07 用户口径 · 爱仕达 9/7）—— 占比达标里的一档例外：',
+    '　　　同题材【龙头】与【中军】都在买点里（大题材），本股是那只中军，且三项指标同时爆表',
+    '　　　（① 涨幅 > ' + DIVE_AUC_PCT_MIN + '% 且没涨停；② 量比比上一交易日多 ' +
+      DIVE_VOL_RATIO_DELTA_MIN + ' 以上；③ 占比 > ' + DIVE_SHARE_MIN + '%）',
+    '　　　⇒ 别在竞价追高（溢价已高、涨停空间小）⇒ 改标【' + BUY_DIVE_TAG + '】，等它下杀洗盘后回调再买。',
+    '　　　（反例 9/8 安记食品是龙七 = 后排，不是中军 ⇒ 不适用，仍标【' + BUY_NOW_TAG + '】。）',
     '　　⚠️ 【竞价涨幅】与【竞价量比】只是【辅助】—— 两者都涨也可能是「假强」，',
     '　　　配上占比（实打实的水量）才能确认；三者同向时确定性最高。',
     '　　（例：捷荣技术量比【下降】但占比 7.0% ≥ 3.5% → 照样【' + BUY_NOW_TAG +

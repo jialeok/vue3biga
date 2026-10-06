@@ -41,6 +41,16 @@ import {
   // [FOLLOW-DRAGON 2026-10-05 用户口径 · 9/9 国芳集团 + 安记食品] 同题材龙一限制（优先规则）
   SELL_FOLLOW_DRAGON_TAG,
   SELL_ACTION_TONE_FOLLOW,
+  // [DIVE-BUY 2026-10-07 用户口径 · 9/7 爱仕达] 中军三项指标正面异常 ⇒ 下杀买（竞价异常）
+  BUY_DIVE_TAG,
+  DIVE_AUC_PCT_MIN,
+  DIVE_VOL_RATIO_DELTA_MIN,
+  DIVE_SHARE_MIN,
+  // [SELL-TEN-MIN 2026-10-07 用户口径 · 9/7 我爱我家] 龙一占比差一点点 + 量比增加 ⇒ 10分钟时卖
+  SELL_TEN_MIN_TAG,
+  SELL_ACTION_TONE_TEN_MIN,
+  SELL_TIME_TEN_MIN,
+  SELL_TEN_MIN_GAP,
   HOLD_TAG,
   RULE_NO
 } from './decision-rules.js';
@@ -71,8 +81,10 @@ import { VR_DIR_UP, VR_DIR_DOWN, VR_DIR_FLAT } from './vol-ratio-trend.js';
  * @param {number|null} volRatio 竞价量比（买点选票依据）
  * @param {number|null} share 竞价占比（%）—— 本文件的主角；null = 缺数据（§10）
  * @param {string} [dir] 竞价量比方向（up/flat/down/''），占比缺数据时的退路依据
+ * @param {number|null} [delta] 竞价量比与上一交易日的【整数差】——[DIVE-BUY 2026-10-07] 下杀买档的硬指标。
+ *        ⚠️ 不传一律写 null（= 缺数据）⇒ 该档【不生效】（§10：缺数据 ≠ 没增加）。
  */
-function R(name, topic, pct, aucPct, volRatio, share, dir) {
+function R(name, topic, pct, aucPct, volRatio, share, dir, delta) {
   return {
     name: name,
     topic: topic,
@@ -84,7 +96,8 @@ function R(name, topic, pct, aucPct, volRatio, share, dir) {
     aucPct: (aucPct === undefined) ? null : aucPct,
     aucVolRatio: (volRatio === undefined) ? null : volRatio,
     aucShare: (share === undefined) ? null : share,
-    volRatioDir: dir || ''
+    volRatioDir: dir || '',
+    volRatioDelta: (delta === undefined) ? null : delta
   };
 }
 
@@ -1252,5 +1265,251 @@ describe('规则文案：占比规则必须写进灰色问号面板（可一键�
     const back = joinRulesLines(lines).split('\n');
     expect(back.length).toBe(lines.length);
     expect(back).toEqual(lines);
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════════
+   ★ [DIVE-BUY 2026-10-07 用户口径 · 9/7 爱仕达] 中军三项指标【正面异常】⇒【下杀买（竞价异常）】
+   用户原话（9/7 爱仕达 = 龙四，与龙一国芳集团同题材）：
+     「竞价涨幅高达 9.04%，量比 101.89 同比增长，占比高达 20.2，竞价买，三个指标都是正面反馈没错，
+       所有指标都没有错，到这步也没错。但是作为中军选手来说，它属于指标异常了……如果竞价买，
+       风险还是很高，因为溢价不是很高，涨停盈利只有 1%，所以竞价买，不是很有性价比，
+       等它下杀后买溢价才高……添加标签的话，应该是「下杀买（竞价异常）」，这种一般它先下杀一阵，
+       把不坚定的筹码洗掉，然后再涨停的概率非常大。」
+     「判断标准，同题材有两只以上（包含两种，一种龙头和一种中军）进入决策买点（说明是大题材），
+       龙一符合竞价买。中军选手符合竞价买。中军选手竞价涨幅超过 7% 没有涨停（标准一般 -2% 到 3%），
+       竞价量比比上个交易日多 30（一般不超过 20，这是个硬指标，同比减少都不符合），
+       占比大于 20%（标准大于 2%），这属于指标正面异常（非负面），这三个指标同时满足。缺一个不行。」
+     「像 9 月 8 日的安记食品（也是消费题材有国芳集团龙一入选，安记食品龙七是后排选手）
+       不符合这个标准，所以它保持不变，竞价买。」
+   ════════════════════════════════════════════════════════════════════════════════ */
+describe('★ 9/7 爱仕达（龙四 = 中军）：三项指标正面异常 ⇒ 【下杀买（竞价异常）】', () => {
+  /**
+   * 造一个 7 只的题材「大消费」：
+   *   国芳集团（龙一，默认占比 4.0% ≥ 3.5% ⇒ 竞价买）+ 5 只量比很低的中间票 + 目标票（量比 101.89）。
+   *   targetPct 决定目标票的龙位：25 ⇒ 龙四（中军）｜-10 ⇒ 龙七（后排）。
+   *   ⚠️ 中间票的十日涨幅是 40 / 30 / 20 / 10 / 0 ⇒ 目标票要落在「20 与 30 之间」才是龙四，
+   *      写 15 会掉到龙五（后排）—— 【下杀买】只认中军，档位写错用例会静默变成空测。
+   *   7 只 ⇒ 中档 ⇒ 取 2 只；量比降序 = 目标票(101.89) ＞ 国芳集团(80) ⇒ 两只都进买点（① 成立）。
+   */
+  function topicRows(targetName, targetPct, aucPct, share, dir, delta, leaderShare) {
+    const rows = [R('国芳集团', '大消费', 50, 0.5, 80,
+      (leaderShare === undefined ? 4.0 : leaderShare), VR_DIR_UP)];
+    [40, 30, 20, 10, 0].forEach(function(pct, i) {
+      rows.push(R('中间' + (i + 1), '大消费', pct, 0.2, 3 - i * 0.1, 1.0));
+    });
+    rows.push(R(targetName, '大消费', targetPct, aucPct, 101.89, share, dir, delta));
+    return rows;
+  }
+  /** 爱仕达 9/7 的真实数值（可用 extra 逐项改掉某一个指标，做「缺一不行」的反例） */
+  function aisida(extra) {
+    const o = extra || {};
+    return topicRows('爱仕达', 25,
+      (o.aucPct === undefined ? 9.04 : o.aucPct),
+      (o.share === undefined ? 20.2 : o.share),
+      (o.dir === undefined ? VR_DIR_UP : o.dir),
+      (o.delta === undefined ? 40 : o.delta),
+      o.leaderShare);
+  }
+  const tagOf = function(rows, name) { return pickOf(buy(rows), name).buyActionTag; };
+
+  it('① 命中：龙头（国芳集团=龙一）+ 中军（爱仕达=龙四）都在买点里，三项指标同时爆表 ⇒ 【下杀买（竞价异常）】', () => {
+    const plan = buy(aisida());
+    const a = pickOf(plan, '爱仕达');
+    expect(a.dragonRank).toBe(4);                        // 龙四 ⇒ 中军
+    expect(a.aucPct).toBeCloseTo(9.04);
+    expect(a.aucShare).toBeCloseTo(20.2);
+    expect(a.volRatioDelta).toBe(40);
+    expect(a.aucLimitUp).toBe(false);                    // 9.04% < 10% ⇒ 没涨停
+    expect(a.buyActionTag).toBe(BUY_DIVE_TAG);
+    expect(a.buyActionTag).toBe('下杀买（竞价异常）');
+    expect(a.buyActionTone).toBe('dive');
+    // 龙头自己【不受】本档影响 —— 它照旧是【竞价买】（本档只针对中军）
+    expect(pickOf(plan, '国芳集团').buyActionTag).toBe(BUY_NOW_TAG);
+    // 行内说明要把「为什么」写全（正面异常 / 量化补涨 / 等下杀）
+    expect(a.actionNote).toContain(BUY_DIVE_TAG);
+    expect(a.actionNote).toContain('正面异常');
+    expect(a.actionNote).toContain('量化');
+    expect(a.actionNote).toContain(String(DIVE_SHARE_MIN));
+  });
+
+  it('② 反例（用户点名）：9/8 安记食品是龙七 =【后排】，指标再异常也不适用 ⇒ 保持【竞价买】', () => {
+    const rows = topicRows('安记食品', -10, 9.04, 20.2, VR_DIR_UP, 40);
+    const a = pickOf(buy(rows), '安记食品');
+    expect(a.dragonRank).toBe(7);                        // 龙七 ⇒ 后排（不是中军）
+    expect(a.aucPct).toBeCloseTo(9.04);
+    expect(a.aucShare).toBeCloseTo(20.2);
+    expect(a.buyActionTag).toBe(BUY_NOW_TAG);            // ⛔ 不变
+  });
+
+  it('③ 缺一不行 ①：竞价涨幅只到 6.5%（不 > ' + DIVE_AUC_PCT_MIN + '%）⇒ 仍是【竞价买】', () => {
+    expect(tagOf(aisida({ aucPct: 6.5 }), '爱仕达')).toBe(BUY_NOW_TAG);
+  });
+
+  it('④ 缺一不行 ②：量比只比上一交易日多 20（不 ≥ ' + DIVE_VOL_RATIO_DELTA_MIN +
+    '，硬指标）⇒ 仍是【竞价买】', () => {
+    expect(tagOf(aisida({ delta: 20 }), '爱仕达')).toBe(BUY_NOW_TAG);
+    // 边界：正好多 30 也【算】（用户口径「多 30」）
+    expect(tagOf(aisida({ delta: DIVE_VOL_RATIO_DELTA_MIN }), '爱仕达')).toBe(BUY_DIVE_TAG);
+  });
+
+  it('⑤ 缺一不行 ③：占比 18%（不 > ' + DIVE_SHARE_MIN + '%）⇒ 仍是【竞价买】', () => {
+    expect(tagOf(aisida({ share: 18 }), '爱仕达')).toBe(BUY_NOW_TAG);
+  });
+
+  it('⑥ 【已经涨停】就不算（没有下杀空间）：涨幅 +10.02% ⇒ 仍是【竞价买】', () => {
+    const a = pickOf(buy(aisida({ aucPct: 10.02 })), '爱仕达');
+    expect(a.aucLimitUp).toBe(true);
+    expect(a.buyActionTag).toBe(BUY_NOW_TAG);
+  });
+
+  it('⑦ §10：量比差值缺数据（null）⇒ 不判本档（缺数据 ≠ 没增加）', () => {
+    const a = pickOf(buy(aisida({ delta: null })), '爱仕达');
+    expect(a.volRatioDelta).toBe(null);
+    expect(a.buyActionTag).toBe(BUY_NOW_TAG);
+  });
+
+  it('⑧ 前提不成立：龙头（国芳集团）自己占比不达标（2.0% < 3.5%）⇒ 不判本档', () => {
+    const plan = buy(aisida({ leaderShare: 2.0 }));
+    expect(pickOf(plan, '国芳集团').aucSharePass).toBe(false);
+    expect(pickOf(plan, '爱仕达').buyActionTag).toBe(BUY_NOW_TAG);
+  });
+
+  it('⑨ 前提不成立：同题材只有龙头一只进买点（中军没被选出来）⇒ 不判本档', () => {
+    // 目标票量比只有 1.5（排在中量比之后）⇒ 只剩国芳集团一只被选中 ⇒ ① 不成立
+    const rows = [R('国芳集团', '大消费', 50, 0.5, 80, 4.0, VR_DIR_UP)];
+    [40, 30, 20, 10, 0].forEach(function(pct, i) {
+      rows.push(R('中间' + (i + 1), '大消费', pct, 0.2, 3 - i * 0.1, 1.0));
+    });
+    rows.push(R('中军票', '大消费', 15, 9.04, 1.5, 20.2, VR_DIR_UP, 40));
+    const plan = buy(rows);
+    expect(pickOf(plan, '国芳集团').buyActionTag).toBe(BUY_NOW_TAG);
+    // 「中军票」没被选中 ⇒ 本用例只断言龙头那只没被误改（§10：没选中就不给动作）
+    expect(plan.heavy.picks.concat(plan.light ? plan.light.picks : [])
+      .some(function(p) { return p.name === '中军票'; })).toBe(false);
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════════
+   ★ [SELL-TEN-MIN 2026-10-07 用户口径 · 9/7 我爱我家] 【10分钟时卖】
+   用户原话：
+     「卖点 我爱我家龙一，占比很接近 3.5%，它只有 3.2%，竞价量比 9.53 增加，竞价涨幅减少。
+       上面两个指标说明（竞价量比同比增加，和相差不大的占比（标准门槛 3.5%），相差在 0.5% 左右，
+       所以要同时满足这两个条件，特别是在占比相差不大的时候，龙一会出现这种情况），盘中有冲高可能。
+       如果竞价卖，容易卖飞。应该是 9：40 卖，等 10 分钟，等到时间不管冲不冲高，都要卖的。
+       标签应该是「10分钟时卖」」
+   ════════════════════════════════════════════════════════════════════════════════ */
+describe('★ 9/7 我爱我家（今日龙一）：占比差一点点 + 量比增加 ⇒ 【10分钟时卖】', () => {
+  // 同一题材 T1 共 5 只：龙一 = 我爱我家（十日涨幅最高）+ 中军（龙二~龙四）+ 后排（龙五）。
+  //   中军 / 后排自己的占比都给 3.0%（≥ 2% 达标）⇒ 若「不跟」应各自判【尾盘卖】。
+  function t1Rows(leaderShare, leaderDir) {
+    return [
+      R('我爱我家', 'T1', 50, -0.5, 9.53, leaderShare, leaderDir),
+      R('中军二', 'T1', 40, 0.5, 1, 3.0),
+      R('中军三', 'T1', 30, 0.5, 1, 3.0),
+      R('中军四', 'T1', 20, 0.5, 1, 3.0),
+      R('后排五', 'T1', 10, 0.5, 1, 3.0)
+    ];
+  }
+  function s(leaderShare, leaderDir, todayBuyNames) {
+    const rows = t1Rows(leaderShare, leaderDir);
+    return sell(rows, {
+      memberRows: rows,
+      prevDragonNames: new Set(['别的股票']),
+      todayBuyNames: todayBuyNames || null
+    });
+  }
+
+  it('① 命中：龙一占比 3.2%（离门槛 3.5% 只差 0.3%）＋ 量比增加 ⇒ 【10分钟时卖】（不是竞价卖）', () => {
+    const x = itemOf(s(3.2, VR_DIR_UP), '我爱我家');
+    expect(x.dragonRank).toBe(1);
+    expect(x.aucShareText).toBe('3.2%');
+    expect(x.aucSharePass).toBe(false);              // 3.2% < 3.5% ⇒ 不达标
+    expect(x.sellActionTag).toBe(SELL_TEN_MIN_TAG);
+    expect(x.sellActionTag).toBe('10分钟时卖');
+    expect(x.sellActionTone).toBe(SELL_ACTION_TONE_TEN_MIN);
+    expect(x.actionNote).toContain(SELL_TIME_TEN_MIN);   // 9:40
+    expect(x.actionNote).toContain('卖飞');
+    expect(x.sellHint).toBe(null);                   // 占比有数据 ⇒ 旧口径让路
+  });
+
+  it('② 只满足一半（占比差一点点，但量比【下降】）⇒ 照旧【竞价卖】', () => {
+    expect(itemOf(s(3.2, VR_DIR_DOWN), '我爱我家').sellActionTag).toBe(SELL_OUT_TAG);
+  });
+
+  it('③ 只满足一半（占比差一点点，但量比【基本平】）⇒ 照旧【竞价卖】', () => {
+    expect(itemOf(s(3.2, VR_DIR_FLAT), '我爱我家').sellActionTag).toBe(SELL_OUT_TAG);
+  });
+
+  it('④ 占比差得多（2.5%，离门槛差 1.0%）＋ 量比增加 ⇒ 照旧【竞价卖】（不是差一点点）', () => {
+    expect(itemOf(s(2.5, VR_DIR_UP), '我爱我家').sellActionTag).toBe(SELL_OUT_TAG);
+  });
+
+  it('⑤ 边界：正好差 ' + SELL_TEN_MIN_GAP + '%（占比 3.0%）⇒ 命中；差 0.6%（2.9%）⇒ 不命中', () => {
+    expect(itemOf(s(3.0, VR_DIR_UP), '我爱我家').sellActionTag).toBe(SELL_TEN_MIN_TAG);
+    expect(itemOf(s(2.9, VR_DIR_UP), '我爱我家').sellActionTag).toBe(SELL_OUT_TAG);
+  });
+
+  it('⑥ 占比【达标】（3.5%）⇒ 走【尾盘卖】，不是本档', () => {
+    expect(itemOf(s(3.5, VR_DIR_UP), '我爱我家').sellActionTag).toBe(SELL_LATE_TAG);
+  });
+
+  it('⑦ 优先级：龙一【也进了买点】⇒ 【竞价卖（先卖后买）】优先，⛔ 不让本档抢走', () => {
+    // 买点侧的说明文字直接引用卖点标签名（「开盘先按卖点的【竞价卖（先卖后买）】卖掉」），
+    // 本档若抢走会让两侧文案打架 ⇒ 两档同时成立时必须以「先卖后买」为准。
+    const x = itemOf(s(3.2, VR_DIR_UP, new Set(['我爱我家'])), '我爱我家');
+    expect(x.sellActionTag).toBe(SELL_OUT_SWAP_TAG);
+  });
+
+  it('⑧ 只认【今日龙一】：中军（龙二）占比 1.2% + 量比增加 ⇒ 仍是【竞价卖】，不是本档', () => {
+    const rows = [
+      R('龙头票', 'T1', 50, -0.5, 1, 5.0, VR_DIR_UP),      // 龙一占比达标 ⇒ 不触发跟龙
+      R('中军二', 'T1', 40, -0.5, 1, 1.2, VR_DIR_UP),
+      R('中军三', 'T1', 30, 0.5, 1, 3.0)
+    ];
+    const plan = sell(rows, { memberRows: rows, prevDragonNames: new Set(['别的股票']) });
+    const m = itemOf(plan, '中军二');
+    expect(m.dragonRank).toBe(2);
+    expect(m.sellActionTag).toBe(SELL_OUT_TAG);
+  });
+
+  it('⑨ 跟龙联动：龙一判本档 ⇒ 说明它【没那么弱】⇒ 只有【后排】跟（中军各判各的）', () => {
+    const plan = s(3.2, VR_DIR_UP);
+    expect(itemOf(plan, '我爱我家').sellActionTag).toBe(SELL_TEN_MIN_TAG);
+    ['中军二', '中军三', '中军四'].forEach(function(n) {
+      expect(itemOf(plan, n).sellActionTag).toBe(SELL_LATE_TAG);
+      expect(itemOf(plan, n).aucFollowDragon).toBe(false);
+    });
+    const b = itemOf(plan, '后排五');
+    expect(b.sellActionTag).toBe(SELL_FOLLOW_DRAGON_TAG);
+    expect(b.aucFollowDragon).toBe(true);
+    // 跟龙的说明文字要如实写出龙一那一枚标签（本档，不是「先卖后买」）
+    expect(b.actionNote).toContain(SELL_TEN_MIN_TAG);
+  });
+});
+
+describe('规则文案：两条新规则（下杀买 / 10分钟时卖）必须写进灰色问号面板', () => {
+  it('买点段写出【下杀买（竞价异常）】的四个条件与 9/7 / 9/8 两个案例', () => {
+    const lines = buildVolRatioRulesLines().join('\n');
+    expect(lines).toContain(BUY_DIVE_TAG);
+    expect(lines).toContain(String(DIVE_AUC_PCT_MIN));
+    expect(lines).toContain(String(DIVE_VOL_RATIO_DELTA_MIN));
+    expect(lines).toContain(String(DIVE_SHARE_MIN));
+    expect(lines).toContain('爱仕达');
+    expect(lines).toContain('安记食品');
+  });
+
+  it('卖点段写出【10分钟时卖】的两个条件与 9:40', () => {
+    const lines = buildVolRatioRulesLines().join('\n');
+    expect(lines).toContain(SELL_TEN_MIN_TAG);
+    expect(lines).toContain(SELL_TIME_TEN_MIN);
+    expect(lines).toContain('我爱我家');
+    expect(lines).toContain(String(SELL_TEN_MIN_GAP));
+  });
+
+  it('legacy（一字）文案也带上【下杀买（竞价异常）】—— 两套模式共用同一份买卖时机实现', () => {
+    const lines = buildRulesLines().join('\n');
+    expect(lines).toContain(BUY_DIVE_TAG);
+    expect(lines).toContain(SELL_TEN_MIN_TAG);
   });
 });
