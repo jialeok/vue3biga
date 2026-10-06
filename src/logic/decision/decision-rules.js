@@ -112,6 +112,11 @@ import { getAucOpenKind } from '../ladder/ladder-rules.js';
 // [DIVE-BUY 2026-10-07 用户口径 · 爱仕达 9/7] 还要判「有没有涨停」——【竞价涨停】判定同样复用
 //   limit-up.js 的唯一实现（「涨跌停」看板用的就是它），⛔ 不在这里手写 10% / 20% / 30% 那套阈值。
 import { formatAucPct, getAuctionLimitState } from '../auction/limit-up.js';
+// [BOARD-RISK 2026-10-07 用户口径] 买点行的【创业板 / 科创板风险提示】—— 板块判定同样复用
+//   limit-up.js 的唯一实现 getBoardKind（⛔ 绝不手写 /^30|68/ 这类前缀，§6 两套口径必然分叉）。
+import {
+  getBoardKind, BOARD_STAR, BOARD_GROWTH
+} from '../auction/limit-up.js';
 // [VR-COMPARE 2026-10-02 用户口径] 「今日 vs 上交易日」竞价量比方向的【唯一口径】在 vol-ratio-trend.js
 //   （compareVolRatioDirection 的四舍五入整数差）。⛔ 本文件只 import 常量做比较，绝不另写一套阈值 ——
 //   否则「量比算不算下降」在徽标与规则两处会出现两个答案（§6 破）。
@@ -350,6 +355,53 @@ export const BUY_ACTION_TONE_MAKEUP = 'makeup';
 export const MAKEUP_AUC_PCT_MIN = 3;
 /** 补涨判据 ②：题材入选次数必须【恰好】等于这个值（二次入选；3 次及以上不标） */
 export const MAKEUP_STREAK = 2;
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [BOARD-RISK 2026-10-07 用户口径] 买点行的【创业板 / 科创板风险提示】 ★★
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话：「凡是进入决策看板买点的非主板的股票，自动打上标签"创业板风险极高"，因为那些都
+//   科创板，创业板等。不受规则控制，这种一般是套利的，也不准确，风险极高，很容易吃亏。
+//   文字前面警示标志，这样更加醒目些，避免误买。其它不变。但是选票逻辑不变，
+//   还是按照原来的（后期发现不对劲，我会考虑改下）。」
+//
+// ⇒ 三条边界，改宽一分都会越权：
+//   ① 【只做提示】：写了 p.riskTag，⛔ 不参与任何选票 / 仓位 / 买卖时机的判断
+//      （用户口径「不受规则控制」「选票逻辑不变」）；
+//   ② 【只在买点】：由 _decorateAucBadge 落地，而它只在买点块的收口里被调用 ⇒ 卖点侧天然没有。
+//   ③ 【只标创业板 + 科创板】（用户口径「你标准创业板或者科创板就可以了」）：
+//      ⛔ 刻意【不含】北交所 BOARD_BJ —— 北交所同样是放开板（30%），但用户这次没要，
+//         擅自扩进去会让用户以为是 bug。真要加，改一行 _boardRiskTag 即可（下面留了注释位）。
+//
+// §6：板块判定只有一份 —— limit-up.js#getBoardKind（早盘竞价「20% / 30% 放开板灰色删除线」
+//   用的就是它，那里注释原话：这类股票「最容易误买」—— 与本标签是同一个防误买意图）。
+// ⛔ 注意它判的是【板块】，不是「涨跌幅 ≠ 10%」：主板 ST（5%）同样 ≠10%，用 getLimitUpPct
+//    反推会把 ST 全标上 —— 那是错的范围（limit-up.js#isHighLimitBoard 顶部有这条口径说明）。
+// §10：代码缺失 ⇒ getBoardKind 返回 BOARD_UNKNOWN ⇒ 【不标】（⛔ 宁可漏标，也绝不凭股票名猜板块）。
+
+/**
+ * [BOARD-RISK 2026-10-07] 买点行的两档风险文案。
+ * ⛔ 刻意【按板块分别取名】，而不是统一写「创业板风险极高」——
+ *    把科创板的票标成「创业板」是不准确的，而本标签存在的意义恰恰就是【准确防误买】。
+ *    （用户指定的措辞是「X板风险极高」，本实现保留了这个结构，只是把 X 换成真实板块。）
+ * ⚠️ 文案里【不含】警示符号：符号由 CSS 的 .dcb-risk::before 统一给（改符号不必改 Logic）。
+ */
+export const BOARD_RISK_TAG_GROWTH = '创业板风险极高';
+export const BOARD_RISK_TAG_STAR = '科创板风险极高';
+/** 风险提示配色档（decision-board.css 的 .dcb-risk 用的就是这个值；UI 不做 === '…' 判断，§21） */
+export const BOARD_RISK_TONE = 'high';
+
+/**
+ * [BOARD-RISK 2026-10-07] 板块 → 风险提示文案（唯一实现，§6）。
+ *
+ * @param {string} kind getBoardKind 的返回值（BOARD_* ）
+ * @returns {string} 风险文案；不需要提示时返回【空串】（UI 层 v-if 判定，§10 不猜）
+ */
+export function boardRiskTagOf(kind) {
+  if (kind === BOARD_GROWTH) return BOARD_RISK_TAG_GROWTH;
+  if (kind === BOARD_STAR) return BOARD_RISK_TAG_STAR;
+  // ⛔ BOARD_BJ（北交所）用户这次【明确不要】；BOARD_MAIN / BOARD_UNKNOWN 一律不标
+  return '';
+}
 
 // ══════════════════════════════════════════════════════════════════════════════════════
 // ★★ [SHARE-RULE 2026-10-03 用户口径 · 买卖点改以【竞价占比】为唯一主判据] ★★
@@ -1420,6 +1472,13 @@ function _decorateAucBadge(blockObj) {
     //   §10：缺数据（含缺代码 ⇒ 按主板兜底）→ false / null ⇒ 本档自然不成立，⛔ 不猜。
     p.volRatioDelta = _num(m ? m.volRatioDelta : null);
     p.aucLimitUp = (getAuctionLimitState(n, m ? m.code : '', p.name) === 'up');
+    // [BOARD-RISK 2026-10-07 用户口径] 【创业板 / 科创板风险提示】—— 挂在这一次反查里，
+    //   ⛔ 不另建一份 members 索引（§6：那只反查表本函数只建一次）。
+    //   · 板块走 getBoardKind 的唯一实现（代码前缀表只此一份，§6）；
+    //   · 代码缺失 ⇒ BOARD_UNKNOWN ⇒ 空串 ⇒ UI 不渲染（§10 绝不凭股票名猜板块）；
+    //   · ⛔ 本字段纯展示，不参与任何选票 / 仓位 / 买卖时机的判断（用户口径「选票逻辑不变」）。
+    p.riskTag = boardRiskTagOf(getBoardKind(m ? m.code : ''));
+    p.riskTone = p.riskTag ? BOARD_RISK_TONE : '';
   });
   return blockObj;
 }
@@ -2803,7 +2862,14 @@ function _volRatioBuyRulesLines() {
     '　※ 每个题材块下面的「选择理由」与说明文字都会标【规则N】（如【规则②】），方便按条文逐条核对。',
     '【题材行的数据】题材名右边依次是：实心红圆点（里面的数字 = 题材排名）｜数量：n（股票只数）｜',
     '　　竞价一字：n｜【' + TOPIC_PREV_BOUGHT_TAG + '】（有才显示）｜【N 次入选】（有才显示）。',
-    '【股票行的数据】股票名右边依次是：龙几（龙一 / 龙二）｜十日涨幅｜竞价涨幅小标签｜竞价量比；',
+    '【股票行的数据】股票名右边依次是：⚠【' + BOARD_RISK_TAG_GROWTH + ' / ' + BOARD_RISK_TAG_STAR +
+      '】（有才显示）｜龙几（龙一 / 龙二）｜十日涨幅｜竞价涨幅小标签｜竞价量比；',
+    // [BOARD-RISK 2026-10-07 用户口径] 20% 板的防误买提示 —— Rule box 里必须写清楚它【不是】规则。
+    '　　⚠️ 【' + BOARD_RISK_TAG_GROWTH + ' / ' + BOARD_RISK_TAG_STAR + '】（黑底黄字 + 警示三角，紧跟股票名）：',
+    '　　　这只票是【创业板（300 / 301）】或【科创板（688 / 689）】—— 20% 涨跌幅板；',
+    '　　　这类票进来买点【一般是短线套利】，不准、很容易吃亏 ⇒ 风险极高，下单前多看一眼。',
+    '　　　⛔ 它【不受任何规则控制】，也【不参与】任何规则：选票 / 仓位 / 买卖时机【完全不变】',
+    '　　　　（用户口径「选票逻辑不变，还是按照原来的」）；没代码 ⇒ 不标（§10 绝不凭股票名猜板块）。',
     '　　【竞价量比】小标签会显示与【上一交易日】相比的方向（两个值各自四舍五入到整数后作差）：',
     '　　　增强（差 ≥ +1）→ 整块【红底】带 ↑；下降（差 ≤ -1）→ 整块【绿底】带 ↓；基本平（差 = 0）或数据不全 → 靛蓝底不带箭头。',
     '　　行尾是仓位：' + POSITION_HEAVY + ' / ' + POSITION_LIGHT + ' = 今天新买建多少仓，' + POSITION_HOLD +

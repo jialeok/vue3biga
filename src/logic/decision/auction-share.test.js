@@ -51,6 +51,13 @@ import {
   BUY_ACTION_TONE_MAKEUP,
   MAKEUP_AUC_PCT_MIN,
   MAKEUP_STREAK,
+  // [BOARD-RISK 2026-10-07 用户口径] 买点行【创业板 / 科创板风险极高】：文案常量 + 板块取文案的函数
+  BOARD_RISK_TAG_GROWTH,
+  BOARD_RISK_TAG_STAR,
+  BOARD_RISK_TONE,
+  boardRiskTagOf,
+  POSITION_HEAVY,
+  POSITION_LIGHT,
   // [SELL-TEN-MIN 2026-10-07 用户口径 · 9/7 我爱我家] 龙一占比差一点点 + 量比增加 ⇒ 10分钟时卖
   SELL_TEN_MIN_TAG,
   SELL_ACTION_TONE_TEN_MIN,
@@ -74,6 +81,9 @@ import {
 //   买卖时机实现（_decorateShareAction），条文必须一起更新，⛔ 不许只改量比模式那一份。
 import { buildRulesLines } from './decision-rules-legacy.js';
 import { VR_DIR_UP, VR_DIR_DOWN, VR_DIR_FLAT } from './vol-ratio-trend.js';
+// [BOARD-RISK 2026-10-07] 板块判定复用早盘竞价的唯一实现（⛔ 测试也【不许】手写 /^30|68/ 前缀，
+//   否则测的是「另一份口径」，判据被改坏也测不出来）。
+import { getBoardKind, BOARD_BJ } from '../auction/limit-up.js';
 
 /* ─────────────────────────── 桩数据 ─────────────────────────── */
 
@@ -88,15 +98,17 @@ import { VR_DIR_UP, VR_DIR_DOWN, VR_DIR_FLAT } from './vol-ratio-trend.js';
  * @param {string} [dir] 竞价量比方向（up/flat/down/''），占比缺数据时的退路依据
  * @param {number|null} [delta] 竞价量比与上一交易日的【整数差】——[DIVE-BUY 2026-10-07] 下杀买档的硬指标。
  *        ⚠️ 不传一律写 null（= 缺数据）⇒ 该档【不生效】（§10：缺数据 ≠ 没增加）。
+ * @param {string} [code] 6 位股票代码 —— [BOARD-RISK 2026-10-07] 创业板 / 科创板风险提示要靠它判板块。
+ *        ⚠️ 不传一律写 ''（= 缺代码）⇒ 该票【不标】风险提示（§10 绝不凭股票名猜板块）。
  */
-function R(name, topic, pct, aucPct, volRatio, share, dir, delta) {
+function R(name, topic, pct, aucPct, volRatio, share, dir, delta, code) {
   return {
     name: name,
     topic: topic,
     pct: pct,
     isYizi: false,
     countable: true,
-    code: '',
+    code: (code === undefined || code === null) ? '' : code,
     inheritSold: false,
     aucPct: (aucPct === undefined) ? null : aucPct,
     aucVolRatio: (volRatio === undefined) ? null : volRatio,
@@ -1712,5 +1724,105 @@ describe('规则文案：[MAKEUP-BUY 2026-10-08] 【补涨竞价买】必须写�
     expect(lines).toContain(String(MAKEUP_AUC_PCT_MIN));
     expect(lines).toContain('二次入选');
     expect(lines).toContain('中新赛克');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★ [BOARD-RISK 2026-10-07 用户口径] 买点行【创业板 / 科创板风险极高】提示
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话：「凡是进入决策看板买点的非主板的股票，自动打上标签"创业板风险极高"……
+//   不受规则控制，这种一般是套利的，也不准确，风险极高，很容易吃亏。文字前面警示标志，
+//   这样更加醒目些，避免误买。其它不变。但是选票逻辑不变，还是按照原来的。」
+// ⛔ 本档【只做提示】：不参与选票 / 仓位 / 买卖时机的任何判断 —— 下面 ⑥ 专门钉这一点。
+describe('★ [BOARD-RISK 2026-10-07] 买点行 ⚠【创业板 / 科创板风险极高】', () => {
+  /**
+   * 造题材 T1（8 只 ⇒ 中档 ⇒ 一块正好选 2 只：甲票重仓 + 乙票轻仓）。
+   * 甲票（龙一）占比 5.0% 达标 ⇒ 【竞价买】；乙票 占比 1.5% 不达标 ⇒ 【尾盘买】。
+   * @param {string} [code] 甲票的股票代码（板块由它决定）
+   */
+  function riskRows(code) {
+    return [
+      R('甲票', 'T1', 55, 2, 9, 5.0, VR_DIR_UP, 5, code),
+      R('乙票', 'T1', 47, 1, 3, 1.5),
+      R('凑1', 'T1', 40, 0, 2.9, 1.1),
+      R('凑2', 'T1', 35, 0, 2.8, 1.1),
+      R('凑3', 'T1', 30, 0, 2.7, 1.1),
+      R('凑4', 'T1', 25, 0, 2.6, 1.1),
+      R('凑5', 'T1', 20, 0, 2.5, 1.1),
+      R('凑6', 'T1', 15, 0, 2.4, 1.1)
+    ];
+  }
+  const first = (code) => buy(riskRows(code)).heavy.picks[0];
+
+  it('① 创业板（300 / 301）⇒ 标【创业板风险极高】+ 高警示配色档', () => {
+    const p = first('300750');
+    expect(p.riskTag).toBe(BOARD_RISK_TAG_GROWTH);
+    expect(p.riskTag).toBe('创业板风险极高');
+    expect(p.riskTone).toBe(BOARD_RISK_TONE);
+    expect(first('301269').riskTag).toBe(BOARD_RISK_TAG_GROWTH);   // 301 同样算创业板
+  });
+
+  it('② 科创板（688 / 689）⇒ 标【科创板风险极高】（⛔ 不写成「创业板」，板块要准）', () => {
+    expect(first('688981').riskTag).toBe(BOARD_RISK_TAG_STAR);
+    expect(first('688981').riskTag).toBe('科创板风险极高');
+    expect(first('689009').riskTag).toBe(BOARD_RISK_TAG_STAR);
+  });
+
+  it('③ 主板（沪 60 / 深 00 · 01）⇒ 不标', () => {
+    expect(first('600519').riskTag).toBe('');
+    expect(first('000651').riskTag).toBe('');
+    expect(first('001234').riskTag).toBe('');
+    expect(first('600519').riskTone).toBe('');
+  });
+
+  it('④ §10：代码缺失 ⇒ 不标（⛔ 绝不凭股票名猜板块）', () => {
+    expect(first('').riskTag).toBe('');
+    expect(first(undefined).riskTag).toBe('');
+    expect(first('').riskTone).toBe('');
+  });
+
+  it('⑤ ⛔ 北交所（43 / 83 / 87 / 88 / 92）这次【明确不标】—— 用户只要创业板 + 科创板', () => {
+    expect(first('830799').riskTag).toBe('');
+    expect(first('430047').riskTag).toBe('');
+    // 顺带钉住判据表本身没被改坏：北交所仍然是放开板，只是本标签不涵盖它
+    expect(getBoardKind('830799')).toBe(BOARD_BJ);
+    expect(boardRiskTagOf(BOARD_BJ)).toBe('');
+  });
+
+  it('⑥ ⛔ 纯提示：不改变选票结果 / 仓位 / 买卖时机（用户口径「选票逻辑不变」）', () => {
+    const plan = buy(riskRows('300750'));
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['甲票', '乙票']);   // 选票不变
+    expect(plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_LIGHT]);
+    expect(plan.heavy.picks[0].buyActionTag).toBe(BUY_NOW_TAG);            // 占比 5.0% 达标
+    expect(plan.heavy.picks[1].buyActionTag).toBe(BUY_LATE_TAG);           // 占比 1.5% 不达标
+    // 与「不带代码」的那份逐字段对比：除了 riskTag / riskTone，其余必须一模一样
+    const plain = buy(riskRows('')).heavy.picks;
+    const risky = plan.heavy.picks;
+    expect(risky.length).toBe(plain.length);
+    risky.forEach((p, i) => {
+      Object.keys(plain[i]).forEach((k) => {
+        if (k === 'riskTag' || k === 'riskTone') return;
+        expect(p[k]).toEqual(plain[i][k]);
+      });
+    });
+  });
+
+  it('⑦ 卖点侧【不标】（本次只要买点；判据挂在买点块收口 _decorateAucBadge 上）', () => {
+    const plan = sell([R('甲票', 'T1', 55, 2, 9, 5.0, VR_DIR_UP, 5, '300750')]);
+    const hit = (plan.blocks || []).flatMap(b => b.picks || []).find(p => p.name === '甲票');
+    expect(hit === undefined || hit.riskTag === undefined).toBe(true);
+  });
+
+  it('⑧ 规则文案：两套模式的灰色问号面板都要写清【标签 + 用于提示 + 不参与规则】', () => {
+    const vol = buildVolRatioRulesLines().join('\n');
+    expect(vol).toContain(BOARD_RISK_TAG_GROWTH);
+    expect(vol).toContain(BOARD_RISK_TAG_STAR);
+    expect(vol).toContain('不参与');
+    expect(vol).toContain('选票逻辑不变');
+    const leg = buildRulesLines().join('\n');
+    expect(leg).toContain(BOARD_RISK_TAG_GROWTH);
+    expect(leg).toContain(BOARD_RISK_TAG_STAR);
+    expect(leg).toContain('不受任何规则控制');
+    expect(leg).toContain('完全不变');
   });
 });

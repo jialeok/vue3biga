@@ -311,6 +311,37 @@
             white-space: nowrap;
         }
 
+        /* [BOARD-RISK 2026-10-07 用户口径] 买点行的【创业板 / 科创板风险提示】—— 防误买的最后一道岗。
+           视觉刻意做成【施工警示牌】：深墨底 + 明黄字 + 警示三角，紧跟在股票名右边。
+           ⛔ 为什么【不用红色】：决策行里所有红色系胶囊（#dc2626 竞价买 / #be123c 下杀买 /
+              #f43f5e 补涨竞价买）全都是「今天要买」的动作标签 —— 风险提示做成红底会被一眼读成
+              买点信号，正好帮倒忙。深墨 + 明黄在整行里没有任何同款，跳出来又不与任何语义撞车。
+           ⛔ 类名必须带 dcb- 前缀：本文件是全局加载的，通用名会串改早盘竞价看板。 */
+        .dcb-risk {
+            padding: 0 5px;
+            font-size: 9px;
+            font-weight: 700;
+            line-height: 14px;
+            color: #fde047;
+            background: #111827;
+            border: 1px solid #facc15;
+            border-radius: 4px;
+            white-space: nowrap;
+            letter-spacing: 0.2px;
+        }
+
+        /* 警示三角由 CSS 统一给（Logic 层的文案保持干净、便于断言）。
+           ① \FE0E = 文字变体选择符：强制用【文字形态】渲染 ⚠，避免某些系统把它画成彩色 emoji
+              （emoji 不吃 CSS 的 color，会变成一块不受控的黄图标）；
+           ② ⛔ 间距必须写 margin-right，【不要】写进 content 的尾随空格 —— 实测 CSS 压缩器
+              会把 content 里的尾随空格裁掉，符号就会和后面的文字贴死。 */
+        .dcb-risk::before {
+            content: '⚠\FE0E';
+            margin-right: 3px;
+            color: #fbbf24;
+            font-weight: 700;
+        }
+
         .dcb-pct {
             font-size: 11px;
             color: #b91c1c;
