@@ -46,6 +46,11 @@ import {
   DIVE_AUC_PCT_MIN,
   DIVE_VOL_RATIO_DELTA_MIN,
   DIVE_SHARE_MIN,
+  // [MAKEUP-BUY 2026-10-08 用户口径 · 9/15 华正新材] 被达标龙一带动的补涨 ⇒ 补涨竞价买
+  BUY_MAKEUP_TAG,
+  BUY_ACTION_TONE_MAKEUP,
+  MAKEUP_AUC_PCT_MIN,
+  MAKEUP_STREAK,
   // [SELL-TEN-MIN 2026-10-07 用户口径 · 9/7 我爱我家] 龙一占比差一点点 + 量比增加 ⇒ 10分钟时卖
   SELL_TEN_MIN_TAG,
   SELL_ACTION_TONE_TEN_MIN,
@@ -1416,6 +1421,155 @@ describe('★ 9/7 爱仕达（实测龙五 = 非龙头）：三项指标正面�
 });
 
 /* ════════════════════════════════════════════════════════════════════════════════
+   ★ [MAKEUP-BUY 2026-10-08 用户口径 · 9/15 华正新材] 【补涨竞价买】
+   用户原话：
+     「9月15日，华正新材就是补涨，补涨的意思就是占比不达标它只有 1.5%，竞价量比也不高只有 3.24
+       同比减少，竞价涨幅却达到 4.5%，也就是被龙一超声电子带动的，超声电子当天占比达 4.5%，
+       入了决策买点，电子/通信/算力题材是显示是二次入选，当天就是超声电子和华正新材入选决策买点。
+       华正新材只有竞价涨幅是正向的，其它不达标。这足以说明华正新材就是补涨……
+       所以应该打的标签是"补涨竞价买"」
+   四条判据（缺一不行）：
+     ① 同题材当天入选买点的票【只有龙一 + 中军】两只（夹带任何后排 ⇒ 不算）；
+     ② 该题材【恰好二次入选】（用户口径「三次就有可能不准了……现在限定是二次入选」）；
+     ③ 该题材【龙一占比达标】（≥ 3.5%）；
+     ④ 中军那只【竞价涨幅 > 3%】，其它重要指标（占比 / 竞价量比）可以不达标。
+   ⚠️ 9/18 中新赛克是【反例】：涨幅 1.54% ≤ 3% ⇒ 按原规则处理（轻仓 + 尾盘买），不变。
+   ════════════════════════════════════════════════════════════════════════════════ */
+describe('★ 9/15 华正新材（龙二 = 中军）：被达标龙一带起来的补涨 ⇒ 【补涨竞价买】', () => {
+  /**
+   * 造题材 T1（8 只 ⇒ 中档 ⇒ 一个块里正好选出 2 只，构成【龙一 + 中军】）。
+   * 十日涨幅序：超声电子 55（龙一）> 华正新材 47（龙二 = 中军）> 其余 40/35/30/25/20/15（龙三~龙八）。
+   * 竞价量比序：超声电子 8.56 > 华正新材 3.24 > 其余（2.9 ~ 2.4）⇒ 选票正好落在前两只。
+   * 超声电子占比 4.5%（龙头门槛 3.5%）⇒ 达标 ⇒ 【竞价买】；
+   * 华正新材占比 1.5%（非龙头门槛 2%）⇒ 不达标 ⇒ 落到本档去判。
+   * @param {object} [o] 逐项改掉某个判据做「缺一不行」的反例
+   */
+  function makeupRows(o) {
+    const c = o || {};
+    return [
+      R('超声电子', 'T1', 55, 1.64, 8.56,
+        (c.leaderShare === undefined ? 4.5 : c.leaderShare), VR_DIR_DOWN, -5),
+      R('华正新材', 'T1', 47,
+        (c.midAucPct === undefined ? 4.81 : c.midAucPct), 3.24, 1.5, VR_DIR_DOWN, -1),
+      R('凑1', 'T1', 40, 0, 2.9, 1.1),
+      R('凑2', 'T1', 35, 0, 2.8, 1.1),
+      R('凑3', 'T1', 30, 0, 2.7, 1.1),
+      R('凑4', 'T1', 25, 0, 2.6, 1.1),
+      R('凑5', 'T1', 20, 0, 2.5, 1.1),
+      R('凑6', 'T1', 15, 0, 2.4, 1.1)
+    ];
+  }
+  /**
+   * 题材入选次数 = past + 1（今天这一次）。past=1 ⇒ 二次入选；past=2 ⇒ 三次入选。
+   * @param {number|null} past 过去窗口内的次数；null = 不提供（模拟 topicStreakPast 未加载）
+   */
+  function streakOpts(past) {
+    return past === null ? {} : { topicStreakPast: new Map([['T1', past]]) };
+  }
+  const planOf = function(past, extra) { return buy(makeupRows(extra), streakOpts(past)); };
+  const hz = function(plan) { return pickOf(plan, '华正新材'); };
+
+  it('① 命中：二次入选 + 龙一占比达标 + 买点只有【龙一 + 中军】+ 中军涨幅 > ' +
+    MAKEUP_AUC_PCT_MIN + '% ⇒ 【补涨竞价买】', () => {
+    const plan = planOf(MAKEUP_STREAK - 1);
+    expect(plan.heavy.picks.length).toBe(2);              // 只有超声电子 + 华正新材两只
+    const h = hz(plan);
+    expect(h.dragonRank).toBe(2);                         // 中军（龙二）—— 9/15 实测位次
+    expect(h.aucPct).toBeCloseTo(4.81);                   // 唯一的正向指标
+    expect(h.aucShare).toBeCloseTo(1.5);                  // 占比【不达标】（< 2%）
+    expect(h.volRatioDelta).toBe(-1);                     // 竞价量比同比【减少】
+    expect(h.buyActionTag).toBe(BUY_MAKEUP_TAG);
+    expect(h.buyActionTag).toBe('补涨竞价买');
+    expect(h.buyActionTone).toBe(BUY_ACTION_TONE_MAKEUP);
+    // 行内说明要把「凭什么不按常规」写全
+    expect(h.actionNote).toContain(BUY_MAKEUP_TAG);
+    expect(h.actionNote).toContain('补涨');
+    expect(h.actionNote).toContain('二次入选');
+    expect(h.actionNote).toContain(String(MAKEUP_AUC_PCT_MIN));
+    // ⛔ 本档【只换动作】：行尾仓位照旧（仍是今天的买点票，只是不等尾盘）
+    expect(h.position).toBe('轻仓');
+    // 龙头自己不受本档影响 —— 它占比达标，照旧【竞价买】
+    expect(pickOf(plan, '超声电子').buyActionTag).toBe(BUY_NOW_TAG);
+  });
+
+  it('⓪ 题材入选次数的【数字真相】落到块上：past=1 ⇒ topicStreakN=2（与题材行显示同源）', () => {
+    expect(planOf(MAKEUP_STREAK - 1).heavy.topicStreakN).toBe(2);
+    expect(planOf(MAKEUP_STREAK - 1).heavy.streakTag).toBe('二次入选');
+    expect(planOf(2).heavy.topicStreakN).toBe(3);
+    expect(planOf(2).heavy.streakTag).toBe('三次入选');
+    // §10：pastCounts 未加载 ⇒ 索引压根不在（undefined），不是 0
+    expect(planOf(null).heavy.topicStreakN).toBe(undefined);
+    expect(planOf(null).heavy.streakTag).toBe(undefined);
+  });
+
+  it('② 缺一不行 ①：题材是【三次入选】⇒ 不判本档（用户口径「三次就有可能不准了」）', () => {
+    const plan = planOf(MAKEUP_STREAK);                   // past=2 ⇒ 含今日共 3 次
+    expect(plan.heavy.topicStreakN).toBe(3);
+    expect(hz(plan).buyActionTag).toBe(BUY_LATE_TAG);     // 回落普通【尾盘买】
+  });
+
+  it('②b §10：题材入选次数【未加载】⇒ 不判本档（未知 ≠ 二次入选）', () => {
+    expect(hz(planOf(null)).buyActionTag).toBe(BUY_LATE_TAG);
+  });
+
+  it('③ 缺一不行 ②：龙一（超声电子）自己占比【不达标】⇒ 不判本档', () => {
+    const plan = planOf(MAKEUP_STREAK - 1, { leaderShare: 2.0 });
+    expect(pickOf(plan, '超声电子').aucSharePass).toBe(false);
+    expect(hz(plan).buyActionTag).toBe(BUY_LATE_TAG);
+  });
+
+  it('④ 缺一不行 ③：中军竞价涨幅 1.54%（9/18 中新赛克实测，不 > ' +
+    MAKEUP_AUC_PCT_MIN + '%）⇒ 【按原规则处理，不变】= 尾盘买', () => {
+    const plan = planOf(MAKEUP_STREAK - 1, { midAucPct: 1.54 });
+    const h = hz(plan);
+    expect(h.aucPct).toBeCloseTo(1.54);
+    expect(h.buyActionTag).toBe(BUY_LATE_TAG);            // ⛔ 不是补涨竞价买
+    expect(h.buyActionTone).not.toBe(BUY_ACTION_TONE_MAKEUP);
+    // 边界：正好 == MAKEUP_AUC_PCT_MIN 也不算（判据是【大于】）
+    expect(hz(planOf(MAKEUP_STREAK - 1, { midAucPct: MAKEUP_AUC_PCT_MIN })).buyActionTag)
+      .toBe(BUY_LATE_TAG);
+  });
+
+  it('⑤ 缺一不行 ④：买点里混进【后排】⇒ 不判本档（用户原话「如果还有后排其它票那就不算了」）', () => {
+    // 10 只 ⇒ 大档 ⇒ 一个块选 3 只；把第 3 名的量比给一只【后排】（龙位 ≥ 5）
+    const rows = [
+      R('超声电子', 'T1', 55, 1.64, 8.56, 4.5, VR_DIR_DOWN, -5),
+      R('华正新材', 'T1', 47, 4.81, 3.24, 1.5, VR_DIR_DOWN, -1),
+      R('后排票', 'T1', 5, 4.5, 3.0, 1.5, VR_DIR_DOWN, -1),   // 量比第 3 ⇒ 被选中；十日涨幅最低 ⇒ 龙十
+      R('凑1', 'T1', 40, 0, 2.9, 1.1),
+      R('凑2', 'T1', 35, 0, 2.8, 1.1),
+      R('凑3', 'T1', 30, 0, 2.7, 1.1),
+      R('凑4', 'T1', 25, 0, 2.6, 1.1),
+      R('凑5', 'T1', 20, 0, 2.5, 1.1),
+      R('凑6', 'T1', 15, 0, 2.4, 1.1),
+      R('凑7', 'T1', 10, 0, 2.3, 1.1)
+    ];
+    const plan = buy(rows, streakOpts(MAKEUP_STREAK - 1));
+    expect(plan.heavy.picks.length).toBe(3);
+    expect(dragonTierOf(pickOf(plan, '后排票').dragonRank)).toBe('back');
+    expect(pickOf(plan, '华正新材').buyActionTag).toBe(BUY_LATE_TAG);
+  });
+
+  it('⑥ 龙一自己【不适用】本档：题材达标的是龙头，不需要「补涨」这个解释', () => {
+    // 让「超声电子」变成中军位、把华正新材顶成龙一，且华正新材也满足四个条件 → 仍不打本档
+    const rows = [
+      R('华正新材', 'T1', 55, 4.81, 8.56, 1.5, VR_DIR_DOWN, -1),  // 龙一（占比 1.5 不达标）
+      R('超声电子', 'T1', 47, 1.64, 3.24, 4.5, VR_DIR_DOWN, -5),  // 龙二（占比达标）
+      R('凑1', 'T1', 40, 0, 2.9, 1.1),
+      R('凑2', 'T1', 35, 0, 2.8, 1.1),
+      R('凑3', 'T1', 30, 0, 2.7, 1.1),
+      R('凑4', 'T1', 25, 0, 2.6, 1.1),
+      R('凑5', 'T1', 20, 0, 2.5, 1.1),
+      R('凑6', 'T1', 15, 0, 2.4, 1.1)
+    ];
+    const plan = buy(rows, streakOpts(MAKEUP_STREAK - 1));
+    expect(pickOf(plan, '华正新材').dragonRank).toBe(1);
+    // 龙一不被本档改标（它自己没有「被谁带动」这回事）⇒ 照常走占比逻辑 = 尾盘买
+    expect(pickOf(plan, '华正新材').buyActionTag).toBe(BUY_LATE_TAG);
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════════
    ★ [SELL-TEN-MIN 2026-10-07 用户口径 · 9/7 我爱我家] 【10分钟时卖】
    用户原话：
      「卖点 我爱我家龙一，占比很接近 3.5%，它只有 3.2%，竞价量比 9.53 增加，竞价涨幅减少。
@@ -1536,5 +1690,27 @@ describe('规则文案：两条新规则（下杀买 / 10分钟时卖）必须�
     const lines = buildRulesLines().join('\n');
     expect(lines).toContain(BUY_DIVE_TAG);
     expect(lines).toContain(SELL_TEN_MIN_TAG);
+  });
+});
+
+describe('规则文案：[MAKEUP-BUY 2026-10-08] 【补涨竞价买】必须写进两套模式的灰色问号面板', () => {
+  it('量比模式买点段：写出四条判据 + 9/15 华正新材正例 + 9/18 中新赛克反例', () => {
+    const lines = buildVolRatioRulesLines().join('\n');
+    expect(lines).toContain(BUY_MAKEUP_TAG);
+    expect(lines).toContain(String(MAKEUP_AUC_PCT_MIN));
+    expect(lines).toContain('二次入选');               // 判据②：限定二次
+    expect(lines).toContain('三次');                   // 明确写出「三次不准」
+    expect(lines).toContain('华正新材');
+    expect(lines).toContain('超声电子');
+    expect(lines).toContain('中新赛克');               // ⛔ 反例：涨幅不够 ⇒ 按原规则
+    expect(lines).toContain('后排');                   // ⛔ 判据①：夹带后排就不算
+  });
+
+  it('legacy（一字）文案：⑭ 里列出【补涨竞价买】且阈值不手抄', () => {
+    const lines = buildRulesLines().join('\n');
+    expect(lines).toContain(BUY_MAKEUP_TAG);
+    expect(lines).toContain(String(MAKEUP_AUC_PCT_MIN));
+    expect(lines).toContain('二次入选');
+    expect(lines).toContain('中新赛克');
   });
 });

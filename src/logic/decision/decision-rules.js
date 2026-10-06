@@ -297,6 +297,61 @@ export const DIVE_VOL_RATIO_DELTA_MIN = 20;
 export const DIVE_SHARE_MIN = 20;
 
 // ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [MAKEUP-BUY 2026-10-08 用户口径 · 华正新材 9/15] 【补涨竞价买】★★
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话：
+//   「9月15日，华正新材就是补涨，补涨的意思就是占比不达标它只有 1.5%，竞价量比也不高只有 3.24
+//     同比减少，竞价涨幅却达到 4.5%，也就是被龙一超声电子带动的，超声电子当天占比达 4.5%，
+//     入了决策买点，电子/通信/算力题材是显示是二次入选，当天就是超声电子和华正新材入选决策买点。
+//     华正新材只有竞价涨幅是正向的，其它不达标。这足以说明华正新材就是补涨，补涨的意思就是当天会涨
+//     （不按常规指标来，只按竞价涨幅，和题材龙头达标走强入选条件），所以应该打的标签是"补涨竞价买"」
+//
+// ⇒ 【补涨】的定义：本股（中军）自己【指标不达标、只是竞价涨幅为正】，靠【同题材龙一达标走强】
+//    带动 ⇒ 它【当天会涨】⇒ 别等到尾盘，【竞价就买】。
+//    ⛔ 与【竞价买】的区别：竞价买是「本股自己占比达标（够强）」；本档是「本股不达标，龙头够强」。
+//    ⛔ 与【下杀买（竞价异常）】的区别：那一档要求本股占比【也达标】且三项指标爆表（要等回调）；
+//       本档要求本股占比【不达标】⇒ 两档天然互斥，实测不会同时命中（用户口径「和其它规则不冲突，
+//       只是分得更细了」）。
+//
+// ── 四条判据（同时满足，缺一不行 —— 走 _isMakeupBuyPick 这【唯一一份】实现，§6）──────────
+//     编号与判据顺序【逐字照抄】下方 §6 判据函数的 ① / ② / ③ / ④。
+//   ① 【题材构成】必须是【龙一 + 中军】两只 —— 两小条，缺一不行：
+//      · 本股自己必须是【中军（龙二~龙四）】（⛔ 龙一不适用：龙头强是应该的，
+//        不需要"补涨"这个解释；后排 / 龙位未知也不适用 —— §10 未知按最弱处理，不猜它是中军）；
+//      · 买点里【不得出现后排】—— 用户原话「如果还有后排其它票那就不算了」。
+//   ② 该题材是【二次入选】（含今日在内近 5 个交易日内第 2 次进买点）——
+//      说明题材【再次走强】：昨天在买点、今天又在买点，还带动中军跟进。
+//      ⛔ 限定【恰好第二次】：用户口径「三次就有可能不准了，三次还没看到案例」⇒ 3 次及以上【不标】。
+//   ③ 该题材【龙一必须达标】（占比 ≥ 3.5%，即龙头门槛）—— 走 passesAuctionShare，§6 不另写阈值。
+//   ④ 本股（中军）【竞价涨幅 > MAKEUP_AUC_PCT_MIN(3%)】—— 其它重要指标与竞价量比【可以不达标】。
+//      ⛔ 本股不达标（涨幅 ≤ 3%）⇒ 按原来的规则处理，【不变】（用户口径 · 9/18 中新赛克：
+//         涨幅不到 3% ⇒ 照旧【轻仓】【尾盘买】）。
+//
+// ── 生效位置与优先级（⛔ 只替掉【尾盘买】这一档）────────────────────────────────────
+//   · 只在【占比不达标】的分支里判 ⇒ 天然不会碰【竞价买】【下杀买】（那两档要求占比达标）；
+//   · ⛔ 低于【尾盘买（先卖后买）】：那一档要求「昨天真买过」，买点文案与卖点的
+//     【竞价卖（先卖后买）】是【互相引用】的（"尾盘再接回来"）—— 让本档抢走会让买卖两侧
+//     文案直接打架。故本档【不覆盖】先卖后买档。
+//   · §10：占比缺数据 ⇒ 一律【不判本档】（未知 ≠ 不达标，回落既有的量比方向退路）；
+//     题材入选次数缺数据（topicStreakPast 未加载）⇒ 同样不判（未知 ≠ 二次入选）。
+//
+// §21：整段说明文字在 Logic 层拼好，组件只渲染（见 _makeupBuyNoteText）。
+// ⛔ 本档【只改动作标签与说明文字】，不碰选票结果、不改行尾仓位、不动 ③ 的【持有】。
+/** 【补涨竞价买】买点动作：本股不达标、靠同题材达标龙一带动 ⇒ 当天会涨，竞价就买 */
+export const BUY_MAKEUP_TAG = '补涨竞价买';
+/**
+ * 买点动作配色档：补涨竞价买 → 亮玫红。
+ * ⚠️ 与【竞价买】的正红（#dc2626）、【下杀买】的深玫红（#be123c）刻意【同族而更亮】：
+ *    三者都是「今天要买」，靠【明度】区分 —— 正红 = 自己强；深玫红 = 指标爆表要等回调；
+ *    亮玫红 = 自己不达标、被龙头带上去。⛔ 不要换成绿 / 蓝（会被读成卖点或中性）。
+ */
+export const BUY_ACTION_TONE_MAKEUP = 'makeup';
+/** 补涨判据 ④：本股（中军）竞价涨幅要【大于】这个值（%）—— 其它指标可以不达标 */
+export const MAKEUP_AUC_PCT_MIN = 3;
+/** 补涨判据 ②：题材入选次数必须【恰好】等于这个值（二次入选；3 次及以上不标） */
+export const MAKEUP_STREAK = 2;
+
+// ══════════════════════════════════════════════════════════════════════════════════════
 // ★★ [SHARE-RULE 2026-10-03 用户口径 · 买卖点改以【竞价占比】为唯一主判据] ★★
 // ══════════════════════════════════════════════════════════════════════════════════════
 // 用户给了 8/31、9/1、9/2 三天共 11 个【已标注】案例（原文见 auction-share.js 文件头），
@@ -471,8 +526,12 @@ function _thresholdText(isFront) {
   return min + '%';
 }
 
-/** 三分档（龙头 / 中军 / 后排）→ 人话（说明文字用；⛔ 只在 Logic 层拼一次，别在组件里拼） */
-function _tierText(tier) {
+/**
+ * 三分档（龙头 / 中军 / 后排）→ 人话（说明文字用；⛔ 只在 Logic 层拼一次，别在组件里拼）。
+ * ⚠️ [MAKEUP-BUY 2026-10-08] 已 export —— 一字模式的【规则面板文案】也要摆这三个档位名，
+ *   与其在那个文件里手抄一份（改一处漏一处），不如共用这一份（§6）。
+ */
+export function _tierText(tier) {
   if (tier === 'leader') return '龙头（龙一）';
   if (tier === 'middle') return '中军（龙二~龙四）';
   return '后排（龙五及以下）';
@@ -1441,6 +1500,22 @@ function _decorateShareAction(blockObj, opts) {
     })
   };
 
+  // ══ [MAKEUP-BUY 2026-10-08 用户口径 · 华正新材 9/15] 预扫描：本题材是不是【二次入选 + 龙一达标 + 无后排】══
+  //   本档四条判据里，②③④ 都是【块级】的（同一块的 picks 共用同一个答案）⇒ 在循环外只算一次
+  //   （§19：不做无意义的逐只重复计算）；逐只的那一条（龙位 = 中军 / 竞价涨幅 > 3%）在 _isMakeupBuyPick 里。
+  //   · streakN   = 含今日在内的题材入选次数（_markTopicStreak 落的数，§6 与题材行显示同源）——
+  //     计算是【块级】的，已经在 _markTopicStreak 里做过一次，这里只是把同一个数取出来（§19 不重复算）。
+  //     ⛔ 由 _isMakeupBuyPick 判【恰好二次】：用户口径「现在限定是二次入选」，
+  //        「三次就有可能不准了，三次还没看到案例」⇒ 3 次及以上【不标】。
+  //     §10：未加载（undefined）⇒ NaN ≠ 2 ⇒ 本档自然不成立，⛔ 绝不把「不知道」当「二次」。
+  const makeupCtx = {
+    streakN: _num(blockObj.topicStreakN),
+    leaderBuyOk: diveCtx.leaderBuyOk,
+    hasBackPick: blockObj.picks.some(function(p) {
+      return dragonTierOf(p.dragonRank) === 'back';
+    })
+  };
+
   blockObj.picks.forEach(function(p) {
     const share = _num(p.aucShare);
     const isPrevDragon = prevDragon ? prevDragon.has(p.name) : null;
@@ -1482,6 +1557,15 @@ function _decorateShareAction(blockObj, opts) {
       //   ⛔ 只换【动作标签】：行尾仓位与 ③ 的【持有】照旧 —— 它仍然是今天的买点票，
       //     只是「别在竞价追高」，不是「不买」。所以这里【不】清 position / holdTag。
       const diveCase = pass && _isDiveBuyPick(p, diveCtx);
+      // [MAKEUP-BUY 2026-10-08 用户口径 · 华正新材 9/15] 占比【不达标】里再分一层：
+      //   题材二次入选 + 龙一达标 + 无后排 + 本股(中军)竞价涨幅 > 3% ⇒ 不标【尾盘买】，
+      //   改标【补涨竞价买】（判据见 _isMakeupBuyPick，§6 只此一份）。
+      //   🔴 两条边界刻意收在这里，都是为了「不和既有规则打架」（用户口径「和其它规则不冲突」）：
+      //     ① 只在【不达标】分支判 ⇒ 天然不会碰【竞价买】【下杀买】（那两档都要求占比达标）；
+      //     ② ⛔ swapCase（尾盘买·先卖后买）【优先】：那一档的买点文案与卖点的【竞价卖（先卖后买）】
+      //        是互相引用的（"尾盘再接回来"），被本档抢走会让买卖两侧文案直接矛盾。
+      //   §10：占比缺数据（share === null）根本走不到这个分支 ⇒ 本档不判，回落既有的量比方向退路。
+      const makeupCase = !pass && !swapCase && _isMakeupBuyPick(p, makeupCtx);
       if (pass) {
         if (diveCase) {
           p.buyActionTag = BUY_DIVE_TAG;
@@ -1496,6 +1580,11 @@ function _decorateShareAction(blockObj, opts) {
         p.holdTag = '';
         p.position = '';
         p.positionTone = '';
+      } else if (makeupCase) {
+        // [MAKEUP-BUY 2026-10-08 用户口径] 补涨：本股不达标、靠达标龙一带动 ⇒ 当天会涨 ⇒ 竞价就买。
+        // ⛔ 只换动作标签：行尾仓位与 ③ 的【持有】照旧（它仍然是今天的买点票，只是【不等尾盘】）。
+        p.buyActionTag = BUY_MAKEUP_TAG;
+        p.buyActionTone = BUY_ACTION_TONE_MAKEUP;
       } else {
         p.buyActionTag = BUY_LATE_TAG;
         p.buyActionTone = BUY_ACTION_TONE_LATE;
@@ -1504,6 +1593,10 @@ function _decorateShareAction(blockObj, opts) {
         // ⚠️ 这一档的说明文字与其它档【结构不同】（要逐条摆出三个异常指标），所以整段另写一份，
         //   ⛔ 不硬塞进下面那条「达标 / 不达标」的模板串（塞进去会读成「占比不达标」）。
         p.actionNote = _note(no, _diveBuyNoteText(p, dir));
+      } else if (makeupCase) {
+        // ⚠️ 同理整段另写：本档恰恰是「占比不达标但照样竞价买」，塞进下面的模板串会被读成
+        //   「占比不达标 ⇒ 尾盘买」，与结论正好相反（[MAKEUP-BUY 2026-10-08] 用户口径）。
+        p.actionNote = _note(no, _makeupBuyNoteText(p, dir, makeupCtx.streakN));
       } else {
         p.actionNote = _note(no,
           '竞价占比 ' + formatAuctionShare(share) + '（' + p.aucShareScopeText + '门槛 ' +
@@ -1626,6 +1719,73 @@ function _diveBuyNoteText(p, dir) {
     '性价比差 ⇒ 改标【' + BUY_DIVE_TAG + '】：等它先下杀一阵、把不坚定的筹码洗掉，' +
     '盘中回调时再买（洗完之后再涨停的概率非常大）。' +
     '辅助验证：竞价量比' + _dirWord(dir) + '。';
+}
+
+/**
+ * [MAKEUP-BUY 2026-10-08 用户口径 · 华正新材 9/15] 【补涨竞价买】的【唯一判据】（§6 只此一份）。
+ *
+ * 判据编号【逐条对应】用户原话的 1 / 2 / 3 / 4（也是文件头 MAKEUP-BUY 大段注释的顺序）：
+ *   ① 【题材构成】必须是【龙一 + 中军】两只（⛔ 绝不能由本题材自己去补第 ⑤ 条）：
+ *      · ①a 本股是【中军（龙二~龙四）】—— ⛔ 龙一不适用（龙头强是应该的，不需要"补涨"这个解释）；
+ *         后排（龙五及以下 / 龙位未知）也不适用（§10：未知按最弱处理，不猜它是中军）。
+ *      · ①b 买点里【不得出现后排】—— 用户口径「如果还有后排其它票那就不算了」。
+ *         ⚠️ 未知龙位也按后排算（dragonTierOf 的既定口径，§10）⇒ 本档不成立。
+ *   ② 【题材恰好二次入选】—— 走 ctx.streakN（_markTopicStreak 落的数，§6）。
+ *      用户口径「现在限定是二次入选」「三次就有可能不准了，三次还没看到案例」⇒ 3 次及以上不标。
+ *   ③ 【龙一必须达标】—— 走 ctx.leaderBuyOk（与 diveCtx 同一份，§6 不分裂）：
+ *      龙一在买点里且占比达标（≥ 3.5%，走 passesAuctionShare，不另写阈值）。
+ *   ④ 【中军竞价涨幅 > MAKEUP_AUC_PCT_MIN(3%)】—— 唯一要求的正向指标，
+ *      其它重要指标（占比 / 竞价量比）【可以不达标】（这正是"补涨"的特征）。
+ *
+ * §10：任一判据缺数据 ⇒ false ——「没查到」绝不等于「异常 / 达标 / 不达标 / 二次入选」。
+ *
+ * @param {object} p pick（须已跑过 _decorateAucBadge：有 aucPct）
+ * @param {{leaderBuyOk:boolean, hasBackPick:boolean, streakN:number|null}} ctx
+ * @returns {boolean}
+ */
+function _isMakeupBuyPick(p, ctx) {
+  if (!p || !ctx) return false;
+  // ② 题材必须【恰好】二次入选（块级判据，取 _markTopicStreak 算好的同一个数，这里不重算）
+  if (ctx.streakN !== MAKEUP_STREAK) return false;
+  // ①a 本股必须是【中军】（龙二~龙四）
+  if (dragonTierOf(p.dragonRank) !== 'middle') return false;
+  // ①b 买点里不得混进后排
+  if (ctx.hasBackPick) return false;
+  // ③ 题材龙一在买点里且占比达标
+  if (!ctx.leaderBuyOk) return false;
+  // ④ 中军竞价涨幅 > 3%
+  const pct = _num(p.aucPct);
+  if (pct === null || !(pct > MAKEUP_AUC_PCT_MIN)) return false;
+  return true;
+}
+
+/**
+ * [MAKEUP-BUY 2026-10-08 用户口径 · 华正新材 9/15] 【补涨竞价买】的逐行说明文字。
+ *
+ * ⚠️ 为什么整段另写一份、⛔ 不复用「占比达标 / 不达标」那条模板串：
+ *   本档的前提恰恰是【占比不达标 + 竞价涨幅为正】，塞进模板会被读成「因为占比不达标所以尾盘买」——
+ *   正好与结论相反（本档就是要在竞价买）。与 _diveBuyNoteText 同一理由（§21 整段在 Logic 层拼好）。
+ *
+ * @param {object} p pick（已判定命中本档）
+ * @param {string} dir 今日 vs 上一交易日竞价量比方向（只作辅助陈述）
+ * @param {number|null} streakN 含今日在内的题材入选次数（走到这里必然 === MAKEUP_STREAK）
+ * @returns {string} 不带【规则N】前缀的正文（由调用方 _note 补前缀）
+ */
+function _makeupBuyNoteText(p, dir, streakN) {
+  const share = _num(p.aucShare);
+  const aucPct = _num(p.aucPct);
+  // ⚠️ 括号里走 topicStreakText（中文序数唯一实现，§6）—— ⛔ 别在这里自己拼「二次」。
+  //   这里 streakN 已由判据 ⑤ 保证是 2，所以必然是「二次入选」，不会出空串。
+  return '本股是同题材【' + _tierText('middle') + '】。本题材今天是【' + topicStreakText(streakN) +
+    '】（第 ' + streakN + ' 次）—— 昨天在买点、今天又在买点，还带动中军跟进，' +
+    '说明题材【再次走强】；且本题材【' + _tierText('leader') + '】占比达标（走占比门槛唯一实现）、' +
+    '买点里【只有龙一 + 中军、没有后排】。' +
+    '本股自己占比 ' + formatAuctionShare(share) + '（' + p.aucShareScopeText + '门槛 ' +
+    p.aucShareThresholdText + '）【不达标】，但竞价涨幅 ' + formatAucPct(aucPct) + '（> ' +
+    MAKEUP_AUC_PCT_MIN + '%）—— 这是【被龙一带动的补涨】：中军无脑跟进龙一涨，它就涨。' +
+    '⇒ 不按常规指标来（只按【竞价涨幅】+【题材龙头达标走强】这两个入选条件），' +
+    '当天会涨 ⇒ 别等尾盘，标【' + BUY_MAKEUP_TAG + '】：竞价就买。' +
+    '辅助验证：竞价量比' + _dirWord(dir) + '（辅助，不单独决定时机）。';
 }
 
 /** 量比方向 → 人话（说明文字用；'' = 未知，⛔ 绝不写成「平」） */
@@ -1809,6 +1969,11 @@ function _markTopicStreak(blockObj, pastCounts) {
   const t = String(blockObj.block.topic || '').trim();
   if (!t) return blockObj;
   const n = (Number(pastCounts.get(t)) || 0) + 1;   // +1 = 本块（今天）这一次
+  // [MAKEUP-BUY 2026-10-08] 次数【本身】也挂上去：题材行显示的是 streakTag（"二次入选"这种中文串），
+  //   但规则层要拿它【判大小】（补涨档要求「恰好二次」）—— 反过来从中文串里解析数字等于把 §6 撕成两半，
+  //   ⛔ 那才是分裂。这里留在【算 n 的同一处】写下去 ⇒ 显示与判定必然同源。
+  //   §10：pastCounts 为 null 时上面已 return ⇒ 这里写下去的必然是「窗口完整算出来的数」。
+  blockObj.topicStreakN = n;
   const text = topicStreakText(n);
   if (text) blockObj.streakTag = text;
   return blockObj;
@@ -2645,6 +2810,28 @@ function _volRatioBuyRulesLines() {
     '　　　　用户原话「从龙二以下（包含龙二），都可以覆盖」。）',
     '　　⚠️ §10：三项里任意一项【算不出来】⇒ 不判本档，回落普通【' + BUY_NOW_TAG + '】',
     '　　　（「没查到」绝不等于「异常」）。',
+    // [MAKEUP-BUY 2026-10-08 用户口径 · 华正新材 9/15] 第三条例外：占比【不达标】里的「补涨」档。
+    '　【例外 · ' + BUY_MAKEUP_TAG + '】（2026-10-08 用户口径 · 华正新材 9/15）：',
+    '　　占比【不达标】里还有一档要改标 —— 本股自己不强，但【同题材达标的龙一把它带上去了】：',
+    '　　四条【同时】满足（缺一不行）：',
+    '　　　① 同题材当天入选买点的票【只有 ' + _tierText('leader') + ' + ' + _tierText('middle') +
+      '】两只 —— 夹带任意一只后排就不算（用户原话「如果还有后排其它票那就不算了」）；',
+    '　　　② 该题材是【' + topicStreakText(MAKEUP_STREAK) + '】（第 ' + MAKEUP_STREAK +
+      ' 次）⇒ 昨天在买点、今天又在买点，题材【再次走强】，还带动中军跟进；',
+    '　　　　⛔ 现在【限定二次】：用户口径「三次就有可能不准了，三次还没看到案例」⇒ 三次及以上【不标】；',
+    '　　　③ 该题材【' + _tierText('leader') + '】占比【达标】（≥ ' + AUCTION_SHARE_FRONT_MIN + '%）；',
+    '　　　④ 本股（中军）【竞价涨幅 > ' + MAKEUP_AUC_PCT_MIN +
+      '%】，其它重要指标（占比 / 竞价量比）【可以不达标】。',
+    '　　⇒ 这是【被龙一带动的补涨】：中军无脑跟进龙一涨，它就涨 ⇒ 当天会涨，',
+    '　　　不按常规指标来（只按【竞价涨幅】+【题材龙头达标走强】这两个入选条件）⇒ 竞价就买。',
+    '　　例（9/15 华正新材）：同题材【' + _tierText('leader') + '】超声电子占比 4.5%（≥ ' +
+      AUCTION_SHARE_FRONT_MIN + '%）达标，题材是【' + topicStreakText(MAKEUP_STREAK) + '】；',
+    '　　　华正新材自己占比 1.5%（< ' + AUCTION_SHARE_BACK_STD + '%）、竞价量比 3.24 同比【减少】，',
+    '　　　但竞价涨幅 +4.81%（> ' + MAKEUP_AUC_PCT_MIN + '%）⇒ 【' + BUY_MAKEUP_TAG + '】。',
+    '　　⚠️ 不达标就【按原来的规则处理，不变】：9/18 中新赛克竞价涨幅 1.54% ≤ ' + MAKEUP_AUC_PCT_MIN +
+      '% ⇒ 照旧【' + BUY_LATE_TAG + '】。',
+    '　　⚠️ §10：龙位 / 涨幅 / 题材入选次数任意一项【算不出来】⇒ 不判本档，',
+    '　　　回落普通【' + BUY_LATE_TAG + '】（「没查到」绝不等于「二次入选」）。',
     '　【为什么用占比当主判据】竞价涨幅与竞价量比只是【辅助】：',
     '　　两个都涨的时候如果是「假强」，当天一路下跌，即使明天涨也得失相当；',
     '　　但配上占比就能确认（占比是实打实的水量），三者同向时确定性最高。',

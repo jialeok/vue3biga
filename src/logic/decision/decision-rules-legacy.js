@@ -74,12 +74,18 @@ import {
   //   动作标签由共享的 _decorateShareAction（decision-rules.js）统一给，⛔ 本文件不判；
   //   这里 import 只为了写【规则文案】（§6：阈值只有一份，⛔ 不在文案里手抄 7 / 30 / 20）。
   BUY_DIVE_TAG, DIVE_AUC_PCT_MIN, DIVE_VOL_RATIO_DELTA_MIN, DIVE_SHARE_MIN,
+  // [MAKEUP-BUY 2026-10-08 用户口径 · 华正新材 9/15] 【补涨竞价买】标签 + 两个阈值，同样只有一份
+  //   （在 decision-rules.js）：动作由共享的 _decorateShareAction 给，这里只为了写【规则文案】。
+  BUY_MAKEUP_TAG, MAKEUP_AUC_PCT_MIN, MAKEUP_STREAK,
   // ⚠️ [SHARE-RULE 2026-10-03] BUY_ACTION_TONE_LATE / SWAP / NOW 三个配色档的导入已删除 ——
   //   配色档现在由 _decorateShareAction（decision-rules.js）统一给，本文件不再直接写 buyActionTone。
   //   （§16：不留死导入；否则 ESLint no-unused-vars 会报错。）
   // [POSITION-HOLD 2026-10-03 用户口径] ⑫ 的行尾仓位文案由【加仓】改为【持有】
   //   （decision-rules.js 里的常量已改名 POSITION_HOLD，判据与触发位置一律不变）。
   POSITION_HEAVY, POSITION_LIGHT, POSITION_HOLD,
+  // [MAKEUP-BUY 2026-10-08] 三分档（龙头 / 中军 / 后排）的人话 + 题材「二次入选」的中文序数 ——
+  //   规则面板的补涨档文案要摆这两个词，共用 decision-rules.js 那一份（§6 不在文案里手抄）。
+  _tierText, topicStreakText,
   sellRulesLines,
   _num, _note, _toPick, _reseq, _reasonBuy, _rankWord,
   _markHold, _markPrevBought, _markTopicPrevBought, _markTopicStreak,
@@ -1788,7 +1794,7 @@ function _legacyBuyRulesLines() {
     //   是【同一份实现】（_decorateShareAction），只是编号不同 —— 两套模式对
     //   「什么时候买」必须给同一个答案（§6 单一真相）。
     '　⑭ 【' + BUY_NOW_TAG + ' / ' + BUY_LATE_TAG + ' / ' + BUY_LATE_SWAP_TAG + ' / ' + BUY_DIVE_TAG +
-      '】= 按【竞价占比】决定今天什么时候买（2026-10-03 新规，占比说了算）：',
+      ' / ' + BUY_MAKEUP_TAG + '】= 按【竞价占比】决定今天什么时候买（2026-10-03 新规，占比说了算）：',
     '　　· 占比（%）= 【当日竞价量】÷【昨日成交量】×100，保留 1 位小数（如 0.0435 → 4.4%）；',
     '　　· 门槛：龙头（今日【龙一】，或昨日在龙头名册里）→ ' + AUCTION_SHARE_FRONT_MIN + '%（标准 ' +
       AUCTION_SHARE_FRONT_STD + '% 容错 ' + AUCTION_SHARE_TOLERANCE + '%）；其余（龙二及以下）→ ' +
@@ -1808,6 +1814,19 @@ function _legacyBuyRulesLines() {
     '　　　⇒ 别在竞价追高（溢价已高、涨停空间小）⇒ 改标【' + BUY_DIVE_TAG + '】，等它下杀洗盘后回调再买。',
     '　　　⚠️ 档位口径（2026-10-07 用户拍板）：本档【不再排除后排】，只要不是【龙一】都算',
     '　　　　（9/7 爱仕达实测龙五 / 界面龙六，旧口径限「龙二~龙四」会漏掉它）。',
+    // [MAKEUP-BUY 2026-10-08 用户口径 · 华正新材 9/15] 占比【不达标】里的新增一档。
+    '　　⚠️ 【' + BUY_MAKEUP_TAG + '】（2026-10-08 用户口径 · 华正新材 9/15）—— 占比【不达标】里的例外：',
+    '　　　四条【同时】满足（缺一不行）：',
+    '　　　① 同题材当天入选买点的票【只有龙一 + 中军】两只（夹带任何后排 ⇒ 不算）；',
+    '　　　② 该题材是【' + topicStreakText(MAKEUP_STREAK) + '】（第 ' + MAKEUP_STREAK +
+      ' 次）⇒ 昨天在买点、今天又在买点，题材【再次走强】；',
+    '　　　　　（⛔ 现在【限定二次】：三次有可能不准，还没看到案例 ⇒ 三次及以上【不标】。）',
+    '　　　③ 该题材【' + _tierText('leader') + '】占比【达标】（≥ ' + AUCTION_SHARE_FRONT_MIN + '%）；',
+    '　　　④ 中军那只【竞价涨幅 > ' + MAKEUP_AUC_PCT_MIN + '%】，其它重要指标（占比 / 竞价量比）【可以不达标】。',
+    '　　　⇒ 这是【被龙一带动的补涨】：中军无脑跟进龙一涨，它就涨 ⇒ 当天会涨，',
+    '　　　　不按常规指标来（只按【竞价涨幅】+【题材龙头达标走强】这两个入选条件），竞价就买。',
+    '　　　⚠️ 不达标就按原规则处理，【不变】（9/18 中新赛克涨幅 1.54% ≤ ' + MAKEUP_AUC_PCT_MIN +
+      '% ⇒ 照旧【' + POSITION_LIGHT + '】+【' + BUY_LATE_TAG + '】）。',
     '　　⚠️ 【竞价涨幅】与【竞价量比】只是【辅助】—— 两者都涨也可能是「假强」，',
     '　　　配上占比（实打实的水量）才能确认；三者同向时确定性最高。',
     '　　（例：捷荣技术量比【下降】但占比 7.0% ≥ 3.5% → 照样【' + BUY_NOW_TAG +
