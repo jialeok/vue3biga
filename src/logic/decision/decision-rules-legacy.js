@@ -74,6 +74,9 @@ import {
   //   动作标签由共享的 _decorateShareAction（decision-rules.js）统一给，⛔ 本文件不判；
   //   这里 import 只为了写【规则文案】（§6：阈值只有一份，⛔ 不在文案里手抄 7 / 30 / 20）。
   BUY_DIVE_TAG, DIVE_AUC_PCT_MIN, DIVE_VOL_RATIO_DELTA_MIN, DIVE_SHARE_MIN,
+  // [TOPIC-TAKEOVER 2026-10-08 用户口径 · 9/23] 【上位卡位】的唯一判据（§6 只此一份）：
+  //   第 1 名题材倒下 + 第 2 名题材龙一达标 ⇒ 第 2 名升【重仓】。⛔ 只改仓位，不碰其它规则。
+  isTopicTakeover,
   // [MAKEUP-BUY 2026-10-08 用户口径 · 华正新材 9/15] 【补涨竞价买】标签 + 两个阈值，同样只有一份
   //   （在 decision-rules.js）：动作由共享的 _decorateShareAction 给，这里只为了写【规则文案】。
   BUY_MAKEUP_TAG, MAKEUP_AUC_PCT_MIN, MAKEUP_STREAK,
@@ -173,7 +176,9 @@ export const RULE_NO = {
   PREV_BOUGHT: '⑫',    // 【昨有买入 / 持有】标记（题材级聚合 + 股票级仓位改写）
   TOPIC_STREAK: '⑬',   // 【入选次数】题材行标记（近 5 个交易日内进过买点几次）
   // [VR-ACTION 2026-10-02 用户口径] 【尾盘买 / 先卖后买】：弱票（竞价低开 + 量比下降）的动作徽标
-  BUY_ACTION: '⑭'
+  BUY_ACTION: '⑭',
+  // [TOPIC-TAKEOVER 2026-10-08 用户口径 · 9/23] 【上位卡位】：第 1 名题材倒下 ⇒ 第 2 名题材升【重仓】
+  TAKEOVER: '⑮'
 };
 
 // ===== [DUAL-MAIN 2026-09-27] 两个【大容量题材并存】→ 比竞价高开率，谁高谁重仓 =====
@@ -1321,6 +1326,62 @@ function _finishBuyBlock(blockObj, opts) {
 }
 
 /**
+ * [TOPIC-TAKEOVER 2026-10-08 用户口径 · 9/23] 题材间【上位卡位】—— 只改【仓位】，其它一律不动。
+ *
+ * 用户原话：题材和题材间也有上位的逻辑，排名第 1 的倒下了（虽在买点中但变弱了），排名第 2 的
+ *   会去卡位或者补涨，这时买第 2 名的题材【更有性价比】⇒ 应该是【重仓】而不是【轻仓】。
+ *
+ * ⛔ 边界（用户口径「其它不变」，改宽一分都可能打到不该打的票）：
+ *   · 只服务【常规第 1 / 第 2 名档位】（②④）；弱市兜底 ⑤ / 小题材兜底 ⑥ / 大题材兜底 /
+ *     双主线竞争 ⑨ 这几条链路【不调本函数】。
+ *   · 只把 position === 【轻仓】的票升成【重仓】：行尾已是【持有】（⑫ 昨天真买过）或被 ⑭ 的
+ *     【先卖后买】清空了仓位的票【一律不动】—— 「今天新买建多少仓」与「昨天已有仓 / 今天要先卖」
+ *     是两回事，混改会让用户读错。
+ *   · ⛔ 不碰 buyActionTag / buyActionTone（买卖时机徽标由 ⑭ 独占决定）、⛔ 不碰选票结果。
+ *   · ⛔ 不动第 1 名题材那一块（用户原话：「标签都对，没问题」）。
+ *
+ * 判据【只有一份】：isTopicTakeover（decision-rules.js，§6 单一真相），这里不重写门槛。
+ *
+ * @param {object} heavyBlock 第 1 名题材的买点块（已跑完 _finishBuyBlock）
+ * @param {object} lightBlock 第 2 名题材的买点块（已跑完 _finishBuyBlock）
+ * @param {string[]} notes 题材块下面的说明文字数组（命中时追加一条；与 block.notes 同一引用）
+ * @returns {boolean} 是否发生了升仓
+ */
+function _applyTopicTakeover(heavyBlock, lightBlock, notes) {
+  if (!lightBlock || !lightBlock.picks || lightBlock.picks.length === 0) return false;
+  if (!isTopicTakeover(heavyBlock, lightBlock)) return false;
+
+  const firstTopic = (heavyBlock && heavyBlock.block && heavyBlock.block.topic) || '第 1 名题材';
+  const leader = lightBlock.picks.find(function(p) { return Number(p.dragonRank) === 1; }) || null;
+  let changed = 0;
+  lightBlock.picks.forEach(function(p) {
+    if (p.position === POSITION_LIGHT) {
+      p.position = POSITION_HEAVY;
+      changed++;
+    }
+  });
+  // 全部被 ⑫ / ⑭ 占了仓位 ⇒ 本条不落地（不写理由，免得说明文字与行尾对不上）
+  if (changed === 0) return false;
+  // ⛔ 配色档必须重算：positionTone 是 _decoratePositionTone 在收口时算好的，改了 position 就得跟上
+  _decoratePositionTone(lightBlock);
+
+  const names = lightBlock.picks.filter(function(p) { return p.position === POSITION_HEAVY; })
+    .map(function(p) { return p.name; }).join('、');
+  const note = _note(RULE_NO.TAKEOVER,
+    '第 1 名题材「' + firstTopic + '」入选的票竞价占比【全部不达标】（题材倒下、变弱），' +
+    '而本题材' + (leader ? '【龙一「' + leader.name + '」' : '龙一') + '占比【达标】（超出预期）' +
+    '⇒ 这是题材间的【上位卡位 / 补涨】：买第 2 名更有性价比，' +
+    '本档由【' + POSITION_LIGHT + '】升为【' + POSITION_HEAVY + '】（' + names + '）');
+  if (notes) notes.push(note);
+  else if (lightBlock.notes) lightBlock.notes.push(note);
+  // 题材下面的「选择理由」也带上出处（用户口径：能按条文逐条核对）
+  lightBlock.reason = String(lightBlock.reason || '') +
+    '　→ 另按规则' + RULE_NO.TAKEOVER + '：第 1 名题材占比全不达标（倒下）' +
+    ' ⇒ 本档升为【' + POSITION_HEAVY + '】';
+  return true;
+}
+
+/**
  * 兜底方案（无一字 / 小题材 / 大题材）的统一收口：逐块走【亏钱效应 + 弱势题材 + 持有标记】。
  * ⛔ 这类方案【不走】_capPicksByTopicCount —— 用户口径「买入只数」只针对【第 1 名题材】
  *    （①②③④ 的常规档位），兜底方案本来就只取 1~2 只，再砍一次反而会空仓。
@@ -1655,6 +1716,9 @@ export function buildBuyPlan(blocks, dragonMap, opts) {
   } else {
     _appendLowOpenDragonOneNote(light);
     _finishBuyBlock(light, o);
+    // ⛔ [TOPIC-TAKEOVER 2026-10-08] 必须排在 _finishBuyBlock 之后：判据要读它落的 p.aucSharePass，
+    //   早一步调用会恒 false（静默失效，属于最难查的那一类 bug）。
+    _applyTopicTakeover(heavy, light, lightNotes);
   }
 
   return {
@@ -1837,6 +1901,22 @@ function _legacyBuyRulesLines() {
     '　　　量比【下降】＋ 手上已经有（行尾已是【' + POSITION_HOLD + '】）→ 【' + SELL_FIRST_BUY_LATER_TAG +
       '】：开盘先把昨天的仓卖掉，尾盘稳住了再买回来；',
     '　　　量比【基本平】或方向未知 → 一律不标（⛔ 未知 ≠ 增强，也 ≠ 下降，绝不猜）。',
+    // [TOPIC-TAKEOVER 2026-10-08 用户口径 · 9/23] ⑮ 上位卡位：题材间的【仓位升级】。
+    //   用户原话「只改变重仓逻辑 / 其它不变」⇒ 条文里必须把「不改什么」也逐条写死，
+    //   免得后面有人顺手把它扩成「改选票 / 改第 1 名」。
+    '　⑮ 【上位卡位】（2026-10-08 用户口径 · 9/23）= 题材间的【仓位升级】，只改【' +
+      POSITION_HEAVY + ' / ' + POSITION_LIGHT + '】：',
+    '　　两条【同时】满足（缺一不行）：',
+    '　　① 排名第 1 的题材【倒下】= 它入选买点的票【每一只】竞价占比都【不达标】（虽在买点中，但变弱了）；',
+    '　　② 排名第 2 的题材【超预期】= 它入选买点的票里有【龙一】，且龙一占比【达标】；',
+    '　　⇒ 第 1 名倒下、第 2 名会去【卡位 / 补涨】上位 ⇒ 这时【买第 2 名的题材更有性价比】，',
+    '　　　本档由【' + POSITION_LIGHT + '】升为【' + POSITION_HEAVY + '】。',
+    '　　⛔ 只改【仓位】：⑭ 的买卖时机徽标、选票结果、第 1 名题材的仓位【一律不变】。',
+    '　　⛔ 行尾已是【' + POSITION_HOLD + '】（⑫ 昨天真买过）或被 ⑭ 的【' + BUY_LATE_SWAP_TAG +
+      '】清掉仓位的票【不升】：',
+    '　　　那是「昨天已有仓 / 今天要先卖」，与「今天新买建多少仓」不是一回事。',
+    '　　⚠️ 只服务【常规第 1 / 第 2 名档位】（②④）：⑤ / ⑥ / ⑨ 与几条兜底方案【不适用】本条。',
+    '　　§10：占比算不出来 ⇒ 既不算「不达标」也不算「达标」⇒ 本条【不触发】（⛔ 绝不拿未知当「倒下」）。',
     '　※ 每个题材块下面的「选择理由」与说明文字都会标【规则N】（如【规则⑨】），方便按条文逐条核对。',
     '【题材行的数据】题材名右边依次是：实心红圆点（里面的数字 = 题材排名）｜数量：n（股票只数）｜',
     '　　竞价一字：n｜【' + TOPIC_PREV_BOUGHT_TAG + '】（有才显示）｜【N 次入选】（有才显示）。',

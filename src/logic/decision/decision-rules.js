@@ -1759,6 +1759,50 @@ function _isMakeupBuyPick(p, ctx) {
   return true;
 }
 
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [TOPIC-TAKEOVER 2026-10-08 用户口径 · 9/23 大消费倒下 / 第二题材上位] ★★
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话（9/23）：「题材和题材间也有上位的逻辑，排名第一的倒下了（虽然在买点中，但是变弱了），
+//   排名第二的会去卡位或者补涨。这时买第二的题材更有性价比 —— 这天，排名第一的大消费两只股票
+//   占比不及预期，排名第二的却超出预期达标。所以应该是重仓，而不是轻仓。」
+//   ⇒ 用户明确要求【只改仓位管理】：买卖动作徽标、选票结果、第 1 名题材的仓位一律不变。
+//
+// 两条判据【同时】成立才升仓：
+//   ① 第 1 名题材【倒下】= 它入选买点的票【每一只】竞价占比都【明确不达标】；
+//   ② 第 2 名题材【超预期】= 它入选买点的票里有【龙一】，且龙一占比【明确达标】。
+//   ⇒ 第 2 名题材的票由【轻仓】升为【重仓】（卡位 / 补涨上位，性价比更高）。
+//
+// §6：达标口径直接读 _decorateShareAction 落的 p.aucSharePass（它内部走
+//     passesAuctionShare 这唯一一份实现），⛔ 不在本函数里重写门槛（否则改门槛必漏一处）。
+// §10：占比算不出来 ⇒ p.aucSharePass === null ⇒ 既不算「不达标」也不算「达标」
+//     ⇒ ① ② 都不成立（⛔ 绝不拿未知当「倒下」或「达标」）。
+// ⛔ 只服务【常规第 1 / 第 2 名档位】（一字模式的 ②④）：弱市兜底 / 小题材兜底 / 大题材兜底 /
+//    双主线竞争这几条链路【不应用】本规则（用户口径「其它不变」）。
+
+/**
+ * [TOPIC-TAKEOVER 2026-10-08] 题材间【上位卡位】的唯一判据（§6 只此一份，两套模式共用）。
+ *
+ * ⚠️ 调用时机：必须等两个块都跑完 _finishBuyBlock / _finishPlanBlocks 之后再调 ——
+ *    判据要读 p.aucSharePass，而它是由 _decorateShareAction（收口的最后一步）落上去的；
+ *    早于它调用会读到 undefined ⇒ 恒 false（静默失效，最难查的那种）。
+ *
+ * @param {object} heavyBlock 第 1 名题材的买点块（可为 null）
+ * @param {object} lightBlock 第 2 名题材的买点块（可为 null）
+ * @returns {boolean} true ⇒ 第 2 名题材应判【重仓】
+ */
+export function isTopicTakeover(heavyBlock, lightBlock) {
+  const hp = (heavyBlock && heavyBlock.picks) || [];
+  const lp = (lightBlock && lightBlock.picks) || [];
+  if (hp.length === 0 || lp.length === 0) return false;
+  // ① 第 1 名题材【倒下】：每一只入选票的占比都【明确不达标】（null = 算不出来 ⇒ 不算倒下）
+  const firstDown = hp.every(function(p) { return p.aucSharePass === false; });
+  if (!firstDown) return false;
+  // ② 第 2 名题材【超预期】：入选票里有【龙一】且它占比【明确达标】
+  return lp.some(function(p) {
+    return Number(p.dragonRank) === 1 && p.aucSharePass === true;
+  });
+}
+
 /**
  * [MAKEUP-BUY 2026-10-08 用户口径 · 华正新材 9/15] 【补涨竞价买】的逐行说明文字。
  *

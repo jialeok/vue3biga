@@ -75,8 +75,13 @@ import {
   HOLD_TAG,
   PREV_BOUGHT_TAG,
   TOPIC_PREV_BOUGHT_TAG,
-  TOPIC_STREAK_WINDOW
+  TOPIC_STREAK_WINDOW,
+  // [TOPIC-TAKEOVER 2026-10-08 用户口径 · 9/23] 题材间【上位卡位】的唯一判据（§6 只此一份）
+  isTopicTakeover,
+  BUY_NOW_TAG,
+  BUY_LATE_TAG
 } from './decision-rules.js';
+import { AUCTION_SHARE_FRONT_MIN, AUCTION_SHARE_BACK_STD } from './auction-share.js';
 
 // ── 题材排名：分模式，本文件固定按【一字模式】调用 ────────────────────────
 // 老版语义 = 题材按【竞价一字数量】降序（一字多的题材排在前面）。
@@ -2400,5 +2405,135 @@ describe('规则编号标注（RULE-NO）', () => {
     expect(text).toContain('⑨ 【双主线竞争】');
     expect(text).toContain('⑩ 【买入只数】');
     expect(text).toContain('⑪ 【' + HOLD_TAG + '】');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★ [TOPIC-TAKEOVER 2026-10-08 用户口径 · 9/23 大消费倒下 / 第 2 名题材上位] ★
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话：
+//   「题材和题材间也有上位的逻辑，排名第一的倒下了（虽然在买点中，但是变弱了），排名第二的会去
+//     卡位或者补涨。这时买第二的题材更有性价比，这天，排名第一的大消费两只股票占比不及预期，
+//     排名第二的却超出预期达标。所以应该是重仓，而不是轻仓。其它不变。按照这个只改变重仓逻辑。」
+// 9/23 实测（一字模式）：#1 大消费 会稽山（龙一）2.6% + 大连圣亚（龙五）0.9% 全都【不达标】；
+//   #2 医药 南华生物（龙一）173.7%【达标】⇒ 由【轻仓】升【重仓】。
+// ⛔ 本档【只改仓位】：买卖时机徽标、选票结果、第 1 名题材一律不变（用户口径「其它不变」）。
+describe('★ 9/23 上位卡位（⑮）：第 1 名题材占比全不达标 + 第 2 名龙一占比达标 ⇒ 第 2 名升【重仓】', () => {
+  /**
+   * 造「第 1 名倒下 + 第 2 名龙一达标」的场景（结构照 9/23 实测）。
+   *   T1 = 第 1 名题材：恰好 1 个一字（走 ② single 档）⇒ 龙一【重仓】+ 龙三（高开）【轻仓】，
+   *        两只占比都【不达标】= 题材倒下；⛔ 必须撑过 10 只，否则「买入只数」会砍票。
+   *   T2 = 第 2 名题材：龙一【不是】一字 ⇒ ④ 直接买龙一（原来固定【轻仓】）。
+   * @param {object} [o] 逐项改掉某个判据做「缺一不行」的反例
+   */
+  function takeoverRows(o) {
+    const c = o || {};
+    const sh = (v) => ({ aucShare: v });
+    return [
+      Object.assign(E('T1龙一', 'T1', 50, false, true, 1),
+        sh(c.firstLeaderShare === undefined ? 2.6 : c.firstLeaderShare)),   // 9/23 会稽山 2.6%
+      Object.assign(E('T1一字', 'T1', 45, true, true, 10), sh(9)),          // 唯一的一字 ⇒ 买不进
+      Object.assign(E('T1龙三', 'T1', 40, false, true, 2),
+        sh(c.firstSecondShare === undefined ? 0.9 : c.firstSecondShare)),   // 9/23 大连圣亚 0.9%
+      Object.assign(E('T1龙四', 'T1', 30, false, true, -3), sh(0.5)),       // 低开 ⇒ 不入选
+      Object.assign(E('T1龙五', 'T1', 20, false, true, -1), sh(0.5)),       // 低开 ⇒ 不入选
+      Object.assign(E('T2龙一', 'T2', 10, false, true, 0),
+        sh(c.secondLeaderShare === undefined ? 173.7 : c.secondLeaderShare)), // 9/23 南华生物 173.7%
+      Object.assign(E('T2龙二', 'T2', 9, false, true, -1), sh(1))
+    ].concat(FILLER('T1', 6));   // ⛔ 撑过 10 只，否则「买入只数」会砍成 1 只
+  }
+  const planOf = (o, opts) => {
+    const blocks = rankDecisionTopics(takeoverRows(o));
+    return buildBuyPlan(blocks, rankDragons(blocks), opts || {});
+  };
+
+  it('① 命中：第 1 名两只占比【都不达标】+ 第 2 名龙一【达标】⇒ 第 2 名由【轻仓】升【重仓】', () => {
+    const plan = planOf();
+    // 第 1 名题材（② single 档）：龙一重仓 + 龙三轻仓，两只占比都【明确不达标】
+    expect(plan.heavy.picks.map(p => p.name)).toEqual(['T1龙一', 'T1龙三']);
+    expect(plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_LIGHT]);
+    expect(plan.heavy.picks.map(p => p.aucSharePass)).toEqual([false, false]);
+    // 第 2 名题材：龙一占比达标 ⇒ 升【重仓】
+    expect(plan.light.picks.length).toBe(1);
+    expect(plan.light.picks[0].name).toBe('T2龙一');
+    expect(plan.light.picks[0].aucSharePass).toBe(true);
+    expect(plan.light.picks[0].position).toBe(POSITION_HEAVY);
+    expect(plan.light.picks[0].positionTone).toBe(POSITION_TONE_HEAVY);
+  });
+
+  it('② ⛔ 只改仓位：买卖时机徽标照旧【竞价买】，第 1 名题材的仓位一字不动', () => {
+    const plan = planOf();
+    expect(plan.light.picks[0].buyActionTag).toBe(BUY_NOW_TAG);      // ⑭ 独占决定，不被 ⑮ 抢
+    expect(plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_LIGHT]);
+    expect(plan.heavy.picks.map(p => p.buyActionTag)).toEqual([BUY_LATE_TAG, BUY_LATE_TAG]);
+  });
+
+  it('③ 出处：题材理由与说明文字都带【规则⑮】，说明里点明「上位卡位 / 补涨」', () => {
+    const plan = planOf();
+    expect(plan.light.reason).toContain('规则' + RULE_NO.TAKEOVER);
+    const notes = plan.light.notes.join('｜');
+    expect(notes).toContain(ruleTag(RULE_NO.TAKEOVER));
+    expect(notes).toContain('上位卡位');
+    expect(notes).toContain('T1');
+    expect(notes).toContain('T2龙一');
+  });
+
+  it('④ 缺一不行 ①：第 1 名题材里有【任何一只】占比达标 ⇒ 不算倒下 ⇒ 第 2 名仍是【轻仓】', () => {
+    // 龙一占比改到达标（≥ 3.5%）⇒ 题材没倒下
+    const plan = planOf({ firstLeaderShare: AUCTION_SHARE_FRONT_MIN });
+    expect(plan.heavy.picks[0].aucSharePass).toBe(true);
+    expect(plan.light.picks[0].position).toBe(POSITION_LIGHT);
+    expect(plan.light.reason).not.toContain('规则' + RULE_NO.TAKEOVER);
+  });
+
+  it('⑤ 缺一不行 ②：第 2 名龙一占比【不达标】⇒ 不算超预期 ⇒ 仍是【轻仓】', () => {
+    const plan = planOf({ secondLeaderShare: 1.2 });
+    expect(plan.light.picks[0].aucSharePass).toBe(false);
+    expect(plan.light.picks[0].position).toBe(POSITION_LIGHT);
+    expect(plan.light.picks[0].buyActionTag).toBe(BUY_LATE_TAG);
+  });
+
+  it('⑥ ⛔ 第 2 名入选的【不是龙一】（龙一是一字 ⇒ 回退取高开票）⇒ 不升', () => {
+    // 直接钉判据本身：入选票是龙二 ⇒ 即使它占比达标也不享受本条（用户口径看的是「龙一达标」）
+    const fake = { picks: [{ name: '某龙二', dragonRank: 2, aucSharePass: true, position: POSITION_LIGHT }] };
+    const firstDown = { picks: [{ name: '倒下的龙一', dragonRank: 1, aucSharePass: false }] };
+    expect(isTopicTakeover(firstDown, fake)).toBe(false);
+  });
+
+  it('⑦ §10：占比算不出来（null）⇒ 既不算「不达标」也不算「达标」⇒ 本条不触发', () => {
+    // 第 2 名龙一缺占比 ⇒ 不升
+    const a = planOf({ secondLeaderShare: null });
+    expect(a.light.picks[0].aucSharePass).toBe(null);
+    expect(a.light.picks[0].position).toBe(POSITION_LIGHT);
+    // 第 1 名缺占比 ⇒ 不算「倒下」⇒ 也不升
+    const b = planOf({ firstLeaderShare: null });
+    expect(b.heavy.picks[0].aucSharePass).toBe(null);
+    expect(b.light.picks[0].position).toBe(POSITION_LIGHT);
+  });
+
+  it('⑧ ⛔ 第 2 名龙一【昨天已买过】（行尾已是【持有】）⇒ 不升（9/18 澳弘电子同款边界）', () => {
+    const plan = planOf({}, { prevBoughtNames: new Set(['T2龙一']) });
+    expect(plan.light.picks[0].position).toBe(POSITION_HOLD);   // ⑫ 的语义 ≠ 「今天新买建多少仓」
+    expect(plan.light.reason).not.toContain('规则' + RULE_NO.TAKEOVER);
+  });
+
+  it('⑨ 判据的单元边界：块为空 / 没有 picks / 第 1 名块为 null ⇒ 一律 false', () => {
+    const down = { picks: [{ dragonRank: 1, aucSharePass: false }] };
+    const up = { picks: [{ dragonRank: 1, aucSharePass: true }] };
+    expect(isTopicTakeover(null, up)).toBe(false);
+    expect(isTopicTakeover(down, null)).toBe(false);
+    expect(isTopicTakeover(down, { picks: [] })).toBe(false);
+    expect(isTopicTakeover({ picks: [] }, up)).toBe(false);
+    expect(isTopicTakeover(down, up)).toBe(true);
+  });
+
+  it('⑩ 规则面板（灰色问号）里必须有【⑮ 上位卡位】这条，且写明「只改仓位」', () => {
+    const text = buildRulesLines().join('\n');
+    expect(text).toContain('⑮ 【上位卡位】');
+    expect(text).toContain(POSITION_LIGHT + '】升为【' + POSITION_HEAVY + '】');
+    expect(text).toContain('只改【仓位】');
+    expect(text).toContain('不适用】本条');
+    // ⛔ 非龙头门槛只在文案里出现、不在本条判据里 —— 钉一下门槛常量本身没被本条改动
+    expect(AUCTION_SHARE_BACK_STD).toBe(2);
   });
 });
