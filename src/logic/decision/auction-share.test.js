@@ -67,7 +67,7 @@ import {
   // [SELL-LIMIT-UP 2026-10-07 用户口径] 竞价一字涨停 ⇒ 竞价就走、落袋为安
   SELL_LIMIT_UP_TAG,
   SELL_ACTION_TONE_LIMIT_UP,
-  SELL_ACTION_TONE_OUT,
+  SELL_ACTION_TONE_LATE,
   // [DRAGON-YIZI-HOLD 2026-10-08 用户口径 · 泛微网络 8/5] 龙一一字涨停 ⇒ 中军 / 后排【龙一字持有】
   DRAGON_YIZI_HOLD_TAG,
   SELL_ACTION_TONE_YIZI_HOLD,
@@ -1666,7 +1666,11 @@ describe('★ 9/7 我爱我家（今日龙一）：占比差一点点 + 量比�
     expect(x.sellActionTag).toBe(SELL_OUT_SWAP_TAG);
   });
 
-  it('⑧ 只认【今日龙一】：中军（龙二）占比 1.2% + 量比增加 ⇒ 仍是【竞价卖】，不是本档', () => {
+  it('⑧ 只认【今日龙一】：中军（龙二）占比 1.2% + 量比增加 ⇒ ⛔ 不是本档', () => {
+    // ⚠️ 本用例在 [DRAGON-STRONG-LATE 2026-10-07] 后【按新口径更新期望值】：
+    //   龙一「龙头票」占比 5.0%【达标】⇒ 命中新档【龙一强 ⇒ 尾盘卖】
+    //   ⇒ 中军二拿到的是【尾盘卖】，⛔ 仍然【不是】本档（【10分钟时卖】）——
+    //     本档的验证点是「十分钟档只认龙一」，中军在任何情况下都拿不到【10分钟时卖】。
     const rows = [
       R('龙头票', 'T1', 50, -0.5, 1, 5.0, VR_DIR_UP),      // 龙一占比达标 ⇒ 不触发跟龙
       R('中军二', 'T1', 40, -0.5, 1, 1.2, VR_DIR_UP),
@@ -1675,7 +1679,18 @@ describe('★ 9/7 我爱我家（今日龙一）：占比差一点点 + 量比�
     const plan = sell(rows, { memberRows: rows, prevDragonNames: new Set(['别的股票']) });
     const m = itemOf(plan, '中军二');
     expect(m.dragonRank).toBe(2);
-    expect(m.sellActionTag).toBe(SELL_OUT_TAG);
+    expect(m.sellActionTag).toBe(SELL_LATE_TAG);              // 龙一强 ⇒ 尾盘卖（新档）
+    expect(m.sellActionTag).not.toBe(SELL_TEN_MIN_TAG);       // ⛔ 十分钟档只认龙一
+  });
+
+  it('⑧-b 只认【今日龙一】（补钉）：龙一占比【不达标】⇒ 中军走【跟龙竞价卖】，也不是本档', () => {
+    const rows = [
+      R('龙头票', 'T1', 50, -0.5, 1, 1.0, VR_DIR_UP),      // 龙一占比不达标 ⇒ 真的倒下
+      R('中军二', 'T1', 40, -0.5, 1, 1.2, VR_DIR_UP),
+      R('中军三', 'T1', 30, 0.5, 1, 3.0)
+    ];
+    const plan = sell(rows, { memberRows: rows, prevDragonNames: new Set(['别的股票']) });
+    expect(itemOf(plan, '中军二').sellActionTag).toBe(SELL_FOLLOW_DRAGON_TAG);
   });
 
   it('⑨ 跟龙联动：龙一判本档 ⇒ 说明它【没那么弱】⇒ 只有【后排】跟（中军各判各的）', () => {
@@ -2056,9 +2071,13 @@ describe('★ [SELL-LIMIT-UP 2026-10-07] 卖点【竞价涨停卖】', () => {
     expect(yi.sellActionTone).toBe(SELL_ACTION_TONE_YIZI_HOLD);
     // A/B 对照：唯一区别 = 龙一【没有】一字涨停（+3%）⇒ 乙票立刻回到【竞价卖】
     //   （证明「只改『龙一一字』这一档，其它规则没动」）
+    // ⚠️ A/B 对照在 [DRAGON-STRONG-LATE 2026-10-07] 后【按新口径更新】：
+    //   唯一区别仍是「龙一【没有】一字」，但甲票（龙一）占比 5.0% 是【达标】的
+    //   ⇒ 乙票拿到的是新档【尾盘卖】（龙一强 ⇒ 跟着龙一拿尾盘），
+    //     ⛔ 不再是【竞价卖】。核心验证点不变：⛔ 不是【龙一字持有】。
     const plain = sellPickOf(sell(sellRowsOf(3, '600519')), '乙票');
-    expect(plain.sellActionTag).toBe(SELL_OUT_TAG);
-    expect(plain.sellActionTone).toBe(SELL_ACTION_TONE_OUT);
+    expect(plain.sellActionTag).toBe(SELL_LATE_TAG);
+    expect(plain.sellActionTag).not.toBe(DRAGON_YIZI_HOLD_TAG);
   });
 
   it('⑧ 规则文案：卖点条文里写了【竞价涨停卖】且标明「最优先 / 只换标签」', () => {
@@ -2155,8 +2174,15 @@ describe('★ [DRAGON-YIZI-HOLD 2026-10-08] 【龙一字持有】', () => {
     // 8/5 泛微网络正是这一档（它没进当天买点）
     const yi = sellOf(yiziRows(), '龙二乙');
     expect(yi.sellActionTag).toBe(DRAGON_YIZI_HOLD_TAG);
+    // ⚠️ A/B 对照在 [DRAGON-STRONG-LATE 2026-10-07] 后【按新口径更新】：
+    //   龙一【没有】一字，但占比 5.0%【达标】⇒ 命中新档【龙一强 ⇒ 尾盘卖】
+    //   ⇒ 龙二乙拿到【尾盘卖】。核心验证点不变：⛔ 不是【龙一字持有】。
     const plain = sellOf(yiziRows({ leaderYizi: false, leaderPct: 3 }), '龙二乙');
-    expect(plain.sellActionTag).toBe(SELL_OUT_TAG);
+    expect(plain.sellActionTag).toBe(SELL_LATE_TAG);
+    expect(plain.sellActionTag).not.toBe(DRAGON_YIZI_HOLD_TAG);
+    // 补一个「龙一【也】不达标」的对照 ⇒ 龙一真的倒下 ⇒ 龙二跟跌【跟龙竞价卖】
+    expect(sellOf(yiziRows({ leaderYizi: false, leaderPct: 3, leaderShare: 1.0 }), '龙二乙')
+      .sellActionTag).toBe(SELL_FOLLOW_DRAGON_TAG);
   });
 
   it('④ ⛔ 龙一【自己】不适用：它一字涨停 ⇒ 【竞价涨停卖】（请求 W 最优先档）', () => {
@@ -2213,5 +2239,134 @@ describe('★ [DRAGON-YIZI-HOLD 2026-10-08] 【龙一字持有】', () => {
     expect(sellTxt).toContain(DRAGON_YIZI_HOLD_TAG);
     expect(sellTxt).toContain('卖都不用卖');
     expect(sellTxt).toContain('泛微网络');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★ [DRAGON-STRONG-LATE 2026-10-07 用户口径 · 泛微网络 / 中国科传 8/6]
+//   【龙一强 ⇒ 尾盘卖】：同题材今日龙一【占比达标】⇒ 中军 / 后排不竞价卖，拿到尾盘
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话：「8月6日。决策看板，AI应用题材，买点有，传智教育龙一（昨天因为它竞价一字涨停没有入选，
+//   今天开板它入选了），占比11%，达标。卖点有，泛微网络龙二，占比1.8%，不达标，竞价卖（错误），
+//   中国科传龙四，1.4%，不达标，竞价卖（错误），把竞价卖改成尾盘卖，逻辑还是因为龙一，
+//   因为龙一有带动性，当天占比11%说明很强，在龙一达标很强大的情况，我说的那些中军或者后排
+//   也应该尾盘卖。而不是竞价卖。因为龙一表现还不错。所以，还是要看龙一当天的竞价表现。
+//   卖点的还有有大晟文化也是ai应用，因为竞价就涨停了，溢价高。所以，竞价卖了。
+//   标签是"竞价涨停卖"不变。」
+//   「如果当天传智教育，占比不达标，就按原来的规则。和原来一样竞价卖。」
+//
+// ⇒ 本档是【跟龙竞价卖】的【镜像】：那档「龙一倒了 ⇒ 跟着慌」，本档「龙一很硬 ⇒ 跟着强」。
+// ⛔ 用例全部用【A/B 对照】写法：唯一变量 = 龙一占比达不达标，其余桩数据一模一样。
+describe('★ [DRAGON-STRONG-LATE 2026-10-07] 龙一占比达标 ⇒ 中军 / 后排改【尾盘卖】', () => {
+  /**
+   * 8/6 AI应用的结构（六只：龙一 + 龙二 + 龙四 + 一只一字涨停的后排 + 两只凑数）：
+   *   · 传智教育 = 龙一，占比 11.0%【达标】（今天开板、竞价 +5%，不是一字）；
+   *   · 泛微网络 = 龙二，占比 1.8% 不达标 —— 本档的落点；
+   *   · 中国科传 = 龙四，占比 1.4% 不达标 —— 另一只落点（后排同理）；
+   *   · 大晟文化 = 后排，竞价 +10%【一字涨停】⇒ 走【竞价涨停卖】（最优先档，⛔ 不被本档抢）。
+   * @param {object} [o] { leaderShare, leaderAucPct, noLeader }
+   */
+  function rowsOf(o) {
+    const c = o || {};
+    const leader = R('传智教育', 'T1', 60,
+      (c.leaderAucPct === undefined ? 5 : c.leaderAucPct), 100,
+      (c.leaderShare === undefined ? 11.0 : c.leaderShare), VR_DIR_UP, 5, '003032');
+    return [
+      leader,
+      R('泛微网络', 'T1', 50, -1.5, 20, 1.8, VR_DIR_DOWN, -2, '603039'),
+      R('龙三票', 'T1', 45, 0.5, 15, 3.0, VR_DIR_UP, 1, '600001'),
+      R('中国科传', 'T1', 40, -0.8, 12, 1.4, VR_DIR_UP, 1, '601858'),
+      R('大晟文化', 'T1', 35, 10, 8, 2.0, VR_DIR_UP, 3, '600892'),
+      R('凑一', 'T1', -10, 0.2, 3, 1.0, VR_DIR_UP, 0, '600901'),
+      R('凑二', 'T1', -11, 0.1, 2, 1.0, VR_DIR_UP, 0, '600902')
+    ];
+  }
+  /** 卖点里按名字取一行（⛔ 找不到就抛，避免用例静默变成空测） */
+  function pickOf(plan, name) {
+    const hit = (plan || []).flatMap(g => g.items || []).find(p => p.name === name);
+    if (!hit) throw new Error('卖点里没有 ' + name);
+    return hit;
+  }
+  const sellOf = (o, name, opts) => pickOf(sell(rowsOf(o), opts || {}), name);
+
+  it('① 龙一占比【达标】⇒ 龙二 1.8% 不达标也改【尾盘卖】（8/6 泛微网络）', () => {
+    const p = sellOf({}, '泛微网络');
+    expect(p.dragonRank).toBe(2);
+    expect(p.aucSharePass).toBe(false);                 // ⛔ 占比【结论不变】：仍是不达标
+    expect(p.sellActionTag).toBe(SELL_LATE_TAG);
+    expect(p.sellActionTag).toBe('尾盘卖');
+    expect(p.sellActionTone).toBe(SELL_ACTION_TONE_LATE);
+  });
+
+  it('② 后排同样适用：中国科传（龙四）1.4% 不达标 ⇒ 也改【尾盘卖】', () => {
+    const p = sellOf({}, '中国科传');
+    expect(p.dragonRank).toBe(4);
+    expect(p.sellActionTag).toBe(SELL_LATE_TAG);
+  });
+
+  it('③ A/B 对照：龙一占比【不达标】（1.0%）⇒ 本档【不生效】⇒ 龙二跟跌【跟龙竞价卖】', () => {
+    // 用户原话：「如果当天传智教育，占比不达标，就按原来的规则。和原来一样竞价卖。」
+    // ⚠️ 龙一不达标 ⇒ 它自己就是【竞价卖】⇒ 中军按【跟龙竞价卖】跟（既有优先规则，先于本档）。
+    const p = sellOf({ leaderShare: 1.0 }, '泛微网络');
+    expect(p.sellActionTag).toBe(SELL_FOLLOW_DRAGON_TAG);
+    expect(p.sellActionTag).not.toBe(SELL_LATE_TAG);
+    // 后排同理
+    expect(sellOf({ leaderShare: 1.0 }, '中国科传').sellActionTag).toBe(SELL_FOLLOW_DRAGON_TAG);
+  });
+
+  it('④ ⛔ 大晟文化竞价【一字涨停】⇒ 仍是【竞价涨停卖】（最优先档压过本档）', () => {
+    const p = sellOf({}, '大晟文化');
+    expect(p.sellActionTag).toBe(SELL_LIMIT_UP_TAG);
+    expect(p.sellActionTag).not.toBe(SELL_LATE_TAG);
+  });
+
+  it('⑤ ⛔ 只替【竞价卖】：今天【又进买点】那档 ⇒ 仍给【竞价卖（先卖后买）】，不被本档抢', () => {
+    // 买点侧的说明文字直接引用卖点标签名（「开盘先按卖点的【竞价卖（先卖后买）】卖掉」），
+    // 本档若抢走会让买卖两侧文案打架（9/30 事故同型）。
+    const p = sellOf({}, '泛微网络', { todayBuyNames: new Set(['泛微网络']) });
+    expect(p.sellActionTag).toBe(SELL_OUT_SWAP_TAG);
+  });
+
+  it('⑥ ⛔ 占比【达标】的档【不动】：龙三票 3.0% 达标 ⇒ 照旧【尾盘卖】（本来就这一档）', () => {
+    const p = sellOf({}, '龙三票');
+    expect(p.aucSharePass).toBe(true);
+    expect(p.sellActionTag).toBe(SELL_LATE_TAG);
+    // A/B：龙一不达标时它反而被【跟龙竞价卖】截走 —— 那是既有的「优先规则」
+    //   （跟的人【不再看它自己的占比】），⛔ 与本档无关（本档只服务占比【不达标】的票）。
+    expect(sellOf({ leaderShare: 1.0 }, '龙三票').sellActionTag).toBe(SELL_FOLLOW_DRAGON_TAG);
+  });
+
+  it('⑦ §10：龙一占比【缺数据】（null）⇒ 判不出它强不强 ⇒ 不判本档 ⇒ 回到【竞价卖】', () => {
+    // ⛔ 「没查到」绝不等于「达标」（也绝不等于「不达标」）⇒ 与跟龙档的 §10 处理对称。
+    const p = sellOf({ leaderShare: null }, '泛微网络');
+    expect(p.sellActionTag).toBe(SELL_OUT_TAG);
+  });
+
+  it('⑧ §10 边界：题材里【没有龙一】（成员里没人 rank===1）⇒ 不判本档 ⇒ 【竞价卖】', () => {
+    // 用 memberRows 造一个「龙一不在题材成员里」的块（dragonMap 里没有 rank===1）。
+    const rows = rowsOf({}).filter(r => r.name !== '传智教育');
+    const p = pickOf(sell(rows, { memberRows: rows }), '泛微网络');
+    expect(p.dragonRank).toBe(1);                 // 龙一被摘掉 ⇒ 它顺延成龙一
+    expect(p.sellActionTag).toBe(SELL_OUT_TAG);   // ⛔ 本档只给「不是龙一」的票
+  });
+
+  it('⑨ 说明文字里点明「龙一强」与「龙一不达标则回归原规则」', () => {
+    const note = String(sellOf({}, '泛微网络').actionNote || '');
+    expect(note).toContain('传智教育');
+    expect(note).toContain('达标');
+    expect(note).toContain('被龙一带着走');
+    expect(note).toContain('尾盘');
+    // ⛔ 必须写明「龙一不达标 ⇒ 本档不生效」，否则用户看不到边界
+    expect(note).toContain('不达标');
+    expect(note).toContain(SELL_OUT_TAG);
+  });
+
+  it('⑩ 规则文案：卖点段（两套模式共用）里写了这条，且点名 8/6 例子', () => {
+    const txt = sellRulesLines().join('\n');
+    expect(txt).toContain('龙一强');
+    expect(txt).toContain('泛微网络');
+    expect(txt).toContain('中国科传');
+    expect(txt).toContain('传智教育');
+    expect(txt).toContain(SELL_LATE_TAG);
   });
 });

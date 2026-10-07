@@ -2088,7 +2088,24 @@ function _dragonOneMemberOf(blockObj, dragonMap) {
 function _isDragonYiziHoldPick(p, ctx) {
   if (!p || !ctx || !ctx.dragonOneYizi) return false;      // ① 龙一必须一字涨停
   // ② 只给【不是龙一】的票（中军 / 后排；龙位未知也算 —— 它肯定不是那个龙一）
-  return Number(p.dragonRank) !== 1;
+  return _isNotDragonOne(p);
+}
+
+/**
+ * 「本股【不是】龙一」（= 中军 / 后排）的唯一判据（§6 只此一份）。
+ *
+ * 🔴 [DRAGON-STRONG-LATE 2026-10-07] 现在有【两档】都靠「被龙一带着走」成立：
+ *   · 【龙一字持有】：龙一竞价【一字涨停】；
+ *   · 【龙一强 ⇒ 尾盘卖】（本档）：龙一竞价【占比达标】。
+ *   两档的「被带者」条件完全相同 ⇒ 抽出来共用，⛔ 绝不在两处各写一遍 `dragonRank !== 1`
+ *   （改龙位口径时必漏一处，9/30 事故同型）。
+ * §10：龙位未知（null / 0）也算「不是龙一」—— 它肯定不是那个 rank===1，⛔ 不猜它是。
+ *
+ * @param {object} p 行（读 dragonRank）
+ * @returns {boolean}
+ */
+function _isNotDragonOne(p) {
+  return !!p && Number(p.dragonRank) !== 1;
 }
 
 /**
@@ -2116,6 +2133,36 @@ function _dragonYiziHoldNoteText(p, dir, ctx, side) {
     p.aucShareThresholdText + '）确实【不达标】，但那只是它【自己】的量能不够，' +
     '决定它今天方向的是【龙一】⇒ 卖都不用卖，改标【' + DRAGON_YIZI_HOLD_TAG + '】：' +
     '拿着别动，有仓位的可加仓（⛔ 行尾仓位与【' + HOLD_TAG + '】标记【保留】，不清）。' +
+    '辅助验证：本股竞价涨幅 ' + formatAucPct(aucPct) + '、竞价量比' + _dirWord(dir) +
+    '（辅助，不单独决定时机）。';
+}
+
+/**
+ * [DRAGON-STRONG-LATE 2026-10-07 用户口径 · 泛微网络 / 中国科传 8/6]
+ * 【龙一强 ⇒ 尾盘卖】的逐行说明文字（只服务卖点侧，买点侧【没有】对应档 ——
+ *  买点那边「占比不达标」的票本来就按【尾盘买】处理，时间点没变，⛔ 不跟着改）。
+ *
+ * ⚠️ 为什么整段另写：结论是「占比【不达标】⇒ 但【不用开盘就走】」，
+ *    与「占比不达标 ⇒ 【竞价卖】」那条模板串结论相反，塞进去会被读反。
+ *
+ * @param {object} p 行（读 aucShare / aucPct / aucShareScopeText / aucShareThresholdText）
+ * @param {string} dir 今日 vs 上一交易日竞价量比方向（只作辅助陈述）
+ * @param {{dragonOneName:string, dragonOneShare:number|null}} ctx 第 0 遍算好的题材级前提
+ * @returns {string} 不带【规则N】前缀的正文
+ */
+function _dragonStrongLateNoteText(p, dir, ctx) {
+  const share = _num(p.aucShare);
+  const aucPct = _num(p.aucPct);
+  return '同题材【今日龙一 ' + (ctx.dragonOneName || '—') + '】竞价占比 ' +
+    formatAuctionShare(ctx.dragonOneShare) + '（龙头门槛 ' + _thresholdText(true) +
+    '）【达标】⇒ 龙一当天【很强】，有带动性。' +
+    '本股是同题材的【中军 / 后排】（不是龙一），是【被龙一带着走】的 —— ' +
+    '龙一还硬着，题材当天就没走完，⛔ 不该按「自己走弱」开盘就【' + SELL_OUT_TAG + '】' +
+    '（那样容易卖飞）。' +
+    '本股自身占比 ' + formatAuctionShare(share) + '（' + p.aucShareScopeText + '门槛 ' +
+    p.aucShareThresholdText + '）确实【不达标】，但那只是它【自己】的量能不够，' +
+    '决定它今天方向的是【龙一】⇒ 改标【' + SELL_LATE_TAG + '】：跟着龙一，拿到尾盘再卖。' +
+    '（⛔ 若龙一当天占比【不达标】⇒ 走原规则【' + SELL_OUT_TAG + '】，本档不生效。）' +
     '辅助验证：本股竞价涨幅 ' + formatAucPct(aucPct) + '、竞价量比' + _dirWord(dir) +
     '（辅助，不单独决定时机）。';
 }
@@ -2706,6 +2753,35 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
     });
   });
 
+  // ══ [DRAGON-STRONG-LATE 2026-10-07 用户口径 · 泛微网络 / 中国科传 8/6] 第 0 遍：找出
+  //    「同题材今日龙一【竞价占比达标】」的题材 ══
+  //   用户原话：「8月6日……AI应用题材，买点有，传智教育龙一……占比11%，达标。卖点有，
+  //     泛微网络龙二，占比1.8%，不达标，竞价卖（错误），中国科传龙四，1.4%，不达标，竞价卖（错误），
+  //     把竞价卖改成尾盘卖，逻辑还是因为龙一，因为龙一有带动性，当天占比11%说明很强，
+  //     在龙一达标很强大情况，我说的那些中军或者后排也应该尾盘卖，而不是竞价卖。」
+  //     「如果当天传智教育，占比不达标，就按原来的规则。和原来一样竞价卖。」
+  //   ⇒ 本档是【跟龙竞价卖】的【镜像】：那档是「龙一倒了 ⇒ 跟着慌」，
+  //     本档是「龙一很硬 ⇒ 跟着强，不用开盘就走」。两档判据互斥（达标 vs 不达标），天然不会撞。
+  //   🔴 同样必须走【blocks + dragonMap】：龙一（传智教育 8/6）【在买点里、不在卖点候选里】
+  //     ⇒ 只扫 rows 会整档失效（与 dragonYiziTopics 同一个坑）。
+  //     members 上的 aucShare 由 decision-collect#_mkRow 统一挂好（§6）。
+  //   ⛔ 达标判定走 auction-share#passesAuctionShare（§6 唯一实现，⛔ 不手写 `share >= 门槛`）。
+  //   §10：没有龙一 / 龙一占比缺数据 ⇒ 不记（未知 ≠ 强）。
+  const dragonStrongTopics = new Map();   // 题材 tp → { name, share }（该题材今日龙一占比达标）
+  (blocks || []).forEach(function(b) {
+    const tp = String(b.topic || '').trim();
+    if (!tp || dragonStrongTopics.has(tp)) return;
+    (b.members || []).forEach(function(m) {
+      if (!m || !m.name) return;
+      const d = dragon.get(m.name);
+      if (!d || Number(d.rank) !== 1) return;
+      const sh = _num(m.aucShare);
+      if (sh === null) return;                                  // §10：龙一占比没抓到 ⇒ 不猜它强不强
+      if (!passesAuctionShare(sh, resolveDragonScope(1, null).isFront)) return;  // 龙一档门槛
+      dragonStrongTopics.set(tp, { name: String(m.name), share: sh });
+    });
+  });
+
   rows.forEach(function(r) {
     const tp = String(r.topic || '').trim();
     if (!tp || fallenDragon.has(tp)) return;          // 未成组 ⇒ 无「同题材龙一」可言
@@ -2799,6 +2875,21 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
     //   §10：占比缺数据 ⇒ 走不到下面 `share !== null` 这个大分支 ⇒ 本档不判（回落旧口径）。
     const dragonOneYizi = dragonYiziTopics.get(tp) || null;
     const dragonYiziHold = !!dragonOneYizi && _isDragonYiziHoldPick(
+      { dragonRank: dragonRank }, { dragonOneYizi: true });
+
+    // ══ [DRAGON-STRONG-LATE 2026-10-07 用户口径 · 泛微网络 / 中国科传 8/6] 本行是不是该
+    //    「因为龙一很强而改成【尾盘卖】」══
+    //   判据（两条，§6）：
+    //     ① 同题材【今日龙一】竞价【占比达标】（第 0 遍的 dragonStrongTopics，⛔ 不在这里重扫 members）；
+    //     ② 本行【不是龙一】（中军 / 后排；龙一自己占比达标 ⇒ 上面第 3 档已是【尾盘卖】，不在本档）。
+    //   ⛔ 「本股自己占比不达标」由【分支位置】保证（本档排在 sharePass 那两档之后）。
+    //   🔴【只替】【竞价卖】那一档（排在最末的 else），⛔ 不动【竞价卖（先卖后买）】：
+    //     买点侧的说明文字是【直接引用】卖点标签名的（「开盘先按卖点的【竞价卖（先卖后买）】卖掉」），
+    //     本档抢走会让买卖两侧文案打架（9/30 事故同型）。
+    //   ⛔ 也不与【跟龙竞价卖】重叠（那条要求龙一【不达标】，本档要求【达标】）。
+    //   §10：占比缺数据 ⇒ 走不到下面 `share !== null` 这个大分支 ⇒ 本档不判（回落旧口径）。
+    const dragonStrong = dragonStrongTopics.get(tp) || null;
+    const dragonStrongLate = !!dragonStrong && _isDragonYiziHoldPick(
       { dragonRank: dragonRank }, { dragonOneYizi: true });
 
     // ══ [SELL-LIMIT-UP 2026-10-07 用户口径] 【最优先】本行竞价是不是【一字涨停】══
@@ -2946,6 +3037,30 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
           ' 卖；到点不管冲没冲高，都要卖。辅助验证：竞价涨幅 ' + formatAucPct(aucPct) +
           '、竞价量比' + _dirWord(volRatioDir) + '。' +
           '（本档只针对【今日龙一】—— 龙一占比接近门槛时才会出现这种「差一点点」的情形。）');
+      } else if (dragonStrongLate) {
+        // ══ [DRAGON-STRONG-LATE 2026-10-07 用户口径 · 泛微网络 / 中国科传 8/6] 【尾盘卖】══
+        //   同题材【今日龙一】竞价占比【达标】（8/6 传智教育 11%）⇒ 龙一当天很强、有带动性
+        //   ⇒ 本股（中军 / 后排）是被龙一【带着走】的，⛔ 不该开盘就【竞价卖】（容易卖飞）
+        //   ⇒ 改【尾盘卖】。用户原话：「在龙一达标很强大的情况下，中军或者后排也应该尾盘卖。」
+        //   ⚠️ 标签【复用】既有的【尾盘卖】（SELL_LATE_TAG，琥珀 #d97706）：
+        //     本档要传达的就是「卖的时间点改成尾盘」，与「自己占比达标 ⇒ 尾盘卖」是同一个动作，
+        //     原因写在下面的说明文字里（⛔ 不另造标签名 —— 用户口径只说「把竞价卖改成尾盘卖」）。
+        //   🔴 只替【竞价卖】：本档排在【竞价卖（先卖后买）】【10分钟时卖】两档【之后】，
+        //     ⛔ 那两档不动（它们各自有买卖两侧互相引用的文案，抢了会打架）。
+        //   ⛔ 与上面的【跟龙竞价卖】互斥（那条要龙一【不达标】）。
+        sellActionTag = SELL_LATE_TAG;
+        sellActionTone = SELL_ACTION_TONE_LATE;
+        actionNote = _note(RULE_NO.SHARE, _dragonStrongLateNoteText(
+          {
+            aucShare: share, aucPct: aucPct,
+            aucShareScopeText: _scopeText(scope, isFront),
+            aucShareThresholdText: _thresholdText(isFront)
+          },
+          volRatioDir,
+          {
+            dragonOneName: dragonStrong ? dragonStrong.name : '',
+            dragonOneShare: dragonStrong ? dragonStrong.share : null
+          }));
       } else {
         sellActionTag = SELL_OUT_TAG;
         sellActionTone = SELL_ACTION_TONE_OUT;
@@ -2953,7 +3068,7 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
           '竞价占比 ' + formatAuctionShare(share) + '（' + _scopeText(scope, isFront) + '门槛 ' +
           _thresholdText(isFront) + '）⇒ 占比不达标，' +
           '【' + SELL_OUT_TAG + '】：占比不到门槛，开盘就走，别恋战。' +
-          '（本股今天【没有】进买点 ⇒ 就是「真的弱了」，不是先卖后买。）' +
+          '（本股今天【没有】进买点，同题材龙一【也不达标】⇒ 就是「真的弱了」，不是先卖后买。）' +
           '辅助验证：竞价涨幅 ' + formatAucPct(aucPct) + '、竞价量比' + _dirWord(volRatioDir) +
           '（辅助，不单独决定时机）。');
       }
@@ -3393,12 +3508,33 @@ export function sellRulesLines() {
     '　　　· ⛔ 它【不进】「同题材龙一限制」的判定：龙一一字涨停 = 题材最强，⛔ 不算「将军倒下」，',
     '　　　　所以中军 / 后排【不会】被它拖成【' + SELL_FOLLOW_DRAGON_TAG + '】。',
     '　　　· §10：龙一一字【判不出来】（题材成员里没有龙一 / 缺竞价涨幅）⇒ 不判本档，原规则照跑。',
+    // 🔴 [DRAGON-STRONG-LATE 2026-10-07 用户口径 · 泛微网络 / 中国科传 8/6]【龙一强 ⇒ 尾盘卖】
+    //   与上面的【龙一字持有】是【同一族的两半】：那档看「龙一是不是一字封死」，
+    //   本档看「龙一占比达不达标」—— 都是「被龙一带着走，别按自己走弱处理」。
+    '　🔴 【龙一强 ⇒ ' + SELL_LATE_TAG + '】（2026-10-07 用户口径 · 泛微网络 / 中国科传 8/6）——',
+    '　　　占比【不达标】时，先看这一条：',
+    '　　　两条【同时】满足（缺一不行）：',
+    '　　　① 同题材【今日龙一】当天【竞价占比【达标】】（龙头门槛 ' + AUCTION_SHARE_FRONT_MIN + '%）；',
+    '　　　② 本股【不是龙一】（是同题材的中军 / 后排）。',
+    '　　　⇒ 龙一当天【很强、有带动性】⇒ 中军 / 后排是【被龙一带着走】的，',
+    '　　　　⛔ 不该开盘就【' + SELL_OUT_TAG + '】（那样容易卖飞）⇒ 改标【' + SELL_LATE_TAG +
+      '】：跟着龙一，拿到尾盘再卖。',
+    '　　　· 例（8/6 AI应用）：龙一【传智教育】占比 11%（达标）⇒ 龙二【泛微网络】1.8%、',
+    '　　　　龙四【中国科传】1.4% 都不达标，但都改【' + SELL_LATE_TAG + '】（⛔ 不再是【' + SELL_OUT_TAG + '】）。',
+    '　　　· ⛔ 龙一当天占比【不达标】⇒ 本档【不生效】，照旧【' + SELL_OUT_TAG + '】',
+    '　　　　（用户原话「如果当天传智教育，占比不达标，就按原来的规则。和原来一样竞价卖。」）。',
+    '　　　· ⛔ 只替【' + SELL_OUT_TAG + '】那一档：【' + SELL_OUT_SWAP_TAG + '】【' + SELL_TEN_MIN_TAG +
+      '】两档【不动】',
+    '　　　　（它们与买点侧的文案互相引用，被抢会让买卖两边说的话打架）。',
+    '　　　· ⛔ 与【' + SELL_FOLLOW_DRAGON_TAG + '】互斥（那条要龙一【不达标】，本档要【达标】）。',
+    '　　　· §10：龙一占比【缺数据】⇒ 不判本档，原规则照跑（「没查到」绝不等于「达标」）。',
     '　【动作】（行尾标签，共六种；后三种【' + SELL_OUT_SWAP_TAG + '】【' + SELL_TEN_MIN_TAG +
       '】【' + SELL_FOLLOW_DRAGON_TAG + '】见下面三条补充规则）：',
     '　　· 占比 ≥ 门槛【且】该股没进今天的买点 → 【' + SELL_LATE_TAG +
       '】：说明还没走弱、当天还有走强趋势，不必开盘慌着走，拿到尾盘；',
     '　　· 占比 ≥ 门槛【且】该股【今天又进了买点】→ 【' + HOLD_TAG + '】：它是强势股，今天是要买 / 加，不是卖；',
     '　　· 占比 < 门槛【且】该股【没进今天的买点】→ 【' + SELL_OUT_TAG + '】：占比不到门槛，开盘就走，别恋战；',
+    '　　　（⛔ 但若命中上面【龙一强 ⇒ ' + SELL_LATE_TAG + '】那条 ⇒ 改判【' + SELL_LATE_TAG + '】）；',
     '　　· 占比 < 门槛【且】该股【今天又进了买点】→ 【' + SELL_OUT_SWAP_TAG +
       '】：开盘先把昨天的仓卖掉，尾盘按买点再接回来。',
     '　　　🔴 [DRAGON-SWAP 2026-10-06 用户口径 · 楚天龙 9/3] 这一档是本次新增：',
