@@ -63,6 +63,11 @@ import {
   SELL_ACTION_TONE_TEN_MIN,
   SELL_TIME_TEN_MIN,
   SELL_TEN_MIN_GAP,
+  // [SELL-LIMIT-UP 2026-10-07 用户口径] 竞价一字涨停 ⇒ 竞价就走、落袋为安
+  SELL_LIMIT_UP_TAG,
+  SELL_ACTION_TONE_LIMIT_UP,
+  SELL_ACTION_TONE_OUT,
+  sellRulesLines,
   HOLD_TAG,
   RULE_NO
 } from './decision-rules.js';
@@ -144,7 +149,10 @@ function sell(rows, opts) {
     return {
       name: r.name, topic: r.topic, pct: r.pct, inTodayList: true,
       aucPct: r.aucPct, volRatioDir: r.volRatioDir, volRatioTimes: r.volRatioTimes,
-      aucShare: r.aucShare
+      aucShare: r.aucShare,
+      // [SELL-LIMIT-UP 2026-10-07] 代码透传：判「竞价是不是涨停」要靠它（涨停幅度按板块分）。
+      //   ⛔ 与线上 sellRows 同结构（decision-collect.js 也是这么透传的）。
+      code: r.code || ''
     };
   });
   return buildSellPlan(sellRows, blocks, dragonMap, o.prevDragonNames || null, o.todayBuyNames || null);
@@ -1809,8 +1817,11 @@ describe('★ [BOARD-RISK 2026-10-07] 买点行 ⚠【创业板 / 科创板风�
 
   it('⑦ 卖点侧【不标】（本次只要买点；判据挂在买点块收口 _decorateAucBadge 上）', () => {
     const plan = sell([R('甲票', 'T1', 55, 2, 9, 5.0, VR_DIR_UP, 5, '300750')]);
-    const hit = (plan.blocks || []).flatMap(b => b.picks || []).find(p => p.name === '甲票');
-    expect(hit === undefined || hit.riskTag === undefined).toBe(true);
+    // ⛔ 卖点计划的结构是 [{ topic, items }]，不是 { blocks: [{ picks }] } —— 写错会取不到行，
+    //    整条用例就变成「永远通过」的空测。所以先断言【真的取到了这一行】。
+    const hit = (plan || []).flatMap(g => g.items || []).find(p => p.name === '甲票');
+    expect(hit).toBeTruthy();
+    expect(hit.riskTag).toBeUndefined();      // 卖点行压根没有这个字段（判据挂在买点收口上）
   });
 
   it('⑧ 规则文案：两套模式的灰色问号面板都要写清【标签 + 用于提示 + 不参与规则】', () => {
@@ -1824,5 +1835,108 @@ describe('★ [BOARD-RISK 2026-10-07] 买点行 ⚠【创业板 / 科创板风�
     expect(leg).toContain(BOARD_RISK_TAG_STAR);
     expect(leg).toContain('不受任何规则控制');
     expect(leg).toContain('完全不变');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★ [SELL-LIMIT-UP 2026-10-07 用户口径] 卖点【竞价涨停卖】
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话：「把决策看板卖点的股票如果出现竞价涨幅是涨停幅度的（一字涨停的，一般涨停幅度是
+//   9.9%-10.1%，大多是10%），标签换成竞价卖。如果是尾盘卖，很容易有变故，盘中下杀风险，
+//   利润要保住先。其它不变。就是只换标签，添加新标签，"竞价涨停卖"，并添加这个规则。
+//   其它股票在卖点的没有涨停的，原来的规则保持不变。」
+// ⛔ 本档【最优先】：压过 ⑦ 的四档，也压过【跟龙竞价卖】那条优先规则（风控不让位于「还看好」）。
+describe('★ [SELL-LIMIT-UP 2026-10-07] 卖点【竞价涨停卖】', () => {
+  /**
+   * 甲票（龙一）占比 5.0% 达标且没进买点 ⇒ 正常该判【尾盘卖】；
+   * 乙票（龙二）占比 1.5% 不达标 ⇒ 正常该判【竞价卖】。
+   * @param {number|null} aucPct 甲票今日竞价涨幅（%）
+   * @param {string} [code] 甲票股票代码
+   */
+  function sellRowsOf(aucPct, code) {
+    return [
+      R('甲票', 'T1', 55, aucPct, 9, 5.0, VR_DIR_UP, 5, code),
+      R('乙票', 'T1', 47, 1, 3, 1.5)
+    ];
+  }
+  /** 从卖点计划里按名字取一行（⛔ 找不到就抛，避免用例静默变成空测） */
+  function sellPickOf(plan, name) {
+    const hit = (plan || []).flatMap(g => g.items || []).find(p => p.name === name);
+    if (!hit) throw new Error('卖点里没有 ' + name);
+    return hit;
+  }
+  const jia = (aucPct, code, opts) =>
+    sellPickOf(sell(sellRowsOf(aucPct, code), opts || {}), '甲票');
+
+  it('① 主板竞价一字涨停（+10%）⇒ 【竞价涨停卖】（压过原本的【尾盘卖】）', () => {
+    const p = jia(10, '600519');
+    expect(p.sellActionTag).toBe(SELL_LIMIT_UP_TAG);
+    expect(p.sellActionTag).toBe('竞价涨停卖');
+    expect(p.sellActionTone).toBe(SELL_ACTION_TONE_LIMIT_UP);
+  });
+
+  it('② 容差内都算涨停：+9.9% / +10.02% ⇒ 【竞价涨停卖】', () => {
+    expect(jia(9.9, '600519').sellActionTag).toBe(SELL_LIMIT_UP_TAG);
+    expect(jia(10.02, '600519').sellActionTag).toBe(SELL_LIMIT_UP_TAG);
+    // 差太远（+9.5%）就不算涨停 ⇒ 原规则不变（占比 5.0% 达标 ⇒ 【尾盘卖】）
+    expect(jia(9.5, '600519').sellActionTag).toBe(SELL_LATE_TAG);
+  });
+
+  it('③ ⛔ 涨停幅度【按板块分】：创业板 300xxx 竞价 +10% 【不是】涨停 ⇒ 原规则不变', () => {
+    // 20% 板要 +20% 才算一字 —— 这条专门钉住「别把 10% 写死」（写死会漏掉最猛的那批票）
+    expect(jia(10, '300750').sellActionTag).toBe(SELL_LATE_TAG);
+    expect(jia(20, '300750').sellActionTag).toBe(SELL_LIMIT_UP_TAG);
+    expect(jia(20, '688981').sellActionTag).toBe(SELL_LIMIT_UP_TAG);  // 科创板同为 20%
+  });
+
+  it('④ §10：竞价涨幅【缺数据】⇒ 判不出 ⇒ 不判本档，原规则照跑', () => {
+    expect(jia(null, '600519').sellActionTag).toBe(SELL_LATE_TAG);
+  });
+
+  it('⑤ 压过【持有】：占比达标 + 今天又进买点（本来是持有）⇒ 也改判【竞价涨停卖】', () => {
+    const p = jia(10, '600519', { todayBuyNames: new Set(['甲票']) });
+    expect(p.sellActionTag).toBe(SELL_LIMIT_UP_TAG);
+    expect(p.holdTag).toBe('');      // ⛔「拿着别动」与「竞价就走」直接矛盾，必须清掉
+    // 对照：不涨停时照旧给【持有】
+    const plain = jia(3, '600519', { todayBuyNames: new Set(['甲票']) });
+    expect(plain.sellActionTag).toBe(HOLD_TAG);
+  });
+
+  it('⑥ ⛔ 只换标签：占比结论 / 卖出时点 / 竞价涨幅徽标 一律不变', () => {
+    const hit = jia(10, '600519');
+    const plain = jia(3, '600519');
+    expect(hit.aucShare).toBe(plain.aucShare);
+    expect(hit.aucSharePass).toBe(plain.aucSharePass);
+    expect(hit.aucShareText).toBe(plain.aucShareText);
+    expect(hit.sellAt).toBe(plain.sellAt);
+    expect(hit.aucPctText).toBe('+10.00%');
+    expect(hit.aucTone).toBe('high');
+  });
+
+  it('⑦ 没涨停的票【完全不变】：乙票占比 1.5% 不达标 ⇒ 照旧【竞价卖】', () => {
+    const plan = sell(sellRowsOf(10, '600519'));
+    const yi = sellPickOf(plan, '乙票');
+    expect(yi.sellActionTag).toBe(SELL_OUT_TAG);
+    expect(yi.sellActionTone).toBe(SELL_ACTION_TONE_OUT);
+  });
+
+  it('⑧ 规则文案：卖点条文里写了【竞价涨停卖】且标明「最优先 / 只换标签」', () => {
+    const lines = sellRulesLines().join('\n');
+    expect(lines).toContain(SELL_LIMIT_UP_TAG);
+    expect(lines).toContain('最优先');
+    expect(lines).toContain('利润要保住先');
+    expect(lines).toContain('只换标签');
+  });
+
+  it('⑨ ⛔ 一字【跌停】（-10%）【不】触发本档 ⇒ 原规则不变（占比 5.0% 达标 ⇒ 尾盘卖）', () => {
+    // 钉住判据必须严格 === 'up'：写成 `!== null` / `!== ''` 会把跌停也当成涨停。
+    expect(jia(-10, '600519').sellActionTag).toBe(SELL_LATE_TAG);
+    expect(jia(-9.99, '600519').sellActionTag).toBe(SELL_LATE_TAG);
+  });
+
+  it('⑩ 股票代码回带到卖点输出行（判「用哪个板块的涨停幅度」可追溯）', () => {
+    expect(jia(10, '600519').code).toBe('600519');
+    // 代码缺失 ⇒ 空串（⛔ 不凭股票名猜板块），判据回落主板 10% 兜底
+    expect(jia(10, '').code).toBe('');
   });
 });

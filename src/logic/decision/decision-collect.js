@@ -554,6 +554,13 @@ export function collectDecisionData(date, opts) {
       name: nm,
       topic: row ? row.topic : '',
       pct: row ? row.pct : null,
+      // [SELL-LIMIT-UP 2026-10-07 用户口径] 股票代码 —— 判「竞价是不是一字涨停」要用它：
+      //   涨停幅度【按板块分】（主板 10% / 创业板·科创板 20% / 北交所 30%），没有代码就只能按主板兜底，
+      //   20% 板的票竞价 +10% 时根本不算涨停 ⇒ 会漏判。
+      //   ⛔ 与买点 members【同源】（_mkRow 已经算好），这里只透传（§6 单一真相，绝不另查一份）；
+      //     今天不在任何池里（row 缺失）⇒ 回落 getStockCode(nm) 查名册，查不到 = ''
+      //     ⇒ 规则层按「代码缺失」处理，⛔ 不凭股票名猜板块（§10）。
+      code: row ? String(row.code || '') : (getStockCode(nm) || ''),
       // [SELL-OPEN 2026-09-29] 今日竞价涨幅：卖点【细分提示】的唯一依据
       //   （深低开盯盘 / 小低开立刻出 / 小幅高开看分时）。row 不存在（今天不在任何池里）→ null，
       //   规则层按「缺数据」处理，回落原题材排名时点（§10 不猜方向）。
