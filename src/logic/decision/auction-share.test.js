@@ -64,6 +64,10 @@ import {
   SELL_ACTION_TONE_TEN_MIN,
   SELL_TIME_TEN_MIN,
   SELL_TEN_MIN_GAP,
+  // [SELL-TEN-MIN-PROFIT 2026-10-09 用户口径 · 宝鼎科技 8/13] 竞价涨幅 ≥ 2% ⇒ 收紧，不等 10 分钟
+  SELL_TEN_MIN_PROFIT_PCT,
+  // [DRAGON-WEAK 2026-10-09 用户口径 · 宝鼎科技 8/19] 龙一竞价大跌 + 占比不达标 ⇒ 中军也跟龙竞价卖
+  DRAGON_WEAK_AUC_PCT_MAX,
   // [SELL-LIMIT-UP 2026-10-07 用户口径] 竞价一字涨停 ⇒ 竞价就走、落袋为安
   SELL_LIMIT_UP_TAG,
   SELL_ACTION_TONE_LIMIT_UP,
@@ -2368,5 +2372,132 @@ describe('★ [DRAGON-STRONG-LATE 2026-10-07] 龙一占比达标 ⇒ 中军 / �
     expect(txt).toContain('中国科传');
     expect(txt).toContain('传智教育');
     expect(txt).toContain(SELL_LATE_TAG);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★ [SELL-TEN-MIN-PROFIT 2026-10-09 用户口径 · 宝鼎科技 8/13]
+//   【10分钟时卖】的【收紧】：龙一占比差一点点 + 量比增，但竞价涨幅 ≥ 2% ⇒ 获利了结、竞价卖
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话：「这个规则需要收紧下，还要看竞价涨幅的幅度，如果竞价涨幅大于等于 2%，那就获利了结，
+//   竞价卖，如果小于 2%，那就按照原来规则。等 10 分钟。宝鼎科技竞价涨幅 3.2% 大于 2%，所以应该是竞价卖。」
+// ⛔ 全部用例走 A/B 对照：唯一变量 = 龙一的【竞价涨幅】，其余桩数据一模一样。
+describe('★ 8/13 宝鼎科技（今日龙一）：占比差一点点 + 量比增，但竞价涨幅 ≥ 2% ⇒ 【竞价卖】', () => {
+  function bdRows(leaderAucPct) {
+    return [
+      // 龙一 = 宝鼎科技（十日涨幅最高），占比 3.2%（离龙头门槛 3.5% 只差 0.3%）＋ 量比【增强】
+      R('宝鼎科技', 'T1', 50, leaderAucPct, 9.53, 3.2, VR_DIR_UP),
+      R('中军二', 'T1', 40, 0.5, 1, 3.0),
+      R('中军三', 'T1', 30, 0.5, 1, 3.0)
+    ];
+  }
+  function s(leaderAucPct) {
+    const rows = bdRows(leaderAucPct);
+    return sell(rows, { memberRows: rows, prevDragonNames: new Set(['别的股票']) });
+  }
+
+  it('① 竞价涨幅 +3.2% ≥ 2% ⇒ 收紧为【竞价卖】（⛔ 不再是【10分钟时卖】）', () => {
+    const x = itemOf(s(3.2), '宝鼎科技');
+    expect(x.dragonRank).toBe(1);
+    expect(x.aucShareText).toBe('3.2%');
+    expect(x.aucSharePass).toBe(false);
+    expect(x.sellActionTag).toBe(SELL_OUT_TAG);
+    expect(x.sellActionTag).not.toBe(SELL_TEN_MIN_TAG);
+    expect(x.actionNote).toContain('获利了结');
+  });
+
+  it('② A/B：竞价涨幅 1.5% < 2% ⇒ 仍按原规则【10分钟时卖】（等 10 分钟）', () => {
+    const x = itemOf(s(1.5), '宝鼎科技');
+    expect(x.sellActionTag).toBe(SELL_TEN_MIN_TAG);
+    expect(x.actionNote).toContain(SELL_TIME_TEN_MIN);
+  });
+
+  it('③ 边界：竞价涨幅正好 = 2% ⇒「≥ 2%」命中 ⇒ 收紧【竞价卖】', () => {
+    expect(itemOf(s(SELL_TEN_MIN_PROFIT_PCT), '宝鼎科技').sellActionTag).toBe(SELL_OUT_TAG);
+  });
+
+  it('④ §10：竞价涨幅【缺数据】⇒ 不算「涨上去了」⇒ 仍按原【10分钟时卖】', () => {
+    expect(itemOf(s(null), '宝鼎科技').sellActionTag).toBe(SELL_TEN_MIN_TAG);
+  });
+
+  it('⑤ 规则文案：卖点段写出 8/13 收紧条件（阈值 + 宝鼎科技 + 获利了结）', () => {
+    const txt = sellRulesLines().join('\n');
+    expect(txt).toContain(String(SELL_TEN_MIN_PROFIT_PCT));
+    expect(txt).toContain('宝鼎科技');
+    expect(txt).toContain('获利了结');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★ [DRAGON-WEAK 2026-10-09 用户口径 · 宝鼎科技 8/19]
+//   【龙一走弱 ⇒ 跟龙竞价卖】：龙一竞价 ≤ -5% + 占比不达标 ⇒ 中军也一起【竞价卖】，不是尾盘卖
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话：「当龙一竞价跌幅高达 -5% 时，竞价占比又不达标，说明这个题材真的弱了。虽然龙一进入决策
+//   买点，但是已经是很弱状态，带不动后排选手了……非龙头规则还是需要改下，龙一走弱（竞价涨幅小于 -5%，
+//   占比不达标），同题材的非龙一股票（中军或者后排），要竞价卖。不是尾盘卖。因为很弱了。」
+describe('★ 8/19 宝鼎科技（龙二中军）：龙一竞价 ≤ -5% + 占比不达标 ⇒ 【跟龙竞价卖】', () => {
+  function bdRows(leaderAucPct) {
+    return [
+      // 龙一 = 华正新材（十日涨幅最高），占比 1.7%（不达标）
+      R('华正新材', 'T1', 50, leaderAucPct, 1, 1.7, VR_DIR_DOWN),
+      // 龙二 = 宝鼎科技（中军），自己占比 2.3% ≥ 2% 本就【达标】
+      R('宝鼎科技', 'T1', 40, -3.25, 1, 2.3, VR_DIR_DOWN),
+      R('中军三', 'T1', 30, 0.5, 1, 3.0)
+    ];
+  }
+  function s(leaderAucPct) {
+    const rows = bdRows(leaderAucPct);
+    // 8/19 龙一【华正新材进了买点】⇒ 原「先卖后买」档只让【后排】跟、中军各判各的。
+    //   本节验证：龙一竞价大跌时，中军也必须【一起跟龙竞价卖】（那条例外被压过）。
+    return sell(rows, {
+      memberRows: rows,
+      prevDragonNames: new Set(['别的股票']),
+      todayBuyNames: new Set(['华正新材'])
+    });
+  }
+
+  it('① 龙一 -5.00%（≤ -5）+ 占比不达标 ⇒ 中军宝鼎改【跟龙竞价卖】（⛔ 不是【尾盘卖】）', () => {
+    const x = itemOf(s(-5.0), '宝鼎科技');
+    expect(x.dragonRank).toBe(2);
+    expect(x.aucSharePass).toBe(true);          // 自己占比 2.3% ≥ 2% 本就达标
+    expect(x.sellActionTag).toBe(SELL_FOLLOW_DRAGON_TAG);
+    expect(x.sellActionTag).not.toBe(SELL_LATE_TAG);
+    expect(x.actionNote).toContain('华正新材');
+    expect(x.actionNote).toContain('真的弱了');
+  });
+
+  it('② A/B：龙一只跌 -3%（未达 -5%）⇒ 原规则不变 ⇒ 中军宝鼎【尾盘卖】', () => {
+    expect(itemOf(s(-3), '宝鼎科技').sellActionTag).toBe(SELL_LATE_TAG);
+  });
+
+  it('③ 边界：龙一正好 ' + DRAGON_WEAK_AUC_PCT_MAX + '% ⇒ 命中（含 -5.00%）', () => {
+    expect(itemOf(s(DRAGON_WEAK_AUC_PCT_MAX), '宝鼎科技').sellActionTag).toBe(SELL_FOLLOW_DRAGON_TAG);
+  });
+
+  it('④ §10：龙一竞价涨幅【缺数据】⇒ 不判本档 ⇒ 中军宝鼎【尾盘卖】', () => {
+    expect(itemOf(s(null), '宝鼎科技').sellActionTag).toBe(SELL_LATE_TAG);
+  });
+
+  it('⑤ 规则文案：卖点段写出【龙一走弱 ⇒ 跟龙竞价卖】与 8/19 例子', () => {
+    const txt = sellRulesLines().join('\n');
+    expect(txt).toContain(String(DRAGON_WEAK_AUC_PCT_MAX));
+    expect(txt).toContain('华正新材');
+    expect(txt).toContain('真的弱了');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★ [DRAGON-YIZI-HOLD-REMIND 2026-10-09 用户口径 · 宝鼎科技 8/18]
+//   规则说明里加【盘中盯龙一炸板】文字提醒（⛔ 不改判据，纯文字）
+// ══════════════════════════════════════════════════════════════════════════════════════
+describe('★ 规则文案：8/18 龙一字持有带上【盘中盯龙一炸板】提醒', () => {
+  it('卖点段写了「封单额 / 炸板」的盘中提醒，且仍保留原判据说明', () => {
+    const txt = sellRulesLines().join('\n');
+    expect(txt).toContain('封单额');
+    expect(txt).toContain('炸板');
+    expect(txt).toContain(DRAGON_YIZI_HOLD_TAG);
+    // 原判据（「卖都不用卖」「一字涨停」）必须还在 —— 提醒是叠加的，不是替换
+    expect(txt).toContain('卖都不用卖');
+    expect(txt).toContain('一字涨停');
   });
 });
