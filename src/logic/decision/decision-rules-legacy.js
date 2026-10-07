@@ -83,6 +83,10 @@ import {
   // [MAKEUP-BUY 2026-10-08 用户口径 · 华正新材 9/15] 【补涨竞价买】标签 + 两个阈值，同样只有一份
   //   （在 decision-rules.js）：动作由共享的 _decorateShareAction 给，这里只为了写【规则文案】。
   BUY_MAKEUP_TAG, MAKEUP_AUC_PCT_MIN, MAKEUP_STREAK,
+  // [DRAGON-YIZI-HOLD 2026-10-08 用户口径 · 泛微网络 8/5] 【龙一字持有】标签 ——
+  //   动作由共享的 _decorateShareAction / buildSellPlan（decision-rules.js）统一给，⛔ 本文件不判；
+  //   这里 import 只为了写【规则文案】（§6：标签文案只有一份）。
+  DRAGON_YIZI_HOLD_TAG,
   // ⚠️ [SHARE-RULE 2026-10-03] BUY_ACTION_TONE_LATE / SWAP / NOW 三个配色档的导入已删除 ——
   //   配色档现在由 _decorateShareAction（decision-rules.js）统一给，本文件不再直接写 buyActionTone。
   //   （§16：不留死导入；否则 ESLint no-unused-vars 会报错。）
@@ -1576,7 +1580,11 @@ export function buildBuyPlan(blocks, dragonMap, opts) {
   const list = blocks || [];
   const first = list.find(function(b) { return b.rank === 1; }) || null;
   const second = list.find(function(b) { return b.rank === 2; }) || null;
-  const o = opts || {};
+  // [DRAGON-YIZI-HOLD 2026-10-08 用户口径 · 泛微网络 8/5] 把 dragonMap 一并挂进 opts：
+  //   收口里的 _markHold / _decorateShareAction（共享实现，在 decision-rules.js）要用它反查
+  //   「同题材今日龙一」（§6：龙位只有 rankDragons 一份，⛔ 收口里绝不另算一遍排序）。
+  //   ⚠️ Object.assign 复制一份，⛔ 不改调用方传进来的对象（避免副作用跨调用点泄漏）。
+  const o = Object.assign({}, opts || {}, { dragonMap: dragonMap });
 
   // [SMALL-TOPIC 2026-09-25] 第 1 / 第 2 名题材是「票太少 + 有 1~2 个一字」的高风险小题材
   //   ⇒ 常规规则准确率低，【不用常规规则】，改走 ⑥（题材连扳 + 早盘竞价股票数 ≥ 4 只过滤）。
@@ -1909,6 +1917,18 @@ function _legacyBuyRulesLines() {
     '　　　　不按常规指标来（只按【竞价涨幅】+【题材龙头达标走强】这两个入选条件），竞价就买。',
     '　　　⚠️ 不达标就按原规则处理，【不变】（9/18 中新赛克涨幅 1.54% ≤ ' + MAKEUP_AUC_PCT_MIN +
       '% ⇒ 照旧【' + POSITION_LIGHT + '】+【' + BUY_LATE_TAG + '】）。',
+    // [DRAGON-YIZI-HOLD 2026-10-08 用户口径 · 泛微网络 8/5] 占比【不达标】+ 昨有买入 里的新增一档。
+    '　　⚠️ 【' + DRAGON_YIZI_HOLD_TAG + '】（2026-10-08 用户口径 · 泛微网络 8/5）——【' +
+      BUY_LATE_SWAP_TAG + '】里的例外：',
+    '　　　两条【同时】满足（缺一不行）：',
+    '　　　① 同题材【今日龙一】当天竞价【一字涨停】（一字买不进 ⇒ 它没进买点，这是【现规则】）；',
+    '　　　② 本股【不是龙一】（是同题材的中军 / 后排）。',
+    '　　　⇒ 龙头封死一字板 = 本题材当天【最强】；中军 / 后排是【被龙一带着走】的，',
+    '　　　　⛔ 不该按「自己走弱」去「先卖后买」⇒ 改标【' + DRAGON_YIZI_HOLD_TAG + '】：',
+    '　　　　卖都不用卖，拿着别动，有仓位的可加仓（⛔ 行尾仓位与【' + HOLD_TAG + '】标记【照旧保留】）。',
+    '　　　（例：8/5 泛微网络是龙二、占比 1.4% 不达标，同题材龙一传智教育竞价一字涨停没进买点',
+    '　　　　⇒ 原本【' + BUY_LATE_SWAP_TAG + '】，改标【' + DRAGON_YIZI_HOLD_TAG + '】。）',
+    '　　　⚠️ §10：龙一一字【判不出来】⇒ 不判本档，回落【' + BUY_LATE_SWAP_TAG + '】。',
     '　　⚠️ 【竞价涨幅】与【竞价量比】只是【辅助】—— 两者都涨也可能是「假强」，',
     '　　　配上占比（实打实的水量）才能确认；三者同向时确定性最高。',
     '　　（例：捷荣技术量比【下降】但占比 7.0% ≥ 3.5% → 照样【' + BUY_NOW_TAG +

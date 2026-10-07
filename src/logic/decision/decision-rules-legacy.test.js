@@ -79,7 +79,12 @@ import {
   // [TOPIC-TAKEOVER 2026-10-08 用户口径 · 9/23] 题材间【上位卡位】的唯一判据（§6 只此一份）
   isTopicTakeover,
   BUY_NOW_TAG,
-  BUY_LATE_TAG
+  BUY_LATE_TAG,
+  BUY_LATE_SWAP_TAG,
+  // [DRAGON-YIZI-HOLD 2026-10-08 用户口径 · 泛微网络 8/5] 龙一一字涨停 ⇒ 中军 / 后排【龙一字持有】
+  DRAGON_YIZI_HOLD_TAG,
+  BUY_ACTION_TONE_YIZI_HOLD,
+  isAuctionYiZiRow
 } from './decision-rules.js';
 import { AUCTION_SHARE_FRONT_MIN, AUCTION_SHARE_BACK_STD } from './auction-share.js';
 
@@ -2539,5 +2544,124 @@ describe('★ 9/23 上位卡位（⑮）：第 1 名题材占比全不达标 + �
     expect(text).toContain('不适用】本条');
     // ⛔ 非龙头门槛只在文案里出现、不在本条判据里 —— 钉一下门槛常量本身没被本条改动
     expect(AUCTION_SHARE_BACK_STD).toBe(2);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★ [DRAGON-YIZI-HOLD 2026-10-08 用户口径 · 泛微网络 8/5]【一字模式】下的【龙一字持有】
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话：「8月5日……泛微网络是龙二，占比1.4%，不达标，标有"竞价卖（先卖后买）"……
+//   龙一是竞价一字涨停的，说明题材很强，卖都不用卖，应该持有或者加仓。标签应该换成"龙一字持有"。」
+//
+// ⇒ 判据两条：① 同题材【今日龙一】竞价一字涨停；② 本股【不是】龙一（中军 / 后排）。
+//
+// ⛔ 为什么本文件也要钉一份（判据实现只在 decision-rules.js，不在 legacy 里）：
+//    两条模式的【选票】不同（一字模式按龙位取、量比模式按量比取），
+//    但「什么时候买 / 卖」必须是同一个答案（§6）—— 本文件钉的就是「一字模式下选出来的票
+//    走到共享收口时，拿到的标签与量比模式完全一致」。
+//
+// ⚠️ 一字模式下的【块级】说明（⑪ 持有标记）与量比模式有一处【既有差异】：
+//    legacy 的 _finishBuyBlock 把 _markHold 排在 _decorateAucBadge 之前，
+//    而 p.aucShare 是 _decorateAucBadge 才从 block.members 反查挂上的
+//    ⇒ _markHold 里读到的 aucShare 恒为 null ⇒ 按 §10「未知 ≠ 不达标」走【照标持有】分支。
+//    这与本档语义【不冲突】（写的正是「可【持有】」），⛔ 本轮不改收口顺序（用户口径「其它不变」）。
+describe('★ [DRAGON-YIZI-HOLD 2026-10-08] 一字模式【龙一字持有】（两套模式同一答案）', () => {
+  /**
+   * 一字模式的 11 只题材（撑过 10 只，否则「买入只数」会砍票）：
+   *   T1龙一 = 龙一（十日涨幅最高）；T1龙二 = 龙二（占比 1.4% 不达标 —— 本档落点）；
+   *   T1龙三 = 龙三（占比 3.0% 达标 —— 对照档）；T1垫底 = 保底的一字票（撑住 totalYizi > 0，
+   *   ⛔ 否则「所有题材都没一字」会整块走 noYizi 兜底，对照组变成空测）。
+   * @param {object} [o] { leaderYizi, leaderPct, leaderCode, share2, noPrev }
+   */
+  function yiziRows(o) {
+    const c = o || {};
+    return [
+      Object.assign(E('T1龙一', 'T1', 50, c.leaderYizi !== false, true,
+        (c.leaderPct === undefined ? 10 : c.leaderPct), c.leaderCode || '600519'),
+      { aucShare: 5.0 }),                                        // 8/5 传智教育同型：一字 ⇒ 买不进
+      Object.assign(E('T1龙二', 'T1', 45, false, true, -2, '600520'),
+        { aucShare: (c.share2 === undefined ? 1.4 : c.share2) }), // 8/5 泛微网络同型：1.4% 不达标
+      Object.assign(E('T1龙三', 'T1', 40, false, true, 1, '600521'), { aucShare: 3.0 }),
+      Object.assign(E('T1龙四', 'T1', 30, false, true, -3, '600522'), { aucShare: 0.5 }),
+      Object.assign(E('T1垫底', 'T1', 20, true, true, 10, '600529'), { aucShare: 0.5 })
+    ].concat(FILLER('T1', 6));
+  }
+  const pickOf = (plan, name) => {
+    const list = [].concat((plan.heavy && plan.heavy.picks) || [], (plan.light && plan.light.picks) || []);
+    const hit = list.find(p => p.name === name);
+    if (!hit) throw new Error('买点里没有 ' + name);
+    return hit;
+  };
+  /** @param {object} [o] @param {object} [opts] 覆盖 opts（如去掉 prevBoughtNames 做 §10 用例） */
+  const planOf = (o, opts) => {
+    const c = o || {};
+    const rows = yiziRows(c);
+    const blocks = rankDecisionTopics(rows);
+    const base = { prevBuyNames: new Set(['T1龙二']) };
+    if (!c.noPrev) base.prevBoughtNames = new Set(['T1龙二']);
+    return buildBuyPlan(blocks, rankDragons(blocks), Object.assign(base, opts || {}));
+  };
+
+  it('① 命中：龙一【一字涨停】+ 龙二占比不达标 + 昨天买过 ⇒ 【龙一字持有】', () => {
+    const plan = planOf();
+    const yi = pickOf(plan, 'T1龙二');
+    expect(yi.buyActionTag).toBe(DRAGON_YIZI_HOLD_TAG);
+    expect(yi.buyActionTag).toBe('龙一字持有');
+    expect(yi.buyActionTone).toBe(BUY_ACTION_TONE_YIZI_HOLD);
+    // ⛔ 语义是「持有或加仓」⇒ 行尾仓位【保留】【持有】（⛔ 不像【先卖后买】那样清空）
+    expect(yi.position).toBe(POSITION_HOLD);
+    // ⛔ 龙一自己【不在】买点里（竞价一字买不进）—— 正是 8/5 传智教育的情况
+    expect(plan.heavy.picks.map(p => p.name)).not.toContain('T1龙一');
+  });
+
+  it('② ⛔ 只换标签：占比【达标】的档照旧【竞价买】（龙三 3.0% ⇒ 重仓 · 竞价买）', () => {
+    const san = pickOf(planOf(), 'T1龙三');
+    expect(san.aucSharePass).toBe(true);
+    expect(san.buyActionTag).toBe(BUY_NOW_TAG);
+    expect(san.position).toBe(POSITION_HEAVY);
+  });
+
+  it('③ §10：昨天【没】打过「买」标签（prevBoughtNames 缺失）⇒ 本档不判 ⇒ 照旧【尾盘买】', () => {
+    // ⛔ 本档是【先卖后买】那一档的例外 ⇒ 压根不在那一档上就不该改标签（未知 ≠ 不达标）
+    const yi = pickOf(planOf({ noPrev: true }), 'T1龙二');
+    expect(yi.buyActionTag).toBe(BUY_LATE_TAG);
+    expect(yi.buyActionTag).not.toBe(DRAGON_YIZI_HOLD_TAG);
+  });
+
+  it('④ 龙一【不是】一字（+3%）⇒ 本档无从触发（且龙一自己入选拿【竞价买】）', () => {
+    // ⚠️ 一字模式下龙一不一字就会占掉买点名额（龙二落选）—— 这正是本档只在
+    //    「龙一买不进」时才看得见的原因（8/5 传智教育一字 ⇒ 泛微网络才进买点）。
+    const plan = planOf({ leaderYizi: false, leaderPct: 3 });
+    expect(plan.heavy.picks.map(p => p.name)).toContain('T1龙一');
+    expect(pickOf(plan, 'T1龙一').buyActionTag).toBe(BUY_NOW_TAG);
+  });
+
+  it('⑤ ⛔ 龙一是【创业板】⇒ 不挂龙标签（请求 X）⇒ 题材没有「今日龙一」⇒ 本档不触发', () => {
+    // 300750 一字 +10%：getBoardKind ⇒ 创业板 20% 板 ⇒ isAuctionYiZiRow 为 false，
+    // 且龙位【顺延】给龙二（它变成龙一）⇒ 两条判据都不成立 ⇒ 照旧【尾盘买（先卖后买）】。
+    const yi = pickOf(planOf({ leaderCode: '300750' }), 'T1龙二');
+    expect(yi.dragonRank).toBe(1);                 // 顺延成龙一
+    expect(yi.buyActionTag).toBe(BUY_LATE_SWAP_TAG);
+    expect(yi.position).toBe('');                  // 【先卖后买】档会清空行尾仓位（原口径不变）
+  });
+
+  it('⑥ 龙二占比【达标】（4.0%）⇒ 本档不动（照旧【竞价买】）', () => {
+    const yi = pickOf(planOf({ share2: 4.0 }), 'T1龙二');
+    expect(yi.aucSharePass).toBe(true);
+    expect(yi.buyActionTag).toBe(BUY_NOW_TAG);
+  });
+
+  it('⑦ 判据与量比模式【同源】：isAuctionYiZiRow 按板块判，一字【跌停】不算', () => {
+    expect(isAuctionYiZiRow({ aucPct: 10, code: '600519', name: '主板票' })).toBe(true);
+    expect(isAuctionYiZiRow({ aucPct: -10, code: '600519', name: '主板票' })).toBe(false);
+    expect(isAuctionYiZiRow({ aucPct: 10, code: '300750', name: '创业板票' })).toBe(false);
+    expect(isAuctionYiZiRow({ aucPct: 20, code: '300750', name: '创业板票' })).toBe(true);
+    expect(isAuctionYiZiRow(null)).toBe(false);
+  });
+
+  it('⑧ 规则面板（灰色问号 · 一字模式）里必须写明【龙一字持有】这条', () => {
+    const text = buildRulesLines().join('\n');
+    expect(text).toContain(DRAGON_YIZI_HOLD_TAG);
+    expect(text).toContain('泛微网络');
   });
 });

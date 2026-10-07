@@ -357,6 +357,81 @@ export const MAKEUP_AUC_PCT_MIN = 3;
 export const MAKEUP_STREAK = 2;
 
 // ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [DRAGON-YIZI-HOLD 2026-10-08 用户口径 · 泛微网络 8/5] 【龙一字持有】★★
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话（8/5 案例）：
+//   「8月5日，决策看板买点，当天泛微网络是龙二，占比1.4%，不达标，标有"竞价卖（先卖后买）"，
+//     当天同题材的龙一传智教育没有入选决策看板（因为是一字涨停，所以没有入选，一字是买不到的，
+//     现规则没错）。但是当天的传智教育龙一，一字涨停了，说明这个题材很强，如果泛微网络打
+//     "竞价卖（先卖后买）"，不是很合理，这个规则对于当天就是龙一的票比较合适，因为它入选了买点，
+//     所以是有上涨预期的，竞价卖尾盘买（竞价下跌厉害，所以尾盘买入），但是8月5日这天，
+//     泛微网络是龙二，这些中军或者后排是受龙一的影响的，龙一是竞价一字涨停的，说明题材很强，
+//     卖都不用卖，应该持有或者加仓。标签应该换成"龙一字持有"。这个标签就是龙一当天一字涨停
+//     （龙一非创业板，已排除），所以这个标签要识别龙一是否是一字涨停。」
+//
+// ⇒ 语义：同题材【今日龙一】竞价【一字涨停】= 题材当天【最强】（龙头封死一字板）
+//   ⇒ 中军 / 后排是被龙头【带着走】的，⛔ 不该按「自己走弱」去【先卖后买】
+//   ⇒ 改标【龙一字持有】：卖都不用卖，持有或加仓。
+//
+// ── 两条判据（缺一不行 —— 走 _isDragonYiziHoldPick 这【唯一一份】实现，§6）──────────
+//   ① 同题材【今日龙一】当天竞价【一字涨停】；
+//      · 龙位只认 rank === 1（dragonMap，§6 与早盘竞价徽章同源）；
+//      · 「一字涨停」走 isAuctionYiZiRow（下面那个函数，§6 只此一份）；
+//      · ⛔ 龙一【不在 picks 里】是常态（一字买不进、不进候选）⇒ 必须从 block.members 反查，
+//         不能拿 picks 里「龙位最靠前那只」当龙一（那是龙二，会整档失效）。
+//      · 🔴 [MAIN-BOARD-ONLY 2026-10-07] 龙标签只发主板 ⇒ 拿到 rank===1 就【天然非创业板 / 科创板】，
+//         用户原话里的「龙一非创业板，已排除」这条无需另写判据（⛔ 别再写一遍 getBoardKind，§6）。
+//   ② 本股【不是龙一】（中军 / 后排；龙位未知也算 —— 它肯定不是那个龙一，§10 不猜它"是"）。
+//
+// ── 生效位置与优先级（⛔ 只替掉【先卖后买】这一档）──────────────────────────────────
+//   · 买点侧：占比【不达标】+ 昨天真买过（= 原本会给【尾盘买（先卖后买）】）⇒ 改标本档；
+//   · 卖点侧：占比【不达标】+ 今天又进买点（= 原本会给【竞价卖（先卖后买）】）⇒ 改标本档。
+//     两侧是【同一批票、同一件事的两半】，与既有 swap 档完全对称（§6 不分裂）。
+//   · ⛔ 占比【达标】的票【不动】：那本来就是【竞价买】/【持有】（已经是不卖的语义，改了反而丢信息）。
+//   · ⛔ 今天没进买点的票【不动】（卖点侧 = 【竞价卖】，那是「真的弱了」，与「龙一强」无关）。
+//   · ⛔ 只换【动作标签】与说明文字：⛔ 不清行尾仓位、⛔ 不清 ③ 的【持有】
+//     （恰恰相反 —— 本档的语义就是「持有或加仓」，持有类标记【必须保留】）。
+/**
+ * 【龙一字持有】动作标签：同题材龙一竞价一字涨停 ⇒ 题材很强 ⇒ 中军 / 后排不用卖，持有或加仓。
+ * 用户原话「标签应该换成"龙一字持有"」⇒ 文案保持用户给的词，⛔ 不另起名。
+ * ⚠️ 买点 / 卖点【两侧共用同一枚标签与同一个配色档】：它们描述的是同一个判断（§6）。
+ */
+export const DRAGON_YIZI_HOLD_TAG = '龙一字持有';
+/**
+ * 配色档：龙一字持有 → 深靛蓝。
+ * ⚠️ 与【持有】的蓝紫（#1d4ed8）刻意【同族而更深】：两档都是「不用卖」，
+ *    深的那档 = 龙一一字板撑腰（更笃定）。
+ *    ⛔ 不要换成红系（本看板红 = 今天要买）、也不要绿 / 青（那是卖点档）。
+ */
+export const BUY_ACTION_TONE_YIZI_HOLD = 'yizihold';
+/** 卖点侧复用【同一个】配色档（与 SELL_ACTION_TONE_SWAP 同一套路，§6 只有一份） */
+export const SELL_ACTION_TONE_YIZI_HOLD = BUY_ACTION_TONE_YIZI_HOLD;
+
+/**
+ * [DRAGON-YIZI-HOLD 2026-10-08] 【竞价一字涨停？】的【唯一判据】（§6 只此一份）。
+ *
+ * 两条腿（任一为真即算 —— 不是「猜」，是两个同源证据各证一次）：
+ *   ① 数据源给的【竞价一字】标记 isYizi（decision-collect#_mkRow 用 limit-up.js#isAuctionYiZi 算好，
+ *      与「选票时一字跳过」用的是【同一个】值，§6）；
+ *   ② 竞价涨幅按【板块】判涨停（limit-up.js#getAuctionLimitState，与卖点【竞价涨停卖】同一口径，
+ *      §6 —— 主板 10% / 创业板·科创板 20% / 北交所 30% / ST 5%，EPS 容差）。
+ *
+ * ⚠️ 为什么两条腿都要留：龙一常常【不在 picks 里】但【一定在 members 里】，members 上两个字段都有；
+ *    而卖点的 rows 上没有 isYizi ⇒ 第 ② 条是它的唯一依据。合成一个函数才不会分叉。
+ * §10：两条都取不到（缺 isYizi 且缺竞价涨幅）⇒ false（⛔ 未知 ≠ 一字）。
+ *
+ * @param {{isYizi?:boolean, aucPct?:number|null, code?:string, name?:string}|null} it
+ * @returns {boolean}
+ */
+export function isAuctionYiZiRow(it) {
+  if (!it) return false;
+  if (it.isYizi === true) return true;
+  const pct = _num(it.aucPct);
+  if (pct === null) return false;
+  return getAuctionLimitState(pct, String(it.code || ''), String(it.name || '')) === 'up';
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════
 // ★★ [BOARD-RISK 2026-10-07 用户口径] 买点行的【创业板 / 科创板风险提示】 ★★
 // ══════════════════════════════════════════════════════════════════════════════════════
 // 用户原话：「凡是进入决策看板买点的非主板的股票，自动打上标签"创业板风险极高"，因为那些都
@@ -1623,6 +1698,18 @@ function _decorateShareAction(blockObj, opts) {
     })
   };
 
+  // ══ [DRAGON-YIZI-HOLD 2026-10-08 用户口径 · 泛微网络 8/5] 预扫描：本题材今日龙一是不是【一字涨停】══
+  //   这是【块级】判据（同一块的 picks 共用同一个答案）⇒ 在循环外只算一次（§19）。
+  //   🔴 龙一【不在 picks 里】是常态（竞价一字买不进 ⇒ 被 pickByVolRatio 剔除）⇒ 必须回
+  //     block.members 反查（_dragonOneMemberOf），⛔ 绝不拿 picks 里龙位最靠前那只当龙一。
+  //   §10：dragonMap 没传 / 块里没有 members ⇒ dragonOne = null ⇒ dragonOneYizi = false ⇒ 本档不判。
+  const dragonOne = _dragonOneMemberOf(blockObj, o.dragonMap);
+  const yiziHoldCtx = {
+    dragonOneYizi: isAuctionYiZiRow(dragonOne),
+    dragonOneName: dragonOne ? String(dragonOne.name) : '',
+    dragonOnePct: dragonOne ? _num(dragonOne.aucPct) : null
+  };
+
   blockObj.picks.forEach(function(p) {
     const share = _num(p.aucShare);
     const isPrevDragon = prevDragon ? prevDragon.has(p.name) : null;
@@ -1673,6 +1760,16 @@ function _decorateShareAction(blockObj, opts) {
       //        是互相引用的（"尾盘再接回来"），被本档抢走会让买卖两侧文案直接矛盾。
       //   §10：占比缺数据（share === null）根本走不到这个分支 ⇒ 本档不判，回落既有的量比方向退路。
       const makeupCase = !pass && !swapCase && _isMakeupBuyPick(p, makeupCtx);
+      // [DRAGON-YIZI-HOLD 2026-10-08 用户口径 · 泛微网络 8/5] 【先卖后买】档里再分一层：
+      //   同题材【今日龙一】竞价【一字涨停】⇒ 题材当天最强 ⇒ 中军 / 后排是【被龙一带着走】的，
+      //   ⛔ 不该按「自己走弱」先卖 ⇒ 改标【龙一字持有】（持有或加仓）。
+      //   🔴 生效位置刻意收在 `!pass && swapCase`：
+      //     ① 只在【不达标】分支判 ⇒ 天然不碰【竞价买】【下杀买】（那两档要求占比达标）；
+      //     ② 与 makeupCase 互斥（makeup 要求 !swapCase），两者不会抢同一只票；
+      //     ③ ⛔【不清】holdTag / position —— 本档的语义恰恰是「持有或加仓」，
+      //        清掉就与结论自相矛盾（这正是 swapCase 那一档才会做的动作）。
+      //   §10：龙一一字判不出来（缺 members / 缺涨幅）⇒ 本档不判，回落【尾盘买（先卖后买）】。
+      const yiziHoldCase = !pass && swapCase && _isDragonYiziHoldPick(p, yiziHoldCtx);
       if (pass) {
         if (diveCase) {
           p.buyActionTag = BUY_DIVE_TAG;
@@ -1681,6 +1778,10 @@ function _decorateShareAction(blockObj, opts) {
           p.buyActionTag = BUY_NOW_TAG;
           p.buyActionTone = BUY_ACTION_TONE_NOW;
         }
+      } else if (yiziHoldCase) {
+        p.buyActionTag = DRAGON_YIZI_HOLD_TAG;
+        p.buyActionTone = BUY_ACTION_TONE_YIZI_HOLD;
+        // ⛔ 刻意不清 p.holdTag / p.position / p.positionTone（见上面第 ③ 条）
       } else if (swapCase) {
         p.buyActionTag = BUY_LATE_SWAP_TAG;
         p.buyActionTone = BUY_ACTION_TONE_SWAP;
@@ -1704,6 +1805,8 @@ function _decorateShareAction(blockObj, opts) {
         // ⚠️ 同理整段另写：本档恰恰是「占比不达标但照样竞价买」，塞进下面的模板串会被读成
         //   「占比不达标 ⇒ 尾盘买」，与结论正好相反（[MAKEUP-BUY 2026-10-08] 用户口径）。
         p.actionNote = _note(no, _makeupBuyNoteText(p, dir, makeupCtx.streakN));
+      } else if (yiziHoldCase) {
+        p.actionNote = _note(no, _dragonYiziHoldNoteText(p, dir, yiziHoldCtx, 'buy'));
       } else {
         p.actionNote = _note(no,
           '竞价占比 ' + formatAuctionShare(share) + '（' + p.aucShareScopeText + '门槛 ' +
@@ -1939,6 +2042,84 @@ function _makeupBuyNoteText(p, dir, streakN) {
     '辅助验证：竞价量比' + _dirWord(dir) + '（辅助，不单独决定时机）。';
 }
 
+// ══════════════════════════════════════════════════════════════════════════════════════
+// [DRAGON-YIZI-HOLD 2026-10-08 用户口径 · 泛微网络 8/5] 【龙一字持有】的三个内部件
+// ══════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 【找本题材的今日龙一 member】（唯一实现，§6）。
+ *
+ * 🔴 为什么不能拿 picks 里「龙位最靠前那只」当龙一：龙一常常【根本不在 picks 里】
+ *    —— 竞价一字买不进、被 pickByVolRatio 剔除（YIZI-OCCUPY 口径），8/5 的传智教育正是这种。
+ *    拿 picks 判 ⇒ 会拿龙二当龙一 ⇒ 整档静默失效（最难查的那种 bug）。
+ *    ⇒ 必须从【block.members】里按 dragonMap 找 rank === 1 的那一只。
+ *
+ * ⚠️ 龙位口径只有一份（dragonMap = rankDragons → computeDragonRankMap，与早盘竞价徽章同源），
+ *    本函数【不做任何排序 / 不重算龙位】（§19 + §6）。
+ * §10：dragonMap 没传（兜底方案 / 老调用点）⇒ 返回 null ⇒ 本档不判（⛔ 不猜谁是龙一）。
+ *
+ * @param {object} blockObj 买点块
+ * @param {Map|null} dragonMap rankDragons 的返回
+ * @returns {object|null} 龙一的 member（含 name / isYizi / aucPct / code）
+ */
+function _dragonOneMemberOf(blockObj, dragonMap) {
+  if (!blockObj || !dragonMap) return null;
+  const members = (blockObj.block && blockObj.block.members) || [];
+  for (let i = 0; i < members.length; i++) {
+    const m = members[i];
+    if (!m || !m.name) continue;
+    const d = dragonMap.get(m.name);
+    if (d && Number(d.rank) === 1) return m;
+  }
+  return null;
+}
+
+/**
+ * [DRAGON-YIZI-HOLD 2026-10-08] 【龙一字持有】的【唯一判据】（§6 只此一份，两套模式共用）。
+ *
+ * 两条：① 同题材今日龙一竞价【一字涨停】；② 本股【不是龙一】（中军 / 后排）。
+ * ⛔ 「先卖后买」那一半由【调用方】各自判 —— 买点侧是 _isLateSwapPick、卖点侧是
+ *    「今天又进买点 + 占比不达标」，两者本来就是同一件事的两面，⛔ 不在这里合并成第三份。
+ *
+ * @param {object} p 行（pick / 卖点行）；读 dragonRank
+ * @param {{dragonOneYizi:boolean}|null} ctx _dragonOneMemberOf + isAuctionYiZiRow 算好的块级前提
+ * @returns {boolean}
+ */
+function _isDragonYiziHoldPick(p, ctx) {
+  if (!p || !ctx || !ctx.dragonOneYizi) return false;      // ① 龙一必须一字涨停
+  // ② 只给【不是龙一】的票（中军 / 后排；龙位未知也算 —— 它肯定不是那个龙一）
+  return Number(p.dragonRank) !== 1;
+}
+
+/**
+ * [DRAGON-YIZI-HOLD 2026-10-08] 【龙一字持有】的逐行说明文字（买卖两侧【共用同一份】，§6）。
+ *
+ * ⚠️ 为什么整段另写：本档的结论是「占比不达标 ⇒ 但【不用卖】」，与「占比不达标 ⇒ 竞价卖 /
+ *    尾盘买（先卖后买）」那两条模板串【结论相反】，塞进去会被读反（与 _makeupBuyNoteText 同理）。
+ *
+ * @param {object} p 行（读 aucShare / aucPct / aucShareScopeText / aucShareThresholdText）
+ * @param {string} dir 今日 vs 上一交易日竞价量比方向（只作辅助陈述）
+ * @param {{dragonOneYizi:boolean, dragonOneName:string, dragonOnePct:number|null}} ctx
+ * @param {'buy'|'sell'} side 买点侧 / 卖点侧（只有「被替掉的那一档」的措辞不同）
+ * @returns {string} 不带【规则N】前缀的正文
+ */
+function _dragonYiziHoldNoteText(p, dir, ctx, side) {
+  const share = _num(p.aucShare);
+  const aucPct = _num(p.aucPct);
+  const replaced = (side === 'sell') ? SELL_OUT_SWAP_TAG : BUY_LATE_SWAP_TAG;
+  return '同题材【今日龙一 ' + (ctx.dragonOneName || '—') + '】竞价 ' +
+    formatAucPct(ctx.dragonOnePct) + ' =【一字涨停】（一字买不进 ⇒ 它没进买点，现规则没错）' +
+    ' ⇒ 龙头封死一字板 = 本题材当天【最强】。' +
+    '本股是同题材的【中军 / 后排】（不是龙一），是【被龙一带着走】的 —— ' +
+    '龙一这么强，题材不会差，⛔ 不该按「自己走弱」去【' + replaced + '】。' +
+    '本股自身占比 ' + formatAuctionShare(share) + '（' + p.aucShareScopeText + '门槛 ' +
+    p.aucShareThresholdText + '）确实【不达标】，但那只是它【自己】的量能不够，' +
+    '决定它今天方向的是【龙一】⇒ 卖都不用卖，改标【' + DRAGON_YIZI_HOLD_TAG + '】：' +
+    '拿着别动，有仓位的可加仓（⛔ 行尾仓位与【' + HOLD_TAG + '】标记【保留】，不清）。' +
+    '辅助验证：本股竞价涨幅 ' + formatAucPct(aucPct) + '、竞价量比' + _dirWord(dir) +
+    '（辅助，不单独决定时机）。';
+}
+
 /** 量比方向 → 人话（说明文字用；'' = 未知，⛔ 绝不写成「平」） */
 function _dirWord(dir) {
   if (dir === VR_DIR_UP) return '比上一交易日【增强】';
@@ -1976,9 +2157,27 @@ function _markHold(blockObj, prevBuyNames, ruleNo, opts) {
   const no = ruleNo || RULE_NO.HOLD;
   const hits = [];
   const swapped = [];
+  // [DRAGON-YIZI-HOLD 2026-10-08 用户口径 · 泛微网络 8/5] 块级前提：同题材今日龙一【一字涨停】？
+  //   ⛔ 与 _decorateShareAction【同一套函数】（_dragonOneMemberOf + isAuctionYiZiRow + _isDragonYiziHoldPick）
+  //      —— 否则会出现「行内写【龙一字持有】、块级说明却写『不算强势股、不标持有』」的自相矛盾
+  //      （9/30 事故同型：两句话打架是看板最忌讳的）。
+  const dragonOne = _dragonOneMemberOf(blockObj, o.dragonMap);
+  const yiziHoldCtx = {
+    dragonOneYizi: isAuctionYiZiRow(dragonOne),
+    dragonOneName: dragonOne ? String(dragonOne.name) : '',
+    dragonOnePct: dragonOne ? _num(dragonOne.aucPct) : null
+  };
+  const yiziHeld = [];
   blockObj.picks.forEach(function(p) {
     if (!prevBuyNames.has(p.name)) return;
     if (_isLateSwapPick(p, o)) {
+      // [DRAGON-YIZI-HOLD 2026-10-08] 龙一一字涨停 ⇒ 题材很强 ⇒ 本股（中军 / 后排）不用卖
+      //   ⇒ 它【照样算强势股】：③ 的【持有】照标（⛔ 不跟着 swapCase 一起清掉）。
+      if (_isDragonYiziHoldPick(p, yiziHoldCtx)) {
+        p.holdTag = HOLD_TAG;
+        yiziHeld.push(p.name);
+        return;
+      }
       // 让路给【尾盘买（先卖后买）】：⛔ 不标 holdTag（否则会被读成「拿着别动」）
       p.holdTag = '';
       swapped.push(p.name);
@@ -1991,6 +2190,13 @@ function _markHold(blockObj, prevBuyNames, ruleNo, opts) {
   if (hits.length > 0) {
     blockObj.notes.push(_note(no,
       '【' + hits.join('、') + '】上一个交易日也在买点里 → 强势股，可【' + HOLD_TAG + '】'));
+  }
+  if (yiziHeld.length > 0) {
+    blockObj.notes.push(_note(no,
+      '【' + yiziHeld.join('、') + '】上一个交易日也在买点里，今天【竞价占比不达标】，' +
+      '但同题材【今日龙一 ' + (yiziHoldCtx.dragonOneName || '—') + '】竞价【一字涨停】' +
+      ' ⇒ 题材当天最强 ⇒ 本股是被龙一带着走的，【不算走弱】⇒ 照标【' + HOLD_TAG +
+      '】（动作标签改【' + DRAGON_YIZI_HOLD_TAG + '】，原因见该行行内说明）'));
   }
   if (swapped.length > 0) {
     blockObj.notes.push(_note(no,
@@ -2227,7 +2433,11 @@ function _picksLen(b) {
  */
 export function buildBuyPlan(blocks, dragonMap, opts) {
   const list = blocks || [];
-  const o = opts || {};
+  // [DRAGON-YIZI-HOLD 2026-10-08 用户口径 · 泛微网络 8/5] 把 dragonMap 一并挂进 opts：
+  //   买点收口里的 _markHold / _decorateShareAction 要用它反查「同题材今日龙一」
+  //   （§6：龙位只有 rankDragons 这一份，⛔ 收口里绝不另算一遍排序）。
+  //   ⚠️ 用 Object.assign 复制一份，⛔ 不改调用方传进来的那个对象（避免副作用跨调用点泄漏）。
+  const o = Object.assign({}, opts || {}, { dragonMap: dragonMap });
 
   // ① 合格题材：数量 ≥ 4 只。⛔ 数量不达标的题材【直接跳过、不占名次】⇒ 后面的题材递补。
   const qualified = [];
@@ -2475,11 +2685,37 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
   //     龙一不在卖点候选里 ⇒ 一律【不跟】（最后一种由「rows 里找不到那只龙一」自然覆盖）。
   //   ⛔ 只在【本函数内部】先用一遍 rows，不额外取数、不改 Data 层（§6 单一数据源）。
   const fallenDragon = new Map();   // 题材 tp → { name, share, tag, level }（level: 'all' | 'back'）
+
+  // ══ [DRAGON-YIZI-HOLD 2026-10-08 用户口径 · 泛微网络 8/5] 第 0 遍：找出
+  //    「同题材今日龙一竞价【一字涨停】」的题材 ══
+  //   🔴 必须走【blocks + dragonMap】，⛔ 不能只扫 rows：龙一常常【不在卖点候选里】
+  //     （卖点候选 = 昨天打过「买」标签的票；8/5 的传智教育昨天就没买过 ⇒ 根本不在 rows 里）。
+  //     只扫 rows 会在最典型的场景下静默失效（用户原话：龙一是一字 ⇒ 没入选买点）。
+  //   ⛔ 判「是不是一字」走 isAuctionYiZiRow（§6 只此一份，与买点侧同一个函数）。
+  //   §10：题材里没有龙一（dragonMap 里没人 rank===1）/ 龙一的一字判不出来 ⇒ 不记（不猜）。
+  const dragonYiziTopics = new Map();   // 题材 tp → { name, pct }（该题材今日龙一竞价一字涨停）
+  (blocks || []).forEach(function(b) {
+    const tp = String(b.topic || '').trim();
+    if (!tp || dragonYiziTopics.has(tp)) return;
+    (b.members || []).forEach(function(m) {
+      if (!m || !m.name) return;
+      const d = dragon.get(m.name);
+      if (!d || Number(d.rank) !== 1) return;
+      if (!isAuctionYiZiRow(m)) return;
+      dragonYiziTopics.set(tp, { name: String(m.name), pct: _num(m.aucPct) });
+    });
+  });
+
   rows.forEach(function(r) {
     const tp = String(r.topic || '').trim();
     if (!tp || fallenDragon.has(tp)) return;          // 未成组 ⇒ 无「同题材龙一」可言
     const d = dragon.get(r.name);
     if (!d || Number(d.rank) !== 1) return;           // 只看【今日龙一】
+    // 🔴 [DRAGON-YIZI-HOLD 2026-10-08] 龙一【竞价一字涨停】⇒ 它是【封死一字板】，
+    //   卖出动作是【竞价涨停卖】（落袋为安，请求 W），⛔ 绝对不是「倒下」——
+    //   恰恰相反：题材当天最强。让它进 fallenDragon 会把中军 / 后排全拖成【跟龙竞价卖】，
+    //   与本档「题材很强、不用卖」直接打架 ⇒ 直接跳过（§6：倒下判定只此一处）。
+    if (dragonYiziTopics.has(tp)) return;
     const share = _num(r.aucShare);
     if (share === null) return;                       // §10：龙一占比没抓到 ⇒ 不猜它倒没倒
     const isPrevDragon = prevUnknown ? null : prevSet.has(r.name);
@@ -2549,6 +2785,21 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
     let actionNote = '';
     // [FOLLOW-DRAGON 2026-10-05] 本行的卖点动作是不是「被同题材龙一带下去的」（不是自己走弱）
     let aucFollowDragon = false;
+
+    // ══ [DRAGON-YIZI-HOLD 2026-10-08 用户口径 · 泛微网络 8/5] 本行是不是该标【龙一字持有】══
+    //   判据（两条，走 _isDragonYiziHoldPick 这【唯一一份】实现，§6 与买点侧同一个函数）：
+    //     ① 同题材【今日龙一】竞价【一字涨停】（第 0 遍的 dragonYiziTopics，⛔ 不在这里重扫 members）；
+    //     ② 本行【不是龙一】（中军 / 后排；龙位未知也算 —— 它肯定不是那个龙一）。
+    //   ⛔ 「占比不达标」这一半由【分支位置】保证（本档排在 sharePass 为真那两档之后）。
+    //   🔴 覆盖两档【竞价卖】：
+    //     · 【竞价卖（先卖后买）】（今天又进买点）—— 用户点名的那一档；
+    //     · 【竞价卖】（今天没进买点）—— 8/5 泛微网络实测正是这一档
+    //       （用户原话「卖都不用卖」的落点就是它）。
+    //   ⛔ 龙一【自己】不适用：它一字涨停 ⇒ 走【竞价涨停卖】（请求 W，最优先档）。
+    //   §10：占比缺数据 ⇒ 走不到下面 `share !== null` 这个大分支 ⇒ 本档不判（回落旧口径）。
+    const dragonOneYizi = dragonYiziTopics.get(tp) || null;
+    const dragonYiziHold = !!dragonOneYizi && _isDragonYiziHoldPick(
+      { dragonRank: dragonRank }, { dragonOneYizi: true });
 
     // ══ [SELL-LIMIT-UP 2026-10-07 用户口径] 【最优先】本行竞价是不是【一字涨停】══
     //   判「涨停幅度」走 limit-up.js#getAuctionLimitState（按板块 10% / 20% / 30%，§6 唯一实现）。
@@ -2635,6 +2886,28 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
           '【' + SELL_LATE_TAG + '】：说明还没走弱、当天还有走强趋势，不必开盘慌着走，拿到尾盘。' +
           '辅助验证：竞价涨幅 ' + formatAucPct(aucPct) + '、竞价量比' + _dirWord(volRatioDir) +
           '（辅助，不单独决定时机）。');
+      } else if (dragonYiziHold) {
+        // ══ [DRAGON-YIZI-HOLD 2026-10-08 用户口径 · 泛微网络 8/5] 【龙一字持有】══
+        //   同题材【今日龙一】竞价【一字涨停】⇒ 龙头封死一字板 = 题材当天【最强】
+        //   ⇒ 本股（中军 / 后排）是被龙一【带着走】的，⛔ 不该按「自己走弱」卖掉。
+        //   用户原话：「龙一是竞价一字涨停的，说明题材很强，卖都不用卖，应该持有或者加仓。」
+        //   ⚠️ 说明文字里【不提】「今天有没有进买点」：本档覆盖【竞价卖】与
+        //     【竞价卖（先卖后买）】两档，那一句对两档结论都一样（都是不用卖），提了反而啰嗦。
+        sellActionTag = DRAGON_YIZI_HOLD_TAG;
+        sellActionTone = SELL_ACTION_TONE_YIZI_HOLD;
+        actionNote = _note(RULE_NO.SHARE, _dragonYiziHoldNoteText(
+          {
+            aucShare: share, aucPct: aucPct,
+            aucShareScopeText: _scopeText(scope, isFront),
+            aucShareThresholdText: _thresholdText(isFront)
+          },
+          volRatioDir,
+          {
+            dragonOneYizi: true,
+            dragonOneName: dragonOneYizi ? dragonOneYizi.name : '',
+            dragonOnePct: dragonOneYizi ? dragonOneYizi.pct : null
+          },
+          'sell'));
       } else if (todayInBuy) {
         // 🔴 [DRAGON-SWAP 2026-10-06 用户口径 · 9/3 楚天龙] 占比【不达标】但今天【又进买点】
         //   ⇒ 【竞价卖（先卖后买）】：开盘先把昨天的仓卖掉（按卖点），尾盘再接回来（按买点）。
@@ -3028,6 +3301,22 @@ function _volRatioBuyRulesLines() {
       '% ⇒ 照旧【' + BUY_LATE_TAG + '】。',
     '　　⚠️ §10：龙位 / 涨幅 / 题材入选次数任意一项【算不出来】⇒ 不判本档，',
     '　　　回落普通【' + BUY_LATE_TAG + '】（「没查到」绝不等于「二次入选」）。',
+    // [DRAGON-YIZI-HOLD 2026-10-08 用户口径 · 泛微网络 8/5] 第四条例外：【先卖后买】里的「龙一字」档。
+    '　【例外 · ' + DRAGON_YIZI_HOLD_TAG + '】（2026-10-08 用户口径 · 泛微网络 8/5）：',
+    '　　占比【不达标】+ 昨天真买过（= 本来会给【' + BUY_LATE_SWAP_TAG + '】）里还有一档要改标 ——',
+    '　　两条【同时】满足（缺一不行）：',
+    '　　　① 同题材【今日龙一】当天竞价【一字涨停】（一字买不进 ⇒ 它没进买点，这是【现规则】）；',
+    '　　　② 本股【不是龙一】（是同题材的中军 / 后排）。',
+    '　　⇒ 龙头封死一字板 = 本题材当天【最强】；中军 / 后排是【被龙一带着走】的，',
+    '　　　⛔ 不该按「自己走弱」去【先卖后买】⇒ 改标【' + DRAGON_YIZI_HOLD_TAG + '】：',
+    '　　　卖都不用卖，拿着别动，有仓位的可加仓（行尾仓位与【' + HOLD_TAG + '】标记【照旧保留】）。',
+    '　　例（8/5 泛微网络）：同题材龙一传智教育竞价一字涨停、没进买点；泛微网络是龙二，',
+    '　　　占比 1.4% 不达标 ⇒ 原本【' + BUY_LATE_SWAP_TAG + '】，改标【' + DRAGON_YIZI_HOLD_TAG + '】。',
+    '　　⚠️ 为什么【龙一自己】不适用：它一字涨停 ⇒ 卖点是【' + SELL_LIMIT_UP_TAG +
+      '】（落袋为安，最优先档）。',
+    '　　⚠️ 龙位【只发主板】（2026-10-07 口径）⇒ 拿到「龙一」就天然排除了创业板 / 科创板。',
+    '　　⚠️ §10：龙一一字【判不出来】（龙一不在题材成员里 / 缺竞价涨幅）⇒ 不判本档，',
+    '　　　回落【' + BUY_LATE_SWAP_TAG + '】（「没查到」绝不等于「一字」）。',
     '　【为什么用占比当主判据】竞价涨幅与竞价量比只是【辅助】：',
     '　　两个都涨的时候如果是「假强」，当天一路下跌，即使明天涨也得失相当；',
     '　　但配上占比就能确认（占比是实打实的水量），三者同向时确定性最高。',
@@ -3088,6 +3377,22 @@ export function sellRulesLines() {
       SELL_TIME_CLOSE + '）一律不变（用户口径「只换标签、其它不变」）；',
     '　　　　行尾【' + HOLD_TAG + '】会被清掉（「拿着别动」与「竞价就走」直接矛盾）。',
     '　　　· §10：竞价涨幅缺数据 / 代码缺失 ⇒ 判不出是不是涨停 ⇒【不判本档】，原规则照跑。',
+    // 🔴 [DRAGON-YIZI-HOLD 2026-10-08 用户口径 · 泛微网络 8/5] 【龙一字持有】排在【动作】之前说明：
+    //   它替掉的是「占比不达标 → 竞价卖 / 竞价卖（先卖后买）」这两档（用户原话「卖都不用卖」）。
+    '　🔴 【' + DRAGON_YIZI_HOLD_TAG + '】（2026-10-08 用户口径 · 泛微网络 8/5）—— 占比【不达标】时先看这一条：',
+    '　　　两条【同时】满足（缺一不行）：',
+    '　　　① 同题材【今日龙一】当天竞价【一字涨停】（一字买不进 ⇒ 它没进买点，这是【现规则】）；',
+    '　　　② 本股【不是龙一】（是同题材的中军 / 后排）。',
+    '　　　⇒ 龙头封死一字板 = 本题材当天【最强】；中军 / 后排是【被龙一带着走】的，',
+    '　　　　⛔ 不该按「自己走弱」卖掉 ⇒ 改标【' + DRAGON_YIZI_HOLD_TAG + '】：',
+    '　　　　卖都不用卖，拿着别动，有仓位的可加仓（用户原话「应该持有或者加仓」）。',
+    '　　　· 替掉的两档：【' + SELL_OUT_SWAP_TAG + '】（今天又进买点）与【' + SELL_OUT_TAG +
+      '】（今天没进买点）；',
+    '　　　　占比【达标】那两档（【' + HOLD_TAG + '】/【' + SELL_LATE_TAG + '】）本来就是「不卖」，不受影响。',
+    '　　　· ⛔ 龙一【自己】不适用：它一字涨停 ⇒ 走【最优先】的【' + SELL_LIMIT_UP_TAG + '】（竞价就走、落袋为安）。',
+    '　　　· ⛔ 它【不进】「同题材龙一限制」的判定：龙一一字涨停 = 题材最强，⛔ 不算「将军倒下」，',
+    '　　　　所以中军 / 后排【不会】被它拖成【' + SELL_FOLLOW_DRAGON_TAG + '】。',
+    '　　　· §10：龙一一字【判不出来】（题材成员里没有龙一 / 缺竞价涨幅）⇒ 不判本档，原规则照跑。',
     '　【动作】（行尾标签，共六种；后三种【' + SELL_OUT_SWAP_TAG + '】【' + SELL_TEN_MIN_TAG +
       '】【' + SELL_FOLLOW_DRAGON_TAG + '】见下面三条补充规则）：',
     '　　· 占比 ≥ 门槛【且】该股没进今天的买点 → 【' + SELL_LATE_TAG +

@@ -58,6 +58,7 @@ import {
   boardRiskTagOf,
   POSITION_HEAVY,
   POSITION_LIGHT,
+  POSITION_HOLD,
   // [SELL-TEN-MIN 2026-10-07 用户口径 · 9/7 我爱我家] 龙一占比差一点点 + 量比增加 ⇒ 10分钟时卖
   SELL_TEN_MIN_TAG,
   SELL_ACTION_TONE_TEN_MIN,
@@ -67,6 +68,11 @@ import {
   SELL_LIMIT_UP_TAG,
   SELL_ACTION_TONE_LIMIT_UP,
   SELL_ACTION_TONE_OUT,
+  // [DRAGON-YIZI-HOLD 2026-10-08 用户口径 · 泛微网络 8/5] 龙一一字涨停 ⇒ 中军 / 后排【龙一字持有】
+  DRAGON_YIZI_HOLD_TAG,
+  SELL_ACTION_TONE_YIZI_HOLD,
+  BUY_ACTION_TONE_YIZI_HOLD,
+  isAuctionYiZiRow,
   sellRulesLines,
   HOLD_TAG,
   RULE_NO
@@ -2041,11 +2047,18 @@ describe('★ [SELL-LIMIT-UP 2026-10-07] 卖点【竞价涨停卖】', () => {
     expect(hit.aucTone).toBe('high');
   });
 
-  it('⑦ 没涨停的票【完全不变】：乙票占比 1.5% 不达标 ⇒ 照旧【竞价卖】', () => {
-    const plan = sell(sellRowsOf(10, '600519'));
-    const yi = sellPickOf(plan, '乙票');
-    expect(yi.sellActionTag).toBe(SELL_OUT_TAG);
-    expect(yi.sellActionTone).toBe(SELL_ACTION_TONE_OUT);
+  it('⑦ 同题材【非龙一】的票：龙一一字涨停 ⇒ 改标【龙一字持有】（2026-10-08 请求 Y）', () => {
+    // ⚠️ 本用例在请求 Y 后【按新口径重写】：乙票是龙二，龙一（甲票）竞价 +10% 一字涨停
+    //   ⇒ 题材当天最强 ⇒ 乙票不该按「自己走弱」卖 ⇒ 【龙一字持有】（不是原来的【竞价卖】）。
+    const yi = sellPickOf(sell(sellRowsOf(10, '600519')), '乙票');
+    expect(yi.sellActionTag).toBe(DRAGON_YIZI_HOLD_TAG);
+    expect(yi.sellActionTag).toBe('龙一字持有');
+    expect(yi.sellActionTone).toBe(SELL_ACTION_TONE_YIZI_HOLD);
+    // A/B 对照：唯一区别 = 龙一【没有】一字涨停（+3%）⇒ 乙票立刻回到【竞价卖】
+    //   （证明「只改『龙一一字』这一档，其它规则没动」）
+    const plain = sellPickOf(sell(sellRowsOf(3, '600519')), '乙票');
+    expect(plain.sellActionTag).toBe(SELL_OUT_TAG);
+    expect(plain.sellActionTone).toBe(SELL_ACTION_TONE_OUT);
   });
 
   it('⑧ 规则文案：卖点条文里写了【竞价涨停卖】且标明「最优先 / 只换标签」', () => {
@@ -2066,5 +2079,139 @@ describe('★ [SELL-LIMIT-UP 2026-10-07] 卖点【竞价涨停卖】', () => {
     expect(jia(10, '600519').code).toBe('600519');
     // 代码缺失 ⇒ 空串（⛔ 不凭股票名猜板块），判据回落主板 10% 兜底
     expect(jia(10, '').code).toBe('');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★ [DRAGON-YIZI-HOLD 2026-10-08 用户口径 · 泛微网络 8/5] 【龙一字持有】
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话：「8月5日，决策看板买点，当天泛微网络是龙二，占比1.4%，不达标，标有"竞价卖（先卖后买）"，
+//   当天同题材的龙一传智教育没有入选决策看板（因为是一字涨停，所以没有入选，一字是买不到的，
+//   现规则没错）。但是当天的传智教育龙一，一字涨停了，说明这个题材很强，如果泛微网络打
+//   "竞价卖（先卖后买）"，不是很合理……龙一是竞价一字涨停的，说明题材很强，卖都不用卖，
+//   应该持有或者加仓。标签应该换成"龙一字持有"。」
+//
+// ⇒ 两条判据：① 同题材今日龙一竞价【一字涨停】；② 本股【不是龙一】。
+// ⛔ 用例全部用【A/B 对照】写法：唯一变量 = 龙一是不是一字，其余桩数据一模一样
+//    —— 这样能钉住「只改这一档，其它规则没动」（9/30 事故同型的教训）。
+describe('★ [DRAGON-YIZI-HOLD 2026-10-08] 【龙一字持有】', () => {
+  /**
+   * 七只票的题材（数量 7 ⇒ 中档取【2】名）：
+   *   · 龙一甲 = 龙一，量比 100（第 1 名）；龙二乙 = 龙二，量比 20（第 2 名）⇒ 两只都进名次；
+   *   · 龙二乙 占比 1.5%（< 2% 不达标）—— 本档规则的落点。
+   * ⚠️ 为什么必须是 7 只（取 2 名）而不是 4 只（取 1 名）：A/B 对照要求【龙二乙在两边都入选】——
+   *    只取 1 名时，龙一不是一字 ⇒ 那唯一一个名额被龙一自己占掉，龙二乙根本不进买点，
+   *    对照组就变成了空测（这正是第一次写这条用例踩到的坑）。
+   * @param {object} [o] { leaderYizi, leaderPct, leaderShare }
+   */
+  function yiziRows(o) {
+    const c = o || {};
+    const leader = R('龙一甲', 'T1', 60,
+      (c.leaderPct === undefined ? 10 : c.leaderPct), 100,
+      (c.leaderShare === undefined ? 5.0 : c.leaderShare), VR_DIR_UP, 5, '600519');
+    leader.isYizi = (c.leaderYizi !== false);      // 一字 ⇒ 买不进、不进 picks（8/5 传智教育同型）
+    return [
+      leader,
+      R('龙二乙', 'T1', 50, -1, 20, 1.5, VR_DIR_DOWN, -2, '600520'),
+      R('龙三丙', 'T1', 40, 0.5, 15, 3.0, VR_DIR_UP, 1, '600521'),
+      R('龙四丁', 'T1', 30, 0.3, 12, 2.5, VR_DIR_UP, 1, '600522'),
+      R('凑一', 'T1', -10, 0, 3, 1.0, VR_DIR_UP, 0, '600523'),
+      R('凑二', 'T1', -11, 0, 2, 1.0, VR_DIR_UP, 0, '600524'),
+      R('凑三', 'T1', -12, 0, 1, 1.0, VR_DIR_UP, 0, '600525')
+    ];
+  }
+  /** 卖点里按名字取一行 */
+  function sellOf(rows, name, opts) {
+    const hit = (sell(rows, opts) || []).flatMap(g => g.items || []).find(p => p.name === name);
+    if (!hit) throw new Error('卖点里没有 ' + name);
+    return hit;
+  }
+
+  it('① 判据 isAuctionYiZiRow：isYizi 标记 / 按板块判涨停 两条腿', () => {
+    expect(isAuctionYiZiRow({ isYizi: true })).toBe(true);
+    expect(isAuctionYiZiRow({ aucPct: 10, code: '600519', name: '甲' })).toBe(true);   // 主板 10%
+    expect(isAuctionYiZiRow({ aucPct: 9.9, code: '600519', name: '甲' })).toBe(true);  // 容差内
+    // ⛔ 创业板 / 科创板是 20% 板，+10% 根本不是一字（写死 10% 会误判）
+    expect(isAuctionYiZiRow({ aucPct: 10, code: '300750', name: '乙' })).toBe(false);
+    expect(isAuctionYiZiRow({ aucPct: 20, code: '300750', name: '乙' })).toBe(true);
+    // §10：缺数据 / 空 ⇒ false（⛔ 未知 ≠ 一字）；跌停也不算
+    expect(isAuctionYiZiRow({ aucPct: null, code: '600519', name: '甲' })).toBe(false);
+    expect(isAuctionYiZiRow({ aucPct: -10, code: '600519', name: '甲' })).toBe(false);
+    expect(isAuctionYiZiRow(null)).toBe(false);
+  });
+
+  it('② 卖点 · 龙一一字 + 龙二不达标 + 今天又进买点 ⇒ 【龙一字持有】（替掉【竞价卖（先卖后买）】）', () => {
+    const yi = sellOf(yiziRows(), '龙二乙', { todayBuyNames: new Set(['龙二乙']) });
+    expect(yi.sellActionTag).toBe(DRAGON_YIZI_HOLD_TAG);
+    expect(yi.sellActionTag).toBe('龙一字持有');
+    expect(yi.sellActionTone).toBe(SELL_ACTION_TONE_YIZI_HOLD);
+    // A/B 对照：唯一区别 = 龙一【没有】一字 ⇒ 立刻回到【竞价卖（先卖后买）】
+    const plain = sellOf(yiziRows({ leaderYizi: false, leaderPct: 3 }), '龙二乙',
+      { todayBuyNames: new Set(['龙二乙']) });
+    expect(plain.sellActionTag).toBe(SELL_OUT_SWAP_TAG);
+  });
+
+  it('③ 卖点 · 龙一一字 + 龙二不达标 + 今天没进买点 ⇒ 【龙一字持有】（替掉【竞价卖】）', () => {
+    // 8/5 泛微网络正是这一档（它没进当天买点）
+    const yi = sellOf(yiziRows(), '龙二乙');
+    expect(yi.sellActionTag).toBe(DRAGON_YIZI_HOLD_TAG);
+    const plain = sellOf(yiziRows({ leaderYizi: false, leaderPct: 3 }), '龙二乙');
+    expect(plain.sellActionTag).toBe(SELL_OUT_TAG);
+  });
+
+  it('④ ⛔ 龙一【自己】不适用：它一字涨停 ⇒ 【竞价涨停卖】（请求 W 最优先档）', () => {
+    const jia = sellOf(yiziRows(), '龙一甲');
+    expect(jia.sellActionTag).toBe(SELL_LIMIT_UP_TAG);
+    expect(jia.sellActionTag).not.toBe(DRAGON_YIZI_HOLD_TAG);
+  });
+
+  it('⑤ ⛔ 占比【达标】的档【不动】：龙二占比 3.0% 达标 ⇒ 照旧【持有】/【尾盘卖】', () => {
+    const rows = yiziRows();
+    rows[1].aucShare = 3.0;                       // 龙二乙 3.0% ≥ 2%（非龙头门槛）
+    expect(sellOf(rows, '龙二乙', { todayBuyNames: new Set(['龙二乙']) }).sellActionTag).toBe(HOLD_TAG);
+    expect(sellOf(rows, '龙二乙').sellActionTag).toBe(SELL_LATE_TAG);
+  });
+
+  it('⑥ ⛔ 龙一一字【不算「将军倒下」】⇒ 中军 / 后排【不会】被拖成【跟龙竞价卖】', () => {
+    // 龙一占比 1.0%（< 3.5% 龙头门槛、不达标）⇒ 按 [FOLLOW-DRAGON] 规则本该让中军 / 后排跟跌；
+    // 但它竞价一字涨停 = 题材最强 ⇒ 该题材【不进】fallenDragon ⇒ 龙二拿【龙一字持有】。
+    const rows = yiziRows({ leaderShare: 1.0 });
+    const yi = sellOf(rows, '龙二乙');
+    expect(yi.sellActionTag).toBe(DRAGON_YIZI_HOLD_TAG);
+    expect(yi.sellActionTag).not.toBe(SELL_FOLLOW_DRAGON_TAG);
+    // A/B 对照：龙一【不】一字 + 同样占比 1.0% ⇒ 真的倒下 ⇒ 龙二（中军）跟跌【跟龙竞价卖】
+    const plain = sellOf(yiziRows({ leaderYizi: false, leaderPct: 3, leaderShare: 1.0 }), '龙二乙');
+    expect(plain.sellActionTag).toBe(SELL_FOLLOW_DRAGON_TAG);
+  });
+
+  it('⑦ 买点 · 龙一一字 + 龙二不达标 + 昨天买过 ⇒ 【龙一字持有】且【保留】仓位与【持有】', () => {
+    const opts = { prevBuyNames: new Set(['龙二乙']), prevBoughtNames: new Set(['龙二乙']) };
+    const yi = pickOf(buy(yiziRows(), opts), '龙二乙');
+    expect(yi.buyActionTag).toBe(DRAGON_YIZI_HOLD_TAG);
+    expect(yi.buyActionTone).toBe(BUY_ACTION_TONE_YIZI_HOLD);
+    // ⛔ 关键：本档【不清】行尾仓位 —— 语义就是「持有或加仓」
+    expect(yi.position).toBe(POSITION_HOLD);
+    // A/B 对照：龙一【没有】一字 ⇒ 回到【尾盘买（先卖后买）】，且仓位被清空（原口径）
+    const plain = pickOf(buy(yiziRows({ leaderYizi: false, leaderPct: 3 }), opts), '龙二乙');
+    expect(plain.buyActionTag).toBe(BUY_LATE_SWAP_TAG);
+    expect(plain.position).toBe('');
+  });
+
+  it('⑧ 买点 · 块级说明不再自相矛盾：龙一一字时【不写】「不算强势股、不标持有」', () => {
+    const opts = { prevBuyNames: new Set(['龙二乙']), prevBoughtNames: new Set(['龙二乙']) };
+    const withYizi = allBlockNotes(buy(yiziRows(), opts));
+    expect(withYizi).toContain(DRAGON_YIZI_HOLD_TAG);
+    expect(withYizi).not.toContain('不算强势股');
+    const plain = allBlockNotes(buy(yiziRows({ leaderYizi: false, leaderPct: 3 }), opts));
+    expect(plain).toContain('不算强势股');
+  });
+
+  it('⑨ 规则文案：量比模式买点段 + 一字模式买点段 + 共用卖点段 三处都写了【龙一字持有】', () => {
+    expect(buildVolRatioRulesLines().join('\n')).toContain(DRAGON_YIZI_HOLD_TAG);
+    expect(buildRulesLines().join('\n')).toContain(DRAGON_YIZI_HOLD_TAG);
+    const sellTxt = sellRulesLines().join('\n');
+    expect(sellTxt).toContain(DRAGON_YIZI_HOLD_TAG);
+    expect(sellTxt).toContain('卖都不用卖');
+    expect(sellTxt).toContain('泛微网络');
   });
 });
