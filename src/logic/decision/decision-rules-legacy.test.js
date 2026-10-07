@@ -1033,14 +1033,18 @@ describe('创业板 / 科创板顺延（GROWTH-BOARD）', () => {
     expect(picks.map(p => p.name)).toEqual(['股1', '股3']);
   });
 
-  it('龙一自己是创业板也照选（龙一是最强票，不因板块被跳过）', () => {
+  it('🔴 [MAIN-BOARD-ONLY 2026-10-07] 龙一自己是创业板 ⇒【不选】（旧口径「照选」已被新需求取代）', () => {
+    // 用户口径：「不要把创业板或者科创板的选进来……如果创业板或者科创板的票是龙一，
+    //   就要让位给主板的。」⇒ 创业板票不进候选（龙位也让给下一只主板）。
     const { dragon, blk } = mk([
       E('创龙一', 'T', 90, false, true, 1, '300413'),
       E('股2', 'T', 80, false, true, 5),
       E('X1', 'X', 1), E('X2', 'X', 0)
     ]);
     const picks = pickBuyable(blk, dragon, 2, POSITION_HEAVY);
-    expect(picks.map(p => p.name)).toEqual(['创龙一', '股2']);
+    expect(picks.map(p => p.name)).not.toContain('创龙一');
+    expect(picks.map(p => p.name)).toEqual(['股2']);     // 该块只剩这一只合格候选
+    expect(picks[0].dragonRank).toBe(1);                 // 顺延后它就是龙一
   });
 });
 

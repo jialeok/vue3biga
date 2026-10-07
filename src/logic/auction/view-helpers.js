@@ -818,7 +818,14 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       if (!nm || !dragonPctMap.has(nm)) return;
       const pct = dragonPctMap.get(nm).pct;
       if (pct === null || pct === undefined || isNaN(pct)) return;
-      dragonEntries.push({ name: nm, topic: primaryTopicOfForColor(i), pct: pct });
+      // [MAIN-BOARD-ONLY 2026-10-07] 必须带上 code：龙标签只发主板，
+      //   板块判定要用它（缺代码 ⇒ 名册兜底；再取不到 ⇒ 按「未知」照发，§10 不猜）。
+      dragonEntries.push({
+        name: nm,
+        topic: primaryTopicOfForColor(i),
+        pct: pct,
+        code: raw.code || getStockCode(nm) || ''
+      });
     });
     const coloredTopics = topicColorMap ? new Set(topicColorMap.keys()) : null;
     return computeDragonRankMap(dragonEntries, { coloredTopics: coloredTopics, minGroupSize: 2 });
@@ -904,7 +911,12 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
           const it = renderList[idx];
           const nm = it && it.stock ? String(it.stock).trim() : '';
           const dk = nm ? dragonRankMap.get(nm) : null;
-          return dk ? dk.rank : null;
+          // 🔴 [MAIN-BOARD-ONLY 2026-10-07 用户口径] 组内排序键必须用【seq（十日涨幅位次）】，
+          //   ⛔ 绝不能用 rank（龙位）—— 创业板 / 科创板的 rank 已经是 null，
+          //   而 sortByTopicGroups 对「无排名者」一律【置底】⇒ 用 rank 当排序键会让
+          //   中石科技（创业板，涨幅第一）掉到题材组最后，与用户「排序不变」的要求直接冲突。
+          //   seq 是入组每一只票都有的十日涨幅位次 ⇒ 屏幕顺序与改造前逐行一致。
+          return dk ? dk.seq : null;
         }
         : null,
       yiZiOf,
@@ -1165,7 +1177,11 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
         it.topicBg = '';
       }
       const dk = dragonRankMap ? dragonRankMap.get(it.stock) : null;
-      it.dragonRank = dk ? dk.rank : 0;
+      // [MAIN-BOARD-ONLY 2026-10-07 用户口径] 创业板 / 科创板的 dk.rank 是 null
+      //   ⇒ 归一成 0 ⇒ AuctionEntityRow 的 `v-if="item.dragonRank > 0"` 不渲染徽章
+      //   （= 屏幕上「没有龙标签」，与用户口径一致）。
+      //   ⚠️ dk 仍然存在（seq / pct 有值），所以十日涨幅那一列照常显示、排序也照常。
+      it.dragonRank = (dk && dk.rank) ? dk.rank : 0;
       it.dragonPct = dk ? dk.pct : null;
     }
     return it;

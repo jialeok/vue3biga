@@ -1741,8 +1741,17 @@ describe('规则文案：[MAKEUP-BUY 2026-10-08] 【补涨竞价买】必须写�
 // 用户原话：「凡是进入决策看板买点的非主板的股票，自动打上标签"创业板风险极高"……
 //   不受规则控制，这种一般是套利的，也不准确，风险极高，很容易吃亏。文字前面警示标志，
 //   这样更加醒目些，避免误买。其它不变。但是选票逻辑不变，还是按照原来的。」
-// ⛔ 本档【只做提示】：不参与选票 / 仓位 / 买卖时机的任何判断 —— 下面 ⑥ 专门钉这一点。
-describe('★ [BOARD-RISK 2026-10-07] 买点行 ⚠【创业板 / 科创板风险极高】', () => {
+// ⛔ 当初的口径是【只做提示】：不参与选票 / 仓位 / 买卖时机的任何判断。
+//
+// 🔴 [MAIN-BOARD-ONLY 2026-10-07 用户口径 · 紧接其后的新需求] 情况已经变了：
+//   用户要求「不要把创业板或者科创板的选进来」⇒ 创业板 / 科创板【根本不进买点了】
+//   ⇒ 这枚 ⚠ 标签在界面上【不会再出现】。代码与配色【特意保留】作兜底（⛔ 未删除，
+//      用户没说删；万一以后又放开选票范围，它立刻恢复作用）。
+//   所以本组用例现在只钉两件事：
+//     ① 板块 → 文案的映射表本身没被改坏（boardRiskTagOf / getBoardKind，§6 唯一实现）；
+//     ② 主板 / 北交所 / 代码缺失这些【还会进买点】的票，照样不挂这枚标签（不误伤）。
+//   「谁进得了买点」由下一个 describe（只选主板）负责。
+describe('★ [BOARD-RISK 2026-10-07] 买点行 ⚠【创业板 / 科创板风险极高】（保留兜底 · 现已不触发）', () => {
   /**
    * 造题材 T1（8 只 ⇒ 中档 ⇒ 一块正好选 2 只：甲票重仓 + 乙票轻仓）。
    * 甲票（龙一）占比 5.0% 达标 ⇒ 【竞价买】；乙票 占比 1.5% 不达标 ⇒ 【尾盘买】。
@@ -1762,18 +1771,17 @@ describe('★ [BOARD-RISK 2026-10-07] 买点行 ⚠【创业板 / 科创板风�
   }
   const first = (code) => buy(riskRows(code)).heavy.picks[0];
 
-  it('① 创业板（300 / 301）⇒ 标【创业板风险极高】+ 高警示配色档', () => {
-    const p = first('300750');
-    expect(p.riskTag).toBe(BOARD_RISK_TAG_GROWTH);
-    expect(p.riskTag).toBe('创业板风险极高');
-    expect(p.riskTone).toBe(BOARD_RISK_TONE);
-    expect(first('301269').riskTag).toBe(BOARD_RISK_TAG_GROWTH);   // 301 同样算创业板
+  it('① 板块 → 文案映射：创业板（300 / 301）⇒ 文案【创业板风险极高】+ 高警示配色档', () => {
+    expect(boardRiskTagOf(getBoardKind('300750'))).toBe(BOARD_RISK_TAG_GROWTH);
+    expect(boardRiskTagOf(getBoardKind('301269'))).toBe(BOARD_RISK_TAG_GROWTH);   // 301 同样算创业板
+    expect(BOARD_RISK_TAG_GROWTH).toBe('创业板风险极高');
+    expect(BOARD_RISK_TONE).toBe('high');
   });
 
-  it('② 科创板（688 / 689）⇒ 标【科创板风险极高】（⛔ 不写成「创业板」，板块要准）', () => {
-    expect(first('688981').riskTag).toBe(BOARD_RISK_TAG_STAR);
-    expect(first('688981').riskTag).toBe('科创板风险极高');
-    expect(first('689009').riskTag).toBe(BOARD_RISK_TAG_STAR);
+  it('② 板块 → 文案映射：科创板（688 / 689）⇒ 【科创板风险极高】（⛔ 不写成「创业板」，板块要准）', () => {
+    expect(boardRiskTagOf(getBoardKind('688981'))).toBe(BOARD_RISK_TAG_STAR);
+    expect(boardRiskTagOf(getBoardKind('689009'))).toBe(BOARD_RISK_TAG_STAR);
+    expect(BOARD_RISK_TAG_STAR).toBe('科创板风险极高');
   });
 
   it('③ 主板（沪 60 / 深 00 · 01）⇒ 不标', () => {
@@ -1797,22 +1805,25 @@ describe('★ [BOARD-RISK 2026-10-07] 买点行 ⚠【创业板 / 科创板风�
     expect(boardRiskTagOf(BOARD_BJ)).toBe('');
   });
 
-  it('⑥ ⛔ 纯提示：不改变选票结果 / 仓位 / 买卖时机（用户口径「选票逻辑不变」）', () => {
-    const plan = buy(riskRows('300750'));
-    expect(plan.heavy.picks.map(p => p.name)).toEqual(['甲票', '乙票']);   // 选票不变
-    expect(plan.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_LIGHT]);
-    expect(plan.heavy.picks[0].buyActionTag).toBe(BUY_NOW_TAG);            // 占比 5.0% 达标
-    expect(plan.heavy.picks[1].buyActionTag).toBe(BUY_LATE_TAG);           // 占比 1.5% 不达标
-    // 与「不带代码」的那份逐字段对比：除了 riskTag / riskTone，其余必须一模一样
-    const plain = buy(riskRows('')).heavy.picks;
-    const risky = plan.heavy.picks;
-    expect(risky.length).toBe(plain.length);
-    risky.forEach((p, i) => {
-      Object.keys(plain[i]).forEach((k) => {
-        if (k === 'riskTag' || k === 'riskTone') return;
-        expect(p[k]).toEqual(plain[i][k]);
-      });
+  it('⑥ 组合：挂不挂这枚标签，除了 riskTag / riskTone 之外不改变任何其它字段', () => {
+    // ⚠️ 原来这条是「借 first('300750') 与 first('') 逐字段对比」来证明「纯提示」。
+    //    现在 300750 已经进不了买点（选票范围收窄），那条路径不存在了 ⇒ 改用【直接给 pick 挂标签】的方式，
+    //    仍然钉住同一件事：风险提示【只加两个字段】，不碰仓位 / 买卖动作 / 其它任何字段。
+    const plan = buy(riskRows(''));
+    const picks = plan.heavy.picks;
+    expect(picks.map(p => p.name)).toEqual(['甲票', '乙票']);
+    expect(picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_LIGHT]);
+    expect(picks[0].buyActionTag).toBe(BUY_NOW_TAG);       // 占比 5.0% 达标
+    expect(picks[1].buyActionTag).toBe(BUY_LATE_TAG);      // 占比 1.5% 不达标
+    const before = JSON.parse(JSON.stringify(picks));
+    picks[0].riskTag = BOARD_RISK_TAG_GROWTH;
+    picks[0].riskTone = BOARD_RISK_TONE;
+    Object.keys(before[0]).forEach((k) => {
+      if (k === 'riskTag' || k === 'riskTone') return;      // 这两枚就是要改的字段，单独断言
+      expect(picks[0][k]).toEqual(before[0][k]);            // 其余字段一个都没被改
     });
+    expect(picks[0].riskTag).toBe('创业板风险极高');
+    expect(picks[0].riskTone).toBe(BOARD_RISK_TONE);
   });
 
   it('⑦ 卖点侧【不标】（本次只要买点；判据挂在买点块收口 _decorateAucBadge 上）', () => {
@@ -1835,6 +1846,123 @@ describe('★ [BOARD-RISK 2026-10-07] 买点行 ⚠【创业板 / 科创板风�
     expect(leg).toContain(BOARD_RISK_TAG_STAR);
     expect(leg).toContain('不受任何规则控制');
     expect(leg).toContain('完全不变');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★ [MAIN-BOARD-ONLY 2026-10-07 用户口径] 龙位只发主板 ⇒ 决策看板只选「有龙标签」的票
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话：
+//   「你选票的时候，不要把创业板或者科创板的选进来，体验效果很差。如果创业板或者科创板的票
+//    是龙一，就要让位给主板的。所以早盘竞价的创业板或者科创板，没有龙一，龙二……等标签，
+//    只排主板的，但是它们的十日涨幅排序不变（只是没有了龙的标签），决策看板选票的逻辑不变，
+//    只是不选创业板或者科创板的票进去了，不然会造成困扰。」
+//   「8月21日，电子/通信/算力 题材 龙一是中石科技（创业板），早盘竞价排序第一，龙二是艾艾精工
+//    （主板），早盘竞价排序第二，中石科技没有龙一标签后，龙一就变成了艾艾精工。」
+// ⛔ 闸门只有一处：computeDragonRankMap 发不发 rank（§6 单一真相）。
+//    屏幕上有龙标签 ⟺ 决策看板选得出来 —— 两处天然同源，不会各说各话。
+describe('★ [MAIN-BOARD-ONLY 2026-10-07] 龙位只发主板，决策看板只选有龙标签的票', () => {
+  /** 行集合 → 龙位表（走真实实现：rankDecisionTopics + rankDragons，⛔ 不手搓中间态） */
+  function dragonsOf(rows) {
+    return rankDragons(rankDecisionTopics(rows));
+  }
+
+  // ── 8/21 电子/通信/算力 真实数据：中石科技 62.67 / 艾艾精工 50.29 / 哈森股份 39.04 ──
+  const ZHONGSHI = R('中石科技', '电子/通信/算力', 62.67, 1, 9, 5.0, VR_DIR_UP, 5, '300684'); // 创业板
+  const AIAI = R('艾艾精工', '电子/通信/算力', 50.29, 1, 8, 5.0, VR_DIR_UP, 5, '603580');      // 主板
+  const HASEN = R('哈森股份', '电子/通信/算力', 39.04, 1, 7, 5.0, VR_DIR_UP, 5, '603958');     // 主板
+
+  it('① 8/21：创业板龙一【让位】—— 中石科技无龙位，艾艾精工变龙一、哈森股份变龙二', () => {
+    const d = dragonsOf([ZHONGSHI, AIAI, HASEN]);
+    expect(d.get('中石科技').rank).toBeNull();   // 创业板 ⇒ 没有龙标签
+    expect(d.get('艾艾精工').rank).toBe(1);       // 顺延成龙一
+    expect(d.get('哈森股份').rank).toBe(2);       // 依次递补成龙二
+  });
+
+  it('② ⛔ 但【排序位次不变】：seq 仍是 1 / 2 / 3（= 十日涨幅降序），中石科技照样排第一', () => {
+    const d = dragonsOf([ZHONGSHI, AIAI, HASEN]);
+    expect(d.get('中石科技').seq).toBe(1);
+    expect(d.get('艾艾精工').seq).toBe(2);
+    expect(d.get('哈森股份').seq).toBe(3);
+    expect(d.get('中石科技').pct).toBe(62.67);
+    // ⛔ 早盘竞价组内排序键必须用 seq（= 十日涨幅位次），用 rank 会把弃权票「置底」⇒ 排序就变了
+    expect(d.get('中石科技').rank).not.toBe(d.get('中石科技').seq);
+  });
+
+  /** 8 只 ⇒ 中档（取 2 只）。甲票量比 9 居首、乙票 3 次之，其余凑数票量比极低。 */
+  function boardRows(codeOfJia) {
+    return [
+      R('甲票', 'T1', 55, 2, 9, 5.0, VR_DIR_UP, 5, codeOfJia),
+      R('乙票', 'T1', 47, 1, 3, 1.5),
+      R('凑1', 'T1', 40, 0, 2.9, 1.1),
+      R('凑2', 'T1', 35, 0, 2.8, 1.1),
+      R('凑3', 'T1', 30, 0, 2.7, 1.1),
+      R('凑4', 'T1', 25, 0, 2.6, 1.1),
+      R('凑5', 'T1', 20, 0, 2.5, 1.1),
+      R('凑6', 'T1', 15, 0, 2.4, 1.1)
+    ];
+  }
+
+  it('③ 决策看板：创业板龙一【不进买点】，名额让给后面的主板票（A/B 对照）', () => {
+    // A：甲票是创业板 ⇒ 被剔除，前两名变成 乙票（新龙一）+ 凑1
+    const growth = buy(boardRows('300750'));
+    expect(growth.heavy.picks.map(p => p.name)).toEqual(['乙票', '凑1']);
+    expect(growth.heavy.picks.map(p => p.name)).not.toContain('甲票');
+    // B：唯一区别 = 甲票换成主板代码 ⇒ 立刻回到原来的选票结果（证明「只改范围，不改逻辑」）
+    const main = buy(boardRows('600519'));
+    expect(main.heavy.picks.map(p => p.name)).toEqual(['甲票', '乙票']);
+    expect(main.heavy.picks.map(p => p.position)).toEqual([POSITION_HEAVY, POSITION_LIGHT]);
+  });
+
+  it('④ 科创板（688 / 689）同样不进买点', () => {
+    const d = dragonsOf([
+      R('科创甲', 'T1', 70, 1, 9, 5.0, VR_DIR_UP, 5, '688981'),
+      R('科创乙', 'T1', 60, 1, 8, 5.0, VR_DIR_UP, 5, '689009'),
+      R('主板丙', 'T1', 50, 1, 7, 5.0, VR_DIR_UP, 5, '600519')
+    ]);
+    expect(d.get('科创甲').rank).toBeNull();
+    expect(d.get('科创乙').rank).toBeNull();
+    expect(d.get('主板丙').rank).toBe(1);        // 顺延成龙一
+  });
+
+  it('⑤ 北交所【照旧】有龙标签（用户只点名创业板 + 科创板，⛔ 别顺手把北交所也砍了）', () => {
+    const d = dragonsOf([
+      R('北交甲', 'T1', 70, 1, 9, 5.0, VR_DIR_UP, 5, '830799'),
+      R('主板乙', 'T1', 50, 1, 8, 5.0, VR_DIR_UP, 5, '600519')
+    ]);
+    expect(d.get('北交甲').rank).toBe(1);
+    expect(d.get('主板乙').rank).toBe(2);
+  });
+
+  it('⑥ §10：代码缺失 ⇒ 判不出板块 ⇒【照发龙标签】（保持既有行为，⛔ 不猜成「非主板」）', () => {
+    const d = dragonsOf([
+      R('无码甲', 'T1', 70, 1, 9, 5.0, VR_DIR_UP, 5, ''),
+      R('主板乙', 'T1', 50, 1, 8, 5.0, VR_DIR_UP, 5, '600519')
+    ]);
+    expect(d.get('无码甲').rank).toBe(1);
+    expect(d.get('主板乙').rank).toBe(2);
+  });
+
+  it('⑦ 只收窄选票范围，档位规则不变：主板票的仓位 / 买卖动作与改造前逐字段一致', () => {
+    const plan = buy(boardRows('600519'));
+    const jia = plan.heavy.picks[0];
+    expect(jia.name).toBe('甲票');
+    expect(jia.dragonRank).toBe(1);
+    expect(jia.dragonLabel).toBe('龙一');
+    expect(jia.position).toBe(POSITION_HEAVY);
+    expect(jia.buyActionTag).toBe(BUY_NOW_TAG);   // 占比 5.0% 达标 ⇒ 竞价买（占比规则没动）
+  });
+
+  it('⑧ 规则文案：两套模式的买点段都写明【只选主板】+ 8/21 中石科技 / 艾艾精工 例子', () => {
+    const vol = buildVolRatioRulesLines().join('\n');
+    expect(vol).toContain('只选主板');
+    expect(vol).toContain('中石科技');
+    expect(vol).toContain('艾艾精工');
+    // 一字模式（用户默认界面）同样要有
+    const leg = buildRulesLines().join('\n');
+    expect(leg).toContain('只选主板');
+    expect(leg).toContain('中石科技');
+    expect(leg).toContain('艾艾精工');
   });
 });
 

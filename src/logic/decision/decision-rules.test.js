@@ -554,14 +554,28 @@ describe('pickByVolRatio（按竞价量比降序取票 · §6 唯一实现）', 
     expect(r.notes.join('｜')).toContain('占名次不递补');
   });
 
-  it('⭐ 创业板 / 科创板 / 北交所【照选】—— 不再因板块顺延下一位', () => {
+  it('🔴 [MAIN-BOARD-ONLY 2026-10-07] 创业板 / 科创板【不选】—— 旧口径「照选」已被新需求取代', () => {
+    // 用户原话：「决策看板选票的时候只选那些有龙的标签（主板的票），选票逻辑基本这个不变，
+    //   只是不选创业板或者科创板的票进去了，不然会造成困扰。」
     const { blk, dragon } = mk([
       E('主板甲', 'T', 90, false, true, 3, '600001', false, 1),
       E('创业板乙', 'T', 80, false, true, 3, '300001', false, 9),
       E('科创板丙', 'T', 70, false, true, 3, '688001', false, 5)
     ]);
+    // 量比：创业板乙 9 ＞ 科创板丙 5 ＞ 主板甲 3 —— 换成旧口径前两名就是那两只非主板票；
+    // 现在它们【压根不进候选】⇒ 只剩主板甲，且它顺延后就是【龙一】。
     const r = pickByVolRatio(blk, dragon, 2, 2, RULE_NO.FIRST);
-    expect(r.picks.map(p => p.name)).toEqual(['创业板乙', '科创板丙']);
+    expect(r.picks.map(p => p.name)).toEqual(['主板甲']);
+    expect(r.picks.map(p => p.dragonRank)).toEqual([1]);
+  });
+
+  it('⭐ 北交所【照选】（用户只点名创业板 + 科创板，⛔ 别顺手把北交所也砍了）', () => {
+    const { blk, dragon } = mk([
+      E('北交甲', 'T', 90, false, true, 3, '830799', false, 1),
+      E('主板乙', 'T', 80, false, true, 9, '600001', false, 2)
+    ]);
+    const r = pickByVolRatio(blk, dragon, 2, 2, RULE_NO.FIRST);
+    expect(r.picks.map(p => p.name)).toEqual(['主板乙', '北交甲']);   // 量比降序：9 ＞ 3
   });
 
   it('§10：缺量比的票排在有量比的票【后面】（⛔ 绝不当 0 去比大小）', () => {

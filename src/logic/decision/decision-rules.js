@@ -1100,7 +1100,11 @@ export function rankDragons(blocks) {
     colored.add(b.topic);
     b.members.forEach(function(m) {
       if (m.pct === null) return;             // §10：缺十日涨幅 → 排不进龙位
-      entries.push({ name: m.name, topic: b.topic, pct: m.pct });
+      // [MAIN-BOARD-ONLY 2026-10-07 用户口径] 必须带上 code：龙标签只发主板
+      //   （创业板 300/301、科创板 688/689 弃权，龙位顺延给下一只主板）。
+      //   ⛔ 与早盘竞价徽章【同一个 computeDragonRankMap】（§6 单一真相）——
+      //      屏幕上有龙标签的票 ⟺ 这里的 rank 非 null ⟺ 决策看板可选的票。
+      entries.push({ name: m.name, topic: b.topic, pct: m.pct, code: m.code || '' });
     });
   });
   return computeDragonRankMap(entries, { coloredTopics: colored, minGroupSize: DECISION_MIN_GROUP });
@@ -1115,6 +1119,15 @@ export function rankDragons(blocks) {
  *   · ⭐ [2026-10-01] ⛔ 不再因「非龙一 + 20%/30% 涨跌幅板」顺延 ——
  *     用户口径「创业板 / 科创板 / 北交所【照选】，完全按量比」（AskUserQuestion 确认）。
  *     因此本函数相对旧版【删掉了 isHighLimitBoard 过滤】。
+ *
+ * 🔴 [MAIN-BOARD-ONLY 2026-10-07 用户口径] 上面那条 2026-10-01 的口径【已被本次需求取代】：
+ *   用户原话「决策看板选票的时候只选那些有龙的标签（主板的票），选票逻辑基本这个不变，
+ *   只是不选创业板或者科创板的票进去了（不然会造成困扰）」。
+ *   实现方式 = 只保留 `rank !== null` 的候选（闸门放在**龙位**这一处，§6 单一真相）：
+ *     · 创业板 / 科创板在 computeDragonRankMap 里 rank 恒为 null ⇒ 在这里被剔除；
+ *     · 与早盘竞价「没有龙标签」的判定【同源】，屏幕上没徽章的票，这里就一定选不出来；
+ *     · ⛔ 绝不在本函数里另写一遍 `getBoardKind` 板块判断 —— 那就成了第二份规则（§6 分叉），
+ *       以后改板块范围（如加北交所）时必漏一处。
  *
  * @param {object} block 题材块
  * @param {Map} dragonMap 龙头排名
@@ -1148,6 +1161,10 @@ function _buyCandidates(block, dragonMap) {
         rank: (d && d.rank) ? d.rank : null
       };
     })
+    // 🔴 [MAIN-BOARD-ONLY 2026-10-07 用户口径] 没有龙标签的票【不进候选】：
+    //   rank === null ⟺ 创业板 / 科创板（在 computeDragonRankMap 里被弃权）。
+    //   ⛔ 必须是 filter 而不是「排序放到最后」—— 用户要的是【不选进来】。
+    .filter(function(c) { return c.rank !== null; })
     .sort(function(a, b) {
       const ra = (a.rank === null ? Number.MAX_SAFE_INTEGER : a.rank);
       const rb = (b.rank === null ? Number.MAX_SAFE_INTEGER : b.rank);
@@ -2829,6 +2846,13 @@ export function buildVolRatioRulesLines() {
 function _volRatioBuyRulesLines() {
   return [
     '【买点】只看题材排名前二的题材（题材排名 = 早盘竞价「题材 toggle」的组序，见第 0 步）：',
+    // [MAIN-BOARD-ONLY 2026-10-07 用户口径] 选票范围 —— 写在最前，它是所有候选集的前提。
+    '⛔ 【选票范围 · 只选主板】创业板（300 / 301）/ 科创板（688 / 689）的票【不进买点】：',
+    '　　它们在【早盘竞价】里【没有龙一 / 龙二…标签】（十日涨幅排序位置不变，只是不挂龙标），',
+    '　　龙位【顺延】给下一只主板 —— 8/21 电子/通信/算力：中石科技（创业板，十日涨幅第一）原本是龙一，',
+    '　　　现在没标签、仍排第一；龙一变成艾艾精工（主板），后面依次递补。',
+    '　　⇢ 本看板【只选拿得到龙标签的票】（= 主板）；北交所、代码缺失的票照旧（§10 不猜板块）。',
+    '　　⇢ 除了这条范围限定，选票逻辑与档位规则【完全不变】。',
     '　第 0 步【题材怎么排名】= 按题材的【平均竞价量比】降序（2026-10-01 新规，取代原来的「一字数量排序」）：',
     '　　平均竞价量比高的题材排在前面 —— 这样能分出排在第一和第二的题材（用户口径）。',
     '　　量比取自 market_metrics 的 auc_vol_ratio = 早盘竞价看板展开面板那行「竞价量比」，',
@@ -2930,6 +2954,8 @@ function _volRatioBuyRulesLines() {
     '　　　这类票进来买点【一般是短线套利】，不准、很容易吃亏 ⇒ 风险极高，下单前多看一眼。',
     '　　　⛔ 它【不受任何规则控制】，也【不参与】任何规则：选票 / 仓位 / 买卖时机【完全不变】',
     '　　　　（用户口径「选票逻辑不变，还是按照原来的」）；没代码 ⇒ 不标（§10 绝不凭股票名猜板块）。',
+    '　　　🔴 2026-10-07 起【选票范围只认主板】（见上）⇒ 创业板 / 科创板已进不了买点，',
+    '　　　　这枚标签实际上【不会再出现】；代码与配色【保留】不动，作为兜底，⛔ 未删除。',
     '　　【竞价量比】小标签会显示与【上一交易日】相比的方向（两个值各自四舍五入到整数后作差）：',
     '　　　增强（差 ≥ +1）→ 整块【红底】带 ↑；下降（差 ≤ -1）→ 整块【绿底】带 ↓；基本平（差 = 0）或数据不全 → 靛蓝底不带箭头。',
     '　　行尾是仓位：' + POSITION_HEAVY + ' / ' + POSITION_LIGHT + ' = 今天新买建多少仓，' + POSITION_HOLD +

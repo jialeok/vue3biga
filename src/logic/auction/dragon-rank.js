@@ -7,6 +7,11 @@
 //   - 组内按区间涨幅降序：最高 = 龙一，次高 = 龙二，依次类推。
 //   - 龙一/龙二…本身【不落库】，是 view-helpers 按题材组现算的派生字段。
 //
+// 🔴 [MAIN-BOARD-ONLY 2026-10-07 用户口径] 龙标签【只发主板】（详见 isDragonBoardEligible）：
+//   创业板（300/301）/ 科创板（688/689）不给龙标签，龙位【顺延】给下一只主板票；
+//   但它们的【十日涨幅排序位次不变】（= 早盘竞价里中石科技照样排第一，只是没有龙一）。
+//   决策看板选票因此也只认「有龙标签的票」（= rank 非 null）⇒ 与屏幕上的徽章天然同源（§6）。
+//
 // ===== 数据链路（方案A / 2026-09-10 改造）=====
 //   9:25 worker（workers/bidding-auto-fetch）在与历史涨幅【同一次】numcat daily 请求里，
 //   把 [T-9, T] 的日涨幅按 range-window.js 的复利口径算成区间涨幅，直接写 stock_range_pct；
@@ -42,6 +47,9 @@ import {
 } from '../../data/stock-range-pct.js';
 import { _dbgLog } from '../../data/debug-log.js';
 import { ensureAuctionCodeMapping } from './auction-fetch-helpers.js';
+// [MAIN-BOARD-ONLY 2026-10-07 用户口径] 板块判定走 limit-up.js 的唯一实现（§6），⛔ 不手写 /^30|68/ 前缀：
+//   早盘竞价「20%/30% 板灰色删除线」、决策看板【竞价涨停卖】用的都是这一份 getBoardKind。
+import { getBoardKind, BOARD_GROWTH, BOARD_STAR } from './limit-up.js';
 // 口径单一真相（纯函数，worker 与前端共用同一份实现）
 import {
   RANGE_WINDOW_DAYS, parsePct, compoundPct, resolveTDayPct, isAuctionLegActive,
@@ -801,11 +809,47 @@ export function getDragonLabel(rank) {
 }
 
 /**
+ * [MAIN-BOARD-ONLY 2026-10-07 用户口径] 该股【有没有资格拿龙标签】—— 唯一实现（§6）。
+ *
+ * 用户原话：
+ *   「不要把创业板或者科创板的选进来，体验效果很差。如果创业板或者科创板的票是龙一，
+ *    就要让位给主板的。所以早盘竞价的创业板或者科创板，没有龙一，龙二……等标签，
+ *    只排主板的，但是它们的十日涨幅排序不变（只是没有了龙的标签）。」
+ *   「你标准创业板或者科创板就可以了。」（⛔ 刻意不含北交所 —— 与请求 V 的板块提示同一取舍）
+ *
+ * ✅ 有资格（照发龙标签）：主板（60 / 00 / 01）、北交所（30% 板）、**代码缺失**。
+ * ❌ 无资格（不发龙标签，龙位顺延给下一只有资格的票）：创业板（300 / 301）、科创板（688 / 689）。
+ *
+ * §10 红线：代码缺失 ⇒ getBoardKind 返回 BOARD_UNKNOWN ⇒ **照发龙标签**。
+ *   理由：判不出板块 ≠ 判出「是创业板」。把「没查到」当作「非主板」会静默删掉一只本该有龙位的票
+ *   （§10「读取失败 ≠ 空数据」的同一原则）。真实链路里名册（stockcodemap）会兜底解析股票名 → 代码，
+ *   所以「缺失」只在名册未加载时出现，且此时**保持既有行为**才是安全的。
+ *
+ * @param {string} code 股票代码；缺失 / 空串 = 未知
+ * @returns {boolean} true = 可以拿龙标签
+ */
+export function isDragonBoardEligible(code) {
+  const kind = getBoardKind(code || '');
+  if (kind === BOARD_GROWTH || kind === BOARD_STAR) return false;
+  return true;
+}
+
+/**
  * 按题材组计算龙头排名。
- * @param {Array<{name:string, topic:string, pct:number}>} entries - 参与排名的股票
+ *
+ * 🔴 [MAIN-BOARD-ONLY 2026-10-07 用户口径] 排位顺序与龙标签在这里【解耦】：
+ *   · `seq` = 十日涨幅位次（1 起）—— **入组的每一只票都有**，包含创业板 / 科创板。
+ *     早盘竞价组内排序只用 seq ⇒ 「中石科技还是排第一、艾艾精工还是排第二」完全不变。
+ *   · `rank` = 龙位（龙一 / 龙二…）—— **只发给主板 / 北交所 / 未知板块的票**，
+ *     创业板 / 科创板恒为 null（= 屏幕上没有龙标签，龙位顺延给下一只主板）。
+ *   ⛔ 两者必须分开：早盘竞价那边如果拿 rank 当排序键，被弃权的票会被「无排名者置底」
+ *     （见 topic-sort.js#sortByTopicGroups）⇒ 排序就变了，与用户明确要求冲突。
+ *
+ * @param {Array<{name:string, topic:string, pct:number, code?:string}>} entries - 参与排名的股票
  * @param {{coloredTopics?: Set<string>|null, minGroupSize?: number}} [opts]
  *        coloredTopics 非空时只给「已上色题材」（= 界面同颜色块，成员>=2 的真实题材）排名
- * @returns {Map<string, {rank:number, pct:number, topic:string, groupSize:number}>}
+ * @returns {Map<string, {rank:number|null, seq:number, pct:number, topic:string, groupSize:number}>}
+ *          rank = null 表示「无龙标签」（创业板 / 科创板弃权）
  */
 export function computeDragonRankMap(entries, opts) {
   const result = new Map();
@@ -825,9 +869,13 @@ export function computeDragonRankMap(entries, opts) {
   groups.forEach(function(arr, topic) {
     if (arr.length < minSize) return;
     arr.sort(function(a, b) { return b.pct - a.pct; });
+    let rank = 0;   // ⛔ 只给【有资格】的票递增：弃权的票不占龙位，下一只主板自动递补
     arr.forEach(function(e, i) {
+      const eligible = isDragonBoardEligible(e.code);
+      if (eligible) rank += 1;
       result.set(e.name, {
-        rank: i + 1,
+        rank: eligible ? rank : null,
+        seq: i + 1,
         pct: e.pct,
         topic: topic,
         groupSize: arr.length
