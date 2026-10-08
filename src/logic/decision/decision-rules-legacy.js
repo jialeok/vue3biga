@@ -36,7 +36,9 @@
 
 import { getDragonLabel } from '../auction/dragon-rank.js';
 // 竞价开平（高开 / 低开 / 平开）复用连板天梯的唯一实现，⛔ 不在本文件另写一套阈值与文案（§6）
-import { getAucOpenKind, getAucOpenText, AUC_OPEN_HIGH } from '../ladder/ladder-rules.js';
+// ⚠️ [DRAGON-STRONG-GATE 2026-10-09] AUC_OPEN_HIGH 已从本文件 import 移除：数高开只数的
+//   _calcOpenRate 已上移到 decision-rules.js（_calcTopicOpenRate），本文件不再直接判 high（§16 不留死导入）。
+import { getAucOpenKind, getAucOpenText } from '../ladder/ladder-rules.js';
 // 板块（创业板 / 科创板 / 北交所 = 20% / 30% 涨跌幅板）判定复用早盘竞价的唯一实现（§6）：
 // 早盘竞价给这类票画浅灰删除线用的就是 isHighLimitBoard，⛔ 本文件不另写 /^(30|68)/ 这类正则。
 // 竞价【跌停】同样复用 limit-up.js#getAuctionLimitState（涨跌停看板用的就是它），不另写阈值。
@@ -96,6 +98,11 @@ import {
   // [MAKEUP-BUY 2026-10-08] 三分档（龙头 / 中军 / 后排）的人话 + 题材「二次入选」的中文序数 ——
   //   规则面板的补涨档文案要摆这两个词，共用 decision-rules.js 那一份（§6 不在文案里手抄）。
   _tierText, topicStreakText,
+  // [DRAGON-STRONG-GATE 2026-10-09 用户口径 · 大亚圣象 10/8] 【竞价高开率】的取数与文案 ——
+  //   ⑧ 弱势题材 / ⑨ 双主线竞争原来各自在本文件里有一份私有实现，卖点侧的新判据也要用
+  //   ⇒ 上移到 decision-rules.js，本文件反向 import（§6：公式只许有一份）。
+  //   ⛔ 搬动只挪位置、不改一行逻辑；本文件调用点里的函数名同步改成 _calcTopicOpenRate / _topicOpenRateText。
+  _calcTopicOpenRate, _topicOpenRateText,
   sellRulesLines,
   _num, _note, _toPick, _reseq, _reasonBuy, _rankWord,
   _markHold, _markPrevBought, _markTopicPrevBought, _markTopicStreak,
@@ -193,7 +200,7 @@ export const RULE_NO = {
 //   【只有一个能活下来】⇒ 不看常规档位，直接比两个题材的【竞价高开率】：
 //     农业 11 只、5 只高开（45%）＜ 大消费 10 只、8 只高开（80%）
 //     ⇒ 大消费的龙一国芳集团【重仓】，农业的龙一敦煌种业【轻仓】，【各只选 1 只】。
-// ⛔ 高开率口径与 ⑧ 完全同一份实现（_calcOpenRate，§6）：分母 = 题材股票总数，
+// ⛔ 高开率口径与 ⑧ 完全同一份实现（_calcTopicOpenRate，§6）：分母 = 题材股票总数，
 //    缺竞价涨幅的行按【未高开】计入分母（§10 不猜它是高开）。
 /** 触发「双主线竞争」的题材股票数门槛（第 1 / 第 2 名题材【都】要 ≥ 这么多只） */
 export const DUAL_MAIN_MIN_COUNT = 10;
@@ -1075,49 +1082,13 @@ function _applyLossEffect(blockObj) {
 }
 
 /**
- * 【竞价高开率 · 唯一实现（§6）】⑧ 弱势题材与 ⑨ 双主线竞争都用它，⛔ 不各写一份。
- *
- * 口径（2026-09-27 定稿）：
- *   · 分母 = 【题材股票总数 block.count】，⛔ 不是「有竞价涨幅数据的行数」；
- *   · 分子 = 成员里【竞价涨幅 > 0】的只数（判定复用 ladder-rules#getAucOpenKind，§6）；
- *   · 缺竞价涨幅的行【按未高开】计入分母 —— 9:25 看不到它高开，就不能把它算进题材强度（§10 不猜）。
- *
- * ⛔ 为什么分母必须是总数（事故复盘）：上一版用「有数据的行数」当分母，灰行（观察组 / 昨日龙头
- *    继承壳）在很多日期拿不到 auc_pct_chg ⇒ 12 只的题材分母被缩成 7 只，3 只高开算成 43%（≥35%）
- *    ⇒ 规则不触发。用户口径是「12 只里只有 3 只高开 = 25%」，看的正是题材总数那一档。
- *
- * @param {object} block 题材块（rankDecisionTopics 的元素：{count, members}）
- * @returns {{total:number, highCount:number, knownCount:number, unknownCount:number,
- *            rate:number|null}} rate = null ⇒ 高开率【未知】（一只都没有竞价涨幅，§10 不猜）
+ * ⚠️ [DRAGON-STRONG-GATE 2026-10-09] 【竞价高开率】的取数与文案（原 _calcOpenRate / _openRateText）
+ *    已【上移到 decision-rules.js】（_calcTopicOpenRate / _topicOpenRateText）——
+ *    卖点侧【龙一强 ⇒ 尾盘卖】的条件 B「题材竞价高开率 > 35%」也要用它，
+ *    留在本文件会让公式出现两份（§6 ⛔）。搬动【只挪位置、不改一行逻辑】：
+ *    本文件下面 ⑧ ⑨ 两处的判据与文案一个字都没变，只是改调那两个 import 进来的函数。
+ *    （沿用 getAucOpenKind / AUC_OPEN_HIGH 的那条 §6 理由：口径只许有一份。）
  */
-function _calcOpenRate(block) {
-  const total = Number(block && block.count) || 0;
-  const members = (block && block.members) || [];
-  let highCount = 0;
-  let knownCount = 0;
-  let unknownCount = 0;
-  members.forEach(function(m) {
-    const kind = getAucOpenKind(_num(m && m.aucPct));
-    if (kind === null) { unknownCount++; return; }
-    knownCount++;
-    if (kind === AUC_OPEN_HIGH) highCount++;
-  });
-  return {
-    total: total,
-    highCount: highCount,
-    knownCount: knownCount,
-    unknownCount: unknownCount,
-    rate: (knownCount === 0 || total <= 0) ? null : (highCount / total)
-  };
-}
-
-/** 高开率 → 「n 只 = p%（x/y）」的可核对文案（⑧ ⑨ 共用，⛔ 不各处拼字符串） */
-function _openRateText(r) {
-  const base = '竞价高开 ' + r.highCount + '/' + r.total + ' 只 = ' + Math.round(r.rate * 100) + '%';
-  return r.unknownCount > 0
-    ? base + '（另 ' + r.unknownCount + ' 只缺竞价涨幅，按未高开计入分母，§10 不猜）'
-    : base;
-}
 
 /**
  * 【⑧ 弱势题材（2026-09-27 用户口径）】题材越大却【没人高开】⇒ 题材是虚胖的，别重仓铺票：
@@ -1140,7 +1111,7 @@ function _applyWeakOpenRate(blockObj) {
   // ⛔ 只在【总数 > WEAK_OPEN_MIN_COUNT】时生效 —— ≤ 10 只由「买入只数」管，两条不重叠
   if (total <= WEAK_OPEN_MIN_COUNT || (block.members || []).length === 0) return blockObj;
 
-  const r = _calcOpenRate(block);
+  const r = _calcTopicOpenRate(block);
 
   // §10 红线：一只都没有竞价涨幅 ⇒ 「高开率」是未知，既不能算高也不能算低 ⇒ 不触发，如实说明
   if (r.rate === null) {
@@ -1150,7 +1121,7 @@ function _applyWeakOpenRate(blockObj) {
     return blockObj;
   }
 
-  const base = '题材共 ' + total + ' 只，' + _openRateText(r);
+  const base = '题材共 ' + total + ' 只，' + _topicOpenRateText(r);
   // 没触发也把高开率写出来 —— 用户能直接核对「为什么还是常规档位」，不用猜
   if (r.rate >= WEAK_OPEN_RATE) {
     blockObj.notes = blockObj.notes || [];
@@ -1177,7 +1148,7 @@ function _applyWeakOpenRate(blockObj) {
  *   ⇒ 大消费龙一国芳集团【重仓】，农业龙一敦煌种业【轻仓】。
  *
  * ⛔ 只选【龙一】各 1 只，不再补第二只（大容量题材并存时铺票等于两边下注，违背「只有一个能活下来」）。
- * ⛔ 高开率口径复用 _calcOpenRate（与 ⑧ 同一份实现，§6）：分母 = 题材股票总数，
+ * ⛔ 高开率口径复用 _calcTopicOpenRate（本文件 ⑧ 用的是同一个函数，§6）：分母 = 题材股票总数，
  *    缺竞价涨幅的行按【未高开】计入分母（§10 不猜）。
  * ⛔ 龙一是一字（买不进）时按龙头顺序顺延 —— 复用 pickBuyable，⛔ 不另写一遍跳过逻辑。
  *
@@ -1197,8 +1168,8 @@ export function buildDualMainPlan(first, second, dragonMap) {
   // ① 两个题材【都】要 ≥ DUAL_MAIN_MIN_COUNT 只才算「双主线并存」
   if (ca < DUAL_MAIN_MIN_COUNT || cb < DUAL_MAIN_MIN_COUNT) return null;
 
-  const ra = _calcOpenRate(first);
-  const rb = _calcOpenRate(second);
+  const ra = _calcTopicOpenRate(first);
+  const rb = _calcTopicOpenRate(second);
   // §10：高开率未知 ⇒ 无从比较 ⇒ 不适用（绝不拿 null 当 0% 去比）
   if (ra.rate === null || rb.rate === null) return null;
 
@@ -1208,8 +1179,8 @@ export function buildDualMainPlan(first, second, dragonMap) {
   const rw = isSecondWin ? rb : ra;
   const rl = isSecondWin ? ra : rb;
 
-  const rateTextW = _openRateText(rw);
-  const rateTextL = _openRateText(rl);
+  const rateTextW = _topicOpenRateText(rw);
+  const rateTextL = _topicOpenRateText(rl);
   const why = '两个题材都 ≥ ' + DUAL_MAIN_MIN_COUNT + ' 只（' + winner.topic + ' ' + winner.count +
     ' 只 / ' + loser.topic + ' ' + loser.count + ' 只）→ 只有一个能活下来，比【竞价高开率】：' +
     winner.topic + ' ' + rateTextW + '　＞　' + loser.topic + ' ' + rateTextL;

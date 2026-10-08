@@ -68,6 +68,13 @@ import {
   SELL_TEN_MIN_PROFIT_PCT,
   // [DRAGON-WEAK 2026-10-09 用户口径 · 宝鼎科技 8/19] 龙一竞价大跌 + 占比不达标 ⇒ 中军也跟龙竞价卖
   DRAGON_WEAK_AUC_PCT_MAX,
+  // [DRAGON-STRONG-GATE 2026-10-09 用户口径 · 大亚圣象 10/8] 【龙一强 ⇒ 尾盘卖】的收紧：
+  //   占比达标之外还要【龙一竞价涨幅 > 3%】或【题材竞价高开率 > 35%】（⛔ 两个都严格大于）。
+  //   判据函数 / 高开率取数也一并 import —— 用例直接钉住【唯一那一份实现】，⛔ 不在测试里重写一遍。
+  DRAGON_STRONG_AUC_PCT_MIN,
+  TOPIC_HIGH_OPEN_RATE_MIN,
+  _dragonStrongEnough,
+  _calcTopicOpenRate,
   // [SELL-LIMIT-UP 2026-10-07 用户口径] 竞价一字涨停 ⇒ 竞价就走、落袋为安
   SELL_LIMIT_UP_TAG,
   SELL_ACTION_TONE_LIMIT_UP,
@@ -1675,8 +1682,10 @@ describe('★ 9/7 我爱我家（今日龙一）：占比差一点点 + 量比�
     //   龙一「龙头票」占比 5.0%【达标】⇒ 命中新档【龙一强 ⇒ 尾盘卖】
     //   ⇒ 中军二拿到的是【尾盘卖】，⛔ 仍然【不是】本档（【10分钟时卖】）——
     //     本档的验证点是「十分钟档只认龙一」，中军在任何情况下都拿不到【10分钟时卖】。
+    // ⚠️ 2026-10-09 再收紧：龙一还要【竞价涨幅 > 3%】或【题材高开率 > 35%】才算「真强」
+    //   ⇒ 桩数据里龙一改成竞价 +5%（满足条件 A），本用例的验证点（十分钟档只认龙一）不变。
     const rows = [
-      R('龙头票', 'T1', 50, -0.5, 1, 5.0, VR_DIR_UP),      // 龙一占比达标 ⇒ 不触发跟龙
+      R('龙头票', 'T1', 50, 5, 1, 5.0, VR_DIR_UP),        // 龙一占比达标 + 涨幅 > 3% ⇒ 真的强
       R('中军二', 'T1', 40, -0.5, 1, 1.2, VR_DIR_UP),
       R('中军三', 'T1', 30, 0.5, 1, 3.0)
     ];
@@ -1685,6 +1694,16 @@ describe('★ 9/7 我爱我家（今日龙一）：占比差一点点 + 量比�
     expect(m.dragonRank).toBe(2);
     expect(m.sellActionTag).toBe(SELL_LATE_TAG);              // 龙一强 ⇒ 尾盘卖（新档）
     expect(m.sellActionTag).not.toBe(SELL_TEN_MIN_TAG);       // ⛔ 十分钟档只认龙一
+    // A/B 对照（2026-10-09 收紧后的口径）：唯一区别 = 龙一竞价涨幅由 +5% 改成 -0.5%（≤ 3%），
+    //   且本题材高开率 1/3 = 33.3% ≤ 35% ⇒ 两条强度条件都不满足 ⇒ 本档【不生效】
+    //   ⇒ 中军二落回【竞价卖】（⛔ 不再是【尾盘卖】）。
+    const weakRows = [
+      R('龙头票', 'T1', 50, -0.5, 1, 5.0, VR_DIR_UP),
+      R('中军二', 'T1', 40, -0.5, 1, 1.2, VR_DIR_UP),
+      R('中军三', 'T1', 30, 0.5, 1, 3.0)
+    ];
+    const weakPlan = sell(weakRows, { memberRows: weakRows, prevDragonNames: new Set(['别的股票']) });
+    expect(itemOf(weakPlan, '中军二').sellActionTag).toBe(SELL_OUT_TAG);
   });
 
   it('⑧-b 只认【今日龙一】（补钉）：龙一占比【不达标】⇒ 中军走【跟龙竞价卖】，也不是本档', () => {
@@ -2079,6 +2098,8 @@ describe('★ [SELL-LIMIT-UP 2026-10-07] 卖点【竞价涨停卖】', () => {
     //   唯一区别仍是「龙一【没有】一字」，但甲票（龙一）占比 5.0% 是【达标】的
     //   ⇒ 乙票拿到的是新档【尾盘卖】（龙一强 ⇒ 跟着龙一拿尾盘），
     //     ⛔ 不再是【竞价卖】。核心验证点不变：⛔ 不是【龙一字持有】。
+    // 🔴 2026-10-09 收紧后仍成立：甲票竞价涨幅传 3%（⛔ 不算条件 A —— A 要 > 3%），
+    //   但本题材只有 2 只、两只都高开（2/2 = 100% > 35%）⇒ 走【条件 B】照样算龙一强。
     const plain = sellPickOf(sell(sellRowsOf(3, '600519')), '乙票');
     expect(plain.sellActionTag).toBe(SELL_LATE_TAG);
     expect(plain.sellActionTag).not.toBe(DRAGON_YIZI_HOLD_TAG);
@@ -2261,6 +2282,10 @@ describe('★ [DRAGON-YIZI-HOLD 2026-10-08] 【龙一字持有】', () => {
 //
 // ⇒ 本档是【跟龙竞价卖】的【镜像】：那档「龙一倒了 ⇒ 跟着慌」，本档「龙一很硬 ⇒ 跟着强」。
 // ⛔ 用例全部用【A/B 对照】写法：唯一变量 = 龙一占比达不达标，其余桩数据一模一样。
+// 🔴 [DRAGON-STRONG-GATE 2026-10-09 用户口径 · 大亚圣象 10/8] 【收紧】：占比达标之外，还要
+//   「龙一真的强」（竞价涨幅 > 3% 或 题材高开率 > 35%）—— 本节用例的桩数据里龙一竞价涨幅 = +5%，
+//   ⛔ 不是随手写的：正好用来把「条件 A 通过」和「收紧后新增的门槛」两件事分开测
+//   （收紧门槛的正面 / 反面 / 边界用例见下面单独的 ★ [DRAGON-STRONG-GATE] 一节）。
 describe('★ [DRAGON-STRONG-LATE 2026-10-07] 龙一占比达标 ⇒ 中军 / 后排改【尾盘卖】', () => {
   /**
    * 8/6 AI应用的结构（六只：龙一 + 龙二 + 龙四 + 一只一字涨停的后排 + 两只凑数）：
@@ -2372,6 +2397,169 @@ describe('★ [DRAGON-STRONG-LATE 2026-10-07] 龙一占比达标 ⇒ 中军 / �
     expect(txt).toContain('中国科传');
     expect(txt).toContain('传智教育');
     expect(txt).toContain(SELL_LATE_TAG);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★ [DRAGON-STRONG-GATE 2026-10-09 用户口径 · 大亚圣象 10/8]
+//   【龙一强 ⇒ 尾盘卖】的【收紧】：占比达标【还不够】，还要「龙一真的强」
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话：「10月8日，卖点里的，大亚圣象【规则⑦】同题材【今日龙一 深物业A】竞价占比 6.4%
+//   （龙头门槛 4%（龙头容错 0.5% ⇒ 门槛 3.5%））【达标】⇒ 龙一当天【很强】，有带动性……
+//   改标【尾盘卖】……这个规则要改下。龙一占比达标，还是要竞价涨幅限制，说明是真的强。
+//   现在要求龙一竞价涨幅大于 3%，这两个条件同时满足，才说明龙一真的强，也就是跟着龙一走的话，
+//   占比大于 3.5%，竞价涨幅大于 3%，如果卖点中军或者后排占比不达标，可以尾盘卖，否则也是竞价卖。
+//   还有一种条件，龙一的占比达标，竞价涨幅可以达不到 3%，但是题材中的竞价高开率大于 35%，
+//   也算是整体题材强，尾盘卖。否则后排或者中军的票，占比不达标，也是按照原来的，竞价卖。
+//   所以大亚圣象的标签应该是竞价卖。改下卖点规则和说明。」
+//
+// ⇒ 三条判据合成两条【任一】（见 _dragonStrongEnough，§6 只此一份）：
+//     条件 A：龙一占比达标【且】龙一竞价涨幅 > 3%；
+//     条件 B：龙一占比达标【且】龙一竞价涨幅 ≤ 3%【但】题材竞价高开率 > 35%。
+//   ⛔ 两条都不成立 ⇒ 本档【不生效】⇒ 占比不达标的【中军 / 后排】照原规则【竞价卖】。
+// ⛔ 全部用例走【A/B 对照】：唯一变量 = 龙一的竞价涨幅 / 题材高开率，其余桩数据一模一样。
+describe('★ [DRAGON-STRONG-GATE 2026-10-09] 龙一占比达标 + 龙一【真的强】⇒ 才改【尾盘卖】', () => {
+  /** 题材总只数（高开率的分母 = 题材股票总数） */
+  const TOTAL = 20;
+  /**
+   * 10/8 深物业A / 大亚圣象 的结构：
+   *   · 深物业A = 龙一，占比 6.4%【达标】；
+   *   · 大亚圣象 = 中军（龙二），占比 1.7% 不达标 —— 本档的落点；
+   *   · 其余 18 只用来把题材撑到 20 只，好精确控制高开率（7/20 = 35% 那个边界）。
+   * @param {object} [o] { leaderAucPct, leaderShare, highExtra }
+   *        highExtra = 除龙一（自己就算一只高开）之外，再补几只高开
+   */
+  function gateRows(o) {
+    const c = o || {};
+    const rows = [
+      R('深物业A', 'T1', 100,
+        (c.leaderAucPct === undefined ? 0.5 : c.leaderAucPct), 100,
+        (c.leaderShare === undefined ? 6.4 : c.leaderShare), VR_DIR_UP, 5, '000011'),
+      R('大亚圣象', 'T1', 90, -0.33, 20, 1.7, VR_DIR_DOWN, -2, '000910')
+    ];
+    const highExtra = (c.highExtra === undefined) ? 0 : c.highExtra;
+    // ⚠️ 循环上界【先算好】：写成 `i < TOTAL - rows.length` 会边 push 边缩短上界（只补出 9 只）。
+    const pad = TOTAL - rows.length;
+    for (let i = 0; i < pad; i++) {
+      // 前 highExtra 只给高开（+0.3%），其余低开（-0.4%）⇒ 高开只数 = 1（龙一）+ highExtra
+      rows.push(R('填' + (i + 1), 'T1', 80 - i, (i < highExtra ? 0.3 : -0.4), 10, 1.0, VR_DIR_FLAT, 0));
+    }
+    return rows;
+  }
+  /** 卖点里按名字取一行（⛔ 找不到就抛，避免用例静默变成空测） */
+  function pickOf(plan, name) {
+    const hit = (plan || []).flatMap(g => g.items || []).find(p => p.name === name);
+    if (!hit) throw new Error('卖点里没有 ' + name);
+    return hit;
+  }
+  const sellOf = (o, name) => pickOf(sell(gateRows(o), {}), name);
+
+  it('① 10/8 大亚圣象：龙一占比 6.4% 达标，但涨幅没超过 3%、高开率 1/20 = 5% ⇒ 【竞价卖】', () => {
+    const p = sellOf({}, '大亚圣象');
+    expect(p.dragonRank).toBe(2);
+    expect(p.aucSharePass).toBe(false);            // 1.7% < 2% ⇒ 不达标
+    expect(p.sellActionTag).toBe(SELL_OUT_TAG);    // ⛔ 用户点名：应该是【竞价卖】
+    expect(p.sellActionTag).not.toBe(SELL_LATE_TAG);
+    // ⛔ 说明文字必须如实写「龙一占比【达标】、只是不够强」——
+    //   照旧文案会写成「同题材龙一也不达标」，与 6.4% 达标的事实矛盾。
+    expect(p.actionNote).toContain('深物业A');
+    expect(p.actionNote).toContain('6.4%');
+    expect(p.actionNote).toContain('达标');
+    expect(p.actionNote).toContain('真的弱了');
+  });
+
+  it('② 条件 A：龙一竞价涨幅 > 3%（+3.01%）⇒ 龙一真的强 ⇒ 【尾盘卖】', () => {
+    expect(sellOf({ leaderAucPct: 3.01 }, '大亚圣象').sellActionTag).toBe(SELL_LATE_TAG);
+    // 说明文字要点明是哪一条让它算强的（⛔ 不许只写「达标」）
+    expect(String(sellOf({ leaderAucPct: 3.01 }, '大亚圣象').actionNote))
+      .toContain('> ' + DRAGON_STRONG_AUC_PCT_MIN + '%');
+  });
+
+  it('③ A 的边界：龙一竞价涨幅【恰好】' + DRAGON_STRONG_AUC_PCT_MIN + '% ⇒ ⛔ 不算（严格大于）', () => {
+    // 恰好 3% + 高开率 1/20 = 5%（≤ 35%）⇒ 两条都不成立 ⇒ 竞价卖
+    expect(sellOf({ leaderAucPct: DRAGON_STRONG_AUC_PCT_MIN }, '大亚圣象').sellActionTag)
+      .toBe(SELL_OUT_TAG);
+  });
+
+  it('④ 条件 B：龙一涨幅没超过 3%，但题材高开率 > 35% ⇒ 整体题材强 ⇒ 【尾盘卖】', () => {
+    // 高开 = 龙一 1 只 + 补 8 只 = 9 只；9/20 = 45% > 35% ⇒ 条件 B 成立
+    const p = sellOf({ leaderAucPct: 0.5, highExtra: 8 }, '大亚圣象');
+    expect(p.sellActionTag).toBe(SELL_LATE_TAG);
+    expect(String(p.actionNote)).toContain('竞价高开 9/20 只 = 45%');
+  });
+
+  it('⑤ B 的边界：高开率【恰好】' + Math.round(TOPIC_HIGH_OPEN_RATE_MIN * 100) +
+    '%（7/20）⇒ ⛔ 不算（严格大于）', () => {
+    // 高开 = 龙一 1 只 + 补 6 只 = 7 只；7/20 = 35% ⇒ 不 > 35% ⇒ 条件 B 不成立 ⇒ 竞价卖
+    expect(sellOf({ leaderAucPct: 0.5, highExtra: 6 }, '大亚圣象').sellActionTag)
+      .toBe(SELL_OUT_TAG);
+    // 多一只（8/20 = 40%）就越过门槛 ⇒ 尾盘卖（证明差的就是这一只）
+    expect(sellOf({ leaderAucPct: 0.5, highExtra: 7 }, '大亚圣象').sellActionTag)
+      .toBe(SELL_LATE_TAG);
+  });
+
+  it('⑥ 条件 A 优先于条件 B：涨幅已 > 3% 时，高开率再低也照样【尾盘卖】', () => {
+    expect(sellOf({ leaderAucPct: 5, highExtra: 0 }, '大亚圣象').sellActionTag).toBe(SELL_LATE_TAG);
+  });
+
+  it('⑦ §10：龙一竞价涨幅【缺数据】⇒ 两条都判不了 ⇒ ⛔ 不判本档 ⇒ 【竞价卖】', () => {
+    // ⛔「没查到」绝不等于「没超过 3%」—— 否则会把「未知」当成条件 B 的前提
+    expect(sellOf({ leaderAucPct: null }, '大亚圣象').sellActionTag).toBe(SELL_OUT_TAG);
+  });
+
+  it('⑧ §10：龙一占比【缺数据】⇒ 连「达标」都不成立 ⇒ 【竞价卖】（与跟龙档对称）', () => {
+    expect(sellOf({ leaderShare: null }, '大亚圣象').sellActionTag).toBe(SELL_OUT_TAG);
+  });
+
+  it('⑨ 判据函数（§6 唯一实现）：A / B / 都不满足 / 缺数据 四种输入的各档结果', () => {
+    // 条件 A
+    expect(_dragonStrongEnough(3.01, null)).toEqual({ strong: true, via: 'aucPct' });
+    expect(_dragonStrongEnough(10, 0)).toEqual({ strong: true, via: 'aucPct' });
+    // 边界：恰好 3 不算 A，但高开率 > 35% 可以让 B 兜住
+    expect(_dragonStrongEnough(3, 0.35)).toEqual({ strong: false, via: '' });
+    expect(_dragonStrongEnough(3, 0.3500001)).toEqual({ strong: true, via: 'openRate' });
+    // 条件 B：涨幅没超过 3% + 高开率 > 35%
+    expect(_dragonStrongEnough(0.5, 0.45)).toEqual({ strong: true, via: 'openRate' });
+    expect(_dragonStrongEnough(-5, 0.45)).toEqual({ strong: true, via: 'openRate' });
+    // 都不满足（10/8 大亚圣象：涨幅 0.5% + 题材高开率 5%）
+    expect(_dragonStrongEnough(0.5, 0.05)).toEqual({ strong: false, via: '' });
+    // §10：涨幅缺数据 / 高开率未知 ⇒ 一律不强（⛔ 不猜）
+    expect(_dragonStrongEnough(null, 0.9)).toEqual({ strong: false, via: '' });
+    expect(_dragonStrongEnough(0.5, null)).toEqual({ strong: false, via: '' });
+  });
+
+  it('⑩ 高开率取数（§6 唯一实现，与买点侧 ⑧⑨ 同一份）：分母 = 题材总数，缺涨幅按未高开计', () => {
+    const rows = gateRows({ highExtra: 6 });
+    const blocks = rankDecisionTopics(rows);
+    const r = _calcTopicOpenRate(blocks[0]);
+    expect(r.total).toBe(TOTAL);
+    expect(r.highCount).toBe(7);
+    expect(r.knownCount).toBe(TOTAL);
+    expect(r.unknownCount).toBe(0);
+    expect(r.rate).toBeCloseTo(0.35, 10);
+    // 缺竞价涨幅的行【计入分母但不计入高开】（§10：缺数据 ≠ 高开）
+    const rows2 = gateRows({ highExtra: 6 });
+    rows2[3].aucPct = null;
+    rows2[4].aucPct = null;
+    const r2 = _calcTopicOpenRate(rankDecisionTopics(rows2)[0]);
+    expect(r2.total).toBe(TOTAL);
+    expect(r2.highCount).toBe(5);            // 少了两个本来是「低开」的行，高开只数不变
+    expect(r2.knownCount).toBe(TOTAL - 2);
+    expect(r2.unknownCount).toBe(2);
+    expect(r2.rate).toBeCloseTo(5 / TOTAL, 10);
+  });
+
+  it('⑪ 规则文案：写了收紧后的两条门槛、点名 10/8 大亚圣象，且常量值出现在文案里', () => {
+    const txt = sellRulesLines().join('\n');
+    expect(txt).toContain('大亚圣象');
+    expect(txt).toContain('深物业A');
+    expect(txt).toContain(String(DRAGON_STRONG_AUC_PCT_MIN));                      // 3
+    expect(txt).toContain(String(Math.round(TOPIC_HIGH_OPEN_RATE_MIN * 100)));     // 35
+    expect(txt).toContain('条件 A');
+    expect(txt).toContain('条件 B');
+    // 买点侧（一字模式）面板也共用同一份卖点条文 ⇒ 两套模式的文案必须都能看到这条
+    const leg = buildRulesLines().join('\n');
+    expect(leg).toContain('大亚圣象');
   });
 });
 
