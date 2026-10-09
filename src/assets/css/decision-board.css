@@ -617,6 +617,101 @@
             margin-left: 0;
         }
 
+        /* ---- [CHART-JUDGE 2026-10-09 用户口径] 手动「竞价图形判断」三档小选择器 ----
+           位置：买点 / 卖点的【股票行】行尾，紧跟在该行的【动作徽标 / 持有】之后。
+           语义（用户原话「颜色显著些，可能这是我作为买卖点的最终判断」）：
+             · 默认 → 中性灰（= 没做手动判断，完全按原有规则显示）；
+             · 符合 → 红（沿用全站「涨 = 红」的直觉：图好 = 会涨 ⇒ 敢买敢留）；
+             · 不符 → 绿（图差 = 会跌 ⇒ 买得保守、卖得果断）。
+           ⛔ 整枚胶囊的底 / 描边 / 外发光随当前档位变（不只高亮里面那一小块）——
+              用户要在【扫一眼】的层面上看见「这一行我下过判断」，只亮一个小方块看不见。
+           ⛔ 它【排在动作徽标之后】、用普通 margin-left 贴着它，不抢 .dcb-action 的
+              `margin-left: auto`（那个「靠右对齐」的语义一旦被抢，整行会散开）。
+           ⛔ 类名全带 dcb- 前缀：CSS 是全局的，judge-opt 这类通用名会串改其它看板。 */
+        .dcb-judge {
+            display: inline-flex;
+            align-items: stretch;
+            margin-left: 6px;
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            overflow: hidden;
+            font-size: 10px;
+            line-height: 16px;
+            white-space: nowrap;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            transition: box-shadow 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+        }
+
+        /* 左侧小标题「竞价图」：淡灰，只负责说明这枚胶囊是干什么的，不参与点击 */
+        .dcb-judge-cap {
+            padding: 1px 4px 1px 5px;
+            font-size: 9px;
+            color: #94a3b8;
+            background: #f8fafc;
+            border-right: 1px solid #e2e8f0;
+        }
+
+        .dcb-judge-opt {
+            padding: 1px 6px;
+            color: #64748b;
+            border-left: 1px solid #e2e8f0;
+            cursor: pointer;
+        }
+
+        .dcb-judge-cap + .dcb-judge-opt {
+            border-left: none;
+        }
+
+        .dcb-judge-opt:not(.on):hover {
+            background: #f1f5f9;
+        }
+
+        /* 选中的那一档：实底白字。三档底色 = 三种语义（灰 / 红 / 绿）。 */
+        .dcb-judge-opt.on {
+            color: #ffffff;
+            font-weight: 600;
+        }
+
+        .dcb-judge-opt-default.on {
+            background: #475569;
+        }
+
+        .dcb-judge-opt-ok.on {
+            background: #dc2626;
+        }
+
+        .dcb-judge-opt-bad.on {
+            background: #16a34a;
+        }
+
+        /* 当前档位 ≠ 默认 ⇒ 整个胶囊换成对应语气（底色 + 描边 + 外发光），
+           让「这一行已被我手动改过」在任何一行里都能被一眼挑出来。 */
+        .dcb-judge.dcb-judge-ok {
+            background: #fef2f2;
+            border-color: #dc2626;
+            box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.18);
+        }
+
+        .dcb-judge.dcb-judge-ok .dcb-judge-cap {
+            color: #dc2626;
+            background: #fee2e2;
+            border-right-color: #fecaca;
+        }
+
+        .dcb-judge.dcb-judge-bad {
+            background: #f0fdf4;
+            border-color: #16a34a;
+            box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.18);
+        }
+
+        .dcb-judge.dcb-judge-bad .dcb-judge-cap {
+            color: #16a34a;
+            background: #dcfce7;
+            border-right-color: #bbf7d0;
+        }
+
         /* ---- [SELL-OPEN 2026-09-29] 卖出节奏提示（按今日竞价高低开细分）----
            tone 由 Logic 层给（danger / watch / plan），CSS 只做视觉映射，⛔ 不判断档位（§21）。
            提示整行独占（flex-basis:100%），所以在 .dcb-row 里换行显示、左对齐与行首齐平。 */

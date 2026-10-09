@@ -37,6 +37,10 @@ import {
   buildRulesLines as buildLegacyRulesLines,
   isSmallRiskyTopic
 } from './decision-rules-legacy.js';
+// [CHART-JUDGE 2026-10-09 用户口径] 手动「竞价图形判断」的规则文案段（与它的映射实现同处一处，§6）。
+//   依赖方向：decision-chart-judge.js → decision-rules.js（取标签 / 配色常量），
+//   ⛔ 它【不】回头 import 本文件 ⇒ 不会构成 ESM 循环依赖。
+import { chartJudgeRulesLines } from './decision-chart-judge.js';
 
 export { MODE_VOL_RATIO, MODE_YIZI, normalizeDecisionMode };
 
@@ -114,13 +118,22 @@ export function buildBuyPlan(blocks, dragonMap, opts, mode) {
 
 /**
  * 规则面板文案（分模式）。两套模式的【卖点段】由 decision-rules.js#sellRulesLines 共用。
+ *
+ * 🔴 [CHART-JUDGE 2026-10-09 用户口径] 【手动「竞价图形判断」段放在最前面】（两套模式都放）：
+ *   用户原话「颜色显著些，可能这是我作为买卖点的最终判断。原来规则作为辅助」⇒
+ *   它是【凌驾于两套模式之上】的机制，不是某一套买点规则的一部分，所以：
+ *     · 位置 = 全文最前（点开问号第一眼看到的就是它）；
+ *     · 只加一次，不随模式变（⛔ 不是在两套买点段里各写一遍）。
+ *   ⛔ 必须【前置】而不是【追加】：decision-mode.test.js 断言
+ *     「卖点段 = 条文的最后 sellRulesLines().length 行」——追加会把卖点段挤出尾部，断言就断了。
  * @param {string} mode MODE_VOL_RATIO | MODE_YIZI
  * @returns {string[]}
  */
 export function buildRulesLines(mode) {
-  return normalizeDecisionMode(mode) === MODE_YIZI
+  const lines = normalizeDecisionMode(mode) === MODE_YIZI
     ? buildLegacyRulesLines()
     : buildVolRatioRulesLines();
+  return chartJudgeRulesLines().concat(lines);
 }
 
 /**

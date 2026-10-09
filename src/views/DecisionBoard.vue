@@ -67,6 +67,16 @@
       >
         {{ errorText }}
       </div>
+      <!-- [CHART-JUDGE 2026-10-09 用户口径] 手动「竞价图形判断」的加载 / 保存失败原文：
+           单独一块（不并进上面的 errorText）—— ① 两者可能同时存在（决策算得出来、但判断读不到）；
+           ② 这条会告诉用户「去跑 db/create_decision_chart_judge.sql」，混进决策错误里就淹了。
+           §10：读失败 ≠ 没有判断，必须红字说出来，⛔ 不能静默显示成「全部默认」。 -->
+      <div
+        v-if="chartJudgeError"
+        class="decision-error dcb-selectable"
+      >
+        {{ chartJudgeError }}
+      </div>
       <div
         v-if="!ready"
         class="decision-empty dcb-selectable"
@@ -181,6 +191,9 @@ const {
   rulesOpen,
   compactOpen,
   errorText,
+  // [CHART-JUDGE 2026-10-09 用户口径] 手动「竞价图形判断」的失败原文（红字展示；§10 失败必须可见）。
+  //   ⛔ 选择器本身不在这里渲染：它在买卖点两个块组件的【行内】（见 ChartJudgeSelect.vue）。
+  chartJudgeError,
   ready,
   reasonText,
   buyHeavy,

@@ -162,6 +162,19 @@
           v-if="p.holdTag"
           class="dcb-hold"
         >{{ p.holdTag }}</span>
+        <!-- [CHART-JUDGE 2026-10-09 用户口径] 手动「竞价图形判断」三档小选择器（默认｜符合｜不符）。
+             它【凌驾于原有规则之上】：用户看当天的竞价图形自己下判断，以他的判断为准
+             （符合 → 竞价买；不符 → 尾盘买），原有规则退为辅助 —— 详见 decision-chart-judge.js。
+             ⛔ 只在本行原标签属于【竞价买 / 尾盘买】时渲染（p.chartJudgeTarget 由 Logic 层给，
+                §21 模板零判断、⛔ 不在这里写 `=== '竞价买'` 这类比较）。特殊标签（尾盘买（先卖后买）、
+                下杀买（竞价异常）、补涨竞价买、龙一字持有）以及占比缺数据的行都【不显示】——
+                显示一枚点了不生效的选择器比不显示更误导（§10）。
+             ⛔ 落库 / 乐观更新 / 回滚全在 Logic 层（board.setChartJudge），组件只把值抛上去。 -->
+        <ChartJudgeSelect
+          v-if="p.chartJudgeTarget"
+          :judge="p.chartJudge"
+          @change="(v) => setChartJudge(p.name, v)"
+        />
         <!-- [SHARE-RULE 2026-10-03 用户口径] 逐行【说明文字】：这一只为什么是竞价买 / 尾盘买 ——
              写清占比数值、龙头 / 其余门槛来源、以及作为辅助的竞价涨幅与量比方向。
              文案整段由 Logic 层给（p.actionNote，§21 模板零计算），⛔ 组件不拼规则句子。 -->
@@ -230,6 +243,8 @@
 <script setup>
 import { inject } from 'vue';
 import DecisionTopicHead from './DecisionTopicHead.vue';
+// [CHART-JUDGE 2026-10-09 用户口径] 手动「竞价图形判断」三档选择器（买点 / 卖点两个块共用这一个组件）。
+import ChartJudgeSelect from './ChartJudgeSelect.vue';
 // [VRATIO-TREND 2026-10-01] 曲线组件复用既有 TrendChart（纯声明式 SVG：无图表实例、无 dispose 生命周期问题）。
 import TrendChart from '../TrendChart.vue';
 import { formatRangePct } from '../../logic/decision/decision-rules.js';
@@ -243,8 +258,10 @@ defineProps({
 
 // [VRATIO-TREND 2026-10-01] 与 DecisionBoard.vue 共用同一个 board 实例（provide / inject）：
 //   展开态只有一份，本组件不新建状态、不复制一份 board（§6 单一真相 / §34 状态靠近使用它的模块）。
+// [CHART-JUDGE 2026-10-09] setChartJudge 同样从这一份 board 取 —— ⛔ 本组件不直接碰 Data 层
+//   （UI → Logic → Data，§2；落库 / 乐观更新 / 回滚都在 logic/decision/decision-chart-judge-store.js）。
 const board = inject('decisionBoard');
-const { trendOpenSet, toggleTrend } = board;
+const { trendOpenSet, toggleTrend, setChartJudge } = board;
 
 /** 序号 / 股票名的悬停提示（纯文案常量，避免模板里写死字符串两处不一致） */
 const trendTip = '点击展开 / 收起「竞价量比」近 5 日走势';

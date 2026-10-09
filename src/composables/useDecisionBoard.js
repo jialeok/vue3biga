@@ -4,17 +4,24 @@
 //   views/DecisionBoard.vue（模板）→ 本文件（UI 状态 + 触发重算的时机）
 //     → logic/decision/decision-collect.js（读内存真相、组装 entries）
 //     → logic/decision/decision-rules.js（纯规则，可单测）
-//   ⛔ 本文件不发请求、不写库、不消费猫抓额度；⛔ 不复用任何其它看板的组件或组合式。
+//   ⛔ 本文件【不抓数据、不消费猫抓额度】；⛔ 不复用任何其它看板的组件或组合式。
+//   ⚠️ [CHART-JUDGE 2026-10-09 用户口径] 唯一例外 = 手动「竞价图形判断」：
+//      那是【用户自己输入 + 要持久化】的业务数据（§8 必须上云），不属于「抓数据」。
+//      但本文件【依然不直接发请求】—— 读写与状态都在 logic/decision/decision-chart-judge-store.js，
+//      本文件只负责「什么时候加载 / 什么时候订阅 / 出错怎么说给用户听」这三件 UI 时机的事
+//      （与 useLimitBoard → logic/limitpool/limit-pool.js 同一分工）。
 //
-// §34：expanded / rulesOpen 都是纯展示态 —— 不落 localStorage（§8）、不进全局 store（§6）。
+// §34：expanded / rulesOpen 是纯展示态 —— 不落 localStorage（§8）、不进全局 store（§6）。
+//      ⚠️ 手动判断【不是】展示态：它要跨设备同步，所以进 Logic 层状态 + Supabase（见上）。
 // §17：数据刷新（抓取 / 导入 / 收盘覆盖）后要跟着更新，因此监听事件总线 auction-refresh。
 
-import { ref, computed, watch, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useUiStore } from '../stores/uiStore.js';
 // ⛔ [DROP-VOL-RATIO-PICK 2026-10-07] useAuctionStore 的 import 已删：本看板不再读 topicOrderBy
 //   （模式恒为一字）。早盘竞价那份 store 不受影响，它照旧读写同一格。
 import { _on, _off } from '../stores/eventBus.js';
 import { collectDecisionData } from '../logic/decision/decision-collect.js';
+import { showWarningToast } from './useToast.js';
 // 🔴 [DROP-VOL-RATIO-PICK 2026-10-07 用户口径] 决策看板【只用一字选股】，「题材·竞价量比」选股已下线。
 //   用户原话：「把决策看板中的那个题材，竞价量比选股去掉，这个没有用准确率不高，还会误导，去掉后更加清晰。」
 //   ⇒ ① decisionMode 恒为 MODE_YIZI（⛔ 不再读 store 的 topicOrderBy、不再受早盘竞价 toggle 影响）；
@@ -23,6 +30,16 @@ import { collectDecisionData } from '../logic/decision/decision-collect.js';
 //     日后要恢复，只需把 decisionMode 改回 resolveDecisionMode(store 那一格) 即可。
 //   ⚠️ MODE_YIZI 仍从 decision-mode.js 取（§6：模式常量只有一处定义，⛔ 别在 UI 层写字面量）。
 import { buildRulesLines, MODE_YIZI } from '../logic/decision/decision-mode.js';
+// [CHART-JUDGE 2026-10-09 用户口径] 手动「竞价图形判断」：① 纯映射（把判断套到标签上）
+//   ② 状态 + 加载 / 保存 / 订阅。两处都归 Logic 层，本文件不实现任何映射规则（§6 / §21）。
+import { applyChartJudge } from '../logic/decision/decision-chart-judge.js';
+import {
+  chartJudgeState,
+  loadChartJudge,
+  saveChartJudge,
+  startChartJudgeRealtime,
+  stopChartJudgeRealtime
+} from '../logic/decision/decision-chart-judge-store.js';
 
 /** §10：任何一次计算失败都要【可见】，绝不静默成「今天没有信号」 */
 function _empty(reason) {
@@ -89,11 +106,18 @@ export function useDecisionBoard() {
 
   const data = computed(function() {
     void version.value;               // 显式声明对刷新信号的依赖
+    // [CHART-JUDGE 2026-10-09 用户口径] 显式声明对【手动竞价图形判断】的依赖：
+    //   判断一变（用户点了一下 / Realtime 从别的设备推过来）⇒ 整块决策重算一次，
+    //   标签与说明文字立刻跟着变。⛔ 不用 watch 去「顺便改标签」——那是第二份真相（§6）。
+    void chartJudgeState.map;
     const d = currentDate.value;
     if (!d) return _empty('未选择日期');
     try {
       // [TWO-MODES 2026-10-02] 把当前模式传下去 —— 题材排名、买点规则、连板天梯采集全部跟着它走
-      return collectDecisionData(d, { mode: decisionMode.value });
+      const decided = collectDecisionData(d, { mode: decisionMode.value });
+      // [CHART-JUDGE 2026-10-09] 最后一步：把用户手动判断覆盖到标签上（默认档一个字节都不动）。
+      //   原地写回（collect 每次都返回全新对象，见 applyChartJudge 的注释）。
+      return applyChartJudge(decided, chartJudgeState.map);
     } catch (e) {
       // §10：计算失败必须可见，绝不能返回「空结果」伪装成「今天没有信号」
       errorText.value = '决策计算失败：' + (e && e.message ? e.message : String(e));
@@ -184,21 +208,118 @@ export function useDecisionBoard() {
   /** 供规则面板自己上报开合（子组件无内部状态，开合真相在 composable 里，§6） */
   function setRulesOpen(v) { rulesOpen.value = !!v; }
 
-  /** 供父级在「刷新」时调用（与早盘竞价 / 涨跌停看板同款契约：defineExpose({ refresh })） */
-  function refresh() { version.value++; errorText.value = ''; }
+  /**
+   * 只重算决策（不碰手动判断）—— 供【事件总线的高频刷新】用。
+   *
+   * ⚠️ [CHART-JUDGE 2026-10-09] 为什么要把这条从 refresh() 里拆出来：
+   *   `auction-refresh` 是【高频事件】—— 早盘 9:25 前后 auction_watchlist / market_metrics 的
+   *   每一次 Realtime 变化都会经 useAppBootstrap 转成它（还叠加 morning-sync / auction-sync-pull /
+   *   算分流程各自的 emit）。若顺手在里面读一次「竞价图形判断」，就变成「行情每动一下都去云端
+   *   读一遍用户的手动判断」—— 那份数据跟行情毫无关系，一秒也不会变（§32 相同数据不得重复请求）。
+   */
+  function bumpVersion() {
+    version.value++;
+    errorText.value = '';
+  }
+
+  /**
+   * 供父级在「刷新」时调用（与早盘竞价 / 涨跌停看板同款契约：defineExpose({ refresh })）。
+   * [CHART-JUDGE 2026-10-09] 这条是【用户主动】触发的低频路径，才顺带重读手动判断 ——
+   *   用户「刚在 Supabase 里建好建表 SQL」时点一下刷新就能立刻用上，不必整页重载。
+   */
+  function refresh() {
+    bumpVersion();
+    reloadChartJudge();
+  }
+
+  // ══ [CHART-JUDGE 2026-10-09 用户口径] 手动「竞价图形判断」的 UI 时机 ══════════════════════════
+  // 本文件只做三件事：① 什么时候加载；② Realtime 通知后重载；③ 失败了怎么让用户知道。
+  // 判断值本身、标签映射（符合 ⇒ 竞价买 / 不符 ⇒ 尾盘买）、乐观更新与回滚，
+  // 全在 Logic 层（logic/decision/decision-chart-judge*.js），⛔ 本文件一行都不实现（§6 / §21）。
+  // §8：判断值存 Supabase（跨设备），⛔ 不用 localStorage 兜。
+
+  /** 错误原文（看板红字直接用；§10 失败必须可见，⛔ 不静默） */
+  const chartJudgeError = computed(() => chartJudgeState.error);
+
+  // 同一条错只弹一次 toast：表没建时「切日期 / 收到实时通知」会反复触发加载，
+  // 每次都弹会让用户以为出了一堆不同的错（§10 要的是「可见」，不是「刷屏」）。
+  let _lastJudgeToast = '';
+
+  function _judgeFailToast(e) {
+    const msg = chartJudgeState.error || ('竞价图形判断加载失败：' + ((e && e.message) || e));
+    if (msg === _lastJudgeToast) return;
+    _lastJudgeToast = msg;
+    showWarningToast('❌ ' + msg);
+  }
+
+  /** 重新加载当日判断（首次进入 / 日期切换 / 看板刷新 / Realtime 通知共用这一条路径） */
+  function reloadChartJudge() {
+    return loadChartJudge(currentDate.value).catch(function(e) {
+      _judgeFailToast(e);
+    });
+  }
+
+  /**
+   * 用户点了选择器某一档 → 落库。
+   * §10：保存失败必须【看得见】，并且屏上的值要【回滚】（回滚本身在 Logic 层做，这里负责说清楚）。
+   * ⛔ 映射规则不在这里实现：本函数只把 (股票名, 档位) 交给 Logic，标签怎么变由映射表决定。
+   *
+   * @param {string} name 股票名
+   * @param {string} judge 'default' | 'ok' | 'bad'
+   * @returns {Promise<void>} 已捕获错误（UI 不因未处理的 rejection 打断渲染）
+   */
+  function setChartJudge(name, judge) {
+    if (!currentDate.value) {
+      showWarningToast('未选择日期，无法保存「竞价图形判断」');
+      return Promise.resolve();
+    }
+    return saveChartJudge(currentDate.value, name, judge).then(function() {
+      // 保存成功 → 清掉上一次的失败提示（用户接着操作时不该还看到旧错误）
+      chartJudgeState.error = '';
+      _lastJudgeToast = '';
+    }, function(e) {
+      const msg = chartJudgeState.error || ('竞价图形判断保存失败：' + ((e && e.message) || e));
+      _lastJudgeToast = msg;
+      showWarningToast('❌ ' + msg + '（已还原为改之前的值）');
+    });
+  }
+
+  /** Realtime：别的设备 / 别的标签页改了判断 → 重载（§31 跨设备）。本端自己的保存已在屏上（乐观更新）。 */
+  function _onChartJudgeRealtime(payload) {
+    if (!payload || !payload.boards || payload.boards === 'all' || payload.boards === 'chartjudge') {
+      reloadChartJudge();
+    }
+  }
+
+  onMounted(function() {
+    // §33 首次加载：进来读一次当日判断 + 建立订阅（§31 subscribe 只建一次，onUnmounted 成对清理）
+    reloadChartJudge();
+    startChartJudgeRealtime();
+  });
 
   // §26 日期切换 → 规则面板收起（新的一天是全新的结论，旧展开态会误导）
   // [VRATIO-TREND 2026-10-01] 同理把「竞价量比」趋势面板一并收起 —— 换了日期整条曲线都换了，
   //   留着展开态只会让人拿新日期的图去对旧结论。
+  // [CHART-JUDGE 2026-10-09] 手动判断也是【按日期】的 ⇒ 换日期必须重读（⛔ 不能把 A 日的判断留在 B 日屏上）。
   watch(currentDate, function() {
     rulesOpen.value = false;
     errorText.value = '';
     trendOpenSet.value = new Set();
+    _lastJudgeToast = '';
+    reloadChartJudge();
   });
 
-  const _onRefresh = function() { refresh(); };
+  // ⛔ [CHART-JUDGE 2026-10-09] 事件总线这条走 bumpVersion【而不是 refresh】：见 bumpVersion 的注释
+  //   —— auction-refresh 是高频事件，而手动判断与行情无关，绝不能跟着一起读云端（§32）。
+  const _onRefresh = function() { bumpVersion(); };
   _on('auction-refresh', _onRefresh);
-  onUnmounted(function() { _off('auction-refresh', _onRefresh); });
+  _on('data:realtime-update', _onChartJudgeRealtime);
+  onUnmounted(function() {
+    _off('auction-refresh', _onRefresh);
+    _off('data:realtime-update', _onChartJudgeRealtime);
+    // §31 配对清理：本看板持有的 channel 由本看板关掉（⛔ 不留给下一个页面）
+    stopChartJudgeRealtime();
+  });
 
   return {
     expanded,
@@ -214,6 +335,13 @@ export function useDecisionBoard() {
     // [VRATIO-TREND 2026-10-01] 竞价量比趋势面板的展开态与开关（由 DecisionBoard.vue provide 给买卖点两个块组件）
     trendOpenSet,
     errorText,
+    // [CHART-JUDGE 2026-10-09 用户口径] 手动「竞价图形判断」对外的两个口子：
+    //   · chartJudgeError —— 加载 / 保存失败的原文（看板红字用；§10 失败必须可见）
+    //   · setChartJudge   —— 用户在行内选择器上点某一档时调用（落库 + 乐观更新 + 失败回滚都在 Logic 层）
+    //   ⛔ 不把整份 chartJudgeState 抛出去：组件只该知道「这一行的当前档位」（已由行数据给出），
+    //      拿到整张 map 会诱导组件自己去查名字 → 又一处口径（§6 单一真相）。
+    chartJudgeError,
+    setChartJudge,
     data,
     ready,
     reasonText,

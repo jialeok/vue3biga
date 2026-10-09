@@ -151,6 +151,19 @@
           class="dcb-sell-at"
           :class="it.sellHint ? ('tone-' + it.sellHint.tone) : ''"
         >{{ it.sellHint ? it.sellHint.timeLabel : (it.sellAt + '卖') }}</span>
+        <!-- [CHART-JUDGE 2026-10-09 用户口径] 手动「竞价图形判断」三档小选择器（默认｜符合｜不符）。
+             卖点口径：符合 → 尾盘卖（图好 = 当天走势好，尾盘获利更高）；不符 → 竞价卖（果断出局）；
+             默认 → 完全按原有规则的标签。原有规则退为辅助 —— 详见 decision-chart-judge.js。
+             ⛔ 只在本行原标签属于【竞价卖 / 尾盘卖】时渲染（it.chartJudgeTarget 由 Logic 层给，
+                §21 模板零判断）。持有 / 10分钟时卖 / 跟龙竞价卖 / 竞价涨停卖 / 竞价卖（先卖后买）
+                以及占比缺数据的行都【不显示】—— 显示一枚点了不生效的选择器比不显示更误导（§10）。
+             ⚠️ 它【在 v-if/v-else-if 链之外】：不能塞进那条链里，否则会顶掉行尾时点那个 v-else。
+             ⛔ 落库 / 乐观更新 / 回滚全在 Logic 层（board.setChartJudge），组件只把值抛上去。 -->
+        <ChartJudgeSelect
+          v-if="it.chartJudgeTarget"
+          :judge="it.chartJudge"
+          @change="(v) => setChartJudge(it.name, v)"
+        />
         <!-- [SHARE-RULE 2026-10-03 用户口径] 逐行【说明文字】：这一只为什么是尾盘卖 / 竞价卖 / 持有 ——
              写清占比数值、龙头 / 其余门槛来源、以及作为辅助的竞价涨幅与量比方向。
              文案整段由 Logic 层给（it.actionNote，§21 模板零计算），⛔ 组件不拼规则句子。 -->
