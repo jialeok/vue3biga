@@ -5,7 +5,9 @@
     第一行：题材名称  ●1（实心红圆点 = 题材排名）  数量：n  竞价一字：n  [昨有买入] [N 次入选]
             ← 一行挤完，省空间；末两个标记见 DecisionTopicHead 的注释（题材级，买点侧专有）
     第二行：选择理由：题材排第一，股票数量n只，m个竞价一字
-    第三行起：序号  股票名称  [创业板/科创板风险极高] （龙几）  十日涨幅  竞价涨幅（红底/绿底/灰底小徽标）
+    第三行起：序号  股票名称  [创业板/科创板风险极高] （龙几 ±n）  十日涨幅  竞价涨幅（红底/绿底/灰底小徽标）
+              ← [DRAGON-RANK-CHANGE 2026-10-09 用户口径] 龙标右边的 ±n = 题材内名次的【昨日→今日变化】
+                （'+3' 上升红 / '-2' 下降绿，只改文字颜色、不加底色；无可比时不显示，见下）
               竞价量比（小徽标，紧跟在竞价涨幅右边；标签内右侧带 ↑/↓ 箭头 = 与上一交易日相比的方向，
                         增强红底 / 下降绿底 / 基本平或数据不全 = 靛蓝底不带箭头，[VR-COMPARE 2026-10-02]）
               重仓 / 轻仓 / 持有   [竞价买] [尾盘买] [先卖后买] [下杀买（竞价异常）]
@@ -88,6 +90,18 @@
           v-if="p.dragonLabel"
           class="dcb-dragon"
         >{{ p.dragonLabel }}</span>
+        <!-- [DRAGON-RANK-CHANGE 2026-10-09 用户口径] 龙标旁边的【名次变化】：'+3' 上升（红）/
+             '-2' 下降（绿），数字永远带符号、⛔ 不加底色（用户原话「数字前有加减号，不用背景色，
+             上升用红色，下降用绿色」）。
+             文案 / 配色档 / 悬停说明全部由 Logic 层给（p.dragonDeltaText / Tone / Title，§21 模板零计算）。
+             §10：昨日龙位未就绪、昨今不在同一题材、或名次没变 ⇒ Logic 给空串 ⇒ 整个徽标不渲染
+             （⛔ 绝不显示成 0 / '--' —— 那会被读成「名次没变」，而它其实是「不知道」）。 -->
+        <span
+          v-if="p.dragonDeltaText"
+          class="dcb-dragon-delta"
+          :class="'dcb-dragon-delta-' + p.dragonDeltaTone"
+          :title="p.dragonDeltaTitle"
+        >{{ p.dragonDeltaText }}</span>
         <span class="dcb-pct">{{ pctText(p.pct) }}</span>
         <!-- [AUC-BADGE 2026-09-29] 竞价涨幅徽标：与【卖点】完全同款（同一个 .dcb-auc 类、同一份
              formatAucPct + getAucOpenKind），金额与配色都在 Logic 层算好（§21 模板零计算）。

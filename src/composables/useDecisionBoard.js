@@ -40,6 +40,11 @@ import {
   startChartJudgeRealtime,
   stopChartJudgeRealtime
 } from '../logic/decision/decision-chart-judge-store.js';
+// [DRAGON-RANK-CHANGE 2026-10-09 用户口径] 龙标旁边的【名次变化】徽标要一份历史数据
+//   （前一交易日的十日涨幅 → 昨日龙位）。本文件只负责【什么时候去取】（§34）；
+//   取数 / 计算 / 发布全在 Logic 层（logic/decision/dragon-rank-change-store.js）。
+//   ⛔ 依赖方向：composable → store → collect → dragon-rank-change（纯映射），单向，无循环。
+import { ensurePrevDragonRank } from '../logic/decision/dragon-rank-change-store.js';
 
 /** §10：任何一次计算失败都要【可见】，绝不静默成「今天没有信号」 */
 function _empty(reason) {
@@ -230,6 +235,9 @@ export function useDecisionBoard() {
   function refresh() {
     bumpVersion();
     reloadChartJudge();
+    // [DRAGON-RANK-CHANGE 2026-10-09] 用户主动刷新时也顺带补一次昨日龙位
+    //   （store 已算好 / 次数用尽时是 no-op，不会重复请求）
+    reloadPrevDragonRank();
   }
 
   // ══ [CHART-JUDGE 2026-10-09 用户口径] 手动「竞价图形判断」的 UI 时机 ══════════════════════════
@@ -257,6 +265,18 @@ export function useDecisionBoard() {
     return loadChartJudge(currentDate.value).catch(function(e) {
       _judgeFailToast(e);
     });
+  }
+
+  // ══ [DRAGON-RANK-CHANGE 2026-10-09 用户口径] 「龙标名次变化」的 UI 时机 ════════════════════════
+  // 本文件同样只决定【什么时候去取】：名次差怎么算、昨日龙位从哪来、失败怎么办，
+  // 全在 logic/decision/dragon-rank-change*.js（§6 / §21）。⛔ 本文件一行都不实现。
+  // §10：取不到就是【不显示徽标】（不猜、也不弹错）—— 它是行情派生的辅助项，不是用户输入的东西；
+  //      失败原因由 store 用 console.warn 如实留痕，不占用看板红字（那是留给真正要用户处理的问题的）。
+  // §32：这里是【后台补数】，store 内部有单飞 + 冷却 + 次数上限（见该文件 MAX_ATTEMPTS），
+  //      所以即使挂在高频事件上也不会变成「行情每动一下就多读一次云端」。
+  // §17：不 await（不阻塞渲染）—— 算好之后靠 dragonRankChangeState 换引用自动重算。
+  function reloadPrevDragonRank() {
+    return ensurePrevDragonRank(currentDate.value, decisionMode.value);
   }
 
   /**
@@ -295,6 +315,10 @@ export function useDecisionBoard() {
     // §33 首次加载：进来读一次当日判断 + 建立订阅（§31 subscribe 只建一次，onUnmounted 成对清理）
     reloadChartJudge();
     startChartJudgeRealtime();
+    // [DRAGON-RANK-CHANGE 2026-10-09] 首次进入补一次【前一交易日龙位表】。
+    //   ⚠️ 它可能比首屏的「近 30 天竞价窗口」更早跑完 —— 那种情况下这次会失败（名单未就绪），
+    //      由下面的 auction-refresh 分支在数据到货后自动重试（§10：未就绪 ≠ 没有）。
+    reloadPrevDragonRank();
   });
 
   // §26 日期切换 → 规则面板收起（新的一天是全新的结论，旧展开态会误导）
@@ -307,11 +331,21 @@ export function useDecisionBoard() {
     trendOpenSet.value = new Set();
     _lastJudgeToast = '';
     reloadChartJudge();
+    // [DRAGON-RANK-CHANGE 2026-10-09] 换了展示日 ⇒ 「前一交易日」也换了 ⇒ 必须重新取一份龙位表
+    //   （store 内部会先清空上一天的名次，避免把更早一天的名次当成「昨天」算出一个假的变化值）。
+    reloadPrevDragonRank();
   });
 
   // ⛔ [CHART-JUDGE 2026-10-09] 事件总线这条走 bumpVersion【而不是 refresh】：见 bumpVersion 的注释
   //   —— auction-refresh 是高频事件，而手动判断与行情无关，绝不能跟着一起读云端（§32）。
-  const _onRefresh = function() { bumpVersion(); };
+  const _onRefresh = function() {
+    bumpVersion();
+    // [DRAGON-RANK-CHANGE 2026-10-09] 首屏「近 30 天竞价窗口」到货后会发 auction-refresh ——
+    //   这正是「onMounted 那次抢跑了」之后的自愈时机。⚠️ 它是【高频事件】，
+    //   所以 store 内部有单飞 + 8 秒冷却 + 每日 8 次上限（§32），这里放心调用：
+    //   已算好 / 冷却中 / 次数用尽 ⇒ 立即返回，一次请求都不会发。
+    reloadPrevDragonRank();
+  };
   _on('auction-refresh', _onRefresh);
   _on('data:realtime-update', _onChartJudgeRealtime);
   onUnmounted(function() {

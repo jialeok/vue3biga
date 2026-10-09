@@ -65,6 +65,14 @@ import {
 //   ⛔ 公式 / 门槛 / 展示精度 / 取数的唯一实现在 auction-share.js；本文件只负责【调一次并挂到行上】（§6）。
 //   §10：取不到（缺数据 / 昨日成交量为 0）→ null ⇒ 规则层回落旧口径，绝不补 0。
 import { getAuctionShare } from './auction-share.js';
+// [DRAGON-RANK-CHANGE 2026-10-09 用户口径] 龙标旁边的【名次变化】徽标（昨日龙几 → 今日龙几）。
+//   本文件只负责【把字段挂到每一行上】（与竞价量比同一处遍历收口，§6）；名次差怎么算、
+//   前一交易日的名次从哪来，全在 dragon-rank-change.js（纯映射）/ dragon-rank-change-store.js（取数）。
+//   ⛔ 依赖方向是单向的：collect → dragon-rank-change；反向 import 会构成 ESM 循环依赖
+//      （dragon-rank-change-store 要 import 本文件的 collectDragonRankMap），所以状态与纯映射
+//      必须单独一个文件，见 dragon-rank-change.js 文件头。
+//   ⚠️ 本文件同时要读【前一交易日龙位表】这个状态单例（st.date / st.map），一并 import。
+import { applyDragonRankChange, dragonRankChangeState } from './dragon-rank-change.js';
 
 function _notReady(reason) {
   return {
@@ -150,6 +158,40 @@ function _buyPlanNames(buy) {
 }
 
 /**
+ * 【买点 / 卖点 · 全部行遍历的唯一实现（§6）】
+ *
+ * 覆盖：买点的 heavy（第 1 名）/ light（第 2 名）/ candidates[]（候选题材）/ 三个兜底槽位
+ *       （noYizi / smallTopic / bigTopic —— 它们是 `{blocks:[...]}` 形状，见 _buyBlocksOf 注释）
+ *       ＋ 卖点的每一组 items。
+ *
+ * 🔴 [DRAGON-RANK-CHANGE 2026-10-09] 为什么要把遍历抽出来（而不是各自写一遍 forEach）：
+ *   在这之前只有「竞价量比装饰」一处需要逐行挂字段，所以遍历内联在它里面没问题。
+ *   现在「龙标名次变化」是第二处 —— 若各自写一份遍历，日后【新增一个买点档位】（历史上发生过：
+ *   candidates 是 2026-10-02 才加的、兜底槽位改过三回）就必然漏掉其中一处，
+ *   表现为「行照常显示，但某个新档位的票没有量比 / 没有名次变化」这种极难自查的隐性缺项。
+ *   ⇒ 遍历只此一份，两个装饰器共用（口径一致性靠结构保证，而不是靠人记得改两处）。
+ *
+ * ⛔ 只做遍历，不做任何业务判断、不挂任何字段 —— 挂什么由各装饰器自己决定。
+ *
+ * @param {object} buy  buildBuyPlan 的返回（可为 null）
+ * @param {Array} sell  buildSellPlan 的返回（可为 null）
+ * @param {(row:object)=>void} fn 逐行回调（行 = 买点 pick / 卖点 item）
+ */
+function _eachRow(buy, sell, fn) {
+  if (buy) {
+    _buyBlocksOf(buy).forEach(function(b) {
+      (b.picks || []).forEach(fn);
+      (b.blocks || []).forEach(function(bb) {
+        (bb.picks || []).forEach(fn);
+      });
+    });
+  }
+  (sell || []).forEach(function(g) {
+    (g.items || []).forEach(fn);
+  });
+}
+
+/**
  * [VRATIO-TREND 2026-10-01 用户口径] 给买点 / 卖点的每一行挂上「竞价量比（auc_vol_ratio）」：
  *   · `volRatioText`     行内徽标文案（如「量比 2.18」；缺值 → 空串 ⇒ 模板不渲染，§10）
  *   · `volRatioTrend`    近 5 个交易日的点集（喂 TrendChart，点开行才画）
@@ -157,8 +199,7 @@ function _buyPlanNames(buy) {
  *
  * 为什么在这里收口（而不是在 decision-rules 里逐处构造）：
  *   · 规则文件是纯函数、不许读 state；竞价量比必须读内存真相（Data 层只读选择器）；
- *   · 买点有 5 个档（heavy/light + noYizi/smallTopic/bigTopic 的 blocks）、卖点有 N 组，
- *     若在每个构造点各补一次，日后加档位必漏 —— 这里【一处遍历收口】，与 _buyPlanNames 同一范式。
+ *   · 买点有 5 个档、卖点有 N 组，若在每个构造点各补一次，日后加档位必漏 —— 这里【一处遍历收口】。
  *
  * ⛔ 只挂展示字段，不改任何选票结论；⛔ 不发请求（近 30 自然日已在内存缓存里，§32）。
  *
@@ -168,16 +209,32 @@ function _buyPlanNames(buy) {
  */
 function _decorateVolRatioTrend(buy, sell, date) {
   if (!date) return;
-  if (buy) {
-    _buyBlocksOf(buy).forEach(function(b) {
-      (b.picks || []).forEach(function(p) { decorateVolRatioFields(p, date, VOL_RATIO_TREND_DAYS); });
-      (b.blocks || []).forEach(function(bb) {
-        (bb.picks || []).forEach(function(p) { decorateVolRatioFields(p, date, VOL_RATIO_TREND_DAYS); });
-      });
-    });
-  }
-  (sell || []).forEach(function(g) {
-    (g.items || []).forEach(function(it) { decorateVolRatioFields(it, date, VOL_RATIO_TREND_DAYS); });
+  _eachRow(buy, sell, function(row) {
+    decorateVolRatioFields(row, date, VOL_RATIO_TREND_DAYS);
+  });
+}
+
+/**
+ * [DRAGON-RANK-CHANGE 2026-10-09 用户口径] 给买点 / 卖点的每一行挂上【龙标名次变化】：
+ *   · `dragonDeltaText`  徽标文案（'+3' / '-2'；无可比 → 空串 ⇒ 模板不渲染，§10）
+ *   · `dragonDeltaTone`  配色档（'up' 上升红 / 'down' 下降绿；空串 = 不渲染）
+ *   · `dragonDeltaTitle` 悬停说明（写清「昨日龙三 → 今日龙一（上升 2 个名次）」）
+ *
+ * 数据来自【前一交易日】的龙位表（dragon-rank-change-state，由 dragon-rank-change-store 异步备好）。
+ * §10：它还没备好 / 对不上日期 ⇒ 传 null ⇒ 全行空串 ⇒ 一枚徽标都不显示（⛔ 绝不猜）。
+ * ⚠️ prevDate 由本函数自己算（与主流程同一个 getPreviousTradingDay），并【比对表上的日期】——
+ *    只有 date 正好等于「今天的上一交易日」才用它，否则会拿更早一天的名次算出一个假的变化值。
+ *
+ * @param {object} buy  buildBuyPlan 的返回
+ * @param {Array} sell  buildSellPlan 的返回
+ * @param {string} prevDate 上一交易日 YYYY-MM-DD
+ * @param {Map} todayRankMap 今日龙位表（= rankDragons 的返回）
+ */
+function _decorateDragonRankChange(buy, sell, prevDate, todayRankMap) {
+  const st = dragonRankChangeState;
+  const prevRankMap = (prevDate && st.date === prevDate && st.map.size > 0) ? st.map : null;
+  _eachRow(buy, sell, function(row) {
+    applyDragonRankChange(row, prevRankMap, todayRankMap);
   });
 }
 
@@ -317,7 +374,8 @@ function _topicStreakPast(date, mode) {
 /**
  * 采集并计算某日的决策结论（同步：数据源全在内存里）。
  * @param {string} date 展示日 YYYY-MM-DD
- * @param {{skipPrevBuy?:boolean, rangeOptional?:boolean, mode?:string}} [opts]
+ * @param {{skipPrevBuy?:boolean, rangeOptional?:boolean, mode?:string,
+ *          dragonRankOnly?:boolean, rangeMap?:Map}} [opts]
  *        skipPrevBuy=true → 不往回算上一交易日的买点（内部递归用，防止无限往前追）
  *        rangeOptional=true → 【十日涨幅没加载也继续算】（§10 的例外，见下方闸门注释）。
  *          只给「近 5 个交易日题材入选次数」的历史日重算用；⛔ UI 展示日【绝不要】传它 ——
@@ -327,11 +385,19 @@ function _topicStreakPast(date, mode) {
  *          （判定见 decision-mode.js#resolveDecisionMode）。⛔ 本文件不自己读 store ——
  *          collect 是纯数据组装，模式属于「上游口径」，只接受入参。
  *          ⚠️ 历史日重算（_prevBuyNames / _topicStreakPast）必须【原样转发同一个 mode】。
- * @returns {{ready:boolean, reason:string, topics:Array, buy:object, sell:Array}}
+ *        [DRAGON-RANK-CHANGE 2026-10-09] 下面两个只有「算前一交易日龙位表」在用，
+ *        ⛔ UI 展示日调用【绝不要】传（属于模块内部出口，见 collectDragonRankMap）：
+ *          dragonRankOnly=true → 算到 rankDragons 就返回（只出龙位表，不排买卖点）。
+ *          rangeMap = 十日涨幅的【注入来源】——历史日不在 dragon-rank 的单日期主状态里
+ *            （getDragonRangePct(历史日) 恒为 null，见 dragon-rank.js 的逐日期闸门），
+ *            由调用方把云端按日读回的那份传进来。⛔ 本文件【绝不自己去读云】。
+ * @returns {{ready:boolean, reason:string, topics:Array, buy:object, sell:Array}
+ *           |{ready:true, dragonRankOnly:true, topics:Array, dragonMap:Map}}
  */
 export function collectDecisionData(date, opts) {
   const skipPrevBuy = !!(opts && opts.skipPrevBuy);
   const rangeOptional = !!(opts && opts.rangeOptional);
+  const dragonRankOnly = !!(opts && opts.dragonRankOnly);
   // ⛔ 非法 / 缺失一律回落 MODE_VOL_RATIO（§10：绝不因为参数没传就抛错）
   const mode = normalizeDecisionMode(opts && opts.mode);
   if (!date) return _notReady('未选择日期');
@@ -356,6 +422,13 @@ export function collectDecisionData(date, opts) {
   //   ⚠️ 代价：rangeOptional 下灰行（观察组继承票，需有十日涨幅才纳入）会被统一排除；
   //      灰行 countable=false，本来就不进题材只数，故对题材结论无影响（见 _mkRow / 灰行注释）。
   let rangeMap = getDragonRangePct(date);
+  // [DRAGON-RANK-CHANGE 2026-10-09] 历史日（算前一交易日龙位表时）的涨幅由【调用方注入】：
+  //   主状态只持有当前展示日 ⇒ 历史日必然为 null。⚠️ 只在显式传了 rangeMap 时才用它，
+  //   ⛔ 且【绝不给现有调用路径】开这个口子（dragonRankOnly 才传，见 collectDragonRankMap）——
+  //   否则「最近 5 日题材入选次数」等历史日重算会突然拿到一份涨幅、产出与以前不同的结论。
+  if ((!rangeMap || rangeMap.size === 0) && opts && opts.rangeMap) {
+    rangeMap = (opts.rangeMap instanceof Map && opts.rangeMap.size > 0) ? opts.rangeMap : null;
+  }
   if (!rangeMap || rangeMap.size === 0) {
     if (!rangeOptional) return _notReady('十日涨幅 / 龙头数据尚未加载完成');
     rangeMap = new Map();
@@ -508,6 +581,25 @@ export function collectDecisionData(date, opts) {
 
   const dragonMap = rankDragons(topics);
 
+  // [DRAGON-RANK-CHANGE 2026-10-09] 内部出口：只要「这一天的题材龙位表」。
+  //   用途 = 算【前一交易日】的龙位（决策看板龙标旁边的名次变化徽标）。
+  //   ⚠️ 为什么必须借用本函数（而不是另写一份「读名单 → 分题材 → rankDragons」）：
+  //     昨今两个名次必须用【同一把尺子】量 —— 一样的行集合（含灰行）、一样的题材分组、
+  //     一样的成组门槛。另写一份必然分叉，而分叉出来的差值会是一个看着很像真的假数字（§6 红线）。
+  //   ⛔ 走到这里就返回：不排买卖点、不回溯历史，因此这个出口【天然不会递归】。
+  //   ⛔ dragonRankOnly 归还的是【中间产物】（不是完整决策），调用方（store）自己知道怎么用。
+  if (dragonRankOnly) {
+    return {
+      ready: true,
+      reason: '',
+      dragonRankOnly: true,
+      date: date,
+      prevDate: prevDate,
+      topics: topics,
+      dragonMap: dragonMap
+    };
+  }
+
   // [TWO-MODES 2026-10-02 / NO-YIZI 2026-09-25 恢复] 一字模式的【老版规则】里有两条兜底
   //   （⑤ 全部题材无一字 / ⑥ 高风险小题材）以及第 2 名题材的「题材替换」，都要读
   //   【连板天梯 · 题材连扳】的分组；量比模式【一律不采】（§36 性能红线）。
@@ -588,6 +680,12 @@ export function collectDecisionData(date, opts) {
   //      那些结果不进 UI，挂了纯属白算（§36 不做无意义的重复计算）。
   if (!skipPrevBuy) _decorateVolRatioTrend(buy, sell, date);
 
+  // [DRAGON-RANK-CHANGE 2026-10-09 用户口径] 龙标旁边的【名次变化】（'+3' / '-2'）。
+  //   ⛔ 同样只在主流程挂：skipPrevBuy 的调用是内部重算（结果不进 UI），挂了纯属白算（§36）。
+  //   ⚠️ 依赖 dragonRankChangeState（store 异步备好的前一交易日龙位表）：这里【读】它，
+  //      于是 computed 会自动追踪这份 ref ⇒ 表备好之后看板自己重算、徽标自己出现（§17 不阻塞渲染）。
+  _decorateDragonRankChange(buy, sell, prevDate, dragonMap);
+
   // [PREV-BOUGHT 2026-09-30 用户口径，同日两次修正] 「昨天买过」这件事现在有【两个】落点：
   //   · 题材行【昨有买入】(block.prevBoughtTag)：题材里【有】票昨天被打过「买」标签 ⇒ 题材在延续。
   //     判据 = prevBoughtTopics（本文件按【今日题材】把 prevBought 聚合出来，见 _prevBoughtTopics）。
@@ -621,4 +719,35 @@ export function collectDecisionData(date, opts) {
     // 规则面板要用到的常量（UI 不硬编码时间点，避免与规则层分叉）
     times: { midday: SELL_TIME_MIDDAY, close: SELL_TIME_CLOSE }
   };
+}
+
+/**
+ * 【某一天的题材龙位表】—— 唯一出口（§6）。
+ *
+ * 用途：[DRAGON-RANK-CHANGE 2026-10-09 用户口径] 决策看板龙标旁边的名次变化徽标，
+ *   要用【前一交易日】的龙位表来跟今天比。今天的龙位表 = collectDecisionData 里的 dragonMap；
+ *   昨天的龙位表由本函数按【完全同一套组装】算出来（见 collectDecisionData 里 dragonRankOnly 的注释）。
+ *
+ * ⛔ 本函数【不读云、不发请求】：历史日的十日涨幅必须由调用方（dragon-rank-change-store.js）
+ *    用 data/stock-range-pct.js 的只读入口读回来、从 rangeMap 传进来。
+ *    ——§4 分工：拿数据的一侧和用数据算结论的一侧不混在一起。
+ *
+ * §10：任一闸门不过（名单没加载完 / 区间涨幅没有 / 该日不成组）⇒ ready=false + 明确 reason，
+ *   ⛔ 绝不返回一张空表冒充「那天没有龙位」（那会让所有行的名次变化静默消失，且无从发现）。
+ *
+ * @param {string} date 目标日（算前一交易日时传前一交易日）
+ * @param {{mode?:string, rangeMap?:Map}} [opts] mode 必须与【今日】同一套；rangeMap 见上
+ * @returns {{ready:boolean, reason:string, map:Map|null}} map = computeDragonRankMap 的输出
+ */
+export function collectDragonRankMap(date, opts) {
+  const rec = collectDecisionData(date, {
+    dragonRankOnly: true,
+    mode: opts && opts.mode,
+    rangeMap: opts && opts.rangeMap
+  });
+  // 命中内部出口 ⇒ 中间产物带 dragonRankOnly 标记（_notReady 的返回没有这个键）
+  if (rec && rec.dragonRankOnly) {
+    return { ready: true, reason: '', map: rec.dragonMap };
+  }
+  return { ready: false, reason: (rec && rec.reason) || '未就绪', map: null };
 }

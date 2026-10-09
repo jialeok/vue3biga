@@ -311,6 +311,34 @@
             white-space: nowrap;
         }
 
+        /* [DRAGON-RANK-CHANGE 2026-10-09 用户口径] 龙标旁边的【名次变化】数字（'+3' / '-2'）。
+           用户原话「数字前有加减号，不用背景色，上升用红色，下降用绿色」⇒ 所以这里
+             · 只给【文字颜色】，⛔ 刻意【不加】padding / 底色 / 边框 —— 加了就变成第二枚胶囊，
+               与旁边的龙标争视觉重心（用户要的是「龙二 +3」这样一句话，不是一个新标签）；
+             · 字号与龙标一致（9px），紧贴龙标（margin-left: 2px），整行高度不变（line-height 14px）。
+           ⛔ 类名必须带 dcb- 前缀：本文件全局加载，.dragon-delta 这种通用名会串改早盘竞价看板。
+           ⛔ 别改成「涨绿跌红」：A 股口径是【上升红 / 下降绿】（与欧美相反）。 */
+        .dcb-dragon-delta {
+            margin-left: 2px;
+            font-size: 9px;
+            line-height: 14px;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+            /* 允许长按选中复制（与行内说明文字同一口径，见 .dcb-selectable） */
+            user-select: text;
+        }
+
+        /* 上升（名次数字变小）→ 红 */
+        .dcb-dragon-delta-up {
+            color: #dc2626;
+        }
+
+        /* 下降（名次数字变大）→ 绿 */
+        .dcb-dragon-delta-down {
+            color: #16a34a;
+        }
+
         /* [BOARD-RISK 2026-10-07 用户口径] 买点行的【创业板 / 科创板风险提示】—— 防误买的最后一道岗。
            视觉刻意做成【施工警示牌】：深墨底 + 明黄字 + 警示三角，紧跟在股票名右边。
            ⛔ 为什么【不用红色】：决策行里所有红色系胶囊（#dc2626 竞价买 / #be123c 下杀买 /

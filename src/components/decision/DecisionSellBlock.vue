@@ -4,7 +4,9 @@
   排版（用户口径 2026-09-24 改版）：
     第一行：题材名称  ●n（实心红圆点 = 今日题材排名）  数量：n  竞价一字：n  ← 与买点同一行口径
     第二行：卖出理由：题材排…第n名，股票数量n只，该题材…一字涨停，…14:50 / 11:20 卖
-    第三行起：序号  股票名称（龙几）  十日涨幅  竞价涨幅  竞价量比  11:20卖 / 14:50卖
+    第三行起：序号  股票名称（龙几 ±n）  十日涨幅  竞价涨幅  竞价量比  11:20卖 / 14:50卖
+              ← [DRAGON-RANK-CHANGE 2026-10-09 用户口径] 龙标右边的 ±n = 题材内名次的【昨日→今日变化】
+                （'+3' 上升红 / '-2' 下降绿，只改文字颜色、不加底色；无可比时不显示）
     行下方：  [VRATIO-TREND 2026-10-01 用户口径] 点【序号】或【股票名】展开 / 收起
               「竞价量比 近 5 日」趋势面板（默认收起，样式与早盘竞价看板的趋势图一致）
             ⚠️ [AUC-BADGE 2026-09-29] 「竞价涨幅」是紧跟在十日涨幅后面的小标签：
@@ -68,6 +70,18 @@
           v-if="it.dragonLabel"
           class="dcb-dragon"
         >{{ it.dragonLabel }}</span>
+        <!-- [DRAGON-RANK-CHANGE 2026-10-09 用户口径] 龙标旁边的【名次变化】：'+3' 上升（红）/
+             '-2' 下降（绿），数字永远带符号、⛔ 不加底色。
+             与【买点】完全同一份字段、同一套配色（≠ 各写一份，§6 单一真相）——
+             用户原话「买点和卖点看板都要标」。
+             文案 / 配色档 / 悬停说明全部由 Logic 层给（it.dragonDeltaText / Tone / Title，§21 模板零计算）。
+             §10：昨日龙位未就绪、昨今不在同一题材、或名次没变 ⇒ 空串 ⇒ 整个徽标不渲染。 -->
+        <span
+          v-if="it.dragonDeltaText"
+          class="dcb-dragon-delta"
+          :class="'dcb-dragon-delta-' + it.dragonDeltaTone"
+          :title="it.dragonDeltaTitle"
+        >{{ it.dragonDeltaText }}</span>
         <span class="dcb-pct">{{ pctText(it.pct) }}</span>
         <!-- [AUC-BADGE 2026-09-29 用户口径] 竞价涨幅标签：紧跟在十日涨幅后面。
              文本 / 配色档全部由 Logic 层给（aucPctText / aucTone，§21 模板零计算）：
