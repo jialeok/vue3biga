@@ -319,7 +319,11 @@
            ⛔ 类名必须带 dcb- 前缀：本文件全局加载，.dragon-delta 这种通用名会串改早盘竞价看板。
            ⛔ 别改成「涨绿跌红」：A 股口径是【上升红 / 下降绿】（与欧美相反）。 */
         .dcb-dragon-delta {
-            margin-left: 2px;
+            /* ⚠️ 负 margin 是刻意的：.dcb-row 是 flex + gap: 8px 的容器，龙标与数字是两个 flex 子项，
+               gap 会把它们推开 8px。而用户要的是「龙二 +3」这样【一句话】——
+               -3px 把净间距收到 5px（比行内其它元素更紧），读起来才是「龙标 + 它的变化」，
+               而不是「两个并列的小标签」。⛔ 别去掉它（去掉后会与相邻徽标同样松散）。 */
+            margin-left: -3px;
             font-size: 9px;
             line-height: 14px;
             font-weight: 700;
