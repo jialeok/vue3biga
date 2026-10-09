@@ -155,15 +155,10 @@ describe('「竞价图形判断」取值归一（§10：不认识的输入一律
   });
 });
 
-describe('「竞价图形判断」只对【四种基础标签】生效（用户口径点名的四个选项）', () => {
+describe('「竞价图形判断」受控范围：买点只认两档基础标签、卖点【每一行】都受控', () => {
   it('买点：竞价买 / 尾盘买 受控', () => {
     expect(isChartJudgeTarget(SIDE_BUY, BUY_NOW_TAG)).toBe(true);
     expect(isChartJudgeTarget(SIDE_BUY, BUY_LATE_TAG)).toBe(true);
-  });
-
-  it('卖点：竞价卖 / 尾盘卖 受控', () => {
-    expect(isChartJudgeTarget(SIDE_SELL, SELL_OUT_TAG)).toBe(true);
-    expect(isChartJudgeTarget(SIDE_SELL, SELL_LATE_TAG)).toBe(true);
   });
 
   it('买点的特殊标签【不受控】（各自还带着别的信息，覆盖掉就是丢信息）', () => {
@@ -172,21 +167,37 @@ describe('「竞价图形判断」只对【四种基础标签】生效（用户�
     });
   });
 
-  it('卖点的特殊标签【不受控】', () => {
-    [SELL_OUT_SWAP_TAG, SELL_TEN_MIN_TAG, SELL_FOLLOW_DRAGON_TAG, SELL_LIMIT_UP_TAG, HOLD_TAG, ''].forEach(function(t) {
-      expect(isChartJudgeTarget(SIDE_SELL, t)).toBe(false);
-    });
-  });
-
-  it('侧别错的标签不受控（买点不许被卖点标签带跑，反之亦然）', () => {
+  it('买点：侧别错的 / 空标签一律不受控（买点不许被卖点标签带跑；§10 未知 ≠ 受控）', () => {
     expect(isChartJudgeTarget(SIDE_BUY, SELL_OUT_TAG)).toBe(false);
-    expect(isChartJudgeTarget(SIDE_SELL, BUY_NOW_TAG)).toBe(false);
+    expect(isChartJudgeTarget(SIDE_BUY, SELL_LATE_TAG)).toBe(false);
+    expect(isChartJudgeTarget(SIDE_BUY, null)).toBe(false);
+    expect(isChartJudgeTarget(SIDE_BUY, undefined)).toBe(false);
     expect(isChartJudgeTarget('bogus', BUY_NOW_TAG)).toBe(false);
   });
 
-  it('null / undefined 标签不受控（§10 未知 ≠ 受控）', () => {
-    expect(isChartJudgeTarget(SIDE_BUY, null)).toBe(false);
-    expect(isChartJudgeTarget(SIDE_SELL, undefined)).toBe(false);
+  /* ══ [CHART-JUDGE-SELL-ALL 2026-10-09 用户口径] 卖点【每一行】都受控 ══
+     用户原话：「现在只有买点的股票显示，卖的股票没有显示 UI，我要求的是卖点的股票也显示，完善下。」
+     这几条就是本次修复的验收基准 —— ⛔ 别再退回「只认竞价卖 / 尾盘卖」的旧口径。 */
+  it('卖点：两档基础标签受控（原本就受控，回归不许破坏）', () => {
+    expect(isChartJudgeTarget(SIDE_SELL, SELL_OUT_TAG)).toBe(true);
+    expect(isChartJudgeTarget(SIDE_SELL, SELL_LATE_TAG)).toBe(true);
+  });
+
+  it('卖点：六档特殊标签【也受控】（旧口径漏掉它们 ⇒ 卖点整列看不到选择器）', () => {
+    [HOLD_TAG, DRAGON_YIZI_HOLD_TAG, SELL_FOLLOW_DRAGON_TAG, SELL_TEN_MIN_TAG,
+      SELL_OUT_SWAP_TAG, SELL_LIMIT_UP_TAG].forEach(function(t) {
+      expect(isChartJudgeTarget(SIDE_SELL, t)).toBe(true);
+    });
+  });
+
+  it('卖点：空标签 / null / undefined【也受控】（占比缺数据的行，行尾回落题材排名时点）', () => {
+    ['', null, undefined].forEach(function(t) {
+      expect(isChartJudgeTarget(SIDE_SELL, t)).toBe(true);
+    });
+  });
+
+  it('卖点：传进来的就算是买点标签也照样受控（卖点侧别无条件优先）', () => {
+    expect(isChartJudgeTarget(SIDE_SELL, BUY_NOW_TAG)).toBe(true);
   });
 });
 
@@ -345,18 +356,50 @@ describe('「竞价图形判断」套用到行上（applyChartJudge）', () => {
     expect([buyTwo.chartJudge, sellTwo.chartJudge]).toEqual([JUDGE_BAD, JUDGE_BAD]);
   });
 
-  it('特殊标签的行：不受控 + 不改标签 + 不产说明（选择器也不渲染）', () => {
+  it('买点特殊标签的行：不受控 + 不改标签 + 不产说明（选择器不渲染）', () => {
     const d = mkDecisionData();
     d.buy.heavy.picks.push(mkBuyRow('先卖后买票', BUY_LATE_SWAP_TAG, 'swap'));
-    d.sell[0].items.push(mkSellRow('十分钟票', SELL_TEN_MIN_TAG, 'tenmin'));
-    applyChartJudge(d, { 先卖后买票: JUDGE_OK, 十分钟票: JUDGE_OK });
+    applyChartJudge(d, { 先卖后买票: JUDGE_OK });
     const a = row(d, '先卖后买票');
     expect(a.chartJudgeTarget).toBe(false);
     expect(a.buyActionTag).toBe(BUY_LATE_SWAP_TAG);
     expect(a.chartJudgeNote).toBe('');
+  });
+
+  /* ══ [CHART-JUDGE-SELL-ALL 2026-10-09 用户口径] 卖点每一行都受控 ══ */
+
+  it('★卖点特殊标签的行：受控 + 能被覆盖（原标签写进说明，⛔ 信息不丢）', () => {
+    const d = mkDecisionData();
+    d.sell[0].items.push(mkSellRow('十分钟票', SELL_TEN_MIN_TAG, 'tenmin'));
+    applyChartJudge(d, { 十分钟票: JUDGE_OK });
     const b = row(d, '十分钟票');
-    expect(b.chartJudgeTarget).toBe(false);
-    expect(b.sellActionTag).toBe(SELL_TEN_MIN_TAG);
+    expect(b.chartJudgeTarget).toBe(true);
+    expect(b.sellActionTag).toBe(SELL_LATE_TAG);            // 图好 ⇒ 尾盘卖
+    expect(b.sellActionTone).toBe(SELL_ACTION_TONE_LATE);
+    expect(b.chartJudgeNote).toContain(SELL_TEN_MIN_TAG);   // 原标签保留在说明里
+    expect(b.actionNote).toContain('卖点原规则说明-十分钟票');
+  });
+
+  it('★卖点【空标签】的行（占比缺数据、只回落题材排名时点）：受控 + 能从「无」到「有」给出标签', () => {
+    const d = mkDecisionData();
+    d.sell[0].items.push(mkSellRow('无标签票', '', ''));
+    applyChartJudge(d, { 无标签票: JUDGE_BAD });
+    const p = row(d, '无标签票');
+    expect(p.chartJudgeTarget).toBe(true);
+    expect(p.sellActionTag).toBe(SELL_OUT_TAG);             // 图差 ⇒ 竞价卖
+    expect(p.sellActionTone).toBe(SELL_ACTION_TONE_OUT);
+    // ⛔ 不能写成「由原规则的【】改为…」（空方括号像 bug）—— 要如实说「原本没有动作标签」
+    expect(p.chartJudgeNote).toContain('原本');
+    expect(p.chartJudgeNote).not.toContain('【】');
+  });
+
+  it('★卖点空标签的行选【符合】⇒ 尾盘卖（与特殊标签行同一条映射，不搞两套）', () => {
+    const d = mkDecisionData();
+    d.sell[0].items.push(mkSellRow('无标签票2', '', ''));
+    applyChartJudge(d, { 无标签票2: JUDGE_OK });
+    const p = row(d, '无标签票2');
+    expect(p.sellActionTag).toBe(SELL_LATE_TAG);
+    expect(p.sellActionTone).toBe(SELL_ACTION_TONE_LATE);
   });
 
   it('三条兜底方案（无一字 / 小题材 / 大题材）里的块也要被覆盖到', () => {
@@ -422,10 +465,17 @@ describe('规则文案：手动「竞价图形判断」必须写进灰色问号�
     expect(text).toContain('不符');
   });
 
-  it('点名说明哪些【特殊标签不受影响】', () => {
-    [BUY_LATE_SWAP_TAG, BUY_DIVE_TAG, BUY_MAKEUP_TAG, DRAGON_YIZI_HOLD_TAG,
-      SELL_OUT_SWAP_TAG, SELL_TEN_MIN_TAG, SELL_FOLLOW_DRAGON_TAG, SELL_LIMIT_UP_TAG, HOLD_TAG]
+  it('买点特殊标签（不受影响）与卖点特殊标签（会被接管）都要点名', () => {
+    // 买点：这几个不显示选择器
+    [BUY_LATE_SWAP_TAG, BUY_DIVE_TAG, BUY_MAKEUP_TAG, DRAGON_YIZI_HOLD_TAG]
       .forEach(function(t) { expect(text).toContain(t); });
+    // 卖点：每一行都显示，下面这些标签同样能被覆盖（原标签会写进逐行说明，信息不丢）
+    [HOLD_TAG, SELL_FOLLOW_DRAGON_TAG, SELL_TEN_MIN_TAG, SELL_OUT_SWAP_TAG, SELL_LIMIT_UP_TAG, DRAGON_YIZI_HOLD_TAG]
+      .forEach(function(t) { expect(text).toContain(t); });
+  });
+
+  it('写清【卖点每一只票都显示】选择器（2026-10-09 用户口径）', () => {
+    expect(text).toContain('每一只票');
   });
 
   it('写清保存口径（按日期 + 股票存云端表、刷新不丢、选回默认 = 删记录）', () => {

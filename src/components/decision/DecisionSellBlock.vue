@@ -154,9 +154,12 @@
         <!-- [CHART-JUDGE 2026-10-09 用户口径] 手动「竞价图形判断」三档小选择器（默认｜符合｜不符）。
              卖点口径：符合 → 尾盘卖（图好 = 当天走势好，尾盘获利更高）；不符 → 竞价卖（果断出局）；
              默认 → 完全按原有规则的标签。原有规则退为辅助 —— 详见 decision-chart-judge.js。
-             ⛔ 只在本行原标签属于【竞价卖 / 尾盘卖】时渲染（it.chartJudgeTarget 由 Logic 层给，
-                §21 模板零判断）。持有 / 10分钟时卖 / 跟龙竞价卖 / 竞价涨停卖 / 竞价卖（先卖后买）
-                以及占比缺数据的行都【不显示】—— 显示一枚点了不生效的选择器比不显示更误导（§10）。
+             🔴 [CHART-JUDGE-SELL-ALL 2026-10-09 用户口径] 卖点【每一行】都渲染它
+                （it.chartJudgeTarget 恒为 true，仍由 Logic 层给，§21 模板零判断）——
+                用户原话「现在只有买点的股票显示，卖的股票没有显示 UI，我要求的是卖点的股票也显示」。
+                因为卖点行的原标签常是特殊标签（持有 / 跟龙竞价卖 / 10分钟时卖 / 竞价卖（先卖后买）/
+                竞价涨停卖 / 龙一字持有），或占比缺数据时为空串（回落题材排名时点）⇒ 旧口径只认
+                【竞价卖 / 尾盘卖】会整列都看不到选择器。覆盖时原标签写进逐行说明，⛔ 信息不丢。
              ⚠️ 它【在 v-if/v-else-if 链之外】：不能塞进那条链里，否则会顶掉行尾时点那个 v-else。
              ⛔ 落库 / 乐观更新 / 回滚全在 Logic 层（board.setChartJudge），组件只把值抛上去。 -->
         <ChartJudgeSelect
@@ -236,7 +239,10 @@ defineProps({
 // [VRATIO-TREND 2026-10-01] 与 DecisionBoard.vue 共用同一个 board 实例（provide / inject）：
 //   展开态只有一份、且与【买点】共用 —— 同一只票在两处是同一个开关，本组件不新建状态（§6 / §34）。
 const board = inject('decisionBoard');
-const { trendOpenSet, toggleTrend } = board;
+// [CHART-JUDGE 2026-10-09] setChartJudge 必须一起解构出来 —— 模板里的 @change 在用它
+//   （漏了会 ReferenceError：点击选择器直接报错）。⛔ 本组件不直接碰 Data 层，
+//   落库 / 乐观更新 / 回滚都在 logic/decision/decision-chart-judge-store.js（UI → Logic → Data）。
+const { trendOpenSet, toggleTrend, setChartJudge } = board;
 
 /** 序号 / 股票名的悬停提示（纯文案常量，避免模板里写死字符串两处不一致） */
 const trendTip = '点击展开 / 收起「竞价量比」近 5 日走势';
