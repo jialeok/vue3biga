@@ -225,6 +225,15 @@
 <script setup>
 import { inject } from 'vue';
 import DecisionTopicHead from './DecisionTopicHead.vue';
+// 🔴 [CHART-JUDGE-SELL-ALL 2026-10-09 用户口径 · 本次修复的真正根因]
+//   模板里写了 <ChartJudgeSelect> 就【必须】在这里 import —— 少了这一行，Vue 会把
+//   <ChartJudgeSelect> 当成【未解析组件】当原生自定义元素渲染 ⇒ 什么都不显示（DOM 里连标签都没有），
+//   只在控制台留一句 "Failed to resolve component: ChartJudgeSelect"。
+//   ⚠️ 它【不会被单测 / eslint / vite build 拦下】：本仓库的单测只覆盖 Logic 纯函数，
+//      没有组件级挂载测试；模板里的组件名也不在 eslint 的检查范围内 —— 所以这类漏写成隐性故障，
+//      只能靠「模板用到什么，script setup 就要 import 什么」这条人工纪律（或组件级测试）兜住。
+//   买点那块（DecisionBuyBlock.vue）有这一行，卖点这块此前【两次都漏】⇒ 用户两次反馈「卖点没 UI」。
+import ChartJudgeSelect from './ChartJudgeSelect.vue';
 // [VRATIO-TREND 2026-10-01] 曲线组件复用既有 TrendChart（纯声明式 SVG：无图表实例、无 dispose 问题）。
 import TrendChart from '../TrendChart.vue';
 import { formatRangePct } from '../../logic/decision/decision-rules.js';
