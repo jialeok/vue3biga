@@ -125,7 +125,7 @@ describe('tick-minute · 快照 → 一笔一笔 + 红绿统计', () => {
     expect(s.pens[1].arrow).toBe('↓');
   });
 
-  it('上涨多于下跌 ⇒ 开盘强；下跌多于上涨 ⇒ 开盘弱；相等 ⇒ 均衡', () => {
+  it('买卖结论：强/弱/均衡，且【买点侧与卖点侧的动作名不同】（2026-10-10 用户口径）', () => {
     // 构造：第 1 笔 = 与开盘价相平（所以它自己会进「绿」那一边），随后 upN 笔涨、downN 笔跌
     const mk = (upN, downN) => {
       const pens = [{ t: '09:30:03', p: 10, v: null }];
@@ -134,17 +134,35 @@ describe('tick-minute · 快照 → 一笔一笔 + 红绿统计', () => {
       for (let i = 0; i < downN; i++) { p = Number((p - 0.01).toFixed(2)); pens.push({ t: 'y' + i, p: p, v: 100 }); }
       return buildTickPens({ openPrice: 10, pens: pens });
     };
-    // mk(5,1) → 红 5 / 绿 1 + 首笔平 1 = 2 ⇒ 强
-    expect(tickStrengthOf(mk(5, 1)).tone).toBe('strong');
-    expect(tickStrengthOf(mk(5, 1)).text).toBe('开盘强');
-    // mk(1,5) → 红 1 / 绿 6 ⇒ 弱
-    expect(tickStrengthOf(mk(1, 5)).tone).toBe('weak');
-    expect(tickStrengthOf(mk(1, 5)).text).toBe('开盘弱');
-    // mk(3,2) → 红 3 / 绿 2 + 首笔平 1 = 3 ⇒ 均衡
-    expect(tickStrengthOf(mk(3, 2)).tone).toBe('even');
-    expect(tickStrengthOf(mk(3, 2)).text).toBe('均衡');
+    // mk(5,1) → 红 5 / 绿 1 + 首笔平 1 = 2 ⇒ 强（红）
+    expect(tickStrengthOf(mk(5, 1), 'buy').tone).toBe('strong');
+    expect(tickStrengthOf(mk(5, 1), 'buy').text).toBe('立刻买');
+    expect(tickStrengthOf(mk(5, 1), 'sell').tone).toBe('strong');
+    expect(tickStrengthOf(mk(5, 1), 'sell').text).toBe('盘中冲高卖');
+    // mk(1,5) → 红 1 / 绿 6 ⇒ 弱（绿）
+    expect(tickStrengthOf(mk(1, 5), 'buy').tone).toBe('weak');
+    expect(tickStrengthOf(mk(1, 5), 'buy').text).toBe('盘中下杀买');
+    expect(tickStrengthOf(mk(1, 5), 'sell').tone).toBe('weak');
+    expect(tickStrengthOf(mk(1, 5), 'sell').text).toBe('立刻卖');
+    // mk(3,2) → 红 3 / 绿 2 + 首笔平 1 = 3 ⇒ 均衡（买卖两侧同名，不站边）
+    expect(tickStrengthOf(mk(3, 2), 'buy').tone).toBe('even');
+    expect(tickStrengthOf(mk(3, 2), 'buy').text).toBe('均衡');
+    expect(tickStrengthOf(mk(3, 2), 'sell').text).toBe('均衡');
     // §10：一笔都判不出来 ⇒ 不给结论（⛔ 不硬判「均衡」）
     expect(tickStrengthOf(buildTickPens({ openPrice: null, pens: [] })).text).toBe('');
+    // 缺省 side ⇒ 按买点侧处理（⛔ 不会凭空给出一个卖点动作名）
+    expect(tickStrengthOf(mk(5, 1)).text).toBe('立刻买');
+  });
+
+  it('★ 结论胶囊的文案里【必须带上「手」这个单位】—— 用户看到的手数单位就是手（股÷100）', () => {
+    const s = buildTickPens({
+      openPrice: 10,
+      pens: [{ t: 'a', p: 10, v: null }, { t: 'b', p: 9.9, v: 100 }, { t: 'c', p: 9.8, v: 100 }]
+    });
+    // 「盘中下杀买」的说明文字要让用户知道手数的单位，否则「一位数/两位数」无从对照
+    expect(tickStrengthOf(s, 'buy').title).toContain('手');
+    // ⛔ 这张看板的手数是【手】不是【万手】—— 说明文字里不能出现「万手」（免得用户按 100 倍去找）
+    expect(tickStrengthOf(s, 'buy').title).not.toContain('万手');
   });
 
   it('无成交快照（累计量没变，v=0）被略去，且不计入平盘', () => {
@@ -326,14 +344,17 @@ describe('tick-minute · 决策行 → 分笔买卖看板行', () => {
     expect(p0.redText).toBe('2红');     // 10→10.10→10.20 两笔上涨
     expect(p0.greenText).toBe('1绿');   // 第一笔与开盘价 10 相平
     expect(p0.strengthTone).toBe('strong');
+    expect(p0.strengthText).toBe('立刻买');   // 买点侧：走强 ⇒ 立刻买
     expect(p0.pens.length).toBe(3);
     expect(p0.pens[0].volText).toBe('—');
     expect(p0.pens[1].volText).toBe('12');
     expect(p0.pens[2].arrow).toBe('↑');
     expect(p0.panelTitle).toContain('襄阳轴承');
-    // 卖点侧同一只票应是同一份统计（§6 一个口径）
+    // 卖点侧同一只票应是同一份统计（§6 一个口径），但【动作名不同】——买点说买、卖点说卖
     expect(b.sellGroups[0].items[0].redText).toBe('2红');
     expect(b.sellGroups[0].items[0].greenText).toBe('1绿');
+    expect(b.sellGroups[0].items[0].strengthTone).toBe('strong');       // 同一份强弱色
+    expect(b.sellGroups[0].items[0].strengthText).toBe('盘中冲高卖');   // ★ 但名字必须是卖点侧的动作
   });
 
   it('有行但一笔都判不出来（全缺价格）⇒ 回落「无数据」，⛔ 不留空胶囊', () => {

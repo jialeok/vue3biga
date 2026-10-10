@@ -272,29 +272,62 @@ export function tickStatText(s) {
 }
 
 /**
- * 开盘强弱结论（由红绿笔数直接得出，用户原话「这样就可以判断当天开盘强弱」）。
- * ⛔ 只是把统计结果翻译成一句话，不改任何选票 / 买卖结论（决策看板一行都不动）。
- * 平局 → 'even'（不站边，§10 不硬判强弱）。
+ * 买卖结论标签（由红绿笔数直接得出）。
+ *
+ * ★ [ACTION-LABEL 2026-10-10 用户口径] 「分笔买卖就是买入和卖出信号，所以标注清晰些。
+ *    早上就靠这个来判断」⇒ 把原来那个中性的「开盘强 / 开盘弱」换成【动作名】，
+ *    并且【买点侧和卖点侧给不同的名字】—— 同一个强弱结论，两边的动作正好相反：
+ *
+ *      买点（side='buy'） 强 ⇒ 「立刻买」      红      （= 竞价买同路，只是要等开盘后才知道）
+ *                        弱 ⇒ 「盘中下杀买」  绿      （开盘不能追，等盘中下杀完再买）
+ *      卖点（side='sell'）强 ⇒ 「盘中冲高卖」  红      （别急，等冲高后第一笔绿色手数再卖）
+ *                        弱 ⇒ 「立刻卖」      绿      （弱了就是止损，别等反抽）
+ *      两侧相等           ⇒ 「均衡」          灰蓝    （不站边，§10 不硬判）
+ *
+ * ⛔ 只是把同一份统计翻译成一句「现在该怎么做」，**不改任何选票 / 买卖结论**
+ *    （决策看板一行都不动；§6：红绿统计仍然只有 buildTickPens 一个口径）。
+ * ⛔ tone 只保留 strong / weak / even 三档 —— CSS 的 .tbb-verdict-* 就这三档，
+ *    且红=strong / 绿=weak 与用户要的红绿**完全一致**，所以样式一个字都不用改（§21）。
+ *
+ * @param {{red:number, green:number, total:number}} s buildTickPens 的返回
+ * @param {'buy'|'sell'} [side] 买点侧 / 卖点侧（缺省按买点侧处理）
+ * @returns {{text:string, tone:string, title:string}}
  */
-export function tickStrengthOf(s) {
+export function tickStrengthOf(s, side) {
     if (!s || !s.total) return { text: '', tone: '', title: '' };
+    const isSell = side === 'sell';
+    const cmp = (s.red > s.green) ? ' > ' : ((s.red < s.green) ? ' < ' : ' = ');
+    const cnt = '上涨 ' + s.red + ' 笔' + cmp + '下跌（含平盘）' + s.green + ' 笔';
     if (s.red > s.green) {
-        return {
-            text: '开盘强', tone: 'strong',
-            title: '上涨 ' + s.red + ' 笔 > 下跌（含平盘）' + s.green + ' 笔 ⇒ 这一分钟整体走强：'
-                + '买点更适合【竞价买】那一路（别等，容易买不到）；卖点别急着竞价卖（容易卖飞）。'
-        };
+        return isSell
+            ? {
+                text: '盘中冲高卖', tone: 'strong',
+                title: cnt + ' ⇒ 开盘走强、还在往上冲：【别急着卖】，等【盘中冲高】。'
+                    + '盯同花顺的分笔订单：红色手数代表价格还在上涨，'
+                    + '【第一次出现绿色（下跌）手数】时就是卖点。'
+            }
+            : {
+                text: '立刻买', tone: 'strong',
+                title: cnt + ' ⇒ 开盘走强、买盘主动：直接【立刻买】。'
+                    + '与「竞价买」同一路思路，区别只是这个要等开盘后（9:30~9:31）才能确认。'
+            };
     }
     if (s.red < s.green) {
-        return {
-            text: '开盘弱', tone: 'weak',
-            title: '上涨 ' + s.red + ' 笔 < 下跌（含平盘）' + s.green + ' 笔 ⇒ 这一分钟整体走弱：'
-                + '买点更适合【等盘中下杀完成再买】而不是竞价追高；卖点适合【9:31 直接卖】止损。'
-        };
+        return isSell
+            ? {
+                text: '立刻卖', tone: 'weak',
+                title: cnt + ' ⇒ 开盘就走弱：直接【立刻卖】止损，别等反抽。'
+            }
+            : {
+                text: '盘中下杀买', tone: 'weak',
+                title: cnt + ' ⇒ 开盘走弱、【不能追高】：等【盘中下杀】走完再买。'
+                    + '盯分笔手数：缩到一位数或两位数（单位＝手）时，说明卖盘也弱了、成交冷淡、'
+                    + '抛压枯竭、即将反转 —— 那时再买入。'
+            };
     }
     return {
         text: '均衡', tone: 'even',
-        title: '上涨 ' + s.red + ' 笔 = 下跌（含平盘）' + s.green + ' 笔 ⇒ 多空均衡，不硬判强弱（按原规则看别的指标）。'
+        title: cnt + ' ⇒ 多空均衡，不硬判强弱（按原规则看别的指标）。'
     };
 }
 
@@ -361,8 +394,10 @@ function _resolveCode(name, directCode, memberMap) {
  * @param {Set<string>} attempted 本次会话里【已经抓过】的股票名
  * @param {Map<string,string>} skipMap name → 「为什么没抓」（如缺代码），命中时优先展示
  * @param {Map<string,string>} memberMap name → code（买点侧专用）
+ * @param {'buy'|'sell'} side 这一行属于买点还是卖点 —— 决定结论胶囊显示哪个【动作名】
+ *        （买点「立刻买 / 盘中下杀买」 vs 卖点「盘中冲高卖 / 立刻卖」，见 tickStrengthOf）
  */
-function _decorateTickRow(row, tickMap, attempted, skipMap, memberMap) {
+function _decorateTickRow(row, tickMap, attempted, skipMap, memberMap, side) {
     const name = String(row.name || '').trim();
     const out = {
         seq: row.seq,
@@ -404,7 +439,7 @@ function _decorateTickRow(row, tickMap, attempted, skipMap, memberMap) {
     out.redText = st.redText;
     out.greenText = st.greenText;
     out.statTitle = st.title;
-    const str = tickStrengthOf(s);
+    const str = tickStrengthOf(s, side);
     out.strengthText = str.text;
     out.strengthTone = str.tone;
     out.strengthTitle = str.title;
@@ -462,7 +497,7 @@ export function buildTickBoard(decided, tickMap, opts) {
         if (rawBlocks.indexOf(b) !== bi) return;
         const memberMap = _codeMapOfMembers(b.block);
         const picks = (b.picks || []).map(function(p) {
-            return _decorateTickRow(p, map, attempted, skipMap, memberMap);
+            return _decorateTickRow(p, map, attempted, skipMap, memberMap, 'buy');
         });
         // 没有股票的块【不渲染】：本看板没有「选择理由 / 不出票原因」那些行，
         // 留一个光秃秃的题材名反而让人以为是坏了（§10 宁可整块不出现）。
@@ -485,7 +520,7 @@ export function buildTickBoard(decided, tickMap, opts) {
     (decided.sell || []).forEach(function(g) {
         if (!g) return;
         const items = (g.items || []).map(function(it) {
-            return _decorateTickRow(it, map, attempted, skipMap, null);
+            return _decorateTickRow(it, map, attempted, skipMap, null, 'sell');
         });
         if (items.length === 0) return;
         items.forEach(function(it) { if (!targets.has(it.name)) targets.set(it.name, it.code); });
