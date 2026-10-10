@@ -46,7 +46,7 @@
 //
 // §10 红线：任何一项取不到都不许补 0 / 不许编 —— 一律给 null / 空串，由模板 v-if 决定不渲染。
 
-import { buyBlocksOf } from '../decision/decision-collect.js';
+import { buyBlocksFlat } from '../decision/decision-collect.js';
 import { formatRangePct } from '../decision/decision-rules.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 
@@ -562,13 +562,18 @@ export function buildTickBoard(decided, tickMap, opts) {
     const targets = new Map(); // name → code（去重，按出现顺序）
 
     // ---- 买点块 ----
-    // ⛔ 同一个块对象只渲染一次：候选题材数组里可能【就是】light 那一块
-    //    （第 2 名题材已够 3 只时被降级成候选题材）—— 决策看板用「引用相等」过滤掉它
-    //    （见 useDecisionBoard#buyCandidates），这里必须同一口径，否则第 2 名会重复出现一遍。
-    const rawBlocks = buyBlocksOf(decided.buy);
-    rawBlocks.forEach(function(b, bi) {
+    // 🔴 [BUY-BLOCKS-FLAT 2026-10-11] 必须用 buyBlocksFlat（decision-collect 里那份【摊平清单】），
+    //    ⛔ 不能只认 b.picks：买点计划的三个兜底槽位（noYizi / smallTopic / bigTopic）是【方案外壳】，
+    //    形状 `{mode, qualified, emptyText, hintText, blocks:[...], notes:[...]}` ——
+    //    没有 .block、也没有 .picks，真正的块在 .blocks 里。
+    //    上一版这里只读 b.picks ⇒ **当天买点只要全落在兜底方案里，本看板买点侧就整侧空白**。
+    //    现场（用户 2026-10-11 报障）：2026-09-30 走的是 ⑥ 小题材兜底（口径 = 在龙一~龙五里取
+    //    竞价高开的两只）⇒ 决策看板显示 大亚圣象 / 新华文轩 两只，分笔看板一个块都没有。
+    //    ⛔ 别在这里再手写一份「b.picks / b.blocks」的摊平 —— 那正是隔壁 _eachRow 长注释里
+    //       「每多一份遍历，就多一次某个新档位静默漏掉」的坑；摊平与去重全部收口在 buyBlocksFlat。
+    const rawBlocks = buyBlocksFlat(decided.buy);
+    rawBlocks.forEach(function(b) {
         if (!b || !b.block) return;
-        if (rawBlocks.indexOf(b) !== bi) return;
         const memberMap = _codeMapOfMembers(b.block);
         const picks = (b.picks || []).map(function(p) {
             return _decorateTickRow(p, map, attempted, skipMap, memberMap, 'buy');

@@ -470,6 +470,121 @@ describe('tick-minute · 决策行 → 分笔买卖看板行', () => {
     expect(topics).toEqual(['AI应用', '机器人']);
   });
 
+  // 🔴 [BUY-BLOCKS-FLAT 2026-10-11] 用户报障现场：2026-09-30 决策看板有买点（大亚圣象 / 新华文轩），
+  //    分笔看板买点侧【整侧空白】。根因 = 当天买点全部落在【兜底方案】里，
+  //    而本看板当时只读 b.picks ⇒ 拿到的三个兜底槽位都是【方案外壳】：
+  //      形状 `{mode, qualified, emptyText, hintText, blocks:[...], notes:[...]}` ——
+  //      ⛔ 没有 .block、也没有 .picks，真正的块在 .blocks 里。
+  //    下面三个用例把这条口径钉死：兜底方案的块必须一个不少地渲染出来。
+  it('买点全在【⑥ 小题材兜底】里时照样渲染（9/30 现场：决策看板 2 只，本看板也必须 2 只）', () => {
+    const d = {
+      ready: true,
+      reason: '',
+      buy: {
+        heavy: null, light: null, candidates: [],
+        noYizi: null, bigTopic: null,
+        // 兜底方案 = 【外壳】，真正的块在 .blocks
+        smallTopic: {
+          mode: 'smallTopic',
+          qualified: true,
+          emptyText: '',
+          hintText: '题材股票数量过少（≤ 4 只）却有 1~2 个竞价一字（疑似量化）→ …',
+          notes: [],
+          blocks: [{
+            block: {
+              topic: '出版传媒', rank: null, count: 8, yiziCount: 1,
+              members: [{ name: '大亚圣象', code: '000910' }, { name: '新华文轩', code: '601811' }]
+            },
+            rankWord: '',
+            reason: '该题材在早盘竞价中股票数量最多（8 只）　→ 根据规则⑥：在龙一~龙五里取竞价高开的两只',
+            mode: 'smallTopic',
+            ruleNo: '⑥',
+            qualified: true,
+            notQualifiedText: '',
+            prevBoughtTag: '昨有买入',
+            streakTag: '三次入选',
+            picks: [
+              { seq: 1, name: '大亚圣象', dragonLabel: '龙一', dragonRank: 1, pct: 12.1 },
+              { seq: 2, name: '新华文轩', dragonLabel: '龙二', dragonRank: 2, pct: 8.4 }
+            ],
+            notes: []
+          }]
+        }
+      },
+      sell: []
+    };
+    const b = buildTickBoard(d, new Map());
+    // ① 整块必须出现（这是被报障的那一条）
+    expect(b.buyBlocks.length).toBe(1);
+    expect(b.buyBlocks[0].topic).toBe('出版传媒');
+    // ② 题材行两个标记照样带过来（引擎侧 _finishPlanBlocks 对兜底块一视同仁）
+    expect(b.buyBlocks[0].prevBoughtTag).toBe('昨有买入');
+    expect(b.buyBlocks[0].streakTag).toBe('三次入选');
+    // ③ 两只票都在（顺序与引擎给的 picks 一致）
+    expect(b.buyBlocks[0].picks.map(function(p) { return p.name; })).toEqual(['大亚圣象', '新华文轩']);
+    // ④ 抓取目标必须跟着出来 —— 否则这几只永远抓不到分笔（看板会空着「未抓取」）
+    expect(tickTargetsOf(b).map(function(t) { return t.name; })).toEqual(['大亚圣象', '新华文轩']);
+    expect(tickTargetsOf(b)[1].code).toBe('601811');
+  });
+
+  it('【⑤ 无一字 / 大题材 / ⑥ 小题材】三条兜底槽位逐一都能渲染（槽位名不同、外壳相同）', () => {
+    ['noYizi', 'smallTopic', 'bigTopic'].forEach(function(slot) {
+      const d = {
+        ready: true,
+        reason: '',
+        buy: { heavy: null, light: null, candidates: [], noYizi: null, smallTopic: null, bigTopic: null },
+        sell: []
+      };
+      d.buy[slot] = {
+        mode: slot,
+        qualified: true,
+        emptyText: '',
+        hintText: 'hint',
+        notes: [],
+        blocks: [{
+          block: { topic: 'T-' + slot, rank: null, count: 5, yiziCount: 0, members: [{ name: '甲股', code: '000001' }] },
+          rankWord: '',
+          reason: 'r',
+          mode: slot,
+          ruleNo: 'n',
+          qualified: true,
+          notQualifiedText: '',
+          prevBoughtTag: '',
+          streakTag: '',
+          picks: [{ seq: 1, name: '甲股', dragonLabel: '龙一', dragonRank: 1, pct: 3.3 }],
+          notes: []
+        }]
+      };
+      const b = buildTickBoard(d, new Map());
+      expect(b.buyBlocks.map(function(x) { return x.topic; })).toEqual(['T-' + slot]);
+      expect(b.buyBlocks[0].picks.map(function(p) { return p.name; })).toEqual(['甲股']);
+    });
+  });
+
+  it('兜底方案未达门槛（picks 全空）⇒ 整块仍不渲染（与决策看板「空仓」同一口径）', () => {
+    const d = {
+      ready: true,
+      reason: '',
+      buy: {
+        heavy: null, light: null, candidates: [], noYizi: null, bigTopic: null,
+        smallTopic: {
+          mode: 'smallTopic', qualified: false, emptyText: '入选题材里没有可买的票 → 【空仓】',
+          hintText: 'h', notes: [],
+          blocks: [{
+            block: { topic: '出版传媒', rank: null, count: 8, yiziCount: 1, members: [] },
+            rankWord: '', reason: 'r', mode: 'smallTopic', ruleNo: '⑥',
+            qualified: false, notQualifiedText: '', prevBoughtTag: '', streakTag: '',
+            picks: [], notes: []
+          }]
+        }
+      },
+      sell: []
+    };
+    const b = buildTickBoard(d, new Map());
+    expect(b.buyBlocks).toEqual([]);
+    expect(tickTargetsOf(b)).toEqual([]);
+  });
+
   it('tickTargetsOf：买点 + 卖点去重后的抓取目标（同一只票只出现一次）', () => {
     const b = buildTickBoard(_decided(), new Map());
     const targets = tickTargetsOf(b);

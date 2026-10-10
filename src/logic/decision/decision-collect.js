@@ -146,27 +146,54 @@ function _buyBlocksOf(buy) {
 }
 
 /**
- * [TICK-BOARD 2026-10-10] 【买点块摊平】的对外出口。
+ * [BUY-BLOCKS-FLAT 2026-10-11] 【买点块 · 摊平清单】的对外出口 —— 遍历「一个买点块」的唯一实现（§6）。
  *
- * 用途：「分笔买卖」看板要按【和决策看板完全相同的买点块】去取分笔 ——
- *   它必须拿到 heavy / light / candidates[] / 三个兜底槽位的并集。
+ * 与 _buyBlocksOf 的区别（这就是上面那段注释里说的「槽位列表 + 数组 + blocks 兜底」的落地）：
+ *   · _buyBlocksOf         = 【原始槽位清单】：原样吐出 heavy / light / candidates[] /
+ *                            noYizi / smallTopic / bigTopic —— 其中后三个是【方案外壳】，
+ *                            形状是 `{mode, qualified, emptyText, hintText, blocks:[...], notes:[...]}`，
+ *                            ⛔ 它们【没有 .block、也没有 .picks】，真正的块在 .blocks 里。
+ *   · buyBlocksFlat（本函数）= 【摊平后的块清单】：保证每一项都是【常规块】（都有 .block / .picks），
+ *                            可以直接 `b.block.topic` / `b.picks.forEach(...)`。
  *
- * ⛔ 为什么必须从这里导出、而不是在那边的逻辑层再写一份 ['heavy','light',...].forEach：
- *   那份遍历是「口径一致性靠结构保证」的那一处（见 _eachRow 的长注释）——
- *   历史上新增过 candidates（2026-10-02）、兜底槽位改过三回，
- *   每多一份遍历就多一次「某个新档位的票静默漏掉」的机会。
- *   本导出【纯增量】：只是把同一个函数暴露出去，⛔ 不改任何行为（决策看板一行都不变）。
+ * 🔴 为什么需要它（2026-09-30 现场，用户 2026-10-11 报障）：
+ *   「分笔买卖」看板最初只看 `b.picks`，遇到 heavy / light / candidates 都正常，
+ *   但只要当天的买点【全部落在兜底方案里】（⑥ 小题材 / ⑤ 无一字 / 大题材），
+ *   拿到的就是三个【外壳】⇒ `b.picks` 恒空 ⇒ **整侧买点空白**，而决策看板照常显示
+ *   （它走的是 buySpecial.blocks）。9/30 实测就是这一天：决策看板有 大亚圣象 / 新华文轩 两只，
+ *   分笔看板买点侧一个块都没有。同一个坑，引擎侧 `_finishPlanBlocks` 的注释里也记过一次
+ *   （「当天买点全在兜底方案里的日子整块看板没有次数（9/30 实测）」）。
+ *
+ * ⛔ 为什么遍历必须收口在这里：每多写一份「b.picks / b.blocks」的手写遍历，
+ *    就多一次「新增一个档位后，那边的票静默漏掉」的机会（candidates 是 2026-10-02 才加的、
+ *    兜底槽位改过三回）。_buyPlanNames / _eachRow / 分笔看板三处现在共用本函数。
+ *
+ * ⚠️ 行为与旧的「先 b.picks、再 b.blocks[].picks」逐字等价（顺序一致）；
+ *    按【对象标识】去重（同一个块同时出现在 light 与 candidates 里时只出一次）。
+ *
+ * @param {object} buy buildBuyPlan 的返回值（可为 null）
+ * @returns {Array<object>} 常规买点块数组（每项都有 .block / .picks）
  */
-export { _buyBlocksOf as buyBlocksOf };
+export function buyBlocksFlat(buy) {
+  const out = [];
+  _buyBlocksOf(buy).forEach(function(b) {
+    if (!b) return;
+    // ① 常规块（heavy / light / candidates）：它自己就是块
+    //    ⚠️ 也要去重：被降级成候选题材的第 2 名【同时】出现在 light 与 candidates 里
+    //       （是同一个对象引用）—— 决策看板用「引用相等」排除它，这里同一口径。
+    if ((b.block || (b.picks && !b.blocks)) && out.indexOf(b) < 0) out.push(b);
+    // ② 兜底方案外壳：把 .blocks 里真正的块摊平出来（按对象标识去重）
+    (b.blocks || []).forEach(function(bb) {
+      if (bb && out.indexOf(bb) < 0) out.push(bb);
+    });
+  });
+  return out;
+}
 
 function _buyPlanNames(buy) {
   const out = new Set();
-  if (!buy) return out;
-  _buyBlocksOf(buy).forEach(function(b) {
+  buyBlocksFlat(buy).forEach(function(b) {
     (b.picks || []).forEach(function(p) { if (p && p.name) out.add(p.name); });
-    (b.blocks || []).forEach(function(bb) {
-      (bb.picks || []).forEach(function(p) { if (p && p.name) out.add(p.name); });
-    });
   });
   return out;
 }
@@ -192,14 +219,10 @@ function _buyPlanNames(buy) {
  * @param {(row:object)=>void} fn 逐行回调（行 = 买点 pick / 卖点 item）
  */
 function _eachRow(buy, sell, fn) {
-  if (buy) {
-    _buyBlocksOf(buy).forEach(function(b) {
-      (b.picks || []).forEach(fn);
-      (b.blocks || []).forEach(function(bb) {
-        (bb.picks || []).forEach(fn);
-      });
-    });
-  }
+  // ⛔ 摊平（含三个兜底方案的 .blocks）由 buyBlocksFlat 负责 —— 遍历只此一份，见它的长注释。
+  buyBlocksFlat(buy).forEach(function(b) {
+    (b.picks || []).forEach(fn);
+  });
   (sell || []).forEach(function(g) {
     (g.items || []).forEach(fn);
   });
