@@ -42,6 +42,11 @@ import { ensureDragonGroup } from '../logic/auction/dragon-group.js';
 // [CLOSE-COVER 2026-09-10] 收盘后自动用【收盘涨幅】覆盖 9:25 竞价涨幅（此前该闭环只存在于
 // 从未执行过的 pg_cron，导致当天 change_pct 全天停留在竞价值）。
 import { ensureClosePctCovered, isCloseCoverWindow } from '../logic/auction/close-pct-cover.js';
+// [SEAL-VOLUME 2026-10-11 用户口径] 封单量（手）的 5 日趋势腿 + limit_pool 只读窗口。
+//   ⛔ 不消费任何猫抓额度：limit_pool 由 Edge Function 15:40 用同花顺 fuyao 免费抓取落库，本端只读库。
+import { sealLotsPointsOfHistory, sealWindowPending, ensureSealWindow } from '../logic/auction/seal-volume.js';
+import { hasLimitPoolDay, ensureLimitPoolDays } from '../data/limit-pool.js';
+import { _dbgLog } from '../data/debug-log.js';
 // §P1-6：展示层纯函数已抽取到 ../composables/auction-board-helpers.js（行为等价）。
 import {
     getStarSymbols,
@@ -518,17 +523,9 @@ export function useAuctionBoard() {
     }
   }
   function loadP2TrendHistory(stockName) {
-    const history = getAuctionStockHistory(stockName.trim(), uiStore.currentDate, 5, 'auction');
-    const stats = _computeTrendStats(history);
-    return {
-      volume: history.map(h => ({ date: h.date, value: h.volume })),
-      yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
-      changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
-      aucPctChg: history.map(h => ({ date: h.date, value: h.aucPctChg !== undefined ? h.aucPctChg : null })),
-      // [VRATIO-TREND 2026-10-01] 竞价量比（倍数）：与上面四列同一份 history / 同一个 5 日窗口
-      aucVolRatio: history.map(h => ({ date: h.date, value: h.aucVolRatio !== undefined ? h.aucVolRatio : null })),
-      ...stats
-    };
+    const name = stockName.trim();
+    const history = getAuctionStockHistory(name, uiStore.currentDate, 5, 'auction');
+    return _trendEntryOf(history, name);
   }
 
   // [FIX 2026-08-16] 整组展开分批异步加载趋势历史（§33 性能）：每帧一批（默认 4 只），
@@ -811,8 +808,39 @@ export function useAuctionBoard() {
     if (!headerSearchActive.value) highlightStockSet.value = new Set();
   }
 
+  /** 封单量窗口的读取单飞标志：同一时刻只允许一次「读 limit_pool 窗口」（§32） */
+  let _sealEnsuring = false;
+
+  /**
+   * [SEAL-VOLUME 2026-10-11 用户口径] 确保封单量窗口已在 Data 层内存缓存里
+   * （供 Logic 层纯函数同步取值；窗口日期口径见 seal-volume.js#sealWindowDates）。
+   *
+   * ⛔ 不消费猫抓额度：limit_pool 是 Edge Function 15:40 用同花顺 fuyao 免费抓的。
+   * §32：窗口已缓存 ⇒ 一个请求都不发、也不重算视图，直接返回。
+   * 读完 → 再 bump 一次版本号 → 统计条 / 趋势图重算，封单段才会出现。
+   * §10：读失败只记日志 —— 封单段自然不出现（⛔ 不污染看板、不假装成「没有封单」）。
+   */
+  function _ensureSealWindow() {
+    const d = uiStore.currentDate;
+    if (!d || _sealEnsuring) return;
+    if (!sealWindowPending(d)) return;
+    _sealEnsuring = true;
+    ensureSealWindow(d)
+      .then(function() {
+        // 日期已切走 ⇒ 不要用旧窗口的到货去触发新日期的重算（新日期那次自己会再 ensure）
+        if (uiStore.currentDate !== d) return;
+        auctionStore.bumpDataVersion('auction');
+      })
+      .catch(function(e) {
+        _dbgLog('[SEAL-VOLUME] limit_pool 窗口读取失败：' + ((e && e.message) || e));
+      })
+      .finally(function() { _sealEnsuring = false; });
+  }
+
   function refresh() {
     auctionStore.bumpDataVersion('auction');
+    // [SEAL-VOLUME 2026-10-11] 顺带确保封单量窗口已就绪（已缓存 = 立刻返回，零请求零重算）。
+    _ensureSealWindow();
   }
 
   /**
@@ -951,16 +979,7 @@ export function useAuctionBoard() {
         const name = item.stock.trim();
         newSet.add(name);
         const history = getAuctionStockHistory(name, uiStore.currentDate, 5, 'auction');
-        const stats = _computeTrendStats(history);
-        newHistory[name] = {
-          volume: history.map(h => ({ date: h.date, value: h.volume })),
-          yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
-          changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
-          aucPctChg: history.map(h => ({ date: h.date, value: h.aucPctChg !== undefined ? h.aucPctChg : null })),
-          // [VRATIO-TREND 2026-10-01] 竞价量比（倍数）
-          aucVolRatio: history.map(h => ({ date: h.date, value: h.aucVolRatio !== undefined ? h.aucVolRatio : null })),
-          ...stats
-        };
+        newHistory[name] = _trendEntryOf(history, name);
       }
     });
     expandedSet.value = newSet;
@@ -992,23 +1011,48 @@ export function useAuctionBoard() {
     return { jingRatio, yestRatio, diff };
   }
 
+  /**
+   * [SEAL-VOLUME 2026-10-11] 【趋势面板行对象的唯一构造实现（§6）】
+   *
+   * 把一份 getAuctionStockHistory 的结果转成趋势面板要的「一条腿一天一个点」结构。
+   *
+   * 🔴 为什么要收口成一个函数（而不是三个调用点各写一份 history.map）：
+   *   同一个对象在【三处】被构造 —— 第二页整组展开（loadP2TrendHistory）、第一页「全部展开」
+   *   （expandAll）、点序号展开（loadTrendHistory 的 paint）。
+   *   三处逐字节相同的 6 行 map，加一条腿（本轮的封单量）就要改三遍 —— 漏一处就会出现
+   *   「这一页有封单量图、那一页没有」这种极难自查的缺项（§6 / 与 decision-collect 的
+   *   _eachRow 注释同一条教训：口径一致性靠结构保证，不靠人记得改三处）。
+   *
+   * @param {Array<object>} history getAuctionStockHistory(stockName, date, 5) 的返回（正序）
+   * @param {string} name 股票名（封单量腿要从 limit_pool 缓存按名字取，⛔ 不能从 history 里猜）
+   * @returns {object} 趋势面板的一行（volume / yestVolume / changePct / aucPctChg / aucVolRatio /
+   *                   sealLots / 以及 jingRatio、yestRatio、diff 三个派生比）
+   */
+  function _trendEntryOf(history, name) {
+    const stats = _computeTrendStats(history);
+    return {
+      volume: history.map(h => ({ date: h.date, value: h.volume })),
+      yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
+      changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
+      aucPctChg: history.map(h => ({ date: h.date, value: h.aucPctChg !== undefined ? h.aucPctChg : null })),
+      // [VRATIO-TREND 2026-10-01] 竞价量比（倍数）
+      aucVolRatio: history.map(h => ({ date: h.date, value: h.aucVolRatio !== undefined ? h.aucVolRatio : null })),
+      // [SEAL-VOLUME 2026-10-11 用户口径] 封单量（手）近 5 日：**只有当天涨停的才有数值**
+      //   （非涨停 = 不在 limit_pool ⇒ null ⇒ 图上画「--」，§10 ⛔ 不补 0）。
+      //   横轴日期【只认 history 给的】（见 sealLotsPointsOfHistory 的注释：必须与上面几张图逐日对齐）。
+      sealLots: sealLotsPointsOfHistory(history, name),
+      ...stats
+    };
+  }
+
   async function loadTrendHistory(stockName) {
     const name = (stockName || '').trim();
     if (!name) return;
     // 先用内存缓存即时出图：保证点击序号后面板立即展开（不依赖网络，根治"展开空白/像没展开"）
     const paint = (history) => {
-      const stats = _computeTrendStats(history);
       trendHistory.value = {
         ...trendHistory.value,
-        [name]: {
-          volume: history.map(h => ({ date: h.date, value: h.volume })),
-          yestVolume: history.map(h => ({ date: h.date, value: h.yestVolume })),
-          changePct: history.map(h => ({ date: h.date, value: h.changePct !== undefined ? h.changePct : null })),
-          aucPctChg: history.map(h => ({ date: h.date, value: h.aucPctChg !== undefined ? h.aucPctChg : null })),
-          // [VRATIO-TREND 2026-10-01] 竞价量比（倍数）
-          aucVolRatio: history.map(h => ({ date: h.date, value: h.aucVolRatio !== undefined ? h.aucVolRatio : null })),
-          ...stats
-        }
+        [name]: _trendEntryOf(history, name)
       };
     };
     const history = getAuctionStockHistory(name, uiStore.currentDate, 5, 'auction');
@@ -1040,6 +1084,22 @@ export function useAuctionBoard() {
     }
     if (hydrated) {
         paint(getAuctionStockHistory(name, uiStore.currentDate, 5, 'auction'));
+    }
+    // [SEAL-VOLUME 2026-10-11] 封单量腿：先把这几天读进 limit_pool 内存缓存，再补画一次。
+    //   ⚠️ 只在【确实缺这一天】时才打库并重画 —— 窗口缓存命中的常见情形 = 完全不做事（§32）。
+    //   ⚠️ 读失败只记日志：封单量那张图自然不出现，⛔ 不连坐上面五张图（辅助指标失败不打断主流程，§10）。
+    const sealDates = history.map(h => h.date);
+    if (sealDates.length > 0 && sealDates.some(d => !hasLimitPoolDay(d))) {
+        const reqDate = uiStore.currentDate;
+        ensureLimitPoolDays(sealDates)
+            .then(function() {
+                // 日期已切走 ⇒ 不要拿旧窗口的数据画到新日期的面板上
+                if (uiStore.currentDate !== reqDate) return;
+                paint(getAuctionStockHistory(name, uiStore.currentDate, 5, 'auction'));
+            })
+            .catch(function(e) {
+                _dbgLog('[SEAL-VOLUME] 展开趋势时读 limit_pool 失败：' + ((e && e.message) || e));
+            });
     }
   }
 
@@ -1447,10 +1507,14 @@ export function useAuctionBoard() {
     refresh();
     loadCopiedStocks();
     _on('auction-refresh', onAuctionRefresh);
+    // [SEAL-VOLUME 2026-10-11] limit_pool 变化（15:40 抓取端写入 / 他端写库）→ 重新确保封单量窗口。
+    _on('data:realtime-update', _onLimitPoolRealtime);
   });
   onUnmounted(() => {
     cancelLongPress();
     _off('auction-refresh', onAuctionRefresh);
+    // [SEAL-VOLUME 2026-10-11] 与 _on 成对注销（§31 生命周期，⛔ 不留给下一个页面）
+    _off('data:realtime-update', _onLimitPoolRealtime);
     // [CLOSE-COVER] 清理跨门槛轮询，避免组件卸载后定时器泄漏（§31 生命周期）
     if (_closeCoverTimer) {
       clearInterval(_closeCoverTimer);
@@ -1458,6 +1522,17 @@ export function useAuctionBoard() {
       _closeCoverBound = false;
     }
   });
+
+  /**
+   * [SEAL-VOLUME 2026-10-11] limit_pool 实时变化 → 重新确保封单量窗口。
+   * ⚠️ 严格按 boards === 'limitpool' 过滤：别的看板的实时事件与本看板无关，
+   *    ⛔ 不能让它们触发本看板的读库（§32）。
+   * （Data 层在 emit 之前已作废该日的内存缓存，所以这里的 ensure 会真的重读那一天。）
+   */
+  function _onLimitPoolRealtime(ev) {
+    if (!ev || ev.boards !== 'limitpool') return;
+    _ensureSealWindow();
+  }
 
   function onAuctionRefresh() {
     if (uiStore.currentDate) prepareAuctionData(uiStore.currentDate);

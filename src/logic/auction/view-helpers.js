@@ -41,6 +41,9 @@ import { getDragonRangePct, computeDragonRankMap, isAuthoritativeCloseReached } 
 // 此处同步读取（与 weakStrongSetRef 同款 ref-driven 范式），题材 toggle 开启时才参与计算。
 // [TOPIC-STATS 2026-09-10] 题材块统计条（数量/一字/竞价高开/龙头…）：纯函数在 topic-stats.js
 import { buildTopicStatsMap } from './topic-stats.js';
+// [SEAL-VOLUME 2026-10-11] 封单量（手）的同步读取器：读 Data 层 limit_pool 内存缓存（§6 单一真相），
+//   ⛔ 本文件不发请求、不消费猫抓额度 —— 「什么时候把 limit_pool 读进缓存」由组合式负责。
+import { sealLotsOf } from './seal-volume.js';
 // [DRAGON-GROUP 2026-09-14] 龙头组（第一页【观察组上方】的独立区块）：名册由 logic/auction/dragon-group.js
 // 异步加载后经模块级 ref 暴露，此处【同步读取】（与 dragon-rank 同款 ref-driven 范式，绝不阻塞渲染）。
 // 名册是唯一真相（§6）：本文件只负责「读名册 → 注入空壳行 → 给出 dragonIndices → 观察组去重」，
@@ -1201,6 +1204,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     //   由 topic-stats.js 自己按 formal 分流：计数走正式成员、平均量比走全部行。
     //   ⚠️ 成组门槛（不足 2 只正式成员的题材不出统计条）仍在 topic-stats.js 内部按 formal 判，
     //      因此「哪些题材会出现统计条」与改造前【逐字一致】。
+    // [SEAL-VOLUME 2026-10-11 用户口径] 封单量（手）的同步读取器（Data 层内存缓存，⛔ 不发请求、
+    //   不消费猫抓额度）。合计 / 变化的口径与格式化全在 topic-stats.js + seal-volume.js。
+    const _sealPrevDate = getPreviousTradingDay(currentDate);
     const _entries = items.map(function(it) {
       const rp = (_rangeMap && _rangeMap.has(it.stock)) ? _rangeMap.get(it.stock).pct : null;
       return {
@@ -1214,10 +1220,15 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
         //    停板只由股票名下蚂蚁线表达（见本文件 closeLimit 字段 + AuctionBoardTable）。
         closePct: it.closePct,
         // [NOT-FORMAL 2026-09-23] 是否今日 9:25 正式名单成员（false = 灰行）。
-        //   计数类统计只看 true（口径不变）；[AVG-VRATIO 2026-10-01] 平均竞价量比【不分】。
+        //   计数类统计只看 true（口径不变）；[AVG-VRATIO 2026-10-01] 平均竞价量比【不分】；
+        //   [SEAL-VOLUME 2026-10-11] 封单合计同样【不分】（与平均量比同一分母口径）。
         formal: !!it.isFormalMember,
         // [AVG-VRATIO 2026-10-01 用户口径] 当日竞价量比（倍数）→ 题材平均量比的分母/分子。
-        volRatio: getAucVolRatio(currentDate, it.stock)
+        volRatio: getAucVolRatio(currentDate, it.stock),
+        // [SEAL-VOLUME 2026-10-11 用户口径] 封单量（手）：当日 + 上一交易日（后者只用于算「变化」）。
+        //   非涨停 / 没有封单数据 ⇒ null（§10 ⛔ 不补 0，不会被算进合计，也算不出变化）。
+        sealLots: sealLotsOf(currentDate, it.stock),
+        sealLotsPrev: _sealPrevDate ? sealLotsOf(_sealPrevDate, it.stock) : null
       };
     });
     topicStatsMap = buildTopicStatsMap(_entries);

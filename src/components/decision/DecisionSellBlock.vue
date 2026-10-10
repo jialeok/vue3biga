@@ -105,6 +105,28 @@
           v-if="it.volRatioArrow"
           class="dcb-vratio-arrow"
         >{{ it.volRatioArrow }}</span></span>
+        <!-- ══ [SEAL 2026-10-11 用户口径] 连板 + 封单额（+ 与上一交易日的变化）——
+             与【买点】完全同一份字段、同一套配色（≠ 各写一份，§6 单一真相）：
+             用户原话「决策看板那里我希望你也要添加，这样同步也方便知道哪些股票是连板，封单数量是多少」。
+             数据来自 limit_pool（同花顺 fuyao 15:40 收盘快照 ⇒ ⛔ 0 猫抓额度），
+               **只有当天涨停的股票才有值**（非涨停 ⇒ Logic 给空串 ⇒ 两枚徽标都不渲染，§10）。
+             · 【连板】只在【真连板】（≥ 2 连板）时出现（首板满屏都是，标了没有信息量）；
+             · 【封单】= 今日封单额 + 变化量：增加红 ↑ / 减少绿 ↓。
+             ⛔ 文案 / 箭头 / 配色档全由 Logic 层给，模板只拼接（§21 零计算）。 -->
+        <span
+          v-if="it.sealContinueTag"
+          class="dcb-continue"
+          title="连板天数（来自涨停池 continue_day_cnt；首板不显示本标签）"
+        >{{ it.sealContinueTag }}</span>
+        <span
+          v-if="it.sealMoneyText"
+          class="dcb-seal"
+          :class="it.sealDeltaTone ? ('dcb-seal-' + it.sealDeltaTone) : ''"
+          :title="it.sealDeltaTitle"
+        >封单 {{ it.sealMoneyText }}<span
+          v-if="it.sealDeltaText"
+          class="dcb-seal-delta"
+        >{{ it.sealDeltaArrow }}{{ it.sealDeltaText }}</span></span>
         <!-- [SHARE-RULE 2026-10-03 用户口径] 竞价占比标签：与【买点】同款同位置（跟在竞价量比右边）。
              口径 = 当日竞价量 ÷ 昨日成交量、保留 1 位小数；文案 / 配色档全在 Logic 层算好（§21）；
              缺数据 ⇒ 空串 ⇒ 徽标不渲染（§10 绝不显示 0.0%）。 -->

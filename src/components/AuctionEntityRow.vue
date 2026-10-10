@@ -223,6 +223,30 @@
           :percent="true"
         />
       </div>
+      <!-- [SEAL-VOLUME 2026-10-11 用户口径] 「封单量（手）近 5 日」趋势：位置 = 【涨幅(%) 近5日】图【下方】
+           （用户原话「在，股票下方的五日趋势图下面的涨幅图下方，增加封单数量五日趋势变化图，
+             有涨停的才有数值」）。
+           口径：数据来自 limit_pool（同花顺 fuyao 15:40 收盘快照，⛔ 0 猫抓额度），
+                **只有当天涨停的股票才有数值**（非涨停 = 当日不在涨停池 ⇒ 该点画「--」，
+                §10 ⛔ 不用 0 冒充「封单为 0」）；整条一个有效点都没有 ⇒ 整块不渲染
+                （judge 在下方 sealLotsHasData，与上面几张图同一套 §10 处理）。
+           🔴 颜色取【紫 #a855f7】：上面五张已占用 靛蓝#6366f1 / 绿#10b981 / 玫红#ec4899 /
+              橙#f59e0b / 灰#64748b —— 再复用任一色都会与已有一张图混淆（封单量是独立指标）。
+           ⛔ decimals 用默认 0（整数手）：封单量是【手数】，不像量比那样靠小数表意；
+              若按「万手」缩到 2 位小数，小额封单会显示成 `0.00` —— 那正是 §10 禁止的
+              「把没数据画成 0」。宁可标签长一点，也不能让数值与事实打脸。 -->
+      <div
+        v-if="sealLotsHasData(item.stock)"
+        class="trend-chart-item"
+      >
+        <div class="trend-chart-label">
+          封单量(手) 近5日
+        </div>
+        <TrendChart
+          :points="trendHistory[item.stock].sealLots"
+          color="#a855f7"
+        />
+      </div>
     </template>
   </div>
 </template>
@@ -263,6 +287,13 @@ function changePctHasData(stock) {
 // 绝不让一个缺失字段把整行渲染打断（§10 缺值可见，但不许崩）。
 function volRatioHasData(stock) {
   const leg = trendHistory.value[stock].aucVolRatio;
+  return Array.isArray(leg) && leg.some(p => p.value !== null);
+}
+// [SEAL-VOLUME 2026-10-11 用户口径] 封单量（手）序列同上：整条都没有有效点 → 整块不渲染。
+// ⚠️ 多一层 Array.isArray 防御：该字段是本轮新加的，若某条 trendHistory 快照来自旧结构（或
+//    limit_pool 窗口还没读回来）就按「无数据」处理，绝不让一个缺失字段把整行渲染打断（§10）。
+function sealLotsHasData(stock) {
+  const leg = trendHistory.value[stock].sealLots;
   return Array.isArray(leg) && leg.some(p => p.value !== null);
 }
 

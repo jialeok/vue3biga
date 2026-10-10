@@ -126,6 +126,29 @@
           v-if="p.volRatioArrow"
           class="dcb-vratio-arrow"
         >{{ p.volRatioArrow }}</span></span>
+        <!-- ══ [SEAL 2026-10-11 用户口径] 连板 + 封单额（+ 与上一交易日的变化）════════════════
+             用户原话：「决策看板那里我希望你也要添加，这样同步也方便知道哪些股票是连板，
+               封单数量是多少」；拍板口径 =【只加封单额 + 变化】。
+             数据来自 limit_pool（同花顺 fuyao 15:40 收盘快照 ⇒ ⛔ 0 猫抓额度），
+               所以**只有当天涨停的股票才有值**（非涨停 ⇒ Logic 给空串 ⇒ 两枚徽标都不渲染）。
+             · 【连板】只在【真连板】（≥ 2 连板）时出现 —— 首板满屏都是，标了没有信息量；
+             · 【封单】= 今日封单额 + 变化量：增加红 ↑ / 减少绿 ↓（A 股涨红跌绿口径）；
+             · 文案 / 箭头 / 配色档 / 悬停说明全部由 Logic 层给（§21 模板零计算），
+               ⛔ 组件不在这里写 `sealDeltaTone === 'up'` 之类的判断。 -->
+        <span
+          v-if="p.sealContinueTag"
+          class="dcb-continue"
+          title="连板天数（来自涨停池 continue_day_cnt；首板不显示本标签）"
+        >{{ p.sealContinueTag }}</span>
+        <span
+          v-if="p.sealMoneyText"
+          class="dcb-seal"
+          :class="p.sealDeltaTone ? ('dcb-seal-' + p.sealDeltaTone) : ''"
+          :title="p.sealDeltaTitle"
+        >封单 {{ p.sealMoneyText }}<span
+          v-if="p.sealDeltaText"
+          class="dcb-seal-delta"
+        >{{ p.sealDeltaArrow }}{{ p.sealDeltaText }}</span></span>
         <!-- [SHARE-RULE 2026-10-03 用户口径] 竞价占比标签：紧跟在【竞价量比】右边（与卖点同款同位置）。
              口径 = 当日竞价量 ÷ 昨日成交量，【保留 1 位小数】（用户原话「这样更准确」，
              金健米业 0.0435 → 4.4%）。⚠️ 与早盘竞价第一页显示的那个占比【同一个公式】，

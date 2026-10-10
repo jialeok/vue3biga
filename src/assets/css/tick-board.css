@@ -395,6 +395,30 @@
   border: 1px solid #16a34a;
 }
 
+/* ---- [DRAGON-REF 2026-10-11 用户口径] 从决策看板继承的「跟龙」参考标签 ----
+   用户原话：「继承决策看板的龙一字持有标签，跟龙竞价卖等标签，就是跟龙有关的……只是作为参考」。
+   ★ 刻意用【空心描边】而不是像结论胶囊那样实心填充：
+     本看板的主角永远是【本分钟红绿笔数得出的结论】（立刻买 / 下杀买 / 冲高卖 / 立刻卖），
+     这三枚是从决策看板借来的【参考】—— 视觉上必须一眼能分清，⛔ 不能让参考盖过结论的注意力。
+     (`.tbb-verdict` 是实心；这里 border + 同色文字，尺寸与它一致，不撑高行高。)
+   配色（沿用全站「买红卖绿」的直觉）：
+     · 龙一字持有（yizi）   → 琥珀：龙一最强，中军 / 后排跟着走
+     · 跟龙竞价卖（follow） → 绿：跟着龙一走弱一起卖
+     · 补涨竞价买（makeup） → 红：靠达标龙一带动，竞价就买 */
+.tbb-ref {
+  padding: 0 4px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 13px;
+  border-radius: 4px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+
+.tbb-ref-yizi   { color: #b45309; }
+.tbb-ref-follow { color: #16a34a; }
+.tbb-ref-makeup { color: #dc2626; }
+
 /* 均衡：⛔ 已随「三次改」删除 —— 红 = 绿【打平】并入【弱】档，tone 只剩 strong / weak，
    本类不会再被任何 code path 命中（组件是 'tbb-verdict-' + strengthTone 拼类名）。 */
 

@@ -24,6 +24,10 @@ import { getDragonLeadersForDisplay } from '../auction/dragon-group.js';
 import { getPrevSoldInheritedSet } from '../auction/inherited-sold.js';
 // [GRAY-DRAGON 2026-09-26] 灰行（不在当日正式列表的继承票）的观察组来源，与早盘竞价同款（§6）
 import { getJingYestHighlightSetForDate } from '../auction/sort-rules.js';
+// [SEAL 2026-10-11 用户口径] 决策看板逐票「封单额 + 变化 + 连板」：口径与读取全在 seal-volume.js
+//   （§6 单一真相，与早盘竞价看板的封单量共用同一份 limit_pool 内存缓存）。
+//   ⛔ 不消费猫抓额度：limit_pool 由 Edge Function 15:40 用同花顺 fuyao 免费抓取落库，本层只读。
+import { decorateSealFields } from '../auction/seal-volume.js';
 import { _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 // [TWO-MODES 2026-10-02 用户口径] 买点分两套模式，由早盘竞价的题材 / 一字 toggle 决定
@@ -272,6 +276,33 @@ function _decorateDragonRankChange(buy, sell, prevDate, todayRankMap) {
   const prevRankMap = (prevDate && st.date === prevDate && st.map.size > 0) ? st.map : null;
   _eachRow(buy, sell, function(row) {
     applyDragonRankChange(row, prevRankMap, todayRankMap);
+  });
+}
+
+/**
+ * [SEAL 2026-10-11 用户口径] 给买点 / 卖点的每一行挂上【封单额 + 变化 + 连板】：
+ *   · `sealMoneyText`  今日封单额（'3.20亿'；无值 / 0 → 空串 ⇒ 徽标不渲染）
+ *   · `sealDeltaText`  与上一交易日的变化量（'+1.10亿' / '-8500万'；算不出 → 空串）
+ *   · `sealDeltaTone`  变化配色档（'up' 增加红 / 'down' 减少绿）
+ *   · `sealDeltaArrow` '↑' / '↓'
+ *   · `sealContinueTag` 连板文案（'2连板'…；首板 → 空串）
+ *   · `sealDeltaTitle` 悬停说明
+ *
+ * 用户原话（2026-10-11）：「决策看板那里我希望你也要添加，这样同步也方便知道哪些股票是连板，
+ *   封单数量是多少」；拍板口径 =【只加封单额 + 变化】（封单量（手）只放早盘竞价看板）。
+ *
+ * 数据来自 limit_pool（同花顺 fuyao 15:40 收盘快照 ⇒ 0 猫抓额度）；§10：当天没涨停
+ * （不在涨停池）⇒ 全行空串 ⇒ 一枚徽标都不显示，⛔ 绝不猜。
+ * ⛔ skipPrevBuy（内部递归算历史日买点、结果不进 UI）不挂：挂了纯属白算（§36）。
+ *
+ * @param {object} buy  buildBuyPlan 的返回
+ * @param {Array} sell  buildSellPlan 的返回
+ * @param {string} date 展示日（= 决策看板当前日期）
+ */
+function _decorateSeal(buy, sell, date) {
+  if (!date) return;
+  _eachRow(buy, sell, function(row) {
+    decorateSealFields(row, date);
   });
 }
 
@@ -722,6 +753,10 @@ export function collectDecisionData(date, opts) {
   //   ⚠️ 依赖 dragonRankChangeState（store 异步备好的前一交易日龙位表）：这里【读】它，
   //      于是 computed 会自动追踪这份 ref ⇒ 表备好之后看板自己重算、徽标自己出现（§17 不阻塞渲染）。
   _decorateDragonRankChange(buy, sell, prevDate, dragonMap);
+
+  // [SEAL 2026-10-11 用户口径] 逐票【封单额 + 变化 + 连板】—— 只读 limit_pool 内存缓存（0 请求、
+  //   0 猫抓额度）。⛔ 与上面两个装饰器同一取舍：skipPrevBuy 的内部重算结果不进 UI，不挂（§36）。
+  if (!skipPrevBuy) _decorateSeal(buy, sell, date);
 
   // [PREV-BOUGHT 2026-09-30 用户口径，同日两次修正] 「昨天买过」这件事现在有【两个】落点：
   //   · 题材行【昨有买入】(block.prevBoughtTag)：题材里【有】票昨天被打过「买」标签 ⇒ 题材在延续。

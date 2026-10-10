@@ -658,3 +658,74 @@ describe('tick-minute · 红线：前端超时 > 后端上游总预算', () => {
     expect(edge.indexOf('.delete(')).toBe(-1);
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════════════
+// [DRAGON-REF 2026-10-11 用户口径] 「分笔买卖」看板继承【决策看板】的跟龙标签
+//   用户原话：「分笔买卖看板，我希望继承决策看板的龙一字持有标签，跟龙竞价卖等标签，就是跟龙有关的，
+//     继承下，因为龙一会影响中军或者后排的走势，技术再好也没用，有时还要看题材或者龙一的眼色。
+//     当然你把标签放到分笔买卖看板时，原来的那些标签保持不变，只是作为参考。」
+//   ⇒ 只继承三枚（龙一字持有 / 跟龙竞价卖 / 补涨竞价买），按固定顺序；
+//     ⛔ 其它决策标签（竞价买 / 尾盘买 / 下杀买 / 持有 / 竞价卖 …）一律不继承；
+//     ⛔ 不影响本行结论（strengthText 仍由本分钟红绿笔数独立给出）。
+// ══════════════════════════════════════════════════════════════════════════════════
+describe('tick-minute · 跟龙参考标签（继承自决策看板）', () => {
+  /** 在基础夹具上加动作标签：buyTags 按 picks 顺序逐个贴（'' / null = 不贴） */
+  function _withTags(buyTags, sellTag) {
+    const d = _decided();
+    buyTags.forEach(function(t, i) {
+      if (t && d.buy.heavy.picks[i]) d.buy.heavy.picks[i].buyActionTag = t;
+    });
+    if (sellTag) d.sell[0].items[0].sellActionTag = sellTag;
+    return d;
+  }
+
+  it('买点侧继承【龙一字持有】/【补涨竞价买】，并带上固定配色档', () => {
+    const b = buildTickBoard(_withTags(['龙一字持有', '补涨竞价买']), new Map());
+    const picks = b.buyBlocks[0].picks;
+    expect(picks[0].dragonRefTags.map(function(t) { return t.text; })).toEqual(['龙一字持有']);
+    expect(picks[0].dragonRefTags[0].tone).toBe('yizi');
+    expect(picks[1].dragonRefTags.map(function(t) { return t.text; })).toEqual(['补涨竞价买']);
+    expect(picks[1].dragonRefTags[0].tone).toBe('makeup');
+    expect(picks[0].dragonRefTags[0].title).toContain('参考');
+  });
+
+  it('卖点侧继承【跟龙竞价卖】（绿档）', () => {
+    const b = buildTickBoard(_withTags([], '跟龙竞价卖'), new Map());
+    const it0 = b.sellGroups[0].items[0];
+    expect(it0.dragonRefTags.map(function(t) { return t.text; })).toEqual(['跟龙竞价卖']);
+    expect(it0.dragonRefTags[0].tone).toBe('follow');
+  });
+
+  it('★ 同一行同时命中多枚时按【固定顺序】输出（不随字段先后变化）', () => {
+    const d = _decided();
+    const p0 = d.buy.heavy.picks[0];
+    // 三个承载动作标签的格子各放一枚，故意与 DRAGON_REF_TAGS 的声明顺序【不同】
+    p0.buyActionTag = '补涨竞价买';
+    p0.sellActionTag = '跟龙竞价卖';
+    p0.holdTag = '龙一字持有';
+    const b = buildTickBoard(d, new Map());
+    expect(b.buyBlocks[0].picks[0].dragonRefTags.map(function(t) { return t.text; }))
+      .toEqual(['龙一字持有', '跟龙竞价卖', '补涨竞价买']);
+  });
+
+  it('★ 其它决策标签一律【不继承】（用户口径「就是跟龙有关的」）', () => {
+    const b = buildTickBoard(_withTags(['竞价买', '尾盘买'], '竞价卖'), new Map());
+    expect(b.buyBlocks[0].picks[0].dragonRefTags).toEqual([]);
+    expect(b.buyBlocks[0].picks[1].dragonRefTags).toEqual([]);
+    expect(b.sellGroups[0].items[0].dragonRefTags).toEqual([]);
+  });
+
+  it('★ 一枚都没命中 ⇒ 空数组（组件不渲染占位符）', () => {
+    const b = buildTickBoard(_withTags([], ''), new Map());
+    expect(b.buyBlocks[0].picks[0].dragonRefTags).toEqual([]);
+    expect(b.sellGroups[0].items[0].dragonRefTags).toEqual([]);
+  });
+
+  it('★ 参考标签【不影响本行结论】：库里没分笔数据时，结论仍是「未抓取」（⛔ 不是被标签顶掉）', () => {
+    const b = buildTickBoard(_withTags(['龙一字持有'], ''), new Map(), { attempted: new Set() });
+    const p = b.buyBlocks[0].picks[0];
+    expect(p.strengthText).toBe('');            // 没有分笔 ⇒ 没有结论胶囊
+    expect(p.emptyText).toBe(TICK_NOT_FETCHED); // 如实显示「未抓取」（§10）
+    expect(p.dragonRefTags.map(function(t) { return t.text; })).toEqual(['龙一字持有']);
+  });
+});

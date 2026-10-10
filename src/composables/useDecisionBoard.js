@@ -33,6 +33,9 @@ import { buildRulesLines, MODE_YIZI } from '../logic/decision/decision-mode.js';
 // [CHART-JUDGE 2026-10-09 用户口径] 手动「竞价图形判断」：① 纯映射（把判断套到标签上）
 //   ② 状态 + 加载 / 保存 / 订阅。两处都归 Logic 层，本文件不实现任何映射规则（§6 / §21）。
 import { applyChartJudge } from '../logic/decision/decision-chart-judge.js';
+// [SEAL 2026-10-11 用户口径] 封单额窗口的读取（口径 / 换算全在 seal-volume.js，§6）。
+//   ⛔ 不消费猫抓额度：limit_pool 由 Edge Function 15:40 用同花顺 fuyao 免费抓取落库。
+import { sealWindowPending, ensureSealWindow } from '../logic/auction/seal-volume.js';
 import {
   chartJudgeState,
   loadChartJudge,
@@ -238,6 +241,30 @@ export function useDecisionBoard() {
     // [DRAGON-RANK-CHANGE 2026-10-09] 用户主动刷新时也顺带补一次昨日龙位
     //   （store 已算好 / 次数用尽时是 no-op，不会重复请求）
     reloadPrevDragonRank();
+    // [SEAL 2026-10-11] 用户主动刷新时也顺带补一次封单量窗口（已缓存 = no-op）
+    _ensureSeal();
+  }
+
+  // ══ [SEAL 2026-10-11 用户口径] 逐票「封单额 + 变化 + 连板」的取数时机 ═══════════════════════════
+  // 口径 / 换算 / 格式化全在 logic/auction/seal-volume.js（§6），本文件只决定「什么时候读进缓存」。
+  // ⛔ 不消费猫抓额度：limit_pool 由 Edge Function 15:40 用同花顺 fuyao 免费抓取落库，这里只读库。
+  // §32：窗口已缓存 ⇒ 一个请求都不发；§10：读失败只记日志（封单徽标自然不出现，⛔ 不假装成「没有封单」）。
+  let _sealEnsuring = false;
+  function _ensureSeal() {
+    const d = currentDate.value;
+    if (!d || _sealEnsuring) return;
+    if (!sealWindowPending(d)) return;
+    _sealEnsuring = true;
+    ensureSealWindow(d)
+      .then(function() {
+        // 日期已切走 ⇒ 不要用旧窗口的到货去触发新日期的重算
+        if (currentDate.value !== d) return;
+        bumpVersion();
+      })
+      .catch(function(e) {
+        console.warn('[SEAL] limit_pool 窗口读取失败:', (e && e.message) || e);
+      })
+      .finally(function() { _sealEnsuring = false; });
   }
 
   // ══ [CHART-JUDGE 2026-10-09 用户口径] 手动「竞价图形判断」的 UI 时机 ══════════════════════════
@@ -319,6 +346,8 @@ export function useDecisionBoard() {
     //   ⚠️ 它可能比首屏的「近 30 天竞价窗口」更早跑完 —— 那种情况下这次会失败（名单未就绪），
     //      由下面的 auction-refresh 分支在数据到货后自动重试（§10：未就绪 ≠ 没有）。
     reloadPrevDragonRank();
+    // [SEAL 2026-10-11] 首次进入也把封单额窗口读进来（已缓存 = no-op）。
+    _ensureSeal();
   });
 
   // §26 日期切换 → 规则面板收起（新的一天是全新的结论，旧展开态会误导）
@@ -334,6 +363,8 @@ export function useDecisionBoard() {
     // [DRAGON-RANK-CHANGE 2026-10-09] 换了展示日 ⇒ 「前一交易日」也换了 ⇒ 必须重新取一份龙位表
     //   （store 内部会先清空上一天的名次，避免把更早一天的名次当成「昨天」算出一个假的变化值）。
     reloadPrevDragonRank();
+    // [SEAL 2026-10-11] 封单额也按日 ⇒ 换日期要重新确保窗口（已缓存 = no-op）。
+    _ensureSeal();
   });
 
   // ⛔ [CHART-JUDGE 2026-10-09] 事件总线这条走 bumpVersion【而不是 refresh】：见 bumpVersion 的注释
@@ -345,12 +376,22 @@ export function useDecisionBoard() {
     //   所以 store 内部有单飞 + 8 秒冷却 + 每日 8 次上限（§32），这里放心调用：
     //   已算好 / 冷却中 / 次数用尽 ⇒ 立即返回，一次请求都不会发。
     reloadPrevDragonRank();
+    // [SEAL 2026-10-11] 封单额窗口同理：sealWindowPending 已缓存/冷却中都会立刻返回（§32）。
+    _ensureSeal();
   };
   _on('auction-refresh', _onRefresh);
   _on('data:realtime-update', _onChartJudgeRealtime);
+  // [SEAL 2026-10-11] limit_pool 变化（15:40 抓取端写入 / 他端写库）→ 重新确保封单额窗口。
+  //   ⚠️ 严格按 boards === 'limitpool' 过滤，与上面的手动判断互不干扰（§32）。
+  function _onLimitPoolRealtime(payload) {
+    if (!payload || payload.boards !== 'limitpool') return;
+    _ensureSeal();
+  }
+  _on('data:realtime-update', _onLimitPoolRealtime);
   onUnmounted(function() {
     _off('auction-refresh', _onRefresh);
     _off('data:realtime-update', _onChartJudgeRealtime);
+    _off('data:realtime-update', _onLimitPoolRealtime);
     // §31 配对清理：本看板持有的 channel 由本看板关掉（⛔ 不留给下一个页面）
     stopChartJudgeRealtime();
   });

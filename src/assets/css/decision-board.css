@@ -440,6 +440,50 @@
         .dcb-vratio-up   { background-color: #dc2626; }   /* 比上一交易日增强 */
         .dcb-vratio-down { background-color: #16a34a; }   /* 比上一交易日下降 */
 
+        /* ---- [SEAL 2026-10-11 用户口径] 连板 + 封单额（+ 与上一交易日的变化）----
+           用户原话：「决策看板那里我希望你也要添加，这样同步也方便知道哪些股票是连板，封单数量是多少」
+                   「封单数量增加，你就在后面添加增加的数量和向上箭头，减少你就在后面添加减少的数量和向下箭头」。
+           数据 = limit_pool（同花顺 fuyao 15:40 收盘快照）⇒ **只有当天涨停的股票才有值**；
+             §10：没有值 ⇒ Logic 层给空串 ⇒ 徽标整个不渲染（⛔ 绝不显示 0 / '--'）。
+           配色沿用全站「涨红跌绿」：封单【增加】= 红底 + ↑、【减少】= 绿底 + ↓；
+             无变化 / 算不出变化时保持【琥珀底】——那两档既不增也不减，涂红绿都会给错暗示（§10 不猜）。
+           刻意不用靛蓝（那是竞价量比的色）、也不用占比的红：封单是【收盘后】的第三个独立指标，
+             同色会被当成同一个数。
+           ⛔ 类名带 dcb- 前缀：CSS 全局加载，通用名会串改其它看板。 */
+        .dcb-continue {
+            padding: 0 4px;
+            font-size: 9px;
+            line-height: 14px;
+            border-radius: 4px;
+            color: #ffffff;
+            background-color: #b45309;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .dcb-seal {
+            padding: 0 4px;
+            font-size: 9px;
+            line-height: 14px;
+            border-radius: 4px;
+            color: #ffffff;
+            background-color: #b45309;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* 变化量（在封单额右边）：与量比标签里的箭头同款处理 —— 略放大 + 轻微上移，
+           保证在小徽标里也看得清、且不撑高行高。 */
+        .dcb-seal-delta {
+            margin-left: 3px;
+            font-weight: 700;
+            font-size: 10px;
+            vertical-align: -1px;
+        }
+
+        .dcb-seal-up   { background-color: #dc2626; }   /* 封单【增加】：红 + ↑ */
+        .dcb-seal-down { background-color: #16a34a; }   /* 封单【减少】：绿 + ↓ */
+
         /* ---- [SHARE-RULE 2026-10-03 用户口径] 竞价占比（当日竞价量 ÷ 昨日成交量）----
            口径：保留 1 位小数（与早盘竞价第一页那个「取整」的占比刻意不同，⛔ 别去对齐）。
            它是买卖【时机】的主判据 ⇒ 配色直接表达「这个数值有多强」，与门槛对应：

@@ -47,7 +47,14 @@
 // §10 红线：任何一项取不到都不许补 0 / 不许编 —— 一律给 null / 空串，由模板 v-if 决定不渲染。
 
 import { buyBlocksFlat } from '../decision/decision-collect.js';
-import { formatRangePct } from '../decision/decision-rules.js';
+// [DRAGON-REF 2026-10-11 用户口径] 分笔看板要继承的「跟龙」标签常量，来自决策规则层
+//   （§6 单一真相：⛔ 不在本文件写 '龙一字持有' 这类字面量 —— 规则层改文案时这里会静默失配）。
+import {
+    formatRangePct,
+    DRAGON_YIZI_HOLD_TAG,
+    SELL_FOLLOW_DRAGON_TAG,
+    BUY_MAKEUP_TAG
+} from '../decision/decision-rules.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -458,6 +465,63 @@ function _resolveCode(name, directCode, memberMap) {
     return String(getStockCode(name) || '').trim();
 }
 
+// ══════════════════════════════════════════════════════════════════════════════════
+// ★ [DRAGON-REF 2026-10-11 用户口径] 分笔买卖看板【继承决策看板的「跟龙」标签】★
+// ══════════════════════════════════════════════════════════════════════════════════
+// 用户原话：「分笔买卖看板，我希望继承决策看板的龙一字持有标签，跟龙竞价卖等标签，就是跟龙有关的，
+//   继承下，因为龙一会影响中军或者后排的走势，技术再好也没用，有时还要看题材或者龙一的眼色。
+//   当然你把标签放到分笔买卖看板时，原来的那些标签保持不变，只是作为参考。」
+//
+// ⇒ 只继承【与龙一有关】的三枚（拍板口径：龙一字持有 + 跟龙竞价卖 + 补涨竞价买），
+//   ⛔ 不继承「竞价买 / 尾盘买 / 下杀买 / 持有 / 竞价卖 / 尾盘卖…」那些其它决策标签
+//      （用户明确「就是跟龙有关的」，多了会把这个以【分笔结论】为主角的看板淹掉）。
+//
+// ★ 定位 = 【参考】：本看板的结论胶囊（立刻买 / 下杀买 / 冲高卖 / 立刻卖）仍由【本分钟的红绿笔数】
+//   独立给出，这三枚标签【不参与】任何判断、⛔ 不覆盖结论（用户原话「原来的那些标签保持不变，
+//   只是作为参考」）。所以渲染上是【空心描边】样式，与实心的结论胶囊刻意不同 ——
+//   一眼能分清「哪个是我自己算的、哪个是从决策看板借来的」。
+//
+// ⚠️ 顺序是【固定】的（DRAGON_REF_TAGS 的声明顺序），不随行上字段的先后变化 ——
+//    否则同一只票在买点 / 卖点两侧、或换个模式，标签次序会跳。
+const DRAGON_REF_TAGS = [DRAGON_YIZI_HOLD_TAG, SELL_FOLLOW_DRAGON_TAG, BUY_MAKEUP_TAG];
+
+/** 标签 → 配色档（组件只拼 `'tbb-ref-' + tone`，⛔ 不判断文案，§21） */
+const DRAGON_REF_TONES = {
+    [DRAGON_YIZI_HOLD_TAG]: 'yizi',      // 龙一字持有 —— 琥珀（龙一最强，跟着走）
+    [SELL_FOLLOW_DRAGON_TAG]: 'follow',  // 跟龙竞价卖 —— 绿（跟着卖）
+    [BUY_MAKEUP_TAG]: 'makeup'           // 补涨竞价买 —— 红（补涨买入）
+};
+
+/**
+ * 决策行 → 该行命中的【跟龙】参考标签（按 DRAGON_REF_TAGS 固定顺序，去重）。
+ *
+ * 扫描的字段 = 决策行上所有可能承载动作标签的格子：
+ *   · `buyActionTag`  —— 买点结论（可能是【龙一字持有】/【补涨竞价买】）
+ *   · `sellActionTag` —— 卖点结论（可能是【跟龙竞价卖】/【龙一字持有】）
+ *   · `holdTag`       —— ③ 持有档（防御性一并扫：将来若规则层把它换成跟龙类文案，这里自动跟上）
+ * ⛔ 只做「取用现成文案」的匹配，⛔ 不自己复算任何规则（§6：规则只有 decision-rules.js 一份）。
+ * §10：一枚都没命中 ⇒ 空数组 ⇒ 组件不渲染任何参考标签（⛔ 绝不显示占位符）。
+ *
+ * @param {object} row 决策行（买点 pick / 卖点 item）
+ * @returns {Array<{text:string, tone:string, title:string}>}
+ */
+function _dragonRefTagsOf(row) {
+    if (!row) return [];
+    const hit = new Set();
+    [row.buyActionTag, row.sellActionTag, row.holdTag].forEach(function(t) {
+        if (t && DRAGON_REF_TAGS.indexOf(t) >= 0) hit.add(t);
+    });
+    if (hit.size === 0) return [];
+    return DRAGON_REF_TAGS.filter(function(t) { return hit.has(t); }).map(function(t) {
+        return {
+            text: t,
+            tone: DRAGON_REF_TONES[t] || '',
+            title: '跟龙参考｜' + t + '（口径来自决策看板：龙一会影响同题材中军 / 后排的走势）' +
+                '。⚠️ 本看板只把它【作为参考】显示 —— 结论仍由本分钟的红绿笔数独立给出，⛔ 不受它影响。'
+        };
+    });
+}
+
 /**
  * 一行（买点 pick / 卖点 item）挂上分笔统计。
  * §10：库里没有这一行 ⇒ 按「未抓取 / 无数据」给出可见文案，⛔ 绝不显示「0红0绿」。
@@ -482,6 +546,9 @@ function _decorateTickRow(row, tickMap, attempted, skipMap, memberMap, side) {
         dragonDeltaTone: row.dragonDeltaTone || '',
         dragonDeltaTitle: row.dragonDeltaTitle || '',
         pctText: formatRangePct(row.pct),
+        // [DRAGON-REF 2026-10-11 用户口径] 继承的【跟龙】参考标签（龙一字持有 / 跟龙竞价卖 / 补涨竞价买）。
+        //   空数组 ⇒ 组件一枚都不渲染（§10 ⛔ 不显示占位符）；它不影响本行结论（见 _dragonRefTagsOf 的长注释）。
+        dragonRefTags: _dragonRefTagsOf(row),
         // 分笔部分
         hasTick: false,
         redText: '', greenText: '', statTitle: '',

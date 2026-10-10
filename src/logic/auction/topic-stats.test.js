@@ -355,3 +355,72 @@ describe('[AVG-VRATIO 2026-10-01] 平均竞价量比', () => {
     expect(topicStatsSignature(base)).not.toBe(topicStatsSignature({ ...base, avgVolRatio: null }));
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════════════
+// [SEAL-VOLUME 2026-10-11 用户口径] 题材统计条「封单」段
+//   用户原话：「你把它加进早盘竞价看板的统计条那里」「封单数量增加，你就在后面添加增加的数量和
+//     向上箭头，减少你就在后面添加减少的数量和向下箭头」。
+//   口径：封单量（手）；合计走【全组（含灰行）】（与平均竞价量比同一分母口径）；
+//        变化只累加【两天都有封单量】的股票（= 连板；首板不进变化）。
+//   §10：整组一只都没有封单量 ⇒ 整段不产出（⛔ 不显示「0手」）。
+// ══════════════════════════════════════════════════════════════════════════════════
+describe('buildTopicStatsMap / formatTopicStatsLayout —— 封单（合计 + 变化）', () => {
+  it('合计封单量（手）+ 变化量进入统计对象；灰行也计入（与平均量比同一分母口径）', () => {
+    const s = buildTopicStatsMap([
+      { topic: 'T', name: '甲', formal: true, sealLots: 1000, sealLotsPrev: 800 },
+      { topic: 'T', name: '乙', formal: true, sealLots: 500, sealLotsPrev: 900 },
+      { topic: 'T', name: '丙', formal: false, sealLots: 700 } // 灰行：进合计；无 prev ⇒ 不进变化
+    ]).get('T');
+    expect(s.sealLots).toBe(2200);
+    expect(s.sealLotsCount).toBe(3);
+    expect(s.sealLotsDelta).toBe(-200); // +200 - 400
+    expect(s.sealDeltaCount).toBe(2);
+  });
+
+  it('布局层：合计 + 箭头 + 变化量拼成 parts（变化 up → 红；down → 绿）', () => {
+    const up = formatTopicStatsLayout({
+      topic: 'T', count: 2, sealLots: 2200, sealLotsDelta: 1000
+    });
+    expect(up.row1[up.row1.length - 1]).toEqual({
+      key: 'seal',
+      label: '封单',
+      parts: [{ text: '2200手', tone: '' }, { text: '↑+1000手', tone: 'up' }]
+    });
+    const down = formatTopicStatsLayout({
+      topic: 'T', count: 2, sealLots: 22000, sealLotsDelta: -15000
+    });
+    expect(down.row1[down.row1.length - 1].parts).toEqual([
+      { text: '2.20万手', tone: '' },
+      { text: '↓-1.50万手', tone: 'down' }
+    ]);
+  });
+
+  it('★ 全是首板（变化算不出）⇒ 只出合计、不出变化（parts 只有一段）', () => {
+    const lay = formatTopicStatsLayout({
+      topic: 'T', count: 2, sealLots: 1000, sealLotsDelta: null
+    });
+    const seal = lay.row1[lay.row1.length - 1];
+    expect(seal.key).toBe('seal');
+    expect(seal.parts).toEqual([{ text: '1000手', tone: '' }]);
+  });
+
+  it('★ §10：整组一只都没有封单量 ⇒ 整段不产出（⛔ 不显示 0手）', () => {
+    const lay = formatTopicStatsLayout({
+      topic: 'T', count: 2, sealLots: null, sealLotsDelta: null
+    });
+    expect(lay.row1.some((x) => x.key === 'seal')).toBe(false);
+  });
+
+  it('增量签名必须包含封单合计 / 变化（否则块首行会复用旧对象、封单陈旧）', () => {
+    const base = {
+      topic: 'T', count: 2, yiziCount: 0, highOpenCount: 1, hasClose: false,
+      avgVolRatio: 12, sealLots: 2000, sealLotsDelta: 300,
+      leader: 'A', leaderAucPct: 1, leaderRangePct: 5
+    };
+    expect(topicStatsSignature(base)).toBe(topicStatsSignature({ ...base }));
+    expect(topicStatsSignature(base)).not.toBe(topicStatsSignature({ ...base, sealLots: 2001 }));
+    expect(topicStatsSignature(base)).not.toBe(topicStatsSignature({ ...base, sealLotsDelta: -300 }));
+    // null ↔ 有值也必须让签名失效（整段从「不产出」变成「产出」）
+    expect(topicStatsSignature(base)).not.toBe(topicStatsSignature({ ...base, sealLots: null }));
+  });
+});

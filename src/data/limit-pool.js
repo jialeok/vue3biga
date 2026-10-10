@@ -171,6 +171,37 @@ export async function fetchLimitPoolFromFuyao(date) {
     };
 }
 
+/** 读取列清单（单日 / 多日两条路径共用，§6 一份口径 —— 加列只改这里） */
+const READ_COLS = 'date,board,stock,code,thscode,price,change_pct,limit_time,last_limit_time,reason,continue_text,continue_cnt,seal_money,max_seal_money,turnover_ratio,updated_at';
+
+/**
+ * 库行 → 视图行（字段归一：数值非有限 → null、文本空串 → ''）。
+ * ⛔ 绝不把缺值补成 0：`seal_money` 为 null = 那天没有封单数据，和「封单 0 元」是两件事（§10）。
+ * @param {object} r limit_pool 库行
+ * @returns {object|null} null = 不是一行有效池数据（无股票名 / 无板别）
+ */
+function _rowToView(r) {
+    if (!r || !r.stock || !r.board) return null;
+    return {
+        date: r.date,
+        board: r.board === BOARD_DOWN ? BOARD_DOWN : BOARD_UP,
+        stock: String(r.stock).trim(),
+        code: r.code || '',
+        thscode: r.thscode || '',
+        price: r.price === null || r.price === undefined ? null : Number(r.price),
+        changePct: r.change_pct || '',
+        limitTime: r.limit_time || '',
+        lastLimitTime: r.last_limit_time || '',
+        reason: r.reason || '',
+        continueText: r.continue_text || '',
+        continueCnt: r.continue_cnt === null || r.continue_cnt === undefined ? null : Number(r.continue_cnt),
+        sealMoney: r.seal_money === null || r.seal_money === undefined ? null : Number(r.seal_money),
+        maxSealMoney: r.max_seal_money === null || r.max_seal_money === undefined ? null : Number(r.max_seal_money),
+        turnoverRatio: r.turnover_ratio === null || r.turnover_ratio === undefined ? null : Number(r.turnover_ratio),
+        updatedAt: r.updated_at || ''
+    };
+}
+
 /**
  * 读取某交易日的涨跌停池。
  * @param {string} date YYYY-MM-DD
@@ -188,7 +219,7 @@ export async function readLimitPoolForDate(date) {
     for (let page = 0; page < maxPages; page++) {
         const { data, error } = await sb
             .from('limit_pool')
-            .select('date,board,stock,code,thscode,price,change_pct,limit_time,last_limit_time,reason,continue_text,continue_cnt,seal_money,max_seal_money,turnover_ratio,updated_at')
+            .select(READ_COLS)
             .eq('date', date)
             .range(from, from + pageSize - 1);
         if (error) throw _explainDbError(error);
@@ -197,28 +228,155 @@ export async function readLimitPoolForDate(date) {
         if (data.length < pageSize) break;
         from += pageSize;
     }
-    return all
-        .filter(function(r) { return r && r.stock && r.board; })
-        .map(function(r) {
-            return {
-                date: r.date,
-                board: r.board === BOARD_DOWN ? BOARD_DOWN : BOARD_UP,
-                stock: String(r.stock).trim(),
-                code: r.code || '',
-                thscode: r.thscode || '',
-                price: r.price === null || r.price === undefined ? null : Number(r.price),
-                changePct: r.change_pct || '',
-                limitTime: r.limit_time || '',
-                lastLimitTime: r.last_limit_time || '',
-                reason: r.reason || '',
-                continueText: r.continue_text || '',
-                continueCnt: r.continue_cnt === null || r.continue_cnt === undefined ? null : Number(r.continue_cnt),
-                sealMoney: r.seal_money === null || r.seal_money === undefined ? null : Number(r.seal_money),
-                maxSealMoney: r.max_seal_money === null || r.max_seal_money === undefined ? null : Number(r.max_seal_money),
-                turnoverRatio: r.turnover_ratio === null || r.turnover_ratio === undefined ? null : Number(r.turnover_ratio),
-                updatedAt: r.updated_at || ''
-            };
+    return all.map(_rowToView).filter(Boolean);
+}
+
+/**
+ * 【多日窗口读取】一次查询拿回若干交易日的涨跌停池（§32：能一次拿完就不逐日打库）。
+ *
+ * 为什么不逐日调 readLimitPoolForDate：一只股票的五日「封单量」趋势要 5 个交易日，
+ * 若逐日各查一次 = 一次展开 5 个请求；改成 `.in('date', [...])` 后 = 1 个请求。
+ * ⚠️ 分页必须配 `.order(...)`：没有稳定排序时 PostgREST 的 range 分页可能漏行 / 重复行
+ *   （多日窗口的行数比单日大，这个坑会真的踩到；单日那条旧路径行少、暂不动它）。
+ *
+ * @param {string[]} dates YYYY-MM-DD 列表
+ * @returns {Promise<Map<string, Array<object>>>} date → 行数组（每个请求到的日期都有一项，可能为空数组）
+ * @throws 读取失败时抛错（绝不静默返回空 Map 伪装成「这些天没有涨跌停」）
+ */
+export async function readLimitPoolForDates(dates) {
+    const want = Array.from(new Set((dates || []).map(function(d) {
+        return d === null || d === undefined ? '' : String(d).trim();
+    }).filter(Boolean)));
+    const out = new Map();
+    want.forEach(function(d) { out.set(d, []); });
+    if (want.length === 0) return out;
+
+    const sb = getSupabase();
+    const pageSize = 1000;
+    const maxPages = 20;
+    let from = 0;
+    for (let page = 0; page < maxPages; page++) {
+        const { data, error } = await sb
+            .from('limit_pool')
+            .select(READ_COLS)
+            .in('date', want)
+            .order('date', { ascending: true })
+            .order('board', { ascending: true })
+            .order('stock', { ascending: true })
+            .range(from, from + pageSize - 1);
+        if (error) throw _explainDbError(error);
+        if (!data || data.length === 0) break;
+        data.forEach(function(r) {
+            const row = _rowToView(r);
+            if (!row) return;
+            const bucket = out.get(row.date);
+            if (bucket) bucket.push(row);
         });
+        if (data.length < pageSize) break;
+        from += pageSize;
+    }
+    _dbgLog('[LIMIT-POOL] 窗口读取 ' + want.length + ' 日：命中 ' +
+        Array.from(out.entries()).filter(function(e) { return e[1].length > 0; }).length + ' 日有数据');
+    return out;
+}
+
+// ============================================================================
+// 只读内存缓存（给 Logic 层【同步】取值用，§6 单一真相 / §32 不重复打库）
+// ============================================================================
+//
+// 为什么要有它：题材统计条、逐票五日趋势、决策看板徽标都是**同步**纯函数里算展示字段的
+//   （§4 Logic 层纯函数不许发请求）。所以「读库」这件事必须在组合式里先做完、把结果放进
+//   一份内存缓存，纯函数再从缓存里同步取 —— 与 getAucVolRatio / getDragonRangePct 同一范式。
+//
+// ⚠️ 单飞（inflight）：同一批日期并发请求只打一次上游。切日期 / 实时刷新 / 多个看板同时要
+//   同一份窗口时，不会把同一个窗口查 N 遍（§32）。
+// ⚠️ 失败【不写缓存】：下一次 ensure 会重试；查不到 ≠ 这些天没有涨停（§10）。
+// ⛔ 只读表，⛔ 不消费任何猫抓额度（limit_pool 由 Edge Function 15:40 免费抓取落库）。
+
+/** date → { rows: Array<object>, byStock: Map<stock, row> } */
+const _dayCache = new Map();
+/** date → Promise（单飞） */
+const _dayInflight = new Map();
+/** 缓存天数上限：一只票看 5 日、一晚上翻不了几个日期；满了就淘汰最早插入的那天（§36 内存有界） */
+const DAY_CACHE_MAX = 60;
+
+function _putDayCache(date, rows) {
+    const byStock = new Map();
+    (rows || []).forEach(function(r) { byStock.set(r.stock, r); });
+    // 重新插入：Map 保持插入顺序，便于按「最早使用」淘汰
+    if (_dayCache.has(date)) _dayCache.delete(date);
+    _dayCache.set(date, { rows: rows || [], byStock: byStock });
+    while (_dayCache.size > DAY_CACHE_MAX) {
+        const oldest = _dayCache.keys().next();
+        if (oldest.done) break;
+        _dayCache.delete(oldest.value);
+    }
+}
+
+/** 该日的池数据是否已进内存缓存（true 且行数为 0 = 云端确实没有那天的快照） */
+export function hasLimitPoolDay(date) {
+    return _dayCache.has(String(date || '').trim());
+}
+
+/** 作废某日缓存（实时端写库后调用，强制下次 ensure 重新读） */
+export function invalidateLimitPoolDay(date) {
+    _dayCache.delete(String(date || '').trim());
+}
+
+/** 清空整份内存缓存（换看板 / 测试用） */
+export function clearLimitPoolDayCache() {
+    _dayCache.clear();
+}
+
+/**
+ * 【同步】取某交易日某股票的池行（供 Logic 层纯函数读展示字段）。
+ * §10：缓存里没有这一天 / 没有这只票 ⇒ 返回 null（= 「没有这一行的数据」，
+ *   ⛔ 绝不返回一个全 0 的假行 —— 那会把「没抓到」显示成「封单 0」）。
+ * @param {string} date YYYY-MM-DD
+ * @param {string} stock 股票名
+ * @returns {object|null}
+ */
+export function getLimitPoolRow(date, stock) {
+    const day = _dayCache.get(String(date || '').trim());
+    if (!day) return null;
+    const name = String(stock || '').trim();
+    if (!name) return null;
+    return day.byStock.get(name) || null;
+}
+
+/**
+ * 把若干交易日的池数据**确保**进内存缓存（缺哪天就读哪天，已有的不重复读）。
+ * ⚠️ 读取失败会 throw —— 由调用方决定怎么呈现（§10 读取失败 ≠ 空数据）。
+ * @param {string[]} dates
+ * @returns {Promise<string[]>} 实际保证过的日期列表
+ */
+export async function ensureLimitPoolDays(dates) {
+    const want = Array.from(new Set((dates || []).map(function(d) {
+        return d === null || d === undefined ? '' : String(d).trim();
+    }).filter(Boolean)));
+    if (want.length === 0) return [];
+    const missing = want.filter(function(d) { return !_dayCache.has(d); });
+    if (missing.length > 0) {
+        // 单飞：同一个日期并发只打一次
+        let p = _dayInflight.get(_keyOf(missing));
+        if (!p) {
+            const key = _keyOf(missing);
+            p = readLimitPoolForDates(missing)
+                .then(function(map) {
+                    missing.forEach(function(d) { _putDayCache(d, map.get(d) || []); });
+                    return true;
+                })
+                .finally(function() { _dayInflight.delete(key); });
+            _dayInflight.set(key, p);
+        }
+        await p;
+    }
+    return want;
+}
+
+/** 单飞 key：把要读的日期集合归一成稳定字符串（顺序无关，同样一组日期视为同一次请求） */
+function _keyOf(dates) {
+    return dates.slice().sort().join(',');
 }
 
 /**
@@ -305,7 +463,14 @@ export function startLimitPoolRealtime() {
         if (!sb) return;
         _limitPoolChannel = sb
             .channel('limit_pool_changes')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'limit_pool' }, function() {
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'limit_pool' }, function(payload) {
+                // ⚠️ 15:40 抓取端写完这一天后，本端的内存缓存（getLimitPoolRow 的真相）必须作废，
+                //    否则「封单量」还停在上一次读到的旧值上 —— 缓存作废 + 下面 emit 事件，
+                //    由组合式重新 ensure 一次（§6 单一真相，⛔ 不能让缓存比库还旧）。
+                const changed = (payload && payload.new && payload.new.date) ||
+                    (payload && payload.old && payload.old.date) || '';
+                if (changed) invalidateLimitPoolDay(changed);
+                else clearLimitPoolDayCache();
                 if (_limitPoolReloadTimer) clearTimeout(_limitPoolReloadTimer);
                 _limitPoolReloadTimer = setTimeout(function() {
                     _limitPoolReloadTimer = null;

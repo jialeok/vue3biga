@@ -4,7 +4,8 @@
 //   - 只在【题材 toggle 单独开启】时显示（与 topicOnlyMode 同源：题材开且无其它主排序参与）；
 //   - 每个题材（界面一个色块）上方一行小字，排版与展开面板「趋势图上方小字」一致，但背景色统一，
 //     方便视觉上把题材与题材分开；
-//   - 内容：题材名 / 【平均竞价量比】 / 数量 / 一字 / 竞价高开 / 收盘(红绿) / 龙头 / 龙头竞价涨幅 / 龙头十日涨幅；
+//   - 内容：题材名 / 【平均竞价量比】 / 数量 / 一字 / 竞价高开 / 收盘(红绿) / 【封单(合计+变化)】 /
+//     龙头 / 龙头竞价涨幅 / 龙头十日涨幅；
 //     其中第二行「竞价」数值按当天竞价涨幅符号着色（>0 红 / <0 绿 / =0 灰，2026-09-11）；
 //     第一行「收盘」= 同题材收盘涨跌数（>0 红 / <0 绿），只在【该日为收盘口径】时才产出（见 opts.hasClose）。
 //   - [AVG-VRATIO 2026-10-01 用户口径] 统计条【最上面一行】= 题材平均竞价量比（用户原话：
@@ -29,19 +30,27 @@
 //   4) 【显示门槛】与 buildTopicColorMap 口径一致：只有「真正成组」的题材（非其它 + 至少 2 只）
 //      才产出统计条——单只股票的题材没有统计意义，出条只会让列表变乱（2026-09-10 修订）。
 
+// [SEAL-VOLUME 2026-10-11 用户口径] 封单量（手）的合计 + 日变化。
+//   口径 / 换算 / 格式化全部收在 logic/auction/seal-volume.js（§6 单一真相）——
+//   本文件只负责「把它摆到统计条的哪一段」，⛔ 不在这里重写换算或格式化。
+import { summarizeSealLots, formatSealLots, formatSealLotsDelta, sealLotsDeltaArrowOf, sealLotsDeltaTone } from './seal-volume.js';
+
 /** 成组门槛：与 buildTopicColorMap(minCount=2) 同源——不足 2 只不成一个题材块 */
 export const TOPIC_STATS_MIN_GROUP = 2;
 
 /**
  * 按题材分组统计。
  * @param {Array<{topic:string, name:string, isYiZi?:boolean, aucPct?:number|null, rangePct?:number|null,
- *                closePct?:number|null, volRatio?:number|null, formal?:boolean}>} entries
+ *                closePct?:number|null, volRatio?:number|null, formal?:boolean,
+ *                sealLots?:number|null, sealLotsPrev?:number|null}>} entries
  *        必须按【最终渲染顺序】传入（组内顺序无所谓，但组必须连续——与渲染一致才能保证 count 正确）
  *        closePct 只有在该日已是【收盘口径】时调用方才该填（否则传 null）：
  *        早盘 change_pct 只是竞价副本，用它数红绿会把竞价方向当成收盘结果（口径错误）。
  *        volRatio 当日竞价量比（倍数）；formal=false 表示「不在今日正式名单」的灰行。
+ *        [SEAL-VOLUME 2026-10-11] sealLots = 当日封单量（手）、sealLotsPrev = 上一交易日封单量（手）；
+ *          非涨停 / 无数据一律 null（§10，⛔ 绝不用 0 冒充）。
  *        ⚠️ [AVG-VRATIO 2026-10-01] 调用方应传入【列表上显示的全部行】（含灰行），本函数自己按
- *           formal 分流：计数类只算 formal !== false，平均量比的【分母不区分】。
+ *           formal 分流：计数类只算 formal !== false，平均量比与封单合计的【分母不区分】。
  * @param {{minGroupSize?:number, includeOther?:boolean}} [opts]
  *        minGroupSize 默认 2：不足该数量（指【正式成员】数量）的题材组直接不产出
  *        （调用方拿到 undefined → 不渲染统计条）；
@@ -49,9 +58,13 @@ export const TOPIC_STATS_MIN_GROUP = 2;
  * @returns {Map<string, {topic:string, count:number, yiziCount:number, highOpenCount:number,
  *                        hasClose:boolean, redCount:number, greenCount:number,
  *                        leader:string, leaderAucPct:number|null, leaderRangePct:number|null,
- *                        avgVolRatio:number|null}>}
+ *                        avgVolRatio:number|null, sealLots:number|null, sealLotsCount:number,
+ *                        sealLotsDelta:number|null, sealDeltaCount:number}>}
  *          hasClose=false → redCount/greenCount 无意义（不要渲染）。
  *          avgVolRatio=null → 该组一行量比都拿不到 → 布局层整行不产出（§10，⛔ 不显示 0.00）。
+ *          [SEAL-VOLUME 2026-10-11] sealLots=null → 该组一只都没封单量（今天没有涨停）→
+ *          布局层【封单段】不产出（§10，⛔ 不显示 0手）；sealLotsDelta=null → 没有任何一只
+ *          两天都有封单量（全是首板）→ 只显示合计、不显示变化。
  */
 export function buildTopicStatsMap(entries, opts) {
   const out = new Map();
@@ -135,6 +148,14 @@ export function buildTopicStatsMap(entries, opts) {
       if (r !== null) { ratioSum += r; ratioN++; }
     });
 
+    // [SEAL-VOLUME 2026-10-11 用户口径] 封单量（手）合计 + 日变化（增加红 ↑ / 减少绿 ↓）。
+    //   ⚠️ 分母口径 = 【全组 arr（含灰行）】，与上面的「平均竞价量比」同一口径
+    //      （用户 2026-10-01 明确「数量不分灰色和常规，只要显示在上面的都要算进去」）；
+    //      与「数量 / 一字 / 高开 / 收盘」的【正式成员】口径【刻意不同】。
+    //      非涨停的股票本来就没有封单量（null）⇒ 不进分子，不需要再过滤一次。
+    //   §10：整组一只都没有封单量 ⇒ lots = null ⇒ 布局层整段不产出（⛔ 不显示 '0手'）。
+    const seal = summarizeSealLots(arr);
+
     out.set(topic, {
       topic: topic,
       count: formalArr.length,
@@ -146,7 +167,12 @@ export function buildTopicStatsMap(entries, opts) {
       leader: leader,
       leaderAucPct: leaderAucPct,
       leaderRangePct: leaderRangePct,
-      avgVolRatio: ratioN > 0 ? (ratioSum / ratioN) : null
+      avgVolRatio: ratioN > 0 ? (ratioSum / ratioN) : null,
+      // [SEAL-VOLUME 2026-10-11] 封单量合计（手）/ 计入只数 / 日变化（手）/ 计入变化只数
+      sealLots: seal.lots,
+      sealLotsCount: seal.count,
+      sealLotsDelta: seal.delta,
+      sealDeltaCount: seal.deltaCount
     });
   });
   return out;
@@ -159,7 +185,7 @@ export function buildTopicStatsMap(entries, opts) {
  *   左格（窄）：题材名，字号更大更显眼；
  *   右格（宽）：上中下三行
  *       [AVG-VRATIO 2026-10-01] 第一行 —— 平均竞价量比（用户原话「第一行 平均竞价量比：12」）
- *       第二行 —— 数量 / 一字 / 竞价高开 / 收盘(红绿)
+ *       第二行 —— 数量 / 一字 / 竞价高开 / 收盘(红绿) / [SEAL-VOLUME 2026-10-11] 封单(合计+↑↓变化)
  *       第三行 —— 龙头 / 竞价 / 十日
  *   ⚠️ 2026-09-11 晚：第二行原有的「停板 N涨停M跌停」段按用户要求【移除】（太占地方）。
  *      停板信息由「股票名下方红/绿蚂蚁线」承担，不要再往统计条里加回来。
@@ -207,6 +233,24 @@ export function formatTopicStatsLayout(stats) {
       ]
     });
   }
+  // [SEAL-VOLUME 2026-10-11 用户口径] 「封单」段：本题材【合计封单量（手）】+ 与上一交易日的
+  //   【变化量】。用户原话「封单数量增加，你就在后面添加增加的数量和向上箭头，减少你就在后面
+  //   添加减少的数量和向下箭头」⇒ 变化段 = 箭头 + 带符号数量，增加红（tone='up'）/ 减少绿（tone='down'）。
+  //   走 parts 多段拼接（与「2红9绿」同一形态，组件只做 v-for，§21 零计算）。
+  //   §10：整组一只都没封单量（今天没有涨停 / limit_pool 还没写）⇒ lotsText 为空 ⇒ 整段不产出
+  //        （⛔ 不显示 '0手'）；两天都有的股票一只都没有（全是首板）⇒ 只出合计、不出变化。
+  const sealLotsText = formatSealLots(stats.sealLots);
+  if (sealLotsText) {
+    const sealParts = [{ text: sealLotsText, tone: '' }];
+    const sealDeltaText = formatSealLotsDelta(stats.sealLotsDelta);
+    if (sealDeltaText) {
+      sealParts.push({
+        text: sealLotsDeltaArrowOf(stats.sealLotsDelta) + sealDeltaText,
+        tone: sealLotsDeltaTone(stats.sealLotsDelta)
+      });
+    }
+    row1.push({ key: 'seal', label: '封单', parts: sealParts });
+  }
   if (stats.leader) {
     // [2026-09-10] 第二行（龙头行）三个数值统一「红色加粗」强调：
     //   龙头竞价涨幅保留 1 位小数；龙头十日涨幅取整（四舍五入）。
@@ -244,6 +288,10 @@ export function topicStatsSignature(stats) {
     //   却只挂在块的【第一行】上 —— 组内别的股票量比变了，块首行自己的输入可以一个字都没变
     //   ⇒ 不入签名，块首行会复用旧对象、统计条上的均值陈旧。
     _num(stats.avgVolRatio),
+    // [SEAL-VOLUME 2026-10-11] 同理：封单合计 / 变化也是【全组】的派生值，却只挂在块首行上。
+    //   15:40 抓取端写入 limit_pool 后（或实时刷新作废缓存后重读），组内某几只的封单变了，
+    //   而块首行自己的输入（它是哪只票、量比多少）一个字都没变 ⇒ 不入签名就会显示旧封单。
+    _num(stats.sealLots), _num(stats.sealLotsDelta),
     stats.leader, _num(stats.leaderAucPct), _num(stats.leaderRangePct)].join(',');
 }
 

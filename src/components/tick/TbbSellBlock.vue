@@ -59,6 +59,19 @@
           class="tbb-pct"
           title="十日涨幅"
         >{{ it.pctText }}</span>
+        <!-- ══ [DRAGON-REF 2026-10-11 用户口径] 从【决策看板】继承的「跟龙」参考标签：
+             与【买点】完全同一份字段、同一套渲染（≠ 各写一份，§6 单一真相）——
+             用户原话「分笔买卖看板，我希望继承决策看板的龙一字持有标签，跟龙竞价卖等标签，
+               就是跟龙有关的……原来的那些标签保持不变，只是作为参考」。
+             空心描边（.tbb-ref-*）与【实心】的结论胶囊刻意不同，一眼分清参考与结论。
+             §10：没命中 ⇒ 空数组 ⇒ 一枚都不渲染（⛔ 不显示占位符）。 -->
+        <span
+          v-for="t in it.dragonRefTags"
+          :key="'ref-' + t.text"
+          class="tbb-ref"
+          :class="'tbb-ref-' + t.tone"
+          :title="t.title"
+        >{{ t.text }}</span>
         <span
           v-if="it.redText"
           class="tbb-stat"
