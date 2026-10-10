@@ -428,7 +428,9 @@
 
 .tbb-pen-row {
   display: grid;
-  grid-template-columns: 22px 1fr 52px 46px 30px;
+  /* ⚠️ 第 4 列（手数）= 56px：2026-10-10 单位更正后手数显示原值（如 31319），
+     不再是「÷100 后的两位数」，46px 已经放不下 ⇒ 加宽；时间那列是 1fr，会自动让位。 */
+  grid-template-columns: 22px 1fr 52px 56px 30px;
   align-items: baseline;
   gap: 6px;
   padding: 1px 0;
@@ -472,3 +474,21 @@
   color: #94a3b8;
   user-select: text;
 }
+
+/* ★ 最下方：分析过程 + 买卖点逻辑（用户 2026-10-10：「写到股票展开分笔订单最下那里…
+     相当于一个分析过程，和买卖点逻辑，简洁」）
+   —— 与上面的灰色「口径注释」刻意分开：上面讲【事实怎么来的】，这一块讲【此刻该怎么做】，
+      所以给淡琥珀底 + 深棕字，早上扫一眼就能找到，不会被口径文字淹没。 */
+.tbb-panel-hint {
+  margin-top: 5px;
+  padding: 4px 6px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 1.7;
+  color: #78350f;
+  user-select: text;
+}
+
+.tbb-panel-hint-line + .tbb-panel-hint-line { margin-top: 1px; }

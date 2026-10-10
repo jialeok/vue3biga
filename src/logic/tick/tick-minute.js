@@ -23,10 +23,19 @@
 //   那确实是本分钟第一笔之前发生的那一笔交易。⚠️ 拿不到开盘价 ⇒ 第一笔方向【未知】，
 //   计入 unknown 而不是硬算成平盘（§10 不猜）。
 //
-// ★★ 单位口径 ★★
-//   上游 vol 是【累计成交量，单位：股】⇒ 本模块用「本行 − 上一行」得到本快照的成交量（股），
-//   展示成【手】（股 ÷ 100），与东财「手数」同一口径。第一行没有上一行 ⇒ 量为 null，
-//   展示为「—」（⛔ 绝不拿累计值冒充单笔量）。
+// ★★ 单位口径（2026-10-10 实测更正，⛔ 别再改回 ÷100）★★
+//   上游 vol 是【累计成交量，单位：手】—— 本模块用「本行 − 上一行」得到本快照的成交量，
+//   它【本身就是手】，直接展示即可（与东财「手数」同一口径）。
+//
+//   ⚠️ 曾经写错：早期按「一手 = 100 股」把差值又 ÷100，导致看板显示 11.29 而东财显示 1129
+//      （用户 2026-10-10 对照东财后发现，比值正好 100）。三条独立证据都指向「上游就是手」：
+//        ① 用户实测：东财 1129 ↔ 本看板 11.29，差正好 100 倍；
+//        ② 线上 30 只 / 76 个差值里，是 100 的整数倍的占 **0%** —— A 股一笔成交必是 100 股的
+//           整数倍（1 手起），若上游单位是「股」，差值几乎必然都是 100 的倍数；0% ⇒ 不是股；
+//        ③ 量级：若按「股」解释，一只涨停股开盘一分钟只有几百手（几万元），明显不可能。
+//      ⇒ 差值原值 = 手。库里存的也是这个原值，**所以这次只改展示，不需要动历史数据**。
+//
+//   第一行没有上一行 ⇒ 量为 null，展示为「—」（⛔ 绝不拿累计值冒充单笔量）。
 //
 // ★★ 快照 ≠ 逐笔成交（务必知道）★★
 //   上游按固定间隔给【快照】（每行 = 那一瞬间的最新价与累计量），东财的「20 笔」是【逐笔成交】。
@@ -123,17 +132,18 @@ function _num(v) {
 }
 
 /**
- * 【成交量：股 → 手】展示文案（唯一实现，§6）。
- * A 股一手 = 100 股；成交额/成交量 相除即价格，故上游 vol 的单位是【股】。
- * 整手 → 整数（东财口径）；出现零股（不足一手）→ 保留 2 位小数，⛔ 不四舍五入成 0。
+ * 【成交量：手】展示文案（唯一实现，§6）。
+ * ⚠️ 上游 vol 的差值【本身就是手】，所以这里【不做任何换算】（2026-10-10 实测更正：
+ *    以前误按「一手 = 100 股」又 ÷100，导致显示 11.29 而东财显示 1129，差正好 100 倍）。
+ * 整手 → 整数；万一手数出现小数（上游异常）→ 保留 2 位，⛔ 不四舍五入成 0。
  * null → '—'（§10：⛔ 不显示 0）
+ * @param {number|null} lots 上游 vol 的差分值，单位【手】
  */
-export function formatPenHands(shares) {
-    const n = _num(shares);
+export function formatPenHands(lots) {
+    const n = _num(lots);
     if (n === null) return '—';
-    const hands = n / 100;
-    if (Math.abs(hands - Math.round(hands)) < 1e-9) return String(Math.round(hands));
-    return hands.toFixed(2);
+    if (Math.abs(n - Math.round(n)) < 1e-9) return String(Math.round(n));
+    return n.toFixed(2);
 }
 
 /** 价格展示：两位小数；null → '—' */
@@ -355,7 +365,50 @@ export function tickPanelNote(s) {
     if (s.droppedNoPrice) bits.push('其中 ' + s.droppedNoPrice + ' 个缺价格（已略去）');
     bits.push('第一笔的涨跌基准 = 当日开盘价（9:25 集合竞价的成交价）');
     bits.push('「绿」= 下跌 + 平盘（按东财口径）');
+    bits.push('「手数」= 该快照的成交量，单位【手】（与东财/同花顺同口径，⛔ 不是股）');
     return bits.join('｜');
+}
+
+/**
+ * 展开面板【最下方】的「分析过程 + 买卖点逻辑」提示（用户 2026-10-10 要求：
+ * 「把说明买卖点文字写到股票展开分笔订单最下那里说明下…相当于一个分析过程，
+ *   和买卖点逻辑，简洁。不用太长」）。
+ *
+ * ⇒ 固定两行，回答两件事：
+ *     第 1 行【分析】这一分钟怎么读出来的（红绿笔数 → 强/弱/均衡）
+ *     第 2 行【买点/卖点】这只票此刻该怎么做（= 结论胶囊那个动作名的展开）
+ * ⛔ 全部是纯文案推导，不产生任何新的业务结论（§6：动作名仍由 tickStrengthOf 一处给出）。
+ *
+ * @param {{red:number, green:number, flat:number, total:number}} s buildTickPens 的返回
+ * @param {'buy'|'sell'} [side]
+ * @returns {string[]} 逐行文案（空数组 = 不渲染那一块，§10）
+ */
+export function tickPanelHint(s, side) {
+    if (!s || !s.total) return [];
+    const isSell = side === 'sell';
+    const act = tickStrengthOf(s, side);
+    // ── 第 1 行：分析过程（红绿 → 强弱）──────────────────────────────────
+    const verdict = (s.red > s.green) ? '上涨占优 = 开盘强'
+        : ((s.red < s.green) ? '下跌占优 = 开盘弱' : '多空相等 = 均衡');
+    let l1 = '【分析】红 ' + s.red + ' 笔 / 绿 ' + s.green + ' 笔（绿 = 下跌 + 平盘';
+    if (s.flat) l1 += '，其中平盘 ' + s.flat + ' 笔';
+    l1 += '）⇒ ' + verdict;
+    // ── 第 2 行：这一步该怎么做（动作名 + 一句操作要点）──────────────────
+    let how;
+    if (s.red === s.green) {
+        how = '多空均衡，本看板不下结论 —— 按原规则看别的指标。';
+    } else if (isSell) {
+        how = (s.red > s.green)
+            ? '别急着卖，等【盘中冲高】；盯分笔，红色手数 = 还在上涨，'
+                + '【第一次出现绿色（下跌）手数】时就是卖点。'
+            : '弱了就是止损，【别等反抽】。';
+    } else {
+        how = (s.red > s.green)
+            ? '走强直接买（与「竞价买」同路，只是要等开盘后才知道）。'
+            : '不追高，等【盘中下杀】；手数缩到一位数 / 两位数（手）时说明卖盘也弱、'
+                + '抛压枯竭、即将反转，那时再买。';
+    }
+    return [l1, '【' + (isSell ? '卖点' : '买点') + '】' + act.text + ' —— ' + how];
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -415,7 +468,7 @@ function _decorateTickRow(row, tickMap, attempted, skipMap, memberMap, side) {
         strengthText: '', strengthTone: '', strengthTitle: '',
         emptyText: '',
         emptyTitle: '',
-        pens: [], panelTitle: '', panelNote: ''
+        pens: [], panelTitle: '', panelNote: '', panelHint: []
     };
 
     const dbRow = tickMap ? tickMap.get(name) : null;
@@ -446,6 +499,7 @@ function _decorateTickRow(row, tickMap, attempted, skipMap, memberMap, side) {
     out.pens = s.pens;
     out.panelTitle = tickPanelTitle(s, name);
     out.panelNote = tickPanelNote(s);
+    out.panelHint = tickPanelHint(s, side);
     // ⚠️ 有行但一笔都判不出来（全缺价格）⇒ 走「无数据」文案而不是空胶囊（§10）
     if (s.total === 0) {
         out.emptyText = TICK_NO_DATA;

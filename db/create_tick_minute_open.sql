@@ -58,7 +58,11 @@ create table if not exists tick_minute_open (
   --   [{ "t": "09:30:03", "p": 10.36, "v": 1200 }, ...]
   --   t = 快照时间 HH:MM:SS.SSS（原样保留上游 time 的时分秒毫秒）
   --   p = 该快照的最新成交价（上游 close 字段；null = 上游缺值）
-  --   v = 本快照【新增】成交量（元数据，单位：股）= 本行 vol − 上一行 vol（上游 vol 是【累计】成交量）
+  --   v = 本快照【新增】成交量（单位：【手】）= 本行 vol − 上一行 vol（上游 vol 是【累计】成交量）
+  --       ★ 2026-10-10 实测更正：上游 vol 的差分值【本身就是手】，不要再 ÷100。
+  --         证据：用户对照东财，东财 1129 ↔ 本表 11.29（差正好 100 倍）；且线上 76 个差值里
+  --         是 100 的整数倍的占 0%（A 股一笔成交必是 100 股整数倍，若是「股」不可能 0%）。
+  --         本表存的【是原值】，所以这次只改前端展示，⛔ 不需要刷历史数据。
   --       ⚠️ 第一行没有上一行 ⇒ v 恒为 null（⛔ 绝不拿累计值冒充单笔量）
   --       ⚠️ v = 0 表示这一快照里没有任何成交（停顿时段）—— 是否算「一笔」由 Logic 层决定，
   --          本表【原样保留】，不做过滤。
@@ -86,7 +90,7 @@ comment on table tick_minute_open is
 comment on column tick_minute_open.name is '股票简称，与 stock_topics.stock 同键 → 可直接跟决策看板的买点/卖点行对上';
 comment on column tick_minute_open.code is '6 位纯代码（上游 symbol，不含交易所后缀）';
 comment on column tick_minute_open.open_price is '当日开盘价（集合竞价成交价）= 本分钟第一笔的涨跌基准';
-comment on column tick_minute_open.pens is '本分钟原始快照序列 [{t,p,v}]；v=本快照新增成交量(股)，首条为 null，0 表示该快照无成交。红/绿/平一律由 Logic 层现算，本表只存事实';
+comment on column tick_minute_open.pens is '本分钟原始快照序列 [{t,p,v}]；v=本快照新增成交量(手，上游原值，⛔ 不再÷100)，首条为 null，0 表示该快照无成交。红/绿/平一律由 Logic 层现算，本表只存事实';
 comment on column tick_minute_open.trade_count is '本分钟真实成交笔数（= 上游累计成交笔数在窗口内的差分，不含首行自身；null=上游缺值）。只做对照：快照数 ≠ 成交笔数。不参与红绿统计';
 comment on column tick_minute_open.start_time is '抓取窗口起点 09:30:00（含）';
 comment on column tick_minute_open.end_time is '抓取窗口终点 09:31:00（上游语义：不含该边界）';

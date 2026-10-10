@@ -90,6 +90,7 @@
         v-if="penOpenSet.has(p.name)"
         :title="p.panelTitle"
         :note="p.panelNote"
+        :hint="p.panelHint"
         :pens="p.pens"
       />
     </template>

@@ -11,9 +11,14 @@
       - 上涨 → 红 + ↑；下跌 → 绿 + ↓；平盘 → 绿 + 无箭头（与东财口径一致）
       - 第一笔没有上一笔可比 ⇒ 手数显示「—」（⛔ 绝不拿累计量冒充单笔量）
     · 底部注释：把「上游快照数 ≠ 成交笔数」以及第一笔的基准讲清楚（§10 不糊弄）
+    · ★ 最下方：分析过程 + 买卖点逻辑（用户 2026-10-10 要求「写到股票展开分笔订单最下那里
+      说明下…相当于一个分析过程，和买卖点逻辑，简洁」，逐行文案由 Logic 层给）
 
-  §21：本组件零计算 —— 标题 / 注释 / 每行的价格文案 / 手数文案 / 箭头 / 配色档
-       全部由 logic/tick/tick-minute.js 预先算好（title / note / pens[]）。
+  ⚠️ 单位：明细里的「手数」就是【手】（与东财/同花顺同口径）。
+     2026-10-10 实测更正：上游 vol 的差分值本身就是手，⛔ 不要再 ÷100。
+
+  §21：本组件零计算 —— 标题 / 注释 / 分析提示 / 每行的价格文案 / 手数文案 / 箭头 / 配色档
+       全部由 logic/tick/tick-minute.js 预先算好（title / note / hint[] / pens[]）。
 -->
 <template>
   <div class="tbb-panel">
@@ -59,6 +64,20 @@
     >
       {{ note }}
     </div>
+    <!-- ★ 最下方：分析过程 + 买卖点逻辑（用户 2026-10-10：「写到股票展开分笔订单最下那里
+         说明下…相当于一个分析过程，和买卖点逻辑，简洁」）—— 逐行文案由 Logic 层给，模板零计算 -->
+    <div
+      v-if="hint && hint.length"
+      class="tbb-panel-hint"
+    >
+      <div
+        v-for="(line, i) in hint"
+        :key="i"
+        class="tbb-panel-hint-line"
+      >
+        {{ line }}
+      </div>
+    </div>
   </div>
 </template>
 
@@ -68,6 +87,8 @@ defineProps({
   title: { type: String, default: '' },
   /** 底部口径注释（同上） */
   note: { type: String, default: '' },
+  /** ★ 最下方的「分析过程 + 买卖点逻辑」逐行文案（同上；空数组 ⇒ 整块不渲染） */
+  hint: { type: Array, default: () => [] },
   /** 明细行（已含 seq / time / priceText / volText / arrow / tone / title） */
   pens: { type: Array, default: () => [] }
 });

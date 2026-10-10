@@ -16,7 +16,7 @@ import {
   TICK_NOT_FETCHED, TICK_NO_DATA,
   hmsToSec, beijingHms, beijingToday, tickWindowState,
   formatPenHands, formatPenPrice, penDirectionOf, penArrowOf, penToneOf,
-  buildTickPens, tickStatText, tickStrengthOf, tickPanelTitle, tickPanelNote,
+  buildTickPens, tickStatText, tickStrengthOf, tickPanelTitle, tickPanelNote, tickPanelHint,
   buildTickBoard, tickTargetsOf
 } from './tick-minute.js';
 
@@ -64,10 +64,13 @@ describe('tick-minute · 时间口径', () => {
 
 // ── 单位与方向的基础件 ───────────────────────────────────────────────────
 describe('tick-minute · 单位与方向', () => {
-  it('formatPenHands：股 → 手；整手取整、零股留 2 位；null → —（绝不补 0）', () => {
-    expect(formatPenHands(1200)).toBe('12');
+  it('formatPenHands：原值【就是手】，⛔ 绝不再 ÷100（2026-10-10 实测更正）；null → —', () => {
+    // 用户对照东财发现：东财 1129 ↔ 本看板 11.29，差正好 100 倍 ⇒ 我们多除了一次 100。
+    // 线上 76 个差值里「是 100 的整数倍」占 0%（A 股一笔成交必是 100 股的整数倍）⇒ 上游单位是【手】。
+    expect(formatPenHands(1129)).toBe('1129');
+    expect(formatPenHands(31319)).toBe('31319');
     expect(formatPenHands(0)).toBe('0');
-    expect(formatPenHands(150)).toBe('1.50');
+    expect(formatPenHands(12.5)).toBe('12.50');   // 上游万一给小数才保留 2 位（整手一律整数）
     expect(formatPenHands(null)).toBe('—');
     expect(formatPenHands(undefined)).toBe('—');
     expect(formatPenHands('')).toBe('—');
@@ -154,7 +157,7 @@ describe('tick-minute · 快照 → 一笔一笔 + 红绿统计', () => {
     expect(tickStrengthOf(mk(5, 1)).text).toBe('立刻买');
   });
 
-  it('★ 结论胶囊的文案里【必须带上「手」这个单位】—— 用户看到的手数单位就是手（股÷100）', () => {
+  it('★ 结论胶囊的文案里【必须带上「手」这个单位】—— 用户看到的手数单位就是手', () => {
     const s = buildTickPens({
       openPrice: 10,
       pens: [{ t: 'a', p: 10, v: null }, { t: 'b', p: 9.9, v: 100 }, { t: 'c', p: 9.8, v: 100 }]
@@ -163,6 +166,38 @@ describe('tick-minute · 快照 → 一笔一笔 + 红绿统计', () => {
     expect(tickStrengthOf(s, 'buy').title).toContain('手');
     // ⛔ 这张看板的手数是【手】不是【万手】—— 说明文字里不能出现「万手」（免得用户按 100 倍去找）
     expect(tickStrengthOf(s, 'buy').title).not.toContain('万手');
+  });
+
+  it('★ 展开面板最下方：分析过程 + 买卖点逻辑（两行，买/卖侧不同）', () => {
+    const mk = (upN, downN) => {
+      const pens = [{ t: '09:30:03', p: 10, v: null }];
+      let p = 10;
+      for (let i = 0; i < upN; i++) { p = Number((p + 0.01).toFixed(2)); pens.push({ t: 'x' + i, p: p, v: 100 }); }
+      for (let i = 0; i < downN; i++) { p = Number((p - 0.01).toFixed(2)); pens.push({ t: 'y' + i, p: p, v: 100 }); }
+      return buildTickPens({ openPrice: 10, pens: pens });
+    };
+    // 第 1 行永远是【分析】（红绿 → 强弱），买卖两侧相同
+    const weakBuy = tickPanelHint(mk(1, 5), 'buy');
+    const weakSell = tickPanelHint(mk(1, 5), 'sell');
+    expect(weakBuy.length).toBe(2);
+    expect(weakBuy[0]).toContain('【分析】');
+    expect(weakBuy[0]).toContain('红 1 笔');
+    expect(weakBuy[0]).toContain('开盘弱');
+    expect(weakSell[0]).toBe(weakBuy[0]);
+    // 第 2 行是【买点/卖点】动作名 + 怎么做 —— 两侧必须不同
+    expect(weakBuy[1]).toContain('【买点】盘中下杀买');
+    expect(weakSell[1]).toContain('【卖点】立刻卖');
+    expect(weakBuy[1]).not.toBe(weakSell[1]);
+    // 走强那一侧同样成立，并且「盘中冲高卖」要交代「第一笔绿色手数」这个观察点
+    expect(tickPanelHint(mk(5, 1), 'buy')[1]).toContain('【买点】立刻买');
+    expect(tickPanelHint(mk(5, 1), 'sell')[1]).toContain('【卖点】盘中冲高卖');
+    expect(tickPanelHint(mk(5, 1), 'sell')[1]).toContain('绿色');
+    // 均衡：第 1 行说明相等，第 2 行不下结论（§10 不站边）
+    const even = tickPanelHint(mk(3, 2), 'buy');
+    expect(even[0]).toContain('均衡');
+    expect(even[1]).toContain('不下结论');
+    // §10：一笔都判不出来 ⇒ 整块不渲染（空数组）
+    expect(tickPanelHint(buildTickPens({ openPrice: null, pens: [] }), 'buy')).toEqual([]);
   });
 
   it('无成交快照（累计量没变，v=0）被略去，且不计入平盘', () => {
@@ -347,7 +382,7 @@ describe('tick-minute · 决策行 → 分笔买卖看板行', () => {
     expect(p0.strengthText).toBe('立刻买');   // 买点侧：走强 ⇒ 立刻买
     expect(p0.pens.length).toBe(3);
     expect(p0.pens[0].volText).toBe('—');
-    expect(p0.pens[1].volText).toBe('12');
+    expect(p0.pens[1].volText).toBe('1200');   // ★ 原值就是手：v=1200 ⇒ 显示 1200（⛔ 不再是 12）
     expect(p0.pens[2].arrow).toBe('↑');
     expect(p0.panelTitle).toContain('襄阳轴承');
     // 卖点侧同一只票应是同一份统计（§6 一个口径），但【动作名不同】——买点说买、卖点说卖
@@ -355,6 +390,12 @@ describe('tick-minute · 决策行 → 分笔买卖看板行', () => {
     expect(b.sellGroups[0].items[0].greenText).toBe('1绿');
     expect(b.sellGroups[0].items[0].strengthTone).toBe('strong');       // 同一份强弱色
     expect(b.sellGroups[0].items[0].strengthText).toBe('盘中冲高卖');   // ★ 但名字必须是卖点侧的动作
+    // ★ 展开面板最下方的「分析过程 + 买卖点逻辑」同样要跟着侧别走
+    expect(p0.panelHint.length).toBe(2);
+    expect(p0.panelHint[1]).toContain('【买点】立刻买');
+    expect(b.sellGroups[0].items[0].panelHint[1]).toContain('【卖点】盘中冲高卖');
+    // ⛔ 没有行 / 抓不到时整块不渲染（§10）
+    expect(b.buyBlocks[0].picks[1].panelHint).toEqual([]);
   });
 
   it('有行但一笔都判不出来（全缺价格）⇒ 回落「无数据」，⛔ 不留空胶囊', () => {
