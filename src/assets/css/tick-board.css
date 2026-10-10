@@ -1,0 +1,431 @@
+/* 「分笔买卖」看板（独立看板，类名统一 tick- / tbb- 前缀，⛔ 不蹭任何其它看板的前缀）
+   视觉与其它看板保持一致（同款圆角卡片 + 渐变头部），但类名完全独立：
+   任何一边改版都不会悄悄影响另一边 —— 尤其【决策看板必须保持不变】。
+
+   ⚠️ 本文件是全局加载的（src/assets/main.css 里 @import）：
+      ⛔ 绝不写 .row / .stat / .panel 这类通用名（会串改早盘竞价等看板）；
+      ⛔ 也不要用 .dcb-* / .decision-*（那是决策看板的，混用等于把两个看板耦合成一体）。 */
+
+/* 头部用【靛蓝渐变】而非决策看板的蓝：
+   两个看板上下紧挨着，同色会让人分不清哪条条是哪块；
+   靛蓝与看板内「买=红 / 卖=绿 / 上涨=红 / 下跌=绿」的语义色也完全错开。 */
+.tick-board {
+  margin: 0 15px 10px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.tick-board.minimized .tick-header {
+  border-radius: 15px;
+}
+
+.tick-header {
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  background: linear-gradient(135deg, #6366f1, #4338ca);
+  transition: background 0.2s;
+}
+
+.tick-header:hover {
+  background: linear-gradient(135deg, #4f46e5, #3730a3);
+}
+
+.tick-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #ffffff;
+  white-space: nowrap;
+}
+
+/* 落库时间小字：贴在标题右边（头部空间紧张，先于摘要被压缩掉也没关系） */
+.tick-updated {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.75);
+  white-space: nowrap;
+}
+
+.tick-summary {
+  flex: 1;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.95);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 三角按钮：与其它看板【同尺寸同底色】（24×24 圆底 + 12px 实心三角 ▲/▼） */
+.tick-toggle-btn {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+  border-radius: 50%;
+  transition: all 0.2s;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.tick-body {
+  padding: 8px 10px 10px;
+  background: #ffffff;
+}
+
+/* §10：未就绪 / 失败必须看得见 —— 用醒目的告警色，绝不用灰字糊过去 */
+.tick-error {
+  margin: 4px 2px 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #b91c1c;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+}
+
+.tick-empty {
+  padding: 10px 6px;
+  font-size: 12px;
+  color: #94a3b8;
+  text-align: center;
+}
+
+.tick-section {
+  padding: 0 2px;
+}
+
+.tick-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 2px 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+/* 涨红跌绿（中国习惯）：买点 = 红，卖点 = 绿（与决策看板同一套语义色） */
+.tick-section-title.buy { color: #b91c1c; }
+.tick-section-title.sell { color: #15803d; }
+
+/* 蚂蚁线：买点与卖点之间的分隔（与其它看板同款行进虚线语言） */
+.tick-sep {
+  height: 2px;
+  margin: 12px 0;
+  background-image: repeating-linear-gradient(90deg, #94a3b8 0 5px, transparent 5px 10px);
+  background-size: 10px 2px;
+  background-repeat: repeat-x;
+  animation: tickAnts 1s linear infinite;
+}
+
+@keyframes tickAnts {
+  from { background-position: 0 0; }
+  to { background-position: 10px 0; }
+}
+
+/* ---- 题材块（买点 / 卖点共用） ---- */
+.tbb-block {
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  background: #f8fafc;
+  border: 1px solid #eef2f7;
+  border-radius: 10px;
+}
+
+.tbb-block-head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+/* 第 1 行：题材级标记（昨有买入 / N 次入选；一个都没有时整行不渲染 ⇒ 不会出现空行） */
+.tbb-tags-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 第 2 行：题材名称 + 排名圆点 + 数量 + 竞价一字 */
+.tbb-topic-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 题材名【完整显示，永不压缩】（与决策看板同一处理） */
+.tbb-topic {
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+/* 实心圆点里的白字 = 决策看板【内】的题材排名 */
+.tbb-rank-dot {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  color: #ffffff;
+  background: #dc2626;
+  border-radius: 50%;
+}
+
+.tbb-meta {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #64748b;
+}
+
+/* 「竞价一字：2」里的数字用红色 —— 一字 = 最强 / 买不到的那个信号 */
+.tbb-meta-num {
+  color: #dc2626;
+  font-weight: 700;
+}
+
+/* 题材级标记：昨有买入（实心琥珀，语义 = 题材在延续） */
+.tbb-prev-bought {
+  flex-shrink: 0;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  color: #ffffff;
+  background: #b45309;
+  border: 1px solid #b45309;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+/* 题材级标记：N 次入选（淡紫描边，与琥珀的「昨有买入」一眼可分） */
+.tbb-topic-streak {
+  flex-shrink: 0;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  color: #6d28d9;
+  background: #f5f3ff;
+  border: 1px solid #ddd6fe;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+/* ---- 股票行 ---- */
+.tbb-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+  color: #1f2937;
+}
+
+.tbb-seq {
+  width: 18px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #94a3b8;
+  text-align: right;
+}
+
+/* 序号 / 股票名可点：展开这一分钟的分笔明细（纯 UI 态，真相在 useTickBoard#penOpenSet，§34） */
+.tbb-trigger {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tbb-trigger:hover {
+  color: #4338ca;
+}
+
+.tbb-name {
+  font-weight: 600;
+}
+
+/* 龙一 / 龙二 徽章 */
+.tbb-dragon {
+  padding: 0 4px;
+  font-size: 9px;
+  line-height: 14px;
+  color: #b45309;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+/* 龙标旁边的名次变化（'+3' 上升红 / '-2' 下降绿）。
+   用户口径「数字前有加减号，不用背景色，上升用红色，下降用绿色」⇒ 只给文字颜色。
+   ⚠️ 负 margin 是刻意的：.tbb-row 是 flex + gap: 8px，龙标与数字是两个 flex 子项，
+      gap 会把它们推开 8px；-3px 把净间距收到 5px，读起来才是「龙二 +3」这一句话。
+      ⛔ A 股口径是【上升红 / 下降绿】（与欧美相反），别改。 */
+.tbb-dragon-delta {
+  margin-left: -3px;
+  font-size: 9px;
+  line-height: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  user-select: text;
+}
+
+.tbb-dragon-delta-up { color: #dc2626; }
+.tbb-dragon-delta-down { color: #16a34a; }
+
+.tbb-pct {
+  font-size: 11px;
+  color: #b91c1c;
+}
+
+/* ---- 20 笔统计「17红4绿」 ---- */
+.tbb-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 涨红跌绿 —— 与全站语义色一致（上涨笔数红字 / 下跌含平盘笔数绿字） */
+.tbb-stat-red { color: #dc2626; }
+.tbb-stat-green { color: #16a34a; }
+
+/* 「未抓取 / 无数据 / 缺代码」：灰字灰底（§10 缺失必须可见，⛔ 不能用 0 冒充） */
+.tbb-stat-empty {
+  color: #94a3b8;
+  font-weight: 600;
+  background: #f8fafc;
+}
+
+/* ---- 开盘强弱结论（由红绿笔数直接得出） ---- */
+.tbb-verdict {
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+/* 开盘强：实心红（上涨占优；与「买点」的红同一支） */
+.tbb-verdict-strong {
+  color: #ffffff;
+  background: #dc2626;
+  border: 1px solid #dc2626;
+}
+
+/* 开盘弱：实心绿（下跌占优） */
+.tbb-verdict-weak {
+  color: #ffffff;
+  background: #16a34a;
+  border: 1px solid #16a34a;
+}
+
+/* 均衡：描边灰蓝（⛔ 不站边，不硬判强弱，§10） */
+.tbb-verdict-even {
+  color: #475569;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+}
+
+/* ---- 展开后的分笔明细面板 ---- */
+.tbb-panel {
+  margin: 1px 0 6px 26px;   /* 26px = 序号宽 18 + 行内 gap 8 ⇒ 与股票名左对齐 */
+  padding: 6px 8px 6px;
+  background: #f9fafb;
+  border: 1px solid #eef2f7;
+  border-radius: 6px;
+  box-sizing: border-box;
+}
+
+.tbb-panel-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 4px;
+  line-height: 1.5;
+  /* 允许长按选中复制（方便整段发给 AI / 对照东财） */
+  user-select: text;
+}
+
+.tbb-pen-table {
+  display: flex;
+  flex-direction: column;
+}
+
+.tbb-pen-row {
+  display: grid;
+  grid-template-columns: 22px 1fr 52px 46px 30px;
+  align-items: baseline;
+  gap: 6px;
+  padding: 1px 0;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: #334155;
+}
+
+.tbb-pen-head {
+  color: #94a3b8;
+  font-size: 10px;
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 2px;
+  margin-bottom: 2px;
+}
+
+.tbb-pen-seq { text-align: right; color: #94a3b8; }
+.tbb-pen-time { white-space: nowrap; }
+.tbb-pen-price { text-align: right; }
+.tbb-pen-vol { text-align: right; }
+.tbb-pen-dir { text-align: center; }
+
+/* ★ 用户口径：「下跌和平的用绿色，上涨用红色」
+     ⇒ 整行（价格 / 手数 / 箭头）统一染色，一眼扫过去就能数红绿；
+       平盘没有箭头（模板输出 '—'），但配色仍是绿 —— 与东财一致。 */
+.tbb-pen-up { color: #dc2626; font-weight: 600; }
+.tbb-pen-down { color: #16a34a; font-weight: 600; }
+
+.tbb-pen-empty {
+  padding: 6px 2px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.tbb-panel-note {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed #e2e8f0;
+  font-size: 10px;
+  line-height: 1.6;
+  color: #94a3b8;
+  user-select: text;
+}

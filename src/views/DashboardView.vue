@@ -94,6 +94,13 @@
          组件与样式全部独立（decision- / dcb- 前缀），⛔ 不复用任何其它看板的组件，
          因此挂载在这里不会影响任何既有看板。 -->
     <DecisionBoard v-show="boardView === 'trading'" />
+    <!-- 「分笔买卖」看板：独立看板组件（紧跟在「决策」看板【下面】）。
+         它只把决策看板选中的买点 / 卖点股票，拿去查 9:30~9:31 这一分钟的分笔，
+         按红/绿笔数判开盘强弱（用来复核 竞价买 / 竞价卖 / 尾盘买 / 尾盘卖）。
+         组件与样式全部独立（tick- / tbb- 前缀），数据源是猫头鹰 tick_history
+         （独立 Edge Function tick-minute-fetch + 独立表 tick_minute_open），
+         ⛔ 不改决策看板一行、也不改任何其它看板。 -->
+    <TickBoard v-show="boardView === 'trading'" />
     <DuibanBoard v-show="boardView === 'trading'" />
     <EtfBoard v-show="boardView === 'trading'" />
     <HomeStocksView
@@ -223,6 +230,7 @@ import EditModal from '../components/EditModal.vue';
 import HomeStocksView from './HomeStocksView.vue';
 import AuctionBoard from './AuctionBoard.vue';
 import DecisionBoard from './DecisionBoard.vue';
+import TickBoard from './TickBoard.vue';
 import BiddingBoard from './BiddingBoard.vue';
 import PatternBoard from './PatternBoard.vue';
 import DuibanBoard from './DuibanBoard.vue';

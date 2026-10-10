@@ -145,6 +145,20 @@ function _buyBlocksOf(buy) {
   return out;
 }
 
+/**
+ * [TICK-BOARD 2026-10-10] 【买点块摊平】的对外出口。
+ *
+ * 用途：「分笔买卖」看板要按【和决策看板完全相同的买点块】去取分笔 ——
+ *   它必须拿到 heavy / light / candidates[] / 三个兜底槽位的并集。
+ *
+ * ⛔ 为什么必须从这里导出、而不是在那边的逻辑层再写一份 ['heavy','light',...].forEach：
+ *   那份遍历是「口径一致性靠结构保证」的那一处（见 _eachRow 的长注释）——
+ *   历史上新增过 candidates（2026-10-02）、兜底槽位改过三回，
+ *   每多一份遍历就多一次「某个新档位的票静默漏掉」的机会。
+ *   本导出【纯增量】：只是把同一个函数暴露出去，⛔ 不改任何行为（决策看板一行都不变）。
+ */
+export { _buyBlocksOf as buyBlocksOf };
+
 function _buyPlanNames(buy) {
   const out = new Set();
   if (!buy) return out;

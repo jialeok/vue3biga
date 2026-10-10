@@ -34,6 +34,14 @@ verify_jwt = false
 [functions.limit-pool-fetch]
 verify_jwt = false
 
+# 【建议关闭】「分笔买卖」看板的抓取函数（前端在 9:31 后直接调 /minute，
+# 浏览器带 anon key + apikey 头 → 预检 + 真实请求都要过 CORS）。
+# 关掉的好处：能用浏览器直接打开 /health、/minute 排查。
+# ⛔ 关掉【不】降低安全性：它只往自己的表 tick_minute_open 写「已选定股票」的公开分笔，
+#    且该表本来就是 anon 全开放（RLS allow_all，与其它看板一致）。
+[functions.tick-minute-fetch]
+verify_jwt = false
+
 # ---------------------------------------------------------------------------
 # verify_jwt = true —— 保持平台 JWT 校验（默认值，显式写出防误改）
 # 这两个是给【前端】用 anon key 调的，anon key 本身就是合法 JWT，开着即可。
