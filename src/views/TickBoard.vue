@@ -61,7 +61,23 @@
         v-if="fetchError"
         class="tick-error"
       >
-        {{ fetchError }}
+        <span class="tick-error-text">{{ fetchError }}</span>
+        <!-- 失败必须给下一步动作（2026-10-10）：只丢一段红字，用户只能干瞪眼或整页刷新。
+             两个动作都【不写业务数据】：重试 = 重新读库 + 补抓；自检 = 只读的 /probe。 -->
+        <span class="tick-error-actions">
+          <button
+            type="button"
+            class="tick-link"
+            :disabled="retrying"
+            @click.stop="refresh"
+          >{{ retrying ? '重试中…' : '重试' }}</button>
+          <a
+            class="tick-link"
+            :href="probeUrl"
+            target="_blank"
+            rel="noopener"
+          >上游自检</a>
+        </span>
       </div>
       <div
         v-if="!ready"
@@ -140,7 +156,10 @@ const {
   sellGroups,
   summaryText,
   updatedText,
-  toggleExpand
+  toggleExpand,
+  refresh,
+  retrying,
+  probeUrl
 } = board;
 
 // 与早盘竞价 / 涨跌停 / 竞价一字 / 决策看板同款三角（实心 ▲/▼），别再各写一套

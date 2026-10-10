@@ -37,7 +37,8 @@ import {
   refreshTickMinute,
   resetTickMinuteTransient,
   stopTickMinuteRetry,
-  isTickMinuteReadable
+  isTickMinuteReadable,
+  TICK_PROBE_URL
 } from '../logic/tick/tick-minute-store.js';
 
 /** 稳定的空集合 / 空 Map（避免每次 computed 都 new 一个 → 白白触发下游重算） */
@@ -64,6 +65,8 @@ export function useTickBoard() {
   const version = ref(0);
   /** 本看板自己的计算错误（与抓取/读库错误分开显示：两者可能同时存在，含义也不同） */
   const computeError = ref('');
+  /** 用户点「重试」进行中（纯按钮态，⛔ 不参与渲染阻塞 §17） */
+  const retrying = ref(false);
 
   const data = computed(function() {
     void version.value;
@@ -181,7 +184,10 @@ export function useTickBoard() {
     computeError.value = '';
     const d = currentDate.value;
     if (!d) return Promise.resolve();
-    return refreshTickMinute(d, data.value.targets || []);
+    retrying.value = true;
+    return refreshTickMinute(d, data.value.targets || []).finally(function() {
+      retrying.value = false;
+    });
   }
 
   // 目标名单变化（首个买点/卖点到货、或选票结论变了）→ 补一次抓取。
@@ -238,6 +244,9 @@ export function useTickBoard() {
     updatedText,
     toggleExpand,
     togglePens,
-    refresh
+    refresh,
+    // 失败时给用户的下一步：重试 + 自检（2026-10-10 加：光有红字、没有动作，用户只能干瞪眼）
+    retrying,
+    probeUrl: TICK_PROBE_URL
   };
 }

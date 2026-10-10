@@ -60,6 +60,28 @@
 //   ⛔ 历史日【不受此限】：tradedate 已经把日期钉死，上游那一天的这一分钟是终值，
 //      补抓不会取到错值（同 auction-yizi-fetch 的「迟到容错」口径）。
 //
+// ── ★ 事故与不变式：后端等的必须【短于】前端等的（2026-10-10 修）────────────
+//   现场：前端红字「分笔抓取接口不可达：请求 /minute 失败（signal is aborted without reason）；
+//   functions/v1/tick-minute-fetch」，并附带「① 跨域被拦 ② 未部署 ③ 网络不通」三条猜测。
+//   ⛔ 三条【全错】。实测：OPTIONS 预检回 204 + Access-Control-Allow-Origin:*；/minute 回 200、
+//      980ms 拿到 20 条快照；不存在的函数名 404、缺认证头 401，都是 1~2s 内返回。
+//   真因：`signal is aborted without reason` 是【前端 AbortController 的超时】原文。旧参数
+//      REQUEST_TIMEOUT_MS=20000 × 2 个端点 = 后端最坏 40s，而前端只等 25s ⇒ 上游专线一抽风，
+//      前端必然先 abort，并把「我超时了」错报成「接口不可达」，把排查方向整个带偏。
+//   ✅ 不变式（改本文件或改 src/data/tick-minute.js 前必须守住）：
+//        后端上游最坏耗时 = TOTAL_BUDGET_MS（默认 15s）
+//        <  前端 timeoutMs（默认 60s）
+//      ⇒ 前端永远等得到后端的【有内容的说法】（attempts 里带真实错误原文），
+//        而不是一句没有信息的 abort。
+//
+// ── 排查三件套（前端报错时按顺序来）──────────────────────────────────────────
+//   1) GET /probe   —— 从 Edge 机房这一侧实测上游专线：每个端点的往返耗时 / 上游原文。
+//                      通了 ⇒ 问题在「浏览器→Supabase」这一段；不通 ⇒ 看 error 原文。
+//   2) GET /health  —— 端点、key 来源（掩码）、窗口、预算、今天/现在。
+//                      若这里 401 ⇒ Verify JWT 还开着（Dashboard 粘贴部署不读 config.toml）。
+//   3) GET /minute?date=…&stocks=… —— 真正抓一次，看 attempts / upstreamMs / pending。
+//   ⛔ 别再靠「浏览器报错文案」猜原因：跨域/未部署/超时/DNS 在 fetch 抛错里长得一模一样。
+//
 // ── 部署（二选一）──────────────────────────────────────────────────────────
 //   A. Dashboard：Functions → 新建 tick-minute-fetch → 粘贴本文件全部内容 → Deploy。
 //   B. CLI：supabase functions deploy tick-minute-fetch
@@ -78,6 +100,7 @@
 //
 // ── 手动触发（排查 / 补某日）──────────────────────────────────────────────
 //   GET /functions/v1/tick-minute-fetch/health
+//   GET /functions/v1/tick-minute-fetch/probe          ← 排障先看这个（上游通不通、多快）
 //   GET /functions/v1/tick-minute-fetch/minute?date=2026-10-09&stocks=襄阳轴承:000678,宝鼎科技
 //        （stocks 支持 `名字:代码` 或纯名字；纯名字会去 stockcodemap 查代码；用 | 或 , 分隔）
 //   POST /functions/v1/tick-minute-fetch/minute   body: {date, items:[{name,code}]}
@@ -105,7 +128,18 @@ const CONFIG = {
   // 9:31 闸门用的时刻（= END_TIME 的秒数）
   WINDOW_READY: (Deno.env.get('TICK_WINDOW_READY') || '09:31:00').trim(),
 
-  REQUEST_TIMEOUT_MS: Number(Deno.env.get('NUMCAT_TICK_TIMEOUT_MS') || 20000),
+  // ── 上游时间预算（2026-10-10 修）────────────────────────────────────────
+  // 【事故】前端曾报「分笔抓取接口不可达：请求 /minute 失败（signal is aborted without reason）」。
+  //   真因不是跨域、也不是没部署，而是【后端最坏比前端等得久】：
+  //   旧值 REQUEST_TIMEOUT_MS=20000，fetchMinute 会依次试 2 个专线端点 ⇒ 最坏 20s×2=40s，
+  //   而前端自己的超时只有 25s ⇒ 只要上游专线抽风一次（6688 端口对海外机房时常限流），
+  //   前端必然先 abort，并把「我超时了」误报成「接口不可达 / 跨域被拦」，排查方向被彻底带偏。
+  // 【红线】后端所有上游尝试的【总和】必须明显小于前端的 timeoutMs（见 src/data/tick-minute.js）。
+  REQUEST_TIMEOUT_MS: Number(Deno.env.get('NUMCAT_TICK_TIMEOUT_MS') || 8000),
+  // 所有端点尝试加起来的总预算（超过就不再开新的上游请求）
+  TOTAL_BUDGET_MS: Number(Deno.env.get('NUMCAT_TICK_BUDGET_MS') || 15000),
+  // 剩余预算低于这个值就【不】再开新的端点尝试（开了也会被总预算切掉，白烧一次上游额度）
+  MIN_SLICE_MS: Number(Deno.env.get('NUMCAT_TICK_MIN_SLICE_MS') || 2500),
   WRITE_CHUNK: 200,
   // 单次上游请求最多带几个 symbol（上游上限 200，这里留足余量）
   MAX_SYMBOLS_PER_CALL: Number(Deno.env.get('NUMCAT_TICK_MAX_SYMBOLS') || 60),
@@ -233,10 +267,13 @@ type UpstreamSnapshot = { fields: string[]; items: unknown[]; endpoint: string; 
  * ⚠️ 与 auction-yizi-fetch 的差别只有两处：apiname 换成 tick_history、params 带窗口与 symbols。
  *    信封格式（POST + JSON + {apikey,apiname,fields,params}）完全一致。
  */
-async function numcatTickRaw(endpoint: string, key: string, symbols: string[], dateYmd: string): Promise<UpstreamSnapshot> {
+async function numcatTickRaw(endpoint: string, key: string, symbols: string[], dateYmd: string, timeoutMs?: number): Promise<UpstreamSnapshot> {
   if (!key) {
     throw new Error('猫头鹰 key 未配置（请设置 Secrets: ' + KEY_PRIMARY + ' 或 ' + KEY_FALLBACK + '）');
   }
+  // 本次允许等多久：默认取 REQUEST_TIMEOUT_MS；fetchMinute 在总预算快用完时会【收紧】它，
+  // 避免最后一个端点把总预算整个吃穿（那会让前端先超时，症状同上方的【事故】注释）。
+  const waitMs = (typeof timeoutMs === 'number' && timeoutMs > 0) ? timeoutMs : CONFIG.REQUEST_TIMEOUT_MS;
   const body = {
     apiname: CONFIG.APINAME,
     apikey: key,
@@ -257,11 +294,11 @@ async function numcatTickRaw(endpoint: string, key: string, symbols: string[], d
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal: timeoutSignal(CONFIG.REQUEST_TIMEOUT_MS),
+      signal: timeoutSignal(waitMs),
     });
   } catch (e) {
     const msg = (e as Error)?.message || String(e);
-    throw new Error('上游请求未拿到响应（' + CONFIG.REQUEST_TIMEOUT_MS + 'ms 超时 / DNS / 端口不通）: ' + msg + '  [ep=' + endpoint + ']');
+    throw new Error('上游请求未拿到响应（' + waitMs + 'ms 超时 / DNS / 端口不通）: ' + msg + '  [ep=' + endpoint + ']');
   }
   const elapsedMs = Date.now() - t0;
   const text = await resp.text();
@@ -347,6 +384,10 @@ type FetchResult = {
   pending: string[];
   attempts: Array<Record<string, unknown>>;
   requests: number;
+  /** 是否因为总预算用完而【主动放弃】了还没抓到的 symbol（前端据此区分「超时」与「真没有」） */
+  budgetExhausted: boolean;
+  /** 上游阶段总耗时（所有端点尝试之和） */
+  elapsedMs: number;
 };
 
 /**
@@ -354,7 +395,13 @@ type FetchResult = {
  *
  * 端点策略：按候选列表顺序尝试；每个端点只请求【还没拿到数据的 symbol】；
  * 某端点报错 ⇒ 记下错误、继续下一个端点（不中断整批）。
- * ⛔ 最多走完候选列表（默认 2 个专线），不会无限重试（保护上游 3 次/秒的限流）。
+ *
+ * 时间策略（2026-10-10 加，修「前端先超时」事故）：
+ *   · 每次上游请求的等待 = min(REQUEST_TIMEOUT_MS, 剩余总预算)；
+ *   · 剩余预算 < MIN_SLICE_MS ⇒ 不再开新端点尝试，置 budgetExhausted；
+ *   · 于是本函数的【最坏耗时 ≤ TOTAL_BUDGET_MS】（默认 15s），
+ *     小于前端 timeoutMs（60s）⇒ 前端永远能拿到后端的说法，而不是一句无信息的 abort。
+ * ⛔ 不会无限重试（保护上游 3 次/秒的限流）。
  */
 async function fetchMinute(symbols: string[], dateYmd: string, keyRef: KeyRef): Promise<FetchResult> {
   const endpoints = buildEndpoints();
@@ -362,33 +409,51 @@ async function fetchMinute(symbols: string[], dateYmd: string, keyRef: KeyRef): 
   let pending = symbols.slice(0);
   const attempts: Array<Record<string, unknown>> = [];
   let requests = 0;
+  let budgetExhausted = false;
+  const t0 = Date.now();
+
+  const leftMs = () => CONFIG.TOTAL_BUDGET_MS - (Date.now() - t0);
 
   for (const ep of endpoints) {
-    if (pending.length === 0) break;
-    const batch = pending.slice(0, CONFIG.MAX_SYMBOLS_PER_CALL);
-    try {
-      requests++;
-      const snap = await numcatTickRaw(ep, keyRef.key, batch, dateYmd);
-      const m = mapItems(snap, batch, dateYmd);
-      const got = new Set<string>();
-      m.rows.forEach((r) => {
-        if (!bySymbol.has(r.symbol)) bySymbol.set(r.symbol, []);
-        (bySymbol.get(r.symbol) as RawTick[]).push(r);
-        got.add(r.symbol);
-      });
-      attempts.push({
-        endpoint: ep, ok: true, symbols: batch.length, rows: m.rows.length,
-        covered: got.size, elapsedMs: snap.elapsedMs,
-        droppedForeign: m.droppedForeign, droppedDateMismatch: m.droppedDateMismatch,
-      });
-      // 上游若忽略 symbols 返回了全市场，我们已按 wanted 过滤掉 → 未命中的照旧算「没拿到」，
-      // 于是会去试下一个端点 ⇒ 这既是兜底也能让「参数被忽略」这件事在 attempts 里露出来。
-      pending = pending.filter((s) => !got.has(s));
-    } catch (e) {
-      attempts.push({ endpoint: ep, ok: false, symbols: batch.length, error: (e as Error)?.message || String(e) });
+    // 同一端点内可能有多批（pending > MAX_SYMBOLS_PER_CALL）；
+    // ⚠️ 旧版只用 slice(0, MAX) 取一批就换端点 ⇒ 超过 60 只时后面的票会被【静默丢掉】。
+    for (;;) {
+      if (pending.length === 0) break;
+      const left = leftMs();
+      if (left < CONFIG.MIN_SLICE_MS) {
+        budgetExhausted = true;
+        break;
+      }
+      const batch = pending.slice(0, CONFIG.MAX_SYMBOLS_PER_CALL);
+      const waitMs = Math.max(1000, Math.min(CONFIG.REQUEST_TIMEOUT_MS, left));
+      try {
+        requests++;
+        const snap = await numcatTickRaw(ep, keyRef.key, batch, dateYmd, waitMs);
+        const m = mapItems(snap, batch, dateYmd);
+        const got = new Set<string>();
+        m.rows.forEach((r) => {
+          if (!bySymbol.has(r.symbol)) bySymbol.set(r.symbol, []);
+          (bySymbol.get(r.symbol) as RawTick[]).push(r);
+          got.add(r.symbol);
+        });
+        attempts.push({
+          endpoint: ep, ok: true, symbols: batch.length, rows: m.rows.length,
+          covered: got.size, elapsedMs: snap.elapsedMs,
+          droppedForeign: m.droppedForeign, droppedDateMismatch: m.droppedDateMismatch,
+        });
+        // 上游若忽略 symbols 返回了全市场，我们已按 wanted 过滤掉 → 未命中的照旧算「没拿到」，
+        // 于是会去试下一个端点 ⇒ 这既是兜底也能让「参数被忽略」这件事在 attempts 里露出来。
+        pending = pending.filter((s) => !got.has(s));
+        // 这个端点对这批一个都没命中 ⇒ 再拿它切下一块也没意义，直接换端点（省一次上游调用）
+        if (got.size === 0) break;
+      } catch (e) {
+        attempts.push({ endpoint: ep, ok: false, symbols: batch.length, elapsedMs: Date.now() - t0, error: (e as Error)?.message || String(e) });
+        break;
+      }
     }
+    if (pending.length === 0 || budgetExhausted) break;
   }
-  return { bySymbol, pending, attempts, requests };
+  return { bySymbol, pending, attempts, requests, budgetExhausted, elapsedMs: Date.now() - t0 };
 }
 
 // ----------------------------- Supabase 读写 -----------------------------
@@ -565,8 +630,10 @@ async function runFetch(dateIso: string, items: ItemReq[], missing: Array<{ name
 
   // 上游一条都没返回（两个端点都没拿到）⇒ 不写库（§10：未就绪 ≠ 没有）
   if (fr.bySymbol.size === 0) {
+    const errs = fr.attempts.filter((a) => !a.ok).map((a) => String(a.error || ''));
+    const upstreamSlow = fr.budgetExhausted || errs.some((s) => s.indexOf('超时') >= 0 || s.indexOf('timeout') >= 0);
     await writeLog(Object.assign({}, logBase, {
-      ok: false, detail: { skipped: 'upstream-empty', attempts: fr.attempts, pending: fr.pending, requests: fr.requests },
+      ok: false, detail: { skipped: 'upstream-empty', attempts: fr.attempts, pending: fr.pending, requests: fr.requests, upstreamMs: fr.elapsedMs, budgetExhausted: fr.budgetExhausted },
     }));
     return {
       status: 200,
@@ -574,9 +641,15 @@ async function runFetch(dateIso: string, items: ItemReq[], missing: Array<{ name
         ok: false, skipped: 'upstream-empty', date: dateIso, dateYmd,
         keySource: keyRef.name, keyMasked: maskKey(keyRef.key),
         symbols: codes.length, missing, pending: fr.pending, attempts: fr.attempts,
-        hint: '上游这一分钟没有返回任何数据。可能：① 猫头鹰的 tick_history 未开通 / key 无该接口权限；' +
-          '② 专线端口 6688 在本网段不通（endpoints 见 /health）；③ 该日确实没有分笔数据（停牌 / 非交易日）。' +
-          '请先开 /health 看端点与 key 来源，再核对 attempts 里的真实错误原文。',
+        upstreamMs: fr.elapsedMs, budgetExhausted: fr.budgetExhausted, upstreamSlow,
+        hint: (upstreamSlow
+          ? '【上游超时/被限流】' + fr.elapsedMs + 'ms 内没从专线拿到数据（预算 ' + CONFIG.TOTAL_BUDGET_MS + 'ms）。' +
+            '这通常是 sz/sh.meoz.cn:6688 对海外机房（本项目 Edge 在 us-west-1）临时限流 —— 与 CORS、与函数是否部署【无关】。' +
+            '隔 1~2 分钟重试即可；连续多次都这样再看下面。'
+          : '上游这一分钟没有返回任何数据。') +
+          '可能：① 猫头鹰的 tick_history 未开通 / key 无该接口权限（本 key: ' + keyRef.name + '）；' +
+          '② 专线端口 6688 在本网段不通；③ 该日确实没有分笔数据（停牌 / 非交易日）。' +
+          '自查顺序：先开 GET /probe 看每个端点的真实往返与上游原文，再看 /health 的端点与 key 来源。',
       },
     };
   }
@@ -664,8 +737,14 @@ async function runFetch(dateIso: string, items: ItemReq[], missing: Array<{ name
       written, readBack, requests: fr.requests, attempts: fr.attempts,
       noData: noDataCount, pending: fr.pending, missing: missing.length,
       window: CONFIG.START_TIME + '~' + CONFIG.END_TIME,
+      upstreamMs: fr.elapsedMs, budgetExhausted: fr.budgetExhausted,
     },
   }));
+
+  // ⚠️ §10：因【总预算用完】而没取到的票，必须单独回执 —— 它们既不是「无数据」也不是「抓到了」，
+  //    前端据此【不】把它们标记成「已抓过」（否则会躺成「无数据」= 谎报，见 _handleResult）。
+  const pendingSet = new Set(fr.pending);
+  const uncovered = items.filter((it) => pendingSet.has(it.code)).map((it) => it.name);
 
   return {
     status: 200,
@@ -677,6 +756,9 @@ async function runFetch(dateIso: string, items: ItemReq[], missing: Array<{ name
       window: CONFIG.START_TIME + '~' + CONFIG.END_TIME,
       symbols: codes.length,
       upstreamRequests: fr.requests,
+      upstreamMs: fr.elapsedMs,
+      budgetExhausted: fr.budgetExhausted,
+      uncovered,
       results, missing,
       pending: fr.pending,
       attempts: fr.attempts,
@@ -742,6 +824,9 @@ Deno.serve(async (req: Request) => {
       keyFallbackEnabled: (Deno.env.get('NUMCAT_TICK_KEY_FALLBACK') || '1').trim() !== '0',
       window: { start: CONFIG.START_TIME, end: CONFIG.END_TIME, readyAfterBeijing: CONFIG.WINDOW_READY },
       requestTimeoutMs: CONFIG.REQUEST_TIMEOUT_MS,
+      totalBudgetMs: CONFIG.TOTAL_BUDGET_MS,
+      minSliceMs: CONFIG.MIN_SLICE_MS,
+      upstreamWorstCaseMs: '≤ ' + CONFIG.TOTAL_BUDGET_MS + 'ms（所有端点尝试之和）',
       maxSymbolsPerCall: CONFIG.MAX_SYMBOLS_PER_CALL,
       tokenSource: tokenSource(),
       table: 'tick_minute_open（先执行 db/create_tick_minute_open.sql 建表）',
@@ -751,9 +836,58 @@ Deno.serve(async (req: Request) => {
       fields: CONFIG.FIELDS,
       routes: {
         health: 'GET /health —— 只看配置（不回显密钥）',
+        probe: 'GET /probe —— 【从 Edge 机房实测上游专线】连通性与往返耗时（只读、不写库；排障第一步）',
         minute: 'GET /minute?date=YYYY-MM-DD&stocks=名字:代码,名字 | POST /minute {date, items:[{name,code}]}',
       },
-      nextStep: '第一次跑请先执行 db/create_tick_minute_open.sql，再配 NUMCAT_TICK_API_KEY（或复用 NUMCAT_API_KEY），最后关掉 Verify JWT。',
+      nextStep: '第一次跑请先执行 db/create_tick_minute_open.sql，再配 NUMCAT_TICK_API_KEY（或复用 NUMCAT_API_KEY），最后关掉 Verify JWT（关了本页才不需要 apikey 就能直接打开）。',
+      diagnosing: '前端报「不可达 / signal is aborted without reason」时：① 先 GET /probe 看上游通不通；'
+        + '② 再 GET /health（若这里 401，说明 Verify JWT 还开着——本函数的 config.toml 声明是 false，'
+        + '但【Dashboard 粘贴部署不读 config.toml】，必须手动关）；③ 两者都正常 ⇒ 是浏览器→Supabase 这一段。',
+    });
+  }
+
+  // ── GET /probe —— 上游连通性自检（排障第一步）──────────────────────────────
+  // 为什么必须有它：前端「超时 / 不可达 / 跨域」在浏览器里长得【一模一样】（fetch 抛错不带原因），
+  //   只有从 Edge 机房这一侧实测，才能把「上游专线不通」和「浏览器→Supabase 这一段不通」分开。
+  //   ⛔ 只读：不写 tick_minute_open、不占 9:31 闸门；成本 = 每端点 1 次上游调用（≤2 次）。
+  if (p.endsWith('/probe')) {
+    const dateRaw = (url.searchParams.get('date') || '').trim();
+    const todayIso = beijingToday();
+    const dateYmd = (dateRaw ? isoToYmd(dateRaw) : isoToYmd(todayIso)) || isoToYmd(todayIso) || '';
+    if (!dateYmd) return json({ ok: false, error: 'date 必须是 YYYY-MM-DD 或 YYYYMMDD，收到：' + dateRaw }, 400);
+    const probeSymbol = ((url.searchParams.get('symbol') || '000001').trim()) || '000001';
+    const keyRef = primaryKey();
+    if (!keyRef) {
+      return json({ ok: false, error: '未配置猫头鹰 key：请设置 Secrets ' + KEY_PRIMARY + '（或 ' + KEY_FALLBACK + '）', keySource: '未配置' }, 200);
+    }
+    const eps = buildEndpoints();
+    const probes: Array<Record<string, unknown>> = [];
+    for (const ep of eps) {
+      const t0 = Date.now();
+      try {
+        // 与 /minute 走【完全同一条】上游路径（同 apiname / 同窗口 / 同字段），
+        // 否则「/probe 通了但 /minute 不通」会变成新的假线索。
+        const snap = await numcatTickRaw(ep, keyRef.key, [probeSymbol], dateYmd, CONFIG.REQUEST_TIMEOUT_MS);
+        probes.push({ endpoint: ep, ok: true, roundTripMs: Date.now() - t0, upstreamElapsedMs: snap.elapsedMs, items: snap.items.length });
+      } catch (e) {
+        probes.push({ endpoint: ep, ok: false, roundTripMs: Date.now() - t0, error: (e as Error)?.message || String(e) });
+      }
+    }
+    const anyOk = probes.some((x) => x.ok === true);
+    return json({
+      ok: anyOk,
+      service: 'tick-minute-fetch',
+      route: 'GET /probe —— 从 Edge 机房这一侧实测上游专线',
+      probe: { symbol: probeSymbol, date: dateYmd, window: CONFIG.START_TIME + '~' + CONFIG.END_TIME },
+      keySource: keyRef.name,
+      keyMasked: maskKey(keyRef.key),
+      perRequestTimeoutMs: CONFIG.REQUEST_TIMEOUT_MS,
+      upstreamRegion: Deno.env.get('SB_REGION') || Deno.env.get('DENO_REGION') || '(未暴露)',
+      results: probes,
+      verdict: anyOk
+        ? '上游专线【通】。若前端仍报不可达/超时，问题就在「浏览器 → Supabase」这一段：跨域（看 /health 的 CORS）、本机代理、函数未部署、或 Verify JWT 未关 —— 与上游无关。'
+        : '上游专线【不通】。逐条看 results.error 原文：含「超时」= 被限流/端口被墙（等 1~2 分钟再试）；含「invalid api key」= key 无效或无 tick_history 权限；都不是 ⇒ 该日可能就是没有分笔数据（停牌/非交易日）。',
+      note: '本路由只读、不写库；每次消耗 ≤2 次上游调用（与 /minute 共享同一个 10万/日 额度）。',
     });
   }
 

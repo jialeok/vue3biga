@@ -7,6 +7,9 @@
 //   ③ 决策行 → 看板行：只带用户点名的那几列；库里没数据时显示「未抓取 / 无数据」而不是「0红0绿」。
 
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   TICK_START_TIME, TICK_END_TIME, TICK_WINDOW_READY,
   PEN_UP, PEN_DOWN, PEN_FLAT,
@@ -380,5 +383,45 @@ describe('tick-minute · 决策行 → 分笔买卖看板行', () => {
     const targets = tickTargetsOf(b);
     expect(targets.map(function(t) { return t.name; })).toEqual(['襄阳轴承', '龙版传媒']);
     expect(targets[0].code).toBe('000678');
+  });
+});
+
+// ── 跨文件红线：后端等的必须短于前端等的（2026-10-10 事故的回归护栏）──────
+// 为什么用「读源码」而不是「import 常量」：
+//   · 这两个常量活在两个不同的运行环境里（前端 bundle / Deno Edge Function），
+//     没有任何一个模块能同时 import 到它们；
+//   · 而它们的【大小关系】是硬约束 —— 一旦后端预算 ≥ 前端超时，
+//     上游一抽风前端就先 abort，并把「我超时了」误报成「接口不可达」（正是本次事故）。
+//   ⇒ 只能用文本断言把这条不变式钉住。改任一侧的数字，这条测试都会红。
+describe('tick-minute · 红线：前端超时 > 后端上游总预算', () => {
+  const ROOT = fileURLToPath(new URL('../../..', import.meta.url));
+  const textOf = function(rel) { return readFileSync(join(ROOT, rel), 'utf8'); };
+  const numOf = function(text, re, label) {
+    const m = re.exec(text);
+    expect(m, '没匹配到 ' + label + ' —— 常量被改名/挪走了？请同步更新本测试').toBeTruthy();
+    return Number(m[1]);
+  };
+
+  const EDGE_SRC = 'supabase/functions/tick-minute-fetch/index.ts';
+  const FE_SRC = 'src/data/tick-minute.js';
+
+  it('后端的 TOTAL_BUDGET_MS 明显小于前端的 EDGE_TIMEOUT_MS', () => {
+    const edge = textOf(EDGE_SRC);
+    const fe = textOf(FE_SRC);
+    const perRequest = numOf(edge, /REQUEST_TIMEOUT_MS:\s*Number\(Deno\.env\.get\('NUMCAT_TICK_TIMEOUT_MS'\)\s*\|\|\s*(\d+)\)/, 'REQUEST_TIMEOUT_MS');
+    const budget = numOf(edge, /TOTAL_BUDGET_MS:\s*Number\(Deno\.env\.get\('NUMCAT_TICK_BUDGET_MS'\)\s*\|\|\s*(\d+)\)/, 'TOTAL_BUDGET_MS');
+    const feTimeout = numOf(fe, /const EDGE_TIMEOUT_MS\s*=\s*(\d+)/, 'EDGE_TIMEOUT_MS');
+
+    // 单次上游请求不能比总预算还长（否则一次就能把预算吃穿）
+    expect(perRequest).toBeLessThanOrEqual(budget);
+    // 前端必须等得比后端久，且留出冷启动 + 写库 + 回读 + 公网往返的余量（≥ 1.3 倍）
+    expect(feTimeout).toBeGreaterThan(budget);
+    expect(feTimeout).toBeGreaterThanOrEqual(Math.round(budget * 1.3));
+  });
+
+  it('Edge Function 全文没有 delete（§11：本表是点名抓取的产物，不该有清理语义）', () => {
+    const edge = textOf(EDGE_SRC).toLowerCase();
+    expect(edge.indexOf("method: 'delete'")).toBe(-1);
+    expect(edge.indexOf('.delete(')).toBe(-1);
   });
 });

@@ -14,9 +14,16 @@
 // §10：读取失败必须【可见】—— 错误原文进 tickMinuteError，由看板红字展示，⛔ 不静默成空看板。
 
 import { ref } from 'vue';
-import { readTickMinuteForDate, requestTickMinuteFromEdge } from '../../data/tick-minute.js';
+import { readTickMinuteForDate, requestTickMinuteFromEdge, TICK_MINUTE_META } from '../../data/tick-minute.js';
 import { _dbgLog } from '../../data/debug-log.js';
 import { tickWindowState, TICK_WINDOW_READY } from './tick-minute.js';
+
+/**
+ * 排障自检地址（Edge Function 的 /probe：从 Edge 机房实测上游专线）。
+ * 只暴露 URL，⛔ 不含任何密钥 —— 它本来就是「浏览器直接打开也能看」的只读体检页。
+ * 放在 Logic 层转发，是为了让视图层不必 import data/*（§2 UI → Logic → Data）。
+ */
+export const TICK_PROBE_URL = TICK_MINUTE_META.probeUrl;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 响应式状态（模块级单例：与 dragonRankChangeState / chartJudgeState 同一范式）
@@ -183,12 +190,23 @@ function _handleResult(date, res, requested) {
 
   if (res.ok === true) {
     // 抓取成功：请求过的（含上游没给的、缺代码的）都算「已抓过」
-    _markAttempted(date, names.concat(missingNames));
+    // ⚠️ 例外：因【后端上游预算用完】而没取到的（res.uncovered）【不算已抓过】——
+    //    否则它们会躺成「无数据」，而事实是「我们没抓到」（§10 未就绪 ≠ 没有）。
+    const uncovered = (res.uncovered || []).map(function(n) { return String(n); });
+    const doneNames = names.filter(function(n) { return uncovered.indexOf(n) < 0; });
+    _markAttempted(date, doneNames.concat(missingNames));
     const withData = (res.results || []).filter(function(r) { return r && r.hasData; }).length;
     const noData = (res.results || []).length - withData;
     tickMinuteFetchNote.value = '已抓 ' + withData + ' 只' + (noData > 0 ? '，上游无 ' + noData + ' 只' : '')
       + (missingNames.length > 0 ? '，缺代码 ' + missingNames.length + ' 只' : '');
-    tickMinuteError.value = '';
+    if (uncovered.length > 0) {
+      // 拿不到就说拿不到（§10）：写进红字并提示可重试，⛔ 不静默
+      tickMinuteError.value = '上游超时：有 ' + uncovered.length + ' 只（' + uncovered.slice(0, 8).join('、')
+        + (uncovered.length > 8 ? ' 等' : '') + '）在预算内没取到，已按【未抓取】显示。'
+        + '隔 1~2 分钟点【重试】即可；连续失败请看 /probe。';
+    } else {
+      tickMinuteError.value = '';
+    }
     return;
   }
 
@@ -207,13 +225,15 @@ function _handleResult(date, res, requested) {
   }
 
   if (res.skipped === 'upstream-empty') {
-    // 上游一个端点都没通 ⇒ 这是链路问题（key / 端口 / 权限），⛔ 不标已抓过，允许重试
-    tickMinuteError.value = res.hint || res.error || '上游这一分钟没有返回任何数据';
+    // 上游一个端点都没通 ⇒ 这是链路问题（key / 端口 / 权限 / 限流），⛔ 不标已抓过，允许重试
+    tickMinuteError.value = (res.hint || res.error || '上游这一分钟没有返回任何数据')
+      + '　自检：' + TICK_PROBE_URL;
     return;
   }
 
   // 其它失败（未配 key / 上游业务码错误 …）：红字如实展示，⛔ 不标已抓过
-  tickMinuteError.value = res.hint || res.error || ('抓取失败：' + JSON.stringify(res).slice(0, 200));
+  tickMinuteError.value = (res.hint || res.error || ('抓取失败：' + JSON.stringify(res).slice(0, 200)))
+    + '　自检：' + TICK_PROBE_URL;
 }
 
 /**

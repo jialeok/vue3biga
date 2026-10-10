@@ -33,6 +33,22 @@ const SELECT_COLUMNS = [
 ];
 
 /**
+ * 前端等 Edge Function 的上限。
+ *
+ * ★ 不变式（2026-10-10 事故后立的红线）：
+ *     后端上游最坏耗时（Edge 侧 TOTAL_BUDGET_MS，默认 15s）
+ *     <  本值（60s）
+ *   旧值 25s 时，后端最坏 40s（20s×2 端点）⇒ 上游一抽风前端就先 abort，
+ *   抛出无信息的 `signal is aborted without reason`，被误报成「接口不可达 / 跨域被拦」。
+ *   ⛔ 以后调小本值前，先确认 Edge 侧 supabase/functions/tick-minute-fetch/index.ts
+ *      的 TOTAL_BUDGET_MS 仍然明显更小。
+ */
+const EDGE_TIMEOUT_MS = 60000;
+
+/** Edge 自检路由（排障用；不含任何密钥） */
+const EDGE_PROBE_URL = SUPABASE_URL + '/functions/v1/tick-minute-fetch/probe';
+
+/**
  * 把 PostgREST / Edge Function 的「找不到表」原文翻译成「该干什么」。
  * 现场两个长相：
  *   · 前端读库 → `Could not find the table 'public.tick_minute_open' in the schema cache`（PGRST205）
@@ -53,20 +69,42 @@ function _explainDbError(raw) {
 }
 
 /**
- * Edge /minute 不可达时的报错（浏览器里 fetch 抛错【没有原因信息】：
- * 跨域被拦、断网、超时长得一模一样，所以必须把三种可能都列出来，
- * 否则「请确认已部署」会把排查方向带偏 —— 见 yizi-trend.js 的同类注释）。
+ * 浏览器 fetch 失败时，把错误翻成【有证据】的人话。
+ *
+ * ⚠️ 为什么不能只列「三种可能」：fetch 抛错是【不带原因】的 —— 跨域被拦、DNS 不通、
+ *    本机代理挂了、我们自己 AbortController 掐断，四种在 JS 里几乎长得一样。
+ *    2026-10-10 的教训：当时把四种全列出来并让用户按概率猜，结果三条猜测全错
+ *    （真正的原因是「我们自己超时了」），排查方向被彻底带偏。
+ * ⇒ 现在改成【按证据分支】：只有我们自己的 timedOut 标记才报「超时」，
+ *    其余网络类错误才提示跨域/未部署，且每条都给下一步动作。
+ *
+ * @param {*} raw 原始错误
+ * @param {{timedOut?:boolean, elapsedMs?:number}} info 我们自己掌握的现场证据
+ * @returns {Error}
  */
-function _explainEdgeError(raw) {
+function _explainEdgeError(raw, info) {
     const msg = String((raw && raw.message) || raw || '');
     const t = msg.toLowerCase();
+    const secs = Math.max(1, Math.round(((info && info.elapsedMs) || 0) / 1000));
+    const probeHint = '自查顺序：打开 ' + EDGE_PROBE_URL + '（从 Edge 机房实测上游专线），'
+        + '再看 /functions/v1/tick-minute-fetch/health（配置与 key 来源）。';
+
+    // ① 我们自己掐断的（唯一能确定的一条）—— 必须先判，否则会误报成「不可达」
+    if (info && info.timedOut) {
+        return new Error('分笔抓取请求超时：已等 ' + secs + ' 秒仍未收到 Edge Function 的回应（正常 3~6 秒）。'
+            + '注意：这【不是】跨域、也【不是】函数没部署 —— 那些都会在 1~2 秒内以明确错误返回。'
+            + '多半是上游专线 sz/sh.meoz.cn:6688 临时限流，或本机 → supabase.co 这一段卡顿。'
+            + '处理：隔 1~2 分钟点【重试】；连续多次如此再打开 /probe 看上游到底通不通。');
+    }
+    // ② 网关明确回 404/401/非 JSON 的情形（调用方已另判，这里兜底）
     if (t.indexOf('请求 /minute 失败') >= 0 || t.indexOf('functions/v1/tick-minute-fetch') >= 0 ||
-        t.indexOf('fetch failed') >= 0 || t.indexOf('failed to fetch') >= 0 || t.indexOf('load failed') >= 0) {
-        return new Error('分笔抓取接口不可达：' + msg +
-            '。三种可能（按概率）：' +
-            '① 【跨域被拦】Edge Function tick-minute-fetch 对 OPTIONS 预检必须回 Access-Control-Allow-Origin（本文件对应的函数已带 CORS，需重新部署该函数）；' +
-            '② 该 Edge Function 未部署 / 部署到了别的项目；' +
-            '③ 网络或代理不通、请求超时（该函数要打上游专线，最坏比普通请求慢）');
+        t.indexOf('fetch failed') >= 0 || t.indexOf('failed to fetch') >= 0 || t.indexOf('load failed') >= 0 ||
+        t.indexOf('networkerror') >= 0) {
+        return new Error('分笔抓取接口不可达（' + secs + ' 秒内失败）：' + msg + '。'
+            + '既然后端超时已被排除（后端预算 ≤15 秒），剩下两种可能：'
+            + '① 本机网络 / 代理拦了这一条（浏览器走的是系统代理，先在浏览器里直接打开 /health 试）'
+            + '② Edge Function tick-minute-fetch 未部署或部署在别的项目（本文件对应函数已带 CORS，无需担心跨域）。'
+            + probeHint);
     }
     return _explainDbError(raw);
 }
@@ -165,13 +203,16 @@ export async function requestTickMinuteFromEdge(opts) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('分笔抓取：date 必须是 YYYY-MM-DD，收到「' + date + '」');
     const items = ((opts && opts.items) || []).filter(function(x) { return x && x.name; });
     if (items.length === 0) throw new Error('分笔抓取：没有目标股票');
-    // 超时闸门（§R2 红线：所有上游调用都必须有超时）；
-    // Edge 侧要打上游专线（可能试两个端点），给它 25s 已经足够宽松。
-    const timeoutMs = (opts && Number(opts.timeoutMs) > 0) ? Number(opts.timeoutMs) : 25000;
+    // 超时闸门（§R2 红线：所有上游调用都必须有超时）。
+    // ★ 本值必须 > Edge 侧 TOTAL_BUDGET_MS（默认 15s）—— 见文件头 EDGE_TIMEOUT_MS 的不变式说明。
+    //   Edge 侧还有冷启动 + 写库 + 回读，正常总耗时 3~6s，60s 是给足余量的上限，不是预期值。
+    const timeoutMs = (opts && Number(opts.timeoutMs) > 0) ? Number(opts.timeoutMs) : EDGE_TIMEOUT_MS;
 
     let resp;
+    const t0 = Date.now();
+    let timedOut = false;
     const ctl = new AbortController();
-    const timer = setTimeout(function() { ctl.abort(); }, timeoutMs);
+    const timer = setTimeout(function() { timedOut = true; ctl.abort(); }, timeoutMs);
     try {
         resp = await fetch(EDGE_MINUTE_URL, {
             method: 'POST',
@@ -184,28 +225,34 @@ export async function requestTickMinuteFromEdge(opts) {
             signal: ctl.signal
         });
     } catch (e) {
+        const elapsedMs = Date.now() - t0;
         const msg = (e && e.message) || String(e);
-        _dbgLog('[TICK-MINUTE] /minute 请求失败: ' + msg);
-        throw _explainEdgeError('请求 /minute 失败（' + msg + '）；functions/v1/tick-minute-fetch');
+        _dbgLog('[TICK-MINUTE] /minute 请求失败（' + elapsedMs + 'ms, timedOut=' + timedOut + '）: ' + msg);
+        // ⚠️ 必须把 elapsedMs 与 timedOut 一起传下去：单看 msg 无法区分
+        //    「我们自己掐断」与「浏览器把请求拦了」—— 那正是 2026-10-10 误判的根因。
+        throw _explainEdgeError('请求 /minute 失败（' + msg + '）；functions/v1/tick-minute-fetch',
+            { timedOut: timedOut, elapsedMs: elapsedMs });
     } finally {
         clearTimeout(timer);
     }
 
+    const elapsedMs = Date.now() - t0;
     const text = await resp.text();
     let data = null;
     try {
         data = JSON.parse(text);
     } catch (e) {
         // 404 常见于「函数没部署」；5xx 常见于函数内部异常（返回错误页而不是 JSON）
-        throw _explainEdgeError('分笔抓取接口返回非 JSON（HTTP ' + resp.status + '）：' + text.slice(0, 200));
+        throw _explainEdgeError('分笔抓取接口返回非 JSON（HTTP ' + resp.status + '，' + elapsedMs + 'ms）：' + text.slice(0, 200),
+            { timedOut: false, elapsedMs: elapsedMs });
     }
     if (resp.status === 404) {
         throw _explainEdgeError('分笔抓取接口不存在（HTTP 404）：Edge Function tick-minute-fetch 未部署'
-            + '（supabase/functions/tick-minute-fetch/index.ts）');
+            + '（supabase/functions/tick-minute-fetch/index.ts）', { timedOut: false, elapsedMs: elapsedMs });
     }
     if (resp.status === 401 || resp.status === 403) {
         throw _explainEdgeError('分笔抓取接口鉴权失败（HTTP ' + resp.status + '）：请确认该函数的 Verify JWT 已关闭'
-            + '（详见该函数文件头的部署说明）');
+            + '（详见该函数文件头的部署说明）', { timedOut: false, elapsedMs: elapsedMs });
     }
     if (data && data.table && data.ok === false && !data.skipped) {
         // Edge 侧回显了表名 + 失败 → 大概率是表没建，把提示说清楚
@@ -214,9 +261,11 @@ export async function requestTickMinuteFromEdge(opts) {
     return data || {};
 }
 
-/** 供排查用：本模块持有的表 / 路由（⛔ 不含任何密钥） */
+/** 供排查用：本模块持有的表 / 路由 / 超时（⛔ 不含任何密钥） */
 export const TICK_MINUTE_META = {
     table: TABLE,
     edgeUrl: EDGE_MINUTE_URL,
+    probeUrl: EDGE_PROBE_URL,
+    timeoutMs: EDGE_TIMEOUT_MS,
     columns: SELECT_COLUMNS.slice()
 };
