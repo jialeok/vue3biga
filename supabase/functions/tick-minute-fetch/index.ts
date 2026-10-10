@@ -92,6 +92,11 @@
 //          —— 这不是「调用方法不对」，就是那张表还不存在。
 //     1) Secrets：NUMCAT_TICK_API_KEY = 你的猫头鹰 key
 //        （没配时自动回退 NUMCAT_API_KEY —— 即已配好的早盘竞价那把；响应 keySource 会标出用的是哪把）
+//        ★ 2026-10-10 起【回退真的会生效】：第一把 key 若回 `403 今日调用额度已用完` /
+//          `invalid api key`，会自动拿第二把再走一轮（回执 keyPasses 里能看到每把的结果）；
+//          超时/网络类失败【不换】（换 key 也救不了，白花额度）。要禁掉回退设 NUMCAT_TICK_KEY_FALLBACK=0。
+//        ⚠️ 实测这两把 key 常是【同一个账号】（/health 的 numcatKeysMasked 一眼可比），
+//          同账号 ⇒ 共享同一个「免费档 10 次/日」，换 key 也救不了额度，只能等次日 0 点。
 //     2) Verify JWT：建议【关掉】（浏览器要直接打开 /health 排查）。
 //        · CLI 部署：仓库根 supabase/config.toml 已声明本函数 verify_jwt=false
 //        · Dashboard 部署：【不读】config.toml，需在 Details 里手动关一次
@@ -101,6 +106,7 @@
 // ── 手动触发（排查 / 补某日）──────────────────────────────────────────────
 //   GET /functions/v1/tick-minute-fetch/health
 //   GET /functions/v1/tick-minute-fetch/probe          ← 排障先看这个（上游通不通、多快）
+//   GET /functions/v1/tick-minute-fetch/probe?keys=all ← 每把 key 各探一遍（分辨「是不是额度用完了」）
 //   GET /functions/v1/tick-minute-fetch/minute?date=2026-10-09&stocks=襄阳轴承:000678,宝鼎科技
 //        （stocks 支持 `名字:代码` 或纯名字；纯名字会去 stockcodemap 查代码；用 | 或 , 分隔）
 //   POST /functions/v1/tick-minute-fetch/minute   body: {date, items:[{name,code}]}
@@ -176,6 +182,9 @@ type KeyRef = { name: string; key: string };
  *    用户 2026-10-10 明确说「用猫抓数据的 key 就可以抓取猫头鹰数据的那些数据了」，
  *    所以这里允许回退；要禁掉可设 Secret NUMCAT_TICK_KEY_FALLBACK=0。
  */
+// ⚠️ [2026-10-10 已删「只取第一把 key」的旧辅助函数 primaryKey] 它原先被 runFetch / /probe
+//    当成「唯一那把 key」用，而真正该走的是 configuredKeys() 的整套回退（见下方 isKeyLevelFailure）。留着它只会让
+//    后人又写出「只认第一把 key」的代码，所以整段删掉、⛔ 不要再加回来。
 function configuredKeys(): KeyRef[] {
   const list: KeyRef[] = [];
   const primary = (Deno.env.get(KEY_PRIMARY) || '').trim();
@@ -186,11 +195,6 @@ function configuredKeys(): KeyRef[] {
     list.push({ name: KEY_FALLBACK + '(回退)', key: fallback });
   }
   return list;
-}
-
-function primaryKey(): KeyRef | null {
-  const list = configuredKeys();
-  return list.length > 0 ? list[0] : null;
 }
 
 /** 掩码回显（排查用）：abcd***wxyz —— 只用于确认「是不是同一把 key」，绝不回显全量 */
@@ -403,6 +407,24 @@ type FetchResult = {
  *     小于前端 timeoutMs（60s）⇒ 前端永远能拿到后端的说法，而不是一句无信息的 abort。
  * ⛔ 不会无限重试（保护上游 3 次/秒的限流）。
  */
+/**
+ * 这次失败是不是「换一把 key 就能好」的那一类（额度用尽 / key 无效 / 没开通该接口）。
+ *
+ * ★ 为什么必须区分（2026-10-10 发现）：`configuredKeys()` 早就支持「主号回退」，
+ *   但 `runFetch` 里只取了第一把 key —— 回退那把**从来没被用过**（注释在、代码不在）。
+ *   现在按「失败是不是 key 级」决定要不要换下一把：
+ *     · key 级（403 额度 / invalid api key）→ 换下一把有意义，且这类失败【很快返回】，
+ *       多花的一次调用换来「不白白失败」，划算；
+ *     · 超时 / 网络 / 参数被忽略 → 换 key 救不了（上游根本没回我们），⛔ 不换，省一次额度。
+ */
+function isKeyLevelFailure(fr: FetchResult): boolean {
+  if (fr.bySymbol.size > 0) return false;
+  const blob = fr.attempts.map((a) => String(a.error || '')).join(' | ').toLowerCase();
+  return blob.indexOf('额度') >= 0 || blob.indexOf('403') >= 0
+    || blob.indexOf('invalid api key') >= 0 || blob.indexOf('unauthorized') >= 0
+    || blob.indexOf('未开通') >= 0 || blob.indexOf('权限') >= 0;
+}
+
 async function fetchMinute(symbols: string[], dateYmd: string, keyRef: KeyRef): Promise<FetchResult> {
   const endpoints = buildEndpoints();
   const bySymbol = new Map<string, RawTick[]>();
@@ -619,31 +641,65 @@ async function runFetch(dateIso: string, items: ItemReq[], missing: Array<{ name
     };
   }
 
+  const codes = Array.from(new Set(items.map((x) => x.code)));
   const keys = configuredKeys();
-  const keyRef = primaryKey();
-  if (!keyRef) {
+  if (keys.length === 0) {
     return { status: 200, body: { ok: false, error: '未配置猫头鹰 key：请在 Secrets 里设置 ' + KEY_PRIMARY + '（或 ' + KEY_FALLBACK + '）', date: dateIso } };
   }
 
-  const codes = Array.from(new Set(items.map((x) => x.code)));
-  const fr = await fetchMinute(codes, dateYmd, keyRef);
+  // ── 依次用「已配置的 key」（第一把不行且是 key 级失败 → 换下一把）──────────────
+  // ⚠️ 与 auction-yizi-fetch 的「小号绝不碰主号」相反：本功能默认允许回退主号
+  //    （用户 2026-10-10：「用猫抓数据的 key 就可以抓取猫头鹰数据的那些数据了」），
+  //    要禁掉回退设 Secret NUMCAT_TICK_KEY_FALLBACK=0（见 configuredKeys）。
+  const keyPasses: Array<Record<string, unknown>> = [];
+  let keyRef: KeyRef = keys[0];
+  let fr: FetchResult | null = null;
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    keyRef = k;
+    const r = await fetchMinute(codes, dateYmd, k);
+    keyPasses.push({
+      key: k.name, keyMasked: maskKey(k.key),
+      covered: r.bySymbol.size, requests: r.requests,
+      elapsedMs: r.elapsedMs, budgetExhausted: r.budgetExhausted,
+      keyLevelFailure: isKeyLevelFailure(r), attempts: r.attempts,
+    });
+    const isLast = i === keys.length - 1;
+    // 拿到数据 / 已是最后一把 / 失败与 key 无关（换也是白换，省额度）⇒ 收手
+    if (r.bySymbol.size > 0 || isLast || !isKeyLevelFailure(r)) { fr = r; break; }
+  }
+  if (!fr) fr = await fetchMinute(codes, dateYmd, keyRef);   // 理论上不可达（循环必赋值）
 
   // 上游一条都没返回（两个端点都没拿到）⇒ 不写库（§10：未就绪 ≠ 没有）
   if (fr.bySymbol.size === 0) {
     const errs = fr.attempts.filter((a) => !a.ok).map((a) => String(a.error || ''));
     const upstreamSlow = fr.budgetExhausted || errs.some((s) => s.indexOf('超时') >= 0 || s.indexOf('timeout') >= 0);
+    // 额度用尽 / key 级失败：必须【单独说清楚】—— 它和「上游没数据」「超时」是完全不同的三件事，
+    // 而且它是唯一一种「换 key 或等 0 点就能解决」的失败。
+    const qBlob = JSON.stringify(keyPasses);
+    const quotaOut = qBlob.indexOf('403') >= 0 || qBlob.indexOf('额度') >= 0;
+    const keyLine = keyPasses.length > 1
+      ? '【已依次试 ' + keyPasses.length + ' 把 key】' + keyPasses.map((p) => p.key + '(覆盖 ' + p.covered + ' 只)').join('；') + '。'
+      : '';
+    const quotaLine = quotaOut
+      ? '上游原文含 `403 今日调用额度已用完` ⇒ 这是【额度用尽】，不是配置问题、也与跨域/部署无关：'
+        + '上游免费档每日 10 次（猫爪+猫头鹰两站共享·按日 0 点重置）。处理：等次日 0 点，'
+        + '或把有额度的 key 配到 ' + KEY_PRIMARY + ' 上。'
+      : '';
     await writeLog(Object.assign({}, logBase, {
-      ok: false, detail: { skipped: 'upstream-empty', attempts: fr.attempts, pending: fr.pending, requests: fr.requests, upstreamMs: fr.elapsedMs, budgetExhausted: fr.budgetExhausted },
+      ok: false, detail: { skipped: 'upstream-empty', attempts: fr.attempts, pending: fr.pending, requests: fr.requests, upstreamMs: fr.elapsedMs, budgetExhausted: fr.budgetExhausted, keyPasses: keyPasses.map((p) => ({ key: p.key, covered: p.covered, requests: p.requests, elapsedMs: p.elapsedMs })) },
     }));
     return {
       status: 200,
       body: {
         ok: false, skipped: 'upstream-empty', date: dateIso, dateYmd,
         keySource: keyRef.name, keyMasked: maskKey(keyRef.key),
+        keyPasses,
+        quotaExhausted: quotaOut,
         symbols: codes.length, missing, pending: fr.pending, attempts: fr.attempts,
         upstreamMs: fr.elapsedMs, budgetExhausted: fr.budgetExhausted, upstreamSlow,
-        hint: (upstreamSlow
-          ? '【上游超时/被限流】' + fr.elapsedMs + 'ms 内没从专线拿到数据（预算 ' + CONFIG.TOTAL_BUDGET_MS + 'ms）。' +
+        hint: keyLine + quotaLine + (upstreamSlow
+          ? '【上游超时/被限流】' + fr.elapsedMs + 'ms 内没从专线拿到数据（预算 ' + CONFIG.TOTAL_BUDGET_MS + 'ms/把 key）。' +
             '这通常是 sz/sh.meoz.cn:6688 对海外机房（本项目 Edge 在 us-west-1）临时限流 —— 与 CORS、与函数是否部署【无关】。' +
             '隔 1~2 分钟重试即可；连续多次都这样再看下面。'
           : '上游这一分钟没有返回任何数据。') +
@@ -712,7 +768,7 @@ async function runFetch(dateIso: string, items: ItemReq[], missing: Array<{ name
       body: {
         ok: false, skipped: 'no-rows', date: dateIso,
         keySource: keyRef.name, symbols: codes.length, missing, pending: fr.pending,
-        attempts: fr.attempts, results,
+        keyPasses, attempts: fr.attempts, results,
         hint: '上游有响应，但点名的这些股票在这一分钟里一条快照都没有（停牌 / 非交易日 / 上游无该批次）。未写库。',
       },
     };
@@ -738,6 +794,7 @@ async function runFetch(dateIso: string, items: ItemReq[], missing: Array<{ name
       noData: noDataCount, pending: fr.pending, missing: missing.length,
       window: CONFIG.START_TIME + '~' + CONFIG.END_TIME,
       upstreamMs: fr.elapsedMs, budgetExhausted: fr.budgetExhausted,
+      keyPasses: keyPasses.map((p) => ({ key: p.key, covered: p.covered, requests: p.requests, elapsedMs: p.elapsedMs })),
     },
   }));
 
@@ -752,6 +809,7 @@ async function runFetch(dateIso: string, items: ItemReq[], missing: Array<{ name
       ok: true, date: dateIso, dateYmd,
       written, readBack,
       keySource: keyRef.name,
+      keyPasses,
       table: 'tick_minute_open',
       window: CONFIG.START_TIME + '~' + CONFIG.END_TIME,
       symbols: codes.length,
@@ -821,12 +879,15 @@ Deno.serve(async (req: Request) => {
       numcatKeySource: keys.length ? keys[0].name : '未配置',
       numcatKeyMasked: keys.length ? maskKey(keys[0].key) : '',
       numcatKeysConfigured: keys.map((k) => k.name),
+      numcatKeysMasked: keys.map((k) => k.name + '=' + maskKey(k.key)),
       keyFallbackEnabled: (Deno.env.get('NUMCAT_TICK_KEY_FALLBACK') || '1').trim() !== '0',
+      keyFallbackRule: '第一把 key 若是【key 级失败】（403 额度 / invalid api key）→ 自动换下一把；超时/网络失败不换（省额度）。',
       window: { start: CONFIG.START_TIME, end: CONFIG.END_TIME, readyAfterBeijing: CONFIG.WINDOW_READY },
       requestTimeoutMs: CONFIG.REQUEST_TIMEOUT_MS,
       totalBudgetMs: CONFIG.TOTAL_BUDGET_MS,
       minSliceMs: CONFIG.MIN_SLICE_MS,
-      upstreamWorstCaseMs: '≤ ' + CONFIG.TOTAL_BUDGET_MS + 'ms（所有端点尝试之和）',
+      upstreamWorstCaseMs: '≤ ' + (CONFIG.TOTAL_BUDGET_MS * Math.max(1, keys.length))
+        + 'ms（' + Math.max(1, keys.length) + ' 把 key × 每把最多 ' + CONFIG.TOTAL_BUDGET_MS + 'ms）',
       maxSymbolsPerCall: CONFIG.MAX_SYMBOLS_PER_CALL,
       tokenSource: tokenSource(),
       table: 'tick_minute_open（先执行 db/create_tick_minute_open.sql 建表）',
@@ -836,7 +897,7 @@ Deno.serve(async (req: Request) => {
       fields: CONFIG.FIELDS,
       routes: {
         health: 'GET /health —— 只看配置（不回显密钥）',
-        probe: 'GET /probe —— 【从 Edge 机房实测上游专线】连通性与往返耗时（只读、不写库；排障第一步）',
+        probe: 'GET /probe —— 【从 Edge 机房实测上游专线】连通性与往返耗时（只读、不写库；排障第一步；加 ?keys=all 可逐把 key 探）',
         minute: 'GET /minute?date=YYYY-MM-DD&stocks=名字:代码,名字 | POST /minute {date, items:[{name,code}]}',
       },
       nextStep: '第一次跑请先执行 db/create_tick_minute_open.sql，再配 NUMCAT_TICK_API_KEY（或复用 NUMCAT_API_KEY），最后关掉 Verify JWT（关了本页才不需要 apikey 就能直接打开）。',
@@ -856,38 +917,50 @@ Deno.serve(async (req: Request) => {
     const dateYmd = (dateRaw ? isoToYmd(dateRaw) : isoToYmd(todayIso)) || isoToYmd(todayIso) || '';
     if (!dateYmd) return json({ ok: false, error: 'date 必须是 YYYY-MM-DD 或 YYYYMMDD，收到：' + dateRaw }, 400);
     const probeSymbol = ((url.searchParams.get('symbol') || '000001').trim()) || '000001';
-    const keyRef = primaryKey();
-    if (!keyRef) {
+    // ?keys=all ⇒ 每把 key 各探一遍（用来回答「是不是这把 key 的额度用完了」）。
+    //   默认只探第一把（成本 ≤2 次），加了 all 才是 把数 × 端点数 次。
+    const allKeys = (url.searchParams.get('keys') || '').trim().toLowerCase() === 'all';
+    const keys = configuredKeys();
+    const probeKeys = allKeys ? keys : keys.slice(0, 1);
+    if (probeKeys.length === 0) {
       return json({ ok: false, error: '未配置猫头鹰 key：请设置 Secrets ' + KEY_PRIMARY + '（或 ' + KEY_FALLBACK + '）', keySource: '未配置' }, 200);
     }
     const eps = buildEndpoints();
     const probes: Array<Record<string, unknown>> = [];
-    for (const ep of eps) {
-      const t0 = Date.now();
-      try {
-        // 与 /minute 走【完全同一条】上游路径（同 apiname / 同窗口 / 同字段），
-        // 否则「/probe 通了但 /minute 不通」会变成新的假线索。
-        const snap = await numcatTickRaw(ep, keyRef.key, [probeSymbol], dateYmd, CONFIG.REQUEST_TIMEOUT_MS);
-        probes.push({ endpoint: ep, ok: true, roundTripMs: Date.now() - t0, upstreamElapsedMs: snap.elapsedMs, items: snap.items.length });
-      } catch (e) {
-        probes.push({ endpoint: ep, ok: false, roundTripMs: Date.now() - t0, error: (e as Error)?.message || String(e) });
+    for (const k of probeKeys) {
+      for (const ep of eps) {
+        const t0 = Date.now();
+        try {
+          // 与 /minute 走【完全同一条】上游路径（同 apiname / 同窗口 / 同字段），
+          // 否则「/probe 通了但 /minute 不通」会变成新的假线索。
+          const snap = await numcatTickRaw(ep, k.key, [probeSymbol], dateYmd, CONFIG.REQUEST_TIMEOUT_MS);
+          probes.push({ key: k.name, keyMasked: maskKey(k.key), endpoint: ep, ok: true, roundTripMs: Date.now() - t0, upstreamElapsedMs: snap.elapsedMs, items: snap.items.length });
+        } catch (e) {
+          probes.push({ key: k.name, keyMasked: maskKey(k.key), endpoint: ep, ok: false, roundTripMs: Date.now() - t0, error: (e as Error)?.message || String(e) });
+        }
       }
     }
     const anyOk = probes.some((x) => x.ok === true);
+    const blob = JSON.stringify(probes);
+    const quotaOut = blob.indexOf('403') >= 0 || blob.indexOf('额度') >= 0;
     return json({
       ok: anyOk,
       service: 'tick-minute-fetch',
       route: 'GET /probe —— 从 Edge 机房这一侧实测上游专线',
-      probe: { symbol: probeSymbol, date: dateYmd, window: CONFIG.START_TIME + '~' + CONFIG.END_TIME },
-      keySource: keyRef.name,
-      keyMasked: maskKey(keyRef.key),
+      probe: { symbol: probeSymbol, date: dateYmd, window: CONFIG.START_TIME + '~' + CONFIG.END_TIME, keysProbed: probeKeys.map((k) => k.name) },
+      keySource: probeKeys[0].name,
+      keyMasked: maskKey(probeKeys[0].key),
+      keyCandidates: keys.map((k) => k.name + '=' + maskKey(k.key)),
       perRequestTimeoutMs: CONFIG.REQUEST_TIMEOUT_MS,
       upstreamRegion: Deno.env.get('SB_REGION') || Deno.env.get('DENO_REGION') || '(未暴露)',
       results: probes,
+      quotaExhausted: quotaOut,
       verdict: anyOk
         ? '上游专线【通】。若前端仍报不可达/超时，问题就在「浏览器 → Supabase」这一段：跨域（看 /health 的 CORS）、本机代理、函数未部署、或 Verify JWT 未关 —— 与上游无关。'
-        : '上游专线【不通】。逐条看 results.error 原文：含「超时」= 被限流/端口被墙（等 1~2 分钟再试）；含「invalid api key」= key 无效或无 tick_history 权限；都不是 ⇒ 该日可能就是没有分笔数据（停牌/非交易日）。',
-      note: '本路由只读、不写库；每次消耗 ≤2 次上游调用（与 /minute 共享同一个 10万/日 额度）。',
+        : (quotaOut
+          ? '上游【专线通，但额度已用完】：原文含 `403 今日调用额度已用完`。这不是配置/部署/跨域问题 —— 上游免费档每日 10 次（猫爪+猫头鹰两站共享·按日 0 点重置）。加 `?keys=all` 可看每一把 key 的额度状态；换一把有额度的 key 配到 ' + KEY_PRIMARY + ' 即可立刻恢复。'
+          : '上游专线【不通】。逐条看 results.error 原文：含「超时」= 被限流/端口被墙（等 1~2 分钟再试）；含「invalid api key」= key 无效或无 tick_history 权限；都不是 ⇒ 该日可能就是没有分笔数据（停牌/非交易日）。'),
+      note: '本路由只读、不写库；成本 = 探的 key 数 × 端点数（默认 1 把 key ⇒ ≤2 次；加 &keys=all 则翻倍）。与 /minute 共享同一个每日额度。',
     });
   }
 

@@ -419,6 +419,32 @@ describe('tick-minute · 红线：前端超时 > 后端上游总预算', () => {
     expect(feTimeout).toBeGreaterThanOrEqual(Math.round(budget * 1.3));
   });
 
+  it('★ 预算要按【最多几把 key】算：前端超时 > key 把数 × 每把预算', () => {
+    // 2026-10-10 新增回退后，一次 /minute 最坏会跑 2 轮上游（小号 403 → 主号再来一轮），
+    // 所以前端的等待上限必须按【轮数】放宽。这条断言把「轮数」钉在 2 —— 以后谁再加一把 key，
+    // 这条会先红，逼他同时改前端超时（否则又会退化成「前端先掐断 = 误报不可达」）。
+    const edge = textOf(EDGE_SRC);
+    const fe = textOf(FE_SRC);
+    const budget = numOf(edge, /TOTAL_BUDGET_MS:\s*Number\(Deno\.env\.get\('NUMCAT_TICK_BUDGET_MS'\)\s*\|\|\s*(\d+)\)/, 'TOTAL_BUDGET_MS');
+    const feTimeout = numOf(fe, /const EDGE_TIMEOUT_MS\s*=\s*(\d+)/, 'EDGE_TIMEOUT_MS');
+    const keyConsts = edge.match(/^const KEY_[A-Z_]+ = '/gm) || [];
+    expect(keyConsts.length).toBeGreaterThan(0);
+    expect(keyConsts.length).toBeLessThanOrEqual(2);
+    expect(feTimeout).toBeGreaterThanOrEqual(Math.round(budget * keyConsts.length * 1.3));
+  });
+
+  it('★ 密钥回退必须真的接在取数路径上（不能只写在注释里）', () => {
+    // 2026-10-10 发现的历史 bug：configuredKeys() 早就会返回两把 key，
+    // 但 runFetch / /probe 只取了 primaryKey()（第一把）⇒ 回退那把【从来没被用过】。
+    // 这条测试用「源码结构」把它钉住：入口必须遍历 configuredKeys()，且不得再有 primaryKey()。
+    const edge = textOf(EDGE_SRC);
+    expect(edge).toContain('configuredKeys()');
+    expect(edge).toContain('isKeyLevelFailure(');
+    expect(edge).not.toContain('primaryKey(');
+    // 只有「key 级失败」才换下一把（超时/网络失败换 key 也救不了，白花额度）
+    expect(edge).toContain('!isKeyLevelFailure(');
+  });
+
   it('Edge Function 全文没有 delete（§11：本表是点名抓取的产物，不该有清理语义）', () => {
     const edge = textOf(EDGE_SRC).toLowerCase();
     expect(edge.indexOf("method: 'delete'")).toBe(-1);
