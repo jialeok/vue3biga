@@ -128,7 +128,7 @@ describe('tick-minute · 快照 → 一笔一笔 + 红绿统计', () => {
     expect(s.pens[1].arrow).toBe('↓');
   });
 
-  it('买卖结论：强/弱/均衡，且【买点侧与卖点侧的动作名不同】（2026-10-10 用户口径）', () => {
+  it('买卖结论：强 / 弱（红 = 绿 打平也按弱），且【买点侧与卖点侧的动作名不同】（2026-10-10 用户口径）', () => {
     // 构造：第 1 笔 = 与开盘价相平（所以它自己会进「绿」那一边），随后 upN 笔涨、downN 笔跌
     const mk = (upN, downN) => {
       const pens = [{ t: '09:30:03', p: 10, v: null }];
@@ -154,11 +154,26 @@ describe('tick-minute · 快照 → 一笔一笔 + 红绿统计', () => {
         expect(tickStrengthOf(s, side).text).not.toContain('盘中');
       });
     });
-    // mk(3,2) → 红 3 / 绿 2 + 首笔平 1 = 3 ⇒ 均衡（买卖两侧同名，不站边）
-    expect(tickStrengthOf(mk(3, 2), 'buy').tone).toBe('even');
-    expect(tickStrengthOf(mk(3, 2), 'buy').text).toBe('均衡');
-    expect(tickStrengthOf(mk(3, 2), 'sell').text).toBe('均衡');
-    // §10：一笔都判不出来 ⇒ 不给结论（⛔ 不硬判「均衡」）
+    // mk(3,2) → 红 3 / 绿 2 + 首笔平 1 = 3 ⇒【红 = 绿 打平】⇒ 也按【弱】那一档走
+    // ★ 用户 2026-10-10：「红和绿打平，也要标上立刻卖……打平了，但是为了规避风险，选择立刻卖」
+    //   ＋「打平说明不好，买点侧标上下杀买，记住一点，买点侧都是每天要买的票，只是要选择
+    //     买入时机，卖侧也是一样」⇒ ⛔ 不再返回「均衡」
+    expect(tickStrengthOf(mk(3, 2), 'buy').tone).toBe('weak');
+    expect(tickStrengthOf(mk(3, 2), 'buy').text).toBe('下杀买');
+    expect(tickStrengthOf(mk(3, 2), 'sell').tone).toBe('weak');
+    expect(tickStrengthOf(mk(3, 2), 'sell').text).toBe('立刻卖');
+    // ⛔ 回归护栏：任何红绿组合、任何侧别，都不允许再出现「均衡」/ even 那一档
+    [mk(5, 1), mk(1, 5), mk(3, 2)].forEach((s) => {
+      ['buy', 'sell'].forEach((side) => {
+        expect(tickStrengthOf(s, side).text).not.toBe('均衡');
+        expect(tickStrengthOf(s, side).tone).not.toBe('even');
+      });
+    });
+    // 打平那一档的 tooltip 要把「为什么按弱」讲出来（规避风险 / 挑时机）
+    expect(tickStrengthOf(mk(3, 2), 'sell').title).toContain('按弱处理');
+    expect(tickStrengthOf(mk(3, 2), 'sell').title).toContain('规避风险');
+    expect(tickStrengthOf(mk(3, 2), 'buy').title).toContain('按弱处理');
+    // §10：一笔都判不出来 ⇒ 不给结论（空文案，⛔ 也不会退化成「均衡」）
     expect(tickStrengthOf(buildTickPens({ openPrice: null, pens: [] })).text).toBe('');
     // 缺省 side ⇒ 按买点侧处理（⛔ 不会凭空给出一个卖点动作名）
     expect(tickStrengthOf(mk(5, 1)).text).toBe('立刻买');
@@ -199,10 +214,18 @@ describe('tick-minute · 快照 → 一笔一笔 + 红绿统计', () => {
     expect(tickPanelHint(mk(5, 1), 'buy')[1]).toContain('【买点】立刻买');
     expect(tickPanelHint(mk(5, 1), 'sell')[1]).toContain('【卖点】冲高卖');
     expect(tickPanelHint(mk(5, 1), 'sell')[1]).toContain('绿色');
-    // 均衡：第 1 行说明相等，第 2 行不下结论（§10 不站边）
-    const even = tickPanelHint(mk(3, 2), 'buy');
-    expect(even[0]).toContain('均衡');
-    expect(even[1]).toContain('不下结论');
+    // ★ 打平那一档（mk(3,2)：红 3 = 绿 3）也按【弱】—— 第 1 行说明打平，第 2 行必须给动作，
+    //   ⛔ 不再有「不下结论」（用户 2026-10-10：「买点侧都是每天要买的票，只是要选择买入时机」）
+    const tieBuy = tickPanelHint(mk(3, 2), 'buy');
+    const tieSell = tickPanelHint(mk(3, 2), 'sell');
+    expect(tieBuy.length).toBe(2);
+    expect(tieBuy[0]).toContain('红绿打平');
+    expect(tieBuy[0]).not.toContain('均衡');
+    expect(tieSell[0]).toBe(tieBuy[0]);
+    expect(tieBuy[1]).toContain('【买点】下杀买');
+    expect(tieBuy[1]).not.toContain('不下结论');
+    expect(tieSell[1]).toContain('【卖点】立刻卖');
+    expect(tieSell[1]).toContain('规避风险');
     // §10：一笔都判不出来 ⇒ 整块不渲染（空数组）
     expect(tickPanelHint(buildTickPens({ openPrice: null, pens: [] }), 'buy')).toEqual([]);
   });
