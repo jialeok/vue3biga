@@ -141,12 +141,19 @@ describe('tick-minute · 快照 → 一笔一笔 + 红绿统计', () => {
     expect(tickStrengthOf(mk(5, 1), 'buy').tone).toBe('strong');
     expect(tickStrengthOf(mk(5, 1), 'buy').text).toBe('立刻买');
     expect(tickStrengthOf(mk(5, 1), 'sell').tone).toBe('strong');
-    expect(tickStrengthOf(mk(5, 1), 'sell').text).toBe('盘中冲高卖');
+    expect(tickStrengthOf(mk(5, 1), 'sell').text).toBe('冲高卖');
     // mk(1,5) → 红 1 / 绿 6 ⇒ 弱（绿）
     expect(tickStrengthOf(mk(1, 5), 'buy').tone).toBe('weak');
-    expect(tickStrengthOf(mk(1, 5), 'buy').text).toBe('盘中下杀买');
+    expect(tickStrengthOf(mk(1, 5), 'buy').text).toBe('下杀买');
     expect(tickStrengthOf(mk(1, 5), 'sell').tone).toBe('weak');
     expect(tickStrengthOf(mk(1, 5), 'sell').text).toBe('立刻卖');
+    // ★ [2026-10-10 二次改·用户口径]「因为这个分笔，就是盘中，盘中多余去掉」
+    //   ⇒ 四个动作名里都不允许再出现冗余的「盘中」（回归护栏，防后人又加回去）
+    ['buy', 'sell'].forEach((side) => {
+      [mk(5, 1), mk(1, 5), mk(3, 2)].forEach((s) => {
+        expect(tickStrengthOf(s, side).text).not.toContain('盘中');
+      });
+    });
     // mk(3,2) → 红 3 / 绿 2 + 首笔平 1 = 3 ⇒ 均衡（买卖两侧同名，不站边）
     expect(tickStrengthOf(mk(3, 2), 'buy').tone).toBe('even');
     expect(tickStrengthOf(mk(3, 2), 'buy').text).toBe('均衡');
@@ -162,7 +169,7 @@ describe('tick-minute · 快照 → 一笔一笔 + 红绿统计', () => {
       openPrice: 10,
       pens: [{ t: 'a', p: 10, v: null }, { t: 'b', p: 9.9, v: 100 }, { t: 'c', p: 9.8, v: 100 }]
     });
-    // 「盘中下杀买」的说明文字要让用户知道手数的单位，否则「一位数/两位数」无从对照
+    // 「下杀买」的说明文字要让用户知道手数的单位，否则「一位数/两位数」无从对照
     expect(tickStrengthOf(s, 'buy').title).toContain('手');
     // ⛔ 这张看板的手数是【手】不是【万手】—— 说明文字里不能出现「万手」（免得用户按 100 倍去找）
     expect(tickStrengthOf(s, 'buy').title).not.toContain('万手');
@@ -185,12 +192,12 @@ describe('tick-minute · 快照 → 一笔一笔 + 红绿统计', () => {
     expect(weakBuy[0]).toContain('开盘弱');
     expect(weakSell[0]).toBe(weakBuy[0]);
     // 第 2 行是【买点/卖点】动作名 + 怎么做 —— 两侧必须不同
-    expect(weakBuy[1]).toContain('【买点】盘中下杀买');
+    expect(weakBuy[1]).toContain('【买点】下杀买');
     expect(weakSell[1]).toContain('【卖点】立刻卖');
     expect(weakBuy[1]).not.toBe(weakSell[1]);
-    // 走强那一侧同样成立，并且「盘中冲高卖」要交代「第一笔绿色手数」这个观察点
+    // 走强那一侧同样成立，并且「冲高卖」要交代「第一笔绿色手数」这个观察点
     expect(tickPanelHint(mk(5, 1), 'buy')[1]).toContain('【买点】立刻买');
-    expect(tickPanelHint(mk(5, 1), 'sell')[1]).toContain('【卖点】盘中冲高卖');
+    expect(tickPanelHint(mk(5, 1), 'sell')[1]).toContain('【卖点】冲高卖');
     expect(tickPanelHint(mk(5, 1), 'sell')[1]).toContain('绿色');
     // 均衡：第 1 行说明相等，第 2 行不下结论（§10 不站边）
     const even = tickPanelHint(mk(3, 2), 'buy');
@@ -389,11 +396,11 @@ describe('tick-minute · 决策行 → 分笔买卖看板行', () => {
     expect(b.sellGroups[0].items[0].redText).toBe('2红');
     expect(b.sellGroups[0].items[0].greenText).toBe('1绿');
     expect(b.sellGroups[0].items[0].strengthTone).toBe('strong');       // 同一份强弱色
-    expect(b.sellGroups[0].items[0].strengthText).toBe('盘中冲高卖');   // ★ 但名字必须是卖点侧的动作
+    expect(b.sellGroups[0].items[0].strengthText).toBe('冲高卖');       // ★ 但名字必须是卖点侧的动作
     // ★ 展开面板最下方的「分析过程 + 买卖点逻辑」同样要跟着侧别走
     expect(p0.panelHint.length).toBe(2);
     expect(p0.panelHint[1]).toContain('【买点】立刻买');
-    expect(b.sellGroups[0].items[0].panelHint[1]).toContain('【卖点】盘中冲高卖');
+    expect(b.sellGroups[0].items[0].panelHint[1]).toContain('【卖点】冲高卖');
     // ⛔ 没有行 / 抓不到时整块不渲染（§10）
     expect(b.buyBlocks[0].picks[1].panelHint).toEqual([]);
   });
