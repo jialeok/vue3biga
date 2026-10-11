@@ -823,3 +823,52 @@ export function collectDragonRankMap(date, opts) {
   }
   return { ready: false, reason: (rec && rec.reason) || '未就绪', map: null };
 }
+
+/**
+ * 【某一天的「题材块 + 龙位名册」】—— 唯一出口（§6）。
+ *
+ * 用途：[TVRB 2026-10-11 用户口径] 「题材量比」看板要自己按「平均竞价量比」选股，
+ *   它需要的两样东西恰好就是 collectDecisionData 内部已经算好的【中间产物】：
+ *     · topics   = rankDecisionTopics(rows, mode)（mode 传 MODE_VOL_RATIO 时 = 按平均竞价量比降序）
+ *     · dragonMap = rankDragons(topics)（龙一 / 龙二 … 名册）
+ *
+ * ⛔ 为什么不让它自己去读「名单 → 分题材 → 排名」：那必然与决策看板分叉 ——
+ *    同一批题材的排序 / 同一只票的龙位，两个看板必须用【同一把尺子】量
+ *    （行集合含灰行、题材成组门槛、主板闸门都完全一致），否则屏幕上两处名次对不上。
+ * ⛔ 本函数【不读云、不发请求、不消费额度】：全部是内存组装（与 collectDecisionData 同源）。
+ *   ——它复用内部出口 dragonRankOnly（走到 rankDragons 就返回，不排买卖点、不回溯历史 ⇒ 天然不递归）。
+ *
+ * §10：任一闸门不过（名单没加载完 / 十日涨幅未加载 / 该日不成组）⇒ ready=false + 明确 reason，
+ *   ⛔ 绝不返回空数组冒充「今天没有题材」。
+ *
+ * @param {string} date 展示日 YYYY-MM-DD
+ * @param {{mode?:string}} [opts] mode = 题材组序口径（「题材量比」看板传 MODE_VOL_RATIO；
+ *        缺省回落 MODE_VOL_RATIO —— 见 normalizeDecisionMode）
+ * @returns {{ready:boolean, reason:string, date:string, prevDate:string|null,
+ *            topics:Array, dragonMap:Map|null}}
+ */
+export function collectDecisionTopics(date, opts) {
+  const rec = collectDecisionData(date, {
+    dragonRankOnly: true,
+    mode: opts && opts.mode
+  });
+  // 命中内部出口 ⇒ 中间产物带 dragonRankOnly 标记（_notReady 的返回没有这个键）
+  if (rec && rec.dragonRankOnly) {
+    return {
+      ready: true,
+      reason: '',
+      date: rec.date,
+      prevDate: rec.prevDate,
+      topics: rec.topics || [],
+      dragonMap: rec.dragonMap || null
+    };
+  }
+  return {
+    ready: false,
+    reason: (rec && rec.reason) || '未就绪',
+    date: date || '',
+    prevDate: null,
+    topics: [],
+    dragonMap: null
+  };
+}

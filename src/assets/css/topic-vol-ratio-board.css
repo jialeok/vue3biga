@@ -1,0 +1,493 @@
+/* 「题材量比」看板（独立看板，类名统一 tvrb- 前缀，⛔ 不蹭任何其它看板的前缀）
+   视觉与其它看板保持一致（同款圆角卡片 + 渐变头部），但类名完全独立：
+   任何一边改版都不会悄悄影响另一边 —— 尤其【决策看板 / 分笔看板必须保持不变】。
+
+   ⚠️ 本文件是全局加载的（src/assets/main.css 里 @import）：
+      ⛔ 绝不写 .row / .stat / .panel 这类通用名（会串改早盘竞价等看板）；
+      ⛔ 也不要用 .dcb-* / .decision-* / .tbb-* / .tick-*（那是别家看板的，混用等于把看板耦合成一体）。 */
+
+/* 头部用【青绿渐变】而非决策看板的蓝 / 分笔看板的靛蓝：
+   三个看板上下紧挨着，同色会让人分不清哪条条是哪块；
+   青绿与看板内「买=红 / 卖=绿 / 上涨=红 / 下跌=绿」的语义色也完全错开。 */
+.tvrb-board {
+    margin: 0 15px 10px;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 16px;
+    overflow: visible;   /* 规则面板要铺满整条头部，⛔ 不能 hidden（会被裁掉右边） */
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.tvrb-board.minimized .tvrb-header {
+    border-radius: 15px;
+}
+
+.tvrb-header {
+    position: relative;   /* 规则面板以【整条头部】定位 */
+    border-radius: 15px 15px 0 0;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    background: linear-gradient(135deg, #14b8a6, #0f766e);
+    transition: background 0.2s;
+}
+
+.tvrb-header:hover {
+    background: linear-gradient(135deg, #0d9488, #115e59);
+}
+
+.tvrb-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #ffffff;
+    white-space: nowrap;
+}
+
+.tvrb-summary {
+    flex: 1;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.95);
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* 三角按钮：与其它看板【同尺寸同底色】（24×24 圆底 + 12px 实心三角 ▲/▼） */
+.tvrb-toggle-btn {
+    width: 24px;
+    height: 24px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.9);
+    cursor: pointer;
+    border-radius: 50%;
+    transition: all 0.2s;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.tvrb-body {
+    border-radius: 0 0 15px 15px;
+    overflow: hidden;
+    padding: 8px 10px 10px;
+    background: #ffffff;
+}
+
+/* §10：未就绪 / 失败必须看得见 —— 用醒目的告警色，绝不用「今天没有信号」的灰字糊过去 */
+.tvrb-error {
+    margin: 4px 2px 8px;
+    padding: 6px 8px;
+    font-size: 12px;
+    color: #b91c1c;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 8px;
+}
+
+.tvrb-empty {
+    padding: 12px 6px;
+    font-size: 12px;
+    color: #94a3b8;
+    text-align: center;
+}
+
+/* [COMPACT] 「简洁」开关：置内容区顶部（与决策看板同一位置口径） */
+.tvrb-compact-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 2px 6px;
+}
+
+.tvrb-compact-toggle {
+    padding: 1px 8px;
+    font-size: 11px;
+    color: #0f766e;
+    background: #f0fdfa;
+    border: 1px solid #99f6e4;
+    border-radius: 10px;
+    cursor: pointer;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.tvrb-compact-toggle.on {
+    color: #ffffff;
+    background: #0d9488;
+    border-color: #0f766e;
+}
+
+.tvrb-section {
+    padding: 0 2px;
+}
+
+.tvrb-section-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 2px 6px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #0f172a;
+}
+
+/* 涨红跌绿（中国习惯）：本看板只有选股段 = 红 */
+.tvrb-section-title.buy {
+    color: #b91c1c;
+}
+
+/* ---- 题材块 ---- */
+.tvrb-block {
+    margin-bottom: 8px;
+    padding: 6px 8px;
+    background: #f8fafc;
+    border: 1px solid #eef2f7;
+    border-radius: 10px;
+}
+
+.tvrb-block-head {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+}
+
+.tvrb-topic-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+/* 题材名【完整显示，永不压缩】（与决策看板同款处理） */
+.tvrb-topic {
+    flex: 0 0 auto;
+    font-size: 13px;
+    font-weight: 700;
+    color: #0f172a;
+}
+
+/* 实心圆点，里面的白字 = 该题材在本看板内的排名（青绿 = 本看板的色） */
+.tvrb-rank-dot {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
+    color: #ffffff;
+    background: #0d9488;
+    border-radius: 50%;
+}
+
+.tvrb-meta {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: #64748b;
+}
+
+/* 「竞价一字：n」里的数字用红色 —— 一字是「买不到 / 最强」的信号（与决策看板同款） */
+.tvrb-meta-num {
+    color: #dc2626;
+    font-weight: 700;
+}
+
+/* 「平均量比：x.xx」里的数值 = 本看板的排序依据 ⇒ 用青绿加粗，与普通 meta 的灰区分开 */
+.tvrb-meta-vr {
+    color: #0f766e;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 「选 n 只」：本看板档位结论（4~8 只 → 1 只；> 8 只 → 2 只） */
+.tvrb-pick-tag {
+    flex-shrink: 0;
+    padding: 0 5px;
+    font-size: 10px;
+    line-height: 15px;
+    font-weight: 700;
+    color: #0f766e;
+    background: #f0fdfa;
+    border: 1px solid #99f6e4;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+.tvrb-reason-line {
+    margin: 2px 0 4px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: #475569;
+}
+
+.tvrb-block-note {
+    margin-top: 4px;
+    font-size: 11px;
+    color: #b45309;
+}
+
+/* 股票行下面的每一条规则都【圈起来 + 浅底色】（与决策看板同款视觉语言） */
+.tvrb-block-note.tvrb-note-box {
+    padding: 4px 7px;
+    border: 1px solid #fde68a;
+    border-radius: 6px;
+    background: #fffbeb;
+    line-height: 1.5;
+}
+
+/* 未选出任何票：用更强的告警色（浅红底），和上面的琥珀「提示」区分开 */
+.tvrb-block-note.tvrb-note-box.unqualified {
+    border-color: #fecaca;
+    background: #fef2f2;
+}
+
+.tvrb-block-note.unqualified {
+    color: #b91c1c;
+}
+
+/* ---- 股票行 ---- */
+.tvrb-row {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 3px 0;
+    font-size: 12px;
+    color: #1f2937;
+}
+
+.tvrb-seq {
+    width: 18px;
+    flex-shrink: 0;
+    font-size: 11px;
+    color: #94a3b8;
+    text-align: right;
+}
+
+.tvrb-name {
+    font-weight: 600;
+}
+
+/* 龙一 / 龙二 徽章：9px 小字，紧贴股票名（与决策看板龙标同款） */
+.tvrb-dragon {
+    padding: 0 4px;
+    font-size: 9px;
+    line-height: 14px;
+    color: #b45309;
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+.tvrb-pct {
+    font-size: 11px;
+    color: #b91c1c;
+}
+
+/* ---- 竞价涨幅徽标（与决策看板同款：涨 → 红底 / 跌 → 绿底 / 平 → 灰底）---- */
+.tvrb-auc {
+    padding: 0 4px;
+    font-size: 9px;
+    line-height: 14px;
+    border-radius: 4px;
+    color: #ffffff;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.tvrb-auc-high { background-color: #dc2626; }   /* 竞价涨幅 > 0 → 红底 */
+.tvrb-auc-low  { background-color: #16a34a; }   /* 竞价涨幅 < 0 → 绿底 */
+.tvrb-auc-flat { background-color: #64748b; }   /* 竞价涨幅 = 0 → 灰底 */
+
+/* ---- 竞价量比徽标 + 趋势面板（与决策看板同款：靛蓝 = 量比的色）---- */
+.tvrb-trend-trigger {
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.tvrb-vratio {
+    padding: 0 4px;
+    font-size: 9px;
+    line-height: 14px;
+    border-radius: 4px;
+    color: #ffffff;
+    background-color: #6366f1;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.tvrb-vratio-arrow {
+    margin-left: 2px;
+    font-size: 10px;
+    font-weight: 700;
+    vertical-align: -1px;
+}
+
+/* 整标签配色：量比【增强】= 红底 + ↑｜量比【下降】= 绿底 + ↓（涨红跌绿）。
+   基本平 / 方向未知保持靛蓝底（§10 不猜方向）。 */
+.tvrb-vratio-up   { background-color: #dc2626; }
+.tvrb-vratio-down { background-color: #16a34a; }
+
+.tvrb-trend-panel {
+    margin: 1px 0 5px 26px;   /* 26px = 序号宽 18 + 行内 gap 8 ⇒ 与股票名左对齐 */
+    padding: 6px 8px 4px;
+    background: #f9fafb;
+    border: 1px solid #eef2f7;
+    border-radius: 6px;
+    box-sizing: border-box;
+}
+
+.tvrb-trend-label {
+    font-size: 10px;
+    color: #94a3b8;
+    margin-bottom: 2px;
+}
+
+/* 近 5 个交易日一条有效数据都没有时的说明行（⛔ 不画满屏「--」，§10 缺失要如实可见） */
+.tvrb-trend-empty {
+    padding: 6px 2px;
+    font-size: 11px;
+    color: #94a3b8;
+}
+
+/* ---- 规则面板（灰色小问号）---- */
+.tvrb-rules {
+    /* ⛔ 刻意【不设 position:relative】—— 面板要以 .tvrb-header 为定位基准铺满整条头部 */
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    margin-left: 16px;
+}
+
+.tvrb-rules-q {
+    width: 16px;
+    height: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    color: #ffffff;
+    background: #94a3b8;
+    border-radius: 50%;
+    cursor: pointer;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.tvrb-rules-q:hover {
+    background: #64748b;
+}
+
+/* 面板铺满【整条头部】的左右内边距之间（left/right 都给值 + width:auto ⇒ 窄屏也不会被裁掉右边） */
+.tvrb-rules-panel {
+    position: absolute;
+    top: calc(100% - 2px);
+    left: 10px;
+    right: 10px;
+    z-index: 30;
+    width: auto;
+    max-width: none;
+    max-height: 62vh;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 0 10px 8px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.12);
+}
+
+.tvrb-rules-line {
+    font-size: 11px;
+    line-height: 1.7;
+    color: #475569;
+    white-space: normal;
+    word-break: break-word;
+}
+
+/* 面板顶部工具条（粘住不滚走）+ 一键复制全部规则按钮 */
+.tvrb-rules-panel .tvrb-rules-bar {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 0 -10px 4px;
+    padding: 7px 10px 6px;
+    background: #f8fafc;
+    border-bottom: 1px solid #e2e8f0;
+    /* ⛔ 工具条自己「不可选」：面板挂着 .tvrb-selectable，那条白名单写的是 `.tvrb-selectable *`，
+       会把面板内所有子节点一起放开选区 ⇒ 必须靠 .tvrb-rules-panel 前缀提权压住按钮文字。 */
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+}
+
+.tvrb-rules-panel .tvrb-rules-bar-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: #64748b;
+    letter-spacing: 0.5px;
+}
+
+.tvrb-rules-panel .tvrb-rules-copy {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 9px;
+    font-size: 11px;
+    line-height: 1.6;
+    color: #0f766e;   /* 取头部渐变的青绿，与本看板同色系 */
+    background: #ffffff;
+    border: 1px solid #99f6e4;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.tvrb-rules-panel .tvrb-rules-copy:hover {
+    background: #f0fdfa;
+    border-color: #5eead4;
+}
+
+.tvrb-rules-panel .tvrb-rules-copy:active {
+    background: #ccfbf1;
+    color: #115e59;
+}
+
+/* ---- 长按选中复制白名单（与决策看板 .dcb-selectable 同一口径）----
+   base.css 有全局 `* { user-select:none }` ⇒ 这里做白名单放行；
+   JS 侧同一个选择器在 useAppBootstrap#_isCopyableTarget 里放行 contextmenu / selectstart。
+   ⛔ 只放行「文字选区」这一件事，不碰任何点击 / 长按手势。 */
+.tvrb-selectable,
+.tvrb-selectable * {
+    -webkit-user-select: text;
+    -moz-user-select: text;
+    -ms-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: default;
+}
+
+/* ---- [COMPACT] 简洁模式：隐藏解释性文字，只留【题材行 + 股票行 + 行内标签】----
+   ⛔ .tvrb-note-empty（「这一块为什么没有股票」）【不隐藏】—— 全隐藏会剩一行光秃秃的题材名，
+      反而让人以为「没算出来」（§10）。趋势面板也不隐藏（那是用户主动点开的量化数据）。 */
+.tvrb-board.tvrb-compact .tvrb-reason-line,
+.tvrb-board.tvrb-compact .tvrb-rules,
+.tvrb-board.tvrb-compact .tvrb-block-note:not(.tvrb-note-empty) {
+    display: none;
+}

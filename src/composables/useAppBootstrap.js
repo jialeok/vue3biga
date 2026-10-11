@@ -39,10 +39,12 @@ export function useAppBootstrap(loginRef) {
     //   改法：白名单放行 —— 命中 .dcb-selectable（或其内部任意子节点）就不拦截；
     //   ⛔ 其它区域行为【一字不改】（仍然禁止选中 / 长按菜单），
     //      否则会波及早盘竞价的「长按股票名打标签」等既有手势（§6 只动该动的）。
+    //   [TVRB 2026-10-11] 新增 .tvrb-selectable：让「题材量比」看板的规则面板 / 选择理由同样可长按复制
+    //     （与决策看板同一诉求、同一实现；⛔ 只是多一个白名单类，不改变任何既有区域的行为）。
     // 事件 target 可能是文本节点 → 统一取元素再判 closest。
     const _isCopyableTarget = function (target) {
       const el = (target && target.nodeType === 3) ? target.parentElement : target;
-      return !!(el && el.closest && el.closest('.dcb-selectable'));
+      return !!(el && el.closest && el.closest('.dcb-selectable, .tvrb-selectable'));
     };
     document.addEventListener('contextmenu', function (e) {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return true;

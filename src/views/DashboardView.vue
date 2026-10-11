@@ -101,6 +101,13 @@
          （独立 Edge Function tick-minute-fetch + 独立表 tick_minute_open），
          ⛔ 不改决策看板一行、也不改任何其它看板。 -->
     <TickBoard v-show="boardView === 'trading'" />
+    <!-- 「题材量比」看板：独立看板组件（放在「决策 / 分笔」之下，⛔ 不改这两个看板一行）。
+         它与决策看板一样【只用早盘竞价已有的内存数据选股】，但选股口径不同：
+         按题材【平均竞价量比】降序 → 数量档位（<4 只排除 / 4~8 只选 1 / >8 只选 2）
+         → 题材内按【龙一 → 龙二 → …】依次取非竞价涨停的票，取最靠前的两个题材。
+         组件与样式全部独立（topicvolratio / tvrb- 前缀），⛔ 不复用任何其它看板的组件，
+         因此挂载在这里不会影响任何既有看板。 -->
+    <TopicVolRatioBoard v-show="boardView === 'trading'" />
     <DuibanBoard v-show="boardView === 'trading'" />
     <EtfBoard v-show="boardView === 'trading'" />
     <HomeStocksView
@@ -231,6 +238,7 @@ import HomeStocksView from './HomeStocksView.vue';
 import AuctionBoard from './AuctionBoard.vue';
 import DecisionBoard from './DecisionBoard.vue';
 import TickBoard from './TickBoard.vue';
+import TopicVolRatioBoard from './TopicVolRatioBoard.vue';
 import BiddingBoard from './BiddingBoard.vue';
 import PatternBoard from './PatternBoard.vue';
 import DuibanBoard from './DuibanBoard.vue';
