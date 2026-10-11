@@ -303,6 +303,15 @@ describe('tick-minute · 快照 → 一笔一笔 + 红绿统计', () => {
     expect(title).toContain('上游成交笔数 37');
     expect(tickPanelNote(s)).toContain('原始快照 3 个');
     expect(tickPanelNote(s)).toContain('没有任何成交');
+    // ★ [TRADE-COUNT 2026-10-11 用户提问「上游成交笔数是 4190，你解释下」] 注释里必须把口径写清楚：
+    //   它是【累计成交笔数】在这一分钟窗口内的差值（不含首条快照自身），与「共 N 笔」= 快照条数不是一回事。
+    const note = tickPanelNote(s);
+    expect(note).toContain('上游成交笔数 37');
+    expect(note).toContain('累计成交笔数');
+    expect(note).toContain('快照');
+    // §10：没有 tradeCount（上游缺值）⇒ ⛔ 不许凭空解释一个不存在的数字
+    const noTc = buildTickPens({ openPrice: 10, pens: [{ t: 'a', p: 10, v: null }] });
+    expect(tickPanelNote(noTc)).not.toContain('上游成交笔数');
   });
 });
 
@@ -424,8 +433,16 @@ describe('tick-minute · 决策行 → 分笔买卖看板行', () => {
     expect(p0.panelHint.length).toBe(2);
     expect(p0.panelHint[1]).toContain('【买点】立刻买');
     expect(b.sellGroups[0].items[0].panelHint[1]).toContain('【卖点】冲高卖');
+    // ★ [TICK-VERDICT-BADGE 2026-10-11] 结论胶囊的【数组形式】(喂给展开面板标题行)——
+    //   与行内那枚是同一份结果、同一个文案 / 配色档 / 悬停说明；卖点侧换名不换色。
+    expect(p0.strengthBadges).toEqual([
+      { text: '立刻买', tone: 'strong', title: p0.strengthTitle }
+    ]);
+    expect(b.sellGroups[0].items[0].strengthBadges[0].text).toBe('冲高卖');
+    expect(b.sellGroups[0].items[0].strengthBadges[0].tone).toBe('strong');
     // ⛔ 没有行 / 抓不到时整块不渲染（§10）
     expect(b.buyBlocks[0].picks[1].panelHint).toEqual([]);
+    expect(b.buyBlocks[0].picks[1].strengthBadges).toEqual([]);
   });
 
   it('有行但一笔都判不出来（全缺价格）⇒ 回落「无数据」，⛔ 不留空胶囊', () => {
@@ -442,6 +459,8 @@ describe('tick-minute · 决策行 → 分笔买卖看板行', () => {
     expect(p0.redText).toBe('');
     expect(p0.greenText).toBe('');
     expect(p0.strengthText).toBe('');
+    // ★ 全缺价格 ⇒ 结论胶囊也不许残留（否则展开面板上会挂一枚没有结论的空标签，§10）
+    expect(p0.strengthBadges).toEqual([]);
   });
 
   it('没有股票的买点块整块不渲染（本看板没有「不出票原因」行，留个空题材名反而像坏了）', () => {

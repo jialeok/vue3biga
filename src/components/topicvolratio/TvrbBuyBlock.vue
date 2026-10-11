@@ -161,6 +161,7 @@
           :note="p.panelNote"
           :hint="p.panelHint"
           :pens="p.pens"
+          :badges="p.strengthBadges"
         />
         <div
           v-else

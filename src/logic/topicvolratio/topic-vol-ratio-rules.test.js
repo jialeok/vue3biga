@@ -479,6 +479,20 @@ describe('tvrb · 卖点段复用决策看板的卖点计划', function() {
     expect(g.reason.length).toBeGreaterThan(0);
     // §21：十日涨幅文案由 Logic 层补好，⛔ 组件不再 format 一次
     expect(g.items[0].pctText).toBe('+20%');
+    // ★ [SELL-AVG-VR 2026-10-11 用户报障] 卖点侧的题材标题行也要有【平均竞价量比】——
+    //   原先漏传 ⇒ 组件回落到 '—'（用户原话「题材的平均量比数值没有显示出来，只出现 -」）。
+    //   值必须与买点侧同源（同一个 avgVolRatioOf）：本组 4 只成员量比都是 60 ⇒ 60.00
+    expect(g.avgVolRatioText).toBe('60.00');
+    expect(g.avgVolRatioText).toBe(plan.blocks[0].avgVolRatioText);
+  });
+
+  it('卖点题材【今日未成组】⇒ 平均量比如实给「—」（§10 ⛔ 不编 0.00 / 不默认为空）', function() {
+    const plan = buildTopicVolRatioPlan(topics, dm, {
+      sellRows: [sellRow('昆仑万维', { topic: '昨日已散题材' })]
+    });
+    expect(plan.sell).toHaveLength(1);
+    expect(plan.sell[0].topic).toBe('昨日已散题材');
+    expect(plan.sell[0].avgVolRatioText).toBe('—');
   });
 
   it('今天又进【本看板】买点 ⇒ 卖点标【持有】（而不是竞价卖）', function() {
@@ -513,6 +527,23 @@ describe('tvrb · buildTvrbRulesLines 规则文案', function() {
     expect(Array.isArray(lines)).toBe(true);
     expect(lines.length).toBeGreaterThanOrEqual(10);
     lines.forEach(function(l) { expect(typeof l).toBe('string'); });
+  });
+
+  it('第三轮补的【操作纪律】必须写进规则（用户要求：写进规范，起提醒作用 + 规范自己的交易行为）', function() {
+    const all = lines.join('\n');
+    // 八条操作纪律：买点侧 / 卖点侧各一条（用户 2026-10-11 原话交代的实盘流程）
+    expect(all).toContain('操作纪律');
+    expect(all).toContain('9:26');        // 竞价看到【竞价买】⇒ 9:26 左右先买一笔
+    expect(all).toContain('9:31');        // 9:31 左右看分笔成交的结论
+    expect(all).toContain('补一笔');      // 分笔提示【下杀买】⇒ 再补一笔摊低成本
+    expect(all).toContain('拉低持仓成本');
+    expect(all).toContain('再补');        // 【立刻买】⇒ 不再补（两个买点吻合）
+    expect(all).toContain('卖半仓');      // 【竞价卖】⇒ 竞价期间先卖半仓
+    expect(all).toContain('冲高再清');    // 【冲高卖】⇒ 等冲高再清
+    expect(all).toContain('止损');        // 【立刻卖】⇒ 止损
+    // 上游成交笔数的口径也要写进规则（用户提问：4190 是什么意思）
+    expect(all).toContain('上游成交笔数');
+    expect(all).toContain('快照');
   });
 
   it('含标题与关键口径，且数字来自常量（不是写死）', function() {

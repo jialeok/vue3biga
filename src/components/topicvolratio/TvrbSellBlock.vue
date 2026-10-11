@@ -28,12 +28,16 @@
 -->
 <template>
   <div class="tvrb-block">
-    <!-- 第一行：题材名 + 排名圆点 + 数量 + 竞价一字（今日数据；今日未成组时显示「—」） -->
+    <!-- 第一行：题材名 + 排名圆点 + 数量 + 竞价一字 + 平均竞价量比（今日数据；今日未成组时显示「—」）
+         ★ 平均量比：买点侧一直有（block.avgVolRatioText）；卖点侧原先漏传 ⇒ 只显示「—」（用户 2026-10-11
+           报障「题材的平均量比数值没有显示出来，只出现 -」）。值由 buildTopicVolRatioPlan 按 g.topic
+           反查同一个题材块算出（⛔ 不是第二份实现）；该题材今天没成组 ⇒ 如实给「—」（§10 不编数）。 -->
     <TvrbTopicHead
       :topic="group.topic"
       :rank="group.topicRank"
       :count="group.count"
       :yizi="group.yiziCount"
+      :avg-vol-ratio="group.avgVolRatioText"
     />
     <!-- 第二行：卖出理由（决策看板同一份文案，由 buildSellPlan 生成） -->
     <div class="tvrb-reason-line tvrb-selectable">
@@ -158,6 +162,7 @@
           :note="it.panelNote"
           :hint="it.panelHint"
           :pens="it.pens"
+          :badges="it.strengthBadges"
         />
         <div
           v-else

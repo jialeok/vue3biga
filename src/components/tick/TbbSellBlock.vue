@@ -102,6 +102,7 @@
         :note="it.panelNote"
         :hint="it.panelHint"
         :pens="it.pens"
+        :badges="it.strengthBadges"
       />
     </template>
   </div>

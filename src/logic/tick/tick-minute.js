@@ -404,6 +404,14 @@ export function tickPanelNote(s) {
     bits.push('第一笔的涨跌基准 = 当日开盘价（9:25 集合竞价的成交价）');
     bits.push('「绿」= 下跌 + 平盘（按东财口径）');
     bits.push('「手数」= 该快照的成交量，单位【手】（与东财/同花顺同口径，⛔ 不是股）');
+    // ★ [TRADE-COUNT 口径 2026-10-11 用户提问] 「上游成交笔数是 4190，你解释下」——
+    //   就写在它出现的地方（标题行 → 紧下方的注释），⛔ 不用用户去别处找。
+    if (s.tradeCount !== null && s.tradeCount !== undefined) {
+        bits.push('「上游成交笔数 ' + s.tradeCount + '」= 上游（东财）的【累计成交笔数】在这一分钟窗口' +
+            '内的差值（不含窗口内第一条快照自身）⇒ 即这一分钟【真实成交的笔数】；' +
+            '它与「共 N 笔」不是一回事 —— 我们保存的是【快照】条数（节奏由上游推送决定），' +
+            '同一价格同一秒的多笔成交会被上游并进一个快照，所以快照条数通常远小于真实成交笔数');
+    }
     return bits.join('｜');
 }
 
@@ -623,6 +631,12 @@ export function decorateTickRow(row, tickMap, attempted, skipMap, memberMap, sid
         hasTick: false,
         redText: '', greenText: '', statTitle: '',
         strengthText: '', strengthTone: '', strengthTitle: '',
+        // ★ [TICK-VERDICT-BADGE 2026-10-11 用户口径] 结论胶囊的【数组形式】—— 供展开面板的标题行
+        //   直接 v-for（用户：「在展开的股票分笔成交上面的小文字那里…添加那个立刻卖/立刻买/
+        //   冲高卖/下杀买等分笔买卖看板的标签，只添加这种，其它不要添加，因为我要对照下」）。
+        //   ⛔ 与上面 strengthText / Tone / Title 是【同一份 tickStrengthOf 结果】的两种摆放，
+        //      不是第二份判定（§6）；空 ⇒ 空数组 ⇒ 面板一个字符都不渲染（§10）。
+        strengthBadges: [],
         emptyText: '',
         emptyTitle: '',
         pens: [], panelTitle: '', panelNote: '', panelHint: []
@@ -653,6 +667,10 @@ export function decorateTickRow(row, tickMap, attempted, skipMap, memberMap, sid
     out.strengthText = str.text;
     out.strengthTone = str.tone;
     out.strengthTitle = str.title;
+    // 结论胶囊的数组形式（喂给展开面板标题行）—— 同一份结果，⛔ 无数据 ⇒ 空数组
+    out.strengthBadges = str.text
+        ? [{ text: str.text, tone: str.tone, title: str.title }]
+        : [];
     out.pens = s.pens;
     out.panelTitle = tickPanelTitle(s, name);
     out.panelNote = tickPanelNote(s);
@@ -667,6 +685,7 @@ export function decorateTickRow(row, tickMap, attempted, skipMap, memberMap, sid
         out.strengthText = '';
         out.strengthTone = '';
         out.strengthTitle = '';
+        out.strengthBadges = [];
     }
     return out;
 }

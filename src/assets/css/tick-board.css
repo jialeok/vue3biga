@@ -457,6 +457,18 @@
   user-select: text;
 }
 
+/* ★ 标题行尾的【结论胶囊】（立刻买 / 下杀买 / 冲高卖 / 立刻卖）—— 用户 2026-10-11 要求把它
+   从行内【也】摆到展开面板的标题行，方便与决策看板的买卖标签对照。
+   胶囊本体直接复用 .tbb-verdict / -strong / -weak（§6：同一份判定 ⇒ 同一套外观，不会分叉）；
+   本类只负责把它摆到标题行右侧（inline-flex + 与标题拉开一点距离 + 垂直居中）。 */
+.tbb-panel-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
 .tbb-pen-table {
   display: flex;
   flex-direction: column;
