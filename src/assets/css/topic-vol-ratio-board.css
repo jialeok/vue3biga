@@ -4,11 +4,15 @@
 
    ⚠️ 本文件是全局加载的（src/assets/main.css 里 @import）：
       ⛔ 绝不写 .row / .stat / .panel 这类通用名（会串改早盘竞价等看板）；
-      ⛔ 也不要用 .dcb-* / .decision-* / .tbb-* / .tick-*（那是别家看板的，混用等于把看板耦合成一体）。 */
+      ⛔ 也不要用 .dcb-* / .decision-* / .tbb-* / .tick-*（那是别家看板的，混用等于把看板耦合成一体）。
+      ⛔ 分笔面板内部的 .tbb-* 类由 tick-board.css 提供（全局已加载），本文件【不再重复定义】。 */
 
-/* 头部用【青绿渐变】而非决策看板的蓝 / 分笔看板的靛蓝：
-   三个看板上下紧挨着，同色会让人分不清哪条条是哪块；
-   青绿与看板内「买=红 / 卖=绿 / 上涨=红 / 下跌=绿」的语义色也完全错开。 */
+/* 头部用【渐变粉色】（2026-10-11 用户口径：「把标题栏的渐变色改下，颜色变成渐变粉色（股市忌讳绿色）」）。
+   ⚠️ 改动原因记录：原先是青绿渐变 #14b8a6→#0f766e，正好落在「绿」上，与用户口径冲突 ⇒ 全看板的主色
+      一并从青绿系换成粉色系（下方 .tvrb-rank-dot / .tvrb-meta-vr / .tvrb-pick-tag /
+      .tvrb-compact-toggle / .tvrb-rules-copy 同步）。
+   ⛔ 行内【语义色不在此列】：买=红 / 卖=绿 / 涨=红 / 跌=绿 是【全站统一口径】，⛔ 绝不跟着头部改色
+      （改了就把买卖点读反了）。粉色只用于【看板自身标识】（头部 / 排名圆点 / 本看板自己的档位标签）。 */
 .tvrb-board {
     margin: 0 15px 10px;
     background: #ffffff;
@@ -30,12 +34,12 @@
     align-items: center;
     gap: 8px;
     cursor: pointer;
-    background: linear-gradient(135deg, #14b8a6, #0f766e);
+    background: linear-gradient(135deg, #ec4899, #be185d);
     transition: background 0.2s;
 }
 
 .tvrb-header:hover {
-    background: linear-gradient(135deg, #0d9488, #115e59);
+    background: linear-gradient(135deg, #db2777, #9d174d);
 }
 
 .tvrb-title {
@@ -106,12 +110,13 @@
     padding: 0 2px 6px;
 }
 
+/* 本看板主色已改粉（2026-10-11）⇒ 这个小胶囊也统一到粉，别再是青绿 */
 .tvrb-compact-toggle {
     padding: 1px 8px;
     font-size: 11px;
-    color: #0f766e;
-    background: #f0fdfa;
-    border: 1px solid #99f6e4;
+    color: #be185d;
+    background: #fdf2f8;
+    border: 1px solid #fbcfe8;
     border-radius: 10px;
     cursor: pointer;
     user-select: none;
@@ -120,8 +125,8 @@
 
 .tvrb-compact-toggle.on {
     color: #ffffff;
-    background: #0d9488;
-    border-color: #0f766e;
+    background: #db2777;
+    border-color: #be185d;
 }
 
 .tvrb-section {
@@ -138,12 +143,32 @@
     color: #0f172a;
 }
 
-/* 涨红跌绿（中国习惯）：本看板只有选股段 = 红 */
+/* 涨红跌绿（中国习惯）：买点段 = 红、卖点段 = 绿（与决策看板同款）。 */
 .tvrb-section-title.buy {
     color: #b91c1c;
 }
 
-/* ---- 题材块 ---- */
+.tvrb-section-title.sell {
+    color: #15803d;
+}
+
+/* 蚂蚁线：选股段与卖点段之间的分隔（与决策看板同款行进虚线语言）。
+   ⛔ 动画名必须独立（tvrbAnts），共用 decisionAnts 等于把两个看板耦成一体。 */
+.tvrb-sep {
+    height: 2px;
+    margin: 12px 0;
+    background-image: repeating-linear-gradient(90deg, #94a3b8 0 5px, transparent 5px 10px);
+    background-size: 10px 2px;
+    background-repeat: repeat-x;
+    animation: tvrbAnts 1s linear infinite;
+}
+
+@keyframes tvrbAnts {
+    from { background-position: 0 0; }
+    to { background-position: 10px 0; }
+}
+
+/* ---- 题材块（选股 / 卖点共用）---- */
 .tvrb-block {
     margin-bottom: 8px;
     padding: 6px 8px;
@@ -152,6 +177,9 @@
     border-radius: 10px;
 }
 
+/* 题材区：纵向两行，行间距压到 2px 以免吃掉纵向空间
+   第 1 行 .tvrb-tags-row   = [昨有买入] [N 次入选]（买点侧专有；一个都没有 ⇒ 整行不渲染）
+   第 2 行 .tvrb-topic-row  = 题材名 ●排名 数量：n 竞价一字：n 平均量比：x.xx [选 n 只] */
 .tvrb-block-head {
     display: flex;
     flex-direction: column;
@@ -159,6 +187,15 @@
     gap: 2px;
 }
 
+/* 第 1 行：题材级标记（买点侧专有；一个都没有时整行不渲染 ⇒ 这里不会出现空行） */
+.tvrb-tags-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+/* 第 2 行：题材名称 + 排名圆点 + 数量 + 竞价一字 + 平均量比 + 选几只 */
 .tvrb-topic-row {
     display: flex;
     align-items: center;
@@ -174,7 +211,7 @@
     color: #0f172a;
 }
 
-/* 实心圆点，里面的白字 = 该题材在本看板内的排名（青绿 = 本看板的色） */
+/* 实心圆点，里面的白字 = 该题材在本看板内的排名（粉色 = 本看板的主色） */
 .tvrb-rank-dot {
     width: 16px;
     height: 16px;
@@ -186,7 +223,7 @@
     font-weight: 700;
     line-height: 1;
     color: #ffffff;
-    background: #0d9488;
+    background: #db2777;
     border-radius: 50%;
 }
 
@@ -202,9 +239,9 @@
     font-weight: 700;
 }
 
-/* 「平均量比：x.xx」里的数值 = 本看板的排序依据 ⇒ 用青绿加粗，与普通 meta 的灰区分开 */
+/* 「平均量比：x.xx」里的数值 = 本看板的排序依据 ⇒ 用本看板主色（粉）加粗，与普通 meta 的灰区分开 */
 .tvrb-meta-vr {
-    color: #0f766e;
+    color: #be185d;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
 }
@@ -216,9 +253,45 @@
     font-size: 10px;
     line-height: 15px;
     font-weight: 700;
-    color: #0f766e;
-    background: #f0fdfa;
-    border: 1px solid #99f6e4;
+    color: #be185d;
+    background: #fdf2f8;
+    border: 1px solid #fbcfe8;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+/* ---- [TOPIC-PREV-BOUGHT] 题材行「昨有买入」标记 ----
+   语义：【题材级】—— 这个题材昨天【有票】被打过「买」标签 = 题材在延续。
+   ⛔ 不要写成「昨天已买」（会被读成【个股】结论）；个股级的信息由行尾【持有】表达。
+   ⛔ 卖点块【不传】这个标记（候选本来就是昨天买过的票，标了没信息量）。
+   配色：实心琥珀（白字），与同行的紫色「N 次入选」一眼可分。
+   （与决策看板 .dcb-prev-bought 逐值一致 —— 用户口径「标签逻辑基本一样」。） */
+.tvrb-prev-bought {
+    flex-shrink: 0;
+    padding: 0 5px;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 15px;
+    color: #ffffff;
+    background: #b45309;
+    border: 1px solid #b45309;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+/* ---- [TOPIC-STREAK] 题材行「N 次入选」标记 ----
+   语义：该题材在【含今日的最近 5 个交易日】里进过买点几次 —— 次数越大 = 频率越高。
+   配色：淡紫底 + 紫字（描边），与左边实心琥珀的「昨有买入」一眼可分，
+   也和行尾的持有紫（#7c3aed，在股票行）不是同一处，不会混。 */
+.tvrb-topic-streak {
+    flex-shrink: 0;
+    padding: 0 5px;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 15px;
+    color: #6d28d9;
+    background: #f5f3ff;
+    border: 1px solid #ddd6fe;
     border-radius: 4px;
     white-space: nowrap;
 }
@@ -228,6 +301,15 @@
     font-size: 11px;
     line-height: 1.5;
     color: #475569;
+}
+
+/* 【规则编号】选票说明要标「规则几」，像法律条文一样能查出处。
+   编号由 Logic 层给出（RULE_NO），此处只负责视觉 —— ⛔ 不做任何判断（§21）。
+   蓝色与决策看板的 .dcb-rule-no 一致（本看板主色只用于头部 / 排名 / 自己那两枚档位标签）。 */
+.tvrb-rule-no {
+    margin-left: 2px;
+    color: #1d4ed8;
+    font-weight: 600;
 }
 
 .tvrb-block-note {
@@ -259,6 +341,8 @@
 .tvrb-row {
     display: flex;
     align-items: baseline;
+    /* 允许换行：逐行说明 / 卖出节奏提示是 flex-basis:100% 的整行子元素，
+       必须能让它们落到下一行；普通行（无说明）内容本来就一行放得下，不受影响。 */
     flex-wrap: wrap;
     gap: 8px;
     padding: 3px 0;
@@ -278,6 +362,42 @@
     font-weight: 600;
 }
 
+/* 序号 / 股票名可点（展开、收起分笔明细），给个手型提示 */
+.tvrb-pen-trigger {
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+
+/* ---- [BOARD-RISK] 创业板 / 科创板风险提示 —— 防误买的最后一道岗 ----
+   视觉刻意做成【施工警示牌】：深墨底 + 明黄字 + 警示三角，紧跟在股票名右边。
+   ⛔ 为什么【不用红色】：行里所有红色系胶囊（#dc2626 竞价买 / #be123c 下杀买 /
+      #f43f5e 补涨竞价买）全都是「今天要买」的动作标签 —— 风险提示做成红底会被一眼读成
+      买点信号，正好帮倒忙。深墨 + 明黄在整行里没有任何同款，跳出来又不与任何语义撞车。 */
+.tvrb-risk {
+    padding: 0 5px;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 14px;
+    color: #fde047;
+    background: #111827;
+    border: 1px solid #facc15;
+    border-radius: 4px;
+    white-space: nowrap;
+    letter-spacing: 0.2px;
+}
+
+/* 警示三角由 CSS 统一给（Logic 层的文案保持干净、便于断言）。
+   ① \FE0E = 文字变体选择符：强制用【文字形态】渲染 ⚠，避免某些系统把它画成彩色 emoji
+      （emoji 不吃 CSS 的 color，会变成一块不受控的黄图标）；
+   ② ⛔ 间距必须写 margin-right，【不要】写进 content 的尾随空格 —— 实测 CSS 压缩器
+      会把 content 里的尾随空格裁掉，符号就会和后面的文字贴死。 */
+.tvrb-risk::before {
+    content: '⚠\FE0E';
+    margin-right: 3px;
+    color: #fbbf24;
+    font-weight: 700;
+}
+
 /* 龙一 / 龙二 徽章：9px 小字，紧贴股票名（与决策看板龙标同款） */
 .tvrb-dragon {
     padding: 0 4px;
@@ -288,6 +408,35 @@
     border: 1px solid #fde68a;
     border-radius: 4px;
     white-space: nowrap;
+}
+
+/* ---- [DRAGON-RANK-CHANGE] 龙标旁边的【名次变化】数字（'+3' / '-2'）----
+   用户口径「数字前有加减号，不用背景色，上升用红色，下降用绿色」⇒ 所以这里
+     · 只给【文字颜色】，⛔ 刻意【不加】padding / 底色 / 边框 —— 加了就变成第二枚胶囊，
+       与旁边的龙标争视觉重心（要的是「龙二 +3」这样一句话，不是一个新标签）；
+     · 字号与龙标一致（9px），紧贴龙标，整行高度不变（line-height 14px）。
+   ⛔ 别改成「涨绿跌红」：A 股口径是【上升红 / 下降绿】（与欧美相反）。 */
+.tvrb-dragon-delta {
+    /* ⚠️ 负 margin 是刻意的：.tvrb-row 是 flex + gap: 8px 的容器，龙标与数字是两个 flex 子项，
+       gap 会把它们推开 8px。而这里要的是「龙二 +3」这样【一句话】——
+       -3px 把净间距收到 5px（比行内其它元素更紧），读起来才是「龙标 + 它的变化」，
+       而不是「两个并列的小标签」。⛔ 别去掉它。 */
+    margin-left: -3px;
+    font-size: 9px;
+    line-height: 14px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    /* 允许长按选中复制（与行内说明文字同一口径，见 .tvrb-selectable） */
+    user-select: text;
+}
+
+.tvrb-dragon-delta-up {
+    color: #dc2626;
+}
+
+.tvrb-dragon-delta-down {
+    color: #16a34a;
 }
 
 .tvrb-pct {
@@ -310,12 +459,10 @@
 .tvrb-auc-low  { background-color: #16a34a; }   /* 竞价涨幅 < 0 → 绿底 */
 .tvrb-auc-flat { background-color: #64748b; }   /* 竞价涨幅 = 0 → 灰底 */
 
-/* ---- 竞价量比徽标 + 趋势面板（与决策看板同款：靛蓝 = 量比的色）---- */
-.tvrb-trend-trigger {
-    cursor: pointer;
-    -webkit-tap-highlight-color: transparent;
-}
-
+/* ---- 竞价量比徽标（与决策看板同款：靛蓝 = 量比的色）----
+   刻意用【靛蓝】，与「竞价涨幅」的红/绿/灰三档语义色分开 ——
+   量比说的是【强弱程度】，不是【涨跌方向】，套同一组红绿会让人误读成涨跌幅。
+   缺当日量比 ⇒ Logic 层给空串 ⇒ 徽标整个不渲染（§10，绝不显示 0.00 冒充「量比很小」）。 */
 .tvrb-vratio {
     padding: 0 4px;
     font-size: 9px;
@@ -327,6 +474,8 @@
     font-variant-numeric: tabular-nums;
 }
 
+/* 量比标签里的方向箭头（在文字【右边】）：相对字号略放大 + 轻微上移，
+   保证在小徽标里也看得清、且不撑高行高。 */
 .tvrb-vratio-arrow {
     margin-left: 2px;
     font-size: 10px;
@@ -339,26 +488,309 @@
 .tvrb-vratio-up   { background-color: #dc2626; }
 .tvrb-vratio-down { background-color: #16a34a; }
 
-.tvrb-trend-panel {
-    margin: 1px 0 5px 26px;   /* 26px = 序号宽 18 + 行内 gap 8 ⇒ 与股票名左对齐 */
-    padding: 6px 8px 4px;
-    background: #f9fafb;
-    border: 1px solid #eef2f7;
+/* ---- [SEAL] 连板 + 封单额（+ 与上一交易日的变化）----
+   数据 = limit_pool（同花顺 fuyao 15:40 收盘快照）⇒ **只有当天涨停的股票才有值**；
+     §10：没有值 ⇒ Logic 层给空串 ⇒ 徽标整个不渲染（⛔ 绝不显示 0 / '--'）。
+   配色沿用全站「涨红跌绿」：封单【增加】= 红底 + ↑、【减少】= 绿底 + ↓；
+     无变化 / 算不出变化时保持【琥珀底】——那两档既不增也不减，涂红绿都会给错暗示（§10 不猜）。
+   刻意不用靛蓝（那是竞价量比的色）、也不用占比的红：封单是【收盘后】的第三个独立指标。
+   （与决策看板 .dcb-continue / .dcb-seal 逐值一致。） */
+.tvrb-continue {
+    padding: 0 4px;
+    font-size: 9px;
+    line-height: 14px;
+    border-radius: 4px;
+    color: #ffffff;
+    background-color: #b45309;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.tvrb-seal {
+    padding: 0 4px;
+    font-size: 9px;
+    line-height: 14px;
+    border-radius: 4px;
+    color: #ffffff;
+    background-color: #b45309;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 变化量（在封单额右边）：与量比标签里的箭头同款处理 —— 略放大 + 轻微上移。 */
+.tvrb-seal-delta {
+    margin-left: 3px;
+    font-weight: 700;
+    font-size: 10px;
+    vertical-align: -1px;
+}
+
+.tvrb-seal-up   { background-color: #dc2626; }   /* 封单【增加】：红 + ↑ */
+.tvrb-seal-down { background-color: #16a34a; }   /* 封单【减少】：绿 + ↓ */
+
+/* ---- [SHARE-RULE] 竞价占比（当日竞价量 ÷ 昨日成交量）----
+   口径：保留 1 位小数（与早盘竞价第一页那个「取整」的占比刻意不同，⛔ 别去对齐）。
+   它是买卖【时机】的主判据 ⇒ 配色直接表达「这个数值有多强」，与门槛对应：
+     ≥ 龙头标准 4%  → 红（完全达标）
+     ≥ 其余标准 2%  → 琥珀（一般水平 / 龙头容错区）
+     其余（含 0.x%）→ 绿（水量不足）
+   ⛔ 缺数据 ⇒ Logic 层给空串 ⇒ 徽标不渲染，绝不显示 0.0%（§10）。 */
+.tvrb-share {
+    padding: 0 4px;
+    font-size: 9px;
+    line-height: 14px;
+    border-radius: 4px;
+    color: #ffffff;
+    background-color: #dc2626;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.tvrb-share-strong { background-color: #dc2626; }   /* ≥ 4%：完全达标 */
+.tvrb-share-meet   { background-color: #d97706; }   /* ≥ 2%：达到后排标准 */
+.tvrb-share-weak   { background-color: #16a34a; }   /* < 2%：水量不足 */
+
+/* ---- 仓位槽（本看板【没有仓位口径】）----
+   本看板按龙位取票，没有「前 N 只重仓 / 其余轻仓」这件事 ⇒ Logic 层一律给空字符串，
+   模板有 v-if ⇒ 正常不渲染。只有「昨天真买过」时会被改写成【持有】（tone = hold）。
+   保留 heavy / light 两档样式是为了「万一口径变了」也如实显示，而不是留一个没定义的类。
+   ⛔ 类名一律带 tvrb- 前缀（本项目 CSS 全局加载，`.light` 这种裸名会串改其它看板）。 */
+.tvrb-position {
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 600;
+    color: #b91c1c;
+    white-space: nowrap;
+}
+
+.tvrb-position.tvrb-pos-heavy { color: #b91c1c; }   /* 重仓 */
+.tvrb-position.tvrb-pos-light { color: #c2410c; }   /* 轻仓 */
+.tvrb-position.tvrb-pos-hold  { color: #7c3aed; }   /* 持有（昨天已买，今天继续拿） */
+
+/* 卖点侧的行尾时点（11:20卖 / 14:50卖 …） */
+.tvrb-sell-at {
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 600;
+    color: #15803d;
+    white-space: nowrap;
+}
+
+/* 【持有】上交易日也在买点里 = 强势股 → 行尾换成这枚蓝色标签。
+   刻意用蓝底而不复用红/橙：它既不是「买几成仓」也不是「几点卖」，是第三种结论（继续拿）。
+   卖点侧它会【顶替】.tvrb-sell-at 出现（v-else），所以同样带 margin-left:auto 靠右对齐。 */
+.tvrb-hold {
+    margin-left: auto;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: #1d4ed8;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+/* 买点侧：仓位（重仓 / 轻仓）已经在行尾，持有标记紧跟其后，不再抢 margin-left:auto。
+   ⚠️ 行尾仓位本身已经是【持有】时，Logic 层不会再给这枚标记（否则同一行会出现两个「持有」），
+      所以这里的相邻选择器只会命中「重仓 / 轻仓 + 持有」。 */
+.tvrb-position + .tvrb-hold {
+    margin-left: 0;
+}
+
+/* ---- [ACTION] 动作徽标（买点 / 卖点共用同一组类名，tone 由 Logic 层给）----
+   语义与配色逐档与决策看板一致（用户口径「标签逻辑基本一样」）：
+     竞价买 #dc2626 红      = 现在就动手（最急）
+     下杀买 #be123c 深玫红  = 也是买点，但别在竞价追高、等回调再买
+     补涨竞价买 #f43f5e 亮玫红 = 靠自己不如靠题材龙一带动
+     尾盘买 / 尾盘卖 #d97706 琥珀 = 等一等（当日节奏）
+     先卖后买 #7c3aed 紫    = 两段动作（开盘先卖、尾盘接回）
+     竞价卖 #16a34a 绿      = 走弱，尽早出、别恋战
+     跟龙竞价卖 #0891b2 青蓝 = 不是自己走弱，是被同题材龙一带下去
+     10分钟时卖 #0f766e 深青绿 = 只差一点点 + 量比增，等 9:40 冲高再卖
+     持有 #1d4ed8 蓝        = 今天又进买点 ⇒ 是要买/加，不是卖
+     龙一字持有 #4338ca 深靛蓝 = 有一字板龙头撑腰，更笃定
+     竞价涨停卖 #047857 深绿 = 一字落袋（最确定、最急的一个卖）
+   ⛔ 别把这些改成粉色系：它们表达的是【买卖语义】，全站统一「涨红跌绿」，改色就把买卖读反了。 */
+.tvrb-action {
+    margin-left: auto;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: #d97706;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.tvrb-action.tvrb-action-now       { background: #dc2626; }
+.tvrb-action.tvrb-action-dive      { background: #be123c; }
+.tvrb-action.tvrb-action-makeup    { background: #f43f5e; }
+.tvrb-action.tvrb-action-swap      { background: #7c3aed; }
+.tvrb-action.tvrb-action-late      { background: #d97706; }
+.tvrb-action.tvrb-action-out       { background: #16a34a; }
+.tvrb-action.tvrb-action-selllate  { background: #d97706; }
+.tvrb-action.tvrb-action-hold      { background: #1d4ed8; }
+.tvrb-action.tvrb-action-follow    { background: #0891b2; }
+.tvrb-action.tvrb-action-tenmin    { background: #0f766e; }
+.tvrb-action.tvrb-action-yizihold  { background: #4338ca; }
+.tvrb-action.tvrb-action-limitup   { background: #047857; }
+
+/* 买点侧：仓位（和/或持有标签）已经在行里，动作徽标紧跟其后，不再抢 margin-left:auto */
+.tvrb-position + .tvrb-action {
+    margin-left: 0;
+}
+
+.tvrb-action + .tvrb-hold {
+    margin-left: 0;
+}
+
+/* ---- [ROW-NOTE] 逐行「为什么这么买卖」的说明文字 ----
+   买点 / 卖点两处共用此一条：写出占比数值、龙头 / 其余门槛来源、以及作为辅助的竞价涨幅与量比方向。
+   整行独占（flex-basis:100%）⇒ 在 .tvrb-row 里换行、与行首左对齐（26px = 序号宽 + gap）。
+   浅灰底 + 左边一条细竖线：属于「解释」层级，不能盖过上面的数据徽标。
+   ⚠️ 简洁模式（.tvrb-compact）【不隐藏】这条（与决策看板 .dcb-row-note 同口径）——
+      它写的是判据本身，藏了就等于「为什么给这个动作」无从核对（§10 理由必须可见）。 */
+.tvrb-row-note {
+    flex-basis: 100%;
+    margin: 1px 0 3px 26px;
+    padding: 3px 6px;
+    font-size: 10.5px;
+    line-height: 1.5;
+    color: #475569;
+    background: #f8fafc;
+    border-left: 2px solid #cbd5e1;
+    border-radius: 0 6px 6px 0;
+    box-sizing: border-box;
+    word-break: break-word;
+}
+
+/* ---- [SELL-OPEN] 卖出节奏提示（按今日竞价高低开细分）----
+   tone 由 Logic 层给（danger / watch / plan / hold / surge），CSS 只做视觉映射，⛔ 不判断档位（§21）。
+   提示整行独占（flex-basis:100%），所以在 .tvrb-row 里换行显示、左对齐与行首齐平。 */
+.tvrb-sell-hint {
+    flex-basis: 100%;
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    margin: 1px 0 3px 26px;
+    padding: 3px 6px;
+    font-size: 10.5px;
+    line-height: 1.5;
     border-radius: 6px;
     box-sizing: border-box;
 }
 
-.tvrb-trend-label {
-    font-size: 10px;
-    color: #94a3b8;
-    margin-bottom: 2px;
+.tvrb-sell-hint-text {
+    word-break: break-word;
 }
 
-/* 近 5 个交易日一条有效数据都没有时的说明行（⛔ 不画满屏「--」，§10 缺失要如实可见） */
-.tvrb-trend-empty {
-    padding: 6px 2px;
+/* 小低开 → 开盘立刻出：用最强告警色（与「❗危」徽标同色系） */
+.tvrb-sell-hint.tvrb-tone-danger {
+    color: #b91c1c;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+}
+
+/* 深低开 → 盯盘等反弹：琥珀色（与买点侧的「提示」同色系，是提醒不是告警） */
+.tvrb-sell-hint.tvrb-tone-watch {
+    color: #92400e;
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+}
+
+/* 小幅高开 → 看分时定：蓝色（待观察，不是必须动作） */
+.tvrb-sell-hint.tvrb-tone-plan {
+    color: #1d4ed8;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+}
+
+/* 小幅高开 + 竞价量比【没走弱】（基本平 / 增强）→ 尾盘卖（看好）：
+   青绿色 —— 与 danger 红 / watch 琥珀 / plan 蓝 都区分开，表达「不用盯盘、拿住就行」。
+   ⚠️ 这一档保留决策看板的原色：它是【档位语义色】而不是【看板主色】，
+      跟着改成粉色会让两个看板的「档位 → 颜色」对不上（用户要的是「标签逻辑基本一样」）。 */
+.tvrb-sell-hint.tvrb-tone-hold {
+    color: #0f766e;
+    background: #f0fdfa;
+    border: 1px solid #99f6e4;
+}
+
+/* 深低开 + 竞价量比【暴增】（≥ 5 倍）→ 【冲高就卖】：
+   紫色（比「盯盘」琥珀更乐观，比「立刻出」红不着急）。 */
+.tvrb-sell-hint.tvrb-tone-surge {
+    color: #6d28d9;
+    background: #f5f3ff;
+    border: 1px solid #ddd6fe;
+}
+
+/* 「❗危」感叹号警示徽标：只在 danger 档有徽标，另两档的「盯 / 观」是中性标注 */
+.tvrb-sell-badge {
+    flex-shrink: 0;
+    padding: 0 4px;
+    font-size: 9.5px;
+    line-height: 14px;
+    font-weight: 700;
+    color: #fff;
+    background: #dc2626;
+    border-radius: 3px;
+    white-space: nowrap;
+}
+
+.tvrb-sell-hint.tvrb-tone-watch .tvrb-sell-badge {
+    background: #d97706;
+}
+
+.tvrb-sell-hint.tvrb-tone-plan .tvrb-sell-badge {
+    background: #2563eb;
+}
+
+.tvrb-sell-hint.tvrb-tone-hold .tvrb-sell-badge {
+    background: #0d9488;
+}
+
+.tvrb-sell-hint.tvrb-tone-surge .tvrb-sell-badge {
+    background: #7c3aed;
+}
+
+/* 行尾时点跟着档位变色：绿（原规则）→ 红（立刻出）/ 琥珀（盯盘）/ 蓝（看分时）/ 青绿（尾盘卖·看好） */
+.tvrb-sell-at.tvrb-tone-danger {
+    color: #dc2626;
+}
+
+.tvrb-sell-at.tvrb-tone-watch {
+    color: #b45309;
+}
+
+.tvrb-sell-at.tvrb-tone-plan {
+    color: #1d4ed8;
+}
+
+.tvrb-sell-at.tvrb-tone-hold {
+    color: #0f766e;
+}
+
+.tvrb-sell-at.tvrb-tone-surge {
+    color: #6d28d9;
+}
+
+/* ---- 分笔明细面板（复用分笔买卖看板的 TbbPenPanel）----
+   ⛔ 内层 .tbb-panel 自己已经带 `margin: 1px 0 6px 26px`（与股票名左对齐）⇒
+      本层【只做容器】，⛔ 不要再加 margin / padding / 底色，否则会双份缩进 + 双层底。
+   .tvrb-pen-empty = 还没抓到 / 没数据时的占位（§10 缺失必须如实可见，⛔ 不留一片空白），
+      视觉做成与 .tbb-panel 同一个盒子（同样的边距 / 圆角 / 底色），两种状态切换时不会跳。 */
+.tvrb-pen-panel {
+    display: block;
+}
+
+.tvrb-pen-empty {
+    margin: 1px 0 6px 26px;
+    padding: 6px 8px;
     font-size: 11px;
     color: #94a3b8;
+    background: #f9fafb;
+    border: 1px solid #eef2f7;
+    border-radius: 6px;
+    box-sizing: border-box;
 }
 
 /* ---- 规则面板（灰色小问号）---- */
@@ -451,9 +883,9 @@
     padding: 2px 9px;
     font-size: 11px;
     line-height: 1.6;
-    color: #0f766e;   /* 取头部渐变的青绿，与本看板同色系 */
+    color: #be185d;   /* 取头部渐变的主色（粉），与本看板同色系 */
     background: #ffffff;
-    border: 1px solid #99f6e4;
+    border: 1px solid #fbcfe8;
     border-radius: 6px;
     cursor: pointer;
     white-space: nowrap;
@@ -461,13 +893,13 @@
 }
 
 .tvrb-rules-panel .tvrb-rules-copy:hover {
-    background: #f0fdfa;
-    border-color: #5eead4;
+    background: #fdf2f8;
+    border-color: #f9a8d4;
 }
 
 .tvrb-rules-panel .tvrb-rules-copy:active {
-    background: #ccfbf1;
-    color: #115e59;
+    background: #fce7f3;
+    color: #9d174d;
 }
 
 /* ---- 长按选中复制白名单（与决策看板 .dcb-selectable 同一口径）----
@@ -483,10 +915,14 @@
     -webkit-touch-callout: default;
 }
 
-/* ---- [COMPACT] 简洁模式：隐藏解释性文字，只留【题材行 + 股票行 + 行内标签】----
+/* ---- [COMPACT] 简洁模式：隐藏解释性文字，只留【题材行 + 股票行 + 行内标签 + 逐行说明】----
    ⛔ .tvrb-note-empty（「这一块为什么没有股票」）【不隐藏】—— 全隐藏会剩一行光秃秃的题材名，
-      反而让人以为「没算出来」（§10）。趋势面板也不隐藏（那是用户主动点开的量化数据）。 */
+      反而让人以为「没算出来」（§10）。
+   ⛔ .tvrb-row-note（逐行说明）【不隐藏】—— 与决策看板 .dcb-row-note 同口径：它写的是判据本身。
+   ⛔ 分笔面板（.tvrb-pen-panel）也不隐藏 —— 那是用户主动点开的量化数据。
+   ⛔ 用 CSS 隐藏而不是模板 v-if：模板分支越少越稳。 */
 .tvrb-board.tvrb-compact .tvrb-reason-line,
+.tvrb-board.tvrb-compact .tvrb-sell-hint,
 .tvrb-board.tvrb-compact .tvrb-rules,
 .tvrb-board.tvrb-compact .tvrb-block-note:not(.tvrb-note-empty) {
     display: none;

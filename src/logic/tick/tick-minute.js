@@ -586,6 +586,13 @@ function _refTagsOf(row) {
  * 一行（买点 pick / 卖点 item）挂上分笔统计。
  * §10：库里没有这一行 ⇒ 按「未抓取 / 无数据」给出可见文案，⛔ 绝不显示「0红0绿」。
  *
+ * ★ [TVRB 2026-10-11 用户口径] 本函数【公开导出】——「题材量比」看板要复用它：
+ *   用户原话「把股票下方点击展开的量比图换成，分笔图（设计和分笔买卖看板的股票展开图一样，
+ *     包括图上文字）」⇒ 两个看板的展开面板必须是【同一份实现、同一套文案】，
+ *     否则同一只票在两处会显示不同的红绿统计 / 不同的买卖动作名（§6 单一真相）。
+ *   ⛔ 调用方只需保证传进来的 row 至少带 name（买点 pick / 卖点 item 都满足）；
+ *     该 row 上原有的展示字段（seq / dragonLabel / pct …）会被【原样搬进】返回对象。
+ *
  * @param {object} row 决策行（含 name / seq / dragonLabel / dragonDeltaText / pct）
  * @param {Map} tickMap name → tick_minute_open 行（Data 层读回并归一后的对象）
  * @param {Set<string>} attempted 本次会话里【已经抓过】的股票名
@@ -594,7 +601,7 @@ function _refTagsOf(row) {
  * @param {'buy'|'sell'} side 这一行属于买点还是卖点 —— 决定结论胶囊显示哪个【动作名】
  *        （买点「立刻买 / 下杀买」 vs 卖点「冲高卖 / 立刻卖」，见 tickStrengthOf）
  */
-function _decorateTickRow(row, tickMap, attempted, skipMap, memberMap, side) {
+export function decorateTickRow(row, tickMap, attempted, skipMap, memberMap, side) {
     const name = String(row.name || '').trim();
     const out = {
         seq: row.seq,
@@ -706,7 +713,7 @@ export function buildTickBoard(decided, tickMap, opts) {
         if (!b || !b.block) return;
         const memberMap = _codeMapOfMembers(b.block);
         const picks = (b.picks || []).map(function(p) {
-            return _decorateTickRow(p, map, attempted, skipMap, memberMap, 'buy');
+            return decorateTickRow(p, map, attempted, skipMap, memberMap, 'buy');
         });
         // 没有股票的块【不渲染】：本看板没有「选择理由 / 不出票原因」那些行，
         // 留一个光秃秃的题材名反而让人以为是坏了（§10 宁可整块不出现）。
@@ -729,7 +736,7 @@ export function buildTickBoard(decided, tickMap, opts) {
     (decided.sell || []).forEach(function(g) {
         if (!g) return;
         const items = (g.items || []).map(function(it) {
-            return _decorateTickRow(it, map, attempted, skipMap, null, 'sell');
+            return decorateTickRow(it, map, attempted, skipMap, null, 'sell');
         });
         if (items.length === 0) return;
         items.forEach(function(it) { if (!targets.has(it.name)) targets.set(it.name, it.code); });

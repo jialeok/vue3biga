@@ -440,10 +440,102 @@ function _topicStreakPast(date, mode) {
 }
 
 /**
+ * 【买卖点「标记用数据」的唯一采集入口（§6）】
+ *
+ * 一句话：这四项是 decision-rules 把标签挂到行上所需的【历史侧】输入 —— 它们不参与任何选票，
+ * 只决定「持有 / 加仓 / 昨有买入 / N 次入选 / 先卖后买 / 补涨竞价买」这几枚标记打不打。
+ *
+ *   · prevBuyNames      = 上一交易日【买点方案】里的股票名（③ 持有：连续两天被选中 = 强势股）
+ *   · prevBought        = 上一交易日【实际】打过「买」标签的股票名（④ 行尾改【持有】+ 先卖后买判据）
+ *   · prevBoughtTopics  = 把上面这批票按【今日题材】聚合（题材行【昨有买入】）
+ *   · topicStreakPast   = 过去（不含今日）窗口内每个题材进过买点几次（题材行【N 次入选】+ 补涨档判据）
+ *
+ * ⛔ 为什么必须收口成一处：主流程（collectDecisionData）与「题材量比」看板的出口
+ *    （dragonRankOnly + topicActionContext）都要这四项。各写一遍的话，
+ *    日后 `_prevBoughtNames` 换数据源、或 `_topicStreakPast` 窗口调整时必漏一处，
+ *    表现为「某个看板的持有标签悄悄不对」这种极难自查的隐性缺项。
+ *
+ * §10：四项里任何一项算不出来 → 对应字段为 null（未知），⛔ 绝不退化成空 Set / 空 Map ——
+ *      那会被规则层读成「昨天一只都没买 / 这题材从没入选过」。
+ * §36：skipPrevBuy=true（内部递归重算历史日买点）⇒ 后两项恒 null，递归不会继续往下展开。
+ *
+ * @param {{date:string, prevDate:string|null, byName:Map<string,object>, prevDragonNames:Set<string>|null,
+ *          mode:string, skipPrevBuy:boolean}} p
+ * @returns {{prevBuyNames:Set<string>|null, prevBought:Set<string>, prevBoughtTopics:Set<string>,
+ *            topicStreakPast:Map<string,number>|null, prevDragonNames:Set<string>|null}}
+ */
+function _actionContext(p) {
+  const prevBuyNames = p.skipPrevBuy ? null : _prevBuyNames(p.prevDate, p.mode);
+  const prevBought = _prevBoughtNames(p.prevDate);
+  const prevBoughtTopics = _prevBoughtTopics(prevBought, p.byName);
+  const topicStreakPast = p.skipPrevBuy ? null : _topicStreakPast(p.date, p.mode);
+  return {
+    prevBuyNames: prevBuyNames,
+    prevBought: prevBought,
+    prevBoughtTopics: prevBoughtTopics,
+    topicStreakPast: topicStreakPast,
+    prevDragonNames: p.prevDragonNames
+  };
+}
+
+/**
+ * 【卖点候选行】的唯一构造入口（§6）—— 由「昨日打过买标签的股票名」→ buildSellPlan 要的行。
+ *
+ * ⛔ 收口理由与 _actionContext 相同：主流程与「题材量比」看板的出口都用它，
+ *    各写一遍必然在「今天不在任何池里的票（row 缺失）该回落什么」这件小事上分叉。
+ *
+ * §10：row 缺失（今天不在任何池里，典型 = 继承过来的观察组票）⇒ 各字段回落
+ *      getStockCode / getVolRatioDir / getVolRatioTimes / getAuctionShare 现场取一次，
+ *      仍取不到就是 null / ''（缺数据），⛔ 绝不补 0、绝不猜方向 —— 用户手上还拿着这只票，
+ *      给一个「看着很像真的」的假方向比不给更坏。
+ *
+ * @param {Set<string>} prevBought 上一交易日打过「买」标签的股票名
+ * @param {Map<string,object>} byName 今日 股票名 → 行（含 topic / pct / code / aucPct / aucShare …）
+ * @param {string} date 展示日
+ * @returns {Array<object>} buildSellPlan 的 rows 入参
+ */
+function _buildSellRows(prevBought, byName, date) {
+  const out = [];
+  (prevBought || new Set()).forEach(function(nm) {
+    const row = byName ? byName.get(nm) : null;
+    // 今日不在列表里（继承过来的观察组票）也要给出卖出建议 —— 用户手上还拿着它
+    out.push({
+      name: nm,
+      topic: row ? row.topic : '',
+      pct: row ? row.pct : null,
+      // [SELL-LIMIT-UP 2026-10-07 用户口径] 股票代码 —— 判「竞价是不是一字涨停」要用它：
+      //   涨停幅度【按板块分】（主板 10% / 创业板·科创板 20% / 北交所 30%），没有代码就只能按主板兜底，
+      //   20% 板的票竞价 +10% 时根本不算涨停 ⇒ 会漏判。
+      //   ⛔ 与买点 members【同源】（_mkRow 已经算好），这里只透传（§6 单一真相，绝不另查一份）；
+      //     今天不在任何池里（row 缺失）⇒ 回落 getStockCode(nm) 查名册，查不到 = ''
+      //     ⇒ 规则层按「代码缺失」处理，⛔ 不凭股票名猜板块（§10）。
+      code: row ? String(row.code || '') : (getStockCode(nm) || ''),
+      // [SELL-OPEN 2026-09-29] 今日竞价涨幅：卖点【细分提示】的唯一依据
+      //   （深低开盯盘 / 小低开立刻出 / 小幅高开看分时）。row 不存在（今天不在任何池里）→ null，
+      //   规则层按「缺数据」处理，回落原题材排名时点（§10 不猜方向）。
+      aucPct: row ? row.aucPct : null,
+      // [VR-COMPARE 2026-10-02 用户口径] 今日 vs 上交易日的竞价量比方向（up / flat / down / ''）；
+      //   卖点新档位（低开+量比下降 → 立刻出；高开+量比平 → 尾盘卖）的唯一依据。
+      //   ⛔ 与行内量比徽标同一个口径函数（vol-ratio-trend#compareVolRatioDirection，§6 单一真相）。
+      volRatioDir: row ? row.volRatioDir : getVolRatioDir(nm, date),
+      // [SELL-SURGE 2026-10-03 用户口径] 竞价量比倍数（今日 ÷ 上交易日）：
+      //   卖点【冲高就卖】档（深低开 + 量比放大 ≥ 5 倍）的唯一依据。null = 未知 ⇒ 该档不生效（§10）。
+      volRatioTimes: row ? row.volRatioTimes : getVolRatioTimes(nm, date),
+      // [SHARE-RULE 2026-10-03 用户口径] 今日【竞价占比】（%）：卖点动作（尾盘卖 / 竞价卖 / 持有）的唯一主判据。
+      //   与买点用的是【同一个函数、同一份数据】（§6）；row 不存在（今天不在任何池里）⇒ 现场取一次，
+      //   取不到 → null ⇒ 规则层回落旧口径（§10 不猜）。
+      aucShare: row ? row.aucShare : getAuctionShare(date, nm),
+      inTodayList: !!row
+    });
+  });
+  return out;
+}
+
+/**
  * 采集并计算某日的决策结论（同步：数据源全在内存里）。
  * @param {string} date 展示日 YYYY-MM-DD
  * @param {{skipPrevBuy?:boolean, rangeOptional?:boolean, mode?:string,
- *          dragonRankOnly?:boolean, rangeMap?:Map}} [opts]
+ *          dragonRankOnly?:boolean, topicActionContext?:boolean, rangeMap?:Map}} [opts]
  *        skipPrevBuy=true → 不往回算上一交易日的买点（内部递归用，防止无限往前追）
  *        rangeOptional=true → 【十日涨幅没加载也继续算】（§10 的例外，见下方闸门注释）。
  *          只给「近 5 个交易日题材入选次数」的历史日重算用；⛔ UI 展示日【绝不要】传它 ——
@@ -459,13 +551,19 @@ function _topicStreakPast(date, mode) {
  *          rangeMap = 十日涨幅的【注入来源】——历史日不在 dragon-rank 的单日期主状态里
  *            （getDragonRangePct(历史日) 恒为 null，见 dragon-rank.js 的逐日期闸门），
  *            由调用方把云端按日读回的那份传进来。⛔ 本文件【绝不自己去读云】。
+ *        [TVRB 2026-10-11 用户口径] topicActionContext=true → 只在 dragonRankOnly 出口上生效：
+ *          额外采回【买卖点标签上下文 + 卖点候选行】（见 _actionContext / _buildSellRows）。
+ *          ⛔ 默认关（undefined = false）：算前一交易日龙位表的调用方不传它，
+ *            因而不会白付「回溯 4 天题材入选次数 + 重算昨日买点」这份开销（§36）。
  * @returns {{ready:boolean, reason:string, topics:Array, buy:object, sell:Array}
- *           |{ready:true, dragonRankOnly:true, topics:Array, dragonMap:Map}}
+ *           |{ready:true, dragonRankOnly:true, topics:Array, dragonMap:Map, <topicActionContext 的附加字段>}}
  */
 export function collectDecisionData(date, opts) {
   const skipPrevBuy = !!(opts && opts.skipPrevBuy);
   const rangeOptional = !!(opts && opts.rangeOptional);
   const dragonRankOnly = !!(opts && opts.dragonRankOnly);
+  // [TVRB 2026-10-11] 只在 dragonRankOnly 出口上生效的附加开关（见下方出口注释）
+  const topicActionContext = !!(opts && opts.topicActionContext);
   // ⛔ 非法 / 缺失一律回落 MODE_VOL_RATIO（§10：绝不因为参数没传就抛错）
   const mode = normalizeDecisionMode(opts && opts.mode);
   if (!date) return _notReady('未选择日期');
@@ -657,7 +755,7 @@ export function collectDecisionData(date, opts) {
   //   ⛔ 走到这里就返回：不排买卖点、不回溯历史，因此这个出口【天然不会递归】。
   //   ⛔ dragonRankOnly 归还的是【中间产物】（不是完整决策），调用方（store）自己知道怎么用。
   if (dragonRankOnly) {
-    return {
+    const out = {
       ready: true,
       reason: '',
       dragonRankOnly: true,
@@ -666,6 +764,30 @@ export function collectDecisionData(date, opts) {
       topics: topics,
       dragonMap: dragonMap
     };
+    // ── [TVRB 2026-10-11 用户口径] 「题材量比」看板要的【买卖点标签上下文】──────────────
+    //   那个看板只替换【选股】，标签管线一律复用 decision-rules#finishBuyBlock / buildSellPlan
+    //   （用户原话「买入和卖出基本逻辑一样，只是选股不同」）。为此它需要三样东西：
+    //     ① 五个标记数据（prevDragonNames / prevBuyNames / prevBought / prevBoughtTopics /
+    //        topicStreakPast）—— 没有它们，持有 / 昨有买入 / N 次入选 / 先卖后买 / 补涨 全打不出来；
+    //     ② sellRows —— 卖点候选行（它自己调 buildSellPlan，今天的买点名单要用【它自己的选股】，
+    //        所以卖点计划不能在这里替它算死）。
+    //   ⛔ 缺一不可：少给一项，那边的标签就会【静默】缺一枚（最难查的那种）。
+    //   ⛔ 必须由显式开关打开：本出口原来的唯一调用方是 dragon-rank-change-store
+    //      （算前一交易日龙位表，每天调用多次），它不传 topicActionContext ⇒
+    //      不会白付「回溯 4 天题材入选次数 + 重算昨日买点」这份开销（§36 性能红线）。
+    if (topicActionContext) {
+      const act = _actionContext({
+        date: date, prevDate: prevDate, byName: byName,
+        prevDragonNames: prevDragonNames, mode: mode, skipPrevBuy: false
+      });
+      out.prevDragonNames = prevDragonNames;
+      out.prevBuyNames = act.prevBuyNames;
+      out.prevBought = act.prevBought;
+      out.prevBoughtTopics = act.prevBoughtTopics;
+      out.topicStreakPast = act.topicStreakPast;
+      out.sellRows = _buildSellRows(act.prevBought, byName, date);
+    }
+    return out;
   }
 
   // [TWO-MODES 2026-10-02 / NO-YIZI 2026-09-25 恢复] 一字模式的【老版规则】里有两条兜底
@@ -675,21 +797,17 @@ export function collectDecisionData(date, opts) {
   //   ⚠️ 这里是【懒采集】：不触发就不跑那次全量行归堆。
   const needLadder = needsLadderData(topics, mode);
   const ladder = needLadder ? _ladderTopicGroups(date) : null;
-  // 【③ 持有 / 加仓】上一交易日的买点股票名（null = 未知 → 规则层一律不标，§10 不猜）
-  //   ⚠️ 带上 mode：昨天必须用【同一套规则】重算（两套菜谱不同，混用会标错票）
-  const prevBuyNames = skipPrevBuy ? null : _prevBuyNames(prevDate, mode);
-  // 【④ 昨天已买】上一交易日【实际】打过「买」标签的股票名（§6：与卖点候选同一份数据源）。
-  //   ⛔ 股票级判据，逐只比名字（2026-09-30 修正：上一版按题材判，会把整块都标上，误导）。
-  //   在 buildBuyPlan 之前取：买点与卖点两边都要用它（一次采集、两处复用）。
-  const prevBought = _prevBoughtNames(prevDate);
-  // 【④ 题材级 · 昨有买入】把上面这批股票【按今日题材】聚合（题材行标【昨有买入】）。
-  //   与上一行的股票级判据共用同一份 prevBought（§6：一处采集、两处复用，不会分叉）。
-  const prevBoughtTopics = _prevBoughtTopics(prevBought, byName);
-  // 【⑤ 题材入选次数】过去（不含今日）4 个交易日里每个题材进过买点几次；null = 窗口内有历史日未知。
-  //   ⛔ 只在主流程算：内部递归调用一律带 skipPrevBuy=true ⇒ topicStreakPast 恒为 null ⇒
-  //      不会再往下展开（否则 _topicStreakPast → collectDecisionData → _topicStreakPast … 指数爆炸）。
-  //   ⚠️ 历史日同样要用【同一个 mode】重算（见 _topicStreakPast 的注释）
-  const topicStreakPast = skipPrevBuy ? null : _topicStreakPast(date, mode);
+  // 【③ 持有 / 加仓】【④ 昨天已买】【④ 题材级 · 昨有买入】【⑤ 题材入选次数】
+  //   —— 四项「标记用数据」的唯一采集入口（§6：主流程与「题材量比」看板的出口共用同一份，
+  //     见 _actionContext 的长注释；⛔ 别再在这里逐行展开一遍）。
+  const act = _actionContext({
+    date: date, prevDate: prevDate, byName: byName,
+    prevDragonNames: prevDragonNames, mode: mode, skipPrevBuy: skipPrevBuy
+  });
+  const prevBuyNames = act.prevBuyNames;
+  const prevBought = act.prevBought;
+  const prevBoughtTopics = act.prevBoughtTopics;
+  const topicStreakPast = act.topicStreakPast;
   const buy = buildBuyPlan(topics, dragonMap, {
     // 一字模式（老版规则）才需要的连板天梯分组；量比模式下是 [] / false
     ladderTopicGroups: ladder ? ladder.groups : [],
@@ -706,39 +824,8 @@ export function collectDecisionData(date, opts) {
 
   // 昨日龙头名册的名字集合已在【买点之前】算好（prevDragonNames）—— 买卖两侧共用同一份，⛔ 不重复取第二次。
 
-  const sellRows = [];
-  prevBought.forEach(function(nm) {
-    const row = byName.get(nm);
-    // 今日不在列表里（继承过来的观察组票）也要给出卖出建议 —— 用户手上还拿着它
-    sellRows.push({
-      name: nm,
-      topic: row ? row.topic : '',
-      pct: row ? row.pct : null,
-      // [SELL-LIMIT-UP 2026-10-07 用户口径] 股票代码 —— 判「竞价是不是一字涨停」要用它：
-      //   涨停幅度【按板块分】（主板 10% / 创业板·科创板 20% / 北交所 30%），没有代码就只能按主板兜底，
-      //   20% 板的票竞价 +10% 时根本不算涨停 ⇒ 会漏判。
-      //   ⛔ 与买点 members【同源】（_mkRow 已经算好），这里只透传（§6 单一真相，绝不另查一份）；
-      //     今天不在任何池里（row 缺失）⇒ 回落 getStockCode(nm) 查名册，查不到 = ''
-      //     ⇒ 规则层按「代码缺失」处理，⛔ 不凭股票名猜板块（§10）。
-      code: row ? String(row.code || '') : (getStockCode(nm) || ''),
-      // [SELL-OPEN 2026-09-29] 今日竞价涨幅：卖点【细分提示】的唯一依据
-      //   （深低开盯盘 / 小低开立刻出 / 小幅高开看分时）。row 不存在（今天不在任何池里）→ null，
-      //   规则层按「缺数据」处理，回落原题材排名时点（§10 不猜方向）。
-      aucPct: row ? row.aucPct : null,
-      // [VR-COMPARE 2026-10-02 用户口径] 今日 vs 上交易日的竞价量比方向（up / flat / down / ''）；
-      //   卖点新档位（低开+量比下降 → 立刻出；高开+量比平 → 尾盘卖）的唯一依据。
-      //   ⛔ 与行内量比徽标同一个口径函数（vol-ratio-trend#compareVolRatioDirection，§6 单一真相）。
-      volRatioDir: row ? row.volRatioDir : getVolRatioDir(nm, date),
-      // [SELL-SURGE 2026-10-03 用户口径] 竞价量比倍数（今日 ÷ 上交易日）：
-      //   卖点【冲高就卖】档（深低开 + 量比放大 ≥ 5 倍）的唯一依据。null = 未知 ⇒ 该档不生效（§10）。
-      volRatioTimes: row ? row.volRatioTimes : getVolRatioTimes(nm, date),
-      // [SHARE-RULE 2026-10-03 用户口径] 今日【竞价占比】（%）：卖点动作（尾盘卖 / 竞价卖 / 持有）的唯一主判据。
-      //   与买点用的是【同一个函数、同一份数据】（§6）；row 不存在（今天不在任何池里）⇒ 现场取一次，
-      //   取不到 → null ⇒ 规则层回落旧口径（§10 不猜）。
-      aucShare: row ? row.aucShare : getAuctionShare(date, nm),
-      inTodayList: !!row
-    });
-  });
+  // 卖点候选行 = 昨日打过「买」标签的股票（构造收口在 _buildSellRows，§6）
+  const sellRows = _buildSellRows(prevBought, byName, date);
   // 【三 · 持有 / 加仓（卖点侧）】今天又在买点里的卖点候选 = 连续两天被选中 = 强势股，标【持有 / 加仓】
   const todayBuyNames = _buyPlanNames(buy);
   const sell = buildSellPlan(sellRows, topics, dragonMap, prevDragonNames, todayBuyNames);
@@ -825,7 +912,7 @@ export function collectDragonRankMap(date, opts) {
 }
 
 /**
- * 【某一天的「题材块 + 龙位名册」】—— 唯一出口（§6）。
+ * 【某一天的「题材块 + 龙位名册」（+ 可选的买卖点标签上下文）】—— 唯一出口（§6）。
  *
  * 用途：[TVRB 2026-10-11 用户口径] 「题材量比」看板要自己按「平均竞价量比」选股，
  *   它需要的两样东西恰好就是 collectDecisionData 内部已经算好的【中间产物】：
@@ -838,23 +925,37 @@ export function collectDragonRankMap(date, opts) {
  * ⛔ 本函数【不读云、不发请求、不消费额度】：全部是内存组装（与 collectDecisionData 同源）。
  *   ——它复用内部出口 dragonRankOnly（走到 rankDragons 就返回，不排买卖点、不回溯历史 ⇒ 天然不递归）。
  *
+ * ★ [TVRB 2026-10-11 用户口径] opts.actionContext=true 时【额外】带回：
+ *   `prevDragonNames / prevBuyNames / prevBought / prevBoughtTopics / topicStreakPast / sellRows`
+ *   —— 用户原话「要模仿决策看板的占比，卖出，持有，竞价卖，竞价买，尾盘买，尾盘卖，龙持有，
+ *     跟龙等所有的标签逻辑基本一样。因为买入和卖出基本逻辑一样，只是选股不同。」
+ *   ⇒ 「题材量比」看板的做法 = 只替换【选股】（它自己的 buildTopicVolRatioPlan），
+ *     买点标签交给 decision-rules#finishBuyBlock、卖点交给 decision-rules#buildSellPlan
+ *     （两者都是决策看板的同一份实现）。
+ *   ⚠️ 打开它会多付「回溯 4 天题材入选次数 + 重算昨日买点」这份开销（§36）——
+ *     所以它是【显式开关】，且只有这个看板会传（见 collectDecisionData#topicActionContext）。
+ *   ⚠️ 卖点计划【不在这里算】：「今天又进买点」要用【本看板自己的选股】，
+ *     所以只把 sellRows 交出去，由调用方拿到自己的买点名单后再调 buildSellPlan。
+ *
  * §10：任一闸门不过（名单没加载完 / 十日涨幅未加载 / 该日不成组）⇒ ready=false + 明确 reason，
  *   ⛔ 绝不返回空数组冒充「今天没有题材」。
  *
  * @param {string} date 展示日 YYYY-MM-DD
- * @param {{mode?:string}} [opts] mode = 题材组序口径（「题材量比」看板传 MODE_VOL_RATIO；
- *        缺省回落 MODE_VOL_RATIO —— 见 normalizeDecisionMode）
+ * @param {{mode?:string, actionContext?:boolean}} [opts] mode = 题材组序口径（「题材量比」看板传
+ *        MODE_VOL_RATIO；缺省回落 MODE_VOL_RATIO —— 见 normalizeDecisionMode）；
+ *        actionContext 见上（缺省 false ⇒ 与原行为逐字一致）
  * @returns {{ready:boolean, reason:string, date:string, prevDate:string|null,
  *            topics:Array, dragonMap:Map|null}}
  */
 export function collectDecisionTopics(date, opts) {
   const rec = collectDecisionData(date, {
     dragonRankOnly: true,
+    topicActionContext: !!(opts && opts.actionContext),
     mode: opts && opts.mode
   });
   // 命中内部出口 ⇒ 中间产物带 dragonRankOnly 标记（_notReady 的返回没有这个键）
   if (rec && rec.dragonRankOnly) {
-    return {
+    const out = {
       ready: true,
       reason: '',
       date: rec.date,
@@ -862,6 +963,16 @@ export function collectDecisionTopics(date, opts) {
       topics: rec.topics || [],
       dragonMap: rec.dragonMap || null
     };
+    // 附加上下文只在真的采到时才挂（避免调用方读到 undefined 时误判成「已采到、但为空」）
+    if (rec.sellRows) {
+      out.prevDragonNames = rec.prevDragonNames || null;
+      out.prevBuyNames = rec.prevBuyNames || null;
+      out.prevBought = rec.prevBought || null;
+      out.prevBoughtTopics = rec.prevBoughtTopics || null;
+      out.topicStreakPast = rec.topicStreakPast || null;
+      out.sellRows = rec.sellRows;
+    }
+    return out;
   }
   return {
     ready: false,
@@ -871,4 +982,32 @@ export function collectDecisionTopics(date, opts) {
     topics: [],
     dragonMap: null
   };
+}
+
+/**
+ * 【买点 / 卖点逐行字段的装饰器 · 对外出口（§6）】
+ *
+ * 把三件「要读内存真相才能算」的逐行展示字段一次性挂到行上：
+ *   · [VRATIO-TREND 2026-10-01] 竞价量比（当日值 + 方向箭头 + 近 5 日趋势）
+ *   · [DRAGON-RANK-CHANGE 2026-10-09] 龙标旁边的名次变化（'+3' / '-2'）
+ *   · [SEAL 2026-10-11] 封单额 + 变化 + 连板
+ *
+ * ⛔ 为什么必须收口在这里：这三样都要读【本文件所在层】才知道的内存真相
+ *    （vol-ratio 缓存 / dragonRankChangeState / limit_pool 缓存），
+ *    decision-rules 是纯函数、读不到。另写一份 = 同一只票在两个看板显示不同的量比 / 名次（§6 红线）。
+ *
+ * ⚠️ buy / sell 可任传其一（另一方传 null）；⛔ 传进来的对象是【原地装饰】的。
+ * §36：date 缺失 ⇒ 直接返回（⛔ 不白算一轮）。
+ *
+ * @param {object|null} buy 买点计划（buildBuyPlan 的返回；可为 null）
+ * @param {Array|null} sell 卖点计划（buildSellPlan 的返回；可为 null）
+ * @param {string} date 展示日
+ * @param {string} prevDate 上一交易日（名次变化要跟它比）
+ * @param {Map} todayRankMap 今日龙位表（rankDragons 的返回）
+ */
+export function decorateDecisionRows(buy, sell, date, prevDate, todayRankMap) {
+  if (!date) return;
+  _decorateVolRatioTrend(buy, sell, date);
+  _decorateDragonRankChange(buy, sell, prevDate, todayRankMap);
+  _decorateSeal(buy, sell, date);
 }

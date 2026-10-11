@@ -1,11 +1,24 @@
 // topic-vol-ratio-rules.test.js — 「题材量比」看板纯规则的单元测试
 //
-// 覆盖用户 2026-10-11 给出的口径与举例：
+// 覆盖用户 2026-10-11 给出的口径与举例（【第一轮 · 选股】）：
 //   · 档位边界：< 4 只不入选 / 4~8 只取 1 只 / > 8 只取 2 只；
 //   · 平均竞价量比（含灰行、全缺值 → null）；
 //   · 举例：机器人 3 只（排 1）排除 → AI应用 5 只（排 2，取 1）→ 大消费 10 只（排 3，取 2）；
 //   · 龙位顺延：龙一竞价涨停 ⇒ 看龙二（⛔ 与决策看板「占名次不递补」不同，本看板要顺延）；
 //   · 无龙位（创业板 / 科创板）的成员不进候选。
+//
+// 覆盖【第二轮 · 完善】的口径：
+//   · 买点块 = 【决策看板形状】+ finishBuyBlock 收口（本看板没有第二套标签实现）；
+//   · 无 ctx ⇒ 持有 / 昨有买入 / N 次入选【一枚都不打】（§10：未知 ≠ 没有）；
+//   · 有 ctx ⇒ 打出来的值与决策看板的常量【逐字一致】；
+//   · 占比达标 ⇒ 动作标签 = 决策看板的【竞价买】；
+//   · buy 槽位 heavy / light（通用装饰器按它遍历）；
+//   · 卖点段 = buildSellPlan 的同一份实现（「今天又进买点 ⇒ 持有」用本看板自己的名单）；
+//   · 规则文案扩到 14 条且口径齐全。
+//
+// ⚠️ 断言里刻意【引用 decision-rules 的常量】而不是手写中文字面量：
+//   本看板的口径就是「标签与决策看板完全同一套」⇒ 决策看板改名时两边要一起动，
+//   手写字面量会让这个测试变成「挡住正确改名」的绊脚石。
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -20,6 +33,16 @@ import {
   buildTopicVolRatioPlan,
   buildTvrbRulesLines
 } from './topic-vol-ratio-rules.js';
+import {
+  RULE_NO,
+  HOLD_TAG,
+  BUY_NOW_TAG,
+  BUY_LATE_SWAP_TAG,
+  DRAGON_YIZI_HOLD_TAG,
+  SELL_OUT_TAG,
+  TOPIC_PREV_BOUGHT_TAG,
+  topicStreakText
+} from '../decision/decision-rules.js';
 
 // ── 夹具 ─────────────────────────────────────────────────────────────────────────────────
 function m(name, opts) {
@@ -267,13 +290,228 @@ describe('tvrb · 边界与 §10', function() {
   });
 });
 
+// ── 第二轮 · 买点块 = 决策看板形状 + finishBuyBlock 收口 ────────────────────────────────────
+describe('tvrb · 买点块由决策看板的收口函数打标签', function() {
+  // AI应用 4 只（mid 档 ⇒ 取 1 只）：龙一竞价一字 ⇒ 顺延取龙二【三六零】
+  function aiTopic() {
+    return block('AI应用', 1, [
+      m('金山办公', { aucVolRatio: 60, isYizi: true, aucShare: 9, aucPct: 10 }),
+      m('三六零', { aucVolRatio: 60, aucShare: 6, code: '601360' }),
+      m('昆仑万维', { aucVolRatio: 60, aucShare: 6, code: '300418' }),
+      m('汤姆猫', { aucVolRatio: 60, aucShare: 6, code: '300459' })
+    ]);
+  }
+  const dm = dragonMap([['金山办公', 1], ['三六零', 2], ['昆仑万维', 3], ['汤姆猫', 4]]);
+
+  /** 一个完整的标记上下文（= decision-collect#_actionContext 的出口形状） */
+  function fullCtx(over) {
+    return Object.assign({
+      prevDragonNames: new Set(['金山办公']),
+      prevBuyNames: new Set(['三六零']),
+      prevBought: new Set(),
+      prevBoughtTopics: new Set(['AI应用']),
+      topicStreakPast: new Map([['AI应用', 2]])
+    }, over || {});
+  }
+
+  it('块形状与决策看板一致（收口要读的字段一个都不能少）', function() {
+    const plan = buildTopicVolRatioPlan([aiTopic()], dm, {});
+    const b = plan.blocks[0];
+    // ⭐ 少了 block.topic / block.members，_markTopicPrevBought / _markTopicStreak 会【静默】不打标记
+    expect(b.block).toBeTruthy();
+    expect(b.block.topic).toBe('AI应用');
+    expect(b.block.members).toHaveLength(4);
+    // picks 上必须预置 aucShare / dragonRank（收口跑在派生徽标之前，缺了就判不出先卖后买）
+    expect(b.picks[0].name).toBe('三六零');
+    expect(b.picks[0].dragonRank).toBe(2);
+    expect(b.picks[0].aucShare).toBe(6);
+    expect(b.picks[0].code).toBe('601360');
+    // 规则编号借决策看板买点段的 ①（⛔ 不另立一套编号）
+    expect(b.ruleNo).toBe(RULE_NO.FIRST);
+  });
+
+  it('§10：没有 ctx ⇒ 持有 / 昨有买入 / N 次入选【一枚都不打】', function() {
+    const plan = buildTopicVolRatioPlan([aiTopic()], dm, {});
+    const b = plan.blocks[0];
+    const p = b.picks[0];
+    expect(b.prevBoughtTag || '').toBe('');   // 题材「昨有买入」
+    expect(b.streakTag || '').toBe('');       // 题材「N 次入选」
+    expect(p.holdTag || '').toBe('');         // 个股「持有」（③）
+    expect(p.position).toBe('');              // 行尾仓位（本看板无仓位口径 ⇒ 恒空）
+  });
+
+  it('有 ctx ⇒ 打出来的值与 decision-rules 的常量逐字一致', function() {
+    const plan = buildTopicVolRatioPlan([aiTopic()], dm, { ctx: fullCtx() });
+    const b = plan.blocks[0];
+    const p = b.picks[0];
+    expect(b.prevBoughtTag).toBe(TOPIC_PREV_BOUGHT_TAG);   // '昨有买入'
+    expect(b.streakTag).toBe(topicStreakText(3));          // pastCounts 2 + 今天这次 = 三次入选
+    expect(b.topicStreakN).toBe(3);
+    expect(p.holdTag).toBe(HOLD_TAG);                      // ③ 上一个交易日也在买点里 ⇒ 强势股
+    expect(p.position).toBe('');                           // 本看板无仓位口径
+    // 说明文字也必须落到块上（§10 理由必须可见），而不是被静默吞掉
+    expect(b.notes.join('\n')).toContain(HOLD_TAG);
+  });
+
+  it('昨天真买过 ⇒ 行尾仓位改标【持有】、③ 的【持有】让位（决策看板同一口径）', function() {
+    const plan = buildTopicVolRatioPlan([aiTopic()], dm, {
+      ctx: fullCtx({ prevBought: new Set(['三六零']) })
+    });
+    const p = plan.blocks[0].picks[0];
+    expect(p.position).toBe('持有');
+    expect(p.positionTone).toBe('hold');
+    // [HOLD-UNIFY] 同一行不出现两个【持有】
+    expect(p.holdTag || '').toBe('');
+  });
+
+  it('占比达标 ⇒ 动作标签 = 决策看板的【竞价买】', function() {
+    const plan = buildTopicVolRatioPlan([aiTopic()], dm, { ctx: fullCtx() });
+    const p = plan.blocks[0].picks[0];
+    expect(p.aucShareText).toBe('6.0%');       // 占比展示（1 位小数，缺数据才不渲染）
+    expect(p.aucShareTone).toBe('strong');
+    expect(p.aucSharePass).toBe(true);
+    expect(p.buyActionTag).toBe(BUY_NOW_TAG);
+    expect(p.buyActionTone).toBe('now');
+  });
+
+  it('占比不达标 + 昨天真买过 ⇒ 【尾盘买（先卖后买）】（先卖后买档，⛔ 不标持有）', function() {
+    // ⚠️ 刻意【不给龙一龙位】：本题材龙一（金山办公）在真实数据里是 688 科创板，本来就没有龙位。
+    //    若给它 rank 1 且标成竞价一字，这一档会被【龙一字持有】接管（见下一条用例）——
+    //    那条是另一条规则，本用例要验的是【纯先卖后买】。
+    const topics = [block('AI应用', 1, [
+      m('金山办公', { aucVolRatio: 60, aucShare: 9 }),
+      m('三六零', { aucVolRatio: 60, aucShare: 0.4 }),
+      m('昆仑万维', { aucVolRatio: 60, aucShare: 0.4 }),
+      m('汤姆猫', { aucVolRatio: 60, aucShare: 0.4 })
+    ])];
+    const noLeader = dragonMap([['三六零', 2], ['昆仑万维', 3], ['汤姆猫', 4]]);
+    const plan = buildTopicVolRatioPlan(topics, noLeader, {
+      ctx: fullCtx({ prevDragonNames: null, prevBought: new Set(['三六零']) })
+    });
+    const p = plan.blocks[0].picks[0];
+    expect(p.name).toBe('三六零');
+    expect(p.aucSharePass).toBe(false);
+    expect(p.buyActionTag).toBe(BUY_LATE_SWAP_TAG);
+    expect(p.holdTag || '').toBe('');
+    expect(p.position).toBe('');
+  });
+
+  it('同题材今日龙一竞价一字 ⇒ 占比不达标改标【龙一字持有】（同一份规则的另一档，自动生效）', function() {
+    const topics = [block('AI应用', 1, [
+      m('金山办公', { aucVolRatio: 60, isYizi: true, aucShare: 9 }),
+      m('三六零', { aucVolRatio: 60, aucShare: 0.4 }),
+      m('昆仑万维', { aucVolRatio: 60, aucShare: 0.4 }),
+      m('汤姆猫', { aucVolRatio: 60, aucShare: 0.4 })
+    ])];
+    const plan = buildTopicVolRatioPlan(topics, dm, {
+      ctx: fullCtx({ prevBought: new Set(['三六零']) })
+    });
+    const p = plan.blocks[0].picks[0];
+    expect(p.aucSharePass).toBe(false);
+    // 被龙一带着走 ⇒ 不算走弱 ⇒ 不改【先卖后买】
+    expect(p.buyActionTag).toBe(DRAGON_YIZI_HOLD_TAG);
+  });
+
+  it('buy 槽位：第 1 块 → heavy、第 2 块 → light；三个兜底槽位恒 null（形状契约）', function() {
+    const t1 = block('甲题材', 1, [m('甲一'), m('甲二'), m('甲三'), m('甲四')]);
+    const t2 = block('乙题材', 2, [m('乙一'), m('乙二'), m('乙三'), m('乙四')]);
+    const d = dragonMap([
+      ['甲一', 1], ['甲二', 2], ['甲三', 3], ['甲四', 4],
+      ['乙一', 1], ['乙二', 2], ['乙三', 3], ['乙四', 4]
+    ]);
+    const plan = buildTopicVolRatioPlan([t1, t2], d, {});
+    expect(plan.buy.heavy).toBe(plan.blocks[0]);
+    expect(plan.buy.light).toBe(plan.blocks[1]);
+    expect(plan.buy.candidates).toEqual([]);
+    expect(plan.buy.noYizi).toBeNull();
+    expect(plan.buy.smallTopic).toBeNull();
+    expect(plan.buy.bigTopic).toBeNull();
+  });
+
+  it('buyNames = 本次选出的票（喂给卖点判「今天又进买点 ⇒ 持有」）', function() {
+    const plan = buildTopicVolRatioPlan([aiTopic()], dm, { ctx: fullCtx() });
+    expect(Array.from(plan.buyNames)).toEqual(['三六零']);
+  });
+});
+
+// ── 第二轮 · 卖点段（decision-rules#buildSellPlan 的同一份实现）────────────────────────────
+describe('tvrb · 卖点段复用决策看板的卖点计划', function() {
+  // ⚠️ 与买点段同款处理：题材里的龙一（金山办公，688 科创板）【本来就没有龙位】。
+  //    若给它 rank 1 且标成竞价一字，「龙一一字 ⇒ 全题材龙一字持有」这一档会盖掉所有其它档
+  //    （那是 decision-rules 的既有规则，不是本看板的），本组用例要验的是常规卖出分档。
+  const topics = [block('AI应用', 1, [
+    m('金山办公', { aucVolRatio: 60, aucShare: 9 }),
+    m('三六零', { aucVolRatio: 60, aucShare: 6, code: '601360' }),
+    m('昆仑万维', { aucVolRatio: 60, aucShare: 6, code: '300418' }),
+    m('汤姆猫', { aucVolRatio: 60, aucShare: 6, code: '300459' })
+  ])];
+  const dm = dragonMap([['三六零', 2], ['昆仑万维', 3], ['汤姆猫', 4]]);
+
+  function sellRow(name, over) {
+    return Object.assign({
+      name: name,
+      topic: 'AI应用',
+      pct: 20,
+      code: '601360',
+      aucPct: 3,
+      volRatioDir: '',
+      volRatioTimes: null,
+      aucShare: 1,
+      inTodayList: true
+    }, over || {});
+  }
+
+  it('没有卖点候选 ⇒ 不产卖点段（⛔ 不伪造一个空分组）', function() {
+    const plan = buildTopicVolRatioPlan(topics, dm, {});
+    expect(plan.sell).toEqual([]);
+  });
+
+  it('有候选 ⇒ 按题材分组，分组字段齐全（UI 直接拿来当 key / 题材行）', function() {
+    const plan = buildTopicVolRatioPlan(topics, dm, { sellRows: [sellRow('昆仑万维')] });
+    expect(plan.sell).toHaveLength(1);
+    const g = plan.sell[0];
+    expect(g.groupKey).toBeTruthy();
+    expect(g.topic).toBe('AI应用');
+    expect(g.topicRank).toBe(1);
+    expect(g.items.map(function(x) { return x.name; })).toEqual(['昆仑万维']);
+    // 卖出理由由 decision-rules 的同一份文案给（⛔ 本看板不另写一份「为什么卖」）
+    expect(typeof g.reason).toBe('string');
+    expect(g.reason.length).toBeGreaterThan(0);
+    // §21：十日涨幅文案由 Logic 层补好，⛔ 组件不再 format 一次
+    expect(g.items[0].pctText).toBe('+20%');
+  });
+
+  it('今天又进【本看板】买点 ⇒ 卖点标【持有】（而不是竞价卖）', function() {
+    const plan = buildTopicVolRatioPlan(topics, dm, {
+      sellRows: [sellRow('三六零', { aucShare: 6 })]
+    });
+    const it0 = plan.sell[0].items[0];
+    expect(it0.name).toBe('三六零');
+    expect(it0.sellActionTag).toBe(HOLD_TAG);
+    expect(it0.sellActionTone).toBe('hold');
+  });
+
+  it('没进买点且占比不达标 ⇒ 卖点标【竞价卖】（走决策看板同一批判据）', function() {
+    const plan = buildTopicVolRatioPlan(topics, dm, { sellRows: [sellRow('昆仑万维')] });
+    const it0 = plan.sell[0].items[0];
+    expect(it0.aucShareText).toBe('1.0%');
+    expect(it0.sellActionTag).toBe(SELL_OUT_TAG);
+    expect(it0.sellActionTone).toBe('out');
+  });
+
+  it('卖点段出场时把口径写进看板级说明（§10 理由必须可见）', function() {
+    const plan = buildTopicVolRatioPlan(topics, dm, { sellRows: [sellRow('昆仑万维')] });
+    expect(plan.notes.join('\n')).toContain('卖点候选');
+  });
+});
+
 // ── 规则文案 ─────────────────────────────────────────────────────────────────────────────
 describe('tvrb · buildTvrbRulesLines 规则文案', function() {
   const lines = buildTvrbRulesLines();
 
-  it('是逐行数组，且条数 ≥ 5', function() {
+  it('是逐行数组，且条数 ≥ 10（选股 7 条 + 第二轮补的买卖标签 / 卖点 / 分笔 / 数据来源等）', function() {
     expect(Array.isArray(lines)).toBe(true);
-    expect(lines.length).toBeGreaterThanOrEqual(5);
+    expect(lines.length).toBeGreaterThanOrEqual(10);
     lines.forEach(function(l) { expect(typeof l).toBe('string'); });
   });
 
@@ -288,4 +526,14 @@ describe('tvrb · buildTvrbRulesLines 规则文案', function() {
     expect(all).toContain(String(TVRB_MID_MAX));
     expect(all).toContain(String(TVRB_TOPIC_LIMIT));
   });
+
+  it('第二轮补齐的口径必须都写进规则（买卖标签同源 / 卖点段 / 无仓位 / 分笔图 / 不抓数据）', function() {
+    const all = lines.join('\n');
+    expect(all).toContain('决策看板完全同一套');   // 八：买点 / 卖点标签复用同一份实现
+    expect(all).toContain('卖点段');               // 九：卖点候选与动作
+    expect(all).toContain('不标重仓');             // 十：本看板没有仓位口径
+    expect(all).toContain('分笔');                 // 十一：展开面板 = 分笔明细
+    expect(all).toContain('不抓数据');             // 十三：不额外消耗额度
+  });
 });
+

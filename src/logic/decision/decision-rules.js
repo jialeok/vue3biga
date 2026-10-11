@@ -2643,8 +2643,19 @@ function _decoratePositionTone(blockObj) {
  * ⚠️ [QUANT-PICK 2026-10-01] 旧版这里还会按顺序走「亏钱效应 ⑦ → 弱势题材 ⑧ → 只数限制 ⑩」，
  *    这三条已整体删除（用户口径「不分弱势题材，量化了」），所以收口现在只剩标记类动作，
  *    ⛔ 收口【不再改 picks、不再砍票】—— 选票结果 = _buildTopicBuyBlock 的产出，一步到位。
+ *
+ * ★ [TVRB 2026-10-11 用户口径] 本函数【公开导出】——「题材量比」看板要复用它：
+ *   用户原话「要模仿决策看板的占比，卖出，持有，竞价卖，竞价买，尾盘买，尾盘卖，龙持有，
+ *     跟龙等所有的标签逻辑基本一样。因为买入和卖出基本逻辑一样，只是选股不同。」
+ *   ⇒ 那个看板只替换【选股】（按题材平均竞价量比 + 龙位升序取票），
+ *     **标签管线（持有 / 昨天已买 / 题材标记 / 占比 / 竞价买·尾盘买·下杀买·补涨·龙一字持有）
+ *     一律复用本函数**——⛔ 绝不在那边另写一份，否则两处的「占比门槛」「先卖后买判据」
+ *     迟早分叉（§6 单一真相）。
+ *   ⚠️ 调用方（logic/topicvolratio/topic-vol-ratio-rules.js）负责把 blockObj 组装成
+ *      【与 _buildTopicBuyBlock 同形状】的对象（block / picks / notes / ruleNo …），
+ *      opts 里的六个标记数据由 decision-collect.js 的题材出口一并给出。
  */
-function _finishBuyBlock(blockObj, opts) {
+export function finishBuyBlock(blockObj, opts) {
   // ⚠️ 第 4 参把 opts 透传进去：③ 要判「先卖后买档」——
   //   那一档【不算】强势股，既不标【持有】、也不写「可持有」的块级说明（2026-10-04 用户口径）。
   _markHold(blockObj, opts ? opts.prevBuyNames : null, undefined, opts);
@@ -2742,7 +2753,7 @@ export function buildBuyPlan(blocks, dragonMap, opts) {
   const candidates = [];
 
   if (q1) {
-    heavy = _finishBuyBlock(
+    heavy = finishBuyBlock(
       _buildTopicBuyBlock(q1, dragonMap, _rankWord(1), RULE_NO.FIRST, { pickRank: 1 }), o);
     _appendLowOpenDragonOneNote(heavy);
   }
@@ -2750,7 +2761,7 @@ export function buildBuyPlan(blocks, dragonMap, opts) {
   if (q2) {
     // ④ 双主线：第 1 名已选出 ≥ 3 只 ⇒ 第 2 名降级为候选题材（只选最强的那个题材为重仓主线）
     const asCandidate = _picksLen(heavy) >= DAILY_MIN_PICKS;
-    light = _finishBuyBlock(
+    light = finishBuyBlock(
       _buildTopicBuyBlock(q2, dragonMap, _rankWord(2),
         asCandidate ? RULE_NO.CANDIDATE : RULE_NO.SECOND,
         { candidate: asCandidate, pickRank: 2 }), o);
@@ -2766,7 +2777,7 @@ export function buildBuyPlan(blocks, dragonMap, opts) {
     // ⛔ 取「降一档」与「还差几只」的小者：降一档是候选题材的待遇，还差几只是补位的目的，
     //    两者取小才不会「一个候选题材就把 3 只全占了」（用户要的是往下推、逐个题材补）。
     const need = Math.min(candMax, DAILY_MIN_PICKS - total);
-    const cb = _finishBuyBlock(
+    const cb = finishBuyBlock(
       _buildTopicBuyBlock(b, dragonMap, _rankWord(i + 1), RULE_NO.CANDIDATE,
         { candidate: true, pickMax: need, pickRank: i + 1 }), o);
     _appendLowOpenDragonOneNote(cb);
