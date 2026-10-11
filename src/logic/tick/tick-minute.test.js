@@ -660,17 +660,22 @@ describe('tick-minute · 红线：前端超时 > 后端上游总预算', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════════
-// [DRAGON-REF 2026-10-11 / HOLD-REF 2026-10-11 用户口径] 「分笔买卖」看板继承【决策看板】的参考标签
-//   第一轮原话：「分笔买卖看板，我希望继承决策看板的龙一字持有标签，跟龙竞价卖等标签，就是跟龙有关的，
-//     继承下，因为龙一会影响中军或者后排的走势，技术再好也没用，有时还要看题材或者龙一的眼色。
-//     当然你把标签放到分笔买卖看板时，原来的那些标签保持不变，只是作为参考。」
-//   第二轮原话（2026-10-11）：「分笔买卖看盘，你把决策看板的持有标签，也继承下，其它不变。」
-//   ⇒ 继承四枚：龙一字持有 / 跟龙竞价卖 / 补涨竞价买（跟龙三枚）+ 持有（决策看板行尾仓位 / ③ 档），
-//     按固定顺序（跟龙三枚在前、【持有】在后）；
-//     ⛔ 其它决策标签（竞价买 / 尾盘买 / 下杀买 / 竞价卖 / 尾盘卖 …）一律不继承；
+// [DRAGON-REF / HOLD-REF / DECISION-LABEL-REF 2026-10-11 用户口径]
+//   「分笔买卖」看板继承【决策看板】的【全部买卖点动作标签】（对照用）
+//   第一轮原话：「继承决策看板的龙一字持有标签，跟龙竞价卖等标签，就是跟龙有关的……
+//     原来的那些标签保持不变，只是作为参考。」
+//   第二轮原话（2026-10-11）：「你把决策看板的持有标签，也继承下，其它不变。」
+//   第三轮原话（2026-10-11）：「把决策看板的所有买卖点标签都继承下……就是决策看板买卖点侧
+//     股票最后的那一个标签（非数据标签），我要对比下这两个看板的差异……比如决策看板有些票是
+//     竞价买，分笔买卖是下杀买，经过对比就知道差异……要设计对比明显些，不要搞混。」
+//   ⇒ 继承【全部 14 枚动作标签】（tick-minute.js#REF_TAGS），按固定顺序：
+//       买点：竞价买 / 下杀买（竞价异常）/ 尾盘买 / 尾盘买（先卖后买）/ 先卖后买 / 补涨竞价买
+//       卖点：竞价涨停卖 / 竞价卖 / 竞价卖（先卖后买）/ 尾盘卖 / 10分钟时卖 / 跟龙竞价卖
+//       共用：龙一字持有 / 持有
+//     ⛔ 数据/状态类标记（昨天已买 / 昨有买入 / 候选题材 / 板块风险 / 重仓 / 轻仓）【不】继承；
 //     ⛔ 不影响本行结论（strengthText 仍由本分钟红绿笔数独立给出）。
 // ══════════════════════════════════════════════════════════════════════════════════
-describe('tick-minute · 跟龙 / 持有参考标签（继承自决策看板）', () => {
+describe('tick-minute · 决策看板买卖点标签继承（对照）', () => {
   /** 在基础夹具上加动作标签：buyTags 按 picks 顺序逐个贴（'' / null = 不贴） */
   function _withTags(buyTags, sellTag) {
     const d = _decided();
@@ -681,103 +686,127 @@ describe('tick-minute · 跟龙 / 持有参考标签（继承自决策看板）'
     return d;
   }
 
-  it('买点侧继承【龙一字持有】/【补涨竞价买】，并带上固定配色档', () => {
-    const b = buildTickBoard(_withTags(['龙一字持有', '补涨竞价买']), new Map());
-    const picks = b.buyBlocks[0].picks;
+  /** 造一只票的分笔行：两笔（第一笔平、第二笔跌）⇒ 买点侧结论「下杀买」 */
+  function _weakTickRow() {
+    return {
+      openPrice: 10,
+      pens: [
+        { t: '09:30:05', p: 10, v: 100 },
+        { t: '09:30:20', p: 9.8, v: 200 }   // 价格下跌 ⇒ 绿（弱）
+      ]
+    };
+  }
+
+  it('★ 买点侧 6 枚动作标签【全部】继承，各带配色档', () => {
+    [
+      ['竞价买', 'buy'],
+      ['下杀买（竞价异常）', 'buy'],
+      ['尾盘买', 'buy'],
+      ['尾盘买（先卖后买）', 'buy'],
+      ['先卖后买', 'buy'],
+      ['补涨竞价买', 'buy']
+    ].forEach(function(c) {
+      const d = _decided();
+      d.buy.heavy.picks[0].buyActionTag = c[0];
+      const p = buildTickBoard(d, new Map()).buyBlocks[0].picks[0];
+      expect(p.dragonRefTags.map(function(t) { return t.text; })).toEqual([c[0]]);
+      expect(p.dragonRefTags[0].tone).toBe(c[1]);
+    });
+  });
+
+  it('★ 卖点侧 6 枚动作标签【全部】继承，各带配色档', () => {
+    [
+      ['竞价涨停卖', 'sell'],
+      ['竞价卖', 'sell'],
+      ['竞价卖（先卖后买）', 'sell'],
+      ['尾盘卖', 'sell'],
+      ['10分钟时卖', 'sell'],
+      ['跟龙竞价卖', 'follow']
+    ].forEach(function(c) {
+      const d = _decided();
+      d.sell[0].items[0].sellActionTag = c[0];
+      const it0 = buildTickBoard(d, new Map()).sellGroups[0].items[0];
+      expect(it0.dragonRefTags.map(function(t) { return t.text; })).toEqual([c[0]]);
+      expect(it0.dragonRefTags[0].tone).toBe(c[1]);
+    });
+  });
+
+  it('★ 两侧共用的两枚：龙一字持有（琥珀 yizi）/ 持有（蓝紫 hold），title 明示来自决策看板', () => {
+    const d = _decided();
+    d.buy.heavy.picks[0].buyActionTag = '龙一字持有';
+    d.buy.heavy.picks[1].holdTag = '持有';
+    const picks = buildTickBoard(d, new Map()).buyBlocks[0].picks;
     expect(picks[0].dragonRefTags.map(function(t) { return t.text; })).toEqual(['龙一字持有']);
     expect(picks[0].dragonRefTags[0].tone).toBe('yizi');
-    expect(picks[1].dragonRefTags.map(function(t) { return t.text; })).toEqual(['补涨竞价买']);
-    expect(picks[1].dragonRefTags[0].tone).toBe('makeup');
-    expect(picks[0].dragonRefTags[0].title).toContain('参考');
+    expect(picks[1].dragonRefTags.map(function(t) { return t.text; })).toEqual(['持有']);
+    expect(picks[1].dragonRefTags[0].tone).toBe('hold');
+    expect(picks[0].dragonRefTags[0].title).toContain('决策看板');
   });
 
-  it('卖点侧继承【跟龙竞价卖】（绿档）', () => {
-    const b = buildTickBoard(_withTags([], '跟龙竞价卖'), new Map());
-    const it0 = b.sellGroups[0].items[0];
-    expect(it0.dragonRefTags.map(function(t) { return t.text; })).toEqual(['跟龙竞价卖']);
-    expect(it0.dragonRefTags[0].tone).toBe('follow');
-  });
-
-  // ── [HOLD-REF 2026-10-11 用户口径] 第二轮追加：决策看板的【持有】也一起继承（其它不变）──
-  it('买点侧继承【持有】（来自 ③ holdTag）—— 蓝紫 hold 档，title 说清是【决策参考】', () => {
+  it('【持有】还来自买点行尾仓位 position（与 holdTag 二选一 ⇒ 两个字段都要扫）', () => {
     const d = _decided();
-    d.buy.heavy.picks[0].holdTag = '持有';
-    const b = buildTickBoard(d, new Map());
-    const p = b.buyBlocks[0].picks[0];
-    expect(p.dragonRefTags.map(function(t) { return t.text; })).toEqual(['持有']);
-    expect(p.dragonRefTags[0].tone).toBe('hold');
-    expect(p.dragonRefTags[0].title).toContain('决策参考');
-  });
-
-  it('买点侧继承【持有】（来自行尾仓位 position —— 与 holdTag 二选一，两个字段都要扫）', () => {
-    const d = _decided();
-    // 规则层 _markPrevBought 去重后的真实形态：行尾已经写了【持有】⇒ holdTag 是空的
+    // 规则层 _markPrevBought 去重后的真实形态：行尾已写【持有】⇒ holdTag 是空的
     d.buy.heavy.picks[0].position = '持有';
     const b = buildTickBoard(d, new Map());
     expect(b.buyBlocks[0].picks[0].dragonRefTags.map(function(t) { return t.text; })).toEqual(['持有']);
   });
 
-  it('卖点侧继承【持有】（sellActionTag = 持有）', () => {
+  it('卖点侧【持有】（sellActionTag = 持有）也继承', () => {
     const d = _decided();
     d.sell[0].items[0].sellActionTag = '持有';
     const b = buildTickBoard(d, new Map());
     expect(b.sellGroups[0].items[0].dragonRefTags.map(function(t) { return t.text; })).toEqual(['持有']);
   });
 
-  it('⛔ 仓位【重仓 / 轻仓】不继承 —— 只认【持有】这一枚词', () => {
+  it('⛔ 数据 / 状态类标记一律【不继承】（重仓 / 轻仓 / 昨天已买 / 昨有买入 / 候选题材 / 板块风险）', () => {
+    // 仓位：只有【持有】继承；重仓 / 轻仓 是持仓数据，不是买卖动作
     const d = _decided();
     d.buy.heavy.picks[0].position = '重仓';
     d.buy.heavy.picks[1].position = '轻仓';
     const b = buildTickBoard(d, new Map());
     expect(b.buyBlocks[0].picks[0].dragonRefTags).toEqual([]);
     expect(b.buyBlocks[0].picks[1].dragonRefTags).toEqual([]);
+    // 把这些「非动作」文案直接塞进动作字段：不在 REF_TAGS 白名单里 ⇒ 仍不继承
+    ['昨天已买', '昨有买入', '候选题材', '创业板风险极高'].forEach(function(tag) {
+      const dd = _decided();
+      dd.buy.heavy.picks[0].buyActionTag = tag;
+      expect(buildTickBoard(dd, new Map()).buyBlocks[0].picks[0].dragonRefTags).toEqual([]);
+    });
   });
 
-  it('★ 四枚同时命中 ⇒ 固定顺序（跟龙三枚在前、【持有】在后）', () => {
+  it('★ 一行同时命中多枚 ⇒ 按【固定顺序】输出（买点动作 → 卖点动作 → 持有）', () => {
     const d = _decided();
     const p0 = d.buy.heavy.picks[0];
     // 四个承载标签的格子各放一枚，故意与 REF_TAGS 的声明顺序【不同】
-    p0.buyActionTag = '补涨竞价买';
+    p0.buyActionTag = '尾盘买';
     p0.sellActionTag = '跟龙竞价卖';
-    p0.holdTag = '龙一字持有';
-    p0.position = '持有';
-    // ⚠️「龙一字持有 + 持有」并排是【如实继承】：规则层命中【龙一字持有】时刻意【不清】行尾仓位
-    //    （见 decision-rules.js 1901~1903）⇒ 决策看板那一行本来就同时挂着这两枚。
+    p0.holdTag = '持有';
+    p0.position = '龙一字持有';   // 极端构造：position 里也塞一枚
     const b = buildTickBoard(d, new Map());
     expect(b.buyBlocks[0].picks[0].dragonRefTags.map(function(t) { return t.text; }))
-      .toEqual(['龙一字持有', '跟龙竞价卖', '补涨竞价买', '持有']);
+      .toEqual(['尾盘买', '跟龙竞价卖', '龙一字持有', '持有']);
   });
 
-  it('★ 同一行同时命中多枚时按【固定顺序】输出（不随字段先后变化）', () => {
-    const d = _decided();
-    const p0 = d.buy.heavy.picks[0];
-    // 三个承载动作标签的格子各放一枚，故意与 DRAGON_REF_TAGS 的声明顺序【不同】
-    p0.buyActionTag = '补涨竞价买';
-    p0.sellActionTag = '跟龙竞价卖';
-    p0.holdTag = '龙一字持有';
-    const b = buildTickBoard(d, new Map());
-    expect(b.buyBlocks[0].picks[0].dragonRefTags.map(function(t) { return t.text; }))
-      .toEqual(['龙一字持有', '跟龙竞价卖', '补涨竞价买']);
-  });
-
-  it('★ 其它决策标签一律【不继承】（竞价买 / 尾盘买 / 竞价卖 …）', () => {
-    const b = buildTickBoard(_withTags(['竞价买', '尾盘买'], '竞价卖'), new Map());
-    expect(b.buyBlocks[0].picks[0].dragonRefTags).toEqual([]);
-    expect(b.buyBlocks[0].picks[1].dragonRefTags).toEqual([]);
-    expect(b.sellGroups[0].items[0].dragonRefTags).toEqual([]);
-  });
-
-  it('★ 一枚都没命中 ⇒ 空数组（组件不渲染占位符）', () => {
+  it('★ 一枚都没命中 ⇒ 空数组（组件不渲染占位符，§10）', () => {
     const b = buildTickBoard(_withTags([], ''), new Map());
     expect(b.buyBlocks[0].picks[0].dragonRefTags).toEqual([]);
     expect(b.sellGroups[0].items[0].dragonRefTags).toEqual([]);
   });
 
-  it('★ 参考标签【不影响本行结论】：库里没分笔数据时，结论仍是「未抓取」（⛔ 不是被标签顶掉）', () => {
-    const b = buildTickBoard(_withTags(['龙一字持有'], ''), new Map(), { attempted: new Set() });
+  it('★ 对照标签【不影响本行结论】：库里没分笔数据时，结论仍是「未抓取」', () => {
+    const b = buildTickBoard(_withTags(['竞价买'], ''), new Map(), { attempted: new Set() });
     const p = b.buyBlocks[0].picks[0];
     expect(p.strengthText).toBe('');            // 没有分笔 ⇒ 没有结论胶囊
     expect(p.emptyText).toBe(TICK_NOT_FETCHED); // 如实显示「未抓取」（§10）
-    expect(p.dragonRefTags.map(function(t) { return t.text; })).toEqual(['龙一字持有']);
+    expect(p.dragonRefTags.map(function(t) { return t.text; })).toEqual(['竞价买']);
+  });
+
+  it('★ 对照现场：决策说【竞价买】、本分钟算出【下杀买】⇒ 两枚并存（用户要看的差异）', () => {
+    const d = _decided();
+    d.buy.heavy.picks[0].buyActionTag = '竞价买';            // 决策看板的动作
+    const tickMap = new Map([['襄阳轴承', _weakTickRow()]]);  // 本分钟走弱 ⇒ 下杀买
+    const p = buildTickBoard(d, tickMap).buyBlocks[0].picks[0];
+    expect(p.dragonRefTags.map(function(t) { return t.text; })).toEqual(['竞价买']); // 决策看板
+    expect(p.strengthText).toBe('下杀买');                                           // 本看板结论
   });
 });

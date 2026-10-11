@@ -395,32 +395,44 @@
   border: 1px solid #16a34a;
 }
 
-/* ---- [DRAGON-REF / HOLD-REF 2026-10-11 用户口径] 从决策看板继承来的【参考】标签 ----
-   用户原话（第一轮）：「继承决策看板的龙一字持有标签，跟龙竞价卖等标签，就是跟龙有关的……
-     只是作为参考」；（第二轮）：「你把决策看板的持有标签，也继承下，其它不变」。
-   ★ 刻意用【空心描边】而不是像结论胶囊那样实心填充：
-     本看板的主角永远是【本分钟红绿笔数得出的结论】（立刻买 / 下杀买 / 冲高卖 / 立刻卖），
-     这些是从决策看板借来的【参考】—— 视觉上必须一眼能分清，⛔ 不能让参考盖过结论的注意力。
-     (`.tbb-verdict` 是实心；这里 border + 同色文字，尺寸与它一致，不撑高行高。)
-   配色：
-     · 龙一字持有（yizi）   → 琥珀：龙一最强，中军 / 后排跟着走
-     · 跟龙竞价卖（follow） → 绿：跟着龙一走弱一起卖
-     · 补涨竞价买（makeup） → 红：靠达标龙一带动，竞价就买
-     · 持有（hold）         → 蓝紫：与决策看板行尾仓位【持有】同一档色（两处是同一枚词） */
+/* ---- [DECISION-LABEL-REF 2026-10-11 用户口径] 从决策看板继承来的【买卖点对照标签】----
+   用户原话：「把决策看板的所有买卖点标签都继承下……我要对比下这两个看板的差异……
+     要设计对比明显些，不要搞混」。
+   ★★ 与【结论胶囊】做成两套视觉，防止混淆（用户「不要搞混」）★★
+     本看板结论（立刻买 / 下杀买 / 冲高卖 / 立刻卖）= `.tbb-verdict`
+         → 实心填充 + 实线边框（醒目，是主角）；
+     这里的决策标签 = `.tbb-ref`
+         → 【浅色底】+ 【虚线】边框 + 统一「决策」前缀（明示"从决策看板借来的"）。
+     三重差异叠加（底色 / 线型 / 前缀），即便两者并排也不会看混。
+   配色（沿用全站「买红 / 卖绿」直觉；跟龙与持有另给一档）：
+     · 买点动作（buy）     → 红：竞价买 / 下杀买（竞价异常）/ 尾盘买 / 尾盘买（先卖后买）/ 先卖后买 / 补涨竞价买
+     · 卖点动作（sell）    → 绿：竞价涨停卖 / 竞价卖 / 竞价卖（先卖后买）/ 尾盘卖 / 10分钟时卖
+     · 跟龙竞价卖（follow）→ 青：跟着龙一走弱一起卖（色相与普通卖点分开）
+     · 龙一字持有（yizi）  → 琥珀：龙一最强，中军 / 后排跟着走
+     · 持有（hold）        → 蓝紫：与决策看板行尾仓位【持有】同一档色 */
 .tbb-ref {
   padding: 0 4px;
   font-size: 9px;
   font-weight: 600;
   line-height: 13px;
   border-radius: 4px;
-  border: 1px solid currentColor;
+  border: 1px dashed currentColor;   /* 虚线 —— 结论胶囊是实线 */
   white-space: nowrap;
 }
 
-.tbb-ref-yizi   { color: #b45309; }
-.tbb-ref-follow { color: #16a34a; }
-.tbb-ref-makeup { color: #dc2626; }
-.tbb-ref-hold   { color: #1d4ed8; }
+/* 统一「决策」前缀（⛔ 不写进模板：CSS 一处控制、两个组件零改动）—— 明示标签来自决策看板 */
+.tbb-ref::before {
+  content: '决策';
+  margin-right: 3px;
+  font-weight: 700;
+  opacity: 0.55;
+}
+
+.tbb-ref-buy    { color: #dc2626; background: #fef2f2; }
+.tbb-ref-sell   { color: #16a34a; background: #f0fdf4; }
+.tbb-ref-follow { color: #0e7490; background: #ecfeff; }
+.tbb-ref-yizi   { color: #b45309; background: #fffbeb; }
+.tbb-ref-hold   { color: #1d4ed8; background: #eff6ff; }
 
 /* 均衡：⛔ 已随「三次改」删除 —— 红 = 绿【打平】并入【弱】档，tone 只剩 strong / weak，
    本类不会再被任何 code path 命中（组件是 'tbb-verdict-' + strengthTone 拼类名）。 */
