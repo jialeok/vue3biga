@@ -49,11 +49,14 @@
 import { buyBlocksFlat } from '../decision/decision-collect.js';
 // [DRAGON-REF 2026-10-11 用户口径] 分笔看板要继承的「跟龙」标签常量，来自决策规则层
 //   （§6 单一真相：⛔ 不在本文件写 '龙一字持有' 这类字面量 —— 规则层改文案时这里会静默失配）。
+// [HOLD-REF 2026-10-11 用户口径] 再加一枚【持有】（HOLD_TAG）—— 决策看板的行尾仓位 / ③ 档
+//   都用这个词（POSITION_HOLD 与 HOLD_TAG 同文案，见 decision-rules.js），分笔这边一并继承。
 import {
     formatRangePct,
     DRAGON_YIZI_HOLD_TAG,
     SELL_FOLLOW_DRAGON_TAG,
-    BUY_MAKEUP_TAG
+    BUY_MAKEUP_TAG,
+    HOLD_TAG
 } from '../decision/decision-rules.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 
@@ -468,57 +471,76 @@ function _resolveCode(name, directCode, memberMap) {
 // ══════════════════════════════════════════════════════════════════════════════════
 // ★ [DRAGON-REF 2026-10-11 用户口径] 分笔买卖看板【继承决策看板的「跟龙」标签】★
 // ══════════════════════════════════════════════════════════════════════════════════
-// 用户原话：「分笔买卖看板，我希望继承决策看板的龙一字持有标签，跟龙竞价卖等标签，就是跟龙有关的，
-//   继承下，因为龙一会影响中军或者后排的走势，技术再好也没用，有时还要看题材或者龙一的眼色。
-//   当然你把标签放到分笔买卖看板时，原来的那些标签保持不变，只是作为参考。」
+// 用户原话（第一轮）：「分笔买卖看板，我希望继承决策看板的龙一字持有标签，跟龙竞价卖等标签，
+//   就是跟龙有关的，继承下，因为龙一会影响中军或者后排的走势，技术再好也没用，有时还要看题材
+//   或者龙一的眼色。当然你把标签放到分笔买卖看板时，原来的那些标签保持不变，只是作为参考。」
+// 用户原话（第二轮 · 2026-10-11）：「分笔买卖看盘，你把决策看板的持有标签，也继承下，其它不变。」
 //
-// ⇒ 只继承【与龙一有关】的三枚（拍板口径：龙一字持有 + 跟龙竞价卖 + 补涨竞价买），
-//   ⛔ 不继承「竞价买 / 尾盘买 / 下杀买 / 持有 / 竞价卖 / 尾盘卖…」那些其它决策标签
-//      （用户明确「就是跟龙有关的」，多了会把这个以【分笔结论】为主角的看板淹掉）。
+// ⇒ 继承范围（拍板口径）：先三枚【跟龙】标签（龙一字持有 + 跟龙竞价卖 + 补涨竞价买），
+//   再补一枚决策看板的【持有】；⛔ 不继承「竞价买 / 尾盘买 / 下杀买 / 竞价卖 / 尾盘卖…」
+//   那些其它决策标签（多了会把这个以【分笔结论】为主角的看板淹掉）。
 //
 // ★ 定位 = 【参考】：本看板的结论胶囊（立刻买 / 下杀买 / 冲高卖 / 立刻卖）仍由【本分钟的红绿笔数】
 //   独立给出，这三枚标签【不参与】任何判断、⛔ 不覆盖结论（用户原话「原来的那些标签保持不变，
 //   只是作为参考」）。所以渲染上是【空心描边】样式，与实心的结论胶囊刻意不同 ——
 //   一眼能分清「哪个是我自己算的、哪个是从决策看板借来的」。
 //
-// ⚠️ 顺序是【固定】的（DRAGON_REF_TAGS 的声明顺序），不随行上字段的先后变化 ——
-//    否则同一只票在买点 / 卖点两侧、或换个模式，标签次序会跳。
-const DRAGON_REF_TAGS = [DRAGON_YIZI_HOLD_TAG, SELL_FOLLOW_DRAGON_TAG, BUY_MAKEUP_TAG];
+// ⚠️ 顺序是【固定】的（REF_TAGS 的声明顺序，跟龙三枚在前、【持有】在后），不随行上字段的
+//    先后变化 —— 否则同一只票在买点 / 卖点两侧、或换个模式，标签次序会跳。
+//
+// ⚠️ 对外字段名仍叫 `dragonRefTags`（[DRAGON-REF 2026-10-11] 首次落地时的命名）——
+//    这组里现在既有跟龙三枚、又有决策看板的【持有】，为免动组件与既有单测，名字【沿用不变】；
+//    它的真实含义已是「从决策看板继承来的参考标签」。
+const REF_TAGS = [DRAGON_YIZI_HOLD_TAG, SELL_FOLLOW_DRAGON_TAG, BUY_MAKEUP_TAG, HOLD_TAG];
 
 /** 标签 → 配色档（组件只拼 `'tbb-ref-' + tone`，⛔ 不判断文案，§21） */
-const DRAGON_REF_TONES = {
+const REF_TONES = {
     [DRAGON_YIZI_HOLD_TAG]: 'yizi',      // 龙一字持有 —— 琥珀（龙一最强，跟着走）
     [SELL_FOLLOW_DRAGON_TAG]: 'follow',  // 跟龙竞价卖 —— 绿（跟着卖）
-    [BUY_MAKEUP_TAG]: 'makeup'           // 补涨竞价买 —— 红（补涨买入）
+    [BUY_MAKEUP_TAG]: 'makeup',          // 补涨竞价买 —— 红（补涨买入）
+    [HOLD_TAG]: 'hold'                   // 持有 —— 蓝紫（与决策看板行尾仓位【持有】同档色）
 };
 
 /**
- * 决策行 → 该行命中的【跟龙】参考标签（按 DRAGON_REF_TAGS 固定顺序，去重）。
+ * 参考标签 → 悬浮说明（title）。文案在 Logic 层拼好，组件只贴（§21）。
+ * ⚠️ 跟龙三枚的措辞与 [DRAGON-REF] 首版**逐字一致**（用户「其它不变」）；【持有】不是跟龙类，
+ *    单独一段措辞（前缀「决策参考」、理由说清是「上一交易日也在买点里 ⇒ 强势股」）。
+ */
+function _refTitleOf(t) {
+    const isHold = (t === HOLD_TAG);
+    const head = isHold ? '决策参考' : '跟龙参考';
+    const why = isHold
+        ? '上一交易日也在买点里、今天又在 ⇒ 强势股，决策看板标【持有】'
+        : '龙一会影响同题材中军 / 后排的走势';
+    return head + '｜' + t + '（口径来自决策看板：' + why + '）' +
+        '。⚠️ 本看板只把它【作为参考】显示 —— 结论仍由本分钟的红绿笔数独立给出，⛔ 不受它影响。';
+}
+
+/**
+ * 决策行 → 该行命中的【决策参考】标签（按 REF_TAGS 固定顺序，去重）。
  *
- * 扫描的字段 = 决策行上所有可能承载动作标签的格子：
+ * 扫描的字段 = 决策行上所有可能承载这些文案的格子：
  *   · `buyActionTag`  —— 买点结论（可能是【龙一字持有】/【补涨竞价买】）
- *   · `sellActionTag` —— 卖点结论（可能是【跟龙竞价卖】/【龙一字持有】）
- *   · `holdTag`       —— ③ 持有档（防御性一并扫：将来若规则层把它换成跟龙类文案，这里自动跟上）
+ *   · `sellActionTag` —— 卖点结论（可能是【跟龙竞价卖】/【龙一字持有】/【持有】）
+ *   · `holdTag`       —— ③ 持有档（文案 = HOLD_TAG）
+ *   · `position`      —— 买点行尾仓位（文案 = POSITION_HOLD = '持有'；⛔ 重仓 / 轻仓 不会命中）
+ *     ⚠️ holdTag 与 position 是【二选一】出现在行上的（规则层 _markPrevBought 去重：行尾已经写了
+ *        【持有】就不再重复标 ③）⇒ 两个字段都要扫，才能不漏掉决策看板那一行实际显示的【持有】。
  * ⛔ 只做「取用现成文案」的匹配，⛔ 不自己复算任何规则（§6：规则只有 decision-rules.js 一份）。
  * §10：一枚都没命中 ⇒ 空数组 ⇒ 组件不渲染任何参考标签（⛔ 绝不显示占位符）。
  *
  * @param {object} row 决策行（买点 pick / 卖点 item）
  * @returns {Array<{text:string, tone:string, title:string}>}
  */
-function _dragonRefTagsOf(row) {
+function _refTagsOf(row) {
     if (!row) return [];
     const hit = new Set();
-    [row.buyActionTag, row.sellActionTag, row.holdTag].forEach(function(t) {
-        if (t && DRAGON_REF_TAGS.indexOf(t) >= 0) hit.add(t);
+    [row.buyActionTag, row.sellActionTag, row.holdTag, row.position].forEach(function(t) {
+        if (t && REF_TAGS.indexOf(t) >= 0) hit.add(t);
     });
     if (hit.size === 0) return [];
-    return DRAGON_REF_TAGS.filter(function(t) { return hit.has(t); }).map(function(t) {
-        return {
-            text: t,
-            tone: DRAGON_REF_TONES[t] || '',
-            title: '跟龙参考｜' + t + '（口径来自决策看板：龙一会影响同题材中军 / 后排的走势）' +
-                '。⚠️ 本看板只把它【作为参考】显示 —— 结论仍由本分钟的红绿笔数独立给出，⛔ 不受它影响。'
-        };
+    return REF_TAGS.filter(function(t) { return hit.has(t); }).map(function(t) {
+        return { text: t, tone: REF_TONES[t] || '', title: _refTitleOf(t) };
     });
 }
 
@@ -546,9 +568,11 @@ function _decorateTickRow(row, tickMap, attempted, skipMap, memberMap, side) {
         dragonDeltaTone: row.dragonDeltaTone || '',
         dragonDeltaTitle: row.dragonDeltaTitle || '',
         pctText: formatRangePct(row.pct),
-        // [DRAGON-REF 2026-10-11 用户口径] 继承的【跟龙】参考标签（龙一字持有 / 跟龙竞价卖 / 补涨竞价买）。
-        //   空数组 ⇒ 组件一枚都不渲染（§10 ⛔ 不显示占位符）；它不影响本行结论（见 _dragonRefTagsOf 的长注释）。
-        dragonRefTags: _dragonRefTagsOf(row),
+        // [DRAGON-REF 2026-10-11 / HOLD-REF 2026-10-11 用户口径] 继承的【决策参考】标签
+        //   （龙一字持有 / 跟龙竞价卖 / 补涨竞价买 + 持有）。
+        //   空数组 ⇒ 组件一枚都不渲染（§10 ⛔ 不显示占位符）；它不影响本行结论（见 _refTagsOf 的长注释）。
+        //   ⚠️ 字段名 dragonRefTags 沿用首版命名（原因见 REF_TAGS 处的注释）。
+        dragonRefTags: _refTagsOf(row),
         // 分笔部分
         hasTick: false,
         redText: '', greenText: '', statTitle: '',
