@@ -977,6 +977,9 @@ function buildCompletenessSummary(today, missingDatesAfterNumcat, phantomDates, 
  *      （免费、不限次数、自带「服务端日期 == 今天 + data_status=final」双重闸门）；
  *      它只补「库内为空」的字段 ⇒ 恰好只补上被我们丢空的那几个（幂等，绝不覆盖已有值）；
  *   ③ 从库里【重读】这几个字段回内存 metricsByDate ⇒ 紧随其后的区间涨幅(T 腿)用的是真值。
+ *   ★ ③ 的入库口径 = **同花顺给什么就写什么**（权威源，即使仍超涨跌停幅度也照写 ——
+ *     那只能是新股上市前 5 个交易日不设限，如实入库；详见本函数内 [AUC-SANE-FIX] 注释）。
+ *     ⛔ 绝不对权威源的值二次丢弃：那会把【真数据】变成空数据（原实现如此，已纠正）。
  *
  * ⚠️ 为什么必须回内存（而不是只写库就完）：`stock_range_pct` 的 T 腿取自
  *   `metricsByDate[today]` 的 auc_pct_chg（见 buildRangePctRows）。只修库不回内存，
@@ -985,7 +988,8 @@ function buildCompletenessSummary(today, missingDatesAfterNumcat, phantomDates, 
  *
  * ⛔ 放在 P0（今天的 market_metrics）落库【之后】：P0 是 9:26 硬指标的关键路径，
  *    本函数要发一次同花顺请求（慢调用超时 10s），绝不能挡在它前面。
- * ⛔ 整段 try/catch：任何失败都只留日志，最坏结果 = 该字段留空（§10 宁缺勿错），
+ * ⛔ 整段 try/catch：任何失败都只留日志，最坏结果 = 该字段本次留空
+ *    （下一轮 / 16:00 close 的同花顺补漏会再试一次；§10 宁缺勿错），
  *    绝不让「修复失败」演变成「整轮早盘抓取失败」。
  *
  * @param {object} env worker env
@@ -1017,17 +1021,36 @@ async function repairOutOfRangeAucPct(env, metricsByDate, today, outOfRange, log
     let fixed = 0;
     const fixedNames = [];
     const stillBad = [];
+    const authoritativeOut = [];
     list.forEach(x => {
       const r = byCode.get(String(x.code));
       const v = r ? String(r.auc_pct_chg || '').trim() : '';
       if (!v) { stillBad.push(x.name); return; }
-      // 真值也必须过同一道物理闸门：同花顺若同样给坏值，宁可留空，绝不写（§10）
-      if (isAucPctOutOfRange(v, x.code, x.name)) { stillBad.push(x.name + '(快照值仍越界)'); return; }
+      // 🔴 [AUC-SANE-FIX 2026-10-12] 这里【故意不再】对同花顺的值重复过闸门（原实现见 git 历史）。
+      //   理由（全库 54914 行实测）：本闸门唯一的「假阳性」类别 = 新股/次新股【上市后前 5 个交易日
+      //   不设涨跌幅限制】（全面注册制后主板同样适用）—— 全库恰好 6 行，全部是真值：
+      //     长裕集团 603407 05-12 −12.89%（05-11 首日 +562.63%）
+      //     嘉德利   603435 05-22 +458.38% / 05-25 −15.41%（05-22 首日 +710.15%）
+      //     惠康科技 001237 05-22 +87.74%  / 05-25 −11.45%（05-22 首日 +109.91%）
+      //     托伦斯   301583 07-10 +800.00%（创业板首日 +858.85%）
+      //   ★ 关键区分：numcat 与同花顺是【两条独立链路】。前者可疑 ⇒ 可以丢（随后由本次补写换真值）；
+      //     后者是权威源 ⇒ 它写多少就是真值多少，**再越界也只能如实入库**（这不是「猜」，是照抄权威源，§10）。
+      //   ⚠️ 与「不被误判成一字」解耦：那道闸门在前端 limit-up.js#isAucPctOutOfRange 单独把守，
+      //     本处只负责「把库里的值修对」，绝不因为「怕误判」而丢真数据（原实现正是这么丢的，已纠正）。
       const m = rowByCode.get(String(x.code));
-      if (m) { m.auc_pct_chg = v; fixed++; fixedNames.push(x.name + '→' + v); }
+      if (m) {
+        m.auc_pct_chg = v;
+        fixed++;
+        fixedNames.push(x.name + '→' + v);
+        if (isAucPctOutOfRange(v, x.code, x.name)) authoritativeOut.push(x.name + '=' + v);
+      }
     });
     logs.push('[AUC-SANE] ✅ 越界竞价涨幅已用同花顺快照取回真值 ' + fixed + '/' + list.length + ' 只：' +
       fixedNames.join('、') + (stillBad.length > 0 ? '；仍留空：' + stillBad.join('、') : ''));
+    if (authoritativeOut.length > 0) {
+      logs.push('[AUC-SANE] ℹ️ 其中 ' + authoritativeOut.length + ' 只按权威源如实采纳（仍超涨跌停幅度 ⇒ ' +
+        '只可能是新股上市前 5 个交易日不设限，已入库、⛔ 未被误丢）：' + authoritativeOut.join('、'));
+    }
     return { wanted: list.length, fixed: fixed };
   } catch (e) {
     logs.push('[AUC-SANE] ❌ 越界真值修复失败（不影响本轮其它数据）: ' + (e && e.message ? e.message : String(e)));

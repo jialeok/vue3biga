@@ -250,6 +250,25 @@ describe('isAuctionYiZi × 越界闸门（越界值绝不判一字）', () => {
   });
 });
 
+describe('isAucPctOutOfRange × 已知有界副作用（⛔ 不是 bug，别去「修」）', () => {
+  // 全库 54914 行（2026-03-06 ~ 2026-10-12）实测：闸门唯一会误伤的类别 =
+  //   新股/次新股【上市后前 5 个交易日不设涨跌幅限制】（全面注册制后主板同样适用）。
+  // 这 6 行都是真值，却被判越界 ⇒ 当日不会被判「竞价一字」。
+  // 定调：可接受（7 个月 6 行，且次新首日无「一字买不进」的实盘含义），
+  //   换来「坏值 ⇒ 成片漏选真龙一」这个系统性错误被掐断。
+  // ⛔ 本判据是纯函数、拿不到上市日期 ⇒ 刻意不做次新豁免（不引入新数据依赖，§32/§36）。
+  // ⛔ worker 侧已配套修正：同花顺（权威源）回补的值【即使仍越界也如实入库】，
+  //    所以这 6 类真实数据**不会**因此被丢空（见 morning-workflow.js#repairOutOfRangeAucPct）。
+  it('新股上市前 5 日（不设涨跌幅）：会被判越界 —— 已知且可接受', () => {
+    expect(isAucPctOutOfRange(+458.38, '603435', '嘉德利')).toBe(true);
+    expect(isAucPctOutOfRange(+800.0, '301583', '托伦斯')).toBe(true);
+    expect(isAucPctOutOfRange(-12.89, '603407', '长裕集团')).toBe(true);
+  });
+  it('副作用范围：这类票当日不判一字（是行为改变，不是数据丢失）', () => {
+    expect(isAuctionYiZi({ stock: '托伦斯', auc_pct_chg: '+800.00%' }, '301583')).toBe(false);
+  });
+});
+
 describe('buildYiZiSet', () => {
   it('批量产出名称集合', () => {
     const list = [
