@@ -24,18 +24,22 @@ describe('buildTopicDayStats 单日题材统计与名次', () => {
     expect(m.get('通信').yiziCount).toBe(0);
   });
 
-  it('量比相同时按组大小降序，仍相同按题材名升序；一行量比都没有的题材置底', () => {
+  it('★ [RATIO-ONLY 2026-10-12] 量比相同时【不管组大小】、按题材名升序；一行量比都没有的题材置底', () => {
+    // 通信 5 只 / 电子 2 只，两边平均量比都是 5.0
+    // 旧口径（组大小降序）→ 通信在前；新口径（只看量比 + 题材名）→ 电子（电 U+7535 < 通 U+901A）在前
     const m = buildTopicDayStats([
-      { topic: '算力', name: 'A', volRatio: 5 },
-      { topic: '算力', name: 'B', volRatio: 5 },
-      { topic: '算力', name: 'C', volRatio: 5 },   // 均值 5.0，3 只
-      { topic: '芯片', name: 'D', volRatio: 5 },
-      { topic: '芯片', name: 'E', volRatio: 5 }    // 均值 5.0，2 只
+      { topic: '通信', name: 'A', volRatio: 5 },
+      { topic: '通信', name: 'B', volRatio: 5 },
+      { topic: '通信', name: 'C', volRatio: 5 },
+      { topic: '通信', name: 'D', volRatio: 5 },
+      { topic: '通信', name: 'E', volRatio: 5 },   // 均值 5.0，5 只
+      { topic: '电子', name: 'F', volRatio: 5 },
+      { topic: '电子', name: 'G', volRatio: 5 }    // 均值 5.0，2 只
     ]);
-    expect(m.get('算力').rank).toBe(1); // 量比并列 → 组大的在前
-    expect(m.get('芯片').rank).toBe(2);
+    expect(m.get('电子').rank).toBe(1); // ⛔ 不再因为「组大」把通信抬到前面
+    expect(m.get('通信').rank).toBe(2);
 
-    // 量比并列 + 组大小并列 → 题材名升序：'芯'(U+82AF) > '算'(U+7B97) ⇒ 算力在前
+    // 量比并列 → 题材名升序：'芯'(U+82AF) > '算'(U+7B97) ⇒ 算力在前
     const m2 = buildTopicDayStats([
       { topic: '芯片', name: 'A', volRatio: 5 },
       { topic: '芯片', name: 'B', volRatio: 5 },

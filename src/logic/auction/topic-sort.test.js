@@ -4,6 +4,8 @@ import {
   buildTopicColorMap,
   selectPrimaryTopic,
   buildTopicSizeMap,
+  TOPIC_ORDER_VOL_RATIO,
+  TOPIC_ORDER_YIZI,
   OTHER_TOPIC
 } from './topic-sort.js';
 
@@ -64,6 +66,88 @@ describe('sortByTopicGroups 题材组排序', () => {
     const out = sortByTopicGroups([0, 1], list, () => 0, (idx) => topicOf[list[idx].stock], null, (idx) => idx === 0);
     expect(list[out[0]].stock).toBe('X2');
     expect(list[out[1]].stock).toBe('X1');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// [RATIO-ONLY 2026-10-12 用户口径] 题材 toggle 的组间排序 = **只看【题材平均竞价量比】降序**。
+//   用户原话：「把题材 toggle 改成……按照题材的平均竞价量比由高到低排序（题材平均量比最高的排上，
+//   **不用管数量**，把题材平均竞价量比由高到低排序）。其它不变，以前的那个题材 toggle 排序方式
+//   去掉换成我说的这个。其它不变，只改排序方式。」
+//   ⇒ 主键 = 平均竞价量比降序；**「数量（组大小）」不再参与排序**；末位只留题材名做确定性兜底。
+//   ⛔ 一字口径（不传 topicOrder / by:'yizi'）与既有行为【一行不变】——涨跌停 / 一字看板 / 第二页
+//      题材块都走那一档，跟着变就是越界（各看板独立 §15）。
+// ══════════════════════════════════════════════════════════════════════════════════════
+describe('sortByTopicGroups by:volRatio（题材量比口径）', () => {
+  /** 造一个「每只票写明量比」的 fixture：ratios = { 股票名: 量比 } */
+  function ratioSetup(topicOf, ratios) {
+    const list = Object.keys(topicOf).map((s) => ({ stock: s, auc_pct_chg: '+1%' }));
+    const order = list.map((_, i) => i);
+    return {
+      list,
+      order,
+      tierFn: () => 0,
+      primaryTopicOf: (idx) => topicOf[list[idx].stock] || '其它',
+      volRatioOf: (idx) => {
+        const v = ratios[list[idx].stock];
+        return v === undefined ? null : v;
+      },
+      /** 直接给出「每只票的量比」的取值函数（与 view-helpers#volRatioOf 同形状） */
+      order_(by) { return { by, volRatioOf: (idx) => (ratios[list[idx].stock] === undefined ? null : ratios[list[idx].stock]) }; }
+    };
+  }
+  const names = (s, out) => out.map((i) => s.list[i].stock);
+
+  it('★ 主键 = 平均竞价量比降序：股票【少的】题材只要量比高就排在【多的】题材之前', () => {
+    // 通信 5 只、平均量比 2.0；电子 2 只、平均量比 9.0 ⇒ 电子（少而强）必须排最前
+    const topicOf = {};
+    const ratios = {};
+    [1, 2, 3, 4, 5].forEach((n) => { topicOf['T' + n] = '通信'; ratios['T' + n] = 2.0; });
+    [1, 2].forEach((n) => { topicOf['D' + n] = '电子'; ratios['D' + n] = 9.0; });
+    const s = ratioSetup(topicOf, ratios);
+    const out = sortByTopicGroups(s.order, s.list, s.tierFn, s.primaryTopicOf, null, null, null, s.order_(TOPIC_ORDER_VOL_RATIO));
+    expect(names(s, out)).toEqual(['D1', 'D2', 'T1', 'T2', 'T3', 'T4', 'T5']);
+  });
+
+  it('★【不用管数量】平均量比相同时，题材名兜底 —— ⛔ 不再按组大小降序', () => {
+    // 通信 5 只 / 电子 2 只，两边平均量比都是 3.0
+    // 旧口径（数量降序）→ 通信在前；新口径（只看量比 + 题材名兜底）→ 电子（电 U+7535 < 通 U+901A）在前
+    const topicOf = {};
+    const ratios = {};
+    [1, 2, 3, 4, 5].forEach((n) => { topicOf['T' + n] = '通信'; ratios['T' + n] = 3.0; });
+    [1, 2].forEach((n) => { topicOf['D' + n] = '电子'; ratios['D' + n] = 3.0; });
+    const s = ratioSetup(topicOf, ratios);
+    const out = sortByTopicGroups(s.order, s.list, s.tierFn, s.primaryTopicOf, null, null, null, s.order_(TOPIC_ORDER_VOL_RATIO));
+    expect(names(s, out)).toEqual(['D1', 'D2', 'T1', 'T2', 'T3', 'T4', 'T5']);
+  });
+
+  it('§10：整组一行量比都拿不到 ⇒ 该题材【置底】，⛔ 绝不当 0 参与比大小', () => {
+    const topicOf = { A1: '甲', A2: '乙' };
+    const ratios = { A1: 1.5 };   // 乙 没有量比 ⇒ 置底
+    const s = ratioSetup(topicOf, ratios);
+    const out = sortByTopicGroups(s.order, s.list, s.tierFn, s.primaryTopicOf, null, null, null, s.order_(TOPIC_ORDER_VOL_RATIO));
+    expect(names(s, out)).toEqual(['A1', 'A2']);
+  });
+
+  it('组内顺序不受影响：仍按主排序的 pos 稳定输出', () => {
+    const topicOf = { P1: '甲', P2: '甲', P3: '乙' };
+    const ratios = { P1: 1, P2: 2, P3: 5 };
+    const s = ratioSetup(topicOf, ratios);
+    const out = sortByTopicGroups(s.order, s.list, s.tierFn, s.primaryTopicOf, null, null, null, s.order_(TOPIC_ORDER_VOL_RATIO));
+    // 甲组内 P1/P2 保持原相对顺序（不被量比重排）
+    expect(names(s, out)).toEqual(['P3', 'P1', 'P2']);
+  });
+
+  it('⛔ 一字口径不受影响：不传 topicOrder 时仍按【组大小】降序（既有行为一行不变）', () => {
+    const topicOf = {};
+    [1, 2, 3, 4, 5].forEach((n) => { topicOf['T' + n] = '通信'; });
+    [1, 2].forEach((n) => { topicOf['D' + n] = '电子'; });
+    const s = ratioSetup(topicOf, {});
+    const yizi = sortByTopicGroups(s.order, s.list, s.tierFn, s.primaryTopicOf, null, () => false);
+    expect(names(s, yizi)[0]).toBe('T1');                 // 通信(5) 在前
+    const explicit = sortByTopicGroups(s.order, s.list, s.tierFn, s.primaryTopicOf, null, () => false, null,
+      { by: TOPIC_ORDER_YIZI });
+    expect(names(s, explicit)[0]).toBe('T1');
   });
 });
 

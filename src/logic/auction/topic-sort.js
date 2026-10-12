@@ -4,7 +4,9 @@
 // 在主排序完成后按「题材分组」做稳定叠加排序（同题材聚在一起，组间按下面的口径排）。
 // 组间口径有两档（见 sortByTopicGroups 的第 8 个参数）：
 //   · 默认 'yizi'     —— 一字数量降序 → 组大小降序 → 题材名（涨跌停 / 一字看板 / 第二页题材块都用它）；
-//   · 可选 'volRatio' —— 【平均竞价量比降序】→ 组大小降序 → 题材名（⭐ 只有早盘竞价题材 toggle 用）。
+//   · 可选 'volRatio' —— ★【只看平均竞价量比降序】→ 题材名（⭐ 只有早盘竞价题材 toggle、决策看板与
+//                        题材量比看板用它）。[RATIO-ONLY 2026-10-12 用户口径] 用户要求「不用管数量」，
+//                        ⇒ 组大小【不再参与】该口径的排序（一字口径一行未动）。
 // 本模块只含纯函数，无副作用、不依赖响应式状态，供 view-helpers.js 排序分支与 _enrichAuctionItem 调用。
 
 import { extractTopics, getDisplayNote, isValidTopic } from '../note/helpers.js';
@@ -239,7 +241,9 @@ export function classifyStockPrimaryTopic(item, sizeHint) {
  *   - 题材组排序（默认口径）：先按【一字数量降序】（9:25 一字涨停越多的题材越强，排最前），
  *     一字数量相同再按【组大小降序】（题材内股票多的排前），仍相同按题材名稳定排序；
  *     ⭐ [RATIO-ORDER 2026-10-01] 传 topicOrder={by:'volRatio',…} 时改成【平均竞价量比降序】
- *        （早盘竞价题材 toggle 用这一档；见下方参数说明）；
+ *        （早盘竞价题材 toggle / 决策看板 / 题材量比看板用这一档；见下方参数说明）；
+ *     ★ [RATIO-ONLY 2026-10-12 用户口径] 该档【只用平均竞价量比】——量比相同就按题材名，
+ *        ⛔ 不再拿「组大小」当第二键（用户原话「不用管数量」）。一字档的「组大小降序」不受影响；
  *   - "其它"组永远排在本档位最末；
  *   - 同一题材组内部，默认保持主排序的相对顺序(pos 兜底，稳定)；
  *     传入 rankFn 时改为【按 rankFn 升序】（龙头场景：龙一→龙二→龙三…），无排名的排在最后。
@@ -260,7 +264,9 @@ export function classifyStockPrimaryTopic(item, sizeHint) {
  *        ⭐ [RATIO-ORDER 2026-10-01 用户口径] 题材组的【组间排序依据】—— 可选，不传 = 既有行为（一字优先）。
  *        用户原话：「以前单独打开题材 toggle，题材是按一字数量排序，我希望现在是按题材的【平均竞价量比】
  *        排序，平均竞价量比高的题材排在前面。这样能分出排在第一和第二的题材」。
- *        · by:'volRatio' + volRatioOf ⇒ 组间先比【该组平均竞价量比】（降序）；其余键不变（组大小 → 题材名）。
+ *        · by:'volRatio' + volRatioOf ⇒ 组间先比【该组平均竞价量比】（降序）；
+ *          ★ [RATIO-ONLY 2026-10-12 用户口径] 量比口径下**只**看平均竞价量比（+ 题材名兜底），
+ *          ⛔ 「组大小」不再参与；一字口径仍然「一字数 → 组大小 → 题材名」。
  *        · ⚠️ 分母口径 = 本档位内该题材组的【全部渲染行】（**含灰行**），
  *          与统计条 buildTopicStatsMap 的 avgVolRatio【同一个分母】—— 用户口径「数量不分灰色和常规，
  *          只要显示在上面的都要算进去」。⛔ 不要改成只数正式成员，否则统计条显示的数字会和排序对不上。
@@ -335,7 +341,8 @@ export function sortByTopicGroups(renderOrder, renderList, tierFn, primaryTopicO
         };
         // 题材组去重后排序：
         //   · 默认（yizi）：一字多的题材排最前 → 组大小降序 → 题材名稳定；
-        //   · [RATIO-ORDER 2026-10-01] volRatio：平均竞价量比降序 → 组大小降序 → 题材名稳定；
+        //   · [RATIO-ONLY 2026-10-12] volRatio：**只按平均竞价量比降序** → 题材名稳定；
+        //     用户原话「不用管数量，把题材平均竞价量比由高到低排序」⇒ ⛔ 组大小【不再参与】。
         //   "其它"永远最末。
         const topics = [...new Set(arr.map(x => x.topic))];
         topics.sort((a, b) => {
@@ -348,10 +355,15 @@ export function sortByTopicGroups(renderOrder, renderList, tierFn, primaryTopicO
                 if (ra === null && rb !== null) return 1;
                 if (ra !== null && rb === null) return -1;
                 if (ra !== null && rb !== null && rb !== ra) return rb - ra;
-            } else {
-                const dz = (yiZiMap.get(b) || 0) - (yiZiMap.get(a) || 0);
-                if (dz !== 0) return dz;
+                // ★ [RATIO-ONLY 2026-10-12 用户口径] 量比口径【到此为止】——
+                //   量比相同（或两边都没量比）时只按题材名定序，⛔ 不再拿「组大小」当第二键。
+                //   用户原话：「按题材的平均竞价量比由高到低排序（题材平均量比最高的排上，
+                //   **不用管数量**）……以前的那个题材 toggle 排序方式去掉换成我说的这个」。
+                return a < b ? -1 : (a > b ? 1 : 0);
             }
+            // ── 一字口径（默认档）：一字数量降序 → 组大小降序 → 题材名 ── 既有行为【一行不变】
+            const dz = (yiZiMap.get(b) || 0) - (yiZiMap.get(a) || 0);
+            if (dz !== 0) return dz;
             const d = (sizeMap.get(b) || 0) - (sizeMap.get(a) || 0);
             if (d !== 0) return d;
             return a < b ? -1 : (a > b ? 1 : 0);

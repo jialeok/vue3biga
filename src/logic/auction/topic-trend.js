@@ -36,9 +36,11 @@
 //     · 本文件的趋势图名次 / 一字数 / 平均竞价量比
 //
 // 名次口径（与 sortByTopicGroups 同源，§6 单一真相）：
-//   ⭐ [RATIO-ORDER 2026-10-01 用户口径] ①【平均竞价量比】降序 → ② 组内股票数降序 → ③ 题材名升序；
+//   ⭐ [RATIO-ORDER 2026-10-01 用户口径] ①【平均竞价量比】降序 → ② 题材名升序；
 //   （改造前是「一字数量降序」为首键；用户要求题材按平均竞价量比排序，故首键换成量比，
 //     一键一字数量【不再参与名次】。）
+//   ★ [RATIO-ONLY 2026-10-12 用户口径] 用户进一步明确「不用管数量」⇒ ② 由【组内股票数降序】
+//     改为【题材名升序】—— 与 topic-sort.js 的同一档【逐键一致】（两处必须同时改）。
 //   「其它」与「不足 2 只」的题材不参与名次（与 top-stats 的成组门槛 TOPIC_STATS_MIN_GROUP 同源）。
 //   ⚠️ topicOnlyMode 下所有行同一档位（resolveTopicTier 恒 0），所以这里不需要再分层。
 //   ⚠️ 已知差异：早盘竞价屏幕口径含【现场注入的 0~4 只灰壳】并算进均值分母，
@@ -116,8 +118,10 @@ export function buildTopicDayStats(entries, opts) {
     if (g.size >= minSize) eligible.push(g);
   });
   // ⭐ [RATIO-ORDER 2026-10-01 用户口径] 与 sortByTopicGroups(by:'volRatio') 【逐键一致】：
-  //   平均竞价量比降序 → 组大小降序 → 题材名升序。
+  //   平均竞价量比降序 → 题材名升序。
   //   用户口径原文：「题材按平均竞价量比排序，平均竞价量比高的题材排在前面，这样能分出排在第一和第二的题材」。
+  //   ★ [RATIO-ONLY 2026-10-12 用户口径] 用户进一步明确「不用管数量」⇒ 与 topic-sort.js 同步：
+  //     ⛔ 量比相同不再拿「组大小」当第二键（只留题材名定序）。两处比较器【必须同时改】。
   //   ⛔ 必须与屏幕上的题材块顺序同源：屏幕顺序 / 统计条那个数字 / 本图的「题材名次」是同一条链上的三处，
   //     口径一错位就会出现「屏幕排第 1、趋势图却写第 2」（同类三套口径错位本项目踩过）。
   //   §10：该日一行量比都拿不到的题材 → 置底（⛔ 绝不当 0 参与比大小）。
@@ -129,8 +133,7 @@ export function buildTopicDayStats(entries, opts) {
     if (ra === null && rb !== null) return 1;
     if (ra !== null && rb === null) return -1;
     if (ra !== null && rb !== null && rb !== ra) return rb - ra;
-    const ds = b.size - a.size;
-    if (ds !== 0) return ds;
+    // [RATIO-ONLY 2026-10-12] 到此为止 —— 不再比组大小（`b.size - a.size` 已删除）
     return a.topic < b.topic ? -1 : (a.topic > b.topic ? 1 : 0);
   });
 

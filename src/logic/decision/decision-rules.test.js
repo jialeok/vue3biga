@@ -8,7 +8,9 @@
 //
 // ⭐ [QUANT-PICK 2026-10-01 买点整体重写] 新买点只有三步，用例就围着这三步钉：
 //   ⓪ 题材排名 = 早盘竞价「题材 toggle」的组序（复用 sortByTopicGroups，不另写比较器），
-//      2026-10-01 起口径 = 【该题材的平均竞价量比】降序 → 组大小 → 题材名；
+//      2026-10-01 起口径 = 【该题材的平均竞价量比】降序；
+//      ★ [RATIO-ONLY 2026-10-12 用户口径] 用户明确「不用管数量」⇒ 量比之后【只按题材名】定序，
+//        ⛔ 「组大小（数量）」不再参与（一字模式那一档保持「一字数 → 组大小 → 题材名」不变）；
 //   ① 取排名【第 1 / 第 2】两个题材；
 //   ② 按【题材股票数量】分档（resolvePickTier）：≥10 → 3 只 / 7~9 → 2 只 / 4~6 → 1 只 / ≤3 → 不出票；
 //   ③ 档内按【竞价量比】降序取票（pickByVolRatio）：前 N 只重仓、其余轻仓；
@@ -133,6 +135,8 @@ describe('rankDecisionTopics（题材组序 = 与早盘竞价同一口径）', (
   // === [TOPIC-ORDER 2026-10-01 用户口径] 组序主键从「一字数量」换成「平均竞价量比」 ===
   // 用户原话：「以前单独打开题材 toggle，题材是按一字数量排序，我希望现在是按题材的平均竞价量比排序，
   //   平均竞价量比高的题材排在前面。这样能分出排在第一和第二的题材」。
+  // 然后（2026-10-12）用户进一步明确「不用管数量，把题材平均竞价量比由高到低排序」⇒ 次级键
+  //   「组大小」也被拿掉，量比相同就按题材名（⛔ 与早盘竞价题材 toggle 逐键一致）。
   it('⭐ 组序 = 【平均竞价量比】高的在前，一字数量【不再】决定名次', () => {
     const blocks = rankDecisionTopics([
       // T1 平均量比 (1 + 3) / 2 = 2.0；T2 (8 + 10) / 2 = 9.0 ⇒ T2 第一
@@ -167,13 +171,16 @@ describe('rankDecisionTopics（题材组序 = 与早盘竞价同一口径）', (
     expect(blocks.map(b => b.topic)).toEqual(['T2', 'T1']);
   });
 
-  it('量比相同 → 人多的题材在前', () => {
+  it('★ 量比相同 → 题材名升序，⛔ 不再「人多的在前」（数量已退出排序）', () => {
+    // T1 只有 2 只、T2 有 3 只，两边平均量比都是 2.0
+    // 旧口径（组大小降序）→ T2 在前；新口径（只看量比 + 题材名）→ T1（'T1' < 'T2'）在前
     const blocks = rankDecisionTopics([
       E('a1', 'T1', 1, false, true, 1, '', false, 2), E('a2', 'T1', 2, false, true, 1, '', false, 2),
       E('b1', 'T2', 3, false, true, 1, '', false, 2), E('b2', 'T2', 4, false, true, 1, '', false, 2),
       E('b3', 'T2', 5, false, true, 1, '', false, 2)
     ]);
-    expect(blocks.map(b => b.topic)).toEqual(['T2', 'T1']);
+    expect(blocks.map(b => b.topic)).toEqual(['T1', 'T2']);
+    expect(blocks[0].count).toBe(2);   // ⛔ 数量更少也能排第一 —— 数量不参与排序
   });
 
   it('量比与人头都相同 → 题材名升序（ASCII 名保证确定性）', () => {
@@ -184,12 +191,13 @@ describe('rankDecisionTopics（题材组序 = 与早盘竞价同一口径）', (
     expect(blocks.map(b => b.topic)).toEqual(['T2', 'T3']);
   });
 
-  it('两个题材都缺量比 → 落到「人多的在前」（与早盘竞价同一条退路）', () => {
+  it('★ 两个题材都缺量比 → 题材名升序（⛔ 不再「人多的在前」，数量已退出排序）', () => {
+    // T1 只有 2 只、T2 有 3 只，两边都一行量比都没有 ⇒ 只按题材名定序
     const blocks = rankDecisionTopics([
       E('a1', 'T1', 1), E('a2', 'T1', 2),
       E('b1', 'T2', 3), E('b2', 'T2', 4), E('b3', 'T2', 5)
     ]);
-    expect(blocks.map(b => b.topic)).toEqual(['T2', 'T1']);
+    expect(blocks.map(b => b.topic)).toEqual(['T1', 'T2']);
   });
 
   it('「其它」与不足 2 只的题材都排除', () => {
@@ -262,13 +270,14 @@ describe('rankDragons（龙一 / 龙二 位次口径）', () => {
   });
 });
 
-// 「陪跑」的第 1 名题材 X：5 只，全部【没有竞价量比】⇒ 与只有 4 只的 T 相比，
-//   组序会落到「人多的在前」这一档 ⇒ X 稳坐第 1 名、T 稳坐第 2 名（多个用例共用，故提到模块作用域）。
-// ⚠️ 新规则下「第几名」由【平均竞价量比 → 组大小 → 题材名】决定，跟一字数量无关了。
+// 「陪跑」的第 1 名题材 X：5 只，平均竞价量比 10 ⇒ 稳坐第 1 名（多个用例共用，故提到模块作用域）。
+// ⚠️ 新规则下「第几名」只由【平均竞价量比 → 题材名】决定，跟一字数量 / 题材只数【都无关了】。
+// ★ [RATIO-ONLY 2026-10-12 用户口径] 用户明确「不用管数量」⇒ 这里【显式给量比】把名次钉死，
+//   ⛔ 别再靠「谁的只数多谁在前」那条退路来构造名次（该退路已删除）。
 const headTopic = [
-  E('X一字', 'X', 50, true, true, 10), E('X二', 'X', 40, true, true, 9),
-  E('X三', 'X', 30, false, true, 2), E('X四', 'X', 20, false, true, 3),
-  E('X五', 'X', 10, false, true, -1)
+  E('X一字', 'X', 50, true, true, 10, '', false, 10), E('X二', 'X', 40, true, true, 9, '', false, 10),
+  E('X三', 'X', 30, false, true, 2, '', false, 10), E('X四', 'X', 20, false, true, 3, '', false, 10),
+  E('X五', 'X', 10, false, true, -1, '', false, 10)
 ];
 
 // === [2026-09-29] 买点行也挂【竞价涨幅】徽标（与卖点同款：涨红底 / 跌绿底 / 平灰底） ===
@@ -277,12 +286,15 @@ const headTopic = [
 describe('买点 · 竞价涨幅徽标（AUC-BADGE）', () => {
   // 第 2 名题材 T 用 4 只（落到 small 档 ⇒ 只取 1 只）⇒ 一个场景就能喂进任意 aucPct，逐档验证徽标。
   // ⚠️ T 必须 ≥ 4 只：≤3 只的题材在新规下【不出票】，picks 为空就测不到徽标了。
+  // ★ [RATIO-ONLY 2026-10-12] 名次改由【平均竞价量比】钉死：X 组均值 10 ＞ T 组均值 3
+  //   ⇒ X 第 1（heavy）、T 第 2（light）；T 组内 股1 量比 9 最高 ⇒ 它拿到 small 档那唯一的名额。
+  //   ⛔ 别再依赖「组大者在前」的退路（该退路已按用户口径删除）。
   const run = (aucPct) => {
     const blocks = rankDecisionTopics(headTopic.concat([
-      E('股1', 'T', 90, false, true, aucPct),
-      E('股2', 'T', 80, false, true, 5),
-      E('股3', 'T', 70, false, true, 5),
-      E('股4', 'T', 60, false, true, 5)
+      E('股1', 'T', 90, false, true, aucPct, '', false, 9),
+      E('股2', 'T', 80, false, true, 5, '', false, 1),
+      E('股3', 'T', 70, false, true, 5, '', false, 1),
+      E('股4', 'T', 60, false, true, 5, '', false, 1)
     ]));
     return buildBuyPlan(blocks, rankDragons(blocks)).light.picks[0];
   };
@@ -335,7 +347,9 @@ describe('买点 · 竞价涨幅徽标（AUC-BADGE）', () => {
 
 // === [2026-09-26] 灰行（不在正式列表）也能被选进买点 ===
 describe('灰行参与选票（GRAY-DRAGON）', () => {
-  // T = 第 1 名（5 只正式成员），X = 第 2 名（2 只）；两边都缺量比 ⇒ 组序落到「人多的在前」
+  // T = 第 1 名（6 只，含灰行），X = 第 2 名（2 只）；两边都缺量比 ⇒ 只按题材名定序（'T' < 'X'）
+  // ★ [RATIO-ONLY 2026-10-12] ⛔ 这里【不是】靠「人多的在前」——那条退路已按用户口径删除，
+  //   名次现在由题材名兜底（本例恰好与只数顺序同向）。
   it('第 1 名题材的龙一是灰行 → 照常入选（9/8 大消费 · 国芳集团）', () => {
     const blocks = rankDecisionTopics([
       E('老龙灰行', 'T', 96, false, false, 2),      // countable=false 灰行，十日涨幅最高 = 龙一
