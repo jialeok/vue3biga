@@ -113,7 +113,7 @@ import { getAucOpenKind, AUC_OPEN_HIGH } from '../ladder/ladder-rules.js';
 // 竞价涨幅格式化复用早盘竞价的唯一实现（§6）。
 // [DIVE-BUY 2026-10-07 用户口径 · 爱仕达 9/7] 还要判「有没有涨停」——【竞价涨停】判定同样复用
 //   limit-up.js 的唯一实现（「涨跌停」看板用的就是它），⛔ 不在这里手写 10% / 20% / 30% 那套阈值。
-import { formatAucPct, getAuctionLimitState } from '../auction/limit-up.js';
+import { formatAucPct, getAuctionLimitState, isAucPctOutOfRange } from '../auction/limit-up.js';
 // [BOARD-RISK 2026-10-07 用户口径] 买点行的【创业板 / 科创板风险提示】—— 板块判定同样复用
 //   limit-up.js 的唯一实现 getBoardKind（⛔ 绝不手写 /^30|68/ 这类前缀，§6 两套口径必然分叉）。
 import {
@@ -420,6 +420,8 @@ export const SELL_ACTION_TONE_YIZI_HOLD = BUY_ACTION_TONE_YIZI_HOLD;
  *
  * ⚠️ 为什么两条腿都要留：龙一常常【不在 picks 里】但【一定在 members 里】，members 上两个字段都有；
  *    而卖点的 rows 上没有 isYizi ⇒ 第 ② 条是它的唯一依据。合成一个函数才不会分叉。
+ * 🔴 [AUC-SANE 2026-10-12] 第 ② 条腿前面加了【物理越界闸门】（isAucPctOutOfRange，与 isAuctionYiZi 同一份）：
+ *    越界值一律不下「一字」结论（详见函数体注释）。第 ① 条腿的 isYizi 本身就出自已带闸门的 isAuctionYiZi。
  * §10：两条都取不到（缺 isYizi 且缺竞价涨幅）⇒ false（⛔ 未知 ≠ 一字）。
  *
  * @param {{isYizi?:boolean, aucPct?:number|null, code?:string, name?:string}|null} it
@@ -430,6 +432,13 @@ export function isAuctionYiZiRow(it) {
   if (it.isYizi === true) return true;
   const pct = _num(it.aucPct);
   if (pct === null) return false;
+  // 🔴 [AUC-SANE 2026-10-12] 与 isAuctionYiZi 同一道闸门（§6 单一判据，⛔ 不另写一份）：
+  //   竞价涨幅物理越界（> 该股涨停幅度 + 0.5）⇒ 这个数一定是错的 ⇒ **绝不据此下「一字」结论**。
+  //   为什么这条腿也要补：第 ① 条腿读的是 isYizi（已带闸门），但第 ② 条腿是**独立**按涨幅现判的
+  //   （专门为「龙一不在 picks 里但一定在 members 里」/ 卖点 rows 没有 isYizi 而留），
+  //   它**绕过了** ① 的兜底 —— 不补的话，坏值仍能在本函数里伪造出「一字」，
+  //   让【龙一字持有 / 竞价涨停卖 / 一字占名次】等一系列动作被一个错数驱动。
+  if (isAucPctOutOfRange(pct, String(it.code || ''), String(it.name || ''))) return false;
   return getAuctionLimitState(pct, String(it.code || ''), String(it.name || '')) === 'up';
 }
 

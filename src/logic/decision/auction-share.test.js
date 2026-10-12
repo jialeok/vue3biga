@@ -2182,6 +2182,18 @@ describe('★ [DRAGON-YIZI-HOLD 2026-10-08] 【龙一字持有】', () => {
     expect(isAuctionYiZiRow({ aucPct: null, code: '600519', name: '甲' })).toBe(false);
     expect(isAuctionYiZiRow({ aucPct: -10, code: '600519', name: '甲' })).toBe(false);
     expect(isAuctionYiZiRow(null)).toBe(false);
+    // 🔴 [AUC-SANE 2026-10-12] 腿② 的【物理越界闸门】—— 2026-10-12 事故回归。
+    //   事故：numcat 昨收取错交易日 ⇒ 时代万恒 真值 +6.12% 被写成 +16.74%
+    //   ⇒ 腿② 按「≥ 10% 即一字」判成【一字】⇒ 龙一被跳过、龙二顶替。
+    //   现闸门生效：越界 ⇒ 一律 false（⛔ 不下结论，而不是猜一个）。
+    expect(isAuctionYiZiRow({ name: '时代万恒', code: '600241', aucPct: 16.74 })).toBe(false);
+    expect(isAuctionYiZiRow({ name: '华北制药', code: '600812', aucPct: 20.99 })).toBe(false);
+    // ⛔ 合法一字一个都不能少（防过度拦截）：上界 = 幅度 + 0.5
+    expect(isAuctionYiZiRow({ name: '三柏硕', code: '001300', aucPct: 10.03 })).toBe(true);
+    expect(isAuctionYiZiRow({ name: '某某', code: '600519', aucPct: 10.5 })).toBe(true);
+    expect(isAuctionYiZiRow({ name: '*ST某某', code: '600000', aucPct: 5.03 })).toBe(true);
+    // 腿① 仍以数据源标记为准（本看板自己的 isYizi 优先，闸门不动它）
+    expect(isAuctionYiZiRow({ name: '某某', code: '600000', isYizi: true, aucPct: null })).toBe(true);
   });
 
   it('② 卖点 · 龙一一字 + 龙二不达标 + 今天又进买点 ⇒ 【龙一字持有】（替掉【竞价卖（先卖后买）】）', () => {
