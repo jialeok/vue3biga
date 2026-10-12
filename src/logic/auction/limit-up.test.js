@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getLimitUpPct, parseAucPct, formatAucPct, isAuctionYiZi, buildYiZiSet, isStStockName, getCloseLimitState, getCloseNameTone, getBoardKind, isHighLimitBoard, getAuctionLimitState, getLimitStateByPct, BOARD_STAR, BOARD_GROWTH, BOARD_BJ, BOARD_MAIN, BOARD_UNKNOWN } from './limit-up.js';
+import { getLimitUpPct, parseAucPct, formatAucPct, isAuctionYiZi, buildYiZiSet, isStStockName, getCloseLimitState, getCloseNameTone, getBoardKind, isHighLimitBoard, getAuctionLimitState, getLimitStateByPct, isAucPctOutOfRange, AUCPCT_MAX_ROUND_OVER, BOARD_STAR, BOARD_GROWTH, BOARD_BJ, BOARD_MAIN, BOARD_UNKNOWN } from './limit-up.js';
 
 // [2026-09-22] 涨跌停看板：「竞价就涨停 / 竞价就跌停」判定。
 // 与 getCloseLimitState 共用同一个核心（涨跌停幅度只有一份口径），这里锁住的是【竞价口径】的语义。
@@ -173,6 +173,80 @@ describe('isAuctionYiZi 竞价一字判定', () => {
   it('无竞价涨幅字段 → false（绝不把没数据当成一字）', () => {
     expect(isAuctionYiZi({ stock: '某某' }, '600000')).toBe(false);
     expect(isAuctionYiZi(null, '600000')).toBe(false);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// [AUC-SANE 2026-10-12 用户口径] 竞价涨幅【物理越界】闸门
+//
+// 现场（用户 2026-10-12 报障，已用同花顺 + 库内 updated_at 双向取证）：
+//   numcat daily_auc 把 时代万恒(600241) 的竞价涨幅写成 +16.74%，真实只有 +6.12%
+//   —— 主板涨停 10%，16.74% 物理上不可能。旧判据「pct ≥ 涨停幅度」让它命中 ⇒ 被当成
+//   【竞价一字·买不进】跳过 ⇒ 题材量比看板顺延取龙二 紫竹高科 ⇒ **真龙一被漏选**。
+//
+// 这个 describe 钉住两条不变量（改坏了会立刻红）：
+//   ① 越界判定本身（物理上界 = 涨停幅度 + 0.5，0.5 来自涨停价四舍五入到「分」）；
+//   ② 越界值**永远不判一字**，而合法的一字（含 10.03% / 10.04% 这类四舍五入值）不受影响。
+// ══════════════════════════════════════════════════════════════════════════════════════
+describe('isAucPctOutOfRange 竞价涨幅物理越界（坏值闸门）', () => {
+  it('主板 10% 板：真实一字（≤10.5%）不越界，numcat 坏值越界', () => {
+    expect(isAucPctOutOfRange('+10.00%', '600241', '时代万恒')).toBe(false);
+    expect(isAucPctOutOfRange('+10.03%', '001300', '三柏硕')).toBe(false);   // 实测的真实一字
+    expect(isAucPctOutOfRange('+10.04%', '002242', '九阳股份')).toBe(false); // 实测的真实一字
+    expect(isAucPctOutOfRange('+10.50%', '600241', '时代万恒')).toBe(false); // 恰好等于上界
+    expect(isAucPctOutOfRange('+16.74%', '600241', '时代万恒')).toBe(true);  // ★ 事故现场
+    expect(isAucPctOutOfRange('+10.60%', '601118', '海南橡胶')).toBe(true);  // ★ 同日受害票
+    expect(isAucPctOutOfRange('+20.99%', '600812', '华北制药')).toBe(true);
+    expect(isAucPctOutOfRange('+16.91%', '603533', '掌阅科技')).toBe(true);
+    // 上界 = 涨停幅度 + AUCPCT_MAX_ROUND_OVER（改常量必须连这里一起改 —— 把口径钉死）
+    const hi = 10 + AUCPCT_MAX_ROUND_OVER;
+    expect(isAucPctOutOfRange('+' + hi.toFixed(2) + '%', '600241', '时代万恒')).toBe(false);
+    expect(isAucPctOutOfRange('+' + (hi + 0.01).toFixed(2) + '%', '600241', '时代万恒')).toBe(true);
+  });
+  it('按板块走各自的上界（创业板/科创板 20%、北交所 30%、ST 5%）', () => {
+    expect(isAucPctOutOfRange('+20.50%', '300750', '宁德时代')).toBe(false);
+    expect(isAucPctOutOfRange('+25.00%', '300750', '宁德时代')).toBe(true);
+    expect(isAucPctOutOfRange('+17.91%', '300530', '领湃科技')).toBe(false); // 20% 板内，不算越界
+    expect(isAucPctOutOfRange('+30.50%', '830799', '某某')).toBe(false);
+    expect(isAucPctOutOfRange('+35.00%', '830799', '某某')).toBe(true);
+    expect(isAucPctOutOfRange('+5.50%', '600000', '*ST某某')).toBe(false);
+    expect(isAucPctOutOfRange('+8.00%', '600000', '*ST某某')).toBe(true);    // ST 5% 板，+8% 不可能
+  });
+  it('跌停方向同样受约束（下界 = −涨停幅度 − 0.5）', () => {
+    expect(isAucPctOutOfRange('-10.04%', '600241', '时代万恒')).toBe(false);
+    expect(isAucPctOutOfRange('-15.00%', '600241', '时代万恒')).toBe(true);
+    expect(isAucPctOutOfRange('-9.89%', '001300', '三柏硕')).toBe(false);
+  });
+  it('§10：缺数据 ≠ 越界（false），两者含义不同，不可混用', () => {
+    expect(isAucPctOutOfRange(null, '600241', '时代万恒')).toBe(false);
+    expect(isAucPctOutOfRange(undefined, '600241', '时代万恒')).toBe(false);
+    expect(isAucPctOutOfRange('', '600241', '时代万恒')).toBe(false);
+    expect(isAucPctOutOfRange('abc', '600241', '时代万恒')).toBe(false);
+  });
+  it('代码缺失 → 按主板 10% 兜底（与 getLimitUpPct 同口径，§6）', () => {
+    expect(isAucPctOutOfRange('+10.03%', '', '某某')).toBe(false);
+    expect(isAucPctOutOfRange('+16.74%', '', '某某')).toBe(true);
+  });
+});
+
+describe('isAuctionYiZi × 越界闸门（越界值绝不判一字）', () => {
+  it('★ 事故回归：时代万恒 +16.74%（主板）不再被判成一字 → 真龙一不会被跳过', () => {
+    const row = { stock: '时代万恒', auc_pct_chg: '+16.74%', code: '600241' };
+    expect(isAuctionYiZi(row, '600241')).toBe(false);
+    // 真值（同花顺 +6.12%）本来也不是一字 —— 两种口径下结论一致，说明这条修复不改变正确结论
+    expect(isAuctionYiZi({ stock: '时代万恒', auc_pct_chg: '+6.12%', code: '600241' }, '600241')).toBe(false);
+  });
+  it('同日其它受害票同样不再假一字', () => {
+    expect(isAuctionYiZi({ stock: '掌阅科技', auc_pct_chg: '+16.91%' }, '603533')).toBe(false);
+    expect(isAuctionYiZi({ stock: '华北制药', auc_pct_chg: '+20.99%' }, '600812')).toBe(false);
+    expect(isAuctionYiZi({ stock: '海南橡胶', auc_pct_chg: '+10.60%' }, '601118')).toBe(false);
+  });
+  it('⛔ 合法的一字一个都不能少（防过度拦截）', () => {
+    expect(isAuctionYiZi({ stock: '三柏硕', auc_pct_chg: '+10.03%' }, '001300')).toBe(true);
+    expect(isAuctionYiZi({ stock: '九阳股份', auc_pct_chg: '+10.04%' }, '002242')).toBe(true);
+    expect(isAuctionYiZi({ stock: '某某', auc_pct_chg: '+9.98%' }, '600000')).toBe(true);
+    expect(isAuctionYiZi({ stock: '某某', auc_pct_chg: '+20.00%' }, '300750')).toBe(true);
+    expect(isAuctionYiZi({ stock: '*ST某某', auc_pct_chg: '+5.03%' }, '600000')).toBe(true);
   });
 });
 

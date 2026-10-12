@@ -1,12 +1,12 @@
 // ===== bidding-board-worker-b — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-09-30 03:09:28
+// 生成时间: 2026-10-12 14:56:58
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 1040（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 1038（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── bidding-board-worker-b/config.js ──────
@@ -165,8 +165,6 @@ function localIsTradingDay(dateStr) {
 //
 // ⛔ 任何一层都不能「读取失败 → 当成空数据下结论」（§10 / §40）：
 //    读表失败 = 该层弃权，交给下一层；绝不当成「用户没设置过」直接判假期/交易日。
-
-
 /** 用户覆盖表（与 db/create_trading_day_overrides.sql 同名） */
 const TRADING_DAY_OVERRIDES_TABLE = 'trading_day_overrides';
 

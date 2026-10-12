@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-09-30 03:09:28
+// 生成时间: 2026-10-12 14:56:58
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 3624（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 4049（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
@@ -123,8 +123,6 @@ function localIsTradingDay(dateStr) {
 //
 // ⛔ 任何一层都不能「读取失败 → 当成空数据下结论」（§10 / §40）：
 //    读表失败 = 该层弃权，交给下一层；绝不当成「用户没设置过」直接判假期/交易日。
-
-
 /** 用户覆盖表（与 db/create_trading_day_overrides.sql 同名） */
 const TRADING_DAY_OVERRIDES_TABLE = 'trading_day_overrides';
 
@@ -1905,6 +1903,301 @@ async function runTodaySnapshotPatch(env, opts) {
 }
 
 
+// ────── ../src/logic/auction/limit-up.js ──────
+// limit-up.js — 「竞价一字」（竞价涨停）判定（Logic 层，§15 独立业务模块，纯函数无副作用）
+//
+// 业务口径（2026-09-09 定）：
+//   9:25 集合竞价结束时的竞价涨幅（auc_pct_chg）达到该股【涨停幅度】→ 视为「竞价一字」。
+//   竞价一字意味着开盘竞价报价就是涨停价，是最强的一字板信号，需要在看板上用红线标出。
+//
+// 涨停幅度（按板块，A 股现行规则）：
+//   - 主板（60 / 00 开头）：10%；ST / *ST 主板：5%
+//   - 创业板（300 / 301）与 科创板（688 / 689）：20%（ST 同样 20%）
+//   - 北交所（43 / 83 / 87 / 88 / 92 开头）：30%
+//   - 代码缺失：按主板 10% 兜底（绝大多数标的所在板块），绝不因为缺代码而漏判/误判为 0。
+//
+// 容差：涨停价由「前收 × (1+幅度)」四舍五入到分，实际涨幅常见 9.98% / 10.02% / 10.05%，
+//       因此判定用 EPS 容差，而不是严格 >= 幅度。
+
+const LIMIT_MAIN = 10;    // 主板
+const LIMIT_ST = 5;       // 主板 ST
+const LIMIT_GROWTH = 20;  // 创业板 / 科创板
+const LIMIT_BJ = 30;      // 北交所
+// 四舍五入容差：10.02%、9.98% 都算一字；9.5% 不算
+const EPS = 0.15;
+
+/**
+ * 竞价涨幅的【物理上界容差】（%）——「坏值闸门」的唯一口径（§6）。
+ *
+ * 【为什么必须有它 / 2026-10-12 事故】
+ *   numcat daily_auc 对个别股票的「昨收」取错了（用了更早一个交易日的收盘价），
+ *   算出的竞价涨幅被整体放大。实测 时代万恒（600241）真实竞价 +6.12%，却写成 **+16.74%**。
+ *   主板涨停只有 10%，16.74% 物理上不可能；而 isAuctionYiZi 的判据是「pct ≥ 涨停幅度」
+ *   ⇒ 16.74% ≥ 10% ⇒ 被误判成【竞价一字】⇒ 题材量比 / 决策看板都当它「买不进」跳过
+ *   ⇒ **真龙一被漏选、龙二顶上**（用户 2026-10-12 报障）。
+ *
+ * 【上界是算出来的，不是拍的】
+ *   涨停价 = round(前收 × (1+幅度), 2)，所以涨幅最多比幅度多出「半分钱」的舍入：
+ *     超额 ≤ 0.005 / 前收。A 股最低价股约 1 元 ⇒ 超额上界 = 0.5 个百分点。
+ *   · 10.03% / 10.04%（真实一字，实测）→ 不越界 ✅
+ *   · 16.74% / 20.99%（numcat 坏值）    → 越界 ✅
+ *
+ * ⛔ 这不是「猜值」：越界只说明【这个数一定是错的】，而不是「我认为它应该是多少」，
+ *    所以越界一律【丢弃 / 不用它下结论】，绝不用一个猜测值顶替（§10 宁缺勿错）。
+ */
+const AUCPCT_MAX_ROUND_OVER = 0.5;
+
+// ── 板块识别（2026-09-21 新增）──────────────────────────────────────────────
+// ⚠️ 唯一真相：代码前缀 → 板块。下面 getLimitUpPct 与 isHighLimitBoard 共用这一份表，
+//    ⛔ 任何地方都不要再手写一遍 /^(30|68)/ 这类前缀（§6 两套口径必然分叉）。
+// 前缀顺序与改造前 getLimitUpPct 里的判断顺序【逐条一致】，因此改造前后幅度判定 100% 等价。
+const BOARD_BJ = 'bj';         // 北交所：43 / 83 / 87 / 88 / 92 → 30%
+const BOARD_STAR = 'star';     // 科创板：688 / 689（68 段目前只有科创板）→ 20%
+const BOARD_GROWTH = 'growth'; // 创业板：300 / 301（30 段目前只有创业板）→ 20%
+const BOARD_MAIN = 'main';     // 沪主板 60 / 深主板 00 / 01 → 10%（ST 5%）
+const BOARD_UNKNOWN = '';      // 代码缺失或不在以上任何段 → 不猜（§40）
+
+/**
+ * 股票代码 → 板块。只做纯字符串判定，不做任何请求。
+ * @param {string} code 6 位股票代码（可为空 / 可带非数字）
+ * @returns {string} BOARD_* 之一；代码缺失 → BOARD_UNKNOWN（⛔ 绝不猜成主板，§40）
+ */
+function getBoardKind(code) {
+    const c = String(code || '').replace(/\D/g, '');
+    if (!c) return BOARD_UNKNOWN;
+    if (/^(43|83|87|88|92)/.test(c)) return BOARD_BJ;
+    if (/^68/.test(c)) return BOARD_STAR;
+    if (/^30/.test(c)) return BOARD_GROWTH;
+    if (/^(60|00|01)/.test(c)) return BOARD_MAIN;
+    return BOARD_UNKNOWN;
+}
+
+/**
+ * 【涨跌幅放开板】判定：科创板（688/689）/ 创业板（300/301）/ 北交所（43/83/87/88/92）。
+ *
+ * 用途（2026-09-21 用户要求）：早盘竞价列表把这类股票的【名字画浅灰色删除线】，
+ *   一眼看出「这不是普通 10% 主板的票」—— 这三档涨跌幅是 20% / 30%，且都需额外交易权限，
+ *   没权限的买不了、有权限的也要按另一套涨跌幅判断，最容易误买。
+ *
+ * ⚠️ 判据是【板块】，不是「涨跌幅 ≠ 10%」：主板 ST（5%）同样是「≠10%」，但不在需求范围内，
+ *    故刻意不含它 —— 用 getLimitUpPct 反推会把 ST 全标上，那是错的范围。
+ * ⚠️ 代码缺失 → false（不标）。宁可漏标，也不在没代码时凭股票名猜（§40）。
+ *
+ * @param {string} code 6 位股票代码
+ * @returns {boolean}
+ */
+function isHighLimitBoard(code) {
+    const k = getBoardKind(code);
+    return k === BOARD_STAR || k === BOARD_GROWTH || k === BOARD_BJ;
+}
+
+/** 股票名是否 ST（含 *ST / ST / S*ST 等写法） */
+function isStStockName(stockName) {
+    if (!stockName) return false;
+    return /\*?\s*ST/i.test(String(stockName));
+}
+
+/**
+ * 取涨停幅度（%）——只依赖代码与股票名，不做任何请求（Data 层职责外的纯计算）。
+ * @param {string} code - 6 位股票代码（可为空）
+ * @param {string} [stockName] - 股票名（用于 ST 判定）
+ * @returns {number} 涨停幅度（%）
+ */
+function getLimitUpPct(code, stockName) {
+    const c = String(code || '').replace(/\D/g, '');
+    if (!c) return isStStockName(stockName) ? LIMIT_ST : LIMIT_MAIN;
+    // 板块前缀表只在 getBoardKind 里存一份（§6）；这里只做「板块 → 幅度」映射。
+    switch (getBoardKind(c)) {
+        case BOARD_BJ: return LIMIT_BJ;
+        case BOARD_STAR:
+        case BOARD_GROWTH: return LIMIT_GROWTH;
+        // 主板 + 未知段：改造前这两支完全同码（都是「ST 5% 否则 10%」），行为不变
+        default: return isStStockName(stockName) ? LIMIT_ST : LIMIT_MAIN;
+    }
+}
+
+/**
+ * 竞价涨幅是否【物理越界】—— 即「这个数一定是错的」。
+ *
+ * 判据（唯一实现 §6）：|pct| > 该股涨停幅度 + AUCPCT_MAX_ROUND_OVER。
+ * 用途有两处，共用这一份判据，⛔ 不许各写一遍：
+ *   ① 前端 isAuctionYiZi —— 越界值【不判一字】（它是坏数据，不是一字）；
+ *   ② worker 写库前 —— 越界值【丢弃】（不写进 market_metrics，避免污染趋势图与选股）。
+ *
+ * §10：缺数据（null / 空串 / 非数）→ **false**。「没读到」与「读到坏值」是两回事，
+ *   混用会把「无数据」也当成「坏值」处理，静默丢掉合法数据。
+ *
+ * @param {number|string|null} pct 竞价涨幅（数字或 '+16.74%' 这类字符串）
+ * @param {string} [code] 6 位股票代码（决定涨停幅度）
+ * @param {string} [stockName] 股票名（ST 判定用）
+ * @returns {boolean} true = 物理不可能，必为坏值
+ */
+function isAucPctOutOfRange(pct, code, stockName) {
+    const n = parseAucPct(pct);
+    if (n === null) return false;
+    const hi = getLimitUpPct(code, stockName) + AUCPCT_MAX_ROUND_OVER;
+    return n > hi || n < -hi;
+}
+
+/** 解析竞价涨幅字符串（'+10.02%' / '-7.71%' / 10.02 / null）→ number|null。解析不出来返回 null（绝不退化成 0）。 */
+function parseAucPct(raw) {
+    if (raw === null || raw === undefined || raw === '') return null;
+    const n = Number(String(raw).replace('%', '').replace('+', '').trim());
+    return isFinite(n) ? n : null;
+}
+
+/**
+ * 竞价涨幅【展示文本】（与 parseAucPct 配对：一个解析、一个格式化，§6 单一实现）。
+ * 口径与早盘竞价看板完全一致：正数补 '+'、固定 2 位小数（如 '+1.20%' / '-2.60%' / '0.00%'）。
+ *
+ * §10 红线：null / undefined / 非数（= 缺数据）一律返回【空串】，
+ *   ⛔ 绝不当成 0 —— 那会把「没查到」画成「平开」。
+ * @param {number|string|null} v 竞价涨幅（数字或已解析的字符串）
+ * @returns {string} 可展示文本；缺数据 → ''
+ */
+function formatAucPct(v) {
+    const n = parseAucPct(v);
+    if (n === null) return '';
+    return (n > 0 ? '+' : '') + n.toFixed(2) + '%';
+}
+
+/**
+ * 竞价一字判定：竞价涨幅是否达到该股涨停幅度。
+ * 无竞价涨幅字段 → false（不做任何猜测，避免把"没数据"显示成一字）。
+ *
+ * 🔴 [AUC-SANE 2026-10-12 用户口径] 越界值（物理不可能）**一律不判一字**。
+ *   用户原话：「把那个时代万恒的竞价涨幅 16.7% 彻底从根源解决掉，这样就不会错误选择
+ *   紫竹高科龙二了。导致真的龙一没有被选到。」
+ *   背景：numcat 给 时代万恒(600241) 写了个 +16.74%（真实只有 +6.12%，主板涨停 10%），
+ *   而旧判据「pct ≥ 涨停幅度」让它命中 ⇒ 被当成【竞价一字·买不进】跳过 ⇒ 真龙一漏选。
+ *   ⇒ 现在只认「恰好落在涨停价上」（含四舍五入容差），越界的一律视为坏数据弃权。
+ *   ⚠️ 与「缺数据 → false」是【两个不同的弃权理由】，但结论一致且都安全：
+ *      它们都**不会**把一个坏值当成「一字」而把真龙一挤掉（§10 不拿坏数据下结论）。
+ *   ⛔ 判据只有一处（isAucPctOutOfRange），worker 写库前用的是同一份（§6 单一真相）。
+ *
+ * @param {object} item - 竞价行（含 stock / auc_pct_chg / code 等）
+ * @param {string} [code] - 股票代码；不传则用 item.code
+ * @returns {boolean}
+ */
+function isAuctionYiZi(item, code) {
+    if (!item || !item.stock) return false;
+    const pct = parseAucPct(item.auc_pct_chg || item.aucPctChg || '');
+    if (pct === null) return false;
+    const name = String(item.stock).trim();
+    const cd = code || item.code || '';
+    if (isAucPctOutOfRange(pct, cd, name)) return false;
+    return pct + EPS >= getLimitUpPct(cd, name);
+}
+
+/**
+ * 批量构建「竞价一字」股票名集合（供题材分组排序使用）。
+ * @param {object[]} list - 行列表
+ * @param {(item:object)=>string} [codeOf] - 取代码函数（缺省用 item.code）
+ * @returns {Set<string>} 一字股名称集合（trim）
+ */
+function buildYiZiSet(list, codeOf) {
+    const set = new Set();
+    if (!list || list.length === 0) return set;
+    list.forEach(function(it) {
+        if (!it || !it.stock) return;
+        const name = String(it.stock).trim();
+        if (!name) return;
+        const cd = codeOf ? codeOf(it) : (it.code || '');
+        if (isAuctionYiZi(it, cd)) set.add(name);
+    });
+    return set;
+}
+
+/**
+ * 【核心】某个涨幅是否触及该股的涨停 / 跌停（与「这个涨幅是竞价的还是收盘的」无关）。
+ *
+ * ⚠️ 竞价口径与收盘口径【刻意共用这一个核心】：涨跌停幅度只有一份口径（§6），
+ *    改一处两边同时生效；分成两份迟早会分叉（2026-09-22「涨跌停」看板要用竞价口径时验证过）。
+ *
+ * @param {*} pct 涨幅：number 或 '+9.98%' 这类字符串
+ * @param {string} [code] 6 位股票代码（缺省兜底主板 10%）
+ * @param {string} [stockName] 股票名（用于 ST 判定）
+ * @returns {'up'|'down'|null}
+ */
+function getLimitStateByPct(pct, code, stockName) {
+    const n = (typeof pct === 'number')
+        ? (isFinite(pct) ? pct : null)
+        : parseAucPct(pct);
+    if (n === null) return null;
+    const limit = getLimitUpPct(code, stockName);
+    if (n + EPS >= limit) return 'up';
+    if (n - EPS <= -limit) return 'down';
+    return null;
+}
+
+/**
+ * 【竞价】涨停 / 跌停判定（2026-09-22 新增，「涨跌停」看板用）。
+ *
+ * 判据 = 9:25 集合竞价的涨幅（auc_pct_chg）是否打在该股的涨跌停价上：
+ *   · 'up'   → 竞价就涨停（含「竞价一字」这类一字板）
+ *   · 'down' → 竞价就跌停
+ *   · null   → 都没触及，**或没有竞价涨幅数据**（⛔ 绝不退化成 'up'/'down'，§10）
+ *
+ * @param {*} aucPct 竞价涨幅：number 或 '+10.02%' / '-9.97%' 这类字符串
+ * @param {string} [code] 6 位股票代码
+ * @param {string} [stockName] 股票名（用于 ST 判定）
+ * @returns {'up'|'down'|null}
+ */
+function getAuctionLimitState(aucPct, code, stockName) {
+    return getLimitStateByPct(aucPct, code, stockName);
+}
+
+/**
+ * 【收盘】涨停 / 跌停判定（2026-09-11 新增，用于「收盘停板」蚂蚁线标记与同题材统计）。
+ *
+ * 与 isAuctionYiZi（竞价口径）严格区分：本函数只看【收盘涨幅】。
+ *   · 竞价一字 = 9:25 竞价报价就打在涨停价上（实线红线，盘中信号）；
+ *   · 收盘涨停 = 全天走完后收在涨停价（红色蚂蚁线，收盘结果）。
+ * 两者可以同时成立（竞价一字往往收在涨停），视觉上由调用方决定优先级，本模块只出判定。
+ *
+ * 涨停幅度复用 getLimitUpPct（按板块/ST），容差同样复用 EPS：
+ *   收盘涨停：pct + EPS >= +幅度（涨停价四舍五入到分 → 实测 +9.88% / +9.97% 都算涨停）
+ *   收盘跌停：pct - EPS <= -幅度（跌停同理，实测 -9.97% 算跌停）
+ *
+ * @param {*} closePct - 收盘涨幅：number 或 '+9.98%' / '-9.97%' 这类字符串
+ * @param {string} [code] - 6 位股票代码（缺省兜底主板 10%）
+ * @param {string} [stockName] - 股票名（用于 ST 判定）
+ * @returns {'up'|'down'|null} 'up'=收盘涨停 / 'down'=收盘跌停 / null=都不是或没有涨幅数据
+ *          ⚠️ 无数据一律返回 null，绝不把「没数据」当成「没涨停」以外的任何东西（§10）。
+ */
+function getCloseLimitState(closePct, code, stockName) {
+    return getLimitStateByPct(closePct, code, stockName);
+}
+
+/**
+ * 【收盘】股票名字体颜色档位（2026-09-11 新增）。
+ *
+ * 需求：收盘涨幅 > 0 → 股票名红色；< 0 → 绿色；= 0 → 保持默认色（黑）；
+ *      早盘一律默认色（此时 change_pct 只是 9:25 竞价副本，不是收盘结果）。
+ * 与 getCloseLimitState（是否停板）是两件事：本函数只表「涨跌方向」，不看幅度阈值。
+ *
+ * ⚠️ 【闸门内置、缺省即不上色】—— 这是刻意的安全设计：
+ *    闸门条件（题材模式 + 该日已是收盘口径）必须写在函数里，而不是靠每个调用方记得加 if。
+ *    ctx 缺失 / byTopic=false / closeWindow=false 一律返回 null → 保持默认黑。
+ *    这样「忘了传 ctx」的后果是「不上色」（安全方向），绝不会变成「用竞价副本冒充收盘结果」。
+ *    closeWindow = isAuthoritativeCloseReached(date)（北京 16:05 起才为 true）。
+ *
+ * ⚠️ 无数据（null / '' / 非数）同样返回 null，绝不把「没数据」着色（§10）。
+ *
+ * @param {*} closePct - 收盘涨幅：number 或 '+1.23%' / '-2.34%' 这类字符串
+ * @param {{byTopic?:boolean, closeWindow?:boolean}} ctx - 显示闸门；缺任一项 → null
+ * @returns {'up'|'down'|null} 'up'=红（涨）/ 'down'=绿（跌）/ null=默认色（平盘 / 无数据 / 未到收盘口径）
+ */
+function getCloseNameTone(closePct, ctx) {
+    if (!ctx || !ctx.byTopic || !ctx.closeWindow) return null;
+    const pct = (typeof closePct === 'number')
+        ? (isFinite(closePct) ? closePct : null)
+        : parseAucPct(closePct);
+    if (pct === null || pct === 0) return null;
+    return pct > 0 ? 'up' : 'down';
+}
+
+
 // ────── bidding-auto-fetch/logic/morning-workflow.js ──────
 // morning-workflow.js — 早盘竞价抓取主流程（runMorning 拆分为若干子函数）
 // [TRADING-DAY 2026-09-29] 交易日判定不再各写各的：统一走 _shared-source/trading-day.js。
@@ -1918,6 +2211,12 @@ async function runTodaySnapshotPatch(env, opts) {
 // 窗口天数 / 复利累乘 / T 腿竞价占位判定 全部只此一份，前后端不会算出两个结果。
 // ⚠️ 跨目录引用会让 workers/_bundle.mjs 把该文件一并打进单文件产物（Cloudflare 复制粘贴部署），
 //    因此 src/logic/auction/range-window.js 必须保持「零 import 的纯函数」，不得引入 Vue / DOM 依赖。
+// [AUC-SANE 2026-10-12 用户口径] 竞价涨幅【物理越界】闸门 —— 唯一实现在 limit-up.js（§6），
+//   前端 isAuctionYiZi 用的是同一份判据。本文件只负责「写入前丢了它」。
+//   为什么必须放在 worker（用户原话：「直接改上游自动获取数据那里…彻底从根源解决掉」）：
+//     numcat 偶尔把「昨收」取错一个交易日 ⇒ 竞价涨幅被整体放大（时代万恒 真值 +6.12% 被写成 +16.74%）
+//     ⇒ 前端按「≥ 涨停幅度即一字」判成【竞价一字·买不进】⇒ 真龙一被跳过、龙二顶替。
+//   闸门只管一件事：**物理不可能的值绝不落库**（丢弃 + 告警），值本身不猜（§10）。
 /** 与 range-window.RANGE_WINDOW_DAYS 同源；显式断言避免有人改动窗口天数后 worker 静默失配 */
 const RANGE_DAYS = RANGE_WINDOW_DAYS;
 
@@ -2491,7 +2790,9 @@ async function fetchDailyWindow(env, constituents, today, expectedDates, cache, 
 }
 
 // 4. 解析 numcat 数据 → 按 date 分组 → metricsByDate
-function parseNumcatToMetrics(items, fields, constituents, logs) {
+// [AUC-SANE 2026-10-12] 导出仅为单测（纯函数，零网络）：越界闸门必须有回归测试钉住，
+//   否则「竞价涨幅越界」这类上游坏值又会被静默写进库（无测试 = 无防线）。
+function parseNumcatToMetrics(items, fields, constituents, logs, today) {
   const symIdx = fields.indexOf('symbol');
   const nameIdx = fields.indexOf('name');
   const dateIdx = fields.indexOf('tradedate');
@@ -2528,6 +2829,8 @@ function parseNumcatToMetrics(items, fields, constituents, logs) {
   const metricsByDate = {};
   let parsedCount = 0;
   let yestVolDerivedCount = 0;
+  // [AUC-SANE 2026-10-12] 被闸门丢弃的越界竞价涨幅（只登记，真值由 repairOutOfRangeAucPct 补）
+  const outOfRange = [];
 
   items.forEach(row => {
     const code = String(row[symIdx] || '').trim();
@@ -2547,13 +2850,17 @@ function parseNumcatToMetrics(items, fields, constituents, logs) {
     const volumeStr = isNaN(volNum) ? '' : String(Math.round(volNum / 100));
 
     // changePct = "+X.XX%"
+    // [AUC-SANE 2026-10-12] aucRaw 单独留一份【数字】，供下面越界闸门判定；
+    //   changePctStr 仍按原口径原样保留（今日 change_pct = 竞价副本，16:00 收盘覆盖）。
     let changePctStr = '';
+    let aucRaw = null;
     if (pctIdx >= 0) {
       const pct = row[pctIdx];
       if (pct !== null && pct !== undefined && pct !== '') {
         const n = Number(pct);
         if (!isNaN(n)) {
           changePctStr = (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+          aucRaw = n;
         }
       }
     }
@@ -2574,7 +2881,25 @@ function parseNumcatToMetrics(items, fields, constituents, logs) {
     // auc_pct_chg（竞价涨幅）：与 change_pct 同源（均取自 auc_pct_chg 字段），
     // 但后续会用 numcat daily 的收盘涨幅覆盖【历史日】的 change_pct，
     // 这里单独保存纯竞价涨幅，供「五日竞价涨幅」趋势图使用（不被覆盖）。
-    const aucPctChgStr = changePctStr;
+    //
+    // 🔴 [AUC-SANE 2026-10-12] 越界闸门：|竞价涨幅| > 该股涨停幅度 + 0.5 ⇒ 物理不可能，必为坏值。
+    //   处理 = **丢弃**（该字段留空，绝不写进库）：留空只让趋势图少一个点，
+    //   写进去却会让前端判出【假一字】→ 真龙一被跳过（用户 2026-10-12 实际损失）。
+    //   真值由紧随其后的「越界修复」用同花顺快照补（见 repairOutOfRangeAucPct）——
+    //   所以这里的留空是【临时】的，不是永久丢数据。
+    //   ⛔ 只丢 auc_pct_chg，**不动 change_pct**：那是今日收盘涨幅的占位（竞价副本），
+    //     16:00 会被 close-workflow 用真收盘价覆盖，且今日 T 腿在 9:25 走的是竞价口径。
+    let aucPctChgStr = changePctStr;
+    if (aucRaw !== null && isAucPctOutOfRange(aucRaw, code, stockName)) {
+      aucPctChgStr = '';
+      outOfRange.push({
+        date: dateStr,
+        code: code,
+        name: stockName,
+        pct: aucRaw,
+        limit: getLimitUpPct(code, stockName)
+      });
+    }
 
     // um_vol（未匹配量，手）→ 万手（与 volume 同口径 ÷100），展示 "251w"
     let umVolStr = '';
@@ -2633,7 +2958,19 @@ function parseNumcatToMetrics(items, fields, constituents, logs) {
   });
 
   logs.push('解析完成: ' + parsedCount + '条, 涉及 ' + Object.keys(metricsByDate).length + ' 个交易日, 反推昨日成交量 ' + yestVolDerivedCount + ' 条');
-  return { metricsByDate, parsedCount, yestVolDerivedCount };
+  // [AUC-SANE 2026-10-12] 越界必须【可见】（§10 禁止静默丢弃）：把每只票的「坏值 / 该股涨停上界」都打出来，
+  //   排障时一眼看出「是上游错了多少」，不用再去反推。
+  if (outOfRange.length > 0) {
+    const byDate = {};
+    outOfRange.forEach(x => { (byDate[x.date] = byDate[x.date] || []).push(x); });
+    Object.keys(byDate).sort().forEach(d => {
+      const arr = byDate[d];
+      logs.push('🚫 [AUC-SANE] ' + d + ' 有 ' + arr.length + ' 只票的竞价涨幅【物理越界】（超过该股涨停幅度），已丢弃坏值：' +
+        arr.map(x => x.name + '(' + (x.pct >= 0 ? '+' : '') + x.pct.toFixed(2) + '%，该股涨停 ' + x.limit + '%)').join('、') +
+        (d === today ? '；其中【今天】的会立刻用同花顺快照取真值补回' : '；历史日按 §10 留空（不猜）'));
+    });
+  }
+  return { metricsByDate, parsedCount, yestVolDerivedCount, outOfRange };
 }
 
 // 5. 历史日收盘涨幅合并（纯内存）+ 计算区间涨幅行
@@ -2818,6 +3155,76 @@ function buildCompletenessSummary(today, missingDatesAfterNumcat, phantomDates, 
   return { completenessSummary, todayMissing };
 }
 
+/**
+ * [AUC-SANE 2026-10-12 用户口径] 【越界竞价涨幅】的真值修复（只处理【今天】）。
+ *
+ * 用户原话：「你要么直接改上游自动获取数据那里，要谨慎改，把那个时代万恒的竞价涨幅 16.7%
+ *   彻底从根源解决掉，这样就不会错误选择紫竹高科龙二了。导致真的龙一没有被选到。」
+ *
+ * 三条链路，复用既有实现、零新增数据源（§6 §32）：
+ *   ① 解析时已把越界值【丢弃】（≈库内该字段留空）；
+ *   ② 本函数调 runTodaySnapshotPatch —— 那是「同花顺竞价快照补当日字段」的既有唯一实现
+ *      （免费、不限次数、自带「服务端日期 == 今天 + data_status=final」双重闸门）；
+ *      它只补「库内为空」的字段 ⇒ 恰好只补上被我们丢空的那几个（幂等，绝不覆盖已有值）；
+ *   ③ 从库里【重读】这几个字段回内存 metricsByDate ⇒ 紧随其后的区间涨幅(T 腿)用的是真值。
+ *
+ * ⚠️ 为什么必须回内存（而不是只写库就完）：`stock_range_pct` 的 T 腿取自
+ *   `metricsByDate[today]` 的 auc_pct_chg（见 buildRangePctRows）。只修库不回内存，
+ *   今天的 T 腿依旧是「空」⇒ 该股今天没有十日涨幅 ⇒ 前端 dragon-rank 在早盘
+ *   09:00~09:45 有 morningGuard（连本地重算都不跑）⇒ 龙位算不出来 ⇒ **真龙一照样选不到**。
+ *
+ * ⛔ 放在 P0（今天的 market_metrics）落库【之后】：P0 是 9:26 硬指标的关键路径，
+ *    本函数要发一次同花顺请求（慢调用超时 10s），绝不能挡在它前面。
+ * ⛔ 整段 try/catch：任何失败都只留日志，最坏结果 = 该字段留空（§10 宁缺勿错），
+ *    绝不让「修复失败」演变成「整轮早盘抓取失败」。
+ *
+ * @param {object} env worker env
+ * @param {object} metricsByDate 内存解析结果（会被【就地修改】）
+ * @param {string} today 北京今天 YYYY-MM-DD
+ * @param {Array<{date:string,code:string,name:string,pct:number}>} outOfRange 越界登记表
+ * @param {string[]} logs
+ * @returns {Promise<{wanted:number, fixed:number}>} 仅用于结果上报
+ */
+async function repairOutOfRangeAucPct(env, metricsByDate, today, outOfRange, logs) {
+  const list = (outOfRange || []).filter(x => x && x.date === today && /^\d{6}$/.test(String(x.code || '')));
+  if (list.length === 0) return { wanted: 0, fixed: 0 };
+  try {
+    // ② 复用既有同花顺补漏（只补「空」字段 → 只补我们刚丢空的那几个）
+    const snap = await runTodaySnapshotPatch(env, { logs: logs });
+    if (!snap || !snap.ok || snap.patched === 0) {
+      logs.push('[AUC-SANE] ⚠️ 越界真值补写未生效（patched=' + ((snap && snap.patched) || 0) + '）→ ' +
+        list.map(x => x.name).join('、') + ' 的竞价涨幅本次留空（§10 不猜值）；' +
+        '趋势图该点为空，选股按「无竞价涨幅」处理（不会被误判成一字）');
+      return { wanted: list.length, fixed: 0 };
+    }
+    // ③ 从库重读 → 回内存（只认本次真补上的那些 code）
+    const rows = await readMarketMetricsSnapshotFieldsForDate(env, today);
+    const byCode = new Map();
+    (rows || []).forEach(r => { if (r && r.code) byCode.set(String(r.code).trim(), r); });
+    const todayRows = metricsByDate[today] || [];
+    const rowByCode = new Map();
+    todayRows.forEach(m => { if (m && m.code) rowByCode.set(String(m.code).trim(), m); });
+    let fixed = 0;
+    const fixedNames = [];
+    const stillBad = [];
+    list.forEach(x => {
+      const r = byCode.get(String(x.code));
+      const v = r ? String(r.auc_pct_chg || '').trim() : '';
+      if (!v) { stillBad.push(x.name); return; }
+      // 真值也必须过同一道物理闸门：同花顺若同样给坏值，宁可留空，绝不写（§10）
+      if (isAucPctOutOfRange(v, x.code, x.name)) { stillBad.push(x.name + '(快照值仍越界)'); return; }
+      const m = rowByCode.get(String(x.code));
+      if (m) { m.auc_pct_chg = v; fixed++; fixedNames.push(x.name + '→' + v); }
+    });
+    logs.push('[AUC-SANE] ✅ 越界竞价涨幅已用同花顺快照取回真值 ' + fixed + '/' + list.length + ' 只：' +
+      fixedNames.join('、') + (stillBad.length > 0 ? '；仍留空：' + stillBad.join('、') : ''));
+    return { wanted: list.length, fixed: fixed };
+  } catch (e) {
+    logs.push('[AUC-SANE] ❌ 越界真值修复失败（不影响本轮其它数据）: ' + (e && e.message ? e.message : String(e)));
+    return { wanted: list.length, fixed: 0 };
+  }
+}
+
 // 主流程
 async function runMorning(env) {
   const logs = [];
@@ -2863,13 +3270,24 @@ async function runMorning(env) {
   }
   const { expectedDates, items, fields, missingDatesAfterNumcat, extras } = numcatResult;
 
-  const { metricsByDate, yestVolDerivedCount } = parseNumcatToMetrics(items, fields, constituents, logs);
+  const { metricsByDate, yestVolDerivedCount, outOfRange } = parseNumcatToMetrics(items, fields, constituents, logs, today);
 
   // ---- P0-③ 【今天】的 market_metrics 立刻落库 —— 不等区间涨幅、不等历史日 ----
   // 正确性：历史日合并只改 d < today 的行，今天的行在此刻已是最终值
   // （change_pct = auc_pct_chg 的 9:25 竞价副本，正是早盘口径）。
   const todayWrite = await writeMetricsForDates(env, metricsByDate, d => d === today, nowIso, logs);
   mark('今天 market_metrics 落库 ' + todayWrite.totalMetricsWritten + ' 行');
+  // [AUC-SANE 2026-10-12] 「是否顶穿 9:26 硬指标」必须在【P0 落库这一刻】判定。
+  //   原实现放在 return 前算（那时后面还跑过 P1/P2/P3 + 越界修复），会把「后续步骤慢」
+  //   误报成「P0 顶穿」——那正是排障日志里最不能失真的一个字段。
+  const p0Overrun = todayWrite.totalMetricsWritten > 0 && bjSecondsOfDay() > P0_DEADLINE_BJ_SEC;
+
+  // ---- P0-④ [AUC-SANE 2026-10-12] 越界竞价涨幅的真值修复（只在检测到越界时才付代价）----
+  //   必须在 P1（区间涨幅）之前：T 腿取自 metricsByDate[today].auc_pct_chg，
+  //   修晚了该股今天就拿不到十日涨幅 ⇒ 龙位算不出 ⇒ 真龙一照样被漏选（见函数头长注释）。
+  //   ⛔ 已落在 P0 落库之后，不占用 9:26 硬指标的关键路径。平时零请求、零耗时。
+  const aucRepair = await repairOutOfRangeAucPct(env, metricsByDate, today, outOfRange, logs);
+  if (aucRepair.wanted > 0) mark('越界竞价涨幅修复 ' + aucRepair.fixed + '/' + aucRepair.wanted);
 
   // ---- P1 历史日合并 + 10 日区间涨幅（纯内存计算后落库）----
   const { phantomDates, rangeRows } = mergeHistoricalAndBuildRange(constituents, expectedDates, today, metricsByDate, dailyResult, logs);
@@ -2927,10 +3345,11 @@ async function runMorning(env) {
   mark('全流程结束');
   // [LATENCY 2026-09-30] 把「是否顶穿 9:26」直接算成布尔值放进结果，
   //   由 index.js 落库到 bidding_fetch_log，排查时一眼可判（不用再换算 UTC）。
-  const p0Overrun = todayWrite.totalMetricsWritten > 0 && bjSecondsOfDay() > P0_DEADLINE_BJ_SEC;
+  // [LATENCY 2026-09-30] 「是否顶穿 9:26」已在 P0 落库那一刻算好（见 P0-③ 之后），
+  //   这里不再重算 —— 否则会把 P1/P2/P3/越界修复耗时误报成「P0 顶穿」（排查时最不能失真的字段）。
   logs.push(p0Overrun
-    ? '🔴 P0 落库时刻 ' + bjClock() + ' 已晚于硬截止 ' + P0_DEADLINE_LABEL + '（9:26 硬指标未达成）'
-    : '🟢 P0 落库时刻 ' + bjClock() + '（硬截止 ' + P0_DEADLINE_LABEL + '，达标）');
+    ? '🔴 P0 落库时刻已晚于硬截止 ' + P0_DEADLINE_LABEL + '（9:26 硬指标未达成）'
+    : '🟢 P0 落库时刻达标（硬截止 ' + P0_DEADLINE_LABEL + '）');
   return {
     ok: metricsWriteFailures === 0 || totalMetricsWritten > 0,
     today,
@@ -2952,6 +3371,9 @@ async function runMorning(env) {
     // 竞价四要素在「当日」拿不到是猫抓的既定行为，这里只做可观测性上报，不影响 ok
     auctionExtrasToday: (extras && extras.filled + '/' + extras.total) || '0/0',
     extrasPatched: extrasPatched,
+    // [AUC-SANE 2026-10-12] 竞价涨幅越界闸门的可观测性：0 = 本次上游数据干净（常态）
+    aucPctOutOfRange: outOfRange.length,
+    aucPctRepaired: aucRepair.fixed,
     ladderDegraded: !!ladderDegraded,
     completenessSummary: (ladderDegraded ? '⬇️ 降级运行（名单源不可用，名单未落库）；' : '') + completenessSummary,
     logs
@@ -3505,6 +3927,9 @@ async function persistRunResult(env, point, result) {
       todayMetricsWritten: r.todayMetricsWritten === undefined ? null : r.todayMetricsWritten,
       metricsWritten: r.metricsWritten === undefined ? null : r.metricsWritten,
       rangeWritten: r.rangeWritten === undefined ? null : r.rangeWritten,
+      // [AUC-SANE 2026-10-12] 竞价涨幅越界闸门：>0 说明上游 numcat 又给了物理不可能的坏值
+      aucPctOutOfRange: r.aucPctOutOfRange === undefined ? null : r.aucPctOutOfRange,
+      aucPctRepaired: r.aucPctRepaired === undefined ? null : r.aucPctRepaired,
       completenessSummary: r.completenessSummary || '',
       logs: Array.isArray(r.logs) ? r.logs : []
     }

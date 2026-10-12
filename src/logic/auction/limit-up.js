@@ -20,6 +20,27 @@ const LIMIT_BJ = 30;      // 北交所
 // 四舍五入容差：10.02%、9.98% 都算一字；9.5% 不算
 const EPS = 0.15;
 
+/**
+ * 竞价涨幅的【物理上界容差】（%）——「坏值闸门」的唯一口径（§6）。
+ *
+ * 【为什么必须有它 / 2026-10-12 事故】
+ *   numcat daily_auc 对个别股票的「昨收」取错了（用了更早一个交易日的收盘价），
+ *   算出的竞价涨幅被整体放大。实测 时代万恒（600241）真实竞价 +6.12%，却写成 **+16.74%**。
+ *   主板涨停只有 10%，16.74% 物理上不可能；而 isAuctionYiZi 的判据是「pct ≥ 涨停幅度」
+ *   ⇒ 16.74% ≥ 10% ⇒ 被误判成【竞价一字】⇒ 题材量比 / 决策看板都当它「买不进」跳过
+ *   ⇒ **真龙一被漏选、龙二顶上**（用户 2026-10-12 报障）。
+ *
+ * 【上界是算出来的，不是拍的】
+ *   涨停价 = round(前收 × (1+幅度), 2)，所以涨幅最多比幅度多出「半分钱」的舍入：
+ *     超额 ≤ 0.005 / 前收。A 股最低价股约 1 元 ⇒ 超额上界 = 0.5 个百分点。
+ *   · 10.03% / 10.04%（真实一字，实测）→ 不越界 ✅
+ *   · 16.74% / 20.99%（numcat 坏值）    → 越界 ✅
+ *
+ * ⛔ 这不是「猜值」：越界只说明【这个数一定是错的】，而不是「我认为它应该是多少」，
+ *    所以越界一律【丢弃 / 不用它下结论】，绝不用一个猜测值顶替（§10 宁缺勿错）。
+ */
+export const AUCPCT_MAX_ROUND_OVER = 0.5;
+
 // ── 板块识别（2026-09-21 新增）──────────────────────────────────────────────
 // ⚠️ 唯一真相：代码前缀 → 板块。下面 getLimitUpPct 与 isHighLimitBoard 共用这一份表，
 //    ⛔ 任何地方都不要再手写一遍 /^(30|68)/ 这类前缀（§6 两套口径必然分叉）。
@@ -89,6 +110,29 @@ export function getLimitUpPct(code, stockName) {
     }
 }
 
+/**
+ * 竞价涨幅是否【物理越界】—— 即「这个数一定是错的」。
+ *
+ * 判据（唯一实现 §6）：|pct| > 该股涨停幅度 + AUCPCT_MAX_ROUND_OVER。
+ * 用途有两处，共用这一份判据，⛔ 不许各写一遍：
+ *   ① 前端 isAuctionYiZi —— 越界值【不判一字】（它是坏数据，不是一字）；
+ *   ② worker 写库前 —— 越界值【丢弃】（不写进 market_metrics，避免污染趋势图与选股）。
+ *
+ * §10：缺数据（null / 空串 / 非数）→ **false**。「没读到」与「读到坏值」是两回事，
+ *   混用会把「无数据」也当成「坏值」处理，静默丢掉合法数据。
+ *
+ * @param {number|string|null} pct 竞价涨幅（数字或 '+16.74%' 这类字符串）
+ * @param {string} [code] 6 位股票代码（决定涨停幅度）
+ * @param {string} [stockName] 股票名（ST 判定用）
+ * @returns {boolean} true = 物理不可能，必为坏值
+ */
+export function isAucPctOutOfRange(pct, code, stockName) {
+    const n = parseAucPct(pct);
+    if (n === null) return false;
+    const hi = getLimitUpPct(code, stockName) + AUCPCT_MAX_ROUND_OVER;
+    return n > hi || n < -hi;
+}
+
 /** 解析竞价涨幅字符串（'+10.02%' / '-7.71%' / 10.02 / null）→ number|null。解析不出来返回 null（绝不退化成 0）。 */
 export function parseAucPct(raw) {
     if (raw === null || raw === undefined || raw === '') return null;
@@ -114,6 +158,17 @@ export function formatAucPct(v) {
 /**
  * 竞价一字判定：竞价涨幅是否达到该股涨停幅度。
  * 无竞价涨幅字段 → false（不做任何猜测，避免把"没数据"显示成一字）。
+ *
+ * 🔴 [AUC-SANE 2026-10-12 用户口径] 越界值（物理不可能）**一律不判一字**。
+ *   用户原话：「把那个时代万恒的竞价涨幅 16.7% 彻底从根源解决掉，这样就不会错误选择
+ *   紫竹高科龙二了。导致真的龙一没有被选到。」
+ *   背景：numcat 给 时代万恒(600241) 写了个 +16.74%（真实只有 +6.12%，主板涨停 10%），
+ *   而旧判据「pct ≥ 涨停幅度」让它命中 ⇒ 被当成【竞价一字·买不进】跳过 ⇒ 真龙一漏选。
+ *   ⇒ 现在只认「恰好落在涨停价上」（含四舍五入容差），越界的一律视为坏数据弃权。
+ *   ⚠️ 与「缺数据 → false」是【两个不同的弃权理由】，但结论一致且都安全：
+ *      它们都**不会**把一个坏值当成「一字」而把真龙一挤掉（§10 不拿坏数据下结论）。
+ *   ⛔ 判据只有一处（isAucPctOutOfRange），worker 写库前用的是同一份（§6 单一真相）。
+ *
  * @param {object} item - 竞价行（含 stock / auc_pct_chg / code 等）
  * @param {string} [code] - 股票代码；不传则用 item.code
  * @returns {boolean}
@@ -124,6 +179,7 @@ export function isAuctionYiZi(item, code) {
     if (pct === null) return false;
     const name = String(item.stock).trim();
     const cd = code || item.code || '';
+    if (isAucPctOutOfRange(pct, cd, name)) return false;
     return pct + EPS >= getLimitUpPct(cd, name);
 }
 

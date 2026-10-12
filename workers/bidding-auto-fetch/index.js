@@ -87,6 +87,9 @@ async function persistRunResult(env, point, result) {
       todayMetricsWritten: r.todayMetricsWritten === undefined ? null : r.todayMetricsWritten,
       metricsWritten: r.metricsWritten === undefined ? null : r.metricsWritten,
       rangeWritten: r.rangeWritten === undefined ? null : r.rangeWritten,
+      // [AUC-SANE 2026-10-12] 竞价涨幅越界闸门：>0 说明上游 numcat 又给了物理不可能的坏值
+      aucPctOutOfRange: r.aucPctOutOfRange === undefined ? null : r.aucPctOutOfRange,
+      aucPctRepaired: r.aucPctRepaired === undefined ? null : r.aucPctRepaired,
       completenessSummary: r.completenessSummary || '',
       logs: Array.isArray(r.logs) ? r.logs : []
     }
