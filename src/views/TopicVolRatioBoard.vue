@@ -14,6 +14,13 @@
       把股票下方点击展开的量比图换成，分笔图（设计和分笔买卖看板的股票展开图一样，包括图上文字），
       当然我说的标签你要模仿决策看板的，不是模仿分笔买卖看板的（只是模仿它那个展开后的分笔成交图）。」
 
+  用户口径（2026-10-13 第四轮）：空仓提醒 —— 「题材量比买点侧那里，帮我添加一个条件，数量筛选后，
+    排名第一题材平均量比小于 25 的，题材，在买点侧要提示醒目的空仓……还是按照原来的正常方式选出
+    排名第一，第二的题材的股票，只是在这个低量比的节点，排名第一的题材平均竞价量比小于 25 时，
+    需要文字提示空仓。有空仓提醒。文字大些，醒目些，看到这些文字，我就不开仓了。……
+    其它不变。」
+    ⇒ 只在选股段【顶部】多一个 TvrbCashAlert（大字标语），选股 / 标签 / 卖点一行未改。
+
   分层（§2）：本文件只有模板与调用 ——
       views/TopicVolRatioBoard.vue
         → composables/useTopicVolRatioBoard.js   （UI 状态 + 重算 / 取数时机）
@@ -92,6 +99,11 @@
           <div class="tvrb-section-title buy">
             选股
           </div>
+          <!-- ★ [CASH-ALERT 2026-10-13 用户口径] 空仓提醒：买点侧【顶部】的大字标语。
+               判据（能入选的排名第一题材平均竞价量比 < 25）与文案都在 Logic 层；
+               ⛔ 它不改变选股 —— 命中时下面的题材块与股票行照常列出（用户「其它不变」）。
+               ⛔ 不能挪到 v-if="ready" 之外：未就绪时给「空仓」结论等于拿没数据当量比低用（§10）。 -->
+          <TvrbCashAlert :alert="cashAlert" />
           <TvrbBuyBlock
             v-for="b in blocks"
             :key="'tvrb-buy-' + b.topic"
@@ -143,6 +155,7 @@
 import { computed, provide } from 'vue';
 import TvrbRulesHint from '../components/topicvolratio/TvrbRulesHint.vue';
 import TvrbBuyBlock from '../components/topicvolratio/TvrbBuyBlock.vue';
+import TvrbCashAlert from '../components/topicvolratio/TvrbCashAlert.vue';
 import TvrbSellBlock from '../components/topicvolratio/TvrbSellBlock.vue';
 import { useTopicVolRatioBoard } from '../composables/useTopicVolRatioBoard.js';
 
@@ -165,6 +178,7 @@ const {
   blocks,
   sellGroups,
   notes,
+  cashAlert,
   summaryText,
   rulesLines,
   toggleExpand,

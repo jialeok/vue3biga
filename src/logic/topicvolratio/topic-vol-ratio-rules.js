@@ -27,6 +27,15 @@
 //       包括图上文字），当然我说的标签你要模仿决策看板的，不是模仿分笔买卖看板的
 //       （只是模仿它那个展开后的分笔成交图）。」
 //
+//   【第四轮 · 空仓提醒（2026-10-13，本次）】
+//     「题材量比买点侧那里，帮我添加一个条件，数量筛选后，排名第一题材平均量比小于 25 的，题材，
+//       在买点侧要提示醒目的空仓……我的需求是，还是按照原来的正常方式选出排名第一，第二的题材的
+//       股票，只是在这个低量比的节点，排名第一的题材平均竞价量比小于 25 时，需要文字提示空仓。
+//       有空仓提醒。文字大些，醒目些，看到这些文字，我就不开仓了。记住就是按照正常流程选出股票，
+//       只是多添加了空仓提醒文字。其它不变。」
+//     ⇒ 实现 = TVRB_CASH_ALERT_AVG_VR + buildCashAlert + out.cashAlert + 买点侧顶部的大字标语；
+//       ★ 只多一条提醒文案，【选股 / 标签 / 卖点一行未改】（用户「其它不变」）。
+//
 //   ⇒ 【第二轮的关键设计（就是本文件最重要的一件事）】：
 //     本看板【只替换选股】，其余【一律复用决策看板的同一份实现】——
 //       · 买点标签：把本文件选出来的块组装成【决策看板买点块的形状】，交给
@@ -73,6 +82,33 @@ export const TVRB_PICK_MID = 1;
 export const TVRB_PICK_BIG = 2;
 /** 只取排名最靠前的【几个】入选题材（用户口径「排名第一和排名第二」，不足则顺延） */
 export const TVRB_TOPIC_LIMIT = 2;
+
+/**
+ * ══ 【空仓提醒】门槛（第四轮 · 2026-10-13 用户口径）═══════════════════════════════════════
+ *
+ * 用户原话：「题材量比买点侧那里，帮我添加一个条件，数量筛选后，排名第一题材平均量比小于 25 的，
+ *   题材，在买点侧要提示醒目的空仓……比如今天，题材最高的电力新能源平均竞价量比是 45.92，
+ *   题材显示只有 3 只（排除创业板后，数量显示对的），这个题材排除入选，看排名第二的 AI 应用，
+ *   数量 14 只，（按照现有规则正常入选），题材平均竞价量比 21.51，相当于现在 AI 应用平均竞价量比
+ *   排名第一（能入选的），但是排名第一的 AI 应用平均竞价量比太低了，相当于题材退潮了，什么票都
+ *   跌得很厉害。（排名第二更不用说，因为是按题材的平均竞价量比排名第二，只有更低，所以看被选中的
+ *   题材排名第一的就可以了）……我的需求是，还是按照原来的正常方式选出排名第一，第二的题材的股票，
+ *   只是在这个低量比的节点，排名第一的题材平均竞价量比小于 25 时，需要文字提示空仓。……
+ *   记住就是按照正常流程选出股票，只是多添加了空仓提醒文字。其它不变。」
+ *
+ * ⇒ 判据（★ 只看【能入选的】题材里排名第一的那一个，也就是买点侧第一个题材块）：
+ *     avgVolRatio(blocks[0]) < TVRB_CASH_ALERT_AVG_VR  ⇒  买点侧顶部显示大字【建议空仓】。
+ *   ⛔ 不看排名第二：它按定义只会更低（排名就是按平均竞价量比降的），拿它判等于判了个更松的条件。
+ *   ⛔ 【不改变选股】：命中时股票照常按规则列出（用户原话「还是按照原来的正常方式选出……的股票」），
+ *      所以本判据只产出一条【提醒文案】，绝不删块 / 删票 / 改档位。
+ *   ⛔ 缺数据（该题材一行量比都没拿到 ⇒ avgVolRatio === null）⇒ 【不提示】（§10：未知 ≠ 低）。
+ *   ⛔ 一个题材都没入选（blocks 为空）⇒ 【不提示】—— 那属于「没有合格题材」，看板已有自己的说明，
+ *      与「入选了但量比太低」是两件事（⛔ 不拿这条去冒充）。
+ *
+ * ★ 25 这个数来自用户原话，是一个【经验阈值】而不是从数据推导出来的物理量 —— 原样写死在这里，
+ *   ⛔ 别自行调成 20 / 30：它决定「今天到底开不开仓」，只能用户改。
+ */
+export const TVRB_CASH_ALERT_AVG_VR = 25;
 
 function _num(v) {
   if (v === null || v === undefined || v === '') return null;
@@ -142,6 +178,58 @@ export function avgVolRatioOf(block) {
 export function formatAvgVolRatio(v) {
   const n = _num(v);
   return n === null ? '—' : n.toFixed(2);
+}
+
+/** 未触发时的稳定返回值（同一引用 ⇒ 不白白触发下游重算 / 重渲染，§19） */
+export const TVRB_CASH_ALERT_NONE = Object.freeze({
+  show: false,
+  topic: '',
+  rank: null,
+  avgVolRatio: null,
+  avgVolRatioText: '—',
+  threshold: TVRB_CASH_ALERT_AVG_VR,
+  headline: '',
+  detail: ''
+});
+
+/**
+ * 【空仓提醒】判据 —— 见 TVRB_CASH_ALERT_AVG_VR 的长注释（用户第四轮口径）。
+ *
+ * 入参必须是【入选题材里排名第一的那个块】（= blocks[0]，即 buy.heavy），
+ * ⛔ 不是「全部题材排名第一」——量比最高的题材常常因为数量不足 4 只已经被排除了
+ *    （用户举的例子：电力新能源 45.92 / 3 只被排除 ⇒ 看 AI应用 21.51 / 14 只）。
+ *
+ * 三种「不提示」都必须显式处理，⛔ 绝不退化成「提示」或「不提示」的默认值：
+ *   ① 没有入选题材（leadBlock 为空）⇒ 不提示（那是「没有合格题材」，看板另有说明）；
+ *   ② 该题材平均量比读不出来（null）⇒ 不提示（§10：未知 ≠ 低）；
+ *   ③ 平均量比 ≥ 门槛 ⇒ 不提示。
+ *
+ * @param {object|null} leadBlock 入选题材里排名第一的块（buildTopicVolRatioPlan 里的 blocks[0]）
+ * @returns {{show:boolean, topic:string, rank:number|null, avgVolRatio:number|null,
+ *            avgVolRatioText:string, threshold:number, headline:string, detail:string}}
+ */
+export function buildCashAlert(leadBlock) {
+  if (!leadBlock || !leadBlock.block) return TVRB_CASH_ALERT_NONE;
+  const avg = avgVolRatioOf(leadBlock.block);
+  if (avg === null) return TVRB_CASH_ALERT_NONE;           // §10：缺数据 ⇒ 不提示
+  if (!(avg < TVRB_CASH_ALERT_AVG_VR)) return TVRB_CASH_ALERT_NONE;
+
+  const topic = String(leadBlock.topic || '');
+  const avgText = formatAvgVolRatio(avg);
+  return {
+    show: true,
+    topic: topic,
+    rank: leadBlock.rank === undefined ? null : leadBlock.rank,
+    avgVolRatio: avg,
+    avgVolRatioText: avgText,
+    threshold: TVRB_CASH_ALERT_AVG_VR,
+    // 大字标语（§21：文案在 Logic 层拼好，模板零计算）
+    headline: '⚠️ 今日建议空仓 · 不开仓',
+    // 小字说明：把「为什么」「股票照常列出」讲清楚 —— 用户原话「看到这些文字，我就不开仓了」
+    detail: '能入选的排名第一题材【' + topic + '】平均竞价量比 ' + avgText + ' ＜ ' +
+      TVRB_CASH_ALERT_AVG_VR + ' ⇒ 题材退潮（最强题材的量比都这么低，当天什么票都容易走弱）。' +
+      '⚠️ 下方股票仍按原规则【照常列出】（供参考、不删不改），但看到本提示建议今天不开仓。'
+  };
 }
 
 /**
@@ -324,7 +412,7 @@ function _buildBlock(block, dragonMap, tier) {
  *                   一枚都不打（§10：未知 ≠ 没有），⛔ 绝不在这里用空集合顶替。
  *        sellRows = decision-collect 给的卖点候选行（缺省 ⇒ 不产卖点段）
  * @returns {{topics:Array, blocks:Array, buy:object, sell:Array, excludedTopics:Array,
- *            notes:Array, pickCount:number, buyNames:Set<string>}}
+ *            notes:Array, pickCount:number, buyNames:Set<string>, cashAlert:object}}
  *   topics        —— 全部参与排名的题材（含被排除的），按排名，供说明 / 复核
  *   blocks        —— 入选的题材块（≤ TVRB_TOPIC_LIMIT 个），每个含 picks
  *   buy           —— 决策看板形状的买点计划（heavy / light / candidates / 三个兜底槽位）
@@ -334,6 +422,8 @@ function _buildBlock(block, dragonMap, tier) {
  *   notes         —— 看板级说明（被排除题材汇总等）
  *   pickCount     —— 实际选出的股票总数
  *   buyNames      —— 买点名单（喂给 buildSellPlan 判「今天又进买点 ⇒ 持有」）
+ *   cashAlert     —— ★ 空仓提醒（见 TVRB_CASH_ALERT_AVG_VR / buildCashAlert）；
+ *                    ⛔ 只是【提醒文案】，不改变 blocks / picks 的任何内容
  */
 export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   const o = opts || {};
@@ -348,7 +438,10 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     excludedTopics: [],
     notes: [],
     pickCount: 0,
-    buyNames: new Set()
+    buyNames: new Set(),
+    // ★ [CASH-ALERT 2026-10-13] 空仓提醒（判据见 buildCashAlert / TVRB_CASH_ALERT_AVG_VR）。
+    //   未触发时用【同一份冻结常量】⇒ 引用稳定、不触发下游重算（§19）。
+    cashAlert: TVRB_CASH_ALERT_NONE
   };
 
   list.forEach(function(b) {
@@ -381,6 +474,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     else if (i === 1) out.buy.light = b;
     else out.buy.candidates.push(b);
   });
+
+  // ★ [CASH-ALERT 2026-10-13 用户口径] 空仓提醒：只看【能入选的】排名第一题材（blocks[0]）。
+  //   ⛔ 放在选股【之后】、且只读不写 —— 命中时股票照常列在下面（用户原话「还是按照原来的正常方式
+  //      选出排名第一，第二的题材的股票，只是……多添加了空仓提醒文字」）。
+  out.cashAlert = buildCashAlert(out.blocks[0]);
 
   // ★ 买点标签收口 —— decision-rules 的【同一份实现】（占比 / 动作标签 / 持有 / 题材标记）
   const fOpts = {
@@ -503,6 +601,14 @@ export function buildTvrbRulesLines() {
     '十八、【上游成交笔数】= 上游（东财）的【累计成交笔数】在这一分钟窗口内的差值' +
       '（不含窗口内第一条快照自身）⇒ 即这一分钟【真实成交的笔数】。' +
       '它与面板标题上的「共 N 笔」不是一回事：那是【我们保存的快照条数】（节奏由上游推送决定），' +
-      '同一价格同一秒的多笔成交会被上游并进一个快照，所以快照条数通常远小于真实成交笔数。'
+      '同一价格同一秒的多笔成交会被上游并进一个快照，所以快照条数通常远小于真实成交笔数。',
+    // ── ★ [CASH-ALERT 2026-10-13 用户口径] 空仓提醒（用户要求：要在买点侧醒目提示，看到就不开仓）
+    '十九、【空仓提醒】当【能入选的题材里排名第一】的那个题材，其平均竞价量比 < ' +
+      TVRB_CASH_ALERT_AVG_VR + ' ⇒ 买点侧顶部显示大字【建议空仓】标语，代表题材退潮' +
+      '（最强的题材量比都这么低 ⇒ 当天什么票都容易走弱）。' +
+      '⚠️ 判据只看【能入选的】排名第一者：量比更高的题材若因数量不足被排除，就顺位看下一个；' +
+      '⛔ 不看排名第二 —— 排名就是按平均竞价量比降的，第二只会更低。' +
+      '⚠️ 它只是【提醒】，⛔ 不改变选股：股票仍按上面第一~七条照常列出（供你参考），' +
+      '只是看到这条提示建议今天不开仓。'
   ];
 }

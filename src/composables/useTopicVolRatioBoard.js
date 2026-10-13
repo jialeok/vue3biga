@@ -38,7 +38,8 @@ import {
 import { MODE_VOL_RATIO } from '../logic/decision/decision-mode.js';
 import {
   buildTopicVolRatioPlan,
-  buildTvrbRulesLines
+  buildTvrbRulesLines,
+  TVRB_CASH_ALERT_NONE
 } from '../logic/topicvolratio/topic-vol-ratio-rules.js';
 // ★ 分笔：与「分笔买卖」看板【同一份取数编排 + 同一份逐行实现】（§6 单一真相，⛔ 不另写一份）
 import { decorateTickRow } from '../logic/tick/tick-minute.js';
@@ -82,7 +83,10 @@ function _empty(reason) {
     reason: reason,
     plan: {
       topics: [], blocks: [], buy: null, sell: [], excludedTopics: [], notes: [],
-      pickCount: 0, buyNames: new Set()
+      pickCount: 0, buyNames: new Set(),
+      // ⛔ 未就绪 / 计算失败时【绝不给空仓结论】：那会拿「没数据」当「量比太低」用（§10）。
+      //    形状仍保留，值 = 冻结的「不提示」，引用稳定（§19）。
+      cashAlert: TVRB_CASH_ALERT_NONE
     }
   };
 }
@@ -190,6 +194,15 @@ export function useTopicVolRatioBoard() {
   const notes = computed(() => (data.value.plan ? data.value.plan.notes : []));
   const excludedTopics = computed(() => (data.value.plan ? data.value.plan.excludedTopics : []));
   const pickCount = computed(() => (data.value.plan ? data.value.plan.pickCount : 0));
+  /**
+   * ★ [CASH-ALERT 2026-10-13 用户口径] 空仓提醒 —— 判据全在 Logic 层（buildCashAlert），
+   *   本处只把它透给模板（§21：模板零计算；§34：UI 不判业务）。
+   *   ⛔ 未就绪时是「不提示」（见 _empty）：绝不能因为「数据没算出来」就喊空仓。
+   */
+  const cashAlert = computed(function() {
+    const a = data.value.plan && data.value.plan.cashAlert;
+    return a || TVRB_CASH_ALERT_NONE;
+  });
   /** 卖点股票数（头部摘要用） */
   const sellCount = computed(function() {
     return sellGroups.value.reduce(function(n, g) { return n + ((g.items || []).length); }, 0);
@@ -366,6 +379,7 @@ export function useTopicVolRatioBoard() {
     excludedTopics,
     pickCount,
     sellCount,
+    cashAlert,
     summaryText,
     toggleExpand,
     toggleCompact,

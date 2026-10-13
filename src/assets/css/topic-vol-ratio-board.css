@@ -152,6 +152,38 @@
     color: #15803d;
 }
 
+/* ---- [CASH-ALERT 2026-10-13 用户口径] 空仓提醒（买点侧顶部的大字标语）----
+   用户原话：「在买点侧要提示醒目的空仓……文字大些，醒目些，看到这些文字，我就不开仓了。」
+   触发：能入选的排名第一题材 平均竞价量比 < 25（判据在 logic/topicvolratio/topic-vol-ratio-rules.js）。
+   ⚠️ 它【不在】下面 [COMPACT] 的任何一条隐藏选择器里 ⇒ 简洁模式下同样显示（刻意的：
+      这条标语的全部价值就是「必须被看见」）。
+   ⚠️ 配色走本看板既有的【风险告警】色系（与 .tvrb-error / .tvrb-note-box.unqualified 同语义），
+      ⛔ 与「涨红跌绿」的股价语义色无关。 */
+.tvrb-cash-alert {
+    margin: 2px 0 8px;
+    padding: 10px 12px;
+    text-align: center;
+    background: #fef2f2;
+    border: 2px solid #dc2626;
+    border-radius: 10px;
+}
+
+.tvrb-cash-alert-head {
+    font-size: 22px;
+    font-weight: 800;
+    /* 字距拉开一点，23px 的粗红字在手机上也能一眼看到 */
+    letter-spacing: 1px;
+    line-height: 1.25;
+    color: #b91c1c;
+}
+
+.tvrb-cash-alert-detail {
+    margin-top: 6px;
+    font-size: 12px;
+    line-height: 1.55;
+    color: #991b1b;
+}
+
 /* 蚂蚁线：选股段与卖点段之间的分隔（与决策看板同款行进虚线语言）。
    ⛔ 动画名必须独立（tvrbAnts），共用 decisionAnts 等于把两个看板耦成一体。 */
 .tvrb-sep {
@@ -918,6 +950,8 @@
 /* ---- [COMPACT] 简洁模式：隐藏解释性文字，只留【题材行 + 股票行 + 行内标签 + 逐行说明】----
    ⛔ .tvrb-note-empty（「这一块为什么没有股票」）【不隐藏】—— 全隐藏会剩一行光秃秃的题材名，
       反而让人以为「没算出来」（§10）。
+   ⛔ .tvrb-cash-alert（空仓提醒，买点侧顶部大字标语）【不隐藏】—— 用户口径是「看到这些文字
+      我就不开仓了」；它不在下面任何一条选择器里，这里点名说明是【刻意】的，别顺手加进去。
    ⛔ .tvrb-row-note（逐行说明）【不隐藏】—— 与决策看板 .dcb-row-note 同口径：它写的是判据本身。
    ⛔ 分笔面板（.tvrb-pen-panel）也不隐藏 —— 那是用户主动点开的量化数据。
    ⛔ 用 CSS 隐藏而不是模板 v-if：模板分支越少越稳。 */

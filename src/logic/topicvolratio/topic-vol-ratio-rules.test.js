@@ -16,6 +16,12 @@
 //   · 卖点段 = buildSellPlan 的同一份实现（「今天又进买点 ⇒ 持有」用本看板自己的名单）；
 //   · 规则文案扩到 14 条且口径齐全。
 //
+// 覆盖【第四轮 · 空仓提醒】（2026-10-13 用户口径）：
+//   · 能入选的排名第一题材 平均竞价量比 < 25 ⇒ cashAlert.show = true（判据看【能入选的】，
+//     量比更高但数量不足被排除的题材不算）；
+//   · 边界 25 不触发（用户说的是「小于 25」）；缺量比 / 无入选题材都不触发（§10）；
+//   · ★ 命中提醒时选股 / 标签 / 说明【一行未改】（提醒只是一段独立文案）。
+//
 // ⚠️ 断言里刻意【引用 decision-rules 的常量】而不是手写中文字面量：
 //   本看板的口径就是「标签与决策看板完全同一套」⇒ 决策看板改名时两边要一起动，
 //   手写字面量会让这个测试变成「挡住正确改名」的绊脚石。
@@ -27,9 +33,11 @@ import {
   TVRB_PICK_MID,
   TVRB_PICK_BIG,
   TVRB_TOPIC_LIMIT,
+  TVRB_CASH_ALERT_AVG_VR,
   resolveTvrbTier,
   avgVolRatioOf,
   formatAvgVolRatio,
+  buildCashAlert,
   buildTopicVolRatioPlan,
   buildTvrbRulesLines
 } from './topic-vol-ratio-rules.js';
@@ -519,6 +527,126 @@ describe('tvrb · 卖点段复用决策看板的卖点计划', function() {
   });
 });
 
+// ── 第四轮 · 空仓提醒（2026-10-13 用户口径）─────────────────────────────────────────────
+describe('tvrb · 空仓提醒（入选题材里排名第一 平均量比 < 25 ⇒ 买点侧提示空仓）', function() {
+  it('常量 = 25（用户原话的阈值，⛔ 不是推导值；改它等于改「今天开不开仓」）', function() {
+    expect(TVRB_CASH_ALERT_AVG_VR).toBe(25);
+  });
+
+  /** 四个成员、量比全等于 v 的题材（平均量比 = v） */
+  function flatTopic(topic, rank, v, n) {
+    const members = [];
+    const ranks = [];
+    const cnt = n || 4;
+    for (let i = 1; i <= cnt; i++) {
+      const nm = topic + '票' + i;
+      members.push(m(nm, { aucVolRatio: v }));
+      if (i <= 3) ranks.push([nm, i]);
+    }
+    return { b: block(topic, rank, members), ranks: ranks };
+  }
+
+  /**
+   * 用户 2026-10-13 的真实例子：
+   *   电力新能源 3 只（平均量比 45.92，排 1，数量不足 4 只 ⇒ 排除）
+   *   AI应用 14 只（平均量比 21.51，排 2 ⇒ 正常入选，成为「能入选的」排名第一）
+   */
+  function todayFixtures(aiRatio) {
+    const power = flatTopic('电力新能源', 1, 45.92, 3);
+    const ai = flatTopic('AI应用', 2, aiRatio === undefined ? 21.51 : aiRatio, 14);
+    const dm = new Map();
+    power.ranks.concat(ai.ranks).forEach(function(e) { dm.set(e[0], { rank: e[1], topic: '', groupSize: 0, pct: 20 }); });
+    return { topics: [power.b, ai.b], dm: dm };
+  }
+
+  it('★ 用户今天的例子：量比最高的题材被排除 ⇒ 判据看【能入选的】排名第一 ⇒ 提示空仓', function() {
+    const f = todayFixtures();
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, {});
+    // 选股照旧：电力新能源排除、AI应用入选（下面「选股照常」用例还会逐项钉一遍）
+    expect(plan.excludedTopics.map(function(t) { return t.topic; })).toEqual(['电力新能源']);
+    expect(plan.blocks.map(function(b) { return b.topic; })).toEqual(['AI应用']);
+    // 提醒
+    expect(plan.cashAlert.show).toBe(true);
+    expect(plan.cashAlert.topic).toBe('AI应用');            // ⛔ 不是被排除的电力新能源
+    expect(plan.cashAlert.rank).toBe(2);
+    expect(plan.cashAlert.avgVolRatio).toBeCloseTo(21.51, 10);
+    expect(plan.cashAlert.avgVolRatioText).toBe('21.51');
+    expect(plan.cashAlert.threshold).toBe(25);
+    // 文案：大字标语 + 说明（字数不是重点，关键是「空仓」二字与「照常列出」的口径）
+    expect(plan.cashAlert.headline).toContain('空仓');
+    expect(plan.cashAlert.detail).toContain('21.51');
+    expect(plan.cashAlert.detail).toContain(String(TVRB_CASH_ALERT_AVG_VR));
+    expect(plan.cashAlert.detail).toContain('照常列出');
+  });
+
+  it('边界：恰好 25 ⇒ 不提示（用户口径是「小于 25」）；再低 0.01 就提示', function() {
+    const eq = buildTopicVolRatioPlan(todayFixtures(25).topics, todayFixtures(25).dm, {});
+    expect(eq.cashAlert.show).toBe(false);
+
+    const hi = buildTopicVolRatioPlan(todayFixtures(25.01).topics, todayFixtures(25.01).dm, {});
+    expect(hi.cashAlert.show).toBe(false);
+
+    const lo = buildTopicVolRatioPlan(todayFixtures(24.99).topics, todayFixtures(24.99).dm, {});
+    expect(lo.cashAlert.show).toBe(true);
+    expect(lo.cashAlert.avgVolRatioText).toBe('24.99');
+  });
+
+  it('能入选的排名第一量比达标 ⇒ 不提示（⛔ 排名第二再低也不提示：它只会更低）', function() {
+    const a = flatTopic('强题材', 1, 30);
+    const b = flatTopic('弱题材', 2, 10);
+    const dm = new Map();
+    a.ranks.concat(b.ranks).forEach(function(e) { dm.set(e[0], { rank: e[1], topic: '', groupSize: 0, pct: 20 }); });
+    const plan = buildTopicVolRatioPlan([a.b, b.b], dm, {});
+    expect(plan.blocks.map(function(x) { return x.topic; })).toEqual(['强题材', '弱题材']);
+    expect(plan.cashAlert.show).toBe(false);   // 第一达标 ⇒ 不提示（哪怕第二只有 10）
+  });
+
+  it('§10：平均量比读不出来（该题材一行量比都没有）⇒ 不提示（未知 ≠ 低）', function() {
+    const b = block('无量比题材', 1, [
+      m('甲', { aucVolRatio: null }), m('乙', { aucVolRatio: '' }),
+      m('丙', { aucVolRatio: null }), m('丁', { aucVolRatio: undefined })
+    ]);
+    const plan = buildTopicVolRatioPlan([b], dragonMap([['甲', 1], ['乙', 2], ['丙', 3], ['丁', 4]]), {});
+    expect(avgVolRatioOf(b)).toBeNull();
+    expect(plan.cashAlert.show).toBe(false);
+    expect(plan.cashAlert.avgVolRatioText).toBe('—');
+  });
+
+  it('一个题材都没入选 ⇒ 不提示（那是「没有合格题材」，看板另有说明，⛔ 不拿这条冒充）', function() {
+    const b = flatTopic('只有三只', 1, 5, 3);
+    const plan = buildTopicVolRatioPlan([b.b], dragonMap(b.ranks), {});
+    expect(plan.blocks).toEqual([]);
+    expect(plan.cashAlert.show).toBe(false);
+    expect(plan.cashAlert).toEqual(buildCashAlert(null));
+  });
+
+  it('★ 命中提醒时【选股与标签一行未改】：档位 / 只数 / 票名与「量比达标」时逐项一致', function() {
+    const low = todayFixtures(21.51);
+    const ok = todayFixtures(30);
+    const pLow = buildTopicVolRatioPlan(low.topics, low.dm, {});
+    const pOk = buildTopicVolRatioPlan(ok.topics, ok.dm, {});
+    // 提醒：一个开一个不开
+    expect(pLow.cashAlert.show).toBe(true);
+    expect(pOk.cashAlert.show).toBe(false);
+    // 选股：完全一致（AI应用 14 只 ⇒ big 档 ⇒ 取 2 只）
+    expect(pLow.blocks.map(function(b) { return b.topic + '|' + b.tier + '|' + b.pickCount; }))
+      .toEqual(pOk.blocks.map(function(b) { return b.topic + '|' + b.tier + '|' + b.pickCount; }));
+    expect(pLow.blocks[0].picks.map(function(p) { return p.name; }))
+      .toEqual(pOk.blocks[0].picks.map(function(p) { return p.name; }));
+    expect(pLow.pickCount).toBe(pOk.pickCount);
+    expect(pLow.pickCount).toBe(2);
+    // 说明文字也不因提醒而变化（提醒是独立一段，不进 notes）
+    expect(pLow.notes).toEqual(pOk.notes);
+    expect(pLow.notes.join('\n')).not.toContain('空仓');
+  });
+
+  it('buildCashAlert 直接调用：空块 / 缺均值都返回同一份「不提示」冻结常量', function() {
+    expect(buildCashAlert(null)).toBe(buildCashAlert(undefined));
+    expect(buildCashAlert(null).show).toBe(false);
+    expect(TVRB_CASH_ALERT_AVG_VR).toBe(25);
+  });
+});
+
 // ── 规则文案 ─────────────────────────────────────────────────────────────────────────────
 describe('tvrb · buildTvrbRulesLines 规则文案', function() {
   const lines = buildTvrbRulesLines();
@@ -565,6 +693,13 @@ describe('tvrb · buildTvrbRulesLines 规则文案', function() {
     expect(all).toContain('不标重仓');             // 十：本看板没有仓位口径
     expect(all).toContain('分笔');                 // 十一：展开面板 = 分笔明细
     expect(all).toContain('不抓数据');             // 十三：不额外消耗额度
+  });
+
+  it('第四轮补的【空仓提醒】必须写进规则（阈值取常量，⛔ 不写死；口径要写清「不改选股」）', function() {
+    const all = lines.join('\n');
+    expect(all).toContain('空仓提醒');
+    expect(all).toContain(String(TVRB_CASH_ALERT_AVG_VR));
+    expect(all).toContain('不改变选股');
   });
 });
 
