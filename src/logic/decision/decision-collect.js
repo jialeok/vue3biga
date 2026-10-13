@@ -31,7 +31,7 @@ import { decorateSealFields } from '../auction/seal-volume.js';
 // [BOARD-SUSPEND 2026-10-13 用户口径] 「三个选股看板都要标哪只股票停牌」——
 //   判定与展示收口全在 suspend.js（§6 单一真相，与早盘竞价看板同一条判据）。
 //   ⛔ 不消费猫抓额度：同花顺 fuyao 免费/不限量；本层只做【同步读】，加载由各看板组合式触发。
-import { decorateSuspendField, isSuspended } from '../auction/suspend.js';
+import { decorateSuspendField, isSuspended, canJudgeSuspended } from '../auction/suspend.js';
 import { _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 // [TWO-MODES 2026-10-02 用户口径] 买点分两套模式，由早盘竞价的题材 / 一字 toggle 决定
@@ -685,6 +685,33 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
     return y;
   };
 
+  /** 某日某票在库里【确实没参与竞价】—— 竞价量写着 0（§10：取不到 = null ⇒ 不算，未知 ≠ 没参与） */
+  const _noAuctionOn = function(d, name) {
+    return getAuctionVolume(d, name) === 0;
+  };
+  /**
+   * ★★ [EBB-R8b 2026-10-14 实测修] 某只票在【展示日】是不是停牌 —— 本文件唯一的停牌判据（§6）。
+   *
+   * 为什么不能直接写 `isSuspended(date, name)`：上游两个快照接口【只有当日数据】，
+   *   `isSuspended` 在**历史日**恒 false（见 suspend.js#canJudgeSuspended 的注释）。
+   *   实测事故：2026-10-14 回看 10-13，总龙【新华传媒】当天停牌（库里 10-13 那一行竞价量 = 0），
+   *   但 `isSuspended('2026-10-13', …)` 返 false ⇒ 判据①不成立 ⇒ **退潮首日整套静默失效**
+   *   （买点不灰化 / 无退潮不买 / 无龙二 / 无横幅）—— 与用户反复报的「没生效」是同一类事故。
+   *
+   * 判据（两腿，先权威后回退）：
+   *   ① 上游快照 —— `isSuspended`，**仅当它能为这一天作证时**（`canJudgeSuspended(date)`，
+   *      即 date 就是今天）才算「权威的否定」；
+   *   ② 库内该日该票自己的竞价行 —— 竞价量 = 0 ⇒ 那天没参与集合竞价（= 停牌语义，
+   *      与下面 prevLeader.suspendedLike 逐字同一把尺子）。
+   * ⛔ 今日路径行为【零变化】：`canJudgeSuspended(今天)` 恒 true ⇒ 第①腿返 false 时即返回 false，
+   *   不会被较弱的「量为 0」改写（§11）。§10：两腿都取不到 ⇒ false（不猜成停牌）。
+   */
+  const _suspendOf = function(name) {
+    if (isSuspended(date, name)) return true;
+    if (canJudgeSuspended(date)) return false;
+    return _noAuctionOn(date, name);
+  };
+
   const cand = [];
   const seen = new Set();
   (rows || []).forEach(function(r) {
@@ -729,7 +756,7 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
       siblings.push({
         name: m.name, rank: rank,
         isYizi: !!m.isYizi,
-        suspended: isSuspended(date, m.name)
+        suspended: _suspendOf(m.name)
       });
     });
     siblings.sort(function(a, b) {
@@ -746,7 +773,7 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
       name: second.name, pct: second.pct, topic: String(second.topic || ''),
       rank: _rankOf(second.name),
       isYizi: _isYiziOf(second.name),
-      suspended: isSuspended(date, second.name)
+      suspended: _suspendOf(second.name)
     };
   }
 
@@ -775,7 +802,8 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
       share: prevShare,
       // 昨日「没有竞价」：量为 0（确实有这一行且写着 0）。⚠️ 取不到（null）【不算】——
       // 取不到 = 库里没有那一天这只票的行（例如那天它还没被加入名单）⇒ 无从判断（§10）。
-      suspendedLike: (prevVolume === 0),
+      // ⛔ 与上面的 _suspendOf 第②腿【同一把尺子】（_noAuctionOn 唯一实现）。
+      suspendedLike: _noAuctionOn(prevDate, leader.name),
       // 昨日占比不达标（缺数据 ⇒ false ⇒ 不据此判断 · §10：未知 ≠ 不达标）
       shareFail: (prevShare !== null && !passesAuctionShare(prevShare, Number(leader.rank) === 1)),
       bad: false
@@ -822,7 +850,7 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
         name: top.name, pct: top.pct, topic: top.topic, code: top.code,
         rank: top.rank,
         isYizi: _isYiziOf(top.name),
-        suspended: isSuspended(date, top.name)
+        suspended: _suspendOf(top.name)
       };
     }
   }
@@ -831,8 +859,9 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
     ready: true,
     leader: leader,
     second: second,
-    // 停牌走 suspend.js 的唯一实现（§6），⛔ 不在这里另判一遍
-    leaderSuspended: isSuspended(date, leader.name),
+    // 停牌走 suspend.js 的唯一实现（§6），⛔ 不在这里另判一遍。
+    //   [EBB-R8b] 走 _suspendOf：今日 = 上游快照；历史日回退库内该日竞价行（见 _suspendOf 的 JSDoc）。
+    leaderSuspended: _suspendOf(leader.name),
     // 今日竞价占比（%）：null = 缺数据（规则层据此【不判】不达标，§10：未知 ≠ 不达标）
     leaderShare: getAuctionShare(date, leader.name),
     siblingDragons: siblings,

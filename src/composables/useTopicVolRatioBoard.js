@@ -277,14 +277,28 @@ export function useTopicVolRatioBoard() {
       //   （⛔ 不跟早盘竞价的「题材 / 一字」toggle 联动：本看板的定义就是按量比排）。
       // actionContext=true → 额外取回买卖点标签上下文 + 卖点候选行（见 decision-collect 的出口注释）
       // ★ [EBB] prevRangeMap = 上一交易日的十日涨幅（算市场总龙用）；没读回来 ⇒ null ⇒ 退潮规则不生效
+      //
+      // ★★ [EBB-R8c 2026-10-14 端到端实测修 · 【日期串味】闸门] 两份 rangeMap 传入前【必须逐份核对日期】：
+      //   它们都是【异步】读回的 ref。切日期那一帧，ref 里还挂着【上一个展示日】的 map，
+      //   而 data 是【同步 computed】⇒ 会立刻拿旧日期的数据算一遍并渲染出去。实测（真实 10-13 数据）：
+      //     切到 10-13 后的最初几秒，退潮横幅把总龙的「昨日十日涨幅」显示成 +136% —— 那是【10-13 当日】
+      //     的值；昨日（10-12）真值是 159.51% ⇒ 静置约 12s 后才变回 +160%。
+      //   把 A 日的数据当 B 日用是 §10 红线（口径注释自己就写着「⛔ 必传『昨日』那份」），
+      //   故：日期不匹配 ⇒ 传 null（= 未知 ⇒ 退潮规则本次不生效），⛔ 绝不拿错日期的数据顶替。
+      //   ⚠️ 与本看板「消除切日期空白期」不冲突，也不把性能退回去：
+      //     · 空白期的闸门在 decision-collect 的「十日涨幅 / 龙头数据」那张网，解除它靠的是
+      //       **注入这件事本身**（一次直读，快过 useAuctionBoard 那条串行链），而不是「注入错日期的数据」；
+      //     · readRangePctForDate 有会话级缓存 ⇒ 常见切换路径（如 10-14 ↔ 10-13，两份互为对方的
+      //       prev / cur）里被核对的那份【已经在缓存**，核对几乎零延迟。
+      const pd = getPreviousTradingDay(d);
       const rec = collectDecisionTopics(d, {
         mode: MODE_VOL_RATIO,
         actionContext: true,
-        // 上一交易日的十日涨幅（算市场总龙 = 昨日口径）
-        prevRangeMap: prevRangeMap.value,
+        // 上一交易日的十日涨幅（算市场总龙 = 昨日口径）—— 只认【日期对得上】的那份
+        prevRangeMap: (prevRangeMap.value && prevRangeDate.value === pd) ? prevRangeMap.value : null,
         // ★★ [EBB-R8] 展示日【当天】的十日涨幅（算买点侧唯一那只 = 当日口径）
         //   + 🔴 消除「切日期后 dragonState 尚未跟上」造成的空白期（见 curRangeMap 的注释）
-        rangeMap: curRangeMap.value
+        rangeMap: (curRangeMap.value && curRangeDate.value === d) ? curRangeMap.value : null
       });
       if (!rec || !rec.ready) return _empty((rec && rec.reason) || '暂无数据');
 

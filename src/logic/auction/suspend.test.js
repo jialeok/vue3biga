@@ -5,6 +5,7 @@ import {
   pickSuspendedFromPriceItems,
   decorateSuspendField,
   isSuspended,
+  canJudgeSuspended,
   suspendState,
   SUSPEND_TAG_TEXT
 } from './suspend.js';
@@ -198,5 +199,40 @@ describe('suspend · decorateSuspendField（三个选股看板的唯一展示收
     const row = { name: ' 新华传媒 ' };
     decorateSuspendField(row, D);
     expect(row.suspendTag).toBe(SUSPEND_TAG_TEXT);
+  });
+});
+
+describe('suspend · canJudgeSuspended（上游快照能否为这一天作证 —— 历史日回退腿的判据）', () => {
+  // [EBB-R8b 2026-10-14] 上游两个快照接口（auction/snapshot、prices/snapshot）都【只有当日数据】
+  //   ⇒ isSuspended 在历史日恒 false。但「判不出来」和「没停牌」是两件事（§10），
+  //   调用方必须能问出「上游到底能不能为这一天作证」，才能决定是否回退到库内竞价行。
+  //   实测事故：2026-10-14 回看 10-13，总龙新华传媒停牌被判成 false ⇒ 退潮首日整套静默失效。
+  const NOT_TODAY = '2020-01-01';   // 固定过去日（⛔ 不用 2026-10-13 之类，免得哪天正好是今天）
+  const TODAY = (function() {
+    const n = new Date();
+    return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0') + '-' + String(n.getDate()).padStart(2, '0');
+  })();
+
+  it('★ 只有【今天】返回 true（= 上游快照确实覆盖这一天）', () => {
+    expect(canJudgeSuspended(TODAY)).toBe(true);
+    expect(canJudgeSuspended(NOT_TODAY)).toBe(false);
+  });
+
+  it('§11：判据只看「是不是今天」，与 suspendState 里挂着什么无关（未加载也算「今天能判」）', () => {
+    const saved = suspendState.value;
+    try {
+      // 挂一份别的日期的集合，结论不受影响；今天仍然「能判」（只是暂时还没结果）
+      suspendState.value = { date: NOT_TODAY, set: new Set(['某票']), version: 1, loadedAt: Date.now() };
+      expect(canJudgeSuspended(TODAY)).toBe(true);
+      expect(canJudgeSuspended(NOT_TODAY)).toBe(false);
+    } finally {
+      suspendState.value = saved;
+    }
+  });
+
+  it('§10：空 / 未定义 ⇒ false（⛔ 不猜）', () => {
+    [null, undefined, ''].forEach(function(d) {
+      expect(canJudgeSuspended(d)).toBe(false);
+    });
   });
 });

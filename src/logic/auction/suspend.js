@@ -314,6 +314,27 @@ export function isSuspended(date, stockName) {
 }
 
 /**
+ * 上游停牌快照【能不能为这一天作证】（§6 单一真相：这句判断只有这一个实现）。
+ *
+ * 为什么需要它：`isSuspended` 在**历史日**恒 false —— 不是「那天没停牌」，而是上游两个快照接口
+ *   **只有当日数据**（见上面 `ensureSuspendSet` 的红线）。两者返回的都是 `false`，
+ *   但语义完全不同（§10：**判不出来 ≠ 没停牌**）。调用方若把历史日的 false 当成「没停牌」，
+ *   就会把这个功能在历史日整体静默失效（实测事故：2026-10-14 回看 10-13，
+ *   总龙【新华传媒】停牌却判成 false ⇒ 退潮首日整套不生效）。
+ *   ⇒ 调用方据此决定「能不能用上游」，不能时**回退到库内证据**（该日该票的竞价行）。
+ *
+ * @param {string} date YYYY-MM-DD
+ * @returns {boolean} true = 这一天有上游快照（当且仅当它就是本地「今天」）；false = 上游答不了
+ */
+export function canJudgeSuspended(date) {
+  if (!date) return false;
+  // 上游快照永远是「当日」的 ⇒ 只有 date === 今天时它才对这个日期有效。
+  // ⛔ 不看 loadedAt / set.size：未加载完成也属于「今天能判」，只是暂时还没结果；
+  //    回退到库内证据会让「今天」这种行为被较弱的判据改写（§11 默认零行为变化）。
+  return String(date).trim() === _getLocalTodayStr();
+}
+
+/**
  * 给一行展示行挂上停牌展示字段（**唯一收口**，§6）。
  *
  * 谁调它：`decision-collect` 的 `_decorateSuspend`（早盘竞价看板之外的**三个选股看板** ——

@@ -5,8 +5,9 @@
 //   买点票漏收 ⇒ 那只停牌票不标；形态认错（只读 .picks、不认数组）⇒ 整侧不标。
 //   两种都不会报错，只会静默少一枚标签，所以必须钉死。
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { suspendEntriesOf, ebbCtxOf } from './decision-collect.js';
+import { state } from '../app-state.js';
 
 describe('decision-collect · suspendEntriesOf（停牌名单出口，三个选股看板共用）', () => {
   it('买点（buildBuyPlan 形状）+ 卖点分组：两侧都收，并按名字去重', () => {
@@ -231,5 +232,87 @@ describe('decision-collect · ebbCtxOf（退潮首日的事实采集）', () => 
       expect(c.ready).toBe(true);       // 退潮事实本身仍成立
       expect(c.buySecond).toBe(null);
     });
+  });
+});
+
+// ── ★★ [EBB-R8b 2026-10-14 实测修] 停牌判据的【历史日回退腿】──────────────────────────────
+//   实测事故（浏览器端到端：真实 10-13 云端数据 + 本地构建产物 + 无头 Chrome/CDP，2026-10-14 跑）：
+//     回看 10-13 时总龙【新华传媒】当天确实停牌（库里 10-13 那一行竞价量 = 0），
+//     但 `isSuspended('2026-10-13', …)` 恒 false —— 上游两个快照接口【只有当日数据】
+//     （见 suspend.js#canJudgeSuspended）。于是判据①不成立、占比又缺 ⇒ ebb = null
+//     ⇒ 退潮首日整套（买点灰化 / 退潮不买 / 唯一买点龙二 / 退潮横幅）全部静默失效。
+//     ⚠️ 这正是用户反复报的「没生效」同一类事故；而它在**当天**看不出来（当天 leg① 有效）。
+//   修法：停牌判据两腿 —— ① 上游快照（仅当 `canJudgeSuspended(date)` 为真，即 date 就是今天）；
+//     ② 回退【该日该票自己的竞价行】：竞价量 = 0 ⇒ 那天没参与集合竞价（停牌语义）。
+describe('decision-collect · ebbCtxOf · 停牌判据（上游只有当日 ⇒ 历史日回退库内竞价行）', () => {
+  const HIST = '2026-10-13';   // 历史日：它 ≠ 本地「今天」⇒ 上游快照对这一天无效
+  function row(name, topic, extra) {
+    return Object.assign({ name: name, topic: topic, code: '600000' }, extra || {});
+  }
+  function prev(map) {
+    const m = new Map();
+    Object.keys(map).forEach(function(k) { m.set(k, { pct: map[k], days: 10, updatedAt: '' }); });
+    return m;
+  }
+  function dm(map) {
+    const m = new Map();
+    Object.keys(map).forEach(function(k) { m.set(k, { rank: map[k], topic: '', groupSize: 0, pct: 20 }); });
+    return m;
+  }
+  const AI = 'AI应用';
+  const rows = [row('新华传媒', AI, { code: '600825' }), row('新华文轩', AI, { code: '601811' })];
+  const topics = [{
+    topic: AI, rank: 1, count: 2, yiziCount: 0,
+    members: [{ name: '新华传媒', isYizi: false }, { name: '新华文轩', isYizi: false }]
+  }];
+  const rankMap = dm({ 新华传媒: 1, 新华文轩: 2 });
+  const YEST = prev({ 新华传媒: 159.51, 新华文轩: 65.47 });
+  const TODAY = (function() {
+    const n = new Date();
+    return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0') + '-' + String(n.getDate()).padStart(2, '0');
+  })();
+
+  // 行情缓存的桩：本用例只碰这两格，用完原样还原（⛔ 不污染其它用例）
+  let savedAuction = null;
+  let savedHot = null;
+  beforeEach(() => {
+    savedAuction = state._auctionMemCache;
+    savedHot = state._hotFullRowCache;
+    state._auctionMemCache = {};
+    state._hotFullRowCache = {};
+  });
+  afterEach(() => {
+    state._auctionMemCache = savedAuction;
+    state._hotFullRowCache = savedHot;
+  });
+
+  it('★ 历史日：库里该票当日竞价量 = 0 ⇒ leaderSuspended = true（10-13 新华传媒事故的回归钉）', () => {
+    state._auctionMemCache = {
+      [HIST]: [{ stock: '新华传媒', volume: '0' }, { stock: '新华文轩', volume: '288' }]
+    };
+    const c = ebbCtxOf(rows, topics, rankMap, HIST, YEST);
+    expect(c.ready).toBe(true);
+    expect(c.leader.name).toBe('新华传媒');
+    expect(c.leaderSuspended).toBe(true);                    // ★ 修好之前这里恒 false ⇒ 退潮整体失效
+    // 同题材龙位（新华文轩）那一天有竞价量 ⇒ 不算停牌（⛔ 别把「有量」也判成停牌）
+    expect(c.siblingDragons[0].name).toBe('新华文轩');
+    expect(c.siblingDragons[0].suspended).toBe(false);
+  });
+
+  it('§10：历史日【取不到】该票那一行 ⇒ 不判停牌（未知 ≠ 停牌）；写的是非 0 ⇒ 同样不判', () => {
+    // ① 库里根本没这一天这只票的行
+    state._auctionMemCache = { [HIST]: [{ stock: '新华文轩', volume: '288' }] };
+    expect(ebbCtxOf(rows, topics, rankMap, HIST, YEST).leaderSuspended).toBe(false);
+    // ② 有行、量写着非 0
+    state._auctionMemCache = { [HIST]: [{ stock: '新华传媒', volume: '1635' }, { stock: '新华文轩', volume: '288' }] };
+    expect(ebbCtxOf(rows, topics, rankMap, HIST, YEST).leaderSuspended).toBe(false);
+  });
+
+  it('§11：【今天】不走回退腿 —— 上游答不了、量又写着 0 ⇒ 仍判 false（今日路径行为零变化）', () => {
+    state._auctionMemCache = {
+      [TODAY]: [{ stock: '新华传媒', volume: '0' }, { stock: '新华文轩', volume: '288' }]
+    };
+    const c = ebbCtxOf(rows, topics, rankMap, TODAY, YEST);
+    expect(c.leaderSuspended).toBe(false);
   });
 });
