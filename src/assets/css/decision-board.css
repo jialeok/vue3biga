@@ -392,6 +392,31 @@
             white-space: nowrap;
         }
 
+        /* [BOARD-SUSPEND-GREY 2026-10-13 用户口径] 停牌票的【买卖信号】一律去色（⛔ 只改颜色，不动文案/位置）
+           用户原话：「停牌后，买点侧的竞价买，尾盘买，等标签变成灰色，竞价量比也是。」
+           · 口径：停牌 = 当日不可交易 ⇒ 那些「什么时候买 / 强不强」的彩色徽标已失去意义，
+             统一降级为中性灰，避免被读成「今天还能照这个信号动手」（§10 不放置误导性信号）。
+             覆盖：动作标签 .dcb-action、竞价涨幅 .dcb-auc、竞价量比 .dcb-vratio、占比 .dcb-share，
+                   以及纯文字的仓位 / 持有 .dcb-position / .dcb-hold。
+           · ⛔ 保留原色的 = 【客观数据】：十日涨幅 .dcb-pct、龙标 .dcb-dragon、
+             名次变化 .dcb-dragon-delta-*、连板 .dcb-continue、封单 .dcb-seal
+             —— 它们是停牌前就成立的事实，不是「该不该买」的信号。
+           · ★ 收口 = 行级 :has(.dcb-suspend)：⛔ 不改模板、⛔ 不在组件里逐枚拼 class（§6 单一真相）。
+             顺带让【买卖两侧】同源一致 —— 停牌票两侧都不该再有彩色的买卖信号。
+           · 特异性说明：本组比 .dcb-action-now / .dcb-vratio-up 等修饰类更高 ⇒ ⛔ 无需 !important。 */
+        .dcb-row:has(.dcb-suspend) .dcb-action,
+        .dcb-row:has(.dcb-suspend) .dcb-auc,
+        .dcb-row:has(.dcb-suspend) .dcb-vratio,
+        .dcb-row:has(.dcb-suspend) .dcb-share {
+            background: #f1f5f9;
+            color: #64748b;
+        }
+
+        .dcb-row:has(.dcb-suspend) .dcb-position,
+        .dcb-row:has(.dcb-suspend) .dcb-hold {
+            color: #94a3b8;
+        }
+
         .dcb-pct {
             font-size: 11px;
             color: #b91c1c;

@@ -331,6 +331,18 @@
   white-space: nowrap;
 }
 
+/* [BOARD-SUSPEND-GREY 2026-10-13 用户口径] 停牌票的买卖信号一律去色（与决策 / 题材量比同口径）。
+   用户原话：「停牌后，买点侧的竞价买，尾盘买，等标签变成灰色，竞价量比也是。」
+   ⇒ 本看板两道信号都灰：① 从决策看板继承的买卖点标签 .tbb-ref-*（就是「决策·竞价买 / 尾盘买」，
+     它是本看板里「竞价买 / 尾盘买」的唯一出现形式）；② 本分钟自己算的结论胶囊 .tbb-verdict-*。
+   ⛔ 20 笔红绿统计 .tbb-stat【不动】—— 它是客观成交事实，不是「该不该买」的信号。
+   ★ 行级 :has(.tbb-suspend) 一处收口（§6），买卖两侧同源；特异性已高于各 tone 类，⛔ 不用 !important。 */
+.tbb-row:has(.tbb-suspend) .tbb-ref,
+.tbb-row:has(.tbb-suspend) .tbb-verdict {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
 /* 龙标旁边的名次变化（'+3' 上升红 / '-2' 下降绿）。
    用户口径「数字前有加减号，不用背景色，上升用红色，下降用绿色」⇒ 只给文字颜色。
    ⚠️ 负 margin 是刻意的：.tbb-row 是 flex + gap: 8px，龙标与数字是两个 flex 子项，

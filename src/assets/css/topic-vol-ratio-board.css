@@ -446,6 +446,25 @@
     white-space: nowrap;
 }
 
+/* [BOARD-SUSPEND-GREY 2026-10-13 用户口径] 停牌票的买卖信号一律去色（与决策看板同口径、同色值）。
+   用户原话：「停牌后，买点侧的竞价买，尾盘买，等标签变成灰色，竞价量比也是。」
+   ⇒ 动作标签 .tvrb-action、竞价涨幅 .tvrb-auc、竞价量比 .tvrb-vratio、占比 .tvrb-share
+     统一降级为中性灰；仓位 / 持有 .tvrb-position / .tvrb-hold 只把文字转灰。
+   ⛔ 十日涨幅 / 龙标 / 名次变化 / 连板 / 封单额是客观数据，保留原色。
+   ★ 行级 :has(.tvrb-suspend) 一处收口（§6），买卖两侧同源；特异性已高于各 tone 类，⛔ 不用 !important。 */
+.tvrb-row:has(.tvrb-suspend) .tvrb-action,
+.tvrb-row:has(.tvrb-suspend) .tvrb-auc,
+.tvrb-row:has(.tvrb-suspend) .tvrb-vratio,
+.tvrb-row:has(.tvrb-suspend) .tvrb-share {
+    background: #f1f5f9;
+    color: #64748b;
+}
+
+.tvrb-row:has(.tvrb-suspend) .tvrb-position,
+.tvrb-row:has(.tvrb-suspend) .tvrb-hold {
+    color: #94a3b8;
+}
+
 /* 龙一 / 龙二 徽章：9px 小字，紧贴股票名（与决策看板龙标同款） */
 .tvrb-dragon {
     padding: 0 4px;
