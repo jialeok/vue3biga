@@ -7,6 +7,11 @@
 
 import { getStockHistoryTopics } from '../logic/stocks/stocks.js';
 import { getTopicRankCountThisWeek, isPseudoTopic } from '../logic/topic/rules.js';
+// [SUSPEND 2026-10-13] 当日停牌：题材页「涨幅」列原本对停牌票显示 '-'，与「没抓到数据」
+// 无法区分。判定唯一实现在 logic/auction/suspend.js（同花顺 fuyao，免费/不限量），
+// 这里只同步读取结果用于展示，不做判定、不发请求。
+import { isSuspended, SUSPEND_TAG_TEXT } from '../logic/auction/suspend.js';
+import { useUiStore } from '../stores/uiStore.js';
 
 /**
  * 把星数映射为展示符号：<=0 显示 "-"，>=6 显示 "N★"，否则重复 ★。
@@ -31,9 +36,25 @@ export function extractChangeFromNote(note) {
 }
 
 /**
+ * [SUSPEND 2026-10-13] 「本行是否当日停牌」——仅供展示层询问，不做判定。
+ * 日期取当前看板日期（唯一真相 uiStore.currentDate）；suspend.js 内部已保证
+ * 「非今日一律空集合」，所以切到历史日期时这里自然恒为 false。
+ * 任何异常（Pinia 未就绪等）都降级为「不标」，绝不因展示增益把看板搞崩。
+ * @param {object} item
+ * @returns {boolean}
+ */
+function _isSuspendedRow(item) {
+    const name = item && item.stock ? String(item.stock).trim() : '';
+    if (!name) return false;
+    try { return isSuspended(useUiStore().currentDate, name); } catch (e) { return false; }
+}
+
+/**
  * 计算涨跌幅的展示文本：
  * - 优先用 item.changePct；合法百分比且 |值|<=20 原样显示，否则显示 "-"
  * - 没有 changePct 时回退从 item.note 中提取
+ * - [SUSPEND 2026-10-13] 上述两条都取不到（本要显示 "-"）且该股当日停牌 → 显示「停牌」。
+ *   ⚠️ 只在「本来要显示 -」时才替换：已有真实涨幅一律照常显示，绝不覆盖。
  * @param {object} item
  * @returns {string}
  */
@@ -46,7 +67,9 @@ export function getChangePctDisplay(item) {
         }
         return item.changePct;
     }
-    return extractChangeFromNote(item ? item.note : '');
+    const fromNote = extractChangeFromNote(item ? item.note : '');
+    if (fromNote !== '-') return fromNote;
+    return _isSuspendedRow(item) ? SUSPEND_TAG_TEXT : fromNote;
 }
 
 /**
@@ -74,6 +97,8 @@ export function getTopicNameStyle() {
  */
 export function getChangeClass(stock) {
     const v = getChangePctDisplay(stock);
+    // [SUSPEND 2026-10-13] 停牌 ≠ 涨/跌：用中性灰，不能被下面的「非负号即红」规则染成红色
+    if (v === SUSPEND_TAG_TEXT) return 'auction-topic-change auction-change-suspend';
     if (v.includes('涨停') || (v.startsWith('-') === false && v !== '-')) return 'auction-topic-change auction-change-red';
     if (v.startsWith('-')) return 'auction-topic-change auction-change-green';
     return 'auction-topic-change';

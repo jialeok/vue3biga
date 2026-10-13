@@ -55,6 +55,16 @@
         v-if="item.obsFormalStar || item.dragonGroupFormalStar"
         class="auction-obs-formal-star"
       >*</span></span>
+      <!-- [SUSPEND 2026-10-13] 当日停牌小标：上游（猫抓/同花顺）都拿不到该票的竞价与成交，
+           于是本行竞价量/占比会显示 '-' —— 外观与「上游没抓到数据」完全一致，极易误读
+           （2026-10-13 新华传媒 600825.SH 实例）。命中即明示「停牌」，一眼区分
+           「今天这只票没有行情」与「抓取故障」。判定唯一实现在 logic/auction/suspend.js，
+           本组件只读 item.suspended，不做任何判定、不发请求。 -->
+      <span
+        v-if="item.suspended"
+        class="auction-suspend-tag"
+        title="当日停牌：上游无竞价 / 无成交数据（不是抓取失败）"
+      >停牌</span>
       <!-- [LIMIT-STREAK 2026-09-11] 趋势/连板标记（趋势 / 首板 / 二板 / 三板…）：紧贴股票名后的灰色小标。
            口径 = 前 9 个历史交易日（不含当天）的连续收盘涨停天数，Logic 层（view-helpers）算好文案。 -->
       <span

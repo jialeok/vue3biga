@@ -39,6 +39,10 @@ import { ensureDragonRangePct, getDragonRangePct, getStockRangePct, DRAGON_RANGE
 // [DRAGON-GROUP 2026-09-14] 龙头组：名册异步加载（展示日读 D-1 名册；条件满足时评选并落库当日名册）。
 // 唯一入口 ensureDragonGroup 内含单飞 + 会话幂等 + 收盘口径闸门，重复调用零副作用。
 import { ensureDragonGroup } from '../logic/auction/dragon-group.js';
+// [SUSPEND 2026-10-13] 当日停牌判定（同花顺 fuyao，免费/不限量，0 猫抓额度）。
+// 目的：让看板明确显示「停牌」，而不是把上游缺席留成空白被人当成「没抓到数据」。
+// ⛔ 只读上游 + 只写该模块内存 ref：不写 Supabase、不碰 numcat/worker。
+import { ensureSuspendSet } from '../logic/auction/suspend.js';
 // [CLOSE-COVER 2026-09-10] 收盘后自动用【收盘涨幅】覆盖 9:25 竞价涨幅（此前该闭环只存在于
 // 从未执行过的 pg_cron，导致当天 change_pct 全天停留在竞价值）。
 import { ensureClosePctCovered, isCloseCoverWindow } from '../logic/auction/close-pct-cover.js';
@@ -70,6 +74,8 @@ let _dragonWatchBound = false;
 // [CLOSE-COVER 2026-09-10] 收盘覆盖 watch 与跨门槛轮询同样只挂载一次。
 let _closeCoverBound = false;
 let _closeCoverTimer = null;
+// [SUSPEND 2026-10-13] 停牌判定 watch 同样只挂载一次（useAuctionBoard 可能被多组件调用）。
+let _suspendWatchBound = false;
 /** 收盘覆盖轮询间隔：5 分钟（页面长时间开着时，跨过 15:00 能自动触发一次，无需手动刷新） */
 const CLOSE_COVER_POLL_MS = 5 * 60 * 1000;
 
@@ -176,6 +182,32 @@ export function useAuctionBoard() {
       console.warn('[DRAGON-GROUP] 龙头组加载/评选失败:', e && e.message);
       setApiStatus('numcatApiStatus', '❌ 龙头组加载失败：' + (e && e.message || e), false);
     });
+  }
+
+  // [SUSPEND 2026-10-13] 当日停牌判定的统一入口（幂等、单飞、有界重试都在 suspend.js 内）。
+  // 名单取自【已 enrich 的 items】：它包含观察组/龙头组注入的空壳行，最贴近「屏幕上真正出现的票」；
+  // 每行已带 code（view-helpers 解析好），此处不重复查映射（§32）。
+  // 触发点：① 进入看板 / 切日期 / 当日行数变化（下方 watch）；② auction-refresh 事件（onAuctionRefresh）。
+  function ensureSuspendForCurrentBoard() {
+    if (!uiStore.currentDate) return;
+    const items = (viewData.value && viewData.value.items) || [];
+    const entries = items.map(function(it) { return { stock: it.stock, code: it.code }; });
+    ensureSuspendSet(uiStore.currentDate, entries).catch(function(e) {
+      // 停牌标记是纯展示增益，失败不阻断看板；但必须留痕（§10 禁止静默失败）
+      console.warn('[SUSPEND] 停牌判定加载失败:', e && e.message);
+    });
+  }
+
+  // [SUSPEND 2026-10-13] 与龙头 watch 同款：多依赖并列触发，immediate 保证首屏也判一次。
+  // ⚠️ 结果只改 suspend.js 的内存 ref（指纹不变时连版本都不升）→ 不会反向触发本 watch（无循环）。
+  if (!_suspendWatchBound) {
+    _suspendWatchBound = true;
+    watch(
+      // 额外监听「当日渲染行数」：9:25 名单是逐步到达的，只在日期变化时加载会让后到的票永远没有停牌标记。
+      () => [uiStore.currentDate, (viewData.value && viewData.value.items ? viewData.value.items.length : 0)],
+      () => { ensureSuspendForCurrentBoard(); },
+      { immediate: true }
+    );
   }
 
   // [CLOSE-COVER 2026-09-10] 收盘涨幅自动覆盖 + 龙头排位重算。
@@ -1537,6 +1569,10 @@ export function useAuctionBoard() {
   function onAuctionRefresh() {
     if (uiStore.currentDate) prepareAuctionData(uiStore.currentDate);
     refresh();
+    // [SUSPEND 2026-10-13] 刷新事件顺带重判一次停牌：行数没变时上面的 watch 不会触发，
+    // 但上游可能刚补出竞价终态（页面在 9:25 前打开的场景）→ 这里补一次
+    // （suspend.js 内部有 3 分钟 TTL 节流 + 单飞，重复调用代价可控）。
+    ensureSuspendForCurrentBoard();
     // [FIX 2026-08-17] 数据刷新后重算「已展开」的趋势图：获取涨幅/导入等操作后
     // renderAuction() 只刷新表格，trendHistory 是独立缓存，已展开的图会停留在旧快照
     // （表现为"提示成功但趋势图当天没更新"）。这里只重算当前已展开的股票，不重置展开状态。

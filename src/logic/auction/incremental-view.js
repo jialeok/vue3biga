@@ -29,6 +29,9 @@ import { getDragonFingerprintToken } from './dragon-rank.js';
 // 改变行的分组归属（龙头从观察组/常规组抽到龙头组）。名册到货/切换日期必须让行缓存整体失效，
 // 否则增量缓存会复用旧行对象 → 龙头区块与「龙」标记陈旧（或该出现时没出现）。
 import { getDragonGroupFingerprintToken } from './dragon-group.js';
+// [SUSPEND 2026-10-13] 当日停牌集合同样是【异步加载】的全局输入：它决定行上「停牌」小标。
+// 不进全局指纹 ⇒ 停牌结果到达后行缓存不失效 ⇒ 小标永远不出现（与 dragon= 同款问题）。
+import { getSuspendFingerprintToken } from './suspend.js';
 // [TOPIC-STATS 2026-09-10] 题材块统计条签名（挂在组内首行上，需单独进 rowSig）
 import { topicStatsSignature } from './topic-stats.js';
 
@@ -103,6 +106,9 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
     // [DRAGON-GROUP 2026-09-14] 龙头组名册签名（展示日 + 版本 + 条数）。它决定哪些行进龙头组区块、
     // 以及「龙」组内标记的显隐 → 名册变化必须清空行缓存（与上方 dragon= 同款理由）。
     'dgroup=' + getDragonGroupFingerprintToken(),
+    // [SUSPEND 2026-10-13] 停牌集合签名（日期 + 版本 + 条数）。它决定行上「停牌」小标的显隐 →
+    // 结果到货/重判必须清空行缓存（与上方 dragon= 同款理由）。
+    'suspend=' + getSuspendFingerprintToken(),
     'confirmed=' + confirmed
   ].join('|');
 }

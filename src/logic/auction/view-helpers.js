@@ -52,6 +52,10 @@ import { getDragonLeadersForDisplay } from './dragon-group.js';
 // [INHERIT-SELL 2026-09-23] 「昨日『卖』标签继承过来的复盘行」判定抽成独立模块：
 // view-helpers（当天统计 + 着色）与 topic-trend（五日趋势）共用同一份判据（§6 单一真相）。
 import { getPrevSoldInheritedSet } from './inherited-sold.js';
+// [SUSPEND 2026-10-13] 当日停牌（上游无竞价/无成交）判定：数据由 suspend.js 异步加载后经模块级
+// ref 暴露，此处【同步读取】——与 dragon-rank / dragon-group 同款 ref-driven 范式，绝不阻塞渲染、
+// 不在此处发请求。判定单一真相在 suspend.js（§6）；本文件只把结果挂到行上供模板显示。
+import { isSuspended } from './suspend.js';
 
 function _getAuctionTag(date, stockName) {
   if (!date || !stockName) return null;
@@ -207,6 +211,12 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   // 决策看板卖点行的「竞价涨幅」标签用的是同一个函数，⛔ 不再各处手写 toFixed(2)。
   const aucPctText = formatAucPct(_aucPctNum);
 
+  // [SUSPEND 2026-10-13] 当日停牌：上游（猫抓/同花顺）都拿不到它的竞价与成交，于是本行的
+  // 竞价量/占比会显示 '-' —— 外观与「上游没抓到数据」完全一致、极易误读（2026-10-13 新华传媒
+  // 600825.SH 实例）。这里只【同步读】suspend.js 已加载好的结果（判定与取数都在那边，§6 单一真相），
+  // 命中 → 模板在股票名旁挂「停牌」小标。判不出来（历史日期 / 接口不可用）→ false，不标（§10）。
+  const suspended = isSuspended(ctx.date, stockName);
+
   // [CLOSE-COUNT / CLOSE-LIMIT 2026-09-11] 收盘涨幅 → 红绿 / 停板。
   // 两个前提缺一不可：① 题材 toggle 开启（与竞价一字同一显示口径）；
   // ② 该日已是收盘口径（ctx.closeWindow）—— 否则 change_pct 是 9:25 竞价副本，会误判。
@@ -293,6 +303,13 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     // [YIZI 2026-09-09] 竞价一字（竞价涨停）→ 股票名下红线；aucPctText 仅用于悬停提示
     isYiZi,
     aucPctText,
+    // [SUSPEND 2026-10-13] 当日停牌（上游无竞价/无成交）→ 股票名旁「停牌」小标。
+    // 数据来源 = suspend.js（同花顺 fuyao 判定，唯一实现）；本字段只读，模板不做任何判定。
+    suspended,
+    // [SUSPEND 2026-10-13] 该行解析出的代码（无则空串）。原为 _yiZiCode 局部变量，现一并出口：
+    // suspend.js 需要「股票名 → 代码」调上游批量接口，看板侧直接从已 enrich 的 items 取用，
+    // 不必各自回查一遍映射（§32 不重复请求 / 不重复解析）。
+    code: _yiZiCode,
     // [DRAGON-COLOR 2026-09-11] 龙头徽章（龙一/龙二…）配色依据 = 当天竞价涨幅数值。
     // 取值只认专用竞价涨幅字段 auc_pct_chg（与上方 _aucPctNum 同一个值，零额外计算、
     // 无请求、不落库）：>0 红、<0 绿、=0 灰；null = 该股当日无竞价涨幅数据（按中性灰，不当 0 处理）。

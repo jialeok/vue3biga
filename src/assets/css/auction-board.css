@@ -576,6 +576,26 @@
             white-space: nowrap;
         }
 
+        /* [SUSPEND 2026-10-13] 当日停牌小标（紧随股票名）。
+           口径 = 同花顺 fuyao 明确返回「该票无竞价 / 无成交」（唯一实现 logic/auction/suspend.js）。
+           视觉三重区分：连板标 = 实心浅灰无边框；龙标 = 紫色实心；本标 = 石板灰 + 1px 描边。
+           刻意【不用】红/绿 —— 停牌既不是涨也不是跌，染成红绿会被误读成方向。
+           line-height 10px + 上下各 1px 描边 = 与其它小标同高（12px），不撑高行（省空间）。 */
+        .auction-suspend-tag {
+            display: inline-block;
+            margin-left: 3px;
+            padding: 0 3px;
+            border-radius: 2px;
+            background: #f1f5f9;
+            border: 1px solid #94a3b8;
+            color: #334155;
+            font-size: 9px;
+            font-weight: 700;
+            line-height: 10px;
+            vertical-align: 1px;
+            white-space: nowrap;
+        }
+
         /* [DRAGON-GROUP 2026-09-14] 龙头「组内标记」：题材 toggle 开启时不渲染独立龙头组区块，
            改用名字后的「龙」小标就地辨认（需求 4）。紫色系以区别于题材色块/一字红/停板绿；
            占位与 .auction-streak-tag 同级（9px、无边框），确保「节省空间」。 */
@@ -1423,6 +1443,13 @@
 
         .auction-change-green {
             color: #16a34a;
+            font-weight: 600;
+        }
+
+        /* [SUSPEND 2026-10-13] 题材页「涨幅」列的停牌态：停牌既不是涨也不是跌 →
+           中性石板灰（不红不绿），字重与红/绿一致以便一眼扫到。 */
+        .auction-change-suspend {
+            color: #64748b;
             font-weight: 600;
         }
 
