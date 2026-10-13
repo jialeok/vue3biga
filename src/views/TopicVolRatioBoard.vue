@@ -113,7 +113,26 @@
                ⛔ 它不改变选股 —— 命中时下面的题材块与股票行照常列出（用户「其它不变」）。
                ⛔ 不能挪到 v-if="ready" 之外：未就绪时给「空仓」结论等于拿没数据当量比低用（§10）。 -->
           <TvrbCashAlert :alert="cashAlert" />
-          <!-- 退潮首日：股票块整体灰化（⛔ 上面的空仓标语【不灰】—— 它正是要被看见的那一条） -->
+          <!-- ★★ [EBB-R8 2026-10-14 用户口径] 退潮首日【买点侧唯一那只 · 市场龙二】：
+               用户原话「买点只有一个，那就是市场的龙二（不是同题材的）……把它入选到买点侧」。
+               ⛔ 它【必须】渲染在 .tvrb-buy-list【之外】—— 那个容器挂着父级 filter: grayscale(1)，
+                  CSS 的 filter 无法被子元素撤销；放进去就等于把「今天唯一能下手的那一只」也灰掉了。
+               ⛔ 它【不在】blocks 里（见组合式的 ebbBuy），是独立的一行；不是退潮日 / 算不出 ⇒ 整个容器不渲染。
+               ⚠️ head-text 传 Logic 给的一行标题（这一行没有「数量 / 平均量比」等题材级统计，见 TvrbBuyBlock）。 -->
+          <div
+            v-if="ebbBuy"
+            class="tvrb-ebb-only-buy"
+          >
+            <div class="tvrb-ebb-only-label tvrb-selectable">
+              退潮首日 · 买点只有这一只（市场龙二）
+            </div>
+            <TvrbBuyBlock
+              :block="ebbBuy"
+              :head-text="ebbBuy.block.topic"
+            />
+          </div>
+          <!-- 退潮首日：股票块整体灰化（⛔ 上面的空仓标语【不灰】—— 它正是要被看见的那一条）
+               ⛔ 上面那只【唯一买点】也不灰（它在本次容器之外，见上）。 -->
           <div
             class="tvrb-buy-list"
             :class="{ 'tvrb-ebb': !!ebb }"
@@ -208,6 +227,7 @@ const {
   notes,
   cashAlert,
   ebb,
+  ebbBuy,
   summaryText,
   rulesLines,
   toggleExpand,

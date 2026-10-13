@@ -147,6 +147,28 @@ export function getAuctionShare(date, stockName) {
 }
 
 /**
+ * 取某只股票【某日】的竞价量（原始数值）。
+ *
+ * 为什么要单独暴露它（§6 别在别处再读一遍 auction_watchlist）：
+ *   「当日有没有参与竞价」= 退潮首日判据里【昨日停牌】那一条腿的判据 ——
+ *   竞价量 0 / 取不到 ⇒ 那天它没有竞价（停牌；与 suspend.js 的『无竞价』同一语义）。
+ *   而 getAuctionShare 在这两处都会返回 null（缺量 / 缺昨量除不出来），
+ *   分不清「没竞价」与「昨量缺失」，所以必须把【量】本身单独取出来。
+ *
+ * §10：行不存在 / 空串 ⇒ null（= 未知），⛔ 绝不返回 0 去冒充「没竞价」；
+ *   0 只可能来自行里真的写着 0（那才是「当日零竞价」这个事实）。
+ *
+ * @param {string} date 展示日 / 历史日 YYYY-MM-DD
+ * @param {string} stockName
+ * @returns {number|null} 竞价量（股/手，按库里的原值）；未知 ⇒ null
+ */
+export function getAuctionVolume(date, stockName) {
+  const name = String(stockName || '').trim();
+  if (!date || !name) return null;
+  return getStockHistoryValue(date, name, 'volume');
+}
+
+/**
  * 字符串 / 数字 → 数值；空串 / null / 非数字一律 → null（§10 缺数据 ≠ 0）。
  * @param {*} v
  * @returns {number|null}

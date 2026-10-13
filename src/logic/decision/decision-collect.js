@@ -72,7 +72,9 @@ import {
 // [SHARE-RULE 2026-10-03 用户口径] 竞价占比（当日竞价量 ÷ 昨日成交量）= 买卖时机的【主判据】。
 //   ⛔ 公式 / 门槛 / 展示精度 / 取数的唯一实现在 auction-share.js；本文件只负责【调一次并挂到行上】（§6）。
 //   §10：取不到（缺数据 / 昨日成交量为 0）→ null ⇒ 规则层回落旧口径，绝不补 0。
-import { getAuctionShare } from './auction-share.js';
+// [EBB-R8 2026-10-14] passesAuctionShare = 占比达标判据的唯一实现（§6）：
+//   首日判据要判「昨日占比是否达标」，门槛口径必须与今日那条腿同一个函数，⛔ 不手写 `share >= 门槛`。
+import { getAuctionShare, getAuctionVolume, passesAuctionShare } from './auction-share.js';
 // [DRAGON-RANK-CHANGE 2026-10-09 用户口径] 龙标旁边的【名次变化】徽标（昨日龙几 → 今日龙几）。
 //   本文件只负责【把字段挂到每一行上】（与竞价量比同一处遍历收口，§6）；名次差怎么算、
 //   前一交易日的名次从哪来，全在 dragon-rank-change.js（纯映射）/ dragon-rank-change-store.js（取数）。
@@ -145,7 +147,12 @@ function _prevBoughtNames(prevDate) {
 function _buyBlocksOf(buy) {
   const out = [];
   if (!buy) return out;
-  ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopic'].forEach(function(k) {
+  // ★ [EBB-R8 2026-10-14] 新增槽位 `ebbSecond` = 退潮首日买点侧唯一那只【市场龙二】。
+  //   为什么挂在买点对象里（而不是另起一个顶层字段）：本函数是「遍历一个买点块」的【唯一实现】，
+  //   量比趋势 / 封单额 / 名次变化 / 停牌标记四个装饰器全部经它取块（§6）。
+  //   ⇒ 龙二那一行必须从这里过一遍，否则它会缺掉这些客观数据（与「不另写一份遍历」同一理由）。
+  //   ⚠️ 它仍然只是【一个槽位】：本看板自己去渲染它，决策看板的模板换不到这个键（该看板不传）。
+  ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopic', 'ebbSecond'].forEach(function(k) {
     if (buy[k]) out.push(buy[k]);
   });
   // [MIN-3-PICKS 2026-10-02] 候选题材块 = 常规块结构（有 picks），只是标了 isCandidate
@@ -637,15 +644,28 @@ function _buildSellRows(prevBought, byName, date) {
  * @param {Map} dragonMap 龙位名册（rankDragons 的返回）
  * @param {string} date 展示日
  * @param {Map<string,{pct:number|null}>|null} prevRangeMap 上一交易日的十日涨幅（stock_range_pct）
+ * @param {Map<string,{pct:number|null}>|null} [rangeMap] 【当日】的十日涨幅（= getDragonRangePct(date)，
+ *        也就是屏幕上「十日涨幅」那一列）。用途 = 算【买点侧唯一那只 · 市场龙二】（当日口径）。
+ *        ⛔ 缺省 ⇒ buySecond 为 null ⇒ 买点侧那只龙二不出来（§10 不猜，⛔ 绝不拿昨日口径顶替）。
  * @returns {{ready:boolean, leader:object|null, second:object|null, leaderSuspended:boolean,
- *            leaderShare:number|null, siblingDragons:Array, secondInfo:object|null}}
+ *            leaderShare:number|null, siblingDragons:Array, secondInfo:object|null,
+ *            prevLeader:object, buySecond:object|null}}
  *   leader  = { name, pct, topic, code, rank, isYizi }（rank / isYizi 都是【今日】的）
  *   second  = 同上形状的原始项（昨日涨幅第二）；secondInfo 是它【今日】的龙位 / 一字 / 停牌
+ *   prevLeader = ★ [EBB-R8] 【昨日】同一只总龙的竞价状态（首日判据用）：
+ *                { volume, share, suspendedLike, shareFail, bad }
+ *                · suspendedLike = 昨日【竞价量为 0】（= 那天它没参与集合竞价，停牌语义）；
+ *                  ⚠️ §10：量【取不到】（行不存在）⇒ 不算 —— 未知 ≠ 停牌。
+ *                · 没传 prevDate（老调用方 / 单测）⇒ 整个 prevLeader = null（未知），
+ *                  ⛔ 绝不拼一个「假坏状态」出来。
+ *   buySecond  = ★ [EBB-R8] 买点侧唯一那只【市场龙二】——【当日】十日涨幅在全列表里
+ *                （过「有龙位」闸门）排名最靠前、且不是总龙本人的那只（= 用户口径「排名第二」）
  */
-function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap) {
+function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDate) {
   const none = {
     ready: false, leader: null, second: null,
-    leaderSuspended: false, leaderShare: null, siblingDragons: [], secondInfo: null
+    leaderSuspended: false, leaderShare: null, siblingDragons: [], secondInfo: null,
+    prevLeader: null, buySecond: null
   };
   if (!prevRangeMap || prevRangeMap.size === 0) return none;
   const dm = dragonMap || new Map();
@@ -730,6 +750,83 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap) {
     };
   }
 
+  // ── 事实 ③：[EBB-R8 2026-10-14 用户口径] 【昨日】这只总龙的竞价状态 —— 「首日」判据的唯一依据 ─
+  //   用户原话：「我说的规则是，市场总龙头【首日】出现停牌或者占比不达标的情况下，这个规则才有效，
+  //     又比如明天可能新华传媒又停牌，那就不算了，我说的是首日注意了。」
+  //   ⇒ 今天成立、昨天也成立 ⇒ 不是首日 ⇒ 本规则不生效。
+  //
+  //   ⛔ 为什么不能用 suspend.js：它两条腿都读【当日】上游快照（无 date 参数），
+  //      「昨日停没停牌」它答不了（见 suspend.js 红线）。
+  //   ✅ 用【库里的昨日行】：auction_watchlist(prevDate) 那一行 —— 竞价量 0 / 取不到
+  //      ⇒ 那天没有参与竞价（与 suspend.js 判据同一语义：无竞价 = 停牌）；
+  //      占比走 auction-share 的唯一实现（volume ÷ yest_volume）。
+  //   §10：两处都取不到 ⇒ 全部为 null ⇒ 规则层按【无法确认首日】处理（默认仍按首日，见 detectEbbDay）。
+  //   ⚠️ prevDate 由【调用方注入】（不是在这里算）：它是「上一交易日」这个业务口径，
+  //      主流程（collectDecisionData）与 _buildSellRows 都用同一个 getPreviousTradingDay 得到的一份。
+  //      在这里再算一次会把这个纯函数拖进日期工具（连带 localStorage 依赖），也让单测无法独立构造。
+  //   ⚠️ §10：prevDate 未知（老调用方 / 单测不传）⇒ prevLeader 必须是 **null**（未知），
+  //      ⛔ 绝不能拼出一个 volume=null ⇒ suspendedLike=true ⇒ bad=true 的「假坏状态」——
+  //         那等于用「没查」冒充「昨天停牌」，次日判首日会直接判错。
+  const prevLeader = !prevDate ? null : (function() {
+    const prevVolume = getAuctionVolume(prevDate, leader.name);
+    const prevShare = getAuctionShare(prevDate, leader.name);
+    const out = {
+      volume: prevVolume,
+      share: prevShare,
+      // 昨日「没有竞价」：量为 0（确实有这一行且写着 0）。⚠️ 取不到（null）【不算】——
+      // 取不到 = 库里没有那一天这只票的行（例如那天它还没被加入名单）⇒ 无从判断（§10）。
+      suspendedLike: (prevVolume === 0),
+      // 昨日占比不达标（缺数据 ⇒ false ⇒ 不据此判断 · §10：未知 ≠ 不达标）
+      shareFail: (prevShare !== null && !passesAuctionShare(prevShare, Number(leader.rank) === 1)),
+      bad: false
+    };
+    out.bad = !!(out.suspendedLike || out.shareFail);
+    return out;
+  })();
+
+  // ── 事实 ④：[EBB-R8 2026-10-14 用户口径] 买点侧唯一那只【市场龙二】 ──────────────────
+  //   用户原话：「买点只有一个，那就是市场的龙二（不是同题材的），是整个早盘竞价看板的股票列表
+  //     中的十日涨幅排名第二的龙二，就像今天的九阳股份（市场排名十日涨幅 86%，总列表排名第二），
+  //     把它入选到买点侧，也可以是同题材的，只要它排在所有股票的十日涨幅第二名就可以」。
+  //   ⇒ 口径：
+  //     · 池子 = 当日早盘竞价【全列表】、且【有龙位】的票（与总龙同一把尺子，§6 同源：
+  //       10-13 全列表第一是创业板【善水科技 301190】145.02%，无龙标 ⇒ 不参排，
+  //       于是新华传媒 135.96 第一、九阳股份 86.00 第二 ⇒ 与用户给的例子逐字对上）；
+  //     · 排序 = 【当日】十日涨幅（= 屏幕上那一列，getDragonRangePct(date) 给出的 map）；
+  //     · 取【不是总龙本人】里最靠前的那一只 —— 它就是「总列表排名第二」（总龙自己正是买点侧
+  //       被判定的那一只，本来不买）：
+  //         总龙当日有涨幅（排第 1）      ⇒ 取第 2 名；
+  //         总龙今日停牌 / 当日无涨幅数据 ⇒ 取第 1 名（= 榜单里的第二名换成了它，口径不变）。
+  //     §10：当日涨幅整体没加载（rangeMap 为空）⇒ buySecond = null（⛔ 绝不拿昨日涨幅顶替）。
+  let buySecond = null;
+  if (rangeMap && rangeMap.size > 0) {
+    const pool = [];
+    const seenB = new Set();
+    (rows || []).forEach(function(r) {
+      if (!r || !r.name || seenB.has(r.name)) return;
+      seenB.add(r.name);
+      const rank = _rankOf(r.name);
+      if (rank === null) return;                    // 与总龙同一把尺子：无龙位不参排
+      const rv = rangeMap.get(r.name);
+      const pct = (rv && rv.pct !== undefined && rv.pct !== null) ? Number(rv.pct) : null;
+      if (pct === null || !isFinite(pct)) return;   // §10：这只票当日涨幅读不到 ⇒ 不参排
+      pool.push({ name: r.name, pct: pct, topic: String(r.topic || ''), code: String(r.code || ''), rank: rank });
+    });
+    pool.sort(function(a, b) {
+      if (a.pct !== b.pct) return b.pct - a.pct;
+      return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+    });
+    const top = pool.filter(function(c) { return c.name !== leader.name; })[0] || null;
+    if (top) {
+      buySecond = {
+        name: top.name, pct: top.pct, topic: top.topic, code: top.code,
+        rank: top.rank,
+        isYizi: _isYiziOf(top.name),
+        suspended: isSuspended(date, top.name)
+      };
+    }
+  }
+
   return {
     ready: true,
     leader: leader,
@@ -739,7 +836,10 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap) {
     // 今日竞价占比（%）：null = 缺数据（规则层据此【不判】不达标，§10：未知 ≠ 不达标）
     leaderShare: getAuctionShare(date, leader.name),
     siblingDragons: siblings,
-    secondInfo: secondInfo
+    secondInfo: secondInfo,
+    // ★ [EBB-R8] 首日判据（昨日同一只总龙的竞价状态）+ 买点侧唯一那只（当日十日涨幅第二名）
+    prevLeader: prevLeader,
+    buySecond: buySecond
   };
 }
 
@@ -1006,7 +1106,13 @@ export function collectDecisionData(date, opts) {
       // ★ [EBB 2026-10-13 第五轮用户口径] 退潮首日所需的事实：市场总龙（昨日十日涨幅第一）
       //   + 它今天停不停牌 / 占比多少。涨幅必须用【昨日】那份（停牌票当天没有涨幅），
       //   由调用方读回后从 opts.prevRangeMap 注入 —— ⛔ 本文件不读云。
-      out.ebbCtx = _ebbCtxOf(rows, topics, dragonMap, date, opts && opts.prevRangeMap);
+      // ★ [EBB-R8 2026-10-14 用户口径] 再注入【当日】rangeMap：买点侧唯一那只（市场龙二）
+      //   用的是【当日】十日涨幅（用户举的例子 = 九阳股份 当日 86%）—— 与总龙的「昨日」口径
+      //   是两个不同用途（总龙要在停牌时也排得出；龙二只看今天强不强），⛔ 别合并成一个参数。
+      //   + 第 7 参 prevDate：算「昨日同一只总龙的竞价状态」（首日闸门用）—— 复用本函数已算好的那份，
+      //     ⛔ 不让 _ebbCtxOf 自己再算一次（它会变成非纯函数，单测无法独立构造）。
+      out.ebbCtx = _ebbCtxOf(rows, topics, dragonMap, date,
+        opts && opts.prevRangeMap, rangeMap, prevDate);
     }
     return out;
   }
@@ -1173,11 +1279,20 @@ export function collectDragonRankMap(date, opts) {
  *   当日早上还没收盘算不出今天的十日涨幅，停牌票更是当天压根读不到 ⇒ 昨日口径才排得出总龙。
  *   ⛔ 本函数【不读云】：那份 Map 由调用方（组合式）按 prevDate 读回后注入；缺省 ⇒ ebbCtx.ready=false。
  *
+ * ★★ [EBB-R8 2026-10-14] opts.rangeMap = 【展示日当天】的十日涨幅（Map&lt;股票名,{pct}&gt;），
+ *   由调用方按展示日从 stock_range_pct 读回后注入（纯只读、不耗额度）。两个作用：
+ *     ① 【买点侧唯一那只 · 市场龙二】用它排「当日全列表十日涨幅第二」（见 _ebbCtxOf 事实④）；
+ *     ② 【消除切日期时的空白期】—— 内存 dragonState 还没跟上新日期时，先用这份渲染，
+ *        否则会走到「十日涨幅 / 龙头数据尚未加载完成」那条 §10 闸门（= 用户报的「过好一会儿才显示」）。
+ *   ⚠️ 注入只在 `getDragonRangePct(date)` 为【空】时被采纳；内存权威值一到就自动接管。
+ *   ⛔ 缺省 ⇒ 只有「内存里已有当前日涨幅」的日期能算（历史日算不出龙二，§10 不猜）。
+ *
  * @param {string} date 展示日 YYYY-MM-DD
- * @param {{mode?:string, actionContext?:boolean, prevRangeMap?:Map}} [opts] mode = 题材组序口径
+ * @param {{mode?:string, actionContext?:boolean, prevRangeMap?:Map, rangeMap?:Map}} [opts] mode = 题材组序口径
  *        （「题材量比」看板传 MODE_VOL_RATIO；缺省回落 MODE_VOL_RATIO —— 见 normalizeDecisionMode）；
  *        actionContext 见上（缺省 false ⇒ 与原行为逐字一致）；
- *        prevRangeMap 见上（缺省 ⇒ 退潮首日规则不生效，§10 ⛔ 不退化成「今天没有总龙」）
+ *        prevRangeMap 见上（缺省 ⇒ 退潮首日规则不生效，§10 ⛔ 不退化成「今天没有总龙」）；
+ *        rangeMap 见上（缺省 ⇒ 当日龙二算不出，且切日期的空白期照旧）
  * @returns {{ready:boolean, reason:string, date:string, prevDate:string|null,
  *            topics:Array, dragonMap:Map|null}}
  */
@@ -1187,7 +1302,25 @@ export function collectDecisionTopics(date, opts) {
     topicActionContext: !!(opts && opts.actionContext),
     mode: opts && opts.mode,
     // ★ [EBB 2026-10-13] 上一交易日的十日涨幅（算市场总龙用）—— ⛔ 必传【昨日】那份
-    prevRangeMap: (opts && opts.prevRangeMap) || null
+    prevRangeMap: (opts && opts.prevRangeMap) || null,
+    // ★★ [EBB-R8 2026-10-14] 【当日】十日涨幅的注入来源（算「买点侧唯一那只 · 市场龙二」用）。
+    //
+    // 🔴 为什么必须开这个口子（真实浏览器实测的「切日期要等好久」根因之一）：
+    //   本看板的 data 是【同步 computed】，它在切日期的那一帧就会调本函数；而此刻
+    //   `getDragonRangePct(新日期)` 必然返回 null —— 内存里的 dragonState 还挂在【上一个日期】上，
+    //   要等 useAuctionBoard 那条【串行链】`runCloseCover → ensureDragonRangePct → _publish`
+    //   跑完才会更新。于是这一帧走到 collectDecisionData 的 §10 闸门
+    //   （`if (!rangeOptional && rangeMap 为空) return _notReady('十日涨幅 / 龙头数据尚未加载完成')`），
+    //   看板就显示「十日涨幅 / 龙头数据尚未加载完成」—— 这正是用户报的**「过好一会儿才显示出来」**。
+    //   ⇒ 由调用方按【展示日】从 stock_range_pct（带 date 列，纯只读）读回来注入：
+    //     内存里还没有就先用手上这份渲染，dragonState 一发布就自动接管
+    //     （collectDecisionData 里 `getDragonRangePct` 优先，注入只在它为【空】时生效）。
+    //   ⚠️ 注入只在 `getDragonRangePct(date)` 为空时被采纳；权威值一到就被 override，
+    //      ⇒ 不会用「旧的云端值」顶掉内存里更新的收盘校正值。
+    //   ⛔ 本函数（collectDecisionTopics）【只被题材量比看板调用】（全项目唯一调用方），
+    //      故不会给「最近 5 日题材入选次数」那条历史重算路径（_topicStreakPastOf 自己另开
+    //      一次 collectDecisionData、不传 rangeMap）带去任何口径变化 —— 与 line 908 的告诫一致。
+    rangeMap: (opts && opts.rangeMap) || null
   });
   // 命中内部出口 ⇒ 中间产物带 dragonRankOnly 标记（_notReady 的返回没有这个键）
   if (rec && rec.dragonRankOnly) {

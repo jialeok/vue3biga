@@ -53,6 +53,14 @@ import { ensureSuspendSet } from '../logic/auction/suspend.js';
 //   ⚠️ 它必须【异步提前读】，因为下面 data 是【同步 computed】（computed 里不能 await）。
 import { readRangePctForDate } from '../data/stock-range-pct.js';
 import { getPreviousTradingDay } from '../logic/date/trading-day-helpers.js';
+// ★★ [EBB-R8 2026-10-14 用户口径] 退潮判定【落库表】的读写入口（§5 唯一出处）。
+//   用户原话：「你应该把数据存起来啊，做一个表也行，不然很难判断出来，因为现在的逻辑是通过判断
+//     没有竞价量等判断出来的，是缓存吧？你要完善这点」
+//   ⇒ 读 = 拿【上一交易日那一行】判「今天是不是首日」；写 = 把今天的判定存下来（只存今天，见下）。
+import { readEbbDays, upsertEbbDay } from '../data/ebb-days.js';
+// §6：「今天」的唯一口径（与 suspend.js 的 ensureSuspendSet 同一个函数，⛔ 别自己 new Date 拼一遍）。
+//   停牌判定只对今天可信 ⇒ 落库也只对今天做（历史日的 suspend verdict 恒 false，写进去会污染次日判定）。
+import { _getLocalTodayStr } from '../logic/tagTitles/rules.js';
 // §6：题材组序口径的常量只有一处定义（decision-mode.js），⛔ 别在本文件写字面量 'volRatio'。
 import { MODE_VOL_RATIO } from '../logic/decision/decision-mode.js';
 import {
@@ -107,7 +115,10 @@ function _empty(reason) {
       //    形状仍保留，值 = 冻结的「不提示」，引用稳定（§19）。
       cashAlert: TVRB_CASH_ALERT_NONE,
       // ★ [EBB 2026-10-13] 未就绪时【不是退潮日】（null）—— ⛔ 绝不因为「没算出来」就说今天退潮（§10）
-      ebb: null
+      ebb: null,
+      // ★ [EBB-R8 2026-10-14] 形状与真实 plan 一致（§10 未就绪时不给「唯一买点」、也不给落库行）
+      ebbBuy: null,
+      ebbDayRow: null
     }
   };
 }
@@ -159,6 +170,34 @@ export function useTopicVolRatioBoard() {
    */
   const prevRangeMap = ref(null);
   const prevRangeDate = ref('');
+  /**
+   * ★ [EBB-R8 2026-10-14] 上一交易日在 tvrb_ebb_days 里【落库的退潮判定】那一行。
+   *
+   * 作用：detectEbbDay 的【首日】闸门读它 —— 昨天同一只总龙已经退潮 ⇒ 今天不算首日、规则不生效。
+   * 缺省（表不存在 / 那天没打开过看板）⇒ 规则层自动退化为「用昨日行情行推断」，再取不到按首日处理。
+   * ⚠️ 读失败也保持 null（走退路），但必须留痕（§10 失败可见）；⛔ 绝不因此把 ebb 关掉。
+   */
+  const prevEbbDay = ref(null);
+  const prevEbbDayDate = ref('');
+
+  /**
+   * ★★ [EBB-R8 2026-10-14] 【展示日当天】的十日涨幅（Map&lt;股票名,{pct}&gt;）。
+   *
+   * 两个作用，缺一不可：
+   *   ① 【买点侧唯一那只 · 市场龙二】要按【当日】十日涨幅排「全列表第二」（用户口径的「当日」口径）；
+   *   ② 🔴 【消除切换日期后的空白期】：本看板的 data 是【同步 computed】，切日期那一帧就会问
+   *      `getDragonRangePct(新日期)` —— 此刻内存 dragonState 还挂在【上一个日期】上，必然返回 null，
+   *      于是走到 decision-collect 的 §10 闸门、显示「十日涨幅 / 龙头数据尚未加载完成」，
+   *      要等 useAuctionBoard 那条【串行链】(runCloseCover → ensureDragonRangePct → _publish) 跑完才出数据。
+   *      **这就是用户报的「切换日期时可能过好一会儿才显示出来」**。
+   *      ⇒ 提前按日期把 stock_range_pct（带 date 列，纯只读）读回来注入：
+   *        内存里还没有就先拿它渲染，dragonState 一发布就自动接管（注入只在内存为【空】时被采纳）。
+   *
+   * ⚠️ 与 prevRangeMap 是【两份不同的日期】：那个是上一交易日（算总龙），这个是展示日本身（算龙二）。
+   * ⛔ 失败 ⇒ 保持 null（龙二算不出、空白期照旧），⛔ 绝不退化成用昨日涨幅顶替（§10）。
+   */
+  const curRangeMap = ref(null);
+  const curRangeDate = ref('');
   // ⛔ 用「日期 + version」字符串当键：plan / rec 每次重算都换引用，对象身份当键会无限重载。
   const prevRangeKey = computed(function() {
     return String(currentDate.value || '') + '|v' + version.value;
@@ -166,23 +205,65 @@ export function useTopicVolRatioBoard() {
   watch(prevRangeKey, function() {
     const d = currentDate.value;
     const pd = d ? getPreviousTradingDay(d) : '';
-    if (!pd) { prevRangeMap.value = null; prevRangeDate.value = ''; return; }
-    // 同一天已经读回来了 ⇒ 直接复用（stock_range_pct 是日期级缓存，一天不会变）
-    if (prevRangeDate.value === pd && prevRangeMap.value && prevRangeMap.value.size > 0) return;
-    readRangePctForDate(pd).then(function(m) {
-      // ⚠️ 竞态保护：读回来的这段时间里用户可能切了日期 / 数据刷新了 ⇒ 目标日期已变，丢弃本次结果
-      if (getPreviousTradingDay(currentDate.value) !== pd) return;
-      prevRangeMap.value = (m && m.size > 0) ? m : null;
-      prevRangeDate.value = pd;
-    }).catch(function(e) {
-      console.warn('[TVRB] 上一交易日十日涨幅读取失败，退潮首日规则本次不生效:', e && e.message);
-    });
+    // ①-a stock_range_pct【展示日】：买点侧唯一那只（当日口径）+ 消除切日期的空白期（见 curRangeMap 注释）。
+    //   ⚠️ 它【与上一交易日无关】⇒ 必须排在下面那个 `!pd` 早退【之前】：
+    //      没有「上一交易日」（极端配置 / 空日历）时，看板照样要能渲染出当天数据。
+    if (d && curRangeDate.value !== d) {
+      readRangePctForDate(d).then(function(m) {
+        // ⚠️ 竞态保护：读回来的这段时间里用户可能切了日期 ⇒ 目标日期已变，丢弃本次结果
+        if (currentDate.value !== d) return;
+        curRangeMap.value = (m && m.size > 0) ? m : null;
+        curRangeDate.value = d;
+      }).catch(function(e) {
+        console.warn('[TVRB] 当日十日涨幅读取失败，本次不给出「买点侧唯一那只」:', e && e.message);
+        curRangeMap.value = null;
+        curRangeDate.value = d;
+      });
+    }
+    if (!pd) {
+      prevRangeMap.value = null; prevRangeDate.value = '';
+      prevEbbDay.value = null; prevEbbDayDate.value = '';
+      return;
+    }
+    // ⚠️ 下面两条链【各自独立】判缓存、各自异步（⛔ 别用一个 early-return 串起来：
+    //    十日涨幅已缓存、退潮表还没读时，早退会把退潮表这条链整个跳过）。
+    // ①-b stock_range_pct：同一天已经读回来了 ⇒ 直接复用（日期级缓存，一天不会变）
+    if (!(prevRangeDate.value === pd && prevRangeMap.value && prevRangeMap.value.size > 0)) {
+      readRangePctForDate(pd).then(function(m) {
+        // ⚠️ 竞态保护：读回来的这段时间里用户可能切了日期 / 数据刷新了 ⇒ 目标日期已变，丢弃本次结果
+        if (getPreviousTradingDay(currentDate.value) !== pd) return;
+        prevRangeMap.value = (m && m.size > 0) ? m : null;
+        prevRangeDate.value = pd;
+      }).catch(function(e) {
+        console.warn('[TVRB] 上一交易日十日涨幅读取失败，退潮首日规则本次不生效:', e && e.message);
+      });
+    }
+    // ② tvrb_ebb_days：一次读【今天 + 上一交易日】两行（§32 一次 in 查询；
+    //    今天那行用不着判首日，但读回来能让 upsert 前的判断看到「今天已经写过什么」——幂等且省一次往返）
+    if (prevEbbDayDate.value !== pd) {
+      readEbbDays([d, pd]).then(function(m) {
+        if (getPreviousTradingDay(currentDate.value) !== pd) return;
+        prevEbbDay.value = m.get(pd) || null;
+        prevEbbDayDate.value = pd;
+      }).catch(function(e) {
+        // §10：读失败 ⇒ 按「没有落库判定」处理（规则层会用行情行推断）—— 但必须可见
+        console.warn('[TVRB] 退潮判定表读取失败，本次按昨日行情行推断首日:', e && e.message);
+        prevEbbDay.value = null;
+        prevEbbDayDate.value = pd;
+      });
+    }
   }, { immediate: true });
 
   const data = computed(function() {
     void version.value;                 // 显式声明对刷新信号的依赖
     // ★ [EBB] 昨日十日涨幅（异步读回）⇒ 读到之后重算一次，退潮首日规则才生效
     void prevRangeMap.value;
+    // ★ [EBB-R8] 上一交易日落库的退潮判定（异步读回）⇒ 读到之后重算一次，首日闸门才生效
+    void prevEbbDay.value;
+    // ★★ [EBB-R8] 展示日当天的十日涨幅（异步读回）⇒ 读到之后重算一次：
+    //   ① 买点侧那只【市场龙二】才算得出；② 更重要的是【消除切日期后的空白期】
+    //      （dragonState 还没跟上新日期时，先用这份渲染，见 curRangeMap 的注释）
+    void curRangeMap.value;
     // 分笔那份是响应式单例 ⇒ 显式声明依赖，数据到了自动重算（§17 不阻塞渲染）
     void tickMinuteMap.value;
     void tickMinuteDate.value;
@@ -199,7 +280,11 @@ export function useTopicVolRatioBoard() {
       const rec = collectDecisionTopics(d, {
         mode: MODE_VOL_RATIO,
         actionContext: true,
-        prevRangeMap: prevRangeMap.value
+        // 上一交易日的十日涨幅（算市场总龙 = 昨日口径）
+        prevRangeMap: prevRangeMap.value,
+        // ★★ [EBB-R8] 展示日【当天】的十日涨幅（算买点侧唯一那只 = 当日口径）
+        //   + 🔴 消除「切日期后 dragonState 尚未跟上」造成的空白期（见 curRangeMap 的注释）
+        rangeMap: curRangeMap.value
       });
       if (!rec || !rec.ready) return _empty((rec && rec.reason) || '暂无数据');
 
@@ -216,7 +301,10 @@ export function useTopicVolRatioBoard() {
         sellRows: rec.sellRows || [],
         // ★ [EBB 2026-10-13] 退潮首日的【事实】（市场总龙 / 今日停牌 / 今日占比 / 同题材龙位成员 /
         //   市场总龙二）；ready=false ⇒ 不是退潮日（⛔ 不猜）
-        ebbCtx: rec.ebbCtx || null
+        ebbCtx: rec.ebbCtx || null,
+        // ★ [EBB-R8 2026-10-14] 上一交易日【落库的退潮判定】那一行（tvrb_ebb_days）
+        //   —— 首日闸门的输入；缺省 ⇒ 规则层退化为「用昨日行情行推断」，再取不到按首日处理。
+        prevEbbDay: prevEbbDay.value
       });
 
       // ② 逐行装饰（竞价量比趋势 / 龙标名次变化 / 封单额 + 连板）——与决策看板同一份实现
@@ -231,9 +319,14 @@ export function useTopicVolRatioBoard() {
       // ⛔ 买点 pick 自带 code（由本看板的候选构造透传）⇒ 不需要 memberMap 反查；
       //    卖点行同样自带 code ⇒ 两边都传 null（与分笔看板的 buy 侧传 memberMap 等价，
       //    只是本看板在建 pick 时已经带上 code，省掉一次反查）。
-      plan.blocks.forEach(function(b) {
-        (b.picks || []).forEach(function(p) {
-          Object.assign(p, decorateTickRow(p, map, attempted, skipMap, null, 'buy'));
+      // ⚠️ 退潮首日那只【唯一买点】(plan.ebbBuy) 【不在】plan.blocks 里 —— 它要渲染在灰化容器【之外】，
+      //    所以这里必须单独带上它走一遍；否则它拿不到分笔行（§6：装饰只有这一处，⛔ 别在组件里再铺一次）。
+      const buyBlockLists = [plan.blocks, plan.ebbBuy ? [plan.ebbBuy] : []];
+      buyBlockLists.forEach(function(arr) {
+        arr.forEach(function(b) {
+          (b.picks || []).forEach(function(p) {
+            Object.assign(p, decorateTickRow(p, map, attempted, skipMap, null, 'buy'));
+          });
         });
       });
       plan.sell.forEach(function(g) {
@@ -249,6 +342,31 @@ export function useTopicVolRatioBoard() {
       console.error('[TVRB] 计算失败', e);
       return _empty('计算失败，请看控制台');
     }
+  });
+
+  /**
+   * ★ [EBB-R8 2026-10-14] 落库：把【今天】算出的退潮判定写进 tvrb_ebb_days（幂等 upsert）。
+   *
+   * ⛔ 为什么必须放 watch（不能放 data computed）：computed 必须无副作用（§4 红线）。
+   * ⛔ 为什么只写【今天】：suspend.js 的判定只对今天可信（历史日恒 false，见它的红线）——
+   *    把历史日写进去 = 用「今天没停牌」冒充「那天没停牌」，明天读回来会直接判错首日。
+   * ⚠️ 键用「日期 + 判定内容」而不是对象引用：plan 每次重算都换引用（§19/§20）。
+   */
+  const ebbDayRowKey = computed(function() {
+    const p = data.value && data.value.plan;
+    const r = p && p.ebbDayRow;
+    if (!r || !r.date) return '';
+    return [r.date, r.leaderStock, r.ebb ? 1 : 0, r.suspended ? 1 : 0,
+      r.shareFail ? 1 : 0, r.buySecond, r.buySecondPct === null ? '' : r.buySecondPct].join('|');
+  });
+  watch(ebbDayRowKey, function() {
+    const p = data.value && data.value.plan;
+    const r = p && p.ebbDayRow;
+    if (!r || !r.date) return;
+    if (r.date !== _getLocalTodayStr()) return;   // 只落今天的判定（见上）
+    upsertEbbDay(r).catch(function(e) {
+      console.warn('[TVRB] 退潮判定落库失败（不影响看板）:', e && e.message);
+    });
   });
 
   const ready = computed(() => !!data.value.ready);
@@ -273,6 +391,15 @@ export function useTopicVolRatioBoard() {
    *   ⛔ 未就绪 / 不是退潮日 ⇒ null（模板 v-if 不渲染），绝不会拿「没算出来」当「今天退潮」（§10）。
    */
   const ebb = computed(() => (data.value.plan && data.value.plan.ebb) || null);
+  /**
+   * ★ [EBB-R8 2026-10-14 用户口径] 退潮首日买点侧【唯一那只 · 市场龙二】的买点块（单只票）。
+   *
+   * 用户原话：「买点只有一个，那就是市场的龙二（不是同题材的）……把它入选到买点侧」。
+   * ⚠️ 它【不在 blocks 里】：blocks 是那些要被整体灰化 + 标【退潮不买】的常规题材块；
+   *   这一只要渲染在灰化容器【外面】才能一眼看见（见视图的 .tvrb-ebb-only-buy）。
+   * ⛔ 不是退潮日 / 当日涨幅未就绪 ⇒ null（模板 v-if 不渲染），绝不退化成别的票（§10）。
+   */
+  const ebbBuy = computed(() => (data.value.plan && data.value.plan.ebbBuy) || null);
   /** 卖点股票数（头部摘要用） */
   const sellCount = computed(function() {
     return sellGroups.value.reduce(function(n, g) { return n + ((g.items || []).length); }, 0);
@@ -324,9 +451,12 @@ export function useTopicVolRatioBoard() {
   /** 本看板要抓的票 = 买点 + 卖点里出现过、且拿得到代码的股票（与分笔看板同一口径，§6） */
   const tickTargets = computed(function() {
     const seen = new Map();
-    blocks.value.forEach(function(b) {
-      (b.picks || []).forEach(function(p) {
-        if (p && p.name && !seen.has(p.name)) seen.set(p.name, String(p.code || ''));
+    // ★ [EBB-R8] 退潮首日那只唯一买点也要抓分笔（它不在 blocks 里，见上面的 ebbBuy）
+    [blocks.value, ebbBuy.value ? [ebbBuy.value] : []].forEach(function(arr) {
+      arr.forEach(function(b) {
+        (b.picks || []).forEach(function(p) {
+          if (p && p.name && !seen.has(p.name)) seen.set(p.name, String(p.code || ''));
+        });
       });
     });
     sellGroups.value.forEach(function(g) {
@@ -473,6 +603,7 @@ export function useTopicVolRatioBoard() {
     sellCount,
     cashAlert,
     ebb,
+    ebbBuy,
     summaryText,
     toggleExpand,
     toggleCompact,

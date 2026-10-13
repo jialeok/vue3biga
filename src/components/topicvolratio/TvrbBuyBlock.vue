@@ -29,6 +29,7 @@
   <div class="tvrb-block">
     <!-- 第一行：题材名 + 排名圆点 + 数量 + 竞价一字 + 平均量比 + 选几只 + [昨有买入] [N次入选] -->
     <TvrbTopicHead
+      v-if="!headText"
       :topic="block.block.topic"
       :rank="block.pickRank || block.block.rank"
       :count="block.block.count"
@@ -38,6 +39,17 @@
       :prev-bought-tag="block.prevBoughtTag"
       :streak-tag="block.streakTag"
     />
+    <!-- ★ [EBB-R8 2026-10-14] 退潮首日的【唯一买点】那一行不是题材块，没有「数量 / 竞价一字 / 平均量比」
+         这些【题材级】统计（§10 不能拿 '—' 或 0 冒充）⇒ 传了 headText 就只渲染一行标题、跳过题材统计头。
+         头文案由 Logic 层给（§21 模板零计算）。⚠️ headText 缺省为空串 ⇒ 常规块行为【一字不变】（§11）。 -->
+    <div
+      v-else
+      class="tvrb-block-head"
+    >
+      <div class="tvrb-topic-row">
+        <span class="tvrb-topic">{{ headText }}</span>
+      </div>
+    </div>
     <!-- 第二行：选择理由（本看板的选股口径）+ 规则编号（与决策看板买点段同一枚 ①） -->
     <div class="tvrb-reason-line tvrb-selectable">
       选择理由：{{ block.reason }}<span
@@ -214,7 +226,17 @@ defineProps({
   block: {
     type: Object,
     required: true
-  }
+  },
+  /**
+   * ★ [EBB-R8 2026-10-14] 可选：用【一行纯标题】替换题材统计头。
+   *
+   * 为什么需要：退潮首日买点侧那只【唯一买点】不是题材块 —— 它没有「数量 / 竞价一字 / 平均量比」
+   *   这些题材级统计，套 TvrbTopicHead 会渲染出「数量：— 竞价一字：— 平均量比：—」，
+   *   看着像数据缺失（§10 拿 '—' 冒充「统计项存在但为空」是误导）。
+   * §11：默认空串 ⇒ 常规题材块的行为【一字不变】（走 TvrbTopicHead 原路）。
+   * 文案由 Logic 层给（§21 模板零计算）。
+   */
+  headText: { type: String, default: '' }
 });
 
 // 与 TopicVolRatioBoard.vue 共用同一个 board 实例（provide / inject）：

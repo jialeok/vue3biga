@@ -226,6 +226,29 @@
     opacity: 0.5;
 }
 
+/* 3) ★★ [EBB-R8 2026-10-14 用户口径] 退潮首日【买点侧唯一那只 · 市场龙二】的独立容器。
+      用户原话：「买点只有一个，那就是市场的龙二（不是同题材的）……把它入选到买点侧」。
+   ⛔ 它必须在 .tvrb-buy-list.tvrb-ebb（父级 grayscale + opacity）【之外】：
+      CSS 的 filter 不能被后代元素撤销，放进去就等于把「今天唯一能下手的那一只」也灰掉 —— 那这条设计就白做了。
+   配色：琥珀金描边 + 极浅金底。与旁边整片灰掉的题材块一眼分开，
+   又不抢上面 .tvrb-cash-alert 那条大字标语的风头（那条才是「看到就不开仓」的）。
+   ⛔ 别用红色系：红 = 常规【竞价买】（今天照常买），语义不同（这一条是「退潮日里的例外」）。 */
+.tvrb-ebb-only-buy {
+    margin: 2px 0 8px;
+    padding: 7px 9px 8px;
+    background: #fffbeb;
+    border: 2px solid #d97706;
+    border-radius: 10px;
+}
+
+.tvrb-ebb-only-label {
+    margin-bottom: 5px;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    color: #b45309;
+}
+
 /* 蚂蚁线：选股段与卖点段之间的分隔（与决策看板同款行进虚线语言）。
    ⛔ 动画名必须独立（tvrbAnts），共用 decisionAnts 等于把两个看板耦成一体。 */
 .tvrb-sep {
@@ -768,6 +791,21 @@
     background: #111827;
     color: #f8fafc;
     letter-spacing: 0.3px;
+}
+
+/* ★★ [EBB-R8 2026-10-14 用户口径] 【总龙二买】= 退潮首日买点侧【唯一那一只】的专属标签。
+   用户拍板：单独一枚标签（⛔ 不是复用 finishBuyBlock 的 竞价买 / 尾盘买）。
+   琥珀金底 + 极浅金字 + 内描边：与紧邻的【退潮不买】（深墨底白字）形成
+   「唯一可下手」对「一律别动」的最强对比。
+   ⛔ 别改成红色系（#dc2626 = 同页常规【竞价买】，两枚「买」字辈挨着会读混）；
+      也⛔ 别用中性灰（会被父级 grayscale 语义吞掉 —— 虽然本行挂在灰化容器之外，但语义要一致）。
+   ⚠️ outline 用【实线】（与 tvrb-action-pen 的虚线区分：虚线 = 条件性允许，实线 = 今天的确定结论）。 */
+.tvrb-action.tvrb-action-ebb-second {
+    background: #b45309;
+    color: #fffbeb;
+    letter-spacing: 0.3px;
+    outline: 1px solid rgba(255, 251, 235, 0.85);
+    outline-offset: -2px;
 }
 
 /* 买点侧：仓位（和/或持有标签）已经在行里，动作徽标紧跟其后，不再抢 margin-left:auto */

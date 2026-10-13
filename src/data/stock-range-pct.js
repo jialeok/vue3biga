@@ -13,12 +13,49 @@ import { fuyaoApiGet, tickerToThscode } from './api/fuyao-proxy.js';
 import { _dbgLog } from './debug-log.js';
 
 /**
- * 读取某日的区间涨幅缓存。
- * @param {string} date - 区间结束日 T
- * @returns {Promise<Map<string, {pct:number|null, days:number, updatedAt:string}>>} stock -> 区间涨幅
- * @throws 读取失败时抛错（绝不静默返回空）
+ * ★ [PERF 2026-10-14 §32] 按日期的【会话内缓存 + 单飞】。
+ *
+ * 为什么必须加（实测）：一次「切换日期」有 6 个消费者各自读同一天 ——
+ *   useTopicVolRatioBoard（昨日，判退潮）/ dragon-rank-change-store（昨日，名次变化）/
+ *   dragon-rank#ensureDragonRangePct / dragon-group#DragonGroupForDate /
+ *   limit-pool / yizi-board。它们**全部**在同一个 tick 里发起，而本函数原先既不缓存也不单飞
+ *   ⇒ 同一天被打了 6 次（浏览器网络面板实测：stock_range_pct?date=2026-10-12 出现 6 次，
+ *     其中 5 次结果逐字相同）。
+ *
+ * ⚠️ 数据本身是【日期级不可变】的（见文件头「按 date 缓存」），但收盘覆盖会重算同一天
+ *   ⇒ 唯一的失效点是 upsertRangePctRows（写成功即失效该日期），保证「写后读」拿到新值。
+ * ⚠️ 读取失败【不缓存】（§10：一次失败不能被缓存成「这天没有数据」）。
+ *
+ * @type {Map<string, Map<string,{pct:number|null,days:number,updatedAt:string}>>}
  */
-export async function readRangePctForDate(date) {
+const _cache = new Map();
+/** 单飞：date -> Promise<Map>（同一日期并发读只发一次请求） */
+const _inflight = new Map();
+/** 缓存上限（只保最近若干个日期；一年 250 个交易日，留 12 个足够覆盖「当前 + 前后几天」） */
+const CACHE_MAX = 12;
+
+/** 写缓存并做 LRU 裁剪（Map 保持插入序 ⇒ 最早插入的那个先淘汰） */
+function _putCache(date, map) {
+    _cache.set(date, map);
+    while (_cache.size > CACHE_MAX) {
+        const oldest = _cache.keys().next().value;
+        if (oldest === undefined) break;
+        _cache.delete(oldest);
+    }
+}
+
+/** 清空会话缓存（仅供测试与「切数据源 / 换账户」时调用） */
+export function clearRangePctCache() {
+    _cache.clear();
+    _inflight.clear();
+}
+
+/**
+ * 真正发请求那一段（成功才写缓存；失败原样抛出 ⇒ 调用方照旧能看到错误，§10 口径不变）。
+ * @param {string} date
+ * @returns {Promise<Map<string, {pct:number|null, days:number, updatedAt:string}>>}
+ */
+async function _fetchRangePct(date) {
     const sb = getSupabase();
     const { data, error } = await sb
         .from('stock_range_pct')
@@ -44,6 +81,30 @@ export async function readRangePctForDate(date) {
 }
 
 /**
+ * 读取某日的区间涨幅缓存（★ [PERF 2026-10-14] 会话内缓存 + 单飞，同一天最多请求一次）。
+ *
+ * @param {string} date - 区间结束日 T
+ * @returns {Promise<Map<string, {pct:number|null, days:number, updatedAt:string}>>} stock -> 区间涨幅
+ * @throws 读取失败时抛错（绝不静默返回空）
+ */
+export async function readRangePctForDate(date) {
+    const d = String(date || '').trim();
+    if (!d) return new Map();
+    const hit = _cache.get(d);
+    if (hit) return hit;
+    const fly = _inflight.get(d);
+    if (fly) return fly;
+    const p = _fetchRangePct(d).then(function(map) {
+        _putCache(d, map);
+        return map;
+    }).finally(function() {
+        if (_inflight.get(d) === p) _inflight.delete(d);
+    });
+    _inflight.set(d, p);
+    return p;
+}
+
+/**
  * 批量写入（upsert）某日的区间涨幅。
  * @param {string} date
  * @param {Array<{stock:string, pct:number|null, days:number}>} rows
@@ -66,6 +127,10 @@ export async function upsertRangePctRows(date, rows) {
         .from('stock_range_pct')
         .upsert(payload, { onConflict: 'date,stock' });
     if (error) throw error;
+    // ★ [PERF 2026-10-14] 写成功 ⇒ 该日期的会话缓存作废（保证「自己写、自己马上读」拿到新值）。
+    //   收盘覆盖链路正是 upsert 完立刻要 read 的那种调用者（见 close-pct-cover.js）。
+    _cache.delete(date);
+    _inflight.delete(date);
     return payload.length;
 }
 

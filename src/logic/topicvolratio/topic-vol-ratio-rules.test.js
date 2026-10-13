@@ -45,11 +45,15 @@ import {
   EBB_PICK_TONE,
   EBB_NO_BUY_TAG,
   EBB_NO_BUY_TONE,
+  EBB_SECOND_BUY_TAG,
+  EBB_SECOND_BUY_TONE,
+  EBB_SECOND_RULE_NO,
   resolveTvrbTier,
   avgVolRatioOf,
   formatAvgVolRatio,
   buildCashAlert,
   detectEbbDay,
+  buildEbbDayRecord,
   buildTopicVolRatioPlan,
   buildTvrbRulesLines
 } from './topic-vol-ratio-rules.js';
@@ -1084,3 +1088,325 @@ describe('tvrb · buildTvrbRulesLines 规则文案', function() {
   });
 });
 
+
+// ── 第八轮 · 退潮「只在首日生效」闸门（2026-10-14 用户口径）──────────────────────────────────
+// 用户原话：「我说的规则是，市场总龙头【首日】出现停牌或者占比不达标的情况下，这个规则才有效，
+//   又比如明天可能新华传媒又停牌，那就不算了，我说的是首日注意了。」
+// 用户拍板：昨日状态【优先读落库的判定】（tvrb_ebb_days 表），读不到用昨日行情行推断，
+//   两处都取不到 ⇒ 按首日处理（宁可多提醒一次）。
+describe('tvrb · 第八轮 · 退潮「只在首日生效」闸门', function() {
+  function ctx(over) {
+    return Object.assign({
+      ready: true,
+      leader: { name: '新华传媒', pct: 159.51, topic: 'AI应用', code: '600825', rank: 1, isYizi: false },
+      leaderSuspended: true,
+      leaderShare: null,
+      siblingDragons: [],
+      secondInfo: null,
+      buySecond: null,
+      // 退路用的【昨日行情行】事实（落库判定缺失时才会被读）
+      prevLeader: { volume: 0, share: null, suspendedLike: true, shareFail: false, bad: true }
+    }, over || {});
+  }
+
+  it('§10：昨日状态两处都取不到 ⇒ 按【首日】处理（宁可多提醒一次，不漏掉风险）', function() {
+    const e = detectEbbDay(ctx({ prevLeader: null }), null);
+    expect(e).not.toBe(null);
+    expect(e.firstDay).toBe(true);
+    expect(e.firstDaySource).toBe('unknown');
+    expect(e.detail).toContain('按【首日】处理');
+  });
+
+  it('★ 落库判定：昨日同一只总龙【已经退潮】⇒ 今天不是首日 ⇒ 规则不生效（返回 null）', function() {
+    expect(detectEbbDay(ctx(), { leader_stock: '新华传媒', ebb: true })).toBe(null);
+  });
+
+  it('★ 落库判定：昨日同一只总龙【没退潮】⇒ 今天是首日（正常生效）', function() {
+    const e = detectEbbDay(ctx(), { leader_stock: '新华传媒', ebb: false });
+    expect(e).not.toBe(null);
+    expect(e.firstDaySource).toBe('table');
+    expect(e.detail).toContain('落库判定');
+  });
+
+  it('★ 落库判定：昨日总龙是【别的票】⇒ 对今天这只是首日（只认同一只总龙）', function() {
+    const e = detectEbbDay(ctx(), { leader_stock: '别的龙', ebb: true });
+    expect(e).not.toBe(null);
+    expect(e.firstDaySource).toBe('table');
+    expect(e.detail).toContain('不是同一只');
+  });
+
+  it('★ 表里没有昨天 ⇒ 退化为【昨日行情行推断】：竞价量 0 ⇒ 已在坏状态 ⇒ 今天不算首日', function() {
+    expect(detectEbbDay(ctx({ prevLeader: { volume: 0, share: null, bad: true } }), null)).toBe(null);
+  });
+
+  it('★ 推断：昨日行情行状态正常（有竞价 + 占比达标）⇒ 今天是首日', function() {
+    const e = detectEbbDay(ctx({ prevLeader: { volume: 12345, share: 5, bad: false } }), null);
+    expect(e).not.toBe(null);
+    expect(e.firstDaySource).toBe('inferred');
+    expect(e.detail).toContain('行情行推断');
+  });
+});
+
+// ── 第八轮 · 买点侧唯一那只【总龙二买】（2026-10-14 用户口径）──────────────────────────────
+// 用户原话：「买点只有一个，那就是市场的龙二（不是同题材的），是整个早盘竞价看板的股票列表中的
+//   十日涨幅排名第二的龙二，就像今天的九阳股份（市场排名十日涨幅 86%，总列表排名第二），
+//   把它入选到买点侧……注意我说的的时间点，是市场总龙头出现首日停牌或者占比不达标的情况下，
+//   买点侧只有一个，那就是市场的龙二（十日涨幅排名第二），其它都是卖点侧不变。」
+describe('tvrb · 第八轮 · 买点侧唯一那只「总龙二买」', function() {
+  /** 10-13 的真实例子：九阳股份 002242，当日十日涨幅 86%，全列表排名第二（当日龙二） */
+  const SECOND = {
+    name: '九阳股份', pct: 86, topic: '家电', code: '002242',
+    rank: 2, isYizi: false, suspended: false
+  };
+
+  function ctx(over) {
+    return Object.assign({
+      ready: true,
+      leader: { name: '新华传媒', pct: 159.51, topic: 'AI应用', code: '600825', rank: 1, isYizi: false },
+      leaderSuspended: true,
+      leaderShare: null,
+      siblingDragons: [],
+      secondInfo: null,
+      prevLeader: null,        // 两处都取不到 ⇒ 按首日处理（闸门放行）
+      buySecond: SECOND
+    }, over || {});
+  }
+
+  it('★ 有龙二 ⇒ 买点标语改口径，明细写清「只有这一只 / 它是排名第二」', function() {
+    const e = detectEbbDay(ctx(), null);
+    expect(e.buySecondOn).toBe(true);
+    expect(e.buySecondName).toBe('九阳股份');
+    expect(e.buySecondLabel).toBe('龙二');
+    expect(e.buySecondPctText).toBe('+86%');
+    expect(e.buySecondTopic).toBe('家电');
+    expect(e.buySecondCode).toBe('002242');
+    expect(e.buyHeadline).toContain(EBB_SECOND_BUY_TAG);
+    expect(e.buyDetail).toContain('九阳股份');
+    expect(e.buyDetail).toContain('排名第二');
+    expect(e.buyDetail).toContain('市场龙二');
+    expect(e.buyDetail).toContain(EBB_NO_BUY_TAG);   // 其余入选票一律【退潮不买】
+  });
+
+  it('§10：当日涨幅没加载（算不出龙二）⇒ 标语如实说「算不出」并回到空仓口径（⛔ 不拿昨日口径顶替）', function() {
+    const e = detectEbbDay(ctx({ buySecond: null }), null);
+    expect(e.buySecondOn).toBe(false);
+    expect(e.buySecondName).toBe('');
+    expect(e.buyHeadline).toContain('空仓');
+    // 退潮本身仍然成立（卖点侧照旧收紧），只是买点侧给不出那一只
+    expect(e.reason).toBe('suspend');
+  });
+
+  it('它今日停牌 / 竞价一字 ⇒ 照样列出来并如实标注（⛔ 不顺延到第三名）', function() {
+    const s = detectEbbDay(ctx({ buySecond: Object.assign({}, SECOND, { suspended: true }) }), null);
+    expect(s.buySecondOn).toBe(true);
+    expect(s.buySecondTrouble).toContain('停牌');
+    const y = detectEbbDay(ctx({ buySecond: Object.assign({}, SECOND, { isYizi: true }) }), null);
+    expect(y.buySecondOn).toBe(true);
+    expect(y.buySecondTrouble).toContain('一字');
+  });
+});
+
+describe('tvrb · 第八轮 · 唯一买点那一行接进 buildTopicVolRatioPlan', function() {
+  // ⚠️ 刻意把【家电】放在第 3 位：本看板只取排名最靠前的 2 个题材（TVRB_TOPIC_LIMIT）⇒
+  //    家电【不会成为常规入选块】，九阳股份也就【不可能靠常规通路】进 buyNames。
+  //    这样「九阳股份在 buyNames 里」这条断言才真正证明【是龙二接线放进去的】，而不是被常规选股顺带带入。
+  const names = ['甲一', '甲二', '甲三', '甲四', '甲五', '甲六', '甲七', '甲八', '甲九', '甲十'];
+  const bNames = ['乙一', '乙二', '乙三', '乙四', '乙五', '乙六', '乙七', '乙八', '乙九', '乙十'];
+  const jdNames = ['九阳股份', '家电乙', '家电丙', '家电丁', '家电戊'];
+  const topics = [
+    block('AI应用', 1, names.map(function(n, i) {
+      return m(n, { aucVolRatio: 60, aucShare: 6, code: '6000' + (i < 9 ? '0' + (i + 1) : (i + 1)) });
+    })),
+    block('电力新能源', 2, bNames.map(function(n, i) {
+      return m(n, { aucVolRatio: 50, aucShare: 6, code: '6001' + (i < 9 ? '0' + (i + 1) : (i + 1)) });
+    })),
+    block('家电', 3, jdNames.map(function(n, i) {
+      return m(n, { aucVolRatio: 30, aucShare: 3, code: '00224' + i });
+    }))
+  ];
+  const dm = dragonMap(names.map(function(n, i) { return [n, i + 1]; }));
+  bNames.forEach(function(n, i) { dm.set(n, { rank: i + 1, topic: '电力新能源', groupSize: 10, pct: 40 }); });
+  dm.set('九阳股份', { rank: 2, topic: '家电', groupSize: 5, pct: 86 });
+
+  const EBB_CTX2 = {
+    ready: true,
+    leader: { name: '甲一', pct: 159.51, topic: 'AI应用', code: '600001', rank: 1, isYizi: false },
+    leaderSuspended: true,
+    leaderShare: null,
+    siblingDragons: [],
+    secondInfo: null,
+    prevLeader: null,
+    buySecond: {
+      name: '九阳股份', pct: 86, topic: '家电', code: '002242',
+      rank: 2, isYizi: false, suspended: false
+    }
+  };
+
+  it('★ 产出 out.ebbBuy：单只票 + 专属标签 + 槽位同步 + 进买点名单', function() {
+    const p = buildTopicVolRatioPlan(topics, dm, { ebbCtx: EBB_CTX2 });
+    expect(p.ebb).not.toBe(null);
+    expect(p.ebbBuy).not.toBe(null);
+    expect(p.ebbBuy.isEbbSecond).toBe(true);
+    expect(p.ebbBuy.picks.length).toBe(1);
+    const pick = p.ebbBuy.picks[0];
+    expect(pick.name).toBe('九阳股份');
+    expect(pick.buyActionTag).toBe(EBB_SECOND_BUY_TAG);
+    expect(pick.buyActionTone).toBe(EBB_SECOND_BUY_TONE);
+    expect(pick.holdTag).toBe('');
+    expect(pick.position).toBe('');
+    expect(p.ebbBuy.ruleNo).toBe(EBB_SECOND_RULE_NO);
+    // 槽位同步 ⇒ 四个装饰器（量比趋势 / 名次变化 / 封单额 / 停牌）经 buyBlocksFlat 遍历得到它
+    expect(p.buy.ebbSecond).toBe(p.ebbBuy);
+    // 买点名单 ⇒ 它若同时在卖点侧，卖点标【持有】而不是被要求清仓
+    expect(p.buyNames.has('九阳股份')).toBe(true);
+    // 用户拍板：常规题材块照旧列出来（灰化空仓视觉保留），只是不再有买点
+    expect(p.blocks[0].picks.every(function(x) { return x.buyActionTag === EBB_NO_BUY_TAG; })).toBe(true);
+    expect(p.blocks[0].picks.length).toBeGreaterThan(0);
+  });
+
+  it('★ 行内说明：写出它的常规买点信号（占比达标 ⇒ 竞价买），信息一枚不丢', function() {
+    const p = buildTopicVolRatioPlan(topics, dm, { ebbCtx: EBB_CTX2 });
+    const note = p.ebbBuy.picks[0].actionNote;
+    expect(note).toContain('市场龙二');
+    expect(note).toContain('排名第二');
+    expect(note).toContain(EBB_SECOND_BUY_TAG);
+    expect(note).toContain(EBB_NO_BUY_TAG);
+    expect(note).toContain('常规买点信号');
+  });
+
+  it('§10：算不出龙二（当日涨幅未就绪）⇒ 没有这一行、没有槽位、也不进买点名单（⛔ 不拿别的票顶替）', function() {
+    const p = buildTopicVolRatioPlan(topics, dm, {
+      ebbCtx: Object.assign({}, EBB_CTX2, { buySecond: null })
+    });
+    expect(p.ebb).not.toBe(null);          // 退潮本身仍成立（卖点侧照旧收紧）
+    expect(p.ebbBuy).toBe(null);
+    expect(p.buy.ebbSecond).toBe(null);
+    // 家电没进 blocks ⇒ 九阳股份本就【不可能】靠常规通路进名单 ⇒ 这一条挂掉只可能是接线出的错
+    expect(p.buyNames.has('九阳股份')).toBe(false);
+    // 全计划里【一枚】总龙二买的标签都不该出现
+    const allTags = [];
+    p.blocks.forEach(function(b) {
+      (b.picks || []).forEach(function(x) { allTags.push(x.buyActionTag); });
+    });
+    expect(allTags).not.toContain(EBB_SECOND_BUY_TAG);
+  });
+
+  it('不是退潮日 / ebbCtx 未就绪 ⇒ 没有 ebbBuy（⛔ 不误给一只票）', function() {
+    expect(buildTopicVolRatioPlan(topics, dm, {}).ebbBuy).toBe(null);
+    expect(buildTopicVolRatioPlan(topics, dm, { ebbCtx: { ready: false, leader: null } }).ebbBuy).toBe(null);
+  });
+
+  it('★ 它同时在卖点侧（昨天买过）⇒ 卖点标签不被改写成【竞价卖】（今天又进买点 ⇒ 持有）', function() {
+    const sellRows = [{
+      name: '九阳股份', topic: '家电', pct: 30, code: '002242',
+      aucPct: 3, volRatioDir: '', volRatioTimes: null, aucShare: 6, inTodayList: true
+    }];
+    const p = buildTopicVolRatioPlan(topics, dm, { sellRows: sellRows, ebbCtx: EBB_CTX2 });
+    let found = null;
+    p.sell.forEach(function(g) {
+      (g.items || []).forEach(function(x) { if (x.name === '九阳股份') found = x; });
+    });
+    expect(found).not.toBe(null);
+    // 放行 ⇒ 保持 buildSellPlan 自己的结论（今天又进买点 ⇒ 持有），⛔ 不是 SELL_OUT_TAG
+    expect(found.sellActionTag).not.toBe(SELL_OUT_TAG);
+    expect(found.sellActionTag).toBe(HOLD_TAG);
+  });
+});
+
+// ── 第八轮 · 落库行 buildEbbDayRecord（次日判首日的输入）──────────────────────────────────
+// 用户原话：「你应该把数据存起来啊，做一个表也行，不然很难判断出来，因为现在的逻辑是通过判断
+//   没有竞价量等判断出来的，是缓存吧？你要完善这点」
+describe('tvrb · 第八轮 · buildEbbDayRecord 落库行', function() {
+  it('§10：事实未就绪 / 缺日期 ⇒ null（⛔ 绝不落一行猜的判定，明天会拿它判首日）', function() {
+    expect(buildEbbDayRecord(null, null, '2026-10-13')).toBe(null);
+    expect(buildEbbDayRecord(null, { ready: false, leader: null }, '2026-10-13')).toBe(null);
+    expect(buildEbbDayRecord(null, { ready: true, leader: null }, '2026-10-13')).toBe(null);
+    expect(buildEbbDayRecord(null, {
+      ready: true, leader: { name: '甲一', pct: 1, topic: 'x', rank: 1 }
+    }, '')).toBe(null);
+  });
+
+  it('★【不带首日闸门】：ebb = 停牌 or 占比不达标（这正是次日判首日的输入）', function() {
+    const row = buildEbbDayRecord(null, {
+      ready: true,
+      leader: { name: '新华传媒', pct: 159.51, topic: 'AI应用', rank: 1 },
+      leaderSuspended: true,
+      leaderShare: null
+    }, '2026-10-13');
+    expect(row.date).toBe('2026-10-13');
+    expect(row.leaderStock).toBe('新华传媒');
+    expect(row.leaderTopic).toBe('AI应用');
+    expect(row.suspended).toBe(true);
+    expect(row.shareFail).toBe(false);
+    expect(row.ebb).toBe(true);          // ⚠️ 即使 detectEbbDay 因首日闸门会返 null，这一行仍是 true
+    expect(row.buySecond).toBe('');      // 没传 ebb ⇒ 不写买点侧那只
+    expect(row.source).toBe('tvrb-board');
+  });
+
+  it('★ 买点侧那一只只在【今天确实算出退潮首日】时才写进去（留痕供复核）', function() {
+    const ctx = {
+      ready: true,
+      leader: { name: '甲一', pct: 1, topic: 'x', rank: 1 },
+      leaderSuspended: true,
+      leaderShare: null
+    };
+    const off = buildEbbDayRecord(null, ctx, '2026-10-13');
+    expect(off.ebb).toBe(true);
+    expect(off.buySecond).toBe('');
+    const on = buildEbbDayRecord({ buySecondName: '九阳股份', buySecondPct: 86 }, ctx, '2026-10-13');
+    expect(on.buySecond).toBe('九阳股份');
+    expect(on.buySecondPct).toBe(86);
+  });
+
+  it('占比不达标（非停牌）也算「处在坏状态」', function() {
+    const row = buildEbbDayRecord(null, {
+      ready: true,
+      leader: { name: '甲一', pct: 1, topic: 'x', rank: 1 },
+      leaderSuspended: false,
+      leaderShare: 1.2
+    }, '2026-10-13');
+    expect(row.shareFail).toBe(true);
+    expect(row.ebb).toBe(true);
+  });
+
+  it('§10：占比缺数据 / 停牌且无占比 ⇒ 不判不达标（ebb 仍可为 true，但 share_fail 必须是 false）', function() {
+    const row = buildEbbDayRecord(null, {
+      ready: true,
+      leader: { name: '甲一', pct: 1, topic: 'x', rank: 1 },
+      leaderSuspended: true,
+      leaderShare: null
+    }, '2026-10-13');
+    expect(row.shareFail).toBe(false);
+    expect(row.share).toBe(null);
+    expect(row.ebb).toBe(true);
+  });
+
+  it('两条都不成立（没停牌 + 占比达标）⇒ ebb = false（次日读到它 ⇒ 今天是首日）', function() {
+    const row = buildEbbDayRecord(null, {
+      ready: true,
+      leader: { name: '甲一', pct: 1, topic: 'x', rank: 1 },
+      leaderSuspended: false,
+      leaderShare: 9
+    }, '2026-10-13');
+    expect(row.ebb).toBe(false);
+  });
+});
+
+describe('tvrb · 第八轮规则文案（首日限定 + 总龙二买）', function() {
+  const all = buildTvrbRulesLines().join('\n');
+
+  it('【只在首日生效】必须写进规则（含三条取数来源与「只认同一只总龙」）', function() {
+    expect(all).toContain('只在首日生效');
+    expect(all).toContain('tvrb_ebb_days');
+    expect(all).toContain('推断');
+    expect(all).toContain('同一只总龙');
+  });
+
+  it('第二十一条【总龙二买】必须写进规则（当日口径 / 同一把尺子 / 不顺延 / 不参与灰化）', function() {
+    expect(all).toContain(EBB_SECOND_RULE_NO);
+    expect(all).toContain(EBB_SECOND_BUY_TAG);
+    expect(all).toContain('当日十日涨幅');   // 与总龙的「昨日」口径区分清楚
+    expect(all).toContain('有龙位');         // 与总龙同一把尺子
+    expect(all).toContain('不参与');         // 它不参与买点侧整体灰化
+  });
+});

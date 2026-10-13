@@ -186,4 +186,50 @@ describe('decision-collect · ebbCtxOf（退潮首日的事实采集）', () => 
     expect(c.ready).toBe(false);
     expect(c.leader).toBe(null);
   });
+
+  // ── ★ [EBB-R8 第八轮 2026-10-14] 两个新事实 ────────────────────────────────────────────
+  //   用户口径（首日闸门）：「市场总龙头【首日】出现停牌或者占比不达标……才有效，
+  //     又比如明天可能新华传媒又停牌，那就不算了，我说的是首日注意了。」
+  //   用户口径（买点侧唯一那只）：「买点只有一个，那就是市场的龙二……是整个早盘竞价看板的
+  //     股票列表中的十日涨幅排名第二的龙二，就像今天的九阳股份（市场排名十日涨幅 86%，
+  //     总列表排名第二）」。
+  it('★ [事实③ 首日腿] 不传 prevDate ⇒ prevLeader = null（未知）—— ⛔ 绝不拼一个「假坏状态」', () => {
+    const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap, rangeMap);
+    expect(c.ready).toBe(true);
+    expect(c.prevLeader).toBe(null);
+  });
+
+  it('★ [事实③ 首日腿] 传了 prevDate 但库里查不到那只票 ⇒ bad=false（§10：未知 ≠ 昨天停牌）', () => {
+    const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap, rangeMap, '2026-10-10');
+    expect(c.ready).toBe(true);
+    expect(c.prevLeader).not.toBe(null);
+    // 单测环境没有行情缓存 ⇒ 量 / 占比都取不到 ⇒ 两处都【不判】（而不是判成坏状态）
+    expect(c.prevLeader.volume).toBe(null);
+    expect(c.prevLeader.suspendedLike).toBe(false);
+    expect(c.prevLeader.shareFail).toBe(false);
+    expect(c.prevLeader.bad).toBe(false);
+  });
+
+  it('★ [事实④ 买点侧那只] 当日十日涨幅排名【第二】= 跳过总龙自己后最靠前的那只', () => {
+    // 当日（rangeMap）口径与昨日（prevRangeMap）是两份不同的 map：
+    //   新华传媒 135.96（总龙自己，第一）/ 时代万恒 76.16 / 新华文轩 38.26
+    const today = prev({ 新华传媒: 135.96, 时代万恒: 76.16, 新华文轩: 38.26, 创票: 200 });
+    const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap, today);
+    expect(c.buySecond).not.toBe(null);
+    // ⛔ 不是新华传媒（它自己就是被判定退潮的那只总龙，本来不买）⇒ 顺位到 76.16
+    expect(c.buySecond.name).toBe('时代万恒');
+    expect(c.buySecond.pct).toBe(76.16);
+    expect(c.buySecond.code).toBe('600241');
+    expect(c.buySecond.rank).toBe(1);            // 新能源汽车的龙一
+    // ⛔ 创票 200 更高，但创业板无龙位 ⇒ 不参排（与总龙同一把尺子）
+    expect(c.buySecond.name).not.toBe('创票');
+  });
+
+  it('§10：[事实④] 当日涨幅 map 没注入 / 空 ⇒ buySecond = null（⛔ 绝不拿昨日口径顶替）', () => {
+    [null, undefined, new Map()].forEach(function(t) {
+      const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap, t);
+      expect(c.ready).toBe(true);       // 退潮事实本身仍成立
+      expect(c.buySecond).toBe(null);
+    });
+  });
 });
