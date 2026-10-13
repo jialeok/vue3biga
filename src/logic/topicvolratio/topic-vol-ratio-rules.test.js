@@ -43,6 +43,8 @@ import {
   TVRB_CASH_ALERT_AVG_VR,
   EBB_PICK_TAG,
   EBB_PICK_TONE,
+  EBB_NO_BUY_TAG,
+  EBB_NO_BUY_TONE,
   resolveTvrbTier,
   avgVolRatioOf,
   formatAvgVolRatio,
@@ -926,6 +928,80 @@ describe('tvrb · 退潮首日的卖点改写（经 buildTopicVolRatioPlan）', 
     expect(p.blocks[0].picks.map(function(x) { return x.name; }))
       .toEqual(base.blocks[0].picks.map(function(x) { return x.name; }));
   });
+
+  // ── ★ [第六轮 2026-10-13 用户口径] 买点侧「退潮不买」────────────────────────────────────
+  //   用户原话：「退潮当天，只有卖没有买吗？新华文轩买点侧还标有 持有 竞价买，应该标的是，
+  //     『退潮不买』……还是我说的规则，标签改变下。其它不变。」
+  it('不传 ebbCtx ⇒ 买点标签完全走原口径（⛔ 不把「不是退潮日」写成「退潮不买」）', function() {
+    const p = buildTopicVolRatioPlan(topics, dm, { sellRows: rows });
+    expect(p.ebb).toBe(null);
+    const picks = p.blocks[0].picks;
+    // 甲一 / 甲二：占比达标 ⇒ 决策看板的【竞价买】（挡位原样）
+    expect(picks.map(function(x) { return x.buyActionTag; })).toContain(BUY_NOW_TAG);
+    expect(picks.every(function(x) { return x.buyActionTag !== EBB_NO_BUY_TAG; })).toBe(true);
+  });
+
+  it('ebbCtx 未就绪 ⇒ 买点同样走原口径（§10 不猜）', function() {
+    const p = buildTopicVolRatioPlan(topics, dm, {
+      sellRows: rows, ebbCtx: { ready: false, leader: null }
+    });
+    expect(p.ebb).toBe(null);
+    expect(p.blocks[0].picks.every(function(x) { return x.buyActionTag !== EBB_NO_BUY_TAG; })).toBe(true);
+  });
+
+  it('★ 退潮首日：买点侧每一只的标签一律【退潮不买】（用户「只有卖没有买」）', function() {
+    const p = buildTopicVolRatioPlan(topics, dm, { sellRows: rows, ebbCtx: EBB_CTX });
+    expect(p.ebb).not.toBe(null);
+    p.blocks.forEach(function(b) {
+      b.picks.forEach(function(x) {
+        expect(x.buyActionTag).toBe(EBB_NO_BUY_TAG);
+        expect(x.buyActionTone).toBe(EBB_NO_BUY_TONE);
+      });
+    });
+  });
+
+  it('★ 买点侧：原本的【持有】/ 仓位槽被清掉（同一行不会既【退潮不买】又【持有】）', function() {
+    // 用带「昨天真买过」的 ctx ⇒ 平时 buying 侧的甲一 / 甲二 会被标【持有】
+    const ctx = { prevBought: new Set(['甲一', '甲二']), prevDragonNames: new Set() };
+    const base = buildTopicVolRatioPlan(topics, dm, { sellRows: rows, ctx: ctx });
+    const eb = buildTopicVolRatioPlan(topics, dm, { sellRows: rows, ctx: ctx, ebbCtx: EBB_CTX });
+    // 平时：仓位槽 / 行尾持有至少有一处写着【持有】
+    const baseHold = base.blocks[0].picks.some(function(x) {
+      return x.holdTag === HOLD_TAG || x.position === HOLD_TAG;
+    });
+    expect(baseHold).toBe(true);
+    // 退潮日：两处都被清空，只剩【退潮不买】
+    eb.blocks[0].picks.forEach(function(x) {
+      expect(x.holdTag).toBe('');
+      expect(x.position).toBe('');
+      expect(x.buyActionTag).toBe(EBB_NO_BUY_TAG);
+    });
+  });
+
+  it('★ 买点侧只改【标签与说明】：客观数据（十日涨幅 / 竞价涨幅 / 量比 / 占比 / 龙标）逐项保留', function() {
+    const base = buildTopicVolRatioPlan(topics, dm, { sellRows: rows });
+    const eb = buildTopicVolRatioPlan(topics, dm, { sellRows: rows, ebbCtx: EBB_CTX });
+    base.blocks[0].picks.forEach(function(a, i) {
+      const b = eb.blocks[0].picks[i];
+      expect(b.name).toBe(a.name);
+      expect(b.pctText).toBe(a.pctText);
+      expect(b.aucPctText).toBe(a.aucPctText);
+      expect(b.volRatioText).toBe(a.volRatioText);
+      expect(b.aucShareText).toBe(a.aucShareText);
+      expect(b.dragonLabel).toBe(a.dragonLabel);
+      expect(b.seq).toBe(a.seq);
+    });
+  });
+
+  it('★ 买点侧的逐行说明讲清「为什么今天不买 / 原信号作废 / ⛔ 不动买卖点本身」', function() {
+    const eb = buildTopicVolRatioPlan(topics, dm, { sellRows: rows, ebbCtx: EBB_CTX });
+    const note = eb.blocks[0].picks[0].actionNote;
+    expect(note).toContain('退潮首日');
+    expect(note).toContain('市场总龙');
+    expect(note).toContain('不开新仓');
+    expect(note).toContain(HOLD_TAG);      // 原信号作废（点名【持有】）
+    expect(note).toContain('作废');
+  });
 });
 
 // ── 规则文案 ─────────────────────────────────────────────────────────────────────────────
@@ -992,6 +1068,12 @@ describe('tvrb · buildTvrbRulesLines 规则文案', function() {
     expect(all).toContain('不顺延');          // 市场总龙二不顺延
     expect(all).toContain('昨日');            // 涨幅口径必须是昨日
     expect(all).toContain('竞价卖');          // 其余一律竞价卖
+  });
+
+  it('第六轮补的【退潮不买】必须写进规则（买点侧只有卖没有买）', function() {
+    const all = lines.join('\n');
+    expect(all).toContain(EBB_NO_BUY_TAG);
+    expect(all).toContain('只有卖');
   });
 });
 

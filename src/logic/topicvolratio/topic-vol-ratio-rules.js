@@ -142,6 +142,33 @@ export const EBB_PICK_TITLE =
   '9:25 不竞价卖，等 9:30~9:31 点开分笔成交看结论 ——【冲高卖】等冲高再清、【立刻卖】直接止损。';
 
 /**
+ * ══ 【退潮首日】买点动作标签（第六轮 · 2026-10-13 用户口径补正）══════════════════════════
+ *
+ * 用户原话（2026-10-13 第二轮反馈）：
+ *   「退潮当天，只有卖没有买吗？新华文轩买点侧还标有 持有 竞价买，应该标的是，"退潮不买"，
+ *     ……还是我说的规则，标签改变下。其它不变。」
+ *
+ * ⇒ 退潮首日，买点侧【每一只票】的动作标签一律换成这一枚 ——
+ *   原本由 finishBuyBlock 给出的【持有】/【竞价买】/【尾盘买】/【先卖后买】… 全部作废
+ *   （用户口径「退潮当天，只有卖没有买」）。
+ *
+ * ⛔ 只在本看板用：决策看板 / 分笔看板零改动（用户「其它不变」）。
+ * ⚠️ 它是【覆盖式后处理】，与卖点的 _applyEbbSellRules 同一范式 —— ⛔ 绝不去改 finishBuyBlock 内部
+ *   （那是决策看板与本看板共用的同一份实现，在里面加本看板专有分支等于给决策看板也加了规则）。
+ */
+export const EBB_NO_BUY_TAG = '退潮不买';
+/**
+ * 配色档（本看板独有）：深墨底 + 近白字。
+ *
+ * ⚠️ 为什么【不用红 / 绿】：行内所有红色系胶囊（#dc2626 竞价买 / #be123c 下杀买 / #f43f5e 补涨）
+ *   都是「今天要买」的动作标签，用红底会被一眼读成买点信号，正好帮倒忙（与 .tvrb-risk 同一取舍）。
+ * ⚠️ 为什么用【深底 + 亮字】而不是中性灰：买点侧整体挂着 `filter: grayscale(1)`（退潮空仓视觉），
+ *   grayscale 只去色相 / 饱和度、【保留明度】⇒ 深底亮字在灰化后仍是整行对比最强的元素，
+ *   中性灰标签反而会被灰化吞掉、读不出来。
+ */
+export const EBB_NO_BUY_TONE = 'ebb-nobuy';
+
+/**
  * 【退潮首日】判据（纯函数，可单测）。
  *
  * 数据来源 = decision-collect#_ebbCtxOf 采好的「事实」（市场总龙 / 今日停牌 / 今日占比 /
@@ -331,6 +358,52 @@ function _num(v) {
   if (v === null || v === undefined || v === '') return null;
   const n = Number(v);
   return isFinite(n) ? n : null;
+}
+
+/**
+ * 【退潮首日 · 买点改写】（覆盖式后处理 —— ⛔ 绝不去改 finishBuyBlock 内部）。
+ *
+ * 用户口径（2026-10-13 第六轮）：「退潮当天，只有卖没有买」「新华文轩买点侧还标有 持有 竞价买，
+ *   应该标的是，『退潮不买』」。
+ *
+ * 为什么是「后处理」：finishBuyBlock 是【决策看板与本看板共用的同一份实现】（§6 红线），
+ *   在它里面加本看板专有的分支，等于给决策看板也加了一条它不该有的规则。
+ *   于是：先让它按原口径算完，再由本函数【覆盖】买点行上那几枚「买」的字段。
+ *
+ * 覆盖的三处（模板 TvrbBuyBlock.vue 里买点行上所有「买」的出口，一个不漏）：
+ *   · `p.buyActionTag` / `p.buyActionTone` —— 竞价买 / 尾盘买 / 先卖后买 / 下杀买 / 补涨 / 龙一字持有
+ *     ⇒ 一律换成【退潮不买】；
+ *   · `p.holdTag` —— 行尾【持有】（今天又进买点）
+ *   · `p.position` —— 仓位槽（本看板只有「昨天真买过 ⇒ 持有」会落在这里）
+ * ⛔ 只动这三处；题材级的【昨有买入】/【N 次入选】是【历史统计标记】而不是「今天的买点动作」，
+ *   保留不动（用户「其它不变」）。
+ * ⛔ 一切【客观数据】照旧：十日涨幅 / 竞价涨幅 / 竞价量比 / 占比 / 龙标 / 名次变化 / 连板 / 封单额
+ *   —— 退潮只改「今天买不买」，不篡改行情事实。
+ * ⛔ 停牌票【照旧改写】：停牌事实由【停牌】小标 + 去色 CSS 表达（判定只有 suspend.js 一处，§6），
+ *   本纯函数不重复判一遍。
+ *
+ * @param {Array} blocks buildTopicVolRatioPlan 的入选题材块数组（每块含 picks）
+ * @param {object|null} ebb detectEbbDay 的返回
+ */
+function _applyEbbBuyRules(blocks, ebb) {
+  if (!ebb) return;
+  const topicText = ebb.leaderTopic || '—';
+  const lead = '【退潮首日】市场总龙【' + ebb.leaderName + '】（' + topicText +
+    '，昨日十日涨幅 ' + ebb.leaderPctText + '）' + ebb.whyText +
+    ' ⇒ 题材退潮首日【今天不买】：';
+  (blocks || []).forEach(function(b) {
+    (b.picks || []).forEach(function(p) {
+      if (!p || !p.name) return;
+      p.position = '';                      // 仓位槽（本看板此处只会是【持有】）
+      p.holdTag = '';                       // 行尾【持有】
+      p.buyActionTag = EBB_NO_BUY_TAG;      // ★ 覆盖式：买点行上唯一那枚「买」的标签
+      p.buyActionTone = EBB_NO_BUY_TONE;
+      p.actionNote = lead +
+        '本股今天【不开新仓】—— 退潮首日只有卖点、没有买点，原本的【' + HOLD_TAG + '】/ 竞价买 / ' +
+        '尾盘买 / 先卖后买 等买点信号一律作废。' +
+        '（等题材重新走强 —— 总龙复牌 / 竞价占比回升 / 平均量比回来 —— 再看买点。）';
+    });
+  });
 }
 
 /**
@@ -652,6 +725,7 @@ function _buildBlock(block, dragonMap, tier) {
  *   blocks        —— 入选的题材块（≤ TVRB_TOPIC_LIMIT 个），每个含 picks
  *   buy           —— 决策看板形状的买点计划（heavy / light / candidates / 三个兜底槽位）
  *                    ⚠️ 形状必须一致：通用装饰器（量比趋势 / 名次变化 / 封单额）按它遍历
+ *                    ⚠️ 退潮首日已被 _applyEbbBuyRules 覆盖动作标签 ⇒ 每行只留【退潮不买】
  *   sell          —— buildSellPlan 的返回（题材分组）；退潮首日已被 _applyEbbSellRules 改写动作标签
  *   excludedTopics—— 因数量 < 4 只被排除的题材（仅统计「选够两个之前」遇到的那些）
  *   notes         —— 看板级说明（被排除题材汇总等）
@@ -735,6 +809,13 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     ruleNo: RULE_NO.FIRST
   };
   out.blocks.forEach(function(b) { finishBuyBlock(b, fOpts); });
+
+  // ★ [EBB 2026-10-13 第六轮用户口径] 退潮首日 ⇒ 买点动作【覆盖式】重写：
+  //   「退潮当天，只有卖没有买」「买点侧还标有 持有 竞价买，应该标的是『退潮不买』」。
+  //   把每行的【持有】/【竞价买】/【尾盘买】…一律换成【退潮不买】（含仓位槽）。
+  //   ⛔ 必须排在 finishBuyBlock【之后】（要覆盖它刚算出来的标签）；
+  //   ⛔ 客观数据（十日涨幅 / 涨幅 / 量比 / 占比 / 龙标 / 连板 / 封单）一行不动。
+  if (out.ebb) _applyEbbBuyRules(out.blocks, out.ebb);
 
   // 买点名单（喂给卖点判「今天又进买点 ⇒ 持有」）
   out.blocks.forEach(function(b) {
@@ -870,7 +951,9 @@ export function buildTvrbRulesLines() {
       '（龙二不可用就顺延龙三、龙四……）；' +
       '②【市场总龙二】= 昨日十日涨幅【第二】的那只，且必须是【它自己题材的龙一】、与总龙【不同题材】、' +
       '且非竞价一字 / 非停牌（⛔ 这一只【不顺延】：它必须正好是涨幅第二，不递补涨幅第三）。',
-    '　　其余股票（含原本标【' + HOLD_TAG + '】的）一律改【' + SELL_OUT_TAG + '】：开盘就走，降低风险。' +
-      '⚠️ 同时买点侧【整体变灰 + 大字空仓标语】：退潮首日不开仓。'
+    '　　其余股票（含原本标【' + HOLD_TAG + '】的）一律改【' + SELL_OUT_TAG + '】：开盘就走，降低风险。',
+    '　　买点侧：退潮首日是【只有卖、没有买】——入选股票的买点动作标签一律改为【' + EBB_NO_BUY_TAG + '】' +
+      '（原本的【' + HOLD_TAG + '】/ 竞价买 / 尾盘买 / 先卖后买 等买点信号一律作废），' +
+      '整段【变灰】+ 顶部大字【建议空仓】：今天不开新仓。'
   ];
 }
