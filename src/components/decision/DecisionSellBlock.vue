@@ -66,6 +66,13 @@
           :title="trendTip"
           @click.stop="toggleTrend(it.name)"
         >{{ it.name }}</span>
+        <!-- [BOARD-SUSPEND 2026-10-13 用户口径] 当日停牌小标 —— 紧跟股票名（与买点侧同款）。
+             停牌票今天卖不掉，与「今天没有卖点」是两回事，必须一眼分清（§10）。 -->
+        <span
+          v-if="it.suspendTag"
+          class="dcb-suspend"
+          :title="SUSPEND_TAG_TITLE"
+        >{{ it.suspendTag }}</span>
         <span
           v-if="it.dragonLabel"
           class="dcb-dragon"
@@ -260,6 +267,9 @@
 
 <script setup>
 import { inject } from 'vue';
+// [BOARD-SUSPEND 2026-10-13 用户口径] 「停牌」小标的悬停文案（唯一出处：suspend.js）；
+//   ⛔ 本组件不做判定，只读 Logic 层挂好的 it.suspendTag（§21 模板零计算）。
+import { SUSPEND_TAG_TITLE } from '../../logic/auction/suspend.js';
 import DecisionTopicHead from './DecisionTopicHead.vue';
 // 🔴 [CHART-JUDGE-SELL-ALL 2026-10-09 用户口径 · 本次修复的真正根因]
 //   模板里写了 <ChartJudgeSelect> 就【必须】在这里 import —— 少了这一行，Vue 会把

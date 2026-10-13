@@ -1,8 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import {
   toThscode,
   pickSuspendedFromAuctionItems,
-  pickSuspendedFromPriceItems
+  pickSuspendedFromPriceItems,
+  decorateSuspendField,
+  isSuspended,
+  suspendState,
+  SUSPEND_TAG_TEXT
 } from './suspend.js';
 
 // ===== 真实样本（2026-10-13 盘中 11:15 逐字取自 fuyao 原始返回）=====
@@ -138,5 +142,61 @@ describe('suspend · 两腿交叉（§10 宁缺勿错）', () => {
     const both = new Set();
     auc.suspended.forEach((t) => { if (px.suspended.has(t)) both.add(t); });
     expect([...both]).toEqual(['600825.SH']);
+  });
+});
+
+// [BOARD-SUSPEND 2026-10-13 用户口径]「三个选股看板（决策 / 题材量比 / 分笔买卖）都要标停牌」——
+// 收口函数 decorateSuspendField 的行为必须钉死：命中给文案、未命中给空串（§10 不显示「未知」占位）。
+describe('suspend · decorateSuspendField（三个选股看板的唯一展示收口）', () => {
+  const D = '2026-10-13';
+  const saved = suspendState.value;
+  afterEach(() => { suspendState.value = saved; });
+
+  function arm(date, names) {
+    suspendState.value = { date, set: new Set(names), version: 1, loadedAt: Date.now() };
+  }
+
+  it('命中 ⇒ 写入「停牌」文案', () => {
+    arm(D, ['新华传媒']);
+    const row = { name: '新华传媒', code: '600825' };
+    expect(decorateSuspendField(row, D)).toBe(row);   // 原地写、返回同一对象
+    expect(row.suspendTag).toBe(SUSPEND_TAG_TEXT);
+  });
+
+  it('未命中 ⇒ 空串（§10 不渲染占位）', () => {
+    arm(D, ['新华传媒']);
+    const row = { name: '东方明珠' };
+    decorateSuspendField(row, D);
+    expect(row.suspendTag).toBe('');
+  });
+
+  it('日期不匹配（历史日 / 切日期瞬间）⇒ 空串', () => {
+    arm(D, ['新华传媒']);
+    const row = { name: '新华传媒' };
+    decorateSuspendField(row, '2026-10-12');
+    expect(row.suspendTag).toBe('');
+  });
+
+  it('集合为空（尚未加载 / 判不出来）⇒ 空串 —— ⛔ 绝不把「判不出来」当「没停牌」也不当「停牌」', () => {
+    arm(D, []);
+    const row = { name: '新华传媒' };
+    decorateSuspendField(row, D);
+    expect(row.suspendTag).toBe('');
+  });
+
+  it('空行 / 无名字 ⇒ 不抛错、不打标', () => {
+    arm(D, ['新华传媒']);
+    expect(decorateSuspendField(null, D)).toBe(null);
+    const row = {};
+    decorateSuspendField(row, D);
+    expect(row.suspendTag).toBe('');
+  });
+
+  it('名字前后空格按 trim 命中（与 isSuspended 同一口径）', () => {
+    arm(D, ['新华传媒']);
+    expect(isSuspended(D, ' 新华传媒 ')).toBe(true);
+    const row = { name: ' 新华传媒 ' };
+    decorateSuspendField(row, D);
+    expect(row.suspendTag).toBe(SUSPEND_TAG_TEXT);
   });
 });

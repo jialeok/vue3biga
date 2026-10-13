@@ -36,6 +36,9 @@ import { _getLocalTodayStr } from '../tagTitles/rules.js';
 /** 停牌标记文案（唯一出处 —— 模板/CSS/规则文档都从这里取，不各写一份） */
 export const SUSPEND_TAG_TEXT = '停牌';
 
+/** 停牌标记悬停说明（唯一出处：早盘竞价行 + 三个选股看板的 6 个块组件共用，⛔ 别各写一份） */
+export const SUSPEND_TAG_TITLE = '当日停牌：上游无竞价 / 无成交数据（不是抓取失败）';
+
 /** auction/snapshot 单次最多 100 个 thscode（接口契约） */
 const AUCTION_BATCH = 100;
 /** prices/snapshot 每批 40 只（与 auction-ths.js 同口径：fuyao 对批内不认识的代码会整批报错） */
@@ -180,7 +183,8 @@ async function _loadSuspendedNameSet(entries) {
   const list = Array.isArray(entries) ? entries : [];
   for (let i = 0; i < list.length; i++) {
     const e = list[i];
-    const nm = String((e && e.stock) || (typeof e === 'string' ? e : '') || '').trim();
+    // 名字字段兼容两种形状：早盘竞价行用 `stock`，三个选股看板的行用 `name`（⛔ 别逼调用方转换）。
+    const nm = String((e && (e.stock || e.name)) || (typeof e === 'string' ? e : '') || '').trim();
     const code = toThscode(e);
     if (!nm || !code || nameOf.has(code)) continue;
     nameOf.set(code, nm);
@@ -251,7 +255,8 @@ function _scheduleRetry(date, entries) {
  * 确保「该日期的停牌集合」已加载（幂等、单飞、有界重试）。
  *
  * @param {string} date 看板日期 'YYYY-MM-DD'
- * @param {Array<{stock:string, code?:string}>} entries 当日渲染名单（股票名 + 代码）
+ * @param {Array<{stock?:string, name?:string, code?:string}>} entries 当日渲染名单（股票名 + 代码）
+ *        ⚠️ 名字给 `stock`（早盘竞价行）或 `name`（三个选股看板行）都认，见 _loadSuspendedNameSet。
  * @returns {Promise<object>} suspendState.value
  */
 export async function ensureSuspendSet(date, entries) {
@@ -306,6 +311,26 @@ export function isSuspended(date, stockName) {
   const s = suspendState.value;
   if (!date || !stockName || s.date !== date || s.set.size === 0) return false;
   return s.set.has(String(stockName).trim());
+}
+
+/**
+ * 给一行展示行挂上停牌展示字段（**唯一收口**，§6）。
+ *
+ * 谁调它：`decision-collect` 的 `_decorateSuspend`（早盘竞价看板之外的**三个选股看板** ——
+ * 决策 / 题材量比 / 分笔买卖 —— 都从这里一次性覆盖，⛔ 绝不在各自的规则层或组件里另判一遍）。
+ * 为什么挂在 Logic 层：判定要读模块级 ref（业务真相），组件是纯展示、模板零计算（§21）。
+ *
+ * §10：非今日 / 尚未加载 / 判不出来 / 不在集合 ⇒ `''` ⇒ 模板 `v-if` 不渲染（⛔ 不显示「未知」占位）。
+ * ⚠️ 它是【同步读】：不发起任何请求，加载由各看板的组合式另外触发（见 `ensureSuspendSet`）。
+ *
+ * @param {object} row 任意含 `name` 的展示行（买点 pick / 卖点 item）
+ * @param {string} date 展示日
+ * @returns {object} 同一个 row（原地写 `suspendTag`）
+ */
+export function decorateSuspendField(row, date) {
+  if (!row) return row;
+  row.suspendTag = isSuspended(date, row.name) ? SUSPEND_TAG_TEXT : '';
+  return row;
 }
 
 /** 增量渲染指纹令牌：停牌集合变化必须让行缓存整体失效（与 dragon= 同款理由）。 */

@@ -20,7 +20,10 @@ import { useUiStore } from '../stores/uiStore.js';
 // ⛔ [DROP-VOL-RATIO-PICK 2026-10-07] useAuctionStore 的 import 已删：本看板不再读 topicOrderBy
 //   （模式恒为一字）。早盘竞价那份 store 不受影响，它照旧读写同一格。
 import { _on, _off } from '../stores/eventBus.js';
-import { collectDecisionData } from '../logic/decision/decision-collect.js';
+import { collectDecisionData, suspendEntriesOf } from '../logic/decision/decision-collect.js';
+// [BOARD-SUSPEND 2026-10-13 用户口径] 决策看板逐票「当日停牌」标记：判定唯一实现在 suspend.js
+//   （同花顺 fuyao，免费/不限量）；本层只负责【触发加载】，展示字段由 decision-collect 收口挂好。
+import { ensureSuspendSet } from '../logic/auction/suspend.js';
 import { showWarningToast } from './useToast.js';
 // 🔴 [DROP-VOL-RATIO-PICK 2026-10-07 用户口径] 决策看板【只用一字选股】，「题材·竞价量比」选股已下线。
 //   用户原话：「把决策看板中的那个题材，竞价量比选股去掉，这个没有用准确率不高，还会误导，去掉后更加清晰。」
@@ -366,6 +369,36 @@ export function useDecisionBoard() {
     // [SEAL 2026-10-11] 封单额也按日 ⇒ 换日期要重新确保窗口（已缓存 = no-op）。
     _ensureSeal();
   });
+
+  // ── [BOARD-SUSPEND 2026-10-13 用户口径] 本看板选中的票「今天是否停牌」────────────────────
+  //   用户原话：「选股那里也要添加停牌标签……决策看板……都需要标记哪一个股票停牌，打上标签」。
+  //   · 判定唯一实现在 logic/auction/suspend.js（同花顺 fuyao，免费/不限量，⛔ 不烧猫抓额度）；
+  //   · 这里只负责【触发加载】：名单 = 买点 + 卖点里出现过的票（suspendEntriesOf 唯一实现）。
+  //   🔴 键必须用【日期 + 名单字符串】：⛔ 不能拿 data.value 对象身份/长度当键 ——
+  //      data 是 computed，每次重算都换引用，会让这个 watch 每次重算都白触发一次。
+  //   ⚠️ 幂等：同一天 TTL 内重复调用直接命中缓存、不发请求（§32）；加载完 suspendState 变化会让
+  //      data 重算一次（_decorateSuspend 读它）⇒ 标签自己出现（§17 不阻塞渲染）。
+  const suspendKey = computed(function() {
+    const ents = suspendEntriesOf(
+      data.value && data.value.buy,
+      data.value && data.value.sell
+    );
+    // ⚠️ version 一并入键：数据刷新（早盘抓取 / 导入 / 收盘覆盖）后补一次判定
+    //    （与早盘竞价看板 onAuctionRefresh 后补一次同一取舍）；TTL 内仍是 no-op。
+    return currentDate.value + '|v' + version.value + '|' + ents.map(function(e) { return e.stock; }).join(',');
+  });
+  watch(suspendKey, function() {
+    const d = currentDate.value;
+    if (!d) return;
+    const ents = suspendEntriesOf(
+      data.value && data.value.buy,
+      data.value && data.value.sell
+    );
+    if (ents.length === 0) return;        // 名单未就绪 → 不发请求（等着名单变化再次触发）
+    ensureSuspendSet(d, ents).catch(function(e) {
+      console.warn('[SUSPEND] 决策看板停牌判定加载失败:', e && e.message);
+    });
+  }, { immediate: true });
 
   // ⛔ [CHART-JUDGE 2026-10-09] 事件总线这条走 bumpVersion【而不是 refresh】：见 bumpVersion 的注释
   //   —— auction-refresh 是高频事件，而手动判断与行情无关，绝不能跟着一起读云端（§32）。

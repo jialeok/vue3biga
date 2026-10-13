@@ -430,6 +430,22 @@
     font-weight: 700;
 }
 
+/* [BOARD-SUSPEND 2026-10-13 用户口径] 当日停牌小标（买卖两侧都挂，紧跟股票名）。
+   口径 = 同花顺 fuyao 明确返回「该票无竞价 / 无成交」（唯一实现 logic/auction/suspend.js）。
+   ⛔ 不用红 / 绿（停牌既非涨也非跌）；视觉与决策看板 .dcb-suspend、早盘竞价
+   .auction-suspend-tag 一致 —— 同一个语义在全站长得一样。 */
+.tvrb-suspend {
+    padding: 0 5px;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 14px;
+    color: #334155;
+    background: #f1f5f9;
+    border: 1px solid #94a3b8;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
 /* 龙一 / 龙二 徽章：9px 小字，紧贴股票名（与决策看板龙标同款） */
 .tvrb-dragon {
     padding: 0 4px;

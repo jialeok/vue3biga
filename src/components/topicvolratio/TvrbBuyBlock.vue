@@ -62,6 +62,14 @@
           :title="penTip"
           @click.stop="togglePens(p.name)"
         >{{ p.name }}</span>
+        <!-- [BOARD-SUSPEND 2026-10-13 用户口径] 当日停牌小标 —— 紧跟股票名（与决策看板同款）。
+             停牌票当日无竞价、无分笔，本看板的量比 / 分笔明细都会是空的；
+             贴名字放才能一眼分清「这一只今天停牌」与「数据没抓到」（§10 缺数据要说清原因）。 -->
+        <span
+          v-if="p.suspendTag"
+          class="tvrb-suspend"
+          :title="SUSPEND_TAG_TITLE"
+        >{{ p.suspendTag }}</span>
         <!-- 板块风险（创业板 / 科创板）—— 与决策看板同款，由 Logic 层给（§21）。
              本看板只选主板（有龙位）⇒ 一般不会出现；保留是为了「万一板块闸门变了」也能如实显示。 -->
         <span
@@ -193,6 +201,9 @@
 
 <script setup>
 import { inject } from 'vue';
+// [BOARD-SUSPEND 2026-10-13 用户口径] 「停牌」小标的悬停文案（唯一出处：suspend.js）；
+//   ⛔ 本组件不做判定，只读 Logic 层挂好的 p.suspendTag（§21 模板零计算）。
+import { SUSPEND_TAG_TITLE } from '../../logic/auction/suspend.js';
 import TvrbTopicHead from './TvrbTopicHead.vue';
 // ★ 分笔明细面板：直接复用分笔买卖看板的那一个组件（用户口径「设计和分笔买卖看板的股票展开图
 //   一样，包括图上文字」）。它是纯展示组件（4 个 props、零业务、零状态、零请求），

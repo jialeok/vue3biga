@@ -72,6 +72,15 @@
           :title="trendTip"
           @click.stop="toggleTrend(p.name)"
         >{{ p.name }}</span>
+        <!-- [BOARD-SUSPEND 2026-10-13 用户口径] 当日停牌小标 —— 紧跟股票名。
+             停牌票的竞价数据上游拿不到，买点行会显示 '-'，与「抓取失败」无法区分；
+             贴名字放（与 riskTag 同一取舍）才让人一眼知道「是这一只今天没有行情，不是坏了」。
+             ⛔ 纯提示：不参与选票 / 仓位 / 买卖时机（判定与文案全在 Logic 层）。 -->
+        <span
+          v-if="p.suspendTag"
+          class="dcb-suspend"
+          :title="SUSPEND_TAG_TITLE"
+        >{{ p.suspendTag }}</span>
         <!-- [TOPIC-PREV-BOUGHT 2026-09-30 用户口径] ⛔ 这里【故意】没有「昨天已买」徽标：
              它紧跟股票名会被读成【这一只】的结论（用户 9/30 反馈「大亚圣象昨天没买也被标」）。
              题材在延续 → 看上面的题材行【昨有买入】；这一只昨天真买过 → 看行尾的【持有】。 -->
@@ -279,6 +288,9 @@
 
 <script setup>
 import { inject } from 'vue';
+// [BOARD-SUSPEND 2026-10-13 用户口径] 「停牌」小标的悬停文案（唯一出处：suspend.js）——
+//   ⛔ 本组件不做任何判定，只读 Logic 层挂好的 p.suspendTag（§21 模板零计算）。
+import { SUSPEND_TAG_TITLE } from '../../logic/auction/suspend.js';
 import DecisionTopicHead from './DecisionTopicHead.vue';
 // [CHART-JUDGE 2026-10-09 用户口径] 手动「竞价图形判断」三档选择器（买点 / 卖点两个块共用这一个组件）。
 import ChartJudgeSelect from './ChartJudgeSelect.vue';

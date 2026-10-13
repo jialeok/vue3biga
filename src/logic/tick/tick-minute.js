@@ -620,6 +620,11 @@ export function decorateTickRow(row, tickMap, attempted, skipMap, memberMap, sid
         dragonDeltaText: row.dragonDeltaText || '',
         dragonDeltaTone: row.dragonDeltaTone || '',
         dragonDeltaTitle: row.dragonDeltaTitle || '',
+        // [BOARD-SUSPEND 2026-10-13 用户口径] 当日停牌标记（'停牌' / 空串 —— 由 decision-collect
+        //   的 _decorateSuspend 在规则层收口写好，本函数【只透传】，⛔ 不在这里另判一遍，§6）。
+        //   🔴 必须显式列进本白名单：本函数返回的是【新建对象】，不列进来的字段会被静默丢掉
+        //      （本看板 pick 侧就是走 decorateTickRow 产出，丢了就一个标都不显示）。
+        suspendTag: row.suspendTag || '',
         pctText: formatRangePct(row.pct),
         // [DECISION-LABEL-REF 2026-10-11 用户口径] 从决策看板继承的【全部买卖点动作标签】
         //   （竞价买 / 下杀买（竞价异常）/ 尾盘买 / … / 跟龙竞价卖 / 龙一字持有 / 持有，见 REF_TAGS）。

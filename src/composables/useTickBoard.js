@@ -20,9 +20,12 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useUiStore } from '../stores/uiStore.js';
 import { _on, _off } from '../stores/eventBus.js';
-import { collectDecisionData } from '../logic/decision/decision-collect.js';
+import { collectDecisionData, suspendEntriesOf } from '../logic/decision/decision-collect.js';
 import { MODE_YIZI } from '../logic/decision/decision-mode.js';
 import { buildTickBoard } from '../logic/tick/tick-minute.js';
+// [BOARD-SUSPEND 2026-10-13 用户口径] 分笔买卖看板逐票「当日停牌」标记：判定唯一实现在 suspend.js
+//   （同花顺 fuyao，免费/不限量）；本层只负责【触发加载】，展示字段由 decorateTickRow 白名单透传。
+import { ensureSuspendSet } from '../logic/auction/suspend.js';
 import {
   tickMinuteDate,
   tickMinuteMap,
@@ -208,6 +211,26 @@ export function useTickBoard() {
     resetTickMinuteTransient();
     _loadThenMaybeFetch(d);
   });
+
+  // ── [BOARD-SUSPEND 2026-10-13 用户口径] 本看板选中 / 要卖的票「今天是否停牌」──────────────
+  //   用户原话：「分笔买卖……都需要标记哪一个股票停牌，打上标签」。
+  //   停牌票正是本看板最容易误读的一类 —— 它没有分笔数据，面板会写「上游这一分钟没有这只票的快照」，
+  //   到底是因为停牌还是抓取失败，只有这枚标签能说清（§10 缺数据要可见、且要说清原因）。
+  //   名单取【已摊平的 buyBlocks + sellGroups】（二者都自带 code，见 decorateTickRow#_resolveCode）。
+  //   ⚠️ 键 = 日期 + version + 名单；⛔ 别用对象身份当键。
+  const suspendKey = computed(function() {
+    const ents = suspendEntriesOf(data.value.buyBlocks, data.value.sellGroups);
+    return currentDate.value + '|v' + version.value + '|' + ents.map(function(e) { return e.stock; }).join(',');
+  });
+  watch(suspendKey, function() {
+    const d = currentDate.value;
+    if (!d) return;
+    const ents = suspendEntriesOf(data.value.buyBlocks, data.value.sellGroups);
+    if (ents.length === 0) return;
+    ensureSuspendSet(d, ents).catch(function(e) {
+      console.warn('[SUSPEND] 分笔看板停牌判定加载失败:', e && e.message);
+    });
+  }, { immediate: true });
 
   // 数据刷新（抓取 / 导入 / 收盘覆盖）后跟着更新（§17）
   const _onRefresh = function() {

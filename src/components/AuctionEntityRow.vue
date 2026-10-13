@@ -63,7 +63,7 @@
       <span
         v-if="item.suspended"
         class="auction-suspend-tag"
-        title="当日停牌：上游无竞价 / 无成交数据（不是抓取失败）"
+        :title="SUSPEND_TAG_TITLE"
       >停牌</span>
       <!-- [LIMIT-STREAK 2026-09-11] 趋势/连板标记（趋势 / 首板 / 二板 / 三板…）：紧贴股票名后的灰色小标。
            口径 = 前 9 个历史交易日（不含当天）的连续收盘涨停天数，Logic 层（view-helpers）算好文案。 -->
@@ -265,6 +265,9 @@
 // 与 AuctionBoardTable 共用同一个 composable 实例（inject('auctionBoard')）：
 // 状态与回调只有一份，本组件不新建任何状态、不复制 board（§6 单一真相）。
 import { inject } from 'vue';
+// [SUSPEND 2026-10-13] 「停牌」小标的文案 / 悬停说明都从 suspend.js 取（唯一出处）——
+//   三个选股看板（决策 / 题材量比 / 分笔买卖）与本组件共用同一个常量，⛔ 不各写一份中文字面量。
+import { SUSPEND_TAG_TITLE } from '../logic/auction/suspend.js';
 import AuctionBadge from './AuctionBadge.vue';
 import AuctionDragonBadge from './AuctionDragonBadge.vue';
 import AuctionTopicStatsBar from './AuctionTopicStatsBar.vue';

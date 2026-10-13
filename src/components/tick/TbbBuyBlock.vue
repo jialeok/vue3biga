@@ -59,6 +59,14 @@
           :title="penTip"
           @click.stop="togglePens(p.name)"
         >{{ p.name }}</span>
+        <!-- [BOARD-SUSPEND 2026-10-13 用户口径] 当日停牌小标 —— 紧跟股票名。
+             停牌票没有分笔数据，展开面板会写「上游这一分钟没有这只票的快照」；
+             到底是停牌还是抓取失败，只有这枚标签能说清（§10 缺数据必须说清原因）。 -->
+        <span
+          v-if="p.suspendTag"
+          class="tbb-suspend"
+          :title="SUSPEND_TAG_TITLE"
+        >{{ p.suspendTag }}</span>
         <span
           v-if="p.dragonLabel"
           class="tbb-dragon"
@@ -125,6 +133,8 @@
 
 <script setup>
 import { inject } from 'vue';
+// [BOARD-SUSPEND 2026-10-13 用户口径] 「停牌」小标的悬停文案（唯一出处：suspend.js）。
+import { SUSPEND_TAG_TITLE } from '../../logic/auction/suspend.js';
 import TbbTopicHead from './TbbTopicHead.vue';
 import TbbPenPanel from './TbbPenPanel.vue';
 

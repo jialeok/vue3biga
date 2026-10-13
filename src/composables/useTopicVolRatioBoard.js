@@ -32,8 +32,12 @@ import { useUiStore } from '../stores/uiStore.js';
 import { _on, _off } from '../stores/eventBus.js';
 import {
   collectDecisionTopics,
-  decorateDecisionRows
+  decorateDecisionRows,
+  suspendEntriesOf
 } from '../logic/decision/decision-collect.js';
+// [BOARD-SUSPEND 2026-10-13 用户口径] 本看板逐票「当日停牌」标记：判定唯一实现在 suspend.js
+//   （同花顺 fuyao，免费/不限量）；本层只负责【触发加载】，展示字段由 decorateDecisionRows 收口挂好。
+import { ensureSuspendSet } from '../logic/auction/suspend.js';
 // §6：题材组序口径的常量只有一处定义（decision-mode.js），⛔ 别在本文件写字面量 'volRatio'。
 import { MODE_VOL_RATIO } from '../logic/decision/decision-mode.js';
 import {
@@ -344,6 +348,28 @@ export function useTopicVolRatioBoard() {
     resetTickMinuteTransient();
     _loadThenMaybeFetch(d);
   });
+
+  // ── [BOARD-SUSPEND 2026-10-13 用户口径] 本看板入选的票「今天是否停牌」────────────────────
+  //   用户原话：「选股那里也要添加停牌标签，题材量比看板……都需要标记哪一个股票停牌，打上标签」。
+  //   本看板自己建计划（不走 collectDecisionData）⇒ 在【上面 decorateDecisionRows 那一步】就已收口挂好
+  //   suspendTag；这里只负责触发判定加载。名单口径与决策看板一致（买卖两侧全收）。
+  //   ⚠️ 键 = 日期 + version + 名单：version 入键是为了在数据刷新后补一次（TTL 内仍是 no-op）；
+  //      ⛔ 别用对象身份当键（plan 每次重算都换引用）。
+  const suspendKey = computed(function() {
+    const plan = data.value && data.value.plan;
+    const ents = suspendEntriesOf(plan && plan.buy, plan && plan.sell);
+    return currentDate.value + '|v' + version.value + '|' + ents.map(function(e) { return e.stock; }).join(',');
+  });
+  watch(suspendKey, function() {
+    const d = currentDate.value;
+    if (!d) return;
+    const plan = data.value && data.value.plan;
+    const ents = suspendEntriesOf(plan && plan.buy, plan && plan.sell);
+    if (ents.length === 0) return;
+    ensureSuspendSet(d, ents).catch(function(e) {
+      console.warn('[SUSPEND] 题材量比看板停牌判定加载失败:', e && e.message);
+    });
+  }, { immediate: true });
 
   // §17 数据刷新（早盘竞价抓取 / 导入 / 收盘覆盖）→ 重算 + 补一次分笔读取。
   const _onRefresh = function() {

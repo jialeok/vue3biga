@@ -374,6 +374,24 @@
             font-weight: 700;
         }
 
+        /* [BOARD-SUSPEND 2026-10-13 用户口径] 当日停牌小标（买卖两侧都挂，紧跟股票名）。
+           口径 = 同花顺 fuyao 明确返回「该票无竞价 / 无成交」（唯一实现 logic/auction/suspend.js）。
+           ⛔ 为什么【不用红 / 绿】：停牌既不是涨也不是跌，染成方向色会被读成买卖信号；
+              也【不能】跟 .dcb-auc-flat（竞价涨幅 = 0 的实心深灰胶囊）撞脸 —— 两者含义完全不同。
+           视觉 = 浅灰底 + 石板灰描边（与早盘竞价看板的 .auction-suspend-tag【同一套观感】：
+              同一个语义在全站长得一样，用户才不用重新认一遍）。 */
+        .dcb-suspend {
+            padding: 0 5px;
+            font-size: 9px;
+            font-weight: 700;
+            line-height: 14px;
+            color: #334155;
+            background: #f1f5f9;
+            border: 1px solid #94a3b8;
+            border-radius: 4px;
+            white-space: nowrap;
+        }
+
         .dcb-pct {
             font-size: 11px;
             color: #b91c1c;

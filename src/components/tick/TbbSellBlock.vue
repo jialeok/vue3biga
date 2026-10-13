@@ -51,6 +51,12 @@
           :title="penTip"
           @click.stop="togglePens(it.name)"
         >{{ it.name }}</span>
+        <!-- [BOARD-SUSPEND 2026-10-13 用户口径] 当日停牌小标 —— 卖点侧同样要标（停牌卖不掉）。 -->
+        <span
+          v-if="it.suspendTag"
+          class="tbb-suspend"
+          :title="SUSPEND_TAG_TITLE"
+        >{{ it.suspendTag }}</span>
         <span
           v-if="it.dragonLabel"
           class="tbb-dragon"
@@ -110,6 +116,8 @@
 
 <script setup>
 import { inject } from 'vue';
+// [BOARD-SUSPEND 2026-10-13 用户口径] 「停牌」小标的悬停文案（唯一出处：suspend.js）。
+import { SUSPEND_TAG_TITLE } from '../../logic/auction/suspend.js';
 import TbbTopicHead from './TbbTopicHead.vue';
 import TbbPenPanel from './TbbPenPanel.vue';
 

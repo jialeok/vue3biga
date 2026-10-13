@@ -314,6 +314,23 @@
   white-space: nowrap;
 }
 
+/* [BOARD-SUSPEND 2026-10-13 用户口径] 当日停牌小标（买卖两侧都挂，紧跟股票名）。
+   口径 = 同花顺 fuyao 明确返回「该票无竞价 / 无成交」（唯一实现 logic/auction/suspend.js）。
+   本看板尤其需要它：停牌票没有分笔数据，展开面板会写「上游这一分钟没有这只票的快照」——
+   到底是停牌还是抓取失败，只有这枚标签能说清（§10 缺数据必须说清原因）。
+   ⛔ 不用红 / 绿（停牌既非涨也非跌）；视觉与决策 / 题材量比看板、早盘竞价同一套观感。 */
+.tbb-suspend {
+  padding: 0 4px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  color: #334155;
+  background: #f1f5f9;
+  border: 1px solid #94a3b8;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
 /* 龙标旁边的名次变化（'+3' 上升红 / '-2' 下降绿）。
    用户口径「数字前有加减号，不用背景色，上升用红色，下降用绿色」⇒ 只给文字颜色。
    ⚠️ 负 margin 是刻意的：.tbb-row 是 flex + gap: 8px，龙标与数字是两个 flex 子项，

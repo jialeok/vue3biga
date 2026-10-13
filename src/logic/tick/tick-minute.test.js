@@ -17,7 +17,7 @@ import {
   hmsToSec, beijingHms, beijingToday, tickWindowState,
   formatPenHands, formatPenPrice, penDirectionOf, penArrowOf, penToneOf,
   buildTickPens, tickStatText, tickStrengthOf, tickPanelTitle, tickPanelNote, tickPanelHint,
-  buildTickBoard, tickTargetsOf
+  buildTickBoard, tickTargetsOf, decorateTickRow
 } from './tick-minute.js';
 
 // ── 时间口径 ─────────────────────────────────────────────────────────────
@@ -827,5 +827,36 @@ describe('tick-minute · 决策看板买卖点标签继承（对照）', () => {
     const p = buildTickBoard(d, tickMap).buyBlocks[0].picks[0];
     expect(p.dragonRefTags.map(function(t) { return t.text; })).toEqual(['竞价买']); // 决策看板
     expect(p.strengthText).toBe('下杀买');                                           // 本看板结论
+  });
+});
+
+// [BOARD-SUSPEND 2026-10-13 用户口径] 「分笔买卖看板也要标哪只停牌」——
+// decorateTickRow 返回的是【白名单新对象】，suspendTag 不列进白名单就会被静默丢掉
+// （组件里 v-if 永远不成立 ⇒ 一个标都不显示，且不报错，最难查）。这里把这条钉死。
+describe('tick-minute · decorateTickRow 透传「停牌」标记', () => {
+  it('🔴 行上带 suspendTag ⇒ 必须原样透传（白名单不能再漏）', () => {
+    const out = decorateTickRow(
+      { name: '新华传媒', code: '600825', suspendTag: '停牌' },
+      new Map(), new Set(), new Map(), null, 'buy'
+    );
+    expect(out.suspendTag).toBe('停牌');
+  });
+
+  it('行上没有该字段 ⇒ 空串（未停牌 / 判不出来，§10 不渲染占位）', () => {
+    const out = decorateTickRow(
+      { name: '东方明珠', code: '600637' },
+      new Map(), new Set(), new Map(), null, 'sell'
+    );
+    expect(out.suspendTag).toBe('');
+  });
+
+  it('停牌票仍然照常产出（无分笔数据 ⇒ 走「上游没有这只票的快照」那条，不崩）', () => {
+    const out = decorateTickRow(
+      { name: '新华传媒', code: '600825', suspendTag: '停牌' },
+      new Map(), new Set(), new Map(), null, 'buy'
+    );
+    expect(out.hasTick).toBe(false);
+    expect(out.suspendTag).toBe('停牌');
+    expect(out.emptyText).toBeTruthy();
   });
 });

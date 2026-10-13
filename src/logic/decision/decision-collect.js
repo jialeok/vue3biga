@@ -28,6 +28,10 @@ import { getJingYestHighlightSetForDate } from '../auction/sort-rules.js';
 //   （§6 单一真相，与早盘竞价看板的封单量共用同一份 limit_pool 内存缓存）。
 //   ⛔ 不消费猫抓额度：limit_pool 由 Edge Function 15:40 用同花顺 fuyao 免费抓取落库，本层只读。
 import { decorateSealFields } from '../auction/seal-volume.js';
+// [BOARD-SUSPEND 2026-10-13 用户口径] 「三个选股看板都要标哪只股票停牌」——
+//   判定与展示收口全在 suspend.js（§6 单一真相，与早盘竞价看板同一条判据）。
+//   ⛔ 不消费猫抓额度：同花顺 fuyao 免费/不限量；本层只做【同步读】，加载由各看板组合式触发。
+import { decorateSuspendField } from '../auction/suspend.js';
 import { _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 // [TWO-MODES 2026-10-02 用户口径] 买点分两套模式，由早盘竞价的题材 / 一字 toggle 决定
@@ -304,6 +308,72 @@ function _decorateSeal(buy, sell, date) {
   _eachRow(buy, sell, function(row) {
     decorateSealFields(row, date);
   });
+}
+
+/**
+ * [BOARD-SUSPEND 2026-10-13 用户口径] 给买点 / 卖点的每一行挂上【当日停牌】标记：
+ *   · `suspendTag`  '停牌'；未停牌 / 判不出来 ⇒ 空串 ⇒ 模板不渲染（§10）
+ *
+ * 用户原话：「选股那里也要添加停牌标签，题材量比看板、决策看板、分笔买卖，这些选股看板，
+ *   都需要标记哪一个股票停牌，打上标签」。
+ *
+ * 为什么收口在这里：判定要读 suspend.js 的模块级 ref（业务真相），规则层是纯函数读不到；
+ *   而买点有多个档、卖点有 N 组，在各自构造点各补一遍必然漏（§6）—— 与 _decorateVolRatioTrend 同一取舍。
+ *
+ * ⚠️ 本函数对【买点 + 卖点两侧】都挂：一只票停牌时，它在买点侧（今天想买却买不进）与
+ *   卖点侧（想卖卖不掉）都必须看得见，这正是用户要的「一眼知道是哪一只」。
+ * ⛔ skipPrevBuy 的内部重算不进 UI，不挂（§36）；调用点因此在 collectDecisionData 里加了闸门。
+ *
+ * @param {object} buy  buildBuyPlan 的返回
+ * @param {Array} sell  buildSellPlan 的返回
+ * @param {string} date 展示日（= 看板当前日期）
+ */
+function _decorateSuspend(buy, sell, date) {
+  if (!date) return;
+  _eachRow(buy, sell, function(row) {
+    decorateSuspendField(row, date);
+  });
+}
+
+/**
+ * [BOARD-SUSPEND 2026-10-13] 把买点 / 卖点里出现过的股票收成「停牌判定」要用的名单（**唯一实现**，§6）。
+ *
+ * 为什么需要它：suspend.js 判停牌要拿【股票代码】去问同花顺，而三个看板的组合式手上只有
+ *   「买点 / 卖点计划对象」—— 与其让每个看板各自再遍历一遍（§6 必然分叉），不如在这里收口。
+ *
+ * 代码解析顺序（与 decorateTickRow 的 _resolveCode 同一取舍）：
+ *   ① 行上的 `code`（题材量比看板 / 卖点行 / 分笔看板都自带）；② 名册 `getStockCode(name)`
+ *   （决策看板买点 pick 不带 code，由 pickByVolRatio → _toPick 构造，只透传 name）。
+ *   ⚠️ 缺代码 ⇒ 该行【不参与判定】（也就不打标），§10 不猜。
+ *
+ * @param {object|Array} buy 买点计划（buildBuyPlan / buildTopicVolRatioPlan 的 buy）
+ *        或【已摊平的块数组】（分笔看板拿到的就是 buyBlocks）—— 两种形状都收，⛔ 别让调用方自己转换。
+ * @param {Array} sell 卖点分组数组（每项含 .items）
+ * @returns {Array<{stock:string, code:string}>} 已按名字去重
+ */
+export function suspendEntriesOf(buy, sell) {
+  const out = [];
+  const seen = new Set();
+  function push(name, code) {
+    const n = String(name || '').trim();
+    if (!n || seen.has(n)) return;
+    const c = String(code || '').trim() || String(getStockCode(n) || '').trim();
+    if (!c) return;               // 拿不到代码 ⇒ 这一行不参与判定（§10）
+    seen.add(n);
+    out.push({ stock: n, code: c });
+  }
+  // ⚠️ 买点遍历仍走 buyBlocksFlat（它负责摊平兜底方案的 .blocks）——唯一一份遍历，见它的长注释；
+  //    分笔看板传进来的已经是摊平后的块数组，直接用。
+  const blocks = Array.isArray(buy) ? buy : buyBlocksFlat(buy);
+  blocks.forEach(function(b) {
+    if (!b) return;
+    (b.picks || []).forEach(function(p) { if (p) push(p.name, p.code); });
+  });
+  (sell || []).forEach(function(g) {
+    if (!g) return;
+    (g.items || []).forEach(function(it) { if (it) push(it.name, it.code); });
+  });
+  return out;
 }
 
 /**
@@ -845,6 +915,11 @@ export function collectDecisionData(date, opts) {
   //   0 猫抓额度）。⛔ 与上面两个装饰器同一取舍：skipPrevBuy 的内部重算结果不进 UI，不挂（§36）。
   if (!skipPrevBuy) _decorateSeal(buy, sell, date);
 
+  // [BOARD-SUSPEND 2026-10-13 用户口径] 逐票【当日停牌】标记 —— 与上面几个装饰器同一取舍：
+  //   skipPrevBuy 的内部重算结果不进 UI，不挂（§36）。同步读 suspend.js 的模块级 ref ⇒
+  //   停牌集合到货后（组合式触发加载 → ref 变化）本 computed 自动重算、标签自己出现（§17）。
+  if (!skipPrevBuy) _decorateSuspend(buy, sell, date);
+
   // [PREV-BOUGHT 2026-09-30 用户口径，同日两次修正] 「昨天买过」这件事现在有【两个】落点：
   //   · 题材行【昨有买入】(block.prevBoughtTag)：题材里【有】票昨天被打过「买」标签 ⇒ 题材在延续。
   //     判据 = prevBoughtTopics（本文件按【今日题材】把 prevBought 聚合出来，见 _prevBoughtTopics）。
@@ -987,13 +1062,14 @@ export function collectDecisionTopics(date, opts) {
 /**
  * 【买点 / 卖点逐行字段的装饰器 · 对外出口（§6）】
  *
- * 把三件「要读内存真相才能算」的逐行展示字段一次性挂到行上：
+ * 把「要读内存真相才能算」的逐行展示字段一次性挂到行上：
  *   · [VRATIO-TREND 2026-10-01] 竞价量比（当日值 + 方向箭头 + 近 5 日趋势）
  *   · [DRAGON-RANK-CHANGE 2026-10-09] 龙标旁边的名次变化（'+3' / '-2'）
  *   · [SEAL 2026-10-11] 封单额 + 变化 + 连板
+ *   · [BOARD-SUSPEND 2026-10-13] 当日停牌标记
  *
- * ⛔ 为什么必须收口在这里：这三样都要读【本文件所在层】才知道的内存真相
- *    （vol-ratio 缓存 / dragonRankChangeState / limit_pool 缓存），
+ * ⛔ 为什么必须收口在这里：这些都要读【本文件所在层】才知道的内存真相
+ *    （vol-ratio 缓存 / dragonRankChangeState / limit_pool 缓存 / suspendState），
  *    decision-rules 是纯函数、读不到。另写一份 = 同一只票在两个看板显示不同的量比 / 名次（§6 红线）。
  *
  * ⚠️ buy / sell 可任传其一（另一方传 null）；⛔ 传进来的对象是【原地装饰】的。
@@ -1010,4 +1086,7 @@ export function decorateDecisionRows(buy, sell, date, prevDate, todayRankMap) {
   _decorateVolRatioTrend(buy, sell, date);
   _decorateDragonRankChange(buy, sell, prevDate, todayRankMap);
   _decorateSeal(buy, sell, date);
+  // [BOARD-SUSPEND 2026-10-13] 题材量比看板走这条（它自己建计划、不走 collectDecisionData）
+  //   ⇒ 停牌标记必须在【这一份收口】里也挂一次，否则决策看板有、题材量比看板没有（§6 两处必修）。
+  _decorateSuspend(buy, sell, date);
 }
