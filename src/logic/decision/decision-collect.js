@@ -611,15 +611,25 @@ function _buildSellRows(prevBought, byName, date) {
  * ⇒ 口径（★ 全部按用户拍板，⛔ 别自行改）：
  *   · 候选池 = 当日早盘竞价【全列表】（rows，含观察组继承行 / 灰行 / 不成组的票）——
  *     用户明确说「列表中所有的股票」，⛔ 不是「已成题材分组的成员」；
+ *   · ★★ [EBB-FIX 2026-10-13 第七轮] 候选池再收一道闸门：【只认有龙位（rank 非 null）的票】。
+ *     为什么（实测事故）：10-13 全列表里十日涨幅第一是【善水科技 301190，160.2%】——
+ *     它是【创业板】，本看板与早盘竞价都【不发龙标签】（「只发主板龙标签」闸门在 computeDragonRankMap 内）。
+ *     用户口径里的「市场总龙」是能承载【题材退潮】语义的那个龙头（他举的例子 = 新华传媒 = AI应用龙一），
+ *     一只没有龙标、不属于任何题材龙位的票坐上去 ⇒ 它既没停牌、占比也不看龙头门槛 ⇒ 退潮永不成立
+ *     （实测现象：10-13 整个退潮规则静默失效，用户报「完全没变化」）。
+ *     ⇒ 总龙 = 「有龙标的票」里昨日涨幅最高者（10-13 = 新华传媒 159.51，今日停牌 ⇒ 退潮成立）。
+ *     ⚠️ 这条与「选股只选有龙位的票」「同题材龙位只认有龙位的成员」是【同一把尺子】（§6 同源）。
+ *     ⚠️ 它 `rank` 分配【不依赖涨幅】（按题材组内顺序递增）⇒ 早盘 9:26（当日涨幅尚未算出）照样有龙位。
  *   · 涨幅用【上一交易日】的十日涨幅（prevRangeMap = 调用方按 prevDate 从云端读回的那份）——
  *     停牌票当天没有十日涨幅，只有昨日口径才排得出它（否则最典型的场景恰恰算不出来）；
- *   · leader = 全列表里昨日十日涨幅最高的那只；second = 第二高那只。
+ *   · leader = 候选池里昨日十日涨幅最高的那只；second = 第二高那只。
  *
  * ★ 为什么把「事实」与「判定」拆开（§4）：本函数只【读数】（谁是总龙 / 今天停不停牌 /
  *   今天占比多少），是否算「退潮」由规则层 topic-vol-ratio-rules#detectEbbDay 判（纯函数、可单测）。
  *
  * §10：prevRangeMap 没读到（调用方还没把昨日涨幅读回来）⇒ ready=false，
  *   ⛔ 绝不返回「今天没有总龙」—— 那会把「还没读到」伪装成「判定过、结果是空」。
+ *   同理：全列表里一只【有龙位】的票都排不出（例如龙位表整体为空）⇒ 也按未就绪处理（⛔ 不猜）。
  * ⛔ 本函数【不读云】：昨日涨幅由调用方注入（与 dragonRankOnly 的 rangeMap 同一范式）。
  *
  * @param {Array} rows 当日【全列表】行（_mkRow 的产物，含 name / topic / code）—— 含灰行 / 不成组的票
@@ -660,6 +670,12 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap) {
   (rows || []).forEach(function(r) {
     if (!r || !r.name || seen.has(r.name)) return;
     seen.add(r.name);
+    // ★★ [EBB-FIX 2026-10-13 第七轮] 闸门：无龙位（创业板 300/301、科创板 688/689、未成组）⇒ 不进候选。
+    //   实测事故见本函数 JSDoc：10-13 的十日涨幅第一是创业板【善水科技 301190】(160.2%)，
+    //   它没有龙标 ⇒ 既不停牌、占也不按龙头门槛 ⇒「退潮」静默失效（用户报「完全没变化」）。
+    //   ⛔ 这不是新规则：它就是本看板既有的「只认有龙位的票」那把尺子（与 _dragonCandidates /
+    //      siblings 的 `rank === null` 过滤逐字同源，§6）。
+    if (_rankOf(r.name) === null) return;
     const pr = prevRangeMap.get(r.name);
     const pct = (pr && pr.pct !== undefined && pr.pct !== null) ? Number(pr.pct) : null;
     if (pct === null || !isFinite(pct)) return;   // §10：这只票昨日涨幅读不到 ⇒ 不参与排名
@@ -672,7 +688,7 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap) {
   });
   const head = cand[0];
   const second = cand.length > 1 ? cand[1] : null;
-  // 总龙：昨日涨幅第一，并把【它今天】的龙位 / 一字一并带上 ——
+  // 总龙：候选池（= 全列表里【有龙位】的票）中昨日涨幅第一，并把【它今天】的龙位 / 一字一并带上 ——
   //   规则层判「占比不达标」要按【龙头门槛】（只在它是今日龙一时成立），故必须知道它的龙位。
   const leader = {
     name: head.name, pct: head.pct, topic: head.topic, code: head.code,

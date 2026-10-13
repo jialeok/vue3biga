@@ -124,14 +124,38 @@ describe('decision-collect · ebbCtxOf（退潮首日的事实采集）', () => 
     });
   });
 
-  it('★ 市场总龙 = 昨日十日涨幅最高的那只（候选池 = 当日前列表，含不成组的票）', () => {
+  it('★ 市场总龙 = 【有龙位】的票里昨日十日涨幅最高的那只（候选池 = 当日前列表，含不成组的票）', () => {
     const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap);
     expect(c.ready).toBe(true);
-    expect(c.leader.name).toBe('新华传媒');     // 159.51 最高（创票 120 是创业板，仍按涨幅参排）
+    expect(c.leader.name).toBe('新华传媒');     // 159.51 是【有龙位】票里的最高
     expect(c.leader.pct).toBe(159.51);
     expect(c.leader.topic).toBe(AI);
     expect(c.leader.rank).toBe(1);               // 它今日是 AI应用 的龙一
-    expect(c.second.name).toBe('创票');          // 第二高 = 120（排名只按涨幅，与板块无关）
+    // ★ [EBB-FIX] 第二高 = 时代万恒 80.98 —— ⛔ 不是涨幅更高的「创票」120：创业板无龙标 ⇒ 不参排
+    expect(c.second.name).toBe('时代万恒');
+  });
+
+  it('★★ [EBB-FIX 第七轮] 无龙位的票（创业板 / 未成组）【不参与】总龙排名 —— 10-13 善水科技事故的回归钉', () => {
+    // 实测事故：10-13 全列表十日涨幅第一是【善水科技 301190 创业板 160.2%】，它没有龙标
+    //   ⇒ 旧口径把总龙算成它 ⇒ 它既不停牌、占比也不看龙头门槛 ⇒「退潮」永不成立
+    //   ⇒ 整个退潮规则静默失效（用户报「10-13 买点/卖点/灰化 全都没变化」）。
+    const r2 = [
+      row('善水科技', '', { code: '301190' }),      // 创业板、未成组 ⇒ 无龙位，但昨日涨幅最高
+      row('新华传媒', AI, { code: '600825' })
+    ];
+    const c = ebbCtxOf(r2, topics, rankMap, D, prev({ 善水科技: 160.2, 新华传媒: 159.51 }));
+    expect(c.ready).toBe(true);
+    expect(c.leader.name).toBe('新华传媒');   // ⛔ 不是善水科技
+    expect(c.leader.pct).toBe(159.51);
+    expect(c.second).toBe(null);              // 善水被排除 ⇒ 候选池只剩一只
+  });
+
+  it('§10：候选池里【一只龙位票】都排不出（全是无龙位）⇒ ready=false（⛔ 不猜成「今天没有总龙」）', () => {
+    const r3 = [row('善水科技', '', { code: '301190' })];
+    const c = ebbCtxOf(r3, topics, rankMap, D, prev({ 善水科技: 160.2 }));
+    expect(c.ready).toBe(false);
+    expect(c.leader).toBe(null);
+    expect(c.second).toBe(null);
   });
 
   it('§10：昨日涨幅【读不到】的票不参与排名（⛔ 不当 0 排到最后、更不当没有）', () => {
@@ -147,13 +171,14 @@ describe('decision-collect · ebbCtxOf（退潮首日的事实采集）', () => 
   });
 
   it('★ 市场总龙二：带上它【今日】的龙位 / 一字（判据由规则层做，采集层只给事实）', () => {
+    // [EBB-FIX 第七轮] 候选池已过滤掉无龙位的票 ⇒ 总龙二【必然】有龙位（rank 是数字，不再是 null）
     const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap);
-    expect(c.secondInfo.name).toBe('创票');
-    expect(c.secondInfo.rank).toBe(null);        // 创业板 ⇒ 无龙位
+    expect(c.secondInfo.name).toBe('时代万恒');   // 创票（120）被 [EBB-FIX] 闸门排除
+    expect(c.secondInfo.rank).toBe(1);           // 新能源汽车 的龙一
+    expect(c.secondInfo.isYizi).toBe(false);
     const c2 = ebbCtxOf(rows, topics, rankMap, D, prev({ 新华传媒: 159.51, 时代万恒: 80.98 }));
     expect(c2.secondInfo.name).toBe('时代万恒');
     expect(c2.secondInfo.rank).toBe(1);          // 新能源汽车 的龙一
-    expect(c2.secondInfo.isYizi).toBe(false);
   });
 
   it('全列表一只票都排不出（涨幅全缺）⇒ ready=false（§10 不猜）', () => {

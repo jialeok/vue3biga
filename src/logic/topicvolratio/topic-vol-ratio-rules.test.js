@@ -1075,5 +1075,12 @@ describe('tvrb · buildTvrbRulesLines 规则文案', function() {
     expect(all).toContain(EBB_NO_BUY_TAG);
     expect(all).toContain('只有卖');
   });
+
+  it('第七轮补的【总龙只认有龙位的票】必须写进规则（创业板 / 科创板无龙标 ⇒ 不参排）', function() {
+    const all = lines.join('\n');
+    expect(all).toContain('有龙位');     // 总龙候选池的闸门口径
+    expect(all).toContain('创业板');      // 讲清被排除的是哪一类（300/301）
+    expect(all).toContain('科创板');      // 以及 688/689
+  });
 });
 
