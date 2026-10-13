@@ -1410,3 +1410,23 @@ describe('tvrb · 第八轮规则文案（首日限定 + 总龙二买）', funct
     expect(all).toContain('不参与');         // 它不参与买点侧整体灰化
   });
 });
+
+// ── ★ [MANTRA 2026-10-14 第九轮用户口径] 用户要求「在那个提示文字板上加上一句口诀」──────
+//   原话：「买在分歧，卖在一致。弱势切抱团，分歧切核心。今天是总市场龙一分歧，核心就是
+//          总市场龙二。龙一分歧时，就切到龙二。」
+//   ⛔ 用户的口诀必须逐字在规则面板里（他要的就是这几句），并且要和第二十一条【总龙二买】互相指得着。
+describe('tvrb · 第九轮规则文案（口诀：分歧切龙二）', function() {
+  const all = buildTvrbRulesLines().join('\n');
+
+  it('口诀原话必须逐句写进规则（买在分歧 / 卖在一致 / 弱势切抱团 / 分歧切核心）', function() {
+    expect(all).toContain('买在分歧，卖在一致');
+    expect(all).toContain('弱势切抱团，分歧切核心');
+  });
+
+  it('「市场总龙一分歧 ⇒ 核心就是市场总龙二 / 龙一分歧就切到龙二」必须写进去，并指向第二十一条', function() {
+    expect(all).toContain('总市场龙一分歧');
+    expect(all).toContain('核心就是总市场龙二');
+    expect(all).toContain('龙一分歧时，就切到龙二');
+    expect(all).toContain(EBB_SECOND_RULE_NO);   // 口诀 ⇄ 第二十一条【总龙二买】互相指得着
+  });
+});
