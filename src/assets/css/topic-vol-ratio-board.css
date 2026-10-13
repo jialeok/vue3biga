@@ -184,6 +184,48 @@
     color: #991b1b;
 }
 
+/* ---- ★ [EBB 2026-10-13 第五轮用户口径] 退潮首日 ----
+   1) 卖点侧的【说明】横幅：用户「你帮我完善下题材量比规则，并改下标签和说明」里的「说明」。
+      文案全在 Logic 层（detectEbbDay）；配色沿用本看板的【风险告警】色系（与 .tvrb-cash-alert 同语义）。
+      字号比空仓标语小（15px vs 22px）：它是【解释】，空仓标语才是必须一眼看见的那条。 */
+.tvrb-ebb-banner {
+    margin: 2px 0 8px;
+    padding: 8px 10px;
+    background: #fef2f2;
+    border: 2px solid #dc2626;
+    border-radius: 10px;
+}
+
+.tvrb-ebb-banner-head {
+    font-size: 15px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    text-align: center;
+    color: #b91c1c;
+}
+
+.tvrb-ebb-banner-detail {
+    margin-top: 5px;
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: #991b1b;
+}
+
+/* 2) 买点侧【整体变灰】：用户「买点侧是提示空仓的……把买点侧的文字或者 UI 全部变成灰色，
+      这样空仓效果更加强烈些」。
+   ⛔ 只灰【题目 + 股票块】两块，⛔ 绝不灰 .tvrb-cash-alert ——
+      那条大字标语正是「看到就不开仓」的那一条，灰掉它等于把最该被看见的东西藏起来。
+   用 filter: grayscale 一处收口（§6）：行内所有徽标（红 / 绿 / 蓝 / 紫）一次变灰，
+   不必逐个 tone 类去写一遍（那样每加一个档就得回来补一条，必然漏）。 */
+.tvrb-section-title.tvrb-ebb {
+    color: #94a3b8;
+}
+
+.tvrb-buy-list.tvrb-ebb {
+    filter: grayscale(1);
+    opacity: 0.5;
+}
+
 /* 蚂蚁线：选股段与卖点段之间的分隔（与决策看板同款行进虚线语言）。
    ⛔ 动画名必须独立（tvrbAnts），共用 decisionAnts 等于把两个看板耦成一体。 */
 .tvrb-sep {
@@ -677,6 +719,7 @@
      持有 #1d4ed8 蓝        = 今天又进买点 ⇒ 是要买/加，不是卖
      龙一字持有 #4338ca 深靛蓝 = 有一字板龙头撑腰，更笃定
      竞价涨停卖 #047857 深绿 = 一字落袋（最确定、最急的一个卖）
+    看分笔卖 #c026d3 洋红 + 虚线边 = 【退潮首日专有】只有那两只可以等开盘看分笔再卖（不看占比）
    ⛔ 别把这些改成粉色系：它们表达的是【买卖语义】，全站统一「涨红跌绿」，改色就把买卖读反了。 */
 .tvrb-action {
     margin-left: auto;
@@ -701,6 +744,18 @@
 .tvrb-action.tvrb-action-tenmin    { background: #0f766e; }
 .tvrb-action.tvrb-action-yizihold  { background: #4338ca; }
 .tvrb-action.tvrb-action-limitup   { background: #047857; }
+
+/* ★ [EBB 2026-10-13 第五轮用户口径] 【看分笔卖】= 退潮首日只有那两只可等开盘看分笔再卖。
+   洋红底（与全部既有档都不同色）+ 白色虚线边：虚线是刻意的 —— 它表示「这一档是【条件性允许】，
+   不是常规结论」（常规动作都是实线实心），与「竞价卖 #16a34a」的实心绿一眼就能分开。
+   ⛔ 别改成绿色/灰色：绿 = 竞价卖（今天就走），灰 = 停牌去色，两者都会读错。 */
+.tvrb-action.tvrb-action-pen {
+    background: #c026d3;
+    /* ⚠️ 用 outline（不占布局）而不是 border：border 会把这一枚胶囊撑高 2px，
+       与同一行其它动作标签对不齐。outline-offset 负值 = 虚线画在胶囊内部。 */
+    outline: 1px dashed rgba(255, 255, 255, 0.8);
+    outline-offset: -2px;
+}
 
 /* 买点侧：仓位（和/或持有标签）已经在行里，动作徽标紧跟其后，不再抢 margin-left:auto */
 .tvrb-position + .tvrb-action {

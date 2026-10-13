@@ -22,6 +22,13 @@
 //   · 边界 25 不触发（用户说的是「小于 25」）；缺量比 / 无入选题材都不触发（§10）；
 //   · ★ 命中提醒时选股 / 标签 / 说明【一行未改】（提醒只是一段独立文案）。
 //
+// 覆盖【第五轮 · 退潮首日】（2026-10-13 用户口径）：
+//   · 判据：市场总龙（昨日十日涨幅第一）今日【停牌】或【占比不达标】⇒ 退潮（二者有一即算）；
+//     占比缺数据 ⇒ 不判（§10）；两条都不成立 ⇒ null（不是退潮日）；
+//   · 两只「看分笔卖」：同题材可用龙位（顺延）× 市场总龙二（不顺延，必须正好涨幅第二）；
+//   · 其余（含原本【持有】）一律【竞价卖】；只改动作标签、客观数据逐项保留；
+//   · 买点侧改走退潮口径的空仓标语，选股一行未改（灰化只是视觉）。
+//
 // ⚠️ 断言里刻意【引用 decision-rules 的常量】而不是手写中文字面量：
 //   本看板的口径就是「标签与决策看板完全同一套」⇒ 决策看板改名时两边要一起动，
 //   手写字面量会让这个测试变成「挡住正确改名」的绊脚石。
@@ -34,10 +41,13 @@ import {
   TVRB_PICK_BIG,
   TVRB_TOPIC_LIMIT,
   TVRB_CASH_ALERT_AVG_VR,
+  EBB_PICK_TAG,
+  EBB_PICK_TONE,
   resolveTvrbTier,
   avgVolRatioOf,
   formatAvgVolRatio,
   buildCashAlert,
+  detectEbbDay,
   buildTopicVolRatioPlan,
   buildTvrbRulesLines
 } from './topic-vol-ratio-rules.js';
@@ -647,6 +657,277 @@ describe('tvrb · 空仓提醒（入选题材里排名第一 平均量比 < 25 �
   });
 });
 
+// ── 第五轮 · 退潮首日（2026-10-13 用户口径）──────────────────────────────────────────────
+// 用户原话：「市场上十日涨幅最高的那只股票所在的题材，在题材退潮首日（龙一停牌或者占比不达标），
+//   卖点侧同题材龙二可以看分笔卖出……还有不同题材的龙一也可以这样，但要有条件，不同题材的龙一
+//   必须是总市场的龙二……相当于选出两只可以等开盘卖出的。……其它普通股票都可以竞价卖，降低风险。」
+// 用户拍板的 4 条口径：涨幅排名用【昨日】/ 其余票连【持有】也一起改竞价卖 / 龙位【顺延】下一个 /
+//   买点侧【整体全灰】。
+describe('tvrb · 退潮首日 detectEbbDay（判据）', function() {
+  /** 用户 2026-10-13 的真实例子：新华传媒（AI应用，昨日 159.51%）+ 时代万恒（新能源汽车龙一，80.98%） */
+  function ebb(over) {
+    return Object.assign({
+      ready: true,
+      leader: { name: '新华传媒', pct: 159.51, topic: 'AI应用', code: '600825', rank: 1, isYizi: false },
+      second: { name: '时代万恒', pct: 80.98, topic: '新能源汽车' },
+      leaderSuspended: false,
+      leaderShare: 1.2,
+      siblingDragons: [
+        { name: '新华文轩', rank: 2, isYizi: false, suspended: false },
+        { name: '皖新传媒', rank: 3, isYizi: false, suspended: false }
+      ],
+      secondInfo: {
+        name: '时代万恒', pct: 80.98, topic: '新能源汽车',
+        rank: 1, isYizi: false, suspended: false
+      }
+    }, over || {});
+  }
+
+  it('§10：事实未就绪 / 缺 leader / 缺涨幅 ⇒ null（未知 ≠ 不是退潮日）', function() {
+    expect(detectEbbDay(null)).toBe(null);
+    expect(detectEbbDay(undefined)).toBe(null);
+    expect(detectEbbDay({ ready: false, leader: null })).toBe(null);
+    expect(detectEbbDay({ ready: true, leader: null })).toBe(null);
+    expect(detectEbbDay(ebb({ leader: { name: '新华传媒', pct: null, topic: 'AI应用' } }))).toBe(null);
+  });
+
+  it('★ 判据①：总龙今日【停牌】⇒ 退潮（reason = suspend）', function() {
+    const e = detectEbbDay(ebb({ leaderSuspended: true }));
+    expect(e).not.toBe(null);
+    expect(e.reason).toBe('suspend');
+    expect(e.leaderName).toBe('新华传媒');
+    expect(e.leaderTopic).toBe('AI应用');
+    // ⚠️ 十日涨幅的展示口径 = decision-rules#formatRangePct（取整，与行内「+160%」逐字一致，§6）
+    expect(e.leaderPctText).toBe('+160%');
+    expect(e.whyText).toContain('停牌');
+  });
+
+  it('★ 判据②：总龙【占比不达标】⇒ 退潮（reason = share）；达标 ⇒ 不是退潮日', function() {
+    const bad = detectEbbDay(ebb({ leaderShare: 1.2 }));
+    expect(bad.reason).toBe('share');
+    expect(bad.whyText).toContain('1.2%');
+
+    // 它是今日龙一 ⇒ 走【龙头门槛 3.5%】：恰好 3.5 达标 ⇒ 不退潮
+    expect(detectEbbDay(ebb({ leaderShare: 3.5 }))).toBe(null);
+    expect(detectEbbDay(ebb({ leaderShare: 9 }))).toBe(null);
+  });
+
+  it('§10：占比【缺数据】⇒ 不判退潮（未知 ≠ 不达标）', function() {
+    expect(detectEbbDay(ebb({ leaderShare: null }))).toBe(null);
+  });
+
+  it('★ 允许【看分笔卖】的两只 = 同题材可用龙位 + 市场总龙二', function() {
+    const e = detectEbbDay(ebb({ leaderSuspended: true }));
+    expect(EBB_PICK_TAG).toBe('看分笔卖');
+    expect(EBB_PICK_TONE).toBe('pen');
+    expect(e.siblingName).toBe('新华文轩');
+    expect(e.siblingRank).toBe(2);
+    expect(e.siblingLabel).toBe('龙二');
+    expect(e.secondName).toBe('时代万恒');
+    expect(e.secondTopic).toBe('新能源汽车');
+    expect(e.secondPctText).toBe('+81%');
+    // 「说明」里必须把两只是谁 + 其余怎么办都写清（用户要「改下标签和说明」）
+    expect(e.detail).toContain('新华文轩');
+    expect(e.detail).toContain('时代万恒');
+    expect(e.detail).toContain(EBB_PICK_TAG);
+    expect(e.detail).toContain(SELL_OUT_TAG);
+    expect(e.detail).toContain('退潮');
+    // 买点侧走退潮口径的空仓标语
+    expect(e.buyHeadline).toContain('退潮首日');
+    expect(e.buyHeadline).toContain('空仓');
+  });
+
+  it('★ 同题材龙位【顺延】：龙二停牌 / 龙二一字 ⇒ 都取龙三（用户拍板「顺延下一个」）', function() {
+    const susp = detectEbbDay(ebb({
+      leaderSuspended: true,
+      siblingDragons: [
+        { name: '新华文轩', rank: 2, isYizi: false, suspended: true },
+        { name: '皖新传媒', rank: 3, isYizi: false, suspended: false }
+      ]
+    }));
+    expect(susp.siblingName).toBe('皖新传媒');
+    expect(susp.siblingRank).toBe(3);
+    expect(susp.siblingLabel).toBe('龙三');
+
+    const yizi = detectEbbDay(ebb({
+      leaderSuspended: true,
+      siblingDragons: [
+        { name: '新华文轩', rank: 2, isYizi: true, suspended: false },
+        { name: '皖新传媒', rank: 3, isYizi: false, suspended: false }
+      ]
+    }));
+    expect(yizi.siblingName).toBe('皖新传媒');
+  });
+
+  it('★ 同题材龙位全不可用 ⇒ 该只不成立（⛔ 不回落到总龙自己、也不收无龙位票）', function() {
+    const e = detectEbbDay(ebb({
+      leaderSuspended: true,
+      siblingDragons: [
+        { name: '新华文轩', rank: 2, isYizi: true, suspended: true },
+        { name: '创票', rank: null, isYizi: false, suspended: false }
+      ]
+    }));
+    expect(e.siblingName).toBe('');
+    expect(e.siblingRank).toBe(null);
+    expect(e.picksText).toContain('时代万恒');   // 另一只（市场总龙二）仍在
+  });
+
+  it('★ 市场总龙二【不顺延】：不是它题材的龙一 / 一字 / 停牌 / 与总龙同题材 ⇒ 一律不成立', function() {
+    const cases = [
+      { rank: 3, isYizi: false, suspended: false, topic: '新能源汽车' },   // 不是龙一
+      { rank: null, isYizi: false, suspended: false, topic: '新能源汽车' },// 无龙位
+      { rank: 1, isYizi: true, suspended: false, topic: '新能源汽车' },    // 竞价一字
+      { rank: 1, isYizi: false, suspended: true, topic: '新能源汽车' },    // 停牌
+      { rank: 1, isYizi: false, suspended: false, topic: 'AI应用' }        // 与总龙同题材
+    ];
+    cases.forEach(function(over) {
+      const e = detectEbbDay(ebb({
+        leaderSuspended: true,
+        secondInfo: Object.assign({ name: '时代万恒', pct: 80.98 }, over)
+      }));
+      expect(e.secondName).toBe('');
+    });
+    // 两只都不成立 ⇒ 如实说「本日无符合条件的票」
+    const none = detectEbbDay(ebb({
+      leaderSuspended: true,
+      siblingDragons: [],
+      secondInfo: { name: '时代万恒', pct: 80.98, topic: '新能源汽车', rank: 3, isYizi: false, suspended: false }
+    }));
+    expect(none.picksText).toContain('无符合条件');
+    expect(none.detail).toContain('今天没有符合条件');
+  });
+
+  it('★ 总龙不是今日龙一（无龙标）⇒ 走【非龙头门槛 2%】（更宽松 ⇒ 更不容易误判成退潮）', function() {
+    const e = detectEbbDay(ebb({
+      leader: { name: '创票', pct: 159.51, topic: 'AI应用', code: '300001', rank: null, isYizi: false },
+      leaderShare: 2.5
+    }));
+    expect(e).toBe(null);                       // 2.5 ≥ 2 ⇒ 达标 ⇒ 不退潮
+    const e2 = detectEbbDay(ebb({
+      leader: { name: '创票', pct: 159.51, topic: 'AI应用', code: '300001', rank: null, isYizi: false },
+      leaderShare: 1.5
+    }));
+    expect(e2.reason).toBe('share');
+  });
+});
+
+describe('tvrb · 退潮首日的卖点改写（经 buildTopicVolRatioPlan）', function() {
+  // AI应用 10 只（> 8 ⇒ big 档 ⇒ 取 2 只：甲一 / 甲二）⇒ 买点名单 = 甲一 / 甲二
+  const names = ['甲一', '甲二', '甲三', '甲四', '甲五', '甲六', '甲七', '甲八', '甲九', '甲十'];
+  const topics = [block('AI应用', 1, names.map(function(n, i) {
+    return m(n, { aucVolRatio: 60, aucShare: 6, code: '6000' + (i < 9 ? '0' + (i + 1) : (i + 1)) });
+  }))];
+  const dm = dragonMap(names.map(function(n, i) { return [n, i + 1]; }));
+
+  function sellRow(name, over) {
+    return Object.assign({
+      name: name, topic: 'AI应用', pct: 20, code: '600001',
+      aucPct: 3, volRatioDir: '', volRatioTimes: null, aucShare: 1, inTodayList: true
+    }, over || {});
+  }
+  // 退潮首日的事实：总龙 = 甲一（停牌）；同题材可用龙位 = 甲二；市场总龙二 = 时代万恒
+  const EBB_CTX = {
+    ready: true,
+    leader: { name: '甲一', pct: 159.51, topic: 'AI应用', code: '600001', rank: 1, isYizi: false },
+    second: { name: '时代万恒', pct: 80.98, topic: '新能源汽车' },
+    leaderSuspended: true,
+    leaderShare: null,
+    siblingDragons: [{ name: '甲二', rank: 2, isYizi: false, suspended: false }],
+    secondInfo: {
+      name: '时代万恒', pct: 80.98, topic: '新能源汽车',
+      rank: 1, isYizi: false, suspended: false
+    }
+  };
+  const rows = [
+    sellRow('甲二', { aucShare: 6 }),                                // 可用龙位（原本占比达标 + 今天又进买点 ⇒ 持有）
+    sellRow('甲一', { aucShare: 6 }),                                // 总龙自己（原本也是持有）
+    sellRow('甲五', { aucShare: 1 }),                                // 普通票（原本尾盘卖 / 竞价卖）
+    sellRow('时代万恒', { topic: '新能源汽车', aucShare: null })       // 市场总龙二
+  ];
+
+  function findItem(plan, name) {
+    for (let i = 0; i < plan.sell.length; i++) {
+      const items = plan.sell[i].items || [];
+      for (let k = 0; k < items.length; k++) if (items[k].name === name) return items[k];
+    }
+    return null;
+  }
+
+  it('不传 ebbCtx ⇒ 卖点完全走原口径（ebb 恒为 null，⛔ 不误判成退潮日）', function() {
+    const p = buildTopicVolRatioPlan(topics, dm, { sellRows: rows });
+    expect(p.ebb).toBe(null);
+    expect(findItem(p, '甲二').sellActionTag).toBe(HOLD_TAG);   // 原本是【持有】
+  });
+
+  it('ebbCtx 未就绪（昨日涨幅还没读回来）⇒ 同「不是退潮日」（§10 不猜）', function() {
+    const p = buildTopicVolRatioPlan(topics, dm, {
+      sellRows: rows, ebbCtx: { ready: false, leader: null }
+    });
+    expect(p.ebb).toBe(null);
+    expect(findItem(p, '甲二').sellActionTag).toBe(HOLD_TAG);
+  });
+
+  it('★ 退潮首日：那两只标【看分笔卖】，其余（含原本【持有】的）一律【竞价卖】', function() {
+    const p = buildTopicVolRatioPlan(topics, dm, { sellRows: rows, ebbCtx: EBB_CTX });
+    expect(p.ebb).not.toBe(null);
+    expect(p.ebb.reason).toBe('suspend');
+
+    // ① 同题材可用龙位
+    const sib = findItem(p, '甲二');
+    expect(sib.sellActionTag).toBe(EBB_PICK_TAG);
+    expect(sib.sellActionTone).toBe(EBB_PICK_TONE);
+    expect(sib.holdTag).toBe('');                 // 与「看分笔卖」互斥（原口径的持有让路）
+    // ② 市场总龙二
+    expect(findItem(p, '时代万恒').sellActionTag).toBe(EBB_PICK_TAG);
+    // ③ 其余：总龙自己 + 普通票 —— 用户拍板「连持有也一起改竞价卖」
+    const one = findItem(p, '甲一');
+    expect(one.sellActionTag).toBe(SELL_OUT_TAG);
+    expect(one.sellActionTone).toBe('out');
+    expect(one.holdTag).toBe('');
+    expect(findItem(p, '甲五').sellActionTag).toBe(SELL_OUT_TAG);
+  });
+
+  it('★ 只改【动作标签】：客观数据（涨幅 / 占比 / 龙标）逐项保留', function() {
+    const base = buildTopicVolRatioPlan(topics, dm, { sellRows: rows });
+    const ebbP = buildTopicVolRatioPlan(topics, dm, { sellRows: rows, ebbCtx: EBB_CTX });
+    ['甲一', '甲二', '甲五'].forEach(function(n) {
+      const a = findItem(base, n);
+      const b = findItem(ebbP, n);
+      expect(b.pctText).toBe(a.pctText);
+      expect(b.aucShareText).toBe(a.aucShareText);
+      expect(b.aucShareTone).toBe(a.aucShareTone);
+      expect(b.dragonLabel).toBe(a.dragonLabel);
+      expect(b.aucPctText).toBe(a.aucPctText);
+    });
+  });
+
+  it('★ 退潮首日的行内说明写清「为什么是这两只 / 其余为什么竞价卖 / 不看占比」', function() {
+    const p = buildTopicVolRatioPlan(topics, dm, { sellRows: rows, ebbCtx: EBB_CTX });
+    expect(findItem(p, '甲二').actionNote).toContain('退潮首日');
+    expect(findItem(p, '甲二').actionNote).toContain('市场总龙');
+    expect(findItem(p, '甲二').actionNote).toContain('分笔成交');
+    expect(findItem(p, '时代万恒').actionNote).toContain('市场总龙二');
+    expect(findItem(p, '甲五').actionNote).toContain('降低风险');
+    expect(findItem(p, '甲五').actionNote).toContain('不看');
+  });
+
+  it('★ 买点侧改走【退潮口径】的空仓标语，且【选股一行未改】', function() {
+    const base = buildTopicVolRatioPlan(topics, dm, { sellRows: rows });
+    const p = buildTopicVolRatioPlan(topics, dm, { sellRows: rows, ebbCtx: EBB_CTX });
+    // 平时不提示（本组平均量比 60 ≥ 25）
+    expect(base.cashAlert.show).toBe(false);
+    // 退潮日 ⇒ 提示，且是退潮口径
+    expect(p.cashAlert.show).toBe(true);
+    expect(p.cashAlert.headline).toContain('退潮首日');
+    expect(p.cashAlert.headline).toContain('空仓');
+    // 选股（档位 / 只数 / 票名）与平时逐项一致 —— 灰化只是视觉，⛔ 不动数据
+    expect(p.blocks.map(function(b) { return b.topic + '|' + b.tier + '|' + b.pickCount; }))
+      .toEqual(base.blocks.map(function(b) { return b.topic + '|' + b.tier + '|' + b.pickCount; }));
+    expect(p.blocks[0].picks.map(function(x) { return x.name; }))
+      .toEqual(base.blocks[0].picks.map(function(x) { return x.name; }));
+  });
+});
+
 // ── 规则文案 ─────────────────────────────────────────────────────────────────────────────
 describe('tvrb · buildTvrbRulesLines 规则文案', function() {
   const lines = buildTvrbRulesLines();
@@ -700,6 +981,17 @@ describe('tvrb · buildTvrbRulesLines 规则文案', function() {
     expect(all).toContain('空仓提醒');
     expect(all).toContain(String(TVRB_CASH_ALERT_AVG_VR));
     expect(all).toContain('不改变选股');
+  });
+
+  it('第五轮补的【退潮首日】必须写进规则（判据 / 两只 / 其余竞价卖 / 买点侧空仓）', function() {
+    const all = lines.join('\n');
+    expect(all).toContain('退潮首日');
+    expect(all).toContain('市场总龙');
+    expect(all).toContain(EBB_PICK_TAG);
+    expect(all).toContain('顺延');            // 同题材龙位可顺延
+    expect(all).toContain('不顺延');          // 市场总龙二不顺延
+    expect(all).toContain('昨日');            // 涨幅口径必须是昨日
+    expect(all).toContain('竞价卖');          // 其余一律竞价卖
   });
 });
 

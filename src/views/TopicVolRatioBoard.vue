@@ -96,19 +96,30 @@
       <template v-if="ready">
         <!-- 上：选股（本看板自己的选股口径）—— 行内标签与决策看板买点段完全同一套 -->
         <div class="tvrb-section">
-          <div class="tvrb-section-title buy">
+          <!-- ★ [EBB 2026-10-13 第五轮用户口径] 退潮首日 ⇒ 整段标题变灰（用户「把买点侧的文字或者
+               UI 全部变成灰色，这样空仓效果更加强烈些」）。⛔ 只是视觉灰化，不改任何数据。 -->
+          <div
+            class="tvrb-section-title buy"
+            :class="{ 'tvrb-ebb': !!ebb }"
+          >
             选股
           </div>
           <!-- ★ [CASH-ALERT 2026-10-13 用户口径] 空仓提醒：买点侧【顶部】的大字标语。
-               判据（能入选的排名第一题材平均竞价量比 < 25）与文案都在 Logic 层；
+               判据（能入选的排名第一题材平均竞价量比 < 25，或当日为【退潮首日】）与文案都在 Logic 层；
                ⛔ 它不改变选股 —— 命中时下面的题材块与股票行照常列出（用户「其它不变」）。
                ⛔ 不能挪到 v-if="ready" 之外：未就绪时给「空仓」结论等于拿没数据当量比低用（§10）。 -->
           <TvrbCashAlert :alert="cashAlert" />
-          <TvrbBuyBlock
-            v-for="b in blocks"
-            :key="'tvrb-buy-' + b.topic"
-            :block="b"
-          />
+          <!-- 退潮首日：股票块整体灰化（⛔ 上面的空仓标语【不灰】—— 它正是要被看见的那一条） -->
+          <div
+            class="tvrb-buy-list"
+            :class="{ 'tvrb-ebb': !!ebb }"
+          >
+            <TvrbBuyBlock
+              v-for="b in blocks"
+              :key="'tvrb-buy-' + b.topic"
+              :block="b"
+            />
+          </div>
           <div
             v-if="blocks.length === 0"
             class="tvrb-empty tvrb-selectable"
@@ -124,6 +135,19 @@
         <div class="tvrb-section">
           <div class="tvrb-section-title sell">
             卖点
+          </div>
+          <!-- ★ [EBB 2026-10-13 第五轮用户口径] 退潮首日的【说明】—— 用户「你帮我完善下题材量比规则，
+               并改下标签和说明」里的「说明」。文案全在 Logic 层（detectEbbDay，§21 模板零计算）。 -->
+          <div
+            v-if="ebb"
+            class="tvrb-ebb-banner tvrb-selectable"
+          >
+            <div class="tvrb-ebb-banner-head">
+              {{ ebb.headline }}
+            </div>
+            <div class="tvrb-ebb-banner-detail">
+              {{ ebb.detail }}
+            </div>
           </div>
           <TvrbSellBlock
             v-for="g in sellGroups"
@@ -179,6 +203,7 @@ const {
   sellGroups,
   notes,
   cashAlert,
+  ebb,
   summaryText,
   rulesLines,
   toggleExpand,

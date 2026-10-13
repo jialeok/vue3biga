@@ -31,7 +31,7 @@ import { decorateSealFields } from '../auction/seal-volume.js';
 // [BOARD-SUSPEND 2026-10-13 用户口径] 「三个选股看板都要标哪只股票停牌」——
 //   判定与展示收口全在 suspend.js（§6 单一真相，与早盘竞价看板同一条判据）。
 //   ⛔ 不消费猫抓额度：同花顺 fuyao 免费/不限量；本层只做【同步读】，加载由各看板组合式触发。
-import { decorateSuspendField } from '../auction/suspend.js';
+import { decorateSuspendField, isSuspended } from '../auction/suspend.js';
 import { _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 // [TWO-MODES 2026-10-02 用户口径] 买点分两套模式，由早盘竞价的题材 / 一字 toggle 决定
@@ -602,10 +602,137 @@ function _buildSellRows(prevBought, byName, date) {
 }
 
 /**
+ * 【退潮首日 · 市场总龙】采集（第五轮 · 2026-10-13 用户口径，题材量比看板专有）。
+ *
+ * 用户原话：「市场总龙就是早盘竞价看板股票列表中所有的股票，十日涨幅最高的。
+ *   比如今天的新华传媒龙一 AI应用十日涨幅是 159.51%（今日停牌，代表退潮）……
+ *   市场第二高的是时代万恒……我说的时间点是昨日，因为当天早上还没收盘计算出来。」
+ *
+ * ⇒ 口径（★ 全部按用户拍板，⛔ 别自行改）：
+ *   · 候选池 = 当日早盘竞价【全列表】（rows，含观察组继承行 / 灰行 / 不成组的票）——
+ *     用户明确说「列表中所有的股票」，⛔ 不是「已成题材分组的成员」；
+ *   · 涨幅用【上一交易日】的十日涨幅（prevRangeMap = 调用方按 prevDate 从云端读回的那份）——
+ *     停牌票当天没有十日涨幅，只有昨日口径才排得出它（否则最典型的场景恰恰算不出来）；
+ *   · leader = 全列表里昨日十日涨幅最高的那只；second = 第二高那只。
+ *
+ * ★ 为什么把「事实」与「判定」拆开（§4）：本函数只【读数】（谁是总龙 / 今天停不停牌 /
+ *   今天占比多少），是否算「退潮」由规则层 topic-vol-ratio-rules#detectEbbDay 判（纯函数、可单测）。
+ *
+ * §10：prevRangeMap 没读到（调用方还没把昨日涨幅读回来）⇒ ready=false，
+ *   ⛔ 绝不返回「今天没有总龙」—— 那会把「还没读到」伪装成「判定过、结果是空」。
+ * ⛔ 本函数【不读云】：昨日涨幅由调用方注入（与 dragonRankOnly 的 rangeMap 同一范式）。
+ *
+ * @param {Array} rows 当日【全列表】行（_mkRow 的产物，含 name / topic / code）—— 含灰行 / 不成组的票
+ * @param {Array} topics rankDecisionTopics 的返回（取「总龙所在题材」的成员用）
+ * @param {Map} dragonMap 龙位名册（rankDragons 的返回）
+ * @param {string} date 展示日
+ * @param {Map<string,{pct:number|null}>|null} prevRangeMap 上一交易日的十日涨幅（stock_range_pct）
+ * @returns {{ready:boolean, leader:object|null, second:object|null, leaderSuspended:boolean,
+ *            leaderShare:number|null, siblingDragons:Array, secondInfo:object|null}}
+ *   leader  = { name, pct, topic, code, rank, isYizi }（rank / isYizi 都是【今日】的）
+ *   second  = 同上形状的原始项（昨日涨幅第二）；secondInfo 是它【今日】的龙位 / 一字 / 停牌
+ */
+function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap) {
+  const none = {
+    ready: false, leader: null, second: null,
+    leaderSuspended: false, leaderShare: null, siblingDragons: [], secondInfo: null
+  };
+  if (!prevRangeMap || prevRangeMap.size === 0) return none;
+  const dm = dragonMap || new Map();
+  const L = (topics || []);
+
+  /** 某只票【今日】的龙位；无龙位（创业板 / 科创板 / 未成组）⇒ null（与选股同一闸门，§6） */
+  const _rankOf = function(name) {
+    const d = dm.get(name);
+    return (d && d.rank) ? Number(d.rank) : null;
+  };
+  /** 某只票【今日】是不是竞价一字涨停（读题材成员上的 isYizi，⛔ 不在这里另判一遍，§6） */
+  const _isYiziOf = function(name) {
+    let y = false;
+    L.forEach(function(b) {
+      (b.members || []).forEach(function(m) { if (m && m.name === name) y = !!m.isYizi; });
+    });
+    return y;
+  };
+
+  const cand = [];
+  const seen = new Set();
+  (rows || []).forEach(function(r) {
+    if (!r || !r.name || seen.has(r.name)) return;
+    seen.add(r.name);
+    const pr = prevRangeMap.get(r.name);
+    const pct = (pr && pr.pct !== undefined && pr.pct !== null) ? Number(pr.pct) : null;
+    if (pct === null || !isFinite(pct)) return;   // §10：这只票昨日涨幅读不到 ⇒ 不参与排名
+    cand.push({ name: r.name, pct: pct, topic: String(r.topic || ''), code: String(r.code || '') });
+  });
+  if (cand.length === 0) return none;
+  cand.sort(function(a, b) {
+    if (a.pct !== b.pct) return b.pct - a.pct;
+    return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+  });
+  const head = cand[0];
+  const second = cand.length > 1 ? cand[1] : null;
+  // 总龙：昨日涨幅第一，并把【它今天】的龙位 / 一字一并带上 ——
+  //   规则层判「占比不达标」要按【龙头门槛】（只在它是今日龙一时成立），故必须知道它的龙位。
+  const leader = {
+    name: head.name, pct: head.pct, topic: head.topic, code: head.code,
+    rank: _rankOf(head.name),
+    isYizi: _isYiziOf(head.name)
+  };
+  const leaderTopic = String(leader.topic || '').trim();
+
+  // ── 事实 ①：市场总龙【所在题材】内、有龙位的成员（按龙位升序，排除总龙自己）──
+  //   规则层据此选「同题材龙二（不可用则顺延龙三…）」，⛔ 它不需要自己读停牌 / 一字。
+  const siblings = [];
+  if (leaderTopic) {
+    const blk = L.filter(function(b) { return String(b.topic || '').trim() === leaderTopic; })[0];
+    (blk ? (blk.members || []) : []).forEach(function(m) {
+      if (!m || !m.name || m.name === leader.name) return;
+      const rank = _rankOf(m.name);
+      if (rank === null) return;   // 无龙位（创业板 / 科创板）⇒ 不参与（与选股同一闸门）
+      siblings.push({
+        name: m.name, rank: rank,
+        isYizi: !!m.isYizi,
+        suspended: isSuspended(date, m.name)
+      });
+    });
+    siblings.sort(function(a, b) {
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+    });
+  }
+
+  // ── 事实 ②：市场总龙二（昨日涨幅第二）的今日龙位 / 一字 / 停牌 ──
+  //   用户口径：「不同题材的龙一必须是总市场的龙二」⇒ 判据 = 它今日龙位必须是 1。
+  let secondInfo = null;
+  if (second) {
+    secondInfo = {
+      name: second.name, pct: second.pct, topic: String(second.topic || ''),
+      rank: _rankOf(second.name),
+      isYizi: _isYiziOf(second.name),
+      suspended: isSuspended(date, second.name)
+    };
+  }
+
+  return {
+    ready: true,
+    leader: leader,
+    second: second,
+    // 停牌走 suspend.js 的唯一实现（§6），⛔ 不在这里另判一遍
+    leaderSuspended: isSuspended(date, leader.name),
+    // 今日竞价占比（%）：null = 缺数据（规则层据此【不判】不达标，§10：未知 ≠ 不达标）
+    leaderShare: getAuctionShare(date, leader.name),
+    siblingDragons: siblings,
+    secondInfo: secondInfo
+  };
+}
+
+/**
  * 采集并计算某日的决策结论（同步：数据源全在内存里）。
  * @param {string} date 展示日 YYYY-MM-DD
  * @param {{skipPrevBuy?:boolean, rangeOptional?:boolean, mode?:string,
- *          dragonRankOnly?:boolean, topicActionContext?:boolean, rangeMap?:Map}} [opts]
+ *          dragonRankOnly?:boolean, topicActionContext?:boolean, rangeMap?:Map,
+ *          prevRangeMap?:Map}} [opts]
  *        skipPrevBuy=true → 不往回算上一交易日的买点（内部递归用，防止无限往前追）
  *        rangeOptional=true → 【十日涨幅没加载也继续算】（§10 的例外，见下方闸门注释）。
  *          只给「近 5 个交易日题材入选次数」的历史日重算用；⛔ UI 展示日【绝不要】传它 ——
@@ -625,6 +752,10 @@ function _buildSellRows(prevBought, byName, date) {
  *          额外采回【买卖点标签上下文 + 卖点候选行】（见 _actionContext / _buildSellRows）。
  *          ⛔ 默认关（undefined = false）：算前一交易日龙位表的调用方不传它，
  *            因而不会白付「回溯 4 天题材入选次数 + 重算昨日买点」这份开销（§36）。
+ *        [EBB 2026-10-13 第五轮用户口径] prevRangeMap = 上一交易日的十日涨幅（Map&lt;股票名,{pct}&gt;）——
+ *          只在 topicActionContext 出口用，用来算「市场总龙 / 总龙二」（见 _ebbCtxOf）。
+ *          ⛔ 必传「昨日」那份：停牌票当天没有十日涨幅，用当日口径恰恰排不出总龙。
+ *          缺省（不传）= 该能力退化为「未就绪」，退潮规则不生效（§10，⛔ 不猜成「没有总龙」）。
  * @returns {{ready:boolean, reason:string, topics:Array, buy:object, sell:Array}
  *           |{ready:true, dragonRankOnly:true, topics:Array, dragonMap:Map, <topicActionContext 的附加字段>}}
  */
@@ -856,6 +987,10 @@ export function collectDecisionData(date, opts) {
       out.prevBoughtTopics = act.prevBoughtTopics;
       out.topicStreakPast = act.topicStreakPast;
       out.sellRows = _buildSellRows(act.prevBought, byName, date);
+      // ★ [EBB 2026-10-13 第五轮用户口径] 退潮首日所需的事实：市场总龙（昨日十日涨幅第一）
+      //   + 它今天停不停牌 / 占比多少。涨幅必须用【昨日】那份（停牌票当天没有涨幅），
+      //   由调用方读回后从 opts.prevRangeMap 注入 —— ⛔ 本文件不读云。
+      out.ebbCtx = _ebbCtxOf(rows, topics, dragonMap, date, opts && opts.prevRangeMap);
     }
     return out;
   }
@@ -1002,6 +1137,8 @@ export function collectDragonRankMap(date, opts) {
  *
  * ★ [TVRB 2026-10-11 用户口径] opts.actionContext=true 时【额外】带回：
  *   `prevDragonNames / prevBuyNames / prevBought / prevBoughtTopics / topicStreakPast / sellRows`
+ *   + [EBB 2026-10-13] `ebbCtx`（退潮首日的【事实】：市场总龙 / 总龙二 / 同题材龙位成员 ——
+ *     是否算「退潮」由规则层判，见 topic-vol-ratio-rules#detectEbbDay）
  *   —— 用户原话「要模仿决策看板的占比，卖出，持有，竞价卖，竞价买，尾盘买，尾盘卖，龙持有，
  *     跟龙等所有的标签逻辑基本一样。因为买入和卖出基本逻辑一样，只是选股不同。」
  *   ⇒ 「题材量比」看板的做法 = 只替换【选股】（它自己的 buildTopicVolRatioPlan），
@@ -1015,10 +1152,16 @@ export function collectDragonRankMap(date, opts) {
  * §10：任一闸门不过（名单没加载完 / 十日涨幅未加载 / 该日不成组）⇒ ready=false + 明确 reason，
  *   ⛔ 绝不返回空数组冒充「今天没有题材」。
  *
+ * ★ [EBB 2026-10-13 第五轮用户口径] opts.prevRangeMap = 上一交易日的十日涨幅（Map&lt;股票名,{pct}&gt;）——
+ *   退潮首日规则要用它算「市场总龙（昨日十日涨幅第一）」，见 _ebbCtxOf。⚠️ 涨跌幅口径必须是【昨日】的：
+ *   当日早上还没收盘算不出今天的十日涨幅，停牌票更是当天压根读不到 ⇒ 昨日口径才排得出总龙。
+ *   ⛔ 本函数【不读云】：那份 Map 由调用方（组合式）按 prevDate 读回后注入；缺省 ⇒ ebbCtx.ready=false。
+ *
  * @param {string} date 展示日 YYYY-MM-DD
- * @param {{mode?:string, actionContext?:boolean}} [opts] mode = 题材组序口径（「题材量比」看板传
- *        MODE_VOL_RATIO；缺省回落 MODE_VOL_RATIO —— 见 normalizeDecisionMode）；
- *        actionContext 见上（缺省 false ⇒ 与原行为逐字一致）
+ * @param {{mode?:string, actionContext?:boolean, prevRangeMap?:Map}} [opts] mode = 题材组序口径
+ *        （「题材量比」看板传 MODE_VOL_RATIO；缺省回落 MODE_VOL_RATIO —— 见 normalizeDecisionMode）；
+ *        actionContext 见上（缺省 false ⇒ 与原行为逐字一致）；
+ *        prevRangeMap 见上（缺省 ⇒ 退潮首日规则不生效，§10 ⛔ 不退化成「今天没有总龙」）
  * @returns {{ready:boolean, reason:string, date:string, prevDate:string|null,
  *            topics:Array, dragonMap:Map|null}}
  */
@@ -1026,7 +1169,9 @@ export function collectDecisionTopics(date, opts) {
   const rec = collectDecisionData(date, {
     dragonRankOnly: true,
     topicActionContext: !!(opts && opts.actionContext),
-    mode: opts && opts.mode
+    mode: opts && opts.mode,
+    // ★ [EBB 2026-10-13] 上一交易日的十日涨幅（算市场总龙用）—— ⛔ 必传【昨日】那份
+    prevRangeMap: (opts && opts.prevRangeMap) || null
   });
   // 命中内部出口 ⇒ 中间产物带 dragonRankOnly 标记（_notReady 的返回没有这个键）
   if (rec && rec.dragonRankOnly) {
@@ -1046,6 +1191,8 @@ export function collectDecisionTopics(date, opts) {
       out.prevBoughtTopics = rec.prevBoughtTopics || null;
       out.topicStreakPast = rec.topicStreakPast || null;
       out.sellRows = rec.sellRows;
+      // ★ [EBB 2026-10-13] 退潮首日的事实（市场总龙 + 今日状态）；ready=false 表示昨日涨幅尚未注入
+      if (rec.ebbCtx) out.ebbCtx = rec.ebbCtx;
     }
     return out;
   }
@@ -1090,3 +1237,12 @@ export function decorateDecisionRows(buy, sell, date, prevDate, todayRankMap) {
   //   ⇒ 停牌标记必须在【这一份收口】里也挂一次，否则决策看板有、题材量比看板没有（§6 两处必修）。
   _decorateSuspend(buy, sell, date);
 }
+
+/**
+ * [EBB 2026-10-13 第五轮] 退潮首日「事实」采集的【对外别名】—— 仅供单测（§15 纯函数可单测）。
+ *
+ * ⛔ 生产路径【只有】collectDecisionData 的 dragonRankOnly 出口在调它（见那里的 out.ebbCtx = …），
+ *   别在别处再调一次：它的输入是「当日全列表 + 龙位名册 + 昨日涨幅」，多调一次就是多一份分叉风险。
+ * ⚠️ 它是一个【纯函数】（不读 state、不发请求、不消费额度）—— 昨日涨幅按入参注入。
+ */
+export const ebbCtxOf = _ebbCtxOf;

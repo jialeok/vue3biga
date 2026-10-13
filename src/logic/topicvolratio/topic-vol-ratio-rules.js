@@ -66,7 +66,14 @@
 //     【一枚都不打】（由 finishBuyBlock 内部的 _mark* 各自把关），⛔ 绝不退化成「昨天没买」；
 //   · 未就绪 → 由 decision-collect#collectDecisionTopics 给 ready=false + 明确 reason，UI 如实展示。
 
-import { formatRangePct, RULE_NO, finishBuyBlock, buildSellPlan } from '../decision/decision-rules.js';
+import {
+  formatRangePct, RULE_NO, finishBuyBlock, buildSellPlan,
+  SELL_OUT_TAG, SELL_ACTION_TONE_OUT, HOLD_TAG
+} from '../decision/decision-rules.js';
+// [EBB 2026-10-13] 占比达标判据 + 展示文案（§6 唯一实现，⛔ 不手写 `share >= 门槛`）
+import {
+  passesAuctionShare, formatAuctionShare, auctionShareThresholdOf
+} from '../decision/auction-share.js';
 import { getDragonLabel } from '../auction/dragon-rank.js';
 
 // ══ 档位常量（§6 唯一实现：本看板的「取几只」只由这里决定）════════════════════════════════
@@ -109,6 +116,216 @@ export const TVRB_TOPIC_LIMIT = 2;
  *   ⛔ 别自行调成 20 / 30：它决定「今天到底开不开仓」，只能用户改。
  */
 export const TVRB_CASH_ALERT_AVG_VR = 25;
+
+/**
+ * ══ 【退潮首日】卖点动作标签（第五轮 · 2026-10-13 用户口径）════════════════════════════════
+ *
+ * 用户原话：「市场上十日涨幅最高的那只股票所在的题材，在题材退潮首日（龙一停牌或者占比不达标），
+ *   卖点侧同题材龙二可以看分笔卖出，进行卖出，不看占比卖出，还有不同题材的龙一也可以这样，
+ *   但要有条件，不同题材的龙一必须是总市场的龙二……相当于选出两只可以等开盘卖出的。……
+ *   其它普通股票都可以竞价卖，降低风险。」
+ *
+ * ⇒ 退潮首日时，卖点侧只有【两类票】标这枚标签（= 允许「等开盘看分笔再卖」、不看占比）：
+ *     ① 同题材可用龙位（总龙所在题材里龙位最靠前、且非一字 / 非停牌的那只，可顺延）；
+ *     ② 市场总龙二（昨日十日涨幅第二、且是它自己题材的龙一、且与总龙不同题材、非一字 / 非停牌）。
+ *   其余（含原本标【持有】的）一律改【竞价卖】（SELL_OUT_TAG）—— 用户拍板「全部改竞价卖」。
+ *
+ * ⛔ 只在本看板用：决策看板 / 分笔看板零改动（用户「注意我说的题材量比看板的卖点侧」）。
+ */
+export const EBB_PICK_TAG = '看分笔卖';
+/** 退潮标的配色档（本看板独有：洋红 #c026d3 + 虚线边 —— 与 竞价卖 的绿 / 持有 的蓝都不同） */
+export const EBB_PICK_TONE = 'pen';
+/** 悬停说明（文案唯一出处；组件只渲染 Logic 给的值，§21） */
+export const EBB_PICK_TITLE =
+  '退潮首日专用：市场总龙（昨日十日涨幅第一）今日停牌 / 竞价占比不达标 ⇒ 题材退潮。' +
+  '本股是【同题材可用龙位】或【市场总龙二】⇒ 允许【看分笔卖】（不看占比）：' +
+  '9:25 不竞价卖，等 9:30~9:31 点开分笔成交看结论 ——【冲高卖】等冲高再清、【立刻卖】直接止损。';
+
+/**
+ * 【退潮首日】判据（纯函数，可单测）。
+ *
+ * 数据来源 = decision-collect#_ebbCtxOf 采好的「事实」（市场总龙 / 今日停牌 / 今日占比 /
+ *   同题材龙位成员 / 市场总龙二），⛔ 本函数不读 state、不发请求（§4）。
+ *
+ * ── 判据（★ 用户口径：「龙一停牌或者占比不达标……两种情况，有一种存在就算退潮」）──────────
+ *   ① 市场总龙【今日停牌】⇒ 退潮（停牌 = 最强的那只都停了）；
+ *   ② 市场总龙【今日竞价占比不达标】⇒ 退潮。
+ *   ⛔ ② 的占比【缺数据】⇒【不判】（§10：未知 ≠ 不达标）；门槛走 auction-share 的唯一实现。
+ *   ⛔ 两条都不成立 ⇒ 返回 null（= 不是退潮日，⛔ 不回落到「没有总龙」）。
+ *
+ * ── 涨幅口径（用户原话「我说的时间点是昨日，因为当天早上还没收盘计算出来」）──────────────
+ *   一律用【上一交易日】的十日涨幅 —— 由调用方按 prevDate 从 stock_range_pct 读回后注入。
+ *   ⚠️ 当日口径在停牌票上【必然读不到】（当天没交易就没有当天涨幅）⇒ 最典型的场景恰恰算不出来。
+ *
+ * @param {{ready:boolean, leader:object|null, leaderSuspended:boolean, leaderShare:number|null,
+ *          siblingDragons:Array, secondInfo:object|null}|null} ebbCtx
+ * @returns {null|object} null = 不是退潮日（或事实未就绪）；否则见下方返回结构
+ */
+export function detectEbbDay(ebbCtx) {
+  // §10：事实未就绪（昨日涨幅还没读回来 / 全列表一只票都排不出）⇒ 不判退潮
+  if (!ebbCtx || !ebbCtx.ready || !ebbCtx.leader) return null;
+  const leader = ebbCtx.leader;
+  const leaderName = String(leader.name || '').trim();
+  const leaderTopic = String(leader.topic || '').trim();
+  const leaderPct = _num(leader.pct);
+  if (!leaderName || leaderPct === null) return null;      // §10：涨幅读不到 ⇒ 不判
+
+  // ── 判据 ①/② ──
+  const leaderIsDragonOne = (Number(leader.rank) === 1);
+  const sh = _num(ebbCtx.leaderShare);
+  let reason = '';
+  if (ebbCtx.leaderSuspended) {
+    reason = 'suspend';
+  } else if (sh !== null && !passesAuctionShare(sh, leaderIsDragonOne)) {
+    // ⛔ 门槛按「总龙 = 它的题材的龙一」取龙头档（3.5%）；它不是龙一（创业板 / 未成组）时回落 2% 档 ——
+    //    后者更宽松 ⇒ 更不容易误判成退潮（宁可漏判，也不要在平常日子把全市场都改成竞价卖）。
+    reason = 'share';
+  }
+  if (!reason) return null;
+
+  // ── 【看分笔卖】的两只（用户口径逐条对应；用户拍板：龙位可顺延、总龙二不顺延）──
+  //   ① 同题材可用龙位 = 总龙所在题材内 rank ≥ 2 的成员，按龙位升序取第一个【非竞价一字 + 非停牌】的
+  //      （龙二不可用 ⇒ 顺延龙三、龙四……）；
+  //   ② 市场总龙二 = 昨日涨幅第二那只，且必须是【它自己题材的龙一】、与总龙【不同题材】、
+  //      非竞价一字、非停牌（⛔ 不回落到涨幅第三 —— 用户明确「它必须正好是涨幅第二」）。
+  const sib = (ebbCtx.siblingDragons || []).filter(function(s) {
+    return _num(s.rank) !== null && Number(s.rank) >= 2 && !s.isYizi && !s.suspended;
+  })[0] || null;
+  const si = ebbCtx.secondInfo;
+  const secondOk = !!(si &&
+    Number(si.rank) === 1 && !si.isYizi && !si.suspended &&
+    String(si.topic || '').trim() !== leaderTopic &&
+    String(si.name || '').trim() !== leaderName);
+
+  const leaderPctText = formatRangePct(leaderPct);
+  const shareText = formatAuctionShare(sh);
+  const thresholdText = formatAuctionShare(auctionShareThresholdOf(leaderIsDragonOne));
+  const topicText = leaderTopic || '—';
+  const whyText = (reason === 'suspend')
+    ? '今日【停牌】'
+    : ('今日竞价占比 ' + shareText + ' ＜ ' + (leaderIsDragonOne ? '龙头门槛' : '门槛') + ' ' + thresholdText);
+  const sibLabel = sib ? getDragonLabel(Number(sib.rank)) : '';
+
+  const picksText = (function() {
+    const arr = [];
+    if (sib) {
+      arr.push('【' + sibLabel + sib.name + '】（同题材 ' + topicText + ' 的可用龙位' +
+        (Number(sib.rank) === 2 ? '' : ' · 龙二不可用已顺延') + '）');
+    }
+    if (secondOk) {
+      arr.push('【' + si.name + '】（市场总龙二：昨日十日涨幅第二 ' + formatRangePct(_num(si.pct)) +
+        '，' + (String(si.topic || '').trim() || '—') + ' 的龙一）');
+    }
+    return arr;
+  })();
+
+  return {
+    // ── 判据 / 事实 ──
+    reason: reason,                                  // 'suspend' | 'share'
+    leaderName: leaderName,
+    leaderTopic: leaderTopic,
+    leaderPct: leaderPct,
+    leaderPctText: leaderPctText,
+    leaderSuspended: !!ebbCtx.leaderSuspended,
+    leaderShare: sh,
+    leaderShareText: shareText,
+    leaderThresholdText: thresholdText,
+    leaderIsDragonOne: leaderIsDragonOne,
+    whyText: whyText,
+    // ── 允许【看分笔卖】的两只（空串 = 该只今天不成立）──
+    siblingName: sib ? String(sib.name) : '',
+    siblingRank: sib ? Number(sib.rank) : null,
+    siblingLabel: sibLabel,
+    secondName: secondOk ? String(si.name) : '',
+    secondTopic: secondOk ? String(si.topic || '') : '',
+    secondPct: secondOk ? _num(si.pct) : null,
+    secondPctText: secondOk ? formatRangePct(_num(si.pct)) : '',
+    // 标题上直接列出那两只是谁（没有则如实说「一只都没有」）
+    picksText: picksText.length > 0 ? picksText.join('、') : '（本日无符合条件的票）',
+    // ── 文案（§21：模板零计算）──
+    headline: '⚠️ 退潮首日 · 卖点收紧',
+    detail: '市场总龙【' + leaderName + '】（' + topicText + '，昨日十日涨幅 ' + leaderPctText + '）' +
+      whyText + ' ⇒ 判定为【题材退潮首日】。卖点侧：' +
+      (picksText.length > 0
+        ? ('只有 ' + picksText.join('、') + ' 可以【' + EBB_PICK_TAG + '】（等开盘看分笔，不看占比）；')
+        : '今天没有符合条件的【同题材可用龙位】【市场总龙二】；') +
+      '其余股票一律【' + SELL_OUT_TAG + '】（含原本标【' + HOLD_TAG + '】的）—— 开盘就走，降低风险。',
+    buyHeadline: '⚠️ 退潮首日 · 建议空仓 · 不开仓',
+    buyDetail: '市场总龙【' + leaderName + '】（' + topicText + '，昨日十日涨幅 ' + leaderPctText + '）' +
+      whyText + ' ⇒ 题材退潮首日，风险高。下方选股【整体变灰】仅为参考，建议今天不开仓（空仓）。'
+  };
+}
+
+/** 退潮首日【允许看分笔卖】的股票名集合（§6：唯一的取名实现，判定与改写共用） */
+function _ebbEligibleNames(ebb) {
+  const set = new Set();
+  if (!ebb) return set;
+  if (ebb.siblingName) set.add(ebb.siblingName);
+  if (ebb.secondName) set.add(ebb.secondName);
+  return set;
+}
+
+/**
+ * 【退潮首日 · 卖点改写】（覆盖式后处理 —— ⛔ 绝不去改 buildSellPlan 内部）。
+ *
+ * 为什么是「后处理」而不是「改 buildSellPlan」：那个函数是【决策看板与本看板共用的同一份实现】
+ * （§6 红线），在它里面加本看板专有的分支，等于给决策看板也加了一条它不该有的规则。
+ * 于是：先让它按原口径算完，再由本函数【覆盖】本看板需要改的那两枚字段
+ * （`sellActionTag` / `sellActionTone` —— 它们在本看板卖点行的标签优先级里最高，见 TvrbSellBlock.vue）。
+ *
+ * ⛔ 保留一切【客观数据】：十日涨幅 / 竞价涨幅 / 量比 / 占比 / 龙标 / 名次变化 / 连板 / 封单额
+ *   —— 退潮只改「今天怎么卖」，不篡改行情事实。
+ * ⛔ 停牌票【照旧改写】：本文件是纯函数、读不到停牌事实（判定只有 suspend.js 一处，§6），
+ *   而「它卖不掉」这件事由【停牌】小标 + 第十九轮的去色 CSS 表达，不在这里再判一遍。
+ *
+ * @param {Array} sell buildSellPlan 的返回（题材分组数组，每组含 items）
+ * @param {object|null} ebb detectEbbDay 的返回
+ */
+function _applyEbbSellRules(sell, ebb) {
+  if (!ebb) return;
+  const elig = _ebbEligibleNames(ebb);
+  const topicText = ebb.leaderTopic || '—';
+  const lead = '【退潮首日】市场总龙【' + ebb.leaderName + '】（' + topicText +
+    '，昨日十日涨幅 ' + ebb.leaderPctText + '）' + ebb.whyText + ' ⇒ 题材退潮：';
+
+  (sell || []).forEach(function(g) {
+    (g.items || []).forEach(function(it) {
+      if (!it || !it.name) return;
+      const name = String(it.name);
+      if (elig.has(name)) {
+        const isSib = (name === ebb.siblingName);
+        it.sellActionTag = EBB_PICK_TAG;      // ★ 覆盖式：优先级最高的那一枚
+        it.sellActionTone = EBB_PICK_TONE;
+        it.holdTag = '';                      // 与「看分笔卖」互斥（原口径的持有 / 先卖后买让路）
+        it.buyActionTag = '';
+        it.buyActionTone = '';
+        // 卖点节奏提示（深低开盯盘 / 立刻出…）以【占比】为前提，与「看分笔卖」是两套口径 ⇒ 撤掉
+        it.sellHint = null;
+        it.actionNote = lead +
+          (isSib
+            ? ('本股是【' + (ebb.siblingLabel || '') + '同题材可用龙位】（' + topicText +
+               ' 里龙位最靠前、且非竞价一字 / 非停牌的票）')
+            : ('本股是【市场总龙二】（昨日十日涨幅第二 ' + ebb.secondPctText + '，' +
+               (ebb.secondTopic || '—') + ' 的龙一）')) +
+          ' ⇒ 允许【' + EBB_PICK_TAG + '】：9:25 不竞价卖，等 9:30~9:31 点开【分笔成交】看结论 —— ' +
+          '提示【冲高卖】就等冲高再清、提示【立刻卖】就直接止损。' +
+          '（本档【不看本股自己的占比】，也不看它原本是【' + HOLD_TAG + '】还是【' + SELL_OUT_TAG +
+          '】—— 退潮首日只按「是不是那两只有资格等开盘卖的票」二分。）';
+      } else {
+        it.sellActionTag = SELL_OUT_TAG;      // ★ 其余一律竞价卖（用户拍板：连【持有】也一起改）
+        it.sellActionTone = SELL_ACTION_TONE_OUT;
+        it.holdTag = '';
+        it.buyActionTag = '';
+        it.buyActionTone = '';
+        it.sellHint = null;
+        it.actionNote = lead +
+          ('本股不是【同题材可用龙位】、也不是【市场总龙二】 ⇒ 一律【' + SELL_OUT_TAG +
+           '】：开盘就走，降低风险。' +
+           '（退潮首日【不看占比】、也不因它原本标【' + HOLD_TAG + '】而留下。）');
+      }
+    });
+  });
+}
 
 function _num(v) {
   if (v === null || v === undefined || v === '') return null;
@@ -205,10 +422,26 @@ export const TVRB_CASH_ALERT_NONE = Object.freeze({
  *   ③ 平均量比 ≥ 门槛 ⇒ 不提示。
  *
  * @param {object|null} leadBlock 入选题材里排名第一的块（buildTopicVolRatioPlan 里的 blocks[0]）
+ * @param {object|null} [ebb] detectEbbDay 的返回 —— ★ [EBB 2026-10-13 第五轮] 退潮首日【优先】：
+ *        退潮日直接给退潮口径的空仓标语（用户口径「买点侧是提示空仓的……把买点侧的文字或者 UI
+ *        全部变成灰色，这样空仓效果更加强烈些」），⛔ 不再去算平均量比那条（退潮是更强、更具体的原因）。
  * @returns {{show:boolean, topic:string, rank:number|null, avgVolRatio:number|null,
  *            avgVolRatioText:string, threshold:number, headline:string, detail:string}}
  */
-export function buildCashAlert(leadBlock) {
+export function buildCashAlert(leadBlock, ebb) {
+  // ★ [EBB 2026-10-13] 退潮首日 ⇒ 空仓（理由比「量比低」更硬：最强的那只都停了 / 占比不达标）
+  if (ebb) {
+    return {
+      show: true,
+      topic: ebb.leaderTopic || '',
+      rank: null,
+      avgVolRatio: null,
+      avgVolRatioText: '—',
+      threshold: TVRB_CASH_ALERT_AVG_VR,
+      headline: ebb.buyHeadline,
+      detail: ebb.buyDetail
+    };
+  }
   if (!leadBlock || !leadBlock.block) return TVRB_CASH_ALERT_NONE;
   const avg = avgVolRatioOf(leadBlock.block);
   if (avg === null) return TVRB_CASH_ALERT_NONE;           // §10：缺数据 ⇒ 不提示
@@ -404,26 +637,29 @@ function _buildBlock(block, dragonMap, tier) {
  *
  * @param {Array} topics   rankDecisionTopics(entries, MODE_VOL_RATIO) 的返回（已按平均竞价量比降序）
  * @param {Map} dragonMap  rankDragons(topics) 的返回
- * @param {{date?:string, ctx?:object, sellRows?:Array}} [opts]
+ * @param {{date?:string, ctx?:object, sellRows?:Array, ebbCtx?:object}} [opts]
  *        date     = 展示日（当前已由组合式调 decorateDecisionRows 统一装饰，这里只留作扩展位）
  *        ctx      = decision-collect#collectDecisionTopics(actionContext) 给的标记上下文
  *                   {prevDragonNames, prevBuyNames, prevBought, prevBoughtTopics, topicStreakPast}；
  *                   ⛔ 缺省 = 全部为 null ⇒ 持有 / 昨有买入 / N 次入选 / 先卖后买 / 补涨
  *                   一枚都不打（§10：未知 ≠ 没有），⛔ 绝不在这里用空集合顶替。
  *        sellRows = decision-collect 给的卖点候选行（缺省 ⇒ 不产卖点段）
+ *        ebbCtx   = decision-collect#_ebbCtxOf 采好的【退潮首日事实】（市场总龙 / 今日停牌 / 今日占比 /
+ *                   同题材龙位成员 / 市场总龙二）；缺省 / ready=false ⇒ 退潮规则不生效（§10 不猜）
  * @returns {{topics:Array, blocks:Array, buy:object, sell:Array, excludedTopics:Array,
- *            notes:Array, pickCount:number, buyNames:Set<string>, cashAlert:object}}
+ *            notes:Array, pickCount:number, buyNames:Set<string>, cashAlert:object, ebb:object|null}}
  *   topics        —— 全部参与排名的题材（含被排除的），按排名，供说明 / 复核
  *   blocks        —— 入选的题材块（≤ TVRB_TOPIC_LIMIT 个），每个含 picks
  *   buy           —— 决策看板形状的买点计划（heavy / light / candidates / 三个兜底槽位）
  *                    ⚠️ 形状必须一致：通用装饰器（量比趋势 / 名次变化 / 封单额）按它遍历
- *   sell          —— buildSellPlan 的返回（题材分组）
+ *   sell          —— buildSellPlan 的返回（题材分组）；退潮首日已被 _applyEbbSellRules 改写动作标签
  *   excludedTopics—— 因数量 < 4 只被排除的题材（仅统计「选够两个之前」遇到的那些）
  *   notes         —— 看板级说明（被排除题材汇总等）
  *   pickCount     —— 实际选出的股票总数
  *   buyNames      —— 买点名单（喂给 buildSellPlan 判「今天又进买点 ⇒ 持有」）
  *   cashAlert     —— ★ 空仓提醒（见 TVRB_CASH_ALERT_AVG_VR / buildCashAlert）；
  *                    ⛔ 只是【提醒文案】，不改变 blocks / picks 的任何内容
+ *   ebb           —— ★ [EBB 2026-10-13] 退潮首日（detectEbbDay 的返回）；不是退潮日 ⇒ null
  */
 export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   const o = opts || {};
@@ -441,7 +677,10 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     buyNames: new Set(),
     // ★ [CASH-ALERT 2026-10-13] 空仓提醒（判据见 buildCashAlert / TVRB_CASH_ALERT_AVG_VR）。
     //   未触发时用【同一份冻结常量】⇒ 引用稳定、不触发下游重算（§19）。
-    cashAlert: TVRB_CASH_ALERT_NONE
+    cashAlert: TVRB_CASH_ALERT_NONE,
+    // ★ [EBB 2026-10-13 第五轮] 退潮首日（判据见 detectEbbDay）；
+    //   不是退潮日 ⇒ null（一个稳定的 null ⇒ 视图的 v-if / class 绑定不会反复抖动，§19）
+    ebb: null
   };
 
   list.forEach(function(b) {
@@ -475,10 +714,15 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     else out.buy.candidates.push(b);
   });
 
+  // ★ [EBB 2026-10-13 第五轮用户口径] 退潮首日判定 —— 排在空仓提醒【之前】：
+  //   「空仓提醒」在退潮日走退潮口径（理由比「量比 < 25」更硬），见 buildCashAlert 的二参。
+  //   ⛔ 它只读【事实】（谁是总龙 / 今天停不停牌 / 占比多少），不读 state、不发请求（事实由采集层给）。
+  out.ebb = detectEbbDay(o.ebbCtx || null);
+
   // ★ [CASH-ALERT 2026-10-13 用户口径] 空仓提醒：只看【能入选的】排名第一题材（blocks[0]）。
   //   ⛔ 放在选股【之后】、且只读不写 —— 命中时股票照常列在下面（用户原话「还是按照原来的正常方式
   //      选出排名第一，第二的题材的股票，只是……多添加了空仓提醒文字」）。
-  out.cashAlert = buildCashAlert(out.blocks[0]);
+  out.cashAlert = buildCashAlert(out.blocks[0], out.ebb);
 
   // ★ 买点标签收口 —— decision-rules 的【同一份实现】（占比 / 动作标签 / 持有 / 题材标记）
   const fOpts = {
@@ -525,6 +769,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         if (!it.pctText) it.pctText = formatRangePct(it.pct);
       });
     });
+    // ★ [EBB 2026-10-13 第五轮用户口径] 退潮首日 ⇒ 卖点动作【覆盖式】重写：
+    //   只有【同题材可用龙位】【市场总龙二】两只标「看分笔卖」（等开盘看分笔、不看占比），
+    //   其余（含原本标【持有】的）一律改【竞价卖】。
+    //   ⛔ 排在平均量比 / 涨幅文案补全【之后】：那两项是客观数据，本改写一律不碰。
+    if (out.ebb) _applyEbbSellRules(out.sell, out.ebb);
   }
 
   out.pickCount = out.blocks.reduce(function(n, blk) { return n + blk.picks.length; }, 0);
@@ -609,6 +858,19 @@ export function buildTvrbRulesLines() {
       '⚠️ 判据只看【能入选的】排名第一者：量比更高的题材若因数量不足被排除，就顺位看下一个；' +
       '⛔ 不看排名第二 —— 排名就是按平均竞价量比降的，第二只会更低。' +
       '⚠️ 它只是【提醒】，⛔ 不改变选股：股票仍按上面第一~七条照常列出（供你参考），' +
-      '只是看到这条提示建议今天不开仓。'
+      '只是看到这条提示建议今天不开仓。' +
+      '★ 另外，当当日为【退潮首日】（第二十条）时也一律提示空仓，并改用退潮口径的标语。',
+    // ── ★ [EBB 2026-10-13 第五轮用户口径] 退潮首日（用户原话见文件头，规则与判定同处一处，§6）
+    '二十、【退潮首日 · 卖点收紧】市场总龙 = 当日早盘竞价【全列表】里【昨日十日涨幅】最高的那只。' +
+      '它今日【停牌】或【竞价占比不达标】（二者有一即算）⇒ 判定为【题材退潮首日】。' +
+      '⚠️ 涨幅口径是【昨日】的：当天早上还没收盘算不出今天的十日涨幅，停牌票当天更是读不到。',
+    '　　退潮首日，卖点侧只有两类票标【' + EBB_PICK_TAG + '】（= 允许等开盘看【分笔成交】再卖，' +
+      '⛔ 不看占比）：' +
+      '①【同题材可用龙位】= 总龙所在题材里龙位最靠前、且【非竞价一字 / 非停牌】的那只' +
+      '（龙二不可用就顺延龙三、龙四……）；' +
+      '②【市场总龙二】= 昨日十日涨幅【第二】的那只，且必须是【它自己题材的龙一】、与总龙【不同题材】、' +
+      '且非竞价一字 / 非停牌（⛔ 这一只【不顺延】：它必须正好是涨幅第二，不递补涨幅第三）。',
+    '　　其余股票（含原本标【' + HOLD_TAG + '】的）一律改【' + SELL_OUT_TAG + '】：开盘就走，降低风险。' +
+      '⚠️ 同时买点侧【整体变灰 + 大字空仓标语】：退潮首日不开仓。'
   ];
 }
