@@ -65,17 +65,12 @@
           <span class="auction-toggle-slider" />
         </label>
       </div>
-      <div class="auction-toggle-item">
-        <span class="auction-toggle-label">三天竞跌</span>
-        <label class="auction-toggle-switch">
-          <input
-            type="checkbox"
-            :checked="sortState2.byThreeDayJingDie"
-            @change="toggleSort2('byThreeDayJingDie')"
-          >
-          <span class="auction-toggle-slider" />
-        </label>
-      </div>
+      <!-- [RANGE-PCT 2026-10-14 用户口径] ⛔ 本页原「三天竞跌」开关已【直接删除】（不是改名）：
+           它在本页没有任何消费方 —— sortedTopicGroups 只按「强度」排序，byThreeDayJingDie
+           从未参与任何计算，是个「点了没反应」的死开关（§16 不留死代码）。
+           用户口径「三天竞跌功能去掉」⇒ 从 UI 与状态里一起清掉。
+           「十日涨幅」toggle 落在【第一页】（AuctionBoardToolbar）：那里才有龙头组/观察组/常规组，
+           也正是用户要「所有股票一起按十日涨幅排」的那张表。 -->
     </div>
     <div class="auction-highratio-stat">
       <span style="font-weight:700;color:#dc2626;">竞昨数：{{ p2JingYestCount }}</span><span style="display:inline-block;width:28px;" />竞放量数：<span style="font-weight:700;">{{ p2HighRatioCount }}</span>

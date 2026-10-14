@@ -82,17 +82,17 @@
         class="auction-dragon-tag"
         :title="dragonTagTitle(item)"
       >龙</span>
-      <!-- [DRAGON-GROUP 2026-09-15] 十日区间涨幅数值（= 龙头组区块的排序键）。
-           为什么要显示出来：默认模式下标准行只有 竞价量/昨成交量/占比 三列，十日涨幅原本只在
-           悬停提示里 → 「按十日涨幅由高到低」这件事无从核对（用户实测「排序不对」）。
-           故把排序键直接摆在行上：涨红 / 跌绿 / 平灰（与全站 dragon-badge 同一套国内看板惯例）。
-           只在默认模式显示；题材模式下那里已有龙一/龙二徽章带同一数值，避免重复。 -->
+      <!-- [DRAGON-GROUP 2026-09-15 → RANGE-PCT 2026-10-14] 股票名旁的「十日区间涨幅」数值。
+           两种模式共用这一处渲染（样式 / 配色 / 位置一字未变，⛔ 不新增 CSS）：
+             · 默认模式      → 龙头组行的名册十日涨幅（= 龙头组区块的排序键）；
+             · 十日涨幅 toggle → 每一行的当日十日区间涨幅（= 该 toggle 的排序键，用户要求「标上数据」）。
+           取值分支收敛在下方 rangePctValue（模板只做展示，§21 零计算）。 -->
       <span
-        v-if="item.isDragonGroupMember && !sortState.byTopic && dragonPctText(item)"
+        v-if="rangePctText(item)"
         class="auction-dragon-pct"
-        :class="dragonPctClass(item)"
-        :title="'十日区间涨幅 ' + dragonPctText(item) + (item.dragonGroupTopic ? '（' + item.dragonGroupTopic + '）' : '')"
-      >{{ dragonPctText(item) }}</span>
+        :class="rangePctClass(item)"
+        :title="rangePctTitle(item)"
+      >{{ rangePctText(item) }}</span>
       <AuctionDragonBadge
         v-if="item.dragonRank > 0"
         :rank="item.dragonRank"
@@ -324,19 +324,42 @@ function dragonTagTitle(item) {
   return bits.join('｜');
 }
 
-// [DRAGON-GROUP 2026-09-15] 十日区间涨幅的显示文本 / 颜色档（空白串 = 无值 → 模板不渲染）。
-// 「无值」绝不当 0 显示（否则会与「涨幅为 0」混淆，§40 不猜数据）。
-function dragonPctText(item) {
-  const v = item ? item.dragonGroupPct : null;
+// [DRAGON-GROUP 2026-09-15 / RANGE-PCT 2026-10-14] 股票名旁「十日区间涨幅」数值的取值分支。
+// 为什么两套来源必须分开（⛔ 不能合并成一个字段）：
+//   · 默认模式的龙头组行 → item.dragonGroupPct：来自【前一交易日评选出的名册】（名册里存着当时的
+//     十日涨幅 + 题材），它是龙头组区块的排序键，语义 = 「按昨日口径给这批龙头排名」；
+//   · 十日涨幅 toggle  → item.rangePct：【当日】十日区间涨幅（云端 stock_range_pct），
+//     语义 = 「今天全市场谁更强」，与题材龙位徽章 / 决策看板排名同源（§6）。
+// 用后者去渲染前者会与区块排序键不一致（用户实测过「排序对不上数字」），反之亦然。
+// 「无值」绝不当 0 显示（否则会与「涨幅为 0」混淆，§40 不猜数据）→ 返回空串 ⇒ 模板不渲染。
+function rangePctValue(item) {
+  if (!item) return null;
+  if (sortState.byRangePct) return item.rangePct;
+  if (item.isDragonGroupMember && !sortState.byTopic) return item.dragonGroupPct;
+  return null;
+}
+function rangePctText(item) {
+  const v = rangePctValue(item);
   if (v === null || v === undefined || isNaN(Number(v))) return '';
   const n = Number(v);
   return (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
 }
-function dragonPctClass(item) {
-  const v = item ? item.dragonGroupPct : null;
+// 涨红 / 跌绿 / 平灰（与 .dragon-badge / 全站口径一致：涨=红、跌=绿，⛔ 与欧美相反）。
+function rangePctClass(item) {
+  const v = rangePctValue(item);
   if (v === null || v === undefined || isNaN(Number(v))) return {};
   const n = Number(v);
   return { 'dragon-pct-up': n > 0, 'dragon-pct-down': n < 0, 'dragon-pct-flat': n === 0 };
+}
+function rangePctTitle(item) {
+  const txt = rangePctText(item);
+  if (!txt) return '';
+  // 龙头组行沿用原口径（附题材，方便核对它是哪个题材的龙头）；
+  // 十日涨幅模式是【全市场】排序，题材在行内另有列展示，不在这里重复附（避免提示过长）。
+  if (!sortState.byRangePct && item.isDragonGroupMember && item.dragonGroupTopic) {
+    return '十日区间涨幅 ' + txt + '（' + item.dragonGroupTopic + '）';
+  }
+  return '十日区间涨幅 ' + txt;
 }
 
 // [CLOSE-LIMIT 2026-09-11] 股票名下划线标记的 class（优先级在 Logic 层之外只保留「谁盖住谁」这一件事）：

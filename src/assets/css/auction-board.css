@@ -807,16 +807,11 @@
             background: rgba(59, 130, 246, 0.12);
         }
 
-        /* 三天竞跌达标行（最近三交易日竞价量连续递减）：左侧绿色边框，仅在"三天竞跌"开关打开时显示。
-           显示受容器 .three-day-jing-die-enabled 控制，避免开关关闭后行级 class 残留。 */
-        .auction-content.three-day-jing-die-enabled .auction-item.three-day-jing-die,
-        .auction-content.three-day-jing-die-enabled .auction-topic-row.three-day-jing-die {
-            box-shadow: inset 4px 0 0 #059669;
-        }
-
-        .auction-content.three-day-jing-die-enabled .auction-item.three-day-jing-die:hover {
-            background: rgba(5, 150, 105, 0.12);
-        }
+        /* [RANGE-PCT 2026-10-14] ⛔ 原「三天竞跌达标行（绿色左竖条）」整段已删（功能下线、无 class 产出方，§16）。
+           附带说明：本段依赖的容器类 .three-day-jing-die-enabled 早已无人设置（全项目 0 个设置方），
+           也就是说它【在删除前就已经是死规则】—— 这也是「开关打开却看不到绿条」的历史成因之一。
+           新的「十日涨幅」toggle 是【全列表排序 + 逐行标数值】，刻意不产出任何行级高光：
+           全表都在按十日涨幅排时，挑出「部分行加色条」没有信息量。 */
 
         /* 弱转强达标行：左侧琥珀色边框，仅在「弱转强」开关打开时显示（容器 .weak-strong-enabled 控制）。 */
         .auction-content.weak-strong-enabled .auction-item.weak-strong,
@@ -1410,11 +1405,6 @@
         /* 竞/昨达标行（平行条件基础上，今/昨比 > 昨/前比）：左侧蓝色边框，仅在"竞/昨"开关打开时显示，优先于平行高光 */
         .auction-topic-row.jing-yest-match {
             box-shadow: inset 4px 0 0 #3b82f6;
-        }
-
-        /* 三天竞跌达标行：左侧绿色边框，仅在"三天竞跌"开关打开时显示 */
-        .auction-topic-row.three-day-jing-die {
-            box-shadow: inset 4px 0 0 #059669;
         }
 
         .auction-topic-stock {

@@ -1,59 +1,16 @@
-        // "连续竞跌天数"：从 T 日开始往回看，连续 volume 递减（允许相等）的天数。
-        // 最多看 5 天（T..T-5 共 6 个数据点）。
-        // 若序列全等（无严格递减），天数为 0。
-        // 返回 Map<股票名称, 下跌天数>。
-        import { ref } from 'vue';
-        import { getGroupData } from '../app-core-api.js';
-        import { getNumericVolume } from '../../data/supabase-client.js';
-        import { getStockHistoryValue, getAuctionChangePctHistory, _getAuctionWatchlistSet } from '../../data/watchlist-and-metrics.js';
-        import { _signalCache, _signalFpFor, _isFormalListRow } from './sort-rules.js';
-        import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
+import { ref } from 'vue';
+import { getGroupData } from '../app-core-api.js';
+import { getAuctionChangePctHistory, _getAuctionWatchlistSet } from '../../data/watchlist-and-metrics.js';
+import { _signalCache, _isFormalListRow } from './sort-rules.js';
+import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
 
-        export function getThreeDayJingDieSet(dateStr, dataSource='auction') {
-            const __k = 'tdjd|' + (dataSource || 'auction') + '|' + dateStr;
-            const __sc = _signalCache;
-            let __fp = null;
-            if (__sc && _signalFpFor) {
-                __fp = _signalFpFor(dateStr, dataSource);
-                const __e = __sc[__k];
-                if (__e && __e.fp === __fp) return __e.value;
-            }
-            const MAX_DAYS = 5;
-            const auctionData = getGroupData(dataSource);
-            const todayList = auctionData[dateStr] || [];
-            // [SHADOW-GUARD 2026-09-07] 与竞昨/平行同口径：只统计当日正式名单内的股票
-            const _formalSet = _getAuctionWatchlistSet(dateStr);
-            const result = new Map();
-            todayList.forEach(item => {
-                if (!_isFormalListRow(item, _formalSet)) return;
-                const name = item.stock.trim();
-                const vol0 = getNumericVolume(item.volume);
-                if (vol0 === null || vol0 <= 0) return;
-                let curDate = dateStr;
-                let curVol = vol0;
-                let declineDays = 0;
-                let hasStrictDecline = false;
-                for (let i = 0; i < MAX_DAYS; i++) {
-                    const prevDate = getPreviousTradingDay(curDate);
-                    if (!prevDate) break;
-                    const prevVol = getStockHistoryValue(prevDate, name, 'volume', dataSource);
-                    if (prevVol === null || prevVol <= 0) break;
-                    if (curVol <= prevVol) {
-                        declineDays++;
-                        if (curVol < prevVol) hasStrictDecline = true;
-                        curDate = prevDate;
-                        curVol = prevVol;
-                    } else {
-                        break;
-                    }
-                }
-                if (declineDays > 0 && hasStrictDecline) {
-                    result.set(name, declineDays);
-                }
-            });
-            if (__sc && __fp !== null && result.size > 0) __sc[__k] = { fp: __fp, value: result };
-            return result;
-        }
+        // [RANGE-PCT 2026-10-14 用户口径] ⛔ 原「三天竞跌」判定（getThreeDayJingDieSet）已【整体删除】：
+        //   用户在 2026-10-14 明确「三天竞跌功能去掉，换成十日涨幅功能」——
+        //   「十日涨幅」toggle 的排序键来自云端 stock_range_pct（见 logic/auction/range-pct-sort.js），
+        //   与「竞价量连续递减」这套口径毫无关系，把它留下只会是 §16 意义上的死代码。
+        //   ⚠️ 删除还带来一处实打实的性能收益：它原先挂在 incremental-view 的【全局指纹】里，
+        //      每次视图重算（含每次切 toggle / 单格编辑）都要为全部股票往回扫 5 个交易日
+        //      —— 现在整段扫描消失（详见 incremental-view.js 的指纹注释）。
 
         // ===== 弱转强（2026-09-01）=====
         // 定义（两条件必须同时满足）：

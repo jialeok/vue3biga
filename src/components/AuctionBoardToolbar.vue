@@ -77,13 +77,19 @@
         <span class="auction-toggle-slider" />
       </label>
     </div>
+    <!-- ★ [RANGE-PCT 2026-10-14 用户口径] 这个开关位原来是「三天竞跌」，现改为「十日涨幅」：
+         打开后 = **全部股票一条列表**（龙头组 + 观察组 + 常规组不再分块），按「近 10 个交易日
+         区间涨幅」由高到低排，并在每行股票名旁标出该数值 —— 用户要的是「一眼找到市场总龙头」。
+         ⛔ 原「三天竞跌」功能（竞价量连续递减）已整体删除，不是改名：排序键与数据源都换了
+            （三天竞跌 = 内存逐日 volume 现算；十日涨幅 = 云端 stock_range_pct，与题材龙位徽章同源）。
+         ⚠️ 与其它主排序 toggle（弱转强 / 量比抢筹 / 竞/昨 / 竞/昨占比）互斥，由 Logic 层保证。 -->
     <div class="auction-toggle-item">
-      <span class="auction-toggle-label">三天竞跌</span>
+      <span class="auction-toggle-label">十日涨幅</span>
       <label class="auction-toggle-switch">
         <input
           type="checkbox"
-          :checked="sortState.byThreeDayJingDie"
-          @change="toggleSort('byThreeDayJingDie')"
+          :checked="sortState.byRangePct"
+          @change="toggleSort('byRangePct')"
         >
         <span class="auction-toggle-slider" />
       </label>

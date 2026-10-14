@@ -173,7 +173,7 @@ defineExpose({
 /* 行标签状态（买/卖/选中）只用「左侧色条 + 文字色」表达，背景色一律交给行内 style
    （题材分组高光底色 / item.topicBg）。禁止用 background:!important 覆盖行内背景——
    否则标记买/卖后题材分组高光底色会被强制清空，正是「加标签后高光消失」的根因。
-   竞昨/竞昨占比/三天竞跌的高光（box-shadow 左竖条）本就独立于标签，互不影响。 */
+   竞昨/竞昨占比的高光（box-shadow 左竖条）本就独立于标签，互不影响。 */
 .auction-item.sold {
   background: transparent;
   border-left: 3px solid #9ca3af;
@@ -197,7 +197,7 @@ defineExpose({
 .auction-item.high-ratio { box-shadow: inset 4px 0 0 #f59e0b; }
 /* [TWO-MODES 2026-10-02] ⛔ .auction-item.parallel-match 绿色边条已删（平行并入竞/昨，无 class 产出方，§16） */
 .auction-item.jing-yest-match { box-shadow: inset 4px 0 0 #3b82f6; }
-.auction-item.three-day-jing-die { box-shadow: inset 4px 0 0 #059669; }
+/* [RANGE-PCT 2026-10-14] ⛔ .auction-item.three-day-jing-die 已删：「三天竞跌」下线后无 class 产出方（§16） */
 .auction-item.weak-strong { box-shadow: inset 4px 0 0 #f59e0b; }
 /* [FEAT 2026-08-18] 双击表头搜索 → 匹配行外框圈选（不要背景色，只要低调灰色外框）。
    行 div 类为 auction-item；用 box-shadow inset 模拟内边框，不影响布局、不被相邻行遮挡；
@@ -597,7 +597,7 @@ defineExpose({
 .auction-topic-row.high-ratio { box-shadow: inset 4px 0 0 #f59e0b; }
 /* [TWO-MODES 2026-10-02] ⛔ .auction-topic-row.parallel-match 绿色边条已删（同 .auction-item.parallel-match，§16） */
 .auction-topic-row.jing-yest-match { box-shadow: inset 4px 0 0 #3b82f6; }
-.auction-topic-row.three-day-jing-die { box-shadow: inset 4px 0 0 #059669; }
+/* [RANGE-PCT 2026-10-14] ⛔ .auction-topic-row.three-day-jing-die 已删（「三天竞跌」整体下线，§16） */
 .auction-topic-row.weak-strong { box-shadow: inset 4px 0 0 #f59e0b; }
 .auction-topic-stock {
   flex: 0 0 75px;

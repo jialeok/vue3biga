@@ -94,7 +94,10 @@ export function useAuctionBoard() {
     byRatio: false,
     byJingYest: false,
     byJingYestRatio: false,
-    byThreeDayJingDie: false,
+    // [RANGE-PCT 2026-10-14 用户口径] 原 `byThreeDayJingDie`（三天竞跌）→ 改为 `byRangePct`（十日涨幅）。
+    //   ⚠️ 键名与初值必须与 auctionStore#createSortState 逐字一致（§6：两处默认值不同会让
+    //      「store 读不到」那一瞬间的口径跳变）。
+    byRangePct: false,
     byTopic: false,
     topicOrderBy: TOPIC_ORDER_YIZI
   });
@@ -116,7 +119,7 @@ export function useAuctionBoard() {
     void auctionStore.dataVersions['auction'];
     void uiStore.currentDate;
     void sortState.byWeakStrong; void sortState.byRatio;
-    void sortState.byJingYest; void sortState.byJingYestRatio; void sortState.byThreeDayJingDie; void sortState.byTopic;
+    void sortState.byJingYest; void sortState.byJingYestRatio; void sortState.byRangePct; void sortState.byTopic;
     // [TWO-MODES 2026-10-02] 题材排序口径也进依赖：切「题材 / 一字」必须重算视图（顺序不同）
     void sortState.topicOrderBy;
     // A3-01：经增量行缓存层，单格编辑只重新派生变化的行（logic/auction/incremental-view.js）
@@ -150,7 +153,12 @@ export function useAuctionBoard() {
     watch(
       // [FIX 2026-09-10] 额外监听「当日渲染行数」：9:25 名单是逐步到达的，
       // 只在 toggle/日期变化时加载会让后到的股票永远缺 10 日涨幅（实测 9/10 60 行只有 11 行有数据）。
-      () => [sortState.byTopic, uiStore.currentDate, (viewData.value && viewData.value.items ? viewData.value.items.length : 0)],
+      // [RANGE-PCT 2026-10-14] 把「十日涨幅」toggle 也纳入依赖：它是该模式的【唯一数据源】
+      //   （云端 stock_range_pct → getDragonRangePct）。不列进来的话，用户点开开关时若数据还没
+      //   加载过，屏幕会停在一片「没有涨幅数值、顺序也没变」的状态等下一次触发 —— 那正是
+      //   「打开 toggle 响应慢」的观感来源。列进来后：点开即 ensureDragonRangePct
+      //   （已缓存 → 同步级返回；未缓存 → 一次云端读），数据一到 dragon= 指纹变化 → 自动重排。
+      () => [sortState.byTopic, sortState.byRangePct, uiStore.currentDate, (viewData.value && viewData.value.items ? viewData.value.items.length : 0)],
       async () => {
         // ⚠️ 不再因「关闭题材」而跳过加载：展开面板的「10日涨幅」同样依赖这份数据
         // （与题材 toggle 是否开启无关）。数据按 date 键控，切日期时会被新日期覆盖。
@@ -359,7 +367,10 @@ export function useAuctionBoard() {
   });
 
   // ===== 第二页（题材分组）状态与逻辑 =====
-  const sortState2 = reactive({ byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false });
+  // [RANGE-PCT 2026-10-14] ⛔ 已移除 `byThreeDayJingDie`：本页从来没有任何消费方
+  //   （sortedTopicGroups 只按强度排），是个「点了没反应」的死开关（§16）；
+  //   用户口径「三天竞跌功能去掉」⇒ 连同 UI 开关一并删除，而不是换成一个同样不工作的新开关。
+  const sortState2 = reactive({ byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false });
   const isStrengthSortEnabled = ref(false);
   const p2ExpandedSet = ref(new Set());
   const p2TrendHistory = ref({});
@@ -480,18 +491,15 @@ export function useAuctionBoard() {
     if (sortState2[key]) {
       if (key === 'byRatio') {
         sortState2.byParallel = false; sortState2.byJingYest = false;
-        sortState2.byJingYestRatio = false; sortState2.byThreeDayJingDie = false;
+        sortState2.byJingYestRatio = false;
       } else if (key === 'byParallel') {
-        sortState2.byRatio = false; sortState2.byThreeDayJingDie = false;
+        sortState2.byRatio = false;
       } else if (key === 'byJingYest') {
-        sortState2.byRatio = false; sortState2.byJingYestRatio = false; sortState2.byThreeDayJingDie = false;
+        sortState2.byRatio = false; sortState2.byJingYestRatio = false;
         sortState2.byParallel = true;
       } else if (key === 'byJingYestRatio') {
         sortState2.byRatio = false; sortState2.byParallel = false;
-        sortState2.byJingYest = false; sortState2.byThreeDayJingDie = false;
-      } else if (key === 'byThreeDayJingDie') {
-        sortState2.byRatio = false; sortState2.byParallel = false;
-        sortState2.byJingYest = false; sortState2.byJingYestRatio = false;
+        sortState2.byJingYest = false;
       }
     } else {
       if (key === 'byParallel') {
@@ -887,7 +895,7 @@ export function useAuctionBoard() {
       s.byRatio = sortState.byRatio;
       s.byJingYest = sortState.byJingYest;
       s.byJingYestRatio = sortState.byJingYestRatio;
-      s.byThreeDayJingDie = sortState.byThreeDayJingDie;
+      s.byRangePct = sortState.byRangePct;
       s.byTopic = sortState.byTopic;
       // [TWO-MODES 2026-10-02] 题材排序口径（决策看板据它选买点模式，见 decision-mode.js）
       s.topicOrderBy = sortState.topicOrderBy;
@@ -978,17 +986,21 @@ export function useAuctionBoard() {
     if (sortState[key]) {
       if (key === 'byWeakStrong') {
         sortState.byRatio = false;
-        sortState.byJingYest = false; sortState.byJingYestRatio = false; sortState.byThreeDayJingDie = false;
+        sortState.byJingYest = false; sortState.byJingYestRatio = false; sortState.byRangePct = false;
       } else if (key === 'byRatio') {
         sortState.byWeakStrong = false;
-        sortState.byJingYest = false; sortState.byJingYestRatio = false; sortState.byThreeDayJingDie = false;
+        sortState.byJingYest = false; sortState.byJingYestRatio = false; sortState.byRangePct = false;
       } else if (key === 'byJingYest') {
         sortState.byWeakStrong = false; sortState.byRatio = false;
-        sortState.byJingYestRatio = false; sortState.byThreeDayJingDie = false;
+        sortState.byJingYestRatio = false; sortState.byRangePct = false;
       } else if (key === 'byJingYestRatio') {
         sortState.byWeakStrong = false; sortState.byRatio = false;
-        sortState.byJingYest = false; sortState.byThreeDayJingDie = false;
-      } else if (key === 'byThreeDayJingDie') {
+        sortState.byJingYest = false; sortState.byRangePct = false;
+      } else if (key === 'byRangePct') {
+        // [RANGE-PCT 2026-10-14] 十日涨幅：与其它主排序 toggle 互斥。
+        //   本模式的数据源是云端 stock_range_pct（异步到货），下面的龙头 watch 已把
+        //   `sortState.byRangePct` 纳入依赖 ⇒ 一打开就会 ensureDragonRangePct（数据在就秒回、
+        //   不在才发一次请求），所以点开不会出现「空白等数据」的空窗。
         sortState.byWeakStrong = false; sortState.byRatio = false;
         sortState.byJingYest = false; sortState.byJingYestRatio = false;
       }

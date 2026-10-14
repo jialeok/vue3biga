@@ -49,18 +49,25 @@ export function safeCall(fn, ...args) {
  *      ⚠️ 默认值取【一字】：用户口径「决策看板的『切换选股』默认不打开 = 一字选股逻辑」。
  *        这【不会】改变早盘竞价的初始视图 —— 它的两个题材 toggle 还要 byTopic=true 才亮，
  *        而 byTopic 默认仍是 false（⛔ 别把这一条也改成 true）。
+ *   ④ [RANGE-PCT 2026-10-14 用户口径] `byThreeDayJingDie`（三天竞跌）已【整体下线】——
+ *      开关位改为「十日涨幅」`byRangePct`（全部股票按近 10 个交易日区间涨幅由高到低）。
+ *      ⛔ 这不是改名游戏：两个功能的**排序键与数据源完全不同**
+ *        （三天竞跌 = 竞价量连续递减天数，用内存逐日 volume 现算；
+ *          十日涨幅 = 云端 stock_range_pct 的区间涨幅，与题材龙位徽章同源）。
+ *      ⚠️ 第二页（sortStateP2）的「三天竞跌」开关同时移除：它在本页【本来就没有任何消费方】
+ *        （sortedTopicGroups 只按强度排），属死开关（§16）。
  */
 function createSortState() {
   return {
-    auction: { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI },
-    hot: { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI }
+    auction: { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI },
+    hot: { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI }
   };
 }
 
 function createSortStateP2() {
   return {
-    auction: { byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false },
-    hot: { byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false }
+    auction: { byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byTopic: false },
+    hot: { byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byTopic: false }
   };
 }
 

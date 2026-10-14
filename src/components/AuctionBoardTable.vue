@@ -203,6 +203,9 @@ function rowMemo(item) {
     item.isFormalMember ? 1 : 0,
     item.isDragonGroupMember, item.dragonGroupTopic, item.dragonGroupFormalStar,
     item.dragonGroupPct, item.obsFormalStar,
+    // [RANGE-PCT 2026-10-14] 「十日涨幅」toggle 下行上直接显示的数值（= 该模式排序键）：
+    //   漏进指纹 → 区间涨幅到货后整行不重渲染（数值不出现 / 顺序与数值对不上）。
+    item.rangePct,
     // [TOPIC-TREND 2026-09-20] 题材统计条的五日趋势展开态：漏进指纹 → 点统计条整行不重渲染。
     //   只对本行【带有统计条】时才有意义（统计条只在题材块第一行出现），其余行恒为 false。
     item.topicStats ? topicTrendExpanded.value.has(item.topicStats.topic) : false

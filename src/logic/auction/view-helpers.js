@@ -6,7 +6,10 @@ import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
 // 一并删除——平行 toggle 被「一字」toggle 占用、平行并入竞/昨，该函数在本文件再无引用（§16）。
 import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlightSetForDate } from './sort-rules.js';
 import { ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagState, _buildTagStateCache } from '../tagTitles/rules.js';
-import { getThreeDayJingDieSet, getWeakStrongSet, getWeakStrongTurnSet, getVolGrabSet } from './sort-rules-extra.js';
+import { getWeakStrongSet, getWeakStrongTurnSet, getVolGrabSet } from './sort-rules-extra.js';
+// [RANGE-PCT 2026-10-14 用户口径] 「十日涨幅」toggle 的排序纯函数（由高到低 / 缺数据置底 / 稳定）。
+// 数据源 = getDragonRangePct(currentDate)（云端 stock_range_pct，与题材龙位徽章同源，§6）。
+import { sortIndicesByRangePct } from './range-pct-sort.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 // [AVG-VRATIO 2026-10-01 用户口径] 题材统计条最上面一行「平均竞价量比」的取值入口：
 //   读某只股票【某日】的当日竞价量比（倍数，如 2.18）。
@@ -63,13 +66,13 @@ function _getAuctionTag(date, stockName) {
   return useAuctionTagStore().getTagState(date, stockName);
 }
 
-// ===== 三天竞跌独立逻辑（仅「连跌三天」toggle 开启时生效，与其它高光/排序逻辑完全隔离）=====
-// 资格条件：连续竞跌天数 dd≥2（getThreeDayJingDieSet，基于「竞价量」递减，与涨幅无关）
-// 排序：达标(dd≥2)整体置顶；同档内按「当天竞价涨幅」由高到低
-// 绿色高光：dd≥2 且 当天竞价涨幅 ≥ 0（止跌/企稳/反转）才点亮；下跌中继(竞价涨幅<0)不点亮
-// 竞价涨幅取值：专用字段 auc_pct_chg（五日竞价涨幅），绝不读 changePct/change_pct ——
+// ===== 「当日竞价涨幅 auc_pct_chg」读取器（原「三天竞跌」功能的私有助手，2026-10-14 保留）=====
+// 三天竞跌已整体下线（开关位改为「十日涨幅」），但这个读取器仍被两处使用，故保留：
+//   · 竞/昨（byJingYest）同档内按当日竞价涨幅降序 —— 与改造前逐字一致；
+//   · 题材统计条条目里的 aucPct（竞价高开计数）。
+// 取值只认专用字段 auc_pct_chg（五日竞价涨幅），绝不读 changePct/change_pct ——
 //   后者会被「获取涨幅」(fuyao 快照 price_change_ratio_pct) 改写为当日常规涨幅，导致误判。
-function _getThreeDayAuctionPct(rawItem) {
+function _auctionPctOf(rawItem) {
   if (!rawItem) return null;
   const raw = rawItem.auc_pct_chg || rawItem.aucPctChg || rawItem.changePct || rawItem.change_pct || '';
   const num = parseFloat(String(raw).replace('%', '').replace('+', ''));
@@ -139,17 +142,13 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   // 两条件同时满足才点亮；与 byRatio 排序分支共用 ctx.volGrabSet（单一真相，杜绝排序与高光两套口径）。
   // 旧口径（今/昨比 >= 1.5 的 highRatioToday）仅保留给「竞放量数」常驻统计，不再参与高光。
   const isHighRatioMatch = ctx.sortByRatioEnabled && stockName && ctx.volGrabSet && ctx.volGrabSet.has(stockName);
-  // [THREE-DAY 2026-08-17-v2] 三天竞跌绿色高光：独立逻辑，仅 toggle 开启时生效。
-  // 竞价涨幅取自专用字段 auc_pct_chg（避免被「获取涨幅」改写为常规涨幅而误判）。
-  // dd≥2 且 当天竞价涨幅 ≥ 0（止跌/企稳/反转）才点亮绿色高光；下跌中继(竞价涨幅<0)不点亮。
-  const _todayAucPct = _getThreeDayAuctionPct(rawItem);
-  const isThreeDayJingDieMatch = ctx.sortByThreeDayJingDieEnabled && ctx.threeDayJingDieSet && stockName && (ctx.threeDayJingDieSet.get(stockName) || 0) >= 2 && _todayAucPct !== null && _todayAucPct >= 0;
+  // [RANGE-PCT 2026-10-14] ⛔ 原「三天竞跌」绿色高光（isThreeDayJingDieMatch / three-day-jing-die）
+  //   已随该 toggle 一起【整体删除】：新 toggle「十日涨幅」是【全列表排序 + 逐行标数值】，
+  //   不产生任何行级高光（绿色左竖条的存在意义就是"挑出达标的那几只"，全列表排序下无意义）。
   // [WEAK-STRONG 2026-09-01] 弱转强高光：仅「弱转强」toggle 开启且该股达标（五日涨幅连跌天数>=2 且 上交易日竞价涨幅<=0 且 当日竞价涨幅>0）。
   const isWeakStrongMatch = ctx.sortByWeakStrongEnabled && ctx.weakStrongSet && stockName && ctx.weakStrongSet.has(stockName);
   if (isJingYestMatch) {
     itemClass += ' jing-yest-match';
-  } else if (isThreeDayJingDieMatch) {
-    itemClass += ' three-day-jing-die';
   } else if (isWeakStrongMatch) {
     itemClass += ' weak-strong';
   } else if (isHighRatioMatch) {
@@ -316,6 +315,20 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     // 绝不复用 changePct/change_pct —— 后者会被收盘覆盖改写成收盘涨幅，颜色会跟着收盘变，
     // 与「跟随当天竞价涨幅」的需求不符。
     aucPctNum: _aucPctNum,
+    // [RANGE-PCT 2026-10-14 用户口径] 「十日涨幅」toggle 下每行显示的数值（= 该模式排序键）。
+    //   来源 = ctx.rangePctMap（云端 stock_range_pct，与题材龙位徽章同源，§6）。
+    //   §10：未能取到 → null（模板不渲染该数值，⛔ 绝不当 0 或 '-' 显示）。
+    //   ⚠️ 与 dragonGroupPct 的区别：后者是【昨日名册】里记下的十日涨幅（只对龙头组行有值，
+    //     且用于默认模式的龙头区块）；本字段是【当日】十日区间涨幅，任何行都可能读到。
+    rangePct: (function() {
+      if (!ctx.sortByRangePctEnabled || !ctx.rangePctMap || !stockName) return null;
+      const _e = ctx.rangePctMap.get(stockName);
+      if (!_e) return null;
+      const _v = _e.pct;
+      if (_v === null || _v === undefined || _v === '') return null;
+      const _n = Number(_v);
+      return isFinite(_n) ? _n : null;
+    })(),
     // [CLOSE-LIMIT 2026-09-11] 收盘涨停('up')/跌停('down') → 股票名下绿色/红色【蚂蚁线（虚线）】标记。
     // null = 既非停板也没有收盘涨幅数据（不标记）。视觉优先级见 AuctionBoardTable：竞价一字实线优先。
     closeLimit,
@@ -498,9 +511,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   } else {
     try {
       const store = useAuctionStore();
-      sortState = store && store.sortState ? store.sortState[_p] : { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI };
+      sortState = store && store.sortState ? store.sortState[_p] : { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI };
     } catch {
-      sortState = { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byThreeDayJingDie: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI };
+      sortState = { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI };
     }
   }
 
@@ -617,7 +630,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       const isTurn = !isHighlight && !!(weakStrongTurnSet && weakStrongTurnSet.has(stockName)); // tier1
       const tier = isHighlight ? 0 : (isTurn ? 1 : 2);
       const downStreak = isHighlight ? weakStrongSet.get(stockName) : 0;
-      const todayAuc = _getThreeDayAuctionPct(it);
+      const todayAuc = _auctionPctOf(it);
       return { idx, pos, tier, isHighlight, isTurn, downStreak, todayAuc };
     }).sort((a, b) => {
       if (a.tier !== b.tier) return a.tier - b.tier;
@@ -660,17 +673,24 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     }).map(x => x.idx);
 
   } else if (sortState.byJingYest) {
-    // [FIX 2026-08-18] 同档排序改为按「当天竞价涨幅 auc_pct_chg」由高到低（与三天竞跌口径一致）。
-    //   分档条件不变：tier0=竞昨高光(平行+diff>0) / tier1=仅平行 / tier2=其它（与三天竞跌的"连续竞跌"条件不同）。
-    //   原 digitGap+diff 排序键废弃，改用 _getThreeDayAuctionPct（专用竞价涨幅字段，与绿光口径一致）。
-    const parallelStockNamesForSort = getParallelStocksForDate(currentDate, dataSource);
+    // [FIX 2026-08-18] 同档排序按「当天竞价涨幅 auc_pct_chg」由高到低。
+    //   分档条件不变：tier0=竞昨高光(平行+diff>0) / tier1=仅平行 / tier2=其它。
+    //   原 digitGap+diff 排序键废弃，改用 _auctionPctOf（专用竞价涨幅字段）。
+    //   [RANGE-PCT 2026-10-14] 本分支一行未动：「三天竞跌」下线不影响它 ——
+    //     它历史上的「同档按竞价涨幅」只是因为当时两个 toggle 共用同一个读取器，不是同一套口径。
+    // [RANGE-PCT 2026-10-14 §32 不重复调用] 这里原先【第二次】调用了
+    //   getParallelStocksForDate(currentDate, dataSource) —— 而同一份结果在本函数上方
+    //   （`parallelStocksToday`，resolveTopicTier 也在用）早就取过一次，参数完全相同。
+    //   同一天同一数据源取两遍，即便上游有指纹缓存，也要白构建一次覆盖全表的指纹串。
+    //   现改为复用同一个 Set（§6 单一真相：口径不可能分叉，因为就是同一个对象）。
+    const parallelStockNamesForSort = parallelStocksToday;
     renderOrder = renderOrder.map((idx, pos) => {
       const it = renderList[idx];
       const stockName = it && it.stock ? it.stock.trim() : '';
       const isParallel = parallelStockNamesForSort.has(stockName);
       const isHighlight = stockName && jingYestHighlightSet && jingYestHighlightSet.has(stockName);
       const tier = isHighlight ? 0 : (isParallel ? 1 : 2);
-      const pctVal = _getThreeDayAuctionPct(it);
+      const pctVal = _auctionPctOf(it);
       return { idx, pos, tier, pctVal };
     }).sort((a, b) => {
       if (a.tier !== b.tier) return a.tier - b.tier;
@@ -696,26 +716,18 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       if (b.jr === null) return -1;
       return b.jr - a.jr;
     }).map(x => x.idx);
-  } else if (sortState.byThreeDayJingDie) {
-    // [THREE-DAY 2026-08-17] 排序规则：
-    //   1) 符合条件（连续竞跌天数 dd≥2）整体排在前面；
-    //   2) 同档内按「当天竞价涨幅 auc_pct_chg」由高到低（专用竞价涨幅字段，与绿光口径一致；之前是竞价量比值 jr，已废弃）。
-    const threeDayJingDieSet = getThreeDayJingDieSet(currentDate, dataSource);
-    renderOrder = renderOrder.map((idx, pos) => {
-      const it = renderList[idx];
-      const stockName = it && it.stock ? it.stock.trim() : '';
-      const dd = stockName && threeDayJingDieSet ? (threeDayJingDieSet.get(stockName) || 0) : 0;
-      // 同档排序按「当天竞价涨幅 auc_pct_chg」由高到低（专项字段，与绿光口径一致）
-      const pctVal = _getThreeDayAuctionPct(it);
-      const isQualified = dd >= 2;
-      return { idx, pos, isQualified, pctVal };
-    }).sort((a, b) => {
-      if (a.isQualified !== b.isQualified) return a.isQualified ? -1 : 1;
-      if (a.pctVal === null && b.pctVal === null) return a.pos - b.pos;
-      if (a.pctVal === null) return 1;
-      if (b.pctVal === null) return -1;
-      return b.pctVal - a.pctVal;
-    }).map(x => x.idx);
+  } else if (sortState.byRangePct) {
+    // [RANGE-PCT 2026-10-14 用户口径] 「十日涨幅」toggle（开关位由原「三天竞跌」改造）：
+    //   ★ 全部股票（龙头组 + 观察组 + 常规组，不分块）按「近 10 个交易日区间涨幅」由高到低排。
+    //   用户原话：「我点击十日涨幅 toggle 后，十日涨幅由高到低排序，并标上十日涨幅数据。
+    //   所有的股票都要排，包括龙头组，观察组，常规组。这样我就清楚找到市场总龙头。」
+    //   数据源 = getDragonRangePct(currentDate)（云端 stock_range_pct，与题材龙位徽章/决策看板
+    //   排名同一个来源同一个字段，§6 单一真相）；同步读取，**0 网络请求、0 猫抓额度**。
+    //   §10：Map 未加载（null）或某行缺数据 → 该行置底且不参与 pct 比较（⛔ 绝不补 0）。
+    //   ⚠️ 数据未到时不假装有值：ensureDragonRangePct 一发布新 Map，指纹变化会自动重算本视图。
+    //   排序实现（含稳定/置底口径）收敛在 range-pct-sort.js 纯函数里，可独立单测（§15/§42）。
+    const _rangeMap = getDragonRangePct(currentDate);
+    renderOrder = sortIndicesByRangePct(renderOrder, renderList, _rangeMap);
   }
   // [TWO-MODES 2026-10-02 用户口径] ⛔ 这里原有 `else if (sortState.byParallel)` 主排序分支（平行达标档
   //   按 digitGap 升序 → diff 降序；内层还套了一个永远走不到的 `if (sortState.byJingYest)` 子分支）
@@ -730,31 +742,15 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // 复用第二页题材分类(getTopicGroups) 的同一套核心词匹配口径：把同题材股票聚到一起，
   // 哪个题材股票多哪个排前面，"其它"(无题材/未匹配核心词/组<2只) 置底。
   // 主排序档位(tier)顺序保持不变——竞昨高光/达标(tier0)整体置顶，档位【内部】再按题材组大小降序。
-  // 覆盖 竞/昨、竞/昨占比、三天竞跌（分层）与 数据/环比/平行/默认（单层，等同全局分组）。
+  // 覆盖 竞/昨、竞/昨占比（分层）与 数据/量比抢筹/默认（单层，等同全局分组）。
   // 修复点：v1 按「单只股票题材数量」排序（一只股题材多就排前），与用户要的「题材分组」不符；
   //       现改为与第二页一致的主题材分组，高光档位整体仍置顶、组内按题材聚并组大者居前。
-
-  // 三天竞跌达标集合：提前算一次，下方档位解析与分组逻辑复用（避免重复计算）。
-  const threeDayJingDieSet = sortState.byThreeDayJingDie ? getThreeDayJingDieSet(currentDate, dataSource) : null;
 
   // 主排序档位解析：给定 renderList 索引，返回其档位（0=最高档/高光或达标）。
   // 必须与上方各主排序分支的 tier 口径完全一致，否则档位边界错位。
   function resolveTopicTier(idx) {
     const it = renderList[idx];
     const nm = it && it.stock ? it.stock.trim() : '';
-    if (sortState.byThreeDayJingDie) {
-      // [FIX 2026-08-20] 高光档(tier0) = 绿色高光口径：连续竞跌 dd≥2 且 当天竞价涨幅≥0（止跌/企稳/反转）。
-      // 下跌中继(dd≥2 但 竞价涨幅<0 或缺失)不点亮绿光 → 视为「其它」归入 tier1，
-      // 否则题材分组会把绿光高光与下跌中继按题材打散混在一起（用户反馈的「高光很分散」）。
-      // 此口径与 _enrichAuctionItem 中的 isThreeDayJingDieMatch 完全一致。
-      const dd = nm && threeDayJingDieSet ? (threeDayJingDieSet.get(nm) || 0) : 0;
-      if (dd >= 2) {
-        const pct = _getThreeDayAuctionPct(it);
-        const isGreen = pct !== null && pct >= 0;
-        return isGreen ? 0 : 1;
-      }
-      return 1;
-    }
     if (sortState.byWeakStrong) {
       // [WEAK-STRONG 2026-09-01] 高光档(tier0)=弱转强达标（连跌天数>=2 且 上交易日竞价涨幅<=0 且 当日竞价涨幅>0），否则 tier1。
       // 与 _enrichAuctionItem 中 isWeakStrongMatch 口径一致。
@@ -782,7 +778,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   // [TOPIC-MERGE 2026-09-09] 题材 toggle「单独开启」判定：没有任何主排序 toggle 参与时为真。
   // 单独开启题材 = 用户只想按题材看当日全量（含观察组继承票），不再区分观察组/常规组两块；
-  // 一旦叠加任一主排序 toggle（弱转强/量比抢筹/竞昨/竞昨占比/三天竞跌），
+  // 一旦叠加任一主排序 toggle（弱转强/量比抢筹/竞昨/竞昨占比/十日涨幅），
   // 观察组与常规组的既有显示方式保持不变（下方分组分支的 else/各专属分支原逻辑不动）。
   //
   // [TWO-MODES 2026-10-02] ⚠️ 这里【不再有】 `!sortState.byParallel` 那一项：
@@ -794,7 +790,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     && !sortState.byWeakStrong
     && !sortState.byRatio
     && !jingYestToggleChecked
-    && !sortState.byThreeDayJingDie;
+    && !sortState.byRangePct;
 
   // 题材背景色映射：仅在 byTopic 开启时计算，供下方 enrich 步骤给每行附上浅色背景。
   // 不同题材不同浅色、仅成员>=2 的真实题材上色、"其它"不上色（详细口径见 buildTopicColorMap）。
@@ -1001,9 +997,11 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     return _isAuctionFormalMember(currentDate, name);
   };
 
-  // [THREE-DAY 2026-08-17] 三天竞跌模式下，分组口径改为「达标(dd≥2)置顶 / 未达标在后」，
-  // 不再按观察组/常规组分隔（解决"观察组永远排在前面"的问题）。真实 obs 身份仍由每行 itemClass/obsFormalStar 标记。
-  // 注意：threeDayJingDieSet 已在上方题材分支前统一计算并复用，此处不再重复声明。
+  // [RANGE-PCT 2026-10-14 用户口径] 「十日涨幅」模式：**全部股票一条列表**，不再按
+  // 观察组 / 常规组分隔（下方分支同款折叠）。用户要的就是「一眼在一条降序表里找到市场总龙头」，
+  // 若把观察组单独拎成一块，排序名次就会被区块边界打断。每行的 obs / 龙头身份仍由
+  // itemClass / obsFormalStar / isDragonGroupMember 原样标记，身份不丢。
+  // 注：原「三天竞跌」模式的分组注释随该功能整体删除（2026-10-14）。
 
   let obsIndices, regularIndices, hiddenObsIndices;
   // [DRAGON-GROUP 2026-09-14] 龙头组索引：非空时模板在【观察组之上】渲染独立「龙头组」区块
@@ -1018,10 +1016,11 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     obsIndices = [];
     regularIndices = renderOrder.slice();
     hiddenObsIndices = [];
-  } else if (sortState.byThreeDayJingDie) {
-    // [THREE-DAY 2026-08-17] 三天竞跌模式：折叠观察组（obsIndices=[]）→ 模板不再渲染观察组区块与蚂蚁线；
-    // 所有股票（含不在今日正式列表的观察组票）进单一列表 → 总数与默认一致（90），不隐藏、不增不减（§6 唯一数据源=9:25 列表）。
-    // 排序由上方 three-day 分支处理：dd≥2 达标置顶、同档按 auc_pct_chg（竞价涨幅）降序。
+  } else if (sortState.byRangePct) {
+    // [RANGE-PCT 2026-10-14] 十日涨幅模式：折叠龙头组与观察组（dragonIndices 保持 []、obsIndices=[]）
+    // → 模板不渲染两个独立区块与蚂蚁线；三组股票【全部】进 regularIndices 这一条列表，
+    // 总数与默认模式一致（不隐藏、不增不减，§6 唯一数据源 = 9:25 列表 + 观察组/龙头继承壳）。
+    // 排序由上方 byRangePct 分支给出：十日区间涨幅由高到低、缺数据置底。
     obsIndices = [];
     regularIndices = renderOrder.slice();
     hiddenObsIndices = [];
@@ -1168,8 +1167,12 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     sortByRatioEnabled: sortState.byRatio,
     // 注：highRatioToday（原环比的今/昨比>=1.5 集合）已从 ctx 移除——高光改由 volGrabSet 判定，
     // 保留它只会误导后人以为高光仍走旧口径。它仅用于下方 stats.highRatioCount（「竞放量数」常驻统计）。
-    sortByThreeDayJingDieEnabled: sortState.byThreeDayJingDie,
-    threeDayJingDieSet: threeDayJingDieSet,
+    // [RANGE-PCT 2026-10-14] 「十日涨幅」toggle：行上要标出该数值（= 本模式的排序键）。
+    //   rangePctMap 只在开关打开时读取（关着时 null ⇒ 行上不产出 rangePct，行为一字不变，§11）。
+    //   ⛔ 只读、不请求、不落库 —— 数据由 ensureDragonRangePct 异步发布（失效由 incremental-view 的
+    //      dragon= 指纹保证）。
+    sortByRangePctEnabled: !!sortState.byRangePct,
+    rangePctMap: sortState.byRangePct ? getDragonRangePct(currentDate) : null,
     sortByWeakStrongEnabled: sortState.byWeakStrong,
     weakStrongSet: weakStrongSet,
     volGrabSet: volGrabSet
@@ -1233,7 +1236,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
         topic: primaryTopicOfForColor(it.index),
         name: it.stock,
         isYiZi: !!it.isYiZi,
-        aucPct: _getThreeDayAuctionPct(renderList[it.index]),
+        aucPct: _auctionPctOf(renderList[it.index]),
         rangePct: (rp === undefined ? null : rp),
         // [CLOSE-COUNT 2026-09-11] 收盘口径下才带收盘涨幅（否则为 null → 逻辑层不产出该段）
         // ⚠️ 不再传 closeLimit：统计条的「停板 N涨停M跌停」按用户要求已移除（太占地方），

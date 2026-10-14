@@ -19,7 +19,7 @@ import {
   getJingYestHighlightSetForDate,
   getParallelStocksForDate
 } from './sort-rules.js';
-import { getThreeDayJingDieSet, getVolGrabSet } from './sort-rules-extra.js';
+import { getVolGrabSet } from './sort-rules-extra.js';
 import { deriveAuctionTagState } from '../tagTitles/rules.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 // [DRAGON 2026-09-09] 龙头徽章依赖异步加载的 10 日区间涨幅，必须进全局指纹，
@@ -44,15 +44,11 @@ function setToSortedStr(set) {
   set.forEach((v) => arr.push(v));
   return arr.sort().join(',');
 }
-function mapToStr(map) {
-  if (!map) return '';
-  const arr = [];
-  map.forEach((v, k) => arr.push(k + ':' + v));
-  return arr.sort().join(',');
-}
 // [VOL-GRAB 2026-09-05] 量比抢筹集合序列化为指纹串。
-// 值为 { volRatio, bidPct } 对象，直接用 mapToStr 会退化成 [object Object]，导致量比/抢筹数值变化
-// 无法被感知 → 行缓存不失效 → 高光 class 陈旧复用。必须把两个数值都写进指纹。
+// 值为 { volRatio, bidPct } 对象，若按 `键:值` 朴素串化会退化成 [object Object]，导致量比/抢筹
+// 数值变化无法被感知 → 行缓存不失效 → 高光 class 陈旧复用。必须把两个数值都写进指纹。
+// [RANGE-PCT 2026-10-14] ⛔ 原同族的 mapToStr（「键:值」串化）已删除：它唯一的使用者是
+//   「三天竞跌集合」那一段，随该功能下线一并消失（§16 不留死代码）。
 function volGrabMapToStr(map) {
   if (!map) return '';
   const arr = [];
@@ -64,14 +60,17 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
   let high = '';
   let jing = '';
   let par = '';
-  let three = '';
   let vgrab = '';
   let confirmed = '';
   try { high = setToSortedStr(getHighRatioStocksForDate(date, dataSource).stockNames); } catch (e) { high = ''; }
   try { vgrab = volGrabMapToStr(getVolGrabSet(date, dataSource)); } catch (e) { vgrab = ''; }
   try { jing = setToSortedStr(getJingYestHighlightSetForDate(date, dataSource)); } catch (e) { jing = ''; }
   try { par = setToSortedStr(getParallelStocksForDate(date, dataSource)); } catch (e) { par = ''; }
-  try { three = mapToStr(getThreeDayJingDieSet(date, dataSource)); } catch (e) { three = ''; }
+  // [RANGE-PCT 2026-10-14] ⛔ 原 `three = mapToStr(getThreeDayJingDieSet(...))` 已删除：
+  //   「三天竞跌」功能整体下线（开关位改为「十日涨幅」）。这段原先【每次视图重算】都要为全部股票
+  //   往回扫 5 个交易日算「竞价量连续递减天数」—— 是切换 toggle / 单格编辑时的一处固定开销。
+  //   「十日涨幅」模式的输入（云端 stock_range_pct）已由下面的 `dragon=` 令牌覆盖（同源同一个 Map），
+  //   ⇒ 删掉它不会让行缓存陈旧：区间涨幅一到货，dragon= 变化即整体失效重派生。
   try {
     // §6/§8：标签唯一真相 = auctionTagStore（云端），不再直接读 localStorage
     const tags = useAuctionTagStore().tags;
@@ -95,12 +94,13 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
     'topicOrderBy=' + (s.topicOrderBy === TOPIC_ORDER_YIZI ? TOPIC_ORDER_YIZI : TOPIC_ORDER_VOL_RATIO),
     'byJingYest=' + (s.byJingYest ? 1 : 0),
     'byJingYestRatio=' + (s.byJingYestRatio ? 1 : 0),
-    'byThreeDayJingDie=' + (s.byThreeDayJingDie ? 1 : 0),
+    // [RANGE-PCT 2026-10-14] 键名随功能改名（三天竞跌 → 十日涨幅）；它进指纹的理由不变：
+    //   排序开关决定整表的行顺序 ⇒ 开关一变必须清空行缓存，否则「打开了却还是原来的排法」。
+    'byRangePct=' + (s.byRangePct ? 1 : 0),
     'byTopic=' + (s.byTopic ? 1 : 0),
     'high=' + high,
     'jing=' + jing,
     'par=' + par,
-    'three=' + three,
     'vgrab=' + vgrab,
     'dragon=' + getDragonFingerprintToken(),
     // [DRAGON-GROUP 2026-09-14] 龙头组名册签名（展示日 + 版本 + 条数）。它决定哪些行进龙头组区块、
@@ -135,7 +135,7 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToke
     // [TWO-MODES 2026-10-02] 原 `s.byParallel ? 1 : 0` 已删（见 computeGlobalFingerprint 的注释），
     //   换成题材排序口径 —— 它决定该行落在哪个题材组的哪个位置，属结构性输入，必须入行签名。
     'tob=' + (s.topicOrderBy === TOPIC_ORDER_YIZI ? TOPIC_ORDER_YIZI : TOPIC_ORDER_VOL_RATIO),
-    s.byJingYest ? 1 : 0, s.byJingYestRatio ? 1 : 0, s.byThreeDayJingDie ? 1 : 0, s.byTopic ? 1 : 0,
+    s.byJingYest ? 1 : 0, s.byJingYestRatio ? 1 : 0, s.byRangePct ? 1 : 0, s.byTopic ? 1 : 0,
     'ws=' + (wsToken || 0), // [WEAK-STRONG 2026-09-01] 弱转强达标档(连跌天数)变化需触发该行重派生，否则高光 class 被增量缓存陈旧复用
     'yizi=' + (item.isYiZi ? 1 : 0), // [YIZI 2026-09-09] 竞价一字状态（竞价涨幅达标）变化需触发重派生，否则红线标记陈旧
     // [DRAGON-COLOR 2026-09-11] 龙头徽章底色 = 当天竞价涨幅符号（红/绿/灰）→ 该数值必须入签名，
@@ -151,6 +151,10 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToke
     //   且 byTopic 已在签名里，但模板会直接读它 → 按红线单独入签名，避免日后 tone 的来源/口径
     //   变化时被增量缓存陈旧复用（cp= 只保证数值一致，不保证「读取口径」一致）。
     'nt=' + (item.closeNameTone || ''),
+    // [RANGE-PCT 2026-10-14] 「十日涨幅」模式下行上直接显示的数值（= 该模式排序键）。
+    //   它虽由全局 `dragon=` 令牌派生，但模板会直接读它 → 与 cl=/cp= 同款理由按红线单独入签名：
+    //   日后 rangePct 的来源/口径变化时，不会因「全局令牌恰好没变」而复用旧行对象。
+    'rp=' + (item.rangePct === null || item.rangePct === undefined ? '' : item.rangePct),
     // [LIMIT-STREAK 2026-09-11] 趋势/连板标记文案（前 9 个历史交易日收盘涨幅派生，见 limit-streak.js）。
     //   它不由本行行内输入（volume/note…）派生，而依赖「前若干日的历史日行」——
     //   历史日数据在首屏整段拉入，但 worker 收盘覆盖 / 历史日回填会改写 change_pct → 连板状态可能变化，
