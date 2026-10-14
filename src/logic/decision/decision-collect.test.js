@@ -7,6 +7,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { suspendEntriesOf, ebbCtxOf, nonFirstDaySuspendNames } from './decision-collect.js';
+import { ensureSuspendSet, suspendState } from '../auction/suspend.js';
 import { state } from '../app-state.js';
 
 describe('decision-collect · suspendEntriesOf（停牌名单出口，三个选股看板共用）', () => {
@@ -411,5 +412,61 @@ describe('decision-collect · nonFirstDaySuspendNames（连续停牌第 2 天及
   it('§6 单一真相：昨天 leg 与退潮判定同一把尺子 —— 量写着非数字（'-'）⇒ 判不出 ⇒ 不算停', () => {
     state._auctionMemCache = cache({ 新华传媒: '0' }, { 新华传媒: '-' });
     expect(nonFirstDaySuspendNames(rows, D, P).size).toBe(0);
+  });
+});
+
+// ── ★★ [SUSPEND-STALE 2026-10-14 用户实测回归] 端到端钉住用户报的那条路径 ──────────────
+//   用户原话：「为什么我从 10 月 13 日切到 10 月 14 日时，还是有新华传媒（停牌）进入买点？
+//   你没修复彻底吧？刷新后才显示正常，只显示龙二，龙三。」
+//   根因 = 看板切到【历史日】时，`ensureSuspendSet(历史日, …)` 会把「今天」那份上游判定整个清空
+//     ⇒ 「今天停没停」这条腿塌成 false（而 `canJudgeSuspended(今天)` 恒 true ⇒ 被读成权威否定）
+//     ⇒ 买不进名单变空集 ⇒ 停牌票又被选成龙一。修法见 suspend.js#ensureSuspendSet（历史日一律不碰状态）。
+//   ⚠️ 本用例必须【真调】ensureSuspendSet（⛔ 不手写夹具替身）—— 上一轮的教训就是夹具替身漏掉了
+//      「真实链路能不能产出该结论」。
+describe('decision-collect · ★★ 回归：切历史日看一眼后，今天的「买不进名单」必须还在', () => {
+  const HIST = '2020-01-01';   // 历史日（固定过去日；⛔ 别用 2026-10-13，免得哪天正好是今天）
+  const TODAY = (function() {
+    const n = new Date();
+    return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0') + '-' + String(n.getDate()).padStart(2, '0');
+  })();
+  const rows = [{ name: '新华传媒' }, { name: '新华文轩' }];
+
+  let savedAuction = null;
+  let savedHot = null;
+  let savedSuspend = null;
+  beforeEach(() => {
+    savedAuction = state._auctionMemCache;
+    savedHot = state._hotFullRowCache;
+    savedSuspend = suspendState.value;
+    state._auctionMemCache = {};
+    state._hotFullRowCache = {};
+  });
+  afterEach(() => {
+    state._auctionMemCache = savedAuction;
+    state._hotFullRowCache = savedHot;
+    suspendState.value = savedSuspend;
+  });
+
+  it('★★ 今天有上游判定（新华传媒停牌）+ 昨天竞价量 0 ⇒ 切到历史日再切回来，它仍在名单里', async () => {
+    // ① 今天那份判定已加载（注入 = 上游 fuyao 快照的真值）
+    suspendState.value = { date: TODAY, set: new Set(['新华传媒']), version: 1, loadedAt: Date.now() };
+    // ② 昨天（= 名单里传的 prevDate）那一行竞价量写着 0（10-13 库内真值）
+    state._auctionMemCache[HIST] = [{ stock: '新华传媒', volume: '0' }, { stock: '新华文轩', volume: '288' }];
+
+    // ③ 用户切到历史日看一眼（看板会对【展示日】调 ensureSuspendSet）
+    await ensureSuspendSet(HIST, [{ name: '新华传媒', code: '600825' }]);
+
+    // ④ 再切回今天 ⇒ 名单必须仍然收它（修前：这里变空集 ⇒ 停牌票又进买点）
+    const set = nonFirstDaySuspendNames(rows, TODAY, HIST);
+    expect(set.has('新华传媒')).toBe(true);
+    expect(set.has('新华文轩')).toBe(false);
+    expect(suspendState.value.date).toBe(TODAY);   // ★ 今天的判定没被历史日顶掉
+  });
+
+  it('§6 机制说明：今天这条腿只能靠上游（该票当天不在 watchlist ⇒ 库内无行 ⇒ 判不出来也不该当「没停」）', () => {
+    // 今天判定缺失（未加载）时：库里今天没有它的行（停牌票上游不返回）⇒ 两腿都取不到 ⇒ 不进名单（§10）
+    suspendState.value = { date: '', set: new Set(), version: 0, loadedAt: 0 };
+    state._auctionMemCache[HIST] = [{ stock: '新华传媒', volume: '0' }];
+    expect(nonFirstDaySuspendNames(rows, TODAY, HIST).size).toBe(0);
   });
 });

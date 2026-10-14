@@ -7,6 +7,8 @@ import {
   isSuspended,
   canJudgeSuspended,
   suspendState,
+  ensureSuspendSet,
+  mergeSuspendNames,
   SUSPEND_TAG_TEXT
 } from './suspend.js';
 
@@ -234,5 +236,86 @@ describe('suspend · canJudgeSuspended（上游快照能否为这一天作证 �
     [null, undefined, ''].forEach(function(d) {
       expect(canJudgeSuspended(d)).toBe(false);
     });
+  });
+});
+
+// ── ★★ [SUSPEND-STALE / SUSPEND-MERGE 2026-10-14 用户实测修] ─────────────────────────────
+//   用户原话：「为什么我从 10 月 13 日切到 10 月 14 日时，还是有新华传媒（停牌）进入买点？
+//   你没修复彻底吧？刷新后才显示正常（没有显示新华传媒），只显示龙二，龙三」。
+//   根因两条，都在本模块（§6 一处收口，四个看板同时受益）：
+//     ① 切历史日会把「今天」那份真实判定整个清掉 ⇒ 消费方把它读成「今天没停牌」的权威否定；
+//     ② 同一日期的结果原来是【整体替换】+ 只问当次名单 ⇒ 被跳过的停牌票下轮重取时掉出集合
+//        ⇒ 跳过名单变空 ⇒ 它又被选回来（实测：TTL 3min + 一次刷新事件后开始来回翻）。
+describe('suspend · ensureSuspendSet（★ 切历史日不得清空「今天」的判定）', () => {
+  const NOT_TODAY = '2020-01-01';   // 固定过去日（⛔ 别用 2026-10-13，免得哪天正好是今天）
+  const TODAY = (function() {
+    const n = new Date();
+    return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0') + '-' + String(n.getDate()).padStart(2, '0');
+  })();
+  const saved = suspendState.value;
+  afterEach(() => { suspendState.value = saved; });
+
+  it('★★ [SUSPEND-STALE] 传历史日 ⇒ 今天那份判定【原样保留】（旧实现清成空集 ⇒ 停牌票又进买点）', async () => {
+    suspendState.value = { date: TODAY, set: new Set(['新华传媒']), version: 7, loadedAt: Date.now() };
+    const r = await ensureSuspendSet(NOT_TODAY, [{ stock: '新华传媒', code: '600825' }]);
+    expect(r.date).toBe(TODAY);                      // ★ 没被改写成历史日
+    expect([...r.set]).toEqual(['新华传媒']);         // ★ 判定还在
+    expect(r.version).toBe(7);                       // ★ 没升版本（不制造无意义的重渲染）
+    expect(isSuspended(TODAY, '新华传媒')).toBe(true);
+    expect(isSuspended(NOT_TODAY, '新华传媒')).toBe(false);   // §11 历史日照旧不标
+  });
+
+  it('§11 传历史日【连「查过这一天」都不记录】：未加载时状态一动不动（也不排重试）', async () => {
+    suspendState.value = { date: TODAY, set: new Set(), version: 3, loadedAt: 0 };
+    // ⚠️ 不能拿对象身份比对：`suspendState` 是 Vue ref ⇒ `.value` 读出来的是响应式代理，身份必然不同
+    await ensureSuspendSet(NOT_TODAY, [{ stock: 'X', code: '600000' }]);
+    expect(suspendState.value.date).toBe(TODAY);
+    expect(suspendState.value.loadedAt).toBe(0);
+    expect(suspendState.value.version).toBe(3);
+    expect([...suspendState.value.set]).toEqual([]);
+  });
+
+  it('§11 今天 + 名单还没到（首屏空）⇒ 不发请求、状态不变', async () => {
+    suspendState.value = { date: TODAY, set: new Set(), version: 5, loadedAt: 0 };
+    await ensureSuspendSet(TODAY, []);
+    expect(suspendState.value.date).toBe(TODAY);
+    expect(suspendState.value.loadedAt).toBe(0);
+    expect([...suspendState.value.set]).toEqual([]);
+  });
+
+  it('§10 空日期 ⇒ 直接返回当前状态（不抛错）', async () => {
+    suspendState.value = { date: TODAY, set: new Set(['A']), version: 1, loadedAt: 0 };
+    await ensureSuspendSet('', [{ stock: 'X', code: '600000' }]);
+    await ensureSuspendSet(null, []);
+    expect(suspendState.value.date).toBe(TODAY);
+    expect([...suspendState.value.set]).toEqual(['A']);
+  });
+});
+
+describe('suspend · mergeSuspendNames（同一日按名字合并，⛔ 不整体替换）', () => {
+  const D = '2026-10-14';
+  const prev = '2026-10-14';
+
+  it('★ 本轮【没问到】的名字 ⇒ 保留旧判定（被跳过的停牌票不会掉出集合）', () => {
+    const p = new Set(['新华传媒', '东方明珠']);
+    const queried = new Set(['东方明珠']);       // 本轮只问了东方明珠（新华传媒已被跳过、不在名单里）
+    expect([...mergeSuspendNames(prev, p, D, queried, new Set())]).toEqual(['新华传媒']);
+  });
+
+  it('★ 本轮【问到过】的名字 ⇒ 一律用新判定覆盖（复牌能正确落回「不停牌」）', () => {
+    const p = new Set(['新华传媒']);
+    const queried = new Set(['新华传媒']);
+    expect([...mergeSuspendNames(prev, p, D, queried, new Set())]).toEqual([]);              // 复牌 ⇒ 掉出
+    expect([...mergeSuspendNames(prev, p, D, queried, new Set(['新华传媒']))]).toEqual(['新华传媒']); // 仍停 ⇒ 留着
+  });
+
+  it('§10 跨日期绝不沿用（新的一天从零开始，⛔ 不让昨天的结论钉死今天）', () => {
+    const p = new Set(['新华传媒']);
+    expect([...mergeSuspendNames('2026-10-13', p, D, new Set(), new Set())]).toEqual([]);
+  });
+
+  it('空 / 缺值输入不抛错', () => {
+    expect([...mergeSuspendNames(D, null, D, null, null)]).toEqual([]);
+    expect([...mergeSuspendNames('', new Set(['A']), D, new Set(), new Set(['B']))]).toEqual(['B']);
   });
 });

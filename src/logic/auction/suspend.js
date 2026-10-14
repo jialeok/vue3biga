@@ -23,6 +23,8 @@
 //        绝不把「判不出来」当成「没停牌」写进缓存。
 //   · ⛔ 上游两个快照接口【都只有当日数据】（无 date 参数）⇒ 只对「今天」判定；
 //        历史日期一律不标（那天到底停没停牌无从谈起，不能拿今天的快照冒充）。
+//        且【历史日不得改写本模块的状态】—— 见 {ensureSuspendSet} 的 [SUSPEND-STALE] 注释
+//        （切到历史日看一眼会把「今天」那份判定清空 ⇒ 消费方把它当成「今天没停牌」）。
 //   · 两腿都可用时取【交集】：任一条腿不认可就不标，避免把「上游覆盖缺口」误当成停牌。
 //
 // 状态范式与 dragon-rank.js 完全一致（模块级 ref + 单飞 + 有界重试 + 指纹令牌），
@@ -252,9 +254,65 @@ function _scheduleRetry(date, entries) {
 }
 
 /**
+ * 本次「向上游真的问到过」的股票名集合（纯函数）。
+ *
+ * 口径必须与 `_loadSuspendedNameSet` 的过滤**逐字一致**：名字取 `stock || name`（早盘竞价行用 `stock`、
+ * 三个选股看板的行用 `name`），且只有能转成 thscode 的行才算「问到过」——
+ * ⛔ 问不出去的行不能算「问过」，否则合并时会把它的旧判定误当作「已被新结果覆盖」而丢掉（§10）。
+ *
+ * @param {Array<{stock?:string,name?:string,code?:string}|string>} entries
+ * @returns {Set<string>} 本次问到的股票名（trim 后）
+ */
+function _queriedNames(entries) {
+  const q = new Set();
+  const list = Array.isArray(entries) ? entries : [];
+  for (let i = 0; i < list.length; i++) {
+    const e = list[i];
+    const nm = String((e && (e.stock || e.name)) || (typeof e === 'string' ? e : '') || '').trim();
+    if (nm && toThscode(e)) q.add(nm);
+  }
+  return q;
+}
+
+/**
+ * ★★ [SUSPEND-MERGE 2026-10-14 实测修] 同一日期内【按名字合并】停牌结果（纯函数，§15 可单测）。
+ *
+ * 为什么不能拿本次结果**整体替换**：`_loadSuspendedNameSet(entries)` 只问【传进来的那份名单】，
+ *   而三个选股看板传的是【当次入选的票】。一旦某只停牌票因为「连续停牌 ⇒ 买不进」被**跳过**
+ *   （不再出现在名单里），下一次重取（TTL 3min 到期 + 一次刷新/切日期事件触发）就会把它的判定
+ *   整个丢掉 ⇒ 跳过名单变空 ⇒ 它又被选回来 ⇒ 每 3 分钟来回翻一次（用户会看到停牌票忽然又进买点，
+ *   而且那次连「停牌」小标都没有，因为判定已被清掉）。实测：先错一帧 → 自愈 → 3 分钟后又错。
+ *
+ * 合并规则（§10：不拿「没问过」当「没停牌」）：
+ *   · 本次**问到过**的名字 ⇒ 一律用**新判定**（复牌能正确落回「不停牌」，⛔ 不会把旧结论钉死）；
+ *   · 本次**没问到**的名字 ⇒ 保留上一份判定（我们并没有它的新信息，只是这一轮没问而已）；
+ *   · 跨日期（`prevDate !== date`）⇒ **绝不沿用**，直接返回本次结果（新的一天从零开始）。
+ *
+ * @param {string} prevDate 上一份判定所属日期
+ * @param {Set<string>} prevSet 上一份判定（名字集合）
+ * @param {string} date 本次日期
+ * @param {Set<string>} queried 本次问到的名字
+ * @param {Set<string>} fresh 本次问出来的停牌名字
+ * @returns {Set<string>} 合并后的名字集合
+ */
+export function mergeSuspendNames(prevDate, prevSet, date, queried, fresh) {
+  const out = new Set();
+  if (prevDate === date && prevSet && prevSet.size > 0) {
+    prevSet.forEach(function(n) {
+      if (!(queried && queried.has(n))) out.add(n);
+    });
+  }
+  if (fresh && fresh.size > 0) fresh.forEach(function(n) { out.add(n); });
+  return out;
+}
+
+/**
  * 确保「该日期的停牌集合」已加载（幂等、单飞、有界重试）。
  *
- * @param {string} date 看板日期 'YYYY-MM-DD'
+ * ⚠️ 只有【今天】会被真正加载与写出；传历史日 = 什么都不做（见下方 [SUSPEND-STALE] 注释）。
+ * ⚠️ 同一日期内按名字【合并】而不是整体替换（见 `mergeSuspendNames` 的 JSDoc）。
+ *
+ * @param {string} date 看板日期 'YYYY-MM-DD'（= 消费方要标注的那一天；非今天 ⇒ 本函数不做任何事）
  * @param {Array<{stock?:string, name?:string, code?:string}>} entries 当日渲染名单（股票名 + 代码）
  *        ⚠️ 名字给 `stock`（早盘竞价行）或 `name`（三个选股看板行）都认，见 _loadSuspendedNameSet。
  * @returns {Promise<object>} suspendState.value
@@ -263,11 +321,20 @@ export async function ensureSuspendSet(date, entries) {
   if (!date) return suspendState.value;
 
   // 上游两个快照接口都【只有当日数据】⇒ 历史日期不判定、不标（§10 不能拿今天的快照冒充历史）。
+  //
+  // 🔴 [SUSPEND-STALE 2026-10-14 用户实测修] 这里原本会把 suspendState **改写成**
+  //   `{ date: 历史日, set: ∅ }`。后果：**「切到历史日看一眼再切回今天」会把【今天那份真实判定】整个清掉**
+  //   —— `isSuspended(今天, …)` 变 false（因为 s.date ≠ 今天），而 `canJudgeSuspended(今天)` 恒为 true
+  //   ⇒ 消费方把这次「没有判定」当成「今天没停牌」的**权威否定**（§10 红线：判不出来 ≠ 否定）。
+  //   实测事故（用户原话「从 10 月 13 日切到 10 月 14 日时，还是有新华传媒（停牌）进入买点，
+  //   刷新后才正常」）：10-13 → 10-14 切换后 `buySkipSuspend` 变空集 ⇒ 停牌票又被选成龙一；
+  //   刷新页面（今天那份判定重新拉到）才恢复。
+  //   ⚠️ 同一个坑还影响 `decision-collect.js#_suspendedOn` 的**退潮首日**（今天停牌 ⇒ 退潮）——
+  //      即用户反复报的那类「没生效」。
+  //   ⇒ 修法：历史日【一律不碰 suspendState】。对历史日的**展示**行为逐字不变（`isSuspended` 要求
+  //      `s.date === date` ⇒ 仍恒 false ⇒ 历史日照旧不打停牌标，§11）。
   if (date !== _getLocalTodayStr()) {
     _stopRetry();
-    if (suspendState.value.date !== date) {
-      suspendState.value = { date, set: new Set(), version: suspendState.value.version + 1, loadedAt: Date.now() };
-    }
     return suspendState.value;
   }
 
@@ -285,10 +352,11 @@ export async function ensureSuspendSet(date, entries) {
       if (set === null) { _scheduleRetry(date, entries); return suspendState.value; }
       _stopRetry();
       const prev = suspendState.value;
-      const changed = !(prev.date === date && _sameSet(prev.set, set));
+      const merged = mergeSuspendNames(prev.date, prev.set, date, _queriedNames(entries), set);
+      const changed = !(prev.date === date && _sameSet(prev.set, merged));
       suspendState.value = {
         date: date,
-        set: set,
+        set: merged,
         // 集合没变就不升版本：指纹不变 → 行缓存不整体失效（§23 局部优先）
         version: changed ? prev.version + 1 : prev.version,
         loadedAt: Date.now()
