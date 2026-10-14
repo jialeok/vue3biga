@@ -240,7 +240,26 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
         // 数组引用是否变化（手动编辑保存/清除当天数据/云端拉取都会换新数组或删除该 key），
         // 不需要额外维护版本号，也不改变原有的匹配逻辑，只是不重复算。
         state._topicRankByDateCache = new Map();   // dateStr -> { ref, map: Map(topic -> count) }
-        const _topicRankWeekDayCache = new Map();  // dateStr -> { ref, coreTopicsRaw, map: Map(topicName -> boolean) }
+        // [PERF §19/§22] dateStr -> { ref, coreTopicsRaw, set: Set<命中核心词> }
+        // 每天缓存「当日全部命中核心词集合」，而不是 Map<topicName,boolean>：
+        // 后者只能省掉「同一个题材名」的重复扫描，而模板是【每个不同题材各调一次】⇒
+        // 每个题材仍会全量扫一遍当天列表（实测切日期时 matchTopicToCore 自耗时 708ms）。
+        // 改为集合后，全量扫描每（天 × 数据代）只做一次，输出数值完全不变。
+        const _topicRankWeekDayCache = new Map();
+        // [PERF §36] coreTopics 内容指纹按（数组引用 + 长度）缓存：
+        // 避免「每个题材组 × 每天」都重跑一次 JSON.stringify（核心词表可达上百条含同义词）。
+        // 引用未变即内容未变；长度也纳入 key 以防御极小概率的原地 push/splice。
+        let _coreTopicsJsonRef = null;
+        let _coreTopicsJsonLen = -1;
+        let _coreTopicsJsonCache = '';
+        function _coreTopicsRawOf(coreTopics) {
+            if (coreTopics !== _coreTopicsJsonRef || coreTopics.length !== _coreTopicsJsonLen) {
+                _coreTopicsJsonRef = coreTopics;
+                _coreTopicsJsonLen = coreTopics.length;
+                _coreTopicsJsonCache = JSON.stringify(coreTopics);
+            }
+            return _coreTopicsJsonCache;
+        }
 
         // 统计本周题材在昨日最大成交额看板中出现的次数（缓存版，逻辑与原实现完全一致）
         // 同样支持可选传入 rankData/coreTopics，原因与 getTopicRankCountByDate 一致：
@@ -256,39 +275,39 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
                 if (!weekDays || weekDays.length === 0 || !rankData || !coreTopics) {
                     return 0;
                 }
-                const coreTopicsRaw = JSON.stringify(coreTopics);
+                const coreTopicsRaw = _coreTopicsRawOf(coreTopics);
                 
                 let appearDays = 0;
                 
                 weekDays.forEach(day => {
                     const dayRankList = rankData[day] || [];
 
-                    // 每天的"题材→是否出现"判定结果缓存，key=当天数组引用+coreTopics内容
+                    // [PERF §19/§22] 每天的「当日全部命中核心词集合」缓存：
+                    // key = 当天数组引用 + coreTopics 内容指纹，命中即 O(1) 查表。
+                    // 语义与原实现完全等价：原来
+                    //   dayRankList.some(item => item.concept.split(…).some(c =>
+                    //       matchTopicToCore(c, coreTopics).includes(topicName)))
+                    // 的判定 == (topicName ∈ 所有 matchTopicToCore 结果的并集) == set.has(topicName)。
+                    // 逐题材组调用时，全量扫描由 O(题材数 × 每天条目数 × 概念数)
+                    // 降为 每（天 × 数据代）一次 O(每天条目数 × 概念数)。
                     let dayEntry = _topicRankWeekDayCache.get(day);
                     if (!dayEntry || dayEntry.ref !== dayRankList || dayEntry.coreTopicsRaw !== coreTopicsRaw) {
-                        dayEntry = { ref: dayRankList, coreTopicsRaw, map: new Map() };
+                        const hitSet = new Set();
+                        for (let i = 0; i < dayRankList.length; i++) {
+                            const item = dayRankList[i];
+                            if (!item || !item.concept) continue;
+                            // 提取题材概念中的题材（与原逻辑完全一致）
+                            const concepts = item.concept.split(/[,，、\s]+/).filter(c => c.trim());
+                            for (let j = 0; j < concepts.length; j++) {
+                                const matchedCores = matchTopicToCore(concepts[j], coreTopics);
+                                for (let k = 0; k < matchedCores.length; k++) hitSet.add(matchedCores[k]);
+                            }
+                        }
+                        dayEntry = { ref: dayRankList, coreTopicsRaw, set: hitSet };
                         _topicRankWeekDayCache.set(day, dayEntry);
                     }
 
-                    let hasTopic;
-                    if (dayEntry.map.has(topicName)) {
-                        hasTopic = dayEntry.map.get(topicName);
-                    } else {
-                        // 检查这一天是否有匹配该题材的股票（与原逻辑完全一致）
-                        hasTopic = dayRankList.some(item => {
-                            if (!item.concept) return false;
-                            // 提取题材概念中的题材
-                            const concepts = item.concept.split(/[,，、\s]+/).filter(c => c.trim());
-                            // 检查是否有匹配核心词的题材
-                            return concepts.some(concept => {
-                                const matchedCores = matchTopicToCore(concept, coreTopics);
-                                return matchedCores.includes(topicName);
-                            });
-                        });
-                        dayEntry.map.set(topicName, hasTopic);
-                    }
-                    
-                    if (hasTopic) {
+                    if (dayEntry.set.has(topicName)) {
                         appearDays++;
                     }
                 });

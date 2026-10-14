@@ -393,10 +393,33 @@ export function useAuctionBoard() {
     if (cnt === 2) return 'color:#1f2937;font-weight:500;';
     return 'color:rgba(0,0,0,0.6);font-weight:500;';
   }
+  // [PERF-ROWCLASS 2026-10-14 · §19/§21] 题材页「行 class」的股票名 → 当日竞价行 预索引。
+  //   原实现 getTopicRowClass 被模板【逐行】调用，内部每次都 getTodayGroupList('auction')
+  //   （= 全量 filter，且条数变化时会打一条 _dbgLog）+ list.find()（线性扫）
+  //   ⇒ 行数 N 时为 O(N²) 重复功 + N 条日志刷屏（真实剖析：getTopicRowClass inclusive 491ms，
+  //   其中 _dbgLog 自耗时 133~160ms 全来自这里）。
+  //   改为「每（日期 × 数据代）建一次 Map<trim(股票名), 当日竞价行>」，getTopicRowClass 退化为 O(1) 查表。
+  //   依赖声明与 topicGroups 对齐（同一份 getTodayGroupList('auction') 输入）。
+  //   ⚠️ 语义与 .find() 完全一致：重复股票名取【首个】（Map.has 守卫），缺失 ⇒ undefined（原样）。
+  const p2AuctionItemIndex = computed(() => {
+    void viewData.value;
+    void uiStore.currentDate;
+    const auctionList = getTodayGroupList('auction');
+    const map = new Map();
+    if (auctionList && auctionList.length) {
+      for (let i = 0; i < auctionList.length; i++) {
+        const it = auctionList[i];
+        if (!it || !it.stock) continue;
+        const key = it.stock.trim();
+        if (!map.has(key)) map.set(key, it);
+      }
+    }
+    return map;
+  });
+
   // §P1-6：getTopicNameStyle / getChangeClass 已迁至 ../composables/auction-board-helpers.js（同名 import）。
   function getTopicRowClass(group, stock) {
-    const auctionList = getTodayGroupList('auction');
-    const auctionItem = auctionList.find(it => it.stock && it.stock.trim() === (stock.stock || '').trim());
+    const auctionItem = p2AuctionItemIndex.value.get((stock.stock || '').trim());
     let cls = 'auction-topic-row';
     if (auctionItem) {
       const ts2 = deriveAuctionTagState(auctionItem.stock.trim(), uiStore.currentDate);

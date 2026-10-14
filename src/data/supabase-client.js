@@ -1,6 +1,6 @@
 import { _setGetSupabaseFn } from './auction-data.js';
 import { _setGetStocksDataFn } from './session-and-shield.js';
-﻿import { createClient } from '@supabase/supabase-js';
+import { createClient } from '@supabase/supabase-js';
 import { state } from '../logic/app-state.js';
         import { _dbgLog } from './debug-log.js';
         import { normalizeAuctionNotes } from './auction-data.js';
