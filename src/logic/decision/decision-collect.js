@@ -31,7 +31,9 @@ import { decorateSealFields } from '../auction/seal-volume.js';
 // [BOARD-SUSPEND 2026-10-13 用户口径] 「三个选股看板都要标哪只股票停牌」——
 //   判定与展示收口全在 suspend.js（§6 单一真相，与早盘竞价看板同一条判据）。
 //   ⛔ 不消费猫抓额度：同花顺 fuyao 免费/不限量；本层只做【同步读】，加载由各看板组合式触发。
-import { decorateSuspendField, isSuspended, canJudgeSuspended } from '../auction/suspend.js';
+//   ⚠️ [SUSPEND-PENDING 2026-10-14] 除了「能不能判」（canJudgeSuspended）还要看「判出来没有」
+//      （hasSuspendVerdict）—— 见 nonFirstDaySuspendNames 的注释（§10：没结论 ≠ 否定结论）。
+import { decorateSuspendField, isSuspended, canJudgeSuspended, hasSuspendVerdict } from '../auction/suspend.js';
 import { _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 // [TWO-MODES 2026-10-02 用户口径] 买点分两套模式，由早盘竞价的题材 / 一字 toggle 决定
@@ -732,10 +734,39 @@ function _suspendedOn(d, name) {
 export function nonFirstDaySuspendNames(rows, date, prevDate) {
   const out = new Set();
   if (!date || !prevDate) return out;
+
+  // ★★ [SUSPEND-PENDING 2026-10-14 用户实测修] 「今天能判、但还没判出来」这一小段时间，
+  //   `_suspendedOn(今天, …)` 会走 `canJudgeSuspended` 分支返 **false** —— 那不是「今天没停牌」，
+  //   而是「**还不知道**」（§10 的核心：没有结论 ≠ 否定结论）。
+  //   实测事故（用户原话「从 10 月 13 日切到 10 月 14 日时，还是有新华传媒（停牌）进入买点，
+  //   刷新后才正常」）：页面刚打开 / 判定还在路上时，昨天停牌的新华传媒被当普通票选进了买点
+  //   （渲染出「龙一 新华传媒 +115% 占比 0.000」且没有「连续停牌 ⇒ 顺延」说明），
+  //   等判定回来才自愈 —— 「时有时无、刷新一下就好了」就是这段竞态的产物。
+  //
+  //   ⇒ 保守口径：**昨天停牌 ∧（今天停牌 ∨ 今日判定未就绪且无「今天在竞价」的正面证据）**
+  //     ⇒ 先按「买不进」处理。判定一落地 `todayPending` 立刻翻 false，本函数按真实结论重算
+  //     （复牌票自然被放回来），⛔ 不会把票钉死；本函数读 `suspendState` ⇒ 判定返回时调用方
+  //     的 computed 会自动重算（§17 ref-driven）。
+  //   §10 宁缺勿错：宁可少选一只（顺延下一龙位），也不要让一只根本买不进的票占着龙位。
+  //   ⛔ 只在**本消费方**做保守处理：退潮 `_ebbCtxOf` 走的还是原 `_suspendedOn`
+  //      （把「假设停牌」喂给它会把普通日子误判成退潮日 —— 那是另一种错）。
+  const todayPending = canJudgeSuspended(date) && !hasSuspendVerdict(date);
+
+  // 「暂缓」不是「一律封杀」：库内该票【当日】的竞价行若写着成交量 > 0，
+  //   就是「今天确实在竞价」的**正面证据**（复牌）⇒ 放行，避免把复牌票在判定未就绪这段时间
+  //   里误伤成停牌（那会变成另一种静默少票，§10）。
+  //   ⛔ 只认「数字 > 0」；行不存在 / 空值 ⇒ 返 null ⇒ 没有正面证据 ⇒ 保守跳过（新华传媒就是这种）。
+  const _tradesToday = function(name) {
+    const v = getAuctionVolume(date, name);
+    return typeof v === 'number' && v > 0;
+  };
+
   (rows || []).forEach(function(r) {
     const nm = r && r.name;
     if (!nm) return;
-    if (_suspendedOn(date, nm) && _suspendedOn(prevDate, nm)) out.add(String(nm));
+    if (!_suspendedOn(prevDate, nm)) return;
+    if (_suspendedOn(date, nm)) { out.add(String(nm)); return; }
+    if (todayPending && !_tradesToday(nm)) out.add(String(nm));
   });
   return out;
 }

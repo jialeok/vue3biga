@@ -403,6 +403,30 @@ export function canJudgeSuspended(date) {
 }
 
 /**
+ * ★★ [SUSPEND-PENDING 2026-10-14 用户实测修] 本模块对【这一天】是否**已经拿到结论**。
+ *
+ * 为什么必须与 `canJudgeSuspended` 分开（§10 的核心）：
+ *   · `canJudgeSuspended(d)` 回答的是「上游**能不能**为这一天作证」（能力）；
+ *   · 本函数回答的是「**结论到了没有**」（结果）。
+ *   两者都为 false 时「没停牌」是可靠的；但「能判、还没判出来」时若把它当成「没停牌」，
+ *   就是拿【没有结论】冒充【否定结论】—— 实测事故（2026-10-14，用户原话「切到 10 月 14 日时，
+ *   还是有新华传媒（停牌）进入买点」）：页面刚加载 / 判定还没拉回来时，买点侧把连续停牌的新华传媒
+ *   当普通票选进了买点（渲染出一行「龙一 新华传媒 +115% 占比 0.000」、且**没有**「连续停牌 ⇒ 顺延」
+ *   说明），等判定回来才自愈 —— 「时有时无、刷新一下又变了」正是这个竞态造成的。
+ *
+ * ⛔ 本函数**只描述事实**，不做任何业务判断（要不要保守处理由消费方决定 —— 买点侧跳过会保守，
+ *   退潮判定不会，因为「假设停牌」会把它判成退潮日，那是另一种错）。
+ *
+ * @param {string} date YYYY-MM-DD
+ * @returns {boolean} true = 该日期的判定已落盘（`suspendState` 属于这一天且有结果）
+ */
+export function hasSuspendVerdict(date) {
+  if (!date) return false;
+  const s = suspendState.value;
+  return s.date === String(date).trim() && s.loadedAt > 0;
+}
+
+/**
  * 给一行展示行挂上停牌展示字段（**唯一收口**，§6）。
  *
  * 谁调它：`decision-collect` 的 `_decorateSuspend`（早盘竞价看板之外的**三个选股看板** ——

@@ -6,6 +6,7 @@ import {
   decorateSuspendField,
   isSuspended,
   canJudgeSuspended,
+  hasSuspendVerdict,
   suspendState,
   ensureSuspendSet,
   mergeSuspendNames,
@@ -236,6 +237,60 @@ describe('suspend · canJudgeSuspended（上游快照能否为这一天作证 �
     [null, undefined, ''].forEach(function(d) {
       expect(canJudgeSuspended(d)).toBe(false);
     });
+  });
+});
+
+describe('suspend · hasSuspendVerdict（这一天【结论到了没有】—— 与 canJudgeSuspended 是两个问题）', () => {
+  // ★★ [SUSPEND-PENDING 2026-10-14 用户实测修] 用户原话：「为什么我从 10 月 13 日切到 10 月 14 日时，
+  //   还是有新华传媒（停牌）进入买点？刷新后才显示正常（没有显示新华传媒），只显示龙二，龙三」。
+  //   竞态 = 「今天**能**判」被误读成「今天**没**停牌」：判定还在路上的那一小段时间，
+  //   `isSuspended` 返 false、`canJudgeSuspended` 返 true ⇒ 消费方拿到一个「权威的否定」，
+  //   把连续停牌的票当普通票选进买点；判定回来才自愈（用户看到「时有时无、刷新一下又变了」）。
+  //   ⇒ 本函数把「**结果没到**」这件事单独暴露出来（§10：没有结论 ≠ 否定结论）。
+  const NOT_TODAY = '2020-01-01';
+  const TODAY = (function() {
+    const n = new Date();
+    return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0') + '-' + String(n.getDate()).padStart(2, '0');
+  })();
+  let saved = null;
+  afterEach(function() { if (saved !== null) { suspendState.value = saved; saved = null; } });
+
+  it('★★ 未加载（loadedAt = 0）⇒ false —— 这就是「还没判出来」，⛔ 不能当成「今天没停牌」', () => {
+    saved = suspendState.value;
+    suspendState.value = { date: '', set: new Set(), version: 0, loadedAt: 0 };
+    expect(canJudgeSuspended(TODAY)).toBe(true);    // 上游能为今天作证（能力）
+    expect(hasSuspendVerdict(TODAY)).toBe(false);   // 但结论还没到（结果）
+  });
+
+  it('★ 已加载且日期对得上 ⇒ true（结论到了）；集合为空也算「到了」（= 没停牌的可靠结论）', () => {
+    saved = suspendState.value;
+    suspendState.value = { date: TODAY, set: new Set(), version: 1, loadedAt: Date.now() };
+    expect(hasSuspendVerdict(TODAY)).toBe(true);
+  });
+
+  it('★ 状态属于【别的日期】⇒ false（不能拿昨天那份判定冒充今天的）', () => {
+    saved = suspendState.value;
+    suspendState.value = { date: NOT_TODAY, set: new Set(['某票']), version: 1, loadedAt: Date.now() };
+    expect(hasSuspendVerdict(TODAY)).toBe(false);
+    expect(hasSuspendVerdict(NOT_TODAY)).toBe(true);
+  });
+
+  it('★ 历史日：上游永远答不了 ⇒ 哪怕状态挂在别的日期上也不会返 true（§10 不猜）', () => {
+    saved = suspendState.value;
+    suspendState.value = { date: TODAY, set: new Set(['某票']), version: 1, loadedAt: Date.now() };
+    expect(hasSuspendVerdict(NOT_TODAY)).toBe(false);
+  });
+
+  it('§10：空 / 未定义 ⇒ false（⛔ 不猜）', () => {
+    [null, undefined, ''].forEach(function(d) {
+      expect(hasSuspendVerdict(d)).toBe(false);
+    });
+  });
+
+  it('名字前后空格按 trim 命中（与 isSuspended / canJudgeSuspended 同一口径）', () => {
+    saved = suspendState.value;
+    suspendState.value = { date: TODAY, set: new Set(), version: 1, loadedAt: Date.now() };
+    expect(hasSuspendVerdict('  ' + TODAY + '  ')).toBe(true);
   });
 });
 

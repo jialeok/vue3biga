@@ -464,9 +464,94 @@ describe('decision-collect · ★★ 回归：切历史日看一眼后，今天�
   });
 
   it('§6 机制说明：今天这条腿只能靠上游（该票当天不在 watchlist ⇒ 库内无行 ⇒ 判不出来也不该当「没停」）', () => {
-    // 今天判定缺失（未加载）时：库里今天没有它的行（停牌票上游不返回）⇒ 两腿都取不到 ⇒ 不进名单（§10）
+    // [SUSPEND-PENDING 2026-10-14 用户实测修] 本用例的**标题**一直是这句原则，修前断言却把
+    //   「判不出来」当成了「没停」（返空集）—— 那正是用户报的那个 bug（见下方 SUSPEND-PENDING describe）。
+    //   现在按原则断言：今天判定还没到 + 昨天停牌 + 今天库里没有它的行（停牌票上游不返回）
+    //   ⇒ 没有「今天在竞价」的正面证据 ⇒ **保守进名单**（宁可少选一只，也不要让买不进的票占龙位）。
     suspendState.value = { date: '', set: new Set(), version: 0, loadedAt: 0 };
     state._auctionMemCache[HIST] = [{ stock: '新华传媒', volume: '0' }];
-    expect(nonFirstDaySuspendNames(rows, TODAY, HIST).size).toBe(0);
+    expect(nonFirstDaySuspendNames(rows, TODAY, HIST).has('新华传媒')).toBe(true);
+  });
+});
+
+// ── ★★ [SUSPEND-PENDING 2026-10-14 用户实测修] 「判定还没回来」不得冒充「今天没停牌」 ──────────
+//   用户原话：「为什么我从 10 月 13 日切到 10 月 14 日时，还是有新华传媒（停牌）进入买点？
+//   你没修复彻底吧？刷新后才显示正常（没有显示新华传媒），只显示龙二，龙三」。
+//
+//   竞态（本节要钉住的东西）：页面刚打开 / 判定还在路上时，`suspendState` 还是空的。
+//     · `isSuspended(今天, 新华传媒)` → false（没判定）
+//     · `canJudgeSuspended(今天)` → **true**（上游确实能为今天作证，只是结果没到）
+//     ⇒ 旧 `_suspendedOn` 走第②腿直接返 false，消费方读成「**今天没停牌**」的权威否定
+//     ⇒ 买不进名单变空集 ⇒ 连续停牌的新华传媒又占了龙一（渲染出一行「龙一 新华传媒 +115%
+//        占比 0.000」、而且没有「连续停牌 ⇒ 顺延」说明）；判定回来才自愈 ⇒ 用户看到「时有时无」。
+//
+//   修法：判据分开 —— 「能判」（canJudgeSuspended）+「判出来没有」（hasSuspendVerdict）；
+//     后者为 false 且今天库里没有「成交量 > 0」的正面证据 ⇒ 保守按「买不进」处理（§10 宁缺勿错）。
+//   ⚠️ 本 describe 必须用【本地今天】当展示日（pending 分支只在今天生效），历史日走原路径不受影响。
+describe('decision-collect · ★★ SUSPEND-PENDING：今天判定未就绪时不得把停牌票放进买点', () => {
+  const HIST = '2020-01-01';   // 昨天（= prevDate；固定过去日）
+  const TODAY = (function() {
+    const n = new Date();
+    return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0') + '-' + String(n.getDate()).padStart(2, '0');
+  })();
+  const rows = [{ name: '新华传媒' }, { name: '新华文轩' }, { name: '东方明珠' }];
+
+  let savedAuction = null;
+  let savedHot = null;
+  let savedSuspend = null;
+  beforeEach(() => {
+    savedAuction = state._auctionMemCache;
+    savedHot = state._hotFullRowCache;
+    savedSuspend = suspendState.value;
+    state._auctionMemCache = {};
+    state._hotFullRowCache = {};
+    // 昨天：新华传媒 / 新华文轩 竞价量 0（停牌），东方明珠 有量
+    state._auctionMemCache[HIST] = [
+      { stock: '新华传媒', volume: '0' },
+      { stock: '新华文轩', volume: '0' },
+      { stock: '东方明珠', volume: '470' }
+    ];
+  });
+  afterEach(() => {
+    state._auctionMemCache = savedAuction;
+    state._hotFullRowCache = savedHot;
+    suspendState.value = savedSuspend;
+  });
+
+  it('★★ 判定未加载 + 今天库里查不到它（停牌票上游不返回）⇒ 仍进名单（10-14 新华传媒竞态回归钉）', () => {
+    suspendState.value = { date: '', set: new Set(), version: 0, loadedAt: 0 };   // 判定还没到
+    state._auctionMemCache[TODAY] = [{ stock: '东方明珠', volume: '512' }];        // 今天有行的是别的票
+
+    const set = nonFirstDaySuspendNames(rows, TODAY, HIST);
+    expect(set.has('新华传媒')).toBe(true);    // ★ 修前：返空集 ⇒ 它被当普通票选成龙一
+    expect(set.has('新华文轩')).toBe(true);    // 同样「昨天停 + 今天无正面证据」⇒ 一起保守跳过
+    expect(set.has('东方明珠')).toBe(false);   // 昨天有量 ⇒ 不是连续停牌，不受影响
+  });
+
+  it('★ 「暂缓」不是「一律封杀」：今天库里写着成交量 > 0（复牌正面证据）⇒ 放行，⛔ 不误伤复牌票', () => {
+    suspendState.value = { date: '', set: new Set(), version: 0, loadedAt: 0 };
+    state._auctionMemCache[TODAY] = [{ stock: '新华传媒', volume: '1635' }];       // 今天确实在竞价
+
+    const set = nonFirstDaySuspendNames(rows, TODAY, HIST);
+    expect(set.has('新华传媒')).toBe(false);   // 有正面证据 ⇒ 按复牌处理
+    expect(set.has('新华文轩')).toBe(true);    // 没有正面证据 ⇒ 保守跳过
+  });
+
+  it('★ 判定已就绪（loadedAt > 0）⇒ pending 分支不生效，完全按真实结论（复牌票自然被放回）', () => {
+    // 上游判定说：今天只有 新华文轩 停牌（新华传媒已复牌）
+    suspendState.value = { date: TODAY, set: new Set(['新华文轩']), version: 1, loadedAt: Date.now() };
+    state._auctionMemCache[TODAY] = [{ stock: '新华传媒', volume: '1635' }, { stock: '新华文轩', volume: '0' }];
+
+    const set = nonFirstDaySuspendNames(rows, TODAY, HIST);
+    expect(set.has('新华传媒')).toBe(false);   // 复牌 ⇒ 理所当然参与选股（用户原话）
+    expect(set.has('新华文轩')).toBe(true);
+  });
+
+  it('§11 历史展示日不受影响：canJudgeSuspended(历史日) 恒 false ⇒ pending 分支永不触发', () => {
+    // 状态挂在【今天】上（说明确实「今天已有结论」），但展示日是历史日 ⇒ 行为与修前逐字一致
+    suspendState.value = { date: TODAY, set: new Set([]), version: 1, loadedAt: Date.now() };
+    state._auctionMemCache[HIST] = [{ stock: '新华传媒', volume: '0' }];
+    // 历史日：新华传媒 昨天(=HIST 自己当 prevDate 时)在、今天(=HIST)量 0 ⇒ 两天都停 ⇒ 进名单（原路径）
+    expect(nonFirstDaySuspendNames(rows, HIST, HIST).has('新华传媒')).toBe(true);
   });
 });
