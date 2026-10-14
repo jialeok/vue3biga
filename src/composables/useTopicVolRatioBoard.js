@@ -18,6 +18,17 @@
 //     （readRangePctForDate，纯只读、不耗额度）；判定 / 标签改写全在
 //     topic-vol-ratio-rules.js（检测 detectEbbDay + _applyEbbSellRules）。
 //
+// ★★ [TVRB-926 2026-10-14 用户口径] 买点侧选股固定用【9:26 口径】的十日涨幅。
+//   用户原话「题材量比看板选股买点侧，为什么早上的，和收盘的不一样，我只想要早上 9 点 26 分的……
+//     因为我对照历史日期的时候就对不上，比如今天我明明买了某只股票，过些时间我再翻开那个时期，
+//     又成另外一只股票，非常不合理。」
+//   根因 = 区间涨幅的 T 腿在 15:00 后被换成【收盘涨幅】⇒ 组内十日涨幅重排 ⇒ 龙一换人。
+//   ⇒ 本文件的职责 = 【按展示日读回 9:26 口径那份】并注入买点侧（readAuctionLegRangeMap，
+//     纯只读、0 额度、可回溯历史）；判定 / 选股全在
+//     topic-vol-ratio-rules.js（_buildBlock）+ decision-rules.js（rankDragonsWithPctMap）。
+//   ⚠️ 只影响【买点侧选股 + 行上十日涨幅】：退潮判定 / 市场总龙 / 卖点一律仍用收盘口径
+//     （用户拍板「只改买点侧」，见 range-auction-leg.js 的文件头）。
+//
 // ★ [2026-10-11 第二轮 用户口径] 本看板只替换【选股】，标签与展开面板全部复用别人的同一份实现：
 //   用户原话「要模仿决策看板的占比，卖出，持有，竞价卖，竞价买，尾盘买，尾盘卖，龙持有，跟龙
 //     等所有的标签逻辑基本一样。因为买入和卖出基本逻辑一样，只是选股不同。把股票下方点击展开的
@@ -53,6 +64,16 @@ import { ensureSuspendSet } from '../logic/auction/suspend.js';
 //   ⚠️ 它必须【异步提前读】，因为下面 data 是【同步 computed】（computed 里不能 await）。
 import { readRangePctForDate } from '../data/stock-range-pct.js';
 import { getPreviousTradingDay } from '../logic/date/trading-day-helpers.js';
+// ★★ [TVRB-926 2026-10-14 用户口径] 【9:26 口径】的区间涨幅（买点侧专用）：
+//   区间涨幅的 T 腿在 15:00 后被由竞价涨幅换成收盘涨幅 ⇒ 组内十日涨幅重排 ⇒ 龙一换人 ⇒
+//   买点侧选出来的票跟早上 9:26 看到的不一样。本读取器用已落库的
+//   `change_pct`（收盘腿）+ `auc_pct_chg`（竞价腿）把那根腿【反解回竞价口径】
+//   ⇒ 任何时候翻回那一天，都是当天 9:26 选出来的同一批票。
+//   ⛔ 纯只读：`stock_range_pct` + `market_metrics` 各一次（都走会话缓存 + 单飞，§32），
+//     不发任何上游请求、不消耗猫抓额度。
+import { readAuctionLegRangeMap } from '../logic/auction/range-auction-leg.js';
+// ★ 买点侧专用龙位（= 同一把尺子 computeDragonRankMap，只把十日涨幅换成 9:26 口径那份）
+import { rankDragonsWithPctMap } from '../logic/decision/decision-rules.js';
 // ★★ [EBB-R8 2026-10-14 用户口径] 退潮判定【落库表】的读写入口（§5 唯一出处）。
 //   用户原话：「你应该把数据存起来啊，做一个表也行，不然很难判断出来，因为现在的逻辑是通过判断
 //     没有竞价量等判断出来的，是缓存吧？你要完善这点」
@@ -198,6 +219,19 @@ export function useTopicVolRatioBoard() {
    */
   const curRangeMap = ref(null);
   const curRangeDate = ref('');
+  /**
+   * ★★ [TVRB-926 2026-10-14 用户口径] 【展示日】的 9:26 口径区间涨幅（Map&lt;股票名,{pct,days}&gt;）。
+   *
+   * 这是本看板买点侧选股（龙位 + 行上十日涨幅）【唯一】的口径输入：
+   *   · 只读一次/天（readAuctionLegRangeMap 会话缓存 + 单飞，§32）；
+   *   · 读到 ⇒ 选股与数值都按「早上 9:26 那一刻」算，翻回历史任何一天都是同一批股票；
+   *   · ⛔ 读不到 / 读失败 ⇒ 【null】⇒ `buildTopicVolRatioPlan` 退回原口径（§11 默认零行为变化），
+   *     并在看板说明区【如实标出来】（§10：⛔ 绝不静默拿收盘口径冒充早上那一份）。
+   * ⚠️ buyRangeDate 记「这一天到底读没读过」（成功或失败都算读过）——
+   *   没读过 ≠ 读到空：前者只是异步还没回来（不打标记，避免首帧闪一下），后者才是真的缺（要标记）。
+   */
+  const buyRangeMap = ref(null);
+  const buyRangeDate = ref('');
   // ⛔ 用「日期 + version」字符串当键：plan / rec 每次重算都换引用，对象身份当键会无限重载。
   const prevRangeKey = computed(function() {
     return String(currentDate.value || '') + '|v' + version.value;
@@ -218,6 +252,23 @@ export function useTopicVolRatioBoard() {
         console.warn('[TVRB] 当日十日涨幅读取失败，本次不给出「买点侧唯一那只」:', e && e.message);
         curRangeMap.value = null;
         curRangeDate.value = d;
+      });
+    }
+    // ①-c ★★ [TVRB-926] 展示日的【9:26 口径】区间涨幅（买点侧选股唯一口径）
+    //   §26：只随「日期 / 数据刷新版本」重读；同一天切回来命中会话缓存，不会重复打接口。
+    //   ⚠️ 不做「今天 15:00 前跳过」这类日期级优化：正确性由 range-auction-leg 的
+    //      【行级】前提（那一行确实已换过腿）保证 —— 早晨读进来也只是恒等变换，
+    //      ⛔ 而靠日期判断会与 close-pct-cover 的口径分叉（§6 一把尺子）。
+    if (d && buyRangeDate.value !== d) {
+      readAuctionLegRangeMap(d).then(function(m) {
+        if (currentDate.value !== d) return;
+        buyRangeMap.value = (m && m.size > 0) ? m : null;
+        buyRangeDate.value = d;
+      }).catch(function(e) {
+        // §10：失败必须可见（看板说明区会如实标出「9:26 口径未就绪」），⛔ 绝不静默降级
+        console.warn('[TVRB] 9:26 口径（买点侧选股）读取失败，本次按当前口径选股:', e && e.message);
+        buyRangeMap.value = null;
+        buyRangeDate.value = d;
       });
     }
     if (!pd) {
@@ -264,6 +315,9 @@ export function useTopicVolRatioBoard() {
     //   ① 买点侧那只【市场龙二】才算得出；② 更重要的是【消除切日期后的空白期】
     //      （dragonState 还没跟上新日期时，先用这份渲染，见 curRangeMap 的注释）
     void curRangeMap.value;
+    // ★★ [TVRB-926] 展示日【9:26 口径】的区间涨幅（异步读回）⇒ 买点侧选股与行上数值的输入：
+    //   读到之后重算一次 —— 选股从「当前口径」切到「早上 9:26 那一刻选中的那批」。
+    void buyRangeMap.value;
     // 分笔那份是响应式单例 ⇒ 显式声明依赖，数据到了自动重算（§17 不阻塞渲染）
     void tickMinuteMap.value;
     void tickMinuteDate.value;
@@ -303,6 +357,17 @@ export function useTopicVolRatioBoard() {
       if (!rec || !rec.ready) return _empty((rec && rec.reason) || '暂无数据');
 
       // ① 本看板自己的选股 + 标签收口（标签管线 = 决策看板的同一份实现）
+      //
+      // ★★ [TVRB-926 2026-10-14 用户口径] 买点侧选股固定用【9:26 口径】：
+      //   · `buyDragonMap` = 与 rec.dragonMap 【同一把尺子】（rankDragonsWithPctMap → 同一个
+      //     computeDragonRankMap），只把「算龙位用的十日涨幅」换成 9:26 那一份；
+      //   · `pctMap` 同时下发 ⇒ 买点行上的十日涨幅与龙位【同一口径】（§6 内部自洽，
+      //     ⛔ 绝不让「龙一」的标签配着收盘口径的数值）。
+      //   ⛔ 第 2 参仍是 rec.dragonMap（收盘口径）：卖点段 + finishBuyBlock 的题材统计走它，
+      //      退潮判定（rec.ebbCtx）在采集层就已经用收盘口径算好 ⇒ 逐字不变（用户「只改买点侧」）。
+      //   ⚠️ 日期核对（与上面两份 rangeMap 同一条红线）：异步读回的 ref 在切日期那一帧还挂着旧日期
+      //      的数据 ⇒ 只认【日期对得上】的那份，⛔ 绝不拿 A 日的数据当 B 日选股。
+      const buyMap = (buyRangeMap.value && buyRangeDate.value === d) ? buyRangeMap.value : null;
       const plan = buildTopicVolRatioPlan(rec.topics, rec.dragonMap, {
         date: d,
         ctx: {
@@ -318,10 +383,25 @@ export function useTopicVolRatioBoard() {
         ebbCtx: rec.ebbCtx || null,
         // ★ [EBB-R8 2026-10-14] 上一交易日【落库的退潮判定】那一行（tvrb_ebb_days）
         //   —— 首日闸门的输入；缺省 ⇒ 规则层退化为「用昨日行情行推断」，再取不到按首日处理。
-        prevEbbDay: prevEbbDay.value
+        prevEbbDay: prevEbbDay.value,
+        // ★★ [TVRB-926] 买点侧专用的 9:26 口径（缺 ⇒ 规则层退回原口径 = 旧行为，§11）
+        buyDragonMap: buyMap ? rankDragonsWithPctMap(rec.topics, buyMap) : null,
+        pctMap: buyMap
       });
 
+      // §10 ★★ 失败 / 缺数据必须可见：这一天【确实读过】9:26 口径、但没拿到（失败或表里没有）
+      //   ⇒ 在说明区如实标出来。⛔ 绝不静默拿当前（收盘）口径冒充「早上 9:26 那一份」。
+      //   ⚠️ `buyRangeDate !== d`（还没读完）不打标记 —— 那只是异步没回来，首帧闪一条假告警更糟。
+      if (buyRangeDate.value === d && !buyMap) {
+        plan.notes.unshift('⚠️ 本日【9:26 口径】（= 竞价涨幅换腿前那一份）未读到 ⇒ 买点侧选股' +
+          '暂按当前口径显示。这通常意味着该日缺少「收盘涨幅 / 竞价涨幅」中的一项，' +
+          '无法把那根腿反解回竞价口径（第 二十三 条）。');
+      }
+
       // ② 逐行装饰（竞价量比趋势 / 龙标名次变化 / 封单额 + 连板）——与决策看板同一份实现
+      //   ⚠️ 传的仍是 rec.dragonMap：`_decorateDragonRankChange` 只读【今日龙位】与【昨日龙位】做
+      //      名次变化徽标，它服务于决策看板的口径；本看板买点行的龙标由上面的 buyDragonMap 产出
+      //      （用户只要「选股按 9:26」，「名次变化」属于客观数据，保持原口径，§11）。
       decorateDecisionRows(plan.buy, plan.sell, d, rec.prevDate, rec.dragonMap);
 
       // ③ 分笔明细（与「分笔买卖」看板同一份取数 + 同一份逐行实现）

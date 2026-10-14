@@ -65,7 +65,8 @@ import {
   DRAGON_YIZI_HOLD_TAG,
   SELL_OUT_TAG,
   TOPIC_PREV_BOUGHT_TAG,
-  topicStreakText
+  topicStreakText,
+  rankDragonsWithPctMap
 } from '../decision/decision-rules.js';
 
 // ── 夹具 ─────────────────────────────────────────────────────────────────────────────────
@@ -1428,5 +1429,89 @@ describe('tvrb · 第九轮规则文案（口诀：分歧切龙二）', function
     expect(all).toContain('核心就是总市场龙二');
     expect(all).toContain('龙一分歧时，就切到龙二');
     expect(all).toContain(EBB_SECOND_RULE_NO);   // 口诀 ⇄ 第二十一条【总龙二买】互相指得着
+  });
+});
+
+// ── ★★ [TVRB-926 2026-10-14 用户口径] 买点侧选股固定用【9:26 口径】的十日涨幅 ──────────────────
+//   用户原话：「题材量比看板选股买点侧，为什么早上的，和收盘的不一样，我只想要早上 9 点 26 分的……
+//             因为我对照历史日期的时候就对不上，比如今天我明明买了某只股票，过些时间我再翻开那个时期，
+//             又成另外一只股票，非常不合理。」
+//   根因 = 区间涨幅的 T 腿在 15:00 后被由竞价涨幅换成收盘涨幅 ⇒ 组内十日涨幅重排 ⇒ 龙一换人。
+//   实测事故（2026-10-13）：可比题材组 7 个里【5 个】龙一换人。
+describe('tvrb · ★ 买点侧选股用【9:26 口径】的十日涨幅（TVRB-926）', function() {
+  // 5 只 ⇒ mid（取 1 只）。成员自带 pct = 收盘口径（甲最高）；9:26 口径里乙最高 ⇒ 龙一换人。
+  const mk = function() {
+    return block('AI应用', 1, [
+      m('甲票', { pct: 50, code: '600001' }),
+      m('乙票', { pct: 40, code: '600002' }),
+      m('丙票', { pct: 30, code: '600003' }),
+      m('丁票', { pct: 20, code: '600004' }),
+      m('戊票', { pct: 10, code: '600005' })
+    ]);
+  };
+  const p926 = new Map([
+    ['甲票', { pct: 10 }], ['乙票', { pct: 45 }], ['丙票', { pct: 30 }],
+    ['丁票', { pct: 20 }], ['戊票', { pct: 5 }]
+  ]);
+
+  it('rankDragonsWithPctMap：与 rankDragons 同一把尺子，只换「算龙位用的十日涨幅」', function() {
+    const topics = [mk()];
+    const closeDragon = rankDragonsWithPctMap(topics, null);      // 传 null ⇒ 等价 rankDragons
+    const buyDragon = rankDragonsWithPctMap(topics, p926);
+    expect(closeDragon.get('甲票').rank).toBe(1);                 // 收盘口径：甲龙一
+    expect(closeDragon.get('乙票').rank).toBe(2);
+    expect(buyDragon.get('乙票').rank).toBe(1);                   // 9:26 口径：乙龙一（换人）
+    expect(buyDragon.get('甲票').rank).toBe(4);   // 9:26 口径下甲退到第 4（乙45 > 丙30 > 丁20 > 甲10）
+    // ⭐ 只发主板龙标签这条闸门仍在（创业板 rank 恒 null）—— 与决策看板共用 computeDragonRankMap
+    const withGrowth = block('AI应用', 1, [
+      m('创业板票', { pct: 99, code: '300001' }),
+      m('主板甲', { pct: 50, code: '600001' }),
+      m('主板乙', { pct: 40, code: '600002' }),
+      m('主板丙', { pct: 30, code: '600003' })
+    ]);
+    const dmGrowth = rankDragonsWithPctMap([withGrowth], new Map([['创业板票', { pct: 99 }]]));
+    expect(dmGrowth.get('创业板票').rank).toBeNull();
+    expect(dmGrowth.get('主板甲').rank).toBe(1);
+  });
+
+  it('★ 选股与行上十日涨幅【同口径】：选的是 9:26 的龙一，数值也是 9:26 那份', function() {
+    const topics = [mk()];
+    const closeDragon = rankDragonsWithPctMap(topics, null);
+    const buyDragon = rankDragonsWithPctMap(topics, p926);
+    const plan = buildTopicVolRatioPlan(topics, closeDragon, { buyDragonMap: buyDragon, pctMap: p926 });
+    const b = plan.blocks[0];
+    expect(b.picks.map(function(p) { return p.name; })).toEqual(['乙票']);
+    expect(b.picks[0].dragonLabel).toBe('龙一');
+    expect(b.picks[0].pct).toBe(45);
+    expect(b.picks[0].pctText).toContain('45');
+    // ⛔ 内部自洽：绝不让「龙一」的标签配着收盘口径的数值（40 是甲的收盘口径值，50 是甲的）
+    expect(b.picks[0].pct).not.toBe(40);
+  });
+
+  it('缺省 buyDragonMap / pctMap ⇒ 逐字回到旧行为（§11 默认零行为变化）', function() {
+    const topics = [mk()];
+    const closeDragon = rankDragonsWithPctMap(topics, null);
+    const plan = buildTopicVolRatioPlan(topics, closeDragon, {});
+    expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['甲票']);
+    expect(plan.blocks[0].picks[0].pct).toBe(50);
+    // 空 Map 同样按缺省处理（不做「空集合 ⇒ 全员无龙位」那种悄悄改变选股的降级）
+    const plan2 = buildTopicVolRatioPlan(topics, closeDragon, { buyDragonMap: new Map(), pctMap: new Map() });
+    expect(plan2.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['甲票']);
+  });
+
+  it('§10 某只票在 9:26 那份里没有值 ⇒ 退回成员自带 pct（⛔ 不补 0、不改名次来源）', function() {
+    const topics = [mk()];
+    const partial = new Map([['乙票', { pct: 45 }]]);          // 甲/丙/丁/戊 都没读到
+    const dm2 = rankDragonsWithPctMap(topics, partial);
+    const plan = buildTopicVolRatioPlan(topics, dm2, { buyDragonMap: dm2, pctMap: partial });
+    expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['甲票']);
+    expect(plan.blocks[0].picks[0].pct).toBe(50);               // 甲自己的值，不是 0
+  });
+
+  it('规则面板必须写明「买点侧选股用 9:26 口径」（§6 文案与口径同处一处）', function() {
+    const all = buildTvrbRulesLines().join('\n');
+    expect(all).toContain('二十三');
+    expect(all).toContain('9:26');
+    expect(all).toContain('买点侧选股');
   });
 });

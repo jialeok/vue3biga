@@ -210,3 +210,67 @@ export function replaceTDayLeg(rangePct, oldLeg, newLeg) {
   const next = (prevAcc * (1 + n / 100) - 1) * 100;
   return isFinite(next) ? next : null;
 }
+
+/**
+ * ★★ [TVRB-926 2026-10-14 用户口径] 【反解 T 腿】—— 把「已换成收盘腿的区间涨幅」还原成
+ *    「T 腿 = 竞价涨幅」那一份（= 9:26 口径，用户要的「早上那一份」）。
+ *
+ * 用户原话：
+ *   「题材量比看板选股买点侧，为什么早上的，和收盘的不一样，我只想要早上 9 点 26 分的……
+ *     可能收盘后，涨幅覆盖了，又重新计算……因为我对照历史日期的时候就对不上，
+ *     比如今天我明明买了某只股票，过些时间我再翻开那个时期，又成另外一只股票，非常不合理。」
+ *
+ * 为什么能反解（与 replaceTDayLeg 是【一对互逆运算】，故两处必须放在同一模块，§6）：
+ *   正向：stored = (1 + old926) ÷ (1 + auc) × (1 + close) − 1
+ *   反解：old926 = (1 + stored) ÷ (1 + close) × (1 + auc) − 1
+ *   两个因子（竞价涨幅 / 收盘涨幅）都由 `market_metrics(scope='auction')` 的
+ *   `auc_pct_chg` / `change_pct` 提供 —— 都是已落库的客观数据，**0 额外上游请求、0 额度**。
+ *
+ * ⚠️ 与「换腿」对称的三个前提（缺一不可，缺则【原样返回】，⛔ 绝不猜 —— §10）：
+ *   ① `closePct`（收盘腿）读不到 ⇒ 无法判断这一行到底换过腿没有 ⇒ 原样；
+ *   ② `aucPct`（竞价腿）读不到 ⇒ 无法还原那根腿（典型 = 那天整批 `auc_pct_chg` 缺失、
+ *      9:25 的 T 腿走的是 `change_pct` 回退通道）⇒ 原样（拿 0 顶替会把整根腿凭空抹掉，更错）；
+ *   ③ `closePct === -100` ⇒ 复利因子为 0，反解无意义 ⇒ 原样。
+ *   ⚠️ 调用方还须【先确认这一行已是收盘口径】再调本函数（时间判定见 closeCoverUtcMs）；
+ *      不是收盘口径的行，其原值本来就是 9:26 口径，调进来也只是恒等变换（见下面 ②③ 的注释）。
+ *
+ * @param {*} rangePct 库里已存的区间涨幅（%，可能已是收盘腿口径）
+ * @param {*} aucPct   该股【当日竞价涨幅】（%，= 9:25 那根 T 腿；null ⇒ 不换算）
+ * @param {*} closePct 该股【当日收盘涨幅】（%，= 现在那根 T 腿；null ⇒ 不换算）
+ * @returns {number|null} 9:26 口径的区间涨幅（%）；缺数据 ⇒ 原值 / null（⛔ 绝不伪造 0）
+ */
+export function recoverAuctionLeg(rangePct, aucPct, closePct) {
+  const r = parsePct(rangePct);
+  if (r === null) return null;
+  const c = parsePct(closePct);
+  if (c === null) return r;                      // ① 不知道换没换腿 ⇒ 原样
+  const a = parsePct(aucPct);
+  if (a === null) return r;                      // ② 竞价腿读不到 ⇒ 原样（见函数头）
+  const closeFactor = 1 + c / 100;
+  if (closeFactor === 0) return r;               // ③ 无法反解 ⇒ 原样
+  // 先退回「除当天以外的 9 天复利」，再乘上竞价那根腿 —— 与 replaceTDayLeg 逐字对称
+  const prevAcc = (1 + r / 100) / closeFactor;
+  const next = (prevAcc * (1 + a / 100) - 1) * 100;
+  return isFinite(next) ? next : r;
+}
+
+/** 北京时间收盘时刻（用于判定某行是否已按收盘口径写入，与 close-pct-cover 同源） */
+export const CLOSE_COVER_HOUR_BJ = 15;
+
+/**
+ * 某个日期「收盘覆盖时刻」对应的 UTC 时间戳（北京 15:00）。
+ *
+ * ⚠️ 这是「这一行是竞价腿口径还是收盘腿口径」的**唯一时间尺子**，两个消费者共用：
+ *   · `close-pct-cover.js#_runCover`（决定要不要把 T 腿换成收盘腿）；
+ *   · `range-auction-leg.js`（决定要不要把 T 腿反解回竞价腿）。
+ *   §6：⛔ 绝不各写一份 —— 两处若分叉就会出现「换了腿却不反解」的静默错值。
+ *
+ * @param {string} dateStr YYYY-MM-DD
+ * @returns {number} UTC 毫秒；日期非法 ⇒ NaN
+ */
+export function closeCoverUtcMs(dateStr) {
+  if (!dateStr) return NaN;
+  const base = Date.parse(dateStr + 'T00:00:00Z');
+  if (Number.isNaN(base)) return NaN;
+  return base + (CLOSE_COVER_HOUR_BJ - 8) * 3600000;
+}

@@ -31,6 +31,7 @@ import { describe, it, expect } from 'vitest';
 import {
   rankDecisionTopics,
   rankDragons,
+  rankDragonsWithPctMap,
   buildBuyPlan,
   buildSellPlan,
   buildVolRatioRulesLines,
@@ -1892,5 +1893,60 @@ describe('[YIZI-ALL-CLEAR] 本档名次全被竞价一字占掉 → 往下补位
     expect(text).toContain('9/29 AI应用');
     // ⛔ 旧的「不递补」口径仍然在（两个口径并存，都要说清楚）
     expect(text).toContain('不买入、也不让后面的票递补');
+  });
+});
+
+// ── ★★ [TVRB-926 2026-10-14] 买点侧专用龙位（9:26 口径）与 rankDragons 的等价 / 差异 ────────────
+//   本函数只被「题材量比看板」的买点侧调用（早盘竞价 / 决策 / 分笔看板 + 退潮判定一律仍走
+//   rankDragons）⇒ 必须钉住两件事：
+//     ① 不传 pctMap（或传 null）时与 rankDragons 【逐字等价】（§11 默认零行为变化）；
+//     ② 不【就地改写】传入的题材块（调用方传进来的就是采集层那份内存真相，改它就是污染）。
+describe('decision-rules · ★ rankDragonsWithPctMap（TVRB-926 买点侧 9:26 口径龙位）', function() {
+  const mkBlocks = function() {
+    return [{
+      topic: 'T1', rank: 1, count: 4, yiziCount: 0,
+      members: [
+        { name: 'A', pct: 50, code: '600001' },
+        { name: 'B', pct: 40, code: '600002' },
+        { name: 'C', pct: 30, code: '600003' },
+        { name: 'D', pct: 20, code: '300004' }      // 创业板 ⇒ 不占龙位
+      ]
+    }];
+  };
+
+  it('★ 不传 pctMap / 传 null ⇒ 与 rankDragons 逐字等价（其它看板不受影响）', function() {
+    const blocks = mkBlocks();
+    const base = rankDragons(blocks);
+    const same = rankDragonsWithPctMap(blocks, null);
+    expect(same.size).toBe(base.size);
+    base.forEach(function(v, k) {
+      expect(same.get(k).rank).toBe(v.rank);
+      expect(same.get(k).seq).toBe(v.seq);
+      expect(same.get(k).pct).toBe(v.pct);
+    });
+  });
+
+  it('传 9:26 口径 Map ⇒ 只换「算龙位用的十日涨幅」，名次随之重排', function() {
+    const blocks = mkBlocks();
+    const p926 = new Map([['A', { pct: 5 }], ['B', { pct: 60 }], ['C', { pct: 30 }], ['D', { pct: 90 }]]);
+    const dm = rankDragonsWithPctMap(blocks, p926);
+    expect(dm.get('B').rank).toBe(1);
+    expect(dm.get('C').rank).toBe(2);
+    expect(dm.get('A').rank).toBe(3);
+    expect(dm.get('D').rank).toBeNull();          // 创业板恒 null（闸门仍在）
+    expect(dm.get('B').pct).toBe(60);             // 回报的 pct 也是 9:26 那份
+  });
+
+  it('★ 绝不就地改写传入的题材块（members[].pct 保持原值）', function() {
+    const blocks = mkBlocks();
+    rankDragonsWithPctMap(blocks, new Map([['A', { pct: 5 }]]));
+    expect(blocks[0].members.map(function(m) { return m.pct; })).toEqual([50, 40, 30, 20]);
+  });
+
+  it('§10 该票在 9:26 那份里没有值 ⇒ 退回成员自带 pct（⛔ 不补 0、不把它挤到队尾）', function() {
+    const blocks = mkBlocks();
+    const dm = rankDragonsWithPctMap(blocks, new Map());   // 空 Map ⇒ 全部退回原值
+    expect(dm.get('A').rank).toBe(1);
+    expect(dm.get('A').pct).toBe(50);
   });
 });

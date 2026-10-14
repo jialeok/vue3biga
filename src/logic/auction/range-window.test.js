@@ -6,6 +6,9 @@ import {
   isAuctionLegActive,
   resolveTDayPct,
   replaceTDayLeg,
+  recoverAuctionLeg,
+  closeCoverUtcMs,
+  CLOSE_COVER_HOUR_BJ,
   buildRangeRows,
   collectDailyLegs
 } from './range-window.js';
@@ -151,6 +154,67 @@ describe('replaceTDayLeg 收盘后替换 T 腿', () => {
     expect(replaceTDayLeg('+20.00', '+5.00%', '0')).toBeCloseTo(
       ((1 + 20 / 100) / (1 + 5 / 100) - 1) * 100, 6
     );
+  });
+});
+
+// [TVRB-926 2026-10-14 用户口径] 题材量比看板买点侧选股要「早上 9:26 那一刻」那一份区间涨幅：
+//   T 腿被换成收盘腿之后，用「收盘腿 + 竞价腿」反解回竞价口径。
+//   它直接决定买点侧选谁 ⇒ 必须有回归用例（实事故：10-13 可比题材组 7 个里 5 个龙一换人）。
+describe('recoverAuctionLeg 反解 T 腿（取回 9:26 口径的区间涨幅）', () => {
+  it('★ 与 replaceTDayLeg 互为逆运算（先换成收盘腿，再反解回竞价腿）', () => {
+    const legs9 = [1.5, -2, 3.2, 0.8, -1.1, 4.0, -0.5, 2.2, 1.0];
+    const auc = 6.66;      // 9:25 竞价涨幅（9:26 口径的 T 腿）
+    const close = 10.02;   // 收盘涨幅（库里现在那根 T 腿）
+    const old926 = compoundPct(legs9.concat([auc]));       // 9:26 那一刻的值（用户要的那一份）
+    const stored = replaceTDayLeg(old926, auc, close);     // 收盘换腿后落库的值
+    expect(stored).not.toBeCloseTo(old926, 4);             // 前提：两者确实不同（否则用例没意义）
+    expect(recoverAuctionLeg(stored, auc, close)).toBeCloseTo(old926, 6);
+  });
+
+  it('★ 真实事故样本（10-14 丽人丽妆）：竞价 +9.98 / 收盘 -8.93 ⇒ 反解把 20.65% 还原成 45.70%', () => {
+    const stored = 20.65;    // 库里（收盘腿）值
+    const auc = 9.98;        // 竞价涨幅
+    const close = -8.93;     // 收盘涨幅
+    const got = recoverAuctionLeg(stored, auc, close);
+    expect(got).toBeCloseTo(((1 + stored / 100) / (1 + close / 100) * (1 + auc / 100) - 1) * 100, 6);
+    expect(got).toBeCloseTo(45.70, 1);
+  });
+
+  it('竞价腿 == 收盘腿（一字板 / 停牌）⇒ 恒等变换（值不变）', () => {
+    expect(recoverAuctionLeg(33.33, 9.99, 9.99)).toBeCloseTo(33.33, 6);
+    expect(recoverAuctionLeg('-3.03', '0.00%', 0)).toBeCloseTo(-3.03, 6);
+  });
+
+  it('§10 前提不足一律【原样返回】(⛔ 不猜、⛔ 不用 0 顶替)：收盘腿缺失 / 竞价腿缺失 / 原值缺失', () => {
+    expect(recoverAuctionLeg(12.5, 2.0, null)).toBe(12.5);      // 不知道换没换腿
+    expect(recoverAuctionLeg(12.5, 2.0, '')).toBe(12.5);
+    expect(recoverAuctionLeg(12.5, null, -3.0)).toBe(12.5);     // 竞价腿读不到（拿 0 顶替会更错）
+    expect(recoverAuctionLeg(12.5, '', -3.0)).toBe(12.5);
+    expect(recoverAuctionLeg(null, 2.0, 5)).toBeNull();         // 原值就是空的 ⇒ null
+    expect(recoverAuctionLeg('', 2.0, 5)).toBeNull();
+  });
+
+  it('收盘腿 -100%（复利因子 0）⇒ 无法反解，原样返回（与 replaceTDayLeg 的守卫对称）', () => {
+    expect(recoverAuctionLeg(12.5, 2.0, -100)).toBe(12.5);
+  });
+
+  it('支持字符串入参（云端 range_pct / change_pct 都是 text，带 % 与 +）', () => {
+    expect(recoverAuctionLeg('+20.00', '+5.00%', '0.00%')).toBeCloseTo(
+      ((1 + 20 / 100) / 1 * (1 + 5 / 100) - 1) * 100, 6
+    );
+  });
+});
+
+describe('closeCoverUtcMs 收盘覆盖时刻（两条链共用的唯一时间尺子）', () => {
+  it('北京 15:00 = UTC 07:00', () => {
+    expect(CLOSE_COVER_HOUR_BJ).toBe(15);
+    expect(closeCoverUtcMs('2026-10-14')).toBe(Date.parse('2026-10-14T07:00:00Z'));
+  });
+
+  it('非法 / 空日期 ⇒ NaN（调用方据此按「不知道」处理，⛔ 不猜成「已换腿」）', () => {
+    expect(Number.isNaN(closeCoverUtcMs(''))).toBe(true);
+    expect(Number.isNaN(closeCoverUtcMs('2026/10/14'))).toBe(true);
+    expect(Number.isNaN(closeCoverUtcMs(null))).toBe(true);
   });
 });
 

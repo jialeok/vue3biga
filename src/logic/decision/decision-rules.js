@@ -106,6 +106,8 @@
 
 import { sortByTopicGroups, TOPIC_ORDER_VOL_RATIO, TOPIC_ORDER_YIZI } from '../auction/topic-sort.js';
 import { computeDragonRankMap, getDragonLabel } from '../auction/dragon-rank.js';
+// [TVRB-926 2026-10-14] 「取某只票在某个区间涨幅 Map 里的数值」的唯一实现（缺值 → null，§10 不补 0）
+import { readRangePct } from '../auction/range-pct-sort.js';
 // 竞价开平（高开 / 低开 / 平开）复用连板天梯的唯一实现，⛔ 不在本文件另写一套阈值与文案（§6）
 // ⚠️ [DRAGON-STRONG-GATE 2026-10-09 用户口径 · 大亚圣象 10/8] AUC_OPEN_HIGH 也一并 import：
 //   「题材竞价高开率 > 35%」要用它数高开只数，⛔ 绝不在本文件另写 `aucPct > 0` 那一套阈值（§6）。
@@ -1311,6 +1313,51 @@ export function rankDragons(blocks) {
       //   ⛔ 与早盘竞价徽章【同一个 computeDragonRankMap】（§6 单一真相）——
       //      屏幕上有龙标签的票 ⟺ 这里的 rank 非 null ⟺ 决策看板可选的票。
       entries.push({ name: m.name, topic: b.topic, pct: m.pct, code: m.code || '' });
+    });
+  });
+  return computeDragonRankMap(entries, { coloredTopics: colored, minGroupSize: DECISION_MIN_GROUP });
+}
+
+/**
+ * ★★ [TVRB-926 2026-10-14 用户口径] 「题材量比看板」专用的龙位排名 —— 与 rankDragons
+ *    【同一把尺子】，只把「算龙位用的十日涨幅」换成【9:26 口径】那一份。
+ *
+ * 为什么需要它（用户原话见 range-auction-leg.js 的文件头）：
+ *   区间涨幅的 T 腿在 15:00 后被由竞价涨幅换成收盘涨幅 ⇒ 组内十日涨幅重排 ⇒ 龙一换人 ⇒
+ *   题材量比看板买点侧选出来的票跟早上 9:26 看到的不一样（实测 10-13：7 个可比题材组里 5 个换人）。
+ *   用户要的是「早上 9:26 那一刻选中的股票，任何时候翻回来都是同一批」。
+ *
+ * ⛔ 与 rankDragons 的分工（§11 默认零行为变化）：
+ *   · 本函数【只被】useTopicVolRatioBoard 的买点侧调用；早盘竞价 / 决策 / 分笔看板一律仍走
+ *     rankDragons（屏幕上那一列「十日涨幅」照旧是收盘口径，用户「其它不变」）。
+ *   · 退潮判定（collectDecisionData 内部 `_ebbCtxOf`）也仍走 rankDragons ⇒ 退潮 / 市场总龙
+ *     **逐字不变**（用户拍板：只改买点侧选股）。
+ *   · 其余每一步（成组门槛、coloredTopics、只发主板龙标签、组内 pct 降序）与 rankDragons 完全一致
+ *     —— 因为最后都交给同一个 computeDragonRankMap（§6 不另写一份排名）。
+ *
+ * §10：某只票在 9:26 那份 Map 里【没有值】⇒ 退回它原本的 pct（= 库里该行的原值）。
+ *   为什么这是对的、而不是「猜」：读不到 9:26 值只有两种情形 ——
+ *     ① 该股没有区间涨幅行 ⇒ 原值本来就是 null ⇒ 一样排不进龙位（行为不变）；
+ *     ② 该行从未被收盘换腿 ⇒ 它的原值【本来就是】9:26 口径（见 range-window.js#recoverAuctionLeg）。
+ *   ⛔ 绝不会出现「缺值当 0 参与排名」。
+ *
+ * @param {Array<object>} blocks rankDecisionTopics 的返回（members 里有 name / pct / code）
+ * @param {Map<string,{pct:number|null}>|null} pctMap 9:26 口径区间涨幅（readAuctionLegRangeMap 的返回）
+ * @returns {Map<string,{rank:number|null, seq:number, pct:number, topic:string, groupSize:number}>}
+ */
+export function rankDragonsWithPctMap(blocks, pctMap) {
+  if (!pctMap || typeof pctMap.get !== 'function') return rankDragons(blocks);
+  const entries = [];
+  const colored = new Set();
+  (blocks || []).forEach(function(b) {
+    colored.add(String(b.topic || ''));
+    (b.members || []).forEach(function(m) {
+      if (!m || !m.name) return;
+      // 9:26 口径优先；该 Map 里没有这只票 ⇒ 退回原值（见函数头 §10 说明，⛔ 不当 0）
+      const p926 = readRangePct(pctMap, m.name);
+      const pct = (p926 === null) ? m.pct : p926;
+      if (pct === null || pct === undefined || isNaN(pct)) return;   // 与 rankDragons 同一闸门
+      entries.push({ name: m.name, topic: b.topic, pct: pct, code: m.code || '' });
     });
   });
   return computeDragonRankMap(entries, { coloredTopics: colored, minGroupSize: DECISION_MIN_GROUP });

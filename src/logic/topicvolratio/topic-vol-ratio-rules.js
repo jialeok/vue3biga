@@ -75,6 +75,9 @@ import {
   passesAuctionShare, formatAuctionShare, auctionShareThresholdOf
 } from '../decision/auction-share.js';
 import { getDragonLabel } from '../auction/dragon-rank.js';
+// [TVRB-926 2026-10-14 用户口径] 「取某只票在某个区间涨幅 Map 里的数值」的唯一实现
+//   （缺值 → null，§10 不补 0；与 range-pct-sort.js 的排序共用同一份读取口径，§6）
+import { readRangePct } from '../auction/range-pct-sort.js';
 
 // ══ 档位常量（§6 唯一实现：本看板的「取几只」只由这里决定）════════════════════════════════
 // 用户口径：< 4 只不入选；4 ~ 8 只入选 1 只；> 8 只入选 2 只（早盘竞价股票少，只有这三档）。
@@ -891,11 +894,14 @@ export function buildCashAlert(leadBlock, ebb) {
  *    所以必须在进 finishBuyBlock 之前就挂在 pick 上（与决策看板 _buyCandidates 同一做法，§6）。
  *
  * @param {object} block 题材块（含 members；members 里有 name / isYizi / pct / aucPct / aucVolRatio / aucShare）
- * @param {Map} dragonMap 龙位名册（rankDragons 的返回）
+ * @param {Map} dragonMap 龙位名册（rankDragons / rankDragonsWithPctMap 的返回）
+ * @param {Map<string,{pct:number|null}>} [pctMap] ★ [TVRB-926] 【9:26 口径】的区间涨幅
+ *        （readAuctionLegRangeMap 的返回）—— 有它时，行上的十日涨幅取它（与龙位同源），
+ *        ⛔ 缺这只票 ⇒ 退回成员自带的 pct（§10 不补 0，理由见 decision-rules#rankDragonsWithPctMap）。
  * @returns {Array<{name:string, isYizi:boolean, pct:number|null, aucPct:number|null,
  *                  aucVolRatio:number|null, aucShare:number|null, rank:number}>}
  */
-function _dragonCandidates(block, dragonMap) {
+function _dragonCandidates(block, dragonMap, pctMap) {
   const dm = dragonMap || new Map();
   const out = [];
   ((block && block.members) || []).forEach(function(m) {
@@ -903,10 +909,13 @@ function _dragonCandidates(block, dragonMap) {
     const d = dm.get(m.name);
     const rank = (d && d.rank) ? d.rank : null;
     if (rank === null) return;   // 无龙位（创业板 / 科创板）⇒ 不参与本看板选股（与决策看板同口径）
+    // ★ [TVRB-926 2026-10-14] 十日涨幅 = 【9:26 口径】那份（与上面算龙位用的是同一份，§6）：
+    //   ⛔ 绝不让「龙一」的标签配着收盘口径的数值 —— 那是最难查的一种内部不一致。
+    const p926 = pctMap ? readRangePct(pctMap, m.name) : null;
     out.push({
       name: m.name,
       isYizi: !!m.isYizi,
-      pct: _num(m.pct),
+      pct: (p926 === null) ? _num(m.pct) : p926,
       aucPct: _num(m.aucPct),
       aucVolRatio: _num(m.aucVolRatio),
       aucShare: _num(m.aucShare),
@@ -932,7 +941,7 @@ function _dragonCandidates(block, dragonMap) {
  *    （不报错、不显示，最难查的那种）。
  *
  * 选股（用户口径「按龙一龙二……，龙一竞价涨停的看龙二……」）：
- *   ① 候选序列 = _dragonCandidates(block, dragonMap) —— 已剔除无龙位票（创业板 / 科创板）、
+ *   ① 候选序列 = _dragonCandidates(block, dragonMap, pctMap) —— 已剔除无龙位票（创业板 / 科创板）、
  *      已按【龙位升序】排好（龙一 → 龙二 → …）；
  *   ② 从高到低依次取【非竞价涨停】的票，直到取满本档只数（1 或 2 只）；
  *   ③ 竞价涨停（竞价一字）的龙位 ⇒ 买不进 ⇒【跳过并顺延到下一龙位】（⛔ 但与决策看板的
@@ -942,14 +951,20 @@ function _dragonCandidates(block, dragonMap) {
  *    而本看板按龙位取票、本来就没有「前 N 只重仓」这回事 —— ⛔ 不凭空造一条仓位规则）。
  *    昨天真买过的票仍会被 finishBuyBlock 内部的 _markPrevBought 改写成【持有】（那是决策看板的口径）。
  *
+ * ★ [TVRB-926 2026-10-14 用户口径] `dragonMap` / `pctMap` 都是【9:26 口径】那一套
+ *   （rankDragonsWithPctMap + readAuctionLegRangeMap 的产物，由组合式注入）：
+ *   用户要的是「早上 9:26 那一刻选中的股票，任何时候翻回来都是同一批」——
+ *   收盘后 T 腿换腿会把组内十日涨幅重排、进而换掉龙一，必须用竞价腿那一份才稳定。
+ *
  * @param {object} block   题材块（含 rank / topic / count / yiziCount / members）
- * @param {Map} dragonMap  龙位名册（rankDragons 的返回）
+ * @param {Map} dragonMap  龙位名册（rankDragons / rankDragonsWithPctMap 的返回）
  * @param {object} tier    resolveTvrbTier 的返回
+ * @param {Map} [pctMap]   ★ [TVRB-926] 9:26 口径区间涨幅（行上十日涨幅取它；缺 ⇒ 退回成员自带值）
  * @returns {object} 决策看板形状的买点块（+ 本看板自己的几个平铺别名，见返回值末尾）
  */
-function _buildBlock(block, dragonMap, tier) {
+function _buildBlock(block, dragonMap, tier, pctMap) {
   const avg = avgVolRatioOf(block);
-  const cands = _dragonCandidates(block, dragonMap);
+  const cands = _dragonCandidates(block, dragonMap, pctMap);
   const picked = [];
   const skipped = [];
   for (let i = 0; i < cands.length && picked.length < tier.pickCount; i++) {
@@ -1045,8 +1060,9 @@ function _buildBlock(block, dragonMap, tier) {
  *    —— 用户原话「买入和卖出基本逻辑一样，只是选股不同」。
  *
  * @param {Array} topics   rankDecisionTopics(entries, MODE_VOL_RATIO) 的返回（已按平均竞价量比降序）
- * @param {Map} dragonMap  rankDragons(topics) 的返回
- * @param {{date?:string, ctx?:object, sellRows?:Array, ebbCtx?:object}} [opts]
+ * @param {Map} dragonMap  rankDragons(topics) 的返回【卖点侧用】（= 收盘口径，退潮 / 卖点逐字不变）
+ * @param {{date?:string, ctx?:object, sellRows?:Array, ebbCtx?:object,
+ *          buyDragonMap?:Map, pctMap?:Map, prevEbbDay?:object}} [opts]
  *        date     = 展示日（当前已由组合式调 decorateDecisionRows 统一装饰，这里只留作扩展位）
  *        ctx      = decision-collect#collectDecisionTopics(actionContext) 给的标记上下文
  *                   {prevDragonNames, prevBuyNames, prevBought, prevBoughtTopics, topicStreakPast}；
@@ -1055,6 +1071,11 @@ function _buildBlock(block, dragonMap, tier) {
  *        sellRows = decision-collect 给的卖点候选行（缺省 ⇒ 不产卖点段）
  *        ebbCtx   = decision-collect#_ebbCtxOf 采好的【退潮首日事实】（市场总龙 / 今日停牌 / 今日占比 /
  *                   同题材龙位成员 / 市场总龙二）；缺省 / ready=false ⇒ 退潮规则不生效（§10 不猜）
+ *        buyDragonMap = ★ [TVRB-926 2026-10-14 用户口径]【买点侧专用】的龙位名册（9:26 口径，
+ *                   decision-rules#rankDragonsWithPctMap 的返回）；缺省 ⇒ 退回上面的 dragonMap
+ *                   = 旧行为（§11 默认零行为变化）。
+ *        pctMap   = ★ [TVRB-926]【买点侧专用】的 9:26 口径区间涨幅（readAuctionLegRangeMap 的返回），
+ *                   行上「十日涨幅」取它；缺省 ⇒ 退回成员自带值 = 旧行为。
  * @returns {{topics:Array, blocks:Array, buy:object, sell:Array, excludedTopics:Array,
  *            notes:Array, pickCount:number, buyNames:Set<string>, cashAlert:object, ebb:object|null}}
  *   topics        —— 全部参与排名的题材（含被排除的），按排名，供说明 / 复核
@@ -1075,6 +1096,9 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   const o = opts || {};
   const ctx = o.ctx || {};
   const list = (topics || []).filter(function(b) { return b && b.topic; });
+  // ★ [TVRB-926 2026-10-14] 买点侧专用的 9:26 口径输入（缺省 ⇒ 与卖点共用同一份 = 旧行为，§11）
+  const buyDragonMap = (o.buyDragonMap instanceof Map && o.buyDragonMap.size > 0) ? o.buyDragonMap : dragonMap;
+  const buyPctMap = (o.pctMap instanceof Map && o.pctMap.size > 0) ? o.pctMap : null;
   const out = {
     topics: [],
     blocks: [],
@@ -1128,7 +1152,7 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       });
       continue;
     }
-    out.blocks.push(_buildBlock(b, dragonMap, tier));
+    out.blocks.push(_buildBlock(b, buyDragonMap, tier, buyPctMap));
   }
 
   // 决策看板形状的买点计划：第 1 块 → heavy、第 2 块 → light（本看板最多两块，candidates 恒空）
@@ -1373,6 +1397,21 @@ export function buildTvrbRulesLines() {
       '⚠️ 它若同时在卖点侧（昨天已经买过），卖点侧【不改写】它的标签（今天又进买点 ⇒ 持有）——' +
       '同一天不可能既「唯一要买」又「竞价清仓」。',
     '二十二、本看板的退潮判定【不做预测、不改客观数据】：十日涨幅 / 竞价涨幅 / 量比 / 占比 / 龙标 /' +
-      '名次变化 / 连板 / 封单额一律照常显示 —— 退潮只改「今天怎么买、怎么卖」。'
+      '名次变化 / 连板 / 封单额一律照常显示 —— 退潮只改「今天怎么买、怎么卖」。',
+    // ── ★ [TVRB-926 2026-10-14 用户口径 · 原话] 「题材量比看板选股买点侧，为什么早上的，和收盘的
+    //    不一样，我只想要早上 9 点 26 分的……因为我对照历史日期的时候就对不上，
+    //    比如今天我明明买了某只股票，过些时间我再翻开那个时期，又成另外一只股票，非常不合理。」
+    //    ⇒ 买点侧选股（含行上十日涨幅）固定用【9:26 口径】。规则与判定必须同处一处（§6）。
+    '二十三、【选股用 9:26 口径的十日涨幅】（★ 本条专门解释「为什么早上看的和收盘后翻回来的不一样」）：' +
+      '区间涨幅的【当天那一根腿】在 15:00 收盘后会被自动换成【收盘涨幅】' +
+      '（早上 9:25 落库时用的是【竞价涨幅】）⇒ 每只票的十日涨幅会被按各自「收盘 − 竞价」的差重排，' +
+      '题材组内的【龙一 / 龙二】名次随之换人 ⇒ 选出来的票就不是早上那一批了。' +
+      '⚠️ 本看板的【买点侧选股】（含每行显示的十日涨幅）一律用【9:26 口径】那一份：' +
+      '用库里已存的「收盘涨幅 / 竞价涨幅」把那一根腿反解回竞价口径 —— ' +
+      '⛔ 不新建表、不改任何行情数据，且历史日期同样有效（翻回任何一天，看到的都是当天 9:26 选出的那批股票）。' +
+      '⚠️ 只有【买点侧选股】用这一份：其余（题材排名、平均量比、占比、退潮判定 / 市场总龙、卖点）' +
+      '与早盘竞价看板、决策看板用的是【同一份】收盘口径 —— 用户拍板「其它不变」。' +
+      '⚠️ 反解的前提（那一行确实已换过腿、且两个涨幅都读得到）不满足时，如实保留原值并在' +
+      '买点侧提示「9:26 口径未就绪」，⛔ 绝不静默拿收盘口径冒充早上那一份。'
   ];
 }

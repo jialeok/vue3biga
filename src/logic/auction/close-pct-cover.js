@@ -30,10 +30,14 @@ import { ensureAuctionCodeMapping } from './auction-fetch-helpers.js';
 import { getDragonTargetRows, getDragonWindowDates } from './dragon-rank.js';
 // 区间涨幅 T 腿口径单一真相（纯函数）。⚠️ 漏了这个 import 会让 _syncRangeTDay 抛
 // ReferenceError，而它被 try/catch 吞掉 → T 腿校正静默失效（2026-09-10 审查发现）。
-import { replaceTDayLeg } from './range-window.js';
+// [TVRB-926 2026-10-14] 同时取「收盘覆盖时刻」的全站唯一实现（closeCoverUtcMs）——
+//   它原先在本文件里是一份私有拷贝，现在有了第二个消费者
+//   （range-auction-leg.js 要把 T 腿【反解回竞价腿】给题材量比看板用），
+//   两处必须用同一把时间尺子（§6），否则会出现「换了腿却不反解」的静默错值。
+import { replaceTDayLeg, closeCoverUtcMs, CLOSE_COVER_HOUR_BJ } from './range-window.js';
 
-/** 北京时间 15:00 收盘（与 dragon-rank 的收盘门槛同口径，此处独立常量避免反向依赖） */
-export const CLOSE_COVER_HOUR = 15;
+/** 北京时间 15:00 收盘（口径常量落在 range-window.js#CLOSE_COVER_HOUR_BJ，此处只做转发） */
+export const CLOSE_COVER_HOUR = CLOSE_COVER_HOUR_BJ;
 
 /** 失败的日期在该时长内不再重试：15:00 后行情可能尚未结算，给数据源留出时间并限制请求量 */
 const FAIL_RETRY_MS = 10 * 60 * 1000;
@@ -47,14 +51,6 @@ let _inflight = null;
 
 function _beijingHour() {
     return (new Date().getUTCHours() + 8) % 24;
-}
-
-/** 该日收盘覆盖时刻（北京 15:00）对应的 UTC 时间戳 */
-function _closeCoverUtcMs(dateStr) {
-    if (!dateStr) return NaN;
-    const base = Date.parse(dateStr + 'T00:00:00Z');
-    if (Number.isNaN(base)) return NaN;
-    return base + (CLOSE_COVER_HOUR - 8) * 3600000;
 }
 
 function _parsePct(raw) {
@@ -98,7 +94,7 @@ function _needCover(cloudRow, aucPct, date) {
     if (!cloudRow) return true;
     const close = _parsePct(cloudRow.change_pct);
     if (close === null) return true;
-    const closeMs = _closeCoverUtcMs(date);
+    const closeMs = closeCoverUtcMs(date);
     const t = cloudRow.updated_at ? Date.parse(cloudRow.updated_at) : NaN;
     // 时间判定优先于「与竞价相同」判定：一字板 / 停牌股的收盘价确实等于 9:25 竞价价
     // （如 桂林旅游 +9.99%、瑞尔特 +10.01%），change_pct 与 auc_pct_chg 相同是【合法的】。
@@ -349,7 +345,7 @@ async function _syncRangeTDay(date, cloudByName, freshPctByName) {
     }
     if (!rangeRows || rangeRows.size === 0) return 0;
 
-    const closeMs = _closeCoverUtcMs(date);
+    const closeMs = closeCoverUtcMs(date);
     if (Number.isNaN(closeMs)) return 0;
     // 完整行门槛 = 该日窗口的交易日数（[T-9, T]）。缺腿行（days < 门槛）不做代数换算。
     const expectedLegs = getDragonWindowDates(date).length;
