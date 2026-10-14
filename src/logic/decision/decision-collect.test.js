@@ -6,7 +6,7 @@
 //   两种都不会报错，只会静默少一枚标签，所以必须钉死。
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { suspendEntriesOf, ebbCtxOf } from './decision-collect.js';
+import { suspendEntriesOf, ebbCtxOf, nonFirstDaySuspendNames } from './decision-collect.js';
 import { state } from '../app-state.js';
 
 describe('decision-collect · suspendEntriesOf（停牌名单出口，三个选股看板共用）', () => {
@@ -314,5 +314,102 @@ describe('decision-collect · ebbCtxOf · 停牌判据（上游只有当日 ⇒ 
     };
     const c = ebbCtxOf(rows, topics, rankMap, TODAY, YEST);
     expect(c.leaderSuspended).toBe(false);
+  });
+});
+
+// ── ★★ [SUSPEND-NOBUY 2026-10-14 用户口径] 买点侧「连续停牌 ⇒ 买不进」的名单出口 ─────────────
+//   用户原话：「10月14日的新华传媒是停牌（非首日），不应该选进买点侧……停牌首日可选入（已实现），
+//     次日还是停牌……就不要选进去了，相当于一字买不进……退到龙二，龙三」。
+//   口径：今天停 ∧ 昨天停 ⇒ 进名单（买点侧跳过并顺延）；只停一天（首日）/ 今天复牌 ⇒ 不进名单。
+//   ⛔ 判据不新建：两腿都用本文件唯一的 _suspendedOn（§6），与退潮判定同一把尺子。
+describe('decision-collect · nonFirstDaySuspendNames（连续停牌第 2 天及以上的「买不进」名单）', () => {
+  // ⚠️ 两个日期都必须是【非本地今天】的历史日，才会走 _suspendedOn 的第②腿（库内竞价行）；
+  //    沿用本文件既有的「历史日」约定（HIST = 2026-10-13 ≠ 本地今天，见上一 describe）。
+  const D = '2026-10-13';   // 展示日（模拟「今天」）
+  const P = '2026-10-10';   // 上一交易日（模拟「昨天」）
+
+  let savedAuction = null;
+  let savedHot = null;
+  beforeEach(() => {
+    savedAuction = state._auctionMemCache;
+    savedHot = state._hotFullRowCache;
+    state._auctionMemCache = {};
+    state._hotFullRowCache = {};
+  });
+  afterEach(() => {
+    state._auctionMemCache = savedAuction;
+    state._hotFullRowCache = savedHot;
+  });
+
+  const rows = [{ name: '新华传媒' }, { name: '新华文轩' }, { name: '东方明珠' }];
+  // 构库内竞价行缓存：值 '' / undefined ⇒ 该日该票【没有行】（§10 场景）
+  function cache(today, prev) {
+    const mk = function(m) {
+      return Object.keys(m).filter(function(k) { return m[k] !== '' && m[k] != null; })
+        .map(function(k) { return { stock: k, volume: m[k] }; });
+    };
+    const c = {};
+    if (today) c[D] = mk(today);
+    if (prev) c[P] = mk(prev);
+    return c;
+  }
+
+  it('★ 连续停牌（今天停 ∧ 昨天停）⇒ 进名单（10-14 新华传媒事故的回归钉）', () => {
+    state._auctionMemCache = cache(
+      { 新华传媒: '0', 新华文轩: '288', 东方明珠: '512' },
+      { 新华传媒: '0', 新华文轩: '333', 东方明珠: '470' }
+    );
+    expect(nonFirstDaySuspendNames(rows, D, P)).toEqual(new Set(['新华传媒']));
+  });
+
+  it('★ 首日停牌（今天停 ∧ 昨天有量）⇒ ⛔ 不进名单（用户：「昨日还可以入选因为是首日停牌」）', () => {
+    state._auctionMemCache = cache(
+      { 新华传媒: '0', 新华文轩: '288' },
+      { 新华传媒: '1635', 新华文轩: '333' }
+    );
+    expect(nonFirstDaySuspendNames(rows, D, P).size).toBe(0);
+  });
+
+  it('★ 复牌（今天有竞价量）⇒ ⛔ 不进名单（用户：「有成交量、占比，选进去理所当然」）', () => {
+    state._auctionMemCache = cache(
+      { 新华传媒: '1200', 新华文轩: '288' },
+      { 新华传媒: '0', 新华文轩: '333' }
+    );
+    expect(nonFirstDaySuspendNames(rows, D, P).size).toBe(0);
+  });
+
+  it('§10：昨天那一行【取不到】⇒ 不算「昨天停牌」⇒ 不进名单（未知 ≠ 停牌）', () => {
+    // 今天量 0，但昨天根本没有这只票的行（停牌票上游不返回 ⇒ 常见形态）
+    state._auctionMemCache = cache({ 新华传媒: '0', 新华文轩: '288' }, { 新华文轩: '333' });
+    expect(nonFirstDaySuspendNames(rows, D, P).size).toBe(0);
+  });
+
+  it('§10：prevDate / date 任一缺失 ⇒ 返空集（安全降级，⛔ 绝不猜到「连续停牌」）', () => {
+    state._auctionMemCache = cache({ 新华传媒: '0' }, { 新华传媒: '0' });
+    expect(nonFirstDaySuspendNames(rows, D, null).size).toBe(0);
+    expect(nonFirstDaySuspendNames(rows, null, P).size).toBe(0);
+    expect(nonFirstDaySuspendNames(rows, '', '').size).toBe(0);
+    expect(nonFirstDaySuspendNames(rows, undefined, undefined).size).toBe(0);
+  });
+
+  it('rows 为 null / 空 / 无 name 的行：不抛错，返空集', () => {
+    state._auctionMemCache = cache({ 新华传媒: '0' }, { 新华传媒: '0' });
+    expect(nonFirstDaySuspendNames(null, D, P).size).toBe(0);
+    expect(nonFirstDaySuspendNames([], D, P).size).toBe(0);
+    expect(nonFirstDaySuspendNames([{ code: '600825' }, null], D, P).size).toBe(0);
+  });
+
+  it('多只混合：只有「两天都停」的那只进名单（首日 / 复牌 一律不进）', () => {
+    state._auctionMemCache = cache(
+      { 新华传媒: '0', 新华文轩: '0', 东方明珠: '512' },
+      { 新华传媒: '0', 新华文轩: '333', 东方明珠: '0' }
+    );
+    // 新华传媒 = 两天都停 ⇒ 进；新华文轩 = 昨天有量（首日）⇒ 不进；东方明珠 = 今天有量（复牌）⇒ 不进
+    expect(nonFirstDaySuspendNames(rows, D, P)).toEqual(new Set(['新华传媒']));
+  });
+
+  it('§6 单一真相：昨天 leg 与退潮判定同一把尺子 —— 量写着非数字（'-'）⇒ 判不出 ⇒ 不算停', () => {
+    state._auctionMemCache = cache({ 新华传媒: '0' }, { 新华传媒: '-' });
+    expect(nonFirstDaySuspendNames(rows, D, P).size).toBe(0);
   });
 });

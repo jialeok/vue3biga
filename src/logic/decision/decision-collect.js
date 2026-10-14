@@ -661,6 +661,85 @@ function _buildSellRows(prevBought, byName, date) {
  *   buySecond  = ★ [EBB-R8] 买点侧唯一那只【市场龙二】——【当日】十日涨幅在全列表里
  *                （过「有龙位」闸门）排名最靠前、且不是总龙本人的那只（= 用户口径「排名第二」）
  */
+/**
+ * 某日某票在库里【确实没参与竞价】—— 竞价量写着 0（§10：取不到 = null ⇒ 不算，未知 ≠ 没参与）。
+ *
+ * ★ [SUSPEND-NOBUY 2026-10-14] 由 _ebbCtxOf 内的私有实现【提升为模块级】：判停牌现在有两个消费方
+ *   （退潮首日的 _ebbCtxOf ＋ 买点侧「连续停牌 ⇒ 买不进，顺延下一龙位」），按 §6 只允许一处实现。
+ *
+ * ⚠️ 数据源 = auction_watchlist 的内存缓存（getAuctionVolume → getStockHistoryValue）。
+ * ⚠️ 该行【不存在】⇒ 返 null ⇒ 不算停牌（§10 未知 ≠ 停牌）——
+ *    实测 2026-10-14 新华传媒就**不在**这天的 watchlist 里（停牌票上游根本不返回它），
+ *    所以「今天停不停牌」不能只靠这条腿，必须走 _suspendedOn 的第①腿（上游快照）。
+ *    但「昨天停没停」在历史日只能靠这条腿 —— 10-13 那一行在，且 volume 写着 "0"（实测）。
+ */
+function _noAuctionOn(d, name) {
+  return getAuctionVolume(d, name) === 0;
+}
+
+/**
+ * ★★ [EBB-R8b 2026-10-14 实测修] 某天某票是不是停牌 —— 本文件唯一的停牌判据（§6）。
+ *
+ * 为什么不能直接写 `isSuspended(date, name)`：上游两个快照接口【只有当日数据】，
+ *   `isSuspended` 在**历史日**恒 false（见 suspend.js#canJudgeSuspended 的注释）。
+ *   实测事故：2026-10-14 回看 10-13，总龙【新华传媒】当天停牌（库里 10-13 那一行竞价量 = 0），
+ *   但 `isSuspended('2026-10-13', …)` 返 false ⇒ 判据①不成立 ⇒ **退潮首日整套静默失效**
+ *   （买点不灰化 / 无退潮不买 / 无龙二 / 无横幅）—— 与用户反复报的「没生效」是同一类事故。
+ *
+ * 判据（两腿，先权威后回退）：
+ *   ① 上游快照 —— `isSuspended`，**仅当它能为这一天作证时**（`canJudgeSuspended(d)`，
+ *      即 d 就是今天）才算「权威的否定」；
+ *   ② 库内该日该票自己的竞价行 —— 竞价量 = 0 ⇒ 那天没参与集合竞价（= 停牌语义，
+ *      与 prevLeader.suspendedLike 逐字同一把尺子）。
+ * ⛔ 今日路径行为【零变化】：`canJudgeSuspended(今天)` 恒 true ⇒ 第①腿返 false 时即返回 false，
+ *   不会被较弱的「量为 0」改写（§11）。§10：两腿都取不到 ⇒ false（不猜成停牌）。
+ *
+ * @param {string} d 日期 YYYY-MM-DD（可以是历史日）
+ * @param {string} name 股票名
+ * @returns {boolean}
+ */
+function _suspendedOn(d, name) {
+  if (isSuspended(d, name)) return true;
+  if (canJudgeSuspended(d)) return false;
+  return _noAuctionOn(d, name);
+}
+
+/**
+ * ★★ [SUSPEND-NOBUY 2026-10-14 用户口径] 【买点侧】的「买不进名单」= **连续停牌第 2 天及以上**的票。
+ *
+ * 用户原话：
+ *   「10月14日的新华传媒是停牌（非首日），不应该选进买点侧，因为停牌的股票根本不能买，也买不进。
+ *     昨日还可以入选因为是首日停牌。新华传媒如果今天复牌，有成交量，有占比等数据，选进去理所当然，
+ *     所以改变下规则，停牌首日可选入（已实现），次日还是停牌（没有竞价涨幅，竞价量，昨日成交量等），
+ *     就不要选进去了，相当于一字买不进，因为当天有 14 只，选 2 只，退到龙二，龙三，
+ *     买点侧的这个题材应该是今天早上的龙二，龙三（因为能买进）。」
+ *
+ * 口径：
+ *   · **首日停牌**（今天停、昨天没停）⇒ ⛔ **不**进本名单 ⇒ 照旧可以入选（用户：「昨日还可以入选」）；
+ *   · **连续停牌**（今天停、昨天也停）⇒ 进本名单 ⇒ 买点侧**跳过并顺延到下一龙位**
+ *     （与「竞价一字买不进 ⇒ 顺延」同一条处理路径，见 topic-vol-ratio-rules#_buildBlock）；
+ *   · 一旦**复牌**（今天有竞价）⇒ 今天不在名单里 ⇒ 理所当然参与选股。
+ *
+ * ⛔ 只影响【买点侧选股】：退潮判定 / 市场总龙 / 卖点段 / 停牌标记（客观数据）一律不动（§11）。
+ * ⛔ 不新建判据：「今天停没停」「昨天停没停」都用本文件唯一的 _suspendedOn（§6）。
+ * §10：prevDate 未知（老调用方 / 单测不传）⇒ 返**空集** ⇒ 不跳过任何票（安全降级，不猜）。
+ *
+ * @param {Array} rows 当日全列表行（含灰行），只需 name 字段
+ * @param {string} date 展示日
+ * @param {string|null} prevDate 上一交易日
+ * @returns {Set<string>} 需要跳过的股票名集合（可能是空集）
+ */
+export function nonFirstDaySuspendNames(rows, date, prevDate) {
+  const out = new Set();
+  if (!date || !prevDate) return out;
+  (rows || []).forEach(function(r) {
+    const nm = r && r.name;
+    if (!nm) return;
+    if (_suspendedOn(date, nm) && _suspendedOn(prevDate, nm)) out.add(String(nm));
+  });
+  return out;
+}
+
 function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDate) {
   const none = {
     ready: false, leader: null, second: null,
@@ -685,32 +764,10 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
     return y;
   };
 
-  /** 某日某票在库里【确实没参与竞价】—— 竞价量写着 0（§10：取不到 = null ⇒ 不算，未知 ≠ 没参与） */
-  const _noAuctionOn = function(d, name) {
-    return getAuctionVolume(d, name) === 0;
-  };
-  /**
-   * ★★ [EBB-R8b 2026-10-14 实测修] 某只票在【展示日】是不是停牌 —— 本文件唯一的停牌判据（§6）。
-   *
-   * 为什么不能直接写 `isSuspended(date, name)`：上游两个快照接口【只有当日数据】，
-   *   `isSuspended` 在**历史日**恒 false（见 suspend.js#canJudgeSuspended 的注释）。
-   *   实测事故：2026-10-14 回看 10-13，总龙【新华传媒】当天停牌（库里 10-13 那一行竞价量 = 0），
-   *   但 `isSuspended('2026-10-13', …)` 返 false ⇒ 判据①不成立 ⇒ **退潮首日整套静默失效**
-   *   （买点不灰化 / 无退潮不买 / 无龙二 / 无横幅）—— 与用户反复报的「没生效」是同一类事故。
-   *
-   * 判据（两腿，先权威后回退）：
-   *   ① 上游快照 —— `isSuspended`，**仅当它能为这一天作证时**（`canJudgeSuspended(date)`，
-   *      即 date 就是今天）才算「权威的否定」；
-   *   ② 库内该日该票自己的竞价行 —— 竞价量 = 0 ⇒ 那天没参与集合竞价（= 停牌语义，
-   *      与下面 prevLeader.suspendedLike 逐字同一把尺子）。
-   * ⛔ 今日路径行为【零变化】：`canJudgeSuspended(今天)` 恒 true ⇒ 第①腿返 false 时即返回 false，
-   *   不会被较弱的「量为 0」改写（§11）。§10：两腿都取不到 ⇒ false（不猜成停牌）。
-   */
-  const _suspendOf = function(name) {
-    if (isSuspended(date, name)) return true;
-    if (canJudgeSuspended(date)) return false;
-    return _noAuctionOn(date, name);
-  };
+  // ⚠️ [SUSPEND-NOBUY 2026-10-14] `_noAuctionOn` / `_suspendOn` 原本是这里的私有闭包，
+  //   现已【提升为模块级】（见本文件 `function _noAuctionOn` / `function _suspendedOn`）：
+  //   停牌判定现在有两个消费方 —— 退潮首日的事实（本函数）＋ 买点侧「连续停牌 ⇒ 买不进」，
+  //   按 §6 只能有一处实现；下面一律调 `_suspendedOn(date, name)`（行为逐字不变）。
 
   const cand = [];
   const seen = new Set();
@@ -756,7 +813,7 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
       siblings.push({
         name: m.name, rank: rank,
         isYizi: !!m.isYizi,
-        suspended: _suspendOf(m.name)
+        suspended: _suspendedOn(date, m.name)
       });
     });
     siblings.sort(function(a, b) {
@@ -773,7 +830,7 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
       name: second.name, pct: second.pct, topic: String(second.topic || ''),
       rank: _rankOf(second.name),
       isYizi: _isYiziOf(second.name),
-      suspended: _suspendOf(second.name)
+      suspended: _suspendedOn(date, second.name)
     };
   }
 
@@ -850,7 +907,7 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
         name: top.name, pct: top.pct, topic: top.topic, code: top.code,
         rank: top.rank,
         isYizi: _isYiziOf(top.name),
-        suspended: _suspendOf(top.name)
+        suspended: _suspendedOn(date, top.name)
       };
     }
   }
@@ -861,7 +918,7 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
     second: second,
     // 停牌走 suspend.js 的唯一实现（§6），⛔ 不在这里另判一遍。
     //   [EBB-R8b] 走 _suspendOf：今日 = 上游快照；历史日回退库内该日竞价行（见 _suspendOf 的 JSDoc）。
-    leaderSuspended: _suspendOf(leader.name),
+    leaderSuspended: _suspendedOn(date, leader.name),
     // 今日竞价占比（%）：null = 缺数据（规则层据此【不判】不达标，§10：未知 ≠ 不达标）
     leaderShare: getAuctionShare(date, leader.name),
     siblingDragons: siblings,
@@ -1143,6 +1200,14 @@ export function collectDecisionData(date, opts) {
       out.ebbCtx = _ebbCtxOf(rows, topics, dragonMap, date,
         opts && opts.prevRangeMap, rangeMap, prevDate);
     }
+    // ★★ [SUSPEND-NOBUY 2026-10-14 用户口径] 买点侧「买不进名单」= 连续停牌第 2 天及以上的票。
+    //   放在本出口的【公共段】（⛔ 不在上面 topicActionContext 分支里）：这份名单只依赖
+    //   rows + date + prevDate（本函数手上就有），与「要不要回溯历史买点」无关 ——
+    //   分开放即可让它走最便宜的路径，不必替不关心它的调用方白付回溯开销（§36）。
+    //   ⚠️ 成本 = O(n) 次 Set / Map 命中（n = 当日列表只数，通常 < 200）；无网络、无额度。
+    //   ⛔ 消费方只有一个：topic-vol-ratio-rules#_buildBlock（买点侧选股顺延）。
+    //      退潮判定 / 市场总龙 / 卖点段一律不看它（§11）。
+    out.buySkipSuspend = nonFirstDaySuspendNames(rows, date, prevDate);
     return out;
   }
 
@@ -1372,6 +1437,11 @@ export function collectDecisionTopics(date, opts) {
       // ★ [EBB 2026-10-13] 退潮首日的事实（市场总龙 + 今日状态）；ready=false 表示昨日涨幅尚未注入
       if (rec.ebbCtx) out.ebbCtx = rec.ebbCtx;
     }
+    // ★★ [SUSPEND-NOBUY 2026-10-14 用户口径] 买点侧「买不进名单」（= 连续停牌第 2 天及以上的票）。
+    //   它与 sellRows 采没采到【无关】，故必须放在上面那个 if 之外。
+    //   ⚠️ 空集【也是一份有效答案】（今天就没有连续停牌的票）⇒ 照样往下传；
+    //      只有「这个键根本没算过」（未走到内部出口）才不挂 ⇒ 调用方读到 undefined = 不知道。
+    if (rec.buySkipSuspend) out.buySkipSuspend = rec.buySkipSuspend;
     return out;
   }
   return {

@@ -962,14 +962,21 @@ function _dragonCandidates(block, dragonMap, pctMap) {
  * @param {Map} [pctMap]   ★ [TVRB-926] 9:26 口径区间涨幅（行上十日涨幅取它；缺 ⇒ 退回成员自带值）
  * @returns {object} 决策看板形状的买点块（+ 本看板自己的几个平铺别名，见返回值末尾）
  */
-function _buildBlock(block, dragonMap, tier, pctMap) {
+function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames) {
   const avg = avgVolRatioOf(block);
   const cands = _dragonCandidates(block, dragonMap, pctMap);
   const picked = [];
   const skipped = [];
+  const skippedSuspend = [];
   for (let i = 0; i < cands.length && picked.length < tier.pickCount; i++) {
     const c = cands[i];
     if (c.isYizi) { skipped.push(c); continue; }   // 竞价涨停 → 买不进 ⇒ 顺延下一龙位
+    // ★★ [SUSPEND-NOBUY 2026-10-14 用户口径] 连续停牌（第 2 天及以上）⇒ 买不进 ⇒ 同样顺延。
+    //   用户原话：「停牌的股票根本不能买，也买不进……停牌首日可选入（已实现），
+    //   次日还是停牌（没有竞价涨幅，竞价量，昨日成交量等），就不要选进去了，
+    //   相当于一字买不进……退到龙二，龙三。」
+    //   ⛔ 这里只【跳过】，不改 tier（题材只数照旧按全部成员算，用户：「当天有 14 只，选 2 只」）。
+    if (skipBuyNames && skipBuyNames.has(c.name)) { skippedSuspend.push(c); continue; }
     picked.push(c);
   }
 
@@ -995,21 +1002,31 @@ function _buildBlock(block, dragonMap, tier, pctMap) {
   const skippedNames = skipped.map(function(c) {
     return (c.rank ? getDragonLabel(c.rank) : '') + c.name;
   });
+  // ★ [SUSPEND-NOBUY 2026-10-14] 被【连续停牌】跳过的那几只（与一字分开列，文案不同、理由不同）
+  const skippedSuspendNames = skippedSuspend.map(function(c) {
+    return (c.rank ? getDragonLabel(c.rank) : '') + c.name;
+  });
 
   const reason = '按【平均竞价量比 ' + formatAvgVolRatio(avg) + '】排第 ' + block.rank +
     '，股票数量 ' + tier.count + ' 只（' + tier.rangeText + '）⇒ 取 ' + tier.pickCount +
-    ' 只；按【龙一 → 龙二 → …】从高到低依次取其非【竞价涨停】的票';
+    ' 只；按【龙一 → 龙二 → …】从高到低依次取其非【竞价涨停】、非【连续停牌】的票';
 
   const notes = [];
   notes.push('本题材按平均竞价量比排第 ' + block.rank + '（量比 ' + formatAvgVolRatio(avg) +
     '），数量 ' + tier.count + ' 只 → ' + tier.rangeText + ' ⇒ 取 ' + tier.pickCount +
-    ' 只；入选股票按龙位从高到低依次取，遇到【竞价涨停（竞价一字）】的龙位则顺延到下一个龙位。');
+    ' 只；入选股票按龙位从高到低依次取，遇到【竞价涨停（竞价一字）】或【连续停牌】的龙位则顺延到下一个龙位。');
   if (skippedNames.length > 0) {
     notes.push('⚠️ 龙位 ' + skippedNames.join('、') +
       ' 竞价涨停（买不进）⇒ 已顺延到下一个龙位（用户口径：龙一涨停看龙二，龙二涨停看龙三……）。');
   }
+  if (skippedSuspendNames.length > 0) {
+    notes.push('⚠️ 龙位 ' + skippedSuspendNames.join('、') +
+      ' 【连续停牌】（今天停牌、昨天也停牌：没有竞价涨幅 / 竞价量 / 昨日成交量）⇒ 买不进，' +
+      '已顺延到下一个龙位。⚠️ 停牌【首日】不跳（用户口径：昨天首日停牌还可以入选）——' +
+      '只有连着第 2 天及以上停牌才按「买不进」处理。');
+  }
   if (picks.length < tier.pickCount) {
-    notes.push('⚠️ 本题材有龙位、且可买入（非竞价涨停）的票不足 ' + tier.pickCount +
+    notes.push('⚠️ 本题材有龙位、且可买入（非竞价涨停、非连续停牌）的票不足 ' + tier.pickCount +
       ' 只 ⇒ 实际取 ' + picks.length + ' 只（⛔ 不从其它题材补位）。');
   }
 
@@ -1062,7 +1079,7 @@ function _buildBlock(block, dragonMap, tier, pctMap) {
  * @param {Array} topics   rankDecisionTopics(entries, MODE_VOL_RATIO) 的返回（已按平均竞价量比降序）
  * @param {Map} dragonMap  rankDragons(topics) 的返回【卖点侧用】（= 收盘口径，退潮 / 卖点逐字不变）
  * @param {{date?:string, ctx?:object, sellRows?:Array, ebbCtx?:object,
- *          buyDragonMap?:Map, pctMap?:Map, prevEbbDay?:object}} [opts]
+ *          buyDragonMap?:Map, pctMap?:Map, buySkipNames?:Set, prevEbbDay?:object}} [opts]
  *        date     = 展示日（当前已由组合式调 decorateDecisionRows 统一装饰，这里只留作扩展位）
  *        ctx      = decision-collect#collectDecisionTopics(actionContext) 给的标记上下文
  *                   {prevDragonNames, prevBuyNames, prevBought, prevBoughtTopics, topicStreakPast}；
@@ -1076,6 +1093,10 @@ function _buildBlock(block, dragonMap, tier, pctMap) {
  *                   = 旧行为（§11 默认零行为变化）。
  *        pctMap   = ★ [TVRB-926]【买点侧专用】的 9:26 口径区间涨幅（readAuctionLegRangeMap 的返回），
  *                   行上「十日涨幅」取它；缺省 ⇒ 退回成员自带值 = 旧行为。
+ *        buySkipNames = ★★ [SUSPEND-NOBUY 2026-10-14 用户口径] 买点侧的【买不进名单】
+ *                   （= 连续停牌第 2 天及以上的票，decision-collect#nonFirstDaySuspendNames 的返回）；
+ *                   命中者与「竞价一字」走同一条【跳过并顺延下一龙位】的处理。
+ *                   ⛔ 缺省 / 空集 ⇒ 与旧行为逐字一致（§11）；停牌【首日】不在本名单里（仍可入选）。
  * @returns {{topics:Array, blocks:Array, buy:object, sell:Array, excludedTopics:Array,
  *            notes:Array, pickCount:number, buyNames:Set<string>, cashAlert:object, ebb:object|null}}
  *   topics        —— 全部参与排名的题材（含被排除的），按排名，供说明 / 复核
@@ -1099,6 +1120,10 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   // ★ [TVRB-926 2026-10-14] 买点侧专用的 9:26 口径输入（缺省 ⇒ 与卖点共用同一份 = 旧行为，§11）
   const buyDragonMap = (o.buyDragonMap instanceof Map && o.buyDragonMap.size > 0) ? o.buyDragonMap : dragonMap;
   const buyPctMap = (o.pctMap instanceof Map && o.pctMap.size > 0) ? o.pctMap : null;
+  // ★★ [SUSPEND-NOBUY 2026-10-14 用户口径] 买点侧「买不进名单」= 【连续停牌第 2 天及以上】的票
+  //   （= decision-collect#nonFirstDaySuspendNames(rows, date, prevDate) 的返回）。
+  //   ⛔ 缺省 / 空集 ⇒ 与旧行为逐字一致（§11）；只影响买点侧选股（退潮 / 卖点不看它）。
+  const buySkipNames = (o.buySkipNames instanceof Set && o.buySkipNames.size > 0) ? o.buySkipNames : null;
   const out = {
     topics: [],
     blocks: [],
@@ -1152,7 +1177,7 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       });
       continue;
     }
-    out.blocks.push(_buildBlock(b, buyDragonMap, tier, buyPctMap));
+    out.blocks.push(_buildBlock(b, buyDragonMap, tier, buyPctMap, buySkipNames));
   }
 
   // 决策看板形状的买点计划：第 1 块 → heavy、第 2 块 → light（本看板最多两块，candidates 恒空）
@@ -1412,6 +1437,17 @@ export function buildTvrbRulesLines() {
       '⚠️ 只有【买点侧选股】用这一份：其余（题材排名、平均量比、占比、退潮判定 / 市场总龙、卖点）' +
       '与早盘竞价看板、决策看板用的是【同一份】收盘口径 —— 用户拍板「其它不变」。' +
       '⚠️ 反解的前提（那一行确实已换过腿、且两个涨幅都读得到）不满足时，如实保留原值并在' +
-      '买点侧提示「9:26 口径未就绪」，⛔ 绝不静默拿收盘口径冒充早上那一份。'
+      '买点侧提示「9:26 口径未就绪」，⛔ 绝不静默拿收盘口径冒充早上那一份。',
+    // ── ★ [SUSPEND-NOBUY 2026-10-14 用户口径 · 原话]「10月14日的新华传媒是停牌（非首日），
+    //    不应该选进买点侧，因为停牌的股票根本不能买，也买不进。昨日还可以入选因为是首日停牌……
+    //    次日还是停牌（没有竞价涨幅，竞价量，昨日成交量等），就不要选进去了，相当于一字买不进，
+    //    因为当天有 14 只，选 2 只，退到龙二，龙三，买点侧的这个题材应该是今天早上的龙二，龙三。」
+    //    ⇒ 与上面第二十三条同一个落点（买点侧选股），规则与判定必须同处一处（§6）。
+    '二十四、【连续停牌的票买不进 —— 买点侧跳过并顺延下一龙位】：停牌的股票根本不能买，也买不进。' +
+      '所以【连续停牌第 2 天及以上】的票（今天停牌、昨天也停牌：当天没有竞价涨幅 / 竞价量 / 昨日成交量）' +
+      '在买点侧一律【跳过】，顺延到下一个能买进的龙位（例如题材龙一停牌 ⇒ 取龙二、龙三）。' +
+      '⚠️ 停牌【首日】不跳 —— 昨天首日停牌仍可入选；一旦复牌、有成交量与占比数据，就理所当然参与选股。' +
+      '⚠️ 本规则只改「买点侧选谁」：⛔ 不改题材只数（档位照旧按全部成员算）、不改退潮判定、' +
+      '不改市场总龙、不改卖点侧。'
   ];
 }

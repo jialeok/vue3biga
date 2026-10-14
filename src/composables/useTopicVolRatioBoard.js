@@ -386,7 +386,12 @@ export function useTopicVolRatioBoard() {
         prevEbbDay: prevEbbDay.value,
         // ★★ [TVRB-926] 买点侧专用的 9:26 口径（缺 ⇒ 规则层退回原口径 = 旧行为，§11）
         buyDragonMap: buyMap ? rankDragonsWithPctMap(rec.topics, buyMap) : null,
-        pctMap: buyMap
+        pctMap: buyMap,
+        // ★★ [SUSPEND-NOBUY 2026-10-14 用户口径] 买点侧「买不进名单」= 【连续停牌第 2 天及以上】的票
+        //   （collectDecisionTopics 出口已用库里当日/昨日竞价行算好，见 decision-collect
+        //    #nonFirstDaySuspendNames）。规则层把它与「竞价一字」走同一条【跳过并顺延下一龙位】。
+        //   ⛔ 缺省 ⇒ 规则层退回旧行为（停牌票照旧可选，§11）；停牌【首日】不在名单里（仍可入选）。
+        buySkipNames: rec.buySkipSuspend || null
       });
 
       // §10 ★★ 失败 / 缺数据必须可见：这一天【确实读过】9:26 口径、但没拿到（失败或表里没有）
