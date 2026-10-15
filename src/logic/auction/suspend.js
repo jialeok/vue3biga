@@ -17,13 +17,31 @@
 //   降级判据 = GET /api/a-share/prices/snapshot 该票 volume=0 && turnover=0 && last_price=null，
 //     且同批中【至少一只票有成交】（否则是「尚未开盘」，全市场都是 0 成交，会全员误判）。
 //
+// ===== ★★ [SUSPEND-LIB 2026-10-15 用户口径] 历史日的库内兜底判据 =====
+// 上游快照只有当日 ⇒ 历史日（如 10-15 回看 10-14）本模块什么都没得说 ⇒ 过去一律不标。
+// 用户实测指出这不对：10-14 的【新华传媒】（10-13 停牌首日 ⇒ 次日由龙头组继承成灰行）当天既没有
+// 竞价涨幅、也没有竞价量、也没有昨日成交量，页面上却一个「停牌」小标都没有。
+// 用户口径（逐字）：「在当天自动获取程序没有抓到竞价量，竞价涨幅，昨日成交量，情况下，
+//   这种情况都应该视为停牌股票」，并要求【全部看板统一】。
+//
+// ⇒ 新增第 ③ 条腿（只对上游答不了的日期生效）：
+//   该日该票【三项全缺】⇒ 判为停牌。三项 = 竞价量（auction_watchlist.volume）、
+//   昨日成交量（yest_volume）、竞价涨幅（market_metrics.auc_pct_chg）。
+//   闸门（与 pickSuspendedFromPriceItems 的 `traded > 0` 同一思想）：本次名单里
+//   至少有一只票【成交量 > 0】才算「这一天的数据真的抓过」；一只都没有 ⇒ 判不出来（§10 不猜）。
+//
+// ⛔ 今日路径【逐字不变】（§11）：上游能为这一天作证时（canJudgeSuspended），它的结论即权威，
+//    绝不拿这条较弱的库内判据去改写（否则会在判定未就绪的那几秒里制造伪停牌标）。
+// ⛔ 本腿只算、只写【独立的一份】libSuspendState，⛔ 绝不碰 suspendState ——
+//    后者是「今天那份上游判定」，被历史日改写就会复现 [SUSPEND-STALE] 那类事故。
+//
 // ===== 红线 =====
-//   · ⛔ 只读上游 + 只写本模块内存 ref：不写 Supabase、不碰 numcat/worker、不烧猫抓额度。
+//   · ⛔ 只读上游 / 只读库内内存缓存 + 只写本模块内存 ref：不写 Supabase、不碰 numcat/worker、不烧猫抓额度。
 //   · ⛔ §10 宁缺勿错：两条腿都判不出来 ⇒ 返回 null（不更新缓存、不标），
 //        绝不把「判不出来」当成「没停牌」写进缓存。
 //   · ⛔ 上游两个快照接口【都只有当日数据】（无 date 参数）⇒ 只对「今天」判定；
-//        历史日期一律不标（那天到底停没停牌无从谈起，不能拿今天的快照冒充）。
-//        且【历史日不得改写本模块的状态】—— 见 {ensureSuspendSet} 的 [SUSPEND-STALE] 注释
+//        历史日期由上面的第 ③ 条腿（库内兜底）作答，上游那两条腿在历史日一律不参与。
+//        且【历史日不得改写 suspendState】—— 见 {ensureSuspendSet} 的 [SUSPEND-STALE] 注释
 //        （切到历史日看一眼会把「今天」那份判定清空 ⇒ 消费方把它当成「今天没停牌」）。
 //   · 两腿都可用时取【交集】：任一条腿不认可就不标，避免把「上游覆盖缺口」误当成停牌。
 //
@@ -34,6 +52,12 @@ import { ref } from 'vue';
 import { fuyaoApiGet, tickerToThscode } from '../../data/api/fuyao-proxy.js';
 import { _dbgLog } from '../../data/debug-log.js';
 import { _getLocalTodayStr } from '../tagTitles/rules.js';
+// ★ [SUSPEND-LIB 2026-10-15] 库内兜底判据的数据源（§6 单一真相）：
+//   getStockHistoryValue 是「库内某日某票某字段」的唯一读取器（field 语义：
+//   'volume' = 竞价量、'yestVolume' = 昨日成交量、'aucPctChg' = 竞价涨幅）。
+//   ⛔ 不自己 state._auctionMemCache 里再解析一遍字段 —— 那会变成第二份口径。
+//   ⚠️ 无循环依赖：watchlist-helpers 只 import app-state / supabase-client / debug-log。
+import { getStockHistoryValue } from '../../data/watchlist-helpers.js';
 
 /** 停牌标记文案（唯一出处 —— 模板/CSS/规则文档都从这里取，不各写一份） */
 export const SUSPEND_TAG_TEXT = '停牌';
@@ -52,7 +76,15 @@ const RETRY_MAX = 8;
 const TTL_MS = 3 * 60 * 1000;
 
 // ===== 状态（模块级 ref，§7 不进 Pinia）=====
+/** ① 上游判定（今日专属，权威）—— 任何历史日的计算都 ⛔ 不许碰它。 */
 export const suspendState = ref({ date: '', set: new Set(), version: 0, loadedAt: 0 });
+/**
+ * ③ 库内兜底判定（★★ [SUSPEND-LIB 2026-10-15]）—— 按【当前展示日】缓存一份，
+ * 由 `ensureSuspendSet(date, entries)` 在有名单时算出（纯内存、零请求、零额度）。
+ * ⚠️ 只有【上游答不了这一天】时 `isSuspended` 才会读它（见 isSuspended 的注释）。
+ * ⚠️ 与 suspendState 完全独立：互不覆盖，历史日怎么写都不会动到「今天那份」。
+ */
+export const libSuspendState = ref({ date: '', set: new Set(), version: 0 });
 /** 单飞：{ date, promise } */
 let _inflight = null;
 let _inflightDate = '';
@@ -307,12 +339,80 @@ export function mergeSuspendNames(prevDate, prevSet, date, queried, fresh) {
 }
 
 /**
+ * ★★ [SUSPEND-LIB 2026-10-15 用户口径] 库内兜底判据（纯读内存，无网络、无额度）——
+ * 「该日该票【竞价量 ∧ 昨日成交量 ∧ 竞价涨幅】三项全缺 ⇒ 停牌」。
+ *
+ * 用户口径（逐字）：「在当天自动获取程序没有抓到竞价量，竞价涨幅，昨日成交量，
+ *   情况下，这种情况都应该视为停牌股票」。
+ *
+ * 为什么需要它：上游两个快照接口【只有当日数据】⇒ 翻回历史日（如 10-15 看 10-14）时
+ *   本模块对那天一无所知。但**停牌这件事在库里留下了痕迹** —— 停牌票当天不会有竞价量、
+ *   也不会有竞价涨幅，而它前一交易日的成交量同样取不到（10-13 起连续停牌）。
+ *   实测 2026-10-14：全表 60 行里【只有】新华传媒满足这条判据
+ *   （vol=0 / yv 取不到 / ap=0），其余 59 只都有成交量 —— 精准且零误标。
+ *
+ * 三闸门（缺一不可，§10 宁缺勿错）：
+ *   ① 竞价量 > 0  ⇒ 正常票，立即放行（最常见路径，只花 1 次查表）；
+ *   ② 三项【全都取不到】（vol / 昨量 / 竞价涨幅 都是 null）⇒ 判不出来 ⇒ ⛔ 不当停牌。
+ *      🔴 这道闸门专治【继承空壳行】：历史日注入的「观察组继承 / 龙头组继承」空壳，
+ *         若当日云端压根没有它的行情行，三项必然全空 —— 不过闸就会把整片空壳误标成停牌，
+ *         那是比漏标严重得多的错（§10：未知 ≠ 停牌）。实测新华传媒靠这条脱险：
+ *         它的竞价量是【真实的 0】（market_metrics 影子行），不是「取不到」。
+ *   ③ 昨日成交量 > 0 或 竞价涨幅 ≠ 0（且取得到）⇒ 不符合「三项全缺」⇒ 不是停牌。
+ *   三项都不成立 ⇒ 计入停牌候选。
+ *
+ * 正面证据闸门（与 `pickSuspendedFromPriceItems` 的 `traded > 0` 同一思想）：
+ *   本次名单里【一只都没有成交量】⇒ 更可能是「这一天的数据压根没抓」而不是「全市场停牌」
+ *   ⇒ 返回空集（判不出来，⛔ 不当停牌，§10）。
+ *
+ * ⚠️ 字段口径全部走 `getStockHistoryValue`（§6 单一真相）；⛔ 不在这里再解析一遍原始行。
+ * @param {string} date YYYY-MM-DD（可以是历史日）
+ * @param {Array<{stock?:string, name?:string}|string>} entries 当日渲染名单
+ * @returns {Set<string>} 停牌股票名集合（判不出来 ⇒ 空集）
+ */
+function _libSuspendNamesOf(date, entries) {
+  const set = new Set();
+  let traded = 0;
+  const list = Array.isArray(entries) ? entries : [];
+  for (let i = 0; i < list.length; i++) {
+    const e = list[i];
+    const nm = String((e && (e.stock || e.name)) || (typeof e === 'string' ? e : '') || '').trim();
+    if (!nm || set.has(nm)) continue;
+    const vol = getStockHistoryValue(date, nm, 'volume');
+    if (typeof vol === 'number' && vol > 0) { traded++; continue; }   // ① 有竞价量 ⇒ 正常
+    const yv = getStockHistoryValue(date, nm, 'yestVolume');
+    const ap = getStockHistoryValue(date, nm, 'aucPctChg');
+    // ② 三项全取不到 ⇒ 该日该票根本没有行（多为注入的继承空壳）⇒ 判不出来，⛔ 不当停牌
+    if (vol === null && yv === null && ap === null) continue;
+    if (typeof yv === 'number' && yv > 0) continue;                   // ③ 有昨日成交量 ⇒ 不是
+    if (typeof ap === 'number' && Math.abs(ap) > 1e-9) continue;      // ③ 有竞价涨幅 ⇒ 不是
+    set.add(nm);                                                      // 三项全缺 ⇒ 停牌候选
+  }
+  if (traded === 0) return new Set();   // 正面证据闸门：这一天一只成交的都没有 ⇒ 判不出来
+  return set;
+}
+
+/**
+ * 发布库内兜底判定（幂等：内容没变不升版本 —— 指纹不变就不会让行缓存整体失效，§23）。
+ * @param {string} date
+ * @param {Set<string>} set
+ */
+function _publishLibSuspend(date, set) {
+  const s = libSuspendState.value;
+  if (s.date === date && _sameSet(s.set, set)) return;
+  libSuspendState.value = { date: date, set: set, version: s.version + 1 };
+}
+
+
+/**
  * 确保「该日期的停牌集合」已加载（幂等、单飞、有界重试）。
  *
- * ⚠️ 只有【今天】会被真正加载与写出；传历史日 = 什么都不做（见下方 [SUSPEND-STALE] 注释）。
+ * ⚠️ 上游那两条腿只有【今天】会被真正加载与写出；传历史日 ⇒ 只更新【库内兜底】那份
+ *    （`libSuspendState`，见 _libSuspendNamesOf），⛔ 绝不碰 `suspendState`
+ *    （见下方 [SUSPEND-STALE] 注释）。
  * ⚠️ 同一日期内按名字【合并】而不是整体替换（见 `mergeSuspendNames` 的 JSDoc）。
  *
- * @param {string} date 看板日期 'YYYY-MM-DD'（= 消费方要标注的那一天；非今天 ⇒ 本函数不做任何事）
+ * @param {string} date 看板日期 'YYYY-MM-DD'（= 消费方要标注的那一天；非今天 ⇒ 只算库内兜底那份）
  * @param {Array<{stock?:string, name?:string, code?:string}>} entries 当日渲染名单（股票名 + 代码）
  *        ⚠️ 名字给 `stock`（早盘竞价行）或 `name`（三个选股看板行）都认，见 _loadSuspendedNameSet。
  * @returns {Promise<object>} suspendState.value
@@ -334,6 +434,13 @@ export async function ensureSuspendSet(date, entries) {
   //   ⇒ 修法：历史日【一律不碰 suspendState】。对历史日的**展示**行为逐字不变（`isSuspended` 要求
   //      `s.date === date` ⇒ 仍恒 false ⇒ 历史日照旧不打停牌标，§11）。
   if (date !== _getLocalTodayStr()) {
+    // ★★ [SUSPEND-LIB 2026-10-15 用户口径] 历史日：上游答不了（快照只有当日），
+    //   但【库内证据】答得了 —— 见 _libSuspendNamesOf。这里只更新独立的那份状态，
+    //   ⛔ 绝不碰 suspendState（否则就是下面 [SUSPEND-STALE] 那条事故）。
+    //   ⚠️ 名单还没到（首屏 items 为空）⇒ 什么都不算，等行数变化再次触发本函数。
+    if (Array.isArray(entries) && entries.length > 0) {
+      _publishLibSuspend(date, _libSuspendNamesOf(date, entries));
+    }
     _stopRetry();
     return suspendState.value;
   }
@@ -370,15 +477,31 @@ export async function ensureSuspendSet(date, entries) {
 }
 
 /**
- * 同步读取：该日期、该股票是否停牌。日期不匹配 / 未加载 / 判不出来 → false（不标）。
+ * 同步读取：该日期、该股票是否停牌。
+ *
+ * 三条腿（先权威后兜底）：
+ *   ① 上游判定 `suspendState` —— 对【今天】权威；命中即 true。
+ *   ② 若上游能为这一天作证（`canJudgeSuspended(date)`，当且仅当它就是本地今天）⇒
+ *      它的结论就是权威 ⇒ 返回 false（§11：今日路径与改动前逐字一致，
+ *      ⛔ 绝不在判定未就绪的那几秒里用较弱的库内判据制造伪停牌标）。
+ *   ③ 否则（历史日）⇒ 回退【库内兜底】`libSuspendState`（见 _libSuspendNamesOf）。
+ *      用户口径：「当天没有抓到竞价量、竞价涨幅、昨日成交量 ⇒ 视为停牌」，且要全部看板统一。
+ *
+ * ⛔ 本函数保持【同步、纯读】：不发起任何请求、不做任何计算（计算在 ensureSuspendSet 里
+ *    一次性完成并发布到 ref），因此可以在渲染期被逐行调用（§17 / §21）。
  * @param {string} date
  * @param {string} stockName
  * @returns {boolean}
  */
 export function isSuspended(date, stockName) {
+  if (!date || !stockName) return false;
+  const nm = String(stockName).trim();
+  if (!nm) return false;
   const s = suspendState.value;
-  if (!date || !stockName || s.date !== date || s.set.size === 0) return false;
-  return s.set.has(String(stockName).trim());
+  if (s.date === date && s.set.has(nm)) return true;          // ① 上游命中
+  if (canJudgeSuspended(date)) return false;                  // ② 上游答得了这一天 ⇒ 它的结论即权威
+  const L = libSuspendState.value;                            // ③ 历史日：库内兜底
+  return L.date === date && L.set.has(nm);
 }
 
 /**
@@ -446,10 +569,17 @@ export function decorateSuspendField(row, date) {
   return row;
 }
 
-/** 增量渲染指纹令牌：停牌集合变化必须让行缓存整体失效（与 dragon= 同款理由）。 */
+/**
+ * 增量渲染指纹令牌：停牌集合变化必须让行缓存整体失效（与 dragon= 同款理由）。
+ * ★ [SUSPEND-LIB 2026-10-15] 两份判定都要进令牌：历史日的「停牌」小标完全由库内那份决定，
+ *   而它是在数据到货后才算出来的 —— 不进令牌的话，行缓存不会失效、
+ *   小标要等到别的变化（切日期 / 刷新）才冒出来（用户看到的会是「刷新一下才有」）。
+ */
 export function getSuspendFingerprintToken() {
   const s = suspendState.value;
-  return s.date + '|v' + s.version + '|n' + s.set.size;
+  const L = libSuspendState.value;
+  return s.date + '|v' + s.version + '|n' + s.set.size +
+    '|L' + L.date + 'v' + L.version + 'n' + L.set.size;
 }
 
 /** 切数据源 / 卸载时清空（幂等）。 */
@@ -457,6 +587,10 @@ export function clearSuspendSet() {
   _stopRetry();
   _inflight = null;
   _inflightDate = '';
+  const L = libSuspendState.value;
+  if (!(L.date === '' && L.set.size === 0)) {
+    libSuspendState.value = { date: '', set: new Set(), version: L.version + 1 };
+  }
   if (suspendState.value.date === '' && suspendState.value.set.size === 0) return;
   suspendState.value = { date: '', set: new Set(), version: suspendState.value.version + 1, loadedAt: 0 };
 }

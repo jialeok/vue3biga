@@ -1529,7 +1529,7 @@ describe('tvrb · ★ 买点侧选股用【9:26 口径】的十日涨幅（TVRB-
 // ⛔ 只改「买点侧选谁」：题材只数（档位）照旧按全部成员算；退潮 / 总龙 / 卖点一律不看它（§11）。
 // ⚠️ 本 describe 只钉【规则层对 buySkipNames 的响应】；「哪些票算连续停牌」在
 //    decision-collect.test.js#nonFirstDaySuspendNames 里钉（那是数据层职责，§6）。
-describe('tvrb · ★ 买点侧跳过【连续停牌】并顺延下一龙位（SUSPEND-NOBUY）', function() {
+describe('tvrb · ★ 买点侧【连续停牌】占掉名额、不再补位（SUSPEND-OCCUPY）', function() {
   /** 14 只 ⇒ big 档 = 取 2 只（与用户举例「当天有 14 只，选 2 只」逐字对齐） */
   const mkBig = function() {
     const members = [];
@@ -1540,16 +1540,20 @@ describe('tvrb · ★ 买点侧跳过【连续停牌】并顺延下一龙位（S
     return block('AI应用', 1, members);
   };
 
-  it('★ 龙一连续停牌 ⇒ 跳过它、顺延取龙二龙三（用户：退到龙二，龙三，因为能买进）', function() {
+  it('★★ [用户口径 2026-10-15] 龙一连续停牌 ⇒ 占掉一个名额、只买龙二 1 只（10-14 AI应用 逐字复现）', function() {
     const topics = [mkBig()];
     const dm = rankDragonsWithPctMap(topics, null);
     // 对照组：不跳的时候确实取龙一 + 龙二（证明下面的差异只来自 buySkipNames）
     const before = buildTopicVolRatioPlan(topics, dm, {});
     expect(before.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['票01', '票02']);
-    // 龙一（票01）连续停牌 ⇒ 跳过顺延
+    // 龙一（票01）连续停牌 ⇒ 买不进 ⇒ 该名额作废 ⇒ 只剩 1 个名额 ⇒ 只买龙二（票02）1 只
     const plan = buildTopicVolRatioPlan(topics, dm, { buySkipNames: new Set(['票01']) });
-    expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['票02', '票03']);
-    expect(plan.blocks[0].picks.map(function(p) { return p.dragonLabel; })).toEqual(['龙二', '龙三']);
+    expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['票02']);
+    expect(plan.blocks[0].picks.map(function(p) { return p.dragonLabel; })).toEqual(['龙二']);
+    // §10 说明区必须如实写出「不补位 / 少取」
+    const notes = plan.blocks[0].notes.join('\n');
+    expect(notes).toContain('不再补位');
+    expect(notes).toContain('实际取 1 只');
   });
 
   it('★ 题材只数（档位）不因停牌而变：仍按全部成员 14 只算 ⇒ 取 2 只', function() {
@@ -1557,7 +1561,8 @@ describe('tvrb · ★ 买点侧跳过【连续停牌】并顺延下一龙位（S
     const dm = rankDragonsWithPctMap(topics, null);
     const plan = buildTopicVolRatioPlan(topics, dm, { buySkipNames: new Set(['票01', '票02']) });
     expect(plan.blocks[0].block.count).toBe(14);
-    expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['票03', '票04']);
+    // 前两名都停牌 ⇒ 2 个名额全被占掉 ⇒ 实际一只都不取（⛔ 不往下补位）
+    expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual([]);
   });
 
   it('§11 不传 / 传 null / 传空 Set ⇒ 逐字回到旧行为（停牌票照旧可入选）', function() {
@@ -1572,35 +1577,38 @@ describe('tvrb · ★ 买点侧跳过【连续停牌】并顺延下一龙位（S
     expect(names(c)).toEqual(names(a));
   });
 
-  it('停牌的票【不在】前排龙位 ⇒ 取票结果不变（只跳它自己那一档）', function() {
+  it('停牌的票【不在】前排龙位 ⇒ 取票结果不变（名额早已用满，轮不到它）', function() {
     const topics = [mkBig()];
     const dm = rankDragonsWithPctMap(topics, null);
     const plan = buildTopicVolRatioPlan(topics, dm, { buySkipNames: new Set(['票05']) });
     expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['票01', '票02']);
   });
 
-  it('与【竞价一字】并存 ⇒ 两者都跳过（同一条顺延路径，文案分开写）', function() {
-    const topics = [block('AI应用', 1, [
-      m('一字票', { pct: 90, isYizi: true, code: '600001' }),
-      m('停牌票', { pct: 80, code: '600002' }),
-      m('正常甲', { pct: 70, code: '600003' }),
-      m('正常乙', { pct: 60, code: '600004' }),
-      m('正常丙', { pct: 50, code: '600005' })
-    ])];
+  it('★ 与【竞价一字】并存 ⇒ 语义不同：一字顺延补位（不占名额）、停牌占名额不补', function() {
+    const members = [
+      m('一字票', { pct: 90, isYizi: true, code: '600001' }),   // 龙一：一字 ⇒ 顺延，不占名额
+      m('停牌票', { pct: 80, code: '600002' }),                  // 龙二：连续停牌 ⇒ 占掉 1 个名额
+      m('正常甲', { pct: 70, code: '600003' }),                  // 龙三：补上第 2 个名额
+      m('正常乙', { pct: 60, code: '600004' })
+    ];
+    for (let i = 5; i <= 14; i++) members.push(m('票' + i, { pct: 60 - i, code: '6000' + i }));
+    const topics = [block('AI应用', 1, members)];
     const dm = rankDragonsWithPctMap(topics, null);
     const plan = buildTopicVolRatioPlan(topics, dm, { buySkipNames: new Set(['停牌票']) });
+    // 2 个名额：一字票不占 ⇒ 关键在停牌票占掉一个 ⇒ 只剩「正常甲」1 只
     expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['正常甲']);
     const notes = plan.blocks[0].notes.join('\n');
     expect(notes).toContain('竞价涨停');
     expect(notes).toContain('连续停牌');
   });
 
-  it('§10 说明区如实写出「连续停牌 ⇒ 买不进 ⇒ 已顺延」，且点明【首日不跳】', function() {
+  it('§10 说明区如实写出「连续停牌 ⇒ 买不进 ⇒ 不再补位」，且点明【首日不跳】', function() {
     const topics = [mkBig()];
     const dm = rankDragonsWithPctMap(topics, null);
     const plan = buildTopicVolRatioPlan(topics, dm, { buySkipNames: new Set(['票01']) });
     const notes = plan.blocks[0].notes.join('\n');
     expect(notes).toContain('连续停牌');
+    expect(notes).toContain('不再补位');
     expect(notes).toContain('票01');
     expect(notes).toContain('首日');
   });
@@ -1610,5 +1618,6 @@ describe('tvrb · ★ 买点侧跳过【连续停牌】并顺延下一龙位（S
     expect(all).toContain('二十四');
     expect(all).toContain('连续停牌');
     expect(all).toContain('买不进');
+    expect(all).toContain('不再补位');
   });
 });

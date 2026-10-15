@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   toThscode,
   pickSuspendedFromAuctionItems,
@@ -8,8 +8,11 @@ import {
   canJudgeSuspended,
   hasSuspendVerdict,
   suspendState,
+  libSuspendState,
   ensureSuspendSet,
   mergeSuspendNames,
+  getSuspendFingerprintToken,
+  clearSuspendSet,
   SUSPEND_TAG_TEXT
 } from './suspend.js';
 
@@ -372,5 +375,154 @@ describe('suspend · mergeSuspendNames（同一日按名字合并，⛔ 不整�
   it('空 / 缺值输入不抛错', () => {
     expect([...mergeSuspendNames(D, null, D, null, null)]).toEqual([]);
     expect([...mergeSuspendNames('', new Set(['A']), D, new Set(), new Set(['B']))]).toEqual(['B']);
+  });
+});
+
+// ===== ★★ [SUSPEND-LIB 2026-10-15 用户口径] 历史日的库内兜底判据 =====
+// 用户原话：「在当天自动获取程序没有抓到竞价量，竞价涨幅，昨日成交量，情况下，
+//   这种情况都应该视为停牌股票」，并要求【全部看板统一】。
+// 上游快照只有当日 ⇒ 历史日（10-15 回看 10-14）本模块原本什么都没得说 ⇒ 一个「停牌」标都没有。
+// 实测 2026-10-14：全表 60 行里【只有】新华传媒满足「三项全缺」。
+/**
+ * 库内字段的可控假数据源（key = date|name|field）。
+ * ⚠️ 必须用 vi.hoisted —— vi.mock 的工厂会被提升到 import 之前执行，
+ *   直接引用普通 const 会踩 TDZ。
+ */
+const _histStore = vi.hoisted(() => ({ v: {} }));
+vi.mock('../../data/watchlist-helpers.js', () => ({
+  getStockHistoryValue: (date, name, field) => {
+    const k = date + '|' + name + '|' + field;
+    return Object.prototype.hasOwnProperty.call(_histStore.v, k) ? _histStore.v[k] : null;
+  }
+}));
+
+describe('suspend · ★ 库内兜底判据（历史日：三项全缺 ⇒ 停牌）', () => {
+  const D = '2020-03-05';                     // 固定过去日 ⇒ canJudgeSuspended 恒 false
+  const TODAY = (function() {
+    const n = new Date();
+    return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0') + '-' + String(n.getDate()).padStart(2, '0');
+  })();
+  const savedS = suspendState.value;
+  const savedL = libSuspendState.value;
+
+  function setLib(rows) {
+    // rows: [[name, vol, yestVol, aucPct], ...]
+    _histStore.v = {};
+    rows.forEach(function(r) {
+      _histStore.v[D + '|' + r[0] + '|volume'] = r[1];
+      _histStore.v[D + '|' + r[0] + '|yestVolume'] = r[2];
+      _histStore.v[D + '|' + r[0] + '|aucPctChg'] = r[3];
+    });
+  }
+  function entries(names) { return names.map(function(n) { return { stock: n }; }); }
+
+  afterEach(() => {
+    _histStore.v = {};
+    suspendState.value = savedS;
+    libSuspendState.value = savedL;
+  });
+
+  it('★★ 10-14 新华传媒 逐字复现：vol=0 / 昨量取不到 / 竞价涨幅=0 ⇒ 判为停牌', async () => {
+    setLib([
+      ['新华传媒', 0, null, 0],      // ← 三项全缺（实测值）
+      ['慈文传媒', 3450000, 2130000, 9.65],
+      ['新经典', 1520000, 1470000, 4.91]
+    ]);
+    await ensureSuspendSet(D, entries(['新华传媒', '慈文传媒', '新经典']));
+    expect(isSuspended(D, '新华传媒')).toBe(true);
+    expect(isSuspended(D, '慈文传媒')).toBe(false);
+    expect(isSuspended(D, '新经典')).toBe(false);
+    const row = { name: '新华传媒' };
+    decorateSuspendField(row, D);
+    expect(row.suspendTag).toBe(SUSPEND_TAG_TEXT);
+  });
+
+  it('★ 三项只要有一项成立 ⇒ 不是停牌（用户口径只认「三项全缺」）', async () => {
+    setLib([
+      ['有竞价量', 100, null, 0],
+      ['有昨量', 0, 500, 0],
+      ['有涨幅', 0, null, 3.2]
+    ]);
+    await ensureSuspendSet(D, entries(['有竞价量', '有昨量', '有涨幅', '样本']));
+    expect(isSuspended(D, '有竞价量')).toBe(false);
+    expect(isSuspended(D, '有昨量')).toBe(false);
+    expect(isSuspended(D, '有涨幅')).toBe(false);
+  });
+
+  it('★★ 继承空壳行（该日云端根本没有它的行 ⇒ 三项全取不到）⇒ ⛔ 绝不误标停牌', async () => {
+    _histStore.v = {};
+    // 只给两只正常票的数据 ⇒ traded > 0（正面证据成立）
+    _histStore.v[D + '|正常甲|volume'] = 120;
+    _histStore.v[D + '|正常乙|volume'] = 88;
+    // 「空壳」= 三项全取不到（不是 0，是根本没行）
+    await ensureSuspendSet(D, entries(['正常甲', '正常乙', '空壳丙', '空壳丁']));
+    expect(isSuspended(D, '空壳丙')).toBe(false);
+    expect(isSuspended(D, '空壳丁')).toBe(false);
+    expect([...libSuspendState.value.set]).toEqual([]);
+  });
+
+  it('★ 正面证据闸门：整份名单一只成交的都没有 ⇒ 谁都不标（判不出来 ≠ 停牌，§10）', async () => {
+    setLib([
+      ['甲', 0, null, 0],
+      ['乙', null, null, null]
+    ]);
+    await ensureSuspendSet(D, entries(['甲', '乙']));
+    expect(isSuspended(D, '甲')).toBe(false);
+    expect(isSuspended(D, '乙')).toBe(false);
+  });
+
+  it('§10 名单为空 / 未传 ⇒ 不算、不发布（等行数变化再触发）', async () => {
+    setLib([['甲', 0, null, 0]]);
+    await ensureSuspendSet(D, []);
+    expect(libSuspendState.value.date).toBe('');
+    await ensureSuspendSet(D, undefined);
+    expect(libSuspendState.value.date).toBe('');
+  });
+
+  it('★★ §11：今日路径逐字不变 —— 上游能作证时，库内判据【一律不参与】', async () => {
+    // 让库内判据在「今天」也成立
+    setLib([['甲', 0, null, 0], ['乙', 100, null, 0]]);
+    _histStore.v[TODAY + '|甲|volume'] = 0;
+    _histStore.v[TODAY + '|甲|yestVolume'] = null;
+    _histStore.v[TODAY + '|甲|aucPctChg'] = 0;
+    _histStore.v[TODAY + '|乙|volume'] = 100;
+    suspendState.value = { date: '', set: new Set(), version: 0, loadedAt: 0 };
+    // canJudgeSuspended(今天) = true ⇒ isSuspended 直接返回 false（⛔ 不拿库内判据改写上游）
+    expect(canJudgeSuspended(TODAY)).toBe(true);
+    expect(isSuspended(TODAY, '甲')).toBe(false);
+  });
+
+  it('★ [SUSPEND-STALE] 库内兜底写在【独立的一份】状态里 ⇒ 绝不改写 suspendState', async () => {
+    setLib([['甲', 0, null, 0], ['乙', 100, null, 0]]);
+    suspendState.value = { date: TODAY, set: new Set(['某停牌票']), version: 4, loadedAt: 1 };
+    await ensureSuspendSet(D, entries(['甲', '乙']));
+    expect(suspendState.value.date).toBe(TODAY);
+    expect([...suspendState.value.set]).toEqual(['某停牌票']);
+    expect(suspendState.value.version).toBe(4);
+  });
+
+  it('★ 指纹令牌把库内那份算进去（判定到货 ⇒ 令牌变 ⇒ 行缓存失效，小标不会「刷新才有」）', async () => {
+    setLib([['甲', 0, null, 0], ['乙', 100, null, 0]]);
+    const before = getSuspendFingerprintToken();
+    await ensureSuspendSet(D, entries(['甲', '乙']));
+    expect(getSuspendFingerprintToken()).not.toBe(before);
+  });
+
+  it('★ 幂等：同样的名单再算一次 ⇒ 版本不升（不制造无意义的重渲染）', async () => {
+    setLib([['甲', 0, null, 0], ['乙', 100, null, 0]]);
+    await ensureSuspendSet(D, entries(['甲', '乙']));
+    const v = libSuspendState.value.version;
+    await ensureSuspendSet(D, entries(['甲', '乙']));
+    expect(libSuspendState.value.version).toBe(v);
+  });
+
+  it('clearSuspendSet 把库内那份也清空（切数据源 / 卸载）', async () => {
+    setLib([['甲', 0, null, 0], ['乙', 100, null, 0]]);
+    await ensureSuspendSet(D, entries(['甲', '乙']));
+    expect(libSuspendState.value.set.size).toBe(1);
+    clearSuspendSet();
+    expect(libSuspendState.value.date).toBe('');
+    expect(libSuspendState.value.set.size).toBe(0);
+    expect(isSuspended(D, '甲')).toBe(false);
   });
 });
