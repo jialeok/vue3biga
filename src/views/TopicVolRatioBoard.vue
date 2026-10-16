@@ -98,13 +98,20 @@
         <div class="tvrb-section">
           <!-- ★ [EBB 2026-10-13 第五轮用户口径] 退潮首日 ⇒ 整段标题变灰（用户「把买点侧的文字或者
                UI 全部变成灰色，这样空仓效果更加强烈些」）。⛔ 只是视觉灰化，不改任何数据。 -->
+          <!-- ★ [CASH-ALERT-NOBUY 2026-10-16 用户口径] 空仓提醒命中 ⇒ 同样整段变灰（用户「这个提示下的
+               买点侧，全部变成灰色……那个灰色的样式类似 10月13日的退潮首日那个买点侧整版灰色，
+               你可以参考下」）。⇒ 灰化条件 = `cashAlert.show`（它【已包含】退潮首日：
+               buildCashAlert 在退潮日返回的也是 show=true，见那条长注释）
+               ⇒ ⛔ 一处条件同时覆盖两种成因，⛔ 绝不新造第二套灰化类。 -->
           <!-- ★ [EBB 2026-10-13 第六轮用户口径] 退潮首日 ⇒ 每只票的买点标签已被 Logic 层
                （_applyEbbBuyRules）一律改写成深墨【退潮不买】，原本的【持有】/ 竞价买 / 尾盘买 /
                先卖后买 等买信号作废 —— 用户「退潮当天，只有卖没有买」。
-               ⛔ 模板零改动：标签走的还是 p.buyActionTag 那一个出口（§6 收口不变）。 -->
+               ★ [CASH-ALERT-NOBUY 2026-10-16] 非退潮日命中空仓提醒 ⇒ 同样的覆盖式改写出
+               【分歧日不买】（_applyCashAlertBuyRules）。
+               ⛔ 模板零改动：两枚标签走的都是 p.buyActionTag 那一个出口（§6 收口不变）。 -->
           <div
             class="tvrb-section-title buy"
-            :class="{ 'tvrb-ebb': !!ebb }"
+            :class="{ 'tvrb-ebb': cashAlert.show }"
           >
             选股
           </div>
@@ -131,11 +138,12 @@
               :head-text="ebbBuy.block.topic"
             />
           </div>
-          <!-- 退潮首日：股票块整体灰化（⛔ 上面的空仓标语【不灰】—— 它正是要被看见的那一条）
-               ⛔ 上面那只【唯一买点】也不灰（它在本次容器之外，见上）。 -->
+          <!-- 退潮首日 / 空仓提醒：股票块整体灰化（⛔ 上面的空仓标语【不灰】—— 它正是要被看见的那一条）
+               ⛔ 上面那只【唯一买点】也不灰（它在本次容器之外，见上）。
+               ★ [CASH-ALERT-NOBUY 2026-10-16] 条件 = cashAlert.show（含退潮首日，同上面的标题一处口径）。 -->
           <div
             class="tvrb-buy-list"
-            :class="{ 'tvrb-ebb': !!ebb }"
+            :class="{ 'tvrb-ebb': cashAlert.show }"
           >
             <TvrbBuyBlock
               v-for="b in blocks"

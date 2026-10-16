@@ -20,7 +20,13 @@
 //   · 能入选的排名第一题材 平均竞价量比 < 25 ⇒ cashAlert.show = true（判据看【能入选的】，
 //     量比更高但数量不足被排除的题材不算）；
 //   · 边界 25 不触发（用户说的是「小于 25」）；缺量比 / 无入选题材都不触发（§10）；
-//   · ★ 命中提醒时选股 / 标签 / 说明【一行未改】（提醒只是一段独立文案）。
+//   · ★ 命中提醒时【选股一行未改】（票名 / 档位 / 只数 / notes 与量比达标时逐项一致）。
+//
+// 覆盖【第十六轮 · 空仓提醒下的买点改写】（2026-10-16 用户口径）：
+//   · 命中空仓提醒（非退潮日）⇒ 买点侧每行的动作标签【覆盖式】改写成【分歧日不买】
+//     （含原本的【持有】/ 竞价买 / 尾盘买…），仓位槽与行尾【持有】一并清空；
+//   · ⛔ 卖点侧一行不动；⛔ 客观数据（十日涨幅 / 涨幅 / 量比 / 占比 / 龙标 / 连板 / 封单）逐项保留；
+//   · ★ 优先级：退潮首日 > 空仓提醒（退潮日标签仍是【退潮不买】，⛔ 不被【分歧日不买】盖掉）。
 //
 // 覆盖【第五轮 · 退潮首日】（2026-10-13 用户口径）：
 //   · 判据：市场总龙（昨日十日涨幅第一）今日【停牌】或【占比不达标】⇒ 退潮（二者有一即算）；
@@ -48,6 +54,8 @@ import {
   EBB_SECOND_BUY_TAG,
   EBB_SECOND_BUY_TONE,
   EBB_SECOND_RULE_NO,
+  CASH_NO_BUY_TAG,
+  CASH_NO_BUY_TONE,
   resolveTvrbTier,
   avgVolRatioOf,
   formatAvgVolRatio,
@@ -637,7 +645,7 @@ describe('tvrb · 空仓提醒（入选题材里排名第一 平均量比 < 25 �
     expect(plan.cashAlert).toEqual(buildCashAlert(null));
   });
 
-  it('★ 命中提醒时【选股与标签一行未改】：档位 / 只数 / 票名与「量比达标」时逐项一致', function() {
+  it('★ 命中提醒时【选股一行未改】：档位 / 只数 / 票名 / notes 与「量比达标」时逐项一致', function() {
     const low = todayFixtures(21.51);
     const ok = todayFixtures(30);
     const pLow = buildTopicVolRatioPlan(low.topics, low.dm, {});
@@ -655,12 +663,144 @@ describe('tvrb · 空仓提醒（入选题材里排名第一 平均量比 < 25 �
     // 说明文字也不因提醒而变化（提醒是独立一段，不进 notes）
     expect(pLow.notes).toEqual(pOk.notes);
     expect(pLow.notes.join('\n')).not.toContain('空仓');
+    // ⚠️ ⛔ 标签【不再】逐项一致 —— 第十六轮用户口径：命中提醒时买点动作改成【分歧日不买】
+    //   （逐项钉在下面「第十六轮 · 空仓提醒下的买点改写」那一段，这里只钉「选股没变」）。
+    expect(pOk.blocks[0].picks[0].buyActionTag).not.toBe(CASH_NO_BUY_TAG);
+    expect(pLow.blocks[0].picks[0].buyActionTag).toBe(CASH_NO_BUY_TAG);
   });
 
   it('buildCashAlert 直接调用：空块 / 缺均值都返回同一份「不提示」冻结常量', function() {
     expect(buildCashAlert(null)).toBe(buildCashAlert(undefined));
     expect(buildCashAlert(null).show).toBe(false);
     expect(TVRB_CASH_ALERT_AVG_VR).toBe(25);
+  });
+});
+
+// ── 第十六轮 · 空仓提醒下的买点改写（2026-10-16 用户口径）─────────────────────────────────
+// 用户原话：「题材量比有这个提示时：⚠️ 今日建议空仓 · 不开仓……这个提示下的买点侧，全部变成灰色
+//   （卖点侧不变），买点侧股票标签改成"分歧日不买"。那个灰色的样式类似 10月13日的退潮首日那个
+//   买点侧整版灰色，你可以参考下。其它不变。」
+//   ⚠️ 本测试只覆盖【Logic 层】：整段灰化是【视图层】挂同一个 `.tvrb-ebb` 类的视觉行为，
+//      条件同样取 cashAlert.show（含退潮首日）—— 见 views/TopicVolRatioBoard.vue。
+describe('tvrb · 空仓提醒下的买点改写（非退潮日 ⇒ 分歧日不买）', function() {
+  // AI应用 10 只（> 8 ⇒ big 档 ⇒ 取 2 只：甲一 / 甲二），量比由参数控制（< 25 触发提醒）
+  const names = ['甲一', '甲二', '甲三', '甲四', '甲五', '甲六', '甲七', '甲八', '甲九', '甲十'];
+  function topicsWith(vr) {
+    return [block('AI应用', 1, names.map(function(n, i) {
+      return m(n, {
+        aucVolRatio: vr, aucShare: 6,
+        code: '6000' + (i < 9 ? '0' + (i + 1) : (i + 1))
+      });
+    }))];
+  }
+  const dm = dragonMap(names.map(function(n, i) { return [n, i + 1]; }));
+
+  function sellRow(name, over) {
+    return Object.assign({
+      name: name, topic: 'AI应用', pct: 20, code: '600001',
+      aucPct: 3, volRatioDir: '', volRatioTimes: null, aucShare: 1, inTodayList: true
+    }, over || {});
+  }
+  const rows = [sellRow('甲一', { aucShare: 6 }), sellRow('甲三', { aucShare: 1 })];
+
+  // 退潮首日的事实（总龙 = 甲一 停牌 ⇒ ebb 成立），★ 它同时让 cashAlert.show = true
+  const EBB_CTX = {
+    ready: true,
+    leader: { name: '甲一', pct: 159.51, topic: 'AI应用', code: '600001', rank: 1, isYizi: false },
+    second: { name: '时代万恒', pct: 80.98, topic: '新能源汽车' },
+    leaderSuspended: true,
+    leaderShare: null,
+    siblingDragons: [{ name: '甲二', rank: 2, isYizi: false, suspended: false }],
+    secondInfo: {
+      name: '时代万恒', pct: 80.98, topic: '新能源汽车',
+      rank: 1, isYizi: false, suspended: false
+    }
+  };
+
+  it('常量：标签 = 分歧日不买；配色档与【退潮不买】同档（灰化容器下唯一可读档，⛔ 不新造第二套 CSS）', function() {
+    expect(CASH_NO_BUY_TAG).toBe('分歧日不买');
+    expect(CASH_NO_BUY_TONE).toBe(EBB_NO_BUY_TONE);
+  });
+
+  it('★ 命中提醒（非退潮日）⇒ 每行动作标签改【分歧日不买】+ 仓位槽 / 行尾【持有】一并清空', function() {
+    const p = buildTopicVolRatioPlan(topicsWith(10), dm, {});
+    expect(p.ebb).toBe(null);                  // 没有 ebbCtx ⇒ 不是退潮日（只有空仓提醒这一种成因）
+    expect(p.cashAlert.show).toBe(true);
+    expect(p.cashAlert.avgVolRatioText).toBe('10.00');
+    // 选股照旧：AI应用 10 只 ⇒ big 档 ⇒ 取 2 只
+    expect(p.pickCount).toBe(2);
+    expect(p.blocks[0].picks.map(function(x) { return x.name; })).toEqual(['甲一', '甲二']);
+    p.blocks[0].picks.forEach(function(x) {
+      expect(x.buyActionTag).toBe(CASH_NO_BUY_TAG);
+      expect(x.buyActionTone).toBe(CASH_NO_BUY_TONE);
+      expect(x.position).toBe('');             // ⛔ 不再可能出现【持有】落在仓位槽
+      expect(x.holdTag).toBe('');              // ⛔ 行尾【持有】也清空
+      // 行内说明：把「为什么」「照常列出」讲清（文案在 Logic 层，§21 模板零计算）
+      expect(x.actionNote).toContain('分歧日');
+      expect(x.actionNote).toContain('AI应用');
+      expect(x.actionNote).toContain('10.00'); // 平均量比按 formatAvgVolRatio 给（两位小数）
+      expect(x.actionNote).toContain(String(TVRB_CASH_ALERT_AVG_VR));
+      expect(x.actionNote).toContain('照常列出');
+    });
+  });
+
+  it('⛔ 客观数据一行未动：十日涨幅 / 龙标 / 票名 / 序位 / 选股理由 逐项保留（§11）', function() {
+    const p = buildTopicVolRatioPlan(topicsWith(10), dm, {});
+    const p0 = p.blocks[0].picks[0];
+    expect(p0.name).toBe('甲一');
+    expect(p0.seq).toBe(1);
+    expect(p0.dragonLabel).toBe('龙一');
+    expect(p0.dragonRank).toBe(1);
+    expect(p0.pctText).toBe('+20%');
+    // 选股理由（题材级）不因提醒而变化 —— 提醒只改「今天买不买」，不改「为什么选它」
+    expect(p.blocks[0].reason).toContain('平均竞价量比 10.00');
+    expect(p.blocks[0].qualified).toBe(true);
+  });
+
+  it('§11 未命中（量比达标 30 ⇒ 不提示）⇒ 标签保持 finishBuyBlock 的原值，一行未改', function() {
+    const p = buildTopicVolRatioPlan(topicsWith(30), dm, {});
+    expect(p.cashAlert.show).toBe(false);
+    expect(p.blocks[0].picks[0].buyActionTag).toBe(BUY_NOW_TAG);   // 占比 6% 达标 ⇒ 竞价买
+    expect(p.blocks[0].picks[0].buyActionTag).not.toBe(CASH_NO_BUY_TAG);
+    expect(p.blocks[0].picks[1].buyActionTag).toBe(BUY_NOW_TAG);
+    expect(p.blocks[0].picks[0].actionNote).not.toContain('分歧日');
+  });
+
+  it('★ 优先级：退潮首日 > 空仓提醒 ⇒ 标签仍是【退潮不买】，⛔ 不被【分歧日不买】盖掉', function() {
+    // 这一组：量比 10（< 25）⇒ cashAlert.show = true；同时 ebbCtx 成立 ⇒ ebb 也成立（两者同时为真）
+    const p = buildTopicVolRatioPlan(topicsWith(10), dm, { ebbCtx: EBB_CTX });
+    expect(p.ebb).not.toBe(null);                    // 确实是退潮首日
+    expect(p.cashAlert.show).toBe(true);             // 提醒也确实在（走退潮口径的标语）
+    expect(p.blocks[0].picks.length).toBeGreaterThan(0);
+    p.blocks[0].picks.forEach(function(x) {
+      expect(x.buyActionTag).toBe(EBB_NO_BUY_TAG);   // ★ 更具体的那一枚赢
+      expect(x.buyActionTag).not.toBe(CASH_NO_BUY_TAG);
+      expect(x.actionNote).toContain('退潮首日');
+    });
+  });
+
+  it('⛔ 卖点侧一行不动：命中提醒与量比达标时，卖点【动作标签 / 时机 / 说明】逐项一致（用户「卖点侧不变」）', function() {
+    const hit = buildTopicVolRatioPlan(topicsWith(10), dm, { sellRows: rows });
+    const ok = buildTopicVolRatioPlan(topicsWith(30), dm, { sellRows: rows });
+    expect(hit.cashAlert.show).toBe(true);
+    expect(ok.cashAlert.show).toBe(false);
+    expect(hit.sell.length).toBeGreaterThan(0);
+    expect(hit.sell.length).toBe(ok.sell.length);
+    // ★ 逐行深比较（名牌 / 动作标签 / 配色档 / 时机 / 说明…）—— 卖点段在两种情形下【逐字相同】
+    expect(hit.sell.map(function(g) { return g.items; }))
+      .toEqual(ok.sell.map(function(g) { return g.items; }));
+    // ⚠️ ⛔ 只比【行】不比【题材块头】：卖点分组头上的 avgVolRatioText 是【客观数据】，
+    //   两个夹具的题材量比本来就不同（10 vs 30，为了让一个命中一个不命中）⇒ 那块差异与规则无关。
+    expect(hit.sell[0].avgVolRatioText).not.toBe(ok.sell[0].avgVolRatioText);
+  });
+
+  it('规则手册：第十九条必须写清「整段灰化 + 标签改分歧日不买 + 卖点侧不变 + 退潮优先」', function() {
+    const all = buildTvrbRulesLines().join('\n');
+    expect(all).toContain(CASH_NO_BUY_TAG);
+    expect(all).toContain('整段变灰');
+    expect(all).toContain('卖点侧一行不变');
+    expect(all).toContain(EBB_NO_BUY_TAG);
+    expect(all).toContain('优先');
   });
 });
 
