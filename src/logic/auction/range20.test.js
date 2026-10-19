@@ -81,13 +81,16 @@ describe('T 腿口径（resolveT20Leg）', () => {
 
 describe('legs20FromRows：逐日抽腿', () => {
   const dates = mkDates(20);
+  // ⚠️ 本组用例验证的是「从逐日行里怎么抽腿」这个纯函数逻辑本身。
+  //   最终数据链路里历史日【不采用】库内值（见下方 R20-CLOSE-LEG 的用例），
+  //   所以要考察抽腿逻辑必须显式打开 useDbLegsForHistory。
 
   it('★ 满窗口：20 天全有 ⇒ 20 根腿，且 T 腿来自竞价涨幅', () => {
     const perDate = {};
     dates.forEach(function(d) { perDate[d] = { 甲: { changePct: '1.00' } }; });
     // 最后一天（T）收盘与竞价不同 ⇒ 必须取竞价
     perDate[dates[19]] = { 甲: { changePct: '-5.00', auc_pct_chg: '2.00' } };
-    const legs = legs20FromRows([{ stock: '甲' }], dates, mkRowsByDate(perDate), { tIsToday: true });
+    const legs = legs20FromRows([{ stock: '甲' }], dates, mkRowsByDate(perDate), { tIsToday: true, useDbLegsForHistory: true });
     expect(legs.get('甲').size).toBe(20);
     expect(legs.get('甲').get(dates[19])).toBe(2);
     expect(legs.get('甲').get(dates[18])).toBe(1);
@@ -99,7 +102,7 @@ describe('legs20FromRows：逐日抽腿', () => {
       if (i >= 5 && i <= 7) return;                 // 中间停 3 天
       perDate[d] = { 新华传媒: { changePct: '0.50' } };
     });
-    const legs = legs20FromRows([{ stock: '新华传媒' }], dates, mkRowsByDate(perDate), { tIsToday: false });
+    const legs = legs20FromRows([{ stock: '新华传媒' }], dates, mkRowsByDate(perDate), { tIsToday: false, useDbLegsForHistory: true });
     expect(legs.get('新华传媒').size).toBe(17);
     expect(legs.get('新华传媒').has(dates[5])).toBe(false);
   });
@@ -108,34 +111,67 @@ describe('legs20FromRows：逐日抽腿', () => {
     const perDate = {};
     dates.forEach(function(d) { perDate[d] = { 乙: { changePct: '1.00' } }; });
     perDate[dates[3]] = { 乙: { changePct: '' } };
-    const legs = legs20FromRows([{ stock: '乙' }], dates, mkRowsByDate(perDate), { tIsToday: false });
+    const legs = legs20FromRows([{ stock: '乙' }], dates, mkRowsByDate(perDate), { tIsToday: false, useDbLegsForHistory: true });
     expect(legs.get('乙').size).toBe(19);
+  });
+
+  it('🔴 R20-CLOSE-LEG：默认 ⛔ 不采用库内历史值（库内可能是竞价涨幅 / 缺行）', () => {
+    const perDate = {};
+    dates.forEach(function(d) { perDate[d] = { 甲: { changePct: '1.00' } }; });
+    perDate[dates[19]] = { 甲: { changePct: '-5.00', auc_pct_chg: '2.00' } };
+    const legs = legs20FromRows([{ stock: '甲' }], dates, mkRowsByDate(perDate), { tIsToday: true });
+    // 只剩 T 腿（竞价涨幅）；历史 19 天一律不取库内值，等 K 线补
+    expect(legs.get('甲').size).toBe(1);
+    expect(legs.get('甲').get(dates[19])).toBe(2);
   });
 
   it('一只票 20 天全无行 ⇒ 不出现在结果里（调用方据此不显示数值）', () => {
     const perDate = {};
     dates.forEach(function(d) { perDate[d] = { 甲: { changePct: '1.00' } }; });
-    const legs = legs20FromRows([{ stock: '丙' }], dates, mkRowsByDate(perDate), { tIsToday: false });
+    const legs = legs20FromRows([{ stock: '丙' }], dates, mkRowsByDate(perDate), { tIsToday: false, useDbLegsForHistory: true });
     expect(legs.has('丙')).toBe(false);
   });
 
   it('目标清单按股票名去重（同名多行只算一次）', () => {
     const perDate = {};
     dates.forEach(function(d) { perDate[d] = { 甲: { changePct: '1.00' } }; });
-    const legs = legs20FromRows([{ stock: '甲' }, { stock: ' 甲 ' }], dates, mkRowsByDate(perDate), { tIsToday: false });
+    const legs = legs20FromRows([{ stock: '甲' }, { stock: ' 甲 ' }], dates, mkRowsByDate(perDate), { tIsToday: false, useDbLegsForHistory: true });
     expect(legs.size).toBe(1);
   });
 });
 
-describe('merge20Legs：同花顺补算只补缺', () => {
+describe('merge20Legs：历史日由 K 线覆盖（R20-CLOSE-LEG）', () => {
   const dates = mkDates(3);
 
-  it('已有（库内）的腿不被补算覆盖', () => {
+  it('★ 库内值被 K 线【覆盖】（库内可能是早盘写入的竞价涨幅）', () => {
     const base = new Map([['甲', new Map([[dates[0], 10]])]]);
     const extra = new Map([['甲', new Map([[dates[0].replace(/-/g, ''), 99], [dates[1].replace(/-/g, ''), 5]])]]);
     const out = merge20Legs(base, extra, dates);
-    expect(out.get('甲').get(dates[0])).toBe(10);   // ⛔ 没被 99 覆盖
-    expect(out.get('甲').get(dates[1])).toBe(5);    // 缺的那天补上了
+    expect(out.get('甲').get(dates[0])).toBe(99);   // ★ 被 K 线真收盘覆盖（旧口径是保留 10）
+    expect(out.get('甲').get(dates[1])).toBe(5);    // 库内缺的那天也补上
+  });
+
+  it('🔴 T 日（今天）的腿 ⛔ 不被 K 线覆盖（今天要竞价涨幅）', () => {
+    const t = dates[2];
+    const base = new Map([['甲', new Map([[dates[0], 10], [t, 2.75]])]]);   // t 日 = 竞价涨幅
+    const extra = new Map([['甲', new Map([[dates[0].replace(/-/g, ''), 99], [t.replace(/-/g, ''), 10.0]])]]);
+    const out = merge20Legs(base, extra, dates, { tDate: t });
+    expect(out.get('甲').get(t)).toBe(2.75);        // ★ 保住竞价涨幅，没被 K 线的 10.00 盖掉
+    expect(out.get('甲').get(dates[0])).toBe(99);   // 历史日照样被覆盖
+  });
+
+  it('不传 opts 时视为「无 T 日例外」（历史日全覆盖）', () => {
+    const base = new Map([['甲', new Map([[dates[2], 7]])]]);
+    const extra = new Map([['甲', new Map([[dates[2].replace(/-/g, ''), 42]])]]);
+    const out = merge20Legs(base, extra, dates);
+    expect(out.get('甲').get(dates[2])).toBe(42);
+  });
+
+  it('K 线缺该日 ⇒ 保留库内值（有总比没有好，days 如实记）', () => {
+    const base = new Map([['甲', new Map([[dates[1], 6]])]]);
+    const extra = new Map([['甲', new Map([[dates[0].replace(/-/g, ''), 1]])]]);
+    const out = merge20Legs(base, extra, dates);
+    expect(out.get('甲').get(dates[1])).toBe(6);
   });
 
   it('不修改入参（纯函数）', () => {
