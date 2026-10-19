@@ -167,11 +167,23 @@ export function invalidateDragonRange(date) {
   if (dragonState.value.date === date) clearDragonRangePct();
 }
 
-/** 窗口日期（降序：[T, T-1, ... , T-9]，最多 10 个交易日） */
-export function getDragonWindowDates(date) {
+/**
+ * 窗口日期（降序：[T, T-1, ... , T-9]，最多 10 个交易日）。
+ *
+ * [RANGE20 2026-10-19] 新增可选参数 `days`：默认仍是 `DRAGON_RANGE_DAYS`(=10) ⇒ 所有既有调用方
+ *   **行为逐字不变**（§11 默认零行为变化）。加它的唯一用途是「20日涨幅」toggle 需要同一套
+ *   「按交易日回溯」的实现（§6 单一真相：⛔ 别在 range20.js 里再抄一份 getPreviousTradingDay 循环，
+ *   否则节假日日历口径日后一改就会两处不一致）。
+ * @param {string} date 窗口结束日 T
+ * @param {number} [days] 窗口长度（交易日个数，含 T）；缺省 = DRAGON_RANGE_DAYS
+ * @returns {string[]} 降序日期数组，长度 <= days（日历不够时提前截断）
+ */
+export function getDragonWindowDates(date, days) {
+  const n = (days === null || days === undefined) ? DRAGON_RANGE_DAYS : Number(days);
+  const len = (isFinite(n) && n >= 1) ? Math.floor(n) : DRAGON_RANGE_DAYS;
   const dates = [date];
   let d = date;
-  for (let i = 0; i < DRAGON_RANGE_DAYS - 1; i++) {
+  for (let i = 0; i < len - 1; i++) {
     d = getPreviousTradingDay(d);
     if (!d) break;
     dates.push(d);

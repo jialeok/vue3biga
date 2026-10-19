@@ -36,6 +36,10 @@ import { apiStatusMap, setApiStatus } from '../logic/ui-bridge.js';
 import { setBtnLoading } from '../logic/shared/core-shared.js';
 // [DRAGON 2026-09-09] 题材龙头：10 日区间涨幅异步加载 + 龙头排名（Logic 层模块）
 import { ensureDragonRangePct, getDragonRangePct, getStockRangePct, DRAGON_RANGE_DAYS, invalidateDragonRange } from '../logic/auction/dragon-rank.js';
+// [RANGE20 2026-10-19 用户口径] 「20日涨幅」toggle 的取数入口（开关位由原「量比抢筹」改造）。
+//   与十日涨幅不同：云端没有 20 日行 ⇒ 由 range20.js 按 20 个交易日复利现算（库内腿 + 同花顺补缺），
+//   只放会话内存。⚠️ 只在 toggle 打开时触发，⛔ 不消耗猫抓额度（同花顺 K 线免费额度）。
+import { ensureRange20 } from '../logic/auction/range20.js';
 // [DRAGON-GROUP 2026-09-14] 龙头组：名册异步加载（展示日读 D-1 名册；条件满足时评选并落库当日名册）。
 // 唯一入口 ensureDragonGroup 内含单飞 + 会话幂等 + 收盘口径闸门，重复调用零副作用。
 import { ensureDragonGroup } from '../logic/auction/dragon-group.js';
@@ -76,6 +80,8 @@ let _closeCoverBound = false;
 let _closeCoverTimer = null;
 // [SUSPEND 2026-10-13] 停牌判定 watch 同样只挂载一次（useAuctionBoard 可能被多组件调用）。
 let _suspendWatchBound = false;
+// [RANGE20 2026-10-19] 「20日涨幅」取数 watch 同样只挂载一次。
+let _r20WatchBound = false;
 /** 收盘覆盖轮询间隔：5 分钟（页面长时间开着时，跨过 15:00 能自动触发一次，无需手动刷新） */
 const CLOSE_COVER_POLL_MS = 5 * 60 * 1000;
 
@@ -91,7 +97,11 @@ export function useAuctionBoard() {
   //     （下面的 watch 会让它始终跟随 store，这里只是首帧对齐，免得首帧口径与 store 相反）。
   const sortState = reactive({
     byWeakStrong: false,
-    byRatio: false,
+    // [RANGE20 2026-10-19 用户口径] 原 `byRatio`（量比抢筹）→ 改为 `byRangePct20`（20日涨幅）。
+    //   ⛔ 不是改名游戏：「量比抢筹」是行级达标高光（竞价量比≥10 且 抢筹幅度>1），
+    //      「20日涨幅」是【全列表按 20 个交易日区间涨幅降序 + 逐行标数值】，两者数据源与口径完全不同。
+    //   ⚠️ 键名与初值必须与 auctionStore#createSortState 逐字一致（§6）。
+    byRangePct20: false,
     byJingYest: false,
     byJingYestRatio: false,
     // [RANGE-PCT 2026-10-14 用户口径] 原 `byThreeDayJingDie`（三天竞跌）→ 改为 `byRangePct`（十日涨幅）。
@@ -118,7 +128,7 @@ export function useAuctionBoard() {
   const viewData = computed(() => {
     void auctionStore.dataVersions['auction'];
     void uiStore.currentDate;
-    void sortState.byWeakStrong; void sortState.byRatio;
+    void sortState.byWeakStrong; void sortState.byRangePct20;
     void sortState.byJingYest; void sortState.byJingYestRatio; void sortState.byRangePct; void sortState.byTopic;
     // [TWO-MODES 2026-10-02] 题材排序口径也进依赖：切「题材 / 一字」必须重算视图（顺序不同）
     void sortState.topicOrderBy;
@@ -182,6 +192,45 @@ export function useAuctionBoard() {
     );
   }
 
+  // [RANGE20 2026-10-19 用户口径] 「20日涨幅」toggle 的取数入口（只挂载一次，幂等/单飞在 range20.js 内）。
+  //
+  // 为什么用 watch 而不是点 toggle 时直接 await：
+  //   ① 数据是【两阶段】到货的（库内逐日行 → 同花顺补缺），range20.js 每次发布都会 bump 版本 →
+  //      incremental-view 的 `range20=` 指纹变化 → 本视图自动重排。watch 是这条链的触发器；
+  //   ② 目标清单必须 = 【看板真正渲染的行】（含观察组/龙头继承壳），只有 viewData.items 是这份真相
+  //      （§6：⛔ 别另取一份名单，否则会出现「有的行有 20 日涨幅、有的没有」）；
+  //   ③ 9:25 名单是逐步到达的 ⇒ 把「渲染行数」纳入依赖，后到的票才会被补算（与十日涨幅同款教训）。
+  //
+  // ⚠️ 只在 toggle 打开时触发：关着时一行不动（§11 默认零行为变化）。
+  // ⚠️ 失败必须可见（§10 禁止静默失败）：走 setApiStatus，不把「取不到」显示成「涨幅 0」。
+  if (!_r20WatchBound) {
+    _r20WatchBound = true;
+    watch(
+      () => [sortState.byRangePct20, uiStore.currentDate, (viewData.value && viewData.value.items ? viewData.value.items.length : 0)],
+      async () => {
+        if (!sortState.byRangePct20) return;
+        const _date = uiStore.currentDate;
+        const _rows = (viewData.value && viewData.value.items) || [];
+        if (!_date || _rows.length === 0) return;
+        // 只有【真的报过进度】才在结束时清状态条，否则会把别的操作（龙头/停牌…）的状态文案误清掉
+        let _progressed = false;
+        try {
+          await ensureRange20(_date, _rows, {
+            onProgress: function(done, total) {
+              // 同花顺补缺可能跑几十秒：必须有进度反馈，否则用户会以为看板卡死
+              _progressed = true;
+              setApiStatus('numcatApiStatus', '⏳ 20日涨幅补算中 ' + done + '/' + total + '（同花顺K线）', false);
+            }
+          });
+          if (_progressed) setApiStatus('numcatApiStatus', '', true);
+        } catch (e) {
+          console.warn('[RANGE20] 20日涨幅取数失败:', e && e.message);
+          setApiStatus('numcatApiStatus', '❌ 20日涨幅取数失败：' + (e && e.message || e), false);
+        }
+      },
+      { immediate: true }
+    );
+  }
   // [DRAGON-GROUP 2026-09-14] 龙头组加载/评选的唯一入口（幂等、单飞，见 logic/auction/dragon-group.js）。
   // 读名册失败必须让用户看见（§10 禁止静默失败：不能把「读失败」显示成「今天没有龙头」）。
   function ensureDragonGroupForDate(date) {
@@ -370,7 +419,10 @@ export function useAuctionBoard() {
   // [RANGE-PCT 2026-10-14] ⛔ 已移除 `byThreeDayJingDie`：本页从来没有任何消费方
   //   （sortedTopicGroups 只按强度排），是个「点了没反应」的死开关（§16）；
   //   用户口径「三天竞跌功能去掉」⇒ 连同 UI 开关一并删除，而不是换成一个同样不工作的新开关。
-  const sortState2 = reactive({ byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false });
+  // [RANGE20 2026-10-19 用户口径] ⛔ 已移除 `byRatio`：本页的「量比抢筹」开关与 2026-10-14 删掉的
+  //   「三天竞跌」同性质 —— sortedTopicGroups 只按强度排，它在本页【没有任何消费方】（死开关，§16）。
+  //   用户本轮明确「顺手删掉」，故连状态位一并移除。
+  const sortState2 = reactive({ byParallel: false, byJingYest: false, byJingYestRatio: false });
   const isStrengthSortEnabled = ref(false);
   const p2ExpandedSet = ref(new Set());
   const p2TrendHistory = ref({});
@@ -512,16 +564,14 @@ export function useAuctionBoard() {
   function toggleSort2(key) {
     sortState2[key] = !sortState2[key];
     if (sortState2[key]) {
-      if (key === 'byRatio') {
-        sortState2.byParallel = false; sortState2.byJingYest = false;
+      // [RANGE20 2026-10-19] ⛔ `byRatio` 与 `byParallel` 两个分支都已删除：
+      //   前者是本页「量比抢筹」死开关（本轮移除）；后者原本只是在 byRatio 打开时把它置 false，
+      //   没有可联动的对象后就只剩一个空块（§16 不留死分支）。
+      if (key === 'byJingYest') {
         sortState2.byJingYestRatio = false;
-      } else if (key === 'byParallel') {
-        sortState2.byRatio = false;
-      } else if (key === 'byJingYest') {
-        sortState2.byRatio = false; sortState2.byJingYestRatio = false;
         sortState2.byParallel = true;
       } else if (key === 'byJingYestRatio') {
-        sortState2.byRatio = false; sortState2.byParallel = false;
+        sortState2.byParallel = false;
         sortState2.byJingYest = false;
       }
     } else {
@@ -915,7 +965,7 @@ export function useAuctionBoard() {
     if (auctionStore.sortState && auctionStore.sortState['auction']) {
       const s = auctionStore.sortState['auction'];
       s.byWeakStrong = sortState.byWeakStrong;
-      s.byRatio = sortState.byRatio;
+      s.byRangePct20 = sortState.byRangePct20;
       s.byJingYest = sortState.byJingYest;
       s.byJingYestRatio = sortState.byJingYestRatio;
       s.byRangePct = sortState.byRangePct;
@@ -1008,23 +1058,27 @@ export function useAuctionBoard() {
     sortState[key] = !sortState[key];
     if (sortState[key]) {
       if (key === 'byWeakStrong') {
-        sortState.byRatio = false;
+        sortState.byRangePct20 = false;
         sortState.byJingYest = false; sortState.byJingYestRatio = false; sortState.byRangePct = false;
-      } else if (key === 'byRatio') {
+      } else if (key === 'byRangePct20') {
+        // [RANGE20 2026-10-19 用户口径] 20日涨幅：与其它主排序 toggle 互斥（与十日涨幅同款）。
+        //   本模式的取数由下方 watch 驱动（sortState.byRangePct20 已在依赖里）⇒ 点开即
+        //   ensureRange20：阶段①读库内逐日行（同步可算，立刻出版）、阶段②同花顺补缺（无额度限制）。
+        //   ⚠️ 这里【不 await】—— 取数慢不该阻塞 toggle 的视觉反馈（列表先按已有数据重排）。
         sortState.byWeakStrong = false;
         sortState.byJingYest = false; sortState.byJingYestRatio = false; sortState.byRangePct = false;
       } else if (key === 'byJingYest') {
-        sortState.byWeakStrong = false; sortState.byRatio = false;
+        sortState.byWeakStrong = false; sortState.byRangePct20 = false;
         sortState.byJingYestRatio = false; sortState.byRangePct = false;
       } else if (key === 'byJingYestRatio') {
-        sortState.byWeakStrong = false; sortState.byRatio = false;
+        sortState.byWeakStrong = false; sortState.byRangePct20 = false;
         sortState.byJingYest = false; sortState.byRangePct = false;
       } else if (key === 'byRangePct') {
         // [RANGE-PCT 2026-10-14] 十日涨幅：与其它主排序 toggle 互斥。
         //   本模式的数据源是云端 stock_range_pct（异步到货），下面的龙头 watch 已把
         //   `sortState.byRangePct` 纳入依赖 ⇒ 一打开就会 ensureDragonRangePct（数据在就秒回、
         //   不在才发一次请求），所以点开不会出现「空白等数据」的空窗。
-        sortState.byWeakStrong = false; sortState.byRatio = false;
+        sortState.byWeakStrong = false; sortState.byRangePct20 = false;
         sortState.byJingYest = false; sortState.byJingYestRatio = false;
       }
       // [TWO-MODES 2026-10-02] ⛔ 原 `byParallel` 的互斥分支（toogle 时强置 byParallel=true）已删除：

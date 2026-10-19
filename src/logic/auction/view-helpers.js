@@ -6,10 +6,14 @@ import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
 // 一并删除——平行 toggle 被「一字」toggle 占用、平行并入竞/昨，该函数在本文件再无引用（§16）。
 import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlightSetForDate } from './sort-rules.js';
 import { ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagState, _buildTagStateCache } from '../tagTitles/rules.js';
-import { getWeakStrongSet, getWeakStrongTurnSet, getVolGrabSet } from './sort-rules-extra.js';
+import { getWeakStrongSet, getWeakStrongTurnSet } from './sort-rules-extra.js';
 // [RANGE-PCT 2026-10-14 用户口径] 「十日涨幅」toggle 的排序纯函数（由高到低 / 缺数据置底 / 稳定）。
 // 数据源 = getDragonRangePct(currentDate)（云端 stock_range_pct，与题材龙位徽章同源，§6）。
 import { sortIndicesByRangePct } from './range-pct-sort.js';
+// [RANGE20 2026-10-19 用户口径] 「20日涨幅」toggle（开关位由原「量比抢筹」改造）的取数入口。
+//   与十日涨幅的最大差别：云端【没有】20 日行（表主键 (date,stock)，20 日行会覆盖 10 日行）
+//   ⇒ 数据由 range20.js 在客户端按 20 个交易日复利现算、只放会话内存（详见该模块文件头）。
+import { getRange20Pct } from './range20.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 // [AVG-VRATIO 2026-10-01 用户口径] 题材统计条最上面一行「平均竞价量比」的取值入口：
 //   读某只股票【某日】的当日竞价量比（倍数，如 2.18）。
@@ -138,10 +142,10 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   //   平行 toggle 已被「一字」toggle 占用，平行随之【并入竞/昨】（竞/昨 的 tier1 就是平行档）。
   //   ⇒ 该分支在删掉开关后【永远不成立】，属于死代码（§16）；平行的绿色边条也随之取消。
   //   用户在 AskUserQuestion 里明确选「保留现有『竞/昨』口径」，所以没有把这枚边条搬到竞/昨下面。
-  // [VOL-GRAB 2026-09-05] 量比抢筹高光（原「环比」重构）：竞价量比(auc_vol_ratio) >= 10 且 抢筹幅度(open_bid_pct) > 1
-  // 两条件同时满足才点亮；与 byRatio 排序分支共用 ctx.volGrabSet（单一真相，杜绝排序与高光两套口径）。
-  // 旧口径（今/昨比 >= 1.5 的 highRatioToday）仅保留给「竞放量数」常驻统计，不再参与高光。
-  const isHighRatioMatch = ctx.sortByRatioEnabled && stockName && ctx.volGrabSet && ctx.volGrabSet.has(stockName);
+  // [RANGE20 2026-10-19 用户口径] ⛔ 原「量比抢筹」行级高光（isHighRatioMatch → .high-ratio 左侧橙条）
+  //   已随该 toggle 一起【整体删除】：开关位改成的「20日涨幅」是【全列表排序 + 逐行标数值】，
+  //   与「十日涨幅」同款，不产生任何行级高光（高光的存在意义是"挑出达标的那几只"，全列表排序下无意义）。
+  //   ⚠️ 「竞放量数」(highRatioToday，今/昨比>=1.5) 是【常驻统计】，与 toggle 开关无关，保持原样不动。
   // [RANGE-PCT 2026-10-14] ⛔ 原「三天竞跌」绿色高光（isThreeDayJingDieMatch / three-day-jing-die）
   //   已随该 toggle 一起【整体删除】：新 toggle「十日涨幅」是【全列表排序 + 逐行标数值】，
   //   不产生任何行级高光（绿色左竖条的存在意义就是"挑出达标的那几只"，全列表排序下无意义）。
@@ -151,8 +155,6 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     itemClass += ' jing-yest-match';
   } else if (isWeakStrongMatch) {
     itemClass += ' weak-strong';
-  } else if (isHighRatioMatch) {
-    itemClass += ' high-ratio';
   }
 
   let numberClass = 'auction-number auction-trend-trigger';
@@ -328,6 +330,26 @@ function _enrichAuctionItem(rawItem, index, ctx) {
       if (_v === null || _v === undefined || _v === '') return null;
       const _n = Number(_v);
       return isFinite(_n) ? _n : null;
+    })(),
+    // [RANGE20 2026-10-19 用户口径] 「20日涨幅」toggle 下每行显示的数值（= 该模式排序键）。
+    //   来源 = ctx.rangePct20Map（range20.js 现算的 20 个交易日复利区间涨幅，见该模块文件头）。
+    //   §10：未能取到 → null（模板不渲染，⛔ 绝不当 0 显示）。
+    //   `rangePct20Days` = 实际参与累乘的交易日数（停牌/缺数据会 < 20）——
+    //     只用于悬停提示「n/20日」，⛔ 不参与排序、不进模板计算（§21）。
+    rangePct20: (function() {
+      if (!ctx.sortByRangePct20Enabled || !ctx.rangePct20Map || !stockName) return null;
+      const _e = ctx.rangePct20Map.get(stockName);
+      if (!_e) return null;
+      const _v = _e.pct;
+      if (_v === null || _v === undefined || _v === '') return null;
+      const _n = Number(_v);
+      return isFinite(_n) ? _n : null;
+    })(),
+    rangePct20Days: (function() {
+      if (!ctx.sortByRangePct20Enabled || !ctx.rangePct20Map || !stockName) return 0;
+      const _e = ctx.rangePct20Map.get(stockName);
+      const _d = _e ? Number(_e.days) : 0;
+      return isFinite(_d) && _d > 0 ? _d : 0;
     })(),
     // [CLOSE-LIMIT 2026-09-11] 收盘涨停('up')/跌停('down') → 股票名下绿色/红色【蚂蚁线（虚线）】标记。
     // null = 既非停板也没有收盘涨幅数据（不标记）。视觉优先级见 AuctionBoardTable：竞价一字实线优先。
@@ -511,9 +533,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   } else {
     try {
       const store = useAuctionStore();
-      sortState = store && store.sortState ? store.sortState[_p] : { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI };
+      sortState = store && store.sortState ? store.sortState[_p] : { byWeakStrong: false, byRangePct20: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI };
     } catch {
-      sortState = { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI };
+      sortState = { byWeakStrong: false, byRangePct20: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI };
     }
   }
 
@@ -539,9 +561,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   const weakStrongSet = sortState.byWeakStrong ? getWeakStrongSet(currentDate, dataSource) : null;
   const weakStrongTurnSet = sortState.byWeakStrong ? getWeakStrongTurnSet(currentDate, dataSource) : null;
 
-  // [VOL-GRAB 2026-09-05] 量比抢筹达标集合（竞价量比>=10 且 抢筹幅度>1）；仅该 toggle 开启时计算。
-  // 排序与高光判定共用这一份结果，避免两处口径分叉。
-  const volGrabSet = sortState.byRatio ? getVolGrabSet(currentDate, dataSource) : null;
+  // [RANGE20 2026-10-19] ⛔ 原「量比抢筹」达标集合（volGrabSet = getVolGrabSet(...)）已随该 toggle 删除：
+  //   新开关「20日涨幅」的数据源是 range20.js 的会话内存 Map（下方 ctx 里按需读取），
+  //   ⛔ 不再有「每行查一个达标集合」这种行级判定。
 
   const _prevMap = new Map();
   if (prevAuctionList.length > 0) {
@@ -652,26 +674,10 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       }
       return a.pos - b.pos; // tier2 保持原序
     }).map(x => x.idx);
-  } else if (sortState.byRatio) {
-    // [VOL-GRAB 2026-09-05] 量比抢筹（原「环比」toggle 重构后的排序规则）：
-    //   达标 = 竞价量比(auc_vol_ratio) >= 10 且 抢筹幅度(open_bid_pct) > 1 —— 两条件【同时】满足才高光置顶；
-    //   达标组内按「竞价量比」降序，量比相同则按「抢筹幅度」降序（抢得越猛越靠前）；
-    //   未达标（任一条件不满足或字段缺失）保持原序排在其后。
-    //   注：原环比的「今/昨比 >= 1.5 + 位数差」口径已废弃；「竞放量数」(highRatioToday) 是常驻统计，
-    //   与 toggle 开关无关，保持原样不动，避免误伤既有展示。
-    renderOrder = renderOrder.map((idx, pos) => {
-      const stockName = renderList[idx] && renderList[idx].stock ? renderList[idx].stock.trim() : '';
-      const g = stockName && volGrabSet ? volGrabSet.get(stockName) : null;
-      return { idx, pos, qualified: !!g, volRatio: g ? g.volRatio : null, bidPct: g ? g.bidPct : null };
-    }).sort((a, b) => {
-      if (a.qualified !== b.qualified) return a.qualified ? -1 : 1;
-      if (a.qualified) {
-        if (b.volRatio !== a.volRatio) return b.volRatio - a.volRatio; // 竞价量比降序
-        if (b.bidPct !== a.bidPct) return b.bidPct - a.bidPct;         // 同量比 → 抢筹幅度降序
-      }
-      return a.pos - b.pos;
-    }).map(x => x.idx);
-
+  // [RANGE20 2026-10-19 用户口径] ⛔ 原 `else if (sortState.byRatio)` 分支（「量比抢筹」：
+  //   达标=竞价量比>=10 且 抢筹幅度>1 → 达标组置顶、组内按量比降序 → 抢筹幅度降序）已【整段删除】。
+  //   用户原话：「把早盘竞价看板的竞昨量比抢筹功能去掉，这个功能没用，没参考价值」。
+  //   开关位由「20日涨幅」占用（见上方 byRangePct 分支下面的 byRangePct20 分支）。
   } else if (sortState.byJingYest) {
     // [FIX 2026-08-18] 同档排序按「当天竞价涨幅 auc_pct_chg」由高到低。
     //   分档条件不变：tier0=竞昨高光(平行+diff>0) / tier1=仅平行 / tier2=其它。
@@ -728,6 +734,19 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     //   排序实现（含稳定/置底口径）收敛在 range-pct-sort.js 纯函数里，可独立单测（§15/§42）。
     const _rangeMap = getDragonRangePct(currentDate);
     renderOrder = sortIndicesByRangePct(renderOrder, renderList, _rangeMap);
+  } else if (sortState.byRangePct20) {
+    // [RANGE20 2026-10-19 用户口径] 「20日涨幅」toggle（开关位由原「量比抢筹」改造）：
+    //   ★ 全部股票（龙头组 + 观察组 + 常规组，不分块）按「含今天在内的 20 个交易日区间涨幅」
+    //     由高到低排，并逐行标出该数值 —— 与「十日涨幅」同款，只是时间段不同。
+    //   用户原话：「和十日涨幅toggle类似，只是时间段涨幅不一样，这样在市场总龙出现分歧的时候，
+    //   我可能用这个toggle做参考。」
+    //   §6 单一真相：排序键与行上数值同源（同一个 Map）；排序实现复用 range-pct-sort.js 的
+    //     三级键（缺数据置底 → pct 降序 → 稳定），⛔ 不在这里另写一套比较器。
+    //   §10：Map 未就绪（null）或该行缺腿 → 置底且不参与比较（⛔ 绝不补 0）。
+    //   ⚠️ 两个 map 各自独立：十日读云端 stock_range_pct；20 日读 range20.js 现算结果
+    //      （云端没有 20 日行 —— 表主键 (date,stock)，写进去会覆盖 10 日行，见 range20.js 文件头）。
+    const _rangeMap20 = getRange20Pct(currentDate);
+    renderOrder = sortIndicesByRangePct(renderOrder, renderList, _rangeMap20);
   }
   // [TWO-MODES 2026-10-02 用户口径] ⛔ 这里原有 `else if (sortState.byParallel)` 主排序分支（平行达标档
   //   按 digitGap 升序 → diff 降序；内层还套了一个永远走不到的 `if (sortState.byJingYest)` 子分支）
@@ -742,7 +761,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // 复用第二页题材分类(getTopicGroups) 的同一套核心词匹配口径：把同题材股票聚到一起，
   // 哪个题材股票多哪个排前面，"其它"(无题材/未匹配核心词/组<2只) 置底。
   // 主排序档位(tier)顺序保持不变——竞昨高光/达标(tier0)整体置顶，档位【内部】再按题材组大小降序。
-  // 覆盖 竞/昨、竞/昨占比（分层）与 数据/量比抢筹/默认（单层，等同全局分组）。
+  // 覆盖 竞/昨、竞/昨占比（分层）与 默认/十日涨幅/20日涨幅（单层，等同全局分组）。
   // 修复点：v1 按「单只股票题材数量」排序（一只股题材多就排前），与用户要的「题材分组」不符；
   //       现改为与第二页一致的主题材分组，高光档位整体仍置顶、组内按题材聚并组大者居前。
 
@@ -766,19 +785,15 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       const ip = nm && parallelStocksToday && parallelStocksToday.has(nm);
       return ih ? 0 : (ip ? 1 : 2);
     }
-    if (sortState.byRatio) {
-      // [VOL-GRAB 2026-09-05] 量比抢筹：达标档(tier0)=竞价量比>=10 且 抢筹幅度>1，否则 tier1。
-      // 与 _enrichAuctionItem 中 isHighRatioMatch 口径一致；题材 toggle 叠加时保证高光档仍整体置顶。
-      const vg = nm && volGrabSet ? volGrabSet.has(nm) : false;
-      return vg ? 0 : 1;
-    }
-    // 其它主排序（平行/数据/默认）无分层概念，统一单档
+    // [RANGE20 2026-10-19] ⛔ 原「量比抢筹」达标档在这里（tier0 = 竞价量比>=10 且 抢筹幅度>1，
+    //   否则 tier1）—— 已随该 toggle 整体删除（§16：不留死分支）。
+    // 其它主排序（默认 / 十日涨幅 / 20日涨幅）无分层概念，统一单档
     return 0;
   }
 
   // [TOPIC-MERGE 2026-09-09] 题材 toggle「单独开启」判定：没有任何主排序 toggle 参与时为真。
   // 单独开启题材 = 用户只想按题材看当日全量（含观察组继承票），不再区分观察组/常规组两块；
-  // 一旦叠加任一主排序 toggle（弱转强/量比抢筹/竞昨/竞昨占比/十日涨幅），
+  // 一旦叠加任一主排序 toggle（弱转强/竞昨/竞昨占比/十日涨幅/20日涨幅），
   // 观察组与常规组的既有显示方式保持不变（下方分组分支的 else/各专属分支原逻辑不动）。
   //
   // [TWO-MODES 2026-10-02] ⚠️ 这里【不再有】 `!sortState.byParallel` 那一项：
@@ -788,9 +803,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   //      「打开一字 toggle 后，显示也和单独打开题材 toggle 一样，只是排序变了」。
   const topicOnlyMode = !!sortState.byTopic
     && !sortState.byWeakStrong
-    && !sortState.byRatio
     && !jingYestToggleChecked
-    && !sortState.byRangePct;
+    && !sortState.byRangePct
+    && !sortState.byRangePct20;
 
   // 题材背景色映射：仅在 byTopic 开启时计算，供下方 enrich 步骤给每行附上浅色背景。
   // 不同题材不同浅色、仅成员>=2 的真实题材上色、"其它"不上色（详细口径见 buildTopicColorMap）。
@@ -1016,11 +1031,13 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     obsIndices = [];
     regularIndices = renderOrder.slice();
     hiddenObsIndices = [];
-  } else if (sortState.byRangePct) {
+  } else if (sortState.byRangePct || sortState.byRangePct20) {
     // [RANGE-PCT 2026-10-14] 十日涨幅模式：折叠龙头组与观察组（dragonIndices 保持 []、obsIndices=[]）
     // → 模板不渲染两个独立区块与蚂蚁线；三组股票【全部】进 regularIndices 这一条列表，
     // 总数与默认模式一致（不隐藏、不增不减，§6 唯一数据源 = 9:25 列表 + 观察组/龙头继承壳）。
     // 排序由上方 byRangePct 分支给出：十日区间涨幅由高到低、缺数据置底。
+    // [RANGE20 2026-10-19] 20 日涨幅模式【完全同款】（用户口径「和十日涨幅toggle类似」）：
+    //   同一段分支，只是排序键换成 20 个交易日区间涨幅（见上方 byRangePct20 分支）。
     obsIndices = [];
     regularIndices = renderOrder.slice();
     hiddenObsIndices = [];
@@ -1037,22 +1054,6 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       const isBoughtInherited = _obsBoughtSet.has(stockName) && hasTodayData;
       // 打* 的正式成员永不隐藏（只按是否命中高光排先后），否则正式成员会从列表消失
       if (!matchesWeakStrong && !isBoughtInherited && !_isFormalTodayMember(stockName)) hiddenObsIndices.push(i);
-    });
-    obsIndices = [];
-    regularIndices = renderOrder.filter(i => hiddenObsIndices.indexOf(i) < 0);
-  } else if (sortState.byRatio) {
-    // [VOL-GRAB 2026-09-05] 与「弱转强 / 竞昨」显示口径一致：折叠观察组区块（obsIndices=[]），
-    // 达标的观察组票并入主列表，由上方 byRatio 排序分支统一置顶；未达标且非买入继承的观察组壳隐藏，
-    // 否则整块观察组会渲染在高光票之前，导致「高光置顶」名不副实。
-    hiddenObsIndices = [];
-    _obsIndicesRaw.forEach(i => {
-      const stockName = renderList[i].stock.trim();
-      const isQualified = !!(volGrabSet && volGrabSet.has(stockName));
-      const item = renderList[i];
-      const hasTodayData = item && ((item.volume || '').toString().trim() !== '' || (item.yestVolume || '').toString().trim() !== '');
-      const isBoughtInherited = _obsBoughtSet.has(stockName) && hasTodayData;
-      // 打* 的正式成员永不隐藏（同上，与弱转强分支口径一致）
-      if (!isQualified && !isBoughtInherited && !_isFormalTodayMember(stockName)) hiddenObsIndices.push(i);
     });
     obsIndices = [];
     regularIndices = renderOrder.filter(i => hiddenObsIndices.indexOf(i) < 0);
@@ -1164,18 +1165,21 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     // [TWO-MODES 2026-10-02] `sortByParallelEnabled` 已随平行 toggle 一并移除（平行并入竞/昨，
     //   其唯一消费者 isParallelMatch 已删除）。`parallelStocksToday` 保留：竞/昨的 tier 计算还要用它。
     parallelStocksToday,
-    sortByRatioEnabled: sortState.byRatio,
-    // 注：highRatioToday（原环比的今/昨比>=1.5 集合）已从 ctx 移除——高光改由 volGrabSet 判定，
-    // 保留它只会误导后人以为高光仍走旧口径。它仅用于下方 stats.highRatioCount（「竞放量数」常驻统计）。
+    // 注：highRatioToday（今/昨比>=1.5 集合）从 ctx 移除——行级高光功能已不存在，
+    // 保留它只会误导后人。它仅用于下方 stats.highRatioCount（「竞放量数」常驻统计）。
     // [RANGE-PCT 2026-10-14] 「十日涨幅」toggle：行上要标出该数值（= 本模式的排序键）。
     //   rangePctMap 只在开关打开时读取（关着时 null ⇒ 行上不产出 rangePct，行为一字不变，§11）。
     //   ⛔ 只读、不请求、不落库 —— 数据由 ensureDragonRangePct 异步发布（失效由 incremental-view 的
     //      dragon= 指纹保证）。
     sortByRangePctEnabled: !!sortState.byRangePct,
     rangePctMap: sortState.byRangePct ? getDragonRangePct(currentDate) : null,
+    // [RANGE20 2026-10-19] 「20日涨幅」toggle：同款只读入口，数据源换成 range20.js 的会话内存 Map。
+    //   ⛔ 同样只读、本层不请求（取数由 useAuctionBoard 的 watch 触发 ensureRange20）；
+    //      失效由 incremental-view 的 `range20=` / `rp20=` 指纹保证。
+    sortByRangePct20Enabled: !!sortState.byRangePct20,
+    rangePct20Map: sortState.byRangePct20 ? getRange20Pct(currentDate) : null,
     sortByWeakStrongEnabled: sortState.byWeakStrong,
-    weakStrongSet: weakStrongSet,
-    volGrabSet: volGrabSet
+    weakStrongSet: weakStrongSet
   };
   // [DRAGON-GROUP 2026-09-14] 最终渲染顺序 = 龙头组 → 观察组 → 常规组（龙头组排最前，需求 3）。
   const fullOrder = dragonIndices.concat(obsIndices).concat(regularIndices);
@@ -1300,7 +1304,6 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     dragonIndices,
     hiddenObsIndices,
     weakStrongSet,
-    volGrabSet,
     stats: {
       todayStrength,
       yesterdayStrength,

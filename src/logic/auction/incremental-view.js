@@ -19,8 +19,11 @@ import {
   getJingYestHighlightSetForDate,
   getParallelStocksForDate
 } from './sort-rules.js';
-import { getVolGrabSet } from './sort-rules-extra.js';
 import { deriveAuctionTagState } from '../tagTitles/rules.js';
+// [RANGE20 2026-10-19] 「20日涨幅」是【异步现算】的全局输入（range20.js 阶段①库内腿 / 阶段②
+// 同花顺补缺，两次发布）。不进全局指纹 ⇒ 数据到货后行缓存不失效 ⇒ 行上数值与整表顺序都陈旧
+// （与 dragon= / suspend= 同款问题）。
+import { getRange20FingerprintToken } from './range20.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 // [DRAGON 2026-09-09] 龙头徽章依赖异步加载的 10 日区间涨幅，必须进全局指纹，
 // 否则数据到达后行缓存不失效 → 徽章不显示（或陈旧）。
@@ -44,26 +47,15 @@ function setToSortedStr(set) {
   set.forEach((v) => arr.push(v));
   return arr.sort().join(',');
 }
-// [VOL-GRAB 2026-09-05] 量比抢筹集合序列化为指纹串。
-// 值为 { volRatio, bidPct } 对象，若按 `键:值` 朴素串化会退化成 [object Object]，导致量比/抢筹
-// 数值变化无法被感知 → 行缓存不失效 → 高光 class 陈旧复用。必须把两个数值都写进指纹。
-// [RANGE-PCT 2026-10-14] ⛔ 原同族的 mapToStr（「键:值」串化）已删除：它唯一的使用者是
-//   「三天竞跌集合」那一段，随该功能下线一并消失（§16 不留死代码）。
-function volGrabMapToStr(map) {
-  if (!map) return '';
-  const arr = [];
-  map.forEach((v, k) => arr.push(k + ':' + (v ? v.volRatio : '') + '/' + (v ? v.bidPct : '')));
-  return arr.sort().join(',');
-}
+// [RANGE20 2026-10-19] ⛔ 原 volGrabMapToStr（量比抢筹集合 → 指纹串）已删除：
+//   它唯一的使用者是「量比抢筹」的全局指纹，随该功能下线一并消失（§16 不留死代码）。
 
 function computeGlobalFingerprint(dataSource, date, sortState) {
   let high = '';
   let jing = '';
   let par = '';
-  let vgrab = '';
   let confirmed = '';
   try { high = setToSortedStr(getHighRatioStocksForDate(date, dataSource).stockNames); } catch (e) { high = ''; }
-  try { vgrab = volGrabMapToStr(getVolGrabSet(date, dataSource)); } catch (e) { vgrab = ''; }
   try { jing = setToSortedStr(getJingYestHighlightSetForDate(date, dataSource)); } catch (e) { jing = ''; }
   try { par = setToSortedStr(getParallelStocksForDate(date, dataSource)); } catch (e) { par = ''; }
   // [RANGE-PCT 2026-10-14] ⛔ 原 `three = mapToStr(getThreeDayJingDieSet(...))` 已删除：
@@ -87,7 +79,7 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
   return [
     'date=' + date,
     'byWeakStrong=' + (s.byWeakStrong ? 1 : 0),
-    'byRatio=' + (s.byRatio ? 1 : 0),
+    // [RANGE20 2026-10-19] ⛔ 原 `byRatio=`（量比抢筹）已随该 toggle 删除；开关位改成 `byRangePct20=`。
     // [TWO-MODES 2026-10-02] 原 `byParallel=` 已删（平行 toggle → 一字 toggle、平行并入竞/昨）；
     //   改成题材【排序口径】：它决定题材组的组间顺序 ⇒ 必须入签名，否则切「题材 / 一字」时
     //   行缓存会复用旧顺序（用户会看到「打开了却还是原来的排法」）。
@@ -97,12 +89,16 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
     // [RANGE-PCT 2026-10-14] 键名随功能改名（三天竞跌 → 十日涨幅）；它进指纹的理由不变：
     //   排序开关决定整表的行顺序 ⇒ 开关一变必须清空行缓存，否则「打开了却还是原来的排法」。
     'byRangePct=' + (s.byRangePct ? 1 : 0),
+    // [RANGE20 2026-10-19] 「20日涨幅」开关：同款理由必须入指纹（决定整表顺序）。
+    'byRangePct20=' + (s.byRangePct20 ? 1 : 0),
     'byTopic=' + (s.byTopic ? 1 : 0),
     'high=' + high,
     'jing=' + jing,
     'par=' + par,
-    'vgrab=' + vgrab,
     'dragon=' + getDragonFingerprintToken(),
+    // [RANGE20 2026-10-19] 20 日涨幅签名（日期 + 版本 + 条数）：它是【异步】两阶段到货的
+    // （先库内腿、再同花顺补缺），到货必须清空行缓存，否则行上数值/顺序停在上一阶段。
+    'range20=' + getRange20FingerprintToken(),
     // [DRAGON-GROUP 2026-09-14] 龙头组名册签名（展示日 + 版本 + 条数）。它决定哪些行进龙头组区块、
     // 以及「龙」组内标记的显隐 → 名册变化必须清空行缓存（与上方 dragon= 同款理由）。
     'dgroup=' + getDragonGroupFingerprintToken(),
@@ -113,7 +109,7 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
   ].join('|');
 }
 
-function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToken, vgToken) {
+function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToken) {
   const stockName = (item.stock || '').trim();
   let sold = false, bought = false, selected = false;
   try {
@@ -131,11 +127,12 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToke
     item.topics,
     item.todayChoice, // AuctionBadge 渲染「买→/卖→」等当日选项，必须纳入签名避免陈旧
     date,
-    s.byWeakStrong ? 1 : 0, s.byRatio ? 1 : 0,
+    s.byWeakStrong ? 1 : 0,
     // [TWO-MODES 2026-10-02] 原 `s.byParallel ? 1 : 0` 已删（见 computeGlobalFingerprint 的注释），
     //   换成题材排序口径 —— 它决定该行落在哪个题材组的哪个位置，属结构性输入，必须入行签名。
     'tob=' + (s.topicOrderBy === TOPIC_ORDER_YIZI ? TOPIC_ORDER_YIZI : TOPIC_ORDER_VOL_RATIO),
-    s.byJingYest ? 1 : 0, s.byJingYestRatio ? 1 : 0, s.byRangePct ? 1 : 0, s.byTopic ? 1 : 0,
+    // [RANGE20 2026-10-19] `s.byRatio`（量比抢筹）→ `s.byRangePct20`（20日涨幅）。
+    s.byJingYest ? 1 : 0, s.byJingYestRatio ? 1 : 0, s.byRangePct ? 1 : 0, s.byRangePct20 ? 1 : 0, s.byTopic ? 1 : 0,
     'ws=' + (wsToken || 0), // [WEAK-STRONG 2026-09-01] 弱转强达标档(连跌天数)变化需触发该行重派生，否则高光 class 被增量缓存陈旧复用
     'yizi=' + (item.isYiZi ? 1 : 0), // [YIZI 2026-09-09] 竞价一字状态（竞价涨幅达标）变化需触发重派生，否则红线标记陈旧
     // [DRAGON-COLOR 2026-09-11] 龙头徽章底色 = 当天竞价涨幅符号（红/绿/灰）→ 该数值必须入签名，
@@ -155,6 +152,10 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToke
     //   它虽由全局 `dragon=` 令牌派生，但模板会直接读它 → 与 cl=/cp= 同款理由按红线单独入签名：
     //   日后 rangePct 的来源/口径变化时，不会因「全局令牌恰好没变」而复用旧行对象。
     'rp=' + (item.rangePct === null || item.rangePct === undefined ? '' : item.rangePct),
+    // [RANGE20 2026-10-19] 「20日涨幅」模式下行上显示的数值 + 实际参与累乘的天数（悬停「n/20日」）。
+    //   与 rp= 同款理由单独入签名：模板直接读这两个字段。
+    'rp20=' + (item.rangePct20 === null || item.rangePct20 === undefined ? '' : item.rangePct20) +
+      '/' + (item.rangePct20Days || 0),
     // [LIMIT-STREAK 2026-09-11] 趋势/连板标记文案（前 9 个历史交易日收盘涨幅派生，见 limit-streak.js）。
     //   它不由本行行内输入（volume/note…）派生，而依赖「前若干日的历史日行」——
     //   历史日数据在首屏整段拉入，但 worker 收盘覆盖 / 历史日回填会改写 change_pct → 连板状态可能变化，
@@ -175,7 +176,6 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToke
     // [TOPIC-STATS 2026-09-10] 题材块统计条挂在【该组第一行】上：组内任何一只票的一字/高开/龙头变化
     // 都会改变统计数字，但首行自身的行内输入可能没变 → 必须单独入签名，否则统计条数字陈旧。
     'ts=' + (item.topicStats ? topicStatsSignature(item.topicStats) : ''),
-    'vg=' + (vgToken || 0), // [VOL-GRAB 2026-09-05] 量比抢筹达标状态(0/1)变化需触发该行重派生，否则高光 class 陈旧复用
     prevVolume, prevYestVolume,
     sold ? 1 : 0, bought ? 1 : 0, selected ? 1 : 0
   ].join('|');
@@ -199,15 +199,13 @@ export function computeAuctionViewDataIncremental(dataSource, sortState) {
 
   const items = result.items || [];
   const wsSet = result.weakStrongSet;
-  const vgSet = result.volGrabSet;
   const next = new Array(items.length);
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     const stockName = (item.stock || '').trim();
     const prev = stockName ? prevMap.get(stockName) : null;
     const wsTok = (sortState && sortState.byWeakStrong && wsSet && stockName) ? (wsSet.get(stockName) || 0) : 0;
-    const vgTok = (sortState && sortState.byRatio && vgSet && stockName && vgSet.has(stockName)) ? 1 : 0;
-    const sig = computeRowSig(item, sortState, date, prev ? prev.volume : '', prev ? prev.yestVolume : '', wsTok, vgTok);
+    const sig = computeRowSig(item, sortState, date, prev ? prev.volume : '', prev ? prev.yestVolume : '', wsTok);
     const key = dataSource + '|' + item.index;
     const cached = rowCache.get(key);
     if (cached && cached.sig === sig) {

@@ -59,15 +59,21 @@ export function safeCall(fn, ...args) {
  */
 function createSortState() {
   return {
-    auction: { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI },
-    hot: { byWeakStrong: false, byRatio: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI }
+    // [RANGE20 2026-10-19 用户口径] `byRatio`（量比抢筹）→ `byRangePct20`（20日涨幅）。
+    //   ⚠️ 键名与初值必须与 useAuctionBoard#sortState 逐字一致（§6：两处默认值不同会让
+    //      「store 读不到」那一瞬间的口径跳变）。默认关闭（与十日涨幅一致）。
+    auction: { byWeakStrong: false, byRangePct20: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI },
+    hot: { byWeakStrong: false, byRangePct20: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI }
   };
 }
 
 function createSortStateP2() {
+  // [RANGE20 2026-10-19 用户口径] 第二页的「量比抢筹」开关【删除】（用户：「顺手删掉」）。
+  //   它在本页从来没有任何消费方（sortedTopicGroups 只按强度排），属死开关（§16）——
+  //   与 2026-10-14 删掉的「三天竞跌」完全同性质：点了没反应，删掉不影响任何显示。
   return {
-    auction: { byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byTopic: false },
-    hot: { byRatio: false, byParallel: false, byJingYest: false, byJingYestRatio: false, byTopic: false }
+    auction: { byParallel: false, byJingYest: false, byJingYestRatio: false, byTopic: false },
+    hot: { byParallel: false, byJingYest: false, byJingYestRatio: false, byTopic: false }
   };
 }
 

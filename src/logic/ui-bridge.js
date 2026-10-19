@@ -110,7 +110,19 @@ export async function pushCoreTopicsToCloud(topics) {
   }
   return { ok: true, kept: list.length, deleted: toDelete.length };
 }
-_setCoreTopicsFns(pullCoreTopicsFromCloud, pushCoreTopicsToCloud);
+// [CORE-TOPICS-REG 2026-10-19] 循环依赖守卫（⛔ 别去掉）。
+//   依赖环：topic/rules.js → data/debug-log.js → stores/auctionStore.js
+//           → auction/topic-sort.js → stocks/stocks.js → 本文件 → 回到 topic/rules.js。
+//   本行是在【模块求值时】执行的：环未闭合时 topic/rules.js 尚未求值完 ⇒ `_setCoreTopicsFns`
+//   是 undefined（Vite/Rollup 会把 `export function` 编译成「求值时赋值」，⛔ 别指望函数声明提升）。
+//   浏览器真实 ESM 与生产打包的求值顺序下它能正常注册；只有单测（rules.test.js）按
+//   「先算 stocks.js 再算 topic/rules.js」的顺序加载时才会命中 ⇒ 以前整套用例直接挂掉（0 test）。
+//   ⇒ 只做「就绪才注册」，⛔ 不许无声吞掉：未就绪必须留痕。
+if (typeof _setCoreTopicsFns === 'function') {
+  _setCoreTopicsFns(pullCoreTopicsFromCloud, pushCoreTopicsToCloud);
+} else {
+  console.warn('[ui-bridge] 循环依赖下 _setCoreTopicsFns 未就绪，核心词云同步本次未注册');
+}
 
 export function getAuctionTagState(stockName, date) {
   const d = date || useUiStore().currentDate;

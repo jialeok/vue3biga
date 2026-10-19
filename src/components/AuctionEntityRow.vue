@@ -324,16 +324,20 @@ function dragonTagTitle(item) {
   return bits.join('｜');
 }
 
-// [DRAGON-GROUP 2026-09-15 / RANGE-PCT 2026-10-14] 股票名旁「十日区间涨幅」数值的取值分支。
-// 为什么两套来源必须分开（⛔ 不能合并成一个字段）：
+// [DRAGON-GROUP 2026-09-15 / RANGE-PCT 2026-10-14 / RANGE20 2026-10-19] 股票名旁「区间涨幅」数值的取值分支。
+// 为什么三套来源必须分开（⛔ 不能合并成一个字段）：
 //   · 默认模式的龙头组行 → item.dragonGroupPct：来自【前一交易日评选出的名册】（名册里存着当时的
 //     十日涨幅 + 题材），它是龙头组区块的排序键，语义 = 「按昨日口径给这批龙头排名」；
 //   · 十日涨幅 toggle  → item.rangePct：【当日】十日区间涨幅（云端 stock_range_pct），
 //     语义 = 「今天全市场谁更强」，与题材龙位徽章 / 决策看板排名同源（§6）。
+//   · 20日涨幅 toggle  → item.rangePct20：【含今天在内 20 个交易日】的区间涨幅（range20.js 现算），
+//     语义同样是「今天全市场谁更强」，只是时间段比十日涨幅长一倍（用户用来判「市场总龙是否分歧」）。
 // 用后者去渲染前者会与区块排序键不一致（用户实测过「排序对不上数字」），反之亦然。
 // 「无值」绝不当 0 显示（否则会与「涨幅为 0」混淆，§40 不猜数据）→ 返回空串 ⇒ 模板不渲染。
 function rangePctValue(item) {
   if (!item) return null;
+  // [RANGE20 2026-10-19] 两个 toggle 互斥，判断顺序不影响结果；20 日放前面便于阅读。
+  if (sortState.byRangePct20) return item.rangePct20;
   if (sortState.byRangePct) return item.rangePct;
   if (item.isDragonGroupMember && !sortState.byTopic) return item.dragonGroupPct;
   return null;
@@ -354,6 +358,14 @@ function rangePctClass(item) {
 function rangePctTitle(item) {
   const txt = rangePctText(item);
   if (!txt) return '';
+  // [RANGE20 2026-10-19] 20 日模式：口径文案换成 20 日，并如实标出「实际参与累乘的天数」——
+  //   停牌日没有日涨幅腿（复利里 ×(1+0%) 是恒等变换，数值不受影响），所以停过牌的票会是 17/20 日；
+  //   用户口径是「停牌也算进去」，这里用 n/20 让它一眼可核对，而不是悄悄当作满窗。
+  if (sortState.byRangePct20) {
+    const days = item.rangePct20Days || 0;
+    const tail = (days > 0 && days < 20) ? '（' + days + '/20日，停牌日按 0% 计）' : '（20个交易日）';
+    return '20日区间涨幅 ' + txt + tail;
+  }
   // 龙头组行沿用原口径（附题材，方便核对它是哪个题材的龙头）；
   // 十日涨幅模式是【全市场】排序，题材在行内另有列展示，不在这里重复附（避免提示过长）。
   if (!sortState.byRangePct && item.isDragonGroupMember && item.dragonGroupTopic) {

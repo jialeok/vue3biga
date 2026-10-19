@@ -25,13 +25,22 @@
         <span class="auction-toggle-slider" />
       </label>
     </div>
+    <!-- ★ [RANGE20 2026-10-19 用户口径] 这个开关位原来是「量比抢筹」，现改为「20日涨幅」：
+         打开后 = **全部股票一条列表**（龙头组 + 观察组 + 常规组不再分块），按「含今天在内
+         的 20 个交易日区间涨幅」由高到低排，并在每行股票名旁标出该数值。用户原话：
+         「和十日涨幅toggle类似，只是时间段涨幅不一样，这样在市场总龙出现分歧的时候，
+           我可能用这个toggle做参考。」
+         ⛔ 原「量比抢筹」功能（竞价量比≥10 且 抢筹幅度>1 → 行级高光）已【整体删除】，
+            不是改名：排序键与数据源都换了（量比抢筹 = 当日两个竞价字段现算；
+            20日涨幅 = 20 个交易日逐日涨幅复利，见 logic/auction/range20.js）。
+         默认关闭（与十日涨幅一致）。 -->
     <div class="auction-toggle-item">
-      <span class="auction-toggle-label">量比抢筹</span>
+      <span class="auction-toggle-label">20日涨幅</span>
       <label class="auction-toggle-switch">
         <input
           type="checkbox"
-          :checked="sortState.byRatio"
-          @change="toggleSort('byRatio')"
+          :checked="sortState.byRangePct20"
+          @change="toggleSort('byRangePct20')"
         >
         <span class="auction-toggle-slider" />
       </label>
@@ -82,7 +91,7 @@
          区间涨幅」由高到低排，并在每行股票名旁标出该数值 —— 用户要的是「一眼找到市场总龙头」。
          ⛔ 原「三天竞跌」功能（竞价量连续递减）已整体删除，不是改名：排序键与数据源都换了
             （三天竞跌 = 内存逐日 volume 现算；十日涨幅 = 云端 stock_range_pct，与题材龙位徽章同源）。
-         ⚠️ 与其它主排序 toggle（弱转强 / 量比抢筹 / 竞/昨 / 竞/昨占比）互斥，由 Logic 层保证。 -->
+         ⚠️ 与其它主排序 toggle（弱转强 / 20日涨幅 / 竞/昨 / 竞/昨占比）互斥，由 Logic 层保证。 -->
     <div class="auction-toggle-item">
       <span class="auction-toggle-label">十日涨幅</span>
       <label class="auction-toggle-switch">

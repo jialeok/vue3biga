@@ -194,7 +194,8 @@ defineExpose({
   border-left: 3px solid #f97316;
 }
 .auction-item.manual-selected:hover { background: #ffedd5; }
-.auction-item.high-ratio { box-shadow: inset 4px 0 0 #f59e0b; }
+/* [RANGE20 2026-10-19] ⛔ .auction-item.high-ratio 已删：「量比抢筹」整体下线后无 class 产出方（§16）。
+   开关位改成的「20日涨幅」是【全列表排序 + 逐行标数值】，不产生行级高光（与十日涨幅同款）。 */
 /* [TWO-MODES 2026-10-02] ⛔ .auction-item.parallel-match 绿色边条已删（平行并入竞/昨，无 class 产出方，§16） */
 .auction-item.jing-yest-match { box-shadow: inset 4px 0 0 #3b82f6; }
 /* [RANGE-PCT 2026-10-14] ⛔ .auction-item.three-day-jing-die 已删：「三天竞跌」下线后无 class 产出方（§16） */
@@ -594,7 +595,7 @@ defineExpose({
 .auction-topic-row.sold { background: #f3f4f6; }
 .auction-topic-row.bought { background: #fee2e2; }
 .auction-topic-row.selected { background: #f3e8ff; }
-.auction-topic-row.high-ratio { box-shadow: inset 4px 0 0 #f59e0b; }
+/* [RANGE20 2026-10-19] ⛔ .auction-topic-row.high-ratio 已删（「量比抢筹」下线，全站再无 high-ratio 类，§16） */
 /* [TWO-MODES 2026-10-02] ⛔ .auction-topic-row.parallel-match 绿色边条已删（同 .auction-item.parallel-match，§16） */
 .auction-topic-row.jing-yest-match { box-shadow: inset 4px 0 0 #3b82f6; }
 /* [RANGE-PCT 2026-10-14] ⛔ .auction-topic-row.three-day-jing-die 已删（「三天竞跌」整体下线，§16） */

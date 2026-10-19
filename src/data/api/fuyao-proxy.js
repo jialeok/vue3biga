@@ -10,7 +10,11 @@ const FUYAO_DIRECT_BASE = 'https://fuyao.aicubes.cn';
 export const LADDER_THSCODE = '883410.TI';
 
 // 调用同花顺 fuyao-proxy（GET），返回 data 字段
-export async function fuyaoApiGet(path, params) {
+// [RANGE20 2026-10-19] 新增可选第 3 参 `opts.timeoutMs`：超时即 abort 并抛错。
+//   为什么必须可选：实测上游偶发【不返回也不断开】（挂住），批量拉取时 `Promise.all`
+//   会因此永不结算 ⇒ 整批补算永远发布不出来（20日涨幅卡在库内那几天）。
+//   ⛔ 默认 undefined = 不设超时 ⇒ 既有调用方（十日涨幅 / 一字 / 涨跌停池）行为逐字不变（§11）。
+export async function fuyaoApiGet(path, params, opts) {
     const url = new URL(FUYAO_PROXY_BASE);
     url.searchParams.set('path', path);
     for (const k in params) {
@@ -18,15 +22,26 @@ export async function fuyaoApiGet(path, params) {
             url.searchParams.set(k, params[k]);
         }
     }
+    const timeoutMs = (opts && opts.timeoutMs) || 0;
+    const ctrl = (timeoutMs > 0 && typeof AbortController !== 'undefined') ? new AbortController() : null;
+    let _timer = null;
+    // abort() 按规范不抛错 ⇒ 不需要 try/catch（也免得新增 no-empty 告警）
+    if (ctrl) _timer = setTimeout(function() { ctrl.abort(); }, timeoutMs);
     let resp;
     try {
         resp = await fetch(url.toString(), {
-            headers: { 'Authorization': 'Bearer ' + SUPABASE_ANON_KEY }
+            headers: { 'Authorization': 'Bearer ' + SUPABASE_ANON_KEY },
+            signal: ctrl ? ctrl.signal : undefined
         });
     } catch (netErr) {
+        if (_timer) clearTimeout(_timer);
         _dbgLog('[FUYAO-NET-ERR] ' + path + ': ' + (netErr && netErr.message || netErr));
+        if (netErr && netErr.name === 'AbortError') {
+            throw new Error('代理请求超时（>' + timeoutMs + 'ms）：' + path);
+        }
         throw new Error('代理请求失败（网络层）：' + (netErr && netErr.message || '未知错误') + '。请确认 fuyao-proxy Edge Function 已部署到 Supabase');
     }
+    if (_timer) clearTimeout(_timer);
     if (!resp.ok) {
         let errBody = '';
         try { errBody = await resp.text(); } catch (e) {}

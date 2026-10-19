@@ -1,0 +1,266 @@
+// range20.test.js — 「20日涨幅」口径单测（§15 纯函数优先，§42 验收清单）
+//
+// 覆盖用户 2026-10-19 明确的三条硬口径：
+//   ① 窗口含今天、共 20 个交易日；
+//   ② 复利累乘（不是简单相加）；
+//   ③ T 腿：今天 ⇒ 竞价涨幅；历史日 ⇒ 收盘涨幅。
+// 外加 §10 的两条红线：缺数据不补 0、腿不全时如实给 days。
+
+import { describe, it, expect } from 'vitest';
+import {
+  RANGE20_WINDOW_DAYS,
+  RANGE20_PROBE_DAYS,
+  pickRealWindowDates,
+  resolveT20Leg,
+  closeLegOf,
+  legs20FromRows,
+  merge20Legs,
+  compound20
+} from './range20.js';
+
+/** 20 个连续「交易日」（这里只当日期键用，不需要真日历） */
+function mkDates(n) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const d = new Date(Date.UTC(2026, 8, 1) + i * 86400000);
+    out.push(d.toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+/** 日期 -> (股票名 -> 行) */
+function mkRowsByDate(perDate) {
+  const m = new Map();
+  Object.keys(perDate).forEach(function(d) {
+    const inner = new Map();
+    Object.keys(perDate[d]).forEach(function(name) { inner.set(name, perDate[d][name]); });
+    m.set(d, inner);
+  });
+  return m;
+}
+
+describe('RANGE20_WINDOW_DAYS', () => {
+  it('窗口长度 = 20（含今天，用户口径）', () => {
+    expect(RANGE20_WINDOW_DAYS).toBe(20);
+  });
+});
+
+describe('T 腿口径（resolveT20Leg）', () => {
+  it('★ 今天 ⇒ 用竞价涨幅，⛔ 不是收盘涨幅（用户原话「记住用今天的竞价涨幅」）', () => {
+    const row = { auc_pct_chg: '3.50', changePct: '-1.20' };
+    expect(resolveT20Leg(row, true)).toBe(3.5);
+  });
+
+  it('★ 今天但竞价涨幅缺失 ⇒ 退回收盘涨幅（§10 缺失才退，不补 0）', () => {
+    const row = { auc_pct_chg: '', changePct: '-1.20' };
+    expect(resolveT20Leg(row, true)).toBe(-1.2);
+  });
+
+  it('★ 今天且竞价涨幅真的是 0% ⇒ 就是 0（0 是合法涨幅，⛔ 不能因为 falsy 就退回收盘）', () => {
+    const row = { auc_pct_chg: '0', changePct: '5.00' };
+    expect(resolveT20Leg(row, true)).toBe(0);
+  });
+
+  it('历史日 ⇒ 收盘涨幅优先（用户口径「昨天的或者历史的算到收盘」）', () => {
+    const row = { auc_pct_chg: '3.50', changePct: '-1.20' };
+    expect(resolveT20Leg(row, false)).toBe(-1.2);
+  });
+
+  it('历史日缺收盘涨幅 ⇒ 退回竞价涨幅；两者都没有 ⇒ null', () => {
+    expect(resolveT20Leg({ changePct: '', auc_pct_chg: '2.00' }, false)).toBe(2);
+    expect(resolveT20Leg({}, false)).toBe(null);
+    expect(resolveT20Leg(null, true)).toBe(null);
+  });
+
+  it('closeLegOf 兼容 snake_case / camelCase / 带 % 的字符串', () => {
+    expect(closeLegOf({ change_pct: '+2.34%' })).toBe(2.34);
+    expect(closeLegOf({ changePct: -7.71 })).toBe(-7.71);
+    expect(closeLegOf({ changePct: '' })).toBe(null);
+  });
+});
+
+describe('legs20FromRows：逐日抽腿', () => {
+  const dates = mkDates(20);
+
+  it('★ 满窗口：20 天全有 ⇒ 20 根腿，且 T 腿来自竞价涨幅', () => {
+    const perDate = {};
+    dates.forEach(function(d) { perDate[d] = { 甲: { changePct: '1.00' } }; });
+    // 最后一天（T）收盘与竞价不同 ⇒ 必须取竞价
+    perDate[dates[19]] = { 甲: { changePct: '-5.00', auc_pct_chg: '2.00' } };
+    const legs = legs20FromRows([{ stock: '甲' }], dates, mkRowsByDate(perDate), { tIsToday: true });
+    expect(legs.get('甲').size).toBe(20);
+    expect(legs.get('甲').get(dates[19])).toBe(2);
+    expect(legs.get('甲').get(dates[18])).toBe(1);
+  });
+
+  it('★ 停牌三天（那三天没有行）⇒ 只有 17 根腿，⛔ 不补 0（数值上等价于 0%，靠 days 如实体现）', () => {
+    const perDate = {};
+    dates.forEach(function(d, i) {
+      if (i >= 5 && i <= 7) return;                 // 中间停 3 天
+      perDate[d] = { 新华传媒: { changePct: '0.50' } };
+    });
+    const legs = legs20FromRows([{ stock: '新华传媒' }], dates, mkRowsByDate(perDate), { tIsToday: false });
+    expect(legs.get('新华传媒').size).toBe(17);
+    expect(legs.get('新华传媒').has(dates[5])).toBe(false);
+  });
+
+  it('§10：某行涨幅字段缺失 ⇒ 这根腿不放进去（不是 0%）', () => {
+    const perDate = {};
+    dates.forEach(function(d) { perDate[d] = { 乙: { changePct: '1.00' } }; });
+    perDate[dates[3]] = { 乙: { changePct: '' } };
+    const legs = legs20FromRows([{ stock: '乙' }], dates, mkRowsByDate(perDate), { tIsToday: false });
+    expect(legs.get('乙').size).toBe(19);
+  });
+
+  it('一只票 20 天全无行 ⇒ 不出现在结果里（调用方据此不显示数值）', () => {
+    const perDate = {};
+    dates.forEach(function(d) { perDate[d] = { 甲: { changePct: '1.00' } }; });
+    const legs = legs20FromRows([{ stock: '丙' }], dates, mkRowsByDate(perDate), { tIsToday: false });
+    expect(legs.has('丙')).toBe(false);
+  });
+
+  it('目标清单按股票名去重（同名多行只算一次）', () => {
+    const perDate = {};
+    dates.forEach(function(d) { perDate[d] = { 甲: { changePct: '1.00' } }; });
+    const legs = legs20FromRows([{ stock: '甲' }, { stock: ' 甲 ' }], dates, mkRowsByDate(perDate), { tIsToday: false });
+    expect(legs.size).toBe(1);
+  });
+});
+
+describe('merge20Legs：同花顺补算只补缺', () => {
+  const dates = mkDates(3);
+
+  it('已有（库内）的腿不被补算覆盖', () => {
+    const base = new Map([['甲', new Map([[dates[0], 10]])]]);
+    const extra = new Map([['甲', new Map([[dates[0].replace(/-/g, ''), 99], [dates[1].replace(/-/g, ''), 5]])]]);
+    const out = merge20Legs(base, extra, dates);
+    expect(out.get('甲').get(dates[0])).toBe(10);   // ⛔ 没被 99 覆盖
+    expect(out.get('甲').get(dates[1])).toBe(5);    // 缺的那天补上了
+  });
+
+  it('不修改入参（纯函数）', () => {
+    const base = new Map([['甲', new Map([[dates[0], 10]])]]);
+    const extra = new Map([['甲', new Map([[dates[1].replace(/-/g, ''), 5]])]]);
+    merge20Legs(base, extra, dates);
+    expect(base.get('甲').size).toBe(1);
+  });
+
+  it('补算里多出来的窗口外日期被忽略（由 compound20 的 window 过滤兜底）', () => {
+    const base = new Map();
+    const extra = new Map([['甲', new Map([['19990101', 50], [dates[2].replace(/-/g, ''), 3]])]]);
+    const out = merge20Legs(base, extra, dates);
+    const rows = compound20(out, dates);
+    expect(rows.length).toBe(1);
+    expect(rows[0].days).toBe(1);
+  });
+});
+
+describe('compound20：复利口径（★ 不是简单相加）', () => {
+  const dates = mkDates(2);
+
+  it('★ 两天各 +10% ⇒ +21%（复利），不是 +20%', () => {
+    const legs = new Map([['甲', new Map([[dates[0], 10], [dates[1], 10]])]]);
+    const rows = compound20(legs, dates);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].pct).toBeCloseTo(21, 6);
+    expect(rows[0].days).toBe(2);
+  });
+
+  it('★ 停牌日按 0% 计入 ⇒ 与「跳过该日」数值完全一致（乘 1 是恒等变换）', () => {
+    const dates3 = mkDates(3);
+    const withGap = new Map([['甲', new Map([[dates3[0], 10], [dates3[2], 10]])]]);      // 中间停 1 天
+    const noGap = new Map([['甲', new Map([[dates3[0], 10], [dates3[1], 0], [dates3[2], 10]])]]); // 显式 0%
+    const a = compound20(withGap, dates3)[0];
+    const b = compound20(noGap, dates3)[0];
+    expect(a.pct).toBeCloseTo(b.pct, 9);
+    expect(a.days).toBe(2);   // 腿数如实少 1（行上显示 n/20日）
+    expect(b.days).toBe(3);
+  });
+
+  it('一根腿都没有 ⇒ 不产出该行（⛔ 不伪造 0%）', () => {
+    expect(compound20(new Map([['甲', new Map()]]), dates)).toEqual([]);
+    expect(compound20(new Map(), dates)).toEqual([]);
+  });
+
+  it('窗口外的腿不参与累乘', () => {
+    const legs = new Map([['甲', new Map([['1999-01-01', 100], [dates[0], 10]])]]);
+    const rows = compound20(legs, dates);
+    expect(rows[0].pct).toBeCloseTo(10, 6);
+    expect(rows[0].days).toBe(1);
+  });
+
+  it('多只票各自独立（互不影响）', () => {
+    const legs = new Map([
+      ['甲', new Map([[dates[0], 50]])],
+      ['乙', new Map([[dates[0], -10]])]
+    ]);
+    const rows = compound20(legs, dates);
+    const by = new Map(rows.map(function(r) { return [r.stock, r.pct]; }));
+    expect(by.get('甲')).toBeCloseTo(50, 6);
+    expect(by.get('乙')).toBeCloseTo(-10, 6);
+  });
+});
+
+// ============================================================================
+// [RANGE20 2026-10-19] 真实交易日校准（pickRealWindowDates）
+//
+// 事故原型（⛔ 改这里前先读一遍）：
+//   云端 owner.data.holidays 是空数组 ⇒ isTradingDay 退化为「只判周末」 ⇒ 国庆/中秋这种
+//   工作日假期被当成交易日。20 日窗口（09-14~10-19）里混进 6 个假交易日，实测同花顺 K 线
+//   里这 6 天根本没有数据（miss=20260925,20261001,20261002,20261005,20261006,20261007）
+//   ⇒ 按 App 日历直接取 20 天，实际只覆盖 14 个真实交易日。
+//   解法 = 取数用 30 个槽位的探针窗口，再用「这一天有没有任何一只票拿到腿」重建真实交易日窗口。
+// ============================================================================
+describe('pickRealWindowDates（剔除 App 日历里的工作日假期）', () => {
+  const dates = mkDates(10);
+
+  it('没有任何腿的日期被剔除（模拟假期）', () => {
+    // 只有 dates[0] / dates[1] / dates[3] / dates[4] 有腿 ⇒ dates[2] 视为非交易日
+    const legs = new Map([
+      ['甲', new Map([[dates[0], 1], [dates[1], 2], [dates[3], 3], [dates[4], 4]])],
+      ['乙', new Map([[dates[1], 1], [dates[4], 2]])]
+    ]);
+    const real = pickRealWindowDates(legs, dates, 10);
+    expect(real).toEqual([dates[0], dates[1], dates[3], dates[4]]);
+  });
+
+  it('只要「任意一只票」有腿 ⇒ 该日算真实交易日（停牌票不影响判断）', () => {
+    const legs = new Map([
+      ['停牌票', new Map([[dates[0], 0]])],
+      ['正常票', new Map([[dates[5], 3]])]
+    ]);
+    const real = pickRealWindowDates(legs, dates, 10);
+    expect(real).toEqual([dates[0], dates[5]]);
+  });
+
+  it('只取最后 N 个真实交易日（窗口对所有票全局一致）', () => {
+    const legs = new Map([['甲', new Map(dates.map(function(d) { return [d, 1]; }))]]);
+    const real = pickRealWindowDates(legs, dates, 4);
+    expect(real).toEqual(dates.slice(-4));
+  });
+
+  it('候选窗口外的腿不参与（防止把探针外的日期算进窗口）', () => {
+    const legs = new Map([['甲', new Map([['1999-01-01', 9], [dates[1], 1]])]]);
+    expect(pickRealWindowDates(legs, dates, 10)).toEqual([dates[1]]);
+  });
+
+  it('空输入 ⇒ 空数组（⛔ 不伪造日期、不补 0）', () => {
+    expect(pickRealWindowDates(new Map(), dates, 10)).toEqual([]);
+    expect(pickRealWindowDates(null, dates, 10)).toEqual([]);
+    expect(pickRealWindowDates(new Map([['甲', new Map([[dates[0], 1]])]]), [], 10)).toEqual([]);
+  });
+
+  it('真实交易日不足 N 天 ⇒ 有多少给多少（如实体现 days < 20）', () => {
+    const legs = new Map([['甲', new Map([[dates[2], 1], [dates[7], 2]])]]);
+    expect(pickRealWindowDates(legs, dates, 20)).toEqual([dates[2], dates[7]]);
+  });
+});
+
+describe('探针窗口', () => {
+  it('RANGE20_PROBE_DAYS 必须大于窗口长度（否则假期一多就凑不满 20 天）', () => {
+    expect(RANGE20_PROBE_DAYS).toBeGreaterThan(RANGE20_WINDOW_DAYS);
+  });
+  // ⚠️ 不在这里断言 getRange20WindowDates 返回的日期：它内部走 getPreviousTradingDay
+  //   （依赖云端 allData.holidays + localStorage），单测环境没有那份数据（§10 别让单测去猜日历）。
+  //   纯函数部分（pickRealWindowDates / compound20 / merge20Legs）已各自覆盖。
+});

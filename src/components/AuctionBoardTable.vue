@@ -206,6 +206,9 @@ function rowMemo(item) {
     // [RANGE-PCT 2026-10-14] 「十日涨幅」toggle 下行上直接显示的数值（= 该模式排序键）：
     //   漏进指纹 → 区间涨幅到货后整行不重渲染（数值不出现 / 顺序与数值对不上）。
     item.rangePct,
+    // [RANGE20 2026-10-19] 「20日涨幅」toggle 下行上显示的数值 + 实际参与累乘的天数（悬停 n/20日）。
+    //   同款理由必须入指纹：它是两阶段异步到货的（库内腿 → 同花顺补缺），漏掉则整行不重渲染。
+    item.rangePct20, item.rangePct20Days,
     // [TOPIC-TREND 2026-09-20] 题材统计条的五日趋势展开态：漏进指纹 → 点统计条整行不重渲染。
     //   只对本行【带有统计条】时才有意义（统计条只在题材块第一行出现），其余行恒为 false。
     item.topicStats ? topicTrendExpanded.value.has(item.topicStats.topic) : false

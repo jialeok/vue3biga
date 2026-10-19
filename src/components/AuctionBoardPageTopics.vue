@@ -19,17 +19,10 @@
           <span class="auction-toggle-slider" />
         </label>
       </div>
-      <div class="auction-toggle-item">
-        <span class="auction-toggle-label">量比抢筹</span>
-        <label class="auction-toggle-switch">
-          <input
-            type="checkbox"
-            :checked="sortState2.byRatio"
-            @change="toggleSort2('byRatio')"
-          >
-          <span class="auction-toggle-slider" />
-        </label>
-      </div>
+      <!-- [RANGE20 2026-10-19 用户口径] ⛔ 本页原「量比抢筹」开关已【直接删除】（用户：「顺手删掉」）：
+           它在本页没有任何消费方 —— sortedTopicGroups 只按「强度」排序，byRatio 从未参与任何计算，
+           是个「点了没反应」的死开关（与 2026-10-14 删掉的「三天竞跌」完全同性质，§16）。
+           ⚠️ 第一页同名开关位改成了「20日涨幅」（那一个是有真实排序逻辑的，见 AuctionBoardToolbar）。 -->
       <div class="auction-toggle-item">
         <span class="auction-toggle-label">平行</span>
         <label class="auction-toggle-switch">

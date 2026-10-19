@@ -780,16 +780,10 @@
             background: #e5e7eb;
         }
 
-        /* 竞放量达标行（今日竞价量/昨日竞价量 >= 1.5）：左侧黄色边框，仅在"环比"开关打开时显示
-           用 box-shadow inset 而非 border-left，避免全局 box-sizing:border-box 挤压内容；
-           背景色让给 bought/sold/selected 等状态色，两者互不覆盖 */
-        .auction-item.high-ratio {
-            box-shadow: inset 4px 0 0 #f59e0b;
-        }
-
-        .auction-item.high-ratio:hover {
-            background: rgba(245, 158, 11, 0.12);
-        }
+        /* [RANGE20 2026-10-19] ⛔ 原「量比抢筹达标行」黄色左边条（.auction-item.high-ratio /
+           .auction-item.high-ratio:hover）已删除：「量比抢筹」整体下线，全站再无 high-ratio 类产出方
+           （view-helpers 的 isHighRatioMatch 已移除）。§16 不留死代码。
+           开关位改成的「20日涨幅」是【全列表排序 + 逐行标数值】，不产生行级高光（与十日涨幅同款）。 */
 
         /* [TWO-MODES 2026-10-02 用户口径] ⛔ 原「平行达标行」绿色边条已删除：
            平行 toggle 的开关位被「一字」toggle 占用，平行随之【并入「竞/昨」】
@@ -1393,12 +1387,8 @@
             background: #f3e8ff;
         }
 
-        /* 竞放量达标行（今日竞价量/昨日竞价量四舍五入后 >= 1.5）：左侧黄色边框，仅在"环比"开关打开时显示
-           用 box-shadow inset 而非 border-left，避免全局 box-sizing:border-box 挤压内容；
-           背景色让给 bought/sold/selected 等状态色，两者互不覆盖 */
-        .auction-topic-row.high-ratio {
-            box-shadow: inset 4px 0 0 #f59e0b;
-        }
+        /* [RANGE20 2026-10-19] ⛔ 原「量比抢筹达标行」黄色左边条（.auction-topic-row.high-ratio）已删除：
+           「量比抢筹」整体下线，全站再无 high-ratio 类产出方（§16 不留死代码）。 */
 
         /* [TWO-MODES 2026-10-02] ⛔ 原「平行达标行」绿色边条已删除（同上方 .parallel-enabled 段，§16 不留死代码） */
 

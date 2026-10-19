@@ -211,6 +211,18 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
     // 降到 3 能大幅提高单次完整率，实测总耗时显著低于「高并发 + 反复重试」。
     // §36：禁止用「不断重试」掩盖上游并发缺陷。
     const conc = (opts && opts.concurrency) || 3;
+    // [RANGE20 2026-10-19] 满窗强制重试（默认 false ⇒ 既有调用方行为逐字不变，§11）：
+    //   见下方 listingShort 处的说明 —— 上游偶发只回最近 12 根，20 日窗口会被误判成次新股。
+    const retryShortWindow = !!(opts && opts.retryShortWindow);
+    // [RANGE20 2026-10-19] 单请求超时（默认 0 = 不超时，既有行为不变）：
+    //   实测上游偶发「既不返回也不断开」，批次会永久挂住 ⇒ 整批补算发布不出来。
+    const reqTimeoutMs = (opts && opts.requestTimeoutMs) || 0;
+    // [RANGE20 2026-10-19] 「够用即可」门槛（默认 0 = 必须覆盖整个 wantSet，既有行为不变）：
+    //   调用方传的日期表里可能混有【非交易日】（App 日历把工作日假期当交易日时就是如此），
+    //   那样谁也拿不到 wantSet.size 根腿 ⇒ 每只票都跑满 3 次重试（实测 41 只 = 203 个请求）。
+    //   传本参数后，凑够这么多根腿即视为完成、不再重试。
+    const minCoverage = (opts && opts.minCoverage) || 0;
+    const needN = (minCoverage > 0) ? Math.min(minCoverage, wantSet.size) : wantSet.size;
     // 熔断阈值：连续这么多只都取不到完整窗口 → 判定上游整体不可用，直接放弃剩余。
     // 否则 24 只残缺票会各自跑满 3 次重试（= 72 次请求），页面卡死数分钟。
     const CIRCUIT_LIMIT = 6;
@@ -234,7 +246,7 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
             // （猫抓 daily 的 pct_chg）不可比 → 同一题材内用不同通道算出的票排名会错乱。
             // 前复权价按同一复权因子缩放，日间比值 = 真实涨幅（含分红送转），与涨跌幅口径一致。
             adjust: 'forward'
-        });
+        }, { timeoutMs: reqTimeoutMs });
         const rows = (data && data.item) || [];
         const series = [];
         rows.forEach(function(r) {
@@ -255,6 +267,15 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
             keep.set(cur.ymd, (cur.close / prev.close - 1) * 100);
         }
         // 首根 K 线（用于判定「该票在窗口期才开始有数据」= 次新股 / 长期停牌复牌）
+        // [RANGE20 2026-10-19] 只在满窗模式下打一条诊断（量小、且这条链路出问题时唯一可查的证据）：
+        //   rows=上游返回行数 / series=可用收盘价根数 / keep=命中窗口的日涨幅根数 / want=窗口应有多少天。
+        if (retryShortWindow) {
+            const _miss = ymdList.filter(function(d) { return !keep.has(d); });
+            _dbgLog('[RANGE20-KLINE] ' + code + ' rows=' + rows.length + ' series=' + series.length
+                + ' keep=' + keep.size + ' want=' + wantSet.size
+                + ' span=' + (series.length ? (series[0].ymd + '~' + series[series.length - 1].ymd) : '-')
+                + ' miss=' + _miss.slice(0, 8).join(','));
+        }
         return { keep: keep, firstYmd: series.length > 0 ? series[0].ymd : '' };
     };
 
@@ -281,12 +302,17 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
                     const got = await fetchOnce(it.code);
                     const keep = got.keep;
                     if (!best || keep.size > best.size) best = keep;
-                    if (best.size >= wantSet.size) break; // 已覆盖整个窗口，无需再试
+                    if (best.size >= needN) break; // 已覆盖整个窗口（或够用），无需再试
                     // [PERF 2026-09-18] 首根 K 线落在窗口首日（或之后）⇒ 窗口前它没有交易，
                     // 再重试也只会返回同样短的序列 → 立刻放弃（省下 2 次请求 + 0.9s 退避）。
                     // ⚠️ 与「上游并发截断」区分：截断时请求范围前移了 20 个自然日，
                     //    返回的 series 首日会【早于】窗口首日 → 不会命中本分支，仍会重试。
-                    if (got.firstYmd && got.firstYmd >= sorted[0]) { listingShort = true; break; }
+                    // [RANGE20 2026-10-19] 但这条区分【不总成立】：实测上游偶发只回「最近 12 根」，
+                    //   此时首根 K 线远晚于窗口首日 ⇒ 20 日窗口会被误判成次新股、一次就放弃，
+                    //   结果永远是 12/20 天（各票天数不齐 ⇒ 区间涨幅不可比）。
+                    //   ⇒ 需要满窗的调用方（range20.js）传 retryShortWindow:true 强制重试；
+                    //     默认 false ⇒ 既有调用方（十日涨幅 / 一字 / 涨跌停池）行为逐字不变（§11）。
+                    if (!retryShortWindow && got.firstYmd && got.firstYmd >= sorted[0]) { listingShort = true; break; }
                     // [PERF 2026-09-10] 0 根 = 代码错 / 长期停牌，重试不会有不同结果 → 立刻放弃。
                     if (best.size === 0) break;
                     // 退避：给上游喘息时间，避免并发重试再次触发截断（原来完全无间隔）。
@@ -297,9 +323,14 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
             }
             if (best && best.size > 0) out.set(name, best);
 
-            if (!best || best.size < wantSet.size) {
+            if (!best || best.size < needN) {
                 // 次新/长期停牌本来就不满窗 → 不计入熔断计数（否则会误判「上游整体不可用」而掐掉剩余票）
                 if (listingShort) {
+                    consecutiveShort = 0;
+                } else if (retryShortWindow && best && best.size > 0) {
+                    // [RANGE20 2026-10-19] 满窗模式下「拿到了数据但不满窗」= 上游在正常返回（真实次新 /
+                    //   长期停牌 / 仍被截断），用熔断去掐剩余票会把整块看板打成空的 ⇒ 不计熔断。
+                    //   熔断只留给「0 根」（代码错 / 上游整体不可用）这一种情形。
                     consecutiveShort = 0;
                 } else {
                     consecutiveShort++;
