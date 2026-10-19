@@ -82,6 +82,16 @@
         class="auction-dragon-tag"
         :title="dragonTagTitle(item)"
       >龙</span>
+      <!-- [RANGE20-TOP5 2026-10-19 用户口径] 「20天」标签：该行是「近 20 个交易日竞价名单里
+           20 日涨幅前五、但今天不在正式列表」的补位票，由 Logic 层（range20-leaders.js）检索出来。
+           用户要求：「要区分，就在后面添加标签"20天"，这样我就清楚了。」
+           ⚠️ 身份提示，不是警示：颜色用中性蓝，压不过「停牌」「龙」这些既有标签；
+           判定只读 item.range20Leader，本组件不做任何检索/请求（§3）。 -->
+      <span
+        v-if="item.range20Leader"
+        class="auction-r20-tag"
+        :title="range20LeaderTagTitle(item)"
+      >20天</span>
       <!-- [DRAGON-GROUP 2026-09-15 → RANGE-PCT 2026-10-14] 股票名旁的「十日区间涨幅」数值。
            两种模式共用这一处渲染（样式 / 配色 / 位置一字未变，⛔ 不新增 CSS）：
              · 默认模式      → 龙头组行的名册十日涨幅（= 龙头组区块的排序键）；
@@ -334,11 +344,30 @@ function dragonTagTitle(item) {
 //     语义同样是「今天全市场谁更强」，只是时间段比十日涨幅长一倍（用户用来判「市场总龙是否分歧」）。
 // 用后者去渲染前者会与区块排序键不一致（用户实测过「排序对不上数字」），反之亦然。
 // 「无值」绝不当 0 显示（否则会与「涨幅为 0」混淆，§40 不猜数据）→ 返回空串 ⇒ 模板不渲染。
+// [RANGE20-TOP5 2026-10-19] 「20天」标签的悬停说明：讲清它是什么、为什么在这里、口径是什么。
+//   §21 模板零计算：文案在这里拼好，模板只渲染。
+function range20LeaderTagTitle(item) {
+  if (!item) return '';
+  const bits = ['近 20 个交易日（含今天）竞价名单中的 20 日涨幅前五'];
+  const v = item.range20LeaderPct;
+  if (v !== null && v !== undefined && !isNaN(Number(v))) {
+    const n = Number(v);
+    const days = item.range20LeaderDays || 0;
+    bits.push('20日区间涨幅 ' + (n >= 0 ? '+' : '') + n.toFixed(2) + '%'
+      + (days > 0 && days < 20 ? '（' + days + '/20日）' : '（20个交易日）'));
+  }
+  bits.push('今天不在正式列表 ⇒ 自动补位显示（否则这只票在看板上会消失）');
+  return bits.join('｜');
+}
+
 function rangePctValue(item) {
   if (!item) return null;
   // [RANGE20 2026-10-19] 两个 toggle 互斥，判断顺序不影响结果；20 日放前面便于阅读。
   if (sortState.byRangePct20) return item.rangePct20;
   if (sortState.byRangePct) return item.rangePct;
+  // [RANGE20-TOP5 2026-10-19] 补位行：**恒**显示它的 20 个交易日区间涨幅（不需要打开任何 toggle）。
+  //   它是这只票被补进看板的唯一理由，藏在开关后面等于没补 —— 用户要的是「一眼看到它涨了多少」。
+  if (item.range20Leader) return item.range20LeaderPct;
   if (item.isDragonGroupMember && !sortState.byTopic) return item.dragonGroupPct;
   return null;
 }
@@ -365,6 +394,12 @@ function rangePctTitle(item) {
     const days = item.rangePct20Days || 0;
     const tail = (days > 0 && days < 20) ? '（' + days + '/20日，停牌日按 0% 计）' : '（20个交易日）';
     return '20日区间涨幅 ' + txt + tail;
+  }
+  // [RANGE20-TOP5 2026-10-19] 补位行：口径 + 为什么它在这里（用户需要知道「这不是今天 9:25 的票」）。
+  if (item.range20Leader) {
+    const days = item.range20LeaderDays || 0;
+    const tail = (days > 0 && days < 20) ? '（' + days + '/20日）' : '（20个交易日）';
+    return '20日区间涨幅 ' + txt + tail + '｜近20个交易日竞价名单里涨幅前五、但今天不在正式列表 ⇒ 补位显示';
   }
   // 龙头组行沿用原口径（附题材，方便核对它是哪个题材的龙头）；
   // 十日涨幅模式是【全市场】排序，题材在行内另有列展示，不在这里重复附（避免提示过长）。

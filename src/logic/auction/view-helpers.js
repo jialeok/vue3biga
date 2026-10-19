@@ -14,6 +14,10 @@ import { sortIndicesByRangePct } from './range-pct-sort.js';
 //   与十日涨幅的最大差别：云端【没有】20 日行（表主键 (date,stock)，20 日行会覆盖 10 日行）
 //   ⇒ 数据由 range20.js 在客户端按 20 个交易日复利现算、只放会话内存（详见该模块文件头）。
 import { getRange20Pct } from './range20.js';
+// [RANGE20-TOP5 2026-10-19] 「20日涨幅前五 · 龙头补位」：候选池 = 近 20 个交易日【每天正式列表】的并集
+//   （⛔ 不是当天列表），只主板、取前五；当天列表里没有的注入独立区块（打「20天」标）。
+//   ★ 只读本模块的会话内存（ref-driven），⛔ 本层不请求、不落库（取数由 useAuctionBoard 的 watch 触发）。
+import { getRange20Leaders } from './range20-leaders.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 // [AVG-VRATIO 2026-10-01 用户口径] 题材统计条最上面一行「平均竞价量比」的取值入口：
 //   读某只股票【某日】的当日竞价量比（倍数，如 2.18）。
@@ -200,6 +204,9 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   //（dragonRank/dragonPct）区分，后者由本函数之外的重写逻辑赋值，容易与本组字段互相覆盖。
   const _dragonEntry = (ctx.dragonMap && stockName) ? ctx.dragonMap.get(stockName) : null;
   const isLeaderFromPrev = !!_dragonEntry;
+  // [RANGE20-TOP5 2026-10-19] 该股是否是「20日涨幅前五补位」注入的票（见 computeAuctionViewData 的注入段）。
+  //   meta 里带 pct/days ⇒ 行上恒显示它的 20 个交易日区间涨幅（不需要打开 20日涨幅 toggle）。
+  const _r20Meta = (ctx.range20LeaderMeta && stockName) ? ctx.range20LeaderMeta.get(stockName) : null;
 
   // [YIZI 2026-09-09] 竞价一字（竞价涨幅达到该股涨停幅度）→ 股票名下方红色下划线标记。
   // 仅题材 toggle 开启时判定（与龙头徽章同一显示口径），避免无谓计算。
@@ -298,6 +305,14 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     dragonGroupTopic: _dragonEntry ? _dragonEntry.topic : '',
     dragonGroupPct: _dragonEntry ? _dragonEntry.pct : null,
     dragonGroupSize: _dragonEntry ? _dragonEntry.groupSize : 0,
+    // [RANGE20-TOP5 2026-10-19 用户口径] 「20日涨幅前五补位」字段（只读 ctx 传进来的会话内存）。
+    //   · range20Leader → 模板据此打「20天」标签（用户：「要区分，就在后面添加标签"20天"」）；
+    //   · range20LeaderPct / Days → 该票【20 个交易日区间涨幅】与其有效天数（区块与行上展示，
+    //     它就是这个功能存在的理由，⚙ 与 rangePct20「只有 toggle 打开才显示」是两回事 —— 这个恒显示）；
+    //   §10：没取到就 null / 0，⛔ 不显示成 0%。
+    range20Leader: !!_r20Meta,
+    range20LeaderPct: _r20Meta ? _r20Meta.pct : null,
+    range20LeaderDays: (_r20Meta && _r20Meta.days) ? _r20Meta.days : 0,
     // [FEAT 2026-08-20] 题材 toggle：题材数量（供排序）与题材展示文本（供题材列显示）
     topicCount: getStockTopicCount(rawItem),
     topicsDisplay: getStockTopicsDisplay(rawItem),
@@ -395,7 +410,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   const auctionList = getTodayGroupList(dataSource);
   if (!auctionList || auctionList.length === 0) {
-    return { items: [], obsIndices: [], regularIndices: [], dragonIndices: [], hiddenObsIndices: [], stats: { todayStrength: null, yesterdayStrength: null, strongCount: 0, totalCount: 0, highRatioCount: 0, jingYestCount: 0 }, rawCount: 0, date: currentDate, dataSource };
+    return { items: [], obsIndices: [], regularIndices: [], dragonIndices: [], range20LeaderIndices: [], hiddenObsIndices: [], stats: { todayStrength: null, yesterdayStrength: null, strongCount: 0, totalCount: 0, highRatioCount: 0, jingYestCount: 0 }, rawCount: 0, date: currentDate, dataSource };
   }
 
   const prevDate = getPreviousTradingDay(currentDate);
@@ -481,6 +496,51 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     }
   }
   if (_dragonMap) _dragonMap.forEach(function(meta, name) { _maybeInjectDragon(name, meta); });
+
+  // ============================================================
+  // [RANGE20-TOP5 2026-10-19 用户口径] 「20日涨幅前五」补位行注入
+  //
+  // 用户原话：「当天我怕错过一些不在正式列表的市场龙头……比如今天的九阳股份，如果它不是继承上交易的
+  //   龙头组，就消失了，我就看不见了……如果消失了，我看这个20天涨幅就没多大意义，就不准确。」
+  //   「如果这五只也在当天列表中，那就不用重复补了。……要自动补上去，补到龙头组。……要区分，
+  //    就在后面添加标签"20天"。」
+  //
+  // 与龙头组注入【同一条管线】（_injectedRows → renderList）：⛔ 不写 auctionData、⛔ 不推云端
+  //   （§6 不产生影子记录）。当日云端若有同名行（worker 已并入抓取名单）就复用它的行情字段，
+  //   否则是空壳 + 后续 enrich/数据层照常补 —— 用户要求「进入列表后也是一样可以获取数据」。
+  //
+  // ⚠️ 三条去重（用户「不用重复补」）：
+  //   ① 已在当天正式列表里（_existingNames）→ 不注入；
+  //   ② 已被龙头组注入（_injectNames）→ 不注入（它已经在龙头组区块里出现了）；
+  //   ③ 已注入过的同一只（_range20Names）→ 不注入。
+  //   ⇒ 只有「真·当天看不见的 20 日强势票」才会被补进来，绝不重复。
+  // ============================================================
+  const _range20Leaders = getRange20Leaders(currentDate);   // null = 该日还没有结论（§10 区别对待）
+  const _range20Names = new Set();                          // 本次真正补进来的股票名
+  const _range20Meta = new Map();                           // 股票名 -> {pct, days}（区块/行上显示用）
+  function _maybeInjectRange20Leader(meta) {
+    const n = meta && meta.stock ? String(meta.stock).trim() : '';
+    if (!n) return;
+    if (_existingNames.has(n) || _injectNames.has(n) || _range20Names.has(n)) return;
+    _injectNames.add(n);
+    _range20Names.add(n);
+    _range20Meta.set(n, { pct: meta.pct, days: meta.days });
+    const dayRow = _auctionDayRowMap.get(n);
+    if (dayRow && dayRow.obsAutoAdded !== true) {
+      // 当日云端有同名行（market_metrics 影子行）→ 复用其 volume/yestVolume/note/changePct，不留空壳
+      _injectedRows.push(Object.assign({}, dayRow, { range20AutoAdded: true }));
+    } else {
+      _injectedRows.push({
+        stock: n,
+        code: (meta && meta.code) || getStockCode(n),
+        volume: '', yestVolume: '', note: '',
+        range20AutoAdded: true
+      });
+    }
+  }
+  if (_range20Leaders && _range20Leaders.length) {
+    _range20Leaders.forEach(_maybeInjectRange20Leader);
+  }
 
   // renderList 仅服务于视图渲染；真实业务数据(auctionList)保持不变，统计口径仍基于 auctionList。
   const renderList = _injectedRows.length ? auctionList.concat(_injectedRows) : auctionList;
@@ -1022,6 +1082,11 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // [DRAGON-GROUP 2026-09-14] 龙头组索引：非空时模板在【观察组之上】渲染独立「龙头组」区块
   // （与观察组用蚂蚁线隔开）。其余模式折叠为 [] → 龙头只按「组内标记」体现在原列表中。
   let dragonIndices = [];
+  // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」区块索引：非空时模板在【龙头组之后、观察组之前】
+  // 渲染一个独立小组件（用户口径：「你可以新建一个小组件给它们，这样就不会乱，以后改的时候也方便」）。
+  // 其余模式（题材 / 十日涨幅 / 20日涨幅 / 弱转强 / 竞昨）一律折叠为 [] ——
+  //   十日·20日涨幅模式下全部股票本来就折成一条降序表，补位行自然排在里面（和龙头组同款折叠）。
+  let range20LeaderIndices = [];
   if (topicOnlyMode) {
     // [TOPIC-MERGE 2026-09-09] 题材单独开启：观察组与常规组融合为【单一列表】。
     // - obsIndices=[] → 模板不再渲染观察组区块与蚂蚁线分隔（showObsSeparator 自动为 false）；
@@ -1113,9 +1178,35 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     }
     const _dragonSet = new Set(dragonIndices);
     obsIndices = _obsIndicesRaw.filter(function(i) { return !_dragonSet.has(i); }); // 去重：龙头不进观察组
+    // [RANGE20-TOP5 2026-10-19] 20日补位区块抽取（独立小组件）。
+    //   顺序 = `_range20Leaders` 的顺序（服务端已按 20 日涨幅降序 + 稳定 tie-break，§6 不在这里二次排序）。
+    //   与龙头组去重：若同一只票已在龙头组区块里，补位区块不再重复渲染（用户「不用重复补」）。
+    //
+    //   🔴 [FIX 2026-10-19 · R20-BLOCK-LEAK] **判据必须是 `_range20Names`（本次真正注入的），
+    //   ⛔ 不能用 `_range20Leaders`（全量前五）**：前五里「今天本来就在正式列表」的票只被
+    //   `_existingNames.has(n)` 提前 return、从未走注入 ⇒ 行上没有 `range20Leader` 标记。
+    //   若这里按全量名单捞索引，就会把它们从原本的龙头组/观察组【强行搬到补位区块】，
+    //   于是区块里出现「无标签行」（实测 10-19 生产：新华传媒、新华文轩 被搬走），
+    //   同时原组少行 ⇒ 位置错乱。补位区块只该装真正补进来的那几只。
+    if (_range20Names.size > 0) {
+      const _idxByName20 = new Map();
+      renderList.forEach(function(row, i) {
+        const nm = row && row.stock ? String(row.stock).trim() : '';
+        if (nm && !_idxByName20.has(nm)) _idxByName20.set(nm, i);
+      });
+      range20LeaderIndices = (_range20Leaders || [])
+        .map(function(m) {
+          const nm = m && m.stock ? String(m.stock).trim() : '';
+          // ⛔ 双重闸门：既要是本次注入的（_range20Names），也要在 renderList 里找得到
+          if (!nm || !_range20Names.has(nm) || !_idxByName20.has(nm)) return -1;
+          return _idxByName20.get(nm);
+        })
+        .filter(function(i) { return i >= 0 && !_dragonSet.has(i); });
+    }
+    const _r20Set = new Set(range20LeaderIndices);
     const _obsSet = new Set(obsIndices);
     regularIndices = renderOrder.filter(function(i) {
-      return !_dragonSet.has(i) && !_obsSet.has(i);
+      return !_dragonSet.has(i) && !_obsSet.has(i) && !_r20Set.has(i);
     });
     hiddenObsIndices = [];
   }
@@ -1178,11 +1269,18 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     //      失效由 incremental-view 的 `range20=` / `rp20=` 指纹保证。
     sortByRangePct20Enabled: !!sortState.byRangePct20,
     rangePct20Map: sortState.byRangePct20 ? getRange20Pct(currentDate) : null,
+    // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」的元数据（股票名 -> {pct, days}）与本轮真正补进来的名单。
+    //   ⚠️ 与上面的 rangePct20Map 不是一回事：那个只覆盖「屏幕上已有的 41 行」且只在 toggle 打开时有值；
+    //   这里覆盖「近 20 日曾经上榜、今天不在列表」的补位行，且【恒有值】（它就是这些行存在的理由）。
+    range20LeaderMeta: _range20Meta,
+    range20LeaderSet: _range20Names,
     sortByWeakStrongEnabled: sortState.byWeakStrong,
     weakStrongSet: weakStrongSet
   };
   // [DRAGON-GROUP 2026-09-14] 最终渲染顺序 = 龙头组 → 观察组 → 常规组（龙头组排最前，需求 3）。
-  const fullOrder = dragonIndices.concat(obsIndices).concat(regularIndices);
+  // [RANGE20-TOP5 2026-10-19] 20日补位区块插在【龙头组之后、观察组之前】：
+  //   它和龙头组同属「昨天/近 20 日挑出来的强势票」，放在一起看得顺，但块是分开的 ⇒ 不打乱既有分组。
+  const fullOrder = dragonIndices.concat(range20LeaderIndices).concat(obsIndices).concat(regularIndices);
 
   // 非「题材单独开启」时（叠加主排序 / 未开题材），fullOrder 可能与 renderOrder 不同
   // （折叠观察组会剔除未命中行）→ 必须按【最终展示集合】重算一次排名，避免被隐藏的票占用龙一位次。
@@ -1302,6 +1400,10 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     regularIndices,
     // [DRAGON-GROUP 2026-09-14] 龙头组索引（第一页最上方独立区块）。[] = 该模式/该日无龙头组区块。
     dragonIndices,
+    // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」区块索引（独立小组件，紧跟龙头组之后）。
+    //   [] = 该模式/该日没有可补的票（前五都在当天列表里，或还没算完 —— 两者的区别由 getRange20Leaders
+    //   的 ready 标志表达，视图层不需要区分：没得补就是不渲染区块）。
+    range20LeaderIndices,
     hiddenObsIndices,
     weakStrongSet,
     stats: {

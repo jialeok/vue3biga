@@ -640,6 +640,55 @@
             color: #6d28d9;
         }
 
+        /* ============================================================
+           [RANGE20-TOP5 2026-10-19 用户口径] 「20日强势补位」独立小组件
+           （近 20 个交易日竞价名单中、20 日涨幅前五、当天列表里没有的票）。
+
+           用户原话：「要区分，就在后面添加标签"20天"，这样我就清楚了。」
+                  「你可以新建一个小组件给它们，这样就不会乱，以后改的时候也方便。」
+
+           配色刻意用【中性蓝】，与龙头组的紫（#6d28d9）区分开：
+             · 龙头组 = 昨日评选出来的、有题材归属的「龙」；
+             · 补位组 = 纯粹按 20 日涨幅筛出来的强势票，两者身份不同 ⇒ 颜色必须不同，
+               否则用户会把补位票误当成龙头。
+           ============================================================ */
+        .auction-r20-group-label {
+            color: #0369a1;
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .auction-r20-group-title {
+            font-weight: 700;
+        }
+
+        /* 口径小字：一行说清「这组票是什么、为什么在这」。
+           字号刻意小于分组名（9px），不抢分组标题的视觉层级。 */
+        .auction-r20-group-hint {
+            font-size: 9px;
+            font-weight: 400;
+            color: #64748b;
+            line-height: 12px;
+        }
+
+        /* 行上「20天」标签：与「龙」（紫）/「停牌」（灰蓝边框）同一位、同尺寸，
+           只换配色 —— 中性蓝底 + 深蓝字，一眼可辨但绝不喧宾夺主。 */
+        .auction-r20-tag {
+            display: inline-block;
+            margin-left: 3px;
+            padding: 0 3px;
+            border-radius: 2px;
+            background: #e0f2fe;
+            color: #0369a1;
+            font-size: 9px;
+            font-weight: 700;
+            line-height: 12px;
+            vertical-align: 1px;
+            white-space: nowrap;
+        }
+
         /* [DRAGON-GROUP 2026-09-14] 龙头组与下方（观察组/常规组）之间的蚂蚁线分隔。
            与 .auction-obs-separator 同款虚线，视觉上「隔离开但仍属同一张表」。 */
         .auction-dragon-separator {

@@ -40,6 +40,12 @@ import { ensureDragonRangePct, getDragonRangePct, getStockRangePct, DRAGON_RANGE
 //   与十日涨幅不同：云端没有 20 日行 ⇒ 由 range20.js 按 20 个交易日复利现算（库内腿 + 同花顺补缺），
 //   只放会话内存。⚠️ 只在 toggle 打开时触发，⛔ 不消耗猫抓额度（同花顺 K 线免费额度）。
 import { ensureRange20 } from '../logic/auction/range20.js';
+// [RANGE20-TOP5 2026-10-19 用户口径] 「20日涨幅前五 · 龙头补位」的取数入口。
+//   ★ 与上面的 20日涨幅 toggle 【完全独立】：那个是「打开开关才排一次序」的排序功能；
+//     这个是把「近 20 个交易日每天正式列表」并起来、取 20 日涨幅前五、把今天看不见的补进看板
+//     —— 用户要求「每天都要检索」，所以与开关状态无关，进看板/切日期就跑一次（幂等 + 会话缓存）。
+//   ⛔ 零猫抓额度（用户特别强调）：只用库内正式列表 + 同花顺 K 线（免费），见 range20-leaders.js。
+import { ensureRange20Leaders } from '../logic/auction/range20-leaders.js';
 // [DRAGON-GROUP 2026-09-14] 龙头组：名册异步加载（展示日读 D-1 名册；条件满足时评选并落库当日名册）。
 // 唯一入口 ensureDragonGroup 内含单飞 + 会话幂等 + 收盘口径闸门，重复调用零副作用。
 import { ensureDragonGroup } from '../logic/auction/dragon-group.js';
@@ -82,6 +88,8 @@ let _closeCoverTimer = null;
 let _suspendWatchBound = false;
 // [RANGE20 2026-10-19] 「20日涨幅」取数 watch 同样只挂载一次。
 let _r20WatchBound = false;
+// [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」取数 watch 同样只挂载一次。
+let _r20Top5WatchBound = false;
 /** 收盘覆盖轮询间隔：5 分钟（页面长时间开着时，跨过 15:00 能自动触发一次，无需手动刷新） */
 const CLOSE_COVER_POLL_MS = 5 * 60 * 1000;
 
@@ -205,8 +213,22 @@ export function useAuctionBoard() {
   // ⚠️ 失败必须可见（§10 禁止静默失败）：走 setApiStatus，不把「取不到」显示成「涨幅 0」。
   if (!_r20WatchBound) {
     _r20WatchBound = true;
+    // 🔴 [PERF 2026-10-19 第十九轮] 依赖从 `items.length` 换成【名单签名】。
+    //   原写法两个毛病：① 行数不变但换了一批票（如观察组换人、龙头组继承壳替换）⇒ 不触发 ⇒ 新票没有 20 日涨幅；
+    //   ② 行数抖动（加载中 6 → 41 → 41）⇒ 反复触发同一个计算。
+    //   签名 = 股票名升序拼接，和「谁在屏幕上」一一对应：名单没变就一次都不跑（§20 watch 必须有明确触发条件）。
+    const _r20RowsSig = function(rows) {
+      const names = [];
+      for (let i = 0; i < rows.length; i++) {
+        const n = rows[i] && rows[i].stock ? String(rows[i].stock).trim() : '';
+        if (n) names.push(n);
+      }
+      names.sort();
+      return names.join(',');
+    };
     watch(
-      () => [sortState.byRangePct20, uiStore.currentDate, (viewData.value && viewData.value.items ? viewData.value.items.length : 0)],
+      () => [sortState.byRangePct20, uiStore.currentDate,
+        _r20RowsSig((viewData.value && viewData.value.items) || [])],
       async () => {
         if (!sortState.byRangePct20) return;
         const _date = uiStore.currentDate;
@@ -214,11 +236,24 @@ export function useAuctionBoard() {
         if (!_date || _rows.length === 0) return;
         // 只有【真的报过进度】才在结束时清状态条，否则会把别的操作（龙头/停牌…）的状态文案误清掉
         let _progressed = false;
+        // 🔴 [PERF 2026-10-19 第十九轮] 进度提示必须【节流】。
+        //   实测：20 日补缺会算完 41 只（含重试最多 79 个请求），原先每完成一只就 setApiStatus 一次
+        //   ⇒ 一两分钟内 41~79 次全局状态变更，每次都驱动状态条乃至看板重渲染 ——
+        //   用户逛别的看板/切日期时会明显觉得「改完之后变卡了」。
+        //   §22「短时间内变化很多 ⇒ 批量合并 ⇒ 一次 UI 更新」：改成最多每 600ms 刷一次，
+        //   且强制在「首帧 / 每 10 只 / 收尾」刷新，保证既不卡又不丢反馈（⛔ 不是用延迟掩盖问题）。
+        let _lastProgAt = 0;
         try {
           await ensureRange20(_date, _rows, {
             onProgress: function(done, total) {
               // 同花顺补缺可能跑几十秒：必须有进度反馈，否则用户会以为看板卡死
               _progressed = true;
+              const _now = Date.now();
+              const _isFirst = (done <= 1);
+              const _isStep = (done % 10 === 0);
+              const _isLast = (done >= total);
+              if (!_isFirst && !_isStep && !_isLast && (_now - _lastProgAt) < 600) return;
+              _lastProgAt = _now;
               setApiStatus('numcatApiStatus', '⏳ 20日涨幅补算中 ' + done + '/' + total + '（同花顺K线）', false);
             }
           });
@@ -228,6 +263,49 @@ export function useAuctionBoard() {
           setApiStatus('numcatApiStatus', '❌ 20日涨幅取数失败：' + (e && e.message || e), false);
         }
       },
+      { immediate: true }
+    );
+  }
+  // [RANGE20-TOP5 2026-10-19 用户口径] 「20日涨幅前五 · 龙头补位」的取数入口（只挂载一次）。
+  //
+  // 用户原话：「每天都要检索，用20天涨幅先找到前五的票，看列表有没有，如果没有就补，如果都有了，就不用补」
+  //   「比如今天的九阳股份，如果它不是继承上交易的龙头组，就消失了，我就看不见了」
+  // ⇒ 与 20日涨幅 toggle **无关**，进看板/切日期就跑（幂等、单飞、会话缓存都在 range20-leaders.js 内）。
+  //
+  // ⚠️ §10 禁止静默失败：取数失败走 setApiStatus 让用户看见，⛔ 不能把「没算出来」显示成「今天没有补位」。
+  //
+  // 🔴 依赖 = 【日期 + 当日渲染行数】，与上/下方的停牌 watch 完全同构（已是验证过的成熟写法，§11）。
+  //   为什么必须带上行数（实测踩坑）：immediate 首跑发生在数据到达【之前】——那一刻正式列表索引还是空的
+  //   ⇒ 候选池为空 ⇒ 本次不产出。若只依赖 currentDate，之后数据到了也不会再跑，区块永远不出现。
+  //   ★ 重复触发完全安全：模块内有单飞（_inflight）+ 会话缓存（只缓存非空结果）；
+  //     候选池来自历史列表、与屏幕上有哪些行无关 ⇒ 早跑晚跑结果一致，早跑那次只是没数据。
+  function ensureRange20LeadersForCurrentBoard() {
+    const date = uiStore.currentDate;
+    if (!date) return;
+    let _progressed = false;
+    // 进度节流（<=25 只票，最多刷几次就够，⛔ 别每只都改一次全局状态，§22）
+    let _lastAt = 0;
+    ensureRange20Leaders(date, {
+      onProgress: function(done, total) {
+        _progressed = true;
+        const _now = Date.now();
+        if (done < total && (done % 5 !== 0) && (_now - _lastAt) < 600) return;
+        _lastAt = _now;
+        setApiStatus('numcatApiStatus', '⏳ 20日涨幅前五检索中 ' + done + '/' + total + '（同花顺K线）', false);
+      }
+    }).then(function() {
+      if (_progressed) setApiStatus('numcatApiStatus', '', true);
+    }).catch(function(e) {
+      console.warn('[RANGE20-TOP5] 20日涨幅前五检索失败:', e && e.message);
+      setApiStatus('numcatApiStatus', '❌ 20日涨幅前五检索失败：' + (e && e.message || e), false);
+    });
+  }
+  if (!_r20Top5WatchBound) {
+    _r20Top5WatchBound = true;
+    watch(
+      () => [uiStore.currentDate,
+        (viewData.value && viewData.value.items ? viewData.value.items.length : 0)],
+      () => { ensureRange20LeadersForCurrentBoard(); },
       { immediate: true }
     );
   }
@@ -370,6 +448,14 @@ export function useAuctionBoard() {
     const m = itemsByIndex.value;
     return viewData.value.dragonIndices.map(i => m.get(i)).filter(Boolean);
   });
+  // [RANGE20-TOP5 2026-10-19 用户口径] 「20日涨幅前五补位」→ 独立小组件（AuctionRange20Leaders）。
+  // 与 dragonItems 同款：只按 Logic 层给的索引取行对象，组件不做任何业务判断（§3）。
+  // 顺序 = viewData.range20LeaderIndices 的顺序 = 20 日涨幅降序（Logic 层已排好，⛔ 不在视图层再排）。
+  const range20LeaderItems = computed(() => {
+    if (!viewData.value.range20LeaderIndices) return [];
+    const m = itemsByIndex.value;
+    return viewData.value.range20LeaderIndices.map(i => m.get(i)).filter(Boolean);
+  });
   const regularItems = computed(() => {
     if (!viewData.value.regularIndices) return [];
     const m = itemsByIndex.value;
@@ -402,6 +488,12 @@ export function useAuctionBoard() {
     if (!searchKeyword.value.trim()) return obsItems.value;
     const kw = searchKeyword.value.trim().toLowerCase();
     return obsItems.value.filter(item => item.stock && item.stock.toLowerCase().includes(kw));
+  });
+  // [RANGE20-TOP5 2026-10-19] 与龙头组/观察组同一套搜索过滤（搜索时区块跟着一起筛）。
+  const filteredRange20LeaderItems = computed(() => {
+    if (!searchKeyword.value.trim()) return range20LeaderItems.value;
+    const kw = searchKeyword.value.trim().toLowerCase();
+    return range20LeaderItems.value.filter(item => item.stock && item.stock.toLowerCase().includes(kw));
   });
   const filteredRegularItems = computed(() => {
     if (!searchKeyword.value.trim()) return regularItems.value;
@@ -1698,6 +1790,7 @@ export function useAuctionBoard() {
     filteredObsItems,
     filteredRegularItems,
     filteredDragonItems,
+    filteredRange20LeaderItems,
     showObsSeparator,
     showDragonSeparator,
     sortState2,

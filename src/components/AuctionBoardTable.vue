@@ -30,6 +30,12 @@
     class="auction-dragon-separator"
   />
 
+  <!-- [RANGE20-TOP5 2026-10-19 用户口径] 「20日强势补位」独立小组件（紧跟龙头组之后、观察组之前）。
+       数据/索引全部来自 Logic 层（viewData.range20LeaderIndices，由 range20-leaders.js 检索）。
+       ⚠️ 与龙头组区块【分开渲染】：用户要求「新建一个小组件给它们，这样就不会乱，以后改的时候也方便」
+       —— 补位票在行上另有「20天」标签，两者身份不混。空数组时本组件整体不渲染。 -->
+  <AuctionRange20Leaders :items="filteredRange20LeaderItems" />
+
   <div
     v-if="filteredObsItems.length > 0"
     class="auction-group-label auction-obs-group-label"
@@ -107,6 +113,8 @@
 <script setup>
 import { computed, inject, watch, nextTick } from 'vue';
 import AuctionDragonGroup from './AuctionDragonGroup.vue';
+// [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」独立小组件（用户：「新建一个小组件给它们」）。
+import AuctionRange20Leaders from './AuctionRange20Leaders.vue';
 import AuctionEntityRow from './AuctionEntityRow.vue';
 import AuctionYiziSupplementRow from './AuctionYiziSupplementRow.vue';
 import AuctionYiziSupplementStatus from './AuctionYiziSupplementStatus.vue';
@@ -117,6 +125,8 @@ const board = inject('auctionBoard');
 const {
   sortState, expandedSet, viewData,
   filteredObsItems, filteredRegularItems, filteredDragonItems,
+  // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」区块的行（同样支持搜索过滤）。
+  filteredRange20LeaderItems,
   showObsSeparator, showDragonSeparator,
   highlightStockSet, openBackend
 } = board;

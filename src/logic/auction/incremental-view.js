@@ -24,6 +24,8 @@ import { deriveAuctionTagState } from '../tagTitles/rules.js';
 // 同花顺补缺，两次发布）。不进全局指纹 ⇒ 数据到货后行缓存不失效 ⇒ 行上数值与整表顺序都陈旧
 // （与 dragon= / suspend= 同款问题）。
 import { getRange20FingerprintToken } from './range20.js';
+// [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」的结果签名（恒参与全局指纹，见下方 r20top5= 的说明）。
+import { getRange20LeadersFingerprintToken } from './range20-leaders.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 // [DRAGON 2026-09-09] 龙头徽章依赖异步加载的 10 日区间涨幅，必须进全局指纹，
 // 否则数据到达后行缓存不失效 → 徽章不显示（或陈旧）。
@@ -98,7 +100,17 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
     'dragon=' + getDragonFingerprintToken(),
     // [RANGE20 2026-10-19] 20 日涨幅签名（日期 + 版本 + 条数）：它是【异步】两阶段到货的
     // （先库内腿、再同花顺补缺），到货必须清空行缓存，否则行上数值/顺序停在上一阶段。
-    'range20=' + getRange20FingerprintToken(),
+    // 🔴 [PERF 2026-10-19 第十九轮] **必须受开关门控**：关闭时恒为 'off'。
+    //   为什么（实测）：阶段② 的同花顺补缺要跑 1~2 分钟，期间每次 `_publish` 都会 bump version。
+    //   若指纹无条件跟随它，用户【已经关掉 20日涨幅】之后仍在后台到货 ⇒ 每次都判定「全局指纹变了」
+    //   ⇒ 整个看板（42 行 × 全量 enrich + 排序）重排一次。关掉还卡，就是这么来的。
+    //   关闭状态下 ctx.rangePct20Map 恒为 null、行上也不显示 20 日数值 ⇒ 不重排是安全的（§11）。
+    'range20=' + (s.byRangePct20 ? getRange20FingerprintToken() : 'off'),
+    // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」结果签名（日期 + 版本 + 条数 + 结论标志）。
+    //   它决定【有没有补位区块、区块里是哪几行】⇒ 变化必须让行缓存与视图整体失效。
+    //   ⚠️ 与上面的 `range20=` 不同：那个受 toggle 门控，这个【恒参与】——
+    //     因为补位行是「不需要打开任何开关就要出现在看板上」的（用户：「每天都要检索」）。
+    'r20top5=' + getRange20LeadersFingerprintToken(),
     // [DRAGON-GROUP 2026-09-14] 龙头组名册签名（展示日 + 版本 + 条数）。它决定哪些行进龙头组区块、
     // 以及「龙」组内标记的显隐 → 名册变化必须清空行缓存（与上方 dragon= 同款理由）。
     'dgroup=' + getDragonGroupFingerprintToken(),
@@ -156,6 +168,13 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToke
     //   与 rp= 同款理由单独入签名：模板直接读这两个字段。
     'rp20=' + (item.rangePct20 === null || item.rangePct20 === undefined ? '' : item.rangePct20) +
       '/' + (item.rangePct20Days || 0),
+    // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」行的标记与数值（模板直接读这三个字段：
+    //   「20天」标签 + 该票 20 个交易日区间涨幅 + 有效天数）。
+    //   它由异步检索结果派生、行内输入可以完全没变 ⇒ 与 rp=/rp20= 同款理由必须单独入签名，
+    //   否则增量缓存会复用「没有 20 天标签」的旧行对象。
+    'r20l=' + (item.range20Leader ? 1 : 0) +
+      '/' + (item.range20LeaderPct === null || item.range20LeaderPct === undefined ? '' : item.range20LeaderPct) +
+      '/' + (item.range20LeaderDays || 0),
     // [LIMIT-STREAK 2026-09-11] 趋势/连板标记文案（前 9 个历史交易日收盘涨幅派生，见 limit-streak.js）。
     //   它不由本行行内输入（volume/note…）派生，而依赖「前若干日的历史日行」——
     //   历史日数据在首屏整段拉入，但 worker 收盘覆盖 / 历史日回填会改写 change_pct → 连板状态可能变化，
