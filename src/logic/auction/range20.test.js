@@ -1,9 +1,9 @@
 // range20.test.js — 「20日涨幅」口径单测（§15 纯函数优先，§42 验收清单）
 //
-// 覆盖用户 2026-10-19 明确的三条硬口径：
+// 覆盖用户 2026-10-19 明确的硬口径：
 //   ① 窗口含今天、共 20 个交易日；
 //   ② 复利累乘（不是简单相加）；
-//   ③ T 腿：今天 ⇒ 竞价涨幅；历史日 ⇒ 收盘涨幅。
+//   ③ T 腿：盘中 ⇒ 竞价涨幅；收盘后 / 历史日 ⇒ 收盘涨幅（随 15:00 换腿，见文末 R20-TSWITCH）。
 // 外加 §10 的两条红线：缺数据不补 0、腿不全时如实给 days。
 
 import { describe, it, expect } from 'vitest';
@@ -12,6 +12,8 @@ import {
   RANGE20_PROBE_DAYS,
   pickRealWindowDates,
   resolveT20Leg,
+  resolveT20LegMode,
+  isAfterCloseOf,
   closeLegOf,
   legs20FromRows,
   merge20Legs,
@@ -76,6 +78,81 @@ describe('T 腿口径（resolveT20Leg）', () => {
     expect(closeLegOf({ change_pct: '+2.34%' })).toBe(2.34);
     expect(closeLegOf({ changePct: -7.71 })).toBe(-7.71);
     expect(closeLegOf({ changePct: '' })).toBe(null);
+  });
+});
+
+// 🔴 [R20-TSWITCH 2026-10-19] 用户第二次反馈的口径：T 腿要【随 15:00 换腿】。
+//   原话：「第20天也就是当天，早上开盘我看到前面19天加今天竞价涨幅……收盘后这二十天全部是
+//   收盘涨幅计算20天涨幅，这样就和炒股软件对得上。这个就和那个趋势图覆盖类似。」
+//   实测依据（同花顺日线复算 4 只票的 20 天全收盘，与用户炒股软件【逐项差 0.00】）：
+//     新华传媒 210.98% / 新华文轩 116.68% / 澳弘电子 117.38% / 九阳股份 91.89%
+describe('T 腿随 15:00 换腿（R20-TSWITCH）', () => {
+  it('resolveT20LegMode：今天 + 未收盘 ⇒ auc；今天 + 已收盘 ⇒ close；历史日 ⇒ close', () => {
+    expect(resolveT20LegMode(true, false)).toBe('auc');
+    expect(resolveT20LegMode(true, true)).toBe('close');
+    expect(resolveT20LegMode(false, false)).toBe('close');
+    expect(resolveT20LegMode(false, true)).toBe('close');
+  });
+
+  it('isAfterCloseOf：判尺 = 当日北京 15:00（可注入 now）', () => {
+    const closeMs = Date.parse('2026-10-19T07:00:00Z');       // 北京 15:00
+    expect(isAfterCloseOf('2026-10-19', closeMs - 1)).toBe(false);
+    expect(isAfterCloseOf('2026-10-19', closeMs)).toBe(true);
+    expect(isAfterCloseOf('2026-10-19', closeMs + 60000)).toBe(true);
+  });
+
+  it('isAfterCloseOf：日期非法 ⇒ false（§10 不猜，退回早上竞价口径 = 主用途）', () => {
+    expect(isAfterCloseOf('', 0)).toBe(false);
+    expect(isAfterCloseOf('2026/10/19', 0)).toBe(false);
+    expect(isAfterCloseOf(null, 0)).toBe(false);
+  });
+
+  it('★ 收盘后 T 腿必须切到收盘涨幅（否则永远对不上炒股软件）', () => {
+    const row = { auc_pct_chg: '2.75', changePct: '10.00' };
+    expect(resolveT20Leg(row, true, false)).toBe(2.75);       // 盘中：竞价
+    expect(resolveT20Leg(row, true, true)).toBe(10);          // 收盘后：收盘
+    // 未传 afterClose ⇒ 保守按竞价（向后兼容，早盘是主用途）
+    expect(resolveT20Leg(row, true)).toBe(2.75);
+  });
+
+  it('收盘后收盘涨幅缺失 ⇒ 退回竞价涨幅（§10 缺失才退，不补 0）', () => {
+    expect(resolveT20Leg({ changePct: '', auc_pct_chg: '2.75' }, true, true)).toBe(2.75);
+  });
+
+  it('legs20FromRows 把 afterClose 透传给 T 腿', () => {
+    const dates = mkDates(20);
+    const tDate = dates[19];
+    const rowsByDate = mkRowsByDate({
+      [tDate]: { '甲': { auc_pct_chg: '2.75', changePct: '10.00' } }
+    });
+    const intraday = legs20FromRows([{ stock: '甲' }], dates, rowsByDate, { tIsToday: true });
+    const closed = legs20FromRows([{ stock: '甲' }], dates, rowsByDate, { tIsToday: true, afterClose: true });
+    expect(intraday.get('甲').get(tDate)).toBe(2.75);
+    expect(closed.get('甲').get(tDate)).toBe(10);
+  });
+
+  it('★ merge20Legs tKeepAuctionLeg:false ⇒ K 线的今日收盘【覆盖】竞价腿', () => {
+    const dates = mkDates(20);
+    const tDate = dates[19];
+    const tYmd = tDate.replace(/-/g, '');
+    const baseLegs = new Map([['甲', new Map([[tDate, 2.75]])]]);
+    const extra = new Map([['甲', new Map([[tYmd, 10]])]]);
+
+    // 盘中：保护 T 腿（竞价口径不许被"今天盘中价"顶掉）
+    const keep = merge20Legs(baseLegs, extra, dates, { tDate: tDate, tKeepAuctionLeg: true });
+    expect(keep.get('甲').get(tDate)).toBe(2.75);
+
+    // 收盘后：让 K 线覆盖（用户口径「这二十天全部是收盘涨幅」）
+    const covered = merge20Legs(baseLegs, extra, dates, { tDate: tDate, tKeepAuctionLeg: false });
+    expect(covered.get('甲').get(tDate)).toBe(10);
+  });
+
+  it('merge20Legs 不传 tKeepAuctionLeg 时保持旧语义（保护 T 腿）', () => {
+    const dates = mkDates(20);
+    const tDate = dates[19];
+    const baseLegs = new Map([['甲', new Map([[tDate, 2.75]])]]);
+    const extra = new Map([['甲', new Map([[tDate.replace(/-/g, ''), 10]])]]);
+    expect(merge20Legs(baseLegs, extra, dates, { tDate: tDate }).get('甲').get(tDate)).toBe(2.75);
   });
 });
 
@@ -234,6 +311,56 @@ describe('compound20：复利口径（★ 不是简单相加）', () => {
     const by = new Map(rows.map(function(r) { return [r.stock, r.pct]; }));
     expect(by.get('甲')).toBeCloseTo(50, 6);
     expect(by.get('乙')).toBeCloseTo(-10, 6);
+  });
+});
+
+// 🔴 [R20-PERSTOCK-WIN 2026-10-19] 用户第二次反馈的残差：新华传媒显示 193.41%（12/20日），
+//   炒股软件 210.98%。根因 = 窗口被「全市场统一截到 20 天」⇒ 它停牌 10 天，20 天里只有 12 根腿，
+//   早期那 8 天涨幅被挤出窗口。改成「每只票自己取最近 20 个有腿日」后 = 210.98%（逐位吻合）。
+//   ★ 满窗票两种算法完全等价 ⇒ 只影响停牌/缺数据票。
+describe('compound20：窗口按【每只票自己】的 20 个交易日（R20-PERSTOCK-WIN）', () => {
+  const dates = mkDates(30);   // 30 个真实交易日，比窗口长（模拟探针 45 槽）
+  const d = function(i) { return dates[i]; };
+
+  it('★ 停牌票回溯取满 20 根腿（⛔ 不因"统一窗口"被截成 12 天）', () => {
+    const a = new Map();
+    for (let i = 0; i <= 9; i++) a.set(d(i), 10);        // 早期 10 天有腿
+    for (let i = 15; i <= 24; i++) a.set(d(i), 10);       // 中段 10 天有腿
+    // 最近 5 天（i=25..29）停牌 ⇒ 没有腿
+    const rows = compound20(new Map([['停牌票', a]]), dates);
+    expect(rows[0].days).toBe(20);
+    // 20 根全都是 +10% ⇒ 复利；且窗口确实跨到了 i=0（早于"统一窗口"的起点 i=10）
+    expect(rows[0].pct).toBeCloseTo((Math.pow(1.1, 20) - 1) * 100, 6);
+  });
+
+  it('满窗票：取最近 20 个交易日，⛔ 不会因为 ascDates 有 30 天就多算', () => {
+    const b = new Map();
+    for (let i = 0; i < 30; i++) b.set(d(i), 1);
+    const rows = compound20(new Map([['满窗票', b]]), dates);
+    expect(rows[0].days).toBe(20);
+    expect(rows[0].pct).toBeCloseTo((Math.pow(1.01, 20) - 1) * 100, 6);
+  });
+
+  it('windowDays 可覆盖窗口长度（缺省 = RANGE20_WINDOW_DAYS）', () => {
+    const b = new Map();
+    for (let i = 0; i < 30; i++) b.set(d(i), 1);
+    const rows = compound20(new Map([['甲', b]]), dates, { windowDays: 10 });
+    expect(rows[0].days).toBe(10);
+    expect(rows[0].pct).toBeCloseTo((Math.pow(1.01, 10) - 1) * 100, 6);
+  });
+
+  it('两根票窗口不同也能各算各的（- 停牌票 days 仍为 20）', () => {
+    const a = new Map();
+    for (let i = 0; i <= 9; i++) a.set(d(i), 5);
+    for (let i = 20; i <= 29; i++) a.set(d(i), 5);        // 最近 10 天 + 更早 10 天
+    const b = new Map();
+    for (let i = 0; i < 30; i++) b.set(d(i), 2);
+    const rows = compound20(new Map([['甲', a], ['乙', b]]), dates);
+    const by = new Map(rows.map(function(r) { return [r.stock, r]; }));
+    expect(by.get('甲').days).toBe(20);
+    expect(by.get('乙').days).toBe(20);
+    expect(by.get('甲').pct).toBeCloseTo((Math.pow(1.05, 20) - 1) * 100, 6);
+    expect(by.get('乙').pct).toBeCloseTo((Math.pow(1.02, 20) - 1) * 100, 6);
   });
 });
 

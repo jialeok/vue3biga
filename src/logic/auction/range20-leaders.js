@@ -55,7 +55,9 @@ import {
   legs20FromRows,
   merge20Legs,
   compound20,
-  pickRealWindowDates
+  pickRealWindowDates,
+  resolveT20LegMode,
+  isAfterCloseOf
 } from './range20.js';
 
 /** 只取前 5 只（用户口径：「只选出5只」「取出排名前五的5只股票」） */
@@ -312,6 +314,10 @@ export async function ensureRange20Leaders(date, opts) {
 
   const probeDates = getRange20WindowDates(date, RANGE20_PROBE_DAYS);
   const tIsToday = (date === _getLocalTodayStr());
+  // 🔴 [R20-TSWITCH] 必须与 range20.js 主 toggle 用同一套 T 腿口径（§6），否则「前五补位」的
+  //   涨幅会和同一屏的 20日涨幅列对不上（同一个日期、同一只票出现两个数）。
+  const afterClose = isAfterCloseOf(date);
+  const legMode = resolveT20LegMode(tIsToday, afterClose);
 
   const p = (async function() {
     const rowsByDate = _formalRowsByDate(probeDates);
@@ -321,10 +327,27 @@ export async function ensureRange20Leaders(date, opts) {
       _dbgLog('[RANGE20-TOP5] ' + date + ' 候选池为空（正式列表索引可能未就绪），本次不产出');
       return _state.value.list;
     }
-    const baseLegs = legs20FromRows(pool, probeDates, rowsByDate, { tIsToday: tIsToday });
+    // 🔴 这里要【两份】baseLegs，用途严格分离（2026-10-19 实测踩过，⛔ 别合成一份）：
+    //   ① `baseLegsDb`（库内历史腿）—— **只给粗筛**。`legs20FromRows` 默认
+    //      `useDbLegsForHistory = false`（主看板历史日只认 K 线，见 range20.js 的 R20-CLOSE-LEG），
+    //      不传这个开关 ⇒ 只剩 T 腿一根 ⇒ `minDays: 6` 筛掉所有票 ⇒ 前五补位**静默失效**。
+    //   ② `baseLegs`（干净：历史日不采用库内）—— **给精算结果**。库内 `change_pct` 可能是早盘写入的
+    //      竞价涨幅或整日缺行，混进最终复利就会偏（实测 10-19 新华传媒粗筛版算出 207.91%，
+    //      而真值 210.98%，差 1 根假腿）⇒ 精算必须只信 K 线 + T 腿。
+    const baseLegsDb = legs20FromRows(pool, probeDates, rowsByDate, {
+      tIsToday: tIsToday,
+      afterClose: afterClose,
+      useDbLegsForHistory: true,
+    });
+    const baseLegs = legs20FromRows(pool, probeDates, rowsByDate, {
+      tIsToday: tIsToday,
+      afterClose: afterClose,
+    });
     // 阶段① 粗筛（0 请求）：库内腿 + 门槛 + 只主板
-    const guessDates = probeDates.slice(-RANGE20_WINDOW_DAYS);
-    const coarse = compound20(baseLegs, guessDates);
+    // 🔴 [R20-PERSTOCK-WIN] 传完整 probeDates（⛔ 不再 slice(-20)）：`compound20` 按每票自己的
+    //   最近 20 个有腿日取窗，先截断 20 天会让停牌票无法回溯、粗筛把真龙头筛掉。
+    const guessDates = probeDates;
+    const coarse = compound20(baseLegsDb, guessDates);
     const coarseTop = rankLeaders(coarse, {
       limit: RANGE20_LEADER_PRESELECT,
       minDays: RANGE20_LEADER_MIN_LEGS,
@@ -368,8 +391,14 @@ export async function ensureRange20Leaders(date, opts) {
         extra.forEach(function(v, k) { extraByStock.set(k, v); });
       }
     }
-    const merged = merge20Legs(baseLegs, extraByStock, probeDates);
-    const realDates = pickRealWindowDates(merged, probeDates, RANGE20_WINDOW_DAYS);
+    // 🔴 必须传 tDate（主看板漏掉过这个参数 ⇒ 盘中会把竞价腿换成 K 线的"今天盘中价"）：
+    //   盘中保护 T 腿（竞价口径），收盘后让 K 线的今日收盘覆盖它（见 range20.js#merge20Legs）。
+    const merged = merge20Legs(baseLegs, extraByStock, probeDates, {
+      tDate: date,
+      tKeepAuctionLeg: (legMode === 'auc'),
+    });
+    // 🔴 [R20-PERSTOCK-WIN] 不截到 20：每票在 compound20 内自取最近 20 个有腿日（与主看板同口径）
+    const realDates = pickRealWindowDates(merged, probeDates, probeDates.length);
     const top = rankLeaders(compound20(merged, realDates), {
       limit: RANGE20_LEADER_TOP_N,
       minDays: RANGE20_LEADER_MIN_LEGS,
@@ -380,7 +409,7 @@ export async function ensureRange20Leaders(date, opts) {
     const _coarseCode = new Map();
     coarseTop.forEach(function(t) { if (t.code) _coarseCode.set(t.stock, t.code); });
     top.forEach(function(t) { if (!t.code) t.code = _coarseCode.get(t.stock) || ''; });
-    _dbgLog('[RANGE20-TOP5-PUB] ' + date + ' 精算 real=' + realDates.length + '/' + RANGE20_WINDOW_DAYS
+    _dbgLog('[RANGE20-TOP5-PUB] ' + date + ' 精算 realDays=' + realDates.length
       + ' 补算=' + extraByStock.size + ' 前五=' + top.map(function(t) { return t.stock + ' ' + t.pct.toFixed(2) + '%/' + t.days + 'd'; }).join(' , '));
     _publish(date, top);
     return _state.value.list;

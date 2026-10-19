@@ -46,7 +46,7 @@ import { state } from '../app-state.js';
 import { getAuctionData } from '../app-core-api.js';
 import { isTradingDay } from '../date/trading-day-helpers.js';
 import { _getLocalTodayStr } from '../tagTitles/rules.js';
-import { compoundPct, parsePct } from './range-window.js';
+import { compoundPct, parsePct, closeCoverUtcMs } from './range-window.js';
 import { getDragonWindowDates } from './dragon-rank.js';
 import { ensureAuctionCodeMapping } from './auction-fetch-helpers.js';
 import { fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
@@ -56,19 +56,20 @@ import { _dbgLog } from '../../data/debug-log.js';
 export const RANGE20_WINDOW_DAYS = 20;
 
 /**
- * [RANGE20 2026-10-19] 取数探针长度 = 30 个「App 日历交易日」。
+ * [RANGE20 2026-10-19] 取数探针长度 = 45 个「App 日历交易日」。
  *
  * ★ 为什么不是 20（血泪，别"顺手改回 20"）：
- *   本项目的交易日历 = `isTradingDay` = 「非周末 ∧ 不在 allData.holidays 里」，
- *   而 **云端 owner.data.holidays 目前是空数组**（实测 2026-10-19）⇒ 国庆/中秋这类
- *   工作日假期会被当成交易日。20 日窗口（09-14~10-19）里就混进了 6 个假交易日：
- *   2026-09-25、10-01、10-02、10-05、10-06、10-07（同花顺 K 线里根本没有这几天）。
- *   ⇒ 若按 App 日历直接取 20 天，实际只覆盖 14 个真实交易日，用户要的「20 个交易日」拿不到，
- *     而且 days=14/20 会让各票看起来"缺数据"。
- *   ⇒ 解法：取数时向后多要 10 个槽位，拿到 K 线后用【真实有成交的日期】重建窗口
- *     （见 pickRealWindowDates），取最后 20 个真实交易日 ⇒ 无论假期表修没修都正确。
+ *   ① 本项目的交易日历 = `isTradingDay` = 「非周末 ∧ 不在 allData.holidays 里」，
+ *      而 **云端 owner.data.holidays 目前是空数组**（实测 2026-10-19）⇒ 国庆/中秋这类
+ *      工作日假期会被当成交易日。20 日窗口里就混进了 6 个假交易日：
+ *      2026-09-25、10-01、10-02、10-05、10-06、10-07（同花顺 K 线里根本没有这几天）。
+ *   ② [R20-PERSTOCK-WIN] 窗口现在是**按每只票自己的 N 个交易日**算（见 compound20）⇒
+ *      停牌票要往前多回溯几天才凑得满 20 根（实测新华传媒停牌 10 天 ⇒ 需要 ~30 个真实交易日）。
+ *      ⇒ 只取 20 或 30 个槽位，停牌票就永远凑不满，用户对不上炒股软件。
+ *   ⇒ 解法：向后多要，拿到 K 线后用【真实有成交的日期】重建序列（见 pickRealWindowDates），
+ *     再让每只票各自取最近 20 个有腿日 ⇒ 无论假期表修没修、票停没停牌都正确。
  */
-export const RANGE20_PROBE_DAYS = 30;
+export const RANGE20_PROBE_DAYS = 45;
 
 /** 收盘涨幅候选键（云端/内存行为 snake_case；本地手工行可能是 camelCase） */
 const CLOSE_KEYS = ['changePct', 'change_pct'];
@@ -108,6 +109,19 @@ const _klineTried = new Map();
  *   （baseLegs 里已经没有它们的历史腿了）⇒ 数值反而退回残缺。必须累积。
  */
 const _klineAcc = new Map();
+/**
+ * date -> 已发布结果所用的【T 腿口径模式】（'auc' | 'close'）。
+ *
+ * 🔴 [FIX 2026-10-19 · R20-TSWITCH] 为什么必须有它：
+ *   T 腿现在随 15:00 换腿（盘中竞价 / 收盘后收盘）。跨过 15:00 后必须**重算一次**，
+ *   否则屏幕会一直停在早上那份「前19天收盘 × 今天竞价」的数（= 用户第二次反馈的现象）。
+ *   ⛔ 不能靠 `_klineTried` 的失败重试碰运气 —— 早盘请求成功的票全被登记为 tried，
+ *      收盘后一次都不会重跑。判据必须是「口径变了」，且只在口径真正变化时清一次登记，
+ *      否则每次 ensureRange20 都清空 ⇒ 无限重复请求。
+ */
+const _legMode = new Map();
+/** date -> timerId：收盘后自动重算的一次性定时器 */
+const _closeTimer = new Map();
 /** 单飞：`<date>|base` / `<date>|kline` -> Promise */
 const _inflight = new Map();
 
@@ -132,6 +146,9 @@ export function clearRange20() {
   _inflight.clear();
   _stage.clear();
   _cache.clear();
+  _legMode.clear();
+  _closeTimer.forEach(function(t) { try { clearTimeout(t); } catch (e) { /* 忽略 */ } });
+  _closeTimer.clear();
   _state.value = { date: '', map: new Map(), version: _state.value.version + 1 };
 }
 
@@ -204,20 +221,67 @@ export function closeLegOf(row) {
 }
 
 /**
- * T 腿口径（★ 本模块与十日涨幅的唯一实质差异，⚠️ 刻意如此，别"顺手统一"）：
- *   · 展示日 === 本地今天 → **竞价涨幅优先**（缺失才退回收盘涨幅）；
- *   · 展示日 是历史日   → 收盘涨幅优先（缺失才退回竞价涨幅）。
- * 为什么不像 resolveTDayPct 那样在 15:00 后切成收盘：用户口径
- * 「最新的时间点算到当天的竞价涨幅……等收盘没我什么事了，什么都买不了」——
- * 这个数是早上做参考用的，收盘后再跳一次会让人对不上 9:26 看到的名次。
+ * 某日 T 腿的口径模式：`'auc'` = 竞价口径（盘中）／`'close'` = 收盘口径（收盘后、历史日）。
+ *
+ * 🔴 [FIX 2026-10-19 · R20-TSWITCH] 这是本轮（用户第二次反馈）的**唯一实质改动**。
+ *
+ *   用户原话（逐字，别再只取一半）：
+ *     「第20天也就是当天，早上开盘我看到前面19天加今天竞价涨幅，这是我早上看到的。
+ *       收盘后这二十天全部是收盘涨幅计算20天涨幅，这样就和炒股软件对得上。
+ *       这个就和那个趋势图覆盖类似。因为早上我需要看，收盘我也需要复盘用。」
+ *
+ *   ⇒ T 腿必须【随 15:00 换腿】，与十日涨幅 / 趋势图同一套 `resolveTDayPct` 语义。
+ *     旧实现恒取竞价（注释还写着"收盘后再跳一次会让人对不上"），
+ *     导致收盘后仍显示「前19天收盘 × 今天竞价」，与炒股软件（20 天全收盘）差出一大截：
+ *     实测 2026-10-19 澳弘电子 103.06% vs 炒股软件 117.38%、新华传媒 182.47% vs 210.98%。
+ *   ✅ 已用同花顺日线独立复算 4 只票的「20 天全收盘」：
+ *      新华传媒 210.98 / 新华文轩 116.68 / 澳弘电子 117.38 / 九阳股份 91.89
+ *      —— 与用户炒股软件**逐项差 0.00**，证明「全收盘口径」才是他要的对账基准。
+ *
+ * ⚠️ 时间尺子 = `range-window.js#closeCoverUtcMs`（§6 唯一实现，⛔ 别另写 Date 比较）。
+ *
+ * @param {boolean} tIsToday 展示日是否就是本地今天
+ * @param {boolean} afterClose 该日是否已过北京 15:00
+ * @returns {'auc'|'close'}
+ */
+export function resolveT20LegMode(tIsToday, afterClose) {
+  return (tIsToday && !afterClose) ? 'auc' : 'close';
+}
+
+/**
+ * 某日是否已过收盘覆盖时刻（北京 15:00）。
+ * 取不到日期 / 日期非法 ⇒ false（§10 不猜；调用方据此退回「早上竞价口径」= 主用途）。
+ * @param {string} date YYYY-MM-DD
+ * @param {number} [nowMs] 注入当前时刻（单测用；缺省 = Date.now()）
+ * @returns {boolean}
+ */
+export function isAfterCloseOf(date, nowMs) {
+  const closeMs = closeCoverUtcMs(date);
+  if (Number.isNaN(closeMs)) return false;
+  const now = (typeof nowMs === 'number') ? nowMs : Date.now();
+  return now >= closeMs;
+}
+
+/**
+ * T 腿口径（★ 本模块与十日涨幅的实质差异只体现在**取值优先级**上，⛔ 别"顺手统一"成同一个函数）：
+ *   · 展示日 === 本地今天 且 **未过 15:00** → 竞价涨幅优先（缺失才退回收盘涨幅）；
+ *   · 展示日 已过 15:00 / 是历史日      → 收盘涨幅优先（缺失才退回竞价涨幅）。
+ *
+ * 与 `range-window.js#resolveTDayPct` 的区别只是形状（本函数直接从 row 取两个字段），
+ * 语义必须**完全一致** —— 改这里先去看那个函数的注释。
+ *
  * @param {object} row 展示日当天的行
  * @param {boolean} tIsToday 展示日是否就是本地今天
+ * @param {boolean} afterClose 该日是否已过北京 15:00（缺省 false ⇒ 保守按竞价口径 = 早上主用途）
  * @returns {number|null}
  */
-export function resolveT20Leg(row, tIsToday) {
+export function resolveT20Leg(row, tIsToday, afterClose) {
   const close = _numOf(row, CLOSE_KEYS);
   const auc = _numOf(row, AUC_KEYS);
-  if (tIsToday) return auc !== null ? auc : close;
+  if (tIsToday && !afterClose) {
+    // 区分「竞价腿确实缺失」与「竞价腿真的是 0%」：auc===null 才算缺失，0 是合法涨幅且优先
+    return auc !== null ? auc : close;
+  }
   return close !== null ? close : auc;
 }
 
@@ -227,7 +291,10 @@ export function resolveT20Leg(row, tIsToday) {
  * @param {Array<{stock:string}>} targets 目标股票（按名去重，先到先得）
  * @param {string[]} ascDates 升序交易日（最后一个 = 展示日 T）
  * @param {Map<string, Map<string, object>>} rowsByDate 日期 -> (股票名 -> 当日行)
- * @param {{tIsToday?:boolean}} [opts] tIsToday：展示日是否为本地今天（决定 T 腿口径）
+ * @param {{tIsToday?:boolean, afterClose?:boolean, useDbLegsForHistory?:boolean}} [opts]
+ *        tIsToday：展示日是否为本地今天（决定 T 腿口径）
+ *        afterClose：该日是否已过 15:00（T 腿是否已换成收盘口径，见 resolveT20LegMode）
+ *        useDbLegsForHistory：历史日是否采用库内腿（默认 false，见下方 R20-CLOSE-LEG 说明）
  * @returns {Map<string, Map<string, number>>} 股票名 -> (日期 -> 日涨幅%)
  *
  * §10：某天没有该票的行 / 该行没有可用涨幅 → 这根腿【不放进去】（days 会少 1），
@@ -238,6 +305,7 @@ export function legs20FromRows(targets, ascDates, rowsByDate, opts) {
   if (!targets || targets.length === 0 || !ascDates || ascDates.length === 0) return out;
   const tDate = ascDates[ascDates.length - 1];
   const tIsToday = !!(opts && opts.tIsToday);
+  const afterClose = !!(opts && opts.afterClose);
   // 🔴 [FIX 2026-10-19 · R20-CLOSE-LEG] 历史日是否采用库内腿。
   //   默认 **false**（= 历史日只认同花顺 K 线）：库内 `change_pct` 可能是早盘写入的竞价涨幅、
   //   且大量历史日缺行（见 merge20Legs 函数头）。§10「宁缺勿错」⇒ 拿不到真收盘就不给数，
@@ -258,7 +326,7 @@ export function legs20FromRows(targets, ascDates, rowsByDate, opts) {
       const isT = (d === tDate);
       if (!isT && !useDbLegs) continue;      // 历史日：库内值不可信 ⇒ 跳过，等 K 线
       if (!row) continue;
-      const v = isT ? resolveT20Leg(row, tIsToday) : closeLegOf(row);
+      const v = isT ? resolveT20Leg(row, tIsToday, afterClose) : closeLegOf(row);
       if (v !== null) legs.set(d, v);
     }
     if (legs.size > 0) out.set(name, legs);
@@ -285,7 +353,8 @@ export function legs20FromRows(targets, ascDates, rowsByDate, opts) {
  * @param {Map<string, Map<string, number>>} baseLegs 库内腿（阶段① 占位值，可能含竞价值/缺行）
  * @param {Map<string, Map<string, number>>|null} extraByStock 补算腿（股票名 -> (YYYYMMDD -> 日涨幅%)）
  * @param {string[]} ascDates 升序交易日（'YYYY-MM-DD'）
- * @param {{tDate?:string}} [opts] tDate：展示日 T（该日腿由 resolveT20Leg 负责，⛔ 不被覆盖）
+ * @param {{tDate?:string, tKeepAuctionLeg?:boolean}} [opts]
+ *        tDate：展示日 T；tKeepAuctionLeg：是否保护 T 腿不被 K 线覆盖（缺省 true = 旧行为）
  * @returns {Map<string, Map<string, number>>} 新 Map（不修改入参）
  */
 export function merge20Legs(baseLegs, extraByStock, ascDates, opts) {
@@ -293,14 +362,16 @@ export function merge20Legs(baseLegs, extraByStock, ascDates, opts) {
   if (baseLegs) baseLegs.forEach(function(legs, name) { out.set(name, new Map(legs)); });
   if (!extraByStock || !ascDates) return out;
   const tDate = (opts && opts.tDate) ? String(opts.tDate) : '';
+  // 缺省 true：向后兼容（未显式声明口径的调用方保持"T 腿受保护"的旧语义）
+  const tKeepAuctionLeg = !(opts && opts.tKeepAuctionLeg === false);
   extraByStock.forEach(function(dayMap, name) {
     if (!name || !dayMap) return;
     let legs = out.get(name);
     if (!legs) { legs = new Map(); out.set(name, legs); }
     for (let i = 0; i < ascDates.length; i++) {
       const d = ascDates[i];
-      // 🔴 T 日腿 = 竞价涨幅口径，⛔ K 线不得覆盖（见函数头 2026-10-19 的说明）
-      if (tDate && d === tDate) continue;
+      // 🔴 T 日腿 = 竞价涨幅口径时，⛔ K 线不得覆盖（见函数头 2026-10-19 的说明）
+      if (tDate && tKeepAuctionLeg && d === tDate) continue;
       const v = parsePct(dayMap.get(d.replace(/-/g, '')));
       // ★ 覆盖：K 线是真收盘；库内值可能是「早盘写入的竞价涨幅」或根本缺行
       if (v !== null) legs.set(d, v);
@@ -312,24 +383,46 @@ export function merge20Legs(baseLegs, extraByStock, ascDates, opts) {
 /**
  * 【纯函数】复利累乘 → 每只票的 20 日涨幅。
  *
+ * 🔴 [FIX 2026-10-19 · R20-PERSTOCK-WIN] **窗口按【每只票自己】的最近 N 个交易日算，⛔ 不是全市场统一截取。**
+ *
+ *   事实（2026-10-19 生产实测，别改回"全局一致窗口"）：
+ *     新华传媒 09-07~09-18 停牌 10 个交易日 ⇒ 全市场统一的 20 天窗口里它只有 12 根腿：
+ *       · 统一窗口（旧）＝ 193.41%（12/20日）
+ *       · 个股 20 个交易日（本实现）＝ **210.98%** ＝ 用户炒股软件的值，逐位吻合。
+ *     差别不在「停牌算不算」（`×(1+0%)` 恒等），而在**窗口被停牌日占位后挤掉了早期 8 天**。
+ *     用户明确要求「跟炒股软件对得上」，且停牌票正是他的主战场 ⇒ 按个股窗口。
+ *     ★ 满窗票（无停牌）两种算法完全等价 ⇒ 不影响其余任何票的数值。
+ *
+ * ⚠️ `ascDates` 必须是**全市场真实交易日序列**（可用长度 > N）：本函数从后往前挑「该票有腿的日子」
+ *    凑满 N 根即止，所以调用方 ⛔ 不能再先 `slice(-20)`（那样会截断可回溯范围）。
+ *
  * @param {Map<string, Map<string, number>>} legsByStock 股票名 -> (日期 -> 日涨幅%)
- * @param {string[]} ascDates 升序交易日（只统计窗口内的腿）
+ * @param {string[]} ascDates 升序【真实】交易日（长度可 > 窗口）
+ * @param {{windowDays?:number}} [opts] windowDays：每票窗口长度，缺省 RANGE20_WINDOW_DAYS
  * @returns {Array<{stock:string, pct:number, days:number}>}
  *
- * `days` = 实际参与累乘的天数（停牌/缺数据会 < 20）；`pct` 一根腿都没有 → 该票不出现在结果里
+ * `days` = 实际参与累乘的天数（该票缺数据会 < 20）；`pct` 一根腿都没有 → 该票不出现在结果里
  * （调用方据此让行「没有数值」而不是「涨幅 0」）。
  */
-export function compound20(legsByStock, ascDates) {
+export function compound20(legsByStock, ascDates, opts) {
   const rows = [];
   if (!legsByStock || !ascDates) return rows;
+  const wanted = Number(opts && opts.windowDays);
+  const n = (isFinite(wanted) && wanted >= 1) ? Math.floor(wanted) : RANGE20_WINDOW_DAYS;
   const want = new Set(ascDates);
   legsByStock.forEach(function(legs, name) {
     if (!legs || legs.size === 0) return;
     const list = [];
-    legs.forEach(function(v, d) {
-      if (want.has(d)) list.push(v);
-    });
+    // 从最近一天往前挑，凑满 n 根该票自己的腿即止（停牌日/缺数据日不占窗口位）
+    for (let i = ascDates.length - 1; i >= 0 && list.length < n; i--) {
+      const d = ascDates[i];
+      if (!want.has(d) || !legs.has(d)) continue;
+      const v = legs.get(d);
+      if (v === null || v === undefined || isNaN(v)) continue;
+      list.push(v);
+    }
     if (list.length === 0) return;
+    list.reverse();
     const pct = compoundPct(list);
     if (pct === null || !isFinite(pct)) return;
     rows.push({ stock: name, pct: pct, days: list.length });
@@ -416,6 +509,64 @@ function _fillCodes(targets) {
   });
 }
 
+/** date -> 最近一次传入的行清单（收盘换腿的定时器需要用同一份目标清单重算） */
+const _lastRows = new Map();
+
+/**
+ * T 腿口径切换（跨 15:00）：把「已按旧口径算过」的登记清掉，让阶段② 重跑一遍。
+ *
+ * 🔴 [R20-TSWITCH] 两个关键点，⛔ 别"优化"掉：
+ *   ① `_klineTried` 必须清空：早盘请求成功的票全在里面，不清就一只都不会重跑 ⇒ 永远停在竞价口径。
+ *   ② `_klineAcc` **保留历史日腿、只剔除 T 日腿**：早盘抓到的「今天」那根是盘中现价（不是收盘价），
+ *      留着它会让收盘口径算出一个假数；而历史日腿是同一个数据源的同一天收盘，无需重付请求。
+ *      ⇒ 剔除后重跑，即使上游部分失败，各票也还能靠历史腿 + 库内收盘 T 腿给出接近正确的值。
+ *
+ * @param {string} date 展示日 T
+ * @param {string} fromMode 旧口径
+ * @param {string} toMode 新口径
+ */
+function _switchLegMode(date, fromMode, toMode) {
+  _klineTried.delete(date);
+  const acc = _klineAcc.get(date);
+  if (acc) {
+    const ymd = String(date).replace(/-/g, '');
+    acc.forEach(function(dayMap) { if (dayMap) dayMap.delete(ymd); });
+  }
+  _stage.delete(date);
+  _inflight.delete(date + '|kline');
+  _legMode.delete(date);
+  _dbgLog('[RANGE20-TSWITCH] ' + date + ' T腿口径 ' + fromMode + ' → ' + toMode + '：清空补算登记并重算');
+}
+
+/**
+ * 若本次是「盘中竞价口径」，安排一个一次性定时器在 15:00 后自动换腿重算。
+ *
+ * 为什么需要它：看板是 SPA，页面可能从早盘一直开到现在；没有用户交互 ⇒ `ensureRange20`
+ * 不会再被调用 ⇒ 收盘后屏幕仍停在早上那份数（用户第二次反馈正是这个现象）。
+ * ⚠️ 只是补丁：刷新/切日期时 `ensureRange20` 本身就会按新口径算（`_legMode` 无记录 ⇒ 直接 close）。
+ * ⚠️ 多等 90s：15:00 那一刻同花顺日线的今日收盘可能还没更新，太早抓会拿到盘中价。
+ *
+ * @param {string} date 展示日 T
+ * @param {string} legMode 本次发布所用的口径
+ */
+function _scheduleCloseSwitch(date, legMode) {
+  if (legMode !== 'auc') return;
+  if (_closeTimer.has(date)) return;
+  const closeMs = closeCoverUtcMs(date);
+  if (Number.isNaN(closeMs)) return;
+  const delay = (closeMs + 90000) - Date.now();
+  if (!(delay > 0) || delay > 2147483647) return;
+  const timer = setTimeout(function() {
+    _closeTimer.delete(date);
+    const rows = _lastRows.get(date);
+    if (!rows || rows.length === 0) return;
+    try {
+      ensureRange20(date, rows, { _tswitch: true }).catch(function() { /* 定时重算失败不影响主流程 */ });
+    } catch (e) { /* 同上 */ }
+  }, delay);
+  _closeTimer.set(date, timer);
+}
+
 /**
  * 确保某日的 20 日涨幅已就绪（幂等 / 单飞 / 会话缓存）。
  *
@@ -442,8 +593,14 @@ export async function ensureRange20(date, rows, opts) {
   //   才能在阶段②用「真实有成交的日期」重建出完整 20 个交易日。
   const probeDates = getRange20WindowDates(date, RANGE20_PROBE_DAYS);
   const tIsToday = (date === _getLocalTodayStr());
+  // 🔴 [FIX 2026-10-19 · R20-TSWITCH] T 腿口径随 15:00 换腿（用户口径：早上竞价 / 收盘后全收盘）
+  const afterClose = isAfterCloseOf(date);
+  const legMode = resolveT20LegMode(tIsToday, afterClose);
+  const prevMode = _legMode.get(date);
+  if (prevMode && prevMode !== legMode) _switchLegMode(date, prevMode, legMode);
+  if (rows && rows.length) _lastRows.set(date, rows);
   const rowsByDate = _rowsByDateOf(probeDates);
-  const baseLegs = legs20FromRows(targets, probeDates, rowsByDate, { tIsToday: tIsToday });
+  const baseLegs = legs20FromRows(targets, probeDates, rowsByDate, { tIsToday: tIsToday, afterClose: afterClose });
   // 🔴 [FIX 2026-10-19 · R20-CLOSE-LEG] **阶段① 不再发布**。
   //   原因：历史日的库内 `change_pct` 不可信（早盘写入的竞价涨幅 / 缺行，见 merge20Legs 函数头），
   //   所以 baseLegs 现在只剩「T 腿」一根 —— 拿它发出去会得到一个只有 1 天的假数值。
@@ -527,11 +684,16 @@ export async function ensureRange20(date, rows, opts) {
       });
     }
     const accAll = _klineAcc.get(date) || extra;
-    // ★ tDate = 展示日 T：该日腿走竞价涨幅口径，⛔ 不被 K 线的「今天收盘」覆盖（见 merge20Legs 函数头）
-    const merged = merge20Legs(baseLegs, accAll, probeDates, { tDate: date });
-    // ★ 用【真实交易日】重建最终窗口（剔除 App 日历里的工作日假期），全市场共用同一份窗口
-    //   ⇒ 每只票的区间长度一致、涨幅可比；拿不到 20 个真实交易日时就有多少算多少（days 如实写）。
-    const realDates = pickRealWindowDates(merged, probeDates, RANGE20_WINDOW_DAYS);
+    // ★ tDate = 展示日 T；tKeepAuctionLeg：盘中才保护 T 腿（收盘后必须让 K 线的今日收盘覆盖它）
+    const merged = merge20Legs(baseLegs, accAll, probeDates, {
+      tDate: date,
+      tKeepAuctionLeg: (legMode === 'auc'),
+    });
+    // ★ 用【真实交易日】重建序列（剔除 App 日历里的工作日假期）。
+    //   🔴 [R20-PERSTOCK-WIN] 这里**不再截到 20**：每只票在 `compound20` 里自己取最近 20 个有腿日，
+    //   停牌票需要往前多回溯（截到 20 会把它的窗口挤短 ⇒ 对不上炒股软件）。
+    //   `probeDates.length` = 保留探针范围内的全部真实交易日（升序，供每票回溯）。
+    const realDates = pickRealWindowDates(merged, probeDates, probeDates.length);
     // 常驻诊断（量小；本链路出问题时唯一可查的证据）：抽样一只票，看三个阶段各自的腿数。
     // 排查「数值偏小/天数不齐」时先看这里：base=阶段①库内腿、extra=K线、merged=覆盖后、real=全局窗口。
     let _dbgSample = '';
@@ -544,13 +706,15 @@ export async function ensureRange20(date, rows, opts) {
       }
     } catch (e) { /* 诊断失败不影响主流程 */ }
     _dbgLog('[RANGE20-PUB] ' + date + ' 补缺完成 extra=' + extra.size + ' merged=' + merged.size
-      + ' real=' + realDates.length + '/' + RANGE20_WINDOW_DAYS + _dbgSample);
+      + ' realDays=' + realDates.length + ' leg=' + legMode + _dbgSample);
     if (realDates.length < RANGE20_WINDOW_DAYS) {
       _dbgLog('[RANGE20] ' + date + ' 真实交易日只凑到 ' + realDates.length + '/' + RANGE20_WINDOW_DAYS
         + '（探针 ' + probeDates.length + ' 槽；云端 holidays 可能为空导致假期被当交易日）');
     }
     _publish(date, compound20(merged, realDates));
     _stage.set(date, 2);            // 🔴 标记「该日已合并 K 线」⇒ 后续阶段① 不再覆盖（见 _stage 说明）
+    _legMode.set(date, legMode);    // 🔴 记录本次口径 ⇒ 跨 15:00 时据此触发重算（见 _switchLegMode）
+    _scheduleCloseSwitch(date, legMode);   // 页面一直开着 ⇒ 15:00 后自动换腿重算一遍
     // 上游偶发（截断 / 熔断 / 超时）会让部分票这一轮拿不到腿 ⇒ 对它们这一列是 `—`（§10 不给错值）。
     // 安排【一次】延迟重试补齐：拿到的票已在 tried 里不会重复请求，_klineAcc 保证不丢已有腿。
     // ⛔ 只重试一次（_range20Retried 闸门），避免上游持续故障时无限打请求。
