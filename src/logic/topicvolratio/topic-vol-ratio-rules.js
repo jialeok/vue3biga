@@ -681,11 +681,18 @@ function _ebbBuyPickNames(ebb) {
  *
  * @param {Array} sell buildSellPlan 的返回（题材分组数组，每组含 items）
  * @param {object|null} ebb detectEbbDay 的返回
+ * @param {Set<string>|null} [keepNames] [EBB-R20b] 额外放行集（二次确认 + 常规选股时 = 今日买点名单；
+ *        缺省 null ⇒ 行为逐字不变）—— 与「卖点候选放行」同一不变式：今天要买的票不清仓
  */
-function _applyEbbSellRules(sell, ebb) {
+function _applyEbbSellRules(sell, ebb, keepNames) {
   if (!ebb) return;
   const elig = _ebbEligibleNames(ebb);
   const buyPicks = _ebbBuyPickNames(ebb);
+  // ★ [EBB-R20b 2026-10-20] 可选放行集（缺省 null ⇒ 行为逐字不变，§11）：
+  //   二次确认退潮 + 常规选出了补涨题材时 = 【今日买点名单】—— 这些票今天真要买，
+  //   若昨天买过（在卖点候选里），保持 buildSellPlan 自己的结论（持有 / 先卖后买），
+  //   ⛔ 不改写成【竞价卖】（同一天不可能既「今天要买」又「竞价清仓」—— 与替补放行同一不变式）。
+  if (keepNames) keepNames.forEach(function(n) { buyPicks.add(n); });
   const topicText = ebb.leaderTopic || '—';
   const lead = '【' + ebb.phaseTitle + '】市场总龙【' + ebb.leaderName + '】（' + topicText +
     '，20日涨幅 ' + ebb.leaderPctText + '）' + ebb.whyText + ' ⇒ 题材退潮：';
@@ -1440,10 +1447,36 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     });
   });
 
+  // ★ [EBB 2026-10-13 第五轮用户口径] 退潮日判定 —— 必须排在【题材入选扫描】之前：
+  //   [EBB-R20b 2026-10-20 用户口径] 二次确认退潮的买点侧【先按常规选股、排除退潮题材本身】
+  //   ⇒ 题材入选扫描需要先知道「退潮的是哪个题材」。它只读【事实】（谁是总龙 / 今天停不停牌 /
+  //     占比多少 + 近 10 天的退潮事件），不读 state、不发请求（事实由采集层 / 组合式注入）。
+  // ★ [EBB-R8 2026-10-14] 第二个入参 = 【上一交易日落库的退潮判定】（tvrb_ebb_days 表里那一行）
+  //   —— 昨日闸门用它；缺省（表不存在 / 那天没记录）⇒ 退化为「用昨日行情行推断」，再取不到按可触发。
+  // ★ [EBB-R20 2026-10-20] 第三个入参 = 【近 12 个交易日的退潮判定落库行】——
+  //   「首次 / 二次确认 / 无第三次」的事件计数用它；缺省 ⇒ 按 0 次事件（= 首次退潮）处理。
+  out.ebb = detectEbbDay(o.ebbCtx || null, o.prevEbbDay || null, o.ebbHistory || null);
+  // ★ [EBB-R20b 2026-10-20 用户口径] 二次确认退潮 ⇒ 买点侧【先按常规选股】（排除退潮题材本身）：
+  //   用户原话：「二次确认退潮的时候，应该先看常规选股，就是按题材平均量比选股（注意是新题材，
+  //   不是退潮那个题材，即使是退潮时这个题材还符合常规选股，但是毕竟它退潮了，所以不选这个题材），
+  //   如果符合平均量比的新题材……就按照常规选股就行了。如果排名前二的新题材都没有符合条件，
+  //   兜底就是选总市场的排名前面的龙，所以才回到20日涨幅选股法。」
+  //   ⇒ 只有【二次确认】走这条路；【首次退潮】维持旧口径（主线第一次坏 ⇒ 整段灰化 + 退潮不买 + 替补）。
+  const ebbSecondTopic = (out.ebb && out.ebb.phase === 'second')
+    ? String(out.ebb.leaderTopic || '').trim() : '';
+
   // 沿题材排名（平均竞价量比降序）往下扫：数量不足的排除并顺延，直到选够 TVRB_TOPIC_LIMIT 个。
   for (let i = 0; i < list.length; i++) {
     if (out.blocks.length >= TVRB_TOPIC_LIMIT) break;
     const b = list[i];
+    // ★ [EBB-R20b] 二次确认退潮 ⇒ 退潮那个题材【不参与买点入选】—— 题材排名照旧（它还在
+    //   out.topics 排名里），只是入选扫描在这里跳过它并顺延到下一个题材（与「数量不足顺延」同路径）。
+    //   ⛔ 用户原话「即使是退潮时这个题材还符合常规选股，但是毕竟它退潮了，所以不选这个题材」。
+    if (ebbSecondTopic && String(b.topic || '').trim() === ebbSecondTopic) {
+      out.notes.push('⚠️【' + out.ebb.phaseTitle + '】题材【' + b.topic +
+        '】今天【不参与买点选股】（退潮题材不买），买点侧从其余题材按常规（平均竞价量比）顺延选股。');
+      continue;
+    }
     const tier = resolveTvrbTier(b.count);
     if (tier.tier === 'none') {
       out.excludedTopics.push({
@@ -1461,19 +1494,16 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     else out.buy.candidates.push(b);
   });
 
-  // ★ [EBB 2026-10-13 第五轮用户口径] 退潮日判定 —— 排在空仓提醒【之前】：
-  //   「空仓提醒」在退潮日走退潮口径（理由比「量比 < 25」更硬），见 buildCashAlert 的二参。
-  //   ⛔ 它只读【事实】（谁是总龙 / 今天停不停牌 / 占比多少），不读 state、不发请求（事实由采集层给）。
-  // ★ [EBB-R8 2026-10-14] 第二个入参 = 【上一交易日落库的退潮判定】（tvrb_ebb_days 表里那一行）
-  //   —— 昨日闸门用它；缺省（表不存在 / 那天没记录）⇒ 退化为「用昨日行情行推断」，再取不到按可触发。
-  // ★ [EBB-R20 2026-10-20] 第三个入参 = 【近 12 个交易日的退潮判定落库行】——
-  //   「首次 / 二次确认 / 无第三次」的事件计数用它；缺省 ⇒ 按 0 次事件（= 首次退潮）处理。
-  out.ebb = detectEbbDay(o.ebbCtx || null, o.prevEbbDay || null, o.ebbHistory || null);
-
   // ★ [CASH-ALERT 2026-10-13 用户口径] 空仓提醒：只看【能入选的】排名第一题材（blocks[0]）。
   //   ⛔ 放在选股【之后】、且只读不写 —— 命中时股票照常列在下面（用户原话「还是按照原来的正常方式
   //      选出排名第一，第二的题材的股票，只是……多添加了空仓提醒文字」）。
-  out.cashAlert = buildCashAlert(out.blocks[0], out.ebb);
+  // ★ [EBB-R20b 2026-10-20] 标语接管口径：
+  //   · 首次退潮 / 二次确认但【常规选不出补涨题材】（blocks 为空 = 排名前二的新题材都不符合条件）
+  //     ⇒ 退潮口径接管 cashAlert（整段灰化 + 买点侧替补/空仓标语）—— 这就是用户说的「兜底」；
+  //   · 二次确认且常规选出了补涨题材 ⇒ cashAlert 走【常规判据】（买点侧正常显示；
+  //     退潮信息走行内说明 + 卖点横幅，⛔ 不再拿「建议空仓」标语顶掉常规选股的结果）。
+  const ebbSecondRegular = !!(ebbSecondTopic && out.blocks.length > 0);
+  out.cashAlert = buildCashAlert(out.blocks[0], (out.ebb && !ebbSecondRegular) ? out.ebb : null);
 
   // ★ 买点标签收口 —— decision-rules 的【同一份实现】（占比 / 动作标签 / 持有 / 题材标记）
   const fOpts = {
@@ -1494,18 +1524,42 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //   ⛔ 客观数据（十日涨幅 / 涨幅 / 量比 / 占比 / 龙标 / 连板 / 封单）一行不动。
   // ★ [CASH-ALERT-NOBUY 2026-10-16 用户口径] 空仓提醒（★ 非退潮日）⇒ 买点动作同样【覆盖式】重写：
   //   「这个提示下的买点侧，全部变成灰色（卖点侧不变），买点侧股票标签改成"分歧日不买"」。
-  //   ★ 优先级（★ 用户本轮只讲空仓提醒，退潮首日是更硬、更具体的同类情形）：
-  //     退潮首日 ⇒ 【退潮不买】（_applyEbbBuyRules）；非退潮日 + 命中空仓提醒 ⇒ 【分歧日不买】。
-  //   ⚠️ 两者【可能同时成立】（退潮日的 cashAlert 本来就是走退潮口径，见 buildCashAlert 二参），
-  //      所以这里必须是 else —— ⛔ 不能两条都跑（后者会盖掉【退潮不买】这枚更具体的标签）。
-  if (out.ebb) {
+  //   ★ 优先级：退潮（首次 / 二次确认走兜底）⇒ 【退潮不买】；其余命中空仓提醒 ⇒ 【分歧日不买】。
+  //   ★ [EBB-R20b] 二次确认 + 常规选出了补涨题材 ⇒ 买点侧【按常规规则走】：
+  //     常规的空仓提醒（第一新题材量比 < 25）照常生效（分歧日不买），退潮只写进行内说明 ——
+  //     用户本轮口径「如果符合平均量比的新题材……就按照常规选股就行了」。
+  if (out.ebb && !ebbSecondRegular) {
     _applyEbbBuyRules(out.blocks, out.ebb);
   } else if (out.cashAlert.show) {
     _applyCashAlertBuyRules(out.blocks, out.cashAlert);
   }
 
-  // ★★ [EBB-R20 2026-10-20 用户口径] 退潮日【买点侧替补 · ≤2 只】：
+  // ★ [EBB-R20b 2026-10-20] 二次确认 + 常规选出 ⇒ 这些票是【今天真要买的】：
+  //   卖点侧放行（保持 buildSellPlan 自己的结论 —— 通常 = 今天又进买点 ⇒ 持有 / 先卖后买），
+  //   与替补的放行同一不变式：同一天不可能既「今天要买」又「竞价清仓」。首次退潮不在此列
+  //   （那些票今天不买 ⇒ 卖点照旧一律竞价卖）。
+  const regularPickNames = new Set();
+  if (ebbSecondRegular) {
+    out.blocks.forEach(function(b) {
+      (b.picks || []).forEach(function(p) { if (p && p.name) regularPickNames.add(p.name); });
+    });
+    // 每行说明加注（用户原话「说明文字那里该加一句，主线AI应用二次确认退潮，作为补涨题材选出的股票」）。
+    //   ⛔ 必须排在所有 actionNote 覆盖（finishBuyBlock / 空仓提醒改写）之后 —— 追加，不覆盖任何信息。
+    const tail = '主线' + (out.ebb.leaderTopic || '总龙题材') + '二次确认退潮，作为补涨题材选出的股票' +
+      '（本题材是排除退潮题材后、按题材平均竞价量比常规选出的补涨题材）。';
+    out.blocks.forEach(function(b) {
+      (b.picks || []).forEach(function(p) {
+        if (p && p.name) p.actionNote = (p.actionNote ? p.actionNote + ' ' : '') + tail;
+      });
+    });
+  }
+
+  // ★★ [EBB-R20 2026-10-20 用户口径] 退潮日【买点侧兜底替补 · ≤2 只】：
   //   「从20日涨幅中的总龙一到总龙五选出两只排名靠前的……只选好两只，已经完成任务，后面不选了」。
+  //   ★ [EBB-R20b 2026-10-20 用户口径] 兜底语义（用户本轮原话「如果排名前二的新题材都没有符合条件，
+  //     兜底就是选总市场的排名前面的龙，所以才回到20日涨幅选股法」）：
+  //     · 【首次退潮】⇒ 替补照旧（主线第一次坏，买点侧除替补外没有别的买点）；
+  //     · 【二次确认】⇒ 只当常规选不出（blocks 为空）才启用替补；常规选出了补涨题材 ⇒ ebbBuy 恒 null。
   //   ⛔ 顺序（三步都不能换）：
   //     ① `_applyEbbBuyRules` 先跑完（把【常规题材块】的每行改成【退潮不买】+ 整段灰化）
   //        —— 用户拍板：这些票【照旧列出来】（灰化空仓视觉保留），只是不再有买点；
@@ -1515,7 +1569,7 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //        照常给它挂客观数据（§6 共用同一次遍历）。
   //   §10：20日前五未就绪 / 一只替补都选不出 ⇒ 构造返回 null ⇒ 买点侧不出现这一段
   //        （⛔ 绝不拿别的名次顶替），空仓标语会如实改口径（见 detectEbbDay）。
-  out.ebbBuy = _buildEbbPicksBlock(out.ebb, list, fOpts);
+  out.ebbBuy = (out.ebb && !ebbSecondRegular) ? _buildEbbPicksBlock(out.ebb, list, fOpts) : null;
   if (out.ebbBuy) out.buy.ebbSecond = out.ebbBuy;
 
   // ★★ [EBB-R8 2026-10-14 用户口径] 落库行：把今天的退潮【判定】存下来，供明天判「是不是首日」。
@@ -1567,7 +1621,7 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     //   只有【同题材可用龙位】【市场总龙二】两只标「看分笔卖」（等开盘看分笔、不看占比），
     //   其余（含原本标【持有】的）一律改【竞价卖】。
     //   ⛔ 排在平均量比 / 涨幅文案补全【之后】：那两项是客观数据，本改写一律不碰。
-    if (out.ebb) _applyEbbSellRules(out.sell, out.ebb);
+    if (out.ebb) _applyEbbSellRules(out.sell, out.ebb, ebbSecondRegular ? regularPickNames : null);
   }
 
   out.pickCount = out.blocks.reduce(function(n, blk) { return n + blk.picks.length; }, 0);
@@ -1669,8 +1723,11 @@ export function buildTvrbRulesLines() {
       '（与退潮首日【同一套】灰化视觉）、每只票的动作标签一律改为【' + CASH_NO_BUY_TAG + '】' +
       '（原本的【' + HOLD_TAG + '】/ 竞价买 / 尾盘买 / 先卖后买 等买点信号一律作废）。' +
       '⚠️ ⛔ 卖点侧一行不变、⛔ 客观数据（十日涨幅 / 涨幅 / 量比 / 占比 / 龙标 / 名次 / 连板 / 封单）照常显示。' +
-      '★ 另外，当当日为【退潮首日】（第二十条）时也一律提示空仓，并改用退潮口径的标语、' +
-      '买点侧标签走【' + EBB_NO_BUY_TAG + '】（退潮首日【优先】于本提醒，两枚标签同处一套灰化视觉）。',
+      '★ 另外，当当日为【退潮首日】、或【二次确认退潮但常规选不出补涨题材】（第二十条）时也一律提示空仓，' +
+      '并改用退潮口径的标语、买点侧标签走【' + EBB_NO_BUY_TAG +
+      '】（退潮【优先】于本提醒，两枚标签同处一套灰化视觉）。' +
+      '⚠️ 二次确认退潮但【常规选出了补涨题材】时，空仓提醒按常规判据照常运作' +
+      '（第一新题材平均量比 < ' + TVRB_CASH_ALERT_AVG_VR + ' 才提示）—— 买点侧不再被「建议空仓」接管。',
     // ── ★ [EBB 2026-10-13 第五轮用户口径] 退潮首日（用户原话见文件头，规则与判定同处一处，§6）
     //    ★★ [EBB-R20 2026-10-20 用户口径] 总龙改用 20日涨幅；替补选两只；首日/二次确认。
     '二十、【题材退潮 · 卖点收紧】市场总龙（总龙一）= 【20日涨幅】全市场第一的那只' +
@@ -1690,10 +1747,16 @@ export function buildTvrbRulesLines() {
       '②【市场总龙二】= 昨日十日涨幅【第二】的那只，且必须是【它自己题材的龙一】、与总龙【不同题材】、' +
       '且非竞价一字 / 非停牌（⛔ 这一只【不顺延】：它必须正好是涨幅第二，不递补涨幅第三）。',
     '　　其余股票（含原本标【' + HOLD_TAG + '】的）一律改【' + SELL_OUT_TAG + '】：开盘就走，降低风险。',
-    '　　买点侧：退潮日是【除替补外没有买点】——入选股票的买点动作标签一律改为【' + EBB_NO_BUY_TAG + '】' +
+    '　　买点侧（【首次退潮】）：除替补外没有买点 ——入选股票的买点动作标签一律改为【' + EBB_NO_BUY_TAG + '】' +
       '（原本的【' + HOLD_TAG + '】/ 竞价买 / 尾盘买 / 先卖后买 等买点信号一律作废），' +
       '整段【变灰】+ 顶部大字【建议空仓】：今天不开新仓。' +
       '⚠️ 唯一的例外是第二十一条的那几只【' + EBB_SECOND_BUY_TAG + '】替补。',
+    '　　买点侧（【二次确认退潮】）：【先按常规选股】—— 排除退潮题材本身（即使它还符合常规条件，' +
+      '毕竟它退潮了）之后，按第一~七条的平均竞价量比规则照常选股（题材排名顺延）。' +
+      '选出的票 = 【补涨题材】，动作标签与常规完全同一套，行内说明会注明' +
+      '「主线{题材}二次确认退潮，作为补涨题材选出的股票」。' +
+      '⚠️ 只有当排名前二的新题材都不符合常规条件（一个都选不出）时，才【兜底】到第二十一条的替补' +
+      '（整段灰化 + 退潮不买）。两条的【卖点侧收紧】完全一样。',
     // ── ★ [EBB-R20 2026-10-20 用户口径] 首次 / 二次确认（近 10 天历史）+ 无第三次 ──
     '　　⚠️【只在首次 / 二次确认生效】：这套退潮规则，只对题材【首次退潮】和【二次确认退潮】生效。' +
       '判据看【最近 10 个交易日】的表现：十天内出现过一次退潮 ⇒ 今天【不算首次】，而是【二次确认】；' +
@@ -1704,7 +1767,9 @@ export function buildTvrbRulesLines() {
       '坏状态 ⇒ 今天是延续 ⇒ 不触发；③ 再数【近 10 个交易日】里同题材的退潮事件次数定阶段；' +
       '④ 落库 / 行情行都取不到 ⇒ 按【可触发】处理（宁可多提醒一次，不漏掉风险）。' +
       '说明文字里会如实写出本次判定是从哪里来的（落库 / 推断 / 取不到）。',
-    '二十一、【退潮日 · 买点侧替补「' + EBB_SECOND_BUY_TAG + '」】退潮日的买点侧【只买替补，最多两只】：' +
+    '二十一、【退潮日 · 买点侧【兜底】替补「' + EBB_SECOND_BUY_TAG + '」】' +
+      '（触发时机 = 首次退潮；或二次确认退潮但【排名前二的新题材都不符合常规条件、一个都选不出】）' +
+      '买点侧回到 20日涨幅选股法，【只买替补，最多两只】：' +
       '从【20日涨幅】的总龙一到总龙五里选 —— ' +
       '① 先排除【非主板】（创业板 300/301、科创板 688/689、北交所一律不要）；' +
       '② 再排除【与总龙一同题材】的（总龙自己正是被判定退潮的那只，本来就不买）；' +

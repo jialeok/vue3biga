@@ -1538,6 +1538,144 @@ describe('tvrb · [EBB-R20] 退潮替补 · 两只替补块（经 buildTopicVolR
   });
 });
 
+// ── ★ [EBB-R20b 2026-10-20 用户口径] 二次确认退潮 ⇒ 先常规选股（排除退潮题材），兜底才替补 ──────
+//   用户原话：「二次确认退潮的时候，应该先看常规选股，就是按题材平均量比选股（注意是新题材，
+//   不是退潮那个题材，即使是退潮时这个题材还符合常规选股，但是毕竟它退潮了，所以不选这个题材），
+//   如果符合平均量比的新题材……就按照常规选股就行了。如果排名前二的新题材都没有符合条件，
+//   兜底就是选总市场的排名前面的龙，所以才回到20日涨幅选股法。如果常规选股题材量比符合，
+//   从常规中选出股票，说明文字那里该加一句，主线AI应用二次确认退潮，作为补涨题材选出的股票。」
+describe('tvrb · [EBB-R20b] 二次确认退潮 ⇒ 先常规选股（排除退潮题材），兜底才替补', function() {
+  // 题材排名（数组顺序 = 平均量比降序）：AI应用（退潮题材）→ 商业航天（合格新题材）→ 电力（数量不足）
+  function mkTopics() {
+    return [
+      block('AI应用', 1, ['甲一', '甲二', '甲三', '甲四', '甲五', '甲六'].map(function(n, i) {
+        return m(n, { aucVolRatio: 60, aucShare: 6, code: '6000' + (i < 9 ? '0' + (i + 1) : (i + 1)) });
+      })),
+      block('商业航天', 2, ['海一', '海二', '海三', '海四', '海五'].map(function(n, i) {
+        return m(n, { aucVolRatio: 50, aucShare: 6, code: '6010' + (i + 1) });
+      })),
+      block('电力', 3, ['电一', '电二', '电三'].map(function(n, i) {
+        return m(n, { aucVolRatio: 40, aucShare: 6, code: '6003' + (i + 1) });
+      }))
+    ];
+  }
+  const dm = dragonMap([['甲一', 1], ['甲二', 2], ['海一', 1]]);
+
+  function ebbCtx(over) {
+    return Object.assign({
+      ready: true,
+      leader: { name: '新华传媒', pct: 159.51, topic: 'AI应用', code: '600825', rank: 1, isYizi: false },
+      leaderSuspended: false,
+      leaderShare: 2.5,            // ＜ 龙头门槛 3.5% ⇒ 判据②（占比不达标）
+      siblingDragons: [],
+      secondInfo: null,
+      prevLeader: null,
+      buyPicks: [],
+      buyTrail: []
+    }, over || {});
+  }
+  /** 近 10 天里已有一次 AI应用 退潮事件（10-13）⇒ 今天 = 二次确认 */
+  const HIST = [{ date: '2026-10-13', prevDate: '2026-10-12', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true }];
+
+  it('★ 二次确认 + 有合格新题材 ⇒ 常规选股照常（退潮题材剔除顺延）、行内说明加注、⛔ 不灰化不退潮不买', function() {
+    const p = buildTopicVolRatioPlan(mkTopics(), dm, { ebbCtx: ebbCtx(), ebbHistory: HIST });
+    expect(p.ebb).not.toBe(null);
+    expect(p.ebb.phase).toBe('second');
+    // 退潮题材被剔除：blocks 里没有 AI应用，商业航天顶上
+    expect(p.blocks.map(function(b) { return b.topic; })).not.toContain('AI应用');
+    expect(p.blocks.map(function(b) { return b.topic; })).toContain('商业航天');
+    // 常规标签照旧（占比 6% 达标 ⇒ 竞价买），⛔ 不是【退潮不买】
+    const pick = p.blocks[0].picks[0];
+    expect(pick.name).toBe('海一');
+    expect(pick.buyActionTag).toBe(BUY_NOW_TAG);
+    expect(pick.buyActionTag).not.toBe(EBB_NO_BUY_TAG);
+    // 行内说明加注（用户原话句式）
+    expect(pick.actionNote).toContain('主线AI应用二次确认退潮，作为补涨题材选出的股票');
+    // 替补兜底不启用
+    expect(p.ebbBuy).toBe(null);
+    expect(p.buy.ebbSecond).toBe(null);
+    // 不灰化（常规第一题材量比 50 ≥ 25 ⇒ cashAlert 走常规判据不提示）
+    expect(p.cashAlert.show).toBe(false);
+    // 剔除原因如实写进 notes
+    expect(p.notes.join('\n')).toContain('不参与买点选股');
+    expect(p.notes.join('\n')).toContain('二次确认退潮');
+  });
+
+  it('★ 二次确认 + 排名前二的新题材都不符合条件（一个都选不出）⇒ 兜底替补（退潮口径接管）', function() {
+    const picks2 = [
+      { name: '九阳股份', pct: 106.51, topic: '大消费', code: '002242', rank20: 2, days: 20, isYizi: false, suspended: false },
+      { name: '澳弘电子', pct: 93.07, topic: '电子/通信/算力', code: '605733', rank20: 3, days: 20, isYizi: false, suspended: false }
+    ];
+    // 只有退潮题材合格 + 一个数量不足的题材 ⇒ 排除后常规选不出 ⇒ 兜底
+    const topics2 = [
+      block('AI应用', 1, ['甲一', '甲二', '甲三', '甲四', '甲五', '甲六'].map(function(n, i) {
+        return m(n, { aucVolRatio: 60, aucShare: 6, code: '6000' + (i < 9 ? '0' + (i + 1) : (i + 1)) });
+      })),
+      block('电力', 2, ['电一', '电二', '电三'].map(function(n, i) {
+        return m(n, { aucVolRatio: 40, aucShare: 6, code: '6003' + (i + 1) });
+      }))
+    ];
+    const p = buildTopicVolRatioPlan(topics2, dm, {
+      ebbCtx: ebbCtx({ buyPicks: picks2, buyTrail: [] }),
+      ebbHistory: HIST
+    });
+    expect(p.blocks.length).toBe(0);
+    expect(p.ebbBuy).not.toBe(null);
+    expect(p.ebbBuy.picks.length).toBe(2);
+    expect(p.ebbBuy.picks.every(function(x) { return x.buyActionTag === EBB_SECOND_BUY_TAG; })).toBe(true);
+    // 退潮口径接管 cashAlert（灰化 + 替补标语）
+    expect(p.cashAlert.show).toBe(true);
+    expect(p.cashAlert.headline).toContain('二次确认退潮');
+  });
+
+  it('★ 首次退潮不走常规选股（同 ctx 无历史）⇒ 全部【退潮不买】+ 替补照旧（旧口径一行不变）', function() {
+    const picks1 = [
+      { name: '九阳股份', pct: 106.51, topic: '大消费', code: '002242', rank20: 2, days: 20, isYizi: false, suspended: false }
+    ];
+    const p = buildTopicVolRatioPlan(mkTopics(), dm, {
+      ebbCtx: ebbCtx({ buyPicks: picks1, buyTrail: [] })
+    });
+    expect(p.ebb.phase).toBe('first');
+    // 首次退潮：退潮题材【不剔除】（旧口径）⇒ blocks 含 AI应用，全部退潮不买
+    expect(p.blocks.map(function(b) { return b.topic; })).toContain('AI应用');
+    p.blocks.forEach(function(b) {
+      b.picks.forEach(function(x) { expect(x.buyActionTag).toBe(EBB_NO_BUY_TAG); });
+    });
+    expect(p.ebbBuy).not.toBe(null);
+    expect(p.ebbBuy.picks[0].name).toBe('九阳股份');
+  });
+
+  it('★ 卖点侧：二次确认常规选出 + 昨天买过今天又进买点 ⇒ 保持持有（放行）；退潮题材票照旧竞价卖', function() {
+    const sellRows = [{
+      name: '海一', topic: '商业航天', pct: 30, code: '60101',
+      aucPct: 3, volRatioDir: '', volRatioTimes: null, aucShare: 6, inTodayList: true
+    }];
+    const p = buildTopicVolRatioPlan(mkTopics(), dm, { sellRows: sellRows, ebbCtx: ebbCtx(), ebbHistory: HIST });
+    let found = null;
+    p.sell.forEach(function(g) { (g.items || []).forEach(function(x) { if (x.name === '海一') found = x; }); });
+    expect(found).not.toBe(null);
+    expect(found.sellActionTag).toBe(HOLD_TAG);       // 今天又进买点 ⇒ 持有（放行，⛔ 不改竞价卖）
+
+    const sellRows2 = [{
+      name: '甲一', topic: 'AI应用', pct: 30, code: '600001',
+      aucPct: 3, volRatioDir: '', volRatioTimes: null, aucShare: 6, inTodayList: true
+    }];
+    const p2 = buildTopicVolRatioPlan(mkTopics(), dm, { sellRows: sellRows2, ebbCtx: ebbCtx(), ebbHistory: HIST });
+    let found2 = null;
+    p2.sell.forEach(function(g) { (g.items || []).forEach(function(x) { if (x.name === '甲一') found2 = x; }); });
+    expect(found2).not.toBe(null);
+    expect(found2.sellActionTag).toBe(SELL_OUT_TAG);  // 退潮题材、非今日买点 ⇒ 一律竞价卖（收紧不变）
+  });
+
+  it('规则面板：二十/二十一条必须写清「二次确认先常规选股 + 兜底才替补 + 补涨题材加注」', function() {
+    const all = buildTvrbRulesLines().join('\n');
+    expect(all).toContain('先按常规选股');
+    expect(all).toContain('作为补涨题材选出的股票');
+    expect(all).toContain('兜底');
+    expect(all).toContain('排除退潮题材本身');
+  });
+});
+
 describe('tvrb · 买点侧替补那一行接进 buildTopicVolRatioPlan', function() {
   // ⚠️ 刻意把【家电】放在第 3 位：本看板只取排名最靠前的 2 个题材（TVRB_TOPIC_LIMIT）⇒
   //    家电【不会成为常规入选块】，九阳股份也就【不可能靠常规通路】进 buyNames。
