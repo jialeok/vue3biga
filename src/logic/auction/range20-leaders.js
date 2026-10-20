@@ -43,6 +43,8 @@ import { ref } from 'vue';
 import { getStockCode } from '../../data/stock-code-map.js';
 import { _getAuctionFormalRowsForDate } from '../../data/watchlist-and-metrics.js';
 import { fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
+// [R20-CLOUD 2026-10-20] 与主 toggle 共用同一张结果表（stock_range20_pct）⇒ 谁先算谁落库、另一方 0 请求复用
+import { readRange20Rows, pickUsableRows, upsertRange20Rows } from '../../data/stock-range20-cache.js';
 import { _dbgLog } from '../../data/debug-log.js';
 import { getBoardKind, BOARD_MAIN, BOARD_BJ, BOARD_GROWTH, BOARD_STAR } from './limit-up.js';
 import { _getLocalTodayStr } from '../tagTitles/rules.js';
@@ -348,12 +350,35 @@ export async function ensureRange20Leaders(date, opts) {
     //   最近 20 个有腿日取窗，先截断 20 天会让停牌票无法回溯、粗筛把真龙头筛掉。
     const guessDates = probeDates;
     const coarse = compound20(baseLegsDb, guessDates);
-    const coarseTop = rankLeaders(coarse, {
+    // 🔴 [R20-CLOUD 2026-10-20] 云端结果表优先：主 toggle 已经用 K 线算过的票直接拿来排名，
+    //   ⛔ 不再为它们重打一遍同花顺（这就是「打开应用要等很久」的主因 —— 本模块以前无条件
+    //   跑 25 次 K 线，哪怕主看板/上一次打开早就算过了）。
+    //   ⚠️ 表里的票可能不在候选池（pool 只含「近 20 日正式名单并集」）⇒ 先按 pool 过滤。
+    const cloudAll = (opts && opts.skipCloud)
+      ? new Map()
+      : pickUsableRows(await readRange20Rows(date), legMode);
+    const poolNames = new Set(pool.map(function(t) { return t.stock; }));
+    const cloudMap = new Map();
+    cloudAll.forEach(function(v, n) { if (poolNames.has(n)) cloudMap.set(n, v); });
+    if (cloudMap.size > 0) {
+      _dbgLog('[RANGE20-TOP5] ' + date + ' 云端表命中 ' + cloudMap.size + ' 只（0 请求复用）');
+    }
+    // 粗筛排序用「库内近似 ∪ 云端真值」（同名以云端为准 —— 云端是 K 线算的，必然更准）
+    const coarseMerged = (function() {
+      const m = new Map();
+      coarse.forEach(function(r) { m.set(r.stock, r); });
+      cloudMap.forEach(function(v, n) {
+        if (!poolNames.has(n)) return;
+        m.set(n, { stock: n, pct: v.pct, days: v.days });
+      });
+      return Array.from(m.values());
+    })();
+    const coarseTop = rankLeaders(coarseMerged, {
       limit: RANGE20_LEADER_PRESELECT,
       minDays: RANGE20_LEADER_MIN_LEGS,
       mainBoardOnly: true
     });
-    _dbgLog('[RANGE20-TOP5] ' + date + ' 候选池=' + pool.length + ' 有腿=' + coarse.length
+    _dbgLog('[RANGE20-TOP5] ' + date + ' 候选池=' + pool.length + ' 有腿=' + coarseMerged.length
       + ' 粗筛(>= ' + RANGE20_LEADER_MIN_LEGS + '天/主板)=' + coarseTop.length);
     if (opts && opts.skipKline) {
       return _publish(date, coarseTop.slice(0, RANGE20_LEADER_TOP_N));
@@ -365,8 +390,11 @@ export async function ensureRange20Leaders(date, opts) {
 
     // 阶段② 精算（<=25 请求）：补满 20 天 K 线后重算
     //   跨日期复用：同一只票 + 同一窗口首日 ⇒ 请求内容完全相同 ⇒ 只发一次（切日期不重复烧请求）
+    //   🔴 [R20-CLOUD] 云端表已有真值的票不再请求（0 请求复用）。
     const winKey = probeDates[0] || '';
-    const todo = coarseTop.filter(function(t) { return !_klineTried.has(t.stock + '@' + winKey); });
+    const todo = coarseTop.filter(function(t) {
+      return !_klineTried.has(t.stock + '@' + winKey) && !cloudMap.has(t.stock);
+    });
     const extraByStock = new Map();
     if (todo.length > 0) {
       _fillCodes(todo);
@@ -399,7 +427,17 @@ export async function ensureRange20Leaders(date, opts) {
     });
     // 🔴 [R20-PERSTOCK-WIN] 不截到 20：每票在 compound20 内自取最近 20 个有腿日（与主看板同口径）
     const realDates = pickRealWindowDates(merged, probeDates, probeDates.length);
-    const top = rankLeaders(compound20(merged, realDates), {
+    const fresh = compound20(merged, realDates);
+    // 🔴 [R20-CLOUD] 参与排名 = 本轮算出的 ∪ 云端表真值（同名以本轮为准）。
+    //   否则「表里命中但本轮没算」的票（例如前五里的 4 只本就在正式列表）会从排名里消失 ⇒
+    //   补位候选判断全错（用户要的是「前五里哪些今天看不到」）。
+    const rankPool = (function() {
+      const m = new Map();
+      cloudMap.forEach(function(v, n) { m.set(n, { stock: n, pct: v.pct, days: v.days }); });
+      fresh.forEach(function(r) { if (r && r.stock) m.set(r.stock, r); });
+      return Array.from(m.values());
+    })();
+    const top = rankLeaders(rankPool, {
       limit: RANGE20_LEADER_TOP_N,
       minDays: RANGE20_LEADER_MIN_LEGS,
       mainBoardOnly: true
@@ -410,8 +448,17 @@ export async function ensureRange20Leaders(date, opts) {
     coarseTop.forEach(function(t) { if (t.code) _coarseCode.set(t.stock, t.code); });
     top.forEach(function(t) { if (!t.code) t.code = _coarseCode.get(t.stock) || ''; });
     _dbgLog('[RANGE20-TOP5-PUB] ' + date + ' 精算 realDays=' + realDates.length
-      + ' 补算=' + extraByStock.size + ' 前五=' + top.map(function(t) { return t.stock + ' ' + t.pct.toFixed(2) + '%/' + t.days + 'd'; }).join(' , '));
+      + ' 补算=' + extraByStock.size + ' 云端=' + cloudMap.size
+      + ' 前五=' + top.map(function(t) { return t.stock + ' ' + t.pct.toFixed(2) + '%/' + t.days + 'd'; }).join(' , '));
     _publish(date, top);
+    // 🔴 [R20-CLOUD] 把本轮真拿到 K 线的票落库 ⇒ 主 toggle 下次打开可 0 请求复用（两个模块共享同一张表）。
+    //   只写「确实有 K 线腿的票」，⛔ 不写只有 T 腿的残缺值（§10：宁缺勿错，残缺值落库会永久污染）。
+    try {
+      const _toSave = fresh.filter(function(r) {
+        return r && r.stock && extraByStock.has(r.stock) && r.days >= RANGE20_LEADER_MIN_LEGS;
+      });
+      if (_toSave.length > 0) await upsertRange20Rows(date, _toSave, legMode);
+    } catch (e) { /* 落库失败静默：正确性不依赖它 */ }
     return _state.value.list;
   })().finally(function() {
     if (_inflight.get(key) === p) _inflight.delete(key);

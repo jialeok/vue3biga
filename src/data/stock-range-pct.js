@@ -284,6 +284,11 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
     let circuitOpen = false;
     // 进度回调：每补完一只票上报一次（UI 显示「正在补算 N/M」用）
     const onProgress = (opts && typeof opts.onProgress === 'function') ? opts.onProgress : null;
+    // [R20-PROGRESS 2026-10-20] 每完成一批就回调一次累计结果（默认 null = 无行为，§11）。
+    //   用途：调用方（range20.js）据此【分批发布】，让用户 3~5 秒看到头几只，
+    //   而不是等全部跑完才出数（那正是「20日涨幅比十日涨幅慢很多」的直接原因）。
+    //   ⚠️ 传的是**同一个 Map 引用**（累积结果），回调方若要留存请自行拷贝。
+    const onBatch = (opts && typeof opts.onBatch === 'function') ? opts.onBatch : null;
     let done = 0;
 
     for (let i = 0; i < list.length; i += conc) {
@@ -345,6 +350,10 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
             done++;
             if (onProgress) onProgress(done, list.length);
         }));
+        // 一批跑完（并发 conc 只）⇒ 通知调用方可以拿当前累计结果发布一次
+        if (onBatch) {
+            try { onBatch(out, done, list.length); } catch (e) { /* 回调失败不影响取数 */ }
+        }
     }
     return out;
 }

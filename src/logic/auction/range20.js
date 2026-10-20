@@ -50,6 +50,8 @@ import { compoundPct, parsePct, closeCoverUtcMs } from './range-window.js';
 import { getDragonWindowDates } from './dragon-rank.js';
 import { ensureAuctionCodeMapping } from './auction-fetch-helpers.js';
 import { fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
+// [R20-CLOUD 2026-10-20] 结果表读写（加速层：读失败降级为纯内存计算，⛔ 不影响正确性）
+import { readRange20Rows, pickUsableRows, upsertRange20Rows } from '../../data/stock-range20-cache.js';
 import { _dbgLog } from '../../data/debug-log.js';
 
 /** 窗口长度：含今天在内的 20 个交易日（用户口径「包括今天在内，算20天的」） */
@@ -147,6 +149,8 @@ export function clearRange20() {
   _stage.clear();
   _cache.clear();
   _legMode.clear();
+  _realDatesAcc.clear();
+  _lastRows.clear();
   _closeTimer.forEach(function(t) { try { clearTimeout(t); } catch (e) { /* 忽略 */ } });
   _closeTimer.clear();
   _state.value = { date: '', map: new Map(), version: _state.value.version + 1 };
@@ -513,6 +517,50 @@ function _fillCodes(targets) {
 const _lastRows = new Map();
 
 /**
+ * date -> 已确认的「真实交易日」升序数组（**只增不减**）。
+ *
+ * 🔴 [R20-PROGRESS 2026-10-20] 为什么必须累积：分批发布时早期只有 3 只票的腿，
+ *   `pickRealWindowDates` 的判据是「该日全市场任一票有腿」—— 那 3 只恰好都停牌的日子
+ *   就会被误判成非交易日 ⇒ 窗口变短 ⇒ 数值偏小，下一批再跳回来 ⇒ 用户看见数字闪。
+ *   累积并集（单调收敛）后窗口只会变长不会缩短。
+ */
+const _realDatesAcc = new Map();
+
+/** 合并两份 K 线腿（a 为底，b 覆盖同名同日） */
+function _mergeAccMaps(a, b) {
+  const out = new Map();
+  if (a) a.forEach(function(m, n) { out.set(n, new Map(m)); });
+  if (b) b.forEach(function(m, n) {
+    if (!n || !m) return;
+    let cur = out.get(n);
+    if (!cur) { cur = new Map(); out.set(n, cur); }
+    m.forEach(function(v, ymd) { cur.set(ymd, v); });
+  });
+  return out;
+}
+
+/** 累积真实交易日（见 _realDatesAcc 的说明） */
+function _unionRealDates(date, merged, probeDates) {
+  const cur = pickRealWindowDates(merged, probeDates, probeDates.length);
+  const prev = _realDatesAcc.get(date);
+  if (!prev) { _realDatesAcc.set(date, cur); return cur; }
+  const s = new Set(prev);
+  cur.forEach(function(d) { s.add(d); });
+  const union = probeDates.filter(function(d) { return s.has(d); });
+  _realDatesAcc.set(date, union);
+  return union;
+}
+
+/** 本轮算出的结果 ∪ 云端表里的结果（同名以本轮为准） */
+function _mergeRowsWithCloud(freshRows, cloudMap) {
+  if (!cloudMap || cloudMap.size === 0) return freshRows || [];
+  const m = new Map();
+  cloudMap.forEach(function(v, n) { m.set(n, { stock: n, pct: v.pct, days: v.days }); });
+  (freshRows || []).forEach(function(r) { if (r && r.stock) m.set(r.stock, r); });
+  return Array.from(m.values());
+}
+
+/**
  * T 腿口径切换（跨 15:00）：把「已按旧口径算过」的登记清掉，让阶段② 重跑一遍。
  *
  * 🔴 [R20-TSWITCH] 两个关键点，⛔ 别"优化"掉：
@@ -535,6 +583,7 @@ function _switchLegMode(date, fromMode, toMode) {
   _stage.delete(date);
   _inflight.delete(date + '|kline');
   _legMode.delete(date);
+  _realDatesAcc.delete(date);       // 口径变了 ⇒ 让真实交易日重新累积（腿集合会变）
   _dbgLog('[RANGE20-TSWITCH] ' + date + ' T腿口径 ' + fromMode + ' → ' + toMode + '：清空补算登记并重算');
 }
 
@@ -587,11 +636,7 @@ export async function ensureRange20(date, rows, opts) {
   const targets = _targetsOf(rows);
   if (targets.length === 0) return (_state.value.date === date) ? _state.value.map : null;
 
-  // ---- 阶段①：库内数据（0 请求 / 0 额度），先发布出来 ----
-  // ★ 取数用【探针窗口】= 30 个 App 日历交易日（比 20 多 10 个槽位）：App 日历可能把工作日
-  //   假期当交易日（云端 holidays 为空数组时就是如此，见 RANGE20_PROBE_DAYS），多要 10 个槽位
-  //   才能在阶段②用「真实有成交的日期」重建出完整 20 个交易日。
-  const probeDates = getRange20WindowDates(date, RANGE20_PROBE_DAYS);
+  // T 腿口径（阶段⓪/①② 都要用，提到最前面算一次）
   const tIsToday = (date === _getLocalTodayStr());
   // 🔴 [FIX 2026-10-19 · R20-TSWITCH] T 腿口径随 15:00 换腿（用户口径：早上竞价 / 收盘后全收盘）
   const afterClose = isAfterCloseOf(date);
@@ -599,15 +644,39 @@ export async function ensureRange20(date, rows, opts) {
   const prevMode = _legMode.get(date);
   if (prevMode && prevMode !== legMode) _switchLegMode(date, prevMode, legMode);
   if (rows && rows.length) _lastRows.set(date, rows);
+
+  // ---- 阶段⓪：云端结果表（0 K 线请求 · 跨会话/跨设备）----
+  // 🔴 [R20-CLOUD 2026-10-20 用户反馈「20日涨幅加载太慢，十日涨幅早就出来了」]
+  //   十日涨幅快是因为它读 `stock_range_pct` 表（1 次查询 ~100ms）；而 20 日涨幅每次打开
+  //   都要现打 40+ 次同花顺 K 线（30~90s），刷新即白算。
+  //   ⇒ 把算好的结果按 (date,stock) 落到 `stock_range20_pct`，这里先读出来直接发布。
+  //   命中部分立即出数，只有「表里没有 / 口径不匹配」的票才走阶段②。
+  //   ⚠️ 这是加速层：读失败返回 null ⇒ 降级为纯内存计算，功能不受影响（见 stock-range20-cache.js）。
+  const cloudMap = (opts && opts.skipCloud)
+    ? new Map()
+    : pickUsableRows(await readRange20Rows(date), legMode);
+  if (cloudMap.size > 0) {
+    const cloudRows = [];
+    cloudMap.forEach(function(v, n) { cloudRows.push({ stock: n, pct: v.pct, days: v.days }); });
+    _publish(date, cloudRows);
+    _dbgLog('[RANGE20-CLOUD] ' + date + ' 命中 ' + cloudMap.size + ' 只（leg=' + legMode + '，0 K线请求）');
+  }
+
+  // ---- 阶段①：库内数据（0 请求 / 0 额度）----
+  // ★ 取数用【探针窗口】= 45 个 App 日历交易日（比 20 多 25 个槽位）：App 日历可能把工作日
+  //   假期当交易日（云端 holidays 为空数组时就是如此，见 RANGE20_PROBE_DAYS），且停牌票要
+  //   往前回溯才凑得满自己那 20 个交易日（见 compound20 的 R20-PERSTOCK-WIN）。
+  const probeDates = getRange20WindowDates(date, RANGE20_PROBE_DAYS);
   const rowsByDate = _rowsByDateOf(probeDates);
   const baseLegs = legs20FromRows(targets, probeDates, rowsByDate, { tIsToday: tIsToday, afterClose: afterClose });
-  // 🔴 [FIX 2026-10-19 · R20-CLOSE-LEG] **阶段① 不再发布**。
+  // 🔴 [FIX 2026-10-19 · R20-CLOSE-LEG] **阶段① 本身不发布**。
   //   原因：历史日的库内 `change_pct` 不可信（早盘写入的竞价涨幅 / 缺行，见 merge20Legs 函数头），
   //   所以 baseLegs 现在只剩「T 腿」一根 —— 拿它发出去会得到一个只有 1 天的假数值。
   //   §10「宁缺勿错」⇒ 这一列在 K 线到货前显示 `—`，绝不显示一个对不上的数。
   //   （用户反馈过的「显示 42.7%，实际 117.4%」就是旧版把库内值当结果发出去的后果。）
+  //   ✅ 真正「先出数」的活交给阶段⓪（云端结果表，那是 K 线算过的真值）与阶段② 的分批发布。
   if (_stage.get(date) === 2) {
-    // 已合并过 K 线 ⇒ 用缓存里的那份结果复原（切日期回来时 `_state` 已被别的日期占着）
+    // 本会话已合并过 K 线 ⇒ 用缓存里的那份结果复原（切日期回来时 `_state` 已被别的日期占着）
     if (_cache.has(date)) _publish(date, _cache.get(date));
   }
   if (opts && opts.skipKline) return _state.value.map;
@@ -618,10 +687,12 @@ export async function ensureRange20(date, rows, opts) {
   //   见 merge20Legs 函数头）。若沿用「库内腿数够 30 天就跳过」的判据，
   //   那些「库内行数齐、但值全是竞价涨幅」的票就永远不会被纠正 ⇒ 数值静默偏差近一倍。
   //   `_klineTried` 保证同一会话同一票只请求一次（§32/§36），所以增量成本只有首轮一遍。
+  // 🔴 [R20-CLOUD 2026-10-20] 云端结果表已命中的票**不再请求**（这才是「第二次打开秒开」的关键）。
   const need = targets;
   if (need.length === 0) return _state.value.map;
   const tried = _klineTried.get(date) || new Set();
-  const todo = need.filter(function(t) { return !tried.has(t.stock); });
+  // 🔴 [R20-CLOUD] 云端表已命中的票跳过 —— 这条过滤就是「第二次打开秒开」的实现。
+  const todo = need.filter(function(t) { return !tried.has(t.stock) && !cloudMap.has(t.stock); });
   if (todo.length === 0) return _state.value.map;
 
   const key = date + '|kline';
@@ -650,6 +721,32 @@ export async function ensureRange20(date, rows, opts) {
     _klineTried.set(date, tried);
 
     const onProgress = (opts && typeof opts.onProgress === 'function') ? opts.onProgress : null;
+    // 🔴 [R20-PROGRESS 2026-10-20] **分批发布**：每完成一批（并发 3）就用「已拿到的腿 + 云端表」
+    //   重算并发布 ⇒ 用户 3~5 秒就能看到头几只，而不是等 40 只全跑完（旧实现 30~90s 纯白屏）。
+    //   ⛔ 不要改成「全部跑完再发」：这就是用户反馈的「20日涨幅比十日涨幅慢很多」的直接原因之一。
+    const _publishFrom = function(accKline) {
+      try {
+        const acc = _mergeAccMaps(_klineAcc.get(date), accKline);
+        if (acc.size === 0) return;
+        const mg = merge20Legs(baseLegs, acc, probeDates, {
+          tDate: date,
+          tKeepAuctionLeg: (legMode === 'auc'),
+        });
+        const rd = _unionRealDates(date, mg, probeDates);
+        // 🔴🔴 [R20-PROGRESS-FIX 2026-10-20] 分批发布**只发本轮真拿到 K 线的票**（`acc` 的 key 集合）。
+        //   踩过的坑（E2E 抓到的）：`merge20Legs(baseLegs, acc, …)` 会把 `baseLegs`（阶段①库内）
+        //   一起并进来，而 baseLegs 现在**只有 T 腿**（历史日只认 K 线）⇒ K 线还没到的票在这里
+        //   只剩「T 日一根腿」⇒ `compound20` 拿这一根算出来 = **T 日当天的涨幅**，冒充 20 日涨幅。
+        //   实测：新华传媒发成 2.77%（= 它 10-19 当日收盘涨幅）、新华文轩 -9.99%、澳弘电子 10.00%
+        //   （= 涨停）。这正是用户投诉过的「显示 42.7%，实际 117.4%」同一类错误（§10 宁缺勿错）。
+        //   ⇒ 没腿的票这一列保持 `—`（title 已写明「正在用同花顺日线补算」），绝不发估值。
+        const fresh = compound20(mg, rd).filter(function(r) {
+          return acc.has(r.stock);
+        });
+        if (fresh.length === 0) return;
+        _publish(date, _mergeRowsWithCloud(fresh, cloudMap));
+      } catch (e) { /* 增量发布失败不影响最终发布 */ }
+    };
     let extra = new Map();
     try {
       extra = await fetchFuyaoDailyPctRange(
@@ -659,11 +756,15 @@ export async function ensureRange20(date, rows, opts) {
         //   否则本 toggle 永远只有 12/20 天、各票天数不齐 ⇒ 区间涨幅不可比（见 stock-range-pct.js）。
         // requestTimeoutMs：上游偶发「不返回也不断开」⇒ 批量 Promise.all 永久挂住、整批发布不出来；
         //   15s 超时后按失败重试，最多浪费一次尝试，不会让整块看板卡死。
-        // minCoverage：探针窗口里有非交易日（App 日历把工作日假期当交易日）⇒ 谁也凑不满 30 根，
+        // minCoverage：探针窗口里有非交易日（App 日历把工作日假期当交易日）⇒ 谁也凑不满 45 根，
         //   不设门槛会让每只票都跑满 3 次重试（实测 41 只 = 203 个请求）。凑够 20 根即完成。
         // concurrency 3：实测 3 的成功率明显高于 5（并发高时上游更容易返回截断序列并触发熔断，
         //   实测并发 5 一次只成功 5/41 只）。宁可多几秒，也要拿到真收盘腿。
-        { concurrency: 3, retryShortWindow: true, requestTimeoutMs: 15000, minCoverage: RANGE20_WINDOW_DAYS, onProgress: onProgress }
+        {
+          concurrency: 3, retryShortWindow: true, requestTimeoutMs: 15000,
+          minCoverage: RANGE20_WINDOW_DAYS, onProgress: onProgress,
+          onBatch: _publishFrom,      // §11：可选回调，不传则工厂行为逐字不变
+        }
       );
     } finally {
       // 没拿到腿的票 → 从 tried 移除，下次 ensureRange20（行数变化 / 切日期回来）可再试一次；
@@ -693,7 +794,8 @@ export async function ensureRange20(date, rows, opts) {
     //   🔴 [R20-PERSTOCK-WIN] 这里**不再截到 20**：每只票在 `compound20` 里自己取最近 20 个有腿日，
     //   停牌票需要往前多回溯（截到 20 会把它的窗口挤短 ⇒ 对不上炒股软件）。
     //   `probeDates.length` = 保留探针范围内的全部真实交易日（升序，供每票回溯）。
-    const realDates = pickRealWindowDates(merged, probeDates, probeDates.length);
+    //   [R20-PROGRESS] 走累积并集 ⇒ 与分批发布用的是同一份窗口（否则最终结果会与中途显示的数不一致）。
+    const realDates = _unionRealDates(date, merged, probeDates);
     // 常驻诊断（量小；本链路出问题时唯一可查的证据）：抽样一只票，看三个阶段各自的腿数。
     // 排查「数值偏小/天数不齐」时先看这里：base=阶段①库内腿、extra=K线、merged=覆盖后、real=全局窗口。
     let _dbgSample = '';
@@ -706,15 +808,29 @@ export async function ensureRange20(date, rows, opts) {
       }
     } catch (e) { /* 诊断失败不影响主流程 */ }
     _dbgLog('[RANGE20-PUB] ' + date + ' 补缺完成 extra=' + extra.size + ' merged=' + merged.size
-      + ' realDays=' + realDates.length + ' leg=' + legMode + _dbgSample);
+      + ' realDays=' + realDates.length + ' leg=' + legMode + ' cloud=' + cloudMap.size + _dbgSample);
     if (realDates.length < RANGE20_WINDOW_DAYS) {
       _dbgLog('[RANGE20] ' + date + ' 真实交易日只凑到 ' + realDates.length + '/' + RANGE20_WINDOW_DAYS
         + '（探针 ' + probeDates.length + ' 槽；云端 holidays 可能为空导致假期被当交易日）');
     }
-    _publish(date, compound20(merged, realDates));
+    // 🔴🔴 [R20-PROGRESS-FIX 2026-10-20] 最终发布同样**只发本轮真拿到 K 线的票**（与分批发布同一判据）。
+    //   原因：`merged` 里也含 `baseLegs`（只有 T 腿）—— 上游失败/超时的票在这里只剩一根腿，
+    //   直接发布等于把「T 日当天涨幅」冒充成「20 日涨幅」（§10 铁律：缺数据给 `—`，⛔ 不给错值）。
+    //   这类票由下方延迟重试补齐；补齐前这一列显示 `—`（title 已写明「正在补算」）。
+    const finalRows = compound20(merged, realDates).filter(function(r) {
+      return accAll && accAll.has(r.stock);
+    });
+    _publish(date, _mergeRowsWithCloud(finalRows, cloudMap));
     _stage.set(date, 2);            // 🔴 标记「该日已合并 K 线」⇒ 后续阶段① 不再覆盖（见 _stage 说明）
     _legMode.set(date, legMode);    // 🔴 记录本次口径 ⇒ 跨 15:00 时据此触发重算（见 _switchLegMode）
     _scheduleCloseSwitch(date, legMode);   // 页面一直开着 ⇒ 15:00 后自动换腿重算一遍
+    // 🔴 [R20-CLOUD] 把本轮【真正算出来】的票落库 ⇒ 下次打开/切日期/换设备都能 0 请求秒开。
+    //   只写 accAll 里有的票（= 本会话用 K 线算过的）：云端表已命中的票本来就在库里，重复写只是浪费。
+    //   upsert 内部已 try/catch，写失败不影响页面（下次打开重算一遍而已）。
+    try {
+      const _toSave = finalRows;
+      if (_toSave.length > 0) await upsertRange20Rows(date, _toSave, legMode);
+    } catch (e) { /* 落库失败静默：正确性不依赖它 */ }
     // 上游偶发（截断 / 熔断 / 超时）会让部分票这一轮拿不到腿 ⇒ 对它们这一列是 `—`（§10 不给错值）。
     // 安排【一次】延迟重试补齐：拿到的票已在 tried 里不会重复请求，_klineAcc 保证不丢已有腿。
     // ⛔ 只重试一次（_range20Retried 闸门），避免上游持续故障时无限打请求。
