@@ -81,6 +81,13 @@ import {
   getRange20Leaders,
   getRange20LeadersFingerprintToken
 } from '../logic/auction/range20-leaders.js';
+// ★ [DIVERGE 2026-10-20 用户口径] 市场总龙一【首次分歧】判定：
+//   buildLeaderDivergence = 纯函数判定（首板 / 首次分歧 / 分歧转一致，§15 唯一实现）；
+//   getRange20WindowDates / RANGE20_PROBE_DAYS = 与「20日涨幅」同一个窗口口径（§6 同一把尺子）。
+import { buildLeaderDivergence } from '../logic/auction/leader-divergence.js';
+import { getRange20WindowDates, RANGE20_PROBE_DAYS } from '../logic/auction/range20.js';
+//   K 线（同花顺，免费 0 额度）取总龙的每天收盘涨幅 + 开盘涨幅（竞价涨幅 = open/昨收-1）。
+import { fetchFuyaoDailyPctRange } from '../data/stock-range-pct.js';
 // ★ 买点侧专用龙位（= 同一把尺子 computeDragonRankMap，只把十日涨幅换成 9:26 口径那份）
 import { rankDragonsWithPctMap } from '../logic/decision/decision-rules.js';
 // ★★ [EBB-R8 2026-10-14 用户口径] 退潮判定【落库表】的读写入口（§5 唯一出处）。
@@ -88,6 +95,7 @@ import { rankDragonsWithPctMap } from '../logic/decision/decision-rules.js';
 //     没有竞价量等判断出来的，是缓存吧？你要完善这点」
 //   ⇒ 读 = 拿【上一交易日那一行】判「今天是不是首日」；写 = 把今天的判定存下来（只存今天，见下）。
 import { readEbbDays, upsertEbbDay } from '../data/ebb-days.js';
+import { _dbgLog } from '../data/debug-log.js';
 // §6：「今天」的唯一口径（与 suspend.js 的 ensureSuspendSet 同一个函数，⛔ 别自己 new Date 拼一遍）。
 //   停牌判定只对今天可信 ⇒ 落库也只对今天做（历史日的 suspend verdict 恒 false，写进去会污染次日判定）。
 import { _getLocalTodayStr } from '../logic/tagTitles/rules.js';
@@ -220,6 +228,110 @@ export function useTopicVolRatioBoard() {
    */
   const ebbHistory = ref([]);
   const ebbHistoryDate = ref('');
+  // ★ [DIVERGE 2026-10-20] 市场总龙一【首次分歧】判定（异步算出后经 data computed 重算生效）。
+  //   divergeVerdict = buildLeaderDivergence 的返回（ready/canJudge/todayFirstDivergence/事件流）；
+  //   divergeDate = 判定属于哪一天（⛔ 日期核对红线与两份 rangeMap 同款：不匹配 ⇒ 传 null）。
+  //   ⚠️ 判定输入 = 总龙一（20日涨幅第一）的 K 线腿（收盘涨幅）+ 开盘涨幅（竞价涨幅），
+  //      全部同花顺免费通道，0 猫抓额度（用户红线）。
+  const divergeVerdict = ref(null);
+  const divergeDate = ref('');
+  /** 单飞：date -> Promise（切日期/重复触发不并发跑两遍，§32） */
+  const _divergeInflight = new Map();
+  /** [DIVERGE-RETRY] 退避重算（K 线偶发慢/失败时 watch 不会再次触发 ⇒ 必须自带动钟，4 次封顶） */
+  const _divergeRetry = new Map();
+  const DIVERGE_RETRY_DELAYS = [5000, 15000, 40000, 80000];
+  function _scheduleDivergeRetry(d, reason) {
+    const st = _divergeRetry.get(d) || { n: 0, timer: 0 };
+    if (st.n >= DIVERGE_RETRY_DELAYS.length) return;
+    const delay = DIVERGE_RETRY_DELAYS[st.n];
+    if (st.timer) clearTimeout(st.timer);
+    st.timer = setTimeout(function() {
+      _divergeRetry.set(d, { n: st.n + 1, timer: 0 });
+      ensureLeaderDivergence(d);
+    }, delay);
+    _divergeRetry.set(d, st);
+    console.warn('[TVRB] 总龙分歧判定未产出（' + reason + '），' + (delay / 1000) + 's 后第 ' + (st.n + 1) + ' 次重试');
+  }
+  /**
+   * 确保某日的「总龙首次分歧」判定已就绪（幂等 / 单飞 / 结论缓存）。
+   * ⛔ 判不出（窗口无首板 / K 线缺）⇒ verdict.canJudge=false ⇒ plan 的 divergeActive 恒 false
+   *   （分歧买点静默不生效 —— 宁缺勿错，§10）。
+   * @param {string} d 展示日
+   * @returns {Promise<void>}
+   */
+  function ensureLeaderDivergence(d) {
+    if (!d) return Promise.resolve();
+    // [DIVERGE-DIAG] 入口留痕：确认调用链真的进来了（冷路径，每日一次，开销可忽略）
+    _dbgLog('[DIVERGE] 进入: d=' + d +
+      ' 已就绪短路=' + ((divergeDate.value === d && divergeVerdict.value && divergeVerdict.value.ready) ? 1 : 0) +
+      ' 在途=' + (_divergeInflight.has(d) ? 1 : 0));
+    if (divergeDate.value === d && divergeVerdict.value && divergeVerdict.value.ready) return Promise.resolve();
+    const fly = _divergeInflight.get(d);
+    if (fly) return fly;
+    const p = (async function() {
+      // ① 前五就绪（幂等 + 会话缓存 + 单飞；warm-retry 的重算也走这一份）
+      const leaders = await ensureRange20Leaders(d);
+      divergeVerdict.value = null;
+      divergeDate.value = d;
+      if (!leaders || leaders.length === 0) {
+        // 前五还没发布（候选池/精算在后台跑）⇒ 起退避重试（ leaders 发布后本 watch 不会再次触发）
+        _scheduleDivergeRetry(d, '20日前五未发布');
+        return;
+      }
+      const l0 = leaders[0];
+      if (!l0 || !l0.stock || !l0.code) {
+        // ⛔ 缺代码 ⇒ K 线没法请求（§10 不猜）。必须留痕 —— 这里曾是静默 return，
+        //   排障时「无任何日志」差点把定位带进死胡同（§10 失败可见）。
+        _dbgLog('[DIVERGE] ' + d + ' 总龙缺 stock/code ⇒ 判不出: ' + JSON.stringify(l0 || null));
+        return;
+      }
+      // ② 总龙一的窗口 K 线：收盘涨幅（涨停判定）+ 开盘涨幅（竞价涨幅，分歧判定）
+      const dates = getRange20WindowDates(d, RANGE20_PROBE_DAYS);
+      const openOut = new Map();
+      const pct = await fetchFuyaoDailyPctRange(
+        [{ stock: l0.stock, code: l0.code }],
+        dates,
+        { retryShortWindow: true, requestTimeoutMs: 15000, openOut: openOut }
+      );
+      if (!pct.get(l0.stock) || pct.get(l0.stock).size === 0) {
+        // K 线一根都没拿到（上游偶发失败）⇒ 重试（§10：拿不到 ≠ 没有分歧）
+        _scheduleDivergeRetry(d, '总龙K线未取到');
+        return;
+      }
+      // [DIVERGE-DIAG] K 线取回规模留痕（keep=收盘涨幅腿 / open=竞价涨幅腿）
+      _dbgLog('[DIVERGE] ' + d + ' K线取回: keep=' + pct.get(l0.stock).size +
+        ' open=' + ((openOut.get(l0.stock) && openOut.get(l0.stock).size) || 0));
+      // ③ 纯函数判定（首板 / 首次分歧 / 事件流）。竞价涨幅统一取 K 线 open/昨收：
+      //    A 股开盘价 = 9:25 集合竞价成交价，两者同一价格；展示日行情行的竞价涨幅留作后续增强。
+      const verdict = buildLeaderDivergence({
+        pctByYmd: pct.get(l0.stock) || new Map(),
+        openPctByYmd: openOut.get(l0.stock) || new Map(),
+        dates: dates,
+        code: l0.code,
+        name: l0.stock,
+        viewDate: d,
+        todayAucPct: null
+      });
+      divergeVerdict.value = verdict;
+      divergeDate.value = d;
+      if (_divergeRetry.has(d)) { clearTimeout(_divergeRetry.get(d).timer); _divergeRetry.delete(d); }
+      // [DIVERGE-DIAG] 判定结果留痕（排查「分歧块为什么不出现」的唯一证据链）
+      _dbgLog('[DIVERGE] ' + d + ' 总龙=' + l0.stock + '(' + l0.code + ') ready=' + verdict.ready +
+        ' canJudge=' + verdict.canJudge + ' firstBoard=' + verdict.firstBoardYmd +
+        ' firstDiv=' + verdict.firstDivergenceYmd + ' todayFirst=' + verdict.todayFirstDivergence +
+        ' todayAuc=' + verdict.todayAucPct + ' events=' + verdict.events.length);
+    })().catch(function(e) {
+      // §10：失败必须可见（控制台）+ 如实降级（分歧买点本次不生效），⛔ 不猜、不静默伪造
+      console.warn('[TVRB] 总龙分歧判定失败，分歧买点本次不生效:', e && e.message);
+      divergeVerdict.value = null;
+      divergeDate.value = d;
+      _scheduleDivergeRetry(d, '判定失败: ' + (e && e.message || e));
+    }).finally(function() {
+      if (_divergeInflight.get(d) === p) _divergeInflight.delete(d);
+    });
+    _divergeInflight.set(d, p);
+    return p;
+  }
 
   /**
    * ★★ [EBB-R8 2026-10-14] 【展示日当天】的十日涨幅（Map&lt;股票名,{pct}&gt;）。
@@ -299,6 +411,9 @@ export function useTopicVolRatioBoard() {
       ensureRange20Leaders(d).catch(function(e) {
         console.warn('[TVRB] 20日涨幅前五计算失败，退潮判定（20日口径）本次不生效:', e && e.message);
       });
+      // ★ [DIVERGE 2026-10-20] 总龙首次分歧判定预热（内部自带 ensureRange20Leaders 单飞，
+      //   不会重复请求；K 线 = 同花顺免费通道 0 额度）。fire-and-forget，失败如实降级。
+      ensureLeaderDivergence(d);
     }
     if (!pd) {
       prevRangeMap.value = null; prevRangeDate.value = '';
@@ -390,6 +505,8 @@ export function useTopicVolRatioBoard() {
     void getRange20LeadersFingerprintToken();
     // ★ [EBB-R20] 近 12 个交易日的退潮判定历史（异步读回）⇒「首次 / 二次确认」阶段判定才生效
     void ebbHistory.value;
+    // ★ [DIVERGE 2026-10-20] 总龙首次分歧判定（异步算出）⇒ 分歧买点才生效
+    void divergeVerdict.value;
     // 分笔那份是响应式单例 ⇒ 显式声明依赖，数据到了自动重算（§17 不阻塞渲染）
     void tickMinuteMap.value;
     void tickMinuteDate.value;
@@ -443,6 +560,37 @@ export function useTopicVolRatioBoard() {
       //   ⚠️ 日期核对（与上面两份 rangeMap 同一条红线）：异步读回的 ref 在切日期那一帧还挂着旧日期
       //      的数据 ⇒ 只认【日期对得上】的那份，⛔ 绝不拿 A 日的数据当 B 日选股。
       const buyMap = (buyRangeMap.value && buyRangeDate.value === d) ? buyRangeMap.value : null;
+      // ★ [DIVERGE 2026-10-20] 组装「总龙首次分歧」的规则输入：
+      //   判定（异步 K 线算出）+ 前五事实（rec.ebbCtx.top5 —— 题材/龙位/停牌已由采集层富化，§6）。
+      //   ⛔ 日期核对红线（与两份 rangeMap 同款）：判定不是这一天的 ⇒ 传 null。
+      //   ⛔ todayFirst=false（不是首次分歧日）⇒ 传 null（规则层零行为，§11）。
+      const _ldVerdict = (divergeDate.value === d) ? divergeVerdict.value : null;
+      const _ldTop5 = (rec.ebbCtx && Array.isArray(rec.ebbCtx.top5)) ? rec.ebbCtx.top5 : [];
+      // [DIVERGE-DIAG] 组装证据链：判定到没到 / 前五事实有没有
+      if (_ldVerdict || _ldTop5.length > 0) {
+        _dbgLog('[DIVERGE-OPT] ' + d + ' verdictDate=' + divergeDate.value +
+          ' canJudge=' + (_ldVerdict ? _ldVerdict.canJudge : '—') +
+          ' todayFirst=' + (_ldVerdict ? _ldVerdict.todayFirstDivergence : '—') +
+          ' top5=' + _ldTop5.length);
+      }
+      let leaderDivergeOpt = null;
+      if (_ldVerdict && _ldVerdict.canJudge && _ldVerdict.todayFirstDivergence && _ldTop5.length > 0) {
+        const _head = _ldTop5[0];
+        const _l0 = (getRange20Leaders(d) || [])[0] || null;
+        leaderDivergeOpt = {
+          todayFirst: true,
+          firstBoardYmd: _ldVerdict.firstBoardYmd || '',
+          firstDivergenceYmd: _ldVerdict.firstDivergenceYmd || '',
+          aucPctText: (_ldVerdict.todayAucPct !== null && _ldVerdict.todayAucPct !== undefined)
+            ? Number(_ldVerdict.todayAucPct).toFixed(2) + '%' : '—',
+          leaderName: (_head && _head.name) || (_l0 && _l0.stock) || '',
+          leaderCode: (_head && _head.code) || (_l0 && _l0.code) || '',
+          leaderPct: _l0 ? _l0.pct : null,
+          leaderPctText: (_l0 && isFinite(Number(_l0.pct))) ? Number(_l0.pct).toFixed(2) + '%' : '—',
+          leaderTopic: (_head && _head.topic) || '',
+          top5: _ldTop5
+        };
+      }
       const plan = buildTopicVolRatioPlan(rec.topics, rec.dragonMap, {
         date: d,
         ctx: {
@@ -470,7 +618,9 @@ export function useTopicVolRatioBoard() {
         //   （collectDecisionTopics 出口已用库里当日/昨日竞价行算好，见 decision-collect
         //    #nonFirstDaySuspendNames）。规则层把它与「竞价一字」走同一条【跳过并顺延下一龙位】。
         //   ⛔ 缺省 ⇒ 规则层退回旧行为（停牌票照旧可选，§11）；停牌【首日】不在名单里（仍可入选）。
-        buySkipNames: rec.buySkipSuspend || null
+        buySkipNames: rec.buySkipSuspend || null,
+        // ★ [DIVERGE 2026-10-20] 总龙首次分歧判定（null = 判不出 / 不是首次分歧日 ⇒ 规则层零行为）
+        leaderDiverge: leaderDivergeOpt
       });
 
       // §10 ★★ 失败 / 缺数据必须可见：这一天【确实读过】9:26 口径、但没拿到（失败或表里没有）
@@ -499,7 +649,9 @@ export function useTopicVolRatioBoard() {
       //    只是本看板在建 pick 时已经带上 code，省掉一次反查）。
       // ⚠️ 退潮首日那只【唯一买点】(plan.ebbBuy) 【不在】plan.blocks 里 —— 它要渲染在灰化容器【之外】，
       //    所以这里必须单独带上它走一遍；否则它拿不到分笔行（§6：装饰只有这一处，⛔ 别在组件里再铺一次）。
-      const buyBlockLists = [plan.blocks, plan.ebbBuy ? [plan.ebbBuy] : []];
+      const buyBlockLists = [plan.blocks,
+        plan.ebbBuy ? [plan.ebbBuy] : [],
+        plan.divergeBuy ? [plan.divergeBuy] : []];
       buyBlockLists.forEach(function(arr) {
         arr.forEach(function(b) {
           (b.picks || []).forEach(function(p) {
@@ -582,6 +734,8 @@ export function useTopicVolRatioBoard() {
    *  （{ headline, detail }，文案全在 Logic 层 §21）；其它场景 null（v-if 不渲染）。
    *  ⛔ 不是退潮日 / 首次退潮 / 二次走兜底 ⇒ null，绝不退化成别的说明（§10）。 */
   const ebbNodeNote = computed(() => (data.value.plan && data.value.plan.ebbNodeNote) || null);
+  /** [DIVERGE 2026-10-20] 总龙首次分歧日的分歧买点块（总龙一 + 跟随高标 ≤2 只）；其它场景 null。 */
+  const divergeBuy = computed(() => (data.value.plan && data.value.plan.divergeBuy) || null);
   /** 卖点股票数（头部摘要用） */
   const sellCount = computed(function() {
     return sellGroups.value.reduce(function(n, g) { return n + ((g.items || []).length); }, 0);
@@ -787,6 +941,7 @@ export function useTopicVolRatioBoard() {
     ebb,
     ebbBuy,
     ebbNodeNote,
+    divergeBuy,
     summaryText,
     toggleExpand,
     toggleCompact,

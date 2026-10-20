@@ -226,6 +226,10 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
     // 熔断阈值：连续这么多只都取不到完整窗口 → 判定上游整体不可用，直接放弃剩余。
     // 否则 24 只残缺票会各自跑满 3 次重试（= 72 次请求），页面卡死数分钟。
     const CIRCUIT_LIMIT = 6;
+    // [DIVERGE 2026-10-20] 可选出口（缺省 undefined ⇒ 既有调用方行为逐字不变，§11）：
+    //   调用方传一个 Map 进来 ⇒ 每只票的「每天开盘涨幅」（竞价涨幅，open/昨收-1）也顺手填进去。
+    //   与 keep 同一次请求、同一根 K 线 ⇒ 零额外额度；取不到 open_price 的日子填 null（§10）。
+    const openOut = (opts && opts.openOut instanceof Map) ? opts.openOut : null;
 
     /**
      * 取一次 K 线并换算窗口内日涨幅。
@@ -256,15 +260,27 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
             if (!isFinite(ms) || !isFinite(close) || close <= 0) return;
             // date_ms 是【北京时间午夜】→ 加 8h 后取 UTC 日期才是正确的交易日
             const ymd = new Date(ms + 8 * 3600 * 1000).toISOString().slice(0, 10).replace(/-/g, '');
-            series.push({ ymd: ymd, close: close });
+            // [DIVERGE 2026-10-20] 同一根 K 线里的 open_price 顺带保留（不额外花任何请求）：
+            //   「总龙首次分歧」判定需要历史每天的【竞价涨幅】= 开盘价 / 昨收 - 1
+            //   （A 股开盘价 = 9:25 集合竞价成交价，两者同一价格）。缺 open_price ⇒ null（§10 不猜）。
+            const open = (r.open_price != null && isFinite(Number(r.open_price)) && Number(r.open_price) > 0)
+                ? Number(r.open_price) : null;
+            series.push({ ymd: ymd, close: close, open: open });
         });
         series.sort(function(a, b) { return a.ymd < b.ymd ? -1 : (a.ymd > b.ymd ? 1 : 0); });
         const keep = new Map();
+        // [DIVERGE 2026-10-20] 可选出口：调用方传了 opts.openOut（Map）⇒ 同一趟循环里把
+        //   每天开盘涨幅也填进去（股票名 -> (ymd -> 开盘涨幅%)）。缺省不传 ⇒ 本函数行为逐字不变（§11）。
+        const openKeep = openOut ? new Map() : null;
         for (let k = 1; k < series.length; k++) {
             const prev = series[k - 1];
             const cur = series[k];
             if (!wantSet.has(cur.ymd)) continue;
             keep.set(cur.ymd, (cur.close / prev.close - 1) * 100);
+            if (openKeep) {
+                openKeep.set(cur.ymd, (cur.open != null && prev.close > 0)
+                    ? (cur.open / prev.close - 1) * 100 : null);
+            }
         }
         // 首根 K 线（用于判定「该票在窗口期才开始有数据」= 次新股 / 长期停牌复牌）
         // [RANGE20 2026-10-19] 只在满窗模式下打一条诊断（量小、且这条链路出问题时唯一可查的证据）：
@@ -276,7 +292,7 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
                 + ' span=' + (series.length ? (series[0].ymd + '~' + series[series.length - 1].ymd) : '-')
                 + ' miss=' + _miss.slice(0, 8).join(','));
         }
-        return { keep: keep, firstYmd: series.length > 0 ? series[0].ymd : '' };
+        return { keep: keep, firstYmd: series.length > 0 ? series[0].ymd : '', openKeep: openKeep };
     };
 
     // 熔断计数器（跨批次累计）
@@ -306,8 +322,9 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
                 for (let attempt = 0; attempt < 3; attempt++) {
                     const got = await fetchOnce(it.code);
                     const keep = got.keep;
-                    if (!best || keep.size > best.size) best = keep;
-                    if (best.size >= needN) break; // 已覆盖整个窗口（或够用），无需再试
+                    // best 从「Map」升级为「{keep, openKeep}」记录（[DIVERGE] 开盘涨幅随最佳一趟一起保留）
+                    if (!best || keep.size > best.keep.size) best = got;
+                    if (best.keep.size >= needN) break; // 已覆盖整个窗口（或够用），无需再试
                     // [PERF 2026-09-18] 首根 K 线落在窗口首日（或之后）⇒ 窗口前它没有交易，
                     // 再重试也只会返回同样短的序列 → 立刻放弃（省下 2 次请求 + 0.9s 退避）。
                     // ⚠️ 与「上游并发截断」区分：截断时请求范围前移了 20 个自然日，
@@ -319,16 +336,19 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
                     //     默认 false ⇒ 既有调用方（十日涨幅 / 一字 / 涨跌停池）行为逐字不变（§11）。
                     if (!retryShortWindow && got.firstYmd && got.firstYmd >= sorted[0]) { listingShort = true; break; }
                     // [PERF 2026-09-10] 0 根 = 代码错 / 长期停牌，重试不会有不同结果 → 立刻放弃。
-                    if (best.size === 0) break;
+                    if (best.keep.size === 0) break;
                     // 退避：给上游喘息时间，避免并发重试再次触发截断（原来完全无间隔）。
                     if (attempt < 2) await new Promise(function(r) { setTimeout(r, 300 * (attempt + 1)); });
                 }
             } catch (e) {
                 _dbgLog('[DRAGON-FUYAO] ' + name + '(' + it.code + ') 历史K线失败: ' + (e && e.message || e));
             }
-            if (best && best.size > 0) out.set(name, best);
+            if (best && best.keep.size > 0) {
+                out.set(name, best.keep);
+                if (openOut && best.openKeep) openOut.set(name, best.openKeep);
+            }
 
-            if (!best || best.size < needN) {
+            if (!best || best.keep.size < needN) {
                 // 次新/长期停牌本来就不满窗 → 不计入熔断计数（否则会误判「上游整体不可用」而掐掉剩余票）
                 if (listingShort) {
                     consecutiveShort = 0;

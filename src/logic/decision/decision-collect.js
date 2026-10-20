@@ -783,11 +783,28 @@ export function nonFirstDaySuspendNames(rows, date, prevDate) {
   return out;
 }
 
+/**
+ * [DIVERGE 2026-10-20] 题材串「是否同题材」的唯一判据（原 _ebbCtxOf 内私有闭包提升，§6）。
+ * 退路题材可能来自上一交易日行情行的 topics 串（如「AI应用,数据中心」）⇒ 按分段匹配。
+ * 消费方：ebb 替补选股（本文件）+ 总龙分歧跟随选股（leader-divergence.js）。
+ * @param {string} a 题材串 A（可含分段分隔符）
+ * @param {string} b 题材串 B
+ * @returns {boolean}
+ */
+export function sameTopicText(a, b) {
+  const x = String(a || '').trim();
+  const y = String(b || '').trim();
+  if (!x || !y) return false;
+  if (x === y) return true;
+  return x.split(/[,，/、+;；|]/).some(function(seg) { return seg.trim() === y; });
+}
+
 function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDate, range20Top) {
   const none = {
     ready: false, leader: null, second: null,
     leaderSuspended: false, leaderShare: null, siblingDragons: [], secondInfo: null,
-    prevLeader: null, buyPicks: [], buyTrail: []
+    prevLeader: null, buyPicks: [], buyTrail: [],
+    top5: []   // [DIVERGE 2026-10-20] 缺省空数组（前五没就绪 ⇒ 分歧规则同样不生效）
   };
   // ★★ [EBB-R20 2026-10-20 用户口径] 总龙改用【20日涨幅前五】—— 舍弃「昨日十日涨幅第一」的旧选法
   //   （用户原话「把原来按照10日涨幅改成20日涨幅选股，因为20日比较稳定而且准确，
@@ -973,14 +990,7 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
   //   · buyTrail = 五只每一只的【去留与理由】（规则层把它写进行内说明，判定可追溯，§10）。
   const buyPicks = [];
   const buyTrail = [];
-  const _sameTopic = function(a, b) {
-    const x = String(a || '').trim();
-    const y = String(b || '').trim();
-    if (!x || !y) return false;
-    if (x === y) return true;
-    // 退路题材可能来自上一交易日行情行的 topics 串（如「AI应用,数据中心」）⇒ 按分段匹配
-    return x.split(/[,，/、+;；|]/).some(function(seg) { return seg.trim() === y; });
-  };
+  const _sameTopic = sameTopicText;   // [DIVERGE 2026-10-20] 判据提升为模块级共享（分歧跟随选股同用，§6）
   for (let i = 0; i < top.length; i++) {
     const c = top[i];
     let reason;
@@ -1009,6 +1019,10 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
     ready: true,
     leader: leader,
     second: second,
+    // ★ [DIVERGE 2026-10-20] 前五事实化结果原样透出（name/pct/days/code/topic/rank/isYizi/suspended/rank20）：
+    //   「市场总龙一首次分歧」买点规则要用它挑【不同题材的主板高标】（20日涨幅前五）——
+    //   题材解析（今日行 → 昨日 topics 退路）只有这一份实现（§6），⛔ 规则层绝不自己再解析一遍题材。
+    top5: top,
     // 停牌走 suspend.js 的唯一实现（§6），⛔ 不在这里另判一遍。
     //   [EBB-R8b] 走 _suspendOf：今日 = 上游快照；历史日回退库内该日竞价行（见 _suspendOf 的 JSDoc）。
     leaderSuspended: _suspendedOn(date, leader.name),

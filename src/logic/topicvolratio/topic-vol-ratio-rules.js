@@ -81,6 +81,8 @@ import { readRangePct } from '../auction/range-pct-sort.js';
 // ★ [EBB-R20 2026-10-20 用户口径] 20日涨幅总龙一~五的展示名（总龙N）——
 //   与「20日涨幅」toggle 的专属显示层用【同一份实现】（§6：替补选股的「总龙N」标签不许另写一份）。
 import { totalDragonLabel } from '../auction/range20-top5-label.js';
+// ★ [DIVERGE 2026-10-20] 总龙首次分歧判定 + 跟随高标选股（§15 独立业务模块，纯函数）
+import { pickDivergeFollowers } from '../auction/leader-divergence.js';
 
 // ══ 档位常量（§6 唯一实现：本看板的「取几只」只由这里决定）════════════════════════════════
 // 用户口径：< 4 只不入选；4 ~ 8 只入选 1 只；> 8 只入选 2 只（早盘竞价股票少，只有这三档）。
@@ -237,6 +239,36 @@ export const CASH_NO_BUY_TAG = '分歧日不买';
  *   新造一个同名值 = 同一条 CSS 规则写两处（§6 禁止的第二份真相）。
  */
 export const CASH_NO_BUY_TONE = EBB_NO_BUY_TONE;
+
+/**
+ * ══ 【总龙首次分歧 · 买点】标签组（第十九轮补丁⑧ · 2026-10-20 用户口径）══════════════════
+ *
+ * 用户原话：「市场总龙一，第一次出现分歧的时候，是买点。像新华传媒10月19日出现分歧，一般开盘
+ *   它会下杀，然后反弹，所以标签应该是下杀买。也就是题材量比买点侧只有市场总龙一，还有其它
+ *   不同题材的两只高标股票（20日涨幅前五的），同题材的不要……最多三只。」
+ *
+ * 三个概念（★ 全部定义在 leader-divergence.js 的文件头注释里，这里是展示口径）：
+ *   · 【首板】= 20 日窗口内第一个收盘涨停日 —— 分歧计数从首板日起算，之前的小阴小阳一概不算；
+ *   · 【首次分歧】= 首板后第一个【竞价涨幅 < 0】的日子（新华传媒 11 连板后 10-19 低开 -1.06%）；
+ *   · 【分歧转一致】= 分歧日后出现的涨停日（九阳股份 10-16）；转一致后再低开 = 二次分歧，依次类推。
+ *
+ * 三枚标签：
+ *   · DIVERGE_DIP_TAG（下杀买）= 总龙一自己在分歧日的买点（开盘下杀然后反弹，别追竞价）。
+ *     ⛔ 与 decision-rules 的「下杀买（竞价异常）」是【两条不同的规则、两个不同的文案】——
+ *     那条是中军三项指标正面异常的下杀买；这条是总龙首次分歧日的下杀买。文案按用户本轮原话取三字。
+ *   · DIVERGE_FOLLOW_TAG（高标跟随买）= 与总龙不同题材的主板高标（20日涨幅前五，≤2 只）。
+ *   · DIVERGE_NO_BUY_TAG（总龙分歧不买）= 分歧日其余入选票（照常列出、整段灰化，用户口径
+ *     「买点侧只有总龙一 + 高标」⇒ 其余票今天不开新仓）。
+ */
+export const DIVERGE_DIP_TAG = '下杀买';
+export const DIVERGE_FOLLOW_TAG = '高标跟随买';
+export const DIVERGE_NO_BUY_TAG = '总龙分歧不买';
+/** 配色档：三枚全部复用既有档（§6 不新造 CSS）——「买」字辈用琥珀金（与替补同语义：今天真要买），
+ *  「不买」用深墨亮字（灰化后唯一读得出的档）。 */
+export const DIVERGE_BUY_TONE = EBB_SECOND_BUY_TONE;
+export const DIVERGE_NO_BUY_TONE = EBB_NO_BUY_TONE;
+/** 本行引用的规则编号（= 规则手册第二十五条「总龙首次分歧 · 买点」） */
+export const DIVERGE_RULE_NO = '二十五';
 
 /**
  * 【退潮日】判据（纯函数，可单测）。
@@ -1001,6 +1033,197 @@ function _applyCashAlertBuyRules(blocks, cashAlert) {
 }
 
 /**
+ * ══ [DIVERGE 2026-10-20 用户口径] 总龙首次分歧日 · 买点侧改写（覆盖式后处理）══════════════
+ *
+ * 用户原话：「题材量比买点侧只有市场总龙一，还有其它不同题材的两只高标股票（20日涨幅前五的），
+ *   同题材的不要……最多三只。」⇒ 分歧日的【其余入选票】今天不开新仓：动作标签一律换成
+ *   【总龙分歧不买】（照常列出 + 整段灰化 —— 视觉走 cashAlert.show 那一条既有通道）。
+ *
+ * ⛔ 与 _applyEbbBuyRules / _applyCashAlertBuyRules 同一范式：先按原口径算完，再覆盖那三处
+ *   （buyActionTag / holdTag / position），⛔ 绝不改 finishBuyBlock 内部（决策看板共用，§6）。
+ * ⛔ 客观数据一行不动；卖点侧一行不动（用户本轮未提卖点）。
+ *
+ * @param {Array} blocks buildTopicVolRatioPlan 的入选题材块数组
+ * @param {object} ld leaderDiverge（todayFirst=true 才会被调用方传入）
+ */
+function _applyDivergeNoBuyRules(blocks, ld) {
+  if (!ld) return;
+  const lead = '【总龙首次分歧】市场总龙一【' + (ld.leaderName || '—') + '】' +
+    (ld.firstBoardYmd ? ('自首板 ' + ld.firstBoardYmd + ' 以来') : '') +
+    '首次竞价低开（' + (ld.aucPctText || '—') + '）⇒ 分歧日：';
+  (blocks || []).forEach(function(b) {
+    (b.picks || []).forEach(function(p) {
+      if (!p || !p.name) return;
+      p.position = '';
+      p.holdTag = '';
+      p.buyActionTag = DIVERGE_NO_BUY_TAG;
+      p.buyActionTone = DIVERGE_NO_BUY_TONE;
+      p.actionNote = lead +
+        '分歧日的买点侧【只有总龙一（下杀买）+ 不同题材的主板高标（≤2 只）】，本股今天【不开新仓】——' +
+        '原本的【' + HOLD_TAG + '】/ 竞价买 / 尾盘买 / 先卖后买 等买点信号一律作废。' +
+        '⚠️ 下方股票仍按原规则【照常列出】，供你参考。';
+    });
+  });
+}
+
+/**
+ * ══ [DIVERGE 2026-10-20 用户口径] 总龙首次分歧日 · 买点块（总龙一 + 跟随高标 ≤2 只）════════
+ *
+ * 用户原话：「市场总龙一，第一次出现分歧的时候，是买点……一般开盘它会下杀，然后反弹，
+ *   所以标签应该是下杀买。也就是题材量比买点侧只有市场总龙一，还有其它不同题材的两只高标股票
+ *   （20日涨幅前五的），同题材的不要……最多三只。」
+ *
+ * 结构与 _buildEbbPicksBlock 同款（§6 两步走）：
+ *   ① 真实成员行（今日题材成员）反查客观数据，凑不齐的按缺数据渲染（§10）；
+ *   ② finishBuyBlock 按决策看板同一份实现算齐客观数据与原始买点信号，
+ *      然后【覆盖式】把动作标签换成 总龙一【下杀买】/ 高标【高标跟随买】，原文留进行内说明。
+ *
+ * @param {object} ld 组合式下发的 leaderDiverge（todayFirst=true；含 top5 / firstBoardYmd 等）
+ * @param {Array} list 今日题材块（rankDecisionTopics 的返回，成员行 = 客观数据来源）
+ * @param {object} fOpts finishBuyBlock 的选项（与常规块共用同一份，§6）
+ * @returns {object|null} null = 不渲染（调用方保证 todayFirst 才调）
+ */
+function _buildDivergeBuyBlock(ld, list, fOpts) {
+  if (!ld || !ld.todayFirst || !ld.leaderName) return null;
+  const sel = pickDivergeFollowers(ld.top5 || [], ld.leaderName, ld.leaderTopic || '');
+  const buyPicks = [{ name: ld.leaderName, label: '总龙一', topic: ld.leaderTopic || '',
+    code: ld.leaderCode || '', pct: ld.leaderPct, pctText: ld.leaderPctText || '',
+    rank20: 1, isDip: true }].concat(sel.followers.map(function(c) {
+      return { name: c.name, label: '总龙' + (c.rank20 || '—'), topic: c.topic || '',
+        code: c.code || '', pct: c.pct, pctText: (isFinite(Number(c.pct)) ? Number(c.pct).toFixed(2) + '%' : ''),
+        rank20: c.rank20, isDip: false };
+    }));
+
+  // 真实成员行：先按【它所属题材块】找，找不到再全题材按名字兜一次（与替补块同一份查找，§6 同法）
+  const _memberOf = function(name) {
+    let member = null;
+    (list || []).forEach(function(b) {
+      if (member) return;
+      (b.members || []).forEach(function(m) {
+        if (!member && m && String(m.name || '').trim() === name) member = m;
+      });
+    });
+    return member;
+  };
+
+  const members = [];
+  const picks = buyPicks.map(function(p, idx) {
+    const member = _memberOf(p.name);
+    if (member && !members.some(function(m) { return m && m.name === p.name; })) members.push(member);
+    return {
+      seq: idx + 1,
+      name: p.name,
+      dragonLabel: p.label,
+      dragonRank: null,
+      pct: p.pct,
+      code: p.code || String((member && member.code) || '').trim(),
+      pctText: p.pctText,
+      aucShare: member ? _num(member.aucShare) : null,
+      position: ''
+    };
+  });
+
+  const namesText = buyPicks.map(function(p) {
+    return '【' + (p.label || '') + p.name + '】（' + (p.topic || '—') + '，20日涨幅 ' +
+      (p.pctText || '—') + '）';
+  }).join('、');
+  const trailText = sel.trail.map(function(t) {
+    return t.name + '（' + t.reason + '）';
+  }).join('；');
+
+  const block = {
+    block: {
+      topic: '总龙首次分歧 · 买点',
+      rank: null,
+      count: null,
+      yiziCount: null,
+      members: members
+    },
+    rankWord: '',
+    pickRank: null,
+    reason: '【总龙首次分歧】市场总龙一【' + ld.leaderName + '】' +
+      (ld.firstBoardYmd ? '自首板 ' + ld.firstBoardYmd + ' 以来' : '') +
+      '首次竞价低开（' + (ld.aucPctText || '—') + '）⇒ 分歧日买点 = 总龙一（下杀买）+ 不同题材主板高标 ≤2 只：' +
+      namesText,
+    mode: 'diverge',
+    ruleNo: DIVERGE_RULE_NO,
+    isCandidate: false,
+    candidateTag: '',
+    qualified: true,
+    notQualifiedText: '',
+    picks: picks,
+    notes: [
+      '⚠️ 本行【不是】题材选股的结果，而是【总龙首次分歧】的买点：总龙一连续上涨后首次竞价低开，' +
+        '一般开盘下杀然后反弹 ⇒【下杀买】（别在竞价追）；同时它只会带动【不同题材】的主板高标' +
+        '（20日涨幅前五里选，同题材的今天跌得厉害），最多两只。',
+      '【高标怎么选】= 从【20日涨幅】总龙二~总龙五里：先排非主板（创业板/科创板/北交所），' +
+        '再排与总龙一同题材，剩下的取排名最靠前的前两只 —— 本日 = ' + namesText + '。',
+      (trailText ? '五只去留（判定可追溯）：' + trailText + '。' : ''),
+      '⚠️ 涨幅口径 = 【当日 20日涨幅】（与「20日涨幅」toggle 的总龙一~五同一列）。' +
+        '题材退潮日（如有）优先走退潮规则，本规则不叠加。',
+      '★ 术语对照：首板 = 20 日内第一个涨停日（分歧计数从它起算）；首次分歧 = 首板后首次竞价涨幅 < 0；' +
+        '分歧转一致 = 分歧日后再度涨停（本轮仅记录，暂不参与买点）。'
+    ].filter(function(s) { return !!s; }),
+
+    topic: '总龙首次分歧 · 买点',
+    rank: null,
+    count: null,
+    yiziCount: null,
+    avgVolRatio: null,
+    avgVolRatioText: '',
+    tier: 'diverge',
+    pickCount: 0,
+    rangeText: '',
+    skippedNames: [],
+    isDiverge: true
+  };
+
+  // ① 客观数据 + 原始买点信号算齐（决策看板同一份实现）
+  finishBuyBlock(block, fOpts);
+  // ② 覆盖式：动作标签换成分歧专属（下杀买 / 高标跟随买），原文留行内说明
+  (block.picks || []).forEach(function(p) {
+    const me = buyPicks.filter(function(x) { return x.name === p.name; })[0] || null;
+    const rawTag = p.buyActionTag || '';
+    const rawNote = p.actionNote || '';
+    p.buyActionTag = (me && me.isDip) ? DIVERGE_DIP_TAG : DIVERGE_FOLLOW_TAG;
+    p.buyActionTone = DIVERGE_BUY_TONE;
+    p.holdTag = '';
+    p.position = '';
+    p.actionNote = (me && me.isDip)
+      ? ('【总龙首次分歧 · 下杀买】市场总龙一【' + p.name + '】自首板 ' + (ld.firstBoardYmd || '—') +
+        ' 以来首次竞价低开（' + (ld.aucPctText || '—') + '）—— 一般开盘下杀然后反弹，等下杀再买、别在竞价追。' +
+        (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : ''))
+      : ('【总龙首次分歧 · 高标跟随买】它是【' + ((me && me.label) || '') + p.name + '】= 20日涨幅全市场第 ' +
+        ((me && me.rank20) || '—') + '（' + ((me && me.pctText) || '—') + '，' + ((me && me.topic) || '—') +
+        '），与总龙一不同题材 ⇒ 分歧日跟着总龙一走。' +
+        (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : ''));
+  });
+  return block;
+}
+
+/**
+ * [DIVERGE] 分歧日的大字标语（接管 cashAlert 的顶栏 —— 与退潮接管同一形状，§6 同一消费通道）。
+ * @param {object} ld leaderDiverge
+ * @param {number} n 分歧买点只数（总龙一 + 跟随高标）
+ */
+function _buildDivergeCashAlert(ld, n) {
+  return {
+    show: true,
+    topic: ld.leaderTopic || '',
+    rank: null,
+    avgVolRatio: null,
+    avgVolRatioText: '—',
+    threshold: TVRB_CASH_ALERT_AVG_VR,
+    headline: '⚠️ 市场总龙一【' + ld.leaderName + '】首次分歧 · 分歧买点只有这 ' + n + ' 只（下杀买）',
+    detail: '市场总龙一【' + ld.leaderName + '】' + (ld.leaderTopic ? '（' + ld.leaderTopic + '）' : '') +
+      '自首板 ' + (ld.firstBoardYmd || '—') + ' 以来首次竞价低开（' + (ld.aucPctText || '—') +
+      '）⇒ 首次分歧。分歧日买点侧只有：总龙一（下杀买）+ 不同题材的主板高标（20日涨幅前五，≤2 只）。' +
+      '其余入选票照常列出但今天不开新仓（总龙分歧不买）；卖点侧不变。' +
+      '⚠️ 若当天同时命中【题材退潮】，退潮规则优先，本规则让位。'
+  };
+}
+
+/**
  * 【题材股票数量 → 本看板档位】（§6 唯一实现）。
  *
  * 用户口径（2026-10-11）：
@@ -1435,6 +1658,9 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     //   纯文案（判据与 ebbSecondRegular 同一把尺子，§6），只在「二次确认 ∧ blocks 非空」时非 null
     //   （首次退潮 / 二次走兜底 ⇒ null —— 那两种场景卖点横幅 + 灰化已经把状态说满了，不再叠一条）。
     ebbNodeNote: null,
+    // ★ [DIVERGE 2026-10-20] 市场总龙一【首次分歧】日的分歧买点块（总龙一 + 跟随高标 ≤2 只）。
+    //   只在「总龙首次分歧 ∧ 非退潮日」时非 null（其余场景 null ⇒ 视图 v-if 不渲染）。
+    divergeBuy: null,
     // ★ [EBB-R8 2026-10-14] 【落库行】= 今天这只总龙到底算不算处在坏状态（不带首日闸门）。
     //   组合式据此 upsert 到 tvrb_ebb_days（⛔ 写库放 watch，computed 必须无副作用 §4）；
     //   次日读回那一行判「是不是首日」。§10：事实未就绪 ⇒ null（⛔ 绝不落一行猜的判定）。
@@ -1509,6 +1735,15 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   const ebbSecondRegular = !!(ebbSecondTopic && out.blocks.length > 0);
   out.cashAlert = buildCashAlert(out.blocks[0], (out.ebb && !ebbSecondRegular) ? out.ebb : null);
 
+  // ★ [DIVERGE 2026-10-20 用户口径] 市场总龙一【首次分歧】日：
+  //   「市场总龙一，第一次出现分歧的时候，是买点……标签应该是下杀买。题材量比买点侧只有市场总龙一，
+  //    还有其它不同题材的两只高标股票（20日涨幅前五的），同题材的不要……最多三只。」
+  //   ld 由组合式下发（K 线 bars + 行情竞价涨幅算出的判定，§10 判不出 ⇒ null）。
+  //   ⛔ 优先级：【退潮 > 总龙首次分歧 > 空仓提醒】—— 退潮日（题材预期差）不谈分歧买点；
+  //     分歧日若同时量比低，分歧接管（本日买点侧就是那 ≤3 只）。
+  const ld = o.leaderDiverge || null;
+  const divergeActive = !!(ld && ld.todayFirst && !out.ebb);
+
   // ★ 买点标签收口 —— decision-rules 的【同一份实现】（占比 / 动作标签 / 持有 / 题材标记）
   const fOpts = {
     dragonMap: dragonMap,
@@ -1534,6 +1769,16 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //     用户本轮口径「如果符合平均量比的新题材……就按照常规选股就行了」。
   if (out.ebb && !ebbSecondRegular) {
     _applyEbbBuyRules(out.blocks, out.ebb);
+  } else if (divergeActive) {
+    // ★ [DIVERGE] 分歧日：其余入选票【总龙分歧不买】（照常列出 + 灰化），
+    //   大字标语接管 cashAlert（同一消费通道，视图灰化判据 = cashAlert.show 不变）。
+    out.divergeBuy = _buildDivergeBuyBlock(ld, list, fOpts);
+    out.cashAlert = _buildDivergeCashAlert(ld, out.divergeBuy ? (out.divergeBuy.picks || []).length : 1);
+    _applyDivergeNoBuyRules(out.blocks, ld);
+    out.notes.push('⚠️【总龙首次分歧】市场总龙一【' + (ld.leaderName || '—') + '】' +
+      (ld.firstBoardYmd ? '自首板 ' + ld.firstBoardYmd + ' 以来' : '') +
+      '首次竞价低开（' + (ld.aucPctText || '—') + '）⇒ 分歧日：买点侧只有 总龙一（下杀买）+ ' +
+      '不同题材的主板高标 ≤2 只（第二十二条），其余入选票今天不开新仓。');
   } else if (out.cashAlert.show) {
     _applyCashAlertBuyRules(out.blocks, out.cashAlert);
   }
@@ -1831,6 +2076,25 @@ export function buildTvrbRulesLines() {
       '停牌是「连竞价都没有、占着龙位也买不到」⇒ 名额作废。' +
       '⚠️ 停牌【首日】不跳 —— 昨天首日停牌仍可入选；一旦复牌、有成交量与占比数据，就理所当然参与选股。' +
       '⚠️ 本规则只改「买点侧选谁」：⛔ 不改题材只数（档位照旧按全部成员算）、不改退潮判定、' +
-      '不改市场总龙、不改卖点侧。'
+      '不改市场总龙、不改卖点侧。',
+    // ── ★ [DIVERGE 2026-10-20 用户口径] 市场总龙一首次分歧 ⇒ 分歧买点 ──
+    '二十五、【市场总龙一【首次分歧】⇒ 分歧买点（下杀买 + 高标跟随 ≤2 只）】：' +
+      '★ 三个概念（判定全在 leader-divergence 模块，K 线 + 竞价涨幅，0 额度）：' +
+      '①【首板】= 20 日窗口内第一个【收盘涨停日】—— 分歧计数从首板日起算，' +
+      '首板之前的小阴小阳、竞价忽高忽低【一概不算分歧】（用户口径「要找到这20个交易日的首板很关键」）；' +
+      '②【首次分歧】= 首板后第一个【竞价涨幅 < 0】（低开）的日子' +
+      '（例：新华传媒 9-21 首板起 11 连板，10-19 低开 -1.06% ⇒ 首次分歧）；' +
+      '③【分歧转一致】= 分歧日之后出现的【涨停日】（例：九阳股份 9-28 首板、10-13 首次低开、' +
+      '10-16 涨停 ⇒ 分歧转一致）；转一致后再低开 =【第二次分歧】，再涨停 = 二次分歧转一致，依次类推' +
+      '（本轮只记录与说明，暂不参与买点 —— 用户「后期会用到这个术语」）。' +
+      '★【买点规则】：市场总龙一出现【首次分歧】的当天是买点 —— ' +
+      '一般开盘会下杀然后反弹 ⇒ 总龙一标【下杀买】（别在竞价追）；' +
+      '同时分歧日总龙一只会带动【不同题材】的高标：从【20日涨幅】总龙二~总龙五里，' +
+      '先排非主板（创业板/科创板/北交所），再排与总龙一同题材（同题材的下跌很厉害），' +
+      '剩下的取排名最靠前的【前两只】，标【高标跟随买】—— 连总龙一在内【最多三只】；' +
+      '若总龙二也是非主板就少一只，若总龙二~五都与总龙同题材则只有总龙一。' +
+      '分歧日其余入选票【照常列出但标【总龙分歧不买】、整段灰化】（今天不开新仓）；卖点侧不变。' +
+      '⚠️ 优先级：【退潮（第二十/二十一条）> 总龙首次分歧 > 空仓提醒】—— 退潮日不谈分歧买点。' +
+      '⚠️ 判不出的情形（窗口内无首板 / K 线或竞价涨幅缺）⇒ 本规则静默不生效（宁缺勿错）。'
   ];
 }

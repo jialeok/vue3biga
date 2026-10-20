@@ -156,6 +156,22 @@
               :head-text="ebbBuy.block.topic"
             />
           </div>
+          <!-- ★★ [DIVERGE 2026-10-20 用户口径] 市场总龙一【首次分歧】日的分歧买点（总龙一下杀买 +
+               不同题材主板高标 ≤2 只）。结构与退潮替补同一形态：渲染在灰化容器 .tvrb-buy-list【之外】
+               （今天真要买的那几只不能被 grayscale 吞掉）；不是分歧日 / 退潮日接管 ⇒ 不渲染。
+               ⛔ 类名独立（.tvrb-diverge-only-*）—— 与退潮替补是两条规则，DOM 查询不能混。 -->
+          <div
+            v-if="divergeBuy"
+            class="tvrb-diverge-only-buy"
+          >
+            <div class="tvrb-diverge-only-label tvrb-selectable">
+              总龙首次分歧 · 买点（第二十五条）
+            </div>
+            <TvrbBuyBlock
+              :block="divergeBuy"
+              :head-text="divergeBuy.block.topic"
+            />
+          </div>
           <!-- 退潮首日 / 空仓提醒：股票块整体灰化（⛔ 上面的空仓标语【不灰】—— 它正是要被看见的那一条）
                ⛔ 上面那只【唯一买点】也不灰（它在本次容器之外，见上）。
                ★ [CASH-ALERT-NOBUY 2026-10-16] 条件 = cashAlert.show（含退潮首日，同上面的标题一处口径）。 -->
@@ -255,6 +271,7 @@ const {
   ebb,
   ebbBuy,
   ebbNodeNote,
+  divergeBuy,
   summaryText,
   rulesLines,
   toggleExpand,

@@ -272,6 +272,24 @@
     border-radius: 10px;
 }
 
+/* ★ [DIVERGE 2026-10-20] 总龙首次分歧 · 买点容器 —— 与退潮替补同一视觉语义（琥珀金「今天真要买」），
+   ⛔ 类名独立（两条规则、DOM 查询不能混）；渲染在灰化容器之外。 */
+.tvrb-diverge-only-buy {
+    margin: 2px 0 8px;
+    padding: 7px 9px 8px;
+    background: #fffbeb;
+    border: 2px solid #d97706;
+    border-radius: 10px;
+}
+
+.tvrb-diverge-only-label {
+    margin-bottom: 5px;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    color: #b45309;
+}
+
 .tvrb-ebb-only-label {
     margin-bottom: 5px;
     font-size: 13px;

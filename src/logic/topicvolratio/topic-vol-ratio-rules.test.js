@@ -56,6 +56,10 @@ import {
   EBB_SECOND_RULE_NO,
   CASH_NO_BUY_TAG,
   CASH_NO_BUY_TONE,
+  DIVERGE_DIP_TAG,
+  DIVERGE_FOLLOW_TAG,
+  DIVERGE_NO_BUY_TAG,
+  DIVERGE_RULE_NO,
   resolveTvrbTier,
   avgVolRatioOf,
   formatAvgVolRatio,
@@ -1717,6 +1721,128 @@ describe('tvrb · [EBB-R20b] 二次确认退潮 ⇒ 先常规选股（排除退�
     const p0 = buildTopicVolRatioPlan(mkTopics(), dm, {});
     expect(p0.ebb).toBe(null);
     expect(p0.ebbNodeNote).toBe(null);
+  });
+});
+
+// ── ★ [DIVERGE 2026-10-20 用户口径] 市场总龙一首次分歧 ⇒ 分歧买点（下杀买 + 高标跟随 ≤2 只）────
+//   用户原话：「市场总龙一，第一次出现分歧的时候，是买点……标签应该是下杀买。也就是题材量比
+//   买点侧只有市场总龙一，还有其它不同题材的两只高标股票（20日涨幅前五的），同题材的不要……最多三只。」
+describe('tvrb · [DIVERGE] 总龙首次分歧 ⇒ 分歧买点', function() {
+  // 复用 EBB-R20b 的夹具形状：AI应用（退潮题材之外的场景里是普通题材）+ 商业航天 + 电力
+  function mkTopics() {
+    return [
+      block('AI应用', 1, ['甲一', '甲二', '甲三', '甲四', '甲五', '甲六'].map(function(n, i) {
+        return m(n, { aucVolRatio: 60, aucShare: 6, code: '6000' + (i < 9 ? '0' + (i + 1) : (i + 1)) });
+      })),
+      block('商业航天', 2, ['海一', '海二', '海三', '海四', '海五'].map(function(n, i) {
+        return m(n, { aucVolRatio: 50, aucShare: 6, code: '6010' + (i + 1) });
+      })),
+      block('电力', 3, ['电一', '电二', '电三'].map(function(n, i) {
+        return m(n, { aucVolRatio: 40, aucShare: 6, code: '6003' + (i + 1) });
+      }))
+    ];
+  }
+  const dm = dragonMap([['甲一', 1], ['甲二', 2], ['海一', 1]]);
+  // 复刻用户 10-19 实例的 top5 结构：总龙三同题材淘汰、总龙五非主板淘汰
+  const LD = {
+    todayFirst: true,
+    firstBoardYmd: '2026-09-21',
+    firstDivergenceYmd: '2026-10-19',
+    aucPctText: '-1.06%',
+    leaderName: '甲一',
+    leaderCode: '600001',
+    leaderPct: 210.98,
+    leaderPctText: '+210.98%',
+    leaderTopic: 'AI应用',
+    top5: [
+      { name: '甲一', code: '600001', topic: 'AI应用', rank20: 1, pct: 210.98 },
+      { name: '海一', code: '601001', topic: '商业航天', rank20: 2, pct: 117.38 },
+      { name: '甲三', code: '600003', topic: 'AI应用', rank20: 3, pct: 116.68 },
+      { name: '电一', code: '600301', topic: '电力', rank20: 4, pct: 91.89 },
+      { name: '莱美药业', code: '300006', topic: '医药', rank20: 5, pct: 79.10 }
+    ]
+  };
+
+  it('★ 分歧日：分歧买点块 = 总龙一【下杀买】+ 不同题材主板高标 ≤2 只【高标跟随买】', function() {
+    const p = buildTopicVolRatioPlan(mkTopics(), dm, { leaderDiverge: LD });
+    expect(p.ebb).toBe(null);
+    expect(p.divergeBuy).not.toBe(null);
+    expect(p.divergeBuy.ruleNo).toBe(DIVERGE_RULE_NO);
+    const picks = p.divergeBuy.picks;
+    expect(picks.length).toBe(3);
+    expect(picks[0].name).toBe('甲一');
+    expect(picks[0].buyActionTag).toBe(DIVERGE_DIP_TAG);           // 下杀买（用户原话）
+    expect(picks.map(function(x) { return x.name; })).toContain('海一');
+    expect(picks.map(function(x) { return x.name; })).toContain('电一');
+    picks.slice(1).forEach(function(x) {
+      expect(x.buyActionTag).toBe(DIVERGE_FOLLOW_TAG);             // 高标跟随买
+    });
+    // 同题材 / 非主板被排除
+    expect(picks.map(function(x) { return x.name; })).not.toContain('甲三');
+    expect(picks.map(function(x) { return x.name; })).not.toContain('莱美药业');
+    // 五只去留留痕
+    expect(p.divergeBuy.notes.join('\n')).toContain('同题材');
+    expect(p.divergeBuy.notes.join('\n')).toContain('非主板');
+  });
+
+  it('★ 分歧日其余入选票【总龙分歧不买】+ 大字标语接管（灰化走 cashAlert.show 既有通道）', function() {
+    const p = buildTopicVolRatioPlan(mkTopics(), dm, { leaderDiverge: LD });
+    expect(p.cashAlert.show).toBe(true);
+    expect(p.cashAlert.headline).toContain('首次分歧');
+    expect(p.cashAlert.headline).toContain('甲一');
+    p.blocks.forEach(function(b) {
+      b.picks.forEach(function(x) {
+        expect(x.buyActionTag).toBe(DIVERGE_NO_BUY_TAG);
+        expect(x.holdTag).toBe('');
+        expect(x.position).toBe('');
+      });
+    });
+    // notes 有分歧说明
+    expect(p.notes.join('\n')).toContain('总龙首次分歧');
+  });
+
+  it('★ 优先级：退潮日接管（ebb ≠ null）⇒ 分歧规则让位（divergeBuy 恒 null）', function() {
+    // ebbCtx 与 EBB-R20b describe 同款：占比 2.5% ＜ 龙头门槛 3.5% ⇒ 判据②命中 ⇒ 首次退潮
+    const ebbCtx = function() {
+      return {
+        ready: true,
+        leader: { name: '甲一', pct: 210.98, topic: 'AI应用', code: '600001', rank: 1, isYizi: false },
+        leaderSuspended: false,
+        leaderShare: 2.5,
+        siblingDragons: [],
+        secondInfo: null,
+        prevLeader: null,
+        buyPicks: [],
+        buyTrail: []
+      };
+    };
+    const p = buildTopicVolRatioPlan(mkTopics(), dm, { leaderDiverge: LD, ebbCtx: ebbCtx() });
+    expect(p.ebb).not.toBe(null);
+    expect(p.divergeBuy).toBe(null);
+    p.blocks.forEach(function(b) {
+      b.picks.forEach(function(x) { expect(x.buyActionTag).toBe(EBB_NO_BUY_TAG); });
+    });
+  });
+
+  it('★ 非首次分歧日（todayFirst=false / ld 缺省）⇒ 零行为（§11 缺省不变）', function() {
+    const notFirst = buildTopicVolRatioPlan(mkTopics(), dm, {
+      leaderDiverge: Object.assign({}, LD, { todayFirst: false })
+    });
+    expect(notFirst.divergeBuy).toBe(null);
+    expect(notFirst.cashAlert.show).toBe(false);
+    const none = buildTopicVolRatioPlan(mkTopics(), dm, {});
+    expect(none.divergeBuy).toBe(null);
+  });
+
+  it('规则面板：第二十五条必须写清 首板 / 首次分歧 / 分歧转一致 / 下杀买 + 高标跟随 / 优先级', function() {
+    const all = buildTvrbRulesLines().join('\n');
+    expect(all).toContain('首板');
+    expect(all).toContain('首次分歧');
+    expect(all).toContain('分歧转一致');
+    expect(all).toContain('下杀买');
+    expect(all).toContain('高标跟随买');
+    expect(all).toContain('总龙分歧不买');
+    expect(all).toContain('退潮（第二十/二十一条）> 总龙首次分歧');
   });
 });
 
