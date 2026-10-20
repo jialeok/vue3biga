@@ -139,6 +139,15 @@
       >
         昨成交量(万)
       </div>
+      <!-- [RANGE20-TOPIC 2026-10-20 用户口径] 「20日涨幅」toggle 专属显示层：占比前加「题材」列。
+           与 AuctionEntityRow 用同一个判据 ⇒ 表头与数据列同增同减、不错位；
+           文案来源与「题材」toggle 同一字段（item.topicsDisplay，§6），其它 toggle 恒 false 不渲染。 -->
+      <div
+        v-if="sortState.byRangePct20"
+        class="auction-header-item auction-header-topic20"
+      >
+        题材
+      </div>
       <div class="auction-header-item auction-header-ratio">
         占比
       </div>

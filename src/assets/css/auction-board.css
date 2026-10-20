@@ -706,6 +706,27 @@
             white-space: nowrap;
         }
 
+        /* [RANGE20-TOPIC 2026-10-20 用户口径] 「20日涨幅」toggle 专属显示层：占比前加一列题材文本。
+           用户要求「不用分类、不用背景色，整体省空间、美观简洁」⇒ 纯文本 + 小字号 +
+           单行省略（悬停 title 看全文）。flex 与表头 .auction-header-topic20 严格一致。 */
+        .auction-topic-cell-20 {
+            flex: 1.4;
+            min-width: 0;
+            font-size: 11px;
+            color: #64748b;
+            padding: 8px 4px;
+            text-align: left;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .auction-header-topic20 {
+            flex: 1.4;
+            text-align: left;
+            padding-left: 4px;
+        }
+
         /* [DRAGON-GROUP 2026-09-14] 龙头组与下方（观察组/常规组）之间的蚂蚁线分隔。
            与 .auction-obs-separator 同款虚线，视觉上「隔离开但仍属同一张表」。 */
         .auction-dragon-separator {

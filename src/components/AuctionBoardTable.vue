@@ -204,6 +204,10 @@ function rowMemo(item) {
     item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow,
     item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass,
     item.topicsDisplay, item.topicBg, expandedSet.value.has(item.stock), sortState.byTopic,
+    // [RANGE20-TOPIC 2026-10-20] 「20日涨幅」toggle 的列结构开关（隐两列 / 加题材列）：
+    //   ⛔ 必须入指纹 —— 若 range20 数据未到、排序与所有字段都没变，切 toggle 时
+    //   v-memo 会因「内容全等」跳过整行 ⇒ 竞价量列该隐的没隐、题材列该出的没出（陈旧列结构）。
+    sortState.byRangePct20 ? 1 : 0,
     item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo,
     item.closeLimit, item.closePct, item.closeNameTone, item.streakLabel,
     // [HIGH-LIMIT-BOARD 2026-09-21] 科创/创业/北交所的浅灰删除线：漏进指纹 → 代码补上后行不重渲染

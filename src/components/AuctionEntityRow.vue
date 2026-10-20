@@ -149,6 +149,19 @@
       >
         {{ item.yestVolumeDisplay }}
       </div>
+      <!-- [RANGE20-TOPIC 2026-10-20 用户口径] 「20日涨幅」toggle 专属显示层：在占比前面加一列题材文本。
+           · 文案 = item.topicsDisplay（与「题材」toggle 的题材列【同一个字段同一个来源】，
+             getStockTopicsDisplay(rawItem)，§6 单一真相 ⇒ 用户「题材要和题材 toggle 一样」是结构保证）；
+           · 不分组、不上题材背景色（topicBg 在非题材模式恒为 ''，§11 默认无行为）——
+             就是每行按 20 日涨幅降序排着的纯文本，省空间（小字号 + 超长省略 + 悬停看全文）。 -->
+      <div
+        v-if="sortState.byRangePct20"
+        class="auction-topic-cell-20"
+        :class="{ 'not-formal-member': !item.isFormalMember }"
+        :title="item.topicsDisplay"
+      >
+        {{ item.topicsDisplay }}
+      </div>
       <div
         :class="item.ratioClass"
         :data-index="item.index"
