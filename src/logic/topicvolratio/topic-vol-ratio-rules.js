@@ -78,6 +78,9 @@ import { getDragonLabel } from '../auction/dragon-rank.js';
 // [TVRB-926 2026-10-14 用户口径] 「取某只票在某个区间涨幅 Map 里的数值」的唯一实现
 //   （缺值 → null，§10 不补 0；与 range-pct-sort.js 的排序共用同一份读取口径，§6）
 import { readRangePct } from '../auction/range-pct-sort.js';
+// ★ [EBB-R20 2026-10-20 用户口径] 20日涨幅总龙一~五的展示名（总龙N）——
+//   与「20日涨幅」toggle 的专属显示层用【同一份实现】（§6：替补选股的「总龙N」标签不许另写一份）。
+import { totalDragonLabel } from '../auction/range20-top5-label.js';
 
 // ══ 档位常量（§6 唯一实现：本看板的「取几只」只由这里决定）════════════════════════════════
 // 用户口径：< 4 只不入选；4 ~ 8 只入选 1 只；> 8 只入选 2 只（早盘竞价股票少，只有这三档）。
@@ -175,18 +178,19 @@ export const EBB_NO_BUY_TONE = 'ebb-nobuy';
  * ══ 【退潮首日】买点侧唯一那只【市场龙二】的专属标签（第八轮 · 2026-10-14 用户拍板）══════
  *
  * 用户原话：
- *   「买点只有一个，那就是市场的龙二（不是同题材的），是整个早盘竞价看板的股票列表中的
- *     十日涨幅排名第二的龙二，就像今天的九阳股份（市场排名十日涨幅 86%，总列表排名第二），
- *     把它入选到买点侧……注意我说的的时间点，是市场总龙头出现首日停牌或者占比不达标的情况下，
- *     买点侧只有一个，那就是市场的龙二（十日涨幅排名第二），其它都是卖点侧不变。」
- *   （口径追问时用户拍板：标签做成【单独一枚「总龙二买」】，并【保留原有题材块（灰化 + 退潮不买）】）
+ *   【旧口径 · 2026-10-14】「买点只有一个，那就是市场的龙二（不是同题材的），是整个早盘竞价看板的股票列表中的
+ *     十日涨幅排名第二的龙二……」（标签拍板为【单独一枚「总龙二买」】）
+ *   【新口径 · 2026-10-20】「把原来按照10日涨幅改成20日涨幅选股……从20日涨幅中的总龙一到总龙五
+ *     选出两只排名靠前的。而且是不同总龙一题材的股票……也就是从这五只中，要判断是不是创业板，
+ *     科创板，北交所等非主板的股票，如果是先排除，剩下的看是不是和总龙一是同题材，是也排除，
+ *     剩下的就选排名靠前的那两只。只选好两只，已经完成任务，后面不选了。」
  *
- * ⇒ 退潮首日，买点侧**唯一可买的那一行** = 当日十日涨幅「总列表排名第二」的那只，
- *   它挂这一枚标签（⛔ 不是 finishBuyBlock 的 竞价买 / 尾盘买 —— 用户明确要专属标签），
+ * ⇒ 退潮日，买点侧**可买的那几行** = 20日涨幅总龙一~五里选出的【替补 · 最多两只】，
+ *   每行挂这一枚标签（⛔ 不是 finishBuyBlock 的 竞价买 / 尾盘买 —— 用户明确要专属标签），
  *   原始买点信号（占比达标与否）写进行内说明，信息一枚不丢。
  * ⛔ 与 EBB_NO_BUY_TAG 是两枚不同的标签：那枚是「今天不买」，这枚是「今天唯一买点」。
  */
-export const EBB_SECOND_BUY_TAG = '总龙二买';
+export const EBB_SECOND_BUY_TAG = '退潮替补买';
 /**
  * 配色档（本看板独有）：琥珀金底 + 近白字。
  *
@@ -235,10 +239,14 @@ export const CASH_NO_BUY_TAG = '分歧日不买';
 export const CASH_NO_BUY_TONE = EBB_NO_BUY_TONE;
 
 /**
- * 【退潮首日】判据（纯函数，可单测）。
+ * 【退潮日】判据（纯函数，可单测）。
  *
  * 数据来源 = decision-collect#_ebbCtxOf 采好的「事实」（市场总龙 / 今日停牌 / 今日占比 /
- *   同题材龙位成员 / 市场总龙二），⛔ 本函数不读 state、不发请求（§4）。
+ *   同题材龙位成员 / 市场总龙二 / 买点侧替补与五只去留留痕），⛔ 本函数不读 state、不发请求（§4）。
+ *
+ * ── 退潮是什么（★ 2026-10-20 用户口径的【定义澄清】）──────────────────────────────────
+ *   「退潮是指总龙一在某个题材停牌或者占比不符，导致是整个题材的股票预期走势很差，
+ *     叫题材退潮，不是个股退潮。」⇒ 退潮的主体是【总龙所在的题材】，不是总龙那只票本身。
  *
  * ── 判据（★ 用户口径：「龙一停牌或者占比不达标……两种情况，有一种存在就算退潮」）──────────
  *   ① 市场总龙【今日停牌】⇒ 退潮（停牌 = 最强的那只都停了）；
@@ -246,35 +254,51 @@ export const CASH_NO_BUY_TONE = EBB_NO_BUY_TONE;
  *   ⛔ ② 的占比【缺数据】⇒【不判】（§10：未知 ≠ 不达标）；门槛走 auction-share 的唯一实现。
  *   ⛔ 两条都不成立 ⇒ 返回 null（= 不是退潮日，⛔ 不回落到「没有总龙」）。
  *
- * ── ★★【首日】闸门（第八轮 · 2026-10-14 用户口径，本轮新增）─────────────────────────────
+ * ── ★★【首次 / 二次确认】（2026-10-20 用户口径，本轮新增）─────────────────────────────
+ *   用户原话：「判断是不是首日要看它最近10天的表现，如果十天内出现首日退潮，那今天就不能算是
+ *     首日了，而是确认主线退潮……提示语改下首日退潮，改成具体的题材名称，比如，主线AI应用
+ *     首次退潮。第二次的时候，改成比如，AI应用二次确认退潮。注意没有第三次了，退潮后基本不看了
+ *     这个题材了。」
+ *   ⇒ 判定 = 【近 10 个交易日】里、同题材的【退潮事件】次数（ebbHistory 注入）：
+ *     · 0 次 ⇒ 本次为【首次退潮】（提示语 = 主线{题材}首次退潮）；
+ *     · 1 次 ⇒ 本次为【二次确认退潮】（提示语 = {题材}二次确认退潮）；
+ *     · ≥ 2 次 ⇒【无第三次】：本规则不再触发，返回 null（按平常日子选股）。
+ *   ⚠️ 【事件】≠【天数】：总龙连续多日停牌 / 不达标只算【一次】事件（第二天起是延续，
+ *     由下面的「昨日闸门」拦住不触发；历史计数时也把连续退潮日合并，⛔ 别数成多次）。
+ *   ⚠️ 计数按【题材】认（leaderTopic）；题材取不到时退回按【同一只总龙】认（§10 从紧，不乱认亲）。
+ *
+ * ── ★★【昨日闸门】（第八轮 · 2026-10-14 用户口径，保留）─────────────────────────────
  *   用户原话：「我说的规则是，市场总龙头【首日】出现停牌或者占比不达标的情况下，这个规则才有效，
  *     又比如明天可能新华传媒又停牌，那就不算了，我说的是首日注意了。」
- *   ⇒ 上面①/② 成立【且】上一交易日【同一只总龙】还没处在坏状态 ⇒ 才是「退潮首日」。
- *     昨天就已经停牌 / 占比不达标 ⇒ 今天算第 2 天 ⇒ 返回 null（本规则不生效）。
+ *   ⇒ 上面①/② 成立【且】上一交易日【同一只总龙】还没处在坏状态 ⇒ 才触发本规则；
+ *     昨天就已经停牌 / 占比不达标 ⇒ 今天算延续 ⇒ 返回 null（本规则不生效）。
  *
  *   「昨日状态」的两条来源（按优先级，见 _prevLeaderDayState）：
- *     ① 【落库的昨日判定】—— verdict 来自 tvrb_ebb_days 表（用户口径「你应该把数据存起来啊，
- *        做一个表也行，不然很难判断出来」）⇒ 最权威：那一天到底算不算退潮，是当天亲眼判定后存下来的；
- *     ② 退路：库里昨日那一行的【竞价量 / 占比】推断（量 0 ⇒ 无竞价 ⇒ 停牌语义；占比走唯一实现）；
- *     ③ 两处都取不到 ⇒ 按【首日】处理（继续提醒）—— 用户拍板「取不到就按首日处理，别漏掉风险」。
- *   ⚠️ 只认「同一只总龙」：昨日那只总龙与今日不是同一只 ⇒ 对今天这只而言本来就是首日。
+ *     ① 【落库的昨日判定】—— verdict 来自 tvrb_ebb_days 表 ⇒ 最权威；
+ *     ② 退路：库里昨日那一行的【竞价量 / 占比】推断；
+ *     ③ 两处都取不到 ⇒ 按【可触发】处理（继续提醒）—— 用户拍板「取不到就按首日处理，别漏掉风险」。
+ *   ⚠️ 只认「同一只总龙」：昨日那只总龙与今日不是同一只 ⇒ 对今天这只而言本来就是新事件。
  *
- * ── 涨幅口径（用户原话「我说的时间点是昨日，因为当天早上还没收盘计算出来」）──────────────
- *   总龙一律用【上一交易日】的十日涨幅 —— 由调用方按 prevDate 从 stock_range_pct 读回后注入。
- *   ⚠️ 当日口径在停牌票上【必然读不到】（当天没交易就没有当天涨幅）⇒ 最典型的场景恰恰算不出来。
- *   ⚠️ 但【买点侧唯一那只 · 市场龙二】用的是【当日】涨幅（用户举的例子 = 九阳股份 当日 86%，
- *      「是整个早盘竞价看板的股票列表中的十日涨幅排名第二」= 屏幕上那一列）——
- *      两者用途不同（总龙要在停牌时也排得出；龙二只看今天强不强），⛔ 别混用。
+ * ── 涨幅口径（★ 2026-10-20 改定）────────────────────────────────────────────────────
+ *   总龙 = 【当日 20日涨幅】全市场第一（getRange20Leaders，与「20日涨幅」toggle 的总龙一同一只）。
+ *   20日按每票自己的交易日回溯、停牌票靠补位照样进榜 —— 这正是改用 20日的原因：
+ *   十日口径在总龙停牌那天根本排不出它（当日快照没它的行）。
+ *   卖点侧的【市场总龙二】仍用【昨日十日涨幅第二】的旧口径（用户「其它规则不变」）。
  *
  * @param {{ready:boolean, leader:object|null, leaderSuspended:boolean, leaderShare:number|null,
  *          siblingDragons:Array, secondInfo:object|null, prevLeader:object|null,
- *          buySecond:object|null}|null} ebbCtx
- *        prevLeader / buySecond 见 decision-collect#_ebbCtxOf（第八轮新增的两个事实）
+ *          buyPicks:Array, buyTrail:Array}|null} ebbCtx
+ *        见 decision-collect#_ebbCtxOf（[EBB-R20] buyPicks / buyTrail 为本轮新增的两个事实）
  * @param {{leader_stock?:string, ebb?:boolean}|null} [prevEbbDay]
  *        ★ [EBB-R8] 上一交易日在 tvrb_ebb_days 里落库的判定行（缺省 = 表里还没有 / 表不存在）
- * @returns {null|object} null = 不是退潮日（或事实未就绪 / 不是首日）；否则见下方返回结构
+ * @param {Array<{date:string, prevDate:string, leaderStock:string, leaderTopic:string,
+ *          ebb:boolean}>|null} [ebbHistory]
+ *        ★ [EBB-R20] 近 12 个交易日的退潮判定落库行（组合式读 tvrb_ebb_days 注入；
+ *        前 10 天是「事件窗口」，多取的 2 天只用来判「连续退潮日合并成一次事件」）。
+ *        缺省 / 空 ⇒ 按 0 次事件处理（= 首次退潮；与「取不到就按首日处理」同一拍板）。
+ * @returns {null|object} null = 不是退潮日（或事实未就绪 / 是延续 / 无第三次）；否则见下方返回结构
  */
-export function detectEbbDay(ebbCtx, prevEbbDay) {
+export function detectEbbDay(ebbCtx, prevEbbDay, ebbHistory) {
   // §10：事实未就绪（昨日涨幅还没读回来 / 全列表一只票都排不出）⇒ 不判退潮
   if (!ebbCtx || !ebbCtx.ready || !ebbCtx.leader) return null;
   const leader = ebbCtx.leader;
@@ -284,21 +308,45 @@ export function detectEbbDay(ebbCtx, prevEbbDay) {
   if (!leaderName || leaderPct === null) return null;      // §10：涨幅读不到 ⇒ 不判
 
   // ── 判据 ①/② ──
-  const leaderIsDragonOne = (Number(leader.rank) === 1);
+  // ★★ [EBB-R20 2026-10-20] 判据②的占比门槛【恒按龙头档】：总龙一 = 20日涨幅全市场第一，
+  //   它本身就是市场龙头。旧实现「按它今日十日龙位取档（龙一 3.5% / 其余 2%）」是总龙还选
+  //   「昨日十日涨幅第一」时代的写法 —— 那时的总龙几乎总是今日龙一，两档等价；
+  //   改成 20日选总龙后，总龙完全可能是当日十日口径的龙三（10-20 实测：新华传媒 20日 202.59%
+  //   全市场第一，但十日口径里它是 AI应用 的龙三、占比 2.7%）⇒ 若仍按十日龙位落到 2% 档，
+  //   2.7% 会被误判「达标」，用户拍板的「今天新华传媒占比不达标 ⇒ 二次确认退潮」整条静默失效
+  //   （🔴 这正是「改了选法、忘了改门槛取档」的伴生缺陷，§38 同类根因）。
+  //   判据②的本意 = 「全市场最强的那只票竞价占比塌了」，龙头门槛（3.5%，含容错 4%）才是本意。
+  const leaderIsDragonOne = true;
   const sh = _num(ebbCtx.leaderShare);
   let reason = '';
   if (ebbCtx.leaderSuspended) {
     reason = 'suspend';
   } else if (sh !== null && !passesAuctionShare(sh, leaderIsDragonOne)) {
-    // ⛔ 门槛按「总龙 = 它的题材的龙一」取龙头档（3.5%）；它不是龙一（创业板 / 未成组）时回落 2% 档 ——
-    //    后者更宽松 ⇒ 更不容易误判成退潮（宁可漏判，也不要在平常日子把全市场都改成竞价卖）。
+    // 门槛恒为龙头档（3.5%）：总龙一的竞价占比塌了才算「占比不符」（用户 10-20 口径）。
     reason = 'share';
   }
   if (!reason) return null;
 
-  // ── ★★【首日】闸门（第八轮）──
+  // ── ★★【昨日闸门】（第八轮，保留）──
   const prev = _prevLeaderDayState(ebbCtx, prevEbbDay, leaderName);
-  if (prev.bad) return null;   // 昨日同一只总龙已在坏状态 ⇒ 今天不是首日 ⇒ 本规则不生效
+  if (prev.bad) return null;   // 昨日同一只总龙已在坏状态 ⇒ 今天是延续 ⇒ 本规则不触发
+
+  // ── ★★【首次 / 二次确认】（[EBB-R20 2026-10-20 用户口径]）──
+  //   近 10 个交易日里同题材的【退潮事件】次数（连续退潮日合并为一次）：0 ⇒ 首次、1 ⇒ 二次确认、
+  //   ≥2 ⇒ 无第三次 ⇒ 本规则不再触发（返回 null，按平常日子选股 —— 用户「退潮后基本不看了这个题材了」）。
+  const phase = _ebbPhaseOf(leaderTopic, leaderName, ebbHistory);
+  if (phase.count >= 2) return null;
+  const isFirst = (phase.count === 0);
+  // 提示语（用户给的原样示例）：首日 = 「主线AI应用首次退潮」；第二次 = 「AI应用二次确认退潮」
+  const topicText0 = leaderTopic || '总龙题材';
+  const phaseTitle = isFirst
+    ? ('主线' + topicText0 + '首次退潮')
+    : (topicText0 + '二次确认退潮');
+  const phaseNote = isFirst
+    ? ('（近 10 个交易日内【' + topicText0 + '】没有退潮事件 ⇒ 本次为【首次退潮】' +
+       (prev.source === 'unknown' ? '；昨日状态两处都取不到 ⇒ 按【可触发】处理，宁可多提醒一次' : '') + '）')
+    : ('（近 10 个交易日内【' + topicText0 + '】已出现过 ' + phase.count + ' 次退潮事件' +
+       (phase.lastDate ? ('，最近一次 ' + phase.lastDate) : '') + ' ⇒ 本次为【二次确认退潮】）');
 
   // ── 【看分笔卖】的两只（用户口径逐条对应；用户拍板：龙位可顺延、总龙二不顺延）──
   //   ① 同题材可用龙位 = 总龙所在题材内 rank ≥ 2 的成员，按龙位升序取第一个【非竞价一字 + 非停牌】的
@@ -336,22 +384,49 @@ export function detectEbbDay(ebbCtx, prevEbbDay) {
     return arr;
   })();
 
-  // ── ★★ 买点侧唯一那只【市场龙二】（第八轮）───────────────────────────────────────────
-  //   ⛔ 它是【当日】口径（用户例子 = 九阳股份 当日 86%），与上面的 secondInfo（昨日口径）不同源。
-  const bs = ebbCtx.buySecond;
-  const bsOn = !!bs;
-  const bsPct = bs ? _num(bs.pct) : null;
-  const bsLabel = bs ? getDragonLabel(Number(bs.rank)) : '';
-  const bsTopic = bs ? String(bs.topic || '').trim() : '';
-  const bsTrouble = !bs ? '（当日十日涨幅还没加载出来 ⇒ 今天算不出市场龙二，买点侧暂不给出这一只）'
-    : (bs.suspended ? '⚠️ 但它今日【停牌】，买不进。'
-      : (bs.isYizi ? '⚠️ 但它今日【竞价一字涨停】，竞价买不进（要不要打板由你自己定）。' : ''));
-  // 「首日」这一判定的依据来自哪里 —— 如实写进说明（§10 判定可追溯；⛔ 不静默）
+  // ── ★★ 买点侧替补【≤2 只】（[EBB-R20 2026-10-20 用户口径]）────────────────────────────
+  //   从 20日涨幅总龙一~五里：排非主板 → 排与总龙同题材 → 取排名最靠前的前两只（采集层已选好，
+  //   本层只把每只的 20日涨幅 / 总龙N 标签 / 停牌·一字麻烦如实格式化）。
+  const rawPicks = Array.isArray(ebbCtx.buyPicks) ? ebbCtx.buyPicks : [];
+  const buyPicksOut = rawPicks.map(function(p) {
+    const pPct = _num(p.pct);
+    const pRank20 = Number(p.rank20) || 0;
+    return {
+      name: String(p.name || ''),
+      code: String(p.code || ''),
+      topic: String(p.topic || '').trim(),
+      pct: pPct,
+      pctText: formatRangePct(pPct),
+      days: Number(p.days) || 0,
+      rank20: pRank20,
+      // 总龙N 标签：与「20日涨幅」toggle 同一份实现（§6），配不上名次的给 ''（§10 不硬造）
+      label: totalDragonLabel(pRank20),
+      isYizi: !!p.isYizi,
+      suspended: !!p.suspended,
+      trouble: p.suspended ? '⚠️ 但它今日【停牌】，买不进。'
+        : (p.isYizi ? '⚠️ 但它今日【竞价一字涨停】，竞价买不进（要不要打板由你自己定）。' : '')
+    };
+  }).filter(function(p) { return !!p.name; });
+  const bsOn = buyPicksOut.length > 0;
+  const bs = bsOn ? buyPicksOut[0] : null;
+  // 兼容别名（旧字段还有两处只读消费：落库行的 buySecond / 卖点侧放行）—— 语义 = 第一只替补
+  const bsTrouble = bsOn
+    ? buyPicksOut.map(function(p) { return p.trouble; }).filter(function(t) { return !!t; }).join('')
+    : '（20日涨幅前五还没算出来 / 五只里选不出符合条件的替补 ⇒ 买点侧暂不给出替补）';
+  // 五只去留留痕（规则层写进行内说明，判定可追溯，§10）
+  const trailText = (function() {
+    const arr = (Array.isArray(ebbCtx.buyTrail) ? ebbCtx.buyTrail : []).map(function(t) {
+      const lb = totalDragonLabel(Number(t.rank20) || 0);
+      return '【' + (lb || '总龙?') + t.name + '】' + String(t.reason || '');
+    });
+    return arr.join('；');
+  })();
+  // 「首日 / 二次确认」判定的依据来自哪里 —— 如实写进说明（§10 判定可追溯；⛔ 不静默）
   const firstDayNote = (prev.source === 'table')
     ? ('（昨日状态取自落库判定：' + prev.detail + '）')
     : (prev.source === 'inferred'
       ? ('（昨日落库判定缺失 ⇒ 按行情行推断：' + prev.detail + '）')
-      : ('（昨日状态两处都取不到 ⇒ 本次按【首日】处理，宁可多提醒一次）'));
+      : ('（昨日状态两处都取不到 ⇒ 本次按【可触发】处理，宁可多提醒一次）'));
 
   return {
     // ── 判据 / 事实 ──
@@ -366,8 +441,13 @@ export function detectEbbDay(ebbCtx, prevEbbDay) {
     leaderThresholdText: thresholdText,
     leaderIsDragonOne: leaderIsDragonOne,
     whyText: whyText,
-    // ★ [EBB-R8] 首日判定的来源与依据（'table' 落库判定 / 'inferred' 昨日行情行推断 / 'unknown' 取不到）
-    firstDay: true,
+    // ★ [EBB-R20] 阶段：'first' 首次退潮 / 'second' 二次确认退潮（≥2 次事件 ⇒ 本函数返回 null）
+    phase: isFirst ? 'first' : 'second',
+    phaseTitle: phaseTitle,
+    phaseCount: phase.count,
+    phaseNote: phaseNote,
+    // ★ [EBB-R8] 昨日判定的来源与依据（'table' 落库判定 / 'inferred' 昨日行情行推断 / 'unknown' 取不到）
+    firstDay: isFirst,
     firstDaySource: prev.source,
     firstDayPrevLeader: prev.prevLeaderName,
     // ── 允许【看分笔卖】的两只（空串 = 该只今天不成立）──
@@ -378,39 +458,91 @@ export function detectEbbDay(ebbCtx, prevEbbDay) {
     secondTopic: secondOk ? String(si.topic || '') : '',
     secondPct: secondOk ? _num(si.pct) : null,
     secondPctText: secondOk ? formatRangePct(_num(si.pct)) : '',
-    // ── ★ 买点侧唯一那只【市场龙二】（第八轮 · 当日十日涨幅排名第二）──
+    // ── ★ 买点侧替补【≤2 只】（[EBB-R20] 当日 20日涨幅口径）──
+    buyPicks: buyPicksOut,
+    buyPicksOn: bsOn,
+    buyPickNames: buyPicksOut.map(function(p) { return p.name; }),
+    // 五只去留留痕的展示文案（替补块行内说明用，判定可追溯 §10）
+    buyTrailText: trailText,
+    // 兼容别名（= 第一只替补；落库行 / 卖点放行等旧消费方只读）
     buySecondOn: bsOn,
-    buySecondName: bs ? String(bs.name) : '',
-    buySecondTopic: bsTopic,
-    buySecondPct: bsPct,
-    buySecondPctText: bs ? formatRangePct(bsPct) : '',
-    buySecondRank: bs ? Number(bs.rank) : null,
-    buySecondLabel: bsLabel,
-    // 股票代码（分笔抓取 + 停牌判定的目标；§6 只透传采集层给的值，⛔ 不在这里反查）
-    buySecondCode: bs && bs.code ? String(bs.code) : '',
+    buySecondName: bs ? bs.name : '',
+    buySecondTopic: bs ? bs.topic : '',
+    buySecondPct: bs ? bs.pct : null,
+    buySecondPctText: bs ? bs.pctText : '',
+    buySecondLabel: bs ? bs.label : '',
+    buySecondCode: bs ? bs.code : '',
     buySecondTrouble: bsTrouble,
     // 标题上直接列出那两只是谁（没有则如实说「一只都没有」）
     picksText: picksText.length > 0 ? picksText.join('、') : '（本日无符合条件的票）',
     // ── 文案（§21：模板零计算）──
-    headline: '⚠️ 退潮首日 · 卖点收紧',
-    detail: '市场总龙【' + leaderName + '】（' + topicText + '，昨日十日涨幅 ' + leaderPctText + '）' +
-      whyText + ' ⇒ 判定为【题材退潮首日】。' + firstDayNote + '卖点侧：' +
+    headline: '⚠️ ' + phaseTitle + ' · 卖点收紧',
+    detail: '市场总龙【' + leaderName + '】（' + topicText + '，20日涨幅 ' + leaderPctText + '）' +
+      whyText + ' ⇒ 判定为【' + phaseTitle + '】（题材退潮：总龙停牌 / 占比不符 ⇒ 整个题材的股票预期走势差）。' +
+      firstDayNote + phaseNote + '卖点侧：' +
       (picksText.length > 0
         ? ('只有 ' + picksText.join('、') + ' 可以【' + EBB_PICK_TAG + '】（等开盘看分笔，不看占比）；')
         : '今天没有符合条件的【同题材可用龙位】【市场总龙二】；') +
       '其余股票一律【' + SELL_OUT_TAG + '】（含原本标【' + HOLD_TAG + '】的）—— 开盘就走，降低风险。',
     buyHeadline: bsOn
-      ? ('⚠️ 退潮首日 · 买点只有一只：' + EBB_SECOND_BUY_TAG)
-      : '⚠️ 退潮首日 · 建议空仓 · 不开仓',
-    buyDetail: '市场总龙【' + leaderName + '】（' + topicText + '，昨日十日涨幅 ' + leaderPctText + '）' +
-      whyText + ' ⇒ 题材退潮首日，风险高。' + firstDayNote +
+      ? ('⚠️ ' + phaseTitle + ' · 买点替补只有这 ' + buyPicksOut.length + ' 只（' + EBB_SECOND_BUY_TAG + '）')
+      : ('⚠️ ' + phaseTitle + ' · 建议空仓 · 不开仓'),
+    buyOnlyLabelText: bsOn
+      ? ('退潮替补 · 买点只有这 ' + buyPicksOut.length + ' 只（' + phaseTitle + '）')
+      : '',
+    buyDetail: '市场总龙【' + leaderName + '】（' + topicText + '，20日涨幅 ' + leaderPctText + '）' +
+      whyText + ' ⇒ ' + phaseTitle + '，风险高。' + firstDayNote + phaseNote +
       (bsOn
-        ? ('买点侧今天【只有一只】：【' + bsLabel + bs.name + '】（' + (bsTopic || '—') +
-           '，当日十日涨幅 ' + formatRangePct(bsPct) + '）= 全列表十日涨幅排名第二的【市场龙二】' +
-           '（总龙自己正是被判定退潮的那一只，今天不买）。' + bsTrouble +
-           ' 下方其余入选票一律【' + EBB_NO_BUY_TAG + '】（整段灰化），只有卖出、没有买点。')
-        : ('当天【算不出市场龙二】' + bsTrouble + '下方选股【整体变灰】仅为参考，建议今天不开仓（空仓）。'))
+        ? ('买点侧今天【只买替补】（从 20日涨幅总龙一~五里选：先排非主板（创业板/科创板/北交所），' +
+           '再排与总龙一同题材，剩下取排名最靠前的前两只）：' +
+           buyPicksOut.map(function(p) {
+             return '【' + (p.label || '') + p.name + '】（' + (p.topic || '—') + '，20日涨幅 ' + p.pctText + '）';
+           }).join('、') + '。' + (trailText ? ('五只去留：' + trailText + '。') : '') +
+           (bsTrouble ? bsTrouble + ' ' : '') +
+           '下方其余入选票一律【' + EBB_NO_BUY_TAG + '】（整段灰化），除替补外没有买点。')
+        : ('当天【选不出替补】（' + bsTrouble + '）' + (trailText ? ('五只去留：' + trailText + '。') : '') +
+           '下方选股【整体变灰】仅为参考，建议今天不开仓（空仓）。'))
   };
+}
+
+/**
+ * 【退潮事件计数】—— 「首次 / 二次确认 / 无第三次」的判定（§6：只此一份，⛔ 别在视图或组合式再数一遍）。
+ *
+ * 用户口径（2026-10-20）：「判断是不是首日要看它最近10天的表现，如果十天内出现首日退潮，
+ *   那今天就不能算是首日了，而是确认主线退潮……注意没有第三次了。」
+ *
+ * ⚠️ 【事件】≠【天数】：总龙连续多日停牌 / 不达标只算一次事件 ——
+ *   一条历史记录算「新事件」当且仅当它的【前一交易日】没有同题材的退潮记录
+ *   （ebbHistory 的每行都带 prevDate，由组合式用 getPreviousTradingDay 链好；§6 日期口径不进本纯函数）。
+ * ⚠️ 计数按【题材】认；题材取不到时退回按【同一只总龙】认（§10 从紧，不乱认亲）。
+ * ⚠️ ebbHistory 缺省 / 空 ⇒ 计 0 次（= 首次退潮）—— 与用户拍板「取不到就按首日处理」同一口径。
+ *
+ * @param {string} topic 今日总龙的题材（可空）
+ * @param {string} name 今日总龙名（题材为空时的认亲退路）
+ * @param {Array<{date:string, prevDate:string, leaderStock:string, leaderTopic:string, ebb:boolean}>|null} history
+ * @returns {{count:number, lastDate:string}} count = 近 10 个交易日内的退潮事件数；lastDate = 最近一次的日期
+ */
+function _ebbPhaseOf(topic, name, history) {
+  const rows = (Array.isArray(history) ? history : []).filter(function(r) {
+    return r && r.date && !!r.ebb;
+  });
+  const hit = function(r) {
+    const rt = String(r.leaderTopic || '').trim();
+    if (topic) return rt === topic;
+    return String(r.leaderStock || '').trim() === name;
+  };
+  const byDate = new Map();
+  rows.forEach(function(r) { byDate.set(String(r.date), r); });
+  let count = 0;
+  let lastDate = '';
+  rows.forEach(function(r) {
+    if (!hit(r)) return;
+    const p = r.prevDate ? byDate.get(String(r.prevDate)) : null;
+    if (p && hit(p)) return;   // 前一交易日同题材也在退潮 ⇒ 本次是延续，不是新事件
+    count++;
+    lastDate = String(r.date);
+  });
+  return { count: count, lastDate: lastDate };
 }
 
 /**
@@ -505,19 +637,32 @@ export function buildEbbDayRecord(ebb, ebbCtx, date) {
     shareFail: shareFail,
     // ★ 原始结论（不带首日闸门）—— 次日判「昨天这只票是不是已经在坏状态」就读它
     ebb: !!(suspended || shareFail),
-    // ⚠️ 买点侧那只只在【今天确实是退潮首日】时才有意义（ebb === null ⇒ 不放）
-    buySecond: (ebb && ebb.buySecondName) ? String(ebb.buySecondName) : '',
+    // ⚠️ 买点侧替补只在【今天确实触发退潮规则】时才有意义（ebb === null ⇒ 不放）
+    //   [EBB-R20] 起为 ≤2 只，落库格式 = 名字「、」连接（buy_second_pct = 第一只的 20日涨幅）
+    buySecond: (ebb && Array.isArray(ebb.buyPickNames) && ebb.buyPickNames.length > 0)
+      ? ebb.buyPickNames.join('、')
+      : ((ebb && ebb.buySecondName) ? String(ebb.buySecondName) : ''),
     buySecondPct: (ebb && _num(ebb.buySecondPct) !== null) ? _num(ebb.buySecondPct) : null,
     source: 'tvrb-board'
   };
 }
 
-/** 退潮首日【允许看分笔卖】的股票名集合（§6：唯一的取名实现，判定与改写共用） */
+/** 退潮日【允许看分笔卖】的股票名集合（§6：唯一的取名实现，判定与改写共用） */
 function _ebbEligibleNames(ebb) {
   const set = new Set();
   if (!ebb) return set;
   if (ebb.siblingName) set.add(ebb.siblingName);
   if (ebb.secondName) set.add(ebb.secondName);
+  return set;
+}
+
+/** 退潮日【买点侧替补】的股票名集合（卖点侧放行用：今天要买的票不能同时被要求竞价清仓） */
+function _ebbBuyPickNames(ebb) {
+  const set = new Set();
+  if (!ebb) return set;
+  (ebb.buyPickNames || []).forEach(function(n) { if (n) set.add(String(n)); });
+  // 兼容旧消费方：buySecondName 恒在 buyPickNames 里（§6 同一来源，这里再兜一次不亏）
+  if (ebb.buySecondName) set.add(String(ebb.buySecondName));
   return set;
 }
 
@@ -540,19 +685,20 @@ function _ebbEligibleNames(ebb) {
 function _applyEbbSellRules(sell, ebb) {
   if (!ebb) return;
   const elig = _ebbEligibleNames(ebb);
+  const buyPicks = _ebbBuyPickNames(ebb);
   const topicText = ebb.leaderTopic || '—';
-  const lead = '【退潮首日】市场总龙【' + ebb.leaderName + '】（' + topicText +
-    '，昨日十日涨幅 ' + ebb.leaderPctText + '）' + ebb.whyText + ' ⇒ 题材退潮：';
+  const lead = '【' + ebb.phaseTitle + '】市场总龙【' + ebb.leaderName + '】（' + topicText +
+    '，20日涨幅 ' + ebb.leaderPctText + '）' + ebb.whyText + ' ⇒ 题材退潮：';
 
   (sell || []).forEach(function(g) {
     (g.items || []).forEach(function(it) {
       if (!it || !it.name) return;
       const name = String(it.name);
-      // ★ [EBB-R8 2026-10-14] 放行【今天唯一那只买点】：
-      //   它如果同时在卖点侧（昨天买过），按本文件退潮口径本来会被改成【竞价卖】——
-      //   那就与买点侧的【总龙二买】正面矛盾（同一天不可能既「唯一要买」又「竞价清仓」）。
-      //   ⇒ 它保持 buildSellPlan 自己的结论（今天又进买点 ⇒ 持有）：留着，并在开盘买点加仓。
-      if (ebb.buySecondName && name === String(ebb.buySecondName)) return;
+      // ★ [EBB-R8 2026-10-14] 放行【今天的替补买点】（[EBB-R20] 起为 ≤2 只）：
+      //   它们如果同时在卖点侧（昨天买过），按本文件退潮口径本来会被改成【竞价卖】——
+      //   那就与买点侧的【退潮替补买】正面矛盾（同一天不可能既「今天要买」又「竞价清仓」）。
+      //   ⇒ 它们保持 buildSellPlan 自己的结论（今天又进买点 ⇒ 持有）：留着，并在开盘买点加仓。
+      if (buyPicks.has(name)) return;
       if (elig.has(name)) {
         const isSib = (name === ebb.siblingName);
         it.sellActionTag = EBB_PICK_TAG;      // ★ 覆盖式：优先级最高的那一枚
@@ -571,7 +717,7 @@ function _applyEbbSellRules(sell, ebb) {
           ' ⇒ 允许【' + EBB_PICK_TAG + '】：9:25 不竞价卖，等 9:30~9:31 点开【分笔成交】看结论 —— ' +
           '提示【冲高卖】就等冲高再清、提示【立刻卖】就直接止损。' +
           '（本档【不看本股自己的占比】，也不看它原本是【' + HOLD_TAG + '】还是【' + SELL_OUT_TAG +
-          '】—— 退潮首日只按「是不是那两只有资格等开盘卖的票」二分。）';
+          '】—— 退潮日只按「是不是那两只有资格等开盘卖的票」二分。）';
       } else {
         it.sellActionTag = SELL_OUT_TAG;      // ★ 其余一律竞价卖（用户拍板：连【持有】也一起改）
         it.sellActionTone = SELL_ACTION_TONE_OUT;
@@ -582,7 +728,7 @@ function _applyEbbSellRules(sell, ebb) {
         it.actionNote = lead +
           ('本股不是【同题材可用龙位】、也不是【市场总龙二】 ⇒ 一律【' + SELL_OUT_TAG +
            '】：开盘就走，降低风险。' +
-           '（退潮首日【不看占比】、也不因它原本标【' + HOLD_TAG + '】而留下。）');
+           '（退潮日【不看占比】、也不因它原本标【' + HOLD_TAG + '】而留下。）');
       }
     });
   });
@@ -595,105 +741,123 @@ function _num(v) {
 }
 
 /**
- * 【退潮首日 · 买点侧唯一那只「市场龙二」】构造（第八轮 · 2026-10-14 用户口径）。
+ * 【退潮日 · 买点侧替补（≤2 只）】构造（第八轮建立 · [EBB-R20 2026-10-20 用户口径] 本轮升级）。
  *
- * 用户口径：「买点只有一个，那就是市场的龙二（不是同题材的），是整个早盘竞价看板的股票列表中的
- *   十日涨幅排名第二的龙二，就像今天的九阳股份（市场排名十日涨幅 86%，总列表排名第二），
- *   把它入选到买点侧」（口径追问时拍板：标签用【单独一枚「总龙二买」】）。
+ * 用户口径（本轮原话）：「从20日涨幅中的总龙一到总龙五选出两只排名靠前的。而且是不同总龙一题材的
+ *   股票……也就是从这五只中，要判断是不是创业板，科创板，北交所等非主板的股票，如果是先排除，
+ *   剩下的看是不是和总龙一是同题材，是也排除，剩下的就选排名靠前的那两只。」
+ * （替补名单与五只去留由采集层 _ebbCtxOf 选好 / 留痕，本函数只负责【组装成可渲染的买点块】。）
  *
- * 产出 = 一个【常规买点块】（形状与 _buildBlock 完全一致）里只放一只票 ——
+ * 产出 = 一个【常规买点块】（形状与 _buildBlock 完全一致）里放替补的 1~2 只票 ——
  *   ⇒ 它可以直接喂给 TvrbBuyBlock 渲染，也可以进 `buy.ebbSecond` 槽位让四个装饰器统一挂客观数据
  *   （量比趋势 / 名次变化 / 封单额 / 停牌标记，见 decision-collect#_buyBlocksOf）。
  *
  * ⚠️ 顺序（决定了本函数里那两次「覆盖」的必要性）：
  *   ① 先 `finishBuyBlock` —— 它不是用来给动作标签的，而是为了把【客观数据 + 原始买点信号】
  *      （竞价涨幅徽标 / 占比 + 门槛 / 量比方向 / 仓位 / 持有 / 逐行说明）一次算齐；
- *   ② 再【覆盖】动作标签为【总龙二买】（用户明确要专属标签）并把原始信号写进行内说明
+ *   ② 再【覆盖】动作标签为【退潮替补买】（用户明确要专属标签）并把原始信号写进行内说明
  *      —— 覆盖而不改写逻辑：占比达标与否这条结论一枚不丢，只是换了标签的外观。
  *   ⛔ 绝不改 finishBuyBlock 内部（那是决策看板与本看板共用的实现，§6 红线）。
  *
- * ⚠️ 为什么 `block.block` 用【合成的题材头】而不是它在早盘竞价里的真实题材块：
+ * ⚠️ 为什么 `block.block` 用【合成的题材头】而不是替补票所在的真实题材块：
  *   真实题材块的 `rank` 是「题材排名圆点」，挂在这一行上会被读成本行的名次；
- *   而且本行的第一行标题要写清楚它是什么（市场龙二 / 全列表排名第二），不是某个题材。
- *   ⚠️ 但 `members` 必须放【真实成员行】—— `finishBuyBlock` 的徽标反查（_decorateAucBadge）
- *     要按名字从 members 里取 aucPct / aucShare / volRatioDelta / code，放空数组就会静默少几个徽标。
+ *   而且本行第一行标题要写清楚它是什么（退潮替补 / 20日涨幅总龙一~五里选出来的），不是某个题材。
+ *   ⚠️ `members` 放【真实成员行】—— `finishBuyBlock` 的徽标反查（_decorateAucBadge）
+ *     要按名字从 members 里取 aucPct / aucShare / volRatioDelta / code。
+ *   ⚠️ 替补票【不在今日列表】（20日补位票 / 停牌票）时拿不到成员行 ⇒ 该行照样给出
+ *     （名字 / 代码 / 20日涨幅 / 总龙N 都是采集层的事实），只是少几个竞价徽标，并在说明里如实标注。
  *
- * @param {object} ebb detectEbbDay 的返回（必须 buySecondOn=true）
- * @param {Array} list rankDecisionTopics 的返回 —— 用来找这只票的【真实成员行】（含代码 / 占比 / 量比）
+ * @param {object} ebb detectEbbDay 的返回（必须 buyPicksOn=true）
+ * @param {Array} list rankDecisionTopics 的返回 —— 用来找替补票的【真实成员行】（含代码 / 占比 / 量比）
  * @param {object} fOpts finishBuyBlock 的入参（与正常题材块同一份，保证标记口径一致）
- * @returns {object|null} 常规买点块；拿不到成员行 / 没有龙二 ⇒ null（§10 不猜）
+ * @returns {object|null} 常规买点块；一只替补都没有 ⇒ null（§10 不猜）
  */
-function _buildEbbSecondBlock(ebb, list, fOpts) {
-  if (!ebb || !ebb.buySecondOn || !ebb.buySecondName) return null;
-  const name = String(ebb.buySecondName);
-  const topic = String(ebb.buySecondTopic || '').trim();
+function _buildEbbPicksBlock(ebb, list, fOpts) {
+  if (!ebb || !ebb.buyPicksOn || !Array.isArray(ebb.buyPicks) || ebb.buyPicks.length === 0) return null;
+  const picks = [];
 
-  // 真实成员行：只在【该票所属题材块】里找（同名的其它题材成员不存在，找不到就返回 null 不硬造）
-  let member = null;
-  (list || []).forEach(function(b) {
-    if (member) return;
-    if (String(b && b.topic || '').trim() !== topic) return;
-    (b.members || []).forEach(function(m) {
-      if (!member && m && String(m.name || '').trim() === name) member = m;
+  // 真实成员行：先按【它所属题材块】找（同名的其它题材成员不存在），找不到再全题材按名字兜一次
+  const _memberOf = function(name, topic) {
+    let member = null;
+    (list || []).forEach(function(b) {
+      if (member) return;
+      if (topic && String(b && b.topic || '').trim() !== topic) return;
+      (b.members || []).forEach(function(m) {
+        if (!member && m && String(m.name || '').trim() === name) member = m;
+      });
     });
-  });
-  if (!member) return null;
-
-  const head = topic ? ('市场龙二 · ' + topic) : '市场龙二';
-  const pick = {
-    seq: 1,
-    name: name,
-    dragonLabel: ebb.buySecondLabel,
-    dragonRank: ebb.buySecondRank,
-    pct: ebb.buySecondPct,
-    // 代码优先取采集层给的（与 members 同一个值，§6 只搬运）
-    code: ebb.buySecondCode || String(member.code || '').trim(),
-    pctText: ebb.buySecondPctText,
-    // ⚠️ 预置：_decorateAucBadge 之前 _markHold 要读它（与 _buildBlock 同一做法）
-    aucShare: _num(member.aucShare),
-    position: ''
+    if (!member) {
+      (list || []).forEach(function(b) {
+        if (member) return;
+        (b.members || []).forEach(function(m) {
+          if (!member && m && String(m.name || '').trim() === name) member = m;
+        });
+      });
+    }
+    return member;
   };
 
+  const members = [];
+  ebb.buyPicks.forEach(function(p, idx) {
+    const member = _memberOf(p.name, p.topic);
+    if (member && !members.some(function(m) { return m && m.name === p.name; })) members.push(member);
+    picks.push({
+      seq: idx + 1,
+      name: p.name,
+      dragonLabel: p.label,
+      dragonRank: null,
+      pct: p.pct,
+      // 代码优先取采集层给的（与 members 同一个值，§6 只搬运）
+      code: p.code || String((member && member.code) || '').trim(),
+      pctText: p.pctText,
+      // ⚠️ 预置：_decorateAucBadge 之前 _markHold 要读它（与 _buildBlock 同一做法）；
+      //    替补票不在今日列表 ⇒ member 为 null ⇒ 只能按缺数据处理（§10 不猜）
+      aucShare: member ? _num(member.aucShare) : null,
+      position: ''
+    });
+  });
+
+  const namesText = ebb.buyPicks.map(function(p) {
+    return '【' + (p.label || '') + p.name + '】（' + (p.topic || '—') + '，20日涨幅 ' + p.pctText + '）';
+  }).join('、');
+
   const notes = [
-    '⚠️ 本行【不是】题材选股的结果，而是【退潮首日的唯一买点】：市场总龙【' + ebb.leaderName + '】' +
-      ebb.whyText + ' ⇒ 买点侧只留【市场龙二】（总龙自己今天不买）。',
-    '【市场龙二】= 当日十日涨幅在【早盘竞价全列表】里排名第二、且【有龙位】的那一只' +
-      '（本日 = ' + name + '，当日十日涨幅 ' + ebb.buySecondPctText +
-      (topic ? '，' + topic : '') + '）。' +
-      '⚠️ 全列表第一是【市场总龙】自己（' + ebb.leaderName + '）——它今天正是被判定退潮的那一只，不买。',
-    '为什么只用【当日】十日涨幅排：这是屏幕上「十日涨幅」那一列的口径（与市场总龙的「昨日」口径不同）' +
-      '——总龙停牌时当日读不到涨幅，只能用昨日；而龙二只看今天谁最强，所以看今天那一列。',
-    '⚠️ 与卖点侧的【市场总龙二】不是同一只：那边用的是【昨日】十日涨幅第二' +
-      '（昨日口径，因为要判「它昨天就是强龙」），这边用的是【当日】十日涨幅第二（今天最强的那只）。'
-  ];
+    '⚠️ 本行【不是】题材选股的结果，而是【' + ebb.phaseTitle + '的退潮替补】：市场总龙【' + ebb.leaderName + '】' +
+      ebb.whyText + ' ⇒ 买点侧只留替补（总龙自己今天不买）。',
+    '【替补怎么选】= 从【20日涨幅】的总龙一到总龙五里：先排非主板（创业板/科创板/北交所），' +
+      '再排与总龙一同题材，剩下的取排名最靠前的前两只 —— 本日 = ' + namesText + '。',
+    (ebb.buyTrailText ? ('五只去留（判定可追溯）：' + ebb.buyTrailText + '。') : ''),
+    '⚠️ 涨幅口径 = 【当日 20日涨幅】（与「20日涨幅」toggle 的总龙一~五同一列）——' +
+      '停牌票按它自己的交易日回溯、靠补位照样进榜，这正是总龙用 20日口径的原因。'
+  ].filter(function(s) { return !!s; });
   if (ebb.buySecondTrouble) notes.push(ebb.buySecondTrouble);
 
   const block = {
     // ── ① 决策看板形状的字段（finishBuyBlock / 装饰器要读的）──
     block: {
-      topic: head,
+      topic: '退潮替补 · ' + (ebb.leaderTopic || '—'),
       rank: null,          // ⛔ 不给圆点：本行不是题材排名
       count: null,
       yiziCount: null,
       // ★ 真实成员行 —— 徽标 / 占比 / 量比方向 / 代码都从它反查（见函数头注释）
-      members: [member]
+      members: members
     },
     rankWord: '',
     pickRank: null,
-    reason: '退潮首日【唯一买点】：【市场龙二】= 当日十日涨幅全列表排名第二（' +
-      ebb.buySecondPctText + '，' + (topic || '—') + '）—— 总龙【' + ebb.leaderName + '】' +
-      ebb.whyText + ' ⇒ 今天只买这一只（其余入选票一律【' + EBB_NO_BUY_TAG + '】）',
+    reason: ebb.phaseTitle + '【退潮替补】：' + namesText +
+      ' —— 总龙【' + ebb.leaderName + '】' + ebb.whyText +
+      ' ⇒ 今天只买这 ' + ebb.buyPicks.length + ' 只替补（其余入选票一律【' + EBB_NO_BUY_TAG + '】）',
     mode: 'ebb',
     ruleNo: EBB_SECOND_RULE_NO,
     isCandidate: false,
     candidateTag: '',
     qualified: true,
     notQualifiedText: '',
-    picks: [pick],
+    picks: picks,
     notes: notes,
 
     // ── ② 本看板自己的平铺字段（组件直接读）──
-    topic: head,
+    topic: '退潮替补 · ' + (ebb.leaderTopic || '—'),
     rank: null,
     count: null,
     yiziCount: null,
@@ -703,26 +867,29 @@ function _buildEbbSecondBlock(ebb, list, fOpts) {
     pickCount: 0,
     rangeText: '',
     skippedNames: [],
-    // ★ 供视图判断「这是退潮首日那一行」（避免模板靠 tier 字符串比较，§21）
+    // ★ 供视图判断「这是退潮替补那一行」（避免模板靠 tier 字符串比较，§21）
     isEbbSecond: true
   };
 
   // ① 让它按决策看板的同一份实现把【客观数据 + 原始买点信号】算齐
   finishBuyBlock(block, fOpts);
-  // ② 再覆盖动作标签为专属的【总龙二买】（用户拍板），并原始信号原文留进行内说明
-  const lead = '【退潮首日 · 唯一买点】市场总龙【' + ebb.leaderName + '】' + ebb.whyText +
-    ' ⇒ 今天买点侧只有这一只（【' + EBB_SECOND_BUY_TAG + '】）：';
+  // ② 再覆盖动作标签为专属的【退潮替补买】（用户拍板），并原始信号原文留进行内说明
+  const lead = '【' + ebb.phaseTitle + ' · 退潮替补】市场总龙【' + ebb.leaderName + '】' + ebb.whyText +
+    ' ⇒ 今天买点侧只有替补这几只（【' + EBB_SECOND_BUY_TAG + '】）：';
   (block.picks || []).forEach(function(p) {
+    const me = ebb.buyPicks.filter(function(x) { return x.name === p.name; })[0] || null;
     const rawTag = p.buyActionTag || '';
     const rawNote = p.actionNote || '';
     p.buyActionTag = EBB_SECOND_BUY_TAG;      // ★ 覆盖式：本行唯一那枚标签
     p.buyActionTone = EBB_SECOND_BUY_TONE;
     p.holdTag = '';                           // 与「今天要买」互斥（原本的持有 / 先卖后买让路）
     p.position = '';
-    p.actionNote = lead + '它是【市场龙二】= 当日十日涨幅全列表排名第二（' + ebb.buySecondPctText +
-      '，' + (topic || '—') + '，' + (ebb.buySecondLabel || '') + '）。' +
+    p.actionNote = lead + '它是【' + ((me && me.label) || '') + p.name + '】= 20日涨幅全市场排名第 ' +
+      ((me && me.rank20) || '—') + ' 的替补（' + ((me && me.pctText) || '') +
+      '，' + ((me && me.topic) || '—') + '）。' +
       (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : '') +
-      ' 退潮首日不按常规买点罗列：只留这一只，其余入选票一律【' + EBB_NO_BUY_TAG + '】（灰色）。';
+      (me && me.trouble ? (' ' + me.trouble) : '') +
+      ' 退潮日不按常规买点罗列：只留替补这几只，其余入选票一律【' + EBB_NO_BUY_TAG + '】（灰色）。';
   });
   return block;
 }
@@ -755,9 +922,9 @@ function _buildEbbSecondBlock(ebb, list, fOpts) {
 function _applyEbbBuyRules(blocks, ebb) {
   if (!ebb) return;
   const topicText = ebb.leaderTopic || '—';
-  const lead = '【退潮首日】市场总龙【' + ebb.leaderName + '】（' + topicText +
-    '，昨日十日涨幅 ' + ebb.leaderPctText + '）' + ebb.whyText +
-    ' ⇒ 题材退潮首日【今天不买】：';
+  const lead = '【' + ebb.phaseTitle + '】市场总龙【' + ebb.leaderName + '】（' + topicText +
+    '，20日涨幅 ' + ebb.leaderPctText + '）' + ebb.whyText +
+    ' ⇒ 题材退潮【今天不买】：';
   (blocks || []).forEach(function(b) {
     (b.picks || []).forEach(function(p) {
       if (!p || !p.name) return;
@@ -766,8 +933,8 @@ function _applyEbbBuyRules(blocks, ebb) {
       p.buyActionTag = EBB_NO_BUY_TAG;      // ★ 覆盖式：买点行上唯一那枚「买」的标签
       p.buyActionTone = EBB_NO_BUY_TONE;
       p.actionNote = lead +
-        '本股今天【不开新仓】—— 退潮首日只有卖点、没有买点，原本的【' + HOLD_TAG + '】/ 竞价买 / ' +
-        '尾盘买 / 先卖后买 等买点信号一律作废。' +
+        '本股今天【不开新仓】—— 退潮日除【' + EBB_SECOND_BUY_TAG + '】替补外没有其它买点，' +
+        '原本的【' + HOLD_TAG + '】/ 竞价买 / 尾盘买 / 先卖后买 等买点信号一律作废。' +
         '（等题材重新走强 —— 总龙复牌 / 竞价占比回升 / 平均量比回来 —— 再看买点。）';
     });
   });
@@ -1182,15 +1349,18 @@ function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames) {
  * @param {Array} topics   rankDecisionTopics(entries, MODE_VOL_RATIO) 的返回（已按平均竞价量比降序）
  * @param {Map} dragonMap  rankDragons(topics) 的返回【卖点侧用】（= 收盘口径，退潮 / 卖点逐字不变）
  * @param {{date?:string, ctx?:object, sellRows?:Array, ebbCtx?:object,
- *          buyDragonMap?:Map, pctMap?:Map, buySkipNames?:Set, prevEbbDay?:object}} [opts]
+ *          buyDragonMap?:Map, pctMap?:Map, buySkipNames?:Set, prevEbbDay?:object,
+ *          ebbHistory?:Array}} [opts]
  *        date     = 展示日（当前已由组合式调 decorateDecisionRows 统一装饰，这里只留作扩展位）
  *        ctx      = decision-collect#collectDecisionTopics(actionContext) 给的标记上下文
  *                   {prevDragonNames, prevBuyNames, prevBought, prevBoughtTopics, topicStreakPast}；
  *                   ⛔ 缺省 = 全部为 null ⇒ 持有 / 昨有买入 / N 次入选 / 先卖后买 / 补涨
  *                   一枚都不打（§10：未知 ≠ 没有），⛔ 绝不在这里用空集合顶替。
  *        sellRows = decision-collect 给的卖点候选行（缺省 ⇒ 不产卖点段）
- *        ebbCtx   = decision-collect#_ebbCtxOf 采好的【退潮首日事实】（市场总龙 / 今日停牌 / 今日占比 /
- *                   同题材龙位成员 / 市场总龙二）；缺省 / ready=false ⇒ 退潮规则不生效（§10 不猜）
+ *        ebbCtx   = decision-collect#_ebbCtxOf 采好的【退潮日事实】（市场总龙 / 今日停牌 / 今日占比 /
+ *                   同题材龙位成员 / 市场总龙二 / 买点侧替补与五只去留）；缺省 / ready=false ⇒ 退潮规则不生效（§10 不猜）
+ *        ebbHistory = ★ [EBB-R20] 近 12 个交易日的退潮判定落库行（tvrb_ebb_days，组合式读回注入）——
+ *                   「首次 / 二次确认 / 无第三次」的事件计数用；缺省 ⇒ 按 0 次事件（= 首次退潮）。
  *        buyDragonMap = ★ [TVRB-926 2026-10-14 用户口径]【买点侧专用】的龙位名册（9:26 口径，
  *                   decision-rules#rankDragonsWithPctMap 的返回）；缺省 ⇒ 退回上面的 dragonMap
  *                   = 旧行为（§11 默认零行为变化）。
@@ -1291,12 +1461,14 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     else out.buy.candidates.push(b);
   });
 
-  // ★ [EBB 2026-10-13 第五轮用户口径] 退潮首日判定 —— 排在空仓提醒【之前】：
+  // ★ [EBB 2026-10-13 第五轮用户口径] 退潮日判定 —— 排在空仓提醒【之前】：
   //   「空仓提醒」在退潮日走退潮口径（理由比「量比 < 25」更硬），见 buildCashAlert 的二参。
   //   ⛔ 它只读【事实】（谁是总龙 / 今天停不停牌 / 占比多少），不读 state、不发请求（事实由采集层给）。
   // ★ [EBB-R8 2026-10-14] 第二个入参 = 【上一交易日落库的退潮判定】（tvrb_ebb_days 表里那一行）
-  //   —— 首日闸门用它；缺省（表不存在 / 那天没记录）⇒ 退化为「用昨日行情行推断」，再取不到按首日。
-  out.ebb = detectEbbDay(o.ebbCtx || null, o.prevEbbDay || null);
+  //   —— 昨日闸门用它；缺省（表不存在 / 那天没记录）⇒ 退化为「用昨日行情行推断」，再取不到按可触发。
+  // ★ [EBB-R20 2026-10-20] 第三个入参 = 【近 12 个交易日的退潮判定落库行】——
+  //   「首次 / 二次确认 / 无第三次」的事件计数用它；缺省 ⇒ 按 0 次事件（= 首次退潮）处理。
+  out.ebb = detectEbbDay(o.ebbCtx || null, o.prevEbbDay || null, o.ebbHistory || null);
 
   // ★ [CASH-ALERT 2026-10-13 用户口径] 空仓提醒：只看【能入选的】排名第一题材（blocks[0]）。
   //   ⛔ 放在选股【之后】、且只读不写 —— 命中时股票照常列在下面（用户原话「还是按照原来的正常方式
@@ -1332,18 +1504,18 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     _applyCashAlertBuyRules(out.blocks, out.cashAlert);
   }
 
-  // ★★ [EBB-R8 2026-10-14 用户口径] 退潮首日【买点侧唯一那只 · 市场龙二】：
-  //   「买点只有一个，那就是市场的龙二……把它入选到买点侧」。
+  // ★★ [EBB-R20 2026-10-20 用户口径] 退潮日【买点侧替补 · ≤2 只】：
+  //   「从20日涨幅中的总龙一到总龙五选出两只排名靠前的……只选好两只，已经完成任务，后面不选了」。
   //   ⛔ 顺序（三步都不能换）：
   //     ① `_applyEbbBuyRules` 先跑完（把【常规题材块】的每行改成【退潮不买】+ 整段灰化）
   //        —— 用户拍板：这些票【照旧列出来】（灰化空仓视觉保留），只是不再有买点；
-  //     ② 再构造龙二那一行（它走 finishBuyBlock，拿到客观数据与原始买点信号，然后换成专属标签）
-  //        —— 若反过来，第 ① 步会把它也打成【退潮不买】（那这枚唯一买点就没了）；
+  //     ② 再构造替补块（它走 finishBuyBlock，拿到客观数据与原始买点信号，然后换成专属标签）
+  //        —— 若反过来，第 ① 步会把它也打成【退潮不买】（那这些替补买点就没了）；
   //     ③ 同时挂进 `buy.ebbSecond` 槽位，让四个装饰器（量比趋势 / 名次变化 / 封单额 / 停牌）
   //        照常给它挂客观数据（§6 共用同一次遍历）。
-  //   §10：当日涨幅未就绪 / 这一只找不到真实成员行 ⇒ 构造返回 null ⇒ 买点侧不出现这一行
-  //        （⛔ 绝不拿昨日涨幅或另一个名次去顶替），空仓标语会如实改口径（见 detectEbbDay）。
-  out.ebbBuy = _buildEbbSecondBlock(out.ebb, list, fOpts);
+  //   §10：20日前五未就绪 / 一只替补都选不出 ⇒ 构造返回 null ⇒ 买点侧不出现这一段
+  //        （⛔ 绝不拿别的名次顶替），空仓标语会如实改口径（见 detectEbbDay）。
+  out.ebbBuy = _buildEbbPicksBlock(out.ebb, list, fOpts);
   if (out.ebbBuy) out.buy.ebbSecond = out.ebbBuy;
 
   // ★★ [EBB-R8 2026-10-14 用户口径] 落库行：把今天的退潮【判定】存下来，供明天判「是不是首日」。
@@ -1434,11 +1606,11 @@ export function buildTvrbRulesLines() {
     //    「买在分歧，卖在一致。弱势切抱团，分歧切核心。今天是总市场龙一分歧，核心就是总市场龙二。
     //      龙一分歧时，就切到龙二。」
     //    ⛔ 原文照录（含「今天」那一句 —— 它就是这条口诀的实例说明），只在句尾补一句「对应第几条」，
-    //       让口诀与第二十一条【总龙二买】互相指得着（§6：文案与口径同处一处）。
+    //       让口诀与第二十一条【退潮替补买】互相指得着（§6：文案与口径同处一处）。
     '★【口诀 · 用户口径】买在分歧，卖在一致。弱势切抱团，分歧切核心。' +
       '市场总龙（龙一）分歧时，核心就是【市场总龙二】（今天正是这种情形：总市场龙一分歧' +
-      ' ⇒ 核心就是总市场龙二）；龙一分歧时，就切到龙二 —— 即第二十一条那只【' +
-      EBB_SECOND_BUY_TAG + '】。',
+      ' ⇒ 核心就是总市场龙二）；龙一分歧时，就切到龙二 —— 即第二十一条那几只【' +
+      EBB_SECOND_BUY_TAG + '】替补。',
     '一、题材排名：把早盘竞价看板的题材按【平均竞价量比】由高到低排序（与早盘竞价「题材 toggle」同一套组序）；' +
       '★ 只看平均竞价量比、【不管题材里股票有多少只】（量比相同才按题材名定序）——与早盘竞价题材 toggle 逐键一致。',
     '二、题材数量门槛：题材内股票数量 < ' + TVRB_MIN_COUNT + ' 只 ⇒ 该题材【不入选】；' +
@@ -1500,49 +1672,52 @@ export function buildTvrbRulesLines() {
       '★ 另外，当当日为【退潮首日】（第二十条）时也一律提示空仓，并改用退潮口径的标语、' +
       '买点侧标签走【' + EBB_NO_BUY_TAG + '】（退潮首日【优先】于本提醒，两枚标签同处一套灰化视觉）。',
     // ── ★ [EBB 2026-10-13 第五轮用户口径] 退潮首日（用户原话见文件头，规则与判定同处一处，§6）
-    '二十、【退潮首日 · 卖点收紧】市场总龙 = 当日早盘竞价【全列表】里【昨日十日涨幅】最高、' +
-      '且【有龙位（主板龙标）】的那只。' +
-      '它今日【停牌】或【竞价占比不达标】（二者有一即算）⇒ 判定为【题材退潮首日】。' +
-      '⚠️ 涨幅口径是【昨日】的：当天早上还没收盘算不出今天的十日涨幅，停牌票当天更是读不到。' +
-      '⚠️ 【只认有龙位的票】：创业板 / 科创板不发龙标，不具备「某题材的龙头」语义，' +
-      '也就不可能承载【题材退潮】—— 它们不参与总龙排名（否则一只没有龙标的高涨幅票会顶掉真总龙，' +
-      '让退潮判定永不成立）。',
-    '　　退潮首日，卖点侧只有两类票标【' + EBB_PICK_TAG + '】（= 允许等开盘看【分笔成交】再卖，' +
+    //    ★★ [EBB-R20 2026-10-20 用户口径] 总龙改用 20日涨幅；替补选两只；首日/二次确认。
+    '二十、【题材退潮 · 卖点收紧】市场总龙（总龙一）= 【20日涨幅】全市场第一的那只' +
+      '（与「20日涨幅」toggle 的总龙一【同一只、同一列】：停牌票按它自己的交易日回溯、靠补位照样进榜，' +
+      '这正是改用 20日口径的原因 —— 十日口径在总龙停牌那天恰恰排不出它；舍弃旧的「昨日十日涨幅第一」选法）。' +
+      '⚠️ 退潮是【题材退潮】，不是个股退潮：总龙一在某个题材停牌或者占比不符，' +
+      '导致整个题材的股票预期走势很差。' +
+      '它今日【停牌】或【竞价占比不达标】（二者有一即算）⇒ 判定为【题材退潮】。' +
+      '⚠️ 占比门槛【恒按龙头档】（3.5%，含容错 4%）—— 总龙一就是市场龙头，' +
+      '⛔ 不因它今天在题材内的十日龙位不是龙一而降档到 2%' +
+      '（10-20 例：总龙新华传媒 20日全市场第一，当日十日口径里只是 AI应用 的龙三，占比 2.7% ⇒ 按龙头档判【不达标】⇒ 退潮）。' +
+      '提示语会写明题材与阶段：首次 =【主线{题材}首次退潮】，再次 =【{题材}二次确认退潮】。',
+    '　　退潮日，卖点侧只有两类票标【' + EBB_PICK_TAG + '】（= 允许等开盘看【分笔成交】再卖，' +
       '⛔ 不看占比）：' +
       '①【同题材可用龙位】= 总龙所在题材里龙位最靠前、且【非竞价一字 / 非停牌】的那只' +
       '（龙二不可用就顺延龙三、龙四……）；' +
       '②【市场总龙二】= 昨日十日涨幅【第二】的那只，且必须是【它自己题材的龙一】、与总龙【不同题材】、' +
       '且非竞价一字 / 非停牌（⛔ 这一只【不顺延】：它必须正好是涨幅第二，不递补涨幅第三）。',
     '　　其余股票（含原本标【' + HOLD_TAG + '】的）一律改【' + SELL_OUT_TAG + '】：开盘就走，降低风险。',
-    '　　买点侧：退潮首日是【只有卖、没有买】——入选股票的买点动作标签一律改为【' + EBB_NO_BUY_TAG + '】' +
+    '　　买点侧：退潮日是【除替补外没有买点】——入选股票的买点动作标签一律改为【' + EBB_NO_BUY_TAG + '】' +
       '（原本的【' + HOLD_TAG + '】/ 竞价买 / 尾盘买 / 先卖后买 等买点信号一律作废），' +
       '整段【变灰】+ 顶部大字【建议空仓】：今天不开新仓。' +
-      '⚠️ 唯一的例外是第二十一条的那一只【总龙二买】。',
-    // ── ★ [EBB-R8 2026-10-14 用户口径] 「首日」限定 + 买点侧唯一那只（用户要求写进规则手册）──
-    '　　⚠️【只在首日生效】：上面这套退潮规则，只对市场总龙【首日】出现停牌 / 占比不达标的那一天生效。' +
-      '如果总龙【连续第二天】还是停牌（或还是不达标），就【不算】了 —— 规则不生效，按平常的日子处理。' +
-      '判据 = ① 先看【上一交易日那只总龙】落库的判定（存到 tvrb_ebb_days 表里：那天算不算退潮）；' +
-      '② 表里没有那天（例如那天没打开过看板）⇒ 用上一交易日那一行的【竞价量 / 占比】推断' +
-      '（竞价量 0 = 那天没有竞价 = 停牌语义）；' +
-      '③ 两处都取不到 ⇒ 按【首日】处理（宁可多提醒一次，不漏掉风险）。' +
-      '⚠️ 只认【同一只总龙】：昨天当总龙的是别的票 ⇒ 对今天这只而言本来就是首日。' +
-      '说明文字里会如实写出本次这条判定是从哪里来的（落库 / 推断 / 按首日）。',
-    '二十一、【退潮首日 · 买点侧唯一那只「' + EBB_SECOND_BUY_TAG + '」】退潮首日的买点侧' +
-      '【只有一个买点】，就是【市场龙二】= 整个早盘竞价看板股票列表里【当日十日涨幅排名第二】的那只' +
-      '（例如 10-13 = 九阳股份，当日十日涨幅 86%，全列表第二）。' +
-      '⚠️ 排名用【当日】十日涨幅（= 屏幕上「十日涨幅」那一列）——与第二十条的市场总龙的【昨日】口径不同：' +
-      '总龙停牌时当日读不到涨幅、只能用昨日；龙二只看今天谁最强，所以看今天那一列。' +
-      '⚠️ 与市场总龙【同一把尺子】：只认【有龙位（主板龙标）】的票（创业板 / 科创板不参排）。' +
-      '⚠️ 取【不是总龙本人】里最靠前的那一只：总龙当日有涨幅（排第 1）⇒ 取第 2 名；' +
-      '总龙今日停牌 / 当日无涨幅 ⇒ 取第 1 名（榜单第二名换成了它，口径不变）。' +
-      '⚠️ 它可以是同题材的，也可以不是 —— 只看「所有股票里的十日涨幅第二名」。' +
-      '⚠️ 标签是【' + EBB_SECOND_BUY_TAG + '】这一枚专属标签（不是竞价买 / 尾盘买），' +
-      '但行内说明会把它【常规的买点信号】（占比达标 ⇒ 竞价买 / 不达标 ⇒ 尾盘买）原样写出来，信息不丢。' +
-      '⚠️ 这一行【不参与买点侧的整体灰化】：灰化只盖入选题材块那些【' + EBB_NO_BUY_TAG + '】的行 ——' +
-      '它正是要一眼看见的那一只。' +
-      '⚠️ 它若今日停牌 / 竞价一字（买不进），照样列出来并如实标注，⛔ 不顺延到第三名。' +
-      '⚠️ 它若同时在卖点侧（昨天已经买过），卖点侧【不改写】它的标签（今天又进买点 ⇒ 持有）——' +
-      '同一天不可能既「唯一要买」又「竞价清仓」。',
+      '⚠️ 唯一的例外是第二十一条的那几只【' + EBB_SECOND_BUY_TAG + '】替补。',
+    // ── ★ [EBB-R20 2026-10-20 用户口径] 首次 / 二次确认（近 10 天历史）+ 无第三次 ──
+    '　　⚠️【只在首次 / 二次确认生效】：这套退潮规则，只对题材【首次退潮】和【二次确认退潮】生效。' +
+      '判据看【最近 10 个交易日】的表现：十天内出现过一次退潮 ⇒ 今天【不算首次】，而是【二次确认】；' +
+      '十天内已出现过两次 ⇒【没有第三次】，本规则不再触发，按平常日子选股（用户口径「退潮后基本不看了' +
+      '这个题材了」）。' +
+      '⚠️ 【事件】≠【天数】：总龙连续多日停牌 / 不达标只算【一次】事件（第二天起是延续，不触发也不多计）。' +
+      '判据 = ① 退潮判定每天落库（tvrb_ebb_days 表）；② 首日闸门先看【上一交易日】：同一只总龙昨天已在' +
+      '坏状态 ⇒ 今天是延续 ⇒ 不触发；③ 再数【近 10 个交易日】里同题材的退潮事件次数定阶段；' +
+      '④ 落库 / 行情行都取不到 ⇒ 按【可触发】处理（宁可多提醒一次，不漏掉风险）。' +
+      '说明文字里会如实写出本次判定是从哪里来的（落库 / 推断 / 取不到）。',
+    '二十一、【退潮日 · 买点侧替补「' + EBB_SECOND_BUY_TAG + '」】退潮日的买点侧【只买替补，最多两只】：' +
+      '从【20日涨幅】的总龙一到总龙五里选 —— ' +
+      '① 先排除【非主板】（创业板 300/301、科创板 688/689、北交所一律不要）；' +
+      '② 再排除【与总龙一同题材】的（总龙自己正是被判定退潮的那只，本来就不买）；' +
+      '③ 剩下的按 20日涨幅排名取【最靠前的前两只】—— 只选两只，后面不再选（不足两只就只给算得出的）。' +
+      '（例 10-20：五只全主板，总龙三新华文轩 / 总龙五慈文传媒与龙一（AI应用）同题材先排除，' +
+      '剩下九阳股份（总龙二）和澳弘电子（总龙四）入选。）' +
+      '⚠️ 涨幅口径 = 【当日 20日涨幅】（与「20日涨幅」toggle 的总龙一~五同一列）。' +
+      '⚠️ 标签是【' + EBB_SECOND_BUY_TAG + '】这枚专属标签（不是竞价买 / 尾盘买），' +
+      '但行内说明会把每只的【常规买点信号】（占比达标 ⇒ 竞价买 / 不达标 ⇒ 尾盘买）原样写出来，信息不丢，' +
+      '并如实列出【五只去留】（谁为什么被排除）。' +
+      '⚠️ 替补若今日停牌 / 竞价一字（买不进），照样列出来并如实标注。' +
+      '⚠️ 替补若同时在卖点侧（昨天已经买过），卖点侧【不改写】它的标签（今天又进买点 ⇒ 持有）——' +
+      '同一天不可能既「要买」又「竞价清仓」。',
     '二十二、本看板的退潮判定【不做预测、不改客观数据】：十日涨幅 / 竞价涨幅 / 量比 / 占比 / 龙标 /' +
       '名次变化 / 连板 / 封单额一律照常显示 —— 退潮只改「今天怎么买、怎么卖」。',
     // ── ★ [TVRB-926 2026-10-14 用户口径 · 原话] 「题材量比看板选股买点侧，为什么早上的，和收盘的
@@ -1556,8 +1731,8 @@ export function buildTvrbRulesLines() {
       '⚠️ 本看板的【买点侧选股】（含每行显示的十日涨幅）一律用【9:26 口径】那一份：' +
       '用库里已存的「收盘涨幅 / 竞价涨幅」把那一根腿反解回竞价口径 —— ' +
       '⛔ 不新建表、不改任何行情数据，且历史日期同样有效（翻回任何一天，看到的都是当天 9:26 选出的那批股票）。' +
-      '⚠️ 只有【买点侧选股】用这一份：其余（题材排名、平均量比、占比、退潮判定 / 市场总龙、卖点）' +
-      '与早盘竞价看板、决策看板用的是【同一份】收盘口径 —— 用户拍板「其它不变」。' +
+      '⚠️ 只有【买点侧题材选股】用这一份：题材排名、平均量比、占比、卖点与早盘竞价看板、决策看板用' +
+      '【同一份】收盘口径；退潮判定的总龙与替补【另有 20日涨幅口径】（见第二十 / 二十一条）—— 用户拍板「其它不变」。' +
       '⚠️ 反解的前提（那一行确实已换过腿、且两个涨幅都读得到）不满足时，如实保留原值并在' +
       '买点侧提示「9:26 口径未就绪」，⛔ 绝不静默拿收盘口径冒充早上那一份。',
     // ── ★ [SUSPEND-NOBUY 2026-10-14 用户口径 · 原话]「10月14日的新华传媒是停牌（非首日），

@@ -120,18 +120,18 @@
                ⛔ 它不改变选股 —— 命中时下面的题材块与股票行照常列出（用户「其它不变」）。
                ⛔ 不能挪到 v-if="ready" 之外：未就绪时给「空仓」结论等于拿没数据当量比低用（§10）。 -->
           <TvrbCashAlert :alert="cashAlert" />
-          <!-- ★★ [EBB-R8 2026-10-14 用户口径] 退潮首日【买点侧唯一那只 · 市场龙二】：
-               用户原话「买点只有一个，那就是市场的龙二（不是同题材的）……把它入选到买点侧」。
+          <!-- ★★ [EBB-R8 2026-10-14 → EBB-R20 2026-10-20 用户口径] 退潮日【买点侧替补（≤2 只）】：
+               用户原话「从20日涨幅中的总龙一到总龙五选出两只排名靠前的……剩下的就选排名靠前的那两只」。
                ⛔ 它【必须】渲染在 .tvrb-buy-list【之外】—— 那个容器挂着父级 filter: grayscale(1)，
-                  CSS 的 filter 无法被子元素撤销；放进去就等于把「今天唯一能下手的那一只」也灰掉了。
-               ⛔ 它【不在】blocks 里（见组合式的 ebbBuy），是独立的一行；不是退潮日 / 算不出 ⇒ 整个容器不渲染。
-               ⚠️ head-text 传 Logic 给的一行标题（这一行没有「数量 / 平均量比」等题材级统计，见 TvrbBuyBlock）。 -->
+                  CSS 的 filter 无法被子元素撤销；放进去就等于把「今天能下手的替补」也灰掉了。
+               ⛔ 它【不在】blocks 里（见组合式的 ebbBuy），是独立的一段；不是退潮日 / 选不出 ⇒ 整个容器不渲染。
+               ⚠️ 容器标签由 Logic 下发（ebb.buyOnlyLabelText，§21 模板零计算）；head-text 传块的合成题材头。 -->
           <div
             v-if="ebbBuy"
             class="tvrb-ebb-only-buy"
           >
             <div class="tvrb-ebb-only-label tvrb-selectable">
-              退潮首日 · 买点只有这一只（市场龙二）
+              {{ ebb && ebb.buyOnlyLabelText ? ebb.buyOnlyLabelText : '退潮替补 · 买点' }}
             </div>
             <TvrbBuyBlock
               :block="ebbBuy"

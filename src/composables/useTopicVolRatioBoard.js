@@ -72,6 +72,15 @@ import { getPreviousTradingDay } from '../logic/date/trading-day-helpers.js';
 //   ⛔ 纯只读：`stock_range_pct` + `market_metrics` 各一次（都走会话缓存 + 单飞，§32），
 //     不发任何上游请求、不消耗猫抓额度。
 import { readAuctionLegRangeMap } from '../logic/auction/range-auction-leg.js';
+// ★ [EBB-R20 2026-10-20 用户口径] 20日涨幅前五（总龙一~五）—— 退潮判定的总龙与买点侧替补的【唯一】来源：
+//   ensureRange20Leaders 触发计算（幂等 + 会话缓存 + 单飞，与「20日涨幅」toggle 共享同一份）；
+//   getRange20Leaders 读发布结果（null = 该日还没结论，⛔ 不等于「没有总龙」）；
+//   getRange20LeadersFingerprintToken = 响应式指纹（发布后 data computed 自动重算）。
+import {
+  ensureRange20Leaders,
+  getRange20Leaders,
+  getRange20LeadersFingerprintToken
+} from '../logic/auction/range20-leaders.js';
 // ★ 买点侧专用龙位（= 同一把尺子 computeDragonRankMap，只把十日涨幅换成 9:26 口径那份）
 import { rankDragonsWithPctMap } from '../logic/decision/decision-rules.js';
 // ★★ [EBB-R8 2026-10-14 用户口径] 退潮判定【落库表】的读写入口（§5 唯一出处）。
@@ -200,6 +209,17 @@ export function useTopicVolRatioBoard() {
    */
   const prevEbbDay = ref(null);
   const prevEbbDayDate = ref('');
+  /**
+   * ★ [EBB-R20 2026-10-20] 近 12 个交易日的退潮判定落库行（tvrb_ebb_days）。
+   *
+   * 作用：detectEbbDay 的【首次 / 二次确认 / 无第三次】事件计数 ——
+   *   近 10 个交易日里同题材的退潮事件 0 次 ⇒ 首次、1 次 ⇒ 二次确认、≥2 次 ⇒ 不触发。
+   *   多取 2 天只用来判「连续退潮日合并成一次事件」（每行带 prevDate，日期链在这里算好注入，
+   *   ⛔ 不把 getPreviousTradingDay 拖进规则层的纯函数 —— 与 _ebbCtxOf 的 prevDate 同一范式）。
+   * ⚠️ 读失败 ⇒ 置空数组（按 0 次事件 = 首次处理，与「取不到就按可触发」的用户拍板一致），但必须留痕。
+   */
+  const ebbHistory = ref([]);
+  const ebbHistoryDate = ref('');
 
   /**
    * ★★ [EBB-R8 2026-10-14] 【展示日当天】的十日涨幅（Map&lt;股票名,{pct}&gt;）。
@@ -271,9 +291,19 @@ export function useTopicVolRatioBoard() {
         buyRangeDate.value = d;
       });
     }
+    // ①-d ★ [EBB-R20 2026-10-20] 20日涨幅前五（总龙一~五）：为退潮判定 / 替补选股预热。
+    //   幂等 + 会话缓存 + 单飞（与「20日涨幅」toggle / 补位区块共享同一份，不会多烧请求）；
+    //   发布结果经 getRange20Leaders(d) 在 data computed 里同步读（指纹令牌保证发布后自动重算）。
+    //   ⚠️ fire-and-forget：失败只留痕，⛔ 绝不阻塞看板（退潮规则本次不生效，§10 如实降级）。
+    if (d) {
+      ensureRange20Leaders(d).catch(function(e) {
+        console.warn('[TVRB] 20日涨幅前五计算失败，退潮判定（20日口径）本次不生效:', e && e.message);
+      });
+    }
     if (!pd) {
       prevRangeMap.value = null; prevRangeDate.value = '';
       prevEbbDay.value = null; prevEbbDayDate.value = '';
+      ebbHistory.value = []; ebbHistoryDate.value = d || '';
       return;
     }
     // ⚠️ 下面两条链【各自独立】判缓存、各自异步（⛔ 别用一个 early-return 串起来：
@@ -303,6 +333,44 @@ export function useTopicVolRatioBoard() {
         prevEbbDayDate.value = pd;
       });
     }
+    // ③ ★ [EBB-R20 2026-10-20] 近 12 个交易日的退潮判定历史（「首次 / 二次确认 / 无第三次」的输入）。
+    //   一次 in 查询（§32）；每行带上自己的上一交易日（日期链在此算好，规则层保持纯函数）。
+    if (ebbHistoryDate.value !== d) {
+      const histDates = [];
+      let cur = d;
+      for (let i = 0; i < 12; i++) {
+        cur = getPreviousTradingDay(cur);
+        if (!cur) break;
+        histDates.push(cur);
+      }
+      if (histDates.length >= 2) {
+        readEbbDays(histDates).then(function(m) {
+          if (currentDate.value !== d) return;   // 竞态保护：期间切了日期 ⇒ 丢弃
+          const rows = [];
+          for (let i = 0; i < histDates.length; i++) {
+            const r = m.get(histDates[i]);
+            if (!r) continue;
+            rows.push({
+              date: histDates[i],
+              prevDate: histDates[i + 1] || '',
+              leaderStock: r.leaderStock,
+              leaderTopic: r.leaderTopic,
+              ebb: r.ebb
+            });
+          }
+          ebbHistory.value = rows;
+          ebbHistoryDate.value = d;
+        }).catch(function(e) {
+          // §10：读失败 ⇒ 按「没有历史」处理（规则层按 0 次事件 = 首次退潮）—— 但必须可见
+          console.warn('[TVRB] 退潮判定历史读取失败，本次按 0 次事件（首次退潮）处理:', e && e.message);
+          ebbHistory.value = [];
+          ebbHistoryDate.value = d;
+        });
+      } else {
+        ebbHistory.value = [];
+        ebbHistoryDate.value = d;
+      }
+    }
   }, { immediate: true });
 
   const data = computed(function() {
@@ -318,6 +386,10 @@ export function useTopicVolRatioBoard() {
     // ★★ [TVRB-926] 展示日【9:26 口径】的区间涨幅（异步读回）⇒ 买点侧选股与行上数值的输入：
     //   读到之后重算一次 —— 选股从「当前口径」切到「早上 9:26 那一刻选中的那批」。
     void buyRangeMap.value;
+    // ★ [EBB-R20] 20日涨幅前五（总龙一~五）：响应式指纹令牌 —— ensureRange20Leaders 发布后自动重算
+    void getRange20LeadersFingerprintToken();
+    // ★ [EBB-R20] 近 12 个交易日的退潮判定历史（异步读回）⇒「首次 / 二次确认」阶段判定才生效
+    void ebbHistory.value;
     // 分笔那份是响应式单例 ⇒ 显式声明依赖，数据到了自动重算（§17 不阻塞渲染）
     void tickMinuteMap.value;
     void tickMinuteDate.value;
@@ -352,7 +424,10 @@ export function useTopicVolRatioBoard() {
         prevRangeMap: (prevRangeMap.value && prevRangeDate.value === pd) ? prevRangeMap.value : null,
         // ★★ [EBB-R8] 展示日【当天】的十日涨幅（算买点侧唯一那只 = 当日口径）
         //   + 🔴 消除「切日期后 dragonState 尚未跟上」造成的空白期（见 curRangeMap 的注释）
-        rangeMap: (curRangeMap.value && curRangeDate.value === d) ? curRangeMap.value : null
+        rangeMap: (curRangeMap.value && curRangeDate.value === d) ? curRangeMap.value : null,
+        // ★ [EBB-R20 2026-10-20] 20日涨幅前五（总龙一~五）—— 退潮判定的总龙与买点侧替补的【唯一】来源；
+        //   null = 该日还没发布结论（20日前五在后台算）⇒ 退潮规则本次不生效（§10，不猜）
+        range20Top: getRange20Leaders(d) || null
       });
       if (!rec || !rec.ready) return _empty((rec && rec.reason) || '暂无数据');
 
@@ -382,8 +457,12 @@ export function useTopicVolRatioBoard() {
         //   市场总龙二）；ready=false ⇒ 不是退潮日（⛔ 不猜）
         ebbCtx: rec.ebbCtx || null,
         // ★ [EBB-R8 2026-10-14] 上一交易日【落库的退潮判定】那一行（tvrb_ebb_days）
-        //   —— 首日闸门的输入；缺省 ⇒ 规则层退化为「用昨日行情行推断」，再取不到按首日处理。
+        //   —— 昨日闸门的输入；缺省 ⇒ 规则层退化为「用昨日行情行推断」，再取不到按可触发处理。
         prevEbbDay: prevEbbDay.value,
+        // ★ [EBB-R20 2026-10-20] 近 12 个交易日的退潮判定历史（tvrb_ebb_days）
+        //   —— 「首次 / 二次确认 / 无第三次」事件计数的输入；缺省 ⇒ 按 0 次事件（首次退潮）。
+        //   ⚠️ 日期核对（与上面两份 rangeMap 同一条红线）：还没读到 / 读的是旧日期 ⇒ 传 null。
+        ebbHistory: (ebbHistoryDate.value === d) ? ebbHistory.value : null,
         // ★★ [TVRB-926] 买点侧专用的 9:26 口径（缺 ⇒ 规则层退回原口径 = 旧行为，§11）
         buyDragonMap: buyMap ? rankDragonsWithPctMap(rec.topics, buyMap) : null,
         pctMap: buyMap,

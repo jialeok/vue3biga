@@ -69,21 +69,31 @@ describe('decision-collect · suspendEntriesOf（停牌名单出口，三个选�
 });
 
 // ── 第五轮 · 退潮首日的事实采集（2026-10-13 用户口径）────────────────────────────────────────
-// 为什么单测：这个函数决定「谁是市场总龙」—— 排错一位，退潮首日就会把【另一只票】当成总龙，
-// 进而选出错误的「可等开盘卖」名单。它不报错、只会静默给错名单，所以必须钉死。
-// ⚠️ 它读不到的三样东西（停牌 / 今日占比）在本测试环境里是「未加载」⇒ 恒为 false / null，
+// ★★ [EBB-R20 2026-10-20 用户口径] 总龙与买点侧替补【已换 20日涨幅口径】：
+//   用户原话「把原来按照10日涨幅改成20日涨幅选股……从20日涨幅中的总龙一到总龙五选出两只排名靠前的。
+//   而且是不同总龙一题材的股票……要判断是不是创业板，科创板，北交所等非主板的股票，如果是先排除，
+//   剩下的看是不是和总龙一是同题材，是也排除，剩下的就选排名靠前的那两只。只选好两只，后面不选了」。
+// 为什么单测：这个函数决定「谁是市场总龙」—— 排错一位，退潮日就会把【另一只票】当成总龙，
+// 进而选出错误的替补 / 可等开盘卖名单。它不报错、只会静默给错名单，所以必须钉死。
+// ⚠️ 它读不到的东西（停牌 / 今日占比）在本测试环境里是「未加载」⇒ 恒为 false / null，
 //    正是 §10 想要的行为（未知 ⇒ 不判），下面的用例也顺带钉住这一点。
-describe('decision-collect · ebbCtxOf（退潮首日的事实采集）', () => {
-  const D = '2026-10-13';
+describe('decision-collect · ebbCtxOf（退潮日的事实采集 · 20日涨幅口径）', () => {
+  const D = '2026-10-20';
 
   function row(name, topic, extra) {
     return Object.assign({ name: name, topic: topic, code: '600000' }, extra || {});
   }
-  /** prevRangeMap：股票名 → { pct }（null 值表示「这只票昨日涨幅读不到」） */
+  /** prevRangeMap：股票名 → { pct }（昨日十日涨幅；卖点侧总龙二用） */
   function prev(map) {
     const m = new Map();
     Object.keys(map).forEach(function(k) { m.set(k, { pct: map[k], days: 10, updatedAt: '' }); });
     return m;
+  }
+  /** range20Top：20日涨幅前五（getRange20Leaders 的发布结果形状） */
+  function top20(list) {
+    return list.map(function(t) {
+      return { stock: t[0], code: t[1], pct: t[2], days: t[3] === undefined ? 20 : t[3] };
+    });
   }
   function dm(map) {
     const m = new Map();
@@ -91,118 +101,164 @@ describe('decision-collect · ebbCtxOf（退潮首日的事实采集）', () => 
     return m;
   }
 
-  // 用户 2026-10-13 的例子：新华传媒（AI应用）159.51 停牌；时代万恒（新能源汽车）80.98
+  // 用户 2026-10-20 的例子（20日涨幅前五）：
+  //   总龙一 新华传媒（AI应用）197.82 / 总龙二 九阳股份（大消费）106.51 /
+  //   总龙三 新华文轩（AI应用）101.90 / 总龙四 澳弘电子（电子/通信/算力）90.73 /
+  //   总龙五 慈文传媒（AI应用）79.41 —— 五只全主板；龙一同题材 = 新华文轩 / 慈文传媒
   const AI = 'AI应用';
   const rows = [
     row('新华传媒', AI, { code: '600825' }),
+    row('九阳股份', '大消费', { code: '002242' }),
     row('新华文轩', AI, { code: '601811' }),
-    row('皖新传媒', AI, { code: '601801' }),
-    row('创票', AI, { code: '300001' }),                 // 创业板 ⇒ 无龙位
+    row('澳弘电子', '电子/通信/算力', { code: '605733' }),
+    row('慈文传媒', AI, { code: '002343' }),
     row('时代万恒', '新能源汽车', { code: '600241' })
   ];
   const topics = [
     {
-      topic: AI, rank: 1, count: 4, yiziCount: 0,
+      topic: AI, rank: 1, count: 3, yiziCount: 0,
       members: [
         { name: '新华传媒', isYizi: false },
         { name: '新华文轩', isYizi: false },
-        { name: '皖新传媒', isYizi: true },
-        { name: '创票', isYizi: false }
+        { name: '慈文传媒', isYizi: true }
       ]
     },
-    { topic: '新能源汽车', rank: 2, count: 1, yiziCount: 0, members: [{ name: '时代万恒', isYizi: false }] }
+    { topic: '大消费', rank: 2, count: 1, yiziCount: 0, members: [{ name: '九阳股份', isYizi: false }] },
+    { topic: '电子/通信/算力', rank: 3, count: 1, yiziCount: 0, members: [{ name: '澳弘电子', isYizi: false }] },
+    { topic: '新能源汽车', rank: 4, count: 1, yiziCount: 0, members: [{ name: '时代万恒', isYizi: false }] }
   ];
-  const rankMap = dm({ 新华传媒: 1, 新华文轩: 2, 皖新传媒: 3, 时代万恒: 1 });
-  const rangeMap = prev({ 新华传媒: 159.51, 新华文轩: 40, 皖新传媒: 30, 创票: 120, 时代万恒: 80.98 });
+  const rankMap = dm({ 新华传媒: 1, 九阳股份: 1, 新华文轩: 2, 澳弘电子: 1, 慈文传媒: 3, 时代万恒: 1 });
+  const TOP5 = top20([
+    ['新华传媒', '600825', 197.82],
+    ['九阳股份', '002242', 106.51],
+    ['新华文轩', '601811', 101.90],
+    ['澳弘电子', '605733', 90.73],
+    ['慈文传媒', '002343', 79.41]
+  ]);
+  const rangeMap = prev({ 新华传媒: 159.51, 新华文轩: 40, 慈文传媒: 30, 时代万恒: 80.98 });
 
-  it('§10：昨日涨幅没注入 / 空 Map ⇒ ready=false（⛔ 绝不返回「今天没有总龙」）', () => {
-    [null, undefined, new Map()].forEach(function(m) {
-      const c = ebbCtxOf(rows, topics, rankMap, D, m);
+  it('§10：20日前五没注入 / 空 ⇒ ready=false（⛔ 绝不返回「今天没有总龙」）', () => {
+    [null, undefined, []].forEach(function(t) {
+      const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap, rangeMap, null, t);
       expect(c.ready).toBe(false);
       expect(c.leader).toBe(null);
       expect(c.second).toBe(null);
       expect(c.siblingDragons).toEqual([]);
       expect(c.secondInfo).toBe(null);
+      expect(c.buyPicks).toEqual([]);
     });
   });
 
-  it('★ 市场总龙 = 【有龙位】的票里昨日十日涨幅最高的那只（候选池 = 当日前列表，含不成组的票）', () => {
-    const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap);
+  it('★ 市场总龙 = 20日涨幅第一（全市场；topic / 龙位 / 一字都是【今日】的）', () => {
+    const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap, rangeMap, null, TOP5);
     expect(c.ready).toBe(true);
-    expect(c.leader.name).toBe('新华传媒');     // 159.51 是【有龙位】票里的最高
-    expect(c.leader.pct).toBe(159.51);
+    expect(c.leader.name).toBe('新华传媒');
+    expect(c.leader.pct).toBe(197.82);
     expect(c.leader.topic).toBe(AI);
     expect(c.leader.rank).toBe(1);               // 它今日是 AI应用 的龙一
-    // ★ [EBB-FIX] 第二高 = 时代万恒 80.98 —— ⛔ 不是涨幅更高的「创票」120：创业板无龙标 ⇒ 不参排
-    expect(c.second.name).toBe('时代万恒');
+    expect(c.leader.code).toBe('600825');
   });
 
-  it('★★ [EBB-FIX 第七轮] 无龙位的票（创业板 / 未成组）【不参与】总龙排名 —— 10-13 善水科技事故的回归钉', () => {
-    // 实测事故：10-13 全列表十日涨幅第一是【善水科技 301190 创业板 160.2%】，它没有龙标
-    //   ⇒ 旧口径把总龙算成它 ⇒ 它既不停牌、占比也不看龙头门槛 ⇒「退潮」永不成立
-    //   ⇒ 整个退潮规则静默失效（用户报「10-13 买点/卖点/灰化 全都没变化」）。
-    const r2 = [
-      row('善水科技', '', { code: '301190' }),      // 创业板、未成组 ⇒ 无龙位，但昨日涨幅最高
-      row('新华传媒', AI, { code: '600825' })
-    ];
-    const c = ebbCtxOf(r2, topics, rankMap, D, prev({ 善水科技: 160.2, 新华传媒: 159.51 }));
-    expect(c.ready).toBe(true);
-    expect(c.leader.name).toBe('新华传媒');   // ⛔ 不是善水科技
-    expect(c.leader.pct).toBe(159.51);
-    expect(c.second).toBe(null);              // 善水被排除 ⇒ 候选池只剩一只
+  it('★★ [EBB-R20] 替补 = 前五里【主板 ∧ 非总龙本人 ∧ 非总龙同题材】取前两只 —— 10-20 用户例子的回归钉', () => {
+    const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap, rangeMap, null, TOP5);
+    // 新华传媒 = 总龙本人（不买）；新华文轩 / 慈文传媒 = 与总龙同题材（排除）⇒ 剩九阳 + 澳弘
+    expect(c.buyPicks.map(function(p) { return p.name; })).toEqual(['九阳股份', '澳弘电子']);
+    expect(c.buyPicks[0].rank20).toBe(2);
+    expect(c.buyPicks[0].pct).toBe(106.51);
+    expect(c.buyPicks[0].topic).toBe('大消费');
+    expect(c.buyPicks[1].rank20).toBe(4);
+    // 五只去留留痕：每一只都有理由，被排除的 picked=false
+    expect(c.buyTrail.length).toBe(5);
+    const byName = {};
+    c.buyTrail.forEach(function(t) { byName[t.name] = t; });
+    expect(byName['新华传媒'].picked).toBe(false);
+    expect(byName['新华传媒'].reason).toContain('总龙一');
+    expect(byName['新华文轩'].picked).toBe(false);
+    expect(byName['新华文轩'].reason).toContain('同题材');
+    expect(byName['慈文传媒'].picked).toBe(false);
+    expect(byName['慈文传媒'].reason).toContain('同题材');
+    expect(byName['九阳股份'].picked).toBe(true);
+    expect(byName['澳弘电子'].picked).toBe(true);
   });
 
-  it('§10：候选池里【一只龙位票】都排不出（全是无龙位）⇒ ready=false（⛔ 不猜成「今天没有总龙」）', () => {
-    const r3 = [row('善水科技', '', { code: '301190' })];
-    const c = ebbCtxOf(r3, topics, rankMap, D, prev({ 善水科技: 160.2 }));
-    expect(c.ready).toBe(false);
-    expect(c.leader).toBe(null);
-    expect(c.second).toBe(null);
+  it('★★ [EBB-R20] 非主板（创业板 / 科创板 / 北交所）先排除 —— 挤掉的名额【不往下递补出第 3 只】', () => {
+    // 用户 10-13 的例子：龙二是创业板 ⇒ 排除；能凑的只剩龙三龙四里符合条件的 —— 只选两只封顶
+    const TOP5B = top20([
+      ['新华传媒', '600825', 197.82],
+      ['创票', '300001', 180.00],
+      ['澳弘电子', '605733', 90.73],
+      ['时代万恒', '600241', 85.00],
+      ['另一票', '688001', 80.00]
+    ]);
+    const r2 = rows.concat([row('创票', AI, { code: '300001' }), row('另一票', '芯片', { code: '688001' })]);
+    const c = ebbCtxOf(r2, topics, rankMap, D, rangeMap, rangeMap, null, TOP5B);
+    // 创票（创业板）/ 另一票（科创板）都排除 ⇒ 替补 = 澳弘电子 + 时代万恒（恰好两只）
+    expect(c.buyPicks.map(function(p) { return p.name; })).toEqual(['澳弘电子', '时代万恒']);
+    // 五只全被排除 / 选满 ⇒ 不超过 2 只（「只选两只，后面不选了」）
+    const t2 = {};
+    c.buyTrail.forEach(function(t) { t2[t.name] = t; });
+    expect(t2['创票'].reason).toContain('非主板');
+    expect(t2['另一票'].reason).toContain('非主板');
   });
 
-  it('§10：昨日涨幅【读不到】的票不参与排名（⛔ 不当 0 排到最后、更不当没有）', () => {
-    const c = ebbCtxOf(rows, topics, rankMap, D, prev({ 新华传媒: 159.51, 时代万恒: 80.98 }));
-    expect(c.leader.name).toBe('新华传媒');
-    expect(c.second.name).toBe('时代万恒');     // 其余三只读不到 ⇒ 不参与，第二就是 80.98
+  it('★★ [EBB-R20] 同题材排除后凑不满两只 ⇒ 就给算得出的（⛔ 不从五只之外乱补）', () => {
+    const TOP5C = top20([
+      ['新华传媒', '600825', 197.82],
+      ['新华文轩', '601811', 101.90],
+      ['慈文传媒', '002343', 79.41],
+      ['九阳股份', '002242', 60],
+      ['创票', '300001', 55.00]
+    ]);
+    const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap, rangeMap, null, TOP5C);
+    expect(c.buyPicks.map(function(p) { return p.name; })).toEqual(['九阳股份']);   // 只有一只
+    expect(c.buyPicks.length).toBe(1);
   });
 
-  it('★ 同题材龙位成员：按龙位升序、排除总龙自己、无龙位（创业板）不收', () => {
-    const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap);
-    expect(c.siblingDragons.map(function(s) { return s.name + '/' + s.rank + '/' + s.isYizi; }))
-      .toEqual(['新华文轩/2/false', '皖新传媒/3/true']);   // 总龙自己与「创票」都不在里面
-  });
-
-  it('★ 市场总龙二：带上它【今日】的龙位 / 一字（判据由规则层做，采集层只给事实）', () => {
-    // [EBB-FIX 第七轮] 候选池已过滤掉无龙位的票 ⇒ 总龙二【必然】有龙位（rank 是数字，不再是 null）
-    const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap);
-    expect(c.secondInfo.name).toBe('时代万恒');   // 创票（120）被 [EBB-FIX] 闸门排除
-    expect(c.secondInfo.rank).toBe(1);           // 新能源汽车 的龙一
+  it('★ 卖点侧总龙二口径【不变】：仍是【昨日十日涨幅第二、有龙位】（prevRangeMap）', () => {
+    const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap, rangeMap, null, TOP5);
+    expect(c.second.name).toBe('时代万恒');       // 昨日十日：新华传媒 159.51 → 时代万恒 80.98
+    expect(c.secondInfo.name).toBe('时代万恒');
+    expect(c.secondInfo.rank).toBe(1);            // 新能源汽车 的龙一
     expect(c.secondInfo.isYizi).toBe(false);
-    const c2 = ebbCtxOf(rows, topics, rankMap, D, prev({ 新华传媒: 159.51, 时代万恒: 80.98 }));
-    expect(c2.secondInfo.name).toBe('时代万恒');
-    expect(c2.secondInfo.rank).toBe(1);          // 新能源汽车 的龙一
   });
 
-  it('全列表一只票都排不出（涨幅全缺）⇒ ready=false（§10 不猜）', () => {
-    const c = ebbCtxOf(rows, topics, rankMap, D, prev({ 某票: 10 }));
-    expect(c.ready).toBe(false);
-    expect(c.leader).toBe(null);
+  it('§11：prevRangeMap 没注入 ⇒ 只有 second/secondInfo 为 null，退潮事实本身仍成立（总龙来自20日前五）', () => {
+    const c = ebbCtxOf(rows, topics, rankMap, D, null, null, null, TOP5);
+    expect(c.ready).toBe(true);
+    expect(c.leader.name).toBe('新华传媒');
+    expect(c.second).toBe(null);
+    expect(c.secondInfo).toBe(null);
+    expect(c.buyPicks.length).toBe(2);            // 替补不依赖 prevRangeMap
   });
 
-  // ── ★ [EBB-R8 第八轮 2026-10-14] 两个新事实 ────────────────────────────────────────────
-  //   用户口径（首日闸门）：「市场总龙头【首日】出现停牌或者占比不达标……才有效，
-  //     又比如明天可能新华传媒又停牌，那就不算了，我说的是首日注意了。」
-  //   用户口径（买点侧唯一那只）：「买点只有一个，那就是市场的龙二……是整个早盘竞价看板的
-  //     股票列表中的十日涨幅排名第二的龙二，就像今天的九阳股份（市场排名十日涨幅 86%，
-  //     总列表排名第二）」。
+  it('★ 同题材龙位成员：按龙位升序、排除总龙自己、无龙位（创业板）不收（口径不变）', () => {
+    const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap, rangeMap, null, TOP5);
+    expect(c.siblingDragons.map(function(s) { return s.name + '/' + s.rank + '/' + s.isYizi; }))
+      .toEqual(['新华文轩/2/false', '慈文传媒/3/true']);   // 总龙自己与未成组的都不在里面（口径不变）
+  });
+
+  it('§10：前五里【一只票的 20日涨幅】都读不到 ⇒ 那只不参排（⛔ 不当 0、更不当没有）', () => {
+    const TOP5D = top20([
+      ['新华传媒', '600825', null],
+      ['九阳股份', '002242', 106.51],
+      ['澳弘电子', '605733', 90.73],
+      ['时代万恒', '600241', 85.00],
+      ['慈文传媒', '002343', 79.41]
+    ]);
+    const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap, rangeMap, null, TOP5D);
+    // 新华传媒无值 ⇒ 总龙顺位到九阳股份（前五里第一个有值的）
+    expect(c.leader.name).toBe('九阳股份');
+    expect(c.leader.pct).toBe(106.51);
+  });
+
   it('★ [事实③ 首日腿] 不传 prevDate ⇒ prevLeader = null（未知）—— ⛔ 绝不拼一个「假坏状态」', () => {
-    const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap, rangeMap);
+    const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap, rangeMap, null, TOP5);
     expect(c.ready).toBe(true);
     expect(c.prevLeader).toBe(null);
   });
 
   it('★ [事实③ 首日腿] 传了 prevDate 但库里查不到那只票 ⇒ bad=false（§10：未知 ≠ 昨天停牌）', () => {
-    const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap, rangeMap, '2026-10-10');
+    const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap, rangeMap, '2026-10-17', TOP5);
     expect(c.ready).toBe(true);
     expect(c.prevLeader).not.toBe(null);
     // 单测环境没有行情缓存 ⇒ 量 / 占比都取不到 ⇒ 两处都【不判】（而不是判成坏状态）
@@ -210,29 +266,6 @@ describe('decision-collect · ebbCtxOf（退潮首日的事实采集）', () => 
     expect(c.prevLeader.suspendedLike).toBe(false);
     expect(c.prevLeader.shareFail).toBe(false);
     expect(c.prevLeader.bad).toBe(false);
-  });
-
-  it('★ [事实④ 买点侧那只] 当日十日涨幅排名【第二】= 跳过总龙自己后最靠前的那只', () => {
-    // 当日（rangeMap）口径与昨日（prevRangeMap）是两份不同的 map：
-    //   新华传媒 135.96（总龙自己，第一）/ 时代万恒 76.16 / 新华文轩 38.26
-    const today = prev({ 新华传媒: 135.96, 时代万恒: 76.16, 新华文轩: 38.26, 创票: 200 });
-    const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap, today);
-    expect(c.buySecond).not.toBe(null);
-    // ⛔ 不是新华传媒（它自己就是被判定退潮的那只总龙，本来不买）⇒ 顺位到 76.16
-    expect(c.buySecond.name).toBe('时代万恒');
-    expect(c.buySecond.pct).toBe(76.16);
-    expect(c.buySecond.code).toBe('600241');
-    expect(c.buySecond.rank).toBe(1);            // 新能源汽车的龙一
-    // ⛔ 创票 200 更高，但创业板无龙位 ⇒ 不参排（与总龙同一把尺子）
-    expect(c.buySecond.name).not.toBe('创票');
-  });
-
-  it('§10：[事实④] 当日涨幅 map 没注入 / 空 ⇒ buySecond = null（⛔ 绝不拿昨日口径顶替）', () => {
-    [null, undefined, new Map()].forEach(function(t) {
-      const c = ebbCtxOf(rows, topics, rankMap, D, rangeMap, t);
-      expect(c.ready).toBe(true);       // 退潮事实本身仍成立
-      expect(c.buySecond).toBe(null);
-    });
   });
 });
 
@@ -268,6 +301,9 @@ describe('decision-collect · ebbCtxOf · 停牌判据（上游只有当日 ⇒ 
   }];
   const rankMap = dm({ 新华传媒: 1, 新华文轩: 2 });
   const YEST = prev({ 新华传媒: 159.51, 新华文轩: 65.47 });
+  // [EBB-R20] 总龙来自 20日前五（本 describe 只钉停牌判据 ⇒ 前五随便给一份让 ebbCtx ready 即可）
+  const TOP5 = [{ stock: '新华传媒', code: '600825', pct: 197.82, days: 20 },
+    { stock: '新华文轩', code: '601811', pct: 101.90, days: 20 }];
   const TODAY = (function() {
     const n = new Date();
     return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0') + '-' + String(n.getDate()).padStart(2, '0');
@@ -291,7 +327,7 @@ describe('decision-collect · ebbCtxOf · 停牌判据（上游只有当日 ⇒ 
     state._auctionMemCache = {
       [HIST]: [{ stock: '新华传媒', volume: '0' }, { stock: '新华文轩', volume: '288' }]
     };
-    const c = ebbCtxOf(rows, topics, rankMap, HIST, YEST);
+    const c = ebbCtxOf(rows, topics, rankMap, HIST, YEST, null, null, TOP5);
     expect(c.ready).toBe(true);
     expect(c.leader.name).toBe('新华传媒');
     expect(c.leaderSuspended).toBe(true);                    // ★ 修好之前这里恒 false ⇒ 退潮整体失效
@@ -303,17 +339,17 @@ describe('decision-collect · ebbCtxOf · 停牌判据（上游只有当日 ⇒ 
   it('§10：历史日【取不到】该票那一行 ⇒ 不判停牌（未知 ≠ 停牌）；写的是非 0 ⇒ 同样不判', () => {
     // ① 库里根本没这一天这只票的行
     state._auctionMemCache = { [HIST]: [{ stock: '新华文轩', volume: '288' }] };
-    expect(ebbCtxOf(rows, topics, rankMap, HIST, YEST).leaderSuspended).toBe(false);
+    expect(ebbCtxOf(rows, topics, rankMap, HIST, YEST, null, null, TOP5).leaderSuspended).toBe(false);
     // ② 有行、量写着非 0
     state._auctionMemCache = { [HIST]: [{ stock: '新华传媒', volume: '1635' }, { stock: '新华文轩', volume: '288' }] };
-    expect(ebbCtxOf(rows, topics, rankMap, HIST, YEST).leaderSuspended).toBe(false);
+    expect(ebbCtxOf(rows, topics, rankMap, HIST, YEST, null, null, TOP5).leaderSuspended).toBe(false);
   });
 
   it('§11：【今天】不走回退腿 —— 上游答不了、量又写着 0 ⇒ 仍判 false（今日路径行为零变化）', () => {
     state._auctionMemCache = {
       [TODAY]: [{ stock: '新华传媒', volume: '0' }, { stock: '新华文轩', volume: '288' }]
     };
-    const c = ebbCtxOf(rows, topics, rankMap, TODAY, YEST);
+    const c = ebbCtxOf(rows, topics, rankMap, TODAY, YEST, null, null, TOP5);
     expect(c.leaderSuspended).toBe(false);
   });
 });
