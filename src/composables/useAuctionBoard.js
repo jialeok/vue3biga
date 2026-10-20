@@ -53,6 +53,11 @@ import { ensureDragonGroup } from '../logic/auction/dragon-group.js';
 // 目的：让看板明确显示「停牌」，而不是把上游缺席留成空白被人当成「没抓到数据」。
 // ⛔ 只读上游 + 只写该模块内存 ref：不写 Supabase、不碰 numcat/worker。
 import { ensureSuspendSet } from '../logic/auction/suspend.js';
+// [TREND-PATCH 2026-10-21] 趋势图「缺数据日」的同花顺兜底补缺（0 猫抓额度）。
+//   补位票（range20 前五注入行）不在当日 worker 抓取名单 ⇒ market_metrics 没有那一天的行
+//   ⇒ 既有水合（hydrateStockHistoryRow 只认云端表）永远补不到 ⇒ 趋势该日空白（时代万恒 10-20 实证）。
+//   K 线补 竞价涨幅/涨幅/昨日成交量 + 当日快照补竞价量；⛔ 只改趋势面板展示数据，不写任何表。
+import { ensureTrendPatch } from '../logic/auction/trend-patch.js';
 // [CLOSE-COVER 2026-09-10] 收盘后自动用【收盘涨幅】覆盖 9:25 竞价涨幅（此前该闭环只存在于
 // 从未执行过的 pg_cron，导致当天 change_pct 全天停留在竞价值）。
 import { ensureClosePctCovered, isCloseCoverWindow } from '../logic/auction/close-pct-cover.js';
@@ -1297,6 +1302,55 @@ export function useAuctionBoard() {
     }
     if (hydrated) {
         paint(getAuctionStockHistory(name, uiStore.currentDate, 5, 'auction'));
+    }
+    // [TREND-PATCH 2026-10-21] 同花顺兜底补缺（补位票不在当日抓取名单 ⇒ 库里根本没有那一天的行）：
+    //   上面 hydrateStockHistoryRow 只认 market_metrics 云端表，缺行 = 永远补不到（时代万恒 10-20 实证）。
+    //   这里把水合后【仍双缺】的日子交给 Logic 层：K 线补 竞价涨幅/涨幅/昨日成交量 + 当日快照补竞价量。
+    //   ⛔ 只把补缺值合并进 trendHistory（展示层），不写 _auctionMemCache、不写云端（§6 不产生影子真相）。
+    //   ⚠️ 库里已有值的字段一律不覆盖（合并时只填 null 位，§6 不用同花顺冒充库内真相）。
+    {
+        const reqDate2 = uiStore.currentDate;
+        const hist2 = getAuctionStockHistory(name, reqDate2, 5, 'auction');
+        const missing = hist2
+            .filter(h => {
+                const hasVolume = h.volume != null && String(h.volume).trim() !== '';
+                const hasPct = h.changePct != null && String(h.changePct).trim() !== '';
+                return !hasVolume && !hasPct;
+            })
+            .map(h => h.date);
+        const code = getStockCode(name);
+        if (missing.length > 0 && code) {
+            const m = new Map();
+            m.set(name, missing);
+            ensureTrendPatch([{ stock: name, code: code }], m, {})
+                .then(function(patchByYmd) {
+                    const byYmd = patchByYmd && patchByYmd.get(name);
+                    if (!byYmd) return;
+                    // 日期已切走 ⇒ 补缺结果作废（竞态保护，与上方 seal 腿同款）
+                    if (uiStore.currentDate !== reqDate2) return;
+                    const merged = getAuctionStockHistory(name, reqDate2, 5, 'auction').map(function(h) {
+                        const p = byYmd.get(h.date);
+                        if (!p) return h;
+                        // 「只填 null 位」：库里已有值的字段一律不覆盖（§6 不用同花顺冒充库内真相）。
+                        const _fill = function(cur, patch) {
+                            return (cur !== null && cur !== undefined && cur !== '')
+                                ? cur : (patch !== null && patch !== undefined ? patch : cur);
+                        };
+                        return Object.assign({}, h, {
+                            volume: _fill(h.volume, p.volume),
+                            yestVolume: _fill(h.yestVolume, p.yestVolume),
+                            changePct: _fill(h.changePct, p.changePct),
+                            aucPctChg: _fill(h.aucPctChg, p.aucPctChg),
+                            aucVolRatio: _fill(h.aucVolRatio, p.aucVolRatio)
+                        });
+                    });
+                    paint(merged);
+                })
+                .catch(function(e) {
+                    // §10：补缺失败只留痕（趋势图保持原样 = 该日「--」），⛔ 不连坐主流程
+                    _dbgLog('[TREND-PATCH] ' + name + ' 趋势兜底补缺失败: ' + (e && e.message || e));
+                });
+        }
     }
     // [SEAL-VOLUME 2026-10-11] 封单量腿：先把这几天读进 limit_pool 内存缓存，再补画一次。
     //   ⚠️ 只在【确实缺这一天】时才打库并重画 —— 窗口缓存命中的常见情形 = 完全不做事（§32）。

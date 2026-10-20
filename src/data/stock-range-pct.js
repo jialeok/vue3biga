@@ -230,6 +230,12 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
     //   调用方传一个 Map 进来 ⇒ 每只票的「每天开盘涨幅」（竞价涨幅，open/昨收-1）也顺手填进去。
     //   与 keep 同一次请求、同一根 K 线 ⇒ 零额外额度；取不到 open_price 的日子填 null（§10）。
     const openOut = (opts && opts.openOut instanceof Map) ? opts.openOut : null;
+    // [TREND-PATCH 2026-10-21] 可选出口（缺省 undefined ⇒ 既有调用方行为逐字不变，§11，与 openOut 同范式）：
+    //   调用方传一个 Map 进来 ⇒ 每只票的「每天成交量」（单位=股，K 线原始值）也顺手填进去。
+    //   用途：趋势图兜底补缺时算「昨日成交量」（前一交易日的全天成交量，÷1e4 = 万股，与
+    //   market_metrics.yest_volume 同单位同口径——2026-10-21 实测 8181 vs 库内 8176，一致）。
+    //   ⚠️ 记录的是 series 里【全部】日子（不只 wantSet）：窗口首日的「昨日」可能在窗口外。
+    const volOut = (opts && opts.volOut instanceof Map) ? opts.volOut : null;
 
     /**
      * 取一次 K 线并换算窗口内日涨幅。
@@ -265,13 +271,21 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
             //   （A 股开盘价 = 9:25 集合竞价成交价，两者同一价格）。缺 open_price ⇒ null（§10 不猜）。
             const open = (r.open_price != null && isFinite(Number(r.open_price)) && Number(r.open_price) > 0)
                 ? Number(r.open_price) : null;
-            series.push({ ymd: ymd, close: close, open: open });
+            // [TREND-PATCH 2026-10-21] 成交量（股）顺带保留：volume 缺失 / 非数字 ⇒ null（§10 不猜）
+            const vol = (r.volume != null && isFinite(Number(r.volume))) ? Number(r.volume) : null;
+            series.push({ ymd: ymd, close: close, open: open, vol: vol });
         });
         series.sort(function(a, b) { return a.ymd < b.ymd ? -1 : (a.ymd > b.ymd ? 1 : 0); });
         const keep = new Map();
         // [DIVERGE 2026-10-20] 可选出口：调用方传了 opts.openOut（Map）⇒ 同一趟循环里把
         //   每天开盘涨幅也填进去（股票名 -> (ymd -> 开盘涨幅%)）。缺省不传 ⇒ 本函数行为逐字不变（§11）。
         const openKeep = openOut ? new Map() : null;
+        // [TREND-PATCH 2026-10-21] 可选出口：每天成交量（股）。series 全部日子都记（不只 wantSet）——
+        //   窗口首日的「昨日成交量」要用的那一根 K 线可能在窗口外（起点已前移 20 自然日 ⇒ 必然取得到）。
+        const volKeep = volOut ? new Map() : null;
+        if (volKeep) {
+            for (let k = 0; k < series.length; k++) volKeep.set(series[k].ymd, series[k].vol);
+        }
         for (let k = 1; k < series.length; k++) {
             const prev = series[k - 1];
             const cur = series[k];
@@ -292,7 +306,7 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
                 + ' span=' + (series.length ? (series[0].ymd + '~' + series[series.length - 1].ymd) : '-')
                 + ' miss=' + _miss.slice(0, 8).join(','));
         }
-        return { keep: keep, firstYmd: series.length > 0 ? series[0].ymd : '', openKeep: openKeep };
+        return { keep: keep, firstYmd: series.length > 0 ? series[0].ymd : '', openKeep: openKeep, volKeep: volKeep };
     };
 
     // 熔断计数器（跨批次累计）
@@ -346,6 +360,8 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
             if (best && best.keep.size > 0) {
                 out.set(name, best.keep);
                 if (openOut && best.openKeep) openOut.set(name, best.openKeep);
+                // [TREND-PATCH 2026-10-21] 成交量腿随最佳一趟一起交付（同一根 K 线，零额外请求）
+                if (volOut && best.volKeep) volOut.set(name, best.volKeep);
             }
 
             if (!best || best.keep.size < needN) {
