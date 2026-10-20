@@ -67,6 +67,9 @@ import { getPrevSoldInheritedSet } from './inherited-sold.js';
 // ref 暴露，此处【同步读取】——与 dragon-rank / dragon-group 同款 ref-driven 范式，绝不阻塞渲染、
 // 不在此处发请求。判定单一真相在 suspend.js（§6）；本文件只把结果挂到行上供模板显示。
 import { isSuspended } from './suspend.js';
+// [RANGE20-TOTAL-DRAGON 2026-10-20 用户口径] 「20日涨幅」toggle 专属显示层：前五标「总龙一…总龙五」。
+//   纯函数独立成模块（可单测），⛔ 与其它 toggle 的显示口径无关 —— 其它模式一律不标。
+import { assignTotalDragonRanks, RANGE20_TOTAL_DRAGON_TOP_N } from './range20-top5-label.js';
 
 function _getAuctionTag(date, stockName) {
   if (!date || !stockName) return null;
@@ -366,6 +369,12 @@ function _enrichAuctionItem(rawItem, index, ctx) {
       const _d = _e ? Number(_e.days) : 0;
       return isFinite(_d) && _d > 0 ? _d : 0;
     })(),
+    // [RANGE20-TOTAL-DRAGON 2026-10-20 用户口径] 「20日涨幅」toggle 专属的「总龙一…总龙五」名次。
+    //   默认 0 / ''（= 不打标），只有该 toggle 打开时由 range20-top5-label.js 后置赋值 1..5。
+    //   ★ 为什么在这里给【默认值】而不是只在那个模式里写：items 会经增量视图缓存复用，
+    //     若只有某个模式写、其它模式不写，切 toggle 时残留的旧标签会串到别的视图里（§11 默认无行为）。
+    totalDragonRank: 0,
+    totalDragonLabel: '',
     // [CLOSE-LIMIT 2026-09-11] 收盘涨停('up')/跌停('down') → 股票名下绿色/红色【蚂蚁线（虚线）】标记。
     // null = 既非停板也没有收盘涨幅数据（不标记）。视觉优先级见 AuctionBoardTable：竞价一字实线优先。
     closeLimit,
@@ -1314,6 +1323,23 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     }
     return it;
   }).filter(Boolean);
+
+  // ==========================================================================
+  // [RANGE20-TOTAL-DRAGON 2026-10-20 用户口径] 「20日涨幅」toggle 专属显示层：
+  //   由高到低给前五只打「总龙一…总龙五」标签，其它票一律不标（用户原话「其它票不标」）。
+  //
+  // ★ 为什么放在 items 组装【之后】：
+  //   ① 此时 items 的顺序 = fullOrder = 最终渲染顺序，且该模式下三组已折叠为一条列表
+  //      （dragonIndices=[]、obsIndices=[]，见上方 byRangePct20 分支）⇒ 下标 0..4 就是 20 日涨幅前五；
+  //   ② 顺序本身由 sortIndicesByRangePct（与十日涨幅同一个比较器）给出，本层⛔ 不再排序（§6）。
+  // ★ 只在 `byRangePct20` 打开时赋值 —— 其它 toggle 走 _enrichAuctionItem 的默认值 0/''
+  //   ⇒ 用户要求的「其它 toggle 保留原样」是结构性保证，不是靠模板再判一次。
+  // ⚠️ 不叠加题材单独模式：那时列表已按题材分组，顺序不再是 20 日涨幅降序，
+  //   此时打「总龙N」会把名次标错（§10 宁缺勿错：宁可没有标签，也不给错误的龙头名次）。
+  // ==========================================================================
+  if (sortState.byRangePct20 && !topicOnlyMode) {
+    assignTotalDragonRanks(items, RANGE20_TOTAL_DRAGON_TOP_N);
+  }
 
   let topicStatsMap = null;
   if (topicOnlyMode && primaryTopicOfForColor) {

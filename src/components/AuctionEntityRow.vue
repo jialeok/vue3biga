@@ -55,6 +55,15 @@
         v-if="item.obsFormalStar || item.dragonGroupFormalStar"
         class="auction-obs-formal-star"
       >*</span></span>
+      <!-- [RANGE20-TOTAL-DRAGON 2026-10-20 用户口径] 「总龙一…总龙五」：只在「20日涨幅」toggle 下出现，
+           由 Logic 层 range20-top5-label.js 按 20 日涨幅降序给前五只赋值（item.totalDragonRank/Label），
+           其它模式该字段恒为 0/'' ⇒ 本标签不渲染（用户「其它 toggle 要保留原样、其它票不标」）。
+           ⚠️ 纯展示：本组件不做任何排名/取值判定（§3/§21）。 -->
+      <span
+        v-if="item.totalDragonRank > 0"
+        class="auction-totaldragon-tag"
+        :title="totalDragonTagTitle(item)"
+      >{{ item.totalDragonLabel }}</span>
       <!-- [SUSPEND 2026-10-13] 当日停牌小标：上游（猫抓/同花顺）都拿不到该票的竞价与成交，
            于是本行竞价量/占比会显示 '-' —— 外观与「上游没抓到数据」完全一致，极易误读
            （2026-10-13 新华传媒 600825.SH 实例）。命中即明示「停牌」，一眼区分
@@ -116,13 +125,21 @@
       />
     </div>
     <template v-if="!sortState.byTopic">
+      <!-- [RANGE20-TOTAL-DRAGON 2026-10-20 用户口径] 「20日涨幅」toggle 专属显示层：
+           该模式下【只】隐藏「竞价量(万)」与「昨成交量(万)」两列（用户：「单独把竞价量万和昨日成交量万
+           去掉，注意仅限这个 20 日涨幅 toggle」），占比列保留。
+           ⚠️ 表头（AuctionBoardToolbar）用同一个判据隐藏同样的两列 ⇒ 两边同增同减，
+              剩下的 序号/股票名/占比 三段 flex 比例不变 ⇒ 列不会错位。
+           ⚠️ 其它 toggle（含默认模式）本判据恒 false ⇒ 行为一字不动（§11 可选能力 + 默认无行为）。 -->
       <div
+        v-if="!sortState.byRangePct20"
         class="auction-volume"
         @dblclick.stop="onEditVolumeNote(item.index)"
       >
         {{ item.volumeDisplay }}
       </div>
       <div
+        v-if="!sortState.byRangePct20"
         :class="item.yestColorClass"
         :data-index="item.index"
         :data-note="item.note || ''"
@@ -346,6 +363,23 @@ function dragonTagTitle(item) {
 // 「无值」绝不当 0 显示（否则会与「涨幅为 0」混淆，§40 不猜数据）→ 返回空串 ⇒ 模板不渲染。
 // [RANGE20-TOP5 2026-10-19] 「20天」标签的悬停说明：讲清它是什么、为什么在这里、口径是什么。
 //   §21 模板零计算：文案在这里拼好，模板只渲染。
+// [RANGE20-TOTAL-DRAGON 2026-10-20 用户口径] 「总龙N」标签的悬停说明。
+//   说清三件事：这是哪个 toggle 的标签、名次口径是什么、为什么只有五只。
+//   §21 模板零计算：文案在这里拼好，模板只渲染。
+function totalDragonTagTitle(item) {
+  if (!item) return '';
+  const bits = ['「20日涨幅」排序下全市场第 ' + item.totalDragonRank + ' 名'];
+  const v = item.rangePct20;
+  if (v !== null && v !== undefined && !isNaN(Number(v))) {
+    const n = Number(v);
+    const days = item.rangePct20Days || 0;
+    bits.push('20日区间涨幅 ' + (n >= 0 ? '+' : '') + n.toFixed(2) + '%'
+      + (days > 0 && days < 20 ? '（' + days + '/20日）' : '（20个交易日）'));
+  }
+  bits.push('只给前五只打标（总龙一…总龙五），其它票不标');
+  return bits.join('｜');
+}
+
 function range20LeaderTagTitle(item) {
   if (!item) return '';
   const bits = ['近 20 个交易日（含今天）竞价名单中的 20 日涨幅前五'];

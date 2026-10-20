@@ -122,10 +122,21 @@
       股票名称
     </div>
     <template v-if="!sortState.byTopic">
-      <div class="auction-header-item auction-header-volume">
+      <!-- [RANGE20-TOTAL-DRAGON 2026-10-20 用户口径] 「20日涨幅」toggle 专属显示层：
+           该模式下只隐藏「竞价量(万)」「昨成交量(万)」两列表头（占比保留），
+           与 AuctionEntityRow 用同一个判据（sortState.byRangePct20）⇒ 表头与数据列同增同减、
+           剩下的 序号/股票名/占比 按原 flex 比例同步变宽 ⇒ 不会错位。
+           ⚠️ 其它 toggle 判据恒 false（§11 默认无行为），表头一字不动。 -->
+      <div
+        v-if="!sortState.byRangePct20"
+        class="auction-header-item auction-header-volume"
+      >
         竞价量(万)
       </div>
-      <div class="auction-header-item auction-header-yest">
+      <div
+        v-if="!sortState.byRangePct20"
+        class="auction-header-item auction-header-yest"
+      >
         昨成交量(万)
       </div>
       <div class="auction-header-item auction-header-ratio">

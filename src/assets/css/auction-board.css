@@ -689,6 +689,23 @@
             white-space: nowrap;
         }
 
+        /* [RANGE20-TOTAL-DRAGON 2026-10-20 用户口径] 「总龙一…总龙五」：只在「20日涨幅」toggle 下出现，
+           标在该模式 20 日涨幅前五只的股票名后。样式沿用既有标签族（同尺寸/同圆角/同位置），
+           只换配色：红底（与全站「涨=红」一致，且它是本模式下最强的名次，压过「龙」「20天」的中性色）。 */
+        .auction-totaldragon-tag {
+            display: inline-block;
+            margin-left: 3px;
+            padding: 0 3px;
+            border-radius: 2px;
+            background: #fee2e2;
+            color: #b91c1c;
+            font-size: 9px;
+            font-weight: 700;
+            line-height: 12px;
+            vertical-align: 1px;
+            white-space: nowrap;
+        }
+
         /* [DRAGON-GROUP 2026-09-14] 龙头组与下方（观察组/常规组）之间的蚂蚁线分隔。
            与 .auction-obs-separator 同款虚线，视觉上「隔离开但仍属同一张表」。 */
         .auction-dragon-separator {

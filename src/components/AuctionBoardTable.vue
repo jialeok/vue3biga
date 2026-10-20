@@ -219,6 +219,10 @@ function rowMemo(item) {
     // [RANGE20 2026-10-19] 「20日涨幅」toggle 下行上显示的数值 + 实际参与累乘的天数（悬停 n/20日）。
     //   同款理由必须入指纹：它是两阶段异步到货的（库内腿 → 同花顺补缺），漏掉则整行不重渲染。
     item.rangePct20, item.rangePct20Days,
+    // [RANGE20-TOTAL-DRAGON 2026-10-20 用户口径] 「20日涨幅」toggle 下的「总龙一…总龙五」名次：
+    //   名次是 rangePct20 到货后【异步】才有的（先没有值 → 置底无标，随后置顶打标），
+    //   漏进指纹 ⇒ 数值到了、顺序也换了，但标签不出现（与 rangePct20 同款理由）。
+    item.totalDragonRank,
     // [TOPIC-TREND 2026-09-20] 题材统计条的五日趋势展开态：漏进指纹 → 点统计条整行不重渲染。
     //   只对本行【带有统计条】时才有意义（统计条只在题材块第一行出现），其余行恒为 false。
     item.topicStats ? topicTrendExpanded.value.has(item.topicStats.topic) : false
