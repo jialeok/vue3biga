@@ -11,10 +11,12 @@ import { describe, it, expect } from 'vitest';
 import {
   RANGE20_LEADER_TOP_N,
   RANGE20_LEADER_MIN_LEGS,
+  RANGE20_LEADER_COARSE_MIN_LEGS,
   RANGE20_LEADER_PRESELECT,
   isMainBoardOnly,
   rankLeaders,
-  unionPoolFromDates
+  unionPoolFromDates,
+  buildLeaderRankPool
 } from './range20-leaders.js';
 
 describe('常量口径', () => {
@@ -148,5 +150,100 @@ describe('unionPoolFromDates —— 候选池 = 每天正式列表的并集', ()
   it('空输入 ⇒ 空数组', () => {
     expect(unionPoolFromDates(null)).toEqual([]);
     expect(unionPoolFromDates(new Map())).toEqual([]);
+  });
+});
+
+// ============================================================================
+// [R20-TOP5-POOL 2026-10-20] 用户投诉：「今天补的这些 20 日涨幅都是负数，不是强势股啊，
+//   是代码乱补、兜底？我说的是补强势股，就是 20 日涨幅前五的……让我能看到真正排名前五的龙头。
+//   其它后排的不要乱补，会污染数据。」
+//
+// 根因（实测 10-20 数据复现）：精算只覆盖粗筛前 25 只，上游限流时大部分请求失败 ⇒
+//   这些票在 fresh 里只剩一根 T 腿 ⇒ 被 minDays=6 全部筛掉 ⇒ 前五只能从「侥幸精算成功的
+//   少数弱势票」里出（金健米业 -2.88% / 捷荣技术 -16.09% / 海正新材 -18.00% …）。
+//   而全池真实近似前五是 新华传媒 111.70 / 九阳股份 62.30 / 时代万恒 60.04 / 新华文轩 58.85。
+//
+// 这组用例锁住「精算失败不许把强票踢出排名」这条红线。
+// ============================================================================
+
+describe('RANGE20_LEADER_COARSE_MIN_LEGS —— 粗筛门槛必须与可信门槛分开', () => {
+  it('粗筛门槛 2 < 可信门槛 6（粗筛宁滥勿缺，只排除「只有 1 天数据」的噪声）', () => {
+    expect(RANGE20_LEADER_COARSE_MIN_LEGS).toBe(2);
+    expect(RANGE20_LEADER_COARSE_MIN_LEGS).toBeLessThan(RANGE20_LEADER_MIN_LEGS);
+  });
+});
+
+describe('buildLeaderRankPool —— 排名池四层合并（★ 本轮修复的核心）', () => {
+  it('★★ 精算全部失败时，粗筛近似值必须兜底 ⇒ 强票不会消失（这正是用户看到的 bug）', () => {
+    const coarseTop = [
+      { stock: '新华传媒', code: '600825', pct: 111.70, days: 12 },
+      { stock: '九阳股份', code: '002242', pct: 62.30, days: 9 },
+      { stock: '时代万恒', code: '600241', pct: 60.04, days: 8 },
+      { stock: '新华文轩', code: '601811', pct: 58.85, days: 15 },
+      { stock: '澳弘电子', code: '605058', pct: 53.74, days: 17 },
+      { stock: '金健米业', code: '600127', pct: 38.77, days: 12 }
+    ];
+    // K 线一个都没拿到 ⇒ fresh 只有「T 腿一根」的残缺值（days=1）
+    const fresh = [{ stock: '金健米业', pct: -2.88, days: 1 }];
+    const pool = buildLeaderRankPool({ coarseTop: coarseTop, fresh: fresh });
+    const top = rankLeaders(pool, { limit: 5, minDays: RANGE20_LEADER_MIN_LEGS, mainBoardOnly: true });
+    expect(top.map(r => r.stock)).toEqual(['新华传媒', '九阳股份', '时代万恒', '新华文轩', '澳弘电子']);
+    // 且全部标记为「近似」（不是真值，视图/title 可以据此说明）
+    expect(pool.filter(r => r.approx).length).toBe(6);
+  });
+
+  it('★★ 残缺的精算值（days=1）⛔ 不许覆盖粗筛近似（否则强票被拉成「T 日当天涨幅」）', () => {
+    const pool = buildLeaderRankPool({
+      coarseTop: [{ stock: '新华传媒', code: '600825', pct: 111.70, days: 12 }],
+      fresh: [{ stock: '新华传媒', pct: 2.77, days: 1 }]
+    });
+    expect(pool.length).toBe(1);
+    expect(pool[0].pct).toBe(111.70);
+    expect(pool[0].approx).toBe(true);
+  });
+
+  it('精算拿到完整腿（days>=6）⇒ 用真值覆盖近似值', () => {
+    const pool = buildLeaderRankPool({
+      coarseTop: [{ stock: '新华传媒', code: '600825', pct: 111.70, days: 12 }],
+      fresh: [{ stock: '新华传媒', pct: 197.82, days: 20 }]
+    });
+    expect(pool[0].pct).toBe(197.82);
+    expect(pool[0].approx).toBe(false);
+  });
+
+  it('优先级：精算 > 主看板 > 云端 > 粗筛（后者依次被覆盖）', () => {
+    const cloud = new Map([['甲', { pct: 50, days: 20 }]]);
+    const live = new Map([['甲', { pct: 60, days: 20 }]]);
+    const fresh = [{ stock: '甲', pct: 70, days: 20 }];
+    const coarseTop = [{ stock: '甲', code: '600001', pct: 999, days: 20 }];
+    const a = buildLeaderRankPool({ coarseTop: coarseTop, cloudMap: cloud });
+    expect(a[0].pct).toBe(50);
+    const b = buildLeaderRankPool({ coarseTop: coarseTop, cloudMap: cloud, liveMap: live });
+    expect(b[0].pct).toBe(60);
+    const c = buildLeaderRankPool({ coarseTop: coarseTop, cloudMap: cloud, liveMap: live, fresh: fresh });
+    expect(c[0].pct).toBe(70);
+  });
+
+  it('主看板 map 按候选池过滤（池外的票不许混进排名）', () => {
+    const pool = buildLeaderRankPool({
+      coarseTop: [{ stock: '甲', code: '600001', pct: 10, days: 20 }],
+      liveMap: new Map([['池外票', { pct: 999, days: 20 }]]),
+      poolNames: new Set(['甲'])
+    });
+    expect(pool.map(r => r.stock)).toEqual(['甲']);
+  });
+
+  it('§10：pct 为 null / NaN 的云端/主看板行 ⛔ 不覆盖已有值', () => {
+    const pool = buildLeaderRankPool({
+      coarseTop: [{ stock: '甲', code: '600001', pct: 10, days: 20 }],
+      cloudMap: new Map([['甲', { pct: null, days: 20 }]]),
+      liveMap: new Map([['甲', { pct: NaN, days: 20 }]])
+    });
+    expect(pool[0].pct).toBe(10);
+  });
+
+  it('空输入 ⇒ 空数组（不抛错）', () => {
+    expect(buildLeaderRankPool({})).toEqual([]);
+    expect(buildLeaderRankPool(null)).toEqual([]);
   });
 });

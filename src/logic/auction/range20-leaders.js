@@ -41,7 +41,7 @@
 
 import { ref } from 'vue';
 import { getStockCode } from '../../data/stock-code-map.js';
-import { _getAuctionFormalRowsForDate } from '../../data/watchlist-and-metrics.js';
+import { _getAuctionFormalRowsForDate, _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
 import { fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
 // [R20-CLOUD 2026-10-20] 与主 toggle 共用同一张结果表（stock_range20_pct）⇒ 谁先算谁落库、另一方 0 请求复用
 import { readRange20Rows, pickUsableRows, upsertRange20Rows } from '../../data/stock-range20-cache.js';
@@ -54,6 +54,7 @@ import {
   RANGE20_WINDOW_DAYS,
   RANGE20_PROBE_DAYS,
   getRange20WindowDates,
+  getRange20Pct,
   legs20FromRows,
   merge20Legs,
   compound20,
@@ -64,8 +65,24 @@ import {
 
 /** 只取前 5 只（用户口径：「只选出5只」「取出排名前五的5只股票」） */
 export const RANGE20_LEADER_TOP_N = 5;
-/** 候选门槛：20 日窗口内至少这么多天出现在【早盘竞价正式列表】里（理由见文件头） */
+/**
+ * 「可信门槛」：20 日窗口内至少这么多天有腿。
+ * ⚠️ 语义按阶段不同，⛔ 别混用（2026-10-20 就是因为混用才补出负涨幅的票）：
+ *   · 精算阶段 = **K 线腿数**（正常票 ≈20，停牌票 ≥6）⇒ 判断这个值可不可信；
+ *   · 粗筛阶段 = **库内上榜天数**（20 天里只有 4 天在名单里，数据本来就残）——
+ *     所以粗筛**不能**直接用这个门槛（见 RANGE20_LEADER_COARSE_MIN_LEGS）。
+ */
 export const RANGE20_LEADER_MIN_LEGS = 6;
+/**
+ * 粗筛的「入场门槛」：只要 >= 2 天有库内腿就有资格参与近似排名。
+ *
+ * 🔴 为什么必须与 RANGE20_LEADER_MIN_LEGS 分开（2026-10-20 用户投诉「补出来的全是负涨幅」）：
+ *   粗筛的唯一职责是「挑 25 只进精算」，所以它应该**宁滥勿缺** —— 挑「可能涨得最多」的票。
+ *   旧实现拿 `minDays: 6`（上榜天数）当粗筛门槛 ⇒ 把「上榜天数少但涨幅巨大」的真龙头
+ *   （停牌票、中途进名单的票）直接筛掉，只剩「长期霸榜但涨幅平庸」的票进入精算，
+ *   于是前五变成一批弱势票。实测 10-20：过门槛只剩 11 只，金健米业/国芳集团/楚天龙排在前面。
+ */
+export const RANGE20_LEADER_COARSE_MIN_LEGS = 2;
 /** 粗筛进入精算的只数（留 5 倍余量吸收粗筛误差，把请求数从 200+ 压到 25） */
 export const RANGE20_LEADER_PRESELECT = 25;
 
@@ -81,6 +98,35 @@ const _inflight = new Map();
 const _cache = new Map();
 /** 同花顺已请求过的「股票名@窗口首日」（跨日期复用：窗口首日相同 ⇒ 请求内容完全相同 ⇒ 不重复烧请求） */
 const _klineTried = new Set();
+/**
+ * 🔴 date -> Map<stock, Map<ymd, pct>>：本轮拿到的 K 线腿【累积】缓存。
+ *
+ * 为什么必须有（2026-10-20 修）：旧实现把腿放在局部变量 `extraByStock` 里，
+ *   而 `_klineTried` 会把请求过的票全部登记住 ⇒ **任何一次重算（数据到齐 / 换口径）都拿不到腿**
+ *   ⇒ `fresh` 只剩「T 腿」⇒ 全被可信门槛筛掉 ⇒ 前五退化成空或极少数票。
+ *   累积后重算可以 0 请求复原完整腿集（与 range20.js#_klineAcc 同款范式）。
+ */
+const _klineAcc = new Map();
+/**
+ * 🔴 date -> 'auc' | 'close'：该日结果是用哪套 T 腿口径算出来的。
+ *
+ * 跨 15:00 口径会变（盘中竞价 → 收盘），`_cache` 里的旧结果必须作废重算，
+ * 否则整个会话一直显示早上那份数（主看板有 `_legMode` 护栏，本模块此前漏了）。
+ */
+const _legMode = new Map();
+/**
+ * 🔴 date -> 候选池大小（`pool.length`）：缓存判据之一。
+ *   候选池来自异步分批加载的正式列表索引 ⇒ 池会「先小后大」；池变大时必须重算，
+ *   否则第一次那份残缺池的结论会被永久缓存（见 [R20-POOL-GROW]）。
+ */
+const _poolSig = new Map();
+/**
+ * 🔴 date -> { n:number, timer:any }：索引预热期的退避重算计数（见 [R20-WARM]）。
+ *   4 次封顶后不再重试 —— 剩下的日子可能本来就没有名单数据，无限重试只会烧 CPU。
+ */
+const _warmRetry = new Map();
+/** 退避间隔（毫秒）：由近到远，覆盖「首次打开应用后 2 分钟内索引补齐」这段窗口 */
+const WARM_RETRY_DELAYS = [3000, 10000, 30000, 60000];
 
 /**
  * 当前已发布的「20日涨幅前五」。
@@ -117,6 +163,11 @@ export function clearRange20Leaders() {
   _inflight.clear();
   _cache.clear();
   _klineTried.clear();
+  _klineAcc.clear();
+  _legMode.clear();
+  _poolSig.clear();
+  _warmRetry.forEach(function(st) { if (st && st.timer) clearTimeout(st.timer); });
+  _warmRetry.clear();
   _state.value = { date: '', list: [], ready: false, version: _state.value.version + 1 };
 }
 
@@ -197,6 +248,70 @@ export function unionPoolFromDates(rowsByDate) {
 }
 
 /**
+ * 【纯函数】构建「20日涨幅前五」的排名池 —— 四层由可信到兜底合并（本次修复的核心）。
+ *
+ * ★★ 为什么必须有「粗筛近似」这一层底座（2026-10-20 用户投诉「补出来的全是负涨幅」的正解）：
+ *   排名池原来只装「精算成功的票」∪「云端真值」。而精算只覆盖粗筛前 25 只，一旦上游限流/超时
+ *   让大部分请求失败，这 25 只里只有极少数有 K 线腿 ⇒ 其余在 `fresh` 里只剩一根 T 腿
+ *   ⇒ 被 `minDays: 6` 筛掉 ⇒ **前五只能从「侥幸精算成功的少数票」里出**，而那些恰恰是
+ *   粗筛排 7/11/30/42 名的弱势票 ⇒ 用户看到 -2.88% / -16.09% 这种「前五」。
+ *   §10 的正解不是「丢弃」，而是「**如实降级**」：精算没拿到就用粗筛近似值参与排名，
+ *   保证前五的**成员**永远来自全池最强的一批（数值精度另说，绝不换成弱票）。
+ *
+ * 优先级（后者覆盖前者，越靠后越可信）：
+ *   ④ 粗筛近似（库内 change_pct 复利，可能混竞价口径）—— 兜底底座，保证强票不消失
+ *   ③ 云端结果表 `stock_range20_pct`（K 线算过的真值，0 请求）
+ *   ② 主看板内存 map（`getRange20Pct`，今天正式列表的票正在/已被主 toggle 算成真值，0 请求）
+ *   ① 本轮精算 `fresh`（K 线真值，最新）
+ *
+ * @param {{
+ *   coarseTop: Array<{stock:string, code?:string, pct:number, days:number}>,
+ *   cloudMap?: Map<string,{pct:number,days:number}>,
+ *   liveMap?: Map<string,{pct:number,days:number}>|null,
+ *   fresh?: Array<{stock:string, pct:number, days:number}>,
+ *   poolNames?: Set<string>,
+ *   minLegs?: number
+ * }} input
+ * @returns {Array<{stock:string, code:string, pct:number, days:number, approx:boolean}>}
+ */
+export function buildLeaderRankPool(input) {
+  const o = input || {};
+  const minLegs = (o.minLegs === null || o.minLegs === undefined)
+    ? RANGE20_LEADER_MIN_LEGS : Number(o.minLegs);
+  const poolNames = o.poolNames || null;
+  const m = new Map();
+
+  // ④ 粗筛近似（底座：⛔ 绝不因为后面几层没有就把它删掉）
+  (o.coarseTop || []).forEach(function(t) {
+    if (!t || !t.stock) return;
+    m.set(t.stock, { stock: t.stock, code: t.code || '', pct: t.pct, days: t.days || 0, approx: true });
+  });
+  // ③ 云端结果表
+  if (o.cloudMap) {
+    o.cloudMap.forEach(function(v, n) {
+      if (!v || v.pct === null || v.pct === undefined || isNaN(v.pct)) return;
+      m.set(n, { stock: n, code: '', pct: Number(v.pct), days: v.days || 0, approx: false });
+    });
+  }
+  // ② 主看板真值（今天正式列表的票）
+  if (o.liveMap && o.liveMap.size > 0) {
+    o.liveMap.forEach(function(v, n) {
+      if (poolNames && !poolNames.has(n)) return;
+      if (!v || v.pct === null || v.pct === undefined || isNaN(v.pct)) return;
+      m.set(n, { stock: n, code: '', pct: Number(v.pct), days: v.days || 0, approx: false });
+    });
+  }
+  // ① 本轮精算 —— 🔴 只有「腿数够」的才算真值：days=1 的残缺值不许覆盖近似底座
+  //   （否则强票又被拉回「T 日当天涨幅」，正是本轮要修的病）
+  (o.fresh || []).forEach(function(r) {
+    if (!r || !r.stock) return;
+    if (!(Number(r.days) >= minLegs)) return;
+    m.set(r.stock, { stock: r.stock, code: '', pct: r.pct, days: Number(r.days), approx: false });
+  });
+  return Array.from(m.values());
+}
+
+/**
  * 【纯函数】排名 + 截断（降序；同涨幅按「天数多者优先」再按名字，保证稳定可复现）。
  *
  * @param {Array<{stock:string, pct:number, days:number, code?:string}>} rows
@@ -263,7 +378,7 @@ function _sigOf(list) {
 }
 
 /** 发布（签名相同 ⇒ 不发布、不 bump version） */
-function _publish(date, list) {
+function _publish(date, list, cacheable) {
   const sig = _sigOf(list);
   if (_sig.get(date) === sig && _state.value.date === date) return _state.value.list;
   _sig.set(date, sig);
@@ -273,9 +388,34 @@ function _publish(date, list) {
   //   之后数据到了、watch 再触发，开头的 `_cache.has(date)` 短路直接返回那个空结论 ⇒
   //   整个会话再也算不出来（表现为「区块永远不出现」，而手动调用却一切正常）。
   //   ⇒ 只有非空结果才缓存；空结论只写 _sig（防重复发布），下次仍会重算。
-  if (copy.length > 0) _cache.set(date, copy);
+  //   ★ [R20-WARM 2026-10-20] 同理：**索引还在预热（候选池会继续变大）时的非空结论也不缓存** ——
+  //     那一刻的前五是从一份残缺池里选出来的，缓存住就再也不改（实测补出第 6 名的弱票）。
+  if (copy.length > 0 && cacheable !== false) _cache.set(date, copy);
   _state.value = { date: date, list: copy, ready: true, version: _state.value.version + 1 };
   return copy;
+}
+
+/**
+ * [R20-WARM] 索引预热期结束后自动重算（退避 4 次封顶）。
+ *
+ * ⛔ 为什么不能指望 watch 再触发：`useAuctionBoard` 的 watch 盯的是
+ *   「`uiStore.currentDate` + 展示日行数」，而**历史日索引补齐不会改变展示日的行数**
+ *   ⇒ 池从 43 涨到 424 时一次触发都没有，缓存（或那次错结论）就永久留在屏幕上。
+ */
+function _scheduleWarmRetry(date, readyDays, totalDays) {
+  const st = _warmRetry.get(date) || { n: 0, timer: 0 };
+  if (st.n >= WARM_RETRY_DELAYS.length) return;   // 封顶：剩下的日子可能本来就没有名单数据
+  const delay = WARM_RETRY_DELAYS[st.n];
+  if (st.timer) clearTimeout(st.timer);
+  st.timer = setTimeout(function() {
+    _warmRetry.set(date, { n: st.n + 1, timer: 0 });
+    Promise.resolve(ensureRange20Leaders(date, { force: true })).catch(function(e) {
+      _dbgLog('[RANGE20-TOP5-WARM] ' + date + ' 预热重算失败（下次再试）: ' + (e && e.message || e));
+    });
+  }, delay);
+  _warmRetry.set(date, st);
+  _dbgLog('[RANGE20-TOP5-WARM] ' + date + ' 索引就绪 ' + readyDays + '/' + totalDays
+    + ' ⇒ 本次结论不缓存，' + (delay / 1000) + 's 后第 ' + (st.n + 1) + ' 次重算');
 }
 
 /** 日期闸门（未来日 / 非交易日 ⇒ 不产出数据，与 range20.js/_notTradable 同口径） */
@@ -304,6 +444,43 @@ export async function ensureRange20Leaders(date, opts) {
     _publish(date, []);
     return _state.value.list;
   }
+  const probeDates = getRange20WindowDates(date, RANGE20_PROBE_DAYS);
+  const tIsToday = (date === _getLocalTodayStr());
+  // 🔴 [R20-TSWITCH] 必须与 range20.js 主 toggle 用同一套 T 腿口径（§6），否则「前五补位」的
+  //   涨幅会和同一屏的 20日涨幅列对不上（同一个日期、同一只票出现两个数）。
+  const afterClose = isAfterCloseOf(date);
+  const legMode = resolveT20LegMode(tIsToday, afterClose);
+
+  // 🔴 [R20-TOP5-TSWITCH 2026-10-20] 口径跨 15:00 变化 ⇒ 会话缓存必须作废重算。
+  //   漏掉这条 ⇒ 页面从早盘开到现在会一直显示「前19收盘 × 今天竞价」，与看板另一列的收盘口径打架。
+  const prevLeg = _legMode.get(date);
+  if (prevLeg && prevLeg !== legMode) {
+    _cache.delete(date);
+    _sig.delete(date);
+    _dbgLog('[RANGE20-TOP5-TSWITCH] ' + date + ' 口径 ' + prevLeg + ' → ' + legMode + '：作废缓存并重算');
+  }
+  // 🔴 [R20-POOL-GROW 2026-10-20] 候选池来自「正式列表索引」，而它是**异步分批加载**的
+  //   ⇒ 第一次调用常常只拿到当天那 40 来行（历史日还没到），于是把「前五」算在一份残缺池上
+  //   并写进 `_cache`；此后真·第一（10-19 新华传媒 210.98%）永远进不了池 ⇒ 区块显示的是
+  //   「残缺池里的第一」。E2E 实测：同一日期两次会话，一次 候选池=175（正确）、一次 43（错）。
+  //   判据：池变大 ⇒ 作废缓存重算。池只会单调增长（索引只加不减）⇒ 必然收敛，不会反复重算。
+  const rowsByDate = _formalRowsByDate(probeDates);
+  const pool = unionPoolFromDates(rowsByDate);
+  const poolSig = pool.length;
+  // 🔴 [R20-WARM 2026-10-20] 索引预热判据：候选池来自「日 -> 正式列表」索引，索引是按日分批加载的。
+  //   未预热完时算出来的前五是从「只加载了一部分日期」的池里选的（实测 10-19 池只有 43 只 =
+  //   当天那 43 行，真·第一新华传媒 210.98% 根本不在池里，反而把第 6 名时代万恒补了上去）。
+  //   ⇒ 结论照发（用户能尽快看到东西），但**不写会话缓存** + 起一个退避重算。
+  const _readyDays = probeDates.reduce(function(a, d) {
+    return a + (_isAuctionWatchlistIndexReady(d) ? 1 : 0);
+  }, 0);
+  const _warm = _readyDays >= Math.ceil(probeDates.length * 0.8);
+  const prevPoolSig = _poolSig.get(date);
+  if (_cache.has(date) && prevPoolSig !== undefined && poolSig > prevPoolSig) {
+    _cache.delete(date);
+    _sig.delete(date);
+    _dbgLog('[RANGE20-TOP5-POOLGROW] ' + date + ' 候选池 ' + prevPoolSig + ' → ' + poolSig + '：作废缓存重算');
+  }
   // 已算完且有结果 ⇒ 直接用缓存（切日期回来不再请求，§24）
   //   ⚠️ 判据只看 `_cache`（非空结果才写），不看 `_sig` —— 空结论不缓存的理由见 _publish。
   if (_cache.has(date)) {
@@ -314,19 +491,13 @@ export async function ensureRange20Leaders(date, opts) {
   const fly = _inflight.get(key);
   if (fly) return fly;
 
-  const probeDates = getRange20WindowDates(date, RANGE20_PROBE_DAYS);
-  const tIsToday = (date === _getLocalTodayStr());
-  // 🔴 [R20-TSWITCH] 必须与 range20.js 主 toggle 用同一套 T 腿口径（§6），否则「前五补位」的
-  //   涨幅会和同一屏的 20日涨幅列对不上（同一个日期、同一只票出现两个数）。
-  const afterClose = isAfterCloseOf(date);
-  const legMode = resolveT20LegMode(tIsToday, afterClose);
-
   const p = (async function() {
-    const rowsByDate = _formalRowsByDate(probeDates);
-    const pool = unionPoolFromDates(rowsByDate);
+    // rowsByDate / pool 已在上面的 [R20-POOL-GROW] 处算好（缓存判据要用池大小）
     if (pool.length === 0) {
       // 正式列表索引还没就绪（§10：未就绪 ≠ 没有股票）⇒ 不发布「空结论」
       _dbgLog('[RANGE20-TOP5] ' + date + ' 候选池为空（正式列表索引可能未就绪），本次不产出');
+      // [R20-WARM] 同样起退避重算：索引补齐不改展示日行数 ⇒ 不能只靠 watch
+      _scheduleWarmRetry(date, _readyDays, probeDates.length);
       return _state.value.list;
     }
     // 🔴 这里要【两份】baseLegs，用途严格分离（2026-10-19 实测踩过，⛔ 别合成一份）：
@@ -363,23 +534,53 @@ export async function ensureRange20Leaders(date, opts) {
     if (cloudMap.size > 0) {
       _dbgLog('[RANGE20-TOP5] ' + date + ' 云端表命中 ' + cloudMap.size + ' 只（0 请求复用）');
     }
+    // 🔴 [R20-COARSE-CODE 2026-10-20] `compound20` 只产 `{stock,pct,days}`，**不含 code**
+    //   ⇒ 粗筛的「只主板」闸门只能靠 `codeOfRow` 反查股票名册；名册这一刻还没就绪时
+    //   全部返回 '' ⇒ `isMainBoardOnly('')` = false ⇒ **428 只候选被一刀切光，粗筛归零**，
+    //   表现成「补位区块整块消失」（E2E 实测 tier1=0 tier2=0 进精算=0，而离线诊断算出 73/287）。
+    //   修法：候选池 `pool` 里的 code 是从正式列表行 `codeOfRow` 取的，回填给粗筛行（§6 同一套解析）。
+    const poolCode = new Map();
+    pool.forEach(function(t) { if (t && t.stock && t.code) poolCode.set(t.stock, t.code); });
     // 粗筛排序用「库内近似 ∪ 云端真值」（同名以云端为准 —— 云端是 K 线算的，必然更准）
     const coarseMerged = (function() {
       const m = new Map();
-      coarse.forEach(function(r) { m.set(r.stock, r); });
+      coarse.forEach(function(r) {
+        m.set(r.stock, { stock: r.stock, code: poolCode.get(r.stock) || '', pct: r.pct, days: r.days });
+      });
       cloudMap.forEach(function(v, n) {
         if (!poolNames.has(n)) return;
-        m.set(n, { stock: n, pct: v.pct, days: v.days });
+        m.set(n, { stock: n, code: poolCode.get(n) || '', pct: v.pct, days: v.days });
       });
       return Array.from(m.values());
     })();
-    const coarseTop = rankLeaders(coarseMerged, {
-      limit: RANGE20_LEADER_PRESELECT,
-      minDays: RANGE20_LEADER_MIN_LEGS,
+    // 粗筛分两档，⛔ 别用一个 minDays 一刀切（2026-10-20 的负涨幅补位就是这个错）：
+    //   tier1 = 「库内上榜 >= 6 天」⇒ 数据完整，可信度高，优先占精算名额；
+    //   tier2 = 「2~5 天」⇒ 数据残缺但**可能是真龙头**（停牌票 / 中途进名单），
+    //           只有 tier1 不满 25 只时才补进来。⛔ 绝不能因为天数少就把它们直接丢掉。
+    const _allCoarse = rankLeaders(coarseMerged, {
+      limit: 0,                       // 0 = 不截断，先拿全量排序
+      minDays: RANGE20_LEADER_COARSE_MIN_LEGS,
       mainBoardOnly: true
     });
+    const _tier1 = _allCoarse.filter(function(r) { return r.days >= RANGE20_LEADER_MIN_LEGS; });
+    const _tier2 = _allCoarse.filter(function(r) {
+      return r.days >= RANGE20_LEADER_COARSE_MIN_LEGS && r.days < RANGE20_LEADER_MIN_LEGS;
+    });
+    const coarseTop = _tier1.concat(_tier2).slice(0, RANGE20_LEADER_PRESELECT);
+    // 诊断：粗筛归零时必须能一眼区分「天数不够」还是「代码缺失被主板闸门切光」
+    //   （2026-10-20 就是后者：daysMax=20 却 tier1=0，浪费了一轮 rebuild 才发现）
+    const _maxDays = coarseMerged.reduce(function(a, r) { return Math.max(a, Number(r.days) || 0); }, 0);
+    const _passDays = coarseMerged.filter(function(r) {
+      return Number(r.days) >= RANGE20_LEADER_COARSE_MIN_LEGS;
+    }).length;
     _dbgLog('[RANGE20-TOP5] ' + date + ' 候选池=' + pool.length + ' 有腿=' + coarseMerged.length
-      + ' 粗筛(>= ' + RANGE20_LEADER_MIN_LEGS + '天/主板)=' + coarseTop.length);
+      + ' 粗筛 tier1(>=' + RANGE20_LEADER_MIN_LEGS + '天)=' + _tier1.length
+      + ' tier2(' + RANGE20_LEADER_COARSE_MIN_LEGS + '~' + (RANGE20_LEADER_MIN_LEGS - 1) + '天)=' + _tier2.length
+      + ' 进精算=' + coarseTop.length + '（只主板）'
+      + ' [过门槛=' + _passDays + ' daysMax=' + _maxDays + ']');
+    _dbgLog('[RANGE20-TOP5] ' + date + ' 粗筛前 10：' + coarseTop.slice(0, 10).map(function(t) {
+      return t.stock + ' ' + t.pct.toFixed(2) + '%/' + t.days + 'd';
+    }).join(' , '));
     if (opts && opts.skipKline) {
       return _publish(date, coarseTop.slice(0, RANGE20_LEADER_TOP_N));
     }
@@ -391,11 +592,14 @@ export async function ensureRange20Leaders(date, opts) {
     // 阶段② 精算（<=25 请求）：补满 20 天 K 线后重算
     //   跨日期复用：同一只票 + 同一窗口首日 ⇒ 请求内容完全相同 ⇒ 只发一次（切日期不重复烧请求）
     //   🔴 [R20-CLOUD] 云端表已有真值的票不再请求（0 请求复用）。
+    //   🔴 [R20-KACC] 上一轮已拿到的 K 线腿从 `_klineAcc` 复用 ⇒ 重算时 0 请求且**不会丢腿**。
     const winKey = probeDates[0] || '';
+    const extraByStock = _klineAcc.get(date) || new Map();
     const todo = coarseTop.filter(function(t) {
-      return !_klineTried.has(t.stock + '@' + winKey) && !cloudMap.has(t.stock);
+      return !extraByStock.has(t.stock)
+        && !_klineTried.has(t.stock + '@' + winKey)
+        && !cloudMap.has(t.stock);
     });
-    const extraByStock = new Map();
     if (todo.length > 0) {
       _fillCodes(todo);
       if (todo.some(function(t) { return !t.code; })) {
@@ -417,6 +621,7 @@ export async function ensureRange20Leaders(date, opts) {
           { concurrency: 3, retryShortWindow: true, requestTimeoutMs: 15000, minCoverage: RANGE20_WINDOW_DAYS, onProgress: onProgress }
         );
         extra.forEach(function(v, k) { extraByStock.set(k, v); });
+        _klineAcc.set(date, extraByStock);
       }
     }
     // 🔴 必须传 tDate（主看板漏掉过这个参数 ⇒ 盘中会把竞价腿换成 K 线的"今天盘中价"）：
@@ -428,15 +633,30 @@ export async function ensureRange20Leaders(date, opts) {
     // 🔴 [R20-PERSTOCK-WIN] 不截到 20：每票在 compound20 内自取最近 20 个有腿日（与主看板同口径）
     const realDates = pickRealWindowDates(merged, probeDates, probeDates.length);
     const fresh = compound20(merged, realDates);
-    // 🔴 [R20-CLOUD] 参与排名 = 本轮算出的 ∪ 云端表真值（同名以本轮为准）。
-    //   否则「表里命中但本轮没算」的票（例如前五里的 4 只本就在正式列表）会从排名里消失 ⇒
-    //   补位候选判断全错（用户要的是「前五里哪些今天看不到」）。
-    const rankPool = (function() {
-      const m = new Map();
-      cloudMap.forEach(function(v, n) { m.set(n, { stock: n, pct: v.pct, days: v.days }); });
-      fresh.forEach(function(r) { if (r && r.stock) m.set(r.stock, r); });
-      return Array.from(m.values());
+
+    // ========================================================================
+    // 🔴🔴 [R20-TOP5-POOL 2026-10-20] 排名池 = 四层【由可信到兜底】，⛔ 绝不允许「精算失败 ⇒ 强票消失」
+    //   合并规则与踩坑经过全部收敛在 `buildLeaderRankPool` 的注释里（纯函数，可单测）。
+    //   一句话：粗筛近似是**底座**，云端/主看板/本轮精算依次覆盖它；
+    //   这样「前五的成员」永远来自全池最强的一批，不会因为上游限流降级成一批弱势票。
+    // ========================================================================
+    const _live = (function() {
+      try { return getRange20Pct(date); } catch (e) { return null; }
     })();
+    const rankPool = buildLeaderRankPool({
+      coarseTop: coarseTop,
+      cloudMap: cloudMap,
+      liveMap: _live,
+      fresh: fresh,
+      poolNames: poolNames,
+      minLegs: RANGE20_LEADER_MIN_LEGS
+    });
+    // 🔴 [R20-COARSE-CODE] 排名池里「云端 / 主看板 / 本轮精算」这三层都不带 code
+    //   （它们的来源分别是表行与内存 map，只有 pct+days）⇒ 必须在这里统一回填，
+    //   否则下面的「只主板」闸门会把这三层全切掉，前五只剩粗筛层 —— 又是一个静默失效。
+    rankPool.forEach(function(r) { if (!r.code) r.code = poolCode.get(r.stock) || ''; });
+    const rankMap = new Map();
+    rankPool.forEach(function(r) { rankMap.set(r.stock, r); });
     const top = rankLeaders(rankPool, {
       limit: RANGE20_LEADER_TOP_N,
       minDays: RANGE20_LEADER_MIN_LEGS,
@@ -447,10 +667,25 @@ export async function ensureRange20Leaders(date, opts) {
     const _coarseCode = new Map();
     coarseTop.forEach(function(t) { if (t.code) _coarseCode.set(t.stock, t.code); });
     top.forEach(function(t) { if (!t.code) t.code = _coarseCode.get(t.stock) || ''; });
+    // 诊断：前五里哪些是「精算真值」、哪些是「粗筛近似」（approx=1 说明这只票的 K 线没拿到）
+    let _approxCnt = 0;
+    rankMap.forEach(function(v) { if (v.approx) _approxCnt++; });
     _dbgLog('[RANGE20-TOP5-PUB] ' + date + ' 精算 realDays=' + realDates.length
-      + ' 补算=' + extraByStock.size + ' 云端=' + cloudMap.size
-      + ' 前五=' + top.map(function(t) { return t.stock + ' ' + t.pct.toFixed(2) + '%/' + t.days + 'd'; }).join(' , '));
-    _publish(date, top);
+      + ' 精算腿=' + extraByStock.size + '/' + coarseTop.length
+      + ' 云端=' + cloudMap.size + ' 主看板真值=' + (_live ? _live.size : 0)
+      + ' 近似兜底=' + _approxCnt
+      + ' 前五=' + top.map(function(t) {
+        const r = rankMap.get(t.stock);
+        return t.stock + ' ' + t.pct.toFixed(2) + '%/' + t.days + 'd' + (r && r.approx ? '(近似)' : '');
+      }).join(' , '));
+    _publish(date, top, _warm);
+    // 🔴 [R20-POOL-GROW] 记下本次用的池大小 ⇒ 池变大时据此作废缓存重算
+    _poolSig.set(date, poolSig);
+    // 🔴 [R20-WARM] 索引没预热完 ⇒ 退避重算（4 次封顶：3s/10s/30s/60s）。
+    //   ⛔ 不能只靠 watch 再触发：watch 盯的是「展示日的行数」，历史日索引加载完并不会改行数。
+    if (!_warm) _scheduleWarmRetry(date, _readyDays, probeDates.length);
+    // 🔴 [R20-TOP5-TSWITCH] 记录本次口径 ⇒ 跨 15:00 时据此作废缓存重算（见函数开头）
+    _legMode.set(date, legMode);
     // 🔴 [R20-CLOUD] 把本轮真拿到 K 线的票落库 ⇒ 主 toggle 下次打开可 0 请求复用（两个模块共享同一张表）。
     //   只写「确实有 K 线腿的票」，⛔ 不写只有 T 腿的残缺值（§10：宁缺勿错，残缺值落库会永久污染）。
     try {
