@@ -211,6 +211,33 @@
     color: #991b1b;
 }
 
+/* ---- ★ [EBB-R20c 2026-10-20 用户口径] 二次确认退潮 + 常规选出补涨题材 ⇒ 买点侧顶部的
+   【节点说明】横幅。视觉沿用本看板【风险告警】色系（与 .tvrb-ebb-banner 同语义同配色），
+   ⛔ 类名独立 —— 两处 head 文本语义不同（节点说明 vs 卖点收紧），共用类名会让 DOM 查询混淆。
+   文案全在 Logic 层（out.ebbNodeNote，§21 模板零计算）；仅「二次确认 ∧ 常规选出」时渲染。 */
+.tvrb-ebb-node-note {
+    margin: 2px 0 8px;
+    padding: 8px 10px;
+    background: #fef2f2;
+    border: 2px solid #dc2626;
+    border-radius: 10px;
+}
+
+.tvrb-ebb-node-note-head {
+    font-size: 15px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    text-align: center;
+    color: #b91c1c;
+}
+
+.tvrb-ebb-node-note-detail {
+    margin-top: 5px;
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: #991b1b;
+}
+
 /* 2) 买点侧【整体变灰】：用户「买点侧是提示空仓的……把买点侧的文字或者 UI 全部变成灰色，
       这样空仓效果更加强烈些」。
    ★ [CASH-ALERT-NOBUY 2026-10-16 用户口径] 触发条件由【视图层】挂类表达 = `cashAlert.show`

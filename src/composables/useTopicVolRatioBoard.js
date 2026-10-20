@@ -578,6 +578,10 @@ export function useTopicVolRatioBoard() {
    * ⛔ 不是退潮日 / 当日涨幅未就绪 ⇒ null（模板 v-if 不渲染），绝不退化成别的票（§10）。
    */
   const ebbBuy = computed(() => (data.value.plan && data.value.plan.ebbBuy) || null);
+  /** [EBB-R20c 2026-10-20] 二次确认退潮 + 常规选出补涨题材 ⇒ 买点侧顶部的节点说明横幅
+   *  （{ headline, detail }，文案全在 Logic 层 §21）；其它场景 null（v-if 不渲染）。
+   *  ⛔ 不是退潮日 / 首次退潮 / 二次走兜底 ⇒ null，绝不退化成别的说明（§10）。 */
+  const ebbNodeNote = computed(() => (data.value.plan && data.value.plan.ebbNodeNote) || null);
   /** 卖点股票数（头部摘要用） */
   const sellCount = computed(function() {
     return sellGroups.value.reduce(function(n, g) { return n + ((g.items || []).length); }, 0);
@@ -782,6 +786,7 @@ export function useTopicVolRatioBoard() {
     cashAlert,
     ebb,
     ebbBuy,
+    ebbNodeNote,
     summaryText,
     toggleExpand,
     toggleCompact,

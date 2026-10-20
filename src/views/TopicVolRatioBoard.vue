@@ -119,6 +119,24 @@
                判据（能入选的排名第一题材平均竞价量比 < 25，或当日为【退潮首日】）与文案都在 Logic 层；
                ⛔ 它不改变选股 —— 命中时下面的题材块与股票行照常列出（用户「其它不变」）。
                ⛔ 不能挪到 v-if="ready" 之外：未就绪时给「空仓」结论等于拿没数据当量比低用（§10）。 -->
+          <!-- ★ [EBB-R20c 2026-10-20 用户口径] 二次确认退潮 + 常规选出补涨题材 ⇒ 买点侧顶部的
+               【节点说明】横幅：用户「这是个退潮节点大方向……新的题材符合条件，这些题材叫做补涨题材，
+               因为这是个节点很重要，可能接下来会出现轮动行情……会进入了常规选股规则」。
+               ⛔ 纯说明文字：文案与判据全在 Logic 层（out.ebbNodeNote，§21 模板零计算）；
+               首次退潮 / 二次走兜底 ⇒ null 不渲染（那两种场景卖点横幅 + 灰化已把状态说满）。
+               样式独立类 .tvrb-ebb-node-note（⛔ 不复用卖点 .tvrb-ebb-banner 类名 ——
+               两处 head 文本不同，共用类名会让 DOM 查询/E2E 混淆）。 -->
+          <div
+            v-if="ebbNodeNote"
+            class="tvrb-ebb-node-note tvrb-selectable"
+          >
+            <div class="tvrb-ebb-node-note-head">
+              {{ ebbNodeNote.headline }}
+            </div>
+            <div class="tvrb-ebb-node-note-detail">
+              {{ ebbNodeNote.detail }}
+            </div>
+          </div>
           <TvrbCashAlert :alert="cashAlert" />
           <!-- ★★ [EBB-R8 2026-10-14 → EBB-R20 2026-10-20 用户口径] 退潮日【买点侧替补（≤2 只）】：
                用户原话「从20日涨幅中的总龙一到总龙五选出两只排名靠前的……剩下的就选排名靠前的那两只」。
@@ -236,6 +254,7 @@ const {
   cashAlert,
   ebb,
   ebbBuy,
+  ebbNodeNote,
   summaryText,
   rulesLines,
   toggleExpand,

@@ -1594,6 +1594,13 @@ describe('tvrb · [EBB-R20b] 二次确认退潮 ⇒ 先常规选股（排除退�
     // 替补兜底不启用
     expect(p.ebbBuy).toBe(null);
     expect(p.buy.ebbSecond).toBe(null);
+    // ★ [EBB-R20c] 买点侧顶部的【节点说明】横幅（文案全在 Logic 层）
+    expect(p.ebbNodeNote).not.toBe(null);
+    expect(p.ebbNodeNote.headline).toContain('退潮节点');
+    expect(p.ebbNodeNote.headline).toContain('AI应用');
+    expect(p.ebbNodeNote.detail).toContain('补涨题材');
+    expect(p.ebbNodeNote.detail).toContain('轮动行情');
+    expect(p.ebbNodeNote.detail).toContain('常规选股规则');
     // 不灰化（常规第一题材量比 50 ≥ 25 ⇒ cashAlert 走常规判据不提示）
     expect(p.cashAlert.show).toBe(false);
     // 剔除原因如实写进 notes
@@ -1673,6 +1680,43 @@ describe('tvrb · [EBB-R20b] 二次确认退潮 ⇒ 先常规选股（排除退�
     expect(all).toContain('作为补涨题材选出的股票');
     expect(all).toContain('兜底');
     expect(all).toContain('排除退潮题材本身');
+    // ★ [EBB-R20c] 节点概念（退潮节点 / 补涨题材 / 轮动行情）也要写进规则面板
+    expect(all).toContain('退潮节点');
+    expect(all).toContain('轮动行情');
+    expect(all).toContain('节点说明横幅');
+  });
+
+  it('★ [EBB-R20c] 节点说明横幅只在「二次确认 ∧ 常规选出」时出现：首次退潮 / 二次兜底 / 非退潮日 ⇒ null', function() {
+    // 首次退潮（同一 ctx、无历史）⇒ null（卖点横幅 + 灰化已把状态说满，不再叠一条）
+    const p1 = buildTopicVolRatioPlan(mkTopics(), dm, {
+      ebbCtx: ebbCtx({ buyPicks: [{ name: '九阳股份', pct: 106.51, topic: '大消费', code: '002242', rank20: 2, days: 20, isYizi: false, suspended: false }], buyTrail: [] })
+    });
+    expect(p1.ebb.phase).toBe('first');
+    expect(p1.ebbNodeNote).toBe(null);
+    // 二次确认 + 常规选不出（兜底替补）⇒ null
+    const topics2 = [
+      block('AI应用', 1, ['甲一', '甲二', '甲三', '甲四', '甲五', '甲六'].map(function(n, i) {
+        return m(n, { aucVolRatio: 60, aucShare: 6, code: '6000' + (i < 9 ? '0' + (i + 1) : (i + 1)) });
+      })),
+      block('电力', 2, ['电一', '电二', '电三'].map(function(n, i) {
+        return m(n, { aucVolRatio: 40, aucShare: 6, code: '6003' + (i + 1) });
+      }))
+    ];
+    const picks2 = [
+      { name: '九阳股份', pct: 106.51, topic: '大消费', code: '002242', rank20: 2, days: 20, isYizi: false, suspended: false },
+      { name: '澳弘电子', pct: 93.07, topic: '电子/通信/算力', code: '605733', rank20: 3, days: 20, isYizi: false, suspended: false }
+    ];
+    const p2 = buildTopicVolRatioPlan(topics2, dm, {
+      ebbCtx: ebbCtx({ buyPicks: picks2, buyTrail: [] }),
+      ebbHistory: HIST
+    });
+    expect(p2.blocks.length).toBe(0);
+    expect(p2.ebbBuy).not.toBe(null);
+    expect(p2.ebbNodeNote).toBe(null);
+    // 非退潮日 ⇒ null（绝不能拿出一个「猜的」节点说明，§10）
+    const p0 = buildTopicVolRatioPlan(mkTopics(), dm, {});
+    expect(p0.ebb).toBe(null);
+    expect(p0.ebbNodeNote).toBe(null);
   });
 });
 
