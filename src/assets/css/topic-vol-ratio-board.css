@@ -1189,20 +1189,31 @@
     -webkit-touch-callout: default;
 }
 
-/* ---- [COMPACT] 简洁模式：隐藏解释性文字，只留【题材行 + 股票行 + 行内标签 + 分笔图】----
+/* ---- [COMPACT] 简洁模式：隐藏解释性文字与提示板，只留【题材行 + 股票行 + 行内标签 + 分笔图】----
    ★ [2026-10-22 用户口径] 行内说明（.tvrb-row-note，即每只股票下面的「根据规则几判定……」）
      【隐藏】—— 用户原话「我希望简洁版不要出现股票下面的说明文字（就是根据规则几判定……），
      要放到原版……其它保留（包括分笔图等）」。原版（不点简洁）全量显示不变。
+   ★ [2026-10-22 用户口径追加] 红/黄【提示板】也只进原版 —— 用户原话「买点侧和卖点侧那个红色
+     或者黄色提示板也放在原版（比如分歧提示，退潮提示语等）」：
+     · .tvrb-ebb-node-note（买点侧退潮节点说明横幅）
+     · .tvrb-diverge-mantra（分歧板口诀条）
+     · .tvrb-ebb-banner（卖点侧退潮判定横幅）
+     · .tvrb-cash-alert（空仓大字标语 —— ★ 推翻旧拍板「刻意保留」：本轮口径是所有提示板只进原版；
+       简洁模式下决策警示仍由行级【退潮不买】/【分歧日不买】标签承载，不丢决策信息）
    ⛔ .tvrb-note-empty（「这一块为什么没有股票」）【不隐藏】—— 全隐藏会剩一行光秃秃的题材名，
       反而让人以为「没算出来」（§10）。
-   ⛔ .tvrb-cash-alert（空仓提醒，买点侧顶部大字标语）【不隐藏】—— 用户口径是「看到这些文字
-      我就不开仓了」；它不在下面任何一条选择器里，这里点名说明是【刻意】的，别顺手加进去。
+   ⛔ 买点内容块不隐藏：.tvrb-ebb-only-buy / .tvrb-diverge-only-buy 是【当天的买点票】，不是提示板
+      （用户「其它不变」）。
    ⛔ 分笔面板（.tvrb-pen-panel）也不隐藏 —— 那是用户主动点开的量化数据（用户「其它保留」）。
    ⛔ 用 CSS 隐藏而不是模板 v-if：模板分支越少越稳。 */
 .tvrb-board.tvrb-compact .tvrb-reason-line,
 .tvrb-board.tvrb-compact .tvrb-sell-hint,
 .tvrb-board.tvrb-compact .tvrb-rules,
 .tvrb-board.tvrb-compact .tvrb-row-note,
+.tvrb-board.tvrb-compact .tvrb-ebb-node-note,
+.tvrb-board.tvrb-compact .tvrb-diverge-mantra,
+.tvrb-board.tvrb-compact .tvrb-ebb-banner,
+.tvrb-board.tvrb-compact .tvrb-cash-alert,
 .tvrb-board.tvrb-compact .tvrb-block-note:not(.tvrb-note-empty) {
     display: none;
 }
