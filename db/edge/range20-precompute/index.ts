@@ -1,28 +1,34 @@
 // Supabase Edge Function: range20-precompute
 // ============================================
-// 9:25 竞价结束后，自动把当天 20 日涨幅（leg='auc' 竞价口径）预计算并落库
-// stock_range20_pct ⇒ 用户竞价期间打开「20日涨幅」toggle 时，前端阶段⓪
-// 云端命中即发布（0 K 线请求）⇒ 秒开。
+// 「20日涨幅」双腿预计算 ⇒ 前端 toggle 早晚都秒开：
+//   · 北京 09:25（cron 自动）→ 写当天 leg='auc'（竞价口径）行 ⇒ 竞价期间打开秒开；
+//   · 北京 15:05（cron 自动）→ 写当天 leg='close'（收盘口径）行 ⇒ 收盘后第一次打开秒开
+//     （收盘价 15:00 定格，15:05 时当天 K 线 bar 已是最终收盘价）。
+//   · 函数按【运行时刻】自动选腿，无需两个函数：
+//       15:00 前 → leg='auc'，T 腿 = 竞价涨幅（open/昨收-1，缺则名单 change_pct 兜底——
+//                  9:25 早盘它就是竞价涨幅，见前端 merge20Legs 函数头实证）；
+//       15:00 后 → leg='close'，T 腿 = 今天 bar 收盘价/昨收-1（与前端 closeLegOf 同口径；
+//                  今天 bar 缺 ⇒ 该票不写，留前端算，⛔ 绝不拿竞价腿冒充收盘腿）。
+//   · 前端 15:00 换腿后按 leg 过滤读表（pickUsableRows：leg 不匹配 ≡ 还没有），
+//     我们写的行与前端自己重算写的行同一主键 (date,stock) ⇒ 前端照旧覆盖，零冲突。
 //
 // 部署：Dashboard → Edge Functions → Create a new function → 命名 range20-precompute
 //       → 把本文件全文粘贴进 index.ts → Deploy。无需配置任何 secrets
 //       （SUPABASE_URL / SUPABASE_ANON_KEY 由 Edge runtime 自动注入）。
 //
-// 定时：由 pg_cron + pg_net 在北京 09:25（UTC 01:25）触发，见 db/create_range20_cron.sql。
-//       也可手动触发：curl -X POST '<本项目URL>/functions/v1/range20-precompute?token=range20-cron-2026'
+// 定时：见 db/create_range20_cron.sql（两条 cron：UTC 01:25 与 UTC 07:05，周一~五）。
+//       也可手动触发（?leg=auc / ?leg=close 可强制指定口径，缺省按时钟）：
+//         curl -X POST '<本项目URL>/functions/v1/range20-precompute?token=range20-cron-2026'
 //
 // 口径（与前端 src/logic/auction/range20.js 逐字一致，⛔ 别"顺手优化"）：
 //   ① 窗口 = 含今天在内、每只票【自己的】最近 20 个有成交交易日（compound20 语义：
 //      停牌缺 bar 天然跳过 = 0% 等价；days 如实标注实际腿数）。
 //   ② 复利累乘 ∏(1+p/100)，结果 (acc-1)*100，写入格式 Number(pct).toFixed(2) 字符串。
-//   ③ T 腿 = 竞价涨幅（open/昨收-1），写入 leg='auc'。前端 15:00 换 close 腿后
-//      这些行自然不再命中（pickUsableRows 按 leg 过滤），收盘重算的 close 行按
-//      (date,stock) 主键覆盖本行 —— 与前端自己的换腿行为完全一致，无冲突。
-//   ④ 算不出的票【不写行】（§10 宁缺勿错，绝不写 0 冒充），留给前端补算。
+//   ③ 算不出的票【不写行】（§10 宁缺勿错，绝不写 0 冒充），留给前端补算。
 //
 // 数据源（只读既有表 + 只写既有结果表，⛔ 不新增/不修改其它任何数据源）：
 //   读  auction_watchlist  （date=今天 的正式名单：stock / code / change_pct）
-//   读  stock_range20_pct  （当天已有 leg='auc' 行 ⇒ 跳过，幂等重跑不重复烧上游）
+//   读  stock_range20_pct  （当天已有同 leg 行 ⇒ 跳过，幂等重跑不重复烧上游）
 //   写  stock_range20_pct  （on_conflict=date,stock，列与前端 upsertRange20Rows 完全一致）
 //   上游 同花顺 K 线（经既有 fuyao-proxy Edge Function 代理，零新增密钥）
 //
@@ -63,7 +69,7 @@ function beijingNow(): Date {
 function todayYmd(): string {
   return beijingNow().toISOString().slice(0, 10);
 }
-/** 北京 HH:MM（15:00 闸门用） */
+/** 北京 HH:MM（选腿用） */
 function beijingHhmm(): string {
   return beijingNow().toISOString().slice(11, 16);
 }
@@ -162,23 +168,35 @@ function barsToSeries(item: unknown[]): Bar[] {
 /**
  * 复刻前端 compound20 语义：每只票自己的最近 20 个有腿日（19 根历史收盘腿 + T 腿）。
  *
- * T 腿（竞价涨幅）取值优先级：
- *   ① K 线今天 bar 存在且 open > 0 ⇒ open / 前一根 close - 1（与前端 openKeep 同一根 K 线同语义）；
- *   ② 否则用名单 change_pct（9:25 早盘它就是竞价涨幅，见前端 merge20Legs 函数头实证）；
- *   ③ 两个都拿不到 ⇒ 返回 null（⛔ 该票不写行，宁缺勿错，留给前端补算）。
+ * T 腿按 leg 取值：
+ *   'auc'（15:00 前，竞价口径）：
+ *     ① K 线今天 bar 存在且 open > 0 ⇒ open / 前一根 close - 1（与前端 openKeep 同一根 K 线同语义）；
+ *     ② 否则用名单 change_pct（9:25 早盘它就是竞价涨幅，见前端 merge20Legs 函数头实证）；
+ *   'close'（15:00 后，收盘口径）：
+ *     ① K 线今天 bar 存在 ⇒ close / 前一根 close - 1（与前端 closeLegOf 同口径）；
+ *     ② 今天 bar 缺 ⇒ 返回 null（⛔ 绝不拿竞价腿/昨日收盘冒充今天的收盘腿）。
  *
+ * 两个口径都拿不到 T 腿 ⇒ 返回 null（⛔ 该票不写行，宁缺勿错，留给前端补算）。
  * 停牌票：hist 中间缺 bar 天然跳过（×(1+0%) 恒等），days 如实 < 20。
  */
-function computeRange20(series: Bar[], today: string, aucPct: number | null): { pct: string; days: number } | null {
+function computeRange20(series: Bar[], today: string, leg: string, aucPct: number | null): { pct: string; days: number } | null {
   if (series.length < 2) return null;
   const tIdx = series.findIndex((b) => b.ymd === today);
   const hist = series.filter((b) => b.ymd !== today);
   let tLeg: number | null = null;
-  if (tIdx > 0 && series[tIdx].open != null) {
-    const prev = series[tIdx - 1].close;
-    if (prev > 0) tLeg = ((series[tIdx].open as number) / prev - 1) * 100;
+  const hasTodayBar = tIdx > 0;
+  if (leg === 'close') {
+    if (hasTodayBar) {
+      const prev = series[tIdx - 1].close;
+      if (prev > 0) tLeg = (series[tIdx].close / prev - 1) * 100;
+    }
+  } else { // 'auc'
+    if (hasTodayBar && series[tIdx].open != null) {
+      const prev = series[tIdx - 1].close;
+      if (prev > 0) tLeg = ((series[tIdx].open as number) / prev - 1) * 100;
+    }
+    if (tLeg === null) tLeg = aucPct;
   }
-  if (tLeg === null) tLeg = aucPct;
   if (tLeg === null || !Number.isFinite(tLeg)) return null;
   const legs: number[] = [];
   for (let i = 1; i < hist.length; i++) {
@@ -211,12 +229,14 @@ Deno.serve(async (req: Request) => {
     const t0 = Date.now();
     const today = todayYmd();
 
-    // 15:00 闸门：收盘后前端换 close 腿，此时再写 auc 行只会留脏行 ⇒ 拒绝执行
-    if (beijingHhmm() >= '15:00') {
-      return json({ ok: false, reason: '已过北京 15:00（收盘口径时段），禁止写 leg=auc 行', date: today });
-    }
+    // 选腿：15:00 前 = 竞价口径（auc），15:00 后 = 收盘口径（close）——与前端 resolveT20LegMode 一致。
+    // ?leg= 可强制指定（手动测试用）；强制值与时钟口径不同时也不出错（幂等按 leg 跳过）。
+    let leg = beijingHhmm() < '15:00' ? 'auc' : 'close';
+    const forced = String(url.searchParams.get('leg') ?? '').trim();
+    if (forced === 'auc' || forced === 'close') leg = forced;
 
-    // ① 等待 9:25 名单落库（runMorning P0 与本函数同在 09:25 触发 → 轮询等它写完）
+    // ① 等待 9:25 名单落库（runMorning P0 与本函数同在 09:25 触发 → 轮询等它写完；
+    //    15:05 收盘那轮名单必然早已在库，此循环首轮即过）
     let watchRows: Array<Record<string, unknown>> = [];
     while (Date.now() - t0 < WATCHLIST_WAIT_MS) {
       const got = await sbRest('GET', '/rest/v1/auction_watchlist?select=stock,code,change_pct&date=eq.' + today);
@@ -229,12 +249,13 @@ Deno.serve(async (req: Request) => {
         ok: false,
         reason: '等待名单超时（今日 auction_watchlist 无行：非交易日 / 名单抓取失败）',
         date: today,
+        leg,
         elapsedMs: Date.now() - t0,
       });
     }
-    console.log('[range20-precompute] ' + today + ' 名单就绪 ' + watchRows.length + ' 行，开始预计算');
+    console.log('[range20-precompute] ' + today + ' leg=' + leg + ' 名单就绪 ' + watchRows.length + ' 行，开始预计算');
 
-    // 目标 = 当天正式名单（去重，先到先得；aucPct = change_pct 兜底 T 腿）
+    // 目标 = 当天正式名单（去重，先到先得；aucPct = change_pct 兜底竞价 T 腿，close 腿不用它）
     const targets: Array<{ stock: string; code: string; aucPct: number | null }> = [];
     const seen = new Set<string>();
     for (const r of watchRows) {
@@ -248,15 +269,15 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // ② 跳过表里已有的当日 auc 行（幂等：手动重跑 / cron 重复触发不重复烧上游）
-    const existed = await sbRest('GET', '/rest/v1/stock_range20_pct?select=stock&date=eq.' + today + '&leg=eq.auc');
+    // ② 跳过表里已有的当日【同 leg】行（幂等：手动重跑 / cron 重复触发不重复烧上游）
+    const existed = await sbRest('GET', '/rest/v1/stock_range20_pct?select=stock&date=eq.' + today + '&leg=eq.' + leg);
     const doneSet = new Set<string>(
       (Array.isArray(existed) ? existed as Array<Record<string, unknown>> : [])
         .map((r) => String((r && r.stock) ?? '').trim())
         .filter(Boolean),
     );
     const todo = targets.filter((t) => !doneSet.has(t.stock));
-    console.log('[range20-precompute] todo=' + todo.length + '（名单 ' + targets.length + '，库里已有 ' + doneSet.size + '）');
+    console.log('[range20-precompute] leg=' + leg + ' todo=' + todo.length + '（名单 ' + targets.length + '，库里已有 ' + doneSet.size + '）');
 
     // K 线窗口：往前 100 个自然日（≈65 个真实交易日，足够停牌票回溯凑满 20 腿；多要不增加成本）
     const todayMidnightMs = Date.parse(today + 'T00:00:00+08:00');
@@ -297,14 +318,14 @@ Deno.serve(async (req: Request) => {
         }
         try {
           const item = await fetchKlineBars(thscode(t.code), startMs, endMs);
-          const row = computeRange20(barsToSeries(item), today, t.aucPct);
+          const row = computeRange20(barsToSeries(item), today, leg, t.aucPct);
           if (row) {
             buffer.push({
               date: today,
               stock: t.stock,
               pct: row.pct,          // Number(x).toFixed(2) 字符串（与前端 upsertRange20Rows 同格式）
               days: row.days,
-              leg: 'auc',
+              leg: leg,
               updated_at: new Date().toISOString(),
             });
             consecutiveFail = 0;
@@ -330,6 +351,7 @@ Deno.serve(async (req: Request) => {
     const stat = {
       ok: true,
       date: today,
+      leg,
       watchlist: targets.length,
       todo: todo.length,
       written,
@@ -337,7 +359,7 @@ Deno.serve(async (req: Request) => {
       circuitBreak,
       elapsedMs: Date.now() - t0,
       failures: failures.slice(0, 30),
-      note: 'leg=auc（竞价口径）已落库，前端 20日涨幅 toggle 阶段⓪命中即秒开',
+      note: 'leg=' + leg + ' 已落库，前端 20日涨幅 toggle 阶段⓪命中即秒开（auc=竞价腿 / close=收盘腿）',
     };
     console.log('[range20-precompute] done ' + JSON.stringify(stat));
     return json(stat);
