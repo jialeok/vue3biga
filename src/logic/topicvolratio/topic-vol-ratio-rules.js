@@ -578,6 +578,110 @@ function _ebbPhaseOf(topic, name, history) {
 }
 
 /**
+ * ★★ [EBB-D1 2026-10-21 用户口径] 【昨日二次确认退潮的题材】—— 次日禁入买点侧（第二十六条）。
+ *
+ * 用户原话：「主线题材如果昨天已经二次确认退潮了，次日就不要进入买点侧了，也就是说次日即使
+ *   这个题材符合平均量比的条件，题材平均量比排名第二，也不应该买了，因为风险很高。其它题材可以。
+ *   ……你把买点侧的主线题材入选的票的区域，变成灰色，不用去掉，其它题材不变。」
+ * （10-21 实例：AI应用 10-20 二次确认退潮，10-21 它平均量比排第二、慈文传媒进了买点侧 ⇒ 不合理。）
+ *
+ * 为什么 detectEbbDay 自己答不了这道题：它带「首日闸门 + 无第三次」，昨日已是第二次退潮事件 ⇒
+ *   今天必返 null（按平常日子选股）—— 这正是本规则的空档：题材退潮后的第二天，它以「平常题材」
+ *   的身份混进买点侧。本函数补上这道闸。
+ *
+ * 「昨日那笔退潮是不是二次确认」怎么数（⛔ 与 _ebbPhaseOf 同一把尺子，§6 绝不另写一套）：
+ *   ① 取【上一交易日】（prevDate，由组合式注入，规则层不碰日期工具）那一行：ebb=false / 无行 ⇒ null；
+ *   ② 从昨日往回走【连续同题材退潮日】（事件 ≠ 天数：连续退潮合并成一次事件），找到事件起点 S；
+ *   ③ 数 S 之前、同题材的退潮事件次数（_ebbPhaseOf）：恰好 1 次 ⇒ 昨日那笔 = 二次确认 ⇒ 返回题材；
+ *     0 次（首次退潮）⇒ 不在本规则内（首次退潮次日本来就由首日闸门/当日判定处理，用户未要求禁入）；
+ *     ≥2 次 ⇒ 无第三次 ⇒ 同样不适用。
+ *
+ * ⛔ 纯函数：只读 ebbHistory（组合式按展示日读回的 tvrb_ebb_days 近 12 行，已带 prevDate 链）。
+ * ⛔ ebbHistory 缺省 / 没读到昨日行 ⇒ null（§10：判不出来 ≠ 昨天没退潮，绝不拿「没数据」当「没退潮」
+ *    —— 反过来也不行：没有落库行就不禁入，宁可漏禁也不误禁，§11 与既有判定同一取舍）。
+ *
+ * @param {Array<{date:string, prevDate:string, leaderStock:string, leaderTopic:string,
+ *          ebb:boolean}>|null} history 近 12 个交易日的退潮判定落库行
+ * @param {string} prevDate 展示日的上一交易日（YYYY-MM-DD；组合式注入，⛔ 规则层不自算）
+ * @returns {{topic:string, leaderName:string, since:string}|null}
+ *          topic = 昨日二次确认退潮的题材；since = 该次事件的起点日（留痕用）；判不出 ⇒ null
+ */
+export function secondEbbTopicOfPrevDay(history, prevDate) {
+  const pd = String(prevDate || '').trim();
+  if (!pd || !Array.isArray(history)) return null;
+  const rows = history.filter(function(r) { return r && r.date && !!r.ebb; });
+  const byDate = new Map();
+  rows.forEach(function(r) { byDate.set(String(r.date), r); });
+  const y = byDate.get(pd);
+  if (!y) return null;                       // 昨天没有退潮判定（或未退潮）⇒ 不禁
+  const topic = String(y.leaderTopic || '').trim();
+  const name = String(y.leaderStock || '').trim();
+  const hit = function(r) {
+    const rt = String(r.leaderTopic || '').trim();
+    if (topic) return rt === topic;
+    return String(r.leaderStock || '').trim() === name;   // 与 _ebbPhaseOf 同一认亲退路
+  };
+  // ② 从昨日往回走连续同题材退潮日 ⇒ 事件起点（连续退潮日合并为一次事件）
+  let start = y;
+  for (;;) {
+    const p = start.prevDate ? byDate.get(String(start.prevDate)) : null;
+    if (p && hit(p)) { start = p; continue; }
+    break;
+  }
+  // ③ 起点之前、同题材的退潮事件次数：恰好 1 ⇒ 昨日这笔是【二次确认】
+  const earlier = rows.filter(function(r) { return String(r.date) < String(start.date); });
+  const phase = _ebbPhaseOf(topic, name, earlier);
+  if (phase.count !== 1) return null;
+  return { topic: topic, leaderName: name, since: String(start.date) };
+}
+
+/**
+ * 【昨日二次确认退潮题材 · 买点侧覆盖式改写】（[EBB-D1] 第二十六条的后处理，范式与
+ * _applyEbbBuyRules / _applyCashAlertBuyRules 完全同一套 —— ⛔ 绝不去改 finishBuyBlock 内部）。
+ *
+ * 用户口径：题材【不删、照常列出】（「不用去掉，其它题材不变」），但：
+ *   · 动作标签一律换成【退潮不买】（与退潮日同一枚标签 —— 语义同源：题材在退潮，不买）；
+ *   · 行尾【持有】/ 仓位槽清空（同一天不可能既「禁入」又「持有」）；
+ *   · 逐行说明写明原因（判定可追溯，§10）；
+ *   · ⛔ 客观数据一行不动；卖点侧一行不动（用户本轮只说买点侧）。
+ *
+ * 视觉：整块灰化【不在本函数里做】—— 本函数只在块上挂 `prevEbbGray = true` 旗子，
+ *   视图层给该块挂 `.tvrb-prev-ebb-gray`（与 .tvrb-buy-list.tvrb-ebb 同一套灰化值，
+ *   ⛔ 不新造第二套灰化视觉；只灰这一个题材块，其它题材块不灰 —— 与整段灰化刻意不同）。
+ *
+ * ★ 它必须排在退潮 / 分歧 / 空仓提醒三条改写【之后】（调用方保证）：本规则是「按题材」的
+ *   覆盖式后处理，优先级解释写进行内说明（它比前三条更具体 —— 针对的是昨日已二次确认的题材）。
+ *
+ * @param {Array} blocks buildTopicVolRatioPlan 的入选题材块数组（每块含 picks / notes）
+ * @param {{topic:string, leaderName:string, since:string}|null} prevSecondEbb
+ *        secondEbbTopicOfPrevDay 的返回；null ⇒ 零副作用（§11）
+ */
+function _applyPrevEbbSecondNoBuy(blocks, prevSecondEbb) {
+  if (!prevSecondEbb || !prevSecondEbb.topic) return;
+  const topic = String(prevSecondEbb.topic).trim();
+  const lead = '【' + topic + '】昨日已【二次确认退潮】' +
+    (prevSecondEbb.since ? ('（该次退潮事件自 ' + prevSecondEbb.since + ' 起）') : '') +
+    ' ⇒ 第二十六条：题材退潮次日禁止买入。';
+  (blocks || []).forEach(function(b) {
+    if (!b || String((b.block && b.block.topic) || b.topic || '').trim() !== topic) return;
+    b.prevEbbGray = true;                   // ★ 视图层据此给该块挂灰化类（只灰这一个题材块）
+    if (!Array.isArray(b.notes)) b.notes = [];
+    (b.notes).push('⚠️ ' + lead + '本题材今天【不参与买入】—— 即使它平均竞价量比排名靠前' +
+      '（风险很高）；股票照常列出供参考（灰化显示），原本的买点信号一律作废，其它题材不变。');
+    (b.picks || []).forEach(function(p) {
+      if (!p || !p.name) return;
+      p.position = '';
+      p.holdTag = '';
+      p.buyActionTag = EBB_NO_BUY_TAG;      // ★ 覆盖式：与退潮日同一枚标签（语义同源）
+      p.buyActionTone = EBB_NO_BUY_TONE;
+      p.actionNote = lead +
+        '本股今天【不开新仓】—— 原本的【' + HOLD_TAG + '】/ 竞价买 / 尾盘买 / 先卖后买 等买点信号' +
+        '一律作废。（等题材重新走强 —— 总龙复牌 / 竞价占比回升 / 平均量比回来 —— 再看买点。）';
+    });
+  });
+}
+
+/**
  * 【昨日同一只总龙的坏状态】—— 「首日」判据的取数收口（§6：判定与取数同处一处，只有这一份）。
  *
  * 用户口径（2026-10-14）：「你应该把数据存起来啊，做一个表也行，不然很难判断出来，
@@ -1601,6 +1705,9 @@ function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames) {
  *                   命中者【买不进 ⇒ 占掉一个名额、不再补位】（与「竞价一字」的顺延补位刻意不同，
  *                   见 _buildBlock 的 [SUSPEND-OCCUPY 2026-10-15] 注释）。
  *                   ⛔ 缺省 / 空集 ⇒ 与旧行为逐字一致（§11）；停牌【首日】不在本名单里（仍可入选）。
+ *        prevDate = ★ [EBB-D1 2026-10-21] 展示日的【上一交易日】（组合式用 getPreviousTradingDay
+ *                   算好注入，§6 日期口径不进纯函数）—— 「昨日二次确认退潮 ⇒ 次日禁入买点侧」
+ *                   （第二十六条）用它去 ebbHistory 里找昨日那一行；缺省 ⇒ 判不出 ⇒ 本规则不生效。
  * @returns {{topics:Array, blocks:Array, buy:object, sell:Array, excludedTopics:Array,
  *            notes:Array, pickCount:number, buyNames:Set<string>, cashAlert:object, ebb:object|null}}
  *   topics        —— 全部参与排名的题材（含被排除的），按排名，供说明 / 复核
@@ -1778,9 +1885,29 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     out.notes.push('⚠️【总龙首次分歧】市场总龙一【' + (ld.leaderName || '—') + '】' +
       (ld.firstBoardYmd ? '自首板 ' + ld.firstBoardYmd + ' 以来' : '') +
       '首次竞价低开（' + (ld.aucPctText || '—') + '）⇒ 分歧日：买点侧只有 总龙一（下杀买）+ ' +
-      '不同题材的主板高标 ≤2 只（第二十二条），其余入选票今天不开新仓。');
+      '不同题材的主板高标 ≤2 只（第二十五条），其余入选票今天不开新仓。');
   } else if (out.cashAlert.show) {
     _applyCashAlertBuyRules(out.blocks, out.cashAlert);
+  }
+
+  // ★★ [EBB-D1 2026-10-21 用户口径] 昨日【二次确认退潮】的题材 ⇒ 次日禁入买点侧（第二十六条）。
+  //   用户原话：「主线题材如果昨天已经二次确认退潮了，次日就不要进入买点侧了，也就是说次日即使
+  //     这个题材符合平均量比的条件，题材平均量比排名第二，也不应该买了，因为风险很高。其它题材可以。
+  //     ……你把买点侧的主线题材入选的票的区域，变成灰色，不用去掉，其它题材不变。」
+  //   ⛔ 为什么必须排在上面三条改写【之后】：本规则是【按题材】的覆盖式后处理（更具体的理由
+  //     要写进行内说明）。
+  //   ★ 优先级关系：今日若是退潮日（out.ebb 生效）⇒ 全段已被 _applyEbbBuyRules 灰化改写，本规则
+  //     只是再叠一层【更具体的题材级说明】（同一枚标签，幂等）；分歧日同理（该题材块从
+  //     【总龙分歧不买】细化为【退潮不买】，理由更准）。prevDate / ebbHistory 缺省 ⇒ 判不出 ⇒ 零行为（§11）。
+  //   ⛔ 题材块【不删】：用户明确「不用去掉，其它题材不变」⇒ 照常入选占位 + 整块灰化 + 标签改【退潮不买】。
+  //   ⚠️ 买点名单（buyNames）在本函数后段组装 ⇒ 组装完后要把禁入题材的票【剔除】（见下方
+  //      [EBB-D1] 剔除段）—— 禁入的票今天不买 ⇒ 卖点侧不因它标【持有】，与退潮题材被 R20b
+  //      排除出选股 ⇒ 同样不进名单，是同一不变式。
+  const prevSecondEbb = secondEbbTopicOfPrevDay(o.ebbHistory || null, o.prevDate || '');
+  if (prevSecondEbb) {
+    _applyPrevEbbSecondNoBuy(out.blocks, prevSecondEbb);
+    out.notes.push('⚠️【' + prevSecondEbb.topic + '】昨日已二次确认退潮（第二十六条）：该题材今天【禁止买入】，' +
+      '入选票照常列出但整块灰化、动作标签一律【' + EBB_NO_BUY_TAG + '】；其它题材不变。');
   }
 
   // ★ [EBB-R20b 2026-10-20] 二次确认 + 常规选出 ⇒ 这些票是【今天真要买的】：
@@ -1847,6 +1974,16 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //   「今天唯一要买的票」与「今天要竞价卖掉」不可能同时成立（见下方 _applyEbbSellRules 的放行）。
   if (out.ebbBuy) {
     (out.ebbBuy.picks || []).forEach(function(p) { if (p && p.name) out.buyNames.add(p.name); });
+  }
+  // ★★ [EBB-D1 2026-10-21 用户口径] 第二十六条：禁入题材的票【不进买点名单】——
+  //   它们今天不买（「不用去掉」只针对【展示】，不针对【买点名单】）：
+  //   若留在名单里，卖点侧会因「今天又进买点」把它们标成【持有】，与「次日禁止买入」正面矛盾。
+  //   （与退潮题材被 [EBB-R20b] 排除出选股 ⇒ 同样不进名单，是同一不变式。）
+  if (prevSecondEbb) {
+    out.blocks.forEach(function(b) {
+      if (!b || !b.prevEbbGray) return;
+      (b.picks || []).forEach(function(p) { if (p && p.name) out.buyNames.delete(p.name); });
+    });
   }
 
   // ★ 卖点段 —— decision-rules 的【同一份实现】；⛔ 候选池不依赖本看板选股（= 昨日打过买标签的票），
@@ -2095,6 +2232,20 @@ export function buildTvrbRulesLines() {
       '若总龙二也是非主板就少一只，若总龙二~五都与总龙同题材则只有总龙一。' +
       '分歧日其余入选票【照常列出但标【总龙分歧不买】、整段灰化】（今天不开新仓）；卖点侧不变。' +
       '⚠️ 优先级：【退潮（第二十/二十一条）> 总龙首次分歧 > 空仓提醒】—— 退潮日不谈分歧买点。' +
-      '⚠️ 判不出的情形（窗口内无首板 / K 线或竞价涨幅缺）⇒ 本规则静默不生效（宁缺勿错）。'
+      '⚠️ 判不出的情形（窗口内无首板 / K 线或竞价涨幅缺）⇒ 本规则静默不生效（宁缺勿错）。',
+    // ── ★ [EBB-D1 2026-10-21 用户口径 · 原话] 主线题材二次确认退潮 ⇒ 次日禁入买点侧 ──
+    '二十六、【主线题材二次确认退潮 ⇒ 次日禁入买点侧】：主线题材【昨天】已经【二次确认退潮】了' +
+      '（昨天总龙停牌 / 竞价占比不达标、且近 10 个交易日内该题材已有过一次退潮事件），' +
+      '【次日该题材不进入买点侧】—— 即使它今天符合平均竞价量比的条件、排名靠前也不应该买（风险很高），' +
+      '其它题材不受影响照常选股。' +
+      '★ 表现方式（用户口径「不用去掉，其它题材不变」）：该题材的入选票【照常列出】（占住它的题材名额），' +
+      '但【整块变灰】、每只票的动作标签一律改为【' + EBB_NO_BUY_TAG + '】' +
+      '（原本的【' + HOLD_TAG + '】/ 竞价买 / 尾盘买 / 先卖后买 等买点信号一律作废），' +
+      '行内说明注明「昨日已二次确认退潮，次日禁止买入」。' +
+      '⚠️ 这类票今天【不进买点名单】：卖点侧不会因「今天又进买点」把它们标成【持有】。' +
+      '⚠️ 判据 = 退潮判定落库表（tvrb_ebb_days）：昨日那一行退潮 ⇒ 往回合并连续退潮日找到事件起点 ⇒ ' +
+      '起点之前同题材已有 1 次退潮事件 ⇒ 昨日这笔就是【二次确认】；' +
+      '昨日【首次退潮】不在本条内（首日闸门 / 当日判定已覆盖），取不到昨日落库行 ⇒ 不禁（宁可漏禁不误禁）。' +
+      '（例 10-21：AI应用 10-20 二次确认退潮，10-21 它平均量比排第二、慈文传媒照常入选 ⇒ 整块灰化 + 退潮不买。）'
   ];
 }

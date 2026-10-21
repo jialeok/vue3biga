@@ -95,6 +95,8 @@ import { rankDragonsWithPctMap } from '../logic/decision/decision-rules.js';
 //     没有竞价量等判断出来的，是缓存吧？你要完善这点」
 //   ⇒ 读 = 拿【上一交易日那一行】判「今天是不是首日」；写 = 把今天的判定存下来（只存今天，见下）。
 import { readEbbDays, upsertEbbDay } from '../data/ebb-days.js';
+// ★ [DIVERGE-DAYS 2026-10-21] 总龙分歧判定落库：切换日期时读回即用（一次到位渲染分歧板，不用再等 K 线）
+import { readDivergeDay, upsertDivergeDay } from '../data/diverge-days.js';
 import { _dbgLog } from '../data/debug-log.js';
 // §6：「今天」的唯一口径（与 suspend.js 的 ensureSuspendSet 同一个函数，⛔ 别自己 new Date 拼一遍）。
 //   停牌判定只对今天可信 ⇒ 落库也只对今天做（历史日的 suspend verdict 恒 false，写进去会污染次日判定）。
@@ -242,7 +244,17 @@ export function useTopicVolRatioBoard() {
   const DIVERGE_RETRY_DELAYS = [5000, 15000, 40000, 80000];
   function _scheduleDivergeRetry(d, reason) {
     const st = _divergeRetry.get(d) || { n: 0, timer: 0 };
-    if (st.n >= DIVERGE_RETRY_DELAYS.length) return;
+    if (st.n >= DIVERGE_RETRY_DELAYS.length) {
+      // ★ [DIVERGE-GATE 2026-10-21] 重试额度用完 ⇒ 落一个【判不出】的终态结论（canJudge=false），
+      //   门控据此放行（买点侧按平常日子渲染）—— ⛔ 否则 verdict 恒 null，占位会挂死整个会话。
+      //   ⚠️ 只在该日仍是当前生效判定时落（用户可能已切到别的日期，别把旧日期的终态写到新日期上）。
+      if (divergeDate.value === d && !(divergeVerdict.value && divergeVerdict.value.ready)) {
+        divergeVerdict.value = { ready: true, canJudge: false, firstBoardYmd: '',
+          firstDivergenceYmd: '', todayFirstDivergence: false, todayAucPct: null, events: [] };
+        console.warn('[TVRB] 总龙分歧判定重试额度用完（' + d + '）⇒ 本会话按「判不出」处理');
+      }
+      return;
+    }
     const delay = DIVERGE_RETRY_DELAYS[st.n];
     if (st.timer) clearTimeout(st.timer);
     st.timer = setTimeout(function() {
@@ -269,6 +281,32 @@ export function useTopicVolRatioBoard() {
     const fly = _divergeInflight.get(d);
     if (fly) return fly;
     const p = (async function() {
+      // ⓪ ★ [DIVERGE-DAYS 2026-10-21] 落库优先：该日的分歧判定【曾经算出来过】（canJudge=true）⇒
+      //   直接读回当结论 —— 分歧判定对历史日是确定性的（K 线历史不可变 + 竞价涨幅 9:25 后不变），
+      //   读回即用 ⇒ 切回该日【一次到位】渲染分歧板，K 线都不用等（用户「就不能直接显示正确的吗」）。
+      //   ⛔ 读失败 / 表不存在 ⇒ 留痕后照走 K 线链路（§10 失败可见，不连坐）。
+      //   ⛔ 与退潮落库不同，历史日也读也写：本判定不依赖「当日上游快照」，全输入来自不可变历史。
+      try {
+        const row = await readDivergeDay(d);
+        if (row && row.canJudge &&
+            !(divergeDate.value === d && divergeVerdict.value && divergeVerdict.value.ready)) {
+          divergeVerdict.value = {
+            ready: true, canJudge: true,
+            firstBoardYmd: row.firstBoardYmd || '',
+            firstDivergenceYmd: row.firstDivergenceYmd || '',
+            todayFirstDivergence: !!row.todayFirst,
+            todayAucPct: (row.todayAucPct === null || row.todayAucPct === undefined)
+              ? null : Number(row.todayAucPct),
+            events: []
+          };
+          divergeDate.value = d;
+          _dbgLog('[DIVERGE] ' + d + ' 命中落库判定（todayFirst=' + row.todayFirst +
+            '）⇒ 直接采用，不再等 K 线');
+          return;
+        }
+      } catch (e) {
+        _dbgLog('[DIVERGE-DAYS] 落库判定读取失败（继续 K 线链路）: ' + (e && e.message));
+      }
       // ① 前五就绪（幂等 + 会话缓存 + 单飞；warm-retry 的重算也走这一份）
       const leaders = await ensureRange20Leaders(d);
       divergeVerdict.value = null;
@@ -283,6 +321,11 @@ export function useTopicVolRatioBoard() {
         // ⛔ 缺代码 ⇒ K 线没法请求（§10 不猜）。必须留痕 —— 这里曾是静默 return，
         //   排障时「无任何日志」差点把定位带进死胡同（§10 失败可见）。
         _dbgLog('[DIVERGE] ' + d + ' 总龙缺 stock/code ⇒ 判不出: ' + JSON.stringify(l0 || null));
+        // ★ [DIVERGE-GATE] 落「判不出」终态：门控据此放行（⛔ 不然 verdict 恒 null ⇒ 占位挂死）
+        if (divergeDate.value === d) {
+          divergeVerdict.value = { ready: true, canJudge: false, firstBoardYmd: '',
+            firstDivergenceYmd: '', todayFirstDivergence: false, todayAucPct: null, events: [] };
+        }
         return;
       }
       // ② 总龙一的窗口 K 线：收盘涨幅（涨停判定）+ 开盘涨幅（竞价涨幅，分歧判定）
@@ -315,6 +358,20 @@ export function useTopicVolRatioBoard() {
       divergeVerdict.value = verdict;
       divergeDate.value = d;
       if (_divergeRetry.has(d)) { clearTimeout(_divergeRetry.get(d).timer); _divergeRetry.delete(d); }
+      // ★ [DIVERGE-DAYS 2026-10-21] 判定算出（canJudge=true）⇒ 落库：下次切回该日读回即用（一次到位）。
+      //   ⛔ 只写 canJudge=true（Data 层有第二道闸，§10 绝不落一行「猜的」判定）；
+      //   ⛔ 幂等 upsert，失败不阻断看板（Data 层留痕）。历史日也写 —— 判定对历史日是确定性的。
+      if (verdict.canJudge) {
+        void upsertDivergeDay({
+          date: d,
+          leaderStock: l0.stock,
+          leaderTopic: '',
+          todayFirst: verdict.todayFirstDivergence,
+          firstBoardYmd: verdict.firstBoardYmd,
+          firstDivergenceYmd: verdict.firstDivergenceYmd,
+          todayAucPct: verdict.todayAucPct
+        });
+      }
       // [DIVERGE-DIAG] 判定结果留痕（排查「分歧块为什么不出现」的唯一证据链）
       _dbgLog('[DIVERGE] ' + d + ' 总龙=' + l0.stock + '(' + l0.code + ') ready=' + verdict.ready +
         ' canJudge=' + verdict.canJudge + ' firstBoard=' + verdict.firstBoardYmd +
@@ -620,7 +677,10 @@ export function useTopicVolRatioBoard() {
         //   ⛔ 缺省 ⇒ 规则层退回旧行为（停牌票照旧可选，§11）；停牌【首日】不在名单里（仍可入选）。
         buySkipNames: rec.buySkipSuspend || null,
         // ★ [DIVERGE 2026-10-20] 总龙首次分歧判定（null = 判不出 / 不是首次分歧日 ⇒ 规则层零行为）
-        leaderDiverge: leaderDivergeOpt
+        leaderDiverge: leaderDivergeOpt,
+        // ★ [EBB-D1 2026-10-21] 上一交易日（日期链在组合式算好注入，规则层保持纯函数）——
+        //   「昨日二次确认退潮 ⇒ 次日禁入买点侧」（第二十六条）用它去 ebbHistory 里找昨日那一行。
+        prevDate: pd || ''
       });
 
       // §10 ★★ 失败 / 缺数据必须可见：这一天【确实读过】9:26 口径、但没拿到（失败或表里没有）
@@ -664,6 +724,35 @@ export function useTopicVolRatioBoard() {
           Object.assign(it, decorateTickRow(it, map, attempted, skipMap, null, 'sell'));
         });
       });
+
+      // ★★ [DIVERGE-GATE 2026-10-21 用户口径] 分歧判定未就绪 ⇒ 买点侧先挂「判定计算中」占位，
+      //   ⛔ 绝不先把旧规则的选票渲染出去再换板。用户原话：「刚开始显示的是以前旧规则的票，
+      //   后面停顿了几秒钟，才出现那个提示词分歧的信息板……我做决定很快，万一哪天它没跳转，
+      //   我不就买错股票了？所以要修复下。」
+      //   门控条件（全部【同步可判】，⛔ 无 setTimeout 掩盖；判定落地（落库读回 / K 线链路）⇒
+      //   divergeVerdict 变更 → data 自动重算 → 本帧放行，一次成型）：
+      //     ① 该日分歧判定还没落地（在途 / 退避重试中）—— divergeVerdict 尚无 ready 结论；
+      //     ② 「今天还定不了是不是分歧日」，两条路（满足其一即视为定不了）：
+      //        a. 前五与当日事实已就绪（rec.ebbCtx.ready）⇒ 同步预检：非退潮日 + 总龙今日未停牌 +
+      //           总龙今日低开（竞价涨幅 < 0）或【取不到】（取不到 ⇒ 保守等待，宁可多等不错显 §10）；
+      //        b. 【历史日】而事实还没就绪（range20 / 昨日涨幅还在读）⇒ 同样保守等待 ——
+      //           这正是「切历史日期头一两帧闪旧样式」的缺口：这些帧里判定与事实都在途，
+      //           先渲染旧样式等事实到齐再换板 = 闪现。历史日的这些输入都是库里的（秒级），
+      //           多等这一两秒换「一次到位」；⚠️【今天】不走 b（早盘 range20 精算要几十秒，
+      //           ⛔ 不能为它把每天的主路径拖住 —— 今天的闪现风险维持现状，等用户拍板再收）。
+      //   竞价涨幅 ≥ 0 / 停牌 / 退潮日的日子（绝大多数）事实就绪后立刻放行 —— 零体验损失。
+      const _isTodayD = (d === _getLocalTodayStr());
+      const _ebbCtxReady = !!(rec.ebbCtx && rec.ebbCtx.ready);
+      const _couldBeDiverge = _ebbCtxReady
+        ? (!plan.ebb && !rec.ebbCtx.leaderSuspended &&
+           (rec.ebbCtx.leaderAucPct === null || rec.ebbCtx.leaderAucPct < 0))
+        : !_isTodayD;
+      if (!(_ldVerdict && _ldVerdict.ready) && rec.ready && _couldBeDiverge) {
+        plan.divergePending = true;
+        _dbgLog('[DIVERGE-GATE] ' + d + ' 分歧判定未就绪 ⇒ 买点侧挂「判定计算中」占位' +
+          '（ebbCtxReady=' + _ebbCtxReady + ' leaderAucPct=' +
+          (_ebbCtxReady ? rec.ebbCtx.leaderAucPct : '—') + '）');
+      }
 
       return { ready: true, reason: '', plan: plan };
     } catch (e) {
@@ -736,6 +825,14 @@ export function useTopicVolRatioBoard() {
   const ebbNodeNote = computed(() => (data.value.plan && data.value.plan.ebbNodeNote) || null);
   /** [DIVERGE 2026-10-20] 总龙首次分歧日的分歧买点块（总龙一 + 跟随高标 ≤2 只）；其它场景 null。 */
   const divergeBuy = computed(() => (data.value.plan && data.value.plan.divergeBuy) || null);
+  /**
+   * ★ [DIVERGE-GATE 2026-10-21] 分歧判定未就绪的门控旗（非 null ⇒ 买点侧渲染「判定计算中」占位、
+   *   不渲染旧规则选票 —— 见 data computed 里门控条件的逐条注释）。判不出 / 已就绪 ⇒ null。
+   */
+  const divergePending = computed(function() {
+    const p = data.value.plan;
+    return (p && p.divergePending) || null;
+  });
   /** 卖点股票数（头部摘要用） */
   const sellCount = computed(function() {
     return sellGroups.value.reduce(function(n, g) { return n + ((g.items || []).length); }, 0);
@@ -942,6 +1039,7 @@ export function useTopicVolRatioBoard() {
     ebbBuy,
     ebbNodeNote,
     divergeBuy,
+    divergePending,
     summaryText,
     toggleExpand,
     toggleCompact,

@@ -661,7 +661,7 @@ function _buildSellRows(prevBought, byName, date) {
  * @param {Array<{stock:string,code:string,pct:number,days:number}>|null} [range20Top]
  *        ★ [EBB-R20] 20日涨幅前五（总龙一~五）。缺省 / 空 ⇒ ready=false（退潮规则不生效，§10 不猜）。
  * @returns {{ready:boolean, leader:object|null, second:object|null, leaderSuspended:boolean,
- *            leaderShare:number|null, siblingDragons:Array, secondInfo:object|null,
+ *            leaderShare:number|null, leaderAucPct:number|null, siblingDragons:Array, secondInfo:object|null,
  *            prevLeader:object, buyPicks:Array, buyTrail:Array}}
  *   leader  = { name, pct(20日), topic, code, rank, isYizi }（rank / isYizi 都是【今日】的）
  *   second  = 昨日十日涨幅第二（卖点侧口径，不变）；secondInfo 是它【今日】的龙位 / 一字 / 停牌
@@ -802,7 +802,8 @@ export function sameTopicText(a, b) {
 function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDate, range20Top) {
   const none = {
     ready: false, leader: null, second: null,
-    leaderSuspended: false, leaderShare: null, siblingDragons: [], secondInfo: null,
+    leaderSuspended: false, leaderShare: null, leaderAucPct: null,
+    siblingDragons: [], secondInfo: null,
     prevLeader: null, buyPicks: [], buyTrail: [],
     top5: []   // [DIVERGE 2026-10-20] 缺省空数组（前五没就绪 ⇒ 分歧规则同样不生效）
   };
@@ -1028,6 +1029,15 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
     leaderSuspended: _suspendedOn(date, leader.name),
     // 今日竞价占比（%）：null = 缺数据（规则层据此【不判】不达标，§10：未知 ≠ 不达标）
     leaderShare: getAuctionShare(date, leader.name),
+    // ★ [DIVERGE-GATE 2026-10-21] 总龙【今日竞价涨幅】（%）：null = 缺数据。
+    //   消费方 = 题材量比组合式的【分歧判定门控】（同步预检）：分歧日的必要条件 = 总龙今日低开
+    //   （竞价涨幅 < 0）—— 该值从【今日行】读（auc_pct_chg，parseAucPct 唯一实现，§6 不另写一份）。
+    //   总龙不在今日行（20日补位壳行等）⇒ null ⇒ 组合式按【保守等待】处理（宁可多等不错显，§10）。
+    leaderAucPct: (function() {
+      const r = rowByName.get(head.name);
+      return r ? parseAucPct(r.auc_pct_chg !== undefined && r.auc_pct_chg !== null
+        ? r.auc_pct_chg : r.aucPctChg) : null;
+    })(),
     siblingDragons: siblings,
     secondInfo: secondInfo,
     // ★ [EBB-R8] 首日判据（昨日同一只总龙的竞价状态）

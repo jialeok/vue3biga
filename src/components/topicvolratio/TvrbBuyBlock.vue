@@ -26,7 +26,10 @@
        仓位 / 动作标签 / 逐行说明 / 分笔每一行的价格与手数，全部由 Logic 层预先算好。
 -->
 <template>
-  <div class="tvrb-block">
+  <div
+    class="tvrb-block"
+    :class="{ 'tvrb-prev-ebb-gray': gray }"
+  >
     <!-- 第一行：题材名 + 排名圆点 + 数量 + 竞价一字 + 平均量比 + 选几只 + [昨有买入] [N次入选] -->
     <TvrbTopicHead
       v-if="!headText"
@@ -236,7 +239,16 @@ defineProps({
    * §11：默认空串 ⇒ 常规题材块的行为【一字不变】（走 TvrbTopicHead 原路）。
    * 文案由 Logic 层给（§21 模板零计算）。
    */
-  headText: { type: String, default: '' }
+  headText: { type: String, default: '' },
+  /**
+   * ★ [EBB-D1 2026-10-21] 可选：整块灰化（昨日【二次确认退潮】题材 · 第二十六条）。
+   *
+   * 为什么是 prop 而不是视图层包一层 div：块头 / 行 / 说明都是本组件的内部结构，
+   *   灰化必须罩住【整个块】；本组件根节点已有 .tvrb-block ⇒ 挂类最省、DOM 结构零变化。
+   * §11：缺省 false ⇒ 其它消费方（退潮替补 / 分歧买点 / 常规块）行为【一字不变】。
+   * 灰化视觉与 .tvrb-buy-list.tvrb-ebb 同一套值（grayscale + opacity），⛔ 不新造第二套观感。
+   */
+  gray: { type: Boolean, default: false }
 });
 
 // 与 TopicVolRatioBoard.vue 共用同一个 board 实例（provide / inject）：

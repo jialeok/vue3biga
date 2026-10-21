@@ -298,6 +298,57 @@
     color: #b45309;
 }
 
+/* ---- ★ [DIVERGE-MANTRA 2026-10-21 用户口径] 分歧板上的口诀（用户指定原文，要求「醒目些」）----
+   视觉沿用本分歧容器（.tvrb-diverge-only-buy）的琥珀金系：虚线描边内衬，字重最大、居中 ——
+   它是这条板上的「行为准则」，必须比标签行更跳。 */
+.tvrb-diverge-mantra {
+    margin: 2px 0 7px;
+    padding: 6px 8px;
+    background: #fff7ed;
+    border: 1.5px dashed #d97706;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 900;
+    letter-spacing: 1.5px;
+    text-align: center;
+    color: #b45309;
+}
+
+/* ---- ★ [DIVERGE-GATE 2026-10-21 用户口径] 分歧判定计算中的占位 ----
+   门控期间买点侧【只有这一条】（旧规则选票一律不渲染，防误判）。中性灰 + 虚线 =
+   「在算、没结论」，⛔ 绝不借用红（告警）/ 金（可买）语义色。 */
+.tvrb-diverge-pending {
+    margin: 2px 0 8px;
+    padding: 10px 10px;
+    background: #f8fafc;
+    border: 2px dashed #94a3b8;
+    border-radius: 10px;
+    text-align: center;
+}
+
+.tvrb-diverge-pending-head {
+    font-size: 14px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    color: #475569;
+}
+
+.tvrb-diverge-pending-detail {
+    margin-top: 5px;
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: #64748b;
+    text-align: left;
+}
+
+/* ---- ★ [EBB-D1 2026-10-21 用户口径] 昨日二次确认退潮题材块【单块】灰化（第二十六条）----
+   与整段灰化 .tvrb-buy-list.tvrb-ebb 同一套值（grayscale + opacity）—— 用户「那个灰色的样式
+   参考退潮首日那套」，⛔ 不新造第二套观感；差别只在作用域：只灰这一个题材块，其它题材块不灰。 */
+.tvrb-block.tvrb-prev-ebb-gray {
+    filter: grayscale(1);
+    opacity: 0.5;
+}
+
 /* 蚂蚁线：选股段与卖点段之间的分隔（与决策看板同款行进虚线语言）。
    ⛔ 动画名必须独立（tvrbAnts），共用 decisionAnts 等于把两个看板耦成一体。 */
 .tvrb-sep {

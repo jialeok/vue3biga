@@ -67,7 +67,8 @@ import {
   detectEbbDay,
   buildEbbDayRecord,
   buildTopicVolRatioPlan,
-  buildTvrbRulesLines
+  buildTvrbRulesLines,
+  secondEbbTopicOfPrevDay
 } from './topic-vol-ratio-rules.js';
 import {
   RULE_NO,
@@ -2260,5 +2261,154 @@ describe('tvrb · ★ 买点侧【连续停牌】占掉名额、不再补位（S
     expect(all).toContain('连续停牌');
     expect(all).toContain('买不进');
     expect(all).toContain('不再补位');
+  });
+});
+
+// ── ★ [EBB-D1 2026-10-21 用户口径] 昨日二次确认退潮 ⇒ 次日禁入买点侧（第二十六条）──────────
+//   用户原话：「主线题材如果昨天已经二次确认退潮了，次日就不要进入买点侧了，也就是说次日即使
+//     这个题材符合平均量比的条件，题材平均量比排名第二，也不应该买了，因为风险很高。其它题材可以。
+//     ……你把买点侧的主线题材入选的票的区域，变成灰色，不用去掉，其它题材不变。」
+//   （10-21 实例：AI应用 10-20 二次确认退潮，10-21 它平均量比排第二、慈文传媒进了买点侧 ⇒ 不合理。）
+describe('tvrb · [EBB-D1] secondEbbTopicOfPrevDay（昨日二次确认退潮判据）', function() {
+  // 事件链：10-13 首次退潮（AI应用）……10-20 二次确认退潮（AI应用）
+  const HIST = [
+    { date: '2026-10-13', prevDate: '2026-10-12', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true },
+    { date: '2026-10-20', prevDate: '2026-10-16', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true }
+  ];
+
+  it('昨日那笔退潮 = 起点前已有 1 次同题材事件 ⇒ 判【二次确认】并返回题材', function() {
+    const r = secondEbbTopicOfPrevDay(HIST, '2026-10-20');
+    expect(r).not.toBeNull();
+    expect(r.topic).toBe('AI应用');
+    expect(r.leaderName).toBe('新华传媒');
+    expect(r.since).toBe('2026-10-20');
+  });
+
+  it('昨日是【首次】退潮（起点前 0 次事件）⇒ null（首次退潮次日不在本规则内）', function() {
+    const r = secondEbbTopicOfPrevDay([HIST[0]], '2026-10-13');
+    expect(r).toBeNull();
+  });
+
+  it('昨日无退潮行 / 昨日 ebb=false ⇒ null', function() {
+    expect(secondEbbTopicOfPrevDay(HIST, '2026-10-16')).toBeNull();          // 那天没有行
+    expect(secondEbbTopicOfPrevDay([
+      { date: '2026-10-13', prevDate: '2026-10-12', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true },
+      { date: '2026-10-20', prevDate: '2026-10-16', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: false }
+    ], '2026-10-20')).toBeNull();
+  });
+
+  it('⛔ 防御：prevDate 缺省 / history 缺省 ⇒ null（§10 判不出 ≠ 昨天没退潮，但也绝不误禁）', function() {
+    expect(secondEbbTopicOfPrevDay(HIST, '')).toBeNull();
+    expect(secondEbbTopicOfPrevDay(null, '2026-10-20')).toBeNull();
+    expect(secondEbbTopicOfPrevDay([], '2026-10-20')).toBeNull();
+  });
+
+  it('连续退潮日合并为一次事件：昨日与前一交易日同题材都退潮 ⇒ 起点合并，事件序数不变', function() {
+    // 10-19 与 10-20 连续退潮（同题材）⇒ 走回连续链找到起点 10-19；10-19 前已有 1 次事件 ⇒ 仍是二次确认
+    const rows = [
+      { date: '2026-10-13', prevDate: '2026-10-12', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true },
+      { date: '2026-10-19', prevDate: '2026-10-16', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true },
+      { date: '2026-10-20', prevDate: '2026-10-19', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true }
+    ];
+    const r = secondEbbTopicOfPrevDay(rows, '2026-10-20');
+    expect(r).not.toBeNull();
+    expect(r.since).toBe('2026-10-19');
+  });
+
+  it('起点前已有 ≥2 次事件 ⇒ null（无第三次，连这条禁入规则也不再适用）', function() {
+    const rows = [
+      { date: '2026-10-09', prevDate: '2026-10-08', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true },
+      { date: '2026-10-13', prevDate: '2026-10-12', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true },
+      { date: '2026-10-20', prevDate: '2026-10-16', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true }
+    ];
+    expect(secondEbbTopicOfPrevDay(rows, '2026-10-20')).toBeNull();
+  });
+
+  it('认亲按【题材】：昨日退潮行是别的题材 ⇒ 与本题材无关 ⇒ null', function() {
+    const rows = [
+      { date: '2026-10-13', prevDate: '2026-10-12', leaderStock: 'XX龙一', leaderTopic: '机器人', ebb: true },
+      { date: '2026-10-20', prevDate: '2026-10-16', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true }
+    ];
+    // AI应用 起点=10-20，之前没有 AI应用 的事件 ⇒ 首次 ⇒ null
+    expect(secondEbbTopicOfPrevDay(rows, '2026-10-20')).toBeNull();
+  });
+});
+
+describe('tvrb · [EBB-D1] 经 buildTopicVolRatioPlan：昨日二次确认退潮题材灰化保留（第二十六条）', function() {
+  /** 高量比题材（平均量比 ≥ 25 ⇒ 不触发空仓提醒，隔离本规则的效果） */
+  function hiBlock(topic, rank, names) {
+    const members = names.map(function(n, i) {
+      return m(n, { aucVolRatio: 60 - i, pct: 60 - i, code: '6000' + (i + 1) });
+    });
+    return block(topic, rank, members);
+  }
+  const HIST = [
+    { date: '2026-10-13', prevDate: '2026-10-12', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true },
+    { date: '2026-10-20', prevDate: '2026-10-16', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true }
+  ];
+
+  function build() {
+    const topics = [
+      hiBlock('AI应用', 1, ['新华传媒', '慈文传媒', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9']),
+      hiBlock('机器人', 2, ['B1', 'B2', 'B3', 'B4'])
+    ];
+    const dm = rankDragonsWithPctMap(topics, null);
+    return buildTopicVolRatioPlan(topics, dm, { prevDate: '2026-10-20', ebbHistory: HIST });
+  }
+
+  it('命中题材：整块灰化旗 + 照常入选（不删）+ 标签一律【退潮不买】+ 持有/仓位清空', function() {
+    const plan = build();
+    const ai = plan.blocks.filter(function(b) { return b.block.topic === 'AI应用'; })[0];
+    expect(ai).toBeDefined();                       // ⛔ 不删：题材块照常入选占位
+    expect(ai.prevEbbGray).toBe(true);              // 视图层据此挂 .tvrb-prev-ebb-gray
+    ai.picks.forEach(function(p) {
+      expect(p.buyActionTag).toBe(EBB_NO_BUY_TAG);
+      expect(p.buyActionTone).toBe(EBB_NO_BUY_TONE);
+      expect(p.holdTag).toBe('');
+      expect(p.position).toBe('');
+      expect(p.actionNote).toContain('二次确认退潮');
+      expect(p.actionNote).toContain('第二十六条');
+    });
+    expect(ai.notes.join('\n')).toContain('禁止买入');
+    expect(plan.notes.join('\n')).toContain('AI应用');
+    expect(plan.notes.join('\n')).toContain('第二十六条');
+  });
+
+  it('其它题材【一字不变】：不灰化、标签不走退潮不买', function() {
+    const plan = build();
+    const rb = plan.blocks.filter(function(b) { return b.block.topic === '机器人'; })[0];
+    expect(rb).toBeDefined();
+    expect(rb.prevEbbGray).toBeFalsy();
+    rb.picks.forEach(function(p) {
+      expect(p.buyActionTag).not.toBe(EBB_NO_BUY_TAG);
+    });
+  });
+
+  it('⛔ 禁入的票【不进买点名单】（卖点侧不得因「今天又进买点」标持有）', function() {
+    const plan = build();
+    expect(plan.buyNames.has('慈文传媒')).toBe(false);
+    expect(plan.buyNames.has('新华传媒')).toBe(false);
+    expect(plan.buyNames.size).toBeGreaterThan(0);   // 其它题材的票照常进名单
+  });
+
+  it('⛔ 缺省（无 prevDate / 无 ebbHistory）⇒ 零行为（§11）', function() {
+    const topics = [
+      hiBlock('AI应用', 1, ['新华传媒', '慈文传媒', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9'])
+    ];
+    const dm = rankDragonsWithPctMap(topics, null);
+    const p1 = buildTopicVolRatioPlan(topics, dm, {});
+    const p2 = buildTopicVolRatioPlan(topics, dm, { prevDate: '2026-10-20' });
+    const p3 = buildTopicVolRatioPlan(topics, dm, { ebbHistory: HIST });
+    [p1, p2, p3].forEach(function(p) {
+      p.blocks.forEach(function(b) { expect(b.prevEbbGray).toBeFalsy(); });
+      expect(p.buyNames.has('慈文传媒')).toBe(true);
+    });
+  });
+
+  it('规则面板必须写明第二十六条（§6 文案与口径同处一处）', function() {
+    const all = buildTvrbRulesLines().join('\n');
+    expect(all).toContain('二十六');
+    expect(all).toContain('二次确认退潮');
+    expect(all).toContain('次日禁入买点侧');
   });
 });

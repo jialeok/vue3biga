@@ -126,71 +126,101 @@
                首次退潮 / 二次走兜底 ⇒ null 不渲染（那两种场景卖点横幅 + 灰化已把状态说满）。
                样式独立类 .tvrb-ebb-node-note（⛔ 不复用卖点 .tvrb-ebb-banner 类名 ——
                两处 head 文本不同，共用类名会让 DOM 查询/E2E 混淆）。 -->
+          <!-- ★★ [DIVERGE-GATE 2026-10-21 用户口径] 分歧判定未就绪 ⇒ 买点侧只渲染「判定计算中」占位，
+               ⛔ 绝不先把旧规则的选票渲染出去再换板（用户：「刚开始显示的是以前旧规则的票，后面停顿了
+               几秒钟，才出现那个提示词分歧的信息板……我做决定很快，万一哪天它没跳转，我不就买错股票了」）。
+               门控条件全在组合式 data computed（同步可判、无 setTimeout；判定落地自动重算放行一次成型）。
+               ⛔ 未就绪时给「空仓 / 分歧」结论都是拿没数据当结论（§10）⇒ 占位只说【在算】，不说结论。 -->
           <div
-            v-if="ebbNodeNote"
-            class="tvrb-ebb-node-note tvrb-selectable"
+            v-if="divergePending"
+            class="tvrb-diverge-pending tvrb-selectable"
           >
-            <div class="tvrb-ebb-node-note-head">
-              {{ ebbNodeNote.headline }}
+            <div class="tvrb-diverge-pending-head">
+              ⏳ 总龙分歧判定计算中……（比对总龙 K 线，约十几秒）
             </div>
-            <div class="tvrb-ebb-node-note-detail">
-              {{ ebbNodeNote.detail }}
+            <div class="tvrb-diverge-pending-detail">
+              今天可能是【总龙首次分歧】日（总龙竞价低开）⇒ 买点侧要等分歧判定落地才能给出结论：
+              若确认分歧，买点侧将切换为「总龙一（下杀买）+ 不同题材主板高标 ≤2 只」的分歧板；
+              若不是分歧日，则按常规规则渲染。为防止先看到旧规则选票再切换造成误判，
+              判定落地前这里不显示选票。卖点侧不受影响。
             </div>
           </div>
-          <TvrbCashAlert :alert="cashAlert" />
-          <!-- ★★ [EBB-R8 2026-10-14 → EBB-R20 2026-10-20 用户口径] 退潮日【买点侧替补（≤2 只）】：
+          <template v-if="!divergePending">
+            <div
+              v-if="ebbNodeNote"
+              class="tvrb-ebb-node-note tvrb-selectable"
+            >
+              <div class="tvrb-ebb-node-note-head">
+                {{ ebbNodeNote.headline }}
+              </div>
+              <div class="tvrb-ebb-node-note-detail">
+                {{ ebbNodeNote.detail }}
+              </div>
+            </div>
+            <TvrbCashAlert :alert="cashAlert" />
+            <!-- ★★ [EBB-R8 2026-10-14 → EBB-R20 2026-10-20 用户口径] 退潮日【买点侧替补（≤2 只）】：
                用户原话「从20日涨幅中的总龙一到总龙五选出两只排名靠前的……剩下的就选排名靠前的那两只」。
                ⛔ 它【必须】渲染在 .tvrb-buy-list【之外】—— 那个容器挂着父级 filter: grayscale(1)，
                   CSS 的 filter 无法被子元素撤销；放进去就等于把「今天能下手的替补」也灰掉了。
                ⛔ 它【不在】blocks 里（见组合式的 ebbBuy），是独立的一段；不是退潮日 / 选不出 ⇒ 整个容器不渲染。
                ⚠️ 容器标签由 Logic 下发（ebb.buyOnlyLabelText，§21 模板零计算）；head-text 传块的合成题材头。 -->
-          <div
-            v-if="ebbBuy"
-            class="tvrb-ebb-only-buy"
-          >
-            <div class="tvrb-ebb-only-label tvrb-selectable">
-              {{ ebb && ebb.buyOnlyLabelText ? ebb.buyOnlyLabelText : '退潮替补 · 买点' }}
+            <div
+              v-if="ebbBuy"
+              class="tvrb-ebb-only-buy"
+            >
+              <div class="tvrb-ebb-only-label tvrb-selectable">
+                {{ ebb && ebb.buyOnlyLabelText ? ebb.buyOnlyLabelText : '退潮替补 · 买点' }}
+              </div>
+              <TvrbBuyBlock
+                :block="ebbBuy"
+                :head-text="ebbBuy.block.topic"
+              />
             </div>
-            <TvrbBuyBlock
-              :block="ebbBuy"
-              :head-text="ebbBuy.block.topic"
-            />
-          </div>
-          <!-- ★★ [DIVERGE 2026-10-20 用户口径] 市场总龙一【首次分歧】日的分歧买点（总龙一下杀买 +
+            <!-- ★★ [DIVERGE 2026-10-20 用户口径] 市场总龙一【首次分歧】日的分歧买点（总龙一下杀买 +
                不同题材主板高标 ≤2 只）。结构与退潮替补同一形态：渲染在灰化容器 .tvrb-buy-list【之外】
                （今天真要买的那几只不能被 grayscale 吞掉）；不是分歧日 / 退潮日接管 ⇒ 不渲染。
                ⛔ 类名独立（.tvrb-diverge-only-*）—— 与退潮替补是两条规则，DOM 查询不能混。 -->
-          <div
-            v-if="divergeBuy"
-            class="tvrb-diverge-only-buy"
-          >
-            <div class="tvrb-diverge-only-label tvrb-selectable">
-              总龙首次分歧 · 买点（第二十五条）
+            <div
+              v-if="divergeBuy"
+              class="tvrb-diverge-only-buy"
+            >
+              <div class="tvrb-diverge-only-label tvrb-selectable">
+                总龙首次分歧 · 买点（第二十五条）
+              </div>
+              <!-- ★ [DIVERGE-MANTRA 2026-10-21 用户口径] 用户指定的口诀，要求「醒目些」——
+                 纯展示文案（与上面 label 同一先例：静态标语放视图层），样式见 .tvrb-diverge-mantra。 -->
+              <div class="tvrb-diverge-mantra tvrb-selectable">
+                买在分歧，卖在一致，分歧切核心，弱势切抱团
+              </div>
+              <TvrbBuyBlock
+                :block="divergeBuy"
+                :head-text="divergeBuy.block.topic"
+              />
             </div>
-            <TvrbBuyBlock
-              :block="divergeBuy"
-              :head-text="divergeBuy.block.topic"
-            />
-          </div>
-          <!-- 退潮首日 / 空仓提醒：股票块整体灰化（⛔ 上面的空仓标语【不灰】—— 它正是要被看见的那一条）
+            <!-- 退潮首日 / 空仓提醒：股票块整体灰化（⛔ 上面的空仓标语【不灰】—— 它正是要被看见的那一条）
                ⛔ 上面那只【唯一买点】也不灰（它在本次容器之外，见上）。
                ★ [CASH-ALERT-NOBUY 2026-10-16] 条件 = cashAlert.show（含退潮首日，同上面的标题一处口径）。 -->
-          <div
-            class="tvrb-buy-list"
-            :class="{ 'tvrb-ebb': cashAlert.show }"
-          >
-            <TvrbBuyBlock
-              v-for="b in blocks"
-              :key="'tvrb-buy-' + b.topic"
-              :block="b"
-            />
-          </div>
-          <div
-            v-if="blocks.length === 0"
-            class="tvrb-empty tvrb-selectable"
-          >
-            当日没有满足条件的题材（题材数量 ≥ 4 只）
-          </div>
+            <div
+              class="tvrb-buy-list"
+              :class="{ 'tvrb-ebb': cashAlert.show }"
+            >
+              <!-- ★ [EBB-D1 2026-10-21] b.prevEbbGray（Logic 层旗子）⇒ 只给【昨日二次确认退潮】那一个
+                 题材块挂灰化类（第二十六条：整块灰化 + 退潮不买，其它题材块不灰）。
+                 ⛔ 走 TvrbBuyBlock 的可选 prop（§11 缺省 false = 其它消费方零行为），不新造灰化 CSS。 -->
+              <TvrbBuyBlock
+                v-for="b in blocks"
+                :key="'tvrb-buy-' + b.topic"
+                :block="b"
+                :gray="!!b.prevEbbGray"
+              />
+            </div>
+            <div
+              v-if="blocks.length === 0"
+              class="tvrb-empty tvrb-selectable"
+            >
+              当日没有满足条件的题材（题材数量 ≥ 4 只）
+            </div>
+          </template>
         </div>
 
         <!-- 蚂蚁线分隔（与决策看板同款视觉语言） -->
@@ -272,6 +302,7 @@ const {
   ebbBuy,
   ebbNodeNote,
   divergeBuy,
+  divergePending,
   summaryText,
   rulesLines,
   toggleExpand,
