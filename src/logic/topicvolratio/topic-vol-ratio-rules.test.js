@@ -1596,6 +1596,10 @@ describe('tvrb · [EBB-R20b] 二次确认退潮 ⇒ 先常规选股（排除退�
     expect(pick.buyActionTag).not.toBe(EBB_NO_BUY_TAG);
     // 行内说明加注（用户原话句式）
     expect(pick.actionNote).toContain('主线AI应用二次确认退潮，作为补涨题材选出的股票');
+    // ★ [EBB-WHY 2026-10-22] 判定依据事实句（与卖点侧横幅同款）：买点侧必须写清「为什么退潮、怎么判定」
+    expect(pick.actionNote).toContain('判定依据：市场总龙【');
+    expect(pick.actionNote).toContain('⇒ 判定为【AI应用二次确认退潮】');
+    expect(pick.actionNote).toContain('（题材退潮：总龙停牌 / 占比不符 ⇒ 整个题材的股票预期走势差）');
     // 替补兜底不启用
     expect(p.ebbBuy).toBe(null);
     expect(p.buy.ebbSecond).toBe(null);
@@ -1603,6 +1607,8 @@ describe('tvrb · [EBB-R20b] 二次确认退潮 ⇒ 先常规选股（排除退�
     expect(p.ebbNodeNote).not.toBe(null);
     expect(p.ebbNodeNote.headline).toContain('退潮节点');
     expect(p.ebbNodeNote.headline).toContain('AI应用');
+    // ★ [EBB-WHY 2026-10-22] 节点横幅句首同样带判定依据事实句
+    expect(p.ebbNodeNote.detail).toContain('判定依据：市场总龙【');
     expect(p.ebbNodeNote.detail).toContain('补涨题材');
     expect(p.ebbNodeNote.detail).toContain('轮动行情');
     expect(p.ebbNodeNote.detail).toContain('常规选股规则');

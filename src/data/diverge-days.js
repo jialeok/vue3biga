@@ -40,8 +40,25 @@ export const DIVERGE_DAYS_TABLE = 'tvrb_diverge_days';
 /** 列清单（与建表 SQL 一一对应；⛔ 加列必须同时改 SQL 与这里） */
 const COLS = 'date,leader_stock,leader_topic,can_judge,today_first,first_board_ymd,first_divergence_ymd,today_auc_pct,updated_at';
 
-/** 表不存在（PGRST205 / 42P01 / 404）⇒ 本会话不再重试、直接走 K 线链路（§32 禁止反复请求不存在的表） */
-let _tableMissing = false;
+/** 表不存在（PGRST205 / 42P01 / 404）⇒ 冷却期内不再重试、直接走 K 线链路（§32 禁止反复请求不存在的表）
+ *  ★ [2026-10-22 用户报障修复] 原实现是「会话级永久跳过」：用户在建表【前】打开的页面（SPA 长开不刷新）
+ *    会永远记住「没有这张表」⇒ 建表后判定依旧每次重算、永远不落库。
+ *    改成【10 分钟冷却窗】：冷却期内不发请求（§32 语义不变），过期后自动再探一次 ——
+ *    失败则续一个冷却期，成功则本会话恢复正常读写。⇒ 建表后最多 10 分钟自愈，无需刷新页面。 */
+const TABLE_MISSING_COOLDOWN_MS = 10 * 60 * 1000;
+let _tableMissingUntil = 0;
+
+/** 现在是否处于「表不存在」冷却期（冷却过期 ⇒ 自动重新探测一次） */
+function _tableMissing() {
+    return Date.now() < _tableMissingUntil;
+}
+
+function _markTableMissing() {
+    _tableMissingUntil = Date.now() + TABLE_MISSING_COOLDOWN_MS;
+    _dbgLog('[DIVERGE-DAYS] 表 ' + DIVERGE_DAYS_TABLE +
+        ' 不存在（或还没建）⇒ ' + Math.round(TABLE_MISSING_COOLDOWN_MS / 60000) +
+        ' 分钟内不再重试、直接走 K 线链路（执行 db/create_tvrb_diverge_days.sql 后最迟 10 分钟自动恢复）');
+}
 
 /** 会话内按日期缓存：date -> row | null（null = 这一天表里确实没有行，避免反复重查） */
 const _cache = new Map();
@@ -90,9 +107,7 @@ async function _fetchDays(miss) {
     }
     if (error) {
         if (_isMissingTable(error)) {
-            _tableMissing = true;
-            _dbgLog('[DIVERGE-DAYS] 表 ' + DIVERGE_DAYS_TABLE +
-                ' 不存在 ⇒ 本次会话直接走 K 线链路（执行 db/create_tvrb_diverge_days.sql 后即生效）');
+            _markTableMissing();
             return new Map();
         }
         // §10：读取失败必须抛（⛔ 不静默成空 —— 上层要能区分「没记录」与「读失败」）
@@ -122,7 +137,7 @@ export async function readDivergeDays(dates) {
     const out = new Map();
     const list = Array.from(new Set((dates || []).filter(function(d) { return !!d; })));
     if (list.length === 0) return out;
-    if (_tableMissing) return out;          // 本会话已知没有这张表 ⇒ 不再发请求（§32）
+    if (_tableMissing()) return out;        // 冷却期内已知没有这张表 ⇒ 不再发请求（§32）
 
     const miss = [];
     list.forEach(function(d) {
@@ -170,8 +185,14 @@ export async function readDivergeDay(date) {
  */
 export async function upsertDivergeDay(row) {
     if (!row || !row.date) return false;
-    if (!row.canJudge) return false;        // §10：判不出的结论绝不落库（那会伪装成「该日已判」）
-    if (_tableMissing) return false;
+    // §10：判不出的结论绝不落库（那会伪装成「该日已判」）。
+    // ★ [DIVERGE-DAYS-FIX 2026-10-22] 被闸拦截必须留痕 —— 本闸曾把【漏传 canJudge 字段】的
+    //   正常写入也静默拦掉（表恒 0 行、零线索，排查代价极大）。留一条日志，§10 失败可见。
+    if (!row.canJudge) {
+        _dbgLog('[DIVERGE-DAYS] 拒写 ' + (row && row.date) + '：row.canJudge 非真（判不出 / 调用方漏传字段）');
+        return false;
+    }
+    if (_tableMissing()) return false;
     const payload = {
         date: String(row.date),
         leader_stock: row.leaderStock || null,
@@ -192,9 +213,7 @@ export async function upsertDivergeDay(row) {
     }
     if (error) {
         if (_isMissingTable(error)) {
-            _tableMissing = true;
-            _dbgLog('[DIVERGE-DAYS] 表 ' + DIVERGE_DAYS_TABLE +
-                ' 不存在 ⇒ 写入跳过（执行 db/create_tvrb_diverge_days.sql 后即生效）');
+            _markTableMissing();
             return false;
         }
         _dbgLog('[DIVERGE-DAYS] 写入 ' + row.date + ' 失败：' + (error.message || error));
@@ -204,13 +223,13 @@ export async function upsertDivergeDay(row) {
     return true;
 }
 
-/** 清空会话缓存（仅供测试；⛔ 正常业务流程无需调用）。不清 `_tableMissing`（那是会话级结论）。 */
+/** 清空会话缓存（仅供测试；⛔ 正常业务流程无需调用）。不清 `_tableMissingUntil`（那是会话级结论）。 */
 export function clearDivergeDaysCache() {
     _cache.clear();
     _inflight.clear();
 }
 
-/** 仅测试用：把「表不存在」结论复位（正常流程不需要） */
+/** 仅测试用：把「表不存在」冷却期复位（正常流程不需要） */
 export function _resetDivergeDaysTableMissing() {
-    _tableMissing = false;
+    _tableMissingUntil = 0;
 }

@@ -364,6 +364,11 @@ export function useTopicVolRatioBoard() {
       if (verdict.canJudge) {
         void upsertDivergeDay({
           date: d,
+          // ★ [DIVERGE-DAYS-FIX 2026-10-22] ⛔ 此字段此前漏传 —— Data 层第二道闸
+          //   `if (!row.canJudge) return false` 会把每一次写入都【静默拦截】（§10 无声失败），
+          //   落库表恒 0 行 ⇒ 用户「每次切日期都重新计算」。外层 if (verdict.canJudge)
+          //   已守卫，这里按同一结论传 true（以 Data 层闸为准，双保险）。
+          canJudge: true,
           leaderStock: l0.stock,
           leaderTopic: '',
           todayFirst: verdict.todayFirstDivergence,

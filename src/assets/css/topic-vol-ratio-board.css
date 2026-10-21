@@ -921,8 +921,9 @@
    买点 / 卖点两处共用此一条：写出占比数值、龙头 / 其余门槛来源、以及作为辅助的竞价涨幅与量比方向。
    整行独占（flex-basis:100%）⇒ 在 .tvrb-row 里换行、与行首左对齐（26px = 序号宽 + gap）。
    浅灰底 + 左边一条细竖线：属于「解释」层级，不能盖过上面的数据徽标。
-   ⚠️ 简洁模式（.tvrb-compact）【不隐藏】这条（与决策看板 .dcb-row-note 同口径）——
-      它写的是判据本身，藏了就等于「为什么给这个动作」无从核对（§10 理由必须可见）。 */
+   ★ [2026-10-22 用户口径更新] 简洁模式（.tvrb-compact）【隐藏】这条 —— 用户原话「我希望简洁版
+      不要出现股票下面的说明文字（就是根据规则几判定……），要放到原版」。
+      （推翻旧拍板「与决策看板 .dcb-row-note 同口径不隐藏」—— 判据在原版全量可核对，§10 仍满足。） */
 .tvrb-row-note {
     flex-basis: 100%;
     margin: 1px 0 3px 26px;
@@ -1188,17 +1189,20 @@
     -webkit-touch-callout: default;
 }
 
-/* ---- [COMPACT] 简洁模式：隐藏解释性文字，只留【题材行 + 股票行 + 行内标签 + 逐行说明】----
+/* ---- [COMPACT] 简洁模式：隐藏解释性文字，只留【题材行 + 股票行 + 行内标签 + 分笔图】----
+   ★ [2026-10-22 用户口径] 行内说明（.tvrb-row-note，即每只股票下面的「根据规则几判定……」）
+     【隐藏】—— 用户原话「我希望简洁版不要出现股票下面的说明文字（就是根据规则几判定……），
+     要放到原版……其它保留（包括分笔图等）」。原版（不点简洁）全量显示不变。
    ⛔ .tvrb-note-empty（「这一块为什么没有股票」）【不隐藏】—— 全隐藏会剩一行光秃秃的题材名，
       反而让人以为「没算出来」（§10）。
    ⛔ .tvrb-cash-alert（空仓提醒，买点侧顶部大字标语）【不隐藏】—— 用户口径是「看到这些文字
       我就不开仓了」；它不在下面任何一条选择器里，这里点名说明是【刻意】的，别顺手加进去。
-   ⛔ .tvrb-row-note（逐行说明）【不隐藏】—— 与决策看板 .dcb-row-note 同口径：它写的是判据本身。
-   ⛔ 分笔面板（.tvrb-pen-panel）也不隐藏 —— 那是用户主动点开的量化数据。
+   ⛔ 分笔面板（.tvrb-pen-panel）也不隐藏 —— 那是用户主动点开的量化数据（用户「其它保留」）。
    ⛔ 用 CSS 隐藏而不是模板 v-if：模板分支越少越稳。 */
 .tvrb-board.tvrb-compact .tvrb-reason-line,
 .tvrb-board.tvrb-compact .tvrb-sell-hint,
 .tvrb-board.tvrb-compact .tvrb-rules,
+.tvrb-board.tvrb-compact .tvrb-row-note,
 .tvrb-board.tvrb-compact .tvrb-block-note:not(.tvrb-note-empty) {
     display: none;
 }
