@@ -76,8 +76,12 @@ import {
   NEW_DRAGON_TOP_N,
   NEW_DRAGON_LOOKBACK_DAYS,
   detectSwitchDay,
-  pickNewDragon
+  pickNewDragon,
+  // ★★ [EBB-20D 2026-10-22] 退潮事件计数窗口（用户「时间太短没有检查到10月13日那天」）
+  EBB_EVENT_WINDOW_DAYS
 } from './topic-vol-ratio-rules.js';
+// ★★ [CORE-CAT 2026-10-22] 「题材 → 核心词大类」归一的唯一实现（文化传媒 ⇒ AI应用）
+import { makeCoreTopicResolver } from '../topic/core-category.js';
 import {
   RULE_NO,
   HOLD_TAG,
@@ -2443,9 +2447,9 @@ describe('tvrb · [EBB-D1] 经 buildTopicVolRatioPlan：昨日二次确认退潮
 //   ⇒ 新龙 = 冰山冷热；常规侧收紧到【一个题材、一只】= 工业4.0 的宁波东力。
 // ══════════════════════════════════════════════════════════════════════════════════════════
 describe('tvrb · [SWITCH] 常量与用户口径逐字一致', function() {
-  it('规则编号 / 前五只数 / 回看 20 个交易日', function() {
+  it('规则编号 / 前八只数 / 回看 20 个交易日', function() {
     expect(SWITCH_RULE_NO).toBe('二十八');
-    expect(NEW_DRAGON_TOP_N).toBe(5);              // 「20日涨幅排名前五」
+    expect(NEW_DRAGON_TOP_N).toBe(8);              // 「如果前五找不到，你就找前八的，改用排名前八的」
     expect(NEW_DRAGON_LOOKBACK_DAYS).toBe(20);     // 「20个交易日内……有没有上过榜」
     expect(NEW_DRAGON_TAG).toBe('新龙买');
     expect(NEW_DRAGON_TONE).toBe(EBB_SECOND_BUY_TONE);  // 复用「退潮替补买」的琥珀金（不新造配色档）
@@ -2691,21 +2695,24 @@ describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新
     expect(plan.buy.newDragon.picks[0].name).toBe('冰山冷热');
   });
 
-  it('切换日但【没有】符合条件的新龙 ⇒ 新龙行不出现 + 回落常规（不收紧）+ 原因可见', function() {
+  it('切换日但【没有】符合条件的新龙 ⇒ 新龙行不出现 + 回落常规（仍只取一个题材）+ 原因可见', function() {
     const plan = build({ top5HistoryEver: new Set(['新华传媒', '九阳股份', '冰山冷热', '慈文传媒', '新华文轩']) });
     expect(plan.switchDay).not.toBeNull();
     expect(plan.newDragon).toBeNull();
     expect(plan.buy.newDragon).toBeNull();
-    expect(plan.blocks).toHaveLength(2);             // ← 常规 2 个题材（不收紧）
+    // ★ [CYCLE 2026-10-22 用户口径] 切换日【始终】收紧到「一个题材、一只」——
+    //   老周期昨天已结束，今天不可能再买两个题材（与「判不出新龙就不收紧」的旧口径相反）。
+    expect(plan.blocks).toHaveLength(1);
+    expect(plan.blocks[0].picks).toHaveLength(1);
     expect(plan.notes.join('\n')).toContain('回落常规');
-    expect(plan.notes.join('\n')).toContain('五只去留');   // 判不出的原因逐只留痕
+    expect(plan.notes.join('\n')).toContain('八只去留');   // 判不出的原因逐只留痕
   });
 
   it('⛔ 历史榜读不到（top5HistoryEver 缺省）⇒ 判不出，⛔ 绝不把「没数据」当「首次上榜」', function() {
     const plan = build({ top5HistoryEver: null });
     expect(plan.switchDay).not.toBeNull();
     expect(plan.newDragon).toBeNull();                // ← 没有凭空冒出「新龙」
-    expect(plan.blocks).toHaveLength(2);              // ← 回落常规
+    expect(plan.blocks).toHaveLength(1);              // ← 回落常规（但仍只取一个题材）
     expect(plan.notes.join('\n')).toContain('无法判定');
   });
 
@@ -2747,5 +2754,311 @@ describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新
     expect(all).toContain('新龙');
     expect(all).toContain('首次');
     expect(all).toContain('前五');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// ★★ [CORE-CAT / EBB-20D / CYCLE 2026-10-22 用户报障回归]
+//
+// 用户原话（10-22 收盘后）：
+//   「主线文化传媒首次退潮 · 买点替补只有这 2 只（退潮替补买）……这个逻辑错了，我都说不是首次退潮了，
+//     首次退潮是在它首次停牌哪天（10-13），它停牌好几天的。……买点侧选的应该是冰山冷热，和宁波东力。
+//     而不是现在的 九阳股份，冰山冷热，下面还有重复的冰山冷热。……还有时间点，你也没计算清楚。
+//     ……还是说你判断的时候用的时间段错了，提示板上写着（近10个交易日内AI应用没有退潮事件），
+//     时间太短没有检查到10月13日那天？」
+//
+// 四条根因 + 四条修法（本 describe 逐条钉住）：
+//   ① 题材名漂移（行上「文化传媒」vs 落库「AI应用」）⇒ 事件计数 2→0 ⇒ 误报首次退潮
+//      ⇒ 修：题材按【核心词大类】认亲（o.coreTopics 注入）；
+//   ② 计数窗口只有 10 个交易日 ⇒ 修：EBB_EVENT_WINDOW_DAYS = 20；
+//   ③ 切换日仍判退潮 ⇒ 退潮替补与切换日新龙两条买点路径同时输出
+//      ⇒ 修：切换日 out.ebb 恒 null、退潮替补恒 null；
+//   ④ 冰山冷热在「退潮替补」和「新龙」两处重复 ⇒ 修：买点侧全局同名去重（新龙优先）。
+// ══════════════════════════════════════════════════════════════════════════════════════════
+describe('tvrb · [EBB-20D] 退潮事件计数窗口 = 近 20 个交易日', function() {
+  it('常量 = 20（用户「时间太短没有检查到10月13日那天？」）', function() {
+    expect(EBB_EVENT_WINDOW_DAYS).toBe(20);
+  });
+
+  /** 造一条「退潮事件」：同题材、ebb=true */
+  function ebbRow(date, prevDate) {
+    return { date: date, prevDate: prevDate, leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true };
+  }
+  /** 造 20 个交易日（升序）：第 i 天 = 2026-09-01 起顺延的假日期，只为构造「第 N 个交易日前」 */
+  function days(n) {
+    const out = [];
+    for (let i = 0; i < n; i++) out.push('2026-09-' + String(i + 1).padStart(2, '0'));
+    return out;
+  }
+  const EBB_CTX = {
+    ready: true, leader: { name: '新华传媒', pct: 200, topic: 'AI应用' },
+    leaderSuspended: true, leaderShare: null,
+    siblingDragons: [], secondInfo: null, prevLeader: null, buyPicks: [], buyTrail: [], top5: []
+  };
+
+  it('★ 事件落在第 15 个交易日前（旧 10 天窗口看不到）⇒ 现在能看到 ⇒ 计为【二次确认】不是首次', function() {
+    const d = days(20);
+    // 第 15 天前（= 窗口内、但 10 天窗口外）的一次退潮事件
+    const hist = [ebbRow(d[2], d[1])];
+    const r = detectEbbDay(EBB_CTX, null, hist, null, d[0]);
+    expect(r).not.toBeNull();                 // 停牌 ⇒ 触发退潮
+    expect(r.phase).toBe('second');           // ← 20 天窗口看得到 ⇒ 二次确认
+    expect(r.phaseTitle).toContain('二次确认');
+  });
+
+  it('★ 20 天内已有 2 次事件 ⇒ 命中「无第三次」⇒ 不判退潮（返回 null）', function() {
+    const d = days(20);
+    const hist = [ebbRow(d[2], d[1]), ebbRow(d[15], d[14])];
+    expect(detectEbbDay(EBB_CTX, null, hist, null, d[0])).toBeNull();
+  });
+
+  it('窗口起点之前的事件不计入（windowFrom = 第 20 个交易日的日期）', function() {
+    const d = days(22);
+    // d[0] 是第 22 个交易日前 ⇒ 在窗口起点（d[2]）之前 ⇒ 不计入
+    const hist = [ebbRow(d[0], '2026-08-31')];
+    const r = detectEbbDay(EBB_CTX, null, hist, null, d[2]);
+    expect(r).not.toBeNull();
+    expect(r.phase).toBe('first');            // 窗口外 ⇒ 看不到 ⇒ 仍是首次
+  });
+});
+
+describe('tvrb · [CORE-CAT] 题材按【核心词大类】认亲（文化传媒 ⇒ AI应用）', function() {
+  // 用户口径：核心管理里「AI应用」这个大类的同义词包含「文化传媒」。
+  const CORES = [
+    { name: 'AI应用', synonyms: ['文化传媒', '影视院线', '短剧'] },
+    { name: '机器人', synonyms: ['人形机器人', '减速器'] },
+    { name: '电力', synonyms: ['风电'] }
+  ];
+  /** 10-22 实况：行上市细题材是「文化传媒」，落库历史行写的是「AI应用」 */
+  const EBB_CTX = {
+    ready: true, leader: { name: '新华传媒', pct: 214.3, topic: '文化传媒' },
+    leaderSuspended: true, leaderShare: null,
+    siblingDragons: [], secondInfo: null, prevLeader: null, buyPicks: [], buyTrail: [], top5: []
+  };
+  // 10-14 + 10-15 连续停牌（1 次事件，合并）+ 10-20 二次确认（1 次事件）= 2 次
+  const HIST = [
+    { date: '2026-10-14', prevDate: '2026-10-13', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true },
+    { date: '2026-10-15', prevDate: '2026-10-14', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true },
+    { date: '2026-10-16', prevDate: '2026-10-15', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: false },
+    { date: '2026-10-19', prevDate: '2026-10-16', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: false },
+    { date: '2026-10-20', prevDate: '2026-10-19', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true }
+  ];
+  const coreRes = makeCoreTopicResolver(CORES);
+
+  it('⛔ 不传大类映射（旧行为）⇒ 文化传媒 认不上 AI应用 ⇒ 误报【首次退潮】（这就是用户报障的现象）', function() {
+    const r = detectEbbDay(EBB_CTX, null, HIST);
+    expect(r).not.toBeNull();
+    expect(r.phase).toBe('first');
+    expect(r.phaseTitle).toBe('主线文化传媒首次退潮');
+  });
+
+  it('★ 传大类映射 ⇒ 文化传媒 ⇒ AI应用 ⇒ 20 日内已有 2 次事件 ⇒ 不再判退潮', function() {
+    expect(detectEbbDay(EBB_CTX, null, HIST, coreRes)).toBeNull();
+  });
+
+  it('★ 标题也按大类渲染（不再出现「主线文化传媒」这样的细分串）', function() {
+    // 只留 1 次事件（10-14/10-15 合并）+ 别把 10-20 放进来 ⇒ 仍会触发，但标题应写 AI应用
+    const hist = HIST.filter(function(r) { return r.date < '2026-10-20'; });
+    const r = detectEbbDay(EBB_CTX, null, hist, coreRes);
+    expect(r).not.toBeNull();
+    expect(r.leaderTopic).toBe('AI应用');
+    expect(r.phaseTitle).toContain('AI应用');
+    expect(r.phaseTitle).not.toContain('文化传媒');
+  });
+
+  it('大类归一也作用在 secondEbbTopicOfPrevDay（昨日二次确认的题材 = 大类名）', function() {
+    const r = secondEbbTopicOfPrevDay(HIST, '2026-10-20', coreRes);
+    expect(r).not.toBeNull();
+    expect(r.topic).toBe('AI应用');
+  });
+});
+
+describe('tvrb · [CYCLE] 切换日不判退潮（周期状态）', function() {
+  const HIST = [
+    { date: '2026-10-14', prevDate: '2026-10-13', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true },
+    { date: '2026-10-15', prevDate: '2026-10-14', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true },
+    { date: '2026-10-19', prevDate: '2026-10-16', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: false },
+    { date: '2026-10-20', prevDate: '2026-10-19', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true }
+  ];
+  /** 10-22：总龙仍在停牌（占比也塌）——若照旧判，会重开一次退潮事件 */
+  function ebbCtxOf() {
+    return {
+      ready: true, leader: { name: '新华传媒', pct: 214.3, topic: 'AI应用' },
+      leaderSuspended: true, leaderShare: 2.0,
+      siblingDragons: [{ name: '慈文传媒', rank: 2, isYizi: false, suspended: false }],
+      secondInfo: null, prevLeader: null,
+      // 退潮替补那两只（用户明确说「不该是九阳 + 冰山」）
+      buyPicks: [
+        { name: '九阳股份', code: '002242', topic: '大消费', pct: 137, rank20: 2 },
+        { name: '冰山冷热', code: '000530', topic: '电子通信算力', pct: 74.4, rank20: 5 }
+      ],
+      buyTrail: [],
+      top5: [
+        { name: '新华传媒', code: '600825', topic: 'AI应用', pct: 214.3, rank20: 1 },
+        { name: '九阳股份', code: '002242', topic: '大消费', pct: 137.0, rank20: 2 }
+      ],
+      newDragonPool: [
+        { name: '新华传媒', code: '600825', topic: 'AI应用', pct: 214.3, rank20: 1, mainBoard: true },
+        { name: '九阳股份', code: '002242', topic: '大消费', pct: 137.0, rank20: 2, mainBoard: true },
+        { name: '慈文传媒', code: '002343', topic: '文化传媒', pct: 85.6, rank20: 3, mainBoard: true },
+        { name: '新华文轩', code: '601811', topic: '文化传媒', pct: 79.8, rank20: 4, mainBoard: true },
+        { name: '凡拓数创', code: '301313', topic: '数字孪生', pct: 78.5, rank20: 5, mainBoard: false },
+        { name: '冰山冷热', code: '000530', topic: '电子通信算力', pct: 74.4, rank20: 6, mainBoard: true }
+      ]
+    };
+  }
+  const CORES = [{ name: 'AI应用', synonyms: ['文化传媒'] }];
+
+  it('★ 切换日 ⇒ plan.ebb 恒 null（即使总龙停牌、占比也不达标）', function() {
+    const plan = buildTopicVolRatioPlan([], new Map(), {
+      ebbCtx: ebbCtxOf(),
+      prevPrevDate: '2026-10-20',
+      ebbHistory: HIST,
+      top5HistoryEver: new Set(['新华传媒', '九阳股份']),
+      coreTopics: CORES
+    });
+    expect(plan.switchDay).not.toBeNull();
+    expect(plan.ebb).toBeNull();                    // ← 核心：切换日不判退潮
+    expect(plan.ebbBuy).toBeNull();                 // ← 退潮替补不再输出（用户：「不该是九阳 + 冰山」）
+    expect(plan.notes.join('\n')).toContain('今天【不再判退潮】');
+  });
+
+  it('★ 非切换日（同一份事实）⇒ 仍判退潮（确认上面那条是【切换日】在生效，不是别的原因）', function() {
+    const plan = buildTopicVolRatioPlan([], new Map(), {
+      ebbCtx: ebbCtxOf(),
+      prevPrevDate: '2026-10-19',                     // ← 换成前两个交易日不是 10-20 ⇒ 不是切换日
+      ebbHistory: HIST,
+      top5HistoryEver: new Set(['新华传媒', '九阳股份']),
+      coreTopics: CORES
+    });
+    expect(plan.switchDay).toBeNull();
+    // 20 日内 2 次事件 ⇒ 无第三次 ⇒ 也不判退潮（这是「无第三次」在生效，与切换日无关）
+    expect(plan.ebb).toBeNull();
+  });
+});
+
+describe('tvrb · [NEW-DRAGON-08] 前八候选 + 只主板 / 非竞价一字 / 非停牌', function() {
+  const EVER = new Set(['新华传媒', '九阳股份']);
+
+  function cand(name, code, topic, rank20, over) {
+    return Object.assign({
+      name: name, code: code, topic: topic, pct: 100 - rank20, rank20: rank20, mainBoard: true
+    }, over || {});
+  }
+
+  it('★ 前八：第 6 名也能当新龙（前五不够就顺延）', function() {
+    const pool = [
+      cand('新华传媒', '600825', 'AI应用', 1),
+      cand('九阳股份', '002242', '大消费', 2),
+      cand('慈文传媒', '002343', '文化传媒', 3),
+      cand('新华文轩', '601811', '文化传媒', 4),
+      cand('A5', '600005', 'AI应用', 5),
+      cand('冰山冷热', '000530', '电子通信算力', 6)
+    ];
+    const r = pickNewDragon(pool, EVER, {
+      oldTopic: 'AI应用', oldLeaderName: '新华传媒', windowDays: 20,
+      coreRes: makeCoreTopicResolver([{ name: 'AI应用', synonyms: ['文化传媒'] }])
+    });
+    expect(r.pick).not.toBeNull();
+    expect(r.pick.name).toBe('冰山冷热');
+    expect(r.pick.rank20).toBe(6);
+  });
+
+  it('★ 非主板（创业板 301xxx）⇒ 排除，继续往下找', function() {
+    const pool = [
+      cand('新华传媒', '600825', 'AI应用', 1),
+      cand('凡拓数创', '301313', '数字孪生', 2, { mainBoard: false }),
+      cand('冰山冷热', '000530', '电子通信算力', 3)
+    ];
+    const r = pickNewDragon(pool, new Set(['新华传媒']), { oldTopic: 'AI应用', oldLeaderName: '新华传媒' });
+    expect(r.pick.name).toBe('冰山冷热');
+    expect(r.trail.find(function(t) { return t.name === '凡拓数创'; }).reason).toContain('非主板');
+  });
+
+  it('★ 竞价一字涨停 ⇒ 买不进，不能作新龙', function() {
+    const pool = [
+      cand('新华传媒', '600825', 'AI应用', 1),
+      cand('一字票', '600066', '机器人', 2, { isYizi: true }),
+      cand('冰山冷热', '000530', '电子通信算力', 3)
+    ];
+    const r = pickNewDragon(pool, new Set(['新华传媒']), { oldTopic: 'AI应用', oldLeaderName: '新华传媒' });
+    expect(r.pick.name).toBe('冰山冷热');
+    expect(r.trail.find(function(t) { return t.name === '一字票'; }).reason).toContain('一字');
+  });
+
+  it('★ 停牌 ⇒ 买不进，不能作新龙', function() {
+    const pool = [
+      cand('新华传媒', '600825', 'AI应用', 1),
+      cand('停牌票', '600067', '机器人', 2, { suspended: true }),
+      cand('冰山冷热', '000530', '电子通信算力', 3)
+    ];
+    const r = pickNewDragon(pool, new Set(['新华传媒']), { oldTopic: 'AI应用', oldLeaderName: '新华传媒' });
+    expect(r.pick.name).toBe('冰山冷热');
+    expect(r.trail.find(function(t) { return t.name === '停牌票'; }).reason).toContain('停牌');
+  });
+
+  it('★ 题材按大类认亲：文化传媒 = AI应用 ⇒ 同题材排除', function() {
+    const pool = [
+      cand('新华传媒', '600825', '文化传媒', 1),
+      cand('慈文传媒', '002343', '文化传媒', 2)
+    ];
+    const r = pickNewDragon(pool, new Set(), {
+      oldTopic: 'AI应用', oldLeaderName: '别的票',
+      coreRes: makeCoreTopicResolver([{ name: 'AI应用', synonyms: ['文化传媒'] }])
+    });
+    expect(r.pick).toBeNull();
+    expect(r.trail.every(function(t) { return !t.picked; })).toBe(true);
+  });
+
+  it('⛔ mainBoard / isYizi / suspended 缺省 ⇒ 不据此排除（§11 老调用方零行为变化）', function() {
+    const pool = [{ name: '新票', code: '', topic: '机器人', pct: 50, rank20: 1 }];
+    const r = pickNewDragon(pool, new Set(), { oldTopic: 'AI应用' });
+    expect(r.pick).not.toBeNull();
+    expect(r.pick.name).toBe('新票');
+  });
+});
+
+describe('tvrb · [SWITCH-DEDUPE] 买点侧同名去重（新龙优先）', function() {
+  function hiBlock(topic, rank, names) {
+    const members = names.map(function(n, i) {
+      return m(n, { aucVolRatio: 60 - i, pct: 60 - i, code: '6000' + (i + 1) });
+    });
+    return block(topic, rank, members);
+  }
+  const HIST = [
+    { date: '2026-10-14', prevDate: '2026-10-13', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true },
+    { date: '2026-10-20', prevDate: '2026-10-19', leaderStock: '新华传媒', leaderTopic: 'AI应用', ebb: true }
+  ];
+
+  it('★ 冰山冷热同时落在【新龙】与常规题材里 ⇒ 常规块里那一只被剔除，只出现一次', function() {
+    const topics = [
+      hiBlock('AI应用', 1, ['新华传媒', '慈文传媒', 'A3', 'A4', 'A5', 'A6']),
+      hiBlock('电子通信算力', 2, ['冰山冷热', 'C2', 'C3', 'C4', 'C5']),
+      hiBlock('工业4.0', 3, ['宁波东力', 'D2', 'D3', 'D4', 'D5'])
+    ];
+    const dm = rankDragonsWithPctMap(topics, null);
+    const plan = buildTopicVolRatioPlan(topics, dm, {
+      ebbCtx: {
+        ready: false,
+        top5: [],
+        newDragonPool: [
+          { name: '新华传媒', code: '600825', topic: 'AI应用', pct: 214.3, rank20: 1, mainBoard: true },
+          { name: '冰山冷热', code: '000530', topic: '电子通信算力', pct: 87.2, rank20: 2, mainBoard: true }
+        ]
+      },
+      prevPrevDate: '2026-10-20',
+      ebbHistory: HIST,
+      top5HistoryEver: new Set(['新华传媒']),
+      top5HistoryDays: 20
+    });
+    expect(plan.newDragon.picks.map(function(p) { return p.name; })).toEqual(['冰山冷热']);
+    // 常规侧：老题材与新龙题材都被跳过 ⇒ 只剩工业4.0
+    expect(plan.blocks).toHaveLength(1);
+    expect(plan.blocks[0].picks[0].name).toBe('宁波东力');
+    // 买点侧全局不重复
+    const all = [];
+    plan.blocks.forEach(function(b) { (b.picks || []).forEach(function(p) { all.push(p.name); }); });
+    (plan.newDragon.picks || []).forEach(function(p) { all.push(p.name); });
+    expect(all.filter(function(n) { return n === '冰山冷热'; })).toHaveLength(1);
   });
 });

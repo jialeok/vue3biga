@@ -66,6 +66,16 @@ import {
 /** 只取前 5 只（用户口径：「只选出5只」「取出排名前五的5只股票」） */
 export const RANGE20_LEADER_TOP_N = 5;
 /**
+ * ★★ [NEW-DRAGON-08 2026-10-22 用户口径] 「宽榜」只数 = 8。
+ *
+ * 用户原话：「如果前五找到你就找前八的，不用前五的，改用排名前八的。注意竞价涨停一字涨停板
+ *   是买不进的，所以前八的，在这个节点上，你只能挑选非竞价一字涨停的主板」。
+ * ⇒ 第二十八条「切换日挑新龙」的候选池要看前 8 名，而「20日涨幅」toggle / 总龙一~五 标签 / 分歧买点
+ *   **仍然只用前 5 名**（用户没让改那些）。所以这里在一次计算里裁两份：前 5 用于发布（展示不变），
+ *   前 8 另存一份宽榜供规则层取候选 —— ⛔ 绝不为此多算一轮 K 线（同一份 rankPool 裁两次即可）。
+ */
+export const RANGE20_LEADER_WIDE_N = 8;
+/**
  * 「可信门槛」：20 日窗口内至少这么多天有腿。
  * ⚠️ 语义按阶段不同，⛔ 别混用（2026-10-20 就是因为混用才补出负涨幅的票）：
  *   · 精算阶段 = **K 线腿数**（正常票 ≈20，停牌票 ≥6）⇒ 判断这个值可不可信；
@@ -121,12 +131,37 @@ const _legMode = new Map();
  */
 const _poolSig = new Map();
 /**
+ * ★★ [NEW-DRAGON-08 2026-10-22] date -> 该日的「宽榜」（20日涨幅前八，只主板）。
+ *
+ * 为什么不塞进 `_state`：`_state.list` 是「20日涨幅 toggle / 补位区块 / 总龙一~五 标签」的唯一来源，
+ * 改成 8 只会让展示层多出 3 只（用户没让改）。⇒ 宽榜独立存一份，只给第二十八条取候选。
+ * 生命周期与 `_cache` 完全同步（每一处 `_cache.delete` 都必须同步 `_wideCache.delete`）。
+ */
+const _wideCache = new Map();
+/**
  * 🔴 date -> { n:number, timer:any }：索引预热期的退避重算计数（见 [R20-WARM]）。
  *   4 次封顶后不再重试 —— 剩下的日子可能本来就没有名单数据，无限重试只会烧 CPU。
  */
 const _warmRetry = new Map();
 /** 退避间隔（毫秒）：由近到远，覆盖「首次打开应用后 2 分钟内索引补齐」这段窗口 */
 const WARM_RETRY_DELAYS = [3000, 10000, 30000, 60000];
+
+/**
+ * ★★ [NEW-DRAGON-08 2026-10-22] 该日的「宽榜」= 20日涨幅【前八】（只主板）。
+ *
+ * 与 `getRange20Leaders` 的区别只有长度：前者 5（展示 / 总龙一~五 / 分歧买点用），本函数 8
+ * （第二十八条切换日「挑新龙」的候选池用，用户「改用排名前八的」）。
+ * ⚠️ 同一份 `rankPool` 裁出来的，同一天两者【前 5 名逐只相同】，⛔ 不会出现两套口径打架。
+ *
+ * @param {string} date 展示日
+ * @returns {Array<{stock:string, code:string, pct:number, days:number}>|null}
+ *          null = 该日【还没有结论】（§10：能不能 ≠ 有没有，⛔ 不要拿空数组冒充）
+ */
+export function getRange20LeadersWide(date) {
+  if (!date) return null;
+  const cached = _wideCache.get(date);
+  return (Array.isArray(cached) && cached.length > 0) ? cached : null;
+}
 
 /**
  * 当前已发布的「20日涨幅前五」。
@@ -166,6 +201,7 @@ export function clearRange20Leaders() {
   _klineAcc.clear();
   _legMode.clear();
   _poolSig.clear();
+  _wideCache.clear();
   _warmRetry.forEach(function(st) { if (st && st.timer) clearTimeout(st.timer); });
   _warmRetry.clear();
   _state.value = { date: '', list: [], ready: false, version: _state.value.version + 1 };
@@ -441,6 +477,7 @@ function _notTradable(date) {
 export async function ensureRange20Leaders(date, opts) {
   if (!date) return [];
   if (_notTradable(date)) {
+    _wideCache.delete(date);
     _publish(date, []);
     return _state.value.list;
   }
@@ -456,6 +493,7 @@ export async function ensureRange20Leaders(date, opts) {
   const prevLeg = _legMode.get(date);
   if (prevLeg && prevLeg !== legMode) {
     _cache.delete(date);
+    _wideCache.delete(date);
     _sig.delete(date);
     _dbgLog('[RANGE20-TOP5-TSWITCH] ' + date + ' 口径 ' + prevLeg + ' → ' + legMode + '：作废缓存并重算');
   }
@@ -478,6 +516,7 @@ export async function ensureRange20Leaders(date, opts) {
   const prevPoolSig = _poolSig.get(date);
   if (_cache.has(date) && prevPoolSig !== undefined && poolSig > prevPoolSig) {
     _cache.delete(date);
+    _wideCache.delete(date);
     _sig.delete(date);
     _dbgLog('[RANGE20-TOP5-POOLGROW] ' + date + ' 候选池 ' + prevPoolSig + ' → ' + poolSig + '：作废缓存重算');
   }
@@ -585,6 +624,7 @@ export async function ensureRange20Leaders(date, opts) {
       return _publish(date, coarseTop.slice(0, RANGE20_LEADER_TOP_N));
     }
     if (coarseTop.length === 0) {
+      _wideCache.delete(date);
       _publish(date, []);
       return _state.value.list;
     }
@@ -657,16 +697,21 @@ export async function ensureRange20Leaders(date, opts) {
     rankPool.forEach(function(r) { if (!r.code) r.code = poolCode.get(r.stock) || ''; });
     const rankMap = new Map();
     rankPool.forEach(function(r) { rankMap.set(r.stock, r); });
-    const top = rankLeaders(rankPool, {
-      limit: RANGE20_LEADER_TOP_N,
+    // ★★ [NEW-DRAGON-08 2026-10-22] 一次裁两份：宽榜（前 8，给第二十八条挑新龙）+ 前 5（发布，展示不变）。
+    //   ⛔ 别为了宽榜再跑一轮：同一份 rankPool、同一把 rankLeaders，前 5 名逐只相同。
+    const wide = rankLeaders(rankPool, {
+      limit: RANGE20_LEADER_WIDE_N,
       minDays: RANGE20_LEADER_MIN_LEGS,
       mainBoardOnly: true
     });
+    const top = wide.slice(0, RANGE20_LEADER_TOP_N);
     // 把代码补回结果里（`compound20` 只产 {stock,pct,days}，不含 code）：
     //   视图层注入补位行时可以直接用，省一次名册查询；也给「只有代码才能判板块」留了可追溯的痕迹。
     const _coarseCode = new Map();
     coarseTop.forEach(function(t) { if (t.code) _coarseCode.set(t.stock, t.code); });
     top.forEach(function(t) { if (!t.code) t.code = _coarseCode.get(t.stock) || ''; });
+    // ★ [NEW-DRAGON-08 2026-10-22] 宽榜同样补码（第 6~8 名不在 top 里，必须单独补一次）
+    wide.forEach(function(t) { if (!t.code) t.code = _coarseCode.get(t.stock) || ''; });
     // 诊断：前五里哪些是「精算真值」、哪些是「粗筛近似」（approx=1 说明这只票的 K 线没拿到）
     let _approxCnt = 0;
     rankMap.forEach(function(v) { if (v.approx) _approxCnt++; });
@@ -679,6 +724,9 @@ export async function ensureRange20Leaders(date, opts) {
         return t.stock + ' ' + t.pct.toFixed(2) + '%/' + t.days + 'd' + (r && r.approx ? '(近似)' : '');
       }).join(' , '));
     _publish(date, top, _warm);
+    // ★ [NEW-DRAGON-08 2026-10-22] 宽榜（前八）独立存一份：只给第二十八条挑新龙，
+    //   ⛔ 不进 `_state.list`（否则 20日涨幅 toggle 会平白多出 3 只 —— 用户没让改那个）。
+    if (wide.length > 0) _wideCache.set(date, wide); else _wideCache.delete(date);
     // 🔴 [R20-POOL-GROW] 记下本次用的池大小 ⇒ 池变大时据此作废缓存重算
     _poolSig.set(date, poolSig);
     // 🔴 [R20-WARM] 索引没预热完 ⇒ 退避重算（4 次封顶：3s/10s/30s/60s）。

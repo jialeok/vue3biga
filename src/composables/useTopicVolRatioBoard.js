@@ -79,6 +79,9 @@ import { readAuctionLegRangeMap } from '../logic/auction/range-auction-leg.js';
 import {
   ensureRange20Leaders,
   getRange20Leaders,
+  // ★★ [NEW-DRAGON-08 2026-10-22 用户口径] 宽榜（20日涨幅前八）—— 第二十八条挑新龙的候选池；
+  //   ⛔ 不进展示（「20日涨幅」toggle / 总龙一~五 仍只用前五）。
+  getRange20LeadersWide,
   getRange20LeadersFingerprintToken
 } from '../logic/auction/range20-leaders.js';
 // ★ [DIVERGE 2026-10-20 用户口径] 市场总龙一【首次分歧】判定：
@@ -114,8 +117,17 @@ import {
   // ★★ [SWITCH 2026-10-22] 切换日判据 + 回看窗口长度：与规则层【同一把尺子】（§6），
   //   ⛔ 组合式不另写「前两个交易日是否为二次确认」的计数。
   detectSwitchDay,
-  NEW_DRAGON_LOOKBACK_DAYS
+  NEW_DRAGON_LOOKBACK_DAYS,
+  // ★ [EBB-20D 2026-10-22 用户口径] 退潮事件计数窗口 = 近 20 个交易日（§6 同一把尺子：
+  //   「读几天的历史」必须与规则层「数几天的窗口」用同一个常量，⛔ 别在这儿写死 12 / 22）。
+  EBB_EVENT_WINDOW_DAYS
 } from '../logic/topicvolratio/topic-vol-ratio-rules.js';
+// ★★ [CORE-CAT 2026-10-22 用户口径] 题材【大类】归一：
+//   getCoreTopics() = 核心管理里那张表（用户「我在核心管理里把文化传媒放到 AI应用 那个大类了」）；
+//   getCoreTopicsVersion() = 响应式版本号（云端加载完成 / 用户改完核心词 ⇒ computed 自动重算）。
+//   ⛔ 规则层拿到的永远是「数组」而不是「自己去读表」（§5 Data 层职责）。
+import { getCoreTopics, getCoreTopicsVersion } from '../logic/topic/rules.js';
+import { makeCoreTopicResolver } from '../logic/topic/core-category.js';
 // ★ 分笔：与「分笔买卖」看板【同一份取数编排 + 同一份逐行实现】（§6 单一真相，⛔ 不另写一份）
 import { decorateTickRow } from '../logic/tick/tick-minute.js';
 import {
@@ -238,6 +250,14 @@ export function useTopicVolRatioBoard() {
    */
   const ebbHistory = ref([]);
   const ebbHistoryDate = ref('');
+  /**
+   * ★ [EBB-20D 2026-10-22 用户口径] 事件窗口起点 = 第 EBB_EVENT_WINDOW_DAYS 个交易日的日期。
+   *
+   * 为什么要单独传：落库表是【按天写】的（没开看板的日子没有行），所以规则层不能拿
+   * 「ebbHistory 里最后 20 条」当窗口 —— 实测 20 个交易日只有 7 行，那样会横跨 40 多个交易日、
+   * 把窗口外的事件也数进来。⇒ 由本处（手上有交易日历）算好日期下界注入。
+   */
+  const ebbHistoryFrom = ref('');
   /**
    * ★★ [SWITCH 2026-10-22 用户口径] 第二十八条「切换日」的两个输入（异步读回）：
    *   · top5HistEver     = 近 20 个交易日【上过 20日涨幅前五】的股票名集合（判「首次上榜」的唯一输入）；
@@ -544,7 +564,7 @@ export function useTopicVolRatioBoard() {
     if (!pd) {
       prevRangeMap.value = null; prevRangeDate.value = '';
       prevEbbDay.value = null; prevEbbDayDate.value = '';
-      ebbHistory.value = []; ebbHistoryDate.value = d || '';
+      ebbHistory.value = []; ebbHistoryFrom.value = ''; ebbHistoryDate.value = d || '';
       return;
     }
     // ⚠️ 下面两条链【各自独立】判缓存、各自异步（⛔ 别用一个 early-return 串起来：
@@ -574,17 +594,22 @@ export function useTopicVolRatioBoard() {
         prevEbbDayDate.value = pd;
       });
     }
-    // ③ ★ [EBB-R20 2026-10-20] 近 12 个交易日的退潮判定历史（「首次 / 二次确认 / 无第三次」的输入）。
+    // ③ ★ [EBB-R20 2026-10-20] 近 22 个交易日的退潮判定历史（「首次 / 二次确认 / 无第三次」的输入）。
+    //   ★ [EBB-20D 2026-10-22 用户口径] 行数 = EBB_EVENT_WINDOW_DAYS + 2：
+    //     前 20 天是事件窗口，多取的 2 天只用来证明「窗口第一天那笔不是延续日」
+    //     （用户原话「时间太短没有检查到10月13日那天」⇒ 10 天窗口跨不过一个完整老周期）。
     //   一次 in 查询（§32）；每行带上自己的上一交易日（日期链在此算好，规则层保持纯函数）。
     if (ebbHistoryDate.value !== d) {
       const histDates = [];
       let cur = d;
-      for (let i = 0; i < 12; i++) {
+      for (let i = 0; i < (EBB_EVENT_WINDOW_DAYS + 2); i++) {
         cur = getPreviousTradingDay(cur);
         if (!cur) break;
         histDates.push(cur);
       }
       if (histDates.length >= 2) {
+        // ★ [EBB-20D] 窗口起点 = 第 EBB_EVENT_WINDOW_DAYS 个交易日（含 pd 那一格）
+        const winFrom = histDates[EBB_EVENT_WINDOW_DAYS - 1] || histDates[histDates.length - 1] || '';
         readEbbDays(histDates).then(function(m) {
           if (currentDate.value !== d) return;   // 竞态保护：期间切了日期 ⇒ 丢弃
           const rows = [];
@@ -600,20 +625,27 @@ export function useTopicVolRatioBoard() {
             });
           }
           ebbHistory.value = rows;
+          ebbHistoryFrom.value = winFrom;
           ebbHistoryDate.value = d;
           // ★★ [SWITCH 2026-10-22] 顺带判一下「今天是不是切换日」（第二十八条）：
           //   是 ⇒ 才去读近 20 个交易日的每日榜（普通日子多打一次 REST 纯属浪费，§32）。
           //   ⛔ 判据用规则层的 detectSwitchDay（同一把尺子），这里只做【要不要取数】的决策。
+          //   ★ [CORE-CAT 2026-10-22] 第三个入参传大类归一函数：否则「文化传媒 vs AI应用」
+          //     跨不过去，切换日会在题材名漂移的那天静默失效（与 10-22 误判同一根因）。
           const ppd = pd ? getPreviousTradingDay(pd) : '';
-          if (ppd && detectSwitchDay(rows, ppd)) ensureTop5History(d);
+          if (ppd && detectSwitchDay(rows, ppd, makeCoreTopicResolver(getCoreTopics()), winFrom)) {
+            ensureTop5History(d);
+          }
         }).catch(function(e) {
           // §10：读失败 ⇒ 按「没有历史」处理（规则层按 0 次事件 = 首次退潮）—— 但必须可见
           console.warn('[TVRB] 退潮判定历史读取失败，本次按 0 次事件（首次退潮）处理:', e && e.message);
           ebbHistory.value = [];
+          ebbHistoryFrom.value = '';
           ebbHistoryDate.value = d;
         });
       } else {
         ebbHistory.value = [];
+        ebbHistoryFrom.value = '';
         ebbHistoryDate.value = d;
       }
     }
@@ -634,8 +666,12 @@ export function useTopicVolRatioBoard() {
     void buyRangeMap.value;
     // ★ [EBB-R20] 20日涨幅前五（总龙一~五）：响应式指纹令牌 —— ensureRange20Leaders 发布后自动重算
     void getRange20LeadersFingerprintToken();
-    // ★ [EBB-R20] 近 12 个交易日的退潮判定历史（异步读回）⇒「首次 / 二次确认」阶段判定才生效
+    // ★★ [CORE-CAT 2026-10-22] 核心词表（大类）变更信号：云端加载完成 / 用户改完核心词 ⇒ 本帧重算，
+    //   否则「文化传媒 ⇒ AI应用」的归一结果会停在首帧那份默认核心词上（§10 不能静默用旧口径）。
+    void getCoreTopicsVersion();
+    // ★ [EBB-R20] 近 20 个交易日的退潮判定历史（异步读回）⇒「首次 / 二次确认」阶段判定才生效
     void ebbHistory.value;
+    void ebbHistoryFrom.value;
     // ★★ [SWITCH 2026-10-22] 近 20 个交易日的每日前五榜（异步读回）⇒ 第二十八条「新龙」判定才生效
     void top5HistEver.value;
     void top5HistDays.value;
@@ -678,7 +714,10 @@ export function useTopicVolRatioBoard() {
         rangeMap: (curRangeMap.value && curRangeDate.value === d) ? curRangeMap.value : null,
         // ★ [EBB-R20 2026-10-20] 20日涨幅前五（总龙一~五）—— 退潮判定的总龙与买点侧替补的【唯一】来源；
         //   null = 该日还没发布结论（20日前五在后台算）⇒ 退潮规则本次不生效（§10，不猜）
-        range20Top: getRange20Leaders(d) || null
+        range20Top: getRange20Leaders(d) || null,
+        // ★★ [NEW-DRAGON-08 2026-10-22 用户口径] 20日涨幅【前八】—— 只给第二十八条挑新龙当候选池
+        //   （用户「如果前五找不到，你就找前八的」）；⛔ 展示 / 分歧买点 / 总龙标签仍只用前五。
+        range20Wide: getRange20LeadersWide(d) || null
       });
       if (!rec || !rec.ready) return _empty((rec && rec.reason) || '暂无数据');
 
@@ -745,6 +784,9 @@ export function useTopicVolRatioBoard() {
         //   —— 「首次 / 二次确认 / 无第三次」事件计数的输入；缺省 ⇒ 按 0 次事件（首次退潮）。
         //   ⚠️ 日期核对（与上面两份 rangeMap 同一条红线）：还没读到 / 读的是旧日期 ⇒ 传 null。
         ebbHistory: (ebbHistoryDate.value === d) ? ebbHistory.value : null,
+        // ★ [EBB-20D 2026-10-22 用户口径] 事件窗口起点（第 20 个交易日的日期）——
+        //   与上面 ebbHistory 同一条日期核对红线：不是这一天读的 ⇒ 传空（规则层退回按已有日期取 20 个）。
+        ebbWindowFrom: (ebbHistoryDate.value === d) ? ebbHistoryFrom.value : '',
         // ★★ [TVRB-926] 买点侧专用的 9:26 口径（缺 ⇒ 规则层退回原口径 = 旧行为，§11）
         buyDragonMap: buyMap ? rankDragonsWithPctMap(rec.topics, buyMap) : null,
         pctMap: buyMap,
@@ -765,7 +807,11 @@ export function useTopicVolRatioBoard() {
         //   ⚠️ 日期核对（与两份 rangeMap 同一条红线）：读的不是这一天 ⇒ 传 null（§10 不拿旧日期顶替）。
         prevPrevDate: pd ? (getPreviousTradingDay(pd) || '') : '',
         top5HistoryEver: (top5HistDate.value === d) ? top5HistEver.value : null,
-        top5HistoryDays: (top5HistDate.value === d) ? top5HistDays.value : 0
+        top5HistoryDays: (top5HistDate.value === d) ? top5HistDays.value : 0,
+        // ★★ [CORE-CAT 2026-10-22 用户口径] 题材【大类】映射（核心管理那张表）——
+        //   规则层据此把「文化传媒」认成「AI应用」。用户原话：「那个大类就是我说的题材」。
+        //   ⛔ 规则层不自己读表（§5），这里注入；取不到 ⇒ 退化为恒等（§11 零行为变化）。
+        coreTopics: getCoreTopics()
       });
 
       // §10 ★★ 失败 / 缺数据必须可见：这一天【确实读过】9:26 口径、但没拿到（失败或表里没有）

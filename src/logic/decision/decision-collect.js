@@ -826,13 +826,14 @@ export function _cleanTopicText(raw) {
   return s;
 }
 
-function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDate, range20Top) {
+function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDate, range20Top, range20Wide) {
   const none = {
     ready: false, leader: null, second: null,
     leaderSuspended: false, leaderShare: null, leaderAucPct: null,
     siblingDragons: [], secondInfo: null,
     prevLeader: null, buyPicks: [], buyTrail: [],
-    top5: []   // [DIVERGE 2026-10-20] 缺省空数组（前五没就绪 ⇒ 分歧规则同样不生效）
+    top5: [],        // [DIVERGE 2026-10-20] 缺省空数组（前五没就绪 ⇒ 分歧规则同样不生效）
+    newDragonPool: [] // [NEW-DRAGON-08 2026-10-22] 前八候选（切换日新龙判定用）
   };
   // ★★ [EBB-R20 2026-10-20 用户口径] 总龙改用【20日涨幅前五】—— 舍弃「昨日十日涨幅第一」的旧选法
   //   （用户原话「把原来按照10日涨幅改成20日涨幅选股，因为20日比较稳定而且准确，
@@ -902,25 +903,50 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
     } catch (e) { /* 题材库未构建 ⇒ 如实返回空串（§10 不猜） */ }
     return '';
   };
-  const top = [];
-  const seenTop = new Set();
-  (range20Top.slice(0, 5)).forEach(function(t, i) {
-    if (!t || !t.stock) return;
+  // ★★ [NEW-DRAGON-08 2026-10-22 用户口径] 候选池由「前五」放宽到「前八」：
+  //   用户原话「如果前五找不到，你就找前八的，不用前五的，改用排名前八的」。
+  //   ⚠️ top5 仍是【前五】（分歧买点 / 退潮替补 / 总龙一~五 标签都用它，⛔ 别一起放宽）；
+  //      newDragonPool 才是前八 —— 两个数组共用下面【同一份富化实现】（§6：题材解析只有一处）。
+  //   ★ 富化每一只：题材（今日行 → 昨日 topics → 题材库）、今日龙位、竞价一字、停牌、是否主板。
+  //     `mainBoard` 的判据用 isMainBoardOnly（§6 唯一实现），规则层不另写代码段规则。
+  const _enrich = function(t, i) {
     const name = String(t.stock).trim();
-    if (!name || seenTop.has(name)) return;
-    seenTop.add(name);
     const pct = Number(t.pct);
-    if (t.pct === null || t.pct === undefined || !isFinite(pct)) return;   // §10 无值不参排
-    top.push({
+    const code = String(t.code || '').trim();
+    return {
       name: name, pct: pct, days: Number(t.days) || 0,
-      code: String(t.code || '').trim(),
+      code: code,
+      mainBoard: isMainBoardOnly(code),
       topic: _topicOf(name),
       rank: _rankOf(name),
       isYizi: _isYiziOf(name),
       suspended: _suspendedOn(date, name),
       rank20: i + 1
+    };
+  };
+  const _buildPool = function(src, cap) {
+    const arr = [];
+    const seen = new Set();
+    const src2 = (Array.isArray(src) && cap > 0) ? src.slice(0, cap) : src;
+    (Array.isArray(src2) ? src2 : []).forEach(function(t, i) {
+      if (!t || !t.stock) return;
+      const name = String(t.stock).trim();
+      if (!name || seen.has(name)) return;
+      seen.add(name);
+      const pct = Number(t.pct);
+      if (t.pct === null || t.pct === undefined || !isFinite(pct)) return;   // §10 无值不参排
+      arr.push(_enrich(t, i));
     });
-  });
+    return arr;
+  };
+  const top = _buildPool(range20Top, 5);
+  // 前八候选（同一份富化；rank20 = 20日涨幅名次，⛔ 与截断后的下标无关）
+  //   cap=0 ⇒ 不截断：条数由上游 range20-leaders 的 RANGE20_LEADER_WIDE_N 决定（= 8），
+  //   ⛔ 不在这里再写一个「8」，否则两处数字会各自漂移（§6 单一真相）。
+  const newDragonPool = _buildPool(
+    (Array.isArray(range20Wide) && range20Wide.length > 0) ? range20Wide : range20Top,
+    0
+  );
   if (top.length === 0) return none;
   const head = top[0];
   // 总龙 = 20日涨幅第一（全市场，含创业板 —— 与「20日涨幅」toggle 的总龙一同一只），
@@ -1072,6 +1098,10 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
     //   「市场总龙一首次分歧」买点规则要用它挑【不同题材的主板高标】（20日涨幅前五）——
     //   题材解析（今日行 → 昨日 topics 退路）只有这一份实现（§6），⛔ 规则层绝不自己再解析一遍题材。
     top5: top,
+    // ★★ [NEW-DRAGON-08 2026-10-22 用户口径] 20日涨幅【前八】富化结果 —— 第二十八条切换日
+    //   「挑新龙」的候选池（用户「如果前五找不到，你就找前八的」）。
+    //   ⚠️ 与 top5 同一份富化（题材/龙位/一字/停牌/是否主板），只是多 3 只；⛔ 分歧买点仍只认 top5。
+    newDragonPool: newDragonPool,
     // 停牌走 suspend.js 的唯一实现（§6），⛔ 不在这里另判一遍。
     //   [EBB-R8b] 走 _suspendOf：今日 = 上游快照；历史日回退库内该日竞价行（见 _suspendOf 的 JSDoc）。
     leaderSuspended: _suspendedOn(date, leader.name),
@@ -1368,7 +1398,8 @@ export function collectDecisionData(date, opts) {
       //   + 第 8 参 range20Top：[EBB-R20] 20日涨幅前五（总龙一~五）—— 总龙与买点侧替补的【唯一】来源，
       //     由调用方（组合式）ensureRange20Leaders 后注入；缺省 ⇒ ebbCtx.ready=false，退潮规则不生效（§10）。
       out.ebbCtx = _ebbCtxOf(rows, topics, dragonMap, date,
-        opts && opts.prevRangeMap, rangeMap, prevDate, opts && opts.range20Top);
+        opts && opts.prevRangeMap, rangeMap, prevDate, opts && opts.range20Top,
+        opts && opts.range20Wide);
     }
     // ★★ [SUSPEND-NOBUY 2026-10-14 用户口径] 买点侧「买不进名单」= 连续停牌第 2 天及以上的票。
     //   放在本出口的【公共段】（⛔ 不在上面 topicActionContext 分支里）：这份名单只依赖
@@ -1590,7 +1621,10 @@ export function collectDecisionTopics(date, opts) {
     rangeMap: (opts && opts.rangeMap) || null,
     // ★ [EBB-R20 2026-10-20 用户口径] 20日涨幅前五（总龙一~五，getRange20Leaders 的发布结果）——
     //   退潮判定（总龙是谁）与买点侧替补（两只）的【唯一】来源；缺省 ⇒ 退潮规则不生效（§10 不猜）。
-    range20Top: (opts && opts.range20Top) || null
+    range20Top: (opts && opts.range20Top) || null,
+    // ★★ [NEW-DRAGON-08 2026-10-22 用户口径] 20日涨幅【前八】（getRange20LeadersWide 的发布结果）——
+    //   仅第二十八条切换日的「新龙候选池」用它；缺省 ⇒ 退回 range20Top（= 只有前五候选，§11 零行为变化）。
+    range20Wide: (opts && opts.range20Wide) || null
   });
   // 命中内部出口 ⇒ 中间产物带 dragonRankOnly 标记（_notReady 的返回没有这个键）
   if (rec && rec.dragonRankOnly) {

@@ -12,6 +12,16 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
 
         let _coreTopicsMemCache = null;
 
+        /**
+         * [CORE-VER 2026-10-22] 核心词表变更信号：`_coreTopicsMemCache` 是非响应式模块变量，
+         * 而「题材大类归一」的消费方（题材量比看板的 computed）在加载完成 / 用户改词后必须重算。
+         * ⇒ 只 bump 一个纯信号（state._coreTopicsVersion），消费方 `void getCoreTopicsVersion()` 即可。
+         * ⛔ 它不承载任何业务数据，**不允许**拿它当「核心词表已就绪」的判据（那是 `_coreTopicsCloudLoaded`）。
+         */
+        function _bumpCoreTopicsVersion() {
+            state._coreTopicsVersion = (Number(state._coreTopicsVersion) || 0) + 1;
+        }
+
         // ===== core_topics 写入队列（§6 单一真相 + §10 失败必须可见）=================
         // 所有对云端 core_topics 的写入都必须经过这里，⛔ 禁止任何地方直接调 _pushCoreTopicsToCloudFn。
         // 理由（★ 2026-09-18 修「删除核心词没反应 / 前台却像成功」的根因）：
@@ -43,6 +53,7 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
                     const defaultTopics = state.defaultCoreTopics || [];
                     if (defaultTopics.length > 0) {
                         _coreTopicsMemCache = defaultTopics;
+                        _bumpCoreTopicsVersion();
                         _dbgLog('[CORE-TOPICS] 云端 core_topics 表为空，推送默认 ' + defaultTopics.length + ' 个核心词到云端');
                         _queueCoreTopicsPush(defaultTopics).catch(function(e) {
                             _dbgLog('[AUCTION-ERR] core_topics 初始化推送失败: ' + (e && e.message || e));
@@ -56,21 +67,33 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
                 if (validCloud.length === 0) {
                     _dbgLog('[CORE-TOPICS] 云端 core_topics 数据无效，使用默认核心词');
                     _coreTopicsMemCache = state.defaultCoreTopics;
+                    _bumpCoreTopicsVersion();
                     return;
                 }
                 // [TOPIC-SEP 2026-10-02] 读入即自愈：把「顿号粘成一整串」的 synonym 拆开，
                 //   否则那些词会一直失效（详见上方 normalizeCoreTopics 的事故说明）。
                 _coreTopicsMemCache = normalizeCoreTopics(validCloud);
+                _bumpCoreTopicsVersion();
                 _dbgLog('[CORE-TOPICS] 从云端加载 ' + validCloud.length + ' 个核心词（已归一化 synonyms）');
             } catch (e) {
                 _dbgLog('[AUCTION-ERR] loadCoreTopicsFromCloud 失败: ' + (e && e.message || e));
                 _coreTopicsMemCache = state.defaultCoreTopics;
+                _bumpCoreTopicsVersion();
             }
         }
 
         export function getCoreTopics() {
             if (_coreTopicsMemCache && _coreTopicsMemCache.length > 0) return _coreTopicsMemCache;
             return state.defaultCoreTopics || [];
+        }
+
+        /**
+         * [CORE-VER 2026-10-22] 核心词表版本号（响应式）。消费方在 computed 里 `void` 一下，
+         * 即可在「云端加载完成 / 用户改完核心词」后自动重算 —— 见 `_bumpCoreTopicsVersion`。
+         * @returns {number}
+         */
+        export function getCoreTopicsVersion() {
+            return Number(state._coreTopicsVersion) || 0;
         }
 
         // ============ [TOPIC-SEP 2026-10-02] 题材词分隔符 · §6 单一真相 ============
@@ -186,6 +209,7 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
         export function saveCoreTopics(topics) {
             const snapshot = Array.isArray(topics) ? topics.slice() : [];
             _coreTopicsMemCache = snapshot;
+            _bumpCoreTopicsVersion();
             _topicGroupsFp = null;
             _topicGroupsCache = null;
             return _queueCoreTopicsPush(snapshot);

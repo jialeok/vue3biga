@@ -122,6 +122,11 @@ export const state = reactive({
     unlocked: false,
     _coreTopicsCloudLoaded: false,
     _coreTopicsPushingToCloud: false,
+    // [CORE-VER 2026-10-22] 核心词表版本号（纯响应式信号，非真相源）。
+    //   用途：规则层的「题材大类归一」是纯函数，依赖 coreTopics 数组；而数组本体在
+    //   `topic/rules.js` 的模块级变量里（非响应式）⇒ 云端加载完成 / 用户改完核心词后，
+    //   已渲染的 computed 不会重算。这里只放一个「变了」的信号，消费方 `void` 一下即可建立依赖。
+    _coreTopicsVersion: 0,
     _topicRankByDateCache: null,
     currentTrackEditId: null,
     isStrengthSortEnabled: false,
