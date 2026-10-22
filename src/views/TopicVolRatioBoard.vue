@@ -197,6 +197,24 @@
                 :head-text="divergeBuy.block.topic"
               />
             </div>
+            <!-- ★★ [SWITCH 2026-10-22 用户口径] 第二十八条【新龙 / 新题材切换日】的新龙那一行。
+               结构与退潮替补 / 分歧买点同一形态：渲染在灰化容器 .tvrb-buy-list【之外】
+               （今天真要买的那一只不能被 grayscale 吞掉）；不是切换日 / 选不出新龙 ⇒ 不渲染。
+               ⛔ 类名独立（.tvrb-newdragon-only-*）—— 三条规则各不相同，DOM 查询不能混。
+               注：常规侧在同一天已被 Logic 层【收紧】成「一个题材、一只票」（第二十八条），
+                   所以这里看到的就是今天的全部买点：新龙 + 常规那一只。 -->
+            <div
+              v-if="newDragon"
+              class="tvrb-newdragon-only-buy"
+            >
+              <div class="tvrb-newdragon-only-label tvrb-selectable">
+                新龙 / 新题材切换日 · 买点（第二十八条）
+              </div>
+              <TvrbBuyBlock
+                :block="newDragon"
+                :head-text="newDragon.block.topic"
+              />
+            </div>
             <!-- 退潮首日 / 空仓提醒：股票块整体灰化（⛔ 上面的空仓标语【不灰】—— 它正是要被看见的那一条）
                ⛔ 上面那只【唯一买点】也不灰（它在本次容器之外，见上）。
                ★ [CASH-ALERT-NOBUY 2026-10-16] 条件 = cashAlert.show（含退潮首日，同上面的标题一处口径）。 -->
@@ -303,6 +321,9 @@ const {
   ebbNodeNote,
   divergeBuy,
   divergePending,
+  // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条新龙 / 切换日（switchDay 的文案已由 Logic 层写进
+  //   block.reason / notes，模板不需要它 ⇒ ⛔ 不解构，免得留一个未使用变量）
+  newDragon,
   summaryText,
   rulesLines,
   toggleExpand,

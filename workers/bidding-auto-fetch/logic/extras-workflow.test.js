@@ -253,3 +253,120 @@ describe('runTodaySnapshotPatch 当日竞价字段补漏（同花顺快照）', 
     expect(String(r.error || '')).toContain('500');
   });
 });
+
+// ============================================================================
+// [AUC-SNAP-AUTHORITY 2026-10-22] 竞价量比 / 竞价换手率【以同花顺 9:25 快照为准】
+//
+// 【为什么必须有这个测试】用户口径（2026-10-22 原话）：
+//   「猫抓数据，目前的竞价量比是9:25的时候的，是比较准确……如果同花顺接口在9:25的时候
+//     能够抓到这两个数据快照的话，那肯定是用同花顺的接口。」
+//   实测同花顺 auction/snapshot（stage=final）给出的 auction_volume_ratio / auction_turnover_pct
+//   与库内猫抓值逐位一致（0.5943↔0.59、0.348↔0.35）⇒ 两者同一口径，可整口径改用它。
+//
+//   但旧的补漏逻辑是「只补空」——库内只要有值就永不重写 ⇒ 猫抓那一次（可能取了别的时点、
+//   或额度用尽留下旧值）会永久锁死。所以 worker 的两轮都要显式传 preferSnapshot:true。
+//   下面用例把这个「覆盖式重写」钉死，同时锁住两条不越界：
+//     ① ⛔ 只碰 auc_vol_ratio / auc_turnover，auc_pct_chg / volume 仍然只补空；
+//     ② ⛔ 快照值为 0 / 缺 ⇒ 不覆盖（§10 不拿 0 冒充「量比真的是 0」）。
+// ============================================================================
+describe('runTodaySnapshotPatch 量比/换手率以 9:25 快照为准（preferSnapshot）', () => {
+  const today = beijingToday();
+  const tsToday = Date.parse(today + 'T10:00:00+08:00');
+
+  function stub(routes) {
+    globalThis.fetch = (url, init) => {
+      const u = String(url);
+      const m = (init && init.method) || 'GET';
+      for (const r of routes) {
+        if (r.test(u, m)) return Promise.resolve(r.res(u, init));
+      }
+      throw new Error('未预期的请求: ' + m + ' ' + u);
+    };
+  }
+  const isSnap = (u) => decodeURIComponent(u).includes('auction/snapshot');
+  const isMmGet = (u, m) => u.includes('/market_metrics') && m === 'GET';
+  const isMmPost = (u, m) => u.includes('/market_metrics') && m === 'POST';
+
+  it('默认（不传 preferSnapshot）⇒ 库内已有值不动：旧行为逐字不变（§11）', async () => {
+    let posted = false;
+    stub([
+      { test: isMmGet, res: () => ({ ok: true, json: () => Promise.resolve([
+        { stock: '新华传媒', code: '600825', auc_pct_chg: '+1.00%', auc_vol_ratio: '9.99', auc_turnover: '9.99', volume: '10' }
+      ]) }) },
+      { test: isSnap, res: () => { posted = true; return { ok: true, json: () => Promise.resolve({ code: 0, data: {} }) }; } }
+    ]);
+    const r = await runTodaySnapshotPatch({}, { date: today });
+    expect(r.ok).toBe(true);
+    expect(r.patched).toBe(0);
+    expect(posted).toBe(false);
+  });
+
+  it('preferSnapshot=true ⇒ 库内已有的量比/换手率【被快照覆盖】，其它字段仍只补空', async () => {
+    let body = null;
+    stub([
+      { test: isMmGet, res: () => ({ ok: true, json: () => Promise.resolve([
+        // 库内四要素齐全（猫抓旧值）⇒ 唯一被重写的就是这两个口径字段
+        { stock: '新华传媒', code: '600825', auc_pct_chg: '+1.00%', auc_vol_ratio: '9.99', auc_turnover: '9.99', volume: '10' }
+      ]) }) },
+      { test: isSnap, res: () => ({ ok: true, json: () => Promise.resolve({
+        code: 0, data: {
+          timestamp: tsToday, auction_phase: 'closed', data_status: 'final',
+          item: [{ ticker: '600825', auction_pct: -1.8553, auction_volume_ratio: 0.5943, auction_turnover_pct: 0.348, auction_volume: 192513.9 }]
+        }
+      }) }) },
+      { test: isMmPost, res: (u, init) => { body = JSON.parse(init.body); return { ok: true, json: () => Promise.resolve([]) }; } }
+    ]);
+    const r = await runTodaySnapshotPatch({}, { date: today, preferSnapshot: true });
+    expect(r.ok).toBe(true);
+    expect(r.patched).toBe(1);
+    expect(body).toHaveLength(1);
+    expect(body[0].auc_vol_ratio).toBe('0.59');     // ← 快照口径覆盖 9.99
+    expect(body[0].auc_turnover).toBe('0.35');      // ← 快照口径覆盖 9.99
+    expect(body[0].auc_pct_chg).toBeUndefined();    // ⛔ 库内已有值 ⇒ 不覆盖（不在本轮口径）
+    expect(body[0].volume).toBeUndefined();         // ⛔ 同上
+  });
+
+  it('preferSnapshot=true 但快照值为 0 / 缺失 ⇒ 不覆盖库内已有值（§10 不拿 0 冒充）', async () => {
+    let body = null;
+    stub([
+      { test: isMmGet, res: () => ({ ok: true, json: () => Promise.resolve([
+        { stock: 'A', code: '000001', auc_pct_chg: '+1.00%', auc_vol_ratio: '9.99', auc_turnover: '9.99', volume: '10' }
+      ]) }) },
+      { test: isSnap, res: () => ({ ok: true, json: () => Promise.resolve({
+        code: 0, data: {
+          timestamp: tsToday, auction_phase: 'closed', data_status: 'final',
+          item: [{ ticker: '000001', auction_pct: 0, auction_volume_ratio: 0, auction_turnover_pct: null }]
+        }
+      }) }) },
+      { test: isMmPost, res: (u, init) => { body = JSON.parse(init.body); return { ok: true, json: () => Promise.resolve([]) }; } }
+    ]);
+    const r = await runTodaySnapshotPatch({}, { date: today, preferSnapshot: true });
+    expect(r.ok).toBe(true);
+    expect(r.patched).toBe(0);                      // 没有任何可信值 ⇒ 一个字段都不写
+    expect(body).toBeNull();
+  });
+
+  it('preferSnapshot=true 且库内缺 → 与「只补空」路径一致（不重复写、不多发起请求）', async () => {
+    let body = null;
+    let snapCalls = 0;
+    stub([
+      { test: isMmGet, res: () => ({ ok: true, json: () => Promise.resolve([
+        { stock: '桂林旅游', code: '000978', auc_pct_chg: '', auc_vol_ratio: '', auc_turnover: '', volume: '1925' }
+      ]) }) },
+      { test: isSnap, res: () => { snapCalls++; return { ok: true, json: () => Promise.resolve({
+        code: 0, data: {
+          timestamp: tsToday, auction_phase: 'closed', data_status: 'final',
+          item: [{ ticker: '000978', auction_pct: 4.6606, auction_volume_ratio: 2.4549, auction_turnover_pct: 4.1125, auction_volume: 192513.9 }]
+        }
+      }) }; } },
+      { test: isMmPost, res: (u, init) => { body = JSON.parse(init.body); return { ok: true, json: () => Promise.resolve([]) }; } }
+    ]);
+    const r = await runTodaySnapshotPatch({}, { date: today, preferSnapshot: true });
+    expect(r.ok).toBe(true);
+    expect(r.patched).toBe(1);
+    expect(snapCalls).toBe(1);
+    expect(body[0].auc_pct_chg).toBe('+4.66%');
+    expect(body[0].auc_vol_ratio).toBe('2.45');
+    expect(body[0].auc_turnover).toBe('4.11');
+  });
+});

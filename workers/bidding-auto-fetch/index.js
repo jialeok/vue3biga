@@ -60,7 +60,10 @@ function cronToPoint(cronExpr) {
  */
 async function runSnapshotPatchSafely(env, result, tag) {
   try {
-    const snap = await runTodaySnapshotPatch(env, {});
+    // ★ [AUC-SNAP-AUTHORITY 2026-10-22 用户口径] preferSnapshot=true ⇒ 竞价量比 / 竞价换手率
+    //   以【同花顺 9:25 快照】为准（覆盖猫抓的值，两者实测逐位一致）。用户原话：
+    //   「如果同花顺能抓取这两个数据9点25时刻的快照，那就用同花顺，不要用猫抓。」
+    const snap = await runTodaySnapshotPatch(env, { preferSnapshot: true });
     console.log('[auto-fetch] ' + tag + ' 快照补当日竞价字段: patched=' + snap.patched + ' 日志=' + JSON.stringify(snap.logs || []));
     if (result && typeof result === 'object') result.snapshotPatch = snap;
   } catch (e) {

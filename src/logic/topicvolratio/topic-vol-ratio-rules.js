@@ -84,6 +84,43 @@ import { totalDragonLabel } from '../auction/range20-top5-label.js';
 // ★ [DIVERGE 2026-10-20] 总龙首次分歧判定 + 跟随高标选股（§15 独立业务模块，纯函数）
 import { pickDivergeFollowers } from '../auction/leader-divergence.js';
 
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [EBB-TOPIC-FIX 2026-10-22] 题材串归一（§6 唯一实现，⛔ 别在三个消费点各写一遍）
+//
+// 用户报障：「今天10月22日……提示板说【主线16950新华传媒首次退潮】，这个不是首次了」。
+// 根因链（实测站库确认，完整过程见 data/watchlist-helpers.js 的 topics 分支注释）：
+//   ① 新华传媒 10-21 / 10-22 都是【停牌补位票】（不在当天 watchlist 里）⇒ 题材走「昨日题材」退路；
+//   ② 那条退路取 'topics' 时命中了读取器的 yest_volume 兜底 ⇒ 退潮行里 leader_topic = '16950'；
+//   ③ 事件计数按题材认亲 ⇒ '16950' 在近 10 天里 0 次 ⇒ 误判【首次退潮】。
+// 修好 ② 之后，【历史行】里仍留着 '26728' / '16950' 这两条脏数据（不能靠改库解决：
+//   历史判定是审计留痕，而且用户明确不让动 worker 相关的表）⇒ 计数这一层必须【认得出脏值】：
+//   · 题材名不可能是纯数字 ⇒ 纯数字一律视作【未知】（清洗成空串）；
+//   · 任一侧题材未知 ⇒ 退回「同一只总龙」认亲（从紧，不乱认亲 —— 与既有认亲退路同一条口径）；
+//   · 两侧都有题材 ⇒ 按题材比较，且支持「AI应用,数据中心」这种分段串。
+// ⇒ 10-22 实测效果：今天的题材解析出 'AI应用'（题材库补位），历史 10-14/10-15 事件（1 次）
+//   + 10-20 事件（1 次）= 2 次 ⇒ 第二十七条「无第三次」生效 ⇒ 不再误报首次退潮。
+// ══════════════════════════════════════════════════════════════════════════════════════
+/**
+ * 题材串清洗：trim；**纯数字一律置空**（那是错值：题材名不可能是 '16950'）。
+ * @param {*} raw
+ * @returns {string}
+ */
+function _normTopic(raw) {
+  const s = String(raw === null || raw === undefined ? '' : raw).trim();
+  if (!s) return '';
+  if (/^\d+(\.\d+)?$/.test(s)) return '';
+  return s;
+}
+
+/** 两个题材串是否同一题材（支持 'AI应用,数据中心' 分段串；任一侧为空 ⇒ false） */
+function _sameTopicLoose(a, b) {
+  const x = _normTopic(a);
+  const y = _normTopic(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  return x.split(/[,，/、+;；|]/).some(function(seg) { return seg.trim() === y; });
+}
+
 // ══ 档位常量（§6 唯一实现：本看板的「取几只」只由这里决定）════════════════════════════════
 // 用户口径：< 4 只不入选；4 ~ 8 只入选 1 只；> 8 只入选 2 只（早盘竞价股票少，只有这三档）。
 // ⛔ 别自行改成 ≥ 8 / > 10 之类：三个边界与用户原话「小于4」「大于等于4小于等于8」「大于8」逐字对应。
@@ -335,7 +372,9 @@ export function detectEbbDay(ebbCtx, prevEbbDay, ebbHistory) {
   if (!ebbCtx || !ebbCtx.ready || !ebbCtx.leader) return null;
   const leader = ebbCtx.leader;
   const leaderName = String(leader.name || '').trim();
-  const leaderTopic = String(leader.topic || '').trim();
+  // ★ [EBB-TOPIC-FIX 2026-10-22] 题材串归一：纯数字（= 脏值，实测 '16950' / '26728'）视作未知，
+  //   否则标题会渲染成「主线16950首次退潮」，且按题材认亲会全部落空（见文件头 [EBB-TOPIC-FIX]）。
+  const leaderTopic = _normTopic(leader.topic);
   const leaderPct = _num(leader.pct);
   if (!leaderName || leaderPct === null) return null;      // §10：涨幅读不到 ⇒ 不判
 
@@ -554,14 +593,25 @@ export function detectEbbDay(ebbCtx, prevEbbDay, ebbHistory) {
  * @param {Array<{date:string, prevDate:string, leaderStock:string, leaderTopic:string, ebb:boolean}>|null} history
  * @returns {{count:number, lastDate:string}} count = 近 10 个交易日内的退潮事件数；lastDate = 最近一次的日期
  */
+/**
+ * 【退潮事件计数】—— 见上方长注释（_ebbPhaseOf 的既有实现）。
+ *
+ * ★ [EBB-TOPIC-FIX 2026-10-22] 认亲规则改成三段：
+ *   ① 今日题材【有效】且该行题材【有效】⇒ 按题材比较（支持 'AI应用,数据中心' 分段串）；
+ *   ② 任一侧题材【无效】（空 / 纯数字脏值）⇒ 退回「同一只总龙」认亲；
+ *   ③ 都认不上 ⇒ 不算同一事件。
+ *   ⛔ 与旧实现的差别只有「脏值时不再直接判不命中」这一条 —— 正是它导致 10-22 误报首次退潮。
+ */
 function _ebbPhaseOf(topic, name, history) {
+  const t0 = _normTopic(topic);
+  const n0 = String(name || '').trim();
   const rows = (Array.isArray(history) ? history : []).filter(function(r) {
     return r && r.date && !!r.ebb;
   });
   const hit = function(r) {
-    const rt = String(r.leaderTopic || '').trim();
-    if (topic) return rt === topic;
-    return String(r.leaderStock || '').trim() === name;
+    const rt = _normTopic(r.leaderTopic);
+    if (t0 && rt) return _sameTopicLoose(rt, t0);
+    return String(r.leaderStock || '').trim() === n0 && !!n0;
   };
   const byDate = new Map();
   rows.forEach(function(r) { byDate.set(String(r.date), r); });
@@ -614,12 +664,13 @@ export function secondEbbTopicOfPrevDay(history, prevDate) {
   rows.forEach(function(r) { byDate.set(String(r.date), r); });
   const y = byDate.get(pd);
   if (!y) return null;                       // 昨天没有退潮判定（或未退潮）⇒ 不禁
-  const topic = String(y.leaderTopic || '').trim();
+  // ★ [EBB-TOPIC-FIX 2026-10-22] 与 _ebbPhaseOf 同一把清洗尺子（纯数字 = 脏值 ⇒ 未知）
+  const topic = _normTopic(y.leaderTopic);
   const name = String(y.leaderStock || '').trim();
   const hit = function(r) {
-    const rt = String(r.leaderTopic || '').trim();
-    if (topic) return rt === topic;
-    return String(r.leaderStock || '').trim() === name;   // 与 _ebbPhaseOf 同一认亲退路
+    const rt = _normTopic(r.leaderTopic);
+    if (topic && rt) return _sameTopicLoose(rt, topic);
+    return String(r.leaderStock || '').trim() === name && !!name;   // 与 _ebbPhaseOf 同一认亲退路
   };
   // ② 从昨日往回走连续同题材退潮日 ⇒ 事件起点（连续退潮日合并为一次事件）
   let start = y;
@@ -765,7 +816,9 @@ export function buildEbbDayRecord(ebb, ebbCtx, date) {
   return {
     date: d,
     leaderStock: name,
-    leaderTopic: String(leader.topic || ''),
+    // ★ [EBB-TOPIC-FIX 2026-10-22] 落库前同样清洗：⛔ 绝不再把「纯数字」（= 误取的成交量）当题材写进表，
+    //   否则明天读回来又要靠 _normTopic 兜一次（错值不进库才是根治）。
+    leaderTopic: _normTopic(leader.topic),
     leaderPct: _num(leader.pct),
     leaderRank: _num(leader.rank),
     suspended: suspended,
@@ -1670,6 +1723,246 @@ function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames) {
 }
 
 /**
+ * ══【第二十八条 · 新龙 / 新题材切换日】══════════════════════════════════════════════════
+ *
+ * 用户口径（2026-10-22 原话，逐字）：
+ *   「二次退潮次日后一天，也就是10月22日，就要切换新题材或者寻找新题材了（这是核心思想）」
+ *   「20个交易日内，上述的时间点这只股票名称有没有上榜？今天是不是首次20日涨幅上榜前五？
+ *     如果是，看下一个条件，是不是和和老龙一是不是同个题材，如果不是，说明这是个新龙，
+ *     是要入选题材量比买点侧的。相当于又找新的周期或者题材的票。」
+ *   「规则要添加下：只选20日涨幅排名前五题材，没有出现过的新龙。」
+ *   「从常规中寻找新的题材，这个节点要收紧，和常规不同，这个节点只选一个题材，
+ *     只找排名靠前的一个符合条件题材的股票……（排名第一的房地产按照常规不符合选入条件，排除）」
+ *   「如果看20日涨幅没有符合条件（比如五只都是同题材的，5只20天都出现过的），
+ *     接下来就是常规班选股了，不做限制。」
+ *
+ * ── 时间轴（用户给的三段式，⛔ 别把 D+1 与 D+2 搞混）────────────────────────────────
+ *   D      = 总龙一【二次确认退潮】日（10-20）
+ *   D+1    = 退潮次日 ⇒ 主轴题材【禁止买入】（第二十六条，已实现；10-21）
+ *   D+2    = 【切换日】= 今天（10-22）⇒ 老周期结束，找【新龙】/【新题材】
+ *   ⇒ 判据 = 「二次确认退潮事件」正好发生在【前两个交易日】（prevPrevDate）。
+ *     复用 secondEbbTopicOfPrevDay（§6 同一把尺子：连它那套「事件 ≠ 天数」的合并口径一起复用），
+ *     ⛔ 绝不另写一份「昨天是不是二次确认」的计数。
+ *
+ * ── 新龙怎么选（用户逐条对应）──────────────────────────────────────────────────────
+ *   ① 候选 = 今日【20日涨幅前五】（与「20日涨幅」toggle 的总龙一~五同一份，§6）；
+ *   ② 自上而下逐只过闸：
+ *        · 老龙一自己 ⇒ 跳过（它是被交接的那一方，不是新龙）；
+ *        · 近 20 个交易日【已上过前五】⇒ 跳过（「20个交易日内……有没有上榜」）；
+ *        · 与老龙一【同题材】⇒ 跳过（老周期的票，退潮后基本不看）；
+ *        · 剩下第一只 = 【新龙】（= 老龙向新龙的交接）。
+ *   ③ 一只都不剩 ⇒ 本规则【不生效】，买点侧回落常规（用户「接下来就是常规班选股了，不做限制」）。
+ *
+ * ── 常规侧怎么收紧（切换日专属，⛔ 只在有【新龙】时才收紧）──────────────────────────
+ *   · 只选【一个】题材（排名最前、且数量达标的那一个 —— 数量不足照旧顺延，用户举例：房地产被排除）；
+ *   · 该题材只取【一只】票（龙位最前、非竞价一字、非连续停牌）；
+ *   · 跳过【退潮的那个老题材】与【新龙自己的题材】（老周期不买 / 避免同一题材出两只）。
+ *
+ * ⚠️ 为什么「收紧」必须依赖「新龙成立」：用户把两者写在同一个节点里 ——
+ *   「如果看20日涨幅没有符合条件……接下来就是常规班选股了，不做限制」。
+ *   ⇒ 判不出新龙（五只都不合格 / 历史榜读不到）⇒ 不收紧，且必须在说明里写清原因（§10）。
+ */
+/** 本行引用的规则编号（= 规则手册第二十八条「新龙 / 新题材切换日」） */
+export const SWITCH_RULE_NO = '二十八';
+/** 新龙那一行的动作标签（⛔ 不复用「退潮替补买」：那是退潮日的语义，与「新周期开启」不同） */
+export const NEW_DRAGON_TAG = '新龙买';
+/** 配色档：复用【退潮替补买】的琥珀金（本看板「今天真要买的例外」同一套语义色，⛔ 不新造一档） */
+export const NEW_DRAGON_TONE = EBB_SECOND_BUY_TONE;
+/** 候选榜只数（用户口径「20日涨幅排名前五」） */
+export const NEW_DRAGON_TOP_N = 5;
+/** 「有没有上过榜」的回看窗口（用户口径「20个交易日内」） */
+export const NEW_DRAGON_LOOKBACK_DAYS = 20;
+
+/**
+ * 【纯函数】切换日判定：二次确认退潮是否正好发生在前两个交易日。
+ *
+ * @param {Array<{date:string, prevDate:string, leaderStock:string, leaderTopic:string, ebb:boolean}>|null} ebbHistory
+ * @param {string} prevPrevDate 展示日的【前两个交易日】（组合式注入，⛔ 规则层不自算日期）
+ * @returns {{ebbDate:string, topic:string, leaderName:string, since:string}|null}
+ */
+export function detectSwitchDay(ebbHistory, prevPrevDate) {
+  const ppd = String(prevPrevDate || '').trim();
+  if (!ppd || !Array.isArray(ebbHistory)) return null;
+  const hit = secondEbbTopicOfPrevDay(ebbHistory, ppd);
+  if (!hit) return null;
+  return {
+    ebbDate: ppd,
+    topic: _normTopic(hit.topic),
+    leaderName: String(hit.leaderName || '').trim(),
+    since: String(hit.since || '')
+  };
+}
+
+/**
+ * 【纯函数】从今日 20日涨幅前五里挑出【新龙】。
+ *
+ * @param {Array<{name:string, code:string, topic:string, pct:number, pctText:string, rank20:number,
+ *          isYizi:boolean, suspended:boolean}>} top5
+ *        采集层富化过的前五（decision-collect#_ebbCtxOf 的 top5，已带题材/代码/停牌/一字）
+ * @param {Set<string>} everInTop5 近 N 个交易日【上过前五】的股票名集合（data/range20-top5-history.js）
+ * @param {{oldTopic?:string, oldLeaderName?:string, windowDays?:number}} info
+ *        oldTopic / oldLeaderName = 老龙一（= 二次确认退潮那只总龙）
+ *        windowDays = 实际覆盖的天数（写进说明，§10 覆盖度如实上报）
+ * @returns {{pick:object|null, trail:Array<{name:string, rank20:number, picked:boolean, reason:string}>, oldTopic:string}}
+ */
+export function pickNewDragon(top5, everInTop5, info) {
+  const o = info || {};
+  const top = Array.isArray(top5) ? top5 : [];
+  const ever = (everInTop5 instanceof Set) ? everInTop5 : new Set();
+  const ln = String(o.oldLeaderName || '').trim();
+  // 老龙题材：优先用落库的退潮行（老龙一自己的题材）；缺失 ⇒ 退回「今天榜第一名的题材」
+  //   （今天的第一名就是老龙一 —— 停牌也被 20日口径排上榜，所以这条退路语义等价）。
+  const lt = _normTopic(o.oldTopic) || _normTopic(top[0] && top[0].topic);
+  const windowDays = Number(o.windowDays) || NEW_DRAGON_LOOKBACK_DAYS;
+  const trail = [];
+  let pick = null;
+  for (let i = 0; i < top.length; i++) {
+    const c = top[i];
+    if (!c || !c.name) continue;
+    const name = String(c.name).trim();
+    const rank20 = Number(c.rank20) || (i + 1);
+    // ★ 已选出新龙 ⇒ 后面的【照样留痕】但不再评估：说明文案写的是「五只去留（判定可追溯）」，
+    //   提早 break 会让后两只在说明里凭空消失（用户无法复核「为什么不是它」）。
+    //   ⛔ 切换日只买一只新龙 ⇒ 后面这些本来也不可能被选中，写明原因即可（不假装评估过）。
+    if (pick) {
+      trail.push({ name: name, rank20: rank20, picked: false,
+        reason: '前面已选出更靠前的新龙【' + String(pick.name).trim() + '】⇒ 切换日只买一只新龙，本只不再考虑' });
+      continue;
+    }
+    if (ln && name === ln) {
+      trail.push({ name: name, rank20: rank20, picked: false, reason: '它就是老龙一【' + ln + '】（被交接的一方，不算新龙）' });
+      continue;
+    }
+    const tp = _normTopic(c.topic);
+    if (!tp) {
+      trail.push({ name: name, rank20: rank20, picked: false, reason: '题材解析不到 ⇒ 无法证明是「新题材」，保守排除' });
+      continue;
+    }
+    if (ever.has(name)) {
+      trail.push({ name: name, rank20: rank20, picked: false, reason: '近 ' + windowDays + ' 个交易日内已上过前五 ⇒ 不是首次上榜' });
+      continue;
+    }
+    if (lt && _sameTopicLoose(tp, lt)) {
+      trail.push({ name: name, rank20: rank20, picked: false, reason: '与老龙一同题材（' + lt + '）⇒ 老周期，退潮后不买' });
+      continue;
+    }
+    trail.push({ name: name, rank20: rank20, picked: true, reason: '近 ' + windowDays + ' 个交易日内【首次】上到前五 + 与老龙一【不同题材】⇒ 新龙（老龙→新龙交接）' });
+    pick = c;
+  }
+  return { pick: pick, trail: trail, oldTopic: lt };
+}
+
+/**
+ * 【新龙 · 买点块】—— 与退潮替补（_buildEbbPicksBlock）/ 分歧买点同一形态：
+ * 单只票、独立容器、渲染在灰化容器【之外】（今天真要买的票不能被 grayscale 吞掉）。
+ *
+ * ⛔ 仍然要过 finishBuyBlock：客观数据（十日涨幅 / 竞价涨幅 / 量比 / 占比 / 龙标 / 连板 / 封单）
+ *   全部由它算齐（§6 同一实现），本函数只在【算完之后】把动作标签覆盖成【新龙买】。
+ *
+ * @param {object} nd pickNewDragon 的返回（pick 必须非空）
+ * @param {Array} list 当日题材块列表（反查成员行，拿量比 / 占比 / 代码）
+ * @param {object} fOpts finishBuyBlock 的入参（与常规块同一份）
+ * @param {{topic:string, leaderName:string, ebbDate:string}} switchDay
+ * @param {number} windowDays 历史榜实际覆盖天数
+ * @returns {object} 决策看板形状的买点块（+ 本看板平铺字段）
+ */
+function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tierPick) {
+  const p = nd && nd.pick;
+  if (!p || !p.name) return null;
+  const name = String(p.name).trim();
+  const topic = String(p.topic || '').trim();
+  const oldTopic = String(nd.oldTopic || '').trim() || '老龙题材';
+
+  // 真实成员行（与退潮替补同一取法：先按题材块找，再全表按名字兜一次）
+  let member = null;
+  (list || []).forEach(function(b) {
+    if (member) return;
+    (b.members || []).forEach(function(m) {
+      if (!member && m && String(m.name || '').trim() === name) member = m;
+    });
+  });
+
+  const picks = [{
+    seq: 1,
+    name: name,
+    dragonLabel: totalDragonLabel(Number(p.rank20) || 0),
+    dragonRank: null,
+    pct: _num(p.pct),
+    code: String(p.code || (member && member.code) || '').trim(),
+    pctText: formatRangePct(_num(p.pct)),
+    // ⚠️ 预置：finishBuyBlock 内部 _markHold 要读它（§6 与 _buildBlock 同一做法）
+    aucShare: member ? _num(member.aucShare) : null,
+    position: ''
+  }];
+
+  const windowText = (Number(windowDays) > 0) ? (windowDays + ' 个交易日') : '（历史榜未读到）';
+  const trailText = (nd.trail || []).map(function(t) {
+    return '【' + (totalDragonLabel(Number(t.rank20) || 0) || '总龙?') + t.name + '】' + t.reason;
+  }).join('；');
+
+  const block = {
+    block: {
+      topic: '新龙 · ' + (topic || '—'),
+      rank: null,          // ⛔ 不给圆点：本行不是题材排名
+      count: null,
+      yiziCount: null,
+      members: member ? [member] : []
+    },
+    rankWord: '',
+    pickRank: null,
+    reason: '【' + SWITCH_RULE_NO + '】切换日新龙：' + (oldTopic) + '（老龙一 ' + (switchDay.leaderName || '—') +
+      '）二次确认退潮后的第 2 个交易日 ⇒ 老周期结束。' + name + '（' + (topic || '—') +
+      '，20日涨幅 ' + formatRangePct(_num(p.pct)) + '，' + (totalDragonLabel(Number(p.rank20) || 0) || '总龙?') +
+      '）近 ' + windowText + '【首次】上到前五、且与老龙一【不同题材】⇒ 新龙（老龙→新龙交接）。',
+    mode: 'newdragon',
+    ruleNo: SWITCH_RULE_NO,
+    isCandidate: false,
+    candidateTag: '',
+    qualified: true,
+    notQualifiedText: '',
+    picks: picks,
+    notes: [
+      '【新龙怎么选】= 今日 20日涨幅前五自上而下：跳过老龙一自己 → 跳过近 ' + windowText +
+        '已上过前五的（不是首次上榜）→ 跳过与老龙一同题材的（老周期）⇒ 剩下第一只即新龙。',
+      (trailText ? ('五只去留（判定可追溯）：' + trailText + '。') : ''),
+      '⚠️ 常规侧同日【收紧】：切换日只选一个题材、只取一只（排名最前且数量达标，退潮题材与新龙题材跳过）'
+        + (tierPick ? ('——本日常规那只 = ' + tierPick + '。') : '。')
+    ].filter(function(s) { return !!s; })
+  };
+
+  // ① 客观数据 + 原始买点信号（同一份实现）
+  finishBuyBlock(block, fOpts);
+  // ② 覆盖动作标签为【新龙买】
+  (block.picks || []).forEach(function(row) {
+    const rawTag = row.buyActionTag || '';
+    const rawNote = row.actionNote || '';
+    row.buyActionTag = NEW_DRAGON_TAG;
+    row.buyActionTone = NEW_DRAGON_TONE;
+    row.holdTag = '';       // 与「今天要买」互斥
+    row.position = '';
+    row.actionNote = '【第二十八条 · 新龙】' + oldTopic + '（老龙一 ' + (switchDay.leaderName || '—') +
+      '）二次确认退潮后第 2 个交易日 = 切换日：老周期结束、新周期开启。它近 ' + windowText +
+      '【首次】上到 20日涨幅前五，且与老龙一【不同题材】（' + (topic || '—') + '）⇒ 判定为新龙。' +
+      (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : '') +
+      ' 切换日买点侧只有【新龙】+ 常规收紧后的那【一只】（第二十八条）。';
+  });
+
+  // 本看板平铺字段
+  block.topic = '新龙 · ' + (topic || '—');
+  block.rank = null;
+  block.count = null;
+  block.yiziCount = null;
+  block.avgVolRatio = null;
+  block.avgVolRatioText = '';
+  block.tier = 'newdragon';
+  block.pickCount = 1;
+  block.rangeText = '';
+  block.skippedNames = [];
+  block.isNewDragon = true;
+  return block;
+}
+
+/**
  * 【本看板 · 买点 + 卖点的唯一实现（§6）】。
  *
  * 一次调用产出三块东西：
@@ -1709,6 +2002,12 @@ function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames) {
  *        prevDate = ★ [EBB-D1 2026-10-21] 展示日的【上一交易日】（组合式用 getPreviousTradingDay
  *                   算好注入，§6 日期口径不进纯函数）—— 「昨日二次确认退潮 ⇒ 次日禁入买点侧」
  *                   （第二十六条）用它去 ebbHistory 里找昨日那一行；缺省 ⇒ 判不出 ⇒ 本规则不生效。
+ *        prevPrevDate = ★ [SWITCH 2026-10-22] 展示日的【前两个交易日】—— 第二十八条「切换日」判据
+ *                   （二次确认退潮正好发生在 D，今天 = D+2）；缺省 ⇒ 不判切换日。
+ *        top5HistoryEver = ★ [SWITCH] 近 20 个交易日【上过 20日涨幅前五】的股票名集合
+ *                   （data/range20-top5-history.js#everInTop5Set）；缺省 / null ⇒ 判不出「是否首次上榜」
+ *                   ⇒ 切换日不收紧（并在说明里写明原因，§10）。
+ *        top5HistoryDays = ★ [SWITCH] 历史榜实际覆盖的天数（只用于说明文案，⛔ 不参与判定）。
  * @returns {{topics:Array, blocks:Array, buy:object, sell:Array, excludedTopics:Array,
  *            notes:Array, pickCount:number, buyNames:Set<string>, cashAlert:object, ebb:object|null}}
  *   topics        —— 全部参与排名的题材（含被排除的），按排名，供说明 / 复核
@@ -1746,7 +2045,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     //   都经它取块 —— 挂进这里，龙二那一行才会和其它买点行一样带上这些客观数据（§6）。
     buy: {
       heavy: null, light: null, candidates: [],
-      noYizi: null, smallTopic: null, bigTopic: null, ebbSecond: null
+      noYizi: null, smallTopic: null, bigTopic: null, ebbSecond: null,
+      // ★ [SWITCH 2026-10-22] 第二十八条：切换日的【新龙】那一行。与 ebbSecond 同一理由挂在
+      //   买点对象里 —— decision-collect#_buyBlocksOf 是「遍历一个买点块」的唯一实现，
+      //   四个装饰器（量比趋势 / 名次变化 / 封单额 / 停牌）都经它取块（§6）。
+      newDragon: null
     },
     sell: [],
     excludedTopics: [],
@@ -1769,6 +2072,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     // ★ [DIVERGE 2026-10-20] 市场总龙一【首次分歧】日的分歧买点块（总龙一 + 跟随高标 ≤2 只）。
     //   只在「总龙首次分歧 ∧ 非退潮日」时非 null（其余场景 null ⇒ 视图 v-if 不渲染）。
     divergeBuy: null,
+    // ★★ [SWITCH 2026-10-22] 第二十八条【新龙 / 新题材切换日】：
+    //   switchDay = 今天是不是「二次确认退潮」后的第 2 个交易日（判据见 detectSwitchDay）；
+    //   newDragon = 那一行新龙的买点块（独立容器、渲染在灰化容器之外）；不是切换日 / 选不出 ⇒ null。
+    switchDay: null,
+    newDragon: null,
     // ★ [EBB-R8 2026-10-14] 【落库行】= 今天这只总龙到底算不算处在坏状态（不带首日闸门）。
     //   组合式据此 upsert 到 tvrb_ebb_days（⛔ 写库放 watch，computed 必须无副作用 §4）；
     //   次日读回那一行判「是不是首日」。§10：事实未就绪 ⇒ null（⛔ 绝不落一行猜的判定）。
@@ -1803,9 +2111,40 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   const ebbSecondTopic = (out.ebb && out.ebb.phase === 'second')
     ? String(out.ebb.leaderTopic || '').trim() : '';
 
-  // 沿题材排名（平均竞价量比降序）往下扫：数量不足的排除并顺延，直到选够 TVRB_TOPIC_LIMIT 个。
+  // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条【新龙 / 新题材切换日】—— 必须排在【选股扫描之前】：
+  //   它决定本次扫描是否【收紧】（只选一个题材、只取一只）。
+  //   时间轴：D = 二次确认退潮日（10-20）→ D+1 禁买主轴（第二十六条，10-21）→ D+2 = 切换日（10-22）。
+  //   ⇒ 判据 = 「二次确认事件」正好落在【前两个交易日】（o.prevPrevDate）。
+  //   ⛔ 复用 secondEbbTopicOfPrevDay（同一把尺子），⛔ 不另写一份「昨天是不是二次确认」的计数。
+  out.switchDay = detectSwitchDay(o.ebbHistory || null, o.prevPrevDate || '');
+  let ndResult = null;          // pickNewDragon 的返回
+  let ndJudgeFail = '';         // 判不出的原因（§10 必须可见）
+  if (out.switchDay) {
+    const top5 = (o.ebbCtx && Array.isArray(o.ebbCtx.top5)) ? o.ebbCtx.top5 : [];
+    const ever = (o.top5HistoryEver instanceof Set) ? o.top5HistoryEver : null;
+    const winDays = Number(o.top5HistoryDays) || 0;
+    if (top5.length === 0) {
+      ndJudgeFail = '20日涨幅前五未就绪（数据未到）⇒ 新龙判定不生效';
+    } else if (!ever) {
+      // ⛔ 历史榜读不到 ⇒ 无法回答「今天是不是首次上榜」⇒ 判不出（⛔ 绝不把「没数据」当「首次」）
+      ndJudgeFail = '20日涨幅历史榜未读到 ⇒ 无法判定「今天是否首次上榜」⇒ 新龙判定不生效';
+    } else {
+      ndResult = pickNewDragon(top5, ever, {
+        oldTopic: out.switchDay.topic,
+        oldLeaderName: out.switchDay.leaderName,
+        windowDays: winDays
+      });
+    }
+  }
+  const switchNewDragon = !!(ndResult && ndResult.pick);
+  // 收紧只在【新龙成立】时生效（用户口径「如果看20日涨幅没有符合条件……接下来就是常规班选股了，不做限制」）
+  const topicLimit = switchNewDragon ? 1 : TVRB_TOPIC_LIMIT;
+  const ndTopic = switchNewDragon ? _normTopic(ndResult.pick.topic) : '';
+  const ndName = switchNewDragon ? String(ndResult.pick.name || '').trim() : '';
+
+  // 沿题材排名（平均竞价量比降序）往下扫：数量不足的排除并顺延，直到选够 topicLimit 个。
   for (let i = 0; i < list.length; i++) {
-    if (out.blocks.length >= TVRB_TOPIC_LIMIT) break;
+    if (out.blocks.length >= topicLimit) break;
     const b = list[i];
     // ★ [EBB-R20b] 二次确认退潮 ⇒ 退潮那个题材【不参与买点入选】—— 题材排名照旧（它还在
     //   out.topics 排名里），只是入选扫描在这里跳过它并顺延到下一个题材（与「数量不足顺延」同路径）。
@@ -1815,12 +2154,32 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         '】今天【不参与买点选股】（退潮题材不买），买点侧从其余题材按常规（平均竞价量比）顺延选股。');
       continue;
     }
-    const tier = resolveTvrbTier(b.count);
+    // ★★ [SWITCH 2026-10-22] 切换日：退潮的【老题材】与新龙自己的题材都不进常规扫描
+    //   （老周期已结束不买；新龙题材避免同一题材出两只 —— 今日买点侧 = 新龙 + 另一个新题材各一只）。
+    if (switchNewDragon) {
+      const bt = String(b.topic || '').trim();
+      const oldTopic = _normTopic(out.switchDay.topic);
+      if (oldTopic && _sameTopicLoose(bt, oldTopic)) {
+        out.notes.push('⚠️【第二十八条 · 切换日】题材【' + b.topic +
+          '】= 老周期（' + oldTopic + ' 二次确认退潮）⇒ 今天不参与常规选股。');
+        continue;
+      }
+      if (ndTopic && _sameTopicLoose(bt, ndTopic)) {
+        out.notes.push('⚠️【第二十八条 · 切换日】题材【' + b.topic +
+          '】= 新龙【' + ndName + '】所在题材 ⇒ 已由新龙那一行买入，常规侧不再重复选。');
+        continue;
+      }
+    }
+    let tier = resolveTvrbTier(b.count);
     if (tier.tier === 'none') {
       out.excludedTopics.push({
         rank: b.rank, topic: b.topic, count: b.count, avgVolRatio: avgVolRatioOf(b)
       });
       continue;
+    }
+    // ★ [SWITCH] 切换日收紧：本题材只取【一只】（龙位最前、非一字、非连续停牌 —— 取票逻辑不变）
+    if (switchNewDragon) {
+      tier = Object.assign({}, tier, { pickCount: 1 });
     }
     out.blocks.push(_buildBlock(b, buyDragonMap, tier, buyPctMap, buySkipNames));
   }
@@ -1863,6 +2222,34 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     ruleNo: RULE_NO.FIRST
   };
   out.blocks.forEach(function(b) { finishBuyBlock(b, fOpts); });
+
+  // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条：把【新龙】那一行构造出来（独立容器渲染）。
+  //   ① 必须先有 fOpts（finishBuyBlock 要它算客观数据与原始买点信号）；
+  //   ② 它的标签随后被覆盖成【新龙买】—— 与退潮替补 / 分歧买点同一范式（⛔ 不改 finishBuyBlock 内部）。
+  if (switchNewDragon) {
+    out.newDragon = _buildNewDragonBlock(
+      ndResult, list, fOpts, out.switchDay, Number(o.top5HistoryDays) || 0,
+      (out.blocks[0] && out.blocks[0].picks && out.blocks[0].picks[0])
+        ? ((out.blocks[0].picks[0].dragonLabel || '') + out.blocks[0].picks[0].name)
+        : ''
+    );
+    if (out.newDragon) out.buy.newDragon = out.newDragon;
+    out.notes.push('⚠️【第二十八条 · 切换日】' + (out.switchDay.leaderName || '老龙一') + '（' +
+      (out.switchDay.topic || '—') + '）二次确认退潮（' + out.switchDay.ebbDate +
+      '）后第 2 个交易日 ⇒ 老周期结束、找新龙：买点侧 = 【新龙】' + ndName + '（' + (ndResult.pick.topic || '—') +
+      '）+ 常规收紧后的【一只】（只选一个题材、只取一只）。');
+  } else if (out.switchDay) {
+    // §10：切换日到了但判不出新龙 ⇒ 必须说清原因，并明确「回落常规（不收紧）」
+    out.notes.push('⚠️【第二十八条 · 切换日】' + (out.switchDay.leaderName || '老龙一') + '（' +
+      (out.switchDay.topic || '—') + '）二次确认退潮后第 2 个交易日 = 切换日，' +
+      (ndJudgeFail ? (ndJudgeFail + '。') : '但 20日涨幅前五里【没有】符合「首次上榜 + 不同题材」的新龙。') +
+      ' ⇒ 买点侧【回落常规选股，不收紧】（第二十八条）。' +
+      ((ndResult && ndResult.trail && ndResult.trail.length > 0)
+        ? (' 五只去留：' + ndResult.trail.map(function(t) {
+          return '【' + (totalDragonLabel(Number(t.rank20) || 0) || '总龙?') + t.name + '】' + t.reason;
+        }).join('；') + '。')
+        : ''));
+  }
 
   // ★ [EBB 2026-10-13 第六轮用户口径] 退潮首日 ⇒ 买点动作【覆盖式】重写：
   //   「退潮当天，只有卖没有买」「买点侧还标有 持有 竞价买，应该标的是『退潮不买』」。
@@ -1986,6 +2373,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   if (out.ebbBuy) {
     (out.ebbBuy.picks || []).forEach(function(p) { if (p && p.name) out.buyNames.add(p.name); });
   }
+  // ★★ [SWITCH 2026-10-22] 切换日的【新龙】同样是「今天进买点」⇒ 进名单（同一不变式）：
+  //   它若昨天已在卖点侧候选里，卖点侧要标【持有】而不是「竞价清仓」（同一天不可能既买又清）。
+  if (out.newDragon) {
+    (out.newDragon.picks || []).forEach(function(p) { if (p && p.name) out.buyNames.add(p.name); });
+  }
   // ★★ [EBB-D1 2026-10-21 用户口径] 第二十六条：禁入题材的票【不进买点名单】——
   //   它们今天不买（「不用去掉」只针对【展示】，不针对【买点名单】）：
   //   若留在名单里，卖点侧会因「今天又进买点」把它们标成【持有】，与「次日禁止买入」正面矛盾。
@@ -2032,7 +2424,9 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     if (out.ebb) _applyEbbSellRules(out.sell, out.ebb, ebbSecondRegular ? regularPickNames : null);
   }
 
-  out.pickCount = out.blocks.reduce(function(n, blk) { return n + blk.picks.length; }, 0);
+  out.pickCount = out.blocks.reduce(function(n, blk) { return n + blk.picks.length; }, 0)
+    // ★ [SWITCH 2026-10-22] 新龙那一只也要计入「实际选出几只」（summary 文案读它）
+    + ((out.newDragon && out.newDragon.picks) ? out.newDragon.picks.length : 0);
 
   if (out.excludedTopics.length > 0) {
     const names = out.excludedTopics.map(function(t) {
@@ -2266,6 +2660,31 @@ export function buildTvrbRulesLines() {
       '（决策警示由行级【退潮不买】/【分歧日不买】标签承载，不丢信息）。' +
       '关掉「简洁」（= 原版）则全部说明与提示板照常显示。' +
       '（简洁模式同样隐藏：卖点「卖出理由」行、规则手册全文、题材块的档位说明框；' +
-      '保留：「这一块为什么没有股票」提示、当天的买点票（退潮替补 / 分歧买点）、分笔面板。）'
+      '保留：「这一块为什么没有股票」提示、当天的买点票（退潮替补 / 分歧买点）、分笔面板。）',
+    // ── ★★ [SWITCH 2026-10-22 用户口径 · 原话] 二次退潮次日的次日 ⇒ 新龙 / 新题材切换日 ──
+    '二十八、【新龙 / 新题材切换日 · 买点侧】（★ 核心思想：二次退潮次日后一天，就要切换新题材或寻找新题材了）：' +
+      '★ 时间轴（三段，别把 D+1 与 D+2 搞混）：' +
+      'D = 总龙一【二次确认退潮】当天（例 10-20 AI应用）；' +
+      'D+1 = 退潮次日 ⇒ 主轴题材【禁止买入】（第二十六条，例 10-21）；' +
+      'D+2 = 【切换日】（例 10-22）⇒ 老周期结束，开始找【新龙】/【新题材】。' +
+      '★【怎么找新龙】（判据 = 当日 20日涨幅前五，与「20日涨幅」toggle 的总龙一~五同一列）：' +
+      '① 从总龙一往下一只一只看；' +
+      '② 跳过【老龙一】自己（它是被交接的一方，不是新龙）；' +
+      '③ 跳过【近 20 个交易日内已经上过前五】的（= 不是首次上榜：`stock_range20_pct` 每日榜逐日重算后比对，' +
+      '说明里会写出窗口实际覆盖了多少天）；' +
+      '④ 跳过【与老龙一同题材】的（老周期的票，退潮后基本不看）；' +
+      '⑤ 剩下第一只 = 【新龙】（= 老龙向新龙的交接），标【' + NEW_DRAGON_TAG + '】独立成行、' +
+      '渲染在灰化容器之外（今天真要买的那一只不能被灰掉）。' +
+      '（例 10-22：总龙一 新华传媒 = 老龙一、总龙二 九阳股份 20日内上过榜、总龙四 慈文传媒 / 总龙五 新华文轩 ' +
+      '既是 AI应用 同题材又上过榜 ⇒ 只剩总龙三【冰山冷热】首次上榜且属电子/通信/算力 ⇒ 新龙。）' +
+      '★【常规侧同日收紧】（⛔ 只在【新龙成立】时收紧，与常规的「前二题材」不同）：' +
+      '① 只选【一个】题材 —— 排名最前、且数量达标的那一个（数量不足照旧顺延，例：10-22 排名第一的房地产' +
+      '按常规不符合选入条件 ⇒ 顺延到工业4.0）；' +
+      '② 该题材只取【一只】票（龙位最前、非竞价一字、非连续停牌 —— 取票顺序同第一~七条）；' +
+      '③ 跳过【退潮的老题材】与【新龙自己的题材】（老周期不买；同一题材不出两只）。' +
+      '（例 10-22：买点侧 = 新龙【冰山冷热】+ 常规收紧后的【宁波东力】（工业4.0）两只。）' +
+      '★【判不出新龙 ⇒ 不收紧】：若前五里【没有】符合条件的新龙（例如五只全是同一题材、或五只近 20 日都上过榜），' +
+      '或 20日涨幅前五 / 历史榜还没读到 ⇒ 买点侧【回落常规选股、不做限制】（第一~七条照常），' +
+      '说明区会如实写出原因与【五只去留】（谁为什么被排除）。'
   ];
 }

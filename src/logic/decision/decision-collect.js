@@ -39,6 +39,13 @@ import { decorateSuspendField, isSuspended, canJudgeSuspended, hasSuspendVerdict
 import { isMainBoardOnly } from '../auction/range20-leaders.js';
 // ★ [EBB-R20] 总龙【题材】的退路（今日停牌 / 不在今日列表时）：读上一交易日行情行的 topics 串。
 import { getStockHistoryValue } from '../../data/watchlist-helpers.js';
+// ★ [EBB-TOPIC-FIX 2026-10-22] 补位票（今天不在列表里）的题材退路：题材库按股票名反查。
+//   为什么必须有：10-22 新华传媒（停牌补位，20日涨幅第一）在当天列表里【没有行】，
+//   老退路 `getStockHistoryValue(prevDate, name, 'topics')` 原本因缺分支返回了【昨日成交量】
+//   （'16950'）⇒ 退潮提示写成「主线16950首次退潮」（已修，见 watchlist-helpers）。
+//   但修好之后它只会返回 null（该票 watchlist.topics 一直是空串）⇒ 题材仍是空的，
+//   而「按题材认亲数退潮事件」正需要这个题材名 ⇒ 再往下一层：查题材库（权威来源 §6）。
+import { lookupTopicsByName } from '../../data/stock-topics.js';
 import { _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 // [TWO-MODES 2026-10-02 用户口径] 买点分两套模式，由早盘竞价的题材 / 一字 toggle 决定
@@ -159,7 +166,9 @@ function _buyBlocksOf(buy) {
   //   量比趋势 / 封单额 / 名次变化 / 停牌标记四个装饰器全部经它取块（§6）。
   //   ⇒ 龙二那一行必须从这里过一遍，否则它会缺掉这些客观数据（与「不另写一份遍历」同一理由）。
   //   ⚠️ 它仍然只是【一个槽位】：本看板自己去渲染它，决策看板的模板换不到这个键（该看板不传）。
-  ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopic', 'ebbSecond'].forEach(function(k) {
+  // ★★ [SWITCH 2026-10-22] 新增槽位 `newDragon` = 第二十八条【切换日的新龙】那一行。
+  //   与 ebbSecond 同一理由：四个装饰器只经本函数取块，不进这里它就会缺客观数据（§6 不另写遍历）。
+  ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopic', 'ebbSecond', 'newDragon'].forEach(function(k) {
     if (buy[k]) out.push(buy[k]);
   });
   // [MIN-3-PICKS 2026-10-02] 候选题材块 = 常规块结构（有 picks），只是标了 isCandidate
@@ -799,6 +808,24 @@ export function sameTopicText(a, b) {
   return x.split(/[,，/、+;；|]/).some(function(seg) { return seg.trim() === y; });
 }
 
+/**
+ * ★★ [EBB-TOPIC-FIX 2026-10-22] 题材串清洗（§6 唯一实现）：过滤掉「看起来像数」的脏值。
+ *
+ * 为什么需要：2026-10-22 事故里 tvrb_ebb_days 的 leader_topic 被写成了 '16950' / '26728'
+ *   （其实是昨日成交量 —— 根因见 data/watchlist-helpers.js 的 topics 分支注释）。
+ *   题材名不可能是【纯数字】，纯数字一定是错值 ⇒ 一律清成空串（= 未知），
+ *   ⛔ 绝不把一个数字当题材名去认亲、去和别的题材比较（那会一路静默错下去）。
+ *
+ * @param {*} raw
+ * @returns {string} 清洗后的题材串（可能为空）
+ */
+export function _cleanTopicText(raw) {
+  const s = String(raw === null || raw === undefined ? '' : raw).trim();
+  if (!s) return '';
+  if (/^\d+(\.\d+)?$/.test(s)) return '';
+  return s;
+}
+
 function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDate, range20Top) {
   const none = {
     ready: false, leader: null, second: null,
@@ -847,11 +874,32 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
   });
   const _topicOf = function(name) {
     const r = rowByName.get(name);
-    if (r && String(r.topic || '').trim()) return String(r.topic).trim();
+    const rt = _cleanTopicText(r && r.topic);
+    if (rt) return rt;
     if (prevDate) {
-      const t = getStockHistoryValue(prevDate, name, 'topics');
-      if (t && String(t).trim()) return String(t).trim();
+      const t = _cleanTopicText(getStockHistoryValue(prevDate, name, 'topics'));
+      if (t) return t;
     }
+    // ★ [EBB-TOPIC-FIX 2026-10-22] 第三层退路 = 题材库（停牌补位票在今日列表与昨日 watchlist 里
+    //   都可能是空题材）。取法：优先取「今天真的成组」的那个题材名 —— 这样下面 siblings 的
+    //   `b.topic === leaderTopic` 反查才能命中；否则按名字排序取第一个（可复现，不随 Set 插入序漂移）。
+    try {
+      const set = lookupTopicsByName(name);
+      if (set && set.size > 0) {
+        const all = [];
+        set.forEach(function(t) {
+          const c = _cleanTopicText(t);
+          if (c && all.indexOf(c) < 0) all.push(c);
+        });
+        all.sort();
+        for (let i = 0; i < all.length; i++) {
+          for (let k = 0; k < L.length; k++) {
+            if (String((L[k] && L[k].topic) || '').trim() === all[i]) return all[i];
+          }
+        }
+        if (all.length > 0) return all[0];
+      }
+    } catch (e) { /* 题材库未构建 ⇒ 如实返回空串（§10 不猜） */ }
     return '';
   };
   const top = [];

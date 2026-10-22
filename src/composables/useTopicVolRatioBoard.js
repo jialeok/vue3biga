@@ -95,6 +95,10 @@ import { rankDragonsWithPctMap } from '../logic/decision/decision-rules.js';
 //     没有竞价量等判断出来的，是缓存吧？你要完善这点」
 //   ⇒ 读 = 拿【上一交易日那一行】判「今天是不是首日」；写 = 把今天的判定存下来（只存今天，见下）。
 import { readEbbDays, upsertEbbDay } from '../data/ebb-days.js';
+// ★★ [SWITCH 2026-10-22 用户口径] 第二十八条「切换日 · 新龙」的取数：
+//   readTop5History / everInTop5Set = 近 20 个交易日的【每日 20日涨幅前五榜】（回库读 stock_range20_pct，
+//   一次 in 查询 + 会话缓存；⛔ 不新增表、不改表结构）。
+import { readTop5History, everInTop5Set } from '../data/range20-top5-history.js';
 // ★ [DIVERGE-DAYS 2026-10-21] 总龙分歧判定落库：切换日期时读回即用（一次到位渲染分歧板，不用再等 K 线）
 import { readDivergeDay, upsertDivergeDay } from '../data/diverge-days.js';
 import { _dbgLog } from '../data/debug-log.js';
@@ -106,7 +110,11 @@ import { MODE_VOL_RATIO } from '../logic/decision/decision-mode.js';
 import {
   buildTopicVolRatioPlan,
   buildTvrbRulesLines,
-  TVRB_CASH_ALERT_NONE
+  TVRB_CASH_ALERT_NONE,
+  // ★★ [SWITCH 2026-10-22] 切换日判据 + 回看窗口长度：与规则层【同一把尺子】（§6），
+  //   ⛔ 组合式不另写「前两个交易日是否为二次确认」的计数。
+  detectSwitchDay,
+  NEW_DRAGON_LOOKBACK_DAYS
 } from '../logic/topicvolratio/topic-vol-ratio-rules.js';
 // ★ 分笔：与「分笔买卖」看板【同一份取数编排 + 同一份逐行实现】（§6 单一真相，⛔ 不另写一份）
 import { decorateTickRow } from '../logic/tick/tick-minute.js';
@@ -230,6 +238,62 @@ export function useTopicVolRatioBoard() {
    */
   const ebbHistory = ref([]);
   const ebbHistoryDate = ref('');
+  /**
+   * ★★ [SWITCH 2026-10-22 用户口径] 第二十八条「切换日」的两个输入（异步读回）：
+   *   · top5HistEver     = 近 20 个交易日【上过 20日涨幅前五】的股票名集合（判「首次上榜」的唯一输入）；
+   *   · top5HistDays     = 历史榜实际覆盖天数（只用于说明文案，⛔ 不参与判定）。
+   *
+   * 为什么要有它：用户口径「20个交易日内……这只股票名称有没有上榜？今天是不是首次上榜前五？」
+   *   —— 这是【历史每日榜】的问题，前端内存里只有当天那份（切日期就换掉）⇒ 必须回库读
+   *   `stock_range20_pct` 的过去 N 天（data/range20-top5-history.js，一次 in 查询 + 会话缓存）。
+   *
+   * ⚠️ 只在【真的可能是切换日】时才去读（判据复用 detectSwitchDay，与规则层同一把尺子 §6）——
+   *   普通日子多一次 REST 请求纯属浪费（§32）。
+   * ⚠️ 读失败 ⇒ top5HistEver=null ⇒ 规则层【判不出】⇒ 不收紧 + 说明区如实写原因（§10，绝不猜「首次」）。
+   */
+  const top5HistEver = ref(null);
+  const top5HistDays = ref(0);
+  const top5HistDate = ref('');
+  /** 单飞：date -> Promise（切日期/重复触发不并发跑两遍，§32） */
+  const _top5HistInflight = new Map();
+
+  /**
+   * 确保某展示日的「近 20 个交易日 20日涨幅前五榜」已读回（幂等 / 单飞 / 会话缓存）。
+   * ⛔ 只读【今天之前】的交易日：今天的榜由 ebbCtx.top5 提供，混进来会把新龙自己也算成「上过榜」。
+   * @param {string} d 展示日 YYYY-MM-DD
+   */
+  function ensureTop5History(d) {
+    if (!d) return;
+    if (top5HistDate.value === d) return;                 // 该日已读过（成功或失败都已定论）
+    if (_top5HistInflight.has(d)) return;
+    const dates = [];
+    let cur = d;
+    for (let i = 0; i < NEW_DRAGON_LOOKBACK_DAYS; i++) {
+      cur = getPreviousTradingDay(cur);
+      if (!cur) break;
+      dates.push(cur);
+    }
+    if (dates.length === 0) {
+      top5HistEver.value = null; top5HistDays.value = 0; top5HistDate.value = d;
+      return;
+    }
+    const p = readTop5History(dates).then(function(hist) {
+      if (currentDate.value !== d) return;                // 竞态保护：期间切了日期 ⇒ 丢弃
+      top5HistEver.value = everInTop5Set(hist);
+      top5HistDays.value = Number(hist && hist.days) || 0;
+      top5HistDate.value = d;
+    }).catch(function(e) {
+      if (currentDate.value !== d) return;
+      // §10：读失败 ⇒ 集合置 null（= 判不出「是否首次上榜」）⇒ 规则层不收紧，且说明可见
+      console.warn('[TVRB] 20日涨幅历史榜读取失败，切换日新龙判定本次不生效:', e && e.message);
+      top5HistEver.value = null;
+      top5HistDays.value = 0;
+      top5HistDate.value = d;
+    }).finally(function() {
+      if (_top5HistInflight.get(d) === p) _top5HistInflight.delete(d);
+    });
+    _top5HistInflight.set(d, p);
+  }
   // ★ [DIVERGE 2026-10-20] 市场总龙一【首次分歧】判定（异步算出后经 data computed 重算生效）。
   //   divergeVerdict = buildLeaderDivergence 的返回（ready/canJudge/todayFirstDivergence/事件流）；
   //   divergeDate = 判定属于哪一天（⛔ 日期核对红线与两份 rangeMap 同款：不匹配 ⇒ 传 null）。
@@ -537,6 +601,11 @@ export function useTopicVolRatioBoard() {
           }
           ebbHistory.value = rows;
           ebbHistoryDate.value = d;
+          // ★★ [SWITCH 2026-10-22] 顺带判一下「今天是不是切换日」（第二十八条）：
+          //   是 ⇒ 才去读近 20 个交易日的每日榜（普通日子多打一次 REST 纯属浪费，§32）。
+          //   ⛔ 判据用规则层的 detectSwitchDay（同一把尺子），这里只做【要不要取数】的决策。
+          const ppd = pd ? getPreviousTradingDay(pd) : '';
+          if (ppd && detectSwitchDay(rows, ppd)) ensureTop5History(d);
         }).catch(function(e) {
           // §10：读失败 ⇒ 按「没有历史」处理（规则层按 0 次事件 = 首次退潮）—— 但必须可见
           console.warn('[TVRB] 退潮判定历史读取失败，本次按 0 次事件（首次退潮）处理:', e && e.message);
@@ -567,6 +636,9 @@ export function useTopicVolRatioBoard() {
     void getRange20LeadersFingerprintToken();
     // ★ [EBB-R20] 近 12 个交易日的退潮判定历史（异步读回）⇒「首次 / 二次确认」阶段判定才生效
     void ebbHistory.value;
+    // ★★ [SWITCH 2026-10-22] 近 20 个交易日的每日前五榜（异步读回）⇒ 第二十八条「新龙」判定才生效
+    void top5HistEver.value;
+    void top5HistDays.value;
     // ★ [DIVERGE 2026-10-20] 总龙首次分歧判定（异步算出）⇒ 分歧买点才生效
     void divergeVerdict.value;
     // 分笔那份是响应式单例 ⇒ 显式声明依赖，数据到了自动重算（§17 不阻塞渲染）
@@ -685,7 +757,15 @@ export function useTopicVolRatioBoard() {
         leaderDiverge: leaderDivergeOpt,
         // ★ [EBB-D1 2026-10-21] 上一交易日（日期链在组合式算好注入，规则层保持纯函数）——
         //   「昨日二次确认退潮 ⇒ 次日禁入买点侧」（第二十六条）用它去 ebbHistory 里找昨日那一行。
-        prevDate: pd || ''
+        prevDate: pd || '',
+        // ★★ [SWITCH 2026-10-22] 第二十八条「新龙 / 新题材切换日」的三个输入：
+        //   prevPrevDate    = 前两个交易日（切换日判据：二次确认退潮正好发生在 D，今天 = D+2）；
+        //   top5HistoryEver = 近 20 个交易日【上过前五】的票（判「首次上榜」）；null ⇒ 判不出 ⇒ 不收紧；
+        //   top5HistoryDays = 历史榜实际覆盖天数（只写说明，⛔ 不参与判定）。
+        //   ⚠️ 日期核对（与两份 rangeMap 同一条红线）：读的不是这一天 ⇒ 传 null（§10 不拿旧日期顶替）。
+        prevPrevDate: pd ? (getPreviousTradingDay(pd) || '') : '',
+        top5HistoryEver: (top5HistDate.value === d) ? top5HistEver.value : null,
+        top5HistoryDays: (top5HistDate.value === d) ? top5HistDays.value : 0
       });
 
       // §10 ★★ 失败 / 缺数据必须可见：这一天【确实读过】9:26 口径、但没拿到（失败或表里没有）
@@ -716,7 +796,9 @@ export function useTopicVolRatioBoard() {
       //    所以这里必须单独带上它走一遍；否则它拿不到分笔行（§6：装饰只有这一处，⛔ 别在组件里再铺一次）。
       const buyBlockLists = [plan.blocks,
         plan.ebbBuy ? [plan.ebbBuy] : [],
-        plan.divergeBuy ? [plan.divergeBuy] : []];
+        plan.divergeBuy ? [plan.divergeBuy] : [],
+        // ★★ [SWITCH 2026-10-22] 第二十八条的新龙那一行同样要拿分笔（它也在灰化容器之外）
+        plan.newDragon ? [plan.newDragon] : []];
       buyBlockLists.forEach(function(arr) {
         arr.forEach(function(b) {
           (b.picks || []).forEach(function(p) {
@@ -830,6 +912,15 @@ export function useTopicVolRatioBoard() {
   const ebbNodeNote = computed(() => (data.value.plan && data.value.plan.ebbNodeNote) || null);
   /** [DIVERGE 2026-10-20] 总龙首次分歧日的分歧买点块（总龙一 + 跟随高标 ≤2 只）；其它场景 null。 */
   const divergeBuy = computed(() => (data.value.plan && data.value.plan.divergeBuy) || null);
+  /**
+   * ★★ [SWITCH 2026-10-22 用户口径] 第二十八条切换日：
+   *   switchDay = { ebbDate, topic, leaderName, since }（今天是不是二次确认退潮后的第 2 个交易日）；
+   *   newDragon = 那一行【新龙】的买点块（单只票）。
+   * ⚠️ 与 ebbBuy / divergeBuy 同一约定：它【不在 blocks 里】，视图要渲染在灰化容器【之外】
+   *   （今天真要买的票不能被父级 grayscale 吞掉）。不是切换日 / 选不出新龙 ⇒ null（v-if 不渲染）。
+   */
+  const switchDay = computed(() => (data.value.plan && data.value.plan.switchDay) || null);
+  const newDragon = computed(() => (data.value.plan && data.value.plan.newDragon) || null);
   /**
    * ★ [DIVERGE-GATE 2026-10-21] 分歧判定未就绪的门控旗（非 null ⇒ 买点侧渲染「判定计算中」占位、
    *   不渲染旧规则选票 —— 见 data computed 里门控条件的逐条注释）。判不出 / 已就绪 ⇒ null。
@@ -1045,6 +1136,9 @@ export function useTopicVolRatioBoard() {
     ebbNodeNote,
     divergeBuy,
     divergePending,
+    // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条「新龙 / 新题材切换日」
+    switchDay,
+    newDragon,
     summaryText,
     toggleExpand,
     toggleCompact,

@@ -266,13 +266,34 @@ export async function runAuctionExtrasPatch(env, opts) {
 //   · 写入前必须校验「快照服务端日期 == 目标日」+ data_status=final，否则整体拒绝（避免把上一交易日写到今天）；
 //   · 读取失败抛错中断，绝不把「读不到」当成「全都缺」（§10）；
 //   · 幂等：重复跑只补仍为空的行，已有值永不覆盖。
+//
+// ★★ [AUC-SNAP-AUTHORITY 2026-10-22 用户口径] 【竞价量比 / 竞价换手率】改以【同花顺 9:25 快照】为准。
+//
+//   用户原话：「竞价量比是猫抓数据的比较准确，因为是竞价9点25分那个时刻的，而不是日终的，
+//     如果同花顺接口在9点25分能抓到，那这两个口径就是一样的，换手率也是，猫抓数据接口是9点25分的
+//     那个换手率，不是同花顺那个日终的……如果同花顺能抓取这两个数据9点25时刻的快照，那就用同花顺，
+//     不要用猫抓。」
+//   实测（2026-10-22 收盘后，拿本项目 fuyao-proxy 直调 auction/snapshot，新华传媒 600825）：
+//     auction_volume_ratio=0.5943  ↔ 库内 auc_vol_ratio=0.59
+//     auction_turnover_pct=0.348   ↔ 库内 auc_turnover=0.35
+//     auction_pct=-1.8553          ↔ 库内 auc_pct_chg=-1.86%
+//   ⇒ 两者是【同一个 9:25 时刻的同一个口径】，逐位一致。
+//   ⇒ 于是把 auc_vol_ratio / auc_turnover 的【写入优先级】倒过来：同花顺有值就以它为准（覆盖猫抓），
+//     猫抓/库内原值只在同花顺取不到时保留（fill-empty）。好处：这两个指标不再依赖猫抓的每日 10 次额度。
+//   ⛔ 只对这两个字段生效；auc_pct_chg / volume 仍然是「只补空」（它们的来源更复杂，不在本轮口径内）。
+//   ⛔ 只覆盖 > 0 的值（0 可能是「上游没这笔数据」而不是「量比真的 0」——§10 不拿 0 冒充）。
 // ============================================================================
 const SNAPSHOT_FIELDS = ['auc_pct_chg', 'auc_vol_ratio', 'auc_turnover', 'volume'];
+/** [AUC-SNAP-AUTHORITY] 同花顺优先覆盖的字段（只有这两个是「9:25 快照 = 唯一口径」） */
+const SNAPSHOT_AUTHORITY_FIELDS = ['auc_vol_ratio', 'auc_turnover'];
 
 /**
  * 用同花顺快照补「当天」竞价字段缺口。
  * @param {object} env
- * @param {{logs?:string[], date?:string}} [opts] date 缺省 = 北京今天（仅供排查时指定）
+ * @param {{logs?:string[], date?:string, preferSnapshot?:boolean}} [opts]
+ *        date 缺省 = 北京今天（仅供排查时指定）；
+ *        preferSnapshot = ★ [AUC-SNAP-AUTHORITY 2026-10-22] 竞价量比 / 竞价换手率【以快照为准重写】
+ *        （缺省 false = 旧行为：只补空。worker 的 9:25 / 16:00 两轮均传 true）
  * @returns {Promise<{ok:boolean, today:string, patched:number, logs:string[]}>}
  */
 export async function runTodaySnapshotPatch(env, opts) {
@@ -293,8 +314,17 @@ export async function runTodaySnapshotPatch(env, opts) {
     logs.push('[snapshot] ⚠️ ' + today + ' 无竞价行（worker 尚未写入？）→ 跳过');
     return { ok: false, today, patched: 0, logs, reason: '无行' };
   }
-  const need = rows.filter(r => SNAPSHOT_FIELDS.some(f => extrasIsEmpty(r[f])) && /^\d{6}$/.test(r.code));
-  logs.push('[snapshot] 行数 ' + rows.length + '，其中缺字段 ' + need.length + ' 行');
+  // ★ [AUC-SNAP-AUTHORITY 2026-10-22] preferSnapshot=true ⇒ 即使库内已有值，也要把
+  //   auc_vol_ratio / auc_turnover 这两个字段按同花顺 9:25 快照重写一遍（它们是「9:25 快照 = 唯一口径」）。
+  //   其它行仍走旧的「只补空」逻辑。
+  const preferSnap = !!o.preferSnapshot;
+  const need = rows.filter(function(r) {
+    if (!/^\d{6}$/.test(r.code)) return false;
+    if (SNAPSHOT_FIELDS.some(f => extrasIsEmpty(r[f]))) return true;
+    return preferSnap && SNAPSHOT_AUTHORITY_FIELDS.some(f => !extrasIsEmpty(r[f]));
+  });
+  logs.push('[snapshot] 行数 ' + rows.length + '，其中缺字段 ' + need.length + ' 行' +
+    (preferSnap ? '（量比/换手率按同花顺 9:25 快照为准重写）' : ''));
   if (need.length === 0) {
     logs.push('[snapshot] ✅ 当日竞价字段已完整，无需补写');
     return { ok: true, today, patched: 0, logs };
@@ -333,7 +363,7 @@ export async function runTodaySnapshotPatch(env, opts) {
     if (t && !byCode.has(t)) byCode.set(t, it);
   });
 
-  // 4) 只补「库内为空 + 本次有值」的行
+  // 4) 写「本次快照有值」的字段：缺的补上；★ 量比/换手率在 preferSnapshot 下【一律以快照为准】
   const nowIso = new Date().toISOString();
   const patchRows = [];
   const seen = new Set();
@@ -351,13 +381,30 @@ export async function runTodaySnapshotPatch(env, opts) {
       const v = extrasFmtSignedPct(it.auction_pct);
       if (v !== '') { patch.auc_pct_chg = v; any = true; }
     }
-    if (extrasIsEmpty(r.auc_vol_ratio)) {
-      const v = extrasFmt2(extrasNum(it.auction_volume_ratio));
-      if (v !== '') { patch.auc_vol_ratio = v; any = true; }
-    }
-    if (extrasIsEmpty(r.auc_turnover)) {
-      const v = extrasFmt2(extrasNum(it.auction_turnover_pct));
-      if (v !== '') { patch.auc_turnover = v; any = true; }
+    // ★ [AUC-SNAP-AUTHORITY] 这两个字段：preferSnapshot 时不管库内有没有值都以快照为准；
+    //   ⛔ 只写 > 0 的值（0 通常意味着「上游没有这笔数据」，拿它当「量比真的是 0」违反 §10）。
+    const vr = extrasNum(it.auction_volume_ratio);
+    const to = extrasNum(it.auction_turnover_pct);
+    if (preferSnap) {
+      if (!isNaN(vr) && vr > 0) { patch.auc_vol_ratio = extrasFmt2(vr); any = true; }
+      else if (extrasIsEmpty(r.auc_vol_ratio)) {
+        const v = extrasFmt2(vr);
+        if (v !== '') { patch.auc_vol_ratio = v; any = true; }
+      }
+      if (!isNaN(to) && to > 0) { patch.auc_turnover = extrasFmt2(to); any = true; }
+      else if (extrasIsEmpty(r.auc_turnover)) {
+        const v = extrasFmt2(to);
+        if (v !== '') { patch.auc_turnover = v; any = true; }
+      }
+    } else {
+      if (extrasIsEmpty(r.auc_vol_ratio)) {
+        const v = extrasFmt2(vr);
+        if (v !== '') { patch.auc_vol_ratio = v; any = true; }
+      }
+      if (extrasIsEmpty(r.auc_turnover)) {
+        const v = extrasFmt2(to);
+        if (v !== '') { patch.auc_turnover = v; any = true; }
+      }
     }
     if (extrasIsEmpty(r.volume)) {
       const n = extrasNum(it.auction_volume);

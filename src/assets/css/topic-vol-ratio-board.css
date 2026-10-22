@@ -908,6 +908,28 @@
     outline-offset: -2px;
 }
 
+/* ★★ [SWITCH 2026-10-22 用户口径] 第二十八条【新龙 / 新题材切换日】的新龙容器 ——
+   与退潮替补 / 分歧买点同一视觉语义（琥珀金「今天真要买」），⛔ 类名独立（三条规则各不相同）。
+   ⛔ 必须渲染在 .tvrb-buy-list.tvrb-ebb（父级 grayscale + opacity）【之外】：CSS 的 filter
+      不能被后代撤销，放进去等于把今天要买的新龙也灰掉（与 .tvrb-ebb-only-buy 同一条理由）。
+   左边框加粗到 3px 以区分（新龙 = 新周期开启，是这一屏最重要的结论）。 */
+.tvrb-newdragon-only-buy {
+    margin: 2px 0 8px;
+    padding: 7px 9px 8px;
+    background: #fffbeb;
+    border: 2px solid #d97706;
+    border-left-width: 3px;
+    border-radius: 10px;
+}
+
+.tvrb-newdragon-only-label {
+    margin-bottom: 5px;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    color: #b45309;
+}
+
 /* 买点侧：仓位（和/或持有标签）已经在行里，动作徽标紧跟其后，不再抢 margin-left:auto */
 .tvrb-position + .tvrb-action {
     margin-left: 0;
@@ -1202,8 +1224,8 @@
        简洁模式下决策警示仍由行级【退潮不买】/【分歧日不买】标签承载，不丢决策信息）
    ⛔ .tvrb-note-empty（「这一块为什么没有股票」）【不隐藏】—— 全隐藏会剩一行光秃秃的题材名，
       反而让人以为「没算出来」（§10）。
-   ⛔ 买点内容块不隐藏：.tvrb-ebb-only-buy / .tvrb-diverge-only-buy 是【当天的买点票】，不是提示板
-      （用户「其它不变」）。
+   ⛔ 买点内容块不隐藏：.tvrb-ebb-only-buy / .tvrb-diverge-only-buy / .tvrb-newdragon-only-buy
+      是【当天的买点票】，不是提示板（用户「其它不变」）。
    ⛔ 分笔面板（.tvrb-pen-panel）也不隐藏 —— 那是用户主动点开的量化数据（用户「其它保留」）。
    ⛔ 用 CSS 隐藏而不是模板 v-if：模板分支越少越稳。 */
 .tvrb-board.tvrb-compact .tvrb-reason-line,

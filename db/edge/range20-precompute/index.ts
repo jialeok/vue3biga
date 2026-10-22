@@ -28,6 +28,10 @@
 //
 // 数据源（只读既有表 + 只写既有结果表，⛔ 不新增/不修改其它任何数据源）：
 //   读  auction_watchlist  （date=今天 的正式名单：stock / code / change_pct）
+//   读  stock_range20_pct  （★[R20-POOL 2026-10-22] 最近 3 个交易日的票 = 补位票池：前五里不在当天
+//                           名单的票（停牌补位 / 已移出名单的旧龙头，10-22 实测总龙一 新华传媒就不在
+//                           当天名单里）原先只有前端打开看板才补算 ⇒ 两条 cron 都不覆盖它们）
+//   读  stockcodemap       （★[R20-POOL] 补位票 code 缺失时的一次性批查；name→code 唯一真相源）
 //   读  stock_range20_pct  （当天已有同 leg 行 ⇒ 跳过，幂等重跑不重复烧上游）
 //   写  stock_range20_pct  （on_conflict=date,stock，列与前端 upsertRange20Rows 完全一致）
 //   上游 同花顺 K 线（经既有 fuyao-proxy Edge Function 代理，零新增密钥）
@@ -256,7 +260,7 @@ Deno.serve(async (req: Request) => {
     console.log('[range20-precompute] ' + today + ' leg=' + leg + ' 名单就绪 ' + watchRows.length + ' 行，开始预计算');
 
     // 目标 = 当天正式名单（去重，先到先得；aucPct = change_pct 兜底竞价 T 腿，close 腿不用它）
-    const targets: Array<{ stock: string; code: string; aucPct: number | null }> = [];
+    const targets: Array<{ stock: string; code: string; aucPct: number | null; from: string }> = [];
     const seen = new Set<string>();
     for (const r of watchRows) {
       const name = String((r && r.stock) ?? '').trim();
@@ -266,7 +270,87 @@ Deno.serve(async (req: Request) => {
         stock: name,
         code: String((r && r.code) ?? '').trim(),
         aucPct: parsePct(r && r.change_pct),
+        from: 'today',
       });
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════
+    // ★★ [R20-POOL 2026-10-22] 名单补齐【补位票】—— 用户原话：
+    //   「含'20天'标签的补充股票，当天有没有把这个数据写进 supabase 表？如果没有，你需要完善下。」
+    //
+    //   背景：「20日涨幅」前五里常常有票【不在当天的早盘名单】—— 停牌补位、或已被移出名单的旧龙头
+    //   （10-22 实测：总龙一 新华传媒 188.12% 就不在当天 43 行名单里）。这些票原先只有【前端真正
+    //   打开看板时】才补算并落库 ⇒ 9:25 / 15:05 两条 cron 一天都没覆盖过它们，
+    //   于是「收盘腿覆盖竞价腿」对它们根本不会发生（表里要么缺行、要么停在前一天）。
+    //
+    //   修法（不新增表、不改 worker 表、只读既有表）：
+    //     名单 = 当天正式名单 ∪ 「最近 3 个交易日的 stock_range20_pct 里出现过的票」
+    //   —— 后者就是【带「20天」标签的那批票】：20日涨幅前五天生只能从"已经算过 20 日涨幅的票"
+    //      里产生（没算过的票根本进不了榜）。补位票昨天/前天一定在榜里，所以它一定被捞得到；
+    //      而"从没进过榜的票"补它也没有意义（它不是前五）⇒ 池子自然收敛在 ~150 只，
+    //      不会像"30 天早盘名单并集"那样膨胀到上千只把 cron 预算烧光。
+    //
+    //   ⚠️ 补位池读失败【不中断本函数】：名单补全是增强项，主流程（当天名单）照旧要跑完；
+    //      但必须把失败写进日志与响应（§10：失败可见，⛔ 不静默）。
+    // ══════════════════════════════════════════════════════════════════════════════════
+    let poolError = '';
+    try {
+      // ① 表里最近一个榜日（< 今天）
+      const lastGot = await sbRest(
+        'GET',
+        '/rest/v1/stock_range20_pct?select=date&date=lt.' + today + '&order=date.desc&limit=1',
+      );
+      const lastRows = Array.isArray(lastGot) ? (lastGot as Array<Record<string, unknown>>) : [];
+      const lastDate = String((lastRows[0] && lastRows[0].date) ?? '').trim();
+      if (lastDate) {
+        const poolStart = new Date(Date.parse(lastDate + 'T00:00:00+08:00') - 7 * 86400000)
+          .toISOString().slice(0, 10);
+        const got = await sbRest(
+          'GET',
+          '/rest/v1/stock_range20_pct?select=stock&date=gte.' + poolStart + '&date=lt.' + today +
+            '&order=date.desc&limit=800',
+        );
+        const poolRows = Array.isArray(got) ? (got as Array<Record<string, unknown>>) : [];
+        let added = 0;
+        for (const r of poolRows) {
+          const name = String((r && r.stock) ?? '').trim();
+          if (!name || seen.has(name)) continue;
+          seen.add(name);
+          targets.push({
+            stock: name,
+            code: '',       // 结果表没有 code 列 ⇒ 下面一次性批查 stockcodemap
+            aucPct: null,   // ⛔ 历史日的涨幅绝不能拿来当今天的竞价腿
+            from: 'pool',
+          });
+          added++;
+        }
+        console.log('[range20-precompute] 补位池 ' + poolStart + '~' + lastDate + ' 命中 ' + added +
+          ' 只（名单合计 ' + targets.length + '）');
+      } else {
+        console.log('[range20-precompute] 补位池：表里还没有任何历史榜 ⇒ 本次只算当天名单');
+      }
+      // 池里 code 为空的票：一次性批查 stockcodemap（name→code 的唯一真相源）补上
+      const noCode = targets.filter((t) => t.from === 'pool' && !t.code);
+      if (noCode.length > 0) {
+        const names = noCode.slice(0, 200).map((t) => '"' + t.stock.replace(/"/g, '') + '"');
+        const cm = await sbRest(
+          'GET',
+          '/rest/v1/stockcodemap?select=stock,code&stock=in.' + encodeURIComponent('(' + names.join(',') + ')'),
+        );
+        const cmRows = Array.isArray(cm) ? (cm as Array<Record<string, unknown>>) : [];
+        const codeOf = new Map<string, string>();
+        cmRows.forEach((r) => {
+          const n = String((r && r.stock) ?? '').trim();
+          const c = String((r && r.code) ?? '').trim();
+          if (n && c) codeOf.set(n, c);
+        });
+        let filled = 0;
+        noCode.forEach((t) => { const c = codeOf.get(t.stock); if (c) { t.code = c; filled++; } });
+        console.log('[range20-precompute] 补位票 code 补齐 ' + filled + ' / ' + noCode.length);
+      }
+    } catch (e) {
+      poolError = e instanceof Error ? e.message : String(e);
+      console.error('[range20-precompute] ⚠️ 补位池读取失败（本次只算当天名单）: ' + poolError);
     }
 
     // ② 跳过表里已有的当日【同 leg】行（幂等：手动重跑 / cron 重复触发不重复烧上游）
@@ -353,13 +437,17 @@ Deno.serve(async (req: Request) => {
       date: today,
       leg,
       watchlist: targets.length,
+      // ★ [R20-POOL 2026-10-22] 名单里有多少只是【补位票】（不在当天名单、靠近 20 日名单并集补进来的）
+      poolAdded: targets.filter((t) => t.from === 'pool').length,
+      poolError,
       todo: todo.length,
       written,
       failed,
       circuitBreak,
       elapsedMs: Date.now() - t0,
       failures: failures.slice(0, 30),
-      note: 'leg=' + leg + ' 已落库，前端 20日涨幅 toggle 阶段⓪命中即秒开（auc=竞价腿 / close=收盘腿）',
+      note: 'leg=' + leg + ' 已落库，前端 20日涨幅 toggle 阶段⓪命中即秒开（auc=竞价腿 / close=收盘腿）；' +
+        '名单含补位票（近 20 个交易日早盘名单并集）',
     };
     console.log('[range20-precompute] done ' + JSON.stringify(stat));
     return json(stat);

@@ -66,6 +66,25 @@ export function _readHistoryValueFrom(rows, stockName, field) {
     if (field === 'volume') {
         return getNumericVolume(found.volume);
     }
+    // ★★ [EBB-TOPIC-BUG 2026-10-22] 【题材串】必须有自己的分支 —— 这是「主线16950首次退潮」的根因。
+    //
+    //   用户报障（10-22）：「提示板说 主线16950 新华传媒 首次退潮，这个不是首次了」。
+    //   实测 tvrb_ebb_days：10-21 行 leader_topic='26728'、10-22 行 leader_topic='16950'，
+    //   而 10-21 / 10-22 的新华传媒【都不在 watchlist 里】（停牌补位票）⇒ 采集层走
+    //   `getStockHistoryValue(prevDate, name, 'topics')` 取题材当退路。
+    //   ⛔ 旧实现【没有 'topics' 分支】⇒ 直接掉到函数末尾那句
+    //   `getNumericVolume(yest_volume)` 兜底 ⇒ 返回【昨日成交量】！
+    //   实测 26728 / 16950 正是新华传媒 10-20 / 10-21 的 yest_volume（单位万股）——
+    //   于是「题材」变成了一个数字，按题材认亲全部落空 ⇒ 退潮事件数 0 ⇒ 误判成【首次退潮】。
+    //
+    // ⚠️ 这是一次典型的「猜字段」事故（§40）：调用方按名字取 'topics'，读取器却不认识它，
+    //   而末尾那个 yest_volume 兜底又【恰好能返回一个数字】⇒ 不报错、不告警、静默错值。
+    //   ⇒ 今后任何新字段都必须显式分支；末尾兜底只服务 yest_volume 一种语义。
+    if (field === 'topics') {
+        // auction_watchlist.topics（云端 snake_case；本地手工行偶有 camelCase）—— 空串 ⇒ null（§10 不补值）
+        const raw = found.topics != null ? String(found.topics) : (found.topicsText != null ? String(found.topicsText) : '');
+        return raw.trim() !== '' ? raw.trim() : null;
+    }
     // 本地内存行常用 camelCase yestVolume，云端/历史表用 snake_case yest_volume，两者都要兼容
     return getNumericVolume(found.yest_volume || found.yestVolume);
 }
