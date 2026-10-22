@@ -359,6 +359,14 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
             }
             if (best && best.keep.size > 0) {
                 out.set(name, best.keep);
+            }
+            // [TREND-PATCH-FIX 2026-10-22] 可选出口（openOut/volOut）不再绑定 keep.size>0：
+            //   盘中拉「今天」的 K 线 ⇒ 上游无今天 bar ⇒ keep.size===0 ⇒ 此前三个出口全不 set，
+            //   连【昨天 bar 里的成交量】（yestVolume 的唯一来源）也被一并丢弃 ⇒ 补位票
+            //   趋势图当天整体断点（新华传媒 10-22 实证）。这是【类】问题：所有「目标日无 K 线 bar」
+            //   的补缺请求都命中。可选出口是消费方按 ymd 取值的超集（缺天取到 null，§10 不补 0），
+            //   多给不改变语义；主返回 out 保持原条件不动（保护十日涨幅等既有调用方，§11）。
+            if (best) {
                 if (openOut && best.openKeep) openOut.set(name, best.openKeep);
                 // [TREND-PATCH 2026-10-21] 成交量腿随最佳一趟一起交付（同一根 K 线，零额外请求）
                 if (volOut && best.volKeep) volOut.set(name, best.volKeep);

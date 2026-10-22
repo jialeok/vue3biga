@@ -7,8 +7,17 @@
 //     10-16: vol=81806100 股, close=14.15
 //     10-19: vol=80381300 股, open=12.75, close=12.74
 //     10-20: vol=96742200 股, open=11.96, close=13.62
-import { describe, it, expect } from 'vitest';
-import { computeKlineDayPatch } from './trend-patch.js';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { computeKlineDayPatch, ensureTrendPatch } from './trend-patch.js';
+import { fuyaoApiGet } from '../../data/api/fuyao-proxy.js';
+import { fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
+
+// [TREND-PATCH-FIX 2026-10-22] mock 上游两腿：K 线腿 / 快照腿（ensureTrendPatch 集成语义）
+vi.mock('../../data/api/fuyao-proxy.js', async (importOriginal) => {
+    const actual = await importOriginal();
+    return Object.assign({}, actual, { fuyaoApiGet: vi.fn() });
+});
+vi.mock('../../data/stock-range-pct.js', () => ({ fetchFuyaoDailyPctRange: vi.fn() }));
 
 describe('trend-patch · computeKlineDayPatch（K线腿换算，复刻时代万恒 10-20 实例）', () => {
   // 与探针逐字节一致的 K 线 series（键 = YYYYMMDD，量 = 股）
@@ -79,4 +88,84 @@ describe('trend-patch · computeKlineDayPatch（K线腿换算，复刻时代万�
     const r = computeKlineDayPatch('20261020', null, null, v);
     expect(r.yestVolume).toBeNull();
   });
+});
+
+// ============================================================
+// [TREND-PATCH-FIX 2026-10-22] ensureTrendPatch 集成语义（复刻新华传媒 600825 · 10-22 报障）：
+//   ① K 线腿盘中拉「今天」⇒ 上游无今天 bar ⇒ 主返回 keep 为空，但 openOut/volOut
+//      （修复后的超集出口）仍交付昨天 bar ⇒ yestVolume 必须能算出；
+//   ② 快照腿请求 thscodes【必须带交易所后缀】（裸 6 位码上游返 code:1002 ⇒ 整腿 throw）；
+//   ③ 响应 item.thscode 带【.SH 后缀】⇒ codeOf 双键匹配 ⇒ 当日竞价量/竞价涨幅/量比补上。
+// 「今天」用真实北京时间当天（ensureTrendPatch 内部按 _beijingTodayYmd 判定，不可注入）。
+// ============================================================
+describe('trend-patch · ensureTrendPatch 集成（快照腿带后缀 + 双键匹配 + K线腿超集出口）', () => {
+    const todayYmd = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+    const todayYmdKey = todayYmd.replace(/-/g, '');
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+    });
+
+    it('复刻 10-22：K线今天无bar（keep空、volOut有昨天）+ 快照带后缀 ⇒ 五腿全补上', async () => {
+        // K 线腿 mock：模拟修复①后的交付形状 —— 主返回空（今天无 bar），openOut/volOut 超集交付
+        fetchFuyaoDailyPctRange.mockImplementation(async (list, dates, opts) => {
+            if (opts && opts.volOut) {
+                opts.volOut.set('新华传媒', new Map([
+                    ['20261021', 52000000],
+                    [todayYmdKey, 61000000]   // 盘中其实没有今天 bar，多给无害（按 ymd 取值）
+                ]));
+            }
+            if (opts && opts.openOut) opts.openOut.set('新华传媒', new Map());
+            return new Map();   // keep 为空 ⇒ changePct/aucPctChg 该日 null（§10 不补 0）
+        });
+        // 快照腿 mock：断言请求带后缀 + 响应 thscode 带后缀（真实上游形状）
+        // ⚠️ mock 语义 = 真 fuyaoApiGet：返回【data 字段本身】（code!==0 时真实现会 throw）
+        fuyaoApiGet.mockImplementation(async (path, params) => {
+            expect(path).toBe('/api/a-share/auction/snapshot');
+            expect(params.stage).toBe('final');
+            expect(params.thscodes).toBe('600825.SH');   // ← 修复②核心断言（裸码 600825 = code:1002）
+            return {
+                timestamp: Date.now(),                   // 服务端时间 = 今天 ⇒ 过日期闸门
+                data_status: 'final',
+                item: [{
+                    thscode: '600825.SH',                // ← 带后缀响应（修复③双键匹配）
+                    ticker: '600825',
+                    name: '新华传媒',
+                    auction_volume: 36365.21,            // 手
+                    auction_pct: -1.8553,
+                    auction_volume_ratio: 1.37
+                }]
+            };
+        });
+
+        const result = await ensureTrendPatch(
+            [{ stock: '新华传媒', code: '600825' }],
+            new Map([['新华传媒', [todayYmd]]])
+        );
+
+        const day = result.get('新华传媒').get(todayYmd);
+        expect(day.volume).toBeCloseTo(363.6521, 3);    // 36365.21 手 ÷ 100 = 万股
+        expect(day.aucPctChg).toBeCloseTo(-1.8553, 4);  // 快照 auction_pct 优先
+        expect(day.aucVolRatio).toBeCloseTo(1.37, 5);
+        expect(day.yestVolume).toBeCloseTo(5200, 0);    // 10-21 量 52000000 股 → 5200 万股（K线腿超集出口）
+        expect(day.changePct).toBeNull();                // 今天无 bar ⇒ null（§10 宁缺勿错）
+    });
+
+    it('快照闸门（data_status≠final）⇒ 当日竞价量不补，K线腿照常交付', async () => {
+        fetchFuyaoDailyPctRange.mockImplementation(async (list, dates, opts) => {
+            if (opts && opts.volOut) opts.volOut.set('测试股', new Map([['20261021', 10000000]]));
+            return new Map();
+        });
+        fuyaoApiGet.mockResolvedValue({
+            timestamp: Date.now(), data_status: 'not_ready', item: []
+        });
+
+        const result = await ensureTrendPatch(
+            [{ stock: '测试股', code: '000001' }],
+            new Map([['测试股', [todayYmd]]])
+        );
+        const day = result.get('测试股').get(todayYmd);
+        expect(day.volume).toBeNull();                   // 闸门拒绝 ⇒ 不补（防跨日写错）
+        expect(day.yestVolume).toBeCloseTo(1000, 0);     // K 线腿不受影响
+    });
 });

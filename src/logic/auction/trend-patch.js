@@ -35,7 +35,7 @@
 // @returns {Promise<Map<string, Map<string, {aucPctChg,changePct,yestVolume,volume,aucVolRatio}>>>}
 //          股票名 -> (日期 -> 补缺值；拿不到的字段为 null —— 调用方只用来填 null 位)
 import { fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
-import { fuyaoApiGet } from '../../data/api/fuyao-proxy.js';
+import { fuyaoApiGet, tickerToThscode } from '../../data/api/fuyao-proxy.js';
 import { _dbgLog } from '../../data/debug-log.js';
 
 // 会话缓存：'股票名|YYYY-MM-DD' -> 补缺值对象（含 null 字段 = 「真的没有」，防重复请求 §32）。
@@ -174,7 +174,14 @@ export function ensureTrendPatch(items, missingByStock, opts) {
         const todayWant = want.filter(function(w) { return w.days.indexOf(todayYmd) >= 0; });
         if (todayWant.length > 0) {
             try {
-                const snap = await _fetchAuctionSnapshotItems(todayWant.map(function(w) { return w.code; }));
+                // [TREND-PATCH-FIX 2026-10-22] 快照接口的 thscodes 参数【必须带交易所后缀】
+                //   （thscode 格式）：传 6 位裸码实测返回 code:1002（上游错误）⇒ fuyaoApiGet throw
+                //   ⇒ 快照腿整腿失败 ⇒ 当日竞价量/竞价涨幅/量比恒补不上（新华传媒 10-22 实证，
+                //   600825 裸码 1002 / 600825.SH 成功 data_status=final）。这是【类】问题：
+                //   所有走快照腿的补缺请求都命中，⛔ 不是单只票特例。K 线腿两码通吃、不用改。
+                const snap = await _fetchAuctionSnapshotItems(todayWant.map(function(w) {
+                    return tickerToThscode(w.code);
+                }));
                 // 🔴 双重日期闸门（与 worker runTodaySnapshotPatch 同一条安全约束）：
                 //   ① data_status === 'final' —— 竞价终态才算数。实测 00:34 打开时快照仍挂着
                 //      【上一交易日】的竞价（data_status='not_ready'）⇒ 不闸门就会把昨天的竞价量
@@ -187,7 +194,15 @@ export function ensureTrendPatch(items, missingByStock, opts) {
                         ' 服务端日=' + snapYmd + ' 目标日=' + todayYmd + '）⇒ 当日竞价量本次补不上');
                 } else {
                     const codeOf = {};
-                    todayWant.forEach(function(w) { codeOf[w.code] = w.stock; });
+                    // [TREND-PATCH-FIX 2026-10-22] 双键登记：响应 item.thscode 带【.SH/.SZ 后缀】
+                    //   （实测 "600825.SH"），此前只登记 6 位裸码键 ⇒ 即使请求成功也静默匹配失败。
+                    //   两键都指同一股票名，后缀/裸码命中皆可（双保险 bug 的第二处）。
+                    todayWant.forEach(function(w) {
+                        const bare = String(w.code || '').trim();
+                        codeOf[bare] = w.stock;
+                        const ths = tickerToThscode(bare);
+                        if (ths !== bare) codeOf[ths] = w.stock;
+                    });
                     (snap.items || []).forEach(function(it) {
                         if (!it || !it.thscode) return;
                         const name = codeOf[it.thscode];
