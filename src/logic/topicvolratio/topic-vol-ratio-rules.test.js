@@ -2665,6 +2665,43 @@ describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新
     expect(p.actionNote).toContain('新周期');
   });
 
+  it('★ 名次文案必须跟数据走：第 6 名时⛔ 绝不许写「上到前五」（2026-10-22 用户当场抓到的表述错误）', function() {
+    // 前八：前 5 只全不合格（老龙一 / 已上过前五 / 同题材），新龙落在第 6 名
+    const WIDE = [
+      { name: '新华传媒', code: '600825', topic: 'AI应用', pct: 188.12, rank20: 1 },
+      { name: '九阳股份', code: '002242', topic: '大消费', pct: 133.69, rank20: 2 },
+      { name: '慈文传媒', code: '002343', topic: 'AI应用', pct: 80.10, rank20: 3 },
+      { name: '新华文轩', code: '601811', topic: 'AI应用', pct: 75.50, rank20: 4 },
+      { name: '粤传媒', code: '002181', topic: 'AI应用', pct: 70.00, rank20: 5 },
+      { name: '冰山冷热', code: '000530', topic: '电子通信算力', pct: 87.18, rank20: 6 }
+    ];
+    const plan = build({ ebbCtx: { ready: false, top5: TOP5, newDragonPool: WIDE } });
+    expect(plan.newDragon).not.toBeNull();
+    const p = plan.newDragon.picks[0];
+    expect(p.name).toBe('冰山冷热');
+    // 前五才有「总龙N」标；第 6 名如实写「20日涨幅第 6 名」（⛔ 不出现 totalDragonLabel 的 '' 与「总龙?」）
+    expect(p.dragonLabel).toBe('');
+    expect(plan.newDragon.reason).toContain('20日涨幅第 6 名');
+    expect(plan.newDragon.reason).not.toContain('总龙?');
+    // 名次文案：写「今日排名第 6 名」，⛔ 不再有「上到前五」这种假话
+    expect(plan.newDragon.reason).toContain('今日排名第 6 名');
+    expect(plan.newDragon.reason).not.toContain('上到前五');
+    expect(p.actionNote).toContain('今日排名第 6 名');
+    expect(p.actionNote).not.toContain('上到前五');
+    expect(plan.notes.join('\n')).not.toContain('总龙?');
+  });
+
+  it('★ 历史榜只覆盖 8/20 天 ⇒ 文案必须同时写出窗口与实际覆盖（⛔ 不许把 8 说成 20）', function() {
+    const plan = build();                    // top5HistoryDays: 8
+    // 窗口口径是 20 个交易日（NEW_DRAGON_LOOKBACK_DAYS），实际只有 8 天有落库行
+    expect(plan.newDragon.reason).toContain('8 个交易日');
+    expect(plan.newDragon.reason).toContain('实际覆盖 8/20 天');
+    // 覆盖足 20 天时不加这句（避免天天挂一句噪音）
+    const full = build({ top5HistoryDays: 20 });
+    expect(full.newDragon.reason).toContain('20 个交易日');
+    expect(full.newDragon.reason).not.toContain('实际覆盖');
+  });
+
   it('★ 常规侧【收紧】：只选一个题材、只取一只，且跳过老题材与新龙题材', function() {
     const plan = build();
     expect(plan.blocks).toHaveLength(1);             // ← 只有一个题材（默认是 2）

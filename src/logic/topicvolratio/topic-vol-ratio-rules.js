@@ -1855,6 +1855,61 @@ export const NEW_DRAGON_TOP_N = 8;
 export const NEW_DRAGON_LOOKBACK_DAYS = 20;
 
 /**
+ * 【纯函数】文案：历史榜窗口的描述 —— **必须如实暴露覆盖度**。
+ *
+ * 🔴 2026-10-22 用户当场质问「这个不是算20个交易日吗？为什么说是8个交易日？」：
+ *   判定窗口确实是 20 个交易日（`NEW_DRAGON_LOOKBACK_DAYS = 20`，组合式按交易日历往前取 20 天），
+ *   但落库表 `stock_range20_pct` 当时**只有 8 天有行**（该能力 2026-10-12 才上线）⇒
+ *   `readTop5History` 的 `days` = 8，文案如实写 8。
+ *   ⛔ 绝不能为了"看起来对"改写成 20 —— 那是把「没查过」伪装成「查过且没上榜」（§10 红线）。
+ *   ⇒ 正解 = 把【窗口 20 / 实际 8】两个数同时写出来，用户一眼就能看出是数据缺口而不是算错。
+ *
+ * @param {number} windowDays 历史榜实际覆盖天数
+ * @returns {string}
+ */
+function _windowTextOf(windowDays) {
+  const n = Math.floor(Number(windowDays) || 0);
+  if (n <= 0) return '（历史榜未读到）';
+  if (n >= NEW_DRAGON_LOOKBACK_DAYS) return n + ' 个交易日';
+  return n + ' 个交易日（实际覆盖 ' + n + '/' + NEW_DRAGON_LOOKBACK_DAYS + ' 天）';
+}
+
+/**
+ * 【纯函数】文案：这只票【今天】在 20日涨幅榜上的名次。
+ *
+ * 🔴 2026-10-22 用户当场质问「你不是说按照当天竞价冰山冷热排在第六吗？现在怎么是排在前五？」
+ *   根因 = 旧文案**硬编码**「【首次】上到前五」，而判定允许从【前八】里挑（用户口径「改用排名前八的」）
+ *   ⇒ 只要选中的是新龙榜第 6/7/8 名，那句「上到前五」就是**假话**。
+ *   ⚠️ 另一个诱因是口径随时钟切换：同一只票 9:25 竞价口径可能第 6 名、收盘口径第 3 名
+ *     （`resolveT20LegMode`：<15:00 走 auc，≥15:00 走 close）⇒ 同一个屏幕早晚看到的"名次"本来就会变。
+ *   ⇒ 文案一律写【今日排名第 K 名】，把名次交给数据说话，⛔ 不再出现任何"上到前五"的断言。
+ *
+ * @param {number} rank20 今日名次（1 起）
+ * @returns {string}
+ */
+function _todayRankPhrase(rank20) {
+  const r = Math.floor(Number(rank20) || 0);
+  return r > 0 ? ('今日排名第 ' + r + ' 名') : '今日排名未定';
+}
+
+/**
+ * 【纯函数】文案：名次标签。
+ *
+ * 🔴 为什么需要：`totalDragonLabel` 只定义了 1~5（第 6 名及以后返回 `''`），而本规则的候选池是
+ *   【前八】⇒ 选中的是新龙榜第 6/7/8 名时，旧文案会把标签渲染成 **`总龙?`**（2026-10-22 实测）。
+ *   ⇒ 前五照旧用「总龙一~五」；第 6~8 名如实写「20日涨幅第 K 名」；再往后写「榜外」。
+ *
+ * @param {number} rank20
+ * @returns {string}
+ */
+function _rankLabelOf(rank20) {
+  const r = Math.floor(Number(rank20) || 0);
+  if (r <= 0) return '20日涨幅榜外';
+  const lb = totalDragonLabel(r);
+  return lb || ('20日涨幅第 ' + r + ' 名');
+}
+
+/**
  * 【纯函数】切换日判定：二次确认退潮是否正好发生在前两个交易日。
  *
  * @param {Array<{date:string, prevDate:string, leaderStock:string, leaderTopic:string, ebb:boolean}>|null} ebbHistory
@@ -1948,14 +2003,16 @@ export function pickNewDragon(top5, everInTop5, info) {
       continue;
     }
     if (ever.has(name)) {
-      trail.push({ name: name, rank20: rank20, picked: false, reason: '近 ' + windowDays + ' 个交易日内已上过前五 ⇒ 不是首次上榜' });
+      trail.push({ name: name, rank20: rank20, picked: false, reason: '近 ' + _windowTextOf(windowDays) + '已上过前五 ⇒ 不是首次上榜' });
       continue;
     }
     if (lt && _sameTopicLoose(tp, lt, coreRes)) {
       trail.push({ name: name, rank20: rank20, picked: false, reason: '与老龙一同题材（' + lt + '）⇒ 老周期，退潮后不买' });
       continue;
     }
-    trail.push({ name: name, rank20: rank20, picked: true, reason: '近 ' + windowDays + ' 个交易日内【首次】上到前五 + 与老龙一【不同题材】⇒ 新龙（老龙→新龙交接）' });
+    trail.push({ name: name, rank20: rank20, picked: true,
+      reason: '近 ' + _windowTextOf(windowDays) + '【首次】进入 20日涨幅前列（此前未进前五）+ '
+        + _todayRankPhrase(rank20) + ' + 与老龙一【不同题材】⇒ 新龙（老龙→新龙交接）' });
     pick = c;
   }
   return { pick: pick, trail: trail, oldTopic: lt };
@@ -2004,9 +2061,9 @@ function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tierPick) 
     position: ''
   }];
 
-  const windowText = (Number(windowDays) > 0) ? (windowDays + ' 个交易日') : '（历史榜未读到）';
+  const windowText = _windowTextOf(windowDays);
   const trailText = (nd.trail || []).map(function(t) {
-    return '【' + (totalDragonLabel(Number(t.rank20) || 0) || '总龙?') + t.name + '】' + t.reason;
+    return '【' + _rankLabelOf(t.rank20) + t.name + '】' + t.reason;
   }).join('；');
 
   const block = {
@@ -2021,8 +2078,9 @@ function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tierPick) 
     pickRank: null,
     reason: '【' + SWITCH_RULE_NO + '】切换日新龙：' + (oldTopic) + '（老龙一 ' + (switchDay.leaderName || '—') +
       '）二次确认退潮后的第 2 个交易日 ⇒ 老周期结束。' + name + '（' + (topic || '—') +
-      '，20日涨幅 ' + formatRangePct(_num(p.pct)) + '，' + (totalDragonLabel(Number(p.rank20) || 0) || '总龙?') +
-      '）近 ' + windowText + '【首次】上到前五、且与老龙一【不同题材】⇒ 新龙（老龙→新龙交接）。',
+      '，20日涨幅 ' + formatRangePct(_num(p.pct)) + '，' + _rankLabelOf(p.rank20) +
+      '）近 ' + windowText + '【首次】进入前列（此前未进前五），' + _todayRankPhrase(p.rank20) +
+      '，且与老龙一【不同题材】⇒ 新龙（老龙→新龙交接）。',
     mode: 'newdragon',
     ruleNo: SWITCH_RULE_NO,
     isCandidate: false,
@@ -2033,7 +2091,9 @@ function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tierPick) 
     notes: [
       '【新龙怎么选】= 今日 20日涨幅前八（前五不够就顺延到前八）自上而下：跳过老龙一自己 → ' +
         '跳过非主板 / 竞价一字 / 停牌（买不进）→ 跳过近 ' + windowText +
-        ' 已上过前五的（不是首次上榜）→ 跳过与老龙一同题材的（老周期）⇒ 剩下第一只即新龙。',
+        ' 已上过前五的（不是首次上榜）→ 跳过与老龙一同题材的（老周期）⇒ 剩下第一只即新龙。'
+        + '⚠️ 名次按【当前时点】口径：15:00 前 = 前 19 日收盘 × 今日竞价（auc），15:00 后 = 20 日全收盘（close）'
+        + '—— 同一只票早晚名次会不一样，属正常。',
       (trailText ? ('八只去留（判定可追溯）：' + trailText + '。') : ''),
       '⚠️ 常规侧同日【收紧】：切换日只选一个题材、只取一只（排名最前且数量达标，退潮题材与新龙题材跳过）'
         + (tierPick ? ('——本日常规那只 = ' + tierPick + '。') : '。')
@@ -2052,7 +2112,7 @@ function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tierPick) 
     row.position = '';
     row.actionNote = '【第二十八条 · 新龙】' + oldTopic + '（老龙一 ' + (switchDay.leaderName || '—') +
       '）二次确认退潮后第 2 个交易日 = 切换日：老周期结束、新周期开启。它近 ' + windowText +
-      '【首次】上到 20日涨幅前五，且与老龙一【不同题材】（' + (topic || '—') + '）⇒ 判定为新龙。' +
+      '【首次】进入前列（此前未进前五），' + _todayRankPhrase(p.rank20) + '，且与老龙一【不同题材】（' + (topic || '—') + '）⇒ 判定为新龙。' +
       (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : '') +
       ' 切换日买点侧只有【新龙】+ 常规收紧后的那【一只】（第二十八条）。';
   });
