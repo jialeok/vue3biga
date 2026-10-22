@@ -28,9 +28,9 @@
 //
 // 数据源（只读既有表 + 只写既有结果表，⛔ 不新增/不修改其它任何数据源）：
 //   读  auction_watchlist  （date=今天 的正式名单：stock / code / change_pct）
-//   读  stock_range20_pct  （★[R20-POOL 2026-10-22] 最近 3 个交易日的票 = 补位票池：前五里不在当天
-//                           名单的票（停牌补位 / 已移出名单的旧龙头，10-22 实测总龙一 新华传媒就不在
-//                           当天名单里）原先只有前端打开看板才补算 ⇒ 两条 cron 都不覆盖它们）
+//   读  stock_range20_pct  （★[R20-POOL 2026-10-22] 最近 1 个榜日 pct 前 40 名 = 补位票池：前五里不在
+//                           当天名单的票（停牌补位 / 已移出名单的旧龙头，10-22 实测总龙一 新华传媒
+//                           就不在当天名单里）原先只有前端打开看板才补算 ⇒ 两条 cron 都不覆盖它们）
 //   读  stockcodemap       （★[R20-POOL] 补位票 code 缺失时的一次性批查；name→code 唯一真相源）
 //   读  stock_range20_pct  （当天已有同 leg 行 ⇒ 跳过，幂等重跑不重复烧上游）
 //   写  stock_range20_pct  （on_conflict=date,stock，列与前端 upsertRange20Rows 完全一致）
@@ -40,6 +40,9 @@
 //   · 名单就绪即开抓（不等 runMorning 全链路跑完）；
 //   · 并发 3（上游实测约束：并发 5 会截断/熔断）+ 每完成一批立即 upsert
 //     ⇒ 即使函数超时被打断，已算部分也已在库里、前端照常命中；
+//   · ★[R20-RATE 2026-10-22] 上游限流（`Rate limit exceeded ... Retry after Ns`）单独处理：
+//     ⛔ 不计入熔断计数（原来一次限流就把整轮砍掉），先攒进 retryLater，主循环结束后
+//     单线程 + 700ms 间隔串行补跑；补跑仍吃总预算，超时就停（幂等，下一轮/前端接着补）。
 //   · 总预算闸门（190s）：超时停止抓取、flush 已有、返回 partial 统计。
 
 const TOKEN = 'range20-cron-2026'; // 防匿名滥用触发烧上游；与 create_range20_cron.sql 里保持一致
@@ -57,6 +60,12 @@ const CIRCUIT_LIMIT = 6;         // 与前端 CIRCUIT_LIMIT 一致（连续失�
 const WATCHLIST_WAIT_MS = 45000; // 等 9:25 名单落库（runMorning P0 同在 09:25 触发，有先后竞态）
 const WATCHLIST_POLL_MS = 5000;
 const TOTAL_BUDGET_MS = 190000;  // 总预算：超时保全已算部分（免费档 wall clock 上限内）
+// ★ [R20-RATE 2026-10-22] 补位池规模：只取【最近 1 个榜日】的 pct 前 N 名。
+//   10-22 实测：「近 7 个自然日并集」把名单从 75 涨到 158 ⇒ 上游 43 秒内限流，熔断后只写 29 只。
+//   补位票必然是排名很高的票（否则进不了前五），前 40 名足够覆盖今天前五的所有候选。
+const POOL_TOP_N = 40;
+// ★ [R20-RATE] 被限流那批的串行补跑间隔（把峰值速率压到上游阈值以下）
+const RATE_RETRY_GAP_MS = 700;
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -303,28 +312,36 @@ Deno.serve(async (req: Request) => {
       const lastRows = Array.isArray(lastGot) ? (lastGot as Array<Record<string, unknown>>) : [];
       const lastDate = String((lastRows[0] && lastRows[0].date) ?? '').trim();
       if (lastDate) {
-        const poolStart = new Date(Date.parse(lastDate + 'T00:00:00+08:00') - 7 * 86400000)
-          .toISOString().slice(0, 10);
+        // ★ [R20-RATE 2026-10-22] 只取【最近 1 个榜日】且只取【pct 前 POOL_TOP_N 名】：
+        //   10-22 实测教训 —— 取「近 7 个自然日的并集」把名单从 75 涨到 158，todo 83 只，
+        //   上游 43 秒内就返回 `Rate limit exceeded`，熔断后只写完 29 只（比不扩容更差）。
+        //   口径依据：补位票必然是【20日涨幅排名很高】的票（否则它进不了前五），
+        //   所以「昨天榜的前 40 名」足以覆盖今天前五的所有候选，且请求量回到原来的量级。
+        //   ⚠️ pct 是【字符串列】（'87.18'），⛔ 不能靠 order=pct.desc 排序（字典序：'9' > '87'），
+        //      必须在内存里 Number() 后排序。
         const got = await sbRest(
           'GET',
-          '/rest/v1/stock_range20_pct?select=stock&date=gte.' + poolStart + '&date=lt.' + today +
-            '&order=date.desc&limit=800',
+          '/rest/v1/stock_range20_pct?select=stock,pct&date=eq.' + lastDate + '&limit=500',
         );
         const poolRows = Array.isArray(got) ? (got as Array<Record<string, unknown>>) : [];
+        const scored = poolRows
+          .map((r) => ({ stock: String((r && r.stock) ?? '').trim(), pct: parsePct(r && r.pct) }))
+          .filter((r) => !!r.stock && r.pct !== null)
+          .sort((a, b) => (b.pct as number) - (a.pct as number))
+          .slice(0, POOL_TOP_N);
         let added = 0;
-        for (const r of poolRows) {
-          const name = String((r && r.stock) ?? '').trim();
-          if (!name || seen.has(name)) continue;
-          seen.add(name);
+        for (const r of scored) {
+          if (seen.has(r.stock)) continue;
+          seen.add(r.stock);
           targets.push({
-            stock: name,
+            stock: r.stock,
             code: '',       // 结果表没有 code 列 ⇒ 下面一次性批查 stockcodemap
             aucPct: null,   // ⛔ 历史日的涨幅绝不能拿来当今天的竞价腿
             from: 'pool',
           });
           added++;
         }
-        console.log('[range20-precompute] 补位池 ' + poolStart + '~' + lastDate + ' 命中 ' + added +
+        console.log('[range20-precompute] 补位池 ' + lastDate + ' 前 ' + POOL_TOP_N + ' 名命中 ' + added +
           ' 只（名单合计 ' + targets.length + '）');
       } else {
         console.log('[range20-precompute] 补位池：表里还没有任何历史榜 ⇒ 本次只算当天名单');
@@ -372,6 +389,9 @@ Deno.serve(async (req: Request) => {
     let failed = 0;
     let circuitBreak = false;
     let consecutiveFail = 0;
+    // ★ [R20-RATE 2026-10-22] 被上游限流挡下的票（不计熔断，主循环结束后串行补跑）
+    let rateLimited = 0;
+    const retryLater: Array<{ stock: string; code: string; aucPct: number | null; from: string }> = [];
     const failures: string[] = [];
     const buffer: Array<Record<string, unknown>> = [];
 
@@ -418,9 +438,21 @@ Deno.serve(async (req: Request) => {
             failures.push(t.stock + '(no legs)'); // T 腿/历史腿拿不到 ⇒ 不写（宁缺勿错）
           }
         } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          // ★★ [R20-RATE 2026-10-22] 上游限流 ≠ 上游坏了 —— 必须分开处理：
+          //   10-22 实测：83 只 todo，前 29 只正常，之后连续 9 条
+          //   `Rate limit exceeded for trace ... Retry after 38s`，被当成「连续失败」触发熔断，
+          //   整轮直接砍掉（只写 29 只）。但下一轮手动重跑立刻又能写 ⇒ 说明只是**速率**问题。
+          //   ⇒ 限流【不计入熔断计数】（否则一次限流就废掉整轮），先攒起来，主循环结束后
+          //     用单线程 + 间隔把它们补跑掉（见下方 retryLater 段）。
+          if (/rate limit/i.test(msg)) {
+            rateLimited++;
+            retryLater.push(t);
+            continue;
+          }
           failed++;
           consecutiveFail++;
-          failures.push(t.stock + '(' + (e instanceof Error ? e.message : String(e)) + ')');
+          failures.push(t.stock + '(' + msg + ')');
           if (consecutiveFail >= CIRCUIT_LIMIT) {
             circuitBreak = true;
             console.error('[range20-precompute] 连续 ' + consecutiveFail + ' 只失败 ⇒ 熔断，停止剩余请求');
@@ -432,22 +464,70 @@ Deno.serve(async (req: Request) => {
     await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
     await flush();
 
+    // ★★ [R20-RATE 2026-10-22] 限流那批的【串行补跑】：单线程 + 每次间隔 RATE_RETRY_GAP_MS，
+    //   把峰值速率压到上游限流阈值以下。仍然吃总预算 —— 超时就停，已写的照常保留（幂等）。
+    let retried = 0;
+    let retryFailed = 0;
+    if (retryLater.length > 0) {
+      console.log('[range20-precompute] ⚠️ 限流 ' + retryLater.length + ' 只 ⇒ 串行补跑（间隔 ' +
+        RATE_RETRY_GAP_MS + 'ms）');
+    }
+    for (let i = 0; i < retryLater.length; i++) {
+      if (Date.now() - t0 > TOTAL_BUDGET_MS) {
+        retryFailed += retryLater.length - i;
+        console.warn('[range20-precompute] 补跑到总预算上限，剩余 ' + (retryLater.length - i) + ' 只留给下一轮/前端');
+        break;
+      }
+      const t = retryLater[i];
+      await sleep(RATE_RETRY_GAP_MS);
+      try {
+        const item = await fetchKlineBars(thscode(t.code), startMs, endMs);
+        const row = computeRange20(barsToSeries(item), today, leg, t.aucPct);
+        if (row) {
+          await sbRest('POST', '/rest/v1/stock_range20_pct?on_conflict=date,stock', [{
+            date: today,
+            stock: t.stock,
+            pct: row.pct,
+            days: row.days,
+            leg: leg,
+            updated_at: new Date().toISOString(),
+          }]);
+          written++;
+          retried++;
+        } else {
+          retryFailed++;
+          failures.push(t.stock + '(no legs)');
+        }
+      } catch (e) {
+        retryFailed++;
+        const m = e instanceof Error ? e.message : String(e);
+        failures.push(t.stock + '(补跑仍失败: ' + m + ')');
+      }
+    }
+    if (retryLater.length > 0) {
+      console.log('[range20-precompute] 限流补跑完成：成功 ' + retried + '，仍失败 ' + retryFailed);
+    }
+
     const stat = {
       ok: true,
       date: today,
       leg,
       watchlist: targets.length,
-      // ★ [R20-POOL 2026-10-22] 名单里有多少只是【补位票】（不在当天名单、靠近 20 日名单并集补进来的）
+      // ★ [R20-POOL 2026-10-22] 名单里有多少只是【补位票】（不在当天名单、靠最近榜日前 N 名补进来的）
       poolAdded: targets.filter((t) => t.from === 'pool').length,
       poolError,
       todo: todo.length,
       written,
       failed,
+      // ★ [R20-RATE] 限流与补跑：rateLimited = 第一轮被限流挡下的只数；retried/retryFailed = 串行补跑结果
+      rateLimited,
+      retried,
+      retryFailed,
       circuitBreak,
       elapsedMs: Date.now() - t0,
       failures: failures.slice(0, 30),
       note: 'leg=' + leg + ' 已落库，前端 20日涨幅 toggle 阶段⓪命中即秒开（auc=竞价腿 / close=收盘腿）；' +
-        '名单含补位票（近 20 个交易日早盘名单并集）',
+        '名单含补位票（最近榜日 pct 前 ' + POOL_TOP_N + ' 名）；限流那批已串行补跑',
     };
     console.log('[range20-precompute] done ' + JSON.stringify(stat));
     return json(stat);
