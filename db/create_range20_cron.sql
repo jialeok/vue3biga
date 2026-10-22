@@ -73,3 +73,57 @@ select cron.schedule(
 -- 当天两腿结果行数（auc 与 close 各 ≈ 名单只数）：
 --   select leg, count(*), min(days), max(days) from stock_range20_pct
 --    where date = (now() at time zone 'Asia/Shanghai')::date group by leg;
+
+-- ============================================================================
+-- ⑤ 历史回补：把「20 个交易日」补齐（★ 一次性，用 Edge Function 的 ?date= 参数）
+--
+-- 背景（2026-10-22 实测）：stock_range20_pct 最早一行是 2026-10-12 ⇒ 表里只有 9 个交易日，
+--   而「20日涨幅前五 / 总龙一~五」的补位池要翻 20 个交易日 ⇒ 前 11 天是空的，
+--   断点直接体现为「宁波东力只有 2 天 / 三峡新材只有 1 天 / 冰山冷热 6 天」。
+--   ⚠️ 注意区分两件事（用户问过）：
+--     · 「20日涨幅的【数值】」来自同花顺 K 线（一次拉 100 个自然日）⇒ 一直是准的，与表里有几天无关；
+--     · 「表里的【记录】」是缓存 + 补位池 ⇒ 它只有 9 天。
+--   所以「数字对得上同花顺」和「表里只有 9 天」并不矛盾，缺的是【历史深度】，不是【算法】。
+--
+-- 20 个交易日窗口（10-22 往前数）：
+--   已有：10-12 10-13 10-14 10-15 10-16 10-19 10-20 10-21 10-22   （9 天）
+--   待补：10-09 10-08 09-30 09-29 09-28 09-25 09-24 09-23 09-22 09-21 09-18 （11 天）
+--
+-- ★ 纪律：必须【由旧到新】逐日跑（补位池取的是 date < 目标日 的榜日，前序没数据池就是空的）；
+--         每天一条命令，⛔ 不要并发（上游同花顺会限流，实测 43 秒内必熔断）。
+--         数据源是同花顺 K 线（经 fuyao-proxy）⇒ **零猫抓额度**。
+--
+-- 先干跑看目标对不对（不打上游，&dry=1）：
+--   curl -X POST '<URL>/functions/v1/range20-precompute?token=range20-cron-2026&date=2026-09-18&dry=1'
+-- 再逐日真跑（把 <URL> 换成 https://tonqfgeyxnnwicjopshn.supabase.co）：
+--   curl -X POST '...&date=2026-09-18'
+--   curl -X POST '...&date=2026-09-21'
+--   curl -X POST '...&date=2026-09-22'
+--   curl -X POST '...&date=2026-09-23'
+--   curl -X POST '...&date=2026-09-24'
+--   curl -X POST '...&date=2026-09-25'
+--   curl -X POST '...&date=2026-09-28'
+--   curl -X POST '...&date=2026-09-29'
+--   curl -X POST '...&date=2026-09-30'
+--   curl -X POST '...&date=2026-10-08'
+--   curl -X POST '...&date=2026-10-09'
+--
+-- 回补完成后自查（应看到 20 天、每天 close 行数 ≈ 当天名单只数）：
+--   select date, count(*) filter (where leg='close') as close_rows,
+--          count(*) filter (where leg='auc')   as auc_rows
+--     from stock_range20_pct
+--    where date >= '2026-09-18'
+--    group by date order by date;
+--
+-- 补位票「每天都有数据」自查（把 新华传媒 换成任意补位票名；应连续 20 行）：
+--   select date, leg, pct, days from stock_range20_pct
+--    where stock = '新华传媒' and date >= '2026-09-18' order by date;
+--
+-- 哪几天还缺（返回的行就是要补的日期）：
+--   with d as (select distinct date from stock_range20_pct where date >= '2026-09-18')
+--   select g::date as missing
+--     from generate_series('2026-09-18'::date, '2026-10-22'::date, '1 day') g
+--    where extract(isodow from g) < 6
+--      and g::date::text not in (select date from d);
+-- ============================================================================
+

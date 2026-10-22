@@ -27,14 +27,30 @@
 //   ③ 算不出的票【不写行】（§10 宁缺勿错，绝不写 0 冒充），留给前端补算。
 //
 // 数据源（只读既有表 + 只写既有结果表，⛔ 不新增/不修改其它任何数据源）：
-//   读  auction_watchlist  （date=今天 的正式名单：stock / code / change_pct）
-//   读  stock_range20_pct  （★[R20-POOL 2026-10-22] 最近 1 个榜日 pct 前 40 名 = 补位票池：前五里不在
-//                           当天名单的票（停牌补位 / 已移出名单的旧龙头，10-22 实测总龙一 新华传媒
-//                           就不在当天名单里）原先只有前端打开看板才补算 ⇒ 两条 cron 都不覆盖它们）
+//   读  auction_watchlist  （date=目标日 的正式名单：stock / code / change_pct）
+//   读  stock_range20_pct  （★★[R20-POOL20 2026-10-22] 补位票池 = **近 20 个榜日**并集，每票取它
+//                           【最近一次】的 pct，按 pct 降序取前 POOL_TOP_N 名。用户原话：
+//                           「翻开之前的20个交易日记录监测，看有没有漏掉的，如果发现排名前五的就补上去」。
+//                           ⚠️ 旧实现只翻「最近 1 个榜日的前 40 名」⇒ 一只票一旦那天掉出前 40，
+//                           之后就再也不会被 cron 算到（实测断点：宁波东力仅 2 天 / 冰山冷热 6 天 /
+//                           慈文传媒 8 天），「补进去的票每天都要有数据」无法保证。
+//                           翻 20 天仍只取 40 只 ⇒ 上游请求量与旧实现完全相同，不会触发限流。）
 //   读  stockcodemap       （★[R20-POOL] 补位票 code 缺失时的一次性批查；name→code 唯一真相源）
-//   读  stock_range20_pct  （当天已有同 leg 行 ⇒ 跳过，幂等重跑不重复烧上游）
+//   读  stock_range20_pct  （目标日已有同 leg 行 ⇒ 跳过，幂等重跑不重复烧上游）
 //   写  stock_range20_pct  （on_conflict=date,stock，列与前端 upsertRange20Rows 完全一致）
 //   上游 同花顺 K 线（经既有 fuyao-proxy Edge Function 代理，零新增密钥）
+//
+// ★★ [R20-BACKFILL 2026-10-22] 历史回补：`?date=YYYY-MM-DD` 指定目标日 T（缺省今天）。
+//   用途：把 stock_range20_pct 从「只有近 9 个交易日」补齐到「20 个交易日全覆盖」。
+//   实测 10-22：表最早一行 2026-10-12 ⇒ 20 交易日窗口（09-18 ~ 10-22）缺 11 天。
+//   规则：
+//     · 目标日 < 今天 ⇒ leg 缺省强制 'close'（历史日的「竞价腿」没有实时意义，竞价价 = 当日 open，
+//       只有显式 ?leg=auc 才按开盘价算）；
+//     · 历史日名单早已落库 ⇒ 不进入 45s 轮询等待；
+//     · 补位池取 `date < T` 的榜日 ⇒ **回补必须由旧到新逐日跑**，否则前序无数据、池为空。
+//   回补命令（每天一条，从旧到新）：
+//     curl -X POST '<URL>/functions/v1/range20-precompute?token=range20-cron-2026&date=2026-09-18'
+//   干跑（只列目标、不打上游）：追加 &dry=1
 //
 // 响应时间优化：
 //   · 名单就绪即开抓（不等 runMorning 全链路跑完）；
@@ -60,9 +76,13 @@ const CIRCUIT_LIMIT = 6;         // 与前端 CIRCUIT_LIMIT 一致（连续失�
 const WATCHLIST_WAIT_MS = 45000; // 等 9:25 名单落库（runMorning P0 同在 09:25 触发，有先后竞态）
 const WATCHLIST_POLL_MS = 5000;
 const TOTAL_BUDGET_MS = 190000;  // 总预算：超时保全已算部分（免费档 wall clock 上限内）
-// ★ [R20-RATE 2026-10-22] 补位池规模：只取【最近 1 个榜日】的 pct 前 N 名。
-//   10-22 实测：「近 7 个自然日并集」把名单从 75 涨到 158 ⇒ 上游 43 秒内限流，熔断后只写 29 只。
-//   补位票必然是排名很高的票（否则进不了前五），前 40 名足够覆盖今天前五的所有候选。
+// ★★ [R20-POOL20 2026-10-22] 补位池 = 近 POOL_LOOKBACK_DAYS 个榜日的并集。
+//   为什么不再只翻 1 天：用户「翻开之前的20个交易日记录监测，看有没有漏掉的，如果发现排名前五的就
+//   补上去」。旧口径（只翻最近 1 个榜日的前 40 名）会让「中途掉出前 40」的票彻底断供 ——
+//   实测 10-22 断点：宁波东力只有 10-21/10-22 两天、冰山冷热只有 6 天、慈文传媒 8 天。
+const POOL_LOOKBACK_DAYS = 20;
+// 并集去重后仍只取最强 POOL_TOP_N 只 ⇒ 上游请求量与旧实现完全相同（当天名单 ~43 + 补位 ~40）。
+//   ⚠️ 别调大：10-22 实测 158 只 todo 时上游 43 秒内就 `Rate limit exceeded`，熔断后只写完 29 只。
 const POOL_TOP_N = 40;
 // ★ [R20-RATE] 被限流那批的串行补跑间隔（把峰值速率压到上游阈值以下）
 const RATE_RETRY_GAP_MS = 700;
@@ -240,33 +260,52 @@ Deno.serve(async (req: Request) => {
     }
 
     const t0 = Date.now();
-    const today = todayYmd();
+    const params = url.searchParams;
+    // ★★ [R20-BACKFILL] 目标日 T：?date=YYYY-MM-DD 可指定历史日做回补，缺省今天。
+    //   ⚠️ 后面所有地方（名单查询 / 已有行幂等判据 / K 线窗口 / computeRange20 的 T 腿）都必须用
+    //     这个 `today`，⛔ 不能有哪一处仍用 todayYmd()，否则回补会写错日期。
+    const rawDate = String(params.get('date') ?? '').trim();
+    const isBackfill = /^\d{4}-\d{2}-\d{2}$/.test(rawDate);
+    const today = isBackfill ? rawDate : todayYmd();
 
     // 选腿：15:00 前 = 竞价口径（auc），15:00 后 = 收盘口径（close）——与前端 resolveT20LegMode 一致。
     // ?leg= 可强制指定（手动测试用）；强制值与时钟口径不同时也不出错（幂等按 leg 跳过）。
     let leg = beijingHhmm() < '15:00' ? 'auc' : 'close';
-    const forced = String(url.searchParams.get('leg') ?? '').trim();
+    const forced = String(params.get('leg') ?? '').trim();
     if (forced === 'auc' || forced === 'close') leg = forced;
+    // ★ [R20-BACKFILL] 回补历史日的缺省口径必须是 close：历史日的「竞价腿」是当日 09:25 那一刻的
+    //   实时语义，事后无从复原当年那个时钟；按开盘价算出来的是「开盘涨幅」，不是用户当年看到的数。
+    //   ⇒ 只有显式 ?leg=auc 才跑竞价腿，缺省一律归档收盘口径（与同花顺一致，复盘用）。
+    if (isBackfill && !forced) leg = 'close';
 
-    // ① 等待 9:25 名单落库（runMorning P0 与本函数同在 09:25 触发 → 轮询等它写完；
-    //    15:05 收盘那轮名单必然早已在库，此循环首轮即过）
-    let watchRows: Array<Record<string, unknown>> = [];
-    while (Date.now() - t0 < WATCHLIST_WAIT_MS) {
+    // ① 读 9:25 名单（历史回补：名单早已落库，读一次即可，⛔ 不要白等 45 秒）
+    const readWatch = async (): Promise<Array<Record<string, unknown>>> => {
       const got = await sbRest('GET', '/rest/v1/auction_watchlist?select=stock,code,change_pct&date=eq.' + today);
-      watchRows = Array.isArray(got) ? got as Array<Record<string, unknown>> : [];
-      if (watchRows.length > 0) break;
-      await sleep(WATCHLIST_POLL_MS);
+      return Array.isArray(got) ? got as Array<Record<string, unknown>> : [];
+    };
+    let watchRows = await readWatch();
+    if (!isBackfill && watchRows.length === 0) {
+      // runMorning P0 与本函数同在 09:25 触发 → 轮询等它写完（历史日不适用：名单早已在库）
+      while (Date.now() - t0 < WATCHLIST_WAIT_MS) {
+        await sleep(WATCHLIST_POLL_MS);
+        watchRows = await readWatch();
+        if (watchRows.length > 0) break;
+      }
     }
     if (watchRows.length === 0) {
       return json({
         ok: false,
-        reason: '等待名单超时（今日 auction_watchlist 无行：非交易日 / 名单抓取失败）',
+        reason: isBackfill
+          ? '目标日 auction_watchlist 无行（该日非交易日 / 名单从未落库）⇒ 无法回补'
+          : '等待名单超时（今日 auction_watchlist 无行：非交易日 / 名单抓取失败）',
         date: today,
+        backfill: isBackfill,
         leg,
         elapsedMs: Date.now() - t0,
       });
     }
-    console.log('[range20-precompute] ' + today + ' leg=' + leg + ' 名单就绪 ' + watchRows.length + ' 行，开始预计算');
+    console.log('[range20-precompute] ' + today + ' leg=' + leg + (isBackfill ? ' [回补]' : '')
+      + ' 名单就绪 ' + watchRows.length + ' 行，开始预计算');
 
     // 目标 = 当天正式名单（去重，先到先得；aucPct = change_pct 兜底竞价 T 腿，close 腿不用它）
     const targets: Array<{ stock: string; code: string; aucPct: number | null; from: string }> = [];
@@ -292,42 +331,66 @@ Deno.serve(async (req: Request) => {
     //   打开看板时】才补算并落库 ⇒ 9:25 / 15:05 两条 cron 一天都没覆盖过它们，
     //   于是「收盘腿覆盖竞价腿」对它们根本不会发生（表里要么缺行、要么停在前一天）。
     //
-    //   修法（不新增表、不改 worker 表、只读既有表）：
-    //     名单 = 当天正式名单 ∪ 「最近 3 个交易日的 stock_range20_pct 里出现过的票」
-    //   —— 后者就是【带「20天」标签的那批票】：20日涨幅前五天生只能从"已经算过 20 日涨幅的票"
-    //      里产生（没算过的票根本进不了榜）。补位票昨天/前天一定在榜里，所以它一定被捞得到；
-    //      而"从没进过榜的票"补它也没有意义（它不是前五）⇒ 池子自然收敛在 ~150 只，
-    //      不会像"30 天早盘名单并集"那样膨胀到上千只把 cron 预算烧光。
+    //   ★★ [R20-POOL20 2026-10-22 第二轮] 池子从「最近 1 个榜日 × 前 40」扩到
+    //      「近 20 个榜日并集 ⇒ 每票取最近一次的 pct ⇒ 按 pct 降序仍取前 40」。
+    //   用户原话：「翻开之前的20个交易日记录监测，看有没有漏掉的，如果发现排名前五的就补上去。」
+    //   为什么要扩：只翻 1 天时，一只票哪天掉出「前 40」就再也不被 cron 算到 ⇒ 数据断点。
+    //   实测 10-22 断点：宁波东力只有 10-21/10-22 两天、冰山冷热 6 天、慈文传媒 8 天
+    //   （而新华传媒 9/9 天齐全 —— 因为它一直霸榜前 40，正好反证了旧池的问题）。
+    //   为什么仍只取 40 只：请求量 = 当天名单 ~43 + 补位 ~40 ≈ 83，与旧实现**完全相同**。
+    //   10-22 实测教训：把名单涨到 158 只，上游 43 秒内就 `Rate limit exceeded`，熔断后只写完 29 只。
     //
     //   ⚠️ 补位池读失败【不中断本函数】：名单补全是增强项，主流程（当天名单）照旧要跑完；
     //      但必须把失败写进日志与响应（§10：失败可见，⛔ 不静默）。
     // ══════════════════════════════════════════════════════════════════════════════════
     let poolError = '';
+    let poolDays: string[] = [];
+    let poolCandidates = 0;
     try {
-      // ① 表里最近一个榜日（< 今天）
-      const lastGot = await sbRest(
+      // ① 取「目标日之前」的榜日，最多 POOL_LOOKBACK_DAYS 个（⛔ 不含目标日自己：当天的行还没算）
+      //    ⚠️ 回补时必须由【旧到新】逐日跑，否则目标日之前没有榜日 ⇒ 池为空 ⇒ 只能算当天名单。
+      const dateGot = await sbRest(
         'GET',
-        '/rest/v1/stock_range20_pct?select=date&date=lt.' + today + '&order=date.desc&limit=1',
+        '/rest/v1/stock_range20_pct?select=date&date=lt.' + today + '&order=date.desc&limit=6000',
       );
-      const lastRows = Array.isArray(lastGot) ? (lastGot as Array<Record<string, unknown>>) : [];
-      const lastDate = String((lastRows[0] && lastRows[0].date) ?? '').trim();
-      if (lastDate) {
-        // ★ [R20-RATE 2026-10-22] 只取【最近 1 个榜日】且只取【pct 前 POOL_TOP_N 名】：
-        //   10-22 实测教训 —— 取「近 7 个自然日的并集」把名单从 75 涨到 158，todo 83 只，
-        //   上游 43 秒内就返回 `Rate limit exceeded`，熔断后只写完 29 只（比不扩容更差）。
-        //   口径依据：补位票必然是【20日涨幅排名很高】的票（否则它进不了前五），
-        //   所以「昨天榜的前 40 名」足以覆盖今天前五的所有候选，且请求量回到原来的量级。
-        //   ⚠️ pct 是【字符串列】（'87.18'），⛔ 不能靠 order=pct.desc 排序（字典序：'9' > '87'），
-        //      必须在内存里 Number() 后排序。
+      const dateRows = Array.isArray(dateGot) ? (dateGot as Array<Record<string, unknown>>) : [];
+      const uniqDates: string[] = [];
+      const seenDate = new Set<string>();
+      for (const r of dateRows) {
+        const d = String((r && r.date) ?? '').trim();
+        if (!d || seenDate.has(d)) continue;
+        seenDate.add(d);
+        uniqDates.push(d);
+        if (uniqDates.length >= POOL_LOOKBACK_DAYS) break;
+      }
+      poolDays = uniqDates;
+      if (uniqDates.length > 0) {
+        // ② 一次把这 20 天的 (date,stock,pct) 全拉回来（2 次 REST，⛔ 不逐日查 20 次）
+        //    ⚠️ pct 是【字符串列】（'87.18'），⛔ 绝不能靠 order=pct.desc 排序（字典序：'9' > '87'），
+        //       必须在内存里 parsePct 后排序 —— 这一条是本函数最容易踩的坑（SQL 排序结果会是
+        //       9.48 > 9.06 > 87.18 这种荒谬顺序）。
+        const inList = uniqDates.map((d) => '"' + d.replace(/"/g, '') + '"').join(',');
         const got = await sbRest(
           'GET',
-          '/rest/v1/stock_range20_pct?select=stock,pct&date=eq.' + lastDate + '&limit=500',
+          '/rest/v1/stock_range20_pct?select=date,stock,pct&date=in.' + encodeURIComponent('(' + inList + ')') + '&limit=8000',
         );
         const poolRows = Array.isArray(got) ? (got as Array<Record<string, unknown>>) : [];
-        const scored = poolRows
-          .map((r) => ({ stock: String((r && r.stock) ?? '').trim(), pct: parsePct(r && r.pct) }))
-          .filter((r) => !!r.stock && r.pct !== null)
-          .sort((a, b) => (b.pct as number) - (a.pct as number))
+        // ③ 每票只保留【它最近一次】的 pct：断供多日的票也能凭它最后一条已知值回到候选池，
+        //    正好把「断点票」捞回来重算（这是本需求的关键——用户怕漏掉的就是这类票）。
+        const latest = new Map<string, { pct: number; date: string }>();
+        for (const r of poolRows) {
+          const n = String((r && r.stock) ?? '').trim();
+          if (!n) continue;
+          const p = parsePct(r && r.pct);
+          if (p === null) continue;
+          const d = String((r && r.date) ?? '');
+          const prev = latest.get(n);
+          if (!prev || d > prev.date) latest.set(n, { pct: p, date: d });
+        }
+        poolCandidates = latest.size;
+        const scored = Array.from(latest.entries())
+          .map(([stock, v]) => ({ stock, pct: v.pct, date: v.date }))
+          .sort((a, b) => b.pct - a.pct)
           .slice(0, POOL_TOP_N);
         let added = 0;
         for (const r of scored) {
@@ -341,10 +404,12 @@ Deno.serve(async (req: Request) => {
           });
           added++;
         }
-        console.log('[range20-precompute] 补位池 ' + lastDate + ' 前 ' + POOL_TOP_N + ' 名命中 ' + added +
-          ' 只（名单合计 ' + targets.length + '）');
+        console.log('[range20-precompute] 补位池 翻 ' + uniqDates.length + ' 个榜日（'
+          + uniqDates[uniqDates.length - 1] + ' ~ ' + uniqDates[0] + '）候选 ' + poolCandidates
+          + ' 只 ⇒ 取最强 ' + POOL_TOP_N + '，命中 ' + added
+          + ' 只（名单合计 ' + targets.length + '）');
       } else {
-        console.log('[range20-precompute] 补位池：表里还没有任何历史榜 ⇒ 本次只算当天名单');
+        console.log('[range20-precompute] 补位池：目标日之前还没有任何榜 ⇒ 本次只算当天名单');
       }
       // 池里 code 为空的票：一次性批查 stockcodemap（name→code 的唯一真相源）补上
       const noCode = targets.filter((t) => t.from === 'pool' && !t.code);
@@ -380,10 +445,32 @@ Deno.serve(async (req: Request) => {
     const todo = targets.filter((t) => !doneSet.has(t.stock));
     console.log('[range20-precompute] leg=' + leg + ' todo=' + todo.length + '（名单 ' + targets.length + '，库里已有 ' + doneSet.size + '）');
 
+    // ★ [R20-BACKFILL] 干跑：只报「会算哪些票」，⛔ 一次上游请求都不打（回补前先确认名单对不对）
+    if (params.get('dry') === '1') {
+      return json({
+        ok: true,
+        dry: true,
+        date: today,
+        backfill: isBackfill,
+        leg,
+        watchlist: targets.filter((t) => t.from === 'today').length,
+        poolAdded: targets.filter((t) => t.from === 'pool').length,
+        poolDays: poolDays.length,
+        poolDaysRange: poolDays.length > 0 ? (poolDays[poolDays.length - 1] + ' ~ ' + poolDays[0]) : '',
+        poolCandidates,
+        alreadyDone: doneSet.size,
+        todo: todo.length,
+        todoNoCode: todo.filter((t) => !t.code).length,
+        todoList: todo.slice(0, 200).map((t) => t.stock + (t.code ? '(' + t.code + ')' : '(无码)') + '[' + t.from + ']'),
+      });
+    }
+
     // K 线窗口：往前 100 个自然日（≈65 个真实交易日，足够停牌票回溯凑满 20 腿；多要不增加成本）
-    const todayMidnightMs = Date.parse(today + 'T00:00:00+08:00');
-    const startMs = todayMidnightMs - 100 * 86400000;
-    const endMs = todayMidnightMs + 2 * 86400000;
+    //   ★ [R20-BACKFILL] 终点必须挂在【目标日】上，⛔ 不能是「今天」—— 回补 9 月某天时若按今天取窗口，
+    //     那根「T 腿」会落到窗口外，computeRange20 拿不到 T 腿 ⇒ 整轮 0 行（静默空转）。
+    const targetMidnightMs = Date.parse(today + 'T00:00:00+08:00');
+    const startMs = targetMidnightMs - 100 * 86400000;
+    const endMs = targetMidnightMs + 2 * 86400000;
 
     let written = 0;
     let failed = 0;
@@ -511,10 +598,16 @@ Deno.serve(async (req: Request) => {
     const stat = {
       ok: true,
       date: today,
+      // ★ [R20-BACKFILL] 历史回补标记（true = 目标日不是今天，由 ?date= 指定）
+      backfill: isBackfill,
       leg,
       watchlist: targets.length,
-      // ★ [R20-POOL 2026-10-22] 名单里有多少只是【补位票】（不在当天名单、靠最近榜日前 N 名补进来的）
+      // ★ [R20-POOL 2026-10-22] 名单里有多少只是【补位票】（不在当天名单、靠近 20 个榜日并集补进来的）
       poolAdded: targets.filter((t) => t.from === 'pool').length,
+      // ★ [R20-POOL20] 这次翻了多少个榜日、并集里有多少候选（诊断「补位池够不够厚」）
+      poolDays: poolDays.length,
+      poolDaysRange: poolDays.length > 0 ? (poolDays[poolDays.length - 1] + ' ~ ' + poolDays[0]) : '',
+      poolCandidates,
       poolError,
       todo: todo.length,
       written,
@@ -526,8 +619,9 @@ Deno.serve(async (req: Request) => {
       circuitBreak,
       elapsedMs: Date.now() - t0,
       failures: failures.slice(0, 30),
-      note: 'leg=' + leg + ' 已落库，前端 20日涨幅 toggle 阶段⓪命中即秒开（auc=竞价腿 / close=收盘腿）；' +
-        '名单含补位票（最近榜日 pct 前 ' + POOL_TOP_N + ' 名）；限流那批已串行补跑',
+      note: 'leg=' + leg + (isBackfill ? ' [回补 ' + today + ']' : '')
+        + ' 已落库，前端 20日涨幅 toggle 阶段⓪命中即秒开（auc=竞价腿 / close=收盘腿）；'
+        + '名单含补位票（近 ' + poolDays.length + ' 个榜日并集取最强 ' + POOL_TOP_N + ' 名）；限流那批已串行补跑',
     };
     console.log('[range20-precompute] done ' + JSON.stringify(stat));
     return json(stat);
