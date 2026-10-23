@@ -94,6 +94,17 @@
             color: #1f2937;
         }
 
+        /* [JIWANG 2026-10-23 三版] 昨多板K线格：可能是「十字星-0.3%+小阳1.9%+小阴-1.87%」这类链条，
+           单元格只有 1/3 宽，必须让它只在 '+' 处换行，⛔ 不许从数字中间断开。 */
+        .jiwang-value-kxian {
+            font-size: 12px;
+            line-height: 1.45;
+        }
+
+        .jiwang-value-kxian .kxian-seg {
+            display: inline-block;
+        }
+
         .jiwang-value-highlight {
             font-size: 14px;
             font-weight: 700;

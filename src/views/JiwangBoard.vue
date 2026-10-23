@@ -61,9 +61,18 @@
         </div>
         <div
           id="jw-kxian"
-          class="jiwang-value"
+          class="jiwang-value jiwang-value-kxian"
         >
-          {{ kxianDisplay }}
+          <template v-if="kxianSegments.length">
+            <span
+              v-for="(seg, i) in kxianSegments"
+              :key="i"
+              class="kxian-seg"
+            >{{ seg }}{{ i < kxianSegments.length - 1 ? '+' : '' }}</span>
+          </template>
+          <template v-else>
+            -
+          </template>
         </div>
       </div>
       <div class="jiwang-item">
@@ -312,7 +321,7 @@
                   v-model="form.kxianPrefix"
                   type="text"
                   class="form-input"
-                  placeholder="如：三连阳"
+                  placeholder="如：十字星0.5%+小阳1.2%"
                 >
               </div>
               <div
@@ -404,7 +413,7 @@ import { useUiStore } from '../stores/uiStore.js';
 import { _dbgLog } from '../data/debug-log.js';
 import { _on, _off } from '../stores/eventBus.js';
 import { getTodayJiwang } from '../logic/app-core.js';
-import { getBiddingData } from '../data/supabase-client.js';
+import { getBiddingData, getJiwangData } from '../data/supabase-client.js';
 import { pushJiwangNow } from '../data/jiwang-data.js';
 import { getStats, autoCalculateConsecutiveDays, renderCircleStats, getKxianTypeByClose } from '../logic/jiwang/helpers.js';
 // [JIWANG 2026-10-23] 「昨收盘结果 → 昨日跌涨简化比 / 昨日情绪节点」纯逻辑下沉到 Logic 层（§3/§4）
@@ -480,6 +489,19 @@ const kxianDisplay = computed(() => {
   //   序列前缀 ⇒ 十字星0.5%+小阳1.2%+中阳2.5%
   //   ⛔ 不要在这里自己写 prefix + '+' + k，否则「第一次」会被拼成「第一次+中阳2.5%」
   return formatKxianWithPrefix(d.kxianPrefix || autoDisplay.value.kxianPrefix, k);
+});
+
+/**
+ * [JIWANG 2026-10-23 三版] 把 K 线链条按 '+' 拆成段，交给模板分段渲染。
+ *
+ * 为什么不在模板里直接输出整串：`.jiwang-item` 只有 1/3 宽，长串（如
+ * 「十字星-0.3%+小阳1.9%+小阴-1.87%」）会从数字中间断行，看起来像坏掉。
+ * 拆成 inline-block 段后只在 '+' 处换行，每段各自完整。
+ */
+const kxianSegments = computed(() => {
+  const s = kxianDisplay.value;
+  if (!s || s === '-') return [];
+  return s.split('+').map((t) => t.trim()).filter(Boolean);
 });
 
 /**
@@ -568,20 +590,37 @@ function getMultiBoardCloseOf(ymd) {
 
 /**
  * 取「昨多板K线」序列：按时间【倒序】，series[0] = 前一交易日（也就是看板上那条「昨多板K线」），
- * 往后最多再取 days 天，供 kxian-trend 判断「第几次中阳 / 前面几根小阳」。
+ * 往后最多再取 days 天，供 kxian-trend 判断「第几次中阳 / 前面几根小阳 / 前缀序列」。
  *
  * 为什么从「前一交易日」起算而不是当天：看板上的「昨多板K线」讲的就是昨天那根多板K线，
  * 用户口径里的「倒退看昨天是十字星还是阴线」也是相对它而言。
+ *
+ * [JIWANG 2026-10-23 三版] 数据来源改为【继承优先】：
+ *   ① 先读 jiwang_data[当天].kxian —— 它记的正是「前一交易日的多板K线」，
+ *      所以 series[0] 直接取当天这行、series[1] 取前一交易日那行，逐格往前「继承」。
+ *   ② 继承不到（那天没填）才回退到 bidding_data 的「最近多板%」收盘涨幅推算。
+ *
+ * 为什么必须继承：bidding_data 的历史 close 有缺口（如 2026-10-09 为空），
+ * 只靠重算会让整条链断在缺口处 ⇒ 出现「编辑弹窗里明明填了、前台却不显示前缀」。
+ * 用户原话：「前面一个格子填前面两天的，继承过来就可以」。
  */
 function getMultiBoardKxianSeries(days) {
   const out = [];
   const n = Math.max(0, Number(days) || 0);
+  const jiwangRows = getJiwangData() || {};
   let cur = uiStore.currentDate;
   for (let i = 0; i <= n; i++) {
     const prev = getPreviousTradingDay(cur);
     if (!prev) break;
-    const close = getMultiBoardCloseOf(prev);
-    out.push({ ymd: prev, label: close === null ? '' : getKxianTypeByClose(close) });
+    // ① 继承：jiwang_data[cur].kxian 就是「cur 的前一交易日」那根 K 线
+    const jwRow = jiwangRows[cur];
+    let label = jwRow && jwRow.kxian ? String(jwRow.kxian).trim() : '';
+    // ② 兜底：那天没填过，才用 bidding 收盘涨幅推算（缺数 ⇒ ''，⛔ 不用 0 冒充）
+    if (!label) {
+      const close = getMultiBoardCloseOf(prev);
+      label = close === null ? '' : getKxianTypeByClose(close);
+    }
+    out.push({ ymd: prev, label });
     cur = prev;
   }
   return out;

@@ -177,7 +177,7 @@ describe('kxian-trend / deriveGuanchaByKxian', () => {
   it('★ 小阳：前面已有 2 根 ⇒ 结果（原话：但是前面有两根小阳，看结果）', () => {
     const r = deriveGuanchaByKxian(S('小阳1.9%', '小阳1.2%', '小阳1.1%', '十字星0.5%'));
     expect(r.guancha).toBe(GUANCHA_RESULT);
-    expect(r.kxianPrefix).toBe('');   // 只有中阳非首次才出序列前缀
+    expect(r.kxianPrefix).toBe('十字星0.5%+小阳1.1%+小阳1.2%');
   });
 
   it('★ 小阳前面被十字星打断 ⇒ 重新从 0 数', () => {
@@ -196,6 +196,36 @@ describe('kxian-trend / deriveGuanchaByKxian', () => {
     expect(deriveGuanchaByKxian(null)).toBeNull();
     expect(deriveGuanchaByKxian(S('', '中阳2.3%'))).toBeNull();
     expect(deriveGuanchaByKxian(S('普涨', '中阳2.3%'))).toBeNull();
+  });
+
+  it('★★ 所有 K 线类型都要带序列前缀（用户：三天的都填好，前面一个格子填前面两天的）', () => {
+    // 阴线 / 十字星 / 大阳 / 小阳 一律带前缀，不再只有「中阳·非首次」才带
+    expect(deriveGuanchaByKxian(S('小阴-1.87%', '小阳1.9%', '十字星-0.3%')).kxianPrefix)
+      .toBe('十字星-0.3%+小阳1.9%');
+    expect(deriveGuanchaByKxian(S('十字星0.81%', '中阳2.3%', '小阳1.2%')).kxianPrefix)
+      .toBe('小阳1.2%+中阳2.3%');
+    expect(deriveGuanchaByKxian(S('大阳5.2%', '小阳1.9%', '十字星0.5%')).kxianPrefix)
+      .toBe('十字星0.5%+小阳1.9%');
+    expect(deriveGuanchaByKxian(S('小阳1.9%', '十字星-0.3%')).kxianPrefix)
+      .toBe('十字星-0.3%');
+  });
+
+  it('★★ 前缀格 + K 线格 = 三天一起，且不重复', () => {
+    const r = deriveGuanchaByKxian(S('小阴-1.87%', '小阳1.9%', '十字星-0.3%', '小阴-2.18%'));
+    expect(formatKxianWithPrefix(r.kxianPrefix, '小阴-1.87%'))
+      .toBe('十字星-0.3%+小阳1.9%+小阴-1.87%');
+  });
+
+  it('★ 序列只有当前一天 ⇒ 前缀为空（没有前面几天可继承）', () => {
+    const r = deriveGuanchaByKxian(S('小阴-1.87%'));
+    expect(r.guancha).toBe(GUANCHA_RESULT);
+    expect(r.kxianPrefix).toBe('');
+    expect(formatKxianWithPrefix(r.kxianPrefix, '小阴-1.87%')).toBe('小阴-1.87%');
+  });
+
+  it('★ 前缀遇数据缺口立即停，⛔ 不跨过空格继续拼', () => {
+    const r = deriveGuanchaByKxian(S('小阴-1.87%', '', '十字星-0.3%'));
+    expect(r.kxianPrefix).toBe('');
   });
 });
 
