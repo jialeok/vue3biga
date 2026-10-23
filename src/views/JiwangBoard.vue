@@ -13,7 +13,7 @@
           id="jw-diezhang"
           class="jiwang-value-highlight"
         >
-          {{ display.diezhang || '-' }}
+          {{ display.diezhang || autoDisplay.diezhang || '-' }}
         </div>
       </div>
       <div class="jiwang-item">
@@ -24,7 +24,7 @@
           id="jw-qingxu"
           class="jiwang-value"
         >
-          {{ display.qingxu || '-' }}
+          {{ display.qingxu || autoDisplay.qingxu || '-' }}
         </div>
       </div>
       <div class="jiwang-item">
@@ -40,7 +40,7 @@
             <span :style="whoIncreaseStyle">{{ display.whoIncrease }}</span>
           </template>
           <template v-else>
-            {{ display.jujiao || '-' }}
+            {{ display.jujiao || '最近多板' }}
           </template>
         </div>
       </div>
@@ -266,6 +266,7 @@
                     type="text"
                     placeholder="跌"
                     style="flex:1;border:none;padding:10px 8px;text-align:right;outline:none;font-size:14px;min-width:0;height:40px;box-sizing:border-box;"
+                    @input="onShouguChange"
                   >
                   <span style="padding:10px 2px;font-weight:700;color:#374151;background:#fff;flex-shrink:0;height:40px;display:flex;align-items:center;">:</span>
                   <input
@@ -273,6 +274,7 @@
                     type="text"
                     placeholder="涨"
                     style="flex:1;border:none;padding:10px 8px;text-align:left;outline:none;font-size:14px;min-width:0;height:40px;box-sizing:border-box;"
+                    @input="onShouguChange"
                   >
                 </div>
               </div>
@@ -404,7 +406,9 @@ import { _on, _off } from '../stores/eventBus.js';
 import { getTodayJiwang } from '../logic/app-core.js';
 import { getBiddingData } from '../data/supabase-client.js';
 import { pushJiwangNow } from '../data/jiwang-data.js';
-import { getStats, autoCalculateConsecutiveDays, renderCircleStats } from '../logic/jiwang/helpers.js';
+import { getStats, autoCalculateConsecutiveDays, renderCircleStats, getKxianTypeByClose } from '../logic/jiwang/helpers.js';
+// [JIWANG 2026-10-23] 「昨收盘结果 → 昨日跌涨简化比 / 昨日情绪节点」纯逻辑下沉到 Logic 层（§3/§4）
+import { deriveFromShougu, parseShouguRatio, ratioToDiezhang, ratioToQingxu, SHOUGU_RATIO_LABELS } from '../logic/jiwang/ratio-nodes.js';
 import { getPreviousTradingDay } from '../logic/date/trading-day-helpers.js';
 import { renderConsecutiveUp } from '../logic/tagTitles/helpers.js';
 // [A7-01] 修正导入源：autoCalculateRecentMultiScore 在 bidding-helpers.js 中已 re-export，
@@ -417,7 +421,37 @@ const uiStore = useUiStore();
 const display = ref({});
 const modalActive = ref(false);
 
-const diezhangOptions = ['1:2', '1:3', '1:4', '2:1', '1:1', '2:3', '3:1', '3:2', '4:1'];
+/**
+ * [JIWANG 2026-10-23] 前台「自动补全」的展示态。
+ *
+ * 用户口径：「昨日多板K线…点击编辑看板时，有数值，但是前台却没有显示出来，默认它应该是显示出来的，
+ *   这个是自动获取计算的，然后默认显示在前台」「昨日跌涨…自动填入显示」「今日聚焦，默认选最近多板显示」。
+ *
+ * ⚠️ 只做**展示派生**：⛔ 不写回 display、⛔ 不落库、⛔ 不标脏（§6 单一真相 + §10 不静默写入）。
+ *   真正的落库仍然只在用户点「保存看板」时发生（见 save()）。
+ */
+const autoDisplay = ref({ diezhang: '', qingxu: '', kxian: '' });
+
+const form = reactive({
+  diezhang: '', diezhangOther: '', qingxu: '', jujiao: '最近多板', whoIncrease: '',
+  kxianPrefix: '', kxian: '', guancha: '', guochengJieguo: '',
+  shouguDie: '', shouguZhang: '', jielun: '', chushou: '', sectorEtf: false
+});
+
+// [JIWANG 2026-10-23] 选项来源改为 Logic 层节点表（⛔ 不在 UI 再抄一份，§6）。
+// 「昨日跌涨」允许出现节点表以外的延伸值（如自动算出的 9:1 / 1:6），所以用 computed 动态并入当前值，
+// 否则 select 的 v-model 值不在 option 里会显示空白。
+const diezhangOptions = computed(() => {
+  const cur = form.diezhang;
+  // 只有「数字:数字」形式的延伸节点（自动算出的 9:1 / 1:6）才动态并入；
+  // 历史脏值（如「普涨」）不并入，让它落到「其它」分支，避免污染标准选项。
+  // ⚠️ 冒号要同时认半角「:」和全角「：」：2026-10-15 存的「5：1」、10-16 的「10：1」都是全角，
+  //    不认全角会让这两天的历史值掉进「其它」，下拉里就看不到原值了。
+  if (cur && cur !== '其它' && /^\d+[：:]\d+$/.test(cur) && SHOUGU_RATIO_LABELS.indexOf(cur) < 0) {
+    return SHOUGU_RATIO_LABELS.concat([cur]);
+  }
+  return SHOUGU_RATIO_LABELS;
+});
 const allGuanchaOptions = ['最近多板过程', '最近多板结果', '板块ETF过程', '两个过程'];
 // 旧版过程结果为固定四项（结果为正/负/过程递增/递减）
 const allGuochengOptions = ['结果为正', '结果为负', '过程递增', '过程递减'];
@@ -426,20 +460,17 @@ const resultGuochengOptions = ['结果为正', '结果为负'];
 const processGuochengOptions = ['过程递增', '过程递减'];
 const allChushouOptions = ['出手对了', '出手错了', '空仓对了', '空仓错了'];
 
-const form = reactive({
-  diezhang: '', diezhangOther: '', qingxu: '', jujiao: '最近多板', whoIncrease: '',
-  kxianPrefix: '', kxian: '', guancha: '', guochengJieguo: '',
-  shouguDie: '', shouguZhang: '', jielun: '', chushou: '', sectorEtf: false
-});
-
 const guanchaOptions = ref(allGuanchaOptions);
 const guochengOptions = ref(allGuochengOptions);
 const chushouOptions = ref(allChushouOptions);
 
 const kxianDisplay = computed(() => {
   const d = display.value;
-  if (d.kxianPrefix && d.kxian) return d.kxianPrefix + '+' + d.kxian;
-  return d.kxian || '-';
+  // [JIWANG 2026-10-23] 缺值时用前一交易日「最近多板%」收盘涨幅推算的 K 线型态补上（只展示、不落库）
+  const k = d.kxian || autoDisplay.value.kxian;
+  if (!k) return '-';
+  if (d.kxianPrefix) return d.kxianPrefix + '+' + k;
+  return k;
 });
 
 const whoIncreaseStyle = computed(() => {
@@ -494,18 +525,8 @@ function getNthPreviousTradingDay(dateStr, n) {
   return result;
 }
 
-function getKxianTypeByClose(closeValue) {
-  if (!closeValue) return '';
-  const value = parseFloat(closeValue);
-  if (isNaN(value)) return '';
-  if (value >= 3.6) return `大阳${value}%`;
-  else if (value >= 2.6) return `中阳${value}%`;
-  else if (value >= 1.0) return `小阳${value}%`;
-  else if (value > -1.0) return `十字星${value}%`;
-  else if (value >= -2.5) return `小阴${value}%`;
-  else if (value >= -3.5) return `中阴${value}%`;
-  else return `大阴${value}%`;
-}
+// [JIWANG 2026-10-23] 本地 getKxianTypeByClose 已删：与 logic/jiwang/helpers.js 逐字重复（§6 同一实现），
+// 统一从 Logic 层 import，避免两处阈值（3.6/2.6/1.0/-1.0/-2.5/-3.5）各改各的。
 
 function getPrevDayMultiBoardClose() {
   const prevDate = getPreviousTradingDay(uiStore.currentDate);
@@ -518,9 +539,39 @@ function getPrevDayMultiBoardClose() {
   return multiBoardRow.close || null;
 }
 
+/**
+ * 计算前台「自动补全」的三个值（缺值时才补，已有真值一律以数据库为准）。
+ *
+ * ① 昨日跌涨 / 昨日情绪 ← 昨收盘结果（跌:涨）经 Logic 层 ratio-nodes 换算：
+ *      4999:535 ⇒ 9:1；3364:1918 ⇒ 3:2（用户 2026-10-23 两个原始例子）
+ * ② 昨多板K线 ← 前一交易日「最近多板%」的收盘涨幅 → 大阳/中阳/小阳/十字星/小阴/中阴/大阴
+ *
+ * ⛔ 任何一项取不到就留空（前台显示 '-'），绝不用默认值冒充真实数据（§10）。
+ * ⛔ 只读不写：本函数不触碰 jiwangData，不 markDirty。
+ */
+function computeAutoDisplay(d) {
+  const out = { diezhang: '', qingxu: '', kxian: '' };
+
+  // ① 昨收盘结果 → 跌涨简化比 + 情绪节点
+  const derived = deriveFromShougu(d.shouguJieguo);
+  if (derived) {
+    out.diezhang = derived.diezhang;
+    out.qingxu = derived.qingxu;
+  }
+
+  // ② 昨多板 K 线（只在数据里没有时才推算）
+  if (!d.kxian) {
+    const prevClose = getPrevDayMultiBoardClose();
+    if (prevClose) out.kxian = getKxianTypeByClose(prevClose);
+  }
+
+  return out;
+}
+
 function render() {
   const d = getTodayJiwang() || {};
   display.value = d;
+  autoDisplay.value = computeAutoDisplay(d);
   renderCircleStats();
 }
 
@@ -535,29 +586,28 @@ onUnmounted(() => { _off('jiwang-refresh', render); });
 
 function openEdit() {
   const d = getTodayJiwang() || {};
-  const diezhangValue = d.diezhang || '';
-  if (diezhangOptions.includes(diezhangValue)) {
-    form.diezhang = diezhangValue;
-  } else if (diezhangValue) {
+  // [JIWANG 2026-10-23] 编辑态复用前台同一套自动补全（computeAutoDisplay），
+  // 避免出现「前台看到 9:1、点进编辑却是空」的错位。
+  const auto = computeAutoDisplay(d);
+
+  const diezhangValue = d.diezhang || auto.diezhang || '';
+  // 先赋值再问选项：让 diezhangOptions（依赖 form.diezhang）能把「9:1」这类延伸节点识别出来
+  form.diezhang = diezhangValue;
+  if (!diezhangValue) {
+    form.diezhangOther = '';
+  } else if (diezhangOptions.value.indexOf(diezhangValue) < 0) {
     form.diezhang = '其它';
     form.diezhangOther = diezhangValue;
   } else {
-    form.diezhang = '';
+    form.diezhangOther = '';
   }
-  form.qingxu = d.qingxu || '';
+
+  form.qingxu = d.qingxu || auto.qingxu || '';
   form.jujiao = d.jujiao || '最近多板';
   form.kxianPrefix = d.kxianPrefix || '';
-
-  let kxianValue = d.kxian || '';
-  if (!kxianValue) {
-    const prevClose = getPrevDayMultiBoardClose();
-    if (prevClose) {
-      kxianValue = getKxianTypeByClose(prevClose);
-    }
-  }
   // [A7-03] K 线推算结果仅作为表单默认值填入编辑态，不在此处写缓存 / 不推云端。
   // 真正的落库只在用户点「保存」(save) 时执行，避免打开编辑即静默落库（违反 §2/§10）。
-  form.kxian = kxianValue;
+  form.kxian = d.kxian || auto.kxian || '';
 
   form.whoIncrease = (d.jujiao === '谁增做谁' && d.whoIncrease) ? d.whoIncrease : '';
   const jujiaoValue = d.jujiao || '最近多板';
@@ -599,6 +649,23 @@ function openEdit() {
 }
 
 function onDiezhangChange() {}
+
+/**
+ * [JIWANG 2026-10-23] 编辑态里改「昨收盘结果」时，实时把「昨日跌涨 / 昨日情绪」重算出来。
+ * ⚠️ 只在两个数都填全时才动手（parseShouguRatio 返回 null 就 return）：
+ *    否则用户刚敲下第 1 位数字就把下拉刷成别的值，反而干扰输入。
+ * ⚠️ 用户仍可在下拉里手动改成别的节点 —— 手动改动不会被这里覆盖，除非他再次编辑跌/涨数。
+ */
+function onShouguChange() {
+  const ratio = parseShouguRatio(form.shouguDie, form.shouguZhang);
+  if (ratio === null) return;
+  const label = ratioToDiezhang(ratio);
+  if (!label) return;
+  form.diezhang = label;
+  const qingxu = ratioToQingxu(ratio);
+  if (qingxu) form.qingxu = qingxu;
+}
+
 function onJujiaoChange() {
   // [JIWANG 2026-09-01] 过程结果选项由「观察」联动决定（见 onGuanchaChange），不在此固定为四项
   if (form.jujiao === '谁增做谁') updateGuanchaOptions('all');
