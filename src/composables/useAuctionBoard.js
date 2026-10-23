@@ -753,7 +753,10 @@ export function useAuctionBoard() {
   function loadP2TrendHistory(stockName) {
     const name = stockName.trim();
     const history = getAuctionStockHistory(name, uiStore.currentDate, 5, 'auction');
-    return _trendEntryOf(history, name);
+    // [TREND-PATCH-STORE 2026-10-23] 第二页整组展开也套补缺仓库。
+    //   ⛔ 漏这一处就是 _trendEntryOf 注释里警告的那类缺项：同一只票「第一页展开有当天数据、
+    //   第二页展开没有」。仓库里没有该票时 mergeTrendPatch 原样返回入参，零开销。
+    return _trendEntryOf(_mergeTrendPatch(history, name), name);
   }
 
   // [FIX 2026-08-16] 整组展开分批异步加载趋势历史（§33 性能）：每帧一批（默认 4 只），
