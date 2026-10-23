@@ -38,6 +38,10 @@
 //   读  stockcodemap       （★[R20-POOL] 补位票 code 缺失时的一次性批查；name→code 唯一真相源）
 //   读  stock_range20_pct  （目标日已有同 leg 行 ⇒ 跳过，幂等重跑不重复烧上游）
 //   写  stock_range20_pct  （on_conflict=date,stock，列与前端 upsertRange20Rows 完全一致）
+//   写  market_metrics     （★★[R20-METRICS 2026-10-23] 补位票的当日行情：volume / yest_volume /
+//                           change_pct / auc_pct_chg / auc_vol_ratio，scope='auction'、source='range20'。
+//                           on_conflict=date,stock,scope。目的：前端展开趋势图时【0 上游请求】，
+//                           直接读这张表就有当天数据。详见下方 R20-METRICS 段头注释。）
 //   上游 同花顺 K 线（经既有 fuyao-proxy Edge Function 代理，零新增密钥）
 //
 // ★★ [R20-BACKFILL 2026-10-22] 历史回补：`?date=YYYY-MM-DD` 指定目标日 T（缺省今天）。
@@ -179,7 +183,7 @@ async function fetchKlineBars(ths: string, startMs: number, endMs: number): Prom
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
-interface Bar { ymd: string; close: number; open: number | null; }
+interface Bar { ymd: string; close: number; open: number | null; vol: number | null; }
 
 /** 上游 bar → 有序序列（date_ms 是北京午夜 ⇒ +8h 取 UTC 日期；close ≤0 / 缺失丢弃） */
 function barsToSeries(item: unknown[]): Bar[] {
@@ -192,7 +196,11 @@ function barsToSeries(item: unknown[]): Bar[] {
     const ymd = new Date(Number(row.date_ms) + 8 * 3600 * 1000).toISOString().slice(0, 10);
     const openRaw = row.open_price == null ? null : Number(row.open_price);
     const open = openRaw != null && Number.isFinite(openRaw) && openRaw > 0 ? openRaw : null;
-    out.push({ ymd, close, open });
+    // ★★ [R20-METRICS 2026-10-23] 成交量（股）顺带保留：落 market_metrics 的 yest_volume 要用
+    //   前一交易日的全天成交量 ÷ 1e4（万股）。同一次 K 线请求里就有，⛔ 不额外发请求。
+    const volRaw = row.volume == null ? null : Number(row.volume);
+    const vol = volRaw != null && Number.isFinite(volRaw) ? volRaw : null;
+    out.push({ ymd, close, open, vol });
   }
   out.sort((a, b) => (a.ymd < b.ymd ? -1 : a.ymd > b.ymd ? 1 : 0));
   return out;
@@ -240,6 +248,143 @@ function computeRange20(series: Bar[], today: string, leg: string, aucPct: numbe
   let acc = 1;
   for (const p of win) acc *= (1 + p / 100);   // 与前端 compoundPct 逐字一致
   return { pct: ((acc - 1) * 100).toFixed(2), days: win.length };
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ★★ [R20-METRICS 2026-10-23] 补位票当日行情落 market_metrics
+//
+// 用户原话：「补位的（有20天标签）……要自动获取啊，不是我说了就补，我要每天打开看，都要看到
+//   当天数据昨日成交量、竞价涨幅，等，收盘后再覆盖涨幅。就和列表股票的趋势图显示一样，
+//   没有断点，数据也全。」
+// 「补位的票怎么算出来的，让它进去supabase表里，后面再整理出来就行。」
+// 「如果进去 cloudflare worker，补位的票计算会延迟正常的票显示时间，得不偿失。不要用。」
+//
+// 【为什么必须在这里写，而不是让前端展开趋势图时补】
+//   前端补缺要现场打同花顺 fuyao-proxy（K 线 + 快照）。实测 2026-10-23 15:40：
+//     前端补缺 → `code=429 Global request rate limit exceeded`（K 线腿与快照腿双双失败）
+//     因为 15:05 的 range20-close-precompute 刚把上游配额烧完。
+//   ⇒ 前端补缺本质上是「每次打开都跟 cron 抢上游配额」，抢不到就当天全空，
+//     这解释了「有时有、有时没有 / 一直空」的全部现象。
+//   本函数本来就在 09:25 / 15:05 抓这些票的 K 线 ⇒ 顺手把当日行情写进 market_metrics，
+//     ⛔ 零额外 K 线请求（同一批 bars 里就有 open/close/volume）；
+//     只多 1 次快照请求（40 只代码一次批量），用于竞价量 / 竞价量比。
+//   ⇒ 前端 `getAuctionStockHistory` 直接从云端读，展开趋势图时**一个上游请求都不打**。
+//
+// 【口径 —— 与 worker / 前端逐字一致，⛔ 别"顺手优化"】
+//   · volume       = 快照 auction_volume ÷ 100（手 → 万股），整数串（与库内 "711" 同格式）
+//                    ⚠️ 只有「当天」快照有竞价量；⛔ 绝不拿全天成交量冒充竞价量。
+//   · yest_volume  = 前一交易日 K 线 volume ÷ 1e4（股 → 万股），整数串
+//   · change_pct   = 15:00 后（leg='close'）→ 收盘涨幅；15:00 前 → 竞价涨幅
+//                    （与 worker 9:25 写竞价涨幅、16:00 覆盖成收盘涨幅完全同口径）
+//   · auc_pct_chg  = 快照 auction_pct 优先，缺则 K 线 open/昨收-1（缺则 null，§10 不猜）
+//   · auc_vol_ratio= 快照 auction_volume_ratio（缺则 null）
+//   · scope='auction'（前端按 scope 读）、source='range20'（可审计、与 worker/manual 区分）
+//
+// 【写哪些票】只写【补位票】（targets 里 from='pool' 的那批 = 不在今日正式名单的票）。
+//   ⛔ 不碰当天正式名单的票：它们由 worker 写，重复写会拿不同来源的数覆盖 worker 的口径。
+//   写全部补位池（≤40 只）而不是只写前五 —— 用户要的是「和列表股票一样没有断点」，
+//   而"前五"依赖前端跳空/龙头组去重等视图层判据，前端一旦和这里判得不完全一致就会漏。
+//   写满池子是安全的多写：market_metrics 表注释明确「不进入任何主列表」，多行不影响任何统计。
+// ════════════════════════════════════════════════════════════════════════════════
+
+/** 4 位小数以内、去掉多余的 0；用于 volume / yest_volume 这类「数值字符串」列 */
+function fmtNum(v: number | null): string | null {
+  if (v === null || !Number.isFinite(v)) return null;
+  return String(Math.round(v));
+}
+/** 百分比串："+6.45%" / "-1.86%"（与库内既有格式逐字一致）；缺值 null（§10 不猜 0） */
+function fmtPct(v: number | null): string | null {
+  if (v === null || !Number.isFinite(v)) return null;
+  return (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+}
+
+/** 一日行情：从已抓到的 K 线序列 + 当日快照推出来（纯函数，不发请求） */
+export function dayMetricsOf(
+  series: Bar[],
+  today: string,
+  leg: string,
+  snap: Record<string, unknown> | null,
+): Record<string, string | null> {
+  const ti = series.findIndex((b) => b.ymd === today);
+  const tb = ti >= 0 ? series[ti] : null;
+  // 🔴 [R20-METRICS] 「前一交易日」这一步有个必须绕开的坑：
+  //   09:25 那一轮【今天还没有 K 线 bar】（A 股 9:30 才开盘，日 bar 收盘后才成型）⇒ ti === -1。
+  //   若照抄 `ti > 0 ? series[ti-1] : null`，此时 pb 会是 null ⇒ yest_volume / 竞价涨幅全部算不出来，
+  //   而 9:25 恰恰是「昨日成交量、竞价涨幅」最该有值的时刻（用户口径点名要这两个）。
+  //   ⇒ today 不在序列里时，pb 取序列最后一根（= 上一交易日）。
+  const pb = ti >= 0
+    ? (ti > 0 ? series[ti - 1] : null)
+    : (series.length > 0 ? series[series.length - 1] : null);
+  const closePct = (tb && pb && pb.close > 0) ? (tb.close / pb.close - 1) * 100 : null;
+  const openPct = (tb && tb.open != null && pb && pb.close > 0)
+    ? ((tb.open as number) / pb.close - 1) * 100 : null;
+
+  const numOf = (v: unknown): number | null => {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const snapAucPct = numOf(snap && snap.auction_pct);
+  const snapVolHand = numOf(snap && snap.auction_volume);
+  const snapRatio = numOf(snap && snap.auction_volume_ratio);
+
+  const aucPct = snapAucPct !== null ? snapAucPct : openPct;
+  // 涨幅：收盘腿用收盘涨幅；竞价腿用竞价涨幅（9:25 那一刻 change_pct 就是竞价涨幅，
+  // 与 worker 同口径），都拿不到才退回收盘涨幅
+  const changePct = (leg === 'close') ? closePct : (aucPct !== null ? aucPct : closePct);
+  const yestVolume = (pb && pb.vol !== null) ? (pb.vol as number) / 1e4 : null;
+  // 竞价量：只有【当天终态快照】才有（手 → 万股）。⛔ 不回退到 tb.vol（那是全天成交量）
+  const volume = snapVolHand !== null ? snapVolHand / 100 : null;
+
+  return {
+    volume: fmtNum(volume),
+    yest_volume: fmtNum(yestVolume),
+    change_pct: fmtPct(changePct),
+    auc_pct_chg: fmtPct(aucPct),
+    auc_vol_ratio: snapRatio !== null ? String(Number(snapRatio.toFixed(2))) : null,
+  };
+}
+
+/** 批量取当日竞价终态快照（一次 ≤40 个代码；⛔ thscode 必须带交易所后缀，裸码上游返回 1002） */
+async function fetchSnapshots(thscodes: string[]): Promise<{
+  byCode: Map<string, Record<string, unknown>>;
+  dataStatus: string;
+  serverYmd: string;
+  error: string;
+}> {
+  const byCode = new Map<string, Record<string, unknown>>();
+  if (thscodes.length === 0) return { byCode, dataStatus: '', serverYmd: '', error: '' };
+  try {
+    const url = FUYAO_PROXY + '?path=' + encodeURIComponent('/api/a-share/auction/snapshot') +
+      '&thscodes=' + encodeURIComponent(thscodes.slice(0, 40).join(',')) + '&stage=final';
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), REQ_TIMEOUT_MS);
+    let json: Record<string, unknown> | null = null;
+    try {
+      const resp = await fetch(url, { headers: { Authorization: 'Bearer ' + ANON_KEY }, signal: ctrl.signal });
+      if (!resp.ok) throw new Error('fuyao-proxy HTTP ' + resp.status);
+      json = await resp.json();
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!json || json.code !== 0) throw new Error('fuyao code=' + String(json && json.code));
+    // 响应结构：{code,message,data:{timestamp, data_status, item:[...]}} —— ⛔ item 不在顶层
+    const data = (json.data ?? {}) as Record<string, unknown>;
+    const dataStatus = String(data.data_status ?? '');
+    const ts = Number(data.timestamp) || 0;
+    const serverYmd = ts > 0 ? new Date(ts + 8 * 3600 * 1000).toISOString().slice(0, 10) : '';
+    const items = Array.isArray(data.item) ? (data.item as Array<Record<string, unknown>>) : [];
+    for (const it of items) {
+      // item.thscode 带后缀（"600825.SH"）⇒ 裸码键 + 带后缀键都登记，防静默匹配失败
+      const raw = String((it && it.thscode) ?? '');
+      const bare = raw.split('.')[0];
+      if (bare) byCode.set(bare, it);
+      if (raw) byCode.set(raw, it);
+    }
+    return { byCode, dataStatus, serverYmd, error: '' };
+  } catch (e) {
+    return { byCode, dataStatus: '', serverYmd: '', error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 Deno.serve(async (req: Request) => {
@@ -481,6 +626,10 @@ Deno.serve(async (req: Request) => {
     const retryLater: Array<{ stock: string; code: string; aucPct: number | null; from: string }> = [];
     const failures: string[] = [];
     const buffer: Array<Record<string, unknown>> = [];
+    // ★★ [R20-METRICS 2026-10-23] 补位票的 K 线序列（落 market_metrics 用）。
+    //   只在 from='pool' 时收集：当天正式名单的票由 worker 写 market_metrics，
+    //   这里重复写会拿不同来源的数覆盖 worker 的口径（⛔ 不越界）。
+    const poolSeries: Array<{ stock: string; code: string; series: Bar[] }> = [];
 
     const flush = async () => {
       if (buffer.length === 0) return;
@@ -509,7 +658,10 @@ Deno.serve(async (req: Request) => {
         }
         try {
           const item = await fetchKlineBars(thscode(t.code), startMs, endMs);
-          const row = computeRange20(barsToSeries(item), today, leg, t.aucPct);
+          const series = barsToSeries(item);
+          const row = computeRange20(series, today, leg, t.aucPct);
+          // [R20-METRICS] 补位票：序列留一份，后面算 market_metrics 用（⛔ 不额外发请求）
+          if (t.from === 'pool') poolSeries.push({ stock: t.stock, code: t.code, series });
           if (row) {
             buffer.push({
               date: today,
@@ -569,7 +721,10 @@ Deno.serve(async (req: Request) => {
       await sleep(RATE_RETRY_GAP_MS);
       try {
         const item = await fetchKlineBars(thscode(t.code), startMs, endMs);
-        const row = computeRange20(barsToSeries(item), today, leg, t.aucPct);
+        const series = barsToSeries(item);
+        const row = computeRange20(series, today, leg, t.aucPct);
+        // [R20-METRICS] 补跑成功的补位票同样收进 poolSeries（否则限流那批的趋势图仍然空）
+        if (t.from === 'pool') poolSeries.push({ stock: t.stock, code: t.code, series });
         if (row) {
           await sbRest('POST', '/rest/v1/stock_range20_pct?on_conflict=date,stock', [{
             date: today,
@@ -595,6 +750,59 @@ Deno.serve(async (req: Request) => {
       console.log('[range20-precompute] 限流补跑完成：成功 ' + retried + '，仍失败 ' + retryFailed);
     }
 
+    // ══════════════════════════════════════════════════════════════════════════════
+    // ⑤ [R20-METRICS 2026-10-23] 补位票当日行情 → market_metrics（前端趋势图只读，0 上游请求）
+    //    ⛔ 历史回补不写：那天的 market_metrics 早已由 worker 写过，重写会覆盖既有口径。
+    // ══════════════════════════════════════════════════════════════════════════════
+    let metricsWritten = 0;
+    let metricsError = '';
+    let snapStatus = '';
+    let snapRejected = '';
+    if (!isBackfill && poolSeries.length > 0) {
+      try {
+        // 快照：一次批量（≤40 只）。双重闸门与 worker / 前端同一条安全约束：
+        //   ① data_status==='final'（竞价终态才算数，否则会把上一交易日的竞价写到今天头上）
+        //   ② 服务端 timestamp 的北京日期 === 目标日（防上游给「滚动最近交易日」）
+        const snap = await fetchSnapshots(poolSeries.map((p) => thscode(p.code)));
+        snapStatus = snap.dataStatus;
+        let snapOk = false;
+        if (snap.error) {
+          snapRejected = '快照请求失败: ' + snap.error;
+        } else if (snap.dataStatus !== 'final' || snap.serverYmd !== today) {
+          snapRejected = '快照闸门拒绝（status=' + snap.dataStatus + ' 服务端日=' + snap.serverYmd +
+            ' 目标日=' + today + '）⇒ 本次不写竞价量/量比，只写 K 线可得的字段';
+        } else {
+          snapOk = true;
+        }
+        const rows = poolSeries.map((p) => {
+          const s = snapOk ? (snap.byCode.get(p.code) ?? null) : null;
+          const m = dayMetricsOf(p.series, today, leg, s);
+          return {
+            date: today,
+            stock: p.stock,
+            code: p.code,
+            scope: 'auction',
+            source: 'range20',
+            volume: m.volume,
+            yest_volume: m.yest_volume,
+            change_pct: m.change_pct,
+            auc_pct_chg: m.auc_pct_chg,
+            auc_vol_ratio: m.auc_vol_ratio,
+            updated_at: new Date().toISOString(),
+          };
+        });
+        // 主键 (date, stock, scope) —— 与前端 upsertMarketMetrics / worker 写库同一冲突键
+        await sbRest('POST', '/rest/v1/market_metrics?on_conflict=date,stock,scope', rows);
+        metricsWritten = rows.length;
+        console.log('[range20-precompute] market_metrics 补位票已落库 ' + metricsWritten + ' 行'
+          + (snapRejected ? '（' + snapRejected + '）' : ''));
+      } catch (e) {
+        metricsError = e instanceof Error ? e.message : String(e);
+        // §10：失败必须可见，⛔ 不静默；但也⛔ 不连坐主流程 —— range20 结果已经落库了
+        console.error('[range20-precompute] ⚠️ market_metrics 落库失败（补位票趋势图当天仍会空）: ' + metricsError);
+      }
+    }
+
     const stat = {
       ok: true,
       date: today,
@@ -616,6 +824,11 @@ Deno.serve(async (req: Request) => {
       rateLimited,
       retried,
       retryFailed,
+      // ★★ [R20-METRICS 2026-10-23] 补位票当日行情落 market_metrics 的结果（前端趋势图只读）
+      metricsWritten,
+      metricsError,
+      snapStatus,
+      snapRejected,
       circuitBreak,
       elapsedMs: Date.now() - t0,
       failures: failures.slice(0, 30),

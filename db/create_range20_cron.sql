@@ -9,6 +9,18 @@
 -- 即便某条 cron 早/晚触发串了腿也无害：写错腿的行按 (date,stock) 主键会被
 -- 正确腿的行 / 前端收盘重算覆盖，且前端按 leg 过滤不会读错。
 --
+-- ★★ [R20-METRICS 2026-10-23] 同一个函数现在还顺带写 market_metrics（补位票的当日行情）：
+--     · 09:25 那轮写：volume(竞价量，万股) / yest_volume(昨日成交量，万股) /
+--                     auc_pct_chg(竞价涨幅) / auc_vol_ratio(竞价量比) / change_pct(=竞价涨幅)
+--     · 15:05 那轮覆盖：change_pct 改成【收盘涨幅】（用户口径「收盘后再覆盖涨幅」）
+--     目的：前端展开「补位票」趋势图时【0 上游请求】，直接读表就有当天数据。
+--     为什么必须落库而不能让前端现补：前端现补要现场打同花顺，而 15:05 这轮 cron 刚把
+--     上游配额烧完 ⇒ 实测前端补缺直接吃 `429 Global request rate limit exceeded`
+--     ⇒ 补位票当天五条线全空。落库后前端只读，彻底与配额脱钩。
+--     自检：select source, count(*) from market_metrics
+--            where date = (now() at time zone 'Asia/Shanghai')::date and source = 'range20' group by 1;
+--
+--
 -- ⚠️ 执行前把下面两处 <ANON_KEY> 替换成你项目的 anon public key：
 --    Dashboard → Project Settings → API → Project API Keys → anon public
 --    （anon key 本来就是公开的前端钥匙，写进 cron 无泄密风险）
