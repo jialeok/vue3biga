@@ -46,6 +46,10 @@ import { ensureRange20 } from '../logic/auction/range20.js';
 //     —— 用户要求「每天都要检索」，所以与开关状态无关，进看板/切日期就跑一次（幂等 + 会话缓存）。
 //   ⛔ 零猫抓额度（用户特别强调）：只用库内正式列表 + 同花顺 K 线（免费），见 range20-leaders.js。
 import { ensureRange20Leaders } from '../logic/auction/range20-leaders.js';
+// [TREND-PATCH-STORE 2026-10-23] 趋势「同花顺补缺值」的合并语义（纯函数，Logic 层，§3/§4）。
+//   抽到 Logic 层是为了用测试锁死三条语义：只填 null 位 / 今天整天替换 / 四腿任一缺即补。
+//   背景见 trend-patch-merge.js 头注释（新华传媒 600825 当天五条线全空 = paint 互相覆盖）。
+import { mergeTrendPatch, putTrendPatch, trendNeedsPatch, beijingTodayYmd } from '../logic/auction/trend-patch-merge.js';
 // [DRAGON-GROUP 2026-09-14] 龙头组：名册异步加载（展示日读 D-1 名册；条件满足时评选并落库当日名册）。
 // 唯一入口 ensureDragonGroup 内含单飞 + 会话幂等 + 收盘口径闸门，重复调用零副作用。
 import { ensureDragonGroup } from '../logic/auction/dragon-group.js';
@@ -131,6 +135,20 @@ export function useAuctionBoard() {
   const topicToggleOn = computed(() => !!sortState.byTopic && sortState.topicOrderBy !== TOPIC_ORDER_YIZI);
   const expandedSet = ref(new Set());
   const trendHistory = ref({});
+  /**
+   * [TREND-PATCH-STORE 2026-10-23 用户报障] 趋势补缺值的【持久层】：股票名 -> { 'YYYY-MM-DD' -> 补缺值 }。
+   *
+   * 🔴 为什么必须单独存一层（而不能再「就地 merge 进 trendHistory 就完事」）：
+   *   展开一只票时，面板会被【多腿异步】重画，最后的 paint 谁后到谁生效：
+   *     ① 主腿（hydrate stock_history）              → paint(原始 history)
+   *     ② 补缺腿（ensureTrendPatch，同花顺 K 线+快照）→ paint(merged)
+   *     ③ 封单量腿（ensureLimitPoolDays）             → paint(原始 history)  ← ⛔ 会把 ② 的结果整片擦掉
+   *   ③ 与 ② 谁先谁后纯看网络，于是出现「有时当天有数、有时又没了」，
+   *   用户 10-23 报障：「新华传媒…当天还是没有数据…昨天都说过了」测的就是这个。
+   *   ⇒ 补缺结果落进本 store 后，任何一次 paint 都会自动带上它（见 _mergeTrendPatch），
+   *     腿的先后顺序不再影响结果。⛔ 仍然只影响展示，不写库（§6 不产生影子真相）。
+   */
+  const trendPatchStore = ref({});
   // [FIX 2026-08-17] 展开状态 key 用股票名而非位置 index：翻页/刷新后 viewData 重算会导致
   // index 漂移，v-memo 复用的旧闭包携带旧 index 会 find 落空 → 序号点击"展不开"。
   // 股票名是稳定标识，永不漂移。expandedSet = Set<股票名>，trendHistory = { 股票名: {...} }
@@ -1080,6 +1098,7 @@ export function useAuctionBoard() {
     // 但下一次 toggle 动作又会回到默认收起。trendHistory 同步清空，避免留存已收起股票的趋势缓存。
     expandedSet.value = new Set();
     trendHistory.value = {};
+    trendPatchStore.value = {};   // [TREND-PATCH-STORE 2026-10-23] 补缺仓库与趋势缓存同生命周期
     refresh();
   }
 
@@ -1197,7 +1216,8 @@ export function useAuctionBoard() {
         const name = item.stock.trim();
         newSet.add(name);
         const history = getAuctionStockHistory(name, uiStore.currentDate, 5, 'auction');
-        newHistory[name] = _trendEntryOf(history, name);
+        // [TREND-PATCH-STORE 2026-10-23] 「全部展开」同样要套补缺仓库，否则补位票整组展开时当天仍是空
+        newHistory[name] = _trendEntryOf(_mergeTrendPatch(history, name), name);
       }
     });
     expandedSet.value = newSet;
@@ -1207,6 +1227,7 @@ export function useAuctionBoard() {
   function collapseAll() {
     expandedSet.value = new Set();
     trendHistory.value = {};
+    trendPatchStore.value = {};   // [TREND-PATCH-STORE 2026-10-23] 补缺仓库与趋势缓存同生命周期
   }
 
   function _computeTrendStats(history) {
@@ -1227,6 +1248,28 @@ export function useAuctionBoard() {
       }
     }
     return { jingRatio, yestRatio, diff };
+  }
+
+  /**
+   * [TREND-PATCH-STORE 2026-10-23] 把补缺仓库里的值合并进 history（**只填 null 位**）。
+   *
+   * 合并语义本身在 Logic 层（trend-patch-merge.js#mergeTrendPatch，纯函数、有单测）；
+   * 这里只负责把 ref 里的仓库取出来喂进去。库里已有值的字段一律不覆盖（§6）。
+   */
+  function _mergeTrendPatch(history, name) {
+    return mergeTrendPatch(history, trendPatchStore.value[name]);
+  }
+
+  /** 补缺仓库写入（今天整天替换 / 历史日浅合并 —— 语义见 Logic 层 putTrendPatch） */
+  function _putTrendPatch(name, byYmd) {
+    if (!name || !byYmd) return;
+    const next = putTrendPatch(trendPatchStore.value[name], byYmd, beijingTodayYmd());
+    trendPatchStore.value = Object.assign({}, trendPatchStore.value, { [name]: next });
+  }
+
+  /** 该日是否需要走同花顺补缺（四腿任一缺即补，语义见 Logic 层 trendNeedsPatch） */
+  function _trendNeedsPatch(h) {
+    return trendNeedsPatch(h);
   }
 
   /**
@@ -1268,9 +1311,12 @@ export function useAuctionBoard() {
     if (!name) return;
     // 先用内存缓存即时出图：保证点击序号后面板立即展开（不依赖网络，根治"展开空白/像没展开"）
     const paint = (history) => {
+      // [TREND-PATCH-STORE 2026-10-23] 出图前统一套上补缺仓库 ⇒ 任何一腿重画都不会丢掉
+      //   同花顺补到的当天数据（封单量腿 / 水合腿的 paint 同样受益）。
+      const merged = _mergeTrendPatch(history, name);
       trendHistory.value = {
         ...trendHistory.value,
-        [name]: _trendEntryOf(history, name)
+        [name]: _trendEntryOf(merged, name)
       };
     };
     const history = getAuctionStockHistory(name, uiStore.currentDate, 5, 'auction');
@@ -1286,12 +1332,17 @@ export function useAuctionBoard() {
     //   ③ 补完统一重算一次（一次 paint 而不是每个 await 各 paint 一次，避免 5 次全量重渲染）。
     let hydrated = false;
     // 只补真正缺数据的交易日：hydrateStockHistoryRow 自身的短路条件是
-    // 「该行 volume / change_pct 任一非空」，这里用同一口径预筛，避免为已就绪的日白建 await。
+    // 「该行 volume 【且】 change_pct 都在才算齐」（见 data/watchlist-and-metrics.js#_isTrendRowHydrated），
+    // 所以预筛必须是「任一缺」才与之同口径。
+    // 🔴 [TREND-PATCH-STORE 2026-10-23] 原写法是 `!hasVolume && !hasPct`（**两样都缺**才算缺），
+    //   与短路条件正好相反 ⇒ 「当天只有 change_pct、没有 volume」的半残行被预筛挡掉，
+    //   永远不会去云端补量；同时注释把它写成了「任一非空」，读代码的人会以为已经对上了。
+    //   改成「任一缺」后：完整行仍被短路（零请求），半残行才会真正补一次（同 key 只试一次，§32）。
     const pending = history
         .filter(h => {
             const hasVolume = h.volume != null && String(h.volume).trim() !== '';
             const hasPct = h.changePct != null && String(h.changePct).trim() !== '';
-            return !hasVolume && !hasPct;
+            return !hasVolume || !hasPct;
         })
         .map(h => h.date);
     if (pending.length > 0) {
@@ -1311,14 +1362,17 @@ export function useAuctionBoard() {
     {
         const reqDate2 = uiStore.currentDate;
         const hist2 = getAuctionStockHistory(name, reqDate2, 5, 'auction');
-        const missing = hist2
-            .filter(h => {
-                const hasVolume = h.volume != null && String(h.volume).trim() !== '';
-                const hasPct = h.changePct != null && String(h.changePct).trim() !== '';
-                return !hasVolume && !hasPct;
-            })
-            .map(h => h.date);
-        const code = getStockCode(name);
+        // [TREND-PATCH-STORE 2026-10-23] 判据改为「四腿任一缺」（见 _trendNeedsPatch 注释），
+        //   否则「当天行只有涨幅、没有量/竞价涨幅」的半残行永远不会走补缺。
+        const missing = hist2.filter(_trendNeedsPatch).map(h => h.date);
+        // [TREND-PATCH-STORE 2026-10-23] 代码兜底：行对象自带 code 优先，其次云端股票代码表。
+        //   补位行是注入壳（不在 auction_watchlist 里），只认 getStockCode 时一旦代码表未加载完成
+        //   就会拿到空串 ⇒ 整个补缺被 if 静默跳过 ⇒ 当天全空且没有任何报错（§10 禁止静默）。
+        const rowItem = (viewData.value.items || []).find(it => it && it.stock && String(it.stock).trim() === name);
+        const code = (rowItem && rowItem.code ? String(rowItem.code).trim() : '') || getStockCode(name);
+        if (missing.length > 0 && !code) {
+            _dbgLog('[TREND-PATCH] ' + name + ' 取不到股票代码（stockcodemap 未命中）⇒ 当天趋势无法补缺，请补代码');
+        }
         if (missing.length > 0 && code) {
             const m = new Map();
             m.set(name, missing);
@@ -1328,23 +1382,11 @@ export function useAuctionBoard() {
                     if (!byYmd) return;
                     // 日期已切走 ⇒ 补缺结果作废（竞态保护，与上方 seal 腿同款）
                     if (uiStore.currentDate !== reqDate2) return;
-                    const merged = getAuctionStockHistory(name, reqDate2, 5, 'auction').map(function(h) {
-                        const p = byYmd.get(h.date);
-                        if (!p) return h;
-                        // 「只填 null 位」：库里已有值的字段一律不覆盖（§6 不用同花顺冒充库内真相）。
-                        const _fill = function(cur, patch) {
-                            return (cur !== null && cur !== undefined && cur !== '')
-                                ? cur : (patch !== null && patch !== undefined ? patch : cur);
-                        };
-                        return Object.assign({}, h, {
-                            volume: _fill(h.volume, p.volume),
-                            yestVolume: _fill(h.yestVolume, p.yestVolume),
-                            changePct: _fill(h.changePct, p.changePct),
-                            aucPctChg: _fill(h.aucPctChg, p.aucPctChg),
-                            aucVolRatio: _fill(h.aucVolRatio, p.aucVolRatio)
-                        });
-                    });
-                    paint(merged);
+                    // [TREND-PATCH-STORE 2026-10-23] 先落补缺仓库，再重画：
+                    //   ⛔ 不能像以前那样只把 merge 结果交给一次 paint —— 后面封单量腿还会
+                    //   paint 一次【原始 history】，会把这里的结果整片擦掉（今天的报障就是这个）。
+                    _putTrendPatch(name, byYmd);
+                    paint(getAuctionStockHistory(name, reqDate2, 5, 'auction'));
                 })
                 .catch(function(e) {
                     // §10：补缺失败只留痕（趋势图保持原样 = 该日「--」），⛔ 不连坐主流程
@@ -1765,6 +1807,7 @@ export function useAuctionBoard() {
   watch(() => uiStore.currentDate, (v) => {
     expandedSet.value = new Set();
     trendHistory.value = {};
+    trendPatchStore.value = {};   // [TREND-PATCH-STORE 2026-10-23] 补缺仓库与趋势缓存同生命周期
     if (v) prepareAuctionData(v);
     refresh();
   });
