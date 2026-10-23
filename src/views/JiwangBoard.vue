@@ -410,7 +410,7 @@ import { getStats, autoCalculateConsecutiveDays, renderCircleStats, getKxianType
 // [JIWANG 2026-10-23] 「昨收盘结果 → 昨日跌涨简化比 / 昨日情绪节点」纯逻辑下沉到 Logic 层（§3/§4）
 import { deriveFromShougu, parseShouguRatio, ratioToDiezhang, ratioToQingxu, SHOUGU_RATIO_LABELS } from '../logic/jiwang/ratio-nodes.js';
 // [JIWANG 2026-10-23] 「昨多板K线 → 观察」「9:25/9:20 → 过程结果 + 得出结论」纯逻辑下沉到 Logic 层
-import { KXIAN_LOOKBACK_DAYS, GUANCHA_PROCESS, GUANCHA_RESULT, deriveGuanchaByKxian } from '../logic/jiwang/kxian-trend.js';
+import { KXIAN_LOOKBACK_DAYS, GUANCHA_PROCESS, GUANCHA_RESULT, deriveGuanchaByKxian, formatKxianWithPrefix } from '../logic/jiwang/kxian-trend.js';
 import { deriveGuochengAndJielun } from '../logic/jiwang/auction-derive.js';
 import { getPreviousTradingDay } from '../logic/date/trading-day-helpers.js';
 import { renderConsecutiveUp } from '../logic/tagTitles/helpers.js';
@@ -475,9 +475,11 @@ const kxianDisplay = computed(() => {
   // [JIWANG 2026-10-23] 缺值时用前一交易日「最近多板%」收盘涨幅推算的 K 线型态补上（只展示、不落库）
   const k = d.kxian || autoDisplay.value.kxian;
   if (!k) return '-';
-  // 前缀同理：库里没有就用「第一次中阳」这类自动标注
-  const prefix = d.kxianPrefix || autoDisplay.value.kxianPrefix;
-  return prefix ? prefix + '+' + k : k;
+  // [JIWANG 2026-10-23 二版] 前缀拼接统一走 logic 层单一出口：
+  //   「第一次」⇒ 第一次中阳 2.5%（标记词，不重复 K 线名）
+  //   序列前缀 ⇒ 十字星0.5%+小阳1.2%+中阳2.5%
+  //   ⛔ 不要在这里自己写 prefix + '+' + k，否则「第一次」会被拼成「第一次+中阳2.5%」
+  return formatKxianWithPrefix(d.kxianPrefix || autoDisplay.value.kxianPrefix, k);
 });
 
 /**

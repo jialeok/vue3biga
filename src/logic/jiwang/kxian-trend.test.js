@@ -3,7 +3,11 @@ import {
   KXIAN_KIND,
   GUANCHA_PROCESS,
   GUANCHA_RESULT,
+  PREFIX_FIRST,
+  isBoundaryKind,
   kxianKind,
+  buildKxianPrefix,
+  formatKxianWithPrefix,
   deriveGuanchaByKxian
 } from './kxian-trend.js';
 import {
@@ -41,6 +45,69 @@ describe('kxian-trend / kxianKind', () => {
   });
 });
 
+describe('kxian-trend / isBoundaryKind', () => {
+  it('★ 十字星与阴线（小阴/中阴/大阴）是临界点', () => {
+    expect(isBoundaryKind(KXIAN_KIND.CROSS)).toBe(true);
+    expect(isBoundaryKind(KXIAN_KIND.XIAOYIN)).toBe(true);
+    expect(isBoundaryKind(KXIAN_KIND.ZHONGYIN)).toBe(true);
+    expect(isBoundaryKind(KXIAN_KIND.DAYIN)).toBe(true);
+  });
+
+  it('★ 阳线（大阳/中阳/小阳）不是临界点', () => {
+    expect(isBoundaryKind(KXIAN_KIND.DAYANG)).toBe(false);
+    expect(isBoundaryKind(KXIAN_KIND.ZHONGYANG)).toBe(false);
+    expect(isBoundaryKind(KXIAN_KIND.XIAOYANG)).toBe(false);
+  });
+});
+
+describe('kxian-trend / buildKxianPrefix', () => {
+  it('★ 扫到最近的十字星/阴线为止（含它自己）', () => {
+    expect(buildKxianPrefix(S('中阳2.5%', '小阳1.2%', '十字星0.5%', '大阳3.9%')))
+      .toBe('十字星0.5%+小阳1.2%');
+    expect(buildKxianPrefix(S('中阳2.5%', '小阴-1.6%', '小阳1.2%')))
+      .toBe('小阴-1.6%');
+  });
+
+  it('★ 找不到临界点时最多取 KXIAN_PREFIX_MAX_DAYS(3) 天（按时间正序）', () => {
+    expect(buildKxianPrefix(S('中阳2.5%', '中阳1.8%', '中阳1.2%', '中阳1.1%', '中阳1.0%')))
+      .toBe('中阳1.1%+中阳1.2%+中阳1.8%');
+  });
+
+  it('★ 遇数据缺口立即停，⛔ 不跨过空格继续拼（§10）', () => {
+    expect(buildKxianPrefix(S('中阳2.5%', '', '小阳1.2%'))).toBe('');
+  });
+
+  it('★ 序列只有 1 项 ⇒ 空串', () => {
+    expect(buildKxianPrefix(S('中阳2.5%'))).toBe('');
+    expect(buildKxianPrefix(null)).toBe('');
+  });
+});
+
+describe('kxian-trend / formatKxianWithPrefix', () => {
+  it('★ 「第一次」⇒ 第一次中阳 2.5%（标记词，不重复 K 线名）', () => {
+    expect(formatKxianWithPrefix('第一次', '中阳2.5%')).toBe('第一次中阳 2.5%');
+  });
+
+  it('★ 序列前缀 ⇒ 用 + 连接，三天一起', () => {
+    expect(formatKxianWithPrefix('十字星0.5%+小阳1.2%', '中阳2.5%'))
+      .toBe('十字星0.5%+小阳1.2%+中阳2.5%');
+  });
+
+  it('★ 无前缀 ⇒ 原样返回', () => {
+    expect(formatKxianWithPrefix('', '中阳2.5%')).toBe('中阳2.5%');
+    expect(formatKxianWithPrefix(null, '小阴-1.87%')).toBe('小阴-1.87%');
+  });
+
+  it('★ 旧数据前缀写着「第一次中阳」也要去重，⛔ 不许出现「第一次中阳+中阳2.3%」', () => {
+    expect(formatKxianWithPrefix('第一次中阳', '中阳2.3%')).toBe('第一次中阳 2.3%');
+    expect(formatKxianWithPrefix('第一次中阳', '中阳2.3%')).not.toContain('第一次中阳+');
+  });
+
+  it('★ 只有本体没有类型词时兜住不拼出空格', () => {
+    expect(formatKxianWithPrefix('第一次', '普涨')).toBe('第一次普涨');
+  });
+});
+
 describe('kxian-trend / deriveGuanchaByKxian', () => {
   it('★ 阴线一律看结果（原话：十字星、小阴、大阴 → 最近多板结果）', () => {
     expect(deriveGuanchaByKxian(S('小阴-1.87%', '小阳1.9%')).guancha).toBe(GUANCHA_RESULT);
@@ -57,23 +124,24 @@ describe('kxian-trend / deriveGuanchaByKxian', () => {
     expect(deriveGuanchaByKxian(S('大阳5.2%', '中阳2.3%')).guancha).toBe(GUANCHA_RESULT);
   });
 
-  it('★ 中阳·第一次 ⇒ 过程，且前缀写「第一次中阳」（前一日是十字星）', () => {
+  it('★ 中阳·第一次 ⇒ 过程，前缀写「第一次」（前一日是十字星）', () => {
     const r = deriveGuanchaByKxian(S('中阳2.3%', '十字星0.81%', '小阳1.9%'));
     expect(r.guancha).toBe(GUANCHA_PROCESS);
-    expect(r.kxianPrefix).toBe('第一次中阳');
+    expect(r.kxianPrefix).toBe('第一次');
+    expect(r.kxianPrefix).toBe(PREFIX_FIRST);
     expect(r.isFirstZhongyang).toBe(true);
   });
 
   it('★ 中阳·第一次（前一日是阴线）也算第一次', () => {
     const r = deriveGuanchaByKxian(S('中阳2.3%', '小阴-1.6%'));
     expect(r.guancha).toBe(GUANCHA_PROCESS);
-    expect(r.kxianPrefix).toBe('第一次中阳');
+    expect(r.kxianPrefix).toBe('第一次');
   });
 
-  it('★ 中阳·第二次 ⇒ 结果，且不再标前缀（原话：第二次中阳看结果）', () => {
+  it('★ 中阳·第二次 ⇒ 结果，前缀给出 K 线序列（原话：第二次中阳看结果）', () => {
     const r = deriveGuanchaByKxian(S('中阳2.3%', '中阳1.8%', '十字星0.5%'));
     expect(r.guancha).toBe(GUANCHA_RESULT);
-    expect(r.kxianPrefix).toBe('');
+    expect(r.kxianPrefix).toBe('十字星0.5%+中阳1.8%');
     expect(r.isFirstZhongyang).toBe(false);
   });
 
@@ -82,16 +150,23 @@ describe('kxian-trend / deriveGuanchaByKxian', () => {
     expect(r.guancha).toBe(GUANCHA_RESULT);
   });
 
-  it('★ 十字星是临界点：中间隔了十字星，更早的中阳不参与计数 ⇒ 重新算第一次', () => {
-    // 中阳 → 十字星 → 中阳：今天这个中阳仍是「第一次」
+  it('★ 十字星是临界点：中间隔了十字星，更早的中阳不参与 ⇒ 重新算第一次', () => {
+    // 中阳 → 十字星 → 中阳 → 中阳：今天这个中阳仍是「第一次」
     const r = deriveGuanchaByKxian(S('中阳2.3%', '十字星0.1%', '中阳1.8%', '中阳1.5%'));
     expect(r.guancha).toBe(GUANCHA_PROCESS);
-    expect(r.kxianPrefix).toBe('第一次中阳');
+    expect(r.kxianPrefix).toBe('第一次');
   });
 
-  it('★ 中阳之间夹了别的不算连续（只认连续同类）', () => {
-    const r = deriveGuanchaByKxian(S('中阳2.3%', '小阳1.9%', '中阳1.8%'));
-    expect(r.guancha).toBe(GUANCHA_PROCESS);   // 前一日不是中阳 ⇒ 第一次
+  it('★★ 十字星+小阳+中阳 ⇒ 看结果，前缀写「十字星0.5%+小阳1.2%」（用户点名的反例）', () => {
+    // 用户原话：「比如前面两天是十字星+小阳，今天的昨多板k线是中阳，那就看结果，
+    //            相当于十字星+小阳+中阳，前缀应该写，十字星0.5%+小阳1.2%」
+    const r = deriveGuanchaByKxian(S('中阳2.5%', '小阳1.2%', '十字星0.5%', '大阴-4.0%'));
+    expect(r.guancha).toBe(GUANCHA_RESULT);          // ⛔ 不是过程！昨天是小阳不是第一次
+    expect(r.kxianPrefix).toBe('十字星0.5%+小阳1.2%');
+    expect(r.isFirstZhongyang).toBe(false);
+    // 拼出来的最终文案：三天一起、无重复
+    expect(formatKxianWithPrefix(r.kxianPrefix, '中阳2.5%'))
+      .toBe('十字星0.5%+小阳1.2%+中阳2.5%');
   });
 
   it('★ 小阳：前面不足 2 根 ⇒ 过程（原话：小阳看过程）', () => {
@@ -102,6 +177,7 @@ describe('kxian-trend / deriveGuanchaByKxian', () => {
   it('★ 小阳：前面已有 2 根 ⇒ 结果（原话：但是前面有两根小阳，看结果）', () => {
     const r = deriveGuanchaByKxian(S('小阳1.9%', '小阳1.2%', '小阳1.1%', '十字星0.5%'));
     expect(r.guancha).toBe(GUANCHA_RESULT);
+    expect(r.kxianPrefix).toBe('');   // 只有中阳非首次才出序列前缀
   });
 
   it('★ 小阳前面被十字星打断 ⇒ 重新从 0 数', () => {
@@ -109,9 +185,10 @@ describe('kxian-trend / deriveGuanchaByKxian', () => {
     expect(r.guancha).toBe(GUANCHA_PROCESS);   // 十字星之后只有 1 根
   });
 
-  it('★ 数据缺口必须中断计数，⛔ 不许跨过空格继续数（§10）', () => {
-    const r = deriveGuanchaByKxian(S('中阳2.3%', '', '中阳1.8%'));
-    expect(r.guancha).toBe(GUANCHA_PROCESS);
+  it('★ 中阳/小阳 但上个交易日数据缺失 ⇒ null，⛔ 不猜过程还是结果（§10）', () => {
+    expect(deriveGuanchaByKxian(S('中阳2.3%', '', '中阳1.8%'))).toBeNull();
+    expect(deriveGuanchaByKxian(S('中阳2.3%'))).toBeNull();
+    expect(deriveGuanchaByKxian(S('小阳1.9%'))).toBeNull();
   });
 
   it('★ 序列为空 / 首项认不出 ⇒ null（前台保持 "-"，⛔ 不猜）', () => {
