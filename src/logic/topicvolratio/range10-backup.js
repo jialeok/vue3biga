@@ -16,6 +16,17 @@
  *     排名靠前的新股票（首次在列或者二次在列），新面孔。有首次在列的只选一只，没有首次在列的，
  *     选二次在列的。如果都没有，依旧空仓。」
  * ============================================================================
+ * 用户口径（2026-10-24 第四次修正，9-29 雪龙集团事故）：
+ *   「9月29日，量比题材买点侧你选择，雪龙集团，十日涨幅雪龙股份2次在列，给出理由……
+ *     但是雪龙股份竞价是涨停一字板，买不进去啊，所以规则你要完善下，竞价涨幅是涨停的，
+ *     一字板的你说明下就可以了，不用把股票选进去，选进去没用，也买不了。你选票的时候要注意这点，
+ *     买不进去的，也不用替补，也不用选进去了。其它不变。」
+ *   ⇒ ★ 新增一道否决：最强的那只若是【竞价一字涨停】⇒ 本日候补【空仓】，
+ *      ⛔ **既不选入，也不顺延到下一名**（"也不用替补"）。
+ *      ⚠️ 与题材块「龙一一字 ⇒ 顺延龙二」【刻意相反】：那边是买满名额的打板口径，
+ *        这边是「候补只有一只」的替换口径 —— 换成第二名就用更弱的票顶掉了最强的票，
+ *        那不是用户要的东西（与 10-20「不许顺延」的纪律同源，只是这次的顺延理由是买不进）。
+ * ============================================================================
  * 用户口径（2026-10-24 第三次修正，10-20 事故）：
  *   「10月20日，十日候补题材你选了京城股份，实际上是海洋王，因为海洋王已经选在了下面题材
  *     商业航天题材中，所以你选排在后一名的京城股份？这是不对的。……出现多只首次在列只选一只
@@ -73,6 +84,18 @@ export const RANGE10_CNT_FIRST = 1;
 export const RANGE10_CNT_SECOND = 2;
 
 /**
+ * 涨幅 → 「+49.00%」文案（仅用于【说明文字】，⛔ 不参与任何判定）。
+ * §21：文案在 Logic 层拼好，模板零计算；缺值 ⇒ '—'（⛔ 不补 0，§10）。
+ * @param {number|null} n
+ * @returns {string}
+ */
+function _fmtPct(n) {
+  const v = (n === null || n === undefined || n === '') ? null : Number(n);
+  if (v === null || !isFinite(v)) return '—';
+  return (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+}
+
+/**
  * 【纯函数】把注入的十日涨幅池排成「屏幕顺序 + 主板名次」。
  *
  * @param {Array<{name:string, code?:string, topic?:string, pct:number|string|null}>} pool
@@ -100,6 +123,20 @@ export function buildRange10Ranked(pool) {
       code: String(r.code || '').trim(),
       topic: String(r.topic || '').trim(),
       pct: pct,
+      // ★★ [R10-YIZI 2026-10-24] 该票【今日】是否竞价一字涨停（买不进）。
+      //   三态，⛔ 不许把「不知道」塌成 false（§10）：
+      //     true  = 采集层用 limit-up.js#isAuctionYiZi 判出来了（读 auc_pct_chg，唯一实现 §6）；
+      //     false = 明确不是一字；
+      //     null  = 拿不到该票今日的竞价数据（典型 = 「20天」补位行：它【不在】今日竞价名单里）
+      //             ⇒ 判不出，⛔ 不能当成「能买」也不当成「买不进」（见 pickRange10Backup 的说明）。
+      isYizi: (r.isYizi === true) ? true : (r.isYizi === false ? false : null),
+      // 竞价涨幅（%，仅用于说明文案：「竞价涨幅 +10.00% ⇒ 一字板」）；null = 缺数据
+      aucPct: (function() {
+        const v = r.aucPct;
+        if (v === null || v === undefined || v === '') return null;
+        const n = Number(v);
+        return isFinite(n) ? n : null;
+      })(),
       // sortIndicesByRangePct 的行契约是 `row.stock`（与早盘竞价的 renderList 同形）
       stock: name
     });
@@ -125,6 +162,7 @@ export function buildRange10Ranked(pool) {
     out.push({
       name: it.name, code: it.code, topic: it.topic, pct: it.pct,
       mainBoard: mainBoard, rank: r,
+      isYizi: it.isYizi, aucPct: it.aucPct,
       // ⚠️ 屏幕行号（1 起，含非主板）—— 只用于【说明文案】帮用户核对，
       //    ⛔ 绝不拿它当名次口径：用户问的是「排名前十」，而屏幕上的标签按【主板名次】发
       //    （2026-10-23 实测：兆威机电 主板第 8 名 / 屏幕第 9 行 —— 两种数法都能进前十，但混用就会出现
@@ -148,6 +186,8 @@ export function buildRange10Ranked(pool) {
  *      ⚠️ 「没有首次在列」按【剔除后仍可用】解释：一档里全是同题材的，
  *         等于「没有可用的首次在列」⇒ 才看二档；两档都空 ⇒ 返回 pick=null（= 空仓）。
  *   ④ 选中即停，⛔ 绝不多选（用户：「有首次在列的只选一只」）。
+ *   ⑤ ★★ [R10-YIZI 2026-10-24] 若选中的那只【今日竞价一字涨停】⇒ 买不进 ⇒
+ *      pick=null、blockedBy='yizi'、blocked=那只票，⛔ **不换下一名替补**（本日候补空仓）。
  *
  * @param {Array} pool 见 buildRange10Ranked
  * @param {{counts?:Map<string,{cnt:number}>|null, coveredDays?:number, topN?:number,
@@ -160,7 +200,8 @@ export function buildRange10Ranked(pool) {
  *           「是否已被题材块选中」不参与判定。要表达「同一只票两条通道都选中」，
  *           请在规则层的说明文案里讲（_buildRange10BackupBlock 的 overlap）。
  * @returns {{ready:boolean, reason:string, pick:object|null, tier:'first'|'second'|'',
- *            trail:Array<object>, topN:number, coveredDays:number, windowDays:number}}
+ *            trail:Array<object>, topN:number, coveredDays:number, windowDays:number,
+ *            blockedBy:string, blocked:object|null, yiziUnknown:boolean}}
  */
 export function pickRange10Backup(pool, opts) {
   const o = opts || {};
@@ -183,7 +224,15 @@ export function pickRange10Backup(pool, opts) {
     trail: [],
     topN: topN,
     coveredDays: coveredDays,
-    windowDays: RANGE10_BACKUP_WINDOW_DAYS
+    windowDays: RANGE10_BACKUP_WINDOW_DAYS,
+    // ★★ [R10-YIZI 2026-10-24 用户口径] 买不进（竞价一字涨停）的三件事实：
+    //   · blockedBy = 'yizi'  ⇒ 「不是选不出，是选出来的那只买不进」—— 规则层据此换文案；
+    //   · blocked   = 被否掉的那只（name/topic/pct/rank/cnt/label/aucPct），用于说明区点名；
+    //   · yiziUnknown = 选中的票今日竞价数据缺失（补位行）⇒ 无法确认是否一字，需用户自核。
+    //   ⚠️ 三个都是【附加信息】，缺省值 = 没有发生（§11：老调用方 / 老单测零行为变化）。
+    blockedBy: '',
+    blocked: null,
+    yiziUnknown: false
   };
 
   const ranked = buildRange10Ranked(pool);
@@ -223,7 +272,9 @@ export function pickRange10Backup(pool, opts) {
     return {
       name: it.name, code: it.code, topic: it.topic, pct: it.pct, rank: it.rank,
       rowNo: it.rowNo,
-      cnt: cnt, label: presenceLabelOf(cnt), reason: reason
+      cnt: cnt, label: presenceLabelOf(cnt), reason: reason,
+      // [R10-YIZI 2026-10-24] 今日竞价一字涨停（true / false / null=判不出，见 buildRange10Ranked）
+      isYizi: it.isYizi, aucPct: it.aucPct
     };
   });
   out.trail = judged;
@@ -238,7 +289,35 @@ export function pickRange10Backup(pool, opts) {
       '（有首次在列只选一只；没有首次在列才看二次在列）⇒ 今天空仓';
     return out;
   }
+  // ★★ [R10-YIZI 2026-10-24 用户口径] 「买不进去的，也不用替补，也不用选进去了」：
+  //   最强的那只若是【竞价一字涨停】⇒ 一字板竞价买不进（开盘也基本买不到）⇒
+  //   ⛔ 不选入，⛔ 也不顺延到下一名（下一名更弱，替换没有意义），本日候补直接空仓。
+  //   ⚠️ 只对【会被选中的那一只】生效：一字票若排在更后面（前面已有可用票），它不影响结论。
+  if (pick.isYizi === true) {
+    // 让「前十逐只去留」那段文字也能看见它被否掉的真实原因（可追溯，§10）
+    pick.reason = '今日【竞价涨停（一字板）】⇒ 竞价买不进 ⇒ 不选入，也不替补';
+    out.blockedBy = 'yizi';
+    out.blocked = {
+      name: pick.name, code: pick.code, topic: pick.topic,
+      pct: pick.pct, rank: pick.rank, rowNo: pick.rowNo,
+      cnt: pick.cnt, label: pick.label, aucPct: pick.aucPct
+    };
+    out.tier = '';          // ⛔ 一档都没成（别让下游误读成「首次在列档选出来的」）
+    out.pick = null;
+    out.reason = '十日涨幅前 ' + topN + ' 名里最强的那只【' + pick.name + '】' +
+      '（' + (pick.topic || '—') + '，十日涨幅 ' + _fmtPct(pick.pct) +
+      '，第 ' + pick.rank + ' 名，' + (pick.label || '次数未知') + '）' +
+      '今日【竞价涨停（一字板）】' +
+      (pick.aucPct === null ? '' : ('（竞价涨幅 ' + _fmtPct(pick.aucPct) + '）')) +
+      ' ⇒ 一字板竞价买不进、开盘也基本买不到；' +
+      '按用户口径【不选入、也不替补】⇒ 今天这只候补【空仓】（⛔ 没有换成下一名顶上来）';
+    return out;
+  }
   out.pick = pick;
   out.tier = tier1 ? 'first' : 'second';
+  // §10：补位行（「20天」票）不在今日竞价名单里 ⇒ 拿不到竞价涨幅 ⇒ 判不出是否一字。
+  //   仍然选它（⛔ 不因为「不知道」就否掉一个合格候选），但要把这个缺口如实说出去，
+  //   让用户自己核一眼 —— 这比「默默当成能买」安全。
+  if (pick.isYizi === null) out.yiziUnknown = true;
   return out;
 }

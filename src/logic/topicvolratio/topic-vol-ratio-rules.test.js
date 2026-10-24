@@ -3403,6 +3403,56 @@ describe('tvrb · 第二十九条 十日涨幅 · 在列次数候补', function(
     expect(plan.range10Backup.notes.join('\n')).toContain('重复出现');
   });
 
+  // ★★ [R10-YIZI 2026-10-24 第四次修正 · 9-29 雪龙集团事故]
+  //   用户原话：「9月29日，量比题材买点侧你选择，雪龙集团，十日涨幅雪龙股份2次在列，给出理由……
+  //     但是雪龙股份竞价是涨停一字板，买不进去啊，所以规则你要完善下，竞价涨幅是涨停的，
+  //     一字板的你说明下就可以了，不用把股票选进去，选进去没用，也买不了。你选票的时候要注意这点，
+  //     买不进去的，也不用替补，也不用选进去了。其它不变。」
+  //   ⇒ ① 不选入（range10Backup=null，买点名单里没有它）；
+  //     ② ⛔ 不替补（京城股份同样合格也不许顶上来）；
+  //     ③ 必须说明（说明区点名「一字板 ⇒ 买不进 ⇒ 空仓」，而不是含糊的「没有候补」）。
+  it('★★ 9-29 事故回归：候补那只竞价一字涨停 ⇒ 不选入、不替补，说明区点名原因', function() {
+    const f = twoTopics();     // 强题材（60）+ 房地产（7.47 < 25 ⇒ 整块作废）⇒ 触发候补
+    const pool = [
+      { name: '九阳股份', code: '002242', topic: '家电', pct: 88.00 },
+      { name: '慈文传媒', code: '002343', topic: 'AI视频', pct: 76.00 },
+      { name: '新华传媒', code: '600825', topic: '文化传媒', pct: 61.00 },
+      { name: '冰山冷热', code: '000530', topic: '冰雪产业', pct: 56.00 },
+      { name: '吉大正元', code: '003029', topic: 'AI应用', pct: 50.00 },
+      // ★ 事故票：农业 ≠ 文化传媒，主板第 6 名，2次在列，但当天是【竞价一字涨停】
+      { name: '雪龙集团', code: '603949', topic: '农业', pct: 49.00, isYizi: true, aucPct: 10.00 },
+      { name: '京城股份', code: '600860', topic: '机器人概念', pct: 44.00, isYizi: false, aucPct: 2.0 },
+      { name: '百洋股份', code: '002696', topic: '水产品', pct: 40.00 },
+      { name: '东安动力', code: '600178', topic: '飞行汽车', pct: 35.00 },
+      { name: '金奥博', code: '002917', topic: '并购重组', pct: 30.00 }
+    ];
+    const cnt = {
+      九阳股份: 5, 慈文传媒: 6, 新华传媒: 8, 冰山冷热: 4, 吉大正元: 3,
+      雪龙集团: 2, 京城股份: 2, 百洋股份: 6, 东安动力: 4, 金奥博: 5
+    };
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, {
+      range10Rows: pool,
+      range10Presence: presence(cnt),
+      ebbCtx: ebbCtxOf()
+    });
+    // ① 不选入：候补行不出现，也不进买点名单
+    expect(plan.range10Backup).toBeNull();
+    expect(plan.buy.range10Backup).toBeNull();
+    expect(plan.buyNames.has('雪龙集团')).toBe(false);
+    // ② ⛔ 不替补：下一名（京城股份）同样合格也不许顶上来
+    expect(plan.buyNames.has('京城股份')).toBe(false);
+    // ③ 说明区点名原因（用户要的「说明一下就可以了」）
+    const notes = plan.notes.join('\n');
+    expect(notes).toContain('雪龙集团');
+    expect(notes).toContain('一字');
+    expect(notes).toContain('不替补');
+    expect(notes).toContain('空仓');
+    // ⛔ 措辞必须与「确实没有候补」区分开（否则用户会以为规则又选不出票）
+    expect(notes).not.toContain('本次【没有候补】');
+    // 题材级结论照旧：房地产那块仍然整块作废
+    expect(plan.blocks.map(function(b) { return b.block.topic; })).toEqual(['强题材']);
+  });
+
   it('§11：调用方没传十日涨幅池 ⇒ 与旧行为逐字一致（不作废、不出候补、不加说明）', function() {
     const f = twoTopics();
     const plan = buildTopicVolRatioPlan(f.topics, f.dm, { ebbCtx: ebbCtxOf() });

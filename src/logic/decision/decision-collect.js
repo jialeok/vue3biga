@@ -1436,7 +1436,17 @@ export function collectDecisionData(date, opts) {
     //   ⚠️ 题材走 classifyStockPrimaryTopic（与 _mkRow 的兜底同一条路：它会回落到历史题材库），
     //      ⛔ 不给补位票编一个 '其它' 之外的假题材。
     const r10Pool = rows.map(function(r) {
-      return { name: r.name, code: r.code, topic: r.topic, pct: r.pct };
+      return {
+        name: r.name, code: r.code, topic: r.topic, pct: r.pct,
+        // ★★ [R10-YIZI 2026-10-24 用户口径] 该票【今日】是否竞价一字涨停 —— 一字板买不进，
+        //   第二十九条要据此把它【排除且不替补】（用户原话「竞价涨幅是涨停的，一字板的你说明下
+        //   就可以了，不用把股票选进去……也不用替补」）。
+        //   ⛔ 本层不自己判涨停幅度：rows 上的 isYizi 就是 limit-up.js#isAuctionYiZi 的结果
+        //      （与早盘竞价行内红线、题材块顺延同一份判定，§6 单一真相）。
+        isYizi: (r.isYizi === true),
+        // 竞价涨幅（%）：只用于「竞价涨幅 +10.00% ⇒ 一字板」这句说明；缺数据 ⇒ null（§10）
+        aucPct: (r.aucPct === undefined ? null : r.aucPct)
+      };
     });
     const r10Seen = new Set();
     r10Pool.forEach(function(r) { r10Seen.add(String(r.name || '').trim()); });
@@ -1447,11 +1457,18 @@ export function collectDecisionData(date, opts) {
         if (!nm || r10Seen.has(nm)) return;
         r10Seen.add(nm);
         const rm = rangeMap.get(nm);
+        const _pr = byName.get(nm);
         r10Pool.push({
           name: nm,
           code: String((m && m.code) || getStockCode(nm) || '').trim(),
           topic: String(classifyStockPrimaryTopic({ stock: nm }, psize) || '').trim(),
-          pct: (rm && rm.pct !== undefined && rm.pct !== null) ? rm.pct : null
+          pct: (rm && rm.pct !== undefined && rm.pct !== null) ? rm.pct : null,
+          // ★★ [R10-YIZI 2026-10-24] 「20天」补位票【不在今日竞价名单】⇒ 拿不到竞价涨幅
+          //   ⇒ isYizi 只能给 null（**判不出**）。⛔ 绝不给 false —— 那等于替它担保「能买」，
+          //   而它恰恰是最可能一字涨停的一类票（§10：判不出 ≠ 判出不是一字）。
+          //   规则层拿到 null 时仍可选它，但会在说明区明写「无法确认是否一字，请自核一眼」。
+          isYizi: _pr ? (_pr.isYizi === true) : null,
+          aucPct: _pr && _pr.aucPct !== undefined ? _pr.aucPct : null
         });
       });
     }

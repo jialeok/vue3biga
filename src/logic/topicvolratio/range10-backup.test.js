@@ -325,3 +325,118 @@ describe('range10-backup · 2026-10-23 真实快照（含「20天」补位行）
     expect(buggy.pick.rank).toBe(10);   // ← 错就错在这个 10（真实名次是 11）
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// ★★ [R10-YIZI 2026-10-24 第四次修正 · 9-29 雪龙集团事故]
+//   用户原话：「9月29日……十日涨幅雪龙股份2次在列……但是雪龙股份竞价是涨停一字板，
+//   买不进去啊，所以规则你要完善下，竞价涨幅是涨停的，一字板的你说明下就可以了，
+//   不用把股票选进去，选进去也没用，也买不了。你选票的时候要注意这点，
+//   买不进去的，也不用替补，也不用选进去了。其它不变。」
+//
+//   ⇒ 锁住三件事：
+//     ① 最强的那只若【竞价一字涨停】⇒ 本日候补【空仓】（pick=null，blockedBy='yizi'）；
+//     ② ⛔ 【不许替补】—— 下一名（京城股份）不许顶上来（哪怕它也是二次在列）；
+//     ③ §10 ——「20天」补位行拿不到竞价涨幅（null）⇒ 仍选它，但必须标 yiziUnknown。
+// ══════════════════════════════════════════════════════════════════════════════════════════
+describe('range10-backup · 竞价一字涨停（买不进 ⇒ 不选入、不替补）', () => {
+  /** 2026-09-29 场景：雪龙集团 = 主板第 6 名 · 二次在列 · 农业（≠ 总龙一 澳弘电子 的 电子） */
+  function pool0929() {
+    return [
+      { name: '九阳股份', code: '002242', topic: '家电', pct: 88.00 },
+      { name: '慈文传媒', code: '002343', topic: 'AI视频', pct: 76.00 },
+      { name: '新华传媒', code: '600825', topic: '文化传媒', pct: 61.00 },
+      { name: '冰山冷热', code: '000530', topic: '冰雪产业', pct: 56.00 },
+      { name: '吉大正元', code: '003029', topic: 'AI应用', pct: 50.00 },
+      { name: '雪龙集团', code: '603949', topic: '农业', pct: 49.00, isYizi: false, aucPct: 3.1 },
+      { name: '京城股份', code: '600860', topic: '机器人概念', pct: 44.00, isYizi: false, aucPct: 2.0 },
+      { name: '百洋股份', code: '002696', topic: '水产品', pct: 40.00 },
+      { name: '东安动力', code: '600178', topic: '飞行汽车', pct: 35.00 },
+      { name: '金奥博', code: '002917', topic: '并购重组', pct: 30.00 }
+    ];
+  }
+  const CNT_0929 = {
+    九阳股份: 5, 慈文传媒: 6, 新华传媒: 8, 冰山冷热: 4, 吉大正元: 3,
+    雪龙集团: 2, 京城股份: 2, 百洋股份: 6, 东安动力: 4, 金奥博: 5
+  };
+  function opts0929(extra) {
+    return Object.assign({
+      counts: countsOf(CNT_0929),
+      coveredDays: 10,
+      excludeTopics: ['电子']      // 20日涨幅总龙一 = 澳弘电子（电子/通信/算力）
+    }, extra || {});
+  }
+
+  it('基准：雪龙集团不是一字时 = 二次在列里排最前 ⇒ 选它（事故现场就是这一步选中的）', () => {
+    const r = pickRange10Backup(pool0929(), opts0929());
+    expect(r.ready).toBe(true);
+    expect(r.tier).toBe('second');
+    expect(r.pick && r.pick.name).toBe('雪龙集团');
+    expect(r.pick.rank).toBe(6);
+    expect(r.blockedBy).toBe('');
+    expect(r.yiziUnknown).toBe(false);
+  });
+
+  it('★★ 事故回归：雪龙集团竞价一字涨停 ⇒ 空仓（⛔ 不许选进买点）', () => {
+    const pool = pool0929().map(function(p) {
+      return p.name === '雪龙集团' ? Object.assign({}, p, { isYizi: true, aucPct: 10.00 }) : p;
+    });
+    const r = pickRange10Backup(pool, opts0929());
+    expect(r.ready).toBe(true);              // ⛔ 不是「判不出」，是「判出来了但买不进」
+    expect(r.pick).toBeNull();
+    expect(r.tier).toBe('');
+    expect(r.blockedBy).toBe('yizi');
+    expect(r.blocked && r.blocked.name).toBe('雪龙集团');
+    expect(r.blocked.aucPct).toBe(10);
+    // 说明文案要点名：谁 / 多少涨幅 / 第几名 / 几次在列 / 为什么放弃 / 不替补
+    expect(r.reason).toContain('雪龙集团');
+    expect(r.reason).toContain('一字');
+    expect(r.reason).toContain('+49.00%');
+    expect(r.reason).toContain('+10.00%');
+    expect(r.reason).toContain('第 6 名');
+    expect(r.reason).toContain('2次在列');
+    expect(r.reason).toContain('不替补');
+    expect(r.reason).toContain('空仓');
+    // trail 里那只票的原因要能被核对（「十个名次去留」那段文字会打印它）
+    const xl = r.trail.filter(function(t) { return t.name === '雪龙集团'; })[0];
+    expect(xl.reason).toContain('一字');
+  });
+
+  it('★ ⛔ 不许替补：下一名（京城股份，同为二次在列、非一字）不许顶上来', () => {
+    const pool = pool0929().map(function(p) {
+      return p.name === '雪龙集团' ? Object.assign({}, p, { isYizi: true }) : p;
+    });
+    const r = pickRange10Backup(pool, opts0929());
+    expect(r.pick).toBeNull();
+    // 京城股份在 trail 里【仍然是干净的候选】（reason 为空）—— 证明它不是「被剔除」，
+    // 而是「用户口径不允许拿它替补」⇒ 这一条断言就是「换成更弱的票」这个错误方案的防线。
+    const jc = r.trail.filter(function(t) { return t.name === '京城股份'; })[0];
+    expect(jc.reason).toBe('');
+    expect(jc.cnt).toBe(2);
+    expect(r.reason).not.toContain('京城股份');
+  });
+
+  it('一字只在更后面出现 ⇒ 不影响结论（前面已有可买的票就照常选它）', () => {
+    const pool = pool0929();
+    // 京城股份（第 7 名）是一字，但第 6 名的雪龙集团可买 ⇒ 结论与「京城是不是一字」无关
+    pool.forEach(function(p) { if (p.name === '京城股份') p.isYizi = true; });
+    const cnt = Object.assign({}, CNT_0929, { 雪龙集团: 1 });   // 雪龙 = 首次在列
+    const r = pickRange10Backup(pool, opts0929({ counts: countsOf(cnt) }));
+    expect(r.pick && r.pick.name).toBe('雪龙集团');
+    expect(r.tier).toBe('first');
+    expect(r.blockedBy).toBe('');
+  });
+
+  it('§10：「20天」补位行拿不到竞价涨幅（isYizi 缺省）⇒ 仍选它，但必须标 yiziUnknown', () => {
+    const pool = pool0929().map(function(p) {
+      if (p.name !== '雪龙集团') return p;
+      const c = Object.assign({}, p);
+      delete c.isYizi;                        // 采集层：补位行 = 判不出
+      delete c.aucPct;
+      return c;
+    });
+    const r = pickRange10Backup(pool, opts0929());
+    expect(r.pick && r.pick.name).toBe('雪龙集团');
+    expect(r.yiziUnknown).toBe(true);         // 规则层据此在说明区提醒「自己核一眼」
+    expect(r.blockedBy).toBe('');
+  });
+});
