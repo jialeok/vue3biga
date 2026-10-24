@@ -1655,6 +1655,81 @@ function _dragonCandidates(block, dragonMap, pctMap) {
 }
 
 /**
+ * ★★ [TVRB-926-DRIFT 2026-10-24 用户口径] 买点侧说明区：把「早上 9:26 龙位」与「收盘龙位」的差异讲清楚。
+ *
+ * 用户原话（9-24 报障）：
+ *   「题材量比入选的题材有AI应用和房地产，买点侧房地产的选华远控股龙五，为什么不选世联行龙二呢？
+ *     是因为早上的龙位和收盘的龙位不同变化了吗？如果是你在买点侧那里说明下，
+ *     还是股票量比高低选股，应该不是吧？」
+ *
+ * 根因（实测 9-24 房地产组，6 只 ⇒ 中档只取 1 只）：
+ *   · 买点侧选股按【早上 9:26 竞价口径】的龙位（[TVRB-926] rankDragonsWithPctMap）——
+ *     那个口径下：大亚圣象 龙一（竞价 +10.03% 一字，买不进已顺延）、**华远控股 龙二**、
+ *     我爱我家 龙三、世联行 龙四、三峡新材 龙五、绿地控股 龙六 ⇒ 取龙二 = 华远控股；
+ *   · 收盘后十日涨幅的「今天」那一根腿被换成【收盘涨幅】（华远控股 -9.22%、世联行 +2.84%）
+ *     ⇒ 组内重排成：大亚圣象 龙一、**世联行 龙二**、…、华远控股 龙五。
+ *   ⇒ 于是「收盘回看」时会觉得「怎么不选龙二世联行」，而早上那一刻按龙位根本轮不到它。
+ *   ⛔ 这不是按【竞价量比高低】选股（选股只认龙位；量比只用于【题材之间】的排名与空仓提醒）。
+ *
+ * 发声条件（§11 零行为变化）：只有【真正出现差异】时才追加一条说明 ——
+ *   9:26 口径与收盘口径的龙位完全一致时，本函数一个字都不写。
+ *
+ * @param {object} blk _buildBlock 的返回（含 block.members / picks / notes）
+ * @param {Map} closeDragonMap 收盘口径的龙位名册（= rankDragons 的返回）；
+ *        缺省 / 空 ⇒ 无可比 ⇒ 不发声（§10 不猜「它收盘是龙几」）
+ */
+function _appendDragonDriftNote(blk, closeDragonMap) {
+  if (!blk || !blk.block || !Array.isArray(blk.picks) || blk.picks.length === 0) return;
+  if (!closeDragonMap || typeof closeDragonMap.get !== 'function' || closeDragonMap.size === 0) return;
+  const topic = String(blk.block.topic || '').trim();
+  const pickedNames = new Set();
+  const driftTexts = [];
+  let bestPickedClose = Infinity;
+  blk.picks.forEach(function(p) {
+    const nm = String((p && p.name) || '').trim();
+    if (!nm) return;
+    pickedNames.add(nm);
+    const c = closeDragonMap.get(nm);
+    const buyRank = Number(p && p.dragonRank);
+    if (!c || !c.rank || !isFinite(buyRank) || buyRank <= 0) return;
+    if (String(c.topic || '').trim() !== topic) return;   // 换题材的龙位不可比（§10）
+    const closeRank = Number(c.rank);
+    if (!isFinite(closeRank) || closeRank <= 0) return;
+    if (closeRank < bestPickedClose) bestPickedClose = closeRank;
+    if (closeRank !== buyRank) {
+      driftTexts.push('【' + nm + '】9:26 是' + getDragonLabel(buyRank) +
+        '、收盘口径是' + getDragonLabel(closeRank));
+    }
+  });
+  if (driftTexts.length === 0) return;
+
+  // 收盘口径下排在「被选中的那只」前面、却没被选中的同题材成员 —— 正是用户会追问的那几只
+  const outRanked = [];
+  (blk.block.members || []).forEach(function(m) {
+    const nm = String((m && m.name) || '').trim();
+    if (!nm || pickedNames.has(nm)) return;
+    const c = closeDragonMap.get(nm);
+    if (!c || !c.rank) return;
+    if (String(c.topic || '').trim() !== topic) return;
+    const closeRank = Number(c.rank);
+    if (!isFinite(closeRank) || closeRank >= bestPickedClose) return;
+    outRanked.push('【' + nm + '】' + getDragonLabel(closeRank));
+  });
+  outRanked.sort();
+
+  blk.notes = Array.isArray(blk.notes) ? blk.notes : [];
+  blk.notes.push('ℹ️ 本题材的「龙几」按【早上 9:26 竞价口径】排（早上选中的票，任何时候翻回来都是同一批）：' +
+    driftTexts.join('；') + '。' +
+    (outRanked.length > 0
+      ? '⚠️ 收盘口径下 ' + outRanked.join('、') + ' 排得更前，但 9:26 那一刻它们排在被选中的那只之后' +
+        '（只取 ' + blk.picks.length + ' 只 ⇒ 轮不到），所以【没有选错票】。'
+      : '') +
+    '原因：十日涨幅的「今天」那一根腿在 15:00 后被换成【收盘涨幅】⇒ 组内十日涨幅重排 ⇒ 龙位跟着变' +
+    '（第 二十三 条）。这是「早上选股 vs 收盘回看」的正常差异；' +
+    '⛔ 选股只认龙位，⛔ 不是按【竞价量比高低】挑股票（量比只决定题材之间的排名与空仓提醒）。');
+}
+
+/**
  * 构造一个入选题材的块 —— ★形状与 decision-rules#_buildTopicBuyBlock【完全一致】★。
  *
  * ⛔ 为什么必须同形状（这是本文件最容易踩的坑）：块要交给 decision-rules#finishBuyBlock
@@ -2690,6 +2765,10 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       tier = Object.assign({}, tier, { pickCount: 1 });
     }
     out.blocks.push(_buildBlock(b, buyDragonMap, tier, buyPctMap, buySkipNames));
+    // ★★ [TVRB-926-DRIFT 2026-10-24 用户口径] 「早上 9:26 龙位」与「收盘龙位」不一致时，
+    //   在本题材的说明区讲清「为什么收盘回看时不选那只看似更靠前的票」——
+    //   只在【真的不一致】时追加一条，口径一致时一个字都不写（§11 零行为变化）。
+    _appendDragonDriftNote(out.blocks[out.blocks.length - 1], dragonMap);
   }
 
   // 决策看板形状的买点计划：第 1 块 → heavy、第 2 块 → light（本看板最多两块，candidates 恒空）

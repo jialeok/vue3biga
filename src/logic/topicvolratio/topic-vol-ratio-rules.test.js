@@ -3542,3 +3542,78 @@ describe('tvrb · 第二十九条 十日涨幅 · 在列次数候补', function(
     expect(line).toContain(RANGE10_BACKUP_TAG);
   });
 });
+
+// ============================================================================
+// [TVRB-926-DRIFT 2026-10-24 用户口径] 「早上 9:26 龙位」与「收盘龙位」不一致时，
+// 买点侧说明区必须讲清楚：为什么收盘回看时不选那只看似更靠前的票。
+//
+// 真实事故（用户 9-24 报障）：「买点侧房地产的选华远控股龙五，为什么不选世联行龙二呢？
+//   是因为早上的龙位和收盘的龙位不同变化了吗？」
+// 实测 9-24 房地产 6 只（→ mid，只取 1 只）：
+//   9:26 口径：大亚圣象 龙一（竞价 +10.03% 一字，买不进已顺延）→ 华远控股 龙二 → 我爱我家 龙三
+//              → 世联行 龙四 → 三峡新材 龙五 → 绿地控股 龙六
+//   收盘口径：大亚圣象 龙一、世联行 龙二、…、华远控股 龙五
+//   ⇒ 选股用 9:26（早上那一刻），所以取的是华远控股；不是「按竞价量比高低选股」。
+// ============================================================================
+describe('tvrb · 早盘 9:26 龙位 vs 收盘龙位 的差异说明（9-24 房地产）', function() {
+  /** 收盘口径龙位名册（带 topic，drift 说明要求「同题材才可比」） */
+  function closeMap(entries) {
+    const map = new Map();
+    entries.forEach(function(e) {
+      map.set(e[0], { rank: e[1], topic: '房地产', groupSize: 6, pct: e[2] === undefined ? 20 : e[2] });
+    });
+    return map;
+  }
+
+  const names = ['大亚圣象', '世联行', '我爱我家', '三峡新材', '华远控股', '绿地控股'];
+  const b = block('房地产', 1, names.map(function(n) { return m(n, { aucVolRatio: 20 }); }));
+  // 龙一 大亚圣象 = 竞价一字（买不进 ⇒ 顺延）
+  b.members[0].isYizi = true;
+
+  // 9:26 口径（早上那一刻）
+  const buyDm = closeMap([
+    ['大亚圣象', 1, 54.74], ['华远控股', 2, 35.21], ['我爱我家', 3, 32.08],
+    ['世联行', 4, 29.29], ['三峡新材', 5, 20.00], ['绿地控股', 6, 13.64]
+  ]);
+  // 收盘口径（15:00 后 T 腿被换成收盘涨幅 ⇒ 组内重排）
+  const closeDm = closeMap([
+    ['大亚圣象', 1, 41.00], ['世联行', 2, 36.40], ['我爱我家', 3, 24.91],
+    ['三峡新材', 4, 21.93], ['华远控股', 5, 20.18], ['绿地控股', 6, 8.33]
+  ]);
+
+  const plan = buildTopicVolRatioPlan([b], closeDm, { buyDragonMap: buyDm });
+
+  it('选股按【早上 9:26 龙位】：龙一一字顺延 ⇒ 取龙二 华远控股（不是收盘龙二 世联行）', function() {
+    const blk = plan.blocks[0];
+    expect(blk.tier).toBe('mid');
+    expect(blk.pickCount).toBe(1);
+    expect(blk.picks.map(function(p) { return p.name; })).toEqual(['华远控股']);
+    // 行上的龙标也必须是 9:26 那一个（§6：龙标与选股同一口径）
+    expect(blk.picks[0].dragonLabel).toBe('龙二');
+  });
+
+  it('说明区把差异讲清：9:26 龙二 / 收盘龙五，且点名收盘更靠前的世联行', function() {
+    const txt = plan.blocks[0].notes.join('\n');
+    expect(txt).toContain('9:26');
+    expect(txt).toContain('华远控股');
+    expect(txt).toContain('龙五');
+    expect(txt).toContain('世联行');
+    // 必须明确否掉「按量比选股」这个误解（用户原话「还是股票量比高低选股，应该不是吧？」）
+    expect(txt).toContain('量比');
+    expect(txt).toContain('不是按');
+  });
+
+  it('§11：两个口径完全一致时，一个字都不多写', function() {
+    const same = buildTopicVolRatioPlan([b], buyDm, { buyDragonMap: buyDm });
+    const txt = same.blocks[0].notes.join('\n');
+    expect(txt).not.toContain('9:26 是');
+    expect(txt).not.toContain('收盘口径');
+  });
+
+  it('§10：收盘名册缺失 / 空 ⇒ 不发声（不猜「它收盘是龙几」）', function() {
+    const noClose = buildTopicVolRatioPlan([b], buyDm, { buyDragonMap: buyDm });
+    expect(noClose.blocks[0].notes.join('\n')).not.toContain('收盘口径是');
+    const emptyClose = buildTopicVolRatioPlan([b], new Map(), { buyDragonMap: buyDm });
+    expect(emptyClose.blocks[0].notes.join('\n')).not.toContain('收盘口径是');
+  });
+});
