@@ -47,7 +47,7 @@
 //         必须靠下面的 version 手动信号驱动重算（与决策看板 useDecisionBoard 同一套路）；
 //         分笔那份是【响应式单例】⇒ 直接 void 它的 ref 即可自动重算。
 
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, shallowRef, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useUiStore } from '../stores/uiStore.js';
 import { _on, _off } from '../stores/eventBus.js';
 import {
@@ -82,13 +82,24 @@ import {
   // ★★ [NEW-DRAGON-08 2026-10-22 用户口径] 宽榜（20日涨幅前八）—— 第二十八条挑新龙的候选池；
   //   ⛔ 不进展示（「20日涨幅」toggle / 总龙一~五 仍只用前五）。
   getRange20LeadersWide,
-  getRange20LeadersFingerprintToken
+  getRange20LeadersFingerprintToken,
+  // ★★ [DIVERGE-GUESS 2026-10-24] 预热通道挑「总龙一候选」（纯函数，§15 可单测）；
+  //   ⛔ 只在预热里用，正式判定仍以精算出的真·总龙一为准。
+  pickLeaderFromUsableRows
 } from '../logic/auction/range20-leaders.js';
+// ★★ [DIVERGE-GUESS 2026-10-24] 预热通道读【上一交易日】已落库的 20 日涨幅（stock_range20_pct）：
+//   readRange20Rows = 一次 REST + 会话缓存 + 单飞（§32）；pickUsableRows = 按口径过滤（同一把尺子，§6）。
+//   ⛔ 纯只读、0 K 线、0 猫抓额度 —— 它只用来「猜谁是总龙一」，不产出任何结论。
+import { readRange20Rows, pickUsableRows } from '../data/stock-range20-cache.js';
+// 名册兜底取代码（云表行里没有 code，K 线请求必须有 6 位代码）——与采集层同一个入口（§6）
+import { getStockCode } from '../data/stock-code-map.js';
 // ★ [DIVERGE 2026-10-20 用户口径] 市场总龙一【首次分歧】判定：
 //   buildLeaderDivergence = 纯函数判定（首板 / 首次分歧 / 分歧转一致，§15 唯一实现）；
+//   shouldGateBuySide    = 买点侧「该不该先挂占位」的唯一判据（纯函数，见其 JSDoc）；
 //   getRange20WindowDates / RANGE20_PROBE_DAYS = 与「20日涨幅」同一个窗口口径（§6 同一把尺子）。
-import { buildLeaderDivergence } from '../logic/auction/leader-divergence.js';
-import { getRange20WindowDates, RANGE20_PROBE_DAYS } from '../logic/auction/range20.js';
+import { buildLeaderDivergence, shouldGateBuySide } from '../logic/auction/leader-divergence.js';
+//   isAfterCloseOf = 「口径阶段」的唯一判据（§6）—— 预热拿到的 K 线能否被正式链路复用，就看它。
+import { getRange20WindowDates, RANGE20_PROBE_DAYS, isAfterCloseOf } from '../logic/auction/range20.js';
 //   K 线（同花顺，免费 0 额度）取总龙的每天收盘涨幅 + 开盘涨幅（竞价涨幅 = open/昨收-1）。
 import { fetchFuyaoDailyPctRange } from '../data/stock-range-pct.js';
 // ★ 买点侧专用龙位（= 同一把尺子 computeDragonRankMap，只把十日涨幅换成 9:26 口径那份）
@@ -379,7 +390,9 @@ export function useTopicVolRatioBoard() {
       // ★ [DIVERGE-GATE 2026-10-21] 重试额度用完 ⇒ 落一个【判不出】的终态结论（canJudge=false），
       //   门控据此放行（买点侧按平常日子渲染）—— ⛔ 否则 verdict 恒 null，占位会挂死整个会话。
       //   ⚠️ 只在该日仍是当前生效判定时落（用户可能已切到别的日期，别把旧日期的终态写到新日期上）。
-      if (divergeDate.value === d && !(divergeVerdict.value && divergeVerdict.value.ready)) {
+      //   ⚠️ [DIVERGE-RACE 2026-10-24] 追加 `currentDate` 守卫：过期日期的终态也不许覆盖当前日的结论。
+      if (divergeDate.value === d && currentDate.value === d &&
+          !(divergeVerdict.value && divergeVerdict.value.ready)) {
         divergeVerdict.value = { ready: true, canJudge: false, firstBoardYmd: '',
           firstDivergenceYmd: '', todayFirstDivergence: false, todayAucPct: null, events: [] };
         console.warn('[TVRB] 总龙分歧判定重试额度用完（' + d + '）⇒ 本会话按「判不出」处理');
@@ -394,6 +407,116 @@ export function useTopicVolRatioBoard() {
     }, delay);
     _divergeRetry.set(d, st);
     console.warn('[TVRB] 总龙分歧判定未产出（' + reason + '），' + (delay / 1000) + 's 后第 ' + (st.n + 1) + ' 次重试');
+  }
+  /**
+   * ★★ [DIVERGE-GUESS 2026-10-24 用户口径] 分歧判定的【预热通道】—— 解决三件事：
+   *
+   *   用户原话：「为什么这个提示总是过很久才显示出来，有时显示出来了结果，之后又变成这样了，
+   *   不是很稳定，当时改的时候不是说秒显示吗？计算判断有那么久吗？要再优化下」
+   *
+   *   根因（§35 先定位再改）：
+   *     ① 判定必须知道【今天的总龙一是谁】，而它来自 20 日涨幅前五的**精算**（<=25 只票 × K 线，
+   *        并发 3 ⇒ 十几~几十秒）。判定本身只要 1 只票的 K 线（1~3 秒）⇒ 等待全在「等身份」；
+   *     ② 今天的门控此前是 `!_isTodayD` = **恒 false**（见 shouldGateBuySide 的 ③），
+   *        即「事实没就绪就当作不可能分歧」⇒ 占位只能等精算完才出现，而在这之前屏幕上
+   *        已经是一批「按常规规则选出来的票」—— 那正是用户说的「过很久才显示」；
+   *     ③ 预热把「昨日总龙一」的判定提前算好（昨日已经落库 ⇒ 0 K 线请求即可挑出候选），
+   *        于是今天一进页面（1~3 秒）就能知道「是不是分歧日」⇒ 是 ⇒ 秒挂占位、不是 ⇒ 照常渲染。
+   *
+   *   ⚠️ 纪律（§10 宁缺勿错）：
+   *     · 这里产出的只是【猜测】，绝不落到 plan / 不写库；买点侧结论 100% 来自 ensureLeaderDivergence；
+   *     · 猜不出来（昨日云表没数据 / 拿不到代码 / 非主板）⇒ 保持 null ⇒ 门控回退到「与加预热之前一致」；
+   *     · 今日 bar 还没出（9:25 之前）⇒ verdict.canJudge=false ⇒ 照样当「猜不出来」。
+   */
+  //   ⚠️ shallowRef：里面挂着两份 Map（K 线的收盘/开盘腿）—— 深响应会把它们整份代理一遍，
+  //      纯浪费（它们只在整体替换时才需要触发重算，而本函数每次都是 `divergeGuess.value = {...}`）。
+  const divergeGuess = shallowRef(null);
+  const _divergeGuessInflight = new Map();
+  /**
+   * 20 日涨幅精算进度 `{ date, done, total }`（只在占位里显示一行小字，§10 缺省不改行为）。
+   * ⚠️ 它【绝不进 data computed 的依赖】—— 每补完一只票就重算一遍整张买点计划是 §36 红线；
+   *    模板在占位块里单独读它，只有那一小块重渲染。
+   */
+  const range20Progress = ref(null);
+  /**
+   * 【口径阶段】指纹：`是否今天|是否已收盘`。
+   * 用途只有一处 —— 判断「预热拿到的 K 线能不能被正式链路复用」：
+   *   同一阶段内 K 线的「今日腿」含义不变（竞价口径 / 收盘口径）⇒ 可复用；
+   *   跨 15:00 就变（今日腿由竞价值换成收盘值）⇒ ⛔ 必须重取（§6 一把尺子，§10 不拿旧口径顶替）。
+   * @param {string} d 展示日
+   * @returns {string}
+   */
+  function _divergePhaseKey(d) {
+    return (d === _getLocalTodayStr() ? 'T' : 'H') + '|' + (isAfterCloseOf(d) ? 'C' : 'I');
+  }
+  /**
+   * 确保「该日的分歧日猜测」已算过（幂等 / 单飞 / 结论缓存）。
+   * @param {string} d 展示日
+   * @returns {Promise<void>}
+   */
+  function ensureDivergeGuess(d) {
+    if (!d) return Promise.resolve();
+    const cur = divergeGuess.value;
+    // 已有【猜得出】的同一日结论 ⇒ 短路；猜不出来（canJudge=false）不缓存，允许下一次刷新事件重试
+    if (cur && cur.date === d && cur.verdict && cur.verdict.canJudge) return Promise.resolve();
+    const fly = _divergeGuessInflight.get(d);
+    if (fly) return fly;
+    const p = (async function() {
+      const pd = getPreviousTradingDay(d);
+      if (!pd) return;
+      // ① 昨日 20 日涨幅（已落库）⇒ 挑一个「总龙一候选」（0 K 线请求，一次 REST 走会话缓存）
+      const rows = await readRange20Rows(pd);
+      if (currentDate.value !== d) return;                 // 竞态：期间切了日期 ⇒ 丢弃
+      const cand = pickLeaderFromUsableRows(pickUsableRows(rows, 'close'), getStockCode);
+      if (!cand) {
+        _dbgLog('[DIVERGE-GUESS] ' + d + ' 昨日（' + pd + '）云表挑不出总龙一候选 ⇒ 不预热' +
+          '（门控回退：今天按「不可能分歧」处理，与加预热之前一致）');
+        return;
+      }
+      // ② 只拉这一只票的窗口 K 线（1 次请求）⇒ 跑同一份纯函数判定（§6 同一把尺子）
+      const dates = getRange20WindowDates(d, RANGE20_PROBE_DAYS);
+      const openOut = new Map();
+      const pct = await fetchFuyaoDailyPctRange(
+        [{ stock: cand.stock, code: cand.code }],
+        dates,
+        { retryShortWindow: true, requestTimeoutMs: 15000, openOut: openOut }
+      );
+      if (currentDate.value !== d) return;                 // 竞态：同上
+      const legs = pct.get(cand.stock);
+      if (!legs || legs.size === 0) {
+        _dbgLog('[DIVERGE-GUESS] ' + d + ' 预热 K 线未取到（' + cand.stock + '）⇒ 不预热');
+        return;
+      }
+      const verdict = buildLeaderDivergence({
+        pctByYmd: legs,
+        openPctByYmd: openOut.get(cand.stock) || new Map(),
+        dates: dates,
+        code: cand.code,
+        name: cand.stock,
+        viewDate: d,
+        todayAucPct: null
+      });
+      divergeGuess.value = {
+        date: d, stock: cand.stock, code: cand.code, verdict: verdict,
+        // ★ [DIVERGE-GUESS 2026-10-24] 把 K 线一起带上 + 记「口径阶段」：
+        //   正式链路若最终的总龙一【就是这只票、且阶段没变】⇒ 直接复用这份 K 线（0 请求、0 等待，
+        //   §32 相同数据不重复请求）。阶段一变（9:26 → 15:00 后今日腿由竞价换成收盘）⇒ 必须重取，
+        //   ⛔ 否则会拿早盘那根「今日腿」当收盘口径算（§6 一把尺子）。
+        legs: legs,
+        open: openOut.get(cand.stock) || new Map(),
+        phase: _divergePhaseKey(d)
+      };
+      _dbgLog('[DIVERGE-GUESS] ' + d + ' 预热猜测: 总龙一≈' + cand.stock + '(昨日 ' + pd + ' 第一)' +
+        ' canJudge=' + verdict.canJudge + ' todayFirst=' + verdict.todayFirstDivergence +
+        ' todayAuc=' + verdict.todayAucPct);
+    })().catch(function(e) {
+      // §10：失败必须可见，但⛔ 绝不能连坐主链路（预热只是「快一点」，不是结论）
+      _dbgLog('[DIVERGE-GUESS] ' + d + ' 预热失败（不影响正式判定）: ' + (e && e.message || e));
+    }).finally(function() {
+      if (_divergeGuessInflight.get(d) === p) _divergeGuessInflight.delete(d);
+    });
+    _divergeGuessInflight.set(d, p);
+    return p;
   }
   /**
    * 确保某日的「总龙首次分歧」判定已就绪（幂等 / 单飞 / 结论缓存）。
@@ -411,15 +534,24 @@ export function useTopicVolRatioBoard() {
     if (divergeDate.value === d && divergeVerdict.value && divergeVerdict.value.ready) return Promise.resolve();
     const fly = _divergeInflight.get(d);
     if (fly) return fly;
+    // ★★ [DIVERGE-GUESS 2026-10-24] 预热通道【与精算并行起跑】（fire-and-forget）：
+    //   它只产出「门控用的猜测」，⛔ 不参与正式结论；失败/慢都不影响下面的链路。
+    void ensureDivergeGuess(d);
     const p = (async function() {
       // ⓪ ★ [DIVERGE-DAYS 2026-10-21] 落库优先：该日的分歧判定【曾经算出来过】（canJudge=true）⇒
       //   直接读回当结论 —— 分歧判定对历史日是确定性的（K 线历史不可变 + 竞价涨幅 9:25 后不变），
       //   读回即用 ⇒ 切回该日【一次到位】渲染分歧板，K 线都不用等（用户「就不能直接显示正确的吗」）。
       //   ⛔ 读失败 / 表不存在 ⇒ 留痕后照走 K 线链路（§10 失败可见，不连坐）。
       //   ⛔ 与退潮落库不同，历史日也读也写：本判定不依赖「当日上游快照」，全输入来自不可变历史。
+      // ⚠️ [DIVERGE-RACE 2026-10-24] 单飞是【按日】的 ⇒ 切日期时会有两条链路同时活在本会话里。
+      //   本函数所有 ref 写入都必须先过 `currentDate.value === d`：
+      //   ⛔ 否则一条【过期日期】的链路（退避重试 / 切回切走）会把【当前日】已经拿到的结论清成 null
+      //      ⇒ 屏幕从「分歧板/常规板」退回「⏳ 计算中」—— 用户原话「显示出来了结果，之后又变成这样了」。
+      //   这条守卫是「不稳定」的根因修复，改动任何一处都要保留。
       try {
         const row = await readDivergeDay(d);
         if (row && row.canJudge &&
+            currentDate.value === d &&
             !(divergeDate.value === d && divergeVerdict.value && divergeVerdict.value.ready)) {
           divergeVerdict.value = {
             ready: true, canJudge: true,
@@ -440,8 +572,11 @@ export function useTopicVolRatioBoard() {
       }
       // ① 前五就绪（幂等 + 会话缓存 + 单飞；warm-retry 的重算也走这一份）
       const leaders = await ensureRange20Leaders(d);
-      divergeVerdict.value = null;
-      divergeDate.value = d;
+      // ⚠️ [DIVERGE-RACE] 只清【当前展示日】那格：过期链路不许把别人算好的结论抹掉（见上面守卫注释）
+      if (currentDate.value === d) {
+        divergeVerdict.value = null;
+        divergeDate.value = d;
+      }
       if (!leaders || leaders.length === 0) {
         // 前五还没发布（候选池/精算在后台跑）⇒ 起退避重试（ leaders 发布后本 watch 不会再次触发）
         _scheduleDivergeRetry(d, '20日前五未发布');
@@ -453,7 +588,7 @@ export function useTopicVolRatioBoard() {
         //   排障时「无任何日志」差点把定位带进死胡同（§10 失败可见）。
         _dbgLog('[DIVERGE] ' + d + ' 总龙缺 stock/code ⇒ 判不出: ' + JSON.stringify(l0 || null));
         // ★ [DIVERGE-GATE] 落「判不出」终态：门控据此放行（⛔ 不然 verdict 恒 null ⇒ 占位挂死）
-        if (divergeDate.value === d) {
+        if (divergeDate.value === d && currentDate.value === d) {
           divergeVerdict.value = { ready: true, canJudge: false, firstBoardYmd: '',
             firstDivergenceYmd: '', todayFirstDivergence: false, todayAucPct: null, events: [] };
         }
@@ -462,11 +597,25 @@ export function useTopicVolRatioBoard() {
       // ② 总龙一的窗口 K 线：收盘涨幅（涨停判定）+ 开盘涨幅（竞价涨幅，分歧判定）
       const dates = getRange20WindowDates(d, RANGE20_PROBE_DAYS);
       const openOut = new Map();
-      const pct = await fetchFuyaoDailyPctRange(
-        [{ stock: l0.stock, code: l0.code }],
-        dates,
-        { retryShortWindow: true, requestTimeoutMs: 15000, openOut: openOut }
-      );
+      // ★★ [DIVERGE-GUESS 2026-10-24] 预热已经为【同一只票、同一口径阶段】拉过这份 K 线 ⇒ 直接复用：
+      //   · 预热候选就是真·总龙一（绝大多数日子）⇒ 判定 0 请求 0 等待，占位一出现就能落地；
+      //   · 名字对不上 / 阶段变了（跨 15:00）⇒ 照旧现取（1 只票，1~3 秒），⛔ 绝不复用错口径的腿。
+      const _guess = divergeGuess.value;
+      const _guessHit = !!(_guess && _guess.date === d && _guess.legs &&
+        _guess.stock === l0.stock && _guess.phase === _divergePhaseKey(d));
+      let pct = null;
+      if (_guessHit) {
+        pct = new Map();
+        pct.set(l0.stock, _guess.legs);
+        openOut.set(l0.stock, _guess.open || new Map());
+        _dbgLog('[DIVERGE-GUESS] ' + d + ' 正式链路复用预热 K 线（总龙一=' + l0.stock + '，0 请求）');
+      } else {
+        pct = await fetchFuyaoDailyPctRange(
+          [{ stock: l0.stock, code: l0.code }],
+          dates,
+          { retryShortWindow: true, requestTimeoutMs: 15000, openOut: openOut }
+        );
+      }
       if (!pct.get(l0.stock) || pct.get(l0.stock).size === 0) {
         // K 线一根都没拿到（上游偶发失败）⇒ 重试（§10：拿不到 ≠ 没有分歧）
         _scheduleDivergeRetry(d, '总龙K线未取到');
@@ -486,8 +635,11 @@ export function useTopicVolRatioBoard() {
         viewDate: d,
         todayAucPct: null
       });
-      divergeVerdict.value = verdict;
-      divergeDate.value = d;
+      // ⚠️ [DIVERGE-RACE] 同上：只写【当前展示日】那格（过期链路写进来会让屏幕倒退回占位）
+      if (currentDate.value === d) {
+        divergeVerdict.value = verdict;
+        divergeDate.value = d;
+      }
       if (_divergeRetry.has(d)) { clearTimeout(_divergeRetry.get(d).timer); _divergeRetry.delete(d); }
       // ★ [DIVERGE-DAYS 2026-10-21] 判定算出（canJudge=true）⇒ 落库：下次切回该日读回即用（一次到位）。
       //   ⛔ 只写 canJudge=true（Data 层有第二道闸，§10 绝不落一行「猜的」判定）；
@@ -516,8 +668,11 @@ export function useTopicVolRatioBoard() {
     })().catch(function(e) {
       // §10：失败必须可见（控制台）+ 如实降级（分歧买点本次不生效），⛔ 不猜、不静默伪造
       console.warn('[TVRB] 总龙分歧判定失败，分歧买点本次不生效:', e && e.message);
-      divergeVerdict.value = null;
-      divergeDate.value = d;
+      // ⚠️ [DIVERGE-RACE] 失败也只降级【自己的日期】：过期链路失败不能把当前日的好结论清空
+      if (currentDate.value === d) {
+        divergeVerdict.value = null;
+        divergeDate.value = d;
+      }
       _scheduleDivergeRetry(d, '判定失败: ' + (e && e.message || e));
     }).finally(function() {
       if (_divergeInflight.get(d) === p) _divergeInflight.delete(d);
@@ -601,12 +756,25 @@ export function useTopicVolRatioBoard() {
     //   发布结果经 getRange20Leaders(d) 在 data computed 里同步读（指纹令牌保证发布后自动重算）。
     //   ⚠️ fire-and-forget：失败只留痕，⛔ 绝不阻塞看板（退潮规则本次不生效，§10 如实降级）。
     if (d) {
-      ensureRange20Leaders(d).catch(function(e) {
+      // ★★ [DIVERGE-GATE-2 2026-10-24] 精算进度回报：占位里要能看见「20日涨幅精算 12/25」——
+      //   用户问「计算判断有那么久吗」，答案就在这个分母上（25 只票的 K 线，不是 1 只）。
+      //   ⚠️ 只有【本次会话的第一条】ensureRange20Leaders 调用带的 onProgress 会生效（单飞共享），
+      //      拿不到进度就只是少一行小字，⛔ 不影响任何判定（§10 缺省不改行为）。
+      range20Progress.value = null;
+      ensureRange20Leaders(d, {
+        onProgress: function(done, total) {
+          if (currentDate.value !== d) return;      // 竞态：期间切了日期 ⇒ 丢弃
+          range20Progress.value = { date: d, done: Number(done) || 0, total: Number(total) || 0 };
+        }
+      }).catch(function(e) {
         console.warn('[TVRB] 20日涨幅前五计算失败，退潮判定（20日口径）本次不生效:', e && e.message);
       });
       // ★ [DIVERGE 2026-10-20] 总龙首次分歧判定预热（内部自带 ensureRange20Leaders 单飞，
       //   不会重复请求；K 线 = 同花顺免费通道 0 额度）。fire-and-forget，失败如实降级。
       ensureLeaderDivergence(d);
+      // ★★ [DIVERGE-GUESS 2026-10-24] 猜测通道与上面两条【同帧起跑】（不等 rec 就绪）：
+      //   它是「今天要不要先挂占位」的唯一输入，越早起跑越接近用户要的「秒显示」。
+      void ensureDivergeGuess(d);
     }
     if (!pd) {
       prevRangeMap.value = null; prevRangeDate.value = '';
@@ -724,6 +892,9 @@ export function useTopicVolRatioBoard() {
     void top5HistDays.value;
     // ★ [DIVERGE 2026-10-20] 总龙首次分歧判定（异步算出）⇒ 分歧买点才生效
     void divergeVerdict.value;
+    // ★★ [DIVERGE-GUESS 2026-10-24] 预热猜测（异步算出）⇒ 门控据它决定「今天就挂不挂占位」，
+    //   到货后必须重算一帧，否则依然要等精算才知道该不该挂（= 用户抱怨的「过很久才出现」）。
+    void divergeGuess.value;
     // ★★ [R10-BACKUP 2026-10-24 用户口径] 十日涨幅候补的两个异步输入：
     //   ① `range10Presence` —— 在列次数（首次 / 二次在列）到货后重算一次；
     //   ② `getPresenceFingerprintToken()` —— Data 层的到货令牌（缓存刷新 / 清空时版本号变化），
@@ -936,23 +1107,36 @@ export function useTopicVolRatioBoard() {
       //     ② 「今天还定不了是不是分歧日」，两条路（满足其一即视为定不了）：
       //        a. 前五与当日事实已就绪（rec.ebbCtx.ready）⇒ 同步预检：非退潮日 + 总龙今日未停牌 +
       //           总龙今日低开（竞价涨幅 < 0）或【取不到】（取不到 ⇒ 保守等待，宁可多等不错显 §10）；
-      //        b. 【历史日】而事实还没就绪（range20 / 昨日涨幅还在读）⇒ 同样保守等待 ——
-      //           这正是「切历史日期头一两帧闪旧样式」的缺口：这些帧里判定与事实都在途，
-      //           先渲染旧样式等事实到齐再换板 = 闪现。历史日的这些输入都是库里的（秒级），
-      //           多等这一两秒换「一次到位」；⚠️【今天】不走 b（早盘 range20 精算要几十秒，
-      //           ⛔ 不能为它把每天的主路径拖住 —— 今天的闪现风险维持现状，等用户拍板再收）。
-      //   竞价涨幅 ≥ 0 / 停牌 / 退潮日的日子（绝大多数）事实就绪后立刻放行 —— 零体验损失。
+      //        b. 事实还没就绪（range20 精算 / 昨日涨幅还在读）⇒
+      //           · 历史日 ⇒ 保守等待（这些输入都在库里，秒级；多等一两秒换「一次到位」）；
+      //           · 【今天】⇒ 只认【预热猜测】（DIVERGE-GUESS，昨日总龙一的判定，1 只票 K 线秒级）：
+      //             猜「是分歧日」⇒ 秒挂占位；猜不出来 / 猜「不是」⇒ 不挂（= 加预热之前的零行为，§11）。
+      //   ★ 判据本体已抽成纯函数 shouldGateBuySide（§15 可单测），⛔ 别再往这里堆行内 if。
+      //   [DIVERGE-GATE-2 2026-10-24 用户口径] 修掉「占位总过很久才出现」：
+      //     此前今天恒不挂（等精算十几秒 ⇒ 那段时间屏幕上是会变的常规票）—— 这正是用户抱怨的现象。
       const _isTodayD = (d === _getLocalTodayStr());
       const _ebbCtxReady = !!(rec.ebbCtx && rec.ebbCtx.ready);
-      const _couldBeDiverge = _ebbCtxReady
-        ? (!plan.ebb && !rec.ebbCtx.leaderSuspended &&
-           (rec.ebbCtx.leaderAucPct === null || rec.ebbCtx.leaderAucPct < 0))
-        : !_isTodayD;
-      if (!(_ldVerdict && _ldVerdict.ready) && rec.ready && _couldBeDiverge) {
+      //   ⚠️ 日期核对（与两份 rangeMap 同一条红线）：猜测不是这一天的 ⇒ 当没有。
+      const _dGuess = (divergeGuess.value && divergeGuess.value.date === d) ? divergeGuess.value : null;
+      const _guessFirst = !!(_dGuess && _dGuess.verdict && _dGuess.verdict.canJudge &&
+        _dGuess.verdict.todayFirstDivergence);
+      const _gate = shouldGateBuySide({
+        verdictReady: !!(_ldVerdict && _ldVerdict.ready),
+        ebbCtxReady: _ebbCtxReady,
+        ebb: !!plan.ebb,
+        leaderSuspended: !!(_ebbCtxReady && rec.ebbCtx.leaderSuspended),
+        //   ⚠️ 只在事实就绪时读它（未就绪时 rec.ebbCtx 里那个值是占位 null，⛔ 别当「取不到」用）
+        leaderAucPct: _ebbCtxReady ? rec.ebbCtx.leaderAucPct : null,
+        isToday: _isTodayD,
+        guessFirst: _guessFirst
+      });
+      if (_gate && rec.ready) {
         plan.divergePending = true;
         _dbgLog('[DIVERGE-GATE] ' + d + ' 分歧判定未就绪 ⇒ 买点侧挂「判定计算中」占位' +
           '（ebbCtxReady=' + _ebbCtxReady + ' leaderAucPct=' +
-          (_ebbCtxReady ? rec.ebbCtx.leaderAucPct : '—') + '）');
+          (_ebbCtxReady ? rec.ebbCtx.leaderAucPct : '—') +
+          ' isToday=' + _isTodayD + ' 预热猜测=' +
+          (_dGuess ? (_dGuess.stock + '→' + _guessFirst) : '无') + '）');
       }
 
       return { ready: true, reason: '', plan: plan };
@@ -1050,6 +1234,21 @@ export function useTopicVolRatioBoard() {
   const divergePending = computed(function() {
     const p = data.value.plan;
     return (p && p.divergePending) || null;
+  });
+  /**
+   * ★★ [DIVERGE-GATE-2 2026-10-24 用户口径] 占位里那行「20日涨幅精算 X/Y」小字。
+   *
+   * 用户原话：「计算判断有那么久吗？要再优化下」—— 长的不是判定（1 只票 K 线），
+   * 而是它必须先知道【今天的总龙一是谁】，那要 20 日涨幅前五的精算（≤25 只票 K 线）。
+   * 把分母摆出来，「为什么在等」就不再是黑箱（§10 失败/等待可见）。
+   * ⚠️ 只读 `range20Progress`，⛔ 不让它进 data computed 依赖（否则每算完一只票就重算整张计划，§36）。
+   * @returns {string} '' = 不显示（没进度 / 已算完 / 不是本日）
+   */
+  const divergeWaitText = computed(function() {
+    const pr = range20Progress.value;
+    if (!pr || pr.date !== currentDate.value) return '';
+    if (!pr.total || pr.done >= pr.total) return '';
+    return '20日涨幅精算中：' + pr.done + '/' + pr.total + ' 只（判定要先知道市场总龙一是谁）';
   });
   /** 卖点股票数（头部摘要用） */
   const sellCount = computed(function() {
@@ -1263,6 +1462,7 @@ export function useTopicVolRatioBoard() {
     ebbNodeNote,
     divergeBuy,
     divergePending,
+    divergeWaitText,
     // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条「新龙 / 新题材切换日」
     switchDay,
     newDragon,

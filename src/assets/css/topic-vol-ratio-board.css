@@ -333,6 +333,15 @@
     color: #475569;
 }
 
+/* ★★ [DIVERGE-GATE-2 2026-10-24] 进度小字：说清「分母是精算的票数」（回应用户「计算有那么久吗」）。
+   等宽数字 + 更小字号 ⇒ 只当背景信息，不抢 head 的视觉焦点。 */
+.tvrb-diverge-pending-wait {
+    margin-top: 4px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: #94a3b8;
+}
+
 .tvrb-diverge-pending-detail {
     margin-top: 5px;
     font-size: 11.5px;

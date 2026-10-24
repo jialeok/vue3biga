@@ -16,7 +16,8 @@ import {
   isMainBoardOnly,
   rankLeaders,
   unionPoolFromDates,
-  buildLeaderRankPool
+  buildLeaderRankPool,
+  pickLeaderFromUsableRows
 } from './range20-leaders.js';
 
 describe('常量口径', () => {
@@ -245,5 +246,61 @@ describe('buildLeaderRankPool —— 排名池四层合并（★ 本轮修复的
   it('空输入 ⇒ 空数组（不抛错）', () => {
     expect(buildLeaderRankPool({})).toEqual([]);
     expect(buildLeaderRankPool(null)).toEqual([]);
+  });
+});
+
+// ============================================================================
+// ★★ [DIVERGE-GUESS 2026-10-24] pickLeaderFromUsableRows —— 分歧判定【预热通道】挑候选
+//   背景（用户原话）：「为什么这个提示总是过很久才显示出来……计算判断有那么久吗？要再优化下」
+//   ⇒ 用【上一交易日已落库的 20 日涨幅】先猜「今天的总龙一是谁」，好让分歧判定提前跑起来。
+//   ⚠️ 它只产出【猜测】(门控 + 预热 K 线)，⛔ 绝不当结论用 ⇒ 判据必须可单测。
+// ============================================================================
+describe('tvrb · [DIVERGE-GUESS] pickLeaderFromUsableRows（预热挑总龙一候选）', function() {
+  const CODES = {
+    '甲一': '600001',      // 主板
+    '乙一': '000002',      // 主板（深市）
+    '创一': '300003',      // 创业板 ⇒ 非主板
+    '科一': '688004',      // 科创板 ⇒ 非主板
+    '北一': '830005',      // 北交所 ⇒ 非主板
+    '无名': ''             // 名册里没有 ⇒ 拿不到代码
+  };
+  const codeOf = function(n) { return CODES[String(n || '').trim()] || ''; };
+  const mk = function(obj) {
+    const m = new Map();
+    Object.keys(obj).forEach(function(k) { m.set(k, { pct: obj[k], days: 20 }); });
+    return m;
+  };
+
+  it('取涨幅最大的那只（含 code / pct / days）', () => {
+    const r = pickLeaderFromUsableRows(mk({ '甲一': 101.2, '乙一': 210.98 }), codeOf);
+    expect(r).toEqual({ stock: '乙一', code: '000002', pct: 210.98, days: 20 });
+  });
+
+  it('§10：非主板一律不参与（创业板 / 科创板 / 北交所）', () => {
+    const r = pickLeaderFromUsableRows(mk({ '甲一': 50, '创一': 300, '科一': 280, '北一': 260 }), codeOf);
+    expect(r.stock).toBe('甲一');
+  });
+
+  it('§10：拿不到代码的票⛔ 不参与（K 线请求发不出去，⛔ 不用名字硬试）', () => {
+    const r = pickLeaderFromUsableRows(mk({ '甲一': 50, '无名': 999 }), codeOf);
+    expect(r.stock).toBe('甲一');
+  });
+
+  it('§10：pct 为 null / NaN ⇒ 跳过（未知 ≠ 0，⛔ 不补 0 参与比较）', () => {
+    const r = pickLeaderFromUsableRows(mk({ '甲一': 10, '乙一': null }), codeOf);
+    expect(r.stock).toBe('甲一');
+    const r2 = pickLeaderFromUsableRows(mk({ '甲一': 10, '乙一': NaN }), codeOf);
+    expect(r2.stock).toBe('甲一');
+  });
+
+  it('全都不合格 / 空输入 ⇒ null（调用方据此降级为「不预热」，§10 不猜）', () => {
+    expect(pickLeaderFromUsableRows(mk({ '创一': 300, '无名': 999 }), codeOf)).toBe(null);
+    expect(pickLeaderFromUsableRows(new Map(), codeOf)).toBe(null);
+    expect(pickLeaderFromUsableRows(null, codeOf)).toBe(null);
+    expect(pickLeaderFromUsableRows(undefined, codeOf)).toBe(null);
+  });
+
+  it('没传 codeOf ⇒ 全部拿不到代码 ⇒ null（⛔ 不猜代码）', () => {
+    expect(pickLeaderFromUsableRows(mk({ '甲一': 100 }), null)).toBe(null);
   });
 });

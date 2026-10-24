@@ -263,6 +263,46 @@ export function isMainBoardOnly(code) {
 }
 
 /**
+ * ★★ [DIVERGE-GUESS 2026-10-24] 【纯函数】从「某日已落库的 20 日涨幅」里挑出【总龙一候选】——
+ *   只给「总龙首次分歧判定」的**预热通道**用（见 useTopicVolRatioBoard#ensureDivergeGuess）。
+ *
+ * 为什么需要它（用户 2026-10-24 原话：「为什么这个提示总是过很久才显示出来……计算判断有那么久吗？
+ * 要再优化下」）：
+ *   分歧判定必须知道【今天的总龙一是谁】，而总龙一来自 20 日涨幅前五的**精算**（<=25 只票的 K 线，
+ *   十几~几十秒）。判定本身只要【1 只票】的 K 线（1~3 秒）⇒ 全部等待都在「等身份」上。
+ *   于是先用【上一交易日已落库的总龙一】把这只票的判定**提前算出来**当「猜测」：
+ *     · 猜「是分歧日」⇒ 买点侧【秒挂】占位（不等精算，用户不用先看到一堆会变的旧规则选票）；
+ *     · 猜「不是分歧日」⇒ 照常渲染（⛔ 不为每天的主路径凭空多加等待）。
+ *   ⚠️ 它产出的是**猜测**，绝不当结论用：精算给出真·总龙一后必须以真身份重核（名字不同 ⇒ 重算），
+ *      买点侧最终结论 100% 来自 `ensureLeaderDivergence` 的正规链路（§10 不拿猜测冒充结论）。
+ *
+ * @param {Map<string,{pct:number,days:number}>} usable 某日 pickUsableRows 的结果（口径已过滤）
+ * @param {(name:string)=>string} codeOf 股票名 -> 6 位代码（名册查询，失败返回 ''）
+ * @returns {{stock:string, code:string, pct:number, days:number}|null}
+ *          null = 挑不出来（没有可用行 / 全部拿不到代码或非主板）⇒ 调用方降级为「不预热」
+ */
+export function pickLeaderFromUsableRows(usable, codeOf) {
+  if (!usable || typeof usable.forEach !== 'function' || !usable.size) return null;
+  const fn = (typeof codeOf === 'function') ? codeOf : null;
+  let best = null;
+  usable.forEach(function(v, name) {
+    const nm = String(name || '').trim();
+    if (!nm || !v) return;
+    const pct = (v.pct === null || v.pct === undefined) ? NaN : Number(v.pct);
+    if (!isFinite(pct)) return;
+    // ⛔ §10：代码缺席 ⇒ K 线请求发不出去（⛔ 不用名字硬试）；非主板 ⇒ 不符合总龙口径。
+    //   与 codeOfRow 同一套规范化（只留数字 + 必须 6 位），⛔ 别让带市场前缀的代码漏进 isMainBoardOnly。
+    const raw = fn ? String(fn(nm) || '') : '';
+    const code = raw.replace(/\D/g, '');
+    if (code.length !== 6 || !isMainBoardOnly(code)) return;
+    if (!best || pct > best.pct) {
+      best = { stock: nm, code: code, pct: pct, days: Number(v.days) || 0 };
+    }
+  });
+  return best;
+}
+
+/**
  * 【纯函数】候选池 = 若干天的正式列表并集（按股票名去重，先到先得）。
  * @param {Map<string, Map<string, object>>} rowsByDate 日期 -> (股票名 -> 当日行)
  * @returns {Array<{stock:string, code:string}>}

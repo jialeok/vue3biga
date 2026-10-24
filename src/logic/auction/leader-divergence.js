@@ -185,3 +185,42 @@ export function buildLeaderDivergence(input) {
     events: events
   };
 }
+
+/**
+ * ★★ [DIVERGE-GATE 2026-10-24] 【纯函数】买点侧要不要挂「判定计算中」占位（= 这一帧能不能信买点侧）。
+ *
+ * 为什么必须是一份纯函数：这是「先看到旧规则选票再换板 ⇒ 买错股票」的唯一防线
+ * （用户 2026-10-21 原话「我做决定很快，万一哪天它没跳转，我不就买错股票了」），
+ * 判据必须可单测、可回放，⛔ 不许散落在 computed 的行内 if 里各写一套。
+ *
+ * 判据（全部同步可判，⛔ 无 setTimeout 掩盖）：
+ *   ① 该日判定已有 ready 结论 ⇒ 永不挂（结论就是结论，哪怕它说「判不出」）。
+ *   ② 今日事实（ebbCtx）已就绪 ⇒ 直接用事实判：
+ *        · 退潮日 / 总龙停牌 ⇒ 走不到分歧买点 ⇒ 不挂；
+ *        · 总龙今日竞价涨幅 < 0（低开）⇒ 可能分歧 ⇒ 挂；
+ *        · ≥ 0 ⇒ 不挂（绝大多数日子，零体验损失）；
+ *        · 取不到（null）⇒ 保守挂（§10：未知 ≠ 没分歧，宁可多等不错显）。
+ *   ③ 事实还没就绪（range20 精算 / 昨日涨幅还在读）：
+ *        · 历史日 ⇒ 挂（这些输入都在库里，秒级就到；多等一两秒换「一次到位」）；
+ *        · 【今天】⇒ 只有【预热猜测】明确说「是分歧日」才挂 ——
+ *          今天的事实要等 20 日涨幅精算（<=25 只票 K 线，十几秒），⛔ 不能为它把每天的主路径拖住；
+ *          但分歧日又绝不能先放旧规则的票出去 ⇒ 用 §预热（昨日总龙一，1 只票 K 线，秒级）兜住。
+ *          预热没跑 / 猜「不是分歧」⇒ 不挂（= 与加预热之前完全一致，§11 零行为变化）。
+ *
+ * @param {{verdictReady?:boolean, ebbCtxReady?:boolean, ebb?:boolean, leaderSuspended?:boolean,
+ *          leaderAucPct?:number|null, isToday?:boolean, guessFirst?:boolean}} input
+ * @returns {boolean} true ⇒ 买点侧本帧只渲染占位
+ */
+export function shouldGateBuySide(input) {
+  const o = input || {};
+  if (o.verdictReady) return false;
+  if (o.ebbCtxReady) {
+    if (o.ebb) return false;                 // 退潮日：买点侧由退潮规则接管，不走分歧板
+    if (o.leaderSuspended) return false;     // 总龙停牌：今天不可能有竞价分歧
+    const a = o.leaderAucPct;
+    if (a === null || a === undefined || !isFinite(Number(a))) return true;
+    return Number(a) < 0;
+  }
+  if (!o.isToday) return true;               // 历史日：证据都在库里，秒级到齐，等
+  return !!o.guessFirst;                     // 今天：只认预热猜测
+}

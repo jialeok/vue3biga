@@ -5,7 +5,7 @@
 //   · 首次分歧 = 首板后第一个竞价涨幅 < 0 的日子（新华传媒 11 连板后 10-19 低开 -1.06%）；
 //   · 分歧转一致 = 分歧日后的涨停日（九阳 10-13 低开 → 10-16 涨停）；再低开 = 二次分歧，依次类推。
 import { describe, it, expect } from 'vitest';
-import { buildLeaderDivergence, pickDivergeFollowers } from './leader-divergence.js';
+import { buildLeaderDivergence, pickDivergeFollowers, shouldGateBuySide } from './leader-divergence.js';
 
 /** 便捷构造：{ 'YYYY-MM-DD': [closePct, openPct] } → 两份 Map（键 = YYYYMMDD） */
 function mkBars(spec) {
@@ -215,5 +215,64 @@ describe('tvrb · [DIVERGE] pickDivergeFollowers（分歧日跟随高标 ≤2 �
     const r2 = pickDivergeFollowers(noTopic5, '甲一', '');
     expect(r2.followers.length).toBe(0);
     expect(r2.trail[0].reason).toContain('题材解析不到');
+  });
+});
+
+// ============================================================================
+// ★★ [DIVERGE-GATE 2026-10-24] shouldGateBuySide —— 买点侧「该不该先挂占位」的唯一判据
+//   用户 2026-10-21 原话：「刚开始显示的是以前旧规则的票，后面停顿了几秒钟，才出现那个提示词
+//     分歧的信息板……我做决定很快，万一哪天它没跳转，我不就买错股票了？所以要修复下。」
+//   用户 2026-10-24 追问：「为什么这个提示总是过很久才显示出来，有时显示出来了结果，之后又变成
+//     这样了，不是很稳定……计算判断有那么久吗？要再优化下」
+//   ⇒ 判据必须可回放：结论落地必放行 / 事实就绪按竞价涨幅判 / 今天只认预热猜测。
+// ============================================================================
+describe('tvrb · [DIVERGE-GATE] shouldGateBuySide（占位门控）', function() {
+  const base = {
+    verdictReady: false, ebbCtxReady: true, ebb: false,
+    leaderSuspended: false, leaderAucPct: -1.06, isToday: true, guessFirst: false
+  };
+  const q = function(patch) { return Object.assign({}, base, patch || {}); };
+
+  it('① 判定已落地 ⇒ 永不挂占位（哪怕结论是「判不出」）', function() {
+    expect(shouldGateBuySide(q({ verdictReady: true }))).toBe(false);
+    expect(shouldGateBuySide(q({ verdictReady: true, ebbCtxReady: false, isToday: true }))).toBe(false);
+  });
+
+  it('② 事实就绪：总龙低开 ⇒ 挂', function() {
+    expect(shouldGateBuySide(q({ leaderAucPct: -0.01 }))).toBe(true);
+  });
+
+  it('② 事实就绪：总龙高开 / 平开 ⇒ 不挂（绝大多数日子，零体验损失）', function() {
+    expect(shouldGateBuySide(q({ leaderAucPct: 3.2 }))).toBe(false);
+    expect(shouldGateBuySide(q({ leaderAucPct: 0 }))).toBe(false);
+  });
+
+  it('② §10：总龙竞价涨幅取不到（null / NaN）⇒ 保守挂（未知 ≠ 没分歧）', function() {
+    expect(shouldGateBuySide(q({ leaderAucPct: null }))).toBe(true);
+    expect(shouldGateBuySide(q({ leaderAucPct: undefined }))).toBe(true);
+    expect(shouldGateBuySide(q({ leaderAucPct: NaN }))).toBe(true);
+  });
+
+  it('② 退潮日 / 总龙停牌 ⇒ 走不到分歧买点 ⇒ 不挂', function() {
+    expect(shouldGateBuySide(q({ ebb: true }))).toBe(false);
+    expect(shouldGateBuySide(q({ leaderSuspended: true }))).toBe(false);
+  });
+
+  it('③ 历史日 + 事实未就绪 ⇒ 保守挂（证据都在库里，秒级到齐）', function() {
+    expect(shouldGateBuySide(q({ ebbCtxReady: false, isToday: false }))).toBe(true);
+  });
+
+  it('③ 今天 + 事实未就绪：预热猜「是分歧日」⇒ 挂（这就是「秒显示」的来源）', function() {
+    expect(shouldGateBuySide(q({ ebbCtxReady: false, isToday: true, guessFirst: true }))).toBe(true);
+  });
+
+  it('③ 今天 + 事实未就绪：猜不出来 / 猜「不是」⇒ 不挂（§11：与加预热之前零行为差异）', function() {
+    expect(shouldGateBuySide(q({ ebbCtxReady: false, isToday: true, guessFirst: false }))).toBe(false);
+    expect(shouldGateBuySide(q({ ebbCtxReady: false, isToday: true }))).toBe(false);
+  });
+
+  it('③ 缺省输入 ⇒ 按【历史日】保守挂（§10 宁可多等不错显，⛔ 不静默放行）', function() {
+    expect(shouldGateBuySide({})).toBe(true);
+    expect(shouldGateBuySide(null)).toBe(true);
   });
 });

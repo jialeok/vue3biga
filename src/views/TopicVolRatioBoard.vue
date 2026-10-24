@@ -136,7 +136,15 @@
             class="tvrb-diverge-pending tvrb-selectable"
           >
             <div class="tvrb-diverge-pending-head">
-              ⏳ 总龙分歧判定计算中……（比对总龙 K 线，约十几秒）
+              ⏳ 总龙分歧判定计算中……（先算 20 日涨幅总龙一，再比对它的 K 线）
+            </div>
+            <!-- ★★ [DIVERGE-GATE-2 2026-10-24] 进度小字：把「为什么在等」摆出来（分母 = 精算的票数，
+                 不是判定的票数）。空 ⇒ 不渲染（§21 模板零计算，文案在组合式）。 -->
+            <div
+              v-if="divergeWaitText"
+              class="tvrb-diverge-pending-wait"
+            >
+              {{ divergeWaitText }}
             </div>
             <div class="tvrb-diverge-pending-detail">
               今天可能是【总龙首次分歧】日（总龙竞价低开）⇒ 买点侧要等分歧判定落地才能给出结论：
@@ -342,6 +350,7 @@ const {
   ebbNodeNote,
   divergeBuy,
   divergePending,
+  divergeWaitText,
   // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条新龙 / 切换日（switchDay 的文案已由 Logic 层写进
   //   block.reason / notes，模板不需要它 ⇒ ⛔ 不解构，免得留一个未使用变量）
   newDragon,
