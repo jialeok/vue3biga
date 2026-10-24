@@ -19,6 +19,7 @@ import {
   PRESENCE_WINDOW_10,
   PRESENCE_WINDOW_20,
   presenceLabelOf,
+  rankBoxClassOf,
   presenceSortValueOf,
   assignPresenceLabels
 } from './presence-label.js';
@@ -206,5 +207,60 @@ describe('assignPresenceLabels · 非主板不占名次', () => {
     expect(n).toBe(2);
     expect(items[0].presenceLabel).toBe('3次在列');
     expect(items[1].presenceLabel).toBe('2次在列');
+  });
+});
+
+// [RANK-BOX 2026-10-24 用户口径] 「前十（主板、有在列次数标签）的票，前面的序号换成有颜色的小方框」。
+// 本组锁住三件事：
+//   ① 三档配色与 presenceLabel 一一对应（0 灰 / 1 红 / n 青）；
+//   ② 非法次数 ⇒ 空串（⛔ 不给「不知道」上色）；
+//   ③ 与标签【同生同灭】—— 没进前十 / 非主板的行，rankClass 必须为空且被显式清零（缓存复用不残留）。
+describe('rankBoxClassOf · 序号小方框分档', () => {
+  it('0 → 灰框 / 1 → 红框 / n → 青框', () => {
+    expect(rankBoxClassOf(0)).toBe('auction-rank-box auction-rank-box-none');
+    expect(rankBoxClassOf(1)).toBe('auction-rank-box auction-rank-box-first');
+    expect(rankBoxClassOf(2)).toBe('auction-rank-box');
+    expect(rankBoxClassOf(10)).toBe('auction-rank-box');
+    expect(rankBoxClassOf('7')).toBe('auction-rank-box');
+  });
+
+  it('非法值 ⇒ 空串（没有方框，序号照旧是纯数字）', () => {
+    expect(rankBoxClassOf(null)).toBe('');
+    expect(rankBoxClassOf(undefined)).toBe('');
+    expect(rankBoxClassOf('')).toBe('');
+    expect(rankBoxClassOf('abc')).toBe('');
+    expect(rankBoxClassOf(-1)).toBe('');
+  });
+
+  it('★ 与 presenceLabel 同生同灭：前十有框、第 11 只起清空、非主板不给框', () => {
+    const items = [];
+    for (let i = 1; i <= 12; i++) items.push(row('S' + i, 100 - i, 100 - i));
+    // 第 1 只塞一只创业板，验证「不占名次 ⇒ 也不给方框」
+    items[0] = row('创业票', 100, 100, '300750');
+    const counts = countsOf({ S2: 1, S3: 0, S4: 6 });
+    const n = assignPresenceLabels(items, PRESENCE_TOP_N, {
+      windowDays: 10, counts: counts, coveredDays: 10
+    });
+    expect(n).toBe(10);
+    // 非主板：不占名次 ⇒ 无标签、无方框
+    expect(items[0].presenceLabel).toBe('');
+    expect(items[0].presenceRankClass).toBe('');
+    // 1 次 = 首次在列 → 红框
+    expect(items[1].presenceRankClass).toBe('auction-rank-box auction-rank-box-first');
+    // 0 次 = 未在列 → 灰框
+    expect(items[2].presenceRankClass).toBe('auction-rank-box auction-rank-box-none');
+    // n 次 → 青框
+    expect(items[3].presenceRankClass).toBe('auction-rank-box');
+    // 第 11 只名次已经用完（含被跳过的创业板，主板只数到 10） ⇒ 显式清零
+    expect(items[11].presenceRankClass).toBe('');
+  });
+
+  it('★ 次数数据没到（§10）⇒ 谁都不给方框', () => {
+    const items = [row('甲', 50, 50), row('乙', 40, 40)];
+    assignPresenceLabels(items, 10, { windowDays: 10, counts: null, coveredDays: 0 });
+    items.forEach(function(it) {
+      expect(it.presenceLabel).toBe('');
+      expect(it.presenceRankClass).toBe('');
+    });
   });
 });

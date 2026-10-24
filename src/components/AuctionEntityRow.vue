@@ -32,7 +32,13 @@
       @click.stop="onExpandTrend(item.stock)"
       @dblclick.stop
     >
-      {{ item.seqNo || (idx + 1) }}
+      <!-- [RANK-BOX 2026-10-24 用户口径] 「10日/20日涨幅前十（主板、带在列次数标签）的票，前面的序号
+           换成有颜色的小方框」。class 由 Logic 层 presence-label.js#rankBoxClassOf 下发
+           （item.presenceRankClass），与右边那枚「n次在列」标签【同一个判据、同一份次数】⇒ 不会分叉；
+           没命中的行该字段恒为 '' ⇒ 渲染与改动前逐字一致（§11 默认无行为）。
+           ⚠️ 这层 span 是【恒渲染】的（不用 v-if）：序号列 DOM 结构在两种状态下保持一致，
+              否则切 toggle 时 .auction-number 里的文本节点被整体替换 ⇒ 行高抖一下。 -->
+      <span :class="item.presenceRankClass">{{ item.seqNo || (idx + 1) }}</span>
     </div>
     <div
       :class="item.stockClass"
@@ -136,21 +142,24 @@
       />
     </div>
     <template v-if="!sortState.byTopic">
-      <!-- [RANGE20-TOTAL-DRAGON 2026-10-20 用户口径] 「20日涨幅」toggle 专属显示层：
-           该模式下【只】隐藏「竞价量(万)」与「昨成交量(万)」两列（用户：「单独把竞价量万和昨日成交量万
-           去掉，注意仅限这个 20 日涨幅 toggle」），占比列保留。
-           ⚠️ 表头（AuctionBoardToolbar）用同一个判据隐藏同样的两列 ⇒ 两边同增同减，
-              剩下的 序号/股票名/占比 三段 flex 比例不变 ⇒ 列不会错位。
-           ⚠️ 其它 toggle（含默认模式）本判据恒 false ⇒ 行为一字不动（§11 可选能力 + 默认无行为）。 -->
+      <!-- [RANGE-COLS 2026-10-24 用户口径] 「十日涨幅」与「20日涨幅」共用同一套列结构：
+           【只】隐藏「竞价量(万)」与「昨成交量(万)」两列，占比前面插入「题材」列，占比列保留。
+           用户原话：「十日涨幅独立 toggle 设计 UI 要和 20 日涨幅一样，不要那个竞价量和昨日成交量，
+           要换成题材，其它不变，你可以参考 20 日涨幅单独打开时的布局设计，节省空间为准。」
+           ⚠️ 判据 = rangeColsMode（below，script 里算好的 computed）：
+              byRangePct（十日）|| byRangePct20（二十日）。
+           ⚠️ 表头（AuctionBoardToolbar）必须用【同一个判据】隐藏同样的两列、插同样的题材列
+              ⇒ 两边同增同减，剩下的 序号/股票名/占比 三段 flex 比例不变 ⇒ 列不会错位。
+           ⚠️ 其它 toggle（含默认模式 / 题材模式）本判据恒 false ⇒ 行为一字不动（§11）。 -->
       <div
-        v-if="!sortState.byRangePct20"
+        v-if="!rangeColsMode"
         class="auction-volume"
         @dblclick.stop="onEditVolumeNote(item.index)"
       >
         {{ item.volumeDisplay }}
       </div>
       <div
-        v-if="!sortState.byRangePct20"
+        v-if="!rangeColsMode"
         :class="item.yestColorClass"
         :data-index="item.index"
         :data-note="item.note || ''"
@@ -160,14 +169,14 @@
       >
         {{ item.yestVolumeDisplay }}
       </div>
-      <!-- [RANGE20-TOPIC 2026-10-20 用户口径] 「20日涨幅」toggle 专属显示层：在占比前面加一列题材文本。
+      <!-- [RANGE-TOPIC 2026-10-24 用户口径] 区间涨幅模式（十日 / 二十日）在占比前面加一列题材文本。
            · 文案 = item.topicsDisplay（与「题材」toggle 的题材列【同一个字段同一个来源】，
              getStockTopicsDisplay(rawItem)，§6 单一真相 ⇒ 用户「题材要和题材 toggle 一样」是结构保证）；
            · 不分组、不上题材背景色（topicBg 在非题材模式恒为 ''，§11 默认无行为）——
-             就是每行按 20 日涨幅降序排着的纯文本，省空间（小字号 + 超长省略 + 悬停看全文）。 -->
+             就是每行按区间涨幅降序排着的纯文本，省空间（小字号 + 超长省略 + 悬停看全文）。 -->
       <div
-        v-if="sortState.byRangePct20"
-        class="auction-topic-cell-20"
+        v-if="rangeColsMode"
+        class="auction-topic-cell-range"
         :class="{ 'not-formal-member': !item.isFormalMember }"
         :title="item.topicsDisplay"
       >
@@ -315,7 +324,7 @@
 <script setup>
 // 与 AuctionBoardTable 共用同一个 composable 实例（inject('auctionBoard')）：
 // 状态与回调只有一份，本组件不新建任何状态、不复制 board（§6 单一真相）。
-import { inject } from 'vue';
+import { inject, computed } from 'vue';
 // [SUSPEND 2026-10-13] 「停牌」小标的文案 / 悬停说明都从 suspend.js 取（唯一出处）——
 //   三个选股看板（决策 / 题材量比 / 分笔买卖）与本组件共用同一个常量，⛔ 不各写一份中文字面量。
 import { SUSPEND_TAG_TITLE } from '../logic/auction/suspend.js';
@@ -338,6 +347,14 @@ const {
   onToggleSelect, onExpandTrend, onEditVolumeNote, onYestClick, openEditModal,
   onLongPress, startLongPress, cancelLongPress, dailyMetricsList
 } = board;
+
+// [RANGE-COLS 2026-10-24 用户口径] 列结构开关（隐两列 / 加题材列）的唯一判据：
+//   「十日涨幅」与「20日涨幅」共用同一套列结构（用户：「十日涨幅独立 toggle 设计 UI 要和 20 日涨幅一样，
+//   不要那个竞价量和昨日成交量，要换成题材」）。两者互斥，`||` 即可。
+//   ⛔ AuctionBoardToolbar 的表头必须用【同一个表达式】，否则表头与数据列错位
+//      （列少了一格，后面的列整体左移 —— 2026-10-20 已踩过一次）。
+//   ⚠️ 其它 toggle / 默认模式恒 false ⇒ 渲染与改动前逐字一致（§11 默认无行为）。
+const rangeColsMode = computed(() => !!(sortState.byRangePct20 || sortState.byRangePct));
 
 // 趋势图显示判定：整条序列是否有任一有效点（渲染结果与原先内联写法 100% 一致）。
 function aucPctHasData(stock) {

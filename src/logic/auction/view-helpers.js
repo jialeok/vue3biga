@@ -386,6 +386,10 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     //     缺省值不一致会让标签在切 toggle 后串到别的视图里（§11）。
     presenceCnt: null,
     presenceLabel: '',
+    // [RANK-BOX 2026-10-24 用户口径] 序号「小方框」的 class（前十 + 主板 + 有在列次数才给），
+    //   与 presenceLabel 同源同生灭；默认 '' ⇒ 序号照旧是纯数字（§11 默认无行为）。
+    //   必须与上面几个字段一样显式给默认值，理由完全相同：行对象会被增量视图缓存复用。
+    presenceRankClass: '',
     presenceWindowDays: 0,
     presenceCoveredDays: 0,
     // [CLOSE-LIMIT 2026-09-11] 收盘涨停('up')/跌停('down') → 股票名下绿色/红色【蚂蚁线（虚线）】标记。

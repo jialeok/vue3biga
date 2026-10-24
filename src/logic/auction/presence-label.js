@@ -69,6 +69,35 @@ export function presenceLabelOf(cnt) {
 }
 
 /**
+ * 【纯函数】次数 → 序号「小方框」的 class（用户 2026-10-24 口径，逐字）：
+ *   「10日涨幅或者20日涨幅还有排名前十的（主板，有几次在列的股票），前面的序号要标记下颜色，
+ *     比如换成小方框里面有数字，这样更明显些，我打开后就可以看得更清晰，纯 UI 改动，其它不变」
+ *
+ * 为什么放在这里而不是模板里（§21 模板零计算 / §6 单一真相）：
+ *   「谁进前十、谁有在列次数」的唯一判定就是本文件的 assignPresenceLabels；
+ *   序号方框与「n次在列」小标签必须【同生同灭】—— 若模板另外判一次，
+ *   两条判据迟早在某只票上分叉（一边有标签、一边序号没框）。
+ *
+ * 三档配色与 .auction-presence-tag 的三档【刻意保持一致】（用户看起来是同一件事的两处表达）：
+ *   · 0 次（未在列）  → 灰框：一条「没上过榜」的信息，不该抢视觉权重；
+ *   · 1 次（首次在列）→ 红实底白字：窗口内新冒出来的强势票，是这枚标签要传达的最强信号；
+ *   · n 次（n次在列） → 青灰框：纯统计值。
+ * ⚠️ 非法值（null / '' / NaN / 负数）→ ''（模板仍渲染数字，只是没有方框，视觉与改动前一致）。
+ *
+ * @param {number|string|null} cnt 窗口内（含今天）在列次数
+ * @returns {string} 空格分隔的 class 串；'' = 不打方框
+ */
+export function rankBoxClassOf(cnt) {
+  if (cnt === null || cnt === undefined || cnt === '') return '';
+  const n = Number(cnt);
+  if (!isFinite(n) || n < 0) return '';
+  const k = Math.floor(n);
+  if (k === 0) return 'auction-rank-box auction-rank-box-none';
+  if (k === 1) return 'auction-rank-box auction-rank-box-first';
+  return 'auction-rank-box';
+}
+
+/**
  * 【纯函数】取该行在当前窗口下的区间涨幅（= 该 toggle 的排序键）。
  * 10 日窗口读 `rangePct`（云端 stock_range_pct），20 日窗口读 `rangePct20`（range20.js 现算）。
  * 两者语义不同（见 view-helpers 里这两个字段的长注释），⛔ 不可互相顶替。
@@ -89,9 +118,10 @@ export function presenceSortValueOf(item, windowDays) {
  * 【纯函数】按「items 的当前顺序」给前 N 只挂「在列次数」标签（就地写字段，返回实际打标只数）。
  *
  * 入参 items 的顺序【必须已经是】该窗口下的涨幅降序（由 view-helpers 保证），本函数不再排序。
- * 对**每一个**非空行都会写这四个字段（模板只渲染字符串，§21 零计算）：
+ * 对**每一个**非空行都会写这五个字段（模板只渲染字符串，§21 零计算）：
  *   · `presenceCnt`         : number|null 次数（null = 不打标 / 没数据）
  *   · `presenceLabel`       : '5次在列' / '首次在列' / '未在列' / ''
+ *   · `presenceRankClass`  : 序号小方框的 class（'' = 不打方框），由 rankBoxClassOf 生成
  *   · `presenceWindowDays`  : 10 / 20（悬停文案用）
  *   · `presenceCoveredDays` : 窗口内实际有名单数据的天数（悬停文案用，§10 如实用 n/N 报覆盖度）
  *
@@ -123,6 +153,7 @@ export function assignPresenceLabels(items, topN, opts) {
     // 先无条件清零，再按需赋值（结构性保证：任何残留都会被这一轮擦掉）
     it.presenceCnt = null;
     it.presenceLabel = '';
+    it.presenceRankClass = '';
     it.presenceWindowDays = windowDays;
     it.presenceCoveredDays = coveredDays;
     if (!usable || rank >= cap) continue;
@@ -141,6 +172,9 @@ export function assignPresenceLabels(items, topN, opts) {
     const cnt = hit ? Number(hit.cnt) : 0;
     it.presenceCnt = isFinite(cnt) && cnt >= 0 ? Math.floor(cnt) : 0;
     it.presenceLabel = presenceLabelOf(it.presenceCnt);
+    // [RANK-BOX 2026-10-24 用户口径] 序号小方框：与上面那枚「n次在列」标签【同一个判据、
+    //   同一份次数】⇒ 有标签就一定有方框、没标签就没有（不会出现「标签在、序号没框」的分叉）。
+    it.presenceRankClass = rankBoxClassOf(it.presenceCnt);
   }
   return rank;
 }

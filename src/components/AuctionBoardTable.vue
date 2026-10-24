@@ -204,12 +204,17 @@ function rowMemo(item) {
     item.itemClass, item.numberClass, item.stockClass, item.ratio, item.ratioArrow,
     item.volumeDisplay, item.yestVolumeDisplay, item.yestColorClass, item.ratioClass,
     item.topicsDisplay, item.topicBg, expandedSet.value.has(item.stock), sortState.byTopic,
-    // [RANGE20-TOPIC 2026-10-20] 「20日涨幅」toggle 的列结构开关（隐两列 / 加题材列）：
-    //   ⛔ 必须入指纹 —— 若 range20 数据未到、排序与所有字段都没变，切 toggle 时
-    //   v-memo 会因「内容全等」跳过整行 ⇒ 竞价量列该隐的没隐、题材列该出的没出（陈旧列结构）。
-    sortState.byRangePct20 ? 1 : 0,
+    // [RANGE-COLS 2026-10-24 用户口径] 区间涨幅模式（十日 / 二十日）的列结构开关
+    //   （隐两列 / 加题材列）：⛔ 必须入指纹 —— 若 range20 数据未到、排序与所有字段都没变，
+    //   切 toggle 时 v-memo 会因「内容全等」跳过整行 ⇒ 竞价量列该隐的没隐、题材列该出的没出
+    //   （陈旧列结构）。两档合并成一个 0/1：它们【列结构完全相同】，区分它俩没有意义。
+    (sortState.byRangePct20 || sortState.byRangePct) ? 1 : 0,
     item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo,
     item.closeLimit, item.closePct, item.closeNameTone, item.streakLabel,
+    // [PRESENCE 2026-10-23 / RANK-BOX 2026-10-24] 「n次在列」标签 + 序号小方框的 class：
+    //   两者都是 presence 数据【异步到货】后才有的（先没有 → 随后出现），
+    //   漏进指纹 ⇒ 次数/颜色到了但行不重渲染（标签与方框都不出现）。
+    item.presenceLabel, item.presenceRankClass,
     // [HIGH-LIMIT-BOARD 2026-09-21] 科创/创业/北交所的浅灰删除线：漏进指纹 → 代码补上后行不重渲染
     item.isHighLimitBoard,
     // [NOT-FORMAL 2026-09-23] 是否在今日 9:25 正式名单（决定股票名/题材是黑还是灰）：

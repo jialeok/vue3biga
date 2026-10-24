@@ -122,29 +122,29 @@
       股票名称
     </div>
     <template v-if="!sortState.byTopic">
-      <!-- [RANGE20-TOTAL-DRAGON 2026-10-20 用户口径] 「20日涨幅」toggle 专属显示层：
-           该模式下只隐藏「竞价量(万)」「昨成交量(万)」两列表头（占比保留），
-           与 AuctionEntityRow 用同一个判据（sortState.byRangePct20）⇒ 表头与数据列同增同减、
-           剩下的 序号/股票名/占比 按原 flex 比例同步变宽 ⇒ 不会错位。
+      <!-- [RANGE-COLS 2026-10-24 用户口径] 区间涨幅模式（十日 / 二十日）的表头：
+           只隐藏「竞价量(万)」「昨成交量(万)」两列表头（占比保留），并在占比前加「题材」列。
+           与 AuctionEntityRow 用【同一个判据】rangeColsMode（byRangePct20 || byRangePct）
+           ⇒ 表头与数据列同增同减、剩下的 序号/股票名/占比 按原 flex 比例同步变宽 ⇒ 不会错位。
            ⚠️ 其它 toggle 判据恒 false（§11 默认无行为），表头一字不动。 -->
       <div
-        v-if="!sortState.byRangePct20"
+        v-if="!rangeColsMode"
         class="auction-header-item auction-header-volume"
       >
         竞价量(万)
       </div>
       <div
-        v-if="!sortState.byRangePct20"
+        v-if="!rangeColsMode"
         class="auction-header-item auction-header-yest"
       >
         昨成交量(万)
       </div>
-      <!-- [RANGE20-TOPIC 2026-10-20 用户口径] 「20日涨幅」toggle 专属显示层：占比前加「题材」列。
-           与 AuctionEntityRow 用同一个判据 ⇒ 表头与数据列同增同减、不错位；
-           文案来源与「题材」toggle 同一字段（item.topicsDisplay，§6），其它 toggle 恒 false 不渲染。 -->
+      <!-- [RANGE-TOPIC 2026-10-24 用户口径] 区间涨幅模式的「题材」列表头。
+           文案来源与「题材」toggle 同一字段（item.topicsDisplay，§6）；
+           判据与行组件同源 ⇒ 列同增同减、不错位。 -->
       <div
-        v-if="sortState.byRangePct20"
-        class="auction-header-item auction-header-topic20"
+        v-if="rangeColsMode"
+        class="auction-header-item auction-header-range-topic"
       >
         题材
       </div>
@@ -319,6 +319,12 @@ const {
 // § 模板重构：内联条件链 / 状态访问抽取（渲染结果 100% 不变）
 const jingYestCountText = computed(() => (viewData.value.stats && viewData.value.stats.jingYestCount) || '-');
 const highRatioCountText = computed(() => (viewData.value.stats && viewData.value.stats.highRatioCount) || '-');
+
+// [RANGE-COLS 2026-10-24 用户口径] 列结构开关（隐两列 / 加题材列）：
+//   与 AuctionEntityRow.vue 里的同名 computed 【逐字相同】—— 表头与数据列必须同增同减，
+//   任何一侧多/少渲染一格，剩下的列会整体平移 ⇒ 表头文字与数据错位。
+//   ⛔ 改这里就要同步改那边（两处都写了交叉引用注释，别只改一边）。
+const rangeColsMode = computed(() => !!(sortState.byRangePct20 || sortState.byRangePct));
 
 const thsStatus = computed(() => apiStatusMap['thsApiStatus'] || {});
 const numcatStatus = computed(() => apiStatusMap['numcatApiStatus'] || {});
