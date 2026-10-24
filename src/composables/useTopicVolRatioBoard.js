@@ -865,12 +865,15 @@ export function useTopicVolRatioBoard() {
         //   规则层据此把「文化传媒」认成「AI应用」。用户原话：「那个大类就是我说的题材」。
         //   ⛔ 规则层不自己读表（§5），这里注入；取不到 ⇒ 退化为恒等（§11 零行为变化）。
         coreTopics: getCoreTopics(),
-        // ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条「十日涨幅 · 在列次数候补」的两个输入：
-        //   range10Rows     = 当日名单的十日涨幅池（采集层出口，含空题材行 —— 与早盘竞价看板同一批行，
-        //                     ⛔ 不从 rec.topics 里翻：那会漏掉没成组的行，排出来的「前十」就不是屏幕那十行）；
+        // ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条「十日涨幅 · 在列次数候补」的输入：
+        //   range10Rows     = 十日涨幅候选池（采集层出口）——**含「20天」补位行**。
+        //                     🔴 10-23 事故：漏了补位行（屏幕第 3 行慈文传媒）⇒ 名次整体前移一位
+        //                     ⇒ 主板第 11 名的上海九百被当成第 10 名顶上来。见 decision-collect#range10Rows。
         //   range10Presence = 十日窗口的在列次数（首次 / 二次在列的唯一依据）。
+        //   range10Complete = 池子是否【与屏幕同一批行】（补位数据到没到）。false ⇒ 规则层判不出、不选（§10）。
         //   ⚠️ 日期核对红线（与两份 rangeMap 同款）：Presence 不是这一天的 ⇒ 传 null（§10 不拿旧日期顶替）。
         range10Rows: rec.range10Rows || null,
+        range10Complete: rec.range10PoolComplete !== false,
         range10Presence: (range10PresenceDate.value === d && range10Presence.value)
           ? range10Presence.value
           : null

@@ -2228,6 +2228,13 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
     // ★ 本行专属徽标（Logic 层拼好，模板零计算 §21）：「十日涨幅第 N 名 · 首次在列」
     range10Label: '十日涨幅第 ' + (p.rank === null || p.rank === undefined ? '—' : p.rank) +
       ' 名 · ' + (p.label || '在列次数未知'),
+    // ★ [R10-TRAIL 2026-10-24] 徽标的悬停说明：把「名次」与「屏幕行号」两个数一次讲清，
+    //   ⛔ 免得用户看到「第 8 名」却在第 9 行找不到对不上的感觉（两种数法都没错，是口径不同）。
+    range10Title: '十日涨幅第 ' + (p.rank === null || p.rank === undefined ? '—' : p.rank) +
+      ' 名（只算主板名次：创业板 / 科创板 / 北交所不占名次，所以它在屏幕上是第 ' +
+      (p.rowNo === undefined || p.rowNo === null ? '—' : p.rowNo) + ' 行）｜' +
+      (p.label || '在列次数未知') + ' = 这 10 个交易日里它出现在当日名单的次数' +
+      '（含今天；1 次 = 首次在列，2 次 = 二次在列）',
     // ⚠️ 预置：finishBuyBlock 内部 _markHold 要读它（§6 与 _buildBlock 同一做法）
     aucShare: member ? _num(member.aucShare) : null,
     position: ''
@@ -2535,7 +2542,14 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //   ⚠️ `r10PoolGiven` 单独留一格：调用方【根本没传】十日涨幅池（老调用方 / 单测）⇒ 一条说明都不加
   //      （§11 零行为变化）；传了但次数没到 ⇒ 才按「数据缺口」如实说明（§10 缺口必须可见）。
   const r10PoolGiven = Array.isArray(o.range10Rows);
-  const r10DataReady = !!(r10PoolGiven && o.range10Rows.length > 0 &&
+  // 🔴🔴 [R10-POOL 2026-10-24 事故修复] 「池子是否与屏幕同一批行」。
+  //   事故现场（10-23）：候选池只含当日名单、漏了「20天」补位票（屏幕第 3 行慈文传媒），
+  //   ⇒ 名次整体前移一位 ⇒ 主板第 11 名的【上海九百】（屏幕上没有标签）被当成第 10 名顶了上来。
+  //   ⇒ 采集层现在会把补位行并进池子，并用 range10PoolComplete 报告「补位数据到了没有」。
+  //   ⚠️ 缺省（调用方没给这个键 = 老调用方 / 单测自己造的池子）⇒ 按【完整】处理，
+  //      保证 §11 零行为变化；只有采集层明确说 false（补位数据未就绪）才拦。
+  const r10PoolComplete = (o.range10Complete !== false);
+  const r10DataReady = !!(r10PoolGiven && r10PoolComplete && o.range10Rows.length > 0 &&
     o.range10Presence && o.range10Presence.counts &&
     Number(o.range10Presence.coveredDays) > 0);
   // 被作废的题材（供候补的「不同题材」闸门 + 说明文案用）
@@ -2661,9 +2675,16 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         // §10：数据缺口必须可见 —— 但只在「调用方确实给了池子」时提示（老调用方 / 单测不传 ⇒ 零打扰）
         if (r10PoolGiven) {
           r10GapNoted = true;
+          // ★ [R10-POOL 2026-10-24] 缺口有两种，文案必须分开说：
+          //   · 补位行没到 ⇒ 名次这把尺子整体错位（10-23 上海九百 事故的直接原因）；
+          //   · 在列次数没到 ⇒ 分不出「首次 / 二次在列」。
+          //   ⛔ 合写成一句「十日涨幅池 / 在列次数还没读到」等于把根因藏起来，用户没法判断要不要等。
+          const r10GapWhy = !r10PoolComplete
+            ? '十日涨幅榜的【20 天补位行】还没就绪（候选池与屏幕上那十行对不上，名次会整体错位）'
+            : '【十日窗口在列次数】还没读到';
           out.notes.push('⚠️【第' + RANGE10_BACKUP_RULE_NO + '条 · 题材量比太小】排名第二的入选题材【' +
             weakInfo.topic + '】平均竞价量比 ' + weakInfo.avgText + ' ＜ ' + TVRB_CASH_ALERT_AVG_VR +
-            '，本该禁止选入；但【十日涨幅池 / 十日窗口在列次数还没读到】⇒ 判不出候补票，' +
+            '，本该禁止选入；但' + r10GapWhy + ' ⇒ 判不出候补票，' +
             '本次【暂不作废】该题材（保持原规则照常列出）。数据到货后会自动重判（§10：判不出 ≠ 作废）。');
         }
       } else {
@@ -2814,16 +2835,25 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   // §10：该给候补却因为次数没读到而给不出 ⇒ 如实说一句（⛔ 沉默会让人以为「今天本来就没有候补」）。
   //   只在「调用方确实给了池子」时提示；弱题材那条已经说过（r10GapNoted）就不重复。
   if (r10Enabled && r10PoolGiven && !r10DataReady && !r10GapNoted && (r10LeadWeak || !!r10SecondWeak)) {
+    // ★ [R10-POOL 2026-10-24] 缺口有两种，文案必须分开说（口径不同、用户要采取的动作也不同）：
+    //   · 补位行没到 ⇒ 名次这把尺子整体错位（10-23 上海九百 事故就是这个）；
+    //   · 在列次数没到 ⇒ 分不出「首次 / 二次」。
+    const r10GapWhy = !r10PoolComplete
+      ? '十日涨幅榜的【20 天补位行】还没就绪 ⇒ 候选池与屏幕上那十行对不上（名次会整体错位）'
+      : '十日窗口的在列次数（auction_presence）还没读到 ⇒ 无法判断「首次 / 二次在列」';
     out.notes.push('⚠️【第' + RANGE10_BACKUP_RULE_NO + '条 · 十日涨幅候补】本次【判不出候补】：' +
-      '十日窗口的在列次数（auction_presence）还没读到 ⇒ 无法判断「首次 / 二次在列」。' +
-      '数据到货后会自动补算（§10：判不出 ≠ 今天没有候补）。');
+      r10GapWhy + '。数据到货后会自动补算（§10：判不出 ≠ 今天没有候补）。');
   }
   if (r10Need) {
     // 20日涨幅总龙一（不同题材闸门的对照物）：由采集层富化在 ebbCtx.top5[0]（§6 同一份事实）；
-    //   取不到 ⇒ 传空 ⇒ range10-backup 判不出「是否同题材」⇒ 不选票（§10 不猜）。
+    //   取不到 ⇒ 判不出「是否同题材」⇒ ⛔ 不选票（§10 不猜）。
+    //   🔴 [R10-GATE 2026-10-24] 从「传空就放行」改成【硬闸门】：用户口径是
+    //   「和 20日涨幅的总龙一不同题材 + 排名前十，这几个条件同时满足，不然都要空仓」——
+    //   总龙一题材未知时，这条「不同题材」根本没被验证过，选出来的票就是没依据的。
     const r10Top1 = (o.ebbCtx && Array.isArray(o.ebbCtx.top5) && o.ebbCtx.top5[0]) ? o.ebbCtx.top5[0] : null;
     const r10Top1Topic = r10Top1 ? String(r10Top1.topic || '').trim() : '';
     const r10Top1Name = r10Top1 ? String(r10Top1.name || '').trim() : '';
+    const r10Top1Missing = !r10Top1Topic;
     // 已占用的买点（同一只票不重复列）：常规块的票 + 新龙 + 退潮替补（后者正常不会同时出现，防御性带上）
     const r10Taken = new Set();
     out.blocks.forEach(function(b) {
@@ -2839,7 +2869,7 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     r10WeakTopics.forEach(function(w) { if (w.topic) r10ExcludeTopics.push(w.topic); });
 
     const r10Presence = o.range10Presence || null;
-    const r10Res = pickRange10Backup(o.range10Rows || null, {
+    const r10Res = r10Top1Missing ? null : pickRange10Backup(o.range10Rows || null, {
       counts: r10Presence ? r10Presence.counts : null,
       coveredDays: r10Presence ? r10Presence.coveredDays : 0,
       excludeName: r10Taken,
@@ -2847,7 +2877,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       // 题材认亲走【大类归一】的同一把尺子（「文化传媒」与「AI应用」必须认成同一题材，§6）
       sameTopic: function(a, b) { return _sameTopicLoose(a, b, coreRes); }
     });
-    if (r10Res && r10Res.pick) {
+    if (r10Top1Missing) {
+      out.notes.push('⚠️【第' + RANGE10_BACKUP_RULE_NO + '条 · 十日涨幅候补】本次【判不出候补】：' +
+        '20日涨幅总龙一（及其题材）还没就绪 ⇒ 无法验证用户要求的「必须与总龙一不同题材」这道闸门 ⇒ ' +
+        '不猜（§10：判不出 ≠ 今天没有候补）。');
+    } else if (r10Res && r10Res.pick) {
       const r10Blk = _buildRange10BackupBlock(r10Res, list, fOpts, {
         weakTopics: r10WeakTopics,
         top1Topic: r10Top1Topic,
@@ -2876,8 +2910,16 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       }
     } else {
       // §10：判不出 / 没有合格票 ⇒ 必须可见（⛔ 绝不让它静默变成「今天什么都没有」）
+      // ★ [R10-TRAIL 2026-10-24] 再附一句【前十逐只的去留】—— 用户两次问「为什么选了这一只 /
+      //   为什么不是那一只」，光给结论没法核对；有了这一句，屏幕上点开就能逐只对上（判定可追溯）。
+      const r10TrailText = (r10Res && Array.isArray(r10Res.trail) && r10Res.trail.length)
+        ? ' 前十逐只看：' + r10Res.trail.map(function(t) {
+            return '第' + t.rank + '名 ' + t.name + '（' + (t.label || '次数未知') + '）' +
+              (t.reason ? '⇒ ' + t.reason : '');
+          }).join('；') + '。'
+        : '';
       out.notes.push('⚠️【第' + RANGE10_BACKUP_RULE_NO + '条 · 十日涨幅候补】本次【没有候补】' +
-        ((r10Res && r10Res.reason) ? ('：' + r10Res.reason) : '') + '。');
+        ((r10Res && r10Res.reason) ? ('：' + r10Res.reason) : '') + '。' + r10TrailText);
     }
   }
 
@@ -3333,13 +3375,17 @@ export function buildTvrbRulesLines() {
       ' ⇒ 它照旧「建议空仓」+ 整段灰化（第十九条不变），但【另外给一只候补】可以买' +
       '（大字标语里会多一句「另有 1 只十日周期候补」，标语⛔ 不撤 —— 风险事实必须留着）。' +
       '★ 候补票怎么选（只选【一只】，⛔ 绝不多选）：' +
-      '① 池子 = 当日名单里【十日涨幅】前 ' + PRESENCE_TOP_N + ' 名（只数主板名次，' +
-      '创业板 / 科创板 / 北交所不占名次 —— 与「在列次数」标签同一把尺子）；' +
+      '① 池子 = 【与早盘竞价「10日涨幅」toggle 屏幕同一批行】的十日涨幅前 ' + PRESENCE_TOP_N + ' 名' +
+      '（只数主板名次，创业板 / 科创板 / 北交所不占名次 —— 与「在列次数」标签同一把尺子）；' +
+      '⚠️ 这一批行【必须含「20天」补位行】：补位票（如 10-23 的慈文传媒）不在当日名单里，' +
+      '若漏掉它，名次会整体前移一位，第 11 名就会被当成第 10 名（2026-10-24 选中上海九百 的事故根因）；' +
+      '补位数据还没就绪 ⇒ 判不出（⛔ 不许按错位的名次选票）；' +
       '② 在列次数 = 该票在这 10 个交易日的早盘竞价名单里出现过几次（预计算表 auction_presence，window_days = 10）；' +
       '③ 【首次在列】（1 次）优先；前十名里没有可用的首次在列，才看【二次在列】（2 次）；两档都没有 ⇒ 今天空仓；' +
       '④ 硬条件（同时满足，缺一不可）：必须是主板、必须与【20日涨幅总龙一】不同题材' +
       '（题材按核心词大类认，如「文化传媒」归到「AI应用」）、⛔ 不能是刚被作废的那个弱题材、' +
-      '⛔ 不能是今日买点侧已有的票。' +
+      '⛔ 不能是今日买点侧已有的票；' +
+      '⚠️【20日涨幅总龙一】未就绪 ⇒ 这道「不同题材」闸门没被验证过 ⇒ 候补不出现（§10 不猜，⛔ 不放行）。' +
       '（例 10-20：房地产平均量比只有 7.47 < ' + TVRB_CASH_ALERT_AVG_VR + ' ⇒ 作废 ⇒ 十日涨幅第 8 行' +
       '【海洋王】（主板第 7 名，10 日内只在列 1 次 = 首次在列，LED/军工 ≠ 总龙一 AI应用）⇒ 选它。）' +
       '★ 表现方式：候补那一行标【' + RANGE10_BACKUP_TAG + '】、独立渲染在灰化容器【之外】' +
@@ -3348,7 +3394,9 @@ export function buildTvrbRulesLines() {
       '⚠️ 与其它规则的优先级（⛔ 不许两条同时输出买点）：' +
       '【退潮兜底（首次退潮 / 二次确认但常规选不出）】> 【切换日 第二十八条】> 【总龙首次分歧 第二十五条】' +
       '> 本规则。也就是说这三种场景里本规则一律不生效。' +
-      '⚠️ 判不出就如实说明（§10）：十日涨幅池 / 在列次数没读到 ⇒ 候补不出现，说明区写明原因，' +
-      '⛔ 绝不拿「没数据」当成「今天没有候补」更不当成「空仓」。'
+      '⚠️ 判不出就如实说明（§10）：十日涨幅池（含 20 天补位行）/ 在列次数 / 20日涨幅总龙一 没读到 ⇒ ' +
+      '候补不出现，说明区写明是哪个缺口，' +
+      '⛔ 绝不拿「没数据」当成「今天没有候补」更不当成「空仓」；' +
+      '没有候补时，说明区会附上【前十名逐只的去留与理由】，方便逐只核对。'
   ];
 }

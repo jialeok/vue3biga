@@ -1421,9 +1421,45 @@ export function collectDecisionData(date, opts) {
     //   ⚠️ 只搬运 name / code / topic / pct（pct = 该票当日十日涨幅，来自 rangeMap，§6 同一份真相）；
     //      排序 / 名次 / 板块判定一律交给 range10-backup.js（⛔ 本层不做业务判断，§4）。
     //   成本 = O(n) 一次 map（n = 当日列表只数，通常 < 200），无网络、无额度。
-    out.range10Rows = rows.map(function(r) {
+    //
+    // 🔴🔴 [R10-POOL 2026-10-24 事故修复] 必须再并进【20日涨幅前五的补位行（「20天」票）】。
+    //   事故现场（10-23）：屏幕第 3 行是【慈文传媒 +79.11% / 8次在列】——它是 20 日补位票，
+    //   **不在 auction_watchlist 里**，所以只按 `rows` 建池时它缺席 ⇒ 后面每只票的名次整体【前移一位】，
+    //   于是主板第 11 名的【上海九百】（屏幕上没有标签、根本不在前十）被当成第 10 名，
+    //   在兆威机电（真正的「首次在列」、主板第 8 名）被别的条件剔除后顶了上来 ⇒ 用户报「怎么选了上海九百」。
+    //   ⇒ 用户口径「排名前十」= 早盘竞价看板 10日涨幅 toggle 上【带在列次数标签的那十只】，
+    //     而那十只是【含补位行】一起排序的（assignPresenceLabels 收到的是含补位行的 items）。
+    //     §6：池子必须与屏幕同一批行，否则「名次」这把尺子就不是同一把。
+    //   ⚠️ 补位行从 range20Top（= getRange20Leaders 的发布结果，与 view-helpers 的注入口同一个来源）来，
+    //      ⛔ 本层不自己去算 20 日涨幅、也不发请求。
+    //   ⚠️ 补位行恒有「20日涨幅」，但【十日涨幅】可能没有（§10 ⇒ pct=null ⇒ 不占名次，与屏幕一致）。
+    //   ⚠️ 题材走 classifyStockPrimaryTopic（与 _mkRow 的兜底同一条路：它会回落到历史题材库），
+    //      ⛔ 不给补位票编一个 '其它' 之外的假题材。
+    const r10Pool = rows.map(function(r) {
       return { name: r.name, code: r.code, topic: r.topic, pct: r.pct };
     });
+    const r10Seen = new Set();
+    r10Pool.forEach(function(r) { r10Seen.add(String(r.name || '').trim()); });
+    const r20ForPool = (opts && Array.isArray(opts.range20Top)) ? opts.range20Top : null;
+    if (r20ForPool) {
+      r20ForPool.forEach(function(m) {
+        const nm = String((m && (m.stock || m.name)) || '').trim();
+        if (!nm || r10Seen.has(nm)) return;
+        r10Seen.add(nm);
+        const rm = rangeMap.get(nm);
+        r10Pool.push({
+          name: nm,
+          code: String((m && m.code) || getStockCode(nm) || '').trim(),
+          topic: String(classifyStockPrimaryTopic({ stock: nm }, psize) || '').trim(),
+          pct: (rm && rm.pct !== undefined && rm.pct !== null) ? rm.pct : null
+        });
+      });
+    }
+    out.range10Rows = r10Pool;
+    // ★ [R10-POOL] 池子【是否与屏幕同一批行】：补位数据没就绪（range20Top = null）时无法确认，
+    //   ⇒ 名次可能整体错位 ⇒ 规则层据此【不选候补】（§10 判不出 ≠ 随便选一只）。
+    //   ⚠️ 空数组是有效答案（当天确实没有补位票）⇒ complete = true。
+    out.range10PoolComplete = !!r20ForPool;
     return out;
   }
 
@@ -1671,6 +1707,9 @@ export function collectDecisionTopics(date, opts) {
     //   ⚠️ 与上面 buySkipSuspend 同一道理：它只依赖 rows，与「要不要回溯历史买点」无关 ⇒ 放在 if 之外。
     //      空数组也是一份有效答案（当天没有可排的行）⇒ 照样往下传，让规则层如实说「判不出」。
     if (rec.range10Rows) out.range10Rows = rec.range10Rows;
+    // ★ [R10-POOL 2026-10-24] 池子是否与屏幕同一批行（补位行有没有并进来）。
+    //   ⚠️ 与 range10Rows 必须【同时】透出：只给 rows 不给它，规则层就会拿一个错位的名次当真。
+    if (rec.range10PoolComplete !== undefined) out.range10PoolComplete = rec.range10PoolComplete;
     return out;
   }
   return {

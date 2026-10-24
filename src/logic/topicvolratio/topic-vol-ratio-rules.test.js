@@ -3264,6 +3264,45 @@ describe('tvrb · 第二十九条 十日涨幅 · 在列次数候补', function(
     expect(plan.notes.join('\n')).not.toContain('十日涨幅候补');
   });
 
+  // ★★ [R10-POOL 2026-10-24] 池子完整性闸门 —— 10-23 事故（选到上海九百）的直接防线：
+  //   采集层发现「20天补位行还没就绪」时会传 range10Complete=false，此时名次与屏幕对不上
+  //   ⇒ 规则层必须【判不出】（既不选票、也不作废题材），⛔ 绝不能拿错位的名次当真。
+  it('§10：池子与屏幕对不上（补位行未就绪）⇒ 【不作废】题材、不出候补，且说明缺口', function() {
+    const f = twoTopics();
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, {
+      range10Rows: POOL,
+      range10Complete: false,       // ← 采集层：补位数据未就绪
+      range10Presence: presence(CNT),
+      ebbCtx: ebbCtxOf()
+    });
+    // ⛔ 数据缺口 ≠ 判决：房地产（7.47）不许因此被作废
+    expect(plan.blocks).toHaveLength(2);
+    expect(plan.blocks[1].block.topic).toBe('房地产');
+    expect(plan.range10Backup).toBeNull();
+    expect(plan.buy.range10Backup).toBeNull();
+    const notes = plan.notes.join('\n');
+    expect(notes).toContain('暂不作废');
+    expect(notes).toContain('补位行');
+  });
+
+  // ★★ [R10-GATE 2026-10-24] 「必须与 20日涨幅总龙一不同题材」是用户四个条件之一：
+  //   总龙一都不知道时，这道闸门根本没被验证过 ⇒ ⛔ 不许放行（旧版传空 = 放行，属于静默猜测）。
+  it('§10：20日涨幅总龙一未就绪 ⇒ 候补【不猜】，说明区写明原因', function() {
+    const f = twoTopics();
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, {
+      range10Rows: POOL,
+      range10Presence: presence(CNT),
+      ebbCtx: null                   // ← 总龙一（ebbCtx.top5[0]）不知道
+    });
+    // 第二题材量比 7.47 仍照常作废（这条判据不依赖总龙一），但候补给不出来
+    expect(plan.blocks).toHaveLength(1);
+    expect(plan.range10Backup).toBeNull();
+    const notes = plan.notes.join('\n');
+    expect(notes).toContain('判不出候补');
+    expect(notes).toContain('总龙一');
+    expect(notes).not.toContain('本次【没有候补】');   // 措辞要区分「判不出」与「确实没有」
+  });
+
   it('优先级：退潮兜底日（首次退潮）⇒ 本规则不生效', function() {
     const f = twoTopics();
     const ctx = ebbCtxOf();

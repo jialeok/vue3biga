@@ -98,7 +98,7 @@ export function buildRange10Ranked(pool) {
 
   const out = [];
   let rank = 0;
-  order.forEach(function(idx) {
+  order.forEach(function(idx, i) {
     const it = items[idx];
     const mainBoard = isMainBoardRankEligible(it.code);
     let r = null;
@@ -109,7 +109,12 @@ export function buildRange10Ranked(pool) {
     }
     out.push({
       name: it.name, code: it.code, topic: it.topic, pct: it.pct,
-      mainBoard: mainBoard, rank: r
+      mainBoard: mainBoard, rank: r,
+      // ⚠️ 屏幕行号（1 起，含非主板）—— 只用于【说明文案】帮用户核对，
+      //    ⛔ 绝不拿它当名次口径：用户问的是「排名前十」，而屏幕上的标签按【主板名次】发
+      //    （2026-10-23 实测：兆威机电 主板第 8 名 / 屏幕第 9 行 —— 两种数法都能进前十，但混用就会出现
+      //      「第 8 名」与「第 9 行」看着矛盾的口径争执）。
+      rowNo: i + 1
     });
   });
   return out;
@@ -202,6 +207,7 @@ export function pickRange10Backup(pool, opts) {
     }
     return {
       name: it.name, code: it.code, topic: it.topic, pct: it.pct, rank: it.rank,
+      rowNo: it.rowNo,
       cnt: cnt, label: presenceLabelOf(cnt), reason: reason
     };
   });

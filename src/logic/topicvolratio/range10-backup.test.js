@@ -2,14 +2,16 @@
 //
 // 用户口径（2026-10-24 逐字，见 range10-backup.js 文件头）。
 //
-// 本文件锁住七件事：
+// 本文件锁住八件事：
 //   ① 排名口径 = 主板名次（非主板 / 缺涨幅【不占名次】），排序复用 sortIndicesByRangePct；
 //   ② 只从「主板名次 ≤ 10」的十只里挑；
 //   ③ 优先级：首次在列（cnt=1）> 二次在列（cnt=2）；且【只选一只】；
 //   ④ 必须与「总龙一 / 已作废题材」不同题材（大类归一由调用方注入，本处用严格相等桩）；
 //   ⑤ 已在今日买点侧的票不重复选；
 //   ⑥ §10：次数未到 / 池子为空 ⇒ 判不出（ready=false、pick=null），⛔ 绝不当 0 次；
-//   ⑦ 10-20 真实快照（海洋王 第 8 行 / 主板第 7 名、首次在列）必须能复现。
+//   ⑦ 10-20 真实快照（海洋王 第 8 行 / 主板第 7 名、首次在列）必须能复现；
+//   ⑧ 🔴 10-23 真实快照 + 【事故回归】：池子必须含「20天」补位行，否则名次整体前移一位
+//      ⇒ 第 11 名的上海九百会被当成第 10 名选中（用户 2026-10-24 报的那个 bug）。
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -19,6 +21,8 @@ import {
   RANGE10_CNT_FIRST,
   RANGE10_CNT_SECOND
 } from './range10-backup.js';
+// ★ 标签文案复用生产实现（§6：⛔ 别在测试里另写一份「1 次 = 首次在列」）
+import { presenceLabelOf } from '../auction/presence-label.js';
 
 /** 2026-10-20 真实快照：当日名单 ∩ 十日涨幅（按涨幅降序），cnt 来自 auction_presence(w10) */
 const POOL_1020 = [
@@ -204,5 +208,109 @@ describe('range10-backup · 选票', () => {
       expect(typeof t.label).toBe('string');
       expect(typeof t.reason).toBe('string');
     });
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// ★★ 2026-10-23 真实快照 + 事故回归（2026-10-24 用户报：
+//    「十日涨幅标有首次在列的是兆威机电……你怎么又选上海九百了呢？这只票也没进前十啊」）
+//
+// 事故根因：屏幕上的十日涨幅榜【含「20天」补位行】（慈文传媒 = 20日涨幅补位票，不在 auction_watchlist 里），
+//   而候选池只按当日名单建 ⇒ 少了慈文传媒这一行 ⇒ 后面每只票名次【整体前移一位】⇒
+//   主板第 11 名的上海九百（屏幕上根本没标签）被当成第 10 名，在兆威机电被别的条件剔除后顶上来。
+// ⇒ 本组用例：池子必须与屏幕同一批行（含补位行），并把「漏补位行会选错谁」这件事【反向钉死】。
+// ══════════════════════════════════════════════════════════════════════════════════════════
+describe('range10-backup · 2026-10-23 真实快照（含「20天」补位行）', () => {
+  /** 屏幕顺序（十日涨幅降序）。慈文传媒 = 20日涨幅补位行 ⇒ 第十行缺失的错误由下面的回归用例复现 */
+  const POOL_1023 = [
+    { name: '凡拓数创', code: '301313', topic: '物理AI', pct: 115.05 },   // 创业板 ⇒ 不占名次
+    { name: '海洋王', code: '002724', topic: 'LED', pct: 80.53 },
+    { name: '慈文传媒', code: '002343', topic: 'AI视频', pct: 79.11 },    // ★「20天」补位行
+    { name: '冰山冷热', code: '000530', topic: '冰雪产业', pct: 78.80 },
+    { name: '大业股份', code: '603278', topic: '机器人概念', pct: 58.02 },
+    { name: '九阳股份', code: '002242', topic: '家电', pct: 42.30 },
+    { name: '百洋股份', code: '002696', topic: '水产品', pct: 40.03 },
+    { name: '福莱新材', code: '605488', topic: '灵巧手', pct: 36.79 },
+    { name: '兆威机电', code: '003021', topic: '灵巧手', pct: 32.79 },
+    { name: '宁波东力', code: '002164', topic: '机器人概念', pct: 30.93 },
+    { name: '吉大正元', code: '003029', topic: 'AI应用', pct: 28.63 },
+    { name: '上海九百', code: '600838', topic: '零售', pct: 26.44 },
+    { name: '润建股份', code: '002929', topic: '算力租赁', pct: 25.66 },
+    { name: '三峡新材', code: '600293', topic: '玻璃', pct: 24.94 }
+  ];
+  /** auction_presence(2026-10-23, w=10) 的真实次数 */
+  const CNT_1023 = {
+    凡拓数创: 3, 海洋王: 3, 慈文传媒: 8, 冰山冷热: 7, 大业股份: 4, 九阳股份: 8,
+    百洋股份: 9, 福莱新材: 3, 兆威机电: 1, 宁波东力: 3, 吉大正元: 5, 上海九百: 1,
+    润建股份: 3, 三峡新材: 2
+  };
+  /** 20日涨幅总龙一 = 新华传媒（文化传媒）；与「灵巧手」互不相干 */
+  const OPTS = function(extra) {
+    return Object.assign({
+      counts: countsOf(CNT_1023),
+      coveredDays: 10,
+      excludeTopics: ['文化传媒']
+    }, extra || {});
+  };
+
+  it('前十名逐只（含标签）与用户屏幕完全一致 —— 与「在列次数」标签同一把尺子', () => {
+    const ranked = buildRange10Ranked(POOL_1023);
+    const labeled = ranked
+      .filter(function(r) { return r.rank !== null && r.rank <= 10; })
+      .map(function(r) { return r.name + ':' + presenceLabelOf(CNT_1023[r.name]); });
+    expect(labeled).toEqual([
+      '海洋王:3次在列',
+      '慈文传媒:8次在列',
+      '冰山冷热:7次在列',
+      '大业股份:4次在列',
+      '九阳股份:8次在列',
+      '百洋股份:9次在列',
+      '福莱新材:3次在列',
+      '兆威机电:首次在列',
+      '宁波东力:3次在列',
+      '吉大正元:5次在列'
+    ]);
+  });
+
+  it('上海九百 = 主板第 11 名（屏幕上没有标签）⇒ 不进候选；兆威机电 = 第 8 名 / 屏幕第 9 行', () => {
+    const ranked = buildRange10Ranked(POOL_1023);
+    const byName = new Map();
+    ranked.forEach(function(r) { byName.set(r.name, r); });
+    expect(byName.get('上海九百').rank).toBe(11);
+    expect(byName.get('上海九百').rowNo).toBe(12);
+    expect(byName.get('兆威机电').rank).toBe(8);
+    expect(byName.get('兆威机电').rowNo).toBe(9);   // 名次 ≠ 行号：凡拓数创（创业板）占了第 1 行
+    // 前十的名次里绝不含上海九百
+    const top = ranked.filter(function(r) { return r.rank !== null && r.rank <= 10; });
+    expect(top.some(function(r) { return r.name === '上海九百'; })).toBe(false);
+  });
+
+  it('★ 选中兆威机电（首次在列 · 主板第 8 名 · 灵巧手 ≠ 文化传媒）', () => {
+    const r = pickRange10Backup(POOL_1023, OPTS());
+    expect(r.ready).toBe(true);
+    expect(r.tier).toBe('first');
+    expect(r.pick && r.pick.name).toBe('兆威机电');
+    expect(r.pick.rank).toBe(8);
+    expect(r.pick.rowNo).toBe(9);
+    expect(r.pick.label).toBe('首次在列');
+    expect(r.pick.cnt).toBe(1);
+    expect(r.pick.topic).toBe('灵巧手');
+  });
+
+  it('🔴 事故回归：兆威机电被剔除时【必须空仓】，⛔ 不许把第 11 名的上海九百顶上来', function() {
+    const opts = OPTS({ excludeName: new Set(['兆威机电']) });
+    // ① 正确的池子（含补位行慈文传媒）：前十只剩兆威机电一只「首次在列」，它被剔除 ⇒ 两档全空 ⇒ 空仓
+    const ok = pickRange10Backup(POOL_1023, opts);
+    expect(ok.ready).toBe(true);
+    expect(ok.pick).toBeNull();
+    expect(ok.reason).toContain('空仓');
+    expect(ok.trail.some(function(t) { return t.name === '上海九百'; })).toBe(false);
+
+    // ② 复现旧 bug：把补位行（慈文传媒）从池子里拿掉 = 名次整体前移一位
+    //    ⇒ 上海九百 变成「第 10 名 · 首次在列」⇒ 被选中（用户实际看到的错票）
+    const buggyPool = POOL_1023.filter(function(p) { return p.name !== '慈文传媒'; });
+    const buggy = pickRange10Backup(buggyPool, opts);
+    expect(buggy.pick && buggy.pick.name).toBe('上海九百');
+    expect(buggy.pick.rank).toBe(10);   // ← 错就错在这个 10（真实名次是 11）
   });
 });
