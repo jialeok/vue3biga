@@ -1023,6 +1023,21 @@ function _num(v) {
 }
 
 /**
+ * 涨幅 → 「+35.21%」两位小数文案（★ 只用于【说明文字】，⛔ 不参与任何判定，§21 文案在 Logic 层拼好）。
+ *
+ * ⚠️ 为什么不复用 `formatRangePct`：那个是行上「十日涨幅」列的展示口径（**取整**，+35%），
+ *   而说明区要跟用户核对「9:26 那一刻到底是多少」—— 取整会让 +35.21 与 +36.40 都显示成 +35%/+36%，
+ *   看着像同一档，反而更难核对。缺值 ⇒ '—'（§10 不补 0）。
+ * @param {number|string|null} v
+ * @returns {string}
+ */
+function _pct2(v) {
+  const n = _num(v);
+  if (n === null) return '—';
+  return (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+}
+
+/**
  * 【退潮日 · 买点侧替补（≤2 只）】构造（第八轮建立 · [EBB-R20 2026-10-20 用户口径] 本轮升级）。
  *
  * 用户口径（本轮原话）：「从20日涨幅中的总龙一到总龙五选出两只排名靠前的。而且是不同总龙一题材的
@@ -1655,27 +1670,31 @@ function _dragonCandidates(block, dragonMap, pctMap) {
 }
 
 /**
- * ★★ [TVRB-926-DRIFT 2026-10-24 用户口径] 买点侧说明区：把「早上 9:26 龙位」与「收盘龙位」的差异讲清楚。
+ * ★★ [TVRB-926-FACT 2026-10-25 用户口径 · 第二次修正] 买点侧说明区：只写【口径时间 + 涨幅 + 第几名】，⛔ 不解释。
  *
- * 用户原话（9-24 报障）：
- *   「题材量比入选的题材有AI应用和房地产，买点侧房地产的选华远控股龙五，为什么不选世联行龙二呢？
- *     是因为早上的龙位和收盘的龙位不同变化了吗？如果是你在买点侧那里说明下，
- *     还是股票量比高低选股，应该不是吧？」
+ * 用户原话（对上一版说明的直接反馈，逐字）：
+ *   「所以买点侧的10日涨幅和20日涨幅的股票，如果有入选时也应该按照9点26分的口径，因为一般都是早上
+ *     选出来，收盘看的时候就不一样的，所以你在说明文字那里说明，它排名第几名（我说有入选的时候）
+ *     你不要解释，在上面说明时间他们的涨幅是多少排名第几就行了」
+ *
+ * ⇒ 本函数与上一版的差别【只在于文案】，判据一行没改：
+ *   · 删掉「原因：十日涨幅的今天那根腿 15:00 后被换成收盘涨幅（第二十三条）」这类解释；
+ *   · 删掉「⛔ 选股只认龙位 / ⛔ 不是按竞价量比高低」这类辩解；
+ *   · 只留事实：`〔9:26 竞价口径〕X +35.21% 第 2 名（选入）`、`〔收盘口径〕Y +36.40% 第 2 名`。
  *
  * 根因（实测 9-24 房地产组，6 只 ⇒ 中档只取 1 只）：
- *   · 买点侧选股按【早上 9:26 竞价口径】的龙位（[TVRB-926] rankDragonsWithPctMap）——
- *     那个口径下：大亚圣象 龙一（竞价 +10.03% 一字，买不进已顺延）、**华远控股 龙二**、
- *     我爱我家 龙三、世联行 龙四、三峡新材 龙五、绿地控股 龙六 ⇒ 取龙二 = 华远控股；
- *   · 收盘后十日涨幅的「今天」那一根腿被换成【收盘涨幅】（华远控股 -9.22%、世联行 +2.84%）
- *     ⇒ 组内重排成：大亚圣象 龙一、**世联行 龙二**、…、华远控股 龙五。
- *   ⇒ 于是「收盘回看」时会觉得「怎么不选龙二世联行」，而早上那一刻按龙位根本轮不到它。
- *   ⛔ 这不是按【竞价量比高低】选股（选股只认龙位；量比只用于【题材之间】的排名与空仓提醒）。
+ *   · 买点侧按【早上 9:26 竞价口径】的龙位选股（[TVRB-926] rankDragonsWithPctMap）——
+ *     大亚圣象 龙一（竞价 +10.03% 一字，买不进已顺延）、**华远控股 龙二**、我爱我家 龙三、
+ *     世联行 龙四、三峡新材 龙五、绿地控股 龙六 ⇒ 取龙二 = 华远控股；
+ *   · 收盘后组内重排成：大亚圣象 龙一、**世联行 龙二**、…、华远控股 龙五。
+ *   ⇒ 说明区把两个口径的【数值 + 名次】并列摆出来，用户自己一眼核对（⛔ 不再替用户下结论）。
  *
  * 发声条件（§11 零行为变化）：只有【真正出现差异】时才追加一条说明 ——
  *   9:26 口径与收盘口径的龙位完全一致时，本函数一个字都不写。
  *
- * @param {object} blk _buildBlock 的返回（含 block.members / picks / notes）
- * @param {Map} closeDragonMap 收盘口径的龙位名册（= rankDragons 的返回）；
+ * @param {object} blk _buildBlock 的返回（含 block.members / picks / notes）；
+ *        picks[].pct 已是【9:26 口径】（见 _dragonCandidates），picks[].dragonRank = 9:26 名次
+ * @param {Map} closeDragonMap 收盘口径的龙位名册（= rankDragons 的返回，项含 pct）；
  *        缺省 / 空 ⇒ 无可比 ⇒ 不发声（§10 不猜「它收盘是龙几」）
  */
 function _appendDragonDriftNote(blk, closeDragonMap) {
@@ -1683,28 +1702,31 @@ function _appendDragonDriftNote(blk, closeDragonMap) {
   if (!closeDragonMap || typeof closeDragonMap.get !== 'function' || closeDragonMap.size === 0) return;
   const topic = String(blk.block.topic || '').trim();
   const pickedNames = new Set();
-  const driftTexts = [];
+  const aucFacts = [];        // 〔9:26 竞价口径〕被选中的那只/那几只：涨幅 + 名次
+  const closeFacts = [];      // 〔收盘口径〕被选中的 + 收盘排得更前却没轮到的
+  let drift = false;
   let bestPickedClose = Infinity;
+
   blk.picks.forEach(function(p) {
     const nm = String((p && p.name) || '').trim();
     if (!nm) return;
     pickedNames.add(nm);
-    const c = closeDragonMap.get(nm);
     const buyRank = Number(p && p.dragonRank);
-    if (!c || !c.rank || !isFinite(buyRank) || buyRank <= 0) return;
+    if (isFinite(buyRank) && buyRank > 0) {
+      aucFacts.push({ name: nm, pct: p.pct, rank: buyRank, picked: true });
+    }
+    const c = closeDragonMap.get(nm);
+    if (!c || !c.rank) return;
     if (String(c.topic || '').trim() !== topic) return;   // 换题材的龙位不可比（§10）
     const closeRank = Number(c.rank);
     if (!isFinite(closeRank) || closeRank <= 0) return;
     if (closeRank < bestPickedClose) bestPickedClose = closeRank;
-    if (closeRank !== buyRank) {
-      driftTexts.push('【' + nm + '】9:26 是' + getDragonLabel(buyRank) +
-        '、收盘口径是' + getDragonLabel(closeRank));
-    }
+    closeFacts.push({ name: nm, pct: c.pct, rank: closeRank, picked: true });
+    if (isFinite(buyRank) && buyRank > 0 && closeRank !== buyRank) drift = true;
   });
-  if (driftTexts.length === 0) return;
+  if (!drift) return;   // §11：两个口径完全一致 ⇒ 一个字都不多写
 
-  // 收盘口径下排在「被选中的那只」前面、却没被选中的同题材成员 —— 正是用户会追问的那几只
-  const outRanked = [];
+  // 收盘口径下排在「被选中的那只」前面、却没被选中的同题材成员（= 用户会追问的那几只）
   (blk.block.members || []).forEach(function(m) {
     const nm = String((m && m.name) || '').trim();
     if (!nm || pickedNames.has(nm)) return;
@@ -1713,20 +1735,86 @@ function _appendDragonDriftNote(blk, closeDragonMap) {
     if (String(c.topic || '').trim() !== topic) return;
     const closeRank = Number(c.rank);
     if (!isFinite(closeRank) || closeRank >= bestPickedClose) return;
-    outRanked.push('【' + nm + '】' + getDragonLabel(closeRank));
+    closeFacts.push({ name: nm, pct: c.pct, rank: closeRank, picked: false });
   });
-  outRanked.sort();
+
+  const _fact = function(f) {
+    return f.name + ' ' + _pct2(f.pct) + ' 第 ' + f.rank + ' 名' + (f.picked ? '（选入）' : '');
+  };
+  closeFacts.sort(function(a, b) { return a.rank - b.rank; });
 
   blk.notes = Array.isArray(blk.notes) ? blk.notes : [];
-  blk.notes.push('ℹ️ 本题材的「龙几」按【早上 9:26 竞价口径】排（早上选中的票，任何时候翻回来都是同一批）：' +
-    driftTexts.join('；') + '。' +
-    (outRanked.length > 0
-      ? '⚠️ 收盘口径下 ' + outRanked.join('、') + ' 排得更前，但 9:26 那一刻它们排在被选中的那只之后' +
-        '（只取 ' + blk.picks.length + ' 只 ⇒ 轮不到），所以【没有选错票】。'
-      : '') +
-    '原因：十日涨幅的「今天」那一根腿在 15:00 后被换成【收盘涨幅】⇒ 组内十日涨幅重排 ⇒ 龙位跟着变' +
-    '（第 二十三 条）。这是「早上选股 vs 收盘回看」的正常差异；' +
-    '⛔ 选股只认龙位，⛔ 不是按【竞价量比高低】挑股票（量比只决定题材之间的排名与空仓提醒）。');
+  blk.notes.push('ℹ️ 本题材龙位（买点侧按【9:26 竞价口径】排、并按它选股）：' +
+    '〔9:26 竞价口径〕' + aucFacts.map(_fact).join('；') + '。' +
+    '〔收盘口径〕' + (closeFacts.length > 0 ? closeFacts.map(_fact).join('；') : '—') + '。');
+}
+
+/**
+ * ★★ [R20-926 2026-10-25 用户口径] 买点侧【20日涨幅通道】的入选票：把「9:26 那一刻的涨幅 + 名次」写出来。
+ *
+ * 用户原话（逐字）：
+ *   「所以买点侧的10日涨幅和20日涨幅的股票，如果有入选时也应该按照9点26分的口径，因为一般都是
+ *     早上选出来，收盘看的时候就不一样的，所以你在说明文字那里说明，它排名第几名（我说有入选的时候）
+ *     你不要解释，在上面说明时间他们的涨幅是多少排名第几就行了」
+ *
+ * 覆盖范围（= 买点侧全部走 20日涨幅 的票，别漏）：
+ *   · `out.ebbBuy`   —— 退潮首日的替补（总龙二~五，第二十六条）；
+ *   · `out.newDragon`—— 切换日的新龙（前八里挑，第二十八条）。
+ *   ⛔ 不含十日涨幅通道（那是第二十九条，口径已在 `_buildRange10BackupBlock` 里标好）。
+ *
+ * 文案纪律（★ 用户明确要求「你不要解释」）：
+ *   · 只写「〔口径时间〕名称 涨幅 第几名」，⛔ 不写原因、⛔ 不写「这是正常的」这类辩解；
+ *   · 两个口径并列摆出来（9:26 竞价 / 收盘），用户自己核对；
+ *   · §10：`aucMap` 里没有这只票（该日 20 日涨幅的 9:26 口径判不出）⇒ **一行都不写**，
+ *     ⛔ 绝不拿收盘口径冒充、⛔ 不猜一个名次；
+ *   · §11：`aucMap` 缺省（组合式没注入 / 没读到）⇒ 本函数直接返回，一个字都不多写。
+ *
+ * @param {object} out buildTopicVolRatioPlan 的产出（读 ebbBuy / newDragon / notes）
+ * @param {Map|null} aucMap range20-auction-leg#readAuctionLegRange20Rank 的返回（name -> {pct, days, rank}）
+ * @param {object|null} ebbCtx 采集层的事实（用来取那只票的【收盘口径】名次 rank20）
+ */
+function _appendRange20AucNote(out, aucMap, ebbCtx) {
+  if (!out || !aucMap || typeof aucMap.get !== 'function' || aucMap.size === 0) return;
+  // 收盘口径的名次：top5 / newDragonPool 的每一项都带 rank20（= 20日涨幅名次，§6 同一份事实）
+  const closeInfo = new Map();
+  const _put = function(arr) {
+    (Array.isArray(arr) ? arr : []).forEach(function(t) {
+      const nm = String((t && (t.name || t.stock)) || '').trim();
+      if (!nm || closeInfo.has(nm)) return;
+      closeInfo.set(nm, { pct: _num(t.pct), rank: Number(t.rank20) || null });
+    });
+  };
+  if (ebbCtx) { _put(ebbCtx.newDragonPool); _put(ebbCtx.top5); }
+
+  const rows = [];
+  const seen = new Set();
+  [out.ebbBuy, out.newDragon].forEach(function(blk) {
+    (blk && Array.isArray(blk.picks) ? blk.picks : []).forEach(function(p) {
+      const nm = String((p && p.name) || '').trim();
+      if (!nm || seen.has(nm)) return;
+      const a = aucMap.get(nm);
+      if (!a) return;                     // §10：这只票 9:26 口径判不出 ⇒ 不写（⛔ 不猜名次）
+      const aucRank = Number(a.rank) || null;
+      if (aucRank === null) return;       // 非主板 / 天数不足 ⇒ 没有名次，不写
+      seen.add(nm);
+      const ci = closeInfo.get(nm) || null;
+      rows.push({
+        name: nm,
+        aucPct: _num(a.pct), aucRank: aucRank,
+        closePct: ci ? ci.pct : _num(p && p.pct),
+        closeRank: ci ? ci.rank : null
+      });
+    });
+  });
+  if (rows.length === 0) return;
+
+  const _a = rows.map(function(r) { return r.name + ' ' + _pct2(r.aucPct) + ' 第 ' + r.aucRank + ' 名'; }).join('；');
+  const _c = rows.map(function(r) {
+    return r.name + ' ' + _pct2(r.closePct) + ' 第 ' + (r.closeRank === null ? '—' : r.closeRank) + ' 名';
+  }).join('；');
+  out.notes = Array.isArray(out.notes) ? out.notes : [];
+  out.notes.push('ℹ️ 买点侧【20日涨幅通道】入选票的涨幅与名次：' +
+    '〔9:26 竞价口径〕' + _a + '。〔收盘口径〕' + _c + '。');
 }
 
 /**
@@ -2253,6 +2341,46 @@ function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tierPick) 
 }
 
 /**
+ * ★★ [R10-926 2026-10-25 用户口径] 把十日涨幅候选池的 `pct` 换成【9:26 竞价口径】那一份。
+ *
+ * 用户原话：「所以买点侧的10日涨幅和20日涨幅的股票，如果有入选时也应该按照9点26分的口径，
+ *   因为一般都是早上选出来，收盘看的时候就不一样的」。
+ *
+ * 为什么能直接换（而不是另算一遍）：
+ *   · `o.range10Rows`（decision-collect#range10Rows）与 `pctMap`（range-auction-leg#readAuctionLegRangeMap）
+ *     **同源** —— 都是 `stock_range_pct` 那一天的行，前者取原值（收盘口径），后者用
+ *     `market_metrics.auc_pct_chg / change_pct` 把 T 腿反解回竞价口径（§6 同一把尺子）。
+ *     ⇒ 键集合一致，只需逐行覆盖 `pct`，⛔ 不需要补票、也不会漏票。
+ *   · 覆盖后排序 / 主板名次 / 「前十」判定全部自动走 9:26 口径 —— 因为 `range10-backup.js`
+ *     只认 `pct` 一个输入（sortIndicesByRangePct 与 presence-label 同一把尺子）。
+ *
+ * §10 / §11 两条安全降级：
+ *   · `pctMap` 缺失 / 为空（该日 9:26 口径还没读到、或反解前提不满足）⇒ **原样返回**，
+ *     一个字都不改（= 退回收盘口径，行为与加本函数之前逐字节相同）；
+ *   · 某只票在 `pctMap` 里没有 / 值为空 ⇒ 保留该行原 `pct`（⛔ 不补 0、不当 0%）。
+ *
+ * @param {Array|null} rows decision-collect#range10Rows（含「20天」补位行）
+ * @param {Map|null} pctMap 9:26 口径区间涨幅（readAuctionLegRangeMap 的返回）
+ * @returns {{rows:Array|null, used:boolean}} used=true 表示本次真的用了 9:26 口径（文案据此标注）
+ */
+function _withAuctionLegPct(rows, pctMap) {
+  if (!Array.isArray(rows) || rows.length === 0) return { rows: rows || null, used: false };
+  if (!pctMap || typeof pctMap.get !== 'function' || pctMap.size === 0) return { rows: rows, used: false };
+  let used = false;
+  const out = rows.map(function(r) {
+    const nm = String((r && r.name) || '').trim();
+    if (!nm) return r;
+    const v = pctMap.get(nm);
+    const p = v ? _num(v.pct) : null;
+    if (p === null) return r;
+    if (_num(r.pct) === p) return r;          // 值没变 ⇒ 保持原对象（§19 引用稳定，不白触发下游重算）
+    used = true;
+    return Object.assign({}, r, { pct: p });
+  });
+  return { rows: out, used: used };
+}
+
+/**
  * ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条：把 range10-backup#pickRange10Backup 选出的
  * 【那一只候补】组装成买点块（形状与 _buildNewDragonBlock / 退潮替补【完全一致】）。
  *
@@ -2284,6 +2412,9 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
   const name = String(p.name).trim();
   const topic = String(p.topic || '').trim();
   const inf = info || {};
+  // ★★ [R10-926 2026-10-25] 本次「十日涨幅 / 名次」用的口径时间（'9:26 竞价口径' / '收盘口径（…未读到）'）。
+  //   ⛔ 只在文案里出现，不参与任何判定（§21：模板零计算，文案在 Logic 层拼好）。
+  const baseText = String(inf.baseText || '');
 
   // 真实成员行（与退潮替补 / 新龙同一取法：先按题材块找，再全表按名字兜一次）
   let member = null;
@@ -2304,15 +2435,20 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
     pct: pct,
     code: String(p.code || (member && member.code) || '').trim(),
     pctText: formatRangePct(pct),
-    // ★ 本行专属徽标（Logic 层拼好，模板零计算 §21）：「十日涨幅第 N 名 · 首次在列」
-    range10Label: '十日涨幅第 ' + (p.rank === null || p.rank === undefined ? '—' : p.rank) +
+    // ★ 本行专属徽标（Logic 层拼好，模板零计算 §21）：
+    //   「9:26 竞价口径 · 十日涨幅第 N 名 · 首次在列」—— ★ [R10-926 2026-10-25] 必须写明【口径时间】：
+    //   名次是按早上 9:26 那一刻算的，收盘回看时数值会变，⛔ 不能让人以为那一列是收盘口径。
+    range10Label: (baseText ? ('〔' + baseText + '〕') : '') + '十日涨幅第 ' +
+      (p.rank === null || p.rank === undefined ? '—' : p.rank) +
       ' 名 · ' + (p.label || '在列次数未知') +
       // ★ [R10-NOEXCLUDE 2026-10-24] 与题材买点重叠时把「叠加确认」直接写进徽标 ——
       //   用户要的是「一眼看见确定性」，⛔ 不能只藏在点开后的说明里。
       (inf.overlap ? ' · 叠加确认' : ''),
     // ★ [R10-TRAIL 2026-10-24] 徽标的悬停说明：把「名次」与「屏幕行号」两个数一次讲清，
     //   ⛔ 免得用户看到「第 8 名」却在第 9 行找不到对不上的感觉（两种数法都没错，是口径不同）。
-    range10Title: '十日涨幅第 ' + (p.rank === null || p.rank === undefined ? '—' : p.rank) +
+    range10Title: (baseText ? ('涨幅与名次都按【' + baseText + '】算（' + _pct2(pct) +
+      '）；收盘后这个数会变，但选股与名次固定为早上那一刻。') : '') +
+      '十日涨幅第 ' + (p.rank === null || p.rank === undefined ? '—' : p.rank) +
       ' 名（只算主板名次：创业板 / 科创板 / 北交所不占名次，所以它在屏幕上是第 ' +
       (p.rowNo === undefined || p.rowNo === null ? '—' : p.rowNo) + ' 行）｜' +
       (p.label || '在列次数未知') + ' = 这 10 个交易日里它出现在当日名单的次数' +
@@ -2330,8 +2466,9 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
     return '【' + w.topic + '】平均竞价量比 ' + w.avgText + ' ＜ ' + TVRB_CASH_ALERT_AVG_VR +
       '（' + (w.reasonText || '题材量比太小') + '）';
   }).join('；');
+  // ★ [R10-926 2026-10-25] 每一只都带【涨幅 + 名次】（只列事实，便于用户逐只核对，⛔ 不下结论）
   const trailText = (bk.trail || []).map(function(t) {
-    return '【第 ' + t.rank + ' 名 ' + t.name + '】' +
+    return '【第 ' + t.rank + ' 名 ' + t.name + ' ' + _pct2(t.pct) + '】' +
       (t.reason ? t.reason : (t.label || '') + (t.cnt === 1 || t.cnt === 2 ? ' ⇒ 候选' : '（不是首次 / 二次在列）'));
   }).join('；');
   const tierText = (bk.tier === 'first')
@@ -2375,7 +2512,8 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
       (weakText ? (weakText + ' ⇒ 该题材作废；') : '') +
       dupText + overlapText +
       '按「十日涨幅前十 + ' + (bk.tier === 'first' ? '首次在列' : '二次在列') + ' + 与' + top1Text +
-      '不同题材」选出 ' + name + '（' + (topic || '—') + '，十日涨幅 ' + formatRangePct(pct) +
+      '不同题材」选出 ' + name + '（' + (topic || '—') + '，〔' + (baseText || '当日口径') +
+      '〕十日涨幅 ' + _pct2(pct) +
       '，第 ' + p.rank + ' 名，' + (p.label || '') + '）—— 十日周期的新面孔。',
     mode: 'r10backup',
     ruleNo: RANGE10_BACKUP_RULE_NO,
@@ -2397,7 +2535,7 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
       '⚠️ 为什么用十日涨幅而不是 20日涨幅：20 日老周期已经结束（总龙二次确认退潮），现在轮到【十日周期】 ——' +
         '龙头的量比都比题材大，十日周期的新面孔才是接下来的核心。20日涨幅列表里的老票会逐渐换成新票，' +
         '本看板 20日涨幅榜上的老面孔也会一天天被十日周期的新票替换掉（这是正常的周期切换，不是数据错乱）。',
-      '十个名次去留（判定可追溯）：' + (trailText || '—') + '。',
+      '十个名次去留（' + (baseText || '当日口径') + '，判定可追溯）：' + (trailText || '—') + '。',
       '⚠️ 窗口覆盖：' + (bk.coveredDays || 0) + ' / ' + (bk.windowDays || 10) +
         ' 个交易日有名单数据（在列次数 = 这 ' + (bk.coveredDays || 0) + ' 天里它出现在早盘竞价名单的几次）。'
     ].filter(function(s) { return !!s; })
@@ -2422,7 +2560,8 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
       (overlap ? ('✅ 本股同时是上方【' + (overlap.topic || '—') + '】题材块的买点 —— ' +
         '两条通道叠加确认（确定性更高），不是重复选错 —— ') : '') +
       '按「十日涨幅前十 + ' + (bk.tier === 'first' ? '首次在列' : '二次在列') + ' + 与' + top1Text +
-      '不同题材」选出本股（第 ' + p.rank + ' 名，十日涨幅 ' + formatRangePct(pct) + '，' + (p.label || '') + '）。' +
+      '不同题材」选出本股（〔' + (baseText || '当日口径') + '〕十日涨幅 ' + _pct2(pct) +
+      '，第 ' + p.rank + ' 名，' + (p.label || '') + '）。' +
       (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : '') +
       ' 这是十日周期的新面孔买点（20日老周期已结束），不是题材量比买点。';
   });
@@ -2504,6 +2643,13 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
  *        range10Presence = ★★ [R10-BACKUP] 十日窗口的在列次数 `{counts:Map<name,{cnt}>, coveredDays}`、
  *                   （data/auction-presence.js#getPresenceForDate(date, 10) 的返回）；
  *                   缺省 / coveredDays=0 ⇒ 判不出「首次 / 二次在列」⇒ 候补不生效（§10）。
+ *        range20Auc = ★★ [R20-926 2026-10-25 用户口径] 该日【20日涨幅 · 9:26 竞价口径】的主板名次
+ *                   （logic/auction/range20-auction-leg.js#readAuctionLegRange20Rank 的返回：
+ *                    `Map<股票名, {pct, days, rank}>`，pct 已把 T 腿反解回竞价口径）。
+ *                   用途【只有一个】：买点侧【20日涨幅通道】的入选票（退潮替补 / 切换日新龙）
+ *                   在说明区写出「9:26 那一刻的涨幅 + 第几名」（只列事实，⛔ 不解释）。
+ *                   ⛔ 不参与选股、⛔ 不影响 getRange20Leaders 的发布结果（退潮 / 总龙 / 展示仍走收盘口径）。
+ *                   缺省 / 判不出 ⇒ 一条说明都不写（§10 不猜名次；§11 零行为变化）。
  * @returns {{topics:Array, blocks:Array, buy:object, sell:Array, excludedTopics:Array,
  *            notes:Array, pickCount:number, buyNames:Set<string>, cashAlert:object, ebb:object|null}}
  *   topics        —— 全部参与排名的题材（含被排除的），按排名，供说明 / 复核
@@ -3055,8 +3201,14 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     if (r10Top1Topic) r10ExcludeTopics.push(r10Top1Topic);
 
     const r10Presence = o.range10Presence || null;
+    // ★★ [R10-926 2026-10-25 用户口径] 候选池的十日涨幅换成【9:26 竞价口径】那一份 ⇒
+    //   「前十 / 第几名 / 谁最强」全部按【早上 9:26 那一刻】算（早上选出来的票，收盘回看仍是同一只）。
+    //   ⚠️ 9:26 口径没读到 ⇒ 原样返回（退回收盘口径，§11 零行为变化），下面的文案据此如实标注口径时间。
+    const r10Rows926 = _withAuctionLegPct(o.range10Rows || null, buyPctMap);
+    const r10Base926 = r10Rows926.used;
+    const r10BaseText = r10Base926 ? '9:26 竞价口径' : '收盘口径（9:26 口径未读到）';
     // ⛔ [R10-NOEXCLUDE 2026-10-24] 不传任何「已占用」名单：选票只认 涨幅名次 + 在列次数 + 总龙一题材。
-    const r10Res = r10Top1Missing ? null : pickRange10Backup(o.range10Rows || null, {
+    const r10Res = r10Top1Missing ? null : pickRange10Backup(r10Rows926.rows, {
       counts: r10Presence ? r10Presence.counts : null,
       coveredDays: r10Presence ? r10Presence.coveredDays : 0,
       excludeTopics: r10ExcludeTopics,
@@ -3078,7 +3230,9 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         top1Topic: r10Top1Topic,
         top1Name: r10Top1Name,
         grayed: r10Grayed,
-        overlap: r10Overlap
+        overlap: r10Overlap,
+        // ★★ [R10-926 2026-10-25] 本次名次是按哪套口径算的（只影响文案的「口径时间」标注，§21）
+        baseText: r10BaseText
       });
       if (r10Blk) {
         out.range10Backup = r10Blk;
@@ -3086,10 +3240,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         const r10Grayed = r10NoBuyInfo.get(String(r10Res.pick.name).trim()) || null;
         const r10Overlap = r10RealPickInfo.get(String(r10Res.pick.name).trim()) || null;
         out.notes.push('⚠️【第' + RANGE10_BACKUP_RULE_NO + '条 · 十日涨幅候补】买点侧追加这一只：' +
-          r10Res.pick.name + '（' + (r10Res.pick.topic || '—') + '，十日涨幅第 ' + r10Res.pick.rank +
+          r10Res.pick.name + '（' + (r10Res.pick.topic || '—') + '，〔' + r10BaseText + '〕十日涨幅 ' +
+          _pct2(r10Res.pick.pct) + ' 第 ' + r10Res.pick.rank +
           ' 名，' + (r10Res.pick.label || '') + '，与 20日涨幅总龙一' +
           (r10Top1Name ? ('【' + r10Top1Name + '】（' + (r10Top1Topic || '—') + '）') : '') +
-          '不同题材）⇒ 十日周期的新面孔（20日老周期已结束，现在轮到十日周期）。' +
+          '不同题材）⇒ 十日周期的新面孔。' +
           // ★ [R10-STOCK-LEVEL 2026-10-24] 这条通道是【选股票】不是【选题材】：
           //   同一只票可能正在上方被灰化的题材块里（10-23 兆威机电 / 工业4.0）—— 题材块灰化不恢复，
           //   但它凭「十日涨幅前十 + 首次在列」独立成立，因此会重复出现一次。
@@ -3257,6 +3412,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //      本行回答的是「今天这只总龙到底在不在坏状态」，这正是明天那个闸门的输入（§6 同一把尺子）。
   //   ⚠️ 只在【有事实】时产出（§10）；写不写（今天 / 历史日）由组合式把关，本层不做时间判断。
   out.ebbDayRow = buildEbbDayRecord(out.ebb, o.ebbCtx || null, o.date);
+
+  // ★★ [R20-926 2026-10-25 用户口径] 买点侧【20日涨幅通道】的入选票：补一条「9:26 那一刻的涨幅 + 名次」。
+  //   ⛔ 必须放在 ebbBuy / newDragon 都造好之后（它俩就是这条通道的全部产出）；
+  //   ⛔ 只写事实（用户「你不要解释」）；9:26 口径判不出 ⇒ 一行都不写（§10，见函数注释）。
+  _appendRange20AucNote(out, o.range20Auc || null, o.ebbCtx || null);
 
   // 买点名单（喂给卖点判「今天又进买点 ⇒ 持有」）
   out.blocks.forEach(function(b) {

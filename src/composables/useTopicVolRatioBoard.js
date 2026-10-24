@@ -72,6 +72,14 @@ import { getPreviousTradingDay } from '../logic/date/trading-day-helpers.js';
 //   ⛔ 纯只读：`stock_range_pct` + `market_metrics` 各一次（都走会话缓存 + 单飞，§32），
 //     不发任何上游请求、不消耗猫抓额度。
 import { readAuctionLegRangeMap } from '../logic/auction/range-auction-leg.js';
+// ★★ [R20-926 2026-10-25 用户口径] 买点侧【20日涨幅 · 9:26 竞价口径】的名次：
+//   用户原话「买点侧的10日涨幅和20日涨幅的股票，如果有入选时也应该按照9点26分的口径……
+//     在上面说明时间他们的涨幅是多少排名第几就行了」。
+//   实现 = 复用十日涨幅那套【T 腿反解】(range-window.js#recoverAuctionLeg)，把
+//   `stock_range20_pct`（收盘口径的 20 日复利）换成「前 19 根收盘 + 今天竞价」那一刻的值，再排主板名次。
+//   ⛔ 纯只读、不落库、不改 getRange20Leaders 的发布结果（退潮 / 总龙 / 展示仍走收盘口径）；
+//   ⛔ 只用于【说明文案】，不参与任何选股（选股口径由用户此前锁定，⛔ 不许在这里动）。
+import { readAuctionLegRange20Rank } from '../logic/auction/range20-auction-leg.js';
 // ★ [EBB-R20 2026-10-20 用户口径] 20日涨幅前五（总龙一~五）—— 退潮判定的总龙与买点侧替补的【唯一】来源：
 //   ensureRange20Leaders 触发计算（幂等 + 会话缓存 + 单飞，与「20日涨幅」toggle 共享同一份）；
 //   getRange20Leaders 读发布结果（null = 该日还没结论，⛔ 不等于「没有总龙」）；
@@ -712,6 +720,20 @@ export function useTopicVolRatioBoard() {
    */
   const buyRangeMap = ref(null);
   const buyRangeDate = ref('');
+  /**
+   * ★★ [R20-926 2026-10-25 用户口径] 展示日【20日涨幅 · 9:26 竞价口径】的主板名次
+   * （Map&lt;股票名, {pct, days, rank}&gt;，见 logic/auction/range20-auction-leg.js）。
+   *
+   * 用途【只有一个】：买点侧走【20日涨幅通道】的入选票（退潮替补 = 总龙二~五 / 切换日新龙），
+   *   说明区要写出「9:26 那一刻它的 20日涨幅是多少、排第几」（用户原话「说明时间他们的涨幅是多少
+   *   排名第几就行了……你不要解释」）。
+   * ⛔ 不参与选股：那两条通道的判据（退潮 / 切换日 / 总龙身份）用户此前明确锁定为收盘口径
+   *   （「收盘后这二十天全部是收盘涨幅，这样就和炒股软件对得上」）——这里只补一句事实，⛔ 不改结论。
+   * ⚠️ §10：读不到 / 判不出 ⇒ null ⇒ 规则层一条说明都不写（⛔ 绝不拿收盘口径冒充 9:26）。
+   * ⚠️ 日期核对红线（与下面两份 rangeMap 同一条）：只认【日期对得上】的那份。
+   */
+  const r20AucMap = ref(null);
+  const r20AucDate = ref('');
   // ⛔ 用「日期 + version」字符串当键：plan / rec 每次重算都换引用，对象身份当键会无限重载。
   const prevRangeKey = computed(function() {
     return String(currentDate.value || '') + '|v' + version.value;
@@ -749,6 +771,22 @@ export function useTopicVolRatioBoard() {
         console.warn('[TVRB] 9:26 口径（买点侧选股）读取失败，本次按当前口径选股:', e && e.message);
         buyRangeMap.value = null;
         buyRangeDate.value = d;
+      });
+    }
+    // ①-c2 ★★ [R20-926 2026-10-25 用户口径] 展示日的【20日涨幅 · 9:26 竞价口径】主板名次。
+    //   只服务一件事：买点侧走 20日涨幅通道的票（退潮替补 / 切换日新龙）在说明区写出
+    //   「9:26 那一刻的涨幅 + 第几名」。⛔ 不参与选股（用户此前锁定退潮 / 总龙走收盘口径）。
+    //   §26：一天只读一次（模块内会话缓存 + 单飞）；读不到 ⇒ null ⇒ 规则层一条说明都不写（§10）。
+    if (d && r20AucDate.value !== d) {
+      readAuctionLegRange20Rank(d).then(function(m) {
+        if (currentDate.value !== d) return;      // 竞态：期间切了日期 ⇒ 丢弃
+        r20AucMap.value = (m && m.size > 0) ? m : null;
+        r20AucDate.value = d;
+      }).catch(function(e) {
+        // §10：失败必须可见（但这个值只影响一条说明，⛔ 不影响任何选股结论）
+        console.warn('[TVRB] 20日涨幅 9:26 口径名次读取失败（只影响说明文案）:', e && e.message);
+        r20AucMap.value = null;
+        r20AucDate.value = d;
       });
     }
     // ①-d ★ [EBB-R20 2026-10-20] 20日涨幅前五（总龙一~五）：为退潮判定 / 替补选股预热。
@@ -879,6 +917,9 @@ export function useTopicVolRatioBoard() {
     // ★★ [TVRB-926] 展示日【9:26 口径】的区间涨幅（异步读回）⇒ 买点侧选股与行上数值的输入：
     //   读到之后重算一次 —— 选股从「当前口径」切到「早上 9:26 那一刻选中的那批」。
     void buyRangeMap.value;
+    // ★★ [R20-926 2026-10-25] 20日涨幅 9:26 口径名次（异步读回）⇒ 到货后重算一帧：
+    //   买点侧那两条 20日涨幅通道的说明文案才会带上「9:26 那一刻的涨幅 + 第几名」。
+    void r20AucMap.value;
     // ★ [EBB-R20] 20日涨幅前五（总龙一~五）：响应式指纹令牌 —— ensureRange20Leaders 发布后自动重算
     void getRange20LeadersFingerprintToken();
     // ★★ [CORE-CAT 2026-10-22] 核心词表（大类）变更信号：云端加载完成 / 用户改完核心词 ⇒ 本帧重算，
@@ -1047,7 +1088,11 @@ export function useTopicVolRatioBoard() {
         range10Complete: rec.range10PoolComplete !== false,
         range10Presence: (range10PresenceDate.value === d && range10Presence.value)
           ? range10Presence.value
-          : null
+          : null,
+        // ★★ [R20-926 2026-10-25 用户口径] 20日涨幅的【9:26 竞价口径】主板名次 ——
+        //   只给说明区写事实（「9:26 那一刻 涨幅 + 第几名」），⛔ 不参与选股、⛔ 不影响退潮 / 总龙。
+        //   ⚠️ 日期核对红线（与上面几份 rangeMap 同一条）：读的不是这一天 ⇒ 传 null（§10 不拿旧日期顶替）。
+        range20Auc: (r20AucDate.value === d) ? r20AucMap.value : null
       });
 
       // §10 ★★ 失败 / 缺数据必须可见：这一天【确实读过】9:26 口径、但没拿到（失败或表里没有）

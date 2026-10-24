@@ -1526,6 +1526,36 @@ describe('tvrb · [EBB-R20] 退潮替补 · 两只替补块（经 buildTopicVolR
     expect(p.buyNames.has('澳弘电子')).toBe(true);
   });
 
+  // ★★ [R20-926 2026-10-25 用户口径] 买点侧【20日涨幅通道】的入选票，说明区要写出
+  //   「9:26 那一刻的涨幅 + 第几名」，而且**只列事实、不解释**（用户原话「你不要解释，
+  //   在上面说明时间他们的涨幅是多少排名第几就行了」）。
+  it('★ 9:26 口径：给 range20Auc ⇒ 说明区并列两个口径的涨幅 + 名次；不给 / 判不出 ⇒ 一个字都不写', function() {
+    const ctxAuc = Object.assign({}, EBB_CTX2, {
+      top5: [
+        { name: '九阳股份', pct: 106.51, rank20: 2, topic: '大消费', code: '002242' },
+        { name: '澳弘电子', pct: 90.73, rank20: 4, topic: '电子/通信/算力', code: '605733' }
+      ],
+      newDragonPool: []
+    });
+    const auc = new Map([
+      ['九阳股份', { pct: 88.20, days: 20, rank: 2 }],
+      ['澳弘电子', { pct: 77.10, days: 20, rank: 4 }]
+    ]);
+    const p = buildTopicVolRatioPlan(topics, dm, { ebbCtx: ctxAuc, range20Auc: auc });
+    const txt = p.notes.join('\n');
+    expect(txt).toContain('买点侧【20日涨幅通道】');
+    expect(txt).toContain('〔9:26 竞价口径〕九阳股份 +88.20% 第 2 名；澳弘电子 +77.10% 第 4 名');
+    expect(txt).toContain('〔收盘口径〕九阳股份 +106.51% 第 2 名；澳弘电子 +90.73% 第 4 名');
+
+    // §11：没注入 range20Auc ⇒ 零噪声（行为与加这条之前逐字相同）
+    expect(buildTopicVolRatioPlan(topics, dm, { ebbCtx: EBB_CTX2 }).notes.join('\n'))
+      .not.toContain('20日涨幅通道');
+    // §10：注入的 9:26 口径里没有这两只票 ⇒ ⛔ 不猜名次、不拿收盘口径冒充
+    const other = new Map([['别的票', { pct: 1, days: 20, rank: 1 }]]);
+    expect(buildTopicVolRatioPlan(topics, dm, { ebbCtx: ctxAuc, range20Auc: other }).notes.join('\n'))
+      .not.toContain('20日涨幅通道');
+  });
+
   it('★ 行内说明 / notes：20日涨幅名次 + 常规买点信号 + 五只去留 + 客观数据 一枚不丢', function() {
     const p = buildTopicVolRatioPlan(topics, dm, { ebbCtx: EBB_CTX2 });
     const note = p.ebbBuy.picks[1].actionNote;
@@ -3531,6 +3561,38 @@ describe('tvrb · 第二十九条 十日涨幅 · 在列次数候补', function(
     expect(plan.range10Backup.notes.join('\n')).toContain('同题材');
   });
 
+  // ★★ [R10-926 2026-10-25 用户口径] 候选池的十日涨幅必须换成【9:26 竞价口径】那一份：
+  //   用户原话「买点侧的10日涨幅和20日涨幅的股票，如果有入选时也应该按照9点26分的口径，
+  //   因为一般都是早上选出来，收盘看的时候就不一样的」。
+  it('★ 9:26 口径：池子涨幅换成早上那一刻 ⇒ 名次与选股跟着变，且文案写明口径时间', function() {
+    const f = twoTopics();
+    // ① 不给 pctMap ⇒ 收盘口径：海洋王 29.51 在 京城股份 27.26 前面 ⇒ 选海洋王（= 10-20 真实结论）
+    const closePlan = buildTopicVolRatioPlan(f.topics, f.dm, {
+      range10Rows: POOL, range10Presence: presence(CNT), ebbCtx: ebbCtxOf()
+    });
+    expect(closePlan.range10Backup.picks[0].name).toBe('海洋王');
+    expect(closePlan.range10Backup.picks[0].range10Label).toContain('收盘口径');
+
+    // ② 给 9:26 口径：两只掉个个儿（早上那一刻 京城股份 更强）⇒ 必须改选 京城股份
+    const auc = new Map();
+    POOL.forEach(function(p) { auc.set(p.name, { pct: p.pct }); });
+    auc.set('海洋王', { pct: 18.00 });
+    auc.set('京城股份', { pct: 40.00 });
+    const plan926 = buildTopicVolRatioPlan(f.topics, f.dm, {
+      range10Rows: POOL, range10Presence: presence(CNT), ebbCtx: ebbCtxOf(), pctMap: auc
+    });
+    expect(plan926.range10Backup.picks[0].name).toBe('京城股份');
+    // ③ 徽标 + 说明必须写明【口径时间 + 涨幅 + 名次】（用户：说明时间他们的涨幅是多少排名第几）
+    expect(plan926.range10Backup.picks[0].range10Label).toContain('9:26 竞价口径');
+    expect(plan926.range10Backup.picks[0].range10Title).toContain('+40.00%');
+    // 说明分两处：块内 = 「十个名次去留」逐只涨幅 + 名次；看板级 = 选中理由（口径时间 + 涨幅 + 名次）
+    expect(plan926.range10Backup.notes.join('\n')).toContain('十个名次去留（9:26 竞价口径');
+    expect(plan926.range10Backup.notes.join('\n')).toContain('第 7 名 京城股份 +40.00%');
+    expect(plan926.notes.join('\n')).toContain('〔9:26 竞价口径〕十日涨幅 +40.00%');
+    // ④ §11：没给 pctMap 时退回收盘口径，文案如实标注（⛔ 不冒充 9:26）
+    expect(closePlan.range10Backup.notes.join('\n')).toContain('收盘口径（9:26 口径未读到）');
+  });
+
   it('规则手册里有第二十九条，且写明门槛 / 优先级 / 十日周期', function() {
     const lines = buildTvrbRulesLines();
     const line = lines.filter(function(s) { return s.indexOf('二十九、【十日涨幅 · 在列次数候补】') === 0; })[0];
@@ -3581,39 +3643,45 @@ describe('tvrb · 早盘 9:26 龙位 vs 收盘龙位 的差异说明（9-24 房�
     ['三峡新材', 4, 21.93], ['华远控股', 5, 20.18], ['绿地控股', 6, 8.33]
   ]);
 
-  const plan = buildTopicVolRatioPlan([b], closeDm, { buyDragonMap: buyDm });
+  const plan = buildTopicVolRatioPlan([b], closeDm, { buyDragonMap: buyDm, pctMap: buyDm });
 
   it('选股按【早上 9:26 龙位】：龙一一字顺延 ⇒ 取龙二 华远控股（不是收盘龙二 世联行）', function() {
     const blk = plan.blocks[0];
     expect(blk.tier).toBe('mid');
     expect(blk.pickCount).toBe(1);
     expect(blk.picks.map(function(p) { return p.name; })).toEqual(['华远控股']);
-    // 行上的龙标也必须是 9:26 那一个（§6：龙标与选股同一口径）
+    // 行上的龙标 / 十日涨幅也必须是 9:26 那一个（§6：龙标与选股同一口径）
     expect(blk.picks[0].dragonLabel).toBe('龙二');
+    expect(blk.picks[0].pct).toBe(35.21);
   });
 
-  it('说明区把差异讲清：9:26 龙二 / 收盘龙五，且点名收盘更靠前的世联行', function() {
+  // ★★ [TVRB-926-FACT 2026-10-25 用户口径] 说明区只写【口径时间 + 涨幅 + 第几名】，⛔ 不解释。
+  //   用户原话：「所以你在说明文字那里说明，它排名第几名（我说有入选的时候）你不要解释，
+  //   在上面说明时间他们的涨幅是多少排名第几就行了」。
+  it('说明区只摆事实：两个口径的【涨幅 + 第几名】并列，且不写原因', function() {
     const txt = plan.blocks[0].notes.join('\n');
-    expect(txt).toContain('9:26');
-    expect(txt).toContain('华远控股');
-    expect(txt).toContain('龙五');
-    expect(txt).toContain('世联行');
-    // 必须明确否掉「按量比选股」这个误解（用户原话「还是股票量比高低选股，应该不是吧？」）
-    expect(txt).toContain('量比');
-    expect(txt).toContain('不是按');
+    // ① 9:26 竞价口径：被选中的那只，带涨幅 + 名次
+    expect(txt).toContain('〔9:26 竞价口径〕');
+    expect(txt).toContain('华远控股 +35.21% 第 2 名（选入）');
+    // ② 收盘口径：同样带涨幅 + 名次（用户会追问的世联行在这里）
+    expect(txt).toContain('〔收盘口径〕');
+    expect(txt).toContain('世联行 +36.40% 第 2 名');
+    expect(txt).toContain('华远控股 +20.18% 第 5 名');
+    // ③ ⛔ 不许解释（上一版被用户否掉的那几段：根因 / 第二十三条 / 「没有选错票」/「不是按量比」）
+    expect(txt).not.toContain('第二十三');
+    expect(txt).not.toContain('没有选错票');
+    expect(txt).not.toContain('不是按');
   });
 
   it('§11：两个口径完全一致时，一个字都不多写', function() {
-    const same = buildTopicVolRatioPlan([b], buyDm, { buyDragonMap: buyDm });
+    const same = buildTopicVolRatioPlan([b], buyDm, { buyDragonMap: buyDm, pctMap: buyDm });
     const txt = same.blocks[0].notes.join('\n');
-    expect(txt).not.toContain('9:26 是');
+    expect(txt).not.toContain('本题材龙位');
     expect(txt).not.toContain('收盘口径');
   });
 
-  it('§10：收盘名册缺失 / 空 ⇒ 不发声（不猜「它收盘是龙几」）', function() {
-    const noClose = buildTopicVolRatioPlan([b], buyDm, { buyDragonMap: buyDm });
-    expect(noClose.blocks[0].notes.join('\n')).not.toContain('收盘口径是');
-    const emptyClose = buildTopicVolRatioPlan([b], new Map(), { buyDragonMap: buyDm });
-    expect(emptyClose.blocks[0].notes.join('\n')).not.toContain('收盘口径是');
+  it('§10：收盘名册缺失 / 空 ⇒ 不发声（不猜「它收盘是第几名」）', function() {
+    const emptyClose = buildTopicVolRatioPlan([b], new Map(), { buyDragonMap: buyDm, pctMap: buyDm });
+    expect(emptyClose.blocks[0].notes.join('\n')).not.toContain('本题材龙位');
   });
 });
