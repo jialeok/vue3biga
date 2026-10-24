@@ -23,9 +23,9 @@ import {
   assignPresenceLabels
 } from './presence-label.js';
 
-/** 造行：10 日模式看 rangePct，20 日模式看 rangePct20 */
-function row(stock, rangePct, rangePct20) {
-  return { stock, rangePct, rangePct20 };
+/** 造行：10 日模式看 rangePct，20 日模式看 rangePct20；code 用于「只算主板」的板块判定 */
+function row(stock, rangePct, rangePct20, code) {
+  return { stock, rangePct, rangePct20, code: code === undefined ? '600000' : code };
 }
 
 /** counts 构造器：{ 股票名: 次数 } */
@@ -156,5 +156,55 @@ describe('assignPresenceLabels · 只标前十', () => {
     for (let i = 1; i <= 12; i++) items.push(row('S' + i, 100 - i, 100 - i));
     const n = assignPresenceLabels(items, 'abc', { windowDays: 10, counts: countsOf({}), coveredDays: 10 });
     expect(n).toBe(10);
+  });
+});
+
+// [MAIN-BOARD-RANK 2026-10-24 用户口径] 「只排主板的」：非主板【跳过且不占名次】，
+// 但⛔ 不影响排序（items 顺序仍由调用方按涨幅给）—— 本组测试只断言"名次归谁"。
+describe('assignPresenceLabels · 非主板不占名次', () => {
+  it('创业板 / 科创板 / 北交所在前也不拿标签，名次顺延给下一只主板', () => {
+    const items = [
+      row('创业票', 300, 300, '300750'),   // 创业板 → 不占名次
+      row('科创票', 280, 280, '688111'),   // 科创板 → 不占名次
+      row('北交票', 260, 260, '830799'),   // 北交所 → 不占名次
+      row('主板甲', 100, 100, '600825'),   // 第 1 名
+      row('主板乙', 90, 90, '000678')      // 第 2 名
+    ];
+    const n = assignPresenceLabels(items, PRESENCE_TOP_N, {
+      windowDays: 10, counts: countsOf({ 主板甲: 5, 主板乙: 1 }), coveredDays: 10
+    });
+    expect(n).toBe(2);
+    expect(items[0].presenceLabel).toBe('');
+    expect(items[0].presenceCnt).toBeNull();
+    expect(items[1].presenceLabel).toBe('');
+    expect(items[2].presenceLabel).toBe('');
+    expect(items[3].presenceLabel).toBe('5次在列');
+    expect(items[4].presenceLabel).toBe('首次在列');
+  });
+
+  it('非主板不占名额 ⇒ 主板仍能凑满十个标签', () => {
+    const items = [];
+    for (let i = 1; i <= 3; i++) items.push(row('创业' + i, 500 - i, 500 - i, '30010' + i));
+    for (let i = 1; i <= 12; i++) items.push(row('主板' + i, 200 - i, 200 - i, '60000' + i));
+    const n = assignPresenceLabels(items, PRESENCE_TOP_N, {
+      windowDays: 20, counts: countsOf({ 主板10: 7 }), coveredDays: 20
+    });
+    expect(n).toBe(10);
+    // 前 3 只（创业板）不标；主板 1..10 依次标，主板 11、12 不标
+    items.slice(0, 3).forEach(function(it) { expect(it.presenceLabel).toBe(''); });
+    expect(items[3].presenceLabel).toBe('未在列');
+    expect(items[12].presenceLabel).toBe('7次在列');   // 主板10 = 第 10 个有名次的
+    expect(items[13].presenceLabel).toBe('');           // 主板11
+    expect(items[14].presenceLabel).toBe('');           // 主板12
+  });
+
+  it('代码缺失 = 未知板块 ⇒ 算有资格（§10 判不出 ≠ 判出非主板）', () => {
+    const items = [row('无代码票', 50, 50, ''), row('主板甲', 40, 40, '600825')];
+    const n = assignPresenceLabels(items, PRESENCE_TOP_N, {
+      windowDays: 10, counts: countsOf({ 无代码票: 3, 主板甲: 2 }), coveredDays: 10
+    });
+    expect(n).toBe(2);
+    expect(items[0].presenceLabel).toBe('3次在列');
+    expect(items[1].presenceLabel).toBe('2次在列');
   });
 });

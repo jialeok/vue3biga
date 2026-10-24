@@ -392,7 +392,9 @@ function dragonTagTitle(item) {
 //   §21 模板零计算：文案在这里拼好，模板只渲染。
 function totalDragonTagTitle(item) {
   if (!item) return '';
-  const bits = ['「20日涨幅」排序下全市场第 ' + item.totalDragonRank + ' 名'];
+  // [MAIN-BOARD-RANK 2026-10-24] 名次口径已改为「只算主板」⇒ 文案必须跟着改，
+  //   ⛔ 不能还写「全市场第 N 名」（否则用户会拿它去跟全市场榜单对账，对不上）。
+  const bits = ['「20日涨幅」排序下【主板】第 ' + item.totalDragonRank + ' 名（创业板/科创板/北交所不占名次）'];
   const v = item.rangePct20;
   if (v !== null && v !== undefined && !isNaN(Number(v))) {
     const n = Number(v);
@@ -419,7 +421,7 @@ function presenceTagTitle(item) {
   else if (cnt === 1) bits.push('只有今天在列 ⇒ 首次出现');
   if (cov > 0 && cov < w) bits.push('⚠️ 窗口内只有 ' + cov + '/' + w + ' 天有名单数据，次数按实际覆盖天数统计');
   else if (cov >= w) bits.push('窗口数据完整（' + w + '/' + w + ' 天）');
-  bits.push('只标「' + w + '日涨幅」排序下的前十名，其它票不标');
+  bits.push('前十名只算主板（创业板/科创板/北交所不占名次），其它票不标');
   return bits.join('｜');
 }
 

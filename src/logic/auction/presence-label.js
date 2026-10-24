@@ -25,11 +25,21 @@
  *   · 次数数据未到（counts = null）→ 全表不标（⛔ 绝不当 0 显示成「未在列」）；
  *   · 没有区间涨幅的行不占名次（与 range20-top5-label.js 的「总龙N」同一套口径），
  *     ⛔ 绝不因为「凑够 10 行」而给一只没有涨幅的票打标。
+ *
+ * [MAIN-BOARD-RANK 2026-10-24 用户口径] 「排名只算主板」：
+ *   非主板（创业板 / 科创板 / 北交所）**不占前十名额**，名次顺延给下一只主板票。
+ *   ⚠️ 只影响名次与标签，⛔ 不影响涨幅排序 —— 它们照旧按涨幅待在原位
+ *      （用户在同一次 AskUserQuestion 里明确选的是「排序不动，只不占名次」，
+ *        与 2026-10-07 龙标签「只排主板的，但十日涨幅排序不变」是同一条纪律）。
+ *   判据走 limit-up.js#isMainBoardRankEligible（唯一实现，§6）。
  */
+
+// [MAIN-BOARD-RANK 2026-10-24 用户口径] 「排名只算主板」的判据走 limit-up.js 的唯一实现（§6），
+//   ⛔ 不在这里手写 /^30|68|43/ 前缀（板块分类只有 getBoardKind 一处真相）。
+import { isMainBoardRankEligible } from './limit-up.js';
 
 /** 打标只数（用户口径：前十名）。与 range20-top5-label.js#RANGE20_TOTAL_DRAGON_TOP_N 是同族常量但含义不同。 */
 export const PRESENCE_TOP_N = 10;
-
 /** 统计窗口（交易日数）：10 = 「10日涨幅」toggle；20 = 「20日涨幅」toggle。 */
 export const PRESENCE_WINDOW_10 = 10;
 export const PRESENCE_WINDOW_20 = 20;
@@ -118,6 +128,11 @@ export function assignPresenceLabels(items, topN, opts) {
     if (!usable || rank >= cap) continue;
     // §10：没有区间涨幅的行不占名次（与「总龙N」同口径），避免「数据没到」时按原顺序乱标
     if (presenceSortValueOf(it, windowDays) === null) continue;
+    // [MAIN-BOARD-RANK 2026-10-24 用户口径] 非主板（创业板 / 科创板 / 北交所）**跳过且不占名次**：
+    //   它们照旧显示在涨幅排序里的原位（排序一点没动），但「前十」的名额只数主板，
+    //   名次自动顺延给下一只主板 ⇒ 屏幕上带标签的永远是主板票，且标签刚好十个。
+    //   ⚠️ 代码缺失按「未知」处理 = 有资格（§10：判不出 ≠ 判出非主板）。
+    if (!isMainBoardRankEligible(it.code)) continue;
     rank += 1;
     const name = it.stock ? String(it.stock).trim() : '';
     const hit = name && counts.has(name) ? counts.get(name) : null;

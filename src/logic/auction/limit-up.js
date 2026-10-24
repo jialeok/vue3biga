@@ -85,6 +85,33 @@ export function isHighLimitBoard(code) {
     return k === BOARD_STAR || k === BOARD_GROWTH || k === BOARD_BJ;
 }
 
+/**
+ * 【纯函数】有没有资格拿「排名类标签」（总龙一~五 / 涨幅前十在列次数）—— 唯一实现（§6）。
+ *
+ * 用户口径（2026-10-24 逐字）：
+ *   「10日涨幅和20日涨幅，非主板的票不做排名，只排主板的，就是我分别单独打开他们的时候，
+ *    不要出现排在前十。」
+ *   AskUserQuestion 选择：「排序不动，只不占名次」—— 涨幅排序仍是全市场由高到低，
+ *   但名次名额只发给主板，创业板/科创板/北交所【跳过且不占位】（名次自动顺延给下一只主板）。
+ *   这与 2026-10-07 龙标签的既有口径完全一致：「只排主板的，但是它们的十日涨幅排序不变」。
+ *
+ * ✅ 有资格：沪主板（60）/ 深主板（00、01）、**代码缺失**。
+ * ❌ 无资格：创业板（30）、科创板（68）、北交所（43/83/87/88/92）—— 即 isHighLimitBoard 的全集。
+ *
+ * §10 红线：代码缺失 ⇒ getBoardKind 返回 BOARD_UNKNOWN ⇒ **算有资格**。
+ *   理由（与 dragon-rank.js#isDragonBoardEligible 同一条）：判不出板块 ≠ 判出「不是主板」，
+ *   把「没查到」当成「非主板」会静默把一只本该有名次的票踢出前十，那比「多给一次名次」危险得多。
+ *
+ * ⚠️ 判据只认代码前缀（getBoardKind），⛔ 绝不按股票名猜板块（§40）。
+ *
+ * @param {string} code 6 位股票代码（缺失 / 空串 = 未知 ⇒ 有资格）
+ * @returns {boolean} true = 可以占名次
+ */
+export function isMainBoardRankEligible(code) {
+    // isHighLimitBoard 的补集：创业板 / 科创板 / 北交所 = 无资格；主板与「未知」= 有资格。
+    return !isHighLimitBoard(code);
+}
+
 /** 股票名是否 ST（含 *ST / ST / S*ST 等写法） */
 export function isStStockName(stockName) {
     if (!stockName) return false;

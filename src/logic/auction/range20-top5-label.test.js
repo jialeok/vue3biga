@@ -18,9 +18,9 @@ import {
   assignTotalDragonRanks
 } from './range20-top5-label.js';
 
-/** 造行：只带本模块要读的两个字段（别的字段与判定无关） */
-function row(stock, rangePct20) {
-  return { stock, rangePct20 };
+/** 造行：只带本模块要读的两个字段（别的字段与判定无关）；code 用于「只算主板」的板块判定 */
+function row(stock, rangePct20, code) {
+  return { stock, rangePct20, code: code === undefined ? '600000' : code };
 }
 
 describe('range20-top5-label · 常量与文案', () => {
@@ -103,5 +103,43 @@ describe('assignTotalDragonRanks · 按顺序给前五打标', () => {
     assignTotalDragonRanks(items);
     assignTotalDragonRanks(items);
     expect(items.map(i => i.totalDragonRank)).toEqual([1, 2]);
+  });
+});
+
+// [MAIN-BOARD-RANK 2026-10-24 用户口径] 「只排主板的」：非主板【跳过且不占名次】，
+// 名次顺延给下一只主板票；涨幅排序本身不动（items 顺序仍由调用方给）。
+describe('assignTotalDragonRanks · 非主板不占名次', () => {
+  it('创业板 / 科创板 / 北交所在前也不拿总龙标，名次顺延给主板', () => {
+    const items = [
+      row('创业票', 300, '300750'),
+      row('科创票', 280, '688111'),
+      row('北交票', 260, '830799'),
+      row('主板甲', 200, '600825'),
+      row('主板乙', 190, '000678')
+    ];
+    const n = assignTotalDragonRanks(items);
+    expect(n).toBe(2);
+    expect(items.map(i => i.totalDragonLabel)).toEqual(['', '', '', '总龙一', '总龙二']);
+    expect(items.map(i => i.totalDragonRank)).toEqual([0, 0, 0, 1, 2]);
+  });
+
+  it('非主板不占名额 ⇒ 主板仍能凑满总龙一…总龙五', () => {
+    const items = [
+      row('创业票', 500, '300750'),
+      row('A', 100, '600000'), row('B', 90, '600001'), row('C', 80, '600002'),
+      row('D', 70, '600003'), row('E', 60, '600004'), row('F', 50, '600005')
+    ];
+    expect(assignTotalDragonRanks(items)).toBe(5);
+    expect(items[0].totalDragonLabel).toBe('');
+    expect(items[1].totalDragonLabel).toBe('总龙一');
+    expect(items[5].totalDragonLabel).toBe('总龙五');
+    expect(items[6].totalDragonLabel).toBe('');
+  });
+
+  it('代码缺失 = 未知板块 ⇒ 算有资格（§10 判不出 ≠ 判出非主板）', () => {
+    const items = [row('无代码票', 50, ''), row('主板甲', 40, '600825')];
+    expect(assignTotalDragonRanks(items)).toBe(2);
+    expect(items[0].totalDragonLabel).toBe('总龙一');
+    expect(items[1].totalDragonLabel).toBe('总龙二');
   });
 });

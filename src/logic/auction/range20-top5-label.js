@@ -23,6 +23,10 @@
 /** 打标只数上限（用户口径：前五） */
 export const RANGE20_TOTAL_DRAGON_TOP_N = 5;
 
+// [MAIN-BOARD-RANK 2026-10-24 用户口径] 「总龙N」只发给主板：非主板（创业板/科创板/北交所）
+//   **不占名次**，名次顺延给下一只主板票。判据走 limit-up.js 的唯一实现（§6），⛔ 不手写前缀。
+import { isMainBoardRankEligible } from './limit-up.js';
+
 /**
  * 名次文案。顺序即语义：第 1 名 = 总龙一（20 日涨幅第一）。
  * ⚠️ 用「一二三四五」而不是数字，是用户原话的写法（「总龙一，总龙二…」）。
@@ -67,7 +71,10 @@ export function assignTotalDragonRanks(items, topN) {
     if (!it) continue;
     const v = it.rangePct20;
     // §10：没有值就不参与名次（既不占位、也不补 0），且显式清零
-    if (rank >= cap || v === null || v === undefined || isNaN(v)) {
+    // [MAIN-BOARD-RANK 2026-10-24 用户口径] 非主板（创业板/科创板/北交所）同样【跳过且不占名次】：
+    //   它们仍按 20 日涨幅待在列表原位（排序未变），但「总龙一~五」的名额只数主板。
+    //   ⚠️ 代码缺失 = 未知板块 ⇒ 有资格（§10：判不出 ≠ 判出非主板）。
+    if (rank >= cap || v === null || v === undefined || isNaN(v) || !isMainBoardRankEligible(it.code)) {
       it.totalDragonRank = 0;
       it.totalDragonLabel = '';
       continue;
