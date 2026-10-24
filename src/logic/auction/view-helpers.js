@@ -70,6 +70,11 @@ import { isSuspended } from './suspend.js';
 // [RANGE20-TOTAL-DRAGON 2026-10-20 用户口径] 「20日涨幅」toggle 专属显示层：前五标「总龙一…总龙五」。
 //   纯函数独立成模块（可单测），⛔ 与其它 toggle 的显示口径无关 —— 其它模式一律不标。
 import { assignTotalDragonRanks, RANGE20_TOTAL_DRAGON_TOP_N } from './range20-top5-label.js';
+// [PRESENCE 2026-10-23 用户口径] 「涨幅前十 · 在列次数」标签（「5次在列」「首次在列」）：
+//   判定/文案全在 presence-label.js（纯函数、可单测），次数来自预计算表 auction_presence
+//   （Data 层 auction-presence.js，⛔ 本层不发请求，只同步读会话缓存）。
+import { assignPresenceLabels, PRESENCE_TOP_N, PRESENCE_WINDOW_10, PRESENCE_WINDOW_20 } from './presence-label.js';
+import { getPresenceForDate } from '../../data/auction-presence.js';
 
 function _getAuctionTag(date, stockName) {
   if (!date || !stockName) return null;
@@ -375,6 +380,14 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     //     若只有某个模式写、其它模式不写，切 toggle 时残留的旧标签会串到别的视图里（§11 默认无行为）。
     totalDragonRank: 0,
     totalDragonLabel: '',
+    // [PRESENCE 2026-10-23 用户口径] 「在列次数」标签的默认值 = 不标。
+    //   只有「10日涨幅」/「20日涨幅」toggle 打开时才由 presence-label.js 后置赋值。
+    //   ⚠️ 必须在这里显式给默认值（而不是只在那个模式里写）：items 会经增量视图缓存复用，
+    //     缺省值不一致会让标签在切 toggle 后串到别的视图里（§11）。
+    presenceCnt: null,
+    presenceLabel: '',
+    presenceWindowDays: 0,
+    presenceCoveredDays: 0,
     // [CLOSE-LIMIT 2026-09-11] 收盘涨停('up')/跌停('down') → 股票名下绿色/红色【蚂蚁线（虚线）】标记。
     // null = 既非停板也没有收盘涨幅数据（不标记）。视觉优先级见 AuctionBoardTable：竞价一字实线优先。
     closeLimit,
@@ -1339,6 +1352,38 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // ==========================================================================
   if (sortState.byRangePct20 && !topicOnlyMode) {
     assignTotalDragonRanks(items, RANGE20_TOTAL_DRAGON_TOP_N);
+  }
+
+  // ==========================================================================
+  // [PRESENCE 2026-10-23 用户口径] 「涨幅前十 · 在列次数」标签（「5次在列」「首次在列」）。
+  //
+  // 用户原话：「10日涨幅 toggle 单独打开后，把排名前十的股票，在这 10 个交易日中出现过几次
+  //   标记起来……打上小标签比如"5次在列"，"首次在列"，单独打开 20 日涨幅 toggle 时也要。」
+  //   AskUserQuestion：「只给前十名标」/「Supabase 定时算好落表」/「含今天」。
+  //
+  // ★ 位置与「总龙N」完全同构（都在 items 组装之后、都用当前顺序）：
+  //   两个涨幅 toggle 下三组已折叠成一条列表、顺序 = 区间涨幅降序
+  //   （见上方 byRangePct / byRangePct20 两个分支），所以下标 0..9 就是「排名前十」。
+  //   ⛔ 本层不再排序、不再判断谁在名单里（§6：顺序由 range-pct-sort.js 给，次数由表给）。
+  //
+  // ★ 数据来源：预计算表 auction_presence（Data 层 auction-presence.js 同步读会话缓存）。
+  //   ⛔ 本文件绝不发请求；取数由 useAuctionBoard 的 watch 触发 ensurePresence，
+  //   到货后 incremental-view 的 `presence=` 指纹变化 ⇒ 本视图自动重算（标签才出现）。
+  //
+  // ⚠️ 题材单独模式（topicOnlyMode）下顺序是「按题材分组」而非涨幅降序 ⇒ 传 null 让标签清空，
+  //   与「总龙N」同一条纪律：宁可没有标签，也不给错误的名次（§10）。
+  // ⚠️ 两个 toggle 都没开时不进这里 —— 走 _enrichAuctionItem 的默认值（null / ''），
+  //   即「默认模式一条标签都不出现」（用户只要求这两个 toggle 下标）。
+  // ==========================================================================
+  if (sortState.byRangePct || sortState.byRangePct20) {
+    const _presenceWindow = sortState.byRangePct20 ? PRESENCE_WINDOW_20 : PRESENCE_WINDOW_10;
+    const _presenceRec = topicOnlyMode ? null : getPresenceForDate(currentDate, _presenceWindow);
+    assignPresenceLabels(items, PRESENCE_TOP_N, {
+      windowDays: _presenceWindow,
+      // counts = null ⇒ 全表不标（数据未到 / 表还没建），⛔ 绝不把「不知道」显示成「未在列」
+      counts: _presenceRec ? _presenceRec.counts : null,
+      coveredDays: _presenceRec ? _presenceRec.coveredDays : 0
+    });
   }
 
   let topicStatsMap = null;

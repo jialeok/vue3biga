@@ -26,6 +26,8 @@ import { deriveAuctionTagState } from '../tagTitles/rules.js';
 import { getRange20FingerprintToken } from './range20.js';
 // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」的结果签名（恒参与全局指纹，见下方 r20top5= 的说明）。
 import { getRange20LeadersFingerprintToken } from './range20-leaders.js';
+// [PRESENCE 2026-10-23] 「涨幅前十 · 在列次数」预计算表的加载版本（受两个涨幅 toggle 门控）。
+import { getPresenceFingerprintToken } from '../../data/auction-presence.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 // [DRAGON 2026-09-09] 龙头徽章依赖异步加载的 10 日区间涨幅，必须进全局指纹，
 // 否则数据到达后行缓存不失效 → 徽章不显示（或陈旧）。
@@ -111,6 +113,12 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
     //   ⚠️ 与上面的 `range20=` 不同：那个受 toggle 门控，这个【恒参与】——
     //     因为补位行是「不需要打开任何开关就要出现在看板上」的（用户：「每天都要检索」）。
     'r20top5=' + getRange20LeadersFingerprintToken(),
+    // [PRESENCE 2026-10-23 用户口径] 「在列次数」预计算结果的加载版本。
+    //   ⚠️ 受开关门控（与上面 `range20=` 同款理由）：两个涨幅 toggle 都关着时恒为 'off' ⇒
+    //     结果到货也不会让整张表白重排一次；打开时到货 ⇒ 版本变 ⇒ 行缓存失效 ⇒ 标签出现。
+    //   ⚠️ 为什么必须是【全局】指纹而不是行签名：它决定「哪 10 行带标签」（要按整表顺序数名次），
+    //     只失效某一行会留下「第 10 行没标签」这种半截状态。
+    'presence=' + ((s.byRangePct || s.byRangePct20) ? getPresenceFingerprintToken() : 'off'),
     // [DRAGON-GROUP 2026-09-14] 龙头组名册签名（展示日 + 版本 + 条数）。它决定哪些行进龙头组区块、
     // 以及「龙」组内标记的显隐 → 名册变化必须清空行缓存（与上方 dragon= 同款理由）。
     'dgroup=' + getDragonGroupFingerprintToken(),

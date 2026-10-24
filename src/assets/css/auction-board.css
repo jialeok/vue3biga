@@ -706,6 +706,32 @@
             white-space: nowrap;
         }
 
+        /* [PRESENCE 2026-10-23 用户口径] 「在列次数」小标签（「5次在列」「首次在列」「未在列」）。
+           位置：区间涨幅数值【之后】，与「龙」「20天」「总龙N」同族同尺寸，只换配色。
+           配色取【青灰】：它是"分析用的统计值"，既不是身份（龙/20天=蓝）、也不是名次（总龙=红），
+           所以刻意不用红/蓝，避免用户把它误读成涨跌或龙头标记。 */
+        .auction-presence-tag {
+            display: inline-block;
+            margin-left: 3px;
+            padding: 0 3px;
+            border-radius: 2px;
+            background: #ecfeff;
+            color: #0e7490;
+            font-size: 9px;
+            font-weight: 700;
+            line-height: 12px;
+            vertical-align: 1px;
+            white-space: nowrap;
+        }
+
+        /* 次数为 0（「未在列」）：灰调 + 常规字重 —— 这是一条「没上过榜」的信息，
+           不该和「5次在列」抢视觉权重。 */
+        .auction-presence-tag-none {
+            background: #f1f5f9;
+            color: #64748b;
+            font-weight: 400;
+        }
+
         /* [RANGE20-TOPIC 2026-10-20 用户口径] 「20日涨幅」toggle 专属显示层：占比前加一列题材文本。
            用户要求「不用分类、不用背景色，整体省空间、美观简洁」⇒ 纯文本 + 小字号 +
            单行省略（悬停 title 看全文）。flex 与表头 .auction-header-topic20 严格一致。 */

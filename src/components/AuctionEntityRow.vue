@@ -112,6 +112,17 @@
         :class="rangePctClass(item)"
         :title="rangePctTitle(item)"
       >{{ rangePctText(item) }}</span>
+      <!-- [PRESENCE 2026-10-23 用户口径] 「在列次数」小标签（「5次在列」「首次在列」「未在列」）。
+           出现条件：10日涨幅 / 20日涨幅 toggle 打开，且本行属于该排序下的【前十名】。
+           次数 = 这 10（20）个交易日里，该票在早盘竞价看板每日列表中出现过几次（含今天）。
+           判定 + 文案全在 Logic 层 presence-label.js；次数来自预计算表 auction_presence
+           （Data 层 auction-presence.js 同步读缓存）。⚠️ 纯展示：本组件不做任何判定/请求（§3/§21）。 -->
+      <span
+        v-if="item.presenceLabel"
+        class="auction-presence-tag"
+        :class="presenceTagClass(item)"
+        :title="presenceTagTitle(item)"
+      >{{ item.presenceLabel }}</span>
       <AuctionDragonBadge
         v-if="item.dragonRank > 0"
         :rank="item.dragonRank"
@@ -391,6 +402,32 @@ function totalDragonTagTitle(item) {
   }
   bits.push('只给前五只打标（总龙一…总龙五），其它票不标');
   return bits.join('｜');
+}
+
+// [PRESENCE 2026-10-23 用户口径] 「在列次数」标签的悬停说明。
+//   说清四件事：这是哪个窗口的次数、次数具体是几、窗口数据覆盖了多少天（§10 如实例外）、
+//   以及「只给前十名标」这条口径 —— 免得用户以为「别的票为什么没标」。
+//   §21 模板零计算：文案在这里拼好，模板只渲染。
+function presenceTagTitle(item) {
+  if (!item) return '';
+  const w = Number(item.presenceWindowDays) || 10;
+  const cov = Number(item.presenceCoveredDays) || 0;
+  const cnt = (item.presenceCnt === null || item.presenceCnt === undefined) ? null : Number(item.presenceCnt);
+  const bits = ['近 ' + w + ' 个交易日（含今天）在早盘竞价看板列表里出现 '
+    + (cnt === null ? '-' : cnt) + ' 次'];
+  if (cnt === 0) bits.push('窗口内一次都没进过名单（新龙头 / 补位票常见）');
+  else if (cnt === 1) bits.push('只有今天在列 ⇒ 首次出现');
+  if (cov > 0 && cov < w) bits.push('⚠️ 窗口内只有 ' + cov + '/' + w + ' 天有名单数据，次数按实际覆盖天数统计');
+  else if (cov >= w) bits.push('窗口数据完整（' + w + '/' + w + ' 天）');
+  bits.push('只标「' + w + '日涨幅」排序下的前十名，其它票不标');
+  return bits.join('｜');
+}
+
+// 「未在列」用灰调（它是一条「没有上过榜」的信息，不该和「5次在列」抢视觉权重）。
+function presenceTagClass(item) {
+  if (!item) return {};
+  const n = Number(item.presenceCnt);
+  return { 'auction-presence-tag-none': isFinite(n) && n === 0 };
 }
 
 function range20LeaderTagTitle(item) {

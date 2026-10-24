@@ -46,6 +46,11 @@ import { ensureRange20 } from '../logic/auction/range20.js';
 //     —— 用户要求「每天都要检索」，所以与开关状态无关，进看板/切日期就跑一次（幂等 + 会话缓存）。
 //   ⛔ 零猫抓额度（用户特别强调）：只用库内正式列表 + 同花顺 K 线（免费），见 range20-leaders.js。
 import { ensureRange20Leaders } from '../logic/auction/range20-leaders.js';
+// [PRESENCE 2026-10-23 用户口径] 「涨幅前十 · 在列次数」预计算表的取数入口（Data 层）。
+//   ⛔ 零上游请求：只读 Supabase 表 auction_presence（由 pg_cron 在 09:30 / 15:05 算好）。
+//   为什么走表而不是现场算：现场算要回读 10~20 天的历史名单；落表后前端只读 ≤400 行结论，
+//   而且这张表本身还能被用户直接拿去做分析（用户原话「我会用这个出现次数做分析」）。
+import { ensurePresence } from '../data/auction-presence.js';
 // [TREND-PATCH-STORE 2026-10-23] 趋势「同花顺补缺值」的合并语义（纯函数，Logic 层，§3/§4）。
 //   抽到 Logic 层是为了用测试锁死三条语义：只填 null 位 / 今天整天替换 / 四腿任一缺即补。
 //   背景见 trend-patch-merge.js 头注释（新华传媒 600825 当天五条线全空 = paint 互相覆盖）。
@@ -99,6 +104,8 @@ let _suspendWatchBound = false;
 let _r20WatchBound = false;
 // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」取数 watch 同样只挂载一次。
 let _r20Top5WatchBound = false;
+// [PRESENCE 2026-10-23] 「涨幅前十 · 在列次数」预计算表取数 watch 同样只挂载一次。
+let _presenceWatchBound = false;
 /** 收盘覆盖轮询间隔：5 分钟（页面长时间开着时，跨过 15:00 能自动触发一次，无需手动刷新） */
 const CLOSE_COVER_POLL_MS = 5 * 60 * 1000;
 
@@ -284,6 +291,43 @@ export function useAuctionBoard() {
         } catch (e) {
           console.warn('[RANGE20] 20日涨幅取数失败:', e && e.message);
           setApiStatus('numcatApiStatus', '❌ 20日涨幅取数失败：' + (e && e.message || e), false);
+        }
+      },
+      { immediate: true }
+    );
+  }
+  // [PRESENCE 2026-10-23 用户口径] 「涨幅前十 · 在列次数」标签的取数入口（只挂载一次，幂等/单飞在 Data 层）。
+  //
+  // 用户原话：「10日涨幅 toggle 单独打开后，把排名前十的股票，在这 10 个交易日中出现过几次标记起来……
+  //   打上小标签比如"5次在列"，"首次在列"，单独打开 20 日涨幅 toggle 时也要。」
+  //
+  // 依赖 = 【两个涨幅 toggle + 当前日期】：
+  //   · 只在 10日/20日涨幅开关打开时才去读表 —— 关着时一条标签都不显示，⛔ 不白打 REST（§11 默认零行为）；
+  //   · 窗口由「哪个开关开着」决定（10 / 20），两者互斥（点开一个会自动关掉另一个）。
+  //   · 数据到货 ⇒ Data 层 version + 1 ⇒ incremental-view 的 `presence=` 指纹变化 ⇒ 视图重算 ⇒ 标签出现。
+  //
+  // ⚠️ 失败必须可见（§10 禁止静默失败）。表还没建时（用户尚未执行 db/create_auction_presence.sql）
+  //   给一句能指导下一步的提示，⛔ 不能把「没算出来」显示成「所有票都未在列」。
+  if (!_presenceWatchBound) {
+    _presenceWatchBound = true;
+    watch(
+      () => [sortState.byRangePct, sortState.byRangePct20, uiStore.currentDate],
+      async () => {
+        // 20 日优先（两个开关互斥；万一同时为真，按 20 日口径走，与 view-helpers 的取值顺序一致）
+        const _pw = sortState.byRangePct20 ? 20 : (sortState.byRangePct ? 10 : 0);
+        if (!_pw) return;
+        const _date = uiStore.currentDate;
+        if (!_date) return;
+        try {
+          await ensurePresence(_date, _pw);
+        } catch (e) {
+          const _code = (e && e.code) ? String(e.code) : '';
+          const _missingTable = _code === '42P01' || /auction_presence/i.test(String(e && e.message || ''));
+          const _msg = _missingTable
+            ? '⚠️ 在列次数表未建（执行 db/create_auction_presence.sql 后自动生效）'
+            : '❌ 在列次数加载失败：' + ((e && e.message) || e);
+          console.warn('[PRESENCE] 在列次数加载失败:', (e && e.message) || e);
+          setApiStatus('numcatApiStatus', _msg, false);
         }
       },
       { immediate: true }
