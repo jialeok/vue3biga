@@ -168,9 +168,12 @@ function _buyBlocksOf(buy) {
   //   ⚠️ 它仍然只是【一个槽位】：本看板自己去渲染它，决策看板的模板换不到这个键（该看板不传）。
   // ★★ [SWITCH 2026-10-22] 新增槽位 `newDragon` = 第二十八条【切换日的新龙】那一行。
   //   与 ebbSecond 同一理由：四个装饰器只经本函数取块，不进这里它就会缺客观数据（§6 不另写遍历）。
-  ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopic', 'ebbSecond', 'newDragon'].forEach(function(k) {
-    if (buy[k]) out.push(buy[k]);
-  });
+  // ★★ [R10-BACKUP 2026-10-24] 新增槽位 `range10Backup` = 第二十九条【十日涨幅 · 在列次数候补】那一只，
+  //   同样是「今天真要买、渲染在灰化容器之外」的行 ⇒ 必须进这里，否则它缺量比趋势 / 名次 / 封单 / 停牌（§6）。
+  ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopic', 'ebbSecond', 'newDragon', 'range10Backup']
+    .forEach(function(k) {
+      if (buy[k]) out.push(buy[k]);
+    });
   // [MIN-3-PICKS 2026-10-02] 候选题材块 = 常规块结构（有 picks），只是标了 isCandidate
   (buy.candidates || []).forEach(function(b) { if (b) out.push(b); });
   return out;
@@ -1409,6 +1412,18 @@ export function collectDecisionData(date, opts) {
     //   ⛔ 消费方只有一个：topic-vol-ratio-rules#_buildBlock（买点侧选股顺延）。
     //      退潮判定 / 市场总龙 / 卖点段一律不看它（§11）。
     out.buySkipSuspend = nonFirstDaySuspendNames(rows, date, prevDate);
+    // ★★ [R10-BACKUP 2026-10-24 用户口径] 当日名单的【十日涨幅池】——
+    //   topic-vol-ratio-rules 第二十九条（十日涨幅 · 在列次数候补）的候选来源：
+    //   用户原话「排名第二的题材如果量比太小就用十日涨幅首次在列进行候补……排名前十」。
+    //   ⛔ 为什么在这里给而不是让规则层从 topics 里翻：`topics` 是按题材分组的、且【成组门槛】
+    //     与【空题材行】都会漏掉一些行 —— 那样排出来的「前十」就不是早盘竞价看板上
+    //     10日涨幅 toggle 的那十行（用户数的是屏幕行号）。rows 才是与看板同一批行。
+    //   ⚠️ 只搬运 name / code / topic / pct（pct = 该票当日十日涨幅，来自 rangeMap，§6 同一份真相）；
+    //      排序 / 名次 / 板块判定一律交给 range10-backup.js（⛔ 本层不做业务判断，§4）。
+    //   成本 = O(n) 一次 map（n = 当日列表只数，通常 < 200），无网络、无额度。
+    out.range10Rows = rows.map(function(r) {
+      return { name: r.name, code: r.code, topic: r.topic, pct: r.pct };
+    });
     return out;
   }
 
@@ -1652,6 +1667,10 @@ export function collectDecisionTopics(date, opts) {
     //   ⚠️ 空集【也是一份有效答案】（今天就没有连续停牌的票）⇒ 照样往下传；
     //      只有「这个键根本没算过」（未走到内部出口）才不挂 ⇒ 调用方读到 undefined = 不知道。
     if (rec.buySkipSuspend) out.buySkipSuspend = rec.buySkipSuspend;
+    // ★★ [R10-BACKUP 2026-10-24 用户口径] 当日名单的十日涨幅池（第二十九条候补的候选来源）。
+    //   ⚠️ 与上面 buySkipSuspend 同一道理：它只依赖 rows，与「要不要回溯历史买点」无关 ⇒ 放在 if 之外。
+    //      空数组也是一份有效答案（当天没有可排的行）⇒ 照样往下传，让规则层如实说「判不出」。
+    if (rec.range10Rows) out.range10Rows = rec.range10Rows;
     return out;
   }
   return {

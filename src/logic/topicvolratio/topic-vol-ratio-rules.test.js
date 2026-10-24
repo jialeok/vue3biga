@@ -78,7 +78,11 @@ import {
   detectSwitchDay,
   pickNewDragon,
   // ★★ [EBB-20D 2026-10-22] 退潮事件计数窗口（用户「时间太短没有检查到10月13日那天」）
-  EBB_EVENT_WINDOW_DAYS
+  EBB_EVENT_WINDOW_DAYS,
+  // ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条【十日涨幅 · 在列次数候补】
+  RANGE10_BACKUP_TAG,
+  RANGE10_BACKUP_TONE,
+  RANGE10_BACKUP_RULE_NO
 } from './topic-vol-ratio-rules.js';
 // ★★ [CORE-CAT 2026-10-22] 「题材 → 核心词大类」归一的唯一实现（文化传媒 ⇒ AI应用）
 import { makeCoreTopicResolver } from '../topic/core-category.js';
@@ -3097,5 +3101,208 @@ describe('tvrb · [SWITCH-DEDUPE] 买点侧同名去重（新龙优先）', func
     plan.blocks.forEach(function(b) { (b.picks || []).forEach(function(p) { all.push(p.name); }); });
     (plan.newDragon.picks || []).forEach(function(p) { all.push(p.name); });
     expect(all.filter(function(n) { return n === '冰山冷热'; })).toHaveLength(1);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// ★★ 第二十九条 · 十日涨幅 · 在列次数候补（2026-10-24 用户口径）
+//
+// 用户原话（见 topic-vol-ratio-rules.js 里 RANGE10_BACKUP_TAG 上方那一段逐字注释）。
+// 本组用例钉住六件事：
+//   ① 排名【第二】的题材量比 < 25 ⇒ 整块作废（不列股票）+ 出候补那一只；
+//   ② 排名【第一】的题材量比 < 25 ⇒ 空仓标语【保留】+ 灰化照旧 + 另外给一只候补（用户四答之①）；
+//   ③ 候补票 = 十日涨幅前十 · 首次在列 · 与 20日涨幅总龙一不同题材（例 10-20 海洋王）；
+//   ④ 选不出候补 ⇒ 不出那一行，说明区如实写「空仓 / 判不出」（§10）；
+//   ⑤ 优先级：退潮兜底 / 切换日 / 分歧日 ⇒ 本规则一律不生效（⛔ 不许两条同时输出买点）；
+//   ⑥ §10：在列次数没读到 ⇒ 【不作废】题材、不出候补，只留一条说明。
+// ══════════════════════════════════════════════════════════════════════════════════════════
+describe('tvrb · 第二十九条 十日涨幅 · 在列次数候补', function() {
+  /** 4 只同量比的题材（avgVolRatio 可控） */
+  function topic4(name, rank, vr, codeBase) {
+    const names = [name + '一', name + '二', name + '三', name + '四'];
+    const ms = names.map(function(n, i) {
+      return m(n, { aucVolRatio: vr, aucShare: 6, code: String(codeBase + i).padStart(6, '0') });
+    });
+    return { b: block(name, rank, ms), names: names };
+  }
+
+  /** 题材量比充足的「强题材」+ 量比 7.47 的「房地产」（10-20 的真实数值） */
+  function twoTopics(secondVr) {
+    const a = topic4('强题材', 1, 60, 600100);
+    const b = topic4('房地产', 2, secondVr === undefined ? 7.47 : secondVr, 600200);
+    const dm = new Map();
+    a.names.concat(b.names).forEach(function(n, i) {
+      dm.set(n, { rank: (i % 4) + 1, topic: '', groupSize: 0, pct: 20 });
+    });
+    return { topics: [a.b, b.b], dm: dm, first: a, second: b };
+  }
+
+  /** 十日涨幅池（含 10-20 的真实票：海洋王 = 首次在列、LED ≠ 文化传媒） */
+  const POOL = [
+    { name: '九阳股份', code: '002242', topic: '家电', pct: 80.99 },
+    { name: '慈文传媒', code: '002343', topic: 'AI视频', pct: 79.20 },
+    { name: '新华传媒', code: '600825', topic: '文化传媒', pct: 61.43 },
+    { name: '冰山冷热', code: '000530', topic: '冰雪产业', pct: 56.81 },
+    { name: '吉大正元', code: '003029', topic: 'AI应用', pct: 48.00 },
+    { name: '莱美药业', code: '300006', topic: '医药', pct: 46.23 },
+    { name: '百洋股份', code: '002696', topic: '水产品', pct: 45.07 },
+    { name: '海洋王', code: '002724', topic: 'LED', pct: 29.51 },
+    { name: '京城股份', code: '600860', topic: '机器人概念', pct: 27.26 },
+    { name: '东安动力', code: '600178', topic: '飞行汽车', pct: 25.10 },
+    { name: '金奥博', code: '002917', topic: '并购重组', pct: 23.96 }
+  ];
+  const CNT = {
+    九阳股份: 9, 慈文传媒: 6, 新华传媒: 8, 冰山冷热: 4, 吉大正元: 2, 莱美药业: 4,
+    百洋股份: 6, 海洋王: 1, 京城股份: 1, 东安动力: 1, 金奥博: 4
+  };
+  function presence(cntObj) {
+    const counts = new Map();
+    Object.keys(cntObj).forEach(function(k) { counts.set(k, { cnt: cntObj[k] }); });
+    return { counts: counts, coveredDays: 10 };
+  }
+  /** 20日涨幅总龙一（新华传媒 · 文化传媒/AI应用 大类）+ 非退潮（占比达标、不停牌） */
+  function ebbCtxOf(top1Topic) {
+    return {
+      ready: true,
+      leader: { name: '新华传媒', topic: top1Topic || '文化传媒', pct: 202.59 },
+      leaderSuspended: false,
+      leaderShare: 9,
+      top5: [{ name: '新华传媒', topic: top1Topic || '文化传媒', pct: 202.59, rank20: 1 }],
+      newDragonPool: [],
+      siblingDragons: [],
+      secondInfo: null
+    };
+  }
+
+  it('★ 10-20：房地产（量比 7.47）整块作废 ⇒ 候补换成海洋王（首次在列 · 主板第 7 名）', function() {
+    const f = twoTopics();
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, {
+      range10Rows: POOL,
+      range10Presence: presence(CNT),
+      ebbCtx: ebbCtxOf()
+    });
+    // ① 第二题材整块作废：不在 blocks 里，buy.light 也必须是 null（⛔ 不留悬空槽位）
+    expect(plan.blocks.map(function(b) { return b.block.topic; })).toEqual(['强题材']);
+    expect(plan.buy.light).toBeNull();
+    // ② 候补那一只 = 海洋王
+    expect(plan.range10Backup).toBeTruthy();
+    expect(plan.range10Backup.picks.map(function(p) { return p.name; })).toEqual(['海洋王']);
+    expect(plan.buy.range10Backup).toBe(plan.range10Backup);
+    // ③ 专属标签 + 徽标（十日涨幅第 7 名 / 首次在列）
+    expect(plan.range10Backup.picks[0].buyActionTag).toBe(RANGE10_BACKUP_TAG);
+    expect(plan.range10Backup.picks[0].buyActionTone).toBe(RANGE10_BACKUP_TONE);
+    expect(plan.range10Backup.picks[0].range10Label).toContain('第 7 名');
+    expect(plan.range10Backup.picks[0].range10Label).toContain('首次在列');
+    expect(plan.range10Backup.picks[0].dragonLabel).toBe('');   // ⛔ 不冒充题材龙位
+    expect(plan.range10Backup.ruleNo).toBe(RANGE10_BACKUP_RULE_NO);
+    // ④ 进买点名单（卖点侧才会判「持有」而不是「竞价清仓」）
+    expect(plan.buyNames.has('海洋王')).toBe(true);
+    // ⑤ 选股总数 = 强题材 1 只 + 候补 1 只
+    expect(plan.pickCount).toBe(2);
+    // ⑥ 说明区写清「作废 + 替换」
+    const notes = plan.notes.join('\n');
+    expect(notes).toContain('房地产');
+    expect(notes).toContain('7.47');
+    expect(notes).toContain('海洋王');
+    // ⛔ 不再报「当日只有 1 个题材满足条件」——那是另一件事
+    expect(notes).not.toContain('当日只有 1 个题材满足条件');
+  });
+
+  it('★ 第一题材量比也 < 25 ⇒ 空仓标语【保留】+ 灰化照旧 + 另给一只候补', function() {
+    const f = twoTopics(60);   // 第二题材量比 60 ⇒ 不作废
+    // 把第一题材的量比压到 10
+    f.topics[0].members.forEach(function(x) { x.aucVolRatio = 10; });
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, {
+      range10Rows: POOL,
+      range10Presence: presence(CNT),
+      ebbCtx: ebbCtxOf()
+    });
+    expect(plan.blocks).toHaveLength(2);                 // 两个题材都照常列出
+    expect(plan.cashAlert.show).toBe(true);              // 空仓标语【不撤】
+    expect(plan.cashAlert.detail).toContain('另有 1 只十日周期候补');
+    expect(plan.cashAlert.hasRange10Backup).toBe(true);
+    // 常规块被灰化改写（第十六条照旧），候补那一行是今天唯一还能买的
+    expect(plan.blocks[0].picks[0].buyActionTag).toBe(CASH_NO_BUY_TAG);
+    expect(plan.range10Backup.picks[0].buyActionTag).toBe(RANGE10_BACKUP_TAG);
+  });
+
+  it('§10：选不出候补 ⇒ 不出那一行，说明区如实写「空仓」（⛔ 不留空壳）', function() {
+    const f = twoTopics();
+    const allThree = {};
+    Object.keys(CNT).forEach(function(k) { allThree[k] = 5; });
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, {
+      range10Rows: POOL,
+      range10Presence: presence(allThree),
+      ebbCtx: ebbCtxOf()
+    });
+    expect(plan.range10Backup).toBeNull();
+    expect(plan.buy.range10Backup).toBeNull();
+    const notes = plan.notes.join('\n');
+    expect(notes).toContain('没有候补');
+    expect(notes).toContain('空仓');
+    expect(plan.buyNames.has('海洋王')).toBe(false);
+  });
+
+  it('§10：在列次数没读到 ⇒ 【不作废】第二题材、不出候补，只留一条说明', function() {
+    const f = twoTopics();
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, {
+      range10Rows: POOL,
+      range10Presence: null,       // 数据未到
+      ebbCtx: ebbCtxOf()
+    });
+    expect(plan.blocks).toHaveLength(2);            // ⛔ 不因为一次数据缺口白扔一个题材
+    expect(plan.blocks[1].block.topic).toBe('房地产');
+    expect(plan.range10Backup).toBeNull();
+    expect(plan.notes.join('\n')).toContain('暂不作废');
+  });
+
+  it('§11：调用方没传十日涨幅池 ⇒ 与旧行为逐字一致（不作废、不出候补、不加说明）', function() {
+    const f = twoTopics();
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, { ebbCtx: ebbCtxOf() });
+    expect(plan.blocks).toHaveLength(2);
+    expect(plan.range10Backup).toBeNull();
+    expect(plan.notes.join('\n')).not.toContain('十日涨幅候补');
+  });
+
+  it('优先级：退潮兜底日（首次退潮）⇒ 本规则不生效', function() {
+    const f = twoTopics();
+    const ctx = ebbCtxOf();
+    ctx.leaderSuspended = true;      // 总龙停牌 ⇒ 退潮日
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, {
+      range10Rows: POOL,
+      range10Presence: presence(CNT),
+      ebbCtx: ctx
+    });
+    expect(plan.ebb).toBeTruthy();
+    expect(plan.range10Backup).toBeNull();
+    expect(plan.blocks).toHaveLength(2);   // 退潮日只灰化，不作废
+  });
+
+  it('候补票必须与 20日涨幅总龙一【不同题材】（大类归一后仍同类 ⇒ 跳过）', function() {
+    const f = twoTopics();
+    // 把海洋王 认成「文化传媒」（= 总龙一 的细分题材）⇒ 必须被剔除，选下一只首次在列
+    const pool = POOL.map(function(p) {
+      return p.name === '海洋王' ? Object.assign({}, p, { topic: '文化传媒' }) : p;
+    });
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, {
+      range10Rows: pool,
+      range10Presence: presence(CNT),
+      ebbCtx: ebbCtxOf()
+    });
+    expect(plan.range10Backup).toBeTruthy();
+    expect(plan.range10Backup.picks[0].name).toBe('京城股份');
+    expect(plan.range10Backup.notes.join('\n')).toContain('海洋王');
+    expect(plan.range10Backup.notes.join('\n')).toContain('同题材');
+  });
+
+  it('规则手册里有第二十九条，且写明门槛 / 优先级 / 十日周期', function() {
+    const lines = buildTvrbRulesLines();
+    const line = lines.filter(function(s) { return s.indexOf('二十九、【十日涨幅 · 在列次数候补】') === 0; })[0];
+    expect(line).toBeTruthy();
+    expect(line).toContain(String(TVRB_CASH_ALERT_AVG_VR));
+    expect(line).toContain('首次在列');
+    expect(line).toContain('二次在列');
+    expect(line).toContain('海洋王');
+    expect(line).toContain(RANGE10_BACKUP_TAG);
   });
 });

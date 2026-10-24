@@ -96,6 +96,15 @@
           v-if="p.dragonLabel"
           class="tvrb-dragon"
         >{{ p.dragonLabel }}</span>
+        <!-- ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条候补行的专属徽标
+             （「十日涨幅第 N 名 · 首次在列」，文案全在 Logic 层拼好 §21）。
+             ⛔ 它【不是】龙标：那只票来自十日涨幅榜，与题材内的龙位无关 —— 两枚徽标互斥显示
+             （候补行的 dragonLabel 恒为空串，见 _buildRange10BackupBlock）。 -->
+        <span
+          v-if="p.range10Label"
+          class="tvrb-r10-label"
+          title="十日涨幅名次（只算主板名次，与早盘竞价「10日涨幅」toggle 的在列次数标签同一口径）｜首次在列 = 这 10 个交易日里它只在今天的名单出现过 1 次"
+        >{{ p.range10Label }}</span>
         <!-- 龙标旁边的名次变化（'+3' 上升红 / '-2' 下降绿；无可比 ⇒ 空串 ⇒ 不渲染，§10） -->
         <span
           v-if="p.dragonDeltaText"

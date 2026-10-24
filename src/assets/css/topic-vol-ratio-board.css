@@ -930,6 +930,51 @@
     color: #b45309;
 }
 
+/* ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条【十日涨幅 · 在列次数候补】容器 ——
+   前提与另外三段完全一样：⛔ 必须渲染在 .tvrb-buy-list.tvrb-ebb（父级 grayscale + opacity）【之外】，
+   CSS 的 filter 不能被后代撤销，放进去等于把今天要买的那一只也灰掉。
+   ⚠️ 配色刻意用【青蓝】而不是琥珀金：琥珀金那三处（退潮替补 / 分歧买点 / 新龙）都是
+      「周期节点的例外买点」，而候补是【常规题材作废后的替换】—— 语义不同，颜色必须能一眼分开，
+      ⛔ 也别用红色系（那是同页常规【竞价买】，两枚「买」字辈挨着会读混）。 */
+.tvrb-r10backup-only-buy {
+    margin: 2px 0 8px;
+    padding: 7px 9px 8px;
+    background: #ecfeff;
+    border: 2px solid #0891b2;
+    border-left-width: 3px;
+    border-radius: 10px;
+}
+
+.tvrb-r10backup-only-label {
+    margin-bottom: 5px;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    color: #0e7490;
+}
+
+/* 候补行上的「十日涨幅第 N 名 · 首次在列」徽标（与在列次数标签同一套青灰底，但更小更淡） */
+.tvrb-r10-label {
+    padding: 0 4px;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 13px;
+    color: #0e7490;
+    background: #ecfeff;
+    border: 1px solid #a5f3fc;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+/* 候补的动作标签【十日涨幅候补买】（tone = 'r10backup'，由 Logic 层给，CSS 只做视觉映射 §21） */
+.tvrb-action.tvrb-action-r10backup {
+    background: #0891b2;
+    color: #ecfeff;
+    letter-spacing: 0.3px;
+    outline: 1px solid rgba(236, 254, 255, 0.85);
+    outline-offset: -2px;
+}
+
 /* 买点侧：仓位（和/或持有标签）已经在行里，动作徽标紧跟其后，不再抢 margin-left:auto */
 .tvrb-position + .tvrb-action {
     margin-left: 0;

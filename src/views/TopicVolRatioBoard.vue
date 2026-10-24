@@ -215,6 +215,24 @@
                 :head-text="newDragon.block.topic"
               />
             </div>
+            <!-- ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条【十日涨幅 · 在列次数候补】那一只。
+               结构与退潮替补 / 分歧买点 / 新龙同一形态：渲染在灰化容器 .tvrb-buy-list【之外】
+               （今天真要买的那一只不能被 grayscale 吞掉）；不需要候补 / 选不出 / 次数未到 ⇒ 不渲染。
+               ⛔ 类名独立（.tvrb-r10backup-only-*）—— 四条规则各不相同，DOM 查询不能混。
+               注：被作废的那个弱题材已由 Logic 层【整块删除】（用户拍板「整块删除，只出候补」），
+                   所以这一块就是它留下的位置。 -->
+            <div
+              v-if="range10Backup"
+              class="tvrb-r10backup-only-buy"
+            >
+              <div class="tvrb-r10backup-only-label tvrb-selectable">
+                十日涨幅候补 · 买点（第二十九条）
+              </div>
+              <TvrbBuyBlock
+                :block="range10Backup"
+                :head-text="range10Backup.block.topic"
+              />
+            </div>
             <!-- 退潮首日 / 空仓提醒：股票块整体灰化（⛔ 上面的空仓标语【不灰】—— 它正是要被看见的那一条）
                ⛔ 上面那只【唯一买点】也不灰（它在本次容器之外，见上）。
                ★ [CASH-ALERT-NOBUY 2026-10-16] 条件 = cashAlert.show（含退潮首日，同上面的标题一处口径）。 -->
@@ -324,6 +342,9 @@ const {
   // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条新龙 / 切换日（switchDay 的文案已由 Logic 层写进
   //   block.reason / notes，模板不需要它 ⇒ ⛔ 不解构，免得留一个未使用变量）
   newDragon,
+  // ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条「十日涨幅 · 在列次数候补」那一只
+  //   （同样渲染在灰化容器【之外】：题材量比太小被作废后，它才是今天真正要买的那一只）
+  range10Backup,
   summaryText,
   rulesLines,
   toggleExpand,

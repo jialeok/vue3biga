@@ -102,6 +102,17 @@ import { readEbbDays, upsertEbbDay } from '../data/ebb-days.js';
 //   readTop5History / everInTop5Set = 近 20 个交易日的【每日 20日涨幅前五榜】（回库读 stock_range20_pct，
 //   一次 in 查询 + 会话缓存；⛔ 不新增表、不改表结构）。
 import { readTop5History, everInTop5Set } from '../data/range20-top5-history.js';
+// ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条「十日涨幅 · 在列次数候补」的次数来源：
+//   预计算表 auction_presence（data/auction-presence.js，会话缓存 + 单飞 + 30s 失败冷却）。
+//   getPresenceForDate = 同步读（不发请求）；ensurePresence = 触发加载；getPresenceFingerprintToken
+//   = 响应式指纹（到货 ⇒ data computed 自动重算）。
+//   ⚠️ 10 日窗口（PRESENCE_WINDOW_10）：候补看的是「十日周期」，与「20日老周期」刻意不同。
+import {
+  ensurePresence,
+  getPresenceForDate,
+  getPresenceFingerprintToken
+} from '../data/auction-presence.js';
+import { PRESENCE_WINDOW_10 } from '../logic/auction/presence-label.js';
 // ★ [DIVERGE-DAYS 2026-10-21] 总龙分歧判定落库：切换日期时读回即用（一次到位渲染分歧板，不用再等 K 线）
 import { readDivergeDay, upsertDivergeDay } from '../data/diverge-days.js';
 import { _dbgLog } from '../data/debug-log.js';
@@ -313,6 +324,42 @@ export function useTopicVolRatioBoard() {
       if (_top5HistInflight.get(d) === p) _top5HistInflight.delete(d);
     });
     _top5HistInflight.set(d, p);
+  }
+  /**
+   * ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条「十日涨幅候补」的【在列次数】（10 日窗口）。
+   *
+   * 为什么要它：候补优先级是「首次在列（1 次）> 二次在列（2 次）」，而「在列」= 该票在这 10 个
+   *   交易日的早盘竞价名单里出现过几次 —— 这是【历史逐日名单】的问题，前端内存里只有当天那一份
+   *   ⇒ 只能读预计算表 auction_presence（data/auction-presence.js，会话缓存 + 单飞 + 失败冷却）。
+   *
+   * ⚠️ 会话缓存 / 单飞 / 冷却都在 Data 层（§5），本文件只负责【什么时候去要】+ 竞态保护。
+   * ⚠️ §10：读失败 / 表里没这一天 ⇒ range10Presence = null ⇒ 规则层【判不出】⇒ 候补不出现，
+   *   说明区会写出原因（⛔ 绝不把「没数据」当成「0 次在列」更不当成「今天空仓」）。
+   */
+  const range10Presence = ref(null);
+  const range10PresenceDate = ref('');
+  function ensureRange10Presence(d) {
+    if (!d) return;
+    const hit = getPresenceForDate(d, PRESENCE_WINDOW_10);
+    if (hit) {
+      if (range10PresenceDate.value !== d) {
+        range10Presence.value = hit;
+        range10PresenceDate.value = d;
+      }
+      return;
+    }
+    if (range10PresenceDate.value === d) return;   // 这一天要过了（成功或失败都已定论）
+    ensurePresence(d, PRESENCE_WINDOW_10).then(function(rec) {
+      if (currentDate.value !== d) return;         // 竞态保护：期间切了日期 ⇒ 丢弃
+      range10Presence.value = rec || null;
+      range10PresenceDate.value = d;
+    }).catch(function(e) {
+      if (currentDate.value !== d) return;
+      console.warn('[TVRB] 在列次数（auction_presence · 10日窗口）读取失败，十日涨幅候补本次不生效:',
+        e && e.message);
+      range10Presence.value = null;
+      range10PresenceDate.value = d;
+    });
   }
   // ★ [DIVERGE 2026-10-20] 市场总龙一【首次分歧】判定（异步算出后经 data computed 重算生效）。
   //   divergeVerdict = buildLeaderDivergence 的返回（ready/canJudge/todayFirstDivergence/事件流）；
@@ -677,6 +724,12 @@ export function useTopicVolRatioBoard() {
     void top5HistDays.value;
     // ★ [DIVERGE 2026-10-20] 总龙首次分歧判定（异步算出）⇒ 分歧买点才生效
     void divergeVerdict.value;
+    // ★★ [R10-BACKUP 2026-10-24 用户口径] 十日涨幅候补的两个异步输入：
+    //   ① `range10Presence` —— 在列次数（首次 / 二次在列）到货后重算一次；
+    //   ② `getPresenceFingerprintToken()` —— Data 层的到货令牌（缓存刷新 / 清空时版本号变化），
+    //      保证「先算了一轮判不出、数据后到」时也会自动补算一次（与 range20 指纹同一套路）。
+    void range10Presence.value;
+    void getPresenceFingerprintToken();
     // 分笔那份是响应式单例 ⇒ 显式声明依赖，数据到了自动重算（§17 不阻塞渲染）
     void tickMinuteMap.value;
     void tickMinuteDate.value;
@@ -811,7 +864,16 @@ export function useTopicVolRatioBoard() {
         // ★★ [CORE-CAT 2026-10-22 用户口径] 题材【大类】映射（核心管理那张表）——
         //   规则层据此把「文化传媒」认成「AI应用」。用户原话：「那个大类就是我说的题材」。
         //   ⛔ 规则层不自己读表（§5），这里注入；取不到 ⇒ 退化为恒等（§11 零行为变化）。
-        coreTopics: getCoreTopics()
+        coreTopics: getCoreTopics(),
+        // ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条「十日涨幅 · 在列次数候补」的两个输入：
+        //   range10Rows     = 当日名单的十日涨幅池（采集层出口，含空题材行 —— 与早盘竞价看板同一批行，
+        //                     ⛔ 不从 rec.topics 里翻：那会漏掉没成组的行，排出来的「前十」就不是屏幕那十行）；
+        //   range10Presence = 十日窗口的在列次数（首次 / 二次在列的唯一依据）。
+        //   ⚠️ 日期核对红线（与两份 rangeMap 同款）：Presence 不是这一天的 ⇒ 传 null（§10 不拿旧日期顶替）。
+        range10Rows: rec.range10Rows || null,
+        range10Presence: (range10PresenceDate.value === d && range10Presence.value)
+          ? range10Presence.value
+          : null
       });
 
       // §10 ★★ 失败 / 缺数据必须可见：这一天【确实读过】9:26 口径、但没拿到（失败或表里没有）
@@ -844,7 +906,10 @@ export function useTopicVolRatioBoard() {
         plan.ebbBuy ? [plan.ebbBuy] : [],
         plan.divergeBuy ? [plan.divergeBuy] : [],
         // ★★ [SWITCH 2026-10-22] 第二十八条的新龙那一行同样要拿分笔（它也在灰化容器之外）
-        plan.newDragon ? [plan.newDragon] : []];
+        plan.newDragon ? [plan.newDragon] : [],
+        // ★★ [R10-BACKUP 2026-10-24] 第二十九条的十日涨幅候补同样要拿分笔（它也在灰化容器之外）——
+        //   ⛔ 漏掉它，那只票点开就是「分笔明细暂不可用」（装饰只有这一处，§6）
+        plan.range10Backup ? [plan.range10Backup] : []];
       buyBlockLists.forEach(function(arr) {
         arr.forEach(function(b) {
           (b.picks || []).forEach(function(p) {
@@ -967,6 +1032,14 @@ export function useTopicVolRatioBoard() {
    */
   const switchDay = computed(() => (data.value.plan && data.value.plan.switchDay) || null);
   const newDragon = computed(() => (data.value.plan && data.value.plan.newDragon) || null);
+  /**
+   * ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条【十日涨幅 · 在列次数候补】那一只的买点块。
+   * ⚠️ 与 ebbBuy / divergeBuy / newDragon 同一约定：它【不在 blocks 里】，
+   *   视图必须渲染在灰化容器（.tvrb-buy-list.tvrb-ebb）【之外】——
+   *   它是题材量比太小被作废之后【今天真正要买】的那一只，不能被父级 grayscale 吞掉。
+   *   不需要候补 / 选不出（含数据未到）⇒ null ⇒ 视图 v-if 不渲染（§10 不拿空壳冒充结论）。
+   */
+  const range10Backup = computed(() => (data.value.plan && data.value.plan.range10Backup) || null);
   /**
    * ★ [DIVERGE-GATE 2026-10-21] 分歧判定未就绪的门控旗（非 null ⇒ 买点侧渲染「判定计算中」占位、
    *   不渲染旧规则选票 —— 见 data computed 里门控条件的逐条注释）。判不出 / 已就绪 ⇒ null。
@@ -1142,6 +1215,11 @@ export function useTopicVolRatioBoard() {
     });
   }, { immediate: true });
 
+  // ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条的【在列次数】按展示日补齐（切日期就补一次）。
+  //   幂等 + 会话缓存 + 单飞都在 Data 层（auction-presence.js）⇒ 这里重复触发也只是命中缓存（§32）。
+  //   ⚠️ 用 immediate：首屏那一次也要读（否则第一帧永远判不出「首次在列」）。
+  watch(currentDate, function(d) { ensureRange10Presence(d); }, { immediate: true });
+
   // §17 数据刷新（早盘竞价抓取 / 导入 / 收盘覆盖）→ 重算 + 补一次分笔读取。
   const _onRefresh = function() {
     bumpVersion();
@@ -1185,6 +1263,8 @@ export function useTopicVolRatioBoard() {
     // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条「新龙 / 新题材切换日」
     switchDay,
     newDragon,
+    // ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条「十日涨幅 · 在列次数候补」
+    range10Backup,
     summaryText,
     toggleExpand,
     toggleCompact,
