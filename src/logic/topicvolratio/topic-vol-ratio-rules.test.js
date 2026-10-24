@@ -3685,3 +3685,140 @@ describe('tvrb · 早盘 9:26 龙位 vs 收盘龙位 的差异说明（9-24 房�
     expect(emptyClose.blocks[0].notes.join('\n')).not.toContain('本题材龙位');
   });
 });
+
+// ============================================================================
+// [SECOND-LEADER-10 2026-10-24 用户口径] 排名第二的入选题材：它的【龙一】必须进入当天
+// 十日涨幅前十（9:26 竞价口径）—— 用户本轮新增的第二个入选条件。
+//
+// 用户原话：
+//   「排名第二的题材规则，还需要完善下，添加规则，这个题材的龙一是否进入当天的10日涨幅前十？
+//     如果没进入，也不能选，只选排名第一的那个题材股票」
+//   「连它的龙一都没有进入当天的十日涨幅，说明没有带动性，后续基本上涨概率不大，风险很高。」
+//   「平均量比符合，题材龙一进入当天十日涨幅前十（竞价口径），只有满足这个条件。才能入选买点侧。」
+//
+// ★ 9-24 真实数据核查结论（直接查库算出来的，见提交说明）：
+//   大亚圣象 9:26 竞价口径 = 54.74% ⇒ 主板【第 7 名】（进了前十）；
+//   收盘口径 = 41.00% ⇒ 主板【第 11 名】（用户看到的就是这个）。
+//   ⇒ 9-24 房地产的龙一【达标】，新规【不改变】当日结果（仍选 9:26 的龙二 华远控股）。
+//   本组单测因此用「造出来的池子」覆盖「没进前十」的那条分支。
+// ============================================================================
+describe('tvrb · [SECOND-LEADER-10] 排名第二题材：龙一必须进当天十日涨幅前十', function() {
+  const FIRST = '强题材';
+  const SECOND = '房地产';
+  const THIRD = '备选题材';
+
+  function topicOf(name, rank, vr) {
+    const names = [name + '一', name + '二', name + '三', name + '四'];
+    const ms = names.map(function(n, i) {
+      return m(n, { aucVolRatio: vr, aucShare: 6, code: '6002' + String(rank * 10 + i).padStart(2, '0') });
+    });
+    return { b: block(name, rank, ms), names: names };
+  }
+
+  const T1 = topicOf(FIRST, 1, 60);
+  const T2 = topicOf(SECOND, 2, 40);   // 量比 40 ≥ 25 ⇒ 走不到「量比太小作废」那条路
+  const T3 = topicOf(THIRD, 3, 30);    // 用来证明「不顺延到排名第三」
+
+  const dm = new Map();
+  [T1, T2, T3].forEach(function(t) {
+    t.names.forEach(function(n, i) {
+      dm.set(n, { rank: i + 1, topic: '', groupSize: 4, pct: 20 });
+    });
+  });
+
+  /**
+   * 造一个 12 只主板票的十日涨幅池（pct 递减 ⇒ 名次 = 位置），把【房地产一】放在 leadRank 位。
+   * @param {number} leadRank 房地产一的名次（1 起；> 10 ⇒ 没进前十）
+   * @param {boolean} [omitLead] true ⇒ 池子里干脆不放房地产一（模拟「判不出」）
+   */
+  function poolOf(leadRank, omitLead) {
+    const list = [];
+    for (let i = 1; i <= 12; i++) {
+      const isLead = (i === leadRank) && !omitLead;
+      list.push({
+        name: isLead ? SECOND + '一' : ('外票' + i),
+        code: isLead ? '600801' : ('6009' + String(i).padStart(2, '0')),
+        topic: isLead ? SECOND : '其它',
+        pct: 100 - i
+      });
+    }
+    return list;
+  }
+
+  const TOPICS = [T1.b, T2.b, T3.b];
+
+  it('★ 龙一没进前十（第 11 名）⇒ 第二题材【不入选】，且⛔ 不顺延到排名第三', function() {
+    const plan = buildTopicVolRatioPlan(TOPICS, dm, { range10Rows: poolOf(11) });
+    expect(plan.blocks).toHaveLength(1);
+    expect(plan.blocks[0].block.topic).toBe(FIRST);
+    expect(plan.buy.light).toBeNull();          // 槽位必须一起重建（⛔ 不留幽灵块）
+    expect(plan.buy.heavy).toBe(plan.blocks[0]);
+    const txt = plan.notes.join('\n');
+    expect(txt).toContain('排名第二题材的入选条件');
+    expect(txt).toContain('没有进入前十');
+    expect(txt).toContain('第 11 名');
+    // 用户要求原句入文案
+    expect(txt).toContain('连它的龙一都没有进入当天的十日涨幅，说明没有带动性，后续基本上涨概率不大，风险很高');
+    expect(txt).toContain('只选排名第一的题材【' + FIRST + '】');
+    // ⛔ 不顺延：第三题材不得顶上来
+    expect(plan.blocks.map(function(b) { return b.block.topic; })).not.toContain(THIRD);
+    // 也不许报「只有 1 个题材满足条件」（那是「今天本来就没第二个」的读法，与事实相反）
+    expect(txt).not.toContain('当日只有 1 个题材满足条件');
+  });
+
+  it('★ 龙一进了前十（第 5 名）⇒ 两个题材都入选，并留一条「通过」事实供核对', function() {
+    const plan = buildTopicVolRatioPlan(TOPICS, dm, { range10Rows: poolOf(5) });
+    expect(plan.blocks).toHaveLength(2);
+    expect(plan.blocks[1].block.topic).toBe(SECOND);
+    const txt = plan.notes.join('\n');
+    expect(txt).toContain('通过');
+    expect(txt).toContain(SECOND + '一');
+    expect(txt).toContain('第 5 名');
+  });
+
+  it('★ 9:26 口径优先：收盘第 3 名但 9:26 第 12 名 ⇒ 按【早上那一刻】否掉', function() {
+    const pool = poolOf(3);
+    // 9:26 口径：把房地产一压到最低 ⇒ 名次掉到第 12
+    const auc = new Map();
+    pool.forEach(function(p) { auc.set(p.name, { pct: p.pct }); });
+    auc.set(SECOND + '一', { pct: 1.0 });
+    // ① 不给 pctMap ⇒ 收盘口径 ⇒ 第 3 名 ⇒ 达标入选
+    expect(buildTopicVolRatioPlan(TOPICS, dm, { range10Rows: pool }).blocks).toHaveLength(2);
+    // ② 给 pctMap ⇒ 9:26 口径 ⇒ 第 12 名 ⇒ 不入选
+    const plan926 = buildTopicVolRatioPlan(TOPICS, dm, { range10Rows: pool, pctMap: auc });
+    expect(plan926.blocks).toHaveLength(1);
+    const txt = plan926.notes.join('\n');
+    expect(txt).toContain('9:26 竞价口径');
+    expect(txt).toContain('第 12 名');
+  });
+
+  it('§11：调用方没传十日涨幅池 ⇒ 这道闸整段跳过（行为与加规则之前逐字节相同）', function() {
+    const plan = buildTopicVolRatioPlan(TOPICS, dm, {});
+    expect(plan.blocks).toHaveLength(2);
+    expect(plan.notes.join('\n')).not.toContain('排名第二题材的入选条件');
+  });
+
+  it('§10：池子的 20 天补位行没就绪 ⇒ 名次会整体错位 ⇒ 判不出 ⇒ 【不否题材】只说明「未校验」', function() {
+    const plan = buildTopicVolRatioPlan(TOPICS, dm, { range10Rows: poolOf(11), range10Complete: false });
+    expect(plan.blocks).toHaveLength(2);
+    const txt = plan.notes.join('\n');
+    expect(txt).toContain('未校验');
+    expect(txt).not.toContain('本次【不入选】');
+  });
+
+  it('§10：龙一根本不在池子里 ⇒ 判不出（⛔ 不当成「没进前十」去否题材）', function() {
+    const plan = buildTopicVolRatioPlan(TOPICS, dm, { range10Rows: poolOf(11, true) });
+    expect(plan.blocks).toHaveLength(2);
+    expect(plan.notes.join('\n')).toContain('不在当天的十日涨幅名单里');
+  });
+
+  it('规则面板里写明了这条新规（文案与判定同处一处，§6）', function() {
+    const line = buildTvrbRulesLines().filter(function(s) { return s.indexOf('三、取几个题材') === 0; })[0];
+    expect(line).toBeTruthy();
+    expect(line).toContain('排名第二的题材 · 额外入选条件');
+    expect(line).toContain('龙一');
+    expect(line).toContain('十日涨幅前十');
+    expect(line).toContain('9:26 竞价口径');
+    expect(line).toContain('没有带动性');
+  });
+});

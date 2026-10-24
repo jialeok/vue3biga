@@ -91,7 +91,7 @@ import { makeCoreTopicResolver } from '../topic/core-category.js';
 //   用户原话：「排名第二的题材如果量比太小就用 10 日涨幅首次在列进行候补……因为 20 日老周期结束，
 //   现在轮到十日周期」⇒ 判定（排名 / 首次在列 / 同题材闸门）全在 range10-backup.js，
 //   ⛔ 本文件只负责「什么时候要用候补」+ 把它组装成买点块（§6 判据唯一）。
-import { pickRange10Backup, RANGE10_BACKUP_RULE_NO } from './range10-backup.js';
+import { pickRange10Backup, buildRange10Ranked, RANGE10_BACKUP_RULE_NO } from './range10-backup.js';
 // [R10-BACKUP] 「前十名」的只数常量与 presence-label 共用（§6：同一个数字只有一处真相）
 import { PRESENCE_TOP_N } from '../auction/presence-label.js';
 
@@ -1818,6 +1818,101 @@ function _appendRange20AucNote(out, aucMap, ebbCtx) {
 }
 
 /**
+ * ★★ [SECOND-LEADER-10 2026-10-24 用户口径] 排名第二的入选题材：它的【龙一】必须进入当天
+ * 十日涨幅前十（9:26 竞价口径）—— 用户本轮新增的第二个入选条件。
+ *
+ * 用户原话（逐字）：
+ *   「排名第二的题材规则，还需要完善下，添加规则，这个题材的龙一是否进入当天的10日涨幅前十？
+ *     如果没进入，也不能选，只选排名第一的那个题材股票」
+ *   「龙一是大亚圣象在十日涨幅排名11名（我按照当天收盘口径看到的，实际上是按照9点26分的竞价口径，
+ *     你核查下……），没有进入前十，说明这个题材还是很弱。连它的龙一都没有进入当天的十日涨幅，
+ *     说明没有带动性，后续基本上涨概率不大，风险很高。」
+ *   「排名第二题材入选规则是，平均量比符合，题材龙一进入当天十日涨幅前十（竞价口径），
+ *     只有满足这个条件。才能入选买点侧。」
+ *
+ * 口径（§6：两把尺子都必须与屏幕同源，⛔ 不许另写一份）：
+ *   · 「龙一」= 组内【龙位 = 1】的那只。名册用 `buyDragonMap`（9:26 竞价口径的
+ *     `rankDragonsWithPctMap`），与买点侧选股同一个名册；非主板不占龙位 ⇒ 不会出现「龙一是创业板」。
+ *   · 「当天十日涨幅前十」= `PRESENCE_TOP_N`（与「10日涨幅」toggle 那十枚标签同一个常量），
+ *     名次来自 `range10-backup.js#buildRange10Ranked`（与候补选股、与屏幕排序同一个实现）。
+ *
+ * ⚠️ 「排不出名次」分两种情况，⛔ 绝不能混（§10 的方向在这里是关键）：
+ *   · 龙一【在池子里、但没有十日涨幅 / 非主板】⇒ 屏幕上它本来就没有名次、也不在那十枚标签里
+ *     ⇒ 结论是确定的「没进前十」（judge = ''，rank = null）；
+ *   · 龙一【根本不在池子里】/ 池子不可用 ⇒ 我们没看到它这一行 ⇒ **判不出**（judge = 'no-row' / 'no-pool'）
+ *     ⇒ ⛔ 不许当成「没进」去否掉题材（判不出 ≠ 判出 false）。
+ *
+ * @param {object} blk 题材块（rankDecisionTopics 的一项：含 topic / members）
+ * @param {Map} dragonMap 9:26 口径龙位名册
+ * @param {Map<string,{rank:number|null,pct:number|null}>} rankMap 十日涨幅名次（见 _range10RankMapOf）
+ * @returns {{ok:boolean, judge:string, dragonName:string, rank:number|null, pct:number|null}}
+ *          judge：'' = 判出来了；'no-dragon' / 'no-row' / 'no-pool' = 判不出（各自原因不同，文案要分开说）
+ */
+function _secondTopicLeaderInTop10(blk, dragonMap, rankMap) {
+  const topN = PRESENCE_TOP_N;
+  const dm = dragonMap || new Map();
+  let lead = null;
+  ((blk && blk.members) || []).forEach(function(m) {
+    if (lead || !m || !m.name) return;
+    const d = dm.get(m.name);
+    if (d && Number(d.rank) === 1) lead = m;
+  });
+  if (!lead) {
+    return { ok: false, judge: 'no-dragon', dragonName: '', rank: null, pct: null };
+  }
+  const nm = String(lead.name).trim();
+  if (!(rankMap instanceof Map) || rankMap.size === 0) {
+    return { ok: false, judge: 'no-pool', dragonName: nm, rank: null, pct: null };
+  }
+  if (!rankMap.has(nm)) {
+    // 池子里根本没有这只票 ⇒ 我们没看到它的十日涨幅 ⇒ 判不出（⛔ 不当成「没进」）
+    return { ok: false, judge: 'no-row', dragonName: nm, rank: null, pct: null };
+  }
+  const hit = rankMap.get(nm) || null;
+  const pct = hit ? _num(hit.pct) : null;
+  const rawRank = hit ? Number(hit.rank) : NaN;
+  const rank = (isFinite(rawRank) && rawRank > 0) ? rawRank : null;
+  // rank === null ⇒ 它在池子里但排不出名次（没有十日涨幅 / 非主板）⇒ 不在那十枚标签里
+  return { ok: rank !== null && rank <= topN, judge: '', dragonName: nm, rank: rank, pct: pct };
+}
+
+/**
+ * 【纯函数】把十日涨幅池排成「主板名次」索引：`Map<股票名, {rank, pct}>`。
+ * ⛔ 排序 / 名次 / 只主板 全部复用 range10-backup.js#buildRange10Ranked（§6 同一个实现），
+ *   本函数只负责「换成按名字查」。
+ */
+function _range10RankMapOf(rows) {
+  const m = new Map();
+  if (!Array.isArray(rows) || rows.length === 0) return m;
+  buildRange10Ranked(rows).forEach(function(it) {
+    if (it && it.name) m.set(it.name, { rank: it.rank, pct: it.pct });
+  });
+  return m;
+}
+
+/**
+ * 把「第 2 个入选题材块」整块摘掉，并重建 heavy / light / candidates 三个槽位（§6 唯一实现）。
+ *
+ * ⚠️ 为什么必须重建槽位：`buy.light` 若还挂着已删除的块，四个装饰器会遍历到幽灵块 ——
+ *    那是「静默多渲染一段」的最短路径（第二十九条量比作废那次踩过）。
+ * @param {object} out buildTopicVolRatioPlan 的产出
+ * @returns {boolean} 真的摘掉了 ⇒ true（不足两块 ⇒ false，调用方据此决定要不要写说明）
+ */
+function _dropSecondBlockSlot(out) {
+  if (!out || !Array.isArray(out.blocks) || out.blocks.length < 2) return false;
+  out.blocks.splice(1, 1);
+  out.buy.heavy = null;
+  out.buy.light = null;
+  out.buy.candidates = [];
+  out.blocks.forEach(function(b, i) {
+    if (i === 0) out.buy.heavy = b;
+    else if (i === 1) out.buy.light = b;
+    else out.buy.candidates.push(b);
+  });
+  return true;
+}
+
+/**
  * 构造一个入选题材的块 —— ★形状与 decision-rules#_buildTopicBuyBlock【完全一致】★。
  *
  * ⛔ 为什么必须同形状（这是本文件最容易踩的坑）：块要交给 decision-rules#finishBuyBlock
@@ -2826,6 +2921,15 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   let r10RemovedSecond = null;   // 记录「第二题材因量比太小被整块删除」，供尾部的说明文案使用
   let r10SecondWeak = null;      // 记录「第二题材量比太小」这个事实（即使因数据缺口没删）
   let r10GapNoted = false;       // 「数据缺口已说明」旗子：同一件事只说一次（⛔ 不叠两条告警）
+  // ★★ [R10-926 2026-10-24 用户口径] 十日涨幅池 → 【9:26 竞价口径】（★ 只算一次，三处共用：
+  //   ① 本文后面「排名第二题材的龙一是否进前十」这道新闸门；② 第二十九条十日涨幅候补的选股；
+  //   ③ 候补 / 闸门的说明文案里的「口径时间」）。
+  //   ⚠️ §11：9:26 口径没读到（老调用方 / 单测不传 pctMap）⇒ _withAuctionLegPct 原样返回，
+  //     等于退回收盘口径，行为与加这一段之前逐字节相同；文案会如实标注口径时间。
+  const r10Rows926Res = _withAuctionLegPct(o.range10Rows || null, buyPctMap);
+  const r10Base926 = r10Rows926Res.used;
+  const r10BaseText = r10Base926 ? '9:26 竞价口径' : '收盘口径（9:26 口径未读到）';
+  const r10Rank926 = _range10RankMapOf(r10Rows926Res.rows);
 
 
   // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条【新龙 / 新题材切换日】—— 必须排在【选股扫描之前】：
@@ -2977,20 +3081,77 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
             }
           }
         });
-        out.blocks.splice(1, 1);
-        out.buy.heavy = null;
-        out.buy.light = null;
-        out.buy.candidates = [];
-        out.blocks.forEach(function(b, i) {
-          if (i === 0) out.buy.heavy = b;
-          else if (i === 1) out.buy.light = b;
-          else out.buy.candidates.push(b);
-        });
+        // ⚠️ 槽位必须一起重建（§6 唯一实现：_dropSecondBlockSlot）
+        _dropSecondBlockSlot(out);
         out.notes.push('⚠️【第' + RANGE10_BACKUP_RULE_NO + '条 · 题材量比太小】排名第二的入选题材【' +
           weakInfo.topic + '】平均竞价量比 ' + weakInfo.avgText + ' ＜ ' +
           TVRB_CASH_ALERT_AVG_VR + ' ⇒ 该题材【禁止选入】（已整块作废，不列股票），' +
           '改用【十日涨幅前十 + 首次在列】的主板新面孔候补。');
       }
+    }
+  }
+
+  // ── ★★ [SECOND-LEADER-10 2026-10-24 用户口径] 第二道闸门：排名第二的入选题材，
+  //    它的【龙一】必须进入当天十日涨幅前十（9:26 竞价口径）──────────────────────────────
+  //   用户原话：「排名第二的题材规则，还需要完善下，添加规则，这个题材的龙一是否进入当天的
+  //     10日涨幅前十？如果没进入，也不能选，只选排名第一的那个题材股票」
+  //   「排名第二题材入选规则是，平均量比符合，题材龙一进入当天十日涨幅前十（竞价口径），
+  //     只有满足这个条件。才能入选买点侧。」
+  //   「连它的龙一都没有进入当天的十日涨幅，说明没有带动性，后续基本上涨概率不大，风险很高。」
+  //
+  //   为什么是【必要条件】（⛔ 不许有人改成「判不出就放行」）：用户给的判据是「没有带动性 ⇒
+  //     上涨概率不大、风险很高」—— 没被验证过的带动性，按用户口径就是不能买。
+  //
+  //   ⚠️ 顺序铁律（⛔ 别把这段挪到上面）：必须排在【题材量比太小 ⇒ 整块作废 + 走十日涨幅候补】之后。
+  //     那一档要留 `r10RemovedSecond` 给候补当扳机；本段若抢先摘块，候补就永远不会被触发。
+  //   ⚠️ 用户明说「只选排名第一的那个题材股票」⇒ 被否后【不顺延到排名第三】：
+  //     ⛔ 不补位、不 continue，第 2 个槽位直接空着（更弱的题材更不可能过这道闸）。
+  //   ⚠️ §11：调用方【根本没传十日涨幅池】（老调用方 / 单测）⇒ 整段跳过，行为与加本规则之前逐字节相同。
+  //   ⚠️ §10：池子不可用（传了但补位行没就绪 / 池子为空）或龙一没出现在池子里 ⇒ **判不出** ⇒
+  //     本次【不启用】这道闸（保持原规则），并如实说明 —— ⛔ 绝不把「没数据」当成「没进前十」去否题材
+  //     （那与第二十九条「数据缺口 ⇒ 暂不作废」是同一把尺子，两处口径必须一致）。
+  //   ✅ 只有【真的算出了名次】**且名次 > 前十**（或龙一在池子里却排不出名次）时，才否掉该题材。
+  let r10SecondNoLead = null;      // 本轮被这道闸否掉的第二题材（供尾部说明避免自相矛盾）
+  if (r10Enabled && out.blocks.length >= 2 && r10PoolGiven) {
+    const secondBlk = out.blocks[1];
+    const secondTopic = String((secondBlk && secondBlk.block && secondBlk.block.topic) || '').trim();
+    const firstTopic = String((out.blocks[0] && out.blocks[0].block && out.blocks[0].block.topic) || '').trim();
+    const gate = r10PoolComplete
+      ? _secondTopicLeaderInTop10(secondBlk.block, buyDragonMap, r10Rank926)
+      : { ok: false, judge: 'no-pool', dragonName: '', rank: null, pct: null };
+    // 判不出的三种情形（⛔ 不否题材，只说清楚「没校验」——§10 判不出 ≠ 判出 false）
+    const undecidable = (gate.judge === 'no-pool' || gate.judge === 'no-row' || gate.judge === 'no-dragon');
+    if (gate.ok) {
+      // 达标也要留一行事实：用户回看时能核对「这道闸是怎么过的」（§10 判定可追溯）
+      out.notes.push('ℹ️【排名第二题材的入选条件】排名第二的入选题材【' + secondTopic + '】通过：' +
+        '它的龙一【' + gate.dragonName + '】当日十日涨幅〔' + r10BaseText + '〕' +
+        _pct2(gate.pct) + ' 第 ' + gate.rank + ' 名（前十名内 ⇒ 有带动性）。');
+    } else if (undecidable) {
+      // ⛔ 同一件数据缺口只说一次（避免与第二十九条「暂不作废」那条叠成两句）
+      if (!r10GapNoted) {
+        r10GapNoted = true;
+        const gapWhy = (gate.judge === 'no-dragon')
+          ? '该题材【没有龙一】（组内没有可占龙位的主板票）'
+          : (gate.judge === 'no-row'
+            ? ('它的龙一【' + gate.dragonName + '】不在当天的十日涨幅名单里')
+            : ('【十日涨幅名单】' + (r10PoolComplete ? '为空' : '的 20 天补位行还没就绪（名次会整体错位）')));
+        out.notes.push('⚠️【排名第二题材的入选条件】排名第二的入选题材【' + secondTopic + '】本次' +
+          '【未校验】（保持原规则照常列出）：' + gapWhy + ' ⇒ 判不出它的龙一进没进前十。' +
+          '数据到货后会自动重判（§10：判不出 ≠ 没进前十）。');
+      }
+    } else {
+      const rankText = (gate.rank === null)
+        ? '排不出名次（没有十日涨幅 / 非主板 ⇒ 不在那十枚标签里）'
+        : ('第 ' + gate.rank + ' 名');
+      r10SecondNoLead = { topic: secondTopic, judge: gate.judge };
+      // ⚠️ 槽位必须一起重建（§6 唯一实现：_dropSecondBlockSlot）
+      _dropSecondBlockSlot(out);
+      out.notes.push('⚠️【排名第二题材的入选条件】排名第二的入选题材【' + secondTopic +
+        '】本次【不入选】：它的龙一【' + gate.dragonName + '】当日十日涨幅〔' + r10BaseText + '〕' +
+        _pct2(gate.pct) + ' ' + rankText + '，没有进入前十（第 ' + PRESENCE_TOP_N + ' 名以内才达标）。' +
+        '连它的龙一都没有进入当天的十日涨幅，说明没有带动性，后续基本上涨概率不大，风险很高。' +
+        '⇒ 本日买点侧只选排名第一的题材【' + firstTopic + '】的股票' +
+        '（⛔ 不顺延到排名第三的题材）。');
     }
   }
 
@@ -3201,14 +3362,10 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     if (r10Top1Topic) r10ExcludeTopics.push(r10Top1Topic);
 
     const r10Presence = o.range10Presence || null;
-    // ★★ [R10-926 2026-10-24 用户口径] 候选池的十日涨幅换成【9:26 竞价口径】那一份 ⇒
-    //   「前十 / 第几名 / 谁最强」全部按【早上 9:26 那一刻】算（早上选出来的票，收盘回看仍是同一只）。
-    //   ⚠️ 9:26 口径没读到 ⇒ 原样返回（退回收盘口径，§11 零行为变化），下面的文案据此如实标注口径时间。
-    const r10Rows926 = _withAuctionLegPct(o.range10Rows || null, buyPctMap);
-    const r10Base926 = r10Rows926.used;
-    const r10BaseText = r10Base926 ? '9:26 竞价口径' : '收盘口径（9:26 口径未读到）';
+    // ★ [R10-926] 池子与口径在选股扫描之前已经算好（一次），这里直接复用（⛔ 不重算第二遍）
+    const r10Rows926 = r10Rows926Res.rows;
     // ⛔ [R10-NOEXCLUDE 2026-10-24] 不传任何「已占用」名单：选票只认 涨幅名次 + 在列次数 + 总龙一题材。
-    const r10Res = r10Top1Missing ? null : pickRange10Backup(r10Rows926.rows, {
+    const r10Res = r10Top1Missing ? null : pickRange10Backup(r10Rows926, {
       counts: r10Presence ? r10Presence.counts : null,
       coveredDays: r10Presence ? r10Presence.coveredDays : 0,
       excludeTopics: r10ExcludeTopics,
@@ -3510,7 +3667,9 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   }
   // ★ [R10-BACKUP] 第二题材因【量比太小】被整块作废时，不再报「只有 1 个题材满足条件」——
   //   那样读起来像「今天本来就没第二个题材」，与事实（有、但被作废）相反（§10 不许含糊）。
-  if (out.blocks.length < TVRB_TOPIC_LIMIT && list.length > 0 && !r10RemovedSecond) {
+  // ★ [SECOND-LEADER-10 2026-10-24] 第二题材被【龙一没进前十】否掉时同理：不再报「只有 1 个题材
+  //   满足条件」—— 那是「今天本来就没第二个题材」的读法，与事实（有、但没带动性）相反（§10 不许含糊）。
+  if (out.blocks.length < TVRB_TOPIC_LIMIT && list.length > 0 && !r10RemovedSecond && !r10SecondNoLead) {
     out.notes.push('当日只有 ' + out.blocks.length + ' 个题材满足条件（数量 ≥ ' + TVRB_MIN_COUNT +
       ' 只），不足 ' + TVRB_TOPIC_LIMIT + ' 个。');
   }
@@ -3548,7 +3707,16 @@ export function buildTvrbRulesLines() {
       TVRB_MIN_COUNT + ' ~ ' + TVRB_MID_MAX + ' 只 ⇒ 该题材选 ' + TVRB_PICK_MID + ' 只；' +
       '> ' + TVRB_MID_MAX + ' 只 ⇒ 该题材选 ' + TVRB_PICK_BIG + ' 只。',
     '三、取几个题材：按排名从高到低往下扫，跳过数量不足的题材，只保留最靠前的 ' +
-      TVRB_TOPIC_LIMIT + ' 个入选题材（不足时顺延，直到取够或没有合格题材）。',
+      TVRB_TOPIC_LIMIT + ' 个入选题材（不足时顺延，直到取够或没有合格题材）。' +
+      // ★★ [SECOND-LEADER-10 2026-10-24 用户口径] 排名第二题材的第二个入选条件（新规）。
+      //    ⛔ 文案与判定必须同处一处（§6）：判定在 buildTopicVolRatioPlan 的
+      //    「第二道闸门」那一段，改一处必须改另一处。
+      '★【排名第二的题材 · 额外入选条件（新规，2026-10-24）】除平均竞价量比要符合外，' +
+      '还必须满足一条：该题材的【龙一】进入了【当天十日涨幅前十】（第 ' + PRESENCE_TOP_N +
+      ' 名以内，按 9:26 竞价口径）。' +
+      '没进 ⇒ 该题材【不入选】，当天买点侧【只选排名第一的那个题材】的股票，⛔ 不顺延到排名第三。' +
+      '理由（用户原话）：连它的龙一都没有进入当天的十日涨幅，说明没有带动性，' +
+      '后续基本上涨概率不大，风险很高。',
     '四、选股顺序：入选题材内按【龙一 → 龙二 → 龙三 …】从高到低依次取票。',
     '五、竞价涨停剔除：某龙位股票【竞价涨停（竞价一字）】⇒ 当天买不进，跳过它并顺延到下一个龙位' +
       '（龙一涨停看龙二，龙二涨停看龙三……依次类推）；⚠️ 顺延【补位】—— 名额照买满' +
