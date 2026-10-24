@@ -3322,21 +3322,68 @@ describe('tvrb · 第二十九条 十日涨幅 · 在列次数候补', function(
     expect(plan.buyNames.has('兆威机电')).toBe(true);
   });
 
-  it('⛔ 今日【确实要买】的票不重复选（灰化的才算「不占用名额」）', function() {
-    // 场景：第二题材 房地产（7.47）作废 ⇒ 触发候补；而排名第一的【强题材】量比 60 达标，
-    //   ⇒ 它的票是【今天真要买的】，⛔ 不能被候补再选一次。
+  // ★★ [R10-NOEXCLUDE 2026-10-24 第三次修正 · 10-20 事故回归]
+  //   用户原话：「10月20日，十日候补题材你选了京城股份，实际上是海洋王，因为海洋王已经选在了
+  //     下面题材商业航天题材中，所以你选排在后一名的京城股份？这是不对的。……出现多只首次在列
+  //     只选一只最强的，也就是十日涨幅最高的，那就是海洋王。」
+  //     「这种情况是题材和市场选票叠加的效果，这是好事啊，因为两边都选了海洋王，两个提示板
+  //      整合成一个叠加在一起就可以了，这是确定性啊。」
+  //   ⇒ ① ⛔ 不许因为「它已是题材块的买点」就顺延到下一名（那会用更弱的票顶掉最强的票）；
+  //     ② 同一只票两条通道都选中 = 叠加确认，两处各显示一行 + 说明区讲清。
+  /** 商业航天（强题材，量比 60）里 海洋王 = 龙一 ⇒ 它是【今天真要买】的那只 */
+  function commercialSpace() {
+    const ms = [
+      m('海洋王', { aucVolRatio: 60, aucShare: 6, code: '002724' }),
+      m('航天甲', { aucVolRatio: 60, aucShare: 5, code: '600301' }),
+      m('航天乙', { aucVolRatio: 60, aucShare: 4, code: '600302' }),
+      m('航天丙', { aucVolRatio: 60, aucShare: 3, code: '600303' })
+    ];
+    const b = block('商业航天', 1, ms);
+    const d = topic4('房地产', 2, 7.47, 600200);
+    const dm = new Map();
+    ms.concat(d.names.map(function(n) { return { name: n }; })).forEach(function(x, i) {
+      dm.set(x.name, { rank: (i % 4) + 1, topic: '', groupSize: 0, pct: 20 });
+    });
+    return { topics: [b, d.b], dm: dm };
+  }
+
+  it('★★ 10-20 事故回归：海洋王已是【商业航天】的买点 ⇒ 候补仍选海洋王（⛔ 不顺延成京城股份）', function() {
+    const f = commercialSpace();
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, {
+      range10Rows: POOL,
+      range10Presence: presence(CNT),
+      ebbCtx: ebbCtxOf()
+    });
+    // ① 题材通道：商业航天（60 达标）照旧选出海洋王 —— 它是今天真要买的
+    expect(plan.blocks[0].block.topic).toBe('商业航天');
+    expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toContain('海洋王');
+    // ② 市场通道：只认「最强的那只首次在列」= 海洋王（第 7 名），⛔ 不许顺延到京城股份（第 8 名）
+    expect(plan.range10Backup).toBeTruthy();
+    expect(plan.range10Backup.picks.map(function(p) { return p.name; })).toEqual(['海洋王']);
+    // ③ 两处都展示 = 叠加确认，文案必须讲清「不是重复选错」
+    expect(plan.range10Backup.picks[0].range10Label).toContain('叠加确认');   // 徽标上直接可见
+    expect(plan.range10Backup.picks[0].actionNote).toContain('叠加');
+    expect(plan.range10Backup.picks[0].actionNote).toContain('商业航天');
+    expect(plan.notes.join('\n')).toContain('叠加确认');
+    // ④ 「选股 N 只」按去重后的股票数算（同一只票出现在两块里不能算两只）
+    expect(plan.pickCount).toBe(1);
+    // ⑤ 买点名单里仍是同一只（Set 语义，不会重复）
+    expect(plan.buyNames.has('海洋王')).toBe(true);
+  });
+
+  it('⛔ 今日【确实要买】的票不再被排除：它若是最强首次在列，候补也选它（叠加）', function() {
     const f = twoTopics();
     const pool = [{ name: '强题材一', code: '600100', topic: '强题材', pct: 99 }].concat(POOL);
-    const cnt = Object.assign({}, CNT, { 强题材一: 1 });   // 前十第 1 名 + 首次在列（如果不排除就会被选走）
+    const cnt = Object.assign({}, CNT, { 强题材一: 1 });   // 前十第 1 名 + 首次在列
     const plan = buildTopicVolRatioPlan(f.topics, f.dm, {
       range10Rows: pool,
       range10Presence: presence(cnt),
       ebbCtx: ebbCtxOf()
     });
     expect(plan.blocks[0].picks[0].name).toBe('强题材一');       // 它确实是今日买点
-    expect(plan.range10Backup.picks[0].name).not.toBe('强题材一');
-    expect(plan.range10Backup.picks[0].name).toBe('海洋王');
-    expect(plan.range10Backup.picks[0].actionNote).not.toContain('重复出现');
+    expect(plan.range10Backup.picks[0].name).toBe('强题材一');   // ★ 叠加，而不是顺延成海洋王
+    expect(plan.range10Backup.picks[0].actionNote).toContain('叠加');
+    expect(plan.notes.join('\n')).toContain('叠加确认');
   });
 
   it('★ 被整块作废的题材里的票：只要它自己是【首次在列】且 ≠ 总龙一题材，仍可当选候补', function() {

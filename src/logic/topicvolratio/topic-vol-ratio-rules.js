@@ -2196,7 +2196,11 @@ function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tierPick) 
  * @param {Array} list  当日题材块（取 member 拿 aucShare / code，与另外三段同一取法）
  * @param {object} fOpts finishBuyBlock 的入参
  * @param {{weakTopics?:Array<{topic:string,avgText:string,reasonText:string}>,
- *          top1Topic?:string, top1Name?:string}} [info] 说明文案用的事实（谁作废了 / 总龙一是谁）
+ *          top1Topic?:string, top1Name?:string,
+ *          grayed?:{topic:string,tag:string}|null, overlap?:{topic:string,tag:string}|null}} [info]
+ *        说明文案用的事实（谁作废了 / 总龙一是谁 / 同一只票在上方是什么身份）：
+ *        · grayed  = 上方那一块已被改成「不开新仓」并灰化（10-23 兆威机电）；
+ *        · overlap = 上方那一块里它是【今天要买】的买点（10-20 海洋王 ⇒ 两条通道叠加确认）。
  * @returns {object|null}
  */
 function _buildRange10BackupBlock(bk, list, fOpts, info) {
@@ -2227,14 +2231,21 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
     pctText: formatRangePct(pct),
     // ★ 本行专属徽标（Logic 层拼好，模板零计算 §21）：「十日涨幅第 N 名 · 首次在列」
     range10Label: '十日涨幅第 ' + (p.rank === null || p.rank === undefined ? '—' : p.rank) +
-      ' 名 · ' + (p.label || '在列次数未知'),
+      ' 名 · ' + (p.label || '在列次数未知') +
+      // ★ [R10-NOEXCLUDE 2026-10-24] 与题材买点重叠时把「叠加确认」直接写进徽标 ——
+      //   用户要的是「一眼看见确定性」，⛔ 不能只藏在点开后的说明里。
+      (inf.overlap ? ' · 叠加确认' : ''),
     // ★ [R10-TRAIL 2026-10-24] 徽标的悬停说明：把「名次」与「屏幕行号」两个数一次讲清，
     //   ⛔ 免得用户看到「第 8 名」却在第 9 行找不到对不上的感觉（两种数法都没错，是口径不同）。
     range10Title: '十日涨幅第 ' + (p.rank === null || p.rank === undefined ? '—' : p.rank) +
       ' 名（只算主板名次：创业板 / 科创板 / 北交所不占名次，所以它在屏幕上是第 ' +
       (p.rowNo === undefined || p.rowNo === null ? '—' : p.rowNo) + ' 行）｜' +
       (p.label || '在列次数未知') + ' = 这 10 个交易日里它出现在当日名单的次数' +
-      '（含今天；1 次 = 首次在列，2 次 = 二次在列）',
+      '（含今天；1 次 = 首次在列，2 次 = 二次在列）' +
+      (inf.overlap
+        ? ('｜叠加确认：它同时是上方【' + (inf.overlap.topic || '—') + '】题材块的买点 —— ' +
+           '题材通道与市场通道选中同一只票，确定性更高，两处各显示一行')
+        : ''),
     // ⚠️ 预置：finishBuyBlock 内部 _markHold 要读它（§6 与 _buildBlock 同一做法）
     aucShare: member ? _num(member.aucShare) : null,
     position: ''
@@ -2259,11 +2270,20 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
   //   本规则是【股票级】通道（从总市场选股），题材块灰化是【题材级】结论，两者互不否决
   //   ⇒ 同一只票会重复出现一次，这是设计如此（用户原话「上面是重复出现的兆威机电也是逻辑」）。
   const grayed = inf.grayed || null;
+  // ★★ [R10-NOEXCLUDE 2026-10-24 第三次修正] 同一只票是上方某题材块的【买点】（10-20 海洋王 / 商业航天）
+  //   ⇒ 两条通道叠加确认，⛔ 这不是「重复选错」，也⛔ 不许因为它已被选中就顺延到下一名。
+  const overlap = inf.overlap || null;
   const dupText = grayed
     ? ('本股同时也在上方【' + (grayed.topic || '—') + '】题材块里（那一块已被改成【' +
        (grayed.tag || '不开新仓') + '】并灰化，照旧展示、不恢复）—— ' +
        '但本行不是按题材选的，是按【十日涨幅前十 + 在列次数 + 与总龙一不同题材】从全市场选的，' +
        '所以同一只票会重复出现一次。')
+    : '';
+  const overlapText = overlap
+    ? ('本股同时是上方【' + (overlap.topic || '—') + '】题材块里的买点（' +
+       (overlap.tag || '买') + '）—— 【题材通道】和【市场通道】同时选中了同一只票：' +
+       '这是叠加确认（确定性更高），不是重复选错，也不用分成两只。' +
+       '两处照旧各显示一行，看到两次不必担心。')
     : '';
 
   const block = {
@@ -2278,7 +2298,7 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
     pickRank: null,
     reason: '【第' + RANGE10_BACKUP_RULE_NO + '条】十日涨幅候补（★ 股票级通道：从全市场选股，不是选题材）：' +
       (weakText ? (weakText + ' ⇒ 该题材作废；') : '') +
-      dupText +
+      dupText + overlapText +
       '按「十日涨幅前十 + ' + (bk.tier === 'first' ? '首次在列' : '二次在列') + ' + 与' + top1Text +
       '不同题材」选出 ' + name + '（' + (topic || '—') + '，十日涨幅 ' + formatRangePct(pct) +
       '，第 ' + p.rank + ' 名，' + (p.label || '') + '）—— 十日周期的新面孔。',
@@ -2294,9 +2314,11 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
         '和「题材量比买点」是两条线：那条线先选题材再在题材里选股，这条线只认股票自己的三个条件' +
         '（十日涨幅前十 + 首次/二次在列 + 与 20日涨幅总龙一不同题材）。',
       '【候补怎么选】十日涨幅前 ' + (bk.topN || 10) + ' 名（只算主板名次，非主板不占名次）自上而下：' +
-        '跳过【今日确实要买】的（避免买两次）→ 跳过题材未知的（判不出是否与总龙一同题材）→ 跳过与' +
-        top1Text + '同类的 ⇒ ' + tierText + '。',
+        '跳过题材未知的（判不出是否与总龙一同题材）→ 跳过与' + top1Text + '同类的 ⇒ ' + tierText + '。' +
+        '⛔ 不会因为某只票【已经在题材块里当选】就跳过它 —— 那会把最强的票换成更弱的票' +
+        '（10-20 事故：海洋王 29.51% 被跳过、换成京城股份 27.26%）。',
       grayed ? ('⚠️ ' + dupText) : '',
+      overlap ? ('✅ ' + overlapText) : '',
       '⚠️ 为什么用十日涨幅而不是 20日涨幅：20 日老周期已经结束（总龙二次确认退潮），现在轮到【十日周期】 ——' +
         '龙头的量比都比题材大，十日周期的新面孔才是接下来的核心。20日涨幅列表里的老票会逐渐换成新票，' +
         '本看板 20日涨幅榜上的老面孔也会一天天被十日周期的新票替换掉（这是正常的周期切换，不是数据错乱）。',
@@ -2321,6 +2343,9 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
       (grayed ? ('⚠️ 本股在上方【' + (grayed.topic || '—') + '】题材块里已被改成【' +
         (grayed.tag || '不开新仓') + '】（题材量比不达标 ⇒ 那一块照旧灰化、不恢复）；' +
         '但本行是【股票级】通道另选出来的，不是那个题材块要买它 —— ') : '') +
+      // ★ [R10-NOEXCLUDE 2026-10-24] 与题材通道叠加时也要在行内讲一句（用户会点开行看说明）
+      (overlap ? ('✅ 本股同时是上方【' + (overlap.topic || '—') + '】题材块的买点 —— ' +
+        '两条通道叠加确认（确定性更高），不是重复选错 —— ') : '') +
       '按「十日涨幅前十 + ' + (bk.tier === 'first' ? '首次在列' : '二次在列') + ' + 与' + top1Text +
       '不同题材」选出本股（第 ' + p.rank + ' 名，十日涨幅 ' + formatRangePct(pct) + '，' + (p.label || '') + '）。' +
       (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : '') +
@@ -2886,23 +2911,27 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     const r10Top1Topic = r10Top1 ? String(r10Top1.topic || '').trim() : '';
     const r10Top1Name = r10Top1 ? String(r10Top1.name || '').trim() : '';
     const r10Top1Missing = !r10Top1Topic;
-    // ── 已占用的买点（同一只票不重复列）────────────────────────────────────────────
-    // 🔴🔴 [R10-STOCK-LEVEL 2026-10-24 用户口径 · 第二次修正]
-    //   用户原话：「我不是叫你候选 10 日涨幅排名前十的首次在列的股票吗？这个不矛盾啊，
-    //     这个 10 日涨幅和 20 日涨幅排名，是选股票，前者是选题材，后者只选股票
-    //     （唯一区分的就是，和市场总一不同题材）。当天它题材选不了，但是从总市场中选股（非选题材），
-    //     他有首次在列标签，所以被候选……上面是重复出现的兆威机电也是逻辑，因为这个是
-    //     十日涨幅候补选的，不是题材选的。」
-    //   ⇒ 本规则是【股票级通道】，不是【题材级通道】：
-    //     · 只排除「今日【确实要买】的票」，避免同一只票被买两次 / 重复成两行；
-    //     · ⛔ 被改写成「不开新仓」的票（灰化 / 空仓不买 / 退潮不买 / 分歧不买）**不算占用**：
-    //       它们不是今天要买的，凭「十日涨幅前十 + 首次在列」照样能当候补（10-23 的兆威机电：
-    //       工业4.0 题材平均量比 15.18 ＜ 25 ⇒ 整块灰化空仓，但它本身是「首次在列」⇒ 该被选中）。
-    //     · 因此候补行会与上方那个灰化区块里的同一只票【重复出现一次】—— 这是设计如此（用户认可）。
+    // ── 上方每一只票的【身份】（只用于说明文案，⛔ 不参与选票）─────────────────────
+    // 🔴🔴 [R10-STOCK-LEVEL 2026-10-24 用户口径 · 第三次修正（10-20 事故）]
+    //   第一次修正：题材灰化/作废不能否决这只票（10-23 兆威机电）。
+    //   第二次修正：本通道是【选股票】不是【选题材】，同一只票可以在灰化块里重复出现。
+    //   ★ 第三次修正（本次）：「10月20日，十日候补题材你选了京城股份，实际上是海洋王，因为
+    //     海洋王已经选在了下面题材商业航天题材中，所以你选排在后一名的京城股份？这是不对的。」
+    //     「出现多只首次在列只选一只最强的，也就是十日涨幅最高的，那就是海洋王。」
+    //     「这种情况是题材和市场选票叠加的效果，这是好事啊，因为两边都选了海洋王，两个提示板
+    //       整合成一个叠加在一起就可以了，这是确定性啊。意思是它即是题材选出来的，也是市场
+    //       选出来的。两者叠加一起，也不用分开了。」
+    //   ⇒ 两条铁律：
+    //     ① ⛔ 绝不因为「它已在某个题材块里当选买点」就把候补【顺延到下一名】——
+    //        那等于用更弱的票顶掉最强的票（10-20：海洋王 29.51% 被顶掉，换成京城股份 27.26%）；
+    //     ② 同一只票被两条通道同时选中 = 【叠加确认】，两处各展示一行 + 说明区讲清「确定性」。
+    //   于是这两张 Map 只收集「它在上方是什么身份」，用来写文案：
+    //     · r10NoBuyInfo    = 灰化 / 整块作废（不开新仓）⇒ 要解释「那一块照旧灰化、不恢复」；
+    //     · r10RealPickInfo = 今天【确实要买】的买点 ⇒ 要解释「两条通道叠加确认」。
     //   判据用【色调】而不是标签文案：三处「不开新仓」的改写（退潮 / 分歧 / 空仓）都统一 tone = nobuy
     //   （CASH_NO_BUY_TONE = DIVERGE_NO_BUY_TONE = EBB_NO_BUY_TONE），§6 一处真相。
-    const r10Taken = new Set();
     const r10NoBuyInfo = new Map();      // 股票名 -> { topic, tag }：上方以「不开新仓 / 整块作废」身份出现过
+    const r10RealPickInfo = new Map();   // 股票名 -> { topic, tag }：上方以【今天确实要买】身份出现过
     // 先把「被整块作废的那块」里的票铺进去（它们的块已经不在 out.blocks 里了）
     r10RemovedPicks.forEach(function(v, k) { r10NoBuyInfo.set(k, v); });
     const _r10IsNoBuyPick = function(p) {
@@ -2915,15 +2944,24 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         const nm = String(p.name).trim();
         if (_r10IsNoBuyPick(p)) {
           if (!r10NoBuyInfo.has(nm)) r10NoBuyInfo.set(nm, { topic: bt, tag: String(p.buyActionTag || '') });
-          return;                        // ⛔ 不开新仓 ⇒ 不占用候补名额
+          return;                        // 灰化 / 整块作废 ⇒ 只记身份，不参与排除
         }
-        r10Taken.add(nm);
+        // ⚠️ [R10-NOEXCLUDE 2026-10-24] 今天【确实要买】的票同样只记身份，⛔ 不再排除
+        //   （10-20 事故：海洋王 商业航天 已当选 ⇒ 被排除 ⇒ 顺延成京城股份，用更弱的票顶掉最强）
+        if (!r10RealPickInfo.has(nm)) {
+          r10RealPickInfo.set(nm, { topic: bt, tag: String(p.buyActionTag || '') });
+        }
       });
     });
     [out.newDragon, out.ebbBuy].forEach(function(x) {
       if (!x) return;
+      const xt = String((x.block && x.block.topic) || '').trim();
       (x.picks || []).forEach(function(p) {
-        if (p && p.name && !_r10IsNoBuyPick(p)) r10Taken.add(String(p.name).trim());
+        if (!p || !p.name || _r10IsNoBuyPick(p)) return;
+        const nm = String(p.name).trim();
+        if (!r10RealPickInfo.has(nm)) {
+          r10RealPickInfo.set(nm, { topic: xt, tag: String(p.buyActionTag || '') });
+        }
       });
     });
     // ── 必须避开的题材 ────────────────────────────────────────────────────────────
@@ -2937,10 +2975,10 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     if (r10Top1Topic) r10ExcludeTopics.push(r10Top1Topic);
 
     const r10Presence = o.range10Presence || null;
+    // ⛔ [R10-NOEXCLUDE 2026-10-24] 不传任何「已占用」名单：选票只认 涨幅名次 + 在列次数 + 总龙一题材。
     const r10Res = r10Top1Missing ? null : pickRange10Backup(o.range10Rows || null, {
       counts: r10Presence ? r10Presence.counts : null,
       coveredDays: r10Presence ? r10Presence.coveredDays : 0,
-      excludeName: r10Taken,
       excludeTopics: r10ExcludeTopics,
       // 题材认亲走【大类归一】的同一把尺子（「文化传媒」与「AI应用」必须认成同一题材，§6）
       sameTopic: function(a, b) { return _sameTopicLoose(a, b, coreRes); }
@@ -2950,19 +2988,23 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         '20日涨幅总龙一（及其题材）还没就绪 ⇒ 无法验证用户要求的「必须与总龙一不同题材」这道闸门 ⇒ ' +
         '不猜（§10：判不出 ≠ 今天没有候补）。');
     } else if (r10Res && r10Res.pick) {
-      // ★ [R10-STOCK-LEVEL 2026-10-24] 这只票在上方哪个题材块里以「不开新仓」身份出现过
-      //   （10-23 兆威机电 = 工业4.0 灰化块）—— 说明文案据此讲清「为什么会重复出现一次」。
+      // ★ [R10-STOCK-LEVEL 2026-10-24] 这只票在上方题材块里是什么身份 —— 决定文案怎么讲「为什么会出现两次」：
+      //   · grayed（灰化 / 整块作废）：那一块照旧灰化、不恢复（10-23 兆威机电 = 工业4.0 灰化块）；
+      //   · overlap（今天【确实要买】的买点）：两条通道叠加确认 = 确定性（10-20 海洋王 = 商业航天买点）。
       const r10Grayed = r10NoBuyInfo.get(String(r10Res.pick.name).trim()) || null;
+      const r10Overlap = r10RealPickInfo.get(String(r10Res.pick.name).trim()) || null;
       const r10Blk = _buildRange10BackupBlock(r10Res, list, fOpts, {
         weakTopics: r10WeakTopics,
         top1Topic: r10Top1Topic,
         top1Name: r10Top1Name,
-        grayed: r10Grayed
+        grayed: r10Grayed,
+        overlap: r10Overlap
       });
       if (r10Blk) {
         out.range10Backup = r10Blk;
         out.buy.range10Backup = r10Blk;
         const r10Grayed = r10NoBuyInfo.get(String(r10Res.pick.name).trim()) || null;
+        const r10Overlap = r10RealPickInfo.get(String(r10Res.pick.name).trim()) || null;
         out.notes.push('⚠️【第' + RANGE10_BACKUP_RULE_NO + '条 · 十日涨幅候补】买点侧追加这一只：' +
           r10Res.pick.name + '（' + (r10Res.pick.topic || '—') + '，十日涨幅第 ' + r10Res.pick.rank +
           ' 名，' + (r10Res.pick.label || '') + '，与 20日涨幅总龙一' +
@@ -2975,6 +3017,13 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
             ? ('（注：本股也在上方【' + (r10Grayed.topic || '—') + '】题材块里，那块是【' +
                (r10Grayed.tag || '不开新仓') + '】且照旧灰化、不恢复；' +
                '本行是按【股票级】通道另选的，所以同一只票会出现两次，这是设计如此。）')
+            : '') +
+          // ★★ [R10-NOEXCLUDE 2026-10-24 第三次修正] 与【题材通道选中同一只票】= 叠加确认：
+          //   这不是重复选错，是两条独立的通道同时指向一只票 ⇒ 确定性更高（用户原话「这是好事啊」）。
+          (r10Overlap
+            ? ('（注：本股同时是上方【' + (r10Overlap.topic || '—') + '】题材块里的买点（' +
+               (r10Overlap.tag || '买') + '）—— 【题材通道】和【市场通道】同时选中了同一只票，' +
+               '这是叠加确认（确定性更高），不是重复选错；两处照旧各展示一行，不用合并也不用再选第二只。）')
             : ''));
         // ★ 用户拍板「空仓标语保留 + 另给候补」：标语【不撤】，只在 detail 里点明「另有 1 只可以买」
         //   （撤掉标语会让「第一题材量比 < 25」这个风险事实消失，那正是用户要看见的东西）。
@@ -3179,11 +3228,22 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     if (out.ebb) _applyEbbSellRules(out.sell, out.ebb, ebbSecondRegular ? regularPickNames : null);
   }
 
-  out.pickCount = out.blocks.reduce(function(n, blk) { return n + blk.picks.length; }, 0)
-    // ★ [SWITCH 2026-10-22] 新龙那一只也要计入「实际选出几只」（summary 文案读它）
-    + ((out.newDragon && out.newDragon.picks) ? out.newDragon.picks.length : 0)
-    // ★★ [R10-BACKUP 2026-10-24] 十日涨幅候补那一只同理（它就是今天能不能下单的那一只）
-    + ((out.range10Backup && out.range10Backup.picks) ? out.range10Backup.picks.length : 0);
+  // ★★ [R10-NOEXCLUDE 2026-10-24] 「选股 N 只」按【去重后的股票数】算：
+  //   同一只票可能同时出现在「灰化题材块 + 十日涨幅候补」或「题材买点 + 十日涨幅候补」里
+  //   （用户口径：两条通道叠加是确定性，两处都展示）⇒ 数行数会把它算成两只，与实际能下单的只数不符。
+  const _pickSeen = new Set();
+  const _countUnique = function(arr) {
+    (arr || []).forEach(function(p) {
+      const nm = String((p && p.name) || '').trim();
+      if (nm) _pickSeen.add(nm);
+    });
+  };
+  out.blocks.forEach(function(blk) { _countUnique(blk.picks); });
+  // ★ [SWITCH 2026-10-22] 新龙那一只也要计入「实际选出几只」（summary 文案读它）
+  if (out.newDragon) _countUnique(out.newDragon.picks);
+  // ★★ [R10-BACKUP 2026-10-24] 十日涨幅候补那一只同理（它就是今天能不能下单的那一只）
+  if (out.range10Backup) _countUnique(out.range10Backup.picks);
+  out.pickCount = _pickSeen.size;
 
   if (out.excludedTopics.length > 0) {
     const names = out.excludedTopics.map(function(t) {
@@ -3474,12 +3534,17 @@ export function buildTvrbRulesLines() {
       '② 在列次数 = 该票在这 10 个交易日的早盘竞价名单里出现过几次（预计算表 auction_presence，window_days = 10）；' +
       '③ 【首次在列】（1 次）优先；前十名里没有可用的首次在列，才看【二次在列】（2 次）；两档都没有 ⇒ 今天空仓；' +
       '④ 硬条件（同时满足，缺一不可）：必须是主板、必须与【20日涨幅总龙一】不同题材' +
-      '（题材按核心词大类认，如「文化传媒」归到「AI应用」；⛔ 这条是【周期】约束 —— 老周期的同一题材等于没换周期）、' +
-      '⛔ 不能是今日【确实要买】的票（避免买两次）；' +
-      '⚠️ 被改成「不开新仓」的票（灰化 / 空仓不买 / 退潮不买 / 分歧不买）**不算占用**，照样能当候补；' +
+      '（题材按核心词大类认，如「文化传媒」归到「AI应用」；⛔ 这条是【周期】约束 —— 老周期的同一题材等于没换周期）；' +
+      '★ 第三次修正（10-20 事故）：「出现多只首次在列只选一只最强的，也就是十日涨幅最高的，那就是海洋王」' +
+      '—— ⛔ 【不再】因为某只票已被题材块选中就跳过它。那等于用更弱的票顶掉最强的票' +
+      '（10-20：海洋王 29.51% 被跳过、换成京城股份 27.26%）。' +
+      '⚠️ 同一只票被【题材通道】和【市场通道】同时选中 = 【叠加确认】（确定性更高），' +
+      '不是重复选错：两处照旧各显示一行，候补那行徽标带「叠加确认」，说明区写明「不用合并、也不用再选第二只」。' +
+      '⚠️ 被改成「不开新仓」的票（灰化 / 空仓不买 / 退潮不买 / 分歧不买）照样能当候补；' +
       '⚠️【20日涨幅总龙一】未就绪 ⇒ 这道「不同题材」闸门没被验证过 ⇒ 候补不出现（§10 不猜，⛔ 不放行）。' +
       '（例 10-20：房地产平均量比只有 7.47 < ' + TVRB_CASH_ALERT_AVG_VR + ' ⇒ 作废 ⇒ 十日涨幅第 8 行' +
-      '【海洋王】（主板第 7 名，10 日内只在列 1 次 = 首次在列，LED/军工 ≠ 总龙一 AI应用）⇒ 选它。）' +
+      '【海洋王】（主板第 7 名，10 日内只在列 1 次 = 首次在列，LED ≠ 总龙一 文化传媒/AI应用）⇒ 选它；' +
+      '即使它同时是【商业航天】题材块的买点，也照样选它 —— 那是叠加确认。）' +
       '★ 表现方式：候补那一行标【' + RANGE10_BACKUP_TAG + '】、独立渲染在灰化容器【之外】' +
       '（今天真要买的票不能被灰掉），行上带「十日涨幅第 N 名 · 首次在列」徽标，' +
       '行内说明写明它是十日周期的新面孔买点（⛔ 不是题材量比买点、⛔ 不是退潮替补）。' +

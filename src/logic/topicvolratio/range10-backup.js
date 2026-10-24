@@ -16,6 +16,21 @@
  *     排名靠前的新股票（首次在列或者二次在列），新面孔。有首次在列的只选一只，没有首次在列的，
  *     选二次在列的。如果都没有，依旧空仓。」
  * ============================================================================
+ * 用户口径（2026-10-24 第三次修正，10-20 事故）：
+ *   「10月20日，十日候补题材你选了京城股份，实际上是海洋王，因为海洋王已经选在了下面题材
+ *     商业航天题材中，所以你选排在后一名的京城股份？这是不对的。……出现多只首次在列只选一只
+ *     最强的，也就是十日涨幅最高的，那就是海洋王。」
+ *   「是不是因为买点侧那里也有了题材的海洋王入选了，所以你又挑选了一只？……如果不是，
+ *     这种情况是题材和市场选票叠加的效果，这是好事啊，因为两边都选了海洋王，两个提示板
+ *     整合成一个叠加在一起就可以了，这是确定性啊。」
+ *   「意思是它即是题材选出来的，也是市场选出来的。两者叠加一起，也不用分开了。」
+ *   ⇒ ★ 本模块【不排除任何票】：即使某只票已经在某个题材块里当选买点、甚至已经是今天要买的票，
+ *     只要它是「十日涨幅前十 + 首次/二次在列 + 与总龙一不同题材」里【最强的那一只】，就选它。
+ *     两条通道选中同一只票 = 【叠加确认】（确定性更高），两处照旧各展示一行，
+ *     ⛔ 绝不允许「因为它已经被题材选中，就让它顺延到下一名」（10-20 事故就是这个顺延）。
+ *     10-20 真实数据：海洋王 29.51%（首次在列，主板第 7 名）在 商业航天 题材块里已当选，
+ *     却被排除后顺延到 京城股份 27.26%（首次在列，第 8 名）—— 更弱的票顶掉了最强的票。
+ * ============================================================================
  *
  * 职责边界（§3/§4/§21）：
  *   · 本模块【只做一件事】：给一份「当日 10 日涨幅池」，挑出那【至多一只】候补票。
@@ -125,22 +140,25 @@ export function buildRange10Ranked(pool) {
  *
  * 判定顺序（每一步都写进 trail，可追溯 —— §10 结论必须能被复核）：
  *   ① 取「主板名次 ≤ topN」的那十只（缺涨幅 / 非主板不占名次）；
- *   ② 逐只剔除：已在今日买点侧（不重复）/ 题材未知（判不出是否同题材）/ 与排除题材同类；
+ *   ② 逐只剔除：题材未知（判不出是否同题材）/ 与排除题材同类；
+ *      ★ [R10-NOEXCLUDE 2026-10-24] ⛔ 不剔除「已在今日买点侧」的票 —— 见文件头的第三次修正：
+ *        题材通道与市场通道选中同一只票是【叠加确认】，顺延到下一名反而会选出更弱的票（10-20 事故）。
  *   ③ 第一档 = 首次在列（cnt=1），第二档 = 二次在列（cnt=2）；
  *      按名次从前往后取第一只（用户：「有首次在列的只选一只，没有首次在列的，选二次在列的」）。
- *      ⚠️ 「没有首次在列」按【剔除后仍可用】解释：一档里全是同题材 / 重复的，
+ *      ⚠️ 「没有首次在列」按【剔除后仍可用】解释：一档里全是同题材的，
  *         等于「没有可用的首次在列」⇒ 才看二档；两档都空 ⇒ 返回 pick=null（= 空仓）。
  *   ④ 选中即停，⛔ 绝不多选（用户：「有首次在列的只选一只」）。
  *
  * @param {Array} pool 见 buildRange10Ranked
  * @param {{counts?:Map<string,{cnt:number}>|null, coveredDays?:number, topN?:number,
- *          excludeName?:Set<string>, excludeTopics?:string[],
- *          sameTopic?:(a:string,b:string)=>boolean}} [opts]
+ *          excludeTopics?:string[], sameTopic?:(a:string,b:string)=>boolean}} [opts]
  *        counts        = auction_presence 的次数表（null ⇒ 数据未到 ⇒ 判不出）
  *        coveredDays   = 窗口内实际有名单数据的天数（0 ⇒ 判不出）
- *        excludeName   = 今日买点侧已有的股票名（防重复）
- *        excludeTopics = 必须避开的题材（20 日涨幅总龙一的题材 + 当日被作废的弱题材）
+ *        excludeTopics = 必须避开的题材（20 日涨幅总龙一的题材）—— 这是本通道唯一的题材约束
  *        sameTopic     = 题材认亲（规则层注入【大类归一】后的比较函数，§6）；缺省严格相等
+ *        ⛔ 没有 excludeName（2026-10-24 移除）：本通道是【从全市场选股】，
+ *           「是否已被题材块选中」不参与判定。要表达「同一只票两条通道都选中」，
+ *           请在规则层的说明文案里讲（_buildRange10BackupBlock 的 overlap）。
  * @returns {{ready:boolean, reason:string, pick:object|null, tier:'first'|'second'|'',
  *            trail:Array<object>, topN:number, coveredDays:number, windowDays:number}}
  */
@@ -150,7 +168,6 @@ export function pickRange10Backup(pool, opts) {
   const topN = (isFinite(rawN) && rawN > 0) ? Math.floor(rawN) : PRESENCE_TOP_N;
   const counts = (o.counts && typeof o.counts.get === 'function') ? o.counts : null;
   const coveredDays = Number(o.coveredDays) > 0 ? Math.floor(Number(o.coveredDays)) : 0;
-  const excludeName = (o.excludeName && typeof o.excludeName.has === 'function') ? o.excludeName : new Set();
   const sameTopic = (typeof o.sameTopic === 'function')
     ? o.sameTopic
     : function(a, b) { return !!a && !!b && String(a) === String(b); };
@@ -193,9 +210,7 @@ export function pickRange10Backup(pool, opts) {
     const rawCnt = hit ? Number(hit.cnt) : 0;
     const cnt = (isFinite(rawCnt) && rawCnt >= 0) ? Math.floor(rawCnt) : 0;
     let reason = '';
-    if (excludeName.has(it.name)) {
-      reason = '已在今日买点侧（不重复列）';
-    } else if (!it.topic) {
+    if (!it.topic) {
       reason = '题材未知 ⇒ 判不出是否与总龙一同题材（§10 不猜）';
     } else {
       for (let i = 0; i < excludeTopics.length; i++) {

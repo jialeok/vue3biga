@@ -7,7 +7,8 @@
 //   ② 只从「主板名次 ≤ 10」的十只里挑；
 //   ③ 优先级：首次在列（cnt=1）> 二次在列（cnt=2）；且【只选一只】；
 //   ④ 必须与「总龙一 / 已作废题材」不同题材（大类归一由调用方注入，本处用严格相等桩）；
-//   ⑤ 已在今日买点侧的票不重复选；
+//   ⑤ ★ [R10-NOEXCLUDE 2026-10-24] 不排除任何票：某只票即使已在题材块里当选买点，
+//      只要它是「最强的首次在列」就必须选它（⛔ 不许顺延到下一名 —— 10-20 海洋王 事故）；
 //   ⑥ §10：次数未到 / 池子为空 ⇒ 判不出（ready=false、pick=null），⛔ 绝不当 0 次；
 //   ⑦ 10-20 真实快照（海洋王 第 8 行 / 主板第 7 名、首次在列）必须能复现；
 //   ⑧ 🔴 10-23 真实快照 + 【事故回归】：池子必须含「20天」补位行，否则名次整体前移一位
@@ -151,13 +152,20 @@ describe('range10-backup · 选票', () => {
     expect(hyw.reason).toContain('同题材');
   });
 
-  it('已在今日买点侧的票不重复选', () => {
-    const r = pickRange10Backup(POOL_1020, opts1020({
-      excludeName: new Set(['海洋王'])
-    }));
-    expect(r.pick && r.pick.name).toBe('京城股份');
-    const hyw = r.trail.filter(function(t) { return t.name === '海洋王'; })[0];
-    expect(hyw.reason).toContain('已在今日买点侧');
+  it('★★ 10-20 事故回归：不因「它已被题材通道选中」而顺延 —— 多只首次在列只选最强的海洋王', () => {
+    // 用户 2026-10-24 原话：「十日候补你选了京城股份，实际上是海洋王，因为海洋王已经选在了下面
+    //   题材商业航天题材中，所以你选排在后一名的京城股份？这是不对的。出现多只首次在列只选一只
+    //   最强的，也就是十日涨幅最高的，那就是海洋王。」
+    // 真实数据：海洋王 29.51%（主板第 7）/ 京城股份 27.26%（第 8）/ 东安动力 25.10%（第 9）全是首次在列。
+    //   ⛔ 本函数没有「已占用」这个入参（excludeName 已移除）⇒ 无论调用方怎么传，选中的都只能是海洋王。
+    const r = pickRange10Backup(POOL_1020, opts1020({ excludeName: new Set(['海洋王']) }));
+    expect(r.tier).toBe('first');
+    expect(r.pick && r.pick.name).toBe('海洋王');
+    expect(r.pick.rank).toBe(7);
+    // 排在后面的两只首次在列仍在 trail 里（可追溯），但⛔ 不许顶上来
+    const jc = r.trail.filter(function(t) { return t.name === '京城股份'; })[0];
+    expect(jc.cnt).toBe(1);
+    expect(jc.reason).toBe('');
   });
 
   it('题材未知 ⇒ 判不出是否同题材，跳过（§10 不猜）', () => {
@@ -297,19 +305,22 @@ describe('range10-backup · 2026-10-23 真实快照（含「20天」补位行）
     expect(r.pick.topic).toBe('灵巧手');
   });
 
-  it('🔴 事故回归：兆威机电被剔除时【必须空仓】，⛔ 不许把第 11 名的上海九百顶上来', function() {
-    const opts = OPTS({ excludeName: new Set(['兆威机电']) });
-    // ① 正确的池子（含补位行慈文传媒）：前十只剩兆威机电一只「首次在列」，它被剔除 ⇒ 两档全空 ⇒ 空仓
-    const ok = pickRange10Backup(POOL_1023, opts);
+  it('🔴 事故回归：兆威机电不可用时【必须空仓】，⛔ 不许把第 11 名的上海九百顶上来', function() {
+    // ① 正确的池子（含补位行慈文传媒）里让兆威机电【判不出】（题材缺失 ⇒ 被跳过，名次不变）
+    //    ⇒ 前十只剩宁波东力 / 吉大正元（cnt 都不是 1/2）⇒ 两档全空 ⇒ 空仓
+    const okPool = POOL_1023.map(function(p) {
+      return p.name === '兆威机电' ? Object.assign({}, p, { topic: '' }) : p;
+    });
+    const ok = pickRange10Backup(okPool, OPTS());
     expect(ok.ready).toBe(true);
     expect(ok.pick).toBeNull();
     expect(ok.reason).toContain('空仓');
     expect(ok.trail.some(function(t) { return t.name === '上海九百'; })).toBe(false);
 
-    // ② 复现旧 bug：把补位行（慈文传媒）从池子里拿掉 = 名次整体前移一位
+    // ② 复现旧 bug：再把补位行（慈文传媒）从池子里拿掉 = 名次整体前移一位
     //    ⇒ 上海九百 变成「第 10 名 · 首次在列」⇒ 被选中（用户实际看到的错票）
-    const buggyPool = POOL_1023.filter(function(p) { return p.name !== '慈文传媒'; });
-    const buggy = pickRange10Backup(buggyPool, opts);
+    const buggyPool = okPool.filter(function(p) { return p.name !== '慈文传媒'; });
+    const buggy = pickRange10Backup(buggyPool, OPTS());
     expect(buggy.pick && buggy.pick.name).toBe('上海九百');
     expect(buggy.pick.rank).toBe(10);   // ← 错就错在这个 10（真实名次是 11）
   });
