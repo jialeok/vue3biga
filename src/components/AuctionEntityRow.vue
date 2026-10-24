@@ -423,11 +423,19 @@ function presenceTagTitle(item) {
   return bits.join('｜');
 }
 
-// 「未在列」用灰调（它是一条「没有上过榜」的信息，不该和「5次在列」抢视觉权重）。
+// [PRESENCE 2026-10-24 用户口径] 标签配色分三档（用户原话：「首次在列标志明显一些，用红色显示」）：
+//   · 1 次（首次在列）→ 红（最深的一档）：它意味着「这只票是窗口内新冒出来的强势票」，
+//     是这张标签要传达的最强信号，必须一眼看到（与全站「涨=红」同一套语义）；
+//   · 0 次（未在列）→ 灰：一条「没上过榜」的信息，不该和「5次在列」抢视觉权重；
+//   · 其余（n次在列）→ 青灰：纯统计值，既不是身份（龙/20天=蓝）、也不是名次（总龙=红）。
+// ⚠️ 三档互斥，判定收敛在这里，模板只挂 class（§21 零计算）。
 function presenceTagClass(item) {
   if (!item) return {};
   const n = Number(item.presenceCnt);
-  return { 'auction-presence-tag-none': isFinite(n) && n === 0 };
+  if (!isFinite(n)) return {};
+  if (n === 0) return { 'auction-presence-tag-none': true };
+  if (n === 1) return { 'auction-presence-tag-first': true };
+  return {};
 }
 
 function range20LeaderTagTitle(item) {
