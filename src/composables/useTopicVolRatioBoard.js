@@ -72,7 +72,7 @@ import { getPreviousTradingDay } from '../logic/date/trading-day-helpers.js';
 //   ⛔ 纯只读：`stock_range_pct` + `market_metrics` 各一次（都走会话缓存 + 单飞，§32），
 //     不发任何上游请求、不消耗猫抓额度。
 import { readAuctionLegRangeMap } from '../logic/auction/range-auction-leg.js';
-// ★★ [R20-926 2026-10-25 用户口径] 买点侧【20日涨幅 · 9:26 竞价口径】的名次：
+// ★★ [R20-926 2026-10-24 用户口径] 买点侧【20日涨幅 · 9:26 竞价口径】的名次：
 //   用户原话「买点侧的10日涨幅和20日涨幅的股票，如果有入选时也应该按照9点26分的口径……
 //     在上面说明时间他们的涨幅是多少排名第几就行了」。
 //   实现 = 复用十日涨幅那套【T 腿反解】(range-window.js#recoverAuctionLeg)，把
@@ -721,7 +721,7 @@ export function useTopicVolRatioBoard() {
   const buyRangeMap = ref(null);
   const buyRangeDate = ref('');
   /**
-   * ★★ [R20-926 2026-10-25 用户口径] 展示日【20日涨幅 · 9:26 竞价口径】的主板名次
+   * ★★ [R20-926 2026-10-24 用户口径] 展示日【20日涨幅 · 9:26 竞价口径】的主板名次
    * （Map&lt;股票名, {pct, days, rank}&gt;，见 logic/auction/range20-auction-leg.js）。
    *
    * 用途【只有一个】：买点侧走【20日涨幅通道】的入选票（退潮替补 = 总龙二~五 / 切换日新龙），
@@ -773,7 +773,7 @@ export function useTopicVolRatioBoard() {
         buyRangeDate.value = d;
       });
     }
-    // ①-c2 ★★ [R20-926 2026-10-25 用户口径] 展示日的【20日涨幅 · 9:26 竞价口径】主板名次。
+    // ①-c2 ★★ [R20-926 2026-10-24 用户口径] 展示日的【20日涨幅 · 9:26 竞价口径】主板名次。
     //   只服务一件事：买点侧走 20日涨幅通道的票（退潮替补 / 切换日新龙）在说明区写出
     //   「9:26 那一刻的涨幅 + 第几名」。⛔ 不参与选股（用户此前锁定退潮 / 总龙走收盘口径）。
     //   §26：一天只读一次（模块内会话缓存 + 单飞）；读不到 ⇒ null ⇒ 规则层一条说明都不写（§10）。
@@ -917,7 +917,7 @@ export function useTopicVolRatioBoard() {
     // ★★ [TVRB-926] 展示日【9:26 口径】的区间涨幅（异步读回）⇒ 买点侧选股与行上数值的输入：
     //   读到之后重算一次 —— 选股从「当前口径」切到「早上 9:26 那一刻选中的那批」。
     void buyRangeMap.value;
-    // ★★ [R20-926 2026-10-25] 20日涨幅 9:26 口径名次（异步读回）⇒ 到货后重算一帧：
+    // ★★ [R20-926 2026-10-24] 20日涨幅 9:26 口径名次（异步读回）⇒ 到货后重算一帧：
     //   买点侧那两条 20日涨幅通道的说明文案才会带上「9:26 那一刻的涨幅 + 第几名」。
     void r20AucMap.value;
     // ★ [EBB-R20] 20日涨幅前五（总龙一~五）：响应式指纹令牌 —— ensureRange20Leaders 发布后自动重算
@@ -1089,7 +1089,7 @@ export function useTopicVolRatioBoard() {
         range10Presence: (range10PresenceDate.value === d && range10Presence.value)
           ? range10Presence.value
           : null,
-        // ★★ [R20-926 2026-10-25 用户口径] 20日涨幅的【9:26 竞价口径】主板名次 ——
+        // ★★ [R20-926 2026-10-24 用户口径] 20日涨幅的【9:26 竞价口径】主板名次 ——
         //   只给说明区写事实（「9:26 那一刻 涨幅 + 第几名」），⛔ 不参与选股、⛔ 不影响退潮 / 总龙。
         //   ⚠️ 日期核对红线（与上面几份 rangeMap 同一条）：读的不是这一天 ⇒ 传 null（§10 不拿旧日期顶替）。
         range20Auc: (r20AucDate.value === d) ? r20AucMap.value : null

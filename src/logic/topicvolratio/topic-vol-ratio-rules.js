@@ -1670,7 +1670,7 @@ function _dragonCandidates(block, dragonMap, pctMap) {
 }
 
 /**
- * ★★ [TVRB-926-FACT 2026-10-25 用户口径 · 第二次修正] 买点侧说明区：只写【口径时间 + 涨幅 + 第几名】，⛔ 不解释。
+ * ★★ [TVRB-926-FACT 2026-10-24 用户口径 · 第二次修正] 买点侧说明区：只写【口径时间 + 涨幅 + 第几名】，⛔ 不解释。
  *
  * 用户原话（对上一版说明的直接反馈，逐字）：
  *   「所以买点侧的10日涨幅和20日涨幅的股票，如果有入选时也应该按照9点26分的口径，因为一般都是早上
@@ -1750,7 +1750,7 @@ function _appendDragonDriftNote(blk, closeDragonMap) {
 }
 
 /**
- * ★★ [R20-926 2026-10-25 用户口径] 买点侧【20日涨幅通道】的入选票：把「9:26 那一刻的涨幅 + 名次」写出来。
+ * ★★ [R20-926 2026-10-24 用户口径] 买点侧【20日涨幅通道】的入选票：把「9:26 那一刻的涨幅 + 名次」写出来。
  *
  * 用户原话（逐字）：
  *   「所以买点侧的10日涨幅和20日涨幅的股票，如果有入选时也应该按照9点26分的口径，因为一般都是
@@ -2341,7 +2341,7 @@ function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tierPick) 
 }
 
 /**
- * ★★ [R10-926 2026-10-25 用户口径] 把十日涨幅候选池的 `pct` 换成【9:26 竞价口径】那一份。
+ * ★★ [R10-926 2026-10-24 用户口径] 把十日涨幅候选池的 `pct` 换成【9:26 竞价口径】那一份。
  *
  * 用户原话：「所以买点侧的10日涨幅和20日涨幅的股票，如果有入选时也应该按照9点26分的口径，
  *   因为一般都是早上选出来，收盘看的时候就不一样的」。
@@ -2412,7 +2412,7 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
   const name = String(p.name).trim();
   const topic = String(p.topic || '').trim();
   const inf = info || {};
-  // ★★ [R10-926 2026-10-25] 本次「十日涨幅 / 名次」用的口径时间（'9:26 竞价口径' / '收盘口径（…未读到）'）。
+  // ★★ [R10-926 2026-10-24] 本次「十日涨幅 / 名次」用的口径时间（'9:26 竞价口径' / '收盘口径（…未读到）'）。
   //   ⛔ 只在文案里出现，不参与任何判定（§21：模板零计算，文案在 Logic 层拼好）。
   const baseText = String(inf.baseText || '');
 
@@ -2436,7 +2436,7 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
     code: String(p.code || (member && member.code) || '').trim(),
     pctText: formatRangePct(pct),
     // ★ 本行专属徽标（Logic 层拼好，模板零计算 §21）：
-    //   「9:26 竞价口径 · 十日涨幅第 N 名 · 首次在列」—— ★ [R10-926 2026-10-25] 必须写明【口径时间】：
+    //   「9:26 竞价口径 · 十日涨幅第 N 名 · 首次在列」—— ★ [R10-926 2026-10-24] 必须写明【口径时间】：
     //   名次是按早上 9:26 那一刻算的，收盘回看时数值会变，⛔ 不能让人以为那一列是收盘口径。
     range10Label: (baseText ? ('〔' + baseText + '〕') : '') + '十日涨幅第 ' +
       (p.rank === null || p.rank === undefined ? '—' : p.rank) +
@@ -2466,7 +2466,7 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
     return '【' + w.topic + '】平均竞价量比 ' + w.avgText + ' ＜ ' + TVRB_CASH_ALERT_AVG_VR +
       '（' + (w.reasonText || '题材量比太小') + '）';
   }).join('；');
-  // ★ [R10-926 2026-10-25] 每一只都带【涨幅 + 名次】（只列事实，便于用户逐只核对，⛔ 不下结论）
+  // ★ [R10-926 2026-10-24] 每一只都带【涨幅 + 名次】（只列事实，便于用户逐只核对，⛔ 不下结论）
   const trailText = (bk.trail || []).map(function(t) {
     return '【第 ' + t.rank + ' 名 ' + t.name + ' ' + _pct2(t.pct) + '】' +
       (t.reason ? t.reason : (t.label || '') + (t.cnt === 1 || t.cnt === 2 ? ' ⇒ 候选' : '（不是首次 / 二次在列）'));
@@ -2643,7 +2643,7 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
  *        range10Presence = ★★ [R10-BACKUP] 十日窗口的在列次数 `{counts:Map<name,{cnt}>, coveredDays}`、
  *                   （data/auction-presence.js#getPresenceForDate(date, 10) 的返回）；
  *                   缺省 / coveredDays=0 ⇒ 判不出「首次 / 二次在列」⇒ 候补不生效（§10）。
- *        range20Auc = ★★ [R20-926 2026-10-25 用户口径] 该日【20日涨幅 · 9:26 竞价口径】的主板名次
+ *        range20Auc = ★★ [R20-926 2026-10-24 用户口径] 该日【20日涨幅 · 9:26 竞价口径】的主板名次
  *                   （logic/auction/range20-auction-leg.js#readAuctionLegRange20Rank 的返回：
  *                    `Map<股票名, {pct, days, rank}>`，pct 已把 T 腿反解回竞价口径）。
  *                   用途【只有一个】：买点侧【20日涨幅通道】的入选票（退潮替补 / 切换日新龙）
@@ -3201,7 +3201,7 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     if (r10Top1Topic) r10ExcludeTopics.push(r10Top1Topic);
 
     const r10Presence = o.range10Presence || null;
-    // ★★ [R10-926 2026-10-25 用户口径] 候选池的十日涨幅换成【9:26 竞价口径】那一份 ⇒
+    // ★★ [R10-926 2026-10-24 用户口径] 候选池的十日涨幅换成【9:26 竞价口径】那一份 ⇒
     //   「前十 / 第几名 / 谁最强」全部按【早上 9:26 那一刻】算（早上选出来的票，收盘回看仍是同一只）。
     //   ⚠️ 9:26 口径没读到 ⇒ 原样返回（退回收盘口径，§11 零行为变化），下面的文案据此如实标注口径时间。
     const r10Rows926 = _withAuctionLegPct(o.range10Rows || null, buyPctMap);
@@ -3231,7 +3231,7 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         top1Name: r10Top1Name,
         grayed: r10Grayed,
         overlap: r10Overlap,
-        // ★★ [R10-926 2026-10-25] 本次名次是按哪套口径算的（只影响文案的「口径时间」标注，§21）
+        // ★★ [R10-926 2026-10-24] 本次名次是按哪套口径算的（只影响文案的「口径时间」标注，§21）
         baseText: r10BaseText
       });
       if (r10Blk) {
@@ -3413,7 +3413,7 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //   ⚠️ 只在【有事实】时产出（§10）；写不写（今天 / 历史日）由组合式把关，本层不做时间判断。
   out.ebbDayRow = buildEbbDayRecord(out.ebb, o.ebbCtx || null, o.date);
 
-  // ★★ [R20-926 2026-10-25 用户口径] 买点侧【20日涨幅通道】的入选票：补一条「9:26 那一刻的涨幅 + 名次」。
+  // ★★ [R20-926 2026-10-24 用户口径] 买点侧【20日涨幅通道】的入选票：补一条「9:26 那一刻的涨幅 + 名次」。
   //   ⛔ 必须放在 ebbBuy / newDragon 都造好之后（它俩就是这条通道的全部产出）；
   //   ⛔ 只写事实（用户「你不要解释」）；9:26 口径判不出 ⇒ 一行都不写（§10，见函数注释）。
   _appendRange20AucNote(out, o.range20Auc || null, o.ebbCtx || null);
