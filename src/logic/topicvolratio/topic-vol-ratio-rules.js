@@ -2254,6 +2254,17 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
   const top1Text = inf.top1Name
     ? ('20日涨幅总龙一【' + inf.top1Name + '】（' + (inf.top1Topic || '—') + '）')
     : '20日涨幅总龙一';
+  // ★★ [R10-STOCK-LEVEL 2026-10-24 用户口径] 同一只票在上方以「不开新仓」身份出现过
+  //   （10-23 兆威机电 属工业4.0，题材平均量比 15.18 ＜ 25 ⇒ 整块灰化空仓）⇒ 必须讲清为什么还选它：
+  //   本规则是【股票级】通道（从总市场选股），题材块灰化是【题材级】结论，两者互不否决
+  //   ⇒ 同一只票会重复出现一次，这是设计如此（用户原话「上面是重复出现的兆威机电也是逻辑」）。
+  const grayed = inf.grayed || null;
+  const dupText = grayed
+    ? ('本股同时也在上方【' + (grayed.topic || '—') + '】题材块里（那一块已被改成【' +
+       (grayed.tag || '不开新仓') + '】并灰化，照旧展示、不恢复）—— ' +
+       '但本行不是按题材选的，是按【十日涨幅前十 + 在列次数 + 与总龙一不同题材】从全市场选的，' +
+       '所以同一只票会重复出现一次。')
+    : '';
 
   const block = {
     block: {
@@ -2265,11 +2276,12 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
     },
     rankWord: '',
     pickRank: null,
-    reason: '【第' + RANGE10_BACKUP_RULE_NO + '条】十日涨幅候补：' +
+    reason: '【第' + RANGE10_BACKUP_RULE_NO + '条】十日涨幅候补（★ 股票级通道：从全市场选股，不是选题材）：' +
       (weakText ? (weakText + ' ⇒ 该题材作废；') : '') +
-      '改用「十日涨幅前十 + 首次在列」的主板票替换 ⇒ ' + name + '（' + (topic || '—') +
-      '，十日涨幅 ' + formatRangePct(pct) + '，第 ' + p.rank + ' 名，' + (p.label || '') +
-      '），且与' + top1Text + '【不同题材】（十日周期的新面孔）。',
+      dupText +
+      '按「十日涨幅前十 + ' + (bk.tier === 'first' ? '首次在列' : '二次在列') + ' + 与' + top1Text +
+      '不同题材」选出 ' + name + '（' + (topic || '—') + '，十日涨幅 ' + formatRangePct(pct) +
+      '，第 ' + p.rank + ' 名，' + (p.label || '') + '）—— 十日周期的新面孔。',
     mode: 'r10backup',
     ruleNo: RANGE10_BACKUP_RULE_NO,
     isCandidate: false,
@@ -2278,16 +2290,20 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
     notQualifiedText: '',
     picks: picks,
     notes: [
+      '【本规则的性质】科目【股票级】——从【总市场】选股，不参与题材排名、也不受题材量比门槛约束。' +
+        '和「题材量比买点」是两条线：那条线先选题材再在题材里选股，这条线只认股票自己的三个条件' +
+        '（十日涨幅前十 + 首次/二次在列 + 与 20日涨幅总龙一不同题材）。',
       '【候补怎么选】十日涨幅前 ' + (bk.topN || 10) + ' 名（只算主板名次，非主板不占名次）自上而下：' +
-        '跳过已在今日买点侧的 → 跳过题材未知的（判不出是否与总龙一同题材）→ 跳过与' + top1Text +
-        '、或与被作废题材同类的 ⇒ ' + tierText + '。',
+        '跳过【今日确实要买】的（避免买两次）→ 跳过题材未知的（判不出是否与总龙一同题材）→ 跳过与' +
+        top1Text + '同类的 ⇒ ' + tierText + '。',
+      grayed ? ('⚠️ ' + dupText) : '',
       '⚠️ 为什么用十日涨幅而不是 20日涨幅：20 日老周期已经结束（总龙二次确认退潮），现在轮到【十日周期】 ——' +
         '龙头的量比都比题材大，十日周期的新面孔才是接下来的核心。20日涨幅列表里的老票会逐渐换成新票，' +
         '本看板 20日涨幅榜上的老面孔也会一天天被十日周期的新票替换掉（这是正常的周期切换，不是数据错乱）。',
       '十个名次去留（判定可追溯）：' + (trailText || '—') + '。',
       '⚠️ 窗口覆盖：' + (bk.coveredDays || 0) + ' / ' + (bk.windowDays || 10) +
         ' 个交易日有名单数据（在列次数 = 这 ' + (bk.coveredDays || 0) + ' 天里它出现在早盘竞价名单的几次）。'
-    ]
+    ].filter(function(s) { return !!s; })
   };
 
   // ① 客观数据 + 原始买点信号（同一份实现）
@@ -2302,6 +2318,9 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
     row.position = '';
     row.actionNote = '【第' + RANGE10_BACKUP_RULE_NO + '条 · 十日涨幅候补】' +
       (weakText ? (weakText + ' ⇒ 该题材【作废】；') : '') +
+      (grayed ? ('⚠️ 本股在上方【' + (grayed.topic || '—') + '】题材块里已被改成【' +
+        (grayed.tag || '不开新仓') + '】（题材量比不达标 ⇒ 那一块照旧灰化、不恢复）；' +
+        '但本行是【股票级】通道另选出来的，不是那个题材块要买它 —— ') : '') +
       '按「十日涨幅前十 + ' + (bk.tier === 'first' ? '首次在列' : '二次在列') + ' + 与' + top1Text +
       '不同题材」选出本股（第 ' + p.rank + ' 名，十日涨幅 ' + formatRangePct(pct) + '，' + (p.label || '') + '）。' +
       (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : '') +
@@ -2554,6 +2573,9 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     Number(o.range10Presence.coveredDays) > 0);
   // 被作废的题材（供候补的「不同题材」闸门 + 说明文案用）
   const r10WeakTopics = [];
+  // 「整块作废」那一块里的票（名字 -> {topic, tag}）：块被删掉了，但它们仍可能是股票级候补的候选，
+  // 说明文案要能交代「它来自刚被作废的那块」（⛔ 不代表它被禁买，只是要让判定可追溯）。
+  const r10RemovedPicks = new Map();
   let r10RemovedSecond = null;   // 记录「第二题材因量比太小被整块删除」，供尾部的说明文案使用
   let r10SecondWeak = null;      // 记录「第二题材量比太小」这个事实（即使因数据缺口没删）
   let r10GapNoted = false;       // 「数据缺口已说明」旗子：同一件事只说一次（⛔ 不叠两条告警）
@@ -2693,6 +2715,16 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
           topic: weakInfo.topic,
           avgText: weakInfo.avgText,
           reasonText: '排名第二的入选题材，题材量比太小 ⇒ 禁止选入（整块作废）'
+        });
+        // ★ [R10-STOCK-LEVEL 2026-10-24] 记下这一块里的票：块会被整块删除，但【股票级通道】的候补
+        //   有可能正好选中其中一只（题材不选 ≠ 这只票不能被选）⇒ 说明文案要能讲清它的来历。
+        (secondBlk.picks || []).forEach(function(p) {
+          if (p && p.name) {
+            const nm = String(p.name).trim();
+            if (!r10RemovedPicks.has(nm)) {
+              r10RemovedPicks.set(nm, { topic: weakInfo.topic, tag: '整块作废' });
+            }
+          }
         });
         out.blocks.splice(1, 1);
         out.buy.heavy = null;
@@ -2854,19 +2886,55 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     const r10Top1Topic = r10Top1 ? String(r10Top1.topic || '').trim() : '';
     const r10Top1Name = r10Top1 ? String(r10Top1.name || '').trim() : '';
     const r10Top1Missing = !r10Top1Topic;
-    // 已占用的买点（同一只票不重复列）：常规块的票 + 新龙 + 退潮替补（后者正常不会同时出现，防御性带上）
+    // ── 已占用的买点（同一只票不重复列）────────────────────────────────────────────
+    // 🔴🔴 [R10-STOCK-LEVEL 2026-10-24 用户口径 · 第二次修正]
+    //   用户原话：「我不是叫你候选 10 日涨幅排名前十的首次在列的股票吗？这个不矛盾啊，
+    //     这个 10 日涨幅和 20 日涨幅排名，是选股票，前者是选题材，后者只选股票
+    //     （唯一区分的就是，和市场总一不同题材）。当天它题材选不了，但是从总市场中选股（非选题材），
+    //     他有首次在列标签，所以被候选……上面是重复出现的兆威机电也是逻辑，因为这个是
+    //     十日涨幅候补选的，不是题材选的。」
+    //   ⇒ 本规则是【股票级通道】，不是【题材级通道】：
+    //     · 只排除「今日【确实要买】的票」，避免同一只票被买两次 / 重复成两行；
+    //     · ⛔ 被改写成「不开新仓」的票（灰化 / 空仓不买 / 退潮不买 / 分歧不买）**不算占用**：
+    //       它们不是今天要买的，凭「十日涨幅前十 + 首次在列」照样能当候补（10-23 的兆威机电：
+    //       工业4.0 题材平均量比 15.18 ＜ 25 ⇒ 整块灰化空仓，但它本身是「首次在列」⇒ 该被选中）。
+    //     · 因此候补行会与上方那个灰化区块里的同一只票【重复出现一次】—— 这是设计如此（用户认可）。
+    //   判据用【色调】而不是标签文案：三处「不开新仓」的改写（退潮 / 分歧 / 空仓）都统一 tone = nobuy
+    //   （CASH_NO_BUY_TONE = DIVERGE_NO_BUY_TONE = EBB_NO_BUY_TONE），§6 一处真相。
     const r10Taken = new Set();
+    const r10NoBuyInfo = new Map();      // 股票名 -> { topic, tag }：上方以「不开新仓 / 整块作废」身份出现过
+    // 先把「被整块作废的那块」里的票铺进去（它们的块已经不在 out.blocks 里了）
+    r10RemovedPicks.forEach(function(v, k) { r10NoBuyInfo.set(k, v); });
+    const _r10IsNoBuyPick = function(p) {
+      return !!(p && p.buyActionTone === EBB_NO_BUY_TONE);
+    };
     out.blocks.forEach(function(b) {
-      (b.picks || []).forEach(function(p) { if (p && p.name) r10Taken.add(String(p.name).trim()); });
+      const bt = String((b && b.block && b.block.topic) || '').trim();
+      (b.picks || []).forEach(function(p) {
+        if (!p || !p.name) return;
+        const nm = String(p.name).trim();
+        if (_r10IsNoBuyPick(p)) {
+          if (!r10NoBuyInfo.has(nm)) r10NoBuyInfo.set(nm, { topic: bt, tag: String(p.buyActionTag || '') });
+          return;                        // ⛔ 不开新仓 ⇒ 不占用候补名额
+        }
+        r10Taken.add(nm);
+      });
     });
     [out.newDragon, out.ebbBuy].forEach(function(x) {
       if (!x) return;
-      (x.picks || []).forEach(function(p) { if (p && p.name) r10Taken.add(String(p.name).trim()); });
+      (x.picks || []).forEach(function(p) {
+        if (p && p.name && !_r10IsNoBuyPick(p)) r10Taken.add(String(p.name).trim());
+      });
     });
-    // 必须避开的题材：20日涨幅总龙一所在题材（老周期）+ 当日被作废的弱题材
+    // ── 必须避开的题材 ────────────────────────────────────────────────────────────
+    // 🔴 [R10-STOCK-LEVEL] 只留【20日涨幅总龙一所在题材】这一条。
+    //   用户口径里它是唯一的题材约束，而且它不是「题材筛选」而是【周期筛选】：
+    //   「20 日老周期结束，现在轮到十日周期」⇒ 买老周期的同一题材 = 没换周期，等于白换。
+    //   ⛔ 当日被作废的弱题材【不再】参与排除 —— 题材量比不达标是【题材块】的事（灰化/作废照旧），
+    //     而本通道是「从总市场选股」，龙头自己的强度与题材平均量比本来就是两回事
+    //      （用户原话：「龙头的量比都比题材大，那才是核心」）。
     const r10ExcludeTopics = [];
     if (r10Top1Topic) r10ExcludeTopics.push(r10Top1Topic);
-    r10WeakTopics.forEach(function(w) { if (w.topic) r10ExcludeTopics.push(w.topic); });
 
     const r10Presence = o.range10Presence || null;
     const r10Res = r10Top1Missing ? null : pickRange10Backup(o.range10Rows || null, {
@@ -2882,19 +2950,32 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         '20日涨幅总龙一（及其题材）还没就绪 ⇒ 无法验证用户要求的「必须与总龙一不同题材」这道闸门 ⇒ ' +
         '不猜（§10：判不出 ≠ 今天没有候补）。');
     } else if (r10Res && r10Res.pick) {
+      // ★ [R10-STOCK-LEVEL 2026-10-24] 这只票在上方哪个题材块里以「不开新仓」身份出现过
+      //   （10-23 兆威机电 = 工业4.0 灰化块）—— 说明文案据此讲清「为什么会重复出现一次」。
+      const r10Grayed = r10NoBuyInfo.get(String(r10Res.pick.name).trim()) || null;
       const r10Blk = _buildRange10BackupBlock(r10Res, list, fOpts, {
         weakTopics: r10WeakTopics,
         top1Topic: r10Top1Topic,
-        top1Name: r10Top1Name
+        top1Name: r10Top1Name,
+        grayed: r10Grayed
       });
       if (r10Blk) {
         out.range10Backup = r10Blk;
         out.buy.range10Backup = r10Blk;
+        const r10Grayed = r10NoBuyInfo.get(String(r10Res.pick.name).trim()) || null;
         out.notes.push('⚠️【第' + RANGE10_BACKUP_RULE_NO + '条 · 十日涨幅候补】买点侧追加这一只：' +
           r10Res.pick.name + '（' + (r10Res.pick.topic || '—') + '，十日涨幅第 ' + r10Res.pick.rank +
           ' 名，' + (r10Res.pick.label || '') + '，与 20日涨幅总龙一' +
           (r10Top1Name ? ('【' + r10Top1Name + '】（' + (r10Top1Topic || '—') + '）') : '') +
-          '不同题材）⇒ 十日周期的新面孔（20日老周期已结束，现在轮到十日周期）。');
+          '不同题材）⇒ 十日周期的新面孔（20日老周期已结束，现在轮到十日周期）。' +
+          // ★ [R10-STOCK-LEVEL 2026-10-24] 这条通道是【选股票】不是【选题材】：
+          //   同一只票可能正在上方被灰化的题材块里（10-23 兆威机电 / 工业4.0）—— 题材块灰化不恢复，
+          //   但它凭「十日涨幅前十 + 首次在列」独立成立，因此会重复出现一次。
+          (r10Grayed
+            ? ('（注：本股也在上方【' + (r10Grayed.topic || '—') + '】题材块里，那块是【' +
+               (r10Grayed.tag || '不开新仓') + '】且照旧灰化、不恢复；' +
+               '本行是按【股票级】通道另选的，所以同一只票会出现两次，这是设计如此。）')
+            : ''));
         // ★ 用户拍板「空仓标语保留 + 另给候补」：标语【不撤】，只在 detail 里点明「另有 1 只可以买」
         //   （撤掉标语会让「第一题材量比 < 25」这个风险事实消失，那正是用户要看见的东西）。
         if (r10LeadWeak && out.cashAlert && out.cashAlert.show) {
@@ -2903,7 +2984,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
               ' ⚠️ 不过今天【另有 1 只十日周期候补】可以买：' + r10Res.pick.name +
               '（' + (r10Res.pick.topic || '—') + '，十日涨幅第 ' + r10Res.pick.rank + ' 名，' +
               (r10Res.pick.label || '') + '，与 20日涨幅总龙一不同题材）—— 见下方【' +
-              RANGE10_BACKUP_TAG + '】那一行。第一题材的票照旧不开新仓。',
+              RANGE10_BACKUP_TAG + '】那一行。' +
+              // ★ [R10-STOCK-LEVEL 2026-10-24] 这句原来写「第一题材的票照旧不开新仓」——
+              //   当候补票本身就来自第一题材时（10-23 兆威机电 属工业4.0），那句话自相矛盾。
+              '第一题材的票照旧不开新仓【这只候补除外】—— 它不是按题材选出来的，' +
+              '是按「十日涨幅前十 + 在列次数」从全市场选出来的（股票级通道）。',
             hasRange10Backup: true
           });
         }
@@ -3375,6 +3460,12 @@ export function buildTvrbRulesLines() {
       ' ⇒ 它照旧「建议空仓」+ 整段灰化（第十九条不变），但【另外给一只候补】可以买' +
       '（大字标语里会多一句「另有 1 只十日周期候补」，标语⛔ 不撤 —— 风险事实必须留着）。' +
       '★ 候补票怎么选（只选【一只】，⛔ 绝不多选）：' +
+      '★ 性质（用户口径，2026-10-24 第二次修正）：「这个 10 日涨幅和 20 日涨幅排名，是【选股票】，' +
+      '前者（题材量比）是【选题材】」—— 本规则是【股票级通道】：只认股票自己的三个条件，' +
+      '⛔ 不参与题材排名、⛔ 不受题材量比门槛 / 题材灰化 / 题材作废的约束。' +
+      '所以同一只票可以在上方灰化题材块里【重复出现】一次：那一块照旧灰化、不恢复，' +
+      '这一行是另按股票条件选出来的（例 10-23：工业4.0 平均量比 15.18 ＜ 25 ⇒ 整块灰化空仓，' +
+      '但【兆威机电】是十日涨幅第 8 名 + 首次在列 ⇒ 仍被选为候补）。' +
       '① 池子 = 【与早盘竞价「10日涨幅」toggle 屏幕同一批行】的十日涨幅前 ' + PRESENCE_TOP_N + ' 名' +
       '（只数主板名次，创业板 / 科创板 / 北交所不占名次 —— 与「在列次数」标签同一把尺子）；' +
       '⚠️ 这一批行【必须含「20天」补位行】：补位票（如 10-23 的慈文传媒）不在当日名单里，' +
@@ -3383,8 +3474,9 @@ export function buildTvrbRulesLines() {
       '② 在列次数 = 该票在这 10 个交易日的早盘竞价名单里出现过几次（预计算表 auction_presence，window_days = 10）；' +
       '③ 【首次在列】（1 次）优先；前十名里没有可用的首次在列，才看【二次在列】（2 次）；两档都没有 ⇒ 今天空仓；' +
       '④ 硬条件（同时满足，缺一不可）：必须是主板、必须与【20日涨幅总龙一】不同题材' +
-      '（题材按核心词大类认，如「文化传媒」归到「AI应用」）、⛔ 不能是刚被作废的那个弱题材、' +
-      '⛔ 不能是今日买点侧已有的票；' +
+      '（题材按核心词大类认，如「文化传媒」归到「AI应用」；⛔ 这条是【周期】约束 —— 老周期的同一题材等于没换周期）、' +
+      '⛔ 不能是今日【确实要买】的票（避免买两次）；' +
+      '⚠️ 被改成「不开新仓」的票（灰化 / 空仓不买 / 退潮不买 / 分歧不买）**不算占用**，照样能当候补；' +
       '⚠️【20日涨幅总龙一】未就绪 ⇒ 这道「不同题材」闸门没被验证过 ⇒ 候补不出现（§10 不猜，⛔ 不放行）。' +
       '（例 10-20：房地产平均量比只有 7.47 < ' + TVRB_CASH_ALERT_AVG_VR + ' ⇒ 作废 ⇒ 十日涨幅第 8 行' +
       '【海洋王】（主板第 7 名，10 日内只在列 1 次 = 首次在列，LED/军工 ≠ 总龙一 AI应用）⇒ 选它。）' +

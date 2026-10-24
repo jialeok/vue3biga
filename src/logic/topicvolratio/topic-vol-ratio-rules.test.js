@@ -3256,6 +3256,106 @@ describe('tvrb · 第二十九条 十日涨幅 · 在列次数候补', function(
     expect(plan.notes.join('\n')).toContain('暂不作废');
   });
 
+  // ★★ [R10-STOCK-LEVEL 2026-10-24 用户口径 · 第二次修正] 本规则是【股票级通道】：
+  //   「这个 10 日涨幅和 20 日涨幅排名，是【选股票】，前者（题材量比）是【选题材】」——
+  //   题材块灰化 / 作废是【题材级】结论，⛔ 不否决这条股票级通道：
+  //   同一只票可以在上方灰化块里重复出现一次（用户：「上面是重复出现的兆威机电也是逻辑」）。
+  const POOL_1023 = [
+    { name: '海洋王', code: '002724', topic: 'LED', pct: 80.53 },
+    { name: '慈文传媒', code: '002343', topic: 'AI视频', pct: 79.11 },
+    { name: '冰山冷热', code: '000530', topic: '冰雪产业', pct: 78.80 },
+    { name: '大业股份', code: '603278', topic: '机器人概念', pct: 58.02 },
+    { name: '九阳股份', code: '002242', topic: '家电', pct: 42.30 },
+    { name: '百洋股份', code: '002696', topic: '水产品', pct: 40.03 },
+    { name: '福莱新材', code: '605488', topic: '灵巧手', pct: 36.79 },
+    { name: '兆威机电', code: '003021', topic: '灵巧手', pct: 32.79 },
+    { name: '宁波东力', code: '002164', topic: '机器人概念', pct: 30.93 },
+    { name: '吉大正元', code: '003029', topic: 'AI应用', pct: 28.63 },
+    { name: '上海九百', code: '600838', topic: '零售', pct: 26.44 }
+  ];
+  const CNT_1023 = {
+    海洋王: 3, 慈文传媒: 8, 冰山冷热: 7, 大业股份: 4, 九阳股份: 8, 百洋股份: 9,
+    福莱新材: 3, 兆威机电: 1, 宁波东力: 3, 吉大正元: 5, 上海九百: 1
+  };
+  /** 10-23 真实场景：只有一个入选题材【工业4.0】，平均量比 15.18（< 25） */
+  function industrial40() {
+    const ms = [
+      m('兆威机电', { aucVolRatio: 15.18, aucShare: 6, code: '003021' }),
+      m('大业股份', { aucVolRatio: 15.18, aucShare: 5, code: '603278' }),
+      m('宁波东力', { aucVolRatio: 15.18, aucShare: 4, code: '002164' }),
+      m('福莱新材', { aucVolRatio: 15.18, aucShare: 3, code: '605488' })
+    ];
+    const dm = new Map();
+    ms.forEach(function(x, i) { dm.set(x.name, { rank: i + 1, topic: '工业4.0', groupSize: 4, pct: 20 }); });
+    return { topics: [block('工业4.0', 1, ms)], dm: dm };
+  }
+
+  it('★★ 10-23：工业4.0（量比 15.18 < 25）整块灰化空仓，但兆威机电仍被选为十日涨幅候补', function() {
+    const f = industrial40();
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, {
+      range10Rows: POOL_1023,
+      range10Presence: presence(CNT_1023),
+      ebbCtx: ebbCtxOf()          // 总龙一 = 新华传媒（文化传媒）
+    });
+    // ① 题材级结论【不变】：工业4.0 那块照旧列出、照旧灰化空仓（⛔ 不因为出了候补就恢复它）
+    expect(plan.cashAlert.show).toBe(true);
+    const names = plan.blocks[0].picks.map(function(p) { return p.name; });
+    expect(names).toContain('兆威机电');                                  // 灰化块里仍然展示这只票
+    plan.blocks[0].picks.forEach(function(p) {
+      expect(p.buyActionTag).toBe(CASH_NO_BUY_TAG);                       // 一律「不开新仓」
+    });
+    // ② 股票级通道照常生效：兆威机电 = 十日涨幅第 8 名 + 首次在列 + 灵巧手 ≠ 文化传媒
+    expect(plan.range10Backup).toBeTruthy();
+    expect(plan.range10Backup.picks.map(function(p) { return p.name; })).toEqual(['兆威机电']);
+    expect(plan.range10Backup.picks[0].buyActionTag).toBe(RANGE10_BACKUP_TAG);
+    expect(plan.range10Backup.picks[0].range10Label).toContain('首次在列');
+    expect(plan.buy.range10Backup).toBe(plan.range10Backup);
+    // ③ 说明区必须点明「同一只票重复出现是设计如此」+ 题材块灰化不恢复
+    const notes = plan.range10Backup.notes.join('\n');
+    expect(notes).toContain('重复出现');
+    expect(notes).toContain('工业4.0');
+    expect(plan.range10Backup.picks[0].actionNote).toContain('工业4.0');
+    expect(plan.range10Backup.reason).toContain('股票级');
+    // ④ 空仓标语里那句话不能自相矛盾（候补票本身就在第一题材里）
+    expect(plan.cashAlert.detail).toContain('这只候补除外');
+    // ⑤ 进了买点名单（卖点侧才会按「今日要买」处理）
+    expect(plan.buyNames.has('兆威机电')).toBe(true);
+  });
+
+  it('⛔ 今日【确实要买】的票不重复选（灰化的才算「不占用名额」）', function() {
+    // 场景：第二题材 房地产（7.47）作废 ⇒ 触发候补；而排名第一的【强题材】量比 60 达标，
+    //   ⇒ 它的票是【今天真要买的】，⛔ 不能被候补再选一次。
+    const f = twoTopics();
+    const pool = [{ name: '强题材一', code: '600100', topic: '强题材', pct: 99 }].concat(POOL);
+    const cnt = Object.assign({}, CNT, { 强题材一: 1 });   // 前十第 1 名 + 首次在列（如果不排除就会被选走）
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, {
+      range10Rows: pool,
+      range10Presence: presence(cnt),
+      ebbCtx: ebbCtxOf()
+    });
+    expect(plan.blocks[0].picks[0].name).toBe('强题材一');       // 它确实是今日买点
+    expect(plan.range10Backup.picks[0].name).not.toBe('强题材一');
+    expect(plan.range10Backup.picks[0].name).toBe('海洋王');
+    expect(plan.range10Backup.picks[0].actionNote).not.toContain('重复出现');
+  });
+
+  it('★ 被整块作废的题材里的票：只要它自己是【首次在列】且 ≠ 总龙一题材，仍可当选候补', function() {
+    // 用户口径：「题材选不了，但从总市场中选股（非选题材）」—— 题材级作废 ≠ 这只票被禁买，
+    //   只要股票自己的三个条件成立就仍然可以当选（说明区会交代它来自刚被作废的那块）。
+    const f = twoTopics();
+    const pool = [{ name: '房地产一', code: '600200', topic: '房地产', pct: 99 }].concat(POOL);
+    const cnt = Object.assign({}, CNT, { 房地产一: 1 });
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, {
+      range10Rows: pool,
+      range10Presence: presence(cnt),
+      ebbCtx: ebbCtxOf()
+    });
+    expect(plan.blocks.map(function(b) { return b.block.topic; })).toEqual(['强题材']);  // 题材块照旧作废
+    expect(plan.range10Backup.picks[0].name).toBe('房地产一');
+    expect(plan.range10Backup.picks[0].actionNote).toContain('整块作废');
+    expect(plan.range10Backup.notes.join('\n')).toContain('重复出现');
+  });
+
   it('§11：调用方没传十日涨幅池 ⇒ 与旧行为逐字一致（不作废、不出候补、不加说明）', function() {
     const f = twoTopics();
     const plan = buildTopicVolRatioPlan(f.topics, f.dm, { ebbCtx: ebbCtxOf() });
