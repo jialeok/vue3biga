@@ -46,6 +46,8 @@ import {
   TVRB_PICK_MID,
   TVRB_PICK_BIG,
   TVRB_TOPIC_LIMIT,
+  // ★★ [SMALL-TOPIC 2026-10-24 用户口径] 排名第一 + 数量 4~6 只的收紧上界
+  TVRB_SMALL_TOPIC_MAX,
   TVRB_CASH_ALERT_AVG_VR,
   EBB_PICK_TAG,
   EBB_PICK_TONE,
@@ -3820,5 +3822,211 @@ describe('tvrb · [SECOND-LEADER-10] 排名第二题材：龙一必须进当天�
     expect(line).toContain('十日涨幅前十');
     expect(line).toContain('9:26 竞价口径');
     expect(line).toContain('没有带动性');
+  });
+});
+
+// ============================================================================
+// [SMALL-TOPIC 2026-10-24 用户口径] 排名第一的入选题材、【数量 4~6 只】⇒ 收紧：只买最强的
+//
+// 用户原话（逐字）：
+//   「9月30日，入选排名第一的是新能源汽车，总数4只，平均量比32.55达到门槛。题材量比买点侧今天
+//     选了江淮汽车，不够准确。原因就是因为总数太少，没有启动性，所以次日导致a杀。」
+//   「遇到入选排名第一的题材数量在4-6只时（不是4-8只，那只是入选股票数量1只条件，我说的这个是
+//     选票范围），条件要苛刻些。如果排名第一的题材数量4-6只，要看10日涨幅，看有没有同题材票
+//     进入前10，如果有就选最靠前那一只，如果没有，就弃掉了。」
+//   「因为这种数量少的，次日能存活下来的顶多有一只。所以就买最强的。要收紧下。」
+//
+// ★ 与 TVRB_MID_MAX（= 8）的分工（用户当场纠正过一字）：
+//   · TVRB_MID_MAX = 8 ⇒ 【取几只】（4~8 只这一档只取 1 只）；
+//   · TVRB_SMALL_TOPIC_MAX = 6 ⇒ 【选票范围收紧】（4~6 只这一段的题材，票还得进当天十日涨幅前十）。
+//   ⇒ 7~8 只的题材【不受】本规则约束（本组最后两例专门守这条边界）。
+//
+// ★ 9-30 真实数据核查（直接查库算出来的）：
+//   襄阳轴承 9:26 竞价口径 +24.02% ⇒ 主板第 21 名；收盘 +49.54% ⇒ 第 3 名。
+//   江淮汽车 9:26 竞价口径 +35.15% ⇒ 主板第 9 名；收盘 +42.63% ⇒ 第 8 名。
+//   ⇒ 用户看到的「襄阳轴承更靠前」是【收盘口径】；9:26 那一刻反而是江淮汽车更靠前 ⇒
+//     按买点侧竞价口径，原来看法本身没错，新规在 9-30 这天【不改变选票结果】，
+//     它真正收紧的是「一只都没进前十 ⇒ 弃掉题材」这半边（本组用造出来的池子覆盖）。
+// ============================================================================
+describe('tvrb · [SMALL-TOPIC] 排名第一题材数量 4~6 只：只买当天十日涨幅前十里的最强那只', function() {
+  const FIRST = '新能源汽车';
+  const NEXT = '备选题材';
+
+  /** 造一个题材块：cnt 只，量比 vr，龙位按数组顺序 1..cnt */
+  function topicOf(name, rank, cnt, vr) {
+    const names = [];
+    for (let i = 1; i <= cnt; i++) names.push(name + i);
+    const ms = names.map(function(n, i) {
+      return m(n, { aucVolRatio: vr, aucShare: 6, code: '601' + String(rank) + String(i).padStart(2, '0') });
+    });
+    const dm = new Map();
+    names.forEach(function(n, i) { dm.set(n, { rank: i + 1, topic: name, groupSize: cnt, pct: 20 }); });
+    return { b: block(name, rank, ms), names: names, dm: dm };
+  }
+
+  /**
+   * 造十日涨幅池：head 只「外票」占住第 1..head 名，再把本题材成员按 tailPcts 接在后面
+   * （tailPcts 递减 ⇒ 名次连续），最后补几只垫底外票保证总数够 10 名以上。
+   * @param {string[]} members 本题材成员名（按龙位顺序）
+   * @param {number[]} tailPcts 对应成员的十日涨幅（必须递减才是同样的名次顺序）
+   * @param {number} head 前面压几只外票
+   */
+  function poolOf(members, tailPcts, head) {
+    const list = [];
+    const h = head === undefined ? 10 : head;
+    for (let i = 1; i <= h; i++) {
+      list.push({ name: '外票' + i, code: '6009' + String(i).padStart(2, '0'), topic: '其它', pct: 200 - i });
+    }
+    members.forEach(function(nm, i) {
+      list.push({ name: nm, code: '6011' + String(i).padStart(2, '0'), topic: FIRST, pct: tailPcts[i] });
+    });
+    // 垫底：4 只更低的外票（保证池子里始终有「第 10 名之后」的行）
+    for (let i = 1; i <= 4; i++) {
+      list.push({ name: '垫底' + i, code: '6008' + String(i).padStart(2, '0'), topic: '其它', pct: 1 - i });
+    }
+    return list;
+  }
+
+  function topicsOf(firstCnt, nextCnt) {
+    const T1 = topicOf(FIRST, 1, firstCnt, 60);
+    const T2 = topicOf(NEXT, 2, nextCnt === undefined ? 10 : nextCnt, 20);
+    const dm = new Map();
+    [T1, T2].forEach(function(t) { t.dm.forEach(function(v, k) { dm.set(k, v); }); });
+    return { topics: [T1.b, T2.b], dm: dm, t1: T1, t2: T2 };
+  }
+
+  it('★ 4 只、龙一进了前十（第 6 名）⇒ 仍选龙一，并留下「哪几只进了前十」的可追溯事实', function() {
+    const f = topicsOf(4);
+    // 龙一 第 6 名（pct 45）、龙二 第 7 名、龙三第 8、龙四第 9 ⇒ 四只都在前十
+    const pool = poolOf(f.t1.names, [45, 44, 43, 42], 5);
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, { range10Rows: pool });
+    expect(plan.blocks).toHaveLength(2);
+    expect(plan.blocks[0].block.topic).toBe(FIRST);
+    expect(plan.blocks[0].picks).toHaveLength(1);
+    expect(plan.blocks[0].picks[0].name).toBe(FIRST + '1');        // 龙位最前 = 组内最强
+    const notes = plan.blocks[0].notes.join('\n');
+    expect(notes).toContain('小题材收紧');
+    expect(notes).toContain('判定可追溯');
+    expect(notes).toContain('前十里有本题材的票 4 只');
+    expect(notes).toContain('第 6 名 ' + FIRST + '1');
+    // reason 也要换口径（不再说「按龙一 → 龙二 依次取票」）
+    expect(plan.blocks[0].reason).toContain(String(TVRB_SMALL_TOPIC_MAX));
+    expect(plan.blocks[0].reason).toContain('前十');
+  });
+
+  it('★★ 4 只、【一只都没进前十】⇒ 该题材【弃掉】，买点侧顺延到下一个题材', function() {
+    const f = topicsOf(4);
+    // 前 10 名全是外票，本题材 4 只排第 11~14
+    const pool = poolOf(f.t1.names, [5, 4, 3, 2], 10);
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, { range10Rows: pool });
+    // ① 第一题材被弃 ⇒ 只剩第二题材，并且它【顶上来】当第一个块
+    expect(plan.blocks).toHaveLength(1);
+    expect(plan.blocks[0].block.topic).toBe(NEXT);
+    expect(plan.buy.heavy).toBe(plan.blocks[0]);
+    expect(plan.buy.light).toBeNull();
+    // ② 说明必须写清「为什么弃」（§10：否掉一个题材必须可见）
+    const txt = plan.notes.join('\n');
+    expect(txt).toContain('小题材收紧 · 本题材不入选');
+    expect(txt).toContain(FIRST);
+    expect(txt).toContain('前十没有一只本题材的票');
+    expect(txt).toContain('次日能存活下来的顶多有一只');
+    // ③ ⛔ 不许再报「当日只有 1 个题材满足条件」（事实是有、但被弃）
+    expect(txt).not.toContain('当日只有 1 个题材满足条件');
+    // ④ 被弃的票一只都不进买点名单
+    f.t1.names.forEach(function(n) { expect(plan.buyNames.has(n)).toBe(false); });
+  });
+
+  it('★ 6 只（上界）⇒ 同样收紧：一只都没进前十就弃掉', function() {
+    const f = topicsOf(6);
+    const pool = poolOf(f.t1.names, [5, 4, 3, 2, 1, 0], 10);
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, { range10Rows: pool });
+    expect(plan.blocks).toHaveLength(1);
+    expect(plan.blocks[0].block.topic).toBe(NEXT);
+    expect(plan.notes.join('\n')).toContain('小题材收紧 · 本题材不入选');
+  });
+
+  it('★ 7 只（超出上界 1 只）⇒ 【不受】本条约束：一只都没进前十也照旧选龙一', function() {
+    const f = topicsOf(7);
+    const pool = poolOf(f.t1.names, [5, 4, 3, 2, 1, 0, -1], 10);
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, { range10Rows: pool });
+    expect(plan.blocks).toHaveLength(2);
+    expect(plan.blocks[0].block.topic).toBe(FIRST);
+    expect(plan.blocks[0].picks[0].name).toBe(FIRST + '1');
+    const txt = plan.notes.join('\n') + '\n' + plan.blocks[0].notes.join('\n');
+    expect(txt).not.toContain('小题材收紧');
+  });
+
+  it('★ 9:26 口径优先：收盘第 5 名但 9:26 掉出前十 ⇒ 按【早上那一刻】弃掉题材', function() {
+    const f = topicsOf(4);
+    // 收盘：龙一 195 排第 5，龙二/三/四 100/99/98 排第 7/8/9 ⇒ 四只都在前十
+    const pool = poolOf(f.t1.names, [195, 100, 99, 98], 6);
+    // ① 不给 pctMap ⇒ 收盘口径 ⇒ 进了前十 ⇒ 正常入选
+    expect(buildTopicVolRatioPlan(f.topics, f.dm, { range10Rows: pool }).blocks).toHaveLength(2);
+    // ② 给 pctMap ⇒ 9:26 口径把四只全压到第 11 名之后 ⇒ 前十一只都没有 ⇒ 弃掉
+    const auc = new Map();
+    pool.forEach(function(x) { auc.set(x.name, { pct: x.pct }); });
+    f.t1.names.forEach(function(n, i) { auc.set(n, { pct: -50 - i }); });
+    const plan926 = buildTopicVolRatioPlan(f.topics, f.dm, { range10Rows: pool, pctMap: auc });
+    expect(plan926.blocks).toHaveLength(1);
+    expect(plan926.blocks[0].block.topic).toBe(NEXT);
+    const txt = plan926.notes.join('\n');
+    expect(txt).toContain('9:26 竞价口径');
+    expect(txt).toContain('小题材收紧 · 本题材不入选');
+  });
+
+  it('★ 龙一竞价一字（买不进）且前十只剩它一只 ⇒ 实际 0 只，⛔ 不从第十名之外补位', function() {
+    const f = topicsOf(4);
+    // 龙一 45 ⇒ 第 10 名（前十最后一位）；龙二/三/四 -5/-6/-7 ⇒ 第 15~17 名（前十之外）
+    const pool = poolOf(f.t1.names, [45, -5, -6, -7], 9);
+    f.topics[0].members[0].isYizi = true;                    // 龙一 = 竞价一字
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, { range10Rows: pool });
+    expect(plan.blocks).toHaveLength(2);
+    expect(plan.blocks[0].picks).toHaveLength(0);
+    expect(plan.buyNames.has(FIRST + '2')).toBe(false);      // 龙二不在前十 ⇒ 不许顶上来
+    const notes = plan.blocks[0].notes.join('\n');
+    expect(notes).toContain('实际 0 只');
+    expect(notes).toContain('不从前十之外补位');
+  });
+
+  it('§11：调用方没传十日涨幅池 ⇒ 整段跳过（行为与加规则之前逐字节相同）', function() {
+    const f = topicsOf(4);
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, {});
+    expect(plan.blocks).toHaveLength(2);
+    expect(plan.blocks[0].picks[0].name).toBe(FIRST + '1');
+    const txt = plan.notes.join('\n') + '\n' + plan.blocks[0].notes.join('\n');
+    expect(txt).not.toContain('小题材收紧');
+  });
+
+  it('§10：池子的 20 天补位行没就绪 ⇒ 名次会整体错位 ⇒ 判不出 ⇒ 【不弃题材】只写「未校验」', function() {
+    const f = topicsOf(4);
+    const pool = poolOf(f.t1.names, [5, 4, 3, 2], 10);
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, { range10Rows: pool, range10Complete: false });
+    expect(plan.blocks).toHaveLength(2);
+    expect(plan.blocks[0].block.topic).toBe(FIRST);
+    const txt = plan.notes.join('\n');
+    expect(txt).toContain('小题材收紧 · 未校验');
+    expect(txt).not.toContain('本题材不入选');
+  });
+
+  it('§10：本题材的票一只都不在池子里 ⇒ 判不出（⛔ 不当成「没进前十」去弃题材）', function() {
+    const f = topicsOf(4);
+    const pool = poolOf([], [], 12);       // 池子里一只本题材的票都没有
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, { range10Rows: pool });
+    expect(plan.blocks).toHaveLength(2);
+    expect(plan.blocks[0].block.topic).toBe(FIRST);
+    const txt = plan.notes.join('\n');
+    expect(txt).toContain('小题材收紧 · 未校验');
+    expect(txt).toContain('一只都不在十日涨幅名单里');
+  });
+
+  it('规则面板里写明了这条新规，并点明「7~8 只不受约束」（文案与判定同处一处，§6）', function() {
+    const line = buildTvrbRulesLines().filter(function(s) { return s.indexOf('四、选股顺序') === 0; })[0];
+    expect(line).toBeTruthy();
+    expect(line).toContain('小题材收紧');
+    expect(line).toContain(String(TVRB_SMALL_TOPIC_MAX));
+    expect(line).toContain('十日涨幅');
+    expect(line).toContain('9:26 竞价口径');
+    expect(line).toContain('弃掉');
+    expect(line).toContain('要收紧下');
   });
 });
