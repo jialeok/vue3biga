@@ -82,7 +82,11 @@
            ⇒ 用 `flex-wrap: nowrap`：一行放不下就横向溢出（极端窄屏才会），⛔ 绝不折行，
              这样「两行」是结构上保证的，不取决于机型宽度 / 字数。
            ⇒ 第一行 4 个开关（全开 / 竞价口径 / 20日涨幅 / 一字），第二行 4 个
-             （竞/昨 / 竞/昨占比 / 十日涨幅 / 题材），与用户要的「只保留两行」一致。 */
+             （竞/昨 / 竞/昨占比 / 十日涨幅 / 题材），与用户要的「只保留两行」一致。
+
+           ⚠️ 底色/分隔线用「实际渲染值」而不是本文件原来写的 #f8f7ff / #ede9fe：
+             因为一直生效的是 AuctionBoard.vue 那份遗留规则（无 background、border #e5e7eb），
+             用户看到的就是白底 + 灰线。这次只修「折行」，⛔ 不顺带换配色（用户：「其它不变」）。 */
         .auction-toolbar {
             display: flex;
             flex-wrap: nowrap;
@@ -90,8 +94,7 @@
             justify-content: flex-start;
             gap: 8px;
             padding: 8px 12px;
-            background: #f8f7ff;
-            border-bottom: 1px solid #ede9fe;
+            border-bottom: 1px solid #e5e7eb;
         }
 
         /* 第二行工具栏：放置"竞/昨"等后续新增开关，避免挤压第一行。
@@ -103,8 +106,7 @@
             justify-content: flex-start;
             gap: 8px;
             padding: 6px 12px;
-            background: #f8f7ff;
-            border-bottom: 1px solid #ede9fe;
+            border-bottom: 1px solid #e5e7eb;
         }
 
         .auction-help-icon {
