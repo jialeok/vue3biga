@@ -4030,3 +4030,177 @@ describe('tvrb · [SMALL-TOPIC] 排名第一题材数量 4~6 只：只买当天�
     expect(line).toContain('要收紧下');
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [DUAL-RANK 2026-10-24 用户口径] 复盘：竞价口径 与 收盘口径【并列对照】
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话：
+//   「我明白了，就是按照竞价口径，上海九百就是排名前十首次在列的那只，但是收盘口径，
+//     兆威机电排在前十且出现首次在列。而上海九百，却排在 11，所以看起来产生错觉。复盘时出现困惑。
+//     你有没有办法让我复盘时，只看竞价口径的排名结果，但是收盘时我也想看，竞价口径我也想看
+//     原始的是怎么排名的。」
+//   「我之前要求的都是竞价口径选股，收盘口径作为复盘，我要的就是竞价口径。」
+// ⇒ 本组测试钉三件事：
+//   ① 【选股口径一个字不改】—— 仍然只认 9:26 竞价口径（收盘口径的胜者不许顶上来）；
+//   ② 屏幕上把【两套名次并列】写出来（徽标 / 悬停 / 十名去留 / 看板级对照）；
+//   ③ §10 / §11：判不出就不写、两套相同就不写（老调用方零噪声）。
+// 数据造得与 10-23 的真实形状同构：两只都「首次在列」，竞价口径与收盘口径名次互换。
+describe('tvrb · [DUAL-RANK] 复盘：竞价口径与收盘口径名次并列（⛔ 不改选股口径）', function() {
+  /** 4 只同量比的题材（量比可控） */
+  function topic4(name, rank, vr, codeBase) {
+    const names = [name + '一', name + '二', name + '三', name + '四'];
+    const ms = names.map(function(n, i) {
+      return m(n, { aucVolRatio: vr, aucShare: 6, code: String(codeBase + i).padStart(6, '0') });
+    });
+    return { b: block(name, rank, ms), names: names };
+  }
+
+  /** 第一题材量比 60（达标）+ 第二题材量比 7.47（作废 ⇒ 触发第二十九条候补） */
+  function twoTopics() {
+    const a = topic4('强题材', 1, 60, 600100);
+    const b = topic4('房地产', 2, 7.47, 600200);
+    const dm = new Map();
+    a.names.concat(b.names).forEach(function(n, i) {
+      dm.set(n, { rank: (i % 4) + 1, topic: '', groupSize: 0, pct: 20 });
+    });
+    return { topics: [a.b, b.b], dm: dm };
+  }
+
+  // 十日涨幅池 = 【收盘口径】原值。两只候选都「首次在列」，只有名次不同：
+  //   收盘口径   ⇒ 戊票 第 5 名、己票 第 6 名
+  //   9:26 口径  ⇒ 己票 第 5 名、戊票 第 6 名（戊票竞价腿低得多 ⇒ 反解后 32.79 掉到 23.05）
+  const POOL = [
+    { name: '甲票', code: '600001', topic: '机械', pct: 90 },
+    { name: '乙票', code: '600002', topic: '电子', pct: 80 },
+    { name: '丙票', code: '600003', topic: '材料', pct: 70 },
+    { name: '丁票', code: '600004', topic: '化工', pct: 60 },
+    { name: '戊票', code: '600005', topic: '汽车零部件', pct: 32.79 },
+    { name: '己票', code: '600006', topic: '医药', pct: 26.44 }
+  ];
+  const CNT = { 甲票: 5, 乙票: 5, 丙票: 5, 丁票: 5, 戊票: 1, 己票: 1 };
+  // 9:26 竞价口径：只有戊票变了（其余原对象返回 ⇒ §19 引用稳定）
+  const P926 = new Map([['戊票', { pct: 23.05 }]]);
+
+  function presence(cntObj) {
+    const counts = new Map();
+    Object.keys(cntObj).forEach(function(k) { counts.set(k, { cnt: cntObj[k] }); });
+    return { counts: counts, coveredDays: 10 };
+  }
+  function ebbCtxOf() {
+    return {
+      ready: true,
+      leader: { name: '总龙', topic: '文化传媒', pct: 202.59 },
+      leaderSuspended: false,
+      leaderShare: 9,
+      top5: [{ name: '总龙', topic: '文化传媒', pct: 202.59, rank20: 1 }],
+      newDragonPool: [],
+      siblingDragons: [],
+      secondInfo: null
+    };
+  }
+  function planOf(extra) {
+    const f = twoTopics();
+    return buildTopicVolRatioPlan(f.topics, f.dm, Object.assign({
+      range10Rows: POOL,
+      range10Presence: presence(CNT),
+      ebbCtx: ebbCtxOf()
+    }, extra || {}));
+  }
+
+  it('★ 选股口径不变：9:26 口径下己票第 5 名 ⇒ 选己票（⛔ 收盘口径的戊票不许顶上来）', function() {
+    const plan = planOf({ pctMap: P926 });
+    expect(plan.range10Backup).toBeTruthy();
+    expect(plan.range10Backup.picks.map(function(p) { return p.name; })).toEqual(['己票']);
+    // 行上那个「十日涨幅」也是 9:26 那一份（26.44 不变，不是别的口径的数）
+    expect(plan.range10Backup.picks[0].pct).toBe(26.44);
+  });
+
+  it('★ 徽标并列两套名次：前半段竞价口径（选股用）、后半段收盘口径（复盘用）', function() {
+    const plan = planOf({ pctMap: P926 });
+    const row = plan.range10Backup.picks[0];
+    expect(row.range10Label).toContain('〔9:26 竞价口径〕');
+    expect(row.range10Label).toContain('十日涨幅第 5 名');
+    expect(row.range10Label).toContain('首次在列');
+    expect(row.range10Label).toContain('收盘口径第 6 名');     // ★ 复盘对照
+    // 顺序铁律：竞价口径在前（它是选股用的那一份），⛔ 不许颠倒
+    expect(row.range10Label.indexOf('第 5 名')).toBeLessThan(row.range10Label.indexOf('收盘口径第 6 名'));
+  });
+
+  it('★ 悬停说明把两套口径一次讲清，并点明「选股永远用竞价口径」', function() {
+    const plan = planOf({ pctMap: P926 });
+    const t = plan.range10Backup.picks[0].range10Title;
+    expect(t).toContain('【复盘对照】');
+    expect(t).toContain('收盘口径（现价）】是第 6 名');
+    expect(t).toContain('选股永远用【竞价口径】');
+    expect(t).toContain('不是算错了');
+  });
+
+  it('★ 「十个名次去留」逐只并列收盘口径名次 + 一句话解释括号里的数是什么', function() {
+    const plan = planOf({ pctMap: P926 });
+    const line = plan.range10Backup.notes.filter(function(s) {
+      return s.indexOf('十个名次去留') === 0;
+    })[0];
+    expect(line).toBeTruthy();
+    expect(line).toContain('己票 +26.44%（收盘口径第 6 名）');
+    // ⚠️ 前面的涨幅是【9:26 口径】那一份（戊票反解后 23.05），括号里才是收盘口径名次 ——
+    //   两个数属于两把尺子，⛔ 不能混成一个（这正是用户复盘时产生错觉的根源）。
+    expect(line).toContain('戊票 +23.05%（收盘口径第 5 名）');
+    expect(line).toContain('仅用于复盘对照');
+  });
+
+  it('★ 看板级「两套口径前十对照」：两套名单 + 进出变化都写出来', function() {
+    const plan = planOf({ pctMap: P926 });
+    const line = plan.notes.filter(function(s) { return s.indexOf('📊【两套口径前十对照') === 0; })[0];
+    expect(line).toBeTruthy();
+    // 两套前十名单：竞价口径里己票在戊票前面，收盘口径反过来
+    expect(line).toContain('竞价口径（9:26，本看板选股用的那一份）前十：1.甲票 2.乙票 3.丙票 4.丁票 5.己票 6.戊票');
+    expect(line).toContain('收盘口径（现价，即早盘竞价「10日涨幅」toggle 上看到的原始排名）前十：1.甲票 2.乙票 3.丙票 4.丁票 5.戊票 6.己票');
+    // 进出变化（逐只交代，⛔ 不下结论）
+    expect(line).toContain('己票 竞价第 5 名 → 收盘第 6 名');
+    expect(line).toContain('戊票 竞价第 6 名 → 收盘第 5 名');
+    expect(line).toContain('选股与行上的名次仍固定为【竞价口径（9:26）】');
+  });
+
+  it('★ 没有候补（空仓）时，「前十逐只看」同样并列收盘口径名次（复盘不依赖有没有买）', function() {
+    const allFive = {};
+    Object.keys(CNT).forEach(function(k) { allFive[k] = 5; });     // 既非首次也非二次 ⇒ 无候补
+    const plan = planOf({ pctMap: P926, range10Presence: presence(allFive) });
+    expect(plan.range10Backup).toBeNull();
+    const line = plan.notes.filter(function(s) { return s.indexOf('前十逐只看') > 0; })[0];
+    expect(line).toBeTruthy();
+    expect(line).toContain('己票');
+    expect(line).toContain('收盘口径第 6 名');
+  });
+
+  it('§11：没传 9:26 口径（两套必然相同）⇒ 一条对照都不写（零噪声，逐字回到旧行为）', function() {
+    const plan = planOf({});
+    // 没有 9:26 口径 ⇒ 选股退回收盘口径：戊票第 5 名 ⇒ 选戊票（与加本功能之前完全一致）
+    expect(plan.range10Backup.picks.map(function(p) { return p.name; })).toEqual(['戊票']);
+    expect(plan.range10Backup.picks[0].range10Label).toContain('收盘口径（9:26 口径未读到）');
+    expect(plan.range10Backup.picks[0].range10Label).not.toContain('收盘口径第 ');
+    expect(plan.range10Backup.picks[0].range10Title).not.toContain('【复盘对照】');
+    expect(plan.notes.join('\n')).not.toContain('两套口径前十对照');
+  });
+
+  it('§11：传了【空 Map】的 pctMap 同样按缺省处理（⛔ 不许悄悄换成「全员无名次」）', function() {
+    const plan = planOf({ pctMap: new Map() });
+    expect(plan.range10Backup.picks.map(function(p) { return p.name; })).toEqual(['戊票']);
+    expect(plan.notes.join('\n')).not.toContain('两套口径前十对照');
+  });
+
+  it('§10：调用方没传十日涨幅池 ⇒ 判不出 ⇒ 不写对照（⛔ 不留半段文案）', function() {
+    const f = twoTopics();
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, { ebbCtx: ebbCtxOf() });
+    expect(plan.notes.join('\n')).not.toContain('两套口径前十对照');
+  });
+
+  it('规则面板第二十三条写明了「两套口径并列 + 收盘口径只用于复盘」', function() {
+    const line = buildTvrbRulesLines().filter(function(s) {
+      return s.indexOf('二十三、') === 0;
+    })[0];
+    expect(line).toBeTruthy();
+    expect(line).toContain('复盘对照');
+    expect(line).toContain('只用于复盘对照');
+    expect(line).toContain('永远是【竞价口径】');
+  });
+});

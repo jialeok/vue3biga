@@ -1921,6 +1921,111 @@ function _range10RankMapOf(rows) {
 }
 
 /**
+ * ★★ [DUAL-RANK 2026-10-24 用户口径] 一只票在【收盘口径】下的名次（复盘对照用）。
+ *
+ * 用户原话：「我明白了，就是按照竞价口径，上海九百就是排名前十首次在列的那只，但是收盘口径，
+ *   兆威机电排在前十且出现首次在列。而上海九百，却排在 11，所以看起来产生错觉。复盘时出现困惑。
+ *   你有没有办法让我复盘时，只看竞价口径的排名结果，但是收盘时我也想看，竞价口径我也想看
+ *   原始的是怎么排名的。」
+ *   ⇒ 屏幕上【继续以竞价口径（9:26）为准】（名字前面那个「第 N 名」永远是选股用的那一份），
+ *     同时把【收盘口径】的名次并列写出来，让复盘时能直接对照，⛔ 不用去两个看板来回比对。
+ *
+ * ⛔ 本函数只产出事实，绝不参与任何判定（§6：选股口径一旦分叉就等于换了一套规则）。
+ *
+ * 三态返回（§10：判不出 ≠ 判出「没有名次」）：
+ *   · `null`             ⇒ 收盘口径名次表不可用 / 这只票不在原始池里 ⇒ **判不出** ⇒ 文案一个字都不写；
+ *   · `{rank:null,...}`  ⇒ 它在原始池里，但收盘口径下排不出名次（非主板 / 缺涨幅）⇒ 屏幕上本来就没名次；
+ *   · `{rank:N,...}`     ⇒ 判出来了；`same=true` 表示与竞价口径名次相同（⇒ 文案可省，零噪声）。
+ *
+ * @param {Map|null} closeRankMap 收盘口径名次表（`_range10RankMapOf(o.range10Rows)`）
+ * @param {string} name 股票名
+ * @param {number|null} rank926 竞价口径名次（用来判「两套是否相同」）
+ * @returns {{rank:number|null, pct:number|null, same:boolean}|null}
+ */
+function _closeRankOf(closeRankMap, name, rank926) {
+  if (!(closeRankMap instanceof Map) || closeRankMap.size === 0) return null;
+  const nm = String(name || '').trim();
+  if (!nm || !closeRankMap.has(nm)) return null;
+  const it = closeRankMap.get(nm) || null;
+  const r = it ? Number(it.rank) : NaN;
+  const cur = Number(rank926);
+  if (!isFinite(r) || r <= 0) return { rank: null, pct: it ? _num(it.pct) : null, same: false };
+  return { rank: r, pct: it ? _num(it.pct) : null, same: isFinite(cur) && cur === r };
+}
+
+/**
+ * 【纯函数】把一份名次表里「第 1 ~ topN 名」的票按名次取出来（供两套口径对照文案用）。
+ * @param {Map<string,{rank:number|null,pct:number|null}>} rankMap
+ * @param {number} topN
+ * @returns {Array<{name:string, rank:number, pct:number|null}>}
+ */
+function _rankTopEntries(rankMap, topN) {
+  const out = [];
+  if (!(rankMap instanceof Map) || rankMap.size === 0) return out;
+  rankMap.forEach(function(v, k) {
+    const r = v ? Number(v.rank) : NaN;
+    if (!isFinite(r) || r <= 0 || r > topN) return;
+    out.push({ name: k, rank: r, pct: v ? _num(v.pct) : null });
+  });
+  out.sort(function(a, b) {
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+  });
+  return out;
+}
+
+/**
+ * ★★ [DUAL-RANK 2026-10-24 用户口径] 「两套口径的前十名单」对照文案（复盘专用）。
+ *
+ * 为什么要有这一段：单看一只票的「收盘口径第 N 名」还不够 —— 用户复盘时的困惑是
+ *   「为什么竞价口径是上海九百、收盘回看却是兆威机电」这种【整批名单换了】的现象。
+ *   逐只给名次能对上号，但看不到「这一批到底进了谁、出了谁」。
+ *
+ * §10 / §11 两条安全降级：
+ *   · 任一套名次表为空 ⇒ 判不出 ⇒ 返回 ''（⛔ 不写半段、不猜）；
+ *   · 两套前十【名单与顺序完全一致】⇒ 没有可对照的差异 ⇒ 返回 ''（零噪声；
+ *     调用方没传 9:26 口径（pctMap）时 rows 原样返回，两套必然一致 ⇒ 自动不出现）。
+ *
+ * ⛔ 只列事实，不下结论（选股永远用竞价口径那一份）。
+ *
+ * @param {Map} rank926 竞价口径名次表
+ * @param {Map} rankClose 收盘口径名次表
+ * @param {number} topN 「前十」的 N
+ * @returns {string}
+ */
+function _range10DualTopText(rank926, rankClose, topN) {
+  const n = (isFinite(Number(topN)) && Number(topN) > 0) ? Math.floor(Number(topN)) : PRESENCE_TOP_N;
+  const a = _rankTopEntries(rank926, n);
+  const b = _rankTopEntries(rankClose, n);
+  if (a.length === 0 || b.length === 0) return '';
+  const same = a.length === b.length && a.every(function(x, i) { return x.name === b[i].name; });
+  if (same) return '';
+
+  const fmt = function(list) {
+    return list.map(function(x) { return x.rank + '.' + x.name; }).join(' ');
+  };
+  const closeRankOf = new Map();
+  b.forEach(function(x) { closeRankOf.set(x.name, x.rank); });
+  const aNames = new Set(a.map(function(x) { return x.name; }));
+  const moves = [];
+  a.forEach(function(x) {
+    if (!closeRankOf.has(x.name)) {
+      moves.push(x.name + ' 竞价第 ' + x.rank + ' 名 → 收盘掉出前十');
+    } else if (closeRankOf.get(x.name) !== x.rank) {
+      moves.push(x.name + ' 竞价第 ' + x.rank + ' 名 → 收盘第 ' + closeRankOf.get(x.name) + ' 名');
+    }
+  });
+  b.forEach(function(x) {
+    if (aNames.has(x.name)) return;
+    moves.push(x.name + ' 竞价没进前十 → 收盘第 ' + x.rank + ' 名');
+  });
+  return '📊【两套口径前十对照 · 复盘专用】⛔ 只作对照，选股与行上的名次仍固定为【竞价口径（9:26）】。' +
+    '竞价口径（9:26，本看板选股用的那一份）前十：' + fmt(a) + '｜' +
+    '收盘口径（现价，即早盘竞价「10日涨幅」toggle 上看到的原始排名）前十：' + fmt(b) + '｜' +
+    '差异：' + (moves.length ? moves.join('；') : '名次相同') + '。';
+}
+
+/**
  * 【纯函数】★ [SMALL-TOPIC 2026-10-24 用户口径] 一个题材里，有哪些票进了【当天十日涨幅前十】。
  *
  * 用途：排名第一的入选题材、【数量 4~6 只】时（`TVRB_SMALL_TOPIC_MAX`），只许在这几只里选
@@ -2627,6 +2732,9 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
   // ★★ [R10-926 2026-10-24] 本次「十日涨幅 / 名次」用的口径时间（'9:26 竞价口径' / '收盘口径（…未读到）'）。
   //   ⛔ 只在文案里出现，不参与任何判定（§21：模板零计算，文案在 Logic 层拼好）。
   const baseText = String(inf.baseText || '');
+  // ★★ [DUAL-RANK 2026-10-24 用户口径] 同一只票在【收盘口径】下的名次（复盘对照，⛔ 不参与选股）。
+  //   名次表缺失 / 这只票不在原始池里 ⇒ null ⇒ 下面三处文案一个字都不加（§10 判不出就不猜）。
+  const closeInfo = _closeRankOf(inf.closeRankMap, name, p.rank);
 
   // 真实成员行（与退潮替补 / 新龙同一取法：先按题材块找，再全表按名字兜一次）
   let member = null;
@@ -2653,6 +2761,12 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
     range10Label: (baseText ? ('〔' + baseText + '〕') : '') + '十日涨幅第 ' +
       (p.rank === null || p.rank === undefined ? '—' : p.rank) +
       ' 名 · ' + (p.label || '在列次数未知') +
+      // ★★ [DUAL-RANK 2026-10-24 用户口径] 收盘口径名次【并列】写在后面（只在两套不同时写，
+      //   §11 零噪声）—— 复盘时一眼能看出「早上第 8 名、收盘回看是第 11 名」这种错觉的来源。
+      //   ⛔ 前半段（竞价口径）永远是选股用的那一份，顺序不许颠倒。
+      (closeInfo && closeInfo.rank !== null && !closeInfo.same
+        ? (' · 收盘口径第 ' + closeInfo.rank + ' 名')
+        : '') +
       // ★ [R10-NOEXCLUDE 2026-10-24] 与题材买点重叠时把「叠加确认」直接写进徽标 ——
       //   用户要的是「一眼看见确定性」，⛔ 不能只藏在点开后的说明里。
       (inf.overlap ? ' · 叠加确认' : ''),
@@ -2665,6 +2779,20 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
       (p.rowNo === undefined || p.rowNo === null ? '—' : p.rowNo) + ' 行）｜' +
       (p.label || '在列次数未知') + ' = 这 10 个交易日里它出现在当日名单的次数' +
       '（含今天；1 次 = 首次在列，2 次 = 二次在列）' +
+      // ★★ [DUAL-RANK 2026-10-24 用户口径] 悬停里把两套口径一次讲清。
+      //   ⚠️ 只在【确实不同】时才写（§11 零噪声）：老调用方不传 pctMap ⇒ 两张名次表逐项相同
+      //      ⇒ 悬停逐字回到加本功能之前的样子（⛔ 不拿一句「两套相同」去污染一条旧文案）；
+      //      而且此时 baseText 本身就是「收盘口径（9:26 口径未读到）」，再写一段「收盘口径是第 N 名」
+      //      等于同一句话说了两遍。
+      //   §10：收盘口径下它【不占名次】这种情况必须写（那是一句新信息，不是重复）。
+      (closeInfo && !closeInfo.same
+        ? (closeInfo.rank === null
+          ? '｜【复盘对照】同一只票在【收盘口径（现价）】下不占名次（非主板 / 缺十日涨幅）—— 屏幕上那一份也没有它。'
+          : ('｜【复盘对照】同一只票在【收盘口径（现价）】是第 ' + closeInfo.rank + ' 名（' +
+             _pct2(closeInfo.pct) + '） ⇒ 名次与竞价口径不同：这是同一批票在两个时刻' +
+             '（早上 9:26 与现价）的排序差异，不是算错了。' +
+             '选股永远用【竞价口径】那一份，这里的收盘名次只用于复盘对照。'))
+        : '') +
       (inf.overlap
         ? ('｜叠加确认：它同时是上方【' + (inf.overlap.topic || '—') + '】题材块的买点 —— ' +
            '题材通道与市场通道选中同一只票，确定性更高，两处各显示一行')
@@ -2679,10 +2807,17 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
       '（' + (w.reasonText || '题材量比太小') + '）';
   }).join('；');
   // ★ [R10-926 2026-10-24] 每一只都带【涨幅 + 名次】（只列事实，便于用户逐只核对，⛔ 不下结论）
-  const trailText = (bk.trail || []).map(function(t) {
-    return '【第 ' + t.rank + ' 名 ' + t.name + ' ' + _pct2(t.pct) + '】' +
+  // ★★ [DUAL-RANK 2026-10-24 用户口径] 括号里再并一个【收盘口径名次】（两套不同才写）——
+  //   复盘时逐只对上号，⛔ 不用再去早盘竞价看板比对一遍。
+  let closeDiffN = 0;
+  const trailParts = (bk.trail || []).map(function(t) {
+    const cs = _closeRankOf(inf.closeRankMap, t.name, t.rank);
+    const csText = (cs && cs.rank !== null && !cs.same) ? ('（收盘口径第 ' + cs.rank + ' 名）') : '';
+    if (csText) closeDiffN += 1;
+    return '【第 ' + t.rank + ' 名 ' + t.name + ' ' + _pct2(t.pct) + csText + '】' +
       (t.reason ? t.reason : (t.label || '') + (t.cnt === 1 || t.cnt === 2 ? ' ⇒ 候选' : '（不是首次 / 二次在列）'));
-  }).join('；');
+  });
+  const trailText = trailParts.join('；');
   const tierText = (bk.tier === 'first')
     ? '前十名里【有首次在列】⇒ 只选这一只（首次在列优先）'
     : '前十名里【没有可用的首次在列】⇒ 退到【二次在列】里取排名最靠前的这一只';
@@ -2747,7 +2882,14 @@ function _buildRange10BackupBlock(bk, list, fOpts, info) {
       '⚠️ 为什么用十日涨幅而不是 20日涨幅：20 日老周期已经结束（总龙二次确认退潮），现在轮到【十日周期】 ——' +
         '龙头的量比都比题材大，十日周期的新面孔才是接下来的核心。20日涨幅列表里的老票会逐渐换成新票，' +
         '本看板 20日涨幅榜上的老面孔也会一天天被十日周期的新票替换掉（这是正常的周期切换，不是数据错乱）。',
-      '十个名次去留（' + (baseText || '当日口径') + '，判定可追溯）：' + (trailText || '—') + '。',
+      '十个名次去留（' + (baseText || '当日口径') + '，判定可追溯）：' + (trailText || '—') + '。' +
+        // ★★ [DUAL-RANK 2026-10-24 用户口径] 括号里的收盘口径名次是什么，一句话交代清楚
+        //   （§10：有差异就必须能解释，⛔ 不能让两个数字并排摆着却没人说明）。
+        (closeDiffN > 0
+          ? ('（括号里的「收盘口径第 N 名」= 同一只票在【收盘口径（现价）】下排第 N 名，' +
+             '仅用于复盘对照；【选股与前面的名次一律用竞价口径（9:26）】。' +
+             '两套对不上不是算错，是同一批票在早上 9:26 与现价两个时刻的排序差异。）')
+          : ''),
       '⚠️ 窗口覆盖：' + (bk.coveredDays || 0) + ' / ' + (bk.windowDays || 10) +
         ' 个交易日有名单数据（在列次数 = 这 ' + (bk.coveredDays || 0) + ' 天里它出现在早盘竞价名单的几次）。'
     ].filter(function(s) { return !!s; })
@@ -3052,6 +3194,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   const r10Base926 = r10Rows926Res.used;
   const r10BaseText = r10Base926 ? '9:26 竞价口径' : '收盘口径（9:26 口径未读到）';
   const r10Rank926 = _range10RankMapOf(r10Rows926Res.rows);
+  // ★★ [DUAL-RANK 2026-10-24 用户口径] 同一份池子的【收盘口径】名次表 —— ⛔ 只喂文案，绝不参与判定。
+  //   用途：① 候补行徽标 / 悬停 / 前十去留里并列「收盘口径第 N 名」；② 看板级「两套前十对照」。
+  //   §11：调用方没传 9:26 口径（buyPctMap 缺省）⇒ 上面那份 = 原样池子 ⇒ 两张表逐项相同
+  //        ⇒ _range10DualTopText 判「没有差异」⇒ 一个字都不出现（零噪声）。
+  const r10RankClose = _range10RankMapOf(o.range10Rows || null);
 
 
   // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条【新龙 / 新题材切换日】—— 必须排在【选股扫描之前】：
@@ -3598,7 +3745,9 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         grayed: r10Grayed,
         overlap: r10Overlap,
         // ★★ [R10-926 2026-10-24] 本次名次是按哪套口径算的（只影响文案的「口径时间」标注，§21）
-        baseText: r10BaseText
+        baseText: r10BaseText,
+        // ★★ [DUAL-RANK 2026-10-24 用户口径] 收盘口径名次表（复盘对照用，⛔ 不改选股）
+        closeRankMap: r10RankClose
       });
       if (r10Blk) {
         out.range10Backup = r10Blk;
@@ -3658,7 +3807,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       //   为什么不是那一只」，光给结论没法核对；有了这一句，屏幕上点开就能逐只对上（判定可追溯）。
       const r10TrailText = (r10Res && Array.isArray(r10Res.trail) && r10Res.trail.length)
         ? ' 前十逐只看：' + r10Res.trail.map(function(t) {
-            return '第' + t.rank + '名 ' + t.name + '（' + (t.label || '次数未知') + '）' +
+            // ★★ [DUAL-RANK 2026-10-24 用户口径] 每只并一个收盘口径名次（两套不同才写）——
+            //   复盘时能直接看出「竞价第 8 名的票，收盘回看是第 11 名」这类口径差。
+            const cs = _closeRankOf(r10RankClose, t.name, t.rank);
+            return '第' + t.rank + '名 ' + t.name + '（' + (t.label || '次数未知') +
+              (cs && cs.rank !== null && !cs.same ? ('；收盘口径第 ' + cs.rank + ' 名') : '') + '）' +
               (t.reason ? '⇒ ' + t.reason : '');
           }).join('；') + '。'
         : '';
@@ -3672,6 +3825,18 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
           ((r10Res && r10Res.reason) ? ('：' + r10Res.reason) : '') + '。' + r10TrailText);
       }
     }
+  }
+
+  // ★★ [DUAL-RANK 2026-10-24 用户口径] 【两套口径前十对照 · 复盘专用】
+  //   用户原话：「复盘时出现困惑。你有没有办法让我复盘时，只看竞价口径的排名结果，
+  //     但是收盘时我也想看，竞价口径我也想看原始的是怎么排名的。」
+  //   ⇒ 这一条【永远】给（不限于「今天要不要用候补」）：复盘时最想知道的是「这一批名单
+  //     两套口径下差在哪」，而不是「今天恰好有没有候补」。
+  //   ⚠️ 三条安全降级全在 _range10DualTopText 里：池子没给 / 名次表空 ⇒ 不写（§10）；
+  //      两套名单完全一致 ⇒ 不写（§11 零噪声，老调用方不传 pctMap 时必然走这条）。
+  if (r10PoolGiven) {
+    const r10DualTopText = _range10DualTopText(r10Rank926, r10RankClose, PRESENCE_TOP_N);
+    if (r10DualTopText) out.notes.push(r10DualTopText);
   }
 
 
@@ -4068,7 +4233,13 @@ export function buildTvrbRulesLines() {
       '⚠️ 只有【买点侧题材选股】用这一份：题材排名、平均量比、占比、卖点与早盘竞价看板、决策看板用' +
       '【同一份】收盘口径；退潮判定的总龙与替补【另有 20日涨幅口径】（见第二十 / 二十一条）—— 用户拍板「其它不变」。' +
       '⚠️ 反解的前提（那一行确实已换过腿、且两个涨幅都读得到）不满足时，如实保留原值并在' +
-      '买点侧提示「9:26 口径未就绪」，⛔ 绝不静默拿收盘口径冒充早上那一份。',
+      '买点侧提示「9:26 口径未就绪」，⛔ 绝不静默拿收盘口径冒充早上那一份。' +
+      // ★★ [DUAL-RANK 2026-10-24 用户口径] 复盘对照（⛔ 只加对照信息，不改选股口径）。
+      '★【复盘对照 · 两套口径并列】为了复盘时不产生错觉（例：竞价口径前十是 A，收盘回看却是 B），' +
+      '候补行的徽标 / 悬停 / 「十名去留」里会【并列】写出同一只票在【收盘口径】下是第几名，' +
+      '看板底部另有一条「两套口径前十对照」（竞价口径前十 + 收盘口径前十 + 进出变化）。' +
+      '⚠️ 名字前面那个「第 N 名」永远是【竞价口径】—— 它才是选股用的那一份；' +
+      '收盘口径名次【只用于复盘对照】，两套对不上不是算错，是同一批票在 9:26 与现价两个时刻的排序差异。',
     // ── ★ [SUSPEND-NOBUY 2026-10-14 用户口径 · 原话]「10月14日的新华传媒是停牌（非首日），
     //    不应该选进买点侧，因为停牌的股票根本不能买，也买不进。昨日还可以入选因为是首日停牌……
     //    次日还是停牌（没有竞价涨幅，竞价量，昨日成交量等），就不要选进去了，相当于一字买不进，
