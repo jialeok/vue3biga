@@ -6,7 +6,56 @@
     <title>股票日记 v260</title>
 </head>
 <body>
-<div id="app"></div>
+<!-- ★★ [BOOT-FALLBACK 2026-10-25] 首屏占位（原来 #app 是【空的】，这是「一片空白」的结构性根因）：
+     只要 Vue 还没挂载 —— 入口脚本 404 / 被手机浏览器拦掉 / 网络太慢 / 缓存过的旧 index.html
+     引用已删除的旧哈希文件 —— 用户看到的就是纯白，没有任何提示，也不知道该刷新。
+     这里放一块静态占位，Vue 挂载时会【整体替换】掉它（成功路径零视觉变化，§11）。
+     ⛔ 只是兜底提示，不碰任何业务逻辑。 -->
+<div id="app">
+  <div id="boot-fallback" style="max-width:520px;margin:18vh auto 0;padding:0 20px;text-align:center;font:14px/1.8 -apple-system,'Segoe UI','Microsoft YaHei',sans-serif;color:#374151">
+    <div style="font-size:15px;color:#111827">正在加载…</div>
+    <div id="boot-note" style="margin-top:10px;color:#6b7280">首次打开要拉取数据，稍等一下</div>
+    <div id="boot-retry" style="margin-top:16px;display:none">
+      <div style="color:#b91c1c;font-weight:600">页面没能加载出来</div>
+      <div id="boot-reason" style="margin-top:6px;color:#6b7280"></div>
+      <button type="button" onclick="location.reload()" style="margin-top:14px;padding:9px 20px;border:1px solid #d1d5db;border-radius:6px;background:#fff;color:#111827;font-size:14px;cursor:pointer">重新加载</button>
+    </div>
+  </div>
+</div>
+<script>
+  // ★★ [BOOT-FALLBACK 2026-10-25] 看门狗：脚本没跑起来时，把「一片空白」换成一句人话 + 一个刷新按钮。
+  //   触发条件（三选一）：
+  //     ① 12 秒后 #app 里还是这块占位 → 脚本压根没执行完（网速太慢 / 被拦 / 404）；
+  //     ② 入口 <script>/<link> 加载失败（捕获阶段监听，能拿到资源错误）；
+  //     ③ 动态 import 失败（路由分包拉不下来 —— 典型症状就是「刚更新完，手机还开着旧页面」）。
+  //   ⛔ Vue 一挂载就会把 #boot-fallback 整块替换掉 ⇒ 以下判定在这种情况全部 no-op（零误报）。
+  (function () {
+    function fail(reason) {
+      var fb = document.getElementById('boot-fallback');
+      if (!fb) return;                       // Vue 已接管 ⇒ 什么都不做
+      var box = document.getElementById('boot-retry');
+      var why = document.getElementById('boot-reason');
+      // 先到先得：资源 404 的具体原因比「12 秒超时」更有用，⛔ 不要被后面的通用提示覆盖掉
+      if (why && reason && !why.textContent) why.textContent = reason;
+      if (box) box.style.display = 'block';
+      var note = document.getElementById('boot-note');
+      if (note) note.textContent = '';
+    }
+    setTimeout(function () { fail('超过 12 秒还没加载完，可能是网络太慢或被拦截。'); }, 12000);
+    window.addEventListener('error', function (e) {
+      var t = e && e.target;
+      if (t && (t.tagName === 'SCRIPT' || t.tagName === 'LINK')) {
+        fail('入口文件加载失败：' + String(t.src || t.href || '').split('/').pop());
+      }
+    }, true);
+    window.addEventListener('unhandledrejection', function (e) {
+      var m = String((e && e.reason && (e.reason.message || e.reason)) || '');
+      if (/dynamically imported module|Importing a module script failed|module script/i.test(m)) {
+        fail('页面代码块加载失败，多半是缓存过期或网络被拦。');
+      }
+    });
+  })();
+</script>
 <script type="module" src="/src/main.js"></script>
 </body>
 </html>
