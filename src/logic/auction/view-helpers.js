@@ -39,6 +39,9 @@ import { getStockTopicCount, getStockTopicsDisplay, getPrimaryTopicMap, classify
 // [CLOSE-LIMIT 2026-09-11] 同模块新增 getCloseLimitState：收盘涨停/跌停（蚂蚁线标记 + 题材统计）。
 // [CLOSE-NAME-COLOR 2026-09-11] 同模块新增 getCloseNameTone：收盘涨幅 → 股票名字体颜色档位。
 import { isAuctionYiZi, parseAucPct, formatAucPct, getCloseLimitState, getCloseNameTone, isHighLimitBoard } from './limit-up.js';
+// [BOARD-SEQ 2026-10-25 用户口径] 区间涨幅模式（十日 / 20日）的「序号」= 主板名次（非主板不占号），
+//   让屏幕序号与规则文案里的「第 N 名」用同一把尺子。判据/口径唯一实现在 board-seq.js（纯函数、可单测）。
+import { buildMainBoardSeq } from './board-seq.js';
 // [LIMIT-STREAK 2026-09-11] 趋势/连板标记（趋势 / 首板 / 二板 / 三板…）：只看【当天之前】的
 // 历史交易日收盘涨幅，逐日回看数连续涨停。判定单一真相在 limit-streak.js（纯函数），
 // 数据取内存已存的逐日 change_pct（首屏已整段拉入）→ 0 网络请求、0 猫抓额度。
@@ -412,7 +415,13 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     closePct: _closePct,
     // [TOPIC-SEQ 2026-09-11] 同题材组内序号（1 起）。只在「题材单独开启」时由调用方赋值；
     // 其余模式保持 0 → 模板回退到原来的全局序号（行为完全不变）。
+    // [BOARD-SEQ 2026-10-25 用户口径] 区间涨幅模式（十日 / 20日）下改由 buildMainBoardSeq 赋「主板名次」
+    //   （非主板不占号），见下方 items 后置赋值那一段。
     seqNo: 0,
+    // [BOARD-SEQ 2026-10-25 用户口径] 「这一行序号列留空」（= 非主板，位置不变但不占序号）。
+    //   只在区间涨幅模式里可能为 true；模板读它决定「显示空」还是「显示 seqNo / 行号」。
+    //   默认 false ⇒ 其它模式渲染与改动前逐字一致（§11）。
+    seqBlank: false,
     // [YIZI-SUP 2026-09-20] 本行所属的题材组名（题材【单独】开启时由下方 items 后置赋值，
     // 其余模式恒为 ''）。纯展示派生字段：⛔ 不参与排序、统计、缓存指纹以外的任何计算。
     // 用途：「补竞价一字」要把竞价一字按题材【融入】对应题材组，必须知道每行属于哪一组；
@@ -1433,7 +1442,21 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     });
   } else {
     // 非「题材单独开启」：不加统计条，序号保持 0 → 模板沿用原来的全局序号（行为不变）
-    items.forEach(function(it) { it.topicStats = null; it.seqNo = 0; it.groupTopic = ''; });
+    items.forEach(function(it) { it.topicStats = null; it.groupTopic = ''; });
+    // ★★ [BOARD-SEQ 2026-10-25 用户口径] 区间涨幅模式（十日 / 20日）下，序号改成「主板名次」：
+    //   非主板【位置不变、但不占序号】（序号列留空），主板按屏幕顺序 1,2,3…
+    //   ⇒ 屏幕上的号与规则文案里的「第 N 名」是同一把尺子（都能被
+    //     topic-vol-ratio-rules.js#buildRange10Ranked 的主板名次复核）。
+    //   用户原话：「……因为有两只非主板的也在十日涨幅前十里面，我想把非主板的序号去掉，
+    //     这样冰山冷热就和下面提示文案口径相同了。也就是非主板的位置可以不变，但是没有序号，
+    //     因为我是看序号来判断排名的。」
+    //   ⚠️ 口径/判据全在 board-seq.js（唯一实现，§6）；其它模式它一律返回 seqNo=0 / seqBlank=false
+    //      ⇒ 本段在默认 / 题材 / 竞昨模式下零行为变化（§11）。
+    const _seq = buildMainBoardSeq(items, sortState);
+    items.forEach(function(it, i) {
+      it.seqNo = _seq[i].seqNo;
+      it.seqBlank = _seq[i].seqBlank;
+    });
   }
 
   return {

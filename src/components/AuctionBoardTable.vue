@@ -210,6 +210,10 @@ function rowMemo(item) {
     //   （陈旧列结构）。两档合并成一个 0/1：它们【列结构完全相同】，区分它俩没有意义。
     (sortState.byRangePct20 || sortState.byRangePct) ? 1 : 0,
     item.dragonRank, item.dragonPct, item.aucPctNum, item.isYiZi, item.topicStats, item.seqNo,
+    // [BOARD-SEQ 2026-10-25 用户口径] 序号列留空标记（区间涨幅模式下非主板 = true）。
+    //   ⚠️ 必须单独入指纹：非主板那行 seqNo 恒为 0，只靠上面的 item.seqNo 判不出来，
+    //   漏掉 ⇒ 代码补齐 / 切 toggle 后该行仍是旧号（陈旧序号）。
+    item.seqBlank,
     item.closeLimit, item.closePct, item.closeNameTone, item.streakLabel,
     // [PRESENCE 2026-10-23 / RANK-BOX 2026-10-24] 「n次在列」标签 + 序号小方框的 class：
     //   两者都是 presence 数据【异步到货】后才有的（先没有 → 随后出现），

@@ -36,9 +36,12 @@
            换成有颜色的小方框」。class 由 Logic 层 presence-label.js#rankBoxClassOf 下发
            （item.presenceRankClass），与右边那枚「n次在列」标签【同一个判据、同一份次数】⇒ 不会分叉；
            没命中的行该字段恒为 '' ⇒ 渲染与改动前逐字一致（§11 默认无行为）。
+           [BOARD-SEQ 2026-10-25 用户口径] 序号本身也换口径了：区间涨幅模式（十日 / 20日）下 seqNo 是
+           【主板名次】，非主板 seqBlank=true ⇒ 这里渲染【空】（位置不变、只是不占号），
+           这样屏幕上的号与规则文案的「第 N 名」一致（口径唯一实现在 logic/auction/board-seq.js）。
            ⚠️ 这层 span 是【恒渲染】的（不用 v-if）：序号列 DOM 结构在两种状态下保持一致，
               否则切 toggle 时 .auction-number 里的文本节点被整体替换 ⇒ 行高抖一下。 -->
-      <span :class="item.presenceRankClass">{{ item.seqNo || (idx + 1) }}</span>
+      <span :class="item.presenceRankClass">{{ item.seqBlank ? '' : (item.seqNo || (idx + 1)) }}</span>
     </div>
     <div
       :class="item.stockClass"
