@@ -13,11 +13,14 @@ import {
   RANGE20_LEADER_MIN_LEGS,
   RANGE20_LEADER_COARSE_MIN_LEGS,
   RANGE20_LEADER_PRESELECT,
+  RANGE20_LEADER_WIDE_N,
+  RANGE20_LEADER_TEN_N,
   isMainBoardOnly,
   rankLeaders,
   unionPoolFromDates,
   buildLeaderRankPool,
-  pickLeaderFromUsableRows
+  pickLeaderFromUsableRows,
+  getRange20LeadersTop10
 } from './range20-leaders.js';
 
 describe('常量口径', () => {
@@ -302,5 +305,39 @@ describe('tvrb · [DIVERGE-GUESS] pickLeaderFromUsableRows（预热挑总龙一�
 
   it('没传 codeOf ⇒ 全部拿不到代码 ⇒ null（⛔ 不猜代码）', () => {
     expect(pickLeaderFromUsableRows(mk({ '甲一': 100 }), null)).toBe(null);
+  });
+});
+
+// ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 第三份裁剪 = 20日涨幅【前十】。
+//   用户原话：「20日涨幅中排名前10的……必须至少有3只排在前10（才算主线题材）」。
+//   用途隔离：5 = 展示 / 8 = 挑新龙 / 10 = 主线题材成组计数，⛔ 三者别互相顶替。
+describe('[EBB-MAIN-TOPIC] 前十榜单（主线题材计数用）', () => {
+  it('常量：前五 5 / 宽榜 8 / 题材榜 10，且逐级包含', () => {
+    expect(RANGE20_LEADER_TOP_N).toBe(5);
+    expect(RANGE20_LEADER_WIDE_N).toBe(8);
+    expect(RANGE20_LEADER_TEN_N).toBe(10);
+    expect(RANGE20_LEADER_WIDE_N).toBeGreaterThan(RANGE20_LEADER_TOP_N);
+    expect(RANGE20_LEADER_TEN_N).toBeGreaterThan(RANGE20_LEADER_WIDE_N);
+  });
+
+  it('★ §11 零行为变化：前五 / 前八 与「直接按 limit=5/8 各裁一次」逐只相同（裁一次前十再切）', () => {
+    const rows = [];
+    for (let i = 0; i < 14; i++) {
+      rows.push({ stock: '票' + String(i).padStart(2, '0'), code: '6000' + String(i).padStart(2, '0'), pct: 200 - i * 7, days: 20 });
+    }
+    const ten = rankLeaders(rows, { limit: RANGE20_LEADER_TEN_N, minDays: RANGE20_LEADER_MIN_LEGS, mainBoardOnly: true });
+    const wideBySlice = ten.slice(0, RANGE20_LEADER_WIDE_N);
+    const topBySlice = ten.slice(0, RANGE20_LEADER_TOP_N);
+    const wideDirect = rankLeaders(rows, { limit: RANGE20_LEADER_WIDE_N, minDays: RANGE20_LEADER_MIN_LEGS, mainBoardOnly: true });
+    const topDirect = rankLeaders(rows, { limit: RANGE20_LEADER_TOP_N, minDays: RANGE20_LEADER_MIN_LEGS, mainBoardOnly: true });
+    expect(wideBySlice).toEqual(wideDirect);
+    expect(topBySlice).toEqual(topDirect);
+    expect(ten).toHaveLength(10);
+  });
+
+  it('该日还没有结论 ⇒ getRange20LeadersTop10 返 null（§10：能不能 ≠ 有没有，⛔ 不拿空数组冒充）', () => {
+    expect(getRange20LeadersTop10('2026-01-01')).toBe(null);
+    expect(getRange20LeadersTop10('')).toBe(null);
+    expect(getRange20LeadersTop10(null)).toBe(null);
   });
 });

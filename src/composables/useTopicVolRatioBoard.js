@@ -90,6 +90,9 @@ import {
   // ★★ [NEW-DRAGON-08 2026-10-22 用户口径] 宽榜（20日涨幅前八）—— 第二十八条挑新龙的候选池；
   //   ⛔ 不进展示（「20日涨幅」toggle / 总龙一~五 仍只用前五）。
   getRange20LeadersWide,
+  // ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 前十（20日涨幅前 10）—— 只给退潮判定的
+  //   「主线题材 ≥3 只同题材」计数；⛔ 不上屏、不参与展示。
+  getRange20LeadersTop10,
   getRange20LeadersFingerprintToken,
   // ★★ [DIVERGE-GUESS 2026-10-24] 预热通道挑「总龙一候选」（纯函数，§15 可单测）；
   //   ⛔ 只在预热里用，正式判定仍以精算出的真·总龙一为准。
@@ -982,7 +985,10 @@ export function useTopicVolRatioBoard() {
         range20Top: getRange20Leaders(d) || null,
         // ★★ [NEW-DRAGON-08 2026-10-22 用户口径] 20日涨幅【前八】—— 只给第二十八条挑新龙当候选池
         //   （用户「如果前五找不到，你就找前八的」）；⛔ 展示 / 分歧买点 / 总龙标签仍只用前五。
-        range20Wide: getRange20LeadersWide(d) || null
+        range20Wide: getRange20LeadersWide(d) || null,
+        // ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 20日涨幅【前十】—— 只给退潮判定的
+        //   「主线题材 ≥3 只同题材」计数（classifyMainTopic）。⛔ 不上屏（展示仍是前五）。
+        range20Top10: getRange20LeadersTop10(d) || null
       });
       if (!rec || !rec.ready) return _empty((rec && rec.reason) || '暂无数据');
 

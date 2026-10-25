@@ -76,6 +76,19 @@ export const RANGE20_LEADER_TOP_N = 5;
  */
 export const RANGE20_LEADER_WIDE_N = 8;
 /**
+ * ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 「题材榜」只数 = 10。
+ *
+ * 用户原话：「首先再说明下什么是主线龙头，20日涨幅中排名前10的，1.必须满足有3只以上同题材的
+ *   才叫主线题材，也就是说主线题材必须至少有3只排在前10。2.而且总龙一是该题材的。这叫主线题材。」
+ * ⇒ 退潮判定要数「前十里有几只同题材」，所以需要【前十】这一份。
+ * ⛔ 与 `RANGE20_LEADER_TOP_N`(5) / `RANGE20_LEADER_WIDE_N`(8) 是三个不同用途，别互相顶替：
+ *   · 5  = 展示（20日涨幅 toggle / 补位区块 / 总龙一~五 标签 / 退潮买点替补）
+ *   · 8  = 第二十八条「切换日挑新龙」的候选池
+ *   · 10 = 本轮的「主线题材成组」判定（只给规则层数题材，⛔ 不上屏）
+ * 三份都从【同一份 rankPool、同一把 rankLeaders】裁出来 ⇒ 前 5 名逐只相同，0 新增请求。
+ */
+export const RANGE20_LEADER_TEN_N = 10;
+/**
  * 「可信门槛」：20 日窗口内至少这么多天有腿。
  * ⚠️ 语义按阶段不同，⛔ 别混用（2026-10-20 就是因为混用才补出负涨幅的票）：
  *   · 精算阶段 = **K 线腿数**（正常票 ≈20，停牌票 ≥6）⇒ 判断这个值可不可信；
@@ -139,6 +152,13 @@ const _poolSig = new Map();
  */
 const _wideCache = new Map();
 /**
+ * ★ [EBB-MAIN-TOPIC 2026-10-25] date -> 该日的「前十」（20日涨幅前 10，只主板）。
+ *
+ * 只给退潮判定的「主线题材成组」计数用（用户口径「前十里有 3 只以上同题材」）。
+ * 生命周期与 `_cache` / `_wideCache` 完全同步（每一处它们的 delete/clear 都要同步本表）。
+ */
+const _tenCache = new Map();
+/**
  * 🔴 date -> { n:number, timer:any }：索引预热期的退避重算计数（见 [R20-WARM]）。
  *   4 次封顶后不再重试 —— 剩下的日子可能本来就没有名单数据，无限重试只会烧 CPU。
  */
@@ -160,6 +180,24 @@ const WARM_RETRY_DELAYS = [3000, 10000, 30000, 60000];
 export function getRange20LeadersWide(date) {
   if (!date) return null;
   const cached = _wideCache.get(date);
+  return (Array.isArray(cached) && cached.length > 0) ? cached : null;
+}
+
+/**
+ * ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 该日的「前十」= 20日涨幅【前 10】（只主板）。
+ *
+ * 唯一消费方：退潮判定的「主线题材」判定（`classifyMainTopic`）——
+ *   用户口径「主线题材必须至少有 3 只排在前 10，而且总龙一是该题材的」。
+ * ⚠️ 与 `getRange20Leaders`(5) / `getRange20LeadersWide`(8) 同源同口径（同一份 rankPool 裁三次），
+ *   ⛔ 不会出现「前十里的第 6 名比前八里的第 6 名还不一样」这种两套口径打架。
+ *
+ * @param {string} date 展示日
+ * @returns {Array<{stock:string, code:string, pct:number, days:number}>|null}
+ *          null = 该日【还没有结论】（§10：能不能 ≠ 有没有，⛔ 不要拿空数组冒充）
+ */
+export function getRange20LeadersTop10(date) {
+  if (!date) return null;
+  const cached = _tenCache.get(date);
   return (Array.isArray(cached) && cached.length > 0) ? cached : null;
 }
 
@@ -202,6 +240,7 @@ export function clearRange20Leaders() {
   _legMode.clear();
   _poolSig.clear();
   _wideCache.clear();
+  _tenCache.clear();
   _warmRetry.forEach(function(st) { if (st && st.timer) clearTimeout(st.timer); });
   _warmRetry.clear();
   _state.value = { date: '', list: [], ready: false, version: _state.value.version + 1 };
@@ -518,6 +557,7 @@ export async function ensureRange20Leaders(date, opts) {
   if (!date) return [];
   if (_notTradable(date)) {
     _wideCache.delete(date);
+    _tenCache.delete(date);
     _publish(date, []);
     return _state.value.list;
   }
@@ -534,6 +574,7 @@ export async function ensureRange20Leaders(date, opts) {
   if (prevLeg && prevLeg !== legMode) {
     _cache.delete(date);
     _wideCache.delete(date);
+    _tenCache.delete(date);
     _sig.delete(date);
     _dbgLog('[RANGE20-TOP5-TSWITCH] ' + date + ' 口径 ' + prevLeg + ' → ' + legMode + '：作废缓存并重算');
   }
@@ -557,6 +598,7 @@ export async function ensureRange20Leaders(date, opts) {
   if (_cache.has(date) && prevPoolSig !== undefined && poolSig > prevPoolSig) {
     _cache.delete(date);
     _wideCache.delete(date);
+    _tenCache.delete(date);
     _sig.delete(date);
     _dbgLog('[RANGE20-TOP5-POOLGROW] ' + date + ' 候选池 ' + prevPoolSig + ' → ' + poolSig + '：作废缓存重算');
   }
@@ -661,10 +703,17 @@ export async function ensureRange20Leaders(date, opts) {
       return t.stock + ' ' + t.pct.toFixed(2) + '%/' + t.days + 'd';
     }).join(' , '));
     if (opts && opts.skipKline) {
+      // ★ [EBB-MAIN-TOPIC 2026-10-25] 诊断/单测路径只跑粗筛：宽榜与前十也按同一份粗筛结果裁出来，
+      //   ⛔ 不能留空 —— 否则调用方（退潮判定）会误以为「该日没有前十结论」而退回前五去数题材。
+      if (coarseTop.length > 0) {
+        _wideCache.set(date, coarseTop.slice(0, RANGE20_LEADER_WIDE_N));
+        _tenCache.set(date, coarseTop.slice(0, RANGE20_LEADER_TEN_N));
+      }
       return _publish(date, coarseTop.slice(0, RANGE20_LEADER_TOP_N));
     }
     if (coarseTop.length === 0) {
       _wideCache.delete(date);
+      _tenCache.delete(date);
       _publish(date, []);
       return _state.value.list;
     }
@@ -739,12 +788,16 @@ export async function ensureRange20Leaders(date, opts) {
     rankPool.forEach(function(r) { rankMap.set(r.stock, r); });
     // ★★ [NEW-DRAGON-08 2026-10-22] 一次裁两份：宽榜（前 8，给第二十八条挑新龙）+ 前 5（发布，展示不变）。
     //   ⛔ 别为了宽榜再跑一轮：同一份 rankPool、同一把 rankLeaders，前 5 名逐只相同。
-    const wide = rankLeaders(rankPool, {
-      limit: RANGE20_LEADER_WIDE_N,
+    // ★★ [EBB-MAIN-TOPIC 2026-10-25] 改成「裁一次前十，再切出前八 / 前五」——三份必然同源：
+    //   切法 = 数组前缀，与「分别以 limit 5/8/10 各调一次 rankLeaders」逐只等价（同一把 sort），
+    //   但只有一次排序开销，且从结构上保证「前十的前五 ≠ 前五」这种漂移不可能发生（§6）。
+    const ten = rankLeaders(rankPool, {
+      limit: RANGE20_LEADER_TEN_N,
       minDays: RANGE20_LEADER_MIN_LEGS,
       mainBoardOnly: true
     });
-    const top = wide.slice(0, RANGE20_LEADER_TOP_N);
+    const wide = ten.slice(0, RANGE20_LEADER_WIDE_N);
+    const top = ten.slice(0, RANGE20_LEADER_TOP_N);
     // 把代码补回结果里（`compound20` 只产 {stock,pct,days}，不含 code）：
     //   视图层注入补位行时可以直接用，省一次名册查询；也给「只有代码才能判板块」留了可追溯的痕迹。
     const _coarseCode = new Map();
@@ -752,6 +805,8 @@ export async function ensureRange20Leaders(date, opts) {
     top.forEach(function(t) { if (!t.code) t.code = _coarseCode.get(t.stock) || ''; });
     // ★ [NEW-DRAGON-08 2026-10-22] 宽榜同样补码（第 6~8 名不在 top 里，必须单独补一次）
     wide.forEach(function(t) { if (!t.code) t.code = _coarseCode.get(t.stock) || ''; });
+    // ★ [EBB-MAIN-TOPIC 2026-10-25] 前十同样补码（第 9~10 名不在宽榜里）
+    ten.forEach(function(t) { if (!t.code) t.code = _coarseCode.get(t.stock) || ''; });
     // 诊断：前五里哪些是「精算真值」、哪些是「粗筛近似」（approx=1 说明这只票的 K 线没拿到）
     let _approxCnt = 0;
     rankMap.forEach(function(v) { if (v.approx) _approxCnt++; });
@@ -767,6 +822,9 @@ export async function ensureRange20Leaders(date, opts) {
     // ★ [NEW-DRAGON-08 2026-10-22] 宽榜（前八）独立存一份：只给第二十八条挑新龙，
     //   ⛔ 不进 `_state.list`（否则 20日涨幅 toggle 会平白多出 3 只 —— 用户没让改那个）。
     if (wide.length > 0) _wideCache.set(date, wide); else _wideCache.delete(date);
+    // ★ [EBB-MAIN-TOPIC 2026-10-25] 前十同样独立存一份：只给退潮判定的「主线题材成组」计数，
+    //   ⛔ 不进 `_state.list` / 不上屏（用户只让改判定，没让多看两行）。
+    if (ten.length > 0) _tenCache.set(date, ten); else _tenCache.delete(date);
     // 🔴 [R20-POOL-GROW] 记下本次用的池大小 ⇒ 池变大时据此作废缓存重算
     _poolSig.set(date, poolSig);
     // 🔴 [R20-WARM] 索引没预热完 ⇒ 退避重算（4 次封顶：3s/10s/30s/60s）。

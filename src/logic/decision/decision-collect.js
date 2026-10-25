@@ -37,6 +37,11 @@ import { decorateSuspendField, isSuspended, canJudgeSuspended, hasSuspendVerdict
 // ★ [EBB-R20 2026-10-20 用户口径] 主板闸门（替补选股用）：创业板 / 科创板 / 北交所一律排除。
 //   唯一实现在 range20-leaders.js（20日涨幅前五的「仅主板」过滤就是它）⇒ 按 §6 复用同一把尺子。
 import { isMainBoardOnly } from '../auction/range20-leaders.js';
+// ★★ [EBB-STREAK 2026-10-25 用户口径] 退潮判定要「前两个交易日都是涨停板」——
+//   连板判定复用早盘竞价看板的唯一实现（limit-streak.js，§6 同一把尺子）：
+//   回看窗口 = 该日 10 日区间窗口去掉当天 T（T-1…T-9），涨停用 getCloseLimitState 判（收盘口径）。
+//   ⛔ 不消费猫抓额度：逐日行全在内存（首屏 auction-pull-window 已整段拉入）⇒ 0 请求。
+import { buildLimitStreakMapForDate } from '../auction/limit-streak.js';
 // ★ [EBB-R20] 总龙【题材】的退路（今日停牌 / 不在今日列表时）：读上一交易日行情行的 topics 串。
 import { getStockHistoryValue } from '../../data/watchlist-helpers.js';
 // ★ [EBB-TOPIC-FIX 2026-10-22] 补位票（今天不在列表里）的题材退路：题材库按股票名反查。
@@ -829,14 +834,17 @@ export function _cleanTopicText(raw) {
   return s;
 }
 
-function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDate, range20Top, range20Wide) {
+function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDate, range20Top, range20Wide, range20Top10) {
   const none = {
     ready: false, leader: null, second: null,
     leaderSuspended: false, leaderShare: null, leaderAucPct: null,
     siblingDragons: [], secondInfo: null,
     prevLeader: null, buyPicks: [], buyTrail: [],
     top5: [],        // [DIVERGE 2026-10-20] 缺省空数组（前五没就绪 ⇒ 分歧规则同样不生效）
-    newDragonPool: [] // [NEW-DRAGON-08 2026-10-22] 前八候选（切换日新龙判定用）
+    newDragonPool: [], // [NEW-DRAGON-08 2026-10-22] 前八候选（切换日新龙判定用）
+    topicPool: [],     // [EBB-MAIN-TOPIC 2026-10-25] 前十（主线题材成组计数用）
+    leaderStreak: null, // [EBB-STREAK 2026-10-25] 总龙连板天数（null = 无从判定）
+    leaderStreakLabel: ''
   };
   // ★★ [EBB-R20 2026-10-20 用户口径] 总龙改用【20日涨幅前五】—— 舍弃「昨日十日涨幅第一」的旧选法
   //   （用户原话「把原来按照10日涨幅改成20日涨幅选股，因为20日比较稳定而且准确，
@@ -948,6 +956,16 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
   //   ⛔ 不在这里再写一个「8」，否则两处数字会各自漂移（§6 单一真相）。
   const newDragonPool = _buildPool(
     (Array.isArray(range20Wide) && range20Wide.length > 0) ? range20Wide : range20Top,
+    0
+  );
+  // ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 20日涨幅【前十】富化结果 —— 退潮判定的「主线题材」计数用。
+  //   用户原话：「必须满足有3只以上同题材的才叫主线题材，也就是说主线题材必须至少有3只排在前10。」
+  //   ⚠️ 与 top5 / newDragonPool 共用同一份 `_enrich`（题材解析只有一处，§6），只是多 2 只；
+  //   ⛔ 上屏的五只 / 挑新龙的八只一律不动（§11：本参数只喂退潮判定）。
+  //   退路顺序 = 前十 → 前八 → 前五：哪一份有结论就用哪一份（§10 不猜，但也别因为缺一份就整条规则失效）。
+  const topicPool = _buildPool(
+    (Array.isArray(range20Top10) && range20Top10.length > 0) ? range20Top10
+      : ((Array.isArray(range20Wide) && range20Wide.length > 0) ? range20Wide : range20Top),
     0
   );
   if (top.length === 0) return none;
@@ -1093,6 +1111,26 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
     });
   }
 
+  // ── 事实 ⑥：★★ [EBB-STREAK 2026-10-25 用户口径] 总龙【连板天数】（= 触发退潮的必要条件）──
+  //   用户原话：「看总龙一是不是分歧，要看它是不是连板涨停。比如前天涨停板，昨天涨停板，
+  //     今天占比不符合（或者停牌），这叫首次退潮。必须前面两天是涨停板，今天占比不符合（竞价口径）。
+  //     如果前两天不是涨停板，这不叫分歧，这叫趋势。按照常规操作就行。」
+  //   ⇒ 规则层要的是「T-1 与 T-2 两天是否都收盘涨停」= streak >= 2。
+  //   判据复用 limit-streak.js（§6 唯一实现）：窗口 = 该日 10 日区间窗口去掉当天 T（T-1…T-9），
+  //   涨停 = getCloseLimitState（收盘口径，与「连板天梯」同一把尺子），逐日行取自内存 ⇒ 0 请求。
+  //   §10：该票在 T-1 没有行 / 涨幅缺失 ⇒ 返 null（**无从判定**）—— 规则层据此【不拦】但会写进说明，
+  //     绝不把「没数据」当成「不是涨停」（那会让退潮规则在停牌补位票上静默失效）。
+  const leaderStreakInfo = (function() {
+    try {
+      const m = buildLimitStreakMapForDate(date);
+      const r = m.get(leader.name);
+      if (!r) return null;
+      return { n: Number(r.streak) || 0, label: String(r.label || '') };
+    } catch (e) {
+      return null;   // 连板判定异常 ⇒ 如实当「无从判定」（§10，不猜成趋势）
+    }
+  })();
+
   return {
     ready: true,
     leader: leader,
@@ -1125,7 +1163,13 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
     prevLeader: prevLeader,
     // ★ [EBB-R20] 买点侧替补两只 + 五只去留留痕（当日 20日涨幅口径，规则层据此渲染与写说明）
     buyPicks: buyPicks,
-    buyTrail: buyTrail
+    buyTrail: buyTrail,
+    // ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 20日涨幅【前十】富化结果 —— 退潮判定的
+    //   「主线题材 ≥3 只同题材」计数用（规则层 classifyMainTopic）。⚠️ 与 top5 同一份富化，只是更长。
+    topicPool: topicPool,
+    // ★★ [EBB-STREAK 2026-10-25 用户口径] 总龙连板天数（null = 无从判定，见上面事实⑥）
+    leaderStreak: leaderStreakInfo ? leaderStreakInfo.n : null,
+    leaderStreakLabel: leaderStreakInfo ? leaderStreakInfo.label : ''
   };
 }
 
@@ -1402,7 +1446,7 @@ export function collectDecisionData(date, opts) {
       //     由调用方（组合式）ensureRange20Leaders 后注入；缺省 ⇒ ebbCtx.ready=false，退潮规则不生效（§10）。
       out.ebbCtx = _ebbCtxOf(rows, topics, dragonMap, date,
         opts && opts.prevRangeMap, rangeMap, prevDate, opts && opts.range20Top,
-        opts && opts.range20Wide);
+        opts && opts.range20Wide, opts && opts.range20Top10);
     }
     // ★★ [SUSPEND-NOBUY 2026-10-14 用户口径] 买点侧「买不进名单」= 连续停牌第 2 天及以上的票。
     //   放在本出口的【公共段】（⛔ 不在上面 topicActionContext 分支里）：这份名单只依赖
@@ -1654,7 +1698,8 @@ export function collectDragonRankMap(date, opts) {
  *   ⛔ 缺省 ⇒ 只有「内存里已有当前日涨幅」的日期能算（历史日算不出龙二，§10 不猜）。
  *
  * @param {string} date 展示日 YYYY-MM-DD
- * @param {{mode?:string, actionContext?:boolean, prevRangeMap?:Map, rangeMap?:Map, range20Top?:Array}} [opts] mode = 题材组序口径
+ * @param {{mode?:string, actionContext?:boolean, prevRangeMap?:Map, rangeMap?:Map, range20Top?:Array,
+ *          range20Wide?:Array, range20Top10?:Array}} [opts] mode = 题材组序口径
  *        （「题材量比」看板传 MODE_VOL_RATIO；缺省回落 MODE_VOL_RATIO —— 见 normalizeDecisionMode）；
  *        actionContext 见上（缺省 false ⇒ 与原行为逐字一致）；
  *        prevRangeMap 见上（缺省 ⇒ 退潮首日规则不生效，§10 ⛔ 不退化成「今天没有总龙」）；
@@ -1692,7 +1737,11 @@ export function collectDecisionTopics(date, opts) {
     range20Top: (opts && opts.range20Top) || null,
     // ★★ [NEW-DRAGON-08 2026-10-22 用户口径] 20日涨幅【前八】（getRange20LeadersWide 的发布结果）——
     //   仅第二十八条切换日的「新龙候选池」用它；缺省 ⇒ 退回 range20Top（= 只有前五候选，§11 零行为变化）。
-    range20Wide: (opts && opts.range20Wide) || null
+    range20Wide: (opts && opts.range20Wide) || null,
+    // ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 20日涨幅【前十】（getRange20LeadersTop10 的发布结果）——
+    //   只给退潮判定的「主线题材 ≥3 只同题材」计数（classifyMainTopic）。
+    //   缺省 ⇒ 退回 range20Wide → range20Top（见 _ebbCtxOf），§11：老调用方不传时行为不变。
+    range20Top10: (opts && opts.range20Top10) || null
   });
   // 命中内部出口 ⇒ 中间产物带 dragonRankOnly 标记（_notReady 的返回没有这个键）
   if (rec && rec.dragonRankOnly) {

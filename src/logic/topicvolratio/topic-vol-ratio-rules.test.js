@@ -67,6 +67,11 @@ import {
   formatAvgVolRatio,
   buildCashAlert,
   detectEbbDay,
+  // ★★ [EBB-MAIN-TOPIC 2026-10-25] 主线题材 / 轮动行情的唯一判据（纯函数）
+  classifyMainTopic,
+  EBB_MAIN_TOPIC_TOP_N,
+  EBB_MAIN_TOPIC_MIN_COUNT,
+  EBB_DIVERGE_MIN_STREAK,
   buildEbbDayRecord,
   buildTopicVolRatioPlan,
   buildTvrbRulesLines,
@@ -4202,5 +4207,254 @@ describe('tvrb · [DUAL-RANK] 复盘：竞价口径与收盘口径名次并列�
     expect(line).toContain('复盘对照');
     expect(line).toContain('只用于复盘对照');
     expect(line).toContain('永远是【竞价口径】');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// [EBB-MAIN-TOPIC / EBB-STREAK 2026-10-25 用户口径] 退潮判定的两道新闸
+//   ① 主线题材：20日涨幅前 10 名里 ≥3 只同题材、且总龙一属于该题材；否则 = 轮动行情 ⇒ 不触发；
+//   ② 连板分歧：总龙前两个交易日【都是收盘涨停】（streak ≥ 2）；否则 = 趋势 ⇒ 不触发。
+// 用户原话：「如果都是不同题材，或者一个题材只有两只，这个算是轮动行情，按照常规操作就行。」
+//   「必须前面两天是涨停板，今天占比不符合（竞价口径）。如果前两天不是涨停板，这不叫分歧，这叫趋势。」
+// ══════════════════════════════════════════════════════════════════════════════════════════
+describe('tvrb · [EBB-MAIN-TOPIC] 主线题材 / 轮动行情 classifyMainTopic', function() {
+  function mk(names, topicOf) {
+    return names.map(function(n, i) { return { name: n, pct: 100 - i * 3, topic: topicOf(n, i) }; });
+  }
+
+  it('组内 ≥3 只同题材 且含总龙一 ⇒ main（用户「至少有3只排在前10」）', function() {
+    const pool = mk(['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸'], function(n) {
+      return (n === '甲' || n === '乙' || n === '丙') ? 'AI应用' : '题材' + n;
+    });
+    const r = classifyMainTopic(pool, '甲', 'AI应用');
+    expect(r.kind).toBe('main');
+    expect(r.count).toBe(3);
+    expect(r.total).toBe(10);
+    expect(r.topic).toBe('AI应用');
+    expect(r.members.map(function(m) { return m.name; })).toEqual(['甲', '乙', '丙']);
+  });
+
+  it('★ 前十里题材【全不同】⇒ rotation（用户「都是不同题材……算轮动行情」）', function() {
+    const pool = mk(['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸'], function(n) { return '题材' + n; });
+    const r = classifyMainTopic(pool, '甲', '题材甲');
+    expect(r.kind).toBe('rotation');
+    expect(r.count).toBe(1);
+  });
+
+  it('★ 某题材只有 2 只 且是总龙的题材 ⇒ rotation（用户「一个题材只有两只」）', function() {
+    const pool = mk(['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸'], function(n) {
+      return (n === '甲' || n === '乙') ? 'AI应用' : '题材' + n;
+    });
+    const r = classifyMainTopic(pool, '甲', 'AI应用');
+    expect(r.kind).toBe('rotation');
+    expect(r.count).toBe(2);
+  });
+
+  it('★ 别组的题材再多也不影响：只看【总龙所在那一组】', function() {
+    const pool = mk(['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸'], function(n) {
+      // 前 5 名同属「新能源」，但总龙（第 6 名）是「AI应用」，且 AI应用 只有它 1 只
+      return (n === '己') ? 'AI应用' : '新能源';
+    });
+    const r = classifyMainTopic(pool, '己', 'AI应用');
+    expect(r.kind).toBe('rotation');
+    expect(r.count).toBe(1);
+  });
+
+  it('总龙一自己一定算进它那一组（即便富化出的题材串与入参不同）', function() {
+    const pool = mk(['甲', '乙', '丙'], function() { return ''; });
+    const r = classifyMainTopic(pool, '甲', 'AI应用');
+    expect(r.count).toBe(1);
+    expect(r.members[0].name).toBe('甲');
+  });
+
+  it('§10：总龙题材读不到 ⇒ unknown（无从判定 ≠ 轮动），⛔ 不判成 rotation', function() {
+    const pool = mk(['甲', '乙', '丙'], function() { return ''; });
+    expect(classifyMainTopic(pool, '甲', '').kind).toBe('unknown');
+    expect(classifyMainTopic(pool, '甲', '16950').kind).toBe('unknown');   // 纯数字脏值 = 未知
+  });
+
+  it('§10：榜单不满 10 只 且组内 <3 ⇒ unknown（后几名里可能还有，⛔ 不硬判轮动）', function() {
+    const pool = mk(['甲', '乙', '丙', '丁', '戊'], function(n) { return '题材' + n; });
+    const r = classifyMainTopic(pool, '甲', '题材甲');
+    expect(r.kind).toBe('unknown');
+    expect(r.total).toBe(5);
+    // 但组内已达 3 只时，榜单长短不影响结论（只会更多，不会翻）
+    const pool2 = mk(['甲', '乙', '丙', '丁', '戊'], function(n) {
+      return (n === '甲' || n === '乙' || n === '丙') ? 'AI应用' : '题材' + n;
+    });
+    expect(classifyMainTopic(pool2, '甲', 'AI应用').kind).toBe('main');
+  });
+
+  it('题材认亲走 _sameTopicLoose：支持分段串 + 大类归一（coreRes）', function() {
+    const pool = mk(['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸'], function(n) {
+      if (n === '甲') return 'AI应用';
+      if (n === '乙') return 'AI应用,数据中心';
+      if (n === '丙') return '文化传媒';
+      return '题材' + n;
+    });
+    // 无 coreRes：'文化传媒' 认不上 'AI应用' ⇒ 只有 甲/乙 两只（乙靠分段串认上）
+    expect(classifyMainTopic(pool, '甲', 'AI应用').count).toBe(2);
+    // 单纯的分段串反方向不认（'数据中心' ≠ 'AI应用'）
+    const solo = [{ name: '甲', pct: 100, topic: 'AI应用' }, { name: '乙', pct: 90, topic: '数据中心' }];
+    expect(classifyMainTopic(solo, '甲', 'AI应用').count).toBe(1);
+    // 有 coreRes（'文化传媒' ⇒ 'AI应用'）：三只
+    const coreRes = function(s) { return s === '文化传媒' ? 'AI应用' : s; };
+    const r = classifyMainTopic(pool, '甲', 'AI应用', coreRes);
+    expect(r.count).toBe(3);
+    expect(r.kind).toBe('main');
+  });
+
+  it('空/畸形入参不抛错（§10 安全降级）', function() {
+    expect(classifyMainTopic(null, '甲', 'AI应用').kind).toBe('unknown');
+    expect(classifyMainTopic([], '甲', 'AI应用').kind).toBe('unknown');
+    expect(classifyMainTopic([null, undefined], '甲', 'AI应用').kind).toBe('unknown');
+  });
+
+  it('常量口径与用户原话逐字对应', function() {
+    expect(EBB_MAIN_TOPIC_TOP_N).toBe(10);        // 「排名前10的」
+    expect(EBB_MAIN_TOPIC_MIN_COUNT).toBe(3);     // 「至少有3只排在前10」
+    expect(EBB_DIVERGE_MIN_STREAK).toBe(2);       // 「前两个交易日都是涨停板」
+  });
+});
+
+describe('tvrb · [EBB-STREAK] 退潮判定的「连板分歧」闸门', function() {
+  /** 主线题材齐全（前十里有 3 只 AI应用）+ 总龙二板 ⇒ 可以走到「是退潮日」 */
+  function ebb2(over) {
+    const AI = ['新华传媒', '新华文轩', '皖新传媒'];
+    const pool = AI.map(function(n, i) { return { name: n, pct: 160 - i * 20, topic: 'AI应用' }; })
+      .concat(['时代万恒', '甲', '乙', '丙', '丁', '戊', '己'].map(function(n, i) {
+        return { name: n, pct: 80 - i * 5, topic: '题材' + n };
+      }));
+    return Object.assign({
+      ready: true,
+      leader: { name: '新华传媒', pct: 159.51, topic: 'AI应用', code: '600825', rank: 1, isYizi: false },
+      second: { name: '时代万恒', pct: 80.98, topic: '新能源汽车' },
+      leaderSuspended: false,
+      leaderShare: 1.2,
+      topicPool: pool,
+      leaderStreak: 2,
+      leaderStreakLabel: '二板',
+      siblingDragons: [
+        { name: '新华文轩', rank: 2, isYizi: false, suspended: false },
+        { name: '皖新传媒', rank: 3, isYizi: false, suspended: false }
+      ],
+      secondInfo: {
+        name: '时代万恒', pct: 80.98, topic: '新能源汽车',
+        rank: 1, isYizi: false, suspended: false
+      }
+    }, over || {});
+  }
+
+  it('★ 前两日都涨停（streak=2）⇒ 触发退潮（用户举的「前天涨停、昨天涨停、今天占比不符」）', function() {
+    const e = detectEbbDay(ebb2({}));
+    expect(e).not.toBe(null);
+    expect(e.leaderStreak).toBe(2);
+    expect(e.leaderStreakLabel).toBe('二板');
+    expect(e.mainTopicKind).toBe('main');
+    expect(e.mainTopicCount).toBe(3);
+    expect(e.basisNote).toContain('连续涨停');
+    expect(e.basisNote).toContain('二板');
+  });
+
+  it('★ 前两日不是都涨停（streak=0 趋势 / streak=1 首板）⇒ null（「这叫趋势，按常规操作」）', function() {
+    expect(detectEbbDay(ebb2({ leaderStreak: 0, leaderStreakLabel: '趋势' }))).toBe(null);
+    expect(detectEbbDay(ebb2({ leaderStreak: 1, leaderStreakLabel: '首板' }))).toBe(null);
+  });
+
+  it('★ 8-03 真实场景回归：艾艾精工 T-2=-3.05% / T-1=-5.87% ⇒ streak=0 ⇒ 不再误报首次退潮', function() {
+    const e = detectEbbDay(ebb2({
+      leader: { name: '艾艾精工', pct: 110.99, topic: '', code: '603580', rank: 1, isYizi: false },
+      leaderShare: 1.8,
+      topicPool: [
+        { name: '艾艾精工', pct: 110.99, topic: '' }, { name: '传智教育', pct: 81.12, topic: '' },
+        { name: '一鸣食品', pct: 58.91, topic: '大消费' }, { name: '中岩大地', pct: 57.56, topic: '基建' },
+        { name: '高争民爆', pct: 55.98, topic: '民爆' }, { name: '智度股份', pct: 45.12, topic: 'AI应用' },
+        { name: '香江控股', pct: 27.84, topic: '地产' }, { name: '金龙羽', pct: 26.54, topic: '线缆' },
+        { name: '顺钠股份', pct: 24.19, topic: '电气' }, { name: '神雾节能', pct: 24.04, topic: '节能' }
+      ],
+      leaderStreak: 0,
+      leaderStreakLabel: '趋势'
+    }));
+    expect(e).toBe(null);   // 闸门 B 拦下：前两日不是都涨停 ⇒ 这叫趋势
+  });
+
+  it('§10：连板状态读不到（null）⇒ 不拦，但说明里必须如实写「读不到」', function() {
+    const e = detectEbbDay(ebb2({ leaderStreak: null, leaderStreakLabel: '' }));
+    expect(e).not.toBe(null);
+    expect(e.leaderStreak).toBe(null);
+    expect(e.streakText).toContain('读不到');
+    expect(e.basisNote).toContain('无法确认是不是连板分歧');
+  });
+
+  it('§10：streak 传成非数字脏值 ⇒ 按「无从判定」处理，⛔ 不当作 0 直接拦', function() {
+    const e = detectEbbDay(ebb2({ leaderStreak: 'x', leaderStreakLabel: '' }));
+    expect(e).not.toBe(null);
+    expect(e.leaderStreak).toBe(null);
+  });
+});
+
+describe('tvrb · [EBB-MAIN-TOPIC] 退潮判定的「主线题材」闸门', function() {
+  function ebb3(over) {
+    return Object.assign({
+      ready: true,
+      leader: { name: '甲', pct: 120, topic: 'AI应用', code: '600001', rank: 1, isYizi: false },
+      second: null,
+      leaderSuspended: true,
+      leaderShare: 1.2,
+      leaderStreak: 3,
+      leaderStreakLabel: '三板',
+      siblingDragons: [],
+      secondInfo: null,
+      topicPool: [
+        { name: '甲', pct: 120, topic: 'AI应用' },
+        { name: '乙', pct: 110, topic: 'AI应用' },
+        { name: '丙', pct: 100, topic: 'AI应用' },
+        { name: '丁', pct: 90, topic: 'T4' },
+        { name: '戊', pct: 80, topic: 'T5' },
+        { name: '己', pct: 70, topic: 'T6' },
+        { name: '庚', pct: 60, topic: 'T7' },
+        { name: '辛', pct: 50, topic: 'T8' },
+        { name: '壬', pct: 40, topic: 'T9' },
+        { name: '癸', pct: 30, topic: 'T10' }
+      ]
+    }, over || {});
+  }
+
+  it('主线题材（前十 3 只同题材）⇒ 触发，且留痕写明是哪几只', function() {
+    const e = detectEbbDay(ebb3({}));
+    expect(e).not.toBe(null);
+    expect(e.mainTopicKind).toBe('main');
+    expect(e.mainTopicCount).toBe(3);
+    expect(e.mainTopicTotal).toBe(10);
+    expect(e.mainTopicText).toContain('甲、乙、丙');
+    expect(e.detail).toContain('主线题材确认');
+  });
+
+  it('★ 轮动行情（前十题材全不同）⇒ null（用户「按照常规操作就行」）', function() {
+    const pool = ebb3({}).topicPool.map(function(t) { return { name: t.name, pct: t.pct, topic: 'X' + t.name }; });
+    expect(detectEbbDay(ebb3({ topicPool: pool }))).toBe(null);
+  });
+
+  it('★ 轮动行情（总龙题材只有 2 只）⇒ null（用户「一个题材只有两只」）', function() {
+    const pool = ebb3({}).topicPool.map(function(t) {
+      return { name: t.name, pct: t.pct, topic: (t.name === '甲' || t.name === '乙') ? 'AI应用' : 'X' + t.name };
+    });
+    expect(detectEbbDay(ebb3({ topicPool: pool }))).toBe(null);
+  });
+
+  it('§10：前十没采到（topicPool 缺省）⇒ 不拦，但说明里写「无法确认主线题材」', function() {
+    const e = detectEbbDay(ebb3({ topicPool: undefined }));
+    expect(e).not.toBe(null);
+    expect(e.mainTopicKind).toBe('unknown');
+    expect(e.basisNote).toContain('无法确认主线题材');
+  });
+
+  it('§10：总龙题材读不到（脏值/空）⇒ 不拦，说明里写「题材读不到」', function() {
+    const e = detectEbbDay(ebb3({
+      leader: { name: '甲', pct: 120, topic: '16950', code: '600001', rank: 1, isYizi: false }
+    }));
+    expect(e).not.toBe(null);
+    expect(e.mainTopicKind).toBe('unknown');
+    expect(e.mainTopicText).toContain('题材读不到');
   });
 });

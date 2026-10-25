@@ -167,6 +167,28 @@ function _sameTopicLoose(a, b, coreRes) {
  */
 export const EBB_EVENT_WINDOW_DAYS = 20;
 
+// ══【主线题材 · 成组门槛】══════════════════════════════════════════════════════════════════
+// 用户口径（2026-10-25，逐字）：
+//   「首先再说明下什么是主线龙头，20日涨幅中排名前10的，
+//     1.必须满足有3只以上同题材的才叫主线题材，也就是说主线题材必须至少有3只排在前10。
+//     2.而且总龙一是该题材的。这叫主线题材。
+//     3.如果都是不同题材，或者一个题材只有两只，这个算是轮动行情，按照常规操作就行。」
+// ⇒ 退潮（分歧）规则的【前置条件】：这一天必须处在【主线题材】里，否则就是轮动行情 = 不触发。
+/** 数题材用的榜单长度上限：用户口径「20日涨幅中排名前10的」（= range20-leaders#RANGE20_LEADER_TEN_N） */
+export const EBB_MAIN_TOPIC_TOP_N = 10;
+/** 同题材成组门槛：前十里同题材只数 ≥ 本值 且 总龙一属于该题材 ⇒ 主线题材（用户「至少有3只」） */
+export const EBB_MAIN_TOPIC_MIN_COUNT = 3;
+/**
+ * 【分歧】的必要条件：总龙前两个交易日【都是收盘涨停】⇒ 连板天数 ≥ 2。
+ *
+ * 用户原话：「看总龙一是不是分歧，要看它是不是连板涨停。比如前天涨停板，昨天涨停板，
+ *   今天占比不符合（或者停牌），这叫首次退潮。必须前面两天是涨停板，今天占比不符合（竞价口径）。
+ *   如果前两天不是涨停板，这不叫分歧，这叫趋势。按照常规操作就行。」
+ * ⚠️ 语义是「T-1 与 T-2 都涨停」，正好等价于 `computeStreak` 的 streak ≥ 2（首板=1 不够）。
+ * ⛔ 别放宽成 ≥ 1：一只首板票占比塌了是【趋势】，用户明确说「按照常规操作就行」。
+ */
+export const EBB_DIVERGE_MIN_STREAK = 2;
+
 // ══ 档位常量（§6 唯一实现：本看板的「取几只」只由这里决定）════════════════════════════════
 // 用户口径：< 4 只不入选；4 ~ 8 只入选 1 只；> 8 只入选 2 只（早盘竞价股票少，只有这三档）。
 // ⛔ 别自行改成 ≥ 8 / > 10 之类：三个边界与用户原话「小于4」「大于等于4小于等于8」「大于8」逐字对应。
@@ -379,6 +401,71 @@ export const DIVERGE_NO_BUY_TONE = EBB_NO_BUY_TONE;
 export const DIVERGE_RULE_NO = '二十五';
 
 /**
+ * ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 【主线题材 or 轮动行情】—— 退潮规则的前置闸门（纯函数，可单测）。
+ *
+ * 用户原话（逐字）：
+ *   「首先再说明下什么是主线龙头，20日涨幅中排名前10的，
+ *     1.必须满足有3只以上同题材的才叫主线题材，也就是说主线题材必须至少有3只排在前10。
+ *     2.而且总龙一是该题材的。这叫主线题材。
+ *     3.如果都是不同题材，或者一个题材只有两只，这个算是轮动行情，按照常规操作就行。」
+ *
+ * 判据（对 20日涨幅【前十】按题材分组，只看【总龙一自己所在的那一组】）：
+ *   · 组内只数 ≥ `EBB_MAIN_TOPIC_MIN_COUNT`（3）且总龙一属于该组 ⇒ `'main'`（主线题材）；
+ *   · 组内只数 < 3 且榜单【确实是完整前十】⇒ `'rotation'`（轮动行情，⛔ 不触发退潮）；
+ *   · 总龙一的题材【读不到】、或榜单【不满 10 只】（数据残缺 / 只注入了前五前八）⇒ `'unknown'`
+ *     （§10：**判不出 ≠ 判出 false** —— 后几名里完全可能还有同题材的票，⛔ 不硬判成轮动）。
+ *     ⚠️ 这一档【不拦】退潮（用户既有拍板「取不到就按首日处理，宁可多提醒一次」），
+ *        但调用方必须把「无法确认主线题材」如实写进说明（§10 判定可追溯）。
+ *
+ * @param {Array<{name:string, topic:string, pct:number}>|null} pool 20日涨幅前十（逐只已带题材）
+ * @param {string} leaderName 总龙一的名字（用于把它自己强行算进它那一组）
+ * @param {string} leaderTopic 总龙一的题材（原始串，内部会做清洗 + 大类归一）
+ * @param {(raw:string)=>string} [coreRes] 题材大类归一函数（见 _normTopic）
+ * @returns {{kind:'main'|'rotation'|'unknown', count:number, total:number,
+ *            topic:string, members:Array<{name:string,pct:number}>}}
+ *          total = 参与统计的只数（= 榜单长度，通常 10；不够 10 只的日期如实小）
+ */
+export function classifyMainTopic(pool, leaderName, leaderTopic, coreRes) {
+  const topic = _normTopic(leaderTopic, coreRes);
+  const list = Array.isArray(pool) ? pool : [];
+  const total = list.length;
+  const members = [];
+  if (!topic) {
+    // §10：题材读不到 ⇒ 分组无从谈起（⛔ 不把「未知」当成「每组只有 1 只」的轮动）
+    return { kind: 'unknown', count: 0, total: total, topic: '', members: members };
+  }
+  const lname = String(leaderName || '').trim();
+  list.forEach(function(t) {
+    if (!t) return;
+    const nm = String(t.name || '').trim();
+    if (!nm) return;
+    // 总龙一本人一定属于它自己那一组（即便榜单富化时它的题材串解析成了别的东西，也不漏算自己）
+    const hit = (lname && nm === lname) || _sameTopicLoose(t.topic, topic, coreRes);
+    if (!hit) return;
+    members.push({ name: nm, pct: _num(t.pct) });
+  });
+  const count = members.length;
+  // ★ 能不能下「轮动行情」这个【否定结论】，取决于榜单够不够长（§10：判不出 ≠ 判出 false）：
+  //   · 组内已经 ≥ 门槛 ⇒ 一定是主线题材（榜单再长也只会更多，结论不会翻）；
+  //   · 组内 < 门槛，但榜单本身就是【完整的前十】⇒ 才是轮动行情；
+  //   · 组内 < 门槛，而榜单不满 10 只（数据残缺 / 调用方只注入了前五或前八）⇒
+  //     **无从判定**（后面那几名里完全可能还有同题材的票）⇒ 'unknown'，⛔ 不硬判成轮动。
+  //   这一档正是「榜单没就绪」与「真的是轮动」的分水岭 —— 两者混为一谈会让规则在数据缺失时静默失效。
+  const enough = total >= EBB_MAIN_TOPIC_TOP_N;
+  let kind;
+  if (count >= EBB_MAIN_TOPIC_MIN_COUNT) kind = 'main';
+  else if (enough) kind = 'rotation';
+  else kind = 'unknown';
+  return {
+    kind: kind,
+    count: count,
+    total: total,
+    topic: topic,
+    members: members
+  };
+}
+
+/**
  * 【退潮日】判据（纯函数，可单测）。
  *
  * 数据来源 = decision-collect#_ebbCtxOf 采好的「事实」（市场总龙 / 今日停牌 / 今日占比 /
@@ -419,6 +506,28 @@ export const DIVERGE_RULE_NO = '二十五';
  *     ③ 两处都取不到 ⇒ 按【可触发】处理（继续提醒）—— 用户拍板「取不到就按首日处理，别漏掉风险」。
  *   ⚠️ 只认「同一只总龙」：昨日那只总龙与今日不是同一只 ⇒ 对今天这只而言本来就是新事件。
  *
+ * ── ★★【闸门 A：主线题材 or 轮动行情】（[EBB-MAIN-TOPIC 2026-10-25 用户口径]）──────────────
+ *   用户原话：「必须满足有3只以上同题材的才叫主线题材，也就是说主线题材必须至少有3只排在前10。
+ *     而且总龙一是该题材的，这叫主线题材。如果都是不同题材，或者一个题材只有两只，
+ *     这个算是轮动行情，按照常规操作就行。」
+ *   ⇒ 判据见 `classifyMainTopic`（前十按题材分组，只看总龙所在那组）：
+ *     · 组内 ≥ `EBB_MAIN_TOPIC_MIN_COUNT`(3) 且含总龙一 ⇒ 主线题材 ⇒ 继续往下判；
+ *     · 组内 < 3（含「前十题材全不同」）⇒ 轮动行情 ⇒ 返回 null（⛔ 不触发，用户「按常规操作」）；
+ *     · 总龙题材读不到 ⇒ 'unknown' ⇒ 不拦，但说明里必须写「无法确认主线题材」（§10）。
+ *   ⚠️ 为什么轮动行情不算退潮：用户 10-20 对退潮的定义是「总龙一在某个题材停牌/占比不符 ⇒
+ *     整个题材的股票预期走势很差」—— 主体是【题材】。一个题材只有 1~2 只票，它构不成题材周期。
+ *
+ * ── ★★【闸门 B：总龙是不是连板被砸开】（[EBB-STREAK 2026-10-25 用户口径]）────────────────
+ *   用户原话：「看总龙一是不是分歧，要看它是不是连板涨停。比如前天涨停板，昨天涨停板，
+ *     今天占比不符合（或者停牌），这叫首次退潮。必须前面两天是涨停板，今天占比不符合（竞价口径）。
+ *     如果前两天不是涨停板，这不叫分歧，这叫趋势。按照常规操作就行。」
+ *   ⇒ `ebbCtx.leaderStreak`（= limit-streak#computeStreak，T-1 起连续收盘涨停天数）：
+ *     · ≥ `EBB_DIVERGE_MIN_STREAK`(2) ⇒ 连板被砸开 ⇒ 继续往下判；
+ *     · 0 / 1（趋势 / 首板）⇒ 返回 null（这叫趋势，按常规操作）；
+ *     · null（T-1 没有行 / 涨幅缺失 ⇒ 无从判定）⇒ 不拦，但说明里必须写「连板状态读不到」（§10）。
+ *   ★ 8-03 实测（用户报障那一天）：总龙艾艾精工 T-2 = -3.05%、T-1 = -5.87% ⇒ streak=0
+ *     ⇒ 新规则下不再报退潮（旧实现只看占比 1.8% < 3.5% 就报了，正是用户说的「这叫趋势」）。
+ *
  * ── 涨幅口径（★ 2026-10-20 改定）────────────────────────────────────────────────────
  *   总龙 = 【当日 20日涨幅】全市场第一（getRange20Leaders，与「20日涨幅」toggle 的总龙一同一只）。
  *   20日按每票自己的交易日回溯、停牌票靠补位照样进榜 —— 这正是改用 20日的原因：
@@ -427,8 +536,12 @@ export const DIVERGE_RULE_NO = '二十五';
  *
  * @param {{ready:boolean, leader:object|null, leaderSuspended:boolean, leaderShare:number|null,
  *          siblingDragons:Array, secondInfo:object|null, prevLeader:object|null,
- *          buyPicks:Array, buyTrail:Array}|null} ebbCtx
- *        见 decision-collect#_ebbCtxOf（[EBB-R20] buyPicks / buyTrail 为本轮新增的两个事实）
+ *          buyPicks:Array, buyTrail:Array,
+ *          topicPool?:Array<{name:string, topic:string, pct:number}>,
+ *          leaderStreak?:number|null, leaderStreakLabel?:string}|null} ebbCtx
+ *        见 decision-collect#_ebbCtxOf（[EBB-R20] buyPicks / buyTrail 为本轮新增的两个事实；
+ *        ★ [EBB-MAIN-TOPIC 2026-10-25] topicPool = 20日涨幅前十富化；
+ *        ★ [EBB-STREAK 2026-10-25] leaderStreak = 总龙连板天数，null = 无从判定）
  * @param {{leader_stock?:string, ebb?:boolean}|null} [prevEbbDay]
  *        ★ [EBB-R8] 上一交易日在 tvrb_ebb_days 里落库的判定行（缺省 = 表里还没有 / 表不存在）
  * @param {Array<{date:string, prevDate:string, leaderStock:string, leaderTopic:string,
@@ -440,7 +553,8 @@ export const DIVERGE_RULE_NO = '二十五';
  *          「时间太短没有检查到10月13日那天」—— 10 天窗口跨不过一个完整的老周期。
  * @param {(raw:string)=>string} [coreRes] ★ [CORE-CAT 2026-10-22] 题材大类归一函数（见 _normTopic）
  * @param {string} [windowFrom] ★ [EBB-20D 2026-10-22] 事件窗口起点（= 第 20 个交易日的日期）
- * @returns {null|object} null = 不是退潮日（或事实未就绪 / 是延续 / 无第三次）；否则见下方返回结构
+ * @returns {null|object} null = 不是退潮日（或事实未就绪 / 是延续 / 无第三次 /
+ *          ★ [EBB-MAIN-TOPIC] 轮动行情 / ★ [EBB-STREAK] 前两日不是都涨停）；否则见下方返回结构
  */
 export function detectEbbDay(ebbCtx, prevEbbDay, ebbHistory, coreRes, windowFrom) {
   // §10：事实未就绪（昨日涨幅还没读回来 / 全列表一只票都排不出）⇒ 不判退潮
@@ -474,6 +588,35 @@ export function detectEbbDay(ebbCtx, prevEbbDay, ebbHistory, coreRes, windowFrom
   }
   if (!reason) return null;
 
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  // ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 闸门 A：这是【主线题材】还是【轮动行情】？
+  //   用户原话：「必须满足有3只以上同题材的才叫主线题材……而且总龙一是该题材的，这叫主线题材。
+  //     如果都是不同题材，或者一个题材只有两只，这个算是轮动行情，按照常规操作就行。」
+  //   ⇒ 轮动行情【根本不存在「题材退潮」这回事】—— 退潮的主体是题材（用户 10-20 的定义澄清：
+  //     「退潮是指总龙一在某个题材停牌或者占比不符，导致整个题材的股票预期走势很差」），
+  //     一个题材只有 1~2 只票时它构不成一个「题材周期」，占比塌了只是这只票自己的事。
+  //   ⛔ 因此轮动行情 = 返回 null（按常规操作选股），而不是「照旧提示但降级文案」。
+  //   ⚠️ 题材读不到 ⇒ 'unknown' ⇒ 【不拦】(§10 从紧但不静默失效)，由下面 phaseNote 如实说明。
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  const mt = classifyMainTopic(ebbCtx.topicPool, leaderName, leader.topic, coreRes);
+  if (mt.kind === 'rotation') return null;
+
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  // ★★ [EBB-STREAK 2026-10-25 用户口径] 闸门 B：总龙一【前两个交易日是不是都涨停】？
+  //   用户原话：「看总龙一是不是分歧，要看它是不是连板涨停。比如前天涨停板，昨天涨停板，
+  //     今天占比不符合（或者停牌），这叫首次退潮。必须前面两天是涨停板，今天占比不符合（竞价口径）。
+  //     如果前两天不是涨停板，这不叫分歧，这叫趋势。按照常规操作就行。」
+  //   ⇒ streak ≥ 2（= T-1、T-2 都是收盘涨停）才是「连板被砸开」的分歧；
+  //     streak = 0 / 1（趋势 / 首板）⇒ 占比塌了只是【趋势中的一次回落】⇒ 返回 null。
+  //   ⚠️ 8-03 实测（用户报障的那一天）：总龙【艾艾精工】T-2 07-30 = -3.05%、T-1 07-31 = -5.87%，
+  //     两天都不是涨停 ⇒ streak=0 ⇒ 新规则下【不再触发退潮】—— 正是用户说的「这叫趋势」。
+  //   §10：streak 读不到（null，如补位票在 T-1 没有行）⇒ 不拦，但 phaseNote 必须如实说明「无从判定」。
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  const streakRaw = ebbCtx.leaderStreak;
+  const streak = (streakRaw === null || streakRaw === undefined || !isFinite(Number(streakRaw)))
+    ? null : Number(streakRaw);
+  if (streak !== null && streak < EBB_DIVERGE_MIN_STREAK) return null;
+
   // ── ★★【昨日闸门】（第八轮，保留）──
   const prev = _prevLeaderDayState(ebbCtx, prevEbbDay, leaderName);
   if (prev.bad) return null;   // 昨日同一只总龙已在坏状态 ⇒ 今天是延续 ⇒ 本规则不触发
@@ -495,6 +638,23 @@ export function detectEbbDay(ebbCtx, prevEbbDay, ebbHistory, coreRes, windowFrom
        (prev.source === 'unknown' ? '；昨日状态两处都取不到 ⇒ 按【可触发】处理，宁可多提醒一次' : '') + '）')
     : ('（近 ' + EBB_EVENT_WINDOW_DAYS + ' 个交易日内【' + topicText0 + '】已出现过 ' + phase.count + ' 次退潮事件' +
        (phase.lastDate ? ('，最近一次 ' + phase.lastDate) : '') + ' ⇒ 本次为【二次确认退潮】）');
+
+  // ── 两道新闸的判定留痕（§10：判定必须可追溯，⛔ 不静默）──
+  //   ① 主线题材：前十里同题材几只、分别是谁（用户是照着这个数去核对的）；
+  //   ② 连板分歧：前两个交易日是不是都涨停（streak ≥ 2 = 二板起）。
+  const mainTopicText = (mt.kind === 'main')
+    ? ('主线题材确认：20日涨幅前 ' + mt.total + ' 名里有 ' + mt.count + ' 只【' + mt.topic + '】（' +
+       mt.members.map(function(m) { return m.name; }).join('、') + '）；')
+    : (mt.topic
+      ? ('⚠️ 20日涨幅榜只拿到 ' + mt.total + ' 只（不足 ' + EBB_MAIN_TOPIC_TOP_N + '）、组内 ' + mt.count +
+         ' 只同题材 ⇒ 无法确认主线题材（口径：前 ' + EBB_MAIN_TOPIC_TOP_N + ' 名里 ≥' +
+         EBB_MAIN_TOPIC_MIN_COUNT + ' 只同题材），本次按可触发处理；')
+      : ('⚠️ 总龙题材读不到 ⇒ 无法确认主线题材（口径：前 ' + EBB_MAIN_TOPIC_TOP_N + ' 名里 ≥' +
+         EBB_MAIN_TOPIC_MIN_COUNT + ' 只同题材），本次按可触发处理；'));
+  const streakText = (streak === null)
+    ? '⚠️ 总龙前两个交易日的连板状态读不到 ⇒ 无法确认是不是连板分歧，本次按可触发处理；'
+    : ('总龙前两个交易日连续涨停（' + (ebbCtx.leaderStreakLabel || (streak + '板')) + '）⇒ 属连板分歧；');
+  const basisNote = '（' + mainTopicText + streakText.slice(0, -1) + '）';
 
   // ── 【看分笔卖】的两只（用户口径逐条对应；用户拍板：龙位可顺延、总龙二不顺延）──
   //   ① 同题材可用龙位 = 总龙所在题材内 rank ≥ 2 的成员，按龙位升序取第一个【非竞价一字 + 非停牌】的
@@ -594,6 +754,19 @@ export function detectEbbDay(ebbCtx, prevEbbDay, ebbHistory, coreRes, windowFrom
     phaseTitle: phaseTitle,
     phaseCount: phase.count,
     phaseNote: phaseNote,
+    // ★★ [EBB-MAIN-TOPIC 2026-10-25] 闸门 A 的判定事实（'main' | 'unknown'；'rotation' 已在上文返回 null）
+    //   count = 前十里与总龙同题材的只数，total = 该榜实际长度（不够 10 只的日期如实小）。
+    mainTopicKind: mt.kind,
+    mainTopicCount: mt.count,
+    mainTopicTotal: mt.total,
+    mainTopicTopic: mt.topic,
+    mainTopicText: mainTopicText,
+    // ★★ [EBB-STREAK 2026-10-25] 闸门 B 的判定事实（streak = null ⇒ 无从判定；已拦下的 streak < 2 不会走到这里）
+    leaderStreak: streak,
+    leaderStreakLabel: String(ebbCtx.leaderStreakLabel || ''),
+    streakText: streakText,
+    // 两道新闸的合并留痕（detail / buyDetail 已内联，此字段供其它消费方复用）
+    basisNote: basisNote,
     // ★ [EBB-R8] 昨日判定的来源与依据（'table' 落库判定 / 'inferred' 昨日行情行推断 / 'unknown' 取不到）
     firstDay: isFirst,
     firstDaySource: prev.source,
@@ -627,7 +800,7 @@ export function detectEbbDay(ebbCtx, prevEbbDay, ebbHistory, coreRes, windowFrom
     headline: '⚠️ ' + phaseTitle + ' · 卖点收紧',
     detail: '市场总龙【' + leaderName + '】（' + topicText + '，20日涨幅 ' + leaderPctText + '）' +
       whyText + ' ⇒ 判定为【' + phaseTitle + '】（题材退潮：总龙停牌 / 占比不符 ⇒ 整个题材的股票预期走势差）。' +
-      firstDayNote + phaseNote + '卖点侧：' +
+      firstDayNote + phaseNote + basisNote + '卖点侧：' +
       (picksText.length > 0
         ? ('只有 ' + picksText.join('、') + ' 可以【' + EBB_PICK_TAG + '】（等开盘看分笔，不看占比）；')
         : '今天没有符合条件的【同题材可用龙位】【市场总龙二】；') +
@@ -639,7 +812,7 @@ export function detectEbbDay(ebbCtx, prevEbbDay, ebbHistory, coreRes, windowFrom
       ? ('退潮替补 · 买点只有这 ' + buyPicksOut.length + ' 只（' + phaseTitle + '）')
       : '',
     buyDetail: '市场总龙【' + leaderName + '】（' + topicText + '，20日涨幅 ' + leaderPctText + '）' +
-      whyText + ' ⇒ ' + phaseTitle + '，风险高。' + firstDayNote + phaseNote +
+      whyText + ' ⇒ ' + phaseTitle + '，风险高。' + firstDayNote + phaseNote + basisNote +
       (bsOn
         ? ('买点侧今天【只买替补】（从 20日涨幅总龙一~五里选：先排非主板（创业板/科创板/北交所），' +
            '再排与总龙一同题材，剩下取排名最靠前的前两只）：' +
@@ -4170,7 +4343,15 @@ export function buildTvrbRulesLines() {
       '⚠️ 占比门槛【恒按龙头档】（3.5%，含容错 4%）—— 总龙一就是市场龙头，' +
       '⛔ 不因它今天在题材内的十日龙位不是龙一而降档到 2%' +
       '（10-20 例：总龙新华传媒 20日全市场第一，当日十日口径里只是 AI应用 的龙三，占比 2.7% ⇒ 按龙头档判【不达标】⇒ 退潮）。' +
-      '提示语会写明题材与阶段：首次 =【主线{题材}首次退潮】，再次 =【{题材}二次确认退潮】。',
+      '提示语会写明题材与阶段：首次 =【主线{题材}首次退潮】，再次 =【{题材}二次确认退潮】。' +
+      // ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 两道前置闸门必须写进规则面板（用户「更新下规则和说明」）
+      '★★ 触发前还有【两道前置闸门】，任一不满足 ⇒ 今天【不算退潮】（按常规操作，不提示、不灰化）：' +
+      '① 【主线题材】20日涨幅前 10 名里，与总龙一【同题材】的必须 ≥3 只（且总龙一属于该题材）——' +
+      '若前十题材全不同、或总龙那个题材只有 2 只，这叫【轮动行情】，根本不存在「题材退潮」这回事；' +
+      '② 【连板分歧】总龙一【前两个交易日必须都是涨停板】（连板 ≥2 板）。' +
+      '若前两天不是涨停板，占比塌了只是【趋势中的回落】，这叫【趋势】不叫【分歧】。' +
+      '（8-03 实测：总龙艾艾精工 T-2 = -3.05%、T-1 = -5.87%，两天都没涨停 ⇒ 不报退潮，正是这条。）' +
+      '⚠️ 两处取不到（题材读不到 / 连板读不到）⇒ 不拦，但在提示里如实写「无法确认」，宁可多提醒一次。',
     '　　退潮日，卖点侧只有两类票标【' + EBB_PICK_TAG + '】（= 允许等开盘看【分笔成交】再卖，' +
       '⛔ 不看占比）：' +
       '①【同题材可用龙位】= 总龙所在题材里龙位最靠前、且【非竞价一字 / 非停牌】的那只' +
