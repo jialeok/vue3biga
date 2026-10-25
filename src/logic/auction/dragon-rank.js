@@ -76,7 +76,7 @@ const EMPTY_RETRY_MAX_TIMES = 20;
 const WORKER_WRITE_FROM_MIN = 9 * 60 + 25;
 const WORKER_WRITE_TO_MIN = 9 * 60 + 45;
 
-// ===== 状态（模块级 ref，§7：不进 Pinia，遵循 weakStrongSetRef 同款 ref-driven 范式）=====
+// ===== 状态（模块级 ref，§7：不进 Pinia —— 异步取数 → 模块级 ref 发布 → view-helpers 同步读）=====
 // loadedAt：本次内存 map 的加载时刻（epoch ms），用于「跨过 15:00 收盘门槛后重读一次」。
 const dragonState = ref({ date: '', map: new Map(), version: 0, loadedAt: 0 });
 let _inflight = null; // { date, promise } 单飞保护

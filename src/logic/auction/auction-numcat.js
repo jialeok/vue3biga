@@ -212,7 +212,7 @@ export async function fetchFiveDaysAuctionFromNumcat(btn) {
                     changed = true;
                 }
                 // [FIX 2026-08-20] 竞价涨幅专用字段 auc_pct_chg：来自 daily_auc 接口，
-                // 供「五日竞价涨幅」趋势图与排序使用（getWeakStrongSet / _getThreeDayAuctionPct 优先读此字段）。
+                // 供「五日竞价涨幅」趋势图与各类竞价转强/转向判定优先读此字段（⛔ 与 change_pct 是两回事）。
                 // 历史日期全覆盖；系统今天只补空值，不覆盖已有值。
                 if (entry.pct && (isHistDay || !((s.aucPctChg || '').trim()))) {
                     s.aucPctChg = entry.pct;
@@ -722,8 +722,8 @@ export async function fetchAuctionFromNumcat(btn, opts) {
                     }
                     // 涨幅：仅今天(fillPct=true)且接口返回了pct时处理
                     if (fillPct && dayEntry.pct) {
-                        // [FIX 2026-08-20] 竞价涨幅专用字段 auc_pct_chg：供「五日竞价涨幅」趋势图与排序使用
-                        // （getWeakStrongSet / _getThreeDayAuctionPct 优先读此字段，避免被「获取涨幅」改写为常规涨幅而误判）
+                        // [FIX 2026-08-20] 竞价涨幅专用字段 auc_pct_chg：供「五日竞价涨幅」趋势图与各类判定使用
+                        // （⛔ 与 change_pct 是两个字段；竞价类判定必须读它，否则会被「获取涨幅」改写后的常规涨幅误判）
                         const needAucPct = overwrite || !((s.aucPctChg || '').trim());
                         if (needAucPct) {
                             s.aucPctChg = dayEntry.pct;

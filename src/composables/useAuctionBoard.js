@@ -21,7 +21,10 @@ import { getTopicGroups, getTopicRankCountThisWeek, isPseudoTopic } from '../log
 import { getDisplayNote, parseNoteToFields, extractTopics } from '../logic/note/helpers.js';
 import { getPreviousTradingDay, isTradingDay } from '../logic/date/trading-day-helpers.js';
 import { getHighRatioStocksForDate, getJingYestHighlightSetForDate, getParallelStocksForDate } from '../logic/auction/sort-rules.js';
-import { loadWeakStrongSet, weakStrongSetRef } from '../logic/auction/sort-rules-extra.js';
+// ★★ [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] 「竞价口径」toggle 的取数入口。
+//   打开且叠加了十日 / 20日涨幅时才取；两张 Map 都由 Data 层按日期缓存 + 单飞 ⇒ 0 新增额度。
+//   ⛔ 原「弱转强」toggle（loadWeakStrongSet / weakStrongSetRef）已随该功能整体删除。
+import { ensureAuctionLegRanges } from '../logic/auction/auction-leg-ranges.js';
 import { syncStockCloseFromAuction, syncStockTopicsFromAuction } from '../logic/auction/stock-sync.js';
 import { getStockCode } from '../data/stock-code-map.js';
 // [HIGH-LIMIT-BOARD 2026-09-21] 第二页题材列表的浅灰删除线：板块判定只用 Logic 层这一份（§6）
@@ -91,8 +94,9 @@ import {
     _buildFullNoteWithTopics
 } from '../composables/auction-board-helpers.js';
 
-// [WEAK-STRONG 2026-09-01] 弱转强集合异步加载 watch 仅挂载一次（useAuctionBoard 可能被多组件调用）。
-let _wsWatchBound = false;
+// ★★ [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] 「竞价口径」取数 watch 仅挂载一次
+//   （useAuctionBoard 可能被多组件调用）。⛔ 原 `_wsWatchBound`（弱转强）已随该功能删除。
+let _alegWatchBound = false;
 // [DRAGON 2026-09-09] 龙头区间涨幅 watch 同理只挂载一次。
 let _dragonWatchBound = false;
 // [CLOSE-COVER 2026-09-10] 收盘覆盖 watch 与跨门槛轮询同样只挂载一次。
@@ -120,7 +124,13 @@ export function useAuctionBoard() {
   //   [SWITCH-PICK 2026-10-02] 默认口径 = 一字；初值必须与 auctionStore#createSortState 一致
   //     （下面的 watch 会让它始终跟随 store，这里只是首帧对齐，免得首帧口径与 store 相反）。
   const sortState = reactive({
-    byWeakStrong: false,
+    // ★★ [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] 原 `byWeakStrong`（弱转强）→ 改为 `byAuctionLeg`（竞价口径）。
+    //   ⛔ 不是改名游戏：「弱转强」是主排序（三档：连跌+转向 / 仅转向 / 其余），
+    //      「竞价口径」是【口径修饰开关】（只换十日 / 20日涨幅两列的数值来源，不产生任何档位与高光）。
+    //   ★ 结构上最重要的差别：它【不进】主排序的互斥组 —— 用户明确要求
+    //      「10日涨幅和竞价口径toggle可以同时打开」，参与互斥就变成二选一了。
+    //   ⚠️ 键名与初值必须与 auctionStore#createSortState 逐字一致（§6）。
+    byAuctionLeg: false,
     // [RANGE20 2026-10-19 用户口径] 原 `byRatio`（量比抢筹）→ 改为 `byRangePct20`（20日涨幅）。
     //   ⛔ 不是改名游戏：「量比抢筹」是行级达标高光（竞价量比≥10 且 抢筹幅度>1），
     //      「20日涨幅」是【全列表按 20 个交易日区间涨幅降序 + 逐行标数值】，两者数据源与口径完全不同。
@@ -166,7 +176,7 @@ export function useAuctionBoard() {
   const viewData = computed(() => {
     void auctionStore.dataVersions['auction'];
     void uiStore.currentDate;
-    void sortState.byWeakStrong; void sortState.byRangePct20;
+    void sortState.byAuctionLeg; void sortState.byRangePct20;
     void sortState.byJingYest; void sortState.byJingYestRatio; void sortState.byRangePct; void sortState.byTopic;
     // [TWO-MODES 2026-10-02] 题材排序口径也进依赖：切「题材 / 一字」必须重算视图（顺序不同）
     void sortState.topicOrderBy;
@@ -174,20 +184,22 @@ export function useAuctionBoard() {
     return computeAuctionViewDataIncremental('auction', sortState);
   });
 
-  // [WEAK-STRONG 2026-09-01] 弱转强集合异步加载：toggle 开启或日期变化时，批量拉取前 4 个交易日(T-1..T-4，不含当日快照)
-  // 的 change_pct 历史写入 weakStrongSetRef（reactive ref）；viewData 依赖该 ref，自动刷新排序与高光。
-  // 关闭时清空，避免陈旧数据污染其它 toggle。显式异步加载（与 loadTrendHistory 一致）替代脆弱的
-  // 同步 computed 内 fire-and-forget hydrate 模式。
-  if (!_wsWatchBound) {
-    _wsWatchBound = true;
+  // ★★ [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] 「竞价口径」取数：开关打开 + 叠加了十日/20日涨幅 才发请求。
+  //   ⛔ 原 [WEAK-STRONG] 那段（拉前 4 个交易日 change_pct 算弱转强）已整段删除。
+  //   依赖里带上两个涨幅主排序与日期：点开「十日涨幅 / 20日涨幅」时若口径开关已经开着，
+  //   必须立刻补一次取数（否则用户会看到「打开了却没有任何数值」的空窗）。
+  //   ⚠️ §11：口径开关关着 ⇒ 一个请求都不发（本 watch 直接 return）。
+  if (!_alegWatchBound) {
+    _alegWatchBound = true;
     watch(
-      () => [sortState.byWeakStrong, uiStore.currentDate],
-      async () => {
-        if (sortState.byWeakStrong) {
-          await loadWeakStrongSet(uiStore.currentDate, 'auction');
-        } else {
-          weakStrongSetRef.value = null;
-        }
+      () => [sortState.byAuctionLeg, sortState.byRangePct, sortState.byRangePct20, uiStore.currentDate],
+      () => {
+        if (!sortState.byAuctionLeg) return;
+        if (!sortState.byRangePct && !sortState.byRangePct20) return;
+        ensureAuctionLegRanges(uiStore.currentDate).catch(function(e) {
+          // §10：读失败必须留痕（视图层表现为「这两列暂时没有数值」，绝不拿收盘口径顶替）
+          console.warn('[AUCTION-LEG] 竞价口径区间涨幅读取失败:', (e && e.message) || e);
+        });
       },
       { immediate: true }
     );
@@ -1126,7 +1138,7 @@ export function useAuctionBoard() {
   function _syncSortStateToStore() {
     if (auctionStore.sortState && auctionStore.sortState['auction']) {
       const s = auctionStore.sortState['auction'];
-      s.byWeakStrong = sortState.byWeakStrong;
+      s.byAuctionLeg = sortState.byAuctionLeg;
       s.byRangePct20 = sortState.byRangePct20;
       s.byJingYest = sortState.byJingYest;
       s.byJingYestRatio = sortState.byJingYestRatio;
@@ -1218,30 +1230,36 @@ export function useAuctionBoard() {
   }
 
   function toggleSort(key) {
+    // ★★ [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] 「竞价口径」是【口径修饰开关】，⛔ 不进主排序互斥组：
+    //   它只翻转自己，⛔ 不关掉十日 / 20日涨幅（用户明确要求「这两个开关可以同时打开」），
+    //   也⛔ 不被它们关掉。关闭 ⇒ 十日 / 20日涨幅立刻退回原来的收盘口径（数值与排序一起变）。
+    //   ⚠️ 取数由上方 _alegWatchBound 那个 watch 负责（它已把 byRangePct / byRangePct20 纳入依赖）。
+    if (key === 'byAuctionLeg') {
+      sortState.byAuctionLeg = !sortState.byAuctionLeg;
+      _syncSortStateToStore();
+      _afterSortChange();
+      return;
+    }
     sortState[key] = !sortState[key];
     if (sortState[key]) {
-      if (key === 'byWeakStrong') {
-        sortState.byRangePct20 = false;
-        sortState.byJingYest = false; sortState.byJingYestRatio = false; sortState.byRangePct = false;
-      } else if (key === 'byRangePct20') {
+      if (key === 'byRangePct20') {
         // [RANGE20 2026-10-19 用户口径] 20日涨幅：与其它主排序 toggle 互斥（与十日涨幅同款）。
         //   本模式的取数由下方 watch 驱动（sortState.byRangePct20 已在依赖里）⇒ 点开即
         //   ensureRange20：阶段①读库内逐日行（同步可算，立刻出版）、阶段②同花顺补缺（无额度限制）。
         //   ⚠️ 这里【不 await】—— 取数慢不该阻塞 toggle 的视觉反馈（列表先按已有数据重排）。
-        sortState.byWeakStrong = false;
         sortState.byJingYest = false; sortState.byJingYestRatio = false; sortState.byRangePct = false;
       } else if (key === 'byJingYest') {
-        sortState.byWeakStrong = false; sortState.byRangePct20 = false;
+        sortState.byRangePct20 = false;
         sortState.byJingYestRatio = false; sortState.byRangePct = false;
       } else if (key === 'byJingYestRatio') {
-        sortState.byWeakStrong = false; sortState.byRangePct20 = false;
+        sortState.byRangePct20 = false;
         sortState.byJingYest = false; sortState.byRangePct = false;
       } else if (key === 'byRangePct') {
         // [RANGE-PCT 2026-10-14] 十日涨幅：与其它主排序 toggle 互斥。
         //   本模式的数据源是云端 stock_range_pct（异步到货），下面的龙头 watch 已把
         //   `sortState.byRangePct` 纳入依赖 ⇒ 一打开就会 ensureDragonRangePct（数据在就秒回、
         //   不在才发一次请求），所以点开不会出现「空白等数据」的空窗。
-        sortState.byWeakStrong = false; sortState.byRangePct20 = false;
+        sortState.byRangePct20 = false;
         sortState.byJingYest = false; sortState.byJingYestRatio = false;
       }
       // [TWO-MODES 2026-10-02] ⛔ 原 `byParallel` 的互斥分支（toogle 时强置 byParallel=true）已删除：

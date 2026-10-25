@@ -62,8 +62,12 @@ function createSortState() {
     // [RANGE20 2026-10-19 用户口径] `byRatio`（量比抢筹）→ `byRangePct20`（20日涨幅）。
     //   ⚠️ 键名与初值必须与 useAuctionBoard#sortState 逐字一致（§6：两处默认值不同会让
     //      「store 读不到」那一瞬间的口径跳变）。默认关闭（与十日涨幅一致）。
-    auction: { byWeakStrong: false, byRangePct20: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI },
-    hot: { byWeakStrong: false, byRangePct20: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI }
+    // ★★ [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] `byWeakStrong`（弱转强）已随该 toggle 整体下线，
+    //   开关位换成 `byAuctionLeg`（竞价口径）：打开 ⇒ 十日 / 20日涨幅两列改用 9:26 竞价口径的数值；
+    //   关闭 ⇒ 收盘口径（与原来逐字相同）。⚠️ 键名与初值必须与 useAuctionBoard#sortState、
+    //   view-helpers 的兜底默认值逐字一致（§6：三处默认值不同会让「store 读不到」那一瞬间的口径跳变）。
+    auction: { byAuctionLeg: false, byRangePct20: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI },
+    hot: { byAuctionLeg: false, byRangePct20: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI }
   };
 }
 

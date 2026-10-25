@@ -971,16 +971,9 @@
            新的「十日涨幅」toggle 是【全列表排序 + 逐行标数值】，刻意不产出任何行级高光：
            全表都在按十日涨幅排时，挑出「部分行加色条」没有信息量。 */
 
-        /* 弱转强达标行：左侧琥珀色边框，仅在「弱转强」开关打开时显示（容器 .weak-strong-enabled 控制）。 */
-        .auction-content.weak-strong-enabled .auction-item.weak-strong,
-        .auction-content.weak-strong-enabled .auction-topic-row.weak-strong {
-            box-shadow: inset 4px 0 0 #f59e0b;
-        }
-
-        .auction-content.weak-strong-enabled .auction-item.weak-strong:hover,
-        .auction-item.weak-strong:hover {
-            background: rgba(245, 158, 11, 0.12);
-        }
+        /* [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] ⛔ 原「弱转强达标行（琥珀色左竖条）」整段已删：
+           「弱转强」toggle 整体下线（开关位换成「竞价口径」），无 class 产出方（§16 不留死规则）。
+           新的「竞价口径」开关是【口径修饰】—— 只换十日 / 20日涨幅两列的数值来源，不产出任何行级高光。 */
 
         .auction-highratio-stat {
             text-align: center;

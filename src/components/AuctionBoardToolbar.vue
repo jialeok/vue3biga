@@ -14,13 +14,24 @@
         <span class="auction-toggle-slider" />
       </label>
     </div>
+    <!-- ★★ [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] 这个开关位原来是「弱转强」，现改为「竞价口径」。
+         ⛔ 不是改名：原「弱转强」是【主排序】（三档：连跌+竞价转向 / 仅转向 / 其余，配行级绿色高光），
+            已【整体删除】；新开关是【口径修饰】——只决定「十日涨幅」「20日涨幅」两列用哪一套数值：
+              · 打开 = 9:26 竞价口径（把区间涨幅的今天那一根腿反解回 9:25 竞价）；
+              · 关闭 = 收盘口径（云端原值，与原来逐字相同）。
+         用户原话：「还不如早盘竞价把弱转强toggle换成竞价口径toggle影响20日和10排名，也就是打开后，
+           按照竞价口径排序，关闭后恢复原样……这样在视觉上我一眼就能看出，也就是10日涨幅和竞价口径
+           toggle可以同时打开，20日涨幅也是一样，关掉竞价toggle后，就变成收盘口径（和原来一样）。」
+         ★ 关键结构差别：它【不进主排序互斥组】——可以和「十日涨幅」「20日涨幅」同时打开。
+         ⚠️ 早上没开盘 / 当天还没被收盘涨幅覆盖时，两套口径数值本来就相同 ⇒ 这个开关用在
+            历史日期与收盘后回看（对照「早上看到的那一批」）。 -->
     <div class="auction-toggle-item">
-      <span class="auction-toggle-label">弱转强</span>
+      <span class="auction-toggle-label">竞价口径</span>
       <label class="auction-toggle-switch">
         <input
           type="checkbox"
-          :checked="sortState.byWeakStrong"
-          @change="toggleSort('byWeakStrong')"
+          :checked="sortState.byAuctionLeg"
+          @change="toggleSort('byAuctionLeg')"
         >
         <span class="auction-toggle-slider" />
       </label>
@@ -91,7 +102,8 @@
          区间涨幅」由高到低排，并在每行股票名旁标出该数值 —— 用户要的是「一眼找到市场总龙头」。
          ⛔ 原「三天竞跌」功能（竞价量连续递减）已整体删除，不是改名：排序键与数据源都换了
             （三天竞跌 = 内存逐日 volume 现算；十日涨幅 = 云端 stock_range_pct，与题材龙位徽章同源）。
-         ⚠️ 与其它主排序 toggle（弱转强 / 20日涨幅 / 竞/昨 / 竞/昨占比）互斥，由 Logic 层保证。 -->
+         ⚠️ 与其它主排序 toggle（20日涨幅 / 竞/昨 / 竞/昨占比）互斥，由 Logic 层保证；
+            「竞价口径」是口径修饰开关，⛔ 不在互斥组里（可以和本开关同时打开）。 -->
     <div class="auction-toggle-item">
       <span class="auction-toggle-label">十日涨幅</span>
       <label class="auction-toggle-switch">

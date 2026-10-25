@@ -28,6 +28,10 @@ import { getRange20FingerprintToken } from './range20.js';
 import { getRange20LeadersFingerprintToken } from './range20-leaders.js';
 // [PRESENCE 2026-10-23] 「涨幅前十 · 在列次数」预计算表的加载版本（受两个涨幅 toggle 门控）。
 import { getPresenceFingerprintToken } from '../../data/auction-presence.js';
+// ★★ [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] 「竞价口径」那两张 Map 是【异步】到货的全局输入：
+//   不进指纹 ⇒ 数据到达后行缓存不失效 ⇒ 行上数值与整表顺序停在「还没到货」那一帧
+//   （与 dragon= / range20= 同款问题）。
+import { getAuctionLegRangesFingerprintToken } from './auction-leg-ranges.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
 // [DRAGON 2026-09-09] 龙头徽章依赖异步加载的 10 日区间涨幅，必须进全局指纹，
 // 否则数据到达后行缓存不失效 → 徽章不显示（或陈旧）。
@@ -82,7 +86,12 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
   const s = sortState || {};
   return [
     'date=' + date,
-    'byWeakStrong=' + (s.byWeakStrong ? 1 : 0),
+    // ★★ [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] 「竞价口径」开关：它决定十日 / 20日涨幅两列
+    //   用哪一份数值（连带整表顺序）⇒ 必须进指纹，否则「打开了却还是原来的排法」。
+    'byAuctionLeg=' + (s.byAuctionLeg ? 1 : 0),
+    // 竞价口径那两张 Map 的加载版本 —— ⚠️ 【受开关门控】（与下面 range20= 同款理由）：
+    //   两个涨幅 toggle 都关着、或者口径开关关着时恒为 'off' ⇒ 后台到货不会让整表白重排一次。
+    'aleg=' + ((s.byAuctionLeg && (s.byRangePct || s.byRangePct20)) ? getAuctionLegRangesFingerprintToken() : 'off'),
     // [RANGE20 2026-10-19] ⛔ 原 `byRatio=`（量比抢筹）已随该 toggle 删除；开关位改成 `byRangePct20=`。
     // [TWO-MODES 2026-10-02] 原 `byParallel=` 已删（平行 toggle → 一字 toggle、平行并入竞/昨）；
     //   改成题材【排序口径】：它决定题材组的组间顺序 ⇒ 必须入签名，否则切「题材 / 一字」时
@@ -129,7 +138,7 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
   ].join('|');
 }
 
-function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToken) {
+function computeRowSig(item, sortState, date, prevVolume, prevYestVolume) {
   const stockName = (item.stock || '').trim();
   let sold = false, bought = false, selected = false;
   try {
@@ -147,13 +156,14 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume, wsToke
     item.topics,
     item.todayChoice, // AuctionBadge 渲染「买→/卖→」等当日选项，必须纳入签名避免陈旧
     date,
-    s.byWeakStrong ? 1 : 0,
+    // [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] 口径开关本身入行签名：它决定「这一行该去哪个 Map 取值」，
+    //   ⛔ 不能只靠全局指纹 —— 与下方 rp= / rp20= 同一条红线（模板直接读的字段，按红线单独入签名）。
+    s.byAuctionLeg ? 1 : 0,
     // [TWO-MODES 2026-10-02] 原 `s.byParallel ? 1 : 0` 已删（见 computeGlobalFingerprint 的注释），
     //   换成题材排序口径 —— 它决定该行落在哪个题材组的哪个位置，属结构性输入，必须入行签名。
     'tob=' + (s.topicOrderBy === TOPIC_ORDER_YIZI ? TOPIC_ORDER_YIZI : TOPIC_ORDER_VOL_RATIO),
     // [RANGE20 2026-10-19] `s.byRatio`（量比抢筹）→ `s.byRangePct20`（20日涨幅）。
     s.byJingYest ? 1 : 0, s.byJingYestRatio ? 1 : 0, s.byRangePct ? 1 : 0, s.byRangePct20 ? 1 : 0, s.byTopic ? 1 : 0,
-    'ws=' + (wsToken || 0), // [WEAK-STRONG 2026-09-01] 弱转强达标档(连跌天数)变化需触发该行重派生，否则高光 class 被增量缓存陈旧复用
     'yizi=' + (item.isYiZi ? 1 : 0), // [YIZI 2026-09-09] 竞价一字状态（竞价涨幅达标）变化需触发重派生，否则红线标记陈旧
     // [DRAGON-COLOR 2026-09-11] 龙头徽章底色 = 当天竞价涨幅符号（红/绿/灰）→ 该数值必须入签名，
     // 否则增量缓存会复用旧行对象、徽章底色陈旧。注意不能用上方 yizi= 代替：yizi 只捕捉「跨过涨停线」
@@ -225,14 +235,14 @@ export function computeAuctionViewDataIncremental(dataSource, sortState) {
   }
 
   const items = result.items || [];
-  const wsSet = result.weakStrongSet;
   const next = new Array(items.length);
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     const stockName = (item.stock || '').trim();
     const prev = stockName ? prevMap.get(stockName) : null;
-    const wsTok = (sortState && sortState.byWeakStrong && wsSet && stockName) ? (wsSet.get(stockName) || 0) : 0;
-    const sig = computeRowSig(item, sortState, date, prev ? prev.volume : '', prev ? prev.yestVolume : '', wsTok);
+    // [AUCTION-LEG-TOGGLE 2026-10-25] ⛔ 原第 6 个参数是「弱转强行签名 token（ws=）」，
+    //   随「弱转强」toggle 下线一并移除（该 toggle 及其数据层已整体删除）。
+    const sig = computeRowSig(item, sortState, date, prev ? prev.volume : '', prev ? prev.yestVolume : '');
     const key = dataSource + '|' + item.index;
     const cached = rowCache.get(key);
     if (cached && cached.sig === sig) {

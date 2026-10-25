@@ -1,5 +1,5 @@
 import { state } from '../app-state.js';
-        // [PERF] 信号函数指纹缓存（模块级，导出供 sort-rules-extra.js 复用）
+        // [PERF] 信号函数指纹缓存（模块级；同步流程会清空它强制重算，见 workflows/auction-sync-pull.js）
         export const _signalCache = {};
         export function _viewFpList(list) {
             if (!list || !list.length) return '0';
@@ -81,7 +81,7 @@ import { state } from '../app-state.js';
         // getGroupData()[date] = auction_watchlist 正式成员 + market_metrics 影子行 合并后的全量，
         // 影子行是「不在当日 9:25 名单、但被 worker/收盘 cron 写入指标表」的股票（典型：前一日
         // watchlist 里的观察组候选）。它们不该参与任何高光/排序/统计——7 日实测：收盘 cron 写入
-        // 影子行后，弱转强高光从 1 只涨到 8 只，而列表里根本看不到这些股票。
+        // 影子行后，某类高光集合的命中数从 1 只涨到 8 只，而列表里根本看不到这些股票。
         // 统一判定（与 getParallelStocksForDate 既有口径一致）：
         //   ① 必须在当日正式名单内（_getAuctionWatchlistSet）——权威口径，优先级最高；
         //   ② 正式名单索引为空 = 尚未就绪，此时退化为「排除观察组继承空壳」，

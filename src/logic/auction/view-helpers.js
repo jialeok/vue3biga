@@ -6,7 +6,9 @@ import { getPreviousTradingDay } from '../date/trading-day-helpers.js';
 // 一并删除——平行 toggle 被「一字」toggle 占用、平行并入竞/昨，该函数在本文件再无引用（§16）。
 import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlightSetForDate } from './sort-rules.js';
 import { ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagState, _buildTagStateCache } from '../tagTitles/rules.js';
-import { getWeakStrongSet, getWeakStrongTurnSet } from './sort-rules-extra.js';
+// ★★ [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] 「竞价口径」toggle 的取值入口（把十日 / 20日涨幅
+//   的今天那一根腿反解回 9:25 竞价）。⛔ 只读、本层不请求 —— 取数由 useAuctionBoard 的 watch 触发。
+import { getAuctionLegRange10, getAuctionLegRange20 } from './auction-leg-ranges.js';
 // [RANGE-PCT 2026-10-14 用户口径] 「十日涨幅」toggle 的排序纯函数（由高到低 / 缺数据置底 / 稳定）。
 // 数据源 = getDragonRangePct(currentDate)（云端 stock_range_pct，与题材龙位徽章同源，§6）。
 import { sortIndicesByRangePct } from './range-pct-sort.js';
@@ -49,7 +51,8 @@ import { buildLimitStreakMapForDate } from './limit-streak.js';
 // 判定复用 dragon-rank 的单一真相 isAuthoritativeCloseReached（北京 16:05），不另写一份时间逻辑（§6）。
 import { getDragonRangePct, computeDragonRankMap, isAuthoritativeCloseReached } from './dragon-rank.js';
 // [DRAGON 2026-09-09] 题材龙头（龙一/龙二…）：区间涨幅状态由 dragon-rank.js 异步加载后经模块级 ref 暴露，
-// 此处同步读取（与 weakStrongSetRef 同款 ref-driven 范式），题材 toggle 开启时才参与计算。
+// 此处同步读取（与 range20 / suspend 同款 ref-driven 范式：异步取数 → 模块级 ref 发布 → 本文件同步读），
+// 题材 toggle 开启时才参与计算。
 // [TOPIC-STATS 2026-09-10] 题材块统计条（数量/一字/竞价高开/龙头…）：纯函数在 topic-stats.js
 import { buildTopicStatsMap } from './topic-stats.js';
 // [SEAL-VOLUME 2026-10-11] 封单量（手）的同步读取器：读 Data 层 limit_pool 内存缓存（§6 单一真相），
@@ -161,12 +164,10 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   // [RANGE-PCT 2026-10-14] ⛔ 原「三天竞跌」绿色高光（isThreeDayJingDieMatch / three-day-jing-die）
   //   已随该 toggle 一起【整体删除】：新 toggle「十日涨幅」是【全列表排序 + 逐行标数值】，
   //   不产生任何行级高光（绿色左竖条的存在意义就是"挑出达标的那几只"，全列表排序下无意义）。
-  // [WEAK-STRONG 2026-09-01] 弱转强高光：仅「弱转强」toggle 开启且该股达标（五日涨幅连跌天数>=2 且 上交易日竞价涨幅<=0 且 当日竞价涨幅>0）。
-  const isWeakStrongMatch = ctx.sortByWeakStrongEnabled && ctx.weakStrongSet && stockName && ctx.weakStrongSet.has(stockName);
+  // [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] ⛔ 原「弱转强」行级高光（isWeakStrongMatch → `.weak-strong`
+  //   左侧绿条）已随该 toggle 整体下线（开关位换成「竞价口径」，它是口径修饰开关、不产生任何高光）。
   if (isJingYestMatch) {
     itemClass += ' jing-yest-match';
-  } else if (isWeakStrongMatch) {
-    itemClass += ' weak-strong';
   }
 
   let numberClass = 'auction-number auction-trend-trigger';
@@ -613,17 +614,35 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   //   ⚠️ 下面两处是【兜底默认值】：正常路径走到的是 store 里那一份（由 useAuctionBoard 维护）。
   //   [SWITCH-PICK 2026-10-02] 默认值 = 一字，必须与 auctionStore#createSortState 保持一致
   //     （§6：同一份状态在两处的默认值不同，会让「store 读不到」这一瞬间的口径跳变）。
+  // [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] `byWeakStrong` 已随「弱转强」toggle 整体下线，
+  //   开关位换成 `byAuctionLeg`（竞价口径）。⚠️ 键名 / 默认值必须与 useAuctionBoard#sortState
+  //   和 auctionStore#createSortState 逐字一致（§6：三处默认值不同，会让「store 读不到」那一瞬间
+  //   的口径跳变）。默认关闭 = 收盘口径，与加本功能之前逐字相同（§11）。
+  const _defaultSortState = { byAuctionLeg: false, byRangePct20: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI };
   let sortState;
   if (sortStateOverride) {
     sortState = sortStateOverride;
   } else {
     try {
       const store = useAuctionStore();
-      sortState = store && store.sortState ? store.sortState[_p] : { byWeakStrong: false, byRangePct20: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI };
+      sortState = store && store.sortState ? store.sortState[_p] : _defaultSortState;
     } catch {
-      sortState = { byWeakStrong: false, byRangePct20: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI };
+      sortState = _defaultSortState;
     }
   }
+
+  // ★★ [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] 「十日 / 20日涨幅 用哪一套口径」的【唯一分支点】。
+  //   打开 = 9:26 竞价口径（历史日期 / 收盘后回看时，用它对齐「早上看到的那一批」）；
+  //   关闭 = 收盘口径（云端原值，逐字回到旧行为）。
+  //   ⛔ 排序键与行上数值必须取【同一个 Map】（§6：两处口径一旦分叉，就会出现「排序对不上数字」）。
+  //   §10：竞价口径那一侧还没读到 / 判不出 ⇒ 返回 null ⇒ 行上不显示数值、排序按「缺数据置底」，
+  //        ⛔ 绝不悄悄拿收盘口径顶替（那等于拿错尺子冒充对尺子）。
+  const _range10MapFor = function() {
+    return sortState.byAuctionLeg ? getAuctionLegRange10(currentDate) : getDragonRangePct(currentDate);
+  };
+  const _range20MapFor = function() {
+    return sortState.byAuctionLeg ? getAuctionLegRange20(currentDate) : getRange20Pct(currentDate);
+  };
 
   // [LIMIT-STREAK 2026-09-11] 趋势/连板映射：只在题材模式计算（需求：「单独打开题材 toggle」看趋势/连板）。
   // 预构建一次（不是逐行现算），供下方 ctx → _enrichAuctionItem 逐行读取。
@@ -643,9 +662,11 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   const parallelStocksToday = getParallelStocksForDate(currentDate, dataSource);
   const jingYestToggleChecked = sortState.byJingYest || sortState.byJingYestRatio;
 
-  // [WEAK-STRONG 2026-09-01] 弱转强达标集合（连跌天数>=1 且 竞价涨幅>=0）；仅该 toggle 开启时计算。
-  const weakStrongSet = sortState.byWeakStrong ? getWeakStrongSet(currentDate, dataSource) : null;
-  const weakStrongTurnSet = sortState.byWeakStrong ? getWeakStrongTurnSet(currentDate, dataSource) : null;
+  // [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] ⛔ 原「弱转强达标集合 / 竞价转向集合」两行已随
+  //   「弱转强」toggle 整体下线（用户：「把原来弱转强toggle功能去掉换成我说的竞价口径toggle」）。
+  //   连带删掉的不只是这两行：sort-rules-extra.js 整个文件（它就是为弱转强而存在的）、
+  //   Data 层 getAuctionChangePctHistory（唯一消费者就是它）、行级高光 `.weak-strong`、
+  //   增量指纹里的 `ws=` 令牌 —— 半旧半新是 §16 明令禁止的状态。
 
   // [RANGE20 2026-10-19] ⛔ 原「量比抢筹」达标集合（volGrabSet = getVolGrabSet(...)）已随该 toggle 删除：
   //   新开关「20日涨幅」的数据源是 range20.js 的会话内存 Map（下方 ctx 里按需读取），
@@ -725,46 +746,12 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   let renderOrder = renderList.map((_, idx) => idx);
 
-  if (sortState.byWeakStrong) {
-            // [WEAK-STRONG 2026-09-01] 弱转强三档排序：
-            //   tier0 高光 = 连跌天数>=2(条件①) 且 竞价转向(上交易日<=0 且 当日>=0，条件②)，两条件同时满足；
-            //   tier1 第二档 = 仅竞价转向(条件②) 达标、连跌未达>=2（不点亮高光）；
-            //   tier2 其余 = 竞价未转向（上交易日>0 或缺失）或当日<0，排在最末。
-            //   同档内：tier0 按连跌天数由高到低、同日按「当日竞价涨幅」由高到低；tier1 按「当日竞价涨幅」由高到低；tier2 保持原序。
-    renderOrder = renderOrder.map((idx, pos) => {
-      const it = renderList[idx];
-      const stockName = it && it.stock ? it.stock.trim() : '';
-      const isHighlight = !!(weakStrongSet && weakStrongSet.has(stockName)); // tier0
-      const isTurn = !isHighlight && !!(weakStrongTurnSet && weakStrongTurnSet.has(stockName)); // tier1
-      const tier = isHighlight ? 0 : (isTurn ? 1 : 2);
-      const downStreak = isHighlight ? weakStrongSet.get(stockName) : 0;
-      const todayAuc = _auctionPctOf(it);
-      return { idx, pos, tier, isHighlight, isTurn, downStreak, todayAuc };
-    }).sort((a, b) => {
-      if (a.tier !== b.tier) return a.tier - b.tier;
-      if (a.tier === 0) {
-        if (b.downStreak !== a.downStreak) return b.downStreak - a.downStreak;
-        if (a.todayAuc === null && b.todayAuc === null) return a.pos - b.pos;
-        if (a.todayAuc === null) return 1;
-        if (b.todayAuc === null) return -1;
-        if (b.todayAuc !== a.todayAuc) return b.todayAuc - a.todayAuc;
-        return a.pos - b.pos;
-      }
-      if (a.tier === 1) {
-        // 第二档：仅竞价转向，按「当日竞价涨幅」由高到低（转得越猛越靠前）
-        if (a.todayAuc === null && b.todayAuc === null) return a.pos - b.pos;
-        if (a.todayAuc === null) return 1;
-        if (b.todayAuc === null) return -1;
-        if (b.todayAuc !== a.todayAuc) return b.todayAuc - a.todayAuc;
-        return a.pos - b.pos;
-      }
-      return a.pos - b.pos; // tier2 保持原序
-    }).map(x => x.idx);
-  // [RANGE20 2026-10-19 用户口径] ⛔ 原 `else if (sortState.byRatio)` 分支（「量比抢筹」：
-  //   达标=竞价量比>=10 且 抢筹幅度>1 → 达标组置顶、组内按量比降序 → 抢筹幅度降序）已【整段删除】。
-  //   用户原话：「把早盘竞价看板的竞昨量比抢筹功能去掉，这个功能没用，没参考价值」。
-  //   开关位由「20日涨幅」占用（见上方 byRangePct 分支下面的 byRangePct20 分支）。
-  } else if (sortState.byJingYest) {
+  // [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] ⛔ 这里原有 `if (sortState.byWeakStrong) { … }` 三档排序
+  //   （tier0 高光 = 连跌≥2 且竞价转向 / tier1 仅竞价转向 / tier2 其余），整段已随「弱转强」toggle 删除。
+  //   开关位由「竞价口径」占用 —— 但那是一个【口径修饰开关】，不是一个主排序档，
+  //   所以它【不在这里占分支】，而是改由下面的 `_range10MapFor / _range20MapFor` 决定
+  //   十日 / 20日涨幅用哪一份数值（见上方那两个函数的注释）。
+  if (sortState.byJingYest) {
     // [FIX 2026-08-18] 同档排序按「当天竞价涨幅 auc_pct_chg」由高到低。
     //   分档条件不变：tier0=竞昨高光(平行+diff>0) / tier1=仅平行 / tier2=其它。
     //   原 digitGap+diff 排序键废弃，改用 _auctionPctOf（专用竞价涨幅字段）。
@@ -818,7 +805,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     //   §10：Map 未加载（null）或某行缺数据 → 该行置底且不参与 pct 比较（⛔ 绝不补 0）。
     //   ⚠️ 数据未到时不假装有值：ensureDragonRangePct 一发布新 Map，指纹变化会自动重算本视图。
     //   排序实现（含稳定/置底口径）收敛在 range-pct-sort.js 纯函数里，可独立单测（§15/§42）。
-    const _rangeMap = getDragonRangePct(currentDate);
+    const _rangeMap = _range10MapFor();
     renderOrder = sortIndicesByRangePct(renderOrder, renderList, _rangeMap);
   } else if (sortState.byRangePct20) {
     // [RANGE20 2026-10-19 用户口径] 「20日涨幅」toggle（开关位由原「量比抢筹」改造）：
@@ -831,7 +818,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     //   §10：Map 未就绪（null）或该行缺腿 → 置底且不参与比较（⛔ 绝不补 0）。
     //   ⚠️ 两个 map 各自独立：十日读云端 stock_range_pct；20 日读 range20.js 现算结果
     //      （云端没有 20 日行 —— 表主键 (date,stock)，写进去会覆盖 10 日行，见 range20.js 文件头）。
-    const _rangeMap20 = getRange20Pct(currentDate);
+    const _rangeMap20 = _range20MapFor();
     renderOrder = sortIndicesByRangePct(renderOrder, renderList, _rangeMap20);
   }
   // [TWO-MODES 2026-10-02 用户口径] ⛔ 这里原有 `else if (sortState.byParallel)` 主排序分支（平行达标档
@@ -856,12 +843,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   function resolveTopicTier(idx) {
     const it = renderList[idx];
     const nm = it && it.stock ? it.stock.trim() : '';
-    if (sortState.byWeakStrong) {
-      // [WEAK-STRONG 2026-09-01] 高光档(tier0)=弱转强达标（连跌天数>=2 且 上交易日竞价涨幅<=0 且 当日竞价涨幅>0），否则 tier1。
-      // 与 _enrichAuctionItem 中 isWeakStrongMatch 口径一致。
-      const ws = nm && weakStrongSet ? weakStrongSet.has(nm) : false;
-      return ws ? 0 : 1;
-    }
+    // [AUCTION-LEG-TOGGLE 2026-10-25] ⛔ 原「弱转强达标 ⇒ tier0 / 否则 tier1」已随该 toggle 删除。
+    //   「竞价口径」不是分层排序（它只换数值来源、不改档位）⇒ 本函数不需要为它开分支。
     if (sortState.byJingYestRatio) {
       const ih = nm && jingYestHighlightSet && jingYestHighlightSet.has(nm);
       return ih ? 0 : 1;
@@ -879,8 +862,10 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   // [TOPIC-MERGE 2026-09-09] 题材 toggle「单独开启」判定：没有任何主排序 toggle 参与时为真。
   // 单独开启题材 = 用户只想按题材看当日全量（含观察组继承票），不再区分观察组/常规组两块；
-  // 一旦叠加任一主排序 toggle（弱转强/竞昨/竞昨占比/十日涨幅/20日涨幅），
+  // 一旦叠加任一主排序 toggle（竞昨/竞昨占比/十日涨幅/20日涨幅），
   // 观察组与常规组的既有显示方式保持不变（下方分组分支的 else/各专属分支原逻辑不动）。
+  // ⚠️ [AUCTION-LEG-TOGGLE 2026-10-25] 「竞价口径」【不算】主排序 toggle（它只换数值来源，
+  //   不改变分组 / 排序档位）⇒ ⛔ 不要把它加进下面这个判定，否则单独开题材时的分组方式会莫名改变。
   //
   // [TWO-MODES 2026-10-02] ⚠️ 这里【不再有】 `!sortState.byParallel` 那一项：
   //   平行 toggle 已被「一字」toggle 占用，`byParallel` 从排序状态里整体移除（平行并入竞/昨）。
@@ -888,7 +873,6 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   //      所以它天然落在这个 topicOnlyMode 里 —— 这正是用户要的
   //      「打开一字 toggle 后，显示也和单独打开题材 toggle 一样，只是排序变了」。
   const topicOnlyMode = !!sortState.byTopic
-    && !sortState.byWeakStrong
     && !jingYestToggleChecked
     && !sortState.byRangePct
     && !sortState.byRangePct20;
@@ -1110,7 +1094,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   let dragonIndices = [];
   // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」区块索引：非空时模板在【龙头组之后、观察组之前】
   // 渲染一个独立小组件（用户口径：「你可以新建一个小组件给它们，这样就不会乱，以后改的时候也方便」）。
-  // 其余模式（题材 / 十日涨幅 / 20日涨幅 / 弱转强 / 竞昨）一律折叠为 [] ——
+  // 其余模式（题材 / 十日涨幅 / 20日涨幅 / 竞昨）一律折叠为 [] ——
   //   十日·20日涨幅模式下全部股票本来就折成一条降序表，补位行自然排在里面（和龙头组同款折叠）。
   let range20LeaderIndices = [];
   if (topicOnlyMode) {
@@ -1132,22 +1116,6 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     obsIndices = [];
     regularIndices = renderOrder.slice();
     hiddenObsIndices = [];
-  } else if (sortState.byWeakStrong) {
-    // [WEAK-STRONG 2026-09-01] 参考「竞昨」toggle 的显示方式：折叠观察组区块（obsIndices=[]），
-    // 不单独成块；弱转强达标（weakStrongSet 命中）或仅竞价转向（weakStrongTurnSet 命中）的观察组票并入主列表，
-    // 由上方 byWeakStrong 排序分支统一排到前列（高光置顶、竞价转向次之）。其余未达标且非买入继承的观察组壳 → 隐藏。
-    hiddenObsIndices = [];
-    _obsIndicesRaw.forEach(i => {
-      const stockName = renderList[i].stock.trim();
-      const matchesWeakStrong = (weakStrongSet && weakStrongSet.has(stockName)) || (weakStrongTurnSet && weakStrongTurnSet.has(stockName));
-      const item = renderList[i];
-      const hasTodayData = item && ((item.volume || '').toString().trim() !== '' || (item.yestVolume || '').toString().trim() !== '');
-      const isBoughtInherited = _obsBoughtSet.has(stockName) && hasTodayData;
-      // 打* 的正式成员永不隐藏（只按是否命中高光排先后），否则正式成员会从列表消失
-      if (!matchesWeakStrong && !isBoughtInherited && !_isFormalTodayMember(stockName)) hiddenObsIndices.push(i);
-    });
-    obsIndices = [];
-    regularIndices = renderOrder.filter(i => hiddenObsIndices.indexOf(i) < 0);
   } else if (jingYestToggleChecked) {
     hiddenObsIndices = [];
     _obsIndicesRaw.forEach(i => {
@@ -1156,7 +1124,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       const item = renderList[i];
       const hasTodayData = item && ((item.volume || '').toString().trim() !== '' || (item.yestVolume || '').toString().trim() !== '');
       const isBoughtInherited = _obsBoughtSet.has(stockName) && hasTodayData;
-      // 打* 的正式成员永不隐藏（同上，与弱转强分支口径一致）
+      // 打* 的正式成员永不隐藏（与其它折叠观察组的分支口径一致）
       if (!matchesToday && !isBoughtInherited && !_isFormalTodayMember(stockName)) hiddenObsIndices.push(i);
     });
     obsIndices = [];
@@ -1289,19 +1257,21 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     //   ⛔ 只读、不请求、不落库 —— 数据由 ensureDragonRangePct 异步发布（失效由 incremental-view 的
     //      dragon= 指纹保证）。
     sortByRangePctEnabled: !!sortState.byRangePct,
-    rangePctMap: sortState.byRangePct ? getDragonRangePct(currentDate) : null,
+    rangePctMap: sortState.byRangePct ? _range10MapFor() : null,
     // [RANGE20 2026-10-19] 「20日涨幅」toggle：同款只读入口，数据源换成 range20.js 的会话内存 Map。
     //   ⛔ 同样只读、本层不请求（取数由 useAuctionBoard 的 watch 触发 ensureRange20）；
     //      失效由 incremental-view 的 `range20=` / `rp20=` 指纹保证。
     sortByRangePct20Enabled: !!sortState.byRangePct20,
-    rangePct20Map: sortState.byRangePct20 ? getRange20Pct(currentDate) : null,
+    rangePct20Map: sortState.byRangePct20 ? _range20MapFor() : null,
     // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」的元数据（股票名 -> {pct, days}）与本轮真正补进来的名单。
     //   ⚠️ 与上面的 rangePct20Map 不是一回事：那个只覆盖「屏幕上已有的 41 行」且只在 toggle 打开时有值；
     //   这里覆盖「近 20 日曾经上榜、今天不在列表」的补位行，且【恒有值】（它就是这些行存在的理由）。
     range20LeaderMeta: _range20Meta,
     range20LeaderSet: _range20Names,
-    sortByWeakStrongEnabled: sortState.byWeakStrong,
-    weakStrongSet: weakStrongSet
+    // ★★ [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] 当前这两个涨幅列用的是哪套口径 —— 传给行组件，
+    //   让悬停文案写明「竞价口径（9:26）」而不是让用户自己猜（§21：模板零计算，判定在这里做完）。
+    //   ⚠️ 只影响文案；选值已经在上面 rangePctMap / rangePct20Map 一处定掉（§6 不加第二个分支点）。
+    sortByAuctionLegEnabled: !!sortState.byAuctionLeg
   };
   // [DRAGON-GROUP 2026-09-14] 最终渲染顺序 = 龙头组 → 观察组 → 常规组（龙头组排最前，需求 3）。
   // [RANGE20-TOP5 2026-10-19] 20日补位区块插在【龙头组之后、观察组之前】：
@@ -1480,7 +1450,6 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     //   的 ready 标志表达，视图层不需要区分：没得补就是不渲染区块）。
     range20LeaderIndices,
     hiddenObsIndices,
-    weakStrongSet,
     stats: {
       todayStrength,
       yesterdayStrength,

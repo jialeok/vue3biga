@@ -199,7 +199,7 @@ defineExpose({
 /* [TWO-MODES 2026-10-02] ⛔ .auction-item.parallel-match 绿色边条已删（平行并入竞/昨，无 class 产出方，§16） */
 .auction-item.jing-yest-match { box-shadow: inset 4px 0 0 #3b82f6; }
 /* [RANGE-PCT 2026-10-14] ⛔ .auction-item.three-day-jing-die 已删：「三天竞跌」下线后无 class 产出方（§16） */
-.auction-item.weak-strong { box-shadow: inset 4px 0 0 #f59e0b; }
+/* [AUCTION-LEG-TOGGLE 2026-10-25] ⛔ .auction-item.weak-strong 已删：「弱转强」toggle 下线，无 class 产出方（§16） */
 /* [FEAT 2026-08-18] 双击表头搜索 → 匹配行外框圈选（不要背景色，只要低调灰色外框）。
    行 div 类为 auction-item；用 box-shadow inset 模拟内边框，不影响布局、不被相邻行遮挡；
    放在状态类之后确保覆盖 sold/bought/selected 等的 box-shadow（同特异性同 important，后定义胜出）。 */
@@ -599,7 +599,7 @@ defineExpose({
 /* [TWO-MODES 2026-10-02] ⛔ .auction-topic-row.parallel-match 绿色边条已删（同 .auction-item.parallel-match，§16） */
 .auction-topic-row.jing-yest-match { box-shadow: inset 4px 0 0 #3b82f6; }
 /* [RANGE-PCT 2026-10-14] ⛔ .auction-topic-row.three-day-jing-die 已删（「三天竞跌」整体下线，§16） */
-.auction-topic-row.weak-strong { box-shadow: inset 4px 0 0 #f59e0b; }
+/* [AUCTION-LEG-TOGGLE 2026-10-25] ⛔ .auction-topic-row.weak-strong 已删（同 .auction-item.weak-strong，§16） */
 .auction-topic-stock {
   flex: 0 0 75px;
   font-size: 13px;

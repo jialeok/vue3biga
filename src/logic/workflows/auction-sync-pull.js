@@ -179,7 +179,7 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
                 // 若新表不可用或为空，保留本地数据（不清空）
                 // 【改造前】await pullAuctionFromTable() 无条件全表拉三张表 = 23 次串行 HTTP ≈ 25~40 秒，
                 // 早盘 9:25 打开页面整段白屏。现在改为两阶段（详见 src/logic/auction/auction-pull-window.js）：
-                //   ① 阻塞：只拉最近 AUCTION_RECENT_WINDOW_DAYS 个自然日（覆盖趋势图/弱转强/竞昨全部诉求）
+                //   ① 阻塞：只拉最近 AUCTION_RECENT_WINDOW_DAYS 个自然日（覆盖趋势图/竞昨/竞价口径反解全部诉求）
                 //   ② 后台：更早的历史在空闲时补齐，完成后再 emit 一次刷新
                 // 若新表不可用或为空，保留本地数据（不清空）
                 try {

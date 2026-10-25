@@ -52,8 +52,16 @@ import { recoverAuctionLeg } from './range-window.js';
 import { RANGE20_LEADER_MIN_LEGS } from './range20-leaders.js';
 import { getBoardKind, BOARD_MAIN } from './limit-up.js';
 
-/** 会话内按日期缓存：date -> Map<股票名, {pct, days, rank}>（引用稳定 ⇒ 不白触发下游重算，§19） */
-const _cache = new Map();
+// ══ ★★ [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] 现在有【两个消费者】，共用同一次取数 ══════════
+//   ① 买点侧的「9:26 口径总龙名次」—— 要 Map<名, {pct, days, rank}>（只主板、只够天数的票）；
+//   ② 早盘竞价看板的「竞价口径」toggle —— 要【全市场】的 Map<名, {pct, days}>（不筛主板：
+//      那一列本来就是「全表排序 + 逐行标数值」，创业板也要有数，否则开关一开这些行就空了）。
+//   ⇒ 缓存分两层：底层永远是【全市场 pct Map】（同一次请求、同一份反解，§6 一把尺子），
+//      名次 Map 由它【派生】并另缓存一份（引用稳定 ⇒ 不白触发下游重算，§19）。
+/** date -> Map<股票名, {pct, days}> | null（null = 判不出，与原实现同口径） */
+const _cachePct = new Map();
+/** date -> Map<股票名, {pct, days, rank}>（从 _cachePct 派生，按日期记忆） */
+const _cacheRank = new Map();
 /** 单飞：date -> Promise<Map|null> */
 const _inflight = new Map();
 
@@ -105,9 +113,9 @@ export function rankMainBoardByPct(rows, opts) {
 }
 
 /**
- * 取数 + 反解 + 排队次。
+ * 取数 + 反解（→ 【全市场】pct Map，⛔ 不筛主板、⛔ 不筛天数）。
  * @param {string} date
- * @returns {Promise<Map<string,{pct:number,days:number,rank:number}>|null>}
+ * @returns {Promise<Map<string,{pct:number,days:number}>|null>}
  *          null = 加速层不可用（判不出，§10）
  */
 async function _fetch(date) {
@@ -127,7 +135,7 @@ async function _fetch(date) {
     if (n && !mByName.has(n)) mByName.set(n, r);
   });
 
-  const items = [];
+  const out = new Map();
   rows.forEach(function(v, name) {
     const nm = String(name || '').trim();
     if (!nm || !v) return;
@@ -143,9 +151,59 @@ async function _fetch(date) {
         if (rec !== null) pct = rec;
       }
     }
-    items.push({ name: nm, pct: pct, days: Number(v.days) || 0 });
+    out.set(nm, { pct: pct, days: Number(v.days) || 0 });
   });
+  return out;
+}
+
+/**
+ * 单飞 + 缓存地拿到某日的【全市场】竞价口径 20 日涨幅 Map。
+ * ⚠️ null 会被缓存（「加速层不可用」是稳定条件，与改本函数之前的实现逐字一致）；
+ *    【抛错不缓存】（§10：一次失败不能被记成「这天判不出」的永久结论）。
+ * @param {string} d
+ * @returns {Promise<Map<string,{pct:number,days:number}>|null>}
+ */
+function _ensure(date) {
+  const d = String(date || '').trim();
+  if (!d) return Promise.resolve(null);
+  const hit = _cachePct.get(d);
+  if (hit !== undefined) return Promise.resolve(hit);
+  const fly = _inflight.get(d);
+  if (fly) return fly;
+  const p = _fetch(d).then(function(map) {
+    _cachePct.set(d, map);
+    _cacheRank.delete(d);           // 底层换了 ⇒ 派生的名次作废
+    return map;
+  }).catch(function() {
+    return null;                    // §10：读失败 ⇒ 判不出（⛔ 不写缓存）
+  }).finally(function() {
+    if (_inflight.get(d) === p) _inflight.delete(d);
+  });
+  _inflight.set(d, p);
+  return p;
+}
+
+/** 从全市场 pct Map 派生出「只主板 + 够天数」的名次 Map（判定全在 rankMainBoardByPct，§6） */
+function _rankFrom(pctMap) {
+  const items = [];
+  pctMap.forEach(function(v, name) { items.push({ name: name, pct: v.pct, days: v.days }); });
   return rankMainBoardByPct(items, { minDays: RANGE20_LEADER_MIN_LEGS });
+}
+
+/**
+ * ★★ [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] 读取某日【9:26 竞价口径】的 20 日涨幅（**全市场**）。
+ *
+ * 用途：早盘竞价看板「竞价口径」toggle 打开时，「20日涨幅」列改为显示 / 排序这一份。
+ * 与下方 `readAuctionLegRange20Rank` 【同一次取数、同一份反解】—— 只是不做主板 / 天数筛选。
+ *
+ * ⚠️ 与 `getRange20Pct(date)`（收盘口径，range20.js 现算）的差别只有【今天那一根腿】：
+ *   那边是收盘涨幅复利，这边把今天那根腿换回 9:25 竞价涨幅 ⇒ 就是 9:26 那一刻看到的 20 日涨幅。
+ *
+ * @param {string} date YYYY-MM-DD（展示日）
+ * @returns {Promise<Map<string,{pct:number,days:number}>|null>} null = 判不出（调用方据此不显示数值，§10）
+ */
+export function readAuctionLegRange20Pct(date) {
+  return _ensure(date);
 }
 
 /**
@@ -158,25 +216,19 @@ async function _fetch(date) {
 export function readAuctionLegRange20Rank(date) {
   const d = String(date || '').trim();
   if (!d) return Promise.resolve(null);
-  const hit = _cache.get(d);
-  if (hit !== undefined) return Promise.resolve(hit);
-  const fly = _inflight.get(d);
-  if (fly) return fly;
-  const p = _fetch(d).then(function(map) {
-    _cache.set(d, map);
-    return map;
-  }).catch(function() {
-    // §10：读失败 ⇒ 判不出；⛔ 不写缓存（一次失败不能被记成「这天判不出」的永久结论）
-    return null;
-  }).finally(function() {
-    if (_inflight.get(d) === p) _inflight.delete(d);
+  return _ensure(d).then(function(pctMap) {
+    if (!pctMap) return null;                       // null = 判不出
+    const hit = _cacheRank.get(d);
+    if (hit) return hit;
+    const rankMap = _rankFrom(pctMap);
+    _cacheRank.set(d, rankMap);
+    return rankMap;
   });
-  _inflight.set(d, p);
-  return p;
 }
 
 /** 清空会话缓存（仅供测试；⛔ 正常业务流程无需调用） */
 export function clearAuctionLegRange20Cache() {
-  _cache.clear();
+  _cachePct.clear();
+  _cacheRank.clear();
   _inflight.clear();
 }
