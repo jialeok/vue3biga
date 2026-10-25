@@ -68,13 +68,41 @@
             overscroll-behavior: contain;
         }
 
+        /* ★★ [TOOLBAR-LAYOUT 2026-10-25 用户口径] 工具栏版式：**永远两行，绝不换行出第三行**。
+           用户原话：「toggle排版不美观，一字toggle跑到了第二行成了单独一行……重新布局下，
+             还是要两行就可以了，这样更加美观。只保留两行和原来一样。」
+
+           ⚠️ 这里曾经写的是 grid（repeat(4,1fr) + justify-items:end），但它【从未生效】：
+             AuctionBoard.vue 全局 style 里另有一份同名 `.auction-toolbar`
+             （display:flex + flex-wrap:wrap + gap:12px，是按钮/表格那套老单文件视图的遗留物），
+             而那两个文件打进不同分包（前者 index-*.css、后者 DashboardView-*.css），
+             分包 CSS 后加载 ⇒ 同特异性下覆盖本文件 ⇒ 实际生效的一直是 flex + wrap。
+             结果行内宽度一旦超限，最后一个开关（一字）就被折到下一行【单独占一行】。
+           ⇒ 已删除 AuctionBoard.vue 里那份重复定义（§6 单一来源），版式只在这里定义。
+           ⇒ 用 `flex-wrap: nowrap`：一行放不下就横向溢出（极端窄屏才会），⛔ 绝不折行，
+             这样「两行」是结构上保证的，不取决于机型宽度 / 字数。
+           ⇒ 第一行 4 个开关（全开 / 竞价口径 / 20日涨幅 / 一字），第二行 4 个
+             （竞/昨 / 竞/昨占比 / 十日涨幅 / 题材），与用户要的「只保留两行」一致。 */
         .auction-toolbar {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            justify-items: end;
+            display: flex;
+            flex-wrap: nowrap;
             align-items: center;
-            gap: 4px;
-            padding: 8px 8px;
+            justify-content: flex-start;
+            gap: 8px;
+            padding: 8px 12px;
+            background: #f8f7ff;
+            border-bottom: 1px solid #ede9fe;
+        }
+
+        /* 第二行工具栏：放置"竞/昨"等后续新增开关，避免挤压第一行。
+           [TOOLBAR-LAYOUT 2026-10-25] 与第一行同一套 nowrap 口径（同上，⛔ 不许回退成 wrap）。 */
+        .auction-toolbar-row2 {
+            display: flex;
+            flex-wrap: nowrap;
+            align-items: center;
+            justify-content: flex-start;
+            gap: 8px;
+            padding: 6px 12px;
             background: #f8f7ff;
             border-bottom: 1px solid #ede9fe;
         }
@@ -114,18 +142,6 @@
         .auction-help-popup h4 { color: #93c5fd; margin: 10px 0 4px 0; font-size: 13px; }
         .auction-help-popup ul { margin: 0 0 8px 0; padding-left: 18px; }
         .auction-help-popup li { margin-bottom: 2px; }
-
-        /* 第二行工具栏：放置"竞/昨"等后续新增开关，避免挤压第一行 */
-        .auction-toolbar-row2 {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            justify-items: end;
-            align-items: center;
-            gap: 4px;
-            padding: 6px 8px;
-            background: #f8f7ff;
-            border-bottom: 1px solid #ede9fe;
-        }
 
         .auction-toggle-item {
             display: flex;

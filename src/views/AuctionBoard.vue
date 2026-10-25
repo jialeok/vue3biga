@@ -290,37 +290,15 @@ defineExpose({
   flex-direction: column;
   height: 100%;
 }
-.auction-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
-  border-bottom: 1px solid #e5e7eb;
-  flex-wrap: wrap;
-}
-.toolbar-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: #374151;
-  cursor: pointer;
-}
-.toolbar-btn {
-  padding: 4px 10px;
-  border: 1px solid #d1d5db;
-  border-radius: 4px;
-  background: #fff;
-  font-size: 12px;
-  cursor: pointer;
-}
-.toolbar-search {
-  padding: 4px 8px;
-  border: 1px solid #d1d5db;
-  border-radius: 4px;
-  font-size: 12px;
-  width: 120px;
-}
+/* ⛔ [TOOLBAR-LAYOUT 2026-10-25 用户口径] 这里原有 `.auction-toolbar { display:flex; flex-wrap:wrap; gap:12px }`
+   以及它的三个死伴生规则 `.toolbar-toggle` / `.toolbar-btn` / `.toolbar-search`，已【整段删除】：
+     · 后三个 class 在全项目里【零使用】（只剩这几行定义自己）⇒ §16 死代码；
+     · `.auction-toolbar` 是【第二个定义】：auction-board.css 里已经有一份（那才是权威版式）。
+       本文件是按钮/表格那套老单文件视图的遗留物，且它属于路由分包 DashboardView-*.css，
+       而 auction-board.css 属 index-*.css ⇒ 分包 CSS 后加载、同特异性下【覆盖掉】权威版式，
+       于是 4 个开关按 flex-wrap:wrap 排 ⇒ 「一字」被挤到第二行单独占一行（用户报的排版问题）。
+       根因是"同一 class 两处定义、谁生效取决于打包顺序"，⛔ 不是宽度不够，调字号/文案治不了本。
+     ⇒ 版式统一由 src/assets/css/auction-board.css 的 .auction-toolbar / .auction-toolbar-row2 决定（§6 单一来源）。 */
 .auction-stats-bar {
   display: flex;
   gap: 16px;
@@ -503,14 +481,9 @@ defineExpose({
   font-size: 10px;
 }
 /* ===== 第二页题材分组样式（复刻原始 HTML） ===== */
-.auction-toolbar-row2 {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 6px 12px;
-  border-bottom: 1px solid #e5e7eb;
-  flex-wrap: wrap;
-}
+/* ⛔ [TOOLBAR-LAYOUT 2026-10-25 用户口径] 这里原有 `.auction-toolbar-row2 { flex; gap:12px; flex-wrap:wrap }`，
+   与上面被删的 `.auction-toolbar` 是同一批遗留物、同一个病根（本文件在分包 DashboardView-*.css 里后加载
+   ⇒ 覆盖 auction-board.css 的权威版式）⇒ 第二行同样会折行。已删除，版式只由 auction-board.css 决定。 */
 .auction-header-change { flex: 0.6; text-align: center; }
 .auction-topic-group {
   margin-bottom: 12px;

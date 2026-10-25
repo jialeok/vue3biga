@@ -4,8 +4,12 @@
 -->
 <template>
   <div class="auction-toolbar">
+    <!-- [TOOLBAR-LAYOUT 2026-10-25 用户口径] 文案「全部展开」→「全开」（用户：「你把前面的全展开改成，
+         全开，名称缩短，功能不变」）。⚠️ 只改文案，onExpandAllChange → expandAll / collapseAll 一字未动。
+         缩短 2 个字是为了给这一行腾出宽度（同行还有 竞价口径 / 20日涨幅 / 一字）——
+         但真正保证「两行不折行」的是 auction-board.css 里的 flex-wrap:nowrap，不是靠省字。 -->
     <div class="auction-toggle-item">
-      <span class="auction-toggle-label">全部展开</span>
+      <span class="auction-toggle-label">全开</span>
       <label class="auction-toggle-switch">
         <input
           type="checkbox"

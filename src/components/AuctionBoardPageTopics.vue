@@ -8,8 +8,10 @@
     class="auction-scroll-container"
   >
     <div class="auction-toolbar">
+      <!-- [TOOLBAR-LAYOUT 2026-10-25 用户口径] 与第一页保持同一个文案「全开」（原「全部展开」），
+           只改文案，p2ToggleExpandAll 一字未动。 -->
       <div class="auction-toggle-item">
-        <span class="auction-toggle-label">全部展开</span>
+        <span class="auction-toggle-label">全开</span>
         <label class="auction-toggle-switch">
           <input
             type="checkbox"
