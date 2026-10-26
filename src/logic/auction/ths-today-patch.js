@@ -64,6 +64,11 @@ function _isEmpty(v) {
   return v === null || v === undefined || String(v).trim() === '';
 }
 
+/** 各字段补齐计数（返回对象口径固定，便于 UI 与日志稳定消费） */
+function _emptyFilled() {
+  return { pct: 0, vol: 0, ratio: 0, turnover: 0 };
+}
+
 /** 拉竞价快照（分批），返回 { items, timestamp, dataStatus } */
 async function _fetchSnapshot(thscodes) {
   const out = [];
@@ -90,7 +95,7 @@ async function _fetchSnapshot(thscodes) {
  *
  * @param {string} [date] 目标日（缺省 = 北京今天）；⛔ 只接受今天
  * @param {{onProgress?:(stage:string,done:number,total:number)=>void, requestTimeoutMs?:number}} [opts]
- * @returns {Promise<{ok:boolean, date:string, roster:number, patchedRows:number, filled:{pct:number,vol:number,ratio:number}, reason?:string, logs:string[]}>}
+ * @returns {Promise<{ok:boolean, date:string, roster:number, patchedRows:number, filled:{pct:number,vol:number,ratio:number,turnover:number}, reason?:string, logs:string[]}>}
  */
 export async function patchTodayAuctionFromThs(date, opts) {
   const o = opts || {};
@@ -106,7 +111,7 @@ export async function patchTodayAuctionFromThs(date, opts) {
   const d = date || today;
   if (d !== today) {
     // ⛔ 只补今天：历史日有专门的按天补拉链路，不走这条"临时救急"
-    return { ok: false, date: d, roster: 0, patchedRows: 0, filled: { pct: 0, vol: 0, ratio: 0 }, reason: '只允许补今天（' + today + '），收到 ' + d, logs: logs };
+    return { ok: false, date: d, roster: 0, patchedRows: 0, filled: _emptyFilled(), reason: '只允许补今天（' + today + '），收到 ' + d, logs: logs };
   }
 
   const fly = _inflight.get(d);
@@ -117,7 +122,7 @@ export async function patchTodayAuctionFromThs(date, opts) {
     const roster = await readAuctionRoster(d);
     if (roster.length === 0) {
       log('名单为空（auction_watchlist ' + d + ' 无行）⇒ 无可补对象');
-      return { ok: false, date: d, roster: 0, patchedRows: 0, filled: { pct: 0, vol: 0, ratio: 0 }, reason: '当天名单为空', logs: logs };
+      return { ok: false, date: d, roster: 0, patchedRows: 0, filled: _emptyFilled(), reason: '当天名单为空', logs: logs };
     }
     // 只有 6 位代码的才能查上游（§40 不猜代码）
     const targets = roster
@@ -125,7 +130,7 @@ export async function patchTodayAuctionFromThs(date, opts) {
       .filter(function(t) { return t.stock && /^\d{6}$/.test(t.code); });
     log('名单 ' + roster.length + ' 只，其中带 6 位代码 ' + targets.length + ' 只');
     if (targets.length === 0) {
-      return { ok: false, date: d, roster: roster.length, patchedRows: 0, filled: { pct: 0, vol: 0, ratio: 0 }, reason: '名单没有可用代码', logs: logs };
+      return { ok: false, date: d, roster: roster.length, patchedRows: 0, filled: _emptyFilled(), reason: '名单没有可用代码', logs: logs };
     }
 
     // ② 库里现状 —— 决定"哪些字段还空着"
@@ -187,7 +192,7 @@ export async function patchTodayAuctionFromThs(date, opts) {
     // ⑤ 组装：只放「库里为空 + 上游拿到了」的字段
     const ymd = d.replace(/-/g, '');
     const rows = [];
-    const filled = { pct: 0, vol: 0, ratio: 0 };
+    const filled = _emptyFilled();
     targets.forEach(function(t) {
       const cur = byStock.get(t.stock) || null;
       const keep = pctMap ? pctMap.get(t.stock) : null;
@@ -238,6 +243,16 @@ export async function patchTodayAuctionFromThs(date, opts) {
         const v = fmtRatio(raw);
         if (v !== null) { row.auc_vol_ratio = v; filled.ratio++; }
       }
+      // 真换手率 ← snapshot.auction_turnover_pct（量纲换算已交叉验证，见
+      //   workers/bidding-auto-fetch/data/fuyao-api.js 的 [SNAPSHOT-EXTRAS] 注记）
+      // ⛔ um_vol / open_bid_pct 不在同花顺快照能力内（auction_unmatched 带符号，
+      //    与库内 um_vol 语义不同源）⇒ 按 §40 留空，绝不猜。
+      if (!cur || _isEmpty(cur.auc_turnover)) {
+        const raw = snap && snap.auction_turnover_pct != null && isFinite(Number(snap.auction_turnover_pct))
+          ? Number(snap.auction_turnover_pct) : null;
+        const v = fmtRatio(raw);
+        if (v !== null) { row.auc_turnover = v; filled.turnover++; }
+      }
 
       // 没有任何一个字段要补 ⇒ 不提交（省请求，也让"全部已完整"能被观察到）
       const hasPayload = Object.keys(row).some(function(key) {
@@ -254,7 +269,7 @@ export async function patchTodayAuctionFromThs(date, opts) {
 
     // ⑥ 写库（只 upsert，⛔ 不 delete）
     const written = await upsertAuctionMetrics(rows);
-    log('✅ 补写 ' + written + ' 行（其中涨幅 ' + filled.pct + '、竞价量 ' + filled.vol + '、量比 ' + filled.ratio + '）');
+    log('✅ 补写 ' + written + ' 行（其中涨幅 ' + filled.pct + '、竞价量 ' + filled.vol + '、量比 ' + filled.ratio + '、换手 ' + filled.turnover + '）');
     report('done', written, rows.length);
     return { ok: true, date: d, roster: roster.length, patchedRows: written, filled: filled, logs: logs };
   })().finally(function() {

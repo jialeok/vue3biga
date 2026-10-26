@@ -56,7 +56,7 @@ function setUpstream(over) {
     timestamp: o.snapTs || TS_TODAY,
     data_status: o.snapStatus || 'final',
     item: o.snapItems || [
-      { thscode: '600001.SH', auction_pct: 3.21, auction_volume: 38830.49, auction_volume_ratio: 12.5 },
+      { thscode: '600001.SH', auction_pct: 3.21, auction_volume: 38830.49, auction_volume_ratio: 12.5, auction_turnover_pct: 2.271 },
     ],
   });
 }
@@ -154,6 +154,10 @@ describe('patchTodayAuctionFromThs — 组装（库里 0 行的场景 = 今天�
     expect(row.yest_volume).toBe('6137');        // 前一交易日量 → 万股
     expect(row.volume).toBe('388');              // 38830.49 手 ÷100 = 388 万股
     expect(row.auc_vol_ratio).toBe('12.50');
+    expect(row.auc_turnover).toBe('2.27');       // ← auction_turnover_pct，两位小数
+    // ⛔ um_vol / open_bid_pct 不在同花顺快照能力内 ⇒ 必须留空（§40 不猜）
+    expect(row.um_vol).toBeUndefined();
+    expect(row.open_bid_pct).toBeUndefined();
   });
 
   it('新行如实标注来源 ths-patch（⛔ 不冒充 worker）', async () => {
@@ -183,13 +187,25 @@ describe('patchTodayAuctionFromThs — ⛔ 只填空，已有值不覆盖（幂�
   it('所有字段都已完整 ⇒ 一次写库都不发，reason="已完整"', async () => {
     readAuctionMetrics.mockResolvedValue([{
       stock: '票A', change_pct: '+5.00%', auc_pct_chg: '+2.00%',
-      volume: '100', yest_volume: '5000', auc_vol_ratio: '3.00',
+      volume: '100', yest_volume: '5000', auc_vol_ratio: '3.00', auc_turnover: '2.27',
     }]);
     const r = await patchTodayAuctionFromThs(TODAY);
     expect(r.ok).toBe(true);
     expect(r.patchedRows).toBe(0);
     expect(r.reason).toContain('已完整');
     expect(upsertAuctionMetrics).not.toHaveBeenCalled();
+  });
+
+  it('auc_turnover 已有值 ⇒ 不覆盖（它也是"只填空"的一员）', async () => {
+    // 留一个空字段（auc_pct_chg）保证这一行确实会提交，才能观察到"换手没被覆盖"
+    readAuctionMetrics.mockResolvedValue([{
+      stock: '票A', change_pct: '+5.00%', auc_pct_chg: '',
+      volume: '100', yest_volume: '5000', auc_vol_ratio: '3.00', auc_turnover: '9.99',
+    }]);
+    await patchTodayAuctionFromThs(TODAY);
+    const row = upsertAuctionMetrics.mock.calls[0][0][0];
+    expect(row.auc_turnover).toBeUndefined();    // 库里 9.99 保留，不写 2.27
+    expect(row.auc_pct_chg).toBe('+3.21%');      // 同一次提交里空字段照补
   });
 });
 
