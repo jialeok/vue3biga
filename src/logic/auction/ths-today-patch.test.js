@@ -153,7 +153,9 @@ describe('patchTodayAuctionFromThs — 组装（库里 0 行的场景 = 今天�
     expect(row.auc_pct_chg).toBe('+3.21%');      // 快照终态优先于 K线 open(-2.5)
     expect(row.yest_volume).toBe('6137');        // 前一交易日量 → 万股
     expect(row.volume).toBe('388');              // 38830.49 手 ÷100 = 388 万股
-    expect(row.auc_vol_ratio).toBe('12.50');
+    // ⛔ 竞价量比(auc_vol_ratio) 不补：同花顺 auction_volume_ratio 与猫爪 auc_vol_ratio
+    //   口径不同源，补上去就是错数据（用户 2026-10-26：「额度用完了就留空」）
+    expect(row.auc_vol_ratio).toBeUndefined();
     expect(row.auc_turnover).toBe('2.27');       // ← auction_turnover_pct，两位小数
     // ⛔ um_vol / open_bid_pct 不在同花顺快照能力内 ⇒ 必须留空（§40 不猜）
     expect(row.um_vol).toBeUndefined();
@@ -242,7 +244,9 @@ describe('patchTodayAuctionFromThs — 快照双重日期闸门（防把上一�
     const row = upsertAuctionMetrics.mock.calls[0][0][0];
     expect(row.change_pct).toBeUndefined();
     expect(row.volume).toBe('388');
-    expect(row.auc_vol_ratio).toBe('12.50');
+    // ⛔ 竞价量比(auc_vol_ratio) 不补：同花顺 auction_volume_ratio 与猫爪 auc_vol_ratio
+    //   口径不同源，补上去就是错数据（用户 2026-10-26：「额度用完了就留空」）
+    expect(row.auc_vol_ratio).toBeUndefined();
   });
 
   it('快照腿失败 ⇒ 只降级该腿，K 线腿仍然补', async () => {

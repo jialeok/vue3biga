@@ -6,7 +6,8 @@
 //      今天 09:25 两把 key 一启动就 403 ⇒ market_metrics 当天 0 行 ⇒ 全站看板"加载中"。
 //      同花顺（fuyao）通道**免费、不限量**，项目里本来就有两条腿：
 //        · K 线 historical  → 涨幅 / 开盘涨幅(=9:25 竞价成交价) / 昨日成交量
-//        · 竞价快照 snapshot?stage=final → 竞价量 / 竞价涨幅 / 竞价量比（仅当天有）
+//        · 竞价快照 snapshot?stage=final → 竞价量 / 竞价涨幅 / 真换手率（仅当天有）
+//          ⛔ 竞价量比（auc_vol_ratio）不在其列 —— 见下方「绝对不许用同花顺补」
 //      本模块把它们组装成「补今天的 market_metrics」，一次性让所有看板恢复。
 //
 // 【与 logic/auction/trend-patch.js 的区别（⛔ 别搞混）】
@@ -36,7 +37,8 @@ const _inflight = new Map();
 // ── 格式化：与库内既有行的字符串口径逐字一致（见 2026-10-23 真实样例行） ──────────────
 //   change_pct / auc_pct_chg : "+10.00%" / "-3.77%"（带符号 + 两位小数 + %）
 //   volume / yest_volume     : "612" / "6137"（整数，单位万股）
-//   auc_vol_ratio / auc_turnover : "55.18" / "2.27"（两位小数，无单位）
+//   auc_turnover                 : "2.27"（两位小数，无单位）
+//   ⛔ auc_vol_ratio 不在此处格式化的范围内（同花顺口径不对，本模块永不补它）
 //
 // ⚠️ 三个函数都先把「空串 / 纯空白」判成缺失 —— 否则 Number('') === 0 会把"没有值"
 //    写成 "0.00%"/"0"，那是**编造数据**（§10 宁缺勿错）。
@@ -66,7 +68,7 @@ function _isEmpty(v) {
 
 /** 各字段补齐计数（返回对象口径固定，便于 UI 与日志稳定消费） */
 function _emptyFilled() {
-  return { pct: 0, vol: 0, ratio: 0, turnover: 0 };
+  return { pct: 0, vol: 0, turnover: 0 };
 }
 
 /** 拉竞价快照（分批），返回 { items, timestamp, dataStatus } */
@@ -95,7 +97,7 @@ async function _fetchSnapshot(thscodes) {
  *
  * @param {string} [date] 目标日（缺省 = 北京今天）；⛔ 只接受今天
  * @param {{onProgress?:(stage:string,done:number,total:number)=>void, requestTimeoutMs?:number}} [opts]
- * @returns {Promise<{ok:boolean, date:string, roster:number, patchedRows:number, filled:{pct:number,vol:number,ratio:number,turnover:number}, reason?:string, logs:string[]}>}
+ * @returns {Promise<{ok:boolean, date:string, roster:number, patchedRows:number, filled:{pct:number,vol:number,turnover:number}, reason?:string, logs:string[]}>}
  */
 export async function patchTodayAuctionFromThs(date, opts) {
   const o = opts || {};
@@ -158,7 +160,8 @@ export async function patchTodayAuctionFromThs(date, opts) {
       log('❌ K 线腿失败（涨幅/竞价涨幅/昨量本次补不上）: ' + (e && e.message || e));
     }
 
-    // ④ 快照腿：竞价量 / 竞价涨幅(终态) / 竞价量比 —— 仅当天有，必须过双重闸门
+    // ④ 快照腿：竞价量 / 竞价涨幅(终态) / 真换手率 —— 仅当天有，必须过双重闸门
+    //    ⛔ 竞价量比（auc_vol_ratio）刻意不在其中：同花顺口径与猫爪不同源，补了就是错数据。
     report('snapshot', 0, targets.length);
     let snapByName = new Map();
     try {
@@ -167,7 +170,7 @@ export async function patchTodayAuctionFromThs(date, opts) {
         ? new Date(snap.timestamp + 8 * 3600 * 1000).toISOString().slice(0, 10) : '';
       if (snap.dataStatus !== 'final' || snapYmd !== d) {
         // 闸门拒绝：⛔ 绝不把上一交易日的竞价量写到今天头上
-        log('⚠️ 快照闸门拒绝（data_status=' + snap.dataStatus + ' 服务端日=' + snapYmd + ' 目标日=' + d + '）⇒ 竞价量/量比本次不补');
+        log('⚠️ 快照闸门拒绝（data_status=' + snap.dataStatus + ' 服务端日=' + snapYmd + ' 目标日=' + d + '）⇒ 竞价量/换手本次不补');
       } else {
         // 双键登记：响应里的 thscode 带 .SH/.SZ 后缀，裸码也要能命中
         const nameOf = {};
@@ -186,7 +189,7 @@ export async function patchTodayAuctionFromThs(date, opts) {
         log('快照命中 ' + snapByName.size + '/' + targets.length + ' 只（data_status=final，服务端日 ' + snapYmd + '）');
       }
     } catch (e) {
-      log('❌ 快照腿失败（竞价量/量比本次补不上）: ' + (e && e.message || e));
+      log('❌ 快照腿失败（竞价量/换手本次补不上）: ' + (e && e.message || e));
     }
 
     // ⑤ 组装：只放「库里为空 + 上游拿到了」的字段
@@ -236,13 +239,23 @@ export async function patchTodayAuctionFromThs(date, opts) {
         const v = fmtIntVol(raw);
         if (v !== null) { row.volume = v; filled.vol++; }
       }
-      // 竞价量比
-      if (!cur || _isEmpty(cur.auc_vol_ratio)) {
-        const raw = snap && snap.auction_volume_ratio != null && isFinite(Number(snap.auction_volume_ratio))
-          ? Number(snap.auction_volume_ratio) : null;
-        const v = fmtRatio(raw);
-        if (v !== null) { row.auc_vol_ratio = v; filled.ratio++; }
-      }
+      // ⛔⛔ 竞价量比（auc_vol_ratio）【绝对不许用同花顺补】—— 2026-10-26 用户口径：
+      //   「早盘竞价看板的股票中的竞价量比统计不对吧，这个是同花顺统计不出来的，
+      //     是猫爪数据才可以统计出来，现在的竞价量比就很小怎么可能，导致题材量比选股失真，
+      //     这个要用猫爪数据接口的，如果额度用完了，就留空，就行了，不要强行补上去。」
+      //
+      //   为什么必须留空而不是"尽力补"：
+      //     同花顺快照里的 auction_volume_ratio 与猫爪（numcat）的 auc_vol_ratio
+      //     **不是同一个指标**，两者分母口径不同（同花顺按自身统计窗口，猫爪按昨日成交量）。
+      //     数值会系统性偏小 ⇒ 题材量比看板按「题材平均竞价量比」排序、决策看板把
+      //     auc_vol_ratio 当【选票依据】（logic/decision/decision-rules.js:67）⇒ 直接选错股。
+      //     宁可空着让 UI 显示「-」，也不能填一个看起来像真的错数字（§10 宁缺勿错 / §40 不猜）。
+      //   ⇒ 本字段的唯一合法来源是猫爪；额度用完就空着，等猫爪下次补漏（worker 侧负责）。
+      //
+      //   （历史教训：本文件最初照抄了 workers/bidding-auto-fetch/data/fuyao-api.js 里
+      //     「auc_vol_ratio ← auction_volume_ratio」这条换算，那条注记写的是"量纲已交叉验证"，
+      //     但两个平台的分子分母并不是同一件事，量纲对不代表口径对。）
+
       // 真换手率 ← snapshot.auction_turnover_pct（量纲换算已交叉验证，见
       //   workers/bidding-auto-fetch/data/fuyao-api.js 的 [SNAPSHOT-EXTRAS] 注记）
       // ⛔ um_vol / open_bid_pct 不在同花顺快照能力内（auction_unmatched 带符号，
@@ -269,7 +282,8 @@ export async function patchTodayAuctionFromThs(date, opts) {
 
     // ⑥ 写库（只 upsert，⛔ 不 delete）
     const written = await upsertAuctionMetrics(rows);
-    log('✅ 补写 ' + written + ' 行（其中涨幅 ' + filled.pct + '、竞价量 ' + filled.vol + '、量比 ' + filled.ratio + '、换手 ' + filled.turnover + '）');
+    log('✅ 补写 ' + written + ' 行（其中涨幅 ' + filled.pct + '、竞价量 ' + filled.vol + '、换手 ' + filled.turnover + '）');
+    log('ℹ️ 竞价量比(auc_vol_ratio) 按口径不补 —— 只认猫爪，额度不足时留空');
     report('done', written, rows.length);
     return { ok: true, date: d, roster: roster.length, patchedRows: written, filled: filled, logs: logs };
   })().finally(function() {
