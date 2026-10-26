@@ -139,19 +139,18 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
                 })
                     .then(function(older) {
                         const n = older ? Object.keys(older).length : 0;
-                        if (n === 0) {
-                            // 空手而归（这 70 天云端本来就没有行）⇒ 没有新索引，不必打扰任何看板
-                            _dbgLog('[AUCTION-PULL] 历史后台补齐：' + olderSince + '~' + until + ' 无新日期，跳过刷新');
-                            return;
-                        }
-                        // ★ [WAKE-CONTRACT 2026-10-26] 必须发，且与「当前展示日」无关。
+                        // ★ [WAKE-CONTRACT 2026-10-26] 必须发，且与「当前展示日」「n 是否为 0」都无关。
                         //   20日涨幅前五要 45 个交易日索引才能算（range20.js#RANGE20_PROBE_DAYS），
                         //   而它只从内存读索引、自己不补拉 ⇒ 本段是它唯一的数据入口。
                         //   漏发这一次 = 题材量比 / 退潮判定永久停在「候选池为空」（本次事故根因）。
+                        //   ⚠️ 为什么不能只在 n > 0 时发：`older` 只统计「有【正式成员】行的日期」，
+                        //      而索引 `state._auctionWatchlistIndex[d]` 是按【拉到行的每一天】回填的。
+                        //      若这段只有影子行（或全是不在正式名单里的行），n 会是 0 但索引其实已经就绪
+                        //      ⇒ 按 n 判会把该发的唤醒漏掉（§10：判不出 ≠ 判出"没有"）。
                         //   ⚠️ 整个会话只发生一次（_olderPullStarted 保证），不是高频刷新。
                         Object.keys(_signalCache).forEach(function(k) { delete _signalCache[k]; });
                         _emit('auction-refresh');
-                        _dbgLog('[AUCTION-PULL] 历史后台补齐完成：再载入 ' + n + ' 天（' + olderSince + '~' + until +
+                        _dbgLog('[AUCTION-PULL] 历史后台补齐完成：再载入 ' + n + ' 天有正式成员的日期（' + olderSince + '~' + until +
                             '，首屏未阻塞）⇒ 已发 auction-refresh 唤醒 20日涨幅前五 / 题材量比 / 退潮判定重算');
                     })
                     .catch(function(e) {
