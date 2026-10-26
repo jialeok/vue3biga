@@ -442,15 +442,38 @@ function _sigOf(rows) {
   return rows.length + '|' + parts.join(',');
 }
 
-/** 发布（内容签名相同 ⇒ 不发布、不 bump version） */
+/**
+ * 发布（内容签名相同 ⇒ 不发布、不 bump version）
+ *
+ * 🔴 [R20-PUB-GUARD 2026-10-26] 守卫**不能**再把 `_state.value.date === date` 当作「跳过发布」的
+ *   前置条件；但也不能干脆删掉——两种情况要分开处理（§22 增量化）：
+ *
+ *   · 内容【变了】（`sig` 与上次不同）      → 正常发布，`version + 1`（消费方必须重算）。
+ *   · 内容【没变】但 `_state.date` 被别的日期顶掉了 → **只把日期拨回来，`version` 不动**。
+ *     为什么：`getRange20Pct(date)` 有 `if (s.date !== date) return null` 的守卫，
+ *     ⇒ `_state.date` 一旦停在旧日期，当前日期整列返回 null（屏幕上一片 `—`）。
+ *     而 `version` 是行缓存指纹（`getRange20FingerprintToken`）的组成部分，只要 `date` 变了
+ *     指纹就已变、消费方本来就会重算 ⇒ **这里再 bump 一次纯属多余**，代价是整块看板重排。
+ *
+ *   实测（2026-10-26 历史日 2026-10-20，云端命中 253 只 / 0 K 线请求）：
+ *     同一份逐字节相同的结果在 60s 内被重复发布 **71 次**（同一秒 2~3 次），
+ *     每次 bump 都让行缓存失效 ⇒ 切完日期后这几秒明显卡顿。
+ */
 function _publish(date, rows) {
   const sig = _sigOf(rows);
-  if (_sig.get(date) === sig && _state.value.date === date) return _state.value.map;
+  const prevSig = _sig.get(date);
+  const sameDate = (_state.value.date === date);
+  const contentChanged = (prevSig !== sig);
+  if (!contentChanged && sameDate) return _state.value.map;
   const map = new Map();
   (rows || []).forEach(function(r) { map.set(r.stock, { pct: r.pct, days: r.days }); });
   _sig.set(date, sig);
   _cache.set(date, (rows || []).slice());
-  _state.value = { date: date, map: map, version: _state.value.version + 1 };
+  _state.value = {
+    date: date,
+    map: map,
+    version: contentChanged ? _state.value.version + 1 : _state.value.version
+  };
   return map;
 }
 

@@ -492,10 +492,26 @@ function _sigOf(list) {
   }).join(',');
 }
 
-/** 发布（签名相同 ⇒ 不发布、不 bump version） */
+/**
+ * 发布（签名相同 ⇒ 不发布、不 bump version）
+ *
+ * 🔴 [R20-PUB-GUARD 2026-10-26] 与 `range20.js#_publish` 同一处修正（理由与实测数据见那边）：
+ *   本模块**同时维护多个日期**（看板展示日 + 前沿交易日的 TOP5 补位检索），而 `_state.value`
+ *   只有一个 `date` 字段 ⇒ 交替发布必然把 `_state.date` 顶来顶去。
+ *   旧守卫 `_sig.get(date) === sig && _state.value.date === date` 因此**几乎永远不成立**：
+ *   每次调用都走到下面 `version + 1` ⇒ 看板行缓存指纹变化 ⇒ 整块重排 ⇒ 触发新的
+ *   `ensureRange20Leaders` ⇒ 自激循环（实测同一天同一内容 1 秒内被重复发布 3 次）。
+ *
+ *   ⇒ 拆成两种情形：内容变了才 bump；内容没变、只是日期被顶掉，只把日期拨回来。
+ *     `getRange20LeadersFingerprintToken()` 里本来就含 `s.date`，日期一变指纹就变，
+ *     消费方照样会重算，**不需要**用 version 再踢一脚。
+ */
 function _publish(date, list, cacheable) {
   const sig = _sigOf(list);
-  if (_sig.get(date) === sig && _state.value.date === date) return _state.value.list;
+  const prevSig = _sig.get(date);
+  const sameDate = (_state.value.date === date);
+  const contentChanged = (prevSig !== sig);
+  if (!contentChanged && sameDate) return _state.value.list;
   _sig.set(date, sig);
   const copy = (list || []).slice();
   // 🔴 [FIX 2026-10-19] **空结果不进会话缓存**（只标记"算过了"）。
@@ -506,7 +522,12 @@ function _publish(date, list, cacheable) {
   //   ★ [R20-WARM 2026-10-20] 同理：**索引还在预热（候选池会继续变大）时的非空结论也不缓存** ——
   //     那一刻的前五是从一份残缺池里选出来的，缓存住就再也不改（实测补出第 6 名的弱票）。
   if (copy.length > 0 && cacheable !== false) _cache.set(date, copy);
-  _state.value = { date: date, list: copy, ready: true, version: _state.value.version + 1 };
+  _state.value = {
+    date: date,
+    list: copy,
+    ready: true,
+    version: contentChanged ? _state.value.version + 1 : _state.value.version
+  };
   return copy;
 }
 
@@ -560,6 +581,24 @@ function _scheduleWarmRetry(date, readyDays, totalDays, cheapCase) {
   if (verdict === 'stop') {
     _dbgLog('[RANGE20-TOP5-WARM] ' + date + ' 索引停在 ' + readyDays + '/' + totalDays
       + ' 且不再增长 ⇒ 停止重算（剩下的日子可能本来就没有名单数据）');
+    return;
+  }
+  // 🔴 [R20-WARM-ONCE 2026-10-26] **已经排了一个待执行的重算 ⇒ 不要再排第二个。**
+  //
+  //   踩过的坑（实测，必须保留这段说明）：`ensureRange20Leaders` 是被 watch / 数据到货反复调用的，
+  //   每次调用都会走到这里。旧实现每次都 `clearTimeout(st.timer)` 重排 `WARM_RETRY_DELAYS[st.n]`
+  //   ⇒ 只要新调用比 3s 更密（实测每秒 1~3 次，5 个日期同时循环），**倒计时永远回到起点、
+  //     `st.n` 永远停在 0** ⇒ 3s/10s/30s/60s 的退避与「封顶 4 次」形同虚设，变成每 3 秒一次
+  //   全量重算（含 25 只同花顺精算）。日志长这样，`第 1 次` 从不递增：
+  //     [RANGE20-TOP5-WARM] 2026-10-20 索引就绪 17/45 ⇒ 3s 后第 1 次重算（已精算 · 封顶 4 次）
+  //   后果：主线程被占满，切完日期后「20 日涨幅」要 ~20 秒才出数，用户感知为「逐批、很卡、几分钟」。
+  //
+  //   ⚠️ 只更新 `readyDays` 不重排：`decideWarmRetry` 的 `reset` 分支正是靠「readyDays 变大」
+  //      判断「数据还在路上」，所以这个字段必须刷新（否则会把正在变长的池误判成已停止）。
+  //   ⚠️ `verdict === 'reset'` 例外：那是「索引在长、退避次数归零」的情况，本就该更早重算。
+  if (st.timer && verdict !== 'reset') {
+    st.readyDays = Number(readyDays);
+    _warmRetry.set(date, st);
     return;
   }
   if (verdict === 'reset') {
