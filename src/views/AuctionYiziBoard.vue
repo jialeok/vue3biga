@@ -445,7 +445,7 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue';
+import { ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import EditModal from '../components/EditModal.vue';
 // 趋势曲线：与「早盘竞价看板」同一个展示组件（纯 SVG 折线，props: points/color/percent）
 import TrendChart from '../components/TrendChart.vue';
@@ -530,20 +530,23 @@ async function onThsPatch() {
 
 // ── 自动补数（静默，无需用户每天手点）────────────────────────────────────────
 // 🔴 猫抓 daily_auc_fd 一旦当天没抓成功，这张表整天就是空的（10-23 / 10-26 实测）。
-//    本看板只要能出数，用户就不该关心是哪个数据源补的 ⇒ 空态时自动尝试一次。
+//    本看板只要能出数，用户就不该关心是哪个数据源补的 ⇒ 空态时自动尝试。
 // 三条约束（缺一条都可能写出错数据或白烧请求）：
 //   ① 只在「看的就是今天」时补 —— 快照接口只有当日数据（逻辑层也会再挡一次）；
-//   ② 库里已有行 ⇒ 逻辑层直接拒绝，所以重复调用是安全的；
-//   ③ 最多每 60 秒试一次：早盘竞价 9:25 之前涨停池可能还是空的，
-//      定时重试才能让它在池子长出来的那一刻补上（⛔ 不是"试一次就永久放弃"）。
+//   ② 库里已有行 ⇒ 逻辑层直接拒绝，所以重复调用是安全的（稳态下只多一次已缓存的读）；
+//   ③ 用【定时器】每 60 秒重试，⛔ 不能只靠 watch 触发一次 ——
+//      watch 的依赖（loading / date / hasAnyData）在首轮加载完之后就不再变化，
+//      9:20 打开页面时涨停池可能还没长出来，只试一次就永久放弃 = 当天还是空板。
 const AUTO_RETRY_MS = 60 * 1000;
 let _autoLastAt = 0;
 let _autoBusy = false;
+let _autoTimer = null;
+
 async function _autoPatchOnce() {
   if (_autoBusy) return;
-  if (Date.now() - _autoLastAt < AUTO_RETRY_MS) return;
   if (state.loading || hasAnyData.value) return;
   if (state.date !== beijingTodayStr()) return;
+  if (Date.now() - _autoLastAt < AUTO_RETRY_MS) return;
   _autoBusy = true;
   _autoLastAt = Date.now();
   try {
@@ -551,10 +554,11 @@ async function _autoPatchOnce() {
     if (r.ok) {
       thsHint.value = r.message;
       await refresh();
+    } else if (r.reason) {
+      // 失败不弹 toast（自动路径不该打扰用户），原因留在提示行里；
+      // 用户点「用同花顺补今日 9:25 快照」时会看到最新一次的失败原因。
+      thsHint.value = r.reason;
     }
-    // 失败不弹 toast（自动路径不该打扰用户）；原因留在 thsHint 里，
-    // 用户点「用同花顺补今日 9:25 快照」时可再看到一次。
-    else if (r.reason) thsHint.value = r.reason;
   } catch (e) {
     // §10：自动路径失败也不静默吞掉，写进提示行
     thsHint.value = '自动补数失败：' + (e && e.message || e);
@@ -562,13 +566,27 @@ async function _autoPatchOnce() {
     _autoBusy = false;
   }
 }
+
+function _startAutoTimer() {
+  if (_autoTimer) return;
+  _autoTimer = setInterval(_autoPatchOnce, AUTO_RETRY_MS);
+}
+function _stopAutoTimer() {
+  if (_autoTimer) { clearInterval(_autoTimer); _autoTimer = null; }
+}
+
+onMounted(_startAutoTimer);
+onBeforeUnmount(_stopAutoTimer);
+// 首轮加载完成后再试一次（不必等满 60 秒）；依赖变化时也顺手试一次
 watch(
   [() => state.loading, () => state.date, () => hasAnyData.value],
-  function () { _autoPatchOnce(); },
+  function () {
+    if (hasAnyData.value) { _stopAutoTimer(); return; }   // 已经有数了 ⇒ 不必再轮询
+    _startAutoTimer();
+    _autoPatchOnce();
+  },
   { immediate: true }
 );
-// 日期切回今天时也要能再补（否则当天第一次失败后就再也不试了）
-watch(() => state.date, function () { _autoLastAt = 0; });
 
 defineExpose({ refresh });
 </script>
