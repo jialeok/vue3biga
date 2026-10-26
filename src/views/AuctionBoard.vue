@@ -45,6 +45,10 @@
         </div>
       </div>
     </div>
+    <!-- [FETCH-HEALTH 2026-10-26] 今日行情没抓到时的真实原因（数据源额度 / 抓取失败 / 未执行）。
+         放在 header 与表格之间：折叠态也可见 —— 用户最需要知道的就这一句，
+         ⛔ 不要塞进表格空态里（那要展开才看得到，用户就会继续反复刷新）。 -->
+    <FetchHealthHint />
     <div
       v-show="expanded"
       class="auction-swipe-container"
@@ -110,6 +114,7 @@ import AuctionBoardTable from '../components/AuctionBoardTable.vue';
 import AuctionBoardPageTopics from '../components/AuctionBoardPageTopics.vue';
 import AuctionBoardPageHistory from '../components/AuctionBoardPageHistory.vue';
 import AuctionBoardPageCopied from '../components/AuctionBoardPageCopied.vue';
+import FetchHealthHint from '../components/auction/FetchHealthHint.vue';
 import LongPressTagMenu from '../components/LongPressTagMenu.vue';
 import CoreTopicModal from '../components/CoreTopicModal.vue';
 import AuctionEditModal from '../components/AuctionEditModal.vue';

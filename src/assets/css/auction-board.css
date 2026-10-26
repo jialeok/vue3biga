@@ -1672,3 +1672,52 @@
             padding: 12px 15px;
         }
 
+
+/* ============================================================================
+   [FETCH-HEALTH 2026-10-26] 「今日行情为什么没到」提示条（组件：components/auction/FetchHealthHint.vue）
+
+   用户口径（原话）：「早盘竞价看板今天没有数据……是不是我一直刷新，把数据刷新没了？
+     你要修复下，下面很多看板都是数据在加载中，一直没有加载出来」
+
+   实测：名单 50 行完好、market_metrics 当天 0 行、worker 09:25 那条 ok=false
+   （numcat 两把 key 都 403「今日调用额度已用完」）⇒ 数据确实没到，不是刷新刷掉的。
+
+   ⛔ 样式单一来源：`.auction-*` 只由本文件定义，不要在 AuctionBoard.vue / FetchHealthHint.vue
+      的 <style> 里再写一份（否则分包加载顺序会让两边打架，项目里踩过这个坑）。
+   ⛔ 不用红 / 绿：红=涨（买），绿=跌 —— 这是"数据缺了"的提示，不属于涨跌语义。
+   ============================================================================ */
+.auction-health-hint {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 8px;
+    margin: 0 0 6px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    line-height: 16px;
+    /* 手机上长文案必须能换行，否则会把表格挤变形 */
+    word-break: break-word;
+}
+
+/* 抓取失败（有明确原因，如额度用尽）—— 橙黄，提示"需要人处理" */
+.auction-health-warn {
+    background: #2a1f0a;
+    border: 1px solid #b45309;
+    color: #fde68a;
+}
+
+/* 未执行 / 还在写 / 读不到原因 —— 蓝灰，提示"再等等" */
+.auction-health-info {
+    background: #0f1c2e;
+    border: 1px solid #1e40af;
+    color: #bfdbfe;
+}
+
+.auction-health-title {
+    font-weight: 700;
+}
+
+.auction-health-text {
+    opacity: 0.92;
+}
