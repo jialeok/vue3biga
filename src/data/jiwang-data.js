@@ -12,9 +12,27 @@ import { reactive } from 'vue';
 // 复用 duiban 域已有的 recent_multi_data Realtime 订阅（不另建 channel，避免重复订阅）。
 // 此处仅挂载一个只读聚合缓存供 stats-calc 的 computeRecordStats 使用（§15 单一数据源）。
 import { subscribeRecentMulti } from './duiban-sync.js';
+import { createQueryMemo } from './query-memo.js';
+
+        // ── §32 不重复请求：记忘看板全表读取的单飞 + 短缓存 ──────────────────────
+        // 【为什么必须加 2026-10-26】首屏实测：`jiwang_data`（全表分页）在打开应用时被读了
+        //   **两遍** —— 两条独立的启动路径都在拉同一张表：
+        //     ① useAppBootstrap#hydrateJiwangAtStartup()（防"统计看板一片空白"的安全网）
+        //     ② pullFromCloud() 里的 jiwang 段（主路径）
+        //   两条都在 `_jiwangMemCache` 为空时触发，而启动时它必然是空的 ⇒ 两遍全表扫描。
+        //   ⇒ 合并 + 5s 窗口（本表按天写入、频率低；写路径 pullJiwangForDate/saveJiwang 之后必须 bust）。
+        const _pullAllMemo = createQueryMemo({ name: 'jiwang_data', ttlMs: 5000 });
+        const _PULL_ALL_KEY = 'all';
+
+        /** 作废全表缓存 —— 任何 jiwang 写入之后必须调用（§10：写完不能读旧值） */
+        export function bustJiwangPullCache() { _pullAllMemo.bust(_PULL_ALL_KEY); }
+
+        /** 仅供测试 / 诊断 */
+        export function _resetJiwangPullMemo() { _pullAllMemo.reset(); }
 
         // 从 jiwang_data 表全量读取，返回 {date: {...}}
         export async function pullJiwangFromTable() {
+          return _pullAllMemo.run(_PULL_ALL_KEY, async function() {
             const sb = getSupabase();
             const result = {};
             // 记录每个 date 已经放进 result 的那一行的 updated_at，方便碰到重复日期时
@@ -65,6 +83,7 @@ import { subscribeRecentMulti } from './duiban-sync.js';
             }
             state._jiwangTableAvailable = true;
             return result;
+          });
         }
 
         // 拉取单日 jiwang 数据并合并到内存缓存（Realtime 收到变更时用）
@@ -171,6 +190,8 @@ import { subscribeRecentMulti } from './duiban-sync.js';
             }
             _dbgLog('pushJiwangToCloud: ' + date + ' upsert 成功');
             state._jiwangTableAvailable = true;
+            // §10：写完立刻作废全表读缓存，否则紧接着的 pullJiwangFromTable 会拿到写之前的那份
+            bustJiwangPullCache();
         }
 
         // 防抖推送 jiwang 到云端（2秒无新改动后才真正推送，避免连续操作时频繁请求）
@@ -293,6 +314,8 @@ import { subscribeRecentMulti } from './duiban-sync.js';
                         if (!row || !row.date) return;
                         const changedDate = row.date;
                         _dbgLog('JiwangRealtime: 收到 ' + changedDate + ' 变化（他端推送），拉取该日数据');
+                        // §10：他端写了这张表 ⇒ 本进程的全表读缓存立刻作废，否则后续全表读会漏掉这天的新值
+                        bustJiwangPullCache();
                         pullJiwangForDate(changedDate).then(function() {
                             if (changedDate === useUiStore().currentDate) {
                                 _emit('data:realtime-update', { boards: 'jiwang' });

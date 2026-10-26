@@ -4,6 +4,7 @@ import { state } from '../logic/app-state.js';
         // 从 stock_topics 表全量读取，返回 {stockName: Set(topics)}
         import { getSupabase } from './supabase-client.js';
         import { _dbgLog } from './debug-log.js';
+        import { createQueryMemo } from './query-memo.js';
         import { refreshCoreTopicsFromCloud } from '../logic/topic/rules.js';
         // ★ 2026-09-18：题材库的「归一化别名索引」用 —— 见下方 buildNormalizedTopicIndex 的事故说明。
         //   纯函数叶子（logic/topics/stock-name.js），无反向依赖，不会造成循环导入。
@@ -15,30 +16,54 @@ import { state } from '../logic/app-state.js';
         //   纯函数叶子（无任何 import），不会造成循环导入。
         import { isValidTopic } from '../logic/note/helpers.js';
 
+        // ── §32 题材库读取的单飞 + 短缓存（统一实现见 data/query-memo.js）──
+        //   ⛔ 这只是「同一份云端数据的读取加速层」，不是第二真相源（§6）：
+        //      真相永在 stock_topics 表，缓存只活 30 秒，写入即作废。
+        //   ⚠️ TTL 给到 30s（远长于行情表的 1.5s）是安全的：stock_topics 是【按股票维度、
+        //      跨日期共享】的题材库，同一天内不会自己变；且任何写入都会立刻 bust。
+        const _topicsMemo = createQueryMemo({ name: 'stock_topics', ttlMs: 30 * 1000 });
+        const _TOPICS_KEY = 'all';
+
         export async function pullStockTopicsFromCloud() {
-            const sb = getSupabase();
-            const allRows = [];
-            let from = 0;
-            const pageSize = 1000;
-            while (true) {
-                const { data, error } = await sb.from('stock_topics')
-                    .select('stock,topics,code')
-                    .range(from, from + pageSize - 1);
-                if (error) throw error;
-                if (!data || data.length === 0) break;
-                allRows.push(...data);
-                if (data.length < pageSize) break;
-                from += pageSize;
-            }
-            const result = {};
-            allRows.forEach(function(row) {
-                if (!row || !row.stock) return;
-                const name = row.stock.trim();
-                if (!row.topics) { result[name] = new Set(); return; }
-                const topics = row.topics.split(',').map(function(t) { return t.trim(); }).filter(function(t) { return t; });
-                result[name] = new Set(topics);
+            // ── §32 不重复请求：单飞 + 短缓存 ──────────────────────────────────
+            // 【为什么必须加 2026-10-26】首屏实测：这是【全表分页扫描】（每次 2 页 × 1000 行），
+            //   打开应用时被并发调了 4 次（竞价看板 / 涨跌停看板 / 一字看板 / 题材量比各调一次），
+            //   光这张表就吃掉 112 KB 与 4 个往返。
+            return _topicsMemo.run(_TOPICS_KEY, async function() {
+                const sb = getSupabase();
+                const allRows = [];
+                let from = 0;
+                const pageSize = 1000;
+                while (true) {
+                    const { data, error } = await sb.from('stock_topics')
+                        .select('stock,topics,code')
+                        .range(from, from + pageSize - 1);
+                    if (error) throw error;
+                    if (!data || data.length === 0) break;
+                    allRows.push(...data);
+                    if (data.length < pageSize) break;
+                    from += pageSize;
+                }
+                const result = {};
+                allRows.forEach(function(row) {
+                    if (!row || !row.stock) return;
+                    const name = row.stock.trim();
+                    if (!row.topics) { result[name] = new Set(); return; }
+                    const topics = row.topics.split(',').map(function(t) { return t.trim(); }).filter(function(t) { return t; });
+                    result[name] = new Set(topics);
+                });
+                return result;
             });
-            return result;
+        }
+
+        /** 作废题材库缓存 —— 任何写入题材之后必须调用（否则读者拿到旧集合，表现为「删了又回来」） */
+        function bustStockTopicsCache() {
+            _topicsMemo.bust(_TOPICS_KEY);
+        }
+
+        /** 仅供测试 / 诊断 */
+        export function _resetStockTopicsMemo() {
+            _topicsMemo.reset();
         }
 
         // 把单只股票的题材写入云端 stock_topics 表（按 stock 维度，跨日期共享）
@@ -111,6 +136,11 @@ import { state } from '../logic/app-state.js';
             const { error } = await sb.from('stock_topics')
                 .upsert(row, { onConflict: 'stock' });
             if (error) throw error;
+
+            // ★ 2026-10-26：写入成功立刻作废 pullStockTopicsFromCloud 的 30s 缓存。
+            //   否则「刚删掉一个题材 → 30 秒内又被别的看板读回旧集合」，
+            //   正是历史上「怎么删都删不掉 / 过一会儿又自己恢复」那类投诉的复现路径。
+            bustStockTopicsCache();
 
             // 同步更新本地缓存，避免下次 buildTopicCache 时丢失
             if (!state._cloudTopicsCache) state._cloudTopicsCache = {};

@@ -23,6 +23,14 @@
 import { getSupabase } from './supabase-client.js';
 import { _dbgLog } from './debug-log.js';
 import { _emit } from '../stores/eventBus.js';
+import { createQueryMemo } from './query-memo.js';
+
+// ── §32 不重复请求：同一交易日的一字快照读取合并 + 极短缓存 ────────────────────
+// 【为什么必须加 2026-10-26】首屏实测：`auction_yizi?date=eq.<今天>` 在打开应用时被发了
+//   3 个网络事件（≈1.5 个真实查询）——   竞价一字看板 + 题材量比看板各自 mount 时各读一次。
+//   本表一天只写一次（9:25 Edge Function），写完由 Realtime 推 `auction-yizi` 事件；
+//   ⇒ 2s 窗口安全，且 replaceAuctionYiziForDate 写成功后会 bust（§10）。
+const _memo = createQueryMemo({ name: 'auction_yizi', ttlMs: 2000 });
 
 /**
  * 把 PostgREST 的「找不到表」原文翻译成「该干什么」。
@@ -81,56 +89,58 @@ const SELECT_COLUMNS = [
  */
 export async function readAuctionYiziForDate(date) {
     if (!date) return [];
-    const sb = getSupabase();
-    const all = [];
-    const pageSize = 1000;
-    // 分页安全上限（单日一字池真实规模几只~百余只；10000 行上限仅用于防游标异常导致死循环）
-    const maxPages = 10;
-    let from = 0;
-    for (let page = 0; page < maxPages; page++) {
-        const { data, error } = await sb
-            .from('auction_yizi')
-            .select(SELECT_COLUMNS.join(','))
-            .eq('date', date)
-            // ⚠️ 分页必须带【确定性排序】：PostgREST 在没有 ORDER BY 时不保证分页间行序稳定，
-            //    同一行可能在两页里各出现一次、另一行被跳过（池子 >1000 只时才会触发）。
-            //    按 stock 排序即可（同日 stock 唯一：表主键是 date+stock）。
-            .order('stock', { ascending: true })
-            .range(from, from + pageSize - 1);
-        if (error) throw _explainDbError(error);
-        if (!data || data.length === 0) break;
-        all.push(...data);
-        if (data.length < pageSize) break;
-        from += pageSize;
-    }
-    return all
-        .filter(function(r) { return r && r.stock; })
-        .map(function(r) {
-            const fa = {};
-            FA_COLUMNS.forEach(function(col) {
-                fa[col] = _numOrNull(r[col]);
+    return _memo.run(date, async function() {
+        const sb = getSupabase();
+        const all = [];
+        const pageSize = 1000;
+        // 分页安全上限（单日一字池真实规模几只~百余只；10000 行上限仅用于防游标异常导致死循环）
+        const maxPages = 10;
+        let from = 0;
+        for (let page = 0; page < maxPages; page++) {
+            const { data, error } = await sb
+                .from('auction_yizi')
+                .select(SELECT_COLUMNS.join(','))
+                .eq('date', date)
+                // ⚠️ 分页必须带【确定性排序】：PostgREST 在没有 ORDER BY 时不保证分页间行序稳定，
+                //    同一行可能在两页里各出现一次、另一行被跳过（池子 >1000 只时才会触发）。
+                //    按 stock 排序即可（同日 stock 唯一：表主键是 date+stock）。
+                .order('stock', { ascending: true })
+                .range(from, from + pageSize - 1);
+            if (error) throw _explainDbError(error);
+            if (!data || data.length === 0) break;
+            all.push(...data);
+            if (data.length < pageSize) break;
+            from += pageSize;
+        }
+        return all
+            .filter(function(r) { return r && r.stock; })
+            .map(function(r) {
+                const fa = {};
+                FA_COLUMNS.forEach(function(col) {
+                    fa[col] = _numOrNull(r[col]);
+                });
+                return {
+                    date: r.date,
+                    stock: String(r.stock).trim(),
+                    code: r.code || '',
+                    symbol: r.symbol || '',
+                    // 上游原始名保留原名；正常等于 stock，改名时可看出差异
+                    name: _textOrEmpty(r.name) || String(r.stock).trim(),
+                    aucPct: r.auc_pct_chg || '',
+                    aucAmt: _numOrNull(r.auc_amt),
+                    aucTurnover: _numOrNull(r.auc_turnover),
+                    // 9:25 口径封单额（元）= 时间上最后一笔非空 fa_*，服务端已算好并落库
+                    sealMoney: _numOrNull(r.seal_money),
+                    faCount: _numOrNull(r.fa_count) === null ? 0 : Number(r.fa_count),
+                    faFirst: r.fa_first || '',
+                    fa: fa,
+                    themeKpl: r.theme_kpl || '',
+                    themeXgb: r.theme_xgb || '',
+                    isSt: r.is_st === true,
+                    updatedAt: r.updated_at || ''
+                };
             });
-            return {
-                date: r.date,
-                stock: String(r.stock).trim(),
-                code: r.code || '',
-                symbol: r.symbol || '',
-                // 上游原始名保留原名；正常等于 stock，改名时可看出差异
-                name: _textOrEmpty(r.name) || String(r.stock).trim(),
-                aucPct: r.auc_pct_chg || '',
-                aucAmt: _numOrNull(r.auc_amt),
-                aucTurnover: _numOrNull(r.auc_turnover),
-                // 9:25 口径封单额（元）= 时间上最后一笔非空 fa_*，服务端已算好并落库
-                sealMoney: _numOrNull(r.seal_money),
-                faCount: _numOrNull(r.fa_count) === null ? 0 : Number(r.fa_count),
-                faFirst: r.fa_first || '',
-                fa: fa,
-                themeKpl: r.theme_kpl || '',
-                themeXgb: r.theme_xgb || '',
-                isSt: r.is_st === true,
-                updatedAt: r.updated_at || ''
-            };
-        });
+    });
 }
 
 /**
@@ -201,6 +211,7 @@ export async function replaceAuctionYiziForDate(date, rows) {
         return Object.assign({}, r, { date: date });
     }));
     const deleted = await deleteStaleAuctionYiziRows(date, list.map(function(r) { return r.stock; }));
+    _memo.bust(date); // §10：整日对齐完成后必须作废，否则读者仍看到替换前的旧快照
     _dbgLog('[AUCTION-YIZI] ' + date + ' 整日对齐完成：写入 ' + written + ' 行，清掉旧行 ' + deleted + ' 条');
     return { written: written, deleted: deleted };
 }
@@ -220,6 +231,9 @@ export function startAuctionYiziRealtime() {
         _yiziChannel = sb
             .channel('auction_yizi_changes')
             .on('postgres_changes', { event: '*', schema: 'public', table: 'auction_yizi' }, function() {
+                // §10：别台设备 / Edge Function 写了这张表 ⇒ 本进程的短缓存必须立刻作废，
+                // 否则 500ms 后重读还会拿到旧快照（"Realtime 收到通知但内容没变"）。
+                _memo.reset();
                 if (_yiziReloadTimer) clearTimeout(_yiziReloadTimer);
                 _yiziReloadTimer = setTimeout(function() {
                     _yiziReloadTimer = null;

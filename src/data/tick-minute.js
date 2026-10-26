@@ -19,9 +19,21 @@
 
 import { getSupabase, SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-client.js';
 import { _dbgLog } from './debug-log.js';
+import { createQueryMemo } from './query-memo.js';
 
 /** 表名（改这里即全模块生效） */
 const TABLE = 'tick_minute_open';
+
+// ── §32 不重复请求：同一交易日的分笔行读取合并 + 短缓存 ────────────────────────
+// 【为什么必须加 2026-10-26】首屏实测：`tick_minute_open?date=eq.<今天>` 这一条**完全相同**的
+//   查询在打开应用时被真实发了 4 次（约 9 个网络事件，含 CORS 预检）——
+//   分笔看板 hydrate / 决策看板 / 竞价看板 / tick-minute-store 各自读一次。
+//   ⚠️ 本表是「点名抓取」的产物，只有 tick-minute-fetch 会写，且写的是**指定股票**；
+//   同一日同一时刻读 4 次必然拿到同一份内容 ⇒ 3s 窗口 + 写后作废完全安全。
+const _memo = createQueryMemo({ name: 'tick_minute_open', ttlMs: 3000 });
+
+/** 写入方（Edge Function）不受本进程控制 ⇒ 只靠 TTL 过期，不依赖 bust */
+export function _resetTickMinuteMemo() { _memo.reset(); }
 
 /** Edge Function 的抓取路由（前端只用这一个入口，不自造上游请求） */
 const EDGE_MINUTE_URL = SUPABASE_URL + '/functions/v1/tick-minute-fetch/minute';
@@ -149,43 +161,45 @@ function _normalizePens(raw) {
  */
 export async function readTickMinuteForDate(date) {
     if (!date) return [];
-    const sb = getSupabase();
-    const all = [];
-    const pageSize = 1000;
-    // 分页安全上限（单日目标票来来回回就那几只；10000 行上限仅用于防游标异常导致死循环）
-    const maxPages = 10;
-    let from = 0;
-    for (let page = 0; page < maxPages; page++) {
-        const { data, error } = await sb
-            .from(TABLE)
-            .select(SELECT_COLUMNS.join(','))
-            .eq('date', date)
-            // ⚠️ 分页必须带【确定性排序】（PostgREST 无 ORDER BY 时不保证翻页行序稳定）；
-            //    同日 name 唯一（表主键 date+name）⇒ 按 name 排序即可。
-            .order('name', { ascending: true })
-            .range(from, from + pageSize - 1);
-        if (error) throw _explainDbError(error);
-        if (!data || data.length === 0) break;
-        all.push(...data);
-        if (data.length < pageSize) break;
-        from += pageSize;
-    }
-    return all
-        .filter(function(r) { return r && r.name; })
-        .map(function(r) {
-            return {
-                date: r.date,
-                name: String(r.name).trim(),
-                code: r.code ? String(r.code).trim() : '',
-                openPrice: _numOrNull(r.open_price),
-                pens: _normalizePens(r.pens),
-                tradeCount: _intOrNull(r.trade_count),
-                startTime: r.start_time || '',
-                endTime: r.end_time || '',
-                source: r.source || '',
-                updatedAt: r.updated_at || ''
-            };
-        });
+    return _memo.run(date, async function() {
+        const sb = getSupabase();
+        const all = [];
+        const pageSize = 1000;
+        // 分页安全上限（单日目标票来来回回就那几只；10000 行上限仅用于防游标异常导致死循环）
+        const maxPages = 10;
+        let from = 0;
+        for (let page = 0; page < maxPages; page++) {
+            const { data, error } = await sb
+                .from(TABLE)
+                .select(SELECT_COLUMNS.join(','))
+                .eq('date', date)
+                // ⚠️ 分页必须带【确定性排序】（PostgREST 无 ORDER BY 时不保证翻页行序稳定）；
+                //    同日 name 唯一（表主键 date+name）⇒ 按 name 排序即可。
+                .order('name', { ascending: true })
+                .range(from, from + pageSize - 1);
+            if (error) throw _explainDbError(error);
+            if (!data || data.length === 0) break;
+            all.push(...data);
+            if (data.length < pageSize) break;
+            from += pageSize;
+        }
+        return all
+            .filter(function(r) { return r && r.name; })
+            .map(function(r) {
+                return {
+                    date: r.date,
+                    name: String(r.name).trim(),
+                    code: r.code ? String(r.code).trim() : '',
+                    openPrice: _numOrNull(r.open_price),
+                    pens: _normalizePens(r.pens),
+                    tradeCount: _intOrNull(r.trade_count),
+                    startTime: r.start_time || '',
+                    endTime: r.end_time || '',
+                    source: r.source || '',
+                    updatedAt: r.updated_at || ''
+                };
+            });
+    });
 }
 
 /**

@@ -10,6 +10,14 @@
 // 红线（§8）：本表是云端业务数据，禁止用 localStorage 兜底。
 
 import { getSupabase } from './supabase-client.js';
+import { createQueryMemo } from './query-memo.js';
+
+// ── §32 不重复请求：同一评选日的名册读取合并 + 极短缓存 ────────────────────────
+// 【为什么必须加 2026-10-26】首屏实测：`dragon_leaders?date=eq.<上一交易日>` 在打开应用时
+//   被发了 5 个网络事件（≈2 个真实查询 + 预检）——竞价看板 / 决策看板 / 连板天梯
+//   各自 mount 时各读一次同一个评选日。名册一天只变一次（收盘评选 + 收盘后重算），
+//   ⇒ 2s 窗口 + 写后立即作废 是安全且够用的。
+const _memo = createQueryMemo({ name: 'dragon_leaders', ttlMs: 2000 });
 
 /**
  * 解析形如 "+12.34" / "12.34%" / "-3.2" 的涨幅文本 → number；无法解析 → null（绝不用 0 顶替）。
@@ -29,25 +37,27 @@ function _parsePct(raw) {
  */
 export async function readDragonLeadersForDate(date) {
     if (!date) return [];
-    const sb = getSupabase();
-    const { data, error } = await sb
-        .from('dragon_leaders')
-        .select('date,topic,stock,code,range_pct,group_size,updated_at')
-        .eq('date', date);
-    if (error) throw error;
-    return (data || [])
-        .filter(function(r) { return r && r.stock && r.topic; })
-        .map(function(r) {
-            return {
-                date: r.date,
-                topic: String(r.topic).trim(),
-                stock: String(r.stock).trim(),
-                code: r.code || '',
-                rangePct: _parsePct(r.range_pct),
-                groupSize: Number(r.group_size) || 0,
-                updatedAt: r.updated_at || ''
-            };
-        });
+    return _memo.run(date, async function() {
+        const sb = getSupabase();
+        const { data, error } = await sb
+            .from('dragon_leaders')
+            .select('date,topic,stock,code,range_pct,group_size,updated_at')
+            .eq('date', date);
+        if (error) throw error;
+        return (data || [])
+            .filter(function(r) { return r && r.stock && r.topic; })
+            .map(function(r) {
+                return {
+                    date: r.date,
+                    topic: String(r.topic).trim(),
+                    stock: String(r.stock).trim(),
+                    code: r.code || '',
+                    rangePct: _parsePct(r.range_pct),
+                    groupSize: Number(r.group_size) || 0,
+                    updatedAt: r.updated_at || ''
+                };
+            });
+    });
 }
 
 /**
@@ -78,6 +88,7 @@ export async function upsertDragonLeaders(date, rows) {
         .from('dragon_leaders')
         .upsert(payload, { onConflict: 'date,topic' });
     if (error) throw error;
+    _memo.bust(date); // §10：写完立刻作废，否则紧接着的读取会拿到旧名册
     return payload.length;
 }
 
@@ -112,5 +123,6 @@ export async function deleteDragonLeadersForDate(date, topics) {
         .in('topic', list)
         .select('topic');
     if (error) throw error;
+    _memo.bust(date); // §10：删除后必须作废，否则读者仍看到已删掉的题材行
     return (data || []).length;
 }

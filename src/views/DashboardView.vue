@@ -70,8 +70,14 @@
 
     <PatternBoard />
 
-    <!-- [P1-8] trading 态 9 看板由 v-if 改 v-show：跨周末/切 tab 不再 destroy→重建→重查→重算→重订阅。
-         组件仅挂载一次（display 切换），日期刷新仍由各看板内部 watch(uiStore.currentDate) 驱动。 -->
+    <!-- [P1-8] trading 态看板由 v-if 改 v-show：跨周末/切 tab 不再 destroy→重建→重查→重算→重订阅。
+         组件仅挂载一次（display 切换），日期刷新仍由各看板内部 watch(uiStore.currentDate) 驱动。
+
+         ⚠️ [LAZY-BOARD 2026-10-26 评估后不采用] 曾试验「进视口才挂载」以减少启动请求，
+           已否决：这 14 个看板【折叠态仍要显示各自的摘要】（如涨跌停头部的「涨停 59 / 跌停 3」），
+           而摘要来自它们自己拉的数据；不挂载 ⇒ 页面会变成只剩几个标题、摘要是空的，
+           属于功能退化（§11）。⇒ 首屏请求量的治理放在 Data 层的「同一查询合并」上
+           （见 src/data/query-memo.js 及各表注释），不动这里的挂载方式。 -->
     <BiddingBoard v-show="boardView === 'trading'" />
     <JiwangBoard v-show="boardView === 'trading'" />
     <StatsBoard v-show="boardView === 'trading'" />
