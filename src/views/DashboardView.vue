@@ -81,7 +81,11 @@
     <BiddingBoard v-show="boardView === 'trading'" />
     <JiwangBoard v-show="boardView === 'trading'" />
     <StatsBoard v-show="boardView === 'trading'" />
-    <StarStatsBoard v-show="boardView === 'trading'" />
+    <!-- 【REMOVED 2026-10-26】原 <StarStatsBoard>（「题材星标签统计」= 甜甜圈 / 扇形统计看板）。
+         用户口径：「题材性标签统计那个看板去掉，就是甜甜圈，扇形统计那个，那个也没用，
+         全部去除，不要隐藏」⇒ 连组件文件、样式块一并真删（同 (AC) 自选股口径）。
+         ⛔ 不是 v-show / v-if 隐藏。数据层零影响：该看板是纯消费方（只读 auction 内存
+         + 题材分组，不发请求、不落库），删除后 auction 数据与题材规则照旧（§6 未变）。 -->
     <EmotionBoard v-show="boardView === 'trading'" />
     <!-- 「涨跌停」看板：独立看板组件（在情绪看板之下、早盘竞价看板之上） -->
     <LimitBoard v-show="boardView === 'trading'" />
@@ -256,7 +260,7 @@ import LimitBoard from './LimitBoard.vue';
 import LadderBoard from './LadderBoard.vue';
 import AuctionYiziBoard from './AuctionYiziBoard.vue';
 import StatsBoard from './StatsBoard.vue';
-import StarStatsBoard from './StarStatsBoard.vue';
+// [REMOVED 2026-10-26] StarStatsBoard（题材星标签统计 / 甜甜圈扇形图）已整块下线，见模板注释。
 import WeekendStatsBoard from './WeekendStatsBoard.vue';
 import MonthlyStatsBoard from './MonthlyStatsBoard.vue';
 import { useStatsView } from '../composables/useStatsView.js';
