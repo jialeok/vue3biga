@@ -110,56 +110,58 @@
     <TopicVolRatioBoard v-show="boardView === 'trading'" />
     <DuibanBoard v-show="boardView === 'trading'" />
     <EtfBoard v-show="boardView === 'trading'" />
-    <HomeStocksView
-      v-show="boardView === 'trading'"
-      ref="stocksRef"
-    />
+    <!-- 【REMOVED 2026-10-26】原 <HomeStocksView>（自选股：统计小方框 / 列表 / 添加·编辑·卖出·跟踪
+         弹窗）整块下线。用户口径：「包括那些添加股票，编辑股票，前台后台等……还有下面那些列表
+         和上面得统计小方框等等，统统去掉」，并要求「不要隐藏，是直接去掉」。
+         ⛔ 不是 v-show / v-if 隐藏，而是连组件文件带挂载点一并删除（见同一提交的 11 个文件删除）。
+         数据层（getStocksData / loadStocksForDate / remaining-boards）不受影响：
+         stocks 数据仍由 loadAllData 自加载，竞价看板照旧消费它（§6 单一真相未变）。 -->
 
     <WeekendStatsBoard v-show="boardView === 'weekly'" />
     <MonthlyStatsBoard v-show="boardView === 'monthly'" />
 
     <!-- 底部操作栏 -->
+    <!-- 【BOTTOM-BAR 精简 2026-10-26】原右侧 60px 蓝色渐变圆圈「+」（.fab / onAddStock）
+         已整体移除（自选股整套功能下线，见提交说明），腾出的横向空间让日期切换 ◀ ▶
+         右移到栏尾，并把两者间距放宽（原 18px → 24px），点起来不再局促。 -->
     <div class="bottom-bar">
-      <div style="display:flex;align-items:center">
+      <div class="bottom-bar-tools">
         <button
           class="icon-btn"
+          title="导出当前日期股票数据"
           @click="onExport"
         >
           📤
         </button>
         <span
-          style="font-size:16px;margin-left:10px;cursor:pointer;"
+          class="bottom-bar-cloud"
+          title="拉取云端最新数据"
           @click="onPullCloud"
         >☁️</span>
         <button
           class="icon-btn"
-          style="margin-left:20px"
+          title="导入股票数据"
           @click="onImport"
         >
           📥
         </button>
+      </div>
+      <div class="bottom-bar-datenav">
         <button
           class="date-nav-btn"
-          style="margin-left:30px"
+          title="上一个交易日"
           @click="goToPrevTradingDay"
         >
           ◀
         </button>
         <button
           class="date-nav-btn"
-          style="margin-left:18px"
+          title="下一个交易日"
           @click="goToNextTradingDay"
         >
           ▶
         </button>
       </div>
-      <button
-        class="fab"
-        style="margin-left:auto"
-        @click="onAddStock"
-      >
-        +
-      </button>
     </div>
 
     <EditModal
@@ -234,7 +236,6 @@ import { _emit } from '../stores/eventBus.js';
 import { useUiStore } from '../stores/uiStore.js';
 import { showToast } from '../composables/useToast.js';
 import EditModal from '../components/EditModal.vue';
-import HomeStocksView from './HomeStocksView.vue';
 import AuctionBoard from './AuctionBoard.vue';
 import DecisionBoard from './DecisionBoard.vue';
 import TickBoard from './TickBoard.vue';
@@ -253,6 +254,8 @@ import StarStatsBoard from './StarStatsBoard.vue';
 import WeekendStatsBoard from './WeekendStatsBoard.vue';
 import MonthlyStatsBoard from './MonthlyStatsBoard.vue';
 import { useStatsView } from '../composables/useStatsView.js';
+// [BOTTOM-BAR 2026-10-26] 导出功能从已下线的自选股模块搬到 Logic 层，底栏 📤 保持可用。
+import { exportStocksData } from '../logic/stocks/stocks-export.js';
 
 // [STATS-VIEW] 模板由当前日期派生（单一真相源在 useStatsView），手动按钮仅作覆盖。
 const statsView = useStatsView();
@@ -262,10 +265,11 @@ const boardView = statsView.boardView;
 //   直接落在周末/假期（App 打开时当前日期就是非交易日；或午夜自然翻页后重新加载）时，
 //   boardView 一上来就是 'weekly'，watch 不触发 ⇒ body 上永远没有 weekend-mode
 //   ⇒ weekend.css 的 `body.weekend-mode .trading-day-element { display:none !important }` 失效
-//   ⇒ 模式看板 / 最近多板 / 添加股票（HomeStocks）等整片照常显示；而「周末统计页」走的是
+//   ⇒ 模式看板 / 最近多板等整片照常显示；而「周末统计页」走的是
 //   v-show，反倒正常显示 —— 正是用户看到的「假期页面不标准、混着交易日看板」。
-//   ⚠️ 另有一层原因记录在此（本轮不动，仅备查）：DuibanBoard / HomeStocksView 的模板有【多个根节点】，
-//   加在它们身上的 v-show 会被 Vue 静默忽略（非元素根节点），只能靠 weekend-mode 这个 body class 隐藏。
+//   ⚠️ 另有一层原因记录在此（本轮不动，仅备查）：DuibanBoard 的模板有【多个根节点】，
+//   加在它身上的 v-show 会被 Vue 静默忽略（非元素根节点），只能靠 weekend-mode 这个 body class 隐藏。
+//   （原文还提到 HomeStocksView 同为此症 —— 该组件已于 2026-10-26 整体下线，故删去。）
 watch(boardView, (mode) => {
   if (mode && mode !== 'trading') document.body.classList.add('weekend-mode');
   else document.body.classList.remove('weekend-mode');
@@ -276,7 +280,6 @@ onUnmounted(() => {
   document.body.classList.remove('weekend-mode');
 });
 
-const stocksRef = ref(null);
 const uiStore = useUiStore();
 // [A4-04] 移除冗余 currentDate：getCurrentDate() 仅是 useUiStore().currentDate 的包装，
 // uiStore.currentDate || getCurrentDate() 恒等于 uiStore.currentDate，统一走响应式 uiStore。
@@ -351,7 +354,7 @@ onMounted(async () => {
 });
 
 // [A4-01] 移除日期切换的「8 路全量重算广播」。
-// 各看板（Auction/Jiwang/Stats/Bidding/HomeStocks/Emotion/StarStats）均自行
+// 各看板（Auction/Jiwang/Stats/Bidding/Emotion/StarStats）均自行
 // watch(() => uiStore.currentDate) 响应日期切换；ETF/Duiban 经 useBoardData 内部
 // watch(uiStore.currentDate) 重新拉取云端。日期变化已由 setCurrentDate 经响应式
 // uiStore.currentDate 统一驱动，无需 Dashboard 主动广播触发无目的全量重算/重复请求。
@@ -378,15 +381,14 @@ function goToday() {
   if (today) setCurrentDate(today);
 }
 
-function onAddStock() {
-  if (stocksRef.value && stocksRef.value.openModal) {
-    stocksRef.value.openModal();
-  }
-}
+// [BOTTOM-BAR 2026-10-26] 原 onAddStock（打开自选股「添加股票」弹窗）随 HomeStocksView 一并移除。
+//   ⛔ 不是改名或留空壳 —— 入口、函数、弹窗、统计卡、列表全部删掉，避免留下被误当成活的死角。
+
 function onExport() {
-  if (stocksRef.value && stocksRef.value.exportData) {
-    stocksRef.value.exportData();
-  }
+  const r = exportStocksData();
+  // §10：导出失败必须让用户看见，不许"点了没反应"
+  if (!r.ok) showToast('导出失败：' + (r.reason || '未知原因'));
+  else showToast('已导出 ' + r.date + '（' + r.count + ' 条）');
 }
 function onImport() {
   _emit('show-import-modal');

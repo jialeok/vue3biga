@@ -49,18 +49,28 @@
             background: rgba(139, 92, 246, 0.1);
         }
 
-        .fab {
-            width: 60px;
-            height: 60px;
-            background: linear-gradient(135deg, #3b82f6, #2563eb);
-            border-radius: 50%;
+        /* 【BOTTOM-BAR 2026-10-26】删除了原 `.fab`（60×60 蓝色渐变圆圈「+」添加股票按钮）。
+           它随「自选股」整套功能一起下线，⛔ 不是隐藏而是连样式带 DOM 一并删除。
+           腾出的横向空间交给右侧日期切换组，◀ ▶ 右移到栏尾并放宽间距。 */
+
+        /* 左侧后台运维组：📤 导出 / ☁️ 云同步 / 📥 导入 */
+        .bottom-bar-tools {
             display: flex;
             align-items: center;
-            justify-content: center;
-            box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
-            border: none;
-            color: white;
-            font-size: 28px;
+            gap: 14px;
+        }
+
+        .bottom-bar-cloud {
+            font-size: 16px;
             cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+        }
+
+        /* 右侧日期切换组：◀ ▶（原两者间距 18px → 24px，点起来更宽松） */
+        .bottom-bar-datenav {
+            display: flex;
+            align-items: center;
+            gap: 24px;
         }
 
