@@ -511,26 +511,75 @@ function _publish(date, list, cacheable) {
 }
 
 /**
+ * 【纯函数】预热退避到达次数上限后，还能不能继续重算。
+ *
+ * ★ [R20-WARM-GROW 2026-10-26] 这是「题材量比永久不出数据」的判定核心，单独抽出来是为了可测。
+ *
+ * 背景：索引是**按日异步补齐**的，`_readyDays` 单调不减（只加不丢）。
+ *   · 池空场景（`cheapCase = true`，本次 0 请求）：只要索引还在长 ⇒ 数据还在路上 ⇒ 重置退避继续算。
+ *     收敛性有保证：`_readyDays` 上界 = `probeDates.length`，涨到头就不满足 `>`，自然停。
+ *   · 已精算场景（`cheapCase = false`）：每次重算都要再打一批同花顺 K 线 ⇒ 到上限必须停（§32）。
+ *
+ * @param {{n:number, readyDays:number}} st  当前重试状态（n = 已重试次数）
+ * @param {number} readyDays                 本次观测到的「索引已就绪天数」
+ * @param {boolean} cheapCase                本次重试是否 0 请求（候选池为空 ⇒ 只读内存）
+ * @returns {'continue'|'reset'|'stop'} continue = 未到上限，正常退避；reset = 索引在长，退避次数归零；stop = 真放弃
+ */
+export function decideWarmRetry(st, readyDays, cheapCase) {
+  const n = Number(st && st.n) || 0;
+  if (n < WARM_RETRY_DELAYS.length) return 'continue';
+  if (!cheapCase) return 'stop';
+  const prevRaw = (st && st.readyDays !== undefined) ? st.readyDays : -1;
+  const prev = Number(prevRaw);
+  const now = Number(readyDays);
+  // ⚠️ 严格大于：索引停在原地（真的没有更多名单数据）⇒ 停，⛔ 别用 >= 变成无限轮询
+  return (isFinite(now) && now > prev) ? 'reset' : 'stop';
+}
+
+/**
  * [R20-WARM] 索引预热期结束后自动重算（退避 4 次封顶）。
  *
  * ⛔ 为什么不能指望 watch 再触发：`useAuctionBoard` 的 watch 盯的是
  *   「`uiStore.currentDate` + 展示日行数」，而**历史日索引补齐不会改变展示日的行数**
  *   ⇒ 池从 43 涨到 424 时一次触发都没有，缓存（或那次错结论）就永久留在屏幕上。
+ *
+ * ★★ [R20-WARM-GROW 2026-10-26 用户报障「题材量比一直不产出」] 封顶规则分两档：
+ *
+ *   · `cheapCase = true`（候选池为空，本次**一个请求都没发**）：
+ *       封顶后**不放弃**，改看「索引是否还在长」—— 索引只加不减、按日补齐 ⇒ `readyDays` 单调，
+ *       只要它比上次大就说明数据还在路上，重置退避继续重算；等它稳定后仍为空，才是真的没数据。
+ *       ⚠️ 这里重试是 0 请求（只读内存索引），放宽不违反 §32。
+ *   · `cheapCase = false`（已烧过 K 线精算、只是索引未预热）：
+ *       保持原 4 次封顶 —— 每次重算都会再打一批同花顺 K 线，无限重试就是 §32 红线。
+ *       这条链路有别的兜底：补齐完成后 `auction-sync-pull` 会 emit('auction-refresh')
+ *       ⇒ 看板 bumpVersion ⇒ 重新调用本函数（此时 `_warm` 已为 true，结论才会进缓存）。
  */
-function _scheduleWarmRetry(date, readyDays, totalDays) {
-  const st = _warmRetry.get(date) || { n: 0, timer: 0 };
-  if (st.n >= WARM_RETRY_DELAYS.length) return;   // 封顶：剩下的日子可能本来就没有名单数据
+function _scheduleWarmRetry(date, readyDays, totalDays, cheapCase) {
+  const st = _warmRetry.get(date) || { n: 0, timer: 0, readyDays: -1 };
+  const verdict = decideWarmRetry(st, readyDays, cheapCase);
+  if (verdict === 'stop') {
+    _dbgLog('[RANGE20-TOP5-WARM] ' + date + ' 索引停在 ' + readyDays + '/' + totalDays
+      + ' 且不再增长 ⇒ 停止重算（剩下的日子可能本来就没有名单数据）');
+    return;
+  }
+  if (verdict === 'reset') {
+    _dbgLog('[RANGE20-TOP5-WARM] ' + date + ' 索引仍在增长（' + st.readyDays + '→' + readyDays
+      + '/' + totalDays + '）⇒ 重置退避继续重算（池空，本次 0 请求）');
+    st.n = 0;
+  }
   const delay = WARM_RETRY_DELAYS[st.n];
   if (st.timer) clearTimeout(st.timer);
+  st.readyDays = Number(readyDays);
   st.timer = setTimeout(function() {
-    _warmRetry.set(date, { n: st.n + 1, timer: 0 });
+    _warmRetry.set(date, { n: st.n + 1, timer: 0, readyDays: st.readyDays });
     Promise.resolve(ensureRange20Leaders(date, { force: true })).catch(function(e) {
       _dbgLog('[RANGE20-TOP5-WARM] ' + date + ' 预热重算失败（下次再试）: ' + (e && e.message || e));
     });
   }, delay);
   _warmRetry.set(date, st);
   _dbgLog('[RANGE20-TOP5-WARM] ' + date + ' 索引就绪 ' + readyDays + '/' + totalDays
-    + ' ⇒ 本次结论不缓存，' + (delay / 1000) + 's 后第 ' + (st.n + 1) + ' 次重算');
+    + ' ⇒ 本次结论不缓存，' + (delay / 1000) + 's 后第 ' + (st.n + 1) + ' 次重算'
+    + (cheapCase ? '（池空 · 0 请求，索引继续长就继续算）' : '（已精算 · 封顶 4 次）'));
 }
 
 /** 日期闸门（未来日 / 非交易日 ⇒ 不产出数据，与 range20.js/_notTradable 同口径） */
@@ -617,8 +666,11 @@ export async function ensureRange20Leaders(date, opts) {
     if (pool.length === 0) {
       // 正式列表索引还没就绪（§10：未就绪 ≠ 没有股票）⇒ 不发布「空结论」
       _dbgLog('[RANGE20-TOP5] ' + date + ' 候选池为空（正式列表索引可能未就绪），本次不产出');
-      // [R20-WARM] 同样起退避重算：索引补齐不改展示日行数 ⇒ 不能只靠 watch
-      _scheduleWarmRetry(date, _readyDays, probeDates.length);
+      // [R20-WARM] 同样起退避重算：索引补齐不改展示日行数 ⇒ 不能只靠 watch。
+      // ★ [R20-WARM-GROW 2026-10-26] 第 4 参 true = 池空场景（本次 0 请求）⇒ 索引继续长就继续重算，
+      //   不封顶。这是「题材量比永久不出数据」的第二道锁：旧实现 4 次(共 103s)后彻底放弃，
+      //   而历史补齐要到首屏 10s + 空闲 + 拉取之后才完成，必然错过这个窗口。
+      _scheduleWarmRetry(date, _readyDays, probeDates.length, true);
       return _state.value.list;
     }
     // 🔴 这里要【两份】baseLegs，用途严格分离（2026-10-19 实测踩过，⛔ 别合成一份）：
@@ -829,7 +881,9 @@ export async function ensureRange20Leaders(date, opts) {
     _poolSig.set(date, poolSig);
     // 🔴 [R20-WARM] 索引没预热完 ⇒ 退避重算（4 次封顶：3s/10s/30s/60s）。
     //   ⛔ 不能只靠 watch 再触发：watch 盯的是「展示日的行数」，历史日索引加载完并不会改行数。
-    if (!_warm) _scheduleWarmRetry(date, _readyDays, probeDates.length);
+    //   ★ 第 4 参 false = 已经烧过 K 线精算 ⇒ 保持封顶（重算会再打一批同花顺，§32）。
+    //     这条链路由「补齐完成 → emit('auction-refresh')」兜底，不依赖时间重试。
+    if (!_warm) _scheduleWarmRetry(date, _readyDays, probeDates.length, false);
     // 🔴 [R20-TOP5-TSWITCH] 记录本次口径 ⇒ 跨 15:00 时据此作废缓存重算（见函数开头）
     _legMode.set(date, legMode);
     // 🔴 [R20-CLOUD] 把本轮真拿到 K 线的票落库 ⇒ 主 toggle 下次打开可 0 请求复用（两个模块共享同一张表）。

@@ -20,7 +20,8 @@ import {
   unionPoolFromDates,
   buildLeaderRankPool,
   pickLeaderFromUsableRows,
-  getRange20LeadersTop10
+  getRange20LeadersTop10,
+  decideWarmRetry
 } from './range20-leaders.js';
 
 describe('常量口径', () => {
@@ -339,5 +340,69 @@ describe('[EBB-MAIN-TOPIC] 前十榜单（主线题材计数用）', () => {
     expect(getRange20LeadersTop10('2026-01-01')).toBe(null);
     expect(getRange20LeadersTop10('')).toBe(null);
     expect(getRange20LeadersTop10(null)).toBe(null);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════
+// [R20-WARM-GROW 2026-10-26] 预热退避的「封顶后裁决」—— 用户报障「题材量比一直不产出」的回归护栏
+//
+// 用户原话：「题材量比还是没有加载完成，只加载了早盘竞价……半个钟都没有加载完成」。
+// 根因：候选池来自按日异步补齐的「正式列表索引」，而旧实现 4 次（3s/10s/30s/60s = 103s）后
+//   **永久放弃**；历史补齐要到「首屏 10s + 空闲 + 拉取」之后才完成，必然错过这 103 秒
+//   ⇒ range20 再也不算 ⇒ 题材量比永久停在「候选池为空 ⇒ 本次不产出」。
+// 这组用例锁住三条红线：① 索引还在长就必须继续算（否则永久卡死）
+//                      ② 索引不长了必须停（否则 §32 无限轮询）
+//                      ③ 已经烧过 K 线的场景到上限必须停（否则 §32 重复请求）
+// ══════════════════════════════════════════════════════════════════════════════════
+describe('[R20-WARM-GROW] 预热退避封顶后的裁决（题材量比不产出的回归护栏）', () => {
+  it('未到次数上限 ⇒ continue（不论池空还是已精算，都按正常退避走）', () => {
+    expect(decideWarmRetry({ n: 0, readyDays: -1 }, 5, true)).toBe('continue');
+    expect(decideWarmRetry({ n: 3, readyDays: 10 }, 12, true)).toBe('continue');
+    expect(decideWarmRetry({ n: 0, readyDays: -1 }, 5, false)).toBe('continue');
+    expect(decideWarmRetry({ n: 3, readyDays: 10 }, 12, false)).toBe('continue');
+  });
+
+  it('★ 到达上限 + 池空（0 请求）+ 索引仍在长 ⇒ reset（这是「不再永久放弃」的核心）', () => {
+    expect(decideWarmRetry({ n: 4, readyDays: 0 }, 1, true)).toBe('reset');
+    expect(decideWarmRetry({ n: 4, readyDays: 20 }, 45, true)).toBe('reset');
+    // 索引一次补齐 jumps 很大（按日批量补）⇒ 同样要续命
+    expect(decideWarmRetry({ n: 4, readyDays: 1 }, 45, true)).toBe('reset');
+  });
+
+  it('到达上限 + 池空 + 索引停在原地 ⇒ stop（§32：⛔ 不许无限轮询）', () => {
+    expect(decideWarmRetry({ n: 4, readyDays: 45 }, 45, true)).toBe('stop');
+    expect(decideWarmRetry({ n: 4, readyDays: 0 }, 0, true)).toBe('stop');
+    // 索引异常回退（理论上不会，但绝不能因此无限重试）
+    expect(decideWarmRetry({ n: 4, readyDays: 45 }, 40, true)).toBe('stop');
+  });
+
+  it('到达上限 + 已精算（要烧 K 线）⇒ 一律 stop，索引再长也不续（§32 重复请求红线）', () => {
+    expect(decideWarmRetry({ n: 4, readyDays: 0 }, 45, false)).toBe('stop');
+    expect(decideWarmRetry({ n: 4, readyDays: 20 }, 45, false)).toBe('stop');
+  });
+
+  it('首次进入（readyDays 未记录，隐式 -1）且池空 ⇒ 0 > -1 成立，允许一次续命', () => {
+    expect(decideWarmRetry({ n: 4 }, 0, true)).toBe('reset');
+    expect(decideWarmRetry({ n: 4, readyDays: undefined }, 0, true)).toBe('reset');
+  });
+
+  it('收敛性：readyDays 单调涨到上界后就只能 stop（保证不会永远重算）', () => {
+    const total = 45;
+    let st = { n: 4, readyDays: -1 };
+    let rounds = 0;
+    for (let d = 0; d <= total; d++) {
+      const v = decideWarmRetry(st, d, true);
+      if (v === 'stop') break;
+      if (v === 'reset') { st = { n: 4, readyDays: d }; rounds++; }
+    }
+    // 涨到 45 之后 d 不再增加 ⇒ 必然 stop；续命轮数受上界约束，不会无限
+    expect(decideWarmRetry({ n: 4, readyDays: total }, total, true)).toBe('stop');
+    expect(rounds).toBeLessThanOrEqual(total + 1);
+  });
+
+  it('非数 / 空值不炸：readyDays 传脏值按「不增长」处理 ⇒ stop', () => {
+    expect(decideWarmRetry({ n: 4, readyDays: 10 }, NaN, true)).toBe('stop');
+    expect(decideWarmRetry({ n: 4, readyDays: 10 }, null, true)).toBe('stop');
+    expect(decideWarmRetry(null, 5, true)).toBe('continue');   // st 缺失 ⇒ n=0 ⇒ 未到上限
   });
 });

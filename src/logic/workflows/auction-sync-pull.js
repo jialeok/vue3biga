@@ -59,20 +59,41 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
         //   ⇒ 用户感受 = 页面出来了但一直卡、点不动、切日期没反应，十几分钟用不了。
         //
         // 【改法·四条，全部只改"什么时候取/取多深"，⛔ 不改"取什么"，行集合与合并语义零变化】
-        //   ① 【早盘静默】09:10~09:45 一律不启动补齐 —— 那 35 分钟是用户唯一的刚需窗口。
+        //   ① 【早盘静默】09:10~09:26 不启动补齐 —— 只保护 9:25 worker 写库那几分钟。
         //   ② 【深度有界】只补到「题材慢路径索引」需要的那点历史，⛔ 不再把 4 年整表拉下来。
-        //      依据：内存里唯一需要深历史的消费方是 stocks.js#TOPIC_CACHE_DAYS = 66 个交易日
-        //      （`Object.keys(auctionData).sort().slice(-66)`）。66 交易日 ≈ 94 个自然日，
-        //      首屏窗口已给 30 天 ⇒ 再往前补 70 天就够它吃满。更早的日期由
-        //      ensureAuctionDateDataLoaded 按天补拉（幂等 + 单飞，切到哪天补哪天）。
+        //      依据：内存里需要深历史的消费方是 stocks.js#TOPIC_CACHE_DAYS = 66 个交易日
+        //      与 range20.js#RANGE20_PROBE_DAYS = 45 个交易日（20日涨幅前五 / 退潮判定）。
+        //      首屏窗口 30 天 ≈ 21 交易日 ⇒ 再往前 70 自然日 ⇒ 合计 ≈ 68 交易日，够 45 且有余量。
+        //      更早的日期由 ensureAuctionDateDataLoaded 按天补拉（幂等 + 单飞，切到哪天补哪天）。
         //   ③ 【让步】补齐期间分页并发降到 2（首屏仍是 6）—— 宁可慢，也不要和用户操作抢连接。
-        //   ④ 【不无关刷新】补齐的是窗口之前的日期；当前展示日若还在窗口内，这批数据
-        //      对屏幕上一个像素都不影响 ⇒ ⛔ 不再 `_emit('auction-refresh')` 触发整块重渲染。
-        //      旧实现无条件刷，等于用一次"无关变化"打一次全量重算（§22 / §36 性能红线）。
+        //
         // ══════════════════════════════════════════════════════════════════════════════════
-        /** 早盘静默期（北京时间的分钟数）：只做首屏那 4 个请求，⛔ 不做任何后台补齐 */
+        // ★★ [WAKE-CONTRACT 2026-10-26 二次修正] 上一版把 ④ 写成「当前展示日不受影响就不刷新」，
+        //   结果把【主题材量比永久不出数据】的事故做出来了，已回滚该判断。事故复盘：
+        //
+        //   🔴 现象：用户 9:26 打开，早盘竞价有数据，题材量比一直不产出（10:12 仍未出）。
+        //   🔴 链路：题材量比 → ensureRange20Leaders(d) → 需要「正式列表索引」覆盖 45 个交易日
+        //      → 这 45 天【只能】由本段补齐拉进内存（range20 自己不调 ensureAuctionDateDataLoaded）
+        //      → 唤醒它的信号只有两条：① 本段补齐完成后 emit('auction-refresh')
+        //        ② range20 自己的 _scheduleWarmRetry（3s/10s/30s/60s，4 次后永久放弃）
+        //   🔴 病灶：上一版用 `cur < until`（当前展示日 < 30天前）判断"是否受影响"。
+        //      展示日是【今天】时永远 false ⇒ 一次都不 emit；而 _scheduleWarmRetry 早在 9:27 就耗尽
+        //      ⇒ 补齐虽然把 45 天数据拉进了内存，却没有任何人通知题材量比重算
+        //      ⇒ 永久停在「候选池为空 ⇒ 本次不产出」。
+        //   🔴 判断错在哪：把「屏幕那一天」当成唯一消费者，漏掉了【深历史消费者】
+        //      （20日涨幅前五 45 个交易日 / 退潮判定 / 决策看板）。
+        //
+        //   ✅ 正确契约：补齐一旦真的补进了日期，就必须发一次「历史索引已就绪」通知。
+        //      这不是"无关刷新"—— 整个会话只发生一次（_olderPullStarted 保证），
+        //      不是每个 tick 都刷，§22「高频数据增量化」管的是高频，不是这一次性加载完成。
+        //      而各看板自己 bumpVersion 后按自己的边界重算（§17 响应式边界不越界）。
+        // ══════════════════════════════════════════════════════════════════════════════════
+        /** 早盘静默期（北京时间的分钟数）：只做首屏那 4 个请求，⛔ 不做任何后台补齐。
+         *  ★ 终点从 9:45 改回 9:26：那 19 分钟让题材量比从「9:36 可用」变成「9:50 可用」，
+         *    正是用户「半个钟都没加载完成」的体感来源。真正治卡顿的是①②③（17.84MB → ~2.7MB），
+         *    不是靠时间段硬拦（§36：不许用延迟执行掩盖问题）。 */
         const MORNING_QUIET_FROM_MIN = 9 * 60 + 10;
-        const MORNING_QUIET_TO_MIN = 9 * 60 + 45;
+        const MORNING_QUIET_TO_MIN = 9 * 60 + 26;
         /** 窗口之外再往前补多少个自然日（≈ 让 TOPIC_CACHE_DAYS=66 交易日吃满；实测 ≈3.5k 行 / 1.2MB） */
         const OLDER_EXTRA_DAYS = 70;
         /** 补齐期间的分页并发（首屏仍是 6）—— 后台任务必须让步 */
@@ -118,15 +139,20 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
                 })
                     .then(function(older) {
                         const n = older ? Object.keys(older).length : 0;
-                        // ④ 只有当前展示日落在补齐区间内时，这批数据才会影响屏幕 ⇒ 才刷新。
-                        const cur = useUiStore().currentDate;
-                        const affected = !!(cur && cur < until);
-                        if (affected) {
-                            Object.keys(_signalCache).forEach(function(k) { delete _signalCache[k]; });
-                            _emit('auction-refresh');
+                        if (n === 0) {
+                            // 空手而归（这 70 天云端本来就没有行）⇒ 没有新索引，不必打扰任何看板
+                            _dbgLog('[AUCTION-PULL] 历史后台补齐：' + olderSince + '~' + until + ' 无新日期，跳过刷新');
+                            return;
                         }
+                        // ★ [WAKE-CONTRACT 2026-10-26] 必须发，且与「当前展示日」无关。
+                        //   20日涨幅前五要 45 个交易日索引才能算（range20.js#RANGE20_PROBE_DAYS），
+                        //   而它只从内存读索引、自己不补拉 ⇒ 本段是它唯一的数据入口。
+                        //   漏发这一次 = 题材量比 / 退潮判定永久停在「候选池为空」（本次事故根因）。
+                        //   ⚠️ 整个会话只发生一次（_olderPullStarted 保证），不是高频刷新。
+                        Object.keys(_signalCache).forEach(function(k) { delete _signalCache[k]; });
+                        _emit('auction-refresh');
                         _dbgLog('[AUCTION-PULL] 历史后台补齐完成：再载入 ' + n + ' 天（' + olderSince + '~' + until +
-                            '，首屏未阻塞，' + (affected ? '当前日受影响 → 已刷新' : '当前日不受影响 → 未刷新') + '）');
+                            '，首屏未阻塞）⇒ 已发 auction-refresh 唤醒 20日涨幅前五 / 题材量比 / 退潮判定重算');
                     })
                     .catch(function(e) {
                         _dbgLog('[AUCTION-ERR] pullAuctionFromTable(older) ' + (e && e.message || e));
