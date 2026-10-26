@@ -88,6 +88,9 @@ export function _setGetSupabaseFn(fn) { _getSupabaseFn = fn; }
          * @param {Object} [opts]
          *   · opts.sinceDate  —— 只拉 date >= sinceDate（首屏快加载：近 30 天窗口）
          *   · opts.untilDate  —— 只拉 date <  untilDate（后台补齐：更早的历史）
+         *   · opts.concurrency —— ★ [OLDER-YIELD 2026-10-26] 本次分页并发度（缺省 = _PAGE_CONCURRENCY 6）。
+         *       用途：后台补齐属于「可以慢、不能抢」的任务 —— 传 2，避免和用户看盘时的请求抢连接。
+         *       ⛔ 只影响"怎么取"，不影响"取什么"：行集合、合并顺序、写内存语义全部不变。
          *   两者都不传 = 全表拉取（行为同改造前）。组合使用即「窗口 + 后台」两阶段。
          *   ⚠️ §11 删除安全：本函数只做「读 + 按日期灌内存」，日期窗口变小绝不会
          *      导致云端任何一行被删除——写路径全部是按日期 patch / upsert。
@@ -95,6 +98,10 @@ export function _setGetSupabaseFn(fn) { _getSupabaseFn = fn; }
 export async function pullAuctionFromTable(opts) {
             const sinceDate = (opts && opts.sinceDate) || '';
             const untilDate = (opts && opts.untilDate) || '';
+            // ★ [OLDER-YIELD 2026-10-26] 分页并发度缺省不传 ⇒ _fetchAllPages 用默认 6（首屏行为零变化）
+            const _pageOpts = (opts && Number(opts.concurrency) > 0)
+                ? { concurrency: Math.max(1, Math.floor(Number(opts.concurrency))) }
+                : undefined;
             const sb = _getSupabaseFn();
             const result = {};
             // 阶段四 Bug 6 收尾修复：不能 _auctionMemCache = {} 重新赋值，否则会切断
@@ -142,7 +149,7 @@ export async function pullAuctionFromTable(opts) {
             await Promise.all([
                 (async function() {
                     try {
-                        watchlistRows = await _fetchAllPages(_buildWatchlistQuery);
+                        watchlistRows = await _fetchAllPages(_buildWatchlistQuery, _pageOpts);
                         state._auctionTableAvailable = true;
                     } catch (e) {
                         watchlistError = e;
@@ -151,7 +158,7 @@ export async function pullAuctionFromTable(opts) {
                 })(),
                 (async function() {
                     try {
-                        metricsRows = await _fetchAllPages(_buildMetricsQuery);
+                        metricsRows = await _fetchAllPages(_buildMetricsQuery, _pageOpts);
                         state._marketMetricsTableAvailable = true;
                     } catch (e) {
                         metricsError = e;
@@ -160,7 +167,7 @@ export async function pullAuctionFromTable(opts) {
                 })(),
                 (async function() {
                     try {
-                        hotRows = await _fetchAllPages(_buildHotQuery);
+                        hotRows = await _fetchAllPages(_buildHotQuery, _pageOpts);
                     } catch (e) {
                         hotError = e;
                     }

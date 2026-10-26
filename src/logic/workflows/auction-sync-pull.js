@@ -46,26 +46,104 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
          */
         const OLDER_PULL_DELAY_MS = 10000;
 
+        // ══════════════════════════════════════════════════════════════════════════════════
+        // ★★ [MORNING-QUIET / OLDER-BOUND 2026-10-26 用户报障「9:26 打开，到 9:36 都没打开成功，很卡」]
+        //
+        // 🔴 【实测证据】（.tmpdiag/perf-boot.cjs / perf-tables.cjs，2026-10-26 真实库）
+        //   · 首屏窗口拉取（sinceDate = 30 个自然日）：4 个请求 / 1,968 行 / 0.54MB / 4.2s —— 没问题。
+        //   · 下面这段「更早历史补齐」：**67 个请求 / 65,971 行 / 17.84MB / 桌面 14.3s**
+        //     （auction_watchlist 旧 11,521 行 3.57MB + market_metrics 旧 54,450 行 14.27MB）。
+        //     手机上要几分钟：17.84MB 下载 + 主线程 JSON.parse 6.6 万行 + 逐日合并。
+        //   · 它原来在首屏后 10 秒（≈ 09:26:10）无条件启动 —— 正好压在
+        //     ① worker 9:25 写库最忙（实测单页最慢 3s）、② 用户正在看盘 这个窗口上。
+        //   ⇒ 用户感受 = 页面出来了但一直卡、点不动、切日期没反应，十几分钟用不了。
+        //
+        // 【改法·四条，全部只改"什么时候取/取多深"，⛔ 不改"取什么"，行集合与合并语义零变化】
+        //   ① 【早盘静默】09:10~09:45 一律不启动补齐 —— 那 35 分钟是用户唯一的刚需窗口。
+        //   ② 【深度有界】只补到「题材慢路径索引」需要的那点历史，⛔ 不再把 4 年整表拉下来。
+        //      依据：内存里唯一需要深历史的消费方是 stocks.js#TOPIC_CACHE_DAYS = 66 个交易日
+        //      （`Object.keys(auctionData).sort().slice(-66)`）。66 交易日 ≈ 94 个自然日，
+        //      首屏窗口已给 30 天 ⇒ 再往前补 70 天就够它吃满。更早的日期由
+        //      ensureAuctionDateDataLoaded 按天补拉（幂等 + 单飞，切到哪天补哪天）。
+        //   ③ 【让步】补齐期间分页并发降到 2（首屏仍是 6）—— 宁可慢，也不要和用户操作抢连接。
+        //   ④ 【不无关刷新】补齐的是窗口之前的日期；当前展示日若还在窗口内，这批数据
+        //      对屏幕上一个像素都不影响 ⇒ ⛔ 不再 `_emit('auction-refresh')` 触发整块重渲染。
+        //      旧实现无条件刷，等于用一次"无关变化"打一次全量重算（§22 / §36 性能红线）。
+        // ══════════════════════════════════════════════════════════════════════════════════
+        /** 早盘静默期（北京时间的分钟数）：只做首屏那 4 个请求，⛔ 不做任何后台补齐 */
+        const MORNING_QUIET_FROM_MIN = 9 * 60 + 10;
+        const MORNING_QUIET_TO_MIN = 9 * 60 + 45;
+        /** 窗口之外再往前补多少个自然日（≈ 让 TOPIC_CACHE_DAYS=66 交易日吃满；实测 ≈3.5k 行 / 1.2MB） */
+        const OLDER_EXTRA_DAYS = 70;
+        /** 补齐期间的分页并发（首屏仍是 6）—— 后台任务必须让步 */
+        const OLDER_PULL_CONCURRENCY = 2;
+
+        /** 北京时间的分钟数（与 morning-sync.js 同口径；⛔ 不受设备时区影响） */
+        function _beijingMinutesNow() {
+            const d = new Date();
+            const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+            return local.getUTCHours() * 60 + local.getUTCMinutes();
+        }
+
+        /** 日期字符串平移 N 天（UTC 运算，⛔ 不用本地时区，避免跨时区漂一天） */
+        function _shiftDateStr(dateStr, deltaDays) {
+            const p = String(dateStr).split('-');
+            const t = Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+            return new Date(t + deltaDays * 86400000).toISOString().slice(0, 10);
+        }
+
         function _scheduleOlderAuctionPull(sinceDate) {
             if (_olderPullStarted) return;
             _olderPullStarted = true;
             const _runOlderPull = function() {
-                pullAuctionFromTable({ untilDate: sinceDate })
+                // ④ 页面不可见（手机切后台/锁屏）⇒ 先不补，避免白耗流量；等切回前台再补一次。
+                if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+                    _dbgLog('[AUCTION-PULL] 页面不可见 ⇒ 暂缓历史补齐（切回前台后补一次；在那之前切老日期由按天补拉兜底）');
+                    try {
+                        const _onVis = function() {
+                            if (document.visibilityState !== 'visible') return;
+                            document.removeEventListener('visibilitychange', _onVis);
+                            setTimeout(_runOlderPull, 3000);
+                        };
+                        document.addEventListener('visibilitychange', _onVis);
+                    } catch (e) { /* 事件挂不上就彻底放弃补齐（按天补拉仍可兜底，§10 不静默失败） */ }
+                    return;
+                }
+                const until = sinceDate;
+                const olderSince = _shiftDateStr(until, -OLDER_EXTRA_DAYS);
+                pullAuctionFromTable({
+                    sinceDate: olderSince,
+                    untilDate: until,
+                    concurrency: OLDER_PULL_CONCURRENCY
+                })
                     .then(function(older) {
                         const n = older ? Object.keys(older).length : 0;
-                        if (n > 0) {
-                            // 历史快照就绪会改变竞昨/并行等信号结果，必须清信号缓存避免缓存命中旧的 0
+                        // ④ 只有当前展示日落在补齐区间内时，这批数据才会影响屏幕 ⇒ 才刷新。
+                        const cur = useUiStore().currentDate;
+                        const affected = !!(cur && cur < until);
+                        if (affected) {
                             Object.keys(_signalCache).forEach(function(k) { delete _signalCache[k]; });
                             _emit('auction-refresh');
                         }
-                        _dbgLog('[AUCTION-PULL] 历史后台补齐完成：再载入 ' + n + ' 天（首屏未阻塞）');
+                        _dbgLog('[AUCTION-PULL] 历史后台补齐完成：再载入 ' + n + ' 天（' + olderSince + '~' + until +
+                            '，首屏未阻塞，' + (affected ? '当前日受影响 → 已刷新' : '当前日不受影响 → 未刷新') + '）');
                     })
                     .catch(function(e) {
                         _dbgLog('[AUCTION-ERR] pullAuctionFromTable(older) ' + (e && e.message || e));
                     });
             };
-            // 先让首屏独占连接池 OLDER_PULL_DELAY_MS，再挑浏览器空闲的时刻开始补齐。
+            // ① 早盘静默：落在这段时间里 ⇒ 把整个补齐推迟到静默期结束之后
+            const nowMin = _beijingMinutesNow();
+            const inQuiet = nowMin >= MORNING_QUIET_FROM_MIN && nowMin <= MORNING_QUIET_TO_MIN;
+            const waitMs = inQuiet
+                ? Math.max(OLDER_PULL_DELAY_MS, (MORNING_QUIET_TO_MIN - nowMin) * 60 * 1000)
+                : OLDER_PULL_DELAY_MS;
+            if (inQuiet) {
+                _dbgLog('[AUCTION-PULL] 早盘静默期（' + Math.floor(nowMin / 60) + ':' + String(nowMin % 60).padStart(2, '0') +
+                    '）⇒ 历史补齐推迟 ' + Math.round(waitMs / 60000) + ' 分钟后开始');
+            }
             setTimeout(function() {
+                // ③ 先让首屏独占连接池，再挑浏览器空闲的时刻开始补齐。
                 if (typeof requestIdleCallback === 'function') {
                     try {
                         requestIdleCallback(_runOlderPull, { timeout: 5000 });
@@ -73,7 +151,7 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
                     } catch (e) { /* 降级到下面的直接执行 */ }
                 }
                 _runOlderPull();
-            }, OLDER_PULL_DELAY_MS);
+            }, waitMs);
         }
 
         // ============================================================
