@@ -233,26 +233,66 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
         }
 
         // 根据核心词匹配题材
+        //
+        // ── [PERF §22 2026-10-26] 两级缓存（CPU profile 实测自身耗时 760ms，是全应用最大单项）──────
+        // 🔴 定位：.tmpdiag/cdp-profile.cjs 抓启动 profile，`index:3:34730` 的 forEach 回调
+        //    自身耗时 **760ms**，即本函数里 `coreTopics.forEach(...)` 的每一项：
+        //      · 每次调用都要对 34 个核心词的 name + 每个同义词各做一次 `toLowerCase()`
+        //        （核心词表含同义词共 400+ 条）⇒ 单次调用 ≈ 500 次字符串分配；
+        //      · 而本函数被「每个题材 × 每个交易日 × 每个看板」反复调用（分组、上榜次数、一字补题材）。
+        //    ⇒ 纯 CPU 浪费，与数据量无关，**换成任何机型都一样慢**。
+        // ✅ 修法（语义逐字不变，只去掉重复计算）：
+        //    ① 【字典缓存】按 coreTopics 的「数组引用 + 长度」重建一份**已小写**的字典
+        //       （与下方 _coreTopicsRawOf 同一套失效判据：引用变了就是内容变了）；
+        //    ② 【结果缓存】以「小写题材名」为键把匹配结果存进 Map ——
+        //       题材名是有限词表（几百个），预热后每次都是 O(1)。
+        // ⚠️ 返回的仍然是**新数组**（与原实现契约一致），⛔ 不把缓存数组直接交出去，
+        //    避免调用方原地 push 污染后续所有调用。
+        let _m2cRef = null;
+        let _m2cLen = -1;
+        let _m2cDict = [];              // [{ name, nameLower, synsLower[] }]
+        let _m2cMemo = new Map();       // topicLower → string[]
+
+        function _ensureMatchDict(coreTopics) {
+            if (coreTopics === _m2cRef && coreTopics.length === _m2cLen) return;
+            _m2cRef = coreTopics;
+            _m2cLen = coreTopics.length;
+            _m2cDict = coreTopics.map(function(core) {
+                const syns = Array.isArray(core.synonyms) ? core.synonyms : [];
+                return {
+                    name: core.name,
+                    nameLower: String(core.name).toLowerCase(),
+                    synsLower: syns.map(function(s) { return String(s).toLowerCase(); })
+                };
+            });
+            _m2cMemo = new Map();   // 核心词表一变，旧的匹配结果全部作废
+        }
+
         export function matchTopicToCore(topic, coreTopics) {
+            if (!topic || !coreTopics || coreTopics.length === 0) return [];
+            const topicLower = String(topic).toLowerCase();
+            _ensureMatchDict(coreTopics);
+
+            const hit = _m2cMemo.get(topicLower);
+            if (hit) return hit.slice();
+
             const matchedCores = [];
-            const topicLower = topic.toLowerCase();
-            
-            coreTopics.forEach(core => {
-                if (topicLower.includes(core.name.toLowerCase())) {
+            for (let i = 0; i < _m2cDict.length; i++) {
+                const core = _m2cDict[i];
+                if (topicLower.includes(core.nameLower)) {
                     matchedCores.push(core.name);
-                    return;
+                    continue;
                 }
-                if (core.synonyms && core.synonyms.length > 0) {
-                    for (let syn of core.synonyms) {
-                        if (topicLower.includes(syn.toLowerCase())) {
-                            matchedCores.push(core.name);
-                            return;
-                        }
+                const syns = core.synsLower;
+                for (let j = 0; j < syns.length; j++) {
+                    if (topicLower.includes(syns[j])) {
+                        matchedCores.push(core.name);
+                        break;
                     }
                 }
-            });
-            
-            return matchedCores;
+            }
+            _m2cMemo.set(topicLower, matchedCores);
+            return matchedCores.slice();
         }
 
         // ============ 题材上榜次数缓存（性能优化） ============

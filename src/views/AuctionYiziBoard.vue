@@ -77,12 +77,27 @@
       </div>
 
       <!-- 空态：唯一出口走 emptyText（区分「正在加载这一天」/「等到 9:25」/「这一天确实没有」）。
-           ⛔ 日期未对齐时绝不渲染另一天的行 —— 那是把上一天的一字池冒充成这一天。 -->
+           ⛔ 日期未对齐时绝不渲染另一天的行 —— 那是把上一天的一字池冒充成这一天。
+           ★ [YIZI-THS 2026-10-26] 同花顺 9:25 快照补数入口：猫抓 daily_auc_fd 连续超时
+             （10-23 / 10-26 均 25s×2 全部超时）时，这是唯一能让看板当天出数的通道，
+             且 **不消耗猫爪额度**（用户要求把猫爪额度留给早盘竞价看板）。
+             ⛔ 只补今天（快照接口只有当日数据）；库里已有猫抓数据时逻辑层直接拒绝覆盖。 -->
       <div
         v-if="!hasAnyData"
         class="yizi-empty"
       >
         {{ emptyText }}
+        <div class="yizi-ths-row">
+          <span
+            class="yizi-ths-btn"
+            :class="{ 'is-busy': thsBusy }"
+            @click.stop="onThsPatch"
+          >{{ thsBusy ? '补齐中…' : '用同花顺补今日 9:25 快照' }}</span>
+          <span
+            v-if="thsHint"
+            class="yizi-ths-hint"
+          >{{ thsHint }}</span>
+        </div>
       </div>
 
       <template v-else>
@@ -430,10 +445,14 @@
 </template>
 
 <script setup>
+import { ref, watch } from 'vue';
 import EditModal from '../components/EditModal.vue';
 // 趋势曲线：与「早盘竞价看板」同一个展示组件（纯 SVG 折线，props: points/color/percent）
 import TrendChart from '../components/TrendChart.vue';
 import { useAuctionYizi } from '../composables/useAuctionYizi.js';
+import { showToast } from '../composables/useToast.js';
+import { patchTodayYiziFromThs } from '../logic/yizi/ths-snapshot.js';
+import { beijingTodayStr } from '../logic/yizi/yizi-board.js';
 
 const {
   state,
@@ -483,6 +502,73 @@ const {
   trendEmpty,
   toggleYiziTrend
 } = useAuctionYizi();
+
+// ── 同花顺 9:25 快照补数（详见 logic/yizi/ths-snapshot.js 文件头） ──────────────
+// 只在「空态」出现，逻辑层负责全部判据与写入；本处仅做点击态与结果提示（§3 UI 层不写业务）。
+const thsBusy = ref(false);
+const thsHint = ref('');
+async function onThsPatch() {
+  if (thsBusy.value) return;
+  thsBusy.value = true;
+  thsHint.value = '';
+  try {
+    const r = await patchTodayYiziFromThs();
+    thsHint.value = r.message || '';
+    if (r.ok) {
+      showToast(r.message);
+      await refresh();          // 重新读库（Data 层写入时已 bust 缓存，这里是立即重渲染）
+    } else {
+      showToast('补数未成功：' + (r.reason || '未知原因'));
+    }
+  } catch (e) {
+    thsHint.value = '补数失败：' + (e && e.message || e);
+    showToast(thsHint.value);
+  } finally {
+    thsBusy.value = false;
+  }
+}
+
+// ── 自动补数（静默，无需用户每天手点）────────────────────────────────────────
+// 🔴 猫抓 daily_auc_fd 一旦当天没抓成功，这张表整天就是空的（10-23 / 10-26 实测）。
+//    本看板只要能出数，用户就不该关心是哪个数据源补的 ⇒ 空态时自动尝试一次。
+// 三条约束（缺一条都可能写出错数据或白烧请求）：
+//   ① 只在「看的就是今天」时补 —— 快照接口只有当日数据（逻辑层也会再挡一次）；
+//   ② 库里已有行 ⇒ 逻辑层直接拒绝，所以重复调用是安全的；
+//   ③ 最多每 60 秒试一次：早盘竞价 9:25 之前涨停池可能还是空的，
+//      定时重试才能让它在池子长出来的那一刻补上（⛔ 不是"试一次就永久放弃"）。
+const AUTO_RETRY_MS = 60 * 1000;
+let _autoLastAt = 0;
+let _autoBusy = false;
+async function _autoPatchOnce() {
+  if (_autoBusy) return;
+  if (Date.now() - _autoLastAt < AUTO_RETRY_MS) return;
+  if (state.loading || hasAnyData.value) return;
+  if (state.date !== beijingTodayStr()) return;
+  _autoBusy = true;
+  _autoLastAt = Date.now();
+  try {
+    const r = await patchTodayYiziFromThs();
+    if (r.ok) {
+      thsHint.value = r.message;
+      await refresh();
+    }
+    // 失败不弹 toast（自动路径不该打扰用户）；原因留在 thsHint 里，
+    // 用户点「用同花顺补今日 9:25 快照」时可再看到一次。
+    else if (r.reason) thsHint.value = r.reason;
+  } catch (e) {
+    // §10：自动路径失败也不静默吞掉，写进提示行
+    thsHint.value = '自动补数失败：' + (e && e.message || e);
+  } finally {
+    _autoBusy = false;
+  }
+}
+watch(
+  [() => state.loading, () => state.date, () => hasAnyData.value],
+  function () { _autoPatchOnce(); },
+  { immediate: true }
+);
+// 日期切回今天时也要能再补（否则当天第一次失败后就再也不试了）
+watch(() => state.date, function () { _autoLastAt = 0; });
 
 defineExpose({ refresh });
 </script>

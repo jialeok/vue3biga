@@ -115,6 +115,34 @@
             text-align: center;
         }
 
+        /* [YIZI-THS 2026-10-26] 同花顺 9:25 快照补数入口（空态里的一行淡字 + 可点链接）。
+           ⛔ 不做成按钮块 / 不要深色底 —— 与「早盘竞价」那条补数提示同一视觉口径
+              （用户明确说过「黑色的块太难看」）。 */
+        .yizi-ths-row {
+            margin-top: 8px;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            font-size: 11px;
+            color: #94a3b8;
+        }
+        .yizi-ths-btn {
+            color: #2563eb;
+            cursor: pointer;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
+        .yizi-ths-btn.is-busy {
+            color: #94a3b8;
+            cursor: default;
+            text-decoration: none;
+        }
+        .yizi-ths-hint {
+            color: #94a3b8;
+        }
+
         .yizi-section-title {
             display: flex;
             align-items: center;
