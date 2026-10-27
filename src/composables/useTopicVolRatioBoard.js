@@ -213,7 +213,9 @@ function _empty(reason) {
       ebbBuy: null,
       ebbDayRow: null,
       // ★★ [WEAK-HUDDLE 2026-10-27] 未就绪时同样不给「弱势切抱团」买点（§10 未就绪 ≠ 今天没有抱团票）
-      weakHuddle: null
+      weakHuddle: null,
+      // ★★ [CATCH-UP 2026-10-27] 第三十一条同理（§10 未就绪 ≠ 今天没有补涨题材）
+      catchUp: null
     }
   };
 }
@@ -1139,7 +1141,9 @@ export function useTopicVolRatioBoard() {
         plan.range10Backup ? [plan.range10Backup] : [],
         // ★★ [WEAK-HUDDLE 2026-10-27] 第三十条的「弱势切抱团」同样要拿分笔（它也在灰化容器之外）——
         //   ⛔ 漏掉它，那只票点开就是「分笔明细暂不可用」（装饰只有这一处，§6）
-        plan.weakHuddle ? [plan.weakHuddle] : []];
+        plan.weakHuddle ? [plan.weakHuddle] : [],
+        // ★★ [CATCH-UP 2026-10-27] 第三十一条的「补涨题材」同样要拿分笔（它也在灰化容器之外）
+        plan.catchUp ? [plan.catchUp] : []];
       buyBlockLists.forEach(function(arr) {
         arr.forEach(function(b) {
           (b.picks || []).forEach(function(p) {
@@ -1292,6 +1296,14 @@ export function useTopicVolRatioBoard() {
    */
   const weakHuddle = computed(() => (data.value.plan && data.value.plan.weakHuddle) || null);
   /**
+   * ★★ [CATCH-UP 2026-10-27 用户口径] 第三十一条【补涨题材】那一块
+   * （20日涨幅主板第 6~10 名里，灰色题材恰好占 2~3 只，且其中有连板票）。
+   * ⚠️ 与 weakHuddle 同一约定：它【不在 blocks 里】，视图必须渲染在灰化容器【之外】、
+   *   并且排在【弱势切抱团之后】（两条看的是不同名次区间，同一天可能各出一只）。
+   *   数量不达标 / 一只连板都没有 / 判不出 ⇒ null ⇒ 视图 v-if 不渲染（§10）。
+   */
+  const catchUp = computed(() => (data.value.plan && data.value.plan.catchUp) || null);
+  /**
    * ★ [DIVERGE-GATE 2026-10-21] 分歧判定未就绪的门控旗（非 null ⇒ 买点侧渲染「判定计算中」占位、
    *   不渲染旧规则选票 —— 见 data computed 里门控条件的逐条注释）。判不出 / 已就绪 ⇒ null。
    */
@@ -1369,7 +1381,9 @@ export function useTopicVolRatioBoard() {
     // ★★ [WEAK-HUDDLE 2026-10-27] 「弱势切抱团」同理（第三十条，同样不在 blocks 里）
     [blocks.value,
       ebbBuy.value ? [ebbBuy.value] : [],
-      weakHuddle.value ? [weakHuddle.value] : []].forEach(function(arr) {
+      weakHuddle.value ? [weakHuddle.value] : [],
+      // ★★ [CATCH-UP 2026-10-27] 补涨题材同理（第三十一条，同样不在 blocks 里）
+      catchUp.value ? [catchUp.value] : []].forEach(function(arr) {
       arr.forEach(function(b) {
         (b.picks || []).forEach(function(p) {
           if (p && p.name && !seen.has(p.name)) seen.set(p.name, String(p.code || ''));
@@ -1530,6 +1544,8 @@ export function useTopicVolRatioBoard() {
     divergeBuy,
     // ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条「弱势切抱团」买点块（渲染在灰化容器之外、最前面）
     weakHuddle,
+    // ★★ [CATCH-UP 2026-10-27] 第三十一条「补涨题材」买点块
+    catchUp,
     divergePending,
     divergeWaitText,
     // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条「新龙 / 新题材切换日」

@@ -1120,16 +1120,30 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
   //   涨停 = getCloseLimitState（收盘口径，与「连板天梯」同一把尺子），逐日行取自内存 ⇒ 0 请求。
   //   §10：该票在 T-1 没有行 / 涨幅缺失 ⇒ 返 null（**无从判定**）—— 规则层据此【不拦】但会写进说明，
   //     绝不把「没数据」当成「不是涨停」（那会让退潮规则在停牌补位票上静默失效）。
-  const leaderStreakInfo = (function() {
-    try {
-      const m = buildLimitStreakMapForDate(date);
-      const r = m.get(leader.name);
-      if (!r) return null;
-      return { n: Number(r.streak) || 0, label: String(r.label || '') };
-    } catch (e) {
-      return null;   // 连板判定异常 ⇒ 如实当「无从判定」（§10，不猜成趋势）
-    }
+  const _streakMap = (function() {
+    try { return buildLimitStreakMapForDate(date); } catch (e) { return null; }
   })();
+  const leaderStreakInfo = (function() {
+    if (!_streakMap) return null;
+    const r = _streakMap.get(leader.name);
+    if (!r) return null;
+    return { n: Number(r.streak) || 0, label: String(r.label || '') };
+  })();
+  // ★★ [CATCH-UP 2026-10-27 用户口径] 第三十一条【补涨题材】要判「这几只里哪只是连板票」——
+  //   把连板天数挂到【前十富化结果】上（与上面总龙读【同一份】map，⛔ 不重算一遍：那个 map 是
+  //   O(9 天 × 当日全表行)，重复构建纯属浪费）。
+  //   ⚠️ 只在 topicPool 上挂（消费方只有第三十一条）；top5 / newDragonPool 的形状一律不动（§11）。
+  //   §10：该票没有连板记录 ⇒ streak = null（**无从判定**）—— 规则层据此【不选】但会写进说明，
+  //        ⛔ 绝不把「没数据」当成「不是连板」之外的第二种猜测（比如猜成 1 连板）。
+  if (_streakMap) {
+    topicPool.forEach(function(t) {
+      const r = _streakMap.get(t.name);
+      t.streak = r ? (Number(r.streak) || 0) : null;
+      t.streakLabel = r ? String(r.label || '') : '';
+    });
+  } else {
+    topicPool.forEach(function(t) { t.streak = null; t.streakLabel = ''; });
+  }
 
   return {
     ready: true,

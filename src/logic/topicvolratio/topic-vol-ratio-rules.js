@@ -425,6 +425,63 @@ export const WEAK_HUDDLE_TITLE =
   '⚠️ 它同时仍在下面的灰化块里出现一次（那块照旧灰化、不恢复）—— 题材结论与股票结论是两件事。';
 
 /**
+ * ══ 【补涨题材 · 买点】标签组（第三十一条 · 2026-10-27 用户口径）══════════════════════════
+ *
+ * 用户原话：
+ *   「如果20日涨幅（竞价口径），该题材的股票有2-3只处在6-10名中，也就是有该题材的2只或者3只票
+ *    排在后面，那么称做补涨题材，补涨题材一般处在低位，所以很多时候该题材的平均量比不符，
+ *    但是后期涨势却很好，但是选票的时候只选连板票比较强势，所以该题材的选大业股份。」
+ *
+ * ★ 用户随后在 AskUserQuestion 里逐条拍板（2026-10-27，三个都选了【最严格】那一档）：
+ *   ① 口径 = 【严格只数灰色题材本身】（不把该题材股票的其他标签并进来）
+ *      ⇒ 10-23 实测：工业4.0 在 6~10 名里只有大业股份 1 只（另一只成员海得控制没有 20日涨幅行）
+ *        ⇒ 【不达标 ⇒ 当天仍然空仓】。这是用户知情后仍选的结论，⛔ 不要"好心"放宽。
+ *   ② 数量门槛 = 【恰好 2 或 3 只】；4 只以上【不算】补涨题材（那已经是主线，不是低位补涨）。
+ *   ③ 该题材在 6~10 名里【一只连板都没有】⇒ 仍然空仓（严格执行"只选连板票比较强势"，不替补）。
+ *
+ * ⇒ 判据（★ 只在【空仓提醒命中】且【当日既不是退潮首日、也不是总龙首次分歧日】时生效）：
+ *   ① 池子 = 20日涨幅【主板第 CATCH_UP_RANK_FROM ~ CATCH_UP_RANK_TO 名】= 第 6~10 名。
+ *      取 `ebbCtx.topicPool`（前十富化，与「20日涨幅」toggle 同一把尺子、同一份富化，§6）——
+ *      ⛔ 不在这里另排一次名次。
+ *   ② 其中【与灰色题材块同题材】（严格相等，与第三十条同一个判据）的票数必须 == 2 或 3。
+ *   ③ 这些票里【只留连板票】：连板天数（`buildLimitStreakMapForDate`，收盘口径，与「连板天梯」
+ *      同一把尺子，§6）≥ CATCH_UP_MIN_STREAK（2）。streak 未知（null，停牌/缺行）⇒ 不当连板（§10 不猜）。
+ *   ④ 一只连板都没有 ⇒ 仍然空仓（不选、不替补）。
+ *
+ * ⚠️ 与第三十条【弱势切抱团】是两个【不同的名次区间】，互不影响、同一天可能各出一只：
+ *   前三（1~3）⇒ 第三十条；6~10 名且恰好 2~3 只 ⇒ 本条。⛔ 不许互相顶替或合并。
+ * ⛔ 这不是【题材选股】：题材本身仍然退潮（平均量比 < 25）、整段灰化、标签【分歧日不买】；
+ *   本条与第三十条同一条思路 —— 从【市场排名】里选，而不是从题材热度里选。
+ * ⚠️ 为什么是「6~10」而不是「4~10」：4~5 名按用户口径仍属"靠前"，真正处在后段（补涨位）的
+ *   是第 6 名之后；用户原话「排在后面」。
+ */
+export const CATCH_UP_RULE_NO = '三十一';
+/** 动作标签 */
+export const CATCH_UP_TAG = '补涨题材';
+/** 独立买点块的合成题材头 */
+export const CATCH_UP_BLOCK_TOPIC = '补涨题材 · 买点';
+/** 名次区间（含两端）：第 6 名 ~ 第 10 名 */
+export const CATCH_UP_RANK_FROM = 6;
+export const CATCH_UP_RANK_TO = 10;
+/** 数量门槛：恰好 2 或 3 只（4 只以上不算 —— 那已是主线，不是低位补涨） */
+export const CATCH_UP_MIN_COUNT = 2;
+export const CATCH_UP_MAX_COUNT = 3;
+/** 连板天数门槛：1 = 首板，≥2 = 连板（与 limit-streak.js 的 label 口径一致） */
+export const CATCH_UP_MIN_STREAK = 2;
+/**
+ * 配色档（本看板独有）：深橙 —— 与既有五档都不同色：
+ *   琥珀金 ebb-second / 青蓝 r10backup / 洋红 pen / 紫罗兰 weakhuddle / 深墨 ebb-nobuy。
+ * ⛔ 不用红（同页常规【竞价买】是红）；不用绿（绿 = 今天就走）。
+ */
+export const CATCH_UP_TONE = 'catchup';
+/** 悬停说明（文案唯一出处；组件只渲染 Logic 给的值，§21） */
+export const CATCH_UP_TITLE =
+  '第三十一条【补涨题材】：题材已经退潮（平均竞价量比 < 25、整段灰化），但该题材有【2~3 只】票同时' +
+  '落在【20日涨幅主板第 6~10 名】⇒ 说明这个题材处在【低位补涨】阶段，后期涨势往往很好。' +
+  '这类题材【只选连板票】（最强势的那只）。⚠️ 恰好 2~3 只才算；4 只以上属主线、1 只属个别票；' +
+  '一只连板都没有 ⇒ 仍然空仓。';
+
+/**
  * ══ 【总龙首次分歧 · 买点】标签组（第十九轮补丁⑧ · 2026-10-20 用户口径）══════════════════
  *
  * 用户原话：「市场总龙一，第一次出现分歧的时候，是买点。像新华传媒10月19日出现分歧，一般开盘
@@ -1877,6 +1934,202 @@ function _buildWeakHuddleBlock(pool, cashAlert, list, fOpts) {
       (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : '');
   });
   return block;
+}
+
+/**
+ * 连板档位文案（第三十一条专用，§6 单一真相的唯一收口处）。
+ *
+ * ★ 为什么要有这个小函数：decision-collect 富化 20日涨幅前十时已经把 `streakLabel`
+ *   （= `getStreakLabel()` 的输出：「首板 / 二板 / … / 五板」）挂在每个池子元素上。
+ *   ⛔ 规则层不许再自造一套档位表（否则「连板天梯」说『五板』、本看板说『5连板』，
+ *      同一只在两个页面两种说法，用户核对时会对不上）。
+ *   ⚠️ 回退：`streakLabel` 缺失（旧调用方 / 单测夹具没给）时才自拼；
+ *      streak 未知（null）⇒ 返回 ''（§10 不猜、不拿 0 顶替成「趋势」）。
+ *
+ * @param {object} t  池子元素（读 .streakLabel）
+ * @param {number|null} st 已归一化的连板天数
+ * @returns {string} '五板' | '首板' | '5连板' | ''
+ */
+function _streakWord(t, st) {
+  if (st === null || st === undefined || !isFinite(Number(st))) return '';
+  const n = Number(st);
+  if (n < 1) return '';                       // 0 = 趋势（不是连板票）⇒ 不出档位文案，⛔ 不写「0连板」
+  const lb = String((t && t.streakLabel) || '').trim();
+  if (lb) return lb;
+  return n === 1 ? '首板' : (n + '连板');
+}
+
+/**
+ * ══ [CATCH-UP 2026-10-27 用户口径] 第三十一条 · 【补涨题材】买点块 ═════════════════════════
+ *
+ * 用户原话与判据长注释见 CATCH_UP_RULE_NO 那一段（常量区）。
+ * 一句话：空仓提醒命中 ⇒ 灰色题材块里若有【恰好 2~3 只】票落在【20日涨幅主板第 6~10 名】，
+ * 该题材叫【补涨题材】（低位补涨、后期往往很好）⇒ 从这几只里【只选连板票】。
+ *
+ * 结构与 _buildWeakHuddleBlock 完全同款（§6 两步走）：先装行 → finishBuyBlock 算客观数据 →
+ * 覆盖式换动作标签。⛔ 不去改 finishBuyBlock 内部（决策看板共用）。
+ *
+ * @param {Array} topicPool   ebbCtx.topicPool（20日涨幅【前十】富化：name/pct/days/code/topic/rank20/streak）
+ * @param {object} cashAlert  buildCashAlert 的返回（读 .topic = 灰色题材块的题材名）
+ * @param {Array} list        今日题材块（成员行 = 客观数据来源）
+ * @param {object} fOpts      finishBuyBlock 的选项
+ * @returns {{block:object|null, reason:string}} reason = 不渲染的原因（供调用方写说明，§10 不沉默）
+ */
+function _buildCatchUpBlock(topicPool, cashAlert, list, fOpts) {
+  const topic = String((cashAlert && cashAlert.topic) || '').trim();
+  if (!topic) return { block: null, reason: 'no-topic' };
+  // ① 名次区间内 ∧ 严格同题材
+  const inRange = (Array.isArray(topicPool) ? topicPool : []).filter(function(t) {
+    if (!t || !t.name) return false;
+    const r = Number(t.rank20);
+    if (!isFinite(r) || r < CATCH_UP_RANK_FROM || r > CATCH_UP_RANK_TO) return false;
+    return String(t.topic || '').trim() === topic;
+  });
+  if (inRange.length === 0) return { block: null, reason: 'none' };
+  // ② 数量门槛：恰好 2~3 只（4 只以上 = 已是主线，不是低位补涨）
+  if (inRange.length < CATCH_UP_MIN_COUNT || inRange.length > CATCH_UP_MAX_COUNT) {
+    return { block: null, reason: 'count', count: inRange.length };
+  }
+  // ③ 只留连板票（streak 未知 ⇒ 不算连板，§10 不猜）
+  //   ⚠️ 必须显式挡 null / undefined / ''：`Number(null)` = 0、`Number('')` = 0 ⇒ 会被当成「趋势」，
+  //      而「趋势」与「读不到」在文案上是两回事（§10：未知 ≠ 没有）。
+  const streakOf = function(t) {
+    if (!t || t.streak === null || t.streak === undefined || t.streak === '') return null;
+    const n = Number(t.streak);
+    return isFinite(n) ? n : null;
+  };
+  const hits = inRange.filter(function(t) {
+    const st = streakOf(t);
+    return st !== null && st >= CATCH_UP_MIN_STREAK;
+  });
+  if (hits.length === 0) return { block: null, reason: 'no-streak', count: inRange.length, inRange: inRange };
+
+  const buyPicks = hits.map(function(t) {
+    const st = streakOf(t);
+    return {
+      name: String(t.name).trim(),
+      label: '',
+      topic: t.topic || '',
+      code: t.code || '',
+      pct: t.pct,
+      pctText: isFinite(Number(t.pct)) ? Number(t.pct).toFixed(2) + '%' : '',
+      rank20: Number(t.rank20),
+      streak: st,
+      streakText: _streakWord(t, st)
+    };
+  });
+
+  // 真实成员行：全题材按名字兜一次（与替补 / 分歧 / 弱抱团同一份查找，§6 同法）
+  const _memberOf = function(name) {
+    let member = null;
+    (list || []).forEach(function(b) {
+      if (member) return;
+      (b.members || []).forEach(function(m) {
+        if (!member && m && String(m.name || '').trim() === name) member = m;
+      });
+    });
+    return member;
+  };
+
+  const members = [];
+  const picks = buyPicks.map(function(p, idx) {
+    const member = _memberOf(p.name);
+    if (member && !members.some(function(m) { return m && m.name === p.name; })) members.push(member);
+    return {
+      seq: idx + 1,
+      name: p.name,
+      dragonLabel: p.label,
+      dragonRank: null,
+      pct: p.pct,
+      code: p.code || String((member && member.code) || '').trim(),
+      pctText: p.pctText,
+      aucShare: member ? _num(member.aucShare) : null,
+      position: ''
+    };
+  });
+
+  const namesText = buyPicks.map(function(p) {
+    return '【' + p.name + '】（' + (p.topic || '—') + '，20日涨幅 ' + (p.pctText || '—') +
+      '，主板第 ' + p.rank20 + ' 名，' + (p.streakText || '连板天数未知') + '）';
+  }).join('、');
+  const inRangeText = inRange.map(function(t) {
+    const st = streakOf(t);
+    return t.name + '（第 ' + Number(t.rank20) + ' 名' + (st === null ? '' : '，' + _streakWord(t, st)) + '）';
+  }).join('、');
+
+  const block = {
+    block: {
+      topic: CATCH_UP_BLOCK_TOPIC,
+      rank: null,
+      count: null,
+      yiziCount: null,
+      members: members
+    },
+    rankWord: '',
+    pickRank: null,
+    reason: '【补涨题材】能入选的排名第一题材【' + topic + '】平均竞价量比 ' +
+      cashAlert.avgVolRatioText + ' ＜ ' + cashAlert.threshold + ' ⇒ 题材退潮（第十九条：买点侧整段灰化、' +
+      '建议空仓）。但该题材有 ' + inRange.length + ' 只票落在【20日涨幅主板第 ' + CATCH_UP_RANK_FROM +
+      '~' + CATCH_UP_RANK_TO + ' 名】⇒ 属【低位补涨题材】（后期往往很好），' +
+      '其中连板票是：' + namesText,
+    mode: 'catchup',
+    ruleNo: CATCH_UP_RULE_NO,
+    isCandidate: false,
+    candidateTag: '',
+    qualified: true,
+    notQualifiedText: '',
+    picks: picks,
+    notes: [
+      '⚠️ 本行【不是】题材选股的结果，也不是「题材没退潮」—— 那个题材照旧退潮、下面那一块照旧灰化。' +
+        '本行是【按市场排名选】：处在前三之外、第 6~10 名（后段）的票，往往是低位补涨资金在接。',
+      '【怎么选】= 先数【20日涨幅主板第 ' + CATCH_UP_RANK_FROM + '~' + CATCH_UP_RANK_TO + ' 名】里' +
+        '与灰色题材块【同题材】的票，必须【恰好 ' + CATCH_UP_MIN_COUNT + '~' + CATCH_UP_MAX_COUNT +
+        ' 只】（4 只以上说明它已是主线、不是低位补涨）；再在其中【只留连板票】' +
+        '（连板天数 ≥ ' + CATCH_UP_MIN_STREAK + '，收盘口径，与「连板天梯」同一把尺子）—— ' +
+        '本日候选 = ' + inRangeText + '。',
+      '⚠️ 数量不落在 ' + CATCH_UP_MIN_COUNT + '~' + CATCH_UP_MAX_COUNT + ' 只、或这几只里【一只连板都没有】' +
+        '⇒ 仍然空仓（不选、不替补）。',
+      '⚠️ 与第三十条【弱势切抱团】是两个不同名次区间：前三走第三十条，第 ' + CATCH_UP_RANK_FROM +
+        '~' + CATCH_UP_RANK_TO + ' 名走本条 —— 互不影响，同一天可能各出一只。',
+      '⚠️ 它同时仍会在下面那个灰化块里出现一次：那一块是【题材结论】（整块灰化、标签【' +
+        CASH_NO_BUY_TAG + '】），这一行是【股票结论】—— 两处都保留。',
+      '⚠️ 涨幅口径 = 【当日 20日涨幅】（9:26 竞价口径那一列），与「20日涨幅」toggle 同一列。'
+    ],
+    topic: CATCH_UP_BLOCK_TOPIC,
+    rank: null,
+    count: null,
+    yiziCount: null,
+    avgVolRatio: null,
+    avgVolRatioText: '',
+    tier: 'catchup',
+    pickCount: 0,
+    rangeText: '',
+    skippedNames: [],
+    isCatchUp: true
+  };
+
+  // ① 客观数据 + 原始买点信号算齐（决策看板同一份实现）
+  finishBuyBlock(block, fOpts);
+  // ② 覆盖式：动作标签换成【补涨题材】
+  (block.picks || []).forEach(function(p) {
+    const me = buyPicks.filter(function(x) { return x.name === p.name; })[0] || null;
+    const rawTag = p.buyActionTag || '';
+    const rawNote = p.actionNote || '';
+    p.buyActionTag = CATCH_UP_TAG;
+    p.buyActionTone = CATCH_UP_TONE;
+    p.holdTag = '';
+    p.position = '';
+    p.actionNote = '【第' + CATCH_UP_RULE_NO + '条 · 补涨题材】它是【' + topic + '】的股票，' +
+      '该题材平均竞价量比只有 ' + cashAlert.avgVolRatioText + '（＜ ' + cashAlert.threshold +
+      '）⇒ 题材已退潮、下面那一块整段灰化不开新仓；' +
+      '但这个题材有 ' + inRange.length + ' 只票落在【20日涨幅主板第 ' + CATCH_UP_RANK_FROM + '~' +
+      CATCH_UP_RANK_TO + ' 名】⇒ 属【低位补涨题材】；它是【主板第 ' + ((me && me.rank20) || '—') +
+      ' 名】（' + ((me && me.pctText) || '—') + '）、' + ((me && me.streakText) || '连板天数未知') +
+      '，是这几只里【最强势的连板票】⇒ 这一只今天可以买（补涨题材只选连板票）。' +
+      '⚠️ 停牌 / 竞价一字的信息照常显示；买不进就买不进，别硬追。' +
+      (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : '');
+  });
+  return { block: block, reason: 'hit', count: inRange.length, inRange: inRange };
 }
 
 /**
@@ -3424,7 +3677,9 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       // ★★ [WEAK-HUDDLE 2026-10-27] 第三十条：弱势切抱团（退潮题材里唯一还能买的那只）。
       //   同一理由挂在买点对象里 —— decision-collect#_buyBlocksOf 是「遍历一个买点块」的唯一实现，
       //   四个装饰器（量比趋势 / 名次变化 / 封单额 / 停牌）都经它取块（§6）。
-      weakHuddle: null
+      weakHuddle: null,
+      // ★★ [CATCH-UP 2026-10-27] 第三十一条：补涨题材（6~10 名里的连板票）。同一理由挂在这里。
+      catchUp: null
     },
     sell: [],
     excludedTopics: [],
@@ -3451,6 +3706,10 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     //   同题材 ⇒ 选出来放在最前面）。只在「空仓提醒命中 ∧ 非退潮首日 ∧ 非分歧日 ∧ 有票进前三」时非 null
     //   （其余场景 null ⇒ 视图 v-if 不渲染 ⇒ 今天就是纯空仓，与改造前一致，§11）。
     weakHuddle: null,
+    // ★★ [CATCH-UP 2026-10-27 用户口径] 第三十一条【补涨题材】买点块（20日涨幅主板第 6~10 名里，
+    //   该灰色题材恰好占 2~3 只，且其中有连板票 ⇒ 选连板票放在最前面）。
+    //   只在「空仓提醒命中 ∧ 非退潮首日 ∧ 非分歧日 ∧ 数量恰好 2~3 ∧ 至少 1 只连板」时非 null。
+    catchUp: null,
     // ★★ [SWITCH 2026-10-22] 第二十八条【新龙 / 新题材切换日】：
     //   switchDay = 今天是不是「二次确认退潮」后的第 2 个交易日（判据见 detectSwitchDay）；
     //   newDragon = 那一行新龙的买点块（独立容器、渲染在灰化容器之外）；不是切换日 / 选不出 ⇒ null。
@@ -4017,6 +4276,62 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
           (topNames || '—') + '，其中【没有】' + whTopic + ' 的股票 ⇒ ' +
           '灰色题材块里没有可抱团的市场龙头 ⇒ 【今天仍然空仓】（不选、不替补）。');
       }
+
+      // ★★ [CATCH-UP 2026-10-27 用户口径] 第三十一条【补涨题材】：
+      //   同一个灰色题材块，改看【20日涨幅主板第 6~10 名】—— 该题材恰好占 2~3 只 ⇒ 低位补涨题材
+      //   ⇒ 从里面【只选连板票】。一只连板都没有 / 数量不在 2~3 ⇒ 仍然空仓。
+      //   ⛔ 与第三十条【并列】而不是互斥：两条看的是【不同名次区间】（1~3 vs 6~10），
+      //      同一个题材同一天理论上可以各命中一次；⛔ 不许互相顶替（用户两轮口径是两条独立规则）。
+      //   ⛔ 池子取 `ebbCtx.topicPool`（20日涨幅【前十】富化，与 top5 同一份 _enrich、同一把尺子）。
+      //      它缺省是空数组（前十没就绪）⇒ 走 §10「判不出」分支，⛔ 不许当成「今天没有补涨题材」。
+      const cuPool = (o.ebbCtx && Array.isArray(o.ebbCtx.topicPool)) ? o.ebbCtx.topicPool : null;
+      if (!whTopic) {
+        // 灰色题材名取不到 ⇒ 无从比对（与第三十条同一处理：不写噪音说明）
+      } else if (!cuPool || cuPool.length === 0) {
+        out.notes.push('⚠️【第' + CATCH_UP_RULE_NO + '条 · 补涨题材】20日涨幅前十（只主板）还没就绪 ⇒ ' +
+          '本次【判不出】灰色题材块【' + whTopic + '】在第 ' + CATCH_UP_RANK_FROM + '~' +
+          CATCH_UP_RANK_TO + ' 名里占几只。（§10：判不出 ≠ 今天没有补涨题材，也 ≠ 今天一定要空仓。）');
+      } else {
+        const cu = _buildCatchUpBlock(cuPool, out.cashAlert, list, fOpts);
+        if (cu.block) {
+          out.catchUp = cu.block;
+          // §6：同一份对象挂进买点槽位（四个装饰器经 _buyBlocksOf 遍历）
+          out.buy.catchUp = out.catchUp;
+          const cuDetail = (cu.inRange || []).map(function(t) {
+            const st = (t && t.streak !== null && t.streak !== undefined) ? Number(t.streak) : null;
+            const word = _streakWord(t, st);
+            return t.name + '（第 ' + Number(t.rank20) + ' 名' + (word ? '，' + word : '') + '）';
+          }).join('、');
+          out.notes.push('⚠️【第' + CATCH_UP_RULE_NO + '条 · 补涨题材】灰色题材块【' + whTopic +
+            '】已退潮（平均竞价量比 ' + out.cashAlert.avgVolRatioText + ' ＜ ' + out.cashAlert.threshold +
+            '）⇒ 买点侧整段灰化；但该题材有 ' + cu.count + ' 只票落在【20日涨幅主板第 ' +
+            CATCH_UP_RANK_FROM + '~' + CATCH_UP_RANK_TO + ' 名】= ' + (cuDetail || '—') +
+            ' ⇒ 属【低位补涨题材】（后期往往很好），其中【连板票】' +
+            (out.catchUp.picks || []).map(function(p) { return '【' + p.name + '】'; }).join('、') +
+            ' 作为【今天可以买】的票列在最前面（标签【' + CATCH_UP_TAG + '】）。' +
+            '⚠️ 它仍会在下面那个灰化块里出现一次（题材结论 ≠ 股票结论，两处都保留）。');
+        } else if (cu.reason === 'count') {
+          out.notes.push('⚠️【第' + CATCH_UP_RULE_NO + '条 · 补涨题材】第 ' + CATCH_UP_RANK_FROM + '~' +
+            CATCH_UP_RANK_TO + ' 名里，灰色题材块【' + whTopic + '】占 ' + cu.count + ' 只 ⇒ ' +
+            '不在【恰好 ' + CATCH_UP_MIN_COUNT + '~' + CATCH_UP_MAX_COUNT + ' 只】的区间内' +
+            (cu.count >= CATCH_UP_MIN_COUNT ? '（4 只以上说明它已是主线，不是低位补涨）' : '（不足 2 只 = 个别票，不成题材）') +
+            ' ⇒ 本条不生效。');
+        } else if (cu.reason === 'no-streak') {
+          const det = (cu.inRange || []).map(function(t) {
+            // ⚠️ §10：`Number(null)` = 0 ⇒ 会渲染成「0连板」这种假数据；null/undefined 必须显式落到「未知」
+            const rawStreak = (t && t.streak !== null && t.streak !== undefined) ? Number(t.streak) : null;
+            const word = _streakWord(t, rawStreak);
+            return t.name + '（第 ' + Number(t.rank20) + ' 名，' + (word || '连板天数未知') + '）';
+          }).join('、');
+          out.notes.push('⚠️【第' + CATCH_UP_RULE_NO + '条 · 补涨题材】第 ' + CATCH_UP_RANK_FROM + '~' +
+            CATCH_UP_RANK_TO + ' 名里灰色题材块【' + whTopic + '】有 ' + cu.count + ' 只：' + (det || '—') +
+            '，但【一只连板票都没有】（门槛 = 连板天数 ≥ ' + CATCH_UP_MIN_STREAK + '）⇒ ' +
+            '按「补涨题材只选连板票比较强势」⇒ 【今天仍然空仓】（不选、不替补）。');
+        } else if (cu.reason === 'none') {
+          out.notes.push('⚠️【第' + CATCH_UP_RULE_NO + '条 · 补涨题材】第 ' + CATCH_UP_RANK_FROM + '~' +
+            CATCH_UP_RANK_TO + ' 名里【没有】' + whTopic + ' 的股票 ⇒ 不构成补涨题材（本条不生效）。');
+        }
+      }
     }
   }
 
@@ -4455,6 +4770,8 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //   ⚠️ 它通常【同时】在下面那个灰化题材块的 picks 里（同一只票、两条通道）—— _pickSeen 是
   //   【按名字去重】的 Set，所以这里再数一遍不会把「实际能下单的只数」数多（用户口径「数只数不数行数」）。
   if (out.weakHuddle) _countUnique(out.weakHuddle.picks);
+  // ★★ [CATCH-UP 2026-10-27] 补涨题材那几只同理（与弱抱团同一个理由：按名字去重，不数多）。
+  if (out.catchUp) _countUnique(out.catchUp.picks);
   out.pickCount = _pickSeen.size;
 
   if (out.excludedTopics.length > 0) {
@@ -4839,6 +5156,30 @@ export function buildTvrbRulesLines() {
       '那条看【十日涨幅 + 近 10 日在列次数】（新面孔，且要与 20日涨幅总龙一【不同】题材），' +
       '本条看【20日涨幅前三 + 与退潮题材【同】题材】（老龙头抱团）—— 语义相反，⛔ 不许互相顶替。' +
       '⚠️ 判不出就如实说（§10）：20日涨幅前五没读到 ⇒ 本块不出现，说明区写明是哪个缺口，' +
-      '⛔ 绝不拿「没数据」当成「今天没有抱团票」，也绝不当成「一定空仓」。'
+      '⛔ 绝不拿「没数据」当成「今天没有抱团票」，也绝不当成「一定空仓」。',
+    '三十一、【补涨题材】（第三十一条 · 从 6~10 名里挑连板票）' +
+      '★ 判据（与第三十条【并列】，看的是【不同名次区间】）：' +
+      '① 池子 = 【20日涨幅 · 当日竞价口径 · 主板第 ' + CATCH_UP_RANK_FROM + '~' + CATCH_UP_RANK_TO +
+      ' 名】（与「20日涨幅」toggle 同一份榜单，⛔ 不另排一次名次）；' +
+      '② 数一数那个【灰色题材块】在里面占几只：必须【恰好 ' + CATCH_UP_MIN_COUNT + '~' +
+      CATCH_UP_MAX_COUNT + ' 只】⇒ 该题材叫【补涨题材】；' +
+      '③ 从这几只里【只选连板票】（连板天数 ≥ ' + CATCH_UP_MIN_STREAK + '，收盘口径，与「连板天梯」同一把尺子）；' +
+      '④ 数量不在 ' + CATCH_UP_MIN_COUNT + '~' + CATCH_UP_MAX_COUNT + ' 只、或【一只连板都没有】⇒ 【今天仍然空仓】。' +
+      '★ 为什么要有这条（用户口径）：「补涨题材一般处在低位，所以很多时候该题材的平均量比不符，' +
+      '但是后期涨势却很好」—— 平均量比低是因为它们【还没起来】，不是因为没有资金；' +
+      '「但是选票的时候只选连板票比较强势」⇒ 用连板天数把「真在走强的」挑出来。' +
+      '★ 两个门槛的来历（用户 2026-10-27 逐条拍板）：' +
+      '　· 口径 = 【严格只数灰色题材本身】，不把该题材股票的其他标签并进来；' +
+      '　· 数量 = 【恰好 2 或 3 只】，4 只以上【不算】（那已经是主线，不是低位补涨）；' +
+      '　· 没有连板票 ⇒ 【仍然空仓】，⛔ 不退而求其次选名次最靠前的那只。' +
+      '（例 10-23：灰色题材块 = 工业4.0（平均量比 15.18 ＜ 25），第 ' + CATCH_UP_RANK_FROM + '~' +
+      CATCH_UP_RANK_TO + ' 名里它只有【大业股份】1 只 ⇒ 不足 2 只 ⇒ 本条不生效、当天仍然空仓。' +
+      ' 这正是「严格口径 + 恰好 2~3 只」两条口径的必然结果，⛔ 不要"好心"放宽。）' +
+      '★ 表现方式：标【' + CATCH_UP_TAG + '】、独立渲染在灰化容器【之外】、排在【弱势切抱团之后】' +
+      '（两条可能同一天各出一只），行上带 20日涨幅与连板天数。' +
+      '⚠️ 它【同时仍会在下面那个灰化块里出现一次】—— 与第三十条同一条纪律：' +
+      '【题材结论】（整块灰化）与【股票结论】（这一只可以买）是两件事。' +
+      '⚠️ 判不出就如实说（§10）：20日涨幅前十没读到 ⇒ 本块不出现，说明区写明缺口，' +
+      '⛔ 绝不拿「没数据」当成「今天没有补涨题材」，也绝不当成「一定空仓」。'
   ];
 }

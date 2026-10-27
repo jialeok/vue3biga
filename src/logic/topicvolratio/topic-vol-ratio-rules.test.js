@@ -95,7 +95,17 @@ import {
   WEAK_HUDDLE_TAG,
   WEAK_HUDDLE_TONE,
   WEAK_HUDDLE_BLOCK_TOPIC,
-  WEAK_HUDDLE_TOP_N
+  WEAK_HUDDLE_TOP_N,
+  // ★★ [CATCH-UP 2026-10-27 用户口径] 第三十一条【补涨题材】
+  CATCH_UP_RULE_NO,
+  CATCH_UP_TAG,
+  CATCH_UP_TONE,
+  CATCH_UP_BLOCK_TOPIC,
+  CATCH_UP_RANK_FROM,
+  CATCH_UP_RANK_TO,
+  CATCH_UP_MIN_COUNT,
+  CATCH_UP_MAX_COUNT,
+  CATCH_UP_MIN_STREAK
 } from './topic-vol-ratio-rules.js';
 // ★★ [CORE-CAT 2026-10-22] 「题材 → 核心词大类」归一的唯一实现（文化传媒 ⇒ AI应用）
 import { makeCoreTopicResolver } from '../topic/core-category.js';
@@ -4659,5 +4669,323 @@ describe('tvrb · 第三十条【弱势切抱团】', function() {
     // ⛔ 与第十九条（空仓提醒）、第二十九条（十日涨幅候补）都写明关系
     expect(all).toContain(CASH_NO_BUY_TAG);
     expect(all).toContain(RANGE10_BACKUP_TAG);
+  });
+});
+
+// ══ ★★ [CATCH-UP 2026-10-27 用户口径] 第三十一条【补涨题材】═══════════════════════════════
+// 用户原话：
+//   「这个题材因为平均量比不符，所以是灰色，需要添加下规则，如果20日涨幅（竞价口径），
+//    该题材的股票有2-3只处在6-10名中，也就是有该题材的2只或者3只票排在后面，那么称做补涨题材，
+//    补涨题材一般处在低位，所以很多时候该题材的平均量比不符，但是后期涨势却很好，
+//    但是选票的时候只选连板票比较强势，所以该题材的选大业股份。」
+// 三个歧义点用户拍板（AskUserQuestion）：
+//   ① 题材口径 = 【严格只数灰色题材块本身】，⛔ 不把成员的其他标签并进来；
+//   ② 数量门槛 = 【恰好 2~3 只】，4 只以上不算（那时它已是主线）；
+//   ③ 这几只里【一只连板都没有】⇒ 仍然空仓（⛔ 不选、不替补）。
+// 判据四段：
+//   ① 前置 = 第十九条空仓提醒命中（能入选的排名第一题材平均竞价量比 < 25）∧ 非退潮首日 ∧ 非分歧日；
+//   ② 池子 = 20日涨幅【主板第 6~10 名】（ebbCtx.topicPool，前十富化）；
+//   ③ 数 = 该灰色题材在里面占【恰好 2~3 只】；从这几只里【只留连板票】（连板天数 ≥ 2）；
+//   ④ 反例 = 数量不对 / 无连板 ⇒ 仍然空仓，⛔ 不重排一次名次、不拿别的题材顶。
+describe('tvrb · 第三十一条【补涨题材】', function() {
+  const TOPIC = '工业4.0';
+  // 灰色题材块 = 工业4.0，共 10 只（> 8 ⇒ big 档取 2 只 = 大业股份 + 福莱新材）；
+  // 平均量比 12.96 < 25 ⇒ 命中空仓提醒（与第三十条夹具同一份，两条规则看同一天同一块）
+  const NAMES = ['大业股份', '福莱新材', '兆威机电', '甲四', '甲五', '甲六', '甲七', '甲八', '甲九', '甲十'];
+  const CODES = ['603278', '605488', '003021', '600004', '600005', '600006', '600007', '600008', '600009', '600010'];
+  const DM = dragonMap(NAMES.map(function(n, i) { return [n, i + 1]; }));
+
+  /** 灰色题材块（vr 可控：默认 12.96 ⇒ 命中空仓提醒） */
+  function grayTopics(vr) {
+    const v = vr === undefined ? 12.96 : vr;
+    return [block(TOPIC, 1, NAMES.map(function(n, i) {
+      return m(n, {
+        aucVolRatio: i === 0 ? v + 4.87 : (i === 1 ? v - 4.29 : v),
+        aucShare: i === 0 ? 3.5 : 6.2,
+        code: CODES[i]
+      });
+    }))];
+  }
+
+  /**
+   * 20日涨幅主板前十（10-23 的【真实形状】）：
+   *   1 新华传媒 193.62% / 2 九阳股份 125.45% / 3 慈文传媒 93.43% / 4 冰山冷热 85.77% / 5 海洋王 80.53%
+   *   6 大业股份 78.12%（工业4.0，截至 T-1 五连板）/ 7 宁波东力 76.21% / 8 三峡新材 67.01%
+   *   9 新华文轩 61.79% / 10 百洋股份 56.73%
+   * ⇒ 工业4.0 在第 6~10 名里【只有大业股份 1 只】= 用户给的那一天的反例。
+   * over 用 rank20 覆盖某一名（造「恰好 2 只 / 4 只 / 无连板」等场景）。
+   */
+  function pool10(over) {
+    const base = [
+      { name: '新华传媒', code: '600825', topic: '文化传媒', pct: 193.62, rank20: 1, streak: null },
+      { name: '九阳股份', code: '002242', topic: '家电', pct: 125.45, rank20: 2, streak: null },
+      { name: '慈文传媒', code: '002343', topic: 'AI视频', pct: 93.43, rank20: 3, streak: null },
+      { name: '冰山冷热', code: '000530', topic: '冰雪产业', pct: 85.77, rank20: 4, streak: null },
+      { name: '海洋王', code: '002724', topic: 'LED', pct: 80.53, rank20: 5, streak: null },
+      { name: '大业股份', code: '603278', topic: TOPIC, pct: 78.12, rank20: 6, streak: 5, streakLabel: '五板' },
+      { name: '宁波东力', code: '002164', topic: '机器人概念', pct: 76.21, rank20: 7, streak: 0 },
+      { name: '三峡新材', code: '600293', topic: '玻璃', pct: 67.01, rank20: 8, streak: 0 },
+      { name: '新华文轩', code: '601811', topic: '文化传媒', pct: 61.79, rank20: 9, streak: null },
+      { name: '百洋股份', code: '002696', topic: '水产品', pct: 56.73, rank20: 10, streak: null }
+    ];
+    const rows = (over || []).reduce(function(acc, o) {
+      return acc.map(function(t) { return t.rank20 === o.rank20 ? Object.assign({}, t, o) : t; });
+    }, base);
+    // 形状对齐 decision-collect 的 _enrich（本规则只读 name/topic/pct/code/rank20/streak）
+    return rows.map(function(t) {
+      return {
+        name: t.name,
+        code: t.code,
+        pct: t.pct,
+        topic: t.topic,
+        rank20: t.rank20,
+        rank: null,
+        mainBoard: true,
+        isYizi: false,
+        suspended: false,
+        streak: t.streak === undefined ? null : t.streak,
+        // decision-collect 富化时挂的档位文案（getStreakLabel 的唯一实现）；夹具缺省 '' ⇒ 走回退自拼
+        streakLabel: t.streakLabel || ''
+      };
+    });
+  }
+
+  /** 采集事实：ready + leader + 非退潮日 / 非分歧日；top5 / topicPool 可覆盖 */
+  function ctxOf(opts) {
+    const o = opts || {};
+    const full = pool10();
+    return {
+      ready: true,
+      leader: { name: '新华传媒', topic: '文化传媒', pct: 193.62 },
+      leaderSuspended: false,
+      leaderShare: 9,
+      // 第三十条（前三）用；默认给前十里的前五 ⇒ 里面没有工业4.0（本条与第三条互不干扰）
+      top5: o.top5 || full.slice(0, 5),
+      // 第三十一条（第 6~10 名）用
+      topicPool: Object.prototype.hasOwnProperty.call(o, 'topicPool') ? o.topicPool : full,
+      siblingDragons: [],
+      secondInfo: null
+    };
+  }
+
+  it('常量：标签 / 配色档 / 规号 / 名次区间 / 数量门槛 / 连板门槛', function() {
+    expect(CATCH_UP_TAG).toBe('补涨题材');
+    expect(CATCH_UP_TONE).toBe('catchup');
+    expect(CATCH_UP_RULE_NO).toBe('三十一');
+    expect(CATCH_UP_RANK_FROM).toBe(6);
+    expect(CATCH_UP_RANK_TO).toBe(10);
+    expect(CATCH_UP_MIN_COUNT).toBe(2);
+    expect(CATCH_UP_MAX_COUNT).toBe(3);
+    expect(CATCH_UP_MIN_STREAK).toBe(2);
+    expect(CATCH_UP_BLOCK_TOPIC).toContain(CATCH_UP_TAG);
+    // ⛔ 名次区间不能和第三十条（前三）重叠，否则同一天两条会抢同一只票
+    expect(CATCH_UP_RANK_FROM).toBeGreaterThan(WEAK_HUDDLE_TOP_N);
+    expect(CATCH_UP_MAX_COUNT).toBeGreaterThan(CATCH_UP_MIN_COUNT - 1);
+  });
+
+  it('★ 10-23 反例（用户给的那一天）：工业4.0 在第 6~10 名只有大业股份 1 只 ⇒ 数量不足、仍然空仓', function() {
+    const plan = buildTopicVolRatioPlan(grayTopics(), DM, { ebbCtx: ctxOf() });
+    // ① 前置成立：空仓提醒命中，灰色题材块 = 工业4.0，且不是退潮日 / 分歧日
+    expect(plan.cashAlert.show).toBe(true);
+    expect(plan.cashAlert.topic).toBe(TOPIC);
+    expect(plan.ebb).toBe(null);
+    expect(plan.divergeBuy).toBe(null);
+    // ② 本条不生效（用户口径：2~3 只才算补涨题材）
+    expect(plan.catchUp).toBe(null);
+    expect(plan.buy.catchUp).toBe(null);
+    // ③ §10 不沉默：说明区讲清「占几只 / 为什么不算」
+    const notes = plan.notes.join('\n');
+    expect(notes).toContain('第' + CATCH_UP_RULE_NO + '条');
+    expect(notes).toContain(TOPIC);
+    expect(notes).toContain('占 1 只');
+    expect(notes).toContain('不足 2 只 = 个别票，不成题材');
+    expect(notes).toContain('本条不生效');
+    // ④ §11 灰化那一块一行未改：仍是【分歧日不买】（题材结论 ≠ 股票结论）
+    expect(plan.blocks[0].picks.length).toBeGreaterThan(0);
+    plan.blocks[0].picks.forEach(function(x) {
+      expect(x.buyActionTag).toBe(CASH_NO_BUY_TAG);
+    });
+  });
+
+  it('★ 命中（用户「选大业股份」的场景）：恰好 2 只、只有一只是连板 ⇒ 只选连板那只', function() {
+    // 把第 7 名换成同题材的福莱新材（首板 = streak 1 ⇒ 不算连板）
+    const pool = pool10([
+      { rank20: 7, name: '福莱新材', code: '605488', topic: TOPIC, pct: 76.21, streak: 1 }
+    ]);
+    const plan = buildTopicVolRatioPlan(grayTopics(), DM, { ebbCtx: ctxOf({ topicPool: pool }) });
+    expect(plan.cashAlert.show).toBe(true);
+    expect(plan.catchUp).toBeTruthy();
+    // ① 只选连板票：大业股份（6 连板）；福莱新材首板 ⇒ 留在灰块里，不上榜
+    expect(plan.catchUp.picks.map(function(p) { return p.name; })).toEqual(['大业股份']);
+    const p0 = plan.catchUp.picks[0];
+    expect(p0.buyActionTag).toBe(CATCH_UP_TAG);
+    expect(p0.buyActionTone).toBe(CATCH_UP_TONE);
+    expect(p0.holdTag).toBe('');                     // ⛔ 补涨票不冒充【持有】
+    expect(p0.position).toBe('');
+    // ② 行内说明（§21 模板零计算）：为什么退潮还买 + 为什么是它
+    expect(p0.actionNote).toContain(CATCH_UP_TAG);
+    expect(p0.actionNote).toContain(TOPIC);
+    expect(p0.actionNote).toContain('五板');        // 复用 getStreakLabel 的档位文案（§6）
+    expect(p0.actionNote).toContain('第 6 名');
+    expect(p0.actionNote).toContain('只选连板票');
+    expect(p0.actionNote).toContain(plan.cashAlert.avgVolRatioText);   // 同一份量比文案
+    // ③ 块级：独立题材名 + 档位 + 规号 + 标记位
+    expect(plan.catchUp.block.topic).toBe(CATCH_UP_BLOCK_TOPIC);
+    expect(plan.catchUp.tier).toBe(CATCH_UP_TONE);
+    expect(plan.catchUp.ruleNo).toBe(CATCH_UP_RULE_NO);
+    expect(plan.catchUp.isCatchUp).toBe(true);
+    expect(plan.catchUp.qualified).toBe(true);
+    expect(plan.catchUp.picks).toHaveLength(1);
+    // ④ §6 同一份对象挂进买点槽位（四个装饰器经 _buyBlocksOf 遍历）
+    expect(plan.buy.catchUp).toBe(plan.catchUp);
+    // ⑤ 说明区留痕：讲清「补涨题材 / 低位 / 两处都保留」
+    const notes = plan.notes.join('\n');
+    expect(notes).toContain(CATCH_UP_TAG);
+    expect(notes).toContain('低位补涨题材');
+    expect(notes).toContain('五板');
+    expect(notes).toContain('两处都保留');
+    // ⑥ 灰化那一块照旧【分歧日不买】、票一只不少
+    expect(plan.blocks[0].picks).toHaveLength(2);
+    plan.blocks[0].picks.forEach(function(x) {
+      expect(x.buyActionTag).toBe(CASH_NO_BUY_TAG);
+    });
+  });
+
+  it('★ 恰好 2 只且【两只都连板】⇒ 两只都选（用户「有该题材的2只或者3只票」）', function() {
+    const pool = pool10([
+      { rank20: 7, name: '福莱新材', code: '605488', topic: TOPIC, pct: 76.21, streak: 3 }
+    ]);
+    const plan = buildTopicVolRatioPlan(grayTopics(), DM, { ebbCtx: ctxOf({ topicPool: pool }) });
+    expect(plan.catchUp).toBeTruthy();
+    expect(plan.catchUp.picks.map(function(p) { return p.name; })).toEqual(['大业股份', '福莱新材']);
+    plan.catchUp.picks.forEach(function(p) {
+      expect(p.buyActionTag).toBe(CATCH_UP_TAG);
+      expect(p.buyActionTone).toBe(CATCH_UP_TONE);
+    });
+    expect(plan.catchUp.picks[1].actionNote).toContain('3连板');
+  });
+
+  it('★ 边界：恰好 3 只 ⇒ 仍算补涨题材（上界含等号）', function() {
+    const pool = pool10([
+      { rank20: 7, name: '福莱新材', code: '605488', topic: TOPIC, pct: 76.21, streak: 3 },
+      { rank20: 8, name: '兆威机电', code: '003021', topic: TOPIC, pct: 67.01, streak: 2 }
+    ]);
+    const plan = buildTopicVolRatioPlan(grayTopics(), DM, { ebbCtx: ctxOf({ topicPool: pool }) });
+    expect(plan.catchUp).toBeTruthy();
+    expect(plan.catchUp.picks.map(function(p) { return p.name; }))
+      .toEqual(['大业股份', '福莱新材', '兆威机电']);
+  });
+
+  it('★ 反例（用户「2~3只」的另一半）：4 只以上不算 —— 那已是主线，不是低位补涨', function() {
+    const pool = pool10([
+      { rank20: 7, name: '福莱新材', code: '605488', topic: TOPIC, pct: 76.21, streak: 3 },
+      { rank20: 8, name: '兆威机电', code: '003021', topic: TOPIC, pct: 67.01, streak: 2 },
+      { rank20: 9, name: '甲四', code: '600004', topic: TOPIC, pct: 61.79, streak: 0 }
+    ]);
+    const plan = buildTopicVolRatioPlan(grayTopics(), DM, { ebbCtx: ctxOf({ topicPool: pool }) });
+    expect(plan.cashAlert.show).toBe(true);
+    expect(plan.catchUp).toBe(null);
+    expect(plan.buy.catchUp).toBe(null);
+    const notes = plan.notes.join('\n');
+    expect(notes).toContain('占 4 只');
+    expect(notes).toContain('4 只以上说明它已是主线，不是低位补涨');
+    expect(notes).toContain('本条不生效');
+  });
+
+  it('★ 反例（用户拍板第 ③ 点）：数量够但没有【一只连板】⇒ 仍然空仓（不选、不替补）', function() {
+    const pool = pool10([
+      { rank20: 6, name: '大业股份', code: '603278', topic: TOPIC, pct: 78.12, streak: 1, streakLabel: '' },   // 首板
+      { rank20: 7, name: '福莱新材', code: '605488', topic: TOPIC, pct: 76.21, streak: null } // 连板天数未知 ⇒ 不算
+    ]);
+    const plan = buildTopicVolRatioPlan(grayTopics(), DM, { ebbCtx: ctxOf({ topicPool: pool }) });
+    expect(plan.cashAlert.show).toBe(true);
+    expect(plan.catchUp).toBe(null);
+    expect(plan.buy.catchUp).toBe(null);
+    const notes = plan.notes.join('\n');
+    expect(notes).toContain('一只连板票都没有');
+    expect(notes).toContain('今天仍然空仓');
+    // 明细里把「未知 ≠ 首板」写清（§10 不猜）
+    expect(notes).toContain('连板天数未知');
+    // ⛔ 绝不能把 null 渲染成「0连板」（`Number(null)` = 0 的经典陷阱）
+    expect(notes).not.toContain('0连板');
+    // 灰化照旧
+    plan.blocks[0].picks.forEach(function(x) {
+      expect(x.buyActionTag).toBe(CASH_NO_BUY_TAG);
+    });
+  });
+
+  it('★ 严格口径（用户拍板第 ① 点）：只数灰色题材块本身，⛔ 不把成员的其他标签并进来', function() {
+    // 第 7/8 名是【机器人概念】而非工业4.0 —— 大业股份身上虽然也挂着机器人概念，
+    // 但本规则只认 cashAlert.topic（工业4.0）⇒ 仍算「只有 1 只」。
+    const plan = buildTopicVolRatioPlan(grayTopics(), DM, { ebbCtx: ctxOf() });
+    expect(plan.catchUp).toBe(null);
+    expect(plan.notes.join('\n')).toContain('占 1 只');
+  });
+
+  it('§10：20日涨幅前十还没就绪 ⇒ 不猜，说明区写「判不出」（⛔ 不等于今天没有补涨题材）', function() {
+    const plan = buildTopicVolRatioPlan(grayTopics(), DM, { ebbCtx: ctxOf({ topicPool: null }) });
+    expect(plan.cashAlert.show).toBe(true);
+    expect(plan.catchUp).toBe(null);
+    expect(plan.buy.catchUp).toBe(null);
+    const notes = plan.notes.join('\n');
+    expect(notes).toContain('判不出');
+    expect(notes).toContain('≠ 今天没有补涨题材');
+  });
+
+  it('§11 未命中：量比达标（30 ⇒ 空仓提醒不触发）⇒ 本条零行为', function() {
+    const pool = pool10([
+      { rank20: 7, name: '福莱新材', code: '605488', topic: TOPIC, pct: 76.21, streak: 3 }
+    ]);
+    const plan = buildTopicVolRatioPlan(grayTopics(30), DM, { ebbCtx: ctxOf({ topicPool: pool }) });
+    expect(plan.cashAlert.show).toBe(false);
+    expect(plan.catchUp).toBe(null);
+    expect(plan.buy.catchUp).toBe(null);
+    expect(plan.notes.join('\n')).not.toContain('第' + CATCH_UP_RULE_NO + '条');
+  });
+
+  it('★ 互斥：退潮首日已接管买点通道 ⇒ 本条不出（⛔ 不许两条同时输出买点）', function() {
+    // 退潮判定有两道前置闸：① 总龙题材必须是【主线题材】（前十里同题材 ≥3 只）；
+    // ② 总龙连板 ≥2。这里把第 4 名也改成文化传媒 ⇒ 前十里文化传媒 3 只 = 主线题材，
+    // 于是「总龙停牌」才真的能触发第二十一条退潮首日（否则会先被判成轮动行情）。
+    const pool = pool10([
+      { rank20: 4, name: '冰山冷热', code: '000530', topic: '文化传媒', pct: 85.77, streak: null },
+      { rank20: 7, name: '福莱新材', code: '605488', topic: TOPIC, pct: 76.21, streak: 3 }
+    ]);
+    const ctx = ctxOf({ topicPool: pool });
+    ctx.leaderSuspended = true;                      // 总龙停牌 ⇒ 第二十一条退潮首日成立
+    const plan = buildTopicVolRatioPlan(grayTopics(), DM, { ebbCtx: ctx });
+    expect(plan.ebb).not.toBe(null);
+    expect(plan.catchUp).toBe(null);
+    expect(plan.buy.catchUp).toBe(null);
+    expect(plan.notes.join('\n')).not.toContain('第' + CATCH_UP_RULE_NO + '条');
+  });
+
+  it('计入「选股 N 只」但按名字去重：补涨那只同时也在灰化块里 ⇒ 只算一只', function() {
+    const pool = pool10([
+      { rank20: 7, name: '福莱新材', code: '605488', topic: TOPIC, pct: 76.21, streak: 1 }
+    ]);
+    const plan = buildTopicVolRatioPlan(grayTopics(), DM, { ebbCtx: ctxOf({ topicPool: pool }) });
+    expect(plan.catchUp).toBeTruthy();
+    const grayNames = [];
+    plan.blocks.forEach(function(b) { (b.picks || []).forEach(function(p) { grayNames.push(p.name); }); });
+    expect(grayNames).toContain('大业股份');          // 补涨那只一定在灰块里出现过
+    expect(plan.pickCount).toBe(Array.from(new Set(grayNames)).length);
+  });
+
+  it('规则手册：第三十一条必须写清「从 6~10 名挑 / 恰好 2~3 只 / 只选连板票 / 没有就连板都没有就空仓」', function() {
+    const all = buildTvrbRulesLines().join('\n');
+    expect(all).toContain('三十一、【' + CATCH_UP_TAG + '】');
+    expect(all).toContain('20日涨幅 · 当日竞价口径 · 主板第 ' + CATCH_UP_RANK_FROM + '~' + CATCH_UP_RANK_TO);
+    expect(all).toContain('恰好 ' + CATCH_UP_MIN_COUNT + '~' + CATCH_UP_MAX_COUNT + ' 只');
+    expect(all).toContain('只选连板票');
+    expect(all).toContain(String(CATCH_UP_MIN_STREAK));
+    expect(all).toContain('今天仍然空仓');
+    expect(all).toContain(String(TVRB_CASH_ALERT_AVG_VR));
+    // ⛔ 与第三十条（弱势切抱团）、第十九条（空仓提醒）都写明关系
+    expect(all).toContain(WEAK_HUDDLE_TAG);
+    expect(all).toContain(CASH_NO_BUY_TAG);
+    // 用户给的那一天的反例必须留档（防止后人「好心」放宽成 1 只也算）
+    expect(all).toContain('10-23');
+    expect(all).toContain('大业股份');
   });
 });

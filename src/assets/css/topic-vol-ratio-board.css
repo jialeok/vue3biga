@@ -1026,6 +1026,48 @@
     outline-offset: -2px;
 }
 
+/* ★★ [CATCH-UP 2026-10-27 用户口径] 第三十一条【补涨题材】容器 ——
+   前提与另外五段一样：⛔ 必须渲染在 .tvrb-buy-list.tvrb-ebb（父级 grayscale + opacity）【之外】，
+   CSS 的 filter 不能被后代撤销，放进去等于把今天要买的这只也灰掉。
+   ⚠️ 配色刻意用【深橙】而不是紫罗兰（第三十条）/ 琥珀金（退潮替补·分歧买点·新龙）/ 青蓝（十日候补）：
+      「低位补涨」是第六条例外买点，六种颜色必须能一眼分开；⛔ 也别用红（同页常规【竞价买】是红）。
+   ⚠️ 左边框比紫罗兰那条细一档（3px）：本条强度低于第三十条【弱势切抱团】（市场龙头 > 低位补涨），
+      视觉权重上不能反超。 */
+.tvrb-catchup-only-buy {
+    margin: 2px 0 8px;
+    padding: 7px 9px 8px;
+    background: #fff7ed;
+    border: 2px solid #c2410c;
+    border-left-width: 3px;
+    border-radius: 10px;
+}
+
+.tvrb-catchup-only-label {
+    margin-bottom: 4px;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    color: #9a3412;
+}
+
+/* 容器内的一句说明：把「题材退潮 ⇄ 这几只还能买」的矛盾一次讲清（用户「更新下规则和说明」），
+   ⛔ 与行内说明不重复：这里讲【为什么这一块存在 + 为什么只选连板票】，行内说明讲【这一只为什么是它】。 */
+.tvrb-catchup-only-note {
+    margin-bottom: 5px;
+    font-size: 10px;
+    line-height: 1.6;
+    color: #c2410c;
+}
+
+/* 动作标签【补涨题材】（tone = 'catchup'，由 Logic 层给，CSS 只做视觉映射 §21） */
+.tvrb-action.tvrb-action-catchup {
+    background: #c2410c;
+    color: #fff7ed;
+    letter-spacing: 0.3px;
+    outline: 1px solid rgba(255, 247, 237, 0.85);
+    outline-offset: -2px;
+}
+
 /* 买点侧：仓位（和/或持有标签）已经在行里，动作徽标紧跟其后，不再抢 margin-left:auto */
 .tvrb-position + .tvrb-action {
     margin-left: 0;
