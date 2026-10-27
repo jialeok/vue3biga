@@ -8,6 +8,8 @@ import { useAuctionStore } from '../stores/auctionStore.js';
 import { state } from '../logic/app-state.js';
 import { getSupabase, getNumericVolume } from './supabase-client.js';
 import { _dbgLog } from './debug-log.js';
+// ★★ [PAGED-FETCH 2026-10-27] 分页取全量的唯一实现（§6）：串行分页 → 第 0 页不满即结束 + 有限并发。
+import { fetchAllPages } from './paged-fetch.js';
 
 // 从 hot_stocks 与 market_metrics(scope='hot') 双表读取并合并，
 // 组装成 {date: [items]} 结构返回，同时把全量快照写入 _hotFullRowCache。
@@ -54,48 +56,45 @@ export async function loadHotStocksFromCloud() {
     const oldLocalData = state._hotAuctionData || {};
     // [BUG-FIX] 从 stockcodemap 云端表拿 name→code 映射，云端 code 为空时做回填。
     const scMap = state._scMapCache || {};
-    let offset = 0;
-    const pageSize = 1000;
 
     // 正式成员索引（方案2：行对象不再携带 in_watchlist，用独立 Set 维护）
     const newWatchlistIndex = {};
 
     // 1) 读取 hot_stocks（正式列表成员）
+    // ★★ [PAGED-FETCH 2026-10-27] 原来是 `while(true){ await range(offset) }` 逐页串行 ——
+    //   墙钟 = Σ单页耗时（实测首屏 hot 影子表 2 页串行 7.1s + 9.0s ≈ 16s，全程占着一条连接）。
+    //   改为 Data 层唯一助手 data/paged-fetch.js（§6）：第 0 页不满即结束，满页才并发扇出。
+    //   ⛔ 取什么（select 列 / 无过滤条件）、字段映射、合并语义【零变化】；只是「怎么取」变快。
     let stocksError = null;
     try {
-        while (true) {
-            const { data, error } = await sb.from('hot_stocks')
-                .select('date,stock,code,volume,yest_volume,note,change_pct,topics,selected,bought,sold,fixed')
-                .range(offset, offset + pageSize - 1);
-            if (error) throw error;
-            if (!data || data.length === 0) break;
-            data.forEach(function(row) {
-                if (!cloudByDate[row.date]) cloudByDate[row.date] = {};
-                const nameTrim = (row.stock || '').trim();
-                if (!nameTrim) return;
-                const mapCode = (scMap[nameTrim] || '').trim();
-                const cloudCode = (row.code || '').trim();
-                const finalCode = cloudCode || mapCode;
-                cloudByDate[row.date][nameTrim] = {
-                    stock: row.stock,
-                    code: finalCode,
-                    volume: row.volume || '',
-                    yest_volume: row.yest_volume || '',
-                    note: row.note || '',
-                    change_pct: row.change_pct || '',
-                    topics: row.topics || '',
-                    selected: row.selected || false,
-                    bought: row.bought || false,
-                    sold: row.sold || false,
-                    fixed: row.fixed || false
-                };
-                // 登记到正式成员索引
-                if (!newWatchlistIndex[row.date]) newWatchlistIndex[row.date] = new Set();
-                newWatchlistIndex[row.date].add(nameTrim);
-            });
-            if (data.length < pageSize) break;
-            offset += pageSize;
-        }
+        const stocksRows = await fetchAllPages(function() {
+            return sb.from('hot_stocks')
+                .select('date,stock,code,volume,yest_volume,note,change_pct,topics,selected,bought,sold,fixed');
+        });
+        stocksRows.forEach(function(row) {
+            if (!cloudByDate[row.date]) cloudByDate[row.date] = {};
+            const nameTrim = (row.stock || '').trim();
+            if (!nameTrim) return;
+            const mapCode = (scMap[nameTrim] || '').trim();
+            const cloudCode = (row.code || '').trim();
+            const finalCode = cloudCode || mapCode;
+            cloudByDate[row.date][nameTrim] = {
+                stock: row.stock,
+                code: finalCode,
+                volume: row.volume || '',
+                yest_volume: row.yest_volume || '',
+                note: row.note || '',
+                change_pct: row.change_pct || '',
+                topics: row.topics || '',
+                selected: row.selected || false,
+                bought: row.bought || false,
+                sold: row.sold || false,
+                fixed: row.fixed || false
+            };
+            // 登记到正式成员索引
+            if (!newWatchlistIndex[row.date]) newWatchlistIndex[row.date] = new Set();
+            newWatchlistIndex[row.date].add(nameTrim);
+        });
         state._hotAuctionTableAvailable = true;
     } catch (e) {
         stocksError = e;
@@ -103,45 +102,42 @@ export async function loadHotStocksFromCloud() {
     }
 
     // 2) 读取 market_metrics(scope='hot')（影子记录/指标数据）
-    offset = 0;
+    // ★ [PAGED-FETCH 2026-10-27] 同上：串行改并发分页。
+    //   ⚠️ 这里【必须保留 order(date,stock)】：本表分页不排序时 Postgres 不保证跨页顺序稳定
+    //      （见 paged-fetch.js 顶部「已知限制」），会静默重复/漏行。
     let metricsError = null;
     let metricsRowsRead = 0;
     try {
-        while (true) {
-            const { data, error } = await sb.from('market_metrics')
+        const metricsRows = await fetchAllPages(function() {
+            return sb.from('market_metrics')
                 .select('date,stock,code,volume,yest_volume,change_pct')
                 .eq('scope', 'hot')
                 .order('date', { ascending: true })
-                .order('stock', { ascending: true })
-                .range(offset, offset + pageSize - 1);
-            if (error) throw error;
-            if (!data || data.length === 0) break;
-            metricsRowsRead += data.length;
-            data.forEach(function(row) {
-                if (!cloudByDate[row.date]) cloudByDate[row.date] = {};
-                const nameTrim = (row.stock || '').trim();
-                if (!nameTrim) return;
-                const existing = cloudByDate[row.date][nameTrim];
-                if (existing) {
-                    if (row.volume !== undefined && row.volume !== null && row.volume !== '') existing.volume = row.volume;
-                    if (row.yest_volume !== undefined && row.yest_volume !== null && row.yest_volume !== '') existing.yest_volume = row.yest_volume;
-                    if (row.change_pct !== undefined && row.change_pct !== null && row.change_pct !== '') existing.change_pct = row.change_pct;
-                    if (row.code) existing.code = row.code;
-                    return;
-                }
-                const mapCode = (scMap[nameTrim] || '').trim();
-                const cloudCode = (row.code || '').trim();
-                cloudByDate[row.date][nameTrim] = {
-                    stock: row.stock,
-                    code: cloudCode || mapCode,
-                    volume: row.volume || '',
-                    yest_volume: row.yest_volume || '',
-                    change_pct: row.change_pct || ''
-                };
-            });
-            if (data.length < pageSize) break;
-            offset += pageSize;
-        }
+                .order('stock', { ascending: true });
+        });
+        metricsRowsRead = metricsRows.length;
+        metricsRows.forEach(function(row) {
+            if (!cloudByDate[row.date]) cloudByDate[row.date] = {};
+            const nameTrim = (row.stock || '').trim();
+            if (!nameTrim) return;
+            const existing = cloudByDate[row.date][nameTrim];
+            if (existing) {
+                if (row.volume !== undefined && row.volume !== null && row.volume !== '') existing.volume = row.volume;
+                if (row.yest_volume !== undefined && row.yest_volume !== null && row.yest_volume !== '') existing.yest_volume = row.yest_volume;
+                if (row.change_pct !== undefined && row.change_pct !== null && row.change_pct !== '') existing.change_pct = row.change_pct;
+                if (row.code) existing.code = row.code;
+                return;
+            }
+            const mapCode = (scMap[nameTrim] || '').trim();
+            const cloudCode = (row.code || '').trim();
+            cloudByDate[row.date][nameTrim] = {
+                stock: row.stock,
+                code: cloudCode || mapCode,
+                volume: row.volume || '',
+                yest_volume: row.yest_volume || '',
+                change_pct: row.change_pct || ''
+            };
+        });
         state._marketMetricsTableAvailable = true;
     } catch (e) {
         metricsError = e;
@@ -306,33 +302,28 @@ export async function loadHotTrendsFromCloud() {
     if (state._justPushedHotTrends) return;
     const sb = getSupabase();
     const result = {};
-    let offset = 0;
-    const pageSize = 1000;
+    const _pushRow = function(row) {
+        if (!row || !row.date || !row.stock) return;
+        if (!result[row.date]) result[row.date] = [];
+        result[row.date].push({
+            stock: row.stock,
+            code: row.code || '',
+            volume: row.volume || '',
+            yest_volume: row.yest_volume || '',
+            change_pct: row.change_pct || ''
+        });
+    };
 
     // 优先读取 market_metrics(scope='hot')
+    // ★ [PAGED-FETCH 2026-10-27] 串行分页 → Data 层唯一助手（§6）。⛔ 行集合与缓存语义零变化。
     let usedMarketMetrics = false;
     try {
-        while (true) {
-            const { data, error } = await sb.from('market_metrics')
+        const rows = await fetchAllPages(function() {
+            return sb.from('market_metrics')
                 .select('date,stock,code,volume,yest_volume,change_pct')
-                .eq('scope', 'hot')
-                .range(offset, offset + pageSize - 1);
-            if (error) throw error;
-            if (!data || data.length === 0) break;
-            data.forEach(function(row) {
-                if (!row || !row.date || !row.stock) return;
-                if (!result[row.date]) result[row.date] = [];
-                result[row.date].push({
-                    stock: row.stock,
-                    code: row.code || '',
-                    volume: row.volume || '',
-                    yest_volume: row.yest_volume || '',
-                    change_pct: row.change_pct || ''
-                });
-            });
-            if (data.length < pageSize) break;
-            offset += pageSize;
-        }
+                .eq('scope', 'hot');
+        });
+        rows.forEach(_pushRow);
         usedMarketMetrics = true;
         state._marketMetricsTableAvailable = true;
     } catch (e) {
@@ -341,27 +332,11 @@ export async function loadHotTrendsFromCloud() {
 
     // 若 market_metrics 无数据或失败，回退读取旧 hot_stock_trends 表
     if (!usedMarketMetrics || Object.keys(result).length === 0) {
-        offset = 0;
-        while (true) {
-            const { data, error } = await sb.from('hot_stock_trends')
-                .select('date,stock,code,volume,yest_volume,change_pct')
-                .range(offset, offset + pageSize - 1);
-            if (error) throw error;
-            if (!data || data.length === 0) break;
-            data.forEach(function(row) {
-                if (!row || !row.date || !row.stock) return;
-                if (!result[row.date]) result[row.date] = [];
-                result[row.date].push({
-                    stock: row.stock,
-                    code: row.code || '',
-                    volume: row.volume || '',
-                    yest_volume: row.yest_volume || '',
-                    change_pct: row.change_pct || ''
-                });
-            });
-            if (data.length < pageSize) break;
-            offset += pageSize;
-        }
+        const rows = await fetchAllPages(function() {
+            return sb.from('hot_stock_trends')
+                .select('date,stock,code,volume,yest_volume,change_pct');
+        });
+        rows.forEach(_pushRow);
     }
 
     state._hotTrendsTableAvailable = true;

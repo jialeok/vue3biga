@@ -156,6 +156,31 @@ export function useAppBootstrap(loginRef) {
     setupEventBus();
     setupVisibilityChange();
 
+    // ★★ [BOOT-ORDER 2026-10-27 首屏提速] `pullFromCloud()` 必须是【第一个发起】的异步链路。
+    //
+    // 🔴 【定位】（.tmpdiag/audit-timeline.cjs，真实网络，2026-10-27）
+    //   原实现把它放在本函数【最后一行】⇒ 前面 9 条 fire-and-forget 链路在同一 tick 内
+    //   先抢走浏览器的 6 条连接：实测首屏「竞价 30 天窗口」那 7 个请求，
+    //   最早一个直到 **2513ms** 才发出，且单条耗时被挤到 2.6~11 秒，
+    //   整段窗口从 2.5s 拖到 **21.9s** —— 决策看板/题材量比等的就是这一段。
+    //   根因属于 §33「首屏与后续刷新必须分离」的执行顺序问题，不是数据量问题。
+    //
+    // ✅ 【改法】只把这一次调用【挪到最前面】，⛔ 不删任何链路、⛔ 不改任何 `.then` 内部逻辑。
+    //   竞价窗口是首屏唯一的关键路径（决策看板 / 题材量比 / 退潮判定全靠它灌内存），
+    //   其它看板（ETF / 浮面 / 记忘 / 热门影子）都是补充数据，晚几百毫秒无感。
+    //   ⚠️ 必须在 `setupEventBus()` 之后发起：`pullFromCloud()` 会 emit auction-refresh 等事件。
+    pullFromCloud().then(() => {
+      state.allData = null; loadAllData();
+      _emit('auction-refresh');
+      _emit('stocks-refresh');
+      _emit('bidding-refresh');
+      _emit('board-refresh');
+      _emit('jiwang-refresh');
+      // [MORNING-SYNC 2026-09-11] 早盘自愈：9:25 worker 写完当天数据要 3~5 分钟，
+      // 页面若更早打开就只能靠这一层把数据补回来（不再需要手点「连抓五天」）。
+      startMorningSync();
+    }).catch(e => _dbgLog('[AUCTION-ERR] background pullFromCloud ' + (e && e.message || e)));
+
     pullDailyHighlights().then(() => _emit('auction-refresh')).catch(e => _dbgLog('[AUCTION-ERR] daily_highlights ' + (e && e.message || e)));
     pullHotStocksHighlights().catch(e => console.warn('hot_stocks_highlights:', e.message));
     loadHotStocksFromCloud().then(() => _emit('auction-refresh')).catch(e => console.warn('hot_stocks:', e.message));
@@ -187,18 +212,6 @@ export function useAppBootstrap(loginRef) {
         });
       });
     }
-
-    pullFromCloud().then(() => {
-      state.allData = null; loadAllData();
-      _emit('auction-refresh');
-      _emit('stocks-refresh');
-      _emit('bidding-refresh');
-      _emit('board-refresh');
-      _emit('jiwang-refresh');
-      // [MORNING-SYNC 2026-09-11] 早盘自愈：9:25 worker 写完当天数据要 3~5 分钟，
-      // 页面若更早打开就只能靠这一层把数据补回来（不再需要手点「连抓五天」）。
-      startMorningSync();
-    }).catch(e => _dbgLog('[AUCTION-ERR] background pullFromCloud ' + (e && e.message || e)));
   }
 
   onMounted(async () => {

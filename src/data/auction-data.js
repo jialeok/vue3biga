@@ -6,6 +6,8 @@ import { state } from '../logic/app-state.js';
 //   相隔几十毫秒以上的串行读取一律照旧重读 —— 竞价时段数据每秒都在变，
 //   ⛔ 绝不用长 TTL 换取「少几个请求、但可能读到旧值」（那会污染 9:26 的选股结论）。
 import { createQueryMemo } from './query-memo.js';
+// ★★ [PAGED-FETCH 2026-10-27] 分页取全量的唯一实现（§6）：去掉 head+count 探测 + 第 0 页不满即结束。
+import { fetchAllPages } from './paged-fetch.js';
 let _invalidateTopicCacheFn = null;
 export function _setInvalidateTopicCacheFn(fn) { _invalidateTopicCacheFn = fn; }
         // ============================================================
@@ -23,67 +25,20 @@ export function _setGetSupabaseFn(fn) { _getSupabaseFn = fn; }
         state._marketMetricsTableAvailable = false; // 运行时标记：market_metrics 表是否可用
         state._lastPushedAuctionStatus = '';  // 上次推送的 auction 状态签名（避免无变化时重复推送）
 
-        /**
-         * 分页拉取工具（§32/§33 性能红线）。
-         *
-         * 【改造前】调用方各自写 `while(true) { query.range(offset, offset+999) }` 的顺序分页，
-         *   auction_watchlist(11600 行) + market_metrics(scope=auction, 7225 行) + market_metrics(scope=hot, 2317 行)
-         *   = 23 次【串行】HTTP，实测单次 0.7~2.0s → 首屏冻结 25~40 秒。
-         *   Supabase 单次响应上限 1000 行（实测 limit=12000 也只回 1000），页数无法消灭；
-         *   真正的问题是「串行」。
-         *
-         * 【改造后】先发一次 head+count 请求拿到总行数，再把各页用有限并发（默认 6，匹配浏览器
-         *   单域名连接上限）一次性并行取回。页数不变但墙钟时间从 Σ 降到 ~1 波。
-         *   若运行环境不支持 head+count（或不支持并发 range），自动降级为原串行分页——
-         *   §10 红线：降级只允许变慢，绝不返回空数据伪装成功。
-         *
-         * @param {Function} buildQuery - () => Supabase query builder（已带 select 与过滤条件）
-         * @param {Object} [opts] - { pageSize, concurrency, onError }
-         * @returns {Promise<Array>} 全部行
-         */
-        const _PAGE_SIZE = 1000;
-        const _PAGE_CONCURRENCY = 6;
-        async function _fetchAllPages(buildQuery, opts) {
-            const pageSize = (opts && opts.pageSize) || _PAGE_SIZE;
-            const concurrency = (opts && opts.concurrency) || _PAGE_CONCURRENCY;
-
-            // 1) 先探总数（head 请求不回行体，成本远低于拉 1000 行）
-            let total = -1;
-            try {
-                const probe = await buildQuery().select('*', { count: 'exact', head: true });
-                if (!probe.error && typeof probe.count === 'number') total = probe.count;
-            } catch (e) {
-                total = -1; // 不支持 → 走串行兜底
-            }
-            if (total === 0) return [];
-            if (total > 0) {
-                const pages = Math.max(1, Math.ceil(total / pageSize));
-                const rows = [];
-                for (let i = 0; i < pages; i += concurrency) {
-                    const batch = [];
-                    for (let j = i; j < Math.min(i + concurrency, pages); j++) {
-                        batch.push(buildQuery().range(j * pageSize, (j + 1) * pageSize - 1));
-                    }
-                    const settled = await Promise.all(batch);
-                    for (const r of settled) {
-                        if (r.error) throw r.error;
-                        if (r.data && r.data.length) rows.push.apply(rows, r.data);
-                    }
-                }
-                return rows;
-            }
-
-            // 2) 降级：顺序分页（与原行为等价）
-            const fallback = [];
-            for (let offset = 0; ; offset += pageSize) {
-                const res = await buildQuery().range(offset, offset + pageSize - 1);
-                if (res.error) throw res.error;
-                if (!res.data || res.data.length === 0) break;
-                fallback.push.apply(fallback, res.data);
-                if (res.data.length < pageSize) break;
-            }
-            return fallback;
-        }
+        // ============================================================
+        // 分页拉取工具（§32/§33 性能红线）
+        //
+        // 【改造前】调用方各自写 `while(true) { query.range(offset, offset+999) }` 的顺序分页 ⇒
+        //   auction_watchlist(11600 行) + market_metrics 两张 scope = 23 次【串行】HTTP，
+        //   实测单次 0.7~2.0s → 首屏冻结 25~40 秒。（页数消灭不了：Supabase 单次上限 1000 行。）
+        //
+        // 【本次改造 2026-10-27】把实现收敛到 Data 层唯一助手 data/paged-fetch.js（§6）：
+        //   ① 去掉 `select=*&count=exact&head=true` 的总数探测 —— 47k 行表上这一条 COUNT
+        //      首屏实测 **5.8 秒**，而它唯一的作用只是算页数（见 paged-fetch.js 顶部说明）。
+        //   ② 改「第 0 页不满即结束，满页才并发扇出后续页」⇒ 小结果集只要 1 条请求。
+        //   ⛔ 取什么（select 列 / 过滤条件）、合并顺序、写内存语义【全部零变化】。
+        // ============================================================
+        const _fetchAllPages = fetchAllPages;
 
         function _getAuctionStore() { try { return useAuctionStore(); } catch { return null; } }
 
