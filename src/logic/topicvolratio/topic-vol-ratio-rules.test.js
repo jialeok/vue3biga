@@ -89,7 +89,13 @@ import {
   // ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条【十日涨幅 · 在列次数候补】
   RANGE10_BACKUP_TAG,
   RANGE10_BACKUP_TONE,
-  RANGE10_BACKUP_RULE_NO
+  RANGE10_BACKUP_RULE_NO,
+  // ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】
+  WEAK_HUDDLE_RULE_NO,
+  WEAK_HUDDLE_TAG,
+  WEAK_HUDDLE_TONE,
+  WEAK_HUDDLE_BLOCK_TOPIC,
+  WEAK_HUDDLE_TOP_N
 } from './topic-vol-ratio-rules.js';
 // ★★ [CORE-CAT 2026-10-22] 「题材 → 核心词大类」归一的唯一实现（文化传媒 ⇒ AI应用）
 import { makeCoreTopicResolver } from '../topic/core-category.js';
@@ -688,9 +694,14 @@ describe('tvrb · 空仓提醒（入选题材里排名第一 平均量比 < 25 �
       .toEqual(pOk.blocks[0].picks.map(function(p) { return p.name; }));
     expect(pLow.pickCount).toBe(pOk.pickCount);
     expect(pLow.pickCount).toBe(2);
-    // 说明文字也不因提醒而变化（提醒是独立一段，不进 notes）
-    expect(pLow.notes).toEqual(pOk.notes);
-    expect(pLow.notes.join('\n')).not.toContain('空仓');
+    // 说明文字：★★ [WEAK-HUDDLE 2026-10-27] 命中提醒时说明区【只多一条】第三十条的留痕
+    //   （用户口径要求本条必须写明「判不出 / 仍然空仓」，所以「提醒不进 notes」这条旧契约放宽为
+    //     「常规选股说明一行未改、只追加第三十条那一条」）；未命中时那条不出现。
+    const _isWhNote = function(s) { return String(s).indexOf('第' + WEAK_HUDDLE_RULE_NO + '条') >= 0; };
+    expect(pLow.notes.filter(function(s) { return !_isWhNote(s); })).toEqual(pOk.notes);
+    expect(pLow.notes.filter(_isWhNote)).toHaveLength(1);
+    // ⛔ 常规说明里仍然不出现「空仓」（只有第三十条那条留痕会提到它）
+    expect(pLow.notes.filter(function(s) { return !_isWhNote(s); }).join('\n')).not.toContain('空仓');
     // ⚠️ ⛔ 标签【不再】逐项一致 —— 第十六轮用户口径：命中提醒时买点动作改成【分歧日不买】
     //   （逐项钉在下面「第十六轮 · 空仓提醒下的买点改写」那一段，这里只钉「选股没变」）。
     expect(pOk.blocks[0].picks[0].buyActionTag).not.toBe(CASH_NO_BUY_TAG);
@@ -4456,5 +4467,197 @@ describe('tvrb · [EBB-MAIN-TOPIC] 退潮判定的「主线题材」闸门', fun
     expect(e).not.toBe(null);
     expect(e.mainTopicKind).toBe('unknown');
     expect(e.mainTopicText).toContain('题材读不到');
+  });
+});
+
+// ══ ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】═══════════════════════════════
+// 用户原话：
+//   「当有这个看板时，下面会出现灰色的选股块，从灰色的题材块中核对20日涨幅，看有没有排名前三的
+//    股票在其中（同题材），如果有再重新选入，因为行情差时，选市场龙头（也是题材龙头），叫弱势切抱团。
+//    并放在最前面，添加文字，弱势切抱团。这个也是之前的从市场的龙头选，而不是题材选，
+//    添加下规则和说明文字。…… 如果该题材的股票不是排名第三的话，还是要空仓的。」
+// 判据三段：
+//   ① 前置 = 第十九条空仓提醒命中（能入选的排名第一题材平均竞价量比 < 25）∧ 非退潮首日 ∧ 非分歧日；
+//   ② 选 = 20日涨幅【主板前三】里，挑【与那个灰色题材块同题材】的票（⛔ 不另排一次名次）；
+//   ③ 反例 = 前三里没有同题材的票 ⇒ 仍然空仓（⛔ 不替补、不拿第二题材顶）。
+describe('tvrb · 第三十条【弱势切抱团】', function() {
+  const TOPIC = '工业4.0';
+  // 灰色题材块 = 工业4.0，共 10 只（> 8 ⇒ big 档取 2 只）；平均量比 12.96 = 10-26/10-27 的真实数值
+  // 龙一 = 大业股份（量比 17.83、占比 3.5%），龙二 = 福莱新材（8.67）
+  const NAMES = ['大业股份', '福莱新材', '兆威机电', '甲四', '甲五', '甲六', '甲七', '甲八', '甲九', '甲十'];
+  const CODES = ['603278', '605488', '003021', '600004', '600005', '600006', '600007', '600008', '600009', '600010'];
+  const DM = dragonMap(NAMES.map(function(n, i) { return [n, i + 1]; }));
+
+  /** 灰色题材块（vr 可控：默认 12.96 ⇒ 命中空仓提醒） */
+  function grayTopics(vr) {
+    const v = vr === undefined ? 12.96 : vr;
+    return [block(TOPIC, 1, NAMES.map(function(n, i) {
+      return m(n, {
+        aucVolRatio: i === 0 ? v + 4.87 : (i === 1 ? v - 4.29 : v),
+        aucShare: i === 0 ? 3.5 : 6.2,
+        code: CODES[i]
+      });
+    }))];
+  }
+
+  /** 20日涨幅主板前五（10-26 / 10-27 的真实形状：大业股份在列；凡拓数创 = 创业板 ⇒ 不算名次） */
+  const TOP5 = [
+    { name: '新华传媒', code: '600825', topic: '文化传媒', pct: 202.59, rank20: 1, mainBoard: true, isYizi: false, suspended: false },
+    { name: '大业股份', code: '603278', topic: TOPIC, pct: 89.98, rank20: 2, mainBoard: true, isYizi: false, suspended: false },
+    { name: '九阳股份', code: '002242', topic: '家电', pct: 180.11, rank20: 3, mainBoard: true, isYizi: false, suspended: false },
+    { name: '凡拓数创', code: '301313', topic: '物理AI', pct: 80.5, rank20: 4, mainBoard: false, isYizi: false, suspended: false },
+    { name: '冰山冷热', code: '000530', topic: '冰雪产业', pct: 70.1, rank20: 5, mainBoard: true, isYizi: false, suspended: false }
+  ];
+
+  /** 非退潮日 / 非分歧日的采集事实（ready + leader，但占比达标 + 不停牌 ⇒ ebb = null） */
+  function ctxOf(pool) {
+    return {
+      ready: true,
+      leader: { name: '新华传媒', topic: '文化传媒', pct: 202.59 },
+      leaderSuspended: false,
+      leaderShare: 9,
+      top5: pool || [],
+      siblingDragons: [],
+      secondInfo: null
+    };
+  }
+
+  it('常量：标签 / 配色档 / 题材名 / 前三名', function() {
+    expect(WEAK_HUDDLE_TAG).toBe('弱势切抱团');
+    expect(WEAK_HUDDLE_TONE).toBe('weakhuddle');
+    expect(WEAK_HUDDLE_RULE_NO).toBe('三十');
+    expect(WEAK_HUDDLE_TOP_N).toBe(3);
+    expect(WEAK_HUDDLE_BLOCK_TOPIC).toContain(WEAK_HUDDLE_TAG);
+  });
+
+  it('★ 10-26 实例：工业4.0 退潮（12.96 < 25）+ 大业股份在 20日涨幅主板前三 ⇒ 选入并标【弱势切抱团】', function() {
+    const plan = buildTopicVolRatioPlan(grayTopics(), DM, { ebbCtx: ctxOf(TOP5) });
+    // ① 前置：空仓提醒命中、且不是退潮首日（ebb 接管的那条分支与本条互斥）
+    expect(plan.cashAlert.show).toBe(true);
+    expect(plan.cashAlert.topic).toBe(TOPIC);
+    expect(plan.ebb).toBe(null);
+    // ② 选出那一只 = 大业股份（同题材 + 主板第 2 名）
+    expect(plan.weakHuddle).toBeTruthy();
+    expect(plan.weakHuddle.picks.map(function(p) { return p.name; })).toEqual(['大业股份']);
+    const p0 = plan.weakHuddle.picks[0];
+    expect(p0.buyActionTag).toBe(WEAK_HUDDLE_TAG);
+    expect(p0.buyActionTone).toBe(WEAK_HUDDLE_TONE);
+    expect(p0.dragonLabel).toBe('总龙二');            // 20日涨幅名次（⛔ 不是题材龙位）
+    expect(p0.holdTag).toBe('');                      // ⛔ 抱团票不冒充【持有】
+    expect(p0.position).toBe('');
+    // 行内说明把「为什么退潮还买」讲清（§21 模板零计算）
+    expect(p0.actionNote).toContain(WEAK_HUDDLE_TAG);
+    expect(p0.actionNote).toContain(TOPIC);
+    // 平均量比取【cashAlert 同一份文案】（⛔ 不在这里另写一个数字）
+    expect(p0.actionNote).toContain(plan.cashAlert.avgVolRatioText);
+    expect(p0.actionNote).toContain('前三');
+    expect(p0.actionNote).toContain('第 2 名');
+    // ③ 块级：独立题材名 + 档位 + 规号
+    expect(plan.weakHuddle.block.topic).toBe(WEAK_HUDDLE_BLOCK_TOPIC);
+    expect(plan.weakHuddle.isWeakHuddle).toBe(true);
+    expect(plan.weakHuddle.tier).toBe(WEAK_HUDDLE_TONE);
+    expect(plan.weakHuddle.ruleNo).toBe(WEAK_HUDDLE_RULE_NO);
+    expect(plan.weakHuddle.picks).toHaveLength(1);
+    // ④ §6：同一份对象挂进买点槽位（四个装饰器经 _buyBlocksOf 遍历）
+    expect(plan.buy.weakHuddle).toBe(plan.weakHuddle);
+    // ⑤ 进买点名单（卖点侧才会判【持有】而不是【竞价清仓】）
+    expect(plan.buyNames.has('大业股份')).toBe(true);
+    // ⑥ ⛔ 灰化那一块一行未改：仍整段【分歧日不买】（题材结论 ≠ 股票结论，两处都保留）
+    expect(plan.blocks[0].picks.length).toBeGreaterThan(0);
+    plan.blocks[0].picks.forEach(function(x) {
+      expect(x.buyActionTag).toBe(CASH_NO_BUY_TAG);
+    });
+    // ⑦ 说明区留痕
+    const notes = plan.notes.join('\n');
+    expect(notes).toContain(WEAK_HUDDLE_TAG);
+    expect(notes).toContain(TOPIC);
+    expect(notes).toContain('两处都保留');
+  });
+
+  it('★ 两只同题材都在前三 ⇒ 两只都选（用户「如果有再重新选入」）', function() {
+    // 把九阳股份换成福莱新材（同题材、主板第 3 名）
+    const pool = TOP5.map(function(t) {
+      if (t.name !== '九阳股份') return t;
+      return { name: '福莱新材', code: '605488', topic: TOPIC, pct: 150.2, rank20: 3, mainBoard: true, isYizi: false, suspended: false };
+    });
+    const plan = buildTopicVolRatioPlan(grayTopics(), DM, { ebbCtx: ctxOf(pool) });
+    expect(plan.weakHuddle.picks.map(function(p) { return p.name; })).toEqual(['大业股份', '福莱新材']);
+    plan.weakHuddle.picks.forEach(function(p) {
+      expect(p.buyActionTag).toBe(WEAK_HUDDLE_TAG);
+      expect(p.buyActionTone).toBe(WEAK_HUDDLE_TONE);
+    });
+  });
+
+  it('★ 反例（用户「如果该题材的股票不是排名第三的话，还是要空仓的」）：前三没有同题材 ⇒ 仍然空仓', function() {
+    // 大业股份掉到主板第 4 名 ⇒ 前三 = 新华传媒 / 九阳股份 / 凡拓数创（都不是工业4.0）
+    const pool = [
+      { name: '新华传媒', code: '600825', topic: '文化传媒', pct: 202.59, rank20: 1, mainBoard: true, isYizi: false, suspended: false },
+      { name: '九阳股份', code: '002242', topic: '家电', pct: 180.11, rank20: 2, mainBoard: true, isYizi: false, suspended: false },
+      { name: '凡拓数创', code: '301313', topic: '物理AI', pct: 170.5, rank20: 3, mainBoard: true, isYizi: false, suspended: false },
+      { name: '大业股份', code: '603278', topic: TOPIC, pct: 89.98, rank20: 4, mainBoard: true, isYizi: false, suspended: false },
+      { name: '冰山冷热', code: '000530', topic: '冰雪产业', pct: 70.1, rank20: 5, mainBoard: true, isYizi: false, suspended: false }
+    ];
+    const plan = buildTopicVolRatioPlan(grayTopics(), DM, { ebbCtx: ctxOf(pool) });
+    expect(plan.cashAlert.show).toBe(true);          // 空仓提醒照旧
+    expect(plan.weakHuddle).toBe(null);              // ⛔ 不选、不替补
+    expect(plan.buy.weakHuddle).toBe(null);
+    // ⚠️ buyNames 里【照旧】会有大业股份 —— 它是灰块的龙一，买点名单收的是「今天标了买标签的票」，
+    //   与本条选不选它无关（本条只是「今天能不能买」的结论，不改题材通道的名单）。
+    const notes = plan.notes.join('\n');
+    expect(notes).toContain('今天仍然空仓');
+    expect(notes).toContain(TOPIC);
+    // 灰化照旧：那一块仍是【分歧日不买】
+    expect(plan.blocks[0].picks[0].buyActionTag).toBe(CASH_NO_BUY_TAG);
+  });
+
+  it('§10：20日涨幅前五还没就绪 ⇒ 不猜，说明区写「判不出」（⛔ 不等于今天没有抱团票）', function() {
+    const noPool = ctxOf(null);
+    delete noPool.top5;
+    const plan = buildTopicVolRatioPlan(grayTopics(), DM, { ebbCtx: noPool });
+    expect(plan.cashAlert.show).toBe(true);
+    expect(plan.weakHuddle).toBe(null);
+    expect(plan.notes.join('\n')).toContain('判不出');
+  });
+
+  it('§11 未命中：量比达标（30 ⇒ 空仓提醒不触发）⇒ 本条零行为，池子里有同题材票也不选', function() {
+    const plan = buildTopicVolRatioPlan(grayTopics(30), DM, { ebbCtx: ctxOf(TOP5) });
+    expect(plan.cashAlert.show).toBe(false);
+    expect(plan.weakHuddle).toBe(null);
+    expect(plan.buy.weakHuddle).toBe(null);
+    expect(plan.notes.join('\n')).not.toContain('第' + WEAK_HUDDLE_RULE_NO + '条');
+  });
+
+  it('★ 互斥：退潮首日已接管买点通道 ⇒ 本条不出（⛔ 不许两条同时输出买点）', function() {
+    const ctx = ctxOf(TOP5);
+    ctx.leaderSuspended = true;                      // 总龙停牌 ⇒ 第二十一条退潮首日成立
+    const plan = buildTopicVolRatioPlan(grayTopics(), DM, { ebbCtx: ctx });
+    expect(plan.ebb).not.toBe(null);
+    expect(plan.weakHuddle).toBe(null);
+    expect(plan.buy.weakHuddle).toBe(null);
+    expect(plan.notes.join('\n')).not.toContain('第' + WEAK_HUDDLE_RULE_NO + '条');
+  });
+
+  it('计入「选股 N 只」但按名字去重：抱团那只同时也在灰化块里 ⇒ 只算一只', function() {
+    const plan = buildTopicVolRatioPlan(grayTopics(), DM, { ebbCtx: ctxOf(TOP5) });
+    const grayNames = [];
+    plan.blocks.forEach(function(b) { (b.picks || []).forEach(function(p) { grayNames.push(p.name); }); });
+    // 大业股份是灰块的龙一 ⇒ 一定在灰块里出现过
+    expect(grayNames).toContain('大业股份');
+    // ⇒ 去重后仍 = 灰块只数（抱团那只不额外加一）
+    expect(plan.pickCount).toBe(Array.from(new Set(grayNames)).length);
+  });
+
+  it('规则手册：第三十条必须写清「触发时机 / 从市场龙头选 / 前三 / 没有就还是空仓 / 放最前面」', function() {
+    const all = buildTvrbRulesLines().join('\n');
+    expect(all).toContain('三十、【' + WEAK_HUDDLE_TAG + '】');
+    expect(all).toContain('从【市场龙头】选，不是选题材');
+    expect(all).toContain('20日涨幅主板前三名');
+    expect(all).toContain(WEAK_HUDDLE_TAG);
+    expect(all).toContain('今天仍然空仓');
+    expect(all).toContain('排在【最前面】');
+    expect(all).toContain(String(TVRB_CASH_ALERT_AVG_VR));
+    // ⛔ 与第十九条（空仓提醒）、第二十九条（十日涨幅候补）都写明关系
+    expect(all).toContain(CASH_NO_BUY_TAG);
+    expect(all).toContain(RANGE10_BACKUP_TAG);
   });
 });

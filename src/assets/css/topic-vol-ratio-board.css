@@ -984,6 +984,48 @@
     outline-offset: -2px;
 }
 
+/* ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】容器 ——
+   前提与另外四段完全一样：⛔ 必须渲染在 .tvrb-buy-list.tvrb-ebb（父级 grayscale + opacity）【之外】，
+   CSS 的 filter 不能被后代撤销，放进去等于把今天要买的这只也灰掉。
+   ⚠️ 配色刻意用【紫罗兰】而不是琥珀金 / 青蓝：琥珀金那三处（退潮替补 / 分歧买点 / 新龙）都是
+      「周期节点的例外买点」，青蓝是「题材作废后的替换」，而本条是「退潮题材里那只最强市场龙头的抱团」
+      —— 语义又不一样，颜色必须能一眼分开；⛔ 也别用红（同页常规【竞价买】是红，两枚「买」字辈挨着会读混）。
+   ⚠️ 用户要求「放在最前面」⇒ 视图里它排在其他前置买点之前；这里用更粗的左边框强调它是最优先的一条。 */
+.tvrb-weak-huddle-only-buy {
+    margin: 2px 0 8px;
+    padding: 7px 9px 8px;
+    background: #f5f3ff;
+    border: 2px solid #6d28d9;
+    border-left-width: 4px;
+    border-radius: 10px;
+}
+
+.tvrb-weak-huddle-only-label {
+    margin-bottom: 4px;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    color: #5b21b6;
+}
+
+/* 容器内的一句说明（用户「添加文字，弱势切抱团」）：把「题材退潮 ⇄ 这只还能买」的矛盾一次讲清，
+   ⛔ 与行内说明不重复：这里讲【为什么这一块存在】，行内说明讲【这一只为什么是它】。 */
+.tvrb-weak-huddle-only-note {
+    margin-bottom: 5px;
+    font-size: 10px;
+    line-height: 1.6;
+    color: #6d28d9;
+}
+
+/* 动作标签【弱势切抱团】（tone = 'weakhuddle'，由 Logic 层给，CSS 只做视觉映射 §21） */
+.tvrb-action.tvrb-action-weakhuddle {
+    background: #6d28d9;
+    color: #f5f3ff;
+    letter-spacing: 0.3px;
+    outline: 1px solid rgba(245, 243, 255, 0.85);
+    outline-offset: -2px;
+}
+
 /* 买点侧：仓位（和/或持有标签）已经在行里，动作徽标紧跟其后，不再抢 margin-left:auto */
 .tvrb-position + .tvrb-action {
     margin-left: 0;

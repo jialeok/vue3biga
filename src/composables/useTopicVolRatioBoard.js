@@ -211,7 +211,9 @@ function _empty(reason) {
       ebb: null,
       // ★ [EBB-R8 2026-10-14] 形状与真实 plan 一致（§10 未就绪时不给「唯一买点」、也不给落库行）
       ebbBuy: null,
-      ebbDayRow: null
+      ebbDayRow: null,
+      // ★★ [WEAK-HUDDLE 2026-10-27] 未就绪时同样不给「弱势切抱团」买点（§10 未就绪 ≠ 今天没有抱团票）
+      weakHuddle: null
     }
   };
 }
@@ -1134,7 +1136,10 @@ export function useTopicVolRatioBoard() {
         plan.newDragon ? [plan.newDragon] : [],
         // ★★ [R10-BACKUP 2026-10-24] 第二十九条的十日涨幅候补同样要拿分笔（它也在灰化容器之外）——
         //   ⛔ 漏掉它，那只票点开就是「分笔明细暂不可用」（装饰只有这一处，§6）
-        plan.range10Backup ? [plan.range10Backup] : []];
+        plan.range10Backup ? [plan.range10Backup] : [],
+        // ★★ [WEAK-HUDDLE 2026-10-27] 第三十条的「弱势切抱团」同样要拿分笔（它也在灰化容器之外）——
+        //   ⛔ 漏掉它，那只票点开就是「分笔明细暂不可用」（装饰只有这一处，§6）
+        plan.weakHuddle ? [plan.weakHuddle] : []];
       buyBlockLists.forEach(function(arr) {
         arr.forEach(function(b) {
           (b.picks || []).forEach(function(p) {
@@ -1279,6 +1284,14 @@ export function useTopicVolRatioBoard() {
    */
   const range10Backup = computed(() => (data.value.plan && data.value.plan.range10Backup) || null);
   /**
+   * ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】那一块（20日涨幅主板前三 ∧ 与退潮题材同题材）。
+   * ⚠️ 与 ebbBuy / divergeBuy / newDragon / range10Backup 同一约定：它【不在 blocks 里】，
+   *   视图必须渲染在灰化容器（.tvrb-buy-list.tvrb-ebb）【之外】—— 它是今天唯一还能买的那一只，
+   *   不能被父级 grayscale 吞掉；而且用户要求放在【最前面】。
+   *   没有票进前三 / 判不出 ⇒ null ⇒ 视图 v-if 不渲染 ⇒ 就是纯空仓（§10 不拿空壳冒充结论）。
+   */
+  const weakHuddle = computed(() => (data.value.plan && data.value.plan.weakHuddle) || null);
+  /**
    * ★ [DIVERGE-GATE 2026-10-21] 分歧判定未就绪的门控旗（非 null ⇒ 买点侧渲染「判定计算中」占位、
    *   不渲染旧规则选票 —— 见 data computed 里门控条件的逐条注释）。判不出 / 已就绪 ⇒ null。
    */
@@ -1353,7 +1366,10 @@ export function useTopicVolRatioBoard() {
   const tickTargets = computed(function() {
     const seen = new Map();
     // ★ [EBB-R8] 退潮首日那只唯一买点也要抓分笔（它不在 blocks 里，见上面的 ebbBuy）
-    [blocks.value, ebbBuy.value ? [ebbBuy.value] : []].forEach(function(arr) {
+    // ★★ [WEAK-HUDDLE 2026-10-27] 「弱势切抱团」同理（第三十条，同样不在 blocks 里）
+    [blocks.value,
+      ebbBuy.value ? [ebbBuy.value] : [],
+      weakHuddle.value ? [weakHuddle.value] : []].forEach(function(arr) {
       arr.forEach(function(b) {
         (b.picks || []).forEach(function(p) {
           if (p && p.name && !seen.has(p.name)) seen.set(p.name, String(p.code || ''));
@@ -1512,6 +1528,8 @@ export function useTopicVolRatioBoard() {
     ebbBuy,
     ebbNodeNote,
     divergeBuy,
+    // ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条「弱势切抱团」买点块（渲染在灰化容器之外、最前面）
+    weakHuddle,
     divergePending,
     divergeWaitText,
     // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条「新龙 / 新题材切换日」

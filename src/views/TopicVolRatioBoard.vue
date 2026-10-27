@@ -166,6 +166,31 @@
               </div>
             </div>
             <TvrbCashAlert :alert="cashAlert" />
+            <!-- ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】买点：
+               用户原话「…从灰色的题材块中核对 20 日涨幅，看有没有排名前三的股票在其中（同题材），
+               如果有再重新选入，因为行情差时，选市场龙头（也是题材龙头），叫弱势切抱团。
+               并放在最前面，添加文字，弱势切抱团。」⇒ 所以它排在所有「灰化容器之外的买点」的【第一位】。
+               ⛔ 与退潮替补 / 分歧买点 / 新龙 / 十日候补同一理由：必须渲染在 .tvrb-buy-list 之外
+                 （那个容器挂着父级 filter: grayscale(1)，CSS 的 filter 无法被子元素撤销，
+                   放进去等于把今天要买的这只也灰掉）。
+               ⛔ 类名独立（.tvrb-weak-huddle-only-*）—— 五条规则各不相同，DOM 查询不能混。
+               ⚠️ 没有票进 20日涨幅主板前三 ⇒ 不渲染（= 就是纯空仓，与改造前一致，§11）。 -->
+            <div
+              v-if="weakHuddle"
+              class="tvrb-weak-huddle-only-buy"
+            >
+              <div class="tvrb-weak-huddle-only-label tvrb-selectable">
+                弱势切抱团 · 买点（第三十条 · 从市场龙头选，不是选题材）
+              </div>
+              <div class="tvrb-weak-huddle-only-note tvrb-selectable">
+                题材已退潮（整段灰化、今天不开新仓），但它的票在【20日涨幅主板前三】之内 ⇒
+                行情差时资金会抱团最强的市场龙头 —— 这一只是今天可以买的。
+              </div>
+              <TvrbBuyBlock
+                :block="weakHuddle"
+                :head-text="weakHuddle.block.topic"
+              />
+            </div>
             <!-- ★★ [EBB-R8 2026-10-14 → EBB-R20 2026-10-20 用户口径] 退潮日【买点侧替补（≤2 只）】：
                用户原话「从20日涨幅中的总龙一到总龙五选出两只排名靠前的……剩下的就选排名靠前的那两只」。
                ⛔ 它【必须】渲染在 .tvrb-buy-list【之外】—— 那个容器挂着父级 filter: grayscale(1)，
@@ -357,6 +382,9 @@ const {
   // ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条「十日涨幅 · 在列次数候补」那一只
   //   （同样渲染在灰化容器【之外】：题材量比太小被作废后，它才是今天真正要买的那一只）
   range10Backup,
+  // ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条「弱势切抱团」买点块
+  //   （渲染在灰化容器【之外】且排在所有前置买点的【第一位】—— 用户「放在最前面」）
+  weakHuddle,
   summaryText,
   rulesLines,
   toggleExpand,

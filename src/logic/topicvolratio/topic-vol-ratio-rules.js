@@ -371,6 +371,60 @@ export const CASH_NO_BUY_TAG = '分歧日不买';
 export const CASH_NO_BUY_TONE = EBB_NO_BUY_TONE;
 
 /**
+ * ══ 【弱势切抱团 · 买点】标签组（第三十条 · 2026-10-27 用户口径）══════════════════════════
+ *
+ * 用户原话：
+ *   「当有这个看板时（⚠️ 今日建议空仓 · 不开仓），下面会出现灰色的选股块，从灰色的题材块中核对
+ *    20日涨幅，看有没有排名前三的股票在其中（同题材），如果有再重新选入，因为行情差时，
+ *    选市场龙头（也是题材龙头），叫弱势切抱团。并放在最前面，添加文字，弱势切抱团。
+ *    这个也是之前的从市场的龙头选，而不是题材选，添加下规则和说明文字。」
+ *   「比如昨天10月26日的灰色题材块是工业4.0，灰色股票行是福莱新材和兆威机电这两只，你看下
+ *    这个题材在20日涨幅排名前三有没有股票，如果有选出来，放在最前面，这个是可以作为当天买入的票。
+ *    比如当天按照竞价口径就有大业股份 93.41% 排名主板第二，进入前三。」
+ *   「又比如今天的还是那个提示板，灰色题材块还是工业4.0，20日涨幅大业股份仍然排第二，又可以选入。」
+ *   「如果该题材的股票不是排名第三的话，还是要空仓的。」
+ *
+ * ⇒ 判据（★ 只在【空仓提醒命中】且【当日既不是退潮首日、也不是总龙首次分歧日】时生效）：
+ *   ① 池子 = 【20日涨幅主板前 WEAK_HUDDLE_TOP_N 名】。直接取 `ebbCtx.top5` 的前 3 只 ——
+ *      那条前五榜本来就是【只主板】（见 range20-leaders.js 的文件头：用户口径
+ *      「注意科创板，创业板，北交所等非主板的股票不要算进去」），与「20日涨幅」toggle 的
+ *      总龙一~五【同一把尺子】，⛔ 不在这里另排一次名次（§6）。
+ *   ② 其中【与灰色题材块同题材】的股票 ⇒ 选入（= 今天可以买的那几只）；
+ *   ③ 一只都没有 ⇒ 【仍然空仓】：不选、不替补，说明区如实写出「该题材没有票进 20日涨幅主板前三」。
+ *
+ * ⛔ 为什么是「前三」而不是「前五 / 前十」：用户原话最后一句「如果该题材的股票不是排名第三的话，
+ *   还是要空仓的」—— 要求的强度是「必须真在前三名里」，不是「前三之外降一档照收」。
+ * ⛔ 这不是【题材选股】：题材本身已经退潮（平均量比 < 25）、整段灰化且标签是【分歧日不买】；
+ *   本通道是【从市场龙头里选】（用户「这个也是之前的从市场的龙头选，而不是题材选」）——
+ *   行情差时资金会抱团最强的市场龙头，而它往往恰好就是退潮题材里唯一还活着的那一只
+ *   （10-26 / 10-27 都是：大业股份 = 工业4.0 的龙一，20日涨幅稳定排在主板前三）。
+ * ⚠️ 与第二十九条【十日涨幅候补】是两条【不同的】股票级通道，同一天可能同时出现：
+ *   那条看【十日涨幅 + 在列次数】（新面孔、且要与 20日涨幅总龙一不同题材）；
+ *   本条看【20日涨幅前三 + 与退潮题材同题材】（老龙头抱团）。两者语义相反，⛔ 不许互相顶替。
+ * ⚠️ 与第二十五条【总龙首次分歧】互斥：分歧日买点侧已由第二十五条接管（cashAlert 被分歧标语顶掉），
+ *   本规则只在【常规空仓提醒】那一条分支里生效。
+ */
+export const WEAK_HUDDLE_RULE_NO = '三十';
+/** 动作标签（买点行上唯一那枚「买」字辈；与【分歧日不买】形成一买一不买的对照） */
+export const WEAK_HUDDLE_TAG = '弱势切抱团';
+/** 独立买点块的合成题材头（渲染在灰化容器之外的那一段的标题） */
+export const WEAK_HUDDLE_BLOCK_TOPIC = '弱势切抱团 · 买点';
+/** 只看 20日涨幅主板前几名（用户口径「排名前三」） */
+export const WEAK_HUDDLE_TOP_N = 3;
+/**
+ * 配色档（本看板独有）：紫罗兰 —— 与既有四档特殊买点【都不同色】：
+ *   琥珀金 ebb-second（退潮替补 / 分歧买点 / 新龙）、青蓝 r10backup（十日候补）、
+ *   洋红 pen（看分笔卖）、深墨 ebb-nobuy（不买）。
+ * ⛔ 不用红（同页常规【竞价买】是红，两枚「买」字辈挨着会读混）；不用绿（绿 = 今天就走）。
+ */
+export const WEAK_HUDDLE_TONE = 'weakhuddle';
+/** 悬停说明（文案唯一出处；组件只渲染 Logic 给的值，§21） */
+export const WEAK_HUDDLE_TITLE =
+  '第三十条【弱势切抱团】：题材已经退潮（平均竞价量比 < 25、整段灰化），但这一只是【20日涨幅主板前三】' +
+  '且正好属于那个退潮题材 ⇒ 行情差时资金会抱团最强的市场龙头，它可以作为当天买入的票。' +
+  '⚠️ 它同时仍在下面的灰化块里出现一次（那块照旧灰化、不恢复）—— 题材结论与股票结论是两件事。';
+
+/**
  * ══ 【总龙首次分歧 · 买点】标签组（第十九轮补丁⑧ · 2026-10-20 用户口径）══════════════════
  *
  * 用户原话：「市场总龙一，第一次出现分歧的时候，是买点。像新华传媒10月19日出现分歧，一般开盘
@@ -1678,6 +1732,151 @@ function _buildDivergeCashAlert(ld, n) {
       '其余入选票照常列出但今天不开新仓（总龙分歧不买）；卖点侧不变。' +
       '⚠️ 若当天同时命中【题材退潮】，退潮规则优先，本规则让位。'
   };
+}
+
+/**
+ * ══ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条 · 【弱势切抱团】买点块 ══════════════════════
+ *
+ * 用户原话与判据长注释见 WEAK_HUDDLE_RULE_NO 那一段（常量区）。
+ * 一句话：空仓提醒命中 ⇒ 那个灰色题材块里，若有票同时是【20日涨幅主板前三】+ 同题材 ⇒ 选出来，
+ * 渲染在【最前面】、标【弱势切抱团】。一只都没有 ⇒ 仍然空仓。
+ *
+ * 结构与 _buildDivergeBuyBlock / _buildNewDragonBlock 完全同款（§6 两步走）：
+ *   ① 先把行装出来（真实题材成员行反查客观数据，凑不齐的按缺数据渲染，§10）；
+ *   ② finishBuyBlock 按决策看板同一份实现算齐客观数据与原始买点信号，
+ *      再【覆盖式】把动作标签换成【弱势切抱团】（⛔ 绝不去改 finishBuyBlock 内部 —— 决策看板共用）。
+ *
+ * ⛔ 不许自己再排一次 20日涨幅名次：池子直接吃 `ebbCtx.top5`（已是主板降序、带 rank20 / topic）。
+ * ⛔ 不许因为「它已经在下面那个灰化块里出现过」就跳过 —— 那正是本条的主角
+ *   （用户 10-26 / 10-27 的例子都是同一只：大业股份既是灰色块里的龙一，又是 20日涨幅主板前三）。
+ *
+ * @param {Array} pool        ebbCtx.top5（主板 20日涨幅降序，已富化 topic / rank20 / suspended / isYizi）
+ * @param {object} cashAlert  buildCashAlert 的返回（读 .topic = 灰色题材块的题材名）
+ * @param {Array} list        今日题材块（rankDecisionTopics 的返回，成员行 = 客观数据来源）
+ * @param {object} fOpts      finishBuyBlock 的选项（与常规块共用同一份，§6）
+ * @returns {object|null} null = 不渲染（该题材没有票进前三 / 题材名缺失 ⇒ 调用方保持空仓）
+ */
+function _buildWeakHuddleBlock(pool, cashAlert, list, fOpts) {
+  const topic = String((cashAlert && cashAlert.topic) || '').trim();
+  if (!topic) return null;
+  // ① 前 WEAK_HUDDLE_TOP_N 名里，挑【与灰色题材块同题材】的
+  const hits = (Array.isArray(pool) ? pool.slice(0, WEAK_HUDDLE_TOP_N) : []).filter(function(t) {
+    return t && t.name && String(t.topic || '').trim() === topic;
+  });
+  if (hits.length === 0) return null;
+
+  const buyPicks = hits.map(function(t) {
+    return {
+      name: String(t.name).trim(),
+      label: totalDragonLabel(Number(t.rank20)) || '',
+      topic: t.topic || '',
+      code: t.code || '',
+      pct: t.pct,
+      pctText: isFinite(Number(t.pct)) ? Number(t.pct).toFixed(2) + '%' : '',
+      rank20: t.rank20
+    };
+  });
+
+  // 真实成员行：全题材按名字兜一次（与替补 / 分歧块同一份查找，§6 同法）
+  const _memberOf = function(name) {
+    let member = null;
+    (list || []).forEach(function(b) {
+      if (member) return;
+      (b.members || []).forEach(function(m) {
+        if (!member && m && String(m.name || '').trim() === name) member = m;
+      });
+    });
+    return member;
+  };
+
+  const members = [];
+  const picks = buyPicks.map(function(p, idx) {
+    const member = _memberOf(p.name);
+    if (member && !members.some(function(m) { return m && m.name === p.name; })) members.push(member);
+    return {
+      seq: idx + 1,
+      name: p.name,
+      dragonLabel: p.label,
+      dragonRank: null,
+      pct: p.pct,
+      code: p.code || String((member && member.code) || '').trim(),
+      pctText: p.pctText,
+      aucShare: member ? _num(member.aucShare) : null,
+      position: ''
+    };
+  });
+
+  const namesText = buyPicks.map(function(p) {
+    return '【' + (p.label || '') + p.name + '】（' + (p.topic || '—') + '，20日涨幅 ' +
+      (p.pctText || '—') + '，主板第 ' + (p.rank20 || '—') + ' 名）';
+  }).join('、');
+
+  const block = {
+    block: {
+      topic: WEAK_HUDDLE_BLOCK_TOPIC,
+      rank: null,
+      count: null,
+      yiziCount: null,
+      members: members
+    },
+    rankWord: '',
+    pickRank: null,
+    reason: '【弱势切抱团】能入选的排名第一题材【' + topic + '】平均竞价量比 ' +
+      cashAlert.avgVolRatioText + ' ＜ ' + cashAlert.threshold + ' ⇒ 题材退潮（第十九条：买点侧整段灰化、' +
+      '建议空仓）。但它的票里有【20日涨幅主板前三】⇒ 行情差时资金会抱团最强的市场龙头，' +
+      '这一只可以作为当天买入的票：' + namesText,
+    mode: 'weakhuddle',
+    ruleNo: WEAK_HUDDLE_RULE_NO,
+    isCandidate: false,
+    candidateTag: '',
+    qualified: true,
+    notQualifiedText: '',
+    picks: picks,
+    notes: [
+      '⚠️ 本行【不是】题材选股的结果，也不是「题材没退潮」—— 那个题材照旧退潮、下面那一块照旧灰化。' +
+        '本行是【从市场龙头里选】：行情差时资金会抱团最强的市场龙头（也是题材龙头），叫【弱势切抱团】。',
+      '【怎么选】= 取【20日涨幅主板前三名】（只数主板：创业板 300/301、科创板 688/689、北交所一律不算名次；' +
+        '与「20日涨幅」toggle 的总龙一~三名同一把尺子），再在其中挑【与灰色题材块同题材】的 —— 本日 = ' +
+        namesText + '。',
+      '⚠️ 一只都不在前三名 ⇒ 仍然空仓（不选、不替补）。',
+      '⚠️ 它同时仍会在下面那个灰化块里出现一次：那一块是【题材结论】（整块灰化、标签【' +
+        CASH_NO_BUY_TAG + '】），这一行是【股票结论】—— 题材结论与股票结论是两件事，' +
+        '⛔ 不用合并、也不用删掉任何一处。',
+      '⚠️ 涨幅口径 = 【当日 20日涨幅】（与「20日涨幅」toggle 的总龙一~五同一列）。'
+    ],
+    topic: WEAK_HUDDLE_BLOCK_TOPIC,
+    rank: null,
+    count: null,
+    yiziCount: null,
+    avgVolRatio: null,
+    avgVolRatioText: '',
+    tier: 'weakhuddle',
+    pickCount: 0,
+    rangeText: '',
+    skippedNames: [],
+    isWeakHuddle: true
+  };
+
+  // ① 客观数据 + 原始买点信号算齐（决策看板同一份实现）
+  finishBuyBlock(block, fOpts);
+  // ② 覆盖式：动作标签换成【弱势切抱团】，原文留进行内说明
+  (block.picks || []).forEach(function(p) {
+    const me = buyPicks.filter(function(x) { return x.name === p.name; })[0] || null;
+    const rawTag = p.buyActionTag || '';
+    const rawNote = p.actionNote || '';
+    p.buyActionTag = WEAK_HUDDLE_TAG;
+    p.buyActionTone = WEAK_HUDDLE_TONE;
+    p.holdTag = '';
+    p.position = '';
+    p.actionNote = '【第' + WEAK_HUDDLE_RULE_NO + '条 · 弱势切抱团】它是【' + topic + '】的股票，' +
+      '该题材平均竞价量比只有 ' + cashAlert.avgVolRatioText + '（＜ ' + cashAlert.threshold +
+      '）⇒ 题材已退潮、下面那一块整段灰化不开新仓；' +
+      '但它是【20日涨幅主板第 ' + ((me && me.rank20) || '—') + ' 名】（' + ((me && me.pctText) || '—') +
+      '），在【前三】之内 ⇒ 行情差时资金会抱团最强的市场龙头，这一只今天可以买（弱势切抱团）。' +
+      '⚠️ 停牌 / 竞价一字的信息照常显示；买不进就买不进，别硬追。' +
+      (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : '');
+  });
+  return block;
 }
 
 /**
@@ -3221,7 +3420,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       newDragon: null,
       // ★★ [R10-BACKUP 2026-10-24] 第二十九条：十日涨幅 · 在列次数候补（题材量比太小 ⇒ 作废后替换的那一只）。
       //   同一理由挂在买点对象里（四个装饰器要遍历到它）。
-      range10Backup: null
+      range10Backup: null,
+      // ★★ [WEAK-HUDDLE 2026-10-27] 第三十条：弱势切抱团（退潮题材里唯一还能买的那只）。
+      //   同一理由挂在买点对象里 —— decision-collect#_buyBlocksOf 是「遍历一个买点块」的唯一实现，
+      //   四个装饰器（量比趋势 / 名次变化 / 封单额 / 停牌）都经它取块（§6）。
+      weakHuddle: null
     },
     sell: [],
     excludedTopics: [],
@@ -3244,6 +3447,10 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     // ★ [DIVERGE 2026-10-20] 市场总龙一【首次分歧】日的分歧买点块（总龙一 + 跟随高标 ≤2 只）。
     //   只在「总龙首次分歧 ∧ 非退潮日」时非 null（其余场景 null ⇒ 视图 v-if 不渲染）。
     divergeBuy: null,
+    // ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】买点块（20日涨幅主板前三 + 与退潮题材
+    //   同题材 ⇒ 选出来放在最前面）。只在「空仓提醒命中 ∧ 非退潮首日 ∧ 非分歧日 ∧ 有票进前三」时非 null
+    //   （其余场景 null ⇒ 视图 v-if 不渲染 ⇒ 今天就是纯空仓，与改造前一致，§11）。
+    weakHuddle: null,
     // ★★ [SWITCH 2026-10-22] 第二十八条【新龙 / 新题材切换日】：
     //   switchDay = 今天是不是「二次确认退潮」后的第 2 个交易日（判据见 detectSwitchDay）；
     //   newDragon = 那一行新龙的买点块（独立容器、渲染在灰化容器之外）；不是切换日 / 选不出 ⇒ null。
@@ -3770,6 +3977,47 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       '不同题材的主板高标 ≤2 只（第二十五条），其余入选票今天不开新仓。');
   } else if (out.cashAlert.show) {
     _applyCashAlertBuyRules(out.blocks, out.cashAlert);
+
+    // ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】：
+    //   空仓提醒命中 ⇒ 从【灰色题材块】出发，看 20日涨幅主板前三里有没有【同题材】的票；
+    //   有 ⇒ 选出来渲染在【最前面】（独立容器、不灰）、标【弱势切抱团】；没有 ⇒ 仍然空仓。
+    //   ⛔ 必须排在 _applyCashAlertBuyRules 之后：那一步才把常规块打成【分歧日不买】+ 整段灰化，
+    //      本块是今天唯一还能买的那几只（渲染在灰化容器之外，语义必须一致 —— 与第二十九条同一条理由）。
+    //   ⛔ 只在【常规空仓提醒】这一条分支里造：退潮首日 / 总龙首次分歧已各自接管 cashAlert，
+    //      它们的买点通道（第二十一条 / 第二十五条）与本条互斥，⛔ 不许两条同时输出买点。
+    //   ⚠️ 池子取 `ebbCtx.top5`（已经是【只主板 + 20日涨幅降序 + 带 topic / rank20】）——
+    //      ⛔ 不在这里另排一次名次，那是第二份真相（§6）。
+    const whPool = (o.ebbCtx && Array.isArray(o.ebbCtx.top5)) ? o.ebbCtx.top5 : null;
+    const whTopic = String((out.cashAlert && out.cashAlert.topic) || '').trim();
+    if (!whPool || whPool.length === 0) {
+      // §10：判不出就如实说（⛔ 沉默会让人以为「今天本来就没有抱团票」）
+      out.notes.push('⚠️【第' + WEAK_HUDDLE_RULE_NO + '条 · 弱势切抱团】20日涨幅前五（只主板）还没就绪 ⇒ ' +
+        '本次【判不出】灰色题材块里有没有票进前三名。数据到货后会自动重算 —— ' +
+        '（§10：判不出 ≠ 今天没有抱团票，也 ≠ 今天一定要空仓）。');
+    } else {
+      out.weakHuddle = _buildWeakHuddleBlock(whPool, out.cashAlert, list, fOpts);
+      if (out.weakHuddle) {
+        // §6：同一份对象挂进买点槽位（四个装饰器经 _buyBlocksOf 遍历，⛔ 别在组合式里再铺一遍）
+        out.buy.weakHuddle = out.weakHuddle;
+        const names = (out.weakHuddle.picks || []).map(function(p) {
+          return '【' + (p.dragonLabel || '') + p.name + '】';
+        }).join('、');
+        out.notes.push('⚠️【第' + WEAK_HUDDLE_RULE_NO + '条 · 弱势切抱团】灰色题材块【' + whTopic +
+          '】已退潮（平均竞价量比 ' + out.cashAlert.avgVolRatioText + ' ＜ ' + out.cashAlert.threshold +
+          '）⇒ 买点侧整段灰化；但它的票里 ' + names + ' 同时在【20日涨幅主板前三】之内 ⇒ ' +
+          '行情差时资金会抱团最强的市场龙头（也是题材龙头），' +
+          '这一只作为【今天可以买】的票单独列在最前面（标签【' + WEAK_HUDDLE_TAG + '】）。' +
+          '⚠️ 它仍会在下面那个灰化块里出现一次（题材结论 ≠ 股票结论，两处都保留）。');
+      } else if (whTopic) {
+        // 有池子但没有同题材的票进前三 ⇒ 用户口径「还是要空仓的」
+        const topNames = whPool.slice(0, WEAK_HUDDLE_TOP_N).map(function(t) {
+          return t.name + '（' + (t.topic || '—') + '）';
+        }).join('、');
+        out.notes.push('⚠️【第' + WEAK_HUDDLE_RULE_NO + '条 · 弱势切抱团】20日涨幅主板前三名 = ' +
+          (topNames || '—') + '，其中【没有】' + whTopic + ' 的股票 ⇒ ' +
+          '灰色题材块里没有可抱团的市场龙头 ⇒ 【今天仍然空仓】（不选、不替补）。');
+      }
+    }
   }
 
   // ★★ [EBB-D1 2026-10-21 用户口径] 昨日【二次确认退潮】的题材 ⇒ 次日禁入买点侧（第二十六条）。
@@ -4203,6 +4451,10 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   if (out.newDragon) _countUnique(out.newDragon.picks);
   // ★★ [R10-BACKUP 2026-10-24] 十日涨幅候补那一只同理（它就是今天能不能下单的那一只）
   if (out.range10Backup) _countUnique(out.range10Backup.picks);
+  // ★★ [WEAK-HUDDLE 2026-10-27] 弱势切抱团那一只同理（今天唯一还能买的就是它）。
+  //   ⚠️ 它通常【同时】在下面那个灰化题材块的 picks 里（同一只票、两条通道）—— _pickSeen 是
+  //   【按名字去重】的 Set，所以这里再数一遍不会把「实际能下单的只数」数多（用户口径「数只数不数行数」）。
+  if (out.weakHuddle) _countUnique(out.weakHuddle.picks);
   out.pickCount = _pickSeen.size;
 
   if (out.excludedTopics.length > 0) {
@@ -4560,6 +4812,33 @@ export function buildTvrbRulesLines() {
       '⚠️ 判不出就如实说明（§10）：十日涨幅池（含 20 天补位行）/ 在列次数 / 20日涨幅总龙一 没读到 ⇒ ' +
       '候补不出现，说明区写明是哪个缺口，' +
       '⛔ 绝不拿「没数据」当成「今天没有候补」更不当成「空仓」；' +
-      '没有候补时，说明区会附上【前十名逐只的去留与理由】，方便逐只核对。'
+      '没有候补时，说明区会附上【前十名逐只的去留与理由】，方便逐只核对。',
+    // ── ★★ [WEAK-HUDDLE 2026-10-27 用户口径 · 原话] 题材已退潮，但退潮题材里若有票进了
+    //    20日涨幅主板前三 ⇒ 弱势切抱团（从市场龙头选，不是选题材）。规则与判定同处一处（§6）。
+    '三十、【弱势切抱团】（第三十条 · 从【市场龙头】选，不是选题材）' +
+      '★ 触发时机（同时满足）：① 命中第十九条的【空仓提醒】（能入选的排名第一题材平均竞价量比 < ' +
+      TVRB_CASH_ALERT_AVG_VR + '，买点侧整段灰化 + 【' + CASH_NO_BUY_TAG + '】标签照旧）；' +
+      '② 当天【不是】退潮首日（第二十一条接管）、也【不是】总龙首次分歧日（第二十五条接管）。' +
+      '★ 怎么选（用户原话）：「从灰色的题材块中核对 20日涨幅，看有没有排名前三的股票在其中（同题材），' +
+      '如果有再重新选入……并放在最前面，添加文字，弱势切抱团。」' +
+      '① 池子 = 【20日涨幅主板前三名】（只数主板：创业板 300/301、科创板 688/689、北交所一律不算名次；' +
+      '与「20日涨幅」toggle 的总龙一~三名【同一把尺子】）；' +
+      '② 在其中挑【与那个灰色题材块同题材】的股票 ⇒ 全部选入（一只有一只，两只有两只）；' +
+      '③ ⛔ 一只都不在前三名 ⇒ 【今天仍然空仓】（不选、不替补）—— 用户原话「如果该题材的股票' +
+      '不是排名第三的话，还是要空仓的」。' +
+      '★ 为什么要有这条（用户口径）：「因为行情差时，选市场龙头（也是题材龙头），叫弱势切抱团。」' +
+      '题材本身已经退潮（平均量比太低、整段不看），但资金在下跌市里会往【最强的市场龙头】上抱团，' +
+      '而它往往正好就是那个退潮题材里唯一还活着的那一只。' +
+      '（例 10-26：灰色题材块 = 工业4.0（福莱新材 / 兆威机电），20日涨幅主板前三里有【大业股份】（同为工业4.0）' +
+      ' ⇒ 选它；10-27 同样的提示板、同样的工业4.0、大业股份仍在前三 ⇒ 继续选它。）' +
+      '★ 表现方式：标【' + WEAK_HUDDLE_TAG + '】、独立渲染在灰化容器【之外】并且排在【最前面】' +
+      '（今天真要买的票不能被灰掉，也不能被别的说明挤到下面），行上带「总龙N」标与 20日涨幅。' +
+      '⚠️ 它【同时仍会在下面那个灰化块里出现一次】—— 【题材结论】（整块灰化 + ' + CASH_NO_BUY_TAG +
+      '）与【股票结论】（这一只可以买）是两件事，⛔ 不用合并、也不用删掉任何一处。' +
+      '⚠️ 与第二十九条【十日涨幅候补】是两条【不同的】股票级通道，同一天可能同时出现且各选各的：' +
+      '那条看【十日涨幅 + 近 10 日在列次数】（新面孔，且要与 20日涨幅总龙一【不同】题材），' +
+      '本条看【20日涨幅前三 + 与退潮题材【同】题材】（老龙头抱团）—— 语义相反，⛔ 不许互相顶替。' +
+      '⚠️ 判不出就如实说（§10）：20日涨幅前五没读到 ⇒ 本块不出现，说明区写明是哪个缺口，' +
+      '⛔ 绝不拿「没数据」当成「今天没有抱团票」，也绝不当成「一定空仓」。'
   ];
 }
