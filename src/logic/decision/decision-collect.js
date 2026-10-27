@@ -1821,6 +1821,26 @@ export function decorateDecisionRows(buy, sell, date, prevDate, todayRankMap) {
 }
 
 /**
+ * ★★ [TICK-PANEL 2026-10-27] 「买点 + 卖点全部行」遍历的【对外别名】—— 给看板侧的逐行装饰用。
+ *
+ * 为什么需要对外暴露（§6 单一真相）：
+ *   决策看板现在要把「分笔成交面板」的数据逐行挂到 pick / sell 行上（原先那是分笔买卖看板干的）。
+ *   若在组合式里再手写一遍 `buy.heavy / buy.light / candidates[] / 三个兜底方案.blocks / sell[].items`
+ *   的遍历，就又多一份「日后新增一个买点档位，那边的票静默漏掉」的机会 ——
+ *   这正是 _eachRow 长注释里记的教训（candidates 是 2026-10-02 才加的、兜底槽位改过三回）。
+ *   ⇒ 遍历只此一份，本别名就是它；⛔ 别在组合式里再写 forEach 摊平。
+ *
+ * ⚠️ 只做遍历，不挂任何字段（挂什么由回调决定）；传进来的行是【原地装饰】的。
+ * ⚠️ 摊平与按对象去重由 buyBlocksFlat 保证（第 2 名被降级成候选题材时会同时出现在
+ *    light 与 candidates 里，是同一个对象引用）。
+ *
+ * @param {object|null} buy  buildBuyPlan 的返回
+ * @param {Array|null} sell  buildSellPlan 的返回
+ * @param {(row:object)=>void} fn 逐行回调（行 = 买点 pick / 卖点 item）
+ */
+export const eachDecisionRow = _eachRow;
+
+/**
  * [EBB 2026-10-13 第五轮] 退潮首日「事实」采集的【对外别名】—— 仅供单测（§15 纯函数可单测）。
  *
  * ⛔ 生产路径【只有】collectDecisionData 的 dragonRankOnly 出口在调它（见那里的 out.ebbCtx = …），

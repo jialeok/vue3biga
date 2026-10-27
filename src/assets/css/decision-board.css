@@ -573,6 +573,39 @@
             color: #94a3b8;
         }
 
+        /* ★★ [TICK-PANEL 2026-10-27 用户口径] 「分笔成交」面板的容器 —— 摆在竞价量比趋势图【下方】。
+           用户原话：「和竞价量比一起，竞价量比趋势图在上方，分笔成交图在下方」。
+           · 与趋势图同宽、同左右留白（外边距在 .dcb-trend-panel 上，这里只管内部）；
+           · 一条虚线分隔，让「上=量比趋势 / 下=分笔成交」一眼分得开。
+           ⛔ 面板内部（.tbb-panel / .tbb-pen-* / .tbb-verdict）的样式由 tick-panel.css 统一提供 ——
+              与「题材量比」看板共用同一份，本文件【不重复定义】（CSS 单一来源，⛔ 别抄一份进来造成漂移）。 */
+        .dcb-tick-wrap {
+            margin-top: 4px;
+            padding-top: 4px;
+            border-top: 1px dashed #e5e7eb;
+        }
+
+        /* ⚠️ 面板本体（.tbb-panel）自带 26px 左外边距 —— 那是它给【原分笔看板】的行对齐用的
+           （26px = 序号宽 18 + gap 8）。本看板里它已经是 .dcb-trend-panel（同样 26px）的【子元素】，
+           再叠一次就变成 52px 双重缩进 + 盒中盒。
+           ⇒ 这里只把头两层外观【抹平】：外边距归零、去掉自己的浅灰底与边框（外层已经有一层），
+              内部排版（标题 / 笔数表 / 结论胶囊 / 最下方分析块）全部照旧由 tick-panel.css 提供。
+           ⛔ 别把 .tbb-* 的排版抄进本文件（CSS 单一来源）。 */
+        .dcb-tick-wrap .tbb-panel {
+            margin: 0;
+            padding: 0;
+            background: transparent;
+            border: 0;
+            border-radius: 0;
+        }
+
+        /* 分笔还没抓 / 这一分钟没有快照时的说明行（§10 缺失必须如实可见，⛔ 不留一片空白） */
+        .dcb-tick-empty {
+            padding: 6px 2px;
+            font-size: 11px;
+            color: #94a3b8;
+        }
+
         /* 仓位建议（§21：配色档由 Logic 层给 `p.positionTone`，模板只拼 `'dcb-pos-' + tone`）：
            重仓 = 红（用力）｜轻仓 = 橙（减一档）｜持有 = 紫（昨天已买过，今天继续持有、不重新建仓）。
            ⛔ 类名一律带 dcb- 前缀（本项目 CSS 全局加载，`.light` 这种裸名会串改其它看板）。

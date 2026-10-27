@@ -77,6 +77,16 @@
       >
         {{ chartJudgeError }}
       </div>
+      <!-- ★★ [TICK-PANEL 2026-10-27] 分笔【读库 / 抓取】的失败原文：同样单独一块（§10 失败必须可见）。
+           与上面两条含义不同，可能同时存在（决策算得出来、趋势图有数、但分笔表读不到）。
+           ⚠️ 这条常带「去执行 db/create_tick_minute_open.sql」「去配 NUMCAT_TICK_API_KEY」这类
+              【要用户动手】的指引，混进决策错误里会被淹掉 —— 这是分笔买卖看板下线前的既有取舍。 -->
+      <div
+        v-if="tickFetchError"
+        class="decision-error dcb-selectable"
+      >
+        {{ tickFetchError }}
+      </div>
       <div
         v-if="!ready"
         class="decision-empty dcb-selectable"
@@ -194,6 +204,8 @@ const {
   // [CHART-JUDGE 2026-10-09 用户口径] 手动「竞价图形判断」的失败原文（红字展示；§10 失败必须可见）。
   //   ⛔ 选择器本身不在这里渲染：它在买卖点两个块组件的【行内】（见 ChartJudgeSelect.vue）。
   chartJudgeError,
+  // ★★ [TICK-PANEL 2026-10-27] 分笔读库 / 抓取的失败原文（红字；§10 失败必须可见）。
+  tickFetchError,
   ready,
   reasonText,
   buyHeavy,

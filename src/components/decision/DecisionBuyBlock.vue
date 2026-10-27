@@ -253,6 +253,31 @@
         >
           竞价量比：近 5 个交易日均无数据
         </div>
+        <!-- ══ ★★ [TICK-PANEL 2026-10-27 用户口径] 分笔成交面板（在竞价量比趋势图【下方】）══
+             用户原话：「你把分笔买卖的分笔成交图放到决策看板的对应的股票下方，和竞价量比一起，
+               竞价量比趋势图在上方，分笔成交图在下方，然后把分笔买卖看板去掉。」
+             ⇒ 与上面那张趋势图共用【同一个展开开关】（点序号 / 股票名），上下相邻，面板宽高与趋势图对齐。
+             ⛔ 复用「题材量比看板」已经在用的同一个 TbbPenPanel（纯展示组件：4 个 props、零业务、
+               零状态、零请求）⇒ 三处（原分笔看板 / 题材量比 / 本看板）逐字一致，§6 不造第二份。
+             ⛔ 本组件不判红绿笔数 / 不数笔 / 不拼文案 —— 全部读 Logic 层挂好的 p.pens / p.panelTitle 等（§21）。
+             §10：还没抓 / 没数据时不留一片空白，如实显示状态（p.emptyText 由 decorateTickRow 给）。 -->
+        <div class="dcb-tick-wrap">
+          <TbbPenPanel
+            v-if="p.hasTick"
+            :title="p.panelTitle"
+            :note="p.panelNote"
+            :hint="p.panelHint"
+            :pens="p.pens"
+            :badges="p.strengthBadges"
+          />
+          <div
+            v-else
+            class="dcb-tick-empty"
+            :title="p.emptyTitle"
+          >
+            {{ p.emptyText || '分笔明细暂不可用' }}
+          </div>
+        </div>
       </div>
     </template>
     <!-- 辅助说明：本档无轻仓票 / 有股票因缺竞价涨幅未纳入（§10 缺失必须可见，不能静默丢掉）
@@ -296,6 +321,11 @@ import DecisionTopicHead from './DecisionTopicHead.vue';
 import ChartJudgeSelect from './ChartJudgeSelect.vue';
 // [VRATIO-TREND 2026-10-01] 曲线组件复用既有 TrendChart（纯声明式 SVG：无图表实例、无 dispose 生命周期问题）。
 import TrendChart from '../TrendChart.vue';
+// ★★ [TICK-PANEL 2026-10-27 用户口径] 分笔成交面板：直接复用「题材量比看板」已经在用的那一枚组件
+//   （纯展示：4 个 props、零业务、零状态、零请求）⇒ 与原有两处逐字一致。
+//   ⛔ 本组件不为它传任何自己的字段：pens / panelTitle / panelNote / panelHint / strengthBadges
+//      全部由 logic/tick/tick-minute.js#decorateTickRow 挂好（§21 模板零计算）。
+import TbbPenPanel from '../tick/TbbPenPanel.vue';
 import { formatRangePct } from '../../logic/decision/decision-rules.js';
 
 defineProps({

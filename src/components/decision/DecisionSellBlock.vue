@@ -260,6 +260,26 @@
         >
           竞价量比：近 5 个交易日均无数据
         </div>
+        <!-- ══ ★★ [TICK-PANEL 2026-10-27 用户口径] 分笔成交面板（在竞价量比趋势图【下方】）══
+             与买点侧完全同款：共用同一个展开开关、同一个 TbbPenPanel 组件、同一份 decorateTickRow 数据。
+             §10：还没抓 / 没数据时如实显示状态，⛔ 不留空白。 -->
+        <div class="dcb-tick-wrap">
+          <TbbPenPanel
+            v-if="it.hasTick"
+            :title="it.panelTitle"
+            :note="it.panelNote"
+            :hint="it.panelHint"
+            :pens="it.pens"
+            :badges="it.strengthBadges"
+          />
+          <div
+            v-else
+            class="dcb-tick-empty"
+            :title="it.emptyTitle"
+          >
+            {{ it.emptyText || '分笔明细暂不可用' }}
+          </div>
+        </div>
       </div>
     </template>
   </div>
@@ -282,6 +302,8 @@ import DecisionTopicHead from './DecisionTopicHead.vue';
 import ChartJudgeSelect from './ChartJudgeSelect.vue';
 // [VRATIO-TREND 2026-10-01] 曲线组件复用既有 TrendChart（纯声明式 SVG：无图表实例、无 dispose 问题）。
 import TrendChart from '../TrendChart.vue';
+// ★★ [TICK-PANEL 2026-10-27 用户口径] 分笔成交面板：与买点侧同一个组件（纯展示、零业务、零请求）。
+import TbbPenPanel from '../tick/TbbPenPanel.vue';
 import { formatRangePct } from '../../logic/decision/decision-rules.js';
 
 defineProps({

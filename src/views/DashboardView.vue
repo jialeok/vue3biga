@@ -104,14 +104,15 @@
          组件与样式全部独立（decision- / dcb- 前缀），⛔ 不复用任何其它看板的组件，
          因此挂载在这里不会影响任何既有看板。 -->
     <DecisionBoard v-show="boardView === 'trading'" />
-    <!-- 「分笔买卖」看板：独立看板组件（紧跟在「决策」看板【下面】）。
-         它只把决策看板选中的买点 / 卖点股票，拿去查 9:30~9:31 这一分钟的分笔，
-         按红/绿笔数判开盘强弱（用来复核 竞价买 / 竞价卖 / 尾盘买 / 尾盘卖）。
-         组件与样式全部独立（tick- / tbb- 前缀），数据源是猫头鹰 tick_history
-         （独立 Edge Function tick-minute-fetch + 独立表 tick_minute_open），
-         ⛔ 不改决策看板一行、也不改任何其它看板。 -->
-    <TickBoard v-show="boardView === 'trading'" />
-    <!-- 「题材量比」看板：独立看板组件（放在「决策 / 分笔」之下，⛔ 不改这两个看板一行）。
+    <!-- 【REMOVED 2026-10-27】原 <TickBoard>（「分笔买卖」看板）已整体下线，不是隐藏。
+         用户口径：「你把分笔买卖的分笔成交图放到决策看板的对应的股票下方，和竞价量比一起，
+         竞价量比趋势图在上方，分笔成交图在下方，然后把分笔买卖看板去掉。」
+         ⇒ ① 分笔成交面板搬进【决策看板】每只票的展开区（趋势图在上、分笔在下，见
+              DecisionBuyBlock / DecisionSellBlock 的 .dcb-tick-wrap）；
+           ② 看板组件、它专用的 4 个子组件、组合式、板块级样式一并真删。
+         ⛔ 数据层零影响：tick_minute_open 表 / tick-minute-fetch Edge Function / tick-minute-store
+            全部保留 —— 决策看板与题材量比看板仍在消费同一份数据（§6 单一真相未变）。 -->
+    <!-- 「题材量比」看板：独立看板组件（放在「决策」之下，⛔ 不改决策看板一行）。
          它与决策看板一样【只用早盘竞价已有的内存数据选股】，但选股口径不同：
          按题材【平均竞价量比】降序 → 数量档位（<4 只排除 / 4~8 只选 1 / >8 只选 2）
          → 题材内按【龙一 → 龙二 → …】依次取非竞价涨停的票，取最靠前的两个题材。
@@ -248,7 +249,7 @@ import { showToast } from '../composables/useToast.js';
 import EditModal from '../components/EditModal.vue';
 import AuctionBoard from './AuctionBoard.vue';
 import DecisionBoard from './DecisionBoard.vue';
-import TickBoard from './TickBoard.vue';
+// [REMOVED 2026-10-27] TickBoard（分笔买卖看板）已整体下线，见模板注释。
 import TopicVolRatioBoard from './TopicVolRatioBoard.vue';
 import BiddingBoard from './BiddingBoard.vue';
 import PatternBoard from './PatternBoard.vue';

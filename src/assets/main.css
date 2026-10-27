@@ -28,6 +28,8 @@
 @import './css/auction-yizi.css';
 @import './css/auction-yizi-supplement.css';
 @import './css/decision-board.css';
-@import './css/tick-board.css';
+/* [TICK-BOARD-REMOVED 2026-10-27] 原 tick-board.css → tick-panel.css：
+   「分笔买卖」看板已整体下线，文件只剩【分笔成交面板】的样式（决策看板 / 题材量比看板两处共用）。 */
+@import './css/tick-panel.css';
 @import './css/topic-vol-ratio-board.css';
 @import './css/ladder-board.css';

@@ -20,7 +20,7 @@ import { useUiStore } from '../stores/uiStore.js';
 // ⛔ [DROP-VOL-RATIO-PICK 2026-10-07] useAuctionStore 的 import 已删：本看板不再读 topicOrderBy
 //   （模式恒为一字）。早盘竞价那份 store 不受影响，它照旧读写同一格。
 import { _on, _off } from '../stores/eventBus.js';
-import { collectDecisionData, suspendEntriesOf } from '../logic/decision/decision-collect.js';
+import { collectDecisionData, suspendEntriesOf, eachDecisionRow } from '../logic/decision/decision-collect.js';
 // [BOARD-SUSPEND 2026-10-13 用户口径] 决策看板逐票「当日停牌」标记：判定唯一实现在 suspend.js
 //   （同花顺 fuyao，免费/不限量）；本层只负责【触发加载】，展示字段由 decision-collect 收口挂好。
 import { ensureSuspendSet } from '../logic/auction/suspend.js';
@@ -51,6 +51,35 @@ import {
 //   取数 / 计算 / 发布全在 Logic 层（logic/decision/dragon-rank-change-store.js）。
 //   ⛔ 依赖方向：composable → store → collect → dragon-rank-change（纯映射），单向，无循环。
 import { ensurePrevDragonRank } from '../logic/decision/dragon-rank-change-store.js';
+// ★★ [TICK-PANEL 2026-10-27 用户口径] 「分笔买卖看板」整体下线，它的【分笔成交面板】搬到这里 ——
+//   用户原话：「你把分笔买卖的分笔成交图放到决策看板的对应的股票下方，和竞价量比一起，
+//   竞价量比趋势图在上方，分笔成交图在下方，然后把分笔买卖看板去掉」。
+//   ⇒ 本看板成为分笔数据的【唯一消费方】（另一个消费方是题材量比看板，它本来就在用）。
+//
+//   分层（§2）与本看板既有分工一致 —— 本文件只决定「什么时候取」，取数与逐行装饰全在 Logic 层：
+//     logic/tick/tick-minute-store.js（读库 / 抓取编排 / 闸门 / 单例）
+//     logic/tick/tick-minute.js#decorateTickRow（面板每一行 / 每一段文案的唯一实现）
+//   ⛔ 本文件不实现任何红绿笔数 / 强弱判定 —— 那是 tick-minute.js 的事（§6 单一真相）。
+//   ★ 照抄 useTopicVolRatioBoard 的既有范式（那边已经在用同一套），⛔ 不另造第二份取数逻辑。
+import { decorateTickRow } from '../logic/tick/tick-minute.js';
+import {
+  tickMinuteDate,
+  tickMinuteMap,
+  tickMinuteAttempted,
+  tickMinuteSkipMap,
+  tickMinuteError,
+  loadTickMinute,
+  ensureTickMinute,
+  refreshTickMinute,
+  isTickMinuteReadable
+} from '../logic/tick/tick-minute-store.js';
+
+/** 稳定的空集合 / 空 Map（避免每次 computed 都 new 一个 → 白白触发下游重算） */
+const EMPTY_SET = new Set();
+const EMPTY_MAP = new Map();
+/** 分笔取数的补抓节奏（与 useTopicVolRatioBoard 同款：首次没抓到就隔一会儿再试，封顶 3 次） */
+const TICK_RETRY_MS = 8000;
+const TICK_RETRY_MAX = 3;
 
 /** §10：任何一次计算失败都要【可见】，绝不静默成「今天没有信号」 */
 function _empty(reason) {
@@ -121,6 +150,12 @@ export function useDecisionBoard() {
     //   判断一变（用户点了一下 / Realtime 从别的设备推过来）⇒ 整块决策重算一次，
     //   标签与说明文字立刻跟着变。⛔ 不用 watch 去「顺便改标签」——那是第二份真相（§6）。
     void chartJudgeState.map;
+    // ★★ [TICK-PANEL 2026-10-27] 分笔那份是响应式单例 ⇒ 显式声明依赖：
+    //   库读回来 / 抓取到货 ⇒ 本 computed 自动重算 ⇒ 面板自己出现（§17 不阻塞渲染、⛔ 不用 setTimeout 碰运气）。
+    void tickMinuteMap.value;
+    void tickMinuteDate.value;
+    void tickMinuteAttempted.value;
+    void tickMinuteSkipMap.value;
     const d = currentDate.value;
     if (!d) return _empty('未选择日期');
     try {
@@ -128,7 +163,10 @@ export function useDecisionBoard() {
       const decided = collectDecisionData(d, { mode: decisionMode.value });
       // [CHART-JUDGE 2026-10-09] 最后一步：把用户手动判断覆盖到标签上（默认档一个字节都不动）。
       //   原地写回（collect 每次都返回全新对象，见 applyChartJudge 的注释）。
-      return applyChartJudge(decided, chartJudgeState.map);
+      const judged = applyChartJudge(decided, chartJudgeState.map);
+      // ★★ [TICK-PANEL 2026-10-27] 逐票挂分笔成交面板的数据（唯一实现：decorateTickRow）。
+      _decorateTickRows(judged, d);
+      return judged;
     } catch (e) {
       // §10：计算失败必须可见，绝不能返回「空结果」伪装成「今天没有信号」
       errorText.value = '决策计算失败：' + (e && e.message ? e.message : String(e));
@@ -136,6 +174,137 @@ export function useDecisionBoard() {
       return _empty('计算失败，请看控制台');
     }
   });
+
+  // ══════════════════════════════════════════════════════════════════════════════════════════
+  // ★★ [TICK-PANEL 2026-10-27 用户口径] 「分笔成交」面板 —— 从已下线的「分笔买卖」看板搬过来
+  //
+  //   用户原话：「你把分笔买卖的分笔成交图放到决策看板的对应的股票下方，和竞价量比一起，
+  //   竞价量比趋势图在上方，分笔成交图在下方，然后把分笔买卖看板去掉。」
+  //
+  //   ⇒ 面板与「竞价量比 近5日」趋势图【同一个展开开关】（点序号 / 股票名），上下相邻：
+  //         TrendChart（竞价量比）在上  →  分笔成交面板 在下
+  //     所以本文件【不新增】penOpenSet —— 复用既有的 trendOpenSet（§6：一处展开态，⛔ 不要两份）。
+  //
+  //   ⛔ 本文件只做两件事：① 决定「什么时候读库 / 抓取」；② 把逐行数据挂到 pick / sell 行上。
+  //      红绿笔数、什么算一笔、强弱结论、面板每段文案 —— 全部在 logic/tick/tick-minute.js（§6/§21）。
+  // ══════════════════════════════════════════════════════════════════════════════════════════
+
+  /** 分笔抓不了的原因 → 只取【本日】的那些（store 里的 key 形如 `${date}|${name}`，与其它看板同款） */
+  function _skipMapOf(d) {
+    const out = new Map();
+    tickMinuteSkipMap.value.forEach(function(v, k) {
+      const i = k.indexOf('|');
+      if (i === d.length && k.slice(0, i) === d) out.set(k.slice(i + 1), v);
+    });
+    return out;
+  }
+
+  /**
+   * 把分笔面板的数据逐行挂到决策行上（唯一实现 `decorateTickRow`，⛔ 这里不写任何判定）。
+   *
+   * @param {object} decided collectDecisionData + applyChartJudge 的产物（原地写回）
+   * @param {string} d 展示日
+   */
+  function _decorateTickRows(decided, d) {
+    if (!decided) return;
+    // ⚠️ 只认【属于这一天】的那份分笔（tickMinuteDate 单独一格：读库是异步的，
+    //    切日期那一帧它还留着上一天的数据）。⛔ 用错日期会给出一个看着很像真的假统计（§10）。
+    const map = (tickMinuteDate.value === d) ? tickMinuteMap.value : EMPTY_MAP;
+    const attempted = tickMinuteAttempted.value.get(d) || EMPTY_SET;
+    const skipMap = _skipMapOf(d);
+
+    // 🔴 遍历必须走 eachDecisionRow（decision-collect 里那份【买点 + 卖点全部行】的唯一遍历），
+    //    ⛔ 不在这里手写「heavy / light / candidates / 三个兜底 .blocks / sell[].items」的摊平 ——
+    //    那正是它在长注释里记的教训：每多一份遍历，日后新增一个买点档位就多一次静默漏掉。
+    //    （买点 pick 自带 code、卖点 item 也自带 code ⇒ memberMap 传 null，与分笔看板等价。）
+    // ⚠️ 买卖两侧【各调一次】而不是一次遍历后再猜 side：卖点行上没有 side 字段，
+    //    猜错的话结论胶囊会显示买点的动作名（「立刻买」出现在卖点行上，§10 宁可没有也不能错）。
+    eachDecisionRow(decided.buy, null, function(row) {
+      if (!row) return;
+      Object.assign(row, decorateTickRow(row, map, attempted, skipMap, null, 'buy'));
+    });
+    eachDecisionRow(null, decided.sell, function(row) {
+      if (!row) return;
+      Object.assign(row, decorateTickRow(row, map, attempted, skipMap, null, 'sell'));
+    });
+  }
+
+  /**
+   * 本看板要抓分笔的票 = 买点 + 卖点里出现过、且拿得到代码的股票。
+   * ⚠️ 名单从【装饰后的行】取（p.code 已由 decorateTickRow 解析好），⛔ 不另做一遍代码解析。
+   * ⚠️ 遍历同样走 eachDecisionRow（§6 唯一遍历），⛔ 别在这里再摊平一遍。
+   */
+  const tickTargets = computed(function() {
+    void version.value;
+    void tickMinuteMap.value;
+    void tickMinuteDate.value;
+    void tickMinuteAttempted.value;
+    const seen = new Map();
+    eachDecisionRow(data.value.buy, data.value.sell, function(r) {
+      if (!r || !r.name) return;
+      const name = String(r.name).trim();
+      if (!name || seen.has(name)) return;
+      seen.set(name, String(r.code || ''));
+    });
+    return Array.from(seen.entries()).map(function(e) { return { name: e[0], code: e[1] }; });
+  });
+
+  /** 这一只还没拿到（库里没有、也没标过「已抓过」）—— 只读判断，无副作用 */
+  function _tickStillMissing(date, name) {
+    const have = (tickMinuteDate.value === date) ? tickMinuteMap.value : EMPTY_MAP;
+    if (have.has(name)) return false;
+    const att = tickMinuteAttempted.value.get(date) || EMPTY_SET;
+    return !att.has(name);
+  }
+
+  let _tickRetryTimer = null;
+  let _tickRetryCount = 0;
+  function _clearTickRetry() {
+    if (_tickRetryTimer) {
+      clearTimeout(_tickRetryTimer);
+      _tickRetryTimer = null;
+    }
+    _tickRetryCount = 0;
+  }
+
+  /** 需要就去抓，一只不落（§32：store 内部单飞 + 已抓过就不重发） */
+  function _tryFetchTick() {
+    const d = currentDate.value;
+    if (!d) return;
+    const targets = tickTargets.value;
+    if (targets.length === 0) return;          // 名单还没就绪 ⇒ 等 watch 下次触发
+    // ⚠️ 必须先 `isTickMinuteReadable(d)`：读库失败（典型现场 = 表还没建）时 store 的
+    //    tickMinuteDate 也已经等于该日，若不拦就会去打一次必然失败的上游。
+    if (!isTickMinuteReadable(d)) return;
+    ensureTickMinute(d, targets).then(function() {
+      if (!tickTargets.value.some(function(t) { return _tickStillMissing(d, t.name); })) return;
+      if (_tickRetryTimer || _tickRetryCount >= TICK_RETRY_MAX) return;
+      _tickRetryCount++;
+      _tickRetryTimer = setTimeout(function() {
+        _tickRetryTimer = null;
+        // 先重读库（上游写入是异步的），再判断还缺不缺
+        loadTickMinute(d).then(function() { _tryFetchTick(); });
+      }, TICK_RETRY_MS);
+    });
+  }
+
+  /** 读一次库 →（读成功的话）再考虑要不要抓 */
+  function _loadTickThenMaybeFetch(d) {
+    if (!d) return Promise.resolve();
+    return loadTickMinute(d).then(function() { _tryFetchTick(); });
+  }
+
+  /**
+   * 分笔【读库 / 抓取】的失败原文（§10 失败必须可见）。
+   * ⚠️ 与 errorText（决策计算失败）、chartJudgeError 分开一格：三者含义不同，可能同时存在。
+   */
+  const tickFetchError = computed(() => tickMinuteError.value);
+
+  // ⛔ 用「名字串」而不是数组引用当键：tickTargets 每次重算都是新数组，拿引用会无限触发（§20）。
+  const tickTargetSig = computed(function() {
+    return tickTargets.value.map(function(t) { return t.name; }).join('|');
+  });
+  watch(tickTargetSig, function() { _tryFetchTick(); });
 
   const ready = computed(() => !!data.value.ready);
   const reasonText = computed(() => (data.value.ready ? '' : (data.value.reason || '暂无数据')));
@@ -246,6 +415,12 @@ export function useDecisionBoard() {
     reloadPrevDragonRank();
     // [SEAL 2026-10-11] 用户主动刷新时也顺带补一次封单量窗口（已缓存 = no-op）
     _ensureSeal();
+    // ★★ [TICK-PANEL 2026-10-27] 用户主动刷新时补一次分笔（store 里已抓过的票不会重抓，§32）
+    const _d = currentDate.value;
+    if (_d) {
+      _clearTickRetry();
+      refreshTickMinute(_d, tickTargets.value).catch(function() { /* 失败由 tickFetchError 红字呈现 */ });
+    }
   }
 
   // ══ [SEAL 2026-10-11 用户口径] 逐票「封单额 + 变化 + 连板」的取数时机 ═══════════════════════════
@@ -351,6 +526,9 @@ export function useDecisionBoard() {
     reloadPrevDragonRank();
     // [SEAL 2026-10-11] 首次进入也把封单额窗口读进来（已缓存 = no-op）。
     _ensureSeal();
+    // ★★ [TICK-PANEL 2026-10-27] §33 首次加载：读一次该日的分笔（读成功后才可能触发抓取）。
+    //   ⚠️ 名单此刻通常还是空的（决策要等竞价窗口到货）⇒ 真正的抓取由 tickTargetSig 的 watch 补上。
+    _loadTickThenMaybeFetch(currentDate.value);
   });
 
   // §26 日期切换 → 规则面板收起（新的一天是全新的结论，旧展开态会误导）
@@ -368,6 +546,10 @@ export function useDecisionBoard() {
     reloadPrevDragonRank();
     // [SEAL 2026-10-11] 封单额也按日 ⇒ 换日期要重新确保窗口（已缓存 = no-op）。
     _ensureSeal();
+    // ★★ [TICK-PANEL 2026-10-27] 分笔也按日 ⇒ 换日期要重读（⛔ 不能把上一天的 20 笔留在新日期的面板里）。
+    //   展开态已在上面清空（trendOpenSet = new Set()）⇒ 面板全部收起，不会出现「新日期 + 旧明细」。
+    _clearTickRetry();
+    _loadTickThenMaybeFetch(currentDate.value);
   });
 
   // ── [BOARD-SUSPEND 2026-10-13 用户口径] 本看板选中的票「今天是否停牌」────────────────────
@@ -427,6 +609,8 @@ export function useDecisionBoard() {
     _off('data:realtime-update', _onLimitPoolRealtime);
     // §31 配对清理：本看板持有的 channel 由本看板关掉（⛔ 不留给下一个页面）
     stopChartJudgeRealtime();
+    // ★★ [TICK-PANEL 2026-10-27] 清掉本看板持有的分笔补抓定时器（§31 成对清理）
+    _clearTickRetry();
   });
 
   return {
@@ -442,6 +626,9 @@ export function useDecisionBoard() {
     //   本看板现在只有【一字】一种选股口径，不再需要开关。
     // [VRATIO-TREND 2026-10-01] 竞价量比趋势面板的展开态与开关（由 DecisionBoard.vue provide 给买卖点两个块组件）
     trendOpenSet,
+    // ★★ [TICK-PANEL 2026-10-27] 分笔【读库 / 抓取】的失败原文（§10）；行数据已在 data 里逐票挂好，
+    //   ⛔ 不额外抛分笔的其它状态：组件只该拿到「这一行怎么显示」，拿整份 store 会诱导第二处口径（§6）。
+    tickFetchError,
     errorText,
     // [CHART-JUDGE 2026-10-09 用户口径] 手动「竞价图形判断」对外的两个口子：
     //   · chartJudgeError —— 加载 / 保存失败的原文（看板红字用；§10 失败必须可见）

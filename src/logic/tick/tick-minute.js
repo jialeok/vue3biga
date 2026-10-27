@@ -514,7 +514,11 @@ function _resolveCode(name, directCode, memberMap) {
 //     决策说【竞价买】、本分钟说【下杀买】⇒ 一眼看出两边看法不同，据此再核对要不要调整。
 //   ⇒ 渲染上刻意与结论胶囊区分开（用户「要设计对比明显些，不要搞混」）：
 //       结论胶囊 = 实心填充 + 实线边框；
-//       继承标签 = 浅色底 + 【虚线】边框 + 统一「决策」前缀（CSS `::before`，见 tick-board.css）。
+//       继承标签 = 浅色底 + 【虚线】边框 + 统一「决策」前缀（原 CSS `.tbb-ref` 的 `::before`）。
+//   ⚠️ [TICK-BOARD-REMOVED 2026-10-27] 分笔买卖看板已整体下线 ⇒ `.tbb-ref*` 样式随之删除，
+//      本字段（dragonRefTags）目前【没有渲染方】：决策看板本来就是这些标签的产地，
+//      面板长在决策行下方再挂一枚「决策·竞价买」纯属重复。字段本身保留（有单测覆盖，
+//      ⛔ 不删是为了动一处不牵三处；日后若把面板挂到别的看板，这个透传仍然生效）。
 //
 // ⚠️ 顺序是【固定】的（REF_TAGS 的声明顺序：买点动作 → 卖点动作 → 持有），不随行上字段的
 //    先后变化 —— 否则同一只票在买点 / 卖点两侧、或换个模式，标签次序会跳。
@@ -698,6 +702,15 @@ export function decorateTickRow(row, tickMap, attempted, skipMap, memberMap, sid
 /**
  * 组装「分笔买卖」看板要显示的买点块 / 卖点组。
  *
+ * ★★ [TICK-BOARD-REMOVED 2026-10-27] 生产代码【已无任何调用方】：分笔买卖看板（views/TickBoard.vue）
+ *   与它的三个块组件已整体下线，决策看板改走 `decision-collect.js#eachDecisionRow` +
+ *   `decorateTickRow`（原地装饰，不需要「块 / 组」这层外壳）。
+ *   ⚠️ 仍【保留】本函数，原因只有一个：`tick-minute.test.js` 有 25 处用它把「块 → picks / 组 → items」
+ *      装出来，再断言 decorateTickRow 的产出（红绿笔数 / 空态文案 / 继承标签 / 龙标差 …）。
+ *      这条测试链是 decorateTickRow 唯一的护栏，删本函数就得重写那 25 处断言 ——
+ *      属于独立的一次清理，⛔ 不夹带在功能提交里（零缺陷合并）。
+ *   ⇒ 结论：本函数现在是【测试专用装配器】，生产路径⛔ 不要再调它；真要清理时整块搬进测试文件。
+ *
  * 只放用户点名的这几列（用户原话「其它不要放」）：
  *   买点块   ：昨有买入 / 四次入选 / 题材名称 / 排名 / 数量 / 竞价一字
  *   股票行   ：序号 / 股票名称 / 龙几（±n）/ 十日涨幅 / 20 笔统计（如 17红4绿）
@@ -782,6 +795,9 @@ export function buildTickBoard(decided, tickMap, opts) {
 /**
  * 抓取目标（= 买点 + 卖点里出现过、且拿得到代码的股票）—— 唯一出口，§6。
  * ⛔ 用户口径：只抓决策看板选中的那几只，不抓全市场。
+ *
+ * [TICK-BOARD-REMOVED 2026-10-27] 与 buildTickBoard 同一处置：生产已无调用方，仅单测在用。
+ *   决策看板的抓取名单改由 composable 的 `tickTargets` computed 给出（走 eachDecisionRow 遍历）。
  */
 export function tickTargetsOf(board) {
     if (!board || !board.targets) return [];
