@@ -17,6 +17,10 @@ import { startAuctionYiziRealtime, stopAuctionYiziRealtime } from './auction-yiz
 import { startHighlightsRealtime, stopHighlightsRealtime, pullDailyHighlights } from './daily-highlights.js';
 import { startHotStocksRealtime, stopHotStocksRealtime, startHotHighlightsRealtime, stopHotHighlightsRealtime, startHotTrendsRealtime, stopHotTrendsRealtime, triggerHotMetricsRealtimeReload } from './hot-stocks.js';
 import { setAuctionDateData } from './auction-data.js';
+// ★★ [REQ-DEDUPE 2026-10-27] §32：同一日期、同一瞬间的重复「按日回拉」合并成一次（纯单飞，不做缓存）。
+//   实测一次加载该函数被并发调用多轮（每轮 = auction_watchlist + market_metrics 两条请求）。
+//   ⛔ realtime:true 的调用【不吃单飞】（那是收到云端变更后的强制重读，必须拿到最新值）。
+import { createQueryMemo } from './query-memo.js';
 
         state._jiwangTableAvailable = false; // jiwang_data 表是否可用
         state._jiwangRealtimeChannel = null; // jiwang_data 表的 Realtime 订阅
@@ -371,7 +375,24 @@ import { setAuctionDateData } from './auction-data.js';
         // 拉取某日期的行情数据并合并到本地（只更新行情列，保留本地状态标记）
         // 拆表后：同时读取 auction_watchlist 与 market_metrics(scope='auction')，合并后整段替换 _auctionMemCache[date]。
         // 方案2：行对象不再携带 in_watchlist 字段；正式/影子身份由 _auctionWatchlistIndex[date] Set 独立维护。
-        export async function pullAuctionMarketDataForDate(date, opts) {
+        // ★★ [REQ-DEDUPE 2026-10-27] 按日回拉的并发单飞（§32 / §6 唯一实现 = data/query-memo.js）
+        //   TTL = 1ms ⇒ 【只合并同一瞬间的并发调用】，不做跨帧缓存：
+        //   竞价时段数据每秒都在变，⛔ 绝不用长 TTL 换「少几个请求」而让 9:26 读到旧值。
+        //   §10：memo 只在成功时记忆，失败照旧抛给每个调用方（不伪装成空数据）。
+        const _pullDateMemo = createQueryMemo({ name: 'auction_pull_date', ttlMs: 1 });
+
+        /** 仅供测试 / 诊断：清空单飞表（⛔ 正常业务流程无需调用） */
+        export function _resetPullDateMemo() { _pullDateMemo.reset(); }
+
+        export function pullAuctionMarketDataForDate(date, opts) {
+            // ⛔ realtime 强制重读：不吃单飞（Realtime 变更后必须立刻拿到新值）
+            if (opts && opts.realtime) return _pullAuctionMarketDataForDateImpl(date, opts);
+            return _pullDateMemo.run(String(date || ''), function() {
+                return _pullAuctionMarketDataForDateImpl(date, opts);
+            });
+        }
+
+        async function _pullAuctionMarketDataForDateImpl(date, opts) {
             if (!state._auctionTableAvailable && !state._marketMetricsTableAvailable) {
                 // 【§10】两张表都标记为不可用（启动早期 / 上次读取失败）→ 本次一次真实读取都没做。
                 // 此时绝不能静默 return：调用方（auction-pull-window.js#ensureAuctionDateDataLoaded）

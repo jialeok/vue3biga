@@ -1,5 +1,11 @@
 import { useAuctionStore } from '../stores/auctionStore.js';
 import { state } from '../logic/app-state.js';
+// ★★ [REQ-DEDUPE 2026-10-27] §32 不重复请求：同一时刻的【同一整段读取】只允许发一次。
+//   实现复用 data/query-memo.js（§6 唯一实现）。⛔ TTL 传 1ms = 【纯单飞，不做缓存】：
+//   只合并「同一瞬间并发」的重复调用（实测同一页 URL 出现 5ms 间隔的成对请求），
+//   相隔几十毫秒以上的串行读取一律照旧重读 —— 竞价时段数据每秒都在变，
+//   ⛔ 绝不用长 TTL 换取「少几个请求、但可能读到旧值」（那会污染 9:26 的选股结论）。
+import { createQueryMemo } from './query-memo.js';
 let _invalidateTopicCacheFn = null;
 export function _setInvalidateTopicCacheFn(fn) { _invalidateTopicCacheFn = fn; }
         // ============================================================
@@ -95,7 +101,34 @@ export function _setGetSupabaseFn(fn) { _getSupabaseFn = fn; }
          *   ⚠️ §11 删除安全：本函数只做「读 + 按日期灌内存」，日期窗口变小绝不会
          *      导致云端任何一行被删除——写路径全部是按日期 patch / upsert。
          */
-export async function pullAuctionFromTable(opts) {
+        /**
+         * ★★ [REQ-DEDUPE 2026-10-27] 「同一整段读取」的并发单飞（§32）。
+         *
+         * 【为什么要它】CDP 实测一次页面加载：`auction_watchlist` 被读 **20 次**
+         *   （每次 = 1 次 head+count 探测 + N 页分页），其中多对请求只相隔 **5ms**
+         *   —— 那是竞价看板 / 题材量比 / 涨停池 / 健康提示几乎同时 mount 抢着调用本函数，
+         *   每次都把同一份云端数据重新拉一遍。§32 红线明确禁止这种行为。
+         *
+         * 【为什么 TTL = 1ms 而不是 1.5s】这些是行情数据，竞价时段每秒都在变。
+         *   本 memo 只做「并发合并」（同一瞬间的 N 个调用合并成 1 次网络），
+         *   ⛔ 不做任何跨帧缓存 —— 相隔 >1ms 的调用一律真读，保证拿到的是当下值。
+         *
+         * 【§10】memo 只在【成功】时记忆；失败直接抛给每个调用方（不会变成空数据）。
+         * 【幂等】本函数副作用 = 把云端行灌进 _auctionMemCache（同样输入灌同样结果），
+         *   因此合并成一次执行与执行 N 次结果逐字相同。
+         */
+        const _pullMemo = createQueryMemo({ name: 'auction_pull', ttlMs: 1 });
+
+        /** 仅供测试 / 诊断：清空单飞表（⛔ 正常业务流程无需调用） */
+export function _resetAuctionPullMemo() { _pullMemo.reset(); }
+
+export function pullAuctionFromTable(opts) {
+            const _key = ((opts && opts.sinceDate) || '') + '|' + ((opts && opts.untilDate) || '') +
+                '|' + ((opts && Number(opts.concurrency) > 0) ? Math.floor(Number(opts.concurrency)) : '');
+            return _pullMemo.run(_key, function() { return _pullAuctionFromTableImpl(opts); });
+        }
+
+async function _pullAuctionFromTableImpl(opts) {
             const sinceDate = (opts && opts.sinceDate) || '';
             const untilDate = (opts && opts.untilDate) || '';
             // ★ [OLDER-YIELD 2026-10-26] 分页并发度缺省不传 ⇒ _fetchAllPages 用默认 6（首屏行为零变化）
