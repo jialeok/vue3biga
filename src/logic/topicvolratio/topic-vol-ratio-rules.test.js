@@ -490,8 +490,16 @@ describe('tvrb · 买点块由决策看板的收口函数打标签', function() 
   });
 
   it('buy 槽位：第 1 块 → heavy、第 2 块 → light；三个兜底槽位恒 null（形状契约）', function() {
-    const t1 = block('甲题材', 1, [m('甲一'), m('甲二'), m('甲三'), m('甲四')]);
-    const t2 = block('乙题材', 2, [m('乙一'), m('乙二'), m('乙三'), m('乙四')]);
+    // ⚠️ 两个题材的量比都给 60（达标）：[TOPIC-CASCADE 2026-10-28] 之后第一题材 ＜ 25 会把第二块摘掉，
+    //   而本用例考的是【槽位接线】，不是量比闸门（闸门另有专门的用例）。
+    const t1 = block('甲题材', 1, [
+      m('甲一', { aucVolRatio: 60 }), m('甲二', { aucVolRatio: 60 }),
+      m('甲三', { aucVolRatio: 60 }), m('甲四', { aucVolRatio: 60 })
+    ]);
+    const t2 = block('乙题材', 2, [
+      m('乙一', { aucVolRatio: 60 }), m('乙二', { aucVolRatio: 60 }),
+      m('乙三', { aucVolRatio: 60 }), m('乙四', { aucVolRatio: 60 })
+    ]);
     const d = dragonMap([
       ['甲一', 1], ['甲二', 2], ['甲三', 3], ['甲四', 4],
       ['乙一', 1], ['乙二', 2], ['乙三', 3], ['乙四', 4]
@@ -707,11 +715,21 @@ describe('tvrb · 空仓提醒（入选题材里排名第一 平均量比 < 25 �
     // 说明文字：★★ [WEAK-HUDDLE 2026-10-27] 命中提醒时说明区【只多一条】第三十条的留痕
     //   （用户口径要求本条必须写明「判不出 / 仍然空仓」，所以「提醒不进 notes」这条旧契约放宽为
     //     「常规选股说明一行未改、只追加第三十条那一条」）；未命中时那条不出现。
-    const _isWhNote = function(s) { return String(s).indexOf('第' + WEAK_HUDDLE_RULE_NO + '条') >= 0; };
-    expect(pLow.notes.filter(function(s) { return !_isWhNote(s); })).toEqual(pOk.notes);
+    // ★★ [TOPIC-CASCADE 2026-10-28] 命中提醒时说明区【多两条】：第三十条的留痕 +
+    //   第二十九条「第一题材不达标 ⇒ 本通道不启用」的留痕（用户要求如实说明，
+    //   ⛔ 沉默会被读成「今天本来就没有十日涨幅候补」）。其余说明仍与达标时逐项一致。
+    const _isR10GateNote = function(s) {
+      return String(s).indexOf('· 十日涨幅候补】排名第一的入选题材') >= 0;
+    };
+    const _isWhNote = function(s) {
+      return !_isR10GateNote(s) && String(s).indexOf('第' + WEAK_HUDDLE_RULE_NO + '条') >= 0;
+    };
+    const _isExtra = function(s) { return _isWhNote(s) || _isR10GateNote(s); };
+    expect(pLow.notes.filter(function(s) { return !_isExtra(s); })).toEqual(pOk.notes);
     expect(pLow.notes.filter(_isWhNote)).toHaveLength(1);
-    // ⛔ 常规说明里仍然不出现「空仓」（只有第三十条那条留痕会提到它）
-    expect(pLow.notes.filter(function(s) { return !_isWhNote(s); }).join('\n')).not.toContain('空仓');
+    expect(pLow.notes.filter(_isR10GateNote)).toHaveLength(1);
+    // ⛔ 常规说明里仍然不出现「空仓」（只有那两条留痕会提到它）
+    expect(pLow.notes.filter(function(s) { return !_isExtra(s); }).join('\n')).not.toContain('空仓');
     // ⚠️ ⛔ 标签【不再】逐项一致 —— 第十六轮用户口径：命中提醒时买点动作改成【分歧日不买】
     //   （逐项钉在下面「第十六轮 · 空仓提醒下的买点改写」那一段，这里只钉「选股没变」）。
     expect(pOk.blocks[0].picks[0].buyActionTag).not.toBe(CASH_NO_BUY_TAG);
@@ -3266,22 +3284,58 @@ describe('tvrb · 第二十九条 十日涨幅 · 在列次数候补', function(
     expect(notes).not.toContain('当日只有 1 个题材满足条件');
   });
 
-  it('★ 第一题材量比也 < 25 ⇒ 空仓标语【保留】+ 灰化照旧 + 另给一只候补', function() {
-    const f = twoTopics(60);   // 第二题材量比 60 ⇒ 不作废
-    // 把第一题材的量比压到 10
-    f.topics[0].members.forEach(function(x) { x.aucVolRatio = 10; });
+  // ★★ [TOPIC-CASCADE 2026-10-28 用户口径 · 10-28 实盘形状] 大消费 21.17 + 工业4.0 14.59
+  it('★★ 第一题材 < 25 ⇒ 第二题材整条线不启用：不列入、不换票、⭐ 也不出十日涨幅候补', function() {
+    // ⚠️ 题材是【按平均竞价量比降序】入选的 ⇒ 第一题材 < 25 时第二题材必然 ≤ 它，
+    //   所以「第一不达标 + 第二达标」在构造上不存在（除非第二题材量比读不出来，那属于 §10 判不出，
+    //   同样不出候补 —— 见下一条用例）。
+    const f = twoTopics(14.59);                                   // 第二题材（工业4.0 形状）
+    f.topics[0].members.forEach(function(x) { x.aucVolRatio = 21.17; });   // 第一题材（大消费形状）
     const plan = buildTopicVolRatioPlan(f.topics, f.dm, {
       range10Rows: POOL,
       range10Presence: presence(CNT),
       ebbCtx: ebbCtxOf()
     });
-    expect(plan.blocks).toHaveLength(2);                 // 两个题材都照常列出
-    expect(plan.cashAlert.show).toBe(true);              // 空仓标语【不撤】
-    expect(plan.cashAlert.detail).toContain('另有 1 只十日周期候补');
-    expect(plan.cashAlert.hasRange10Backup).toBe(true);
-    // 常规块被灰化改写（第十六条照旧），候补那一行是今天唯一还能买的
+    // ① 第二题材整块不入选（既不列入、也不作废换票）—— 槽位一起重建，⛔ 不留幽灵块
+    expect(plan.blocks.map(function(b) { return b.block.topic; })).toEqual(['强题材']);
+    expect(plan.buy.light).toBeNull();
+    // ② ★ 核心：十日涨幅候补【整条不启用】（旧口径「第一题材也弱 ⇒ 额外给一只」已作废）
+    expect(plan.range10Backup).toBeNull();
+    expect(plan.buy.range10Backup).toBeNull();
+    expect(plan.buyNames.has('海洋王')).toBe(false);              // 10-28 的【杰克科技】就是这一行，用户否掉
+    // ③ 空仓标语照旧命中，但不再自称「另有 1 只十日周期候补」
+    expect(plan.cashAlert.show).toBe(true);
+    expect(plan.cashAlert.detail).not.toContain('十日周期候补');
+    // ④ 第一题材那一块照旧灰化（第十六条不受影响）
     expect(plan.blocks[0].picks[0].buyActionTag).toBe(CASH_NO_BUY_TAG);
-    expect(plan.range10Backup.picks[0].buyActionTag).toBe(RANGE10_BACKUP_TAG);
+    // ⑤ 说明区留痕：一条「整体前提」，且不再报「当日只有 N 个题材」（那会读成「本来没第二个题材」）
+    const notes = plan.notes.join('\n');
+    expect(notes).toContain('排名第二题材的整体前提');
+    expect(notes).toContain('21.17');
+    expect(notes).toContain('十日涨幅候补本次不启用');
+    expect(notes).not.toContain('当日只有 1 个题材满足条件');
+  });
+
+  it('★★ 第一题材 < 25 且【只有它一个题材】⇒ 同样不出候补，且说明区讲清「不启用 ≠ 今天没有」', function() {
+    // 10-23 形状：当天只有【工业4.0】一个入选题材、它自己 15.18 ＜ 25。
+    // 旧口径会额外补一只；2026-10-28 之后【不补】—— 那天有没有票买只看第三十条 / 第三十一条。
+    const f = twoTopics(60);
+    f.topics = [f.topics[0]];                            // 当天只剩第一题材
+    f.topics[0].members.forEach(function(x) { x.aucVolRatio = 15.18; });
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, {
+      range10Rows: POOL,
+      range10Presence: presence(CNT),
+      ebbCtx: ebbCtxOf()
+    });
+    expect(plan.blocks).toHaveLength(1);
+    expect(plan.cashAlert.show).toBe(true);
+    expect(plan.range10Backup).toBeNull();
+    expect(plan.buy.range10Backup).toBeNull();
+    const notes = plan.notes.join('\n');
+    expect(notes).toContain('本通道【不启用】');
+    expect(notes).toContain('15.18');
+    // ⛔ 不许沉默（§10：读起来像「今天本来就没有候补」）
+    expect(notes).toContain('第三十一条');
   });
 
   it('§10：选不出候补 ⇒ 不出那一行，说明区如实写「空仓」（⛔ 不留空壳）', function() {
@@ -3348,36 +3402,38 @@ describe('tvrb · 第二十九条 十日涨幅 · 在列次数候补', function(
     return { topics: [block('工业4.0', 1, ms)], dm: dm };
   }
 
-  it('★★ 10-23：工业4.0（量比 15.18 < 25）整块灰化空仓，但兆威机电仍被选为十日涨幅候补', function() {
+  // ★★ [TOPIC-CASCADE 2026-10-28 用户口径] 10-23 那一天原来靠本规则"额外补一只"（兆威机电），
+  //   2026-10-28 用户明确取消：第一题材自己不达标 ⇒ 不用十日涨幅候补（第二十九条整条不启用）。
+  //   那天有没有票买，只看第一题材自己的候补规则（第三十条 弱势切抱团 / 第三十一条 补涨题材）。
+  it('★★ 10-23（口径修正后）：唯一题材自己 15.18 < 25 ⇒ 第二十九条【不启用】，改由第三十条 / 第三十一条回答', function() {
     const f = industrial40();
     const plan = buildTopicVolRatioPlan(f.topics, f.dm, {
       range10Rows: POOL_1023,
       range10Presence: presence(CNT_1023),
       ebbCtx: ebbCtxOf()          // 总龙一 = 新华传媒（文化传媒）
     });
-    // ① 题材级结论【不变】：工业4.0 那块照旧列出、照旧灰化空仓（⛔ 不因为出了候补就恢复它）
+    // ① 题材级结论【不变】：工业4.0 那块照旧列出、照旧灰化空仓
     expect(plan.cashAlert.show).toBe(true);
-    const names = plan.blocks[0].picks.map(function(p) { return p.name; });
-    expect(names).toContain('兆威机电');                                  // 灰化块里仍然展示这只票
+    expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toContain('兆威机电');
     plan.blocks[0].picks.forEach(function(p) {
-      expect(p.buyActionTag).toBe(CASH_NO_BUY_TAG);                       // 一律「不开新仓」
+      expect(p.buyActionTag).toBe(CASH_NO_BUY_TAG);       // 一律「不开新仓」
     });
-    // ② 股票级通道照常生效：兆威机电 = 十日涨幅第 8 名 + 首次在列 + 灵巧手 ≠ 文化传媒
-    expect(plan.range10Backup).toBeTruthy();
-    expect(plan.range10Backup.picks.map(function(p) { return p.name; })).toEqual(['兆威机电']);
-    expect(plan.range10Backup.picks[0].buyActionTag).toBe(RANGE10_BACKUP_TAG);
-    expect(plan.range10Backup.picks[0].range10Label).toContain('首次在列');
-    expect(plan.buy.range10Backup).toBe(plan.range10Backup);
-    // ③ 说明区必须点明「同一只票重复出现是设计如此」+ 题材块灰化不恢复
-    const notes = plan.range10Backup.notes.join('\n');
-    expect(notes).toContain('重复出现');
-    expect(notes).toContain('工业4.0');
-    expect(plan.range10Backup.picks[0].actionNote).toContain('工业4.0');
-    expect(plan.range10Backup.reason).toContain('股票级');
-    // ④ 空仓标语里那句话不能自相矛盾（候补票本身就在第一题材里）
-    expect(plan.cashAlert.detail).toContain('这只候补除外');
-    // ⑤ 进了买点名单（卖点侧才会按「今日要买」处理）
-    expect(plan.buyNames.has('兆威机电')).toBe(true);
+    // ② ★ 口径修正：不再产出「兆威机电 = 十日涨幅候补买」那一行
+    expect(plan.range10Backup).toBeNull();
+    expect(plan.buy.range10Backup).toBeNull();
+    //    ⚠️ 它仍出现在灰化块里（那是题材自己的票），但动作是【分歧日不买】、⛔ 没有任何一行挂候补标签
+    const allPicks = [];
+    plan.blocks.forEach(function(b) { (b.picks || []).forEach(function(p) { allPicks.push(p); }); });
+    expect(allPicks.filter(function(p) { return p.buyActionTag === RANGE10_BACKUP_TAG; })).toEqual([]);
+    // ③ 那天买不买由【第一题材自己的候补规则】决定；本夹具没给这两条的输入 ⇒ 都不出 ⇒ 纯空仓
+    expect(plan.weakHuddle).toBeNull();
+    expect(plan.catchUp).toBeNull();
+    // ④ §10：不是「今天本来没有候补」，而是「按口径不启用」——说明区必须讲清
+    const notes = plan.notes.join('\n');
+    expect(notes).toContain('本通道【不启用】');
+    expect(notes).toContain('15.18');
+    expect(notes).toContain('第三十条');
+    expect(notes).toContain('第三十一条');
   });
 
   // ★★ [R10-NOEXCLUDE 2026-10-24 第三次修正 · 10-20 事故回归]
