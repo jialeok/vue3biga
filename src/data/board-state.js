@@ -59,6 +59,24 @@ function notePatternLocalWrite(date) {
   _patternWriteGuardUntil[d] = Date.now() + PATTERN_LOCAL_WRITE_GUARD_MS;
 }
 
+// ── ★★ [BOARD-LOST-G3 2026-10-28 · §10/§11] 「云端到底有没有这一行」与「这次读取有没有失败」─────
+//   为什么需要这两个集合：`saveXxxForDate` 原来一律 `_xxxMemCache[date] || 空值` 再 upsert，
+//   于是「这一天根本没从云端读到」会被当成「用户把内容清空了」写回云端整行。两个后果：
+//     ① 读取失败（网络抖 / maybeSingle 报错）后一次推送 ⇒ 用空值覆盖云端【有内容】的行 —— 真丢数据（§10 红线）；
+//     ② 云端本来没有这一天 ⇒ 每次刷新都白建一条 `data: []` 的空行 —— 既污染表，又白花一次写请求。
+//   实测（2026-10-28 · 生产包 + 无头 Chrome）：一次刷新即发出 rank_data / multi_data /
+//   hotspot_data / tag_titles_data 四条 `{date, data:[]}` 空写（详见 .tmpdiag/audit-boot-writes.cjs）。
+//   修法只用「记录事实」，不改变任何读写语义 —— 缓存该给的东西照给，只是保存时知道该不该推。
+//   ⚠️ 放在本模块（零依赖叶子状态）而不是各 board-*.js：避免 logic → data → supabase-client 的环。
+const _cloudRowExists = {
+  stocks: new Set(), rank: new Set(), multi: new Set(),
+  hotspot: new Set(), pattern: new Set(), tagTitles: new Set()
+};
+const _loadFailedDates = {
+  stocks: new Set(), rank: new Set(), multi: new Set(),
+  hotspot: new Set(), pattern: new Set(), tagTitles: new Set()
+};
+
 export {
   MODULE_KEYS,
   _stocksMemCache,
@@ -70,6 +88,8 @@ export {
   _caches,
   _dirty,
   _lastPushed,
+  _cloudRowExists,
+  _loadFailedDates,
   _patternWriteSeq,
   _patternWriteGuardUntil,
   PATTERN_LOCAL_WRITE_GUARD_MS,

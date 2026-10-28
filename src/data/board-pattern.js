@@ -33,7 +33,9 @@ import {
   _patternMemCache,
   _lastPushed,
   _patternWriteSeq,
-  _patternWriteGuardUntil
+  _patternWriteGuardUntil,
+  _cloudRowExists,
+  _loadFailedDates
 } from './board-state.js';
 
 /**
@@ -68,6 +70,11 @@ async function loadPatternForDate(date) {
       .eq('date', date)
       .maybeSingle();
     if (error) throw error;
+    // ★ [BOARD-LOST-G3 2026-10-28 · §10/§11] 记录「云端这一天有没有行」+「这次读到了」
+    //   （放在 G1 护栏之前：护栏只决定「要不要用这次读回覆盖缓存」，不改变云端有没有这一行这个事实）
+    if (data) _cloudRowExists.pattern.add(date);
+    else _cloudRowExists.pattern.delete(date);
+    _loadFailedDates.pattern.delete(date);
     // ★ [PATTERN-LOST G1] 读回护栏：本地写过之后，旧读回不许覆盖缓存（否则用户刚存的内容会被抹掉）
     if (!canApplyPatternCloudRead(date, seqAtIssue)) return;
     const defaultVal = { content: '', update: false, keep: false };
@@ -77,18 +84,30 @@ async function loadPatternForDate(date) {
     _patternMemCache[date] = val;
     _lastPushed.pattern[date] = JSON.stringify(val);
   } catch (e) {
+    // ★ [BOARD-LOST-G3 2026-10-28 · §10 读取失败 ≠ 空数据] 保存侧据此拒绝推送。
+    _loadFailedDates.pattern.add(date);
     _warn('loadPatternForDate ' + date + ' 失败: ' + (e.message || e));
   }
 }
 
 async function savePatternForDate(date) {
   if (!date) return;
+  // ★ [BOARD-LOST-G3 2026-10-28 · §10/§11 宁缺勿错]
+  //   ① 这一天【读取失败过】⇒ 禁止保存（§10：读取失败绝不当成「用户清空了」）；
+  //   ② 云端本来【没有】这一天，且本次要写的也是空内容 ⇒ 不推（白建空行 + 白花一次写请求）。
+  //   ⚠️ 反向必须放行：云端有这一天 + 用户真的清空内容 ⇒ 照常推。
+  if (_loadFailedDates.pattern.has(date)) {
+    _warn('savePatternForDate ' + date + ' 跳过：该日期云端读取失败过（§10 读取失败 ≠ 空数据）');
+    return;
+  }
   const cached = _patternMemCache[date];
   // ★ [PATTERN-LOST G2 · §10 宁缺勿错] 缓存里【没有】这一天 ⇒ 不推。
   //   旧实现 `_patternMemCache[date] || {content:'', ...}` 会把「这一天根本没加载过」当成
   //   「用户把内容清空了」写进云端 —— 那是拿未知当已知（线上所有日期 content 全空，正是被它放大的）。
   if (!cached) return;
   const p = cached;
+  const blank = !p.content && !p.update && !p.keep;
+  if (blank && !_cloudRowExists.pattern.has(date)) return;
   try {
     const sb = getSupabase();
     await sb.from('pattern_data').upsert({
@@ -97,6 +116,7 @@ async function savePatternForDate(date) {
       update_flag: !!p.update,
       keep_flag: !!p.keep
     }, { onConflict: 'date' });
+    _cloudRowExists.pattern.add(date);
     _lastPushed.pattern[date] = JSON.stringify(p);
   } catch (e) {
     _warn('savePatternForDate ' + date + ' 失败: ' + (e.message || e));

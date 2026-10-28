@@ -49,6 +49,7 @@ const MAX_PULLS = 18;
 
 let _started = false;
 let _timer = null;
+let _rearmTimer = null;
 let _pullCount = 0;
 let _lastRowCount = -1;
 let _allowOnce = false;
@@ -80,6 +81,32 @@ function _schedule(delayMs) {
 function _stop(reason) {
     if (_timer) { clearTimeout(_timer); _timer = null; }
     if (reason) _dbgLog('[MORNING-SYNC] 停止：' + reason);
+    // ★ [MSYNC-REARM 2026-10-28] 停掉之后必须【解除 _started】并排一次明早的 re-arm。
+    //   旧写法只在 startMorningSync 开头置 `_started = true`、从不复位，于是
+    //   「晚上提前打开（>15:00）→ 次早 9:24」这条最常见的用法里，窗口到了也【不会有任何调度】，
+    //   9:25 的数据永远不来（用户只能手工「连抓五天」）。见文件头 §17 的边界说明：
+    //   re-arm 只是【一个 setTimeout】，零请求，不构成常驻心跳。
+    _started = false;
+    _rearm();
+}
+
+/**
+ * 排一次「下一个 09:24」的 re-arm。
+ * 纯 setTimeout，不发起任何网络请求 ⇒ 不违反 §17「不许用常驻轮询掩盖架构问题」。
+ * 若今天还没到 09:24 ⇒ 排到今天；否则排到明天（跨天/隔夜的唯一兜底）。
+ */
+function _rearm() {
+    if (_rearmTimer) clearTimeout(_rearmTimer);
+    const mins = _beijingMinutes();
+    const remainMin = mins < WINDOW_FROM_MIN
+        ? (WINDOW_FROM_MIN - mins)
+        : (24 * 60 - mins + WINDOW_FROM_MIN);
+    const delayMs = remainMin * 60 * 1000 + 5000; // 多 5s，避开 09:24:00 的边界
+    _rearmTimer = setTimeout(function() {
+        _rearmTimer = null;
+        startMorningSync();
+    }, delayMs);
+    _dbgLog('[MORNING-SYNC] 已排 re-arm：' + Math.round(delayMs / 1000) + 's 后重新尝试启动');
 }
 
 async function _tick() {
@@ -157,11 +184,13 @@ async function _tick() {
  */
 export function startMorningSync() {
     if (_started) return;
-    _started = true;
 
     const today = beijingTodayStr();
     if (!isTradingDay(today)) {
-        _dbgLog('[MORNING-SYNC] 非交易日，不启动');
+        _dbgLog('[MORNING-SYNC] 非交易日，不启动（已排好下一个 09:24 的 re-arm）');
+        // ★ [MSYNC-REARM] 不在开头无条件置 `_started = true`：否则「周末/节假日打开过一次」
+        //   就把模块钉死成「已启动」，下周一 9:24 也不会有任何调度。
+        _rearm();
         return;
     }
     const mins = _beijingMinutes();
@@ -170,17 +199,24 @@ export function startMorningSync() {
         // 覆盖「worker 迟到」「页面晚开」这两种情况。拿不到就收手，不留心跳。
         if (_todayDataArrived(today)) {
             _dbgLog('[MORNING-SYNC] 当天数据已在内存，无需补救');
+            _rearm();   // ★ 数据已在内存也照样排明早的 re-arm（隔夜复用同一个标签页）
             return;
         }
         _dbgLog('[MORNING-SYNC] 已过 9:55 窗口但当天无数据 → 做一次补救拉取');
+        _started = true;       // ★ 只在真的开始调度时置位
         _allowOnce = true;
         _schedule(0);
         return;
     }
     if (mins > CLOSE_HOUR_MIN) {
-        _dbgLog('[MORNING-SYNC] 已过收盘，不启动早盘自愈');
+        // ★ [MSYNC-REARM 2026-10-28] 用户最常见的用法就是「晚上提前打开、次早 9:26 刷新」。
+        //   这里只排 re-arm、不启动自愈（晚上补拉毫无意义）；明早 09:24 re-arm 到点后
+        //   _started 仍为 false ⇒ 真的会启动一次。
+        _dbgLog('[MORNING-SYNC] 已过收盘，不启动早盘自愈（已排好明早 09:24 的 re-arm）');
+        _rearm();
         return;
     }
+    _started = true;   // ★ 只在真的进入窗口调度时置位
     const delayMs = mins < WINDOW_FROM_MIN
         ? (WINDOW_FROM_MIN - mins) * 60 * 1000
         : 0;
@@ -193,6 +229,7 @@ export function startMorningSync() {
 /** 仅供测试：重置模块状态 */
 export function _resetMorningSyncState() {
     if (_timer) { clearTimeout(_timer); _timer = null; }
+    if (_rearmTimer) { clearTimeout(_rearmTimer); _rearmTimer = null; }
     _started = false;
     _pullCount = 0;
     _lastRowCount = -1;

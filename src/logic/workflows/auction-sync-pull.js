@@ -202,6 +202,20 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
 
                 const cloudObj = data.data;
 
+                // ★★ [BOARD-LOST-G3 2026-10-28 · §10「未知 ≠ 空」] 记住云端 blob 各模块分区的原样快照。
+                //   为什么需要：pushToCloud 是整列覆盖 `user_data.data`（一个 JSON 列），
+                //   而它的 payload 取自 `state.allData.*`（= 各域内存缓存）。若某个模块本次【根本没加载】，
+                //   旧实现就会写 `{}` 上去 —— 用「未知」覆盖「已知」，正是 §10 红线。
+                //   实测（.tmpdiag/audit-boot-writes.cjs）：一次首屏即发出
+                //   `POST user_data {"id":"owner","data":{"stocks":{},"rank":{},"multi":{},"hotspot":{},…}}`。
+                //   有了这份快照，push 侧就能「本地有货用本地、本地没货沿用云端刚刚读到的那份」。
+                _cloudBlobExtras._blobSections = {};
+                ['stocks', 'auction', 'jiwang', 'rank', 'multi', 'hotspot', 'pattern', 'bidding', 'tagTitles']
+                    .forEach(function (k) {
+                        const v = cloudObj[k];
+                        if (v && typeof v === 'object' && Object.keys(v).length > 0) _cloudBlobExtras._blobSections[k] = v;
+                    });
+
                 // §8 收口（P0-1 修复）：原 cloud-pull 把云端 blob 各模块镜像写回 stockApp_v42_* localStorage，
                 // 违反 §8「核心业务数据不得落 localStorage」。现各模块已迁移到「云端专用表 + 内存缓存(_xxxMemCache)」，
                 // loadAllData 优先读内存缓存、不再从这些 localStorage key 读（src/data/supabase-client.js:199-214），

@@ -527,16 +527,31 @@ import { _cloudBlobExtras } from './auction-sync-helpers.js';
                     if (val) scoreSettings[type] = JSON.parse(val);
                 });
 
+                // ★★ [BOARD-LOST-G3 2026-10-28 · §10「未知 ≠ 空」] blob 分区取值器。
+                //   `user_data.data` 是一个 JSON 列，本函数是【整列覆盖】。若某模块本次没加载
+                //   （内存缓存里一天都没有），直接用 `state.allData[key]` 就等于写 `{}` 上去 ——
+                //   用「未知」覆盖「已知」。这里改成：本地有货就用本地，本地没货【沿用 pull 时
+                //   刚读到的云端那份快照】（_cloudBlobExtras._blobSections，见 auction-sync-pull.js）。
+                //   ⚠️ 「用户真的清空」仍然照常生效：清空后本地是 `{日期: []}`，键数 > 0 ⇒ 走本地。
+                const _sect = function (key) {
+                    const local = state.allData[key];
+                    const localHas = local && typeof local === 'object' && Object.keys(local).length > 0;
+                    if (localHas) return local;
+                    const blob = _cloudBlobExtras._blobSections && _cloudBlobExtras._blobSections[key];
+                    const blobHas = blob && typeof blob === 'object' && Object.keys(blob).length > 0;
+                    return blobHas ? blob : (local || {});
+                };
+
                 const payload = {
-                    stocks: state.allData.stocks || {},
-                    jiwang: state._jiwangTableAvailable ? {} : (state.allData.jiwang || {}),
-                    rank: state.allData.rank || {},
-                    multi: state.allData.multi || {},
-                    hotspot: state.allData.hotspot || {},
-                    pattern: state.allData.pattern || {},
-                    bidding: state._biddingTableAvailable ? {} : (state.allData.bidding || {}),
-                    auction: state._auctionTableAvailable ? {} : (state.allData.auction || {}),
-                    tagTitles: state.allData.tagTitles || {},
+                    stocks: _sect('stocks'),
+                    jiwang: state._jiwangTableAvailable ? {} : _sect('jiwang'),
+                    rank: _sect('rank'),
+                    multi: _sect('multi'),
+                    hotspot: _sect('hotspot'),
+                    pattern: _sect('pattern'),
+                    bidding: state._biddingTableAvailable ? {} : _sect('bidding'),
+                    auction: state._auctionTableAvailable ? {} : _sect('auction'),
+                    tagTitles: _sect('tagTitles'),
                     holidays: state.allData.holidays || [],
                     duibanData: _cloudBlobExtras.duibanData || {},
                     duibanComment: _cloudBlobExtras.duibanComment || {},

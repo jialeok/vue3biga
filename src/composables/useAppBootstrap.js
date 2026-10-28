@@ -4,7 +4,7 @@
 // 统一收敛到此处，App.vue 仅保留模板与最小脚本。
 import { ref, onMounted, watch } from 'vue';
 import { useAuthStore } from '../stores/authStore.js';
-import { startSessionPoll } from '../data/watchlist-and-metrics.js';
+import { startSessionPoll, pullAuctionMarketDataForDate, _isAuctionWatchlistIndexReady } from '../data/watchlist-and-metrics.js';
 import { pullDailyHighlights } from '../data/daily-highlights.js';
 import { pullHotStocksHighlights, loadHotStocksFromCloud } from '../data/hot-stocks.js';
 import { loadCoreTopicsFromCloud } from '../logic/topic/rules.js';
@@ -21,11 +21,13 @@ import { migrateJiwangToTable, pullJiwangForDate, pullJiwangFromTable } from '..
 import { showToast, showWarningToast } from './useToast.js';
 import { state } from '../logic/app-state.js';
 import { useUiStore } from '../stores/uiStore.js';
-import { startMorningSync } from '../logic/auction/morning-sync.js';
-import { ensureAuctionDateAndRefresh } from '../logic/auction/auction-pull-window.js';
+import { startMorningSync, _todayDataArrived } from '../logic/auction/morning-sync.js';
+import { ensureAuctionDateAndRefresh, beijingTodayStr } from '../logic/auction/auction-pull-window.js';
 
 // 日期切换「按天补拉」的 watch 只挂一次（onLoginSuccess 可能被重复调用）
 let _dateLoaderWatchBound = false;
+// 「切回前台」监听只挂一次（同上；重复绑定会成倍放大切回前台的请求）
+let _visibilityBound = false;
 
 // loginRef: App.vue 持有的 LoginOverlay 组件 ref，用于 forceLogout / showPassword 调用
 export function useAppBootstrap(loginRef) {
@@ -131,6 +133,9 @@ export function useAppBootstrap(loginRef) {
   }
 
   function setupVisibilityChange() {
+    // 幂等：onLoginSuccess 可能因重新登录被再次调用，重复绑定会成倍放大「切回前台」的请求（§32）。
+    if (_visibilityBound) return;
+    _visibilityBound = true;
     document.addEventListener('visibilitychange', function () {
       if (document.visibilityState !== 'visible') return;
       _dbgLog('visibilitychange: 切回前台, useUiStore().currentDate=' + useUiStore().currentDate);
@@ -138,6 +143,32 @@ export function useAppBootstrap(loginRef) {
       loadAllData();
       _emit('stocks-refresh');
       _emit('auction-refresh');
+
+      // ★★ [VIS-AUCTION 2026-10-28 · §32 同一条链路必须补齐] 切回前台要补【当天正式名单】。
+      //   🔴 【定位】（.tmpdiag/audit-refresh-safety.cjs，真实网络）：原实现这一段只发
+      //      `market_metrics?date=gte.…` 的区间请求，**`auction_watchlist` 一条都不发** ——
+      //      于是「晚上开着页面 → 次日切回标签页（不按 F5）」时，行情列被刷新了、正式名单
+      //      却还是昨晚那一份，两边对不上（看板会出现「有行情没票 / 有票没行情」）。
+      //   ✅ 【改法】条件化补拉：只在【确实缺】的时候发（§32 不重复请求）——
+      //      ① 内存里根本没有这一天的竞价行；或
+      //      ② **正式名单索引 `_auctionWatchlistIndex[date]` 未就绪**
+      //         （= auction_watchlist 那张表这次没读到 / 没拉过。⚠️ 只看「有没有行」是不够的：
+      //           首屏若只有 market_metrics 的影子行成功、名单那条失败，内存里【有行】但【没有成员】，
+      //           看板会显示一堆票、但「总数量 / 观察组 / 正式成员」全对不上）；或
+      //      ③ 看的是系统今天、且当天这批行情还没到（9:25 前后切回来最典型）。
+      //      其它情况一律不发（历史日、今天数据已到齐）。
+      var visDate = useUiStore().currentDate;
+      var cachedAuc = visDate && state._auctionMemCache ? state._auctionMemCache[visDate] : undefined;
+      var listReady = !!visDate && _isAuctionWatchlistIndexReady(visDate);
+      var needToday = !!visDate && visDate === beijingTodayStr() && !_todayDataArrived(visDate);
+      if (visDate && (!Array.isArray(cachedAuc) || !listReady || needToday)) {
+        _dbgLog('[VIS] 切回前台补当天竞价 date=' + visDate +
+          '（无内存行=' + !Array.isArray(cachedAuc) + ', 名单未就绪=' + !listReady + ', 当天行情未到=' + needToday + '）');
+        pullAuctionMarketDataForDate(visDate)
+          .then(function () { _emit('auction-refresh'); })
+          .catch(function (e) { _dbgLog('[AUCTION-ERR] 切回前台补竞价失败: ' + (e && e.message || e)); });
+      }
+
       pullBiddingForDate(useUiStore().currentDate).then(() => _emit('bidding-refresh')).catch(e => console.warn('切回前台 bidding:', e.message));
       state._emotionDataCache = null;
       _emit('emotion-refresh');
