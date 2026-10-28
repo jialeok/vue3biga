@@ -55,9 +55,9 @@ import { ensureRange20Leaders } from '../logic/auction/range20-leaders.js';
 //   而且这张表本身还能被用户直接拿去做分析（用户原话「我会用这个出现次数做分析」）。
 import { ensurePresence } from '../data/auction-presence.js';
 // [R20-DELTA 2026-10-28 用户口径] 「20日涨幅」toggle 的占比列改成【名次变化】：
-//   需要【上一交易日】那一份名次表，而且【必须与今天同一口径】（竞价配竞价 / 收盘配收盘）。
-//   装配在 Logic 层 prev-rank-table.js（收盘口径读 stock_range20_pct 的 close 腿；
-//   竞价口径走 range20-auction-leg.js 反解，与今天那一列同一次取数、同一把尺子）。
+//   需要【上一交易日】那一份名次表；基准腿【恒为昨日收盘口径】（收盘=昨天定稿的强度），
+//   ⛔ 不随「竞价口径」toggle 变 —— 今天竞价也比昨收，今天收盘也比昨收（见 prev-rank-table.js 头注释）。
+//   装配在 Logic 层 prev-rank-table.js（读 stock_range20_pct 的 close 腿 → buildRankTable）。
 //   ⛔ 只在 20日涨幅开关打开时才读（关着时一条请求都不发，§11 默认零行为）。
 import { ensurePrevRankTable, getPrevRankTable, resolvePrevRankLeg } from '../logic/auction/prev-rank-table.js';
 // [TREND-PATCH-STORE 2026-10-23] 趋势「同花顺补缺值」的合并语义（纯函数，Logic 层，§3/§4）。
@@ -361,28 +361,23 @@ export function useAuctionBoard() {
   //   「排名变化列那里，收盘是否重新算过一次，我希望重新算过一次，早上可以用竞价口径，收盘时，
   //     用收盘口径，因为竞价时和收盘时会不同，不要搞混了，这样才能分辨出来。」
   //
-  // 依赖 = 【20日涨幅开关 + 当前日期 + 竞价口径开关 + range20 的换腿信号】：
+  // 依赖 = 【20日涨幅开关 + 当前日期 + range20 的换腿信号】：
   //   · 只在 20日涨幅开关打开时才读（关着时一条请求都不发，§11 默认零行为）；
-  //   · 口径跟着「今天那一列实际用的口径」走（`resolvePrevRankLeg`，与 range20 的 T 腿同源），
-  //     所以竞价口径开关要进依赖；
-  //   · 🔴 `range20Fingerprint` 进依赖 = 【收盘换腿的触发器】：15:00 后 range20.js#_scheduleCloseSwitch
-  //     会把今天那份数从竞价腿换成收盘腿并 bump version ⇒ 这里跟着把「昨天」也换成收盘口径，
-  //     否则收盘后屏幕会变成「今天收盘 vs 昨天竞价」（正是用户说的「搞混了」）。
-  //     该令牌在两阶段补算期间本来就会多次变化 ⇒ 下面用「口径 + 是否已加载」做幂等短路，不会白打请求。
+  //   · 基准腿【恒为昨日收盘】⇒ 「竞价口径」toggle 不再影响这里要读哪张表，故不入依赖；
+  //   · range20 指纹仍要进：15:00 后今天那列换腿 ⇒ 名次差要重算（本 watch 幂等短路，不会白打请求）。
   // 数据到货 ⇒ version + 1 ⇒ incremental-view 的 `r20delta=` 指纹变化 ⇒ 视图重算 ⇒ 数值出现。
   // ⚠️ 失败必须可见（§10 禁止静默失败）：⛔ 不能把「没读到」显示成「所有票都没变化」。
   if (!_r20DeltaWatchBound) {
     _r20DeltaWatchBound = true;
     watch(
-      () => [sortState.byRangePct20, uiStore.currentDate, sortState.byAuctionLeg,
-        getRange20FingerprintToken()],
+      () => [sortState.byRangePct20, uiStore.currentDate, getRange20FingerprintToken()],
       async () => {
         if (!sortState.byRangePct20) return;
         const _date = uiStore.currentDate;
         if (!_date) return;
         const _prev = getPreviousTradingDay(_date);
         if (!_prev) return;
-        const _leg = resolvePrevRankLeg(_date, sortState.byAuctionLeg);
+        const _leg = resolvePrevRankLeg();   // 恒 'close'（昨日收盘口径）
         // 幂等短路：同一口径已经装好了就不再发请求（令牌频繁变化时这条是必需的）
         if (getPrevRankTable(_prev, _leg)) return;
         try {

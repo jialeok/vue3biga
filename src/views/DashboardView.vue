@@ -131,48 +131,28 @@
     <WeekendStatsBoard v-show="boardView === 'weekly'" />
     <MonthlyStatsBoard v-show="boardView === 'monthly'" />
 
-    <!-- 底部操作栏 -->
-    <!-- 【BOTTOM-BAR 精简 2026-10-26】原右侧 60px 蓝色渐变圆圈「+」（.fab / onAddStock）
-         已整体移除（自选股整套功能下线，见提交说明），腾出的横向空间让日期切换 ◀ ▶
-         右移到栏尾，并把两者间距放宽（原 18px → 24px），点起来不再局促。 -->
+    <!-- 底部操作栏：只剩「上一个交易日 / 下一个交易日」两个三角 -->
+    <!-- 【BOTTOM-BAR 三按钮下线 2026-10-28】用户原话：「底部那三个按钮，可以去掉，只剩两个切换
+         日期三角，放中间，排列好看些，大些简洁」。
+         ⇒ 📤 导出 / ☁️ 云同步 / 📥 导入 三个按钮**连 DOM 带处理函数一并删除**（⛔ 不是 v-show 隐藏），
+           样式 .bottom-bar-tools / .bottom-bar-cloud / .icon-btn 同步从 bottom-bar.css 移除，
+           避免留下「看起来还活着」的死样式。
+         数据侧的导出 / 导入能力（stocks-export.js、import 弹窗事件）本身不动，只是不再从底栏触发。 -->
     <div class="bottom-bar">
-      <div class="bottom-bar-tools">
-        <button
-          class="icon-btn"
-          title="导出当前日期股票数据"
-          @click="onExport"
-        >
-          📤
-        </button>
-        <span
-          class="bottom-bar-cloud"
-          title="拉取云端最新数据"
-          @click="onPullCloud"
-        >☁️</span>
-        <button
-          class="icon-btn"
-          title="导入股票数据"
-          @click="onImport"
-        >
-          📥
-        </button>
-      </div>
-      <div class="bottom-bar-datenav">
-        <button
-          class="date-nav-btn"
-          title="上一个交易日"
-          @click="goToPrevTradingDay"
-        >
-          ◀
-        </button>
-        <button
-          class="date-nav-btn"
-          title="下一个交易日"
-          @click="goToNextTradingDay"
-        >
-          ▶
-        </button>
-      </div>
+      <button
+        class="date-nav-btn"
+        title="上一个交易日"
+        @click="goToPrevTradingDay"
+      >
+        ◀
+      </button>
+      <button
+        class="date-nav-btn"
+        title="下一个交易日"
+        @click="goToNextTradingDay"
+      >
+        ▶
+      </button>
     </div>
 
     <EditModal
@@ -243,7 +223,6 @@ import { getPreviousTradingDay, getNextTradingDay, getPreviousCalendarDay, getNe
 // [TRADING-DAY 2026-09-29] 假期设置必须落云端表 —— worker 只认 trading_day_overrides，
 // localStorage 里的 holidays 它读不到（这正是 9/25 中秋标了假期却照跑、10/08 开市日被整轮 skip 的根因）。
 import { pullTradingDayOverrides, saveTradingDayOverride } from '../data/trading-day-overrides.js';
-import { _emit } from '../stores/eventBus.js';
 import { useUiStore } from '../stores/uiStore.js';
 import { showToast } from '../composables/useToast.js';
 import EditModal from '../components/EditModal.vue';
@@ -266,7 +245,6 @@ import WeekendStatsBoard from './WeekendStatsBoard.vue';
 import MonthlyStatsBoard from './MonthlyStatsBoard.vue';
 import { useStatsView } from '../composables/useStatsView.js';
 // [BOTTOM-BAR 2026-10-26] 导出功能从已下线的自选股模块搬到 Logic 层，底栏 📤 保持可用。
-import { exportStocksData } from '../logic/stocks/stocks-export.js';
 
 // [STATS-VIEW] 模板由当前日期派生（单一真相源在 useStatsView），手动按钮仅作覆盖。
 const statsView = useStatsView();
@@ -394,19 +372,10 @@ function goToday() {
 
 // [BOTTOM-BAR 2026-10-26] 原 onAddStock（打开自选股「添加股票」弹窗）随 HomeStocksView 一并移除。
 //   ⛔ 不是改名或留空壳 —— 入口、函数、弹窗、统计卡、列表全部删掉，避免留下被误当成活的死角。
+// [BOTTOM-BAR 2026-10-28] onExport / onImport / onPullCloud 三个处理函数同时移除：
+//   用户要求「底部那三个按钮可以去掉」。⛔ 同样不留空函数、不留注释壳 —— 底栏已没有任何按钮
+//   引用它们，留着只会让人以为还有入口。⚠️ stocks-export.js 本身仍是活的（别处可能直接调用）。
 
-function onExport() {
-  const r = exportStocksData();
-  // §10：导出失败必须让用户看见，不许"点了没反应"
-  if (!r.ok) showToast('导出失败：' + (r.reason || '未知原因'));
-  else showToast('已导出 ' + r.date + '（' + r.count + ' 条）');
-}
-function onImport() {
-  _emit('show-import-modal');
-}
-function onPullCloud() {
-  _emit('data:cloud-changed');
-}
 
 const datePickerActive = ref(false);
 const pickerYear = ref(2026);

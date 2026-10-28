@@ -5,7 +5,7 @@
 //   ② 名次只有一套算法（两种口径共用，⛔ 不许分叉）；
 //   ③ 收盘口径只认 leg='close' 的行：只有 auc 行的票【不收】—— 那是另一把尺子量出来的数。
 import { describe, it, expect } from 'vitest';
-import { buildRankTable, pickCloseLegRows, resolvePrevRankLeg, PREV_LEG_AUC, PREV_LEG_CLOSE } from './prev-rank-table.js';
+import { buildRankTable, pickCloseLegRows, resolvePrevRankLeg, resolveTodayLeg, PREV_LEG_AUC, PREV_LEG_CLOSE } from './prev-rank-table.js';
 import { resolveT20LegMode, isAfterCloseOf } from './range20.js';
 import { _getLocalTodayStr } from '../tagTitles/rules.js';
 
@@ -95,24 +95,42 @@ describe('prev-rank-table · pickCloseLegRows（收盘口径只认 close 腿）'
   });
 });
 
-describe('prev-rank-table · resolvePrevRankLeg（口径必须与「今天那一列」同源）', function() {
-  it('★ 竞价口径 toggle 打开 ⇒ 任何日期都用 auc（那一列显示的就是 9:26 反解值）', function() {
-    expect(resolvePrevRankLeg('2026-10-28', true)).toBe(PREV_LEG_AUC);
-    expect(resolvePrevRankLeg('2026-10-20', true)).toBe(PREV_LEG_AUC);
+describe('prev-rank-table · resolvePrevRankLeg（基准腿恒为昨日收盘 —— 2026-10-28 用户口述定死）', function() {
+  // 用户原话：「注意我说的20日涨幅的当天竞价口径对比昨天的收盘口径的……就是早上我打开时看到
+  //   襄阳轴承是竞价口径排名比10月26日的襄阳轴承收盘口径的排名增减变化（不是比10月26日的
+  //   襄阳轴承竞价口径，这点你注意）」
+  // ⇒ 基准腿【恒 close】，与今天那列是竞价还是收盘无关。
+
+  it('★ 恒返回 close（今天竞价也比昨收，今天收盘也比昨收）', function() {
+    expect(resolvePrevRankLeg()).toBe(PREV_LEG_CLOSE);
   });
 
-  it('toggle 关闭 + 历史日 ⇒ close（历史日 range20 本来就是收盘复利）', function() {
+  it('★ 签名里没有参数 —— ⛔ 别再有人把 toggle / 日期接回来', function() {
+    // 早先那版是 resolvePrevRankLeg(date, byAuctionLeg)，用户已明确否掉「竞价配竞价」
+    expect(resolvePrevRankLeg.length).toBe(0);
+    // 就算调用方硬塞实参也不影响结果（多余实参被忽略）
+    expect(resolvePrevRankLeg('2026-10-28', true)).toBe(PREV_LEG_CLOSE);
     expect(resolvePrevRankLeg('2026-01-05', false)).toBe(PREV_LEG_CLOSE);
+    expect(resolvePrevRankLeg(null, true)).toBe(PREV_LEG_CLOSE);
   });
 
-  it('★ 今天 ⇒ 与 range20 的 T 腿口径【同一个函数】（⛔ 不许两处各判一次）', function() {
+  it('resolveTodayLeg：只服务文案 —— toggle 打开即 auc，否则与 range20 的 T 腿【同一个函数】', function() {
+    expect(resolveTodayLeg('2026-10-28', true)).toBe(PREV_LEG_AUC);
+    expect(resolveTodayLeg('2026-01-05', false)).toBe(PREV_LEG_CLOSE);
     const today = _getLocalTodayStr();
     const expected = resolveT20LegMode(true, isAfterCloseOf(today)) === 'auc' ? PREV_LEG_AUC : PREV_LEG_CLOSE;
-    expect(resolvePrevRankLeg(today, false)).toBe(expected);
+    expect(resolveTodayLeg(today, false)).toBe(expected);
   });
 
-  it('空日期 ⇒ 保守按 close（不猜口径；调用方随后会因「没有上一交易日」直接跳过）', function() {
-    expect(resolvePrevRankLeg('', false)).toBe(PREV_LEG_CLOSE);
-    expect(resolvePrevRankLeg(null, false)).toBe(PREV_LEG_CLOSE);
+  it('resolveTodayLeg 空日期 ⇒ 保守按 close（§10 不猜；调用方会因「没有上一交易日」跳过）', function() {
+    expect(resolveTodayLeg('', false)).toBe(PREV_LEG_CLOSE);
+    expect(resolveTodayLeg(null, false)).toBe(PREV_LEG_CLOSE);
+  });
+
+  it('两条腿的语义不可互换：基准永远 close，今天腿可能 auc', function() {
+    // 即便「今天的口径」是竞价，基准也不会跟着变 —— 这正是用户要求的「分辨出来」
+    const todayLeg = resolveTodayLeg(_getLocalTodayStr(), true);
+    expect(todayLeg).toBe(PREV_LEG_AUC);
+    expect(resolvePrevRankLeg()).toBe(PREV_LEG_CLOSE);
   });
 });

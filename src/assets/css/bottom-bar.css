@@ -1,4 +1,9 @@
-        /* 底部栏 */
+        /* 底部栏：只剩「上一个交易日 / 下一个交易日」两个三角 */
+        /* 【BOTTOM-BAR 2026-10-28】📤 导出 / ☁️ 云同步 / 📥 导入 三个按钮按用户要求下线
+           （原话：「底部那三个按钮，可以去掉，只剩两个切换日期三角，放中间，排列好看些，大些简洁」）。
+           ⇒ .bottom-bar-tools / .bottom-bar-cloud / .icon-btn 三条样式一并删除，⛔ 不留死样式
+             （留着会让后来的人以为还有个入口）。
+           版式改为【居中 + 大号 + 宽间距】：单手拇指左右各一下就切日，不用再摸边角。 */
         .bottom-bar {
             position: fixed;
             bottom: 0;
@@ -8,39 +13,30 @@
             max-width: 400px;
             background: rgba(255, 255, 255, 0.95);
             border-top: 1px solid #e2e8f0;
-            padding: 12px 20px;
+            padding: 8px 20px;
             display: flex;
-            justify-content: space-between;
+            justify-content: center;
             align-items: center;
+            gap: 72px;
             z-index: 100;
             backdrop-filter: blur(10px);
         }
 
-        .icon-btn {
-            background: #f8fafc;
-            border: 1px solid #e2e8f0;
-            color: #64748b;
-            width: 40px;
-            height: 40px;
-            border-radius: 10px;
-            font-size: 18px;
-            cursor: pointer;
-        }
-
-        /* 底部日期导航按钮 */
+        /* 日期切换三角：56×48 触摸区 + 26px 字号，视觉上就是底栏唯一的主角 */
         .date-nav-btn {
-            width: 36px;
-            height: 36px;
+            width: 56px;
+            height: 48px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 16px;
+            font-size: 26px;
+            line-height: 1;
             color: #8b5cf6;
             background: transparent;
             border: none;
             cursor: pointer;
-            border-radius: 50%;
-            transition: all 0.2s;
+            border-radius: 14px;
+            transition: background 0.18s, transform 0.12s;
             -webkit-tap-highlight-color: transparent;
             user-select: none;
         }
@@ -49,34 +45,7 @@
             background: rgba(139, 92, 246, 0.1);
         }
 
-        /* 【BOTTOM-BAR 2026-10-26】删除了原 `.fab`（60×60 蓝色渐变圆圈「+」添加股票按钮）。
-           它随「自选股」整套功能一起下线，⛔ 不是隐藏而是连样式带 DOM 一并删除。
-           腾出的横向空间交给右侧日期切换组，◀ ▶ 右移到栏尾并放宽间距。 */
-
-        /* 左侧后台运维组：📤 导出 / ☁️ 云同步 / 📥 导入 */
-        .bottom-bar-tools {
-            display: flex;
-            align-items: center;
-            gap: 14px;
+        /* 按下时轻微回弹，给"已点到"的瞬时反馈（不改变布局尺寸） */
+        .date-nav-btn:active {
+            transform: scale(0.92);
         }
-
-        .bottom-bar-cloud {
-            font-size: 16px;
-            cursor: pointer;
-            -webkit-tap-highlight-color: transparent;
-            user-select: none;
-        }
-
-        /* 右侧日期切换组：◀ ▶
-           【2026-10-26 二次调整】上一版把它们顶到了栏尾（▶ 右边缘贴到 423px），
-           用户反馈「那两个按钮一起向左移动一点，这样在手机上方便单手操作」——
-           单手拇指最省力的是屏幕右下内侧，而不是贴着边角。
-           ⇒ 加 margin-right:28px 把整组往内推 28px（◀ 327→299、▶ 387→359）。
-           间距仍保持 24px（上一版从 18px 放宽的成果，别改回去）。 */
-        .bottom-bar-datenav {
-            display: flex;
-            align-items: center;
-            gap: 24px;
-            margin-right: 28px;
-        }
-

@@ -84,10 +84,10 @@ import { getPresenceForDate } from '../../data/auction-presence.js';
 // [R20-DELTA 2026-10-28 用户口径] 「20日涨幅」模式下占比列 → 【名次变化】：
 //   算法在 range20-rank-delta.js（纯函数、可单测），昨日名次来自 prev-rank-table.js 的会话缓存
 //   （⛔ 本层不发请求；取数由 useAuctionBoard 的 watch 触发 ensurePrevRankTable）。
-//   ★ 2026-10-28 第二次修正：昨日那一份必须与今天【同一口径】——
-//     竞价口径就配竞价口径的昨天，收盘口径就配收盘口径的昨天（用户：「不要搞混了」）。
+//   ★ 2026-10-28 15:49 口径终版（用户口述举例定死）：基准腿【恒为昨日收盘口径】——
+//     今天竞价也比昨收，今天收盘也比昨收。⛔ 不再「什么口径配什么昨天」（早先那版已被用户否掉）。
 import { buildRange20RankDelta, RANGE20_DELTA_UNKNOWN_TEXT } from './range20-rank-delta.js';
-import { getPrevRankTable, resolvePrevRankLeg, PREV_LEG_AUC } from './prev-rank-table.js';
+import { getPrevRankTable, resolvePrevRankLeg, resolveTodayLeg, PREV_LEG_AUC } from './prev-rank-table.js';
 
 function _getAuctionTag(date, stockName) {
   if (!date || !stockName) return null;
@@ -393,7 +393,7 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     range20RankDelta: null,
     range20RankDeltaText: '',
     range20RankDeltaTone: '',
-    range20RankDeltaLeg: '',        // 'auc' | 'close'（哪个口径的昨日名次；'' = 未进入该模式）
+    range20RankDeltaLeg: '',        // 今天那一列的腿 'auc'|'close'（''=未进入该模式）；基准腿恒为昨日 close
     range20RankDeltaTitle: '',      // 悬停文案（含口径说明，§21 模板零计算）
     // [RANGE20-TOTAL-DRAGON 2026-10-20 用户口径] 「20日涨幅」toggle 专属的「总龙一…总龙五」名次。
     //   默认 0 / ''（= 不打标），只有该 toggle 打开时由 range20-top5-label.js 后置赋值 1..5。
@@ -1393,23 +1393,29 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   //   ⛔ 只在【20日涨幅单独排序】时生效：
   //     · `sortState.byRangePct20` 关闭 ⇒ 一行都不赋（走 _enrichAuctionItem 的默认 null/''）；
   //     · 题材单独模式（顺序是按题材分组，不是涨幅降序）⇒ 名次没有意义 ⇒ 不赋（§10 宁可没有）。
-  //   ⛔ 本层不发请求：昨日名次表由 prev-rank-table.js 的会话缓存提供，取数在 useAuctionBoard 的 watch 里，
-  //     到货后 incremental-view 的 `r20delta=` 指纹变化 ⇒ 本视图自动重算（数值才出现）。
-  //   ★★ [R20-DELTA 2026-10-28 第二次修正] 口径必须两边一致：
-  //     今天那一列用哪一腿（竞价口径 toggle 打开 / 早上未收盘 / 收盘后），昨天就取同一腿的名次表。
-  //     `resolvePrevRankLeg` 与 `range20.js#resolveT20LegMode` 同一个函数（§6），
-  //     ⇒ 不会出现「今天竞价 vs 昨天收盘」这种两把尺子量出来的假位移。
-  //   §10：该口径的昨日名次没到货 / 某只票昨天不在榜 ⇒ 该行显示 '—'（⛔ 绝不用 0 冒充「没变化」，
-  //     也⛔ 绝不拿另一口径的表顶替）。
+  //   ⛔ 本层不发请求：昨日名次表由 prev-rank-table.js 的会话缓存提供，取数在 useAuctionBoard 的
+  //     watch 里，到货后 incremental-view 的 `r20delta=` 指纹变化 ⇒ 本视图自动重算（数值才出现）。
+  //
+  //   ★★ [R20-DELTA 2026-10-28 15:49 口径终版 —— 用户口述举例定死]
+  //     基准腿【恒为昨日收盘口径】，与今天那一列是竞价还是收盘无关（见 prev-rank-table.js 头注释）。
+  //     用户举例：10-27 早上看到襄阳轴承「竞价口径」的排名，比的是 **10-26 襄阳轴承的【收盘】口径**
+  //     名次（62.39% 那一版），⛔ 不是 10-26 的竞价口径（58.37% 那一版）。
+  //     ⇒ 今天竞价 vs 昨收；今天收盘 vs 昨收。收盘后只是「今天那列」换成收盘值，基准不变。
+  //
+  //   §10：昨日收盘口径下判不出（该票昨天只有 auc 腿 / 名次表还没到货）⇒ 显示 '—'
+  //     （⛔ 绝不用 0 冒充「没变化」，也⛔ 绝不拿竞价口径的表顶替）。
   if (sortState.byRangePct20 && !topicOnlyMode) {
     const _r20Map = _range20MapFor();
     const _prevDate = getPreviousTradingDay(currentDate);
-    const _prevLeg = resolvePrevRankLeg(currentDate, sortState.byAuctionLeg);
+    // 基准恒 close；今天这列的口径【只用来拼文案】，两个语义别合并（见 prev-rank-table.js）
+    const _prevLeg = resolvePrevRankLeg();
+    const _todayLeg = resolveTodayLeg(currentDate, sortState.byAuctionLeg);
     const _prevRec = _prevDate ? getPrevRankTable(_prevDate, _prevLeg) : null;
     const _deltaMap = buildRange20RankDelta(_r20Map, _prevRec);
-    // 口径文案也在这里拼好（§21 模板零计算）：用户要能【一眼分辨】这一列是拿哪一把尺子量的
-    //   （原话「这样才能分辨出来」）⇒ 悬停文案里直接写清 9:26 竞价口径 / 收盘口径。
-    const _legText = _prevLeg === PREV_LEG_AUC ? '9:26 竞价口径' : '收盘口径';
+    // 文案在这里拼好（§21 模板零计算）：两边各写清是哪把尺子，用户才能【一眼分辨】
+    //   （原话「这样才能分辨出来」「不要搞混了」）。
+    const _todayText = _todayLeg === PREV_LEG_AUC ? '今·9:26竞价口径' : '今·收盘口径';
+    const _prevText = '昨·收盘口径';
     items.forEach(function(it) {
       const _nm = String(it.stock || '').trim();
       if (!_nm) return;
@@ -1417,10 +1423,10 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       it.range20RankDelta = _d;
       it.range20RankDeltaText = _d ? _d.text : RANGE20_DELTA_UNKNOWN_TEXT;
       it.range20RankDeltaTone = _d ? _d.tone : '';
-      it.range20RankDeltaLeg = _prevLeg;
+      it.range20RankDeltaLeg = _todayLeg;
       it.range20RankDeltaTitle = _d
-        ? '对比昨日 20日涨幅排名（' + _legText + '）：' + _d.text + '（正数=上升，负数=下降）'
-        : '昨日 20日涨幅名次未判出（' + _legText + '：昨天不在榜 / 该口径的名次表还没到货）';
+        ? '20日涨幅排名 ' + _todayText + ' vs ' + _prevText + ' ⇒ ' + _d.text + '（正数=上升，负数=下降）'
+        : '昨日收盘口径名次未判出（该票昨天只有竞价腿 / 名次表还没到货）';
     });
   }
 

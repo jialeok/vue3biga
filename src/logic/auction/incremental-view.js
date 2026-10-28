@@ -28,7 +28,7 @@ import { getRange20FingerprintToken } from './range20.js';
 import { getRange20LeadersFingerprintToken } from './range20-leaders.js';
 // [PRESENCE 2026-10-23] 「涨幅前十 · 在列次数」预计算表的加载版本（受两个涨幅 toggle 门控）。
 import { getPresenceFingerprintToken } from '../../data/auction-presence.js';
-import { getPrevRankFingerprintToken, resolvePrevRankLeg } from './prev-rank-table.js';
+import { getPrevRankFingerprintToken, resolveTodayLeg } from './prev-rank-table.js';
 // ★★ [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] 「竞价口径」那两张 Map 是【异步】到货的全局输入：
 //   不进指纹 ⇒ 数据到达后行缓存不失效 ⇒ 行上数值与整表顺序停在「还没到货」那一帧
 //   （与 dragon= / range20= 同款问题）。
@@ -132,11 +132,11 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
     // [R20-DELTA 2026-10-28 用户口径] 「昨日 20日涨幅名次表」的加载版本。
     //   它决定【占比列里显示 +6 / -7 / —】⇒ 结果到货必须让整表重算，否则会一直挂满 '—'。
     //   ⚠️ 受 20日涨幅开关门控（与 presence= 同款理由）：关着时恒 'off' ⇒ 到货不会让整表白重排。
-    //   ★★ [2026-10-28 第二次修正] 指纹里带上【口径】（auc / close）：
-    //     竞价口径与收盘口径是两张不同的名次表，同一份加载版本号不能代表「这一列现在比的是什么」。
-    //     早上 9:26 未收盘 ⇒ 'auc'，收盘后 ⇒ 'close'（15:00 后 range20= 换腿时本串一起变），
-    //     ⇒ 两种口径各自的数值绝不会在屏幕上混着显示。
-    'r20delta=' + (s.byRangePct20 ? (resolvePrevRankLeg(date, !!s.byAuctionLeg) + ':' + getPrevRankFingerprintToken()) : 'off'),
+    //   ★★ [2026-10-28 15:49 口径终版] 指纹里带上【今天那列的口径】：
+    //     基准腿恒为「昨日收盘」（不随 toggle 变），但【今天那列】竞价 / 收盘的值不同 ⇒ 名次差不同。
+    //     今天列 9:26 未收盘 ⇒ 'auc'，15:00 后 ⇒ 'close'（range20= 换腿时本串一起变），
+    //     ⇒ 两套数值绝不会在屏幕上混着显示。
+    'r20delta=' + (s.byRangePct20 ? (resolveTodayLeg(date, !!s.byAuctionLeg) + ':' + getPrevRankFingerprintToken()) : 'off'),
     // [DRAGON-GROUP 2026-09-14] 龙头组名册签名（展示日 + 版本 + 条数）。它决定哪些行进龙头组区块、
     // 以及「龙」组内标记的显隐 → 名册变化必须清空行缓存（与上方 dragon= 同款理由）。
     'dgroup=' + getDragonGroupFingerprintToken(),
