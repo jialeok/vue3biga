@@ -22,6 +22,7 @@
 //   表可能还没建（用户尚未执行建表 SQL）⇒ 冷却 30s，避免每次切日期都白打一次注定失败的 REST。
 // ══════════════════════════════════════════════════════════════════════════════════════
 
+import { ref } from 'vue';
 import { getSupabase } from './supabase-client.js';
 import { _dbgLog } from './debug-log.js';
 
@@ -36,9 +37,10 @@ const FAIL_COOLDOWN_MS = 30000;
 /**
  * 数据版本号：每次成功加载（或清空）都 +1。
  * incremental-view 用它做全局指纹 —— 数据到货 ⇒ 指纹变化 ⇒ 行缓存失效 ⇒ 标签显示出来。
- * ⚠️ 别改成「按 key 拼指纹」：那样切日期回来会命中旧指纹，标签会停在上一个日期的结果。
+ * 🔴 必须是 Vue `ref`：全局指纹在 `viewData` computed 里读它，裸 `let` 不建立依赖 ⇒
+ *   数据到货后 computed 不重跑、标签永远不出现（2026-10-28 同款坑在 prev-rank-table 踩过）。
  */
-let _version = 0;
+const _version = ref(0);
 
 /** 缓存上限（只保最近若干个 (日期,窗口)；切日期一般只会来回走几天） */
 const CACHE_MAX = 12;
@@ -48,12 +50,12 @@ export function clearPresenceCache() {
   _cache.clear();
   _inflight.clear();
   _cooldownUntil = 0;
-  _version += 1;
+  _version.value += 1;
 }
 
 /** 当前数据版本（进 incremental-view 的全局指纹；每次到货/清空都会变） */
 export function getPresenceFingerprintToken() {
-  return String(_version);
+  return String(_version.value);
 }
 
 /**
@@ -82,7 +84,7 @@ function _putCache(key, rec) {
     if (oldest === undefined) break;
     _cache.delete(oldest);
   }
-  _version += 1;
+  _version.value += 1;
 }
 
 /**
