@@ -54,6 +54,10 @@ import { ensureRange20Leaders } from '../logic/auction/range20-leaders.js';
 //   为什么走表而不是现场算：现场算要回读 10~20 天的历史名单；落表后前端只读 ≤400 行结论，
 //   而且这张表本身还能被用户直接拿去做分析（用户原话「我会用这个出现次数做分析」）。
 import { ensurePresence } from '../data/auction-presence.js';
+// [R20-DELTA 2026-10-28 用户口径] 「20日涨幅」toggle 的占比列改成【名次变化】：
+//   需要【上一交易日】那一份完整的 20 日涨幅名次表（Data 层 range20-prev-rank.js，读同一张 stock_range20_pct）。
+//   ⛔ 只在 20日涨幅开关打开时才读（关着时一条请求都不发，§11 默认零行为）。
+import { ensureRange20PrevRank } from '../data/range20-prev-rank.js';
 // [TREND-PATCH-STORE 2026-10-23] 趋势「同花顺补缺值」的合并语义（纯函数，Logic 层，§3/§4）。
 //   抽到 Logic 层是为了用测试锁死三条语义：只填 null 位 / 今天整天替换 / 四腿任一缺即补。
 //   背景见 trend-patch-merge.js 头注释（新华传媒 600825 当天五条线全空 = paint 互相覆盖）。
@@ -110,6 +114,8 @@ let _r20WatchBound = false;
 let _r20Top5WatchBound = false;
 // [PRESENCE 2026-10-23] 「涨幅前十 · 在列次数」预计算表取数 watch 同样只挂载一次。
 let _presenceWatchBound = false;
+// [R20-DELTA 2026-10-28] 「昨日 20日涨幅名次」取数 watch 同样只挂载一次。
+let _r20DeltaWatchBound = false;
 /** 收盘覆盖轮询间隔：5 分钟（页面长时间开着时，跨过 15:00 能自动触发一次，无需手动刷新） */
 const CLOSE_COVER_POLL_MS = 5 * 60 * 1000;
 
@@ -345,7 +351,41 @@ export function useAuctionBoard() {
       { immediate: true }
     );
   }
-  // [RANGE20-TOP5 2026-10-19 用户口径] 「20日涨幅前五 · 龙头补位」的取数入口（只挂载一次）。
+  // [R20-DELTA 2026-10-28 用户口径] 「20日涨幅」toggle 占比列 → 【名次变化（对比昨日）】的取数入口。
+  //
+  // 用户原话：「你把20日涨幅toggle的占比列改成排名变化，对比昨天，排名上升就用红色+数字，比如+6，
+  //   排名下降就用绿色，比如-7，也就是按照20日涨幅的排序，对比昨日排名情况进行标注，其它不变。
+  //   这个数值变化，也很重要，可以看出个股突破。」
+  //
+  // 依赖 = 【20日涨幅开关 + 当前日期】：只在开关打开时才读上一交易日那一份名次表
+  //   （关着时一条请求都不发，§11 默认零行为；与上方 presence watch 同一条纪律）。
+  // 数据到货 ⇒ Data 层 version + 1 ⇒ incremental-view 的 `r20delta=` 指纹变化 ⇒ 视图重算 ⇒ 数值出现。
+  // ⚠️ 失败必须可见（§10 禁止静默失败）：⛔ 不能把「没读到」显示成「所有票都没变化」。
+  if (!_r20DeltaWatchBound) {
+    _r20DeltaWatchBound = true;
+    watch(
+      () => [sortState.byRangePct20, uiStore.currentDate],
+      async () => {
+        if (!sortState.byRangePct20) return;
+        const _date = uiStore.currentDate;
+        if (!_date) return;
+        const _prev = getPreviousTradingDay(_date);
+        if (!_prev) return;
+        try {
+          await ensureRange20PrevRank(_prev);
+        } catch (e) {
+          const _code = (e && e.code) ? String(e.code) : '';
+          const _missingTable = _code === '42P01' || /stock_range20_pct/i.test(String((e && e.message) || ''));
+          const _msg = _missingTable
+            ? '⚠️ 名次变化：20日涨幅表不可用（stock_range20_pct 未建/无权限）'
+            : '❌ 名次变化加载失败：' + ((e && e.message) || e);
+          console.warn('[R20-DELTA] 昨日名次加载失败:', (e && e.message) || e);
+          setApiStatus('numcatApiStatus', _msg, false);
+        }
+      },
+      { immediate: true }
+    );
+  }
   //
   // 用户原话：「每天都要检索，用20天涨幅先找到前五的票，看列表有没有，如果没有就补，如果都有了，就不用补」
   //   「比如今天的九阳股份，如果它不是继承上交易的龙头组，就消失了，我就看不见了」

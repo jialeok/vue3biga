@@ -726,6 +726,34 @@
             font-weight: 600;
         }
 
+        /* ★★ [R20-DELTA 2026-10-28 用户口径] 「20日涨幅」toggle：这一列从【占比】改成【名次变化】
+              （对比昨日排名）。上升 = 红、下降 = 绿（A 股口径：涨红跌绿），0 = 灰，判不出 = 浅灰 '—'。
+           ⚠️ 只改【颜色 / 字重 / 数字对齐】，⛔ 不动 flex 宽度（沿用 .auction-ratio 的 0.5 份）——
+              否则表头与数据列会错位（表头 .auction-header-ratio 也是 0.5）。
+           ⚠️ 这是本项目【唯一】一份定义：别在 .vue 的 <style> 里再写一遍（会随分包先后覆盖，见 MEMORY）。 */
+        .auction-r20-delta {
+            font-weight: 700;
+            letter-spacing: 0.2px;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .auction-r20-delta-up {
+            color: #ef4444;
+        }
+
+        .auction-r20-delta-down {
+            color: #10b981;
+        }
+
+        .auction-r20-delta-flat {
+            color: #6b7280;
+        }
+
+        .auction-r20-delta-unknown {
+            color: #9ca3af;
+            font-weight: 500;
+        }
+
         .auction-item.selected {
             background: #f3e8ff;
         }

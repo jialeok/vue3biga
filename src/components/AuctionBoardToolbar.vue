@@ -164,8 +164,11 @@
       >
         题材
       </div>
+      <!-- ★★ [R20-DELTA 2026-10-28 用户口径] 「20日涨幅」模式下这一列是【排名变化】（对比昨日），
+           不再是【占比】—— 表头必须跟着改，否则列的含义与标题对不上。
+           ⚠️ 只有 20日涨幅（byRangePct20）才换标题；十日涨幅仍叫【占比】（用户只要求 20 日那个）。 -->
       <div class="auction-header-item auction-header-ratio">
-        占比
+        {{ sortState.byRangePct20 ? '排名变化' : '占比' }}
       </div>
     </template>
     <div

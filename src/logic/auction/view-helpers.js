@@ -81,6 +81,11 @@ import { assignTotalDragonRanks, RANGE20_TOTAL_DRAGON_TOP_N } from './range20-to
 //   （Data 层 auction-presence.js，⛔ 本层不发请求，只同步读会话缓存）。
 import { assignPresenceLabels, PRESENCE_TOP_N, PRESENCE_WINDOW_10, PRESENCE_WINDOW_20 } from './presence-label.js';
 import { getPresenceForDate } from '../../data/auction-presence.js';
+// [R20-DELTA 2026-10-28 用户口径] 「20日涨幅」模式下占比列 → 【名次变化】：
+//   算法在 range20-rank-delta.js（纯函数、可单测），昨日名次来自 data/range20-prev-rank.js 的会话缓存
+//   （⛔ 本层不发请求；取数由 useAuctionBoard 的 watch 触发 ensureRange20PrevRank）。
+import { buildRange20RankDelta, RANGE20_DELTA_UNKNOWN_TEXT } from './range20-rank-delta.js';
+import { getRange20PrevRankForDate } from '../../data/range20-prev-rank.js';
 
 function _getAuctionTag(date, stockName) {
   if (!date || !stockName) return null;
@@ -378,6 +383,14 @@ function _enrichAuctionItem(rawItem, index, ctx) {
       const _d = _e ? Number(_e.days) : 0;
       return isFinite(_d) && _d > 0 ? _d : 0;
     })(),
+    // ★★ [R20-DELTA 2026-10-28 用户口径] 「20日涨幅」模式下，占比列改成【名次变化】：
+    //   对比昨日排名，上升 = 红色 +N，下降 = 绿色 -N（口径与算法全在 logic/auction/range20-rank-delta.js）。
+    //   · 默认 null / '' —— 只有该 toggle 打开、且昨日名次表已到货时才赋值（§11 默认无行为）；
+    //   · 必须显式给默认值：items 会被增量视图缓存复用，缺省值不一致会让名次变化串到别的模式里；
+    //   · §10：昨日名次判不出 ⇒ 文案 '—'（⛔ 绝不用 0 冒充「没变化」）。
+    range20RankDelta: null,
+    range20RankDeltaText: '',
+    range20RankDeltaTone: '',
     // [RANGE20-TOTAL-DRAGON 2026-10-20 用户口径] 「20日涨幅」toggle 专属的「总龙一…总龙五」名次。
     //   默认 0 / ''（= 不打标），只有该 toggle 打开时由 range20-top5-label.js 后置赋值 1..5。
     //   ★ 为什么在这里给【默认值】而不是只在那个模式里写：items 会经增量视图缓存复用，
@@ -1366,6 +1379,30 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       // counts = null ⇒ 全表不标（数据未到 / 表还没建），⛔ 绝不把「不知道」显示成「未在列」
       counts: _presenceRec ? _presenceRec.counts : null,
       coveredDays: _presenceRec ? _presenceRec.coveredDays : 0
+    });
+  }
+
+  // ★★ [R20-DELTA 2026-10-28 用户口径] 「20日涨幅」模式：把占比列换成【名次变化】（对比昨日排名）。
+  //   用户原话：「你把20日涨幅toggle的占比列改成排名变化，对比昨天，排名上升就用红色+数字，
+  //     比如+6，排名下降就用绿色，比如-7……这个数值变化，也很重要，可以看出个股突破。」
+  //
+  //   ⛔ 只在【20日涨幅单独排序】时生效：
+  //     · `sortState.byRangePct20` 关闭 ⇒ 一行都不赋（走 _enrichAuctionItem 的默认 null/''）；
+  //     · 题材单独模式（顺序是按题材分组，不是涨幅降序）⇒ 名次没有意义 ⇒ 不赋（§10 宁可没有）。
+  //   ⛔ 本层不发请求：昨日名次表由 Data 层会话缓存提供，取数在 useAuctionBoard 的 watch 里，
+  //     到货后 incremental-view 的 `r20delta=` 指纹变化 ⇒ 本视图自动重算（数值才出现）。
+  //   §10：昨日名次没到货 / 某只票昨天不在榜 ⇒ 该行显示 '—'（⛔ 绝不用 0 冒充「没变化」）。
+  if (sortState.byRangePct20 && !topicOnlyMode) {
+    const _r20Map = _range20MapFor();
+    const _prevRec = getRange20PrevRankForDate(getPreviousTradingDay(currentDate));
+    const _deltaMap = buildRange20RankDelta(_r20Map, _prevRec);
+    items.forEach(function(it) {
+      const _nm = String(it.stock || '').trim();
+      if (!_nm) return;
+      const _d = _deltaMap.get(_nm) || null;
+      it.range20RankDelta = _d;
+      it.range20RankDeltaText = _d ? _d.text : RANGE20_DELTA_UNKNOWN_TEXT;
+      it.range20RankDeltaTone = _d ? _d.tone : '';
     });
   }
 

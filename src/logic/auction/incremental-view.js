@@ -28,6 +28,7 @@ import { getRange20FingerprintToken } from './range20.js';
 import { getRange20LeadersFingerprintToken } from './range20-leaders.js';
 // [PRESENCE 2026-10-23] 「涨幅前十 · 在列次数」预计算表的加载版本（受两个涨幅 toggle 门控）。
 import { getPresenceFingerprintToken } from '../../data/auction-presence.js';
+import { getRange20PrevRankFingerprintToken } from '../../data/range20-prev-rank.js';
 // ★★ [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] 「竞价口径」那两张 Map 是【异步】到货的全局输入：
 //   不进指纹 ⇒ 数据到达后行缓存不失效 ⇒ 行上数值与整表顺序停在「还没到货」那一帧
 //   （与 dragon= / range20= 同款问题）。
@@ -128,6 +129,10 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
     //   ⚠️ 为什么必须是【全局】指纹而不是行签名：它决定「哪 10 行带标签」（要按整表顺序数名次），
     //     只失效某一行会留下「第 10 行没标签」这种半截状态。
     'presence=' + ((s.byRangePct || s.byRangePct20) ? getPresenceFingerprintToken() : 'off'),
+    // [R20-DELTA 2026-10-28 用户口径] 「昨日 20日涨幅名次表」的加载版本。
+    //   它决定【占比列里显示 +6 / -7 / —】⇒ 结果到货必须让整表重算，否则会一直挂满 '—'。
+    //   ⚠️ 受 20日涨幅开关门控（与 presence= 同款理由）：关着时恒 'off' ⇒ 到货不会让整表白重排。
+    'r20delta=' + (s.byRangePct20 ? getRange20PrevRankFingerprintToken() : 'off'),
     // [DRAGON-GROUP 2026-09-14] 龙头组名册签名（展示日 + 版本 + 条数）。它决定哪些行进龙头组区块、
     // 以及「龙」组内标记的显隐 → 名册变化必须清空行缓存（与上方 dragon= 同款理由）。
     'dgroup=' + getDragonGroupFingerprintToken(),
@@ -186,6 +191,9 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume) {
     //   与 rp= 同款理由单独入签名：模板直接读这两个字段。
     'rp20=' + (item.rangePct20 === null || item.rangePct20 === undefined ? '' : item.rangePct20) +
       '/' + (item.rangePct20Days || 0),
+    // [R20-DELTA 2026-10-28 用户口径] 「名次变化」文案（+6 / -7 / —）。模板直接读它 ⇒ 按红线单独入签名：
+    //   它由异步到货的昨日名次表派生，行内输入可以完全没变（与 rp20= 同款理由）。
+    'r20d=' + (item.range20RankDeltaText || ''),
     // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」行的标记与数值（模板直接读这三个字段：
     //   「20天」标签 + 该票 20 个交易日区间涨幅 + 有效天数）。
     //   它由异步检索结果派生、行内输入可以完全没变 ⇒ 与 rp=/rp20= 同款理由必须单独入签名，

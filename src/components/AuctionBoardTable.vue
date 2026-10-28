@@ -236,6 +236,12 @@ function rowMemo(item) {
     //   名次是 rangePct20 到货后【异步】才有的（先没有值 → 置底无标，随后置顶打标），
     //   漏进指纹 ⇒ 数值到了、顺序也换了，但标签不出现（与 rangePct20 同款理由）。
     item.totalDragonRank,
+    // [R20-DELTA 2026-10-28 用户口径] 「20日涨幅」toggle 下占比列 → 【名次变化】的文案与配色档：
+    //   它们由【异步到货】的昨日名次表派生，行内其它输入可以一个字都没变（先全是 '—'，
+    //   名次表到货后才有 +6 / -7）⇒ 漏进指纹 ⇒ Vue 按「内容全等」跳过整行重渲染，
+    //   表现为「数据算出来了、屏幕上还是 —」（2026-10-28 实测：50 行里只有 10 行跟着别的字段变化一起刷新）。
+    //   ⚠️ tone 单独入指纹：它决定 CSS 类（红/绿/灰），文案相同但档位变化的可能性必须挡住。
+    item.range20RankDeltaText, item.range20RankDeltaTone,
     // [TOPIC-TREND 2026-09-20] 题材统计条的五日趋势展开态：漏进指纹 → 点统计条整行不重渲染。
     //   只对本行【带有统计条】时才有意义（统计条只在题材块第一行出现），其余行恒为 false。
     item.topicStats ? topicTrendExpanded.value.has(item.topicStats.topic) : false
