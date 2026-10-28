@@ -187,16 +187,17 @@
       </div>
       <!-- ★★ [R20-DELTA 2026-10-28 用户口径] 「20日涨幅」模式下，这一列从【占比】改成【名次变化】：
            对比昨日排名，上升 = 红色 +N，下降 = 绿色 -N（判定与文案全在 Logic 层，模板零计算 §21）。
+           ★ 2026-10-28 第二次修正：昨日那一份【与今天同一口径】——竞价口径配竞价口径、
+             收盘口径配收盘口径（用户：「早上可以用竞价口径，收盘时，用收盘口径……不要搞混了」）。
+             悬停文案里直接写出是哪把尺子（「9:26 竞价口径」/「收盘口径」），⛔ 模板不自己拼口径名。
            ⚠️ 其它模式（含十日涨幅 / 默认 / 题材）仍然是原来的【占比】，一字不改（§11）。
-           ⚠️ 判不出（昨天不在榜 / 名次表没到货）⇒ 显示 '—'，⛔ 不用 0 冒充「没变化」（§10）。 -->
+           ⚠️ 判不出（昨天不在榜 / 该口径的名次表没到货）⇒ 显示 '—'，⛔ 不用 0 冒充「没变化」（§10）。 -->
       <div
         v-if="sortState.byRangePct20"
         class="auction-ratio auction-r20-delta"
         :class="item.range20RankDeltaTone ? ('auction-r20-delta-' + item.range20RankDeltaTone) : 'auction-r20-delta-unknown'"
         :data-index="item.index"
-        :title="item.range20RankDeltaText === '—'
-          ? '昨日 20日涨幅名次未判出（昨天不在榜 / 名次表还没到货）'
-          : '对比昨日 20日涨幅排名：' + item.range20RankDeltaText + '（正数=上升，负数=下降）'"
+        :title="item.range20RankDeltaTitle"
         @dblclick.stop
       >
         {{ item.range20RankDeltaText }}

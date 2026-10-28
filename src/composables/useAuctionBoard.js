@@ -42,7 +42,7 @@ import { ensureDragonRangePct, getDragonRangePct, getStockRangePct, DRAGON_RANGE
 // [RANGE20 2026-10-19 用户口径] 「20日涨幅」toggle 的取数入口（开关位由原「量比抢筹」改造）。
 //   与十日涨幅不同：云端没有 20 日行 ⇒ 由 range20.js 按 20 个交易日复利现算（库内腿 + 同花顺补缺），
 //   只放会话内存。⚠️ 只在 toggle 打开时触发，⛔ 不消耗猫抓额度（同花顺 K 线免费额度）。
-import { ensureRange20 } from '../logic/auction/range20.js';
+import { ensureRange20, getRange20FingerprintToken } from '../logic/auction/range20.js';
 // [RANGE20-TOP5 2026-10-19 用户口径] 「20日涨幅前五 · 龙头补位」的取数入口。
 //   ★ 与上面的 20日涨幅 toggle 【完全独立】：那个是「打开开关才排一次序」的排序功能；
 //     这个是把「近 20 个交易日每天正式列表」并起来、取 20 日涨幅前五、把今天看不见的补进看板
@@ -55,9 +55,11 @@ import { ensureRange20Leaders } from '../logic/auction/range20-leaders.js';
 //   而且这张表本身还能被用户直接拿去做分析（用户原话「我会用这个出现次数做分析」）。
 import { ensurePresence } from '../data/auction-presence.js';
 // [R20-DELTA 2026-10-28 用户口径] 「20日涨幅」toggle 的占比列改成【名次变化】：
-//   需要【上一交易日】那一份完整的 20 日涨幅名次表（Data 层 range20-prev-rank.js，读同一张 stock_range20_pct）。
+//   需要【上一交易日】那一份名次表，而且【必须与今天同一口径】（竞价配竞价 / 收盘配收盘）。
+//   装配在 Logic 层 prev-rank-table.js（收盘口径读 stock_range20_pct 的 close 腿；
+//   竞价口径走 range20-auction-leg.js 反解，与今天那一列同一次取数、同一把尺子）。
 //   ⛔ 只在 20日涨幅开关打开时才读（关着时一条请求都不发，§11 默认零行为）。
-import { ensureRange20PrevRank } from '../data/range20-prev-rank.js';
+import { ensurePrevRankTable, getPrevRankTable, resolvePrevRankLeg } from '../logic/auction/prev-rank-table.js';
 // [TREND-PATCH-STORE 2026-10-23] 趋势「同花顺补缺值」的合并语义（纯函数，Logic 层，§3/§4）。
 //   抽到 Logic 层是为了用测试锁死三条语义：只填 null 位 / 今天整天替换 / 四腿任一缺即补。
 //   背景见 trend-patch-merge.js 头注释（新华传媒 600825 当天五条线全空 = paint 互相覆盖）。
@@ -356,23 +358,35 @@ export function useAuctionBoard() {
   // 用户原话：「你把20日涨幅toggle的占比列改成排名变化，对比昨天，排名上升就用红色+数字，比如+6，
   //   排名下降就用绿色，比如-7，也就是按照20日涨幅的排序，对比昨日排名情况进行标注，其它不变。
   //   这个数值变化，也很重要，可以看出个股突破。」
+  //   「排名变化列那里，收盘是否重新算过一次，我希望重新算过一次，早上可以用竞价口径，收盘时，
+  //     用收盘口径，因为竞价时和收盘时会不同，不要搞混了，这样才能分辨出来。」
   //
-  // 依赖 = 【20日涨幅开关 + 当前日期】：只在开关打开时才读上一交易日那一份名次表
-  //   （关着时一条请求都不发，§11 默认零行为；与上方 presence watch 同一条纪律）。
-  // 数据到货 ⇒ Data 层 version + 1 ⇒ incremental-view 的 `r20delta=` 指纹变化 ⇒ 视图重算 ⇒ 数值出现。
+  // 依赖 = 【20日涨幅开关 + 当前日期 + 竞价口径开关 + range20 的换腿信号】：
+  //   · 只在 20日涨幅开关打开时才读（关着时一条请求都不发，§11 默认零行为）；
+  //   · 口径跟着「今天那一列实际用的口径」走（`resolvePrevRankLeg`，与 range20 的 T 腿同源），
+  //     所以竞价口径开关要进依赖；
+  //   · 🔴 `range20Fingerprint` 进依赖 = 【收盘换腿的触发器】：15:00 后 range20.js#_scheduleCloseSwitch
+  //     会把今天那份数从竞价腿换成收盘腿并 bump version ⇒ 这里跟着把「昨天」也换成收盘口径，
+  //     否则收盘后屏幕会变成「今天收盘 vs 昨天竞价」（正是用户说的「搞混了」）。
+  //     该令牌在两阶段补算期间本来就会多次变化 ⇒ 下面用「口径 + 是否已加载」做幂等短路，不会白打请求。
+  // 数据到货 ⇒ version + 1 ⇒ incremental-view 的 `r20delta=` 指纹变化 ⇒ 视图重算 ⇒ 数值出现。
   // ⚠️ 失败必须可见（§10 禁止静默失败）：⛔ 不能把「没读到」显示成「所有票都没变化」。
   if (!_r20DeltaWatchBound) {
     _r20DeltaWatchBound = true;
     watch(
-      () => [sortState.byRangePct20, uiStore.currentDate],
+      () => [sortState.byRangePct20, uiStore.currentDate, sortState.byAuctionLeg,
+        getRange20FingerprintToken()],
       async () => {
         if (!sortState.byRangePct20) return;
         const _date = uiStore.currentDate;
         if (!_date) return;
         const _prev = getPreviousTradingDay(_date);
         if (!_prev) return;
+        const _leg = resolvePrevRankLeg(_date, sortState.byAuctionLeg);
+        // 幂等短路：同一口径已经装好了就不再发请求（令牌频繁变化时这条是必需的）
+        if (getPrevRankTable(_prev, _leg)) return;
         try {
-          await ensureRange20PrevRank(_prev);
+          await ensurePrevRankTable(_prev, _leg);
         } catch (e) {
           const _code = (e && e.code) ? String(e.code) : '';
           const _missingTable = _code === '42P01' || /stock_range20_pct/i.test(String((e && e.message) || ''));
