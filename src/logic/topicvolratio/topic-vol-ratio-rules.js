@@ -1811,14 +1811,24 @@ function _buildDivergeCashAlert(ld, n) {
  * @param {object} cashAlert  buildCashAlert 的返回（读 .topic = 灰色题材块的题材名）
  * @param {Array} list        今日题材块（rankDecisionTopics 的返回，成员行 = 客观数据来源）
  * @param {object} fOpts      finishBuyBlock 的选项（与常规块共用同一份，§6）
+ * @param {(raw:string)=>string} [coreRes] ★ [CORE-CAT 2026-10-29 用户口径] 题材大类归一函数（见 _normTopic）
  * @returns {object|null} null = 不渲染（该题材没有票进前三 / 题材名缺失 ⇒ 调用方保持空仓）
  */
-function _buildWeakHuddleBlock(pool, cashAlert, list, fOpts) {
-  const topic = String((cashAlert && cashAlert.topic) || '').trim();
+function _buildWeakHuddleBlock(pool, cashAlert, list, fOpts, coreRes) {
+  const topic = _normTopic((cashAlert && cashAlert.topic) || '', coreRes);
   if (!topic) return null;
   // ① 前 WEAK_HUDDLE_TOP_N 名里，挑【与灰色题材块同题材】的
+  // ★★ [CORE-CAT 2026-10-29 用户报障] 必须过【核心词大类归一】（_sameTopicLoose + coreRes），
+  //   ⛔ 不能再用严格字符串相等 —— 这两侧天生是【两个层级】的名字：
+  //     · `cashAlert.topic` = 题材块的块名 = 核心管理里的【大类名】（getTopicGroups 用 coreName 建组，
+  //       见 topic/rules.js#getTopicGroups ⇒ 「大消费」）；
+  //     · `pool[i].topic`  = 池里那票【行上的细分题材原文】（decision-collect#_topicOf 取不到今日行时
+  //       退回上一交易日行情行的 topics 串 ⇒ 「家电」）。
+  //   10-29 实测：灰色块【大消费】、20日涨幅主板前三含 九阳股份（家电），严格相等 ⇒ 判成
+  //   「其中【没有】大消费 的股票 ⇒ 今天仍然空仓」（用户原话）。同一文件里 classifyMainTopic /
+  //   detectEbbDay / _applyPrevEbbSecondNoBuy 早就走 coreRes 归一 ⇒ 这里是【第二把尺子】（违反 §6）。
   const hits = (Array.isArray(pool) ? pool.slice(0, WEAK_HUDDLE_TOP_N) : []).filter(function(t) {
-    return t && t.name && String(t.topic || '').trim() === topic;
+    return t && t.name && _sameTopicLoose(t.topic, topic, coreRes);
   });
   if (hits.length === 0) return null;
 
@@ -1973,17 +1983,18 @@ function _streakWord(t, st) {
  * @param {object} cashAlert  buildCashAlert 的返回（读 .topic = 灰色题材块的题材名）
  * @param {Array} list        今日题材块（成员行 = 客观数据来源）
  * @param {object} fOpts      finishBuyBlock 的选项
+ * @param {(raw:string)=>string} [coreRes] ★ [CORE-CAT 2026-10-29 用户口径] 题材大类归一函数（见 _normTopic）
  * @returns {{block:object|null, reason:string}} reason = 不渲染的原因（供调用方写说明，§10 不沉默）
  */
-function _buildCatchUpBlock(topicPool, cashAlert, list, fOpts) {
-  const topic = String((cashAlert && cashAlert.topic) || '').trim();
+function _buildCatchUpBlock(topicPool, cashAlert, list, fOpts, coreRes) {
+  const topic = _normTopic((cashAlert && cashAlert.topic) || '', coreRes);
   if (!topic) return { block: null, reason: 'no-topic' };
-  // ① 名次区间内 ∧ 严格同题材
+  // ① 名次区间内 ∧ 同题材（★ 与第三十条同一把尺子：走核心词大类归一，见那边的长注释）
   const inRange = (Array.isArray(topicPool) ? topicPool : []).filter(function(t) {
     if (!t || !t.name) return false;
     const r = Number(t.rank20);
     if (!isFinite(r) || r < CATCH_UP_RANK_FROM || r > CATCH_UP_RANK_TO) return false;
-    return String(t.topic || '').trim() === topic;
+    return _sameTopicLoose(t.topic, topic, coreRes);
   });
   if (inRange.length === 0) return { block: null, reason: 'none' };
   // ② 数量门槛：恰好 2~3 只（4 只以上 = 已是主线，不是低位补涨）
@@ -4294,7 +4305,7 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         '本次【判不出】灰色题材块里有没有票进前三名。数据到货后会自动重算 —— ' +
         '（§10：判不出 ≠ 今天没有抱团票，也 ≠ 今天一定要空仓）。');
     } else {
-      out.weakHuddle = _buildWeakHuddleBlock(whPool, out.cashAlert, list, fOpts);
+      out.weakHuddle = _buildWeakHuddleBlock(whPool, out.cashAlert, list, fOpts, coreRes);
       if (out.weakHuddle) {
         // §6：同一份对象挂进买点槽位（四个装饰器经 _buyBlocksOf 遍历，⛔ 别在组合式里再铺一遍）
         out.buy.weakHuddle = out.weakHuddle;
@@ -4314,7 +4325,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         }).join('、');
         out.notes.push('⚠️【第' + WEAK_HUDDLE_RULE_NO + '条 · 弱势切抱团】20日涨幅主板前三名 = ' +
           (topNames || '—') + '，其中【没有】' + whTopic + ' 的股票 ⇒ ' +
-          '灰色题材块里没有可抱团的市场龙头 ⇒ 【今天仍然空仓】（不选、不替补）。');
+          '灰色题材块里没有可抱团的市场龙头 ⇒ 【今天仍然空仓】（不选、不替补）。' +
+          // ★ [CORE-CAT 2026-10-29] 把判据写清：上面括号里是【细分题材原文】，比对用的是【核心词大类】——
+          //   ⛔ 用户看到的「家电」与块名「大消费」不是同一层级，不写清会以为是判错了（10-29 报障）。
+          '（口径：上面括号里是每只票行上的【细分题材】，与块名【' + whTopic +
+          '】是拿【核心词大类】归一之后再比的 —— 细分题材在该大类的核心词里就算同题材。）');
       }
 
       // ★★ [CATCH-UP 2026-10-27 用户口径] 第三十一条【补涨题材】：
@@ -4332,7 +4347,7 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
           '本次【判不出】灰色题材块【' + whTopic + '】在第 ' + CATCH_UP_RANK_FROM + '~' +
           CATCH_UP_RANK_TO + ' 名里占几只。（§10：判不出 ≠ 今天没有补涨题材，也 ≠ 今天一定要空仓。）');
       } else {
-        const cu = _buildCatchUpBlock(cuPool, out.cashAlert, list, fOpts);
+        const cu = _buildCatchUpBlock(cuPool, out.cashAlert, list, fOpts, coreRes);
         if (cu.block) {
           out.catchUp = cu.block;
           // §6：同一份对象挂进买点槽位（四个装饰器经 _buyBlocksOf 遍历）

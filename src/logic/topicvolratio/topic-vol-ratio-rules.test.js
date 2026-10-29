@@ -4685,6 +4685,51 @@ describe('tvrb · 第三十条【弱势切抱团】', function() {
     expect(plan.notes.join('\n')).toContain('判不出');
   });
 
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  // ★★ [CORE-CAT 2026-10-29 用户报障] 同题材判定必须过【核心词大类归一】
+  //   用户原话：「九阳股份就是大消费的题材，没有判断出来，20日涨幅也在前三，我之前不是叫你，
+  //     用核心词判断吗？九阳股份细分家电和电子商务，我把它归在大消费的核心词里面了。」
+  //   根因：块名 = 核心管理里的【大类名】（大消费），池里的 topic = 行上的【细分题材原文】（家电）
+  //     ⇒ 严格字符串相等永远认不上。修复后走 _sameTopicLoose(…, coreRes)，与 classifyMainTopic 同一把尺子。
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  it('★ 10-29 报障：灰色块【大消费】+ 前三含 九阳股份（家电,电子商务）⇒ 必须选出（核心词归一）', function() {
+    // 灰色块换成【大类名】大消费（核心管理里 家电 / 电子商务 都归在它下面）
+    const big = [block('大消费', 1, NAMES.map(function(n, i) {
+      return m(n, {
+        aucVolRatio: i === 0 ? 17.83 : (i === 1 ? 8.67 : 12.96),
+        aucShare: i === 0 ? 3.5 : 6.2,
+        code: CODES[i]
+      });
+    }))];
+    // 池里九阳股份的 topic 保持【细分原文】（采集层的真实形状）
+    const pool = TOP5.map(function(t) {
+      if (t.name !== '九阳股份') return t;
+      return Object.assign({}, t, { topic: '家电,电子商务' });
+    });
+    const coreTopics = [{ name: '大消费', synonyms: ['家电', '电子商务'] }];
+    const plan = buildTopicVolRatioPlan(big, DM, { ebbCtx: ctxOf(pool), coreTopics: coreTopics });
+    expect(plan.cashAlert.show).toBe(true);
+    expect(plan.cashAlert.topic).toBe('大消费');
+    expect(plan.weakHuddle).toBeTruthy();
+    expect(plan.weakHuddle.picks.map(function(p) { return p.name; })).toEqual(['九阳股份']);
+    expect(plan.weakHuddle.picks[0].buyActionTag).toBe(WEAK_HUDDLE_TAG);
+    // ⛔ 说明区不许再出现「没有大消费 的股票 / 今天仍然空仓」
+    expect(plan.notes.join('\n')).not.toContain('今天仍然空仓');
+  });
+
+  it('§11：核心词表【没登记】家电 ⇒ 认不上大消费，仍按旧口径空仓（不给错建议）', function() {
+    const big = [block('大消费', 1, NAMES.map(function(n, i) {
+      return m(n, { aucVolRatio: 12.96, aucShare: 6.2, code: CODES[i] });
+    }))];
+    // 核心词表只有别的大类，认不出家电 ⇒ 归一后仍是两个名字
+    const plan = buildTopicVolRatioPlan(big, DM, {
+      ebbCtx: ctxOf(TOP5),
+      coreTopics: [{ name: 'AI应用', synonyms: ['文化传媒'] }]
+    });
+    expect(plan.weakHuddle).toBe(null);
+    expect(plan.notes.join('\n')).toContain('今天仍然空仓');
+  });
+
   it('§11 未命中：量比达标（30 ⇒ 空仓提醒不触发）⇒ 本条零行为，池子里有同题材票也不选', function() {
     const plan = buildTopicVolRatioPlan(grayTopics(30), DM, { ebbCtx: ctxOf(TOP5) });
     expect(plan.cashAlert.show).toBe(false);
@@ -4919,6 +4964,33 @@ describe('tvrb · 第三十一条【补涨题材】', function() {
       expect(p.buyActionTone).toBe(CATCH_UP_TONE);
     });
     expect(plan.catchUp.picks[1].actionNote).toContain('3连板');
+  });
+
+  // ★★ [CORE-CAT 2026-10-29 用户报障] 与第三十条同一把尺子：同题材必须过核心词大类归一
+  //   （块名 = 大类【大消费】，池里的 topic = 细分原文【家电 / 电子商务】）
+  it('★ 10-29 同源：灰色块【大消费】+ 第 6~10 名里 2 只【家电/电子商务】⇒ 认成补涨题材', function() {
+    const big = [block('大消费', 1, NAMES.map(function(n, i) {
+      return m(n, {
+        aucVolRatio: i === 0 ? 17.83 : (i === 1 ? 8.67 : 12.96),
+        aucShare: i === 0 ? 3.5 : 6.2,
+        code: CODES[i]
+      });
+    }))];
+    const pool = pool10([
+      { rank20: 6, name: '大业股份', topic: '家电', streak: 5 },
+      { rank20: 7, name: '宁波东力', topic: '电子商务', streak: 3 }
+    ]);
+    const plan = buildTopicVolRatioPlan(big, DM, {
+      ebbCtx: ctxOf({ topicPool: pool }),
+      coreTopics: [{ name: '大消费', synonyms: ['家电', '电子商务'] }]
+    });
+    expect(plan.cashAlert.show).toBe(true);
+    expect(plan.cashAlert.topic).toBe('大消费');
+    expect(plan.catchUp).toBeTruthy();
+    expect(plan.catchUp.picks.map(function(p) { return p.name; })).toEqual(['大业股份', '宁波东力']);
+    plan.catchUp.picks.forEach(function(p) {
+      expect(p.buyActionTag).toBe(CATCH_UP_TAG);
+    });
   });
 
   it('★ 边界：恰好 3 只 ⇒ 仍算补涨题材（上界含等号）', function() {
