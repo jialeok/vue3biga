@@ -822,6 +822,26 @@ export async function ensureRange20(date, rows, opts) {
     _dbgLog('[RANGE20-CLOUD] ' + date + ' 命中 ' + cloudMap.size + ' 只（leg=' + legMode + '，0 K线请求）');
   }
 
+  // ---- 阶段⓪.5：云端结果表已覆盖【全部目标】⇒ 直接收工 ----
+  // 🔴 [R20-CLOUD-FAST 2026-10-30 用户要求「响应速度做到和10日涨幅一样」]
+  //   十日涨幅 = 一次查询（~0.5~1.8s）；本模块即使 0 个 K 线请求，阶段① 还要把
+  //   「候选池 406 只 × 46 个交易日 ≈ 1.87 万行」的逐日腿分页读回来（19 页 ≈ 5 轮 ≈ 10s）。
+  //   ⇒ 云端结果表已经把今天这批票算全时（9:25 预计算或今早第一次打开落库后），
+  //     再读一遍逐日腿纯属白烧时间：值已经在屏幕上了，直接返回。
+  //   ⚠️ 只在【全部目标都命中】时才短路；少一只就走原链路补（§10 宁可慢也不发半截数据）。
+  //   ⚠️ 不写 `_cache`：这不是本会话算出来的结果，切日期回来时仍可复用云端那份（一样准）。
+  if (targets.length > 0 && cloudMap.size > 0) {
+    let _covered = 0;
+    for (let i = 0; i < targets.length; i++) {
+      if (cloudMap.has(targets[i] && targets[i].stock)) _covered++;
+    }
+    if (_covered >= targets.length) {
+      _dbgLog('[RANGE20-CLOUD-FAST] ' + date + ' 云端已覆盖全部 ' + targets.length
+        + ' 只 ⇒ 跳过逐日腿读取与 K 线（本次共 1 个请求）');
+      return _state.value.map;
+    }
+  }
+
   // ---- 阶段①：库内数据（0 请求 / 0 额度）----
   // ★ 取数用【探针窗口】= 45 个 App 日历交易日（比 20 多 25 个槽位）：App 日历可能把工作日
   //   假期当交易日（云端 holidays 为空数组时就是如此，见 RANGE20_PROBE_DAYS），且停牌票要
