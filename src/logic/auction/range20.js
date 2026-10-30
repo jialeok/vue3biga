@@ -445,6 +445,45 @@ export function needsKlineLegs(legsByStock, stock, tDate, needHistory, opts) {
 }
 
 /**
+ * 【纯函数】逐日腿原料表是不是「整体落后于日历」。
+ *
+ * ★★ [R20-STALE 2026-10-30] 为什么必须有这一条（正确性红线，⛔ 别删）：
+ *   `compound20` 对「某天没有腿」的处理是**跳过**（停牌语义，见 R20-PERSTOCK-WIN）——
+ *   这个语义对停牌票是对的，但对「表里压根没写那天」就是**静默丢一天**：
+ *   T 有腿、T-1 缺 ⇒ 窗口变成「T + T-2…T-20」⇒ 多算了一天、少算了一天，数字偏差肉眼可见却查不出来。
+ *   而 `needsKlineLegs` 只数【根数够不够】（45 个日历槽里够 19 根就行），表整体落后 1~2 天时
+ *   根数照样够 ⇒ **完全防不住**。
+ *
+ *   判据：把「任何一只票有腿的最新日期」和「App 日历上的前一交易日」比。
+ *     · 相等或更新 ⇒ 表是新鲜的（正常）；
+ *     · 更旧 ⇒ 整体落后 ⇒ 本轮所有票一律走 K 线（慢，但**准**）。
+ *   ⚠️ 代价：App 日历若把节假日当交易日（云端 holidays 为空时就是如此），节后第一个会话会误判
+ *      一次「落后」⇒ 慢一轮。这是个位数次/年，换来的是「绝不静默算错」，划算。
+ *   ⚠️ 表为空 / 读失败 ⇒ 返回 false（那种情况 needsKlineLegs 本来就判「全补」，不必重复）。
+ *
+ * @param {Map<string, Map<string, number>>} dailyLegs legs20FromDaily 的结果
+ * @param {string[]} ascDates 升序探针日期（App 日历口径，最后一个是展示日 T）
+ * @returns {boolean} true = 整体落后 ⇒ 本轮强制全部补
+ */
+export function isLegTableStale(dailyLegs, ascDates) {
+  if (!ascDates || ascDates.length < 2) return false;
+  const appPrev = ascDates[ascDates.length - 2];
+  if (!appPrev) return false;
+  let newest = '';
+  if (dailyLegs) {
+    dailyLegs.forEach(function(m) {
+      if (!m) return;
+      m.forEach(function(v, d) {
+        if (v === null || v === undefined) return;
+        if (d > newest) newest = d;
+      });
+    });
+  }
+  if (!newest) return false;
+  return newest < appPrev;
+}
+
+/**
  * 【纯函数】把 K 线补回来的腿转成 `stock_daily_pct` 的写入行。
  *
  * 🔴 只写【T 日之前】的腿（⛔ 绝不写 T）：
@@ -891,9 +930,13 @@ export async function ensureRange20(date, rows, opts) {
   // ★★ [R20-REQT 2026-10-30] 「要补」的判据（三者缺一不可）：
   //   ① 本会话没请求过（§32）；② 云端结果表没有真值；③ 历史腿不够【或】收盘口径下缺 T 腿。
   //   ③ 的 requireT 只对收盘口径生效 —— 盘中 K 线的"今天"是现价，补了也用不上（见 needsKlineLegs）。
-  const _legOpts = { requireT: (legMode === 'close') };
+  const _legOpts = { requireT: (legMode === 'close'), forceAll: isLegTableStale(dailyLegs, probeDates) };
+  if (_legOpts.forceAll) {
+    _dbgLog('[RANGE20-STALE] ' + date + ' 逐日腿表整体落后于日历 ⇒ 本轮全部走 K 线（宁慢勿错）');
+  }
   const todo = need.filter(function(t) {
     if (tried.has(t.stock) || cloudMap.has(t.stock)) return false;
+    if (_legOpts.forceAll) return true;
     return needsKlineLegs(baseLegs, t.stock, date, undefined, _legOpts);
   });
   if (todo.length === 0) {
@@ -913,6 +956,8 @@ export async function ensureRange20(date, rows, opts) {
         : baseLegs;
       const rd0 = _unionRealDates(date, base0, probeDates);
       const rows0 = compound20(base0, rd0).filter(function(r) {
+        // ⛔ 表整体落后时这里一条都不发（否则发的就是「跳过缺席那天」的偏值）
+        if (_legOpts.forceAll) return false;
         return !needsKlineLegs(base0, r.stock, date, undefined, _legOpts);
       });
       if (rows0.length > 0) _publish(date, _mergeRowsWithCloud(rows0, cloudMap));
@@ -976,7 +1021,8 @@ export async function ensureRange20(date, rows, opts) {
           //   判据仍守 §10：腿不够（<19 根历史腿）⇒ 发 `—`，⛔ 绝不拿 T 日一根腿冒充 20 日涨幅。
           //   ★ [R20-REQT 2026-10-30] 与 todo 用同一份 `_legOpts`：收盘口径下缺 T 腿的补位票，
           //     在它自己的 K 线到货前一律不发布（否则发出去的是「截至昨天」的窗口，基准与同屏不一致）。
-          return acc.has(r.stock) || !needsKlineLegs(mg, r.stock, date, undefined, _legOpts);
+          return acc.has(r.stock)
+            || (!_legOpts.forceAll && !needsKlineLegs(mg, r.stock, date, undefined, _legOpts));
         });
         if (fresh.length === 0) return;
         _publish(date, _mergeRowsWithCloud(fresh, cloudMap));
@@ -1055,7 +1101,8 @@ export async function ensureRange20(date, rows, opts) {
     const finalRows = compound20(merged, realDates).filter(function(r) {
       // ★ [R20-DAILY 2026-10-30] 同上：原料表里腿齐的票也要发（它们本轮 0 请求）。
       // ★ [R20-REQT 2026-10-30] 与 todo / 分批发布同一份 `_legOpts`（收盘口径要求 T 腿存在）。
-      return (accAll && accAll.has(r.stock)) || !needsKlineLegs(merged, r.stock, date, undefined, _legOpts);
+      return (accAll && accAll.has(r.stock))
+        || (!_legOpts.forceAll && !needsKlineLegs(merged, r.stock, date, undefined, _legOpts));
     });
     _publish(date, _mergeRowsWithCloud(finalRows, cloudMap));
     _stage.set(date, 2);            // 🔴 标记「该日已合并 K 线」⇒ 后续阶段① 不再覆盖（见 _stage 说明）

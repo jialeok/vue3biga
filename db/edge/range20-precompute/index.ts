@@ -91,6 +91,11 @@ const POOL_TOP_N = 40;
 // ★ [R20-RATE] 被限流那批的串行补跑间隔（把峰值速率压到上游阈值以下）
 const RATE_RETRY_GAP_MS = 700;
 
+// ★★ [R20-DAILY 2026-10-30] 逐日腿原料表快路径（详见下方 R20-DAILY 段头）。
+const LEG_DAYS = WINDOW_DAYS - 1;        // 需要的历史腿根数（19），T 腿单独一根合计 20
+const LEG_LOOKBACK_DAYS = 100;           // 与 K 线窗口一致（停牌票要往前回溯才凑得满 19 根）
+const LEG_PAGE = 1000;                   // PostgREST 单次响应上限
+
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -111,14 +116,25 @@ function beijingHhmm(): string {
   return beijingNow().toISOString().slice(11, 16);
 }
 
-/** Supabase REST（anon key；RLS 与前端同权限） */
-async function sbRest(method: string, path: string, body?: unknown): Promise<unknown> {
+/** Supabase REST（anon key；RLS 与前端同权限）
+ *  ★ [R20-DAILY 2026-10-30] `range` 用于分页：PostgREST 单次响应**最多 1000 行**
+ *    （实测 `?limit=3000` 只回 1000，静默截断不报错）⇒ 读逐日腿必须 Range 分页。 */
+async function sbRest(
+  method: string,
+  path: string,
+  body?: unknown,
+  range?: [number, number],
+): Promise<unknown> {
   const headers: Record<string, string> = {
     apikey: ANON_KEY,
     Authorization: 'Bearer ' + ANON_KEY,
     'Content-Type': 'application/json',
   };
   if (method === 'POST') headers['Prefer'] = 'resolution=merge-duplicates';
+  if (range) {
+    headers['Range'] = range[0] + '-' + range[1];
+    headers['Range-Unit'] = 'items';
+  }
   const resp = await fetch(SB_URL.replace(/\/$/, '') + path, {
     method,
     headers,
@@ -248,6 +264,127 @@ function computeRange20(series: Bar[], today: string, leg: string, aucPct: numbe
   let acc = 1;
   for (const p of win) acc *= (1 + p / 100);   // 与前端 compoundPct 逐字一致
   return { pct: ((acc - 1) * 100).toFixed(2), days: win.length };
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ★★ [R20-DAILY 2026-10-30] 逐日腿原料表 stock_daily_pct —— 本函数的「0 个 K 线请求」路径
+//
+// 用户原话（2026-10-30，逐字保留）：
+//   「为什么每次打开都要实时计算，非常耗时间，比如那些历史数据先存好，次日在算次日，这样不更快吗？
+//     为什么每次都要同花顺实时重新拉取，拉取当天的就可以，再加上历史日期……这样局部补数据，
+//     而不是每次整体获取，这样很慢，影响体验。」
+//
+// 为什么必须改这里（2026-10-30 实测）：
+//   `stock_range20_pct` 存的是【窗口涨幅】(date = 窗口末日 T) ⇒ 每天都是新日期 ⇒ 每天全都不命中
+//   ⇒ 本函数每天把 83 只票的 K 线**全量重拉**一遍。上游实测 50% 概率「既不返回也不断开」
+//   ⇒ 真跑一次：HTTP 200 / 142.2s / written:1 / failed:7 ⇒ 9:25 那一轮根本跑不完，
+//     9:36 打开还是空的（用户报障的原点）。
+//
+// 改法（与前端 src/logic/auction/range20.js 的 R20-DAILY 同一口径，§6 单一真相）：
+//   19 根历史腿从 stock_daily_pct 取 → 只补 T 腿一根。而 T 腿在竞价口径下**本来就不用 K 线**：
+//     · from='today'（当天正式名单）⇒ 名单行的 change_pct（9:25 那一刻它就是竞价涨幅，
+//       与 computeRange20 的 aucPct 兜底同一口径）；
+//     · from='pool'（补位票，不在今日名单）⇒ 竞价终态快照的 auction_pct
+//       （**一次批量请求**覆盖 ≤40 只，零新增 K 线）。
+//   ⇒ 9:25 那一轮 K 线请求数 83 → 0。
+//
+// ⚠️ 零回归（§11）：表不存在 / 读失败 / 该票腿不足 19 根 / 快照闸门拒绝 ⇒ **该票照旧走 K 线**，
+//    行为与改造前完全一致，只是不变快。
+// ⚠️ 收盘口径（leg='close'）只有在 worker 覆盖 change_pct 之后（>= 16:05）才走快路径 ——
+//    ⛔ 绝不拿竞价腿冒充收盘腿（那条纪律写死在 computeRange20 函数头）。
+// ⚠️ 历史回补（?date=）一律不走快路径：历史日的 change_pct 是竞价还是收盘无从判定。
+// ════════════════════════════════════════════════════════════════════════════════
+
+interface DailyLegs { legs: Map<string, number[]>; rows: number; error: string; }
+
+/**
+ * 读一批票在 [fromYmd, toYmd) 的逐日收盘涨幅腿（每票一个升序数组）。
+ *
+ * ⚠️ 必须 Range 分页（PAGE=1000）：PostgREST 单次最多回 1000 行且**静默截断**，
+ *    不分页会表现为「一部分票有腿、一部分永远缺腿 ⇒ 永远补不完」，而且完全不报错。
+ * ⚠️ `order=stock.asc,date.asc` 保证分页确定性（⛔ 去掉排序会让翻页漏行/重行）。
+ */
+async function readLegsFor(stocks: string[], fromYmd: string, toYmd: string): Promise<DailyLegs> {
+  const legs = new Map<string, number[]>();
+  if (stocks.length === 0) return { legs, rows: 0, error: '' };
+  // 名单太长会被网关按 URL 长度挡掉（中文名 encodeURIComponent 后每个 ~9 字节）⇒ 只取前 200
+  const names = stocks.slice(0, 200).map((s) => '"' + s.replace(/"/g, '') + '"').join(',');
+  const base = '/rest/v1/stock_daily_pct?select=stock,date,pct'
+    + '&stock=in.' + encodeURIComponent('(' + names + ')')
+    + '&date=gte.' + fromYmd + '&date=lt.' + toYmd
+    + '&order=stock.asc,date.asc';
+  let rows = 0;
+  let from = 0;
+  try {
+    for (;;) {
+      const got = await sbRest('GET', base, undefined, [from, from + LEG_PAGE - 1]);
+      const arr = Array.isArray(got) ? (got as Array<Record<string, unknown>>) : [];
+      rows += arr.length;
+      for (const r of arr) {
+        const n = String((r && r.stock) ?? '').trim();
+        const p = parsePct(r && r.pct);
+        if (!n || p === null) continue;           // §10：缺值/非法一律跳过，⛔ 不当 0%
+        const list = legs.get(n);
+        if (list) list.push(p);
+        else legs.set(n, [p]);
+      }
+      if (arr.length < LEG_PAGE) break;
+      from += LEG_PAGE;
+      if (from > 40000) break;                    // 防御性上限（200 只 × 100 日远达不到）
+    }
+  } catch (e) {
+    // §10：读失败 ⇒ 返回空腿表 + 错误串（调用方据此让所有票走 K 线），⛔ 不静默当成「没有腿」
+    return { legs: new Map(), rows, error: e instanceof Error ? e.message : String(e) };
+  }
+  return { legs, rows, error: '' };
+}
+
+/**
+ * 用逐日腿 + T 腿算出区间涨幅（与 computeRange20 的复利口径逐字一致）。
+ * @param legs 升序逐日涨幅（不含 T）
+ * @param tLeg T 腿（竞价涨幅 / 收盘涨幅）
+ */
+function rangeFromLegs(legs: number[] | undefined, tLeg: number): { pct: string; days: number } | null {
+  if (!legs || legs.length < LEG_DAYS) return null;   // 腿不够 ⇒ 交给 K 线，⛔ 不拿半截算
+  if (!Number.isFinite(tLeg)) return null;
+  const win = legs.slice(-LEG_DAYS);
+  let acc = 1;
+  for (const p of win) acc *= (1 + p / 100);
+  acc *= (1 + tLeg / 100);
+  return { pct: ((acc - 1) * 100).toFixed(2), days: win.length + 1 };
+}
+
+/** null 安全的数值解析（快照里的 auction_pct 可能是字符串 / null） */
+function numOrNull(v: unknown): number | null {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * 从 K 线序列取「今天那根腿」（close / 前一根 close - 1）。
+ *
+ * ★★ [R20-DAILY 2026-10-30] 用途：收盘那一轮把【今天这根腿】补进 stock_daily_pct，
+ *   让明天早上的快路径「历史腿全齐 ⇒ 0 个 K 线请求」真正成立。
+ *   为什么必须有人补：`stock_daily_pct` 的其它写入方（前端 dailyRowsFromKline / 回填脚本）
+ *   **一律只写今天之前**（盘中那根是现价，落库会被当成收盘腿 ⇒ 明天算窗口直接错）。
+ *   ⇒ 唯一能写「今天收盘腿」的时刻就是收盘之后，而且必须是 K 线的今日 bar（⛔ 不能用
+ *     auction_watchlist.change_pct，那张表的历史行被证实会永久停在竞价涨幅）。
+ *   今天 bar 不存在 ⇒ 返回 null（不写，§10 宁可明天慢一天，也不写一个假收盘）。
+ */
+function todayLegOf(series: Bar[], today: string): number | null {
+  const i = series.findIndex((b) => b.ymd === today);
+  if (i <= 0) return null;
+  const prev = series[i - 1].close;
+  if (!(prev > 0)) return null;
+  const p = (series[i].close / prev - 1) * 100;
+  return Number.isFinite(p) ? p : null;
+}
+
+/** 逐日腿的文本格式（与前端 upsertDailyPctRows / 回填脚本逐字一致：'+3.21' / '-1.05'） */
+function fmtLeg(v: number): string {
+  const s = v.toFixed(2);
+  return s.charAt(0) === '-' ? s : ('+' + s);
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -590,6 +727,80 @@ Deno.serve(async (req: Request) => {
     const todo = targets.filter((t) => !doneSet.has(t.stock));
     console.log('[range20-precompute] leg=' + leg + ' todo=' + todo.length + '（名单 ' + targets.length + '，库里已有 ' + doneSet.size + '）');
 
+    // ══════════════════════════════════════════════════════════════════════════════
+    // ②.5 [R20-DAILY 2026-10-30] 逐日腿快路径：历史腿读表 + T 腿不用 K 线 ⇒ 0 个 K 线请求
+    //   详见上方 R20-DAILY 段头。腿不够 / 表不可用 / 快照闸门拒绝 ⇒ 该票原样留在 klineTodo。
+    // ══════════════════════════════════════════════════════════════════════════════
+    const tMidnight = Date.parse(today + 'T00:00:00+08:00');
+    const legsFromYmd = new Date(tMidnight - LEG_LOOKBACK_DAYS * 86400000 + 8 * 3600 * 1000)
+      .toISOString().slice(0, 10);
+    let fastRows: Array<Record<string, unknown>> = [];
+    let fastTargets: typeof todo = [];
+    let klineTodo: typeof todo = todo;
+    let legsRows = 0;
+    let legsError = '';
+    let fastUsed = 0;
+    let fastNoLegs = 0;
+    let fastNoT = 0;
+    // 只对【竞价口径】开快路径。
+    // 🔴 收盘口径（leg='close'）**故意不开**：T 腿只能是今天的收盘价，而唯一"便宜"的来源是
+    //   `auction_watchlist.change_pct` —— 那张表的历史行被证实会永久停在竞价涨幅
+    //   （2026-10-19 实测：粗筛按它算出新华传媒 207.91%，K 线真值 210.98%，差 1 根假腿）。
+    //   ⇒ 收盘腿继续走 K 线（今天 bar 存在才算数，⛔ 绝不拿竞价腿冒充收盘腿）。
+    //   历史回补（?date=）同理不走快路径（历史日的 change_pct 是竞价还是收盘无从判定）。
+    const canFast = !isBackfill && leg === 'auc';
+    if (canFast && todo.length > 0) {
+      const daily = await readLegsFor(todo.map((t) => t.stock), legsFromYmd, today);
+      legsRows = daily.rows;
+      legsError = daily.error;
+      // T 腿：当天名单的票用 change_pct；补位票没有当天行 ⇒ 用竞价终态快照（一次批量，≤40 只）
+      const tLegOf = new Map<string, number>();
+      for (const t of todo) {
+        if (t.aucPct !== null && Number.isFinite(t.aucPct)) tLegOf.set(t.stock, t.aucPct as number);
+      }
+      const needSnap = todo.filter((t) => !tLegOf.has(t.stock) && !!t.code);
+      if (needSnap.length > 0 && leg === 'auc' && !daily.error) {
+        // 双重闸门（与下方 R20-METRICS 同一条安全约束，⛔ 不许放宽）：
+        //   ① data_status==='final'（否则会把上一交易日的竞价写到今天头上）
+        //   ② 服务端 timestamp 的北京日期 === 目标日（防上游给「滚动最近交易日」）
+        const codes = needSnap.map((t) => thscode(t.code));
+        let snap = await fetchSnapshots(codes);
+        if (!snap.error && (snap.dataStatus !== 'final' || snap.serverYmd !== today)) {
+          // 9:25:0x 那一刻竞价可能还没落终态 ⇒ 只再试一次（⛔ 不循环等待，别拖总预算）
+          await sleep(2500);
+          snap = await fetchSnapshots(codes);
+        }
+        if (!snap.error && snap.dataStatus === 'final' && snap.serverYmd === today) {
+          for (const t of needSnap) {
+            const v = numOrNull((snap.byCode.get(t.code) ?? {})['auction_pct']);
+            if (v !== null) tLegOf.set(t.stock, v);
+          }
+        }
+      }
+      const rest: typeof todo = [];
+      for (const t of todo) {
+        const tl = tLegOf.get(t.stock);
+        if (tl === undefined) { fastNoT++; rest.push(t); continue; }
+        const row = rangeFromLegs(daily.legs.get(t.stock), tl);
+        if (!row) { fastNoLegs++; rest.push(t); continue; }
+        fastRows.push({
+          date: today,
+          stock: t.stock,
+          pct: row.pct,            // 与 computeRange20 同格式：Number(x).toFixed(2) 字符串
+          days: row.days,
+          leg: leg,
+          updated_at: new Date().toISOString(),
+        });
+        fastTargets.push(t);
+        fastUsed++;
+      }
+      klineTodo = rest;
+      console.log('[range20-precompute][R20-DAILY] legs=' + daily.legs.size + '/' + todo.length
+        + '（读 ' + legsRows + ' 行' + (daily.error ? '，读失败: ' + daily.error : '') + '）'
+        + ' ⇒ 快路径 ' + fastUsed + ' 只 / 走 K 线 ' + klineTodo.length + ' 只'
+        + '（缺T腿 ' + fastNoT + '、腿不足 ' + fastNoLegs + '）');
+    }
+
     // ★ [R20-BACKFILL] 干跑：只报「会算哪些票」，⛔ 一次上游请求都不打（回补前先确认名单对不对）
     if (params.get('dry') === '1') {
       return json({
@@ -606,8 +817,39 @@ Deno.serve(async (req: Request) => {
         alreadyDone: doneSet.size,
         todo: todo.length,
         todoNoCode: todo.filter((t) => !t.code).length,
+        // ★★ [R20-DAILY 2026-10-30] 干跑就能看出「这一轮要不要打上游」：
+        //   fastPath>0 且 klinePath=0 ⇒ 完全不烧 K 线额度（改造后的目标形态）。
+        fastPath: fastUsed,
+        klinePath: klineTodo.length,
+        fastNoT,
+        fastNoLegs,
+        legsRows,
+        legsError,
+        legsFrom: legsFromYmd,
         todoList: todo.slice(0, 200).map((t) => t.stock + (t.code ? '(' + t.code + ')' : '(无码)') + '[' + t.from + ']'),
       });
+    }
+
+    // ★★ [R20-DAILY 2026-10-30] 快路径结果先落库（0 个 K 线请求 ⇒ 9:25 那一轮秒完）。
+    //   🔴 落库失败**必须把它们并回 klineTodo**：⛔ 不能静默丢掉一整批票
+    //      （那会让前端以为「今天这些票没有值」，从而退回逐只 K 线，就是我们想根治的病）。
+    let fastWritten = 0;
+    if (fastRows.length > 0) {
+      try {
+        // 分批 500 行：一次 POST 上千行请求体过大 / 触发网关限制（前端 upsertRange20Rows 同款）
+        for (let i = 0; i < fastRows.length; i += 500) {
+          await sbRest('POST', '/rest/v1/stock_range20_pct?on_conflict=date,stock', fastRows.slice(i, i + 500));
+        }
+        fastWritten = fastRows.length;
+        console.log('[range20-precompute][R20-DAILY] 快路径已落库 ' + fastWritten + ' 行（0 个 K 线请求）');
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error('[range20-precompute][R20-DAILY] ⚠️ 快路径落库失败 ⇒ ' + fastTargets.length
+          + ' 只改走 K 线: ' + msg);
+        klineTodo = klineTodo.concat(fastTargets);
+        fastUsed = 0;
+        fastRows = [];
+      }
     }
 
     // K 线窗口：往前 100 个自然日（≈65 个真实交易日，足够停牌票回溯凑满 20 腿；多要不增加成本）
@@ -626,6 +868,11 @@ Deno.serve(async (req: Request) => {
     const retryLater: Array<{ stock: string; code: string; aucPct: number | null; from: string }> = [];
     const failures: string[] = [];
     const buffer: Array<Record<string, unknown>> = [];
+    // ★★ [R20-DAILY 2026-10-30] 收盘那一轮顺手把「今天这根腿」写进 stock_daily_pct，
+    //   让明天早上的快路径「历史腿全齐 ⇒ 0 个 K 线请求」真正成立（详见 todayLegOf 注释）。
+    //   ⛔ 盘中不写：今天那根是现价，落库明天会被当成收盘腿（静默算错，最难查）。
+    const legBuffer: Array<Record<string, unknown>> = [];
+    const legFinal = (leg === 'close' && beijingHhmm() >= '15:05');
     // ★★ [R20-METRICS 2026-10-23] 补位票的 K 线序列（落 market_metrics 用）。
     //   只在 from='pool' 时收集：当天正式名单的票由 worker 写 market_metrics，
     //   这里重复写会拿不同来源的数覆盖 worker 的口径（⛔ 不越界）。
@@ -637,7 +884,7 @@ Deno.serve(async (req: Request) => {
       try {
         await sbRest('POST', '/rest/v1/stock_range20_pct?on_conflict=date,stock', batch);
         written += batch.length;
-        console.log('[range20-precompute] 已落库 ' + written + ' / ' + todo.length);
+        console.log('[range20-precompute] 已落库 ' + (written + fastWritten) + ' / ' + todo.length);
       } catch (e) {
         failed += batch.length;
         console.error('[range20-precompute] flush 失败 ' + batch.length + ' 行: ' + (e instanceof Error ? e.message : String(e)));
@@ -648,9 +895,10 @@ Deno.serve(async (req: Request) => {
     const worker = async () => {
       while (!circuitBreak) {
         const i = cursor++;
-        if (i >= todo.length) return;
+        // ★ [R20-DAILY 2026-10-30] 只跑「快路径没解决」的那批（klineTodo），⛔ 不是全部 todo
+        if (i >= klineTodo.length) return;
         if (Date.now() - t0 > TOTAL_BUDGET_MS) return; // 总预算闸门：超时保全已算部分
-        const t = todo[i];
+        const t = klineTodo[i];
         if (!t.code) {
           failed++;
           failures.push(t.stock + '(no code)');
@@ -662,6 +910,16 @@ Deno.serve(async (req: Request) => {
           const row = computeRange20(series, today, leg, t.aucPct);
           // [R20-METRICS] 补位票：序列留一份，后面算 market_metrics 用（⛔ 不额外发请求）
           if (t.from === 'pool') poolSeries.push({ stock: t.stock, code: t.code, series });
+          // [R20-DAILY] 收盘后：今天这根腿补进原料表（免费，同一份 series 里就有）
+          if (legFinal) {
+            const tl = todayLegOf(series, today);
+            if (tl !== null) {
+              legBuffer.push({
+                date: today, stock: t.stock, pct: fmtLeg(tl), src: 'kline',
+                updated_at: new Date().toISOString(),
+              });
+            }
+          }
           if (row) {
             buffer.push({
               date: today,
@@ -725,6 +983,16 @@ Deno.serve(async (req: Request) => {
         const row = computeRange20(series, today, leg, t.aucPct);
         // [R20-METRICS] 补跑成功的补位票同样收进 poolSeries（否则限流那批的趋势图仍然空）
         if (t.from === 'pool') poolSeries.push({ stock: t.stock, code: t.code, series });
+        // [R20-DAILY] 补跑成功同样补今天的腿
+        if (legFinal) {
+          const tl = todayLegOf(series, today);
+          if (tl !== null) {
+            legBuffer.push({
+              date: today, stock: t.stock, pct: fmtLeg(tl), src: 'kline',
+              updated_at: new Date().toISOString(),
+            });
+          }
+        }
         if (row) {
           await sbRest('POST', '/rest/v1/stock_range20_pct?on_conflict=date,stock', [{
             date: today,
@@ -748,6 +1016,24 @@ Deno.serve(async (req: Request) => {
     }
     if (retryLater.length > 0) {
       console.log('[range20-precompute] 限流补跑完成：成功 ' + retried + '，仍失败 ' + retryFailed);
+    }
+
+    // ★★ [R20-DAILY 2026-10-30] 今日收盘腿 → stock_daily_pct（明天早上的 0 请求就靠这一步）
+    let legsWritten = 0;
+    let legsWriteError = '';
+    if (legBuffer.length > 0) {
+      try {
+        for (let i = 0; i < legBuffer.length; i += 500) {
+          await sbRest('POST', '/rest/v1/stock_daily_pct?on_conflict=date,stock', legBuffer.slice(i, i + 500));
+        }
+        legsWritten = legBuffer.length;
+        console.log('[range20-precompute][R20-DAILY] 今日收盘腿已补进 stock_daily_pct ' + legsWritten + ' 行');
+      } catch (e) {
+        // §10：失败可见，但⛔ 不连坐 —— 结果表已经写好了，只是明天早上这些票会走一次 K 线
+        legsWriteError = e instanceof Error ? e.message : String(e);
+        console.error('[range20-precompute][R20-DAILY] ⚠️ 今日腿落库失败（不影响正确性，明天这些票走 K 线）: '
+          + legsWriteError);
+      }
     }
 
     // ══════════════════════════════════════════════════════════════════════════════
@@ -818,7 +1104,18 @@ Deno.serve(async (req: Request) => {
       poolCandidates,
       poolError,
       todo: todo.length,
-      written,
+      // ★★ [R20-DAILY 2026-10-30] 快路径 vs K 线路径的拆分（K线=0 ⇒ 完全不烧上游额度）
+      fastPath: fastUsed,
+      fastWritten,
+      klinePath: klineTodo.length,
+      fastNoT,
+      fastNoLegs,
+      legsRows,
+      legsError,
+      // ★★ [R20-DAILY] 收盘那一轮把「今天这根腿」补进原料表的行数（明天早上 0 请求的前提）
+      legsWritten,
+      legsWriteError,
+      written: written + fastWritten,
       failed,
       // ★ [R20-RATE] 限流与补跑：rateLimited = 第一轮被限流挡下的只数；retried/retryFailed = 串行补跑结果
       rateLimited,

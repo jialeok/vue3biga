@@ -42,6 +42,12 @@ const argOf = function (k, d) {
 };
 const CONCURRENCY = Math.max(1, Number(argOf('concurrency', 2)) || 2);
 const DAYS = Math.max(30, Number(argOf('days', 60)) || 60);
+// ★★ [R20-DAILY 2026-10-30] `--recent`：只补【最近一个榜日】上的那批票（当天名单 + 补位池 top）。
+//   为什么要有这个模式：逐日腿表必须每天补掉「昨天那根」，否则第二天早上的窗口会静默跳过一天
+//   （compound20 把"没写"当成"停牌"）。全量 405 只每天跑 = 405 个 K 线请求，没必要；
+//   看板真正用到的只有最新一天那 ~80~100 只 ⇒ 每天只补这批，请求量降到 ~1/4。
+//   ⚠️ 首次建表仍需全量跑一次（不带 --recent），否则历史 19 根腿凑不齐。
+const RECENT = args.includes('--recent');
 
 const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
 /** YYYY-MM-DD（北京时区；⛔ 不能用 toISOString 直接切 —— 那是 UTC，会差一天） */
@@ -185,7 +191,7 @@ async function main() {
     });
   }
 
-  const pool = Array.from(codeOf.entries())
+  const poolAll = Array.from(codeOf.entries())
     .filter(function (e) { return !!e[1]; })
     .map(function (e) { return { stock: e[0], code: e[1] }; });
   // ★ 今日名单的票排在最前：回填是逐只增量写库的，先补今天的 40 来只，
@@ -193,14 +199,42 @@ async function main() {
   try {
     const rowsToday = await sbGet('auction_watchlist?select=stock&date=eq.' + today + '&limit=5000');
     const todaySet = new Set(rowsToday.map(function (r) { return String(r.stock).trim(); }));
-    pool.sort(function(a, b) {
+    poolAll.sort(function(a, b) {
       const ia = todaySet.has(a.stock) ? 0 : 1;
       const ib = todaySet.has(b.stock) ? 0 : 1;
       return ia - ib;
     });
     console.log('今日名单优先 =', Array.from(todaySet).length, '只');
   } catch (e) { /* 读不到今日名单就按原顺序 */ }
-  console.log('股票全集 =', pool.length, '只（另有 ' + (codeOf.size - pool.length) + ' 只缺代码，跳过）');
+  console.log('股票全集 =', poolAll.length, '只（另有 ' + (codeOf.size - poolAll.length) + ' 只缺代码，跳过）');
+
+  // ★★ [R20-DAILY] --recent：只保留「最近一个榜日」上的票（当天名单 ∪ 补位池 = 看板真正用到的那批）
+  let pool = poolAll;
+  if (RECENT) {
+    const keep = new Set();
+    const takeLatest = async function (table, limit) {
+      // ⚠️ 必须 lte.today：表里可能已经有人预置了「下一个交易日」的名单（如 10-30 就录了 11-02），
+      //   不加这个闸门会把那天的票当成「最近一个榜日」⇒ 当天该补的一只都没补。
+      const rows = await sbGet(table + '?select=stock,date&date=lte.' + today + '&order=date.desc&limit=' + limit);
+      let maxD = '';
+      rows.forEach(function (r) {
+        const d = String(r.date || '');
+        if (d > maxD) maxD = d;
+      });
+      rows.forEach(function (r) {
+        if (String(r.date || '') === maxD) {
+          const n = String(r.stock || '').trim();
+          if (n) keep.add(n);
+        }
+      });
+      return maxD;
+    };
+    const d1 = await takeLatest('auction_watchlist', 300);
+    const d2 = await takeLatest('stock_range20_pct', 600);
+    pool = poolAll.filter(function (e) { return keep.has(e.stock); });
+    console.log('--recent：榜日 ' + d1 + ' / 结果表 ' + d2 + ' ⇒ 目标 ' + pool.length + ' 只'
+      + '（全量 ' + poolAll.length + ' 只）');
+  }
   if (pool.length === 0) { console.log('没有可补的票'); return; }
 
   // ② 已有腿快照（只用于统计缺口 + 决定哪些票完全不用请求）

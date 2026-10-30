@@ -61,6 +61,7 @@ import {
   legs20FromDaily,
   mergeBaseLegs,
   needsKlineLegs,
+  isLegTableStale,
   dailyRowsFromKline,
   merge20Legs,
   compound20,
@@ -839,11 +840,12 @@ export async function ensureRange20Leaders(date, opts) {
     //   而同屏上了榜的票锚点是「今天收盘」⇒ **前10 内部基准不一致**（排名会串）。
     //   ⚠️ 盘中（'auc'）不传：K 线的今日是现价，补了也用不上。
     //   ⚠️ 代价可控：coarseTop 最多 25 只，一天一次；早盘主场景（'auc'）仍然 0 请求。
-    const _legOpts = { requireT: (legMode === 'close') };
+    const _legOpts = { requireT: (legMode === 'close'), forceAll: isLegTableStale(dailyLegs, probeDates) };
     const todo = coarseTop.filter(function(t) {
       if (extraByStock.has(t.stock)) return false;
       if (_klineTried.has(t.stock + '@' + winKey)) return false;
       if (cloudMap.has(t.stock)) return false;
+      if (_legOpts.forceAll) return true;
       // ★★ [R20-DAILY 2026-10-30] 原料表里腿够的票 ⇒ 一个请求都不发（秒开的关键）。
       //   表空 / 表不可用 ⇒ 每只都不够 ⇒ todo = 全部 ⇒ 与改造前一致（§11）。
       return needsKlineLegs(baseLegs, t.stock, date, undefined, _legOpts);

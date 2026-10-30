@@ -19,6 +19,7 @@ import {
   legs20FromDaily,
   mergeBaseLegs,
   needsKlineLegs,
+  isLegTableStale,
   dailyRowsFromKline,
   merge20Legs,
   compound20
@@ -559,6 +560,33 @@ describe('逐日腿原料（R20-DAILY）', () => {
     });
     expect(guarded.map(function(r) { return r.stock; })).toEqual(['甲']);
     expect(guarded[0].days).toBe(20);
+  });
+
+  // ★★ [R20-STALE 2026-10-30] 正确性红线：`compound20` 对「某天没腿」是**跳过**（停牌语义），
+  //   表整体落后一天时会被当成"那天停牌"⇒ 多算一天、少算一天，数字偏了还查不出来。
+  //   而 needsKlineLegs 只数根数（45 槽里够 19 根就行），落后 1~2 天照样「够」⇒ 完全防不住。
+  it('isLegTableStale：表里最新腿 = 日历前一交易日 ⇒ 新鲜（不发多余请求）', () => {
+    const legs = legs20FromDaily([{ stock: '甲' }], dates, fullDaily());
+    expect(isLegTableStale(legs, dates)).toBe(false);
+  });
+
+  it('isLegTableStale：表里最新腿落后日历一天 ⇒ 判落后（本轮强制全部走 K 线，宁慢勿错）', () => {
+    const daily = fullDaily();
+    daily.get('甲').delete(dates[18]);          // 昨天的腿还没写进来
+    const legs = legs20FromDaily([{ stock: '甲' }], dates, daily);
+    // 注意：根数仍然有 18 >= 19? 不是 —— 这里只是证明「根数」之外还需要这条判据
+    expect(isLegTableStale(legs, dates)).toBe(true);
+  });
+
+  it('isLegTableStale：表里有比日历更新的日期 ⇒ 不算落后（容忍时钟差）', () => {
+    const legs = new Map([['甲', new Map([[dates[18], 1], ['2099-01-01', 1]])]]);
+    expect(isLegTableStale(legs, dates)).toBe(false);
+  });
+
+  it('isLegTableStale：表为空 / 日历不足两天 ⇒ false（那种情况 needsKlineLegs 本来就全补）', () => {
+    expect(isLegTableStale(new Map(), dates)).toBe(false);
+    expect(isLegTableStale(null, dates)).toBe(false);
+    expect(isLegTableStale(new Map([['甲', new Map([[T, 1]])]]), [T])).toBe(false);
   });
 
   it('dailyRowsFromKline：只写 T 之前的腿（盘中"今天"是现价，写进去会被当成收盘腿）', () => {
