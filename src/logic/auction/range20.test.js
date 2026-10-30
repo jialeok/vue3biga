@@ -515,6 +515,52 @@ describe('逐日腿原料（R20-DAILY）', () => {
     expect(needsKlineLegs(onlyT, '甲', T)).toBe(true);
   });
 
+  // ★★ [R20-REQT 2026-10-30] 收盘口径下「不在今日名单的票」（补位票 / 候选池里今天没上榜的票）
+  //   没有当天行 ⇒ 没有 T 腿。若不强制补，compound20 会往前多取一根凑满 20
+  //   ⇒ 锚点变成「截至昨天收盘」，与同屏上了榜的票基准不一致（排名会串）。
+  it('needsKlineLegs · requireT：19 根历史腿但缺 T 腿 ⇒ 盘中算够、收盘口径算缺', () => {
+    const legs = mergeBaseLegs(new Map(), legs20FromDaily([{ stock: '甲' }], dates, fullDaily()));
+    // 盘中（'auc'）：K 线的"今天"是现价，补了也用不上 ⇒ 不传 requireT
+    expect(needsKlineLegs(legs, '甲', T)).toBe(false);
+    // 收盘口径：没有当天行就拿不到今日收盘 ⇒ 必须补一次 K 线
+    expect(needsKlineLegs(legs, '甲', T, undefined, { requireT: true })).toBe(true);
+  });
+
+  it('needsKlineLegs · requireT：历史腿够 + T 腿也在 ⇒ 两种口径都不用补', () => {
+    const legs = mergeBaseLegs(
+      new Map([['甲', new Map([[T, 4.5]])]]),
+      legs20FromDaily([{ stock: '甲' }], dates, fullDaily())
+    );
+    expect(needsKlineLegs(legs, '甲', T)).toBe(false);
+    expect(needsKlineLegs(legs, '甲', T, undefined, { requireT: true })).toBe(false);
+  });
+
+  it('needsKlineLegs · requireT：T 腿的值为 null ⇒ 视为缺失（§10 缺数据 ≠ 0%）', () => {
+    const legs = mergeBaseLegs(
+      new Map([['甲', new Map([[T, null]])]]),
+      legs20FromDaily([{ stock: '甲' }], dates, fullDaily())
+    );
+    expect(needsKlineLegs(legs, '甲', T, undefined, { requireT: true })).toBe(true);
+  });
+
+  // ★ 端到端复现「todo.length === 0 分支必须过 §10 过滤」这个坑：
+  //   只有 T 腿的票（腿不够、但这一轮没进 todo）若不过滤就会被 compound20 算成
+  //   「20 日涨幅 = 今日涨幅 / days=1」，而且发布时 fresh 会覆盖同名的云端真值。
+  it('端到端：只有 T 腿的票必须被 §10 过滤挡掉，⛔ 不拿当天涨幅冒充 20 日涨幅', () => {
+    const legs = mergeBaseLegs(
+      new Map([['甲', new Map([[T, 10]])], ['乙', new Map([[T, -3]])]]),
+      legs20FromDaily([{ stock: '甲' }], dates, fullDaily())
+    );
+    const all = compound20(legs, dates);
+    // 不设防时：乙只有一根腿 ⇒ 直接被算成 -3%（= 当天涨幅），天数 1
+    expect(all.map(function(r) { return r.stock; }).sort()).toEqual(['乙', '甲']);
+    const guarded = all.filter(function(r) {
+      return !needsKlineLegs(legs, r.stock, T);
+    });
+    expect(guarded.map(function(r) { return r.stock; })).toEqual(['甲']);
+    expect(guarded[0].days).toBe(20);
+  });
+
   it('dailyRowsFromKline：只写 T 之前的腿（盘中"今天"是现价，写进去会被当成收盘腿）', () => {
     const extra = new Map([['甲', new Map([
       [dates[17].replace(/-/g, ''), 2.5],

@@ -412,21 +412,35 @@ export function mergeBaseLegs(tLegs, dailyLegs) {
  * ⚠️ `needHistory` 用 RANGE20_WINDOW_DAYS - 1（19）：T 腿单独一根，合计 20。
  * ⚠️ 表空 / 表不可用 ⇒ 每只票都不够 ⇒ todo = 全部 ⇒ **回到改造前的行为**（§11 零回归）。
  *
+ * ★★ [R20-REQT 2026-10-30] `opts.requireT` = 收盘口径下必须【也】拿到 T 腿，否则仍要补。
+ *   为什么（别删）：盘中 T 腿口径是竞价，K 线里的"今天"本来就不许用（`tKeepAuctionLeg`）；
+ *   但**收盘后**（legMode='close'）T 腿要靠 K 线的今日收盘补 —— 而「不在今日正式名单的票」
+ *   （「20天」补位票 / 候选池里今天没上榜的票）根本没有当天行 ⇒ 没有竞价腿也没有收盘腿。
+ *   不传这个开关时，这类票会被判成「腿够了」，`compound20` 于是往前多取一根凑满 20
+ *   ⇒ **整个窗口前移一天**（显示的其实是"截至昨天收盘"），与同屏其它票的基准不一致。
+ *   ⇒ 收盘口径下必须让它们补一次 K 线（≤25 只，一天一次）。
+ *   ⚠️ 盘中（'auc'）⛔ 不要传 true：K 线的今日只是现价，补了也用不上，纯属白烧请求。
+ *
  * @param {Map<string, Map<string, number>>} legsByStock mergeBaseLegs 的结果
  * @param {string} stock 股票名
  * @param {string} tDate 展示日 T
  * @param {number} [needHistory] 需要的历史腿数，缺省 19
+ * @param {{requireT?:boolean}} [opts] requireT：T 腿缺失也算「要补」（见上）
  * @returns {boolean} true = 要补
  */
-export function needsKlineLegs(legsByStock, stock, tDate, needHistory) {
+export function needsKlineLegs(legsByStock, stock, tDate, needHistory, opts) {
   const need = (needHistory === undefined || needHistory === null) ? (RANGE20_WINDOW_DAYS - 1) : Number(needHistory);
   const m = legsByStock ? legsByStock.get(stock) : null;
+  const requireT = !!(opts && opts.requireT);
   if (!m || m.size === 0) return true;
   let n = 0;
+  let hasT = false;
   m.forEach(function(v, d) {
-    if (d === tDate) return;                 // T 腿不占历史名额
-    if (v !== null && v !== undefined && !isNaN(v)) n++;
+    if (v === null || v === undefined || isNaN(v)) return;
+    if (d === tDate) { hasT = true; return; }   // T 腿不占历史名额，但 requireT 时要存在
+    n++;
   });
+  if (requireT && !hasT) return true;
   return n < (isFinite(need) ? need : (RANGE20_WINDOW_DAYS - 1));
 }
 
@@ -854,16 +868,33 @@ export async function ensureRange20(date, rows, opts) {
   const need = targets;
   if (need.length === 0) return _state.value.map;
   const tried = _klineTried.get(date) || new Set();
+  // ★★ [R20-REQT 2026-10-30] 「要补」的判据（三者缺一不可）：
+  //   ① 本会话没请求过（§32）；② 云端结果表没有真值；③ 历史腿不够【或】收盘口径下缺 T 腿。
+  //   ③ 的 requireT 只对收盘口径生效 —— 盘中 K 线的"今天"是现价，补了也用不上（见 needsKlineLegs）。
+  const _legOpts = { requireT: (legMode === 'close') };
   const todo = need.filter(function(t) {
     if (tried.has(t.stock) || cloudMap.has(t.stock)) return false;
-    return needsKlineLegs(baseLegs, t.stock, date);
+    return needsKlineLegs(baseLegs, t.stock, date, undefined, _legOpts);
   });
   if (todo.length === 0) {
     // ★ [R20-DAILY] 全部票的腿都在表里 ⇒ 直接复合发布，**0 个 K 线请求**。
     //   ⛔ 不能直接 return：改造前这条路只会返回空结果（因为表里没有腿），现在有腿了必须算出来。
+    //   🔴 [R20-REQT 2026-10-30] **必须过 §10 过滤**（踩坑，别删）：
+    //     `compound20(baseLegs, …)` 会把 baseLegs 里**每一只**都算出来，包括「只有 T 腿」的票
+    //     （腿不够、还挂在 tried / 云端表里没进 todo 的那些）—— 它们算出来 = T 日当天涨幅 + days=1，
+    //     发出去就是「把当天涨幅冒充 20 日涨幅」，而且 `_mergeRowsWithCloud` 里 fresh 会覆盖云端真值
+    //     ⇒ 反而把云端那份正确的数冲掉。这与 R20-PROGRESS-FIX 防的是同一个病。
     try {
-      const rd0 = _unionRealDates(date, baseLegs, probeDates);
-      const rows0 = compound20(baseLegs, rd0);
+      // ★ 会话内已抓到的 K 线腿（`_klineAcc`）也要并进来：原料表写入偶发失败时，
+      //   本轮/上一轮真拿到了腿的票不该退化成 `—`（判据仍是「腿够不够」，不是「表里有没有」）。
+      const acc0 = _klineAcc.get(date);
+      const base0 = (acc0 && acc0.size > 0)
+        ? merge20Legs(baseLegs, acc0, probeDates, { tDate: date, tKeepAuctionLeg: (legMode === 'auc') })
+        : baseLegs;
+      const rd0 = _unionRealDates(date, base0, probeDates);
+      const rows0 = compound20(base0, rd0).filter(function(r) {
+        return !needsKlineLegs(base0, r.stock, date, undefined, _legOpts);
+      });
       if (rows0.length > 0) _publish(date, _mergeRowsWithCloud(rows0, cloudMap));
       _stage.set(date, 2);
       _legMode.set(date, legMode);
@@ -923,7 +954,9 @@ export async function ensureRange20(date, rows, opts) {
           // ★ [R20-DAILY 2026-10-30] 除了本轮真拿到 K 线的票，**腿已经在原料表里的票也要发** ——
           //   它们一个请求都没发，但 20 根腿是齐的（改造前这条路根本不存在：那时没有原料表）。
           //   判据仍守 §10：腿不够（<19 根历史腿）⇒ 发 `—`，⛔ 绝不拿 T 日一根腿冒充 20 日涨幅。
-          return acc.has(r.stock) || !needsKlineLegs(mg, r.stock, date);
+          //   ★ [R20-REQT 2026-10-30] 与 todo 用同一份 `_legOpts`：收盘口径下缺 T 腿的补位票，
+          //     在它自己的 K 线到货前一律不发布（否则发出去的是「截至昨天」的窗口，基准与同屏不一致）。
+          return acc.has(r.stock) || !needsKlineLegs(mg, r.stock, date, undefined, _legOpts);
         });
         if (fresh.length === 0) return;
         _publish(date, _mergeRowsWithCloud(fresh, cloudMap));
@@ -1001,7 +1034,8 @@ export async function ensureRange20(date, rows, opts) {
     //   这类票由下方延迟重试补齐；补齐前这一列显示 `—`（title 已写明「正在补算」）。
     const finalRows = compound20(merged, realDates).filter(function(r) {
       // ★ [R20-DAILY 2026-10-30] 同上：原料表里腿齐的票也要发（它们本轮 0 请求）。
-      return (accAll && accAll.has(r.stock)) || !needsKlineLegs(merged, r.stock, date);
+      // ★ [R20-REQT 2026-10-30] 与 todo / 分批发布同一份 `_legOpts`（收盘口径要求 T 腿存在）。
+      return (accAll && accAll.has(r.stock)) || !needsKlineLegs(merged, r.stock, date, undefined, _legOpts);
     });
     _publish(date, _mergeRowsWithCloud(finalRows, cloudMap));
     _stage.set(date, 2);            // 🔴 标记「该日已合并 K 线」⇒ 后续阶段① 不再覆盖（见 _stage 说明）

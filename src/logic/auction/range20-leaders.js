@@ -833,13 +833,20 @@ export async function ensureRange20Leaders(date, opts) {
     //   🔴 [R20-KACC] 上一轮已拿到的 K 线腿从 `_klineAcc` 复用 ⇒ 重算时 0 请求且**不会丢腿**。
     const winKey = probeDates[0] || '';
     const extraByStock = _klineAcc.get(date) || new Map();
+    // ★★ [R20-REQT 2026-10-30] 收盘口径下「缺 T 腿」也算要补（与 range20.js 同一份判据，§6）。
+    //   原因：候选池里大量票今天没上正式名单 ⇒ 没有当天行 ⇒ 没有 T 腿。若因「历史腿够」就跳过，
+    //   `compound20` 会往前多取一根凑满 20 ⇒ 锚点变成「截至昨天收盘」，
+    //   而同屏上了榜的票锚点是「今天收盘」⇒ **前10 内部基准不一致**（排名会串）。
+    //   ⚠️ 盘中（'auc'）不传：K 线的今日是现价，补了也用不上。
+    //   ⚠️ 代价可控：coarseTop 最多 25 只，一天一次；早盘主场景（'auc'）仍然 0 请求。
+    const _legOpts = { requireT: (legMode === 'close') };
     const todo = coarseTop.filter(function(t) {
       if (extraByStock.has(t.stock)) return false;
       if (_klineTried.has(t.stock + '@' + winKey)) return false;
       if (cloudMap.has(t.stock)) return false;
       // ★★ [R20-DAILY 2026-10-30] 原料表里腿够的票 ⇒ 一个请求都不发（秒开的关键）。
       //   表空 / 表不可用 ⇒ 每只都不够 ⇒ todo = 全部 ⇒ 与改造前一致（§11）。
-      return needsKlineLegs(baseLegs, t.stock, date);
+      return needsKlineLegs(baseLegs, t.stock, date, undefined, _legOpts);
     });
     if (todo.length > 0) {
       _fillCodes(todo);
