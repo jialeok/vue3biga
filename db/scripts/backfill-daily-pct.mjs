@@ -19,9 +19,11 @@
 //
 // 用法
 //   node db/scripts/backfill-daily-pct.mjs                 # 干跑（只报还缺多少，不打上游）
-//   node db/scripts/backfill-daily-pct.mjs --run           # 真跑
+//   node db/scripts/backfill-daily-pct.mjs --run           # 真跑：先 market_metrics 批量补，再 K 线补差
 //   node db/scripts/backfill-daily-pct.mjs --run --days=60 # 回溯多少个自然日（默认 60）
 //   node db/scripts/backfill-daily-pct.mjs --run --concurrency=2
+//   node db/scripts/backfill-daily-pct.mjs --run --recent  # 只补最近一个榜日那批票（每日 08:00 cron 用）
+//   node db/scripts/backfill-daily-pct.mjs --run --no-metrics  # 跳过批量源（调试用，会很慢）
 // ══════════════════════════════════════════════════════════════════════════════════════
 
 const SB = process.env.SUPABASE_URL || 'https://tonqfgeyxnnwicjopshn.supabase.co';
@@ -30,6 +32,14 @@ const ANON = process.env.SUPABASE_ANON_KEY
 
 const FUYAO = SB + '/functions/v1/fuyao-proxy';
 const KLINE_PATH = '/api/a-share/prices/historical';
+// ★★ [R20-DIRECT 2026-10-30] 直连通道（可选，强烈建议）：设了 FUYAO_API_KEY 就不走 Supabase 代理。
+//   实测（.tmpdiag/probe-kline-upstream.cjs）：走 fuyao-proxy 时 10 只里 9 只「12 秒既不返回也不断开」，
+//   45 秒超时也一样；而本机到 fuyao.aicubes.cn 的 TCP/TLS 只要 871ms（无 key 时秒回 code=2003）。
+//   ⇒ 卡的是代理那一层，不是同花顺本尊。直连后同样一只票 2.6 秒就回 52 根 K 线。
+//   用法：FUYAO_API_KEY=xxxx node db/scripts/backfill-daily-pct.mjs --run
+//   （key 与 Supabase Secrets 里的 FUYAO_API_KEY 是同一个；⛔ 不要写进仓库/提交）
+const FUYAO_KEY = process.env.FUYAO_API_KEY || '';
+const FUYAO_BASE = (process.env.FUYAO_BASE_URL || 'https://fuyao.aicubes.cn').replace(/\/$/, '');
 const PAGE = 1000;
 const UPSERT_CHUNK = 500;
 const H = { apikey: ANON, Authorization: 'Bearer ' + ANON };
@@ -48,6 +58,10 @@ const DAYS = Math.max(30, Number(argOf('days', 60)) || 60);
 //   看板真正用到的只有最新一天那 ~80~100 只 ⇒ 每天只补这批，请求量降到 ~1/4。
 //   ⚠️ 首次建表仍需全量跑一次（不带 --recent），否则历史 19 根腿凑不齐。
 const RECENT = args.includes('--recent');
+// ★★ [R20-METRICS 2026-10-30] 允许关掉「先用 market_metrics 批量补」这一步（仅调试用）。
+const NO_METRICS = args.includes('--no-metrics');
+// ★ [R20-DIRECT] 有 key 就直连（见文件头说明）；--proxy 强制走 Supabase 代理
+const DIRECT = !!FUYAO_KEY && !args.includes('--proxy');
 
 const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
 /** YYYY-MM-DD（北京时区；⛔ 不能用 toISOString 直接切 —— 那是 UTC，会差一天） */
@@ -124,8 +138,53 @@ async function sbUpsertDaily(rows) {
   throw lastErr || new Error('REST POST 失败（已重试 4 次）');
 }
 
-/** 6 位代码 → 同花顺 thscode */
-function thscode(t) {
+/** 百分比字段 → 数值（'‑3.84%' / '+1.20' / -3.84 都吃；缺失 ⇒ null，⛔ 不返回 0） */
+function numPct(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(String(v).replace('%', '').replace('+', '').trim());
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * ★★ [R20-METRICS 2026-10-30] 用 `market_metrics` 批量补逐日腿（3~4 个请求覆盖全部票 × 60 天）。
+ *
+ * 为什么必须有这一步（实测，别再"应该没问题"地推理）：
+ *   同花顺日线接口当日实测 **10 只里 9 只 12 秒既不返回也不断开**（探针 .tmpdiag/probe-kline-upstream.cjs），
+ *   而每只票要 1 次请求 ⇒ 400 只票的全量回填跑一小时只成功 51 只（今日名单 42 只里仅 17 只凑够腿）。
+ *   同一份「昨天的收盘涨幅」其实**已经在库里**（market_metrics，收盘覆盖流程写进去的），
+ *   一个 Range 分页就能全读回来 ⇒ 请求数从 ~400 降到 ~4。
+ *
+ * 🔴 门控（§10 的命根子，⛔ 不要放宽）：
+ *   只有当 `change_pct !== auc_pct_chg` 时才认这条腿 —— 那才说明 change_pct 是**收盘覆盖**写进去的。
+ *   两者相等 ⇒ 还停在早盘竞价值（从没被收盘覆盖过），拿它当收盘腿会让整条 20 日复利静默算错
+ *   （这正是记忆里「⛔ 不能拿 auction_watchlist.change_pct 当原料」的同一个坑）。
+ *   实测（.tmpdiag/verify-mm-gate.cjs，与 K 线真值逐条比对 426 条）：
+ *     门控通过 383 条 → 382 条与 K 线完全一致（99.7%），唯一不符的是 2.63 vs 2.61（两位小数舍入）；
+ *     门控拒绝 43 条 → 只有 62.8% 碰巧正确（剩下的是竞价值）⇒ 拒掉是对的。
+ *   ⚠️ 代价：收盘价恰好等于竞价值的票会被误拒（假阴性）—— 宁可少补一根，⛔ 不接受错值。
+ *
+ * @returns {Promise<{rows:Array, scanned:number, gated:number, rejected:number}>}
+ */
+async function metricsLegs(fromYmd, todayYmdStr) {
+  const scanned = await sbGet('market_metrics?select=stock,date,change_pct,auc_pct_chg&date=gte.' + fromYmd
+    + '&date=lt.' + todayYmdStr + '&limit=100000');
+  const rows = [];
+  let rejected = 0;
+  scanned.forEach(function (r) {
+    const n = String(r.stock || '').trim();
+    if (!n) return;
+    const c = numPct(r.change_pct);
+    if (c === null) return;
+    const a = numPct(r.auc_pct_chg);
+    if (a !== null && Math.abs(c - a) < 0.011) { rejected++; return; }   // 竞价值未覆盖 ⇒ ⛔ 不收
+    const d = String(r.date || '');
+    if (!d || d >= todayYmdStr) return;                                   // 只写今天之前
+    rows.push({ date: d, stock: n, pct: (c < 0 ? '' : '+') + c.toFixed(2), src: 'metrics' });
+  });
+  return { rows: rows, scanned: scanned.length, gated: rows.length, rejected: rejected };
+}
+
+/** 6 位代码 → 同花顺 thscode */function thscode(t) {
   const s = String(t || '').trim();
   if (!s || s.indexOf('.') >= 0) return s;
   if (s.length !== 6) return s;
@@ -142,19 +201,21 @@ function thscode(t) {
  * 上游实测 50% 概率「既不返回也不断开」⇒ 必须超时 + 重试（⛔ 不能靠 Promise.all 硬等）。
  */
 async function fetchBars(code, startMs, endMs) {
-  const u = new URL(FUYAO);
-  u.searchParams.set('path', KLINE_PATH);
+  const u = DIRECT ? new URL(FUYAO_BASE + KLINE_PATH) : new URL(FUYAO);
+  if (!DIRECT) u.searchParams.set('path', KLINE_PATH);
   u.searchParams.set('thscode', thscode(code));
   u.searchParams.set('interval', '1d');
   u.searchParams.set('start', String(startMs));
   u.searchParams.set('end', String(endMs));
   u.searchParams.set('adjust', 'forward');
+  // 直连带 X-api-key；走代理只带 anon Bearer（代理自己注入 key）
+  const headers = DIRECT ? { 'X-api-key': FUYAO_KEY } : { Authorization: 'Bearer ' + ANON };
   for (let attempt = 0; attempt < 5; attempt++) {
     if (attempt > 0) await sleep(1200 * attempt);
     const ctrl = new AbortController();
     const timer = setTimeout(function () { ctrl.abort(); }, 12000);
     try {
-      const r = await fetch(u.toString(), { headers: { Authorization: 'Bearer ' + ANON }, signal: ctrl.signal });
+      const r = await fetch(u.toString(), { headers: headers, signal: ctrl.signal });
       if (!r.ok) throw new Error('proxy HTTP ' + r.status);
       const j = await r.json();
       if (!j || j.code !== 0) throw new Error('fuyao code=' + (j && j.code) + ' ' + (j && j.message));
@@ -200,6 +261,7 @@ async function main() {
   const today = todayYmd();
   const from = ymd(Date.now() - DAYS * 86400000);
   console.log('今天 =', today, '｜回溯区间 =', from, '~ 昨天（⛔ 不写今天）');
+  console.log('K 线通道 =', DIRECT ? ('直连 ' + FUYAO_BASE + '（快）') : 'Supabase 代理 fuyao-proxy（实测 85% 超时）');
 
   // ① 股票全集 = 近期名单并集 ∪ 20日结果表里出现过的票（补位票一天都不能漏）
   const rowsWl = await sbGet('auction_watchlist?select=stock,code&date=gte.' + from + '&date=lt.' + today + '&limit=50000');
@@ -292,11 +354,71 @@ async function main() {
     return;
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ②.5 ★★ [R20-METRICS 2026-10-30] 先用 market_metrics 批量补（几秒 · 3~4 个请求）
+  //   把「昨天的收盘腿」从库里直接搬过来，K 线只用来补它真的没有的那几只。
+  //   实测动机：上游 85% 超时，全量走 K 线一小时只补 51 只（见 metricsLegs 文档）。
+  // ═══════════════════════════════════════════════════════════════════════════════
+  if (!NO_METRICS) {
+    try {
+      const m = await metricsLegs(from, today);
+      const todo = m.rows.filter(function (r) { return !have.has(r.date + '|' + r.stock); });
+      console.log('②.5 market_metrics 扫描 ' + m.scanned + ' 行 ⇒ 过门控 ' + m.gated
+        + ' 条（拒掉未覆盖的竞价值 ' + m.rejected + ' 条）｜其中缺的 ' + todo.length + ' 条');
+      let mWritten = 0;
+      for (let i = 0; i < todo.length; i += UPSERT_CHUNK) {
+        const chunk = todo.slice(i, i + UPSERT_CHUNK).map(function (r) {
+          return { date: r.date, stock: r.stock, pct: r.pct, src: r.src, updated_at: new Date().toISOString() };
+        });
+        await sbUpsertDaily(chunk);
+        mWritten += chunk.length;
+        chunk.forEach(function (r) { have.add(r.date + '|' + r.stock); });
+      }
+      if (mWritten > 0) console.log('   ↳ 批量写入 ' + mWritten + ' 行（这批票一个 K 线请求都不用发了）');
+    } catch (e) {
+      // 读不到就退回纯 K 线（§11：这一步是加速层，⛔ 不能因为它失败就整脚本退出）
+      console.log('⚠️ market_metrics 批量补失败（退回纯 K 线）：' + (e && e.message || e));
+    }
+  }
+
+  // ★ 逐票「最近 N 个交易日窗口是否已齐」——齐了就直接跳过，⛔ 不再为它打一次 K 线。
+  //   （改造前：每只票都请求一次，再靠 added===0 判定「本来就齐」，纯属白烧上游额度。）
+  const allDates = Array.from(new Set(Array.from(have).map(function (k) { return k.split('|')[0]; }))).sort();
+  const windowDates = allDates.slice(-19);
+  const stockDates = new Map();
+  have.forEach(function (k) {
+    const i = k.indexOf('|');
+    const d = k.slice(0, i), s = k.slice(i + 1);
+    if (!s) return;
+    if (!stockDates.has(s)) stockDates.set(s, new Set());
+    stockDates.get(s).add(d);
+  });
+  const windowFull = function (stock) {
+    const s = stockDates.get(stock);
+    if (!s || windowDates.length === 0) return false;
+    let hit = 0;
+    for (let i = 0; i < windowDates.length; i++) if (s.has(windowDates[i])) hit++;
+    return hit >= windowDates.length;
+  };
+  const beforeSkip = pool.length;
+  pool = pool.filter(function (e) { return !windowFull(e.stock); });
+  console.log('窗口(' + (windowDates[0] || '—') + '~' + (windowDates[windowDates.length - 1] || '—') + '，'
+    + windowDates.length + ' 天)已齐 ⇒ 跳过 ' + (beforeSkip - pool.length) + ' 只，还要补 ' + pool.length + ' 只');
+  if (pool.length === 0) { console.log('全部齐了，不打上游。'); return; }
+
   // ③ 并发抓 K 线 → 逐日腿 → 批量 upsert
   const startMs = Date.parse(from + 'T00:00:00+08:00') - 20 * 86400000;  // 首日要一根基准 bar
   const endMs = Date.parse(today + 'T00:00:00+08:00') + 86400000;
   const buffer = [];
   let cursor = 0, ok = 0, fail = 0, written = 0, skipped = 0;
+  // ★★ [R20-CIRCUIT 2026-10-30] 上游熔断：连续 8 只都拿不到 K 线 ⇒ 判定接口当前不可用，立刻收工。
+  //   实测（.tmpdiag/probe-kline-upstream.cjs）：10 只里 9 只「12 秒既不返回也不断开」，
+  //   45 秒超时也一样；不熔断的话 357 只 × 5 次重试 × 12 秒 ≈ 数小时空转，
+  //   期间还会持续占用同一个 API key 的配额（反而拖慢用户正在用的看板）。
+  //   ⚠️ 熔断只是「这一次不补」，⛔ 不写任何错误数据；下一天的 cron 会重试。
+  let consecutiveFail = 0;
+  let circuitOpen = false;
+  const CIRCUIT_LIMIT = 8;
   const failures = [];
   let flushChain = Promise.resolve();
   const flush = function () {
@@ -312,6 +434,7 @@ async function main() {
 
   const worker = async function () {
     for (;;) {
+      if (circuitOpen) return;
       const i = cursor++;
       if (i >= pool.length) return;
       const t = pool[i];
@@ -331,12 +454,20 @@ async function main() {
           added++;
         });
         ok++;
+        consecutiveFail = 0;
         if (added === 0) skipped++;
         if (buffer.length >= UPSERT_CHUNK) await flush();
         if ((ok + fail) % 10 === 0) console.log('  进度 ' + (ok + fail) + '/' + pool.length + '（成功 ' + ok + ' 失败 ' + fail + '）');
       } catch (e) {
         fail++;
+        consecutiveFail++;
         failures.push(t.stock + '(' + t.code + '): ' + (e && e.message || e));
+        if (consecutiveFail >= CIRCUIT_LIMIT && !circuitOpen) {
+          circuitOpen = true;
+          console.log('\n🔴 熔断：连续 ' + CIRCUIT_LIMIT + ' 只都拿不到 K 线 ⇒ 上游当前不可用，本轮停止打上游。');
+          console.log('   已写入的腿不受影响；剩余 ' + (pool.length - i - 1) + ' 只留给下次（每天 08:00 的 cron 会自动重试）。');
+          return;
+        }
       }
     }
   };
@@ -346,7 +477,8 @@ async function main() {
   await flushChain;
 
   console.log('\n=== 完成 ===');
-  console.log('成功 ' + ok + ' 只（其中 ' + skipped + ' 只本来就齐，0 新增）、失败 ' + fail + ' 只、写入 ' + written + ' 行');
+  console.log('成功 ' + ok + ' 只（其中 ' + skipped + ' 只本来就齐，0 新增）、失败 ' + fail + ' 只、写入 ' + written + ' 行'
+    + (circuitOpen ? '｜⚠️ 已熔断（上游不可用），本轮未跑完' : ''));
   if (failures.length > 0) {
     console.log('失败的票（重跑本脚本会自动重试；上游挂住时多跑几次即可）：');
     failures.slice(0, 30).forEach(function (s) { console.log('  ✘ ' + s); });
