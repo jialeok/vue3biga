@@ -11,47 +11,155 @@
      引用已删除的旧哈希文件 —— 用户看到的就是纯白，没有任何提示，也不知道该刷新。
      这里放一块静态占位，Vue 挂载时会【整体替换】掉它（成功路径零视觉变化，§11）。
      ⛔ 只是兜底提示，不碰任何业务逻辑。 -->
-<div id="app">
-  <div id="boot-fallback" style="max-width:520px;margin:18vh auto 0;padding:0 20px;text-align:center;font:14px/1.8 -apple-system,'Segoe UI','Microsoft YaHei',sans-serif;color:#374151">
-    <div style="font-size:15px;color:#111827">正在加载…</div>
+<div id="app"></div>
+<!-- ★★ [BOOT-VEIL 2026-10-31] 为什么把它挪到 #app【外面】：
+     旧实现是 #app 的【子节点】，而 Vue 的 app.mount('#app') 会把这个容器的子节点全部清掉。
+     ⇒ 只要「Vue 挂上了、但界面没渲染出东西」（authReady 没变 true / 路由分包没到 / 组件 setup 抛错），
+       这块兜底提示就【一起消失】了 —— 用户看到的就是纯白 + 标签页一直转圈，
+       既没有报错也没有按钮，只能靠猜。这是「一片空白」真正的结构性根因，不是网络问题。
+     现在它是 #app 的兄弟节点、固定定位的白底蒙层：
+       · 应用真正渲染出内容 → 由 __bootDone() 把它 display:none（零视觉变化）；
+       · 启动链抛错 / 超时 → 由 __bootFail() 把它重新显示出来，并写上【真实原因】。
+     ⛔ 只做「可见性」兜底，不碰任何业务逻辑（§11 零行为变化）。 -->
+<div id="boot-veil" style="position:fixed;top:0;right:0;bottom:0;left:0;z-index:99999;background:#fff;overflow:auto;display:block">
+  <div style="max-width:520px;margin:18vh auto 0;padding:0 20px;text-align:center;font:14px/1.8 -apple-system,'Segoe UI','Microsoft YaHei',sans-serif;color:#374151">
+    <div id="boot-title" style="font-size:15px;color:#111827">正在加载…</div>
     <div id="boot-note" style="margin-top:10px;color:#6b7280">首次打开要拉取数据，稍等一下</div>
     <div id="boot-retry" style="margin-top:16px;display:none">
       <div style="color:#b91c1c;font-weight:600">页面没能加载出来</div>
-      <div id="boot-reason" style="margin-top:6px;color:#6b7280"></div>
-      <button type="button" onclick="location.reload()" style="margin-top:14px;padding:9px 20px;border:1px solid #d1d5db;border-radius:6px;background:#fff;color:#111827;font-size:14px;cursor:pointer">重新加载</button>
+      <div id="boot-reason" style="margin-top:6px;color:#6b7280;word-break:break-all"></div>
+      <div style="margin-top:14px">
+        <button type="button" onclick="location.reload()" style="padding:9px 20px;border:1px solid #d1d5db;border-radius:6px;background:#fff;color:#111827;font-size:14px;cursor:pointer">重新加载</button>
+        <button type="button" onclick="window.__bootHardReset&&window.__bootHardReset()" style="margin-left:10px;padding:9px 20px;border:1px solid #d1d5db;border-radius:6px;background:#fff;color:#6b7280;font-size:14px;cursor:pointer">清缓存重载</button>
+      </div>
+      <div id="boot-log" style="margin-top:14px;color:#9ca3af;font-size:12px;white-space:pre-wrap;text-align:left"></div>
     </div>
   </div>
 </div>
 <script>
-  // ★★ [BOOT-FALLBACK 2026-10-25] 看门狗：脚本没跑起来时，把「一片空白」换成一句人话 + 一个刷新按钮。
-  //   触发条件（三选一）：
-  //     ① 12 秒后 #app 里还是这块占位 → 脚本压根没执行完（网速太慢 / 被拦 / 404）；
-  //     ② 入口 <script>/<link> 加载失败（捕获阶段监听，能拿到资源错误）；
-  //     ③ 动态 import 失败（路由分包拉不下来 —— 典型症状就是「刚更新完，手机还开着旧页面」）。
-  //   ⛔ Vue 一挂载就会把 #boot-fallback 整块替换掉 ⇒ 以下判定在这种情况全部 no-op（零误报）。
+  // ★★ [BOOT-VEIL 2026-10-31] 启动蒙层的唯一出口 + 看门狗。
+  //   设计原则：**宁可多显示一句人话，也不要一片空白**。所以这个蒙层只会在两种情况下消失：
+  //     ① 应用明确调用 __bootDone()（渲染成功）；
+  //     ② 看门狗发现 #app 里确实已经有可见内容 —— 双保险，防止应用自己忘了调用。
+  //   反过来，一旦「启动了但没渲染」，__bootFail() 会把它重新盖回来并写明原因。
   (function () {
-    function fail(reason) {
-      var fb = document.getElementById('boot-fallback');
-      if (!fb) return;                       // Vue 已接管 ⇒ 什么都不做
+    var veil = document.getElementById('boot-veil');
+    var HARD_RELOAD_KEY = 'boot_hard_reload_v1';
+    var done = false;
+
+    /** 最近几条调试日志（debug-log.js 写进 sessionStorage 的环形缓冲）—— 白屏时唯一可带出的现场 */
+    function tailLogs(n) {
+      try {
+        var raw = sessionStorage.getItem('jiwang_dbg_log_v1');
+        if (!raw) return '';
+        var arr = JSON.parse(raw);
+        if (!arr || !arr.length) return '';
+        return arr.slice(-(n || 4)).join('\n');
+      } catch (e) { return ''; }
+    }
+
+    window.__bootDone = function () {
+      if (done) return;
+      done = true;
+      if (veil) veil.style.display = 'none';
+      try { sessionStorage.removeItem(HARD_RELOAD_KEY); } catch (e) {}
+    };
+
+    window.__bootFail = function (reason) {
+      done = false;
+      if (veil) veil.style.display = 'block';
       var box = document.getElementById('boot-retry');
       var why = document.getElementById('boot-reason');
-      // 先到先得：资源 404 的具体原因比「12 秒超时」更有用，⛔ 不要被后面的通用提示覆盖掉
-      if (why && reason && !why.textContent) why.textContent = reason;
+      // 先到先得：资源 404 / 组件抛错的具体原因比「超时」有价值，⛔ 不要被后面的通用提示覆盖
+      if (why && reason && !why.textContent) why.textContent = String(reason);
       if (box) box.style.display = 'block';
       var note = document.getElementById('boot-note');
       if (note) note.textContent = '';
+      var title = document.getElementById('boot-title');
+      if (title) title.style.display = 'none';   // 别再同时显示「正在加载…」，否则自相矛盾
+      var log = document.getElementById('boot-log');
+      if (log && !log.textContent) {
+        var t = tailLogs(4);
+        if (t) log.textContent = '最近日志：\n' + t;
+      }
+    };
+
+    /** 清掉浏览器缓存里的旧 index.html 再重载（部署后拿到旧哈希文件的最后手段） */
+    window.__bootHardReset = function () {
+      try { sessionStorage.removeItem(HARD_RELOAD_KEY); } catch (e) {}
+      try {
+        if (window.caches && caches.keys) {
+          caches.keys().then(function (ks) {
+            return Promise.all(ks.map(function (k) { return caches.delete(k); }));
+          }).then(function () { location.replace(location.pathname + '?r=' + Date.now() + location.hash); });
+          return;
+        }
+      } catch (e) {}
+      location.replace(location.pathname + '?r=' + Date.now() + location.hash);
+    };
+
+    /**
+     * 带 cache-buster 重载【一次】。
+     * 这是「旧 index.html 指向已被删除的旧哈希文件」的唯一有效解法 —— GitHub Pages 的 HTML
+     * 缓存是 max-age=600，光按 F5 很可能还是那份旧的，必须换 URL 才拿得到新 HTML。
+     * ⛔ 只自动重载一次（sessionStorage 记旗标）：真的 404 时不会变成刷新死循环。
+     * @returns {boolean} 是否已经触发了重载
+     */
+    function autoReloadOnce() {
+      try {
+        if (sessionStorage.getItem(HARD_RELOAD_KEY)) return false;
+        sessionStorage.setItem(HARD_RELOAD_KEY, '1');
+        location.replace(location.pathname + '?r=' + Date.now() + location.hash);
+        return true;
+      } catch (e) { return false; }
     }
-    setTimeout(function () { fail('超过 12 秒还没加载完，可能是网络太慢或被拦截。'); }, 12000);
+
+    /**
+     * 路由分包 / 入口脚本的动态 import 失败。
+     * 先尝试自动重载一次（覆盖「刚部署完、浏览器还拿着旧 HTML」这个最常见的白屏形态），
+     * 重载过还是不行 ⇒ 把原因写到蒙层上给按钮。
+     */
+    window.__bootChunkError = function (msg) {
+      if (autoReloadOnce()) return;
+      window.__bootFail('页面代码块加载失败：' + String(msg || '未知原因'));
+    };
+
+    setTimeout(function () {
+      var app = document.getElementById('app');
+      // ⚠️ 这里【不能】因为「蒙层已经撤掉」就提前 return：
+      //   首屏路由就绪后我们会撤蒙层，而那一刻如果 `authReady` 还没变 true（启动链里抛了错），
+      //   页面其实还是一片空白 —— 那才是最需要提示的状态。所以统一按「#app 里有没有元素」判。
+      if (app && app.childElementCount > 0) { window.__bootDone(); return; }
+      window.__bootFail('超过 20 秒还没有渲染出任何内容（可能是网络被拦、或启动过程里抛错了）。');
+    }, 20000);
+
+    // ⚠️ 这两个全局监听只在【还没启动成功】时说话：应用已经正常跑起来之后，
+    //    个别业务异步错误不该再把整屏盖成红色面板（那会从「白屏」变成「误报红屏」）。
     window.addEventListener('error', function (e) {
+      if (done) return;
       var t = e && e.target;
-      if (t && (t.tagName === 'SCRIPT' || t.tagName === 'LINK')) {
-        fail('入口文件加载失败：' + String(t.src || t.href || '').split('/').pop());
+      if (t && t.tagName === 'SCRIPT') {
+        // 入口 / 懒加载脚本 404（浏览器给的是 error 而不是 unhandledrejection）
+        if (autoReloadOnce()) return;
+        window.__bootFail('入口文件加载失败：' + String(t.src || '').split('/').pop());
+        return;
+      }
+      if (t && t.tagName === 'LINK') {
+        // 样式表失败只是「没样式」，内容仍然可见 ⇒ ⛔ 不要盖成红色面板
+        try { console.warn('[BOOT] 样式表加载失败：', t.href); } catch (x) {}
+        return;
+      }
+      // 运行时的同步异常（含 Vue 组件 setup / render 抛错）—— 这是白屏最需要看见的那类
+      var m = String((e && e.message) || '');
+      if (m && !/ResizeObserver|Script error/i.test(m)) {
+        window.__bootFail('页面脚本出错：' + m);
       }
     }, true);
     window.addEventListener('unhandledrejection', function (e) {
+      if (done) return;
       var m = String((e && e.reason && (e.reason.message || e.reason)) || '');
       if (/dynamically imported module|Importing a module script failed|module script/i.test(m)) {
-        fail('页面代码块加载失败，多半是缓存过期或网络被拦。');
+        window.__bootChunkError(m);
       }
     });
   })();

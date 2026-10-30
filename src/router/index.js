@@ -9,40 +9,39 @@ const router = createRouter({
   routes,
 });
 
-// ★★ [CHUNK-FALLBACK 2026-10-25] 「懒加载的页面代码块拉不下来」不要再变成一片空白。
+// ★★ [CHUNK-FALLBACK 2026-10-25 / 2026-10-31 重写]
 //
-// 症状（用户实测）：手机上打开应用一片空白，电脑上正常；刚部署完那几分钟最容易出现。
+// 症状（用户实测）：打开应用一片空白，标签页一直转圈；刚部署完那几分钟最容易出现。
 // 根因链：`DashboardView` 是 `() => import(...)` 懒加载 —— 部署换了文件名哈希后，
-//   手机缓存里那份 index.html 仍指向【已被删除】的旧 chunk ⇒ 动态 import 失败 ⇒
-//   Vue Router 只在内部报错，`<RouterView>` 渲染成【空】⇒ 页面纯白、没有报错、也不会重试。
-//   而 `App.vue` 的 `<RouterView v-if="authReady" />` 决定了这一刻页面上不会有任何别的元素。
-// ⇒ 兜底成一句人话 + 一个「重新加载」按钮（⛔ 不自动 reload：那会在真的 404 时变成刷新死循环）。
-// ⛔ 只影响「加载失败」这条路径，正常路径零行为变化（§11）。
+//   浏览器缓存里那份 index.html 仍指向【已被删除】的旧 chunk（GitHub Pages 的 HTML
+//   缓存 max-age=600）⇒ 动态 import 失败 ⇒ Vue Router 只在内部报错 ⇒ `<RouterView>` 渲染成空。
+//
+// 🔴 旧实现在这里是 `app.innerHTML = ''` 再手搓一块提示 —— 有两个问题：
+//   ① 它把【已经挂载好的 Vue 应用】整个清空（包括登录浮层 / 各种模态），只为显示一行字；
+//   ② 它只在 `app` 容器里写字，而启动蒙层已经把屏幕盖住了 ⇒ 手机上仍然看不到。
+// ✅ 现在统一交给 index.html 的启动蒙层（`__bootChunkError`）：
+//   · 若属于「旧缓存 → 新 chunk 404」，带 cache-buster 自动重载【一次】（sessionStorage 记旗标，
+//     真 404 时不会变成刷新死循环）—— 这一条会把「刚部署完必白屏」变成用户无感的自动恢复；
+//   · 否则把失败原因写到蒙层上，给「重新加载 / 清缓存重载」两个按钮。
+// ⛔ 正常路径零行为变化（§11）。
 router.onError(function (err) {
   try {
     if (typeof console !== 'undefined' && console.error) console.error('[ROUTER] 页面代码块加载失败:', err);
-    const app = document.getElementById('app');
-    if (!app) return;
-    app.innerHTML = '';
-    const box = document.createElement('div');
-    box.style.cssText = 'max-width:520px;margin:18vh auto 0;padding:0 20px;text-align:center;'
-      + "font:14px/1.8 -apple-system,'Segoe UI','Microsoft YaHei',sans-serif;color:#374151";
-    const t1 = document.createElement('div');
-    t1.style.cssText = 'font-size:15px;color:#b91c1c;font-weight:600';
-    t1.textContent = '页面代码块加载失败';
-    const t2 = document.createElement('div');
-    t2.style.cssText = 'margin-top:8px;color:#6b7280';
-    t2.textContent = '多半是刚更新过、手机里还是旧版本。点下面按钮重新加载就好。';
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.textContent = '重新加载';
-    btn.style.cssText = 'margin-top:16px;padding:9px 20px;border:1px solid #d1d5db;border-radius:6px;'
-      + 'background:#fff;color:#111827;font-size:14px;cursor:pointer';
-    btn.addEventListener('click', function () { location.reload(); });
-    box.appendChild(t1);
-    box.appendChild(t2);
-    box.appendChild(btn);
-    app.appendChild(box);
+    var msg = (err && (err.message || err.toString())) || '未知原因';
+    if (typeof window !== 'undefined' && window.__bootChunkError) {
+      window.__bootChunkError(msg);
+      return;
+    }
+    // 极端兜底：蒙层脚本没执行（几乎不可能）⇒ 仍然给人一句话
+    var app = document.getElementById('app');
+    if (app) {
+      app.innerHTML = '';
+      var box = document.createElement('div');
+      box.style.cssText = 'max-width:520px;margin:18vh auto 0;padding:0 20px;text-align:center;'
+        + "font:14px/1.8 -apple-system,'Segoe UI','Microsoft YaHei',sans-serif;color:#b91c1c";
+      box.textContent = '页面代码块加载失败，请重新加载：' + msg;
+      app.appendChild(box);
+    }
   } catch (e) {
     /* 兜底的兜底：⛔ 不因为兜底本身再抛错（否则连这句提示都渲染不出来） */
   }

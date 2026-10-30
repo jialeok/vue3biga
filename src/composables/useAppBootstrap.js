@@ -92,6 +92,24 @@ export function useAppBootstrap(loginRef) {
     });
   }
 
+  /** 撤掉 index.html 里的启动蒙层（应用已经有可见内容了） */
+  function bootDone() {
+    try { if (typeof window !== 'undefined' && window.__bootDone) window.__bootDone(); } catch (e) {}
+  }
+  /** 启动链异常 ⇒ 让蒙层把原因显示出来（⛔ 不再静默白屏） */
+  function bootFail(reason) {
+    try { if (typeof window !== 'undefined' && window.__bootFail) window.__bootFail(reason); } catch (e) {}
+  }
+
+  /**
+   * 显示密码框。
+   * ★★ [BOOT-VEIL 2026-10-31] 必须同时撤掉启动蒙层 —— 否则蒙层盖在密码框上面，用户看不到也点不了。
+   */
+  function revealLogin() {
+    if (loginRef.value && loginRef.value.showPassword) loginRef.value.showPassword();
+    bootDone();
+  }
+
   function setupEventBus() {
     _on('data:realtime-update', function (data) {
       if (!data || !data.boards || data.boards === 'all') {
@@ -265,15 +283,30 @@ export function useAppBootstrap(loginRef) {
       const savedToken = localStorage.getItem('sessionToken'); // 合规：登录会话标记（§8 允许）
       if (!savedToken) {
         localStorage.removeItem('unlocked'); // 合规：登录会话标记（§8 允许）
-        loginRef.value && loginRef.value.showPassword();
+        revealLogin();
         return;
       }
 
+      // ★★ [BOOT-ORDER 2026-10-31] 🔴 这里原来把 `startSessionPoll()` 放在 `onLoginSuccess()`
+      //   【之前】，而且**没有任何 try/catch**。它是 12 个 Realtime 频道订阅的同步入口，
+      //   只要其中任何一个抛错（Supabase 建频道失败 / 配置缺失 / 某张表的订阅句柄异常），
+      //   `onLoginSuccess()` 就【永远不会执行】 ⇒ `authReady` 恒为 false
+      //   ⇒ `<RouterView v-if="authReady">` 不渲染、`LoginOverlay` 的 `v-if` 也是关的
+      //   ⇒ #app 里一个可见元素都没有 = **纯白屏**，连「正在加载」都被 Vue 挂载时清掉了。
+      //   ✅ 改法（两件事，缺一不可）：
+      //     ① 顺序反过来：先让应用上屏（authReady=true ⇒ 渲染），再启动实时订阅；
+      //     ② 实时订阅包一层 try/catch —— 它挂了只是「不实时」，绝不该导致打不开。
+      //   ⛔ 订阅本身一行没删、参数没改，只是降级成「失败可见但可忽略」（§10）。
       authStore.sessionToken = savedToken;
-      startSessionPoll();
       onLoginSuccess();
+      try {
+        startSessionPoll();
+      } catch (e) {
+        console.error('[BOOT] startSessionPoll 失败（实时刷新不可用，但应用照常可用）:', e);
+        _dbgLog('[BOOT] startSessionPoll 失败: ' + ((e && e.message) || e));
+      }
     } else {
-      loginRef.value && loginRef.value.showPassword();
+      revealLogin();
     }
   });
 
