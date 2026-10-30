@@ -24,6 +24,31 @@
 //   node db/scripts/backfill-daily-pct.mjs --run --concurrency=2
 //   node db/scripts/backfill-daily-pct.mjs --run --recent  # 只补最近一个榜日那批票（每日 08:00 cron 用）
 //   node db/scripts/backfill-daily-pct.mjs --run --no-metrics  # 跳过批量源（调试用，会很慢）
+//   node db/scripts/backfill-daily-pct.mjs --run --source=qt   # 强制只用腾讯日线（同花顺通道挂掉时用）
+//   node db/scripts/backfill-daily-pct.mjs --run --source=fuyao # 强制只用同花顺（原行为）
+// ══════════════════════════════════════════════════════════════════════════════════════
+//
+// ★★ [R20-QT 2026-10-30] 新增「腾讯前复权日线」这条取数通道（默认 --source=auto 时【优先】用它）
+//
+//   为什么加（当晚实测，同一天内先后踩到两条上游都不可用）：
+//     · fuyao-proxy → 同花顺：**整条断掉**。给足 150 秒仍不返回 ——
+//       一次 HTTP 546 `WORKER_RESOURCE_LIMIT`（边缘函数算力耗尽），一次 502
+//       `代理请求失败: error sending request for url (https://fuyao.aicubes.cn/...)`（Deno 发不出去）。
+//       连 `calendar/trading-days` 这种 2 秒接口也一起 20 秒超时 ⇒ 不是「K 线慢」，是这一层到不了上游。
+//     · numcat daily（另一条批量源）：`code=403 今日调用额度已用完`（免费额度每天 10 次，0 点重置）。
+//
+//   口径可信度（已验证，不是「应该一样」）：
+//     拿库里已有的同花顺 src='kline' 真值逐条比对腾讯 qfq 换算出来的日涨幅 ——
+//     12 只 × 44 天 = **524 条 / 524 条完全一致（±0.02 容差内 100%）**。
+//     日涨幅 = 相邻两日前复权收盘价之比，两家都用交易所除权因子，理论上就该相等，实测也对齐。
+//     ⚠️ 东财（push2his）同法比对**对不上**，且约 15 次请求后按 IP 限流（UND_ERR_SOCKET）⇒ 已弃用。
+//
+//   落库纪律：
+//     · 腾讯来的腿写 `src='qt'`（⛔ 不冒充 'kline'，保留可追溯的来源），读取方不按 src 过滤，行为等价；
+//     · 同一条腿若表里已有（不论 src）一律不覆盖 —— 幂等性与旧行为完全一致；
+//     · 今天那根照旧跳过（legsFromBars 已排除 today）。
+//
+//   ⛔ 这只解决「历史腿」这一件事。前端运行时该走哪条通道是另一回事，本文件不碰。
 // ══════════════════════════════════════════════════════════════════════════════════════
 
 const SB = process.env.SUPABASE_URL || 'https://tonqfgeyxnnwicjopshn.supabase.co';
@@ -62,6 +87,12 @@ const RECENT = args.includes('--recent');
 const NO_METRICS = args.includes('--no-metrics');
 // ★ [R20-DIRECT] 有 key 就直连（见文件头说明）；--proxy 强制走 Supabase 代理
 const DIRECT = !!FUYAO_KEY && !args.includes('--proxy');
+// ★★ [R20-QT] 取数通道：auto（默认，腾讯优先 / 同花顺兜底）| qt（只腾讯）| fuyao（只同花顺，原行为）
+const SOURCE = String(argOf('source', 'auto')).toLowerCase();
+if (['auto', 'qt', 'fuyao'].indexOf(SOURCE) < 0) {
+  console.error('--source 只能是 auto | qt | fuyao（收到 ' + SOURCE + '）');
+  process.exit(2);
+}
 
 const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
 /** YYYY-MM-DD（北京时区；⛔ 不能用 toISOString 直接切 —— 那是 UTC，会差一天） */
@@ -239,6 +270,71 @@ async function fetchBars(code, startMs, endMs) {
 }
 
 /**
+ * 腾讯前复权日线（R20-QT）。
+ *
+ * 接口：https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=<sym>,day,<from>,<to>,<n>,qfq
+ *   sym = sh/sz/bj + 6 位代码；返回 data[sym].qfqday = [[日期, 开, 收, 高, 低, 量, ...], ...]
+ *   ⚠️ 与同花顺一样是【前复权】口径（已用库里 524 条 src='kline' 真值验证，100% 一致）。
+ *
+ * 为什么把重试压到 3 次 / 单次 8 秒：实测这台机器到 web.ifzq.gtimg.cn 只要 75~310ms，
+ * 挂住的情况没出现过；真出问题也应该是「快速失败 + 换 fuyao 兜底」，而不是在这里耗 60 秒。
+ */
+async function fetchBarsQt(code, startMs, endMs) {
+  const c = String(code || '').trim();
+  if (!/^\d{6}$/.test(c)) throw new Error('代码不合法: ' + code);
+  const sym = (/^(6|9)/.test(c) ? 'sh' : (/^(4|8|92)/.test(c) ? 'bj' : 'sz')) + c;
+  const u = 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param='
+    + sym + ',day,' + ymd(startMs) + ',' + ymd(endMs) + ',320,qfq';
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await sleep(600 * attempt);
+    const ctrl = new AbortController();
+    const timer = setTimeout(function () { ctrl.abort(); }, 8000);
+    try {
+      const r = await fetch(u, {
+        headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://gu.qq.com/' },
+        signal: ctrl.signal,
+      });
+      if (!r.ok) throw new Error('qt HTTP ' + r.status);
+      const j = await r.json();
+      const d = (j && j.data && j.data[sym]) || {};
+      const rows = d.qfqday || d.day || [];
+      const out = [];
+      rows.forEach(function (b) {
+        const dt = String((b && b[0]) || '').slice(0, 10);
+        const close = Number(b && b[2]);
+        if (!dt || !Number.isFinite(close) || close <= 0) return;
+        out.push({ ymd: dt, close: close });
+      });
+      out.sort(function (a, b2) { return a.ymd < b2.ymd ? -1 : (a.ymd > b2.ymd ? 1 : 0); });
+      // 空序列 = 该票在这段时间没有 bar（停牌 / 退市 / 北交所不支持）⇒ 交给上层判定，⛔ 不写 0%
+      if (out.length === 0) throw new Error('qt 空序列');
+      return out;
+    } catch (e) {
+      lastErr = e;
+      const msg = e && e.message ? e.message : String(e);
+      if (/代码不合法/.test(msg)) throw e;   // 参数错，重试无意义
+    } finally { clearTimeout(timer); }
+  }
+  throw lastErr || new Error('qt 取数失败（已重试 3 次）');
+}
+
+/**
+ * 通道选择（R20-QT）：auto = 腾讯优先、同花顺兜底；qt / fuyao = 只用指定通道。
+ * 返回 { bars, src }，src 决定落库来源列（'qt' / 'kline'）。
+ */
+async function fetchBarsAuto(code, startMs, endMs) {
+  if (SOURCE === 'fuyao') return { bars: await fetchBars(code, startMs, endMs), src: 'kline' };
+  try {
+    return { bars: await fetchBarsQt(code, startMs, endMs), src: 'qt' };
+  } catch (e) {
+    if (SOURCE === 'qt') throw e;
+    console.log('   ↳ 腾讯取不到 ' + code + '（' + (e && e.message || e) + '）→ 退回同花顺');
+    return { bars: await fetchBars(code, startMs, endMs), src: 'kline' };
+  }
+}
+
+/**
  * 日线序列 → 逐日涨幅腿（只取「今天之前」的日子）。
  * ⚠️ 必须排除 todayYmd()：今天那根盘中是现价，写进原料表会被当成收盘腿（静默算错，最难查）。
  */
@@ -261,7 +357,11 @@ async function main() {
   const today = todayYmd();
   const from = ymd(Date.now() - DAYS * 86400000);
   console.log('今天 =', today, '｜回溯区间 =', from, '~ 昨天（⛔ 不写今天）');
-  console.log('K 线通道 =', DIRECT ? ('直连 ' + FUYAO_BASE + '（快）') : 'Supabase 代理 fuyao-proxy（实测 85% 超时）');
+  console.log('K 线通道 =', SOURCE === 'qt'
+    ? '腾讯前复权日线（src=qt；已用 524 条同花顺真值验证 100% 一致）'
+    : (SOURCE === 'fuyao'
+      ? (DIRECT ? ('直连 ' + FUYAO_BASE + '（快）') : 'Supabase 代理 fuyao-proxy（实测 85% 超时）')
+      : 'auto：腾讯优先 / 同花顺兜底（fuyao-proxy 当前实测不可用）'));
 
   // ① 股票全集 = 近期名单并集 ∪ 20日结果表里出现过的票（补位票一天都不能漏）
   const rowsWl = await sbGet('auction_watchlist?select=stock,code&date=gte.' + from + '&date=lt.' + today + '&limit=50000');
@@ -289,6 +389,27 @@ async function main() {
       const c = String(r.code || '').trim();
       if (n && c) codeOf.set(n, c);
     });
+  }
+
+  // ★★ [R20-CODE 2026-10-30] 第三重兜底：market_metrics.code。
+  //   为什么必须有：实测有 5 只票（华阳智能 / 科瑞思 / 联明股份 / 赛福天 / 青岛食品）
+  //   `auction_watchlist.code` 与 `stockcodemap` 里【都没有代码】⇒ 以前整只票被「缺代码，跳过」，
+  //   而这 5 只恰恰就是 20 日涨幅一直算不出来的那几只。它们的代码在 `market_metrics` 里是有的
+  //   （早盘落库时写入），所以在这里补上，纯读、不写库。
+  const stillNoCode = Array.from(codeOf.keys()).filter(function (n) { return !codeOf.get(n); });
+  for (let i = 0; i < stillNoCode.length; i += 100) {
+    const chunk = stillNoCode.slice(i, i + 100);
+    const list = '(' + chunk.map(function (n) { return '"' + n.replace(/"/g, '').replace(/[()]/g, '') + '"'; }).join(',') + ')';
+    try {
+      const mm = await sbGet('market_metrics?select=stock,code&stock=in.' + encodeURIComponent(list));
+      mm.forEach(function (r) {
+        const n = String(r.stock || '').trim();
+        const c = String(r.code || '').trim();
+        if (n && /^\d{6}$/.test(c) && !codeOf.get(n)) codeOf.set(n, c);
+      });
+    } catch (e) {
+      console.log('⚠️ market_metrics 补代码失败（不影响其余票）：' + (e && e.message || e));
+    }
   }
 
   const poolAll = Array.from(codeOf.entries())
@@ -439,8 +560,8 @@ async function main() {
       if (i >= pool.length) return;
       const t = pool[i];
       try {
-        const bars = await fetchBars(t.code, startMs, endMs);
-        const legs = legsFromBars(bars, today);
+        const got = await fetchBarsAuto(t.code, startMs, endMs);
+        const legs = legsFromBars(got.bars, today);
         let added = 0;
         legs.forEach(function (l) {
           if (have.has(l.date + '|' + t.stock)) return;
@@ -448,7 +569,7 @@ async function main() {
             date: l.date,
             stock: t.stock,
             pct: (l.pct < 0 ? '' : '+') + l.pct.toFixed(2),
-            src: 'kline',
+            src: got.src,
             updated_at: new Date().toISOString(),
           });
           added++;
