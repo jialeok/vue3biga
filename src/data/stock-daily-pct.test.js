@@ -23,17 +23,22 @@ let rangesAsked = [];   // 每次真实发生的分页请求（Range 起点）
 let mode = 'ok';
 
 function makeQuery() {
-    const st = { f: null, t: null };
+    const st = { f: null, t: null, names: null };
     const b = {
         select: function() { return b; },
+        in: function(_col, list) { st.names = list; return b; },
         gte: function(_col, v) { st.f = v; return b; },
         lte: function(_col, v) { st.t = v; return b; },
         order: function() { return b; },
         range: function(from) {
             rangesAsked.push(from);
             if (mode === 'fail') return Promise.resolve({ data: null, error: { message: 'boom' } });
-            // 模拟 PostgREST：先按区间过滤，再按 1000 行分页
-            const hit = ALL_ROWS.filter(function(r) { return r.date >= st.f && r.date <= st.t; });
+            // 模拟 PostgREST：先按区间 + in 过滤，再按 1000 行分页
+            const hit = ALL_ROWS.filter(function(r) {
+                if (!(r.date >= st.f && r.date <= st.t)) return false;
+                if (st.names && st.names.indexOf(r.stock) < 0) return false;
+                return true;
+            });
             return Promise.resolve({ data: hit.slice(from, from + 1000), error: null });
         },
     };
@@ -44,7 +49,7 @@ vi.mock('./supabase-client.js', function() {
     return { getSupabase: function() { return { from: makeQuery }; } };
 });
 
-import { readDailyPctRows, clearDailyPctCache } from './stock-daily-pct.js';
+import { readDailyPctRows, readDailyPctRowsFor, clearDailyPctCache } from './stock-daily-pct.js';
 
 /** Map<stock, Map<date, pct>> → 便于断言的纯对象 */
 function plain(map) {
@@ -116,6 +121,71 @@ describe('readDailyPctRows · 覆盖命中（R20-COVER）', function() {
 
     it('空入参 ⇒ 返回空 Map 且不发请求', async function() {
         const m = await readDailyPctRows('', '');
+        expect(m.size).toBe(0);
+        expect(rangesAsked).toEqual([]);
+    });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// [R20-SUBSET 2026-10-30] 「只读这几只票」的收窄读法
+//
+// 为什么锁这几条：盘中 T 腿口径是竞价，云端结果表里的 close 行命中不了 ⇒ 阶段① 必须读原料表。
+// 全市场读是 414 只 × 45 天 ≈ 1.8 万行 / 16 个请求 / 实测 19.0 秒；收窄到看板那几十只 ⇒ 2 个请求。
+// 但收窄读的缓存**不能**被全量读复用（少票会被静默当成「这些票没腿」）—— 这是本组的红线。
+// ══════════════════════════════════════════════════════════════════════════════════════
+describe('readDailyPctRowsFor · 按票收窄（R20-SUBSET）', function() {
+    beforeEach(function() {
+        clearDailyPctCache();
+        rangesAsked = [];
+        mode = 'ok';
+    });
+
+    it('只读指定票：顺序分页（没满即止，⛔ 不并行发空页），只返回这些票', async function() {
+        const m = await readDailyPctRowsFor(['A'], '2026-10-20', '2026-10-22');
+        expect(rangesAsked).toEqual([0]);            // 3 行 < 1000 ⇒ 只发 1 个请求
+        expect(plain(m)).toEqual({ A: { '2026-10-20': 1, '2026-10-21': 3, '2026-10-22': -5 } });
+    });
+
+    it('同区间同票集再读 ⇒ 0 请求', async function() {
+        await readDailyPctRowsFor(['A', 'B'], '2026-10-20', '2026-10-22');
+        rangesAsked = [];
+        const m2 = await readDailyPctRowsFor(['A', 'B'], '2026-10-20', '2026-10-22');
+        expect(rangesAsked).toEqual([]);
+        expect(plain(m2).B['2026-10-22']).toBe(6);
+    });
+
+    it('已读区间更宽 ⇒ 0 请求切片，且只切出本次要的票/区间', async function() {
+        await readDailyPctRowsFor(['A', 'B'], '2026-10-19', '2026-10-22');
+        rangesAsked = [];
+        const sub = await readDailyPctRowsFor(['A'], '2026-10-21', '2026-10-22');
+        expect(rangesAsked).toEqual([]);
+        expect(plain(sub)).toEqual({ A: { '2026-10-21': 3, '2026-10-22': -5 } });
+    });
+
+    it('🔴 缓存里的票集更窄 ⇒ 必须重新请求（⛔ 绝不拿缺票的缓存冒充）', async function() {
+        await readDailyPctRowsFor(['A'], '2026-10-20', '2026-10-22');
+        rangesAsked = [];
+        const m = await readDailyPctRowsFor(['A', 'B'], '2026-10-20', '2026-10-22');
+        expect(rangesAsked.length).toBeGreaterThan(0);
+        expect(plain(m).B['2026-10-21']).toBe(4);      // B 的腿必须真的拿到
+    });
+
+    it('🔴 与全市场读的缓存完全隔离：全量读过的区间不能当「这些票都读过」', async function() {
+        await readDailyPctRows('2026-10-20', '2026-10-22');   // 全市场已读
+        rangesAsked = [];
+        const m = await readDailyPctRowsFor(['A'], '2026-10-20', '2026-10-22');
+        // 反过来是安全的（全量 ⊇ 收窄），命中 0 请求也行；但必须是「A 的腿正确」
+        expect(plain(m).A['2026-10-21']).toBe(3);
+    });
+
+    it('读失败 ⇒ 返回 null（调用方据此回退全量读，§10）', async function() {
+        mode = 'fail';
+        const m = await readDailyPctRowsFor(['A'], '2026-10-20', '2026-10-22');
+        expect(m).toBeNull();
+    });
+
+    it('空票集 ⇒ 返回空 Map 且不发请求', async function() {
+        const m = await readDailyPctRowsFor([], '2026-10-20', '2026-10-22');
         expect(m.size).toBe(0);
         expect(rangesAsked).toEqual([]);
     });

@@ -46,7 +46,7 @@ import { fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
 // [R20-CLOUD 2026-10-20] 与主 toggle 共用同一张结果表（stock_range20_pct）⇒ 谁先算谁落库、另一方 0 请求复用
 import { readRange20Rows, pickUsableRows, upsertRange20Rows } from '../../data/stock-range20-cache.js';
 // ★★ [R20-DAILY 2026-10-30 用户口径] 逐日腿原料表（与主 toggle 共用同一份原料，§6）
-import { readDailyPctRows, upsertDailyPctRows } from '../../data/stock-daily-pct.js';
+import { readDailyPctRows, readDailyPctRowsFor, upsertDailyPctRows } from '../../data/stock-daily-pct.js';
 import { _dbgLog } from '../../data/debug-log.js';
 import { getBoardKind, BOARD_MAIN, BOARD_BJ, BOARD_GROWTH, BOARD_STAR } from './limit-up.js';
 import { _getLocalTodayStr } from '../tagTitles/rules.js';
@@ -735,27 +735,11 @@ export async function ensureRange20Leaders(date, opts) {
       tIsToday: tIsToday,
       afterClose: afterClose,
     });
-    // ★★ [R20-DAILY 2026-10-30 用户口径] 历史腿改从【逐日腿原料表】取（同花顺日线换算，可信）。
-    //   用户原话：「历史数据先存好，次日在算次日……看表里有没有数据，有的话看哪天没有补哪天」。
-    //   读失败 / 表还没建 ⇒ dailyMap = null ⇒ dailyLegs 为空 ⇒ 行为与改造前完全一致（§11）。
-    //   ⚠️ 粗筛用的 baseLegsDb 也叠上原料腿：库内腿可能是竞价涨幅或整日缺行，
-    //      原料腿能覆盖的部分一律以原料为准（更准的粗筛 ⇒ 更少的好票被门槛误杀）。
-    const dailyMap = (opts && opts.skipDaily) ? null : await readDailyPctRows(probeDates[0], date);
-    const dailyLegs = legs20FromDaily(pool, probeDates, dailyMap);
-    const baseLegs = mergeBaseLegs(tLegsClean, dailyLegs);
-    const baseLegsDbMerged = mergeBaseLegs(baseLegsDb, dailyLegs);
-    if (dailyMap) {
-      _dbgLog('[RANGE20-TOP5-DAILY] ' + date + ' 逐日腿表命中 ' + dailyLegs.size + '/' + pool.length + ' 只');
-    }
-    // 阶段① 粗筛（0 请求）：库内腿 + 门槛 + 只主板
-    // 🔴 [R20-PERSTOCK-WIN] 传完整 probeDates（⛔ 不再 slice(-20)）：`compound20` 按每票自己的
-    //   最近 20 个有腿日取窗，先截断 20 天会让停牌票无法回溯、粗筛把真龙头筛掉。
-    const guessDates = probeDates;
-    const coarse = compound20(baseLegsDbMerged, guessDates);
-    // 🔴 [R20-CLOUD 2026-10-20] 云端结果表优先：主 toggle 已经用 K 线算过的票直接拿来排名，
+    // 🔴 [R20-CLOUD 2026-10-20] 云端结果表优先：主 toggle 已经算过的票直接拿来排名，
     //   ⛔ 不再为它们重打一遍同花顺（这就是「打开应用要等很久」的主因 —— 本模块以前无条件
     //   跑 25 次 K 线，哪怕主看板/上一次打开早就算过了）。
     //   ⚠️ 表里的票可能不在候选池（pool 只含「近 20 日正式名单并集」）⇒ 先按 pool 过滤。
+    //   ★ [R20-SUBSET 2026-10-30] 位置前移到「读原料表之前」：下面要按「云端没覆盖的票」收窄读取。
     const cloudAll = (opts && opts.skipCloud)
       ? new Map()
       : pickUsableRows(await readRange20Rows(date), legMode);
@@ -765,6 +749,46 @@ export async function ensureRange20Leaders(date, opts) {
     if (cloudMap.size > 0) {
       _dbgLog('[RANGE20-TOP5] ' + date + ' 云端表命中 ' + cloudMap.size + ' 只（0 请求复用）');
     }
+
+    // ★★ [R20-DAILY 2026-10-30 用户口径] 历史腿改从【逐日腿原料表】取（同花顺日线换算，可信）。
+    //   用户原话：「历史数据先存好，次日在算次日……看表里有没有数据，有的话看哪天没有补哪天」。
+    //   读失败 / 表还没建 ⇒ dailyMap = null ⇒ dailyLegs 为空 ⇒ 行为与改造前完全一致（§11）。
+    //   ⚠️ 粗筛用的 baseLegsDb 也叠上原料腿：库内腿可能是竞价涨幅或整日缺行，
+    //      原料腿能覆盖的部分一律以原料为准（更准的粗筛 ⇒ 更少的好票被门槛误杀）。
+    //
+    // ★★ [R20-SUBSET 2026-10-30] 只读【云端表没覆盖】的那部分票（⛔ 不是全市场）。
+    //   全市场读 = 414 只 × 45 天 ≈ 1.8 万行 / 16 个分页请求 / 实测 19.0 秒，而本模块进看板就跑
+    //   （与 toggle 无关）；结果表灌满之后未覆盖的通常只剩几十只 ⇒ 1~3 个请求。
+    //   🔴 为什么这样收窄是**等价**的（别处改这里前先看这条）：
+    //     · 云端已覆盖的票，排名走 `buildLeaderRankPool` 的「③ 云端」层（近似=false）；
+    //     · 本轮的 `fresh` 只有在 `days >= minLegs` 时才覆盖云端层（见该函数 ①），
+    //       ⛔ days=1 的残缺值进不去 ⇒ 少读它们的腿**不会**把它们的排名拉低。
+    //     · 没被云端覆盖的票，腿照常从原料表读 ⇒ 粗筛/精算与改造前一致。
+    const needDailyNames = pool
+      .filter(function(t) { return t && t.stock && !cloudMap.has(t.stock); })
+      .map(function(t) { return t.stock; });
+    let dailyMap = null;
+    if (!(opts && opts.skipDaily)) {
+      if (needDailyNames.length === 0) {
+        dailyMap = new Map();                 // 云端全覆盖 ⇒ 一个请求都不发
+        _dbgLog('[RANGE20-TOP5-DAILY] ' + date + ' 云端已覆盖整个候选池 ⇒ 跳过原料表读取（0 请求）');
+      } else {
+        dailyMap = await readDailyPctRowsFor(needDailyNames, probeDates[0], date);
+        if (!dailyMap) dailyMap = await readDailyPctRows(probeDates[0], date);   // 收窄读失败 ⇒ 回退全量（§11）
+      }
+    }
+    const dailyLegs = legs20FromDaily(pool, probeDates, dailyMap);
+    const baseLegs = mergeBaseLegs(tLegsClean, dailyLegs);
+    const baseLegsDbMerged = mergeBaseLegs(baseLegsDb, dailyLegs);
+    if (dailyMap) {
+      _dbgLog('[RANGE20-TOP5-DAILY] ' + date + ' 逐日腿表命中 ' + dailyLegs.size + '/' + pool.length
+        + ' 只（只读了云端未覆盖的 ' + needDailyNames.length + ' 只）');
+    }
+    // 阶段① 粗筛（0 请求）：库内腿 + 门槛 + 只主板
+    // 🔴 [R20-PERSTOCK-WIN] 传完整 probeDates（⛔ 不再 slice(-20)）：`compound20` 按每票自己的
+    //   最近 20 个有腿日取窗，先截断 20 天会让停牌票无法回溯、粗筛把真龙头筛掉。
+    const guessDates = probeDates;
+    const coarse = compound20(baseLegsDbMerged, guessDates);
     // 🔴 [R20-COARSE-CODE 2026-10-20] `compound20` 只产 `{stock,pct,days}`，**不含 code**
     //   ⇒ 粗筛的「只主板」闸门只能靠 `codeOfRow` 反查股票名册；名册这一刻还没就绪时
     //   全部返回 '' ⇒ `isMainBoardOnly('')` = false ⇒ **428 只候选被一刀切光，粗筛归零**，

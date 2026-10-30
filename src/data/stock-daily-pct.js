@@ -41,6 +41,14 @@ const _inflight = new Map();
 const CACHE_MAX = 12;
 /** 表不存在的告警只打一次 */
 let _missingWarned = false;
+/**
+ * [R20-SUBSET] 「只读这几只票」那条路的缓存（与上面的全市场缓存**完全隔离**，见 readDailyPctRowsFor）。
+ * key = `from|to`；value = { names:Set<股票>, map:Map<股票, Map<日期, 涨幅>> }
+ */
+const _subCache = new Map();
+const _subInflight = new Map();
+/** 收窄读的缓存段数上限：看板一次会话最多切十几天 */
+const SUB_CACHE_MAX = 8;
 /** 读失败冷却截止时刻（ms）—— 用户还没跑 create_stock_daily_pct.sql 时不白打 REST */
 let _cooldownUntil = 0;
 const FAIL_COOLDOWN_MS = 30000;
@@ -78,12 +86,21 @@ function _invalidateFor(dates) {
         // 区间与 [minD, maxD] 有交集才作废（字符串比较对 YYYY-MM-DD 安全）
         if (f <= maxD && t >= minD) _cache.delete(k);
     });
+    // [R20-SUBSET] 收窄读的缓存段命名空间是隔离的，这里必须同步作废（否则刚写的腿读不到）
+    Array.from(_subCache.keys()).forEach(function(k) {
+        const parts = String(k).split('|');
+        const f = parts[0], t = parts[1];
+        if (f <= maxD && t >= minD) _subCache.delete(k);
+    });
+    _subInflight.clear();
 }
 
 /** 清空会话缓存（仅测试 / 切账户用） */
 export function clearDailyPctCache() {
     _cache.clear();
     _inflight.clear();
+    _subCache.clear();
+    _subInflight.clear();
     _cooldownUntil = 0;
     _missingWarned = false;
 }
@@ -193,6 +210,139 @@ async function _fetchAll(sb, f, t) {
         if (cursor > 200000) break;             // 防御性上限（正常窗口远达不到）
     }
     return out;
+}
+
+/**
+ * 读取 [from, to] 区间内、**只限这几只票**的逐日腿（会话缓存 + 单飞 + 覆盖命中）。
+ *
+ * ★★ [R20-SUBSET 2026-10-30] 为什么必须再开一条「按票收窄」的读法（⛔ 不是重复实现）：
+ *   原料表现在有 414 只票 × 45 个交易日 ≈ 1.8 万行。看板只需要【屏幕上那几十只】的腿，
+ *   而 `readDailyPctRows` 会把全市场都读回来（16 个分页请求 / 实测 19.0 秒）——
+ *   盘中（T 腿口径 = 竞价，云端结果表里的 close 行命中不了）这是最大的那一笔开销。
+ *   收窄到 42 只 ⇒ 42 × 45 ≈ 1900 行 ⇒ **2 个请求**（实测 1~2 秒），口径一字不动。
+ *
+ * ⚠️ 与 `readDailyPctRows` 的缓存**完全隔离**（`_subCache` / 前缀 `s|`）：
+ *   两条路的 key 空间不能混 —— 一个「只有 42 只票」的区间如果被 `_findCovering` 当成
+ *   能覆盖全市场的区间，`range20-leaders`（要 400 只）就会拿到缺失的票，而且是**静默**的。
+ *   所以覆盖命中额外要求「已读的票集合 ⊇ 本次要的票集合」。
+ *
+ * @param {string[]} stocks 只读这些票（去重后）
+ * @param {string} from 起始日（含）
+ * @param {string} to   结束日（含）
+ * @returns {Promise<Map<string, Map<string, number>>|null>}
+ *          结构同 readDailyPctRows；null = 读失败 ⇒ 调用方回退到全量读（⛔ 不要当空数据）
+ */
+export async function readDailyPctRowsFor(stocks, from, to) {
+    const f = String(from || '').trim();
+    const t = String(to || '').trim();
+    const names = [];
+    const seen = new Set();
+    (stocks || []).forEach(function(s) {
+        const n = String(s || '').trim();
+        if (!n || seen.has(n)) return;
+        seen.add(n);
+        names.push(n);
+    });
+    if (!f || !t || names.length === 0) return new Map();
+    const key = f + '|' + t;
+    const want = new Set(names);
+
+    /** 只保留本次要的票 + 区间（复制成新 Map，⛔ 不要把缓存对象直接交出去） */
+    const _slice = function(src) {
+        const out = new Map();
+        if (!src) return out;
+        names.forEach(function(n) {
+            const dm = src.get(n);
+            if (!dm) return;
+            const kept = new Map();
+            dm.forEach(function(v, d) {
+                const dd = String(d);
+                if (dd >= f && dd <= t) kept.set(dd, v);
+            });
+            if (kept.size > 0) out.set(n, kept);
+        });
+        return out;
+    };
+
+    const hit = _subCache.get(key);
+    if (hit && _isSubset(want, hit.names)) return _slice(hit.map);
+    // 覆盖命中（区间更宽 + 票集合更全）⇒ 0 请求
+    let best = null;
+    Array.from(_subCache.entries()).forEach(function(e) {
+        const parts = e[0].split('|');
+        const cf = parts[0], ct = parts[1];
+        if (!(cf <= f && ct >= t)) return;
+        if (!_isSubset(want, e[1].names)) return;
+        best = e[1];
+    });
+    if (best) return _slice(best.map);
+
+    const fly = _subInflight.get(key + '|' + names.length);
+    if (fly) return fly;
+
+    const p = (async function() {
+        const sb = getSupabase();
+        const PAGE = 1000;
+        // ⚠️ `in(stock, [...])` 的票名会全进 URL：414 个中文名 ≈ 10KB，过网关上限会 414。
+        //   按 100 个一批（≈2.5KB）分批，每批内部顺序分页（收窄后通常 1 页就够）。
+        const CHUNK = 100;
+        const chunks = [];
+        for (let i = 0; i < names.length; i += CHUNK) chunks.push(names.slice(i, i + CHUNK));
+        const data = [];
+        for (let c = 0; c < chunks.length; c++) {
+            for (let from2 = 0; ; from2 += PAGE) {
+                const res = await sb
+                    .from('stock_daily_pct')
+                    .select('date,stock,pct')
+                    .in('stock', chunks[c])
+                    .gte('date', f)
+                    .lte('date', t)
+                    .order('date', { ascending: true })
+                    .order('stock', { ascending: true })
+                    .range(from2, from2 + PAGE - 1);
+                if (res.error) throw res.error;
+                const arr = res.data || [];
+                data.push.apply(data, arr);
+                if (arr.length < PAGE) break;
+                if (from2 > 200000) break;
+            }
+        }
+        const out = new Map();
+        data.forEach(function(r) {
+            if (!r || !r.stock || !r.date) return;
+            const name = String(r.stock).trim();
+            const d = String(r.date).trim();
+            const v = _num(r.pct);
+            if (!name || !d || v === null) return;
+            let m = out.get(name);
+            if (!m) { m = new Map(); out.set(name, m); }
+            m.set(d, v);
+        });
+        return out;
+    })().then(function(map) {
+        _subCache.set(key, { names: want, map: map });
+        while (_subCache.size > SUB_CACHE_MAX) {
+            const oldest = _subCache.keys().next().value;
+            if (oldest === undefined) break;
+            _subCache.delete(oldest);
+        }
+        return map;
+    }).catch(function() {
+        // §10：原料层 ⇒ 失败返回 null 让调用方回退全量读，⛔ 不缓存、⛔ 不当空数据
+        return null;
+    }).finally(function() {
+        if (_subInflight.get(key + '|' + names.length) === p) _subInflight.delete(key + '|' + names.length);
+    });
+    _subInflight.set(key + '|' + names.length, p);
+    return p;
+}
+
+/** a ⊆ b ? */
+function _isSubset(a, b) {
+    if (!b) return false;
+    let ok = true;
+    a.forEach(function(v) { if (!b.has(v)) ok = false; });
+    return ok;
 }
 
 /**

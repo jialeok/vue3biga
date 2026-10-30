@@ -54,7 +54,7 @@ import { fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
 import { readRange20Rows, pickUsableRows, upsertRange20Rows } from '../../data/stock-range20-cache.js';
 // ★★ [R20-DAILY 2026-10-30 用户口径] 逐日腿原料表（详见 data/stock-daily-pct.js 头部）。
 //   ⛔ 与上面那张「结果表」是两回事：结果表按窗口末日 T 存（每天不命中），本表按逐日存（跨日复用）。
-import { readDailyPctRows, upsertDailyPctRows } from '../../data/stock-daily-pct.js';
+import { readDailyPctRows, readDailyPctRowsFor, upsertDailyPctRows } from '../../data/stock-daily-pct.js';
 import { _dbgLog } from '../../data/debug-log.js';
 
 /** 窗口长度：含今天在内的 20 个交易日（用户口径「包括今天在内，算20天的」） */
@@ -794,6 +794,35 @@ function _fillCodes(targets) {
 const _lastRows = new Map();
 
 /**
+ * 读逐日腿原料表：**只读这几只目标票**，失败才回退全市场。
+ *
+ * ★★ [R20-SUBSET 2026-10-30] 这是「盘中打开还是要等十几秒」的最后一块。
+ *   盘中 T 腿口径 = 竞价，云端结果表里的 close 行命中不了 ⇒ 阶段① 必须读原料表。
+ *   而 `readDailyPctRows` 读的是**全市场**（414 只 × 45 天 ≈ 1.8 万行 / 16 个分页请求 / 实测 19.0 秒），
+ *   看板真正用到的只有屏幕上那几十只 ⇒ 收窄到 42 只后是 42 × 45 ≈ 1900 行 / 2 个请求 / 实测 1~2 秒。
+ *
+ * ⚠️ 口径一字不改：`legs20FromDaily` 只按 targets 取名，读全市场和只读这几只得到的腿完全一致。
+ * ⚠️ 收窄读失败（表不存在 / 网络抖动）⇒ `null` ⇒ **回退成全量读**（§11 零回归：这才是改造前的行为）。
+ *
+ * @param {string[]} probeDates 升序探针日期
+ * @param {Array<{stock:string}>} targets 目标票
+ * @param {string} date 展示日 T
+ * @returns {Promise<Map<string, Map<string, number>>|null>}
+ */
+async function _readDailyLegsFor(probeDates, targets, date) {
+  const names = (targets || []).map(function(t) { return t && t.stock; }).filter(Boolean);
+  if (names.length > 0) {
+    try {
+      const sub = await readDailyPctRowsFor(names, probeDates[0], date);
+      if (sub) return sub;                 // ⛔ null 才回退；空 Map 是「这几只真的没腿」，照用
+    } catch (e) {
+      _dbgLog('[R20-SUBSET] 收窄读失败，回退全市场读: ' + ((e && e.message) || e));
+    }
+  }
+  return readDailyPctRows(probeDates[0], date);
+}
+
+/**
  * date -> 已确认的「真实交易日」升序数组（**只增不减**）。
  *
  * 🔴 [R20-PROGRESS 2026-10-20] 为什么必须累积：分批发布时早期只有 3 只票的腿，
@@ -971,7 +1000,7 @@ export async function ensureRange20(date, rows, opts) {
   //   用户原话：「历史数据先存好，次日在算次日……看表里有没有数据，有的话看哪天没有补哪天，
   //   没有的话，就全补，这样局部补数据，而不是每次整体获取」。
   //   读失败 / 表还没建 ⇒ dailyMap = null ⇒ 历史腿为空 ⇒ todo = 全部票 ⇒ 完全退回改造前的行为（§11）。
-  const dailyMap = (opts && opts.skipDaily) ? null : await readDailyPctRows(probeDates[0], date);
+  const dailyMap = (opts && opts.skipDaily) ? null : await _readDailyLegsFor(probeDates, targets, date);
   const dailyLegs = legs20FromDaily(targets, probeDates, dailyMap);
   const baseLegs = mergeBaseLegs(tLegs, dailyLegs);
   if (dailyMap) {
