@@ -1075,11 +1075,37 @@ export async function ensureRange20(date, rows, opts) {
     return _state.value.map;
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════════════
+  // 🔴🔴 [R20-BOUND 2026-10-30 用户报障「打开页面显示后，就动不了，好像崩溃了」]
+  //   **每次 ensureRange20 最多只打 N 只票的 K 线**。⛔ 不是调参数，是修「工作量无界」。
+  //
+  //   踩过的形态（收盘后必现，实测上游 10 只里 9 只「12 秒既不返回也不断开」）：
+  //     · 15:00 后 legMode = 'close' ⇒ `requireT` 为真 ⇒ 只要今天那根腿取不到，
+  //       **整张名单（42 只）全部进 K 线队列**；
+  //     · 单次请求 15s 超时 + retryShortWindow 内部重试 + 外层 5 次重试
+  //       ⇒ 一只票最长能挂 75 秒，42 只 = **几十个悬挂请求**；
+  //     · 再叠加「点开 toggle 会 force 放回失败票」⇒ 每点一次又多一轮。
+  //   页面表现出来就是「列表已经画出来了，然后整页不再响应」（请求把浏览器连接与主线程
+  //   都占着，其它读库全部排队）。
+  //
+  //   为什么是「分批」而不是「加总数上限后就不再补」：
+  //     每轮只取最靠前的 9 只，剩下的**下轮接着取**（行数变化/切日期/下次打开都会再进来），
+  //     ⇒ 数据最终仍会补全（§10 不放弃），但**单帧的工作量恒定**（§17/§19 响应式边界）。
+  //     顺序按 targets 原序（= 屏幕顺序），所以用户最关心的前几行先出值。
+  // ═══════════════════════════════════════════════════════════════════════════════════
+  const KLINE_MAX_PER_RUN = 9;
+  const todoBounded = todo.slice(0, KLINE_MAX_PER_RUN);
+  if (todo.length > todoBounded.length) {
+    _dbgLog('[RANGE20-BOUND] ' + date + ' 本轮只补 ' + todoBounded.length + '/' + todo.length
+      + ' 只（单帧工作量恒定，剩下 ' + (todo.length - todoBounded.length) + ' 只下次接着补）');
+  }
+
   const key = date + '|kline';
   const fly = _inflight.get(key);
   if (fly) return fly;
 
   const p = (async function() {
+    const todo = todoBounded;   // ⛔ 后续所有逻辑只看这一批（有界）
     _fillCodes(todo);
     if (todo.some(function(t) { return !t.code; })) {
       try {
@@ -1140,14 +1166,16 @@ export async function ensureRange20(date, rows, opts) {
         probeDates,
         // retryShortWindow：上游偶发只回「最近 12 根」，窗口会被误判成次新股 ⇒ 强迫它重试，
         //   否则本 toggle 永远只有 12/20 天、各票天数不齐 ⇒ 区间涨幅不可比（见 stock-range-pct.js）。
-        // requestTimeoutMs：上游偶发「不返回也不断开」⇒ 批量 Promise.all 永久挂住、整批发布不出来；
-        //   15s 超时后按失败重试，最多浪费一次尝试，不会让整块看板卡死。
+        // requestTimeoutMs：上游偶发「不返回也不断开」⇒ 批量 Promise.all 永久挂住、整批发布不出来。
+        //   ★ [R20-BOUND 2026-10-30] 15s → 8s：实测健康时 2.6s 就回 52 根，8s 拿不到就是死了，
+        //     再等 7 秒只是把悬挂请求拖长（页面卡死的直接来源）。配合上面的「每次最多 9 只」，
+        //     单帧最坏耗时被压到「3 轮 × 8s × 重试」量级，而不是原先的「42 只 × 75s」。
         // minCoverage：探针窗口里有非交易日（App 日历把工作日假期当交易日）⇒ 谁也凑不满 45 根，
         //   不设门槛会让每只票都跑满 3 次重试（实测 41 只 = 203 个请求）。凑够 20 根即完成。
         // concurrency 3：实测 3 的成功率明显高于 5（并发高时上游更容易返回截断序列并触发熔断，
         //   实测并发 5 一次只成功 5/41 只）。宁可多几秒，也要拿到真收盘腿。
         {
-          concurrency: 3, retryShortWindow: true, requestTimeoutMs: 15000,
+          concurrency: 3, retryShortWindow: true, requestTimeoutMs: 8000,
           minCoverage: RANGE20_WINDOW_DAYS, onProgress: onProgress,
           onBatch: _publishFrom,      // §11：可选回调，不传则工厂行为逐字不变
         }

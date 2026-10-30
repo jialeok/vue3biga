@@ -54,6 +54,32 @@ function _putCache(key, map) {
     }
 }
 
+/**
+ * 作废「与这批写入日期有交集」的会话缓存区间。
+ *
+ * 🔴 [R20-CACHE-KEY 2026-10-30] 原来写成功就 `_cache.clear()` 全清 —— 看起来省事，实际很贵：
+ *   本表一个窗口区间现在是 4000+ 行 / 4 个分页请求，而 K 线补算会**边补边写**。
+ *   全清 ⇒ 紧接着的 `readDailyPctRows`（另一模块 leaders 也会调）又要重读 4 页
+ *   ⇒ 「写一次 → 重读一次」来回打，页面首屏的读库次数被放大。
+ *   ⇒ 只作废真正受影响的区间（key 是 `from|to`，字符串比较就够）。
+ *
+ * @param {string[]} dates 本批写入涉及的日期
+ */
+function _invalidateFor(dates) {
+    if (!dates || dates.length === 0) return;
+    let minD = dates[0], maxD = dates[0];
+    dates.forEach(function(d) {
+        if (d < minD) minD = d;
+        if (d > maxD) maxD = d;
+    });
+    Array.from(_cache.keys()).forEach(function(k) {
+        const parts = String(k).split('|');
+        const f = parts[0], t = parts[1];
+        // 区间与 [minD, maxD] 有交集才作废（字符串比较对 YYYY-MM-DD 安全）
+        if (f <= maxD && t >= minD) _cache.delete(k);
+    });
+}
+
 /** 清空会话缓存（仅测试 / 切账户用） */
 export function clearDailyPctCache() {
     _cache.clear();
@@ -223,7 +249,7 @@ export async function upsertDailyPctRows(rows) {
                 .upsert(payload.slice(i, i + CHUNK), { onConflict: 'date,stock' });
             if (error) throw error;
         }
-        _cache.clear();
+        _invalidateFor(payload.map(function(r) { return r.date; }));
         _inflight.clear();
         return payload.length;
     } catch (e) {

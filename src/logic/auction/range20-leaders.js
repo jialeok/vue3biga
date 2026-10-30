@@ -841,7 +841,7 @@ export async function ensureRange20Leaders(date, opts) {
     //   ⚠️ 盘中（'auc'）不传：K 线的今日是现价，补了也用不上。
     //   ⚠️ 代价可控：coarseTop 最多 25 只，一天一次；早盘主场景（'auc'）仍然 0 请求。
     const _legOpts = { requireT: (legMode === 'close'), forceAll: isLegTableStale(dailyLegs, probeDates) };
-    const todo = coarseTop.filter(function(t) {
+    const todoAll = coarseTop.filter(function(t) {
       if (extraByStock.has(t.stock)) return false;
       if (_klineTried.has(t.stock + '@' + winKey)) return false;
       if (cloudMap.has(t.stock)) return false;
@@ -850,6 +850,18 @@ export async function ensureRange20Leaders(date, opts) {
       //   表空 / 表不可用 ⇒ 每只都不够 ⇒ todo = 全部 ⇒ 与改造前一致（§11）。
       return needsKlineLegs(baseLegs, t.stock, date, undefined, _legOpts);
     });
+    // 🔴🔴 [R20-BOUND 2026-10-30 用户报障「打开页面显示后，就动不了，好像崩溃了」]
+    //   本模块**与 toggle 无关、进看板就跑** ⇒ 它一旦无界地打 K 线，首屏立刻被悬挂请求拖死。
+    //   实测上游 10 只里 9 只「12 秒既不返回也不断开」：coarseTop 最多 25 只 × 15s × 重试
+    //   ⇒ 一次进入看板就挂出 20 多个几分钟不返回的请求，页面表现为「画出来了但点不动」。
+    //   ⇒ 每轮最多 6 只（有界），剩下的靠 `_klineTried`（`票@窗口`）留着下次进看板/切日期再接，
+    //     数据仍会补全（§10 不放弃），但单帧工作量恒定（§17/§19）。
+    const LEADER_KLINE_MAX_PER_RUN = 6;
+    const todo = todoAll.slice(0, LEADER_KLINE_MAX_PER_RUN);
+    if (todoAll.length > todo.length) {
+      _dbgLog('[RANGE20-TOP5-BOUND] ' + date + ' 本轮只补 ' + todo.length + '/' + todoAll.length
+        + ' 只（剩下 ' + (todoAll.length - todo.length) + ' 只下次进入看板再补）');
+    }
     if (todo.length > 0) {
       _fillCodes(todo);
       if (todo.some(function(t) { return !t.code; })) {
@@ -868,7 +880,7 @@ export async function ensureRange20Leaders(date, opts) {
           list.map(function(t) { return { stock: t.stock, code: t.code }; }),
           probeDates,
           // 与 range20.js 同一套参数（理由见该文件阶段② 注释）：上游偶发只回 12 根 / 挂住 / 凑不满窗口
-          { concurrency: 3, retryShortWindow: true, requestTimeoutMs: 15000, minCoverage: RANGE20_WINDOW_DAYS, onProgress: onProgress }
+          { concurrency: 3, retryShortWindow: true, requestTimeoutMs: 8000, minCoverage: RANGE20_WINDOW_DAYS, onProgress: onProgress }
         );
         extra.forEach(function(v, k) { extraByStock.set(k, v); });
         _klineAcc.set(date, extraByStock);
