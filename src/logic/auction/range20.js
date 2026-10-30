@@ -115,6 +115,13 @@ const _klineTried = new Map();
  */
 const _klineAcc = new Map();
 /**
+ * 最近一次「同花顺补缺」批次的结果（§10 失败可见，见 getRange20BatchStat）。
+ * null = 本会话还没跑过批次。
+ */
+let _lastBatch = null;
+/** 最近一次读逐日腿原料表的覆盖概况（诊断用，见 getRange20DailyStat） */
+let _lastDailyStat = null;
+/**
  * date -> 已发布结果所用的【T 腿口径模式】（'auc' | 'close'）。
  *
  * 🔴 [FIX 2026-10-19 · R20-TSWITCH] 为什么必须有它：
@@ -481,6 +488,77 @@ export function isLegTableStale(dailyLegs, ascDates) {
   }
   if (!newest) return false;
   return newest < appPrev;
+}
+
+/**
+ * 【纯读】最近一次「同花顺补缺」批次的结果统计。
+ *
+ * ★★ [R20-FAILVIS 2026-10-30 用户报障「43 只里只有 23 只有涨幅，怎么回事？是没写入吗？
+ *    还是没有抓取？」] 这一列在腿不够时显示 `—`，但用户从屏幕上**分不清**
+ *    「正在补 / 补失败了 / 压根没数据」三种情况 —— 违反 §10「失败必须可见」。
+ *    ⇒ 批次结束时把 missing/total 记在这里，由 UI（useAuctionBoard）在状态条上明说。
+ *
+ * @returns {{date:string, total:number, missing:number, at:number}|null}
+ */
+export function getRange20BatchStat() {
+  return _lastBatch;
+}
+
+/** 逐日腿原料表当前的覆盖概况（诊断用；UI 不依赖它） */
+export function getRange20DailyStat() {
+  return _lastDailyStat;
+}
+
+/**
+ * 【纯函数】这一行有没有「可上屏」的涨幅数值。
+ * ⚠️ 必须显式排除 null/undefined/''：`Number(null)` = 0、`Number('')` = 0
+ *   ⇒ 直接 `isFinite(Number(...))` 会把「没有值」当成「平盘 0%」，
+ *   于是「还差 N 只」永远算出 0、failed 票永远不放回重试（§10 会被静默破坏）。
+ * @param {{pct:any}|null} r 发布结果里的一行
+ */
+function _hasPct(r) {
+  if (!r) return false;
+  const raw = r.pct;
+  if (raw === null || raw === undefined || raw === '') return false;
+  return isFinite(Number(raw));
+}
+
+/**
+ * 【纯函数】数「这批目标里还有几只没有可上屏的涨幅」。
+ *
+ * ⚠️ 判据是【已发布结果】而不是「本轮 K 线有没有返回」：
+ *   上游截断（只回 12 根）时 `extra.has(stock)` 为真、但腿不够 ⇒ 这一列仍是 `—`。
+ *   按 extra 统计会把这种情况算成「有值」⇒ 状态条显示「全部成功」，屏幕却一半是 `—`，
+ *   正是用户这次报障的观感（§10 失败必须可见）。
+ *
+ * @param {Map<string,{pct:number,days:number}>|null} pubMap 已发布结果（stock -> 行）
+ * @param {Array<{stock:string}>} targets 本批目标
+ * @returns {{total:number, missing:number}}
+ */
+export function countMissingRange20(pubMap, targets) {
+  let total = 0, missing = 0;
+  (targets || []).forEach(function(t) {
+    const n = t && t.stock;
+    if (!n) return;
+    total++;
+    if (!_hasPct(pubMap ? pubMap.get(n) : null)) missing++;
+  });
+  return { total: total, missing: missing };
+}
+
+/**
+ * 记录「本批目标里还有几只屏幕上没有值」。
+ * @param {string} date
+ * @param {Array<{stock:string}>} targets
+ */
+function _snapshotBatch(date, targets) {
+  try {
+    const st = _state.value;
+    const pub = (st && st.date === date) ? st.map : null;
+    const c = countMissingRange20(pub, targets);
+    if (c.total === 0) return;
+    _lastBatch = { date: date, total: c.total, missing: c.missing, at: Date.now() };
+  } catch (e) { /* 诊断失败不影响主流程 */ }
 }
 
 /**
@@ -877,6 +955,7 @@ export async function ensureRange20(date, rows, opts) {
     if (_covered >= targets.length) {
       _dbgLog('[RANGE20-CLOUD-FAST] ' + date + ' 云端已覆盖全部 ' + targets.length
         + ' 只 ⇒ 跳过逐日腿读取与 K 线（本次共 1 个请求）');
+      _snapshotBatch(date, targets);   // §10：全命中 ⇒ missing=0，UI 不必报「还差 N 只」
       return _state.value.map;
     }
   }
@@ -899,6 +978,12 @@ export async function ensureRange20(date, rows, opts) {
     _dbgLog('[RANGE20-DAILY] ' + date + ' 逐日腿表命中 ' + dailyLegs.size + '/' + targets.length
       + ' 只（区间 ' + probeDates[0] + '~' + date + '）');
   }
+  // ★ [R20-FAILVIS] 留一份可查的覆盖概况：排查「为什么这么多 `—`」时先看这里
+  //   hit=0 ⇒ 原料表里这批票一根腿都没有（回填没跑 / 回填崩了）；hit<targets ⇒ 部分票没补过。
+  _lastDailyStat = {
+    date: date, rows: dailyMap ? dailyMap.size : 0, hit: dailyLegs.size,
+    targets: targets.length, at: Date.now(),
+  };
   // 🔴 [FIX 2026-10-19 · R20-CLOSE-LEG] **阶段① 本身不发布**。
   //   原因：历史日的库内 `change_pct` 不可信（早盘写入的竞价涨幅 / 缺行，见 merge20Legs 函数头），
   //   所以 baseLegs 现在只剩「T 腿」一根 —— 拿它发出去会得到一个只有 1 天的假数值。
@@ -927,6 +1012,25 @@ export async function ensureRange20(date, rows, opts) {
   const need = targets;
   if (need.length === 0) return _state.value.map;
   const tried = _klineTried.get(date) || new Set();
+  // ★★ [R20-FORCE 2026-10-30 用户报障「关闭再打开 toggle 也没见刷新」]
+  //   语义：**只把「屏幕上还没有值」的票放回重试队列**（⛔ 不是无条件全量重拉，§32 不重复请求）。
+  //   哪些票会赖在 tried 里不出来？上游截断（只回 12 根）或被熔断前拿到残缺序列的票：
+  //   `extra.has()` 为真 ⇒ 下方 finally 不解登记 ⇒ 之后的每次 ensureRange20 全部跳过它
+  //   ⇒ 用户看到的是永久 `—`，而且点了半天没有任何变化（最迷惑的一种，§10 禁止）。
+  //   调用方：点开 20日涨幅 toggle 时显式传 `{ force: true }`（用户「关掉再打开」= 手动重试）。
+  if (opts && opts.force) {
+    const _pub0 = (_state.value.date === date) ? _state.value.map : null;
+    const _drop = [];
+    tried.forEach(function(n) {
+      const r = _pub0 && _pub0.get(n);
+      if (!_hasPct(r)) _drop.push(n);
+    });
+    _drop.forEach(function(n) { tried.delete(n); });
+    if (_drop.length > 0) {
+      _klineTried.set(date, tried);
+      _dbgLog('[RANGE20-FORCE] ' + date + ' 放回 ' + _drop.length + ' 只「登记过但没出值」的票重试');
+    }
+  }
   // ★★ [R20-REQT 2026-10-30] 「要补」的判据（三者缺一不可）：
   //   ① 本会话没请求过（§32）；② 云端结果表没有真值；③ 历史腿不够【或】收盘口径下缺 T 腿。
   //   ③ 的 requireT 只对收盘口径生效 —— 盘中 K 线的"今天"是现价，补了也用不上（见 needsKlineLegs）。
@@ -967,6 +1071,7 @@ export async function ensureRange20(date, rows, opts) {
       _dbgLog('[RANGE20-DAILY] ' + date + ' 全部 ' + need.length + ' 只票的腿都在原料表 ⇒ 0 K线请求，直接发布 '
         + rows0.length + ' 行');
     } catch (e) { /* 发布失败留给下一轮 ensureRange20 */ }
+    _snapshotBatch(date, targets);   // §10：这批一个请求都没发，缺的就是「原料表里没腿」的票
     return _state.value.map;
   }
 
@@ -1053,6 +1158,10 @@ export async function ensureRange20(date, rows, opts) {
       list.forEach(function(t) { if (!extra.has(t.stock)) tried.delete(t.stock); });
       if (tried.size === 0) _klineTried.delete(date);
       else _klineTried.set(date, tried);
+      // ★ [R20-FAILVIS 2026-10-30] 记下这批的成败，UI 据此在状态条上明说「还差 N 只」（§10）
+      //   ⚠️ 这里只是【兜底】：正常路径会在最终 `_publish` 之后再算一次（那时 map 才完整）。
+      //      fetch 抛错/被超时打断时就只能到这一步，所以 finally 也必须写一份。
+      _snapshotBatch(date, targets);
     }
     // ★ 累积本次拿到的新腿（跨轮复用：第二轮重试时不能丢掉第一轮已补好的票）
     if (extra.size > 0) {
@@ -1105,6 +1214,7 @@ export async function ensureRange20(date, rows, opts) {
         || (!_legOpts.forceAll && !needsKlineLegs(merged, r.stock, date, undefined, _legOpts));
     });
     _publish(date, _mergeRowsWithCloud(finalRows, cloudMap));
+    _snapshotBatch(date, targets);   // §10：最终一份「还差几只」以真正上屏的 map 为准
     _stage.set(date, 2);            // 🔴 标记「该日已合并 K 线」⇒ 后续阶段① 不再覆盖（见 _stage 说明）
     _legMode.set(date, legMode);    // 🔴 记录本次口径 ⇒ 跨 15:00 时据此触发重算（见 _switchLegMode）
     _scheduleCloseSwitch(date, legMode);   // 页面一直开着 ⇒ 15:00 后自动换腿重算一遍

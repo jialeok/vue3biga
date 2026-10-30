@@ -20,6 +20,7 @@ import {
   mergeBaseLegs,
   needsKlineLegs,
   isLegTableStale,
+  countMissingRange20,
   dailyRowsFromKline,
   merge20Legs,
   compound20
@@ -626,5 +627,47 @@ describe('逐日腿原料（R20-DAILY）', () => {
     // 19 天各 +1% 再乘今天 +10%：1.01^19 * 1.1 - 1
     const want = (Math.pow(1.01, 19) * 1.1 - 1) * 100;
     expect(rows[0].pct).toBeCloseTo(want, 6);
+  });
+});
+
+describe('countMissingRange20：状态条「还差 N 只」的判据（R20-FAILVIS）', () => {
+  // 用户原话（2026-10-30）：「点开20日toggle，有涨幅的只有23只，总数是43只，怎么回事？
+  //   是每写入吗？还是没有抓取？」—— 屏幕上只有 `—`，用户分不清「在补 / 补失败 / 没数据」。
+  // ⇒ 状态条必须能说清「还差几只」，判据必须守 §10：**没有可上屏的数值就算缺**。
+  it('全部有值 ⇒ missing=0', () => {
+    const pub = new Map([['甲', { pct: 12.5, days: 20 }], ['乙', { pct: -3, days: 20 }]]);
+    expect(countMissingRange20(pub, [{ stock: '甲' }, { stock: '乙' }]))
+      .toEqual({ total: 2, missing: 0 });
+  });
+
+  it('🔴 上游截断（只回 12 根）的票：发布了但 pct 为空 ⇒ 必须算缺', () => {
+    // 这是本次报障的最迷惑形态：`extra.has(stock)` 为真（所以旧统计认为"成功"），
+    // 但腿不够 ⇒ 这一列是 `—`。按 extra 统计会显示「全部成功」，屏幕却一半空白。
+    const pub = new Map([['甲', { pct: null, days: 0 }], ['乙', { pct: 5, days: 20 }]]);
+    expect(countMissingRange20(pub, [{ stock: '甲' }, { stock: '乙' }]))
+      .toEqual({ total: 2, missing: 1 });
+  });
+
+  it('压根没发布过的票 ⇒ 算缺（⛔ 不能当成 0%）', () => {
+    const pub = new Map([['甲', { pct: 8, days: 20 }]]);
+    expect(countMissingRange20(pub, [{ stock: '甲' }, { stock: '乙' }, { stock: '丙' }]))
+      .toEqual({ total: 3, missing: 2 });
+  });
+
+  it('pct=0 是合法值（平盘）⇒ 不算缺', () => {
+    const pub = new Map([['甲', { pct: 0, days: 20 }]]);
+    expect(countMissingRange20(pub, [{ stock: '甲' }])).toEqual({ total: 1, missing: 0 });
+  });
+
+  it('pubMap 为空 / 目标为空 ⇒ 不炸', () => {
+    expect(countMissingRange20(null, [{ stock: '甲' }])).toEqual({ total: 1, missing: 1 });
+    expect(countMissingRange20(null, [])).toEqual({ total: 0, missing: 0 });
+    expect(countMissingRange20(new Map(), null)).toEqual({ total: 0, missing: 0 });
+  });
+
+  it('目标里有空名字 ⇒ 跳过，不污染 total', () => {
+    const pub = new Map([['甲', { pct: 1, days: 20 }]]);
+    expect(countMissingRange20(pub, [{ stock: '甲' }, null, { stock: '' }, {}]))
+      .toEqual({ total: 1, missing: 0 });
   });
 });

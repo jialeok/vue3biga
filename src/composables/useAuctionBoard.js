@@ -42,7 +42,7 @@ import { ensureDragonRangePct, getDragonRangePct, getStockRangePct, DRAGON_RANGE
 // [RANGE20 2026-10-19 用户口径] 「20日涨幅」toggle 的取数入口（开关位由原「量比抢筹」改造）。
 //   与十日涨幅不同：云端没有 20 日行 ⇒ 由 range20.js 按 20 个交易日复利现算（库内腿 + 同花顺补缺），
 //   只放会话内存。⚠️ 只在 toggle 打开时触发，⛔ 不消耗猫抓额度（同花顺 K 线免费额度）。
-import { ensureRange20, getRange20FingerprintToken } from '../logic/auction/range20.js';
+import { ensureRange20, getRange20FingerprintToken, getRange20BatchStat, getRange20DailyStat } from '../logic/auction/range20.js';
 // [RANGE20-TOP5 2026-10-19 用户口径] 「20日涨幅前五 · 龙头补位」的取数入口。
 //   ★ 与上面的 20日涨幅 toggle 【完全独立】：那个是「打开开关才排一次序」的排序功能；
 //     这个是把「近 20 个交易日每天正式列表」并起来、取 20 日涨幅前五、把今天看不见的补进看板
@@ -293,6 +293,27 @@ export function useAuctionBoard() {
         //   §22「短时间内变化很多 ⇒ 批量合并 ⇒ 一次 UI 更新」：改成最多每 600ms 刷一次，
         //   且强制在「首帧 / 每 10 只 / 收尾」刷新，保证既不卡又不丢反馈（⛔ 不是用延迟掩盖问题）。
         let _lastProgAt = 0;
+        // ★★ [R20-FAILVIS 2026-10-30 用户报障「43 只里只有 23 只有涨幅，是没写入吗？还是没有抓取？」]
+        //   旧写法：只要报过进度，结束时就把状态条清空 ⇒ **失败的票一声不响**，
+        //   用户看到一列 `—` 却分不清「正在补 / 补失败了 / 压根没数据」（违反 §10）。
+        //   现在：跑完读 `getRange20BatchStat()`，还差就明说「还差 N/M 只」，并给出下一步动作。
+        const _afterRun = function(progressed) {
+          const _bs = getRange20BatchStat();
+          if (_bs && _bs.date === _date) {
+            const _miss = Number(_bs.missing) || 0;
+            if (_miss > 0) {
+              const _ds = getRange20DailyStat();
+              const _noLegs = (_ds && _ds.date === _date && !(_ds.hit > 0))
+                ? '（逐日腿表里这批票一根腿都没有 ⇒ 回填脚本 db/scripts/backfill-daily-pct.mjs 未跑成功）'
+                : '';
+              setApiStatus('numcatApiStatus',
+                '⚠️ 20日涨幅还差 ' + _miss + '/' + _bs.total + ' 只没取到' + _noLegs
+                + '。重开 toggle 或切走再切回会自动重试', false);
+              return;
+            }
+          }
+          if (progressed) setApiStatus('numcatApiStatus', '', true);
+        };
         try {
           await ensureRange20(_date, _rows, {
             onProgress: function(done, total) {
@@ -307,7 +328,7 @@ export function useAuctionBoard() {
               setApiStatus('numcatApiStatus', '⏳ 20日涨幅补算中 ' + done + '/' + total + '（同花顺K线）', false);
             }
           });
-          if (_progressed) setApiStatus('numcatApiStatus', '', true);
+          _afterRun(_progressed);
         } catch (e) {
           console.warn('[RANGE20] 20日涨幅取数失败:', e && e.message);
           setApiStatus('numcatApiStatus', '❌ 20日涨幅取数失败：' + (e && e.message || e), false);
@@ -1319,6 +1340,22 @@ export function useAuctionBoard() {
     }
     _syncSortStateToStore();
     _afterSortChange();
+    // ★★ [R20-FORCE 2026-10-30 用户报障「关闭再打开 toggle 也没见刷新」]
+    //   点开 20日涨幅 = 用户**手动重试**，必须真的把那批没出值的票再请求一次：
+    //   上游截断（只回 12 根）的票在 `_klineTried` 里登记着（`extra.has()` 为真 ⇒ 不解登记），
+    //   不显式 force 就永远不会再试 ⇒ 屏幕上的 `—` 看起来「点了也没反应」。
+    //   ⚠️ 语义仍是「只补没有值的票」，⛔ 不是全量重拉（§32）；单飞在 range20.js 内部，
+    //      与 watch 那次调用共用同一个 Promise，不会打两份请求。
+    //   ⚠️ 这里【不 await】：重试要几十秒，⛔ 不能卡住 toggle 的视觉反馈（与下方 watch 同款）。
+    if (key === 'byRangePct20' && sortState.byRangePct20) {
+      const _fd = uiStore.currentDate;
+      const _frows = (viewData.value && viewData.value.items) || [];
+      if (_fd && _frows.length > 0) {
+        Promise.resolve(ensureRange20(_fd, _frows, { force: true })).catch(function(e) {
+          console.warn('[RANGE20] 强制重试失败:', (e && e.message) || e);
+        });
+      }
+    }
   }
 
   function expandAll() {

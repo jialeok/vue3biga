@@ -54,15 +54,40 @@ const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms
 function ymd(ms) { return new Date(ms + 8 * 3600 * 1000).toISOString().slice(0, 10); }
 function todayYmd() { return ymd(Date.now()); }
 
+/**
+ * REST GET（Range 分页）。
+ * ★★ [R20-DAILY 2026-10-30] 必须自带重试 —— 实测本机到 Supabase 会偶发 `TypeError: fetch failed`
+ *   （几分钟内出现两次），不重试就是「脚本跑了一半整个崩掉」，而用户看到的结果是
+ *   「SQL 执行了、表还是空的」。任何一次瞬时抖动都不该让 400 只票的补齐作废。
+ */
 async function sbGet(path) {
   const out = [];
   let from = 0;
   for (;;) {
-    const r = await fetch(SB + '/rest/v1/' + path, {
-      headers: Object.assign({}, H, { Range: from + '-' + (from + PAGE - 1), 'Range-Unit': 'items' }),
-    });
-    if (!r.ok) throw new Error('REST GET ' + path.slice(0, 80) + ' -> ' + r.status + ' ' + (await r.text()).slice(0, 200));
-    const arr = await r.json();
+    let arr = null;
+    let lastErr = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (attempt > 0) await sleep(800 * attempt);
+      try {
+        const r = await fetch(SB + '/rest/v1/' + path, {
+          headers: Object.assign({}, H, { Range: from + '-' + (from + PAGE - 1), 'Range-Unit': 'items' }),
+        });
+        if (!r.ok) {
+          const body = (await r.text()).slice(0, 200);
+          // 4xx（表不存在 / 语法错）不重试，直接抛；5xx / 429 重试
+          if (r.status < 500 && r.status !== 429) {
+            throw new Error('REST GET ' + path.slice(0, 80) + ' -> ' + r.status + ' ' + body);
+          }
+          throw new Error('REST GET ' + r.status + ' ' + body);
+        }
+        arr = await r.json();
+        break;
+      } catch (e) {
+        lastErr = e;
+        if (/-> 4\d\d /.test(String(e && e.message))) throw e;
+      }
+    }
+    if (arr === null) throw lastErr || new Error('REST GET 失败（已重试 4 次）: ' + path.slice(0, 80));
     out.push.apply(out, arr);
     if (arr.length < PAGE) break;
     from += PAGE;
@@ -72,18 +97,31 @@ async function sbGet(path) {
 }
 
 async function sbUpsertDaily(rows) {
-  const r = await fetch(SB + '/rest/v1/stock_daily_pct?on_conflict=date,stock', {
-    method: 'POST',
-    headers: Object.assign({}, H, { 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' }),
-    body: JSON.stringify(rows),
-  });
-  if (!r.ok) {
-    const body = (await r.text()).slice(0, 300);
-    if (/relation .* does not exist|42P01/i.test(body)) {
-      throw new Error('stock_daily_pct 表不存在 —— 先在 Supabase SQL Editor 执行 db/create_stock_daily_pct.sql');
+  let lastErr = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt > 0) await sleep(800 * attempt);
+    try {
+      const r = await fetch(SB + '/rest/v1/stock_daily_pct?on_conflict=date,stock', {
+        method: 'POST',
+        headers: Object.assign({}, H, { 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' }),
+        body: JSON.stringify(rows),
+      });
+      if (r.ok) return;
+      const body = (await r.text()).slice(0, 300);
+      if (/relation .* does not exist|42P01/i.test(body)) {
+        throw new Error('stock_daily_pct 表不存在 —— 先在 Supabase SQL Editor 执行 db/create_stock_daily_pct.sql');
+      }
+      // 主键冲突 / 权限问题重试也没用，直接抛
+      if (r.status >= 400 && r.status < 500 && r.status !== 429) {
+        throw new Error('REST POST -> ' + r.status + ' ' + body);
+      }
+      lastErr = new Error('REST POST -> ' + r.status + ' ' + body);
+    } catch (e) {
+      if (/表不存在|REST POST -> 4\d\d /.test(String(e && e.message))) throw e;
+      lastErr = e;
     }
-    throw new Error('REST POST -> ' + r.status + ' ' + body);
   }
+  throw lastErr || new Error('REST POST 失败（已重试 4 次）');
 }
 
 /** 6 位代码 → 同花顺 thscode */
