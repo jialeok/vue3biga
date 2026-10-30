@@ -1180,6 +1180,14 @@ export async function ensureRange20(date, rows, opts) {
           onBatch: _publishFrom,      // §11：可选回调，不传则工厂行为逐字不变
         }
       );
+    } catch (e) {
+      // ★★ [FUYAO-OFF 2026-10-30] 原来这里是 `try { ... } finally { ... }`，**没有 catch**。
+      //   后果：上游一失败（超时 / 546 / 502 / 通道停用），异常直接冒到 `ensureRange20` 之外，
+      //   下面的 `_publish` 一次都不执行 ⇒ 20 日涨幅整列停在 `—`，而原料表里腿其实全是齐的
+      //   （用户看到的「只有 23 只有涨幅」有相当一部分就是这么来的）。
+      //   ⇒ §10 要的是「失败可见但已有数据照常上屏」：K 线这一腿拿不到就记一条日志，
+      //     继续用 `baseLegs`（`stock_daily_pct` 的逐日腿）发布。⛔ 不补 0，腿不够的票仍然发 `—`。
+      _dbgLog('[RANGE20] ' + date + ' K 线腿失败，仅用逐日腿原料表出数: ' + ((e && e.message) || e));
     } finally {
       // 没拿到腿的票 → 从 tried 移除，下次 ensureRange20（行数变化 / 切日期回来）可再试一次；
       // 拿到腿的保持登记 ⇒ 同一会话不重复请求。

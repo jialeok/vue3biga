@@ -9,7 +9,7 @@
 
 import { getSupabase } from './supabase-client.js';
 import { numcatApiPost } from './api/numcat-proxy.js';
-import { fuyaoApiGet, tickerToThscode } from './api/fuyao-proxy.js';
+import { fuyaoApiGet, tickerToThscode, isFuyaoOff } from './api/fuyao-proxy.js';
 import { _dbgLog } from './debug-log.js';
 
 /**
@@ -187,6 +187,14 @@ export async function fetchNumcatDailyPctRange(symbols, startYmd, endYmd) {
  * @returns {Promise<Map<string, Map<string, number>>>} 股票名 -> (YYYYMMDD -> 日涨幅%)
  */
 export async function fetchFuyaoDailyPctRange(items, dates, opts) {
+    // ★★ [FUYAO-OFF 2026-10-30] 同花顺通道已临时停用（见 data/api/fuyao-proxy.js 的 FUYAO-OFF）。
+    //   在这里**提前抛错、一个请求都不发**，而不是返回空 Map —— 本文件头写死了红线：
+    //   读取失败绝不能伪装成「没有数据」（否则上层会误判为「这些票本来就没涨幅」）。
+    //   历史腿的正路是 `stock_daily_pct`（已用腾讯前复权日线补齐，口径与同花顺 524 条真值 100% 一致），
+    //   各调用方的 catch 分支会把这一腿降级掉，继续用原料表的腿出数。
+    if (isFuyaoOff()) {
+        throw new Error('同花顺通道已临时停用（上游不可用，见 data/api/fuyao-proxy.js 的 FUYAO-OFF）');
+    }
     const list = (items || []).filter(function(it) { return it && it.stock && it.code; });
     const ymdList = (dates || []).map(function(d) { return String(d).replace(/-/g, ''); }).filter(Boolean);
     const out = new Map();

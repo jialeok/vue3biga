@@ -101,6 +101,48 @@ function _keyOf(from, to) {
 }
 
 /**
+ * 在会话缓存里找一段【完全包含 [f, t]】的已读区间（[R20-COVER]）。
+ * YYYY-MM-DD 是定长字符串，直接比大小即等于比日期。
+ *
+ * @returns {Map<string, Map<string, number>>|null}
+ */
+function _findCovering(f, t) {
+    let best = null;
+    let bestWidth = -1;
+    Array.from(_cache.keys()).forEach(function(k) {
+        const parts = String(k).split('|');
+        const cf = parts[0], ct = parts[1];
+        if (!(cf <= f && ct >= t)) return;
+        // 多个都覆盖时取「最窄」的那个：切片要遍历它的股票集合，窄的更快
+        const width = (ct < cf) ? 0 : (ct.length + cf.length + (ct > cf ? 1 : 0));
+        if (best === null || width < bestWidth) { best = _cache.get(k); bestWidth = width; }
+    });
+    return best;
+}
+
+/**
+ * 从已读区间里切出 [f, t] 那一段（不请求网络）。
+ * 结构与 `readDailyPctRows` 的返回完全一致：`Map<股票, Map<日期, 日涨幅>>`。
+ * 某只票在这个子区间里一根腿都没有 ⇒ 不放进去（与「读回来就是这样」等价）。
+ */
+function _sliceRange(src, f, t) {
+    const out = new Map();
+    if (!src || typeof src.forEach !== 'function') return out;
+    src.forEach(function(dayMap, stock) {
+        if (!dayMap || typeof dayMap.forEach !== 'function') return;
+        let kept = null;
+        dayMap.forEach(function(v, d) {
+            const dd = String(d);
+            if (dd < f || dd > t) return;
+            if (!kept) kept = new Map();
+            kept.set(dd, v);
+        });
+        if (kept) out.set(stock, kept);
+    });
+    return out;
+}
+
+/**
  * 分页把区间内所有逐日腿读回。
  *
  * 🔴 为什么必须分页（2026-10-30 实测，别删）：Supabase/PostgREST 单次响应**最多 1000 行**
@@ -117,6 +159,10 @@ function _keyOf(from, to) {
  */
 async function _fetchAll(sb, f, t) {
     const PAGE = 1000;
+    // ★ [R20-COVER-1 2026-10-30] 试过把并发提到 6 / 8 来压缩轮数，实测**当场把链路打爆**：
+    //   8 并发连发 8 个「筛 15k 行 + order by」的重查询，undici 直接 UND_ERR_CONNECT_TIMEOUT，
+    //   6 并发同样失败 ⇒ 这里保持 4（§11 不动既有行为）。
+    //   真正要提速只能减少【行数】，不是加大并发：一行一票的聚合视图方案见读表函数头注释。
     const PARALLEL = 4;
     const page = async function(from) {
         const { data, error } = await sb
@@ -165,6 +211,21 @@ export async function readDailyPctRows(from, to) {
     const key = _keyOf(f, t);
     const hit = _cache.get(key);
     if (hit) return hit;
+    // ★★ [R20-COVER 2026-10-30] 已被【更大区间】覆盖 ⇒ 直接切片，一个请求都不发。
+    //
+    //   为什么必须加（实测，用户报障「切换日期也不可以，就是卡顿」）：
+    //   20 日涨幅读的是 [探针首日, 当前日期] 这段 45 天窗口。切一次日期窗口就平移一天 ⇒
+    //   key 变成新串 ⇒ 原来的精确 key 命中不了 ⇒ **每次切日期都把 15,173 行 / 16 个请求重读一遍，
+    //   实测 19.0 秒**（Supabase REST 单页 1000 行上限，一页约 1~4.5 秒）。
+    //   而这段窗口 99% 的行是完全一样的 —— 只有头尾各一天不同。
+    //   ⇒ 只要【会话里已经读过一段更宽的区间】，就在内存里切片返回：来回切日期 0 请求。
+    //   ⚠️ 只是省网络，不改口径：切出来的就是同一批 (date, stock, pct)。
+    const covering = _findCovering(f, t);
+    if (covering) {
+        const sliced = _sliceRange(covering, f, t);
+        _putCache(key, sliced);     // 把切片也登记上，下次同区间直接命中（O(1)）
+        return sliced;
+    }
     const fly = _inflight.get(key);
     if (fly) return fly;
     if (Date.now() < _cooldownUntil) return null;

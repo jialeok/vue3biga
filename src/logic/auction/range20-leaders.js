@@ -876,12 +876,21 @@ export async function ensureRange20Leaders(date, opts) {
       if (list.length > 0) {
         list.forEach(function(t) { _klineTried.add(t.stock + '@' + winKey); });
         const onProgress = (opts && typeof opts.onProgress === 'function') ? opts.onProgress : null;
-        const extra = await fetchFuyaoDailyPctRange(
-          list.map(function(t) { return { stock: t.stock, code: t.code }; }),
-          probeDates,
-          // 与 range20.js 同一套参数（理由见该文件阶段② 注释）：上游偶发只回 12 根 / 挂住 / 凑不满窗口
-          { concurrency: 3, retryShortWindow: true, requestTimeoutMs: 8000, minCoverage: RANGE20_WINDOW_DAYS, onProgress: onProgress }
-        );
+        // ★★ [FUYAO-OFF 2026-10-30] 这里原来**没有 try/catch**：上游一失败（超时 / 546 / 502 /
+        //   通道停用）异常直接冒到 `ensureRange20Leaders` 之外 ⇒ 下面的 merge / compound / _publish
+        //   全被跳过 ⇒ 前10龙位与题材量比「正在计算中」永远不结束（用户看到的「卡在加载」就是这个）。
+        //   ⇒ 与 range20.js 同口径：K 线拿不到就记一条日志，继续用 `baseLegs`（逐日腿原料表）出数。
+        let extra = new Map();
+        try {
+          extra = await fetchFuyaoDailyPctRange(
+            list.map(function(t) { return { stock: t.stock, code: t.code }; }),
+            probeDates,
+            // 与 range20.js 同一套参数（理由见该文件阶段② 注释）：上游偶发只回 12 根 / 挂住 / 凑不满窗口
+            { concurrency: 3, retryShortWindow: true, requestTimeoutMs: 8000, minCoverage: RANGE20_WINDOW_DAYS, onProgress: onProgress }
+          );
+        } catch (e) {
+          _dbgLog('[RANGE20-TOP5] ' + date + ' K 线精算腿失败，仅用逐日腿原料表排名: ' + ((e && e.message) || e));
+        }
         extra.forEach(function(v, k) { extraByStock.set(k, v); });
         _klineAcc.set(date, extraByStock);
       }

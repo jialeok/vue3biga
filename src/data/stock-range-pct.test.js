@@ -51,7 +51,10 @@ vi.mock('./api/numcat-proxy.js', function() {
 vi.mock('./api/fuyao-proxy.js', function() {
     return {
         fuyaoApiGet: function() { return Promise.reject(new Error('不应被调用')); },
-        tickerToThscode: function(c) { return c; }
+        tickerToThscode: function(c) { return c; },
+        // [FUYAO-OFF] 本文件的用例全在「同花顺通道已停用」的前提下跑（真实现状），
+        //   `fetchFuyaoDailyPctRange` 见 true 就立刻抛错 —— 正好锁住「一个请求都不发」。
+        isFuyaoOff: function() { return true; }
     };
 });
 
@@ -169,5 +172,34 @@ describe('stock-range-pct · upsertRangePctRows 与缓存失效', function() {
         expect(await upsertRangePctRows('', [])).toBe(0);
         expect(await upsertRangePctRows('2026-10-12', [])).toBe(0);
         expect(calls.length).toBe(0);
+    });
+});
+
+// ===========================================================================
+// [FUYAO-OFF 2026-10-30] 同花顺通道临时停用时的语义
+//
+// 现场：fuyao-proxy 到上游整条断掉（150s 不返回 / 546 / 502），而本函数有 6 处调用方
+// **没传 requestTimeoutMs** ⇒ 单请求无超时，`range-fill` 一批 20 只 × 3 次重试 ⇒ 几十个
+// 永久 pending 请求把标签页占满，用户表现为「点不动、切日期没反应」。
+// ⇒ 通道关掉时必须**一个请求都不发**，并且**抛错**（⛔ 不返回空 Map：空 Map 会被上层
+//   误读成「这些票本来就没涨幅」，而本文件头的红线就是「失败 ≠ 没有数据」）。
+// ===========================================================================
+describe('fetchFuyaoDailyPctRange · FUYAO-OFF', function() {
+    it('通道停用 ⇒ 立刻抛错，且不产生任何网络请求', async function() {
+        const before = calls.length;
+        const { fetchFuyaoDailyPctRange } = await import('./stock-range-pct.js');
+        await expect(
+            fetchFuyaoDailyPctRange([{ stock: '甲', code: '600000' }], ['2026-10-20', '2026-10-21'])
+        ).rejects.toThrow(/同花顺通道已临时停用/);
+        expect(calls.length).toBe(before);   // 连 supabase 都没碰
+    });
+
+    it('通道停用是【明确抛错】而不是伪装成「没有腿」', async function() {
+        const { fetchFuyaoDailyPctRange } = await import('./stock-range-pct.js');
+        let caught = null;
+        try {
+            await fetchFuyaoDailyPctRange([{ stock: '甲', code: '600000' }], ['2026-10-20']);
+        } catch (e) { caught = e; }
+        expect(caught).toBeInstanceOf(Error);   // ⛔ 不能是 return new Map()
     });
 });
