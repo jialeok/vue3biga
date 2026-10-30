@@ -16,6 +16,10 @@ import {
   isAfterCloseOf,
   closeLegOf,
   legs20FromRows,
+  legs20FromDaily,
+  mergeBaseLegs,
+  needsKlineLegs,
+  dailyRowsFromKline,
   merge20Legs,
   compound20
 } from './range20.js';
@@ -426,4 +430,127 @@ describe('探针窗口', () => {
   // ⚠️ 不在这里断言 getRange20WindowDates 返回的日期：它内部走 getPreviousTradingDay
   //   （依赖云端 allData.holidays + localStorage），单测环境没有那份数据（§10 别让单测去猜日历）。
   //   纯函数部分（pickRealWindowDates / compound20 / merge20Legs）已各自覆盖。
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [R20-DAILY 2026-10-30 用户口径] 逐日腿原料表 —— 「历史数据先存好，次日只补当天」
+//
+// 用户原话：
+//   「为什么每次打开都要实时计算，非常耗时间，比如那些历史数据先存好，次日在算次日，这样不更快吗？
+//     为什么每次都要同花顺实时重新拉取，拉取当天的就可以，再加上历史日期，有些票不在当天正式列表的，
+//     看表里有没有数据，有的话看哪天没有补哪天，没有的话，就全补，这样局部补数据，而不是每次整体获取，
+//     这样很慢，影响体验。」
+//
+// 四个纯函数各司其职：
+//   legs20FromDaily  读表 ⇒ 历史腿（⛔ 绝不含 T）
+//   mergeBaseLegs    表里的历史腿 + 当天的 T 腿（T 必须最后覆盖）
+//   needsKlineLegs   这只票要不要补 K 线（腿够 ⇒ 一个请求都不发）
+//   dailyRowsFromKline  K 线结果 ⇒ 入库行（⛔ 绝不写 T，盘中那根是现价不是收盘）
+// ══════════════════════════════════════════════════════════════════════════════════════
+describe('逐日腿原料（R20-DAILY）', () => {
+  const dates = mkDates(20);                 // 20 个日期键，最后一个 = 展示日 T
+  const T = dates[19];
+
+  /** 造一份「20 天全有腿」的原料表 */
+  function fullDaily() {
+    const inner = new Map();
+    dates.forEach(function(d) { inner.set(d, 1); });
+    return new Map([['甲', inner]]);
+  }
+
+  it('legs20FromDaily：只给 T 之前的历史腿，⛔ 不含 T（T 腿归 resolveT20Leg）', () => {
+    const legs = legs20FromDaily([{ stock: '甲' }], dates, fullDaily());
+    const m = legs.get('甲');
+    expect(m).toBeTruthy();
+    expect(m.size).toBe(19);
+    expect(m.has(T)).toBe(false);
+    expect(m.has(dates[0])).toBe(true);
+  });
+
+  it('legs20FromDaily：表里 T 行有值也不许当今天的腿（否则把隔夜涨幅算进去）', () => {
+    const daily = fullDaily();
+    daily.get('甲').set(T, 99);              // 人为塞一根"今天的腿"
+    const legs = legs20FromDaily([{ stock: '甲' }], dates, daily);
+    expect(legs.get('甲').has(T)).toBe(false);
+  });
+
+  it('legs20FromDaily：缺某天 ⇒ 那天没有腿（§10 不补 0）', () => {
+    const daily = fullDaily();
+    daily.get('甲').delete(dates[5]);
+    const legs = legs20FromDaily([{ stock: '甲' }], dates, daily);
+    expect(legs.get('甲').size).toBe(18);
+    expect(legs.get('甲').has(dates[5])).toBe(false);
+  });
+
+  it('legs20FromDaily：表不可用（null）/ 空表 ⇒ 空结果（调用方据此退回全量补）', () => {
+    expect(legs20FromDaily([{ stock: '甲' }], dates, null).size).toBe(0);
+    expect(legs20FromDaily([{ stock: '甲' }], dates, new Map()).size).toBe(0);
+    expect(legs20FromDaily([], dates, fullDaily()).size).toBe(0);
+  });
+
+  it('mergeBaseLegs：T 腿必须【最后】覆盖（表里的同日行属于历史，不是今天）', () => {
+    const dailyLegs = new Map([['甲', new Map([[dates[18], 2]])]]);
+    const tLegs = new Map([['甲', new Map([[T, 5]])]]);
+    const merged = mergeBaseLegs(tLegs, dailyLegs);
+    expect(merged.get('甲').get(dates[18])).toBe(2);
+    expect(merged.get('甲').get(T)).toBe(5);
+    // 顺序反过来的写法是错的 ⇒ 这里断言"表里若也有 T 也必须被 T 腿盖掉"
+    const dirtyDaily = new Map([['甲', new Map([[T, 99], [dates[18], 2]])]]);
+    const merged2 = mergeBaseLegs(tLegs, dirtyDaily);
+    expect(merged2.get('甲').get(T)).toBe(5);
+  });
+
+  it('needsKlineLegs：19 根历史腿 = 够（不发请求）；18 根 = 缺（要补）', () => {
+    const full = mergeBaseLegs(new Map(), legs20FromDaily([{ stock: '甲' }], dates, fullDaily()));
+    expect(needsKlineLegs(full, '甲', T)).toBe(false);          // 19 根 ⇒ 够
+    full.get('甲').delete(dates[3]);
+    expect(needsKlineLegs(full, '甲', T)).toBe(true);           // 18 根 ⇒ 缺
+  });
+
+  it('needsKlineLegs：表里没这只票 / 表不可用 ⇒ 要补（= 改造前的全量行为，§11 零回归）', () => {
+    expect(needsKlineLegs(new Map(), '甲', T)).toBe(true);
+    expect(needsKlineLegs(null, '甲', T)).toBe(true);
+    // 只有 T 一根腿（改造前阶段① 的形状）⇒ 必须补，⛔ 不能拿一根腿冒充 20 日涨幅
+    const onlyT = new Map([['甲', new Map([[T, 3]])]]);
+    expect(needsKlineLegs(onlyT, '甲', T)).toBe(true);
+  });
+
+  it('dailyRowsFromKline：只写 T 之前的腿（盘中"今天"是现价，写进去会被当成收盘腿）', () => {
+    const extra = new Map([['甲', new Map([
+      [dates[17].replace(/-/g, ''), 2.5],
+      [dates[18].replace(/-/g, ''), -1.5],
+      [T.replace(/-/g, ''), 8.88]            // ← 今天，必须被挡掉
+    ])]]);
+    const rows = dailyRowsFromKline(extra, T);
+    expect(rows).toHaveLength(2);
+    expect(rows.map(function(r) { return r.date; })).toEqual([dates[17], dates[18]]);
+    expect(rows.every(function(r) { return r.stock === '甲'; })).toBe(true);
+    expect(rows[1].pct).toBe(-1.5);
+  });
+
+  it('dailyRowsFromKline：空值 / 非法日期键一律跳过（§10 不造值）', () => {
+    const extra = new Map([['甲', new Map([
+      [dates[17].replace(/-/g, ''), null],
+      ['badkey', 1],
+      [dates[18].replace(/-/g, ''), 3]
+    ])]]);
+    expect(dailyRowsFromKline(extra, T)).toHaveLength(1);
+    expect(dailyRowsFromKline(null, T)).toEqual([]);
+    expect(dailyRowsFromKline(extra, '')).toEqual([]);
+  });
+
+  it('端到端：次日只缺 1 根腿 ⇒ 用表 + 当天 T 腿算出复利（0 个 K 线请求）', () => {
+    // 昨天收盘后把 T-1 写进了表 ⇒ 今天算 T 的窗口时 19 根历史腿全在
+    const legs = mergeBaseLegs(
+      new Map([['甲', new Map([[T, 10]])]]),      // 今天竞价 +10%
+      legs20FromDaily([{ stock: '甲' }], dates, fullDaily())
+    );
+    expect(needsKlineLegs(legs, '甲', T)).toBe(false);
+    const rows = compound20(legs, dates);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].days).toBe(20);
+    // 19 天各 +1% 再乘今天 +10%：1.01^19 * 1.1 - 1
+    const want = (Math.pow(1.01, 19) * 1.1 - 1) * 100;
+    expect(rows[0].pct).toBeCloseTo(want, 6);
+  });
 });

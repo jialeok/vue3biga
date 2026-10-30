@@ -52,6 +52,9 @@ import { ensureAuctionCodeMapping } from './auction-fetch-helpers.js';
 import { fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
 // [R20-CLOUD 2026-10-20] 结果表读写（加速层：读失败降级为纯内存计算，⛔ 不影响正确性）
 import { readRange20Rows, pickUsableRows, upsertRange20Rows } from '../../data/stock-range20-cache.js';
+// ★★ [R20-DAILY 2026-10-30 用户口径] 逐日腿原料表（详见 data/stock-daily-pct.js 头部）。
+//   ⛔ 与上面那张「结果表」是两回事：结果表按窗口末日 T 存（每天不命中），本表按逐日存（跨日复用）。
+import { readDailyPctRows, upsertDailyPctRows } from '../../data/stock-daily-pct.js';
 import { _dbgLog } from '../../data/debug-log.js';
 
 /** 窗口长度：含今天在内的 20 个交易日（用户口径「包括今天在内，算20天的」） */
@@ -335,6 +338,126 @@ export function legs20FromRows(targets, ascDates, rowsByDate, opts) {
     }
     if (legs.size > 0) out.set(name, legs);
   }
+  return out;
+}
+
+/**
+ * 【纯函数】从「逐日腿原料表」抽每只票的【历史】日涨幅腿（T 日除外）。
+ *
+ * ★★ [R20-DAILY 2026-10-30 用户口径] 为什么需要它（与 legs20FromRows 的分工）：
+ *   `legs20FromRows` 只给 **T 腿**（历史日的库内 `change_pct` 不可信，见 R20-CLOSE-LEG）；
+ *   本函数给 **T-19 ~ T-1 的历史腿**，来源是 `stock_daily_pct`（同花顺日线换算，唯一可信源）。
+ *   两者合起来 = 完整的 20 根腿，**稳态下一个 K 线请求都不用发**。
+ *
+ * ⛔ T 日腿一律不从这里取：表里若残留旧的 T 行（比如昨天写进来的），
+ *   拿它当"今天的腿"会把隔夜涨幅算进去 ⇒ 数值全错。T 腿的唯一来源是 `resolveT20Leg`（当日行）。
+ *
+ * @param {Array<{stock:string}>} targets 目标股票
+ * @param {string[]} ascDates 升序交易日（最后一个 = 展示日 T）
+ * @param {Map<string, Map<string, number>>|null} dailyMap 股票名 -> (交易日 -> 日涨幅%)，来自 readDailyPctRows
+ * @returns {Map<string, Map<string, number>>} 股票名 -> (历史交易日 -> 日涨幅%)（不含 T）
+ */
+export function legs20FromDaily(targets, ascDates, dailyMap) {
+  const out = new Map();
+  if (!targets || targets.length === 0 || !ascDates || ascDates.length === 0 || !dailyMap) return out;
+  const tDate = ascDates[ascDates.length - 1];
+  const seen = new Set();
+  for (let i = 0; i < targets.length; i++) {
+    const t = targets[i];
+    const name = t && t.stock ? String(t.stock).trim() : '';
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    const m = dailyMap.get(name);
+    if (!m || m.size === 0) continue;
+    const legs = new Map();
+    for (let k = 0; k < ascDates.length; k++) {
+      const d = ascDates[k];
+      if (d === tDate) continue;              // ⛔ T 腿归 resolveT20Leg，见函数头
+      const v = m.get(d);
+      if (v === null || v === undefined || isNaN(v)) continue;
+      legs.set(d, v);                          // §10：缺某天就不放 ⇒ days 会少 1，⛔ 不补 0
+    }
+    if (legs.size > 0) out.set(name, legs);
+  }
+  return out;
+}
+
+/**
+ * 【纯函数】把「逐日腿原料」与「T 腿」拼成完整的 baseLegs。
+ *
+ * ⛔ 顺序不能反：T 腿必须【最后】覆盖 —— 表里的同日行（若有）属于历史，不是今天。
+ *
+ * @param {Map<string, Map<string, number>>} tLegs legs20FromRows 的结果（只含 T 腿）
+ * @param {Map<string, Map<string, number>>} dailyLegs legs20FromDaily 的结果（只含历史腿）
+ * @returns {Map<string, Map<string, number>>}
+ */
+export function mergeBaseLegs(tLegs, dailyLegs) {
+  const out = new Map();
+  if (dailyLegs) dailyLegs.forEach(function(m, n) { out.set(n, new Map(m)); });
+  if (tLegs) tLegs.forEach(function(m, n) {
+    let cur = out.get(n);
+    if (!cur) { cur = new Map(); out.set(n, cur); }
+    m.forEach(function(v, d) { cur.set(d, v); });
+  });
+  return out;
+}
+
+/**
+ * 【纯函数】某只票是不是「腿不够、需要补 K 线」。
+ *
+ * 用户口径（2026-10-30）「看表里有没有数据，有的话看哪天没有补哪天，没有的话，就全补」：
+ *   · 历史腿数 >= needHistory ⇒ 视为够用（只差 T 腿也能算，那个是当天行给的）；
+ *   · 否则 ⇒ 这只票要补（补回来的历史腿会写进表，下次就不用再补）。
+ *
+ * ⚠️ `needHistory` 用 RANGE20_WINDOW_DAYS - 1（19）：T 腿单独一根，合计 20。
+ * ⚠️ 表空 / 表不可用 ⇒ 每只票都不够 ⇒ todo = 全部 ⇒ **回到改造前的行为**（§11 零回归）。
+ *
+ * @param {Map<string, Map<string, number>>} legsByStock mergeBaseLegs 的结果
+ * @param {string} stock 股票名
+ * @param {string} tDate 展示日 T
+ * @param {number} [needHistory] 需要的历史腿数，缺省 19
+ * @returns {boolean} true = 要补
+ */
+export function needsKlineLegs(legsByStock, stock, tDate, needHistory) {
+  const need = (needHistory === undefined || needHistory === null) ? (RANGE20_WINDOW_DAYS - 1) : Number(needHistory);
+  const m = legsByStock ? legsByStock.get(stock) : null;
+  if (!m || m.size === 0) return true;
+  let n = 0;
+  m.forEach(function(v, d) {
+    if (d === tDate) return;                 // T 腿不占历史名额
+    if (v !== null && v !== undefined && !isNaN(v)) n++;
+  });
+  return n < (isFinite(need) ? need : (RANGE20_WINDOW_DAYS - 1));
+}
+
+/**
+ * 【纯函数】把 K 线补回来的腿转成 `stock_daily_pct` 的写入行。
+ *
+ * 🔴 只写【T 日之前】的腿（⛔ 绝不写 T）：
+ *   · K 线里的"今天"那根在盘中是现价、不是收盘涨幅 ⇒ 写进原料表会把今天的盘中价
+ *     当成"今天的收盘腿"，明天算窗口时直接算错（而且是静默算错，最难查的那种）。
+ *   · 而 T-1 这一根【必须】写：它在本次 `extra` 里本来就是真收盘价，写上之后
+ *     明天算 T+1 的窗口时就有它了 ⇒ **这才是"次日只补当天"能成立的关键**。
+ *
+ * @param {Map<string, Map<string, number>>|null} extraByStock K 线结果（股票名 -> (YYYYMMDD -> 日涨幅%)）
+ * @param {string} tDate 展示日 T（'YYYY-MM-DD'）
+ * @returns {Array<{date:string, stock:string, pct:number}>}
+ */
+export function dailyRowsFromKline(extraByStock, tDate) {
+  const out = [];
+  if (!extraByStock || !tDate) return out;
+  const t = String(tDate);
+  extraByStock.forEach(function(dayMap, name) {
+    if (!name || !dayMap) return;
+    dayMap.forEach(function(v, ymd) {
+      if (v === null || v === undefined || isNaN(v)) return;
+      const s = String(ymd).replace(/-/g, '');
+      if (!/^\d{8}$/.test(s)) return;
+      const d = s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8);
+      if (d >= t) return;                      // 🔴 只写 T 之前（见函数头）
+      out.push({ date: d, stock: String(name), pct: Number(v) });
+    });
+  });
   return out;
 }
 
@@ -691,7 +814,18 @@ export async function ensureRange20(date, rows, opts) {
   //   往前回溯才凑得满自己那 20 个交易日（见 compound20 的 R20-PERSTOCK-WIN）。
   const probeDates = getRange20WindowDates(date, RANGE20_PROBE_DAYS);
   const rowsByDate = _rowsByDateOf(probeDates);
-  const baseLegs = legs20FromRows(targets, probeDates, rowsByDate, { tIsToday: tIsToday, afterClose: afterClose });
+  const tLegs = legs20FromRows(targets, probeDates, rowsByDate, { tIsToday: tIsToday, afterClose: afterClose });
+  // ★★ [R20-DAILY 2026-10-30 用户口径] 历史腿从【逐日腿原料表】取，⛔ 不再每天都重拉同花顺。
+  //   用户原话：「历史数据先存好，次日在算次日……看表里有没有数据，有的话看哪天没有补哪天，
+  //   没有的话，就全补，这样局部补数据，而不是每次整体获取」。
+  //   读失败 / 表还没建 ⇒ dailyMap = null ⇒ 历史腿为空 ⇒ todo = 全部票 ⇒ 完全退回改造前的行为（§11）。
+  const dailyMap = (opts && opts.skipDaily) ? null : await readDailyPctRows(probeDates[0], date);
+  const dailyLegs = legs20FromDaily(targets, probeDates, dailyMap);
+  const baseLegs = mergeBaseLegs(tLegs, dailyLegs);
+  if (dailyMap) {
+    _dbgLog('[RANGE20-DAILY] ' + date + ' 逐日腿表命中 ' + dailyLegs.size + '/' + targets.length
+      + ' 只（区间 ' + probeDates[0] + '~' + date + '）');
+  }
   // 🔴 [FIX 2026-10-19 · R20-CLOSE-LEG] **阶段① 本身不发布**。
   //   原因：历史日的库内 `change_pct` 不可信（早盘写入的竞价涨幅 / 缺行，见 merge20Legs 函数头），
   //   所以 baseLegs 现在只剩「T 腿」一根 —— 拿它发出去会得到一个只有 1 天的假数值。
@@ -705,18 +839,40 @@ export async function ensureRange20(date, rows, opts) {
   if (opts && opts.skipKline) return _state.value.map;
 
   // ---- 阶段②：同花顺 K 线（免费额度）----
-  // 🔴 [FIX 2026-10-19 · R20-CLOSE-LEG] **所有票都要跑一次 K 线，⛔ 不再是「只跑腿不够的票」。**
-  //   为什么：历史日的库内 `change_pct` 不可信（可能是早盘写入的竞价涨幅，且大量历史日缺行，
-  //   见 merge20Legs 函数头）。若沿用「库内腿数够 30 天就跳过」的判据，
-  //   那些「库内行数齐、但值全是竞价涨幅」的票就永远不会被纠正 ⇒ 数值静默偏差近一倍。
-  //   `_klineTried` 保证同一会话同一票只请求一次（§32/§36），所以增量成本只有首轮一遍。
-  // 🔴 [R20-CLOUD 2026-10-20] 云端结果表已命中的票**不再请求**（这才是「第二次打开秒开」的关键）。
+  // 🔴 [FIX 2026-10-19 · R20-CLOSE-LEG] 历史日的库内 `change_pct` 不可信（可能是早盘写入的竞价涨幅，
+  //   且大量历史日缺行，见 merge20Legs 函数头）⇒ **历史腿只认两条来源**：
+  //     ① 逐日腿原料表 stock_daily_pct（同花顺日线换算，可信）；
+  //     ② 本轮现场拉的同花顺 K 线。
+  //   ⛔ 绝不因为「库内行数够」就跳过某只票 —— 那正是「显示 42.7%，实际 117.4%」的根因。
+  //
+  // ★★ [R20-DAILY 2026-10-30] 「要不要补」的判据从「全部票」改成【按票看腿够不够】：
+  //   · 表里已有 ≥19 根历史腿 ⇒ 这只票**一个请求都不发**（本轮新增，这是秒开的关键）；
+  //   · 缺腿（新进池子的票 / 历史上没补过的日子）⇒ 才补，补回来写进表 ⇒ 下次也不用再补。
+  //   表空 / 表不可用 ⇒ 每只票都不够 ⇒ todo = 全部 ⇒ 与改造前完全一致（§11 零回归）。
+  //   `_klineTried` 保证同一会话同一票只请求一次（§32/§36）。
+  //   🔴 [R20-CLOUD 2026-10-20] 云端结果表已命中的票同样不再请求（第二次打开秒开的另一条腿）。
   const need = targets;
   if (need.length === 0) return _state.value.map;
   const tried = _klineTried.get(date) || new Set();
-  // 🔴 [R20-CLOUD] 云端表已命中的票跳过 —— 这条过滤就是「第二次打开秒开」的实现。
-  const todo = need.filter(function(t) { return !tried.has(t.stock) && !cloudMap.has(t.stock); });
-  if (todo.length === 0) return _state.value.map;
+  const todo = need.filter(function(t) {
+    if (tried.has(t.stock) || cloudMap.has(t.stock)) return false;
+    return needsKlineLegs(baseLegs, t.stock, date);
+  });
+  if (todo.length === 0) {
+    // ★ [R20-DAILY] 全部票的腿都在表里 ⇒ 直接复合发布，**0 个 K 线请求**。
+    //   ⛔ 不能直接 return：改造前这条路只会返回空结果（因为表里没有腿），现在有腿了必须算出来。
+    try {
+      const rd0 = _unionRealDates(date, baseLegs, probeDates);
+      const rows0 = compound20(baseLegs, rd0);
+      if (rows0.length > 0) _publish(date, _mergeRowsWithCloud(rows0, cloudMap));
+      _stage.set(date, 2);
+      _legMode.set(date, legMode);
+      _scheduleCloseSwitch(date, legMode);
+      _dbgLog('[RANGE20-DAILY] ' + date + ' 全部 ' + need.length + ' 只票的腿都在原料表 ⇒ 0 K线请求，直接发布 '
+        + rows0.length + ' 行');
+    } catch (e) { /* 发布失败留给下一轮 ensureRange20 */ }
+    return _state.value.map;
+  }
 
   const key = date + '|kline';
   const fly = _inflight.get(key);
@@ -764,7 +920,10 @@ export async function ensureRange20(date, rows, opts) {
         //   （= 涨停）。这正是用户投诉过的「显示 42.7%，实际 117.4%」同一类错误（§10 宁缺勿错）。
         //   ⇒ 没腿的票这一列保持 `—`（title 已写明「正在用同花顺日线补算」），绝不发估值。
         const fresh = compound20(mg, rd).filter(function(r) {
-          return acc.has(r.stock);
+          // ★ [R20-DAILY 2026-10-30] 除了本轮真拿到 K 线的票，**腿已经在原料表里的票也要发** ——
+          //   它们一个请求都没发，但 20 根腿是齐的（改造前这条路根本不存在：那时没有原料表）。
+          //   判据仍守 §10：腿不够（<19 根历史腿）⇒ 发 `—`，⛔ 绝不拿 T 日一根腿冒充 20 日涨幅。
+          return acc.has(r.stock) || !needsKlineLegs(mg, r.stock, date);
         });
         if (fresh.length === 0) return;
         _publish(date, _mergeRowsWithCloud(fresh, cloudMap));
@@ -841,7 +1000,8 @@ export async function ensureRange20(date, rows, opts) {
     //   直接发布等于把「T 日当天涨幅」冒充成「20 日涨幅」（§10 铁律：缺数据给 `—`，⛔ 不给错值）。
     //   这类票由下方延迟重试补齐；补齐前这一列显示 `—`（title 已写明「正在补算」）。
     const finalRows = compound20(merged, realDates).filter(function(r) {
-      return accAll && accAll.has(r.stock);
+      // ★ [R20-DAILY 2026-10-30] 同上：原料表里腿齐的票也要发（它们本轮 0 请求）。
+      return (accAll && accAll.has(r.stock)) || !needsKlineLegs(merged, r.stock, date);
     });
     _publish(date, _mergeRowsWithCloud(finalRows, cloudMap));
     _stage.set(date, 2);            // 🔴 标记「该日已合并 K 线」⇒ 后续阶段① 不再覆盖（见 _stage 说明）
@@ -854,6 +1014,19 @@ export async function ensureRange20(date, rows, opts) {
       const _toSave = finalRows;
       if (_toSave.length > 0) await upsertRange20Rows(date, _toSave, legMode);
     } catch (e) { /* 落库失败静默：正确性不依赖它 */ }
+    // ★★ [R20-DAILY 2026-10-30 用户口径] 把本轮拿到的【逐日腿】写进原料表 ⇒ 下次打开（甚至明天、
+    //   换设备）就不用再拉这几只票的同花顺 K 线了。用户原话：「历史数据先存好，次日在算次日」。
+    //   ⚠️ 只写 T 日之前的腿：K 线里的"今天"那根盘中是现价，写进原料表会把盘中价冒充收盘腿
+    //      —— 明天算窗口时直接算错，而且是静默算错。T 腿的唯一来源永远是当天的行（resolveT20Leg）。
+    //   ⚠️ 用 accAll（跨轮累积）而不是 extra（本轮）：上游偶发时一轮只成功一部分，
+    //      已成功的腿必须立刻落库，否则下一轮失败就把它们丢了。
+    try {
+      const _dailyRows = dailyRowsFromKline(accAll, date);
+      if (_dailyRows.length > 0) {
+        const n = await upsertDailyPctRows(_dailyRows);
+        if (n > 0) _dbgLog('[RANGE20-DAILY] ' + date + ' 写入逐日腿 ' + n + ' 行（下次这些票 0 请求）');
+      }
+    } catch (e) { /* 原料落库失败不影响本次结果 */ }
     // 上游偶发（截断 / 熔断 / 超时）会让部分票这一轮拿不到腿 ⇒ 对它们这一列是 `—`（§10 不给错值）。
     // 安排【一次】延迟重试补齐：拿到的票已在 tried 里不会重复请求，_klineAcc 保证不丢已有腿。
     // ⛔ 只重试一次（_range20Retried 闸门），避免上游持续故障时无限打请求。

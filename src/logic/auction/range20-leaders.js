@@ -45,6 +45,8 @@ import { _getAuctionFormalRowsForDate, _isAuctionWatchlistIndexReady } from '../
 import { fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
 // [R20-CLOUD 2026-10-20] 与主 toggle 共用同一张结果表（stock_range20_pct）⇒ 谁先算谁落库、另一方 0 请求复用
 import { readRange20Rows, pickUsableRows, upsertRange20Rows } from '../../data/stock-range20-cache.js';
+// ★★ [R20-DAILY 2026-10-30 用户口径] 逐日腿原料表（与主 toggle 共用同一份原料，§6）
+import { readDailyPctRows, upsertDailyPctRows } from '../../data/stock-daily-pct.js';
 import { _dbgLog } from '../../data/debug-log.js';
 import { getBoardKind, BOARD_MAIN, BOARD_BJ, BOARD_GROWTH, BOARD_STAR } from './limit-up.js';
 import { _getLocalTodayStr } from '../tagTitles/rules.js';
@@ -56,6 +58,10 @@ import {
   getRange20WindowDates,
   getRange20Pct,
   legs20FromRows,
+  legs20FromDaily,
+  mergeBaseLegs,
+  needsKlineLegs,
+  dailyRowsFromKline,
   merge20Legs,
   compound20,
   pickRealWindowDates,
@@ -724,15 +730,27 @@ export async function ensureRange20Leaders(date, opts) {
       afterClose: afterClose,
       useDbLegsForHistory: true,
     });
-    const baseLegs = legs20FromRows(pool, probeDates, rowsByDate, {
+    const tLegsClean = legs20FromRows(pool, probeDates, rowsByDate, {
       tIsToday: tIsToday,
       afterClose: afterClose,
     });
+    // ★★ [R20-DAILY 2026-10-30 用户口径] 历史腿改从【逐日腿原料表】取（同花顺日线换算，可信）。
+    //   用户原话：「历史数据先存好，次日在算次日……看表里有没有数据，有的话看哪天没有补哪天」。
+    //   读失败 / 表还没建 ⇒ dailyMap = null ⇒ dailyLegs 为空 ⇒ 行为与改造前完全一致（§11）。
+    //   ⚠️ 粗筛用的 baseLegsDb 也叠上原料腿：库内腿可能是竞价涨幅或整日缺行，
+    //      原料腿能覆盖的部分一律以原料为准（更准的粗筛 ⇒ 更少的好票被门槛误杀）。
+    const dailyMap = (opts && opts.skipDaily) ? null : await readDailyPctRows(probeDates[0], date);
+    const dailyLegs = legs20FromDaily(pool, probeDates, dailyMap);
+    const baseLegs = mergeBaseLegs(tLegsClean, dailyLegs);
+    const baseLegsDbMerged = mergeBaseLegs(baseLegsDb, dailyLegs);
+    if (dailyMap) {
+      _dbgLog('[RANGE20-TOP5-DAILY] ' + date + ' 逐日腿表命中 ' + dailyLegs.size + '/' + pool.length + ' 只');
+    }
     // 阶段① 粗筛（0 请求）：库内腿 + 门槛 + 只主板
     // 🔴 [R20-PERSTOCK-WIN] 传完整 probeDates（⛔ 不再 slice(-20)）：`compound20` 按每票自己的
     //   最近 20 个有腿日取窗，先截断 20 天会让停牌票无法回溯、粗筛把真龙头筛掉。
     const guessDates = probeDates;
-    const coarse = compound20(baseLegsDb, guessDates);
+    const coarse = compound20(baseLegsDbMerged, guessDates);
     // 🔴 [R20-CLOUD 2026-10-20] 云端结果表优先：主 toggle 已经用 K 线算过的票直接拿来排名，
     //   ⛔ 不再为它们重打一遍同花顺（这就是「打开应用要等很久」的主因 —— 本模块以前无条件
     //   跑 25 次 K 线，哪怕主看板/上一次打开早就算过了）。
@@ -816,9 +834,12 @@ export async function ensureRange20Leaders(date, opts) {
     const winKey = probeDates[0] || '';
     const extraByStock = _klineAcc.get(date) || new Map();
     const todo = coarseTop.filter(function(t) {
-      return !extraByStock.has(t.stock)
-        && !_klineTried.has(t.stock + '@' + winKey)
-        && !cloudMap.has(t.stock);
+      if (extraByStock.has(t.stock)) return false;
+      if (_klineTried.has(t.stock + '@' + winKey)) return false;
+      if (cloudMap.has(t.stock)) return false;
+      // ★★ [R20-DAILY 2026-10-30] 原料表里腿够的票 ⇒ 一个请求都不发（秒开的关键）。
+      //   表空 / 表不可用 ⇒ 每只都不够 ⇒ todo = 全部 ⇒ 与改造前一致（§11）。
+      return needsKlineLegs(baseLegs, t.stock, date);
     });
     if (todo.length > 0) {
       _fillCodes(todo);
@@ -933,6 +954,15 @@ export async function ensureRange20Leaders(date, opts) {
       });
       if (_toSave.length > 0) await upsertRange20Rows(date, _toSave, legMode);
     } catch (e) { /* 落库失败静默：正确性不依赖它 */ }
+    // ★★ [R20-DAILY 2026-10-30 用户口径] 把本轮拿到的逐日腿写进原料表 ⇒ 明天/换设备都不用再拉。
+    //   ⚠️ 只写 T 日之前的腿（盘中"今天"那根是现价，写进原料表会被当成收盘腿，静默算错）。
+    try {
+      const _dailyRows = dailyRowsFromKline(extraByStock, date);
+      if (_dailyRows.length > 0) {
+        const n = await upsertDailyPctRows(_dailyRows);
+        if (n > 0) _dbgLog('[RANGE20-TOP5-DAILY] ' + date + ' 写入逐日腿 ' + n + ' 行');
+      }
+    } catch (e) { /* 原料落库失败不影响本次结果 */ }
     return _state.value.list;
   })().finally(function() {
     if (_inflight.get(key) === p) _inflight.delete(key);
