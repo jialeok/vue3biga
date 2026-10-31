@@ -241,13 +241,13 @@
         }
 
         .auction-header-number { flex: 0.4; text-align: center; }
-        .auction-header-stock { flex: 1.2; text-align: left; padding-left: 4px; }
+        .auction-header-stock { flex: 2.12; text-align: left; padding-left: 4px; }
         .auction-header-change { flex: 0.6; text-align: center; }
-        .auction-header-volume { flex: 1; text-align: center; }
-        .auction-header-yest { flex: 1; text-align: center; font-size: 11px; }
+        .auction-header-volume { flex: 0.7; text-align: center; }
+        .auction-header-yest { flex: 0.7; text-align: center; font-size: 11px; }
         .auction-header-ratio { flex: 0.5; text-align: center; }
         /* [FEAT 2026-08-20] 题材 toggle：表头题材列，占原 竞价量+昨量+占比 三列空间（flex 1+1+0.5=2.5） */
-        .auction-header-topic { flex: 2.5; text-align: left; padding-left: 4px; }
+        .auction-header-topic { flex: 1.58; text-align: left; padding-left: 4px; }
 
         .strength-sort-active {
             color: #ef4444;
@@ -318,7 +318,7 @@
         }
 
         .auction-stock-name {
-            flex: 1.2;
+            flex: 2.12;
             font-size: 13px;
             font-weight: 600;
             color: #1f2937;
@@ -329,6 +329,14 @@
             overflow: hidden;
             text-overflow: ellipsis;
             position: relative;
+        }
+
+        /* ★ [2026-11-01] 名字下限：本格是 nowrap + ellipsis，一旦 flex 空间不够，
+           唯一可缩的元素就是名字 ⇒ 会被压成 0px（名字消失、后面的标签还在，反着的同一个坑）。
+           给 62px（4 个汉字 + 一个「*」称号标）下限，宁可让排在最后的次要标签被裁，也不让名字消失。
+           ⚠️ 只加 min-width，⛔ 不加 flex-wrap / order / display，DOM 与顺序一字不动。 */
+        .auction-stock-text {
+            min-width: 62px;
         }
 
         /* 竞价一字（9:25 竞价涨幅达到涨停幅度）：股票名下方红色下滑线 */
@@ -657,13 +665,27 @@
            而排名靠后的行没有「总龙 / n次在列」两个标签（内容仅 95px），所以显示得出来
            —— 正是用户说的「后面的股票有的显示，有的不显示」。
 
-           为什么必须改宽度而不是只调顺序：前十名那行「名字+涨幅+总龙+在列」共 171px，
-           单靠重排救不了，必须同时 (a) 加宽本列、(b) 收窄题材列、(c) 把涨幅提到名字紧跟处。
+           ★ 用户第二轮口径：「你查看最早的版本看它是怎么布局的，根本不用重新设计布局的」
+             +「其它 toggle 全都乱套了，特别是那些标签层，人家之前好好的」
+             ⇒ 【只调列宽比例：不新增标签、不隐藏标签、不重排序】。
+             第一版曾用 order 把涨幅顶到名字之后、并隐藏「n次在列」腾空间——
+             用户明确否决（「感觉错位了」/「我又没叫你动这些标签层」），本轮全部撤销。
 
            🔴 三条铁律（⛔ 别只改一条，改漏任何一条都会重新吃掉涨幅）：
-             ① 本列 flex 1.2 → 1.75、题材列 1.4 → 0.85，**总 flex 仍为 3.5**
-                ⇒ 序号/占比列宽不变、表头与数据列天然对齐；
-             ② 表头 `.range-cols-header-stock` 必须与数据格 `.range-cols-name` 【同一个判据、
+             ① 本列 flex 1.2 → **2.2**（≈196px）；表头 `.range-cols-header-stock` 必须同值
+                —— 一边改一边不改就是列错位；
+             ② 涨幅保持在 DOM 原第 7 位（名字→总龙→20天→**涨幅**→在列）：
+                溢出时被裁的是排在最后的「n次在列」，**永远不是涨幅**，因此无需 order；
+             ③ 名字给 62px 下限（4 字 + 一个「*」）：整行挤爆时宁可裁最后一个标签，
+                也不让名字消失（第一版给 0 下限，flex 直接把名字压成 0px，反着的同一个坑）。
+
+           实测结果（2026-11-01 本地构建，6 种 toggle × 390 / 360 / 320 三档屏宽）：
+             默认 / 题材 / 十日 / 二十日 / 竞昨 / 一字 —— 全部【整格 0 溢出、0 元素被裁】；
+             十日 / 二十日 的「n次在列」照常显示（8次在列 38px），标签一个都没少。
+
+           ⚠️ 只在区间涨幅模式（十日 / 20日）生效：类由组件的 rangeColsMode 动态挂，
+             其它 toggle 的 class 与 flex 逐字不变（§11 默认无行为）。
+           ══════════════════════════════════════════════════════════════════════════════ */
                 同一组数值】—— 一边改一边不改就是列错位；
              ③ 涨幅用 order 顶到名字之后、其余标签全部 order:0 排后面
                 ⇒ 万一还是放不下，被裁的是次要标签，**永远不是涨幅**。
@@ -672,11 +694,11 @@
              其它 toggle 的 class 与 flex 逐字不变（§11 默认无行为）。
            ══════════════════════════════════════════════════════════════════════════════ */
         .auction-header-stock.range-cols-header-stock {
-            flex: 1.9;
+            flex: 2.2;
         }
 
         .auction-stock-name.range-cols-name {
-            flex: 1.9;
+            flex: 2.2;
             display: flex;
             align-items: center;
             gap: 2px;
@@ -685,38 +707,27 @@
         /* 默认全部不缩（标签按天然宽度排）。名字【可以缩但留 40px 下限】——
            ⛔ 不能给 0 下限：实测去掉后九阳股份那行「名字 52 + 涨幅 43 + 总龙 33 + 20天 25 + 在列 43 = 196px」
            超过格宽 170，flex 会把唯一可缩的名字直接压成 0px，涨幅看得见、名字没了（同一个坑的另一端）。
-           有了 40px 下限，正常名字（4 字 52px）在去掉「n次在列」后根本不触发收缩。 */
+           有了 62px 下限，正常名字（4 字 52px / 4 字+「*」60px）在整行装不下时也不会被压成 0。 */
         .auction-stock-name.range-cols-name > * {
             flex: 0 0 auto;
         }
 
         .auction-stock-name.range-cols-name .auction-stock-text {
             flex: 0 1 auto;
-            min-width: 52px;
+            min-width: 62px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
 
-        /* 把「名字 → 涨幅」这对钉在最前，其余标签依次跟在后面（放不下就裁标签） */
-        .auction-stock-name.range-cols-name .auction-stock-text { order: -2; }
-        .auction-stock-name.range-cols-name .auction-dragon-pct {
-            order: -1;
-            margin-left: 1px;
-        }
+        /* 🔁 [2026-11-01 第二次修正] 曾经用 order 把「涨幅」提到名字紧跟处，
+           用户反馈「感觉错位了」⇒ 【撤销 order】，恢复 DOM 原顺序（名字 → 总龙 → 20天 → 涨幅 → 在列）。
+           改为纯靠【加宽本列】让整行装得下；万一还差几像素，被裁的是排在最后的次要标签，
+           名字与涨幅都在 2.2 份宽（≈205px）之内，不会再被吃掉。 */
 
-        /* ★ [R20-FIT-PRESENCE 2026-11-01] 区间涨幅模式下隐藏「n次在列」文字标签。
-           为什么可以隐藏：它是【同一件事的第二处表达】—— logic/auction/presence-label.js 的
-           `rankBoxClassOf` 已经把【同样的三档配色】画在序号那个小方框上（见本文件
-           `.auction-rank-box-*` 与 `.auction-presence-tag*` 一一对应的注释）。
-           为什么必须隐藏：它占 43px，是「名字被压到 0px」的最后一根稻草——
-           实测有它的行内容宽 196px、没有它 153px（格宽 170px）。
-           ⚠️ 只在本模式隐藏：十日 / 20日 之外（以及默认模式的龙头组行）照常显示，§11 默认无行为。
-           🔁 若用户要求连次数也看得见 ⇒ 不要加大本列 flex（题材列会被挤没），
-              改成「本格 flex-wrap:wrap + 标签整体换第二行」，行高 +18px。 */
-        .auction-stock-name.range-cols-name .auction-presence-tag {
-            display: none;
-        }
+        /* 🔁 [2026-11-01 第二次修正] 这里曾有一条 `.auction-presence-tag { display:none }`
+           （区间模式下藏掉「n次在列」给涨幅腾 43px）——用户明确「我又没叫你动这些标签层，
+           人家之前好好的」⇒ 【整条撤销】，标签恢复显示，宽度改由加宽本列 + 收窄量列解决。 */
 
         /* [DRAGON-GROUP 2026-09-14] 龙头组与下方（观察组/常规组）之间的蚂蚁线分隔。
            与 .auction-obs-separator 同款虚线，视觉上「隔离开但仍属同一张表」。 */
@@ -726,18 +737,18 @@
         }
 
         .auction-volume {
-            flex: 1;
+            flex: 0.7;
             font-size: 13px;
             color: #374151;
-            padding: 8px 6px;
+            padding: 8px 3px;
             text-align: center;
         }
 
         .auction-yest {
-            flex: 1;
+            flex: 0.7;
             font-size: 13px;
             color: #374151;
-            padding: 8px 6px;
+            padding: 8px 3px;
             text-align: center;
         }
 
@@ -778,7 +789,7 @@
 
         /* [FEAT 2026-08-20] 题材 toggle：行题材单元格，占原 竞价量+昨量+占比 三列空间 */
         .auction-topic-cell {
-            flex: 2.5;
+            flex: 1.58;
             font-size: 12px;
             color: #374151;
             padding: 8px 6px;
@@ -1656,3 +1667,28 @@
     opacity: 0.55;
     cursor: default;
 }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   [NARROW 2026-11-01] 极窄屏（≤340px，如 iPhone SE 一代）兜底：让标签换行，不裁内容。
+   390 / 360 两档实测六种 toggle 全部【整格 0 溢出、0 元素被裁】，本节不参与；
+   只有更窄时列宽物理上放不下（名字 52 + 趋势 24 + 20天 25 + 涨幅 43 = 144px > 格宽），
+   此时宁可让标签掉到第二行（行高 +18px），也【不隐藏任何标签、不裁掉涨幅】（§10 缺项≠结论）。
+   ⚠️ 只动 white-space / overflow / flex-wrap，⛔ 不改 flex 数值、不改 DOM、不改颜色字号。
+   ══════════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 340px) {
+    .auction-stock-name {
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
+        line-height: 1.35;
+    }
+    .auction-stock-name .auction-stock-text {
+        white-space: nowrap;
+    }
+    /* 区间涨幅模式是 flex 容器，得让 flex item 自己换行 */
+    .auction-stock-name.range-cols-name {
+        flex-wrap: wrap;
+        row-gap: 1px;
+    }
+}
+

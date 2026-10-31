@@ -48,8 +48,11 @@
          而「名字 52 + 二十年涨幅 43 + 总龙一 33 + n次在列 43 = 171px」⇒ 涨幅整块被
          `text-overflow: ellipsis` 吃掉。排名靠后的行没有「总龙 / 在列」两个标签，
          所以它们反而显示得出来 —— 正是用户说的「后面的股票有的显示」。
-         ⇒ 本模式给整格挂 `range-cols-name`：加宽（flex 1.2→1.75）+ 改成 flex 容器 +
-         把涨幅用 order 提到名字紧跟处（见 auction-board.css 同名规则）。
+         ⇒ 本模式给整格挂 `range-cols-name`：加宽（flex 1.2→2.2，≈196px）+ 改成 flex 容器。
+         🔁 第二版修正（用户：「根本不用重新设计布局」「我又没叫你动这些标签层」）：
+            ⛔ 不再用 order 把涨幅提前（用户「感觉错位了」）、⛔ 不再隐藏「n次在列」；
+            只加宽本列。涨幅仍在 DOM 原第 7 位 ⇒ 溢出时先被裁的是排在最后的「n次在列」，
+            涨幅与名字永远在安全区内（详见 auction-board.css 同名规则的三条铁律）。
          ⚠️ 只在 rangeColsMode 挂类，其它 toggle 的 DOM class 逐字不变（§11 默认无行为）。 -->
     <div
       :class="[item.stockClass, rangeColsMode ? 'range-cols-name' : '']"
