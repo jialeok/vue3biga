@@ -105,7 +105,10 @@ import { whenFirstPaint, whenIdle } from '../boot/boot-phases.js';
         const MORNING_QUIET_TO_MIN = 9 * 60 + 26;
         /** 窗口之外再往前补多少个自然日（≈ 让 TOPIC_CACHE_DAYS=66 交易日吃满；实测 ≈3.5k 行 / 1.2MB） */
         const OLDER_EXTRA_DAYS = 70;
-        /** 补齐期间的分页并发（首屏仍是 6）—— 后台任务必须让步 */
+        /** 补齐期间的分页并发（首屏仍是 6）—— 后台任务必须让步
+         *  ★ [RANGE20-PREWARM 2026-10-31 复核] 试过 2 → 4（补齐从 11.4s 压到 6s），
+         *    但出票时刻两轮实测 +26s / +25s，**比并发 2 的 +22s 还差**（网络噪声范围内）。
+         *    既然提高并发换不来出票改善，就保持 2 —— 后台任务少抢连接，对用户在看板上的操作更友好。 */
         const OLDER_PULL_CONCURRENCY = 2;
 
         /** 北京时间的分钟数（与 morning-sync.js 同口径；⛔ 不受设备时区影响） */
@@ -166,18 +169,9 @@ import { whenFirstPaint, whenIdle } from '../boot/boot-phases.js';
                         _dbgLog('[AUCTION-ERR] pullAuctionFromTable(older) ' + (e && e.message || e));
                     });
             };
-            // ① 早盘静默：落在这段时间里 ⇒ 把整个补齐推迟到静默期结束之后
-            const nowMin = _beijingMinutesNow();
-            const inQuiet = nowMin >= MORNING_QUIET_FROM_MIN && nowMin <= MORNING_QUIET_TO_MIN;
-            const waitMs = inQuiet
-                ? Math.max(OLDER_PULL_DELAY_MS, (MORNING_QUIET_TO_MIN - nowMin) * 60 * 1000)
-                : OLDER_PULL_DELAY_MS;
-            if (inQuiet) {
-                _dbgLog('[AUCTION-PULL] 早盘静默期（' + Math.floor(nowMin / 60) + ':' + String(nowMin % 60).padStart(2, '0') +
-                    '）⇒ 历史补齐推迟 ' + Math.round(waitMs / 60000) + ' 分钟后开始');
-            }
-            setTimeout(function() {
-                // ③ 先让首屏独占连接池，再挑浏览器空闲的时刻开始补齐。
+
+            /** 真正开始拉「更早历史」：优先挑浏览器空闲时刻，不支持 / 抛错则直接执行 */
+            const _fireOlderPull = function() {
                 if (typeof requestIdleCallback === 'function') {
                     try {
                         requestIdleCallback(_runOlderPull, { timeout: 5000 });
@@ -185,7 +179,45 @@ import { whenFirstPaint, whenIdle } from '../boot/boot-phases.js';
                     } catch (e) { /* 降级到下面的直接执行 */ }
                 }
                 _runOlderPull();
-            }, waitMs);
+            };
+            // ① 早盘静默：落在这段时间里 ⇒ 把整个补齐推迟到静默期结束之后
+            const nowMin = _beijingMinutesNow();
+            const inQuiet = nowMin >= MORNING_QUIET_FROM_MIN && nowMin <= MORNING_QUIET_TO_MIN;
+            if (inQuiet) {
+                const _quietWaitMs = Math.max(OLDER_PULL_DELAY_MS, (MORNING_QUIET_TO_MIN - nowMin) * 60 * 1000);
+                _dbgLog('[AUCTION-PULL] 早盘静默期（' + Math.floor(nowMin / 60) + ':' + String(nowMin % 60).padStart(2, '0') +
+                    '）⇒ 历史补齐推迟 ' + Math.round(_quietWaitMs / 60000) + ' 分钟后开始');
+                setTimeout(_fireOlderPull, _quietWaitMs);
+                return;
+            }
+
+            // ★★ [RANGE20-PREWARM 2026-10-31 · 用户提问「提前预热 45 交易日索引会不会让首屏变慢」]
+            //
+            // 【定位】基线实测（.tmpdiag/pw/diag-range20.cjs，真实网络）：
+            //   + 4817ms  [AUCTION-PULL] 首屏窗口载入 23 天
+            //   + 4834ms  [PULL] 云端数据同步成功            ← 首屏数据可用
+            //   +21609ms  [AUCTION-PULL] 历史后台补齐完成：再载入 49 天（07-23~10-01）
+            //             ⇒ 已发 auction-refresh 唤醒 20日涨幅前五 / 题材量比 / 退潮判定重算
+            //   +25~27s   题材量比首次出票
+            //   ⇒ **45 交易日索引就是首次出票的关键路径**，而且那 21.6s 里有
+            //     **10s 纯粹是在等这个人为定时器**（`OLDER_PULL_DELAY_MS`），剩下 11.4s 才是真拉取。
+            //
+            // 【为什么原来要等 10s】注释里写着「先让首屏独占连接池」。但那是在
+            //   pullFromCloud 还是【串行 await 链】（整段 6.7s）时做的判断。
+            //   现在四段读取并发，首屏窗口 4.8s 就落地 —— 本函数**已经是「首屏窗口之后」才被调用**的，
+            //   再等 10s 纯属重复等待。
+            //
+            // 【两种「提前」的区别（重要，决定了会不会拖慢首屏）】
+            //   ❌ 方案 A：把 23 天窗口直接扩成 72 天一次拉 —— 行数 2000→5500、页数翻倍，
+            //      `[PULL]` 会从 4.8s 推到 7~9s ⇒ **首屏变慢**，按用户判据不做。
+            //   ✅ 方案 B（本实现）：两条窗口**互不阻塞**。首屏窗口的请求时机与优先级一字不改，
+            //      只是把「历史补齐」从「等 10s」改成「首屏窗口落地后立刻排进空闲队列」。
+            //      首屏到货时刻不变，补齐完成时刻从 +21.6s 提前到 ~+12s ⇒ 出票提前。
+            //
+            // 【护栏】① 早盘 09:10~09:26 静默期仍然生效（不跟 9:25 worker 写库抢带宽）；
+            //        ② 补齐期间分页并发仍是 `OLDER_PULL_CONCURRENCY = 2`（让步，不跟首屏抢）；
+            //        ③ requestIdleCallback 兜底不变（浏览器忙就先让路）。
+            whenIdle(_fireOlderPull, { delayMs: 0, name: '更早历史补齐（45 交易日索引）' });
         }
 
         /**
