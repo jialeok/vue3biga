@@ -95,4 +95,18 @@ describe('resolveBuySettle · 买点侧选股输入门控', function() {
     expect(r.settled).toBe(true);
     expect(resolveBuySettle(full({ buyRangeDate: D + ' ' })).settled).toBe(true);
   });
+
+  // ★★ [BUY-SETTLE-2 2026-10-31] 第 ⑨ 项：20 日涨幅前五的结论。
+  //   它最慢（K 线精算）且能整段换板（常规选股 ↔ 退潮替补）—— 用户第三次报障的
+  //   「变成一只 → 又跳转两只 → 又变成一只」就可能是它在迟到。
+  it('⑧ 20 日涨幅结论未到 ⇒ 不放行；到了（或宽限放行）⇒ 放行', function() {
+    const r = resolveBuySettle(full({ range20Settled: false }));
+    expect(r.settled).toBe(false);
+    expect(r.missing).toContain('20 日涨幅结论');
+    expect(resolveBuySettle(full({ range20Settled: true })).settled).toBe(true);
+  });
+
+  it('⑨ 调用方没提供 range20Settled（老调用 / 单测缺省）⇒ 不因此挂起（向后兼容）', function() {
+    expect(resolveBuySettle(full({ range20Settled: undefined })).settled).toBe(true);
+  });
 });

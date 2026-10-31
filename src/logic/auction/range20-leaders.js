@@ -170,6 +170,21 @@ const _tenCache = new Map();
  *   4 次封顶后不再重试 —— 剩下的日子可能本来就没有名单数据，无限重试只会烧 CPU。
  */
 const _warmRetry = new Map();
+/**
+ * ★★ [BUY-SETTLE-2 2026-10-31] date 集合：该日**结论已发布过**（成功或「算出来 0 只」都算）。
+ *
+ * 为什么单独记一份、而不用 `_state.ready` / `hasRange20LeadersVerdict`：
+ *   本模块**同时维护多个日期**（看板展示日 + 前沿交易日的 TOP5 补位检索），`_state.date` 会被
+ *   交替顶来顶去 ⇒ `hasRange20LeadersVerdict(date)` 要求 `_state.date === date`，随时会翻成 false。
+ *   买点侧门控若拿它当判据 ⇒ 结论到手了又被判成「没到」⇒ 占位闪回。
+ *   ⇒ 按日期记一个**只增不减**的集合（`clearRange20Leaders` 时整体清空），日期维度稳定。
+ *
+ * 唯一消费方：题材量比看板买点侧门控（`useTopicVolRatioBoard`）——
+ *   20 日涨幅前五没到时 `ebbCtx.ready=false` ⇒ 退潮规则不生效 ⇒ 按常规选股（1 只）；
+ *   到货后若判出退潮 ⇒ 整段换成退潮替补（可能 2 只）⇒ **屏幕上的票会变**。
+ *   这正是用户报的「变成一只 → 又跳转两只 → 又变成一只」。
+ */
+const _verdictDates = new Set();
 /** 退避间隔（毫秒）：由近到远，覆盖「首次打开应用后 2 分钟内索引补齐」这段窗口 */
 const WARM_RETRY_DELAYS = [3000, 10000, 30000, 60000];
 
@@ -237,6 +252,23 @@ export function getRange20LeadersFingerprintToken() {
   return s.date + '|v' + s.version + '|n' + s.list.length + '|r' + (s.ready ? 1 : 0);
 }
 
+/**
+ * ★★ [BUY-SETTLE-2 2026-10-31] 该日的「20日涨幅前五」**结论到了没有**（按日期、只增不减）。
+ *
+ * 与 `hasRange20LeadersVerdict(date)` 的区别（⛔ 别互相替代）：
+ *   · 那个读 `_state`，要求 `_state.date === date` —— 多日期交替发布时会翻成 false（不稳）；
+ *   · 本函数读 `_verdictDates`，一旦该日发布过结论就恒 true（日期维度稳定，适合做门控）。
+ * ⚠️ §10：true 只表示「结论来了」（可能是「算出来 0 只」），⛔ 不表示「有总龙」。
+ *
+ * 消费方：题材量比看板买点侧门控（前五未到 ⇒ 退潮判定不生效 ⇒ 选股结果稍后必变）。
+ *
+ * @param {string} date 展示日
+ * @returns {boolean}
+ */
+export function hasRange20LeadersVerdictForDate(date) {
+  return !!(date && _verdictDates.has(date));
+}
+
 /** 清空会话缓存（仅供测试 / 换数据源） */
 export function clearRange20Leaders() {
   _sig.clear();
@@ -250,6 +282,8 @@ export function clearRange20Leaders() {
   _tenCache.clear();
   _warmRetry.forEach(function(st) { if (st && st.timer) clearTimeout(st.timer); });
   _warmRetry.clear();
+  // ★★ [BUY-SETTLE-2 2026-10-31] 会话缓存清空 ⇒ 「结论到没到」也一并作废（同生命周期）
+  _verdictDates.clear();
   _state.value = { date: '', list: [], ready: false, version: _state.value.version + 1 };
 }
 
@@ -514,6 +548,9 @@ function _sigOf(list) {
  *     消费方照样会重算，**不需要**用 version 再踢一脚。
  */
 function _publish(date, list, cacheable) {
+  // ★★ [BUY-SETTLE-2 2026-10-31] 「这一天的结论到了」—— 空结论也算（能不能 ≠ 有没有，§10）。
+  //   放在最前面：下面那个「内容没变就直接返回」的守卫会提前 return，若放在后面就会漏记。
+  if (date) _verdictDates.add(date);
   const sig = _sigOf(list);
   const prevSig = _sig.get(date);
   const sameDate = (_state.value.date === date);

@@ -27,6 +27,14 @@
  *     （实测证据：切日期那一帧所有带日期的 ref 都还是**旧日期**的值，`ebbHistory` 为空时规则层按
  *      「0 次事件 = 首次退潮」处理 ⇒ 首帧很可能整段走退潮替补，与最终结果完全不是同一批票。）
  *
+ * ★★ 第三版（2026-10-31，用户第三次报障「变成一只 → 又跳转两只 → 又变成一只」）又补了两项：
+ *   ⑨ 20 日涨幅前五的**结论**（退潮判定的总龙一就是它，能整段换板；带宽限）
+ *   ⑩ 题材库 `stock_topics` 就绪（实测 10-30 两只票的 topics 字段都是 null，题材全靠库反查；
+ *      库没到 ⇒ 全落「其它」⇒ 分组/只数/档位全错；带宽限）
+ *   ⚠️ 但**光靠枚举永远会漏**（买点侧还吃竞价行 / 量比缓存 / 昨日名册 / 灰行来源 ……）——
+ *      所以第三版另有【结果侧】兜底：`buy-quiesce.js` 要求选股指纹连续一段稳定期不被推翻。
+ *      本文件的职责只是「把已知的、能同步判的那几项快速挡住」，⛔ 别把稳定期那套搬进来。
+ *
  * ✅ 判据：上述输入**全部**落地（= 每个都有「成功或失败」的结论）才允许显示选票；
  *    未齐时买点侧只显示占位，并**在标题栏与占位里写清还差哪几项**（用户要的「提示语」）。
  *
@@ -49,6 +57,8 @@
  *   range10PresenceDate  十日涨幅在列次数「读过」的日期
  *   switchDay            本次计划是否判为「切换日」（仅切换日才要求下面那项）
  *   top5HistDate         20日涨幅历史榜「读过」的日期
+ *   range20Settled       ★ [BUY-SETTLE-2] 该日「20 日涨幅前五」的结论到了没有
+ *                        （`hasRange20LeadersVerdictForDate(d)`，或调用方的宽限期已过）
  * @returns {{settled:boolean, missing:string[], text:string}} missing = 中文项名（给用户看）
  */
 export function resolveBuySettle(ctx) {
@@ -75,6 +85,16 @@ export function resolveBuySettle(ctx) {
   if (at(o.range10PresenceDate) !== d) missing.push('十日涨幅在列次数');
   // ⑧ 仅切换日才要：20 日涨幅历史榜（判「首次上榜」）
   if (o.switchDay && at(o.top5HistDate) !== d) missing.push('20 日涨幅历史榜');
+  // ⑨ ★ [BUY-SETTLE-2 2026-10-31] 20 日涨幅前五的【结论】。
+  //    为什么它必须算「选股输入」：`ebbCtx` 的总龙一就是它 → 前五没到 ⇒ 退潮规则不生效 ⇒ 按常规选股；
+  //    到货后若判出退潮 ⇒ 整段换成退潮替补（用户看到的「变成一只 → 又跳转两只 → 又变成一只」）。
+  //    ⚠️ 调用方传 `true` 可以覆盖它（宽限期到了 / 判不出也要放行，⛔ 别把买点侧永久锁死）。
+  if (o.range20Settled === false) missing.push('20 日涨幅结论');
+  // ⑩ ★★ [BUY-SETTLE-2 2026-10-31] 题材库（`stock_topics`）就绪。
+  //    实测 10-30：正式名单 42 行里「上海九百 / 文投控股」的 topics 字段**都是 null**
+  //    ⇒ 题材完全靠题材库反查；库没到之前它们全落「其它」⇒ 分组 / 只数 / 档位全错 ⇒ 选另一批票。
+  //    ⚠️ 同样带宽限覆盖（库拉不到时不能让买点侧永远空着）。
+  if (o.topicLibraryReady === false) missing.push('题材库');
 
   if (missing.length === 0) return { settled: true, missing: [], text: '' };
   return {

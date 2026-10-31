@@ -53,6 +53,10 @@ import { _on, _off } from '../stores/eventBus.js';
 import {
   collectDecisionTopics,
   decorateDecisionRows,
+  // ★★ [BUY-SETTLE-2 2026-10-31] 买点行「唯一」的统一遍历（§6）——
+  //   选股指纹要覆盖全部买点行（含退潮替补 / 分歧 / 新龙 / 候补 / 抱团 / 补涨），
+  //   ⛔ 组合式里别手写 heavy/light/candidates/兜底槽位的摊平（历史上新增档位就被漏掉过）。
+  eachDecisionRow,
   suspendEntriesOf
 } from '../logic/decision/decision-collect.js';
 // [BOARD-SUSPEND 2026-10-13 用户口径] 本看板逐票「当日停牌」标记：判定唯一实现在 suspend.js
@@ -94,6 +98,10 @@ import {
   //   「主线题材 ≥3 只同题材」计数；⛔ 不上屏、不参与展示。
   getRange20LeadersTop10,
   getRange20LeadersFingerprintToken,
+  // ★★ [BUY-SETTLE-2 2026-10-31] 该日「20 日涨幅前五」的【结论到了没有】（按日期记，日期维度稳定）——
+  //   买点侧门控的输入之一：前五没到 ⇒ 退潮判定不生效 ⇒ 选股结果稍后必变（用户看到的换票）。
+  //   ⛔ 别用 hasRange20LeadersVerdict（它要求 _state.date === date，多日期交替发布时会翻成 false）。
+  hasRange20LeadersVerdictForDate,
   // ★★ [DIVERGE-GUESS 2026-10-24] 预热通道挑「总龙一候选」（纯函数，§15 可单测）；
   //   ⛔ 只在预热里用，正式判定仍以精算出的真·总龙一为准。
   pickLeaderFromUsableRows
@@ -158,12 +166,22 @@ import {
 // ★★ [BUY-SETTLE 2026-10-31 用户口径] 买点侧「选股输入是否齐了」的唯一判据
 //   （纯函数，见其 JSDoc / 单测）—— ⛔ 别在 data computed 里另写一串行内比较。
 import { resolveBuySettle } from '../logic/topicvolratio/buy-settle.js';
+// ★★ [BUY-SETTLE-2 2026-10-31 用户口径 · 第三版] 买点侧「选股结果稳定期」判据：
+//   白名单式枚举（第一版挡 1 项、第二版挡 8 项）**注定会漏** —— 买点侧还吃全局内存里的
+//   题材库 / 竞价行 / 量比缓存 / 昨日名册 / 灰行来源 / 20 日涨幅前五 …… 每一项到货都可能换票。
+//   ⇒ 改为【结果侧】：选股指纹连续 BUY_QUIET_MS 不被推翻才放行；之后再被推翻就重新挂占位。
+//   @see logic/topicvolratio/buy-quiesce.js（为什么这样做、三条红线都在那里）
+import { createBuyQuiesce, buildBuySelectionSig, BUY_QUIET_MS } from '../logic/topicvolratio/buy-quiesce.js';
 // ★★ [CORE-CAT 2026-10-22 用户口径] 题材【大类】归一：
 //   getCoreTopics() = 核心管理里那张表（用户「我在核心管理里把文化传媒放到 AI应用 那个大类了」）；
 //   getCoreTopicsVersion() = 响应式版本号（云端加载完成 / 用户改完核心词 ⇒ computed 自动重算）。
 //   ⛔ 规则层拿到的永远是「数组」而不是「自己去读表」（§5 Data 层职责）。
 import { getCoreTopics, getCoreTopicsVersion, isCoreTopicsCloudLoaded } from '../logic/topic/rules.js';
 import { makeCoreTopicResolver } from '../logic/topic/core-category.js';
+// ★★ [BUY-SETTLE-2 2026-10-31 用户口径] 题材库（stock_topics）「就绪了吗」——
+//   买点侧门控的输入之一。判据语义见其 JSDoc：**为空即「题材分类结果不可信」**（§10 读取失败 ≠ 空）。
+//   ⛔ 别用 isCloudTopicsLoaded（那个回答的是「现在写回云端安全吗」，两个判据用途不同）。
+import { isTopicLibraryReady } from '../data/stock-topics.js';
 // ★ 分笔：与「分笔买卖」看板【同一份取数编排 + 同一份逐行实现】（§6 单一真相，⛔ 不另写一份）
 import { decorateTickRow } from '../logic/tick/tick-minute.js';
 import {
@@ -291,6 +309,16 @@ export function useTopicVolRatioBoard() {
    *      而是另加一格「有没有结论」—— 两者含义不同，§6 不合并。
    */
   const prevRangeTriedDate = ref('');
+  /**
+   * ★★ [BUY-SETTLE-2 2026-10-31] 「慢判据」等太久时的**宽限日期**（当前管：20 日涨幅前五结论 / 题材库）。
+   *
+   * 为什么需要宽限：20 日前五要跑 K 线精算（上游实测 50% 超时），历史日还可能因为正式列表索引
+   *   未预热而**久久不出结论**；题材库是登录后的异步步骤，极端情况也可能拉不到。
+   *   若把它们当硬门控，买点侧就会一直挂在「结果确认中」（比闪一下更糟，用户会以为看板坏了）。
+   * ⇒ 判据：`就绪 || 宽限期已过` 才算落地。
+   * ⚠️ 宽限到期只放「这一日」的口子（按日期记），切日期/刷新都要重新等 —— ⛔ 别做成全局一次性。
+   */
+  const gateGraceDate = ref('');
   /**
    * ★ [EBB-R8 2026-10-14] 上一交易日在 tvrb_ebb_days 里【落库的退潮判定】那一行。
    *
@@ -1274,7 +1302,16 @@ export function useTopicVolRatioBoard() {
         ebbHistoryDate: ebbHistoryDate.value,
         range10PresenceDate: range10PresenceDate.value,
         switchDay: !!plan.switchDay,
-        top5HistDate: top5HistDate.value
+        top5HistDate: top5HistDate.value,
+        // ★★ [BUY-SETTLE-2 2026-10-31] 20 日涨幅前五的结论（退潮判定的总龙一就靠它）：
+        //   未到 ⇒ 退潮规则不生效 ⇒ 按常规选股；到货后若判出退潮 ⇒ 整段换成退潮替补 ⇒ 屏幕上的票会变。
+        //   宽限期（gateGraceDate）已过也算落地 —— ⛔ 绝不让买点侧因为上游算不出来而永久挂起。
+        range20Settled: hasRange20LeadersVerdictForDate(d) || gateGraceDate.value === d,
+        // ★★ [BUY-SETTLE-2 2026-10-31] 题材库（stock_topics）就绪。
+        //   实测 10-30：正式名单 42 行里【两只票的 topics 字段都是 null】，题材完全靠题材库反查
+        //   ⇒ 库没到之前它们全落「其它」⇒ 题材分组 / 组内只数 / 档位全错 ⇒ 选出来的是另一批票。
+        //   同样带宽限（库拉不到时不能让买点侧永远空着）。
+        topicLibraryReady: isTopicLibraryReady() || gateGraceDate.value === d
       });
       if (!_settle.settled) {
         plan.buyPending = true;
@@ -1299,6 +1336,79 @@ export function useTopicVolRatioBoard() {
       console.error('[TVRB] 计算失败', e);
       return _empty('计算失败，请看控制台');
     }
+  });
+
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  // ★★ [BUY-SETTLE-2 2026-10-31 用户口径 · 第三版] 买点侧「结果确认」的两道闸门
+  //
+  // 用户第三次报障：「刷新后变成了一只，后面又跳转两只，最后又变成一只，还是没有彻底解决。」
+  //
+  // 🔴 前两版为什么没修好：都在做【输入侧白名单】枚举（第一版挡 1 项、第二版挡 8 项），
+  //    而买点侧选股还吃 `collectDecisionTopics` 从**全局内存**里读的一大堆东西 ——
+  //    当日正式名单索引 / `stock_topics` 题材库 / `auction_watchlist` 竞价行 /
+  //    `market_metrics` 竞价量比（题材排名 = 平均量比！）/ 昨日龙头名册 / 竞昨高光继承集（灰行来源）/
+  //    昨日卖标签继承集 / 竞价一字与停牌名单 / 20 日涨幅前五 ……
+  //    每一项都是异步到货、每一项都可能改「选几只 / 选哪只 / 常规还是退潮替补」。
+  //    ⇒ **枚举注定会漏**，用户每次都能看到换票。
+  //
+  // ✅ 第三版补两道（与原 ① 一起，共三道，⛔ 别再删掉任何一道）：
+  //    ② 「20 日涨幅前五结论」到达（最慢的那一项，且能整段换板）—— 带 6s 宽限，⛔ 不永久挂起；
+  //    ③ 【结果侧】选股指纹连续 BUY_QUIET_MS 不被推翻 —— 不枚举数据源，天然覆盖未来新增的输入。
+  //    ⚠️ 三道闸门的 UI 表现是同一条占位横幅，文案由 `buyPendingText` 说明在等什么。
+  // ════════════════════════════════════════════════════════════════════════════════════════
+
+  /** 慢判据宽限期（毫秒）：超过它就放行（「判不出」≠「不能买」，但也不能让买点侧永远空着） */
+  const GATE_GRACE_MS = 6000;
+  let _gateGraceTimer = null;
+  /** 还有哪些「慢判据」没就绪（就绪了就不该起表，用户不必白等那 6s） */
+  function _slowGateMissing(date) {
+    const d = String(date || '').trim();
+    if (!d) return false;
+    if (!hasRange20LeadersVerdictForDate(d)) return true;   // 20 日涨幅前五结论
+    if (!isTopicLibraryReady()) return true;                // 题材库
+    return false;
+  }
+  // 展示日 / 数据刷新 / 核心词表版本 / 20 日涨幅发布 ⇒ 重新起表；都就绪 ⇒ 立刻清掉计时器
+  watch(function() {
+    return currentDate.value + '|' + getRange20LeadersFingerprintToken() + '|v' + version.value +
+      '|c' + getCoreTopicsVersion();
+  }, function() {
+    const d = currentDate.value;
+    if (_gateGraceTimer) { clearTimeout(_gateGraceTimer); _gateGraceTimer = null; }
+    if (!_slowGateMissing(d)) { gateGraceDate.value = ''; return; }
+    if (gateGraceDate.value === d) return;          // 这一日已经宽限放行过 ⇒ 不重复计时
+    _gateGraceTimer = setTimeout(function() {
+      _gateGraceTimer = null;
+      if (currentDate.value !== d) return;         // 期间切了日期 ⇒ 丢弃（⛔ 别把 A 日的宽限给 B 日）
+      gateGraceDate.value = d;
+      _dbgLog('[TVRB-BUY-SETTLE] ' + d + ' 慢判据（20 日涨幅前五 / 题材库）超过 ' + (GATE_GRACE_MS / 1000) +
+        's 仍无结论 ⇒ 宽限放行（此后若结论到货导致换票，会重新挂占位）');
+    }, GATE_GRACE_MS);
+  }, { immediate: true });
+
+  /**
+   * 买点侧选股结果指纹（只含用户**能看见的选股结论**：票名 + 六个独立买点块 + 档位 + 灰化题材）。
+   * ⛔ 不含涨幅 / 量比 / 封单额 / 名次变化 / 分笔 —— 高频抖动会把稳定期计时器永远重置（§35）。
+   */
+  const buySelSig = computed(function() {
+    const r = data.value;
+    if (!r || !r.ready) return '';
+    return buildBuySelectionSig(r.plan, eachDecisionRow);
+  });
+
+  const _buyQuiesce = createBuyQuiesce({ quietMs: BUY_QUIET_MS });
+  watch(buySelSig, function(sig) {
+    const wasLocked = _buyQuiesce.locked.value;
+    _buyQuiesce.note(sig);
+    // 只在「已经放行过、结果又被推翻」时留痕 —— 这是最值得警惕的一类现场
+    if (wasLocked && wasLocked !== sig) {
+      _dbgLog('[TVRB-BUY-SETTLE] ' + currentDate.value +
+        ' 选股结果在显示后又变了 ⇒ 立刻挂回占位，等新的稳定版（旧票已不可信）');
+    }
+  }, { immediate: true });
+  onUnmounted(function() {
+    _buyQuiesce.dispose();
+    if (_gateGraceTimer) { clearTimeout(_gateGraceTimer); _gateGraceTimer = null; }
   });
 
   /**
@@ -1405,25 +1515,39 @@ export function useTopicVolRatioBoard() {
     return (p && p.divergePending) || null;
   });
   /**
-   * ★★ [BUY-SETTLE 2026-10-31 用户口径] 买点侧的【选股输入还没齐】。
+   * ★★ [BUY-SETTLE / BUY-SETTLE-2 2026-10-31 用户口径] 买点侧「最终结果还没出来」。
    *
    * true ⇒ 视图把买点侧的选票整体收起来，只渲染一条占位横幅，标题栏同步写「结果确认中…」。
-   * 为什么必须这样（用户原话）：「刚开始选的是上海九百和文投控股，几秒钟后，文投控股消失……
-   * 文投控股从开始就不要显示，很容易误导，或者你在标题栏那里提示下，等最终结果，
-   * 最终结果还没出来之类的提示语。」
+   * 为什么必须这样（用户原话，先后三次）：
+   *   ②「刚开始选的是上海九百和文投控股，几秒钟后，文投控股消失……
+   *      文投控股从开始就不要显示，很容易误导，或者你在标题栏那里提示下，等最终结果」
+   *   ③「刷新后变成了一只，后面又跳转两只，最后又变成一只，还是没有彻底解决。」
    *
-   * ⛔ 它不是「空仓」结论：占位只说【在等哪几项数据】，⛔ 不说「今天没票」（§10）。
+   * 两道判据（缺一不可，⛔ 别再退回只留一道）：
+   *   ① `plan.buyPending`  —— 八项**已知**异步输入没落地（buy-settle.js，快、不用等）；
+   *   ② 选股指纹**还没稳定** —— 结果侧的通用兜底（buy-quiesce.js）：
+   *      指纹连续 BUY_QUIET_MS 不被推翻才算定稿。这条不依赖「枚举数据源」，
+   *      ⇒ 题材库 / 竞价行 / 量比缓存 / 昨日名册 / 灰行来源 / 20 日涨幅前五 …… 谁后到都挡得住。
+   *
+   * ⛔ 它不是「空仓」结论：占位只说【在等什么】，⛔ 不说「今天没票」（§10）。
    * ⛔ 只影响买点侧；卖点侧逐字不变（卖点不吃这些口径）。
-   * @see logic/topicvolratio/buy-settle.js —— 判据本体（七项输入 + 逐条理由）
    */
   const buyPending = computed(function() {
-    const p = data.value.plan;
-    return (p && p.buyPending) || false;
+    const r = data.value;
+    // 未就绪时视图走「未就绪 / 失败」那一路，不在这里插一脚（否则会出现两条占位）
+    if (!r || !r.ready) return false;
+    const p = r.plan;
+    if (p && p.buyPending) return true;                    // ① 已知输入未齐
+    return !_buyQuiesce.isStable(buySelSig.value);          // ② 结果还没稳定 / 又被推翻了
   });
   /** ★ [BUY-SETTLE] 占位/标题栏里那串「还差：A · B · C」（文案在 Logic 层拼好，§21 模板零计算） */
   const buyPendingText = computed(function() {
-    const p = data.value.plan;
-    return (p && p.buyPendingText) || '';
+    const r = data.value;
+    const p = r && r.plan;
+    if (p && p.buyPendingText) return p.buyPendingText;
+    // ① 已齐、② 还没稳定 ⇒ 如实说明在等什么（⛔ 不说「空仓」）
+    if (r && r.ready && buyPending.value) return '还差：选股结果稳定（上游数据还在到货）';
+    return '';
   });
   /**
    * ★★ [DIVERGE-GATE-2 2026-10-24 用户口径] 占位里那行「20日涨幅精算 X/Y」小字。
