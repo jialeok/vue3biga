@@ -23,7 +23,12 @@
  * ============================================================================
  */
 var CACHE = 'biga-static-v1';
-var NAV_TIMEOUT_MS = 4000;
+// ★★ [BOOT-SW-NAVFAST 2026-10-31] 从 4000 收到 1500。
+//   原因（实测）：这台机器的网络特征是「每个请求固定停顿 12~64 秒」（3.7KB 的 sw.js 要 64s），
+//   装好 SW 之后每次打开仍然要等「导航请求」这一次停顿 ⇒ 就是这 4 秒在拖。
+//   改成 1.5s：网络正常时照样拿最新 HTML（通常 <0.3s），网络卡时 1.5s 就回退本地缓存。
+//   ⚠️ 后台那次 fetch 不会取消，它到货后仍会更新缓存 ⇒ 下次打开就是新版本（不会一直吃旧页面）。
+var NAV_TIMEOUT_MS = 1500;
 
 self.addEventListener('install', function () {
   // 新版立即待命，不等旧页面全部关闭（否则用户要开两次才生效）
@@ -84,6 +89,9 @@ self.addEventListener('fetch', function (event) {
 
   // ② 页面导航（HTML）→ network-first + 超时回退缓存
   if (req.mode === 'navigate') {
+    // 缓存键归一化成「origin + pathname」：`autoReloadOnce` 的 `?r=<时间戳>` 每次都不一样，
+    // 不归一化就会在缓存里堆出一串只有查询串不同的副本（越用越大，还都匹配不上）。
+    var navKey = (function () { try { return new Request(url.origin + url.pathname); } catch (e) { return req; } })();
     event.respondWith(
       caches.open(CACHE).then(function (cache) {
         var timer = 0;
@@ -92,11 +100,11 @@ self.addEventListener('fetch', function (event) {
         });
         return Promise.race([fetch(req), timeout]).then(function (res) {
           clearTimeout(timer);
-          if (res && res.ok) cache.put(req, res.clone());
+          if (res && res.ok) cache.put(navKey, res.clone());
           return res;
         }).catch(function () {
           clearTimeout(timer);
-          return cache.match(req).then(function (hit) {
+          return cache.match(navKey).then(function (hit) {
             // 有缓存就先用缓存（能立刻看见界面，比白屏强）
             if (hit) return hit;
             // 没缓存 ⇒ 宁可再等一次网络，也不要白屏
