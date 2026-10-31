@@ -651,11 +651,18 @@ async function healDailyLegsFromMetrics(today: string): Promise<Array<Record<str
         const s = String((r && r.stock) ?? '').trim();
         if (s) haveSet.add(s);
       }
-      // ★★ [R20-HEAL-FIX 2026-11-01] 只有【全齐】才跳过。
-      //   旧实现是 `haveSet.size >= metrics.length * 0.6`（阈值 0.6）⇒ 2026-10-30 实测 42/48 = 87.5%
-      //   被判定「视为不缺」**整日跳过**，那 6 只永远补不上，缺口就这么固化下来了。
-      //   现在改成全齐才 skip；差几只就走下面的逐只判断（纯内存，零额外请求）。
-      if (haveSet.size >= metrics.length) {
+      // ★★★ [R20-HEAL-FIX2 2026-11-01] 判据必须【逐只比】，⛔ 绝不能比总数。
+      //   实测：`stock_daily_pct` 一天是 410~412 行（**全市场历史名单并集**），
+      //   而 `market_metrics` 同一天只有 48~92 行（**当天名单**）⇒
+      //   `haveSet.size >= metrics.length`（411 >= 48）**恒真** ⇒ 每天都被判「已齐」，
+      //   整个自愈形同虚设。这是 10-30 缺口一直补不上的第四个原因（也是最后一个）。
+      //   正确做法：只问「metrics 这批票，还有几只没有腿」，0 才算齐。
+      let missingCnt = 0;
+      for (const r of metrics) {
+        const s = String((r && r.stock) ?? '').trim();
+        if (s && !haveSet.has(s)) missingCnt++;
+      }
+      if (missingCnt === 0) {
         out.push({ date: d, metrics: metrics.length, legs: haveSet.size, action: 'ok' });
         continue;
       }
