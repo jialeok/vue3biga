@@ -199,6 +199,63 @@ async function fetchKlineBars(ths: string, startMs: number, endMs: number): Prom
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
+/**
+ * ★★ [R20-LEGS 2026-11-01] 腾讯前复权日线 —— 「补腿」专用通道（与同花顺解耦）。
+ *
+ * 为什么必须加（用户 2026-11-01 00:38 原话：「不要在电脑本地补，要在云端运行，放在 supabase 上定时任务，
+ *   因为我都是用手机盯盘操作的」）：
+ *   15:05 收盘轮写「今天这根腿」**唯一依赖同花顺**（见 ④ 段 `legBuffer`），上游一断
+ *   ⇒ `legsWritten=0` ⇒ 那天在 stock_daily_pct 里一行都没有 ⇒ 次日 20 日窗口**静默跳过一天**
+ *   （compound20 把「没写」当成「停牌」，不报错、不显示，最难查）。10-30 实测只剩 42 行（正常 411 行）。
+ *
+ * 口径可信度（已验证，不是「应该一样」）：见 db/scripts/backfill-daily-pct.mjs 文件头 ——
+ *   12 只 × 44 天 = 524 条与库里同花顺 src='kline' 真值逐条比对，±0.02 内 **100% 一致**。
+ *   ⛔ 落库必须标 `src='qt'`，不许冒充 `'kline'`（保留可追溯来源）。
+ *
+ * ⛔ 与 `fetchKlineBars` 的区别：这条通道**不经 fuyao-proxy**，直连腾讯，因此不受
+ *   「同花顺通道停用（FUYAO-OFF）」和 Edge Function 代理层挂死的影响。
+ */
+async function fetchQtBars(code: string, startYmd: string, endYmd: string): Promise<Bar[]> {
+  const c = String(code || '').trim();
+  if (!/^\d{6}$/.test(c)) throw new Error('代码不合法: ' + code);
+  const sym = (/^(6|9)/.test(c) ? 'sh' : (/^(4|8|92)/.test(c) ? 'bj' : 'sz')) + c;
+  const url = 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=' +
+    sym + ',day,' + startYmd + ',' + endYmd + ',320,qfq';
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await sleep(400 * attempt);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const resp = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://gu.qq.com/' },
+        signal: ctrl.signal,
+      });
+      if (!resp.ok) throw new Error('qt HTTP ' + resp.status);
+      const j = await resp.json();
+      const d = (j && j.data && j.data[sym]) || {};
+      const rows = d.qfqday || d.day || [];
+      const out: Bar[] = [];
+      for (const b of rows as unknown[]) {
+        const arr = b as unknown[];
+        const dt = String((arr && arr[0]) || '').slice(0, 10);
+        const close = Number(arr && arr[2]);
+        if (!dt || !Number.isFinite(close) || close <= 0) continue;
+        out.push({ ymd: dt, close, open: null, vol: null });
+      }
+      out.sort((a, b) => (a.ymd < b.ymd ? -1 : a.ymd > b.ymd ? 1 : 0));
+      // 空序列 = 该票在这段区间没有 bar（停牌 / 北交所不支持）⇒ 交给上层判定，⛔ 不写 0%
+      if (out.length === 0) throw new Error('qt 空序列');
+      return out;
+    } catch (e) {
+      lastErr = e;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
 interface Bar { ymd: string; close: number; open: number | null; vol: number | null; }
 
 /** 上游 bar → 有序序列（date_ms 是北京午夜 ⇒ +8h 取 UTC 日期；close ≤0 / 缺失丢弃） */
@@ -546,12 +603,14 @@ async function fetchSnapshots(thscodes: string[]): Promise<{
 //     同花顺恢复后，前端与收盘轮会用 src='kline' 覆盖同一主键 (date,stock) ⇒ 自动升级成真值。
 //
 // 三条安全闸（§10 宁缺勿错 / §11 不越界）：
-//   ① 只补 `date < 今天`：当天的 change_pct 还是竞价涨幅，⛔ 落地成收盘腿会静默算错；
+//   ① 回看 i=0..8 天（**含当天**）：当天那根能不能写，完全由闸③ 的「收盘轮证据」决定；
 //   ② 只【新增】缺的票：已有 (date,stock) 的（尤其是 kline 真值）一律不碰 ⇒ 纯加法，绝不覆盖；
-//   ③ `change_pct` 与 `auc_pct_chg` 相同 ⇒ 无法排除「16:00 未覆盖」⇒ 跳过不写。
+//   ③ 【必须有「收盘轮写过」的证据】才写：`updated_by` 含 'close' 且 `updated_at` 晚于当日北京 15:00。
+//      ⚠️ 2026-11-01 修正：旧判据是「change_pct == auc_pct_chg ⇒ 跳过」，实测会误杀真一字板
+//      （10-30 上海沪工/东贝集团/凯众股份/赛福天/青岛食品 竞价即封板，竞价涨幅就是收盘涨幅，
+//        且 updated_by 全是 'auto-fetch-worker-close'）。⛔ 这不是放宽红线，是换成更精确的证据链。
 // ════════════════════════════════════════════════════════════════════════════════
 const HEAL_LOOKBACK_DAYS = 8;   // 只回看最近 8 个自然日（覆盖周末 + 小长假，够用且请求量恒定）
-const HEAL_MIN_RATIO = 0.6;     // 已有腿数 >= 该日 metrics 行数 × 0.6 ⇒ 视为不缺，跳过（省请求）
 
 /** YYYY-MM-DD 平移（UTC 毫秒运算，避免时区/DST 干扰；中国无夏令时） */
 function shiftYmd(ymd: string, deltaDays: number): string {
@@ -567,12 +626,18 @@ function shiftYmd(ymd: string, deltaDays: number): string {
 async function healDailyLegsFromMetrics(today: string): Promise<Array<Record<string, unknown>>> {
   const out: Array<Record<string, unknown>> = [];
   const nowIso = new Date().toISOString();
-  for (let i = 1; i <= HEAL_LOOKBACK_DAYS; i++) {
+  // ★★ [R20-HEAL-FIX 2026-11-01] 从 i=0 开始 —— **含当天**。
+  //   旧实现 i=1 起 ⇒ 当天的腿永远进不来，必须等第二天那次 heal 才补得上；
+  //   结果「今天收盘后到明天 9:25 之前」这一段窗口里，腿表一直是缺当天的。
+  //   ⛔ 放开当天安全吗？安全 —— 闸③ 要求 updated_by 含 'close' 且 updated_at >= 北京 15:00：
+  //     · 15:05 收盘轮跑时 worker 16:00 还没更新 ⇒ updated_by 仍是竞价轮标记 ⇒ 全部拒绝（不会把竞价当收盘）
+  //     · 16:30 / 次日 9:25 跑时 worker 已更新 ⇒ 才写得进去
+  for (let i = 0; i <= HEAL_LOOKBACK_DAYS; i++) {
     const d = shiftYmd(today, -i);
     try {
       const metrics = await sbRest(
         'GET',
-        '/rest/v1/market_metrics?select=stock,change_pct,auc_pct_chg&date=eq.' + d
+        '/rest/v1/market_metrics?select=stock,change_pct,auc_pct_chg,updated_by,updated_at&date=eq.' + d
           + '&scope=eq.auction&limit=1000',
       ) as Array<Record<string, unknown>>;
       if (!Array.isArray(metrics) || metrics.length === 0) continue;   // 非交易日 / 该日未落库 ⇒ 无事可做
@@ -586,7 +651,11 @@ async function healDailyLegsFromMetrics(today: string): Promise<Array<Record<str
         const s = String((r && r.stock) ?? '').trim();
         if (s) haveSet.add(s);
       }
-      if (haveSet.size >= metrics.length * HEAL_MIN_RATIO) {
+      // ★★ [R20-HEAL-FIX 2026-11-01] 只有【全齐】才跳过。
+      //   旧实现是 `haveSet.size >= metrics.length * 0.6`（阈值 0.6）⇒ 2026-10-30 实测 42/48 = 87.5%
+      //   被判定「视为不缺」**整日跳过**，那 6 只永远补不上，缺口就这么固化下来了。
+      //   现在改成全齐才 skip；差几只就走下面的逐只判断（纯内存，零额外请求）。
+      if (haveSet.size >= metrics.length) {
         out.push({ date: d, metrics: metrics.length, legs: haveSet.size, action: 'ok' });
         continue;
       }
@@ -596,8 +665,17 @@ async function healDailyLegsFromMetrics(today: string): Promise<Array<Record<str
         if (!s || haveSet.has(s)) continue;                 // 闸②：已有的一律不碰（纯新增）
         const c = parsePct(r.change_pct);
         if (c === null) continue;                           // §10：缺值不写（⛔ 不当 0%）
-        const a = parsePct(r.auc_pct_chg);
-        if (a !== null && Math.abs(c - a) < 0.005) continue; // 闸③：可能是未覆盖的竞价涨幅 ⇒ 跳过
+        // ★★ 闸③ [R20-HEAL-FIX 2026-11-01] 旧判据「change_pct == auc_pct_chg ⇒ 跳过」会**误杀真一字板**：
+        //   2026-10-30 实测上海沪工 +10.03% / 东贝集团 -10.00% / 凯众股份 -10.02% / 赛福天 -10.04% /
+        //   青岛食品 +9.98% —— 竞价即封板、全天不动，竞价涨幅 == 收盘涨幅是【真值】，
+        //   而它们的 updated_by 明确写着 'auto-fetch-worker-close'（全表 48/48 都带 close 标记）。
+        //   ⇒ 改看 updated_by / updated_at：worker 16:00 收盘轮会写 '*-close' 并把 updated_at 推到 16:00。
+        //   ⛔ 这不是放宽红线，是换成**更精确**的证据：拿不出收盘轮证据的，照样一条都不写。
+        const by = String((r && r.updated_by) ?? '');
+        if (by.indexOf('close') < 0) continue;              // 9:25 竞价轮写的行 ⇒ 不写
+        const updMs = Date.parse(String((r && r.updated_at) ?? ''));
+        // 必须晚于当日北京 15:00（收盘定格）才认 —— 与 legFinal 判据同源
+        if (!Number.isFinite(updMs) || updMs < Date.parse(d + 'T15:00:00+08:00')) continue;
         const v = c.toFixed(2);
         rows.push({
           date: d,
@@ -627,6 +705,150 @@ async function healDailyLegsFromMetrics(today: string): Promise<Array<Record<str
   return out;
 }
 
+/**
+ * ★★ [R20-LEGS 2026-11-01] 只补「逐日腿」—— 不算 20 日涨幅、不碰 stock_range20_pct。
+ *
+ * 触发：pg_cron 两条（见 db/create_range20_cron.sql ⑥ 段）
+ *   · 北京 15:20（UTC 07:20）→ 补「今天这根腿」（收盘后 20 分钟，腾讯日线已更新）
+ *   · 北京 08:50（UTC 00:50）→ 补「上一个榜日那根」（早盘前的保险，防止 15:20 那次上游抖动）
+ * 手动：`?token=...&legsOnly=1`（缺省自动判目标日）；`&date=YYYY-MM-DD` 指定回补某天。
+ *
+ * 设计原则（⛔ 一条都不能放宽，放宽任何一条都会静默算错 20 日涨幅）：
+ *   ① **只补缺的** (date,stock)，已有行一律不碰（尤其 `src='kline'` 真值）⇒ 纯加法、幂等、可反复重跑；
+ *   ② **今天这根腿只有北京 15:05 之后才认** —— 盘中 bar 是现价，写进原料表会被当成收盘腿；
+ *   ③ **停牌 / 无 bar ⇒ 跳过**，⛔ 绝不写 0% 冒充（§10 缺数据 ≠ 0%）；
+ *   ④ 落库标 `src='qt'`，⛔ 不冒充 `'kline'`。
+ *
+ * 为什么不用 market_metrics 兜底：那条路对「竞价涨幅 == 收盘涨幅」的票天然失效
+ *   （分不清是真一字板还是 Worker 16:00 收盘轮没更新，见 healDailyLegsFromMetrics 闸①②③），
+ *   而腾讯日线是**从行情源重新取一遍真值**，不存在这个问题 ⇒ 腾讯优先。
+ */
+async function backfillLegsOnly(opts: {
+  targetDate: string;  // '' = 自动判定
+  hhmm: string;        // 北京时刻 HH:MM
+}): Promise<Record<string, unknown>> {
+  const today = todayYmd();
+  let cutoff = opts.targetDate;
+
+  if (!cutoff) {
+    if (opts.hhmm >= '15:05') {
+      cutoff = today;
+    } else {
+      // 早于 15:05：补「上一个榜日」。名单只在交易日有行 ⇒ 它天然就是交易日历
+      const prev = await sbRest(
+        'GET',
+        '/rest/v1/auction_watchlist?select=date&date=lt.' + today + '&order=date.desc&limit=1',
+      );
+      cutoff = Array.isArray(prev) && prev.length > 0 ? String((prev[0] as Record<string, unknown>).date) : '';
+    }
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(cutoff)) {
+    return { ok: false, reason: '无法确定目标交易日（auction_watchlist 里找不到可用名单）', today };
+  }
+  // 闸②：今天这根腿必须等收盘定稿
+  if (cutoff === today && opts.hhmm < '15:05') {
+    return { ok: false, reason: '今天这根腿要等 15:05 收盘后才算终值（当前 ' + opts.hhmm + '）', date: cutoff };
+  }
+
+  // ① 名单
+  const watch = await sbRest('GET', '/rest/v1/auction_watchlist?select=stock,code&date=eq.' + cutoff);
+  const targets = (Array.isArray(watch) ? watch as Array<Record<string, unknown>> : [])
+    .map((r) => ({ stock: String(r.stock ?? '').trim(), code: String(r.code ?? '').trim() }))
+    .filter((t) => t.stock && /^\d{6}$/.test(t.code));
+  if (targets.length === 0) {
+    return { ok: false, reason: '目标日名单为空或全部缺 6 位代码', date: cutoff };
+  }
+
+  // ② 已有的腿（分页读，PostgREST 单次上限 1000）
+  const haveSet = new Set<string>();
+  for (let from = 0; ; from += LEG_PAGE) {
+    const page = await sbRest(
+      'GET',
+      '/rest/v1/stock_daily_pct?select=stock&date=eq.' + cutoff,
+      undefined,
+      [from, from + LEG_PAGE - 1],
+    );
+    if (!Array.isArray(page) || page.length === 0) break;
+    for (const r of page as Array<Record<string, unknown>>) haveSet.add(String(r.stock ?? '').trim());
+    if (page.length < LEG_PAGE) break;
+  }
+
+  const todo = targets.filter((t) => !haveSet.has(t.stock));
+  if (todo.length === 0) {
+    return { ok: true, date: cutoff, watchlist: targets.length, legs: haveSet.size, written: 0, action: 'skip(已齐)' };
+  }
+
+  // ③ 腾讯日线：窗口留 45 个自然日（覆盖长假 + 停牌回溯），end 用 cutoff ⇒ 只回 ≤ cutoff 的 bar
+  const cutoffMs = Date.parse(cutoff + 'T00:00:00+08:00');
+  const startYmd = new Date(cutoffMs - 45 * 86400000 + 8 * 3600 * 1000).toISOString().slice(0, 10);
+
+  const rows: Array<Record<string, unknown>> = [];
+  const failed: string[] = [];
+  const noBar: string[] = [];
+  let idx = 0;
+  const QCONC = 4;
+  const worker = async () => {
+    for (;;) {
+      const i = idx++;
+      if (i >= todo.length) return;
+      const t = todo[i];
+      try {
+        const bars = await fetchQtBars(t.code, startYmd, cutoff);
+        // 找 cutoff 那根 + 它前面最近的一根（前复权价之比 = 当日涨幅）
+        const at = bars.findIndex((b) => b.ymd === cutoff);
+        if (at <= 0) {
+          noBar.push(t.stock + '(无' + cutoff + 'bar)'); // 停牌 ⇒ 跳过，⛔ 不写 0
+          continue;
+        }
+        const cur = bars[at].close;
+        const prev = bars[at - 1].close;
+        if (!(cur > 0) || !(prev > 0)) {
+          noBar.push(t.stock + '(价异常)');
+          continue;
+        }
+        const pct = (cur / prev - 1) * 100;
+        const v = pct.toFixed(2);
+        rows.push({
+          date: cutoff,
+          stock: t.stock,
+          pct: v.charAt(0) === '-' ? v : '+' + v,
+          src: 'qt',
+          updated_at: new Date().toISOString(),
+        });
+      } catch (e) {
+        failed.push(t.stock + '(' + (e instanceof Error ? e.message : String(e)) + ')');
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: QCONC }, () => worker()));
+
+  // ④ 分批落库（500 一批，与前端 upsert 同款）
+  let written = 0;
+  if (rows.length > 0) {
+    for (let k = 0; k < rows.length; k += 500) {
+      await sbRest('POST', '/rest/v1/stock_daily_pct?on_conflict=date,stock', rows.slice(k, k + 500));
+      written += Math.min(500, rows.length - k);
+    }
+    console.log('[range20-precompute][R20-LEGS] ' + cutoff + ' 逐日腿 ' + haveSet.size + ' → 补 ' + written
+      + ' 行（腾讯前复权日线，src=qt）' + (noBar.length ? '｜停牌/无bar ' + noBar.length : '')
+      + (failed.length ? '｜失败 ' + failed.length : ''));
+  }
+
+  return {
+    ok: true,
+    date: cutoff,
+    watchlist: targets.length,
+    legsBefore: haveSet.size,
+    missing: todo.length,
+    written,
+    skippedNoBar: noBar.length,
+    failed: failed.length,
+    failures: failed.slice(0, 15),
+    note: '只补逐日腿（src=qt），不算 20 日涨幅；停牌票按 §10 跳过不写 0%',
+  };
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   const json = (obj: unknown, status = 200) =>
@@ -652,6 +874,37 @@ Deno.serve(async (req: Request) => {
     const rawDate = String(params.get('date') ?? '').trim();
     const isBackfill = /^\d{4}-\d{2}-\d{2}$/.test(rawDate);
     const today = isBackfill ? rawDate : todayYmd();
+
+    // ★★ [R20-LEGS 2026-11-01] 只补「逐日腿」专用入口 —— pg_cron 15:20 / 08:50 用。
+    //   早 return：不读名单、不算 20 日涨幅、不碰 stock_range20_pct，只往 stock_daily_pct 补缺的行。
+    //   ⛔ 必须放在下面的 leg 判定与名单轮询之前，否则会白等 45 秒。
+    if (params.get('legsOnly') === '1') {
+      const stat = await backfillLegsOnly({
+        targetDate: isBackfill ? rawDate : '',
+        hhmm: beijingHhmm(),
+      });
+      console.log('[range20-precompute][R20-LEGS] ' + JSON.stringify(stat));
+      return json(stat);
+    }
+
+    // ★★★ [R20-HEAL-ONLY 2026-11-01] 只跑「缺腿自愈」，不算 20 日涨幅 —— pg_cron 16:30 专用。
+    //   为什么需要独立入口：worker 16:00 收盘轮刚把 change_pct 覆盖成收盘涨幅（updated_by 带 '-close'），
+    //   此时立刻自愈一次，就能在**当天**把腿补齐，而不是拖到次日 9:25 才补。
+    //   纯本库读写（market_metrics → stock_daily_pct），⛔ 零上游请求、零同花顺/腾讯依赖。
+    if (params.get('healOnly') === '1') {
+      const healed = await healDailyLegsFromMetrics(isBackfill ? rawDate : todayYmd());
+      const sum = {
+        ok: true,
+        healOnly: true,
+        today: isBackfill ? rawDate : todayYmd(),
+        days: healed.length,
+        healed: healed.filter((x) => x.action === 'healed'),
+        errors: healed.filter((x) => x.action === 'error'),
+        detail: healed,
+      };
+      console.log('[range20-precompute][R20-HEAL-ONLY] ' + JSON.stringify(sum.healed));
+      return json(sum);
+    }
 
     // 选腿：15:00 前 = 竞价口径（auc），15:00 后 = 收盘口径（close）——与前端 resolveT20LegMode 一致。
     // ?leg= 可强制指定（手动测试用）；强制值与时钟口径不同时也不出错（幂等按 leg 跳过）。

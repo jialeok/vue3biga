@@ -13,8 +13,10 @@
 --     · 09:25 那轮【历史腿全部从这张表读】⇒ K 线请求数 83 → 0（实测改造前 142s 只写成功 1 行）；
 --     · 15:05 那轮把【今天这根腿】写回这张表（K 线今日 bar，收盘后才是终值）。
 --     ⚠️ 这张表必须保持「最近 19 个交易日全齐」，否则函数会退回逐只拉 K 线（慢）。
---       补齐靠本机每天 08:00 的定时任务（只补最近一个榜日那批票）：
---         node db/scripts/backfill-daily-pct.mjs --run --recent --days=40
+--     ✅ 2026-11-01 起，补齐**全部在云端**完成，不再需要任何本机脚本：
+--        见 db/create_range20_legs_cron.sql（两条 heal 任务：北京 16:30 / 08:50），
+--        走 market_metrics 的收盘轮证据（updated_by 含 'close' + updated_at >= 15:00）自愈。
+--        （旧做法 `node db/scripts/backfill-daily-pct.mjs --run --recent` 已降级为应急手段。）
 --     ⚠️ 首次启用顺序不能反：① 执行 db/create_stock_daily_pct.sql
 --                              ② 全量回填一次 node db/scripts/backfill-daily-pct.mjs --run
 --                              ③ 再让 cron 跑（否则 09:25 那轮等于没改，仍然是逐只 K 线）
