@@ -90,6 +90,9 @@ export const state = reactive({
     _justPushedHighlights: false,
     _justPushedHotHighlights: false,
     _lastPushedAuctionStatus: null,
+    // [BOOT-QUIET 2026-10-31] 最近一次 pullFromCloud 成功的时刻：scheduleCloudPush 据此
+    // 把「拉取后自动触发的推送」排到首屏静默窗之后（见 logic/shared/core-shared.js）。0 = 本次会话还没拉过。
+    _pullFinishedAt: 0,
     _logRenderAuctionCall: false,
     _marketMetricsHotRealtimeChannel: null,
     _marketMetricsRealtimeChannel: null,

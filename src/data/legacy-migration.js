@@ -16,6 +16,7 @@
 
 import { state } from '../logic/app-state.js';
 import { getSupabase } from './supabase-client.js';
+import { _dbgLog } from './debug-log.js';
 // getAuctionData 是 app-core 内定义的本地函数（return getGroupData('auction')），仅此处历史迁移需要，故从 app-core 引入。
 import { getAuctionData } from '../logic/app-core.js';
 
@@ -173,6 +174,27 @@ export async function migrateAuctionDataToNewTables() {
     let tableMissing = false;
     try { tableMissing = localStorage.getItem(TABLE_MISSING_MARK) === '1'; } catch (e) { /* 忽略 */ }
     if (tableMissing) { _markAuctionDataDone(); return; }
+
+    // ★★ [BOOT-SKIP 2026-10-31 · 首屏性能关键，零请求短路]
+    //
+    // 🔴 改造前事实（.tmpdiag/pw/perf-timeline.cjs，真实网络，2026-10-31）：
+    //   在新设备 / 清过缓存的浏览器上（localStorage 没有迁移标记），这段逻辑会把旧表
+    //   `auction_data` **全表 8 页串行**拉一遍（+4.2s → +11.8s，每页间隔≈单请求耗时），
+    //   紧接着两个 upsert 分别花 **10.7 秒** 和 **1.9 秒** —— 全部压在首屏关键路径上，
+    //   却与用户屏幕上任何一个数字都无关。这就是「首次打开特别慢」的真正原因之一。
+    //
+    // ✅ 判据：首屏的 `pullFromCloud()` 已经把「近 30 天窗口」从**新表**拉进了 `_auctionMemCache`。
+    //    内存里已经有新表的数据 ⇒ 新表非空 ⇒ 拆表迁移早已完成 ⇒ 根本不必回头问旧表。
+    //    这个判断只读内存，**0 个网络请求**。
+    // ⚠️ §11 删除安全：这里只是「不迁移」，不删任何数据；旧表原样保留，真需要时仍可重跑。
+    // ⚠️ §10：读不到内存（pullFromCloud 还没跑 / 失败了）时不会误判「已完成」——
+    //    非空才短路，空就照旧走下面完整的保护逻辑。
+    const _memDays = Object.keys(state._auctionMemCache || {}).length;
+    if (_memDays > 0) {
+        _dbgLog('[迁移] 新表数据已在内存（' + _memDays + ' 天）⇒ 跳过旧表 auction_data 迁移（零请求）');
+        _markAuctionDataDone();
+        return;
+    }
 
     const alreadyMigrated = (function() {
         try { return localStorage.getItem(MIGRATED_MARK) === '1'; } catch (e) { return false; }

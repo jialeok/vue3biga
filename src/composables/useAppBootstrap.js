@@ -23,11 +23,18 @@ import { state } from '../logic/app-state.js';
 import { useUiStore } from '../stores/uiStore.js';
 import { startMorningSync, _todayDataArrived } from '../logic/auction/morning-sync.js';
 import { ensureAuctionDateAndRefresh, beijingTodayStr } from '../logic/auction/auction-pull-window.js';
+// ★★ [BOOT-DEFER 2026-10-31] 首屏分期调度（§33）唯一实现 —— 见 logic/boot/boot-phases.js 顶部说明。
+import { whenFirstPaint, _setBootLog } from '../logic/boot/boot-phases.js';
+
+// 让 boot-phases 的日志并进应用日志面板（同一个出口，方便排查「首屏到哪一步了」）
+_setBootLog(_dbgLog);
 
 // 日期切换「按天补拉」的 watch 只挂一次（onLoginSuccess 可能被重复调用）
 let _dateLoaderWatchBound = false;
 // 「切回前台」监听只挂一次（同上；重复绑定会成倍放大切回前台的请求）
 let _visibilityBound = false;
+// ★★ [BOOT-IDEMPOTENT 2026-10-31] 首屏引导只允许跑一次（见 onLoginSuccess 里的说明）
+let _bootStarted = false;
 
 // loginRef: App.vue 持有的 LoginOverlay 组件 ref，用于 forceLogout / showPassword 调用
 export function useAppBootstrap(loginRef) {
@@ -65,6 +72,27 @@ export function useAppBootstrap(loginRef) {
     try { migrateAuctionDataToNewTables(); } catch (e) { _dbgLog('[MIGRATE] auctionDataToNewTables: ' + e); }
     try { migrateBiddingToTable(); } catch (e) { _dbgLog('[MIGRATE] biddingToTable: ' + e); }
     try { migrateJiwangToTable(); } catch (e) { _dbgLog('[MIGRATE] jiwangToTable: ' + e); }
+  }
+
+  /**
+   * ★★ [BOOT-DEFER 2026-10-31 · §33 首屏与维护分离] 一次性历史迁移全部移出首屏关键路径。
+   *
+   * 🔴 改造前：`onLoginSuccess()` 第三行就同步调用 `runMigrations()`。它在首屏同一 tick 内
+   *    发出 3~4 条「表是否可用」探测，而在新设备 / 清过缓存的浏览器上，
+   *    `migrateAuctionDataToNewTables` 还会把旧表 `auction_data` 全表 **8 页串行**拉一遍
+   *    再加两个 upsert（实测 10.7s + 1.9s）——
+   *    perf-timeline.cjs 抓到首屏最后一条请求落在 **+34s**，尾巴几乎全是这一段。
+   *    用户原话：「首次加载时要快，早上不可能等那么长时间，不然竞价时间一过就没法交易了。」
+   *
+   * ✅ 现在：首屏画完 + 8 秒后再跑。正常用户因 localStorage 标记 + `_auctionMemCache` 内存短路，
+   *    **一条请求都不会发**；只有真没迁移过的设备才会真跑，而那时首屏早已可用。
+   * ⚠️ 不可删：尚未迁移的用户/设备靠它保住最后一道数据保护（见 legacy-migration.js 顶部说明）。
+   */
+  function scheduleMigrations() {
+    whenFirstPaint(function () {
+      _dbgLog('[BOOT-PHASE] 开始一次性历史迁移（首屏已可用，此任务不阻塞任何显示）');
+      runMigrations();
+    }, { delayMs: 8000, name: '一次性历史迁移' });
   }
 
   // §8/§10 稳健性安全网：确保首屏把 jiwang_data 全量灌入 _jiwangMemCache。
@@ -138,12 +166,16 @@ export function useAppBootstrap(loginRef) {
     });
 
     _on('auth:force-logout', function () {
+      // ★★ [BOOT-IDEMPOTENT 2026-10-31] 退出登录 ⇒ 放开幂等闸门，
+      //   让下一次登录重新走一遍首屏引导（否则守卫会把重新登录后的数据拉取挡掉）。
+      _bootStarted = false;
       loginRef.value && loginRef.value.forceLogout();
     });
 
     _on('data:cloud-changed', function () {
       pullFromCloud().then(function () {
-        state.allData = null; loadAllData();
+        // [BOOT-PARALLEL 2026-10-31] pullFromCloud 内部已置空 allData，这里只负责重建（§32 不做两遍）
+        loadAllData();
         _emit('data:realtime-update', { boards: 'all' });
         _dbgLog('Realtime: pullFromCloud 完成并已重新渲染');
       }).catch(function (e) { _dbgLog('Realtime: pullFromCloud 失败: ' + (e && e.message)); });
@@ -199,9 +231,21 @@ export function useAppBootstrap(loginRef) {
   }
 
   function onLoginSuccess() {
+    // ★★ [BOOT-IDEMPOTENT 2026-10-31 · §32 不重复请求] 首屏引导只跑一次。
+    // 本函数有两个入口：① onMounted 里检测到已登录 ⇒ 直接调用；② EventBus 的 auth:login-success。
+    // 两者同时触发时，整条首屏链路（9 条 fire-and-forget + 4 条并发读取 + 迁移补写）会被跑两遍，
+    // 请求数直接翻倍 —— 这正是 §32 要禁止的行为。真需要刷新数据的是
+    // visibilitychange / Realtime 推送 / 用户手动刷新，不是「再引导一次」。
+    if (_bootStarted) {
+      _dbgLog('[BOOT-PHASE] onLoginSuccess 重复触发 ⇒ 跳过（首屏链路只跑一次）');
+      return;
+    }
+    _bootStarted = true;
+
     authReady.value = true;
     try { initApp(); } catch (e) { console.error('initApp failed:', e); }
-    runMigrations();
+    // ★ [BOOT-DEFER] 一次性历史迁移移出首屏（改到首屏画完 + 8s，见 scheduleMigrations 注释）
+    scheduleMigrations();
     setupEventBus();
     setupVisibilityChange();
 
@@ -219,7 +263,11 @@ export function useAppBootstrap(loginRef) {
     //   其它看板（ETF / 浮面 / 记忘 / 热门影子）都是补充数据，晚几百毫秒无感。
     //   ⚠️ 必须在 `setupEventBus()` 之后发起：`pullFromCloud()` 会 emit auction-refresh 等事件。
     pullFromCloud().then(() => {
-      state.allData = null; loadAllData();
+      // ★★ [BOOT-PARALLEL 2026-10-31] 这里原来还有一句 `state.allData = null;` ——
+      //   `pullFromCloud()` 内部（auction-sync-pull.js）已经置空过一次，这里再置空一次
+      //   只会让 `loadAllData()` 多重建一次（实测首屏重建 3 次，每次都要重新挂 11 个模块别名）。
+      //   §32：同一个「重置」动作不要做两遍。
+      loadAllData();
       _emit('auction-refresh');
       _emit('stocks-refresh');
       _emit('bidding-refresh');

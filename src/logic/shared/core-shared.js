@@ -62,9 +62,29 @@ export function _dumpAuctionSnapshot(label) {
 }
 
 // 云端数据推送（防抖，操作停止 2 秒后触发）
+//
+// ★★ [BOOT-QUIET 2026-10-31 · §33 首屏与后续刷新分离]
+// 🔴 改造前实测（.tmpdiag/pw/perf-timeline.cjs）：首屏 `pullFromCloud()` 刚把数据拉下来，
+//   +9.8s 起就接连发出 **10 条** `auction_watchlist?on_conflict=...` 的 upsert（逐日串行到 +14.3s），
+//   外加一条 `user_data` POST —— 推上去的内容和云端刚给的完全一样。
+//   原因：pull 完成后 `emit('auction-refresh')` 让各看板重算，重算里带了标签搬运/派生逻辑，
+//   它们无条件 `scheduleCloudPush()` ⇒ 一次首屏白写十几条。
+// ✅ 改法（零数据风险）：**不丢弃这次推送，只把它排到「首屏静默窗」之后**。
+//   用户在这几秒内的真实编辑同样会被推上去（只是晚几秒），⛔ 不存在"改了没保存"的风险。
+//   ⚠️ 只在「刚拉完」这段时间生效，之后恢复原来的 2 秒防抖。
+const PULL_QUIET_MS = 4000;
+
 export function scheduleCloudPush() {
     clearTimeout(state._pushDebounceTimer);
-    state._pushDebounceTimer = setTimeout(pushToCloud, 2000);
+    let _delay = 2000;
+    try {
+        const _pulledAt = Number(state._pullFinishedAt) || 0;
+        if (_pulledAt > 0) {
+            const _left = PULL_QUIET_MS - (Date.now() - _pulledAt);
+            if (_left > 0) _delay = Math.max(_delay, _left + 500);
+        }
+    } catch (e) { /* 取不到时间就按原 2 秒，⛔ 不能因此不推送 */ }
+    state._pushDebounceTimer = setTimeout(pushToCloud, _delay);
 }
 
 // 记录“确实发生过增删股票操作”的 auction 日期集合（原 app-core 内 _auctionDirtyDates 初始化保留在 app-core）

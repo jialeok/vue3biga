@@ -20,6 +20,9 @@ import { syncStockTopicsFromAuction } from '../auction/stock-sync.js';
 import { useUiStore } from '../../stores/uiStore.js';
 import { _cloudBlobExtras } from './auction-sync-helpers.js';
 import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
+// ★★ [BOOT-PARALLEL 2026-10-31] 首屏分期调度（§33）唯一实现：把「首屏不需要结果」的任务
+//    （一次性对账 / 标签清洗 / blob 回写）排到首屏画完之后，不再占关键路径。
+import { whenFirstPaint, whenIdle } from '../boot/boot-phases.js';
 
         // 更早历史的后台补齐：整个会话只做一次，且必须等首屏窗口拉完后再发起。
         // §33：首屏加载与后续补齐分离；§10：失败只影响「更早的历史」，窗口内数据完好。
@@ -44,6 +47,12 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
          *      （见 logic/auction/auction-pull-window.js），§10 失败不标记已加载、下次照样重试。
          *   ⚠️ 不用 rAF（后台标签页会被冻结），也不用裸 requestIdleCallback（空闲来得太早、等于没推迟）。
          */
+        // ★ [BOOT-PARALLEL 2026-10-31 复核] 曾试过把 10s 提前到 6s，理由是「首屏拉取已经并发化、
+        //   6s 足够」。实测两轮（.tmpdiag/pw/tvrb-freeze.cjs）：首次出票 +25s → +27s，**没有变快**。
+        //   原因已经查清：题材量比的出票时刻卡在「数据本身到齐」（20 日涨幅结论 / 十日涨幅补位行
+        //   在 +18s 才落地），不是卡在这个定时器上。既然没有收益，就保留原值 10s ——
+        //   更晚一点开始，也少和首屏后那些后台任务抢连接（§32 让步原则）。
+        //   ⇒ 结论记在这里，避免下次有人再走一遍弯路。
         const OLDER_PULL_DELAY_MS = 10000;
 
         // ══════════════════════════════════════════════════════════════════════════════════
@@ -179,6 +188,26 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
             }, waitMs);
         }
 
+        /**
+         * 把一次「读」包装成「永不 reject 的结果对象」，用于四段读取各自独立失败、互不连坐
+         * （§10 一处失败不许伪装成全局没有）。⛔ 不吞错误：错误对象原样带出去。
+         *
+         * ⚠️ 实现必须用 **async IIFE + 原生 await**，⛔ 不能用 `Promise.resolve(thenable)`：
+         *   supabase-js 的查询构造器是**自定义 thenable**（`.then` 内部才真正发请求），
+         *   经 `Promise.resolve()` 订阅时实测拿到的是 `undefined` —— 实测日志
+         *   `ok=true, vKeys=undefined`，直接把「云端已有数据」误判成「暂无快照」。
+         *   而 `await builder` 是原生 await，走的语义和改造前一行不差（原代码就是 `await sb.from(...)`）。
+         *
+         * ✅ 并发性不受影响：async 函数被**调用**时同步执行到第一个 `await`，
+         *   所以四个 `_start(...)` 在同一 tick 依次把请求全部发出去，之后才各自等结果。
+         */
+        function _start(fn) {
+            return (async function () {
+                try { return { ok: true, value: await fn() }; }
+                catch (e) { return { ok: false, error: e }; }
+            })();
+        }
+
         // ============================================================
         // 云端数据拉取（解锁后执行一次）
         // ============================================================
@@ -188,19 +217,56 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
             // 且 statusText 为组件私有 ref、无供逻辑层写入的共享通道，故删除 DOM 写，仅保留诊断日志。
             try {
                 const sb = getSupabase();
-                const { data, error } = await sb
-                    .from('user_data')
-                    .select('data')
-                    .eq('id', 'owner')
-                    .single();
 
-                if (error) throw error;
-                if (!data || !data.data || Object.keys(data.data).length === 0) {
-                    _dbgLog('[PULL] 云端暂无数据，使用本地数据');
-                    return;
+                // ─────────── 第一阶段：四条读取【同一个 tick 全部发出】 ───────────
+                //   §33 首屏关键路径：竞价窗口是决策看板 / 题材量比 / 退潮判定的唯一数据入口，
+                //   bidding / jiwang 是各自看板的入口，user_data 是各模块 blob 快照 —— 四份互不依赖。
+                //   改造前它们排队等，实测整段 6.7s；现在只等最慢的那一段。
+                const _sinceDate = getAuctionRecentSinceDate();
+                const _pBlob = _start(function () {
+                    return sb.from('user_data').select('data').eq('id', 'owner').single();
+                });
+                const _pAuc = _start(function () { return pullAuctionFromTable({ sinceDate: _sinceDate }); });
+                const _pBid = _start(function () { return pullBiddingFromTable(); });
+                const _pJiw = _start(function () { return pullJiwangFromTable(); });
+
+                // ─────────── 第二阶段：按【原顺序】逐段收取并合并（逻辑零变化） ───────────
+                const _blobOut = await _pBlob;
+                const error = _blobOut.ok ? (_blobOut.value && _blobOut.value.error) : _blobOut.error;
+                const data = _blobOut.ok ? (_blobOut.value && _blobOut.value.data) : null;
+
+                if (error) {
+                    // ⚠️ 与改造前的有意差异：原来这里 `throw error` 会把下面「竞价窗口 / bidding / jiwang」
+                    //    三段一起跳过 —— 一份 4KB 的 blob 快照读失败就让所有看板空白（§10 一处失败连坐全局）。
+                    //    现在 blob 失败只影响它自己这段分区，表格数据照常合并。
+                    _dbgLog('[AUCTION-ERR] user_data blob 读取失败（三张表照常继续合并）: ' +
+                        ((error && error.message) || error));
                 }
 
-                const cloudObj = data.data;
+                // ★★ [BOOT-PARALLEL 2026-10-31 · §32/§33 首屏框架改造]
+                //
+                // 🔴 改造前：本函数是一条**串行 await 链**
+                //      user_data(≈2.1s) → 竞价30天窗口(≈2.3s) → 对账 → 标签清洗 → bidding(≈1.6s) → jiwang(≈1.2s)
+                //    实测 `[PULL] 云端数据同步成功` 落在 **+6692ms**（.tmpdiag/pw/perf-timeline.cjs）。
+                //    这四段读的是【四份互不依赖的数据】，却排队一段段来 ——
+                //    §32 的红线是「不重复请求」，同样也禁止「本来能并行却硬串行」。
+                //
+                // ✅ 改法：**只把「发起」提前到同一个 tick**，下面收取结果的顺序、
+                //    合并逻辑、写内存语义【一字不改】。
+                //    等待时间从「四段之和」变成「最慢那一段」，且不改变任何数据结果。
+                //
+                // ⚠️ 提前发起的唯一副作用：即使下面的 blob 读取失败，三张表的请求也已经在飞了。
+                //    这是**有意**的 —— 竞价数据在表里，blob 只是各模块的快照暂存，
+                //    一份 4KB 的快照读失败不该让竞价看板/题材量比全部空白（§10 一处失败不连坐全局）。
+                const cloudObj = (data && data.data && Object.keys(data.data).length > 0) ? data.data : null;
+                if (!cloudObj) {
+                    // ⚠️ 与改造前的有意差异：原来这里直接 `return`，会把三张表【已经拉回来】的数据
+                    //    一起丢掉。表才是竞价数据的真相源，`user_data` 为空不代表表为空。
+                    // §10：判不出原因时把事实打出来（ok / blob 分区数），⛔ 不写「大概没问题」
+                    _dbgLog('[PULL] 云端 user_data 暂无快照，使用本地数据（三张表照常继续合并）｜' +
+                        'ok=' + _blobOut.ok + ', data=' + (data === null ? 'null' : typeof data) +
+                        ', blob分区=' + ((data && data.data && typeof data.data === 'object') ? Object.keys(data.data).length : 'n/a'));
+                }
 
                 // ★★ [BOARD-LOST-G3 2026-10-28 · §10「未知 ≠ 空」] 记住云端 blob 各模块分区的原样快照。
                 //   为什么需要：pushToCloud 是整列覆盖 `user_data.data`（一个 JSON 列），
@@ -209,12 +275,16 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
                 //   实测（.tmpdiag/audit-boot-writes.cjs）：一次首屏即发出
                 //   `POST user_data {"id":"owner","data":{"stocks":{},"rank":{},"multi":{},"hotspot":{},…}}`。
                 //   有了这份快照，push 侧就能「本地有货用本地、本地没货沿用云端刚刚读到的那份」。
-                _cloudBlobExtras._blobSections = {};
-                ['stocks', 'auction', 'jiwang', 'rank', 'multi', 'hotspot', 'pattern', 'bidding', 'tagTitles']
-                    .forEach(function (k) {
-                        const v = cloudObj[k];
-                        if (v && typeof v === 'object' && Object.keys(v).length > 0) _cloudBlobExtras._blobSections[k] = v;
-                    });
+                //   ⚠️ [BOOT-PARALLEL 2026-10-31] 只有真的读到 blob 才重置这份快照 ——
+                //      读失败时把它清成 `{}` 等于「用未知覆盖已知」，正是上面这条红线要防的事。
+                if (cloudObj) {
+                    _cloudBlobExtras._blobSections = {};
+                    ['stocks', 'auction', 'jiwang', 'rank', 'multi', 'hotspot', 'pattern', 'bidding', 'tagTitles']
+                        .forEach(function (k) {
+                            const v = cloudObj[k];
+                            if (v && typeof v === 'object' && Object.keys(v).length > 0) _cloudBlobExtras._blobSections[k] = v;
+                        });
+                }
 
                 // §8 收口（P0-1 修复）：原 cloud-pull 把云端 blob 各模块镜像写回 stockApp_v42_* localStorage，
                 // 违反 §8「核心业务数据不得落 localStorage」。现各模块已迁移到「云端专用表 + 内存缓存(_xxxMemCache)」，
@@ -230,7 +300,9 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
                         localStorage.setItem('stockApp_' + DV + '_' + key, JSON.stringify(cloudObj[key]));
                     }
                 });
-                localStorage.setItem('stockApp_' + DV + '__migrated', '1');
+                // ⚠️ [BOOT-PARALLEL 2026-10-31] 这个标记只在【真的读到云端 blob】时才写：
+                //   读失败就写它，等于告诉 loadAllData「已经迁移过了」，会跳过 v41 → v42 的迁移 —— 丢数据风险。
+                if (cloudObj) localStorage.setItem('stockApp_' + DV + '__migrated', '1');
 
                 // 其余散落 key
                 // §8 收口：stockEtfComment 已并入 Supabase early_etf_data.comment 列（saveEtfBoardComment）；
@@ -264,11 +336,14 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
                 // §8 已上云（写路径仅上云，已移除 localStorage 写入；读路径已切云端 loadFumianTopics → getFumianCache，localStorage 仅作冷启动兜底）。
                 if (cloudObj.hasFumianTopics) {
                     // 双写：新增 Supabase upsert（失败自动降级，绝不破坏既有路径）；localStorage 写入已移除（用户已授权上云）
-                    try {
-                        await saveFumianTopics(cloudObj.hasFumianTopics);
-                    } catch (e) {
-                        console.error('[auction-sync] hasFumian 上云异常：', e && e.message);
-                    }
+                    // ★★ [BOOT-PARALLEL 2026-10-31] 这是一次**写**请求，而且写进去的内容就是从云端刚读出来的同一份，
+                    //   不需要在本函数里等它完成 —— 原来那个 `await` 只是让首屏关键路径多排队一次写操作。
+                    //   改为首屏画完 + 浏览器空闲后再补写（§33：写回填不属于首屏）。
+                    whenIdle(function () {
+                        saveFumianTopics(cloudObj.hasFumianTopics).catch(function (e) {
+                            console.error('[auction-sync] hasFumian 上云异常：', e && e.message);
+                        });
+                    }, { name: 'hasFumianTopics 回写云端' });
                 }
                 if (cloudObj.scoreSettings) {
                     ['recentMulti', 'sectorEtf', 'topicDirection'].forEach(type => {
@@ -290,7 +365,16 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
 
                 // 重置内存中的 allData，让 loadAllData() 重新从 localStorage 读取
                 // §6：rank 缓存经 state._rankMemCache 单独持有（与 allData 解耦），此 null 重置不连坐 rank；安全。
+                //
+                // ★★ [BOOT-PARALLEL 2026-10-31] 置空之后【必须立刻重建】，不能把 null 留在内存里等别人。
+                //   置空的唯一目的就是「强制重建」；一旦留着 null，下面任何一次**同步**回调
+                //   （`_emit('auction-refresh')` → 看板重算 → pushToCloud → `state.allData.holidays`）
+                //   都会 `Cannot read properties of null (reading 'holidays')` 直接抛出去，
+                //   把本函数后半段（bidding / jiwang 合并）整段中断。
+                //   实测：并发化之后 `_pAuc` 早已 resolve，微任务一路直下，中间没有任何人来得及重建 ——
+                //   这条 null 窗口就成了一个必然踩中的坑（改造前只是被串行 await 的时间差掩盖了）。
                 state.allData = null;
+                loadAllData();
 
                 // 从 auction_watchlist + market_metrics 拉取 auction 数据（拆表后新增）
                 // 若新表不可用或为空，保留本地数据（不清空）
@@ -300,8 +384,13 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
                 //   ② 后台：更早的历史在空闲时补齐，完成后再 emit 一次刷新
                 // 若新表不可用或为空，保留本地数据（不清空）
                 try {
-                    const sinceDate = getAuctionRecentSinceDate();
-                    await pullAuctionFromTable({ sinceDate });
+                    const sinceDate = _sinceDate;
+                    // ★ [BOOT-PARALLEL 2026-10-31] 这个请求在函数开头（第一阶段）就已经发出去了，
+                    //   这里只是**等它**，⛔ 不是重新发一次 —— §32 不重复请求。
+                    //   改造前是 `await pullAuctionFromTable(...)`，即「等 blob 等完才开始拉表」；
+                    //   现在两件事同时飞，竞价窗口的到达时间少掉整段 blob 等待（实测约 2.1s）。
+                    const _aucOut = await _pAuc;
+                    if (!_aucOut.ok) throw _aucOut.error;
                     // 更新状态签名，避免 pull 后立即触发无意义的 push
                     // 方案2：状态签名只统计正式成员（用 _auctionWatchlistIndex 判断）
                     const _pullWset = _getAuctionWatchlistSet(useUiStore().currentDate);
@@ -328,33 +417,41 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
                 Object.keys(_signalCache).forEach(function(k) { delete _signalCache[k]; });
                 _emit('auction-refresh');
 
-                // 阶段六 影子bug6 收尾：拉取完成后立即对账，用 localStorage 旧正式列表纠正云端已提升的影子记录
-                try {
-                    const reconcileResult = await reconcileAuctionWatchlistFromLocalStorage();
-                    if (!reconcileResult.skipped && reconcileResult.demoted > 0) {
-                        _dbgLog('[RECONCILE] 首次对账降级 ' + reconcileResult.demoted + ' 只影子记录，触发重新渲染');
-                        // 对账改了 _auctionMemCache 行的 in_watchlist，需重新渲染当前页
-                        _emit('auction-refresh');
-                    }
-                } catch(e) {
-                    _dbgLog('[AUCTION-ERR] reconcileAuctionWatchlistFromLocalStorage ' + (e && e.message || e));
-                }
+                // ★★ [BOOT-PARALLEL 2026-10-31] 下面这两段（对账 / 标签清洗）是**一次性维护任务**，
+                //   都会向云端**写**数据，而且用户屏幕上没有任何一个数字要等它们。
+                //   改造前它们是 `await` 在首屏关键路径中间 —— 竞价窗口拉完了还要再等两个写请求
+                //   才轮到 bidding / jiwang，纯属排队排错了位置（§33 首次加载与维护分离）。
+                //   ✅ 移到「首屏已画出内容」之后立即执行（不是永远不跑，也不是靠延迟掩盖问题：
+                //      它们本来就不属于首屏）。⚠️ 有 localStorage 标记控制，正常只跑一次。
+                whenFirstPaint(function () {
+                    // 阶段六 影子bug6 收尾：拉取完成后立即对账，用 localStorage 旧正式列表纠正云端已提升的影子记录
+                    reconcileAuctionWatchlistFromLocalStorage().then(function (reconcileResult) {
+                        if (!reconcileResult.skipped && reconcileResult.demoted > 0) {
+                            _dbgLog('[RECONCILE] 首次对账降级 ' + reconcileResult.demoted + ' 只影子记录，触发重新渲染');
+                            // 对账改了 _auctionMemCache 行的 in_watchlist，需重新渲染当前页
+                            _emit('auction-refresh');
+                        }
+                    }).catch(function (e) {
+                        _dbgLog('[AUCTION-ERR] reconcileAuctionWatchlistFromLocalStorage ' + ((e && e.message) || e));
+                    });
 
-                // 一次性标签清洗（stockApp_v42_tag_cleanse_v1）：云端拉取完成后执行，
-                // 按 deriveAuctionTagState 重算所有日期竞价行的 bought/sold/selected/fixed，
-                // 清除历史遗留脏位（误标"买"、幽灵灰色"卖出"），并推送云端覆盖脏行。
-                // 只跑一次；清洗前自动备份到 auctionData_tag_cleanse_backup。
-                try {
-                    await cleanseAuctionTagsOnce();
-                    _emit('auction-refresh');
-                } catch(e) {
-                    _dbgLog('[AUCTION-ERR] cleanseAuctionTagsOnce ' + (e && e.message || e));
-                }
+                    // 一次性标签清洗（stockApp_v42_tag_cleanse_v1）：按 deriveAuctionTagState 重算所有日期
+                    // 竞价行的 bought/sold/selected/fixed，清除历史遗留脏位（误标"买"、幽灵灰色"卖出"），
+                    // 并推送云端覆盖脏行。只跑一次；清洗前自动备份到 auctionData_tag_cleanse_backup。
+                    return cleanseAuctionTagsOnce().then(function () {
+                        _emit('auction-refresh');
+                    }).catch(function (e) {
+                        _dbgLog('[AUCTION-ERR] cleanseAuctionTagsOnce ' + ((e && e.message) || e));
+                    });
+                }, { delayMs: 1200, name: '竞价对账 + 一次性标签清洗' });
 
                 // 从 bidding_data 独立表拉取 bidding 数据（云端表是权威来源之一，
                 // 但不能因为某次拉取没返回某个日期就把本地已保存的数据删掉）。
                 try {
-                    const tableBidding = await pullBiddingFromTable();
+                    // ★ [BOOT-PARALLEL 2026-10-31] 同上：请求已在第一阶段发出，这里只是等结果。
+                    const _bidOut = await _pBid;
+                    if (!_bidOut.ok) throw _bidOut.error;
+                    const tableBidding = _bidOut.value;
                     // 收集"正在推送到云端"或"有本地待推送编辑"的日期，这些日期不能被云端旧值覆盖。
                     const pendingDates = new Set();
                     if (state._biddingPushInFlight) state._biddingPushInFlight.forEach(function(d) { pendingDates.add(d); });
@@ -380,7 +477,9 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
                 // 从 jiwang_data 独立表拉取记忘看板数据（云端表是唯一权威来源）
                 try {
                     const _beforeMerge = JSON.stringify((state._jiwangMemCache || {})[useUiStore().currentDate] || null).slice(0, 200);
-                    const tableJiwang = await pullJiwangFromTable();
+                    const _jiwOut = await _pJiw;
+                    if (!_jiwOut.ok) throw _jiwOut.error;
+                    const tableJiwang = _jiwOut.value;
                     if (!state._jiwangMemCache) state._jiwangMemCache = {};
                     // 重要修复：以前这里会把"这次没在 pendingDates 里的本地日期"全部删掉，
                     // 再用 tableJiwang 里有的日期重新填回来。问题是——如果某个日期的数据
@@ -421,7 +520,13 @@ import { getAuctionRecentSinceDate } from '../auction/auction-pull-window.js';
                 try { localStorage.removeItem('obsBought_' + useUiStore().currentDate); } catch(e) {}
 
                 _dbgLog('[PULL] 云端数据同步成功');
+                // ★★ [BOOT-QUIET 2026-10-31] 记录「刚拉完」的时刻：`scheduleCloudPush()` 会据此
+                //   把「拉取后自动触发的推送」排到首屏静默窗之后（详情见 logic/shared/core-shared.js）。
+                //   ⛔ 不是禁止推送：只是把「把云端刚给的数据原样写回去」这件事挪出首屏。
+                state._pullFinishedAt = Date.now();
             } catch (e) {
-                _dbgLog('[AUCTION-ERR] pullFromCloud ' + (e && e.message || e));
+                // §10：整段失败必须能定位到行 —— 带上栈的前 3 帧，⛔ 不要只留一句 message
+                _dbgLog('[AUCTION-ERR] pullFromCloud ' + (e && e.message || e) +
+                    '｜stack=' + String((e && e.stack) || '').split('\n').slice(1, 4).map(function (s) { return s.trim(); }).join(' <- '));
             }
         }
