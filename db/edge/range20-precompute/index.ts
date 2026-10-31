@@ -524,6 +524,109 @@ async function fetchSnapshots(thscodes: string[]): Promise<{
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════════
+// ★★ [R20-HEAL 2026-10-31] 逐日腿【自愈】：拿 market_metrics 的收盘涨幅兜底补 stock_daily_pct
+//
+// 为什么必须有（2026-10-30 实测事故，⛔ 别删）：
+//   「今天这根腿」只有一个写入点 —— 下方 ④ 段 `legBuffer`，即收盘那一轮（leg='close' 且 >=15:05）
+//   用【同花顺 K 线】算出来再落库。上游一旦整体挂掉（实测：16 只全部 `The signal has been aborted`，
+//   143 秒 0 写入并触发熔断），`legsWritten = 0` ⇒ 那一天在 stock_daily_pct 里**一行都没有**。
+//   后果不是「慢」，是【次日整体失效】：
+//     · 前端 `isLegTableStale` 判据 = 目标票最新腿日 vs App 日历前一交易日；
+//     · 缺一天 ⇒ 「表整体落后于日历」⇒ `forceAll` ⇒ 阶段① 一条都不发布（`if (forceAll) return false`）
+//       且全部票被推去走 K 线 ⇒ 同花顺被关时 20 日涨幅【整列 `—`】，题材量比直接选不出票。
+//   而「今天这根腿」在**没人补**的情况下会永久缺 —— 因为它的下一个写入者本来就依赖 K 线。
+//
+// 为什么可以拿 market_metrics 当来源（有实测背书，不是「贪方便」）：
+//   该表 `change_pct` 会在 worker 16:00 那轮被【收盘涨幅】覆盖（见 workers/bidding-auto-fetch）。
+//   2026-10-31 交叉验证（与 stock_daily_pct 同花顺真值逐只比对）：
+//     · 2026-10-28 → 73/73 完全一致（差值 < 0.005pp）
+//     · 2026-10-29 → 57/58 一致（仅「出版传媒」差 1.14pp，疑似除权）
+//   ⇒ 数值可信。但仍**诚实标注来源** `src='metrics_close'`（⛔ 不冒充 'kline'）；
+//     同花顺恢复后，前端与收盘轮会用 src='kline' 覆盖同一主键 (date,stock) ⇒ 自动升级成真值。
+//
+// 三条安全闸（§10 宁缺勿错 / §11 不越界）：
+//   ① 只补 `date < 今天`：当天的 change_pct 还是竞价涨幅，⛔ 落地成收盘腿会静默算错；
+//   ② 只【新增】缺的票：已有 (date,stock) 的（尤其是 kline 真值）一律不碰 ⇒ 纯加法，绝不覆盖；
+//   ③ `change_pct` 与 `auc_pct_chg` 相同 ⇒ 无法排除「16:00 未覆盖」⇒ 跳过不写。
+// ════════════════════════════════════════════════════════════════════════════════
+const HEAL_LOOKBACK_DAYS = 8;   // 只回看最近 8 个自然日（覆盖周末 + 小长假，够用且请求量恒定）
+const HEAL_MIN_RATIO = 0.6;     // 已有腿数 >= 该日 metrics 行数 × 0.6 ⇒ 视为不缺，跳过（省请求）
+
+/** YYYY-MM-DD 平移（UTC 毫秒运算，避免时区/DST 干扰；中国无夏令时） */
+function shiftYmd(ymd: string, deltaDays: number): string {
+  const ms = Date.parse(ymd + 'T00:00:00Z') + deltaDays * 86400000;
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * 用 market_metrics 的历史收盘涨幅，把 stock_daily_pct 缺的腿补上（幂等、纯新增、零上游请求）。
+ * @param today 目标日（回补时是历史日；只处理 date < today）
+ * @returns 每天的处理结果（写进响应体的 legHeal 字段，便于排查「到底补了哪几天」）
+ */
+async function healDailyLegsFromMetrics(today: string): Promise<Array<Record<string, unknown>>> {
+  const out: Array<Record<string, unknown>> = [];
+  const nowIso = new Date().toISOString();
+  for (let i = 1; i <= HEAL_LOOKBACK_DAYS; i++) {
+    const d = shiftYmd(today, -i);
+    try {
+      const metrics = await sbRest(
+        'GET',
+        '/rest/v1/market_metrics?select=stock,change_pct,auc_pct_chg&date=eq.' + d
+          + '&scope=eq.auction&limit=1000',
+      ) as Array<Record<string, unknown>>;
+      if (!Array.isArray(metrics) || metrics.length === 0) continue;   // 非交易日 / 该日未落库 ⇒ 无事可做
+      const have = await sbRest(
+        'GET',
+        '/rest/v1/stock_daily_pct?select=stock&date=eq.' + d + '&limit=1000',
+      ) as Array<Record<string, unknown>>;
+      const haveList = Array.isArray(have) ? have : [];
+      const haveSet = new Set<string>();
+      for (const r of haveList) {
+        const s = String((r && r.stock) ?? '').trim();
+        if (s) haveSet.add(s);
+      }
+      if (haveSet.size >= metrics.length * HEAL_MIN_RATIO) {
+        out.push({ date: d, metrics: metrics.length, legs: haveSet.size, action: 'ok' });
+        continue;
+      }
+      const rows: Array<Record<string, unknown>> = [];
+      for (const r of metrics) {
+        const s = String((r && r.stock) ?? '').trim();
+        if (!s || haveSet.has(s)) continue;                 // 闸②：已有的一律不碰（纯新增）
+        const c = parsePct(r.change_pct);
+        if (c === null) continue;                           // §10：缺值不写（⛔ 不当 0%）
+        const a = parsePct(r.auc_pct_chg);
+        if (a !== null && Math.abs(c - a) < 0.005) continue; // 闸③：可能是未覆盖的竞价涨幅 ⇒ 跳过
+        const v = c.toFixed(2);
+        rows.push({
+          date: d,
+          stock: s,
+          pct: (v.charAt(0) === '-' ? v : '+' + v),
+          src: 'metrics_close',
+          updated_at: nowIso,
+        });
+      }
+      if (rows.length === 0) {
+        out.push({ date: d, metrics: metrics.length, legs: haveSet.size, action: 'skip(无可写行)' });
+        continue;
+      }
+      for (let k = 0; k < rows.length; k += 500) {
+        await sbRest('POST', '/rest/v1/stock_daily_pct?on_conflict=date,stock', rows.slice(k, k + 500));
+      }
+      out.push({ date: d, metrics: metrics.length, legs: haveSet.size, written: rows.length, action: 'healed' });
+      console.log('[range20-precompute][R20-HEAL] ' + d + ' 逐日腿 ' + haveSet.size + ' 行 → 补 ' + rows.length
+        + ' 行（来源 market_metrics 收盘涨幅，src=metrics_close）');
+    } catch (e) {
+      // §10：自愈失败必须可见，但⛔ 不连坐 —— 主流程照常跑，只是这天继续缺
+      const m = e instanceof Error ? e.message : String(e);
+      out.push({ date: d, action: 'error', error: m });
+      console.error('[range20-precompute][R20-HEAL] ' + d + ' 自愈失败（不影响本轮预计算）: ' + m);
+    }
+  }
+  return out;
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   const json = (obj: unknown, status = 200) =>
@@ -588,6 +691,20 @@ Deno.serve(async (req: Request) => {
     }
     console.log('[range20-precompute] ' + today + ' leg=' + leg + (isBackfill ? ' [回补]' : '')
       + ' 名单就绪 ' + watchRows.length + ' 行，开始预计算');
+
+    // ★★ [R20-HEAL 2026-10-31] 先自愈「历史缺腿」，再算今天 —— 顺序不能反：
+    //   前端的 stale 守卫看的正是【历史腿齐不齐】，历史缺一天，今天算得再准也会被整列判成「不可信」。
+    //   全部是本库内读写（market_metrics → stock_daily_pct），⛔ 零上游请求、不烧同花顺额度。
+    //   ?skipHeal=1 可跳过（手动调试 / 只想跑当天时用）。
+    let legHeal: Array<Record<string, unknown>> = [];
+    if (String(params.get('skipHeal') ?? '') !== '1') {
+      legHeal = await healDailyLegsFromMetrics(today);
+      const healedDays = legHeal.filter((x) => x.action === 'healed');
+      if (healedDays.length > 0) {
+        console.log('[range20-precompute][R20-HEAL] 本轮自愈 ' + healedDays.length + ' 天：'
+          + healedDays.map((x) => String(x.date) + '(+' + String(x.written) + ')').join(', '));
+      }
+    }
 
     // 目标 = 当天正式名单（去重，先到先得；aucPct = change_pct 兜底竞价 T 腿，close 腿不用它）
     const targets: Array<{ stock: string; code: string; aucPct: number | null; from: string }> = [];
@@ -1115,6 +1232,8 @@ Deno.serve(async (req: Request) => {
       // ★★ [R20-DAILY] 收盘那一轮把「今天这根腿」补进原料表的行数（明天早上 0 请求的前提）
       legsWritten,
       legsWriteError,
+      // ★★ [R20-HEAL 2026-10-31] 历史缺腿自愈结果（每天一条：ok / healed(+N) / skip / error）
+      legHeal,
       written: written + fastWritten,
       failed,
       // ★ [R20-RATE] 限流与补跑：rateLimited = 第一轮被限流挡下的只数；retried/retryFailed = 串行补跑结果

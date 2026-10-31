@@ -2,40 +2,12 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>股票日记 v260</title>
-</head>
-<body>
-<!-- ★★ [BOOT-FALLBACK 2026-10-25] 首屏占位（原来 #app 是【空的】，这是「一片空白」的结构性根因）：
-     只要 Vue 还没挂载 —— 入口脚本 404 / 被手机浏览器拦掉 / 网络太慢 / 缓存过的旧 index.html
-     引用已删除的旧哈希文件 —— 用户看到的就是纯白，没有任何提示，也不知道该刷新。
-     这里放一块静态占位，Vue 挂载时会【整体替换】掉它（成功路径零视觉变化，§11）。
-     ⛔ 只是兜底提示，不碰任何业务逻辑。 -->
-<div id="app"></div>
-<!-- ★★ [BOOT-VEIL 2026-10-31] 为什么把它挪到 #app【外面】：
-     旧实现是 #app 的【子节点】，而 Vue 的 app.mount('#app') 会把这个容器的子节点全部清掉。
-     ⇒ 只要「Vue 挂上了、但界面没渲染出东西」（authReady 没变 true / 路由分包没到 / 组件 setup 抛错），
-       这块兜底提示就【一起消失】了 —— 用户看到的就是纯白 + 标签页一直转圈，
-       既没有报错也没有按钮，只能靠猜。这是「一片空白」真正的结构性根因，不是网络问题。
-     现在它是 #app 的兄弟节点、固定定位的白底蒙层：
-       · 应用真正渲染出内容 → 由 __bootDone() 把它 display:none（零视觉变化）；
-       · 启动链抛错 / 超时 → 由 __bootFail() 把它重新显示出来，并写上【真实原因】。
-     ⛔ 只做「可见性」兜底，不碰任何业务逻辑（§11 零行为变化）。 -->
-<div id="boot-veil" style="position:fixed;top:0;right:0;bottom:0;left:0;z-index:99999;background:#fff;overflow:auto;display:block">
-  <div style="max-width:520px;margin:18vh auto 0;padding:0 20px;text-align:center;font:14px/1.8 -apple-system,'Segoe UI','Microsoft YaHei',sans-serif;color:#374151">
-    <div id="boot-title" style="font-size:15px;color:#111827">正在加载…</div>
-    <div id="boot-note" style="margin-top:10px;color:#6b7280">首次打开要拉取数据，稍等一下</div>
-    <div id="boot-retry" style="margin-top:16px;display:none">
-      <div style="color:#b91c1c;font-weight:600">页面没能加载出来</div>
-      <div id="boot-reason" style="margin-top:6px;color:#6b7280;word-break:break-all"></div>
-      <div style="margin-top:14px">
-        <button type="button" onclick="location.reload()" style="padding:9px 20px;border:1px solid #d1d5db;border-radius:6px;background:#fff;color:#111827;font-size:14px;cursor:pointer">重新加载</button>
-        <button type="button" onclick="window.__bootHardReset&&window.__bootHardReset()" style="margin-left:10px;padding:9px 20px;border:1px solid #d1d5db;border-radius:6px;background:#fff;color:#6b7280;font-size:14px;cursor:pointer">清缓存重载</button>
-      </div>
-      <div id="boot-log" style="margin-top:14px;color:#9ca3af;font-size:12px;white-space:pre-wrap;text-align:left"></div>
-    </div>
-  </div>
-</div>
+<!-- ★★★ [BOOT-WATCH-ORDER 2026-10-31] 这段启动监控【必须】留在 <head> 里、且在任何
+     <link rel="stylesheet"> / <script type="module"> 之前（vite 构建时会把它们插到 </head> 前）。
+     原因（实测）：经典脚本执行前要等「前面尚未完成的样式表」，而首屏最慢的正是 CSS
+     （线上实测 index-*.css +19972ms）⇒ 旧版把它放在 </body> 前，导致看门狗的 20s 计时
+     被 CSS 拖到 20 秒之后才启动，等于完全失效。挪到这里后 8s 就能给出「网络较慢」提示。
+     ⛔ 别为了「整齐」把它挪回去。 -->
 <script>
   // ★★ [BOOT-VEIL 2026-10-31] 启动蒙层的唯一出口 + 看门狗。
   //   设计原则：**宁可多显示一句人话，也不要一片空白**。所以这个蒙层只会在两种情况下消失：
@@ -43,7 +15,10 @@
   //     ② 看门狗发现 #app 里确实已经有可见内容 —— 双保险，防止应用自己忘了调用。
   //   反过来，一旦「启动了但没渲染」，__bootFail() 会把它重新盖回来并写明原因。
   (function () {
-    var veil = document.getElementById('boot-veil');
+    // ★★ [BOOT-WATCH-ORDER 2026-10-31] 惰性取蒙层，⛔ 不在解析时快照。
+    //   本脚本现在放在 <head> 最前面（原因见下方看门狗段注释）：那时 <body> 还没解析，
+    //   `document.getElementById('boot-veil')` 一定是 null。所以每次使用时现查。
+    function veilEl() { return document.getElementById('boot-veil'); }
     var HARD_RELOAD_KEY = 'boot_hard_reload_v1';
     var done = false;
 
@@ -61,13 +36,15 @@
     window.__bootDone = function () {
       if (done) return;
       done = true;
-      if (veil) veil.style.display = 'none';
+      var v = veilEl();
+      if (v) v.style.display = 'none';
       try { sessionStorage.removeItem(HARD_RELOAD_KEY); } catch (e) {}
     };
 
     window.__bootFail = function (reason) {
       done = false;
-      if (veil) veil.style.display = 'block';
+      var v = veilEl();
+      if (v) v.style.display = 'block';
       var box = document.getElementById('boot-retry');
       var why = document.getElementById('boot-reason');
       // 先到先得：资源 404 / 组件抛错的具体原因比「超时」有价值，⛔ 不要被后面的通用提示覆盖
@@ -124,14 +101,74 @@
       window.__bootFail('页面代码块加载失败：' + String(msg || '未知原因'));
     };
 
-    setTimeout(function () {
+    // ★★ [BOOT-WATCH 2026-10-31] 看门狗从「20 秒一刀切判死」改成【有进度就继续等】。
+    //
+    // 为什么旧实现必须改（实测，不是猜）：
+    //   2026-10-31 直连线上 URL 实测：GitHub Pages 从本机网络取 5 个首屏资源，最坏一次
+    //   `index-BaKnV-Ck.css` +19972ms、入口 `index-B42Ln_ft.js` +55689ms 才到货。
+    //   而旧看门狗在 20s 时只看 `#app.childElementCount`（资源都没到，自然为 0）⇒ 必然误报
+    //   「页面没能加载出来」。更糟的是：红屏会让用户【手动刷新】，而刷新会中断正在下载的连接、
+    //   让整轮冷启动从头再来 —— 这正是「越刷越打不开、刷两次才开」的成因。
+    //   ⇒ 真正的失败（404 / 被拦 / 脚本抛错）由上面的 error 监听即时捕获，看门狗不该抢这个活。
+    //
+    // 新语义（§10：失败必须可见，但**不许把「正在下载」说成「失败」**）：
+    //   · 8s 还没上屏 ⇒ 标题改成「网络较慢」+ 实打实的已等秒数/已到资源数 + 「请勿刷新」；
+    //   · 资源还在持续到达 ⇒ 继续等（最坏实测 56s，所以上限要超过它）；
+    //   · 150s 仍未上屏，或连续 90s 一个资源都没到（真·被拦）⇒ 才判失败。
+    //   ⛔ 不改变任何业务逻辑，只影响蒙层文案与判定时机（§11 零行为变化）。
+    var T_SLOW_MS = 8000;      // 开始给「网络较慢」说明
+    var T_HARD_MS = 150000;    // 硬上限：超过就算失败（实测最坏 56s，留足余量）
+    var T_STALL_MS = 90000;    // 连续这么久没有任何资源到达 ⇒ 判定「真被拦」
+    var startedAt = Date.now();
+    var lastCount = -1;
+    var lastProgressAt = startedAt;
+    var failedAt = 0;
+
+    /** 已完成下载的资源条数（唯一可用的“还在动”信号；完成一个就 +1） */
+    function resourceCount() {
+      try { return (performance.getEntriesByType('resource') || []).length; } catch (e) { return -1; }
+    }
+
+    (function watch() {
+      if (done) return;
+      if (failedAt) return;
       var app = document.getElementById('app');
       // ⚠️ 这里【不能】因为「蒙层已经撤掉」就提前 return：
       //   首屏路由就绪后我们会撤蒙层，而那一刻如果 `authReady` 还没变 true（启动链里抛了错），
       //   页面其实还是一片空白 —— 那才是最需要提示的状态。所以统一按「#app 里有没有元素」判。
       if (app && app.childElementCount > 0) { window.__bootDone(); return; }
-      window.__bootFail('超过 20 秒还没有渲染出任何内容（可能是网络被拦、或启动过程里抛错了）。');
-    }, 20000);
+
+      var now = Date.now();
+      var c = resourceCount();
+      if (c !== lastCount) { lastCount = c; lastProgressAt = now; }
+      var elapsed = now - startedAt;
+      var idle = now - lastProgressAt;
+      // 可观测钩子：白屏排查时 `__bootWatch` 能直接看出「循环还活着吗 / 已等多久 / 到了几个资源」
+      window.__bootWatch = { elapsed: elapsed, idle: idle, resources: c, done: done };
+
+      if (elapsed >= T_SLOW_MS) {
+        var title = document.getElementById('boot-title');
+        var note = document.getElementById('boot-note');
+        if (title) title.textContent = '正在加载…（网络较慢）';
+        if (note) {
+          note.textContent = '已等待 ' + Math.round(elapsed / 1000) + ' 秒'
+            + (c > 0 ? '，已下载 ' + c + ' 个资源' : '')
+            + '。页面正在下载中，请勿刷新（刷新会让下载从头再来）。';
+        }
+      }
+
+      if (elapsed >= T_HARD_MS || idle >= T_STALL_MS) {
+        failedAt = now;
+        window.__bootFail(
+          (idle >= T_STALL_MS
+            ? '连续 ' + Math.round(idle / 1000) + ' 秒没有任何资源到达（已被拦截或断网）'
+            : '等待 ' + Math.round(elapsed / 1000) + ' 秒仍未渲染出内容')
+          + '，已下载 ' + Math.max(0, c) + ' 个资源。可点「重新加载」再试一次。',
+        );
+        return;
+      }
+      setTimeout(watch, 1000);
+    })();
 
     // ⚠️ 这两个全局监听只在【还没启动成功】时说话：应用已经正常跑起来之后，
     //    个别业务异步错误不该再把整屏盖成红色面板（那会从「白屏」变成「误报红屏」）。
@@ -164,6 +201,41 @@
     });
   })();
 </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>股票日记 v260</title>
+</head>
+<body>
+<!-- ★★ [BOOT-FALLBACK 2026-10-25] 首屏占位（原来 #app 是【空的】，这是「一片空白」的结构性根因）：
+     只要 Vue 还没挂载 —— 入口脚本 404 / 被手机浏览器拦掉 / 网络太慢 / 缓存过的旧 index.html
+     引用已删除的旧哈希文件 —— 用户看到的就是纯白，没有任何提示，也不知道该刷新。
+     这里放一块静态占位，Vue 挂载时会【整体替换】掉它（成功路径零视觉变化，§11）。
+     ⛔ 只是兜底提示，不碰任何业务逻辑。 -->
+<div id="app"></div>
+<!-- ★★ [BOOT-VEIL 2026-10-31] 为什么把它挪到 #app【外面】：
+     旧实现是 #app 的【子节点】，而 Vue 的 app.mount('#app') 会把这个容器的子节点全部清掉。
+     ⇒ 只要「Vue 挂上了、但界面没渲染出东西」（authReady 没变 true / 路由分包没到 / 组件 setup 抛错），
+       这块兜底提示就【一起消失】了 —— 用户看到的就是纯白 + 标签页一直转圈，
+       既没有报错也没有按钮，只能靠猜。这是「一片空白」真正的结构性根因，不是网络问题。
+     现在它是 #app 的兄弟节点、固定定位的白底蒙层：
+       · 应用真正渲染出内容 → 由 __bootDone() 把它 display:none（零视觉变化）；
+       · 启动链抛错 / 超时 → 由 __bootFail() 把它重新显示出来，并写上【真实原因】。
+     ⛔ 只做「可见性」兜底，不碰任何业务逻辑（§11 零行为变化）。 -->
+<div id="boot-veil" style="position:fixed;top:0;right:0;bottom:0;left:0;z-index:99999;background:#fff;overflow:auto;display:block">
+  <div style="max-width:520px;margin:18vh auto 0;padding:0 20px;text-align:center;font:14px/1.8 -apple-system,'Segoe UI','Microsoft YaHei',sans-serif;color:#374151">
+    <div id="boot-title" style="font-size:15px;color:#111827">正在加载…</div>
+    <div id="boot-note" style="margin-top:10px;color:#6b7280">首次打开要拉取数据，稍等一下</div>
+    <div id="boot-retry" style="margin-top:16px;display:none">
+      <div style="color:#b91c1c;font-weight:600">页面没能加载出来</div>
+      <div id="boot-reason" style="margin-top:6px;color:#6b7280;word-break:break-all"></div>
+      <div style="margin-top:14px">
+        <button type="button" onclick="location.reload()" style="padding:9px 20px;border:1px solid #d1d5db;border-radius:6px;background:#fff;color:#111827;font-size:14px;cursor:pointer">重新加载</button>
+        <button type="button" onclick="window.__bootHardReset&&window.__bootHardReset()" style="margin-left:10px;padding:9px 20px;border:1px solid #d1d5db;border-radius:6px;background:#fff;color:#6b7280;font-size:14px;cursor:pointer">清缓存重载</button>
+      </div>
+      <div id="boot-log" style="margin-top:14px;color:#9ca3af;font-size:12px;white-space:pre-wrap;text-align:left"></div>
+    </div>
+  </div>
+</div>
+
 <script type="module" src="/src/main.js"></script>
 </body>
 </html>
