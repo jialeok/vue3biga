@@ -354,7 +354,7 @@
    与分歧占位（.tvrb-diverge-pending）同一套观感 = 「在等结论，不是结论」：虚线框 + 灰蓝文字。
    ⛔ 类名必须独立（DOM 查询 / E2E 不能混）—— 两者原因完全不同：一个等分歧判定，一个等选股口径。
    配色刻意用【靛蓝】而不是分歧那个 slate 灰：口径问题说的是「数据在来的路上」，不是「今天可能有变数」。 */
-.tvrb-buyctr-pending {
+.tvrb-buysettle-pending {
     margin: 2px 0 8px;
     padding: 10px 10px;
     background: #f5f7ff;
@@ -363,14 +363,24 @@
     text-align: center;
 }
 
-.tvrb-buyctr-pending-head {
+.tvrb-buysettle-pending-head {
     font-size: 14px;
     font-weight: 800;
     letter-spacing: 0.5px;
     color: #4338ca;
 }
 
-.tvrb-buyctr-pending-detail {
+/* ★★ [BUY-SETTLE 2026-10-31] 进度小字：「还差：A · B · C」—— 用户要的「标题栏提示等最终结果」 */
+.tvrb-buysettle-pending-wait {
+    margin-top: 5px;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.5;
+    color: #4f46e5;
+    text-align: left;
+}
+
+.tvrb-buysettle-pending-detail {
     margin-top: 5px;
     font-size: 11.5px;
     line-height: 1.55;

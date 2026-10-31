@@ -153,30 +153,44 @@
               判定落地前这里不显示选票。卖点侧不受影响。
             </div>
           </div>
-          <!-- ★★ [BUY-PCT-GATE 2026-10-31 用户口径] 买点侧选股的【9:26 竞价口径】还没落地 ⇒ 只渲染
-               「确认选股口径中」占位，⛔ 绝不先拿【收盘口径】的龙位选一票出来再换（那样屏幕上会换票）。
+          <!-- ★★ [BUY-SETTLE 2026-10-31 用户口径] 买点侧选股有【7 项异步输入】，任一项后到都会换票
+               ⇒ 全部落地前只渲染「结果确认中」占位，⛔ 绝不先拿半套输入选一票出来再换。
                用户原话：「10月30日，打开时，出现上海九百和文投控股这两只票，后面文投控股又自动……
                我希望刚开始就显示正确的上海九百，文投控股如果不符合，最好不要显示出来，
                如果网络有延迟的话，很容易买错票。」
-               🔴 根因：这份口径是【异步】读的（stock_range_pct + market_metrics 反解），
-                 读回来之前规则层会退回收盘口径先算一遍 —— 收盘后 T 腿换腿 ⇒ 组内龙位重排 ⇒ 换票。
-               门控在组合式同步判（见 data computed 的 [TVRB-PCT-GATE]），⛔ 无 setTimeout；
-               口径到货自动重算放行，一次成型。卖点侧不受影响（卖点不吃这份口径）。
-               ⛔ 与分歧占位是两个不同原因（口径 vs 分歧判定），类名独立、文案各自讲清。 -->
+               第二版原话：「还是和原来一样，它最终显示正确的，但是要等几秒后……应该只显示上海九百，
+               文投控股从开始就不要显示，很容易误导，或者你在标题栏那里提示下，等最终结果，
+               最终结果还没出来之类的提示语」⇒ 所以占位里点名【还差哪几项】（buyPendingText），
+               标题栏（summaryText）同一条文案，两处都能看到。
+               🔴 根因（第一版只挡了「9:26 竞价口径」一项，不够）：7 项 = 核心题材大类 / 9:26 竞价口径 /
+                 当日十日涨幅 / 昨日十日涨幅 / 昨日退潮判定 / 近 20 日退潮历史 / 十日涨幅在列次数
+                 （+ 仅切换日的 20 日涨幅历史榜）。核心题材大类到货会让题材分组合并拆分 ⇒ 只数变 ⇒ 档位变；
+                 切日期那一帧退潮历史为空 ⇒ 规则层按「0 次事件 = 首次退潮」⇒ 首帧可能整段走退潮替补。
+               门控在组合式同步判（见 data computed 的 [TVRB-BUY-SETTLE]，判据在 logic/topicvolratio/buy-settle.js），
+               ⛔ 无 setTimeout；输入到齐自动重算放行，一次成型、之后不再变。
+               卖点侧不受影响（卖点不吃这 7 项）。 -->
           <div
-            v-if="buyPctPending && !divergePending"
-            class="tvrb-buyctr-pending tvrb-selectable"
+            v-if="buyPending && !divergePending"
+            class="tvrb-buysettle-pending tvrb-selectable"
           >
-            <div class="tvrb-buyctr-pending-head">
-              ⏳ 正在确认选股口径（9:26 竞价口径）……
+            <div class="tvrb-buysettle-pending-head">
+              ⏳ 结果确认中：买点侧选股输入还没全部到货，最终结果未出 —— 这一刻先不显示选票，请等提示消失。
             </div>
-            <div class="tvrb-buyctr-pending-detail">
-              买点侧的龙位是按【早上 9:26 竞价那一刻】的十日涨幅排的，这份数据要现读（不是本地现成的）。
-              为了不让你先看到「收盘口径选出来的票」再被换掉，口径落地前这里不显示选票。
-              卖点侧不受影响。
+            <!-- 进度小字：把「还在等哪几项」摆出来（空 ⇒ 不渲染，§21 模板零计算，文案在组合式） -->
+            <div
+              v-if="buyPendingText"
+              class="tvrb-buysettle-pending-wait"
+            >
+              {{ buyPendingText }}
+            </div>
+            <div class="tvrb-buysettle-pending-detail">
+              买点侧的龙位是按【早上 9:26 竞价那一刻】的十日涨幅排的，还要先定【核心题材大类】再分组、
+              再结合【昨日退潮判定 / 近 20 日退潮历史】决定这一组是买还是整组灰化。这些数据要现读，
+              不是本地现成的。为了不让你先看到「半套输入选出来的票」再被换掉（很容易买错），
+              输入到齐前这里不显示选票；一到齐就一次性成型，之后不会再变。卖点侧不受影响。
             </div>
           </div>
-          <template v-if="!divergePending && !buyPctPending">
+          <template v-if="!divergePending && !buyPending">
             <div
               v-if="ebbNodeNote"
               class="tvrb-ebb-node-note tvrb-selectable"
@@ -427,8 +441,10 @@ const {
   divergeBuy,
   divergePending,
   divergeWaitText,
-  // ★★ [BUY-PCT-GATE 2026-10-31 用户口径] 买点侧 9:26 竞价口径未落地 ⇒ 收起选票、只挂占位
-  buyPctPending,
+  // ★★ [BUY-SETTLE 2026-10-31 用户口径] 买点侧 7 项异步输入未全部落地 ⇒ 收起选票、只挂占位
+  buyPending,
+  // 占位小字「还差：A · B · C」—— 用户明确要的「提示下，等最终结果」
+  buyPendingText,
   // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条新龙 / 切换日（switchDay 的文案已由 Logic 层写进
   //   block.reason / notes，模板不需要它 ⇒ ⛔ 不解构，免得留一个未使用变量）
   newDragon,

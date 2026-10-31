@@ -155,14 +155,14 @@ import {
   //   「读几天的历史」必须与规则层「数几天的窗口」用同一个常量，⛔ 别在这儿写死 12 / 22）。
   EBB_EVENT_WINDOW_DAYS
 } from '../logic/topicvolratio/topic-vol-ratio-rules.js';
-// ★★ [BUY-PCT-GATE 2026-10-31 用户口径] 买点侧「9:26 竞价口径未就绪 ⇒ 先不出票」的唯一判据
-//   （纯函数，见其 JSDoc / 单测）—— ⛔ 别在 data computed 里另写一个行内比较。
-import { isBuyPctPending } from '../logic/topicvolratio/buy-pct-gate.js';
+// ★★ [BUY-SETTLE 2026-10-31 用户口径] 买点侧「选股输入是否齐了」的唯一判据
+//   （纯函数，见其 JSDoc / 单测）—— ⛔ 别在 data computed 里另写一串行内比较。
+import { resolveBuySettle } from '../logic/topicvolratio/buy-settle.js';
 // ★★ [CORE-CAT 2026-10-22 用户口径] 题材【大类】归一：
 //   getCoreTopics() = 核心管理里那张表（用户「我在核心管理里把文化传媒放到 AI应用 那个大类了」）；
 //   getCoreTopicsVersion() = 响应式版本号（云端加载完成 / 用户改完核心词 ⇒ computed 自动重算）。
 //   ⛔ 规则层拿到的永远是「数组」而不是「自己去读表」（§5 Data 层职责）。
-import { getCoreTopics, getCoreTopicsVersion } from '../logic/topic/rules.js';
+import { getCoreTopics, getCoreTopicsVersion, isCoreTopicsCloudLoaded } from '../logic/topic/rules.js';
 import { makeCoreTopicResolver } from '../logic/topic/core-category.js';
 // ★ 分笔：与「分笔买卖」看板【同一份取数编排 + 同一份逐行实现】（§6 单一真相，⛔ 不另写一份）
 import { decorateTickRow } from '../logic/tick/tick-minute.js';
@@ -192,7 +192,7 @@ const EMPTY_MAP = new Map();
  * ⚠️ data computed 在等待期间会因其它依赖变化重算多次 ⇒ 每帧打一条会把 `_dbgLog` 那 200 条
  *    环形缓冲冲掉、把真正有用的现场挤出去（排查时就抓瞎了）。⛔ 别去掉这个去重。
  */
-let _pctGateLogged = '';
+let _settleLogged = '';
 
 /**
  * 分笔取数失败后的一次性重试延迟（ms）。
@@ -229,7 +229,7 @@ function _empty(reason) {
       catchUp: null,
       // ★★ [BUY-PCT-GATE 2026-10-31] 形状与真实 plan 一致（未就绪时不是「口径确认中」，
       //   而是整张计划都没算出来 —— 那两种状态的文案不能混，§10）
-      buyPctPending: false
+      buyPending: false
     }
   };
 }
@@ -281,6 +281,16 @@ export function useTopicVolRatioBoard() {
    */
   const prevRangeMap = ref(null);
   const prevRangeDate = ref('');
+  /**
+   * ★★ [BUY-SETTLE 2026-10-31] 昨日十日涨幅「读过」的日期（**成功或失败都记**）。
+   *
+   * 🔴 为什么要单独一格：`prevRangeDate` 只在【成功且非空】时才写（见下面 watch 里的 then），
+   *   失败分支连日期都不记 ⇒ 这条链既「永远不落地」（买点侧门控会永久挂起），
+   *   又会因为 `if (!(prevRangeDate===pd && map))` 恒成立而在每次重算时**重复打接口**。
+   *   ⛔ 不去改 `prevRangeDate` 的既有语义（那是「有没有可用数据」，退潮规则靠它判 §10），
+   *      而是另加一格「有没有结论」—— 两者含义不同，§6 不合并。
+   */
+  const prevRangeTriedDate = ref('');
   /**
    * ★ [EBB-R8 2026-10-14] 上一交易日在 tvrb_ebb_days 里【落库的退潮判定】那一行。
    *
@@ -837,6 +847,8 @@ export function useTopicVolRatioBoard() {
     }
     if (!pd) {
       prevRangeMap.value = null; prevRangeDate.value = '';
+      // ★ [BUY-SETTLE] 没有上一交易日 ⇒ 与「昨日」相关的两项不参与门控（见门控调用处传的 prevDate）
+      prevRangeTriedDate.value = '';
       prevEbbDay.value = null; prevEbbDayDate.value = '';
       ebbHistory.value = []; ebbHistoryFrom.value = ''; ebbHistoryDate.value = d || '';
       return;
@@ -850,9 +862,17 @@ export function useTopicVolRatioBoard() {
         if (getPreviousTradingDay(currentDate.value) !== pd) return;
         prevRangeMap.value = (m && m.size > 0) ? m : null;
         prevRangeDate.value = pd;
+        // ★ [BUY-SETTLE] 读过（成功）⇒ 落「结论日期」，买点侧门控据此放行（见 prevRangeTriedDate）
+        prevRangeTriedDate.value = pd;
       }).catch(function(e) {
         console.warn('[TVRB] 上一交易日十日涨幅读取失败，退潮首日规则本次不生效:', e && e.message);
+        // ★ [BUY-SETTLE] 读过（失败）也落「结论日期」：退潮规则照样不生效（§10 不猜），
+        //   但门控不能再等它 —— ⛔ 否则一次读失败就把买点侧永久锁死。
+        if (getPreviousTradingDay(currentDate.value) === pd) prevRangeTriedDate.value = pd;
       });
+    } else if (prevRangeTriedDate.value !== pd) {
+      // 已经是「有数据」的状态但还没记过结论日期（例如从缓存直接命中）⇒ 补记，避免门控白等
+      prevRangeTriedDate.value = pd;
     }
     // ② tvrb_ebb_days：一次读【今天 + 上一交易日】两行（§32 一次 in 查询；
     //    今天那行用不着判首日，但读回来能让 upsert 前的判断看到「今天已经写过什么」——幂等且省一次往返）
@@ -929,6 +949,13 @@ export function useTopicVolRatioBoard() {
     void version.value;                 // 显式声明对刷新信号的依赖
     // ★ [EBB] 昨日十日涨幅（异步读回）⇒ 读到之后重算一次，退潮首日规则才生效
     void prevRangeMap.value;
+    // ★★ [BUY-SETTLE 2026-10-31] 「昨日十日涨幅读过没有」—— 买点侧门控的输入之一
+    //   （它和上面的 map 不是一回事：读失败时 map 恒 null 但这一格会落地，见其注释）
+    void prevRangeTriedDate.value;
+    // ★★ [BUY-SETTLE 2026-10-31] 核心词表（题材大类）是否已从云端读过 —— 到货前题材分组按
+    //   「细分原文」算、到货后按「大类」算 ⇒ 只数 / 档位不同 ⇒ 选出来的票也不同。
+    //   ⛔ 不能拿下面的 `getCoreTopicsVersion()` 顶替（那只是「变了就重算」的信号，见 rules.js）。
+    void isCoreTopicsCloudLoaded();
     // ★ [EBB-R8] 上一交易日落库的退潮判定（异步读回）⇒ 读到之后重算一次，首日闸门才生效
     void prevEbbDay.value;
     // ★★ [EBB-R8] 展示日当天的十日涨幅（异步读回）⇒ 读到之后重算一次：
@@ -1213,35 +1240,56 @@ export function useTopicVolRatioBoard() {
           (_dGuess ? (_dGuess.stock + '→' + _guessFirst) : '无') + '）');
       }
 
-      // ★★ [BUY-PCT-GATE 2026-10-31 用户口径] 买点侧选股的【9:26 竞价口径】没落地 ⇒ 买点侧先不出票。
+      // ★★ [BUY-SETTLE 2026-10-31 用户口径 · 第二版] 选股输入没齐 ⇒ 买点侧先不出票。
       //
-      // 🔴 用户报障（逐字）：「10月30日，打开时，出现上海九百和文投控股这两只票，后面文投控股又
-      //   自动……我希望刚开始就显示正确的上海九百，文投控股如果不符合，最好不要显示出来，
-      //   如果网络有延迟的话，很容易买错票。」
+      // 🔴 用户报障（逐字，第二次）：「还是和原来一样，它最终显示正确的，但是要等几秒后……
+      //   刚开始选的是上海九百和文投控股，几秒钟后，文投控股消失……文投控股从开始就不要显示，
+      //   很容易误导，或者你在标题栏那里提示下，等最终结果，最终结果还没出来之类的提示语。」
       //
-      // 🔴【定位】买点侧选股（龙位 + 行上十日涨幅）**唯一的异步输入就是这份 9:26 口径**：
-      //   · 还没读回来时，规则层 `buyDragonMap = (o.buyDragonMap …) ? o.buyDragonMap : dragonMap`
-      //     会【退回收盘口径】先算一遍并上屏（§11 当年的「零回归」设计）；
-      //   · 收盘后 T 腿换成收盘涨幅 ⇒ 组内十日涨幅重排 ⇒ 龙位跟着变 ⇒ **同一题材选出另一只票**；
-      //   · 于是屏幕先出「收盘口径龙二」（文投控股），几百毫秒~几秒后口径到货再换成 9:26 口径那只。
-      //   · 其余选股输入（题材排名 = 平均竞价量比、竞价一字 / 连续停牌名单、题材块成员、只数）全是
-      //     【同步】的，首帧之后不会变 —— 所以换票只可能来自这一处，不是别的地方算错了。
+      // 🔴【上一版为什么不够】上一版只挡了「9:26 竞价口径」一项，但买点侧的选股**有七项异步输入**，
+      //   每一项到货都会让本 computed 重算一次、都可能换一批票：
+      //     ① 核心题材【大类】（`loadCoreTopicsFromCloud`）—— 归一结果变 ⇒ 题材分组合并/拆分
+      //        ⇒ 只数 ⇒ 档位（pickCount 1/2/3）⇒ 选几只。⚠️ 它到货**最容易**造成「两只变一只」。
+      //     ② 9:26 竞价口径 ⇒ 组内十日涨幅重排 ⇒ 龙位变 ⇒ 选哪只；
+      //     ③ 当日十日涨幅；④ 昨日十日涨幅；⑤ 昨日退潮判定；⑥ 近 20 日退潮历史
+      //        —— ④⑤⑥ 判错会**整段换板**（退潮替补 vs 常规选股）。切日期那一帧
+      //        `ebbHistory` 为空 ⇒ 规则层按「0 次事件 = 首次退潮」处理 ⇒ 首帧很可能整个走退潮替补。
+      //     ⑦ 十日涨幅在列次数（第二十九条候补 / 小题材收紧）+ 切换日才要的 20 日涨幅历史榜。
+      //   ⇒ 「暂定值」这段时间里屏幕上那两只票，**跟最终结论没关系**。用户看到的就是误导。
       //
-      // ✅ 与 [DIVERGE-GATE 2026-10-21] 完全同一条口径（那次用户也是「先看到旧票再换板 ⇒ 会买错」）：
-      //    口径没落地 → **先不显示选票**，落地后一次成型。
-      //   · 只认【日期对得上】的那份：切日期那一帧 buyRangeDate 还是旧日期 ⇒ 继续挂占位（§10 不拿旧日期顶替）；
-      //   · 「读过」就算落地（成功 ⇒ 9:26 口径；失败 ⇒ 走既有降级 = 当前口径，且说明区会如实标注
-      //     「9:26 口径未就绪」）。⇒ ⛔ 不会因为一次读失败就永远不出票。
-      //   · 门控条件同步可判、⛔ 无 setTimeout；buyRangeMap/buyRangeDate 一变 ⇒ data 自动重算 ⇒ 本帧放行。
-      if (isBuyPctPending({ date: d, resolvedDate: buyRangeDate.value })) {
-        plan.buyPctPending = true;
-        // ⚠️ 只记一次：data computed 在等待期间会因别的依赖变化重算多次，
-        //    每帧打一条会把 sessionStorage 里那 200 条环形缓冲冲掉（调试现场就没了）。
-        if (_pctGateLogged !== d) {
-          _pctGateLogged = d;
-          _dbgLog('[TVRB-PCT-GATE] ' + d + ' 9:26 竞价口径未就绪 ⇒ 买点侧先不显示选票' +
-            '（避免先用收盘口径出票，口径到货后再显示）');
+      // ✅ 判据抽在 `logic/topicvolratio/buy-settle.js#resolveBuySettle`（纯函数 + 单测）：
+      //    七项全部「落地」（= 每项都有成功或失败的结论）才显示选票；未齐 ⇒ 买点侧只挂占位，
+      //    并把**还差哪几项**同时写进占位横幅与头部标题栏（用户要的「提示语」）。
+      //   · 只认【日期对得上】的那份（切日期那一帧 ref 里还是旧日期 ⇒ 继续挂占位，§10 红线）；
+      //   · 「读过」就算落地（成功/失败都写日期）⇒ ⛔ 不会因为一次读失败把买点侧永久锁死；
+      //   · 同步可判、⛔ 无 setTimeout；任一输入落地 ⇒ 本 computed 自动重算 ⇒ 齐了自动放行。
+      const _settle = resolveBuySettle({
+        date: d,
+        prevDate: pd,
+        coreTopicsLoaded: isCoreTopicsCloudLoaded(),
+        buyRangeDate: buyRangeDate.value,
+        curRangeDate: curRangeDate.value,
+        prevRangeTriedDate: prevRangeTriedDate.value,
+        prevEbbDayDate: prevEbbDayDate.value,
+        ebbHistoryDate: ebbHistoryDate.value,
+        range10PresenceDate: range10PresenceDate.value,
+        switchDay: !!plan.switchDay,
+        top5HistDate: top5HistDate.value
+      });
+      if (!_settle.settled) {
+        plan.buyPending = true;
+        plan.buyPendingText = _settle.text;
+        // ⚠️ 只记一次（按「日期 + 缺项」去重）：data computed 在等待期间会因别的依赖变化重算多次，
+        //    每帧打一条会把 `_dbgLog` 那 200 条环形缓冲冲掉、把真正有用的现场挤出去。
+        const _settleKey = d + '|' + _settle.missing.join(',');
+        if (_settleKey !== _settleLogged) {
+          _settleLogged = _settleKey;
+          _dbgLog('[TVRB-BUY-SETTLE] ' + d + ' 选股输入未齐 ⇒ 买点侧先不显示选票（' + _settle.text + '）');
         }
+      } else if (_settleLogged) {
+        // 齐了 ⇒ 清掉去重标记（同一天稍后又缺项时还能再记一次），并留一条「已放行」的痕迹
+        _settleLogged = '';
+        _dbgLog('[TVRB-BUY-SETTLE] ' + d + ' 选股输入已齐 ⇒ 买点侧放行（结果从此不再变）');
       }
 
       return { ready: true, reason: '', plan: plan };
@@ -1357,18 +1405,25 @@ export function useTopicVolRatioBoard() {
     return (p && p.divergePending) || null;
   });
   /**
-   * ★★ [BUY-PCT-GATE 2026-10-31 用户口径] 买点侧选股的【9:26 竞价口径】是否还没落地。
+   * ★★ [BUY-SETTLE 2026-10-31 用户口径] 买点侧的【选股输入还没齐】。
    *
-   * true ⇒ 视图把买点侧的选票整体收起来，只渲染一条「正在确认选股口径」的占位。
-   * 为什么必须这样（用户原话）：「刚开始就显示正确的上海九百，文投控股如果不符合，最好不要
-   * 显示出来，如果网络有延迟的话，很容易买错票。」
+   * true ⇒ 视图把买点侧的选票整体收起来，只渲染一条占位横幅，标题栏同步写「结果确认中…」。
+   * 为什么必须这样（用户原话）：「刚开始选的是上海九百和文投控股，几秒钟后，文投控股消失……
+   * 文投控股从开始就不要显示，很容易误导，或者你在标题栏那里提示下，等最终结果，
+   * 最终结果还没出来之类的提示语。」
    *
-   * ⛔ 它不是「空仓」结论：占位只说【在确认口径】，⛔ 不说「今天没票」（§10）。
-   * ⛔ 只影响买点侧；卖点侧逐字不变（卖点不吃这份口径）。
+   * ⛔ 它不是「空仓」结论：占位只说【在等哪几项数据】，⛔ 不说「今天没票」（§10）。
+   * ⛔ 只影响买点侧；卖点侧逐字不变（卖点不吃这些口径）。
+   * @see logic/topicvolratio/buy-settle.js —— 判据本体（七项输入 + 逐条理由）
    */
-  const buyPctPending = computed(function() {
+  const buyPending = computed(function() {
     const p = data.value.plan;
-    return (p && p.buyPctPending) || false;
+    return (p && p.buyPending) || false;
+  });
+  /** ★ [BUY-SETTLE] 占位/标题栏里那串「还差：A · B · C」（文案在 Logic 层拼好，§21 模板零计算） */
+  const buyPendingText = computed(function() {
+    const p = data.value.plan;
+    return (p && p.buyPendingText) || '';
   });
   /**
    * ★★ [DIVERGE-GATE-2 2026-10-24 用户口径] 占位里那行「20日涨幅精算 X/Y」小字。
@@ -1395,11 +1450,12 @@ export function useTopicVolRatioBoard() {
 
   const summaryText = computed(function() {
     if (!ready.value) return reasonText.value;
-    // ★ [BUY-PCT-GATE 2026-10-31] 口径确认中 ⇒ 头部不能写「选股 2 只」（列表已经收起来了，
+    // ★ [BUY-SETTLE 2026-10-31] 口径确认中 ⇒ 头部不能写「选股 2 只」（列表已经收起来了，
     //   写数字会让人以为那两只就是要买的票）。⛔ 也不写「0 只」——那是空仓结论（§10）。
-    if (buyPctPending.value) {
-      let s = '选股口径确认中…';
-      if (sellCount.value > 0) s += ' · 卖点 ' + sellCount.value + ' 只';
+    //   把「还差哪几项」摆出来，用户才知道为什么还没有结果（他自己要的那句提示语）。
+    if (buyPending.value) {
+      let s = '⏳ 结果确认中…' + (buyPendingText.value ? '（' + buyPendingText.value + '）' : '');
+      if (sellCount.value > 0) s += ' · 卖点 ' + sellCount.value + ' 只（不受影响）';
       if (loading.value) s += ' · 分笔抓取中…';
       return s;
     }
@@ -1615,8 +1671,10 @@ export function useTopicVolRatioBoard() {
     catchUp,
     divergePending,
     divergeWaitText,
-    // ★★ [BUY-PCT-GATE 2026-10-31] 买点侧 9:26 竞价口径未落地 ⇒ 视图收起选票、只挂占位
-    buyPctPending,
+    // ★★ [BUY-SETTLE 2026-10-31] 买点侧 7 项异步输入未全部落地 ⇒ 视图收起选票、只挂占位
+    buyPending,
+    // 占位小字：把「还差哪几项」点名出来（空 ⇒ 不渲染，§21 模板零计算，文案在组合式）
+    buyPendingText,
     // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条「新龙 / 新题材切换日」
     switchDay,
     newDragon,

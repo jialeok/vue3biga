@@ -78,8 +78,29 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
             } catch (e) {
                 _dbgLog('[AUCTION-ERR] loadCoreTopicsFromCloud 失败: ' + (e && e.message || e));
                 _coreTopicsMemCache = state.defaultCoreTopics;
+                // ★★ [BUY-SETTLE 2026-10-31] 读【失败】也算「落地」—— 否则 `_coreTopicsCloudLoaded`
+                //   永远是 false，消费方（题材量比看板的「选股输入是否齐了」门控）就会永久挂起，
+                //   比「用默认核心词算」还糟。语义与 range-auction-leg#readAuctionLegRangeMap 一致：
+                //   「读过」= 成功或失败都算，调用方据此降级并如实标注，⛔ 不是静默假装读到了。
+                state._coreTopicsCloudLoaded = true;
                 _bumpCoreTopicsVersion();
             }
+        }
+
+        /**
+         * ★★ [BUY-SETTLE 2026-10-31] 核心词表（题材【大类】）是否已从云端「读过」（成功或失败）。
+         *
+         * 为什么需要它：题材量比看板的买点侧选股要按【大类】归一（「文化传媒」⇒「AI应用」），
+         *   而归一用的核心词表是**异步**加载的。加载没完成时 `getCoreTopics()` 退化成
+         *   `state.defaultCoreTopics`（或空） ⇒ 题材分组不同 ⇒ 只数 / 档位不同 ⇒ **选出来的票不同**。
+         *   `data` computed 里 `void getCoreTopicsVersion()` 只是「变了就重算」的信号，
+         *   ⛔ 不能当「已就绪」用（见 `_bumpCoreTopicsVersion` 的注释）。
+         *
+         * 返回的是 reactive 字段 ⇒ 在 computed 里读它即建立依赖，到货后自动重算一帧。
+         * @returns {boolean}
+         */
+        export function isCoreTopicsCloudLoaded() {
+            return state._coreTopicsCloudLoaded === true;
         }
 
         export function getCoreTopics() {
