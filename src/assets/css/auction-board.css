@@ -629,7 +629,7 @@
            用户要求「不用分类、不用背景色，整体省空间、美观简洁」⇒ 纯文本 + 小字号 +
            单行省略（悬停 title 看全文）。flex 与表头 .auction-header-range-topic 严格一致。 */
         .auction-topic-cell-range {
-            flex: 1.4;
+            flex: 0.7;
             min-width: 0;
             font-size: 11px;
             color: #64748b;
@@ -641,9 +641,81 @@
         }
 
         .auction-header-range-topic {
-            flex: 1.4;
+            flex: 0.7;
             text-align: left;
             padding-left: 4px;
+        }
+
+        /* ══════════════════════════════════════════════════════════════════════════════
+           ★★ [R20-FIT 2026-11-01 用户报障] 「股票名称后面只有省略号…，看不到涨幅」
+
+           实测（390px 窄屏 / 20日涨幅模式 / 2026-10-30 九阳股份）：
+             行宽 358 = 序号 41 | 股票名 118 | 题材 139 | 占比 59
+             股票名格内容宽 217 ⇒ 溢出 99px：
+               名字 52 → 总龙一 33 → 20天 25 → **涨幅 43（右界 166 ❌被裁）** → n次在列 43
+           ⇒ 涨幅整块落在 118px 之外，被 text-overflow:ellipsis 吃掉。
+           而排名靠后的行没有「总龙 / n次在列」两个标签（内容仅 95px），所以显示得出来
+           —— 正是用户说的「后面的股票有的显示，有的不显示」。
+
+           为什么必须改宽度而不是只调顺序：前十名那行「名字+涨幅+总龙+在列」共 171px，
+           单靠重排救不了，必须同时 (a) 加宽本列、(b) 收窄题材列、(c) 把涨幅提到名字紧跟处。
+
+           🔴 三条铁律（⛔ 别只改一条，改漏任何一条都会重新吃掉涨幅）：
+             ① 本列 flex 1.2 → 1.75、题材列 1.4 → 0.85，**总 flex 仍为 3.5**
+                ⇒ 序号/占比列宽不变、表头与数据列天然对齐；
+             ② 表头 `.range-cols-header-stock` 必须与数据格 `.range-cols-name` 【同一个判据、
+                同一组数值】—— 一边改一边不改就是列错位；
+             ③ 涨幅用 order 顶到名字之后、其余标签全部 order:0 排后面
+                ⇒ 万一还是放不下，被裁的是次要标签，**永远不是涨幅**。
+
+           ⚠️ 只在区间涨幅模式（十日 / 20日）生效：类由组件的 `rangeColsMode` 动态挂，
+             其它 toggle 的 class 与 flex 逐字不变（§11 默认无行为）。
+           ══════════════════════════════════════════════════════════════════════════════ */
+        .auction-header-stock.range-cols-header-stock {
+            flex: 1.9;
+        }
+
+        .auction-stock-name.range-cols-name {
+            flex: 1.9;
+            display: flex;
+            align-items: center;
+            gap: 2px;
+        }
+
+        /* 默认全部不缩（标签按天然宽度排）。名字【可以缩但留 40px 下限】——
+           ⛔ 不能给 0 下限：实测去掉后九阳股份那行「名字 52 + 涨幅 43 + 总龙 33 + 20天 25 + 在列 43 = 196px」
+           超过格宽 170，flex 会把唯一可缩的名字直接压成 0px，涨幅看得见、名字没了（同一个坑的另一端）。
+           有了 40px 下限，正常名字（4 字 52px）在去掉「n次在列」后根本不触发收缩。 */
+        .auction-stock-name.range-cols-name > * {
+            flex: 0 0 auto;
+        }
+
+        .auction-stock-name.range-cols-name .auction-stock-text {
+            flex: 0 1 auto;
+            min-width: 52px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* 把「名字 → 涨幅」这对钉在最前，其余标签依次跟在后面（放不下就裁标签） */
+        .auction-stock-name.range-cols-name .auction-stock-text { order: -2; }
+        .auction-stock-name.range-cols-name .auction-dragon-pct {
+            order: -1;
+            margin-left: 1px;
+        }
+
+        /* ★ [R20-FIT-PRESENCE 2026-11-01] 区间涨幅模式下隐藏「n次在列」文字标签。
+           为什么可以隐藏：它是【同一件事的第二处表达】—— logic/auction/presence-label.js 的
+           `rankBoxClassOf` 已经把【同样的三档配色】画在序号那个小方框上（见本文件
+           `.auction-rank-box-*` 与 `.auction-presence-tag*` 一一对应的注释）。
+           为什么必须隐藏：它占 43px，是「名字被压到 0px」的最后一根稻草——
+           实测有它的行内容宽 196px、没有它 153px（格宽 170px）。
+           ⚠️ 只在本模式隐藏：十日 / 20日 之外（以及默认模式的龙头组行）照常显示，§11 默认无行为。
+           🔁 若用户要求连次数也看得见 ⇒ 不要加大本列 flex（题材列会被挤没），
+              改成「本格 flex-wrap:wrap + 标签整体换第二行」，行高 +18px。 */
+        .auction-stock-name.range-cols-name .auction-presence-tag {
+            display: none;
         }
 
         /* [DRAGON-GROUP 2026-09-14] 龙头组与下方（观察组/常规组）之间的蚂蚁线分隔。

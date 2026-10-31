@@ -43,8 +43,16 @@
               否则切 toggle 时 .auction-number 里的文本节点被整体替换 ⇒ 行高抖一下。 -->
       <span :class="item.presenceRankClass">{{ item.seqBlank ? '' : (item.seqNo || (idx + 1)) }}</span>
     </div>
+    <!-- ★★ [R20-FIT 2026-11-01 用户口径] 「股票名称后面不显示涨幅，只有省略号…」
+         根因是【宽度】不是数据：区间涨幅模式（十日 / 20日）下这一格只有 118px，
+         而「名字 52 + 二十年涨幅 43 + 总龙一 33 + n次在列 43 = 171px」⇒ 涨幅整块被
+         `text-overflow: ellipsis` 吃掉。排名靠后的行没有「总龙 / 在列」两个标签，
+         所以它们反而显示得出来 —— 正是用户说的「后面的股票有的显示」。
+         ⇒ 本模式给整格挂 `range-cols-name`：加宽（flex 1.2→1.75）+ 改成 flex 容器 +
+         把涨幅用 order 提到名字紧跟处（见 auction-board.css 同名规则）。
+         ⚠️ 只在 rangeColsMode 挂类，其它 toggle 的 DOM class 逐字不变（§11 默认无行为）。 -->
     <div
-      :class="item.stockClass"
+      :class="[item.stockClass, rangeColsMode ? 'range-cols-name' : '']"
       :data-stock="item.stock"
       :data-note="item.note || ''"
       @dblclick.stop

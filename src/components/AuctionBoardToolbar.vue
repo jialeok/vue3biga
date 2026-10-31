@@ -134,7 +134,13 @@
     <div class="auction-header-item auction-header-number">
       序号
     </div>
-    <div class="auction-header-item auction-header-stock">
+    <!-- [R20-FIT 2026-11-01] 区间涨幅模式下本列与数据格一起加宽（flex 1.2→1.75），
+         与 AuctionEntityRow 的 `.range-cols-name` 是【同一个判据 rangeColsMode】——
+         ⛔ 两边必须同增同减，否则表头与数据列错位。 -->
+    <div
+      class="auction-header-item auction-header-stock"
+      :class="{ 'range-cols-header-stock': rangeColsMode }"
+    >
       股票名称
     </div>
     <template v-if="!sortState.byTopic">
