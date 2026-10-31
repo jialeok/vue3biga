@@ -153,7 +153,30 @@
               判定落地前这里不显示选票。卖点侧不受影响。
             </div>
           </div>
-          <template v-if="!divergePending">
+          <!-- ★★ [BUY-PCT-GATE 2026-10-31 用户口径] 买点侧选股的【9:26 竞价口径】还没落地 ⇒ 只渲染
+               「确认选股口径中」占位，⛔ 绝不先拿【收盘口径】的龙位选一票出来再换（那样屏幕上会换票）。
+               用户原话：「10月30日，打开时，出现上海九百和文投控股这两只票，后面文投控股又自动……
+               我希望刚开始就显示正确的上海九百，文投控股如果不符合，最好不要显示出来，
+               如果网络有延迟的话，很容易买错票。」
+               🔴 根因：这份口径是【异步】读的（stock_range_pct + market_metrics 反解），
+                 读回来之前规则层会退回收盘口径先算一遍 —— 收盘后 T 腿换腿 ⇒ 组内龙位重排 ⇒ 换票。
+               门控在组合式同步判（见 data computed 的 [TVRB-PCT-GATE]），⛔ 无 setTimeout；
+               口径到货自动重算放行，一次成型。卖点侧不受影响（卖点不吃这份口径）。
+               ⛔ 与分歧占位是两个不同原因（口径 vs 分歧判定），类名独立、文案各自讲清。 -->
+          <div
+            v-if="buyPctPending && !divergePending"
+            class="tvrb-buyctr-pending tvrb-selectable"
+          >
+            <div class="tvrb-buyctr-pending-head">
+              ⏳ 正在确认选股口径（9:26 竞价口径）……
+            </div>
+            <div class="tvrb-buyctr-pending-detail">
+              买点侧的龙位是按【早上 9:26 竞价那一刻】的十日涨幅排的，这份数据要现读（不是本地现成的）。
+              为了不让你先看到「收盘口径选出来的票」再被换掉，口径落地前这里不显示选票。
+              卖点侧不受影响。
+            </div>
+          </div>
+          <template v-if="!divergePending && !buyPctPending">
             <div
               v-if="ebbNodeNote"
               class="tvrb-ebb-node-note tvrb-selectable"
@@ -404,6 +427,8 @@ const {
   divergeBuy,
   divergePending,
   divergeWaitText,
+  // ★★ [BUY-PCT-GATE 2026-10-31 用户口径] 买点侧 9:26 竞价口径未落地 ⇒ 收起选票、只挂占位
+  buyPctPending,
   // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条新龙 / 切换日（switchDay 的文案已由 Logic 层写进
   //   block.reason / notes，模板不需要它 ⇒ ⛔ 不解构，免得留一个未使用变量）
   newDragon,

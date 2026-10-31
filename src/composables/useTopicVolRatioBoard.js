@@ -155,6 +155,9 @@ import {
   //   「读几天的历史」必须与规则层「数几天的窗口」用同一个常量，⛔ 别在这儿写死 12 / 22）。
   EBB_EVENT_WINDOW_DAYS
 } from '../logic/topicvolratio/topic-vol-ratio-rules.js';
+// ★★ [BUY-PCT-GATE 2026-10-31 用户口径] 买点侧「9:26 竞价口径未就绪 ⇒ 先不出票」的唯一判据
+//   （纯函数，见其 JSDoc / 单测）—— ⛔ 别在 data computed 里另写一个行内比较。
+import { isBuyPctPending } from '../logic/topicvolratio/buy-pct-gate.js';
 // ★★ [CORE-CAT 2026-10-22 用户口径] 题材【大类】归一：
 //   getCoreTopics() = 核心管理里那张表（用户「我在核心管理里把文化传媒放到 AI应用 那个大类了」）；
 //   getCoreTopicsVersion() = 响应式版本号（云端加载完成 / 用户改完核心词 ⇒ computed 自动重算）。
@@ -182,6 +185,14 @@ import {
 /** 稳定的空集合 / 空 Map（避免每次 computed 都 new 一个 → 白白触发下游重算） */
 const EMPTY_SET = new Set();
 const EMPTY_MAP = new Map();
+
+/**
+ * ★★ [BUY-PCT-GATE 2026-10-31] 「9:26 竞价口径未就绪 ⇒ 买点侧先不出票」这条门控的日志去重标记
+ * （记最近一次打过的日期）。
+ * ⚠️ data computed 在等待期间会因其它依赖变化重算多次 ⇒ 每帧打一条会把 `_dbgLog` 那 200 条
+ *    环形缓冲冲掉、把真正有用的现场挤出去（排查时就抓瞎了）。⛔ 别去掉这个去重。
+ */
+let _pctGateLogged = '';
 
 /**
  * 分笔取数失败后的一次性重试延迟（ms）。
@@ -215,7 +226,10 @@ function _empty(reason) {
       // ★★ [WEAK-HUDDLE 2026-10-27] 未就绪时同样不给「弱势切抱团」买点（§10 未就绪 ≠ 今天没有抱团票）
       weakHuddle: null,
       // ★★ [CATCH-UP 2026-10-27] 第三十一条同理（§10 未就绪 ≠ 今天没有补涨题材）
-      catchUp: null
+      catchUp: null,
+      // ★★ [BUY-PCT-GATE 2026-10-31] 形状与真实 plan 一致（未就绪时不是「口径确认中」，
+      //   而是整张计划都没算出来 —— 那两种状态的文案不能混，§10）
+      buyPctPending: false
     }
   };
 }
@@ -1199,6 +1213,37 @@ export function useTopicVolRatioBoard() {
           (_dGuess ? (_dGuess.stock + '→' + _guessFirst) : '无') + '）');
       }
 
+      // ★★ [BUY-PCT-GATE 2026-10-31 用户口径] 买点侧选股的【9:26 竞价口径】没落地 ⇒ 买点侧先不出票。
+      //
+      // 🔴 用户报障（逐字）：「10月30日，打开时，出现上海九百和文投控股这两只票，后面文投控股又
+      //   自动……我希望刚开始就显示正确的上海九百，文投控股如果不符合，最好不要显示出来，
+      //   如果网络有延迟的话，很容易买错票。」
+      //
+      // 🔴【定位】买点侧选股（龙位 + 行上十日涨幅）**唯一的异步输入就是这份 9:26 口径**：
+      //   · 还没读回来时，规则层 `buyDragonMap = (o.buyDragonMap …) ? o.buyDragonMap : dragonMap`
+      //     会【退回收盘口径】先算一遍并上屏（§11 当年的「零回归」设计）；
+      //   · 收盘后 T 腿换成收盘涨幅 ⇒ 组内十日涨幅重排 ⇒ 龙位跟着变 ⇒ **同一题材选出另一只票**；
+      //   · 于是屏幕先出「收盘口径龙二」（文投控股），几百毫秒~几秒后口径到货再换成 9:26 口径那只。
+      //   · 其余选股输入（题材排名 = 平均竞价量比、竞价一字 / 连续停牌名单、题材块成员、只数）全是
+      //     【同步】的，首帧之后不会变 —— 所以换票只可能来自这一处，不是别的地方算错了。
+      //
+      // ✅ 与 [DIVERGE-GATE 2026-10-21] 完全同一条口径（那次用户也是「先看到旧票再换板 ⇒ 会买错」）：
+      //    口径没落地 → **先不显示选票**，落地后一次成型。
+      //   · 只认【日期对得上】的那份：切日期那一帧 buyRangeDate 还是旧日期 ⇒ 继续挂占位（§10 不拿旧日期顶替）；
+      //   · 「读过」就算落地（成功 ⇒ 9:26 口径；失败 ⇒ 走既有降级 = 当前口径，且说明区会如实标注
+      //     「9:26 口径未就绪」）。⇒ ⛔ 不会因为一次读失败就永远不出票。
+      //   · 门控条件同步可判、⛔ 无 setTimeout；buyRangeMap/buyRangeDate 一变 ⇒ data 自动重算 ⇒ 本帧放行。
+      if (isBuyPctPending({ date: d, resolvedDate: buyRangeDate.value })) {
+        plan.buyPctPending = true;
+        // ⚠️ 只记一次：data computed 在等待期间会因别的依赖变化重算多次，
+        //    每帧打一条会把 sessionStorage 里那 200 条环形缓冲冲掉（调试现场就没了）。
+        if (_pctGateLogged !== d) {
+          _pctGateLogged = d;
+          _dbgLog('[TVRB-PCT-GATE] ' + d + ' 9:26 竞价口径未就绪 ⇒ 买点侧先不显示选票' +
+            '（避免先用收盘口径出票，口径到货后再显示）');
+        }
+      }
+
       return { ready: true, reason: '', plan: plan };
     } catch (e) {
       // §10：计算失败必须可见，绝不能返回「空结果」伪装成「今天没有入选股票」
@@ -1312,6 +1357,20 @@ export function useTopicVolRatioBoard() {
     return (p && p.divergePending) || null;
   });
   /**
+   * ★★ [BUY-PCT-GATE 2026-10-31 用户口径] 买点侧选股的【9:26 竞价口径】是否还没落地。
+   *
+   * true ⇒ 视图把买点侧的选票整体收起来，只渲染一条「正在确认选股口径」的占位。
+   * 为什么必须这样（用户原话）：「刚开始就显示正确的上海九百，文投控股如果不符合，最好不要
+   * 显示出来，如果网络有延迟的话，很容易买错票。」
+   *
+   * ⛔ 它不是「空仓」结论：占位只说【在确认口径】，⛔ 不说「今天没票」（§10）。
+   * ⛔ 只影响买点侧；卖点侧逐字不变（卖点不吃这份口径）。
+   */
+  const buyPctPending = computed(function() {
+    const p = data.value.plan;
+    return (p && p.buyPctPending) || false;
+  });
+  /**
    * ★★ [DIVERGE-GATE-2 2026-10-24 用户口径] 占位里那行「20日涨幅精算 X/Y」小字。
    *
    * 用户原话：「计算判断有那么久吗？要再优化下」—— 长的不是判定（1 只票 K 线），
@@ -1336,6 +1395,14 @@ export function useTopicVolRatioBoard() {
 
   const summaryText = computed(function() {
     if (!ready.value) return reasonText.value;
+    // ★ [BUY-PCT-GATE 2026-10-31] 口径确认中 ⇒ 头部不能写「选股 2 只」（列表已经收起来了，
+    //   写数字会让人以为那两只就是要买的票）。⛔ 也不写「0 只」——那是空仓结论（§10）。
+    if (buyPctPending.value) {
+      let s = '选股口径确认中…';
+      if (sellCount.value > 0) s += ' · 卖点 ' + sellCount.value + ' 只';
+      if (loading.value) s += ' · 分笔抓取中…';
+      return s;
+    }
     let s = '选股 ' + pickCount.value + ' 只';
     if (sellCount.value > 0) s += ' · 卖点 ' + sellCount.value + ' 只';
     if (loading.value) s += ' · 分笔抓取中…';
@@ -1548,6 +1615,8 @@ export function useTopicVolRatioBoard() {
     catchUp,
     divergePending,
     divergeWaitText,
+    // ★★ [BUY-PCT-GATE 2026-10-31] 买点侧 9:26 竞价口径未落地 ⇒ 视图收起选票、只挂占位
+    buyPctPending,
     // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条「新龙 / 新题材切换日」
     switchDay,
     newDragon,

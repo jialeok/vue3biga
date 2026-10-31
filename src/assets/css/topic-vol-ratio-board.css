@@ -350,6 +350,34 @@
     text-align: left;
 }
 
+/* ---- ★★ [BUY-PCT-GATE 2026-10-31 用户口径] 买点侧「9:26 竞价口径确认中」占位 ----
+   与分歧占位（.tvrb-diverge-pending）同一套观感 = 「在等结论，不是结论」：虚线框 + 灰蓝文字。
+   ⛔ 类名必须独立（DOM 查询 / E2E 不能混）—— 两者原因完全不同：一个等分歧判定，一个等选股口径。
+   配色刻意用【靛蓝】而不是分歧那个 slate 灰：口径问题说的是「数据在来的路上」，不是「今天可能有变数」。 */
+.tvrb-buyctr-pending {
+    margin: 2px 0 8px;
+    padding: 10px 10px;
+    background: #f5f7ff;
+    border: 2px dashed #a5b4fc;
+    border-radius: 10px;
+    text-align: center;
+}
+
+.tvrb-buyctr-pending-head {
+    font-size: 14px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    color: #4338ca;
+}
+
+.tvrb-buyctr-pending-detail {
+    margin-top: 5px;
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: #6366f1;
+    text-align: left;
+}
+
 /* ---- ★ [EBB-D1 2026-10-21 用户口径] 昨日二次确认退潮题材块【单块】灰化（第二十六条）----
    与整段灰化 .tvrb-buy-list.tvrb-ebb 同一套值（grayscale + opacity）—— 用户「那个灰色的样式
    参考退潮首日那套」，⛔ 不新造第二套观感；差别只在作用域：只灰这一个题材块，其它题材块不灰。 */
