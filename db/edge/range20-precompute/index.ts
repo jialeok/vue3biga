@@ -93,6 +93,7 @@ const RATE_RETRY_GAP_MS = 700;
 
 // ★★ [R20-DAILY 2026-10-30] 逐日腿原料表快路径（详见下方 R20-DAILY 段头）。
 const LEG_DAYS = WINDOW_DAYS - 1;        // 需要的历史腿根数（19），T 腿单独一根合计 20
+const RANGE10_DAYS = 10;                // 10 日涨幅窗口（对齐前端 range-window.js#RANGE_WINDOW_DAYS）
 const LEG_LOOKBACK_DAYS = 100;           // 与 K 线窗口一致（停牌票要往前回溯才凑得满 19 根）
 const LEG_PAGE = 1000;                   // PostgREST 单次响应上限
 
@@ -197,6 +198,139 @@ async function fetchKlineBars(ths: string, startMs: number, endMs: number): Prom
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+/**
+ * ★★★ [R10-RANGE-FROM-LEGS 2026-11-01] 用【逐日腿表】补算 `stock_range_pct`（10 日涨幅）。
+ *
+ * 为什么必须有它（用户 2026-11-01 报障「10 日涨幅也是…历史日期很多也没有」）：
+ *   `stock_range_pct` 的唯一写入方是 worker 的 9:25 / 16:00 两轮，**只写当天名单**，
+ *   且上游一断就只写几十行。实测 2026-10-08~10-23：每天名单 78~92 只，表里 87~133 行，
+ *   **每天都有一批名单票完全没有行**（9 天共 219 条空洞，10-16 一天缺 21 只）。
+ *   前端拿不到行 ⇒ 这一列不渲染 ⇒ 用户看到的「只有…三个点」。
+ *   而腿表那天是齐的（每天 410 行）⇒ **0 个上游请求**就能算出来。
+ *
+ * ⚠️ 口径与 20 日**刻意不同**，⛔ 别照抄 `backfillRange20FromLegs`：
+ *   · 10 日 = **全局统一窗口** [T-9, T] 共 10 个真实交易日（对齐 `range-window.js#buildRangeRows`），
+ *     ⛔ 不是「每票自己最近 10 个有腿日」——那是 20 日的口径，混用会让停牌票算出一个别人无法比较的数；
+ *   · 某票窗口内缺某天 ⇒ 那一天不进复利（停牌语义），`days` 如实 < 10（§10：⛔ 不补 0）；
+ *   · 历史日期 T 腿 = 当日【收盘涨幅】（腿表 T 那根），⛔ 不拿竞价涨幅冒充。
+ *
+ * 安全闸（与 20 日同款，一条都不放宽）：
+ *   ① 只补【当天名单里缺的票】，已有行一律不覆盖 ⇒ 纯加法、幂等、可反复重跑；
+ *   ② 一根腿都没有 ⇒ 不写空行（`compoundPct([]) = null`）；
+ *   ③ 腿表里没有该日 ⇒ 假期 / 未开盘 ⇒ 直接返回，⛔ 不伪造整天；
+ *   ④ 名单外的一律不写 —— `stock_range_pct` 还喂着龙位 / 决策看板 / 卖点段，⛔ 不扩大爆炸半径。
+ */
+async function backfillRange10FromLegs(targetDate: string): Promise<Record<string, unknown>> {
+  // ① 该日名单（只补名单内的票，见安全闸④）
+  const watch = await sbRest('GET', '/rest/v1/auction_watchlist?select=stock&date=eq.' + targetDate);
+  const wanted = new Set<string>();
+  for (const r of (Array.isArray(watch) ? watch : []) as Array<Record<string, unknown>>) {
+    const s = String(r.stock ?? '').trim();
+    if (s) wanted.add(s);
+  }
+  if (wanted.size === 0) {
+    return { date: targetDate, skipped: '当天没有名单（非交易日 / 名单未生成）', written: 0 };
+  }
+
+  // ② 该日已有结果（只补缺的）
+  const haveSet = new Set<string>();
+  for (let from = 0; ; from += LEG_PAGE) {
+    const page = await sbRest(
+      'GET',
+      '/rest/v1/stock_range_pct?select=stock&date=eq.' + targetDate,
+      undefined,
+      [from, from + LEG_PAGE - 1],
+    );
+    if (!Array.isArray(page) || page.length === 0) break;
+    for (const r of page as Array<Record<string, unknown>>) haveSet.add(String(r.stock ?? '').trim());
+    if (page.length < LEG_PAGE) break;
+  }
+
+  // ③ 读腿：目标日往前 45 个自然日（足够凑 10 个交易日，国庆这种长假也够）
+  const fromYmd = shiftYmd(targetDate, -45);
+  const byStock = new Map<string, Map<string, number>>();
+  const dateSet = new Set<string>();
+  let legRows = 0;
+  for (let from = 0; ; from += LEG_PAGE) {
+    const page = await sbRest(
+      'GET',
+      '/rest/v1/stock_daily_pct?select=stock,date,pct&date=gte.' + fromYmd + '&date=lte.' + targetDate
+        + '&order=date.asc',
+      undefined,
+      [from, from + LEG_PAGE - 1],
+    );
+    if (!Array.isArray(page) || page.length === 0) break;
+    legRows += page.length;
+    for (const r of page as Array<Record<string, unknown>>) {
+      const s = String(r.stock ?? '').trim();
+      const d = String(r.date ?? '').slice(0, 10);
+      const p = parsePct(r.pct);
+      if (!s || !d || p === null) continue;
+      dateSet.add(d);
+      let m = byStock.get(s);
+      if (!m) { m = new Map(); byStock.set(s, m); }
+      m.set(d, p);
+    }
+    if (page.length < LEG_PAGE) break;
+  }
+
+  // ④ 真实交易日序列：某天【有任何一只票有腿】⇒ 那天有成交 ⇒ 真交易日
+  //   （与前端 `pickRealWindowDates` 同一判据 —— App 日历的 holidays 为空，假期会被当成交易日）
+  const dates = Array.from(dateSet).sort();
+  const tIdx = dates.indexOf(targetDate);
+  if (tIdx < 0) {
+    return { date: targetDate, skipped: '腿表里没有这一天（非真实交易日）', written: 0, legRows };
+  }
+  const win = dates.slice(Math.max(0, tIdx - (RANGE10_DAYS - 1)), tIdx + 1);
+
+  // ⑤ 逐票：窗口内【有腿的日子】进复利；days = 实际腿数（⛔ 缺的那天不补 0）
+  const rows: Array<Record<string, unknown>> = [];
+  const nowIso = new Date().toISOString();
+  let noLeg = 0;
+  for (const s of wanted) {
+    if (haveSet.has(s)) continue;
+    const m = byStock.get(s);
+    if (!m) { noLeg++; continue; }
+    const legs: number[] = [];
+    for (const d of win) {
+      const v = m.get(d);
+      if (v === undefined) continue;
+      legs.push(v);
+    }
+    if (legs.length === 0) { noLeg++; continue; }   // §10：一根腿都没有 ⇒ 不写（⛔ 不写 0%）
+    let acc = 1;
+    for (const p of legs) acc *= (1 + p / 100);
+    rows.push({
+      date: targetDate,
+      stock: s,
+      range_pct: ((acc - 1) * 100).toFixed(2),
+      days: legs.length,
+      updated_at: nowIso,
+    });
+  }
+
+  let written = 0;
+  for (let k = 0; k < rows.length; k += 500) {
+    await sbRest('POST', '/rest/v1/stock_range_pct?on_conflict=date,stock', rows.slice(k, k + 500));
+    written += Math.min(500, rows.length - k);
+  }
+  if (written > 0) {
+    console.log('[range20-precompute][R10-RANGE-FROM-LEGS] ' + targetDate + ' 名单 ' + wanted.size
+      + ' 只 / 已有 ' + haveSet.size + ' 行 → 用腿表补 ' + written + ' 行（窗口 '
+      + win[0] + '~' + targetDate + '，无腿 ' + noLeg + ' 只，读腿 ' + legRows + ' 行）');
+  }
+  return {
+    date: targetDate,
+    watch: wanted.size,
+    hadRows: haveSet.size,
+    legRows,
+    window: win[0] + '~' + targetDate,
+    written,
+    noLeg,
+    note: '10 日涨幅全局窗口补算（buildRangeRows 同口径，0 上游请求）；无腿不写',
+  };
 }
 
 /**
@@ -713,9 +847,111 @@ async function healDailyLegsFromMetrics(today: string): Promise<Array<Record<str
 }
 
 /**
+ * ★★★ [R20-RANGE-FROM-LEGS 2026-11-01] 用【逐日腿表】补算 `stock_range20_pct`（收盘口径）。
+ *
+ * 为什么必须有它（用户 2026-11-01 00:5x 报障「20 日涨幅只剩三个点…，排名变化却有数值」）：
+ *   15:05 收盘轮算 close 口径时 `canFast=false`（见 868 行注释）⇒ **一律走同花顺 K 线**。
+ *   同花顺一断，那一轮只写得出几十行。实测 2026-10-30：`stock_range20_pct` close 只有 50 行，
+ *   而 10-29 及之前每天都是 410~413 行 ⇒ 前端点开 20 日涨幅，绝大多数票没有云端数据、
+ *   又要现场打 K 线（同样断）⇒ 只剩下两三个点。
+ *
+ *   而腿表其实已经够了：实测 10-30 的 411 只票里 **405 只**都有完整 19 根历史腿 + 当天那根，
+ *   完全可以用 `rangeFromLegs` 的同一套复利口径算出来，**0 个上游请求**。
+ *
+ * 安全闸：
+ *   ① 只补缺的 (date,stock)，已有行一律不覆盖（尤其 K 线算出来的真值）⇒ 纯加法、幂等；
+ *   ② 腿数 < 19 ⇒ 不算（`rangeFromLegs` 内部就返回 null，⛔ 绝不拿半截算、绝不写 0）；
+ *   ③ T 腿必须就是目标日那根（腿表里的真收盘涨幅），⛔ 不拿竞价涨幅冒充；
+ *   ④ 写 leg='close'，与收盘轮同一主键 (date,stock,leg) 语义 —— 前端按 leg 过滤即可命中。
+ */
+async function backfillRange20FromLegs(targetDate: string): Promise<Record<string, unknown>> {
+  // ① 该日已有结果（只补缺的）
+  const haveSet = new Set<string>();
+  for (let from = 0; ; from += LEG_PAGE) {
+    const page = await sbRest(
+      'GET',
+      '/rest/v1/stock_range20_pct?select=stock&date=eq.' + targetDate + '&leg=eq.close',
+      undefined,
+      [from, from + LEG_PAGE - 1],
+    );
+    if (!Array.isArray(page) || page.length === 0) break;
+    for (const r of page as Array<Record<string, unknown>>) haveSet.add(String(r.stock ?? '').trim());
+    if (page.length < LEG_PAGE) break;
+  }
+
+  // ② 读腿：目标日 + 往前 60 个自然日（足够凑 19 个交易日，长假也够）
+  const fromYmd = shiftYmd(targetDate, -60);
+  const byStock = new Map<string, Array<{ d: string; p: number }>>();
+  let legRows = 0;
+  for (let from = 0; ; from += LEG_PAGE) {
+    const page = await sbRest(
+      'GET',
+      '/rest/v1/stock_daily_pct?select=stock,date,pct&date=gte.' + fromYmd + '&date=lte.' + targetDate
+        + '&order=date.asc',
+      undefined,
+      [from, from + LEG_PAGE - 1],
+    );
+    if (!Array.isArray(page) || page.length === 0) break;
+    legRows += page.length;
+    for (const r of page as Array<Record<string, unknown>>) {
+      const s = String(r.stock ?? '').trim();
+      const d = String(r.date ?? '').slice(0, 10);
+      const p = parsePct(r.pct);
+      if (!s || !d || p === null) continue;
+      const list = byStock.get(s);
+      if (list) list.push({ d, p });
+      else byStock.set(s, [{ d, p }]);
+    }
+    if (page.length < LEG_PAGE) break;
+  }
+
+  // ③ 逐票算（每票取它自己最近 20 个有腿的交易日：19 根历史 + 1 根 T）
+  const rows: Array<Record<string, unknown>> = [];
+  let noT = 0;
+  let short = 0;
+  const nowIso = new Date().toISOString();
+  for (const [s, arr] of byStock) {
+    if (haveSet.has(s)) continue;
+    arr.sort((a, b) => (a.d < b.d ? -1 : a.d > b.d ? 1 : 0));
+    const tIdx = arr.findIndex((x) => x.d === targetDate);
+    if (tIdx < 0) { noT++; continue; }                  // 目标日没有这根腿（停牌）⇒ 跳过
+    const hist = arr.slice(0, tIdx).map((x) => x.p);    // T 之前的全部历史腿（升序）
+    const r = rangeFromLegs(hist, arr[tIdx].p);
+    if (!r) { short++; continue; }                      // 腿不足 19 根 ⇒ 不算（§10）
+    rows.push({
+      date: targetDate,
+      stock: s,
+      pct: r.pct,
+      days: r.days,
+      leg: 'close',
+      updated_at: nowIso,
+    });
+  }
+
+  let written = 0;
+  for (let k = 0; k < rows.length; k += 500) {
+    await sbRest('POST', '/rest/v1/stock_range20_pct?on_conflict=date,stock', rows.slice(k, k + 500));
+    written += Math.min(500, rows.length - k);
+  }
+  if (written > 0) {
+    console.log('[range20-precompute][R20-RANGE-FROM-LEGS] ' + targetDate + ' 已有 ' + haveSet.size
+      + ' 行 → 用腿表补 ' + written + ' 行（腿不足 ' + short + ' 只 / 无T腿 ' + noT + ' 只，读腿 ' + legRows + ' 行）');
+  }
+  return {
+    date: targetDate,
+    hadRows: haveSet.size,
+    legRows,
+    written,
+    shortLegs: short,
+    noTLeg: noT,
+    note: '收盘口径用逐日腿表补算（rangeFromLegs，0 上游请求）；腿不足 19 根不写',
+  };
+}
+
+/**
  * ★★ [R20-LEGS 2026-11-01] 只补「逐日腿」—— 不算 20 日涨幅、不碰 stock_range20_pct。
  *
- * 触发：pg_cron 两条（见 db/create_range20_cron.sql ⑥ 段）
+ * 触发：pg_cron 两条（见 db/create_range20_legs_cron.sql ⑤ 段，默认不挂，应急手动用）
  *   · 北京 15:20（UTC 07:20）→ 补「今天这根腿」（收盘后 20 分钟，腾讯日线已更新）
  *   · 北京 08:50（UTC 00:50）→ 补「上一个榜日那根」（早盘前的保险，防止 15:20 那次上游抖动）
  * 手动：`?token=...&legsOnly=1`（缺省自动判目标日）；`&date=YYYY-MM-DD` 指定回补某天。
@@ -899,17 +1135,64 @@ Deno.serve(async (req: Request) => {
     //   此时立刻自愈一次，就能在**当天**把腿补齐，而不是拖到次日 9:25 才补。
     //   纯本库读写（market_metrics → stock_daily_pct），⛔ 零上游请求、零同花顺/腾讯依赖。
     if (params.get('healOnly') === '1') {
-      const healed = await healDailyLegsFromMetrics(isBackfill ? rawDate : todayYmd());
+      const hhmm = beijingHhmm();
+      const todayY = isBackfill ? rawDate : todayYmd();
+      const healed = await healDailyLegsFromMetrics(todayY);
+
+      // ★★★ [R20-RANGE-FROM-LEGS 2026-11-01] 腿补完之后，再用腿表把【结果表】也补上。
+      //   为什么必须连着做：15:05 收盘轮算 close 口径一律走同花顺（canFast 只对 auc 开），
+      //   同花顺一断，那天的 stock_range20_pct 就只有几十行 ⇒ 前端满屏「…」。
+      //   腿补齐后这里 0 上游请求就能把结果算出来（实测 10-30 的 411 只票里 405 只腿够）。
+      let cutoff = isBackfill ? rawDate : '';
+      if (!cutoff) {
+        if (hhmm >= '15:05') {
+          cutoff = todayYmd();
+        } else {
+          const prev = await sbRest(
+            'GET',
+            '/rest/v1/auction_watchlist?select=date&date=lt.' + todayYmd() + '&order=date.desc&limit=1',
+          );
+          cutoff = Array.isArray(prev) && prev.length > 0
+            ? String((prev[0] as Record<string, unknown>).date)
+            : '';
+        }
+      }
+      let ranged: Record<string, unknown> | null = null;
+      let ranged10: Record<string, unknown> | null = null;
+      // 当天这根腿只有 15:05 之后才算定稿（与 legFinal 同源判断）
+      if (/^\d{4}-\d{2}-\d{2}$/.test(cutoff) && (cutoff !== todayYmd() || hhmm >= '15:05')) {
+        try {
+          ranged = await backfillRange20FromLegs(cutoff);
+        } catch (e) {
+          // §10：结果表补算失败必须可见，但⛔ 不连坐 —— 腿已经补好了，主流程不受影响
+          ranged = { error: e instanceof Error ? e.message : String(e) };
+          console.error('[range20-precompute][R20-RANGE-FROM-LEGS] 失败: ' + JSON.stringify(ranged));
+        }
+        // ★★★ [R10-RANGE-FROM-LEGS 2026-11-01] 10 日涨幅同一轮一起补（同一天、同一份腿，只多一次读）。
+        //   为什么放在这里：`stock_range_pct` 只由 worker 写，上游一断就只写几十行，
+        //   实测 10-08~10-23 每天都有 9~26 只名单票完全没有 10 日涨幅 ⇒ 前端整列「…」。
+        //   ⚠️ 与 20 日口径不同（全局窗口 [T-9,T]），实现见函数头，⛔ 别合并两个函数。
+        try {
+          ranged10 = await backfillRange10FromLegs(cutoff);
+        } catch (e) {
+          ranged10 = { error: e instanceof Error ? e.message : String(e) };
+          console.error('[range20-precompute][R10-RANGE-FROM-LEGS] 失败: ' + JSON.stringify(ranged10));
+        }
+      }
+
       const sum = {
         ok: true,
         healOnly: true,
-        today: isBackfill ? rawDate : todayYmd(),
+        today: todayY,
         days: healed.length,
         healed: healed.filter((x) => x.action === 'healed'),
         errors: healed.filter((x) => x.action === 'error'),
+        range20: ranged,
+        range10: ranged10,
         detail: healed,
       };
-      console.log('[range20-precompute][R20-HEAL-ONLY] ' + JSON.stringify(sum.healed));
+      console.log('[range20-precompute][R20-HEAL-ONLY] healed=' + sum.healed.length
+        + ' range20=' + JSON.stringify(ranged) + ' range10=' + JSON.stringify(ranged10));
       return json(sum);
     }
 
