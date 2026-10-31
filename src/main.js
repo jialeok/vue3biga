@@ -51,7 +51,34 @@ app.mount('#app');
 //   所以再加一段「最多等 8 秒，等到 #app 里真的出现元素」的轮询：
 //     等到 → 撤蒙层（成功路径，通常 <1 帧）；
 //     等不到 → 让蒙层把原因写出来，并把最近几条调试日志一起带上（可直接截图定位）。
+//
+// ★★ [CHUNK-WATCHDOG 2026-10-31] 上面这段的前提是 `router.isReady()` 会 resolve。
+//   🔴 实测（.tmpdiag/pw/boot-stall.cjs，把 `DashboardView-*.js` 请求挂住不返回）：
+//      分包请求**既不报错也不结束**时（被代理/防火墙半开、限速卡死），`isReady()` 永远 pending
+//      ⇒ `<RouterView v-if="authReady">` 一直是空的 ⇒ `#app` 连一个元素都没有
+//      ⇒ 只能等 index.html 那个 20s 看门狗报「超过 20 秒还没有渲染出任何内容（可能是网络被拦、
+//         或启动过程里抛错了）」—— 而现场日志里 PULL 明明已经成功，用户完全看不出是分包没下来。
+//   ✅ 加一道 10s 的分包看门狗：
+//      · 10s 未就绪 ⇒ 按「分包没下来」处理 ⇒ 走 `__bootChunkError`：带 cache-buster **自动重载一次**
+//        （新连接通常能过，是这类半开连接的唯一有效自愈），仍然失败则把原因写清楚；
+//      · 只是「下载得慢」也不会被误伤：自动重载每个会话只做一次（sessionStorage 记旗标），
+//        第二次就一直等，分包到货后照常上屏并撤蒙层。
+const CHUNK_WATCHDOG_MS = 10000;
+let _routeReady = false;
+setTimeout(function () {
+  if (_routeReady) return;
+  try {
+    if (window.__bootChunkError) {
+      window.__bootChunkError('首屏代码块 ' + (CHUNK_WATCHDOG_MS / 1000) +
+        's 还没下载完（分包请求被拦或限速，不是数据问题）');
+    } else if (window.__bootFail) {
+      window.__bootFail('首屏代码块 ' + (CHUNK_WATCHDOG_MS / 1000) + 's 还没下载完（分包请求被拦或限速）');
+    }
+  } catch (e) { /* 兜底的兜底 */ }
+}, CHUNK_WATCHDOG_MS);
+
 router.isReady().then(() => {
+  _routeReady = true;
   const startedAt = Date.now();
   const tick = () => {
     const el = document.getElementById('app');
