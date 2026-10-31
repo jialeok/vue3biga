@@ -225,14 +225,39 @@ export function getRange20LeadersTop10(date) {
 
 /**
  * 当前已发布的「20日涨幅前五」。
+ *
  * @param {string} date 展示日
  * @returns {Array<{stock:string, code:string, pct:number, days:number}>|null}
  *          null = 该日【还没有结论】（⛔ 不等于「今天没有龙头补位」，见 hasRange20LeadersVerdict）
+ *
+ * 🔴🔴 [R20-DATESRC 2026-10-31 事故修复 · 跳变的根因之一] **必须按日期读 `_cache`，⛔ 不能只读 `_state`。**
+ *
+ *   踩的坑（实测 10-30，`.tmpdiag/pw/tvrb-groups.cjs` 抓到的「先 2 只后 1 只」）：
+ *     本模块**同时维护多个日期**（看板展示日 + 前沿交易日的 TOP5 补位检索），而 `_state` 只有
+ *     一个 `date` 字段 ⇒ 交替发布必然把 `_state.date` 顶来顶去（见 `_publish` 上面的长注释）。
+ *     旧实现 `if (s.date !== date || !s.ready) return null` 于是**在该日明明已有结论时也返回 null**。
+ *
+ *   后果是「判据与数据不同源」（§6 红线）：门控用的是 `hasRange20LeadersVerdictForDate()`
+ *   （读 `_verdictDates`，按日期稳定，答「到了」），而取数据用的是本函数（读 `_state`，答「没有」）
+ *   ⇒ 采集层据此把 `range10PoolComplete` 记成 false（「20 天补位行还没就绪」）
+ *   ⇒ 规则层对「判不出」按老规则照常出票 ⇒ 几秒后真数据到货、规则层改判 ⇒ 屏幕上的第二只票被收回。
+ *   ⇒ 用户看到的就是「上海九百 → 加上文投控股 → 文投控股又消失」。
+ *
+ *   ✅ 现在两者同源（都按日期）：有结论就是数组（**空数组 = 当天确实没有补位票，是有效答案**），
+ *     没结论才是 null。`range20Top` 拿到 `[]` 时 `!![]` 为 true ⇒ `range10PoolComplete` 正确为 true，
+ *     规则层不再把「结论为空」误判成「数据没到」。
  */
 export function getRange20Leaders(date) {
+  if (!date) return null;
+  const cached = _cache.get(date);
+  if (Array.isArray(cached)) return cached;
+  // 兜底：`_state` 就是这一天的（`_cache` 被清过但状态还在）⇒ 直接给它
   const s = _state.value;
-  if (!date || s.date !== date || !s.ready) return null;
-  return s.list;
+  if (s.date === date && s.ready) return s.list;
+  // 该日从未发布过结论 ⇒ 真的判不出（§10：能不能 ≠ 有没有）
+  if (!_verdictDates.has(date)) return null;
+  // 发布过、但结论是空（0 只补位票）⇒ 返回空数组，与 `hasRange20LeadersVerdictForDate` 保持一致
+  return [];
 }
 
 /**

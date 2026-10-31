@@ -179,7 +179,7 @@ import { createBuyQuiesce, buildBuySelectionSig, BUY_QUIET_MS } from '../logic/t
 //   ⚠️ 不许退回「只看瞬时在途数」：数据是分批起跑的，波与波之间会瞬时归零，
 //     瞬时判据会在中途放行（实测放行后一波到货就换票）。
 //   @see data/net-activity.js（为什么用排除列表、为什么不算 auth/realtime、为什么必须持续）
-import { netInflight, netIdle, netStalled, netHardStalled, netLastDoneAt, NET_STALL_MS, markNetLoadWindow } from '../data/net-activity.js';
+import { netInflight, netIdle, netStalled, netHardStalled, netLastDoneAt, NET_STALL_MS, NET_HARD_MS, markNetLoadWindow } from '../data/net-activity.js';
 // ★★ [NET-QUIET 2026-10-31 · 第四版补] 「当日正式名单装载了没有」的唯一判据（Data 层已有，⛔ 别另写）。
 //   为什么必须加它：20s 兜底放行**不等于**数据到了 —— 实测某一轮 26s 时折叠标题还是「选股 2 只」
 //   （名单那一条请求耗时 14.2s，兜底放行时它还在途）。⇒ 超时只能作为「准放行」，
@@ -194,7 +194,7 @@ import { makeCoreTopicResolver } from '../logic/topic/core-category.js';
 // ★★ [BUY-SETTLE-2 2026-10-31 用户口径] 题材库（stock_topics）「就绪了吗」——
 //   买点侧门控的输入之一。判据语义见其 JSDoc：**为空即「题材分类结果不可信」**（§10 读取失败 ≠ 空）。
 //   ⛔ 别用 isCloudTopicsLoaded（那个回答的是「现在写回云端安全吗」，两个判据用途不同）。
-import { isTopicLibraryReady } from '../data/stock-topics.js';
+import { isTopicLibraryReady, isCloudTopicsLoaded } from '../data/stock-topics.js';
 // ★ 分笔：与「分笔买卖」看板【同一份取数编排 + 同一份逐行实现】（§6 单一真相，⛔ 不另写一份）
 import { decorateTickRow } from '../logic/tick/tick-minute.js';
 import {
@@ -323,15 +323,17 @@ export function useTopicVolRatioBoard() {
    */
   const prevRangeTriedDate = ref('');
   /**
-   * ★★ [BUY-SETTLE-2 2026-10-31] 「慢判据」等太久时的**宽限日期**（当前管：20 日涨幅前五结论 / 题材库）。
+   * ★★ [BUY-PUBLISH 2026-10-31 · 第五版] 这里**原来是一个 `gateGraceDate` 宽限日期（6s → 12s）**：
+   *   `range20Settled: hasRange20LeadersVerdictForDate(d) || gateGraceDate.value === d`
+   *   —— 到点就**明知数据没到也强行当成就绪**，直接把半成品放上屏；数据真到货后规则层重判，
+   *   票当场被收回。实测 10-30 的「+19s 两只 → +21s 改判 → +26s 一只」全部发生在这条宽限之后。
    *
-   * 为什么需要宽限：20 日前五要跑 K 线精算（上游实测 50% 超时），历史日还可能因为正式列表索引
-   *   未预热而**久久不出结论**；题材库是登录后的异步步骤，极端情况也可能拉不到。
-   *   若把它们当硬门控，买点侧就会一直挂在「结果确认中」（比闪一下更糟，用户会以为看板坏了）。
-   * ⇒ 判据：`就绪 || 宽限期已过` 才算落地。
-   * ⚠️ 宽限到期只放「这一日」的口子（按日期记），切日期/刷新都要重新等 —— ⛔ 别做成全局一次性。
+   * 🔴 结论：**「等太久了」不能作为「数据到了」的替代品。** 宽限本身就是跳变的直接成因，
+   *   所以整块删除（连同 `_slowGateMissing` / `_gateGraceTimer`）。现在的兜底改走两条正交的路：
+   *     · 完备就放行（`resolveBuySettle` 全齐）—— 正常路径，实测 +26s；
+   *     · 真读不出来（网络侧 30s 硬兜底）—— 放行 + 头部警示 + **立即定稿**（见 `_buyPublished`）。
+   *   两条路都不会让屏幕上的票再变。
    */
-  const gateGraceDate = ref('');
   /**
    * ★ [EBB-R8 2026-10-14] 上一交易日在 tvrb_ebb_days 里【落库的退潮判定】那一行。
    *
@@ -1316,15 +1318,24 @@ export function useTopicVolRatioBoard() {
         range10PresenceDate: range10PresenceDate.value,
         switchDay: !!plan.switchDay,
         top5HistDate: top5HistDate.value,
-        // ★★ [BUY-SETTLE-2 2026-10-31] 20 日涨幅前五的结论（退潮判定的总龙一就靠它）：
+        // ★★ [BUY-SETTLE-2] / [BUY-PUBLISH 第五版] 20 日涨幅前五的结论（退潮判定的总龙一就靠它）：
         //   未到 ⇒ 退潮规则不生效 ⇒ 按常规选股；到货后若判出退潮 ⇒ 整段换成退潮替补 ⇒ 屏幕上的票会变。
-        //   宽限期（gateGraceDate）已过也算落地 —— ⛔ 绝不让买点侧因为上游算不出来而永久挂起。
-        range20Settled: hasRange20LeadersVerdictForDate(d) || gateGraceDate.value === d,
-        // ★★ [BUY-SETTLE-2 2026-10-31] 题材库（stock_topics）就绪。
+        //   ⛔ 第五版起**不再有「宽限到期就当成到了」的口子** —— 那正是「+19s 两只 → 后期改判」的成因。
+        //   真读不出来时由网络侧硬兜底放行（30s），放行即定稿，屏幕不会再变。
+        range20Settled: hasRange20LeadersVerdictForDate(d),
+        // ★★ [BUY-SETTLE-2] / [BUY-PUBLISH 第五版] 题材库（stock_topics）就绪。
         //   实测 10-30：正式名单 42 行里【两只票的 topics 字段都是 null】，题材完全靠题材库反查
         //   ⇒ 库没到之前它们全落「其它」⇒ 题材分组 / 组内只数 / 档位全错 ⇒ 选出来的是另一批票。
-        //   同样带宽限（库拉不到时不能让买点侧永远空着）。
-        topicLibraryReady: isTopicLibraryReady() || gateGraceDate.value === d
+        //   ★ 第五版补上「力竭」语义：`isCloudTopicsLoaded()` = **已经拉过**（哪怕拉回来确实是空的）。
+        //     这才是确定性判据 —— 它区分「还没开始拉」和「拉完了但库里没有」，后者再等也不会有变化，
+        //     ⛔ 而不是靠「等够 12 秒就当拉完了」这种时间猜测（§10：判据必须可判定，不能靠计时）。
+        topicLibraryReady: isTopicLibraryReady() || isCloudTopicsLoaded(),
+        // ★★ [BUY-SETTLE-3 2026-10-31 · 第五版] 十日涨幅池「与屏幕同一批行」——
+        //   即 20 日涨幅补位行有没有并进池子（采集层 `range10PoolComplete`）。
+        //   false ⇒ 规则层三条判据（第二题材入选 / 小题材收紧 / 十日涨幅候补）全部「判不出」⇒
+        //   按老规则照常列出 ⇒ **多出一只票**；补位行到货后同一段说明改成「不入选」⇒ 票被收回。
+        //   实测 10-30 的「AI应用 → 文投控股」就是这条，所以必须算进「选股输入」。
+        range10PoolReady: rec.range10PoolComplete !== false
       });
       if (!_settle.settled) {
         plan.buyPending = true;
@@ -1351,6 +1362,48 @@ export function useTopicVolRatioBoard() {
     }
   });
 
+  /**
+   * ★★ [BUY-PUBLISH 2026-10-31 用户口径 · 第五版] 买点侧【已定稿】的选股结论快照（冻结）。
+   *
+   * 🔴 为什么必须定稿 —— 这是用户第五次报障，也是前四版都没根治的那「一类问题」：
+   *   前四版全在调「什么时候算读完了」（结果指纹稳定 1.5s / 网络静默 1.5s / 20 日涨幅 20s 软超时 /
+   *   慢判据 12s 宽限），但它们都是**间接指标**。实测 10-30（`.tmpdiag/pw/tvrb-groups.cjs`，
+   *   无头真连 Supabase）把中间态抓了个正着：
+   *     +19s 出票 2 只（大消费 + AI应用）
+   *           此刻说明区原文：「⚠️…入选题材【AI应用】本次【未校验】（保持原规则照常列出）：
+   *           【十日涨幅名单】的 20 天补位行还没就绪（名次会整体错位）⇒ 判不出它的龙一进没进前十」
+   *     +21s 同一段说明变成：「⚠️…【AI应用】本次【不入选】：它的龙一【文投控股】当日十日涨幅
+   *           〔9:26 竞价口径〕+17.82% 第 20 名，没有进入前十」
+   *     +26s 只剩「大消费」1 只 ⇒ 上海九百
+   *   ⇒ 票不是「算错了」，是**判据从『判不出』升级成了『判出否定』**（规则层对判不出的处理是
+   *     「沿用老规则照常列出」，这是 §11 的善意，但它延长了「先给票」的时间窗）。
+   *   ⇒ 结论：**只要 UI 在「判不出」阶段就把票给出去，之后必然要收回。** 门控调到多晚都没用 ——
+   *     只要有任意一条输入还没到，就还会有下一次翻转。
+   *
+   * ✅ 唯一能根治的做法（本版）：**结论一旦上屏就定稿**。
+   *   · 放行那一刻把当时的 `plan` 冻结进这里，屏幕从此读快照（见 `displayPlan`）；
+   *   · 之后任何数据到货、任何重算、任何网络抖动 —— 都⛔不⋅会⋅改⋅写⋅屏幕；
+   *   · 只有「切日期 / 用户刷新」才解冻重取。
+   *   §6：屏幕读的是「已发布的结论」这一份真相，而不是「实时重算的中间结果」。
+   *   ⚠️ 这是刻意的取舍：宁可显示一份「当时不完备但带警示」的结论，也不让它变来变去
+   *      （用户原话：「虽然最终正常，但是体验很不好」「文投控股从开始就不要显示」）。
+   */
+  const _buyPublished = ref(null); // { date, plan, missing }
+
+  /**
+   * 买点侧**屏幕上真正显示的那份 plan**。
+   *
+   * 定稿后恒返回冻结快照；未定稿（或快照属于别的日期）⇒ 返回实时计算的 `data.plan`。
+   * ⚠️ 所有 UI 具名 computed（blocks / notes / pickCount / cashAlert / ebbBuy …）都必须走这里，
+   *    ⛔ 不许再直接读 `data.value.plan` —— 否则定稿就被绕过去了，跳变会从别处回来（§6）。
+   */
+  const displayPlan = computed(function() {
+    const pub = _buyPublished.value;
+    const d = currentDate.value;
+    if (pub && d && pub.date === d && pub.plan) return pub.plan;
+    return (data.value && data.value.plan) || null;
+  });
+
   // ════════════════════════════════════════════════════════════════════════════════════════
   // ★★ [BUY-SETTLE-2 2026-10-31 用户口径 · 第三版] 买点侧「结果确认」的两道闸门
   //
@@ -1370,47 +1423,25 @@ export function useTopicVolRatioBoard() {
   //    ⚠️ 三道闸门的 UI 表现是同一条占位横幅，文案由 `buyPendingText` 说明在等什么。
   // ════════════════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * 慢判据宽限期（毫秒）：超过它就放行（「判不出」≠「不能买」，但也不能让买点侧永远空着）。
-   *
-   * ★ 2026-10-31 由 6s 调到 12s：实测「20 日涨幅结论」在冷启动时 6s 内**根本到不了**
-   *   （它要先拉到总龙一的前五只历史腿），6s 宽限等于「每一项都靠宽限放行」，宽限就失去意义了。
-   *   12s 覆盖了「结论真的会到」的那一段；到不了仍有兜底（网络静默判据 + 45s 硬兜底）。
-   */
-  const GATE_GRACE_MS = 12000;
-  let _gateGraceTimer = null;
-  /** 还有哪些「慢判据」没就绪（就绪了就不该起表，用户不必白等那 6s） */
-  function _slowGateMissing(date) {
-    const d = String(date || '').trim();
-    if (!d) return false;
-    if (!hasRange20LeadersVerdictForDate(d)) return true;   // 20 日涨幅前五结论
-    if (!isTopicLibraryReady()) return true;                // 题材库
-    return false;
-  }
-  // ★★ [NET-QUIET 2026-10-31] 这里**只按【展示日】起一次表** ——
-  //   ⛔ 绝不能把 `version` / 20 日涨幅指纹放进 watch 源：旧写法每次数据刷新都
-  //   `clearTimeout` + 重新计时 ⇒ **刷新越频繁越不放行**（首屏十几条刷新接连进来时，
-  //   这 6s 永远走不完 ⇒ 买点侧一直停在「结果确认中」，用户看到的就是「打不开」）。
-  //   计时器只负责「判不出来也别永久挂起」，带宽限的日期粒度由 `gateGraceDate` 保证。
+  // ★★ [BUY-PUBLISH 2026-10-31 · 第五版] 这里原来是「慢判据宽限期」（`GATE_GRACE_MS` 6s→12s +
+  //   `_slowGateMissing` + `_gateGraceTimer`）：到点就把「20 日涨幅结论 / 题材库」强行当成就绪。
+  //   🔴 那是跳变的直接成因（实测 10-30：宽限放行后 3s 内规则层就改判，票当场被收回），整块删除。
+  //
+  //   保留下来的只有 `markNetLoadWindow()` —— 它不带任何「放行」语义，只负责在网络侧起一个装载窗口，
+  //   供 20s 软超时 / 30s 硬兜底判定「是不是真读不出来了」。兜底放行同样**立即定稿**，屏幕不会再变。
   watch(currentDate, function(dateVal) {
     const d = String(dateVal || '').trim();
-    if (_gateGraceTimer) { clearTimeout(_gateGraceTimer); _gateGraceTimer = null; }
-    // ★★ [NET-QUIET 2026-10-31] 换日 / 首次进入 ⇒ 开一个新的「装载窗口」：
-    //   窗口内只要还有请求在途，买点侧就不放行（25s 仍在途 ⇒ 判上游挂住 ⇒ 放行 + 显示警示）。
+    // ★★ [BUY-PUBLISH 2026-10-31 · 第五版] 换日 ⇒ **解冻**：新的一天要重新等数据、重新定稿。
+    //   ⛔ 这里是唯一的自动解冻口（另一个是用户手动 `refresh()`）；两者都不在时，屏幕永不变。
+    const _pub = _buyPublished.value;
+    if (_pub && _pub.date !== d) {
+      _buyPublished.value = null;
+      _dbgLog('[TVRB-BUY-PUBLISH] 切到 ' + (d || '(空日期)') + ' ⇒ 解除 ' + _pub.date + ' 的定稿，重新等数据');
+    }
+    // ★★ [NET-QUIET] 换日 / 首次进入 ⇒ 开一个新的「装载窗口」：
+    //   窗口内只要还有请求在途，买点侧就不放行（仍有在途超时 ⇒ 判上游挂住 ⇒ 放行 + 显示警示）。
     //   ⛔ 不要放在 version（数据刷新）上：轮询/刷新会让窗口永远重开，等于永久挂起。
     if (d) markNetLoadWindow();
-    if (!d) return;
-    if (!_slowGateMissing(d)) { gateGraceDate.value = ''; return; }
-    if (gateGraceDate.value === d) return;          // 这一日已经宽限放行过 ⇒ 不重复计时
-    _gateGraceTimer = setTimeout(function() {
-      _gateGraceTimer = null;
-      if (currentDate.value !== d) return;         // 期间切了日期 ⇒ 丢弃（⛔ 别把 A 日的宽限给 B 日）
-      // 到点时若其实已经就绪 ⇒ 不必记「宽限」（放行靠真实判据，宽限只留痕）
-      if (!_slowGateMissing(d)) { gateGraceDate.value = ''; return; }
-      gateGraceDate.value = d;
-      _dbgLog('[TVRB-BUY-SETTLE] ' + d + ' 慢判据（20 日涨幅前五 / 题材库）超过 ' + (GATE_GRACE_MS / 1000) +
-        's 仍无结论 ⇒ 宽限放行（此后若结论到货导致换票，会重新挂占位）');
-    }, GATE_GRACE_MS);
   }, { immediate: true });
 
   /**
@@ -1473,6 +1504,9 @@ export function useTopicVolRatioBoard() {
     return bar > 1 && s.charAt(0) === 'n';
   }
   watch([buySelSig, netIdle, netStalled, netHardStalled, netLastDoneAt, _buyQuiesce.locked], function() {
+    // ⓪ [BUY-PUBLISH 第五版] 这一日已经定稿 ⇒ 屏幕读快照，闩不必再动（⛔ 也绝不允许覆盖快照）
+    const _pubNow = _buyPublished.value;
+    if (_pubNow && currentDate.value && _pubNow.date === currentDate.value) return;
     const key = _buyReleaseKey();
     if (!key) return;
     if (_buyRelease.value === key) return;
@@ -1481,24 +1515,47 @@ export function useTopicVolRatioBoard() {
     // 半成品（档位已定、一只票都没有）不算定稿 —— 与 buyPending ⑥ 同一判据，⛔ 别只改一处
     const plan = data.value && data.value.plan;
     if (plan && plan.pickCount > 0 && !_buySigHasNames(buySelSig.value) && !netHardStalled.value) return;
+    // ★★ [BUY-PUBLISH 2026-10-31 · 第五版] **已知输入没齐 ⇒ 不定稿**（这是「跳变」的真正源头）。
+    //    `plan.buyPending` = `resolveBuySettle` 判「八项输入里有没落地的」。实测 10-30：
+    //    `range20Settled`（20 日涨幅前五结论）在 +26s 才到，而此前规则层对「判不出」的处理是
+    //    「沿用老规则照常列出」⇒ 那一刻出票必然是错的，而且**几秒后就会被自己推翻**。
+    //    ✅ 齐了才定稿 ⇒ 定稿的那一份就是最终结论，屏幕永远不用再改。
+    //    ⚠️ 硬兜底（30s）必须能穿透这一条：上游真的算不出来时，宁可给一份「带警示的定稿」，
+    //      也不能让买点侧永久停在占位（那就是用户说的「打不开」）。
+    if (plan && plan.buyPending && !netHardStalled.value) return;
     _buyRelease.value = key;
+    // ★★★ [BUY-PUBLISH 2026-10-31 · 第五版] **放行 = 定稿**：把这一刻的 plan 冻结成屏幕的唯一来源。
+    //   ⛔ 同一天只发布一次 —— 之后再怎么放行、指纹再怎么变都不覆盖（覆盖就等于「又变了」）。
+    //   解冻只有两条路：切日期（`currentDate` watch）或用户手动 `refresh()`。
+    const _pd = currentDate.value;
+    if (_pd && plan) {
+      _buyPublished.value = { date: _pd, plan: plan, degraded: !!netHardStalled.value };
+      _dbgLog('[TVRB-BUY-PUBLISH] ' + _pd + ' 选股结论【定稿】—— 屏幕从此只读这份快照，' +
+        '不再随数据到货变化' + (netHardStalled.value ? '（上游硬兜底，结论可能不完整，已标注）' : '') +
+        '｜' + String(key.split('\u0000')[1] || '').slice(0, 70));
+    }
     _dbgLog('[TVRB-BUY-SETTLE] ' + currentDate.value + ' 选股结果定稿 ⇒ 放行（放行时在途 ' +
       netInflight.value + (netHardStalled.value ? '，硬兜底' : (netStalled.value ? '，名单已就绪' : '')) + '）');
   });
-  let _sigDbgN = 0;
   watch(buySelSig, function(sig) {
     const wasLocked = _buyQuiesce.locked.value;
-    if (_sigDbgN < 12) { _sigDbgN++; _dbgLog('[TVRB-SIG] #' + _sigDbgN + ' inflight=' + netInflight.value + ' idle=' + netIdle.value + ' sig=' + String(sig).slice(0, 160)); }
     _buyQuiesce.note(sig);
-    // 只在「已经放行过、结果又被推翻」时留痕 —— 这是最值得警惕的一类现场
+    // 只在「已经稳定过、结果又被推翻」时留痕 —— 这是最值得警惕的一类现场。
+    // ★ [BUY-PUBLISH 第五版] 注意「已定稿」与「未定稿」的行为差异（⛔ 别按旧文案理解）：
+    //   · 未定稿 ⇒ 立刻挂回占位，等新的稳定版（旧票还没上过屏，收回无感）；
+    //   · 已定稿 ⇒ **屏幕不动**（读的是冻结快照），这条日志只是记录「上游后来又改了」——
+    //     用户看到的仍然是定稿那一份，直到他切日期或点刷新。
     if (wasLocked && wasLocked !== sig) {
-      _dbgLog('[TVRB-BUY-SETTLE] ' + currentDate.value +
-        ' 选股结果在显示后又变了 ⇒ 立刻挂回占位，等新的稳定版（旧票已不可信）');
+      const _pubD = _buyPublished.value;
+      const _frozen = !!(_pubD && _pubD.date === currentDate.value);
+      _dbgLog('[TVRB-BUY-SETTLE] ' + currentDate.value + ' 选股结果在' +
+        (_frozen ? '定稿后又被上游改动（屏幕保持定稿不变，刷新才重算）' : '显示后又变了 ⇒ 立刻挂回占位，等新的稳定版（旧票已不可信）'));
     }
   }, { immediate: true });
   onUnmounted(function() {
     _buyQuiesce.dispose();
-    if (_gateGraceTimer) { clearTimeout(_gateGraceTimer); _gateGraceTimer = null; }
+    // [BUY-PUBLISH 第五版] 定稿快照随组件销毁释放（⛔ 不再有宽限计时器要清）
+    _buyPublished.value = null;
   });
 
   /**
@@ -1528,18 +1585,18 @@ export function useTopicVolRatioBoard() {
 
   const ready = computed(() => !!data.value.ready);
   const reasonText = computed(() => (data.value.ready ? '' : (data.value.reason || '暂无数据')));
-  const blocks = computed(() => (data.value.plan ? data.value.plan.blocks : []));
-  const sellGroups = computed(() => (data.value.plan ? (data.value.plan.sell || []) : []));
-  const notes = computed(() => (data.value.plan ? data.value.plan.notes : []));
-  const excludedTopics = computed(() => (data.value.plan ? data.value.plan.excludedTopics : []));
-  const pickCount = computed(() => (data.value.plan ? data.value.plan.pickCount : 0));
+  const blocks = computed(() => (displayPlan.value ? displayPlan.value.blocks : []));
+  const sellGroups = computed(() => (displayPlan.value ? (displayPlan.value.sell || []) : []));
+  const notes = computed(() => (displayPlan.value ? displayPlan.value.notes : []));
+  const excludedTopics = computed(() => (displayPlan.value ? displayPlan.value.excludedTopics : []));
+  const pickCount = computed(() => (displayPlan.value ? displayPlan.value.pickCount : 0));
   /**
    * ★ [CASH-ALERT 2026-10-13 用户口径] 空仓提醒 —— 判据全在 Logic 层（buildCashAlert），
    *   本处只把它透给模板（§21：模板零计算；§34：UI 不判业务）。
    *   ⛔ 未就绪时是「不提示」（见 _empty）：绝不能因为「数据没算出来」就喊空仓。
    */
   const cashAlert = computed(function() {
-    const a = data.value.plan && data.value.plan.cashAlert;
+    const a = displayPlan.value && displayPlan.value.cashAlert;
     return a || TVRB_CASH_ALERT_NONE;
   });
   /**
@@ -1547,7 +1604,7 @@ export function useTopicVolRatioBoard() {
    *   本处只把它透给模板（§21 模板零计算；§34 UI 不判业务）。
    *   ⛔ 未就绪 / 不是退潮日 ⇒ null（模板 v-if 不渲染），绝不会拿「没算出来」当「今天退潮」（§10）。
    */
-  const ebb = computed(() => (data.value.plan && data.value.plan.ebb) || null);
+  const ebb = computed(() => (displayPlan.value && displayPlan.value.ebb) || null);
   /**
    * ★ [EBB-R8 2026-10-14 用户口径] 退潮首日买点侧【唯一那只 · 市场龙二】的买点块（单只票）。
    *
@@ -1556,13 +1613,13 @@ export function useTopicVolRatioBoard() {
    *   这一只要渲染在灰化容器【外面】才能一眼看见（见视图的 .tvrb-ebb-only-buy）。
    * ⛔ 不是退潮日 / 当日涨幅未就绪 ⇒ null（模板 v-if 不渲染），绝不退化成别的票（§10）。
    */
-  const ebbBuy = computed(() => (data.value.plan && data.value.plan.ebbBuy) || null);
+  const ebbBuy = computed(() => (displayPlan.value && displayPlan.value.ebbBuy) || null);
   /** [EBB-R20c 2026-10-20] 二次确认退潮 + 常规选出补涨题材 ⇒ 买点侧顶部的节点说明横幅
    *  （{ headline, detail }，文案全在 Logic 层 §21）；其它场景 null（v-if 不渲染）。
    *  ⛔ 不是退潮日 / 首次退潮 / 二次走兜底 ⇒ null，绝不退化成别的说明（§10）。 */
-  const ebbNodeNote = computed(() => (data.value.plan && data.value.plan.ebbNodeNote) || null);
+  const ebbNodeNote = computed(() => (displayPlan.value && displayPlan.value.ebbNodeNote) || null);
   /** [DIVERGE 2026-10-20] 总龙首次分歧日的分歧买点块（总龙一 + 跟随高标 ≤2 只）；其它场景 null。 */
-  const divergeBuy = computed(() => (data.value.plan && data.value.plan.divergeBuy) || null);
+  const divergeBuy = computed(() => (displayPlan.value && displayPlan.value.divergeBuy) || null);
   /**
    * ★★ [SWITCH 2026-10-22 用户口径] 第二十八条切换日：
    *   switchDay = { ebbDate, topic, leaderName, since }（今天是不是二次确认退潮后的第 2 个交易日）；
@@ -1570,8 +1627,8 @@ export function useTopicVolRatioBoard() {
    * ⚠️ 与 ebbBuy / divergeBuy 同一约定：它【不在 blocks 里】，视图要渲染在灰化容器【之外】
    *   （今天真要买的票不能被父级 grayscale 吞掉）。不是切换日 / 选不出新龙 ⇒ null（v-if 不渲染）。
    */
-  const switchDay = computed(() => (data.value.plan && data.value.plan.switchDay) || null);
-  const newDragon = computed(() => (data.value.plan && data.value.plan.newDragon) || null);
+  const switchDay = computed(() => (displayPlan.value && displayPlan.value.switchDay) || null);
+  const newDragon = computed(() => (displayPlan.value && displayPlan.value.newDragon) || null);
   /**
    * ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条【十日涨幅 · 在列次数候补】那一只的买点块。
    * ⚠️ 与 ebbBuy / divergeBuy / newDragon 同一约定：它【不在 blocks 里】，
@@ -1579,7 +1636,7 @@ export function useTopicVolRatioBoard() {
    *   它是题材量比太小被作废之后【今天真正要买】的那一只，不能被父级 grayscale 吞掉。
    *   不需要候补 / 选不出（含数据未到）⇒ null ⇒ 视图 v-if 不渲染（§10 不拿空壳冒充结论）。
    */
-  const range10Backup = computed(() => (data.value.plan && data.value.plan.range10Backup) || null);
+  const range10Backup = computed(() => (displayPlan.value && displayPlan.value.range10Backup) || null);
   /**
    * ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】那一块（20日涨幅主板前三 ∧ 与退潮题材同题材）。
    * ⚠️ 与 ebbBuy / divergeBuy / newDragon / range10Backup 同一约定：它【不在 blocks 里】，
@@ -1587,7 +1644,7 @@ export function useTopicVolRatioBoard() {
    *   不能被父级 grayscale 吞掉；而且用户要求放在【最前面】。
    *   没有票进前三 / 判不出 ⇒ null ⇒ 视图 v-if 不渲染 ⇒ 就是纯空仓（§10 不拿空壳冒充结论）。
    */
-  const weakHuddle = computed(() => (data.value.plan && data.value.plan.weakHuddle) || null);
+  const weakHuddle = computed(() => (displayPlan.value && displayPlan.value.weakHuddle) || null);
   /**
    * ★★ [CATCH-UP 2026-10-27 用户口径] 第三十一条【补涨题材】那一块
    * （20日涨幅主板第 6~10 名里，灰色题材恰好占 2~3 只，且其中有连板票）。
@@ -1595,13 +1652,13 @@ export function useTopicVolRatioBoard() {
    *   并且排在【弱势切抱团之后】（两条看的是不同名次区间，同一天可能各出一只）。
    *   数量不达标 / 一只连板都没有 / 判不出 ⇒ null ⇒ 视图 v-if 不渲染（§10）。
    */
-  const catchUp = computed(() => (data.value.plan && data.value.plan.catchUp) || null);
+  const catchUp = computed(() => (displayPlan.value && displayPlan.value.catchUp) || null);
   /**
    * ★ [DIVERGE-GATE 2026-10-21] 分歧判定未就绪的门控旗（非 null ⇒ 买点侧渲染「判定计算中」占位、
    *   不渲染旧规则选票 —— 见 data computed 里门控条件的逐条注释）。判不出 / 已就绪 ⇒ null。
    */
   const divergePending = computed(function() {
-    const p = data.value.plan;
+    const p = displayPlan.value;
     return (p && p.divergePending) || null;
   });
   /**
@@ -1623,6 +1680,12 @@ export function useTopicVolRatioBoard() {
    * ⛔ 只影响买点侧；卖点侧逐字不变（卖点不吃这些口径）。
    */
   const buyPending = computed(function() {
+    // ⓪ ★★ [BUY-PUBLISH 2026-10-31 · 第五版] 这一日【已定稿】⇒ 永远不挂占位。
+    //    ⛔ 必须排在最前面：定稿之后 `buySelSig` / `p.buyPending` / 网络在途数 都还会继续变，
+    //      刚才那七条判据里任何一条变真，都会把已经上屏的票收回去 —— 那正是用户报的
+    //      「文投控股后来又消失了」。定稿 = 屏幕读冻结快照（`displayPlan`），与实时数据脱钩。
+    const _pub = _buyPublished.value;
+    if (_pub && currentDate.value && _pub.date === currentDate.value) return false;
     const r = data.value;
     // 未就绪时视图走「未就绪 / 失败」那一路，不在这里插一脚（否则会出现两条占位）
     if (!r || !r.ready) return false;
@@ -1646,6 +1709,9 @@ export function useTopicVolRatioBoard() {
   });
   /** ★ [BUY-SETTLE] 占位/标题栏里那串「还差：A · B · C」（文案在 Logic 层拼好，§21 模板零计算） */
   const buyPendingText = computed(function() {
+    // [BUY-PUBLISH 第五版] 已定稿 ⇒ 没有「还差什么」可说（与 buyPending ⓪ 同一判据，⛔ 别只改一处）
+    const _pub = _buyPublished.value;
+    if (_pub && currentDate.value && _pub.date === currentDate.value) return '';
     const r = data.value;
     const p = r && r.plan;
     if (p && p.buyPendingText) return p.buyPendingText;
@@ -1688,12 +1754,23 @@ export function useTopicVolRatioBoard() {
     const r = data.value;
     if (!r || !r.ready) return '';
     if (buyPending.value) return '';
+    // ★★ [BUY-PUBLISH 2026-10-31 · 第五版] 口径必须跟着「定稿」一起改 ——
+    //   旧文案写的是「下面这批票…稍后可能变化」，第五版起**这句话不再成立**（屏幕已冻结）。
+    //   如果还这么写，用户会以为结果还会变，反而更焦虑；真正的信息是「这批票是按已到数据给的，
+    //   可能不够完整，想按最新数据重算请点刷新」。
+    const _pub = _buyPublished.value;
+    const _frozen = !!(_pub && currentDate.value && _pub.date === currentDate.value);
+    if (_frozen) {
+      if (!_pub.degraded) return '';   // 完备定稿 ⇒ 没有任何要警示的
+      return '⚠️ 上游数据读取超时（' + (NET_HARD_MS / 1000) + 's 未完成）—— 这批票已按【已到数据】定稿，' +
+        '不会再自己变化，但可能不够完整；点刷新可按最新数据重算。';
+    }
     if (!netStalled.value) return '';
     // 网络后来真的静下来了 ⇒ 数据已到齐 ⇒ 这条警示不再成立（§10 只报真的）。
     // ⚠️ 与「放行许可」分开：放行靠**粘性**的 netStalled（撤了会闪回），
     //    警示靠 `netStalled && !netIdle`（读完了就该收）。
     if (netIdle.value) return '';
-    return '⚠️ 上游数据读取超时（' + (NET_STALL_MS / 1000) + 's 未完成）—— 下面这批票是按已到数据给的，稍后可能变化，可点刷新重试。';
+    return '⚠️ 上游数据读取超时（' + (NET_STALL_MS / 1000) + 's 未完成）—— 仍在等数据到齐，到齐后一次性给结论（不会中途先给半成品）。';
   });
   /**
    * ★★ [DIVERGE-GATE-2 2026-10-24 用户口径] 占位里那行「20日涨幅精算 X/Y」小字。
@@ -1840,6 +1917,13 @@ export function useTopicVolRatioBoard() {
 
   /** 供父级在「刷新」时调用（与其它看板同款契约：defineExpose({ refresh })） */
   function refresh() {
+    // ★★ [BUY-PUBLISH 2026-10-31 · 第五版] 用户手动刷新 ⇒ **解冻**（另一个解冻口是切日期）。
+    //   这是「我就是想按最新数据重算一遍」的唯一入口：先解除定稿，让数据重新到齐后再定稿一次。
+    //   ⛔ 不要做成「每次数据到货都自动解冻」—— 那就回到跳变了。
+    if (_buyPublished.value) {
+      _dbgLog('[TVRB-BUY-PUBLISH] 用户主动刷新 ⇒ 解除本日定稿，等数据重新到齐后再定稿一次');
+      _buyPublished.value = null;
+    }
     bumpVersion();
     const d = currentDate.value;
     if (!d) return Promise.resolve();

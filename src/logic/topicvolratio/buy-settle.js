@@ -95,6 +95,21 @@ export function resolveBuySettle(ctx) {
   //    ⇒ 题材完全靠题材库反查；库没到之前它们全落「其它」⇒ 分组 / 只数 / 档位全错 ⇒ 选另一批票。
   //    ⚠️ 同样带宽限覆盖（库拉不到时不能让买点侧永远空着）。
   if (o.topicLibraryReady === false) missing.push('题材库');
+  // ⑪ ★★ [BUY-SETTLE-3 2026-10-31 · 第五版] **十日涨幅池「与屏幕同一批行」**
+  //    （采集层 `range10PoolComplete`：20 日涨幅补位行有没有并进池子）。
+  //
+  //    🔴 为什么必须单列这一项（实测抓到它就是「第二只票」的直接开关）：
+  //      `range10PoolComplete === false` 时规则层对三条判据一律「判不出」⇒ 按老规则照常列出：
+  //        · 排名第二题材的入选条件（本次【未校验】）
+  //        · 小题材收紧（4~6 只且前十无本题材票 ⇒ 弃题材）
+  //        · 第二十九条十日涨幅候补
+  //      ⇒ 于是「AI应用」这个题材先被列出来（多出文投控股一只），
+  //        补位行到货后同一段说明改写成「本次【不入选】」⇒ 那只票被收回。
+  //      ⚠️ 上一版（BUY-SETTLE-2）只挡了「20 日涨幅前五结论」，但那**不等于**补位行就绪：
+  //        前五的结论可以已经发布，而池子里的补位行仍缺（更别提 `getRange20Leaders` 曾经
+  //        因为读单一 `_state` 而给出 null —— 那一条已在 range20-leaders.js 按日期修掉）。
+  //    ⚠️ 缺省（`undefined`）⇒ 视为就绪 ⇒ §11 零行为变化（老调用方 / 单测不受影响）。
+  if (o.range10PoolReady === false) missing.push('十日涨幅补位行');
 
   if (missing.length === 0) return { settled: true, missing: [], text: '' };
   return {
