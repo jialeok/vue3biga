@@ -172,6 +172,14 @@ import { resolveBuySettle } from '../logic/topicvolratio/buy-settle.js';
 //   ⇒ 改为【结果侧】：选股指纹连续 BUY_QUIET_MS 不被推翻才放行；之后再被推翻就重新挂占位。
 //   @see logic/topicvolratio/buy-quiesce.js（为什么这样做、三条红线都在那里）
 import { createBuyQuiesce, buildBuySelectionSig, BUY_QUIET_MS } from '../logic/topicvolratio/buy-quiesce.js';
+// ★★ [NET-QUIET 2026-10-31 用户口径 · 第四版] 买点侧「上游还在读吗」的唯一判据：
+//   `netIdle` = 在途归零 **且持续 NET_IDLE_MS 没有新请求** ⇒ 这一整批真的读完了 ⇒ 结论已定。
+//   前三版都在赌「等一段时间就齐了」（6s 宽限 / 1.5s 稳定期），实测 10-30 的
+//   auction_watchlist 到 +17.9s、market_metrics 到 +23.7s —— 赌注必然输。
+//   ⚠️ 不许退回「只看瞬时在途数」：数据是分批起跑的，波与波之间会瞬时归零，
+//     瞬时判据会在中途放行（实测放行后一波到货就换票）。
+//   @see data/net-activity.js（为什么用排除列表、为什么不算 auth/realtime、为什么必须持续）
+import { netInflight, netIdle, netStalled, NET_STALL_MS, markNetLoadWindow } from '../data/net-activity.js';
 // ★★ [CORE-CAT 2026-10-22 用户口径] 题材【大类】归一：
 //   getCoreTopics() = 核心管理里那张表（用户「我在核心管理里把文化传媒放到 AI应用 那个大类了」）；
 //   getCoreTopicsVersion() = 响应式版本号（云端加载完成 / 用户改完核心词 ⇒ computed 自动重算）。
@@ -1368,18 +1376,26 @@ export function useTopicVolRatioBoard() {
     if (!isTopicLibraryReady()) return true;                // 题材库
     return false;
   }
-  // 展示日 / 数据刷新 / 核心词表版本 / 20 日涨幅发布 ⇒ 重新起表；都就绪 ⇒ 立刻清掉计时器
-  watch(function() {
-    return currentDate.value + '|' + getRange20LeadersFingerprintToken() + '|v' + version.value +
-      '|c' + getCoreTopicsVersion();
-  }, function() {
-    const d = currentDate.value;
+  // ★★ [NET-QUIET 2026-10-31] 这里**只按【展示日】起一次表** ——
+  //   ⛔ 绝不能把 `version` / 20 日涨幅指纹放进 watch 源：旧写法每次数据刷新都
+  //   `clearTimeout` + 重新计时 ⇒ **刷新越频繁越不放行**（首屏十几条刷新接连进来时，
+  //   这 6s 永远走不完 ⇒ 买点侧一直停在「结果确认中」，用户看到的就是「打不开」）。
+  //   计时器只负责「判不出来也别永久挂起」，带宽限的日期粒度由 `gateGraceDate` 保证。
+  watch(currentDate, function(dateVal) {
+    const d = String(dateVal || '').trim();
     if (_gateGraceTimer) { clearTimeout(_gateGraceTimer); _gateGraceTimer = null; }
+    // ★★ [NET-QUIET 2026-10-31] 换日 / 首次进入 ⇒ 开一个新的「装载窗口」：
+    //   窗口内只要还有请求在途，买点侧就不放行（25s 仍在途 ⇒ 判上游挂住 ⇒ 放行 + 显示警示）。
+    //   ⛔ 不要放在 version（数据刷新）上：轮询/刷新会让窗口永远重开，等于永久挂起。
+    if (d) markNetLoadWindow();
+    if (!d) return;
     if (!_slowGateMissing(d)) { gateGraceDate.value = ''; return; }
     if (gateGraceDate.value === d) return;          // 这一日已经宽限放行过 ⇒ 不重复计时
     _gateGraceTimer = setTimeout(function() {
       _gateGraceTimer = null;
       if (currentDate.value !== d) return;         // 期间切了日期 ⇒ 丢弃（⛔ 别把 A 日的宽限给 B 日）
+      // 到点时若其实已经就绪 ⇒ 不必记「宽限」（放行靠真实判据，宽限只留痕）
+      if (!_slowGateMissing(d)) { gateGraceDate.value = ''; return; }
       gateGraceDate.value = d;
       _dbgLog('[TVRB-BUY-SETTLE] ' + d + ' 慢判据（20 日涨幅前五 / 题材库）超过 ' + (GATE_GRACE_MS / 1000) +
         's 仍无结论 ⇒ 宽限放行（此后若结论到货导致换票，会重新挂占位）');
@@ -1397,8 +1413,40 @@ export function useTopicVolRatioBoard() {
   });
 
   const _buyQuiesce = createBuyQuiesce({ quietMs: BUY_QUIET_MS });
+  /**
+   * ★★ [NET-QUIET 2026-10-31 · 第四版] 已经【正式放行】的那一份选股指纹（闩）。
+   *
+   * 为什么必须有它：`netIdle` 是会被打回的 —— 下一波请求（轮询 / 补拉 / 分笔之外的行情刷新）
+   * 一在途就立刻变 false。若门控直接读 `netIdle`，那么**每次轮询起跑都会把买点侧重新挂回占位**，
+   * 屏幕上就是一闪一闪的「结果确认中」，比换票更糟（用户会以为页面坏了）。
+   * ⇒ 把「放行」按**指纹**记住：同一份指纹放行后不因网络抖动收回；
+   *   指纹一变（= 上游真的改写了结论）闩自动失效，重新走「在途 + 稳定期」两道闸门。
+   */
+  const _buyRelease = ref('');
+  /**
+   * 放行闩的键 = **日期 + 指纹**。
+   * ⚠️ 必须带日期：不同日期的「空仓」指纹是一样的（`n|b|p0|x`），
+   *   只按指纹闩的话，切到另一天会「瞬间就放行」—— 那一天的数据其实还在读。
+   */
+  function _buyReleaseKey() {
+    const sig = buySelSig.value;
+    if (!sig) return '';
+    return String(currentDate.value || '') + '\u0000' + sig;
+  }
+  watch([buySelSig, netIdle, _buyQuiesce.locked], function() {
+    const key = _buyReleaseKey();
+    if (!key) return;
+    if (_buyRelease.value === key) return;
+    if (!netIdle.value && !netStalled.value) return;      // 上游还在读（且没超时）⇒ 不许放行
+    if (!_buyQuiesce.isStable(buySelSig.value)) return;   // 结果还没稳定
+    _buyRelease.value = key;
+    _dbgLog('[TVRB-BUY-SETTLE] ' + currentDate.value + ' 选股结果定稿 ⇒ 放行（放行时在途 ' +
+      netInflight.value + '）');
+  });
+  let _sigDbgN = 0;
   watch(buySelSig, function(sig) {
     const wasLocked = _buyQuiesce.locked.value;
+    if (_sigDbgN < 12) { _sigDbgN++; _dbgLog('[TVRB-SIG] #' + _sigDbgN + ' inflight=' + netInflight.value + ' idle=' + netIdle.value + ' sig=' + String(sig).slice(0, 160)); }
     _buyQuiesce.note(sig);
     // 只在「已经放行过、结果又被推翻」时留痕 —— 这是最值得警惕的一类现场
     if (wasLocked && wasLocked !== sig) {
@@ -1537,17 +1585,61 @@ export function useTopicVolRatioBoard() {
     // 未就绪时视图走「未就绪 / 失败」那一路，不在这里插一脚（否则会出现两条占位）
     if (!r || !r.ready) return false;
     const p = r.plan;
-    if (p && p.buyPending) return true;                    // ① 已知输入未齐
-    return !_buyQuiesce.isStable(buySelSig.value);          // ② 结果还没稳定 / 又被推翻了
+    if (p && p.buyPending) return true;                    // ① 已知输入未齐（同步可判）
+    const sig = buySelSig.value;
+    if (!sig) return true;                                 // ② 还没有任何选股结论
+    // ③ 这一份结论已经定稿放行（闩）⇒ 网络再怎么抖都不收回（否则每次轮询都会闪一下占位）
+    if (_buyRelease.value && _buyRelease.value === _buyReleaseKey()) return false;
+    // ④ ★★ [NET-QUIET 2026-10-31] 上游还有请求在途（且未超时）⇒ 一定还会有数据落地、结论必会变。
+    //    实测（10-30 真数据）：auction_watchlist 到 +17.9s、market_metrics 到 +23.7s 才齐，
+    //    而旧版 6s 宽限早就放行了 ⇒ 屏幕上那两只票是「名单没齐」时的错票。
+    //    ⛔ 别改成「等 N 秒」——到货时刻由网络决定（§35）；也⛔ 别只盯已知表名（会漏新数据源）。
+    //    ⛔ 也别退回「瞬时在途数」：数据分批起跑，波与波之间会瞬时归零，中途放行必换票。
+    if (!netIdle.value && !netStalled.value) return true;
+    return !_buyQuiesce.isStable(sig);                     // ⑤ 结果还没稳定 / 又被推翻了
   });
   /** ★ [BUY-SETTLE] 占位/标题栏里那串「还差：A · B · C」（文案在 Logic 层拼好，§21 模板零计算） */
   const buyPendingText = computed(function() {
     const r = data.value;
     const p = r && r.plan;
     if (p && p.buyPendingText) return p.buyPendingText;
-    // ① 已齐、② 还没稳定 ⇒ 如实说明在等什么（⛔ 不说「空仓」）
-    if (r && r.ready && buyPending.value) return '还差：选股结果稳定（上游数据还在到货）';
+    // ① 已齐、② 还在读 / 还没稳定 ⇒ 如实说明在等什么（⛔ 不说「空仓」）
+    if (r && r.ready && buyPending.value) {
+      if (!netIdle.value && !netStalled.value) {
+        // ★ 把「还在算什么」摆出来：冷启动时上游最慢的那一项（20 日涨幅精算要拉几十只票的历史腿）
+        //   可能要十几秒，只写「在途 N 个请求」会让人以为卡死了（§10 等待必须可见）。
+        const pr = range20Progress.value;
+        let extra = '';
+        if (pr && pr.date === currentDate.value && pr.total && pr.done < pr.total) {
+          extra = '（20日涨幅精算 ' + pr.done + '/' + pr.total + ' 只）';
+        }
+        if (netInflight.value > 0) {
+          return '还差：上游数据仍在读取（在途 ' + netInflight.value + ' 个请求）' + extra;
+        }
+        // 在途已归零、正在等「静默确认」（NET_IDLE_MS）—— 别写成「在途 0 个请求」，那样像出错了
+        return '还差：确认这一批数据已经读完（约 1~2 秒）';
+      }
+      return '还差：选股结果稳定（上游数据还在到货）';
+    }
     return '';
+  });
+  /**
+   * ★★ [NET-QUIET 2026-10-31] 读取超时警示（只在「上游挂了」时出现）。
+   *
+   * 语义：请求整体超过 25s 未归零 ⇒ 判定上游异常 ⇒ 放行已到的结果，但**必须让用户知道**
+   * 这批票可能随后还会变（§10：失败/不确定必须可见，⛔ 不能假装是最终结论）。
+   * 与 `buyPending` 互斥：挂着占位时不出这条（占位本身已经说明在等）。
+   */
+  const buyDataWarning = computed(function() {
+    const r = data.value;
+    if (!r || !r.ready) return '';
+    if (buyPending.value) return '';
+    if (!netStalled.value) return '';
+    // 网络后来真的静下来了 ⇒ 数据已到齐 ⇒ 这条警示不再成立（§10 只报真的）。
+    // ⚠️ 与「放行许可」分开：放行靠**粘性**的 netStalled（撤了会闪回），
+    //    警示靠 `netStalled && !netIdle`（读完了就该收）。
+    if (netIdle.value) return '';
+    return '⚠️ 上游数据读取超时（' + (NET_STALL_MS / 1000) + 's 未完成）—— 下面这批票是按已到数据给的，稍后可能变化，可点刷新重试。';
   });
   /**
    * ★★ [DIVERGE-GATE-2 2026-10-24 用户口径] 占位里那行「20日涨幅精算 X/Y」小字。
@@ -1799,6 +1891,8 @@ export function useTopicVolRatioBoard() {
     buyPending,
     // 占位小字：把「还差哪几项」点名出来（空 ⇒ 不渲染，§21 模板零计算，文案在组合式）
     buyPendingText,
+    // ★★ [NET-QUIET 2026-10-31] 上游读取超时警示（§10：不确定必须可见）
+    buyDataWarning,
     // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条「新龙 / 新题材切换日」
     switchDay,
     newDragon,

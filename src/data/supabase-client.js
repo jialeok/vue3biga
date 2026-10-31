@@ -1,6 +1,8 @@
 import { _setGetSupabaseFn } from './auction-data.js';
 import { _setGetStocksDataFn } from './session-and-shield.js';
 import { createClient } from '@supabase/supabase-js';
+// ★★ [NET-QUIET 2026-10-31] 在途请求计数（买点侧「上游还在读吗」的唯一判据）。
+import { netTrackedFetch } from './net-activity.js';
 import { state } from '../logic/app-state.js';
         import { _dbgLog } from './debug-log.js';
         import { normalizeAuctionNotes } from './auction-data.js';
@@ -42,7 +44,12 @@ import { state } from '../logic/app-state.js';
         state._supabaseClient = null;
         export function getSupabase() {
             if (!state._supabaseClient) {
-                state._supabaseClient = createClient(state.SUPABASE_URL, state.SUPABASE_ANON_KEY);
+                // ★★ [NET-QUIET 2026-10-31] 全部 REST 请求挂一个「在途计数」包装器 ——
+                //   买点侧门控靠它判「上游还在读吗」（见 data/net-activity.js 的来由）。
+                //   ⛔ 只统计，不改请求语义；auth / storage / realtime 握手不计入。
+                state._supabaseClient = createClient(state.SUPABASE_URL, state.SUPABASE_ANON_KEY, {
+                    global: { fetch: netTrackedFetch }
+                });
             }
             return state._supabaseClient;
         }

@@ -195,6 +195,15 @@
             </div>
           </div>
           <template v-if="!divergePending && !buyPending">
+            <!-- ★★ [NET-QUIET 2026-10-31] 上游读取超时警示（只有「请求 25s 未归零」才出现）：
+                 此时放行的是【已到的数据】，必须让用户知道这批票可能随后还会变（§10 不确定必须可见）。
+                 ⛔ 不要把它做成「占位」—— 那会让看板看起来永远打不开。 -->
+            <div
+              v-if="buyDataWarning"
+              class="tvrb-buystale-warn tvrb-selectable"
+            >
+              {{ buyDataWarning }}
+            </div>
             <div
               v-if="ebbNodeNote"
               class="tvrb-ebb-node-note tvrb-selectable"
@@ -449,6 +458,8 @@ const {
   buyPending,
   // 占位小字「还差：A · B · C」—— 用户明确要的「提示下，等最终结果」
   buyPendingText,
+  // ★★ [NET-QUIET 2026-10-31] 读取超时警示（只有在途请求 25s 未归零才出现，§10 不确定必须可见）
+  buyDataWarning,
   // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条新龙 / 切换日（switchDay 的文案已由 Logic 层写进
   //   block.reason / notes，模板不需要它 ⇒ ⛔ 不解构，免得留一个未使用变量）
   newDragon,

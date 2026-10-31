@@ -388,6 +388,23 @@
     text-align: left;
 }
 
+/* ---- ★★ [NET-QUIET 2026-10-31] 买点侧「上游读取超时」警示条 ----
+   与上面的占位【刻意不同】：占位 = 不显示票（还在等）；本警示 = **已经显示票**但可能还会变。
+   ⇒ 用琥珀色（警告语义）+ 细边框，不用虚线框（虚线在本项目里专指「在等结论」）。
+   ⛔ 类名独立，⛔ 别并入 .tvrb-buysettle-pending 的样式组。 */
+.tvrb-buystale-warn {
+    margin: 2px 0 8px;
+    padding: 8px 10px;
+    background: #fffbeb;
+    border: 1px solid #fbbf24;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.5;
+    color: #92400e;
+    text-align: left;
+}
+
 /* ---- ★ [EBB-D1 2026-10-21 用户口径] 昨日二次确认退潮题材块【单块】灰化（第二十六条）----
    与整段灰化 .tvrb-buy-list.tvrb-ebb 同一套值（grayscale + opacity）—— 用户「那个灰色的样式
    参考退潮首日那套」，⛔ 不新造第二套观感；差别只在作用域：只灰这一个题材块，其它题材块不灰。 */
