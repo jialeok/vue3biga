@@ -179,7 +179,12 @@ import { createBuyQuiesce, buildBuySelectionSig, BUY_QUIET_MS } from '../logic/t
 //   ⚠️ 不许退回「只看瞬时在途数」：数据是分批起跑的，波与波之间会瞬时归零，
 //     瞬时判据会在中途放行（实测放行后一波到货就换票）。
 //   @see data/net-activity.js（为什么用排除列表、为什么不算 auth/realtime、为什么必须持续）
-import { netInflight, netIdle, netStalled, NET_STALL_MS, markNetLoadWindow } from '../data/net-activity.js';
+import { netInflight, netIdle, netStalled, netHardStalled, netLastDoneAt, NET_STALL_MS, markNetLoadWindow } from '../data/net-activity.js';
+// ★★ [NET-QUIET 2026-10-31 · 第四版补] 「当日正式名单装载了没有」的唯一判据（Data 层已有，⛔ 别另写）。
+//   为什么必须加它：20s 兜底放行**不等于**数据到了 —— 实测某一轮 26s 时折叠标题还是「选股 2 只」
+//   （名单那一条请求耗时 14.2s，兜底放行时它还在途）。⇒ 超时只能作为「准放行」，
+//   还要名单真的装载过才放（判据只增不减，按日期）。
+import { _isAuctionWatchlistIndexReady } from '../data/watchlist-and-metrics.js';
 // ★★ [CORE-CAT 2026-10-22 用户口径] 题材【大类】归一：
 //   getCoreTopics() = 核心管理里那张表（用户「我在核心管理里把文化传媒放到 AI应用 那个大类了」）；
 //   getCoreTopicsVersion() = 响应式版本号（云端加载完成 / 用户改完核心词 ⇒ computed 自动重算）。
@@ -1365,8 +1370,14 @@ export function useTopicVolRatioBoard() {
   //    ⚠️ 三道闸门的 UI 表现是同一条占位横幅，文案由 `buyPendingText` 说明在等什么。
   // ════════════════════════════════════════════════════════════════════════════════════════
 
-  /** 慢判据宽限期（毫秒）：超过它就放行（「判不出」≠「不能买」，但也不能让买点侧永远空着） */
-  const GATE_GRACE_MS = 6000;
+  /**
+   * 慢判据宽限期（毫秒）：超过它就放行（「判不出」≠「不能买」，但也不能让买点侧永远空着）。
+   *
+   * ★ 2026-10-31 由 6s 调到 12s：实测「20 日涨幅结论」在冷启动时 6s 内**根本到不了**
+   *   （它要先拉到总龙一的前五只历史腿），6s 宽限等于「每一项都靠宽限放行」，宽限就失去意义了。
+   *   12s 覆盖了「结论真的会到」的那一段；到不了仍有兜底（网络静默判据 + 45s 硬兜底）。
+   */
+  const GATE_GRACE_MS = 12000;
   let _gateGraceTimer = null;
   /** 还有哪些「慢判据」没就绪（就绪了就不该起表，用户不必白等那 6s） */
   function _slowGateMissing(date) {
@@ -1424,6 +1435,24 @@ export function useTopicVolRatioBoard() {
    */
   const _buyRelease = ref('');
   /**
+   * 网络侧是否允许放行（**唯一一份判据**，买点门控与放行闩都调它，⛔ 别写两份）。
+   *
+   *  ① 网络静默（netIdle）⇒ 整批读完了 ⇒ 放；
+   *  ② 还没静默但也没超时 ⇒ 等；
+   *  ③ 超时了（20s）⇒ 只有「当日正式名单装载过」才放 —— 实测这一条决定 pickCount 是 1 还是 2；
+   *  ④ 名单一直装不上（拉取失败）⇒ 45s 硬兜底放行（⛔ 不能让买点侧永久空着，那就是「打不开」）。
+   *
+   * ⚠️ `void netLastDoneAt.value` 不是摆设：名单装载完成时未必伴随 netIdle 变化
+   *   （后面还排着 20 日涨幅的历史腿），必须挂一个「每条请求收尾」的依赖才会重算。
+   */
+  function _netGateOpen() {
+    void netLastDoneAt.value;
+    if (netIdle.value) return true;
+    if (!netStalled.value) return false;
+    if (!_isAuctionWatchlistIndexReady(currentDate.value) && !netHardStalled.value) return false;
+    return true;
+  }
+  /**
    * 放行闩的键 = **日期 + 指纹**。
    * ⚠️ 必须带日期：不同日期的「空仓」指纹是一样的（`n|b|p0|x`），
    *   只按指纹闩的话，切到另一天会「瞬间就放行」—— 那一天的数据其实还在读。
@@ -1433,15 +1462,28 @@ export function useTopicVolRatioBoard() {
     if (!sig) return '';
     return String(currentDate.value || '') + '\u0000' + sig;
   }
-  watch([buySelSig, netIdle, _buyQuiesce.locked], function() {
+  /**
+   * 指纹里有没有「至少一只票名」。
+   * `buildBuySelectionSig` 的格式是 `n<票名,票名>|b<块>|p<档位>|x<灰化题材>`
+   * ⇒ 没有票名时就是 `n|b...`，第一个 `|` 落在下标 1。
+   */
+  function _buySigHasNames(sig) {
+    const s = String(sig || '');
+    const bar = s.indexOf('|');
+    return bar > 1 && s.charAt(0) === 'n';
+  }
+  watch([buySelSig, netIdle, netStalled, netHardStalled, netLastDoneAt, _buyQuiesce.locked], function() {
     const key = _buyReleaseKey();
     if (!key) return;
     if (_buyRelease.value === key) return;
-    if (!netIdle.value && !netStalled.value) return;      // 上游还在读（且没超时）⇒ 不许放行
+    if (!_netGateOpen()) return;                          // 网络侧还不允许放行
     if (!_buyQuiesce.isStable(buySelSig.value)) return;   // 结果还没稳定
+    // 半成品（档位已定、一只票都没有）不算定稿 —— 与 buyPending ⑥ 同一判据，⛔ 别只改一处
+    const plan = data.value && data.value.plan;
+    if (plan && plan.pickCount > 0 && !_buySigHasNames(buySelSig.value) && !netHardStalled.value) return;
     _buyRelease.value = key;
     _dbgLog('[TVRB-BUY-SETTLE] ' + currentDate.value + ' 选股结果定稿 ⇒ 放行（放行时在途 ' +
-      netInflight.value + '）');
+      netInflight.value + (netHardStalled.value ? '，硬兜底' : (netStalled.value ? '，名单已就绪' : '')) + '）');
   });
   let _sigDbgN = 0;
   watch(buySelSig, function(sig) {
@@ -1590,13 +1632,17 @@ export function useTopicVolRatioBoard() {
     if (!sig) return true;                                 // ② 还没有任何选股结论
     // ③ 这一份结论已经定稿放行（闩）⇒ 网络再怎么抖都不收回（否则每次轮询都会闪一下占位）
     if (_buyRelease.value && _buyRelease.value === _buyReleaseKey()) return false;
-    // ④ ★★ [NET-QUIET 2026-10-31] 上游还有请求在途（且未超时）⇒ 一定还会有数据落地、结论必会变。
-    //    实测（10-30 真数据）：auction_watchlist 到 +17.9s、market_metrics 到 +23.7s 才齐，
-    //    而旧版 6s 宽限早就放行了 ⇒ 屏幕上那两只票是「名单没齐」时的错票。
+    // ④ ★★ [NET-QUIET 2026-10-31] 上游还在读 / 名单还没装载 ⇒ 一定还会有数据落地、结论必会变。
+    //    判据只有一份（_netGateOpen），见它的注释：静默 / 超时 + 名单就绪 / 45s 硬兜底。
     //    ⛔ 别改成「等 N 秒」——到货时刻由网络决定（§35）；也⛔ 别只盯已知表名（会漏新数据源）。
     //    ⛔ 也别退回「瞬时在途数」：数据分批起跑，波与波之间会瞬时归零，中途放行必换票。
-    if (!netIdle.value && !netStalled.value) return true;
-    return !_buyQuiesce.isStable(sig);                     // ⑤ 结果还没稳定 / 又被推翻了
+    if (!_netGateOpen()) return true;
+    // ⑥ ★★ [NET-QUIET 2026-10-31] 档位已定（pickCount>0）却**一个票名都没有** ⇒ 候选还没到齐。
+    //    实测（10-30）：20~26s 之间就会出现这种半成品 —— 标题栏「选股 2 只」、下面一只票也没有；
+    //    再过几秒才收敛成「选股 1 只」。⛔ 别把它当「今天没票」显示（§10 缺项 ≠ 结论）。
+    //    ⚠️ 必须有硬兜底出口：万一某天真的判了档位却全部不合格，不能永远空着。
+    if (p && p.pickCount > 0 && !_buySigHasNames(sig) && !netHardStalled.value) return true;
+    return !_buyQuiesce.isStable(sig);                     // ⑦ 结果还没稳定 / 又被推翻了
   });
   /** ★ [BUY-SETTLE] 占位/标题栏里那串「还差：A · B · C」（文案在 Logic 层拼好，§21 模板零计算） */
   const buyPendingText = computed(function() {
@@ -1605,7 +1651,15 @@ export function useTopicVolRatioBoard() {
     if (p && p.buyPendingText) return p.buyPendingText;
     // ① 已齐、② 还在读 / 还没稳定 ⇒ 如实说明在等什么（⛔ 不说「空仓」）
     if (r && r.ready && buyPending.value) {
-      if (!netIdle.value && !netStalled.value) {
+      // 档位已定、候选还没到齐（实测 20~26s 之间的半成品态）
+      if (p && p.pickCount > 0 && !_buySigHasNames(buySelSig.value)) {
+        return '还差：候选票（档位已按题材只数定为 ' + p.pickCount + ' 只，个股数据还没到齐）';
+      }
+      if (!_netGateOpen()) {
+        // 超时了但名单还没装载 ⇒ 这是最需要说清楚的一类等待
+        if (netStalled.value && !_isAuctionWatchlistIndexReady(currentDate.value)) {
+          return '还差：当日正式名单装载完成（上游已超时，仍在等名单）';
+        }
         // ★ 把「还在算什么」摆出来：冷启动时上游最慢的那一项（20 日涨幅精算要拉几十只票的历史腿）
         //   可能要十几秒，只写「在途 N 个请求」会让人以为卡死了（§10 等待必须可见）。
         const pr = range20Progress.value;

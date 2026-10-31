@@ -43,6 +43,11 @@ const IGNORE_TABLES = new Set([
   'bidding_data',       // 竞价变化看板（与题材量比选股无关）
   'tag_titles_data',    // 标签文案
   'limit_pool',         // 涨跌停池（本看板不读；买点的竞价一字判定走行内字段）
+  // 逐日收盘涨幅腿：唯一消费方是 `range20`（20 日涨幅精算），而它的**结论**
+  //   已由 `buy-settle` ⑥「20 日涨幅结论」单独把关 ⇒ 这里排除不会漏判选股。
+  //   实测（2026-10-31）：它以 ≈1.5s 节拍连续起跑 40s+（20 条），计进来会让「静默」永远到不了，
+  //   买点侧就要白等 40s；排除后放行时刻 20~22s 且结果正确（两轮复测无换票）。
+  'stock_daily_pct',
 ]);
 
 /** 在途 REST 请求数（响应式：Logic 层的门控直接读它，§19） */
@@ -78,6 +83,16 @@ export const netIdle = ref(true);
  */
 export const netStalled = ref(false);
 
+/**
+ * 「硬兜底」：装载窗口超过 `NET_HARD_MS` ⇒ 无条件放行（⛔ 最后一根保险丝）。
+ *
+ * 为什么还要多一道：`netStalled`（20s）会配合业务侧的「真实就绪判据」一起用 ——
+ * 名单还没装完时**不许**因为超时就放行（实测 20s 放行拿到了错的档位 pickCount=2）。
+ * 但只要有一个判据永远不成立（拉取失败 / 表结构变了），买点侧就会永久空着 ——
+ * 那正是用户说的「打不开」。所以再给一条与业务无关的时间上限：到点就放，并亮警示。
+ */
+export const netHardStalled = ref(false);
+
 /** 静默判定时长：必须 ≥ 选股指纹稳定期（BUY_QUIET_MS），否则两道闸门会互相打架 */
 export const NET_IDLE_MS = 1500;
 
@@ -92,15 +107,22 @@ export const NET_IDLE_MS = 1500;
  */
 export const NET_STALL_MS = 20000;
 
+/** 硬兜底时长：业务判据永远不成立时的最后放行时刻（⛔ 别拿它当常规路径） */
+export const NET_HARD_MS = 45000;
+
 let _inflight = 0;
 let _idleTimer = null;
 let _stallTimer = null;
+let _hardTimer = null;
 
 function _clearIdleTimer() {
   if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null; }
 }
 function _clearStallTimer() {
   if (_stallTimer) { clearTimeout(_stallTimer); _stallTimer = null; }
+}
+function _clearHardTimer() {
+  if (_hardTimer) { clearTimeout(_hardTimer); _hardTimer = null; }
 }
 
 /** 在途归零后开始数静默期（⛔ 只在归零那一刻起表，有请求起跑立刻作废） */
@@ -162,7 +184,9 @@ export function _netEnd() {
  */
 export function markNetLoadWindow() {
   netStalled.value = false;
+  netHardStalled.value = false;
   _clearStallTimer();
+  _clearHardTimer();
   _stallTimer = setTimeout(function () {
     _stallTimer = null;
     if (netInflight.value > 0) {
@@ -171,10 +195,19 @@ export function markNetLoadWindow() {
       try {
         // eslint-disable-next-line no-console
         console.warn('[NET-STALL] 装载窗口 ' + (NET_STALL_MS / 1000) + 's 已过，仍有 ' +
-          netInflight.value + ' 个请求在途 ⇒ 放行已到数据（UI 会显示「读取超时」警示）');
+          netInflight.value + ' 个请求在途（是否放行还要看业务侧的就绪判据）');
       } catch (e) { /* 诊断日志失败不影响主流程 */ }
     }
   }, NET_STALL_MS);
+  _hardTimer = setTimeout(function () {
+    _hardTimer = null;
+    netHardStalled.value = true;
+    netStalled.value = true;
+    try {
+      // eslint-disable-next-line no-console
+      console.warn('[NET-STALL] 装载窗口 ' + (NET_HARD_MS / 1000) + 's 硬兜底 ⇒ 无条件放行（UI 会显示「读取超时」警示）');
+    } catch (e) { /* 同上 */ }
+  }, NET_HARD_MS);
 }
 
 /**
@@ -208,6 +241,8 @@ export function _resetNetActivity() {
   netLastDoneAt.value = 0;
   netIdle.value = true;
   netStalled.value = false;
+  netHardStalled.value = false;
   _clearIdleTimer();
   _clearStallTimer();
+  _clearHardTimer();
 }
