@@ -915,7 +915,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // [DRAGON 2026-09-09] 龙头排名：只在题材 toggle 开启时计算（需求——只要题材开着标记就在，
   // 无论是否叠加其它 toggle）。口径：同题材组（= 界面同颜色块：真实题材 且 成员>=2）内部，
   // 按「近10个交易日区间涨幅」降序，最高=龙一。
-  // 数据来自 dragon-rank.js 的异步缓存（10日区间涨幅，猫抓 daily 一次批量请求 + 云端缓存省额度）；
+  // 数据来自 **`_range10MapFor()`**（2026-11-01 起；此前写死 dragon-rank.js 的收盘口径缓存）：
+  //   · 竞价口径关闭 ⇒ dragon-rank.js 的异步缓存（猫抓 daily 一次批量请求 + 云端缓存省额度）；
+  //   · 竞价口径打开 ⇒ auction-leg-ranges.js 的 9:26 口径 Map（同题材组内顺序/徽章一起切换）。
   // 未加载/无数据时 dragonRankMap 为 null → 行上不显示徽章、组内保持原顺序，绝不阻塞渲染。
   //
   // [GRAY-DRAGON 2026-09-26] 候选集 = 【renderList 全部行】，灰行照常参与同题材龙位排名。
@@ -936,7 +938,23 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   let dragonRankMap = null;
   const _buildDragonRankMap = function(order) {
     if (!sortState.byTopic || !primaryTopicOfForColor) return null;
-    const dragonPctMap = getDragonRangePct(currentDate);
+    // ★★ [TOPIC-AUCTION-LEG 2026-11-01 用户口径] 「竞价口径」打开时，题材组内的【龙位与组内顺序】
+    //   一并换成 9:26 竞价口径 —— 用户原话：「打开题材 toggle，再打开竞价口径 toggle，为什么同题材内的
+    //   股票排序没有变化，我希望它是按照竞价口径的十日涨幅排序的，这样方便我对照下，
+    //   关闭竞价口径就默认就好，保持原样。」
+    //
+    // 🔴 为什么改这一行就能同时搞定「顺序」和「徽章」（⛔ 不是两处各改一遍）：
+    //   ① `computeDragonRankMap` 的 `seq` = 组内按 pct 降序后的下标（dragon-rank.js 内 `seq = i+1`）
+    //      ⇒ 下面 sortByTopicGroups 的 rankFn（返回 dk.seq）就是「十日涨幅降序」本身；
+    //   ② 同一个 Map 的 `rank` 就是龙一/龙二徽章的来源（items 组装处的 it.dragonRank）。
+    //   两者共用一份数据 ⇒ 顺序与徽章【结构性一致】，⛔ 不会出现「龙二排在龙一上面」。
+    //
+    // ⚠️ 取数走【同一个口径分支点】`_range10MapFor()`（见上方定义）：
+    //   · 竞价口径关闭 ⇒ 返回 getDragonRangePct(currentDate) ⇒ 与改造前逐字相同（§11 默认无行为）；
+    //   · 竞价口径打开 ⇒ 返回 getAuctionLegRange10(currentDate)（把今天那根腿反解回 9:25）。
+    //   §10：竞价口径那份还没读到 / 判不出 ⇒ null ⇒ 本函数返回 null ⇒
+    //     组内保持主排序的相对顺序、徽章不显示（⛔ 绝不拿收盘口径冒充竞价口径 —— 那等于拿错尺子）。
+    const dragonPctMap = _range10MapFor();
     if (!dragonPctMap || dragonPctMap.size === 0) return null;
     const dragonEntries = [];
     order.forEach(function(i) {
@@ -1432,7 +1450,11 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   let topicStatsMap = null;
   if (topicOnlyMode && primaryTopicOfForColor) {
-    const _rangeMap = getDragonRangePct(currentDate);
+    // ★ [TOPIC-AUCTION-LEG 2026-11-01] 统计条里的「龙头 + 十日涨幅」必须与上方龙位/组内顺序
+    //   用【同一把尺子】：竞价口径打开时同样换成 9:26 那一份，否则会出现
+    //   「组内第一行（龙一）不是统计条写的那个龙头」—— 正是三套口径各说各话的老坑。
+    //   关闭时 `_range10MapFor()` 返回 getDragonRangePct ⇒ 逐字回到改造前。
+    const _rangeMap = _range10MapFor();
     // [LISTED-TODAY 2026-09-23] 计数类统计（数量 / 一字 / 竞价高开 / 收盘 / 龙头）只认【当天正式列表里的行】
     //   （观察组/龙头继承空壳不计数）—— 与上方 sortByTopicGroups 的 countableOf、下方趋势图
     //   collectTopicDayStats 完全同一口径，是「统计条数字 == 题材块顺序 == 趋势图名次」的结构性保证

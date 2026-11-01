@@ -92,7 +92,11 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
     'byAuctionLeg=' + (s.byAuctionLeg ? 1 : 0),
     // 竞价口径那两张 Map 的加载版本 —— ⚠️ 【受开关门控】（与下面 range20= 同款理由）：
     //   两个涨幅 toggle 都关着、或者口径开关关着时恒为 'off' ⇒ 后台到货不会让整表白重排一次。
-    'aleg=' + ((s.byAuctionLeg && (s.byRangePct || s.byRangePct20)) ? getAuctionLegRangesFingerprintToken() : 'off'),
+    // ★ [TOPIC-AUCTION-LEG 2026-11-01 用户口径] 门控里补上 `byTopic`：题材模式下竞价口径
+    //   直接决定【同题材组内的顺序与龙位徽章】（view-helpers#_buildDragonRankMap 走同一个口径
+    //   分支点）⇒ 数据到货必须让行缓存与整表顺序失效，否则「打开了却还是原来的排法」。
+    //   ⛔ 只有「题材开着」而不是无条件：题材关着时这份数据没有消费方（§11 默认零行为）。
+    'aleg=' + ((s.byAuctionLeg && (s.byRangePct || s.byRangePct20 || s.byTopic)) ? getAuctionLegRangesFingerprintToken() : 'off'),
     // [RANGE20 2026-10-19] ⛔ 原 `byRatio=`（量比抢筹）已随该 toggle 删除；开关位改成 `byRangePct20=`。
     // [TWO-MODES 2026-10-02] 原 `byParallel=` 已删（平行 toggle → 一字 toggle、平行并入竞/昨）；
     //   改成题材【排序口径】：它决定题材组的组间顺序 ⇒ 必须入签名，否则切「题材 / 一字」时

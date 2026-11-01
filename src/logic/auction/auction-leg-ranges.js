@@ -31,9 +31,15 @@
 //        ⛔ 不在原地改 Map（否则下游 computed 会看不到变化、或者看到半更新状态）。
 //   §32：按日期会话缓存 + 单飞，同一天最多各读一次（底层两个读取器自己也带缓存）。
 //
-// ⚠️ 与「题材龙位 / 决策看板」的关系：**无关**。
-//   题材模式下龙一/龙二徽章仍然走收盘口径（`dragon-rank.js`），决策看板仍然走它自己的
-//   `rankDragonsWithPctMap`（本来就是 9:26 口径）。本模块只喂早盘竞价那两个涨幅列。
+// ⚠️ 与「题材龙位 / 决策看板」的关系（★ 2026-11-01 起【变了】，别照旧笔记办事）：
+//   · 【早盘竞价题材模式】的龙一/龙二徽章 + 组内顺序：**现在也跟随本开关**
+//     （用户 2026-11-01 报障：「打开题材 toggle，再打开竞价口径 toggle，同题材内的股票排序没有变化」）。
+//     唯一实现 = view-helpers.js#_buildDragonRankMap 改读 `_range10MapFor()` —— 与十日涨幅列
+//     【同一个口径分支点、同一份 Map】，所以「顺序 / 徽章 / 统计条龙头」三处不可能分叉。
+//     ⚠️ 该文件里 `_buildDragonRankMap` 与统计条 `topicStatsMap` 两处都必须走这个分支点，
+//        ⛔ 不要再出现第二处直接调 getDragonRangePct 的写法。
+//   · 【决策看板】仍然完全无关：它走自己的 `rankDragonsWithPctMap`（本来就是 9:26 口径）；
+//   · 【题材量比看板】照旧走 `range-auction-leg.js#readAuctionLegRangeMap`（本模块的另一消费者）。
 
 import { ref } from 'vue';
 import { readAuctionLegRangeMap } from './range-auction-leg.js';

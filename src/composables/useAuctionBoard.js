@@ -200,10 +200,14 @@ export function useAuctionBoard() {
   if (!_alegWatchBound) {
     _alegWatchBound = true;
     watch(
-      () => [sortState.byAuctionLeg, sortState.byRangePct, sortState.byRangePct20, uiStore.currentDate],
+      () => [sortState.byAuctionLeg, sortState.byRangePct, sortState.byRangePct20, sortState.byTopic, uiStore.currentDate],
       () => {
         if (!sortState.byAuctionLeg) return;
-        if (!sortState.byRangePct && !sortState.byRangePct20) return;
+        // ★ [TOPIC-AUCTION-LEG 2026-11-01 用户口径] 题材 toggle 也是消费方：
+        //   题材模式下竞价口径决定【同题材组内顺序 + 龙位徽章】（view-helpers#_buildDragonRankMap
+        //   与统计条都走 _range10MapFor 这一个口径分支点）；不在这里放行，用户会看到
+        //   「题材 + 竞价口径都打开了，组内顺序一点没变」—— 正是 2026-11-01 的报障。
+        if (!sortState.byRangePct && !sortState.byRangePct20 && !sortState.byTopic) return;
         ensureAuctionLegRanges(uiStore.currentDate).catch(function(e) {
           // §10：读失败必须留痕（视图层表现为「这两列暂时没有数值」，绝不拿收盘口径顶替）
           console.warn('[AUCTION-LEG] 竞价口径区间涨幅读取失败:', (e && e.message) || e);
