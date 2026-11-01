@@ -6,7 +6,12 @@
 //   （它不在当天正式列表 ⇒ worker 9:25 抓取名单里没有它 ⇒ 什么都没写），
 //   而 hydrateStockHistoryRow 只会从 market_metrics 云端补水 ⇒ 永远补不到 ⇒ 趋势该日空白。
 //
-// 【数据来源 —— 全部同花顺免费通道，0 猫抓额度（用户红线）】
+// 【数据来源 —— 0 猫抓额度】
+//   ★ [QT-PATCH 2026-11-01] 同花顺通道停用期间（FUYAO_OFF，见 fuyao-proxy.js），
+//     K 线腿自动改走【腾讯 qfq 日线直连】（data/api/qt-kline.js；与 stock_daily_pct 逐日腿
+//     同一个源，backfill-daily-pct.mjs 已实测 524 条与同花顺真值 ±0.02 内 100% 一致），
+//     快照腿整腿跳过。换算函数 computeQtDayPatches 与 computeKlineDayPatch 同语义。
+//   同花顺通道可用时（FUYAO_OFF=false）走以下原始通道：
 //   · K 线 historical（fetchFuyaoDailyPctRange，同一次请求顺带三样，零额外额度）：
 //       - 涨幅     changePct  = close / 昨收 - 1（fetchFuyaoDailyPctRange 主返回，已实测与库内
 //                    change_pct 逐位对齐：10-19 K线 -9.96% = 库内 -9.96%）；
@@ -35,7 +40,8 @@
 // @returns {Promise<Map<string, Map<string, {aucPctChg,changePct,yestVolume,volume,aucVolRatio}>>>}
 //          股票名 -> (日期 -> 补缺值；拿不到的字段为 null —— 调用方只用来填 null 位)
 import { fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
-import { fuyaoApiGet, tickerToThscode } from '../../data/api/fuyao-proxy.js';
+import { fuyaoApiGet, tickerToThscode, isFuyaoOff } from '../../data/api/fuyao-proxy.js';
+import { fetchQtDailyBars } from '../../data/api/qt-kline.js';
 import { _dbgLog } from '../../data/debug-log.js';
 
 // 会话缓存：'股票名|YYYY-MM-DD' -> 补缺值对象（含 null 字段 = 「真的没有」，防重复请求 §32）。
@@ -47,6 +53,44 @@ const _inflight = new Map();
 /** 北京时区「今天」'YYYY-MM-DD'（timestamp 闸门 / 当日判定用） */
 function _beijingTodayYmd() {
     return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+/**
+ * 【纯函数】腾讯 qfq 日线腿换算（[QT-PATCH 2026-11-01]，与 computeKlineDayPatch 同语义、同出口）。
+ *
+ * 为什么必须有它：同花顺通道 2026-10-30 起总闸停用（FUYAO_OFF，见 fuyao-proxy.js），
+ * K 线腿毫秒级抛错 ⇒ 补位票/灰色行趋势图缺日永远补不上（用户报障的类根因）。
+ * 腾讯 ifzq 与 stock_daily_pct 逐日腿同源（backfill-daily-pct.mjs 已实测 524 条 ±0.02 内
+ * 100% 一致），换算口径与 computeKlineDayPatch 逐字对齐：
+ *   · changePct  = close / 昨收 - 1（百分比，两位小数）
+ *   · aucPctChg  = open / 昨收 - 1（A 股开盘价 = 9:25 集合竞价成交价）
+ *   · yestVolume = 前一根 bar 的 volume(手) ÷ 100（手 → 万股；量纲已对 worker 库内核对）
+ *   · volume / aucVolRatio 恒 null（日线里没有 9:25 竞价瞬时量，§10 绝不拿全天量冒充）
+ *
+ * @param {Array<{ymd:string, open:number|null, close:number, volHand:number|null}>|null} bars 腾讯日线（乱序可）
+ * @param {string[]} days 要补的交易日（'YYYY-MM-DD'）
+ * @returns {Map<string, {aucPctChg:number|null, changePct:number|null, yestVolume:number|null}>}
+ */
+export function computeQtDayPatches(bars, days) {
+    const out = new Map();
+    if (!Array.isArray(bars) || bars.length === 0 || !Array.isArray(days)) return out;
+    const sorted = bars.slice().sort(function (a, b) { return a.ymd < b.ymd ? -1 : (a.ymd > b.ymd ? 1 : 0); });
+    const round2 = function (x) { return Math.round(x * 100) / 100; };
+    for (let i = 0; i < days.length; i++) {
+        const d = days[i];
+        let ti = -1;
+        for (let k = 0; k < sorted.length; k++) { if (sorted[k].ymd === d) { ti = k; break; } }
+        if (ti < 0) continue;                       // 该日无 bar（停牌/未上市）⇒ 不补，调用方按 null 处理
+        const prev = ti > 0 ? sorted[ti - 1] : null;
+        if (!prev || !prev.close || prev.close <= 0) continue;  // 首根无昨收基准 ⇒ 算不出（§10 不猜）
+        const tb = sorted[ti];
+        out.set(d, {
+            aucPctChg: (tb.open != null && tb.open > 0) ? round2((tb.open / prev.close - 1) * 100) : null,
+            changePct: round2((tb.close / prev.close - 1) * 100),
+            yestVolume: (prev.volHand != null && prev.volHand > 0) ? round2(prev.volHand / 100) : null
+        });
+    }
+    return out;
 }
 
 /**
@@ -142,6 +186,37 @@ export function ensureTrendPatch(items, missingByStock, opts) {
             const allDates = [];
             const dateSet = new Set();
             want.forEach(function(w) { w.days.forEach(function(d) { if (!dateSet.has(d)) { dateSet.add(d); allDates.push(d); } }); });
+
+            if (isFuyaoOff()) {
+                // ★★ [QT-PATCH 2026-11-01] 同花顺通道停用（FUYAO_OFF，见 fuyao-proxy.js）⇒
+                //   腾讯 qfq 日线直连（Data 层 qt-kline.js，与 stock_daily_pct 同源同口径，
+                //   不经 fuyao-proxy ⇒ 不受总闸影响、0 同花顺配额）。换算语义与下方 fuyao 腿逐字一致：
+                //   三样出口 = aucPctChg / changePct / yestVolume；竞价量 / 量比恒 null（§10）。
+                //   历史日的竞价量任何上游都不再有（9:25 瞬时值），当天则由云端 R20-METRICS 写库兜底。
+                try {
+                    // 窗口首日需要「上一个交易日收盘价」做基准 ⇒ 起点前移 10 个自然日（覆盖长假）
+                    const sortedDates = allDates.slice().sort();
+                    const startMs = Date.parse(sortedDates[0] + 'T00:00:00+08:00') - 10 * 86400000;
+                    const endMs = Date.parse(sortedDates[sortedDates.length - 1] + 'T00:00:00+08:00') + 2 * 86400000;
+                    const toYmd = new Date(endMs).toISOString().slice(0, 10);
+                    const fromYmd = new Date(startMs).toISOString().slice(0, 10);
+                    const barsByCode = await fetchQtDailyBars(
+                        want.map(function(w) { return w.code; }), fromYmd, toYmd, { timeoutMs: 8000, concurrency: 4 });
+                    want.forEach(function(w) {
+                        const m = computeQtDayPatches(barsByCode.get(w.code) || null, w.days);
+                        w.days.forEach(function(d) {
+                            const p = m.get(d) || { aucPctChg: null, changePct: null, yestVolume: null };
+                            _putDay(result, w.stock, d, {
+                                aucPctChg: p.aucPctChg, changePct: p.changePct,
+                                yestVolume: p.yestVolume, volume: null, aucVolRatio: null
+                            });
+                        });
+                    });
+                } catch (e) {
+                    // §10：失败必须可见，但只降级本腿（其余腿照走），⛔ 不把「取不到」伪装成「没有数据」
+                    _dbgLog('[TREND-PATCH] 腾讯K线腿失败: ' + (e && e.message || e));
+                }
+            } else {
             const openOut = new Map();
             const volOut = new Map();
             let pct = null;
@@ -168,11 +243,14 @@ export function ensureTrendPatch(items, missingByStock, opts) {
                     });
                 });
             });
+            } // else（同花顺通道可用）结束
         }
 
         // ③ 快照腿：只补「今天」的竞价量（auction_volume 手 → 万股），双重闸门防跨日
+        //   [QT-PATCH 2026-11-01] 同花顺停用时连请求都不构造（fuyaoApiGet 会立刻抛错，纯噪音）；
+        //   当天的竞价量/量比改由云端 R20-METRICS 写 market_metrics ⇒ 前端 hydrate 直接命中。
         const todayWant = want.filter(function(w) { return w.days.indexOf(todayYmd) >= 0; });
-        if (todayWant.length > 0) {
+        if (todayWant.length > 0 && !isFuyaoOff()) {
             try {
                 // [TREND-PATCH-FIX 2026-10-22] 快照接口的 thscodes 参数【必须带交易所后缀】
                 //   （thscode 格式）：传 6 位裸码实测返回 code:1002（上游错误）⇒ fuyaoApiGet throw

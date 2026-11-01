@@ -375,7 +375,16 @@ async function fetchQtBars(code: string, startYmd: string, endYmd: string): Prom
         const dt = String((arr && arr[0]) || '').slice(0, 10);
         const close = Number(arr && arr[2]);
         if (!dt || !Number.isFinite(close) || close <= 0) continue;
-        out.push({ ymd: dt, close, open: null, vol: null });
+        // ★★ [R20-METRICS-QT 2026-11-01] 顺带保留 open / volume：
+        //   bar 格式 [日期, open, close, high, low, volume(手)]。
+        //   · open  → dayMetricsOf 的 openPct（竞价涨幅，open/昨收-1）；
+        //   · volume(手) × 100 = 股（与 barsToSeries 的 vol 同单位、同「÷1e4 = 万股」约定）。
+        //   量纲已核对：九阳股份 10-27 腾讯 1,286,639 手 = 12,866 万股 ≈ worker 库内 yest_volume 12,882。
+        const openRaw = arr && arr[1] == null ? null : Number(arr[1]);
+        const open = openRaw != null && Number.isFinite(openRaw) && openRaw > 0 ? openRaw : null;
+        const volRaw = arr && arr[5] == null ? null : Number(arr[5]);
+        const vol = volRaw != null && Number.isFinite(volRaw) && volRaw >= 0 ? volRaw * 100 : null;
+        out.push({ ymd: dt, close, open, vol });
       }
       out.sort((a, b) => (a.ymd < b.ymd ? -1 : a.ymd > b.ymd ? 1 : 0));
       // 空序列 = 该票在这段区间没有 bar（停牌 / 北交所不支持）⇒ 交给上层判定，⛔ 不写 0%
@@ -1693,6 +1702,57 @@ Deno.serve(async (req: Request) => {
         legsWriteError = e instanceof Error ? e.message : String(e);
         console.error('[range20-precompute][R20-DAILY] ⚠️ 今日腿落库失败（不影响正确性，明天这些票走 K 线）: '
           + legsWriteError);
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // ④.5 ★★ [R20-METRICS-QT 2026-11-01] 补位票 K 线序列兜底补齐（腾讯直连，不经 fuyao）
+    //
+    // 【为什么必须加 —— 用户报障的类根因，不是单只票问题】
+    //   poolSeries（第⑤步写 market_metrics 的唯一输入）只在 K 线主循环里收集
+    //   （`if (t.from === 'pool') poolSeries.push(...)`）。而 2026-10-30 加入的逐日腿
+    //   快路径（②.5 R20-DAILY）把「历史腿全齐」的补位票**全部从 klineTodo 拿走了**
+    //   ⇒ 补位票恰恰是最容易腿全齐的那批（它们多在历史名单里出现过）⇒ poolSeries 恒空
+    //   ⇒ 第⑤步恒跳过 ⇒ market_metrics 里 source='range20' 恒 0 行（2026-11-01 实测）
+    //   ⇒ 前端趋势图对灰色行永远 hydrate 不到 ⇒ 「20天」标签票当天断点，修了几次都复发。
+    //
+    // 【数据源】腾讯 ifzq 前复权日线（fetchQtBars，⛔ 不经 fuyao-proxy）：
+    //   与同花顺 K 线同源同口径（backfill-daily-pct.mjs 实测 524 条 ±0.02 内 100% 一致），
+    //   上游稳定、CORS 无关（服务端请求）、单票一次请求 + 8s 超时，≤40 只 ≈ 6 轮 × 6 并发。
+    //   已收集过（K 线循环里拿到 fuyao 序列）的票不重复拉（§32）。
+    //
+    // 【写什么】仍旧只喂第⑤步的 dayMetricsOf：09:25 竞价口径（竞价涨幅/昨日成交量/竞价量）
+    //   / 15:05 收盘口径（收盘涨幅覆盖）。历史回补照旧不写（第⑤步自己的闸门）。
+    // ══════════════════════════════════════════════════════════════════════════════
+    if (!isBackfill) {
+      const haveSeries = new Set(poolSeries.map((p) => p.stock));
+      const needQt = targets.filter((t) => t.from === 'pool' && t.code && !haveSeries.has(t.stock));
+      if (needQt.length > 0) {
+        console.log('[range20-precompute][R20-METRICS-QT] 快路径 bypass 的补位票 ' + needQt.length
+          + ' 只 ⇒ 腾讯日线补序列（不经 fuyao）');
+        const QT_CONC = 6;
+        let qtOk = 0;
+        let qtFail = 0;
+        for (let i = 0; i < needQt.length; i += QT_CONC) {
+          const chunk = needQt.slice(i, i + QT_CONC);
+          const got = await Promise.all(chunk.map(async (t) => {
+            try {
+              // 窗口 45 自然日（与 legsFromYmd 同宽）：dayMetricsOf 只需要「今天 + 上一交易日」，
+              // 取宽一点以覆盖长假 / 停牌回溯，成本只是单请求里多几根 bar。
+              const series = await fetchQtBars(t.code, legsFromYmd, today);
+              return { stock: t.stock, code: t.code, series };
+            } catch (e) {
+              console.error('[range20-precompute][R20-METRICS-QT] ' + t.stock + '(' + t.code
+                + ') 腾讯日线失败: ' + (e instanceof Error ? e.message : String(e)));
+              return null;
+            }
+          }));
+          for (const g of got) {
+            if (g) { poolSeries.push(g); qtOk++; } else { qtFail++; }
+          }
+        }
+        console.log('[range20-precompute][R20-METRICS-QT] 腾讯序列补齐 ok=' + qtOk + ' fail=' + qtFail
+          + ' ⇒ poolSeries=' + poolSeries.length + ' 只');
       }
     }
 
