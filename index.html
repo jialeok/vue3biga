@@ -239,5 +239,30 @@
 </div>
 
 <script type="module" src="/src/main.js"></script>
+<!-- ★★ [SW-STALE-FIX 2026-11-01 用户报障「改了根本没生效」] 「发现新版本」横条。
+     为什么需要它（现场）：这台机器的网络每个请求要停顿 12~64 秒，而 Service Worker 的导航
+     策略是「1.5 秒超时就回退本地缓存」⇒ 页面拿到的一直是缓存里的旧 HTML，用户怎么看都是老界面，
+     会以为「代码没改 / 改了没用」。旧 sw.js 还有个真 bug：超时回退时把网络响应丢弃了，
+     缓存永不刷新 ⇒ 永远吃旧版本（已在 public/sw.js 的 SW-STALE-FIX 段修掉）。
+     现在：SW 只要发现线上 HTML 变了就 postMessage 过来，这里弹一条横条；
+     点「立即刷新」走 __bootHardReset（清 Cache + 带 cache-buster 重载）⇒ 一次点到最新版。
+     ⛔ 刻意【不自动刷新】：用户可能正在看盘 / 正在编辑备注，静默重载会把现场弄丢。
+     ⛔ 不依赖 Vue / 任何模块：必须这段最朴素的 JS 就能工作（旧页面也至少能收到消息）。 -->
+<div id="ver-banner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:99998;align-items:center;justify-content:center;gap:10px;padding:8px 12px;background:#1f2937;color:#fff;font:13px/1.5 -apple-system,'Segoe UI','Microsoft YaHei',sans-serif;box-shadow:0 1px 6px rgba(0,0,0,.25)">
+  <span>已发布新版本</span>
+  <button type="button" onclick="window.__bootHardReset&&window.__bootHardReset()" style="padding:4px 12px;border:0;border-radius:5px;background:#2563eb;color:#fff;font-size:13px;cursor:pointer">立即刷新</button>
+  <button type="button" aria-label="收起" onclick="var b=document.getElementById('ver-banner');if(b)b.style.display='none'" style="padding:4px 8px;border:1px solid rgba(255,255,255,.35);border-radius:5px;background:transparent;color:#fff;font-size:13px;cursor:pointer">稍后</button>
+</div>
+<script>
+  (function () {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.addEventListener('message', function (e) {
+      var d = e.data || {};
+      if (d.type !== 'NEW_VERSION') return;
+      var el = document.getElementById('ver-banner');
+      if (el) el.style.display = 'flex';
+    });
+  })();
+</script>
 </body>
 </html>
