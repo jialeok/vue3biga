@@ -229,6 +229,13 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
       ' → 【降级】改用「前一日名单 ∪ 打标签 ∪ 龙头名册」继续抓取，不中断整轮早盘流程');
   }
   logs.push('成分股数量: ' + ladderConstituents.length + (ladderDegraded ? '（⬇️ 降级模式：名单源不可用）' : ''));
+  // [LADDER-SRC 2026-11-03 用户口径] 把「同花顺最近多板(883410) 源数据条数」抽成【结构化字段】带走。
+  //   用户要拿它对齐炒股软件（原话：「这个才是重点……这个是源数据」）。
+  //   ⚠️ 与下方 constituents.length 不是一回事：那个是「前一日名单 ∪ 打标签 ∪ 龙头名册」并进来的
+  //      【抓取名单】，会比源数据多；源数据只有 ladderConstituents.length 这一个数。
+  //   ⚠️ 降级运行（名单源不可用）时它是 0，但那个 0 的含义是「没抓到」⇒ 由 ladderDegraded 表达，
+  //      前端看到 ladderDegraded=true 就显示 `--` 而不是「0 只」（§10 读失败≠空数据）。
+  const ladderCount = ladderConstituents.length;
 
   const codeMap = (codeMapRes.ok && codeMapRes.v) || {};
   if (!codeMapRes.ok) logs.push('读取 stockcodemap 失败(非致命): ' + codeMapRes.e.message);
@@ -370,7 +377,7 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
   //   仍会照常落库 → 看板不空白；名单由后续重跑（/fetch?point=morning）补写。
   if (ladderDegraded) {
     logs.push('步骤2：⬇️ 降级模式 → 跳过 auction_watchlist 名单落库（避免写入残缺名单）');
-    return { constituents, watchlistRows: [], nowIso: new Date().toISOString(), ladderDegraded: true };
+    return { constituents, watchlistRows: [], nowIso: new Date().toISOString(), ladderDegraded: true, ladderCount };
   }
 
   // 【BUG-FIX】不写 volume/yest_volume/change_pct/note/topics 字段：
@@ -415,7 +422,7 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
     logs.push('写入 auction_watchlist 失败: ' + e.message);
     return { error: '写入 auction_watchlist 失败: ' + e.message };
   }
-  return { constituents, watchlistRows, nowIso };
+  return { constituents, watchlistRows, nowIso, ladderCount };
 }
 
 // 3. 调 numcat daily_auc 获取竞价数据（含"今天缺失"延迟重试）
@@ -1086,7 +1093,7 @@ export async function runMorning(env) {
   if (watchlistResult.error) {
     return { ok: false, today, error: watchlistResult.error, logs };
   }
-  const { constituents, watchlistRows, nowIso, ladderDegraded } = watchlistResult;
+  const { constituents, watchlistRows, nowIso, ladderDegraded, ladderCount } = watchlistResult;
   mark('名单落库' + (ladderDegraded ? '（⬇️ 降级：名单源不可用）' : ''));
 
   // ---- P0-② 竞价 daily_auc 与 收盘 daily【并发】（两者互不依赖）----
@@ -1186,6 +1193,9 @@ export async function runMorning(env) {
   return {
     ok: metricsWriteFailures === 0 || totalMetricsWritten > 0,
     today,
+    // [LADDER-SRC 2026-11-03 用户口径] 同花顺「最近多板」(883410) 源数据条数 —— 前端第一页直接显示，
+    //   用户拿它对齐炒股软件。⚠️ 与 constituentsCount（并入打标签/龙头后的抓取名单）是两个数。
+    ladderCount: ladderCount,
     constituentsCount: constituents.length,
     numcatItems: items.length,
     metricsDates: dateKeys.length,

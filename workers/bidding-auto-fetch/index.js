@@ -83,6 +83,10 @@ async function persistRunResult(env, point, result) {
       finishedAtBj: r.finishedAtBj || '',
       p0Overrun: !!r.p0Overrun,
       ladderDegraded: !!r.ladderDegraded,
+      // [LADDER-SRC 2026-11-03 用户口径] 同花顺「最近多板」(883410) 源数据条数。
+      //   前端 logic/auction/ladder-source.js 读这个字段显示在第一页（用户拿它对炒股软件）。
+      //   ⚠️ null = 本轮没走到那一步（如名单落库失败提前返回）⇒ 前端显示 `--`，⛔ 不补 0。
+      ladderCount: r.ladderCount === undefined ? null : r.ladderCount,
       todayDataMissing: !!r.todayDataMissing,
       todayMetricsWritten: r.todayMetricsWritten === undefined ? null : r.todayMetricsWritten,
       metricsWritten: r.metricsWritten === undefined ? null : r.metricsWritten,

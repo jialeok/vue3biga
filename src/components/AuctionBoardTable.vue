@@ -44,6 +44,15 @@
     v-if="viewData.items && viewData.items.length > 0"
     class="auction-row-counts"
   >
+    <!-- [LADDER-SRC 2026-11-03 用户口径] 源数据条数放在最前 —— 它是「账本的第一行」：
+         worker 9:25 从同花顺「最近多板」(883410) 到底拉到了几只，用户拿它对齐炒股软件。
+         ⚠️ 非 ready 时显示 `--`（不显示 0）：没记录 / 读失败 / 降级运行都不是「0 只」（§10）。
+         文案与状态全部来自 logic/auction/ladder-source.js，本模板不做判断。 -->
+    <span
+      class="auction-row-counts-item auction-row-counts-source"
+      :class="{ 'is-pending': ladderSource.status !== 'ready' }"
+      :title="ladderSource.text || 'worker 9:25 从同花顺「最近多板」(883410) 拉取的成分股条数（源数据）'"
+    >同花顺最近多板 {{ ladderSourceText }}</span>
     <span class="auction-row-counts-total">合计 {{ rowClassCounts.total }} 行</span>
     <span
       class="auction-row-counts-item auction-row-counts-formal"
@@ -200,8 +209,19 @@ const {
   showObsSeparator, showDragonSeparator,
   // [ROW-CLASS 2026-11-02 用户口径] 四类行分账（Logic 层唯一真相的只读透出）
   rowClassCounts,
+  // [LADDER-SRC 2026-11-03 用户口径] 同花顺「最近多板」源数据条数（status/count/text）
+  ladderSource,
   highlightStockSet, openBackend
 } = board;
+
+// [LADDER-SRC 2026-11-03] 源数据条数的显示文案：ready 才给数字，其余一律 `--`。
+// ⛔ 不要在这里 `|| 0`：那会把「没记录 / 读失败 / 降级」全变成「0 只」，用户会以为同花顺只有 0 只
+//   （§10：未知就显示未知，不许伪装成 0）。
+const ladderSourceText = computed(() => {
+  const s = ladderSource.value;
+  if (!s || s.status !== 'ready') return '--';
+  return s.count + ' 只';
+});
 
 // [YIZI-SUP 2026-09-20] 「补竞价一字」的状态与融入序列（provide 在 AuctionBoard.vue，与表头开关同源）。
 // ⚠️ 只读：本组件 ⛔ 不改 board 的任何东西，只是把常规组那一列的行序列换成「原有行 + 补入行」。

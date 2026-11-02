@@ -36,6 +36,9 @@ import { TOPIC_ORDER_VOL_RATIO, TOPIC_ORDER_YIZI } from '../logic/auction/topic-
 import { computeAuctionViewDataIncremental } from '../logic/auction/incremental-view.js';
 // [ROW-CLASS 2026-11-02 用户口径] 四类行分账的形状唯一实现（正式成员 / 龙头组 / 观察组 / 20日补位）。
 import { buildRowClassCounts } from '../logic/auction/row-class-counts.js';
+// [LADDER-SRC 2026-11-03 用户口径] 「同花顺最近多板」源数据条数（worker 9:25 拉到的 883410 成分股数）。
+//   只读 `bidding_fetch_log`（复用 data/fetch-log.js 的缓存与单飞），⛔ 不新增请求通道、不写库。
+import { ensureLadderSource, getLadderSourceInfo } from '../logic/auction/ladder-source.js';
 import { showToast, showWarningToast } from '../composables/useToast.js';
 import { apiStatusMap, setApiStatus } from '../logic/ui-bridge.js';
 import { setBtnLoading } from '../logic/shared/core-shared.js';
@@ -120,8 +123,19 @@ let _r20Top5WatchBound = false;
 let _presenceWatchBound = false;
 // [R20-DELTA 2026-10-28] 「昨日 20日涨幅名次」取数 watch 同样只挂载一次。
 let _r20DeltaWatchBound = false;
+// [LADDER-SRC 2026-11-03 用户口径] 「同花顺最近多板源数据条数」读取 watch + 快轮询同样只挂载一次。
+let _ladderSrcBound = false;
+let _ladderSrcTimer = null;
 /** 收盘覆盖轮询间隔：5 分钟（页面长时间开着时，跨过 15:00 能自动触发一次，无需手动刷新） */
 const CLOSE_COVER_POLL_MS = 5 * 60 * 1000;
+/**
+ * [LADDER-SRC 2026-11-03] 源数据条数的快轮询间隔：20 秒。
+ * 为什么不能用上面那个 5 分钟：用户常常在 9:25 之前就把页面打开了，而 worker 的 9:25 那条日志
+ * 是在 9:25:0x~9:25:30 才写进去的 —— 5 分钟的间隔会让"9:26 打开却看不到数字"。
+ * ⚠️ 它只在【今天 + 还没拿到】时真正发请求（节流与单飞都在 logic/auction/ladder-source.js 里），
+ *    拿到后本定时器不再产生任何网络请求（不是靠"少跳几次"来省，是状态机直接短路）。
+ */
+const LADDER_SRC_POLL_MS = 20 * 1000;
 
 export function useAuctionBoard() {
   const uiStore = useUiStore();
@@ -553,6 +567,23 @@ export function useAuctionBoard() {
     }
   }
 
+  // [LADDER-SRC 2026-11-03 用户口径] 「同花顺最近多板」源数据条数：日期一变就读一次 + 20s 快轮询自愈。
+  //   为什么需要轮询：页面常在 9:25 之前打开，worker 的 9:25 日志要到 9:25:0x 才落库 ——
+  //   不轮询就会「9:26 打开还是 `--`」，而用户恰恰是拿它去对炒股软件的。
+  //   ⛔ 节流与单飞全在 logic/auction/ladder-source.js（ready 后永不再请求）；本处只负责"什么时候该问"。
+  if (!_ladderSrcBound) {
+    _ladderSrcBound = true;
+    watch(
+      () => uiStore.currentDate,
+      (d) => { ensureLadderSource(d); },
+      { immediate: true }
+    );
+    if (_ladderSrcTimer) clearInterval(_ladderSrcTimer);
+    _ladderSrcTimer = setInterval(function() {
+      ensureLadderSource(uiStore.currentDate);
+    }, LADDER_SRC_POLL_MS);
+  }
+
   if (!_closeCoverBound) {
     _closeCoverBound = true;
     watch(
@@ -695,6 +726,12 @@ export function useAuctionBoard() {
   // ⚠️ 兜底对象也由 buildRowClassCounts() 产出 —— 形状只有一处定义（§6），
   //   ⛔ 别在这里手写一个字面量：以后加字段必然漏改一处。
   const rowClassCounts = computed(() => viewData.value.rowClassCounts || buildRowClassCounts());
+
+  // [LADDER-SRC 2026-11-03 用户口径] 「同花顺最近多板」源数据条数 —— 用户要拿它对齐炒股软件。
+  //   只读逻辑层状态（未加载 / 未到点 ⇒ status 非 ready、count=null，UI 显示 `--`，⛔ 不显示 0）。
+  //   ⚠️ 故意【不放进 viewData / 不进增量指纹】：它不参与任何行内容与排序，
+  //     单独一个 computed ⇒ 到货时只有分账那一行重新渲染（§17/§23 最小影响范围）。
+  const ladderSource = computed(() => getLadderSourceInfo(uiStore.currentDate));
   // [DRAGON-GROUP 2026-09-14] 龙头组与下方（观察组/常规组）之间的蚂蚁线分隔：龙头区块非空且下方有内容时显示。
   const showDragonSeparator = computed(() => {
     return filteredDragonItems.value.length > 0
@@ -2088,6 +2125,8 @@ export function useAuctionBoard() {
     showDragonSeparator,
     // [ROW-CLASS 2026-11-02 用户口径] 四类行分账（Logic 层唯一真相的只读透出，见定义处说明）
     rowClassCounts,
+    // [LADDER-SRC 2026-11-03 用户口径] 同花顺「最近多板」源数据条数（status/count/text）
+    ladderSource,
     sortState2,
     isStrengthSortEnabled,
     p2ExpandedSet,
