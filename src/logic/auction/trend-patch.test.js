@@ -9,9 +9,10 @@
 //     10-20: vol=96742200 股, open=11.96, close=13.62
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { computeKlineDayPatch, computeQtDayPatches, ensureTrendPatch } from './trend-patch.js';
-import { fuyaoApiGet, isFuyaoOff } from '../../data/api/fuyao-proxy.js';
+import { fuyaoApiGet, isFuyaoOff, isFuyaoSnapshotAllowed } from '../../data/api/fuyao-proxy.js';
 import { fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
 import { fetchQtDailyBars } from '../../data/api/qt-kline.js';
+import { fetchQtRealtimeQuotes, qtAucPctOf, qtChangePctOf } from '../../data/api/qt-quote.js';
 
 // [TREND-PATCH-FIX 2026-10-22] mock 上游两腿：K 线腿 / 快照腿（ensureTrendPatch 集成语义）
 vi.mock('../../data/api/fuyao-proxy.js', async (importOriginal) => {
@@ -19,11 +20,21 @@ vi.mock('../../data/api/fuyao-proxy.js', async (importOriginal) => {
     // [QT-PATCH 2026-11-01] isFuyaoOff 也必须可 mock：真实模块里它是写死的 true（总闸开着），
     // 不 mock 的话所有集成测试都会走腾讯腿而不是被测的 fuyao 腿。默认 false = 「通道可用」，
     // 腾讯腿的用例里再单独改成 true。
-    return Object.assign({}, actual, { fuyaoApiGet: vi.fn(), isFuyaoOff: vi.fn(() => false) });
+    // [FUYAO-SNAPSHOT 2026-11-02] isFuyaoSnapshotAllowed 同理：总闸开着时它表示「快照端点受控放行」。
+    return Object.assign({}, actual, {
+        fuyaoApiGet: vi.fn(),
+        isFuyaoOff: vi.fn(() => false),
+        isFuyaoSnapshotAllowed: vi.fn(() => true)
+    });
 });
 vi.mock('../../data/stock-range-pct.js', () => ({ fetchFuyaoDailyPctRange: vi.fn() }));
 // [QT-PATCH 2026-11-01] 腾讯腿同样 mock（⛔ 绝不让单测打真实网络）
 vi.mock('../../data/api/qt-kline.js', () => ({ fetchQtDailyBars: vi.fn(), qtSymOf: vi.fn(() => '') }));
+// [QT-TODAY 2026-11-02] 腾讯实时行情腿也 mock（换算函数用真实实现，只挡网络）
+vi.mock('../../data/api/qt-quote.js', async (importOriginal) => {
+    const actual = await importOriginal();
+    return Object.assign({}, actual, { fetchQtRealtimeQuotes: vi.fn() });
+});
 
 describe('trend-patch · computeKlineDayPatch（K线腿换算，复刻时代万恒 10-20 实例）', () => {
   // 与探针逐字节一致的 K 线 series（键 = YYYYMMDD，量 = 股）
@@ -111,6 +122,7 @@ describe('trend-patch · ensureTrendPatch 集成（快照腿带后缀 + 双键�
     beforeEach(() => {
         vi.clearAllMocks();
         isFuyaoOff.mockReturnValue(false);   // 默认「同花顺可用」，腾讯腿用例里单独改 true
+        fetchQtRealtimeQuotes.mockResolvedValue(new Map());  // 默认：实时行情腿无数据
     });
 
     it('复刻 10-22：K线今天无bar（keep空、volOut有昨天）+ 快照带后缀 ⇒ 五腿全补上', async () => {
@@ -147,7 +159,8 @@ describe('trend-patch · ensureTrendPatch 集成（快照腿带后缀 + 双键�
 
         const result = await ensureTrendPatch(
             [{ stock: '新华传媒', code: '600825' }],
-            new Map([['新华传媒', [todayYmd]]])
+            new Map([['新华传媒', [todayYmd]]]),
+            { nowHms: '17:00:00' }   // ★ [QT-TODAY] 钉住「收盘口径」：changePct 只认 K 线，无 bar ⇒ null
         );
 
         const day = result.get('新华传媒').get(todayYmd);
@@ -206,6 +219,23 @@ describe('trend-patch · computeQtDayPatches（腾讯日线腿换算，复刻九
     expect(m2.size).toBe(0);
     expect(computeQtDayPatches(null, ['2026-10-30']).size).toBe(0);
   });
+
+  // ★★ [QT-TODAY 2026-11-02] 复刻「九阳股份 / 新华传媒 11-02 当天整日全空」的现场：
+  //   竞价期腾讯日线**没有今天这根 bar**（实测最后一根是 10-30）⇒ 旧逻辑整日 continue
+  //   ⇒ 连「昨日成交量」都补不上，而它跟今天的 bar 毫无关系。
+  it('当日还没有 bar（noBarYmd）⇒ 昨日成交量照样能算，涨幅/竞价涨幅留 null', () => {
+    const m = computeQtDayPatches(bars, ['2026-11-02'], { noBarYmd: '2026-11-02' });
+    const r = m.get('2026-11-02');
+    expect(r.yestVolume).toBeCloseTo(10395.11, 2);   // 10-30 那根 1,039,511 手 ÷ 100
+    expect(r.changePct).toBeNull();                  // ⛔ 今天自己的收盘价还没有，不猜
+    expect(r.aucPctChg).toBeNull();                  // ⛔ 今天自己的开盘价也没有，交给实时行情腿
+  });
+
+  it('noBarYmd 只豁免「当日」：其它无 bar 日（停牌 / 非交易日）仍然不产出', () => {
+    // 10-31 没有 bar，但 noBarYmd 是 11-02 ⇒ 不属于「当日豁免」⇒ 照旧不产出
+    const m = computeQtDayPatches(bars, ['2026-10-31'], { noBarYmd: '2026-11-02' });
+    expect(m.size).toBe(0);
+  });
 });
 
 describe('trend-patch · ensureTrendPatch 集成 · 同花顺停用（FUYAO_OFF=true）⇒ 走腾讯腿', () => {
@@ -241,22 +271,63 @@ describe('trend-patch · ensureTrendPatch 集成 · 同花顺停用（FUYAO_OFF=
     expect(fuyaoApiGet).not.toHaveBeenCalled();
   });
 
-  it('停用时「今天」的快照腿跳过（不构造请求），K 线可得字段照常补', async () => {
+  it('停用时：快照腿【受控放行】—— 只走这一个端点、必须显式 allowWhenOff + 硬超时', async () => {
     isFuyaoOff.mockReturnValue(true);
     fetchQtDailyBars.mockResolvedValue(new Map([
       ['600825', [
-        { ymd: todayYmd, open: 14.0, close: 14.2, volHand: 500000 },
-        { ymd: '2026-10-29', open: 13.8, close: 13.9, volHand: 480000 }
+        { ymd: '2026-10-29', open: 13.8, close: 13.9, volHand: 480000 },
+        { ymd: todayYmd, open: 14.0, close: 14.2, volHand: 500000 }
       ]]
     ]));
+    fuyaoApiGet.mockResolvedValue({
+      timestamp: Date.now(), data_status: 'final',
+      item: [{ thscode: '600825.SH', auction_volume: 36365.21, auction_pct: -1.8553, auction_volume_ratio: 1.37 }]
+    });
     const result = await ensureTrendPatch(
       [{ stock: '新华传媒', code: '600825' }],
-      new Map([['新华传媒', [todayYmd]]])
+      new Map([['新华传媒', [todayYmd]]]),
+      { nowHms: '09:26:00' }
     );
     const day = result.get('新华传媒').get(todayYmd);
-    // 今天在腾讯 bar 里（盘中动态 bar）⇒ 三样照算；竞价量/量比 null
-    expect(day.changePct).not.toBeNull();
-    expect(day.volume).toBeNull();
-    expect(fuyaoApiGet).not.toHaveBeenCalled();
+    // 竞价量/量比在别处【没有任何等价来源】（腾讯 [49] 量比是另一个口径）⇒ 必须靠这条腿
+    expect(day.volume).toBeCloseTo(363.6521, 3);
+    expect(day.aucVolRatio).toBeCloseTo(1.37, 5);
+    expect(day.aucPctChg).toBeCloseTo(-1.8553, 4);
+    expect(day.yestVolume).toBeCloseTo(4800, 0);
+    // ★ [FUYAO-SNAPSHOT 2026-11-02] 受控放行三条：端点精确 / 显式 allowWhenOff / timeoutMs>0
+    expect(fuyaoApiGet).toHaveBeenCalledTimes(1);
+    const call = fuyaoApiGet.mock.calls[0];
+    expect(call[0]).toBe('/api/a-share/auction/snapshot');
+    expect(call[2] && call[2].allowWhenOff).toBe(true);
+    expect(call[2] && call[2].timeoutMs).toBeGreaterThan(0);
+    // 同花顺 K 线腿仍然零请求（总闸照旧，⛔ 不是把总闸打开）
+    expect(fetchFuyaoDailyPctRange).not.toHaveBeenCalled();
+  });
+
+  it('停用时 + 快照腿失败 ⇒ 腾讯实时行情兜底：竞价涨幅/涨幅补上，竞价量仍 null（§10 不冒充）', async () => {
+    isFuyaoOff.mockReturnValue(true);
+    // ★ 复刻 2026-11-02 实测：竞价期腾讯【日线】没有今天这根 bar（最后一根是上一交易日）
+    fetchQtDailyBars.mockResolvedValue(new Map([
+      ['002242', [
+        { ymd: '2026-10-29', open: 22.380, close: 23.000, volHand: 1172052 },
+        { ymd: '2026-10-30', open: 21.860, close: 22.140, volHand: 1039511 }
+      ]]
+    ]));
+    fuyaoApiGet.mockRejectedValue(new Error('upstream boom'));
+    fetchQtRealtimeQuotes.mockResolvedValue(new Map([
+      ['002242', { ymd: todayYmd, hms: '09:26:03', price: 21.50, prevClose: 22.14, open: 21.50, volHand: 25521 }]
+    ]));
+    const result = await ensureTrendPatch(
+      [{ stock: '九阳股份', code: '002242' }],
+      new Map([['九阳股份', [todayYmd]]]),
+      { nowHms: '09:26:00' }
+    );
+    const day = result.get('九阳股份').get(todayYmd);
+    // 昨日成交量：今天没有 bar，但只需要【上一交易日那一根】⇒ 必须补齐（用户点名的两个字段之一）
+    expect(day.yestVolume).toBeCloseTo(10395.11, 1);
+    expect(day.aucPctChg).toBeCloseTo(-2.89, 2);   // 21.50/22.14-1 = -2.8907%（同花顺 auction_pct 同值）
+    expect(day.changePct).toBeCloseTo(-2.89, 2);   // 竞价期 change_pct 就是竞价涨幅（与 worker 9:25 同口径）
+    expect(day.volume).toBeNull();                 // ⛔ 竞价量没有合法来源，绝不拿全天成交量冒充
+    expect(day.aucVolRatio).toBeNull();
   });
 });

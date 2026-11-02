@@ -145,6 +145,11 @@ import {
 import { PRESENCE_WINDOW_10 } from '../logic/auction/presence-label.js';
 // ★ [DIVERGE-DAYS 2026-10-21] 总龙分歧判定落库：切换日期时读回即用（一次到位渲染分歧板，不用再等 K 线）
 import { readDivergeDay, upsertDivergeDay } from '../data/diverge-days.js';
+// ★★ [DIVERGE-TODAY-AUC 2026-11-02] 竞价期「今天这只票的竞价涨幅」的唯一来源（腾讯实时行情直连）：
+//   `buildLeaderDivergence` 的展示日竞价涨幅原本只从 K 线 open 换算，而【今天这根 bar 收盘后才成型】
+//   ⇒ 9:26 恒拿不到 ⇒ canJudge=false ⇒ 分歧买点【从来不可能在竞价期生效】，门控只能挂占位干等。
+//   @see data/api/qt-quote.js（为什么今开/昨收-1 与同花顺 auction_pct 等价，有逐位交叉验证）
+import { fetchQtRealtimeQuotes, qtAucPctOf } from '../data/api/qt-quote.js';
 import { _dbgLog } from '../data/debug-log.js';
 // §6：「今天」的唯一口径（与 suspend.js 的 ensureSuspendSet 同一个函数，⛔ 别自己 new Date 拼一遍）。
 //   停牌判定只对今天可信 ⇒ 落库也只对今天做（历史日的 suspend verdict 恒 false，写进去会污染次日判定）。
@@ -576,7 +581,12 @@ export function useTopicVolRatioBoard() {
         code: cand.code,
         name: cand.stock,
         viewDate: d,
-        todayAucPct: null
+        // ★★ [DIVERGE-TODAY-AUC 2026-11-02] 与正式链路同款修复：原先这里写死 null ⇒ 竞价期
+        //   `openPctByYmd` 没有今天的键 ⇒ canJudge 恒 false ⇒ **预热通道在早上从来没生效过**
+        //   （它存在的唯一理由就是「早上几秒内猜出是不是分歧日」）。
+        //   用户 2026-11-02 日志实证：`[DIVERGE-GUESS] 昨日云表挑不出总龙一候选 ⇒ 不预热` ——
+        //   那是另一条；即便挑得出候选，也会因为这一行恒判不出。
+        todayAucPct: await _todayAucPctOf(d, cand.code)
       });
       divergeGuess.value = {
         date: d, stock: cand.stock, code: cand.code, verdict: verdict,
@@ -600,6 +610,95 @@ export function useTopicVolRatioBoard() {
     _divergeGuessInflight.set(d, p);
     return p;
   }
+
+  /**
+   * ★★ [DIVERGE-TODAY-AUC 2026-11-02] 取「展示日 = 今天」时总龙一的真实竞价涨幅。
+   *
+   * 🔴 修的是「分歧买点在竞价期从未生效过」这个类根因：
+   *   `ensureLeaderDivergence` 原来给 `buildLeaderDivergence` 传的 `todayAucPct: null`（写死），
+   *   而纯函数在展示日既没有行情竞价涨幅、K 线也没有这根 bar 的 open 时，会按 §10 返回
+   *   `canJudge=false`（见 leader-divergence.js 的 `if (aucPct === null …) return none`）。
+   *   而【今天这根 K 线 bar 要收盘后才成型】⇒ 9:26 时 `openPctByYmd` 里根本没有今天的键
+   *   ⇒ 竞价期**恒** canJudge=false ⇒ 用户 2026-11-02 日志实证：
+   *   `[DIVERGE] 总龙=九阳股份(002242) ready=true canJudge=false`。
+   *   后果有两层，都很要命：
+   *     ① 真正该给的「总龙首次分歧」买点板永远不出现（这是产品最核心的信号）；
+   *     ② 门控 `shouldGateBuySide` 只能靠「重试额度用完落终态」放行 ⇒ 买点侧最长干等 140s
+   *        （5+15+40+80s）⇒ 用户原话「从9点26到开盘都没显示选票结果」。
+   *
+   * ✅ 数据源：腾讯实时行情 今开/昨收-1（0 同花顺额度、不依赖Supabase边缘函数、CORS 直连）。
+   *   2026-11-02 实测逐位一致：九阳 -2.8907% / 新华 -10.0299%，与同花顺 auction_pct 完全相同。
+   *
+   * ⛔ 三条红线：
+   *   ① **只对今天**：行情给的是「此刻」的今开，用到历史日头上就是伪造历史（§10）；
+   *   ② **日期闸门**：行情自带时间戳必须等于展示日，否则当取不到（上游给「最近交易日」）；
+   *   ③ 取不到 ⇒ 返回 null ⇒ 与修复前行为完全一致（canJudge=false，§11 零风险回退）。
+   *
+   * @param {string} d 展示日 'YYYY-MM-DD'
+   * @param {string} code 6 位代码
+   * @returns {Promise<number|null>}
+   */
+  async function _todayAucPctOf(d, code) {
+    const cd = String(code || '').trim();
+    if (!d || !/^\d{6}$/.test(cd)) return null;
+    if (d !== _getLocalTodayStr()) return null;            // 红线①
+    try {
+      const map = await fetchQtRealtimeQuotes([cd], { timeoutMs: 5000 });
+      const q = map.get(cd);
+      if (!q || q.ymd !== d) return null;                  // 红线②
+      return qtAucPctOf(q);
+    } catch (e) {
+      _dbgLog('[DIVERGE-TODAY-AUC] ' + cd + ' 实时行情取不到（判定退回 K 线口径）: ' + (e && e.message || e));
+      return null;
+    }
+  }
+
+  /**
+   * ★★ [DIVERGE-WATCHDOG 2026-11-02] 买点侧占位的**硬上限**（最后一道保险丝）。
+   *
+   * 🔴 为什么必须有（这是「占位会不会重蹈覆辙」的结构性答案）：
+   *   门控 `plan.divergePending` 的唯一放行条件是 `divergeVerdict.ready === true`，而它只由
+   *   `ensureLeaderDivergence` 的**正常返回路径**写入。也就是说：
+   *     · 只要那条链路**跑完**（无论结论是 canJudge 真还是假）⇒ 一定放行 ✅；
+   *     · 但只要它**卡住不返回**（`ensureRange20Leaders` 里某个上游正在途、某个 await 永不结算），
+   *       退避重试链**根本不会被排上**（`_scheduleDivergeRetry` 是在函数内部、返回前才调的）
+   *       ⇒ verdict 恒 null ⇒ 占位永久挂着，直到用户刷新。
+   *   2026-11-02 的现场正是这样：`[RANGE20-TOP5-WARM]` 显示 20 日前五那一轮还在「第 3 次重算」，
+   *   而 `[DIVERGE]` 那条链路在它之后才可能产出结论 ⇒ 用户从 9:26 一直看到开盘。
+   *
+   * ✅ 做法：起链路时同时起一个 20s 的看门狗。到点仍未 ready ⇒ 落**与「重试额度用完」完全相同的
+   *   终态**（`{ready:true, canJudge:false}`）⇒ 门控放行、买点侧按常规规则渲染。
+   *   ⛔ 不新增语义、不新造状态：这是 leader-divergence.js 已经定义的「判不出 ≠ 没分歧」的出口。
+   *   ⛔ 20s 不是拍脑袋：交易 9:30 开始，用户 9:26 打开页面 —— 20s 留出「精算跑完」的正常窗口，
+   *      同时保证 9:30 之前一定已经给出可读结论。
+   */
+  const DIVERGE_VERDICT_DEADLINE_MS = 20000;
+  /** date -> timer（同一日只留一个，重复 arm 会覆盖） */
+  const _divergeWatchdog = new Map();
+
+  function _clearDivergeWatchdog(d) {
+    const t = _divergeWatchdog.get(d);
+    if (t) { clearTimeout(t); _divergeWatchdog.delete(d); }
+  }
+
+  function _armDivergeWatchdog(d) {
+    if (!d) return;
+    _clearDivergeWatchdog(d);
+    const timer = setTimeout(function() {
+      _divergeWatchdog.delete(d);
+      // ⚠️ 两道守卫与退避重试的终态完全同款：过期日期不许覆盖当前日的结论（DIVERGE-RACE）
+      if (currentDate.value !== d) return;
+      if (divergeDate.value === d && divergeVerdict.value && divergeVerdict.value.ready) return;
+      divergeVerdict.value = { ready: true, canJudge: false, firstBoardYmd: '',
+        firstDivergenceYmd: '', todayFirstDivergence: false, todayAucPct: null, events: [] };
+      divergeDate.value = d;
+      console.warn('[TVRB] 总龙分歧判定超过 ' + (DIVERGE_VERDICT_DEADLINE_MS / 1000) +
+        's 未落地（' + d + '）⇒ 看门狗按时落「判不出」，门控放行（买点侧按常规规则渲染）');
+      _dbgLog('[DIVERGE-WATCHDOG] ' + d + ' 判定超时 ⇒ 落终态 canJudge=false，买点侧不再挂占位');
+    }, DIVERGE_VERDICT_DEADLINE_MS);
+    _divergeWatchdog.set(d, timer);
+  }
+
   /**
    * 确保某日的「总龙首次分歧」判定已就绪（幂等 / 单飞 / 结论缓存）。
    * ⛔ 判不出（窗口无首板 / K 线缺）⇒ verdict.canJudge=false ⇒ plan 的 divergeActive 恒 false
@@ -620,6 +719,11 @@ export function useTopicVolRatioBoard() {
     //   它只产出「门控用的猜测」，⛔ 不参与正式结论；失败/慢都不影响下面的链路。
     void ensureDivergeGuess(d);
     const p = (async function() {
+      // ★ [DIVERGE-WATCHDOG 2026-11-02] 起链路【先上保险丝】：本链路任何一步卡住不返回
+      //   （最典型的是 `ensureRange20Leaders` 里 20 日涨幅那一轮还在重算 ⇒ 退避重试链根本
+      //   排不上 ⇒ verdict 恒 null），20s 后由看门狗落终态放行。
+      //   ⛔ 见 _armDivergeWatchdog 的注释：这是「占位会不会重蹈覆辙」的结构性答案。
+      _armDivergeWatchdog(d);
       // ⓪ ★ [DIVERGE-DAYS 2026-10-21] 落库优先：该日的分歧判定【曾经算出来过】（canJudge=true）⇒
       //   直接读回当结论 —— 分歧判定对历史日是确定性的（K 线历史不可变 + 竞价涨幅 9:25 后不变），
       //   读回即用 ⇒ 切回该日【一次到位】渲染分歧板，K 线都不用等（用户「就不能直接显示正确的吗」）。
@@ -645,6 +749,7 @@ export function useTopicVolRatioBoard() {
             events: []
           };
           divergeDate.value = d;
+          _clearDivergeWatchdog(d);                 // ★ [DIVERGE-WATCHDOG] 结论已落地，撤保险丝
           _dbgLog('[DIVERGE] ' + d + ' 命中落库判定（todayFirst=' + row.todayFirst +
             '）⇒ 直接采用，不再等 K 线');
           return;
@@ -655,7 +760,12 @@ export function useTopicVolRatioBoard() {
       // ① 前五就绪（幂等 + 会话缓存 + 单飞；warm-retry 的重算也走这一份）
       const leaders = await ensureRange20Leaders(d);
       // ⚠️ [DIVERGE-RACE] 只清【当前展示日】那格：过期链路不许把别人算好的结论抹掉（见上面守卫注释）
-      if (currentDate.value === d) {
+      // ★ [DIVERGE-WATCHDOG 2026-11-02] 追加「已有 ready 结论就不许清」：看门狗 20s 落终态之后，
+      //   仍在途的那条链路恢复时会把终态清回 null ⇒ 占位重新挂上（正是用户说的
+      //   「显示出来了结果，之后又变成这样了」）。结论一旦 ready 就是结论，
+      //   只允许被【另一个日期的结论】替换，⛔ 不许被同日的在途链路清空。
+      if (currentDate.value === d &&
+          !(divergeDate.value === d && divergeVerdict.value && divergeVerdict.value.ready)) {
         divergeVerdict.value = null;
         divergeDate.value = d;
       }
@@ -673,6 +783,7 @@ export function useTopicVolRatioBoard() {
         if (divergeDate.value === d && currentDate.value === d) {
           divergeVerdict.value = { ready: true, canJudge: false, firstBoardYmd: '',
             firstDivergenceYmd: '', todayFirstDivergence: false, todayAucPct: null, events: [] };
+          _clearDivergeWatchdog(d);                 // ★ [DIVERGE-WATCHDOG] 终态已落，撤保险丝
         }
         return;
       }
@@ -708,6 +819,18 @@ export function useTopicVolRatioBoard() {
         ' open=' + ((openOut.get(l0.stock) && openOut.get(l0.stock).size) || 0));
       // ③ 纯函数判定（首板 / 首次分歧 / 事件流）。竞价涨幅统一取 K 线 open/昨收：
       //    A 股开盘价 = 9:25 集合竞价成交价，两者同一价格；展示日行情行的竞价涨幅留作后续增强。
+      // ③ 纯函数判定（首板 / 首次分歧 / 事件流）。
+      //   ★★ [DIVERGE-TODAY-AUC 2026-11-02] 展示日的竞价涨幅**必须单独取**：
+      //     K 线里今天这根 bar 收盘后才成型 ⇒ `openPctByYmd` 在 9:26 恒无今天的键
+      //     ⇒ 纯函数按 §10 返回 canJudge=false（用户 2026-11-02 日志实证）。这正是
+      //     「分歧买点在竞价期从未生效 + 门控只能干等 140s」的类根因。
+      //   ⚠️ 只对【今天】取（`_todayAucPctOf` 内部有「历史日一律 null」红线）：
+      //      历史日 K 线里有 open，走原口径即可，⛔ 绝不用「此刻」的今开去伪造历史。
+      const _todayAuc = await _todayAucPctOf(d, l0.code);
+      if (_todayAuc != null) {
+        _dbgLog('[DIVERGE-TODAY-AUC] ' + d + ' 总龙=' + l0.stock + ' 今日竞价涨幅=' + _todayAuc +
+          '%（腾讯实时行情，与同花顺 auction_pct 同口径）');
+      }
       const verdict = buildLeaderDivergence({
         pctByYmd: pct.get(l0.stock) || new Map(),
         openPctByYmd: openOut.get(l0.stock) || new Map(),
@@ -715,13 +838,14 @@ export function useTopicVolRatioBoard() {
         code: l0.code,
         name: l0.stock,
         viewDate: d,
-        todayAucPct: null
+        todayAucPct: _todayAuc
       });
       // ⚠️ [DIVERGE-RACE] 同上：只写【当前展示日】那格（过期链路写进来会让屏幕倒退回占位）
       if (currentDate.value === d) {
         divergeVerdict.value = verdict;
         divergeDate.value = d;
       }
+      _clearDivergeWatchdog(d);                      // ★ [DIVERGE-WATCHDOG] 结论已落地，撤保险丝
       if (_divergeRetry.has(d)) { clearTimeout(_divergeRetry.get(d).timer); _divergeRetry.delete(d); }
       // ★ [DIVERGE-DAYS 2026-10-21] 判定算出（canJudge=true）⇒ 落库：下次切回该日读回即用（一次到位）。
       //   ⛔ 只写 canJudge=true（Data 层有第二道闸，§10 绝不落一行「猜的」判定）；
@@ -751,7 +875,10 @@ export function useTopicVolRatioBoard() {
       // §10：失败必须可见（控制台）+ 如实降级（分歧买点本次不生效），⛔ 不猜、不静默伪造
       console.warn('[TVRB] 总龙分歧判定失败，分歧买点本次不生效:', e && e.message);
       // ⚠️ [DIVERGE-RACE] 失败也只降级【自己的日期】：过期链路失败不能把当前日的好结论清空
-      if (currentDate.value === d) {
+      // ★ [DIVERGE-WATCHDOG 2026-11-02] 同款守卫：已有 ready 结论（含看门狗落的终态）不许被清空
+      //   ⇒ 否则「超时放行 ⇒ 几秒后上游报错 ⇒ 屏幕又退回占位」。
+      if (currentDate.value === d &&
+          !(divergeDate.value === d && divergeVerdict.value && divergeVerdict.value.ready)) {
         divergeVerdict.value = null;
         divergeDate.value = d;
       }

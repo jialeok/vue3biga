@@ -34,9 +34,35 @@ export const LADDER_THSCODE = '883410.TI';
  */
 const FUYAO_OFF = true;
 
+/**
+ * ★★ [FUYAO-SNAPSHOT 2026-11-02] 单端点 / 单调用方的**受控放行**（⛔ 不是把总闸打开）。
+ *
+ * 为什么需要：总闸 FUYAO_OFF 是为了防「无超时的批量请求把标签页网络占满」而设的（见上文），
+ *   但它是**按路径一刀切**，顺带把「竞价快照」也拦了。而竞价快照是**唯一**能给出
+ *   「9:25 集合竞价的瞬时量 / 竞价量比」的上游 —— 这两个值 K 线里没有、任何别家口径都不等价
+ *   （见 qt-quote.js 的对照表）。它一断，趋势图每个补位票的当天必然少两条腿
+ *   ——2026-11-02 用户第三次报同一个现象（九阳股份 / 新华传媒），根因就在这。
+ *
+ * 为什么不干脆把 FUYAO_OFF 改回 false：那会把 18 个调用点（区间涨幅 / 成分股 / 十日涨幅……）
+ *   一起放回去，10-30 的卡死随时复现。⛔ 明天就是交易日，不做这种赌博。
+ *
+ * 三道收口（缺一不可，⛔ 别放宽）：
+ *   ① 只认这一个路径（SNAPSHOT_ONLY_PATH，全字符串相等）；
+ *   ② 调用方必须**显式**传 `allowWhenOff: true` —— 其余 3 个快照调用点（suspend.js /
+ *      ths-today-patch.js / yizi/ths-snapshot.js）一个字都不用改，行为逐字不变（§11）；
+ *   ③ 必须**同时**传 `timeoutMs > 0` —— 没有超时的放行一律拒绝。这正是 10-30 事故的直接成因
+ *      （6 处调用没传 timeoutMs ⇒ 单请求挂到边缘函数超时为止），这里从接口层强制掉。
+ */
+const SNAPSHOT_ONLY_PATH = '/api/a-share/auction/snapshot';
+
 /** 同花顺通道当前是否已停用（供 Logic 层判断「还要不要排 K 线补算」） */
 export function isFuyaoOff() {
     return FUYAO_OFF;
+}
+
+/** 竞价快照端点是否被单独放行（供 Logic 层判断「快照腿还要不要走」） */
+export function isFuyaoSnapshotAllowed() {
+    return FUYAO_OFF; // 放行与否只跟总闸有关；总闸开着时该端点是唯一例外
 }
 
 // 调用同花顺 fuyao-proxy（GET），返回 data 字段
@@ -45,10 +71,19 @@ export function isFuyaoOff() {
 //   会因此永不结算 ⇒ 整批补算永远发布不出来（20日涨幅卡在库内那几天）。
 //   ⛔ 默认 undefined = 不设超时 ⇒ 既有调用方（十日涨幅 / 一字 / 涨跌停池）行为逐字不变（§11）。
 export async function fuyaoApiGet(path, params, opts) {
+    // [FUYAO-SNAPSHOT 2026-11-02] 受控放行判定（见 SNAPSHOT_ONLY_PATH 上方注释）。
+    //   ⛔ 三条必须同时满足：路径精确相等 + 显式 allowWhenOff + timeoutMs>0。
+    const _o = opts || {};
+    const _snapshotBypass = !!(_o.allowWhenOff) &&
+        String(path || '') === SNAPSHOT_ONLY_PATH &&
+        Number(_o.timeoutMs) > 0;
     // [FUYAO-OFF] 见文件头。⛔ 必须放在 new URL 之前 —— 连构造请求都不做，一点网络都不产生。
-    if (FUYAO_OFF) {
+    if (FUYAO_OFF && !_snapshotBypass) {
         _dbgLog('[FUYAO-OFF] 已停用同花顺通道，跳过请求: ' + path);
         throw new Error('同花顺通道已临时停用（上游不可用，见 data/api/fuyao-proxy.js 的 FUYAO-OFF）');
+    }
+    if (FUYAO_OFF && _snapshotBypass) {
+        _dbgLog('[FUYAO-SNAPSHOT] 受控放行竞价快照（timeoutMs=' + _o.timeoutMs + '）');
     }
     const url = new URL(FUYAO_PROXY_BASE);
     url.searchParams.set('path', path);

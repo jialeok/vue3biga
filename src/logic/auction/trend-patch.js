@@ -40,8 +40,9 @@
 // @returns {Promise<Map<string, Map<string, {aucPctChg,changePct,yestVolume,volume,aucVolRatio}>>>}
 //          股票名 -> (日期 -> 补缺值；拿不到的字段为 null —— 调用方只用来填 null 位)
 import { fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
-import { fuyaoApiGet, tickerToThscode, isFuyaoOff } from '../../data/api/fuyao-proxy.js';
+import { fuyaoApiGet, tickerToThscode, isFuyaoOff, isFuyaoSnapshotAllowed } from '../../data/api/fuyao-proxy.js';
 import { fetchQtDailyBars } from '../../data/api/qt-kline.js';
+import { fetchQtRealtimeQuotes, qtAucPctOf, qtChangePctOf } from '../../data/api/qt-quote.js';
 import { _dbgLog } from '../../data/debug-log.js';
 
 // 会话缓存：'股票名|YYYY-MM-DD' -> 补缺值对象（含 null 字段 = 「真的没有」，防重复请求 §32）。
@@ -49,10 +50,24 @@ import { _dbgLog } from '../../data/debug-log.js';
 const _patchCache = new Map();
 // 单飞：'股票名' -> Promise（同一只票的并发补缺请求只发一次）
 const _inflight = new Map();
+/**
+ * ★★ [FUYAO-SNAPSHOT 2026-11-02] 竞价快照腿的**硬超时**。
+ *   这不是「顺手加个超时」，而是 2026-10-30 那次「点不动、切日期没反应」事故的正面教训：
+ *   事故直接成因就是 6 处调用没传 timeoutMs ⇒ 单请求挂到边缘函数自己超时为止（约 120s），
+ *   几十个永久 pending 请求把标签页网络占满。⇒ 本端点放行时**必须**带超时，且由
+ *   fuyao-proxy.js 的 allowWhenOff 闸门强制校验（没 timeoutMs 的放行直接被拒）。
+ *   实测代理健康时该接口 ~2.9s（2026-11-02），6s 留一倍余量。
+ */
+const SNAPSHOT_TIMEOUT_MS = 6000;
 
 /** 北京时区「今天」'YYYY-MM-DD'（timestamp 闸门 / 当日判定用） */
 function _beijingTodayYmd() {
     return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+/** 北京时区当前时刻 'HH:MM:SS'（收盘口径分界用，见实时行情腿） */
+function _beijingHmsNow() {
+    return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(11, 19);
 }
 
 /**
@@ -69,18 +84,38 @@ function _beijingTodayYmd() {
  *
  * @param {Array<{ymd:string, open:number|null, close:number, volHand:number|null}>|null} bars 腾讯日线（乱序可）
  * @param {string[]} days 要补的交易日（'YYYY-MM-DD'）
+ * @param {object} [opts] { noBarYmd } —— 见下方「当日无 bar」分支
  * @returns {Map<string, {aucPctChg:number|null, changePct:number|null, yestVolume:number|null}>}
  */
-export function computeQtDayPatches(bars, days) {
+export function computeQtDayPatches(bars, days, opts) {
     const out = new Map();
     if (!Array.isArray(bars) || bars.length === 0 || !Array.isArray(days)) return out;
+    const noBarYmd = String((opts && opts.noBarYmd) || '');
     const sorted = bars.slice().sort(function (a, b) { return a.ymd < b.ymd ? -1 : (a.ymd > b.ymd ? 1 : 0); });
     const round2 = function (x) { return Math.round(x * 100) / 100; };
     for (let i = 0; i < days.length; i++) {
         const d = days[i];
         let ti = -1;
         for (let k = 0; k < sorted.length; k++) { if (sorted[k].ymd === d) { ti = k; break; } }
-        if (ti < 0) continue;                       // 该日无 bar（停牌/未上市）⇒ 不补，调用方按 null 处理
+        if (ti < 0) {
+            // ★★ [QT-TODAY 2026-11-02] 「当日还没有 bar」≠「这一格什么都补不了」。
+            //
+            //   用户报障（第三次，逐字）：「九阳股份和新华传媒……还是没有当天数据，比如竞价涨幅，
+            //   昨日成交量等……前四天历史记录是有的」。前四天有、只有今天空 —— 因为
+            //   **腾讯日线的当日 bar 要收盘后才成型**（实测 2026-11-02 17:0x 的 sz002242 序列
+            //   最后一根仍是 2026-10-30），于是「今天」恒 ti<0 ⇒ 整日 continue ⇒ 三条腿全 null。
+            //   但其中【昨日成交量】与今天的 bar 无关，只需要「上一个交易日那一根」——
+            //   序列最后一根就是它（且必须严格早于该日，防把未来的 bar 当昨收基准）。
+            //   ⚠️ aucPctChg / changePct 仍然留 null：算它们需要【今天自己的】开/收盘价，
+            //      日线里没有 ⇒ 交给后面的「快照腿 / 实时行情腿」补（§10 绝不拿昨天的数冒充今天）。
+            if (noBarYmd && d === noBarYmd) {
+                const last = sorted[sorted.length - 1];
+                if (last && last.ymd < d && last.volHand != null && last.volHand > 0) {
+                    out.set(d, { aucPctChg: null, changePct: null, yestVolume: round2(last.volHand / 100) });
+                }
+            }
+            continue;                                              // 停牌 / 未上市 / 当日未成型 ⇒ 其余字段不补
+        }
         const prev = ti > 0 ? sorted[ti - 1] : null;
         if (!prev || !prev.close || prev.close <= 0) continue;  // 首根无昨收基准 ⇒ 算不出（§10 不猜）
         const tb = sorted[ti];
@@ -127,8 +162,11 @@ export function computeKlineDayPatch(ymd, keep, openKeep, volKeep) {
 
 /** 竞价快照分批（与 suspend.js 同一上游；这里要 auction_volume / auction_pct + 顶层闸门字段）。
  *  返回 { items, timestamp, dataStatus }——timestamp / data_status 在【顶层 data】上，
- *  是「这批竞价数据属于哪个交易日 / 是不是终态」的唯一判据（见下方快照腿的闸门）。 */
-async function _fetchAuctionSnapshotItems(thscodes) {
+ *  是「这批竞价数据属于哪个交易日 / 是不是终态」的唯一判据（见下方快照腿的闸门）。
+ *  ⚠️ [FUYAO-SNAPSHOT 2026-11-02] `fuyaoOpts` 必须带 `{ timeoutMs, allowWhenOff }`：
+ *     总闸开着时本端点靠它受控放行（见 fuyao-proxy.js 的 SNAPSHOT_ONLY_PATH），
+ *     且**没有 timeoutMs 一律拒绝** —— 10-30 卡死就是「无超时请求堆积」造成的。 */
+async function _fetchAuctionSnapshotItems(thscodes, fuyaoOpts) {
     const out = [];
     let timestamp = 0;
     let dataStatus = '';
@@ -137,7 +175,7 @@ async function _fetchAuctionSnapshotItems(thscodes) {
         const data = await fuyaoApiGet('/api/a-share/auction/snapshot', {
             thscodes: chunk.join(','),
             stage: 'final'
-        });
+        }, fuyaoOpts);
         if (i === 0) {
             timestamp = Number(data && data.timestamp) || 0;
             dataStatus = String((data && data.data_status) || '');
@@ -203,7 +241,9 @@ export function ensureTrendPatch(items, missingByStock, opts) {
                     const barsByCode = await fetchQtDailyBars(
                         want.map(function(w) { return w.code; }), fromYmd, toYmd, { timeoutMs: 8000, concurrency: 4 });
                     want.forEach(function(w) {
-                        const m = computeQtDayPatches(barsByCode.get(w.code) || null, w.days);
+                        // ★ [QT-TODAY 2026-11-02] 传 noBarYmd：当日 bar 收盘前不存在，
+                        //   但「昨日成交量」只依赖上一交易日那根 ⇒ 必须仍然产出（见函数头注释）。
+                        const m = computeQtDayPatches(barsByCode.get(w.code) || null, w.days, { noBarYmd: todayYmd });
                         w.days.forEach(function(d) {
                             const p = m.get(d) || { aucPctChg: null, changePct: null, yestVolume: null };
                             _putDay(result, w.stock, d, {
@@ -247,10 +287,15 @@ export function ensureTrendPatch(items, missingByStock, opts) {
         }
 
         // ③ 快照腿：只补「今天」的竞价量（auction_volume 手 → 万股），双重闸门防跨日
-        //   [QT-PATCH 2026-11-01] 同花顺停用时连请求都不构造（fuyaoApiGet 会立刻抛错，纯噪音）；
-        //   当天的竞价量/量比改由云端 R20-METRICS 写 market_metrics ⇒ 前端 hydrate 直接命中。
+        //   ★★ [FUYAO-SNAPSHOT 2026-11-02] 总闸开着时**改为受控放行**（只放行这一个端点，且强制
+        //   6s 超时）。原注释「当天的竞价量/量比改由云端 R20-METRICS 写 market_metrics」经实测证伪：
+        //   `select count(*) from market_metrics where source='range20'` = **0 行**（自该能力上线起
+        //   从未成功写过一行），所以「前端不补、等云端写」等于永远不补 —— 2026-11-02 九阳/新华
+        //   竞价量、竞价量比整列空白就是这条假设的代价。竞价量比在别处没有任何等价来源
+        //   （腾讯的 [49] 量比是另一个口径），只能走这里。
         const todayWant = want.filter(function(w) { return w.days.indexOf(todayYmd) >= 0; });
-        if (todayWant.length > 0 && !isFuyaoOff()) {
+        const _snapLegOn = !isFuyaoOff() || isFuyaoSnapshotAllowed();
+        if (todayWant.length > 0 && _snapLegOn) {
             try {
                 // [TREND-PATCH-FIX 2026-10-22] 快照接口的 thscodes 参数【必须带交易所后缀】
                 //   （thscode 格式）：传 6 位裸码实测返回 code:1002（上游错误）⇒ fuyaoApiGet throw
@@ -259,7 +304,7 @@ export function ensureTrendPatch(items, missingByStock, opts) {
                 //   所有走快照腿的补缺请求都命中，⛔ 不是单只票特例。K 线腿两码通吃、不用改。
                 const snap = await _fetchAuctionSnapshotItems(todayWant.map(function(w) {
                     return tickerToThscode(w.code);
-                }));
+                }), { timeoutMs: SNAPSHOT_TIMEOUT_MS, allowWhenOff: isFuyaoOff() });
                 // 🔴 双重日期闸门（与 worker runTodaySnapshotPatch 同一条安全约束）：
                 //   ① data_status === 'final' —— 竞价终态才算数。实测 00:34 打开时快照仍挂着
                 //      【上一交易日】的竞价（data_status='not_ready'）⇒ 不闸门就会把昨天的竞价量
@@ -308,7 +353,64 @@ export function ensureTrendPatch(items, missingByStock, opts) {
             }
         }
 
-        // ④ 落缓存（「今天」不缓存 —— 盘中 K 线收盘价在动；负结果也缓存 = §32 防请求风暴）
+        // ④ ★★ [QT-TODAY 2026-11-02] 「今天」的闭环：涨幅回填 + 腾讯实时行情兜底。
+        //
+        //   为什么必须有这一步（竞价期能不能看到当天涨幅，全看这里）：
+        //     · 今天这根 K 线 bar 收盘后才成型 ⇒ K 线腿对「今天」只能给出「昨日成交量」；
+        //     · 快照腿成功时能给 竞价量 / 竞价涨幅 / 竞价量比，但**给不出「涨幅」**（它没有收盘价）；
+        //     · 于是「涨幅」这张图今天这一格永远是 `--` —— 用户报障里「五日趋势图没有显示出来」
+        //       的另一半原因就在这。
+        //
+        //   两小步，⛔ 都只填 null 位（§10 不覆盖已有值）：
+        //     ④.1 竞价期（15:00 前）的 change_pct 就是**竞价涨幅** —— 与 worker 9:25 写库
+        //          / range20-precompute 的 `leg='auc'` 逐字同口径（15:05 那轮才覆盖成收盘涨幅）。
+        //          所以只要竞价涨幅有了、涨幅还空着，就直接取它。
+        //     ④.2 还空着的（快照腿失败 / 今开未定 / 本票不在快照返回里）⇒ 腾讯实时行情补：
+        //          竞价涨幅 = 今开/昨收-1（已实测与同花顺 auction_pct 逐位一致），
+        //          涨幅（15:00 后）= 现价/昨收-1。
+        //          这条腿**不依赖 fuyao 与 Supabase**，是竞价期最可靠的一条。
+        const _hmsNow = String(o.nowHms || _beijingHmsNow());   // nowHms 仅供单测注入，生产不传
+        const _afterClose = _hmsNow >= '15:00:00';
+        const _needQuote = [];
+        todayWant.forEach(function(w) {
+            const cur = (result.get(w.stock) && result.get(w.stock).get(todayYmd)) || null;
+            if (!cur) { _needQuote.push(w); return; }
+            if (cur.changePct == null && !_afterClose && cur.aucPctChg != null) {
+                cur.changePct = cur.aucPctChg;                    // ④.1 竞价期同口径
+            }
+            if (cur.aucPctChg == null || cur.changePct == null) _needQuote.push(w);
+        });
+        if (_needQuote.length > 0) {
+            try {
+                const qmap = await fetchQtRealtimeQuotes(
+                    _needQuote.map(function(w) { return String(w.code || '').trim(); }),
+                    { timeoutMs: 5000 });
+                _needQuote.forEach(function(w) {
+                    const q = qmap.get(String(w.code || '').trim());
+                    // 🔴 日期闸门：行情时间戳必须是【今天】。上游给的是「最近交易日」，
+                    //   不闸门就会把上一交易日的今开写到今天头上（本函数最阴险的坑，同快照腿）。
+                    if (!q || q.ymd !== todayYmd) return;
+                    const auc = qtAucPctOf(q);
+                    const chg = qtChangePctOf(q);
+                    const prev = (result.get(w.stock) && result.get(w.stock).get(todayYmd)) ||
+                        { aucPctChg: null, changePct: null, yestVolume: null, volume: null, aucVolRatio: null };
+                    const day = Object.assign({}, prev);
+                    if (day.aucPctChg == null && auc != null) day.aucPctChg = auc;
+                    if (day.changePct == null) day.changePct = _afterClose ? chg : (auc != null ? auc : chg);
+                    _putDay(result, w.stock, todayYmd, day);
+                    _dbgLog('[TREND-PATCH-QT] ' + w.stock + ' 今日行情补齐（' + (q.hms || '—') + '）: 竞价涨幅=' +
+                        (day.aucPctChg == null ? '—' : day.aucPctChg) + ' 涨幅=' +
+                        (day.changePct == null ? '—' : day.changePct) + ' 竞价量=' +
+                        (day.volume == null ? '—' : day.volume) + ' 量比=' +
+                        (day.aucVolRatio == null ? '—' : day.aucVolRatio));
+                });
+            } catch (e) {
+                // §10：失败必须可见，但只降级本腿（其余腿的结果照用），⛔ 不把「取不到」伪装成「没有」
+                _dbgLog('[TREND-PATCH-QT] 实时行情腿失败（今日涨幅本次补不上）: ' + (e && e.message || e));
+            }
+        }
+
+        // ⑤ 落缓存（「今天」不缓存 —— 盘中 K 线收盘价在动；负结果也缓存 = §32 防请求风暴）
         result.forEach(function(byYmd, name) {
             byYmd.forEach(function(v, d) {
                 if (d !== todayYmd) _patchCache.set(name + '|' + d, v);
