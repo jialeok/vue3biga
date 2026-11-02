@@ -44,16 +44,18 @@
     v-if="viewData.items && viewData.items.length > 0"
     class="auction-row-counts"
   >
-    <!-- [LADDER-SRC 2026-11-03 用户口径] 源数据条数放在最前 —— 它是「账本的第一行」：
-         worker 9:25 从同花顺「最近多板」(883410) 到底拉到了几只，用户拿它对齐炒股软件。
-         ⚠️ 非 ready 时显示 `--`（不显示 0）：没记录 / 读失败 / 降级运行都不是「0 只」（§10）。
-         文案与状态全部来自 logic/auction/ladder-source.js，本模板不做判断。 -->
+    <!-- ★ [LADDER-SRC-UI 2026-11-03 用户报障「你在那个合计上标注啊，我都看不到这个数值是多少」]
+         源数据条数【紧跟合计】：这两个数必须并排，用户才能一眼看出差了多少。
+         它是「源头」= worker 9:25 从同花顺「最近多板」(883410) 拉到的成分股条数，
+         ⛔ 不等于 watchlist 行数、也不等于合计（差额来自注入行与历史合并名单）。
+         ⚠️ 非 ready 时不显示数字、也不显示 0，而是显示「为什么没有数字」（待 9:25 / 无记录 / 读取失败…）
+         —— 文案与状态全部来自 logic/auction/ladder-source.js，⛔ 模板不做判断、⛔ 不用 `|| 0`。 -->
+    <span class="auction-row-counts-total">合计 {{ rowClassCounts.total }} 行</span>
     <span
       class="auction-row-counts-item auction-row-counts-source"
       :class="{ 'is-pending': ladderSource.status !== 'ready' }"
       :title="ladderSource.text || 'worker 9:25 从同花顺「最近多板」(883410) 拉取的成分股条数（源数据）'"
     >同花顺最近多板 {{ ladderSourceText }}</span>
-    <span class="auction-row-counts-total">合计 {{ rowClassCounts.total }} 行</span>
     <span
       class="auction-row-counts-item auction-row-counts-formal"
       title="今日 9:25 正式名单成员数（= 强度统计的分母，不含纯观察组继承行）"
@@ -214,13 +216,16 @@ const {
   highlightStockSet, openBackend
 } = board;
 
-// [LADDER-SRC 2026-11-03] 源数据条数的显示文案：ready 才给数字，其余一律 `--`。
+// ★ [LADDER-SRC-UI 2026-11-03] 源数据条数的显示文案：ready 才给数字，其余给【原因】。
+// 旧版非 ready 只显示一个 `--` —— 用户看到的是"没标注"，根本不知道是没跑、读失败还是旧日志没记。
+// 现在由 Logic 层给 short（待 9:25 / 无记录 / 读取失败 / 名单源不可用 / 日志无此项），模板只摆位置。
 // ⛔ 不要在这里 `|| 0`：那会把「没记录 / 读失败 / 降级」全变成「0 只」，用户会以为同花顺只有 0 只
 //   （§10：未知就显示未知，不许伪装成 0）。
 const ladderSourceText = computed(() => {
   const s = ladderSource.value;
-  if (!s || s.status !== 'ready') return '--';
-  return s.count + ' 只';
+  if (!s) return '--';
+  if (s.status === 'ready') return s.count + ' 只';
+  return s.short || '--';
 });
 
 // [YIZI-SUP 2026-09-20] 「补竞价一字」的状态与融入序列（provide 在 AuctionBoard.vue，与表头开关同源）。

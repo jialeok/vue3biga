@@ -1791,13 +1791,27 @@
    ⚠️ 未就绪（--）时降成普通灰、字重回到 500：让「拿不到」在视觉上就弱于「拿到的数字」，
       避免用户把 `--` 当成一个数值。
    ============================================================================ */
+/* ★ [LADDER-SRC-UI 2026-11-03 用户报障「我都看不到这个数值是多少」]
+   旧版只是一个 10px 的青色文字，夹在一排灰字里 —— 用户根本找不到。
+   改成【实心青色胶囊】：12px / 700 / 白字 / 深青底，视觉上明显重于整行其它项。
+   它紧跟在「合计 N 行」后面，用户一眼就能把「合计 95 行」和「源 47 只」并排看。
+   ⛔ 依旧不用红 / 绿（红=涨 绿=跌 是全站铁律，这里没有涨跌语义）。 */
 .auction-row-counts-source {
-    color: #0f766e;
+    padding: 0 6px;
+    font-size: 12px;
     font-weight: 700;
+    line-height: 16px;
+    color: #ffffff;
+    background: #0f766e;
+    border-radius: 3px;
 }
 
+/* 未就绪（待 9:25 / 无记录 / 读取失败 …）不是数值，⛔ 不给它胶囊，降成灰字空心 */
 .auction-row-counts-source.is-pending {
-    color: #94a3b8;
+    padding: 0;
+    font-size: 10px;
     font-weight: 500;
+    color: #94a3b8;
+    background: transparent;
 }
 

@@ -34,7 +34,10 @@ import { _dbgLog } from '../../data/debug-log.js';
 
 /** 与 UI 约定的空态（形状唯一，⛔ 别在别处手写字面量） */
 const EMPTY_INFO = {
-  date: '', status: 'idle', count: null, degraded: false, via: '', at: '', text: ''
+  date: '', status: 'idle', count: null, degraded: false, via: '', at: '', text: '',
+  // [LADDER-SRC-UI 2026-11-03] 分账行里显示的那一小段字（ready ⇒「47 只」，其余 ⇒ 为什么没有数字）。
+  //   为什么放在 Logic 层而不是模板里：它是状态语义，模板只负责摆位置（§6 单一真相）。
+  short: ''
 };
 
 /** 状态容器：ref ⇒ 到货后所有读它的 computed 自动更新（与 dragon-group / suspend 同款模式） */
@@ -42,14 +45,18 @@ const _state = ref(Object.assign({}, EMPTY_INFO));
 
 /** 每个日期最多多久重试一次（今天还没记录时靠它节流；timer 20s 一跳也不会打爆） */
 const RETRY_MS = 12 * 1000;
+/** 读失败后最多重试几次再放弃（历史日"只试一次"的例外：网络抖动不该让用户永久看不到数字） */
+const MAX_ERR_RETRY = 3;
 const _lastTry = new Map();   // date -> ts
 const _inflight = new Map();  // date -> Promise
+const _retry = new Map();     // date -> 已失败次数
 
 /** 仅供测试 / 诊断：重置模块内状态与缓存 */
 export function _resetLadderSourceForTest() {
   _state.value = Object.assign({}, EMPTY_INFO);
   _lastTry.clear();
   _inflight.clear();
+  _retry.clear();
 }
 
 /**
@@ -105,20 +112,29 @@ export function buildLadderSourceInfo(rows, date) {
   const list = Array.isArray(rows) ? rows : [];
   if (list.length === 0) {
     // 没有任何 morning 记录 ⇒ 那天的抓取没跑（§10：与"读失败"严格区分）
-    return Object.assign(base, { status: 'empty', text: '当天没有自动抓取记录（9:25 那一轮没跑）' });
+    // [LADDER-SRC-UI 2026-11-03] 同样是"没记录"，今天和历史的说法必须不同：
+    //   今天写「待 9:25」（马上就会有），历史日写「无记录」（那天就是没跑，别让用户等）。
+    const isToday = (date || '') === beijingTodayStr();
+    return Object.assign(base, {
+      status: 'empty',
+      short: isToday ? '待 9:25' : '无记录',
+      text: isToday
+        ? '今天 9:25 那一轮自动抓取还没跑（跑完这里会自动变成数字）'
+        : '当天没有自动抓取记录（9:25 那一轮没跑）'
+    });
   }
   const row = list[0] || {};
   const detail = row.detail || {};
   const got = extractLadderCount(detail);
   if (got.degraded) {
     return Object.assign(base, {
-      status: 'degraded', degraded: true,
+      status: 'degraded', degraded: true, short: '名单源不可用',
       text: '当天名单源（同花顺最近多板 883410）不可用，条数无意义'
     });
   }
   if (got.count === null) {
     return Object.assign(base, {
-      status: 'none',
+      status: 'none', short: '日志无此项',
       text: '抓取记录里没有「成分股数量」这一项（旧版 worker 没记）'
     });
   }
@@ -127,7 +143,8 @@ export function buildLadderSourceInfo(rows, date) {
     count: got.count,
     via: got.via,
     at: row.created_at || '',
-    text: 'worker 9:25 从同花顺「最近多板」(883410) 拉到的源数据条数'
+    short: got.count + ' 只',
+    text: 'worker 9:25 从同花顺「最近多板」(883410) 拉到的源数据条数（' + got.count + ' 只）'
   });
 }
 
@@ -171,18 +188,26 @@ export async function ensureLadderSource(date, opts) {
   if (fly) return fly;
 
   // 先把 state 标成 loading（同一天才改，避免把别的日期的已就绪状态覆盖掉）
-  if (cur.date !== date) _state.value = Object.assign({}, EMPTY_INFO, { date, status: 'loading' });
-  else if (cur.status !== 'ready') _state.value = Object.assign({}, cur, { status: 'loading' });
+  if (cur.date !== date) _state.value = Object.assign({}, EMPTY_INFO, { date, status: 'loading', short: '读取中' });
+  else if (cur.status !== 'ready') _state.value = Object.assign({}, cur, { status: 'loading', short: '读取中' });
 
   const p = (async function() {
     _lastTry.set(date, Date.now());
     let rows;
     try {
       rows = await fetchMorningFetchLog(date);
+      _retry.delete(date);
     } catch (e) {
+      // ★ [LADDER-SRC-UI 2026-11-03] 历史日原本「只试一次」：首次读失败（网络抖动 / Supabase 未就绪）
+      //   ⇒ 该日期整个会话永远显示 `--`，用户会以为"功能没做"。现在失败最多再重试 MAX_ERR_RETRY 次。
+      //   ⚠️ 只对"读失败"放开；"没记录(empty)"仍按历史日只试一次（那种情况重试也不会变）。
+      const n = (_retry.get(date) || 0) + 1;
+      _retry.set(date, n);
+      if (n < MAX_ERR_RETRY) _lastTry.delete(date);
       // §10：读失败 ≠ 没有记录 ⇒ 状态单独一档，⛔ 不当成 0 只
       const info = Object.assign({}, EMPTY_INFO, {
-        date, status: 'error', text: '抓取日志读取失败：' + ((e && e.message) || e)
+        date, status: 'error', short: '读取失败',
+        text: '抓取日志读取失败：' + ((e && e.message) || e)
       });
       if (_state.value.date === date) _state.value = info;
       _dbgLog('[LADDER-SRC] 读 bidding_fetch_log 失败: ' + ((e && e.message) || e));

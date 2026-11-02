@@ -15,6 +15,7 @@ import {
   getLadderSourceInfo,
   _resetLadderSourceForTest
 } from './ladder-source.js';
+import { beijingTodayStr } from './auction-pull-window.js';
 
 describe('ladder-source · 同花顺最近多板源数据条数', () => {
   it('结构化字段优先于老日志字符串', () => {
@@ -95,5 +96,31 @@ describe('ladder-source · 同花顺最近多板源数据条数', () => {
     expect(idle.count).toBe(null);
     // 空日期
     expect(getLadderSourceInfo('').count).toBe(null);
+  });
+
+  // [LADDER-SRC-UI 2026-11-03] 用户报障「我都看不到这个数值是多少」：
+  //   光有一个 `--` 等于什么都没说。short 是分账行真正显示给用户的那几个字，
+  //   必须是「数字」或「为什么没有数字」，⛔ 不能含糊。
+  it('ready ⇒ short 就是「N 只」（这是用户拿去对炒股软件的那个数）', () => {
+    const info = buildLadderSourceInfo([{ detail: { logs: ['成分股数量: 47'] } }], '2026-10-27');
+    expect(info.status).toBe('ready');
+    expect(info.short).toBe('47 只');
+  });
+
+  it('没记录时：今天说「待 9:25」，历史日说「无记录」（两者含义完全不同，别混成一句话）', () => {
+    const today = beijingTodayStr();
+    expect(buildLadderSourceInfo([], today).short).toBe('待 9:25');
+    expect(buildLadderSourceInfo([], '2020-01-02').short).toBe('无记录');
+  });
+
+  it('其余非 ready 状态各自有原因，且⛔ 都不含数字', () => {
+    const degraded = buildLadderSourceInfo([{ detail: { ladderDegraded: true } }], '2026-10-27');
+    expect(degraded.short).toBe('名单源不可用');
+    const none = buildLadderSourceInfo([{ detail: { logs: ['步骤1：xxx'] } }], '2026-10-27');
+    expect(none.short).toBe('日志无此项');
+    [degraded, none].forEach(function (i) {
+      expect(i.count).toBe(null);
+      expect(/\d/.test(i.short)).toBe(false);
+    });
   });
 });
