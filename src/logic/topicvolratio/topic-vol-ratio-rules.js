@@ -94,6 +94,10 @@ import { makeCoreTopicResolver } from '../topic/core-category.js';
 import { pickRange10Backup, buildRange10Ranked, RANGE10_BACKUP_RULE_NO } from './range10-backup.js';
 // [R10-BACKUP] 「前十名」的只数常量与 presence-label 共用（§6：同一个数字只有一处真相）
 import { PRESENCE_TOP_N } from '../auction/presence-label.js';
+// ★★ [LEADER-LIMITDOWN 2026-11-02 用户口径] 第三十二条「题材龙一竞价跌停」的判定 ——
+//   涨跌停幅度 / ST / 板块 / 容差（EPS = 0.15）只有 limit-up.js 一处实现（与「涨跌停」看板同一把尺子），
+//   ⛔ 本文件不许自己写 `aucPct <= -9.9` 这类判断（那是第二份口径，且会在创业板 / ST 上直接判错）。
+import { getAuctionLimitState } from '../auction/limit-up.js';
 
 // ══════════════════════════════════════════════════════════════════════════════════════
 // ★★ [EBB-TOPIC-FIX 2026-10-22] 题材串归一（§6 唯一实现，⛔ 别在三个消费点各写一遍）
@@ -480,6 +484,64 @@ export const CATCH_UP_TITLE =
   '落在【20日涨幅主板第 6~10 名】⇒ 说明这个题材处在【低位补涨】阶段，后期涨势往往很好。' +
   '这类题材【只选连板票】（最强势的那只）。⚠️ 恰好 2~3 只才算；4 只以上属主线、1 只属个别票；' +
   '一只连板都没有 ⇒ 仍然空仓。';
+
+/**
+ * ══ 【题材龙一竞价跌停 · 切抱团】标签组（第三十二条 · 2026-11-02 用户口径）══════════════════
+ *
+ * 用户原话（逐字）：
+ *   「添加下规则收紧，排名第一的题材，不管有多少只，题材内龙一如果跌停，就不要选，要从20日涨幅里
+ *    选市场总龙一，弱势切抱团，题材内的龙一都跌停了，说明弱势了，就要切抱团，从20日涨幅中选
+ *    市场总龙一，竞价口径。所以今天题材量比选的应该是九阳股份。」
+ *
+ * 触发当天的实况（2026-11-02，站库已核实）：
+ *   · 排名第一的入选题材平均竞价量比 = 50.02（≫ 25 ⇒ 空仓提醒【没有】命中，第三十条 / 三十一条
+ *     那两条「退潮题材」通道当天都不生效）；
+ *   · 该题材 4 只，按龙位取龙一 = 海洋王（002724）；
+ *   · 海洋王 9:25 竞价涨幅 = -9.99%（market_metrics.auc_pct_chg）⇒ getAuctionLimitState = 'down'
+ *     （主板 10%、容差 0.15）⇒ 它【竞价就跌停】，根本买不进，也说明这个题材今天是【弱势】的；
+ *   · 用户口径 ⇒ 当天应该买的是【20日涨幅市场总龙一】九阳股份，而不是跌停的海洋王。
+ *
+ * ⇒ 判据：
+ *   ① 只看【排名第一的入选题材】（= 扫描循环里第一块，`out.blocks.length === 0`）；
+ *      「不管有多少只」⇒ 本条【不带只数门槛】（与第三十条的 4~6 只收紧、第三十一条的 2~3 只无关）。
+ *   ② 该题材的【龙一】= `_dragonCandidates` 序列的第一只（= 买点侧官方龙位名册的第 1 名，§6 不另排序）。
+ *   ③ 龙一的【竞价涨幅】打在跌停价上 ⇒ 判据成立 ⇒ 该题材今天【不选股】，改从
+ *      `ebbCtx.top5` 取【第 1 名】= 20日涨幅市场总龙一（只主板、竞价口径，与「20日涨幅」toggle 同一把尺子）。
+ *   ④ 抱团对象就是那【一只】，⛔ 不取第二只、不替补。
+ *
+ * ⛔ 为什么是「整块不买」而不是「顺延到龙二」：用户原话「题材内的龙一都跌停了，说明弱势了」——
+ *   龙位是题材内【最强】的那只，最强的那只被摁在跌停板上，龙二龙三只会更弱；此时该题材已经
+ *   不成立为「当日主线」，从一个走弱的题材里挑次强的票，正是用户这次要否掉的选法。
+ * ⛔ 为什么不顺延到【排名第二的题材】：用户对今天的结果只给了一个答案 ——「选的应该是九阳股份」。
+ *   所以本条一旦成立，买点侧就只有【抱团那一只】（扫描到此为止，⛔ 不继续往下选）。
+ * ⚠️ 与第三十条【弱势切抱团】同名（同一枚【弱势切抱团】标签、同一档紫罗兰配色），但是【两个触发条件】：
+ *   那条 = 题材【退潮】（平均量比 < 25）+ 抱团对象是【与灰色题材同题材】的前三名票；
+ *   本条 = 题材【龙一竞价跌停】（量比可以很高）+ 抱团对象是【市场总龙一】。
+ *   同一天两条都能成立时，本条优先（它的信号更硬：最强的那只已经跌停），第三十条那一条的结果不再采用。
+ * ⚠️ §10 两条硬约束（缺一 ⇒ 本条不生效，⛔ 绝不猜）：
+ *   · 龙一的竞价涨幅读不到（`aucPct` = null）⇒ 判不出 ⇒ 保持原规则（⛔ 不把「没数据」当跌停）；
+ *   · `ebbCtx.top5` 为空 / 第一只取不到 ⇒ 判不出抱团对象 ⇒ 该题材照常按原规则列出，并如实写「判不出」。
+ * ⚠️ 只在【常规语境】生效（`r10Enabled`）：退潮首日（第二十一条）/ 切换日（第二十八条）/
+ *   总龙首次分歧日（第二十五条）各有专属规则接管买点侧，⛔ 不叠加（§6）。
+ */
+export const TOPIC_LEADER_LIMITDOWN_RULE_NO = '三十二';
+/** 动作标签（与第三十条【同一枚】标签：用户对这两种情形用的是同一个词「弱势切抱团」） */
+export const TOPIC_LEADER_LIMITDOWN_TAG = '弱势切抱团';
+/** 独立买点块的合成题材头（与第三十条的文案不同，用户能一眼看出是哪一条规则触发的） */
+export const TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC = '弱势切抱团 · 买点（题材龙一竞价跌停）';
+/**
+ * 被否掉的那个题材块里，每只票的覆盖式标签。
+ * ⛔ 不复用【退潮不买】/【分歧日不买】：那两枚讲的是「整个买点侧都别买」，而这里只是
+ *   【这个题材】不买（同期还可能有抱团那一只可以买）—— 混用会让人以为今天又空仓了。
+ */
+export const TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG = '龙一跌停不买';
+/**
+ * 该标签的配色档：与【退潮不买 / 分歧日不买 / 总龙分歧不买】**同一档**（深墨 + 亮字）。
+ * ⛔ 不为它新造一个颜色：这一块整块挂着 `filter: grayscale(1)`（下方灰化容器 / 块级 gray prop），
+ *   grayscale 只保留明度 —— 不同色相在灰化后看不出差别，新开一档只会多一份 CSS 与一份认知负担。
+ *   ⚠️ 与 CASH_NO_BUY_TONE / DIVERGE_NO_BUY_TONE 同一条理由（见那两处注释）。
+ */
+export const TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE = EBB_NO_BUY_TONE;
 
 /**
  * ══ 【总龙首次分歧 · 买点】标签组（第十九轮补丁⑧ · 2026-10-20 用户口径）══════════════════
@@ -1117,6 +1179,51 @@ function _applyPrevEbbSecondNoBuy(blocks, prevSecondEbb, coreRes) {
       p.actionNote = lead +
         '本股今天【不开新仓】—— 原本的【' + HOLD_TAG + '】/ 竞价买 / 尾盘买 / 先卖后买 等买点信号' +
         '一律作废。（等题材重新走强 —— 总龙复牌 / 竞价占比回升 / 平均量比回来 —— 再看买点。）';
+    });
+  });
+}
+
+/**
+ * ══ [LEADER-LIMITDOWN 2026-11-02 用户口径] 第三十二条 · 买点侧改写：题材龙一竞价跌停 ══════════
+ *
+ * 用户原话：「排名第一的题材……题材内龙一如果跌停，就不要选」（判据长注释见
+ *   TOPIC_LEADER_LIMITDOWN_RULE_NO 那一段）。
+ *
+ * 只改写【那一个题材块】（按题材名精确认亲，⛔ 不是按块序号 —— 块序号在删块 / 顺延之后不可靠）：
+ *   · 每只票的动作标签 ⇒【龙一跌停不买】，仓位槽 / 行尾【持有】清空；
+ *   · 块上挂 `leaderLimitDownGray = true`（= 视图层可据此灰化；与 prevEbbGray 同一范式）；
+ *   · ⛔ 客观数据一行不动（十日涨幅 / 涨幅 / 量比 / 占比 / 龙标 / 连板 / 封单照常）；
+ *   · ⛔ 卖点侧一行不动（用户本轮只谈买点侧）。
+ *
+ * ⛔ 与 _applyCashAlertBuyRules / _applyEbbBuyRules 同一范式（先按原口径算完，再覆盖那三处），
+ *   ⛔ 绝不改 finishBuyBlock 内部（决策看板共用，§6）。
+ *
+ * @param {Array} blocks buildTopicVolRatioPlan 的入选题材块数组（每块含 picks / notes）
+ * @param {{topic:string, name:string, aucPctText:string, avgText:string, count:number}|null} ld
+ *        out.leaderLimitDown；null ⇒ 零副作用（§11）
+ */
+function _applyLeaderLimitDownNoBuy(blocks, ld) {
+  if (!ld || !ld.topic) return;
+  const lead = '【' + ld.topic + '】的龙一【' + ld.name + '】9:25 竞价涨幅 ' + (ld.aucPctText || '—') +
+    ' = 【竞价跌停】⇒ 第三十二条：题材内最强的那只都被摁在跌停板上（也买不进）⇒ 本题材今天不选股。';
+  (blocks || []).forEach(function(b) {
+    if (!b) return;
+    const bt = String((b.block && b.block.topic) || b.topic || '').trim();
+    if (bt !== String(ld.topic).trim()) return;
+    b.leaderLimitDownGray = true;         // ★ 视图层据此给该块挂灰化类（只灰这一个题材块）
+    if (!Array.isArray(b.notes)) b.notes = [];
+    b.notes.push('⚠️ ' + lead + '原本的买点信号（竞价买 / 尾盘买 / 先卖后买 …）一律作废；' +
+      '股票照常列出供参考，原本的【' + HOLD_TAG + '】也一并取消。' +
+      '今天的买点在下面那段【' + TOPIC_LEADER_LIMITDOWN_TAG + '】里（市场总龙一）。');
+    (b.picks || []).forEach(function(p) {
+      if (!p || !p.name) return;
+      p.position = '';
+      p.holdTag = '';
+      p.buyActionTag = TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG;
+      p.buyActionTone = TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE;
+      p.actionNote = lead +
+        '本股今天【不开新仓】—— 原本的【' + HOLD_TAG + '】/ 竞价买 / 尾盘买 / 先卖后买 等买点信号' +
+        '一律作废。（等这个题材重新走强 —— 龙一不再跌停、竞价占比回升 —— 再看买点。）';
     });
   });
 }
@@ -1844,21 +1951,10 @@ function _buildWeakHuddleBlock(pool, cashAlert, list, fOpts, coreRes) {
     };
   });
 
-  // 真实成员行：全题材按名字兜一次（与替补 / 分歧块同一份查找，§6 同法）
-  const _memberOf = function(name) {
-    let member = null;
-    (list || []).forEach(function(b) {
-      if (member) return;
-      (b.members || []).forEach(function(m) {
-        if (!member && m && String(m.name || '').trim() === name) member = m;
-      });
-    });
-    return member;
-  };
-
+  // 真实成员行：全题材按名字兜一次（§6 唯一实现 = _findMemberByName，第三十二条共用同一份查找）
   const members = [];
   const picks = buyPicks.map(function(p, idx) {
-    const member = _memberOf(p.name);
+    const member = _findMemberByName(list, p.name);
     if (member && !members.some(function(m) { return m && m.name === p.name; })) members.push(member);
     return {
       seq: idx + 1,
@@ -1944,6 +2040,158 @@ function _buildWeakHuddleBlock(pool, cashAlert, list, fOpts, coreRes) {
       (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : '');
   });
   return block;
+}
+
+/**
+ * 「按名字在题材块成员里找那一行」的【唯一实现】（§6）。
+ *
+ * ★ 为什么单独提出来：第三十条【弱势切抱团】与第三十二条【题材龙一竞价跌停 ⇒ 切抱团】都要
+ *   把 20日涨幅池里的那只票，与本看板题材块里的【真实成员行】对上（要用它的 code / aucShare
+ *   去抓分笔、算占比）。两份各写一遍就会在「同名不同块 / 缺行」时给出不同答案。
+ *
+ * @param {Array} list 题材块数组（每块含 members）
+ * @param {string} name 股票名
+ * @returns {object|null} 命中的成员行；找不到 ⇒ null（§10 不造空壳）
+ */
+function _findMemberByName(list, name) {
+  const want = String(name || '').trim();
+  if (!want) return null;
+  let hit = null;
+  (list || []).forEach(function(b) {
+    if (hit) return;
+    (b.members || []).forEach(function(m) {
+      if (!hit && m && String(m.name || '').trim() === want) hit = m;
+    });
+  });
+  return hit;
+}
+
+/**
+ * ══ [LEADER-LIMITDOWN 2026-11-02 用户口径] 第三十二条 · 【题材龙一竞价跌停 ⇒ 弱势切抱团】买点块 ══
+ *
+ * 判据与用户原话见常量区 TOPIC_LEADER_LIMITDOWN_RULE_NO 的长注释。一句话：
+ *   排名第一的入选题材里【最强的那只】竞价就跌停 ⇒ 这个题材今天已经弱势 ⇒ 不选它，
+ *   改从 20日涨幅（竞价口径、只主板）取【市场总龙一】那一只抱团。
+ *
+ * ⛔ 与第三十条 _buildWeakHuddleBlock 的关系（同一枚标签、同一档紫罗兰配色，但是两条规则）：
+ *   · 第三十条：池子 = 前三名，筛【与退潮题材同题材】的那几只 ⇒ 可能 ≥1 只；
+ *   · 本条    ：池子 = 第 1 名，⛔ 不做题材筛选（抱团对象就是市场总龙一本身）⇒ 恒定 1 只。
+ *   两者共用【weakHuddle 槽位 / 渲染通道 / 分笔抓取 / buy-quiesce 标签】，⛔ 不新开一套视觉。
+ *
+ * @param {Array} pool 20日涨幅主板前五富化（`ebbCtx.top5`，已按名次降序 + 带 topic / rank20）
+ * @param {{topic:string, name:string, aucPctText:string, count:number, avgText:string}} ld
+ *        out.leaderLimitDown（第三十二条的事实）
+ * @param {Array} list 题材块数组（用来找那只票的真实成员行：code / aucShare）
+ * @param {object} fOpts finishBuyBlock 的入参（§6 决策看板同一份实现）
+ * @returns {{block:object|null, reason:string}} reason：'' 成功 / 'no-pool' 池子空 / 'same' 与跌停的龙一是同一只
+ */
+function _buildLeaderLimitDownHuddleBlock(pool, ld, list, fOpts) {
+  const arr = Array.isArray(pool) ? pool : [];
+  const t = arr.length > 0 ? arr[0] : null;   // ★ 市场总龙一 = 20日涨幅主板第 1 名（池子已按名次降序）
+  if (!t || !t.name) return { block: null, reason: 'no-pool' };
+  const pickName = String(t.name).trim();
+  // ⛔ 同一只票不可能既是「竞价跌停的题材龙一」又是「今天要抱团买的票」：
+  //   数据若真的这样给（池子名次还没跟上今天的跌停），本条就判不出可买标的，如实交回调用方。
+  if (ld && String(ld.name || '').trim() === pickName) return { block: null, reason: 'same' };
+
+  const pctNum = Number(t.pct);
+  const pick = {
+    name: pickName,
+    label: totalDragonLabel(Number(t.rank20)) || '',
+    topic: t.topic || '',
+    code: String(t.code || '').trim(),
+    pct: t.pct,
+    pctText: isFinite(pctNum) ? pctNum.toFixed(2) + '%' : '',
+    rank20: t.rank20
+  };
+  const member = _findMemberByName(list, pickName);
+  const members = member ? [member] : [];
+  const picks = [{
+    seq: 1,
+    name: pickName,
+    dragonLabel: pick.label,
+    dragonRank: null,
+    pct: pick.pct,
+    code: pick.code || String((member && member.code) || '').trim(),
+    pctText: pick.pctText,
+    aucShare: member ? _num(member.aucShare) : null,
+    position: ''
+  }];
+  const nameText = '【' + (pick.label || '') + pickName + '】（' + (pick.topic || '—') +
+    '，20日涨幅 ' + (pick.pctText || '—') + '，主板第 ' + (pick.rank20 || '—') + ' 名）';
+  const ldTopic = String((ld && ld.topic) || '—');
+  const ldName = String((ld && ld.name) || '—');
+  const ldPctText = String((ld && ld.aucPctText) || '—');
+
+  const block = {
+    block: {
+      topic: TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC,
+      rank: null,
+      count: null,
+      yiziCount: null,
+      members: members
+    },
+    rankWord: '',
+    pickRank: null,
+    reason: '【弱势切抱团】排名第一的题材【' + ldTopic + '】的龙一【' + ldName + '】9:25 竞价涨幅 ' +
+      ldPctText + ' = 【竞价跌停】⇒ 题材内【最强】的那只都被摁在跌停板上（也根本买不进）⇒ ' +
+      '这个题材今天已经【弱势】、不再作为当日主线 ⇒ 本题材不选股；改从【20日涨幅】取【市场总龙一】' +
+      '抱团：' + nameText,
+    mode: 'weakhuddle',
+    ruleNo: TOPIC_LEADER_LIMITDOWN_RULE_NO,
+    isCandidate: false,
+    candidateTag: '',
+    qualified: true,
+    notQualifiedText: '',
+    picks: picks,
+    notes: [
+      '⚠️ 本行【不是】题材选股的结果：那个题材照常列在买点侧，但整块今天【不买】' +
+        '（块内每只票的标签是【' + TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG + '】）。' +
+        '本行是【从市场龙头里选】：题材里最强的那只都跌停了，就去抱团全市场最强的那一只。',
+      '【怎么选】= 取【20日涨幅主板第 1 名】（只数主板：创业板 300/301、科创板 688/689、北交所一律' +
+        '不算名次；与「20日涨幅」toggle 的总龙一同一把尺子、同一份竞价口径），⛔ 不在这里另排一次名次。',
+      '【为什么跌停就不选这个题材】用户口径：题材内的龙一都跌停了，说明这个题材【弱势】了 ——' +
+        '龙位是题材内最强的那只，它被摁在跌停板上，龙二龙三只会更弱；从一个走弱的题材里挑次强的票，' +
+        '正是本条要否掉的选法。',
+      '⚠️ 跌停判据 = 该股 9:25 竞价涨幅打在【跌停价】上（主板 10% / 创业板·科创板 20% / 北交所 30% /' +
+        ' ST 5%，容差 0.15），与「涨跌停」看板【同一份实现】（limit-up.js）。',
+      '⚠️ 龙一的竞价涨幅读不到 ⇒ 判不出 ⇒ 本条不生效（⛔ 不把「没数据」当跌停，也不当没跌停）。',
+      '⚠️ 本条成立时买点侧【只有这一只】：⛔ 不取第二只、⛔ 不顺延到排名第二的题材。',
+      '⚠️ 涨幅口径 = 【当日 20日涨幅】（竞价口径，与「20日涨幅」toggle 的总龙一同一列）。'
+    ],
+    topic: TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC,
+    rank: null,
+    count: null,
+    yiziCount: null,
+    avgVolRatio: null,
+    avgVolRatioText: '',
+    tier: 'weakhuddle',
+    pickCount: 0,
+    rangeText: '',
+    skippedNames: [],
+    isWeakHuddle: true,
+    // ★ 与第三十条区分用（单测 / 排查文案时能一眼看出是哪一条规则产出的）
+    isLeaderLimitDownHuddle: true
+  };
+
+  // ① 客观数据 + 原始买点信号算齐（决策看板同一份实现）
+  finishBuyBlock(block, fOpts);
+  // ② 覆盖式：动作标签换成【弱势切抱团】，原文留进行内说明
+  (block.picks || []).forEach(function(p) {
+    const rawTag = p.buyActionTag || '';
+    const rawNote = p.actionNote || '';
+    p.buyActionTag = TOPIC_LEADER_LIMITDOWN_TAG;
+    p.buyActionTone = WEAK_HUDDLE_TONE;
+    p.holdTag = '';
+    p.position = '';
+    p.actionNote = '【第' + TOPIC_LEADER_LIMITDOWN_RULE_NO + '条 · 弱势切抱团】排名第一的题材【' +
+      ldTopic + '】的龙一【' + ldName + '】竞价就跌停（' + ldPctText + '）⇒ 那个题材今天【弱势】、不选股；' +
+      '本股是【20日涨幅主板第 ' + (pick.rank20 || '—') + ' 名】（' + (pick.pctText || '—') +
+      '）= 【市场总龙一】⇒ 题材走弱时资金会抱团最强的市场龙头，这一只今天可以买（弱势切抱团）。' +
+      '⚠️ 停牌 / 竞价一字的信息照常显示；买不进就买不进，别硬追。' +
+      (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : '');
+  });
+  return { block: block, reason: '' };
 }
 
 /**
@@ -3721,6 +3969,12 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     //   该灰色题材恰好占 2~3 只，且其中有连板票 ⇒ 选连板票放在最前面）。
     //   只在「空仓提醒命中 ∧ 非退潮首日 ∧ 非分歧日 ∧ 数量恰好 2~3 ∧ 至少 1 只连板」时非 null。
     catchUp: null,
+    // ★★ [LEADER-LIMITDOWN 2026-11-02 用户口径] 第三十二条【题材龙一竞价跌停 ⇒ 切抱团】的事实：
+    //   `{topic, name, code, aucPct, aucPctText, count, avgText}` —— 由扫描循环在发现
+    //   「排名第一的入选题材的龙一竞价跌停」时写下；没命中 ⇒ 恒为 null（§11 零行为变化）。
+    //   ⚠️ 它只是【事实】，抱团那一行在 fOpts 就绪之后才由 _buildLeaderLimitDownHuddleBlock 造出来，
+    //      并挂进 weakHuddle 槽位（同一段渲染通道、同一档配色，见该函数的注释）。
+    leaderLimitDown: null,
     // ★★ [SWITCH 2026-10-22] 第二十八条【新龙 / 新题材切换日】：
     //   switchDay = 今天是不是「二次确认退潮」后的第 2 个交易日（判据见 detectSwitchDay）；
     //   newDragon = 那一行新龙的买点块（独立容器、渲染在灰化容器之外）；不是切换日 / 选不出 ⇒ null。
@@ -3933,6 +4187,48 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     if (out.switchDay) {
       tier = Object.assign({}, tier, { pickCount: 1 });
     }
+    // ══ ★★ [LEADER-LIMITDOWN 2026-11-02 用户口径] 第三十二条：题材龙一竞价跌停 ⇒ 本题材不选 ══
+    //
+    // 用户原话（逐字，见 TOPIC_LEADER_LIMITDOWN_RULE_NO 的长注释）：
+    //   「排名第一的题材，不管有多少只，题材内龙一如果跌停，就不要选，要从20日涨幅里选市场总龙一，
+    //    弱势切抱团，题材内的龙一都跌停了，说明弱势了，就要切抱团……所以今天题材量比选的应该是九阳股份。」
+    //
+    // 三个前置：
+    //   ① `out.blocks.length === 0` ⇒ 只看【排名第一的入选题材】（用户口径点明「排名第一」）；
+    //   ② `r10Enabled`             ⇒ 只在【常规语境】生效：退潮首日 / 切换日 / 总龙首次分歧日
+    //      各有专属规则接管买点侧（§6 不叠加）；
+    //   ③ `!out.leaderLimitDown`   ⇒ 只判一次（第一块就命中之后不再重复）。
+    // ⚠️ 本条【不带只数门槛】（用户「不管有多少只」）—— 与第三十条的 4~6 只收紧、
+    //   第三十一条的 2~3 只门槛是三条不同的规则，⛔ 别把只数条件抄进来。
+    // ⚠️ 龙一 = `_dragonCandidates` 序列的第一只（买点侧官方龙位名册的第 1 名，§6 不另排序）。
+    // ⛔ 这里只【记事实】+ 写看板级说明；「块内票改成不买」与「造抱团那一行」都排在
+    //   finishBuyBlock / fOpts 之后（那一步之后才能算客观数据与原始买点信号）。
+    if (out.blocks.length === 0 && r10Enabled && !out.leaderLimitDown) {
+      const ldCands = _dragonCandidates(b, buyDragonMap, buyPctMap);
+      const ldLead = ldCands.length > 0 ? ldCands[0] : null;
+      // §10：竞价涨幅读不到（aucPct = null）⇒ getAuctionLimitState 返回 null ⇒ 判不出 ⇒
+      //   本条不生效（⛔ 绝不把「没数据」当成跌停，也绝不当成没跌停去写说明）
+      const ldState = ldLead ? getAuctionLimitState(ldLead.aucPct, ldLead.code, ldLead.name) : null;
+      if (ldLead && ldState === 'down') {
+        out.leaderLimitDown = {
+          topic: String(b.topic || ''),
+          name: String(ldLead.name).trim(),
+          code: String(ldLead.code || '').trim(),
+          rank: ldLead.rank,
+          aucPct: ldLead.aucPct,
+          aucPctText: _pct2(ldLead.aucPct),
+          count: b.count,
+          avgText: formatAvgVolRatio(avgVolRatioOf(b))
+        };
+        out.notes.push('⚠️【第' + TOPIC_LEADER_LIMITDOWN_RULE_NO + '条 · 弱势切抱团】排名第一的入选题材【' +
+          out.leaderLimitDown.topic + '】（' + b.count + ' 只，平均竞价量比 ' +
+          out.leaderLimitDown.avgText + '）的龙一【' + out.leaderLimitDown.name + '】9:25 竞价涨幅 ' +
+          out.leaderLimitDown.aucPctText + ' = 【竞价跌停】⇒ 题材内最强的那只都被摁在跌停板上，' +
+          '说明这个题材今天已经【弱势】（也根本买不进）⇒ 本题材今天【不选股】' +
+          '（块内每只票的动作标签一律【' + TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG + '】），' +
+          '买点侧改为【从 20日涨幅里取市场总龙一】的【弱势切抱团】（抱团最强的市场龙头，竞价口径）。');
+      }
+    }
     // ══ ★★ [SMALL-TOPIC 2026-10-24 用户口径] 排名第一 + 数量 4~6 只 ⇒ 收紧：只买【最强的】 ══
     //
     // 用户原话（逐字，见 TVRB_SMALL_TOPIC_MAX 的注释）：
@@ -3964,7 +4260,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     //   附带好处：10-23 工业4.0（4 只、兆威机电）这个用户已认可的线上结果【一个字节都没变】。
     let smallOpt = null;
     let smallTrace = null;
-    if (out.blocks.length === 0 && r10Enabled && r10PoolGiven &&
+    // ★★ [LEADER-LIMITDOWN 2026-11-02] 第三十二条已成立（本题材龙一竞价跌停 ⇒ 整块不买）⇒
+    //   小题材收紧【不再跑】：它做的是「在前十里挑最强的，一只都没有就弃掉该题材」，
+    //   而本题材已经被否掉、买点侧改走抱团 —— 再算一遍既没有意义，还可能把这一块
+    //   `continue` 掉，让扫描顺延到排名第二的题材（那正是第三十二条明令不许的）。
+    if (out.blocks.length === 0 && r10Enabled && r10PoolGiven && !out.leaderLimitDown &&
         tier.tier === 'mid' && b.count >= TVRB_MIN_COUNT && b.count <= TVRB_SMALL_TOPIC_MAX) {
       const smallCountText = '本题材数量 ' + b.count + ' 只（落在 ' + TVRB_MIN_COUNT + '~' +
         TVRB_SMALL_TOPIC_MAX + ' 只的收紧档）';
@@ -4025,6 +4325,12 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     //   在本题材的说明区讲清「为什么收盘回看时不选那只看似更靠前的票」——
     //   只在【真的不一致】时追加一条，口径一致时一个字都不写（§11 零行为变化）。
     _appendDragonDriftNote(out.blocks[out.blocks.length - 1], dragonMap, !!smallOpt);
+    // ★★ [LEADER-LIMITDOWN 2026-11-02 用户口径] 第三十二条一旦成立 ⇒ 买点侧就【只有抱团那一只】：
+    //   用户对这次的情形只给了一个答案 ——「选的应该是九阳股份」⇒ ⛔ 不继续顺延到排名第二、第三的题材
+    //   （那个题材的龙一都已跌停，往下的题材只会更弱；再选一个就成了「买两只」，与口径不符）。
+    //   ⚠️ 被否的这个题材块【照常留在 out.blocks 里】（块内票标签已由 _applyLeaderLimitDownNoBuy
+    //     改成【龙一跌停不买】）：题材结论与股票结论是两件事，用户要能核对「为什么今天不选它」。
+    if (out.leaderLimitDown) break;
   }
 
   // 决策看板形状的买点计划：第 1 块 → heavy、第 2 块 → light（本看板最多两块，candidates 恒空）
@@ -4232,6 +4538,12 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   };
   out.blocks.forEach(function(b) { finishBuyBlock(b, fOpts); });
 
+  // ★★ [LEADER-LIMITDOWN 2026-11-02 用户口径] 第三十二条：龙一竞价跌停的那个题材【照常列出但今天不买】。
+  //   ⛔ 必须排在 finishBuyBlock【之后】：那一步才算出每行的原始买点标签，这里做覆盖式改写。
+  //   ⚠️ 排在退潮 / 分歧 / 空仓提醒三条改写【之前】是刻意的：那三条一旦成立，它们讲的是
+  //     「整个买点侧都别买」（更宽的结论），标签以它们为准；本条只否一个题材，被覆盖也不影响结论。
+  if (out.leaderLimitDown) _applyLeaderLimitDownNoBuy(out.blocks, out.leaderLimitDown);
+
   // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条：把【新龙】那一行构造出来（独立容器渲染）。
   //   ① 必须先有 fOpts（finishBuyBlock 要它算客观数据与原始买点信号）；
   //   ② 它的标签随后被覆盖成【新龙买】—— 与退潮替补 / 分歧买点同一范式（⛔ 不改 finishBuyBlock 内部）。
@@ -4387,6 +4699,52 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
             CATCH_UP_RANK_TO + ' 名里【没有】' + whTopic + ' 的股票 ⇒ 不构成补涨题材（本条不生效）。');
         }
       }
+    }
+  }
+
+  // ★★ [LEADER-LIMITDOWN 2026-11-02 用户口径] 第三十二条【题材龙一竞价跌停 ⇒ 弱势切抱团】
+  //   排名第一的入选题材里【最强的那只】竞价就跌停 ⇒ 这个题材今天已经弱势、不选它；
+  //   改从 20日涨幅（竞价口径、只主板）取【市场总龙一】那一只抱团。
+  //   ⛔ 必须排在【所有买点改写之后】：它不在 out.blocks 里（渲染在灰化容器【之外】），
+  //      是今天唯一还能买的那一只 —— 与第三十条 / 第二十九条是同一条理由。
+  //   ⚠️ 池子取 `ebbCtx.top5`（已经是【只主板 + 20日涨幅降序 + 带 topic / rank20】）——
+  //      ⛔ 不在这里另排一次名次，那是第二份真相（§6）。
+  //   ★ 与第三十条共用 weakHuddle 槽位 / 渲染通道 / 分笔抓取 / buy-quiesce 标签（同一枚
+  //     【弱势切抱团】标签、同一档紫罗兰配色）。两条同一天都成立时以本条为准：它的信号更硬
+  //     （题材内最强的那只已经跌停），说明里会讲清为什么换掉第三十条那几只。
+  //   ⚠️ §11：`out.leaderLimitDown` 为 null（没命中 / 不在常规语境 / 龙一竞价涨幅读不到）⇒ 整段跳过，
+  //      行为与加本规则之前逐字节相同。
+  if (out.leaderLimitDown) {
+    const hdPool = (o.ebbCtx && Array.isArray(o.ebbCtx.top5)) ? o.ebbCtx.top5 : null;
+    const tookOverWeakHuddle = !!out.weakHuddle;
+    const hdBuilt = (hdPool && hdPool.length > 0)
+      ? _buildLeaderLimitDownHuddleBlock(hdPool, out.leaderLimitDown, list, fOpts)
+      : { block: null, reason: 'no-pool' };
+    if (hdBuilt.block) {
+      out.weakHuddle = hdBuilt.block;
+      // §6：同一份对象挂进买点槽位（四个装饰器经 _buyBlocksOf 遍历，⛔ 别在组合式里再铺一遍）
+      out.buy.weakHuddle = out.weakHuddle;
+      const hdNames = (out.weakHuddle.picks || []).map(function(p) {
+        return '【' + (p.dragonLabel || '') + p.name + '】';
+      }).join('、');
+      if (tookOverWeakHuddle) {
+        out.notes.push('⚠️【第' + TOPIC_LEADER_LIMITDOWN_RULE_NO + '条】本日同时命中了第三十条【弱势切抱团】' +
+          '（空仓提醒那条通道），但本题材的龙一已经【竞价跌停】= 更硬的弱势信号 ⇒ 抱团对象改为' +
+          '【市场总龙一】，第三十条那几只不再作为买点（同一槽位只保留一条，⛔ 不并列出两只）。');
+      }
+      out.notes.push('⚠️【第' + TOPIC_LEADER_LIMITDOWN_RULE_NO + '条 · 弱势切抱团】买点侧改为抱团' +
+        '【市场总龙一】' + hdNames + '（20日涨幅主板第 1 名，竞价口径）⇒ 作为【今天可以买】的票' +
+        '单独列在最前面（标签【' + TOPIC_LEADER_LIMITDOWN_TAG + '】）。' +
+        '⚠️ 被否掉的那个题材块照常列在下面，但块内票一律【' + TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG + '】。');
+    } else if (hdBuilt.reason === 'same') {
+      // §10：判不出就必须说清原因（⛔ 沉默会让人以为「今天本来就没有抱团票」）
+      out.notes.push('⚠️【第' + TOPIC_LEADER_LIMITDOWN_RULE_NO + '条 · 弱势切抱团】20日涨幅主板第 1 名' +
+        '正是那只竞价跌停的龙一【' + out.leaderLimitDown.name + '】⇒ 今天【没有】可抱团的市场总龙一 ⇒ ' +
+        '本条本次不生效（该题材块照旧不买）。数据修正后会自动重算。');
+    } else {
+      out.notes.push('⚠️【第' + TOPIC_LEADER_LIMITDOWN_RULE_NO + '条 · 弱势切抱团】20日涨幅前五（只主板）' +
+        '还没就绪 ⇒ 本次【判不出】该抱团哪一只（那个题材块照旧不买）。数据到货后会自动重算 —— ' +
+        '（§10：判不出 ≠ 今天没有抱团票）。');
     }
   }
 
@@ -4768,6 +5126,21 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       (b.picks || []).forEach(function(p) { if (p && p.name) out.buyNames.delete(p.name); });
     });
   }
+  // ★★ [LEADER-LIMITDOWN 2026-11-02 用户口径] 第三十二条：龙一竞价跌停的那个题材【今天不买】⇒
+  //   它的票不进买点名单（否则卖点侧会因「今天又进买点」把它们标成【持有】—— 与「本题材不选」正面矛盾）。
+  //   与上面 [EBB-D1] 的剔除是同一条不变式（展示保留、名单剔除）。
+  if (out.leaderLimitDown) {
+    out.blocks.forEach(function(b) {
+      if (!b || !b.leaderLimitDownGray) return;
+      (b.picks || []).forEach(function(p) { if (p && p.name) out.buyNames.delete(p.name); });
+    });
+  }
+  // ★★ [LEADER-LIMITDOWN 2026-11-02 用户口径] 反面同理：抱团那一只（市场总龙一）是【今天真要买】的票
+  //   ⇒ 进买点名单（同一不变式：它若昨天已在卖点侧候选里，卖点侧要标【持有】而不是「竞价清仓」）。
+  //   ⚠️ 只在本条命中时加 —— 第三十条那条通道进不进名单是它自己的既有行为，⛔ 不顺手改动（§11）。
+  if (out.leaderLimitDown && out.weakHuddle) {
+    (out.weakHuddle.picks || []).forEach(function(p) { if (p && p.name) out.buyNames.add(p.name); });
+  }
 
   // ★ 卖点段 —— decision-rules 的【同一份实现】；⛔ 候选池不依赖本看板选股（= 昨日打过买标签的票），
   //   只有「今天又进买点」这一条换成【本看板自己的名单】（本看板内部自洽）。
@@ -4814,7 +5187,12 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       if (nm) _pickSeen.add(nm);
     });
   };
-  out.blocks.forEach(function(blk) { _countUnique(blk.picks); });
+  // ★★ [LEADER-LIMITDOWN 2026-11-02] 第三十二条：龙一竞价跌停那个题材【今天不买】⇒ 它的票不计入
+  //   「实际选出几只」（用户口径「数只数」数的是【今天能下单的】；那一块的票只作展示）。
+  out.blocks.forEach(function(blk) {
+    if (blk && blk.leaderLimitDownGray) return;
+    _countUnique(blk.picks);
+  });
   // ★ [SWITCH 2026-10-22] 新龙那一只也要计入「实际选出几只」（summary 文案读它）
   if (out.newDragon) _countUnique(out.newDragon.picks);
   // ★★ [R10-BACKUP 2026-10-24] 十日涨幅候补那一只同理（它就是今天能不能下单的那一只）
@@ -5259,11 +5637,33 @@ export function buildTvrbRulesLines() {
       '【题材结论】（整块灰化）与【股票结论】（这一只可以买）是两件事。' +
       '⚠️ 判不出就如实说（§10）：20日涨幅前十没读到 ⇒ 本块不出现，说明区写明缺口，' +
       '⛔ 绝不拿「没数据」当成「今天没有补涨题材」，也绝不当成「一定空仓」。',
+    // ── ★★ [LEADER-LIMITDOWN 2026-11-02 用户口径 · 原话] 排名第一的题材里最强的那只都跌停了
+    //    ⇒ 这个题材今天已经弱势 ⇒ 不选它，改从 20日涨幅里取【市场总龙一】抱团（弱势切抱团）。
+    '三十二、【弱势切抱团】（第三十二条 · 题材【龙一竞价跌停】⇒ 改买市场总龙一）' +
+      '★ 用户原话：「排名第一的题材，不管有多少只，题材内龙一如果跌停，就不要选，要从20日涨幅里选' +
+      '市场总龙一，弱势切抱团，题材内的龙一都跌停了，说明弱势了，就要切抱团，从20日涨幅中选市场总龙一，' +
+      '竞价口径。」' +
+      '★ 判据（只看【排名第一的入选题材】，⛔ 不带只数门槛 —— 用户「不管有多少只」）：' +
+      '① 取该题材的【龙一】（= 组内龙位第 1 名，买点侧官方名册，⛔ 不另排序）；' +
+      '② 它的 9:25 竞价涨幅打在【跌停价】上（主板 10% / 创业板·科创板 20% / 北交所 30% / ST 5%，容差 0.15，' +
+      '与「涨跌停」看板同一份实现）⇒ 判据成立；' +
+      '③ 该题材今天【不选股】：块内每只票的动作标签一律改成【' + TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG +
+      '】、整块灰化（股票照常列出，供你核对「为什么今天不选它」）；' +
+      '④ 买点侧改为从【20日涨幅 · 当日竞价口径 · 主板第 1 名】取【市场总龙一】那一只，标【' +
+      TOPIC_LEADER_LIMITDOWN_TAG + '】单独列在最前面；' +
+      '⑤ ⛔ 本条成立时买点侧【只有这一只】：不取第二只、不顺延到排名第二的题材。' +
+      '★ 为什么（用户口径）：「题材内的龙一都跌停了，说明弱势了」—— 龙位是题材内【最强】的那只，' +
+      '它被摁在跌停板上（根本买不进），龙二龙三只会更弱；从一个走弱的题材里挑次强的票，正是本条要否掉的选法。' +
+      '★ 表现方式：与第三十条【同一枚】标签与配色（都是「弱势切抱团」），但触发条件与抱团对象不同 ——' +
+      '第三十条 = 题材【退潮】（平均量比 < ' + TVRB_CASH_ALERT_AVG_VR + '）+ 买【同题材】的前三名票；' +
+      '本条 = 题材【龙一竞价跌停】（量比可以很高）+ 买【市场总龙一】。两条同一天都成立时以本条为准。' +
+      '⚠️ 判不出就如实说（§10）：龙一的竞价涨幅读不到 ⇒ 本条不生效（⛔ 不把「没数据」当跌停）；' +
+      '20日涨幅前五没读到 / 第 1 名就是那只跌停票 ⇒ 抱团那只不出现，说明区写明是哪个缺口。',
     // ── ★★ [CASE-BOOK 2026-10-28 用户口径] 历史案例对照（用户要求：「我每次说的案例你可以放在
     //    说明文字里，这样以后可以翻开历史对照优化」）。
     //    ⛔ 这一节只记录【已发生的事实 + 当时的判定】，不是新规则；改口径时请把当天的案例补进来，
     //       让用户复核时能「一天一天对得上」。
-    '三十二、【历史案例对照 · 用户口径复盘】' +
+    '三十三、【历史案例对照 · 用户口径复盘】' +
       '★ 用法：每次口径调整都对应下面某一天的真实数据。复核时先看是哪一天的哪一条，再看判定是否一致。' +
       '★（本节由用户要求长期维护：以后每次讨论到的实盘案例都追加在这里。）',
     '　· 9-29 【买得进】十日涨幅候补选中【雪龙集团】（农业，十日涨幅第 6 名，2 次在列），' +
@@ -5296,6 +5696,11 @@ export function buildTvrbRulesLines() {
       '现在排名第一的题材都不符合条件，所以就不考虑排名第二的了。」' +
       '⇒ 从此：第一题材不达标 ⇒ 第二题材既不列入、也不换票，十日涨幅候补【整条不启用】（第二十九条）。',
     '　· 10-28 【第三十一条】第 6~10 名里灰色题材块【大消费】只占 1 只 ⇒ 不在「恰好 2~3 只」区间 ⇒ ' +
-      '补涨题材不生效（与 10-23 同一种结论，口径稳定）。'
+      '补涨题材不生效（与 10-23 同一种结论，口径稳定）。',
+    '　· 11-02 【第三十二条 题材龙一竞价跌停】排名第一的入选题材平均量比 50.02（≫ ' +
+      TVRB_CASH_ALERT_AVG_VR + '，空仓提醒没命中），按旧口径选了【海洋王】，但它作为组内龙一' +
+      '9:25 竞价就【跌停】（-9.99%，主板 10%）⇒ 用户否决：「选他很不合理……题材内的龙一都跌停了，' +
+      '说明弱势了，就要切抱团，从20日涨幅中选市场总龙一，竞价口径。所以今天题材量比选的应该是九阳股份。」' +
+      '⇒ 从此：龙一竞价跌停的那个题材整块不买，改买 20日涨幅市场总龙一（当天 = 九阳股份）。'
   ];
 }

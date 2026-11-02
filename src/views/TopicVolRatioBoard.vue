@@ -356,12 +356,15 @@
             >
               <!-- ★ [EBB-D1 2026-10-21] b.prevEbbGray（Logic 层旗子）⇒ 只给【昨日二次确认退潮】那一个
                  题材块挂灰化类（第二十六条：整块灰化 + 退潮不买，其它题材块不灰）。
+                 ★★ [LEADER-LIMITDOWN 2026-11-02] b.leaderLimitDownGray ⇒ 第三十二条【题材龙一竞价跌停】
+                 那一个题材块同样整块灰化（块内票标签 = 【龙一跌停不买】）——
+                 判断口径只有 Logic 层的旗子，⛔ 视图不自己比对涨幅 / 跌停（§6 判定唯一）。
                  ⛔ 走 TvrbBuyBlock 的可选 prop（§11 缺省 false = 其它消费方零行为），不新造灰化 CSS。 -->
               <TvrbBuyBlock
                 v-for="b in blocks"
                 :key="'tvrb-buy-' + b.topic"
                 :block="b"
-                :gray="!!b.prevEbbGray"
+                :gray="!!b.prevEbbGray || !!b.leaderLimitDownGray"
               />
             </div>
             <div

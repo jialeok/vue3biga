@@ -105,7 +105,13 @@ import {
   CATCH_UP_RANK_TO,
   CATCH_UP_MIN_COUNT,
   CATCH_UP_MAX_COUNT,
-  CATCH_UP_MIN_STREAK
+  CATCH_UP_MIN_STREAK,
+  // ★★ [LEADER-LIMITDOWN 2026-11-02 用户口径] 第三十二条【题材龙一竞价跌停 ⇒ 弱势切抱团】
+  TOPIC_LEADER_LIMITDOWN_RULE_NO,
+  TOPIC_LEADER_LIMITDOWN_TAG,
+  TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC,
+  TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG,
+  TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE
 } from './topic-vol-ratio-rules.js';
 // ★★ [CORE-CAT 2026-10-22] 「题材 → 核心词大类」归一的唯一实现（文化传媒 ⇒ AI应用）
 import { makeCoreTopicResolver } from '../topic/core-category.js';
@@ -5115,5 +5121,196 @@ describe('tvrb · 第三十一条【补涨题材】', function() {
     // 用户给的那一天的反例必须留档（防止后人「好心」放宽成 1 只也算）
     expect(all).toContain('10-23');
     expect(all).toContain('大业股份');
+  });
+});
+
+// ══ ★★ [LEADER-LIMITDOWN 2026-11-02 用户口径] 第三十二条【题材龙一竞价跌停 ⇒ 弱势切抱团】════════
+// 用户原话：
+//   「排名第一的题材，不管有多少只，题材内龙一如果跌停，就不要选，要从20日涨幅里选市场总龙一，
+//    弱势切抱团，题材内的龙一都跌停了，说明弱势了，就要切抱团，从20日涨幅中选市场总龙一，竞价口径。
+//    所以今天题材量比选的应该是九阳股份。」
+// 判据四段：
+//   ① 只看【排名第一的入选题材】（⛔ 不带只数门槛 —— 用户「不管有多少只」）；
+//   ② 该题材的【龙一】9:25 竞价涨幅打在跌停价上（limit-up.js 同一份实现）⇒ 判据成立；
+//   ③ 该题材整块【不买】（标签【龙一跌停不买】+ 块上 leaderLimitDownGray 旗子）+ ⛔ 不顺延到排名第二；
+//   ④ 买点侧改买【20日涨幅主板第 1 名】= 市场总龙一，标【弱势切抱团】列在最前面。
+describe('tvrb · 第三十二条【题材龙一竞价跌停 ⇒ 弱势切抱团】', function() {
+  const TOPIC = 'LED';
+  // 11-02 真实形状：排名第一的题材 4 只（平均量比 50.02 ⇒ 空仓提醒【不】命中）
+  //   龙一 = 海洋王（002724，竞价 -9.99% = 主板跌停）；其余三只正常
+  const NAMES = ['海洋王', '甲二', '甲三', '甲四', '甲五', '甲六', '甲七', '甲八', '甲九', '甲十'];
+  const CODES = ['002724', '600002', '600003', '600004', '600005',
+    '600006', '600007', '600008', '600009', '600010'];
+  const DM = dragonMap(NAMES.map(function(n, i) { return [n, i + 1]; }));
+
+  /**
+   * 排名第一的入选题材。
+   * @param {*} leaderAucPct 龙一的竞价涨幅（-9.99 = 跌停；null = 没数据）
+   * @param {number} [count] 只数（默认 4；用来验证「不管有多少只」）
+   */
+  function topicsOf(leaderAucPct, count) {
+    const n = count || 4;
+    return [block(TOPIC, 1, NAMES.slice(0, n).map(function(name, i) {
+      return m(name, {
+        aucPct: i === 0 ? leaderAucPct : 1.2,
+        aucVolRatio: i === 0 ? 60.02 : 46.68,      // 平均 50.02（≫ 25 ⇒ 空仓提醒不命中）
+        aucShare: i === 0 ? 3.5 : 6.2,
+        code: CODES[i]
+      });
+    }))];
+  }
+
+  /** 20日涨幅主板前五（11-02 真实形状：九阳股份 = 市场总龙一） */
+  const TOP5 = [
+    { name: '九阳股份', code: '002242', topic: '家电', pct: 135.78, rank20: 1, mainBoard: true, isYizi: false, suspended: false },
+    { name: '新华传媒', code: '600825', topic: '文化传媒', pct: 110.02, rank20: 2, mainBoard: true, isYizi: false, suspended: false },
+    { name: '大业股份', code: '603278', topic: '工业4.0', pct: 89.98, rank20: 3, mainBoard: true, isYizi: false, suspended: false },
+    { name: '冰山冷热', code: '000530', topic: '冰雪产业', pct: 70.1, rank20: 4, mainBoard: true, isYizi: false, suspended: false },
+    { name: '福莱新材', code: '605488', topic: '工业4.0', pct: 66.2, rank20: 5, mainBoard: true, isYizi: false, suspended: false }
+  ];
+
+  /** 采集事实（非退潮日 / 非分歧日：占比达标 + 不停牌 ⇒ ebb = null） */
+  function ctxOf(pool) {
+    return {
+      ready: true,
+      leader: { name: '九阳股份', topic: '家电', pct: 135.78 },
+      leaderSuspended: false,
+      leaderShare: 9,
+      top5: pool || [],
+      siblingDragons: [],
+      secondInfo: null
+    };
+  }
+
+  it('常量：规号 / 标签 / 独立题材头 / 不买标签', function() {
+    expect(TOPIC_LEADER_LIMITDOWN_RULE_NO).toBe('三十二');
+    expect(TOPIC_LEADER_LIMITDOWN_TAG).toBe('弱势切抱团');       // 与第三十条同一枚（用户同一个词）
+    expect(TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC).toContain('弱势切抱团');
+    expect(TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC).toContain('跌停');
+    expect(TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG).toBe('龙一跌停不买');
+    expect(TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE).toBe(EBB_NO_BUY_TONE);   // 同属「不买」那一档（灰化后只看明度）
+  });
+
+  it('★ 11-02 实例：题材龙一（海洋王）竞价跌停 ⇒ 本题材不买 + 改买市场总龙一（九阳股份）', function() {
+    const plan = buildTopicVolRatioPlan(topicsOf(-9.99), DM, { ebbCtx: ctxOf(TOP5) });
+    // ① 前置：这不是退潮日 / 分歧日，空仓提醒也没命中（量比 50.02 ≫ 25）
+    expect(plan.ebb).toBe(null);
+    expect(plan.cashAlert.show).toBe(false);
+    // ② 事实：命中第三十二条
+    expect(plan.leaderLimitDown).toBeTruthy();
+    expect(plan.leaderLimitDown.topic).toBe(TOPIC);
+    expect(plan.leaderLimitDown.name).toBe('海洋王');
+    // ③ 被否的题材块：照常列出、整块灰化、每只票【龙一跌停不买】
+    expect(plan.blocks).toHaveLength(1);
+    expect(plan.blocks[0].leaderLimitDownGray).toBe(true);
+    expect(plan.blocks[0].picks.length).toBeGreaterThan(0);
+    plan.blocks[0].picks.forEach(function(p) {
+      expect(p.buyActionTag).toBe(TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG);
+      expect(p.buyActionTone).toBe(TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE);
+      expect(p.holdTag).toBe('');
+      expect(p.position).toBe('');
+      expect(p.actionNote).toContain('竞价跌停');
+    });
+    // ④ 唯一的买点：20日涨幅市场总龙一（九阳股份），标【弱势切抱团】
+    expect(plan.weakHuddle).toBeTruthy();
+    expect(plan.weakHuddle.picks.map(function(p) { return p.name; })).toEqual(['九阳股份']);
+    const p0 = plan.weakHuddle.picks[0];
+    expect(p0.buyActionTag).toBe(TOPIC_LEADER_LIMITDOWN_TAG);
+    expect(p0.buyActionTone).toBe(WEAK_HUDDLE_TONE);          // 与第三十条同一档紫罗兰
+    expect(p0.dragonLabel).toBe('总龙一');                     // 20日涨幅名次
+    expect(p0.holdTag).toBe('');
+    expect(p0.actionNote).toContain('海洋王');                  // 讲清为什么换掉它
+    expect(p0.actionNote).toContain('市场总龙一');
+    // ⑤ 块级：独立题材头 + 规号 + 与第三十条区分用的标记
+    expect(plan.weakHuddle.block.topic).toBe(TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC);
+    expect(plan.weakHuddle.ruleNo).toBe(TOPIC_LEADER_LIMITDOWN_RULE_NO);
+    expect(plan.weakHuddle.isLeaderLimitDownHuddle).toBe(true);
+    expect(plan.weakHuddle.isWeakHuddle).toBe(true);
+    // ⑥ §6：同一份对象挂进买点槽位（四个装饰器经 _buyBlocksOf 遍历）
+    expect(plan.buy.weakHuddle).toBe(plan.weakHuddle);
+    // ⑦ 名单：抱团那只【进】、跌停那只【不进】（否则卖点侧会把跌停票标成【持有】）
+    expect(plan.buyNames.has('九阳股份')).toBe(true);
+    expect(plan.buyNames.has('海洋王')).toBe(false);
+    // ⑧ 「实际选出几只」= 1（跌停那块只作展示，⛔ 不计数）
+    expect(plan.pickCount).toBe(1);
+    // ⑨ 说明区留痕
+    const notes = plan.notes.join('\n');
+    expect(notes).toContain('第三十二条');
+    expect(notes).toContain('海洋王');
+    expect(notes).toContain('九阳股份');
+  });
+
+  it('§11：龙一没跌停（-3%）⇒ 零行为变化（不是这条规则的事）', function() {
+    const plan = buildTopicVolRatioPlan(topicsOf(-3), DM, { ebbCtx: ctxOf(TOP5) });
+    expect(plan.leaderLimitDown).toBe(null);
+    expect(plan.weakHuddle).toBe(null);
+    expect(plan.buy.weakHuddle).toBe(null);
+    expect(plan.blocks[0].leaderLimitDownGray).toBeFalsy();
+    // 常规买点标签照旧（⛔ 没被【龙一跌停不买】误伤）
+    plan.blocks[0].picks.forEach(function(p) {
+      expect(p.buyActionTag).not.toBe(TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG);
+    });
+    expect(plan.blocks[0].picks[0].name).toBe('海洋王');        // 正常选龙一
+    expect(plan.pickCount).toBe(1);
+  });
+
+  it('§10：龙一的竞价涨幅读不到 ⇒ 判不出 ⇒ 本条不生效（⛔ 不把「没数据」当跌停）', function() {
+    const plan = buildTopicVolRatioPlan(topicsOf(null), DM, { ebbCtx: ctxOf(TOP5) });
+    expect(plan.leaderLimitDown).toBe(null);
+    expect(plan.weakHuddle).toBe(null);
+    expect(plan.blocks[0].leaderLimitDownGray).toBeFalsy();
+    plan.blocks[0].picks.forEach(function(p) {
+      expect(p.buyActionTag).not.toBe(TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG);
+    });
+    expect(plan.notes.join('\n')).not.toContain('第三十二条');
+  });
+
+  it('§10：20日涨幅前五没就绪 ⇒ 题材照旧不买，但抱团那只不出现 + 写明判不出', function() {
+    const plan = buildTopicVolRatioPlan(topicsOf(-9.99), DM, { ebbCtx: ctxOf([]) });
+    expect(plan.leaderLimitDown).toBeTruthy();
+    expect(plan.weakHuddle).toBe(null);
+    expect(plan.blocks[0].leaderLimitDownGray).toBe(true);      // 跌停事实成立 ⇒ 该题材仍然不买
+    const notes = plan.notes.join('\n');
+    expect(notes).toContain('第三十二条');
+    expect(notes).toContain('判不出');
+  });
+
+  it('§10：20日涨幅第 1 名就是那只跌停票 ⇒ 判不出可抱团的票（⛔ 不拿它自己抱团）', function() {
+    const same = [TOP5[0]].concat(TOP5.slice(1)).map(function(t) { return Object.assign({}, t); });
+    same[0].name = '海洋王';
+    same[0].code = '002724';
+    const plan = buildTopicVolRatioPlan(topicsOf(-9.99), DM, { ebbCtx: ctxOf(same) });
+    expect(plan.leaderLimitDown).toBeTruthy();
+    expect(plan.weakHuddle).toBe(null);
+    expect(plan.blocks[0].leaderLimitDownGray).toBe(true);
+    const notes = plan.notes.join('\n');
+    expect(notes).toContain('第三十二条');
+    expect(notes).toContain('可抱团');
+  });
+
+  it('★「不管有多少只」：10 只（big 档取 2 只）同样收紧 ⇒ 整块不买、只买市场总龙一那一只', function() {
+    const plan = buildTopicVolRatioPlan(topicsOf(-9.99, 10), DM, { ebbCtx: ctxOf(TOP5) });
+    expect(plan.leaderLimitDown).toBeTruthy();
+    expect(plan.blocks).toHaveLength(1);
+    expect(plan.blocks[0].picks).toHaveLength(2);               // 档位照旧（big 档 2 只）——只改标签
+    plan.blocks[0].picks.forEach(function(p) {
+      expect(p.buyActionTag).toBe(TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG);
+    });
+    expect(plan.weakHuddle.picks.map(function(p) { return p.name; })).toEqual(['九阳股份']);
+    expect(plan.pickCount).toBe(1);
+  });
+
+  it('规则手册：第三十二条必须写清「只看排名第一 / 龙一跌停 / 不选它 / 买市场总龙一 / 不顺延」', function() {
+    const all = buildTvrbRulesLines().join('\n');
+    expect(all).toContain('三十二、【' + TOPIC_LEADER_LIMITDOWN_TAG + '】');
+    expect(all).toContain(TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG);
+    expect(all).toContain('不管有多少只');
+    expect(all).toContain('20日涨幅');
+    expect(all).toContain('主板第 1 名');
+    expect(all).toContain('不顺延');
+    // 历史案例（用户要求「以后可以翻开历史对照优化」）
+    expect(all).toContain('11-02');
+    expect(all).toContain('海洋王');
+    expect(all).toContain('九阳股份');
   });
 });
