@@ -20,6 +20,9 @@ import { getRange20Pct } from './range20.js';
 //   （⛔ 不是当天列表），只主板、取前五；当天列表里没有的注入独立区块（打「20天」标）。
 //   ★ 只读本模块的会话内存（ref-driven），⛔ 本层不请求、不落库（取数由 useAuctionBoard 的 watch 触发）。
 import { getRange20Leaders } from './range20-leaders.js';
+// [ROW-CLASS 2026-11-02 用户口径] 「四类行分账」的唯一实现（正式成员 / 龙头组 / 观察组 / 20日补位）。
+//   本文件只负责【数出各行数事实】并交给它整理，⛔ 不在别处再写第二份计数口径（§6）。
+import { buildRowClassCounts, describeRowClassMismatch } from './row-class-counts.js';
 import { getStockCode } from '../../data/stock-code-map.js';
 // [AVG-VRATIO 2026-10-01 用户口径] 题材统计条最上面一行「平均竞价量比」的取值入口：
 //   读某只股票【某日】的当日竞价量比（倍数，如 2.18）。
@@ -463,7 +466,10 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   const auctionList = getTodayGroupList(dataSource);
   if (!auctionList || auctionList.length === 0) {
-    return { items: [], obsIndices: [], regularIndices: [], dragonIndices: [], range20LeaderIndices: [], hiddenObsIndices: [], stats: { todayStrength: null, yesterdayStrength: null, strongCount: 0, totalCount: 0, highRatioCount: 0, jingYestCount: 0 }, rawCount: 0, date: currentDate, dataSource };
+    // [ROW-CLASS 2026-11-02] 空态也必须给出同形状的 rowClassCounts（全 0 + split:false）：
+    //   ⛔ 让下游读到 undefined 再各自兜底，就等于把「没有数据」和「字段没人写」混成一件事（§10）。
+    //   形状由 buildRowClassCounts 统一产出（与正常路径同一个实现，§6）。
+    return { items: [], obsIndices: [], regularIndices: [], dragonIndices: [], range20LeaderIndices: [], hiddenObsIndices: [], rowClassCounts: buildRowClassCounts(), stats: { todayStrength: null, yesterdayStrength: null, strongCount: 0, totalCount: 0, highRatioCount: 0, jingYestCount: 0 }, rawCount: 0, date: currentDate, dataSource };
   }
 
   const prevDate = getPreviousTradingDay(currentDate);
@@ -1133,6 +1139,12 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // 注：原「三天竞跌」模式的分组注释随该功能整体删除（2026-10-14）。
 
   let obsIndices, regularIndices, hiddenObsIndices;
+  // [ROW-CLASS 2026-11-02 用户口径] 本模式下第一页是否【分块显示】（龙头组 / 20日补位 / 观察组 / 常规组
+  //   四块各自成块，各有标题与数量）。只有「默认模式」这一支才为 true：
+  //   题材模式、十日涨幅、20日涨幅、竞昨高光都会把四组【折叠成一条列表】，
+  //   那时屏幕上并没有四个区块 ⇒ ⛔ 不能给「某一类」贴一个区块标题（§10：没显示的就不假装有）。
+  //   它只作为「计数事实」的一部分向下透出，不参与任何排序/渲染归属判定（单一真相仍是四个索引数组）。
+  let _blocksSplit = false;
   // [DRAGON-GROUP 2026-09-14] 龙头组索引：非空时模板在【观察组之上】渲染独立「龙头组」区块
   // （与观察组用蚂蚁线隔开）。其余模式折叠为 [] → 龙头只按「组内标记」体现在原列表中。
   let dragonIndices = [];
@@ -1174,6 +1186,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     obsIndices = [];
     regularIndices = renderOrder.filter(i => hiddenObsIndices.indexOf(i) < 0);
   } else {
+    // [ROW-CLASS 2026-11-02] 走到这一支 = 默认模式（无题材 / 无十日 / 无20日 / 无竞昨）⇒ 四块分块显示。
+    _blocksSplit = true;
     // [DRAGON-GROUP 2026-09-14] 默认/平行模式（观察组区块可见）：把龙头组抽到最上方独立区块。
     //   ① 去重（需求 3）：一只票既是观察组又是龙头组 → 归龙头组，观察组里剔除（龙头组优先、排最前）；
     //   ② 龙头同时位于今日正式列表 → 打 *（需求 4，`dragonGroupFormalStar`，与观察组 `*` 同一套语义）；
@@ -1542,6 +1556,48 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     });
   }
 
+  // ==========================================================================
+  // [ROW-CLASS 2026-11-02 用户口径] 「四类行分账」—— 第一页到底有多少行、每类各多少。
+  //
+  // 用户原话：「历史的股票数量根本不对，怎么进了很多脏数据在里面，早盘竞价看板的股票列表有很多
+  //   不知道是不是影子记录还是20日涨幅的股票灰色行，没有分清就放进去了……每天基本都是90多条
+  //   股票记录，肯定不对……列表里面有正式成员，龙头组，观察组，20日补的，要分清楚啊」
+  // 经 AskUserQuestion 拍板：「你说的 90 多条是在哪里看到的？」→「看板第一页四个区块合起来」；
+  //   「你期望的『正确』是什么样？」→「四类分开显示，各自给数量」。
+  //
+  // ⚠️⚠️ 这段【只做计数，不改任何归属】。四个数字与「四个索引数组」逐一相等（同一份事实，
+  //   §6 不加第二把尺子），因此「区块标题上的数量」必然等于「区块里实际的行数」。
+  //   ⛔ 不在这里重算「谁算正式成员」：那是 _statList / _formalOnly 的职责（下面 stats.totalCount
+  //   就是它），本段只引用结果。若哪天口径要改，改那一处，这里跟着对，不会分叉。
+  //
+  // 各字段含义：
+  //   total    = 实际渲染行数（= items.length，屏幕上有多少行就是多少行）
+  //   formal   = 今日 9:25 正式成员数（= stats.totalCount，**同一个数**，不是另算一遍）
+  //              ⚠️ 它与 auction_watchlist 当日行数的唯一差别：库里带 obs_auto_added=true 的
+  //                 「纯观察组继承行」不算正式成员（_formalOnly 的口径，2026-09-08 已定死）。
+  //                 今天（11-02）56 行全为 source=worker、obs_auto_added 全 false ⇒ 两者相等。
+  //   injected = 自动补进来的行数（今日列表里没有、由龙头组/观察组/20日补位注入的壳行）
+  //              ⇒ total = formal + injected（默认模式下），「90 多条是怎么来的」一眼可对
+  //   dragon / range20 / obs / regular = 四个区块各自的行数（默认模式下四者互斥、相加 = total）
+  //   split    = 本模式是否分块显示（见 _blocksSplit 的说明）
+  // ==========================================================================
+  const rowClassCounts = buildRowClassCounts({
+    total: items.length,
+    formal: _statList.length,
+    injected: _injectedRows.length,
+    // 竞昨高光模式会「折叠掉」不命中高光的观察组行（hiddenObsIndices）⇒ 那时
+    // total = formal + injected − hidden。仅在非 0 时由 UI 显示，否则不提（不给用户添噪音）。
+    hidden: hiddenObsIndices.length,
+    dragon: dragonIndices.length,
+    range20: range20LeaderIndices.length,
+    obs: obsIndices.length,
+    regular: regularIndices.length,
+    split: _blocksSplit
+  });
+  // §10 禁止静默：四块之和不等于渲染行数 ⇒ 有行没被分到任何区块（或某行被重复分组）。
+  // 这正是「90 多条里分不清谁是谁」那一类 bug 的早期信号 ⇒ 必须留痕，⛔ 不能悄悄显示一组对不上的数字。
+  if (!rowClassCounts.balanced) console.warn(describeRowClassMismatch(rowClassCounts));
+
   return {
     date: currentDate,
     dataSource,
@@ -1556,6 +1612,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     //   的 ready 标志表达，视图层不需要区分：没得补就是不渲染区块）。
     range20LeaderIndices,
     hiddenObsIndices,
+    // [ROW-CLASS 2026-11-02 用户口径] 四类行分账（见上方整段说明）。纯计数事实，只读、可复算。
+    rowClassCounts,
     stats: {
       todayStrength,
       yesterdayStrength,

@@ -11,6 +11,12 @@
       · 原有循环（v-else 分支）一个字节都没动；
       · viewData / filteredRegularItems 本身不被改写（只是被读），排序、高光、增量缓存、统计数据全不受影响；
       · 关闭开关 → displayRows 变 null → 立刻回到原样。
+
+  [ROW-CLASS 2026-11-02 用户口径] 「四类行分账」：第一页最上方加一行 合计 / 正式成员 / 自动补，
+  并给四个区块标题各带上数量（常规组原本【没有标题】，本次补上）。
+  · 数字全部来自 Logic 层 `viewData.rowClassCounts`，本组件 ⛔ 不自己数 ——
+    否则「标题上的数字」与「区块里的行数」就会变成两把尺子（§6）。
+  · 详见 view-helpers.js 里 rowClassCounts 的整段说明与 logic/auction/row-class-counts.js。
 -->
 <template>
   <div
@@ -19,6 +25,56 @@
     @dblclick="openBackend"
   >
     暂无数据，双击打开后台
+  </div>
+
+  <!-- ============================================================
+       [ROW-CLASS 2026-11-02 用户口径] 「四类行分账」说明行（第一页最上方，紧贴表头之下）。
+
+       为什么加这一行（用户原话）：
+         「历史的股票数量根本不对，怎么进了很多脏数据在里面……每天基本都是90多条股票记录，
+           肯定不对……列表里面有正式成员，龙头组，观察组，20日补的，要分清楚啊」
+       拍板口径（AskUserQuestion）：「看板第一页四个区块合起来」+「四类分开显示，各自给数量」。
+
+       数字全部来自 Logic 层 `viewData.rowClassCounts`（view-helpers.js 一处算定），
+       本模板 ⛔ 不自己数 —— 否则「标题上的数字」和「区块里的行数」就会有两把尺子。
+       等式（默认模式恒成立）：合计 = 正式成员 + 自动补；
+       四个区块（常规组/龙头组/观察组/20日补位）互斥且相加 = 合计。
+       ============================================================ -->
+  <div
+    v-if="viewData.items && viewData.items.length > 0"
+    class="auction-row-counts"
+  >
+    <span class="auction-row-counts-total">合计 {{ rowClassCounts.total }} 行</span>
+    <span
+      class="auction-row-counts-item auction-row-counts-formal"
+      title="今日 9:25 正式名单成员数（= 强度统计的分母，不含纯观察组继承行）"
+    >正式成员 {{ rowClassCounts.formal }}</span>
+    <span
+      v-if="rowClassCounts.injected > 0"
+      class="auction-row-counts-item auction-row-counts-injected"
+      title="今日正式名单里没有、由龙头组 / 观察组 / 20日补位自动补进来的行（只用于看盘，不写库）"
+    >自动补 {{ rowClassCounts.injected }}</span>
+    <span
+      v-if="rowClassCounts.hidden > 0"
+      class="auction-row-counts-item auction-row-counts-hidden"
+      title="竞昨高光模式下被折叠掉的观察组行（不命中高光且非今日正式成员）"
+    >折叠 {{ rowClassCounts.hidden }}</span>
+    <span
+      v-if="rowClassCounts.dragon > 0"
+      class="auction-row-counts-item auction-row-counts-dragon"
+    >龙头组 {{ rowClassCounts.dragon }}</span>
+    <span
+      v-if="rowClassCounts.range20 > 0"
+      class="auction-row-counts-item auction-row-counts-r20"
+    >20日补位 {{ rowClassCounts.range20 }}</span>
+    <span
+      v-if="rowClassCounts.obs > 0"
+      class="auction-row-counts-item auction-row-counts-obs"
+    >观察组 {{ rowClassCounts.obs }}</span>
+    <span
+      v-if="rowClassCounts.split && rowClassCounts.regular > 0"
+      class="auction-row-counts-item auction-row-counts-regular"
+    >常规组 {{ rowClassCounts.regular }}</span>
   </div>
 
   <!-- [DRAGON-GROUP 2026-09-14] 龙头组：第一页最上方独立区块（观察组之上），用蚂蚁线与观察组隔开。
@@ -36,11 +92,13 @@
        —— 补位票在行上另有「20天」标签，两者身份不混。空数组时本组件整体不渲染。 -->
   <AuctionRange20Leaders :items="filteredRange20LeaderItems" />
 
+  <!-- [ROW-CLASS 2026-11-02] 观察组标题带数量（与区块行数同源：Logic 层的 obsIndices.length）。
+       ⛔ 不要改成 filteredObsItems.length：搜索过滤一旦启用，两者就会分叉。 -->
   <div
     v-if="filteredObsItems.length > 0"
     class="auction-group-label auction-obs-group-label"
   >
-    观察组
+    观察组<span class="auction-group-count">{{ rowClassCounts.obs }} 只</span>
   </div>
   <template
     v-for="(item, idx) in filteredObsItems"
@@ -97,6 +155,18 @@
 
   <!-- 常规路径：题材未开 / 补竞价一字未开 → 原有循环（与改动前完全一致） -->
   <template v-else>
+    <!-- [ROW-CLASS 2026-11-02 用户口径] 常规组标题（原本【没有标题】——四类里唯独它分不出来，
+         用户「列表里面有正式成员、龙头组、观察组、20日补的，要分清楚啊」）。
+         ⚠️ 只在 `split`（= 默认模式，四块真的分开渲染）时出现：
+           题材 / 十日 / 20日 / 竞昨模式下这一条列表是【四组折叠后的合集】，
+           此时挂「常规组」标题会谎报口径（§10：没分开就别假装分开了）。 -->
+    <div
+      v-if="rowClassCounts.split && filteredRegularItems.length > 0"
+      class="auction-group-label auction-regular-group-label"
+    >
+      常规组<span class="auction-group-count">{{ rowClassCounts.regular }} 只</span>
+      <span class="auction-group-hint">9:25 正式名单里、未进入上面各组的行</span>
+    </div>
     <template
       v-for="(item, idx) in filteredRegularItems"
       :key="item.index"
@@ -128,6 +198,8 @@ const {
   // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」区块的行（同样支持搜索过滤）。
   filteredRange20LeaderItems,
   showObsSeparator, showDragonSeparator,
+  // [ROW-CLASS 2026-11-02 用户口径] 四类行分账（Logic 层唯一真相的只读透出）
+  rowClassCounts,
   highlightStockSet, openBackend
 } = board;
 

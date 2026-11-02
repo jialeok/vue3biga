@@ -21,6 +21,10 @@
   <template v-if="items.length > 0">
     <div class="auction-group-label auction-r20-group-label">
       <span class="auction-r20-group-title">20日强势补位</span>
+      <!-- [ROW-CLASS 2026-11-02 用户口径] 区块标题带数量（用户：「四类分开显示，各自给数量」）。
+           数字 = 本区块实际行数（items 就是 Logic 层 range20LeaderIndices 取出的行），
+           ⛔ 不从别处再数一遍（§6 单一真相）。 -->
+      <span class="auction-r20-group-count">{{ items.length }} 只</span>
       <span class="auction-r20-group-hint">近 20 个交易日竞价名单中，20 日涨幅前五 · 当天列表里没有的才补（只主板）</span>
     </div>
     <AuctionEntityRow

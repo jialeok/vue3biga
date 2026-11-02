@@ -15,7 +15,7 @@
 <template>
   <template v-if="items.length > 0">
     <div class="auction-group-label auction-dragon-group-label">
-      龙头组
+      龙头组<span class="auction-group-count">{{ items.length }} 只</span>
     </div>
     <AuctionEntityRow
       v-for="(item, idx) in items"

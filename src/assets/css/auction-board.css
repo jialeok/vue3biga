@@ -1685,3 +1685,98 @@
     }
 }
 
+/* ============================================================================
+   [ROW-CLASS 2026-11-02 用户口径] 「四类行分账」：合计 / 正式成员 / 自动补 + 四个区块各自的数量
+
+   用户原话：「历史的股票数量根本不对……每天基本都是90多条股票记录，肯定不对……
+     列表里面有正式成员，龙头组，观察组，20日补的，要分清楚啊」
+   拍板口径：「看板第一页四个区块合起来」+「四类分开显示，各自给数量」。
+
+   ⛔ 颜色不新造语义：四个区块各自沿用【既有区块色】
+      （龙头组紫 #6d28d9 / 20日补位蓝 #0369a1 / 观察组琥珀 #f59e0b / 常规组石板灰），
+      这样标题上的数字与下面的区块是同一种颜色 —— 一眼知道哪个数说的是哪一块。
+   ⛔ 不用红 / 绿：这里没有涨跌语义（红=涨 绿=跌 是全站铁律）。
+   ============================================================================ */
+.auction-row-counts {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 10px;
+    padding: 3px 12px 4px;
+    font-size: 10px;
+    line-height: 15px;
+    color: #64748b;
+    background: #f8fafc;
+    border-bottom: 1px solid #e2e8f0;
+}
+
+/* 合计：唯一加粗项 —— 它是「对账」的主数（屏幕上到底有多少行） */
+.auction-row-counts-total {
+    font-weight: 700;
+    color: #1e293b;
+}
+
+.auction-row-counts-item {
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.auction-row-counts-formal {
+    color: #475569;
+}
+
+/* 自动补：中性灰蓝，刻意比「正式成员」淡一档 —— 它是解释性数字，不是主体 */
+.auction-row-counts-injected {
+    color: #94a3b8;
+}
+
+/* 被折叠掉的行：同上，淡一档（只在竞昨高光模式下才可能 > 0） */
+.auction-row-counts-hidden {
+    color: #94a3b8;
+}
+
+/* 四个区块色 —— 与下面各区块标题同色，形成「数字 ↔ 区块」的对应关系 */
+.auction-row-counts-dragon {
+    color: #6d28d9;
+}
+
+.auction-row-counts-r20 {
+    color: #0369a1;
+}
+
+.auction-row-counts-obs {
+    color: #f59e0b;
+}
+
+.auction-row-counts-regular {
+    color: #475569;
+}
+
+/* 区块标题里的数量（龙头组 N 只 / 观察组 N 只 / 20日强势补位 N 只 / 常规组 N 只） */
+.auction-group-count {
+    margin-left: 6px;
+    font-size: 10px;
+    font-weight: 700;
+    opacity: 0.9;
+}
+
+.auction-r20-group-count {
+    font-size: 10px;
+    font-weight: 700;
+    color: #0369a1;
+}
+
+/* [ROW-CLASS 2026-11-02] 常规组标题（原本没有标题）。
+   石板灰：它是最"平常"的一类（今日名单里除去各组剩下的），
+   ⛔ 不要抢龙头组（紫）/ 补位（蓝）/ 观察组（琥珀）的视觉优先级。 */
+.auction-regular-group-label {
+    color: #475569;
+}
+
+.auction-group-hint {
+    margin-left: 8px;
+    font-size: 9px;
+    font-weight: 400;
+    color: #94a3b8;
+}
+

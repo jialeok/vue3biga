@@ -34,6 +34,8 @@ import { prepareAuctionData } from '../logic/auction/view-helpers.js';
 // [TWO-MODES 2026-10-02 用户口径] 题材 / 一字两个 toggle 的排序口径词表（§6 唯一真相）
 import { TOPIC_ORDER_VOL_RATIO, TOPIC_ORDER_YIZI } from '../logic/auction/topic-sort.js';
 import { computeAuctionViewDataIncremental } from '../logic/auction/incremental-view.js';
+// [ROW-CLASS 2026-11-02 用户口径] 四类行分账的形状唯一实现（正式成员 / 龙头组 / 观察组 / 20日补位）。
+import { buildRowClassCounts } from '../logic/auction/row-class-counts.js';
 import { showToast, showWarningToast } from '../composables/useToast.js';
 import { apiStatusMap, setApiStatus } from '../logic/ui-bridge.js';
 import { setBtnLoading } from '../logic/shared/core-shared.js';
@@ -682,6 +684,17 @@ export function useAuctionBoard() {
     return regularItems.value.filter(item => item.stock && item.stock.toLowerCase().includes(kw));
   });
   const showObsSeparator = computed(() => filteredObsItems.value.length > 0 && filteredRegularItems.value.length > 0);
+  // [ROW-CLASS 2026-11-02 用户口径] 四类行分账（正式成员 / 龙头组 / 观察组 / 20日补位），供第一页
+  //   「合计 N 行 · 正式成员 X · 自动补 Y」与四个区块标题各自显示数量。
+  //
+  // ⚠️ 数字唯一真相在 Logic 层 `view-helpers.js#computeAuctionViewData`（rowClassCounts），
+  //   ⛔ 本层【不重新数一遍】：在这里 `filteredXxxItems.length` 数一次、那边再数一次，
+  //   就是两把尺子（§6）。而且 Logic 那份带「formal（可与 auction_watchlist 行数对账）/
+  //   injected（自动补了多少行）」两个视图层根本算不出来的事实。
+  // §10：viewData 空态 / 旧缓存里没有这个字段 ⇒ 返回全 0 的同形状对象（绝不 undefined）。
+  // ⚠️ 兜底对象也由 buildRowClassCounts() 产出 —— 形状只有一处定义（§6），
+  //   ⛔ 别在这里手写一个字面量：以后加字段必然漏改一处。
+  const rowClassCounts = computed(() => viewData.value.rowClassCounts || buildRowClassCounts());
   // [DRAGON-GROUP 2026-09-14] 龙头组与下方（观察组/常规组）之间的蚂蚁线分隔：龙头区块非空且下方有内容时显示。
   const showDragonSeparator = computed(() => {
     return filteredDragonItems.value.length > 0
@@ -2073,6 +2086,8 @@ export function useAuctionBoard() {
     filteredRange20LeaderItems,
     showObsSeparator,
     showDragonSeparator,
+    // [ROW-CLASS 2026-11-02 用户口径] 四类行分账（Logic 层唯一真相的只读透出，见定义处说明）
+    rowClassCounts,
     sortState2,
     isStrengthSortEnabled,
     p2ExpandedSet,
