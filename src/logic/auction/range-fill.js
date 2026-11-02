@@ -55,9 +55,9 @@ import {
 } from './range-window.js';
 import {
     fetchNumcatDailyPctRange,
-    fetchFuyaoDailyPctRange,
     upsertRangePctRows
 } from '../../data/stock-range-pct.js';
+import { fetchDailyPctRange } from '../../data/daily-pct-range.js';
 import { beijingTodayStr } from './auction-pull-window.js';
 import { _dbgLog } from '../../data/debug-log.js';
 
@@ -264,7 +264,7 @@ async function _collectLegsViaNumcat(missing, winAsc, date, aucPctOf, fetchDaily
  * @returns {Promise<{targets:Array, dailyByCode:Object, tLegByCode:Object}|null>}
  */
 async function _collectLegsViaKline(missing, winAsc, date, aucPctOf, concurrency) {
-    const pctMap = await fetchFuyaoDailyPctRange(missing, winAsc, { concurrency: concurrency });
+    const pctMap = await fetchDailyPctRange(missing, winAsc, { concurrency: concurrency });
     if (!pctMap || pctMap.size === 0) return null;
 
     const tDate = winAsc[winAsc.length - 1];

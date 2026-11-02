@@ -42,7 +42,7 @@
 import { ref } from 'vue';
 import { getStockCode } from '../../data/stock-code-map.js';
 import { _getAuctionFormalRowsForDate, _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
-import { fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
+import { fetchDailyPctRange } from '../../data/daily-pct-range.js';
 // [R20-CLOUD 2026-10-20] 与主 toggle 共用同一张结果表（stock_range20_pct）⇒ 谁先算谁落库、另一方 0 请求复用
 import { readRange20Rows, pickUsableRows, upsertRange20Rows } from '../../data/stock-range20-cache.js';
 // ★★ [R20-DAILY 2026-10-30 用户口径] 逐日腿原料表（与主 toggle 共用同一份原料，§6）
@@ -968,7 +968,7 @@ export async function ensureRange20Leaders(date, opts) {
         //   ⇒ 与 range20.js 同口径：K 线拿不到就记一条日志，继续用 `baseLegs`（逐日腿原料表）出数。
         let extra = new Map();
         try {
-          extra = await fetchFuyaoDailyPctRange(
+          extra = await fetchDailyPctRange(
             list.map(function(t) { return { stock: t.stock, code: t.code }; }),
             probeDates,
             // 与 range20.js 同一套参数（理由见该文件阶段② 注释）：上游偶发只回 12 根 / 挂住 / 凑不满窗口

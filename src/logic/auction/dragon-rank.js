@@ -42,9 +42,9 @@ import { getCarryOverNamesForDate } from './tag-carryover.js';
 import {
   readRangePctForDate,
   upsertRangePctRows,
-  fetchNumcatDailyPctRange,
-  fetchFuyaoDailyPctRange
+  fetchNumcatDailyPctRange
 } from '../../data/stock-range-pct.js';
+import { fetchDailyPctRange } from '../../data/daily-pct-range.js';
 import { _dbgLog } from '../../data/debug-log.js';
 import { ensureAuctionCodeMapping } from './auction-fetch-helpers.js';
 // [MAIN-BOARD-ONLY 2026-10-07 用户口径] 板块判定走 limit-up.js 的唯一实现（§6），⛔ 不手写 /^30|68/ 前缀：
@@ -689,7 +689,8 @@ async function _fetchRangeFor(date, targetRows) {
  *
  * ⚠️ 与已删除的「前端逐只同花顺补齐」不同（那是给全部 64 只票每只 4.7s 的常规补齐，
  *    是真的「加载一分钟」根因）：这里只跑【确实缺行/缺腿的少数票】，且只在猫抓通道
- *    失败后触发、每阶段最多一次，`fetchFuyaoDailyPctRange` 自带并发 3 + 截断重试 + 熔断。
+ *    失败后触发、每阶段最多一次，`fetchDailyPctRange`（统一 K 线腿：同花顺可用走同花顺 /
+ *    FUYAO-OFF 走腾讯直连，见 data/daily-pct-range.js）自带重试与退避。
  *
  * @param {string} date
  * @param {Array<object>} targetRows
@@ -714,7 +715,7 @@ async function _fetchRangeFromKline(date, targetRows) {
   const dates = getDragonWindowDates(date);
   const ascDates = dates.slice().reverse(); // 升序 [T-9 ... T]
   // 同花顺 K 线取全窗口（含当天）：当天已收盘时 K 线里就有当天收盘价
-  const byName = await fetchFuyaoDailyPctRange(items, ascDates, { concurrency: 3 });
+  const byName = await fetchDailyPctRange(items, ascDates, { concurrency: 3 });
   if (!byName || byName.size === 0) return [];
 
   const sysToday = _getLocalTodayStr();

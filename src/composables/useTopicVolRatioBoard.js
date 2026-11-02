@@ -120,7 +120,7 @@ import { buildLeaderDivergence, shouldGateBuySide } from '../logic/auction/leade
 //   isAfterCloseOf = 「口径阶段」的唯一判据（§6）—— 预热拿到的 K 线能否被正式链路复用，就看它。
 import { getRange20WindowDates, RANGE20_PROBE_DAYS, isAfterCloseOf } from '../logic/auction/range20.js';
 //   K 线（同花顺，免费 0 额度）取总龙的每天收盘涨幅 + 开盘涨幅（竞价涨幅 = open/昨收-1）。
-import { fetchFuyaoDailyPctRange } from '../data/stock-range-pct.js';
+import { fetchDailyPctRange } from '../data/daily-pct-range.js';
 // ★ 买点侧专用龙位（= 同一把尺子 computeDragonRankMap，只把十日涨幅换成 9:26 口径那份）
 import { rankDragonsWithPctMap } from '../logic/decision/decision-rules.js';
 // ★★ [EBB-R8 2026-10-14 用户口径] 退潮判定【落库表】的读写入口（§5 唯一出处）。
@@ -558,7 +558,7 @@ export function useTopicVolRatioBoard() {
       // ② 只拉这一只票的窗口 K 线（1 次请求）⇒ 跑同一份纯函数判定（§6 同一把尺子）
       const dates = getRange20WindowDates(d, RANGE20_PROBE_DAYS);
       const openOut = new Map();
-      const pct = await fetchFuyaoDailyPctRange(
+      const pct = await fetchDailyPctRange(
         [{ stock: cand.stock, code: cand.code }],
         dates,
         { retryShortWindow: true, requestTimeoutMs: 15000, openOut: openOut }
@@ -692,7 +692,7 @@ export function useTopicVolRatioBoard() {
         openOut.set(l0.stock, _guess.open || new Map());
         _dbgLog('[DIVERGE-GUESS] ' + d + ' 正式链路复用预热 K 线（总龙一=' + l0.stock + '，0 请求）');
       } else {
-        pct = await fetchFuyaoDailyPctRange(
+        pct = await fetchDailyPctRange(
           [{ stock: l0.stock, code: l0.code }],
           dates,
           { retryShortWindow: true, requestTimeoutMs: 15000, openOut: openOut }

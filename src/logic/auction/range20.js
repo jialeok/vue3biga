@@ -49,7 +49,7 @@ import { _getLocalTodayStr } from '../tagTitles/rules.js';
 import { compoundPct, parsePct, closeCoverUtcMs } from './range-window.js';
 import { getDragonWindowDates } from './dragon-rank.js';
 import { ensureAuctionCodeMapping } from './auction-fetch-helpers.js';
-import { fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
+import { fetchDailyPctRange } from '../../data/daily-pct-range.js';
 // [R20-CLOUD 2026-10-20] 结果表读写（加速层：读失败降级为纯内存计算，⛔ 不影响正确性）
 import { readRange20Rows, pickUsableRows, upsertRange20Rows } from '../../data/stock-range20-cache.js';
 // ★★ [R20-DAILY 2026-10-30 用户口径] 逐日腿原料表（详见 data/stock-daily-pct.js 头部）。
@@ -1190,7 +1190,7 @@ export async function ensureRange20(date, rows, opts) {
     };
     let extra = new Map();
     try {
-      extra = await fetchFuyaoDailyPctRange(
+      extra = await fetchDailyPctRange(
         list.map(function(t) { return { stock: t.stock, code: t.code }; }),
         probeDates,
         // retryShortWindow：上游偶发只回「最近 12 根」，窗口会被误判成次新股 ⇒ 强迫它重试，

@@ -19,7 +19,7 @@ vi.mock('../../data/auction-metrics-patch.js', () => ({
   upsertAuctionMetrics: vi.fn(),
   AUCTION_SCOPE: 'auction',
 }));
-vi.mock('../../data/stock-range-pct.js', () => ({ fetchFuyaoDailyPctRange: vi.fn() }));
+vi.mock('../../data/daily-pct-range.js', () => ({ fetchDailyPctRange: vi.fn() }));
 vi.mock('../../data/api/fuyao-proxy.js', () => ({
   fuyaoApiGet: vi.fn(),
   tickerToThscode: function(c) { return /^\d{6}$/.test(c) ? c + '.SH' : c; },
@@ -33,7 +33,7 @@ import {
   _resetThsPatchForTest,
 } from './ths-today-patch.js';
 import { readAuctionRoster, readAuctionMetrics, upsertAuctionMetrics } from '../../data/auction-metrics-patch.js';
-import { fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
+import { fetchDailyPctRange } from '../../data/daily-pct-range.js';
 import { fuyaoApiGet } from '../../data/api/fuyao-proxy.js';
 
 /** 北京某天的时间戳（快照顶层 timestamp 用它做日期闸门） */
@@ -43,7 +43,7 @@ const TS_PREV = Date.parse('2026-10-23T15:00:00+08:00');
 /** 默认上游夹具：票A 有完整三腿，票B 只有 K 线腿 */
 function setUpstream(over) {
   const o = over || {};
-  fetchFuyaoDailyPctRange.mockImplementation(async function(items, dates, opts) {
+  fetchDailyPctRange.mockImplementation(async function(items, dates, opts) {
     const out = new Map();
     items.forEach(function(it) {
       out.set(it.stock, new Map(o.pct && o.pct[it.stock] ? o.pct[it.stock] : []));
@@ -238,7 +238,7 @@ describe('patchTodayAuctionFromThs — 快照双重日期闸门（防把上一�
   });
 
   it('K 线腿失败 ⇒ 只降级该腿，快照腿仍然补（不整体失败）', async () => {
-    fetchFuyaoDailyPctRange.mockRejectedValue(new Error('kline down'));
+    fetchDailyPctRange.mockRejectedValue(new Error('kline down'));
     const r = await patchTodayAuctionFromThs(TODAY);
     expect(r.ok).toBe(true);
     const row = upsertAuctionMetrics.mock.calls[0][0][0];

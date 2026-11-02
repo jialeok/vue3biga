@@ -23,7 +23,7 @@
 //   · §10：读名单 / 读库 / 写库 任一步失败都向上抛，绝不伪装成"已补好"。
 //   · §32：模块级单飞，连点只跑一次；不自动触发，只能由用户按钮调用。
 import { readAuctionRoster, readAuctionMetrics, upsertAuctionMetrics, AUCTION_SCOPE } from '../../data/auction-metrics-patch.js';
-import { fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
+import { fetchDailyPctRange } from '../../data/daily-pct-range.js';
 import { fuyaoApiGet, tickerToThscode } from '../../data/api/fuyao-proxy.js';
 import { computeKlineDayPatch } from './trend-patch.js';
 import { beijingTodayStr } from './auction-pull-window.js';
@@ -150,7 +150,7 @@ export async function patchTodayAuctionFromThs(date, opts) {
     const volOut = new Map();
     let pctMap = null;
     try {
-      pctMap = await fetchFuyaoDailyPctRange(
+      pctMap = await fetchDailyPctRange(
         targets,
         [d],
         { requestTimeoutMs: o.requestTimeoutMs || 20000, openOut: openOut, volOut: volOut }

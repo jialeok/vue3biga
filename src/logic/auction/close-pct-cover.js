@@ -23,7 +23,8 @@ import { getAuctionData } from '../app-core-api.js';
 import { state } from '../app-state.js';
 import { _dbgLog } from '../../data/debug-log.js';
 import { readMarketMetricsForDate, upsertMarketMetricsRows } from '../../data/market-metrics.js';
-import { readRangePctForDate, upsertRangePctRows, fetchNumcatDailyPctRange, fetchFuyaoDailyPctRange } from '../../data/stock-range-pct.js';
+import { readRangePctForDate, upsertRangePctRows, fetchNumcatDailyPctRange } from '../../data/stock-range-pct.js';
+import { fetchDailyPctRange } from '../../data/daily-pct-range.js';
 import { ensureAuctionCodeMapping } from './auction-fetch-helpers.js';
 // getDragonWindowDates：[RANGE-FULL-LEG 2026-09-11] T 腿换算的「行完整度」断言要用的窗口长度，
 // 与 dragon-rank 的兜底抓取、worker 的计算窗口同源（§6 单一真相），绝不在这里另算一份。
@@ -217,7 +218,7 @@ async function _runCover(date, force) {
             const missingTargets = targets.filter(function(t) { return !freshPctByName.has(t.name); });
             if (missingTargets.length > 0 && (numcatErr || freshPctByName.size > 0)) {
                 try {
-                    const byName = await fetchFuyaoDailyPctRange(
+                    const byName = await fetchDailyPctRange(
                         missingTargets.map(function(t) { return { stock: t.name, code: t.code }; }),
                         [date],
                         { concurrency: 4 }
