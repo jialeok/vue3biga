@@ -230,7 +230,21 @@ export function useAuctionBoard() {
       //   加载过，屏幕会停在一片「没有涨幅数值、顺序也没变」的状态等下一次触发 —— 那正是
       //   「打开 toggle 响应慢」的观感来源。列进来后：点开即 ensureDragonRangePct
       //   （已缓存 → 同步级返回；未缓存 → 一次云端读），数据一到 dragon= 指纹变化 → 自动重排。
-      () => [sortState.byTopic, sortState.byRangePct, uiStore.currentDate, (viewData.value && viewData.value.items ? viewData.value.items.length : 0)],
+      // 🔴🔴 [WATCH-ARRAY-SRC 2026-11-02 卡死根因 · 必须保持「数组源」写法，⛔ 不要改回 getter 返回数组]
+      //
+      //   Vue 3.4 `doWatch`（@vue/runtime-core:1821/1902）里逐项比较只在 `isMultiSource` 为真时生效，
+      //   而 `isMultiSource = isArray(source)` —— **source 本身**是数组才算。写成 `() => [a, b, c]`
+      //   （getter 返回数组字面量）时 `isMultiSource = false`，比较落到
+      //   `hasChanged(newValue, oldValue)` = `!Object.is(新数组, 旧数组)` ⇒ **恒为 true**
+      //   ⇒ 只要任意一个依赖变化就必然执行回调，下面注释里那句「名单没变就一次都不跑」形同虚设。
+      //   更致命的是 getter 读了 `viewData.value`（computed，每次重算都是新对象）⇒ 任何一次
+      //   `_publish` 的 version+1 都会把本回调重新踢起来（§36 性能红线：一个小状态变化导致整块重算）。
+      //   2026-11-02 用户报障「打开 20日涨幅 toggle 卡死」就是这条链：watch ↔ ensureRange20 ↔ _publish 自激。
+      //   ⇒ 全部改成「数组源 + 每项一个 getter」，让逐项 `hasChanged` 真正生效。
+      [() => sortState.byTopic,
+        () => sortState.byRangePct,
+        () => uiStore.currentDate,
+        () => (viewData.value && viewData.value.items ? viewData.value.items.length : 0)],
       async () => {
         // ⚠️ 不再因「关闭题材」而跳过加载：展开面板的「10日涨幅」同样依赖这份数据
         // （与题材 toggle 是否开启无关）。数据按 date 键控，切日期时会被新日期覆盖。
@@ -281,8 +295,15 @@ export function useAuctionBoard() {
       return names.join(',');
     };
     watch(
-      () => [sortState.byRangePct20, uiStore.currentDate,
-        _r20RowsSig((viewData.value && viewData.value.items) || [])],
+      // 🔴🔴 [WATCH-ARRAY-SRC 2026-11-02 卡死根因修复] 必须写成「数组源 + 每项一个 getter」，
+      //   ⛔ 不要改回 `() => [a, b, c]`。理由见上方龙头 watch 处的长注释（Vue 3.4 doWatch 的
+      //   `isMultiSource` 只认数组源；getter 返回数组字面量 ⇒ 比较恒真 ⇒ 每次 viewData 重算都触发）。
+      //   在这条链上后果最严重：回调会 await `ensureRange20`，而 `ensureRange20` 又会 `_publish`
+      //   ⇒ version+1 ⇒ viewData 重算 ⇒ 回调再触发 ⇒ **自激**（2026-11-02「点开 20日涨幅就卡死」）。
+      //   改成数组源后，下面这句「名单没变就一次都不跑」才真正成立（签名是字符串，逐项比较有效）。
+      [() => sortState.byRangePct20,
+        () => uiStore.currentDate,
+        () => _r20RowsSig((viewData.value && viewData.value.items) || [])],
       async () => {
         if (!sortState.byRangePct20) return;
         const _date = uiStore.currentDate;
@@ -456,8 +477,10 @@ export function useAuctionBoard() {
   if (!_r20Top5WatchBound) {
     _r20Top5WatchBound = true;
     watch(
-      () => [uiStore.currentDate,
-        (viewData.value && viewData.value.items ? viewData.value.items.length : 0)],
+      // 🔴 [WATCH-ARRAY-SRC 2026-11-02] 数组源（逐项比较）；getter 返回数组字面量会让回调恒触发
+      //   ⇒ 每次 viewData 重算都重跑 25 只精算检索（同一份自激链的一环）。理由见龙头 watch 处注释。
+      [() => uiStore.currentDate,
+        () => (viewData.value && viewData.value.items ? viewData.value.items.length : 0)],
       () => { ensureRange20LeadersForCurrentBoard(); },
       { immediate: true }
     );
@@ -491,8 +514,10 @@ export function useAuctionBoard() {
   if (!_suspendWatchBound) {
     _suspendWatchBound = true;
     watch(
-      // 额外监听「当日渲染行数」：9:25 名单是逐步到达的，只在日期变化时加载会让后到的票永远没有停牌标记。
-      () => [uiStore.currentDate, (viewData.value && viewData.value.items ? viewData.value.items.length : 0)],
+      // 🔴 [WATCH-ARRAY-SRC 2026-11-02] 数组源（逐项比较）。旧写法恒触发 ⇒ 每一帧都把 56 只票
+      //   逐只打一次报价接口（实测 3.2s 内 414 次 [FUYAO-OFF] prices/snapshot 降级请求）。
+      [() => uiStore.currentDate,
+        () => (viewData.value && viewData.value.items ? viewData.value.items.length : 0)],
       () => { ensureSuspendForCurrentBoard(); },
       { immediate: true }
     );
@@ -529,7 +554,10 @@ export function useAuctionBoard() {
   if (!_closeCoverBound) {
     _closeCoverBound = true;
     watch(
-      () => [uiStore.currentDate, (viewData.value && viewData.value.items ? viewData.value.items.length : 0)],
+      // 🔴 [WATCH-ARRAY-SRC 2026-11-02] 数组源（逐项比较）。旧写法恒触发 ⇒ 每次 viewData 重算都跑一遍
+      //   收盘覆盖 + 龙头区间涨幅重算（同一份自激链的一环）。理由见龙头 watch 处注释。
+      [() => uiStore.currentDate,
+        () => (viewData.value && viewData.value.items ? viewData.value.items.length : 0)],
       async () => { await runCloseCover(uiStore.currentDate); },
       { immediate: true }
     );

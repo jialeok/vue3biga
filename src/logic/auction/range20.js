@@ -964,8 +964,34 @@ export async function ensureRange20(date, rows, opts) {
   if (cloudMap.size > 0) {
     const cloudRows = [];
     cloudMap.forEach(function(v, n) { cloudRows.push({ stock: n, pct: v.pct, days: v.days }); });
-    _publish(date, cloudRows);
-    _dbgLog('[RANGE20-CLOUD] ' + date + ' 命中 ' + cloudMap.size + ' 只（leg=' + legMode + '，0 K线请求）');
+    // 🔴🔴 [R20-PUB-NODOWN 2026-11-02 卡死根因之二 · ⛔ 别删这条闸门]
+    //
+    //   现象（2026-11-02 用户报障「打开 20日涨幅 toggle 直接卡死」）：日志里
+    //     [RANGE20-CLOUD] 命中 35 只  与  [RANGE20-DAILY] 直接发布 52 行
+    //   在同一毫秒内**无限交替刷屏**，主线程被打满。
+    //
+    //   成因：本函数每跑一次会发布【两次不同内容】——
+    //     ① 阶段⓪：云端结果表那批（本例 35 只，是合并结果的**子集**）；
+    //     ② 阶段① / 阶段②：`_mergeRowsWithCloud(...)`（本例 52 行，云端 ∪ 本轮）。
+    //   本次发布结束时 `_state` 里是 52 行，下一轮开头又先发 35 行（内容变了 ⇒ `_sigOf` 不同
+    //   ⇒ bump version）⇒ 再发 52 行（又变了 ⇒ 再 bump）⇒ 每轮固定 2 次版本变更。
+    //   而 version 变 ⇒ `incremental-view` / `viewData` 重算 ⇒ 消费方 watch 再次触发 `ensureRange20`
+    //   ⇒ **自激循环**（配合 useAuctionBoard 的 watch 依赖形态 bug 就变成死循环，见那边的
+    //   [WATCH-ARRAY-SRC] 注释）。
+    //
+    //   修法（§11 默认无行为 / §32 不重复劳动）：**当前已发布的内容已经覆盖了云端这批票时，
+    //   这一次「云端发布」是纯粹的信息倒退（既没有新增票、数值也会被后面的合并结果覆盖），
+    //   直接跳过**。首次打开 / 切日期（`_state.date` 不是本日）时照常发布 ⇒ 「先出数」的体验不变。
+    let _downgrade = false;
+    if (_state.value.date === date && _state.value.map.size >= cloudMap.size) {
+      _downgrade = true;
+      cloudMap.forEach(function(v, n) {
+        if (!_state.value.map.has(n)) _downgrade = false;
+      });
+    }
+    if (!_downgrade) _publish(date, cloudRows);
+    _dbgLog('[RANGE20-CLOUD] ' + date + ' 命中 ' + cloudMap.size + ' 只（leg=' + legMode + '，0 K线请求'
+      + (_downgrade ? '；已被当前结果覆盖 ⇒ 跳过重复发布' : '') + '）');
   }
 
   // ---- 阶段⓪.5：云端结果表已覆盖【全部目标】⇒ 直接收工 ----
