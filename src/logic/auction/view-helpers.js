@@ -116,6 +116,24 @@ function _auctionPctOf(rawItem) {
 //    缺值一律 null，⛔ 绝不当 0）。原先这里有一份私有副本 _readAucVolRatio，已删除 ——
 //    趋势图（topic-trend.js）要用同一个值，两份实现必然在某个边界上分叉。
 
+// ★★★ [VOL-CELL 2026-11-04] 「竞价量(万) / 昨成交量(万)」两列的显示口径 —— 唯一实现。
+//
+// 【用户报障】「UI上还是显示0或者-，但是五日趋势图当天是有竞价量和昨日成交量的」
+//   上一版是裸的 `Math.round(parseFloat(v))`，两个毛病：
+//     ① `Math.round(0.4)` = **0** ⇒ 真实竞价量 0.4 万手（= 400 手，小盘票竞价很常见）
+//        被四舍五入成「0」，用户读作「今天没有竞价量」（§10 红线：小 ≠ 0 / 缺 ≠ 0）；
+//     ② 字符串 '0' 在 JS 里是 truthy ⇒ 假 0 会原样显示 0。
+//   假 0 的归一已在 Data 层做（metrics-normalize.js#normalizeAucVolume，§6 单一真相），
+//   这里只负责「显示层不许把有值抹成 0」：**0 < v < 1 一律保留 1 位小数**。
+//   ⚠️ 返回类型不一致是刻意的：≥1 返回 number（既有快照/测试都按数字比）、<1 返回字符串。
+export function formatVolumeCell(v) {
+  if (!v) return '-';
+  const n = parseFloat(v);
+  if (!isFinite(n)) return '-';
+  if (n > 0 && n < 1) return n.toFixed(1);
+  return Math.round(n);
+}
+
 function _enrichAuctionItem(rawItem, index, ctx) {
   if (!rawItem) return null;
   const stockName = rawItem.stock ? rawItem.stock.trim() : '';
@@ -212,8 +230,10 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     }
   }
 
-  const volumeDisplay = rawItem.volume ? Math.round(parseFloat(rawItem.volume)) : '-';
-  const yestVolumeDisplay = rawItem.yestVolume ? Math.round(parseFloat(rawItem.yestVolume)) : '-';
+  // ★★★ [VOL-CELL 2026-11-04] 「竞价量 / 昨成交量」两列的显示口径 —— 唯一实现见下方
+  //   `formatVolumeCell`（模块级导出，供单测直接锁住「不许把有值抹成 0」这条红线）。
+  const volumeDisplay = formatVolumeCell(rawItem.volume);
+  const yestVolumeDisplay = formatVolumeCell(rawItem.yestVolume);
 
   // §6/双身份标记：该股票既是「前一日竞昨高光（次日观察组）」，又同时位于今日正式列表
   // （今日 worker 自动获取的最近多板成分股）。用户需求：正式名单中这类股票旁加 * 号，

@@ -922,6 +922,110 @@ async function healDailyLegsFromMetrics(today: string): Promise<Array<Record<str
  *   ④ 写 leg='close'，与收盘轮同一主键 (date,stock,leg) 语义 —— 前端按 leg 过滤即可命中。
  */
 /**
+ * ★★★ [AUC-VOL-LIST 2026-11-04] 第一页「今天会被渲染出来」的股票并集（name → code；缺码给空串）。
+ *
+ * 【为什么必须按名单取，而不是按「库里已有的行」取】
+ *   `market_metrics` 当天只有 worker 写的那批（实测 11-04 `source={"worker":56}`、`range20` 0 行）
+ *   ⇒ 20 日补位票 / 龙头组壳行**整行不存在** ⇒ 无论怎么「补空值」都补不到它们 ⇒ 永远显示 '-'。
+ *   ⇒ 唯一可靠的做法：把第一页的四个注入源并起来，再逐只检查「有没有行 / 值真不真」。
+ *
+ * 四个来源（与前端 view 层四个注入源一一对应，缺一类那一类就必然 '-'）：
+ *   ① 正式成员 + 观察组（obs_auto_added 也在同一张表）→ auction_watchlist(date = 目标日)
+ *   ② 20 日补位 / 龙头候选 → stock_range20_pct(date = 目标日)（= 本轮 targets 算出来的名单）
+ *      前端 `getRange20Leaders` 读的就是这张表，所以它天然覆盖「20天」标签的那批票。
+ *   ③ 龙头组：展示日 D 的龙头 = 名册里 date = **前一交易日** 的行（口径见 create_dragon_leaders.sql）
+ *   ④ 已有 metrics 行的票：由调用方合并（本函数不重复读同一张表，§32）
+ *
+ * 安全：任一类读失败只降级那一类（§10 失败可见、⛔ 不扩大爆炸半径），⛔ 不让整轮补写失效。
+ */
+async function readTodayDisplayStocks(today: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const put = (stock: unknown, code: unknown) => {
+    const s = String(stock ?? '').trim();
+    if (!s) return;
+    const c = String(code ?? '').trim();
+    const okCode = /^\d{6}$/.test(c);
+    if (!out.has(s)) out.set(s, okCode ? c : '');
+    else if (!out.get(s) && okCode) out.set(s, c);
+  };
+  const grab = async (path: string, label: string): Promise<void> => {
+    try {
+      const rows = await sbRest('GET', path);
+      for (const r of (Array.isArray(rows) ? rows : []) as Array<Record<string, unknown>>) {
+        put(r && r.stock, r && r.code);
+      }
+    } catch (e) {
+      console.error('[range20-precompute][AUC-VOL-LIST] ' + label + ' 读取失败（该类降级为空）: '
+        + (e instanceof Error ? e.message : String(e)));
+    }
+  };
+  // ① 正式成员 + 观察组
+  await grab('/rest/v1/auction_watchlist?select=stock,code&date=eq.' + today + '&limit=2000', '名单');
+  // ② 20 日补位候选（结果表没有 code 列，靠后面的 stockcodemap 批查补）
+  await grab('/rest/v1/stock_range20_pct?select=stock&date=eq.' + today + '&limit=2000', '20日结果表');
+  // ③ 龙头组 = 前一交易日名册
+  let prevDate = '';
+  try {
+    const prev = await sbRest(
+      'GET',
+      '/rest/v1/auction_watchlist?select=date&date=lt.' + today + '&order=date.desc&limit=1',
+    );
+    const first = (Array.isArray(prev) ? prev[0] : null) as Record<string, unknown> | null;
+    prevDate = first ? String(first.date ?? '').slice(0, 10) : '';
+  } catch (e) {
+    console.error('[range20-precompute][AUC-VOL-LIST] 前一交易日探测失败: '
+      + (e instanceof Error ? e.message : String(e)));
+  }
+  if (prevDate) {
+    await grab('/rest/v1/dragon_leaders?select=stock,code&date=eq.' + prevDate + '&limit=200', '龙头名册');
+  } else {
+    console.warn('[range20-precompute][AUC-VOL-LIST] 找不到前一交易日 ⇒ 本轮不含龙头组（该组可能仍显示 -）');
+  }
+  return out;
+}
+
+/**
+ * 名单里缺 code 的票，批量补 code（name→code 的唯一真相源 §6）。
+ *
+ * 两级来源（2026-11-04 实测：11-04 有 4 只票在 stockcodemap 里**根本没有记录**
+ *   —— 上海洗霸 / 杰克科技 / 万向钱潮 / 大洋电机 ⇒ 只查一张表就永远补不上，这 4 只恒为 '-'）：
+ *   ① `stockcodemap`（权威映射）；
+ *   ② 兜底：`market_metrics` 里这些票**历史行的 code 列**（它们以前进过名单，一定有代码）。
+ *      ⛔ 不猜、不按代码段硬编：仍只认「库里出现过的 6 位码」。
+ * ⛔ 不用「全表分页读」：名单通常只有几只缺码，全表扫几百~几千行纯属浪费（§32）。
+ */
+async function fillCodesFromStockcodemap(map: Map<string, string>): Promise<number> {
+  const missingOf = () => Array.from(map.entries())
+    .filter(([, c]) => !/^\d{6}$/.test(c))
+    .map(([s]) => s);
+  let fixed = 0;
+  const run = async (path: string, label: string) => {
+    const todo = missingOf().slice(0, 200);
+    if (todo.length === 0) return;
+    for (let i = 0; i < todo.length; i += 60) {
+      const names = todo.slice(i, i + 60).map((n) => '"' + n.replace(/"/g, '') + '"');
+      try {
+        const rows = await sbRest('GET', path + '&stock=in.' + encodeURIComponent('(' + names.join(',') + ')'));
+        for (const r of (Array.isArray(rows) ? rows : []) as Array<Record<string, unknown>>) {
+          const n = String((r && r.stock) ?? '').trim();
+          const c = String((r && r.code) ?? '').trim();
+          if (n && /^\d{6}$/.test(c) && map.has(n) && !map.get(n)) { map.set(n, c); fixed++; }
+        }
+      } catch (e) {
+        console.error('[range20-precompute][AUC-VOL-LIST] ' + label + ' 批查失败: '
+          + (e instanceof Error ? e.message : String(e)));
+      }
+    }
+  };
+  // ① 权威映射表
+  await run('/rest/v1/stockcodemap?select=stock,code', 'stockcodemap');
+  // ② 兜底：历史行情行里的 code（表里没登记的票只能靠它）
+  await run('/rest/v1/market_metrics?select=stock,code&code=not.is.null&limit=400', 'market_metrics 历史行');
+  if (fixed > 0) console.log('[range20-precompute][AUC-VOL-LIST] 补码 ' + fixed + ' 只');
+  return fixed;
+}
+
+/**
  * ★★★ [AUC-VOL-HEAL 2026-11-04] 补当天「竞价量 volume / 昨日成交量 yest_volume」两个列。
  *
  * 【用户报障原话】「早盘竞价看板的第一页的昨日成交量和竞价量列很多股票显示横杠 -，
@@ -946,7 +1050,8 @@ async function healDailyLegsFromMetrics(today: string): Promise<Array<Record<str
  *   · 快照必须过双重闸门（data_status==='final' 且服务端北京日期 === 目标日）；
  *   · 任一上游失败只记日志、继续其它票，⛔ 不连坐（§10：失败可见但不扩大爆炸半径）。
  */
-async function healTodayVolume(today: string, leg: string): Promise<Record<string, unknown>> {
+// ⚠️ `export` 只为单测/离线预演（与 dayMetricsOf 同款用法）：Edge Function 里 export 不影响 Deno.serve。
+export async function healTodayVolume(today: string, leg: string): Promise<Record<string, unknown>> {
   // 1) 读当天全部竞价行（分页取全，Supabase 单次上限 1000）
   const all: Array<Record<string, unknown>> = [];
   for (let from = 0; ; from += 1000) {
@@ -961,76 +1066,159 @@ async function healTodayVolume(today: string, leg: string): Promise<Record<strin
     all.push(...(page as Array<Record<string, unknown>>));
     if (page.length < 1000) break;
   }
-  if (all.length === 0) return { skipped: '当天没有竞价行', total: 0, written: 0 };
 
   const isEmpty = (v: unknown) => v === null || v === undefined || String(v).trim() === '';
-  // '0' 也算「缺」：竞价量为 0 万手在早盘等同没成交，且必然伴随量比为 0（§10 不写假 0）
-  const need = all
-    .map((r) => ({
-      stock: String(r.stock ?? '').trim(),
+  const rowOf = new Map<string, { code: string; vol: unknown; yest: unknown }>();
+  for (const r of all) {
+    const s = String(r.stock ?? '').trim();
+    if (!s) continue;
+    rowOf.set(s, {
       code: String(r.code ?? '').trim(),
       vol: r.volume,
       yest: r.yest_volume,
-    }))
-    .filter((r) => r.stock && /^\d{6}$/.test(r.code)
-      && (isEmpty(r.vol) || Number(r.vol) === 0 || isEmpty(r.yest)));
-  if (need.length === 0) {
-    return { skipped: '竞价量与昨日成交量已齐', total: all.length, missing: 0, written: 0 };
+    });
   }
 
-  // 2) 腾讯日线：dayMetricsOf 只要「今天 + 上一交易日」，窗口 45 自然日足够覆盖长假/停牌
+  // 2) ★ [AUC-VOL-LIST 2026-11-04] 第一页【真正会渲染的票】并集 —— 这是上一轮漏掉的半边天。
+  //   上一轮只补「库里有行、但两列是空/0」的票（32 只），完全没管**整行都不存在**的票：
+  //   实测 11-04 的 `source` 分布 = `{"worker": 56}`、`range20` **0 行** ⇒ 20 日补位票
+  //   （九阳股份 +101.41% / 海洋王 +78.46% / 新华传媒 +74.36%）与龙头组壳行（凯众股份）
+  //   在 market_metrics 里【一行都没有】⇒ 列表列永远 '-'
+  //   （趋势图能画，是因为它走 snapshot+K线现算，压根不读这两列）。
+  //   ⇒ 名单必须按四个注入源取全（见 readTodayDisplayStocks），缺哪一类，那一类就必然 '-'。
+  const list = await readTodayDisplayStocks(today);
+  // 库里有行、但名单里没有的票：并进来（保持既有行为 —— 这类历史遗留行照旧补值，只是不新建）
+  for (const [s, v] of rowOf) {
+    if (!list.has(s)) list.set(s, /^\d{6}$/.test(v.code) ? v.code : '');
+    else if (!list.get(s) && /^\d{6}$/.test(v.code)) list.set(s, v.code);
+  }
+  const codeFixed = await fillCodesFromStockcodemap(list);
+  if (list.size === 0) return { skipped: '当天没有名单（非交易日 / 名单未落库）', total: all.length, written: 0 };
+
+  // 3) 需要补的票 = 「整行缺失」 ∪ 「有行但两列缺/假 0」
+  // '0' 也算「缺」：竞价量为 0 万手在早盘等同没成交，且必然伴随量比为 0（§10 不写假 0）
+  // ⚠️ [§11 不越界] 「整行新建」只对【当天】开放：历史日的 market_metrics 是当年归档，
+  //    事后补建行 = 改写历史（且那些日期前端根本不显示竞价量列）⇒ 历史日只补已有行的空值。
+  const canCreate = today === todayYmd();
+  const need: Array<{ stock: string; code: string; hasRow: boolean; vol: unknown; yest: unknown }> = [];
+  let noCode = 0;
+  let histSkipped = 0;
+  for (const [stock, code] of list) {
+    const c = /^\d{6}$/.test(code) ? code : '';
+    if (!c) { noCode++; continue; }   // 没代码 ⇒ 两条上游都调不了，如实计入 noCode（⛔ 不静默吞）
+    const row = rowOf.get(stock);
+    if (!row) {
+      if (!canCreate) { histSkipped++; continue; }
+      need.push({ stock, code: c, hasRow: false, vol: null, yest: null });
+      continue;
+    }
+    const volMissing = isEmpty(row.vol) || Number(row.vol) === 0;
+    const yestMissing = isEmpty(row.yest);
+    if (!volMissing && !yestMissing) continue;
+    need.push({ stock, code: c, hasRow: true, vol: row.vol, yest: row.yest });
+  }
+  const newCount = need.filter((t) => !t.hasRow).length;
+  if (need.length === 0) {
+    return {
+      skipped: '第一页名单的竞价量与昨日成交量已齐', total: rowOf.size, list: list.size,
+      missing: 0, written: 0, codeFixed, noCode, histSkipped,
+    };
+  }
+
+  // 4) 日线（昨日成交量的唯一来源）：dayMetricsOf 只要「今天 + 上一交易日」，窗口 45 自然日够覆盖长假/停牌
+  //
+  //    🔴 [AUC-VOL-LEG 2026-11-04] **必须有两条腿，且腾讯优先、同花顺兜底** —— 实测教训：
+  //      腾讯 `web.ifzq.gtimg.cn` 会按 IP 打 WAF（本机 2026-11-04 直接 501 跳到
+  //      `waf.tencent.com/501page.html`，47 只票 0 成功），而同一条机器上经 Supabase
+  //      `fuyao-proxy` 取同花顺日 K 是 200 / 522ms 正常。
+  //      上一版只有腾讯一条腿 ⇒ 一旦腾讯拦了，`yest_volume` 全部补不出来（32 只空白照旧）。
+  //      同花顺腿与 worker 的 `yest_volume` 同源同口径（股 ÷ 1e4 = 万股），适合做兜底。
+  //    ⚠️ 腾讯连续失败 3 只就【整体降级】为同花顺，不再拿 45 个 501 白等（省时间、少噪声）。
   const fromYmd = shiftYmd(today, -45);
   const seriesByCode = new Map<string, Bar[]>();
+  const kStartMs = Date.parse(fromYmd + 'T00:00:00+08:00');
+  const kEndMs = Date.parse(today + 'T00:00:00+08:00') + 86400000 - 1;
   let qtFail = 0;
+  let thsFail = 0;
+  let qtStreak = 0;
+  let qtDead = false;
   const QT_CONC = 6;
   for (let i = 0; i < need.length; i += QT_CONC) {
     const chunk = need.slice(i, i + QT_CONC);
     await Promise.all(chunk.map(async (t) => {
+      // ① 腾讯前复权日线（快、无额度）
+      if (!qtDead) {
+        try {
+          const s = await fetchQtBars(t.code, fromYmd, today);
+          if (s.length > 0) { seriesByCode.set(t.code, s); qtStreak = 0; return; }
+        } catch (e) {
+          qtFail++;
+          qtStreak++;
+          // ⚠️ 并发 6 会让多只同时跨过阈值 ⇒ 只在【第一次】置位时打日志，别刷 6 条
+          if (qtStreak >= 3 && !qtDead) {
+            qtDead = true;
+            console.warn('[range20-precompute][AUC-VOL-LEG] 腾讯连续 ' + qtStreak
+              + ' 只失败 ⇒ 本轮整体降级为同花顺腿（' + (e instanceof Error ? e.message : String(e)) + '）');
+          }
+        }
+      }
+      // ② 同花顺日 K（经 fuyao-proxy；与 worker 同源）
       try {
-        const s = await fetchQtBars(t.code, fromYmd, today);
-        if (s.length > 0) seriesByCode.set(t.code, s);
+        const series = barsToSeries(await fetchKlineBars(thscode(t.code), kStartMs, kEndMs));
+        if (series.length > 0) seriesByCode.set(t.code, series);
       } catch (e) {
-        qtFail++;
-        console.error('[range20-precompute][AUC-VOL-HEAL] ' + t.stock + '(' + t.code
-          + ') 腾讯日线失败: ' + (e instanceof Error ? e.message : String(e)));
+        thsFail++;
+        console.error('[range20-precompute][AUC-VOL-LEG] ' + t.stock + '(' + t.code
+          + ') 同花顺日线失败: ' + (e instanceof Error ? e.message : String(e)));
       }
     }));
   }
 
-  // 3) 当日竞价快照。⚠️ `fetchSnapshots` 单次只取 `thscodes.slice(0, 40)` ⇒ 必须分批，
+  // 5) 当日竞价快照。⚠️ `fetchSnapshots` 单次只取 `thscodes.slice(0, 40)` ⇒ 必须分批，
   //    否则名单超过 40 只时后面的票会【静默拿不到竞价量】（这批正好 32 只也要防以后扩容）。
+  //    ⚠️ 闸门判定改成「按所有成功批次」：上一版只取 i===0 那一批的状态，
+  //    第一批恰好失败就会把整轮快照判成不可用（名单越大越容易踩，§10 失败不该扩大半径）。
   let snapOk = false;
   let snapNote = '';
   const snapByCode = new Map<string, Record<string, unknown>>();
   try {
-    let firstStatus = '';
-    let firstServerYmd = '';
+    let okChunks = 0;
+    let failChunks = 0;
+    let badStatus = '';
+    let serverYmdSeen = '';
     let anyErr = '';
     for (let i = 0; i < need.length; i += 40) {
       const chunk = need.slice(i, i + 40);
       const s = await fetchSnapshots(chunk.map((t) => thscode(t.code)));
-      if (s.error) { anyErr = s.error; continue; }
-      if (i === 0) { firstStatus = s.dataStatus; firstServerYmd = s.serverYmd; }
+      if (s.error) { anyErr = s.error; failChunks++; continue; }
+      okChunks++;
+      if (!serverYmdSeen) serverYmdSeen = s.serverYmd;
+      if (s.dataStatus !== 'final' || s.serverYmd !== today) badStatus = s.dataStatus;
       s.byCode.forEach((v, k) => snapByCode.set(k, v));
     }
-    if (anyErr) snapNote = '快照请求失败: ' + anyErr;
-    else if (firstStatus !== 'final' || firstServerYmd !== today) {
-      snapNote = '快照闸门拒绝（status=' + firstStatus + ' 服务端日=' + firstServerYmd
+    if (okChunks === 0) snapNote = '快照请求失败: ' + (anyErr || '全部批次失败');
+    else if (badStatus || serverYmdSeen !== today) {
+      snapNote = '快照闸门拒绝（status=' + (badStatus || '?') + ' 服务端日=' + serverYmdSeen
         + ' 目标日=' + today + '）⇒ 本次只补昨日成交量（K 线可得），竞价量留空';
     } else snapOk = true;
+    if (snapOk && failChunks > 0) snapNote = '部分批次快照失败 ' + failChunks + ' 批（其余已补）';
   } catch (e) {
     snapNote = '快照异常: ' + (e instanceof Error ? e.message : String(e));
   }
 
-  // 4) 组装（只写这两个字段）
+  // 4) 组装
+  //   · hasRow=true  → 只写 volume / yest_volume（⛔ 绝不碰 worker 写的 change_pct / auc_vol_ratio）
+  //   · hasRow=false → 整行新建（四个字段一起给），这是「补位票 / 龙头组壳行永远 '-'」的唯一解法
   const nowIso = new Date().toISOString();
   const out: Array<Record<string, unknown>> = [];
   let volFixed = 0;
   let yestFixed = 0;
+  let rowsNew = 0;
+  let noSrc = 0;
   for (const t of need) {
     const series = seriesByCode.get(t.code) || null;
     const s = snapOk ? (snapByCode.get(t.code) ?? null) : null;
-    if (!series && !s) continue;                 // 两条腿都没有 ⇒ 这只没救，跳过
+    if (!series && !s) { noSrc++; continue; }     // 两条腿都没有 ⇒ 这只没救，跳过
     // ⚠️ 故意传 `series || []`：没有 K 线时 dayMetricsOf 会返回 volume（来自快照）+
     //    yest_volume=null，正好是「能补多少补多少」，不整只放弃。
     const m = dayMetricsOf(series || [], today, leg, s);
@@ -1051,26 +1239,70 @@ async function healTodayVolume(today: string, leg: string): Promise<Record<strin
     if (isEmpty(t.yest) && m.yest_volume != null && Number(m.yest_volume) > 0) {
       patch.yest_volume = m.yest_volume; any = true; yestFixed++;
     }
+    if (!t.hasRow) {
+      // 整行新建：补齐「涨幅 / 竞价涨幅 / 竞价量比」，否则建出来的行仍然只有两列，
+      // 前端的趋势图与「占比」还是缺半边（§6 一次写全，别留半成品）。
+      // ⚠️ 只有 volume 为空串（假 0）时才认 m.volume —— 它经过 fmtNum 取整，<0.5 万手会被抹成 0。
+      if (patch.volume === undefined && m.volume != null && Number(m.volume) > 0) {
+        patch.volume = m.volume; any = true; volFixed++;
+      }
+      if (patch.yest_volume === undefined && m.yest_volume != null && Number(m.yest_volume) > 0) {
+        patch.yest_volume = m.yest_volume; any = true; yestFixed++;
+      }
+      if (m.change_pct != null) patch.change_pct = m.change_pct;
+      if (m.auc_pct_chg != null) patch.auc_pct_chg = m.auc_pct_chg;
+      if (m.auc_vol_ratio != null) patch.auc_vol_ratio = m.auc_vol_ratio;
+      // 连一个真值都没有 ⇒ ⛔ 不建行（空行只会制造「有行但没数」的新假象）
+      if (patch.volume === undefined && patch.yest_volume === undefined) {
+        noSrc++;
+        continue;
+      }
+      rowsNew++;
+      out.push(patch);
+      continue;
+    }
     if (any) out.push(patch);
   }
 
+  // 5) 落库
+  //
+  // 🔴 [AUC-VOL-UPSERT 2026-11-04] **同一批 POST 里每个对象的键集必须完全一致** ——
+  //    PostgREST 对 `[{a,b},{a}]` 这种「键集不齐」的批量直接 400：
+  //      {"code":"PGRST102","message":"All object keys must match"}
+  //    ⚠️ 这是上一版真机上「一行都没写进去」的隐藏杀手：补值行有的只有 volume、
+  //    有的只有 yest_volume、新建行还多三个字段 ⇒ 整批被拒，而 try/catch 之外只看到 400，
+  //    很容易误判成「上游没数据」。⇒ 按「键集签名」分桶，每桶单独 POST（纯加法，语义不变）。
+  const buckets = new Map<string, Array<Record<string, unknown>>>();
+  for (const row of out) {
+    const sig = Object.keys(row).sort().join(',');
+    const arr = buckets.get(sig);
+    if (arr) arr.push(row);
+    else buckets.set(sig, [row]);
+  }
   let written = 0;
-  for (let k = 0; k < out.length; k += 500) {
-    await sbRest('POST', '/rest/v1/market_metrics?on_conflict=date,stock,scope', out.slice(k, k + 500));
-    written += Math.min(500, out.length - k);
+  for (const rows of buckets.values()) {
+    for (let k = 0; k < rows.length; k += 500) {
+      await sbRest('POST', '/rest/v1/market_metrics?on_conflict=date,stock,scope', rows.slice(k, k + 500));
+      written += Math.min(500, rows.length - k);
+    }
   }
   if (written > 0) {
-    console.log('[range20-precompute][AUC-VOL-HEAL] ' + today + ' 缺失 ' + need.length + ' 只 → 补 '
-      + written + ' 行（竞价量 ' + volFixed + ' / 昨日成交量 ' + yestFixed
+    console.log('[range20-precompute][AUC-VOL-HEAL] ' + today + ' 名单 ' + list.size + ' 只 / 待补 '
+      + need.length + ' 只（整行缺失 ' + newCount + '）→ 写 ' + written + ' 行（新建 ' + rowsNew
+      + '，竞价量 ' + volFixed + ' / 昨日成交量 ' + yestFixed + '，键集 ' + buckets.size + ' 桶'
+      + (qtDead ? '，腾讯已降级' : '') + '，同花顺日线失败 ' + thsFail
       + '，快照 ' + (snapOk ? 'final' : '未用') + (snapNote ? '，' + snapNote : '') + '）');
-  } else if (need.length > 0) {
-    console.log('[range20-precompute][AUC-VOL-HEAL] ⚠️ 缺失 ' + need.length + ' 只但无一行可补'
-      + (snapNote ? '（' + snapNote + '）' : '') + '，K线失败 ' + qtFail + ' 只');
+  } else {
+    console.log('[range20-precompute][AUC-VOL-HEAL] ⚠️ 待补 ' + need.length + ' 只但无一行可写'
+      + '（无上游 ' + noSrc + ' 只，腾讯失败 ' + qtFail + ' / 同花顺失败 ' + thsFail + ' 只）'
+      + (snapNote ? '，' + snapNote : ''));
   }
   return {
-    total: all.length, missing: need.length, written, volFixed, yestFixed,
-    qtFail, snapshot: snapOk ? 'final' : (snapNote || '未用'),
-    note: '只写 volume / yest_volume；0 视为缺，只用 >0 真值覆盖',
+    total: rowOf.size, list: list.size, missing: need.length, newRows: newCount,
+    written, rowsNew, volFixed, yestFixed, noSrc, noCode, codeFixed, histSkipped,
+    qtFail, thsFail, qtDead, buckets: buckets.size,
+    snapshot: snapOk ? 'final' : (snapNote || '未用'),
+    note: '名单 = watchlist ∪ 20日结果表 ∪ 龙头名册 ∪ 已有行；有行只补 volume/yest_volume，无行整行新建',
   };
 }
 

@@ -47,6 +47,36 @@
 --   手动重算（部署后立刻修当天，不必等明天 9:25）：
 --     curl -X POST '<URL>/functions/v1/range20-precompute?token=range20-cron-2026&range10=1'
 --
+--
+-- ★★★ [AUC-VOL-LIST 2026-11-04] 同一个函数还负责把第一页【竞价量 / 昨成交量】两列补成真值。
+--   用户原话：「UI上还是显示0或者-，但是五日趋势图当天是有竞价量和昨日成交量的，明白吗？
+--   也就是显示层没有那个竞价量和昨日成交量列没有显示出来。」
+--
+--   实测取证（2026-11-04 当天，market_metrics scope='auction'）：
+--     · 56 行全是 source='worker'，其中 32 行 volume 为空/0、32 行 yest_volume 为 null；
+--     · 这 32 行里 31 行的 auc_vol_ratio 却有值（5.43 / 15.29 / 144.88 …）
+--       ⇒ 量比 = 竞价量 ÷ 基准量，分子为 0 时量比不可能是 5.43 ⇒ **假 0，是写入时丢了**；
+--     · 更要命的是另有一批票（九阳股份 / 海洋王 / 新华传媒 / 凯众股份 / 上海洗霸 … 共 16 只）
+--       在 market_metrics 里【整行都不存在】—— 它们是 20 日补位票 / 龙头组壳行，
+--       只有视图层注入的行，云端从来没给它们写过当日行情 ⇒ 无论怎么「补空值」都补不到。
+--
+--   现在的做法（9:25 这一轮，range20 与 range10 都写完以后执行）：
+--     ① 名单 = auction_watchlist ∪ stock_range20_pct(当日) ∪ dragon_leaders(前一交易日) ∪ 当日已有行
+--        （= 第一页四个注入源，缺哪一类那一类就必然 '-'）；
+--     ② 有行但两列空/0 ⇒ 只写 volume / yest_volume（⛔ 不碰 worker 写的涨幅与量比）；
+--     ③ 整行缺失 ⇒ 用「同花顺快照(竞价量) + 日线(昨日成交量)」整行新建（source='range20'，
+--        只对【当天】开放；历史日只补已有行的空值，⛔ 不改写归档）；
+--     ④ 日线优先腾讯、失败 3 只即整体降级为同花顺腿（2026-11-04 实测腾讯会按 IP 打 WAF 返 501）；
+--     ⑤ 落库按「键集签名」分桶 POST —— PostgREST 对键集不齐的批量直接 400 PGRST102，
+--        上一版就是死在这里（一行都没写进去，而日志只看到 400）。
+--   结果（2026-11-04 实测）：假 0 31→0，竞价量空/0 32→1（亚玛顿上游快照本身没给竞价量，
+--     §10 留空不猜），昨日成交量空 32→0，整行缺失 16→0。
+--   手动补写当天（部署后立刻生效，不必等明天）：
+--     curl -X POST '<URL>/functions/v1/range20-precompute?token=range20-cron-2026&volume=1'
+--   自检：select stock,volume,yest_volume,source from market_metrics
+--          where date=(now() at time zone 'Asia/Shanghai')::date and scope='auction'
+--            and (volume is null or volume='' or volume='0' or yest_volume is null);
+--
 -- ⚠️ 执行前把下面两处 <ANON_KEY> 替换成你项目的 anon public key：
 --    Dashboard → Project Settings → API → Project API Keys → anon public
 --    （anon key 本来就是公开的前端钥匙，写进 cron 无泄密风险）
