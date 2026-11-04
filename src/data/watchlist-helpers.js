@@ -2,6 +2,8 @@
 // 从 watchlist-and-metrics.js 物理拆分而来，原导出通过 barrel re-export 保留，外部 import 路径不变。
 import { state } from '../logic/app-state.js';
 import { getNumericVolume } from './supabase-client.js';
+// [AUC-VOL-GUARD 2026-11-04] 竞价量归一（假 0 ⇒ 缺失）。唯一实现在 metrics-normalize.js。
+import { normalizeAucVolume } from './metrics-normalize.js';
 import { _dbgLogVerbose } from './debug-log.js';
 
 // 查询某只股票在某日期的曲线数据
@@ -64,7 +66,11 @@ export function _readHistoryValueFrom(rows, stockName, field) {
         return raw.trim() !== '' ? raw : null;
     }
     if (field === 'volume') {
-        return getNumericVolume(found.volume);
+        // ★ [AUC-VOL-GUARD 2026-11-04] 假 0 归一：竞价量 0 但竞价量比 > 0 是物理矛盾
+        //   （量比 = 竞价量 ÷ 基准量，分子为 0 则量比必为 0）⇒ 上游当日 auc_vol 未就绪。
+        //   此时返回 null（趋势图画断点），⛔ 绝不返回 0 让用户以为「今天没有竞价量」（§10）。
+        const guarded = normalizeAucVolume(found.volume, found.auc_vol_ratio);
+        return guarded === null ? null : getNumericVolume(guarded);
     }
     // ★★ [EBB-TOPIC-BUG 2026-10-22] 【题材串】必须有自己的分支 —— 这是「主线16950首次退潮」的根因。
     //

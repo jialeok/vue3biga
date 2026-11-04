@@ -8,6 +8,8 @@ import { state } from '../logic/app-state.js';
 import { createQueryMemo } from './query-memo.js';
 // ★★ [PAGED-FETCH 2026-10-27] 分页取全量的唯一实现（§6）：去掉 head+count 探测 + 第 0 页不满即结束。
 import { fetchAllPages } from './paged-fetch.js';
+// [AUC-VOL-GUARD 2026-11-04] 竞价量归一（假 0 ⇒ 缺失）。唯一实现在 metrics-normalize.js，⛔ 别在各处重写判断。
+import { normalizeAucVolume } from './metrics-normalize.js';
 let _invalidateTopicCacheFn = null;
 export function _setInvalidateTopicCacheFn(fn) { _invalidateTopicCacheFn = fn; }
         // ============================================================
@@ -207,9 +209,19 @@ async function _pullAuctionFromTableImpl(opts) {
                         // 注意：change_pct 不再走回退——它已改为以 market_metrics 为唯一权威（见下方权威模型块）。
                         if (row.time930 !== undefined && row.time930 !== null && row.time930 !== '') existing.time930 = row.time930;
                         if (row.seal_count !== undefined && row.seal_count !== null && row.seal_count !== '') existing.seal_count = row.seal_count;
-                        if (row.volume !== undefined && row.volume !== null && String(row.volume).trim() !== '' &&
+                        // ★ [AUC-VOL-GUARD 2026-11-04] 先归一：0 但量比>0 = 上游未就绪的假 0 ⇒ 当缺失（§10）。
+                        //   ① 归一后为空（假 0）且 watchlist 行里也是 0 ⇒ 把 watchlist 的 0 一并清掉
+                        //      （watchlist 没有 auc_vol_ratio 列，判不了真假 —— 只能以 metrics 为准）；
+                        //   ② 归一后是真值 ⇒ 仅在 watchlist 行为空时回退填充（原逻辑不变）。
+                        const _mv = normalizeAucVolume(row.volume, row.auc_vol_ratio);
+                        if (_mv === null) {
+                            if (existing.volume !== undefined && existing.volume !== null &&
+                                String(existing.volume).trim() !== '' && Number(existing.volume) === 0) {
+                                existing.volume = '';
+                            }
+                        } else if (_mv !== undefined && String(_mv).trim() !== '' &&
                             (!existing.volume || String(existing.volume).trim() === '')) {
-                            existing.volume = row.volume;
+                            existing.volume = _mv;
                         }
                         if (row.yest_volume !== undefined && row.yest_volume !== null && String(row.yest_volume).trim() !== '' &&
                             (!existing.yest_volume || String(existing.yest_volume).trim() === '')) {
@@ -234,7 +246,8 @@ async function _pullAuctionFromTableImpl(opts) {
                     cloudByDate[row.date][key] = {
                         stock: row.stock,
                         code: row.code || '',
-                        volume: row.volume || '',
+                        // ★ [AUC-VOL-GUARD 2026-11-04] 同上的归一（假 0 ⇒ 空，不写 0）
+                        volume: normalizeAucVolume(row.volume, row.auc_vol_ratio) || '',
                         yest_volume: row.yest_volume || '',
                         yestVolume: row.yest_volume || '', // camelCase 别名
                         change_pct: row.change_pct || '',

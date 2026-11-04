@@ -646,6 +646,8 @@ export function parseNumcatToMetrics(items, fields, constituents, logs, today) {
   const metricsByDate = {};
   let parsedCount = 0;
   let yestVolDerivedCount = 0;
+  // [AUC-VOL-GUARD 2026-11-04] 被判定为「竞价量 0 但量比>0（上游未就绪）」而留空的条数 —— 只用于日志留痕
+  let suspiciousVolZero = 0;
   // [AUC-SANE 2026-10-12] 被闸门丢弃的越界竞价涨幅（只登记，真值由 repairOutOfRangeAucPct 补）
   const outOfRange = [];
 
@@ -663,8 +665,28 @@ export function parseNumcatToMetrics(items, fields, constituents, logs, today) {
     if (!stockName) return;
 
     // volume(万) = auc_vol(手) / 100
+    // ★★ [AUC-VOL-GUARD 2026-11-04 用户报障「竞价量全部显示 0，这是不可能的」]
+    //   实测 2026-11-04：47 只名单里 25 只（53%）volume='0'，而同行的 auc_vol_ratio 却是
+    //   5.43 / 15.29 / 144.88。**量比 = 竞价量 ÷ 基准量，分子为 0 则量比必为 0** ——
+    //   两者同时出现说明上游 numcat 当日 auc_vol 还没结算，返回的是占位 0，
+    //   旧代码原样写进库 ⇒ 前端趋势图/竞价量列全是 0，用户据此判断竞价强度会直接判错。
+    //   ⇒ 判定为「自相矛盾的 0」时不写数字（留空），让前端显示 '-'/断点（§10 缺值必须可见）。
+    //   ⛔ 不是把 0 一律抹掉：量比与占比也都是 0/空 时，0 就是事实，照常写。
     const volNum = Number(aucVol);
-    const volumeStr = isNaN(volNum) ? '' : String(Math.round(volNum / 100));
+    let volumeStr = '';
+    if (!isNaN(volNum)) {
+      const _ratioPct = ratioIdx >= 0 ? Number(row[ratioIdx]) : NaN;      // auc_to_pre_vol_pct
+      const _volRatio = avrIdx >= 0 ? Number(row[avrIdx]) : NaN;          // auc_vol_ratio
+      const _contradicts = volNum <= 0
+        && ((isFinite(_ratioPct) && _ratioPct > 0) || (isFinite(_volRatio) && _volRatio > 0));
+      if (!_contradicts) {
+        // 保留 1 位小数：旧写法 Math.round(手/100) 会把 <50 手（0.5 万）抹成 0，
+        // 一字板/小盘股的竞价量本来就小，抹成 0 同样会造成「假 0」。
+        volumeStr = String(Math.round((volNum / 100) * 10) / 10);
+      } else {
+        suspiciousVolZero++;
+      }
+    }
 
     // changePct = "+X.XX%"
     // [AUC-SANE 2026-10-12] aucRaw 单独留一份【数字】，供下面越界闸门判定；
@@ -775,6 +797,11 @@ export function parseNumcatToMetrics(items, fields, constituents, logs, today) {
   });
 
   logs.push('解析完成: ' + parsedCount + '条, 涉及 ' + Object.keys(metricsByDate).length + ' 个交易日, 反推昨日成交量 ' + yestVolDerivedCount + ' 条');
+  // [AUC-VOL-GUARD 2026-11-04] 假 0 必须可见（§10）：上游当日 auc_vol 未结算时会出现
+  //   「竞价量 0 但量比>0」的自相矛盾值，上面已留空不写 —— 这里把条数打出来，方便对数。
+  if (suspiciousVolZero > 0) {
+    logs.push('⚠️ 竞价量异常: ' + suspiciousVolZero + ' 条的 auc_vol=0 但量比>0（上游未就绪），已留空不写 0');
+  }
   // [AUC-SANE 2026-10-12] 越界必须【可见】（§10 禁止静默丢弃）：把每只票的「坏值 / 该股涨停上界」都打出来，
   //   排障时一眼看出「是上游错了多少」，不用再去反推。
   if (outOfRange.length > 0) {

@@ -51,7 +51,14 @@ export function maskKey(k) {
 //   12s 对健康调用（实测 1~2s）绰绰有余；超时错误里带 timeout 关键字，
 //   会让 morning-workflow 的「今天数据缺失」重试逻辑正常接管。
 const NUMCAT_TIMEOUT_MS = 12000;
-async function postOnce(url, key, apiname, fields, params) {
+/**
+ * ★ [NUMCAT-RETRY 2026-11-04 用户报障「9:48 才出票，关机就不出票」]
+ * 重试用的超时。为什么要单独给一个更短的值：9:25 那次调用在 P0 硬截止（09:25:45）内，
+ * 首次 12s + 重试 12s = 24s 还能塞进去；但如果首次就吃满 12s，重试再吃 12s 会逼近上限。
+ * 8s 对健康调用（实测 1~2s）依然宽松，且能把「重试也失败」的最坏耗时压到 20s。
+ */
+const NUMCAT_RETRY_TIMEOUT_MS = 8000;
+async function postOnce(url, key, apiname, fields, params, timeoutMs) {
   const body = { apiname: apiname, apikey: key, fields: fields, params: params };
   const opts = {
     method: 'POST',
@@ -59,7 +66,7 @@ async function postOnce(url, key, apiname, fields, params) {
     body: JSON.stringify(body)
   };
   if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-    opts.signal = AbortSignal.timeout(NUMCAT_TIMEOUT_MS);
+    opts.signal = AbortSignal.timeout(timeoutMs || NUMCAT_TIMEOUT_MS);
   }
   const resp = await fetch(url, opts);
   if (!resp.ok) {
@@ -77,6 +84,16 @@ async function postOnce(url, key, apiname, fields, params) {
     throw e;
   }
   return json.data;
+}
+
+/** 超时 / 网络类「瞬态」错误：换 key 无意义，但【同 key 立刻重试一次】常常就好了 */
+export function isTransientError(e) {
+  if (!e) return false;
+  if (e.quotaExhausted) return false;                 // 额度类不在此列（换 key 才有用）
+  if (e.name === 'TimeoutError' || e.name === 'AbortError') return true;
+  const s = String(e.message || '');
+  if (/HTTP 4\d\d/.test(s)) return false;             // 客户端错误，重试也不会变
+  return /timeout|timed out|aborted|network|fetch failed|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up/i.test(s);
 }
 
 /**
@@ -97,7 +114,7 @@ export async function postNumcat(env, opt) {
   for (let i = 0; i < keys.length; i++) {
     const k = keys[i];
     try {
-      const data = await postOnce(o.url, k.key, o.apiname, o.fields, o.params);
+      const data = await requestWithRetry(o, k, logs);
       if (i > 0) {
         logs.push('✅ numcat ' + o.apiname + ' 已退回【小号 ' + k.name + '（' + maskKey(k.key) + '）】取数成功');
       }
@@ -117,6 +134,36 @@ export async function postNumcat(env, opt) {
     }
   }
   throw lastErr;
+}
+
+/**
+ * ★ [NUMCAT-RETRY 2026-11-04] 同 key 一次请求 + 瞬态失败重试一次。
+ *
+ * 【为什么必须有这个重试】2026-11-04 的真实事故链：
+ *   9:25 daily 接口 `The operation was aborted due to timeout`（纯网络抖动）
+ *   → 旧逻辑把它当"非额度错误"直接 break 放弃
+ *   → 云端 `stock_range_pct` 当天 0 行（区间涨幅完全没落库）
+ *   → 题材量比在浏览器里只能自己逐只拉 K 线补算
+ *   → 用户 9:40 开电脑，9:46 才算完写库，9:48 才出票；不开电脑就永远不出票。
+ * 一次 12s 超时不该让整天的区间涨幅消失 —— 重试一次的成本（最坏 +8s）远小于代价。
+ * ⚠️ 只重试「瞬态」错误；额度类仍走换 key（§32 不白烧小号额度），4xx 也不重试。
+ * @returns {Promise<object>} json.data
+ */
+async function requestWithRetry(o, k, logs) {
+  try {
+    return await postOnce(o.url, k.key, o.apiname, o.fields, o.params);
+  } catch (e1) {
+    if (!isTransientError(e1)) throw e1;
+    logs.push('↻ numcat ' + o.apiname + ' 首次失败（' + e1.message + '）⇒ 同 key 立刻重试一次（瞬态错误，不是额度问题）');
+    try {
+      const data = await postOnce(o.url, k.key, o.apiname, o.fields, o.params, NUMCAT_RETRY_TIMEOUT_MS);
+      logs.push('✅ numcat ' + o.apiname + ' 重试成功（第一次是瞬态超时/网络抖动）');
+      return data;
+    } catch (e2) {
+      logs.push('✖ numcat ' + o.apiname + ' 重试仍失败: ' + e2.message);
+      throw e2;
+    }
+  }
 }
 
 /** 竞价数据（含当天）：竞价量 auc_vol / 竞价涨幅 auc_pct_chg / 反推昨成交量用的 auc_to_pre_vol_pct */

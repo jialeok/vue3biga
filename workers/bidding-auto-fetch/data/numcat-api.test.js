@@ -121,7 +121,10 @@ describe('postNumcat 候选链', () => {
     expect(calls.length).toBe(2);
   });
 
-  it('④ 非额度错误（网络/DNS）→ 不换 key，只打 1 次（§32 不白烧小号额度）', async () => {
+  // ★ [NUMCAT-RETRY 2026-11-04] 语义变更：仍然【不换 key】（不烧小号额度），
+  //   但同一个 key 会【重试一次】—— 2026-11-04 事故：9:25 daily 一次瞬态超时未重试
+  //   ⇒ 云端 stock_range_pct 当天 0 行 ⇒ 区间涨幅只能由浏览器补算 ⇒ 不开电脑就不出票。
+  it('④ 非额度错误（网络/DNS）→ 不换 key，同 key 重试 1 次（共 2 次，§32 不白烧小号额度）', async () => {
     const calls = [];
     globalThis.fetch = vi.fn((url, init) => {
       const body = JSON.parse(init.body);
@@ -134,8 +137,43 @@ describe('postNumcat 候选链', () => {
     } catch (e) { err = e; }
     expect(err).toBeTruthy();
     expect(err.quotaExhausted).toBeUndefined();
-    expect(calls.length).toBe(1);
+    expect(calls.length).toBe(2);                       // 首次 + 瞬态重试
     expect(calls[0].apikey).toBe('main-key-0001');
+    expect(calls[1].apikey).toBe('main-key-0001');      // ⛔ 仍是主账号，没动小号
+  });
+
+  // [NUMCAT-RETRY 2026-11-04] 重试必须真的能救回来（这是加它的唯一理由）
+  it('④b 首次瞬态超时 → 重试成功 ⇒ 正常返回数据（不把当天数据丢掉）', async () => {
+    const calls = [];
+    globalThis.fetch = vi.fn((url, init) => {
+      const body = JSON.parse(init.body);
+      calls.push({ apikey: body.apikey });
+      if (calls.length === 1) {
+        const e = new Error('The operation was aborted due to timeout');
+        e.name = 'TimeoutError';
+        return Promise.reject(e);
+      }
+      return Promise.resolve(resp(200, okBody));
+    });
+    const res = await postNumcat(ENV, { apiname: 'daily_auc', url: CONFIG.NUMCAT_DAILY_AUC_URL, fields: ['a'], params: {}, logs: [] });
+    expect(res.data).toBeTruthy();
+    expect(res.keyName).toBe('NUMCAT_API_KEY');
+    expect(calls.length).toBe(2);
+  });
+
+  // [NUMCAT-RETRY 2026-11-04] 4xx 是客户端错误，重试不会变 ⇒ ⛔ 不许重试（§32 不做无意义请求）
+  it('④c HTTP 400 等客户端错误 ⇒ 不重试（只打 1 次）', async () => {
+    const calls = [];
+    globalThis.fetch = vi.fn(() => {
+      calls.push(1);
+      return Promise.resolve(resp(400, { message: 'bad request' }));
+    });
+    let err = null;
+    try {
+      await postNumcat(ENV, { apiname: 'daily', url: CONFIG.NUMCAT_DAILY_URL, fields: ['a'], params: {}, logs: [] });
+    } catch (e) { err = e; }
+    expect(err).toBeTruthy();
+    expect(calls.length).toBe(1);
   });
 
   it('⑤ 上游 HTTP 403（非 JSON code）同样触发退回', async () => {

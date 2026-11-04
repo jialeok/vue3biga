@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-10-13 19:03:38
+// 生成时间: 2026-11-04 02:09:31
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 4086（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 4265（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
@@ -802,7 +802,14 @@ function maskKey(k) {
 //   12s 对健康调用（实测 1~2s）绰绰有余；超时错误里带 timeout 关键字，
 //   会让 morning-workflow 的「今天数据缺失」重试逻辑正常接管。
 const NUMCAT_TIMEOUT_MS = 12000;
-async function postOnce(url, key, apiname, fields, params) {
+/**
+ * ★ [NUMCAT-RETRY 2026-11-04 用户报障「9:48 才出票，关机就不出票」]
+ * 重试用的超时。为什么要单独给一个更短的值：9:25 那次调用在 P0 硬截止（09:25:45）内，
+ * 首次 12s + 重试 12s = 24s 还能塞进去；但如果首次就吃满 12s，重试再吃 12s 会逼近上限。
+ * 8s 对健康调用（实测 1~2s）依然宽松，且能把「重试也失败」的最坏耗时压到 20s。
+ */
+const NUMCAT_RETRY_TIMEOUT_MS = 8000;
+async function postOnce(url, key, apiname, fields, params, timeoutMs) {
   const body = { apiname: apiname, apikey: key, fields: fields, params: params };
   const opts = {
     method: 'POST',
@@ -810,7 +817,7 @@ async function postOnce(url, key, apiname, fields, params) {
     body: JSON.stringify(body)
   };
   if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-    opts.signal = AbortSignal.timeout(NUMCAT_TIMEOUT_MS);
+    opts.signal = AbortSignal.timeout(timeoutMs || NUMCAT_TIMEOUT_MS);
   }
   const resp = await fetch(url, opts);
   if (!resp.ok) {
@@ -828,6 +835,16 @@ async function postOnce(url, key, apiname, fields, params) {
     throw e;
   }
   return json.data;
+}
+
+/** 超时 / 网络类「瞬态」错误：换 key 无意义，但【同 key 立刻重试一次】常常就好了 */
+function isTransientError(e) {
+  if (!e) return false;
+  if (e.quotaExhausted) return false;                 // 额度类不在此列（换 key 才有用）
+  if (e.name === 'TimeoutError' || e.name === 'AbortError') return true;
+  const s = String(e.message || '');
+  if (/HTTP 4\d\d/.test(s)) return false;             // 客户端错误，重试也不会变
+  return /timeout|timed out|aborted|network|fetch failed|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up/i.test(s);
 }
 
 /**
@@ -848,7 +865,7 @@ async function postNumcat(env, opt) {
   for (let i = 0; i < keys.length; i++) {
     const k = keys[i];
     try {
-      const data = await postOnce(o.url, k.key, o.apiname, o.fields, o.params);
+      const data = await requestWithRetry(o, k, logs);
       if (i > 0) {
         logs.push('✅ numcat ' + o.apiname + ' 已退回【小号 ' + k.name + '（' + maskKey(k.key) + '）】取数成功');
       }
@@ -868,6 +885,36 @@ async function postNumcat(env, opt) {
     }
   }
   throw lastErr;
+}
+
+/**
+ * ★ [NUMCAT-RETRY 2026-11-04] 同 key 一次请求 + 瞬态失败重试一次。
+ *
+ * 【为什么必须有这个重试】2026-11-04 的真实事故链：
+ *   9:25 daily 接口 `The operation was aborted due to timeout`（纯网络抖动）
+ *   → 旧逻辑把它当"非额度错误"直接 break 放弃
+ *   → 云端 `stock_range_pct` 当天 0 行（区间涨幅完全没落库）
+ *   → 题材量比在浏览器里只能自己逐只拉 K 线补算
+ *   → 用户 9:40 开电脑，9:46 才算完写库，9:48 才出票；不开电脑就永远不出票。
+ * 一次 12s 超时不该让整天的区间涨幅消失 —— 重试一次的成本（最坏 +8s）远小于代价。
+ * ⚠️ 只重试「瞬态」错误；额度类仍走换 key（§32 不白烧小号额度），4xx 也不重试。
+ * @returns {Promise<object>} json.data
+ */
+async function requestWithRetry(o, k, logs) {
+  try {
+    return await postOnce(o.url, k.key, o.apiname, o.fields, o.params);
+  } catch (e1) {
+    if (!isTransientError(e1)) throw e1;
+    logs.push('↻ numcat ' + o.apiname + ' 首次失败（' + e1.message + '）⇒ 同 key 立刻重试一次（瞬态错误，不是额度问题）');
+    try {
+      const data = await postOnce(o.url, k.key, o.apiname, o.fields, o.params, NUMCAT_RETRY_TIMEOUT_MS);
+      logs.push('✅ numcat ' + o.apiname + ' 重试成功（第一次是瞬态超时/网络抖动）');
+      return data;
+    } catch (e2) {
+      logs.push('✖ numcat ' + o.apiname + ' 重试仍失败: ' + e2.message);
+      throw e2;
+    }
+  }
 }
 
 /** 竞价数据（含当天）：竞价量 auc_vol / 竞价涨幅 auc_pct_chg / 反推昨成交量用的 auc_to_pre_vol_pct */
@@ -1524,6 +1571,70 @@ function replaceTDayLeg(rangePct, oldLeg, newLeg) {
   return isFinite(next) ? next : null;
 }
 
+/**
+ * ★★ [TVRB-926 2026-10-14 用户口径] 【反解 T 腿】—— 把「已换成收盘腿的区间涨幅」还原成
+ *    「T 腿 = 竞价涨幅」那一份（= 9:26 口径，用户要的「早上那一份」）。
+ *
+ * 用户原话：
+ *   「题材量比看板选股买点侧，为什么早上的，和收盘的不一样，我只想要早上 9 点 26 分的……
+ *     可能收盘后，涨幅覆盖了，又重新计算……因为我对照历史日期的时候就对不上，
+ *     比如今天我明明买了某只股票，过些时间我再翻开那个时期，又成另外一只股票，非常不合理。」
+ *
+ * 为什么能反解（与 replaceTDayLeg 是【一对互逆运算】，故两处必须放在同一模块，§6）：
+ *   正向：stored = (1 + old926) ÷ (1 + auc) × (1 + close) − 1
+ *   反解：old926 = (1 + stored) ÷ (1 + close) × (1 + auc) − 1
+ *   两个因子（竞价涨幅 / 收盘涨幅）都由 `market_metrics(scope='auction')` 的
+ *   `auc_pct_chg` / `change_pct` 提供 —— 都是已落库的客观数据，**0 额外上游请求、0 额度**。
+ *
+ * ⚠️ 与「换腿」对称的三个前提（缺一不可，缺则【原样返回】，⛔ 绝不猜 —— §10）：
+ *   ① `closePct`（收盘腿）读不到 ⇒ 无法判断这一行到底换过腿没有 ⇒ 原样；
+ *   ② `aucPct`（竞价腿）读不到 ⇒ 无法还原那根腿（典型 = 那天整批 `auc_pct_chg` 缺失、
+ *      9:25 的 T 腿走的是 `change_pct` 回退通道）⇒ 原样（拿 0 顶替会把整根腿凭空抹掉，更错）；
+ *   ③ `closePct === -100` ⇒ 复利因子为 0，反解无意义 ⇒ 原样。
+ *   ⚠️ 调用方还须【先确认这一行已是收盘口径】再调本函数（时间判定见 closeCoverUtcMs）；
+ *      不是收盘口径的行，其原值本来就是 9:26 口径，调进来也只是恒等变换（见下面 ②③ 的注释）。
+ *
+ * @param {*} rangePct 库里已存的区间涨幅（%，可能已是收盘腿口径）
+ * @param {*} aucPct   该股【当日竞价涨幅】（%，= 9:25 那根 T 腿；null ⇒ 不换算）
+ * @param {*} closePct 该股【当日收盘涨幅】（%，= 现在那根 T 腿；null ⇒ 不换算）
+ * @returns {number|null} 9:26 口径的区间涨幅（%）；缺数据 ⇒ 原值 / null（⛔ 绝不伪造 0）
+ */
+function recoverAuctionLeg(rangePct, aucPct, closePct) {
+  const r = parsePct(rangePct);
+  if (r === null) return null;
+  const c = parsePct(closePct);
+  if (c === null) return r;                      // ① 不知道换没换腿 ⇒ 原样
+  const a = parsePct(aucPct);
+  if (a === null) return r;                      // ② 竞价腿读不到 ⇒ 原样（见函数头）
+  const closeFactor = 1 + c / 100;
+  if (closeFactor === 0) return r;               // ③ 无法反解 ⇒ 原样
+  // 先退回「除当天以外的 9 天复利」，再乘上竞价那根腿 —— 与 replaceTDayLeg 逐字对称
+  const prevAcc = (1 + r / 100) / closeFactor;
+  const next = (prevAcc * (1 + a / 100) - 1) * 100;
+  return isFinite(next) ? next : r;
+}
+
+/** 北京时间收盘时刻（用于判定某行是否已按收盘口径写入，与 close-pct-cover 同源） */
+const CLOSE_COVER_HOUR_BJ = 15;
+
+/**
+ * 某个日期「收盘覆盖时刻」对应的 UTC 时间戳（北京 15:00）。
+ *
+ * ⚠️ 这是「这一行是竞价腿口径还是收盘腿口径」的**唯一时间尺子**，两个消费者共用：
+ *   · `close-pct-cover.js#_runCover`（决定要不要把 T 腿换成收盘腿）；
+ *   · `range-auction-leg.js`（决定要不要把 T 腿反解回竞价腿）。
+ *   §6：⛔ 绝不各写一份 —— 两处若分叉就会出现「换了腿却不反解」的静默错值。
+ *
+ * @param {string} dateStr YYYY-MM-DD
+ * @returns {number} UTC 毫秒；日期非法 ⇒ NaN
+ */
+function closeCoverUtcMs(dateStr) {
+  if (!dateStr) return NaN;
+  const base = Date.parse(dateStr + 'T00:00:00Z');
+  if (Number.isNaN(base)) return NaN;
+  return base + (CLOSE_COVER_HOUR_BJ - 8) * 3600000;
+}
+
 
 // ────── bidding-auto-fetch/logic/extras-workflow.js ──────
 // extras-workflow.js — 「竞价四要素」补漏（runAuctionExtrasPatch）
@@ -1991,6 +2102,33 @@ function isHighLimitBoard(code) {
     return k === BOARD_STAR || k === BOARD_GROWTH || k === BOARD_BJ;
 }
 
+/**
+ * 【纯函数】有没有资格拿「排名类标签」（总龙一~五 / 涨幅前十在列次数）—— 唯一实现（§6）。
+ *
+ * 用户口径（2026-10-24 逐字）：
+ *   「10日涨幅和20日涨幅，非主板的票不做排名，只排主板的，就是我分别单独打开他们的时候，
+ *    不要出现排在前十。」
+ *   AskUserQuestion 选择：「排序不动，只不占名次」—— 涨幅排序仍是全市场由高到低，
+ *   但名次名额只发给主板，创业板/科创板/北交所【跳过且不占位】（名次自动顺延给下一只主板）。
+ *   这与 2026-10-07 龙标签的既有口径完全一致：「只排主板的，但是它们的十日涨幅排序不变」。
+ *
+ * ✅ 有资格：沪主板（60）/ 深主板（00、01）、**代码缺失**。
+ * ❌ 无资格：创业板（30）、科创板（68）、北交所（43/83/87/88/92）—— 即 isHighLimitBoard 的全集。
+ *
+ * §10 红线：代码缺失 ⇒ getBoardKind 返回 BOARD_UNKNOWN ⇒ **算有资格**。
+ *   理由（与 dragon-rank.js#isDragonBoardEligible 同一条）：判不出板块 ≠ 判出「不是主板」，
+ *   把「没查到」当成「非主板」会静默把一只本该有名次的票踢出前十，那比「多给一次名次」危险得多。
+ *
+ * ⚠️ 判据只认代码前缀（getBoardKind），⛔ 绝不按股票名猜板块（§40）。
+ *
+ * @param {string} code 6 位股票代码（缺失 / 空串 = 未知 ⇒ 有资格）
+ * @returns {boolean} true = 可以占名次
+ */
+function isMainBoardRankEligible(code) {
+    // isHighLimitBoard 的补集：创业板 / 科创板 / 北交所 = 无资格；主板与「未知」= 有资格。
+    return !isHighLimitBoard(code);
+}
+
 /** 股票名是否 ST（含 *ST / ST / S*ST 等写法） */
 function isStStockName(stockName) {
     if (!stockName) return false;
@@ -2433,6 +2571,13 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
       ' → 【降级】改用「前一日名单 ∪ 打标签 ∪ 龙头名册」继续抓取，不中断整轮早盘流程');
   }
   logs.push('成分股数量: ' + ladderConstituents.length + (ladderDegraded ? '（⬇️ 降级模式：名单源不可用）' : ''));
+  // [LADDER-SRC 2026-11-03 用户口径] 把「同花顺最近多板(883410) 源数据条数」抽成【结构化字段】带走。
+  //   用户要拿它对齐炒股软件（原话：「这个才是重点……这个是源数据」）。
+  //   ⚠️ 与下方 constituents.length 不是一回事：那个是「前一日名单 ∪ 打标签 ∪ 龙头名册」并进来的
+  //      【抓取名单】，会比源数据多；源数据只有 ladderConstituents.length 这一个数。
+  //   ⚠️ 降级运行（名单源不可用）时它是 0，但那个 0 的含义是「没抓到」⇒ 由 ladderDegraded 表达，
+  //      前端看到 ladderDegraded=true 就显示 `--` 而不是「0 只」（§10 读失败≠空数据）。
+  const ladderCount = ladderConstituents.length;
 
   const codeMap = (codeMapRes.ok && codeMapRes.v) || {};
   if (!codeMapRes.ok) logs.push('读取 stockcodemap 失败(非致命): ' + codeMapRes.e.message);
@@ -2574,7 +2719,7 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
   //   仍会照常落库 → 看板不空白；名单由后续重跑（/fetch?point=morning）补写。
   if (ladderDegraded) {
     logs.push('步骤2：⬇️ 降级模式 → 跳过 auction_watchlist 名单落库（避免写入残缺名单）');
-    return { constituents, watchlistRows: [], nowIso: new Date().toISOString(), ladderDegraded: true };
+    return { constituents, watchlistRows: [], nowIso: new Date().toISOString(), ladderDegraded: true, ladderCount };
   }
 
   // 【BUG-FIX】不写 volume/yest_volume/change_pct/note/topics 字段：
@@ -2619,7 +2764,7 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
     logs.push('写入 auction_watchlist 失败: ' + e.message);
     return { error: '写入 auction_watchlist 失败: ' + e.message };
   }
-  return { constituents, watchlistRows, nowIso };
+  return { constituents, watchlistRows, nowIso, ladderCount };
 }
 
 // 3. 调 numcat daily_auc 获取竞价数据（含"今天缺失"延迟重试）
@@ -2843,6 +2988,8 @@ function parseNumcatToMetrics(items, fields, constituents, logs, today) {
   const metricsByDate = {};
   let parsedCount = 0;
   let yestVolDerivedCount = 0;
+  // [AUC-VOL-GUARD 2026-11-04] 被判定为「竞价量 0 但量比>0（上游未就绪）」而留空的条数 —— 只用于日志留痕
+  let suspiciousVolZero = 0;
   // [AUC-SANE 2026-10-12] 被闸门丢弃的越界竞价涨幅（只登记，真值由 repairOutOfRangeAucPct 补）
   const outOfRange = [];
 
@@ -2860,8 +3007,28 @@ function parseNumcatToMetrics(items, fields, constituents, logs, today) {
     if (!stockName) return;
 
     // volume(万) = auc_vol(手) / 100
+    // ★★ [AUC-VOL-GUARD 2026-11-04 用户报障「竞价量全部显示 0，这是不可能的」]
+    //   实测 2026-11-04：47 只名单里 25 只（53%）volume='0'，而同行的 auc_vol_ratio 却是
+    //   5.43 / 15.29 / 144.88。**量比 = 竞价量 ÷ 基准量，分子为 0 则量比必为 0** ——
+    //   两者同时出现说明上游 numcat 当日 auc_vol 还没结算，返回的是占位 0，
+    //   旧代码原样写进库 ⇒ 前端趋势图/竞价量列全是 0，用户据此判断竞价强度会直接判错。
+    //   ⇒ 判定为「自相矛盾的 0」时不写数字（留空），让前端显示 '-'/断点（§10 缺值必须可见）。
+    //   ⛔ 不是把 0 一律抹掉：量比与占比也都是 0/空 时，0 就是事实，照常写。
     const volNum = Number(aucVol);
-    const volumeStr = isNaN(volNum) ? '' : String(Math.round(volNum / 100));
+    let volumeStr = '';
+    if (!isNaN(volNum)) {
+      const _ratioPct = ratioIdx >= 0 ? Number(row[ratioIdx]) : NaN;      // auc_to_pre_vol_pct
+      const _volRatio = avrIdx >= 0 ? Number(row[avrIdx]) : NaN;          // auc_vol_ratio
+      const _contradicts = volNum <= 0
+        && ((isFinite(_ratioPct) && _ratioPct > 0) || (isFinite(_volRatio) && _volRatio > 0));
+      if (!_contradicts) {
+        // 保留 1 位小数：旧写法 Math.round(手/100) 会把 <50 手（0.5 万）抹成 0，
+        // 一字板/小盘股的竞价量本来就小，抹成 0 同样会造成「假 0」。
+        volumeStr = String(Math.round((volNum / 100) * 10) / 10);
+      } else {
+        suspiciousVolZero++;
+      }
+    }
 
     // changePct = "+X.XX%"
     // [AUC-SANE 2026-10-12] aucRaw 单独留一份【数字】，供下面越界闸门判定；
@@ -2972,6 +3139,11 @@ function parseNumcatToMetrics(items, fields, constituents, logs, today) {
   });
 
   logs.push('解析完成: ' + parsedCount + '条, 涉及 ' + Object.keys(metricsByDate).length + ' 个交易日, 反推昨日成交量 ' + yestVolDerivedCount + ' 条');
+  // [AUC-VOL-GUARD 2026-11-04] 假 0 必须可见（§10）：上游当日 auc_vol 未结算时会出现
+  //   「竞价量 0 但量比>0」的自相矛盾值，上面已留空不写 —— 这里把条数打出来，方便对数。
+  if (suspiciousVolZero > 0) {
+    logs.push('⚠️ 竞价量异常: ' + suspiciousVolZero + ' 条的 auc_vol=0 但量比>0（上游未就绪），已留空不写 0');
+  }
   // [AUC-SANE 2026-10-12] 越界必须【可见】（§10 禁止静默丢弃）：把每只票的「坏值 / 该股涨停上界」都打出来，
   //   排障时一眼看出「是上游错了多少」，不用再去反推。
   if (outOfRange.length > 0) {
@@ -3290,7 +3462,7 @@ async function runMorning(env) {
   if (watchlistResult.error) {
     return { ok: false, today, error: watchlistResult.error, logs };
   }
-  const { constituents, watchlistRows, nowIso, ladderDegraded } = watchlistResult;
+  const { constituents, watchlistRows, nowIso, ladderDegraded, ladderCount } = watchlistResult;
   mark('名单落库' + (ladderDegraded ? '（⬇️ 降级：名单源不可用）' : ''));
 
   // ---- P0-② 竞价 daily_auc 与 收盘 daily【并发】（两者互不依赖）----
@@ -3390,6 +3562,9 @@ async function runMorning(env) {
   return {
     ok: metricsWriteFailures === 0 || totalMetricsWritten > 0,
     today,
+    // [LADDER-SRC 2026-11-03 用户口径] 同花顺「最近多板」(883410) 源数据条数 —— 前端第一页直接显示，
+    //   用户拿它对齐炒股软件。⚠️ 与 constituentsCount（并入打标签/龙头后的抓取名单）是两个数。
+    ladderCount: ladderCount,
     constituentsCount: constituents.length,
     numcatItems: items.length,
     metricsDates: dateKeys.length,
@@ -3960,6 +4135,10 @@ async function persistRunResult(env, point, result) {
       finishedAtBj: r.finishedAtBj || '',
       p0Overrun: !!r.p0Overrun,
       ladderDegraded: !!r.ladderDegraded,
+      // [LADDER-SRC 2026-11-03 用户口径] 同花顺「最近多板」(883410) 源数据条数。
+      //   前端 logic/auction/ladder-source.js 读这个字段显示在第一页（用户拿它对炒股软件）。
+      //   ⚠️ null = 本轮没走到那一步（如名单落库失败提前返回）⇒ 前端显示 `--`，⛔ 不补 0。
+      ladderCount: r.ladderCount === undefined ? null : r.ladderCount,
       todayDataMissing: !!r.todayDataMissing,
       todayMetricsWritten: r.todayMetricsWritten === undefined ? null : r.todayMetricsWritten,
       metricsWritten: r.metricsWritten === undefined ? null : r.metricsWritten,

@@ -7,6 +7,8 @@ import { useUiStore } from '../stores/uiStore.js';
 // 模块顶层求值时若 Pinia 尚未激活，useAuctionStore() 会抛错，这里兜底返回 null，避免 ReferenceError。
 function _getAuctionStore() { try { return useAuctionStore(); } catch { return null; } }
         import { getSupabase, getNumericVolume } from './supabase-client.js';
+        // [AUC-VOL-GUARD 2026-11-04] 竞价量归一（假 0 ⇒ 缺失）。唯一实现在 metrics-normalize.js。
+        import { normalizeAucVolume } from './metrics-normalize.js';
         import { _dbgLog, _dbgLogVerbose } from './debug-log.js';
 import { startStockTopicsRealtime, stopStockTopicsRealtime, startCoreTopicsRealtime, stopCoreTopicsRealtime } from './stock-topics.js';
 import { startStockCodeMapRealtime, stopStockCodeMapRealtime } from './stock-code-map.js';
@@ -429,7 +431,8 @@ import { createQueryMemo } from './query-memo.js';
                     cloudByStock[key] = {
                         stock: row.stock,
                         code: row.code || '',
-                        volume: row.volume || '',
+                        // ★ [AUC-VOL-GUARD 2026-11-04] 假 0（竞价量 0 但量比>0）⇒ 缺失，不写 0（§10）
+                        volume: normalizeAucVolume(row.volume, row.auc_vol_ratio) || '',
                         yest_volume: row.yest_volume || '',
                         yestVolume: row.yest_volume || '', // camelCase 别名，供渲染代码兼容
                         note: row.note || '',
@@ -505,7 +508,8 @@ import { createQueryMemo } from './query-memo.js';
                     cloudByStock[key] = {
                         stock: row.stock,
                         code: row.code || '',
-                        volume: row.volume || '',
+                        // ★ [AUC-VOL-GUARD 2026-11-04] 假 0（竞价量 0 但量比>0）⇒ 缺失，不写 0（§10）
+                        volume: normalizeAucVolume(row.volume, row.auc_vol_ratio) || '',
                         yest_volume: row.yest_volume || '',
                         yestVolume: row.yest_volume || '', // camelCase 别名
                         change_pct: row.change_pct || '',
