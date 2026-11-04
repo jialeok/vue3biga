@@ -222,7 +222,26 @@ async function fetchKlineBars(ths: string, startMs: number, endMs: number): Prom
  *   ③ 腿表里没有该日 ⇒ 假期 / 未开盘 ⇒ 直接返回，⛔ 不伪造整天；
  *   ④ 名单外的一律不写 —— `stock_range_pct` 还喂着龙位 / 决策看板 / 卖点段，⛔ 不扩大爆炸半径。
  */
-async function backfillRange10FromLegs(targetDate: string): Promise<Record<string, unknown>> {
+async function backfillRange10FromLegs(
+  targetDate: string,
+  opts?: { todayTLeg?: Map<string, number>; overwrite?: boolean },
+): Promise<Record<string, unknown>> {
+  // ★★★ [R10-CLOUD 2026-11-04] todayTLeg = 「当天这根腿」由调用方直接给（9:25 竞价涨幅）。
+  //   为什么需要它：9:25 时 `stock_daily_pct` 里【没有今天这根腿】（那根腿要等收盘后 15:05/16:30
+  //   才写），而下面的 ④ 段靠腿表反推真实交易日序列 ⇒ 今天不在序列里 ⇒ 直接 skipped。
+  //   代价就是：10 日涨幅在 9:25 永远算不出来，只能等浏览器补算（= 用户「关机就不出票」）。
+  //   给了 todayTLeg 之后，今天这根腿从 market_metrics.auc_pct_chg 取，其余 9 根仍走腿表。
+  //
+  // ★★★ [R10-OVERWRITE 2026-11-04] overwrite = 覆盖当天已有行（仅 9:25 竞价轮用）。
+  //   为什么必须能覆盖（实测证据）：11-04 库里那 47 行是浏览器 09:46 写的，
+  //   用[腿表 + 竞价 T 腿]重算后与腾讯前复权日线【逐位一致】，而这 47 行里有 8 只偏差极大：
+  //     东方海洋 库=29.57 vs 权威=49.80 ｜ 文投控股 库=-6.05 vs 27.81
+  //     三峡新材 库=-24.53 vs -15.58 ｜ 青岛食品 库=67.75 vs 75.86
+  //   ⇒ 浏览器那次是走兜底腿算的（错值），若还"只补缺"，这 8 只永远修不过来。
+  //   安全性：同一天同一口径覆盖，算对的那 39 只写回去还是同一个数（值比较相同不产生漂移）；
+  //   而 15:00 之后换收盘腿由 close-pct-cover / 前端负责，本函数不掺和。
+  const todayTLeg = (opts && opts.todayTLeg) || null;
+  const overwrite = !!(opts && opts.overwrite);
   // ① 该日名单（只补名单内的票，见安全闸④）
   const watch = await sbRest('GET', '/rest/v1/auction_watchlist?select=stock&date=eq.' + targetDate);
   const wanted = new Set<string>();
@@ -279,6 +298,12 @@ async function backfillRange10FromLegs(targetDate: string): Promise<Record<strin
   // ④ 真实交易日序列：某天【有任何一只票有腿】⇒ 那天有成交 ⇒ 真交易日
   //   （与前端 `pickRealWindowDates` 同一判据 —— App 日历的 holidays 为空，假期会被当成交易日）
   const dates = Array.from(dateSet).sort();
+  // ★ [R10-CLOUD] 9:25 当天腿还没进腿表 ⇒ 序列里没有今天 ⇒ 用调用方给的 T 腿把今天补进序列。
+  //   ⚠️ 只在「确实有当天 T 腿」时才补，否则不能凭空造一个交易日（§10）。
+  if (dates.indexOf(targetDate) < 0 && todayTLeg && todayTLeg.size > 0) {
+    dates.push(targetDate);
+    dates.sort();
+  }
   const tIdx = dates.indexOf(targetDate);
   if (tIdx < 0) {
     return { date: targetDate, skipped: '腿表里没有这一天（非真实交易日）', written: 0, legRows };
@@ -289,19 +314,37 @@ async function backfillRange10FromLegs(targetDate: string): Promise<Record<strin
   const rows: Array<Record<string, unknown>> = [];
   const nowIso = new Date().toISOString();
   let noLeg = 0;
+  let noTLeg = 0;
+  let overwrote = 0;
   for (const s of wanted) {
-    if (haveSet.has(s)) continue;
+    const isExisting = haveSet.has(s);
+    if (isExisting && !overwrite) continue;
     const m = byStock.get(s);
-    if (!m) { noLeg++; continue; }
+    let tLeg: number | null = null;
+    if (todayTLeg) {
+      const v = todayTLeg.get(s);
+      if (v !== undefined) tLeg = v;
+    }
+    // ★ [R10-CLOUD] 竞价口径下「没有当天竞价涨幅」的票【不写行】——
+    //   少了 T 腿的残缺行会让十日涨幅系统性偏低，而十日涨幅直接决定题材量比排序与龙位徽章
+    //   （与 worker buildRangePctRows 的 RANGE-FULL-LEG 同口径）。
+    //   历史腿缺失只如实记 days（停牌/次新属正常），不因此拒写。
+    if (todayTLeg && tLeg === null) { noTLeg++; continue; }
+    if (!m && tLeg === null) { noLeg++; continue; }
     const legs: number[] = [];
     for (const d of win) {
-      const v = m.get(d);
+      if (todayTLeg && d === targetDate) {
+        if (tLeg !== null) legs.push(tLeg);
+        continue;
+      }
+      const v = m ? m.get(d) : undefined;
       if (v === undefined) continue;
       legs.push(v);
     }
     if (legs.length === 0) { noLeg++; continue; }   // §10：一根腿都没有 ⇒ 不写（⛔ 不写 0%）
     let acc = 1;
     for (const p of legs) acc *= (1 + p / 100);
+    if (isExisting) overwrote++;
     rows.push({
       date: targetDate,
       stock: s,
@@ -318,8 +361,9 @@ async function backfillRange10FromLegs(targetDate: string): Promise<Record<strin
   }
   if (written > 0) {
     console.log('[range20-precompute][R10-RANGE-FROM-LEGS] ' + targetDate + ' 名单 ' + wanted.size
-      + ' 只 / 已有 ' + haveSet.size + ' 行 → 用腿表补 ' + written + ' 行（窗口 '
-      + win[0] + '~' + targetDate + '，无腿 ' + noLeg + ' 只，读腿 ' + legRows + ' 行）');
+      + ' 只 / 已有 ' + haveSet.size + ' 行 → 用腿表写 ' + written + ' 行（窗口 '
+      + win[0] + '~' + targetDate + '，无腿 ' + noLeg + ' 只，无T腿 ' + noTLeg + ' 只，'
+      + (overwrite ? '覆盖已有 ' + overwrote + ' 行，' : '') + '读腿 ' + legRows + ' 行）');
   }
   return {
     date: targetDate,
@@ -328,8 +372,12 @@ async function backfillRange10FromLegs(targetDate: string): Promise<Record<strin
     legRows,
     window: win[0] + '~' + targetDate,
     written,
+    overwrote,
     noLeg,
-    note: '10 日涨幅全局窗口补算（buildRangeRows 同口径，0 上游请求）；无腿不写',
+    noTLeg,
+    todayTLeg: todayTLeg ? todayTLeg.size : 0,
+    note: '10 日涨幅补算（buildRangeRows 同口径，0 上游请求）；无腿/无T腿不写'
+      + (overwrite ? '；竞价轮覆盖已有行（修正浏览器兜底腿算出的错值）' : ''),
   };
 }
 
@@ -1139,6 +1187,34 @@ Deno.serve(async (req: Request) => {
       return json(stat);
     }
 
+    // ★★★ [R10-ONLY 2026-11-04] 只重算「10 日区间涨幅」（手动入口，零上游请求）。
+    //   用途：① 部署后立刻修正当天那 47 行（实测 8 只错），不必等到明天 9:25；
+    //        ② 排查「题材量比出不了票」时，确认到底是没数据还是数据错。
+    //   用法：curl -X POST '<URL>/functions/v1/range20-precompute?token=range20-cron-2026&range10=1'
+    //        历史日：再加 &date=YYYY-MM-DD（此时不加 overwrite 就只补缺）
+    //        强覆盖：&overwrite=1
+    if (params.get('range10') === '1') {
+      const target = isBackfill ? rawDate : todayYmd();
+      const tRows = await sbRest(
+        'GET',
+        '/rest/v1/market_metrics?select=stock,auc_pct_chg&date=eq.' + target + '&scope=eq.auction&limit=2000',
+      );
+      const tLeg = new Map<string, number>();
+      for (const r of (Array.isArray(tRows) ? tRows : []) as Array<Record<string, unknown>>) {
+        const s = String(r.stock ?? '').trim();
+        const p = parsePct(r.auc_pct_chg);
+        if (s && p !== null) tLeg.set(s, p);
+      }
+      // 当天默认覆盖（竞价口径权威）；历史日默认只补缺，避免把已换收盘腿的行改回竞价腿
+      const wantOverwrite = params.get('overwrite') === '1'
+        || (target === todayYmd() && params.get('overwrite') !== '0');
+      const stat10 = tLeg.size === 0
+        ? { skipped: '当天 market_metrics 没有 auc_pct_chg（竞价涨幅未落库）', written: 0 }
+        : await backfillRange10FromLegs(target, { todayTLeg: tLeg, overwrite: wantOverwrite });
+      console.log('[range20-precompute][R10-ONLY] ' + JSON.stringify(stat10));
+      return json({ ok: true, range10Only: true, today: target, range10: stat10 });
+    }
+
     // ★★★ [R20-HEAL-ONLY 2026-11-01] 只跑「缺腿自愈」，不算 20 日涨幅 —— pg_cron 16:30 专用。
     //   为什么需要独立入口：worker 16:00 收盘轮刚把 change_pct 覆盖成收盘涨幅（updated_by 带 '-close'），
     //   此时立刻自愈一次，就能在**当天**把腿补齐，而不是拖到次日 9:25 才补。
@@ -1809,6 +1885,53 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    // ★★★ [R10-CLOUD 2026-11-04] 9:25 这一轮把【当天】10 日区间涨幅写进 stock_range_pct。
+    //
+    // 【用户原话 2026-11-04】「20日区间涨幅是存在 supabase 上面啊，也是用里面的 ts 文件和表，
+    //   你改 cloudflare worker 和我说这个有矛盾吗，一定要改 worker 吗？supabase 跑不了？」
+    //   ⇒ 他说得对，而且这正是更好的做法：
+    //     · 腿表 `stock_daily_pct` 已覆盖 48 个交易日（最早 2026-08-20）；
+    //     · 实测 11-04 当天 56 只票里 48 只（85.7%）9 根历史腿全在库；
+    //     ⇒ 10 日涨幅完全能【0 上游请求、0 猫抓额度】在云端算出来 —— 既不碰 worker，也不烧额度。
+    //
+    // 【为什么以前 9:25 从来没算过】`backfillRange10FromLegs` 早就写好了，但只挂在
+    //   `healOnly=1`（16:30 那轮）分支里，主路径一次都没调 ⇒ 当天 `stock_range_pct` 只能由
+    //   浏览器补算（实测 11-04 那 47 行 updated_at 全在 09:46:04~09:46:09）⇒ 用户不开电脑
+    //   就没有十日涨幅 ⇒ 题材量比没有排序依据 ⇒ **出不了票**。这就是「关机就不出票」的根因。
+    //
+    // 【口径】T 腿 = market_metrics.auc_pct_chg（9:25 竞价涨幅，与十日涨幅的历史定义一致）；
+    //   历史 9 根 = stock_daily_pct 的收盘涨幅腿。
+    // 【边界】只在竞价轮（leg='auc' 且非 ?date= 回补）跑：收盘轮的 T 腿换腿由 close-pct-cover
+    //   与前端负责，⛔ 不在这里掺和（否则会把竞价口径的十日涨幅改成收盘口径，两把尺子打架）。
+    let range10: Record<string, unknown> | null = null;
+    if (!isBackfill && leg === 'auc') {
+      try {
+        const tRows = await sbRest(
+          'GET',
+          '/rest/v1/market_metrics?select=stock,auc_pct_chg&date=eq.' + today + '&scope=eq.auction&limit=2000',
+        );
+        const tLeg = new Map<string, number>();
+        for (const r of (Array.isArray(tRows) ? tRows : []) as Array<Record<string, unknown>>) {
+          const s = String(r.stock ?? '').trim();
+          const p = parsePct(r.auc_pct_chg);
+          if (s && p !== null) tLeg.set(s, p);
+        }
+        if (tLeg.size === 0) {
+          // §10：没有竞价涨幅就⛔不能写十日涨幅，如实报原因（前端会显示「数据不全」）
+          range10 = { skipped: '当天 market_metrics 没有 auc_pct_chg（竞价涨幅未落库）', written: 0 };
+        } else {
+          // overwrite=true：竞价轮是当天【权威口径】，覆盖掉浏览器用兜底腿算出的错值
+          // （实测 11-04 有 8/47 只错，见函数头 R10-OVERWRITE 的取证）。
+          range10 = await backfillRange10FromLegs(today, { todayTLeg: tLeg, overwrite: true });
+        }
+      } catch (e) {
+        // §10：失败必须可见，但⛔ 不连坐 —— range20 与 market_metrics 已经落库了
+        range10 = { error: e instanceof Error ? e.message : String(e) };
+        console.error('[range20-precompute][R10-CLOUD] 失败: ' + JSON.stringify(range10));
+      }
+      console.log('[range20-precompute][R10-CLOUD] ' + JSON.stringify(range10));
+    }
+
     const stat = {
       ok: true,
       date: today,
@@ -1846,6 +1969,9 @@ Deno.serve(async (req: Request) => {
       // ★★ [R20-METRICS 2026-10-23] 补位票当日行情落 market_metrics 的结果（前端趋势图只读）
       metricsWritten,
       metricsError,
+      // ★★★ [R10-CLOUD 2026-11-04] 10 日区间涨幅（stock_range_pct）本轮写了多少行 ——
+      //   竞价期间「题材量比能不能出票」全靠这一步；written=0 就说明当天只能等浏览器补算。
+      range10,
       snapStatus,
       snapRejected,
       circuitBreak,

@@ -33,6 +33,20 @@
 --            where date = (now() at time zone 'Asia/Shanghai')::date and source = 'range20' group by 1;
 --
 --
+-- ★★★ [R10-CLOUD 2026-11-04] 同一个函数现在还负责写【10 日区间涨幅】`stock_range_pct`。
+--   用户原话：「20日区间涨幅是存在 supabase 上面啊，也是用里面的 ts 文件和表，你改 cloudflare
+--   worker 和我说这个有矛盾吗，一定要改 worker 吗？supabase 跑不了？」
+--   ⇒ 完全正确，所以 9:25 这一轮在写完 20 日之后，顺手把 10 日也算了：
+--     · 历史 9 根腿 = `stock_daily_pct`（已有 48 个交易日，最早 2026-08-20）；
+--     · 当天 T 腿 = `market_metrics.auc_pct_chg`（9:25 竞价涨幅）；
+--     ⇒ **0 上游请求、0 猫抓额度**，全程在 Supabase 跑，不依赖用户开电脑。
+--   实测验证（2026-11-04）：按腿表算出的值与腾讯前复权日线【逐位一致】；
+--   而库里那 47 行（浏览器 09:46 补算的）里有 8 只偏差极大
+--   （东方海洋 29.57 vs 49.80、文投控股 -6.05 vs 27.81、三峡新材 -24.53 vs -15.58 …）
+--   ⇒ 竞价轮（leg='auc'）会**覆盖**当天已有行，把这些错值修正掉。
+--   手动重算（部署后立刻修当天，不必等明天 9:25）：
+--     curl -X POST '<URL>/functions/v1/range20-precompute?token=range20-cron-2026&range10=1'
+--
 -- ⚠️ 执行前把下面两处 <ANON_KEY> 替换成你项目的 anon public key：
 --    Dashboard → Project Settings → API → Project API Keys → anon public
 --    （anon key 本来就是公开的前端钥匙，写进 cron 无泄密风险）
