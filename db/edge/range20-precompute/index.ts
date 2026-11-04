@@ -1338,8 +1338,10 @@ export async function healTodayVolume(today: string, leg: string): Promise<Recor
 //   ③ 只挑「volume / auc_vol_ratio / auc_pct_chg 有缺」的 (日期, 股票)，已有真值不重复算；
 //   ④ **一次** `daily_auc` 调用拿 [窗口首日, 窗口末日] × 全部代码
 //      （猫抓请求数与「只拉一天」相同，这是本方案能每天跑的关键）；
+//      ⚠️ 代码超过 150 只会自动分批发（见 NUMCAT_MAX_CODES_PER_REQ）——正常交易日名单 ~60 只
+//      ⇒ 恒 1 批 = 1 次额度；只有首次「10 天追平」那天才会到 3 批。
 //   ⑤ 猫抓给真值就写：volume ← auc_vol(手)/100 = 万股；auc_vol_ratio ← auc_vol_ratio；
-//      auc_pct_chg ← auc_pct_chg。`source='numcat'` 留痕。
+//      auc_pct_chg ← auc_pct_chg。**三列都核对过**才打 `source='numcat'`（见 ⑤ 段死角说明）。
 //
 // 【口径与红线】
 //   · 猫抓 = 用户指定的权威口径 ⇒ 对已有值也**覆盖**（同花顺快照的占位值不算准）；
@@ -1351,14 +1353,26 @@ export async function healTodayVolume(today: string, leg: string): Promise<Recor
 // ════════════════════════════════════════════════════════════════════════════
 
 interface NumcatAucCell { vol: number | null; ratio: number | null; aucPct: number | null }
-
-/** 调 numcat-proxy 的 daily_auc（一次调用覆盖 多只 × 多日）。⚠️ 只在这里发，别在别处重造（§6 单一入口） */
-async function numcatDailyAucBulk(codes: string[], startYmd: string, endYmd: string): Promise<{
+interface NumcatAucResult {
   byCode: Map<string, Map<string, NumcatAucCell>>;
   rows: number;
   error: string;
   quota: boolean;
-}> {
+}
+
+/**
+ * 🔴 单批最大代码数 = 150。
+ *   为什么必须分批（2026-11-04 实测）：10 天窗口的四类行并集实测 **353 只**，一次塞进 `symbols`
+ *   既可能顶到上游长度上限（同仓库 `auction-yizi-fetch` 对 symbols 就设了 MAX_SYMBOLS=300 的保守上限），
+ *   更糟的是**上游若静默截断，我们拿到的就是「部分真值」** —— 表现为那几只票永远补不齐、
+ *   每轮都重试、永远补不上，且日志上完全看不出（最典型的静默失败）。
+ *   150 是把风险压到最低的粒度：正常交易日（名单 ~60 只）恒为 1 批 = 1 次额度，
+ *   只有首次 10 天追平那天会到 3 批。
+ */
+const NUMCAT_MAX_CODES_PER_REQ = 150;
+
+/** 单批：调 numcat-proxy 的 daily_auc（一批内仍是「多只 × 多日」= 1 次额度） */
+async function numcatAucOnce(codes: string[], startYmd: string, endYmd: string): Promise<NumcatAucResult> {
   const byCode = new Map<string, Map<string, NumcatAucCell>>();
   if (codes.length === 0) return { byCode, rows: 0, error: '', quota: false };
   const url = SB_URL.replace(/\/$/, '') + '/functions/v1/numcat-proxy';
@@ -1429,6 +1443,47 @@ async function numcatDailyAucBulk(codes: string[], startYmd: string, endYmd: str
   } catch (e) {
     return { byCode, rows: 0, error: 'numcat 请求异常: ' + (e instanceof Error ? e.message : String(e)), quota: false };
   }
+}
+
+/**
+ * 分批拉 daily_auc 并合并结果（调用方只需关心「拿到了什么」）。
+ * 语义：
+ *   · 任一批撞额度耗尽 ⇒ 立刻停（⛔ 不换端点、不重试），已拿到的批次**保留**；
+ *   · 全部批次失败 ⇒ `error` 非空、byCode 为空（调用方据此「优雅跳过」）；
+ *   · 部分批次失败 ⇒ `warn` 非空但 `error` 为空，已拿到的照样写（⛔ 不因为一批失败全盘丢弃）。
+ */
+async function numcatDailyAucBulk(codes: string[], startYmd: string, endYmd: string): Promise<NumcatAucResult & { warn: string; reqs: number }> {
+  const byCode = new Map<string, Map<string, NumcatAucCell>>();
+  const uniq = Array.from(new Set(codes.filter((c) => /^\d{6}$/.test(c))));
+  if (uniq.length === 0) return { byCode, rows: 0, error: '', quota: false, warn: '', reqs: 0 };
+  const chunks: string[][] = [];
+  for (let i = 0; i < uniq.length; i += NUMCAT_MAX_CODES_PER_REQ) chunks.push(uniq.slice(i, i + NUMCAT_MAX_CODES_PER_REQ));
+  let rows = 0;
+  let error = '';
+  let warn = '';
+  let quota = false;
+  let okCount = 0;
+  for (let i = 0; i < chunks.length; i++) {
+    const r = await numcatAucOnce(chunks[i], startYmd, endYmd);
+    if (r.error) {
+      if (!error) error = r.error;
+      if (r.quota) { quota = true; break; }        // 额度耗尽：后面的批次必然也挂，⛔ 不白撞
+      continue;
+    }
+    okCount++;
+    rows += r.rows;
+    for (const [sym, m] of r.byCode) {
+      let t = byCode.get(sym);
+      if (!t) { t = new Map(); byCode.set(sym, t); }
+      for (const [d, c] of m) t.set(d, c);
+    }
+  }
+  if (okCount === 0) return { byCode: new Map(), rows: 0, error, quota, warn: '', reqs: chunks.length };
+  if (okCount < chunks.length) {
+    warn = '部分批次失败(' + (chunks.length - okCount) + '/' + chunks.length + '): ' + error;
+    error = '';
+  }
+  return { byCode, rows, error, quota, warn, reqs: chunks.length };
 }
 
 /**
@@ -1549,71 +1604,107 @@ export async function backfillDisplayFromNumcat(opts?: { days?: number; includeT
   //     —— 值非空、但**来源不是猫抓**，正是用户说「同花顺不准、一定要猫抓」的那批。
   //     只按空值判定 ⇒ 这些行永远轮不到猫抓核对 ⇒ 用户的口径永远落不了地（2026-11-04 预演抓到）。
   const isBlank = (v: unknown) => v === null || v === undefined || String(v).trim() === '' || Number(v) === 0;
-  const needSlots = slots.filter((s) => isBlank(s.vol) || isBlank(s.ratio) || isBlank(s.pct) || s.src !== 'numcat');
+  // ⚠️ 排序：**今天排最前**。分批发请求时若中途撞额度，越靠前的越先拿到 ⇒
+  //    最要紧的「今天」一定先补上，历史日随后（⛔ 不能按日期升序，那样先烧在旧日子上）。
+  const needSlots = slots
+    .filter((s) => isBlank(s.vol) || isBlank(s.ratio) || isBlank(s.pct) || s.src !== 'numcat')
+    .sort((a, b) => (a.date === b.date ? 0 : a.date < b.date ? 1 : -1));
   if (needSlots.length === 0) {
     return {
       skipped: '窗口内竞价量/量比/竞价涨幅已齐且均为猫抓口径（零猫抓请求）',
       window: window.join('~'), slots: slots.length,
     };
   }
-  const codeSet = new Set<string>();
-  for (const s of needSlots) if (/^\d{6}$/.test(s.code)) codeSet.add(s.code);
-  if (codeSet.size === 0) return { skipped: '待补票全都缺代码（无法调猫抓）', slots: slots.length };
+  // 代码顺序跟着槽位顺序（今天优先），分批时同理
+  const codes: string[] = [];
+  const seenCode = new Set<string>();
+  for (const s of needSlots) {
+    if (!/^\d{6}$/.test(s.code) || seenCode.has(s.code)) continue;
+    seenCode.add(s.code);
+    codes.push(s.code);
+  }
+  if (codes.length === 0) return { skipped: '待补票全都缺代码（无法调猫抓）', slots: slots.length };
 
-  // ④ 一次调用覆盖 多只 × 多日
+  // ④ 一次调用覆盖 多只 × 多日（超过 150 只自动分批，见 NUMCAT_MAX_CODES_PER_REQ）
   const startYmd = window[0].replace(/-/g, '');
   const endYmd = window[window.length - 1].replace(/-/g, '');
-  const nc = await numcatDailyAucBulk(Array.from(codeSet), startYmd, endYmd);
+  const nc = await numcatDailyAucBulk(codes, startYmd, endYmd);
   if (nc.error) {
     // 额度用完是「正常业务态」，不是故障：只记一行日志，⛔ 不重试不抛错
     console.log('[range20-precompute][AUC-VOL-NUMCAT] 跳过：' + nc.error
-      + '（待补 ' + needSlots.length + ' 格 / ' + codeSet.size + ' 只；窗口 ' + startYmd + '~' + endYmd + '）');
+      + '（待补 ' + needSlots.length + ' 格 / ' + codes.length + ' 只；窗口 ' + startYmd + '~' + endYmd
+      + '；批次 ' + nc.reqs + '）');
     return {
       ok: false, quota: nc.quota, error: nc.error, window: window.join('~'),
-      slots: slots.length, need: needSlots.length, codes: codeSet.size,
+      slots: slots.length, need: needSlots.length, codes: codes.length, reqs: nc.reqs,
     };
+  }
+  if (nc.warn) {
+    // §10：部分批次失败必须可见，但已拿到的照样写下去
+    console.error('[range20-precompute][AUC-VOL-NUMCAT] ' + nc.warn
+      + '（已拿到 ' + nc.byCode.size + ' 只 / ' + nc.rows + ' 条，继续写）');
   }
 
   // ⑤ 组行：猫抓有真值就写（volume 一定 >0 才写；⛔ 0/空不写）
+  //
+  //   🔴 `source='numcat'` 的语义必须是「**三列都已用猫抓核对过**」，⛔ 不是「我碰过这行」。
+  //   否则会出现这个死角：猫抓这次只回了两列（量比缺失 / 为 0），我们写了量、顺手把
+  //   `source` 也改成 numcat ⇒ 下一轮「来源已是 numcat」就不再把该行选进待核集合
+  //   ⇒ 库里残留的同花顺量比**永远轮不到校正**，用户口径悄悄没落地（2026-11-04 复查发现）。
+  //   ⇒ 三列全部对齐才标 numcat；只要有一列没核对过，就保留原 source（下轮继续核）。
   const nowIso = new Date().toISOString();
   const out: Array<Record<string, unknown>> = [];
   let volFixed = 0;
   let ratioFixed = 0;
   let pctFixed = 0;
   let marked = 0;
+  let partial = 0;
   let noData = 0;
   for (const s of needSlots) {
     const cell = s.code ? nc.byCode.get(s.code)?.get(s.date) : null;
     if (!cell) { noData++; continue; }
     const patch: Record<string, unknown> = {
-      date: s.date, stock: s.stock, code: s.code, scope: 'auction',
-      source: 'numcat', updated_at: nowIso,
+      date: s.date, stock: s.stock, code: s.code, scope: 'auction', updated_at: nowIso,
     };
     let any = false;
     // 竞价量：猫抓有 >0 值，且（库内空 或 与猫抓不同）才写。
     // ⚠️ 这里**允许覆盖非空值** —— 用户口径「猫抓为准」，同花顺拍的占位值就该被换掉。
+    let volOk = false;
     if (cell.vol !== null && cell.vol > 0) {
       const cur = isBlank(s.vol) ? null : Number(s.vol);
       if (cur === null || Math.abs(cur - cell.vol) > 1e-9) {
         patch.volume = String(cell.vol); any = true; volFixed++;
       }
+      volOk = true;
     }
+    let ratioOk = false;
     if (cell.ratio !== null && cell.ratio > 0) {
       const cur = isBlank(s.ratio) ? null : Number(s.ratio);
       const next = Number(cell.ratio.toFixed(2));
       if (cur === null || Math.abs(cur - next) > 1e-9) {
         patch.auc_vol_ratio = String(next); any = true; ratioFixed++;
       }
+      ratioOk = true;
     }
+    let pctOk = false;
     if (cell.aucPct !== null) {
       const cur = parsePct(s.pct);
       if (cur === null || Math.abs(cur - cell.aucPct) > 0.005) {
         patch.auc_pct_chg = fmtPct(cell.aucPct); any = true; pctFixed++;
       }
+      pctOk = true;
     }
-    // 三列都与猫抓一致、但来源还不是猫抓 ⇒ 只写一次 `source='numcat'` 作「已用猫抓核对」的标记。
-    //   为什么必须标记：否则下一轮又会被判成「非猫抓口径」⇒ 每天重复请求、永远幂等不了。
-    if (!any && s.src !== 'numcat') { any = true; marked++; }
+    const allChecked = volOk && ratioOk && pctOk;   // 三列都被猫抓核对过 = 可以打 numcat 标
+    if (allChecked) {
+      // 三列都与猫抓一致（任何一列都没改动）、但来源还不是猫抓 ⇒ 只写一次 source 作「已核对」标记。
+      //   为什么必须标记：否则下一轮又会被判成「非猫抓口径」⇒ 每天重复请求、永远幂等不了。
+      if (!any && s.src !== 'numcat') { any = true; marked++; }
+      patch.source = 'numcat';
+    } else {
+      // 只核对到部分列 ⇒ ⛔ 不敢打 numcat 标（见上方死角说明），保留原来源，下轮继续核。
+      patch.source = s.src || 'numcat-part';
+      if (any) partial++;
+    }
     if (any) out.push(patch);
   }
 
@@ -1634,15 +1725,15 @@ export async function backfillDisplayFromNumcat(opts?: { days?: number; includeT
   }
   console.log('[range20-precompute][AUC-VOL-NUMCAT] 窗口 ' + startYmd + '~' + endYmd
     + '｜名单行 ' + listTotal + '（库内 ' + rowTotal + '）｜待核 ' + needSlots.length
-    + '｜猫抓返回 ' + nc.rows + ' 条 ⇒ 写 ' + written + ' 行（竞价量 ' + volFixed
+    + '｜猫抓返回 ' + nc.rows + ' 条（' + nc.reqs + ' 批）⇒ 写 ' + written + ' 行（竞价量 ' + volFixed
     + ' / 量比 ' + ratioFixed + ' / 竞价涨幅 ' + pctFixed + '，仅标记 ' + marked
-    + '，猫抓无数据 ' + noData + '）');
+    + '，部分列 ' + partial + '，猫抓无数据 ' + noData + '）');
   return {
     ok: true, window: window.join('~'), listRows: listTotal, dbRows: rowTotal,
-    slots: slots.length, need: needSlots.length, codes: codeSet.size,
+    slots: slots.length, need: needSlots.length, codes: codes.length, reqs: nc.reqs, warn: nc.warn,
     numcatRows: nc.rows, written, buckets: buckets.size,
-    volFixed, ratioFixed, pctFixed, marked, noData, codeFixed,
-    note: '只写 volume / auc_vol_ratio / auc_pct_chg；source=numcat；0 与空一律不写',
+    volFixed, ratioFixed, pctFixed, marked, partial, noData, codeFixed,
+    note: '只写 volume / auc_vol_ratio / auc_pct_chg；三列全核对过才标 source=numcat；0 与空一律不写',
   };
 }
 
