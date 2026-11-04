@@ -938,7 +938,7 @@ async function healDailyLegsFromMetrics(today: string): Promise<Array<Record<str
  *
  * 安全：任一类读失败只降级那一类（§10 失败可见、⛔ 不扩大爆炸半径），⛔ 不让整轮补写失效。
  */
-async function readTodayDisplayStocks(today: string): Promise<Map<string, string>> {
+async function readTodayDisplayStocks(today: string, prevDateOverride?: string): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   const put = (stock: unknown, code: unknown) => {
     const s = String(stock ?? '').trim();
@@ -963,18 +963,20 @@ async function readTodayDisplayStocks(today: string): Promise<Map<string, string
   await grab('/rest/v1/auction_watchlist?select=stock,code&date=eq.' + today + '&limit=2000', '名单');
   // ② 20 日补位候选（结果表没有 code 列，靠后面的 stockcodemap 批查补）
   await grab('/rest/v1/stock_range20_pct?select=stock&date=eq.' + today + '&limit=2000', '20日结果表');
-  // ③ 龙头组 = 前一交易日名册
-  let prevDate = '';
-  try {
-    const prev = await sbRest(
-      'GET',
-      '/rest/v1/auction_watchlist?select=date&date=lt.' + today + '&order=date.desc&limit=1',
-    );
-    const first = (Array.isArray(prev) ? prev[0] : null) as Record<string, unknown> | null;
-    prevDate = first ? String(first.date ?? '').slice(0, 10) : '';
-  } catch (e) {
-    console.error('[range20-precompute][AUC-VOL-LIST] 前一交易日探测失败: '
-      + (e instanceof Error ? e.message : String(e)));
+  // ③ 龙头组 = 前一交易日名册（历史窗口回补时由调用方直接给，省掉一次探测）
+  let prevDate = String(prevDateOverride ?? '').trim();
+  if (!prevDate) {
+    try {
+      const prev = await sbRest(
+        'GET',
+        '/rest/v1/auction_watchlist?select=date&date=lt.' + today + '&order=date.desc&limit=1',
+      );
+      const first = (Array.isArray(prev) ? prev[0] : null) as Record<string, unknown> | null;
+      prevDate = first ? String(first.date ?? '').slice(0, 10) : '';
+    } catch (e) {
+      console.error('[range20-precompute][AUC-VOL-LIST] 前一交易日探测失败: '
+        + (e instanceof Error ? e.message : String(e)));
+    }
   }
   if (prevDate) {
     await grab('/rest/v1/dragon_leaders?select=stock,code&date=eq.' + prevDate + '&limit=200', '龙头名册');
@@ -1251,6 +1253,9 @@ export async function healTodayVolume(today: string, leg: string): Promise<Recor
       }
       if (m.change_pct != null) patch.change_pct = m.change_pct;
       if (m.auc_pct_chg != null) patch.auc_pct_chg = m.auc_pct_chg;
+      // ⚠️ [口径] 这里的 auc_vol_ratio 来自【同花顺快照】——猫抓对「当天」不返回四要素，
+      //    9:25 那一刻只有快照有值，属于**占位**。用户口径「竞价量比必须猫抓」由 16:30 的
+      //    `backfillDisplayFromNumcat` 用 daily_auc 覆盖成猫抓值（source='numcat'）⇒ 次日看历史是猫抓权威。
       if (m.auc_vol_ratio != null) patch.auc_vol_ratio = m.auc_vol_ratio;
       // 连一个真值都没有 ⇒ ⛔ 不建行（空行只会制造「有行但没数」的新假象）
       if (patch.volume === undefined && patch.yest_volume === undefined) {
@@ -1303,6 +1308,334 @@ export async function healTodayVolume(today: string, leg: string): Promise<Recor
     qtFail, thsFail, qtDead, buckets: buckets.size,
     snapshot: snapOk ? 'final' : (snapNote || '未用'),
     note: '名单 = watchlist ∪ 20日结果表 ∪ 龙头名册 ∪ 已有行；有行只补 volume/yest_volume，无行整行新建',
+  };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ★★★ [AUC-VOL-NUMCAT 2026-11-04] 用【猫抓 daily_auc】把「四类行」近 N 个交易日的
+//   竞价量 / 竞价量比 / 竞价涨幅 一次性回补进 `market_metrics`。
+//
+// 【用户口径（2026-11-04 原话）】
+//   「今天的竞价量比是同花顺还是猫抓数据接口获取的，我之前要求是一定要猫抓数据接口，
+//     不要用同花顺，因为同花顺的不准。」
+//   「九阳股份五日趋势图前几天没有竞价量比和竞价量」「新华传媒也是前几天缺失数据」
+//   「怎么彻底解决这个问题，就是龙头组，观察组，20日补上去的，同花顺最近多板源，
+//     一起可以正常获取数据，并存起来」
+//
+// 【为什么「前几天」必然全空 —— 两个原因叠加，缺一不可】
+//   ① 竞价量 / 竞价量比是 9:25 那一刻的**瞬时值**：日 K 线里没有（K 线只有全天量），
+//      过了当天连同花顺快照也不再给 ⇒ 历史上只有猫抓 daily_auc 存了它（前端「补全竞价数据」
+//      按钮就是靠 `daily_auc` 的 startdate/enddate **连抓多天**）。
+//   ② worker 的四要素补漏（workers/.../logic/extras-workflow.js）只补「库内【已有行】」，
+//      而 20 日补位票 / 龙头组壳行（九阳股份、新华传媒…）不在「同花顺最近多板 883410」
+//      成分股里 ⇒ worker 9:25 的抓取名单从来没有它们 ⇒ 那几天**一行都没有**
+//      ⇒ 「补空值」的逻辑永远碰不到它们 ⇒ 趋势图前几天必然断点（`--`）。
+//
+// 【本函数做什么（每天 1 次猫抓额度，覆盖整个窗口）】
+//   ① 取最近 N 个交易日：`auction_watchlist` 的 distinct date（与名单同源，不需要交易日历）；
+//   ② 逐日算「四类行名单」并集 —— 与 `readTodayDisplayStocks` 同一套来源：
+//      正式成员 + 观察组 / 20 日补位候选 / 龙头名册（前一交易日）/ 当日已有行；
+//   ③ 只挑「volume / auc_vol_ratio / auc_pct_chg 有缺」的 (日期, 股票)，已有真值不重复算；
+//   ④ **一次** `daily_auc` 调用拿 [窗口首日, 窗口末日] × 全部代码
+//      （猫抓请求数与「只拉一天」相同，这是本方案能每天跑的关键）；
+//   ⑤ 猫抓给真值就写：volume ← auc_vol(手)/100 = 万股；auc_vol_ratio ← auc_vol_ratio；
+//      auc_pct_chg ← auc_pct_chg。`source='numcat'` 留痕。
+//
+// 【口径与红线】
+//   · 猫抓 = 用户指定的权威口径 ⇒ 对已有值也**覆盖**（同花顺快照的占位值不算准）；
+//   · ⛔ 不动 change_pct / yest_volume / um_vol / open_bid_pct / auc_turnover（各有专责：
+//     收盘涨幅由收盘轮写、昨日成交量由 K 线腿写，趋势图那两条线本来就正常）；
+//   · ⛔ 0 / 空一律不写（§10：猫抓当日未结算会给占位 0，写下去就是新的假 0）；
+//   · 额度用完（403「今日调用额度已用完」）⇒ 记日志优雅退出，⛔ 不重试、⛔ 不抛错挡住后续补算；
+//   · 落库仍按「键集签名」分桶（PostgREST 同批对象键集必须一致，见 healTodayVolume 的 PGRST102 注释）。
+// ════════════════════════════════════════════════════════════════════════════
+
+interface NumcatAucCell { vol: number | null; ratio: number | null; aucPct: number | null }
+
+/** 调 numcat-proxy 的 daily_auc（一次调用覆盖 多只 × 多日）。⚠️ 只在这里发，别在别处重造（§6 单一入口） */
+async function numcatDailyAucBulk(codes: string[], startYmd: string, endYmd: string): Promise<{
+  byCode: Map<string, Map<string, NumcatAucCell>>;
+  rows: number;
+  error: string;
+  quota: boolean;
+}> {
+  const byCode = new Map<string, Map<string, NumcatAucCell>>();
+  if (codes.length === 0) return { byCode, rows: 0, error: '', quota: false };
+  const url = SB_URL.replace(/\/$/, '') + '/functions/v1/numcat-proxy';
+  const fields = 'symbol,tradedate,auc_vol,auc_vol_ratio,auc_pct_chg';
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000);
+    let resp: Response;
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + ANON_KEY },
+        body: JSON.stringify({
+          apiname: 'daily_auc', fields,
+          params: { symbols: codes.join(','), startdate: startYmd, enddate: endYmd },
+        }),
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!resp.ok) return { byCode, rows: 0, error: 'numcat-proxy HTTP ' + resp.status, quota: false };
+    const j = (await resp.json()) as Record<string, unknown>;
+    const code = Number(j.code);
+    if (code !== 200) {
+      const msg = String(j.message ?? '');
+      const quota = code === 403 || msg.indexOf('额度') >= 0;
+      return { byCode, rows: 0, error: 'numcat code=' + code + ' ' + msg, quota };
+    }
+    const data = (j.data ?? {}) as Record<string, unknown>;
+    const fl = Array.isArray(data.fields) ? (data.fields as string[]) : [];
+    const items = Array.isArray(data.items) ? (data.items as unknown[][]) : [];
+    const iSym = fl.indexOf('symbol');
+    const iDate = fl.indexOf('tradedate');
+    const iVol = fl.indexOf('auc_vol');
+    const iRatio = fl.indexOf('auc_vol_ratio');
+    const iPct = fl.indexOf('auc_pct_chg');
+    if (iSym < 0 || iDate < 0 || iVol < 0) {
+      return { byCode, rows: 0, error: 'daily_auc 返回缺少 symbol/tradedate/auc_vol 字段', quota: false };
+    }
+    const num = (v: unknown): number | null => {
+      if (v === null || v === undefined || String(v).trim() === '') return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const toCell = (row: unknown[]): NumcatAucCell => {
+      const v = num(row[iVol]);
+      return {
+        // ⚠️ 猫抓 auc_vol 单位是【手】；库内 volume 是【万股】⇒ ÷100。保留 1 位小数：
+        //    旧前端按钮用 Math.round，会把 0.4 万手抹成 0（正是「显示 0」的来源之一）。
+        vol: v !== null && v > 0 ? Math.round((v / 100) * 10) / 10 : null,
+        ratio: iRatio >= 0 ? num(row[iRatio]) : null,
+        aucPct: iPct >= 0 ? num(row[iPct]) : null,
+      };
+    };
+    for (const row of items) {
+      if (!Array.isArray(row)) continue;
+      const sym = String(row[iSym] ?? '').trim().split('.')[0];
+      const date = String(row[iDate] ?? '').trim().replace(/-/g, '').replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+      if (!sym || !date) continue;
+      const cell = toCell(row);
+      if (cell.vol === null && cell.ratio === null && cell.aucPct === null) continue;
+      let m = byCode.get(sym);
+      if (!m) { m = new Map(); byCode.set(sym, m); }
+      m.set(date, cell);
+    }
+    return { byCode, rows: items.length, error: '', quota: false };
+  } catch (e) {
+    return { byCode, rows: 0, error: 'numcat 请求异常: ' + (e instanceof Error ? e.message : String(e)), quota: false };
+  }
+}
+
+/**
+ * 回补「四类行」窗口内的竞价量 / 竞价量比 / 竞价涨幅（猫抓口径）。
+ * @param opts.days 窗口交易日数（默认 5，正好覆盖趋势图「近5日」）
+ * @param opts.includeToday 是否含当天（默认含：16:30 猫抓已结算）
+ */
+// ⚠️ `export` 只为单测/离线预演（与 dayMetricsOf / healTodayVolume 同款用法）。
+export async function backfillDisplayFromNumcat(opts?: { days?: number; includeToday?: boolean }): Promise<Record<string, unknown>> {
+  const days = Math.max(1, Math.min(10, Number(opts?.days) || 5));
+  const includeToday = opts?.includeToday !== false;
+
+  // ① 交易日：auction_watchlist 的 distinct date（与名单同源，⛔ 不引入第二套节假日判定）
+  const uniqDates: string[] = [];
+  try {
+    const got = await sbRest(
+      'GET',
+      '/rest/v1/auction_watchlist?select=date&date=lte.' + todayYmd() + '&order=date.desc&limit=6000',
+    );
+    const seen = new Set<string>();
+    for (const r of (Array.isArray(got) ? got : []) as Array<Record<string, unknown>>) {
+      const d = String(r.date ?? '').trim().slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || seen.has(d)) continue;
+      seen.add(d);
+      uniqDates.push(d);
+      if (uniqDates.length >= days + 1) break;   // 多取 1 个：给「龙头名册 = 前一交易日」用
+    }
+  } catch (e) {
+    return { skipped: '读交易日失败: ' + (e instanceof Error ? e.message : String(e)) };
+  }
+  if (uniqDates.length === 0) return { skipped: 'auction_watchlist 里没有任何日期' };
+  const window = (includeToday ? uniqDates.slice(0, days) : uniqDates.slice(1, days + 1)).reverse(); // 升序
+  if (window.length === 0) return { skipped: '窗口为空' };
+
+  // ② 逐日：名单并集 + 库内已有行
+  type Slot = { date: string; stock: string; code: string; hasRow: boolean; vol: unknown; ratio: unknown; pct: unknown; src: string };
+  const slots: Slot[] = [];
+  const codeOf = new Map<string, string>();
+  let listTotal = 0;
+  let rowTotal = 0;
+  for (const d of window) {
+    const idx = uniqDates.indexOf(d);
+    const prev = idx >= 0 && idx + 1 < uniqDates.length ? uniqDates[idx + 1] : '';
+    const list = await readTodayDisplayStocks(d, prev);
+    // 库内已有行（含 code 与三列现值）
+    const rowMap = new Map<string, Record<string, unknown>>();
+    try {
+      for (let from = 0; ; from += 1000) {
+        let page: unknown;
+        try {
+          page = await sbRest(
+            'GET',
+            '/rest/v1/market_metrics?select=stock,code,volume,auc_vol_ratio,auc_pct_chg,source'
+              + '&date=eq.' + d + '&scope=eq.auction&order=stock.asc',
+            undefined,
+            [from, from + 999],
+          );
+        } catch (e) {
+          // ① 首页就失败 ⇒ 这一天确实读不到，抛给日级 catch（§10：不许当成「全缺」）
+          if (from === 0) throw e;
+          // ② 翻到后面才失败（含 PostgREST 越界 416「Requested Range Not Satisfiable」）
+          //    ⇒ 手里已有前面几页，⛔ 不为了一个越界把整天的行全丢掉，停止翻页即可
+          console.error('[range20-precompute][AUC-VOL-NUMCAT] ' + d + ' 第 '
+            + (Math.floor(from / 1000) + 1) + ' 页读取失败（停止翻页，保留已读 ' + rowMap.size + ' 行）: '
+            + (e instanceof Error ? e.message : String(e)));
+          break;
+        }
+        if (!Array.isArray(page) || page.length === 0) break;
+        for (const r of page as Array<Record<string, unknown>>) {
+          const s = String(r.stock ?? '').trim();
+          if (s && !rowMap.has(s)) rowMap.set(s, r);
+        }
+        if (page.length < 1000) break;
+      }
+    } catch (e) {
+      // §10：读失败必须可见，⛔ 但只跳过这一天（不把「读不到」当成「全缺」）
+      console.error('[range20-precompute][AUC-VOL-NUMCAT] 读 ' + d + ' 失败（跳过该日）: '
+        + (e instanceof Error ? e.message : String(e)));
+      continue;
+    }
+    rowTotal += rowMap.size;
+    // 名单里没有、但有行的票也纳入（保持与 healTodayVolume 同口径）
+    for (const [s, r] of rowMap) {
+      if (!list.has(s)) list.set(s, /^\d{6}$/.test(String(r.code ?? '')) ? String(r.code) : '');
+    }
+    listTotal += list.size;
+    for (const [stock, code] of list) {
+      // ⚠️ 即使 code 为空也必须登记进 codeOf —— 否则 `fillCodesFromStockcodemap` 根本看不到它，
+      //    20 日补位票（结果表没有 code 列）就永远补不上码。2026-11-04 预演抓到的真 bug。
+      if (!codeOf.has(stock)) codeOf.set(stock, /^\d{6}$/.test(code) ? code : '');
+      else if (!codeOf.get(stock) && /^\d{6}$/.test(code)) codeOf.set(stock, code);
+      const r = rowMap.get(stock);
+      slots.push({
+        date: d, stock, code,
+        hasRow: !!r,
+        vol: r ? r.volume : null,
+        ratio: r ? r.auc_vol_ratio : null,
+        pct: r ? r.auc_pct_chg : null,
+        src: r ? String(r.source ?? '') : '',
+      });
+    }
+  }
+  if (slots.length === 0) return { skipped: '窗口内没有任何名单行', window: window.join('~') };
+  const codeFixed = await fillCodesFromStockcodemap(codeOf);
+  for (const s of slots) if (!s.code) s.code = codeOf.get(s.stock) || '';
+
+  // ③ 只挑需要（重新）用猫抓核对的槽；⛔ 已有真值且已标 numcat 的不重复算，避免白烧额度
+  //
+  //   🔴 [口径] 判据必须包含「source ≠ 'numcat'」，只用「值为空」是错的：
+  //     9:25 那一刻猫抓不返回四要素，worker 会用【同花顺快照】把 auc_vol_ratio 填上
+  //     —— 值非空、但**来源不是猫抓**，正是用户说「同花顺不准、一定要猫抓」的那批。
+  //     只按空值判定 ⇒ 这些行永远轮不到猫抓核对 ⇒ 用户的口径永远落不了地（2026-11-04 预演抓到）。
+  const isBlank = (v: unknown) => v === null || v === undefined || String(v).trim() === '' || Number(v) === 0;
+  const needSlots = slots.filter((s) => isBlank(s.vol) || isBlank(s.ratio) || isBlank(s.pct) || s.src !== 'numcat');
+  if (needSlots.length === 0) {
+    return {
+      skipped: '窗口内竞价量/量比/竞价涨幅已齐且均为猫抓口径（零猫抓请求）',
+      window: window.join('~'), slots: slots.length,
+    };
+  }
+  const codeSet = new Set<string>();
+  for (const s of needSlots) if (/^\d{6}$/.test(s.code)) codeSet.add(s.code);
+  if (codeSet.size === 0) return { skipped: '待补票全都缺代码（无法调猫抓）', slots: slots.length };
+
+  // ④ 一次调用覆盖 多只 × 多日
+  const startYmd = window[0].replace(/-/g, '');
+  const endYmd = window[window.length - 1].replace(/-/g, '');
+  const nc = await numcatDailyAucBulk(Array.from(codeSet), startYmd, endYmd);
+  if (nc.error) {
+    // 额度用完是「正常业务态」，不是故障：只记一行日志，⛔ 不重试不抛错
+    console.log('[range20-precompute][AUC-VOL-NUMCAT] 跳过：' + nc.error
+      + '（待补 ' + needSlots.length + ' 格 / ' + codeSet.size + ' 只；窗口 ' + startYmd + '~' + endYmd + '）');
+    return {
+      ok: false, quota: nc.quota, error: nc.error, window: window.join('~'),
+      slots: slots.length, need: needSlots.length, codes: codeSet.size,
+    };
+  }
+
+  // ⑤ 组行：猫抓有真值就写（volume 一定 >0 才写；⛔ 0/空不写）
+  const nowIso = new Date().toISOString();
+  const out: Array<Record<string, unknown>> = [];
+  let volFixed = 0;
+  let ratioFixed = 0;
+  let pctFixed = 0;
+  let marked = 0;
+  let noData = 0;
+  for (const s of needSlots) {
+    const cell = s.code ? nc.byCode.get(s.code)?.get(s.date) : null;
+    if (!cell) { noData++; continue; }
+    const patch: Record<string, unknown> = {
+      date: s.date, stock: s.stock, code: s.code, scope: 'auction',
+      source: 'numcat', updated_at: nowIso,
+    };
+    let any = false;
+    // 竞价量：猫抓有 >0 值，且（库内空 或 与猫抓不同）才写。
+    // ⚠️ 这里**允许覆盖非空值** —— 用户口径「猫抓为准」，同花顺拍的占位值就该被换掉。
+    if (cell.vol !== null && cell.vol > 0) {
+      const cur = isBlank(s.vol) ? null : Number(s.vol);
+      if (cur === null || Math.abs(cur - cell.vol) > 1e-9) {
+        patch.volume = String(cell.vol); any = true; volFixed++;
+      }
+    }
+    if (cell.ratio !== null && cell.ratio > 0) {
+      const cur = isBlank(s.ratio) ? null : Number(s.ratio);
+      const next = Number(cell.ratio.toFixed(2));
+      if (cur === null || Math.abs(cur - next) > 1e-9) {
+        patch.auc_vol_ratio = String(next); any = true; ratioFixed++;
+      }
+    }
+    if (cell.aucPct !== null) {
+      const cur = parsePct(s.pct);
+      if (cur === null || Math.abs(cur - cell.aucPct) > 0.005) {
+        patch.auc_pct_chg = fmtPct(cell.aucPct); any = true; pctFixed++;
+      }
+    }
+    // 三列都与猫抓一致、但来源还不是猫抓 ⇒ 只写一次 `source='numcat'` 作「已用猫抓核对」的标记。
+    //   为什么必须标记：否则下一轮又会被判成「非猫抓口径」⇒ 每天重复请求、永远幂等不了。
+    if (!any && s.src !== 'numcat') { any = true; marked++; }
+    if (any) out.push(patch);
+  }
+
+  // ⑥ 按键集签名分桶落库（PostgREST：同批对象键集必须一致，否则 400 PGRST102）
+  const buckets = new Map<string, Array<Record<string, unknown>>>();
+  for (const row of out) {
+    const sig = Object.keys(row).sort().join(',');
+    const arr = buckets.get(sig);
+    if (arr) arr.push(row);
+    else buckets.set(sig, [row]);
+  }
+  let written = 0;
+  for (const rows of buckets.values()) {
+    for (let k = 0; k < rows.length; k += 500) {
+      await sbRest('POST', '/rest/v1/market_metrics?on_conflict=date,stock,scope', rows.slice(k, k + 500));
+      written += Math.min(500, rows.length - k);
+    }
+  }
+  console.log('[range20-precompute][AUC-VOL-NUMCAT] 窗口 ' + startYmd + '~' + endYmd
+    + '｜名单行 ' + listTotal + '（库内 ' + rowTotal + '）｜待核 ' + needSlots.length
+    + '｜猫抓返回 ' + nc.rows + ' 条 ⇒ 写 ' + written + ' 行（竞价量 ' + volFixed
+    + ' / 量比 ' + ratioFixed + ' / 竞价涨幅 ' + pctFixed + '，仅标记 ' + marked
+    + '，猫抓无数据 ' + noData + '）');
+  return {
+    ok: true, window: window.join('~'), listRows: listTotal, dbRows: rowTotal,
+    slots: slots.length, need: needSlots.length, codes: codeSet.size,
+    numcatRows: nc.rows, written, buckets: buckets.size,
+    volFixed, ratioFixed, pctFixed, marked, noData, codeFixed,
+    note: '只写 volume / auc_vol_ratio / auc_pct_chg；source=numcat；0 与空一律不写',
   };
 }
 
@@ -1584,6 +1917,16 @@ Deno.serve(async (req: Request) => {
       return json({ ok: true, volumeOnly: true, today: target, leg: legForVol, volume: statV });
     }
 
+    // ★★★ [AUC-VOL-NUMCAT-ONLY 2026-11-04] 只用【猫抓】回补近 N 个交易日的
+    //  竞价量 / 竞价量比 / 竞价涨幅（四类行全名单）。手动入口，消耗 1 次猫抓额度。
+    //   用法：curl -X POST '<URL>/functions/v1/range20-precompute?token=range20-cron-2026&display=1'
+    //        自定义窗口：&days=5
+    if (params.get('display') === '1') {
+      const statD = await backfillDisplayFromNumcat({ days: Number(params.get('days')) || 5 });
+      console.log('[range20-precompute][AUC-VOL-NUMCAT-ONLY] ' + JSON.stringify(statD));
+      return json({ ok: true, displayOnly: true, display: statD });
+    }
+
     // ★★★ [R10-ONLY 2026-11-04] 只重算「10 日区间涨幅」（手动入口，零上游请求）。
     //   用途：① 部署后立刻修正当天那 47 行（实测 8 只错），不必等到明天 9:25；
     //        ② 排查「题材量比出不了票」时，确认到底是没数据还是数据错。
@@ -1641,6 +1984,7 @@ Deno.serve(async (req: Request) => {
       }
       let ranged: Record<string, unknown> | null = null;
       let ranged10: Record<string, unknown> | null = null;
+      let displayFill: Record<string, unknown> | null = null;
       // 当天这根腿只有 15:05 之后才算定稿（与 legFinal 同源判断）
       if (/^\d{4}-\d{2}-\d{2}$/.test(cutoff) && (cutoff !== todayYmd() || hhmm >= '15:05')) {
         try {
@@ -1662,6 +2006,28 @@ Deno.serve(async (req: Request) => {
         }
       }
 
+      // ★★★ [AUC-VOL-NUMCAT 2026-11-04] 同一轮用【猫抓】回补四类行窗口内的竞价量/量比/竞价涨幅。
+      //
+      //   为什么挂在这里（而不是新建一条 cron）：本入口已经有 16:30 / 08:50 两个 pg_cron 触发点
+      //   （见 db/create_range20_legs_cron.sql），用户重贴 Edge Function 即生效，⛔ 不必再建任务。
+      //
+      //   为什么只在 hhmm >= 15:05 跑：
+      //     · 猫抓对【当天】的四要素要等结算才给，收盘前跑 = 白烧额度；
+      //     · 08:50 那次是「早盘前补腿」，当天名单还没落库，跑它只会多烧 1 次额度（每天只该烧 1 次）。
+      //
+      //   为什么必须做：竞价量/量比是 9:25 的瞬时值，K 线里没有、过期同花顺也不再给，
+      //   历史值只有猫抓有；而 20 日补位票 / 龙头组壳行不在「同花顺最近多板 883410」里
+      //   ⇒ worker 从来没写过它们的行 ⇒ 趋势图前几天必然断点（用户 2026-11-04 第 5 次报障）。
+      if (hhmm >= '15:05' && !isBackfill) {
+        try {
+          displayFill = await backfillDisplayFromNumcat({ days: 5 });
+        } catch (e) {
+          // §10：失败可见，⛔ 不连坐 —— 腿与区间涨幅已经补好了
+          displayFill = { error: e instanceof Error ? e.message : String(e) };
+          console.error('[range20-precompute][AUC-VOL-NUMCAT] 失败: ' + JSON.stringify(displayFill));
+        }
+      }
+
       const sum = {
         ok: true,
         healOnly: true,
@@ -1671,10 +2037,12 @@ Deno.serve(async (req: Request) => {
         errors: healed.filter((x) => x.action === 'error'),
         range20: ranged,
         range10: ranged10,
+        display: displayFill,
         detail: healed,
       };
       console.log('[range20-precompute][R20-HEAL-ONLY] healed=' + sum.healed.length
-        + ' range20=' + JSON.stringify(ranged) + ' range10=' + JSON.stringify(ranged10));
+        + ' range20=' + JSON.stringify(ranged) + ' range10=' + JSON.stringify(ranged10)
+        + ' display=' + JSON.stringify(displayFill));
       return json(sum);
     }
 

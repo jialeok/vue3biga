@@ -77,6 +77,41 @@
 --          where date=(now() at time zone 'Asia/Shanghai')::date and scope='auction'
 --            and (volume is null or volume='' or volume='0' or yest_volume is null);
 --
+--
+-- ★★★ [AUC-VOL-NUMCAT 2026-11-04] 同一函数的 `?healOnly=1` 入口（北京 16:30 / 08:50 那条 cron，
+--   见 db/create_range20_legs_cron.sql）现在还会用【猫抓 daily_auc】回补四类行窗口内的
+--   竞价量 / 竞价量比 / 竞价涨幅。⛔ 不需要新建 cron，重贴 Edge Function 即生效。
+--
+--   用户原话：「今天的竞价量比是同花顺还是猫抓数据接口获取的，我之前要求是一定要猫抓数据接口，
+--   不要用同花顺，因为同花顺的不准」「九阳股份五日趋势图前几天没有竞价量比和竞价量」
+--   「新华传媒也是前几天缺失数据……怎么彻底解决这个问题，就是龙头组，观察组，20日补上去的，
+--   同花顺最近多板源，一起可以正常获取数据，并存起来。」
+--
+--   为什么前几天必然全空（两件事叠加）：
+--     ① 竞价量/量比是 9:25 那一刻的【瞬时值】：日 K 线里没有，过了当天连同花顺快照也不再给
+--        ⇒ 历史上只有猫抓 daily_auc 存了它（`startdate`/`enddate` 可连抓多天，一次调用覆盖整个窗口）；
+--     ② worker 的四要素补漏只补「库内【已有行】」，而 20 日补位票 / 龙头组壳行
+--        （九阳股份、新华传媒…）不在「同花顺最近多板 883410」成分股里 ⇒ worker 9:25 的抓取名单
+--        从来没有它们 ⇒ 那几天**一行都没有** ⇒ 补空值的逻辑永远碰不到它们。
+--     ⇒ 根因不是 worker 或 Supabase 单方面，是「**抓取名单 ≠ 展示名单**」这个结构性缺口。
+--
+--   现在怎么补（每天恰好 1 次猫抓额度，窗口 5 个交易日）：
+--     ① 交易日 = auction_watchlist 的 distinct date（与名单同源，不引入第二套日历）；
+--     ② 逐日算四类行并集（正式成员+观察组 / 20日补位 / 龙头名册 / 已有行）；
+--     ③ 只挑「三列有缺」或「source ≠ 'numcat'」的槽 —— 后者是关键：9:25 猫抓不给四要素时
+--        worker 会用同花顺快照把量比填上，值非空但来源不对，正是用户说的「不准」那批；
+--     ④ 一次 daily_auc 拿 [窗口首, 窗口末] × 全部代码 ⇒ volume←auc_vol/100(万股)、
+--        auc_vol_ratio←auc_vol_ratio、auc_pct_chg←auc_pct_chg，`source='numcat'` 留痕；
+--     ⑤ 三列都与猫抓一致但来源不是猫抓的行，只写一次 `source='numcat'` 作「已核对」标记
+--        ⇒ 下一轮零请求（幂等）。
+--   额度：用完（403「今日调用额度已用完」）⇒ 记一行日志优雅跳过，⛔ 不重试、不挡其它补算。
+--   手动跑（消耗 1 次猫抓额度）：
+--     curl -X POST '<URL>/functions/v1/range20-precompute?token=range20-cron-2026&display=1'
+--     自定义窗口：&days=5
+--   自检：select date,source,count(*) from market_metrics
+--          where date >= (now() at time zone 'Asia/Shanghai')::date - 7 and scope='auction'
+--          group by 1,2 order by 1 desc;
+--
 -- ⚠️ 执行前把下面两处 <ANON_KEY> 替换成你项目的 anon public key：
 --    Dashboard → Project Settings → API → Project API Keys → anon public
 --    （anon key 本来就是公开的前端钥匙，写进 cron 无泄密风险）
