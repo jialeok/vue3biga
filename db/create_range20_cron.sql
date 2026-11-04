@@ -116,6 +116,37 @@
 --          where date >= (now() at time zone 'Asia/Shanghai')::date - 7 and scope='auction'
 --          group by 1,2 order by 1 desc;
 --
+--   ★★★ [AUC-RATIO-NUMCAT-ONLY 2026-11-04 用户第 6 次口径] 全系统「竞价量比」唯一来源 = 猫抓 daily_auc
+--
+--   用户原话：「我都说竞价期间不用同花顺量比，收盘也不要用，我只要猫抓数据接口的竞价量比数据，
+--   这是最权威的…为什么把同花顺的竞价量比填上去呢？这会造成数据错误明白吗？
+--   永远不要用同花顺获取数据的竞价量比数据。」
+--
+--   现已删除的**所有**同花顺写入口（谁再看到类似代码，一律按违规处理）：
+--     ① workers/bidding-auto-fetch/logic/extras-workflow.js#runTodaySnapshotPatch
+--        —— 曾把快照 auction_volume_ratio 写进 auc_vol_ratio（9:25 与 16:00 各一次）；
+--        已删除，且 SNAPSHOT_FIELDS 里也去掉了该列（否则「只缺量比」的行会每轮白跑一次快照）。
+--     ② db/edge/range20-precompute/index.ts#dayMetricsOf
+--        —— 曾把快照 auction_volume_ratio 写进新建行（source='range20'）；已删除，
+--        量比列干脆不出现在建行语句里（宁可空着，也不写不同源的数）。
+--     ③ src/logic/auction/trend-patch.js（浏览器）
+--        —— 曾用快照顺带给趋势图补 `day.aucVolRatio`；已删除，量比只读库里的猫抓值。
+--     ④ 前端 src/logic/auction/ths-today-patch.js 早在 2026-10-26 就是合规的（从不补量比），
+--        只有后端两条腿漏了 ⇒ 用户看到「说了不要，还是同花顺的数」。现已全链路一致。
+--
+--   为什么「竞价期间量比必然是空的」（这是口径的代价，不是 bug）：
+--     猫抓 daily_auc 对【当天】不返回 auc_vol_ratio（要等结算）。实测证据（2026-11-04）：
+--     11-03 / 10-30 / 11-02 各日量比的 updated_at 全部落在**次日 09:25** ⇒ 结算后才由猫抓写入。
+--     ⇒ 9:25~收盘这段时间，量比没有合规来源 ⇒ 各视图显示 '-' / 断点（§10 宁缺勿错），
+--       收盘后 16:30 那一轮用猫抓回填；最迟次日 09:25 worker 的窗口重刷也会补上。
+--   ⚠️ 因此依赖竞价量比的「题材量比买点规则」在当天盘中拿不到该输入，会自然跳过；
+--      要看当天量比请等收盘后的猫抓回填（这是用户明确选择的口径：准确 > 有数）。
+--
+--   一次性数据清理（2026-11-04 已执行）：把当天由同花顺写入的 72 行 auc_vol_ratio 置 null。
+--   判据：猫抓当天不给量比 ⇒ 当天所有非空量比必然来自同花顺；历史日是次日猫抓写入，不动。
+--   复核：select date, updated_by, count(*) from market_metrics
+--          where scope='auction' and auc_vol_ratio is not null group by 1,2 order by 1 desc;
+--
 -- ⚠️ 执行前把下面两处 <ANON_KEY> 替换成你项目的 anon public key：
 --    Dashboard → Project Settings → API → Project API Keys → anon public
 --    （anon key 本来就是公开的前端钥匙，写进 cron 无泄密风险）

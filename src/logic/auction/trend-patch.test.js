@@ -166,7 +166,10 @@ describe('trend-patch · ensureTrendPatch 集成（快照腿带后缀 + 双键�
         const day = result.get('新华传媒').get(todayYmd);
         expect(day.volume).toBeCloseTo(363.6521, 3);    // 36365.21 手 ÷ 100 = 万股
         expect(day.aucPctChg).toBeCloseTo(-1.8553, 4);  // 快照 auction_pct 优先
-        expect(day.aucVolRatio).toBeCloseTo(1.37, 5);
+        // ⛔⛔ [AUC-RATIO-NUMCAT-ONLY 2026-11-04] 竞价量比**不许**从同花顺快照取
+        //   （auction_volume_ratio 与猫爪 auc_vol_ratio 不同源，用户口径：永远不用同花顺量比）。
+        //   这条断言是口径锁：谁把它接回去，这里立刻红。
+        expect(day.aucVolRatio).toBeNull();
         expect(day.yestVolume).toBeCloseTo(5200, 0);    // 10-21 量 52000000 股 → 5200 万股（K线腿超集出口）
         expect(day.changePct).toBeNull();                // 今天无 bar ⇒ null（§10 宁缺勿错）
     });
@@ -291,7 +294,7 @@ describe('trend-patch · ensureTrendPatch 集成 · 同花顺停用（FUYAO_OFF=
     const day = result.get('新华传媒').get(todayYmd);
     // 竞价量/量比在别处【没有任何等价来源】（腾讯 [49] 量比是另一个口径）⇒ 必须靠这条腿
     expect(day.volume).toBeCloseTo(363.6521, 3);
-    expect(day.aucVolRatio).toBeCloseTo(1.37, 5);
+    expect(day.aucVolRatio).toBeNull();   // ⛔ 同花顺量比永不采纳（见上一条口径注记）
     expect(day.aucPctChg).toBeCloseTo(-1.8553, 4);
     expect(day.yestVolume).toBeCloseTo(4800, 0);
     // ★ [FUYAO-SNAPSHOT 2026-11-02] 受控放行三条：端点精确 / 显式 allowWhenOff / timeoutMs>0

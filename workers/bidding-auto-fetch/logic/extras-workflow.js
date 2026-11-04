@@ -261,13 +261,21 @@ export async function runAuctionExtrasPatch(env, opts) {
 //   同花顺 auction/snapshot 在 9:25 竞价结束后就能给【当天】终态值（免费、不限量）→ 用它补。
 //
 // 【安全约束】
-//   · 只补 4 个字段（auc_pct_chg / auc_vol_ratio / auc_turnover / volume），且只写「库内为空」的行；
+//   · 只补 3 个字段（auc_pct_chg / auc_turnover / volume），且只写「库内为空/0」的行；
+//   · ⛔⛔ **auc_vol_ratio（竞价量比）永不补**：只认猫抓 daily_auc。同花顺的 auction_volume_ratio
+//     与猫爪 auc_vol_ratio 不同源（口径/基准量不同），填进去就是错数据 ——
+//     用户 2026-10-26 与 2026-11-04 两次明确口径：「永远不要用同花顺获取数据的竞价量比数据」。
+//     前端 ths-today-patch.js 早已按此执行，worker 这条腿曾经漏掉，现已删除（见下方写入段）。
 //   · um_vol / open_bid_pct 不在本接口能力内 → 不写（§40 不猜测）；
 //   · 写入前必须校验「快照服务端日期 == 目标日」+ data_status=final，否则整体拒绝（避免把上一交易日写到今天）；
 //   · 读取失败抛错中断，绝不把「读不到」当成「全都缺」（§10）；
 //   · 幂等：重复跑只补仍为空的行，已有值永不覆盖。
 // ============================================================================
-const SNAPSHOT_FIELDS = ['auc_pct_chg', 'auc_vol_ratio', 'auc_turnover', 'volume'];
+// ⛔ [AUC-RATIO-NUMCAT-ONLY 2026-11-04] 本清单里**刻意没有** `auc_vol_ratio`：
+//   竞价量比只认猫抓 daily_auc，同花顺永远不许补（详见下方写入段的用户原话与口径说明）。
+//   把它从「缺口判据」里也去掉是必需的 —— 否则「只缺量比」的行会被反复选中、每轮白跑一次
+//   快照请求，却什么都补不上（静默浪费），日志还会显示「补写 N 行」但其实没写量比。
+const SNAPSHOT_FIELDS = ['auc_pct_chg', 'auc_turnover', 'volume'];
 
 /**
  * 用同花顺快照补「当天」竞价字段缺口。
@@ -357,10 +365,16 @@ export async function runTodaySnapshotPatch(env, opts) {
       const v = extrasFmtSignedPct(it.auction_pct);
       if (v !== '') { patch.auc_pct_chg = v; any = true; }
     }
-    if (extrasIsEmpty(r.auc_vol_ratio)) {
-      const v = extrasFmt2(extrasNum(it.auction_volume_ratio));
-      if (v !== '') { patch.auc_vol_ratio = v; any = true; }
-    }
+    // ⛔⛔ [AUC-RATIO-NUMCAT-ONLY 2026-11-04 用户第 6 次报障] 这里原本有一条
+    //   `auc_vol_ratio ← 同花顺 auction_volume_ratio` 的补写，**已删除，永远不许再加回来**。
+    //   用户原话：「我都说竞价期间不用同花顺量比，收盘也不要用，我只要猫爪数据接口的竞价量比
+    //   数据，这是最权威的…为什么把同花顺的竞价量比填上去呢？这会造成数据错误明白吗？
+    //   永远不要用同花顺获取数据的竞价量比数据。」
+    //   口径一致性：前端 src/logic/auction/ths-today-patch.js 早在 2026-10-26 就按同一口径
+    //   **拒绝**用同花顺补 auc_vol_ratio（那里写着「⛔⛔ 绝对不许」），只有 worker 这条路漏了，
+    //   于是一边前端不补、一边后端偷偷补 ⇒ 用户看到的就是「明明说了不要，还是同花顺的数」。
+    //   ⇒ 竞价量比唯一来源 = 猫抓 daily_auc（结算后由 16:30 的 range20-precompute 回填，
+    //     source='numcat'）；拿不到就留空（§10 宁缺勿错），⛔ 绝不拿同花顺顶替。
     if (extrasIsEmpty(r.auc_turnover)) {
       const v = extrasFmt2(extrasNum(it.auction_turnover_pct));
       if (v !== '') { patch.auc_turnover = v; any = true; }
@@ -395,6 +409,7 @@ export async function runTodaySnapshotPatch(env, opts) {
     logs.push('[snapshot] ❌ 写入失败: ' + e.message);
     return { ok: false, today, patched: 0, logs, error: e.message };
   }
-  logs.push('[snapshot] ✅ 补写 ' + patchRows.length + ' 行当日竞价字段（auc_pct_chg/auc_vol_ratio/auc_turnover/volume）');
+  logs.push('[snapshot] ✅ 补写 ' + patchRows.length + ' 行当日竞价字段（auc_pct_chg/auc_turnover/volume；'
+    + '竞价量比按口径不补，只认猫抓）');
   return { ok: true, today, patched: patchRows.length, logs };
 }

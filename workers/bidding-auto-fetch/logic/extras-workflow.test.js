@@ -220,7 +220,7 @@ describe('runTodaySnapshotPatch 当日竞价字段补漏（同花顺快照）', 
     expect(posted).toBe(false);
   });
 
-  it('日期相符 + final → 只写缺失字段（um_vol/open_bid_pct 绝不写入 §40）', async () => {
+  it('日期相符 + final → 只写缺失字段（um_vol/open_bid_pct/auc_vol_ratio 绝不写入）', async () => {
     let body = null;
     stub([
       { test: isMmGet, res: () => ({ ok: true, json: () => Promise.resolve([
@@ -239,7 +239,9 @@ describe('runTodaySnapshotPatch 当日竞价字段补漏（同花顺快照）', 
     expect(r.patched).toBe(1);
     expect(body).toHaveLength(1);
     expect(body[0].auc_pct_chg).toBe('+4.66%');
-    expect(body[0].auc_vol_ratio).toBe('2.45');
+    // ⛔⛔ [AUC-RATIO-NUMCAT-ONLY 2026-11-04] 竞价量比只认猫抓，即使库内为空也【不许】用同花顺补。
+    //   这条断言是用户口径的锁：谁把 auction_volume_ratio 重新接回 auc_vol_ratio，这里立刻红。
+    expect(body[0].auc_vol_ratio).toBeUndefined();
     expect(body[0].auc_turnover).toBe('4.11');
     expect(body[0].um_vol).toBeUndefined();        // snapshot.auction_unmatched 语义不同源 → 不写
     expect(body[0].open_bid_pct).toBeUndefined();  // 无对应字段 → 不写

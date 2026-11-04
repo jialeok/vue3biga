@@ -278,7 +278,13 @@ export async function fetchSnapshotChangePct(env, codes) {
  *    （从不出现负值）语义不同源 → 按 §40「不凭猜测改数据库」留空，仍由次日 numcat 补漏负责。
  *    量纲换算已交叉验证（见 backups/同花顺官方接口竞价能力核查_2026-09-13.md）：
  *      volume ← round(auction_volume/100)（手→万股）｜auc_pct_chg ← auction_pct
- *      auc_vol_ratio ← auction_volume_ratio ｜auc_turnover ← auction_turnover_pct
+ *      auc_turnover ← auction_turnover_pct
+ * ⛔⛔ [AUC-RATIO-NUMCAT-ONLY 2026-11-04] **auction_volume_ratio 禁止映射到库内 auc_vol_ratio**。
+ *    同花顺的「竞价量比」与猫爪 auc_vol_ratio 不同源（基准量口径不同），掺进库里就是错数据，
+ *    而下游拿它当选票依据（logic/decision/decision-rules.js）⇒ 直接选错股。
+ *    用户两次明确口径（2026-10-26、2026-11-04）：「永远不要用同花顺获取数据的竞价量比数据，
+ *    我只要猫爪数据接口的竞价量比」。后端唯一入口 = numcat daily_auc（结算后由 16:30 云端回填）。
+ *    前端 src/logic/auction/ths-today-patch.js 早已按此执行；worker 这条腿曾漏掉，2026-11-04 已删。
  *
  * @param {object} env
  * @param {string[]} codes 6 位股票代码

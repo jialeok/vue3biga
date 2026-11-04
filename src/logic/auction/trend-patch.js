@@ -291,8 +291,10 @@ export function ensureTrendPatch(items, missingByStock, opts) {
         //   6s 超时）。原注释「当天的竞价量/量比改由云端 R20-METRICS 写 market_metrics」经实测证伪：
         //   `select count(*) from market_metrics where source='range20'` = **0 行**（自该能力上线起
         //   从未成功写过一行），所以「前端不补、等云端写」等于永远不补 —— 2026-11-02 九阳/新华
-        //   竞价量、竞价量比整列空白就是这条假设的代价。竞价量比在别处没有任何等价来源
-        //   （腾讯的 [49] 量比是另一个口径），只能走这里。
+        //   竞价量整列空白就是这条假设的代价。
+        //   ⛔ 但「竞价量比」不在本腿范围内（2026-11-04 用户第 6 次口径）：同花顺的
+        //   auction_volume_ratio 与猫爪 auc_vol_ratio 不同源，掺进来就是错数据 ⇒ 量比只认
+        //   库里的猫抓值，拿不到就留空（§10），⛔ 不用同花顺顶替。
         const todayWant = want.filter(function(w) { return w.days.indexOf(todayYmd) >= 0; });
         const _snapLegOn = !isFuyaoOff() || isFuyaoSnapshotAllowed();
         if (todayWant.length > 0 && _snapLegOn) {
@@ -341,10 +343,15 @@ export function ensureTrendPatch(items, missingByStock, opts) {
                         if (it.auction_pct != null && isFinite(Number(it.auction_pct))) {
                             day.aucPctChg = Number(it.auction_pct);
                         }
-                        // 竞价量比（倍数）：同一次快照顺带（趋势面板有这张图，缺一天也是断线）
-                        if (it.auction_volume_ratio != null && isFinite(Number(it.auction_volume_ratio))) {
-                            day.aucVolRatio = Number(it.auction_volume_ratio);
-                        }
+                        // ⛔⛔ [AUC-RATIO-NUMCAT-ONLY 2026-11-04] 竞价量比**不从这里取**。
+                        //   这里原本是 `day.aucVolRatio = Number(it.auction_volume_ratio)`
+                        //   —— 那是【同花顺】口径，与猫爪 auc_vol_ratio 不同源。
+                        //   用户第 6 次报障原话：「我都说竞价期间不用同花顺量比，收盘也不要用，
+                        //   我只要猫爪数据接口的竞价量比数据，这是最权威的…为什么把同花顺的竞价量比
+                        //   填上去呢？这会造成数据错误明白吗？永远不要用同花顺获取数据的竞价量比数据。」
+                        //   ⇒ 趋势图的量比只认库里 market_metrics.auc_vol_ratio（猫抓，结算后由
+                        //     16:30 的 range20-precompute 回填）。今天还没结算 ⇒ 这点留空（§10 断点），
+                        //     ⛔ 绝不拿同花顺顶替。竞价量（volume）不受影响，照旧从快照补。
                         _putDay(result, name, todayYmd, day);
                     });
                 }

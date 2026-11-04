@@ -79,7 +79,9 @@ function cronToPoint(cronExpr) {
 
 /**
  * [SNAPSHOT-EXTRAS 2026-09-14] 9:25 早盘 / 16:00 收盘主流程末尾，用同花顺快照补【当天】
- * 的 auc_pct_chg / auc_vol_ratio / auc_turnover / volume（免费、0 猫抓额度）。
+ * 的 auc_pct_chg / auc_turnover / volume（免费、0 猫抓额度）。
+ * ⛔ [AUC-RATIO-NUMCAT-ONLY 2026-11-04] **不含 auc_vol_ratio（竞价量比）** ——
+ *    用户口径：竞价量比只认猫抓、同花顺永远不许补（详见 extras-workflow.js#runTodaySnapshotPatch）。
  * 失败不致命：整段 try/catch，只留日志，绝不影响主流程结果。
  */
 async function runSnapshotPatchSafely(env, result, tag) {

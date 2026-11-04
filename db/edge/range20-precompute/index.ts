@@ -39,7 +39,8 @@
 //   读  stock_range20_pct  （目标日已有同 leg 行 ⇒ 跳过，幂等重跑不重复烧上游）
 //   写  stock_range20_pct  （on_conflict=date,stock，列与前端 upsertRange20Rows 完全一致）
 //   写  market_metrics     （★★[R20-METRICS 2026-10-23] 补位票的当日行情：volume / yest_volume /
-//                           change_pct / auc_pct_chg / auc_vol_ratio，scope='auction'、source='range20'。
+//                           change_pct / auc_pct_chg，scope='auction'、source='range20'。
+//                           ⛔ [AUC-RATIO-NUMCAT-ONLY 2026-11-04] 不含 auc_vol_ratio：竞价量比只认猫抓。
 //                           on_conflict=date,stock,scope。目的：前端展开趋势图时【0 上游请求】，
 //                           直接读这张表就有当天数据。详见下方 R20-METRICS 段头注释。）
 //   上游 同花顺 K 线（经既有 fuyao-proxy Edge Function 代理，零新增密钥）
@@ -662,7 +663,9 @@ function fmtLeg(v: number): string {
 //   · change_pct   = 15:00 后（leg='close'）→ 收盘涨幅；15:00 前 → 竞价涨幅
 //                    （与 worker 9:25 写竞价涨幅、16:00 覆盖成收盘涨幅完全同口径）
 //   · auc_pct_chg  = 快照 auction_pct 优先，缺则 K 线 open/昨收-1（缺则 null，§10 不猜）
-//   · auc_vol_ratio= 快照 auction_volume_ratio（缺则 null）
+//   ⛔ auc_vol_ratio：**本函数不产出**。竞价量比只认猫抓 daily_auc（用户 2026-10-26 / 11-04 口径：
+//      「永远不要用同花顺获取数据的竞价量比数据」）。同花顺 auction_volume_ratio 与猫爪不同源，
+//      掺进来就是错数据，而下游拿它当选票依据 ⇒ 宁可留空（§10）。
 //   · scope='auction'（前端按 scope 读）、source='range20'（可审计、与 worker/manual 区分）
 //
 // 【写哪些票】只写【补位票】（targets 里 from='pool' 的那批 = 不在今日正式名单的票）。
@@ -711,7 +714,8 @@ export function dayMetricsOf(
   };
   const snapAucPct = numOf(snap && snap.auction_pct);
   const snapVolHand = numOf(snap && snap.auction_volume);
-  const snapRatio = numOf(snap && snap.auction_volume_ratio);
+  // ⛔ [AUC-RATIO-NUMCAT-ONLY 2026-11-04] 刻意**不读** snap.auction_volume_ratio：
+  //   竞价量比唯一合法来源是猫抓 daily_auc（结算后由 backfillDisplayFromNumcat 回填）。见上方口径注记。
 
   const aucPct = snapAucPct !== null ? snapAucPct : openPct;
   // 涨幅：收盘腿用收盘涨幅；竞价腿用竞价涨幅（9:25 那一刻 change_pct 就是竞价涨幅，
@@ -726,7 +730,7 @@ export function dayMetricsOf(
     yest_volume: fmtNum(yestVolume),
     change_pct: fmtPct(changePct),
     auc_pct_chg: fmtPct(aucPct),
-    auc_vol_ratio: snapRatio !== null ? String(Number(snapRatio.toFixed(2))) : null,
+    // ⛔ 刻意不返回 auc_vol_ratio —— 见上方口径注记（同花顺量比永不入库）。
   };
 }
 
@@ -1253,10 +1257,13 @@ export async function healTodayVolume(today: string, leg: string): Promise<Recor
       }
       if (m.change_pct != null) patch.change_pct = m.change_pct;
       if (m.auc_pct_chg != null) patch.auc_pct_chg = m.auc_pct_chg;
-      // ⚠️ [口径] 这里的 auc_vol_ratio 来自【同花顺快照】——猫抓对「当天」不返回四要素，
-      //    9:25 那一刻只有快照有值，属于**占位**。用户口径「竞价量比必须猫抓」由 16:30 的
-      //    `backfillDisplayFromNumcat` 用 daily_auc 覆盖成猫抓值（source='numcat'）⇒ 次日看历史是猫抓权威。
-      if (m.auc_vol_ratio != null) patch.auc_vol_ratio = m.auc_vol_ratio;
+      // ⛔⛔ [AUC-RATIO-NUMCAT-ONLY 2026-11-04 用户第 6 次报障] 这里原本写过
+      //    `patch.auc_vol_ratio = m.auc_vol_ratio`（同花顺快照的 auction_volume_ratio），**已删除**。
+      //    用户原话：「我都说竞价期间不用同花顺量比，收盘也不要用，我只要猫爪数据接口的竞价量比
+      //    数据，这是最权威的…为什么把同花顺的竞价量比填上去呢？这会造成数据错误明白吗？
+      //    永远不要用同花顺获取数据的竞价量比数据。」
+      //    ⇒ 建行时**不再带量比列**：宁可这一列空着（§10），也绝不写一个不同源的数字。
+      //      量比由 16:30 的 `backfillDisplayFromNumcat`（猫抓 daily_auc，source='numcat'）回填。
       // 连一个真值都没有 ⇒ ⛔ 不建行（空行只会制造「有行但没数」的新假象）
       if (patch.volume === undefined && patch.yest_volume === undefined) {
         noSrc++;
@@ -1600,9 +1607,10 @@ export async function backfillDisplayFromNumcat(opts?: { days?: number; includeT
   // ③ 只挑需要（重新）用猫抓核对的槽；⛔ 已有真值且已标 numcat 的不重复算，避免白烧额度
   //
   //   🔴 [口径] 判据必须包含「source ≠ 'numcat'」，只用「值为空」是错的：
-  //     9:25 那一刻猫抓不返回四要素，worker 会用【同花顺快照】把 auc_vol_ratio 填上
-  //     —— 值非空、但**来源不是猫抓**，正是用户说「同花顺不准、一定要猫抓」的那批。
-  //     只按空值判定 ⇒ 这些行永远轮不到猫抓核对 ⇒ 用户的口径永远落不了地（2026-11-04 预演抓到）。
+  //     历史上 worker 曾用【同花顺快照】把 auc_vol_ratio 填上（2026-11-04 已彻底删除该写入）
+  //     —— 那些库存值**非空但来源不是猫抓**，正是用户说「同花顺不准、一定要猫抓」的那批。
+  //     只按空值判定 ⇒ 这些残留值永远轮不到猫抓核对 ⇒ 用户的口径永远落不了地（2026-11-04 预演抓到）。
+  //     ⇒ 保留「来源」判据：库里那些历史同花顺量比，会在窗口内被猫抓逐格覆盖成权威值。
   const isBlank = (v: unknown) => v === null || v === undefined || String(v).trim() === '' || Number(v) === 0;
   // ⚠️ 排序：**今天排最前**。分批发请求时若中途撞额度，越靠前的越先拿到 ⇒
   //    最要紧的「今天」一定先补上，历史日随后（⛔ 不能按日期升序，那样先烧在旧日子上）。
@@ -2733,7 +2741,8 @@ Deno.serve(async (req: Request) => {
             yest_volume: m.yest_volume,
             change_pct: m.change_pct,
             auc_pct_chg: m.auc_pct_chg,
-            auc_vol_ratio: m.auc_vol_ratio,
+            // ⛔ auc_vol_ratio 刻意不在此处（见 dayMetricsOf 的同名注记）：竞价量比只认猫抓，
+            //    同花顺快照的 auction_volume_ratio 永不入库（用户 2026-10-26 / 11-04 两次口径）。
             updated_at: new Date().toISOString(),
           };
         });
