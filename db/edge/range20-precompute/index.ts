@@ -1433,12 +1433,19 @@ async function numcatDailyAucBulk(codes: string[], startYmd: string, endYmd: str
 
 /**
  * 回补「四类行」窗口内的竞价量 / 竞价量比 / 竞价涨幅（猫抓口径）。
- * @param opts.days 窗口交易日数（默认 5，正好覆盖趋势图「近5日」）
+ * @param opts.days 窗口交易日数（默认 DISPLAY_BACKFILL_DAYS=10）
  * @param opts.includeToday 是否含当天（默认含：16:30 猫抓已结算）
  */
+// ⚠️ 为什么窗口取 10 天而不是趋势图那 5 天（2026-11-04 定）：
+//   窗口一旦等于展示窗口，某一天补失败（额度用尽/上游抽风）**第二天它就滑出窗口**，
+//   再也没有机会补 —— 用户看到的「前几天永远空着」就是这个滑动窗口效应。
+//   取 10 天 = 给一次失败留 5 天补救余量，而猫抓请求数【不变】（一次 startdate~enddate
+//   覆盖整个窗口，与只拉一天同样消耗 1 次额度），纯赚。
+const DISPLAY_BACKFILL_DAYS = 10;
+
 // ⚠️ `export` 只为单测/离线预演（与 dayMetricsOf / healTodayVolume 同款用法）。
 export async function backfillDisplayFromNumcat(opts?: { days?: number; includeToday?: boolean }): Promise<Record<string, unknown>> {
-  const days = Math.max(1, Math.min(10, Number(opts?.days) || 5));
+  const days = Math.max(1, Math.min(10, Number(opts?.days) || DISPLAY_BACKFILL_DAYS));
   const includeToday = opts?.includeToday !== false;
 
   // ① 交易日：auction_watchlist 的 distinct date（与名单同源，⛔ 不引入第二套节假日判定）
@@ -1922,7 +1929,7 @@ Deno.serve(async (req: Request) => {
     //   用法：curl -X POST '<URL>/functions/v1/range20-precompute?token=range20-cron-2026&display=1'
     //        自定义窗口：&days=5
     if (params.get('display') === '1') {
-      const statD = await backfillDisplayFromNumcat({ days: Number(params.get('days')) || 5 });
+      const statD = await backfillDisplayFromNumcat({ days: Number(params.get('days')) || DISPLAY_BACKFILL_DAYS });
       console.log('[range20-precompute][AUC-VOL-NUMCAT-ONLY] ' + JSON.stringify(statD));
       return json({ ok: true, displayOnly: true, display: statD });
     }
@@ -2018,9 +2025,10 @@ Deno.serve(async (req: Request) => {
       //   为什么必须做：竞价量/量比是 9:25 的瞬时值，K 线里没有、过期同花顺也不再给，
       //   历史值只有猫抓有；而 20 日补位票 / 龙头组壳行不在「同花顺最近多板 883410」里
       //   ⇒ worker 从来没写过它们的行 ⇒ 趋势图前几天必然断点（用户 2026-11-04 第 5 次报障）。
+      //   窗口用 DISPLAY_BACKFILL_DAYS(10) 而非趋势图的 5 天：见该常量的注释（防滑动窗口效应）。
       if (hhmm >= '15:05' && !isBackfill) {
         try {
-          displayFill = await backfillDisplayFromNumcat({ days: 5 });
+          displayFill = await backfillDisplayFromNumcat({ days: DISPLAY_BACKFILL_DAYS });
         } catch (e) {
           // §10：失败可见，⛔ 不连坐 —— 腿与区间涨幅已经补好了
           displayFill = { error: e instanceof Error ? e.message : String(e) };
