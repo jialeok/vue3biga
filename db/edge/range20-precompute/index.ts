@@ -921,6 +921,159 @@ async function healDailyLegsFromMetrics(today: string): Promise<Array<Record<str
  *   ③ T 腿必须就是目标日那根（腿表里的真收盘涨幅），⛔ 不拿竞价涨幅冒充；
  *   ④ 写 leg='close'，与收盘轮同一主键 (date,stock,leg) 语义 —— 前端按 leg 过滤即可命中。
  */
+/**
+ * ★★★ [AUC-VOL-HEAL 2026-11-04] 补当天「竞价量 volume / 昨日成交量 yest_volume」两个列。
+ *
+ * 【用户报障原话】「早盘竞价看板的第一页的昨日成交量和竞价量列很多股票显示横杠 -，
+ *   趋势图有数据为什么没显示出来，你又没修复。我之前都说了」
+ *
+ * 【取证 2026-11-04，market_metrics 当天 auction 56 行】
+ *   · 32 行 `volume='0'` 且 `yest_volume=null`；
+ *   · 而这 32 行的 `auc_vol_ratio` 分别是 5.43 / 15.29 / 21.49 / 144.88 …
+ *   ⇒ 量比 = 竞价量 ÷ 基准量，**分子真为 0 时量比不可能是 5.43** ⇒ 竞价量不是 0，是写入时丢了。
+ *   ⇒ 趋势图能画，是因为它走「同花顺快照 + K 线」现算；列表列只读库 ⇒ 库里是 0 就只能显示 '-'。
+ *
+ * 【本函数做什么】把这两列在**云端**补成真值 —— 补一次，全天所有人打开都是对的，
+ *   手机端零等待、不需要用户开电脑，也不依赖 worker 是否升级。
+ *   · volume      ← 同花顺快照 auction_volume（手）÷100 = 万手（与 worker 同口径）
+ *   · yest_volume ← 腾讯前复权日线「今天之前最后一根」的成交量 ÷1e4 = 万股
+ *     （量纲已核对：九阳股份 1,286,639 手 = 12,866 万股 ≈ worker 库内 yest_volume 12,882）
+ *   换算全部复用 `dayMetricsOf`（它已经处理好「9:25 时今天还没有 bar ⇒ 取最后一根」那个坑）。
+ *
+ * 【安全（一条都不放宽）】
+ *   · 只写 volume / yest_volume 两列，upsert 用 merge-duplicates ⇒ 绝不抹 change_pct / auc_vol_ratio；
+ *   · 只用真值（>0）覆盖 0/空，⛔ 绝不把 0 再写回去（那正是造出假 0 的来源）；
+ *   · 快照必须过双重闸门（data_status==='final' 且服务端北京日期 === 目标日）；
+ *   · 任一上游失败只记日志、继续其它票，⛔ 不连坐（§10：失败可见但不扩大爆炸半径）。
+ */
+async function healTodayVolume(today: string, leg: string): Promise<Record<string, unknown>> {
+  // 1) 读当天全部竞价行（分页取全，Supabase 单次上限 1000）
+  const all: Array<Record<string, unknown>> = [];
+  for (let from = 0; ; from += 1000) {
+    const page = await sbRest(
+      'GET',
+      '/rest/v1/market_metrics?select=stock,code,volume,yest_volume'
+        + '&date=eq.' + today + '&scope=eq.auction&order=stock.asc',
+      undefined,
+      [from, from + 999],
+    );
+    if (!Array.isArray(page) || page.length === 0) break;
+    all.push(...(page as Array<Record<string, unknown>>));
+    if (page.length < 1000) break;
+  }
+  if (all.length === 0) return { skipped: '当天没有竞价行', total: 0, written: 0 };
+
+  const isEmpty = (v: unknown) => v === null || v === undefined || String(v).trim() === '';
+  // '0' 也算「缺」：竞价量为 0 万手在早盘等同没成交，且必然伴随量比为 0（§10 不写假 0）
+  const need = all
+    .map((r) => ({
+      stock: String(r.stock ?? '').trim(),
+      code: String(r.code ?? '').trim(),
+      vol: r.volume,
+      yest: r.yest_volume,
+    }))
+    .filter((r) => r.stock && /^\d{6}$/.test(r.code)
+      && (isEmpty(r.vol) || Number(r.vol) === 0 || isEmpty(r.yest)));
+  if (need.length === 0) {
+    return { skipped: '竞价量与昨日成交量已齐', total: all.length, missing: 0, written: 0 };
+  }
+
+  // 2) 腾讯日线：dayMetricsOf 只要「今天 + 上一交易日」，窗口 45 自然日足够覆盖长假/停牌
+  const fromYmd = shiftYmd(today, -45);
+  const seriesByCode = new Map<string, Bar[]>();
+  let qtFail = 0;
+  const QT_CONC = 6;
+  for (let i = 0; i < need.length; i += QT_CONC) {
+    const chunk = need.slice(i, i + QT_CONC);
+    await Promise.all(chunk.map(async (t) => {
+      try {
+        const s = await fetchQtBars(t.code, fromYmd, today);
+        if (s.length > 0) seriesByCode.set(t.code, s);
+      } catch (e) {
+        qtFail++;
+        console.error('[range20-precompute][AUC-VOL-HEAL] ' + t.stock + '(' + t.code
+          + ') 腾讯日线失败: ' + (e instanceof Error ? e.message : String(e)));
+      }
+    }));
+  }
+
+  // 3) 当日竞价快照。⚠️ `fetchSnapshots` 单次只取 `thscodes.slice(0, 40)` ⇒ 必须分批，
+  //    否则名单超过 40 只时后面的票会【静默拿不到竞价量】（这批正好 32 只也要防以后扩容）。
+  let snapOk = false;
+  let snapNote = '';
+  const snapByCode = new Map<string, Record<string, unknown>>();
+  try {
+    let firstStatus = '';
+    let firstServerYmd = '';
+    let anyErr = '';
+    for (let i = 0; i < need.length; i += 40) {
+      const chunk = need.slice(i, i + 40);
+      const s = await fetchSnapshots(chunk.map((t) => thscode(t.code)));
+      if (s.error) { anyErr = s.error; continue; }
+      if (i === 0) { firstStatus = s.dataStatus; firstServerYmd = s.serverYmd; }
+      s.byCode.forEach((v, k) => snapByCode.set(k, v));
+    }
+    if (anyErr) snapNote = '快照请求失败: ' + anyErr;
+    else if (firstStatus !== 'final' || firstServerYmd !== today) {
+      snapNote = '快照闸门拒绝（status=' + firstStatus + ' 服务端日=' + firstServerYmd
+        + ' 目标日=' + today + '）⇒ 本次只补昨日成交量（K 线可得），竞价量留空';
+    } else snapOk = true;
+  } catch (e) {
+    snapNote = '快照异常: ' + (e instanceof Error ? e.message : String(e));
+  }
+
+  // 4) 组装（只写这两个字段）
+  const nowIso = new Date().toISOString();
+  const out: Array<Record<string, unknown>> = [];
+  let volFixed = 0;
+  let yestFixed = 0;
+  for (const t of need) {
+    const series = seriesByCode.get(t.code) || null;
+    const s = snapOk ? (snapByCode.get(t.code) ?? null) : null;
+    if (!series && !s) continue;                 // 两条腿都没有 ⇒ 这只没救，跳过
+    // ⚠️ 故意传 `series || []`：没有 K 线时 dayMetricsOf 会返回 volume（来自快照）+
+    //    yest_volume=null，正好是「能补多少补多少」，不整只放弃。
+    const m = dayMetricsOf(series || [], today, leg, s);
+    const patch: Record<string, unknown> = {
+      date: today, stock: t.stock, code: t.code, scope: 'auction',
+      source: 'range20', updated_at: nowIso,
+    };
+    let any = false;
+    const volMissing = isEmpty(t.vol) || Number(t.vol) === 0;
+    // ⚠️ volume 不走 dayMetricsOf 的 fmtNum（那是 Math.round 取整）：
+    //   取整会把竞价量 <50 手的小票抹成 0 —— **那正是假 0 的来源之一**。
+    //   这里保留 1 位小数，与新版 worker（Math.round((手/100)*10)/10）完全同口径，可逐位比对。
+    const handN = s ? Number(s.auction_volume) : NaN;
+    if (volMissing && Number.isFinite(handN) && handN > 0) {
+      patch.volume = String(Math.round((handN / 100) * 10) / 10);
+      any = true; volFixed++;
+    }
+    if (isEmpty(t.yest) && m.yest_volume != null && Number(m.yest_volume) > 0) {
+      patch.yest_volume = m.yest_volume; any = true; yestFixed++;
+    }
+    if (any) out.push(patch);
+  }
+
+  let written = 0;
+  for (let k = 0; k < out.length; k += 500) {
+    await sbRest('POST', '/rest/v1/market_metrics?on_conflict=date,stock,scope', out.slice(k, k + 500));
+    written += Math.min(500, out.length - k);
+  }
+  if (written > 0) {
+    console.log('[range20-precompute][AUC-VOL-HEAL] ' + today + ' 缺失 ' + need.length + ' 只 → 补 '
+      + written + ' 行（竞价量 ' + volFixed + ' / 昨日成交量 ' + yestFixed
+      + '，快照 ' + (snapOk ? 'final' : '未用') + (snapNote ? '，' + snapNote : '') + '）');
+  } else if (need.length > 0) {
+    console.log('[range20-precompute][AUC-VOL-HEAL] ⚠️ 缺失 ' + need.length + ' 只但无一行可补'
+      + (snapNote ? '（' + snapNote + '）' : '') + '，K线失败 ' + qtFail + ' 只');
+  }
+  return {
+    total: all.length, missing: need.length, written, volFixed, yestFixed,
+    qtFail, snapshot: snapOk ? 'final' : (snapNote || '未用'),
+    note: '只写 volume / yest_volume；0 视为缺，只用 >0 真值覆盖',
+  };
+}
+
 async function backfillRange20FromLegs(targetDate: string): Promise<Record<string, unknown>> {
   // ① 该日已有结果（只补缺的）
   const haveSet = new Set<string>();
@@ -1185,6 +1338,18 @@ Deno.serve(async (req: Request) => {
       });
       console.log('[range20-precompute][R20-LEGS] ' + JSON.stringify(stat));
       return json(stat);
+    }
+
+    // ★★★ [AUC-VOL-ONLY 2026-11-04] 只补「竞价量 / 昨日成交量」（手动入口）。
+    //   用途：部署后立刻把当天那 32 行 '-' 补成真值，不必等到明天 9:25。
+    //   用法：curl -X POST '<URL>/functions/v1/range20-precompute?token=range20-cron-2026&volume=1'
+    //        历史日：再加 &date=YYYY-MM-DD
+    if (params.get('volume') === '1') {
+      const target = isBackfill ? rawDate : todayYmd();
+      const legForVol = beijingHhmm() < '15:00' ? 'auc' : 'close';
+      const statV = await healTodayVolume(target, legForVol);
+      console.log('[range20-precompute][AUC-VOL-ONLY] ' + JSON.stringify(statV));
+      return json({ ok: true, volumeOnly: true, today: target, leg: legForVol, volume: statV });
     }
 
     // ★★★ [R10-ONLY 2026-11-04] 只重算「10 日区间涨幅」（手动入口，零上游请求）。
@@ -1932,6 +2097,26 @@ Deno.serve(async (req: Request) => {
       console.log('[range20-precompute][R10-CLOUD] ' + JSON.stringify(range10));
     }
 
+    // ★★★ [AUC-VOL-HEAL 2026-11-04] 补「竞价量 / 昨日成交量」两列的真值。
+    //   用户报障：「第一页的昨日成交量和竞价量列很多股票显示横杠 -，趋势图有数据为什么没显示出来」
+    //   根因：猫抓当日 `auc_vol` 偶发返回占位 0（32/56 行），而量比却有值 ⇒ 物理矛盾，是写入丢了。
+    //        趋势图走「快照 + K 线」现算所以有值；列表列只读库 ⇒ 只能显示 '-'。
+    //   补一次落库 ⇒ 全天所有人打开都是真值，手机零等待，也不依赖 worker 是否升级。
+    //
+    // ⚠️ 顺序必须排在 range10 之后：区间涨幅决定「题材量比能不能出票」，是本系统的命门；
+    //    竞价量只是展示列。这一趟要给 30+ 只票拉腾讯 K 线（并发 6，实测 6~12 秒），
+    //    ⛔ 绝不能让它挡在出票逻辑前面。
+    let volHeal: Record<string, unknown> | null = null;
+    if (!isBackfill) {
+      try {
+        volHeal = await healTodayVolume(today, leg);
+      } catch (e) {
+        volHeal = { error: e instanceof Error ? e.message : String(e) };
+        console.error('[range20-precompute][AUC-VOL-HEAL] 失败: ' + JSON.stringify(volHeal));
+      }
+      console.log('[range20-precompute][AUC-VOL-HEAL] ' + JSON.stringify(volHeal));
+    }
+
     const stat = {
       ok: true,
       date: today,
@@ -1969,6 +2154,9 @@ Deno.serve(async (req: Request) => {
       // ★★ [R20-METRICS 2026-10-23] 补位票当日行情落 market_metrics 的结果（前端趋势图只读）
       metricsWritten,
       metricsError,
+      // ★★★ [AUC-VOL-HEAL 2026-11-04] 竞价量/昨日成交量的补写结果 ——
+      //   missing=当天缺了多少行、written=补回多少行。第一页那两列显示 '-' 时先看这里。
+      volHeal,
       // ★★★ [R10-CLOUD 2026-11-04] 10 日区间涨幅（stock_range_pct）本轮写了多少行 ——
       //   竞价期间「题材量比能不能出票」全靠这一步；written=0 就说明当天只能等浏览器补算。
       range10,
