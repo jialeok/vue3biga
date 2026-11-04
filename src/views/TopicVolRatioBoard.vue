@@ -111,49 +111,66 @@
                ⛔ 模板零改动：两枚标签走的都是 p.buyActionTag 那一个出口（§6 收口不变）。 -->
           <div
             class="tvrb-section-title buy"
-            :class="{ 'tvrb-ebb': cashAlert.show }"
+            :class="{ 'tvrb-ebb': cashAlert.show || buyDataBlocked }"
           >
             选股
           </div>
-          <!-- ★ [CASH-ALERT 2026-10-13 用户口径] 空仓提醒：买点侧【顶部】的大字标语。
+          <!-- ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] **数据缺失 ⇒ 今天一只票都不选**。
+               用户原话：「题材没有平均量比的时候，题材量比看板选股就不能选票了，应该空仓或者提醒
+               用户修复程序数据，那里应该有一个专门的提示板，写出不能选票的理由……竞价量比，
+               20日涨幅，10日涨幅缺失等，数据缺失都不要选股，要有提示……不要把股票放进去了，
+               这是个常识」。
+               ⛔ 它必须排在【所有买点容器之前】：命中时这一段就是买点侧的全部内容。
+               ⛔ 也不能挪到 v-if="ready" 之外：未就绪时给「不能选股」结论等于拿没数据当结论（§10）。
+               ⚠️ 这里只是【视觉上的最后一道门】；票真正被清空是在规则层
+                 （`topic-vol-ratio-rules.js#_clearBuySideForDataGate`）—— 只靠模板隐藏的话，
+                 以后任何一条新通道读到 plan.blocks 就又把票放出去了。
+               ⚠️ 与「占位」（divergePending / buyPending）互斥且优先：那两个是「在等」，
+                 本板是「等不到的结论」。判定优先级在组合式的 buyDataBlocked（它会先看 buyPending）。 -->
+          <TvrbDataGate
+            v-if="buyDataBlocked"
+            :gate="buyDataGate"
+          />
+          <template v-if="!buyDataBlocked">
+            <!-- ★ [CASH-ALERT 2026-10-13 用户口径] 空仓提醒：买点侧【顶部】的大字标语。
                判据（能入选的排名第一题材平均竞价量比 < 25，或当日为【退潮首日】）与文案都在 Logic 层；
                ⛔ 它不改变选股 —— 命中时下面的题材块与股票行照常列出（用户「其它不变」）。
                ⛔ 不能挪到 v-if="ready" 之外：未就绪时给「空仓」结论等于拿没数据当量比低用（§10）。 -->
-          <!-- ★ [EBB-R20c 2026-10-20 用户口径] 二次确认退潮 + 常规选出补涨题材 ⇒ 买点侧顶部的
+            <!-- ★ [EBB-R20c 2026-10-20 用户口径] 二次确认退潮 + 常规选出补涨题材 ⇒ 买点侧顶部的
                【节点说明】横幅：用户「这是个退潮节点大方向……新的题材符合条件，这些题材叫做补涨题材，
                因为这是个节点很重要，可能接下来会出现轮动行情……会进入了常规选股规则」。
                ⛔ 纯说明文字：文案与判据全在 Logic 层（out.ebbNodeNote，§21 模板零计算）；
                首次退潮 / 二次走兜底 ⇒ null 不渲染（那两种场景卖点横幅 + 灰化已把状态说满）。
                样式独立类 .tvrb-ebb-node-note（⛔ 不复用卖点 .tvrb-ebb-banner 类名 ——
                两处 head 文本不同，共用类名会让 DOM 查询/E2E 混淆）。 -->
-          <!-- ★★ [DIVERGE-GATE 2026-10-21 用户口径] 分歧判定未就绪 ⇒ 买点侧只渲染「判定计算中」占位，
+            <!-- ★★ [DIVERGE-GATE 2026-10-21 用户口径] 分歧判定未就绪 ⇒ 买点侧只渲染「判定计算中」占位，
                ⛔ 绝不先把旧规则的选票渲染出去再换板（用户：「刚开始显示的是以前旧规则的票，后面停顿了
                几秒钟，才出现那个提示词分歧的信息板……我做决定很快，万一哪天它没跳转，我不就买错股票了」）。
                门控条件全在组合式 data computed（同步可判、无 setTimeout；判定落地自动重算放行一次成型）。
                ⛔ 未就绪时给「空仓 / 分歧」结论都是拿没数据当结论（§10）⇒ 占位只说【在算】，不说结论。 -->
-          <div
-            v-if="divergePending"
-            class="tvrb-diverge-pending tvrb-selectable"
-          >
-            <div class="tvrb-diverge-pending-head">
-              ⏳ 总龙分歧判定计算中……（先算 20 日涨幅总龙一，再比对它的 K 线）
-            </div>
-            <!-- ★★ [DIVERGE-GATE-2 2026-10-24] 进度小字：把「为什么在等」摆出来（分母 = 精算的票数，
-                 不是判定的票数）。空 ⇒ 不渲染（§21 模板零计算，文案在组合式）。 -->
             <div
-              v-if="divergeWaitText"
-              class="tvrb-diverge-pending-wait"
+              v-if="divergePending"
+              class="tvrb-diverge-pending tvrb-selectable"
             >
-              {{ divergeWaitText }}
+              <div class="tvrb-diverge-pending-head">
+                ⏳ 总龙分歧判定计算中……（先算 20 日涨幅总龙一，再比对它的 K 线）
+              </div>
+              <!-- ★★ [DIVERGE-GATE-2 2026-10-24] 进度小字：把「为什么在等」摆出来（分母 = 精算的票数，
+                 不是判定的票数）。空 ⇒ 不渲染（§21 模板零计算，文案在组合式）。 -->
+              <div
+                v-if="divergeWaitText"
+                class="tvrb-diverge-pending-wait"
+              >
+                {{ divergeWaitText }}
+              </div>
+              <div class="tvrb-diverge-pending-detail">
+                今天可能是【总龙首次分歧】日（总龙竞价低开）⇒ 买点侧要等分歧判定落地才能给出结论：
+                若确认分歧，买点侧将切换为「总龙一（下杀买）+ 不同题材主板高标 ≤2 只」的分歧板；
+                若不是分歧日，则按常规规则渲染。为防止先看到旧规则选票再切换造成误判，
+                判定落地前这里不显示选票。卖点侧不受影响。
+              </div>
             </div>
-            <div class="tvrb-diverge-pending-detail">
-              今天可能是【总龙首次分歧】日（总龙竞价低开）⇒ 买点侧要等分歧判定落地才能给出结论：
-              若确认分歧，买点侧将切换为「总龙一（下杀买）+ 不同题材主板高标 ≤2 只」的分歧板；
-              若不是分歧日，则按常规规则渲染。为防止先看到旧规则选票再切换造成误判，
-              判定落地前这里不显示选票。卖点侧不受影响。
-            </div>
-          </div>
-          <!-- ★★ [BUY-SETTLE / BUY-SETTLE-2 2026-10-31 用户口径] 买点侧的选股结果会随上游数据陆续到货而变化
+            <!-- ★★ [BUY-SETTLE / BUY-SETTLE-2 2026-10-31 用户口径] 买点侧的选股结果会随上游数据陆续到货而变化
                ⇒ 结果没定稿前只渲染「结果确认中」占位，⛔ 绝不先拿半套输入选一票出来再换。
                用户原话（第一次）：「10月30日，打开时，出现上海九百和文投控股这两只票，后面文投控股又自动……
                我希望刚开始就显示正确的上海九百，文投控股如果不符合，最好不要显示出来，
@@ -173,50 +190,50 @@
                  ③ 【结果侧】选股指纹连续 1.5s 不被推翻 —— 不枚举数据源，谁后到都挡得住。
                显示之后若结果又被推翻，会立刻挂回本占位等新的稳定版（⛔ 不让屏幕停在一批已作废的票上）。
                卖点侧不受影响（卖点不吃这些口径）。 -->
-          <div
-            v-if="buyPending && !divergePending"
-            class="tvrb-buysettle-pending tvrb-selectable"
-          >
-            <div class="tvrb-buysettle-pending-head">
-              ⏳ 结果确认中：买点侧的最终结果还没出来 —— 这一刻先不显示选票，请等提示消失（通常几秒）。
-            </div>
-            <!-- 进度小字：把「还在等什么」摆出来（空 ⇒ 不渲染，§21 模板零计算，文案在组合式） -->
             <div
-              v-if="buyPendingText"
-              class="tvrb-buysettle-pending-wait"
+              v-if="buyPending && !divergePending"
+              class="tvrb-buysettle-pending tvrb-selectable"
             >
-              {{ buyPendingText }}
+              <div class="tvrb-buysettle-pending-head">
+                ⏳ 结果确认中：买点侧的最终结果还没出来 —— 这一刻先不显示选票，请等提示消失（通常几秒）。
+              </div>
+              <!-- 进度小字：把「还在等什么」摆出来（空 ⇒ 不渲染，§21 模板零计算，文案在组合式） -->
+              <div
+                v-if="buyPendingText"
+                class="tvrb-buysettle-pending-wait"
+              >
+                {{ buyPendingText }}
+              </div>
+              <div class="tvrb-buysettle-pending-detail">
+                买点侧要凑齐好几份数据才敢定稿：早上 9:26 竞价那一刻的十日涨幅、核心题材大类与题材库怎么分组、
+                昨日退潮判定与近 20 日退潮历史、还有决定退潮替补的 20 日涨幅前五。这些数据是陆续到货的，
+                中途算出来的票**还会变**。为了不让你先看到一批错票再被换掉（很容易买错），
+                结果定稿前这里不显示选票；定稿后一次性给出，之后不会再变。卖点侧不受影响。
+              </div>
             </div>
-            <div class="tvrb-buysettle-pending-detail">
-              买点侧要凑齐好几份数据才敢定稿：早上 9:26 竞价那一刻的十日涨幅、核心题材大类与题材库怎么分组、
-              昨日退潮判定与近 20 日退潮历史、还有决定退潮替补的 20 日涨幅前五。这些数据是陆续到货的，
-              中途算出来的票**还会变**。为了不让你先看到一批错票再被换掉（很容易买错），
-              结果定稿前这里不显示选票；定稿后一次性给出，之后不会再变。卖点侧不受影响。
-            </div>
-          </div>
-          <template v-if="!divergePending && !buyPending">
-            <!-- ★★ [NET-QUIET 2026-10-31] 上游读取超时警示（只有「请求 25s 未归零」才出现）：
+            <template v-if="!divergePending && !buyPending">
+              <!-- ★★ [NET-QUIET 2026-10-31] 上游读取超时警示（只有「请求 25s 未归零」才出现）：
                  此时放行的是【已到的数据】，必须让用户知道这批票可能随后还会变（§10 不确定必须可见）。
                  ⛔ 不要把它做成「占位」—— 那会让看板看起来永远打不开。 -->
-            <div
-              v-if="buyDataWarning"
-              class="tvrb-buystale-warn tvrb-selectable"
-            >
-              {{ buyDataWarning }}
-            </div>
-            <div
-              v-if="ebbNodeNote"
-              class="tvrb-ebb-node-note tvrb-selectable"
-            >
-              <div class="tvrb-ebb-node-note-head">
-                {{ ebbNodeNote.headline }}
+              <div
+                v-if="buyDataWarning"
+                class="tvrb-buystale-warn tvrb-selectable"
+              >
+                {{ buyDataWarning }}
               </div>
-              <div class="tvrb-ebb-node-note-detail">
-                {{ ebbNodeNote.detail }}
+              <div
+                v-if="ebbNodeNote"
+                class="tvrb-ebb-node-note tvrb-selectable"
+              >
+                <div class="tvrb-ebb-node-note-head">
+                  {{ ebbNodeNote.headline }}
+                </div>
+                <div class="tvrb-ebb-node-note-detail">
+                  {{ ebbNodeNote.detail }}
+                </div>
               </div>
-            </div>
-            <TvrbCashAlert :alert="cashAlert" />
-            <!-- ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】买点：
+              <TvrbCashAlert :alert="cashAlert" />
+              <!-- ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】买点：
                用户原话「…从灰色的题材块中核对 20 日涨幅，看有没有排名前三的股票在其中（同题材），
                如果有再重新选入，因为行情差时，选市场龙头（也是题材龙头），叫弱势切抱团。
                并放在最前面，添加文字，弱势切抱团。」⇒ 所以它排在所有「灰化容器之外的买点」的【第一位】。
@@ -225,23 +242,23 @@
                    放进去等于把今天要买的这只也灰掉）。
                ⛔ 类名独立（.tvrb-weak-huddle-only-*）—— 五条规则各不相同，DOM 查询不能混。
                ⚠️ 没有票进 20日涨幅主板前三 ⇒ 不渲染（= 就是纯空仓，与改造前一致，§11）。 -->
-            <div
-              v-if="weakHuddle"
-              class="tvrb-weak-huddle-only-buy"
-            >
-              <div class="tvrb-weak-huddle-only-label tvrb-selectable">
-                弱势切抱团 · 买点（第三十条 · 从市场龙头选，不是选题材）
+              <div
+                v-if="weakHuddle"
+                class="tvrb-weak-huddle-only-buy"
+              >
+                <div class="tvrb-weak-huddle-only-label tvrb-selectable">
+                  弱势切抱团 · 买点（第三十条 · 从市场龙头选，不是选题材）
+                </div>
+                <div class="tvrb-weak-huddle-only-note tvrb-selectable">
+                  题材已退潮（整段灰化、今天不开新仓），但它的票在【20日涨幅主板前三】之内 ⇒
+                  行情差时资金会抱团最强的市场龙头 —— 这一只是今天可以买的。
+                </div>
+                <TvrbBuyBlock
+                  :block="weakHuddle"
+                  :head-text="weakHuddle.block.topic"
+                />
               </div>
-              <div class="tvrb-weak-huddle-only-note tvrb-selectable">
-                题材已退潮（整段灰化、今天不开新仓），但它的票在【20日涨幅主板前三】之内 ⇒
-                行情差时资金会抱团最强的市场龙头 —— 这一只是今天可以买的。
-              </div>
-              <TvrbBuyBlock
-                :block="weakHuddle"
-                :head-text="weakHuddle.block.topic"
-              />
-            </div>
-            <!-- ★★ [CATCH-UP 2026-10-27 用户口径] 第三十一条【补涨题材】买点：
+              <!-- ★★ [CATCH-UP 2026-10-27 用户口径] 第三十一条【补涨题材】买点：
                用户原话「这个题材因为平均量比不符，所以是灰色，需要添加下规则，如果20日涨幅（竞价口径），
                该题材的股票有2-3只处在6-10名中……那么称做补涨题材，补涨题材一般处在低位，所以很多时候
                该题材的平均量比不符，但是后期涨势却很好，但是选票的时候只选连板票比较强势」。
@@ -252,81 +269,81 @@
                ⛔ 类名独立（.tvrb-catchup-only-*）—— 六条规则各不相同，DOM 查询不能混。
                ⚠️ 没命中（数量不在 2~3 / 一只连板都没有 / 6~10 名里没这个题材）⇒ null 不渲染，
                   只在 cashAlert 的 notes 里说清为什么没生效（§11 不删不改既有内容）。 -->
-            <div
-              v-if="catchUp"
-              class="tvrb-catchup-only-buy"
-            >
-              <div class="tvrb-catchup-only-label tvrb-selectable">
-                补涨题材 · 买点（第三十一条 · 20日涨幅第 6~10 名里只选连板票）
+              <div
+                v-if="catchUp"
+                class="tvrb-catchup-only-buy"
+              >
+                <div class="tvrb-catchup-only-label tvrb-selectable">
+                  补涨题材 · 买点（第三十一条 · 20日涨幅第 6~10 名里只选连板票）
+                </div>
+                <div class="tvrb-catchup-only-note tvrb-selectable">
+                  题材已退潮（平均量比不达 25，整段灰化），但它在【20日涨幅主板第 6~10 名】里恰好占了
+                  2~3 只 —— 这是【低位补涨题材】：题材本身还没被资金充分挖掘，先头部队已经排在后面蓄势，
+                  后期往往涨得更好。这里【只选其中的连板票】，不选跟风的。
+                </div>
+                <TvrbBuyBlock
+                  :block="catchUp"
+                  :head-text="catchUp.block.topic"
+                />
               </div>
-              <div class="tvrb-catchup-only-note tvrb-selectable">
-                题材已退潮（平均量比不达 25，整段灰化），但它在【20日涨幅主板第 6~10 名】里恰好占了
-                2~3 只 —— 这是【低位补涨题材】：题材本身还没被资金充分挖掘，先头部队已经排在后面蓄势，
-                后期往往涨得更好。这里【只选其中的连板票】，不选跟风的。
-              </div>
-              <TvrbBuyBlock
-                :block="catchUp"
-                :head-text="catchUp.block.topic"
-              />
-            </div>
-            <!-- ★★ [EBB-R8 2026-10-14 → EBB-R20 2026-10-20 用户口径] 退潮日【买点侧替补（≤2 只）】：
+              <!-- ★★ [EBB-R8 2026-10-14 → EBB-R20 2026-10-20 用户口径] 退潮日【买点侧替补（≤2 只）】：
                用户原话「从20日涨幅中的总龙一到总龙五选出两只排名靠前的……剩下的就选排名靠前的那两只」。
                ⛔ 它【必须】渲染在 .tvrb-buy-list【之外】—— 那个容器挂着父级 filter: grayscale(1)，
                   CSS 的 filter 无法被子元素撤销；放进去就等于把「今天能下手的替补」也灰掉了。
                ⛔ 它【不在】blocks 里（见组合式的 ebbBuy），是独立的一段；不是退潮日 / 选不出 ⇒ 整个容器不渲染。
                ⚠️ 容器标签由 Logic 下发（ebb.buyOnlyLabelText，§21 模板零计算）；head-text 传块的合成题材头。 -->
-            <div
-              v-if="ebbBuy"
-              class="tvrb-ebb-only-buy"
-            >
-              <div class="tvrb-ebb-only-label tvrb-selectable">
-                {{ ebb && ebb.buyOnlyLabelText ? ebb.buyOnlyLabelText : '退潮替补 · 买点' }}
+              <div
+                v-if="ebbBuy"
+                class="tvrb-ebb-only-buy"
+              >
+                <div class="tvrb-ebb-only-label tvrb-selectable">
+                  {{ ebb && ebb.buyOnlyLabelText ? ebb.buyOnlyLabelText : '退潮替补 · 买点' }}
+                </div>
+                <TvrbBuyBlock
+                  :block="ebbBuy"
+                  :head-text="ebbBuy.block.topic"
+                />
               </div>
-              <TvrbBuyBlock
-                :block="ebbBuy"
-                :head-text="ebbBuy.block.topic"
-              />
-            </div>
-            <!-- ★★ [DIVERGE 2026-10-20 用户口径] 市场总龙一【首次分歧】日的分歧买点（总龙一下杀买 +
+              <!-- ★★ [DIVERGE 2026-10-20 用户口径] 市场总龙一【首次分歧】日的分歧买点（总龙一下杀买 +
                不同题材主板高标 ≤2 只）。结构与退潮替补同一形态：渲染在灰化容器 .tvrb-buy-list【之外】
                （今天真要买的那几只不能被 grayscale 吞掉）；不是分歧日 / 退潮日接管 ⇒ 不渲染。
                ⛔ 类名独立（.tvrb-diverge-only-*）—— 与退潮替补是两条规则，DOM 查询不能混。 -->
-            <div
-              v-if="divergeBuy"
-              class="tvrb-diverge-only-buy"
-            >
-              <div class="tvrb-diverge-only-label tvrb-selectable">
-                总龙首次分歧 · 买点（第二十五条）
-              </div>
-              <!-- ★ [DIVERGE-MANTRA 2026-10-21 用户口径] 用户指定的口诀，要求「醒目些」——
+              <div
+                v-if="divergeBuy"
+                class="tvrb-diverge-only-buy"
+              >
+                <div class="tvrb-diverge-only-label tvrb-selectable">
+                  总龙首次分歧 · 买点（第二十五条）
+                </div>
+                <!-- ★ [DIVERGE-MANTRA 2026-10-21 用户口径] 用户指定的口诀，要求「醒目些」——
                  纯展示文案（与上面 label 同一先例：静态标语放视图层），样式见 .tvrb-diverge-mantra。 -->
-              <div class="tvrb-diverge-mantra tvrb-selectable">
-                买在分歧，卖在一致，分歧切核心，弱势切抱团
+                <div class="tvrb-diverge-mantra tvrb-selectable">
+                  买在分歧，卖在一致，分歧切核心，弱势切抱团
+                </div>
+                <TvrbBuyBlock
+                  :block="divergeBuy"
+                  :head-text="divergeBuy.block.topic"
+                />
               </div>
-              <TvrbBuyBlock
-                :block="divergeBuy"
-                :head-text="divergeBuy.block.topic"
-              />
-            </div>
-            <!-- ★★ [SWITCH 2026-10-22 用户口径] 第二十八条【新龙 / 新题材切换日】的新龙那一行。
+              <!-- ★★ [SWITCH 2026-10-22 用户口径] 第二十八条【新龙 / 新题材切换日】的新龙那一行。
                结构与退潮替补 / 分歧买点同一形态：渲染在灰化容器 .tvrb-buy-list【之外】
                （今天真要买的那一只不能被 grayscale 吞掉）；不是切换日 / 选不出新龙 ⇒ 不渲染。
                ⛔ 类名独立（.tvrb-newdragon-only-*）—— 三条规则各不相同，DOM 查询不能混。
                注：常规侧在同一天已被 Logic 层【收紧】成「一个题材、一只票」（第二十八条），
                    所以这里看到的就是今天的全部买点：新龙 + 常规那一只。 -->
-            <div
-              v-if="newDragon"
-              class="tvrb-newdragon-only-buy"
-            >
-              <div class="tvrb-newdragon-only-label tvrb-selectable">
-                新龙 / 新题材切换日 · 买点（第二十八条）
+              <div
+                v-if="newDragon"
+                class="tvrb-newdragon-only-buy"
+              >
+                <div class="tvrb-newdragon-only-label tvrb-selectable">
+                  新龙 / 新题材切换日 · 买点（第二十八条）
+                </div>
+                <TvrbBuyBlock
+                  :block="newDragon"
+                  :head-text="newDragon.block.topic"
+                />
               </div>
-              <TvrbBuyBlock
-                :block="newDragon"
-                :head-text="newDragon.block.topic"
-              />
-            </div>
-            <!-- ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条【十日涨幅 · 在列次数候补】那一只。
+              <!-- ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条【十日涨幅 · 在列次数候补】那一只。
                结构与退潮替补 / 分歧买点 / 新龙同一形态：渲染在灰化容器 .tvrb-buy-list【之外】
                （今天真要买的那一只不能被 grayscale 吞掉）；不需要候补 / 选不出 / 次数未到 ⇒ 不渲染。
                ⛔ 类名独立（.tvrb-r10backup-only-*）—— 四条规则各不相同，DOM 查询不能混。
@@ -335,44 +352,45 @@
                  ② 【第一题材量比不达标 ⇒ 整段灰化空仓】时也会出现在这里 —— 这一块【不灰】，
                     它与上方灰化块里的同一只票重复出现是设计如此（题材结论 ≠ 股票结论）。
                  所以本块的存在【不代表】上方一定被删掉了一个题材块。 -->
-            <div
-              v-if="range10Backup"
-              class="tvrb-r10backup-only-buy"
-            >
-              <div class="tvrb-r10backup-only-label tvrb-selectable">
-                十日涨幅候补 · 买点（第二十九条 · 全市场选股，不是选题材）
+              <div
+                v-if="range10Backup"
+                class="tvrb-r10backup-only-buy"
+              >
+                <div class="tvrb-r10backup-only-label tvrb-selectable">
+                  十日涨幅候补 · 买点（第二十九条 · 全市场选股，不是选题材）
+                </div>
+                <TvrbBuyBlock
+                  :block="range10Backup"
+                  :head-text="range10Backup.block.topic"
+                />
               </div>
-              <TvrbBuyBlock
-                :block="range10Backup"
-                :head-text="range10Backup.block.topic"
-              />
-            </div>
-            <!-- 退潮首日 / 空仓提醒：股票块整体灰化（⛔ 上面的空仓标语【不灰】—— 它正是要被看见的那一条）
+              <!-- 退潮首日 / 空仓提醒：股票块整体灰化（⛔ 上面的空仓标语【不灰】—— 它正是要被看见的那一条）
                ⛔ 上面那只【唯一买点】也不灰（它在本次容器之外，见上）。
                ★ [CASH-ALERT-NOBUY 2026-10-16] 条件 = cashAlert.show（含退潮首日，同上面的标题一处口径）。 -->
-            <div
-              class="tvrb-buy-list"
-              :class="{ 'tvrb-ebb': cashAlert.show }"
-            >
-              <!-- ★ [EBB-D1 2026-10-21] b.prevEbbGray（Logic 层旗子）⇒ 只给【昨日二次确认退潮】那一个
+              <div
+                class="tvrb-buy-list"
+                :class="{ 'tvrb-ebb': cashAlert.show }"
+              >
+                <!-- ★ [EBB-D1 2026-10-21] b.prevEbbGray（Logic 层旗子）⇒ 只给【昨日二次确认退潮】那一个
                  题材块挂灰化类（第二十六条：整块灰化 + 退潮不买，其它题材块不灰）。
                  ★★ [LEADER-LIMITDOWN 2026-11-02] b.leaderLimitDownGray ⇒ 第三十二条【题材龙一竞价跌停】
                  那一个题材块同样整块灰化（块内票标签 = 【龙一跌停不买】）——
                  判断口径只有 Logic 层的旗子，⛔ 视图不自己比对涨幅 / 跌停（§6 判定唯一）。
                  ⛔ 走 TvrbBuyBlock 的可选 prop（§11 缺省 false = 其它消费方零行为），不新造灰化 CSS。 -->
-              <TvrbBuyBlock
-                v-for="b in blocks"
-                :key="'tvrb-buy-' + b.topic"
-                :block="b"
-                :gray="!!b.prevEbbGray || !!b.leaderLimitDownGray"
-              />
-            </div>
-            <div
-              v-if="blocks.length === 0"
-              class="tvrb-empty tvrb-selectable"
-            >
-              当日没有满足条件的题材（题材数量 ≥ 4 只）
-            </div>
+                <TvrbBuyBlock
+                  v-for="b in blocks"
+                  :key="'tvrb-buy-' + b.topic"
+                  :block="b"
+                  :gray="!!b.prevEbbGray || !!b.leaderLimitDownGray"
+                />
+              </div>
+              <div
+                v-if="blocks.length === 0"
+                class="tvrb-empty tvrb-selectable"
+              >
+                当日没有满足条件的题材（题材数量 ≥ 4 只）
+              </div>
+            </template>
           </template>
         </div>
 
@@ -428,6 +446,8 @@ import { computed, provide } from 'vue';
 import TvrbRulesHint from '../components/topicvolratio/TvrbRulesHint.vue';
 import TvrbBuyBlock from '../components/topicvolratio/TvrbBuyBlock.vue';
 import TvrbCashAlert from '../components/topicvolratio/TvrbCashAlert.vue';
+// ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ 不能选股的专用提示板
+import TvrbDataGate from '../components/topicvolratio/TvrbDataGate.vue';
 import TvrbSellBlock from '../components/topicvolratio/TvrbSellBlock.vue';
 import { useTopicVolRatioBoard } from '../composables/useTopicVolRatioBoard.js';
 
@@ -463,6 +483,10 @@ const {
   buyPendingText,
   // ★★ [NET-QUIET 2026-10-31] 读取超时警示（只有在途请求 25s 未归零才出现，§10 不确定必须可见）
   buyDataWarning,
+  // ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ 今天不能选股
+  //   （buyDataBlocked = 唯一开关；buyDataGate = 缺项清单，文案全在 Logic 层，模板零计算）
+  buyDataGate,
+  buyDataBlocked,
   // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条新龙 / 切换日（switchDay 的文案已由 Logic 层写进
   //   block.reason / notes，模板不需要它 ⇒ ⛔ 不解构，免得留一个未使用变量）
   newDragon,

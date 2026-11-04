@@ -5177,6 +5177,22 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     if (out.ebb) _applyEbbSellRules(out.sell, out.ebb, ebbSecondRegular ? regularPickNames : null);
   }
 
+  // ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ **硬空仓**（fail-closed）。
+  //
+  // 用户原话：「题材没有平均量比的时候，题材量比看板选股就不能选票了，应该空仓或者提醒用户修复
+  //   程序数据，那里应该有一个专门的提示板，写出不能选票的理由……还交代了选股条件的数据缺失，
+  //   也不能选票，比如竞价量比，20日涨幅，10日涨幅缺失等，数据缺失都不要选股，要有提示，
+  //   如果竞价量比缺失选出的票本身就是错误的，只会误导。不要把股票放进去了，这是个常识」
+  //
+  // ⛔ 为什么清在【规则层】而不是让视图「不渲染」：清在这里 = 任何消费方（未来的新组件 /
+  //   导出 / 分笔预取 / 统计条）都拿不到票，是真正的 fail-closed；只在视图加 v-if 的话，
+  //   以后任何一条新通道读到 out.blocks 就又把票放出去了（那是最难查的一类回归）。
+  // ⚠️ 判据本体在 `logic/topicvolratio/buy-data-gate.js#resolveBuyDataGate`（纯函数 + 单测），
+  //   本函数只负责「清」，⛔ 不在这里判覆盖率（判定唯一出口，§6）。
+  // 🔴 维护提醒：以后新增买点槽位（out.xxx / out.buy.xxx），**必须同步加进这个函数**，
+  //   否则「数据缺失日」新槽位会把票漏出去。`buy-data-gate.test.js` 有锁。
+  if (o.dataGateBlocked) _clearBuySideForDataGate(out);
+
   // ★★ [R10-NOEXCLUDE 2026-10-24] 「选股 N 只」按【去重后的股票数】算：
   //   同一只票可能同时出现在「灰化题材块 + 十日涨幅候补」或「题材买点 + 十日涨幅候补」里
   //   （用户口径：两条通道叠加是确定性，两处都展示）⇒ 数行数会把它算成两只，与实际能下单的只数不符。
@@ -5266,6 +5282,20 @@ export function buildTvrbRulesLines() {
       '市场总龙（龙一）分歧时，核心就是【市场总龙二】（今天正是这种情形：总市场龙一分歧' +
       ' ⇒ 核心就是总市场龙二）；龙一分歧时，就切到龙二 —— 即第二十一条那几只【' +
       EBB_SECOND_BUY_TAG + '】替补。',
+    // ── ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 先决条件：数据缺失 ⇒ 一只票都不选。
+    //    文案与判定同处一处（§6）：判定在 `buy-data-gate.js#resolveBuyDataGate`，
+    //    清空在 `_clearBuySideForDataGate`；⛔ 改口径请顺手改这三处。
+    //    用户原话：「数据缺失都不要选股，要有提示，如果竞价量比缺失选出的票本身就是错误的，
+    //      只会误导。不要把股票放进去了，这是个常识」
+    '〇、【先决条件 · 数据缺失 ⇒ 今天不选股】竞价量比、十日涨幅、20 日涨幅前五 —— 这三样只要' +
+      '【整表缺失】（不是个别票缺值），买点侧今天【一只票都不选】，改为显示一块提示板，' +
+      '逐条写出缺的是哪一样、现在有几只、为什么不能选、以及怎么修。' +
+      '理由：本看板的规则全是阈值判据（平均量比 ≥ 25 才开仓 / 十日涨幅定龙位与名次 / ' +
+      '20 日涨幅定总龙与前五），它们没有一个有默认值 —— 数据缺了就只剩「当成 0」和' +
+      '「跳过这条规则」两种算法，而这两种算出来的结论都是编的。' +
+      '★ 注意：竞价量比按口径只认猫抓，猫抓对【当天】不返回这个字段 ⇒ 盘中它本来就是空的，' +
+      '这是正常的、也是本板会给提示的时刻（收盘后 16:30 回填，最迟次日 9:25 补齐）。' +
+      '卖点侧不受影响。',
     '一、题材排名：把早盘竞价看板的题材按【平均竞价量比】由高到低排序（与早盘竞价「题材 toggle」同一套组序）；' +
       '★ 只看平均竞价量比、【不管题材里股票有多少只】（量比相同才按题材名定序）——与早盘竞价题材 toggle 逐键一致。',
     '二、题材数量门槛：题材内股票数量 < ' + TVRB_MIN_COUNT + ' 只 ⇒ 该题材【不入选】；' +
@@ -5703,4 +5733,61 @@ export function buildTvrbRulesLines() {
       '说明弱势了，就要切抱团，从20日涨幅中选市场总龙一，竞价口径。所以今天题材量比选的应该是九阳股份。」' +
       '⇒ 从此：龙一竞价跌停的那个题材整块不买，改买 20日涨幅市场总龙一（当天 = 九阳股份）。'
   ];
+}
+
+/**
+ * ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ 把【买点侧的一切票】清空。
+ *
+ * 注入点：`buildTopicVolRatioPlan` 里 `o.dataGateBlocked === true` 时、算 `pickCount` 之前。
+ * 判据：`logic/topicvolratio/buy-data-gate.js#resolveBuyDataGate`（谁缺了、为什么缺、怎么修）。
+ *
+ * 清的东西分两类（⛔ 别只清一类）：
+ *   ① `out.*` —— 视图直接渲染的那几个容器（blocks / 退潮替补 / 分歧买点 / 新龙 / 十日候补 /
+ *      弱势抱团 / 补涨题材 / 节点说明 / 空仓提醒）；
+ *   ② `out.buy.*` —— 买点对象里给【四个装饰器】遍历的那几个槽位。⚠️ 它们与 ① 是**同一批票的
+ *      第二份引用**：只清 ① 的话，`decorateDecisionRows(plan.buy, …)` 仍会把这批票当买点块
+ *      遍历一遍（分笔 / 量比趋势 / 封单额全照算）⇒ 一旦将来有消费方读 `plan.buy`，票就漏出去了。
+ *
+ * ⛔ 刻意**不清**的三样（它们不是「选股结论」，是事实 / 卖点侧输入）：
+ *   · `out.ebb`         退潮判定（卖点侧横幅也读它，且它是「为什么空仓」的依据之一）
+ *   · `out.sell`        卖点候选（卖出不吃这些输入 —— 用户「卖点侧不受影响」）
+ *   · `out.notes`       说明区（含「为什么某个题材没入选」，是排障唯一线索）
+ *
+ * 🔴 维护提醒：新增任何买点槽位（本文件 `out.xxx` 或 `out.buy.xxx` 里放 `picks` 的那种），
+ *   **必须同步加进本函数**，否则「数据缺失日」新槽位会把票漏出去。
+ *   `buy-data-gate.test.js` 里有一条「槽位清单」用例会红，提醒你来改这里。
+ *
+ * @param {object} out buildTopicVolRatioPlan 正在组装的计划对象（原地清空，§11 不返回新对象）
+ * @returns {void}
+ */
+function _clearBuySideForDataGate(out) {
+  if (!out) return;
+  // ① 视图直接渲染的容器
+  out.blocks = [];
+  out.ebbBuy = null;
+  out.divergeBuy = null;
+  out.newDragon = null;
+  out.range10Backup = null;
+  out.weakHuddle = null;
+  out.catchUp = null;
+  out.ebbNodeNote = null;
+  // 空仓提醒换成「未触发」常量：数据缺失日由提示板（TvrbDataGate）说话，
+  // ⛔ 不能让「平均量比 < 25」那种基于数值的标语在没数值时出现（那就是编出来的结论）。
+  out.cashAlert = TVRB_CASH_ALERT_NONE;
+  // ② 买点对象里的第二份引用（四个装饰器遍历的那一批）
+  if (out.buy) {
+    out.buy.heavy = null;
+    out.buy.light = null;
+    out.buy.candidates = [];
+    out.buy.noYizi = null;
+    out.buy.smallTopic = null;
+    out.buy.bigTopic = null;
+    out.buy.ebbSecond = null;
+    out.buy.newDragon = null;
+    out.buy.range10Backup = null;
+    out.buy.weakHuddle = null;
+    out.buy.catchUp = null;
+  }
+  out.buyNames = new Set();
+  out.pickCount = 0;
 }

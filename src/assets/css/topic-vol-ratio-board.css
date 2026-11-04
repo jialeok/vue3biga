@@ -1432,3 +1432,115 @@
 .tvrb-board.tvrb-compact .tvrb-block-note:not(.tvrb-note-empty) {
     display: none;
 }
+
+/* ---- ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ 不能选股的提示板 ----
+   语义分工（⛔ 别和占位混）：
+     · 占位（.tvrb-diverge-pending / .tvrb-buysettle-pending）= 虚线 + 灰蓝/靛蓝 =「在算，等结论」；
+     · 本板 = **实线 + 深红** =「这就是结论：今天不能选股」。
+   用虚线会让人以为「再等等就有票」，那正好与它要表达的意思相反。
+   ⛔ 不在 .tvrb-compact 的隐藏清单里 —— 这条提示任何模式下都必须看见（用户「看到就不开仓」）。 */
+.tvrb-datagate {
+    margin: 2px 0 8px;
+    padding: 11px 11px 9px;
+    background: #fef2f2;
+    border: 2px solid #dc2626;
+    border-radius: 10px;
+    text-align: left;
+}
+
+.tvrb-datagate-head {
+    font-size: 16px;
+    font-weight: 900;
+    letter-spacing: 0.5px;
+    color: #991b1b;
+    text-align: center;
+}
+
+/* 副标题：一句话说清「为什么宁可不选」+ 点明「下面没有票」 */
+.tvrb-datagate-sub {
+    margin-top: 6px;
+    font-size: 12px;
+    line-height: 1.55;
+    color: #7f1d1d;
+    text-align: center;
+}
+
+.tvrb-datagate-strong {
+    font-weight: 900;
+    color: #991b1b;
+}
+
+/* 每条缺项：白底小卡 ⇒ 与红色外框分层，逐条读不糊成一片 */
+.tvrb-datagate-item {
+    margin-top: 7px;
+    padding: 8px 9px;
+    background: #ffffff;
+    border: 1px solid #fecaca;
+    border-radius: 8px;
+}
+
+.tvrb-datagate-item-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.tvrb-datagate-idx {
+    flex: none;
+    width: 17px;
+    height: 17px;
+    line-height: 17px;
+    text-align: center;
+    border-radius: 50%;
+    background: #dc2626;
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 800;
+}
+
+.tvrb-datagate-label {
+    font-size: 13px;
+    font-weight: 900;
+    color: #991b1b;
+}
+
+/* 现状（几只里有几只 / 百分比）：等宽数字，方便和早盘竞价那几列对账 */
+.tvrb-datagate-stat {
+    font-size: 11.5px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: #b91c1c;
+    background: #fee2e2;
+    border-radius: 5px;
+    padding: 1px 6px;
+}
+
+.tvrb-datagate-why {
+    margin-top: 5px;
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: #7f1d1d;
+}
+
+.tvrb-datagate-fix {
+    margin-top: 3px;
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: #475569;
+}
+
+.tvrb-datagate-k {
+    font-weight: 800;
+    color: #334155;
+}
+
+/* 底部总述：把「缺数据为什么一定是错票」讲成口径，而不是一句道歉 */
+.tvrb-datagate-detail {
+    margin-top: 8px;
+    padding-top: 7px;
+    border-top: 1px dashed #fca5a5;
+    font-size: 11px;
+    line-height: 1.6;
+    color: #7f1d1d;
+}

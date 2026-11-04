@@ -171,6 +171,9 @@ import {
 // ★★ [BUY-SETTLE 2026-10-31 用户口径] 买点侧「选股输入是否齐了」的唯一判据
 //   （纯函数，见其 JSDoc / 单测）—— ⛔ 别在 data computed 里另写一串行内比较。
 import { resolveBuySettle } from '../logic/topicvolratio/buy-settle.js';
+// ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ 禁止选股（硬空仓）的判据。
+//   与 buy-settle 是两件事：那个管「还没到、等几秒」；这个管「根本不会有、必须直接给结论」。
+import { resolveBuyDataGate, TVRB_DATA_GATE_NONE } from '../logic/topicvolratio/buy-data-gate.js';
 // ★★ [BUY-SETTLE-2 2026-10-31 用户口径 · 第三版] 买点侧「选股结果稳定期」判据：
 //   白名单式枚举（第一版挡 1 项、第二版挡 8 项）**注定会漏** —— 买点侧还吃全局内存里的
 //   题材库 / 竞价行 / 量比缓存 / 昨日名册 / 灰行来源 / 20 日涨幅前五 …… 每一项到货都可能换票。
@@ -229,6 +232,11 @@ const EMPTY_MAP = new Map();
  *    环形缓冲冲掉、把真正有用的现场挤出去（排查时就抓瞎了）。⛔ 别去掉这个去重。
  */
 let _settleLogged = '';
+/**
+ * ★★ [TVRB-DATA-GATE 2026-11-04] 「数据缺失 ⇒ 不选股」的日志去重键（日期 + 缺项）。
+ * 与 `_settleLogged` 同一理由：data computed 会反复重算，每帧打一条会把环形缓冲冲掉。
+ */
+let _dataGateLogged = '';
 
 /**
  * 分笔取数失败后的一次性重试延迟（ms）。
@@ -1262,8 +1270,40 @@ export function useTopicVolRatioBoard() {
           top5: _ldTop5
         };
       }
+      // ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] **数据缺失 ⇒ 今天一只票都不选**。
+      //
+      // 用户原话：「题材没有平均量比的时候，题材量比看板选股就不能选票了，应该空仓或者提醒用户
+      //   修复程序数据，那里应该有一个专门的提示板，写出不能选票的理由……竞价量比，20日涨幅，
+      //   10日涨幅缺失等，数据缺失都不要选股，要有提示，如果竞价量比缺失选出的票本身就是错误的，
+      //   只会误导。不要把股票放进去了，这是个常识」
+      //
+      // 🔴 为什么必须在【调 buildTopicVolRatioPlan 之前】判：判定要清的是「买点侧的一切票」，
+      //   把 `dataGateBlocked` 传进规则层，由 `_clearBuySideForDataGate` 在算 pickCount 之前清空
+      //   ⇒ 任何消费方（视图 / 分笔预取 / 未来的新通道）都拿不到票 = 真正的 fail-closed。
+      //   ⛔ 不能只在视图加 v-if：那样以后任何一条新通道读到 plan.blocks 就把票放出去了。
+      //
+      // ⚠️ 判据口径（整表缺失 vs 个别票缺值）与实测阈值见 `buy-data-gate.js` 文件头那张表；
+      //   这里只负责**取数**（覆盖率要的行 = 选股池 rec.topics 摊平后的全部成员）。
+      const _gateRows = [];
+      (rec.topics || []).forEach(function(b) {
+        ((b && b.members) || []).forEach(function(m) {
+          if (m && m.name) _gateRows.push(m);
+        });
+      });
+      const _dataGate = resolveBuyDataGate({
+        date: d,
+        rows: _gateRows,
+        // 20 日涨幅前五：结论到了但榜是空的 ⇒ 缺失；还没结论 ⇒ 交给 buy-settle 去等（⛔ 这里不抢）。
+        // 「上游已放弃（硬兜底放行）却仍没结论」⇒ 按缺失处理，⛔ 不拿空榜当「今天没有龙头」。
+        range20Ready: hasRange20LeadersVerdictForDate(d),
+        range20Count: (getRange20Leaders(d) || []).length,
+        range20GaveUp: !!netHardStalled.value
+      });
+
       const plan = buildTopicVolRatioPlan(rec.topics, rec.dragonMap, {
         date: d,
+        // ★★ [TVRB-DATA-GATE] 数据缺失 ⇒ 规则层直接清空买点侧（见 _clearBuySideForDataGate）
+        dataGateBlocked: _dataGate.blocked,
         ctx: {
           prevDragonNames: rec.prevDragonNames,
           prevBuyNames: rec.prevBuyNames,
@@ -1327,6 +1367,25 @@ export function useTopicVolRatioBoard() {
         //   ⚠️ 日期核对红线（与上面几份 rangeMap 同一条）：读的不是这一天 ⇒ 传 null（§10 不拿旧日期顶替）。
         range20Auc: (r20AucDate.value === d) ? r20AucMap.value : null
       });
+
+      // ★★ [TVRB-DATA-GATE 2026-11-04] 把判定结果挂进 plan（§6：一行结论只有一个出处）。
+      //   挂进 plan 而不是另起一个 ref 的好处：`displayPlan` 定稿时会连它一起冻结
+      //   ⇒ 屏幕上的「不能选股 + 缺什么」与那一份选股结论永远同源，不会出现
+      //   「票是 A 时刻的、提示是 B 时刻的」这种自相矛盾（§10）。
+      plan.buyDataGate = _dataGate;
+      if (_dataGate.blocked) {
+        // ⚠️ 只记一次（按「日期 + 缺项」去重）：data computed 会反复重算，每帧打一条会把
+        //    `_dbgLog` 的环形缓冲冲掉、把真正有用的现场挤出去（与 buy-settle 那条同一做法）。
+        const _dgKey = d + '|' + _dataGate.items.map(function(x) { return x.key; }).join(',');
+        if (_dgKey !== _dataGateLogged) {
+          _dataGateLogged = _dgKey;
+          _dbgLog('[TVRB-DATA-GATE] ' + d + ' 数据缺失 ⇒ 今天不选股（' + _dataGate.shortText +
+            '）｜' + _dataGate.items.map(function(x) { return x.label + ' ' + x.stat; }).join('；'));
+        }
+      } else if (_dataGateLogged) {
+        _dataGateLogged = '';
+        _dbgLog('[TVRB-DATA-GATE] ' + d + ' 数据已齐 ⇒ 恢复选股');
+      }
 
       // §10 ★★ 失败 / 缺数据必须可见：这一天【确实读过】9:26 口径、但没拿到（失败或表里没有）
       //   ⇒ 在说明区如实标出来。⛔ 绝不静默拿当前（收盘）口径冒充「早上 9:26 那一份」。
@@ -1801,6 +1860,23 @@ export function useTopicVolRatioBoard() {
     return (p && p.divergePending) || null;
   });
   /**
+   * ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ 今天不能选股（硬空仓）。
+   *
+   * 与 `buyPending` 的区别（⛔ 别再混成一个）：
+   *   · `buyPending`  = 「数据在来的路上」⇒ 挂占位、等它到 ⇒ 到了就会有票；
+   *   · `buyDataGate` = 「这份数据今天根本不会有」⇒ 直接给结论【今天不能选股】+ 说清缺什么、怎么修。
+   * 混用会把「永远缺失」做成「一直在等」，然后某次网络兜底放行后把票放出来（用户报的就是这个）。
+   *
+   * ⚠️ 读 `displayPlan`（定稿快照）而不是 `data.plan`：与其它具名 computed 同一条 §6 红线，
+   *   否则定稿后提示板还会随实时数据抖动，票与提示就对不上了。
+   */
+  const buyDataGate = computed(function() {
+    const g = displayPlan.value && displayPlan.value.buyDataGate;
+    return g || TVRB_DATA_GATE_NONE;
+  });
+  /** 是否处于「数据缺失 ⇒ 不选股」状态 —— 定义在 `buyPending` 之后（它要读 buyPending，见那里的注释） */
+
+  /**
    * ★★ [BUY-SETTLE / BUY-SETTLE-2 2026-10-31 用户口径] 买点侧「最终结果还没出来」。
    *
    * true ⇒ 视图把买点侧的选票整体收起来，只渲染一条占位横幅，标题栏同步写「结果确认中…」。
@@ -1883,6 +1959,19 @@ export function useTopicVolRatioBoard() {
     return '';
   });
   /**
+   * 是否处于「数据缺失 ⇒ 不选股」状态（视图据此只渲染提示板，⛔ 一只票都不渲染）。
+   * ⚠️ 刻意声明在 `buyPending` **之后**：它读 `buyPending.value`，
+   *   提前声明会踩 TDZ（`const` 未初始化），且读起来也违背「先有等待语义、再有缺失语义」。
+   */
+  const buyDataBlocked = computed(function() {
+    // ⓪ ★★ [TVRB-DATA-GATE] 数据还在陆续到货（buy-settle 未齐）⇒ **不宣布「缺失」**。
+    //   那是「还没到」，不是「没有」—— 首帧 `rec.topics` 可能还是空的，若照直宣布
+    //   就会闪一下「今天不能选股」再变成有票，正是用户最反感的误导（§10 未知 ≠ 缺失 ≠ 0）。
+    //   ⚠️ 这不放松 fail-closed：买点侧这时候本来就只有占位、没有票。
+    if (buyPending.value) return false;
+    return !!buyDataGate.value.blocked;
+  });
+  /**
    * ★★ [NET-QUIET 2026-10-31] 读取超时警示（只在「上游挂了」时出现）。
    *
    * 语义：请求整体超过 25s 未归零 ⇒ 判定上游异常 ⇒ 放行已到的结果，但**必须让用户知道**
@@ -1936,6 +2025,15 @@ export function useTopicVolRatioBoard() {
 
   const summaryText = computed(function() {
     if (!ready.value) return reasonText.value;
+    // ★★ [TVRB-DATA-GATE 2026-11-04 用户口径] 数据缺失 ⇒ 标题栏必须直说【今天不选股】+ 缺什么。
+    //   用户原话「数据缺失都不要选股，要有提示」「要有提示行」—— 他做决定很快，
+    //   常常只看标题栏那一眼就下单，所以标题栏的话必须和买点侧一致（⛔ 不能这里写「选股 0 只」）。
+    if (buyDataBlocked.value) {
+      let b = '⛔ 数据缺失不选股（' + buyDataGate.value.shortText + '）';
+      if (sellCount.value > 0) b += ' · 卖点 ' + sellCount.value + ' 只';
+      if (loading.value) b += ' · 分笔抓取中…';
+      return b;
+    }
     // ★ [BUY-SETTLE 2026-10-31] 口径确认中 ⇒ 头部不能写「选股 2 只」（列表已经收起来了，
     //   写数字会让人以为那两只就是要买的票）。⛔ 也不写「0 只」——那是空仓结论（§10）。
     //   把「还差哪几项」摆出来，用户才知道为什么还没有结果（他自己要的那句提示语）。
@@ -2170,6 +2268,11 @@ export function useTopicVolRatioBoard() {
     buyPendingText,
     // ★★ [NET-QUIET 2026-10-31] 上游读取超时警示（§10：不确定必须可见）
     buyDataWarning,
+    // ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ 今天不能选股（硬空仓）。
+    //   `buyDataGate` = 判定对象（含 items：缺什么 / 为什么 / 怎么修，文案全在 Logic 层 §21）；
+    //   `buyDataBlocked` = 视图唯一开关（true ⇒ 买点侧只渲染提示板，⛔ 一只票都不渲染）。
+    buyDataGate,
+    buyDataBlocked,
     // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条「新龙 / 新题材切换日」
     switchDay,
     newDragon,
