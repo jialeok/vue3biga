@@ -1,8 +1,19 @@
 // index.js — bidding-auto-fetch Worker 入口
 //
-// 两个触发点（同一条 Cloudflare 部署链路）：
-//   · 北京 9:25  → morning：抓竞价数据 + 计算 10 日区间涨幅落库；
-//   · 北京 16:00  → close  ：用收盘涨幅覆盖 9:25 竞价涨幅 + 校正区间涨幅 T 腿。
+// 三个触发点（同一条 Cloudflare 部署链路）：
+//   · 北京 9:25  → morning ：抓竞价数据 + 计算 10 日区间涨幅落库；
+//   · 北京 9:27  → snapshot：云端自愈（同花顺快照补当日竞价字段 + 猫抓补当日区间涨幅）；
+//   · 北京 16:00 → close   ：用收盘涨幅覆盖 9:25 竞价涨幅 + 校正区间涨幅 T 腿。
+//
+// ★ 为什么是 9:27 这一趟（2026-11-04 用户报障「关机就不出票」）：
+//   1) 猫抓对【当日】的 auc_vol 在 9:25 偶尔还没结算 → 写成占位 0（趋势图竞价量全 0）；
+//   2) 猫抓 daily 一旦超时 → stock_range_pct 当天 0 行 → 区间涨幅只能由浏览器补算
+//      （实测 11/04 那 47 行全是 09:46 由前端写的）⇒ 不开电脑当天就出不了票。
+//   ★ 时间点由用户拍板（2026-11-04 原话）：「不是 9 点 35 分，最迟 9 点 27 分就可以了，
+//   9 点 35 分开盘了，没用了，我一直要求的是竞价期间」。9:30 一开盘，竞价就结束了，
+//   这时候再补出来的票对买卖已经没有意义 —— 所以自愈必须压在 9:27。
+//   9:27 上游已结算完竞价（9:25 撮合、9:25:xx 出终态），用「同花顺快照（免费）+
+//   猫抓 daily（仅失败时才请求）」把两样都补回来。
 //
 // [FIX 2026-09-10] 收盘覆盖「回归本 worker」。
 //   2026-08-17 曾把 close 挪到 Supabase Edge Function（bidding-a?point=auction-close，pg_cron 16:00），
@@ -14,6 +25,9 @@ import { runMorning } from './logic/morning-workflow.js';
 import { runClose } from './logic/close-workflow.js';
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏（可手动 /fetch?point=extras；16:00 close 也会自动跑）
 import { runAuctionExtrasPatch, runTodaySnapshotPatch } from './logic/extras-workflow.js';
+// [RANGE-HEAL 2026-11-04] 区间涨幅云端自愈：9:25 那次猫抓 daily 失败时，
+//   9:27 那一趟把 stock_range_pct 补回来 —— 用户关电脑/用手机也能出票（根因见文件头）。
+import { runRangePctHeal } from './logic/range-heal.js';
 // [RUNLOG 2026-09-30] 把每轮的完整日志（含 ⏱ 埋点）落库到 bidding_fetch_log，
 //   否则 CF Worker 的埋点只进 Cloudflare Dashboard，事后无法复盘「9:26 为什么没数据」。
 import { writeRunLog } from './data/supabase-write.js';
@@ -46,13 +60,17 @@ function cronToPoint(cronExpr) {
   const key = min + ' ' + hour;
   // 01:25 UTC = 09:25 北京时间 → morning
   // 08:00 UTC = 16:00 北京时间 → close（收盘涨幅覆盖）
-  // ★ [HEAL-0935 2026-11-04 用户口径「我不可能在电脑旁盯着，用手机打开就要看到结果」]
-  //   01:35 UTC = 09:35 北京时间 → snapshot（自愈补写）。
+  // ★ [HEAL-0927 2026-11-04 用户口径「我不可能在电脑旁盯着，用手机打开就要看到结果」]
+  //   01:27 UTC = 09:27 北京时间 → snapshot（自愈补写）。
   //   为什么需要这一趟：猫抓对【当日】的 auc_vol 在 9:25 偶尔还没结算，会返回占位 0
-  //   ⇒ 9:25 那次写下去是空的；等到 9:35 上游结算完，用同花顺快照（免费、不烧猫抓额度）
-  //   把当日竞价量/量比/竞价涨幅补回来。**全程在云端跑，不需要用户开电脑。**
+  //   ⇒ 9:25 那次写下去是空的；等到 9:27（竞价已结算、还没开盘）用同花顺快照
+  //   （免费、不烧猫抓额度）把当日竞价量/量比/竞价涨幅补回来。
+  //   **全程在云端跑，不需要用户开电脑。**
+  //   注：9:35 仍然保留映射 —— 用户之前可能已加过这条触发器，且它现在只是「再兜一次」
+  //   （内部幂等，覆盖率达标就零请求），对开盘后的复盘仍有用，删掉反而少一层保险。
   const MAP = {
     '25 1': 'morning',
+    '27 1': 'snapshot',
     '35 1': 'snapshot',
     '0 8': 'close'
   };
@@ -106,6 +124,32 @@ async function persistRunResult(env, point, result) {
   });
 }
 
+/**
+ * ★ [HEAL-0927 2026-11-04] 9:27 这一趟必须在【9:30 开盘前】把数据补齐，所以不能「一看到
+ *   非终态就放弃」——上游 data_status 从 pending 跳到 final 往往就差几秒。
+ *   策略：非终态时等 3 秒再试，最多 4 次（最坏拖到约 9:27:15，仍远早于开盘）。
+ *   · 除「非终态」以外的任何原因（日期不符 / 无行 / 无 timestamp / 读失败）都不重试
+ *     —— 那些等多久都不会变，重试只是白等（§32 不做无意义请求）。
+ *   · 不烧任何额度：快照接口免费，区间涨幅那一步才有额度成本。
+ */
+const HEAL_SNAP_RETRY = 4;
+const HEAL_SNAP_WAIT_MS = 3000;
+
+async function runSnapshotPatchUntilFinal(env, date) {
+  let last = null;
+  const allLogs = [];
+  for (let i = 0; i < HEAL_SNAP_RETRY; i++) {
+    last = await runTodaySnapshotPatch(env, { date: date });
+    (last.logs || []).forEach(l => allLogs.push(i === 0 ? l : '(重试' + (i + 1) + ') ' + l));
+    if (last.reason !== '非终态') break;
+    if (i < HEAL_SNAP_RETRY - 1) {
+      allLogs.push('[snapshot] 非终态（上游还没结算完）→ 等 ' + (HEAL_SNAP_WAIT_MS / 1000) + 's 后重试');
+      await new Promise(r => setTimeout(r, HEAL_SNAP_WAIT_MS));
+    }
+  }
+  return Object.assign({}, last, { logs: allLogs });
+}
+
 async function dispatch(point, env, logs, opts) {
   if (point === 'morning') {
     const result = await runMorning(env);
@@ -129,11 +173,35 @@ async function dispatch(point, env, logs, opts) {
     return result;
   }
   if (point === 'snapshot') {
-    // [SNAPSHOT-EXTRAS 2026-09-14] 手动补当天竞价字段（排查用）
-    const result = await runTodaySnapshotPatch(env, { date: (opts && opts.date) || '' });
-    console.log('[auto-fetch] runTodaySnapshotPatch 完成 ok=' + result.ok + ' patched=' + result.patched +
-      ' today=' + (result.today || ''));
-    console.log('[auto-fetch] runTodaySnapshotPatch 完整日志:', JSON.stringify(result.logs || []));
+    // ★ [HEAL-0927 2026-11-04] 9:27 这一趟承担两件事（都在云端跑，不需要用户开电脑）：
+    //   ① 用同花顺快照补【当日】竞价字段（竞价量/量比/竞价涨幅/换手）—— 免费、0 猫抓额度；
+    //   ② 用猫抓 daily 补【当日】stock_range_pct（区间涨幅）—— 只有 9:25 那次失败时才真正发请求。
+    //   为什么 ② 必须在这里：区间涨幅是「题材量比排序 + 十日涨幅列」的唯一依据，
+    //   9:25 猫抓一旦超时，云端就没数据，只能等浏览器补算 ⇒ 不开电脑当天永远出不了票。
+    const date = (opts && opts.date) || '';
+    const snap = await runSnapshotPatchUntilFinal(env, date);
+    console.log('[auto-fetch] runTodaySnapshotPatch 完成 ok=' + snap.ok + ' patched=' + snap.patched +
+      ' today=' + (snap.today || ''));
+    console.log('[auto-fetch] runTodaySnapshotPatch 完整日志:', JSON.stringify(snap.logs || []));
+    // 区间涨幅自愈：失败不致命（内部已 try/catch 到日志），绝不影响上面的竞价字段补漏
+    let range = { ok: false, written: 0, logs: ['[range-heal] 未执行'] };
+    try {
+      range = await runRangePctHeal(env, { date: date });
+      console.log('[auto-fetch] runRangePctHeal 完成 ok=' + range.ok + ' written=' + range.written +
+        ' coverage=' + (range.coverage === undefined ? '-' : (range.coverage * 100).toFixed(0) + '%'));
+      console.log('[auto-fetch] runRangePctHeal 完整日志:', JSON.stringify(range.logs || []));
+    } catch (e) {
+      console.error('[auto-fetch] runRangePctHeal 异常:', e && e.message);
+      range = { ok: false, written: 0, logs: ['[range-heal] 异常: ' + ((e && e.message) || e)] };
+    }
+    const result = {
+      ok: snap.ok || range.ok,
+      today: snap.today || (date || ''),
+      snapshot: snap,
+      rangeHeal: range,
+      rangeWritten: range.written === undefined ? null : range.written,
+      logs: (snap.logs || []).concat(range.logs || [])
+    };
     await persistRunResult(env, point, result);
     return result;
   }

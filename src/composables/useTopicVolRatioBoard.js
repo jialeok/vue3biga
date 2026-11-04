@@ -243,6 +243,18 @@ const TVRB_TICK_RETRY_MS = 25000;
 /** 最多重试几次（够跨过闸门即可；再多就是异常，交给用户点刷新 / 红字提示） */
 const TVRB_TICK_RETRY_MAX = 3;
 
+/**
+ * ★ [DATA-INCOMPLETE 2026-11-04 用户口径]
+ *   「如果没有数据，你就新增一个提示，数据不全，没法选票，这个不就是更清晰了」
+ *
+ * 为什么需要一句固定文案：旧兜底是「暂无数据」——用户看到这四个字无法判断
+ * （是没跑？在算？接口挂了？），也不知道要不要等 / 要不要刷新。
+ * 现在直接说清三件事：① 现在不能选票 ② 原因是数据不全 ③ 补齐后会自动出结果。
+ * ⚠️ 它只用于「确实没数据」的兜底；⛔ 绝不拿它冒充「今天空仓」（§10 两态不混）。
+ */
+const DATA_INCOMPLETE_TEXT = '数据不全，暂时没法选票 —— 当日竞价数据（竞价量/竞价量比/区间涨幅）还没齐。'
+  + '云端会在 9:27 自动补齐（9:30 开盘前），补齐后这里会自动出结果，不用刷新页面。';
+
 /** §10：任何一次「未就绪 / 失败」都要【可见】，绝不静默成「今天没有入选股票」 */
 function _empty(reason) {
   return {
@@ -1205,7 +1217,7 @@ export function useTopicVolRatioBoard() {
         //   「主线题材 ≥3 只同题材」计数（classifyMainTopic）。⛔ 不上屏（展示仍是前五）。
         range20Top10: getRange20LeadersTop10(d) || null
       });
-      if (!rec || !rec.ready) return _empty((rec && rec.reason) || '暂无数据');
+      if (!rec || !rec.ready) return _empty((rec && rec.reason) || DATA_INCOMPLETE_TEXT);
 
       // ① 本看板自己的选股 + 标签收口（标签管线 = 决策看板的同一份实现）
       //
@@ -1711,7 +1723,7 @@ export function useTopicVolRatioBoard() {
   });
 
   const ready = computed(() => !!data.value.ready);
-  const reasonText = computed(() => (data.value.ready ? '' : (data.value.reason || '暂无数据')));
+  const reasonText = computed(() => (data.value.ready ? '' : (data.value.reason || DATA_INCOMPLETE_TEXT)));
   const blocks = computed(() => (displayPlan.value ? displayPlan.value.blocks : []));
   const sellGroups = computed(() => (displayPlan.value ? (displayPlan.value.sell || []) : []));
   const notes = computed(() => (displayPlan.value ? displayPlan.value.notes : []));

@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-11-04 02:42:33
+// 生成时间: 2026-11-04 03:10:33
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 4286（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 4590（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
@@ -4070,21 +4070,271 @@ async function syncRangePct(env, today, closeMs, rangeDates, dailyByCode, pctByC
 }
 
 
+// ────── bidding-auto-fetch/logic/range-heal.js ──────
+// range-heal.js — 云端「区间涨幅」自愈（runRangePctHeal）
+//
+// 【为什么需要这个文件 / 2026-11-04 用户报障】
+//   用户原话：「今天体验非常差，到现在 9 点 48 分题材量比才出票。是不是出票还是要打开电脑，
+//   如果关闭电脑关机就不可以出票吗？我一般是关掉电脑，直接在手机看的，不依赖电脑的。」
+//   实测取证：2026-11-04 那天
+//     · worker 9:25 跑了（bidding_fetch_log ok=true），但日志写着
+//       「⚠️ 区间涨幅无结果可写（numcat daily 不可用）」；
+//     · stock_range_pct 当天 47 行的 updated_at **全部落在 09:46:04~09:46:09（北京）**
+//       —— 那是【浏览器】打开页面时补算并回写的，不是 worker 写的。
+//   ⇒ 结论：区间涨幅在 9:25 没算出来 → 云端空 → 谁打开页面谁补算 → **不开电脑就没人算**
+//     → 手机上看不到十日涨幅 → 题材量比没有排序依据 → 出不了票。这就是「关机不出票」的根因。
+//
+// 【本模块做什么】
+//   9:27 那一趟（cron `27 1 * * 1-5`，用户拍板「最迟 9 点 27 分，9:35 开盘了没用了」）
+//   在补竞价字段之后，再检查一次今天的 stock_range_pct：
+//     · 覆盖率够（满窗行数 ≥ 当日竞价行数的 HEAL_MIN_COVERAGE）→ **零请求直接返回**（不烧额度）；
+//     · 覆盖率不够 → 才发 1 次猫抓 daily（整个 [T-9, T] 窗口，请求数与只拉今天相同），
+//       用与 9:25 早盘【完全同一份口径】（range-window.js 的窗口/复利/T 腿）算好落库。
+//   ⇒ 正常日零成本，只有 9:25 那次真的失败时才多花 1 次额度把数据救回来。
+//
+// 【安全约束（§10 / §11 / NO-PARTIAL-WRITE）】
+//   · 读库失败必须抛错中断 —— 绝不把「读不到」当成「全都缺」而整体重算覆盖；
+//   · 只写【满窗】行（days === 窗口长度）。残缺行会按日期级复用地污染排序，
+//     与 2026-09-15 龙头组事故同构 —— 残缺行只记日志、不落库；
+//   · 只填【库内没有满窗值】的股票，已有的值永不覆盖 ⇒ 天然幂等，重复跑零副作用；
+//   · 整体失败不致命（调用方 try/catch），绝不影响竞价字段补漏那条主链。
+
+
+
+
+
+/**
+ * 覆盖率闸门：满窗行数 / 当日竞价行数 ≥ 该值 ⇒ 判定「健康」，不发猫抓请求。
+ *
+ * 为什么不取 100%：总有票真的缺腿（停牌、次新、窗口内上市），它们永远凑不满窗。
+ * 只要绝大多数票有值，「题材量比能排序、能出票」这个目的就达到了，
+ * 不值得为最后几只每天多烧一次额度。
+ */
+const RANGE_HEAL_MIN_COVERAGE = 0.8;
+
+/** 单次 upsert 行数 */
+const RANGE_HEAL_CHUNK = 400;
+
+/** 北京当前小时（0~23）—— 决定 T 腿口径（15:00 前 = 竞价涨幅） */
+function rangeHealIsAfterClose() {
+  return beijingNow().getUTCHours() >= 15;
+}
+
+/**
+ * 云端补齐当日 stock_range_pct（区间涨幅）。
+ * @param {object} env
+ * @param {{logs?:string[], date?:string, force?:boolean, minCoverage?:number}} [opts]
+ *        date   缺省 = 北京今天（仅供排查时指定历史日）
+ *        force  true = 跳过覆盖率闸门，强制重算（排查用；会把缺的满窗行补齐）
+ * @returns {Promise<{ok:boolean, today:string, written:number, coverage:number, healthy:boolean, logs:string[]}>}
+ */
+async function runRangePctHeal(env, opts) {
+  const o = opts || {};
+  const logs = o.logs || [];
+  const today = o.date || beijingToday();
+  const minCoverage = o.minCoverage === undefined ? RANGE_HEAL_MIN_COVERAGE : Number(o.minCoverage);
+  logs.push('[range-heal] 区间涨幅自愈开始 today=' + today);
+
+  // 1) 读当日竞价行（§10：读失败必须中断，不能当成「全都缺」）
+  let metricsRows;
+  try {
+    metricsRows = await readMarketMetricsForDate(env, today, 'auction');
+  } catch (e) {
+    logs.push('[range-heal] ❌ 读取 ' + today + ' market_metrics 失败（中断，避免误覆盖）: ' + e.message);
+    return { ok: false, today, written: 0, coverage: 0, healthy: false, logs, error: e.message };
+  }
+  // ⚠️ readMarketMetricsForDate 返回的字段是 `name`（而 readStockRangePctForDate 返回 `stock`），
+  //    两者形状不同 —— 这里统一映射成 { name, code, auc, chg }，别混用。
+  const targets = (metricsRows || [])
+    .filter(r => r && r.code && /^\d{6}$/.test(String(r.code).trim()))
+    .map(r => ({ name: String(r.name || '').trim(), code: String(r.code).trim(), auc: r.auc_pct_chg, chg: r.change_pct }))
+    .filter(r => r.name);
+  if (targets.length === 0) {
+    logs.push('[range-heal] ⚠️ ' + today + ' 无可用竞价行（名单未落库？）→ 跳过');
+    return { ok: true, today, written: 0, coverage: 0, healthy: false, logs, reason: '无竞价行' };
+  }
+
+  // 2) 读库内已有区间涨幅，算「满窗覆盖率」
+  let existing = [];
+  try {
+    existing = await readStockRangePctForDate(env, today);
+  } catch (e) {
+    logs.push('[range-heal] ❌ 读取 ' + today + ' stock_range_pct 失败（中断，避免误覆盖）: ' + e.message);
+    return { ok: false, today, written: 0, coverage: 0, healthy: false, logs, error: e.message };
+  }
+  const fullNames = new Set();
+  (existing || []).forEach(r => {
+    if (!r || !r.stock) return;
+    const pct = parsePct(r.range_pct);
+    const days = Number(r.days);
+    if (pct !== null && days === RANGE_WINDOW_DAYS) fullNames.add(String(r.stock).trim());
+  });
+  const coverage = fullNames.size / targets.length;
+  logs.push('[range-heal] 竞价行 ' + targets.length + '，库内满窗 ' + fullNames.size +
+    '（覆盖 ' + (coverage * 100).toFixed(0) + '%，闸门 ' + (minCoverage * 100).toFixed(0) + '%）');
+
+  if (!o.force && coverage >= minCoverage) {
+    logs.push('[range-heal] ✅ 覆盖率已达标 → 零请求直接返回（不烧猫抓额度）');
+    return { ok: true, today, written: 0, coverage: coverage, healthy: true, logs };
+  }
+
+  // 3) 窗口交易日 [T-9, T]（与 9:25 早盘同一份交易日历 / 同一个 RANGE_WINDOW_DAYS）
+  //    opts.dates 可显式指定窗口（手动修复历史日 / 单测注入，避免每次都去查交易日历）
+  let rangeDates = (Array.isArray(o.dates) && o.dates.length > 0) ? o.dates.slice() : [];
+  if (rangeDates.length === 0) {
+    try {
+      rangeDates = await getRecentTradingDays(env, today, RANGE_WINDOW_DAYS);
+    } catch (e) {
+      logs.push('[range-heal] ❌ 交易日历获取失败: ' + e.message);
+      return { ok: false, today, written: 0, coverage: coverage, healthy: false, logs, error: e.message };
+    }
+  }
+  if (!rangeDates || rangeDates.length === 0 || rangeDates[rangeDates.length - 1] !== today) {
+    logs.push('[range-heal] ⚠️ 区间涨幅窗口异常(' + JSON.stringify(rangeDates || []) + ') → 放弃重算');
+    return { ok: false, today, written: 0, coverage: coverage, healthy: false, logs, reason: '窗口异常' };
+  }
+  rangeDates.sort();
+
+  // 4) 只对「库内还没有满窗值」的票重算 —— 请求的代码集也按这个裁剪（省上游压力）
+  const need = targets.filter(t => !fullNames.has(t.name));
+  if (need.length === 0) {
+    logs.push('[range-heal] ✅ 待补票数为 0（剩余缺票属正常缺腿）→ 不请求');
+    return { ok: true, today, written: 0, coverage: coverage, healthy: true, logs };
+  }
+  const symbols = need.map(t => t.code).join(',');
+  const startYMD = rangeDates[0].replace(/-/g, '');
+  const endYMD = rangeDates[rangeDates.length - 1].replace(/-/g, '');
+  logs.push('[range-heal] 待补 ' + need.length + ' 只，请求猫抓 daily ' + rangeDates.length + ' 天窗口...');
+
+  // 5) 一次猫抓 daily 拿整个窗口的逐日涨幅（1 次请求）
+  let dailyData;
+  try {
+    dailyData = await numcatDaily(env, symbols, startYMD, endYMD, logs);
+  } catch (e) {
+    logs.push('[range-heal] ❌ 猫抓 daily 失败（区间涨幅本次仍未补上，等下次触发/收盘重算）: ' + e.message);
+    return { ok: false, today, written: 0, coverage: coverage, healthy: false, logs, error: e.message };
+  }
+  const dFields = (dailyData && dailyData.fields) || [];
+  const dItems = (dailyData && dailyData.items) || [];
+  const dSymIdx = dFields.indexOf('symbol');
+  const dDateIdx = dFields.indexOf('tradedate');
+  const dPctIdx = dFields.indexOf('pct_chg');
+  if (dSymIdx < 0 || dDateIdx < 0 || dPctIdx < 0) {
+    logs.push('[range-heal] ❌ 猫抓 daily 返回字段不完整: ' + JSON.stringify(dFields));
+    return { ok: false, today, written: 0, coverage: coverage, healthy: false, logs, error: '字段不完整' };
+  }
+  // dailyByCode：code -> { YYYYMMDD: 日涨幅 }（与早盘 fetchDailyWindow 完全同构）
+  const dailyByCode = {};
+  let legCount = 0;
+  dItems.forEach(row => {
+    const code = String(row[dSymIdx] || '').trim();
+    const tradedate = String(row[dDateIdx] || '').trim();
+    const rawPct = row[dPctIdx];
+    if (!code || !tradedate || rawPct === null || rawPct === undefined || rawPct === '') return;
+    const dateStr = compactToDateStr(tradedate);
+    const n = Number(rawPct);
+    if (!dateStr || isNaN(n)) return;
+    if (!dailyByCode[code]) dailyByCode[code] = {};
+    dailyByCode[code][dateStr.replace(/-/g, '')] = n;
+    legCount++;
+  });
+  logs.push('[range-heal] 猫抓 daily 返回 ' + legCount + ' 条腿，涉及 ' + Object.keys(dailyByCode).length + ' 只');
+  if (legCount === 0) {
+    logs.push('[range-heal] ⚠️ 猫抓本次一条腿都没给 → 放弃（不写任何行）');
+    return { ok: false, today, written: 0, coverage: coverage, healthy: false, logs, reason: '无腿数据' };
+  }
+
+  // 6) T 腿：15:00 前用竞价涨幅（与 9:25 早盘口径一致），收盘后用当日收盘涨幅
+  const afterClose = rangeHealIsAfterClose();
+  const useAuctionLeg = isAuctionLegActive(today, today, afterClose);
+  const tYmd = today.replace(/-/g, '');
+  const tLegByCode = {};
+  need.forEach(t => {
+    let v;
+    if (useAuctionLeg) {
+      v = parsePct(t.auc);
+    } else {
+      const dm = dailyByCode[t.code];
+      v = dm && Object.prototype.hasOwnProperty.call(dm, tYmd) ? dm[tYmd] : parsePct(t.chg);
+    }
+    if (v !== null && v !== undefined && isFinite(v)) tLegByCode[t.code] = Number(v);
+  });
+
+  // 只把「拿到当天 T 腿」的票交给 buildRangeRows（避免产出残缺行，见文件头 NO-PARTIAL-WRITE）
+  const eligible = need.filter(t => tLegByCode[t.code] !== undefined);
+  const noTLeg = need.length - eligible.length;
+  const built = buildRangeRows(eligible, rangeDates, dailyByCode, tLegByCode);
+  const nowIso = new Date().toISOString();
+  const rows = built
+    .filter(r => Number(r.days) === rangeDates.length)   // ⛔ 残缺行不落库
+    .map(r => ({
+      date: today,
+      stock: r.stock,
+      range_pct: Number(r.pct).toFixed(2),
+      days: r.days,
+      updated_at: nowIso
+    }));
+  logs.push('[range-heal] 计算完成：可写满窗行 ' + rows.length + ' / 待补 ' + need.length +
+    (noTLeg > 0 ? '；' + noTLeg + ' 只无当天 T 腿（不写行）' : '') +
+    (built.length > rows.length ? '；' + (built.length - rows.length) + ' 只缺历史腿（不写残缺行）' : ''));
+
+  if (rows.length === 0) {
+    logs.push('[range-heal] ⚠️ 没有可写的满窗行（等收盘整段重算或下次触发）');
+    return { ok: true, today, written: 0, coverage: coverage, healthy: false, logs };
+  }
+
+  // 7) 分批写入（主键 date+stock，merge-duplicates；只含与本次重算相关的列，绝不抹 change_pct 等）
+  let written = 0;
+  for (let i = 0; i < rows.length; i += RANGE_HEAL_CHUNK) {
+    const chunk = rows.slice(i, i + RANGE_HEAL_CHUNK);
+    try {
+      await upsertStockRangePct(env, chunk);
+      written += chunk.length;
+    } catch (e) {
+      logs.push('[range-heal] ❌ 第 ' + (Math.floor(i / RANGE_HEAL_CHUNK) + 1) + ' 批写入失败: ' + e.message);
+    }
+  }
+  const newCoverage = (fullNames.size + written) / targets.length;
+  logs.push('[range-heal] ✅ 补写 ' + written + ' 行区间涨幅，覆盖率 ' +
+    (coverage * 100).toFixed(0) + '% → ' + (Math.min(newCoverage, 1) * 100).toFixed(0) + '%');
+  return { ok: written > 0, today, written: written, coverage: newCoverage, healthy: false, logs };
+}
+
+
 // ────── bidding-auto-fetch/index.js ──────
 // index.js — bidding-auto-fetch Worker 入口
 //
-// 两个触发点（同一条 Cloudflare 部署链路）：
-//   · 北京 9:25  → morning：抓竞价数据 + 计算 10 日区间涨幅落库；
-//   · 北京 16:00  → close  ：用收盘涨幅覆盖 9:25 竞价涨幅 + 校正区间涨幅 T 腿。
+// 三个触发点（同一条 Cloudflare 部署链路）：
+//   · 北京 9:25  → morning ：抓竞价数据 + 计算 10 日区间涨幅落库；
+//   · 北京 9:27  → snapshot：云端自愈（同花顺快照补当日竞价字段 + 猫抓补当日区间涨幅）；
+//   · 北京 16:00 → close   ：用收盘涨幅覆盖 9:25 竞价涨幅 + 校正区间涨幅 T 腿。
+//
+// ★ 为什么是 9:27 这一趟（2026-11-04 用户报障「关机就不出票」）：
+//   1) 猫抓对【当日】的 auc_vol 在 9:25 偶尔还没结算 → 写成占位 0（趋势图竞价量全 0）；
+//   2) 猫抓 daily 一旦超时 → stock_range_pct 当天 0 行 → 区间涨幅只能由浏览器补算
+//      （实测 11/04 那 47 行全是 09:46 由前端写的）⇒ 不开电脑当天就出不了票。
+//   ★ 时间点由用户拍板（2026-11-04 原话）：「不是 9 点 35 分，最迟 9 点 27 分就可以了，
+//   9 点 35 分开盘了，没用了，我一直要求的是竞价期间」。9:30 一开盘，竞价就结束了，
+//   这时候再补出来的票对买卖已经没有意义 —— 所以自愈必须压在 9:27。
+//   9:27 上游已结算完竞价（9:25 撮合、9:25:xx 出终态），用「同花顺快照（免费）+
+//   猫抓 daily（仅失败时才请求）」把两样都补回来。
 //
 // [FIX 2026-09-10] 收盘覆盖「回归本 worker」。
 //   2026-08-17 曾把 close 挪到 Supabase Edge Function（bidding-a?point=auction-close，pg_cron 16:00），
 //   但实测该 pg_cron 链路从未成功执行过（bidding_fetch_log 里 auction-close 记录数为 0，
 //   手工触发返回 546），导致当天 change_pct 全天停留在竞价涨幅。
 //   本 worker 的早盘 cron 一直稳定，因此收盘也交回这里，不再依赖任何外部 cron。
+
+
+
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏（可手动 /fetch?point=extras；16:00 close 也会自动跑）
+
+// [RANGE-HEAL 2026-11-04] 区间涨幅云端自愈：9:25 那次猫抓 daily 失败时，
+//   9:27 那一趟把 stock_range_pct 补回来 —— 用户关电脑/用手机也能出票（根因见文件头）。
+
 // [RUNLOG 2026-09-30] 把每轮的完整日志（含 ⏱ 埋点）落库到 bidding_fetch_log，
 //   否则 CF Worker 的埋点只进 Cloudflare Dashboard，事后无法复盘「9:26 为什么没数据」。
+
 function jsonResponse(obj, status) {
   return new Response(JSON.stringify(obj, null, 2), {
     status: status || 200,
@@ -4113,13 +4363,17 @@ function cronToPoint(cronExpr) {
   const key = min + ' ' + hour;
   // 01:25 UTC = 09:25 北京时间 → morning
   // 08:00 UTC = 16:00 北京时间 → close（收盘涨幅覆盖）
-  // ★ [HEAL-0935 2026-11-04 用户口径「我不可能在电脑旁盯着，用手机打开就要看到结果」]
-  //   01:35 UTC = 09:35 北京时间 → snapshot（自愈补写）。
+  // ★ [HEAL-0927 2026-11-04 用户口径「我不可能在电脑旁盯着，用手机打开就要看到结果」]
+  //   01:27 UTC = 09:27 北京时间 → snapshot（自愈补写）。
   //   为什么需要这一趟：猫抓对【当日】的 auc_vol 在 9:25 偶尔还没结算，会返回占位 0
-  //   ⇒ 9:25 那次写下去是空的；等到 9:35 上游结算完，用同花顺快照（免费、不烧猫抓额度）
-  //   把当日竞价量/量比/竞价涨幅补回来。**全程在云端跑，不需要用户开电脑。**
+  //   ⇒ 9:25 那次写下去是空的；等到 9:27（竞价已结算、还没开盘）用同花顺快照
+  //   （免费、不烧猫抓额度）把当日竞价量/量比/竞价涨幅补回来。
+  //   **全程在云端跑，不需要用户开电脑。**
+  //   注：9:35 仍然保留映射 —— 用户之前可能已加过这条触发器，且它现在只是「再兜一次」
+  //   （内部幂等，覆盖率达标就零请求），对开盘后的复盘仍有用，删掉反而少一层保险。
   const MAP = {
     '25 1': 'morning',
+    '27 1': 'snapshot',
     '35 1': 'snapshot',
     '0 8': 'close'
   };
@@ -4173,6 +4427,32 @@ async function persistRunResult(env, point, result) {
   });
 }
 
+/**
+ * ★ [HEAL-0927 2026-11-04] 9:27 这一趟必须在【9:30 开盘前】把数据补齐，所以不能「一看到
+ *   非终态就放弃」——上游 data_status 从 pending 跳到 final 往往就差几秒。
+ *   策略：非终态时等 3 秒再试，最多 4 次（最坏拖到约 9:27:15，仍远早于开盘）。
+ *   · 除「非终态」以外的任何原因（日期不符 / 无行 / 无 timestamp / 读失败）都不重试
+ *     —— 那些等多久都不会变，重试只是白等（§32 不做无意义请求）。
+ *   · 不烧任何额度：快照接口免费，区间涨幅那一步才有额度成本。
+ */
+const HEAL_SNAP_RETRY = 4;
+const HEAL_SNAP_WAIT_MS = 3000;
+
+async function runSnapshotPatchUntilFinal(env, date) {
+  let last = null;
+  const allLogs = [];
+  for (let i = 0; i < HEAL_SNAP_RETRY; i++) {
+    last = await runTodaySnapshotPatch(env, { date: date });
+    (last.logs || []).forEach(l => allLogs.push(i === 0 ? l : '(重试' + (i + 1) + ') ' + l));
+    if (last.reason !== '非终态') break;
+    if (i < HEAL_SNAP_RETRY - 1) {
+      allLogs.push('[snapshot] 非终态（上游还没结算完）→ 等 ' + (HEAL_SNAP_WAIT_MS / 1000) + 's 后重试');
+      await new Promise(r => setTimeout(r, HEAL_SNAP_WAIT_MS));
+    }
+  }
+  return Object.assign({}, last, { logs: allLogs });
+}
+
 async function dispatch(point, env, logs, opts) {
   if (point === 'morning') {
     const result = await runMorning(env);
@@ -4196,11 +4476,35 @@ async function dispatch(point, env, logs, opts) {
     return result;
   }
   if (point === 'snapshot') {
-    // [SNAPSHOT-EXTRAS 2026-09-14] 手动补当天竞价字段（排查用）
-    const result = await runTodaySnapshotPatch(env, { date: (opts && opts.date) || '' });
-    console.log('[auto-fetch] runTodaySnapshotPatch 完成 ok=' + result.ok + ' patched=' + result.patched +
-      ' today=' + (result.today || ''));
-    console.log('[auto-fetch] runTodaySnapshotPatch 完整日志:', JSON.stringify(result.logs || []));
+    // ★ [HEAL-0927 2026-11-04] 9:27 这一趟承担两件事（都在云端跑，不需要用户开电脑）：
+    //   ① 用同花顺快照补【当日】竞价字段（竞价量/量比/竞价涨幅/换手）—— 免费、0 猫抓额度；
+    //   ② 用猫抓 daily 补【当日】stock_range_pct（区间涨幅）—— 只有 9:25 那次失败时才真正发请求。
+    //   为什么 ② 必须在这里：区间涨幅是「题材量比排序 + 十日涨幅列」的唯一依据，
+    //   9:25 猫抓一旦超时，云端就没数据，只能等浏览器补算 ⇒ 不开电脑当天永远出不了票。
+    const date = (opts && opts.date) || '';
+    const snap = await runSnapshotPatchUntilFinal(env, date);
+    console.log('[auto-fetch] runTodaySnapshotPatch 完成 ok=' + snap.ok + ' patched=' + snap.patched +
+      ' today=' + (snap.today || ''));
+    console.log('[auto-fetch] runTodaySnapshotPatch 完整日志:', JSON.stringify(snap.logs || []));
+    // 区间涨幅自愈：失败不致命（内部已 try/catch 到日志），绝不影响上面的竞价字段补漏
+    let range = { ok: false, written: 0, logs: ['[range-heal] 未执行'] };
+    try {
+      range = await runRangePctHeal(env, { date: date });
+      console.log('[auto-fetch] runRangePctHeal 完成 ok=' + range.ok + ' written=' + range.written +
+        ' coverage=' + (range.coverage === undefined ? '-' : (range.coverage * 100).toFixed(0) + '%'));
+      console.log('[auto-fetch] runRangePctHeal 完整日志:', JSON.stringify(range.logs || []));
+    } catch (e) {
+      console.error('[auto-fetch] runRangePctHeal 异常:', e && e.message);
+      range = { ok: false, written: 0, logs: ['[range-heal] 异常: ' + ((e && e.message) || e)] };
+    }
+    const result = {
+      ok: snap.ok || range.ok,
+      today: snap.today || (date || ''),
+      snapshot: snap,
+      rangeHeal: range,
+      rangeWritten: range.written === undefined ? null : range.written,
+      logs: (snap.logs || []).concat(range.logs || [])
+    };
     await persistRunResult(env, point, result);
     return result;
   }
