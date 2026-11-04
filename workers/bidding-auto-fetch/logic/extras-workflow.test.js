@@ -246,6 +246,34 @@ describe('runTodaySnapshotPatch 当日竞价字段补漏（同花顺快照）', 
     expect(body[0].volume).toBeUndefined();        // 库内已有 → 不覆盖
   });
 
+  // ★ [AUC-VOL-GUARD 2026-11-04] 「库里是 0」必须能被快照真值救回来，且绝不把 0 写回去。
+  //   2026-11-04 真实事故：25/47 只 volume='0'（猫抓当日未结算的占位值），
+  //   旧判据只看「空」⇒ 这些行永远补不上，用户看到的是 0 或 '-'，而快照里明明有 auction_volume。
+  it('库内 volume=0（假 0）→ 用快照真值覆盖；快照也是 0 时不写（⛔ 不制造 0）', async () => {
+    let body = null;
+    stub([
+      { test: isMmGet, res: () => ({ ok: true, json: () => Promise.resolve([
+        { stock: '七匹狼', code: '002029', auc_pct_chg: '+9.97%', auc_vol_ratio: '15.29', auc_turnover: '0.85', volume: '0' },
+        { stock: '大晟文化', code: '600892', auc_pct_chg: '+9.98%', auc_vol_ratio: '5.43', auc_turnover: '1.00', volume: '0' }
+      ]) }) },
+      { test: isSnap, res: () => ({ ok: true, json: () => Promise.resolve({
+        code: 0, data: {
+          timestamp: tsToday, auction_phase: 'closed', data_status: 'final',
+          item: [
+            { ticker: '002029', auction_volume: 55 },     // 55 手 → 0.55 万（旧 Math.round 会抹成 1，<50 手则抹成 0）
+            { ticker: '600892', auction_volume: 0 }       // 快照也是 0 ⇒ 不许写 0
+          ]
+        }
+      }) }) },
+      { test: isMmPost, res: (u, init) => { body = JSON.parse(init.body); return { ok: true, json: () => Promise.resolve([]) }; } }
+    ]);
+    const r = await runTodaySnapshotPatch({}, { date: today });
+    expect(r.ok).toBe(true);
+    expect(body).toHaveLength(1);                    // 只有七匹狼那一行被补
+    expect(body[0].stock).toBe('七匹狼');
+    expect(body[0].volume).toBe('0.6');              // 55/100=0.55 ⇒ 1 位小数 0.6（⛔ 不是 0/1）
+  });
+
   it('读取库内失败 → 中断，绝不整体覆盖（§10）', async () => {
     stub([{ test: isMmGet, res: () => ({ ok: false, status: 500, text: () => Promise.resolve('boom') }) }]);
     const r = await runTodaySnapshotPatch({}, { date: today });

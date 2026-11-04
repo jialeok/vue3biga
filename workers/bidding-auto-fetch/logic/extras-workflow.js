@@ -293,7 +293,13 @@ export async function runTodaySnapshotPatch(env, opts) {
     logs.push('[snapshot] ⚠️ ' + today + ' 无竞价行（worker 尚未写入？）→ 跳过');
     return { ok: false, today, patched: 0, logs, reason: '无行' };
   }
-  const need = rows.filter(r => SNAPSHOT_FIELDS.some(f => extrasIsEmpty(r[f])) && /^\d{6}$/.test(r.code));
+  // ★ [AUC-VOL-GUARD 2026-11-04] 选行判据也要认「0」：库里 volume='0' 是上游当日未就绪的占位值，
+  //   若只按 extrasIsEmpty（空串/null）筛，这些行根本进不了 need ⇒ 永远补不上（今天 25 只就是这样）。
+  const volMissingOf = (r) => extrasIsEmpty(r.volume) || Number(r.volume) === 0;
+  const need = rows.filter(r =>
+    (SNAPSHOT_FIELDS.some(f => f !== 'volume' && extrasIsEmpty(r[f])) || volMissingOf(r)) &&
+    /^\d{6}$/.test(r.code)
+  );
   logs.push('[snapshot] 行数 ' + rows.length + '，其中缺字段 ' + need.length + ' 行');
   if (need.length === 0) {
     logs.push('[snapshot] ✅ 当日竞价字段已完整，无需补写');
@@ -359,9 +365,18 @@ export async function runTodaySnapshotPatch(env, opts) {
       const v = extrasFmt2(extrasNum(it.auction_turnover_pct));
       if (v !== '') { patch.auc_turnover = v; any = true; }
     }
-    if (extrasIsEmpty(r.volume)) {
+    // ★★ [AUC-VOL-GUARD 2026-11-04 用户报障「竞价量/昨日成交量显示 0 或 -，数据明明有」]
+    //   ① 旧判据只看「空」⇒ 库里已经被写成 '0' 的行永远补不上（今天 25 只就是这样卡死的）。
+    //      ⇒ 从今以后 '0' 也视为「没有值」（竞价量为 0 万在早盘等同没成交，且必然伴随量比为 0）。
+    //   ② 只写 >0 的真值：⛔ 绝不把 0 再写回去（那正是造出假 0 的来源）。
+    //   ③ 保留 1 位小数：Math.round(手/100) 会把 <50 手抹成 0（一字板小票常见）。
+    const volMissing = extrasIsEmpty(r.volume) || Number(r.volume) === 0;
+    if (volMissing) {
       const n = extrasNum(it.auction_volume);
-      if (!isNaN(n)) { patch.volume = String(Math.round(n / 100)); any = true; }
+      if (!isNaN(n) && n > 0) {
+        patch.volume = String(Math.round((n / 100) * 10) / 10);
+        any = true;
+      }
     }
     if (!any) continue;
     seen.add(r.name);

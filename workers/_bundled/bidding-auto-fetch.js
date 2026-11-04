@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-11-04 02:09:31
+// 生成时间: 2026-11-04 02:42:33
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 4265（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 4286（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
@@ -1922,7 +1922,13 @@ async function runTodaySnapshotPatch(env, opts) {
     logs.push('[snapshot] ⚠️ ' + today + ' 无竞价行（worker 尚未写入？）→ 跳过');
     return { ok: false, today, patched: 0, logs, reason: '无行' };
   }
-  const need = rows.filter(r => SNAPSHOT_FIELDS.some(f => extrasIsEmpty(r[f])) && /^\d{6}$/.test(r.code));
+  // ★ [AUC-VOL-GUARD 2026-11-04] 选行判据也要认「0」：库里 volume='0' 是上游当日未就绪的占位值，
+  //   若只按 extrasIsEmpty（空串/null）筛，这些行根本进不了 need ⇒ 永远补不上（今天 25 只就是这样）。
+  const volMissingOf = (r) => extrasIsEmpty(r.volume) || Number(r.volume) === 0;
+  const need = rows.filter(r =>
+    (SNAPSHOT_FIELDS.some(f => f !== 'volume' && extrasIsEmpty(r[f])) || volMissingOf(r)) &&
+    /^\d{6}$/.test(r.code)
+  );
   logs.push('[snapshot] 行数 ' + rows.length + '，其中缺字段 ' + need.length + ' 行');
   if (need.length === 0) {
     logs.push('[snapshot] ✅ 当日竞价字段已完整，无需补写');
@@ -1988,9 +1994,18 @@ async function runTodaySnapshotPatch(env, opts) {
       const v = extrasFmt2(extrasNum(it.auction_turnover_pct));
       if (v !== '') { patch.auc_turnover = v; any = true; }
     }
-    if (extrasIsEmpty(r.volume)) {
+    // ★★ [AUC-VOL-GUARD 2026-11-04 用户报障「竞价量/昨日成交量显示 0 或 -，数据明明有」]
+    //   ① 旧判据只看「空」⇒ 库里已经被写成 '0' 的行永远补不上（今天 25 只就是这样卡死的）。
+    //      ⇒ 从今以后 '0' 也视为「没有值」（竞价量为 0 万在早盘等同没成交，且必然伴随量比为 0）。
+    //   ② 只写 >0 的真值：⛔ 绝不把 0 再写回去（那正是造出假 0 的来源）。
+    //   ③ 保留 1 位小数：Math.round(手/100) 会把 <50 手抹成 0（一字板小票常见）。
+    const volMissing = extrasIsEmpty(r.volume) || Number(r.volume) === 0;
+    if (volMissing) {
       const n = extrasNum(it.auction_volume);
-      if (!isNaN(n)) { patch.volume = String(Math.round(n / 100)); any = true; }
+      if (!isNaN(n) && n > 0) {
+        patch.volume = String(Math.round((n / 100) * 10) / 10);
+        any = true;
+      }
     }
     if (!any) continue;
     seen.add(r.name);
@@ -4098,8 +4113,14 @@ function cronToPoint(cronExpr) {
   const key = min + ' ' + hour;
   // 01:25 UTC = 09:25 北京时间 → morning
   // 08:00 UTC = 16:00 北京时间 → close（收盘涨幅覆盖）
+  // ★ [HEAL-0935 2026-11-04 用户口径「我不可能在电脑旁盯着，用手机打开就要看到结果」]
+  //   01:35 UTC = 09:35 北京时间 → snapshot（自愈补写）。
+  //   为什么需要这一趟：猫抓对【当日】的 auc_vol 在 9:25 偶尔还没结算，会返回占位 0
+  //   ⇒ 9:25 那次写下去是空的；等到 9:35 上游结算完，用同花顺快照（免费、不烧猫抓额度）
+  //   把当日竞价量/量比/竞价涨幅补回来。**全程在云端跑，不需要用户开电脑。**
   const MAP = {
     '25 1': 'morning',
+    '35 1': 'snapshot',
     '0 8': 'close'
   };
   return MAP[key] || null;
