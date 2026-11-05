@@ -492,24 +492,24 @@ export function useAuctionBoard() {
   //     并发等于把 §32「禁止重复请求」直接违反一次）。0 K 线请求、0 猫抓额度，
   //     常态下只花 1 次查询（云端已全覆盖就立刻返回）。
   //
-  //   ⚠️ 每个日期**只跑一次**（`_r20PrefillDone`）：这是「补齐库存」型任务，不是每次重算都该跑。
-  //     ⛔ 不用 localStorage（§8）—— 会话内去重就够了，刷新后重跑一次也无害（幂等）。
+  //   ⚠️ 幂等口径 = 「**目标变多才重跑**」（`_r20PrefillAt`：date -> 上次跑时的目标数），
+  //     ⛔ 不是「每个日期只跑一次」：`ensureRange20Leaders` 有会话缓存，重复触发会**立刻** resolve，
+  //     若此刻 items 还只有零星几行（数据刚到的中间态），「只跑一次」会把这一整天锁死在
+  //     「只覆盖了那几行」的状态 —— 剩下几十只永远不会被预填（比不修更糟）。
+  //     目标数没长就跳过（常态 1 次），长了就再跑一轮（云端已覆盖的部分 0 成本）。
   //   ⚠️ 失败要把毒丸吐出去（`delete`），否则一次网络抖动会让这一整天都不再尝试。
-  const _r20PrefillDone = new Set();
+  const _r20PrefillAt = new Map();
   function prefillRange20ForCurrentBoard() {
     const date = uiStore.currentDate;
-    if (!date || _r20PrefillDone.has(date)) return;
+    if (!date) return;
     const items = (viewData.value && viewData.value.items) || [];
-    if (items.length === 0) return;          // 数据还没到货 ⇒ 不占坑，等行数变化的 watch 再叫
-    _r20PrefillDone.add(date);
+    if (items.length === 0) return;                        // 数据还没到货 ⇒ 不占坑
+    if (items.length <= (_r20PrefillAt.get(date) || 0)) return;   // 目标没长 ⇒ 上次已经覆盖过
+    _r20PrefillAt.set(date, items.length);
     prefillRange20FromDailyLegs(date, items.map(function(it) {
       return { stock: it.stock, code: it.code };
-    })).then(function(st) {
-      if (st && st.written > 0) {
-        setApiStatus('numcatApiStatus', '', true);   // 只在真写了东西时清一次状态，避免噪音
-      }
-    }).catch(function(e) {
-      _r20PrefillDone.delete(date);
+    })).catch(function(e) {
+      _r20PrefillAt.delete(date);
       console.warn('[R20-PREFILL] 20日涨幅结果表预填失败（不影响页面）:', e && e.message);
     });
   }
