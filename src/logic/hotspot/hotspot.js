@@ -11,6 +11,7 @@ import { pushJiwangNow, scheduleJiwangPush } from '../../data/jiwang-data.js';
 import { _closeAuctionShield, _openAuctionShield, _initAuctionMemCache } from '../../data/session-and-shield.js';
 import { loadCloudStockCodeMap, upsertStockCodeMap } from '../../data/stock-code-map.js';
 import { buildTopicCache, invalidateTopicCache, loadCloudTopics, pushStockTopicsToCloud, scanDataSourceForTopics } from '../../data/stock-topics.js';
+import { upsertBucketed } from '../../data/upsert-buckets.js';
 import { _moduleKey, getJiwangData, getNumericVolume, getStocksData, getSupabase, loadAllData } from '../../data/supabase-client.js';
 import { remainingBoards } from '../../data/remaining-boards.js';
 import { _addAuctionWatchlistMember, _extractWatchlistNamesFromRows, _getAuctionWatchlistSet, _setAuctionWatchlistForDate, getStockHistoryValue } from '../../data/watchlist-and-metrics.js';
@@ -141,17 +142,18 @@ export async function patchHotFieldBatch(date, items) {
 
         const sb = getSupabase();
         if (state._hotAuctionTableAvailable && watchlistRows.length > 0) {
-            const { error } = await sb.from('hot_stocks')
-                .upsert(watchlistRows, { onConflict: 'date,stock' });
-            if (error) throw error;
+            // ★ [KEYSET-BUCKET] 行的字段是动态的（按需带 volume / turnover 等）⇒ 必须按键集分桶，
+            //   否则 PostgREST 报 PGRST102「All object keys must match」⇒ 整批 400、一行不写。
+            //   详见 data/upsert-buckets.js 顶部事故记录。
+            await upsertBucketed(sb, 'hot_stocks', watchlistRows, { onConflict: 'date,stock' });
         }
         // [BUG-FIX] 即使 _marketMetricsTableAvailable 标记尚未就绪，也直接尝试写入：
         // 初始化完成前该标记可能为 false，导致历史断点补全等按钮的数据只进本地缓存、
         // 不进云端，刷新后丢失。直接尝试写入，失败时再根据错误类型更新标记。
         if (metricsRows.length > 0) {
-            const { error } = await sb.from('market_metrics')
-                .upsert(metricsRows, { onConflict: 'date,stock,scope' });
-            if (error) {
+            try {
+                await upsertBucketed(sb, 'market_metrics', metricsRows, { onConflict: 'date,stock,scope' });
+            } catch (error) {
                 if (error.message && error.message.indexOf('relation') >= 0) {
                     state._marketMetricsTableAvailable = false;
                 }

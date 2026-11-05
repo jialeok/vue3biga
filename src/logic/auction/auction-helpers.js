@@ -11,6 +11,7 @@ import { pushJiwangNow, scheduleJiwangPush } from '../../data/jiwang-data.js';
 import { _closeAuctionShield, _openAuctionShield, _initAuctionMemCache } from '../../data/session-and-shield.js';
 import { loadCloudStockCodeMap, upsertStockCodeMap } from '../../data/stock-code-map.js';
 import { buildTopicCache, invalidateTopicCache, loadCloudTopics, pushStockTopicsToCloud, scanDataSourceForTopics } from '../../data/stock-topics.js';
+import { upsertBucketed } from '../../data/upsert-buckets.js';
 import { _moduleKey, getJiwangData, getNumericVolume, getStocksData, getSupabase, loadAllData } from '../../data/supabase-client.js';
 import { remainingBoards } from '../../data/remaining-boards.js';
 import { _addAuctionWatchlistMember, _extractWatchlistNamesFromRows, _getAuctionWatchlistSet, _getAuctionFormalRowsForDate, _isAuctionWatchlistIndexReady, _setAuctionWatchlistForDate, getStockHistoryValue } from '../../data/watchlist-and-metrics.js';
@@ -192,16 +193,13 @@ export async function patchAuctionFieldBatch(date, items) {
         if (watchlistRows.length === 0 && metricsRows.length === 0) return { ok: true, rows: 0 };
 
         if (state._auctionTableAvailable && watchlistRows.length > 0) {
-            const sb = getSupabase();
-            const { error } = await sb.from('auction_watchlist')
-                .upsert(watchlistRows, { onConflict: 'date,stock' });
-            if (error) throw error;
+            // ★ [KEYSET-BUCKET] _splitAuctionPatch 切出来的字段是**动态**的（有的票只有 volume、
+            //   有的只有 auc_vol_ratio）⇒ 整批提交时键集不同 ⇒ PostgREST PGRST102 整批 400、一行不写。
+            //   必须按键集分桶后再提交。详见 data/upsert-buckets.js 顶部的事故记录。
+            await upsertBucketed(getSupabase(), 'auction_watchlist', watchlistRows, { onConflict: 'date,stock' });
         }
         if (state._marketMetricsTableAvailable && metricsRows.length > 0) {
-            const sb = getSupabase();
-            const { error } = await sb.from('market_metrics')
-                .upsert(metricsRows, { onConflict: 'date,stock,scope' });
-            if (error) throw error;
+            await upsertBucketed(getSupabase(), 'market_metrics', metricsRows, { onConflict: 'date,stock,scope' });
         }
 
         // 云端成功后再做本地 merge，避免云端失败时本地和云端出现"本地领先云端"的假象

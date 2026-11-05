@@ -20,6 +20,24 @@
 // ⚠️ 注意语义边界：本工具只保证「**不同批次之间**不会互相污染」。
 //   如果调用方**显式**把某列写成空值（`''` / `null`），那仍然是「明确要清空」，
 //   不会被本工具救回来 —— 想保留原值就**不要写这个键**。
+//
+// 【同一件事还有更狠的一半：键集不一致 ⇒ 整批 400、一行都不写】
+//
+// 🔴 真实事故（2026-11-05 收盘，worker 侧）：
+//     [extras] 库内缺「四要素/竞价涨幅」的行 27 行
+//     [extras] numcat 返回 1314 行
+//     [extras] ❌ 第 1 批写入失败: HTTP 400 {"code":"PGRST102","message":"All object keys must match"}
+//     [extras] ✅ 补写 0/27 行
+//   1314 行数据全部拿到，一行都没落库 ⇒ 当日 `auc_vol_ratio` 58/78，缺 20 只。
+//
+// 所以「键集必须一致」不只是为了不抹值，它是**请求能不能成功**的前提：
+//   · 键集一致 ⇒ 一条 INSERT 正常执行；
+//   · 键集不一致 ⇒ PGRST102 直接 400 ⇒ 整批丢弃（不是逐行丢弃，是全部）。
+// 两个后果都靠同一个动作解决：**按键集分桶**。
+//
+// ⛔ 别用 `Prefer: missing=default` 或 `?columns=` 去"修"这件事：
+//   前者语义是「缺的列取 DEFAULT（通常 NULL）」= 抹值，且 PGRST102 在请求体解析阶段就 400，
+//   这条偏好根本来不及生效；后者同罪，缺列照样被写成 NULL。
 
 /**
  * 按字段集把行分桶。
@@ -54,4 +72,49 @@ export function planUpsertBatches(rows, size) {
     for (let i = 0; i < bucket.length; i += max) out.push(bucket.slice(i, i + max));
   });
   return out;
+}
+
+/**
+ * 用「分桶后的批次」执行一次批量 upsert（supabase-js 版公共入口）。
+ *
+ * 调用方只需把原来的
+ *     sb.from('t').upsert(rows, { onConflict: 'a,b' })
+ * 换成
+ *     upsertBucketed(sb, 't', rows, { onConflict: 'a,b' })
+ * 语义完全一致，但不会因为行间键集不同而整批 400 / 抹值。
+ *
+ * @param {object} sb        supabase client
+ * @param {string} table     表名
+ * @param {Array<object>} rows
+ * @param {object} [opts]    { onConflict, ignoreDuplicates, size }
+ * @returns {Promise<{count:number, batches:number}>}
+ * @throws 任一批失败即抛出（message 里带「第 N/M 批 + 行数 + 键集」，照 2026-11-05 事故的教训，
+ *         ⛔ 不要再让调用方只看到一句笼统的 400 而误判成"上游没数据"）
+ */
+export async function upsertBucketed(sb, table, rows, opts) {
+  const o = opts || {};
+  const batches = planUpsertBatches(rows, o.size);
+  if (batches.length === 0) return { count: 0, batches: 0 };
+
+  const cfg = {};
+  if (o.onConflict) cfg.onConflict = o.onConflict;
+  if (o.ignoreDuplicates) cfg.ignoreDuplicates = true;
+  const hasCfg = Object.keys(cfg).length > 0;
+
+  let count = 0;
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i];
+    const { error } = await sb.from(table).upsert(batch, hasCfg ? cfg : undefined);
+    if (error) {
+      const keys = Object.keys(batch[0] || {}).sort().join(',');
+      const prefix = 'upsert ' + table + ' 第 ' + (i + 1) + '/' + batches.length
+        + ' 批失败（' + batch.length + ' 行，键集 [' + keys + ']）: ';
+      // ★ 保留原 error 对象（上层有用 message.indexOf('relation') 判表不存在的逻辑），
+      //   只把上下文拼到 message 前面。
+      if (error && typeof error === 'object') error.message = prefix + (error.message || '');
+      throw error;
+    }
+    count += batch.length;
+  }
+  return { count: count, batches: batches.length };
 }

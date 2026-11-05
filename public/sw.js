@@ -36,7 +36,7 @@
 //   ⇒ 页面里根本没有那个标签。v2 的 bg 更新只解决了"下次会好"，解决不了"这次要看"。
 //   再换一次缓存名 ⇒ 下一次导航 cache-miss ⇒ 必走网络拿当前 HTML ⇒ 立刻脱离旧版本。
 //   ⚠️ 以后再出现「线上已换版但用户看不到」，先换这个版本号，别先去改业务逻辑。
-var CACHE = 'biga-static-v19'; // [SW-STALE-FIX 2026-11-05 第十一轮] v18 → v19：view-helpers 再拆两刀（view-sort-order / view-decorate）
+var CACHE = 'biga-static-v20'; // [SW-STALE-FIX 2026-11-05 第十二轮] v19 → v20：补数层批量 upsert 全部改走键集分桶（auction-helpers / hotspot / sync-push）
 // ★★ [BOOT-SW-NAVFAST 2026-10-31] 从 4000 收到 1500。
 //   原因（实测）：这台机器的网络特征是「每个请求固定停顿 12~64 秒」（3.7KB 的 sw.js 要 64s），
 //   装好 SW 之后每次打开仍然要等「导航请求」这一次停顿 ⇒ 就是这 4 秒在拖。

@@ -5,6 +5,7 @@ import { saveFumianTopics } from '../../data/fumian-sync.js';
 import { saveEtfBoardComment } from '../../data/etf-board-data.js';
 import { saveBiddingTemplate } from '../../data/bidding-template-sync.js';
 import { _dbgLog } from '../../data/debug-log.js';
+import { upsertBucketed } from '../../data/upsert-buckets.js';
 import { _emit } from '../../stores/eventBus.js';
 import { getGroupData, getAuctionData, saveModule, patchAuctionFieldBatch, reconcileAuctionWatchlistFromLocalStorage, mergeAuctionDateRows, getHotAuctionData, _openHotAuctionShield, _closeHotAuctionShield } from '../app-core-api.js';
 import { _getAuctionWatchlistSet } from '../../data/watchlist-and-metrics.js';
@@ -347,14 +348,12 @@ import { _cloudBlobExtras } from './auction-sync-helpers.js';
             });
 
             if (watchlistRows.length > 0 && state._hotAuctionTableAvailable) {
-                const { error } = await sb.from('hot_stocks')
-                    .upsert(watchlistRows, { onConflict: 'date,stock' });
-                if (error) throw error;
+                // ★ [KEYSET-BUCKET] 上面的 row 是「固定键 + if (code) row.code」构造的 ⇒ 键集不一致，
+                //   整批提交会被 PostgREST 判 PGRST102「All object keys must match」⇒ 整批 400、一行不写。
+                await upsertBucketed(sb, 'hot_stocks', watchlistRows, { onConflict: 'date,stock' });
             }
             if (metricsRows.length > 0 && state._marketMetricsTableAvailable) {
-                const { error } = await sb.from('market_metrics')
-                    .upsert(metricsRows, { onConflict: 'date,stock,scope' });
-                if (error) throw error;
+                await upsertBucketed(sb, 'market_metrics', metricsRows, { onConflict: 'date,stock,scope' });
             }
 
             // 合并到本地全量快照缓存，避免趋势图读到旧数据
