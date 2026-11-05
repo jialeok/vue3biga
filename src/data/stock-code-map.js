@@ -50,40 +50,39 @@ import { state } from '../logic/app-state.js';
         }
 
         /**
-         * ★★ [CODE-ON-DEMAND 2026-11-05] 内存缓存里查不到的股票名，按需去 `stockcodemap` 补一次。
+         * ★★ [CODE-CACHE-WRITE 2026-11-05] 把已解析到的「名称→代码」写回内存缓存（**只写内存，不发请求**）。
          *
-         * 为什么需要（E2E 实测踩到）：
-         *   观察组壳行（上海洗霸 / 大洋电机）在页面加载早期 `state._scMapCache` 还没装到它们，
-         *   `getStockCode` 返回 '' ⇒ 补数层按「没有 6 位代码就不能查上游」把它们过滤掉
-         *   ⇒ 这两只的竞价量永远补不上（日志：「展示名单 78 只，其中带 6 位代码 76 只」）。
-         *   缓存是异步装的，等它自己到货是不可靠的；这里按名精确补一次（1 个请求）。
+         * 谁用：`data/stock-code-resolver.js` 的多级兜底解析出结果后调这里回写，
+         *   让后续**同步**路径（`getStockCode` / 视图层壳行注入）也能命中 —— 0 请求、0 延迟。
          *
-         * §40：只查表，⛔ 不猜代码；查不到就如实返回空，调用方照旧跳过。
-         * §10：读失败向上抛，⛔ 不伪装成「这只票没有代码」。
+         * 为什么不在 resolver 里直接改 `state._scMapCache`：
+         *   内存缓存的**唯一写入者**必须是本模块（§6 单一真相）。否则「谁都能改缓存」，
+         *   下次又会出现「两个地方各写一份、写法还不一样」的老毛病。
+         *   持久化（写云端 stockcodemap）仍走 `upsertStockCodeMap`，⛔ 本函数绝不落库。
          *
-         * @param {string[]} names 股票名数组
-         * @returns {Promise<Map<string,string>>} 名字 → 6 位代码（只含查到的）
+         * §40：只收 6 位数字代码；其余一律丢弃（不猜、不补零）。
+         *
+         * @param {Iterable<{stock:string, code:string}>|Map<string,string>|Object} pairs
+         * @returns {number} 实际写入条数
          */
-        export async function resolveStockCodes(names) {
-            const want = Array.from(new Set((names || []).map(function(n) { return String(n || '').trim(); })
-                .filter(function(n) { return n && !getStockCode(n); })));
-            const out = new Map();
-            if (want.length === 0) return out;
-            const sb = getSupabase();
-            const { data, error } = await sb.from('stockcodemap').select('stock,code').in('stock', want);
-            if (error) throw error;
+        export function rememberStockCodes(pairs) {
             if (!state._scMapCache) state._scMapCache = {};
-            (data || []).forEach(function(row) {
-                if (!row || !row.stock || !row.code) return;
-                const n = String(row.stock).trim();
-                const c = String(row.code).trim();
-                if (!n || !/^\d{6}$/.test(c)) return;
-                state._scMapCache[n] = c;   // 顺手把缓存补上，后续同步读也能命中
-                out.set(n, c);
-            });
-            _dbgLog('[CODE-ON-DEMAND] 按名补代码 ' + out.size + '/' + want.length
-                + (out.size ? '：' + Array.from(out.keys()).slice(0, 8).join(',') : ''));
-            return out;
+            let n = 0;
+            const put = function(name, code) {
+                const s = String(name || '').trim();
+                const c = String(code || '').trim();
+                if (!s || !/^\d{6}$/.test(c)) return;
+                if (state._scMapCache[s] === c) return;
+                state._scMapCache[s] = c;
+                n++;
+            };
+            if (pairs instanceof Map) {
+                pairs.forEach(function(c, s) { put(s, c); });
+            } else if (pairs && typeof pairs === 'object') {
+                // 兼容 resolveCodesByNames 的 {名称: 代码} 返回形状
+                Object.keys(pairs).forEach(function(s) { put(s, pairs[s]); });
+            }
+            return n;
         }
 
         // upsert 一批 {stock, code} 到云端 stockcodemap，并同步更新内存缓存

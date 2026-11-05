@@ -29,16 +29,20 @@ vi.mock('../../data/debug-log.js', () => ({ _dbgLog: () => {} }));
 // ★ [VOL-COVER 2026-11-05] 「展示名单」由 dragon-rank 提供；这里换成可控夹具，
 //   用来验证「补数目标 = 展示名单，而不只是 auction_watchlist」这条新口径。
 vi.mock('./dragon-rank.js', () => ({ getDragonTargetRows: vi.fn(() => []) }));
-// ★ [CODE-ON-DEMAND 2026-11-05] 内存缓存里查不到的股票名，靠 stockcodemap 按名补一次。
+// ★ [CODE-ON-DEMAND 2026-11-05] 内存缓存里查不到的股票名，交给 data 层解析服务按名补。
 //   E2E 实测：观察组壳行没有 code ⇒ 被 /^\d{6}$/ 静默滤掉 ⇒ 那两只永远 "-"。
 //   （日志：「展示名单 78 只，其中带 6 位代码 76 只」）
+//   ⚠️ 这里 mock 的是 `stock-code-resolver.js`（解析唯一入口），不是 `stock-code-map.js` ——
+//      解析链在 resolver 里，map 只负责同步缓存读，混用会让「谁是真相」再次分叉（§6）。
 const codeMapMock = vi.hoisted(() => ({ codes: {}, resolved: {}, asked: [] }));
 vi.mock('../../data/stock-code-map.js', () => ({
   getStockCode: vi.fn(function(n) { return codeMapMock.codes[n] || ''; }),
-  resolveStockCodes: vi.fn(async function(names) {
+}));
+vi.mock('../../data/stock-code-resolver.js', () => ({
+  resolveCodesByNames: vi.fn(async function(names) {
     codeMapMock.asked = (names || []).slice();
-    const out = new Map();
-    (names || []).forEach(function(n) { if (codeMapMock.resolved[n]) out.set(n, codeMapMock.resolved[n]); });
+    const out = {};
+    (names || []).forEach(function(n) { if (codeMapMock.resolved[n]) out[n] = codeMapMock.resolved[n]; });
     return out;
   }),
 }));

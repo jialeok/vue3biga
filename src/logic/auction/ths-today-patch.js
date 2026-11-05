@@ -29,7 +29,10 @@ import { computeKlineDayPatch } from './trend-patch.js';
 import { beijingTodayStr } from './auction-pull-window.js';
 // ★ [VOL-COVER 2026-11-05] 「展示名单」唯一真相 —— 与十日涨幅的自愈目标同源（dragon-rank）。
 import { getDragonTargetRows } from './dragon-rank.js';
-import { getStockCode, resolveStockCodes } from '../../data/stock-code-map.js';
+import { getStockCode } from '../../data/stock-code-map.js';
+// ★ [CODE-ON-DEMAND 2026-11-05] 「名称→代码」异步解析的**唯一入口**（data 层，§6 单一真相）。
+//   ⛔ 不许在本文件再写一份补码逻辑：解析链（缓存 → stockcodemap → 历史行 → 宽基成分股）在它那里。
+import { resolveCodesByNames } from '../../data/stock-code-resolver.js';
 import { _dbgLog } from '../../data/debug-log.js';
 
 /** 快照接口单批上限（与 suspend.js / trend-patch.js 同一契约：40 个 thscode） */
@@ -183,15 +186,17 @@ async function _resolveRoster(date, extraStocks) {
     }
     if (!/^\d{6}$/.test(v.code)) noCode.push(v.stock);
   });
-  // ③.5 内存缓存里查不到 ⇒ 按名去 stockcodemap 精确补一次（1 请求）。
-  //   为什么必须有（2026-11-05 E2E 实证）：观察组壳行上海洗霸 / 大洋电机 在加载早期没有代码
+  // ③.5 内存缓存里查不到 ⇒ 交给 data 层解析服务按名补（五级兜底，见 stock-code-resolver.js）。
+  //   为什么必须有（2026-11-05 E2E 实证）：观察组壳行上海洗霸 / 大洋电机 没有代码
   //   ⇒ 被「没 6 位代码不能查上游」这条规则静默过滤 ⇒ 它们的竞价量永远是 '-'。
+  //   🔴 而 `stockcodemap` 实测只有 1130 行（全市场 5000+），这两只它压根没有 ——
+  //      所以解析必须落到「历史行情行里 worker 落下的真 code」，不能只查 stockcodemap。
   if (noCode.length > 0) {
     try {
-      const got = await resolveStockCodes(noCode);
-      got.forEach(function(code, name) {
+      const got = await resolveCodesByNames(noCode);
+      Object.keys(got || {}).forEach(function(name) {
         const v = byName.get(name);
-        if (v && !/^\d{6}$/.test(v.code)) v.code = code;
+        if (v && !/^\d{6}$/.test(v.code)) v.code = got[name];
       });
     } catch (e) {
       // §10：补不到代码不连坐 —— 其余票照补，只把这几只留空（⛔ 不猜代码）
