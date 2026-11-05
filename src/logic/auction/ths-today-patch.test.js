@@ -373,11 +373,11 @@ describe('autoFillTodayAuctionVolume — 自动补的闸门', () => {
     expect(fuyaoApiGet).toHaveBeenCalled();
   });
 
-  it('§32：同一场次最多补 2 次（30s 内连调不会重复烧请求）', async () => {
+  it('§32：同一批缺口 30s 内不重复补（连调不会重复烧请求）', async () => {
     setBeijing('2026-10-26T09:30:00+08:00');
     await autoFillTodayAuctionVolume(TODAY);
     const callsAfterFirst = fuyaoApiGet.mock.calls.length;
-    await autoFillTodayAuctionVolume(TODAY);   // 30s 内、且已补过 1 次
+    await autoFillTodayAuctionVolume(TODAY);   // 30s 内、缺口指纹与上次完全相同
     expect(fuyaoApiGet.mock.calls.length).toBe(callsAfterFirst);
   });
 });

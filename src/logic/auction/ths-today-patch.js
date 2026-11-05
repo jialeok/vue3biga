@@ -198,8 +198,8 @@ function _beijingMinutes() {
 //   ⛔ 只补今天、只在 09:25~15:00 之间补（9:25 前快照还是上一交易日，闸门也会拒）。
 const AUTO_OPEN_MIN = 9 * 60 + 25;    // 北京 09:25（竞价终态最早出现的时刻）
 const AUTO_CLOSE_MIN = 15 * 60;       // 北京 15:00（收盘后交给收盘覆盖链路）
-const AUTO_MAX_TIMES = 2;             // 每日期每会话最多 2 次（名单通常分 1~2 批到货）
-const AUTO_MIN_GAP_MS = 30 * 1000;
+const AUTO_MAX_TIMES = 3;             // 每日期每会话最多 3 次（名单分 2~3 批到货：9:25 worker / 页面注入 / 观察组壳行）
+const AUTO_MIN_GAP_MS = 30 * 1000;   // 只在「缺口指纹完全相同」时用于节流（见函数内注释）
 /** date -> { attempts:number, at:number } */
 const _autoState = new Map();
 
@@ -223,9 +223,8 @@ export async function autoFillTodayAuctionVolume(date, opts) {
   const mins = _beijingMinutes();
   if (mins < AUTO_OPEN_MIN) return { ok: false, skipped: '9:25 之前（快照还不是今天）' };
   if (mins >= AUTO_CLOSE_MIN) return { ok: false, skipped: '已收盘（交给收盘覆盖链路）' };
-  const st = _autoState.get(d) || { attempts: 0, at: 0 };
+  const st = _autoState.get(d) || { attempts: 0, at: 0, sig: '' };
   if (st.attempts >= AUTO_MAX_TIMES) return { ok: false, skipped: '本会话已自动补过 ' + st.attempts + ' 次' };
-  if (Date.now() - st.at < AUTO_MIN_GAP_MS) return { ok: false, skipped: '距上次不足 30s' };
   try {
     const roster = await _resolveRoster(d, extraStocks);
     const existing = await readAuctionMetrics(d);
@@ -235,14 +234,22 @@ export async function autoFillTodayAuctionVolume(date, opts) {
       const cur = byStock.get(t.stock);
       return !cur || _isEmpty(cur.volume);
     });
-    // 已经有缺口统计 ⇒ 记一次「本轮已检查」，避免 30s 内反复读库（§32）
-    _autoState.set(d, { attempts: st.attempts + (missing.length > 0 ? 1 : 0), at: Date.now() });
     if (missing.length === 0) {
+      _autoState.set(d, { attempts: st.attempts, at: st.at, sig: '' });
       _dbgLog('[THS-PATCH] 自动补：展示名单 ' + roster.length + ' 只，竞价量已齐，无需补');
       return { ok: true, skipped: '无缺口', missing: 0 };
     }
+    // ★ 节流判据是「缺口**指纹**」，不是时间（2026-11-05 E2E 实测踩到）：
+    //   页面 6s 时名单 76 只（缺口 0），到 15s 观察组壳行注入后变 78 只（缺口 2）。
+    //   用「30s 内不许再跑」会把这次真正要补的调用挡掉 ⇒ 那 2 只永远是 '-'。
+    //   现在：缺口集合一样才节流（同一批没补上的别反复打），缺口集合变了立刻放行（§32 仍然不空转）。
+    const sig = missing.map(function(x) { return x.stock; }).sort().join(',');
+    if (st.sig === sig && (Date.now() - st.at) < AUTO_MIN_GAP_MS) {
+      return { ok: true, skipped: '同一批缺口 ' + (AUTO_MIN_GAP_MS / 1000) + 's 内不重复补', missing: missing.length };
+    }
+    _autoState.set(d, { attempts: st.attempts + 1, at: Date.now(), sig: sig });
     _dbgLog('[THS-PATCH] 自动补：展示名单 ' + roster.length + ' 只，缺竞价量 ' + missing.length
-      + ' 只（第 ' + (st.attempts + 1) + ' 次）→ 走快照腿');
+      + ' 只（第 ' + (st.attempts + 1) + ' 次）→ 走快照腿' + (missing.length <= 8 ? '：' + missing.map(function(x) { return x.stock; }).join(',') : ''));
     const r = await patchTodayAuctionFromThs(d, { onlyVolume: true, extraStocks: extraStocks });
     return { ok: !!(r && r.ok), missing: missing.length, patchedRows: (r && r.patchedRows) || 0, filled: r && r.filled };
   } catch (e) {
