@@ -19,7 +19,10 @@ import { getRange20Pct } from './range20.js';
 // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五 · 龙头补位」：候选池 = 近 20 个交易日【每天正式列表】的并集
 //   （⛔ 不是当天列表），只主板、取前五；当天列表里没有的注入独立区块（打「20天」标）。
 //   ★ 只读本模块的会话内存（ref-driven），⛔ 本层不请求、不落库（取数由 useAuctionBoard 的 watch 触发）。
-import { getRange20Leaders } from './range20-leaders.js';
+// ★★★ [ROW-GROUPS 2026-11-05] 四组（常规/观察/龙头/20日补）的装配唯一入口。
+//   成员判定 + 壳行注入 + 三条去重都在 `row-groups/` 各组自己的文件里（§15 按功能拆分），
+//   本文件只负责「拿结果 → 算索引 → 排序 → 出 viewData」，⛔ 不再写任何一组的判据（§6）。
+import { collectRowGroups } from './row-groups/index.js';
 // [ROW-CLASS 2026-11-02 用户口径] 「四类行分账」的唯一实现（正式成员 / 龙头组 / 观察组 / 20日补位）。
 //   本文件只负责【数出各行数事实】并交给它整理，⛔ 不在别处再写第二份计数口径（§6）。
 import { buildRowClassCounts, describeRowClassMismatch } from './row-class-counts.js';
@@ -64,11 +67,9 @@ import { buildTopicStatsMap } from './topic-stats.js';
 // [SEAL-VOLUME 2026-10-11] 封单量（手）的同步读取器：读 Data 层 limit_pool 内存缓存（§6 单一真相），
 //   ⛔ 本文件不发请求、不消费猫抓额度 —— 「什么时候把 limit_pool 读进缓存」由组合式负责。
 import { sealLotsOf } from './seal-volume.js';
-// [DRAGON-GROUP 2026-09-14] 龙头组（第一页【观察组上方】的独立区块）：名册由 logic/auction/dragon-group.js
-// 异步加载后经模块级 ref 暴露，此处【同步读取】（与 dragon-rank 同款 ref-driven 范式，绝不阻塞渲染）。
-// 名册是唯一真相（§6）：本文件只负责「读名册 → 注入空壳行 → 给出 dragonIndices → 观察组去重」，
-// 绝不在这里二次评选龙头（那样就是第二个真相源）。
-import { getDragonLeadersForDisplay } from './dragon-group.js';
+// [DRAGON-GROUP 2026-09-14] 龙头组（第一页【观察组上方】的独立区块）。
+// ★ [ROW-GROUPS 2026-11-05] 名册读取已搬到 row-groups/dragon-group-rows.js（本文件不再直接读），
+//   本文件只拿 `_groups.dragon` 算 dragonIndices，⛔ 不在这里二次评选龙头（那是第二个真相源）。
 // [INHERIT-SELL 2026-09-23] 「昨日『卖』标签继承过来的复盘行」判定抽成独立模块：
 // view-helpers（当天统计 + 着色）与 topic-trend（五日趋势）共用同一份判据（§6 单一真相）。
 import { getPrevSoldInheritedSet } from './inherited-sold.js';
@@ -494,33 +495,26 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   const prevDate = getPreviousTradingDay(currentDate);
 
-  // [OBS-FIX 2026-08-17] 观察组 = 前一日「竞昨高光全集」直接继承，与当天 9:25 名单无关。
-  // getJingYestHighlightSetForDate 本身已修（sort-rules.js）：只算当日正式名单内（9:25 拉取的
-  // watchlist 成员），排除 market_metrics 影子行 → 8/14 竞昨=16 只、8/17 观察组=16 只，
-  // 竞昨数/蓝色高光/观察组三者一致（§17/§23 单一真相）。
-  const _obsStocks = getJingYestHighlightSetForDate(prevDate, dataSource);
-  const _obsBoughtSet = new Set(JSON.parse(localStorage.getItem('obsBought_' + currentDate) || '[]')); // 合规：防重复/调试标记（§8 允许）
-  const _isObsMember = function(name) {
-    if (!name) return false;
-    if (_obsBoughtSet.has(name)) return true;
-    return (_obsStocks && _obsStocks.has(name));
-  };
-
-  // [DRAGON-GROUP 2026-09-14] 龙头组名册（同步读，ref-driven —— 名册异步到货后本函数自动重算）。
-  // 展示日 D 的龙头组 = 名册中 date = prevTradingDay(D) 的行（=「每天的龙头放到次日」）。
-  // null = 尚未加载/加载失败 → 本次不产生龙头组（绝不用空列表伪装成「今天没有龙头」，§10）；
-  // 名册的【评选】唯一实现在 logic/auction/dragon-group.js，本文件只读不选（§6 单一真相）。
-  // 判定「某行是否属龙头组」只认 `_dragonMap.has(name)`（下文的区块抽取与排序都以名册为准，
-  // 不再另写一份判定函数 —— 旧版那个 _isDragonPrev 包装已随排序重写删除，§42 不留死代码）。
-  const _dragonMap = getDragonLeadersForDisplay(currentDate);
-  // 凡应属观察组但不在当日列表的股票，构造渲染用空壳行（与 ensureObservationStocks 形状一致，便于 _enrichAuctionItem 统一处理）。
-  const _existingNames = new Set(auctionList.map(function(s) { return s && s.stock ? s.stock.trim() : ''; }));
-  const _injectNames = new Set();
-  const _injectedRows = [];
-  // [OBS-DATA 2026-08-15] 观察组空壳行回填当天真实数据：worker 9:25 已把观察组股票
-  // （前一日 watchlist 合并进抓取名单）的数据写入 market_metrics，pullAuctionFromTable
-  // 会把 market_metrics 的影子行合并进 _auctionMemCache[date]。注入观察组行时若缓存里有
-  // 同名行（非 obsAutoAdded），复用其 volume/yestVolume/note/changePct，避免观察组显示空白。
+  // ══════════════════════════════════════════════════════════════════════════
+  // ★★★ [ROW-GROUPS 2026-11-05] 四组（常规 / 观察 / 龙头 / 20日补）的装配已整体搬出。
+  //
+  //   为什么搬：这一段原来是三个 `_maybeInject*` + 四个索引 + 去重判断全挤在本函数里，
+  //   而本函数（computeAuctionViewData）当时已经 1170 行 —— 用户原话
+  //   「这四组你可以为他们拆成四个组件，这样哪个组件出现问题就修复哪个，不要理到一起乱战」。
+  //
+  //   现在各组自己一份文件（logic/auction/row-groups/）：
+  //     · obs-group.js          —— 观察组：竞昨高光全集 ∪ obsBought 继承票
+  //     · dragon-group-rows.js  —— 龙头组：dragon_leaders(前一交易日)
+  //     · range20-group-rows.js —— 20日补位：20日涨幅前五里今天看不见的票
+  //     · registry.js           —— 三组共用的「壳行注入 + 三条去重」（唯一实现）
+  //   本文件只拿结果，⛔ 不再写任何一组的成员判定（§6：判据只允许有一份）。
+  //
+  //   注入顺序 = 观察组 → 龙头组 → 20日补位，与拆分前逐字一致（顺序一改就是归属变化）。
+  //   最终显示在哪个区块仍由下面的索引层决定（龙头行会从观察组里剔出去）。
+  // ══════════════════════════════════════════════════════════════════════════
+  // [OBS-DATA 2026-08-15] 观察组/龙头组/20日补位壳行回填当天真实数据：
+  //   worker 9:25 已把观察组股票（前一日 watchlist 合并进抓取名单）写进 market_metrics，
+  //   影子行会合并进 _auctionMemCache[date] ⇒ 注入时若缓存里有同名行就复用它，避免空白。
   const _auctionDayRows = (getAuctionData()[currentDate] || []);
   const _auctionDayRowMap = new Map();
   _auctionDayRows.forEach(function(r) {
@@ -529,97 +523,23 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
       if (!_auctionDayRowMap.has(k)) _auctionDayRowMap.set(k, r);
     }
   });
-  function _maybeInject(n) {
-    if (!n) return;
-    if (_existingNames.has(n) || _injectNames.has(n)) return;
-    _injectNames.add(n);
-    const dayRow = _auctionDayRowMap.get(n);
-    if (dayRow && dayRow.obsAutoAdded !== true) {
-      // worker/手动已抓到该股票当天数据：保留真实数据，仅补观察组身份标记（视图层不落库）
-      _injectedRows.push(Object.assign({}, dayRow, { obsAutoAdded: true }));
-    } else {
-      _injectedRows.push({ stock: n, code: getStockCode(n), volume: '', yestVolume: '', note: '', obsAutoAdded: true });
+  const _groups = collectRowGroups({
+    date: currentDate,
+    prevDate: prevDate,
+    dataSource: dataSource,
+    list: auctionList,
+    dayRowMap: _auctionDayRowMap,
+    codeOf: function(n) {
+      try { return getStockCode(n) || ''; } catch (e) { return ''; }
     }
-  }
-  // [OBS-FIX 2026-08-15 v3] 观察组完整继承恢复：无论当天是否已抓取真实数据，都把
-  // 「前一日竞昨高光 + obsBought」中不在当日列表的股票注入为观察组预览空壳行（蚂蚁线上观察组分栏）。
-  //  - 修复全局少股：8/10 观察组 16≠18、8/11 观察组 26≠28（8/14 v2 禁止已抓取日注入导致观察组只剩交集）；
-  //    观察组语义 = 前日竞昨高光完整集合，与"当日是否已抓取"无关。
-  //  - 注入行仅用于视图渲染（renderList），不写入 auctionData、不推送云端（§6：观察组不落库、不产生影子记录）；
-  //    历史锁定仍由 ensureObservationStocks（数据层）承担，视图层只如实呈现继承结果。
-  //  - 注入行 obsAutoAdded=true，经 _isObsMember 判定进入观察组分栏（蚂蚁线上），绝不混入常规组（蚂蚁线下）。
-  //  - 统计口径仍基于 auctionList + 正式成员索引（getAuctionBoardList 已过滤），注入壳不影响总数/涨跌比。
-  if (_obsStocks) _obsStocks.forEach(_maybeInject);
-  _obsBoughtSet.forEach(_maybeInject);
-
-  // [DRAGON-GROUP 2026-09-14] 龙头组空壳行注入（需求 4：龙头「昨日在正式列表中、今日不在」也要出现）。
-  // 与观察组注入同款：仅用于视图渲染，不写入 auctionData、不推云端（§6 不产生影子记录）。
-  // 已落库到 dragon_leaders 的只有「名字/题材/十日涨幅」，当日行情（volume/yestVolume/note）若云端
-  // 有同名行则复用（worker 9:25 会把龙头并入抓取名单 → market_metrics 有影子行），否则留空壳。
-  // 标记 dragonAutoAdded=true 仅用于可观测性/调试（渲染归属由 dragonIndices 决定，不依赖此标记）；
-  // 刻意【不设】obsAutoAdded —— 它不是观察组行，混用会让「观察组归属」出现第二个判据（§6）。
-  function _maybeInjectDragon(n, meta) {
-    if (!n) return;
-    if (_existingNames.has(n) || _injectNames.has(n)) return;
-    _injectNames.add(n);
-    const dayRow = _auctionDayRowMap.get(n);
-    if (dayRow && dayRow.obsAutoAdded !== true) {
-      _injectedRows.push(Object.assign({}, dayRow, { dragonAutoAdded: true }));
-    } else {
-      _injectedRows.push({
-        stock: n,
-        code: (meta && meta.code) || getStockCode(n),
-        volume: '', yestVolume: '', note: '',
-        dragonAutoAdded: true
-      });
-    }
-  }
-  if (_dragonMap) _dragonMap.forEach(function(meta, name) { _maybeInjectDragon(name, meta); });
-
-  // ============================================================
-  // [RANGE20-TOP5 2026-10-19 用户口径] 「20日涨幅前五」补位行注入
-  //
-  // 用户原话：「当天我怕错过一些不在正式列表的市场龙头……比如今天的九阳股份，如果它不是继承上交易的
-  //   龙头组，就消失了，我就看不见了……如果消失了，我看这个20天涨幅就没多大意义，就不准确。」
-  //   「如果这五只也在当天列表中，那就不用重复补了。……要自动补上去，补到龙头组。……要区分，
-  //    就在后面添加标签"20天"。」
-  //
-  // 与龙头组注入【同一条管线】（_injectedRows → renderList）：⛔ 不写 auctionData、⛔ 不推云端
-  //   （§6 不产生影子记录）。当日云端若有同名行（worker 已并入抓取名单）就复用它的行情字段，
-  //   否则是空壳 + 后续 enrich/数据层照常补 —— 用户要求「进入列表后也是一样可以获取数据」。
-  //
-  // ⚠️ 三条去重（用户「不用重复补」）：
-  //   ① 已在当天正式列表里（_existingNames）→ 不注入；
-  //   ② 已被龙头组注入（_injectNames）→ 不注入（它已经在龙头组区块里出现了）；
-  //   ③ 已注入过的同一只（_range20Names）→ 不注入。
-  //   ⇒ 只有「真·当天看不见的 20 日强势票」才会被补进来，绝不重复。
-  // ============================================================
-  const _range20Leaders = getRange20Leaders(currentDate);   // null = 该日还没有结论（§10 区别对待）
-  const _range20Names = new Set();                          // 本次真正补进来的股票名
-  const _range20Meta = new Map();                           // 股票名 -> {pct, days}（区块/行上显示用）
-  function _maybeInjectRange20Leader(meta) {
-    const n = meta && meta.stock ? String(meta.stock).trim() : '';
-    if (!n) return;
-    if (_existingNames.has(n) || _injectNames.has(n) || _range20Names.has(n)) return;
-    _injectNames.add(n);
-    _range20Names.add(n);
-    _range20Meta.set(n, { pct: meta.pct, days: meta.days });
-    const dayRow = _auctionDayRowMap.get(n);
-    if (dayRow && dayRow.obsAutoAdded !== true) {
-      // 当日云端有同名行（market_metrics 影子行）→ 复用其 volume/yestVolume/note/changePct，不留空壳
-      _injectedRows.push(Object.assign({}, dayRow, { range20AutoAdded: true }));
-    } else {
-      _injectedRows.push({
-        stock: n,
-        code: (meta && meta.code) || getStockCode(n),
-        volume: '', yestVolume: '', note: '',
-        range20AutoAdded: true
-      });
-    }
-  }
-  if (_range20Leaders && _range20Leaders.length) {
-    _range20Leaders.forEach(_maybeInjectRange20Leader);
-  }
+  });
+  const _obsBoughtSet = _groups.obs.boughtSet;        // 前一日「买」标签继承票
+  const _isObsMember = _groups.obs.isMember;          // 观察组归属唯一判据
+  const _dragonMap = _groups.dragon;                  // 龙头名册（null = 未就绪，§10）
+  const _injectedRows = _groups.injectedRows;         // 三组注入的壳行
+  const _range20Names = new Set(_groups.range20Meta.keys());  // 本组真正补进来的股票名
+  const _range20Meta = _groups.range20Meta;                   // 股票名 -> {pct, days}
+  const _range20Leaders = _groups.range20;                    // 20日补位名册原件（区块排序要用它的顺序）
 
   // renderList 仅服务于视图渲染；真实业务数据(auctionList)保持不变，统计口径仍基于 auctionList。
   const renderList = _injectedRows.length ? auctionList.concat(_injectedRows) : auctionList;
