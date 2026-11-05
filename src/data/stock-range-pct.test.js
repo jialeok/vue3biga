@@ -218,17 +218,27 @@ describe('fetchFuyaoDailyPctRange · FUYAO-OFF', function() {
 // ===========================================================================
 describe('healTodayRangePct · 当天云端为空的零上游自愈', function() {
     const REAL_FETCH = globalThis.fetch;
+    const REAL_NOW = Date.now;
 
     function beijingToday() {
         return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
     }
 
+    // 🔴 [TIME-FREEZE 2026-11-05] 本块测的是【盘中】行为，而 healTodayRangePct 有一道
+    //   「北京 15:00 之后不再自愈（交给收盘覆盖链路）」的闸门（见下面另一个 describe）。
+    //   以前靠墙上时钟 ⇒ 同一份代码上午跑全绿、下午三点后这 5 条全红
+    //   （2026-11-05 实测：13:43 通过，16:50 全挂，报「已过收盘时间，竞价口径不再适用」）。
+    //   ⛔ 不为测试给生产代码加 nowMs 参数（污染签名）；按本文件另一块的既有做法钉死 Date.now。
     beforeEach(async function() {
+        Date.now = function() { return Date.parse('2026-11-05T02:00:00Z'); };   // 北京 10:00（盘中）
         const m = await import('./stock-range-pct.js');
         m._resetHealTried();
     });
 
-    afterEach(function() { globalThis.fetch = REAL_FETCH; });
+    afterEach(function() {
+        Date.now = REAL_NOW;
+        globalThis.fetch = REAL_FETCH;
+    });
 
     it('非当天 ⇒ 一个请求都不发（历史日的腿早已固化，回补是运维的活）', async function() {
         let hit = 0;

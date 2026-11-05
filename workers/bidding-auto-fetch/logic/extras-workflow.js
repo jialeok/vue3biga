@@ -24,8 +24,10 @@
 //   手动调用传 includeToday:true 可保留「含今天」的旧行为（用于排查）。
 //
 // 【安全约束（§11 删除安全 / §10 静默失败）】
-//   · 只写这四个字段。upsert 用 resolution=merge-duplicates + missing=default，
-//     绝不会抹掉 volume / change_pct / auc_pct_chg / yest_volume；
+//   · 只写这几个缺失字段。抹不抹值**不靠 Prefer 偏好**，靠 Data 层按「键集」分桶：
+//     同批只装键集完全一致的行 ⇒ 不存在「缺列」⇒ 不会把 volume / change_pct / yest_volume 写成 NULL。
+//     ⛔ 别再退回「missing=default」：它的语义是「缺的列取 DEFAULT（通常 NULL）」= 抹值，
+//        而 PGRST102 在请求体解析阶段就 400，那条偏好根本来不及生效（2026-11-05 事故）。
 //   · 只有「库内该行四要素有缺失」且「numcat 本次给了非空值」才写 → 天然幂等，重复跑零副作用；
 //   · 读取失败必须抛错，绝不能被当成「全都缺」而整体覆盖；
 //   · 整体失败不致命，调用方 try/catch 后继续。
@@ -402,7 +404,8 @@ export async function runTodaySnapshotPatch(env, opts) {
     return { ok: true, today, patched: 0, logs };
   }
 
-  // 5) 写入（merge-duplicates + missing=default → 绝不抹掉 change_pct / yest_volume 等）
+  // 5) 写入（Data 层按「键集」分桶 ⇒ 同批键集一致 ⇒ ⛔ 不会抹掉 change_pct / yest_volume 等）
+  //    🔴 2026-11-05 事故：原来整批塞异键集的行 ⇒ PGRST102「All object keys must match」⇒ 27 行全部丢失。
   try {
     await upsertMarketMetrics(env, patchRows);
   } catch (e) {

@@ -71,33 +71,90 @@ export async function writeRunLog(env, entry) {
   }
 }
 
+// ============================================================================
+// [PGRST102 2026-11-05] 批量 upsert 必须按「键集」分桶 —— 否则整批一行都不写
+//
+// 🔴 事故现场（2026-11-05 16:00 收盘 worker，`bidding_fetch_log` 原始日志）：
+//      [extras] 窗口 9 天，库内缺「四要素/竞价涨幅」的行 27 行
+//      [extras] numcat 返回 1314 行
+//      [extras] ❌ 第 1 批写入失败: HTTP 400 {"code":"PGRST102","message":"All object keys must match"}
+//      [extras] ✅ 补写 0/27 行
+//    ⇒ 猫抓数据明明拿到了、库里 27 行明明等着补，**一整批全部丢失**。
+//    ⇒ 直接后果：当天 `auc_vol_ratio` 只有 58/78（20 只永远空白），
+//      11-04 的 70.7% 也是同一个原因；而 10-27~11-03 一直是 100%。
+//
+// 为什么会出现键集不一致：`extras-workflow.js` 组的 patch 是「哪个字段缺就带哪个」
+//   （`patch.code` 只在库内该行有 code 时才带，五个要素各自按需带）
+//   ⇒ 同一批里不同行的键**本来就不一样**。
+//
+// ⛔ 两个常见但**错的**修法（都试过 / 都别再用）：
+//   ① 加 `Prefer: missing=default` —— 它是请求体校验【之后】才生效的偏好，
+//      PGRST102 在解析阶段就 400 了，根本轮不到它。
+//      而且它的语义是「缺的键取该列的 DEFAULT（通常是 NULL）」，配合
+//      `resolution=merge-duplicates` 就是 `SET col = EXCLUDED.col` ⇒ **把现有值抹成 NULL**。
+//      本文件原来那句注释「某一行没带某个字段时保留云端原值」是错的（2026-11-05 更正）。
+//   ② `?columns=a,b,c` 固定列清单 —— 同样会按 missing 语义把没写的列写成 NULL。
+//
+// ✅ 唯一正确修法：一批 = 一条 `INSERT ... ON CONFLICT DO UPDATE`，所以**只让同键集的行同批**。
+//    分桶后每个桶内部键集完全一致 ⇒ 不存在「缺列」⇒ 既不会 400，也不会抹值（§10/§11）。
+// ============================================================================
+
+/**
+ * 按「键集签名」把行分桶（键顺序无关）。
+ * @param {Array<Object>} rows
+ * @returns {Array<{keys:string[], rows:Array<Object>}>} 每个桶内所有行的键集完全相同
+ */
+export function bucketRowsByKeySet(rows) {
+  const map = new Map();
+  (rows || []).forEach(function (r) {
+    if (!r || typeof r !== 'object') return;
+    const keys = Object.keys(r).sort();
+    const sig = keys.join('\u0001');
+    let b = map.get(sig);
+    if (!b) { b = { keys: keys, rows: [] }; map.set(sig, b); }
+    b.rows.push(r);
+  });
+  return Array.from(map.values());
+}
+
+/**
+ * 分桶写入（三个批量 upsert 共用，§6 只允许一份实现）。
+ *
+ * @param {object} env
+ * @param {string} table 表名（仅用于报错文案，⛔ 不参与拼 URL —— URL 由调用方给，含 on_conflict）
+ * @param {string} url 完整 URL（含 ?on_conflict=...）
+ * @param {Array<Object>} rows
+ * @param {object} [extraHeaders] 额外 Prefer 等
+ */
+async function upsertBucketed(env, table, url, rows, extraHeaders) {
+  const buckets = bucketRowsByKeySet(rows);
+  for (let i = 0; i < buckets.length; i++) {
+    const b = buckets[i];
+    const resp = await sbFetch(url, {
+      method: 'POST',
+      headers: Object.assign(sbHeaders(env), { 'Prefer': 'resolution=merge-duplicates, return=minimal' }, extraHeaders || {}),
+      body: JSON.stringify(b.rows)
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      // §10 报错必须能定位：带上桶大小与键集，否则下次又只能猜「是不是上游没数据」
+      throw new Error('upsert ' + table + ' 失败（第 ' + (i + 1) + '/' + buckets.length
+        + ' 桶，' + b.rows.length + ' 行，键集 [' + b.keys.join(',') + ']）: HTTP '
+        + resp.status + ': ' + text.slice(0, 300));
+    }
+  }
+}
+
 export async function upsertAuctionWatchlist(env, rows) {
   if (!rows || rows.length === 0) return;
-  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?on_conflict=date,stock';
-  const resp = await sbFetch(url, {
-    method: 'POST',
-    headers: Object.assign(sbHeaders(env), { 'Prefer': 'resolution=merge-duplicates, return=minimal' }),
-    body: JSON.stringify(rows)
-  });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    throw new Error('upsert auction_watchlist 失败: HTTP ' + resp.status + ': ' + text.slice(0, 300));
-  }
+  await upsertBucketed(env, 'auction_watchlist',
+    CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?on_conflict=date,stock', rows);
 }
 
 export async function upsertMarketMetrics(env, rows) {
   if (!rows || rows.length === 0) return;
-  const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?on_conflict=date,stock,scope';
-  // 【FIX 2026-08-03】加 missing=default：批次里某一行没带某个字段时保留云端原值
-  const resp = await sbFetch(url, {
-    method: 'POST',
-    headers: Object.assign(sbHeaders(env), { 'Prefer': 'resolution=merge-duplicates, missing=default, return=minimal' }),
-    body: JSON.stringify(rows)
-  });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    throw new Error('upsert market_metrics 失败: HTTP ' + resp.status + ': ' + text.slice(0, 300));
-  }
+  await upsertBucketed(env, 'market_metrics',
+    CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?on_conflict=date,stock,scope', rows);
 }
 
 export async function updateStockCodeMap(env, pairs) {
@@ -111,16 +168,9 @@ export async function updateStockCodeMap(env, pairs) {
  */
 export async function upsertStockRangePct(env, rows) {
   if (!rows || rows.length === 0) return;
-  const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range_pct?on_conflict=date,stock';
-  const resp = await sbFetch(url, {
-    method: 'POST',
-    headers: Object.assign(sbHeaders(env), { 'Prefer': 'resolution=merge-duplicates, return=minimal' }),
-    body: JSON.stringify(rows)
-  });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    throw new Error('upsert stock_range_pct 失败: HTTP ' + resp.status + ': ' + text.slice(0, 300));
-  }
+  // [PGRST102 2026-11-05] 同 upsertMarketMetrics：走分桶，⛔ 不要再单批塞异键集的行
+  await upsertBucketed(env, 'stock_range_pct',
+    CONFIG.SUPABASE_URL + '/rest/v1/stock_range_pct?on_conflict=date,stock', rows);
 }
 
 /**
