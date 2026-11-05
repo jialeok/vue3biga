@@ -9,7 +9,7 @@
 //   ③ ⛔ 双重日期闸门：快照非终态或服务端日不符 ⇒ 竞价量/量比一律不写（防跨日写错）
 //   ④ ⛔ 只允许补「今天」；读名单失败 / 名单为空 必须如实返回 ok:false，不伪装成功
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const TODAY = '2026-10-26';
 
@@ -26,15 +26,21 @@ vi.mock('../../data/api/fuyao-proxy.js', () => ({
 }));
 vi.mock('./auction-pull-window.js', () => ({ beijingTodayStr: () => '2026-10-26' }));
 vi.mock('../../data/debug-log.js', () => ({ _dbgLog: () => {} }));
+// ★ [VOL-COVER 2026-11-05] 「展示名单」由 dragon-rank 提供；这里换成可控夹具，
+//   用来验证「补数目标 = 展示名单，而不只是 auction_watchlist」这条新口径。
+vi.mock('./dragon-rank.js', () => ({ getDragonTargetRows: vi.fn(() => []) }));
 
 import {
   patchTodayAuctionFromThs,
+  autoFillTodayAuctionVolume,
+  _resetAutoFillForTest,
   fmtPct, fmtIntVol, fmtRatio,
   _resetThsPatchForTest,
 } from './ths-today-patch.js';
 import { readAuctionRoster, readAuctionMetrics, upsertAuctionMetrics } from '../../data/auction-metrics-patch.js';
 import { fetchDailyPctRange } from '../../data/daily-pct-range.js';
 import { fuyaoApiGet } from '../../data/api/fuyao-proxy.js';
+import { getDragonTargetRows } from './dragon-rank.js';
 
 /** 北京某天的时间戳（快照顶层 timestamp 用它做日期闸门） */
 const TS_TODAY = Date.parse('2026-10-26T15:00:00+08:00');
@@ -64,6 +70,8 @@ function setUpstream(over) {
 beforeEach(() => {
   vi.clearAllMocks();
   _resetThsPatchForTest();
+  _resetAutoFillForTest();
+  getDragonTargetRows.mockReturnValue([]);
   readAuctionRoster.mockResolvedValue([{ stock: '票A', code: '600001' }]);
   readAuctionMetrics.mockResolvedValue([]);
   upsertAuctionMetrics.mockImplementation(async function(rows) { return rows.length; });
@@ -267,5 +275,121 @@ describe('patchTodayAuctionFromThs — §32 单飞', () => {
     ]);
     expect(a).toBe(b);                            // 同一个 Promise 结果
     expect(readAuctionRoster).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// ★ [VOL-COVER 2026-11-05] 用户第 9 次报障的护栏：
+//   「襄阳轴承五日趋势图有当天竞价量，第一页的竞价量却显示横杠……这是一类问题」
+//   「上海洗霸和大洋电机也没有当天数据」
+//   根因两条，各用一组用例锁死：
+//   ① 补数目标名单必须 = 【展示名单】（含观察组/20日补位壳行），不能只认 auction_watchlist；
+//   ② 自动补必须受时间闸 + 缺口预检约束，且只走快照腿（不烧 K 线腿）。
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('展示名单口径（补数目标 ≠ worker 抓取名单）', () => {
+  it('只在视图里出现的票（观察组/20日补位壳行）也在补数目标内', async () => {
+    // 正式名单只有票A；票B 只在展示名单里（今天四张表都没有它 —— 上海洗霸/大洋电机就是这个形状）
+    getDragonTargetRows.mockReturnValue([{ stock: '票A', code: '600001' }, { stock: '票B', code: '600002' }]);
+    fuyaoApiGet.mockResolvedValue({
+      timestamp: TS_TODAY,
+      data_status: 'final',
+      item: [
+        { thscode: '600001.SH', auction_pct: 3.21, auction_volume: 38830.49, auction_turnover_pct: 2.271 },
+        { thscode: '600002.SH', auction_pct: -1.1, auction_volume: 12300, auction_turnover_pct: 0.9 },
+      ],
+    });
+    const r = await patchTodayAuctionFromThs(TODAY);
+    expect(r.ok).toBe(true);
+    const rows = upsertAuctionMetrics.mock.calls[0][0];
+    const names = rows.map((x) => x.stock).sort();
+    expect(names).toEqual(['票A', '票B']);
+    // 票B 是整行新建（库里原本一行都没有）⇒ 必须如实标来源，⛔ 不冒充 worker
+    const b = rows.find((x) => x.stock === '票B');
+    expect(b.source).toBe('ths-patch');
+    expect(b.volume).toBe('123');   // 12300 手 ÷ 100 = 123 万股
+  });
+
+  it('⛔ 竞价量比(auc_vol_ratio) 永不补 —— 即使快照里有这个字段', async () => {
+    fuyaoApiGet.mockResolvedValue({
+      timestamp: TS_TODAY,
+      data_status: 'final',
+      item: [{ thscode: '600001.SH', auction_pct: 3.21, auction_volume: 38830.49, auction_volume_ratio: 12.5 }],
+    });
+    await patchTodayAuctionFromThs(TODAY);
+    const rows = upsertAuctionMetrics.mock.calls[0][0];
+    rows.forEach((x) => expect(x.auc_vol_ratio).toBeUndefined());
+  });
+});
+
+describe('autoFillTodayAuctionVolume — 自动补的闸门', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  /** 把「现在」定在北京某时刻（只伪造 Date，setTimeout/Promise 保持真实） */
+  function setBeijing(iso) {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(iso));
+  }
+
+  it('⛔ 非当天 ⇒ 一个请求都不发', async () => {
+    setBeijing('2026-10-26T10:00:00+08:00');
+    const r = await autoFillTodayAuctionVolume('2026-10-23');
+    expect(r.ok).toBe(false);
+    expect(readAuctionRoster).not.toHaveBeenCalled();
+    expect(fuyaoApiGet).not.toHaveBeenCalled();
+  });
+
+  it('⛔ 9:25 之前 ⇒ 不补（快照还是上一交易日）', async () => {
+    setBeijing('2026-10-26T09:24:00+08:00');
+    const r = await autoFillTodayAuctionVolume(TODAY);
+    expect(r.ok).toBe(false);
+    expect(String(r.skipped)).toContain('9:25');
+    expect(fuyaoApiGet).not.toHaveBeenCalled();
+  });
+
+  it('⛔ 15:00 之后 ⇒ 不补（交给收盘覆盖链路）', async () => {
+    setBeijing('2026-10-26T15:00:00+08:00');
+    const r = await autoFillTodayAuctionVolume(TODAY);
+    expect(r.ok).toBe(false);
+    expect(String(r.skipped)).toContain('收盘');
+    expect(fuyaoApiGet).not.toHaveBeenCalled();
+  });
+
+  it('竞价量已齐 ⇒ 判「无缺口」，不发快照请求', async () => {
+    setBeijing('2026-10-26T09:30:00+08:00');
+    readAuctionMetrics.mockResolvedValue([{ stock: '票A', volume: '388' }]);
+    const r = await autoFillTodayAuctionVolume(TODAY);
+    expect(r.ok).toBe(true);
+    expect(r.missing).toBe(0);
+    expect(fuyaoApiGet).not.toHaveBeenCalled();
+  });
+
+  it('有缺口 ⇒ 只走快照腿（⛔ 不跑 K 线腿，省上游请求）', async () => {
+    setBeijing('2026-10-26T09:30:00+08:00');
+    const r = await autoFillTodayAuctionVolume(TODAY);
+    expect(r.ok).toBe(true);
+    expect(r.patchedRows).toBeGreaterThan(0);
+    expect(fetchDailyPctRange).not.toHaveBeenCalled();
+    expect(fuyaoApiGet).toHaveBeenCalled();
+  });
+
+  it('§32：同一场次最多补 2 次（30s 内连调不会重复烧请求）', async () => {
+    setBeijing('2026-10-26T09:30:00+08:00');
+    await autoFillTodayAuctionVolume(TODAY);
+    const callsAfterFirst = fuyaoApiGet.mock.calls.length;
+    await autoFillTodayAuctionVolume(TODAY);   // 30s 内、且已补过 1 次
+    expect(fuyaoApiGet.mock.calls.length).toBe(callsAfterFirst);
+  });
+});
+
+describe('快照腿必须「受控放行」（否则总闸一开，这条腿就静默死掉）', () => {
+  it('调用上游时必须带 allowWhenOff + timeoutMs（2026-11-05 第一页整列 "-" 的直接成因）', async () => {
+    await patchTodayAuctionFromThs(TODAY);
+    const call = fuyaoApiGet.mock.calls.find((c) => c[0] === '/api/a-share/auction/snapshot');
+    expect(call).toBeTruthy();
+    const opts = call[2] || {};
+    // 这两条是 fuyao-proxy.js#fuyaoApiGet 的放行条件（缺一条就 throw，且是在 new URL 之前抛）
+    expect(opts.allowWhenOff).toBe(true);
+    expect(Number(opts.timeoutMs)).toBeGreaterThan(0);
   });
 });

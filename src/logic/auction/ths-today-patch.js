@@ -27,10 +27,27 @@ import { fetchDailyPctRange } from '../../data/daily-pct-range.js';
 import { fuyaoApiGet, tickerToThscode } from '../../data/api/fuyao-proxy.js';
 import { computeKlineDayPatch } from './trend-patch.js';
 import { beijingTodayStr } from './auction-pull-window.js';
+// ★ [VOL-COVER 2026-11-05] 「展示名单」唯一真相 —— 与十日涨幅的自愈目标同源（dragon-rank）。
+import { getDragonTargetRows } from './dragon-rank.js';
+import { getStockCode } from '../../data/stock-code-map.js';
 import { _dbgLog } from '../../data/debug-log.js';
 
 /** 快照接口单批上限（与 suspend.js / trend-patch.js 同一契约：40 个 thscode） */
 const SNAPSHOT_CHUNK = 40;
+/**
+ * ★★ [SNAP-BYPASS 2026-11-05] 竞价快照是本模块**唯一**的竞价量来源，必须走「受控放行」。
+ *
+ * 🔴 事故（就是今天第一页整列 '-' 的直接成因之一）：
+ *   2026-10-30 打开 FUYAO_OFF 总闸后，`fuyaoApiGet` 要求调用方**同时**给
+ *   `allowWhenOff: true` + `timeoutMs > 0` 才放行 `/api/a-share/auction/snapshot`。
+ *   trend-patch.js 给了（所以五日趋势图有当天竞价量），而**本模块没给** ⇒ 每次调用都在
+ *   `new URL` 之前就被拒 ⇒ `❌ 快照腿失败` ⇒ 竞价量 / 竞价涨幅 / 换手率一条都补不上。
+ *   于是就出现了用户看到的那一幕：**趋势图有、第一页没有**。
+ *
+ * ⛔ 不要放宽成「整个 fuyao 通道打开」：那会把 10-30 的卡死放回来（见 fuyao-proxy.js 文件头）。
+ *    这里只放行这一个端点，且必须带超时 —— 与 trend-patch 的用法逐字一致。
+ */
+const SNAPSHOT_TIMEOUT_MS = 8000;
 
 const _inflight = new Map();
 
@@ -72,8 +89,7 @@ function _emptyFilled() {
 }
 
 /** 拉竞价快照（分批），返回 { items, timestamp, dataStatus } */
-async function _fetchSnapshot(thscodes) {
-  const out = [];
+async function _fetchSnapshot(thscodes) {  const out = [];
   let timestamp = 0;
   let dataStatus = '';
   for (let i = 0; i < thscodes.length; i += SNAPSHOT_CHUNK) {
@@ -81,7 +97,7 @@ async function _fetchSnapshot(thscodes) {
     const data = await fuyaoApiGet('/api/a-share/auction/snapshot', {
       thscodes: chunk.join(','),
       stage: 'final',
-    });
+    }, { allowWhenOff: true, timeoutMs: SNAPSHOT_TIMEOUT_MS });
     if (i === 0) {
       timestamp = Number(data && data.timestamp) || 0;
       dataStatus = String((data && data.data_status) || '');
@@ -93,10 +109,140 @@ async function _fetchSnapshot(thscodes) {
 }
 
 /**
+ * ★★★ [VOL-COVER 2026-11-05] 「今天该有哪些票」的唯一真相 = **展示名单**，不是「worker 抓取名单」。
+ *
+ * 🔴 事故（2026-11-05 用户第 9 次报障）：「襄阳轴承五日趋势图有当天竞价量，第一页的竞价量却显示横杠」
+ *   「上海九百 / 上海洗霸 / 大洋电机 也没有当天数据」。
+ *   逐环取证：
+ *     · `auction_watchlist` 今天 **76 行**，其中 21 行 `source=range20`（20 日补位）、9 行后来补的；
+ *     · `market_metrics` 里这 21 行的 `volume` **全是 null**（Edge 建行时快照腿没拿到手数）；
+ *     · 观察组壳行（上海洗霸/大洋电机）**在四张表里今天一行都没有** —— 它们是视图注入行，
+ *       而第一页的竞价量列**只读库**，趋势图却有一条第 4 腿（前端快照现算）⇒ 天然不同步。
+ *   ⇒ 根因同一类：**「读库的展示位」+「写库的人只认 worker 名单」**。
+ *
+ * 修法（结构性，一处）：补数的目标名单从「auction_watchlist」扩展到
+ *   **`getDragonTargetRows(date)`** —— 那个函数的口径本来就是「看板当天真正会渲染出来的行」
+ *   （正式成员 + 打标签继承 + 前一日竞昨高光观察组 + 20 日补位/龙头壳行），
+ *   与十日涨幅自愈用的分母**同一个定义**（§6：一处定义，两处消费）。
+ *
+ * 这样「库里有没有行」不再取决于「它是不是 883410 成分股」，而取决于「它会不会被显示」。
+ *
+ * @param {string} date
+ * @returns {Promise<Array<{stock:string, code:string}>>}
+ * @throws 正式名单读取失败（§10 —— 不把"读不到"伪装成"没有票"）
+ */
+async function _resolveRoster(date) {
+  const byName = new Map();
+  const wl = await readAuctionRoster(date);           // ① 正式名单（带 code）
+  wl.forEach(function(r) {
+    const n = String((r && r.stock) || '').trim();
+    if (!n) return;
+    byName.set(n, { stock: n, code: String((r && r.code) || '').trim() });
+  });
+  // ② 展示名单并集（观察组继承 / 打标签继承 / 20 日补位 / 龙头壳行）
+  let targets = [];
+  try {
+    targets = getDragonTargetRows(date) || [];
+  } catch (e) {
+    // 视图层名单拿不到 ⇒ 退化为「只补正式名单」，⛔ 不能让补数整条链挂掉，但必须留痕
+    _dbgLog('[THS-PATCH] 展示名单读取失败（本次只补正式名单）: ' + (e && e.message || e));
+  }
+  targets.forEach(function(r) {
+    const n = String((r && r.stock) || '').trim();
+    if (!n) return;
+    const c = String((r && r.code) || '').trim();
+    if (byName.has(n)) {
+      const cur = byName.get(n);
+      if (!cur.code && c) cur.code = c;
+      return;
+    }
+    byName.set(n, { stock: n, code: c });
+  });
+  // ③ 代码兜底：壳行往往没有 code，用股票名册解析（§40 不猜代码，解析不到就留空 → 后面过滤掉）
+  const out = [];
+  byName.forEach(function(v) {
+    let code = v.code;
+    if (!/^\d{6}$/.test(code)) {
+      try { code = getStockCode(v.stock) || ''; } catch (e) { code = ''; }
+    }
+    out.push({ stock: v.stock, code: code });
+  });
+  return out;
+}
+
+/** 北京时间的「当天第几分钟」（与 stock-range-pct.js 同口径，⛔ 不用 UTC 切） */
+function _beijingMinutes() {
+  const now = new Date(Date.now() + 8 * 3600 * 1000);
+  return now.getUTCHours() * 60 + now.getUTCMinutes();
+}
+
+// ── 自动补竞价量（竞价时段、覆盖不足时）──────────────────────────────────
+//   ⛔ 只在「展示名单里还有票缺 volume」时才跑；⛔ 不补 auc_vol_ratio（只认猫抓）；
+//   ⛔ 只补今天、只在 09:25~15:00 之间补（9:25 前快照还是上一交易日，闸门也会拒）。
+const AUTO_OPEN_MIN = 9 * 60 + 25;    // 北京 09:25（竞价终态最早出现的时刻）
+const AUTO_CLOSE_MIN = 15 * 60;       // 北京 15:00（收盘后交给收盘覆盖链路）
+const AUTO_MAX_TIMES = 2;             // 每日期每会话最多 2 次（名单通常分 1~2 批到货）
+const AUTO_MIN_GAP_MS = 30 * 1000;
+/** date -> { attempts:number, at:number } */
+const _autoState = new Map();
+
+/**
+ * 竞价时段自动补齐「第一页竞价量」—— 让读库的列与趋势图（前端现算）不再打架。
+ *
+ * 与手动按钮的区别：只跑**快照腿**（1 请求 / 40 只，免费），不跑 K 线腿，所以很轻；
+ * 其余安全约束与 `patchTodayAuctionFromThs` 完全一致（只填空 / 只 upsert / 双重日期闸门 / 单飞）。
+ *
+ * @param {string} [date]
+ * @returns {Promise<{ok:boolean, skipped?:string, missing?:number, patchedRows?:number}>} 永不抛错
+ */
+export async function autoFillTodayAuctionVolume(date) {
+  const d = String(date || '').trim();
+  const today = beijingTodayStr();
+  if (!d || d !== today) return { ok: false, skipped: '非当天（历史日的行情早已固化）' };
+  const mins = _beijingMinutes();
+  if (mins < AUTO_OPEN_MIN) return { ok: false, skipped: '9:25 之前（快照还不是今天）' };
+  if (mins >= AUTO_CLOSE_MIN) return { ok: false, skipped: '已收盘（交给收盘覆盖链路）' };
+  const st = _autoState.get(d) || { attempts: 0, at: 0 };
+  if (st.attempts >= AUTO_MAX_TIMES) return { ok: false, skipped: '本会话已自动补过 ' + st.attempts + ' 次' };
+  if (Date.now() - st.at < AUTO_MIN_GAP_MS) return { ok: false, skipped: '距上次不足 30s' };
+  try {
+    const roster = await _resolveRoster(d);
+    const existing = await readAuctionMetrics(d);
+    const byStock = new Map();
+    existing.forEach(function(r) { const k = String((r && r.stock) || '').trim(); if (k) byStock.set(k, r); });
+    const missing = roster.filter(function(t) {
+      const cur = byStock.get(t.stock);
+      return !cur || _isEmpty(cur.volume);
+    });
+    // 已经有缺口统计 ⇒ 记一次「本轮已检查」，避免 30s 内反复读库（§32）
+    _autoState.set(d, { attempts: st.attempts + (missing.length > 0 ? 1 : 0), at: Date.now() });
+    if (missing.length === 0) {
+      _dbgLog('[THS-PATCH] 自动补：展示名单 ' + roster.length + ' 只，竞价量已齐，无需补');
+      return { ok: true, skipped: '无缺口', missing: 0 };
+    }
+    _dbgLog('[THS-PATCH] 自动补：展示名单 ' + roster.length + ' 只，缺竞价量 ' + missing.length
+      + ' 只（第 ' + (st.attempts + 1) + ' 次）→ 走快照腿');
+    const r = await patchTodayAuctionFromThs(d, { onlyVolume: true });
+    return { ok: !!(r && r.ok), missing: missing.length, patchedRows: (r && r.patchedRows) || 0, filled: r && r.filled };
+  } catch (e) {
+    // 自动补是加分项：失败只留痕，⛔ 绝不影响看板本身的加载（§10 读失败语义仍由各自链路负责）
+    _dbgLog('[THS-PATCH] 自动补失败（不影响看板）: ' + (e && e.message || e));
+    return { ok: false, skipped: '异常: ' + (e && e.message || e) };
+  }
+}
+
+/** 仅供测试 / 诊断：重置「自动补」的会话状态 */
+export function _resetAutoFillForTest() {
+  _autoState.clear();
+}
+
+/**
  * 用同花顺补齐「今天」的竞价行情并写库。
  *
  * @param {string} [date] 目标日（缺省 = 北京今天）；⛔ 只接受今天
- * @param {{onProgress?:(stage:string,done:number,total:number)=>void, requestTimeoutMs?:number}} [opts]
+ * @param {{onProgress?:(stage:string,done:number,total:number)=>void, requestTimeoutMs?:number,
+ *          onlyVolume?:boolean}} [opts]
+ *        `onlyVolume=true` = 只走快照腿补竞价量（跳过 K 线腿）。自动补用的就是这条轻量路径。
  * @returns {Promise<{ok:boolean, date:string, roster:number, patchedRows:number, filled:{pct:number,vol:number,turnover:number}, reason?:string, logs:string[]}>}
  */
 export async function patchTodayAuctionFromThs(date, opts) {
@@ -120,17 +266,18 @@ export async function patchTodayAuctionFromThs(date, opts) {
   if (fly) return fly;
 
   const p = (async function() {
-    // ① 今天应该有哪些票（正式名单）—— 读失败直接抛（§10）
-    const roster = await readAuctionRoster(d);
+    // ① 今天应该有哪些票 —— **展示名单**（正式成员 ∪ 观察组/打标签继承 ∪ 20 日补位 ∪ 龙头壳行）。
+    //    读失败直接抛（§10）。⛔ 别退回「只认 auction_watchlist」：那正是今天第一页整列 '-' 的根因。
+    const roster = await _resolveRoster(d);
     if (roster.length === 0) {
-      log('名单为空（auction_watchlist ' + d + ' 无行）⇒ 无可补对象');
+      log('名单为空（auction_watchlist ' + d + ' 无行 且 无可注入壳行）⇒ 无可补对象');
       return { ok: false, date: d, roster: 0, patchedRows: 0, filled: _emptyFilled(), reason: '当天名单为空', logs: logs };
     }
     // 只有 6 位代码的才能查上游（§40 不猜代码）
     const targets = roster
       .map(function(r) { return { stock: String(r.stock || '').trim(), code: String(r.code || '').trim() }; })
       .filter(function(t) { return t.stock && /^\d{6}$/.test(t.code); });
-    log('名单 ' + roster.length + ' 只，其中带 6 位代码 ' + targets.length + ' 只');
+    log('展示名单 ' + roster.length + ' 只，其中带 6 位代码 ' + targets.length + ' 只');
     if (targets.length === 0) {
       return { ok: false, date: d, roster: roster.length, patchedRows: 0, filled: _emptyFilled(), reason: '名单没有可用代码', logs: logs };
     }
@@ -145,19 +292,26 @@ export async function patchTodayAuctionFromThs(date, opts) {
     log('库内已有 ' + existing.length + ' 行（缺字段的会被补，已有的绝不覆盖）');
 
     // ③ K 线腿：涨幅 / 开盘涨幅(竞价) / 昨日成交量 —— 一次请求三样，0 猫抓额度
-    report('kline', 0, targets.length);
+    //    ★ [VOL-COVER 2026-11-05] `onlyVolume` 时【整条跳过】：自动补只关心竞价量，
+    //      而 K 线腿是「每只票一次上游请求」的重活 —— 竞价时段每秒都在刷，⛔ 不许把它带进自动路径。
     const openOut = new Map();
     const volOut = new Map();
     let pctMap = null;
-    try {
-      pctMap = await fetchDailyPctRange(
-        targets,
-        [d],
-        { requestTimeoutMs: o.requestTimeoutMs || 20000, openOut: openOut, volOut: volOut }
-      );
-    } catch (e) {
-      // §10：K 线腿失败只降级这一腿（快照腿照走），但不伪装成"没有数据"
-      log('❌ K 线腿失败（涨幅/竞价涨幅/昨量本次补不上）: ' + (e && e.message || e));
+    if (o.onlyVolume) {
+      report('kline', targets.length, targets.length);
+      log('只补竞价量模式：跳过 K 线腿（涨幅/昨量本次不动）');
+    } else {
+      report('kline', 0, targets.length);
+      try {
+        pctMap = await fetchDailyPctRange(
+          targets,
+          [d],
+          { requestTimeoutMs: o.requestTimeoutMs || 20000, openOut: openOut, volOut: volOut }
+        );
+      } catch (e) {
+        // §10：K 线腿失败只降级这一腿（快照腿照走），但不伪装成"没有数据"
+        log('❌ K 线腿失败（涨幅/竞价涨幅/昨量本次补不上）: ' + (e && e.message || e));
+      }
     }
 
     // ④ 快照腿：竞价量 / 竞价涨幅(终态) / 真换手率 —— 仅当天有，必须过双重闸门

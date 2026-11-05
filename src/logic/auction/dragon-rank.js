@@ -92,35 +92,115 @@ const _guardedDates = new Set();
 // 现在改为「每阶段最多一次」：盘中最多 1 次（拿不到 T 腿时也可能只是白跑），收盘后最多再 1 次
 // （此时 T 腿一定取得到=收盘涨幅，重算结果即最终正确值）。有界：每日最多 2 次。
 const _fallbackTried = new Map();
-// 空缓存主动重试（一次性定时器，指数退避，拿到数据即停止）
-let _emptyRetryTimer = null;
-let _emptyRetryDelay = 0;
-let _emptyRetryCount = 0;
+// 覆盖不足主动重试（一次性定时器，指数退避，盖全即停止）
+// [R10-COVER 2026-11-05] 原 `_emptyRetryTimer/_emptyRetryDelay/_emptyRetryCount` 三件已随语义升级
+//   改名为 `_coverRetry*`（判据从「云端为空」扩为「展示名单没盖全」），旧名不再保留（§42）。
+
+// ★★★ [R10-COVER 2026-11-05] 「覆盖收敛」状态 —— 十日涨幅补齐不再是「一次性事件」。
+//
+// 🔴 事故（2026-11-05 用户第 9 次报障）：「十日涨幅从第 45 只开始全部空白」。
+//   逐环取证（⛔ 别凭感觉）：
+//     · 09:25:10 worker 写 auction_watchlist **46 行**；
+//     · 10:13:32 自愈写 stock_range_pct **46 行**（= 那一刻的名单，全覆盖、零缺口）；
+//     · 10:16:08 名单被前端扩到 **76 行**（+21 只 20 日补位 + 9 只观察组/龙头壳行）；
+//     · 那 30 只的逐日腿在 stock_daily_pct 里 **28 只都有 8/10 腿**（数据齐！）
+//       —— 纯粹因为「自愈只认 map.size===0，已经有 46 行了就不会再跑」，所以它们永远空白。
+//   ⇒ 根因不是数据、不是某只票，而是**补齐动作被写成了「一次性」**，而名单是**分批到达**的。
+//
+// 修法（结构性，一处）：把判据从「云端是不是空」换成「**展示名单是不是都覆盖到了**」，
+//   并且只有在「缺口比上次小」时才再打一次自愈 —— 缺口没变化说明云端也补不出，⛔ 不空转（§32）。
+const COVER_HEAL_MAX_TIMES = 3;      // 每日期每会话最多打 3 次自愈（够覆盖「名单分批到货」）
+const COVER_HEAL_MIN_GAP_MS = 12000; // 两次自愈最小间隔，防同一帧内多消费者同时触发
+/** date -> { key:string, attempts:number, at:number }（key = 缺口股票名集合的指纹） */
+const _coverState = new Map();
+// 覆盖不足时的重试（与「空缓存重试」共用同一个定时器槽位，语义已从「空」扩为「没盖全」）
+let _coverRetryTimer = null;
+let _coverRetryDelay = 0;
+let _coverRetryCount = 0;
 
 /**
- * 云端为空时安排一次重读（页面早于 9:25 worker 写入时打开的场景）。
- * 有界：指数退避 + 最大次数，拿到数据立刻停止，不会长期空转（§32 禁止重复请求）。
+ * 纯函数：本轮要不要再打一次「云端自愈」—— 覆盖收敛的**唯一判据**（供单测直接锁住）。
+ *
+ * ⛔ 别把判据写成「缺口数量变小」：名单扩容后缺口通常是**变大**的（46 只盖满后名单扩到 76 只，
+ *    缺口从 0 变 30），用数量判会把新进来的那批永久漏掉 —— 那正是 2026-11-05 这个 bug 的形状。
+ *    所以这里比的是「缺口**集合**指纹」是否变化。
+ *
+ * @param {{mapSize:number, gapKey:string, state:{key:string,attempts:number,at:number}|null, now:number}} o
+ * @returns {boolean} true = 值得再打一次自愈
  */
-function _scheduleEmptyRetry(date) {
-  if (_emptyRetryTimer || _emptyRetryCount >= EMPTY_RETRY_MAX_TIMES) return;
-  const delay = _emptyRetryDelay === 0 ? EMPTY_RETRY_FIRST_MS : Math.min(_emptyRetryDelay * 2, EMPTY_RETRY_MAX_MS);
-  _emptyRetryDelay = delay;
-  _emptyRetryTimer = setTimeout(function() {
-    _emptyRetryTimer = null;
-    _emptyRetryCount++;
+export function shouldHealForCoverage(o) {
+  const mapSize = Number(o && o.mapSize) || 0;
+  // 云端一行都没有 ⇒ 无条件自愈（这是原 R10-SELF-HEAL 的行为，一字不变）
+  if (mapSize === 0) return true;
+  const st = (o && o.state) || null;
+  if (!st) return true;
+  if ((Number(st.attempts) || 0) >= COVER_HEAL_MAX_TIMES) return false;
+  const now = Number((o && o.now) || 0);
+  if (now - (Number(st.at) || 0) < COVER_HEAL_MIN_GAP_MS) return false;
+  return String((o && o.gapKey) || '') !== String(st.key || '');
+}
+
+/**
+ * 计算「展示名单里还差哪些股票没有十日涨幅」。
+ *
+ * 名单唯一真相 = `getDragonTargetRows(date)`（本文件下方导出，与看板真正渲染的行同源）。
+ * @returns {string[]|null} 缺口股票名数组；`null` = 目标名单拿不到（此时调用方必须退回旧判据，
+ *          ⛔ 不能把「算不出来」当成「没有缺口」—— 那等于静默放弃自愈，§10）
+ */
+function _coverageGap(date, map) {
+  let targets;
+  try {
+    targets = getDragonTargetRows(date) || [];
+  } catch (e) {
+    _dbgLog('[DRAGON] 目标名单读取失败（本轮不做覆盖收敛判断）: ' + (e && e.message || e));
+    return null;
+  }
+  const gap = [];
+  targets.forEach(function(t) {
+    const n = t && t.stock ? String(t.stock).trim() : '';
+    if (n && !map.has(n)) gap.push(n);
+  });
+  return gap;
+}
+
+/**
+ * 覆盖不足时安排一次「重读 + （必要时）再自愈」。
+ *
+ * 与旧 `_scheduleEmptyRetry` 的差别只有一个：判据从 `map.size === 0` 扩成「还有票没盖到」。
+ * 有界：指数退避 + 最大次数；缺口不再缩小时自愈本身会停（见 `_load` 里的 `attempts` 闸门）。
+ */
+function _scheduleCoverRetry(date) {
+  if (_coverRetryTimer || _coverRetryCount >= EMPTY_RETRY_MAX_TIMES) return;
+  const delay = _coverRetryDelay === 0 ? EMPTY_RETRY_FIRST_MS : Math.min(_coverRetryDelay * 2, EMPTY_RETRY_MAX_MS);
+  _coverRetryDelay = delay;
+  _coverRetryTimer = setTimeout(function() {
+    _coverRetryTimer = null;
+    _coverRetryCount++;
     const s = dragonState.value;
-    if (s.date !== date || s.map.size > 0) return; // 已拿到数据（或已切日期）→ 不再重试
+    if (s.date !== date) return;                       // 已切日期 → 不再重试
+    const gap = _coverageGap(date, s.map);
+    if (gap !== null && gap.length === 0) return;      // 已盖全 → 收工
+    if (gap === null && s.map.size > 0) return;        // 名单拿不到且已有数据 → 不折腾
     ensureDragonRangePct(date).catch(function(e) {
-      console.warn('[DRAGON] 空缓存重试失败:', e && e.message);
+      console.warn('[DRAGON] 覆盖不足重试失败:', e && e.message);
     });
   }, delay);
 }
 
-function _stopEmptyRetry() {
-  if (_emptyRetryTimer) { clearTimeout(_emptyRetryTimer); _emptyRetryTimer = null; }
-  _emptyRetryDelay = 0;
-  _emptyRetryCount = 0;
+function _stopCoverRetry() {
+  if (_coverRetryTimer) { clearTimeout(_coverRetryTimer); _coverRetryTimer = null; }
+  _coverRetryDelay = 0;
+  _coverRetryCount = 0;
 }
+
+/**
+ * 云端为空时安排一次重读（页面早于 9:25 worker 写入时打开的场景）。
+ * 有界：指数退避 + 最大次数，拿到数据立刻停止，不会长期空转（§32 禁止重复请求）。
+ *
+ * ⚠️ [R10-COVER 2026-11-05] 本函数已由 `_scheduleCoverRetry` 取代（判据从「空」扩为「没盖全」），
+ *    §42：不保留死代码 —— 旧实现已删除。若将来有人想恢复「只在完全为空时重试」，
+ *    请先读 `_coverState` 那段注释（名单分批到货，等一次永远是错的）。
+ */
 
 /** 当前已加载的区间涨幅（仅当 date 匹配时有效，否则返回 null）。同步读取，供 view-helpers 用。 */
 export function getDragonRangePct(date) {
@@ -151,7 +231,7 @@ export function getDragonFingerprintToken() {
 }
 
 export function clearDragonRangePct() {
-  _stopEmptyRetry();
+  _stopCoverRetry();
   if (dragonState.value.date === '' && dragonState.value.map.size === 0) return;
   dragonState.value = { date: '', map: new Map(), version: dragonState.value.version + 1, loadedAt: 0 };
 }
@@ -320,7 +400,13 @@ export async function ensureDragonRangePct(date, opts) {
     //   否则窗口一过就再没人触发补齐，十日涨幅会一直缺着（见 _inMorningGuard 注释）。
     const needReload = _reloadDates.has(date) || _guardedDates.has(date)
       || (cur.loadedAt > 0 && !Number.isNaN(authMs) && cur.loadedAt < authMs && Date.now() >= authMs)
-      || (isEmpty && Date.now() - cur.loadedAt >= EMPTY_RETRY_MS);
+      || (isEmpty && Date.now() - cur.loadedAt >= EMPTY_RETRY_MS)
+      // ★ [R10-COVER 2026-11-05] 「上次自愈之后又过了 12s 且当时还有缺口」⇒ 允许重入。
+      //   没有这一条，`_scheduleCoverRetry` 定时器醒来后调本函数会被这里短路（map 非空），
+      //   覆盖收敛就永远走不到第二趟 —— 名单扩容后的那批票也就永远空白。
+      || (_coverState.has(date)
+          && (_coverState.get(date).attempts || 0) < COVER_HEAL_MAX_TIMES
+          && Date.now() - (_coverState.get(date).at || 0) >= COVER_HEAL_MIN_GAP_MS);
     if (!needReload) return cur.map;
   }
   // 非强制：复用同一次进行中的请求（单飞，杜绝并发重复消耗额度）。
@@ -363,36 +449,63 @@ async function _load(date, force) {
   _publish(date, map);
   _reloadDates.delete(date);
 
-  // ★★★ [R10-SELF-HEAL 2026-11-05] 当天【一行都没有】⇒ 先请云端用逐日腿表自愈，再谈重读。
+  // ★★★ [R10-COVER 2026-11-05] 自愈判据：从「云端一行都没有」升级为「**展示名单没盖全**」。
   //
-  // 为什么必须放在 `_scheduleEmptyRetry` 之前：那个重试只是【重读同一张（空的）云端表】，
-  //   09:25 那天表里本来就是 0 行 ⇒ 重读到次数用完还是 0 行（2026-11-05 实测就是这样空等的）。
-  //   真正能把行写出来的只有云端那套「逐日腿表复利」（= Edge 的 ?range10=1，零上游请求）。
+  // 🔴 旧判据 `map.size === 0` 的致命缺陷（2026-11-05 实测）：
+  //   10:13:32 自愈写了 46 行（那一刻名单正好 46 只）⇒ map.size=46 ≠ 0 ⇒ 之后再也不会自愈；
+  //   10:16:08 名单扩到 76 行（+30 只补位/壳行）⇒ 后进的 30 只永远是空白 —— 用户看到的就是
+  //   「十日涨幅从第 45 只开始全没」。而那 30 只里 28 只在 stock_daily_pct 里**有 8/10 腿**，
+  //   也就是说数据是齐的，纯粹是「补齐只做了一次」。
   //
-  // 为什么不受 `_inMorningGuard` 约束（那道闸门在下面第 2 步才生效，本段在它之前）：
-  //   它是「别跟 worker 抢猫抓 10 次/日额度」用的，而本函数走的是 Edge 纯库内计算
-  //   ——**零上游请求、零猫抓额度**，抢不到任何东西。竞价时段恰恰是最需要它的时候。
+  // 现在的判据：`_coverageGap()`（分母 = getDragonTargetRows，与看板真正渲染的行同源）。
+  //   只有满足以下全部条件才再打一次自愈：
+  //     ① 还有缺口；② 本会话自愈次数 < 3；③ 距上次 ≥ 12s；
+  //     ④ **缺口集合变了**（或本次云端本来就空）—— 集合一字不变说明云端也补不出，再打就是空转（§32）。
+  //
+  // 为什么仍放在 `_scheduleCoverRetry` 之前：那个重试只是「重读同一张表」，
+  //   表里没有的行重读一万次也没有；真正能把行写出来的只有云端「逐日腿表复利」（Edge ?range10=1，
+  //   零上游请求、零猫抓额度）。
+  //
+  // 为什么不受 `_inMorningGuard` 约束：那道闸门是「别跟 worker 抢猫抓 10 次/日额度」用的，
+  //   本段走 Edge 纯库内计算，抢不到任何东西。竞价时段恰恰最需要它。
   //
   // 失败/跳过一律静默（`healTodayRangePct` 自己吞错并打日志）⇒ 这里不会多出一种新失败态（§10）。
-  if (map.size === 0) {
-    try {
-      const healed = await healTodayRangePct(date);
-      if (healed && healed.ok) {
-        // 自愈写成功 ⇒ 重读一次（healTodayRangePct 已作废该日缓存，这里拿到的是新值）
-        const again = await readRangePctForDate(date);
-        again.forEach(function(v, k) { map.set(k, { pct: v.pct, days: v.days }); });
-        if (map.size > 0) {
-          _publish(date, map);
-          _dbgLog('[DRAGON] ' + date + ' 云端自愈后十日涨幅已就绪：' + map.size + ' 只（当天 cron 没写成功的兜底）');
+  const gap = _coverageGap(date, map);
+  const missingCount = gap === null ? (map.size === 0 ? 1 : 0) : gap.length;
+  // 缺口指纹：缺口【集合】变了才值得再打一次自愈。
+  //   ⛔ 别用「缺口数量变小」当判据 —— 名单扩容后缺口通常变大（46→76 时缺口 0→30），
+  //      用数量判会把「新进来的那批」永久漏掉，正是今天这个 bug 的同一个形状。
+  const gapKey = gap === null ? '*' : gap.slice().sort().join(',');
+  if (missingCount > 0) {
+    const cs = _coverState.get(date) || { key: '', attempts: 0, at: 0 };
+    const now = Date.now();
+    const canHeal = shouldHealForCoverage({ mapSize: map.size, gapKey: gapKey, state: cs, now: now });
+    if (canHeal) {
+      _coverState.set(date, { key: gapKey, attempts: cs.attempts + 1, at: now });
+      try {
+        const healed = await healTodayRangePct(date);
+        if (healed && healed.ok) {
+          // 自愈写成功 ⇒ 重读一次（healTodayRangePct 已作废该日缓存，这里拿到的是新值）
+          const again = await readRangePctForDate(date);
+          again.forEach(function(v, k) { map.set(k, { pct: v.pct, days: v.days }); });
+          if (map.size > 0) {
+            _publish(date, map);
+            _dbgLog('[DRAGON] ' + date + ' 云端自愈后十日涨幅已就绪：' + map.size + ' 只'
+              + '（自愈前缺口 ' + missingCount + ' 只，第 ' + cs.attempts + ' 次）');
+          }
         }
+      } catch (e) {
+        // 自愈只是加分项：读/写失败都⛔不能把「加载十日涨幅」整条链拖挂
+        _dbgLog('[DRAGON] ' + date + ' 云端自愈失败（按云端现状继续）: ' + (e && e.message || e));
       }
-    } catch (e) {
-      // 自愈只是加分项：读/写失败都⛔不能把「加载十日涨幅」整条链拖挂
-      _dbgLog('[DRAGON] ' + date + ' 云端自愈失败（按云端为空继续）: ' + (e && e.message || e));
+    } else if (map.size > 0) {
+      // 缺口集合没变化 / 次数用尽 ⇒ 不再自愈，但把缺口如实留痕（排障时一眼看得出「谁一直空着」）
+      _dbgLog('[DRAGON] ' + date + ' 十日涨幅仍缺 ' + missingCount + ' 只'
+        + '（自愈已打 ' + cs.attempts + ' 次，缺口未再变化）:' + (gap || []).slice(0, 12).join('/'));
     }
   }
-  // 云端还没有这一天的数据（页面早于 9:25 打开 / worker 尚未写完）→ 安排一次有界重读
-  if (map.size === 0) _scheduleEmptyRetry(date);
+  // 盖全了吗？没盖全 ⇒ 安排一次有界重试（名单分批到货后，靠它把第二批补上）
+  if (missingCount > 0) _scheduleCoverRetry(date);
 
   // 2) 补齐「缺行 / 缺腿」的目标股票。三级链路，从「不花额度」到「花额度」：
   //    [RANGE-FULL-LEG 2026-09-11] 收盘后额外把「缺腿行」（days < 窗口交易日数）也纳入待补：

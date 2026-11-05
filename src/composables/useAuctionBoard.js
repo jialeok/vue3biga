@@ -81,6 +81,14 @@ import { ensureSuspendSet } from '../logic/auction/suspend.js';
 //   ⇒ 既有水合（hydrateStockHistoryRow 只认云端表）永远补不到 ⇒ 趋势该日空白（时代万恒 10-20 实证）。
 //   K 线补 竞价涨幅/涨幅/昨日成交量 + 当日快照补竞价量；⛔ 只改趋势面板展示数据，不写任何表。
 import { ensureTrendPatch } from '../logic/auction/trend-patch.js';
+// ★★★ [VOL-COVER 2026-11-05] 第一页「竞价量」与五日趋势图【不许再不同步】。
+//   用户原话：「襄阳轴承五日趋势图显示有当天竞价量（打开过一会才显示），第一页的竞价量却显示横杠……
+//   这不是某只票问题，这是一类问题」。
+//   根因：趋势图有第 4 条腿（前端快照现算），第一页只读库；而库里「非 worker 名单票」的 volume 恒空。
+//   ⇒ 这里挂一个【事件驱动】的自动补齐：显示行数变多（名单扩容）时，把展示名单里缺竞价量的票
+//     用同花顺快照补进库（只填空、只 upsert、⛔ 不补量比），然后重读内存。
+import { autoFillTodayAuctionVolume } from '../logic/auction/ths-today-patch.js';
+import { pullAuctionMarketDataForDate } from '../data/watchlist-and-metrics.js';
 // [CLOSE-COVER 2026-09-10] 收盘后自动用【收盘涨幅】覆盖 9:25 竞价涨幅（此前该闭环只存在于
 // 从未执行过的 pg_cron，导致当天 change_pct 全天停留在竞价值）。
 import { ensureClosePctCovered, isCloseCoverWindow } from '../logic/auction/close-pct-cover.js';
@@ -2043,12 +2051,35 @@ export function useAuctionBoard() {
     trendPatchStore.value = {};   // [TREND-PATCH-STORE 2026-10-23] 补缺仓库与趋势缓存同生命周期
     if (v) prepareAuctionData(v);
     refresh();
+    // [VOL-COVER 2026-11-05] 切到当天时也检查一次（切回来往往就是因为"当天数据没补上"）
+    ensureTodayVolumeFill('切日期');
   });
+
+  // ★ [VOL-COVER 2026-11-05] 显示行数【变多】= 名单扩容 = 新进来一批还没行情的票。
+  //   只在 n > o（变大）时触发：补齐本身不会改变行数，所以不会自激循环；
+  //   缩小（切日期/换分组）不触发 —— 那时是另一套数据，硬补只会烧请求（§32）。
+  watch(
+    () => (viewData.value && Array.isArray(viewData.value.items) ? viewData.value.items.length : 0),
+    (n, o) => {
+      if (n <= o) return;
+      const d = uiStore.currentDate;
+      // ① 竞价量：展示名单里缺 volume 的票 → 快照腿补齐并写库
+      ensureTodayVolumeFill('行数 ' + o + '→' + n);
+      // ② 十日涨幅：名单扩容后缺口集合变了 ⇒ 覆盖收敛重跑（dragon-rank 内部自己判要不要真打自愈）
+      if (d) {
+        ensureDragonRangePct(d).catch(function(e) {
+          _dbgLog('[DRAGON] 名单扩容后补十日涨幅失败（不影响看板）: ' + (e && e.message || e));
+        });
+      }
+    }
+  );
 
   onMounted(() => {
     if (uiStore.currentDate) prepareAuctionData(uiStore.currentDate);
     refresh();
     loadCopiedStocks();
+    // [VOL-COVER 2026-11-05] 竞价时段打开页面即检查一次「第一页竞价量」缺口
+    ensureTodayVolumeFill('挂载');
     _on('auction-refresh', onAuctionRefresh);
     // [SEAL-VOLUME 2026-10-11] limit_pool 变化（15:40 抓取端写入 / 他端写库）→ 重新确保封单量窗口。
     _on('data:realtime-update', _onLimitPoolRealtime);
@@ -2077,10 +2108,38 @@ export function useAuctionBoard() {
     _ensureSealWindow();
   }
 
+  // ★★★ [VOL-COVER 2026-11-05] 「第一页竞价量」自动补齐调度器。
+  //
+  // 触发时机只有两个（都是【事件驱动】，⛔ 不轮询、⛔ 不定时器）：
+  //   ① 页面挂载（当天 09:25 之后打开 = 竞价数据刚下来）；
+  //   ② 显示行数【变多】（worker 9:25 写名单 / 前端注入观察组+20日补位 ⇒ 46 → 76 这类扩容）。
+  //      这一条正是今天「第 45 只之后全空」的场景 —— 第二批行是 10:16 才出现的，
+  //      任何"只在首次加载时补一次"的实现都必然漏掉它们。
+  //
+  // 是否真的要发请求，由 Logic 层 `autoFillTodayAuctionVolume` 自己判（时间闸 / 缺口预检 /
+  // 每会话 2 次上限 / 30s 间隔），这里只负责"有机会就问问"。失败一律不打断看板。
+  let _volFillSeq = 0;
+  async function ensureTodayVolumeFill(reason) {
+    const d = uiStore.currentDate;
+    if (!d) return;
+    const my = ++_volFillSeq;
+    try {
+      const r = await autoFillTodayAuctionVolume(d);
+      if (my !== _volFillSeq) return;                 // 期间切了日期 ⇒ 丢弃
+      if (r && r.ok && r.patchedRows > 0) {
+        _dbgLog('[VOL-COVER] ' + d + ' 自动补竞价量 ' + r.patchedRows + ' 行（' + (reason || '') + '）⇒ 重读内存');
+        // 写库后必须重读，否则第一页读到的还是旧内存（§6 单一真相：库是权威，内存只是缓存）
+        await pullAuctionMarketDataForDate(d);
+        if (uiStore.currentDate === d) { prepareAuctionData(d); refresh(); }
+      }
+    } catch (e) {
+      _dbgLog('[VOL-COVER] 自动补调度失败（不影响看板）: ' + (e && e.message || e));
+    }
+  }
+
   function onAuctionRefresh() {
     if (uiStore.currentDate) prepareAuctionData(uiStore.currentDate);
-    refresh();
-    // [SUSPEND 2026-10-13] 刷新事件顺带重判一次停牌：行数没变时上面的 watch 不会触发，
+    refresh();    // [SUSPEND 2026-10-13] 刷新事件顺带重判一次停牌：行数没变时上面的 watch 不会触发，
     // 但上游可能刚补出竞价终态（页面在 9:25 前打开的场景）→ 这里补一次
     // （suspend.js 内部有 3 分钟 TTL 节流 + 单飞，重复调用代价可控）。
     ensureSuspendForCurrentBoard();
