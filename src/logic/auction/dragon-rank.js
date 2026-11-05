@@ -42,7 +42,8 @@ import { getCarryOverNamesForDate } from './tag-carryover.js';
 import {
   readRangePctForDate,
   upsertRangePctRows,
-  fetchNumcatDailyPctRange
+  fetchNumcatDailyPctRange,
+  healTodayRangePct
 } from '../../data/stock-range-pct.js';
 import { fetchDailyPctRange } from '../../data/daily-pct-range.js';
 import { _dbgLog } from '../../data/debug-log.js';
@@ -361,6 +362,35 @@ async function _load(date, force) {
   // §33：先发布云端已有数据 —— 绝不因为随后可能发生的「兜底补齐」而把整份数据扣住不显示。
   _publish(date, map);
   _reloadDates.delete(date);
+
+  // ★★★ [R10-SELF-HEAL 2026-11-05] 当天【一行都没有】⇒ 先请云端用逐日腿表自愈，再谈重读。
+  //
+  // 为什么必须放在 `_scheduleEmptyRetry` 之前：那个重试只是【重读同一张（空的）云端表】，
+  //   09:25 那天表里本来就是 0 行 ⇒ 重读到次数用完还是 0 行（2026-11-05 实测就是这样空等的）。
+  //   真正能把行写出来的只有云端那套「逐日腿表复利」（= Edge 的 ?range10=1，零上游请求）。
+  //
+  // 为什么不受 `_inMorningGuard` 约束（那道闸门在下面第 2 步才生效，本段在它之前）：
+  //   它是「别跟 worker 抢猫抓 10 次/日额度」用的，而本函数走的是 Edge 纯库内计算
+  //   ——**零上游请求、零猫抓额度**，抢不到任何东西。竞价时段恰恰是最需要它的时候。
+  //
+  // 失败/跳过一律静默（`healTodayRangePct` 自己吞错并打日志）⇒ 这里不会多出一种新失败态（§10）。
+  if (map.size === 0) {
+    try {
+      const healed = await healTodayRangePct(date);
+      if (healed && healed.ok) {
+        // 自愈写成功 ⇒ 重读一次（healTodayRangePct 已作废该日缓存，这里拿到的是新值）
+        const again = await readRangePctForDate(date);
+        again.forEach(function(v, k) { map.set(k, { pct: v.pct, days: v.days }); });
+        if (map.size > 0) {
+          _publish(date, map);
+          _dbgLog('[DRAGON] ' + date + ' 云端自愈后十日涨幅已就绪：' + map.size + ' 只（当天 cron 没写成功的兜底）');
+        }
+      }
+    } catch (e) {
+      // 自愈只是加分项：读/写失败都⛔不能把「加载十日涨幅」整条链拖挂
+      _dbgLog('[DRAGON] ' + date + ' 云端自愈失败（按云端为空继续）: ' + (e && e.message || e));
+    }
+  }
   // 云端还没有这一天的数据（页面早于 9:25 打开 / worker 尚未写完）→ 安排一次有界重读
   if (map.size === 0) _scheduleEmptyRetry(date);
 

@@ -7,7 +7,7 @@
 // 红线（§10）：读取失败必须 throw，绝不能返回空 Map 伪装成「没有数据」——
 // 否则上层会误判为「需要重新调接口」，白白消耗额度。
 
-import { getSupabase } from './supabase-client.js';
+import { getSupabase, SUPABASE_ANON_KEY } from './supabase-client.js';
 import { numcatApiPost } from './api/numcat-proxy.js';
 import { fuyaoApiGet, tickerToThscode, isFuyaoOff } from './api/fuyao-proxy.js';
 import { _dbgLog } from './debug-log.js';
@@ -102,6 +102,140 @@ export async function readRangePctForDate(date) {
     });
     _inflight.set(d, p);
     return p;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// ★★★ [R10-SELF-HEAL 2026-11-05] 当天 stock_range_pct【一行都没有】时的云端自愈。
+//
+// 🔴 事故（2026-11-05，用户第 8 次报障）：「今天竞价期间早盘竞价看板数据正常完整显示了，
+//   题材量比又没选出票……提示龙头数据尚未加载完成」。
+//   完整链条（逐环实测，⛔ 别只看最后一环）：
+//     ① Edge cron `range20-auc-precompute`（UTC 01:25 = 北京 09:25）当天跑了，但它的 K 线主循环
+//        吃满 190s 预算 ⇒ 排在后面的「当天 10 日涨幅」那一段没轮到 ⇒ `stock_range_pct` **0 行**
+//        （实测：11-05 当天只有本函数自愈后写入的 46 行，updated_at 全是 01:46+；
+//          而 11-03/11-04 当天同样没有 09:25 写入 —— 这条链一直是「靠运气」）；
+//     ② 前端 09:25 打开 ⇒ `readRangePctForDate(today)` 空 ⇒ `_scheduleEmptyRetry` 只会重读云端，
+//        云端还是空 ⇒ 重读到次数用完也还是空；
+//     ③ `dragon-rank.js#_load` 的补算被 `_inMorningGuard`（北京 09:00~09:45）整段挡下 ——
+//        那道闸门是「别跟 worker 抢猫抓 10 次/日额度」用的，**连 0 请求的本地重算也一起挡了**；
+//     ④ `collectDecisionTopics` 拿到空 rangeMap ⇒ `_notReady('十日涨幅 / 龙头数据尚未加载完成')`
+//        ⇒ 题材量比看板整块不出票。早盘竞价看板不依赖十日涨幅，所以它「正常完整显示」。
+//
+// ✅ 本函数把「09:25 那个 Edge cron 成功」从【硬依赖】降级成【优化】：
+//    直接打 Edge 的 `?range10=1` 入口 —— 它**纯读 `stock_daily_pct` + `market_metrics`，零上游请求、
+//    零猫抓额度**（见 db/edge/range20-precompute/index.ts 的 [R10-ONLY]），所以不违反 morningGuard
+//    当初「不抢额度」的初衷，可以放心在竞价时段调用。
+//
+// 红线：
+//   · 每个日期每个会话只打 **一次**（成功或失败都算打过）—— 失败重试交给页面重开，绝不空转（§32）；
+//   · 只有【今天】才能自愈（历史日的腿早已固化，回补是运维的活，不该由打开页面触发）；
+//   · 失败只记日志、绝不抛错 —— 自愈是加分项，⛔ 不能因为它把「读涨幅」整条链拖挂（§10 的读失败语义仍由
+//     readRangePctForDate 负责）；
+//   · 写成功后必须作废本日缓存，否则「写后读」还是拿到那份空 Map。
+// ─────────────────────────────────────────────────────────────────────────
+
+const RANGE20_EDGE_URL = 'https://tonqfgeyxnnwicjopshn.supabase.co/functions/v1/range20-precompute';
+// 与 db/edge/range20-precompute/index.ts 的 TOKEN 常量、db/create_range20_cron.sql 保持一致。
+const RANGE20_EDGE_TOKEN = 'range20-cron-2026';
+/** 自愈请求超时（ms）。它只是纯库内读写，正常 2~5s；给 20s 是容 Supabase 冷启动。 */
+const HEAL_TIMEOUT_MS = 20000;
+/**
+ * 「临时不可用」的允许重试次数。
+ *
+ * 🔴 为什么需要重试（竞价时段的真实时序）：worker 在**北京 09:25** 才写 `market_metrics` 的
+ *   竞价涨幅（实测 `updated_at = 01:25:10Z`），而用户可能在 09:25:05 就打开页面 ——
+ *   这一刻 Edge 的 `?range10=1` 会返回 `skipped: '当天 market_metrics 没有 auc_pct_chg'`，
+ *   写 0 行。**这不是失败，是还没到**：再等十几秒数据就有了。
+ *   ⇒ 这一类（`skipped` 且不是「池子为空」这种结构性原因）允许再试几次，用尽后彻底放手。
+ * ⚠️ 其它失败（网络 / HTTP 4xx5xx / 写入 0 行且无 skipped）一律只打一次 —— §32 禁止空转。
+ */
+const HEAL_MAX_TRANSIENT_ATTEMPTS = 3;
+/** 打过自愈的日期（会话内，含失败）→ 已试次数 */
+const _healTried = new Map();
+/** 单飞：同一天多个消费者同时发现「空」时只打一次 */
+const _healInflight = new Map();
+
+/** 北京时间的今天（YYYY-MM-DD）。⛔ 不用 toISOString 切 —— 那是 UTC，跨零点会差一天。 */
+function _beijingToday() {
+    const now = new Date(Date.now() + 8 * 3600 * 1000);
+    return now.toISOString().slice(0, 10);
+}
+
+/**
+ * 云端自愈：让 Edge 用逐日腿表把【当天】的 10 日区间涨幅算出来并落库（零上游请求）。
+ *
+ * @param {string} date - 目标日（只接受「今天」）
+ * @returns {Promise<{ok:boolean, skipped?:string, written?:number, error?:string}>}
+ *          永不抛错；`ok:false` 时调用方照旧按「云端为空」处理。
+ */
+export async function healTodayRangePct(date) {
+    const d = String(date || '').trim();
+    if (!d) return { ok: false, skipped: '无日期' };
+    if (d !== _beijingToday()) return { ok: false, skipped: '非当天，不自愈（历史日腿已固化）' };
+    const tried = _healTried.get(d) || 0;
+    if (tried >= HEAL_MAX_TRANSIENT_ATTEMPTS) {
+        return { ok: false, skipped: '本会话已打过 ' + tried + ' 次自愈，不再重试' };
+    }
+    const fly = _healInflight.get(d);
+    if (fly) return fly;
+
+    const p = (async function() {
+        _healTried.set(d, tried + 1);
+        const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        const timer = ctrl ? setTimeout(function() { ctrl.abort(); }, HEAL_TIMEOUT_MS) : null;
+        const t0 = Date.now();
+        try {
+            const resp = await fetch(
+                RANGE20_EDGE_URL + '?token=' + encodeURIComponent(RANGE20_EDGE_TOKEN) + '&range10=1',
+                {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + SUPABASE_ANON_KEY },
+                    signal: ctrl ? ctrl.signal : undefined
+                }
+            );
+            const ms = Date.now() - t0;
+            if (!resp.ok) {
+                // 网络/服务端错误不属于「等一会儿就好」⇒ 次数一次用尽，不再重试
+                _healTried.set(d, HEAL_MAX_TRANSIENT_ATTEMPTS);
+                const body = await resp.text().catch(function() { return ''; });
+                _dbgLog('[R10-HEAL] ' + d + ' 自愈失败 HTTP ' + resp.status + '（' + ms + 'ms）: ' + String(body).slice(0, 160));
+                return { ok: false, error: 'HTTP ' + resp.status };
+            }
+            const data = await resp.json().catch(function() { return null; });
+            const stat = (data && data.range10) || {};
+            const written = Number(stat.written) || 0;
+            // 写成功 ⇒ 本日缓存必须作废，否则「写后读」还是拿到那份空 Map
+            if (written > 0) {
+                _cache.delete(d);
+                _inflight.delete(d);
+            }
+            // §32：只有「还没到（竞价涨幅尚未落库）」这一类值得再试；其它 0 行都是结构性原因，一次用尽。
+            if (written === 0 && !stat.skipped) _healTried.set(d, HEAL_MAX_TRANSIENT_ATTEMPTS);
+            _dbgLog('[R10-HEAL] ' + d + ' 云端自愈完成（' + ms + 'ms）：写入 ' + written + ' 行'
+                + (stat.skipped ? '，跳过原因: ' + stat.skipped : '')
+                + (stat.error ? '，错误: ' + String(stat.error).slice(0, 120) : ''));
+            return { ok: written > 0, written: written, skipped: stat.skipped, error: stat.error };
+        } catch (e) {
+            const msg = (e && e.message) || String(e);
+            // 超时 / 网络层异常都属于「这次不通」，⛔ 不值得在同一会话里反复打（§32）
+            _healTried.set(d, HEAL_MAX_TRANSIENT_ATTEMPTS);
+            _dbgLog('[R10-HEAL] ' + d + ' 自愈异常（' + (Date.now() - t0) + 'ms）: ' + msg);
+            return { ok: false, error: msg };
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
+    })().finally(function() {
+        if (_healInflight.get(d) === p) _healInflight.delete(d);
+    });
+
+    _healInflight.set(d, p);
+    return p;
+}
+
+/** 仅供测试：重置「打过自愈」的会话标记 */
+export function _resetHealTried() {
+    _healTried.clear();
+    _healInflight.clear();
 }
 
 /**

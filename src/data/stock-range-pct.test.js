@@ -11,7 +11,7 @@
 //   ① 读取失败必须 throw（§10：⛔ 不许返回空 Map 伪装成「没有数据」——上层会误判为「需要重调接口」白烧额度）；
 //   ② 写入成功必须让该日期的缓存作废（收盘覆盖链路是「upsert 完立刻 read」的调用者）。
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const calls = [];
 let mode = 'ok';
@@ -43,7 +43,11 @@ function makeQuery(table) {
 }
 
 vi.mock('./supabase-client.js', function() {
-    return { getSupabase: function() { return { from: makeQuery }; } };
+    return {
+        getSupabase: function() { return { from: makeQuery }; },
+        // [R10-SELF-HEAL] healTodayRangePct 用它拼 Authorization 头；测试里只要非空即可
+        SUPABASE_ANON_KEY: 'test-anon-key'
+    };
 });
 vi.mock('./api/numcat-proxy.js', function() {
     return { numcatApiPost: function() { return Promise.reject(new Error('不应被调用')); } };
@@ -201,5 +205,118 @@ describe('fetchFuyaoDailyPctRange · FUYAO-OFF', function() {
             await fetchFuyaoDailyPctRange([{ stock: '甲', code: '600000' }], ['2026-10-20']);
         } catch (e) { caught = e; }
         expect(caught).toBeInstanceOf(Error);   // ⛔ 不能是 return new Map()
+    });
+});
+
+// ===========================================================================
+// [R10-SELF-HEAL 2026-11-05] 当天 stock_range_pct 为空 ⇒ 云端零上游自愈
+//
+// 这一步把「09:25 Edge cron 成功」从【硬依赖】降级成【优化】。事故链（用户第 8 次报障）：
+//   cron 的 K 线主循环吃满 190s 预算 ⇒ 当天 stock_range_pct 0 行 ⇒ 前端读云端得空
+//   ⇒ 补算又被 _inMorningGuard（09:00~09:45）整段挡下 ⇒ rangeMap 恒空
+//   ⇒ collectDecisionTopics 返回「十日涨幅 / 龙头数据尚未加载完成」⇒ 题材量比看板一只票都不选。
+// ===========================================================================
+describe('healTodayRangePct · 当天云端为空的零上游自愈', function() {
+    const REAL_FETCH = globalThis.fetch;
+
+    function beijingToday() {
+        return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+    }
+
+    beforeEach(async function() {
+        const m = await import('./stock-range-pct.js');
+        m._resetHealTried();
+    });
+
+    afterEach(function() { globalThis.fetch = REAL_FETCH; });
+
+    it('非当天 ⇒ 一个请求都不发（历史日的腿早已固化，回补是运维的活）', async function() {
+        let hit = 0;
+        globalThis.fetch = function() { hit++; return Promise.resolve({ ok: true, json: function() { return Promise.resolve({}); } }); };
+        const { healTodayRangePct } = await import('./stock-range-pct.js');
+        const r = await healTodayRangePct('2026-10-12');
+        expect(r.ok).toBe(false);
+        expect(r.skipped).toMatch(/非当天/);
+        expect(hit).toBe(0);
+    });
+
+    it('★ 当天 + 写入成功 ⇒ ok:true 且返回行数，并且【作废该日缓存】（否则写后读还是空 Map）', async function() {
+        rowsByDate[beijingToday()] = [];
+        await readRangePctForDate(beijingToday());          // 先读一次：缓存里存了「空」
+        const before = calls.length;
+        let url = '';
+        globalThis.fetch = function(u) {
+            url = u;
+            return Promise.resolve({ ok: true, json: function() { return Promise.resolve({ ok: true, range10: { written: 46 } }); } });
+        };
+        const { healTodayRangePct } = await import('./stock-range-pct.js');
+        const r = await healTodayRangePct(beijingToday());
+        expect(r.ok).toBe(true);
+        expect(r.written).toBe(46);
+        expect(url).toContain('range10=1');                 // 必须是「只算 10 日涨幅」那个零上游入口
+        expect(url).toContain('range20-cron-2026');
+        // 缓存已作废 ⇒ 再读会真的发一次请求
+        rowsByDate[beijingToday()] = [row('大晟文化', '23.31')];
+        const m = await readRangePctForDate(beijingToday());
+        expect(calls.length).toBeGreaterThan(before);
+        expect(m.get('大晟文化').pct).toBe(23.31);
+    });
+
+    it('「竞价涨幅还没落库」属于【过几秒就好】⇒ 允许再试，但最多 3 次就不再打（§32）', async function() {
+        let hit = 0;
+        globalThis.fetch = function() {
+            hit++;
+            return Promise.resolve({ ok: true, json: function() { return Promise.resolve({ range10: { written: 0, skipped: '当天 market_metrics 没有 auc_pct_chg（竞价涨幅未落库）' } }); } });
+        };
+        const { healTodayRangePct } = await import('./stock-range-pct.js');
+        for (let i = 0; i < 3; i++) {
+            const r = await healTodayRangePct(beijingToday());
+            expect(r.ok).toBe(false);
+            expect(r.skipped).toMatch(/竞价涨幅/);
+        }
+        // 第 4 次：次数用尽，一个请求都不再发
+        const last = await healTodayRangePct(beijingToday());
+        expect(last.ok).toBe(false);
+        expect(last.skipped).toMatch(/已打过/);
+        expect(hit).toBe(3);
+    });
+
+    it('「池子为空」这类结构性 0 行 ⇒ 一次用尽，⛔ 不重试', async function() {
+        let hit = 0;
+        globalThis.fetch = function() {
+            hit++;
+            return Promise.resolve({ ok: true, json: function() { return Promise.resolve({ range10: { written: 0 } }); } });
+        };
+        const { healTodayRangePct } = await import('./stock-range-pct.js');
+        const a = await healTodayRangePct(beijingToday());
+        expect(a.ok).toBe(false);
+        const b = await healTodayRangePct(beijingToday());
+        expect(b.skipped).toMatch(/已打过/);
+        expect(hit).toBe(1);
+    });
+
+    it('网络层抛错 ⇒ 吞掉、返回 ok:false（⛔ 不能把「加载十日涨幅」整条链拖挂）', async function() {
+        globalThis.fetch = function() { return Promise.reject(new Error('Failed to fetch')); };
+        const { healTodayRangePct } = await import('./stock-range-pct.js');
+        const r = await healTodayRangePct(beijingToday());
+        expect(r.ok).toBe(false);
+        expect(r.error).toMatch(/Failed to fetch/);
+    });
+
+    it('HTTP 500 ⇒ 吞掉、返回 ok:false 并带状态码', async function() {
+        globalThis.fetch = function() {
+            return Promise.resolve({ ok: false, status: 500, text: function() { return Promise.resolve('boom'); } });
+        };
+        const { healTodayRangePct } = await import('./stock-range-pct.js');
+        const r = await healTodayRangePct(beijingToday());
+        expect(r.ok).toBe(false);
+        expect(r.error).toBe('HTTP 500');
+    });
+
+    it('无日期 ⇒ 直接跳过（不抛错）', async function() {
+        const { healTodayRangePct } = await import('./stock-range-pct.js');
+        const r = await healTodayRangePct('');
+        expect(r.ok).toBe(false);
+        expect(r.skipped).toMatch(/无日期/);
     });
 });
