@@ -140,6 +140,23 @@ const RANGE20_EDGE_TOKEN = 'range20-cron-2026';
 /** 自愈请求超时（ms）。它只是纯库内读写，正常 2~5s；给 20s 是容 Supabase 冷启动。 */
 const HEAL_TIMEOUT_MS = 20000;
 /**
+ * ★ [R10-HEAL-CLOCK 2026-11-05] 自愈只允许在【收盘前】跑（北京时间 < 15:00）。
+ *
+ * 为什么必须有这道时间闸（口径正确性，不是性能）：
+ *   `?range10=1` 的 T 腿固定取 `market_metrics.auc_pct_chg`（**竞价涨幅**）。这是 9:25 那一刻的
+ *   权威口径，但它只在【收盘前】成立。15:00 之后当天的正确 T 腿是**收盘涨幅**，由
+ *   `close-pct-cover` / 收盘轮负责换腿。
+ *   ⇒ 若收盘后仍然自愈，就会把「竞价口径」写进一个本该是「收盘口径」的日子；一旦收盘覆盖那一轮
+ *     也失败，这份错口径会**过夜留存**，第二天看历史日就是错的（§10：宁缺勿错）。
+ *   ⇒ 收盘后表为空，交给收盘覆盖链路处理，本函数一律不碰。
+ */
+const HEAL_BEFORE_CLOSE_MIN = 15 * 60; // 北京 15:00
+/** 北京时间的「当天第几分钟」 */
+function _beijingMinutes() {
+    const now = new Date(Date.now() + 8 * 3600 * 1000);
+    return now.getUTCHours() * 60 + now.getUTCMinutes();
+}
+/**
  * 「临时不可用」的允许重试次数。
  *
  * 🔴 为什么需要重试（竞价时段的真实时序）：worker 在**北京 09:25** 才写 `market_metrics` 的
@@ -172,6 +189,9 @@ export async function healTodayRangePct(date) {
     const d = String(date || '').trim();
     if (!d) return { ok: false, skipped: '无日期' };
     if (d !== _beijingToday()) return { ok: false, skipped: '非当天，不自愈（历史日腿已固化）' };
+    if (_beijingMinutes() >= HEAL_BEFORE_CLOSE_MIN) {
+        return { ok: false, skipped: '已过收盘时间，竞价口径不再适用（交给收盘覆盖链路）' };
+    }
     const tried = _healTried.get(d) || 0;
     if (tried >= HEAL_MAX_TRANSIENT_ATTEMPTS) {
         return { ok: false, skipped: '本会话已打过 ' + tried + ' 次自愈，不再重试' };

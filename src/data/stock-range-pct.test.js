@@ -320,3 +320,49 @@ describe('healTodayRangePct · 当天云端为空的零上游自愈', function()
         expect(r.skipped).toMatch(/无日期/);
     });
 });
+
+// ===========================================================================
+// [R10-HEAL-CLOCK 2026-11-05] 自愈只许在【收盘前】跑
+//
+// `?range10=1` 的 T 腿固定取 market_metrics.auc_pct_chg（**竞价涨幅**）——
+// 那只在 15:00 前成立。收盘后正确的 T 腿是收盘涨幅，由 close-pct-cover 换腿。
+// 若收盘后仍自愈，就会把竞价口径写进一个本该是收盘口径的日子；
+// 一旦收盘覆盖那轮也失败，这份错口径会过夜留存（§10 宁缺勿错）。
+// ===========================================================================
+describe('healTodayRangePct · 收盘前才允许自愈', function() {
+    const REAL_NOW = Date.now;
+    afterEach(async function() {
+        Date.now = REAL_NOW;
+        const m = await import('./stock-range-pct.js');
+        m._resetHealTried();
+    });
+
+    /** 把「现在」钉在北京时间某个时刻（BJ = UTC+8） */
+    function pinBeijing(bjHour, bjMinute) {
+        const utcH = bjHour - 8;
+        Date.now = function() { return Date.parse('2026-11-05T' + String(utcH).padStart(2, '0') + ':' + String(bjMinute).padStart(2, '0') + ':00Z'); };
+    }
+
+    it('北京 10:00 ⇒ 允许自愈（竞价/盘中）', async function() {
+        pinBeijing(10, 0);
+        let hit = 0;
+        globalThis.fetch = function() { hit++; return Promise.resolve({ ok: true, json: function() { return Promise.resolve({ range10: { written: 46 } }); } }); };
+        const m = await import('./stock-range-pct.js');
+        m._resetHealTried();
+        const r = await m.healTodayRangePct('2026-11-05');
+        expect(r.ok).toBe(true);
+        expect(hit).toBe(1);
+    });
+
+    it('★ 北京 15:00 之后 ⇒ 一个请求都不发（竞价口径已失效）', async function() {
+        pinBeijing(15, 30);
+        let hit = 0;
+        globalThis.fetch = function() { hit++; return Promise.resolve({ ok: true, json: function() { return Promise.resolve({ range10: { written: 46 } }); } }); };
+        const m = await import('./stock-range-pct.js');
+        m._resetHealTried();
+        const r = await m.healTodayRangePct('2026-11-05');
+        expect(r.ok).toBe(false);
+        expect(r.skipped).toMatch(/收盘/);
+        expect(hit).toBe(0);
+    });
+});
