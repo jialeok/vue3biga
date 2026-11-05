@@ -128,10 +128,15 @@ async function _fetchSnapshot(thscodes) {  const out = [];
  * 这样「库里有没有行」不再取决于「它是不是 883410 成分股」，而取决于「它会不会被显示」。
  *
  * @param {string} date
+ * @param {Array<{stock:string, code?:string}>} [extraStocks]
+ *        ★ [VOL-COVER 2026-11-05] 调用方「当前真正渲染出来的行」。
+ *        ⛔ 这一参数是为了消灭「第四份名单定义」：观察组壳行有一部分来自
+ *        `obsBought_<date>`（localStorage）与龙头组名册，`getDragonTargetRows` 看不到它们，
+ *        但它们**确实显示在界面上**。谁渲染谁提供，名单口径天然等于界面（§6）。
  * @returns {Promise<Array<{stock:string, code:string}>>}
  * @throws 正式名单读取失败（§10 —— 不把"读不到"伪装成"没有票"）
  */
-async function _resolveRoster(date) {
+async function _resolveRoster(date, extraStocks) {
   const byName = new Map();
   const wl = await readAuctionRoster(date);           // ① 正式名单（带 code）
   wl.forEach(function(r) {
@@ -149,6 +154,18 @@ async function _resolveRoster(date) {
   }
   targets.forEach(function(r) {
     const n = String((r && r.stock) || '').trim();
+    if (!n) return;
+    const c = String((r && r.code) || '').trim();
+    if (byName.has(n)) {
+      const cur = byName.get(n);
+      if (!cur.code && c) cur.code = c;
+      return;
+    }
+    byName.set(n, { stock: n, code: c });
+  });
+  // ②.5 调用方「当前真正渲染的行」（观察组 obsBought 壳行 / 龙头组壳行等 dragon-target 看不到的）
+  (Array.isArray(extraStocks) ? extraStocks : []).forEach(function(r) {
+    const n = String((r && (r.stock || r.name)) || '').trim();
     if (!n) return;
     const c = String((r && r.code) || '').trim();
     if (byName.has(n)) {
@@ -193,9 +210,13 @@ const _autoState = new Map();
  * 其余安全约束与 `patchTodayAuctionFromThs` 完全一致（只填空 / 只 upsert / 双重日期闸门 / 单飞）。
  *
  * @param {string} [date]
+ * @param {{displayStocks?:Array<{stock:string, code?:string}>}} [opts]
+ *        `displayStocks` = 调用方当前**真正渲染出来的行**（补数目标名单的最后一块拼图，见 _resolveRoster）。
  * @returns {Promise<{ok:boolean, skipped?:string, missing?:number, patchedRows?:number}>} 永不抛错
  */
-export async function autoFillTodayAuctionVolume(date) {
+export async function autoFillTodayAuctionVolume(date, opts) {
+  const o = opts || {};
+  const extraStocks = Array.isArray(o.displayStocks) ? o.displayStocks : null;
   const d = String(date || '').trim();
   const today = beijingTodayStr();
   if (!d || d !== today) return { ok: false, skipped: '非当天（历史日的行情早已固化）' };
@@ -206,7 +227,7 @@ export async function autoFillTodayAuctionVolume(date) {
   if (st.attempts >= AUTO_MAX_TIMES) return { ok: false, skipped: '本会话已自动补过 ' + st.attempts + ' 次' };
   if (Date.now() - st.at < AUTO_MIN_GAP_MS) return { ok: false, skipped: '距上次不足 30s' };
   try {
-    const roster = await _resolveRoster(d);
+    const roster = await _resolveRoster(d, extraStocks);
     const existing = await readAuctionMetrics(d);
     const byStock = new Map();
     existing.forEach(function(r) { const k = String((r && r.stock) || '').trim(); if (k) byStock.set(k, r); });
@@ -222,7 +243,7 @@ export async function autoFillTodayAuctionVolume(date) {
     }
     _dbgLog('[THS-PATCH] 自动补：展示名单 ' + roster.length + ' 只，缺竞价量 ' + missing.length
       + ' 只（第 ' + (st.attempts + 1) + ' 次）→ 走快照腿');
-    const r = await patchTodayAuctionFromThs(d, { onlyVolume: true });
+    const r = await patchTodayAuctionFromThs(d, { onlyVolume: true, extraStocks: extraStocks });
     return { ok: !!(r && r.ok), missing: missing.length, patchedRows: (r && r.patchedRows) || 0, filled: r && r.filled };
   } catch (e) {
     // 自动补是加分项：失败只留痕，⛔ 绝不影响看板本身的加载（§10 读失败语义仍由各自链路负责）
@@ -241,8 +262,9 @@ export function _resetAutoFillForTest() {
  *
  * @param {string} [date] 目标日（缺省 = 北京今天）；⛔ 只接受今天
  * @param {{onProgress?:(stage:string,done:number,total:number)=>void, requestTimeoutMs?:number,
- *          onlyVolume?:boolean}} [opts]
+ *          onlyVolume?:boolean, extraStocks?:Array<{stock:string, code?:string}>}} [opts]
  *        `onlyVolume=true` = 只走快照腿补竞价量（跳过 K 线腿）。自动补用的就是这条轻量路径。
+ *        `extraStocks` = 调用方当前真正渲染的行（补进名单，见 _resolveRoster ②.5）。
  * @returns {Promise<{ok:boolean, date:string, roster:number, patchedRows:number, filled:{pct:number,vol:number,turnover:number}, reason?:string, logs:string[]}>}
  */
 export async function patchTodayAuctionFromThs(date, opts) {
@@ -268,7 +290,7 @@ export async function patchTodayAuctionFromThs(date, opts) {
   const p = (async function() {
     // ① 今天应该有哪些票 —— **展示名单**（正式成员 ∪ 观察组/打标签继承 ∪ 20 日补位 ∪ 龙头壳行）。
     //    读失败直接抛（§10）。⛔ 别退回「只认 auction_watchlist」：那正是今天第一页整列 '-' 的根因。
-    const roster = await _resolveRoster(d);
+    const roster = await _resolveRoster(d, o.extraStocks);
     if (roster.length === 0) {
       log('名单为空（auction_watchlist ' + d + ' 无行 且 无可注入壳行）⇒ 无可补对象');
       return { ok: false, date: d, roster: 0, patchedRows: 0, filled: _emptyFilled(), reason: '当天名单为空', logs: logs };

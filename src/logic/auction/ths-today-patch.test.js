@@ -393,3 +393,39 @@ describe('快照腿必须「受控放行」（否则总闸一开，这条腿就�
     expect(Number(opts.timeoutMs)).toBeGreaterThan(0);
   });
 });
+
+describe('补数目标的最后一块：调用方「当前渲染的行」', () => {
+  it('obsBought / 龙头组壳行由调用方传入 ⇒ 也进补数目标（上海洗霸 / 大洋电机 的形状）', async () => {
+    // 这两只既不在 auction_watchlist，也不在 getDragonTargetRows 的可见集合里，
+    // 但它们确实显示在第一页（观察组壳行）⇒ 必须能补到，否则永远是 '-'
+    getDragonTargetRows.mockReturnValue([{ stock: '票A', code: '600001' }]);
+    fuyaoApiGet.mockResolvedValue({
+      timestamp: TS_TODAY,
+      data_status: 'final',
+      item: [
+        { thscode: '600001.SH', auction_pct: 3.21, auction_volume: 38830.49 },
+        { thscode: '600003.SH', auction_pct: 0.5, auction_volume: 4560 },
+      ],
+    });
+    const r = await patchTodayAuctionFromThs(TODAY, { extraStocks: [{ stock: '票C', code: '600003' }] });
+    expect(r.ok).toBe(true);
+    const names = upsertAuctionMetrics.mock.calls[0][0].map((x) => x.stock).sort();
+    expect(names).toEqual(['票A', '票C']);
+    const c = upsertAuctionMetrics.mock.calls[0][0].find((x) => x.stock === '票C');
+    expect(c.volume).toBe('46');   // 4560 手 ÷ 100 = 45.6 → 四舍五入 46 万股
+  });
+
+  it('autoFill 也会把 displayStocks 透传下去', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-26T09:30:00+08:00'));
+    fuyaoApiGet.mockResolvedValue({
+      timestamp: TS_TODAY, data_status: 'final',
+      item: [{ thscode: '600003.SH', auction_pct: 0.5, auction_volume: 4560 }],
+    });
+    readAuctionMetrics.mockResolvedValue([{ stock: '票A', volume: '388' }]);  // 正式名单那只已齐
+    const r = await autoFillTodayAuctionVolume(TODAY, { displayStocks: [{ stock: '票C', code: '600003' }] });
+    expect(r.missing).toBe(1);
+    expect(r.patchedRows).toBe(1);
+    vi.useRealTimers();
+  });
+});

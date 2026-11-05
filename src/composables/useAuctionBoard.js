@@ -2124,7 +2124,15 @@ export function useAuctionBoard() {
     if (!d) return;
     const my = ++_volFillSeq;
     try {
-      const r = await autoFillTodayAuctionVolume(d);
+      // ★ 把「当前真正渲染出来的行」一起交给补数层：
+      //   观察组壳行有一部分来自 obsBought_<date>(localStorage) / 龙头组名册，
+      //   auction_watchlist 与 getDragonTargetRows 都看不到它们 —— 但它们确实显示在界面上。
+      //   谁渲染谁提供 ⇒ 名单口径天然等于界面，不用再维护第四份名单定义（§6）。
+      const items = (viewData.value && Array.isArray(viewData.value.items)) ? viewData.value.items : [];
+      const displayStocks = items
+        .map(function(it) { return it ? { stock: it.stock, code: it.code } : null; })
+        .filter(function(x) { return x && x.stock; });
+      const r = await autoFillTodayAuctionVolume(d, { displayStocks: displayStocks });
       if (my !== _volFillSeq) return;                 // 期间切了日期 ⇒ 丢弃
       if (r && r.ok && r.patchedRows > 0) {
         _dbgLog('[VOL-COVER] ' + d + ' 自动补竞价量 ' + r.patchedRows + ' 行（' + (reason || '') + '）⇒ 重读内存');
