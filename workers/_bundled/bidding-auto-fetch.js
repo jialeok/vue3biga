@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-11-05 12:01:55
+// 生成时间: 2026-11-05 14:14:38
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 4673（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 4828（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
@@ -123,6 +123,8 @@ function localIsTradingDay(dateStr) {
 //
 // ⛔ 任何一层都不能「读取失败 → 当成空数据下结论」（§10 / §40）：
 //    读表失败 = 该层弃权，交给下一层；绝不当成「用户没设置过」直接判假期/交易日。
+
+
 /** 用户覆盖表（与 db/create_trading_day_overrides.sql 同名） */
 const TRADING_DAY_OVERRIDES_TABLE = 'trading_day_overrides';
 
@@ -274,6 +276,8 @@ const CONFIG = {
 
 // ────── bidding-auto-fetch/data/fuyao-api.js ──────
 // fuyao-api.js — 同花顺 fuyao 接口（proxy + 直连历史K线）
+
+
 /**
  * ============================================================================
  * [TIMEOUT 2026-09-30] 上游请求一律带【硬超时】—— 没有超时的 fetch 会吊死整轮早盘
@@ -776,6 +780,7 @@ async function fetchFuyaoKlineWindowPct(env, items, dates, opts) {
 // ⚠️ 代价（刻意取舍）：退回小号会占用小号当天的额度（小号 = 竞价一字看板那把，10 次/天）。
 //    但小号只在「主账号已废」时才被动用，而用户口径是早盘竞价优先级最高。
 // ============================================================================
+
 /** 上游「额度用尽 / 限流」判定（HTTP 或业务码 403、429，或文案里明确说额度/限流） */
 function isQuotaError(msg) {
   const s = String(msg || '');
@@ -951,6 +956,7 @@ async function numcatDaily(env, symbols, startDateYMD, endDateYMD, logs) {
 
 // ────── bidding-auto-fetch/data/supabase-write.js ──────
 // supabase-write.js — Supabase 写入接口
+
 function sbHeaders(env) {
   const key = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_ANON_KEY;
   return {
@@ -1226,6 +1232,65 @@ async function readStockRangePctForDate(env, date) {
     days: Number(r.days) || 0,
     updated_at: r.updated_at || ''
   })).filter(r => r.stock);
+}
+
+/**
+ * [RANGE20-FETCH 2026-11-05 用户口径] 读取某日「20 日区间涨幅」排行，按数值降序取前 N。
+ *
+ * 用途：把「20 日补位票」并入 9:25 的抓取名单。用户原话：
+ *   「我不是让你把 20 日补票放进 worker 吗？这样不是更方便……先要算出 20 日涨幅，算出排名后，
+ *     统一获取就可以了。也就是和那些最近多板源一起用猫抓数据接口一起获取，也是消耗一个额度。」
+ *   ⇒ 猫抓 `daily_auc` 是「一次请求一批 symbols」，额度按【请求次数】算、不按股票数算，
+ *     所以名单里多这 20 只【0 额外额度】。
+ *
+ * ⚠️ 为什么取【前一交易日】的榜：当天（date=today）这张表要等收盘后才算出来 ——
+ *   2026-11-05 实测 79 行全部 `updated_at=16:38`（收盘后 38 分钟），9:25 时一行都没有。
+ *   而「截至昨日收盘」的 20 日涨幅昨天收盘后就已算好，是 9:25 唯一可及且完整的口径。
+ *
+ * 🔴 `pct` 是【文本列】，⛔ 绝不能用 `order=pct.desc`（那是字典序）：
+ *   实测会把 '8.94' 排在 '78.46' 前面 ⇒ 前五变成一批弱势票。必须取回后按 Number() 排。
+ *
+ * ⚠️ 口径（用户铁律「早上用竞价口径，收盘用收盘口径，不要搞混」）：
+ *   该表同一 (date, stock) 可能同时存在 `leg='auc'`（9:26 竞价口径）与 `leg='close'`（收盘口径）
+ *   两行 —— 这是前端 `src/data/range20-prev-rank.js` 文件头明写的契约。
+ *   本函数【同股只取一行】，优先 `leg='auc'`（9:25 这一刻的正确口径），没有 auc 行才退 `close`。
+ *   实测 11-03/11-04/11-05 三日均为 0 例同股双行（该表事实上 (date,stock) 唯一），
+ *   所以这条规则今天是 no-op，但它是【未来出现双行时不混口径】的保险。
+ *
+ * @returns {Promise<Array<{name:string,pct:number,days:number,leg:string}>>} 失败返回 []（非致命）
+ */
+async function readRange20TopForDate(env, date, limit) {
+  const n = Number(limit) > 0 ? Math.floor(Number(limit)) : 20;
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range20_pct?date=eq.' +
+    encodeURIComponent(date) + '&select=stock,pct,days,leg&limit=2000';
+  const resp = await sbFetch(url, { headers: sbHeaders(env) });
+  if (!resp.ok) return [];
+  const data = await resp.json();
+  const num = function (v) {
+    if (v === null || v === undefined) return null;
+    const s = String(v).replace('%', '').replace(/,/g, '').trim();
+    if (s === '') return null;
+    const x = Number(s);
+    return isNaN(x) ? null : x;
+  };
+  // 同股去重 + 按口径取舍（见上方「口径」注记）
+  const byName = new Map();
+  (data || []).forEach(function (r) {
+    const name = (r.stock || '').trim();
+    if (!name) return;
+    const pct = num(r.pct);
+    if (pct === null) return;                       // §10 缺值不得当 0 参与排名
+    const leg = r.leg || '';
+    const cur = byName.get(name);
+    if (!cur) { byName.set(name, { name: name, pct: pct, days: Number(r.days) || 0, leg: leg }); return; }
+    // 已有 close 行、这次来的是 auc 行 ⇒ 用 auc 覆盖（优先竞价口径）
+    if (cur.leg !== 'auc' && leg === 'auc') {
+      byName.set(name, { name: name, pct: pct, days: Number(r.days) || 0, leg: leg });
+    }
+  });
+  return Array.from(byName.values())
+    .sort(function (a, b) { return b.pct - a.pct; })
+    .slice(0, n);
 }
 
 // [BUG-FIX] 读取指定日期的 auction_watchlist 股票列表，用于合并打标签/观察组股票到 worker 抓取名单
@@ -1726,6 +1791,12 @@ function closeCoverUtcMs(dateStr) {
 //   · 只有「库内该行四要素有缺失」且「numcat 本次给了非空值」才写 → 天然幂等，重复跑零副作用；
 //   · 读取失败必须抛错，绝不能被当成「全都缺」而整体覆盖；
 //   · 整体失败不致命，调用方 try/catch 后继续。
+
+
+
+
+
+
 // ⚠️ 单文件打包（workers/_bundle.mjs）会把所有模块拼进同一个作用域，
 //    顶层标识符必须全局唯一 —— 这里一律加 extras 前缀，避免与其它文件重名导致重复声明。
 const EXTRAS_FIELDS = ['um_vol', 'open_bid_pct', 'auc_vol_ratio', 'auc_turnover'];
@@ -2441,23 +2512,33 @@ function getCloseNameTone(closePct, ctx) {
 
 // ────── bidding-auto-fetch/logic/morning-workflow.js ──────
 // morning-workflow.js — 早盘竞价抓取主流程（runMorning 拆分为若干子函数）
+
 // [TRADING-DAY 2026-09-29] 交易日判定不再各写各的：统一走 _shared-source/trading-day.js。
 //   它把「用户在前端顶栏标的假期（Supabase 覆盖表）」放在最高优先级，其次才周末 / fuyao 日历 / 硬编码表。
+
+
+
 // [KEY-FALLBACK 2026-09-28] configuredKeys/maskKey 只用于把「key 候选链」回显到日志：
 //   小号 Secret 没配时兜底会静默失效，必须在日志里一眼看见（§10 禁止静默失败）。
+
+
+
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏。早盘放在【最后】跑一次（不阻塞 P0/P1/P2）：
 // 猫抓对当日行通常不给四要素，但若为单日请求/结算较快而给了，就能在 9:26 前顺手落库；
 // 没给也零副作用（只补缺失值，写 0 行）。真正的兜底是 16:00 close 与次日窗口重刷。
+
 // [PLAN-A 2026-09-10] 区间涨幅口径复用前端同一份纯函数（单一真相 §6）：
 // 窗口天数 / 复利累乘 / T 腿竞价占位判定 全部只此一份，前后端不会算出两个结果。
 // ⚠️ 跨目录引用会让 workers/_bundle.mjs 把该文件一并打进单文件产物（Cloudflare 复制粘贴部署），
 //    因此 src/logic/auction/range-window.js 必须保持「零 import 的纯函数」，不得引入 Vue / DOM 依赖。
+
 // [AUC-SANE 2026-10-12 用户口径] 竞价涨幅【物理越界】闸门 —— 唯一实现在 limit-up.js（§6），
 //   前端 isAuctionYiZi 用的是同一份判据。本文件只负责「写入前丢了它」。
 //   为什么必须放在 worker（用户原话：「直接改上游自动获取数据那里…彻底从根源解决掉」）：
 //     numcat 偶尔把「昨收」取错一个交易日 ⇒ 竞价涨幅被整体放大（时代万恒 真值 +6.12% 被写成 +16.74%）
 //     ⇒ 前端按「≥ 涨停幅度即一字」判成【竞价一字·买不进】⇒ 真龙一被跳过、龙二顶替。
 //   闸门只管一件事：**物理不可能的值绝不落库**（丢弃 + 告警），值本身不猜（§10）。
+
 /** 与 range-window.RANGE_WINDOW_DAYS 同源；显式断言避免有人改动窗口天数后 worker 静默失配 */
 const RANGE_DAYS = RANGE_WINDOW_DAYS;
 
@@ -2630,10 +2711,34 @@ async function checkTradingDay(env, today, cache, logs) {
   return null;
 }
 
+/**
+ * [RANGE20-FETCH 2026-11-05 用户口径] 「20日涨幅补位票」并入 9:25 抓取名单的只数。
+ *
+ * 用户原话（本轮）：「我不是让你把 20 日补票放进 worker 吗？这样不是更方便，怎么又没有竞价量比了呢？
+ *   也就是和那些最近多板源一起用猫抓数据接口一起获取，也是消耗一个额度。但前提是先要算出 20 日涨幅，
+ *   算出排名后，统一获取就可以了。这是逻辑和常识啊」。
+ *
+ * ⇒ 完全成立：猫抓 `daily_auc` 一次请求一批 symbols，**额度按请求次数算、不按股票数算**，
+ *   所以名单里多这 25 只 → 0 额外额度（只是同一次请求里多 25 个 symbol）。
+ *
+ * 取 25 只（不是 5 只）的理由 —— 前端三处用量的最大值是 10，再留余量吸收「昨日榜 → 今日榜」的换血：
+ *   · 展示用前五       `RANGE20_LEADER_TOP_N = 5`   （20日涨幅 toggle / 补位区块 / 总龙一~五）
+ *   · 宽口径前八       `RANGE20_LEADER_WIDE_N = 8`  （退潮买点候补）
+ *   · 题材榜前十       `RANGE20_MAIN_TOP_N = 10`    （题材量比「候补」规则）
+ *   · 前端自己的粗筛池 `RANGE20_LEADER_PRESELECT = 25` ← 本常量取同一个数，口径对齐
+ *   实测（11-05 回放）：取前 5 只覆盖缺量比 3/28，前 20 覆盖 10/28，前 25 覆盖 13/28。
+ *
+ * ⚠️ 口径：用【前一交易日】完整榜（当天榜要等收盘后才算出来 —— 11-05 实测 79 行全部 16:38 写入，
+ *    9:25 时一行都没有）。这天然自愈，但要接受一个【结构性一天延迟】：
+ *    今天才涨进前 N 的票，今天 9:25 不可能预知，明天 9:25 才落在「昨日完整榜」里被抓到。
+ *    11-05 回放里 28 只缺量比中有 10 只属于这种「今日新进榜」，任何「截至昨收」的排名都算不出来。
+ */
+const RANGE20_FETCH_TOP_N = 25;
+
 // 2. 获取最近多板成分股 + 写入 auction_watchlist
 // [LATENCY 2026-09-11] 原来这一步是 9 次串行网络调用（≈11.6s），现改为 3 组并行（≈3s）：
 //   组A：成分股 ∥ 代码表 ∥ 交易日历       ← 三者互不依赖
-//   组B：前日名单 ∥ 今日名单 ∥ 前日标签    ← 只依赖组A的交易日历
+//   组B：前日名单 ∥ 今日名单 ∥ 前日标签 ∥ 前日龙头 ∥ 前日20日涨幅榜  ← 只依赖组A的交易日历
 //   组C：仅对「仍缺 code 的名字」做一次按名精确补码（通常 0 次或 1 次小请求）
 async function fetchAndWriteWatchlist(env, today, cache, logs) {
   logs.push('步骤1：并行获取 成分股 / 代码表 / 交易日历...');
@@ -2673,15 +2778,21 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
   const recentDays = (tdRes.ok && tdRes.v) || [];
   const prevDay = recentDays.length >= 2 ? recentDays[recentDays.length - 2] : null;
 
-  // 组B：三个名单来源并行（原来串行 3 次 + 中间夹着 2 次重复的代码表读取）
-  logs.push('步骤1b：并行读取 前日名单 / 今日名单 / 前日标签 / 前日龙头...');
-  const [prevWlRes, todayWlRes, tagRes, dragonRes] = await Promise.all([
+  // 组B：名单来源并行（原来串行 3 次 + 中间夹着 2 次重复的代码表读取）
+  logs.push('步骤1b：并行读取 前日名单 / 今日名单 / 前日标签 / 前日龙头 / 20日涨幅榜...');
+  const [prevWlRes, todayWlRes, tagRes, dragonRes, range20Res] = await Promise.all([
     settled(prevDay ? readAuctionWatchlistForDate(env, prevDay) : Promise.resolve([])),
     settled(readAuctionWatchlistForDate(env, today)),
     settled(prevDay ? readAuctionTagsForDate(env, prevDay) : Promise.resolve([])),
     // [DRAGON-GROUP 2026-09-14] 前一交易日评选出的龙头名册（供「龙头组数据完整获取」，需求 2）
-    settled(prevDay ? readDragonLeadersForDate(env, prevDay) : Promise.resolve([]))
+    settled(prevDay ? readDragonLeadersForDate(env, prevDay) : Promise.resolve([])),
+    // [RANGE20-FETCH 2026-11-05] 前一交易日的 20 日涨幅榜（供「20日补位组」数据完整获取）。
+    //   放进组B 并行，是为了【不增加任何额外延迟】—— 它和上面 4 个读互不依赖。
+    settled(prevDay ? readRange20TopForDate(env, prevDay, RANGE20_FETCH_TOP_N) : Promise.resolve([]))
   ]);
+  // 20日补位候选：只有名字+涨幅，code 由下方 codeMap / 按名补码 两路补（该表没有 code 列）
+  const range20Stocks = (range20Res.ok && range20Res.v) || [];
+  if (range20Res.e) logs.push('读取 20 日涨幅榜失败(非致命): ' + range20Res.e.message);
 
   let constituents = ladderConstituents;
 
@@ -2746,6 +2857,10 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
   if (dragonRes.e) logs.push('读取前一交易日龙头名册失败(非致命): ' + dragonRes.e.message);
   const nameless = todayStocks.concat(prevWlRes.ok && prevWlRes.v ? prevWlRes.v : [])
     .concat(dragonStocks)
+    // [RANGE20-FETCH 2026-11-05] 20日涨幅榜只有名字（表内无 code 列），且这些票
+    //   **恰好最容易不在 stockcodemap 里**（它们多半不在 883410 成分股内）。
+    //   不放进这里按名补码 ⇒ 下方 `if (!code) return` 会把它们整批丢掉，等于没做。
+    .concat(range20Stocks)
     .map(s => s.name)
     .filter(n => n && !codeMap[n]);
   if (nameless.length > 0) {
@@ -2798,9 +2913,40 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
     }
   }
 
+  // [RANGE20-FETCH 2026-11-05 用户口径] 合并「20日涨幅补位票」到抓取名单。
+  //
+  //   为什么必须并入（用户本轮明确指出）：20日补位票是**视图注入壳行**（`*AutoAdded`，不写 watchlist），
+  //   如果 9:25 不为它们抓当天行情，它们的 `market_metrics` 行就不存在 ⇒
+  //   ① 第一页竞价量整列 `-`；② 竞价量比空 ⇒ 题材平均量比分母缺失；③ 收盘后才补进来的行只有收盘数据。
+  //   2026-11-05 实测就是这个形状：86 行里 28 只没量比，28 只全部不是 9:25 那轮写的。
+  //
+  //   ⛔ 成本 = 0：猫抓 `daily_auc` 一次请求一批 symbols，额度按【请求次数】算。
+  //   ⛔ 不写 auction_watchlist：与打标签/龙头同一处理，只并入 constituents，
+  //      不破坏「当日名单 = 9:25 快照」的锁定口径（§6）。
+  if (range20Stocks.length > 0) {
+    const existingNames = new Set(constituents.map(c => c.name));
+    const existingCodes = new Set(constituents.map(c => c.code));
+    const range20Extra = [];
+    range20Stocks.forEach(function (r) {
+      if (!r || !r.name || existingNames.has(r.name)) return;
+      const code = codeMap[r.name] || '';
+      if (!code || existingCodes.has(code)) return;
+      existingNames.add(r.name);
+      existingCodes.add(code);
+      range20Extra.push({ name: r.name, code: code });
+    });
+    if (range20Extra.length > 0) {
+      logs.push('20日涨幅补位(基于 ' + prevDay + ' 完整榜, 前 ' + range20Stocks.length + ' 名): ' +
+        range20Extra.length + ' 只，合并到抓取名单（不写 watchlist，0 猫抓额度）');
+      constituents = constituents.concat(range20Extra);
+    } else {
+      logs.push('20日涨幅补位: 榜上前 ' + range20Stocks.length + ' 名均已在抓取名单内（或查不到 code）');
+    }
+  }
+
   // [DEGRADE 2026-09-15] 降级后仍要求「有可抓取的标的」，否则整轮无从下手（§10 读失败≠空）
   if (constituents.length === 0) {
-    return { error: '抓取名单为空：883410 成分股不可用，且前一日名单/打标签/龙头名册均无可用标的' };
+    return { error: '抓取名单为空：883410 成分股不可用，且前一日名单/打标签/龙头名册/20日涨幅榜均无可用标的' };
   }
 
   // [DEGRADE 2026-09-15] 降级模式下【不写】auction_watchlist：拿不到 883410 名册，就绝不伪造
@@ -3719,14 +3865,23 @@ async function runMorning(env) {
 //   让区间涨幅的修复完全不依赖猫抓额度。缺腿行【绝不】做代数换腿。
 //
 // 【幂等】re-run 安全：change_pct 值相同不写；区间涨幅值/天数相同不写。
+
 // [TRADING-DAY 2026-09-29] 交易日判定统一走 _shared-source/trading-day.js ——
 //   用户在前端顶栏标的假期最高优先，其次周末 / fuyao 日历 / 硬编码表。
+
+
+
+
+
+
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素（未匹配量/抢筹幅度/竞价量比/真换手率）补漏：
 // 猫抓 daily_auc 对【当日】行不返回这四个字段，必须等结算后补写 —— 16:00 正是最合适的时机。
+
 // 区间涨幅口径单一真相（纯函数，worker 早盘/收盘与前端共用同一份实现）
 // ⚠️ 单文件打包（_bundle.mjs）会把本文件与 range-window.js 拼进同一个作用域，
 //    因此这里【复用】range-window 的 parsePct / RANGE_WINDOW_DAYS，不再自己定义一份
 //    （同名会直接报重复声明）。
+
 /** 北京时间 15:00 收盘（与前端 close-pct-cover / dragon-rank 同口径） */
 const CLOSE_HOUR = 15;
 /** 区间涨幅「值比较」的容差（range_pct 落库保留 2 位小数） */

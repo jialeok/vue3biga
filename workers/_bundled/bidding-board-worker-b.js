@@ -1,12 +1,12 @@
 // ===== bidding-board-worker-b — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-11-05 12:01:55
+// 生成时间: 2026-11-05 14:14:38
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 1041（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 1052（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
@@ -165,6 +165,8 @@ function localIsTradingDay(dateStr) {
 //
 // ⛔ 任何一层都不能「读取失败 → 当成空数据下结论」（§10 / §40）：
 //    读表失败 = 该层弃权，交给下一层；绝不当成「用户没设置过」直接判假期/交易日。
+
+
 /** 用户覆盖表（与 db/create_trading_day_overrides.sql 同名） */
 const TRADING_DAY_OVERRIDES_TABLE = 'trading_day_overrides';
 
@@ -437,6 +439,10 @@ async function updateJiwangShouguJieguo(env, date, stats) {
 //         判断哪些是一字板（竞价/开盘涨幅达到涨停），计算数量填入 bidding_data 封单家数行 time925 列。
 //   原实现：NumCat emoindic-daily 的 owfd_0925_count 字段 — 不稳定（8/14 等日期接口计数类字段缺失，
 //         且 emoindic 是日级指标，9:25 时往往还没有当天数据 → findTodayItem 找不到 → 空白）。
+
+
+
+
 async function runSeal(env, source) {
   const date = beijingToday();
   const logBase = { run_date: date, time_point: 't0925', source: source || 'cron', job: 'seal', worker: 'B' };
@@ -944,6 +950,11 @@ async function runClose(env, source) {
 // ★ [PATH-FIX 2026-11-05] `../../_shared-source/` → `../_shared-source/`：
 //   本文件在 workers/bidding-board-worker-b/ 下，`../../` 指向项目根，目录不存在。
 //   详见 bidding-auto-fetch/index.js 同一处改动的说明（wrangler 严格解析才会暴露）。
+
+
+
+
+
 function autoPoint() {
   const d = beijingNow();
   const mins = d.getUTCHours() * 60 + d.getUTCMinutes();

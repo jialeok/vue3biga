@@ -278,6 +278,65 @@ export async function readStockRangePctForDate(env, date) {
   })).filter(r => r.stock);
 }
 
+/**
+ * [RANGE20-FETCH 2026-11-05 用户口径] 读取某日「20 日区间涨幅」排行，按数值降序取前 N。
+ *
+ * 用途：把「20 日补位票」并入 9:25 的抓取名单。用户原话：
+ *   「我不是让你把 20 日补票放进 worker 吗？这样不是更方便……先要算出 20 日涨幅，算出排名后，
+ *     统一获取就可以了。也就是和那些最近多板源一起用猫抓数据接口一起获取，也是消耗一个额度。」
+ *   ⇒ 猫抓 `daily_auc` 是「一次请求一批 symbols」，额度按【请求次数】算、不按股票数算，
+ *     所以名单里多这 20 只【0 额外额度】。
+ *
+ * ⚠️ 为什么取【前一交易日】的榜：当天（date=today）这张表要等收盘后才算出来 ——
+ *   2026-11-05 实测 79 行全部 `updated_at=16:38`（收盘后 38 分钟），9:25 时一行都没有。
+ *   而「截至昨日收盘」的 20 日涨幅昨天收盘后就已算好，是 9:25 唯一可及且完整的口径。
+ *
+ * 🔴 `pct` 是【文本列】，⛔ 绝不能用 `order=pct.desc`（那是字典序）：
+ *   实测会把 '8.94' 排在 '78.46' 前面 ⇒ 前五变成一批弱势票。必须取回后按 Number() 排。
+ *
+ * ⚠️ 口径（用户铁律「早上用竞价口径，收盘用收盘口径，不要搞混」）：
+ *   该表同一 (date, stock) 可能同时存在 `leg='auc'`（9:26 竞价口径）与 `leg='close'`（收盘口径）
+ *   两行 —— 这是前端 `src/data/range20-prev-rank.js` 文件头明写的契约。
+ *   本函数【同股只取一行】，优先 `leg='auc'`（9:25 这一刻的正确口径），没有 auc 行才退 `close`。
+ *   实测 11-03/11-04/11-05 三日均为 0 例同股双行（该表事实上 (date,stock) 唯一），
+ *   所以这条规则今天是 no-op，但它是【未来出现双行时不混口径】的保险。
+ *
+ * @returns {Promise<Array<{name:string,pct:number,days:number,leg:string}>>} 失败返回 []（非致命）
+ */
+export async function readRange20TopForDate(env, date, limit) {
+  const n = Number(limit) > 0 ? Math.floor(Number(limit)) : 20;
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range20_pct?date=eq.' +
+    encodeURIComponent(date) + '&select=stock,pct,days,leg&limit=2000';
+  const resp = await sbFetch(url, { headers: sbHeaders(env) });
+  if (!resp.ok) return [];
+  const data = await resp.json();
+  const num = function (v) {
+    if (v === null || v === undefined) return null;
+    const s = String(v).replace('%', '').replace(/,/g, '').trim();
+    if (s === '') return null;
+    const x = Number(s);
+    return isNaN(x) ? null : x;
+  };
+  // 同股去重 + 按口径取舍（见上方「口径」注记）
+  const byName = new Map();
+  (data || []).forEach(function (r) {
+    const name = (r.stock || '').trim();
+    if (!name) return;
+    const pct = num(r.pct);
+    if (pct === null) return;                       // §10 缺值不得当 0 参与排名
+    const leg = r.leg || '';
+    const cur = byName.get(name);
+    if (!cur) { byName.set(name, { name: name, pct: pct, days: Number(r.days) || 0, leg: leg }); return; }
+    // 已有 close 行、这次来的是 auc 行 ⇒ 用 auc 覆盖（优先竞价口径）
+    if (cur.leg !== 'auc' && leg === 'auc') {
+      byName.set(name, { name: name, pct: pct, days: Number(r.days) || 0, leg: leg });
+    }
+  });
+  return Array.from(byName.values())
+    .sort(function (a, b) { return b.pct - a.pct; })
+    .slice(0, n);
+}
+
 // [BUG-FIX] 读取指定日期的 auction_watchlist 股票列表，用于合并打标签/观察组股票到 worker 抓取名单
 // [9:25-LOCK 2026-09-15] 额外返回 obs_auto_added：调用方判断「9:25 那轮是否已成功落库」时，
 //   必须【排除观察组壳行】——壳行是前端打开页面时自己写的（source=manual），

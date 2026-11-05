@@ -8,7 +8,7 @@ import { fetchLadderConstituents, fuyaoCalendarTradingDays } from '../data/fuyao
 // [KEY-FALLBACK 2026-09-28] configuredKeys/maskKey 只用于把「key 候选链」回显到日志：
 //   小号 Secret 没配时兜底会静默失效，必须在日志里一眼看见（§10 禁止静默失败）。
 import { numcatDailyAuc, numcatDaily, configuredKeys, maskKey } from '../data/numcat-api.js';
-import { upsertAuctionWatchlist, upsertMarketMetrics, upsertStockRangePct, readAuctionWatchlistForDate, readAuctionTagsForDate, readDragonLeadersForDate, readStockCodeMap, readStockCodeMapByNames, readMarketMetricsSnapshotFieldsForDate } from '../data/supabase-write.js';
+import { upsertAuctionWatchlist, upsertMarketMetrics, upsertStockRangePct, readAuctionWatchlistForDate, readAuctionTagsForDate, readDragonLeadersForDate, readRange20TopForDate, readStockCodeMap, readStockCodeMapByNames, readMarketMetricsSnapshotFieldsForDate } from '../data/supabase-write.js';
 import { getRecentTradingDays } from './holiday-check.js';
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏。早盘放在【最后】跑一次（不阻塞 P0/P1/P2）：
 // 猫抓对当日行通常不给四要素，但若为单日请求/结算较快而给了，就能在 9:26 前顺手落库；
@@ -199,10 +199,34 @@ async function checkTradingDay(env, today, cache, logs) {
   return null;
 }
 
+/**
+ * [RANGE20-FETCH 2026-11-05 用户口径] 「20日涨幅补位票」并入 9:25 抓取名单的只数。
+ *
+ * 用户原话（本轮）：「我不是让你把 20 日补票放进 worker 吗？这样不是更方便，怎么又没有竞价量比了呢？
+ *   也就是和那些最近多板源一起用猫抓数据接口一起获取，也是消耗一个额度。但前提是先要算出 20 日涨幅，
+ *   算出排名后，统一获取就可以了。这是逻辑和常识啊」。
+ *
+ * ⇒ 完全成立：猫抓 `daily_auc` 一次请求一批 symbols，**额度按请求次数算、不按股票数算**，
+ *   所以名单里多这 25 只 → 0 额外额度（只是同一次请求里多 25 个 symbol）。
+ *
+ * 取 25 只（不是 5 只）的理由 —— 前端三处用量的最大值是 10，再留余量吸收「昨日榜 → 今日榜」的换血：
+ *   · 展示用前五       `RANGE20_LEADER_TOP_N = 5`   （20日涨幅 toggle / 补位区块 / 总龙一~五）
+ *   · 宽口径前八       `RANGE20_LEADER_WIDE_N = 8`  （退潮买点候补）
+ *   · 题材榜前十       `RANGE20_MAIN_TOP_N = 10`    （题材量比「候补」规则）
+ *   · 前端自己的粗筛池 `RANGE20_LEADER_PRESELECT = 25` ← 本常量取同一个数，口径对齐
+ *   实测（11-05 回放）：取前 5 只覆盖缺量比 3/28，前 20 覆盖 10/28，前 25 覆盖 13/28。
+ *
+ * ⚠️ 口径：用【前一交易日】完整榜（当天榜要等收盘后才算出来 —— 11-05 实测 79 行全部 16:38 写入，
+ *    9:25 时一行都没有）。这天然自愈，但要接受一个【结构性一天延迟】：
+ *    今天才涨进前 N 的票，今天 9:25 不可能预知，明天 9:25 才落在「昨日完整榜」里被抓到。
+ *    11-05 回放里 28 只缺量比中有 10 只属于这种「今日新进榜」，任何「截至昨收」的排名都算不出来。
+ */
+const RANGE20_FETCH_TOP_N = 25;
+
 // 2. 获取最近多板成分股 + 写入 auction_watchlist
 // [LATENCY 2026-09-11] 原来这一步是 9 次串行网络调用（≈11.6s），现改为 3 组并行（≈3s）：
 //   组A：成分股 ∥ 代码表 ∥ 交易日历       ← 三者互不依赖
-//   组B：前日名单 ∥ 今日名单 ∥ 前日标签    ← 只依赖组A的交易日历
+//   组B：前日名单 ∥ 今日名单 ∥ 前日标签 ∥ 前日龙头 ∥ 前日20日涨幅榜  ← 只依赖组A的交易日历
 //   组C：仅对「仍缺 code 的名字」做一次按名精确补码（通常 0 次或 1 次小请求）
 async function fetchAndWriteWatchlist(env, today, cache, logs) {
   logs.push('步骤1：并行获取 成分股 / 代码表 / 交易日历...');
@@ -242,15 +266,21 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
   const recentDays = (tdRes.ok && tdRes.v) || [];
   const prevDay = recentDays.length >= 2 ? recentDays[recentDays.length - 2] : null;
 
-  // 组B：三个名单来源并行（原来串行 3 次 + 中间夹着 2 次重复的代码表读取）
-  logs.push('步骤1b：并行读取 前日名单 / 今日名单 / 前日标签 / 前日龙头...');
-  const [prevWlRes, todayWlRes, tagRes, dragonRes] = await Promise.all([
+  // 组B：名单来源并行（原来串行 3 次 + 中间夹着 2 次重复的代码表读取）
+  logs.push('步骤1b：并行读取 前日名单 / 今日名单 / 前日标签 / 前日龙头 / 20日涨幅榜...');
+  const [prevWlRes, todayWlRes, tagRes, dragonRes, range20Res] = await Promise.all([
     settled(prevDay ? readAuctionWatchlistForDate(env, prevDay) : Promise.resolve([])),
     settled(readAuctionWatchlistForDate(env, today)),
     settled(prevDay ? readAuctionTagsForDate(env, prevDay) : Promise.resolve([])),
     // [DRAGON-GROUP 2026-09-14] 前一交易日评选出的龙头名册（供「龙头组数据完整获取」，需求 2）
-    settled(prevDay ? readDragonLeadersForDate(env, prevDay) : Promise.resolve([]))
+    settled(prevDay ? readDragonLeadersForDate(env, prevDay) : Promise.resolve([])),
+    // [RANGE20-FETCH 2026-11-05] 前一交易日的 20 日涨幅榜（供「20日补位组」数据完整获取）。
+    //   放进组B 并行，是为了【不增加任何额外延迟】—— 它和上面 4 个读互不依赖。
+    settled(prevDay ? readRange20TopForDate(env, prevDay, RANGE20_FETCH_TOP_N) : Promise.resolve([]))
   ]);
+  // 20日补位候选：只有名字+涨幅，code 由下方 codeMap / 按名补码 两路补（该表没有 code 列）
+  const range20Stocks = (range20Res.ok && range20Res.v) || [];
+  if (range20Res.e) logs.push('读取 20 日涨幅榜失败(非致命): ' + range20Res.e.message);
 
   let constituents = ladderConstituents;
 
@@ -315,6 +345,10 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
   if (dragonRes.e) logs.push('读取前一交易日龙头名册失败(非致命): ' + dragonRes.e.message);
   const nameless = todayStocks.concat(prevWlRes.ok && prevWlRes.v ? prevWlRes.v : [])
     .concat(dragonStocks)
+    // [RANGE20-FETCH 2026-11-05] 20日涨幅榜只有名字（表内无 code 列），且这些票
+    //   **恰好最容易不在 stockcodemap 里**（它们多半不在 883410 成分股内）。
+    //   不放进这里按名补码 ⇒ 下方 `if (!code) return` 会把它们整批丢掉，等于没做。
+    .concat(range20Stocks)
     .map(s => s.name)
     .filter(n => n && !codeMap[n]);
   if (nameless.length > 0) {
@@ -367,9 +401,40 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
     }
   }
 
+  // [RANGE20-FETCH 2026-11-05 用户口径] 合并「20日涨幅补位票」到抓取名单。
+  //
+  //   为什么必须并入（用户本轮明确指出）：20日补位票是**视图注入壳行**（`*AutoAdded`，不写 watchlist），
+  //   如果 9:25 不为它们抓当天行情，它们的 `market_metrics` 行就不存在 ⇒
+  //   ① 第一页竞价量整列 `-`；② 竞价量比空 ⇒ 题材平均量比分母缺失；③ 收盘后才补进来的行只有收盘数据。
+  //   2026-11-05 实测就是这个形状：86 行里 28 只没量比，28 只全部不是 9:25 那轮写的。
+  //
+  //   ⛔ 成本 = 0：猫抓 `daily_auc` 一次请求一批 symbols，额度按【请求次数】算。
+  //   ⛔ 不写 auction_watchlist：与打标签/龙头同一处理，只并入 constituents，
+  //      不破坏「当日名单 = 9:25 快照」的锁定口径（§6）。
+  if (range20Stocks.length > 0) {
+    const existingNames = new Set(constituents.map(c => c.name));
+    const existingCodes = new Set(constituents.map(c => c.code));
+    const range20Extra = [];
+    range20Stocks.forEach(function (r) {
+      if (!r || !r.name || existingNames.has(r.name)) return;
+      const code = codeMap[r.name] || '';
+      if (!code || existingCodes.has(code)) return;
+      existingNames.add(r.name);
+      existingCodes.add(code);
+      range20Extra.push({ name: r.name, code: code });
+    });
+    if (range20Extra.length > 0) {
+      logs.push('20日涨幅补位(基于 ' + prevDay + ' 完整榜, 前 ' + range20Stocks.length + ' 名): ' +
+        range20Extra.length + ' 只，合并到抓取名单（不写 watchlist，0 猫抓额度）');
+      constituents = constituents.concat(range20Extra);
+    } else {
+      logs.push('20日涨幅补位: 榜上前 ' + range20Stocks.length + ' 名均已在抓取名单内（或查不到 code）');
+    }
+  }
+
   // [DEGRADE 2026-09-15] 降级后仍要求「有可抓取的标的」，否则整轮无从下手（§10 读失败≠空）
   if (constituents.length === 0) {
-    return { error: '抓取名单为空：883410 成分股不可用，且前一日名单/打标签/龙头名册均无可用标的' };
+    return { error: '抓取名单为空：883410 成分股不可用，且前一日名单/打标签/龙头名册/20日涨幅榜均无可用标的' };
   }
 
   // [DEGRADE 2026-09-15] 降级模式下【不写】auction_watchlist：拿不到 883410 名册，就绝不伪造
