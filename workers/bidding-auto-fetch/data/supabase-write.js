@@ -295,9 +295,15 @@ export async function readStockRangePctForDate(env, date) {
  *   实测会把 '8.94' 排在 '78.46' 前面 ⇒ 前五变成一批弱势票。必须取回后按 Number() 排。
  *
  * ⚠️ 口径（用户铁律「早上用竞价口径，收盘用收盘口径，不要搞混」）：
- *   该表同一 (date, stock) 可能同时存在 `leg='auc'`（9:26 竞价口径）与 `leg='close'`（收盘口径）
- *   两行 —— 这是前端 `src/data/range20-prev-rank.js` 文件头明写的契约。
- *   本函数【同股只取一行】，优先 `leg='auc'`（9:25 这一刻的正确口径），没有 auc 行才退 `close`。
+ *   该表同一 (date, stock) 可能同时存在 `leg='auc'`（9:26 竞价口径，当天中间态）与
+ *   `leg='close'`（收盘口径，该日 20 日复利的**权威值**）两行 —— 契约见前端
+ *   `src/logic/auction/prev-rank-table.js#pickCloseLegRows`（那里也是 close 优先）。
+ *   本函数【同股只取一行】，**优先 `leg='close'`**；只有 auc 行的票仍然收（不清空覆盖度）。
+ *
+ *   ⛔ 与前端 `pickCloseLegRows` 的唯一差别：前端拿它做「今日 vs 昨日」名次对比，
+ *      混腿会让名次变化失真，所以那类票宁可判不出；本函数是【挑抓取候选】，
+ *      多抓一只是 0 额度，少抓一只就缺数据 ⇒ 有 auc 行也收，只是排在 close 之后。
+ *
  *   实测 11-03/11-04/11-05 三日均为 0 例同股双行（该表事实上 (date,stock) 唯一），
  *   所以这条规则今天是 no-op，但它是【未来出现双行时不混口径】的保险。
  *
@@ -317,18 +323,19 @@ export async function readRange20TopForDate(env, date, limit) {
     const x = Number(s);
     return isNaN(x) ? null : x;
   };
-  // 同股去重 + 按口径取舍（见上方「口径」注记）
+  // 同股去重 + 按口径取舍（close 优先，见上方「口径」注记）
   const byName = new Map();
   (data || []).forEach(function (r) {
     const name = (r.stock || '').trim();
     if (!name) return;
     const pct = num(r.pct);
     if (pct === null) return;                       // §10 缺值不得当 0 参与排名
-    const leg = r.leg || '';
+    // leg 为空按 close 对待（旧行缺省就是收盘口径），与前端 pickCloseLegRows 一致
+    const leg = (String(r.leg || 'close').trim().toLowerCase() === 'auc') ? 'auc' : 'close';
     const cur = byName.get(name);
     if (!cur) { byName.set(name, { name: name, pct: pct, days: Number(r.days) || 0, leg: leg }); return; }
-    // 已有 close 行、这次来的是 auc 行 ⇒ 用 auc 覆盖（优先竞价口径）
-    if (cur.leg !== 'auc' && leg === 'auc') {
+    // 已有 auc 行、这次来的是 close 行 ⇒ 用 close 覆盖（收盘口径是权威值）
+    if (cur.leg !== 'close' && leg === 'close') {
       byName.set(name, { name: name, pct: pct, days: Number(r.days) || 0, leg: leg });
     }
   });

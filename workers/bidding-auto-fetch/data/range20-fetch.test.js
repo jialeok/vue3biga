@@ -99,27 +99,33 @@ describe('readRange20TopForDate —— 20日涨幅榜取数口径', () => {
   });
 
   // ── 口径：用户铁律「早上用竞价口径，收盘用收盘口径，⛔ 不要搞混」 ──
-  //    同一 (date, stock) 若同时有 auc / close 两行，本函数必须【只取一行】且优先 auc。
-  //    否则一只票会占两个名额，且把两种口径的数值混在一张榜里比较。
-  it('⑤ 同股双行：只取一行，且优先竞价口径(auc)', async () => {
+  //    上一交易日是【已收盘】的 ⇒ leg='close' 才是该日 20 日复利的权威值（auc 只是当天 9:26 中间态）。
+  //    同股双行必须【只取一行】且优先 close，否则一只票占两个名额、还把两种口径混在一张榜里比较。
+  it('⑤ 同股双行：只取一行，且优先收盘口径(close=权威值)', async () => {
     stubRows([
       { stock: '双行票', pct: '10.00', days: 20, leg: 'close' },
       { stock: '双行票', pct: '9.00', days: 20, leg: 'auc' },
-      { stock: '单行票', pct: '11.00', days: 20, leg: 'close' }
+      { stock: '单行票', pct: '11.00', days: 20, leg: 'auc' }
     ]);
     const out = await readRange20TopForDate(ENV, '2026-11-04', 10);
     expect(out.length).toBe(2);                                   // 不是 3
     const dup = out.find(r => r.name === '双行票');
-    expect(dup.leg).toBe('auc');                                  // 优先竞价口径
-    expect(dup.pct).toBe(9);                                      // 用的是 auc 那一行的值
-    // 排序仍按数值：11 > 9
+    expect(dup.leg).toBe('close');                                // 优先收盘口径
+    expect(dup.pct).toBe(10);                                     // 用的是 close 那一行的值
+    // 排序仍按数值：11 > 10
     expect(out.map(r => r.name)).toEqual(['单行票', '双行票']);
   });
 
-  it('⑤b 只有 close 行时照常可用（不因为缺 auc 就把票丢掉）', async () => {
-    stubRows([{ stock: '仅收盘腿', pct: '7.50', days: 20, leg: 'close' }]);
+  it('⑤b 只有 auc 行时照样收（挑抓取候选以覆盖度为先，⛔ 不像名次对比那样判不出）', async () => {
+    stubRows([{ stock: '仅竞价腿', pct: '7.50', days: 20, leg: 'auc' }]);
     const out = await readRange20TopForDate(ENV, '2026-11-04', 10);
     expect(out).toHaveLength(1);
+    expect(out[0].leg).toBe('auc');
+  });
+
+  it('⑤c leg 为空按 close 对待（旧行缺省就是收盘口径，与前端 pickCloseLegRows 一致）', async () => {
+    stubRows([{ stock: '空腿票', pct: '6.00', days: 20, leg: '' }]);
+    const out = await readRange20TopForDate(ENV, '2026-11-04', 10);
     expect(out[0].leg).toBe('close');
   });
 });
