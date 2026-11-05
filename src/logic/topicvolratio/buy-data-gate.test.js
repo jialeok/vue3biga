@@ -66,9 +66,11 @@ describe('resolveBuyDataGate · 数据缺失禁止选股', function() {
     expect(it0.label).toBe('竞价量比');
     // 用户要的「提示行」：必须写清「几只里有几只」，不能只说「缺失」
     expect(it0.stat).toBe('0 / 72 只（0%）');
-    // 必须说清怎么修（盘中必然为空 / 收盘后回填 / 历史日补数）
+    // 必须说清怎么修。⚠️ [TVRB-GATE-TRUTH 2026-11-05] 旧版这里写的是「盘中必然为空」——
+    //    该说法已被 11-05 实测推翻（9:25 写入的 58 只 58/58 全带量比），现在讲的是三种真实成因。
     expect(it0.fix).toContain('猫抓');
-    expect(it0.fix).toContain('16:30');
+    expect(it0.fix).toContain('名单');   // ① 成因必须是「不在抓取名单里」，这才是真实根因
+    expect(it0.fix).toContain('16:30');  // ③ 保留历史日回填这条真实入口
     // 结论必须明确到「今天不能选股」
     expect(r.headline).toContain('不能选股');
     // 标题栏极短文案
@@ -167,6 +169,42 @@ describe('resolveBuyDataGate · 数据缺失禁止选股', function() {
     const r = resolveBuyDataGate();
     expect(r.blocked).toBe(true);
     expect(r.items[0].key).toBe('pool');
+  });
+
+  // ── [TVRB-GATE-TRUTH 2026-11-05] 「修复指引」与代码现实的一致性 ────────────────────────
+  // 用户看到的就是这段字。写一个不存在的入口，等于把人往错路引（旧版真踩过：`?range20=1` 全仓库不存在）。
+  // 反向也踩过：把真实存在、且**前端已自动执行**的入口写成「需要你手动执行」⇒ 用户白忙一场。
+  it('④ 修复文案 ⛔ 不许出现代码里不存在的入口，且每一条都够具体（回归锁）', function() {
+    const cases = [
+      { key: 'pool', r: resolveBuyDataGate(full({ rows: [] })) },
+      { key: 'auc_vol_ratio', r: resolveBuyDataGate(full({ rows: rows(72, 0, 72) })) },
+      { key: 'range10', r: resolveBuyDataGate(full({ rows: rows(72, 72, 0) })) },
+      { key: 'range20', r: resolveBuyDataGate(full({ range20Ready: true, range20Count: 0 })) }
+    ];
+    // 真实不存在的入口（旧版文案里的 `?range20=1` 就在这里，用户照着打只会 404）
+    const ghostEntries = ['?range20=1', '?heal20=1', '?backfill=1'];
+    cases.forEach(function(c) {
+      expect(c.r.items[0].key).toBe(c.key);       // 先确认确实测到了这一条
+      const fix = c.r.items[0].fix;
+      expect(fix.length).toBeGreaterThan(20);     // 不许一句「数据缺失」了事
+      ghostEntries.forEach(function(g) {
+        expect(fix).not.toContain(g);
+      });
+    });
+  });
+
+  it('④-2 十日涨幅的指引必须写明「前端会自动自愈」，⛔ 不能让用户以为要手动打 Edge', function() {
+    const r = resolveBuyDataGate(full({ rows: rows(72, 72, 0) }));
+    const fix = r.items[0].fix;
+    expect(fix).toContain('healTodayRangePct');  // 真实存在的自愈入口（dragon-rank.js 会调）
+    expect(fix).toContain('自动');
+    expect(fix).toContain('stock_daily_pct');    // 兜底指向真正的上游：逐日腿表
+  });
+
+  it('④-3 20 日涨幅的指引必须点名真实存在的 prefillRange20FromDailyLegs', function() {
+    const r = resolveBuyDataGate(full({ range20Ready: true, range20Count: 0 }));
+    expect(r.items[0].fix).toContain('prefillRange20FromDailyLegs');
+    expect(r.items[0].fix).toContain('stock_daily_pct');
   });
 });
 

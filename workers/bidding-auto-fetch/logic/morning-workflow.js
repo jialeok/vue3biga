@@ -11,8 +11,9 @@ import { numcatDailyAuc, numcatDaily, configuredKeys, maskKey } from '../data/nu
 import { upsertAuctionWatchlist, upsertMarketMetrics, upsertStockRangePct, readAuctionWatchlistForDate, readAuctionTagsForDate, readDragonLeadersForDate, readRange20TopForDate, readStockCodeMap, readStockCodeMapByNames, readMarketMetricsSnapshotFieldsForDate } from '../data/supabase-write.js';
 import { getRecentTradingDays } from './holiday-check.js';
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏。早盘放在【最后】跑一次（不阻塞 P0/P1/P2）：
-// 猫抓对当日行通常不给四要素，但若为单日请求/结算较快而给了，就能在 9:26 前顺手落库；
-// 没给也零副作用（只补缺失值，写 0 行）。真正的兜底是 16:00 close 与次日窗口重刷。
+// 猫抓当日行给不给四要素由接口决定（09-11 那天没给，11-05 那天 58/58 全给）——
+// P0 写入时已按当次响应如实落库，所以这里通常零请求返回；
+// 真正的兜底是 16:00 close 与次日窗口重刷。
 import { runAuctionExtrasPatch, runTodaySnapshotPatch } from './extras-workflow.js';
 // [PLAN-A 2026-09-10] 区间涨幅口径复用前端同一份纯函数（单一真相 §6）：
 // 窗口天数 / 复利累乘 / T 腿竞价占位判定 全部只此一份，前后端不会算出两个结果。
@@ -131,11 +132,21 @@ function settled(p) {
 // ---------------------------------------------------------------------------
 // [2026-09-11] 「竞价四要素」= 未匹配量 / 抢筹幅度 / 竞价量比 / 真换手率
 //   这四个是趋势图右侧展示的核心指标，也是「量比抢筹高光」的判据。
-//   ⚠️ 取证结论（.tmpdiag/diag_last_write.mjs）：猫抓 daily_auc 对【当日】这一行
-//      **不返回**这四个字段的值，只有 auc_vol / auc_pct_chg / auc_to_pre_vol_pct；
-//      四要素要等这一天结算后才出现（实际观测：次日早盘窗口重刷时自动补上）。
-//   因此 9:25 早盘**不能**等它们（等也等不到，还会顶穿 9:26 硬指标），
-//   改由 runAuctionExtrasPatch 在结算后补写（16:00 close 自动跑 / 手动 /fetch?point=extras）。
+//
+//   🔴 [EXTRAS-TRUTH 2026-11-05] 下面这条老结论已作废，别再照它推：
+//      「猫抓 daily_auc 对当日这一行不返回这四个字段」 —— **不成立**。
+//      2026-11-05 生产实测：`numcat 返回 fields=[..., "auc_vol_ratio","auc_turnover"] items=290 行`，
+//      9:25 写入的 58 只 **58/58 全部带 auc_vol_ratio**。
+//      2026-09-11 当时观测到的 0/67 是**那天的接口响应就没带这些字段**（`hasFields=false`），
+//      属于接口侧当时的行为，不能推广成「猫抓对当日永远不给」。
+//
+//   ⚠️ 但有一条**永远成立**的约束，改代码时别推翻它：
+//      ⛔ 不许把「四要素是否就绪」当成 9:25 的**阻塞条件**。
+//         行为不可控（接口可能某天就不给），而等它必然顶穿 9:26 硬指标；
+//         判据只能是「今天这个日期出现没」。见 fetchNumcatWithRetry 里那段注释。
+//   ✅ 正确做法就是现在的写法：**有就写、没有就空着**。
+//      写入路径直接用 `fields.indexOf('auc_vol_ratio')`（见下方 metric 组装），
+//      与 todayAuctionExtras 的统计结果**无耦合**；后者只用于打日志和回报，从不参与拦截。
 // ---------------------------------------------------------------------------
 const AUCTION_EXTRA_FIELDS = ['um_vol', 'open_bid_pct', 'auc_vol_ratio', 'auc_turnover'];
 
@@ -539,9 +550,12 @@ async function fetchNumcatWithRetry(env, constituents, today, cache, logs) {
     //      · 同一轮写入（9/11 01:30:03）里 9/10 = 60/67 有四要素，9/11 = 0/67 全空；
     //      · 全表唯一「最后一个写入时刻 = 当天」的日期就是 9/11，它四要素为 0；
     //      · 8/07 起的每个历史日，四要素都是在【后续几天的窗口重刷】时才出现的。
-    //    ⇒ 猫抓 daily_auc 对【当日】这一行不返回 um_vol/open_bid_pct/auc_vol_ratio/auc_turnover，
-    //      它们要等这一天结算后才有。拿它当阻塞条件 = 每天白等 25s 且永远等不到，
-    //      反而把 P0 落库顶穿 9:26。四要素改由 P3 补漏任务负责（runAuctionExtrasPatch）。
+    //    ⇒ 猫抓 daily_auc 对【当日】这一行的四要素**可能**不给（2026-09-11 那天就是 0/67），
+    //      但 **也可能给**（2026-11-05 实测 58/58 全带 auc_vol_ratio）——接口行为不由我们决定。
+    //      ⛔ 所以拿它当阻塞条件 = 每天白等 25s，撞上不给的那天还永远等不到，
+    //      反而把 P0 落库顶穿 9:26。
+    //      ✅ 现在的口径：**有就写、没有就空着**（写入路径与今日无关的字段索引，不做就绪判断）；
+    //      缺的部分由 P3 补漏任务负责（runAuctionExtrasPatch）。
     if (missingDates.includes(today)) {
       for (let attempt = 0; attempt < TODAY_RETRY_DELAYS_SEC.length && missingDates.includes(today); attempt++) {
         // [LATENCY 2026-09-30] P0 硬截止：到点就用手上已有的数据落库，绝不再等。
@@ -586,14 +600,15 @@ async function fetchNumcatWithRetry(env, constituents, today, cache, logs) {
         logs.push('❌ 重试后今天(' + today + ')数据仍缺失，本次不会写入今天的 market_metrics，需要手动补抓');
       }
     }
-    // 四要素【只统计、不阻塞】。当日为空是猫抓的既定行为，不是故障；
-    // 补漏交给 runAuctionExtrasPatch（16:00 close 跑 / 手动 /fetch?point=extras）。
+    // 四要素【只统计、不阻塞】。当日为空**不是**猫抓的既定行为（11-05 实测 58/58 都带），
+    // 而是「那天接口没给 / 个别票无竞价」，所以这里只如实打一行日志，不做任何拦截；
+    // 缺的部分交给 runAuctionExtrasPatch（16:00 close 跑 / 手动 /fetch?point=extras）。
     curExtras = todayAuctionExtras(items, fields, today);
     if (!curExtras.ok) {
-      logs.push('ℹ️ 今天(' + today + ')的「竞价四要素」当日不可用（' + curExtras.filled + '/' + curExtras.total +
-        ' 只非空' + (curExtras.hasFields ? '' : '，且 numcat 本次未返回这些字段') +
-        '）——这是猫抓 daily_auc 对当日行的既定行为，P0 落库不受影响；' +
-        '四要素将在当天结算后由补漏任务写回（最迟次日早盘窗口重刷时自动补上）。');
+      logs.push('ℹ️ 今天(' + today + ')的「竞价四要素」不全（' + curExtras.filled + '/' + curExtras.total +
+        ' 只非空' + (curExtras.hasFields ? '' : '，numcat 本次未返回这些字段') +
+        '）——只统计不拦截，P0 落库不受影响；' +
+        '缺的部分由补漏任务写回（runAuctionExtrasPatch / 次日早盘窗口重刷）。');
     }
     missingDatesAfterNumcat = missingDates;
   }
@@ -1245,12 +1260,16 @@ export async function runMorning(env) {
   mark('历史日 market_metrics 落库 ' + histWrite.totalMetricsWritten + ' 行');
 
   // ---- P3 竞价四要素补漏（保留为「零请求」安全网，最后跑，绝不挡在 P0 前面）----
-  // [QUOTA 2026-09-11] 这一步以前带 dates:[today] 会真发一次猫抓请求，但猫抓对【当日】行
-  // 永远不返回四要素（取证结论见 extras-workflow.js 文件头）→ 100% 白烧 1 次额度/天
-  // （占日额度 1/10）。现在 runAuctionExtrasPatch 默认 includeToday=false：dates 只剩今天
-  // → 立即零请求返回，只留一条日志。今天能拿到的四要素在 P0 写入时就已经落库；
+  // [QUOTA 2026-09-11] 这一步以前带 dates:[today] 会真发一次猫抓请求，但**今天能拿到的四要素
+  // 在 P0 写入时就已经落库了**（P0 按当次响应如实写：有就写、没有就空）⇒ 再补一次等于
+  // 复写同样的值，最坏情况是白烧 1 次额度/天（占日额度 1/10）。
+  // ⚠️ [EXTRAS-TRUTH 2026-11-05] 这里旧文案写的是「猫抓对当日行永远不返回四要素」——**不成立**
+  // （11-05 实测 9:25 写入的 58 只 58/58 全带 auc_vol_ratio）。结论（默认不回补今天）不变，
+  // 但理由要换成上面这句「P0 已经写过」，而不是「反正拿不到」。
+  // 现在 runAuctionExtrasPatch 默认 includeToday=false：dates 只剩今天
+  // → 立即零请求返回，只留一条日志。
   // 结算后的缺口由 16:00 close（自动排除今天）与次日早盘窗口重刷补齐。
-  // 保留这个调用点是刻意的：万一将来猫抓改了当日返回行为，这里会自动恢复补写能力。
+  // 保留这个调用点是刻意的：万一哪天 P0 那轮没跑成，这里仍能按需补一次。
   let extrasPatched = 0;
   if (extras && !extras.ok) {
     try {

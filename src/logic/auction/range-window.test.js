@@ -104,8 +104,10 @@ describe('T 腿口径（龙一/龙二排名的关键）', () => {
     expect(resolveTDayPct(true, false, null, null)).toBeNull();
   });
 
-  // [T-LEG-FALLBACK 2026-09-14] 实测事故：当日 market_metrics.auc_pct_chg 全空（numcat 四要素当日不给 /
-  // worker 未写入），旧实现直接返回 null → 整根 T 腿丢失 → 区间涨幅 days=9（只累到昨天）并被写进
+  // [T-LEG-FALLBACK 2026-09-14] 实测事故：当日 market_metrics.auc_pct_chg 全空
+  // （那天 numcat 没给 / worker 未写入。⚠️ [EXTRAS-TRUTH 2026-11-05] 这**不是**必然 ——
+  //  11-05 实测 9:25 写入的 58 只 58/58 全带量比 ⇒ 缺是「可能」，不是「永远」），
+  // 旧实现直接返回 null → 整根 T 腿丢失 → 区间涨幅 days=9（只累到昨天）并被写进
   // stock_range_pct，看板把「旧窗口」显示成今天的十日涨幅、龙头徽章全部掉色。
   // 口径修正：今天未收盘 + 竞价腿缺失 → 退回当日行内涨幅（9:25 后它就是当天的竞价副本）。
   it('今天 + 未收盘 + 竞价腿缺失 → 退回当日行内涨幅（绝不丢 T 腿）', () => {

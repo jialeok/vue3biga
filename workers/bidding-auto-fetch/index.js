@@ -215,7 +215,12 @@ async function dispatch(point, env, logs, opts) {
     return result;
   }
   if (point === 'extras') {
-    // [QUOTA 2026-09-11] 默认排除当天（猫抓对当日行不给四要素，算进去只是白烧额度）。
+    // [QUOTA 2026-09-11] 默认排除当天 —— 理由不是「拿不到」，而是**分工**：
+    //   当天的字段由同花顺快照腿负责（`runTodaySnapshotPatch`，免费、0 猫抓额度、
+    //   ⛔ 不含量比）；本函数只负责【历史日】的猫抓回填。
+    //   ⇒ 把今天塞进来只会让两条腿抢同一批字段，还白烧额度。
+    // ⚠️ [EXTRAS-TRUTH 2026-11-05] 旧文案写的是「猫抓对当日行不给四要素」——**已被推翻**
+    //   （11-05 实测 9:25 写入的 58 只 58/58 全带 auc_vol_ratio）。结论不变，理由换成上面这条。
     // 想坚持「含当天」的旧行为用于排查时，手动加 &today=1。
     const result = await runAuctionExtrasPatch(env, { includeToday: !!(opts && opts.includeToday) });
     console.log('[auto-fetch] runAuctionExtrasPatch 完成 ok=' + result.ok + ' patched=' + (result.patched || 0) +

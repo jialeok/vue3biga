@@ -281,8 +281,11 @@ export async function runClose(env, opts) {
   logs.push('步骤5：补写竞价四要素（未匹配量/抢筹幅度/竞价量比/真换手率）...');
   let extrasPatched = 0;
   try {
-    // [QUOTA 2026-09-11] 只传窗口、不传 [today] 兜底：四要素补漏默认【排除当天】
-    // （猫抓对当日行不给这四个字段，算进待补集合只是白烧 1 次额度）。
+    // [QUOTA 2026-09-11] 只传窗口、不传 [today] 兜底：四要素补漏默认【排除当天】——
+    // 不是「拿不到」，而是【分工】：当天的字段由同花顺快照腿补（`runTodaySnapshotPatch`，
+    // 免费、0 猫抓额度、⛔ 不含量比），本函数只负责历史日的猫抓回填。
+    // ⚠️ [EXTRAS-TRUTH 2026-11-05] 旧文案「猫抓对当日行不给这四个字段」已被推翻
+    // （11-05 实测 9:25 写入的 58 只 58/58 全带 auc_vol_ratio）；结论不变、理由更正。
     // rangeDates 为空时交给函数自取默认窗口（同样是 [T-9,T] 再去掉今天）。
     const ex = await runAuctionExtrasPatch(env, { logs: logs, dates: rangeDates });
     extrasPatched = ex.patched || 0;
