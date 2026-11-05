@@ -29,6 +29,19 @@ vi.mock('../../data/debug-log.js', () => ({ _dbgLog: () => {} }));
 // ★ [VOL-COVER 2026-11-05] 「展示名单」由 dragon-rank 提供；这里换成可控夹具，
 //   用来验证「补数目标 = 展示名单，而不只是 auction_watchlist」这条新口径。
 vi.mock('./dragon-rank.js', () => ({ getDragonTargetRows: vi.fn(() => []) }));
+// ★ [CODE-ON-DEMAND 2026-11-05] 内存缓存里查不到的股票名，靠 stockcodemap 按名补一次。
+//   E2E 实测：观察组壳行没有 code ⇒ 被 /^\d{6}$/ 静默滤掉 ⇒ 那两只永远 "-"。
+//   （日志：「展示名单 78 只，其中带 6 位代码 76 只」）
+const codeMapMock = vi.hoisted(() => ({ codes: {}, resolved: {}, asked: [] }));
+vi.mock('../../data/stock-code-map.js', () => ({
+  getStockCode: vi.fn(function(n) { return codeMapMock.codes[n] || ''; }),
+  resolveStockCodes: vi.fn(async function(names) {
+    codeMapMock.asked = (names || []).slice();
+    const out = new Map();
+    (names || []).forEach(function(n) { if (codeMapMock.resolved[n]) out.set(n, codeMapMock.resolved[n]); });
+    return out;
+  }),
+}));
 
 import {
   patchTodayAuctionFromThs,
@@ -72,6 +85,9 @@ beforeEach(() => {
   _resetThsPatchForTest();
   _resetAutoFillForTest();
   getDragonTargetRows.mockReturnValue([]);
+  codeMapMock.codes = {};
+  codeMapMock.resolved = {};
+  codeMapMock.asked = [];
   readAuctionRoster.mockResolvedValue([{ stock: '票A', code: '600001' }]);
   readAuctionMetrics.mockResolvedValue([]);
   upsertAuctionMetrics.mockImplementation(async function(rows) { return rows.length; });
@@ -427,5 +443,63 @@ describe('补数目标的最后一块：调用方「当前渲染的行」', () =
     expect(r.missing).toBe(1);
     expect(r.patchedRows).toBe(1);
     vi.useRealTimers();
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// ★ [CODE-ON-DEMAND 2026-11-05] 补数目标名单的第四块拼图：**代码**。
+//
+//   事故（E2E 第三次实测）：名单已经 78 只全对，日志却写着
+//     「展示名单 78 只，其中带 6 位代码 76 只」
+//   ⇒ 缺代码的 2 只（上海洗霸 / 大洋电机）被 /^\d{6}$/ 静默滤掉，
+//     既不算缺口也不会报错，页面永远 "-"。这类「静默过滤」是最难查的形状。
+//
+//   修法：内存缓存查不到 ⇒ 按名去 stockcodemap 精确补一次（1 个请求）。
+//   这里锁死三件事：
+//     ① 补到代码的票必须真的进补数队列（不是补完就忘）；
+//     ② ⛔ 只对「没有代码」的票发请求（§32，不许把整个名单再问一遍）；
+//     ③ 补失败必须降级为「跳过这几只」而不是整条链挂掉。
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('按名补代码（壳行没有 code 时的最后一道兜底）', () => {
+  it('extraStocks 缺 code ⇒ 补到后仍能写入竞价量（上海洗霸 / 大洋电机的形状）', async () => {
+    getDragonTargetRows.mockReturnValue([{ stock: '票A', code: '600001' }]);
+    codeMapMock.resolved['上海洗霸'] = '603200';
+    fuyaoApiGet.mockResolvedValue({
+      timestamp: TS_TODAY,
+      data_status: 'final',
+      item: [
+        { thscode: '600001.SH', auction_pct: 3.21, auction_volume: 38830.49 },
+        { thscode: '603200.SH', auction_pct: -0.8, auction_volume: 15948.86 },
+      ],
+    });
+    const r = await patchTodayAuctionFromThs(TODAY, { extraStocks: [{ stock: '上海洗霸' }] });
+    expect(r.ok).toBe(true);
+    // ① 真的按名去查了，而且只查那 1 只（票A 自己有代码 ⇒ 不许再问）
+    expect(codeMapMock.asked).toEqual(['上海洗霸']);
+    // ② 补到的票必须进补数队列并落库
+    const rows = upsertAuctionMetrics.mock.calls[0][0];
+    const names = rows.map((x) => x.stock);
+    expect(names).toContain('上海洗霸');
+    const sh = rows.find((x) => x.stock === '上海洗霸');
+    expect(sh.volume).toBe('159');     // 15948.86 手 ÷ 100 = 159.49 → 159 万股
+    expect(sh.code).toBe('603200');
+  });
+
+  it('⛔ 按名补不到代码 ⇒ 只跳过这只，其余照旧补（不整条链失败）', async () => {
+    getDragonTargetRows.mockReturnValue([{ stock: '票A', code: '600001' }]);
+    // resolved 里故意不登记 => resolveStockCodes 返回空 Map（stockcodemap 里确实没有）
+    const r = await patchTodayAuctionFromThs(TODAY, { extraStocks: [{ stock: '查不到的票' }] });
+    expect(r.ok).toBe(true);
+    expect(codeMapMock.asked).toEqual(['查不到的票']);
+    const names = upsertAuctionMetrics.mock.calls[0][0].map((x) => x.stock);
+    expect(names).toContain('票A');
+    expect(names).not.toContain('查不到的票');
+  });
+
+  it('名单全部自带代码 ⇒ 一次都不发补码请求（§32 不重复请求）', async () => {
+    getDragonTargetRows.mockReturnValue([{ stock: '票A', code: '600001' }, { stock: '票C', code: '600003' }]);
+    await patchTodayAuctionFromThs(TODAY);
+    expect(codeMapMock.asked).toEqual([]);
   });
 });

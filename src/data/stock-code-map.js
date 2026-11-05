@@ -49,6 +49,43 @@ import { state } from '../logic/app-state.js';
             return '';
         }
 
+        /**
+         * ★★ [CODE-ON-DEMAND 2026-11-05] 内存缓存里查不到的股票名，按需去 `stockcodemap` 补一次。
+         *
+         * 为什么需要（E2E 实测踩到）：
+         *   观察组壳行（上海洗霸 / 大洋电机）在页面加载早期 `state._scMapCache` 还没装到它们，
+         *   `getStockCode` 返回 '' ⇒ 补数层按「没有 6 位代码就不能查上游」把它们过滤掉
+         *   ⇒ 这两只的竞价量永远补不上（日志：「展示名单 78 只，其中带 6 位代码 76 只」）。
+         *   缓存是异步装的，等它自己到货是不可靠的；这里按名精确补一次（1 个请求）。
+         *
+         * §40：只查表，⛔ 不猜代码；查不到就如实返回空，调用方照旧跳过。
+         * §10：读失败向上抛，⛔ 不伪装成「这只票没有代码」。
+         *
+         * @param {string[]} names 股票名数组
+         * @returns {Promise<Map<string,string>>} 名字 → 6 位代码（只含查到的）
+         */
+        export async function resolveStockCodes(names) {
+            const want = Array.from(new Set((names || []).map(function(n) { return String(n || '').trim(); })
+                .filter(function(n) { return n && !getStockCode(n); })));
+            const out = new Map();
+            if (want.length === 0) return out;
+            const sb = getSupabase();
+            const { data, error } = await sb.from('stockcodemap').select('stock,code').in('stock', want);
+            if (error) throw error;
+            if (!state._scMapCache) state._scMapCache = {};
+            (data || []).forEach(function(row) {
+                if (!row || !row.stock || !row.code) return;
+                const n = String(row.stock).trim();
+                const c = String(row.code).trim();
+                if (!n || !/^\d{6}$/.test(c)) return;
+                state._scMapCache[n] = c;   // 顺手把缓存补上，后续同步读也能命中
+                out.set(n, c);
+            });
+            _dbgLog('[CODE-ON-DEMAND] 按名补代码 ' + out.size + '/' + want.length
+                + (out.size ? '：' + Array.from(out.keys()).slice(0, 8).join(',') : ''));
+            return out;
+        }
+
         // upsert 一批 {stock, code} 到云端 stockcodemap，并同步更新内存缓存
         export async function upsertStockCodeMap(pairs) {
             if (!pairs || pairs.length === 0) return;
