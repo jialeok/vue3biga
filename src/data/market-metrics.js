@@ -9,6 +9,8 @@
 import { getSupabase } from './supabase-client.js';
 import { _dbgLog } from './debug-log.js';
 import { createQueryMemo } from './query-memo.js';
+// ★ [KEYSET-BUCKET 2026-11-05] 批量 upsert 必须按字段集分桶（见 upsert-buckets.js 的事故记录）
+import { planUpsertBatches } from './upsert-buckets.js';
 
 const TABLE = 'market_metrics';
 const PAGE = 1000;
@@ -69,8 +71,16 @@ export async function readMarketMetricsForDate(date, scope) {
 
 /**
  * 写入/更新指标行（upsert，主键 date+stock+scope）。
- * ⚠️ 只更新调用方显式提供的列，未提供的列保持原值（Supabase upsert 语义），
- *    因此「收盘覆盖」只传 change_pct + updated_* 不会抹掉 volume / auc_pct_chg 等竞价字段。
+ *
+ * 🔴 [KEYSET-BUCKET 2026-11-05] 这里原来写着「未提供的列保持原值（Supabase upsert 语义）」——
+ *    **那句是错的**。批量 upsert 是一条 INSERT ... ON CONFLICT DO UPDATE，列清单取整批的并集，
+ *    某行没写某列 ⇒ 该行在 VALUES 里是 NULL ⇒ `SET col = EXCLUDED.col` 把库里正确的值抹成 NULL。
+ *    真实后果见 `data/upsert-buckets.js` 顶部事故记录（竞价量 321 → NULL）。
+ *    现在统一走 `planUpsertBatches`：按字段集分桶，桶内字段全一致，不存在 NULL 填空。
+ *
+ * 调用方仍可「只提交需要写的字段」（例如收盘覆盖只传 change_pct + updated_*），
+ * 前提是**别显式写成空值** —— 那是「明确要清空」的语义。
+ *
  * @param {Array<object>} rows - 至少含 date / stock / scope
  * @returns {Promise<{written:number}>}
  */
@@ -84,8 +94,9 @@ export async function upsertMarketMetricsRows(rows) {
   // 分批：单批过大容易被网关截断（与 auction-sync-push 同款对策）
   const BATCH = 200;
   let written = 0;
-  for (let i = 0; i < list.length; i += BATCH) {
-    const chunk = list.slice(i, i + BATCH);
+  const batches = planUpsertBatches(list, BATCH);
+  for (let i = 0; i < batches.length; i++) {
+    const chunk = batches[i];
     const { error } = await sb
       .from(TABLE)
       .upsert(chunk, { onConflict: 'date,stock,scope' });

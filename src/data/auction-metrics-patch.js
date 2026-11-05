@@ -12,6 +12,8 @@
 // 【§10 读取失败 ≠ 空数据】三个读函数失败一律 throw，绝不 return []。
 import { getSupabase } from './supabase-client.js';
 import { _dbgLog } from './debug-log.js';
+// ★ [KEYSET-BUCKET 2026-11-05] 批量 upsert 必须按字段集分桶，否则同批里没写某列的行会把它写成 NULL。
+import { planUpsertBatches } from './upsert-buckets.js';
 
 /** 竞价行在 market_metrics 里的 scope 值（与 worker / 全站看板同一常量口径） */
 export const AUCTION_SCOPE = 'auction';
@@ -55,8 +57,10 @@ export async function readAuctionMetrics(date) {
 /**
  * 批量 upsert 竞价行（唯一键 date,stock,scope）。
  *
- * ⚠️ 调用方必须自己保证「只提交需要写的字段」——本函数不判断"该不该覆盖"，
- *    它只负责把给到的行合并进去（缺失字段用 PostgreSQL 的 merge-duplicates 语义保留原值）。
+ * ⚠️ 调用方可以「只提交需要写的字段」，但**同一批里的字段集必须一致** ——
+ *    本函数会按字段集自动分桶（`data/upsert-buckets.js`，那里记着 2026-11-05
+ *    「18 行只补换手率把别的行 volume 抹成 NULL」的真实事故），所以调用方不必自己保证；
+ *    但也正因为此，**不要把「应该保留原值」的列显式写成空值**，那是「明确要清空」的语义。
  *
  * @param {Array<object>} rows 每行必须含 date / stock / scope
  * @returns {Promise<number>} 实际提交的行数
@@ -67,14 +71,15 @@ export async function upsertAuctionMetrics(rows) {
   if (list.length === 0) return 0;
   const sb = getSupabase();
   let written = 0;
-  for (let i = 0; i < list.length; i += UPSERT_CHUNK) {
-    const chunk = list.slice(i, i + UPSERT_CHUNK);
+  const batches = planUpsertBatches(list, UPSERT_CHUNK);
+  for (let b = 0; b < batches.length; b++) {
+    const chunk = batches[b];
     const { error } = await sb
       .from('market_metrics')
       .upsert(chunk, { onConflict: 'date,stock,scope' });
     if (error) {
       // §10：写失败必须让上层知道（不能"看起来补好了"）
-      _dbgLog('[METRICS-PATCH] upsert 第 ' + (Math.floor(i / UPSERT_CHUNK) + 1) + ' 批失败: ' + error.message);
+      _dbgLog('[METRICS-PATCH] upsert 第 ' + (b + 1) + ' 批失败: ' + error.message);
       throw error;
     }
     written += chunk.length;

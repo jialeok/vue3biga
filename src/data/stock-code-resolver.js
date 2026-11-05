@@ -61,8 +61,11 @@ export async function loadUniverseNameCodeMap(force) {
         const m = {};
         await Promise.all(UNIVERSE_INDEXES.map(async function(thscode) {
             try {
-                // ★ 必须显式传 allowWhenOff + timeoutMs，否则会在 `new URL` 之前被总闸抛掉
-                //   （2026-11-05 同款事故：ths-today-patch 的快照腿就是这么静默死了好几天）
+                // ⚠️ 诚实说明：`allowWhenOff` 目前**还不足以**放行本路径 ——
+                //   fuyao-proxy.js 的受控放行只认 `/api/a-share/auction/snapshot` 一个端点（字符串相等）。
+                //   也就是说只要 `FUYAO_OFF=true`，这条腿就是**休眠**的，真正干活的是 ②③④。
+                //   这里仍然显式写上两个参数，是为了将来给本路径开白名单时不必再改一次调用点，
+                //   同时保证「有超时」——否则即便放行了也会重演 10-30 的卡死。
                 const data = await fuyaoApiGet('/api/a-share-index/constituents/ths-stock-list',
                     { thscode: thscode }, { allowWhenOff: true, timeoutMs: UNIVERSE_TIMEOUT_MS });
                 const items = (data && data.item) || [];
