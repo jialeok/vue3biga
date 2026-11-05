@@ -922,6 +922,111 @@ function _scheduleCloseSwitch(date, legMode) {
   _closeTimer.set(date, timer);
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// [R20-PREFILL 2026-11-05] 用【逐日腿原料表】把当天全部目标票预填进结果表。
+//
+// 🔴 为什么需要它（2026-11-05 实测取证，用户第 N 次问「20日涨幅是否完整」）：
+//   当天 `stock_range20_pct` 只有 **63/78** 行，缺 15 只 —— 而这 15 只**每一只在
+//   `stock_daily_pct` 里都有 25 条逐日腿**（2026-09-23 ~ 11-04）。
+//   ⇒ 不是「数据没有」，是「**没人算**」：`upsertRange20Rows` 只有两个调用点
+//     （`ensureRange20` 阶段② / `ensureRange20Leaders`），
+//     前者只由「20日涨幅 toggle」的 watch 触发，后者只写它选出的那 ~25 只龙头。
+//     用户不开那个 toggle ⇒ 剩下的人一行都不会被写 ⇒ 明天打开时这一列只能靠
+//     K 线现算（上游一抖就是 `—`）。
+//
+// ★ 本函数的定位 = **纯读 + 纯算 + 一次回写**，与 `ensureRange20` 阶段① 完全同源：
+//     0 个同花顺 / 腾讯 K 线请求，0 猫抓额度，只读 `stock_daily_pct` + 当天内存行。
+//   ⇒ 把「打开 20日涨幅 toggle 才有人算」降级成「进看板就顺带算完」（同 §12 十日涨幅自愈的思路）。
+//
+// ⛔ 三条红线：
+//   ① 只在**腿够**时写：判据与 `ensureRange20` 阶段② 的 `finalRows` **同一份**
+//      （`needsKlineLegs` + `isLegTableStale`）。腿不齐的票一律不写 ⇒ 宁可它继续缺，
+//      也绝不把一个「只有 T 腿的当天涨幅」当 20 日涨幅落库（§10 宁缺勿错）。
+//   ② 只写**云端还没有的**票（`!cloudMap.has`）：已命中的值本来就是 K 线算过的真值，
+//      重写只会把更准的数覆盖成更粗的数。
+//   ③ 失败一律吞掉只留日志：这是加速层，正确性不依赖它（写不进去下次再算）。
+//
+// ⚠️ 不碰 `_realDatesAcc`（那是 `ensureRange20` 分批发布的累积态）：
+//   本函数一次拿到**全量** targets，直接 `pickRealWindowDates` 得到的就是最终真实交易日。
+// ══════════════════════════════════════════════════════════════════════════
+/**
+ * @param {string} date 展示日 T
+ * @param {Array<{stock:string, code?:string}>} rows 看板当前渲染的行（目标清单唯一来源）
+ * @returns {Promise<{targets:number, covered:number, written:number, skipped:number}>}
+ *          targets=目标数 / covered=云端已覆盖 / written=本次写入 / skipped=腿不齐跳过
+ */
+export async function prefillRange20FromDailyLegs(date, rows) {
+  const stat = { targets: 0, covered: 0, written: 0, skipped: 0 };
+  if (!date) return stat;
+  if (_notTradable(date)) return stat;
+  const targets = _targetsOf(rows);
+  stat.targets = targets.length;
+  if (targets.length === 0) return stat;
+
+  const tIsToday = (date === _getLocalTodayStr());
+  const afterClose = isAfterCloseOf(date);
+  const legMode = resolveT20LegMode(tIsToday, afterClose);
+
+  // ① 先问云端表「已经有多少」—— 常态下这里就全覆盖了，只花 1 次查询、不读原料表
+  let cloudMap = new Map();
+  try {
+    cloudMap = pickUsableRows(await readRange20Rows(date), legMode);
+  } catch (e) {
+    cloudMap = new Map();                  // 读失败 ⇒ 当作「一行都没有」，走下面全量算
+  }
+  for (let i = 0; i < targets.length; i++) {
+    if (cloudMap.has(targets[i].stock)) stat.covered++;
+  }
+  if (stat.covered >= targets.length) return stat;   // 全覆盖 ⇒ 收工
+
+  // ② 阶段① 同源取数（probeDates → 内存行 T 腿 + 原料表逐日腿）
+  const probeDates = getRange20WindowDates(date, RANGE20_PROBE_DAYS);
+  const rowsByDate = _rowsByDateOf(probeDates);
+  const tLegs = legs20FromRows(targets, probeDates, rowsByDate, { tIsToday: tIsToday, afterClose: afterClose });
+  const dailyMap = await _readDailyLegsFor(probeDates, targets, date);
+  const dailyLegs = legs20FromDaily(targets, probeDates, dailyMap);
+  const baseLegs = mergeBaseLegs(tLegs, dailyLegs);
+  if (!dailyMap) {
+    // 原料表都读不到 ⇒ 只剩 T 腿 ⇒ 一只都不该写（下面的 needsKlineLegs 会全部判掉，这里提前返回）
+    _dbgLog('[R20-PREFILL] ' + date + ' 逐日腿原料表不可读 ⇒ 跳过预填');
+    return stat;
+  }
+
+  // ③ 与阶段② 同一份口径与同一份「腿够不够」判据
+  const legOpts = { requireT: (legMode === 'close'), forceAll: isLegTableStale(dailyLegs, probeDates) };
+  const realDates = pickRealWindowDates(baseLegs, probeDates, probeDates.length);
+  if (realDates.length < RANGE20_WINDOW_DAYS) {
+    // 真实交易日凑不满 20 ⇒ 现在写进去的一定是偏小的数 ⇒ 不写（明天腿补够了自然能算）
+    _dbgLog('[R20-PREFILL] ' + date + ' 真实交易日只凑到 ' + realDates.length + '/' + RANGE20_WINDOW_DAYS + ' ⇒ 跳过预填');
+    return stat;
+  }
+  const computed = compound20(baseLegs, realDates);
+  const toSave = [];
+  for (let i = 0; i < computed.length; i++) {
+    const r = computed[i];
+    if (!r || !r.stock || cloudMap.has(r.stock)) continue;
+    if (legOpts.forceAll || needsKlineLegs(baseLegs, r.stock, date, undefined, legOpts)) {
+      stat.skipped++;
+      continue;
+    }
+    toSave.push(r);
+  }
+  if (toSave.length === 0) {
+    _dbgLog('[R20-PREFILL] ' + date + ' 无可写行（目标 ' + stat.targets + '，云端 ' + stat.covered
+      + '，腿不齐 ' + stat.skipped + '）');
+    return stat;
+  }
+  try {
+    await upsertRange20Rows(date, toSave, legMode);
+    stat.written = toSave.length;
+    _dbgLog('[R20-PREFILL] ' + date + ' 回写 ' + stat.written + ' 行（0 K线请求，leg=' + legMode
+      + '，云端原有 ' + stat.covered + '/' + stat.targets + '，腿不齐跳过 ' + stat.skipped + '）');
+  } catch (e) {
+    _dbgLog('[R20-PREFILL] ' + date + ' 回写失败（不影响页面）: ' + ((e && e.message) || e));
+  }
+  return stat;
+}
+
 /**
  * 确保某日的 20 日涨幅已就绪（幂等 / 单飞 / 会话缓存）。
  *

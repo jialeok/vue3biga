@@ -47,7 +47,11 @@ import { ensureDragonRangePct, getDragonRangePct, getStockRangePct, DRAGON_RANGE
 // [RANGE20 2026-10-19 用户口径] 「20日涨幅」toggle 的取数入口（开关位由原「量比抢筹」改造）。
 //   与十日涨幅不同：云端没有 20 日行 ⇒ 由 range20.js 按 20 个交易日复利现算（库内腿 + 同花顺补缺），
 //   只放会话内存。⚠️ 只在 toggle 打开时触发，⛔ 不消耗猫抓额度（同花顺 K 线免费额度）。
-import { ensureRange20, getRange20FingerprintToken, getRange20BatchStat, getRange20DailyStat } from '../logic/auction/range20.js';
+//   ★ [R20-PREFILL 2026-11-05] 另导出 `prefillRange20FromDailyLegs`：用**逐日腿原料表**
+//     把当天全部目标票补进结果表（0 K 线请求 / 0 猫抓额度）。修的是实测取证的那个缺口 ——
+//     当天 `stock_range20_pct` 只 63/78 行，缺的 15 只在 `stock_daily_pct` 里每只都有 25 条腿，
+//     纯粹因为「结果表只有 toggle 打开时才有人写」⇒ 不打开就永远缺，明天打开还得多打 K 线。
+import { ensureRange20, prefillRange20FromDailyLegs, getRange20FingerprintToken, getRange20BatchStat, getRange20DailyStat } from '../logic/auction/range20.js';
 // [RANGE20-TOP5 2026-10-19 用户口径] 「20日涨幅前五 · 龙头补位」的取数入口。
 //   ★ 与上面的 20日涨幅 toggle 【完全独立】：那个是「打开开关才排一次序」的排序功能；
 //     这个是把「近 20 个交易日每天正式列表」并起来、取 20 日涨幅前五、把今天看不见的补进看板
@@ -477,6 +481,39 @@ export function useAuctionBoard() {
   //   ⇒ 候选池为空 ⇒ 本次不产出。若只依赖 currentDate，之后数据到了也不会再跑，区块永远不出现。
   //   ★ 重复触发完全安全：模块内有单飞（_inflight）+ 会话缓存（只缓存非空结果）；
   //     候选池来自历史列表、与屏幕上有哪些行无关 ⇒ 早跑晚跑结果一致，早跑那次只是没数据。
+  // ★★★ [R20-PREFILL 2026-11-05] 20日涨幅「结果表自愈」的唯一触发点。
+  //
+  //   实测缺口（2026-11-05）：当天 `stock_range20_pct` 只 63/78 行，缺 15 只；而这 15 只
+  //   在 `stock_daily_pct` 里**每只都有 25 条逐日腿** ⇒ 数据齐、只是没人算。
+  //   根因：结果表只有两个写入点 —— `ensureRange20`（只由「20日涨幅」toggle 触发）与
+  //   `ensureRange20Leaders`（只写它选出的 ~25 只龙头）。用户不开那个开关 ⇒ 别人永远缺。
+  //
+  //   ⇒ 排在 `ensureRange20Leaders` **之后**串行跑（⛔ 不并发：两者读的是同一张原料表，
+  //     并发等于把 §32「禁止重复请求」直接违反一次）。0 K 线请求、0 猫抓额度，
+  //     常态下只花 1 次查询（云端已全覆盖就立刻返回）。
+  //
+  //   ⚠️ 每个日期**只跑一次**（`_r20PrefillDone`）：这是「补齐库存」型任务，不是每次重算都该跑。
+  //     ⛔ 不用 localStorage（§8）—— 会话内去重就够了，刷新后重跑一次也无害（幂等）。
+  //   ⚠️ 失败要把毒丸吐出去（`delete`），否则一次网络抖动会让这一整天都不再尝试。
+  const _r20PrefillDone = new Set();
+  function prefillRange20ForCurrentBoard() {
+    const date = uiStore.currentDate;
+    if (!date || _r20PrefillDone.has(date)) return;
+    const items = (viewData.value && viewData.value.items) || [];
+    if (items.length === 0) return;          // 数据还没到货 ⇒ 不占坑，等行数变化的 watch 再叫
+    _r20PrefillDone.add(date);
+    prefillRange20FromDailyLegs(date, items.map(function(it) {
+      return { stock: it.stock, code: it.code };
+    })).then(function(st) {
+      if (st && st.written > 0) {
+        setApiStatus('numcatApiStatus', '', true);   // 只在真写了东西时清一次状态，避免噪音
+      }
+    }).catch(function(e) {
+      _r20PrefillDone.delete(date);
+      console.warn('[R20-PREFILL] 20日涨幅结果表预填失败（不影响页面）:', e && e.message);
+    });
+  }
+
   function ensureRange20LeadersForCurrentBoard() {
     const date = uiStore.currentDate;
     if (!date) return;
@@ -493,9 +530,13 @@ export function useAuctionBoard() {
       }
     }).then(function() {
       if (_progressed) setApiStatus('numcatApiStatus', '', true);
+      // ★ 前五检索完（腿已落库）⇒ 顺带把结果表补齐（串行，复用同一批逐日腿）
+      prefillRange20ForCurrentBoard();
     }).catch(function(e) {
       console.warn('[RANGE20-TOP5] 20日涨幅前五检索失败:', e && e.message);
       setApiStatus('numcatApiStatus', '❌ 20日涨幅前五检索失败：' + (e && e.message || e), false);
+      // 前五失败也要补结果表：预填本身零上游，与 K 线成败无关
+      prefillRange20ForCurrentBoard();
     });
   }
   if (!_r20Top5WatchBound) {
