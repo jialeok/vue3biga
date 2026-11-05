@@ -1,5 +1,8 @@
 // index.js — bidding-board-worker-b 入口
-import { beijingNow } from '../../_shared-source/date-utils.js';
+// ★ [PATH-FIX 2026-11-05] `../../_shared-source/` → `../_shared-source/`：
+//   本文件在 workers/bidding-board-worker-b/ 下，`../../` 指向项目根，目录不存在。
+//   详见 bidding-auto-fetch/index.js 同一处改动的说明（wrangler 严格解析才会暴露）。
+import { beijingNow } from '../_shared-source/date-utils.js';
 import { CRON_TO_POINT } from './config.js';
 import { runSeal } from './logic/seal-workflow.js';
 import { runEmotion, refreshEmotionPredictVol } from './logic/emotion-workflow.js';

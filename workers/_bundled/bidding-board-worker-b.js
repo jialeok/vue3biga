@@ -1,55 +1,13 @@
 // ===== bidding-board-worker-b — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-11-05 08:26:12
+// 生成时间: 2026-11-05 12:01:55
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 1038（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 1041（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
-
-// ────── bidding-board-worker-b/config.js ──────
-// config.js — bidding-board-worker-b 配置
-const CONFIG = {
-  FUYAO_BASE: 'https://fuyao.aicubes.cn',
-  SUPABASE_URL: 'https://tonqfgeyxnnwicjopshn.supabase.co',
-
-  ROW_SEAL: '封单家数',
-
-  NUMCAT_URL: 'https://numcat.net/api/reference-proxy/market/emoindic-daily',
-  NUMCAT_APINAME: 'emoindic_daily',
-  NUMCAT_RECENT_DAYS: 10,
-  SEAL_FIELD_CANDIDATES: ['owfd_0925_count', 'owfd_0925', 'seal_count_0925', 'fengdan_0925', 'fdjs_0925', 's_seal', 'seal_count'],
-
-  EMOTION_FIELDS: {
-    amount:        ['am', 'amount', 's_amount', 'total_amount', 's7', 's_amt'],
-    predictVol:    ['am_pred', 'am_prednumber', 'predict_vol', 'predict_volume', 's_pv'],
-    amountDiff:    ['am_diff', 'amount_diff'],
-    limitUp:       ['u5', 'limit_up', 'zhangting', 'zt_count', 's1', 's4'],
-    limitDown:     ['d3', 'limit_down', 'dieting', 'dt_count', 's5'],
-    onceLimit:     ['u6', 'once_limit', 'yiziban', 'yzb_count', 's9'],
-    highestLb:     ['l17', 'highest_lb', 'max_lb', 'highest_limit', 's10'],
-    zhaban:        ['u12', 'zhaban', 'bomb', 'zhb_count', 's11'],
-    zhabanRate:    ['fp108', 'zhaban_rate', 'bomb_rate', 'zhb_rate', 's12'],
-  },
-
-  JIWANG_TABLE: 'jiwang_data',
-  EMOTION_TABLE: 'emotion_data',
-};
-
-const CRON_TO_POINT = {
-  '25 1 * * 2-6': 't0925-seal',
-  '26 1 * * 2-6': 't0926',
-  '40 1 * * 2-6': 't0926',
-  '0 8 * * 2-6': 'close',
-  '25 1 * * 1-5': 't0925-seal',
-  '26 1 * * 1-5': 't0926',
-  '40 1 * * 1-5': 't0926',
-  '0 8 * * 1-5': 'close',
-};
-
-const SEAL_COLUMN = 'time925';
 
 // ────── _shared-source/date-utils.js ──────
 // date-utils.js — 北京时间日期工具（源文件，各 Worker 复制使用）
@@ -97,6 +55,48 @@ function dateStrToMs(dateStr) {
   return Date.parse(dateStr + 'T00:00:00+08:00');
 }
 
+
+// ────── bidding-board-worker-b/config.js ──────
+// config.js — bidding-board-worker-b 配置
+const CONFIG = {
+  FUYAO_BASE: 'https://fuyao.aicubes.cn',
+  SUPABASE_URL: 'https://tonqfgeyxnnwicjopshn.supabase.co',
+
+  ROW_SEAL: '封单家数',
+
+  NUMCAT_URL: 'https://numcat.net/api/reference-proxy/market/emoindic-daily',
+  NUMCAT_APINAME: 'emoindic_daily',
+  NUMCAT_RECENT_DAYS: 10,
+  SEAL_FIELD_CANDIDATES: ['owfd_0925_count', 'owfd_0925', 'seal_count_0925', 'fengdan_0925', 'fdjs_0925', 's_seal', 'seal_count'],
+
+  EMOTION_FIELDS: {
+    amount:        ['am', 'amount', 's_amount', 'total_amount', 's7', 's_amt'],
+    predictVol:    ['am_pred', 'am_prednumber', 'predict_vol', 'predict_volume', 's_pv'],
+    amountDiff:    ['am_diff', 'amount_diff'],
+    limitUp:       ['u5', 'limit_up', 'zhangting', 'zt_count', 's1', 's4'],
+    limitDown:     ['d3', 'limit_down', 'dieting', 'dt_count', 's5'],
+    onceLimit:     ['u6', 'once_limit', 'yiziban', 'yzb_count', 's9'],
+    highestLb:     ['l17', 'highest_lb', 'max_lb', 'highest_limit', 's10'],
+    zhaban:        ['u12', 'zhaban', 'bomb', 'zhb_count', 's11'],
+    zhabanRate:    ['fp108', 'zhaban_rate', 'bomb_rate', 'zhb_rate', 's12'],
+  },
+
+  JIWANG_TABLE: 'jiwang_data',
+  EMOTION_TABLE: 'emotion_data',
+};
+
+const CRON_TO_POINT = {
+  '25 1 * * 2-6': 't0925-seal',
+  '26 1 * * 2-6': 't0926',
+  '40 1 * * 2-6': 't0926',
+  '0 8 * * 2-6': 'close',
+  '25 1 * * 1-5': 't0925-seal',
+  '26 1 * * 1-5': 't0926',
+  '40 1 * * 1-5': 't0926',
+  '0 8 * * 1-5': 'close',
+};
+
+const SEAL_COLUMN = 'time925';
 
 // ────── _shared-source/holidays.js ──────
 // holidays.js — 节假日表 + 本地交易日判断（源文件，各 Worker 复制使用）
@@ -941,6 +941,9 @@ async function runClose(env, source) {
 
 // ────── bidding-board-worker-b/index.js ──────
 // index.js — bidding-board-worker-b 入口
+// ★ [PATH-FIX 2026-11-05] `../../_shared-source/` → `../_shared-source/`：
+//   本文件在 workers/bidding-board-worker-b/ 下，`../../` 指向项目根，目录不存在。
+//   详见 bidding-auto-fetch/index.js 同一处改动的说明（wrangler 严格解析才会暴露）。
 function autoPoint() {
   const d = beijingNow();
   const mins = d.getUTCHours() * 60 + d.getUTCMinutes();

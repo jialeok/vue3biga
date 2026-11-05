@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-11-05 08:26:12
+// 生成时间: 2026-11-05 12:01:55
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 4666（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 4673（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
@@ -4398,6 +4398,13 @@ async function runRangePctHeal(env, opts) {
 //   但实测该 pg_cron 链路从未成功执行过（bidding_fetch_log 里 auction-close 记录数为 0，
 //   手工触发返回 546），导致当天 change_pct 全天停留在竞价涨幅。
 //   本 worker 的早盘 cron 一直稳定，因此收盘也交回这里，不再依赖任何外部 cron。
+// ★ [PATH-FIX 2026-11-05] 这里原来是 `../../_shared-source/`，是**错的**：
+//   本文件在 workers/bidding-auto-fetch/ 下，`../` = workers/，`../../` = 项目根，
+//   而 _shared-source 实际在 workers/_shared-source ⇒ 路径指向一个不存在的地方。
+//   一直没暴露是因为：① logic/ 与 data/ 下的文件（深度 3，`../../` 正好对）会把 date-utils
+//   一起带进 bundle，_bundle.mjs 又对解析不到的路径静默跳过 ⇒ 粘贴版一直是对的；
+//   ② 但 wrangler 从源码打包是严格解析模块图的，直接报
+//   `Could not resolve "../../_shared-source/date-utils.js"`（2026-11-05 首次尝试 wrangler 部署时踩到）。
 
 
 

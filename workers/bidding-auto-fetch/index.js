@@ -20,7 +20,14 @@
 //   但实测该 pg_cron 链路从未成功执行过（bidding_fetch_log 里 auction-close 记录数为 0，
 //   手工触发返回 546），导致当天 change_pct 全天停留在竞价涨幅。
 //   本 worker 的早盘 cron 一直稳定，因此收盘也交回这里，不再依赖任何外部 cron。
-import { beijingNow } from '../../_shared-source/date-utils.js';
+// ★ [PATH-FIX 2026-11-05] 这里原来是 `../../_shared-source/`，是**错的**：
+//   本文件在 workers/bidding-auto-fetch/ 下，`../` = workers/，`../../` = 项目根，
+//   而 _shared-source 实际在 workers/_shared-source ⇒ 路径指向一个不存在的地方。
+//   一直没暴露是因为：① logic/ 与 data/ 下的文件（深度 3，`../../` 正好对）会把 date-utils
+//   一起带进 bundle，_bundle.mjs 又对解析不到的路径静默跳过 ⇒ 粘贴版一直是对的；
+//   ② 但 wrangler 从源码打包是严格解析模块图的，直接报
+//   `Could not resolve "../../_shared-source/date-utils.js"`（2026-11-05 首次尝试 wrangler 部署时踩到）。
+import { beijingNow } from '../_shared-source/date-utils.js';
 import { runMorning } from './logic/morning-workflow.js';
 import { runClose } from './logic/close-workflow.js';
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏（可手动 /fetch?point=extras；16:00 close 也会自动跑）
