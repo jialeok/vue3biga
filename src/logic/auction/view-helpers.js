@@ -9,9 +9,14 @@ import { ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagSta
 // ★★ [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] 「竞价口径」toggle 的取值入口（把十日 / 20日涨幅
 //   的今天那一根腿反解回 9:25 竞价）。⛔ 只读、本层不请求 —— 取数由 useAuctionBoard 的 watch 触发。
 import { getAuctionLegRange10, getAuctionLegRange20 } from './auction-leg-ranges.js';
-// [RANGE-PCT 2026-10-14 用户口径] 「十日涨幅」toggle 的排序纯函数（由高到低 / 缺数据置底 / 稳定）。
-// 数据源 = getDragonRangePct(currentDate)（云端 stock_range_pct，与题材龙位徽章同源，§6）。
-import { sortIndicesByRangePct } from './range-pct-sort.js';
+// [SORT-ORDER 2026-11-05] 主排序矩阵 + 档位判定已搬到 view-sort-order.js（唯一实现，§6）。
+//   ⛔ 本文件不再 import `sortIndicesByRangePct` —— 比较器只允许存在于那个模块里一次，
+//      否则「十日/20日排序」与「题材组内档位」又是两把尺子。
+import { buildRenderOrder, resolveTopicTierOf } from './view-sort-order.js';
+// [DECORATE 2026-11-05] items 的后置标注（20日名次 / 题材统计条+序号 / 主板名次）唯一实现。
+//   ⛔ 本文件不再直接碰 topic-stats / board-seq / prev-rank-table —— 那些都是「组装完之后才能贴的标签」，
+//      留在 computeAuctionViewData 里就会继续和「四组装配 / 排序」搅在一起（用户：不要理到一起乱战）。
+import { applyRange20RankDelta, applyTopicStatsAndSeqNo } from './view-decorate.js';
 // [RANGE20 2026-10-19 用户口径] 「20日涨幅」toggle（开关位由原「量比抢筹」改造）的取数入口。
 //   与十日涨幅的最大差别：云端【没有】20 日行（表主键 (date,stock)，20 日行会覆盖 10 日行）
 //   ⇒ 数据由 range20.js 在客户端按 20 个交易日复利现算、只放会话内存（详见该模块文件头）。
@@ -47,7 +52,6 @@ import { getStockTopicCount, getStockTopicsDisplay, getPrimaryTopicMap, classify
 import { isAuctionYiZi, parseAucPct, formatAucPct, getCloseLimitState, getCloseNameTone, isHighLimitBoard } from './limit-up.js';
 // [BOARD-SEQ 2026-10-25 用户口径] 区间涨幅模式（十日 / 20日）的「序号」= 主板名次（非主板不占号），
 //   让屏幕序号与规则文案里的「第 N 名」用同一把尺子。判据/口径唯一实现在 board-seq.js（纯函数、可单测）。
-import { buildMainBoardSeq } from './board-seq.js';
 // [LIMIT-STREAK 2026-09-11] 趋势/连板标记（趋势 / 首板 / 二板 / 三板…）：只看【当天之前】的
 // 历史交易日收盘涨幅，逐日回看数连续涨停。判定单一真相在 limit-streak.js（纯函数），
 // 数据取内存已存的逐日 change_pct（首屏已整段拉入）→ 0 网络请求、0 猫抓额度。
@@ -63,10 +67,8 @@ import { getDragonRangePct, computeDragonRankMap, isAuthoritativeCloseReached } 
 // 此处同步读取（与 range20 / suspend 同款 ref-driven 范式：异步取数 → 模块级 ref 发布 → 本文件同步读），
 // 题材 toggle 开启时才参与计算。
 // [TOPIC-STATS 2026-09-10] 题材块统计条（数量/一字/竞价高开/龙头…）：纯函数在 topic-stats.js
-import { buildTopicStatsMap } from './topic-stats.js';
 // [SEAL-VOLUME 2026-10-11] 封单量（手）的同步读取器：读 Data 层 limit_pool 内存缓存（§6 单一真相），
 //   ⛔ 本文件不发请求、不消费猫抓额度 —— 「什么时候把 limit_pool 读进缓存」由组合式负责。
-import { sealLotsOf } from './seal-volume.js';
 // [DRAGON-GROUP 2026-09-14] 龙头组（第一页【观察组上方】的独立区块）。
 // ★ [ROW-GROUPS 2026-11-05] 名册读取已搬到 row-groups/dragon-group-rows.js（本文件不再直接读），
 //   本文件只拿 `_groups.dragon` 算 dragonIndices，⛔ 不在这里二次评选龙头（那是第二个真相源）。
@@ -90,8 +92,6 @@ import { getPresenceForDate } from '../../data/auction-presence.js';
 //   （⛔ 本层不发请求；取数由 useAuctionBoard 的 watch 触发 ensurePrevRankTable）。
 //   ★ 2026-10-28 15:49 口径终版（用户口述举例定死）：基准腿【恒为昨日收盘口径】——
 //     今天竞价也比昨收，今天收盘也比昨收。⛔ 不再「什么口径配什么昨天」（早先那版已被用户否掉）。
-import { buildRange20RankDelta, RANGE20_DELTA_UNKNOWN_TEXT } from './range20-rank-delta.js';
-import { getPrevRankTable, resolvePrevRankLeg, resolveTodayLeg, PREV_LEG_AUC } from './prev-rank-table.js';
 
 function _getAuctionTag(date, stockName) {
   if (!date || !stockName) return null;
@@ -723,76 +723,21 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   //   开关位由「竞价口径」占用 —— 但那是一个【口径修饰开关】，不是一个主排序档，
   //   所以它【不在这里占分支】，而是改由下面的 `_range10MapFor / _range20MapFor` 决定
   //   十日 / 20日涨幅用哪一份数值（见上方那两个函数的注释）。
-  if (sortState.byJingYest) {
-    // [FIX 2026-08-18] 同档排序按「当天竞价涨幅 auc_pct_chg」由高到低。
-    //   分档条件不变：tier0=竞昨高光(平行+diff>0) / tier1=仅平行 / tier2=其它。
-    //   原 digitGap+diff 排序键废弃，改用 _auctionPctOf（专用竞价涨幅字段）。
-    //   [RANGE-PCT 2026-10-14] 本分支一行未动：「三天竞跌」下线不影响它 ——
-    //     它历史上的「同档按竞价涨幅」只是因为当时两个 toggle 共用同一个读取器，不是同一套口径。
-    // [RANGE-PCT 2026-10-14 §32 不重复调用] 这里原先【第二次】调用了
-    //   getParallelStocksForDate(currentDate, dataSource) —— 而同一份结果在本函数上方
-    //   （`parallelStocksToday`，resolveTopicTier 也在用）早就取过一次，参数完全相同。
-    //   同一天同一数据源取两遍，即便上游有指纹缓存，也要白构建一次覆盖全表的指纹串。
-    //   现改为复用同一个 Set（§6 单一真相：口径不可能分叉，因为就是同一个对象）。
-    const parallelStockNamesForSort = parallelStocksToday;
-    renderOrder = renderOrder.map((idx, pos) => {
-      const it = renderList[idx];
-      const stockName = it && it.stock ? it.stock.trim() : '';
-      const isParallel = parallelStockNamesForSort.has(stockName);
-      const isHighlight = stockName && jingYestHighlightSet && jingYestHighlightSet.has(stockName);
-      const tier = isHighlight ? 0 : (isParallel ? 1 : 2);
-      const pctVal = _auctionPctOf(it);
-      return { idx, pos, tier, pctVal };
-    }).sort((a, b) => {
-      if (a.tier !== b.tier) return a.tier - b.tier;
-      if (a.pctVal === null && b.pctVal === null) return a.pos - b.pos;
-      if (a.pctVal === null) return 1;
-      if (b.pctVal === null) return -1;
-      return b.pctVal - a.pctVal;
-    }).map(x => x.idx);
-
-  } else if (sortState.byJingYestRatio) {
-    renderOrder = renderOrder.map((idx, pos) => {
-      const stockName = renderList[idx] && renderList[idx].stock ? renderList[idx].stock.trim() : '';
-      const isHighlight = stockName && jingYestHighlightSet && jingYestHighlightSet.has(stockName);
-      const tier = isHighlight ? 0 : 1;
-      const vol = renderList[idx] ? (parseFloat(renderList[idx].volume) || 0) : 0;
-      const yvol = renderList[idx] ? (parseFloat(renderList[idx].yestVolume) || 0) : 0;
-      const jr = (vol > 0 && yvol > 0) ? (vol / yvol) : null;
-      return { idx, pos, jr, tier };
-    }).sort((a, b) => {
-      if (a.tier !== b.tier) return a.tier - b.tier;
-      if (a.jr === null && b.jr === null) return a.pos - b.pos;
-      if (a.jr === null) return 1;
-      if (b.jr === null) return -1;
-      return b.jr - a.jr;
-    }).map(x => x.idx);
-  } else if (sortState.byRangePct) {
-    // [RANGE-PCT 2026-10-14 用户口径] 「十日涨幅」toggle（开关位由原「三天竞跌」改造）：
-    //   ★ 全部股票（龙头组 + 观察组 + 常规组，不分块）按「近 10 个交易日区间涨幅」由高到低排。
-    //   用户原话：「我点击十日涨幅 toggle 后，十日涨幅由高到低排序，并标上十日涨幅数据。
-    //   所有的股票都要排，包括龙头组，观察组，常规组。这样我就清楚找到市场总龙头。」
-    //   数据源 = getDragonRangePct(currentDate)（云端 stock_range_pct，与题材龙位徽章/决策看板
-    //   排名同一个来源同一个字段，§6 单一真相）；同步读取，**0 网络请求、0 猫抓额度**。
-    //   §10：Map 未加载（null）或某行缺数据 → 该行置底且不参与 pct 比较（⛔ 绝不补 0）。
-    //   ⚠️ 数据未到时不假装有值：ensureDragonRangePct 一发布新 Map，指纹变化会自动重算本视图。
-    //   排序实现（含稳定/置底口径）收敛在 range-pct-sort.js 纯函数里，可独立单测（§15/§42）。
-    const _rangeMap = _range10MapFor();
-    renderOrder = sortIndicesByRangePct(renderOrder, renderList, _rangeMap);
-  } else if (sortState.byRangePct20) {
-    // [RANGE20 2026-10-19 用户口径] 「20日涨幅」toggle（开关位由原「量比抢筹」改造）：
-    //   ★ 全部股票（龙头组 + 观察组 + 常规组，不分块）按「含今天在内的 20 个交易日区间涨幅」
-    //     由高到低排，并逐行标出该数值 —— 与「十日涨幅」同款，只是时间段不同。
-    //   用户原话：「和十日涨幅toggle类似，只是时间段涨幅不一样，这样在市场总龙出现分歧的时候，
-    //   我可能用这个toggle做参考。」
-    //   §6 单一真相：排序键与行上数值同源（同一个 Map）；排序实现复用 range-pct-sort.js 的
-    //     三级键（缺数据置底 → pct 降序 → 稳定），⛔ 不在这里另写一套比较器。
-    //   §10：Map 未就绪（null）或该行缺腿 → 置底且不参与比较（⛔ 绝不补 0）。
-    //   ⚠️ 两个 map 各自独立：十日读云端 stock_range_pct；20 日读 range20.js 现算结果
-    //      （云端没有 20 日行 —— 表主键 (date,stock)，写进去会覆盖 10 日行，见 range20.js 文件头）。
-    const _rangeMap20 = _range20MapFor();
-    renderOrder = sortIndicesByRangePct(renderOrder, renderList, _rangeMap20);
-  }
+  // 【主排序矩阵已搬到 view-sort-order.js —— 见文件头 [SORT-ORDER 2026-11-05]】
+  //   以前这里挤着四条主排序分支（竞/昨 · 竞/昨占比 · 十日 · 20日）+ 60 行外的一个档位判定，
+  //   档位与分支隔太远 ⇒ 改一处忘一处就「档位边界错位」（同题材块里高光票跑到下面）。
+  //   现在两者同一个文件、上下相邻，且本函数只拿结果（⛔ 不再在这里写任何一条比较器，§6）。
+  renderOrder = buildRenderOrder({
+    renderOrder: renderOrder,
+    renderList: renderList,
+    sortState: sortState,
+    jingYestHighlightSet: jingYestHighlightSet,
+    parallelStocksToday: parallelStocksToday,
+    // ⛔ 传函数不传值：`_range10MapFor()` 只在对应分支里才该被调用（惰性，保持改造前逐字行为）
+    rangeMapOf10: _range10MapFor,
+    rangeMapOf20: _range20MapFor,
+    auctionPctOf: _auctionPctOf
+  });
   // [TWO-MODES 2026-10-02 用户口径] ⛔ 这里原有 `else if (sortState.byParallel)` 主排序分支（平行达标档
   //   按 digitGap 升序 → diff 降序；内层还套了一个永远走不到的 `if (sortState.byJingYest)` 子分支）
   //   —— 整段已删除（§16 不留死代码）：
@@ -813,23 +758,13 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // 主排序档位解析：给定 renderList 索引，返回其档位（0=最高档/高光或达标）。
   // 必须与上方各主排序分支的 tier 口径完全一致，否则档位边界错位。
   function resolveTopicTier(idx) {
-    const it = renderList[idx];
-    const nm = it && it.stock ? it.stock.trim() : '';
-    // [AUCTION-LEG-TOGGLE 2026-10-25] ⛔ 原「弱转强达标 ⇒ tier0 / 否则 tier1」已随该 toggle 删除。
-    //   「竞价口径」不是分层排序（它只换数值来源、不改档位）⇒ 本函数不需要为它开分支。
-    if (sortState.byJingYestRatio) {
-      const ih = nm && jingYestHighlightSet && jingYestHighlightSet.has(nm);
-      return ih ? 0 : 1;
-    }
-    if (sortState.byJingYest) {
-      const ih = nm && jingYestHighlightSet && jingYestHighlightSet.has(nm);
-      const ip = nm && parallelStocksToday && parallelStocksToday.has(nm);
-      return ih ? 0 : (ip ? 1 : 2);
-    }
-    // [RANGE20 2026-10-19] ⛔ 原「量比抢筹」达标档在这里（tier0 = 竞价量比>=10 且 抢筹幅度>1，
-    //   否则 tier1）—— 已随该 toggle 整体删除（§16：不留死分支）。
-    // 其它主排序（默认 / 十日涨幅 / 20日涨幅）无分层概念，统一单档
-    return 0;
+    // 【判定本体在 view-sort-order.js#resolveTopicTierOf】
+    //   ⚠️ 与上面的 buildRenderOrder 必须是同一份 tier 口径（同文件、上下相邻）。
+    return resolveTopicTierOf(renderList, idx, {
+      sortState: sortState,
+      jingYestHighlightSet: jingYestHighlightSet,
+      parallelStocksToday: parallelStocksToday
+    });
   }
 
   // [TOPIC-MERGE 2026-09-09] 题材 toggle「单独开启」判定：没有任何主排序 toggle 参与时为真。
@@ -1358,143 +1293,28 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     });
   }
 
-  // ★★ [R20-DELTA 2026-10-28 用户口径] 「20日涨幅」模式：把占比列换成【名次变化】（对比昨日排名）。
-  //   用户原话：「你把20日涨幅toggle的占比列改成排名变化，对比昨天，排名上升就用红色+数字，
-  //     比如+6，排名下降就用绿色，比如-7……这个数值变化，也很重要，可以看出个股突破。」
-  //
-  //   ⛔ 只在【20日涨幅单独排序】时生效：
-  //     · `sortState.byRangePct20` 关闭 ⇒ 一行都不赋（走 _enrichAuctionItem 的默认 null/''）；
-  //     · 题材单独模式（顺序是按题材分组，不是涨幅降序）⇒ 名次没有意义 ⇒ 不赋（§10 宁可没有）。
-  //   ⛔ 本层不发请求：昨日名次表由 prev-rank-table.js 的会话缓存提供，取数在 useAuctionBoard 的
-  //     watch 里，到货后 incremental-view 的 `r20delta=` 指纹变化 ⇒ 本视图自动重算（数值才出现）。
-  //
-  //   ★★ [R20-DELTA 2026-10-28 15:49 口径终版 —— 用户口述举例定死]
-  //     基准腿【恒为昨日收盘口径】，与今天那一列是竞价还是收盘无关（见 prev-rank-table.js 头注释）。
-  //     用户举例：10-27 早上看到襄阳轴承「竞价口径」的排名，比的是 **10-26 襄阳轴承的【收盘】口径**
-  //     名次（62.39% 那一版），⛔ 不是 10-26 的竞价口径（58.37% 那一版）。
-  //     ⇒ 今天竞价 vs 昨收；今天收盘 vs 昨收。收盘后只是「今天那列」换成收盘值，基准不变。
-  //
-  //   §10：昨日收盘口径下判不出（该票昨天只有 auc 腿 / 名次表还没到货）⇒ 显示 '—'
-  //     （⛔ 绝不用 0 冒充「没变化」，也⛔ 绝不拿竞价口径的表顶替）。
-  if (sortState.byRangePct20 && !topicOnlyMode) {
-    const _r20Map = _range20MapFor();
-    const _prevDate = getPreviousTradingDay(currentDate);
-    // 基准恒 close；今天这列的口径【只用来拼文案】，两个语义别合并（见 prev-rank-table.js）
-    const _prevLeg = resolvePrevRankLeg();
-    const _todayLeg = resolveTodayLeg(currentDate, sortState.byAuctionLeg);
-    const _prevRec = _prevDate ? getPrevRankTable(_prevDate, _prevLeg) : null;
-    const _deltaMap = buildRange20RankDelta(_r20Map, _prevRec);
-    // 文案在这里拼好（§21 模板零计算）：两边各写清是哪把尺子，用户才能【一眼分辨】
-    //   （原话「这样才能分辨出来」「不要搞混了」）。
-    const _todayText = _todayLeg === PREV_LEG_AUC ? '今·9:26竞价口径' : '今·收盘口径';
-    const _prevText = '昨·收盘口径';
-    items.forEach(function(it) {
-      const _nm = String(it.stock || '').trim();
-      if (!_nm) return;
-      const _d = _deltaMap.get(_nm) || null;
-      it.range20RankDelta = _d;
-      it.range20RankDeltaText = _d ? _d.text : RANGE20_DELTA_UNKNOWN_TEXT;
-      it.range20RankDeltaTone = _d ? _d.tone : '';
-      it.range20RankDeltaLeg = _todayLeg;
-      it.range20RankDeltaTitle = _d
-        ? '20日涨幅排名 ' + _todayText + ' vs ' + _prevText + ' ⇒ ' + _d.text + '（正数=上升，负数=下降）'
-        : '昨日收盘口径名次未判出（该票昨天只有竞价腿 / 名次表还没到货）';
-    });
-  }
+  // 【20日名次变化已搬到 view-decorate.js#applyRange20RankDelta —— 见该文件头 [DECORATE 2026-11-05]】
+  //   为什么搬：这段依赖「items 已按涨幅降序组装完」这个前置条件（第 0..4 名 = 总龙一~五），
+  //   以前它离 items 组装处 20 行、离排序处 600 行，前置条件全靠注释口口相传。
+  applyRange20RankDelta(items, {
+    sortState: sortState,
+    topicOnlyMode: topicOnlyMode,
+    currentDate: currentDate,
+    range20MapOf: _range20MapFor      // ⛔ 传函数不传值：只在 byRangePct20 打开时才该读
+  });
 
-  let topicStatsMap = null;
-  if (topicOnlyMode && primaryTopicOfForColor) {
-    // ★ [TOPIC-AUCTION-LEG 2026-11-01] 统计条里的「龙头 + 十日涨幅」必须与上方龙位/组内顺序
-    //   用【同一把尺子】：竞价口径打开时同样换成 9:26 那一份，否则会出现
-    //   「组内第一行（龙一）不是统计条写的那个龙头」—— 正是三套口径各说各话的老坑。
-    //   关闭时 `_range10MapFor()` 返回 getDragonRangePct ⇒ 逐字回到改造前。
-    const _rangeMap = _range10MapFor();
-    // [LISTED-TODAY 2026-09-23] 计数类统计（数量 / 一字 / 竞价高开 / 收盘 / 龙头）只认【当天正式列表里的行】
-    //   （观察组/龙头继承空壳不计数）—— 与上方 sortByTopicGroups 的 countableOf、下方趋势图
-    //   collectTopicDayStats 完全同一口径，是「统计条数字 == 题材块顺序 == 趋势图名次」的结构性保证
-    //   （不是靠三处各写一遍 if）。该口径【原样保留】，由 row.formal 标记交给 topic-stats.js 内部分流。
-    //
-    // 🔴 [AVG-VRATIO 2026-10-01 用户口径] 但「平均竞价量比」是【另一套分母】：用户明确要求
-    //   「数量不分灰色和常规，只要显示在上面的都要算进去，这个和那个只算正式列表有区别要注意」。
-    //   所以这里改为把【items 全部（= 最终渲染顺序 = 列表上真正显示的每一行，含灰行）】都送进去，
-    //   由 topic-stats.js 自己按 formal 分流：计数走正式成员、平均量比走全部行。
-    //   ⚠️ 成组门槛（不足 2 只正式成员的题材不出统计条）仍在 topic-stats.js 内部按 formal 判，
-    //      因此「哪些题材会出现统计条」与改造前【逐字一致】。
-    // [SEAL-VOLUME 2026-10-11 用户口径] 封单量（手）的同步读取器（Data 层内存缓存，⛔ 不发请求、
-    //   不消费猫抓额度）。合计 / 变化的口径与格式化全在 topic-stats.js + seal-volume.js。
-    const _sealPrevDate = getPreviousTradingDay(currentDate);
-    const _entries = items.map(function(it) {
-      const rp = (_rangeMap && _rangeMap.has(it.stock)) ? _rangeMap.get(it.stock).pct : null;
-      return {
-        topic: primaryTopicOfForColor(it.index),
-        name: it.stock,
-        isYiZi: !!it.isYiZi,
-        aucPct: _auctionPctOf(renderList[it.index]),
-        rangePct: (rp === undefined ? null : rp),
-        // [CLOSE-COUNT 2026-09-11] 收盘口径下才带收盘涨幅（否则为 null → 逻辑层不产出该段）
-        // ⚠️ 不再传 closeLimit：统计条的「停板 N涨停M跌停」按用户要求已移除（太占地方），
-        //    停板只由股票名下蚂蚁线表达（见本文件 closeLimit 字段 + AuctionBoardTable）。
-        closePct: it.closePct,
-        // [NOT-FORMAL 2026-09-23] 是否今日 9:25 正式名单成员（false = 灰行）。
-        //   计数类统计只看 true（口径不变）；[AVG-VRATIO 2026-10-01] 平均竞价量比【不分】；
-        //   [SEAL-VOLUME 2026-10-11] 封单合计同样【不分】（与平均量比同一分母口径）。
-        formal: !!it.isFormalMember,
-        // [AVG-VRATIO 2026-10-01 用户口径] 当日竞价量比（倍数）→ 题材平均量比的分母/分子。
-        volRatio: getAucVolRatio(currentDate, it.stock),
-        // [SEAL-VOLUME 2026-10-11 用户口径] 封单量（手）：当日 + 上一交易日（后者只用于算「变化」）。
-        //   非涨停 / 没有封单数据 ⇒ null（§10 ⛔ 不补 0，不会被算进合计，也算不出变化）。
-        sealLots: sealLotsOf(currentDate, it.stock),
-        sealLotsPrev: _sealPrevDate ? sealLotsOf(_sealPrevDate, it.stock) : null
-      };
-    });
-    topicStatsMap = buildTopicStatsMap(_entries);
-
-    // 统计条挂到每个题材块的【第一行】（其余行 null）；同时给出组内序号。
-    // 二者共用同一个「题材切换」判断，保证统计条所在行 === 序号从 1 重新开始的那一行。
-    // ⚠️⚠️ 落点必须是块的【第一行】，⛔ 不能跳过灰色行去找「第一行正式成员」（2026-09-23 事故）：
-    //   统计条是整块的【表头】（flex-basis:100% 的整行），挂在第二行 ⇒ 第一行会渲染在统计条【上面】，
-    //   看起来就像"飘在题材组外面"。而块首恰恰常是龙一（rankFn 排第一）—— 会稽山 / 澳弘电子
-    //   作为各自题材的龙一，就是这样被挤出组外的。表头本来就属于整块，不属于某一行。
-    let lastTopicKey = null;
-    let seqInTopic = 0;
-    let statsAssigned = false;
-    items.forEach(function(it) {
-      const tp = (primaryTopicOfForColor(it.index) || '其它').trim() || '其它';
-      // [YIZI-SUP 2026-09-20] 把「本行所属题材组」原样透出（值就是上面这个 tp，零额外计算）：
-      // 「补竞价一字」按题材融入时要定位到具体分组，见 _enrichAuctionItem 里 groupTopic 的说明。
-      it.groupTopic = tp;
-      if (tp !== lastTopicKey) {
-        lastTopicKey = tp;
-        seqInTopic = 0;
-        statsAssigned = false;
-      }
-      if (!statsAssigned) {
-        it.topicStats = topicStatsMap.get(tp) || null;
-        statsAssigned = true;
-      } else {
-        it.topicStats = null;
-      }
-      seqInTopic++;
-      it.seqNo = seqInTopic;
-    });
-  } else {
-    // 非「题材单独开启」：不加统计条，序号保持 0 → 模板沿用原来的全局序号（行为不变）
-    items.forEach(function(it) { it.topicStats = null; it.groupTopic = ''; });
-    // ★★ [BOARD-SEQ 2026-10-25 用户口径] 区间涨幅模式（十日 / 20日）下，序号改成「主板名次」：
-    //   非主板【位置不变、但不占序号】（序号列留空），主板按屏幕顺序 1,2,3…
-    //   ⇒ 屏幕上的号与规则文案里的「第 N 名」是同一把尺子（都能被
-    //     topic-vol-ratio-rules.js#buildRange10Ranked 的主板名次复核）。
-    //   用户原话：「……因为有两只非主板的也在十日涨幅前十里面，我想把非主板的序号去掉，
-    //     这样冰山冷热就和下面提示文案口径相同了。也就是非主板的位置可以不变，但是没有序号，
-    //     因为我是看序号来判断排名的。」
-    //   ⚠️ 口径/判据全在 board-seq.js（唯一实现，§6）；其它模式它一律返回 seqNo=0 / seqBlank=false
-    //      ⇒ 本段在默认 / 题材 / 竞昨模式下零行为变化（§11）。
-    const _seq = buildMainBoardSeq(items, sortState);
-    items.forEach(function(it, i) {
-      it.seqNo = _seq[i].seqNo;
-      it.seqBlank = _seq[i].seqBlank;
-    });
-  }
+  // 【题材统计条 + 组内序号 / 主板名次 已搬到 view-decorate.js#applyTopicStatsAndSeqNo】
+  //   两件事必须留在同一个函数里：它们互斥地占同一个字段位 seqNo。拆成两个函数就要在两处
+  //   各判一次 topicOnlyMode，哪天模式口径改了必然漏改一处 → 序号重复或全空。
+  applyTopicStatsAndSeqNo(items, {
+    currentDate: currentDate,
+    topicOnlyMode: topicOnlyMode,
+    primaryTopicOfForColor: primaryTopicOfForColor,
+    range10MapOf: _range10MapFor,
+    renderList: renderList,
+    sortState: sortState,
+    auctionPctOf: _auctionPctOf
+  });
 
   // ==========================================================================
   // [ROW-CLASS 2026-11-02 用户口径] 「四类行分账」—— 第一页到底有多少行、每类各多少。
