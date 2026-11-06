@@ -50,7 +50,11 @@ import {
 } from '../data/supabase-write.js';
 import { getRecentTradingDays } from './holiday-check.js';
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素（未匹配量/抢筹幅度/竞价量比/真换手率）补漏：
-// 猫抓 daily_auc 对【当日】行不返回这四个字段，必须等结算后补写 —— 16:00 正是最合适的时机。
+// ✅ [EXTRAS-TRUTH 2026-11-05] 旧理由「猫抓当日行不给四要素、必须等结算」已被实证推翻
+//   （11-05 09:25 写入的 58 只 58/58 全带 auc_vol_ratio）。真实分工是：
+//   9:25 主流程按当次响应如实写入（可能给也可能不给，绝不阻塞），16:00 这一趟只补
+//   【历史日】仍缺的字段；把今天塞进来会与主流程抢同一批字段并白烧 1 次猫抓额度。
+// ⛔ 本链路永不写同花顺 auction_volume_ratio（用户铁口径：量比只认猫抓竞价时间段）。
 import { runAuctionExtrasPatch } from './extras-workflow.js';
 // 区间涨幅口径单一真相（纯函数，worker 早盘/收盘与前端共用同一份实现）
 // ⚠️ 单文件打包（_bundle.mjs）会把本文件与 range-window.js 拼进同一个作用域，

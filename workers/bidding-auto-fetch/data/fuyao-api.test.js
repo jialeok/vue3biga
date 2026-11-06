@@ -10,7 +10,7 @@
 //     · 窗口首日需要「上一交易日收盘价」→ 起始必须早于窗口首日；
 //     · 覆盖不足要重试（上游并发下会返回被截断的少数 K 线）。
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { fetchFuyaoKlineWindowPct } from './fuyao-api.js';
+import { fetchFuyaoKlineWindowPct, isRetriableFuyaoError } from './fuyao-api.js';
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -128,5 +128,45 @@ describe('fetchFuyaoKlineWindowPct', () => {
     expect((await fetchFuyaoKlineWindowPct(ENV, [], ['2026-09-11'])).size).toBe(0);
     expect((await fetchFuyaoKlineWindowPct(ENV, [{ name: 'A', code: '600000' }], [])).size).toBe(0);
     expect(urls).toEqual([]);
+  });
+});
+
+// ============================================================================
+// [RETRY-CLASSIFY 2026-11-06] 上游错误分类回归锁
+//   11-06 09:25 P0：883410 返回 `Data source unavailable`，旧正则判成「业务性错误」，
+//   第 1 次就 break（日志却写「已重试」）⇒ 常规组全空；09:4x 同接口拨测就恢复了。
+//   ⛔ 收紧会漏掉上游瞬时故障，放宽会白烧 12s 预算顶穿 9:26 —— 两头都要锁。
+// ============================================================================
+describe('isRetriableFuyaoError — 上游瞬时类必须重试', () => {
+  it('11-06 P0 的 Data source unavailable 必须可重试', () => {
+    expect(isRetriableFuyaoError(
+      'fuyao /api/a-share-index/constituents/ths-stock-list 错误: Data source unavailable'
+    )).toBe(true);
+  });
+
+  it('限流 / 5xx / 超时 / 网络 / 网关类都可重试', () => {
+    [
+      'fuyao calendar 错误: 429 Global request rate limit exceeded',
+      'fuyao-proxy /api/x HTTP 503: upstream',
+      'The operation was aborted due to timeout',
+      'fetch failed',
+      'network error ECONNRESET',
+      'service unavailable',
+      'upstream busy, please try again',
+      'bad gateway'
+    ].forEach(msg => expect(isRetriableFuyaoError(msg), msg).toBe(true));
+  });
+});
+
+describe('isRetriableFuyaoError — 业务性错误绝不重试', () => {
+  it('参数 / 鉴权 / 代码不存在 / 空消息一律不重试', () => {
+    [
+      '',
+      null,
+      'fuyao /api/x 错误: thscode not found',
+      'fuyao-proxy /api/x HTTP 400: invalid thscode',
+      'fuyao-proxy /api/x HTTP 401: unauthorized',
+      'fuyao /api/x 错误: 非交易日无数据'
+    ].forEach(msg => expect(isRetriableFuyaoError(msg), String(msg)).toBe(false));
   });
 });

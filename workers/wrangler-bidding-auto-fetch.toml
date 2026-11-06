@@ -2,12 +2,17 @@ name = "bidding-auto-fetch"
 main = "bidding-auto-fetch/index.js"
 compatibility_date = "2025-07-29"
 
-# 北京时间 9:25  = UTC 01:25（工作日 周一~周五 = Cloudflare 2-6）
+# 北京时间 9:25  = UTC 01:25（工作日 周一~周五 = Cloudflare 2-6）→ 早盘主流程
+# 北京时间 9:26  = UTC 01:26（工作日 周一~周五 = Cloudflare 2-6）→ [LADDER26 2026-11-06]
+#    「最近多板 883410」名单源二次确认 + 新进成分股猫抓补竞价量比。
+#    11-06 P0：9:25 上游 Data source unavailable、9:4x 就恢复，只靠 9:25 内重试救不回来。
+#    9:25 已写足量真实名单时这一趟 0 上游请求、0 猫抓额度，幂等跳过。
 # 北京时间 16:00 = UTC 08:00（工作日 周一~周五 = Cloudflare 2-6）→ 收盘涨幅覆盖
 # ⚠️ Cloudflare 星期编号：1=周日, 2=周一, ..., 6=周五, 7=周六
 #    工作日必须用 2-6，不能用 1-5（1-5 = 周日到周四，周五会漏掉！）
+# ⚠️ 免费账户 5 条 cron，本 worker 用 3 条；Supabase pg_cron 不占这个额度。
 [triggers]
-crons = ["25 1 * * 2-6", "0 8 * * 2-6"]
+crons = ["25 1 * * 2-6", "26 1 * * 2-6", "0 8 * * 2-6"]
 
 [vars]
 TZ = "Asia/Shanghai"

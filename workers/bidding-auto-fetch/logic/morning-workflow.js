@@ -265,7 +265,11 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
   const ladderConstituents = ladderRes.ok ? (ladderRes.v || []) : [];
   if (!ladderRes.ok) {
     ladderDegraded = true;
-    logs.push('⚠️ 883410 成分股获取失败（已重试）: ' + ladderRes.e.message +
+    // [RETRY-CLASSIFY 2026-11-06] 旧文案写死「（已重试）」是**假日志**：11-06 的
+    //   `Data source unavailable` 被旧正则判成不可重试，第 1 次就 break，根本没重试过。
+    //   现在是否重试由 data/fuyao-api.js#isRetriableFuyaoError 决定，那里会打印真实结论；
+    //   这里只如实记「失败」，⛔ 不替上游声明做过没做过的事（§10 可观测性）。
+    logs.push('⚠️ 883410 成分股获取失败: ' + ladderRes.e.message +
       ' → 【降级】改用「前一日名单 ∪ 打标签 ∪ 龙头名册」继续抓取，不中断整轮早盘流程');
   }
   logs.push('成分股数量: ' + ladderConstituents.length + (ladderDegraded ? '（⬇️ 降级模式：名单源不可用）' : ''));

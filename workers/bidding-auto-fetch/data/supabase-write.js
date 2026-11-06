@@ -151,6 +151,32 @@ export async function upsertAuctionWatchlist(env, rows) {
     CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?on_conflict=date,stock', rows);
 }
 
+/**
+ * [LADDER26 2026-11-06] 9:26 真实 883410 名单写成功后，清掉当天 9:25 的兜底行。
+ *
+ * §11 删除安全：这是**范围最窄**的删除 —— 只能删 `date=今天 AND source='worker-fallback'`，
+ *   绝不碰观察组壳行 / 手动行 / 20 日补位行 / 其它日期。调用方还必须先完成
+ *   「真实名单写入成功 + 重读复核达标」，删除后再复核一次（见 ladder-recheck.js ⑤）。
+ *
+ * `Prefer: return=representation` 让 PostgREST 把真正删掉的行返回 ⇒ 用返回行数做结果确认，
+ *   ⛔ 不看「HTTP 204 就算成功」那种无法核对影响行数的做法（§11 删除结果验证）。
+ * 读取/删除失败一律抛错（§10），由调用方记日志并保留兜底行，绝不静默吞掉。
+ */
+export async function deleteLadderFallbackRows(env, date) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?date=eq.' + encodeURIComponent(date) +
+    '&source=eq.worker-fallback';
+  const resp = await sbFetch(url, {
+    method: 'DELETE',
+    headers: Object.assign(sbHeaders(env), { 'Prefer': 'return=representation' })
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error('删除当日 worker-fallback 行失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
+  }
+  const data = await resp.json().catch(() => []);
+  return Array.isArray(data) ? data.length : 0;
+}
+
 export async function upsertMarketMetrics(env, rows) {
   if (!rows || rows.length === 0) return;
   await upsertBucketed(env, 'market_metrics',
@@ -171,6 +197,130 @@ export async function upsertStockRangePct(env, rows) {
   // [PGRST102 2026-11-05] 同 upsertMarketMetrics：走分桶，⛔ 不要再单批塞异键集的行
   await upsertBucketed(env, 'stock_range_pct',
     CONFIG.SUPABASE_URL + '/rest/v1/stock_range_pct?on_conflict=date,stock', rows);
+}
+
+// ============================================================================
+// [R20-PREFILL 2026-11-06] 9:26 云端「20 日涨幅补缺」所需的三个只读 / 一个写入口。
+//   与 Edge `backfillRange20FromLegs` 同源，但跑在 Cloudflare Worker（wrangler CI 自动部署），
+//   ⛔ 不需要用户在 Supabase Dashboard 手工重贴 Edge Function。
+//   §10：以下读取失败【一律抛错】，绝不返回 []（否则会把「读不到」误判成「云端没有值」而覆盖写）。
+// ============================================================================
+
+/** 当日 stock_range20_pct 已有行（按 stock 去重；不区分 leg —— 有任何一行就不写，避免覆盖口径） */
+export async function readRange20StocksForDate(env, date) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range20_pct?date=eq.' + encodeURIComponent(date) +
+    '&select=stock&limit=2000';
+  const resp = await sbFetch(url, { headers: sbHeaders(env) });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error('读取 stock_range20_pct 失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
+  }
+  const data = await resp.json();
+  const set = new Set();
+  (data || []).forEach(function (r) {
+    const s = String((r && r.stock) || '').trim();
+    if (s) set.add(s);
+  });
+  return set;
+}
+
+/**
+ * 读「逐日腿表」的历史腿（⛔ 不含目标日本身：T 腿由 market_metrics 提供）。
+ * 按股票名分批 in 过滤，避免把 60 天 × 400 只 = 1.5 万行整表拉回来（§32 不做无意义请求）。
+ * 实测 PostgREST `stock=in.("中文名","中文名")` 在中国股票名下可用（2026-11-06 生产验证 39 行）。
+ * @returns {Promise<Array<{stock:string,date:string,pct:string}>>}
+ */
+export async function readDailyLegsForStocks(env, fromDate, beforeDate, stocks, chunkSize) {
+  const names = Array.from(new Set((stocks || []).map(s => String(s || '').trim()).filter(Boolean)));
+  if (names.length === 0) return [];
+  const size = chunkSize > 0 ? chunkSize : 40;
+  const out = [];
+  for (let i = 0; i < names.length; i += size) {
+    const chunk = names.slice(i, i + size);
+    // ⚠️ 不要用 /"/g：_check_bundle.mjs 的字符串状态机不识别正则里的引号，
+    //    会失步并把整个产物误判成「缺必需标识符」而拒绝出包（见该文件「已知局限」）。
+    const inVal = '(' + chunk.map(n => '"' + n.split('"').join('') + '"').join(',') + ')';
+    const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_daily_pct?select=stock,date,pct' +
+      '&date=gte.' + encodeURIComponent(fromDate) +
+      '&date=lt.' + encodeURIComponent(beforeDate) +
+      '&stock=in.' + inVal + '&limit=1000';
+    const resp = await sbFetch(url, { headers: sbHeaders(env) });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error('读取 stock_daily_pct 逐日腿失败（第 ' + (i / size + 1) + ' 批）: HTTP ' +
+        resp.status + ': ' + text.slice(0, 200));
+    }
+    const data = await resp.json();
+    (data || []).forEach(function (r) {
+      const s = String((r && r.stock) || '').trim();
+      const d = String((r && r.date) || '').slice(0, 10);
+      if (s && d) out.push({ stock: s, date: d, pct: r.pct });
+    });
+  }
+  return out;
+}
+
+/** 写 stock_range20_pct（与 Edge backfillRange20FromLegs 完全相同的 on_conflict / 列集合） */
+export async function upsertRange20Rows(env, rows) {
+  if (!rows || rows.length === 0) return;
+  await upsertBucketed(env, 'stock_range20_pct',
+    CONFIG.SUPABASE_URL + '/rest/v1/stock_range20_pct?on_conflict=date,stock', rows);
+}
+
+// ============================================================================
+// [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐（替代本机 08:00 定时任务）
+//   §10：读取失败一律抛错；§32：按 Range 分页，不整表拉爆网关。
+// ============================================================================
+
+/** 分页 GET（PostgREST Range 头）；返回扁平数组，任何一页失败都抛错 */
+async function sbGetPaged(env, url) {
+  const PAGE = 1000;
+  const out = [];
+  for (let from = 0; from <= 30000; from += PAGE) {
+    const resp = await sbFetch(url, {
+      headers: Object.assign(sbHeaders(env), {
+        'Range': from + '-' + (from + PAGE - 1),
+        'Range-Unit': 'items'
+      })
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error('分页读取失败 (from=' + from + '): HTTP ' + resp.status + ': ' + text.slice(0, 200));
+    }
+    const page = await resp.json();
+    if (!Array.isArray(page) || page.length === 0) break;
+    page.forEach(r => out.push(r));
+    if (page.length < PAGE) break;
+  }
+  return out;
+}
+
+/** 读窗口内 market_metrics 的「收盘腿原料」（change_pct / auc_pct_chg 用于判是否已被收盘覆盖） */
+export async function readMetricsLegsWindow(env, fromDate, throughDate) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?select=stock,date,change_pct,auc_pct_chg' +
+    '&scope=eq.auction&date=gte.' + encodeURIComponent(fromDate) +
+    '&date=lte.' + encodeURIComponent(throughDate) + '&order=date.asc';
+  return sbGetPaged(env, url);
+}
+
+/** 读某日 stock_daily_pct 已有股票（⛔ 已有的一律不碰：纯新增、幂等） */
+export async function readDailyPctStocksForDate(env, date) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_daily_pct?select=stock' +
+    '&date=eq.' + encodeURIComponent(date);
+  const rows = await sbGetPaged(env, url);
+  const set = new Set();
+  rows.forEach(r => {
+    const s = String((r && r.stock) || '').trim();
+    if (s) set.add(s);
+  });
+  return set;
+}
+
+/** 写逐日腿（与本机脚本 / Edge heal 同一张表、同一 on_conflict） */
+export async function upsertDailyPctRows(env, rows) {
+  if (!rows || rows.length === 0) return;
+  await upsertBucketed(env, 'stock_daily_pct',
+    CONFIG.SUPABASE_URL + '/rest/v1/stock_daily_pct?on_conflict=date,stock', rows);
 }
 
 /**

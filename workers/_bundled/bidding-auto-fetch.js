@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-11-06 02:09:17
+// 生成时间: 2026-11-06 04:42:13
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 5151（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 6140（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
@@ -342,12 +342,36 @@ function fetchWithTimeout(url, opts, timeoutMs) {
  *   · 每次尝试的超时 = min(perCallMs, 预算剩余)，保证最坏耗时 ≤ budgetMs 量级。
  *   这两条是 9/30 事故的正面修复：原来的「4 次尝试」在请求挂起时会变成 4 × 几十秒。
  *
+ * [RETRY-CLASSIFY 2026-11-06] 11-06 09:25 的 P0 事故暴露第二个 bug：
+ *   上游返回 `fuyao ... 错误: Data source unavailable`（code!=0，但 HTTP 200），
+ *   旧正则只认 429/5xx/timeout/network ⇒ 判成「业务性错误」⇒ **第 1 次就 break**，
+ *   而 morning-workflow 的日志却写「（已重试）」，把「没重试」伪装成「重试过还失败」。
+ *   实测该错误是突发的：09:25 失败，09:4x 手工拨测同一个接口 HTTP 200 / 2790ms / 57 只。
+ *   ⇒ 把「上游数据源临时不可用」类文案纳入可重试，同时把判定抽成纯函数 + 单测锁住。
+ *   ⛔ 总预算 12s 不变，重试不会顶穿 9:26 硬指标。
+ *
  * @param {(ms:number)=>Promise<any>} fn 真正发请求的函数，接收「本次可用超时」
  * @param {number} attempts 最多尝试次数
  * @param {string} label 日志标签
  * @param {number} budgetMs 总预算（毫秒）；0/未传 = 只按次数限制（老行为）
  * @param {number} perCallMs 单次超时（毫秒）
  */
+/**
+ * [RETRY-CLASSIFY 2026-11-06] 纯函数：这条错误值不值得重试？
+ *
+ * 只覆盖「上游瞬时不可用」：限流、5xx、超时、网络、数据源临时不可用。
+ * ⛔ 业务性错误（thscode 不存在、参数非法、鉴权失败、非交易日）一律不重试 ——
+ *    重试它们不会改变结果，只会白烧 12s 预算并把 9:26 硬指标顶穿（§32）。
+ * 导出仅为单测：这是 11-06 P0 的根因判据，必须有回归锁。
+ */
+function isRetriableFuyaoError(msg) {
+  const s = String(msg || '');
+  if (!s) return false;
+  return /429|rate limit|5\d\d|timeout|timed out|abort|network|fetch failed|ECONN/i.test(s)
+    || /data source (?:unavailable|not available|error)|service unavailable|temporarily unavailable/i.test(s)
+    || /upstream (?:error|unavailable|busy)|bad gateway|gateway timeout|please (?:try again|retry)/i.test(s);
+}
+
 async function retryFuyao(fn, attempts, label, budgetMs, perCallMs) {
   const n = attempts || 4;
   const budget = budgetMs > 0 ? budgetMs : 0;
@@ -368,8 +392,14 @@ async function retryFuyao(fn, attempts, label, budgetMs, perCallMs) {
       lastErr = e;
       const msg = String((e && e.message) || '');
       // 只重试「上游瞬时」类错误；业务性错误（如 thscode 不存在）重试无意义
-      const retriable = /429|rate limit|5\d\d|timeout|timed out|abort|network|fetch failed|ECONN/i.test(msg);
-      if (!retriable || i === n - 1) break;
+      // [RETRY-CLASSIFY 2026-11-06] 判据统一走纯函数（含 Data source unavailable），⛔ 不在这里另写一份
+      const retriable = isRetriableFuyaoError(msg);
+      if (!retriable || i === n - 1) {
+        if (!retriable) {
+          console.warn('[FUYAO-RETRY] ' + (label || '') + ' 判为【不可重试错误】→ 立即走降级（未重试）: ' + msg.slice(0, 120));
+        }
+        break;
+      }
       const wait = 900 * Math.pow(2, i);
       if (budget > 0 && (Date.now() - t0) + wait >= budget) {
         console.warn('[FUYAO-RETRY] ' + (label || '') + ' 第' + (i + 1) + '次失败：' + msg.slice(0, 120) +
@@ -543,10 +573,14 @@ async function fetchSnapshotChangePct(env, codes) {
 /**
  * [SNAPSHOT-EXTRAS 2026-09-14] 同花顺「集合竞价快照」（免费、不限累计次数、单次 ≤100 个代码、stage=final）。
  *
- * 为什么需要：猫抓 daily_auc 对【当日】行不返回 auc_pct_chg / auc_vol_ratio / auc_turnover
- *   （要等结算后才出现），worker 又默认把今天排除在补漏之外 → 9:25~收盘这一整天，看板的
- *   「竞价量比 / 真换手率 / 当日竞价涨幅」全空、龙头徽章掉色、竞价一字红线判不出。
- *   本接口在 9:25 竞价一结束就能拿到【当天】终态数据，用它把当日缺口补上，0 猫抓额度消耗。
+ * ✅ [AUC-TRUTH 2026-11-05] 旧注释说「猫抓 daily_auc 对【当日】行不返回 auc_pct_chg /
+ *    auc_vol_ratio / auc_turnover，要等结算后才出现」——**已被生产实证推翻**，不要拿它当结论：
+ *    11-05 09:25 那轮 `numcat 返回 fields=[..., "auc_vol_ratio","auc_turnover"] items=290 行`，
+ *    写入的 58 只 58/58 全带 auc_vol_ratio。猫抓 9:25 就给竞价量比，和竞价字段同一个接口。
+ *
+ * 本接口真实用途（分工，不是「猫抓拿不到」）：9:25 主流程写入后，个别票可能因为
+ *   「不在 9:25 抓取名单里」或「上游当次 auc_vol 还是占位 0」而缺 volume / auc_pct_chg /
+ *   auc_turnover；用本接口（免费、0 猫抓额度）把这些**同花顺可提供的字段**补齐。
  *
  * ⚠️ 只返回「最近一个交易日」（滚动窗口：当天收盘后 → 下一交易日开盘前）；周末/节假日调用返回上一交易日终态。
  *    因此调用方必须先用 timestamp 校验「服务端日期 == 目标日」，否则拒绝写入（避免把上一日数据写到今天）。
@@ -555,12 +589,13 @@ async function fetchSnapshotChangePct(env, codes) {
  *    量纲换算已交叉验证（见 backups/同花顺官方接口竞价能力核查_2026-09-13.md）：
  *      volume ← round(auction_volume/100)（手→万股）｜auc_pct_chg ← auction_pct
  *      auc_turnover ← auction_turnover_pct
- * ⛔⛔ [AUC-RATIO-NUMCAT-ONLY 2026-11-04] **auction_volume_ratio 禁止映射到库内 auc_vol_ratio**。
- *    同花顺的「竞价量比」与猫爪 auc_vol_ratio 不同源（基准量口径不同），掺进库里就是错数据，
- *    而下游拿它当选票依据（logic/decision/decision-rules.js）⇒ 直接选错股。
- *    用户两次明确口径（2026-10-26、2026-11-04）：「永远不要用同花顺获取数据的竞价量比数据，
- *    我只要猫爪数据接口的竞价量比」。后端唯一入口 = numcat daily_auc（结算后由 16:30 云端回填）。
- *    前端 src/logic/auction/ths-today-patch.js 早已按此执行；worker 这条腿曾漏掉，2026-11-04 已删。
+ * ⛔⛔ [AUC-RATIO-NUMCAT-ONLY 2026-11-04 / 用户 2026-11-06 再次强调]
+ *    **auction_volume_ratio 禁止映射到库内 auc_vol_ratio，任何时段、任何路径、兜底也不行**。
+ *    同花顺的「竞价量比」是开盘后口径，与猫抓 auc_vol_ratio（9:25 竞价时间段）不同源；
+ *    掺进库里就是错数据，而下游拿它当选票依据（logic/decision/decision-rules.js）⇒ 直接选错股。
+ *    用户原话：「题材量比一定要用猫爪数据的竞价时间段的，不要用同花顺的」「兜底也不行」。
+ *    唯一合法来源 = 猫抓 numcat daily_auc.auc_vol_ratio（9:25 主流程 / 9:26 名单补抓 / 16:30 历史回填）。
+ *    前端 src/logic/auction/ths-today-patch.js 早已合规；worker 的 runTodaySnapshotPatch 曾漏掉，已删。
  *
  * @param {object} env
  * @param {string[]} codes 6 位股票代码
@@ -1107,6 +1142,32 @@ async function upsertAuctionWatchlist(env, rows) {
     CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?on_conflict=date,stock', rows);
 }
 
+/**
+ * [LADDER26 2026-11-06] 9:26 真实 883410 名单写成功后，清掉当天 9:25 的兜底行。
+ *
+ * §11 删除安全：这是**范围最窄**的删除 —— 只能删 `date=今天 AND source='worker-fallback'`，
+ *   绝不碰观察组壳行 / 手动行 / 20 日补位行 / 其它日期。调用方还必须先完成
+ *   「真实名单写入成功 + 重读复核达标」，删除后再复核一次（见 ladder-recheck.js ⑤）。
+ *
+ * `Prefer: return=representation` 让 PostgREST 把真正删掉的行返回 ⇒ 用返回行数做结果确认，
+ *   ⛔ 不看「HTTP 204 就算成功」那种无法核对影响行数的做法（§11 删除结果验证）。
+ * 读取/删除失败一律抛错（§10），由调用方记日志并保留兜底行，绝不静默吞掉。
+ */
+async function deleteLadderFallbackRows(env, date) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?date=eq.' + encodeURIComponent(date) +
+    '&source=eq.worker-fallback';
+  const resp = await sbFetch(url, {
+    method: 'DELETE',
+    headers: Object.assign(sbHeaders(env), { 'Prefer': 'return=representation' })
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error('删除当日 worker-fallback 行失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
+  }
+  const data = await resp.json().catch(() => []);
+  return Array.isArray(data) ? data.length : 0;
+}
+
 async function upsertMarketMetrics(env, rows) {
   if (!rows || rows.length === 0) return;
   await upsertBucketed(env, 'market_metrics',
@@ -1127,6 +1188,130 @@ async function upsertStockRangePct(env, rows) {
   // [PGRST102 2026-11-05] 同 upsertMarketMetrics：走分桶，⛔ 不要再单批塞异键集的行
   await upsertBucketed(env, 'stock_range_pct',
     CONFIG.SUPABASE_URL + '/rest/v1/stock_range_pct?on_conflict=date,stock', rows);
+}
+
+// ============================================================================
+// [R20-PREFILL 2026-11-06] 9:26 云端「20 日涨幅补缺」所需的三个只读 / 一个写入口。
+//   与 Edge `backfillRange20FromLegs` 同源，但跑在 Cloudflare Worker（wrangler CI 自动部署），
+//   ⛔ 不需要用户在 Supabase Dashboard 手工重贴 Edge Function。
+//   §10：以下读取失败【一律抛错】，绝不返回 []（否则会把「读不到」误判成「云端没有值」而覆盖写）。
+// ============================================================================
+
+/** 当日 stock_range20_pct 已有行（按 stock 去重；不区分 leg —— 有任何一行就不写，避免覆盖口径） */
+async function readRange20StocksForDate(env, date) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range20_pct?date=eq.' + encodeURIComponent(date) +
+    '&select=stock&limit=2000';
+  const resp = await sbFetch(url, { headers: sbHeaders(env) });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error('读取 stock_range20_pct 失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
+  }
+  const data = await resp.json();
+  const set = new Set();
+  (data || []).forEach(function (r) {
+    const s = String((r && r.stock) || '').trim();
+    if (s) set.add(s);
+  });
+  return set;
+}
+
+/**
+ * 读「逐日腿表」的历史腿（⛔ 不含目标日本身：T 腿由 market_metrics 提供）。
+ * 按股票名分批 in 过滤，避免把 60 天 × 400 只 = 1.5 万行整表拉回来（§32 不做无意义请求）。
+ * 实测 PostgREST `stock=in.("中文名","中文名")` 在中国股票名下可用（2026-11-06 生产验证 39 行）。
+ * @returns {Promise<Array<{stock:string,date:string,pct:string}>>}
+ */
+async function readDailyLegsForStocks(env, fromDate, beforeDate, stocks, chunkSize) {
+  const names = Array.from(new Set((stocks || []).map(s => String(s || '').trim()).filter(Boolean)));
+  if (names.length === 0) return [];
+  const size = chunkSize > 0 ? chunkSize : 40;
+  const out = [];
+  for (let i = 0; i < names.length; i += size) {
+    const chunk = names.slice(i, i + size);
+    // ⚠️ 不要用 /"/g：_check_bundle.mjs 的字符串状态机不识别正则里的引号，
+    //    会失步并把整个产物误判成「缺必需标识符」而拒绝出包（见该文件「已知局限」）。
+    const inVal = '(' + chunk.map(n => '"' + n.split('"').join('') + '"').join(',') + ')';
+    const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_daily_pct?select=stock,date,pct' +
+      '&date=gte.' + encodeURIComponent(fromDate) +
+      '&date=lt.' + encodeURIComponent(beforeDate) +
+      '&stock=in.' + inVal + '&limit=1000';
+    const resp = await sbFetch(url, { headers: sbHeaders(env) });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error('读取 stock_daily_pct 逐日腿失败（第 ' + (i / size + 1) + ' 批）: HTTP ' +
+        resp.status + ': ' + text.slice(0, 200));
+    }
+    const data = await resp.json();
+    (data || []).forEach(function (r) {
+      const s = String((r && r.stock) || '').trim();
+      const d = String((r && r.date) || '').slice(0, 10);
+      if (s && d) out.push({ stock: s, date: d, pct: r.pct });
+    });
+  }
+  return out;
+}
+
+/** 写 stock_range20_pct（与 Edge backfillRange20FromLegs 完全相同的 on_conflict / 列集合） */
+async function upsertRange20Rows(env, rows) {
+  if (!rows || rows.length === 0) return;
+  await upsertBucketed(env, 'stock_range20_pct',
+    CONFIG.SUPABASE_URL + '/rest/v1/stock_range20_pct?on_conflict=date,stock', rows);
+}
+
+// ============================================================================
+// [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐（替代本机 08:00 定时任务）
+//   §10：读取失败一律抛错；§32：按 Range 分页，不整表拉爆网关。
+// ============================================================================
+
+/** 分页 GET（PostgREST Range 头）；返回扁平数组，任何一页失败都抛错 */
+async function sbGetPaged(env, url) {
+  const PAGE = 1000;
+  const out = [];
+  for (let from = 0; from <= 30000; from += PAGE) {
+    const resp = await sbFetch(url, {
+      headers: Object.assign(sbHeaders(env), {
+        'Range': from + '-' + (from + PAGE - 1),
+        'Range-Unit': 'items'
+      })
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error('分页读取失败 (from=' + from + '): HTTP ' + resp.status + ': ' + text.slice(0, 200));
+    }
+    const page = await resp.json();
+    if (!Array.isArray(page) || page.length === 0) break;
+    page.forEach(r => out.push(r));
+    if (page.length < PAGE) break;
+  }
+  return out;
+}
+
+/** 读窗口内 market_metrics 的「收盘腿原料」（change_pct / auc_pct_chg 用于判是否已被收盘覆盖） */
+async function readMetricsLegsWindow(env, fromDate, throughDate) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?select=stock,date,change_pct,auc_pct_chg' +
+    '&scope=eq.auction&date=gte.' + encodeURIComponent(fromDate) +
+    '&date=lte.' + encodeURIComponent(throughDate) + '&order=date.asc';
+  return sbGetPaged(env, url);
+}
+
+/** 读某日 stock_daily_pct 已有股票（⛔ 已有的一律不碰：纯新增、幂等） */
+async function readDailyPctStocksForDate(env, date) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_daily_pct?select=stock' +
+    '&date=eq.' + encodeURIComponent(date);
+  const rows = await sbGetPaged(env, url);
+  const set = new Set();
+  rows.forEach(r => {
+    const s = String((r && r.stock) || '').trim();
+    if (s) set.add(s);
+  });
+  return set;
+}
+
+/** 写逐日腿（与本机脚本 / Edge heal 同一张表、同一 on_conflict） */
+async function upsertDailyPctRows(env, rows) {
+  if (!rows || rows.length === 0) return;
+  await upsertBucketed(env, 'stock_daily_pct',
+    CONFIG.SUPABASE_URL + '/rest/v1/stock_daily_pct?on_conflict=date,stock', rows);
 }
 
 /**
@@ -1775,21 +1960,26 @@ function closeCoverUtcMs(dateStr) {
 //   竞价四要素 = 未匹配量(um_vol) / 抢筹幅度(open_bid_pct) / 竞价量比(auc_vol_ratio) /
 //               真换手率(auc_turnover)，是趋势图右侧与「量比抢筹高光」的核心判据。
 //
-//   猫抓 daily_auc 对【当日】这一行**不返回**这四个字段的值，只返回
-//   auc_vol / auc_pct_chg / auc_to_pre_vol_pct；四要素要等这一天结算后才出现。
-//   取证（.tmpdiag/diag_last_write.mjs，全表 3692 行，只读）：
-//     · 9/11 同一轮写入（01:29:56~01:30:03）里：9/10 = 60/67 有四要素，9/11 = 0/67 全空；
-//     · 全表唯一「最后一个写入时刻 = 当天」的日期就是 9/11，它四要素为 0；
-//     · 8/07 起的每个历史日，四要素都是被【后续几天的窗口重刷】时才带上的。
-//   ⇒ 9:25 早盘永远拿不到「当天」的四要素，重试只是白等（还会顶穿 9:26 硬指标），
-//     必须有一个「结算后补写」的任务 —— 就是本文件。
+//   ✅ [EXTRAS-TRUTH 2026-11-05 / 用户 2026-11-06 再次强调] 旧结论「猫抓对当日行
+//      **永远不返回**四要素、必须等结算」**已被实证推翻**，⛔ 不要拿它当事实：
+//      11-05 09:25 那轮 `numcat 返回 fields=[..., "auc_vol_ratio","auc_turnover"] items=290 行`，
+//      写入的 58 只 58/58 全带竞价量比；11-06 复核 95/95 全带。
+//      真实口径是「可能给、也可能不给」（9/11 那天确实 0/67），不是「必然不给」。
+//      ⛔ 因此【绝不把四要素就绪当作 9:25 的阻塞条件】——重试只会顶穿 9:26 硬指标。
+//
+//   本文件仍需要存在，但理由换成【分工 + 历史缺口】，不是「猫抓拿不到」：
+//     · 9:25 主流程按当次响应如实写入（有就写、没有就空），只统计不拦截；
+//     · 本函数只负责【历史日】回填：那些当天没给四要素、或名单里没抓到的票，
+//       由后续窗口的猫抓响应补写；16:00 close 会自动跑一次。
+//     · 把「今天」塞进待补集合 = 与 9:25 主流程抢同一批字段 + 白烧 1 次额度，故自动跑排除。
 //
 // 【触发点】
 //   ① 北京 16:00 close 主流程末尾自动跑（复用既有 cron，不需要新增触发器）；
 //   ② 手动 /fetch?point=extras（想当天立刻看到 / 补历史缺口时用）。
 //
-// [QUOTA 2026-09-11] 自动跑时【排除当前交易日】：猫抓「当天不给四要素」是既定行为，
-//   把今天算进待补集合的唯一效果 = 每天都白烧 1 次额度。实测：9/11 16:00 的补漏 patched=0，
+// [QUOTA 2026-09-11 / EXTRAS-TRUTH 2026-11-05] 自动跑时【排除当前交易日】：
+//   理由不是「猫抓当天不给四要素」（已推翻），而是 9:25 主流程已经写过一次、
+//   两条腿抢同一批字段 + 每天都白烧 1 次额度。实测：9/11 16:00 的补漏 patched=0，
 //   而当天 9/11 的四要素依旧是 0/67（查询 market_metrics 证实 updated_by=*-close 48 行全空）。
 //   现在只有「确实存在可补的历史缺口」才发 numcat 请求；窗口内全完整 → 零请求直接返回。
 //   手动调用传 includeToday:true 可保留「含今天」的旧行为（用于排查）。
@@ -2148,8 +2338,11 @@ async function runTodaySnapshotPatch(env, opts) {
     //   口径一致性：前端 src/logic/auction/ths-today-patch.js 早在 2026-10-26 就按同一口径
     //   **拒绝**用同花顺补 auc_vol_ratio（那里写着「⛔⛔ 绝对不许」），只有 worker 这条路漏了，
     //   于是一边前端不补、一边后端偷偷补 ⇒ 用户看到的就是「明明说了不要，还是同花顺的数」。
-    //   ⇒ 竞价量比唯一来源 = 猫抓 daily_auc（结算后由 16:30 的 range20-precompute 回填，
-    //     source='numcat'）；拿不到就留空（§10 宁缺勿错），⛔ 绝不拿同花顺顶替。
+    //   ⇒ 竞价量比唯一来源 = 猫抓 daily_auc 的【9:25 竞价时间段】数据：
+    //     9:25 主流程直接写、9:26 名单二次确认补新进票（ladder-recheck.js）、
+    //     历史日缺口由 16:30 的 range20-precompute 回填（source='numcat'）。
+    //     猫抓 9:25 就给这个字段（11-05 实测 58/58、11-06 复核 95/95），
+    //     ⛔ 旧注释说「要等结算后才有」是错的。拿不到就留空，⛔ 绝不拿同花顺顶替。
     if (extrasIsEmpty(r.auc_turnover)) {
       const v = extrasFmt2(extrasNum(it.auction_turnover_pct));
       if (v !== '') { patch.auc_turnover = v; any = true; }
@@ -2996,7 +3189,11 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
   const ladderConstituents = ladderRes.ok ? (ladderRes.v || []) : [];
   if (!ladderRes.ok) {
     ladderDegraded = true;
-    logs.push('⚠️ 883410 成分股获取失败（已重试）: ' + ladderRes.e.message +
+    // [RETRY-CLASSIFY 2026-11-06] 旧文案写死「（已重试）」是**假日志**：11-06 的
+    //   `Data source unavailable` 被旧正则判成不可重试，第 1 次就 break，根本没重试过。
+    //   现在是否重试由 data/fuyao-api.js#isRetriableFuyaoError 决定，那里会打印真实结论；
+    //   这里只如实记「失败」，⛔ 不替上游声明做过没做过的事（§10 可观测性）。
+    logs.push('⚠️ 883410 成分股获取失败: ' + ladderRes.e.message +
       ' → 【降级】改用「前一日名单 ∪ 打标签 ∪ 龙头名册」继续抓取，不中断整轮早盘流程');
   }
   logs.push('成分股数量: ' + ladderConstituents.length + (ladderDegraded ? '（⬇️ 降级模式：名单源不可用）' : ''));
@@ -4159,7 +4356,11 @@ async function runMorning(env) {
 
 
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素（未匹配量/抢筹幅度/竞价量比/真换手率）补漏：
-// 猫抓 daily_auc 对【当日】行不返回这四个字段，必须等结算后补写 —— 16:00 正是最合适的时机。
+// ✅ [EXTRAS-TRUTH 2026-11-05] 旧理由「猫抓当日行不给四要素、必须等结算」已被实证推翻
+//   （11-05 09:25 写入的 58 只 58/58 全带 auc_vol_ratio）。真实分工是：
+//   9:25 主流程按当次响应如实写入（可能给也可能不给，绝不阻塞），16:00 这一趟只补
+//   【历史日】仍缺的字段；把今天塞进来会与主流程抢同一批字段并白烧 1 次猫抓额度。
+// ⛔ 本链路永不写同花顺 auction_volume_ratio（用户铁口径：量比只认猫抓竞价时间段）。
 
 // 区间涨幅口径单一真相（纯函数，worker 早盘/收盘与前端共用同一份实现）
 // ⚠️ 单文件打包（_bundle.mjs）会把本文件与 range-window.js 拼进同一个作用域，
@@ -4817,13 +5018,708 @@ async function runRangePctHeal(env, opts) {
 }
 
 
+// ────── bidding-auto-fetch/logic/ladder-recheck.js ──────
+// ladder-recheck.js — 北京 09:26 云端「最近多板 883410」二次确认 + 新进成分股竞价数据补抓
+//
+// ============================================================================
+// [P0-2 2026-11-06 用户要求] 「最近多板源头也要修好」「全部改用云端的」「最迟 9 点 26 分」
+// ----------------------------------------------------------------------------
+// 事故回顾：11-06 09:25 上游 `Data source unavailable` ⇒ 9:25 那轮降级，
+//   auction_watchlist 只剩 17 行观察组壳行 ⇒ 常规组全空（应用最重要的数据入口没了）。
+//   09:4x 手工拨测同一个 883410 接口就恢复了（HTTP 200 / 2790ms / 57 只）。
+//   ⇒ 单靠「9:25 内重试」不够：上游可能在 9:25:xx ~ 9:26 之间才恢复。
+//
+// 本模块 = 一条独立的云端 cron（wrangler `26 1 * * 2-6`，Cloudflare 免费额度 3/5），
+//   在 09:26（开盘前 4 分钟）做三件事，全部幂等：
+//     ① 9:25 已写入足量【真实 883410 名单】⇒ 直接跳过，0 网络请求、0 猫抓额度（§32）；
+//     ② 否则再问一次真实名单源：恢复 ⇒ 写今天真实名单，并清掉 9:25 的 `worker-fallback` 行；
+//     ③ 对「真实名单里有、但今天 market_metrics 还没数据 / 缺竞价量比」的票，
+//        用【猫抓 daily_auc】一次性补上（1 次额度，按请求次数算不按股票数算）。
+//
+// ⛔⛔ 竞价量比唯一来源 = 猫抓 `daily_auc.auc_vol_ratio`（9:25 竞价时间段口径）。
+//    同花顺 `auction_volume_ratio` 是开盘后口径，**任何时段、任何路径、兜底也不许用**。
+//    本文件不 import 任何同花顺快照函数，就是为了从依赖上把这条路封死（用户 2026-11-06 原话）。
+//
+// 【成本上限】上游名单源 1 次（自带 12s 预算）+ 猫抓 1 次 + 少量 Supabase REST；
+//  9:26:00 起跑，最坏 9:26:20 完成，仍在用户「最迟 9:26 获取完」的竞价窗口内。
+// 【数据安全】§10 读取失败一律停止；§11 删除只针对当日 `source='worker-fallback'`，
+//  且必须发生在「真实名单写入成功 + 重读复核达标」之后，删除后再复核一次。
+// ============================================================================
+
+
+
+
+
+
+/** 今日正式成员里「真实 883410 名单」的条数（⛔ 兜底名单不算达标） */
+function countRealLadderRows(todayRows) {
+  return (todayRows || []).filter(function (r) {
+    return r && !r.obs_auto_added
+      && String(r.source || '').trim() === 'worker'
+      && /^\d{6}$/.test(String(r.code || '').trim());
+  }).length;
+}
+
+/**
+ * 纯函数：要不要在这一趟重查名单？
+ * 只有「真实名单条数 < 门槛」才跑 —— 正常日 9:25 已写 55~95 行 ⇒ 恒跳过，零副作用。
+ */
+function needsLadderRecheck(todayRows, minRows) {
+  const need = minRows === undefined ? MIN_LADDER_ROWS : minRows;
+  return countRealLadderRows(todayRows) < need;
+}
+
+function hasValue(v) {
+  return v !== null && v !== undefined && String(v).trim() !== '';
+}
+
+/**
+ * 纯函数：算出这一趟需要猫抓补哪些票。
+ *   · 库里今天连行都没有 ⇒ 需要写【整行】；
+ *   · 有行但 auc_vol_ratio 为空 ⇒ 只补这一列（⛔ 不覆盖其它已有值，§11）；
+ *   · 已有量比 ⇒ 完全不碰（幂等，避免重复写库）。
+ * 只认 6 位代码；按 code 去重；不会返回空 symbols 让调用方白烧额度。
+ */
+function pickNumcatTargets(ladder, metricsRows) {
+  const byName = new Map();
+  (metricsRows || []).forEach(function (r) {
+    if (r && r.name) byName.set(String(r.name).trim(), r);
+  });
+  const seenCode = new Set();
+  const fullRows = [];
+  const ratioOnly = [];
+  const symbols = [];
+  (ladder || []).forEach(function (c) {
+    if (!c) return;
+    const name = String(c.name || '').trim();
+    const code = String(c.code || '').trim();
+    if (!name || !/^\d{6}$/.test(code) || seenCode.has(code)) return;
+    const m = byName.get(name);
+    if (m && hasValue(m.auc_vol_ratio)) return;
+    seenCode.add(code);
+    symbols.push(code);
+    if (!m) fullRows.push({ name: name, code: code });
+    else ratioOnly.push({ name: name, code: code });
+  });
+  return { symbols: symbols, fullRows: fullRows, ratioOnly: ratioOnly };
+}
+
+const FULL_FIELDS = [
+  'volume', 'change_pct', 'yest_volume', 'auc_pct_chg',
+  'um_vol', 'open_bid_pct', 'auc_vol_ratio', 'auc_turnover',
+];
+
+/**
+ * 纯函数：把 parseNumcatToMetrics 的当天结果转成写库行。
+ * 复用主流程的解析器（假 0 守卫 / 越界闸门 / 量纲换算全一致，§6 单一真相），
+ * 但按 pickNumcatTargets 的分类决定「整行」还是「只补量比一列」。
+ */
+function buildAucMetricsWriteRows(parsedToday, today, nowIso, targets) {
+  const byName = new Map();
+  (parsedToday || []).forEach(function (m) {
+    if (m && m.stock) byName.set(String(m.stock).trim(), m);
+  });
+  const rows = [];
+  (targets.fullRows || []).forEach(function (t) {
+    const m = byName.get(t.name);
+    if (!m) return;
+    const row = {
+      date: today,
+      stock: t.name,
+      code: t.code,
+      scope: 'auction',
+      source: 'worker',
+      updated_at: nowIso,
+      updated_by: 'auto-fetch-worker',
+    };
+    let got = 0;
+    FULL_FIELDS.forEach(function (k) {
+      if (hasValue(m[k])) { row[k] = m[k]; got++; }
+    });
+    // ⛔ 一只字段都没拿到就别建空行：建了只会让「有行但全空」伪装成「已抓到」，
+    //    题材量比闸门会把它算进分母却拿不到量比（§10 宁缺勿错，等 16:30 云端回填）。
+    if (got > 0) rows.push(row);
+  });
+  (targets.ratioOnly || []).forEach(function (t) {
+    const m = byName.get(t.name);
+    if (!m || !hasValue(m.auc_vol_ratio)) return;
+    // ⛔ 只带这一列：resolution=merge-duplicates 只更新 payload 里出现的列，
+    //    绝不把 worker / 猫抓历史回填写好的其它字段抹掉（§11 覆盖即高风险）。
+    rows.push({
+      date: today,
+      stock: t.name,
+      scope: 'auction',
+      auc_vol_ratio: m.auc_vol_ratio,
+      updated_at: nowIso,
+      updated_by: 'auto-fetch-worker',
+    });
+  });
+  return rows;
+}
+
+/**
+ * 用猫抓 daily_auc 补「真实名单里的新票 / 缺量比的票」。
+ * ⛔ 整个函数最多 1 次 numcat 请求；额度用尽直接优雅退出，不重试（§32）。
+ */
+async function fillAucFromNumcat(env, today, ladder, logs) {
+  const out = { attempted: false, symbols: 0, written: 0, skipped: '', error: '' };
+  let metricsRows;
+  try {
+    metricsRows = await readMarketMetricsSnapshotFieldsForDate(env, today);
+  } catch (e) {
+    out.error = '读取当日 market_metrics 失败 → 停止补抓（§10 不把读失败当空表）: ' + (e && e.message ? e.message : String(e));
+    logs.push('[ladder26] ❌ ' + out.error);
+    return out;
+  }
+  const targets = pickNumcatTargets(ladder, metricsRows);
+  out.symbols = targets.symbols.length;
+  if (targets.symbols.length === 0) {
+    out.skipped = '当日 market_metrics 已覆盖真实名单且竞价量比齐全 → 0 次猫抓请求';
+    logs.push('[ladder26] ✅ ' + out.skipped);
+    return out;
+  }
+  out.attempted = true;
+  const ymd = String(today).replace(/-/g, '');
+  let data;
+  try {
+    data = await numcatDailyAuc(env, targets.symbols.join(','), ymd, ymd, logs);
+  } catch (e) {
+    out.error = (e && e.message ? e.message : String(e));
+    logs.push('[ladder26] ❌ 猫抓 daily_auc 补抓失败（本次不重试、不连坐名单写入）: ' + out.error);
+    return out;
+  }
+  const fields = (data && data.fields) || [];
+  const items = (data && data.items) || [];
+  if (fields.indexOf('symbol') < 0 || fields.indexOf('auc_vol_ratio') < 0 || items.length === 0) {
+    out.skipped = '猫抓本次未返回 symbol/auc_vol_ratio（或 0 行）→ 不写任何行，量比留空待 16:30 云端回填';
+    logs.push('[ladder26] ⚠️ ' + out.skipped);
+    return out;
+  }
+  const parsed = parseNumcatToMetrics(items, fields, ladder, logs, today);
+  const rows = buildAucMetricsWriteRows(parsed.metricsByDate[today] || [], today, new Date().toISOString(), targets);
+  if (rows.length === 0) {
+    out.skipped = '猫抓返回 ' + items.length + ' 行但无一行可写（名单/字段不匹配）→ 留空不猜';
+    logs.push('[ladder26] ⚠️ ' + out.skipped);
+    return out;
+  }
+  try {
+    await upsertMarketMetrics(env, rows);   // 内部按「键集签名」分桶，⛔ 不会 PGRST102
+  } catch (e) {
+    out.error = 'market_metrics 写入失败: ' + (e && e.message ? e.message : String(e));
+    logs.push('[ladder26] ❌ ' + out.error);
+    return out;
+  }
+  out.written = rows.length;
+  logs.push('[ladder26] ✅ 猫抓 daily_auc 1 次请求 → 写入 market_metrics ' + rows.length +
+    ' 行（新票整行 / 已有票只补 auc_vol_ratio，来源=猫抓竞价时间段）');
+  return out;
+}
+
+/**
+ * 9:26 云端二次确认主入口。
+ * @returns {Promise<{ok:boolean,today:string,skipped:boolean,recovered:boolean,written:number,fallbackCleared:number,ladderCount:number|null,auc:object,logs:string[]}>}
+ */
+async function runLadderRecheck(env, opts) {
+  const o = opts || {};
+  const logs = o.logs || [];
+  const today = o.today || beijingToday();
+  const nowIso = new Date().toISOString();
+  const out = {
+    ok: false, today: today, skipped: false, recovered: false,
+    written: 0, fallbackCleared: 0, ladderCount: null,
+    auc: { attempted: false, symbols: 0, written: 0, skipped: '', error: '' },
+    logs: logs,
+  };
+
+  // ① 当日名单现状。读取失败必须停（§10），绝不把它当「空名单」往下写。
+  let todayRows;
+  try {
+    todayRows = await readAuctionWatchlistForDate(env, today);
+  } catch (e) {
+    logs.push('[ladder26] ❌ 读取当日 auction_watchlist 失败 → 停止: ' + (e && e.message ? e.message : String(e)));
+    return out;
+  }
+  if (!needsLadderRecheck(todayRows, MIN_LADDER_ROWS)) {
+    out.ok = true;
+    out.skipped = true;
+    logs.push('[ladder26] ✅ 9:25 已写入 ' + countRealLadderRows(todayRows) +
+      ' 行真实 883410 名单（≥' + MIN_LADDER_ROWS + '）→ 本趟 0 上游请求、0 猫抓额度，直接返回');
+    return out;
+  }
+
+  const officialNames = new Set(todayRows.filter(r => !r.obs_auto_added).map(r => r.name));
+  const inWin = isMorningWindow(beijingNow());
+  logs.push('[ladder26] 当日真实名单 ' + countRealLadderRows(todayRows) + ' 行（<' + MIN_LADDER_ROWS +
+    '）⇒ 重查 883410；9:25 窗口=' + inWin);
+
+  // ② 再问一次真实名单源（fetchLadderConstituents 自带 4 次 / 12s 预算，不会顶穿 9:26）
+  let ladder = null;
+  try {
+    const raw = await fetchLadderConstituents(env);
+    if (Array.isArray(raw) && raw.length >= MIN_LADDER_ROWS) {
+      ladder = raw;
+      out.recovered = true;
+      out.ladderCount = raw.length;
+      logs.push('[ladder26] ✅ 883410 恢复，拿到 ' + raw.length + ' 只');
+    } else {
+      logs.push('[ladder26] ⚠️ 883410 只返回 ' + (Array.isArray(raw) ? raw.length : 0) +
+        ' 只（<' + MIN_LADDER_ROWS + '）→ 视为残缺，不写正式名单');
+    }
+  } catch (e) {
+    logs.push('[ladder26] ⚠️ 883410 仍不可用: ' + (e && e.message ? e.message : String(e)));
+  }
+
+  // ③ 名单源仍挂 + 当日一个正式成员都没有 ⇒ 写前一日兜底（9:25 整轮可能压根没跑成）
+  if (!ladder) {
+    if (officialNames.size > 0) {
+      logs.push('[ladder26] 名单源未恢复，但当日已有 ' + officialNames.size +
+        ' 行正式成员（含 9:25 兜底）⇒ 保留现状，⛔ 不覆盖、不删除');
+      out.ok = true;
+      return out;
+    }
+    const fb = pickFallbackWatchlistRows(o.prevRows, today, nowIso, MIN_FALLBACK_ROWS);
+    if (fb.length === 0) {
+      logs.push('[ladder26] ❌ 名单源未恢复且无足量前一日正式成员 → 不写名单，保留可观测的降级状态');
+      return out;
+    }
+    try {
+      await upsertAuctionWatchlist(env, fb);
+      out.written = fb.length;
+      out.ok = true;
+      logs.push('[ladder26] ⬇️ 写入前一日正式成员兜底 ' + fb.length + ' 行（source=worker-fallback）');
+    } catch (e) {
+      logs.push('[ladder26] ❌ 兜底名单写入失败: ' + (e && e.message ? e.message : String(e)));
+    }
+    return out;
+  }
+
+  // ④ 写真实名单。非 9:25 窗口且当日已有正式成员 ⇒ 名单锁定，只更新已存在的行。
+  let rows = buildLadderWatchlistRows(ladder, today, nowIso, 'worker');
+  if (!inWin && officialNames.size > 0) {
+    const before = rows.length;
+    rows = rows.filter(r => officialNames.has(r.stock));
+    logs.push('[ladder26] 非 9:25 窗口：名单锁定，只更新已存在的 ' + rows.length +
+      ' 行，跳过 ' + (before - rows.length) + ' 只新成分股');
+  }
+  if (rows.length === 0) {
+    logs.push('[ladder26] 名单锁定后无行可写 → 不写');
+    return out;
+  }
+  try {
+    await upsertAuctionWatchlist(env, rows);
+    out.written = rows.length;
+    out.ok = true;
+    logs.push('[ladder26] ✅ auction_watchlist 写入真实 883410 名单 ' + rows.length + ' 行');
+  } catch (e) {
+    logs.push('[ladder26] ❌ 真实名单写入失败 → 停止（⛔ 不清兜底、不补行情）: ' +
+      (e && e.message ? e.message : String(e)));
+    return out;
+  }
+
+  // ⑤ 清掉 9:25 写入的兜底行：必须「写入成功 + 重读复核达标」后才允许删（§11）
+  let after;
+  try {
+    after = await readAuctionWatchlistForDate(env, today);
+  } catch (e) {
+    logs.push('[ladder26] ⚠️ 写入后重读失败 → 不删除任何兜底行: ' + (e && e.message ? e.message : String(e)));
+    after = [];
+  }
+  if (countRealLadderRows(after) >= MIN_LADDER_ROWS) {
+    try {
+      const deleted = await deleteLadderFallbackRows(env, today);
+      out.fallbackCleared = deleted;
+      logs.push('[ladder26] ✅ 清理当日 source=worker-fallback 兜底行 ' + deleted + ' 行（带结果确认）');
+      const verify = await readAuctionWatchlistForDate(env, today);
+      if (countRealLadderRows(verify) < MIN_LADDER_ROWS) {
+        logs.push('[ladder26] ❌ 删除后复核：真实名单不足 ' + MIN_LADDER_ROWS + ' 行 → 报警，请人工检查');
+        out.ok = false;
+      }
+    } catch (e) {
+      logs.push('[ladder26] ⚠️ 清理兜底行失败（不影响刚写入的真实名单）: ' +
+        (e && e.message ? e.message : String(e)));
+    }
+  } else {
+    logs.push('[ladder26] ⚠️ 写入后复核未达标 → ⛔ 不删除任何兜底行（宁可多留几行，也不清空名单）');
+  }
+
+  // ⑥ 猫抓补新进票 / 缺量比票。失败只记日志，绝不影响已写好的真实名单。
+  out.auc = await fillAucFromNumcat(env, today, ladder, logs);
+  return out;
+}
+
+
+// ────── bidding-auto-fetch/logic/range20-prefill.js ──────
+// range20-prefill.js — 北京 09:26 云端「20 日涨幅」补缺（0 上游 / 0 猫抓额度）
+//
+// ============================================================================
+// [R20-CLOUD 2026-11-06 用户口径] 「老问题也要修好」「全部改用云端的」
+// ----------------------------------------------------------------------------
+// 根因（不是逻辑错，是**抢跑**）：
+//   Supabase pg_cron `range20-auc-precompute` 与 Cloudflare worker 都在北京 09:25:00 起跑。
+//   Edge 的快路径要用 `market_metrics.auc_pct_chg` 当 T 腿，可 worker 到 01:25:10Z
+//   （09:25:10）才把竞价涨幅写进库 ⇒ Edge 09:25:0x 读到的 T 腿是空的 ⇒ 快路径 0 行，
+//   剩下的 K 线主循环又常常吃满 190s 预算 ⇒ 当天 `stock_range20_pct` 整表 0 行。
+//   于是只能靠浏览器打开看板时 `prefillRange20FromDailyLegs` 现算写库 ——
+//   用户「换台电脑就出问题」的观感就是这么来的。
+//
+// 修法（本文件）：把「用逐日腿补缺」这一步挪到 **09:26 的 worker cron**（ladder26 同一趟）。
+//   此时 worker 的 P0 已落库完（T 腿有了），且它比 Edge 的 K 线重算便宜得多：
+//     · 只读 3 张 Supabase 表 + 写 1 张，**0 个 K 线 / 腾讯 / 同花顺 / 猫抓请求**；
+//     · 只补「当天还没有行」的票，已有值一律不覆盖（§6/§11 纯加法、幂等）；
+//     · 腿不够 19 根一律不写（§10 宁缺勿错，绝不拿半截复利当 20 日涨幅）。
+//
+// 单一真相：复利口径复用前端/Edge 同源的 `range-window.js#parsePct / compoundPct`，
+//   与 `db/edge/range20-precompute/index.ts#rangeFromLegs` 逐字等价（19 根历史腿 + 1 根 T 腿）。
+//   ⛔ 不在这里另写一份计算公式。
+//
+// 部署：worker 由 .github/workflows/deploy-worker.yml 自动 wrangler deploy，
+//   ⛔ 不需要用户在 Supabase Dashboard 手工重贴 Edge Function（这是选 worker 而不是 Edge 的原因）。
+// ============================================================================
+
+
+
+/** 与 Edge WINDOW_DAYS-1 完全一致：19 根历史腿 + 1 根 T 腿 = 20 日 */
+const RANGE20_LEG_DAYS = 19;
+
+/** 腿表回看窗口（自然日）：足够跨过春节/国庆凑满 19 个交易日，与 Edge shiftYmd(-60) 一致 */
+const RANGE20_LOOKBACK_DAYS = 60;
+
+/**
+ * 纯函数：与 Edge `rangeFromLegs` 逐字等价。
+ * @param {number[]} hist 升序的历史腿（% 数值）
+ * @param {number} tLeg 目标日 T 腿（竞价口径 = auc_pct_chg；收盘口径 = change_pct）
+ * @returns {{pct:string, days:number}|null}
+ */
+function compoundRange20(hist, tLeg) {
+  if (!Array.isArray(hist) || hist.length < RANGE20_LEG_DAYS) return null;
+  if (!Number.isFinite(tLeg)) return null;
+  const win = hist.slice(-RANGE20_LEG_DAYS);
+  const v = compoundPct(win.concat([tLeg]));
+  if (v === null || !isFinite(v)) return null;
+  return { pct: v.toFixed(2), days: win.length + 1 };
+}
+
+/** 北京 15:00 前 = 竞价口径(auc)，之后 = 收盘口径(close)——与 Edge 选腿、前端 resolveT20LegMode 同源 */
+function legModeOf(nowBj) {
+  return nowBj.getUTCHours() < 15 ? 'auc' : 'close';
+}
+
+/** 纯函数：把腿表扁平行按股票归集成升序数值腿（坏值跳过，不折 0） */
+function groupLegs(rows) {
+  const byStock = new Map();
+  (rows || []).forEach(function (r) {
+    if (!r) return;
+    const s = String(r.stock || '').trim();
+    const d = String(r.date || '').slice(0, 10);
+    const p = parsePct(r.pct);
+    if (!s || !d || p === null) return;
+    let arr = byStock.get(s);
+    if (!arr) { arr = []; byStock.set(s, arr); }
+    arr.push({ d: d, p: p });
+  });
+  const out = new Map();
+  byStock.forEach(function (arr, s) {
+    arr.sort(function (a, b) { return a.d < b.d ? -1 : (a.d > b.d ? 1 : 0); });
+    out.set(s, arr.map(x => x.p));
+  });
+  return out;
+}
+
+/** 自然日回退（只用于拼腿表查询下界，不是交易日推算） */
+// ⚠️ 单文件打包会把所有模块拼进同一作用域 ⇒ 顶层函数名必须全局唯一（_bundle.mjs 会体检拦截）
+function r20ShiftDays(dateStr, delta) {
+  const ms = Date.parse(dateStr + 'T00:00:00Z') + delta * 86400000;
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * 云端补缺主入口。
+ * @returns {Promise<{ok:boolean,today:string,leg:string,targets:number,covered:number,need:number,written:number,shortLegs:number,noTLeg:number,skipped:string,error:string,logs:string[]}>}
+ */
+async function runRange20Prefill(env, opts) {
+  const o = opts || {};
+  const logs = o.logs || [];
+  const today = o.today || beijingToday();
+  const leg = o.leg || legModeOf(beijingNow());
+  const out = {
+    ok: false, today: today, leg: leg, targets: 0, covered: 0, need: 0,
+    written: 0, shortLegs: 0, noTLeg: 0, skipped: '', error: '', logs: logs
+  };
+
+  // ① 今日名单（正式成员 + 观察组）与今日行情（T 腿）。§10：任一读取失败立即停，不写任何行。
+  let wl, metrics;
+  try {
+    wl = await readAuctionWatchlistForDate(env, today);
+    metrics = await readMarketMetricsForDate(env, today, 'auction');
+  } catch (e) {
+    out.error = '读取当日名单/行情失败: ' + (e && e.message ? e.message : String(e));
+    logs.push('[r20-prefill] ❌ ' + out.error);
+    return out;
+  }
+  // T 腿：竞价口径优先纯竞价涨幅；收盘口径用收盘涨幅。两者同源（9:25 时 change_pct 是竞价副本）。
+  const tByStock = new Map();
+  metrics.forEach(function (r) {
+    if (!r || !r.name) return;
+    const raw = leg === 'close' ? r.change_pct : (r.auc_pct_chg || r.change_pct);
+    const p = parsePct(raw);
+    if (p !== null) tByStock.set(r.name, p);
+  });
+  const targets = Array.from(new Set(
+    wl.map(r => r.name).concat(metrics.map(r => r.name)).filter(Boolean)
+  ));
+  out.targets = targets.length;
+  if (targets.length === 0) {
+    out.skipped = '当日名单与行情都为空 ⇒ 不写（§10 不把「读不到」当成「没有票」）';
+    logs.push('[r20-prefill] ⚠️ ' + out.skipped);
+    return out;
+  }
+
+  // ② 云端已有一律不碰（纯加法）。有任何 leg 的行都视作已覆盖，⛔ 不混口径覆盖。
+  let have;
+  try {
+    have = await readRange20StocksForDate(env, today);
+  } catch (e) {
+    out.error = '读取 stock_range20_pct 失败: ' + (e && e.message ? e.message : String(e));
+    logs.push('[r20-prefill] ❌ ' + out.error);
+    return out;
+  }
+  targets.forEach(function (s) { if (have.has(s)) out.covered++; });
+  if (out.covered >= targets.length) {
+    out.ok = true;
+    out.skipped = '当天 ' + targets.length + ' 只票云端已全覆盖 ⇒ 0 写入';
+    logs.push('[r20-prefill] ✅ ' + out.skipped);
+    return out;
+  }
+
+  const need = targets.filter(function (s) {
+    if (have.has(s)) return false;
+    if (!tByStock.has(s)) { out.noTLeg++; return false; }
+    return true;
+  });
+  out.need = need.length;
+  if (need.length === 0) {
+    out.ok = true;
+    out.skipped = '缺 ' + (targets.length - out.covered) + ' 只但都没有 T 腿（竞价涨幅尚未落库）⇒ 一只都不写';
+    logs.push('[r20-prefill] ⚠️ ' + out.skipped);
+    return out;
+  }
+
+  // ③ 读历史腿（0 上游请求，按股票分批 in 过滤）
+  let legRows;
+  try {
+    legRows = await readDailyLegsForStocks(
+      env, r20ShiftDays(today, -RANGE20_LOOKBACK_DAYS), today, need
+    );
+  } catch (e) {
+    out.error = '读取逐日腿失败: ' + (e && e.message ? e.message : String(e));
+    logs.push('[r20-prefill] ❌ ' + out.error);
+    return out;
+  }
+  const legs = groupLegs(legRows);
+  const nowIso = new Date().toISOString();
+  const rows = [];
+  need.forEach(function (s) {
+    const hist = legs.get(s);
+    if (!hist || hist.length < RANGE20_LEG_DAYS) { out.shortLegs++; return; }
+    const r = compoundRange20(hist, tByStock.get(s));
+    if (!r) { out.shortLegs++; return; }
+    rows.push({
+      date: today,
+      stock: s,
+      pct: r.pct,
+      days: r.days,
+      leg: leg,
+      updated_at: nowIso
+    });
+  });
+  if (rows.length === 0) {
+    out.ok = true;
+    out.skipped = '待补 ' + need.length + ' 只，但腿不足 ' + RANGE20_LEG_DAYS + ' 根的有 ' +
+      out.shortLegs + ' 只 ⇒ 一只都不写（宁缺勿错）';
+    logs.push('[r20-prefill] ⚠️ ' + out.skipped);
+    return out;
+  }
+
+  // ④ 一次分桶 upsert（所有行键集相同，⛔ 不会 PGRST102）
+  try {
+    await upsertRange20Rows(env, rows);
+  } catch (e) {
+    out.error = 'stock_range20_pct 写入失败: ' + (e && e.message ? e.message : String(e));
+    logs.push('[r20-prefill] ❌ ' + out.error);
+    return out;
+  }
+  out.written = rows.length;
+  out.ok = true;
+  logs.push('[r20-prefill] ✅ ' + today + ' leg=' + leg + ' 云端补缺 ' + rows.length + ' 行' +
+    '（目标 ' + out.targets + ' / 已有 ' + out.covered + ' / 缺T腿 ' + out.noTLeg +
+    ' / 腿不足 ' + out.shortLegs + ' / 读腿 ' + legRows.length + ' 行；0 上游请求、0 猫抓额度）');
+  return out;
+}
+
+
+// ────── bidding-auto-fetch/logic/daily-legs-heal.js ──────
+// daily-legs-heal.js — 云端逐日腿补齐（替代本机 08:00 的 WorkBuddy 定时任务）
+//
+// ============================================================================
+// [DAILY-LEGS-CLOUD 2026-11-06 用户口径] 「本机的那些一律迁移到云端」「换掉电脑就出问题」
+// ----------------------------------------------------------------------------
+// 为什么之前必须靠电脑：Supabase Edge `healDailyLegsFromMetrics` 的闸③ 要求
+//   `market_metrics.updated_by` 含 'close' 且 `updated_at >= 当日 15:00`。
+//   2026-11-06 生产实测：11-04 是 8/87 行、11-05 是 8/86 行满足（其余都是 9:25 写入的
+//   `auto-fetch-worker`，收盘覆盖只补写了少数票）⇒ 云端 heal 每天最多补 8 根腿。
+//   剩下 80 根全靠本机脚本 `db/scripts/backfill-daily-pct.mjs --recent`（工作日 08:00）
+//   用另一条更准的判据补上 —— 换电脑 / 关机就断，用户看到「20 日涨幅又不全」。
+//
+// 本模块把本机那条判据原样搬到 Cloudflare Worker（wrangler CI 自动部署，⛔ 不用手工粘贴 Edge）：
+//   ★ 收盘覆盖判据：`change_pct !== auc_pct_chg`（差 ≥0.011）才认这根是【收盘腿】。
+//     两者相等 ⇒ 还停在 9:25 竞价副本，拿它当收盘腿会让整条 20 日复利静默算错。
+//     本机脚本用腾讯前复权日线逐条比对 426 条：通过 383 条里 382 条完全一致（99.7%），
+//     被拒的 43 条只有 62.8% 碰巧正确 ⇒ 拒掉是对的（见 backfill-daily-pct.mjs 注释）。
+//   ⚠️ 代价：收盘价恰好等于竞价值的票会被误拒（假阴性）—— 宁可少补一根，⛔ 不接受错值。
+//
+// 时点：
+//   · 16:00 close 之后跑 ⇒ 允许写【今天】这根腿（收盘已覆盖），明天 9:26 的 20 日涨幅快路径才齐；
+//   · 09:26 ladder26 里再跑一次 ⇒ 只补【今天之前】漏掉的日期，兜住「昨天 16:00 没跑成」；
+//   · 两个时点都幂等：只写 `stock_daily_pct` 里不存在的 (date,stock)，⛔ 从不覆盖已有腿。
+//
+// 【成本】0 个上游请求、0 猫抓额度；只有 Supabase REST 读写。
+// 【数据安全】§10 任一步读取失败立即停、不写；§11 纯新增，不删不改。
+// ============================================================================
+
+
+/** 回看自然日（覆盖周末 + 小长假；与 Edge HEAL_LOOKBACK_DAYS=8 同量级，略放宽） */
+const DAILY_LEGS_LOOKBACK_DAYS = 12;
+
+/** 与本机脚本 numPct 完全一致：'%'/'+' 剥掉，缺失 ⇒ null（⛔ 绝不返回 0） */
+function numPct(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(String(v).replace('%', '').replace('+', '').trim());
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * 纯函数：从 market_metrics 窗口挑出「可写的收盘腿」。
+ * @param {Array} metricsRows [{stock,date,change_pct,auc_pct_chg}]
+ * @param {Map<string,Set<string>>} existingByDate 每个日期已有的股票名
+ * @param {string} today YYYY-MM-DD
+ * @param {boolean} allowToday 是否允许写今天（只有 15:05 收盘后为 true）
+ * @returns {{rows:Array, scanned:number, rejected:number, todaySkipped:number, already:number}}
+ */
+function pickCloudDailyLegs(metricsRows, existingByDate, today, allowToday, nowIso) {
+  const rows = [];
+  let scanned = 0, rejected = 0, todaySkipped = 0, already = 0;
+  (metricsRows || []).forEach(function (r) {
+    if (!r) return;
+    scanned++;
+    const stock = String(r.stock || '').trim();
+    const d = String(r.date || '').slice(0, 10);
+    if (!stock || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+    if (d > today) return;
+    if (d === today && !allowToday) { todaySkipped++; return; }
+    const c = numPct(r.change_pct);
+    if (c === null) return;                          // §10 缺值不写，⛔ 不当 0%
+    const a = numPct(r.auc_pct_chg);
+    if (a !== null && Math.abs(c - a) < 0.011) { rejected++; return; }  // 还停在竞价副本
+    const set = existingByDate && existingByDate.get(d);
+    if (set && set.has(stock)) { already++; return; }
+    rows.push({
+      date: d,
+      stock: stock,
+      pct: (c < 0 ? '' : '+') + c.toFixed(2),
+      src: 'metrics_close',
+      updated_at: nowIso || new Date().toISOString()
+    });
+  });
+  return { rows: rows, scanned: scanned, rejected: rejected, todaySkipped: todaySkipped, already: already };
+}
+
+// ⚠️ 单文件打包共作用域 ⇒ 顶层名必须全局唯一（与 range20-prefill.js 的 r20ShiftDays 区分）
+function dailyLegsShiftDays(dateStr, delta) {
+  return new Date(Date.parse(dateStr + 'T00:00:00Z') + delta * 86400000).toISOString().slice(0, 10);
+}
+
+/** 北京 15:05 之后才允许把「今天」当收盘腿（与 Edge legFinal / healOnly 同源） */
+function isAfterClose(nowBj) {
+  return nowBj.getUTCHours() > 15 ||
+    (nowBj.getUTCHours() === 15 && nowBj.getUTCMinutes() >= 5);
+}
+
+/**
+ * 云端补齐主入口。
+ * @returns {Promise<{ok:boolean,today:string,allowToday:boolean,scanned:number,written:number,rejected:number,already:number,error:string,logs:string[]}>}
+ */
+async function runDailyLegsHeal(env, opts) {
+  const o = opts || {};
+  const logs = o.logs || [];
+  const today = o.today || beijingToday();
+  const allowToday = o.allowToday === undefined ? isAfterClose(beijingNow()) : !!o.allowToday;
+  const out = {
+    ok: false, today: today, allowToday: allowToday, scanned: 0, written: 0,
+    rejected: 0, already: 0, error: '', logs: logs
+  };
+  const from = dailyLegsShiftDays(today, -DAILY_LEGS_LOOKBACK_DAYS);
+
+  let metrics;
+  try {
+    metrics = await readMetricsLegsWindow(env, from, today);
+  } catch (e) {
+    out.error = '读取 market_metrics 窗口失败: ' + (e && e.message ? e.message : String(e));
+    logs.push('[daily-legs] ❌ ' + out.error);
+    return out;
+  }
+  out.scanned = metrics.length;
+  const dates = Array.from(new Set(metrics
+    .map(r => String((r && r.date) || '').slice(0, 10))
+    .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d) && d <= today)))
+    .sort();
+
+  // 只查真正可能出现的日期，⛔ 不扫空日子（§32）
+  const existingByDate = new Map();
+  for (let i = 0; i < dates.length; i++) {
+    try {
+      existingByDate.set(dates[i], await readDailyPctStocksForDate(env, dates[i]));
+    } catch (e) {
+      out.error = '读取 ' + dates[i] + ' 已有腿失败 → 停止补写（§10）: ' +
+        (e && e.message ? e.message : String(e));
+      logs.push('[daily-legs] ❌ ' + out.error);
+      return out;
+    }
+  }
+
+  const picked = pickCloudDailyLegs(metrics, existingByDate, today, allowToday);
+  out.rejected = picked.rejected;
+  out.already = picked.already;
+  if (picked.rows.length === 0) {
+    out.ok = true;
+    logs.push('[daily-legs] ✅ 窗口 ' + from + '~' + today + ' 已齐（扫描 ' + out.scanned +
+      ' 行 / 已有 ' + out.already + ' / 竞价未覆盖拒 ' + out.rejected +
+      ' / 盘中跳过 ' + picked.todaySkipped + '）⇒ 0 写入');
+    return out;
+  }
+  try {
+    await upsertDailyPctRows(env, picked.rows);
+  } catch (e) {
+    out.error = 'stock_daily_pct 写入失败: ' + (e && e.message ? e.message : String(e));
+    logs.push('[daily-legs] ❌ ' + out.error);
+    return out;
+  }
+  out.written = picked.rows.length;
+  out.ok = true;
+  logs.push('[daily-legs] ✅ 云端补齐逐日腿 ' + out.written + ' 行（窗口 ' + from + '~' + today +
+    '，扫描 ' + out.scanned + ' / 已有 ' + out.already + ' / 竞价未覆盖拒 ' + out.rejected +
+    '，src=metrics_close，0 上游请求）');
+  return out;
+}
+
+
 // ────── bidding-auto-fetch/index.js ──────
 // index.js — bidding-auto-fetch Worker 入口
 //
-// 三个触发点（同一条 Cloudflare 部署链路）：
+// 触发点（同一条 Cloudflare 部署链路；免费账户 5 条 cron，当前用 3 条）：
 //   · 北京 9:25  → morning ：抓竞价数据 + 计算 10 日区间涨幅落库；
-//   · 北京 9:27  → snapshot：云端自愈（同花顺快照补当日竞价字段 + 猫抓补当日区间涨幅）；
+//   · 北京 9:26  → ladder26：最近多板 883410 名单二次确认 + 新进票猫抓补竞价量比（P0-2 2026-11-06）；
 //   · 北京 16:00 → close   ：用收盘涨幅覆盖 9:25 竞价涨幅 + 校正区间涨幅 T 腿。
+//   · （9:27 / 9:35 保留映射，供手动或用户自建触发器做云端自愈；不占用 cron 额度）
 //
 // ★ 为什么是 9:27 这一趟（2026-11-04 用户报障「关机就不出票」）：
 //   1) 猫抓对【当日】的 auc_vol 在 9:25 偶尔还没结算 → 写成占位 0（趋势图竞价量全 0）；
@@ -4856,6 +5752,12 @@ async function runRangePctHeal(env, opts) {
 //   9:27 那一趟把 stock_range_pct 补回来 —— 用户关电脑/用手机也能出票（根因见文件头）。
 
 // [LADDER-FALLBACK 2026-11-06] 只补「最近多板 883410 正式名单」，不碰行情/猫抓/区间涨幅。
+
+// [LADDER26 2026-11-06] 北京 09:26 云端二次确认：真实名单 + 新进票猫抓竞价量比（1 次额度上限）。
+
+// [R20-CLOUD 2026-11-06] 同一趟 9:26 顺带把 20 日涨幅用逐日腿补缺（0 上游、0 额度）。
+
+// [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐，彻底替代本机 08:00 定时任务。
 
 // [RUNLOG 2026-09-30] 把每轮的完整日志（含 ⏱ 埋点）落库到 bidding_fetch_log，
 //   否则 CF Worker 的埋点只进 Cloudflare Dashboard，事后无法复盘「9:26 为什么没数据」。
@@ -4896,8 +5798,12 @@ function cronToPoint(cronExpr) {
   //   **全程在云端跑，不需要用户开电脑。**
   //   注：9:35 仍然保留映射 —— 用户之前可能已加过这条触发器，且它现在只是「再兜一次」
   //   （内部幂等，覆盖率达标就零请求），对开盘后的复盘仍有用，删掉反而少一层保险。
+  // [LADDER26 2026-11-06] 01:26 UTC = 北京 09:26：名单源二次确认。
+  //   11-06 的 P0 里上游 9:25 挂、9:4x 就恢复，只靠 9:25 内重试救不回来；
+  //   这条 cron 在开盘前 4 分钟再问一次，且「9:25 已成功」时 0 请求直接返回（幂等）。
   const MAP = {
     '25 1': 'morning',
+    '26 1': 'ladder26',
     '27 1': 'snapshot',
     '35 1': 'snapshot',
     '0 8': 'close'
@@ -4946,6 +5852,15 @@ async function persistRunResult(env, point, result) {
       ladderHealFallback: !!r.ladderHealFallback,
       ladderHealWritten: r.ladderHealWritten === undefined ? null : r.ladderHealWritten,
       watchlistRowsWritten: r.watchlistRowsWritten === undefined ? null : r.watchlistRowsWritten,
+      // [LADDER26 2026-11-06] 09:26 二次确认留痕：是否跳过 / 名单恢复 / 兜底清理 / 猫抓补抓
+      ladderRecheckSkipped: !!r.skipped,
+      ladderRecheckRecovered: !!r.recovered,
+      ladderRecheckFallbackCleared: r.fallbackCleared === undefined ? null : r.fallbackCleared,
+      ladderRecheckAuc: r.auc || null,
+      // [R20-CLOUD 2026-11-06] 同一趟 9:26 的 20 日涨幅云端补缺结果
+      range20Written: r.range20Written === undefined ? null : r.range20Written,
+      // [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐（替代本机 08:00 任务）
+      dailyLegsWritten: r.dailyLegsWritten === undefined ? null : r.dailyLegsWritten,
       todayDataMissing: !!r.todayDataMissing,
       todayMetricsWritten: r.todayMetricsWritten === undefined ? null : r.todayMetricsWritten,
       metricsWritten: r.metricsWritten === undefined ? null : r.metricsWritten,
@@ -5002,14 +5917,31 @@ async function dispatch(point, env, logs, opts) {
     console.log('[auto-fetch] runClose 完成 ok=' + result.ok + ' today=' + (result.today || '') +
       ' completenessSummary=' + (result.completenessSummary || ''));
     console.log('[auto-fetch] runClose 完整日志:', JSON.stringify(result.logs || []));
-    await persistRunResult(env, point, result);
+    // [DAILY-LEGS-CLOUD 2026-11-06] 运行日志改在本轮全部补写动作之后落库，
+    //   这样 dailyLegsWritten 也会进 bidding_fetch_log，事后可核验「云端是否真的接管」。
     // [SNAPSHOT-EXTRAS 2026-09-14] 收盘后再兜一次（防止 9:25 那次快照未终态 / 漏掉新进名单的票）
     await runSnapshotPatchSafely(env, result, 'close');
+    // [DAILY-LEGS-CLOUD 2026-11-06] 收盘覆盖完成后，把「今天这根收盘腿」写进 stock_daily_pct。
+    //   这是明天 9:26 的 20 日涨幅快路径能否 0 上游请求算出真值的前提；
+    //   以前靠本机 08:00 定时任务补，现在随 worker 自动跑（⛔ 关电脑不影响）。
+    try {
+      const legs = await runDailyLegsHeal(env, {});
+      result.dailyLegs = legs;
+      result.dailyLegsWritten = legs.written;
+      console.log('[auto-fetch] close 逐日腿云端补齐: ok=' + legs.ok + ' written=' + legs.written +
+        ' 日志=' + JSON.stringify(legs.logs || []));
+    } catch (e) {
+      console.error('[auto-fetch] close 逐日腿云端补齐异常（不影响收盘）:', e && e.message);
+    }
+    await persistRunResult(env, point, result);
     return result;
   }
   if (point === 'snapshot') {
     // ★ [HEAL-0927 2026-11-04] 9:27 这一趟承担两件事（都在云端跑，不需要用户开电脑）：
-    //   ① 用同花顺快照补【当日】竞价字段（竞价量/量比/竞价涨幅/换手）—— 免费、0 猫抓额度；
+    //   ① 用同花顺快照补【当日】竞价量 / 竞价涨幅 / 换手 —— 免费、0 猫抓额度；
+    //      ⛔⛔ **不含竞价量比**（旧注释写「量比」是错的，2026-11-06 更正）：
+    //      auc_vol_ratio 只认猫抓 daily_auc 的 9:25 竞价时间段数据，同花顺永远不许兜底。
+    //      SNAPSHOT_FIELDS 实际只有 ['auc_pct_chg','auc_turnover','volume']（有单测锁）。
     //   ② 用猫抓 daily 补【当日】stock_range_pct（区间涨幅）—— 只有 9:25 那次失败时才真正发请求。
     //   为什么 ② 必须在这里：区间涨幅是「题材量比排序 + 十日涨幅列」的唯一依据，
     //   9:25 猫抓一旦超时，云端就没数据，只能等浏览器补算 ⇒ 不开电脑当天永远出不了票。
@@ -5054,6 +5986,63 @@ async function dispatch(point, env, logs, opts) {
     console.log('[auto-fetch] runAuctionExtrasPatch 完整日志:', JSON.stringify(result.logs || []));
     await persistRunResult(env, point, result);
     return result;
+  }
+  if (point === 'ladder26') {
+    // [LADDER26 2026-11-06] 北京 09:26 云端 cron。与 `ladder` 的区别：
+    //   · ladder    = 人工恢复入口，只写名单、⛔ 不烧猫抓额度、⛔ 不删兜底行；
+    //   · ladder26  = 开盘前自动二次确认，名单 + 新进票猫抓补竞价量比 + 清理兜底行，
+    //                 且「9:25 已成功」时 0 请求直接返回（幂等，不重复烧额度）。
+    const logs26 = [];
+    const r26 = await runLadderRecheck(env, { date: (opts && opts.date) || '', logs: logs26 });
+    // [DAILY-LEGS-CLOUD] 先补【今天之前】漏掉的逐日腿，再算 20 日涨幅：
+    //   顺序不能反 —— 昨天那根腿缺了，下面的快路径会用更早的 19 根凑数，窗口整体错位一天。
+    let legs26 = { ok: false, written: 0, logs: ['[daily-legs] 未执行'] };
+    try {
+      legs26 = await runDailyLegsHeal(env, { allowToday: false, logs: logs26 });
+    } catch (e) {
+      legs26 = { ok: false, written: 0, logs: ['[daily-legs] 异常: ' + ((e && e.message) || e)] };
+      logs26.push(legs26.logs[0]);
+    }
+    // [R20-CLOUD] 名单/行情落库之后才是补 20 日涨幅的正确时点（T 腿此刻一定有）。
+    // 失败不致命：这是补缺层，正确性不依赖它，⛔ 绝不影响已写好的名单与竞价量比。
+    let r20 = { ok: false, written: 0, logs: ['[r20-prefill] 未执行'] };
+    try {
+      r20 = await runRange20Prefill(env, { today: (opts && opts.date) || '', logs: logs26 });
+    } catch (e) {
+      r20 = { ok: false, written: 0, logs: ['[r20-prefill] 异常: ' + ((e && e.message) || e)] };
+      logs26.push(r20.logs[0]);
+    }
+    const result26 = {
+      ok: r26.ok || r20.ok,
+      today: r26.today,
+      skipped: r26.skipped,
+      recovered: r26.recovered,
+      written: r26.written,
+      fallbackCleared: r26.fallbackCleared,
+      ladderCount: r26.ladderCount,
+      auc: r26.auc,
+      dailyLegs: legs26,
+      dailyLegsWritten: legs26.written || 0,
+      range20: r20,
+      range20Written: r20.written || 0,
+      logs: logs26
+    };
+    console.log('[auto-fetch] ladder26: ok=' + result26.ok + ' skipped=' + result26.skipped +
+      ' recovered=' + result26.recovered + ' written=' + result26.written +
+      ' 猫抓补写=' + (r26.auc && r26.auc.written) + ' 20日补缺=' + result26.range20Written +
+      ' 日志=' + JSON.stringify(logs26));
+    await persistRunResult(env, point, result26);
+    return result26;
+  }
+  if (point === 'range20') {
+    // [R20-CLOUD 2026-11-06] 手动补 20 日涨幅（0 上游请求），用于验收云端链路是否已接管。
+    const logs20 = [];
+    const r20 = await runRange20Prefill(env, { today: (opts && opts.date) || '', logs: logs20 });
+    const result20 = Object.assign({}, r20, { logs: logs20 });
+    console.log('[auto-fetch] range20 云端补缺: ok=' + r20.ok + ' written=' + r20.written +
+      ' 日志=' + JSON.stringify(logs20));
+    await persistRunResult(env, point, result20);
+    return result20;
   }
   if (point === 'ladder') {
     // [LADDER-FALLBACK 2026-11-06] 上游名单源 9:25 临时挂了之后，【只补正式名单】的恢复入口。
@@ -5123,8 +6112,8 @@ export default {
           return jsonResponse({ ok: false, error: '当前北京时间不在抓取时段（9:25~9:40=morning，15:00~16:30=close）' });
         }
       }
-      if (!['morning', 'close', 'extras', 'snapshot', 'ladder'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|ladder|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot / ladder 可附 &date=YYYY-MM-DD）' });
+      if (!['morning', 'close', 'extras', 'snapshot', 'ladder', 'ladder26', 'range20'].includes(point)) {
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|ladder|ladder26|range20|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot / ladder / ladder26 / range20 可附 &date=YYYY-MM-DD）' });
       }
       try {
         const result = await dispatch(point, env, [], {

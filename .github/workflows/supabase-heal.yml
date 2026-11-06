@@ -1,0 +1,65 @@
+# Supabase 云端自愈（逐日腿 / 20日涨幅 / 10日涨幅 / 猫抓竞价量比历史回填）
+#
+# [CLOUD-ONLY 2026-11-06 用户口径] 「本机的那些一律迁移到云端」
+#   本机 WorkBuddy 自动化「20日涨幅 · 逐日腿每日补齐（工作日 08:00）」已停用：
+#     · 逐日腿改由 Cloudflare Worker 的 16:00 close / 09:26 ladder26 两趟补齐
+#       （workers/bidding-auto-fetch/logic/daily-legs-heal.js，wrangler CI 自动部署）；
+#     · 20 日涨幅改由 09:26 的 range20-prefill.js 云端补缺；
+#     · 本 workflow 负责 Edge 侧剩下的「历史日回填 + 结果表补算」，每天两次。
+#
+# 为什么用 GitHub Actions 而不是只靠 Supabase pg_cron：
+#   · 不需要 SUPABASE_DB_URL / Supabase CLI / Access Token，一次 HTTP POST 即可；
+#   · pg_cron 一旦被误 unschedule 或 JWT 过期，这里仍有一层独立兜底；
+#   · 两端都是幂等（只补缺、不覆盖），同时跑不会互相破坏。
+#
+# ⚠️ 时间是 UTC：08:30 = 北京 16:30、00:50 = 北京 08:50；1-5 = 周一~周五。
+# ⚠️ 16:30 那一轮才会触发猫抓历史回填（Edge 内部 hhmm >= '15:05' 闸），
+#    08:50 那轮只做 0 上游请求的腿/结果表补算 ⇒ 每天猫抓额度恒 1 次。
+
+name: Supabase 云端自愈（工作日 08:50 / 16:30 北京）
+
+on:
+  schedule:
+    - cron: '50 0 * * 1-5'
+    - cron: '30 8 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '可选：指定回补日期 YYYY-MM-DD（留空=今天）'
+        required: false
+        default: ''
+
+jobs:
+  heal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 调用 range20-precompute?healOnly=1
+        env:
+          # anon public key 与 ?token= 均已公开在 db/create_range20_legs_cron.sql / SQL 文件里，
+          # 属于前端公开钥匙，不是机密；如需收紧可改成 secrets.SUPABASE_ANON_KEY。
+          EDGE_URL: https://tonqfgeyxnnwicjopshn.supabase.co/functions/v1/range20-precompute
+          ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRvbnFmZ2V5eG5ud2ljam9wc2huIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NjY3NzEsImV4cCI6MjA5NDI0Mjc3MX0.el-W10JIjr9iQXEKNxV7nLNdhZfOQp6waTY7ZSH27Jg
+          EDGE_TOKEN: range20-cron-2026
+          TARGET_DATE: ${{ inputs.date }}
+        run: |
+          set -euo pipefail
+          URL="${EDGE_URL}?token=${EDGE_TOKEN}&healOnly=1"
+          if [ -n "${TARGET_DATE}" ]; then URL="${URL}&date=${TARGET_DATE}"; fi
+          echo "POST ${EDGE_URL}?token=***&healOnly=1 (date=${TARGET_DATE:-今天})"
+          BODY=$(curl -sS -X POST "${URL}" \
+            -H "Authorization: Bearer ${ANON_KEY}" \
+            -H 'Content-Type: application/json' \
+            -d '{}' --max-time 180 -w '\n%{http_code}')
+          CODE=$(printf '%s' "${BODY}" | tail -n1)
+          JSON=$(printf '%s' "${BODY}" | sed '$d')
+          echo "HTTP ${CODE}"
+          printf '%s\n' "${JSON}" | head -c 4000
+          if [ "${CODE}" != "200" ]; then
+            echo "::error::云端自愈返回 HTTP ${CODE}"
+            exit 1
+          fi
+          printf '%s' "${JSON}" | grep -q '"ok":true' || {
+            echo "::error::云端自愈未返回 ok:true"
+            exit 1
+          }

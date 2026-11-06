@@ -134,22 +134,26 @@
 --     ④ 前端 src/logic/auction/ths-today-patch.js 早在 2026-10-26 就是合规的（从不补量比），
 --        只有后端两条腿漏了 ⇒ 用户看到「说了不要，还是同花顺的数」。现已全链路一致。
 --
---   为什么「竞价期间量比必然是空的」（这是口径的代价，不是 bug）：
---     猫抓 daily_auc 对【当天】不返回 auc_vol_ratio（要等结算）。实测证据（2026-11-04）：
---     11-03 / 10-30 / 11-02 各日量比的 updated_at 全部落在**次日 09:25** ⇒ 结算后才由猫抓写入。
---     ⇒ 9:25~收盘这段时间，量比没有合规来源 ⇒ 各视图显示 '-' / 断点（§10 宁缺勿错），
---       收盘后 16:30 那一轮用猫抓回填；最迟次日 09:25 worker 的窗口重刷也会补上。
---   ⚠️ 因此依赖竞价量比的「题材量比买点规则」在当天盘中拿不到该输入，会自然跳过；
---      要看当天量比请等收盘后的猫抓回填（这是用户明确选择的口径：准确 > 有数）。
+--   ✅✅ [AUC-TRUTH 2026-11-05，2026-11-06 用户再次强调] ⛔ 上面这段旧注释
+--      「竞价期间量比必然是空的 / 猫抓对当天不返回 auc_vol_ratio / 要等结算」
+--      **是错的，已删除，不要拿它当结论，更不要据此改代码**。
+--      用户原话：「股票的竞价量比，猫抓数据是可以 9 点 25 分拿到的，它有字段的……
+--      都是和那个竞价字段同一个接口」「题材量比一定要用猫爪数据的竞价时间段的」。
+--      铁证：11-05 09:25 那轮 `numcat 返回 fields=[..., "auc_vol_ratio","auc_turnover"]
+--      items=290 行`，写入 market_metrics 58 行，58/58 全带量比；11-06 复核 95/95 全带。
+--      ⇒ 竞价期间「题材量比」看板【完全能正常出票】，闸门（覆盖率 <50% 才拦）正常放行。
+--      ⇒ 量比缺失的唯一根因是「票不在 9:25 抓取名单里」或「9:25 那轮没跑成」，
+--        不是「猫抓不给」。历史日缺口由 16:30 的 range20-precompute 猫抓回填。
+--      ⛔ 无论哪种情况，都**不许**用同花顺 auction_volume_ratio 兜底（不同源 ⇒ 选错股）。
 --
 --   一次性数据清理（2026-11-04 已执行）：把当天由同花顺写入的 72 行 auc_vol_ratio 置 null。
---   判据：猫抓当天不给量比 ⇒ 当天所有非空量比必然来自同花顺；历史日是次日猫抓写入，不动。
 --   复核：select date, updated_by, count(*) from market_metrics
 --          where scope='auction' and auc_vol_ratio is not null group by 1,2 order by 1 desc;
 --
--- ⚠️ 执行前把下面两处 <ANON_KEY> 替换成你项目的 anon public key：
---    Dashboard → Project Settings → API → Project API Keys → anon public
---    （anon key 本来就是公开的前端钥匙，写进 cron 无泄密风险）
+-- ✅ [CRON-AUTH] 下面两处原本是字面量占位符 'Bearer <ANON_KEY>'（会让 pg_cron 恒返回
+--    401 UNAUTHORIZED_INVALID_JWT_FORMAT，云端自愈从没真正跑起来），现已替换为项目
+--    anon public key（Dashboard → Project Settings → API → anon public）。
+--    anon key 本来就是公开的前端钥匙，写进 cron 无泄密风险；⛔ 不要再把它改回占位符。
 
 -- ① 启用扩展（Supabase 默认都支持）
 create extension if not exists pg_cron;
@@ -230,20 +234,21 @@ select cron.schedule(
 --   ⚠️ 2026-09-25 是中秋休市（云端 trading_day_overrides 已标 is_holiday=true），不在这 20 天里；
 --      ⛔ 不要手工把它塞进窗口，否则前端永远只能覆盖 19/20 天。
 --
--- ★ 首选做法：跑本地脚本（一只票只请求一次 K 线，20 天一起算，请求数 ~250 而不是 ~5000）
---   node db/scripts/backfill-range20.mjs                      # 干跑：报每天已有行数 / 待补
---   node db/scripts/backfill-range20.mjs --run                # 真跑
---   node db/scripts/backfill-range20.mjs --run --date=2026-10-22
---   特点：只写「缺失的 (date, stock)」⇒ 幂等、重跑零漂移；当天停牌 ⇒ 不写（§10 宁缺勿错）；
---        数据源是同花顺 K 线经 fuyao-proxy ⇒ **零猫抓额度**。
---
--- ○ 备选做法：用 Edge Function 的 ?date= 逐日补（必须【由旧到新】，⛔ 不要并发，上游会限流熔断）
+-- ★ [CLOUD-FIRST 2026-11-06 用户口径「本机的那些一律迁移到云端」]
+--   **首选做法 = 云端 Edge Function 的 ?date= 逐日补**（必须【由旧到新】，⛔ 不要并发，上游会限流熔断）。
+--   这是一次性历史回补，不是每日任务；日常两条 pg_cron 已经覆盖「当天 + 逐日腿自愈」，
+--   ⛔ 不需要任何电脑端定时程序。
 --   先干跑看目标对不对（&dry=1 不打上游）：
 --     curl -X POST '<URL>/functions/v1/range20-precompute?token=range20-cron-2026&date=2026-09-16&dry=1'
 --   再逐日真跑（<URL> = https://tonqfgeyxnnwicjopshn.supabase.co）：
 --     09-16 09-17 09-18 09-21 09-22 09-23 09-24 09-28 09-29 09-30
 --     10-08 10-09 10-12 10-13 10-14 10-15 10-16 10-19 10-20 10-21 10-22
 --   （09-25 中秋休市，跳过）
+--   也可在 GitHub Actions 里用 workflow_dispatch + 循环 curl 完成，全程不开电脑。
+--
+-- ○ 应急兜底（⛔ 不要设成本机每日定时任务）：db/scripts/backfill-range20.mjs
+--   一只票只请求一次 K 线，20 天一起算；只写缺失的 (date, stock) ⇒ 幂等、零猫抓额度。
+--   仅在「云端 Edge 临时不可用 + 必须马上补齐历史」时人工跑一次，跑完即止。
 --
 -- 回补完成后自查（应看到 21 行，每天 close 行数 236~250，且 auc 只在当天有值）：
 --   select date, count(*) filter (where leg='close') as close_rows,

@@ -9,8 +9,11 @@ name: Deploy Cloudflare Worker (bidding-auto-fetch)
 #     CLOUDFLARE_ACCOUNT_ID  = 0ec12a103051054d51a92198fb98397b
 #
 # 🔴 部署会按下述 toml 的 [triggers] **完全覆盖线上 cron**。
-#    workers/wrangler-bidding-auto-fetch.toml 里现在是 2 条（北京 09:25 / 16:00），
-#    与线上实测一致（2026-11-06 用 API 核过：25 1 * * 2-6、0 8 * * 2-6）。
+#    workers/wrangler-bidding-auto-fetch.toml 里现在是 3 条（北京 09:25 / 09:26 / 16:00）：
+#      25 1 * * 2-6  morning  早盘主流程
+#      26 1 * * 2-6  ladder26 最近多板 883410 名单二次确认 + 猫抓补新进票 + 20 日涨幅补缺
+#      0  8 * * 2-6  close    收盘覆盖 + 逐日腿云端补齐
+#    免费账户 5 条 cron，用 3 条；Supabase pg_cron / GitHub Actions 不占这个额度。
 #    ⛔ 改 cron 前必须先核线上，否则会把「7/30 断抓」那个根因再造一遍。
 #
 # ⛔ 不要加 paths 之外的全量触发：前端改动由 deploy-pages.yml 负责，两边各管各的。

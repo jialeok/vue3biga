@@ -15,6 +15,7 @@ import {
   TVRB_DATA_GATE_MIN_RANGE10_COVER
 } from './buy-data-gate.js';
 import { buildTopicVolRatioPlan } from './topic-vol-ratio-rules.js';
+import { buildTvrbRulesLines } from './tvrb-rules-lines.js';
 
 const D = '2026-11-04';
 
@@ -265,5 +266,37 @@ describe('buildTopicVolRatioPlan · dataGateBlocked=true 时买点侧必须清�
     // notes 是「为什么某个题材没入选」的唯一线索 —— 数据缺失日更需要它
     expect(Array.isArray(on.notes)).toBe(true);
     expect(Array.isArray(on.sell)).toBe(true);
+  });
+});
+
+// ============================================================================
+// [AUC-TRUTH 2026-11-05 / 用户 2026-11-06 再次强调] 用户可见文案回归锁
+//   规则手册「〇、先决条件」里曾写着「猫抓对当天不返回量比 ⇒ 盘中本来就是空的，
+//   这是正常的」—— 这是**错误事实**，会让用户把「9:25 抓取挂了」当成正常现象而不报障。
+//   11-05 实测：9:25 写入的 58 只 58/58 全带 auc_vol_ratio；11-06 复核 95/95。
+//   ⛔ 竞价期间本板能正常出票，缺量比是事故，不是口径代价。
+// ============================================================================
+describe('规则手册文案 × 猫抓竞价量比唯一来源', () => {
+  const all = buildTvrbRulesLines().join('\n');
+
+  it('⛔ 不许再出现「猫抓当天不给量比 / 盘中本来就是空的」这类错误口径', () => {
+    [
+      '猫抓对【当天】不返回',
+      '盘中它本来就是空的',
+      '竞价期间量比必然是空的',
+      '要等结算',
+      '这是正常的',
+      '收盘后 16:30 回填，最迟次日 9:25 补齐'
+    ].forEach(s => expect(all, s).not.toContain(s));
+  });
+
+  it('必须明说「只认猫抓 9:25 竞价时间段 / 同花顺不许兜底 / 能正常出票 / 缺量比是事故」', () => {
+    expect(all).toContain('daily_auc');
+    expect(all).toContain('9:25');
+    expect(all).toContain('竞价时间段');
+    expect(all).toContain('同花顺');
+    expect(all).toContain('不许兜底');
+    expect(all).toContain('能正常出票');
+    expect(all).toContain('事故');
   });
 });

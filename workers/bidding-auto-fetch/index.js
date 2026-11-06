@@ -1,9 +1,10 @@
 // index.js — bidding-auto-fetch Worker 入口
 //
-// 三个触发点（同一条 Cloudflare 部署链路）：
+// 触发点（同一条 Cloudflare 部署链路；免费账户 5 条 cron，当前用 3 条）：
 //   · 北京 9:25  → morning ：抓竞价数据 + 计算 10 日区间涨幅落库；
-//   · 北京 9:27  → snapshot：云端自愈（同花顺快照补当日竞价字段 + 猫抓补当日区间涨幅）；
+//   · 北京 9:26  → ladder26：最近多板 883410 名单二次确认 + 新进票猫抓补竞价量比（P0-2 2026-11-06）；
 //   · 北京 16:00 → close   ：用收盘涨幅覆盖 9:25 竞价涨幅 + 校正区间涨幅 T 腿。
+//   · （9:27 / 9:35 保留映射，供手动或用户自建触发器做云端自愈；不占用 cron 额度）
 //
 // ★ 为什么是 9:27 这一趟（2026-11-04 用户报障「关机就不出票」）：
 //   1) 猫抓对【当日】的 auc_vol 在 9:25 偶尔还没结算 → 写成占位 0（趋势图竞价量全 0）；
@@ -37,6 +38,12 @@ import { runAuctionExtrasPatch, runTodaySnapshotPatch } from './logic/extras-wor
 import { runRangePctHeal } from './logic/range-heal.js';
 // [LADDER-FALLBACK 2026-11-06] 只补「最近多板 883410 正式名单」，不碰行情/猫抓/区间涨幅。
 import { healLadderWatchlist } from './logic/ladder-heal.js';
+// [LADDER26 2026-11-06] 北京 09:26 云端二次确认：真实名单 + 新进票猫抓竞价量比（1 次额度上限）。
+import { runLadderRecheck } from './logic/ladder-recheck.js';
+// [R20-CLOUD 2026-11-06] 同一趟 9:26 顺带把 20 日涨幅用逐日腿补缺（0 上游、0 额度）。
+import { runRange20Prefill } from './logic/range20-prefill.js';
+// [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐，彻底替代本机 08:00 定时任务。
+import { runDailyLegsHeal } from './logic/daily-legs-heal.js';
 // [RUNLOG 2026-09-30] 把每轮的完整日志（含 ⏱ 埋点）落库到 bidding_fetch_log，
 //   否则 CF Worker 的埋点只进 Cloudflare Dashboard，事后无法复盘「9:26 为什么没数据」。
 import { writeRunLog } from './data/supabase-write.js';
@@ -77,8 +84,12 @@ function cronToPoint(cronExpr) {
   //   **全程在云端跑，不需要用户开电脑。**
   //   注：9:35 仍然保留映射 —— 用户之前可能已加过这条触发器，且它现在只是「再兜一次」
   //   （内部幂等，覆盖率达标就零请求），对开盘后的复盘仍有用，删掉反而少一层保险。
+  // [LADDER26 2026-11-06] 01:26 UTC = 北京 09:26：名单源二次确认。
+  //   11-06 的 P0 里上游 9:25 挂、9:4x 就恢复，只靠 9:25 内重试救不回来；
+  //   这条 cron 在开盘前 4 分钟再问一次，且「9:25 已成功」时 0 请求直接返回（幂等）。
   const MAP = {
     '25 1': 'morning',
+    '26 1': 'ladder26',
     '27 1': 'snapshot',
     '35 1': 'snapshot',
     '0 8': 'close'
@@ -127,6 +138,15 @@ async function persistRunResult(env, point, result) {
       ladderHealFallback: !!r.ladderHealFallback,
       ladderHealWritten: r.ladderHealWritten === undefined ? null : r.ladderHealWritten,
       watchlistRowsWritten: r.watchlistRowsWritten === undefined ? null : r.watchlistRowsWritten,
+      // [LADDER26 2026-11-06] 09:26 二次确认留痕：是否跳过 / 名单恢复 / 兜底清理 / 猫抓补抓
+      ladderRecheckSkipped: !!r.skipped,
+      ladderRecheckRecovered: !!r.recovered,
+      ladderRecheckFallbackCleared: r.fallbackCleared === undefined ? null : r.fallbackCleared,
+      ladderRecheckAuc: r.auc || null,
+      // [R20-CLOUD 2026-11-06] 同一趟 9:26 的 20 日涨幅云端补缺结果
+      range20Written: r.range20Written === undefined ? null : r.range20Written,
+      // [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐（替代本机 08:00 任务）
+      dailyLegsWritten: r.dailyLegsWritten === undefined ? null : r.dailyLegsWritten,
       todayDataMissing: !!r.todayDataMissing,
       todayMetricsWritten: r.todayMetricsWritten === undefined ? null : r.todayMetricsWritten,
       metricsWritten: r.metricsWritten === undefined ? null : r.metricsWritten,
@@ -183,14 +203,31 @@ async function dispatch(point, env, logs, opts) {
     console.log('[auto-fetch] runClose 完成 ok=' + result.ok + ' today=' + (result.today || '') +
       ' completenessSummary=' + (result.completenessSummary || ''));
     console.log('[auto-fetch] runClose 完整日志:', JSON.stringify(result.logs || []));
-    await persistRunResult(env, point, result);
+    // [DAILY-LEGS-CLOUD 2026-11-06] 运行日志改在本轮全部补写动作之后落库，
+    //   这样 dailyLegsWritten 也会进 bidding_fetch_log，事后可核验「云端是否真的接管」。
     // [SNAPSHOT-EXTRAS 2026-09-14] 收盘后再兜一次（防止 9:25 那次快照未终态 / 漏掉新进名单的票）
     await runSnapshotPatchSafely(env, result, 'close');
+    // [DAILY-LEGS-CLOUD 2026-11-06] 收盘覆盖完成后，把「今天这根收盘腿」写进 stock_daily_pct。
+    //   这是明天 9:26 的 20 日涨幅快路径能否 0 上游请求算出真值的前提；
+    //   以前靠本机 08:00 定时任务补，现在随 worker 自动跑（⛔ 关电脑不影响）。
+    try {
+      const legs = await runDailyLegsHeal(env, {});
+      result.dailyLegs = legs;
+      result.dailyLegsWritten = legs.written;
+      console.log('[auto-fetch] close 逐日腿云端补齐: ok=' + legs.ok + ' written=' + legs.written +
+        ' 日志=' + JSON.stringify(legs.logs || []));
+    } catch (e) {
+      console.error('[auto-fetch] close 逐日腿云端补齐异常（不影响收盘）:', e && e.message);
+    }
+    await persistRunResult(env, point, result);
     return result;
   }
   if (point === 'snapshot') {
     // ★ [HEAL-0927 2026-11-04] 9:27 这一趟承担两件事（都在云端跑，不需要用户开电脑）：
-    //   ① 用同花顺快照补【当日】竞价字段（竞价量/量比/竞价涨幅/换手）—— 免费、0 猫抓额度；
+    //   ① 用同花顺快照补【当日】竞价量 / 竞价涨幅 / 换手 —— 免费、0 猫抓额度；
+    //      ⛔⛔ **不含竞价量比**（旧注释写「量比」是错的，2026-11-06 更正）：
+    //      auc_vol_ratio 只认猫抓 daily_auc 的 9:25 竞价时间段数据，同花顺永远不许兜底。
+    //      SNAPSHOT_FIELDS 实际只有 ['auc_pct_chg','auc_turnover','volume']（有单测锁）。
     //   ② 用猫抓 daily 补【当日】stock_range_pct（区间涨幅）—— 只有 9:25 那次失败时才真正发请求。
     //   为什么 ② 必须在这里：区间涨幅是「题材量比排序 + 十日涨幅列」的唯一依据，
     //   9:25 猫抓一旦超时，云端就没数据，只能等浏览器补算 ⇒ 不开电脑当天永远出不了票。
@@ -235,6 +272,63 @@ async function dispatch(point, env, logs, opts) {
     console.log('[auto-fetch] runAuctionExtrasPatch 完整日志:', JSON.stringify(result.logs || []));
     await persistRunResult(env, point, result);
     return result;
+  }
+  if (point === 'ladder26') {
+    // [LADDER26 2026-11-06] 北京 09:26 云端 cron。与 `ladder` 的区别：
+    //   · ladder    = 人工恢复入口，只写名单、⛔ 不烧猫抓额度、⛔ 不删兜底行；
+    //   · ladder26  = 开盘前自动二次确认，名单 + 新进票猫抓补竞价量比 + 清理兜底行，
+    //                 且「9:25 已成功」时 0 请求直接返回（幂等，不重复烧额度）。
+    const logs26 = [];
+    const r26 = await runLadderRecheck(env, { date: (opts && opts.date) || '', logs: logs26 });
+    // [DAILY-LEGS-CLOUD] 先补【今天之前】漏掉的逐日腿，再算 20 日涨幅：
+    //   顺序不能反 —— 昨天那根腿缺了，下面的快路径会用更早的 19 根凑数，窗口整体错位一天。
+    let legs26 = { ok: false, written: 0, logs: ['[daily-legs] 未执行'] };
+    try {
+      legs26 = await runDailyLegsHeal(env, { allowToday: false, logs: logs26 });
+    } catch (e) {
+      legs26 = { ok: false, written: 0, logs: ['[daily-legs] 异常: ' + ((e && e.message) || e)] };
+      logs26.push(legs26.logs[0]);
+    }
+    // [R20-CLOUD] 名单/行情落库之后才是补 20 日涨幅的正确时点（T 腿此刻一定有）。
+    // 失败不致命：这是补缺层，正确性不依赖它，⛔ 绝不影响已写好的名单与竞价量比。
+    let r20 = { ok: false, written: 0, logs: ['[r20-prefill] 未执行'] };
+    try {
+      r20 = await runRange20Prefill(env, { today: (opts && opts.date) || '', logs: logs26 });
+    } catch (e) {
+      r20 = { ok: false, written: 0, logs: ['[r20-prefill] 异常: ' + ((e && e.message) || e)] };
+      logs26.push(r20.logs[0]);
+    }
+    const result26 = {
+      ok: r26.ok || r20.ok,
+      today: r26.today,
+      skipped: r26.skipped,
+      recovered: r26.recovered,
+      written: r26.written,
+      fallbackCleared: r26.fallbackCleared,
+      ladderCount: r26.ladderCount,
+      auc: r26.auc,
+      dailyLegs: legs26,
+      dailyLegsWritten: legs26.written || 0,
+      range20: r20,
+      range20Written: r20.written || 0,
+      logs: logs26
+    };
+    console.log('[auto-fetch] ladder26: ok=' + result26.ok + ' skipped=' + result26.skipped +
+      ' recovered=' + result26.recovered + ' written=' + result26.written +
+      ' 猫抓补写=' + (r26.auc && r26.auc.written) + ' 20日补缺=' + result26.range20Written +
+      ' 日志=' + JSON.stringify(logs26));
+    await persistRunResult(env, point, result26);
+    return result26;
+  }
+  if (point === 'range20') {
+    // [R20-CLOUD 2026-11-06] 手动补 20 日涨幅（0 上游请求），用于验收云端链路是否已接管。
+    const logs20 = [];
+    const r20 = await runRange20Prefill(env, { today: (opts && opts.date) || '', logs: logs20 });
+    const result20 = Object.assign({}, r20, { logs: logs20 });
+    console.log('[auto-fetch] range20 云端补缺: ok=' + r20.ok + ' written=' + r20.written +
+      ' 日志=' + JSON.stringify(logs20));
+    await persistRunResult(env, point, result20);
+    return result20;
   }
   if (point === 'ladder') {
     // [LADDER-FALLBACK 2026-11-06] 上游名单源 9:25 临时挂了之后，【只补正式名单】的恢复入口。
@@ -304,8 +398,8 @@ export default {
           return jsonResponse({ ok: false, error: '当前北京时间不在抓取时段（9:25~9:40=morning，15:00~16:30=close）' });
         }
       }
-      if (!['morning', 'close', 'extras', 'snapshot', 'ladder'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|ladder|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot / ladder 可附 &date=YYYY-MM-DD）' });
+      if (!['morning', 'close', 'extras', 'snapshot', 'ladder', 'ladder26', 'range20'].includes(point)) {
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|ladder|ladder26|range20|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot / ladder / ladder26 / range20 可附 &date=YYYY-MM-DD）' });
       }
       try {
         const result = await dispatch(point, env, [], {

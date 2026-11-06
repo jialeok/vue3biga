@@ -66,12 +66,36 @@ function fetchWithTimeout(url, opts, timeoutMs) {
  *   · 每次尝试的超时 = min(perCallMs, 预算剩余)，保证最坏耗时 ≤ budgetMs 量级。
  *   这两条是 9/30 事故的正面修复：原来的「4 次尝试」在请求挂起时会变成 4 × 几十秒。
  *
+ * [RETRY-CLASSIFY 2026-11-06] 11-06 09:25 的 P0 事故暴露第二个 bug：
+ *   上游返回 `fuyao ... 错误: Data source unavailable`（code!=0，但 HTTP 200），
+ *   旧正则只认 429/5xx/timeout/network ⇒ 判成「业务性错误」⇒ **第 1 次就 break**，
+ *   而 morning-workflow 的日志却写「（已重试）」，把「没重试」伪装成「重试过还失败」。
+ *   实测该错误是突发的：09:25 失败，09:4x 手工拨测同一个接口 HTTP 200 / 2790ms / 57 只。
+ *   ⇒ 把「上游数据源临时不可用」类文案纳入可重试，同时把判定抽成纯函数 + 单测锁住。
+ *   ⛔ 总预算 12s 不变，重试不会顶穿 9:26 硬指标。
+ *
  * @param {(ms:number)=>Promise<any>} fn 真正发请求的函数，接收「本次可用超时」
  * @param {number} attempts 最多尝试次数
  * @param {string} label 日志标签
  * @param {number} budgetMs 总预算（毫秒）；0/未传 = 只按次数限制（老行为）
  * @param {number} perCallMs 单次超时（毫秒）
  */
+/**
+ * [RETRY-CLASSIFY 2026-11-06] 纯函数：这条错误值不值得重试？
+ *
+ * 只覆盖「上游瞬时不可用」：限流、5xx、超时、网络、数据源临时不可用。
+ * ⛔ 业务性错误（thscode 不存在、参数非法、鉴权失败、非交易日）一律不重试 ——
+ *    重试它们不会改变结果，只会白烧 12s 预算并把 9:26 硬指标顶穿（§32）。
+ * 导出仅为单测：这是 11-06 P0 的根因判据，必须有回归锁。
+ */
+export function isRetriableFuyaoError(msg) {
+  const s = String(msg || '');
+  if (!s) return false;
+  return /429|rate limit|5\d\d|timeout|timed out|abort|network|fetch failed|ECONN/i.test(s)
+    || /data source (?:unavailable|not available|error)|service unavailable|temporarily unavailable/i.test(s)
+    || /upstream (?:error|unavailable|busy)|bad gateway|gateway timeout|please (?:try again|retry)/i.test(s);
+}
+
 async function retryFuyao(fn, attempts, label, budgetMs, perCallMs) {
   const n = attempts || 4;
   const budget = budgetMs > 0 ? budgetMs : 0;
@@ -92,8 +116,14 @@ async function retryFuyao(fn, attempts, label, budgetMs, perCallMs) {
       lastErr = e;
       const msg = String((e && e.message) || '');
       // 只重试「上游瞬时」类错误；业务性错误（如 thscode 不存在）重试无意义
-      const retriable = /429|rate limit|5\d\d|timeout|timed out|abort|network|fetch failed|ECONN/i.test(msg);
-      if (!retriable || i === n - 1) break;
+      // [RETRY-CLASSIFY 2026-11-06] 判据统一走纯函数（含 Data source unavailable），⛔ 不在这里另写一份
+      const retriable = isRetriableFuyaoError(msg);
+      if (!retriable || i === n - 1) {
+        if (!retriable) {
+          console.warn('[FUYAO-RETRY] ' + (label || '') + ' 判为【不可重试错误】→ 立即走降级（未重试）: ' + msg.slice(0, 120));
+        }
+        break;
+      }
       const wait = 900 * Math.pow(2, i);
       if (budget > 0 && (Date.now() - t0) + wait >= budget) {
         console.warn('[FUYAO-RETRY] ' + (label || '') + ' 第' + (i + 1) + '次失败：' + msg.slice(0, 120) +
@@ -267,10 +297,14 @@ export async function fetchSnapshotChangePct(env, codes) {
 /**
  * [SNAPSHOT-EXTRAS 2026-09-14] 同花顺「集合竞价快照」（免费、不限累计次数、单次 ≤100 个代码、stage=final）。
  *
- * 为什么需要：猫抓 daily_auc 对【当日】行不返回 auc_pct_chg / auc_vol_ratio / auc_turnover
- *   （要等结算后才出现），worker 又默认把今天排除在补漏之外 → 9:25~收盘这一整天，看板的
- *   「竞价量比 / 真换手率 / 当日竞价涨幅」全空、龙头徽章掉色、竞价一字红线判不出。
- *   本接口在 9:25 竞价一结束就能拿到【当天】终态数据，用它把当日缺口补上，0 猫抓额度消耗。
+ * ✅ [AUC-TRUTH 2026-11-05] 旧注释说「猫抓 daily_auc 对【当日】行不返回 auc_pct_chg /
+ *    auc_vol_ratio / auc_turnover，要等结算后才出现」——**已被生产实证推翻**，不要拿它当结论：
+ *    11-05 09:25 那轮 `numcat 返回 fields=[..., "auc_vol_ratio","auc_turnover"] items=290 行`，
+ *    写入的 58 只 58/58 全带 auc_vol_ratio。猫抓 9:25 就给竞价量比，和竞价字段同一个接口。
+ *
+ * 本接口真实用途（分工，不是「猫抓拿不到」）：9:25 主流程写入后，个别票可能因为
+ *   「不在 9:25 抓取名单里」或「上游当次 auc_vol 还是占位 0」而缺 volume / auc_pct_chg /
+ *   auc_turnover；用本接口（免费、0 猫抓额度）把这些**同花顺可提供的字段**补齐。
  *
  * ⚠️ 只返回「最近一个交易日」（滚动窗口：当天收盘后 → 下一交易日开盘前）；周末/节假日调用返回上一交易日终态。
  *    因此调用方必须先用 timestamp 校验「服务端日期 == 目标日」，否则拒绝写入（避免把上一日数据写到今天）。
@@ -279,12 +313,13 @@ export async function fetchSnapshotChangePct(env, codes) {
  *    量纲换算已交叉验证（见 backups/同花顺官方接口竞价能力核查_2026-09-13.md）：
  *      volume ← round(auction_volume/100)（手→万股）｜auc_pct_chg ← auction_pct
  *      auc_turnover ← auction_turnover_pct
- * ⛔⛔ [AUC-RATIO-NUMCAT-ONLY 2026-11-04] **auction_volume_ratio 禁止映射到库内 auc_vol_ratio**。
- *    同花顺的「竞价量比」与猫爪 auc_vol_ratio 不同源（基准量口径不同），掺进库里就是错数据，
- *    而下游拿它当选票依据（logic/decision/decision-rules.js）⇒ 直接选错股。
- *    用户两次明确口径（2026-10-26、2026-11-04）：「永远不要用同花顺获取数据的竞价量比数据，
- *    我只要猫爪数据接口的竞价量比」。后端唯一入口 = numcat daily_auc（结算后由 16:30 云端回填）。
- *    前端 src/logic/auction/ths-today-patch.js 早已按此执行；worker 这条腿曾漏掉，2026-11-04 已删。
+ * ⛔⛔ [AUC-RATIO-NUMCAT-ONLY 2026-11-04 / 用户 2026-11-06 再次强调]
+ *    **auction_volume_ratio 禁止映射到库内 auc_vol_ratio，任何时段、任何路径、兜底也不行**。
+ *    同花顺的「竞价量比」是开盘后口径，与猫抓 auc_vol_ratio（9:25 竞价时间段）不同源；
+ *    掺进库里就是错数据，而下游拿它当选票依据（logic/decision/decision-rules.js）⇒ 直接选错股。
+ *    用户原话：「题材量比一定要用猫爪数据的竞价时间段的，不要用同花顺的」「兜底也不行」。
+ *    唯一合法来源 = 猫抓 numcat daily_auc.auc_vol_ratio（9:25 主流程 / 9:26 名单补抓 / 16:30 历史回填）。
+ *    前端 src/logic/auction/ths-today-patch.js 早已合规；worker 的 runTodaySnapshotPatch 曾漏掉，已删。
  *
  * @param {object} env
  * @param {string[]} codes 6 位股票代码
