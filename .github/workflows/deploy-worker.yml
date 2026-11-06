@@ -1,0 +1,120 @@
+name: Deploy Cloudflare Worker (bidding-auto-fetch)
+
+# [WORKER-CI 2026-11-06] 目的：把「改完 worker 还要去 Cloudflare Dashboard 手动粘一遍」
+# 这件事彻底取消。push 到 main 且碰到 worker 相关文件 ⇒ 自动测试 + 自动部署。
+#
+# ⚠️ 一次性准备（在 GitHub 仓库里做一次就够）：
+#   Settings → Secrets and variables → Actions → New repository secret
+#     CLOUDFLARE_API_TOKEN   = 有 Workers Scripts:Edit 权限的 API Token
+#     CLOUDFLARE_ACCOUNT_ID  = 0ec12a103051054d51a92198fb98397b
+#
+# 🔴 部署会按下述 toml 的 [triggers] **完全覆盖线上 cron**。
+#    workers/wrangler-bidding-auto-fetch.toml 里现在是 2 条（北京 09:25 / 16:00），
+#    与线上实测一致（2026-11-06 用 API 核过：25 1 * * 2-6、0 8 * * 2-6）。
+#    ⛔ 改 cron 前必须先核线上，否则会把「7/30 断抓」那个根因再造一遍。
+#
+# ⛔ 不要加 paths 之外的全量触发：前端改动由 deploy-pages.yml 负责，两边各管各的。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'workers/bidding-auto-fetch/**'
+      - 'src/logic/auction/range-window.js'          # worker 直接 import 的纯函数（跨目录引用）
+      - 'workers/wrangler-bidding-auto-fetch.toml'
+  # ⚠️ 刻意【不】把本文件自己放进 paths：新增这份 workflow 的那次 push 不应该顺带触发部署。
+  #    配好 Secrets 后，用 Actions → Run workflow 手动跑第一次，验证通过后再交给 push 自动触发。
+  workflow_dispatch:
+
+concurrency:
+  # 同一条流水线串行：两个部署任务并发会互相覆盖，必须排队
+  group: worker-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Worker 单测（不通过就不部署）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 只跑 worker 侧单测
+        run: npx vitest run workers/
+
+  deploy:
+    name: 部署到 Cloudflare
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 检查 Secrets 是否已配置（缺了直接给出可读报错）
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          missing=0
+          if [ -z "$CF_TOKEN" ]; then
+            echo "::error::缺少仓库 Secret CLOUDFLARE_API_TOKEN（Settings → Secrets and variables → Actions）"
+            missing=1
+          fi
+          if [ -z "$CF_ACCOUNT" ]; then
+            echo "::error::缺少仓库 Secret CLOUDFLARE_ACCOUNT_ID"
+            missing=1
+          fi
+          exit $missing
+
+      # 版本钉死成本地验证过的 4.158.0：wrangler 主版本升级会改打包/触发器行为，
+      # ⛔ 别写成 @latest —— 那等于把线上部署交给「今天恰好发的新版本」。
+      - name: 部署
+        working-directory: workers
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx --yes wrangler@4.158.0 deploy --config wrangler-bidding-auto-fetch.toml | tee /tmp/deploy.log
+          echo "---- 本次部署摘要 ----"
+          grep -E "Current Version ID|schedule:|Total Upload" /tmp/deploy.log || true
+
+  bundle-artifact:
+    name: 重建 _bundled 兜底产物（仅产出 artifact，不回写仓库）
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # _bundled 的用途只剩两个：① Dashboard 手动粘贴的基准 ② 部署前自检。
+      # CI 里只产出 artifact 供下载，⛔ 不自动 commit 回仓库（避免部署流水线污染历史）。
+      - name: 打包
+        run: node workers/_bundle.mjs
+
+      - name: 自检（顶层重名必须 0 处）
+        run: |
+          grep -q "顶层重名 0 处" <(node workers/_bundle.mjs) \
+            && echo "✅ 打包自检通过" \
+            || echo "::warning::打包自检未命中「顶层重名 0 处」，请检查 _bundle.mjs 输出"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: worker-bundles
+          path: workers/_bundled/*.js
+          retention-days: 14

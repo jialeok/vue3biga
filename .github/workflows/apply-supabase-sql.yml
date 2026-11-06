@@ -1,0 +1,103 @@
+name: Apply Supabase SQL（手动触发）
+
+# [DB-CI 2026-11-06] 目的：把「改完 db/*.sql 再去 Supabase SQL Editor 粘一遍」变成点一下。
+#
+# ⛔⛔ 为什么【只能手动触发】，绝不跟着 push 自动跑：
+#   db/ 下的 SQL 是 DDL（建表 / 建扩展 / cron.schedule / cron.unschedule），
+#   其中 create_range20_legs_cron.sql 会**先 unschedule 再重建**两条 heal 任务。
+#   如果随 push 自动执行，任何一次误改（哪怕只是改注释）都会重建生产定时任务；
+#   执行窗口一旦撞上 08:50 / 16:30 / 09:25，当天数据就直接断。
+#   ⇒ 规则：DDL 必须有人按下去那一刻才算数。
+#
+# ⚠️ 一次性准备（在 GitHub 仓库里做一次就够）：
+#   Settings → Secrets and variables → Actions → New repository secret
+#     SUPABASE_DB_URL = Supabase → Project Settings → Database → Connection string → URI
+#       形如 postgresql://postgres.<ref>:<DB密码>@aws-0-<region>.pooler.supabase.com:6543/postgres
+#       ⚠️ 用 6543（事务池）或 5432（直连）都可以；这个串含数据库密码，
+#          ⛔ 绝不能写进仓库任何文件，只能放 Secret。
+#
+# 用法：
+#   Actions → Apply Supabase SQL → Run workflow
+#     sql_file = db/create_range20_legs_cron.sql（默认值）
+#     confirm  = YES
+#   跑完在日志里能看到 psql 的完整输出（含 cron.schedule 返回的 jobid）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      sql_file:
+        description: '要执行的 SQL 文件（相对仓库根）'
+        required: true
+        default: 'db/create_range20_legs_cron.sql'
+      confirm:
+        description: '输入 YES 确认执行（防止手滑）'
+        required: true
+        default: ''
+
+concurrency:
+  group: db-sql-apply
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    name: psql 执行
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 双重确认
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          SQL_FILE: ${{ inputs.sql_file }}
+        run: |
+          if [ "$CONFIRM" != "YES" ]; then
+            echo "::error::confirm 必须填 YES 才会执行（当前: '$CONFIRM'）"
+            exit 1
+          fi
+          # ⛔ 只允许执行仓库 db/ 目录下的 .sql，防止误指到别的文件
+          case "$SQL_FILE" in
+            db/*.sql) ;;
+            *) echo "::error::sql_file 必须是 db/ 下的 .sql 文件（当前: $SQL_FILE）"; exit 1 ;;
+          esac
+          if [ ! -f "$SQL_FILE" ]; then
+            echo "::error::文件不存在: $SQL_FILE"
+            exit 1
+          fi
+          echo "将执行: $SQL_FILE"
+
+      - name: 打印将要执行的 SQL（留档，便于事后追溯谁改了什么）
+        run: |
+          echo "===== ${{ inputs.sql_file }} 开始 ====="
+          cat "${{ inputs.sql_file }}"
+          echo "===== 结束 ====="
+
+      - name: 安装 psql 客户端
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+
+      - name: 执行
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "::error::缺少仓库 Secret SUPABASE_DB_URL（含数据库密码，只能放 Secret）"
+            exit 1
+          fi
+          # ON_ERROR_STOP=1：任何一句失败立即中断，⛔ 不要「跳过错误继续跑」
+          # （cron.unschedule 那几段自己带 exception when others then null，本来就是安全的）
+          psql "$SUPABASE_DB_URL" \
+            --no-psqlrc \
+            --set ON_ERROR_STOP=1 \
+            --echo-errors \
+            --file "${{ inputs.sql_file }}"
+
+      - name: 执行后自检（cron 任务清单）
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          psql "$SUPABASE_DB_URL" --no-psqlrc -c \
+            "select jobid, jobname, schedule, active from cron.job order by jobname;"

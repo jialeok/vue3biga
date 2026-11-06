@@ -57,10 +57,18 @@
 --   共同安全闸：只补【当天名单里缺的票】；一根腿都没有 ⇒ 不写空行；
 --   腿表里没有该日（假期/未开盘）⇒ 直接返回；名单外一律不写（这两张表还喂着龙位/决策看板/卖点段）。
 --
--- ⚠️ 执行前把 <ANON_KEY> 替换成你项目的 anon public key
---    （Dashboard → Project Settings → API → Project API Keys → anon public；
---     anon key 本来就是公开的前端钥匙，写进 cron 无泄密风险。
---     ‼️ 与 db/create_range20_cron.sql 里那两条用的是同一个 key）
+-- 🔴🔴 [CRON-AUTH-FIX 2026-11-06] 这里原来写的是占位符 `Bearer <ANON_KEY>`。
+--   如果照原样执行，两条 cron **每次调用都返回 401 `UNAUTHORIZED_INVALID_JWT_FORMAT`**，
+--   而 `net.http_post` 的响应没有任何人看 ⇒ **静默失败，永远没人发现**。
+--   实测后果（2026-11-06 取证）：`stock_daily_pct` 里云端 heal 的产物 `src='metrics_close'`
+--   全表只有 25 行、最新日期停在 2026-11-03；11-04 / 11-05 两个正常交易日**一条都没有**。
+--   而同一时刻用手写脚本（`src='metrics'`）却天条齐全 ⇒ 云端自愈形同虚设，
+--   实际全靠本机 WorkBuddy 自动化兜底（换电脑就断，用户 2026-11-06 报障的根因）。
+--   同一份 SQL 用真实 anon key 手动调一次：HTTP 200 / 17.2s / 正常写入 ⇒ **代码没问题，是 key 没填**。
+--   ⇒ 现已把真实 anon public key 直接写进下面两处（anon key 本来就是公开的前端钥匙，
+--     前端 `src/data/supabase-client.js` 里就是同一串，写进 cron 无泄密风险）。
+--   ⛔ 以后别再改回占位符；要换 key 必须两处一起换。
+--   ‼️ 与 db/create_range20_cron.sql 里那几条用的是同一个 key。
 -- ============================================================
 
 
@@ -108,10 +116,10 @@ select cron.schedule(
     url := 'https://tonqfgeyxnnwicjopshn.supabase.co/functions/v1/range20-precompute?token=range20-cron-2026&healOnly=1',
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
-      'Authorization', 'Bearer <ANON_KEY>'
+      'Authorization', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRvbnFmZ2V5eG5ud2ljam9wc2huIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NjY3NzEsImV4cCI6MjA5NDI0Mjc3MX0.el-W10JIjr9iQXEKNxV7nLNdhZfOQp6waTY7ZSH27Jg'
     ),
     body := '{}'::jsonb,
-    timeout_milliseconds := 30000
+    timeout_milliseconds := 60000
   );
   $job$
 );
@@ -127,10 +135,10 @@ select cron.schedule(
     url := 'https://tonqfgeyxnnwicjopshn.supabase.co/functions/v1/range20-precompute?token=range20-cron-2026&healOnly=1',
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
-      'Authorization', 'Bearer <ANON_KEY>'
+      'Authorization', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRvbnFmZ2V5eG5ud2ljam9wc2huIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NjY3NzEsImV4cCI6MjA5NDI0Mjc3MX0.el-W10JIjr9iQXEKNxV7nLNdhZfOQp6waTY7ZSH27Jg'
     ),
     body := '{}'::jsonb,
-    timeout_milliseconds := 30000
+    timeout_milliseconds := 60000
   );
   $job$
 );
@@ -150,7 +158,7 @@ select cron.schedule(
 --     select net.http_post(
 --       url := 'https://tonqfgeyxnnwicjopshn.supabase.co/functions/v1/range20-precompute?token=range20-cron-2026&legsOnly=1',
 --       headers := jsonb_build_object('Content-Type','application/json',
---                                     'Authorization','Bearer <ANON_KEY>'),
+--                                     'Authorization','Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRvbnFmZ2V5eG5ud2ljam9wc2huIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NjY3NzEsImV4cCI6MjA5NDI0Mjc3MX0.el-W10JIjr9iQXEKNxV7nLNdhZfOQp6waTY7ZSH27Jg'),
 --       body := '{}'::jsonb, timeout_milliseconds := 60000);
 --   或指定某一天：追加 &date=2026-10-30
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -171,16 +179,22 @@ select cron.schedule(
 --   select created, status_code, substring(content from 1 for 400) as body
 --     from net._http_response order by created desc limit 10;
 
--- ④ 腿表最近 10 个交易日行数（健康值 400~415；某天骤降到两位数 = 那天没补上）：
+-- ④ 腿表最近 10 个交易日行数（健康值 400~415；某天骤降到两位数 = 那天没补上）
+--   ⚠️ [TEXT-DATE 2026-11-06] `stock_daily_pct.date` 实测是 **text**（'YYYY-MM-DD'），
+--      直接写 `where date >= (current_date - 20)` 会报
+--      42883 operator does not exist: text >= date。
+--      ⇒ 一律用 `date::date` 显式转型 —— 对 text 列能转、对 date 列是 no-op，两种都能跑，
+--        比 to_char 更稳（不用猜列类型）。
 --   select date, count(*) as rows,
 --          count(*) filter (where src = 'qt')            as qt_rows,
 --          count(*) filter (where src = 'kline')         as kline_rows,
---          count(*) filter (where src = 'metrics_close') as metrics_rows
+--          count(*) filter (where src = 'metrics_close') as metrics_close_rows
 --     from stock_daily_pct
---    where date >= (current_date - 20)
+--    where date::date >= current_date - 20
 --    group by date order by date desc limit 10;
 
--- ⑤ 当天名单的覆盖缺口（应返回 0 行；有行就是还没补上的票）：
---   with w as (select distinct stock from auction_watchlist where date = current_date),
---        l as (select distinct stock from stock_daily_pct where date = current_date)
+-- ⑤ 当天名单的覆盖缺口（应返回 0 行；有行就是还没补上的票）
+--   同样用 date::date，不猜列类型
+--   with w as (select distinct stock from auction_watchlist where date::date = current_date),
+--        l as (select distinct stock from stock_daily_pct where date::date = current_date)
 --   select w.stock from w left join l using (stock) where l.stock is null;
