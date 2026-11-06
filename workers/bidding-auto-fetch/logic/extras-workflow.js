@@ -115,10 +115,12 @@ export async function runAuctionExtrasPatch(env, opts) {
     return { ok: false, today, patched: 0, dates: [], logs, reason: '无可用交易日' };
   }
   dates.sort();
-  // [QUOTA 2026-09-11] 自动跑排除「今天」：当天四要素永远拿不到，见文件头说明。
+  // [EXTRAS-TRUTH 2026-11-05] 自动跑排除「今天」的真实理由是【分工】，不是「猫抓拿不到」：
+  //   猫抓 9:25 就可能给四要素（11-05 实测 58/58 全带 auc_vol_ratio），P0 主流程已经按当次响应
+  //   如实写入；本函数只负责历史日回填。把今天塞进来只会两条腿抢同一批字段 + 白烧 1 次额度。
   if (!includeToday) dates = dates.filter(d => d !== today);
   if (dates.length === 0) {
-    logs.push('[extras] ✅ 待补窗口内只剩当天（当天四要素猫抓不提供）→ 零请求直接返回');
+    logs.push('[extras] ✅ 待补窗口内只剩当天（当天由 P0 主流程 / 同花顺快照腿负责）→ 零请求直接返回');
     return { ok: true, today, patched: 0, dates: [], logs, reason: '只剩当天' };
   }
   const startYMD = dates[0].replace(/-/g, '');

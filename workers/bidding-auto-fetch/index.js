@@ -35,6 +35,8 @@ import { runAuctionExtrasPatch, runTodaySnapshotPatch } from './logic/extras-wor
 // [RANGE-HEAL 2026-11-04] 区间涨幅云端自愈：9:25 那次猫抓 daily 失败时，
 //   9:27 那一趟把 stock_range_pct 补回来 —— 用户关电脑/用手机也能出票（根因见文件头）。
 import { runRangePctHeal } from './logic/range-heal.js';
+// [LADDER-FALLBACK 2026-11-06] 只补「最近多板 883410 正式名单」，不碰行情/猫抓/区间涨幅。
+import { healLadderWatchlist } from './logic/ladder-heal.js';
 // [RUNLOG 2026-09-30] 把每轮的完整日志（含 ⏱ 埋点）落库到 bidding_fetch_log，
 //   否则 CF Worker 的埋点只进 Cloudflare Dashboard，事后无法复盘「9:26 为什么没数据」。
 import { writeRunLog } from './data/supabase-write.js';
@@ -120,6 +122,11 @@ async function persistRunResult(env, point, result) {
       //   前端 logic/auction/ladder-source.js 读这个字段显示在第一页（用户拿它对炒股软件）。
       //   ⚠️ null = 本轮没走到那一步（如名单落库失败提前返回）⇒ 前端显示 `--`，⛔ 不补 0。
       ladderCount: r.ladderCount === undefined ? null : r.ladderCount,
+      // [LADDER-FALLBACK 2026-11-06] 名单自愈留痕：真名单恢复 / 兜底 / 写入行数
+      ladderHealRecovered: !!r.ladderHealRecovered,
+      ladderHealFallback: !!r.ladderHealFallback,
+      ladderHealWritten: r.ladderHealWritten === undefined ? null : r.ladderHealWritten,
+      watchlistRowsWritten: r.watchlistRowsWritten === undefined ? null : r.watchlistRowsWritten,
       todayDataMissing: !!r.todayDataMissing,
       todayMetricsWritten: r.todayMetricsWritten === undefined ? null : r.todayMetricsWritten,
       metricsWritten: r.metricsWritten === undefined ? null : r.metricsWritten,
@@ -229,6 +236,30 @@ async function dispatch(point, env, logs, opts) {
     await persistRunResult(env, point, result);
     return result;
   }
+  if (point === 'ladder') {
+    // [LADDER-FALLBACK 2026-11-06] 上游名单源 9:25 临时挂了之后，【只补正式名单】的恢复入口。
+    // ⛔ 绝不重跑 runMorning：那样会在开盘后重算行情、再烧 1 次猫抓额度（用户硬口径：额度最贵）。
+    // ⛔ 不写兜底名单：手动补名单必须用「今天真实 883410」，拿不到就如实返回 ok=false。
+    const logs = [];
+    const heal = await healLadderWatchlist(env, {
+      today: (opts && opts.date) || '',
+      logs: logs,
+      allowFallback: false
+    });
+    const result = {
+      ok: heal.ok,
+      today: heal.today,
+      recovered: heal.recovered,
+      written: heal.written,
+      ladderCount: heal.ladderCount,
+      ladderDegraded: !heal.recovered,
+      logs: logs
+    };
+    console.log('[auto-fetch] ladder 名单补写: ok=' + result.ok + ' written=' + result.written +
+      ' count=' + result.ladderCount + ' 日志=' + JSON.stringify(logs));
+    await persistRunResult(env, point, result);
+    return result;
+  }
   console.error('[auto-fetch] 未知触发点:', point);
   return { ok: false, error: '未知触发点: ' + point };
 }
@@ -273,8 +304,8 @@ export default {
           return jsonResponse({ ok: false, error: '当前北京时间不在抓取时段（9:25~9:40=morning，15:00~16:30=close）' });
         }
       }
-      if (!['morning', 'close', 'extras', 'snapshot'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot 可附 &date=YYYY-MM-DD）' });
+      if (!['morning', 'close', 'extras', 'snapshot', 'ladder'].includes(point)) {
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|ladder|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot / ladder 可附 &date=YYYY-MM-DD）' });
       }
       try {
         const result = await dispatch(point, env, [], {

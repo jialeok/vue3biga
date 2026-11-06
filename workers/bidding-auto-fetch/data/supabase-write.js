@@ -349,7 +349,10 @@ export async function readRange20TopForDate(env, date, limit) {
 //   必须【排除观察组壳行】——壳行是前端打开页面时自己写的（source=manual），
 //   若把它当成「名单已存在」，worker 重跑就会一行都不写（2026-09-15 P0 修复现场实测）。
 export async function readAuctionWatchlistForDate(env, date) {
-  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?date=eq.' + date + '&select=stock,code,obs_auto_added';
+  // [LADDER-FALLBACK 2026-11-06] 额外返回 source：降级时挑「前一日正式成员」做兜底名单，
+  //   必须能把 source='range20'（前端 20 日补位票）/ 'manual'（观察组壳行）排除掉，
+  //   否则会把补位票当成「最近多板成分股」写进今天的常规组。
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?date=eq.' + date + '&select=stock,code,obs_auto_added,source';
   const resp = await sbFetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) return [];
   const data = await resp.json();
@@ -359,7 +362,8 @@ export async function readAuctionWatchlistForDate(env, date) {
   return (data || []).map(r => ({
     name: (r.stock || '').trim(),
     code: r.code || '',
-    obs_auto_added: !!r.obs_auto_added
+    obs_auto_added: !!r.obs_auto_added,
+    source: (r.source || '').trim()
   })).filter(s => s.name);
 }
 

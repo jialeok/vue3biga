@@ -15,6 +15,9 @@ import { getRecentTradingDays } from './holiday-check.js';
 // P0 写入时已按当次响应如实落库，所以这里通常零请求返回；
 // 真正的兜底是 16:00 close 与次日窗口重刷。
 import { runAuctionExtrasPatch, runTodaySnapshotPatch } from './extras-workflow.js';
+// [LADDER-FALLBACK 2026-11-06] 883410 名单源失败 ⇒ 常规组一只票都没有（P0）。
+//   降级不再「干脆不写名单」，改为末尾自愈：重试拿真实名单 / 仍失败写前一日正式成员兜底。
+import { healLadderWatchlist } from './ladder-heal.js';
 // [PLAN-A 2026-09-10] 区间涨幅口径复用前端同一份纯函数（单一真相 §6）：
 // 窗口天数 / 复利累乘 / T 腿竞价占位判定 全部只此一份，前后端不会算出两个结果。
 // ⚠️ 跨目录引用会让 workers/_bundle.mjs 把该文件一并打进单文件产物（Cloudflare 复制粘贴部署），
@@ -255,7 +258,9 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
   //
   //   新行为：降级为「前一日名单 ∪ 打标签股票 ∪ 龙头名册」（三者都来自 Supabase，不依赖 fuyao）
   //   继续跑完 P0-②③ / P1 / P2，保证【当天的竞价数据仍能落库】——看板不空白是最高优先级。
-  //   ⚠️ 降级时【不写】auction_watchlist：名册拿不到就绝不伪造一份残缺的「当日名单」（§10 宁缺勿错）。
+  //   ⚠️ [LADDER-FALLBACK 2026-11-06] 降级时本步不写 auction_watchlist（不伪造残缺名册），
+  //      但【整轮末尾必须补名单】：重试真实 883410，仍失败则写明确标注的前一日正式成员兜底。
+  //      旧实现「降级就整轮不写名单」会让常规组全空，是最重要数据入口的 P0 事故。
   let ladderDegraded = false;
   const ladderConstituents = ladderRes.ok ? (ladderRes.v || []) : [];
   if (!ladderRes.ok) {
@@ -448,12 +453,20 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
     return { error: '抓取名单为空：883410 成分股不可用，且前一日名单/打标签/龙头名册/20日涨幅榜均无可用标的' };
   }
 
-  // [DEGRADE 2026-09-15] 降级模式下【不写】auction_watchlist：拿不到 883410 名册，就绝不伪造
-  //   一份残缺的「当日名单」（§10 宁缺勿错）。当天的竞价数据（market_metrics / 区间涨幅）
-  //   仍会照常落库 → 看板不空白；名单由后续重跑（/fetch?point=morning）补写。
+  // [DEGRADE 2026-09-15] 降级时【不在这里】写 auction_watchlist：绝不把残缺名册当 9:25 快照。
+  // ⚠️ [LADDER-FALLBACK 2026-11-06] 旧注释在这里写「名单由后续重跑 morning 补写」——**已废弃**：
+  //   ① 重跑整轮 morning 会再烧 1 次猫抓额度，还会在开盘后重算行情（口径风险）；
+  //   ② 更重要的是：不重跑时，当天的 auction_watchlist 就一直只有观察组壳行 ⇒
+  //      常规组【一只票都没有】（11-06 P0 事故，用户原话「这个应用最重要的数据都没有显示出来」）。
+  //   ⇒ 现在把「前一日正式成员」作为兜底候选带出去，由 runMorning 末尾的 healLadderWatchlist
+  //     先重试真实名单、失败才写兜底（⛔ 不写空名单、不伪造 source）。
   if (ladderDegraded) {
-    logs.push('步骤2：⬇️ 降级模式 → 跳过 auction_watchlist 名单落库（避免写入残缺名单）');
-    return { constituents, watchlistRows: [], nowIso: new Date().toISOString(), ladderDegraded: true, ladderCount };
+    logs.push('步骤2：⬇️ 降级模式 → 本步跳过名单落库；P0 行情照常落库，末尾统一做名单自愈');
+    const fallbackCandidates = (prevWlRes.ok && prevWlRes.v) || [];
+    return {
+      constituents, watchlistRows: [], nowIso: new Date().toISOString(),
+      ladderDegraded: true, ladderCount, fallbackCandidates
+    };
   }
 
   // 【BUG-FIX】不写 volume/yest_volume/change_pct/note/topics 字段：
@@ -1286,13 +1299,41 @@ export async function runMorning(env) {
   const dateKeys = todayWrite.dateKeys.concat(histWrite.dateKeys);
 
   const { completenessSummary, todayMissing } = buildCompletenessSummary(today, missingDatesAfterNumcat, phantomDates, metricsWriteFailures, expectedDates, logs);
-  if (ladderDegraded) {
-    logs.push('⬇️ 本轮为降级运行：883410 名单源不可用，当日 auction_watchlist 名单未落库；' +
-      '竞价数据已按「前一日名单 ∪ 打标签 ∪ 龙头名册」正常落库。' +
-      '请在 9:25~9:40 之外手动重跑 /fetch?point=morning 补写正式名单。');
-  }
 
-  logs.push('完成: auction_watchlist ' + watchlistRows.length + ' 行, market_metrics ' + totalMetricsWritten + ' 行, stock_range_pct ' + rangeWritten + ' 行');
+  // ---- P4 [LADDER-FALLBACK 2026-11-06] 名单自愈（只在降级轮执行）----
+  // 放在 P0/P1/P2/P3 之后：竞价数据/区间涨幅已经全部落库，这一步再慢也不会顶穿 9:26 硬指标。
+  // ① 名单源在这几十秒内恢复 ⇒ 写今天真实 883410 名单；
+  // ② 仍不可用 ⇒ 写前一交易日正式成员兜底（source=worker-fallback），常规组绝不空着；
+  // ③ 两条都不成立 ⇒ 保持 ladderDegraded=true，第一页源条数显示 `--`（§10 不伪装成 0）。
+  let ladderHeal = null;
+  if (ladderDegraded) {
+    try {
+      ladderHeal = await healLadderWatchlist(env, {
+        today: today,
+        logs: logs,
+        prevRows: watchlistResult.fallbackCandidates || [],
+        allowFallback: true
+      });
+      mark('名单自愈 ' + (ladderHeal.recovered ? '真实名单' : ladderHeal.fallback ? '兜底名单' : '未补'));
+    } catch (e) {
+      logs.push('❌ 名单自愈异常（非致命，竞价数据不受影响）: ' + (e && e.message ? e.message : String(e)));
+    }
+    if (!ladderHeal || !ladderHeal.ok) {
+      logs.push('⬇️ 降级运行：883410 名单源不可用且本轮名单自愈未成功；竞价数据已正常落库。' +
+        '上游恢复后可手动补跑 /fetch?point=ladder（只补名单，不重算行情、不烧猫抓额度）。');
+    }
+  }
+  const finalLadderCount = ladderHeal && ladderHeal.recovered ? ladderHeal.ladderCount : ladderCount;
+  const finalLadderDegraded = ladderDegraded && !(ladderHeal && ladderHeal.recovered);
+  const finalWatchlistRows = watchlistRows.length + (ladderHeal ? ladderHeal.written : 0);
+  const ladderNote = !ladderDegraded ? ''
+    : (ladderHeal && ladderHeal.recovered)
+      ? '✅ 名单源二次尝试已恢复（真实 883410 ' + finalLadderCount + ' 只）；'
+      : (ladderHeal && ladderHeal.fallback)
+        ? '⬇️ 降级运行（名单源不可用，已写前一日正式成员兜底名单）；'
+        : '⬇️ 降级运行（名单源不可用，名单未落库）；';
+
+  logs.push('完成: auction_watchlist ' + finalWatchlistRows + ' 行, market_metrics ' + totalMetricsWritten + ' 行, stock_range_pct ' + rangeWritten + ' 行');
   mark('全流程结束');
   // [LATENCY 2026-09-30] 把「是否顶穿 9:26」直接算成布尔值放进结果，
   //   由 index.js 落库到 bidding_fetch_log，排查时一眼可判（不用再换算 UTC）。
@@ -1306,7 +1347,7 @@ export async function runMorning(env) {
     today,
     // [LADDER-SRC 2026-11-03 用户口径] 同花顺「最近多板」(883410) 源数据条数 —— 前端第一页直接显示，
     //   用户拿它对齐炒股软件。⚠️ 与 constituentsCount（并入打标签/龙头后的抓取名单）是两个数。
-    ladderCount: ladderCount,
+    ladderCount: finalLadderCount,
     constituentsCount: constituents.length,
     numcatItems: items.length,
     metricsDates: dateKeys.length,
@@ -1328,8 +1369,13 @@ export async function runMorning(env) {
     // [AUC-SANE 2026-10-12] 竞价涨幅越界闸门的可观测性：0 = 本次上游数据干净（常态）
     aucPctOutOfRange: outOfRange.length,
     aucPctRepaired: aucRepair.fixed,
-    ladderDegraded: !!ladderDegraded,
-    completenessSummary: (ladderDegraded ? '⬇️ 降级运行（名单源不可用，名单未落库）；' : '') + completenessSummary,
+    ladderDegraded: !!finalLadderDegraded,
+    // [LADDER-FALLBACK 2026-11-06] 名单自愈结果：排障时一眼看清「名单到底是真名单还是兜底名单」。
+    ladderHealRecovered: !!(ladderHeal && ladderHeal.recovered),
+    ladderHealFallback: !!(ladderHeal && ladderHeal.fallback),
+    ladderHealWritten: ladderHeal ? ladderHeal.written : 0,
+    watchlistRowsWritten: finalWatchlistRows,
+    completenessSummary: ladderNote + completenessSummary,
     logs
   };
 }

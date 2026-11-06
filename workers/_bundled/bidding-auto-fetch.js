@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-11-05 14:45:55
+// 生成时间: 2026-11-06 02:09:17
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 4866（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 5151（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
@@ -1305,7 +1305,10 @@ async function readRange20TopForDate(env, date, limit) {
 //   必须【排除观察组壳行】——壳行是前端打开页面时自己写的（source=manual），
 //   若把它当成「名单已存在」，worker 重跑就会一行都不写（2026-09-15 P0 修复现场实测）。
 async function readAuctionWatchlistForDate(env, date) {
-  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?date=eq.' + date + '&select=stock,code,obs_auto_added';
+  // [LADDER-FALLBACK 2026-11-06] 额外返回 source：降级时挑「前一日正式成员」做兜底名单，
+  //   必须能把 source='range20'（前端 20 日补位票）/ 'manual'（观察组壳行）排除掉，
+  //   否则会把补位票当成「最近多板成分股」写进今天的常规组。
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?date=eq.' + date + '&select=stock,code,obs_auto_added,source';
   const resp = await sbFetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) return [];
   const data = await resp.json();
@@ -1315,7 +1318,8 @@ async function readAuctionWatchlistForDate(env, date) {
   return (data || []).map(r => ({
     name: (r.stock || '').trim(),
     code: r.code || '',
-    obs_auto_added: !!r.obs_auto_added
+    obs_auto_added: !!r.obs_auto_added,
+    source: (r.source || '').trim()
   })).filter(s => s.name);
 }
 
@@ -1878,10 +1882,12 @@ async function runAuctionExtrasPatch(env, opts) {
     return { ok: false, today, patched: 0, dates: [], logs, reason: '无可用交易日' };
   }
   dates.sort();
-  // [QUOTA 2026-09-11] 自动跑排除「今天」：当天四要素永远拿不到，见文件头说明。
+  // [EXTRAS-TRUTH 2026-11-05] 自动跑排除「今天」的真实理由是【分工】，不是「猫抓拿不到」：
+  //   猫抓 9:25 就可能给四要素（11-05 实测 58/58 全带 auc_vol_ratio），P0 主流程已经按当次响应
+  //   如实写入；本函数只负责历史日回填。把今天塞进来只会两条腿抢同一批字段 + 白烧 1 次额度。
   if (!includeToday) dates = dates.filter(d => d !== today);
   if (dates.length === 0) {
-    logs.push('[extras] ✅ 待补窗口内只剩当天（当天四要素猫抓不提供）→ 零请求直接返回');
+    logs.push('[extras] ✅ 待补窗口内只剩当天（当天由 P0 主流程 / 同花顺快照腿负责）→ 零请求直接返回');
     return { ok: true, today, patched: 0, dates: [], logs, reason: '只剩当天' };
   }
   const startYMD = dates[0].replace(/-/g, '');
@@ -2182,6 +2188,208 @@ async function runTodaySnapshotPatch(env, opts) {
   logs.push('[snapshot] ✅ 补写 ' + patchRows.length + ' 行当日竞价字段（auc_pct_chg/auc_turnover/volume；'
     + '竞价量比按口径不补，只认猫抓）');
   return { ok: true, today, patched: patchRows.length, logs };
+}
+
+
+// ────── bidding-auto-fetch/logic/ladder-heal.js ──────
+// ladder-heal.js — 「最近多板 / 883410 成分股」名单源失败时的补救（Logic 层）
+//
+// ============================================================================
+// [P0 2026-11-06 事故] 用户报障「早盘竞价看板最重要的每天股票入口没有票，只有龙头组和观察组」。
+//
+//   取证（bidding_fetch_log 01:25:35Z / 北京 09:25:35）：
+//     ⚠️ 883410 成分股获取失败（已重试）: fuyao ... 错误: Data source unavailable
+//     成分股数量: 0（⬇️ 降级模式：名单源不可用）
+//     步骤2：⬇️ 降级模式 → 跳过 auction_watchlist 名单落库（避免写入残缺名单）
+//   ⇒ 当天 auction_watchlist 只剩 17 行前端观察组壳行（obs_auto_added=true，前端明确不算正式成员），
+//     market_metrics 却有 78 行 ⇒ 「数据在库里、列表里一只票都没有」。
+//
+//   根因不是数据源冲突，也不是前一天的改动，而是 2026-09-15 那条降级保护：
+//     当时为了修「名单源 429 → 整轮 return → 三张表全空」，改成「降级也继续抓行情」，
+//     顺手加了「降级时绝不写 auction_watchlist」。它保住了竞价数据，却把【常规组】清空。
+//     §10 的「读取失败 ≠ 空数据」在这里被反过来用成了「读取失败 ⇒ 名单干脆不写」。
+//
+//   本模块的口径（两句话）：
+//     ① 名单源恢复 ⇒ 写【今天真实 883410 名单】；
+//     ② 名单源仍不可用 ⇒ 写【前一交易日正式成员】的兜底名单，并明确标 source='worker-fallback'，
+//        同时保留 ladderDegraded=true ⇒ 第一页「最近多板源条数」显示 `--`（可观测，不伪装成 0）。
+//     ⛔ 无论哪条路都不写「空名单」，也不把观察组壳行 / 20日补位票 / 标签票当正式成员。
+//
+//   【成本】0 次猫抓请求；降级时最多 1 次名单源重试；兜底只读已经读过的 Supabase 结果。
+//   【时点】runMorning 里的自愈排在 P0/P1/P2/P3 全部落库之后，绝不会顶穿 9:26 硬指标。
+// ============================================================================
+
+
+
+/** 883410 成分股正常在 55~95 只；少于这个数当成上游返回残缺，⛔ 绝不写进正式名单（§10） */
+const MIN_LADDER_ROWS = 30;
+
+/** 兜底名单至少要有这么多正式成员才值得写，否则宁可不写并报警 */
+const MIN_FALLBACK_ROWS = 20;
+
+/** 这些 source 不是「最近多板成分股」：20日补位票 / 前端观察组壳行 / 影子行 / 热点票 */
+const NON_FORMAL_SOURCES = new Set(['range20', 'manual', 'shadow', 'hot']);
+
+/** 9:25 名单锁定窗口（与 morning-workflow.js#fetchAndWriteWatchlist 同口径，唯一判据） */
+function isMorningWindow(nowBj) {
+  const mins = nowBj.getUTCHours() * 60 + nowBj.getUTCMinutes();
+  return mins >= 9 * 60 + 25 && mins <= 9 * 60 + 40;
+}
+
+/**
+ * 纯函数：上游名册 → auction_watchlist 行。
+ * 过滤无名/非法 code、按 name 去重；source 由调用方给（真实名单 'worker' / 兜底 'worker-fallback'）。
+ */
+function buildLadderWatchlistRows(ladder, today, nowIso, source) {
+  const out = [];
+  const seen = new Set();
+  (ladder || []).forEach(function (c) {
+    if (!c) return;
+    const name = String(c.name || '').trim();
+    const code = String(c.code || '').trim();
+    if (!name || !/^\d{6}$/.test(code) || seen.has(name)) return;
+    seen.add(name);
+    out.push({
+      date: today,
+      stock: name,
+      code: code,
+      source: source || 'worker',
+      obs_auto_added: false,
+      updated_at: nowIso,
+      updated_by: 'auto-fetch-worker'
+    });
+  });
+  return out;
+}
+
+/**
+ * 纯函数：降级兜底名单 = 前一交易日的【正式成员】，排除观察组 / 补位票 / 影子行。
+ * ⚠️ 只用已有读取结果（prevRows / todayRows），不额外发请求。
+ * ⚠️ 达到 minRows 才返回，否则返回 [] —— 宁可不写，也不写一份残缺名单（§10 宁缺勿错）。
+ */
+function pickFallbackWatchlistRows(prevRows, today, nowIso, minRows) {
+  const isFormal = function (r) {
+    if (!r) return false;
+    if (r.obs_auto_added) return false;                       // 观察组壳行
+    if (NON_FORMAL_SOURCES.has(String(r.source || '').trim())) return false;
+    return /^\d{6}$/.test(String(r.code || '').trim());      // 没 code 的行不能当正式成员
+  };
+  const out = [];
+  const seen = new Set();
+  (prevRows || []).forEach(function (r) {
+    if (!isFormal(r)) return;
+    const name = String(r.name || '').trim();
+    const code = String(r.code || '').trim();
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    out.push({
+      date: today,
+      stock: name,
+      code: code,
+      source: 'worker-fallback',
+      obs_auto_added: false,
+      updated_at: nowIso,
+      updated_by: 'auto-fetch-worker'
+    });
+  });
+  const need = minRows === undefined ? MIN_FALLBACK_ROWS : minRows;
+  return out.length >= need ? out : [];
+}
+
+/**
+ * 补写当日正式名单。三种调用方：
+ *   · runMorning 末尾（ladderDegraded=true）：先重试名单源，失败才 allowFallback；
+ *   · 手动 /fetch?point=ladder：上游恢复后只补名单，⛔ 不重算行情、⛔ 不烧猫抓额度；
+ *   · 不允许「读取当日名单失败」时往下写（§10 读取失败 ≠ 空）。
+ *
+ * @returns {Promise<{ok:boolean,today:string,written:number,recovered:boolean,fallback:boolean,ladderCount:number|null,logs:string[]}>}
+ */
+async function healLadderWatchlist(env, opts) {
+  const o = opts || {};
+  const logs = o.logs || [];
+  const today = o.today || beijingToday();
+  const nowIso = new Date().toISOString();
+  const out = {
+    ok: false, today: today, written: 0, recovered: false,
+    fallback: false, ladderCount: null, logs: logs
+  };
+
+  // 1) 当日名单现状（9:25 名单锁定的唯一依据）。读取失败必须停，不许当成空名单继续写。
+  let todayRows;
+  try {
+    todayRows = await readAuctionWatchlistForDate(env, today);
+  } catch (e) {
+    logs.push('[ladder-heal] ❌ 读取当日 auction_watchlist 失败 → 停止补写（避免误覆盖）: ' +
+      (e && e.message ? e.message : String(e)));
+    return out;
+  }
+  const officialNames = new Set(todayRows.filter(r => !r.obs_auto_added).map(r => r.name));
+
+  // 2) 重试名单源（降级时这是第二次；手动入口是第一次）
+  let ladder = null;
+  try {
+    const raw = await fetchLadderConstituents(env);
+    if (Array.isArray(raw) && raw.length >= MIN_LADDER_ROWS) {
+      ladder = raw;
+      out.recovered = true;
+      out.ladderCount = raw.length;
+      logs.push('[ladder-heal] ✅ 883410 名单源恢复，拿到 ' + raw.length + ' 只 → 写入今天真实名单');
+    } else {
+      logs.push('[ladder-heal] ⚠️ 883410 只返回 ' + (Array.isArray(raw) ? raw.length : 0) +
+        ' 只（<' + MIN_LADDER_ROWS + '），视为残缺，不写正式名单');
+    }
+  } catch (e) {
+    logs.push('[ladder-heal] ⚠️ 883410 重试仍失败: ' + (e && e.message ? e.message : String(e)));
+  }
+
+  // 3) 真实名单优先；仍失败才用前一交易日正式成员兜底
+  let rows;
+  if (ladder) {
+    rows = buildLadderWatchlistRows(ladder, today, nowIso, 'worker');
+  } else if (o.allowFallback) {
+    rows = pickFallbackWatchlistRows(o.prevRows, today, nowIso, MIN_FALLBACK_ROWS);
+    if (rows.length === 0) {
+      logs.push('[ladder-heal] ❌ 前一交易日也没有足量正式成员（<' + MIN_FALLBACK_ROWS +
+        ' 只）→ 本次不写名单，保留可观测的降级状态');
+      return out;
+    }
+    out.fallback = true;
+    logs.push('[ladder-heal] ⬇️ 名单源仍不可用 → 写入前一交易日正式成员兜底名单 ' + rows.length +
+      ' 行（source=worker-fallback，第一页源条数显示 `--`）');
+  } else {
+    logs.push('[ladder-heal] 名单源未恢复且本次不允许兜底 → 不写任何行（手动补名单请稍后重试）');
+    return out;
+  }
+
+  // 4) 9:25 名单锁定：窗口外只允许更新已存在的正式成员；
+  //    当日正式名单为空 ⇒ 说明 9:25 那轮根本没落库 ⇒ 允许全量补写（2026-09-15 既有口径）。
+  const inWin = isMorningWindow(beijingNow());
+  if (!inWin && officialNames.size > 0) {
+    const before = rows.length;
+    rows = rows.filter(r => officialNames.has(r.stock));
+    logs.push('[ladder-heal] 非 9:25 窗口：当日名单锁定，只更新已存在的 ' + rows.length +
+      ' 行，跳过 ' + (before - rows.length) + ' 只新成分股');
+  } else if (!inWin) {
+    logs.push('[ladder-heal] 非 9:25 窗口，但当日【正式名单】为空 ⇒ 视为 9:25 未成功，允许全量补写 ' +
+      rows.length + ' 行');
+  }
+
+  if (rows.length === 0) {
+    logs.push('[ladder-heal] 名单锁定后无行可写 → 不写');
+    return out;
+  }
+
+  try {
+    await upsertAuctionWatchlist(env, rows);
+  } catch (e) {
+    logs.push('[ladder-heal] ❌ 写入 auction_watchlist 失败: ' + (e && e.message ? e.message : String(e)));
+    return out;
+  }
+  out.written = rows.length;
+  out.ok = true;
+  logs.push('[ladder-heal] ✅ auction_watchlist 写入 ' + rows.length + ' 行（' +
+    (out.fallback ? '兜底名单' : '真实 883410 名单') + '）');
+  return out;
 }
 
 
@@ -2539,6 +2747,9 @@ function getCloseNameTone(closePct, ctx) {
 // P0 写入时已按当次响应如实落库，所以这里通常零请求返回；
 // 真正的兜底是 16:00 close 与次日窗口重刷。
 
+// [LADDER-FALLBACK 2026-11-06] 883410 名单源失败 ⇒ 常规组一只票都没有（P0）。
+//   降级不再「干脆不写名单」，改为末尾自愈：重试拿真实名单 / 仍失败写前一日正式成员兜底。
+
 // [PLAN-A 2026-09-10] 区间涨幅口径复用前端同一份纯函数（单一真相 §6）：
 // 窗口天数 / 复利累乘 / T 腿竞价占位判定 全部只此一份，前后端不会算出两个结果。
 // ⚠️ 跨目录引用会让 workers/_bundle.mjs 把该文件一并打进单文件产物（Cloudflare 复制粘贴部署），
@@ -2778,7 +2989,9 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
   //
   //   新行为：降级为「前一日名单 ∪ 打标签股票 ∪ 龙头名册」（三者都来自 Supabase，不依赖 fuyao）
   //   继续跑完 P0-②③ / P1 / P2，保证【当天的竞价数据仍能落库】——看板不空白是最高优先级。
-  //   ⚠️ 降级时【不写】auction_watchlist：名册拿不到就绝不伪造一份残缺的「当日名单」（§10 宁缺勿错）。
+  //   ⚠️ [LADDER-FALLBACK 2026-11-06] 降级时本步不写 auction_watchlist（不伪造残缺名册），
+  //      但【整轮末尾必须补名单】：重试真实 883410，仍失败则写明确标注的前一日正式成员兜底。
+  //      旧实现「降级就整轮不写名单」会让常规组全空，是最重要数据入口的 P0 事故。
   let ladderDegraded = false;
   const ladderConstituents = ladderRes.ok ? (ladderRes.v || []) : [];
   if (!ladderRes.ok) {
@@ -2971,12 +3184,20 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
     return { error: '抓取名单为空：883410 成分股不可用，且前一日名单/打标签/龙头名册/20日涨幅榜均无可用标的' };
   }
 
-  // [DEGRADE 2026-09-15] 降级模式下【不写】auction_watchlist：拿不到 883410 名册，就绝不伪造
-  //   一份残缺的「当日名单」（§10 宁缺勿错）。当天的竞价数据（market_metrics / 区间涨幅）
-  //   仍会照常落库 → 看板不空白；名单由后续重跑（/fetch?point=morning）补写。
+  // [DEGRADE 2026-09-15] 降级时【不在这里】写 auction_watchlist：绝不把残缺名册当 9:25 快照。
+  // ⚠️ [LADDER-FALLBACK 2026-11-06] 旧注释在这里写「名单由后续重跑 morning 补写」——**已废弃**：
+  //   ① 重跑整轮 morning 会再烧 1 次猫抓额度，还会在开盘后重算行情（口径风险）；
+  //   ② 更重要的是：不重跑时，当天的 auction_watchlist 就一直只有观察组壳行 ⇒
+  //      常规组【一只票都没有】（11-06 P0 事故，用户原话「这个应用最重要的数据都没有显示出来」）。
+  //   ⇒ 现在把「前一日正式成员」作为兜底候选带出去，由 runMorning 末尾的 healLadderWatchlist
+  //     先重试真实名单、失败才写兜底（⛔ 不写空名单、不伪造 source）。
   if (ladderDegraded) {
-    logs.push('步骤2：⬇️ 降级模式 → 跳过 auction_watchlist 名单落库（避免写入残缺名单）');
-    return { constituents, watchlistRows: [], nowIso: new Date().toISOString(), ladderDegraded: true, ladderCount };
+    logs.push('步骤2：⬇️ 降级模式 → 本步跳过名单落库；P0 行情照常落库，末尾统一做名单自愈');
+    const fallbackCandidates = (prevWlRes.ok && prevWlRes.v) || [];
+    return {
+      constituents, watchlistRows: [], nowIso: new Date().toISOString(),
+      ladderDegraded: true, ladderCount, fallbackCandidates
+    };
   }
 
   // 【BUG-FIX】不写 volume/yest_volume/change_pct/note/topics 字段：
@@ -3809,13 +4030,41 @@ async function runMorning(env) {
   const dateKeys = todayWrite.dateKeys.concat(histWrite.dateKeys);
 
   const { completenessSummary, todayMissing } = buildCompletenessSummary(today, missingDatesAfterNumcat, phantomDates, metricsWriteFailures, expectedDates, logs);
-  if (ladderDegraded) {
-    logs.push('⬇️ 本轮为降级运行：883410 名单源不可用，当日 auction_watchlist 名单未落库；' +
-      '竞价数据已按「前一日名单 ∪ 打标签 ∪ 龙头名册」正常落库。' +
-      '请在 9:25~9:40 之外手动重跑 /fetch?point=morning 补写正式名单。');
-  }
 
-  logs.push('完成: auction_watchlist ' + watchlistRows.length + ' 行, market_metrics ' + totalMetricsWritten + ' 行, stock_range_pct ' + rangeWritten + ' 行');
+  // ---- P4 [LADDER-FALLBACK 2026-11-06] 名单自愈（只在降级轮执行）----
+  // 放在 P0/P1/P2/P3 之后：竞价数据/区间涨幅已经全部落库，这一步再慢也不会顶穿 9:26 硬指标。
+  // ① 名单源在这几十秒内恢复 ⇒ 写今天真实 883410 名单；
+  // ② 仍不可用 ⇒ 写前一交易日正式成员兜底（source=worker-fallback），常规组绝不空着；
+  // ③ 两条都不成立 ⇒ 保持 ladderDegraded=true，第一页源条数显示 `--`（§10 不伪装成 0）。
+  let ladderHeal = null;
+  if (ladderDegraded) {
+    try {
+      ladderHeal = await healLadderWatchlist(env, {
+        today: today,
+        logs: logs,
+        prevRows: watchlistResult.fallbackCandidates || [],
+        allowFallback: true
+      });
+      mark('名单自愈 ' + (ladderHeal.recovered ? '真实名单' : ladderHeal.fallback ? '兜底名单' : '未补'));
+    } catch (e) {
+      logs.push('❌ 名单自愈异常（非致命，竞价数据不受影响）: ' + (e && e.message ? e.message : String(e)));
+    }
+    if (!ladderHeal || !ladderHeal.ok) {
+      logs.push('⬇️ 降级运行：883410 名单源不可用且本轮名单自愈未成功；竞价数据已正常落库。' +
+        '上游恢复后可手动补跑 /fetch?point=ladder（只补名单，不重算行情、不烧猫抓额度）。');
+    }
+  }
+  const finalLadderCount = ladderHeal && ladderHeal.recovered ? ladderHeal.ladderCount : ladderCount;
+  const finalLadderDegraded = ladderDegraded && !(ladderHeal && ladderHeal.recovered);
+  const finalWatchlistRows = watchlistRows.length + (ladderHeal ? ladderHeal.written : 0);
+  const ladderNote = !ladderDegraded ? ''
+    : (ladderHeal && ladderHeal.recovered)
+      ? '✅ 名单源二次尝试已恢复（真实 883410 ' + finalLadderCount + ' 只）；'
+      : (ladderHeal && ladderHeal.fallback)
+        ? '⬇️ 降级运行（名单源不可用，已写前一日正式成员兜底名单）；'
+        : '⬇️ 降级运行（名单源不可用，名单未落库）；';
+
+  logs.push('完成: auction_watchlist ' + finalWatchlistRows + ' 行, market_metrics ' + totalMetricsWritten + ' 行, stock_range_pct ' + rangeWritten + ' 行');
   mark('全流程结束');
   // [LATENCY 2026-09-30] 把「是否顶穿 9:26」直接算成布尔值放进结果，
   //   由 index.js 落库到 bidding_fetch_log，排查时一眼可判（不用再换算 UTC）。
@@ -3829,7 +4078,7 @@ async function runMorning(env) {
     today,
     // [LADDER-SRC 2026-11-03 用户口径] 同花顺「最近多板」(883410) 源数据条数 —— 前端第一页直接显示，
     //   用户拿它对齐炒股软件。⚠️ 与 constituentsCount（并入打标签/龙头后的抓取名单）是两个数。
-    ladderCount: ladderCount,
+    ladderCount: finalLadderCount,
     constituentsCount: constituents.length,
     numcatItems: items.length,
     metricsDates: dateKeys.length,
@@ -3851,8 +4100,13 @@ async function runMorning(env) {
     // [AUC-SANE 2026-10-12] 竞价涨幅越界闸门的可观测性：0 = 本次上游数据干净（常态）
     aucPctOutOfRange: outOfRange.length,
     aucPctRepaired: aucRepair.fixed,
-    ladderDegraded: !!ladderDegraded,
-    completenessSummary: (ladderDegraded ? '⬇️ 降级运行（名单源不可用，名单未落库）；' : '') + completenessSummary,
+    ladderDegraded: !!finalLadderDegraded,
+    // [LADDER-FALLBACK 2026-11-06] 名单自愈结果：排障时一眼看清「名单到底是真名单还是兜底名单」。
+    ladderHealRecovered: !!(ladderHeal && ladderHeal.recovered),
+    ladderHealFallback: !!(ladderHeal && ladderHeal.fallback),
+    ladderHealWritten: ladderHeal ? ladderHeal.written : 0,
+    watchlistRowsWritten: finalWatchlistRows,
+    completenessSummary: ladderNote + completenessSummary,
     logs
   };
 }
@@ -4601,6 +4855,8 @@ async function runRangePctHeal(env, opts) {
 // [RANGE-HEAL 2026-11-04] 区间涨幅云端自愈：9:25 那次猫抓 daily 失败时，
 //   9:27 那一趟把 stock_range_pct 补回来 —— 用户关电脑/用手机也能出票（根因见文件头）。
 
+// [LADDER-FALLBACK 2026-11-06] 只补「最近多板 883410 正式名单」，不碰行情/猫抓/区间涨幅。
+
 // [RUNLOG 2026-09-30] 把每轮的完整日志（含 ⏱ 埋点）落库到 bidding_fetch_log，
 //   否则 CF Worker 的埋点只进 Cloudflare Dashboard，事后无法复盘「9:26 为什么没数据」。
 
@@ -4685,6 +4941,11 @@ async function persistRunResult(env, point, result) {
       //   前端 logic/auction/ladder-source.js 读这个字段显示在第一页（用户拿它对炒股软件）。
       //   ⚠️ null = 本轮没走到那一步（如名单落库失败提前返回）⇒ 前端显示 `--`，⛔ 不补 0。
       ladderCount: r.ladderCount === undefined ? null : r.ladderCount,
+      // [LADDER-FALLBACK 2026-11-06] 名单自愈留痕：真名单恢复 / 兜底 / 写入行数
+      ladderHealRecovered: !!r.ladderHealRecovered,
+      ladderHealFallback: !!r.ladderHealFallback,
+      ladderHealWritten: r.ladderHealWritten === undefined ? null : r.ladderHealWritten,
+      watchlistRowsWritten: r.watchlistRowsWritten === undefined ? null : r.watchlistRowsWritten,
       todayDataMissing: !!r.todayDataMissing,
       todayMetricsWritten: r.todayMetricsWritten === undefined ? null : r.todayMetricsWritten,
       metricsWritten: r.metricsWritten === undefined ? null : r.metricsWritten,
@@ -4794,6 +5055,30 @@ async function dispatch(point, env, logs, opts) {
     await persistRunResult(env, point, result);
     return result;
   }
+  if (point === 'ladder') {
+    // [LADDER-FALLBACK 2026-11-06] 上游名单源 9:25 临时挂了之后，【只补正式名单】的恢复入口。
+    // ⛔ 绝不重跑 runMorning：那样会在开盘后重算行情、再烧 1 次猫抓额度（用户硬口径：额度最贵）。
+    // ⛔ 不写兜底名单：手动补名单必须用「今天真实 883410」，拿不到就如实返回 ok=false。
+    const logs = [];
+    const heal = await healLadderWatchlist(env, {
+      today: (opts && opts.date) || '',
+      logs: logs,
+      allowFallback: false
+    });
+    const result = {
+      ok: heal.ok,
+      today: heal.today,
+      recovered: heal.recovered,
+      written: heal.written,
+      ladderCount: heal.ladderCount,
+      ladderDegraded: !heal.recovered,
+      logs: logs
+    };
+    console.log('[auto-fetch] ladder 名单补写: ok=' + result.ok + ' written=' + result.written +
+      ' count=' + result.ladderCount + ' 日志=' + JSON.stringify(logs));
+    await persistRunResult(env, point, result);
+    return result;
+  }
   console.error('[auto-fetch] 未知触发点:', point);
   return { ok: false, error: '未知触发点: ' + point };
 }
@@ -4838,8 +5123,8 @@ export default {
           return jsonResponse({ ok: false, error: '当前北京时间不在抓取时段（9:25~9:40=morning，15:00~16:30=close）' });
         }
       }
-      if (!['morning', 'close', 'extras', 'snapshot'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot 可附 &date=YYYY-MM-DD）' });
+      if (!['morning', 'close', 'extras', 'snapshot', 'ladder'].includes(point)) {
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|ladder|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot / ladder 可附 &date=YYYY-MM-DD）' });
       }
       try {
         const result = await dispatch(point, env, [], {
