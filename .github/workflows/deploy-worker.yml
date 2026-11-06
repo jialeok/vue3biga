@@ -1,11 +1,11 @@
 name: Deploy Cloudflare Worker (bidding-auto-fetch)
 
 # [WORKER-CI 2026-11-06] 目的：把「改完 worker 还要去 Cloudflare Dashboard 手动粘一遍」
-# 这件事彻底取消。push 到 main 且碰到 worker 相关文件 ⇒ 自动测试 + 自动部署。
+# 这件事彻底取消。push 到 main 且碰到 worker 相关文件 ⇒ 自动测试 + 自动部署 + 线上复核。
 #
 # ⚠️ 一次性准备（在 GitHub 仓库里做一次就够）：
 #   Settings → Secrets and variables → Actions → New repository secret
-#     CLOUDFLARE_API_TOKEN   = 有 Workers Scripts:Edit 权限的 API Token
+#     CLOUDFLARE_API_TOKEN   = 有 Workers Scripts:Edit + Read 权限的 API Token
 #     CLOUDFLARE_ACCOUNT_ID  = 0ec12a103051054d51a92198fb98397b
 #
 # 🔴 部署会按下述 toml 的 [triggers] **完全覆盖线上 cron**。
@@ -17,6 +17,15 @@ name: Deploy Cloudflare Worker (bidding-auto-fetch)
 #    ⛔ 改 cron 前必须先核线上，否则会把「7/30 断抓」那个根因再造一遍。
 #
 # ⛔ 不要加 paths 之外的全量触发：前端改动由 deploy-pages.yml 负责，两边各管各的。
+#
+# [FAKE-GREEN 2026-11-06] 事故与三道闸：
+#   事故：wrangler@4.158.0 要求 Node >=22，CI 却在 Node 20 上跑；wrangler 打印
+#         「requires at least Node.js v22」直接退出，但 `... | tee` 没有 pipefail，
+#         tee 返回 0 ⇒ 三个 job 全绿，线上脚本一行没动（仍是 2 条 cron、无新函数）。
+#   闸①：三个 job 统一 Node 22。
+#   闸②：部署步骤 set -o pipefail + 断言日志里真有 "Current Version ID"。
+#   闸③：部署后直接查 Cloudflare API，断言线上脚本含本轮新标识符、cron 与 toml 一致。
+#   ⛔ 三道闸都不许用 continue-on-error / `|| true` 软化，否则假绿原样回归。
 
 on:
   push:
@@ -25,8 +34,10 @@ on:
       - 'workers/bidding-auto-fetch/**'
       - 'src/logic/auction/range-window.js'          # worker 直接 import 的纯函数（跨目录引用）
       - 'workers/wrangler-bidding-auto-fetch.toml'
-  # ⚠️ 刻意【不】把本文件自己放进 paths：新增这份 workflow 的那次 push 不应该顺带触发部署。
-  #    配好 Secrets 后，用 Actions → Run workflow 手动跑第一次，验证通过后再交给 push 自动触发。
+      - 'workers/verify-deploy.mjs'
+      # [FAKE-GREEN 2026-11-06] 本文件自身也纳入触发：改了部署流水线却没重新部署，
+      #   等于把「CI 绿了但线上是旧代码」永久固化。首次新增 workflow 时用的是手动 dispatch。
+      - '.github/workflows/deploy-worker.yml'
   workflow_dispatch:
 
 concurrency:
@@ -46,7 +57,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # wrangler@4.158.0 要求 Node >=22，三个 job 必须统一，别再退回 20。
+          node-version: 22
           cache: npm
 
       - name: 安装依赖
@@ -64,7 +76,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: 检查 Secrets 是否已配置（缺了直接给出可读报错）
         env:
@@ -90,9 +102,25 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          npx --yes wrangler@4.158.0 deploy --config wrangler-bidding-auto-fetch.toml | tee /tmp/deploy.log
+          set -euo pipefail
+          # 2>&1 把 wrangler 的错误也收进日志；pipefail 让它的退出码透出给 job
+          npx --yes wrangler@4.158.0 deploy --config wrangler-bidding-auto-fetch.toml 2>&1 | tee /tmp/deploy.log
           echo "---- 本次部署摘要 ----"
-          grep -E "Current Version ID|schedule:|Total Upload" /tmp/deploy.log || true
+          grep -E "Current Version ID|Uploaded |Deployed |Total Upload" /tmp/deploy.log || true
+          echo "---- 部署结果断言 ----"
+          if ! grep -q "Current Version ID" /tmp/deploy.log; then
+            echo "::error::wrangler 未打印 Current Version ID ⇒ 视为【未真正部署】，拒绝放行"
+            exit 1
+          fi
+          echo "✅ wrangler 已确认部署出新的 Version ID"
+
+      # 闸③：直接问 Cloudflare「线上现在是什么」。CI 绿了就必须能在线上脚本里
+      #   找到本轮新增函数，且 cron 恰好是 toml 里那 3 条。
+      - name: 线上复核（脚本内容 + cron 条数）
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node workers/verify-deploy.mjs
 
   bundle-artifact:
     name: 重建 _bundled 兜底产物（仅产出 artifact，不回写仓库）
@@ -103,18 +131,16 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       # _bundled 的用途只剩两个：① Dashboard 手动粘贴的基准 ② 部署前自检。
       # CI 里只产出 artifact 供下载，⛔ 不自动 commit 回仓库（避免部署流水线污染历史）。
-      - name: 打包
-        run: node workers/_bundle.mjs
-
-      - name: 自检（顶层重名必须 0 处）
+      - name: 打包并自检（顶层重名必须 0 处）
         run: |
-          grep -q "顶层重名 0 处" <(node workers/_bundle.mjs) \
-            && echo "✅ 打包自检通过" \
-            || echo "::warning::打包自检未命中「顶层重名 0 处」，请检查 _bundle.mjs 输出"
+          set -euo pipefail
+          node workers/_bundle.mjs | tee /tmp/bundle.log
+          grep -q "顶层重名 0 处" /tmp/bundle.log
+          echo "✅ 打包自检通过"
 
       - uses: actions/upload-artifact@v4
         with:
