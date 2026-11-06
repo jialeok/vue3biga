@@ -59,7 +59,23 @@ jobs:
             echo "::error::云端自愈返回 HTTP ${CODE}"
             exit 1
           fi
-          printf '%s' "${JSON}" | grep -q '"ok":true' || {
-            echo "::error::云端自愈未返回 ok:true"
-            exit 1
-          }
+          # [HEAL-PARSE 2026-11-06] 原来用 grep -q '"ok":true' 判成功，
+          #   这依赖 Edge 恰好输出紧凑 JSON；一旦改成格式化输出（"ok": true）就会「假红」。
+          #   实测 2026-11-06 Edge 返回紧凑 JSON（ok:true）/ HTTP 200 / 21.4s，
+          #   但判据必须是结构化的：解析 JSON 后判 j.ok === true，顺带把 errors 打进日志。
+          printf '%s' "${JSON}" > /tmp/heal.json
+          node -e '
+            const fs = require("node:fs");
+            const raw = fs.readFileSync("/tmp/heal.json", "utf8");
+            let j;
+            try { j = JSON.parse(raw); }
+            catch (e) {
+              console.error("::error::云端自愈返回非 JSON: " + raw.slice(0, 300));
+              process.exit(1);
+            }
+            if (j.ok !== true) {
+              console.error("::error::云端自愈未返回 ok:true，errors=" + JSON.stringify(j.errors || []));
+              process.exit(1);
+            }
+            console.log("✅ 云端自愈成功 today=" + j.today + " errors=" + JSON.stringify(j.errors || []));
+          '
