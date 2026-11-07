@@ -1,0 +1,64 @@
+# [JIWANG-SHOUGU-CLOUD 2026-11-08] Worker 手动回补的纯云端入口
+#   背景：本机 DNS 对 *.workers.dev 有污染，且 FETCH_TOKEN 是 Cloudflare Secret（只写不可读），
+#        所以过去「立即回补」只能靠人手在 Dashboard / 浏览器里点。
+#   本工作流把这一步搬到 GitHub Actions：Actions 的网络可直达 workers.dev，
+#   令牌放在仓库 Secret，用户在 Actions 页面点 Run workflow 即可，⛔ 不需要本机、不需要粘贴。
+#   常用 point：
+#     jiwang   → 回补 jiwang_data.shouguJieguo（10 日窗口，只填空、不覆盖人工修正）
+#     ladder26 → 「最近多板 883410」名单二次确认
+#     range20  → 20 日涨幅补位
+#     extras   → 竞价四要素补漏
+name: Worker 云端手动回补
+
+on:
+  workflow_dispatch:
+    inputs:
+      point:
+        description: 'point: jiwang | ladder26 | range20 | extras | morning | close | snapshot | ladder'
+        required: true
+        default: 'jiwang'
+      confirm:
+        description: '填 YES 才会真正执行'
+        required: true
+        default: 'YES'
+
+permissions:
+  contents: read
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 校验
+        if: ${{ inputs.confirm != 'YES' }}
+        run: |
+          echo "::error::confirm 必须为 YES"
+          exit 1
+
+      - name: 触发 Worker
+        env:
+          TOKEN: ${{ secrets.WORKER_FETCH_TOKEN }}
+          POINT: ${{ inputs.point }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TOKEN" ]; then
+            echo "::error::仓库 Secret WORKER_FETCH_TOKEN 未设置"
+            exit 1
+          fi
+          URL="https://bidding-auto-fetch.cctopid.workers.dev/fetch?point=${POINT}&token=${TOKEN}"
+          echo "触发 ${POINT}"
+          code="$(curl -sS -o /tmp/worker-resp.json -w '%{http_code}' --max-time 180 "$URL")"
+          echo "HTTP ${code}"
+          cat /tmp/worker-resp.json
+          echo
+          if [ "$code" != "200" ]; then
+            echo "::error::Worker 返回非 200 ⇒ 视为失败，不允许假绿"
+            exit 1
+          fi
+          node -e '
+            const fs = require("fs");
+            const j = JSON.parse(fs.readFileSync("/tmp/worker-resp.json", "utf8"));
+            if (j.ok !== true) { console.error("Worker 业务失败: " + JSON.stringify(j)); process.exit(1); }
+            console.log("Worker 业务成功: written=" + (j.written ?? "n/a"));
+            (j.logs || []).forEach(l => console.log("  " + l));
+          '
