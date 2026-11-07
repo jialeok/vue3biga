@@ -47,6 +47,10 @@ import { runDailyLegsHeal } from './logic/daily-legs-heal.js';
 // [BIDDING-CLOSE-CLOUD 2026-11-07] 竞价变化看板「收盘」列纯云端幂等落库：
 //   以前只能靠浏览器自动填表 + 人工点保存，漏点一天 ⇒ 次日「昨多板K线」断链。
 import { runBiddingCloseWrite } from './logic/bidding-close-write.js';
+// [JIWANG-SHOUGU-CLOUD 2026-11-08] 「昨收盘结果(跌:涨)」纯云端落库 + 10 日窗口历史回补。
+//   原来只靠另一个账号/查不到的 worker-b 在 16:00 写下一交易日，且日志带不存在的 worker 列被吞，
+//   11-05 16:00 那轮没跑 ⇒ jiwang_data 缺 11-06 整行 ⇒ 昨日跌涨/昨收盘结果/昨日情绪一起空。
+import { runJiwangCloseWrite } from './logic/jiwang-close-write.js';
 // [RUNLOG 2026-09-30] 把每轮的完整日志（含 ⏱ 埋点）落库到 bidding_fetch_log，
 //   否则 CF Worker 的埋点只进 Cloudflare Dashboard，事后无法复盘「9:26 为什么没数据」。
 import { writeRunLog } from './data/supabase-write.js';
@@ -190,6 +194,14 @@ async function runSnapshotPatchUntilFinal(env, date) {
 }
 
 async function dispatch(point, env, logs, opts) {
+  // [JIWANG-SHOUGU-CLOUD 2026-11-08] 手动入口：立即回补昨收盘结果（含历史缺口），
+  //   不改变任何已有非空值；16:00 close 轮也会自动跑一次。
+  if (point === 'jiwang') {
+    const r = await runJiwangCloseWrite(env);
+    console.log('[auto-fetch] jiwang 昨收盘结果云端落库: ok=' + r.ok + ' written=' + r.written +
+      ' 日志=' + JSON.stringify(r.logs || []));
+    return r;
+  }
   if (point === 'morning') {
     const result = await runMorning(env);
     console.log('[auto-fetch] runMorning 完成 ok=' + result.ok + ' completenessSummary=' + (result.completenessSummary || ''));
@@ -233,6 +245,19 @@ async function dispatch(point, env, logs, opts) {
     } catch (e) {
       // 失败必须可见（§10），但绝不拖垮已经成功的 runClose
       const msg = '[bidding-close] ❌ 云端落库异常（不影响收盘主流程）: ' + (e && e.message);
+      if (Array.isArray(result.logs)) result.logs.push(msg);
+      console.error('[auto-fetch] ' + msg);
+    }
+    // [JIWANG-SHOUGU-CLOUD 2026-11-08] 昨收盘结果（跌:涨）云端落库 + 10 日窗口回补历史缺口。
+    //   放在最后：与上面的竞价看板收盘列互不依赖，任一失败都不连坐。
+    try {
+      const jw = await runJiwangCloseWrite(env);
+      result.jiwangShouguWritten = jw.written;
+      if (Array.isArray(result.logs)) result.logs.push.apply(result.logs, (jw.logs || []).map(l => '[jiwang-shougu] ' + l));
+      console.log('[auto-fetch] close 昨收盘结果云端落库: ok=' + jw.ok + ' written=' + jw.written +
+        ' 日志=' + JSON.stringify(jw.logs || []));
+    } catch (e) {
+      const msg = '[jiwang-shougu] ❌ 云端落库异常（不影响收盘主流程）: ' + (e && e.message);
       if (Array.isArray(result.logs)) result.logs.push(msg);
       console.error('[auto-fetch] ' + msg);
     }
@@ -415,8 +440,18 @@ export default {
           return jsonResponse({ ok: false, error: '当前北京时间不在抓取时段（9:25~9:40=morning，15:00~16:30=close）' });
         }
       }
-      if (!['morning', 'close', 'extras', 'snapshot', 'ladder', 'ladder26', 'range20'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|ladder|ladder26|range20|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot / ladder / ladder26 / range20 可附 &date=YYYY-MM-DD）' });
+      if (!['morning', 'close', 'extras', 'snapshot', 'ladder', 'ladder26', 'range20', 'jiwang'].includes(point)) {
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|ladder|ladder26|range20|jiwang|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot / ladder / ladder26 / range20 可附 &date=YYYY-MM-DD；jiwang 立即回补昨收盘结果）' });
+      }
+      // [JIWANG-SHOUGU-CLOUD 2026-11-08] 回补不受「当前时间必须在 9:25~16:30」限制，
+      //   否则周末/夜间出事故时无法立即修复历史缺口。
+      if (point === 'jiwang') {
+        try {
+          const r = await dispatch('jiwang', env, [], {});
+          return jsonResponse(r, r.ok ? 200 : 500);
+        } catch (e) {
+          return jsonResponse({ ok: false, error: e.message, stack: e.stack }, 500);
+        }
       }
       try {
         const result = await dispatch(point, env, [], {

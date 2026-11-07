@@ -54,6 +54,14 @@
         >
           {{ display.shouguJieguo || '-' }}
         </div>
+        <div
+          v-if="shouguGap"
+          class="kxian-gap-note"
+          :title="'「昨收盘结果(跌:涨)」由 16:00 云端收盘轮写入；缺它则「昨日跌涨」「昨日情绪」也无法推导。可在本看板手工补录，或等下个交易日 16:00 由云端用猫抓 10 日窗口自动回补。'"
+          style="font-size:10px;line-height:1.25;color:#b45309;margin-top:2px"
+        >
+          {{ shouguGap }}
+        </div>
       </div>
       <div class="jiwang-item">
         <div class="jiwang-label">
@@ -508,6 +516,19 @@ const kxianDisplay = computed(() => {
 
 /** [KXIAN-GAP 2026-11-07] 缺口原因：只展示、不落库、不进 form（§6/§10） */
 const kxianGap = computed(() => autoDisplay.value.kxianGap || '');
+
+/**
+ * [JIWANG-SHOUGU-CLOUD 2026-11-08] 「昨日跌涨 / 昨收盘结果 / 昨日情绪」同源三字段缺口提示。
+ *   三者都由当天 jiwang_data[date].shouguJieguo 驱动（后者由 16:00 收盘轮写下一交易日）。
+ *   以前缺行时前台只给三个 '-'，用户只能猜「是不是 1:6 没识别 / 是不是前一天没数据」。
+ *   ⛔ 只提示、不造值、不落库、不进 form（§10）。
+ */
+const shouguGap = computed(() => {
+  const v = display.value && display.value.shouguJieguo;
+  return (v === null || v === undefined || String(v).trim() === '')
+    ? '缺「昨收盘结果(跌:涨)」'
+    : '';
+});
 
 /**
  * [JIWANG 2026-10-23 三版] 把 K 线链条按 '+' 拆成段，交给模板分段渲染。

@@ -38,7 +38,9 @@ const REQUIRED = [
   'ladder26',               // 新 cron 分发点
   'metrics_close',          // 云端收盘腿标记（本机脚本写的是 src='metrics'）
   'runBiddingCloseWrite',   // [2026-11-07] 竞价变化看板「收盘」列纯云端幂等落库
-  'computeBiddingCloseValues' // 收盘取值口径：前端 / Worker 共用同一份纯函数
+  'computeBiddingCloseValues', // 收盘取值口径：前端 / Worker 共用同一份纯函数
+  'runJiwangCloseWrite',    // [2026-11-08] 昨收盘结果(跌:涨) 云端落库 + 10 日窗口回补
+  'alignWindowTargets'      // 用真实交易日窗口推「下一交易日」，0 额外请求
 ];
 
 async function cf(url, accept) {
