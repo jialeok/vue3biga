@@ -259,3 +259,67 @@ export function deriveGuanchaByKxian(series) {
     isFirstZhongyang: false
   };
 }
+
+/**
+ * [KXIAN-GAP 2026-11-07] 「昨多板K线」序列 → 前台两格 + 缺口诊断（单一出口）。
+ *
+ * 为什么必须独立于 deriveGuanchaByKxian：
+ *   后者在「本体认不出」或「中阳/小阳但上个交易日缺失」时**整体返回 null**
+ *   （不拿缺失冒充真值，§10 是对的），但调用方把 null 当成「整条序列都不可用」，
+ *   连 `buildKxianPrefix` 本来能算出的前序 K 线也一起丢掉 ⇒ 前台只剩一个 '-'，
+ *   用户既看不到已有数据，也看不出缺哪天，还会误以为是「昨日跌涨比例没识别出来」。
+ *
+ * 实测（2026-11-05 看板，生产库取证）：
+ *   bidding_data['2026-11-04']['最近多板%'].close 整天为空 ⇒ series[0].label=''；
+ *   jiwang_data 近 12 天只有 10-22 / 10-23 存过 kxian ⇒ 继承链也拿不到；
+ *   series[1]=11-03 十字星-0.77%、series[2]=11-02 小阳1.88% 其实是有的。
+ *
+ * ⇒ 把「观察判定」与「序列展示」拆开：观察该空就空（⛔ 不猜），
+ *   但能算出的前序序列必须交出去，并把缺口日期明明白白报出来（§10 读取失败 ≠ 空数据）。
+ *
+ * @param {Array<{ymd?:string, label:string}>} series 时间【倒序】
+ * @returns {{
+ *   kxian:string, kxianPrefix:string, guancha:string,
+ *   isFirstZhongyang:boolean, missingDates:string[], gapNote:string
+ * }}
+ */
+export function viewKxianSeries(series) {
+  const list = Array.isArray(series) ? series : [];
+  const first = list[0] || {};
+  const body = kxianKind(first.label);
+  const derived = deriveGuanchaByKxian(list);
+
+  if (derived) {
+    return {
+      kxian: String(first.label == null ? '' : first.label).trim(),
+      kxianPrefix: derived.kxianPrefix,   // ⚠️ 首次中阳这里是「第一次」，不能被 buildKxianPrefix 覆盖
+      guancha: derived.guancha,
+      isFirstZhongyang: derived.isFirstZhongyang,
+      missingDates: [],
+      gapNote: ''
+    };
+  }
+
+  // 推导不出观察：两种成因分别点名，⛔ 不拿 0 / '-' 冒充
+  const missingDates = [];
+  let gapNote = '';
+  if (!body) {
+    const d = first.ymd || '前一交易日';
+    missingDates.push(d);
+    gapNote = '缺 ' + d + '「最近多板%」收盘涨幅';
+  } else {
+    const prev = list[1] || {};
+    const d = prev.ymd || '再前一交易日';
+    missingDates.push(d);
+    gapNote = '缺 ' + d + ' K线，无法判断第几次';
+  }
+
+  return {
+    kxian: body ? String(first.label).trim() : '',
+    kxianPrefix: buildKxianPrefix(list),   // 本体缺失不该让前两天一起消失
+    guancha: '',
+    isFirstZhongyang: false,
+    missingDates: missingDates,
+    gapNote: gapNote
+  };
+}

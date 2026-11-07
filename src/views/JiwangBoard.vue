@@ -73,6 +73,16 @@
           <template v-else>
             -
           </template>
+          <!-- [KXIAN-GAP 2026-11-07] 缺口必须可见：以前只给一个 '-'，用户无从判断
+               是「没抓到」「比例没识别」还是「那天收盘没录」。这里点名具体日期与补录位置。 -->
+          <div
+            v-if="kxianGap"
+            class="kxian-gap-note"
+            :title="kxianGap + '；请到竞价变化看板补录该日「最近多板%」收盘列，补完自动重算'"
+            style="font-size:10px;line-height:1.25;color:#b45309;margin-top:2px"
+          >
+            {{ kxianGap }}
+          </div>
         </div>
       </div>
       <div class="jiwang-item">
@@ -419,7 +429,9 @@ import { getStats, autoCalculateConsecutiveDays, renderCircleStats, getKxianType
 // [JIWANG 2026-10-23] 「昨收盘结果 → 昨日跌涨简化比 / 昨日情绪节点」纯逻辑下沉到 Logic 层（§3/§4）
 import { deriveFromShougu, parseShouguRatio, ratioToDiezhang, ratioToQingxu, SHOUGU_RATIO_LABELS } from '../logic/jiwang/ratio-nodes.js';
 // [JIWANG 2026-10-23] 「昨多板K线 → 观察」「9:25/9:20 → 过程结果 + 得出结论」纯逻辑下沉到 Logic 层
-import { KXIAN_LOOKBACK_DAYS, GUANCHA_PROCESS, GUANCHA_RESULT, deriveGuanchaByKxian, formatKxianWithPrefix } from '../logic/jiwang/kxian-trend.js';
+// [KXIAN-GAP 2026-11-07] 改走 viewKxianSeries：它在「本体缺失」时仍交出前序序列 + 缺口日期，
+//    ⛔ 不能继续直接用 deriveGuanchaByKxian —— 那个函数遇缺口整体返回 null，会把前两天一起吞掉。
+import { KXIAN_LOOKBACK_DAYS, GUANCHA_PROCESS, GUANCHA_RESULT, viewKxianSeries, formatKxianWithPrefix } from '../logic/jiwang/kxian-trend.js';
 import { deriveGuochengAndJielun } from '../logic/jiwang/auction-derive.js';
 import { getPreviousTradingDay } from '../logic/date/trading-day-helpers.js';
 import { renderConsecutiveUp } from '../logic/tagTitles/helpers.js';
@@ -443,7 +455,7 @@ const modalActive = ref(false);
  *   真正的落库仍然只在用户点「保存看板」时发生（见 save()）。
  */
 const autoDisplay = ref({
-  diezhang: '', qingxu: '', kxian: '', kxianPrefix: '',
+  diezhang: '', qingxu: '', kxian: '', kxianPrefix: '', kxianGap: '',
   guancha: '', guochengJieguo: '', jielun: ''
 });
 
@@ -483,13 +495,19 @@ const kxianDisplay = computed(() => {
   const d = display.value;
   // [JIWANG 2026-10-23] 缺值时用前一交易日「最近多板%」收盘涨幅推算的 K 线型态补上（只展示、不落库）
   const k = d.kxian || autoDisplay.value.kxian;
-  if (!k) return '-';
+  const p = d.kxianPrefix || autoDisplay.value.kxianPrefix;
+  // [KXIAN-GAP 2026-11-07] 原本 `if (!k) return '-'` 会把「本体缺失但前序序列算出来了」
+  //   一口吞成一个横杠。现在只要还有前缀就照实显示，缺口原因由下方 kxianGap 单独标注。
+  if (!k) return p || '-';
   // [JIWANG 2026-10-23 二版] 前缀拼接统一走 logic 层单一出口：
   //   「第一次」⇒ 第一次中阳 2.5%（标记词，不重复 K 线名）
   //   序列前缀 ⇒ 十字星0.5%+小阳1.2%+中阳2.5%
   //   ⛔ 不要在这里自己写 prefix + '+' + k，否则「第一次」会被拼成「第一次+中阳2.5%」
-  return formatKxianWithPrefix(d.kxianPrefix || autoDisplay.value.kxianPrefix, k);
+  return formatKxianWithPrefix(p, k);
 });
+
+/** [KXIAN-GAP 2026-11-07] 缺口原因：只展示、不落库、不进 form（§6/§10） */
+const kxianGap = computed(() => autoDisplay.value.kxianGap || '');
 
 /**
  * [JIWANG 2026-10-23 三版] 把 K 线链条按 '+' 拆成段，交给模板分段渲染。
@@ -645,7 +663,7 @@ function getTodayMultiBoardRow() {
  */
 function computeAutoDisplay(d) {
   const out = {
-    diezhang: '', qingxu: '', kxian: '', kxianPrefix: '',
+    diezhang: '', qingxu: '', kxian: '', kxianPrefix: '', kxianGap: '',
     guancha: '', guochengJieguo: '', jielun: ''
   };
 
@@ -657,13 +675,15 @@ function computeAutoDisplay(d) {
   }
 
   // ② 昨多板K线 + 观察（中阳/小阳要看前面几根，所以取序列）
+  //    [KXIAN-GAP 2026-11-07] 改走 viewKxianSeries：前一交易日「最近多板%」收盘涨幅没录时，
+  //    「观察」照样留空不猜（§10），但已能算出的前序序列必须交出去 + 点名缺口日期。
+  //    ⛔ 旧写法 deriveGuanchaByKxian 一遇缺口就整体 null ⇒ 前两天一起消失、前台只剩 '-'。
   const series = getMultiBoardKxianSeries(KXIAN_LOOKBACK_DAYS);
-  if (!d.kxian && series.length && series[0].label) out.kxian = series[0].label;
-  const kres = deriveGuanchaByKxian(series);
-  if (kres) {
-    out.guancha = kres.guancha;
-    out.kxianPrefix = kres.kxianPrefix;
-  }
+  const kxianView = viewKxianSeries(series);
+  if (!d.kxian && kxianView.kxian) out.kxian = kxianView.kxian;
+  out.kxianPrefix = kxianView.kxianPrefix;
+  out.guancha = kxianView.guancha;
+  out.kxianGap = kxianView.gapNote;
 
   // ③ 过程结果 + 得出结论
   //   ⚠️ 只在「观察」最终落在【最近多板过程/结果】时才自动填：

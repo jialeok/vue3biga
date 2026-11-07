@@ -8,7 +8,8 @@ import {
   kxianKind,
   buildKxianPrefix,
   formatKxianWithPrefix,
-  deriveGuanchaByKxian
+  deriveGuanchaByKxian,
+  viewKxianSeries
 } from './kxian-trend.js';
 import {
   GUOCHENG_UP,
@@ -289,6 +290,79 @@ describe('auction-derive / deriveGuochengAndJielun', () => {
     // 9:25 < 9:20 但 9:25 > 0 ⇒ 仍是「结果为正 + 出手」
     expect(deriveGuochengAndJielun({ time920: '5.0', time925: '2.0', byAuctionTrend: false }))
       .toEqual({ guochengJieguo: GUOCHENG_POSITIVE, jielun: JIELUN_ACT });
+  });
+});
+
+// [KXIAN-GAP 2026-11-07] 生产事故回归锁：
+//   11-05 看板「昨多板K线」只显示 '-'，用户以为是「昨日跌涨 1:6 没识别出来」。
+//   真因：bidding_data['2026-11-04']['最近多板%'].close 整天为空 ⇒ series[0] 空 ⇒
+//   deriveGuanchaByKxian 整体 null ⇒ 连 series[1]/[2] 里本来就有的 K 线也一起被吞。
+describe('kxian-trend / viewKxianSeries [KXIAN-GAP]', () => {
+  it('★ 正常三天：与 deriveGuanchaByKxian 完全一致，不带缺口', () => {
+    const s = S('中阳2.5%', '小阳1.2%', '十字星0.5%');
+    const g = deriveGuanchaByKxian(s);
+    const v = viewKxianSeries(s);
+    expect(v.kxian).toBe('中阳2.5%');
+    expect(v.kxianPrefix).toBe(g.kxianPrefix);
+    expect(v.kxianPrefix).toBe('十字星0.5%+小阳1.2%');
+    expect(v.guancha).toBe(GUANCHA_RESULT);
+    expect(v.missingDates).toEqual([]);
+    expect(v.gapNote).toBe('');
+  });
+
+  it('★ 首次中阳：前缀仍是「第一次」，⛔ 不能被 buildKxianPrefix 覆盖', () => {
+    const v = viewKxianSeries(S('中阳2.3%', '十字星0.81%', '小阳1.9%'));
+    expect(v.kxianPrefix).toBe(PREFIX_FIRST);
+    expect(v.guancha).toBe(GUANCHA_PROCESS);
+    expect(v.isFirstZhongyang).toBe(true);
+  });
+
+  it('★ 11-05 真实数据形状：本体(11-04)缺失 ⇒ 观察留空，但前序序列不丢且点名日期', () => {
+    const series = [
+      { ymd: '2026-11-04', label: '' },
+      { ymd: '2026-11-03', label: '十字星-0.77%' },
+      { ymd: '2026-11-02', label: '小阳1.88%' },
+      { ymd: '2026-10-30', label: '中阴-3.71%' }
+    ];
+    const v = viewKxianSeries(series);
+    // 观察该空就空（⛔ 不拿缺失冒充真值）
+    expect(v.kxian).toBe('');
+    expect(v.guancha).toBe('');
+    // 11-03 十字星是临界点，扫到即停（含它自己）⇒ 前缀只有这一段
+    expect(v.kxianPrefix).toBe('十字星-0.77%');
+    expect(v.missingDates).toEqual(['2026-11-04']);
+    expect(v.gapNote).toContain('2026-11-04');
+    expect(v.gapNote).toContain('收盘涨幅');
+  });
+
+  it('★ 中阳本体在、但上个交易日缺失 ⇒ 不判「第几次」，点名再前一交易日', () => {
+    const series = [
+      { ymd: '2026-11-04', label: '中阳2.8%' },
+      { ymd: '2026-11-03', label: '' }
+    ];
+    const v = viewKxianSeries(series);
+    expect(v.kxian).toBe('中阳2.8%');
+    expect(v.guancha).toBe('');
+    expect(v.missingDates).toEqual(['2026-11-03']);
+    expect(v.gapNote).toContain('无法判断第几次');
+    expect(v.kxianPrefix).toBe('');
+  });
+
+  it('空序列 ⇒ 全空 + 点名「前一交易日」，⛔ 不抛错、不造标签', () => {
+    const v = viewKxianSeries([]);
+    expect(v.kxian).toBe('');
+    expect(v.kxianPrefix).toBe('');
+    expect(v.guancha).toBe('');
+    expect(v.missingDates).toEqual(['前一交易日']);
+  });
+
+  it('★ 本体缺失时前缀仍可交给前台：formatKxianWithPrefix 不会吞掉它', () => {
+    const v = viewKxianSeries([
+      { ymd: '2026-11-04', label: '' },
+      { ymd: '2026-11-03', label: '十字星-0.77%' }
+    ]);
+    // UI 分支：k 为空 ⇒ 直接显示 p，不能再 return '-'
+    expect(formatKxianWithPrefix(v.kxianPrefix, '')).toBe('十字星-0.77%');
   });
 });
 
