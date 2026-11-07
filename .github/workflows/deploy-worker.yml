@@ -33,6 +33,9 @@ on:
     paths:
       - 'workers/bidding-auto-fetch/**'
       - 'src/logic/auction/range-window.js'          # worker 直接 import 的纯函数（跨目录引用）
+      # [BIDDING-CLOSE-CLOUD 2026-11-07] worker 16:00 收盘列落库直接 import 这份共享口径。
+      #   ⛔ 不列进 paths ⇒ 改了取值口径却不会重新部署 Worker，线上继续用旧算法（又一例假绿）。
+      - 'src/logic/bidding/snapshot-spec.js'
       - 'workers/wrangler-bidding-auto-fetch.toml'
       - 'workers/verify-deploy.mjs'
       # [FAKE-GREEN 2026-11-06] 本文件自身也纳入触发：改了部署流水线却没重新部署，

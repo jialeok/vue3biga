@@ -44,6 +44,9 @@ import { runLadderRecheck } from './logic/ladder-recheck.js';
 import { runRange20Prefill } from './logic/range20-prefill.js';
 // [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐，彻底替代本机 08:00 定时任务。
 import { runDailyLegsHeal } from './logic/daily-legs-heal.js';
+// [BIDDING-CLOSE-CLOUD 2026-11-07] 竞价变化看板「收盘」列纯云端幂等落库：
+//   以前只能靠浏览器自动填表 + 人工点保存，漏点一天 ⇒ 次日「昨多板K线」断链。
+import { runBiddingCloseWrite } from './logic/bidding-close-write.js';
 // [RUNLOG 2026-09-30] 把每轮的完整日志（含 ⏱ 埋点）落库到 bidding_fetch_log，
 //   否则 CF Worker 的埋点只进 Cloudflare Dashboard，事后无法复盘「9:26 为什么没数据」。
 import { writeRunLog } from './data/supabase-write.js';
@@ -218,6 +221,20 @@ async function dispatch(point, env, logs, opts) {
         ' 日志=' + JSON.stringify(legs.logs || []));
     } catch (e) {
       console.error('[auto-fetch] close 逐日腿云端补齐异常（不影响收盘）:', e && e.message);
+    }
+    // [BIDDING-CLOSE-CLOUD 2026-11-07] 收盘列云端落库（幂等填空、只允许当天、失败不连坐）。
+    //   放在所有行情/涨幅写入之后：这一轮已经把当天收盘涨幅算完，快照此时是终态。
+    try {
+      const bcw = await runBiddingCloseWrite(env, { date: (opts && opts.date) || '' });
+      result.biddingCloseWritten = bcw.written;
+      if (Array.isArray(result.logs)) result.logs.push.apply(result.logs, (bcw.logs || []).map(l => '[bidding-close] ' + l));
+      console.log('[auto-fetch] close 竞价看板收盘列云端落库: ok=' + bcw.ok +
+        ' written=' + bcw.written + ' skipped=' + !!bcw.skipped + ' 日志=' + JSON.stringify(bcw.logs || []));
+    } catch (e) {
+      // 失败必须可见（§10），但绝不拖垮已经成功的 runClose
+      const msg = '[bidding-close] ❌ 云端落库异常（不影响收盘主流程）: ' + (e && e.message);
+      if (Array.isArray(result.logs)) result.logs.push(msg);
+      console.error('[auto-fetch] ' + msg);
     }
     await persistRunResult(env, point, result);
     return result;

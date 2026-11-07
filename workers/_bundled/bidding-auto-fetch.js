@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-11-06 04:42:13
+// 生成时间: 2026-11-07 12:30:29
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 6140（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 6575（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
@@ -414,6 +414,8 @@ async function retryFuyao(fn, attempts, label, budgetMs, perCallMs) {
   throw lastErr;
 }
 
+// [BIDDING-CLOSE-CLOUD 2026-11-07] 导出给 16:00 收盘列云端落库复用（883901 名单 / 指数快照）。
+// ⛔ 不要在别的模块复制一份 fuyao-proxy 请求逻辑（§6 单一数据入口）。
 async function fuyaoProxyGet(env, path, params, timeoutMs) {
   const authKey = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_ANON_KEY;
   const url = new URL(CONFIG.FUYAO_PROXY_BASE);
@@ -5712,6 +5714,422 @@ async function runDailyLegsHeal(env, opts) {
 }
 
 
+// ────── ../src/logic/bidding/snapshot-spec.js ──────
+// snapshot-spec.js — 竞价变化看板「快照取值口径」唯一真相（§6）
+//
+// [BIDDING-CLOSE-CLOUD 2026-11-07] 为什么抽这个文件：
+//   原来 BIDDING_SECTOR_ETFS / biddingEtfToSnapshotCode / 收盘列的计算规则
+//   全部是 src/logic/bidding/helpers.js 里的私有常量，只有【浏览器】能用。
+//   结果「收盘」列只能靠浏览器 fetchBiddingSnapshotToForm() 自动填表单 + 人工点保存，
+//   一旦某天没点保存，bidding_data.close 就永久空白 ⇒ 次日 jiwang_data 的
+//   「昨多板K线」推导不出来（2026-11-04 事故）。
+//   现在把口径抽到纯模块，前端与 Cloudflare Worker 16:00 轮共用同一份实现：
+//   Worker 直接把收盘值幂等 upsert 到 bidding_data.close，不再依赖人工点保存。
+//
+// ⛔ 本文件必须保持【零浏览器依赖 / 零 DOM / 零 Vue】，否则 Worker 打包会炸。
+
+const LADDER_THSCODE = '883410.TI';
+const TOP10_THSCODE = '883901.TI';
+const MAIN_INDEX_THSCODE = '000001.SH';
+
+/** 「板块ETF」行的 48 个观察标的（含 3 个指数） */
+const BIDDING_SECTOR_ETFS = [
+  { code: '560780', name: '半导体设备ETF' }, { code: '159995', name: '芯片ETF华夏' },
+  { code: '512480', name: '半导体ETF国' }, { code: '159732', name: '消费电子ETF' },
+  { code: '515880', name: '通信ETF国泰' }, { code: '560800', name: '数字经济ETF' },
+  { code: '159819', name: '人工智能ETF' }, { code: '159206', name: '卫星ETF永赢' },
+  { code: '515750', name: '科技50ETF' }, { code: '159608', name: '稀有金属ETF' },
+  { code: '159998', name: '计算机ETF天弘' }, { code: '561160', name: '电池ETF富国' },
+  { code: '159857', name: '光伏ETF天弘' }, { code: '516780', name: '稀土ETF华泰' },
+  { code: '562500', name: '机器人ETF华夏' }, { code: '515400', name: '大数据ETF富国' },
+  { code: '560860', name: '工业有色ETF' }, { code: '516510', name: '云计算ETF易' },
+  { code: '516390', name: '新能源车ETF' }, { code: '563010', name: '电信ETF易方达' },
+  { code: '159875', name: '新能源ETF嘉实' }, { code: '516100', name: '金融科技ETF' },
+  { code: '886078', name: '商业航天' }, { code: '512660', name: '军工ETF国泰' },
+  { code: '560280', name: '工程机械ETF' }, { code: '515230', name: '软件ETF国泰' },
+  { code: '159996', name: '家电ETF国泰' }, { code: '885939', name: '海峡两岸' },
+  { code: '159227', name: '航空航天ETF' }, { code: '518880', name: '黄金ETF华安' },
+  { code: '1A0001', name: '上证指数' }, { code: '159869', name: '游戏ETF华夏' },
+  { code: '515150', name: '一带一路ETF' }, { code: '516620', name: '影视ETF国泰' },
+  { code: '515120', name: '创新药ETF广发' }, { code: '516910', name: '物流ETF富国' },
+  { code: '159842', name: '券商ETF银华' }, { code: '159666', name: '交通运输ETF' },
+  { code: '512200', name: '房地产ETF南方' }, { code: '159766', name: '旅游ETF富国' },
+  { code: '562600', name: '医疗器械ETF' }, { code: '159611', name: '电力ETF广发' },
+  { code: '167301', name: '保险主题LOF' }, { code: '159825', name: '农业ETF富国' },
+  { code: '159309', name: '油气ETF汇添富' }, { code: '512690', name: '酒ETF鹏华' },
+  { code: '515220', name: '煤炭ETF国泰' }, { code: '159887', name: '银行ETF富国' }
+];
+
+/** 「大盘ETF」行的 4 个宽基 ETF */
+const BIDDING_BIG_ETFS = ['510500', '512100', '510300', '510050'];
+
+/** 非 6 位数字代码 → 指数 thscode（其余按 5 开头=SH / 其它=SZ 走个股快照） */
+const BIDDING_INDEX_CODES = {
+  '886078': '886078.TI',
+  '885939': '885939.TI',
+  '1A0001': MAIN_INDEX_THSCODE
+};
+
+function biddingEtfToSnapshotCode(code) {
+  const c = String(code || '').trim();
+  if (BIDDING_INDEX_CODES[c]) return { thscode: BIDDING_INDEX_CODES[c], type: 'index' };
+  if (c.charAt(0) === '5') return { thscode: c + '.SH', type: 'stock' };
+  return { thscode: c + '.SZ', type: 'stock' };
+}
+
+/** 把 48 个观察标的拆成「个股/ETF 快照代码」与「指数快照代码」两组 */
+function biddingSnapshotCodeGroups() {
+  const etfCodes = [];
+  const indexCodes = [];
+  BIDDING_SECTOR_ETFS.forEach(function (e) {
+    const c = biddingEtfToSnapshotCode(e.code);
+    if (c.type === 'index') indexCodes.push(c.thscode);
+    else etfCodes.push(c.thscode);
+  });
+  const allIndexCodes = Array.from(new Set(indexCodes.concat([MAIN_INDEX_THSCODE])));
+  return { etfCodes, indexCodes, allIndexCodes };
+}
+
+/**
+ * 同花顺快照一条 item 的涨跌幅（number）。
+ * 上游偶发给成正的「跌」，用 price_change / current_price vs prev_close 纠符号。
+ * 前端与 Worker 必须用同一份，否则同一时刻两端口径会分叉。
+ */
+function normalizeFuyaoSnapshotPct(it) {
+  if (!it) return null;
+  const raw = it.price_change_ratio_pct;
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  if (!isFinite(n)) return null;
+  const priceChange = it.price_change !== undefined && it.price_change !== null ? Number(it.price_change) : null;
+  const curr = it.current_price !== undefined && it.current_price !== null ? Number(it.current_price) : null;
+  const prev = it.prev_close !== undefined && it.prev_close !== null ? Number(it.prev_close) : null;
+  const isActuallyDown = (priceChange !== null && priceChange < 0) || (curr !== null && prev !== null && curr < prev);
+  if (isActuallyDown && n > 0) return -n;
+  return n;
+}
+
+/** 快照值可能是 number（前端）或 '+1.23%'（worker fetchSnapshotChangePct），统一成 number */
+function biddingNumOf(v) {
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(String(v).replace(/%/g, '').replace(/,/g, '').trim());
+  return isFinite(n) ? n : null;
+}
+
+/**
+ * 快照 map 的 key 形态两端口径不同，这里统一兼容：
+ *   · 前端 fuyao /api/a-share/prices/snapshot → item.thscode（'600519.SH'）
+ *   · Worker fetchSnapshotChangePct → 6 位代码（'600519'）
+ *   · 腾讯行情 → 'sh600519' 解析后前端转成 '600519.SH'
+ * 先按完整 thscode 找，再退回去后缀的纯代码。
+ */
+function biddingPctLookup(map, thscode) {
+  if (!map) return undefined;
+  const k = String(thscode || '');
+  if (map[k] !== undefined) return map[k];
+  const bare = k.replace(/\..*$/, '');
+  if (bare !== k && map[bare] !== undefined) return map[bare];
+  return undefined;
+}
+
+/**
+ * 由各路快照算出「收盘列」各行的值。
+ * 返回 key 与 useBiddingBoard.fetchSnapshot() 的 values 完全同名（板块ETF 用短名，
+ * 由 resolveBiddingRowTargets 负责映射到库里真实的 '板块ETF(48)' 行）。
+ *
+ * ⛔ 任何一路没数据就【不给该行赋值】（§10：读取失败 ≠ 0），调用方只填空不造值。
+ */
+function computeBiddingCloseValues(input) {
+  const src = input || {};
+  const ladderCodes = src.ladderCodes || [];
+  const top10Codes = src.top10Codes || [];
+  const stockPcts = src.stockPcts || {};
+  const etfPcts = src.etfPcts || {};
+  const indexPcts = src.indexPcts || {};
+  const values = {};
+
+  const ladderVals = ladderCodes
+    .map(c => biddingNumOf(biddingPctLookup(stockPcts, c)))
+    .filter(v => v !== null);
+  if (ladderVals.length > 0) {
+    values['最近多板%'] = (ladderVals.reduce((a, b) => a + b, 0) / ladderVals.length).toFixed(2);
+  }
+
+  let sectorRed = 0;
+  let sectorSeen = 0;
+  BIDDING_SECTOR_ETFS.forEach(function (e) {
+    const c = biddingEtfToSnapshotCode(e.code);
+    const raw = c.type === 'index'
+      ? biddingPctLookup(indexPcts, c.thscode)
+      : biddingPctLookup(etfPcts, c.thscode);
+    const v = biddingNumOf(raw);
+    if (v === null) return;
+    sectorSeen++;
+    if (v > 0) sectorRed++;
+  });
+  // 一只都没取到 ⇒ 不写 0（0 家上涨是合法值，但「没数据」不是）
+  if (sectorSeen > 0) values['板块ETF'] = String(sectorRed);
+
+  if (top10Codes.length > 0) {
+    let top10Red = 0;
+    let top10Seen = 0;
+    top10Codes.forEach(function (c) {
+      const v = biddingNumOf(biddingPctLookup(stockPcts, c));
+      if (v === null) return;
+      top10Seen++;
+      if (v > 0) top10Red++;
+    });
+    if (top10Seen > 0) values['昨日资金前十'] = String(top10Red);
+  }
+
+  const bigVals = BIDDING_BIG_ETFS
+    .map(c => biddingNumOf(biddingPctLookup(etfPcts, c + '.SH')))
+    .filter(v => v !== null);
+  if (bigVals.length > 0) {
+    values['大盘ETF'] = (bigVals.reduce((a, b) => a + b, 0) / bigVals.length).toFixed(2);
+  }
+
+  const mainIdx = biddingNumOf(biddingPctLookup(indexPcts, MAIN_INDEX_THSCODE));
+  if (mainIdx !== null) values['大盘（%）'] = mainIdx.toFixed(2);
+
+  return values;
+}
+
+/**
+ * 把 values 映射到【库中真实存在的行】，并只挑 close 仍为空的行。
+ *
+ * ★ 幂等 / 数据安全（§11）：已有非空 close 一律不覆盖 —— 用户手工修正优先于云端自动值。
+ * ★ 不硬编码 '板块ETF(48)' 这种带数字后缀的行名，从 existingRows 里找前缀匹配。
+ *
+ * @param {Array<{name:string,close?:string|null}>} existingRows 当天 bidding_data 已有行
+ * @param {Record<string,string>} values computeBiddingCloseValues 的结果
+ * @returns {Array<{name:string,close:string,from:string}>}
+ */
+function resolveBiddingRowTargets(existingRows, values) {
+  const v = values || {};
+  const out = [];
+  (existingRows || []).forEach(function (row) {
+    const name = String((row && row.name) || '').trim();
+    if (!name) return;
+    const closed = row && row.close !== null && row.close !== undefined && String(row.close).trim() !== '';
+    if (closed) return;
+    let from = '';
+    let value;
+    if (v[name] !== undefined) { value = v[name]; from = name; }
+    else if (name.indexOf('板块ETF') === 0 && v['板块ETF'] !== undefined) { value = v['板块ETF']; from = '板块ETF'; }
+    if (value === undefined || value === null || String(value).trim() === '') return;
+    out.push({ name: name, close: String(value).trim(), from: from });
+  });
+  return out;
+}
+
+
+// ────── bidding-auto-fetch/logic/bidding-close-write.js ──────
+// bidding-close-write.js — 竞价变化看板「收盘」列【纯云端自动落库】
+//
+// [BIDDING-CLOSE-CLOUD 2026-11-07] 事故与根因
+//   用户报障：2026-11-05 记忘看板「昨多板K线」没有三天数据。生产取证：
+//     · 2026-11-04 bidding_data 7 行 close 全是 ''，其余 13 个交易日都有 5~6 行 close；
+//     · bidding_fetch_log 近 30 天 352 条里 `http | bidding | close` = **0 条**
+//       ⇒ db/supabase_bidding_t0925_cron.sql 里 point=close 的 pg_cron 从未成功执行过
+//         （SQL 文件里 URL 还是 <PROJECT_REF>/<TOKEN> 占位符）；
+//     · 前端 fetchBiddingSnapshotToForm() 只是把快照【填进编辑表单】，状态文案明确写
+//       「请检查后点"保存"」，只有 useBiddingBoard.save() 才把 close 写进 bidding_data。
+//   ⇒ 收盘列真实语义 = 「自动抓数 + 人工点保存」，不是无人值守。11-04 那天没点保存
+//     （11-07 点开历史记录保存时反而把空字符串写进去了），于是
+//     syncJiwangKxianFromBidding() / viewKxianSeries() 拿不到 11-04「最近多板%」收盘涨幅
+//     ⇒ 11-05 的 K 线推导不出来。与「昨日跌涨 1:6 识别」完全无关。
+//
+// 【本模块做什么】
+//   16:00 close 轮末尾，用与前端【同一份口径】(src/logic/bidding/snapshot-spec.js)
+//   重算收盘列，幂等 upsert 到 bidding_data.close。之后即使没人开电脑、没人点保存，
+//   收盘列与次日「昨多板K线」也能闭环。
+//
+// 【硬红线】
+//   ⛔ 只允许【当天】：fuyao /api/a-share/prices/snapshot 是「最近一个交易日」滚动快照，
+//      给历史日期 ?date= 会把今天的收盘涨幅错写到过去（§10/§11）。历史缺口不可无损回补，
+//      只能人工补录，本模块绝不猜值、绝不用 market_metrics / 竞价涨幅冒充收盘。
+//   ⛔ 只填空：已有非空 close 一律不覆盖（用户手工修正优先）。
+//   ⛔ 读取失败 ≠ 0：任何一路快照拿不到就不给该行赋值，绝不写 0 家 / +0.00%。
+//   ⛔ 失败不连坐：本模块任何异常都只记日志、返回 ok:false，不影响 runClose 主流程。
+//   ⛔ 0 猫抓额度：全部走同花顺快照，与竞价量比（只认猫抓）无关。
+
+
+
+
+
+const SB_TIMEOUT_MS = 12000;
+const PROXY_TIMEOUT_MS = 9000;
+const BCW_LADDER_ROW = '最近多板%';
+
+function bcwFetch(url, opts) {
+  const base = opts || {};
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return fetch(url, Object.assign({}, base, { signal: AbortSignal.timeout(SB_TIMEOUT_MS) }));
+  }
+  return fetch(url, base);
+}
+
+function bareCode(thscode) {
+  const s = String(thscode || '').trim().replace(/\..*$/, '');
+  return /^\d{6}$/.test(s) ? s : '';
+}
+
+async function readExistingRows(env, date) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/bidding_data?date=eq.' + encodeURIComponent(date) +
+    '&select=name,close';
+  const resp = await bcwFetch(url, { headers: sbHeaders(env) });
+  if (!resp.ok) throw new Error('读取 bidding_data 失败: HTTP ' + resp.status);
+  const rows = await resp.json();
+  return Array.isArray(rows) ? rows : [];
+}
+
+/** 883901「昨日资金前十」成分股；失败返回空数组（该行留空，不写 0） */
+async function fetchTop10Codes(env, logs) {
+  try {
+    const data = await fuyaoProxyGet(env, '/api/a-share-index/constituents/ths-stock-list',
+      { thscode: TOP10_THSCODE }, PROXY_TIMEOUT_MS);
+    const codes = ((data && data.item) || [])
+      .map(it => bareCode(it && (it.ticker || it.thscode)))
+      .filter(Boolean);
+    logs.push('883901 成分股 ' + codes.length + ' 只');
+    return Array.from(new Set(codes));
+  } catch (e) {
+    logs.push('⚠️ 883901 成分股获取失败（该行留空）: ' + (e && e.message));
+    return [];
+  }
+}
+
+/** 指数快照（886078.TI / 885939.TI / 000001.SH） */
+async function fetchIndexPcts(env, allIndexCodes, logs) {
+  const out = {};
+  try {
+    const data = await fuyaoProxyGet(env, '/api/a-share-index/prices/snapshot',
+      { thscodes: allIndexCodes.join(',') }, PROXY_TIMEOUT_MS);
+    ((data && data.item) || []).forEach(it => {
+      if (!it || !it.thscode) return;
+      const v = normalizeFuyaoSnapshotPct(it);
+      if (v !== null) out[String(it.thscode).trim()] = v;
+    });
+    logs.push('指数快照可用 ' + Object.keys(out).length + '/' + allIndexCodes.length);
+  } catch (e) {
+    logs.push('⚠️ 指数快照失败（大盘（%）/板块ETF 留空）: ' + (e && e.message));
+  }
+  return out;
+}
+
+/** 纯函数：组装最终要 upsert 的行（便于单测锁住幂等 / 只填当天 / 键集一致） */
+function buildBiddingCloseWriteRows(existingRows, values, date, nowIso) {
+  const targets = resolveBiddingRowTargets(existingRows, values);
+  const names = {};
+  (existingRows || []).forEach(r => { names[String((r && r.name) || '').trim()] = true; });
+  // 当天已有别的行，但「最近多板%」这一行不存在（9:25 漏写）⇒ 允许补建该行。
+  // 它是「昨多板K线」的唯一原料；其余行不自动新建，避免造出残缺行。
+  if ((existingRows || []).length > 0 && !names[BCW_LADDER_ROW] &&
+      values && values[BCW_LADDER_ROW] !== undefined &&
+      String(values[BCW_LADDER_ROW]).trim() !== '') {
+    targets.push({ name: BCW_LADDER_ROW, close: String(values[BCW_LADDER_ROW]).trim(), from: BCW_LADDER_ROW });
+  }
+  return targets.map(t => ({
+    date: date,
+    name: t.name,
+    close: t.close,
+    updated_at: nowIso || new Date().toISOString()
+  }));
+}
+
+async function runBiddingCloseWrite(env, opts) {
+  const logs = [];
+  const today = beijingToday();
+  const date = (opts && opts.date) || today;
+
+  // ★ 硬闸：/api/a-share/prices/snapshot 只返回「最近一个交易日」，历史日期绝不写。
+  if (date !== today) {
+    logs.push('⛔ 跳过：目标日期 ' + date + ' ≠ 今天 ' + today + '（快照是滚动窗口，禁止回写历史）');
+    return { ok: true, skipped: true, date, written: 0, values: {}, logs };
+  }
+
+  let existingRows;
+  try {
+    existingRows = await readExistingRows(env, date);
+  } catch (e) {
+    logs.push('❌ 读取 bidding_data 失败（本次不写任何值）: ' + (e && e.message));
+    return { ok: false, date, written: 0, values: {}, logs };
+  }
+  logs.push('bidding_data 当日已有 ' + existingRows.length + ' 行');
+  if (existingRows.length === 0) {
+    logs.push('⛔ 当日无任何行（竞价链路未跑/非交易日）⇒ 不造行，跳过');
+    return { ok: true, skipped: true, date, written: 0, values: {}, logs };
+  }
+
+  let ladderCodes = [];
+  try {
+    ladderCodes = (await fetchLadderConstituents(env)).map(s => bareCode(s.code)).filter(Boolean);
+    logs.push('883410 成分股 ' + ladderCodes.length + ' 只');
+  } catch (e) {
+    logs.push('⚠️ 883410 成分股获取失败（最近多板% 留空）: ' + (e && e.message));
+  }
+  const top10Codes = await fetchTop10Codes(env, logs);
+  const groups = biddingSnapshotCodeGroups();
+  const etfBare = groups.etfCodes.map(bareCode).filter(Boolean);
+  const stockCodes = Array.from(new Set([].concat(ladderCodes, top10Codes, etfBare, BIDDING_BIG_ETFS)));
+
+  const stockPcts = {};
+  if (ladderCodes.length === 0 && top10Codes.length === 0 && etfBare.length === 0) {
+    logs.push('⛔ 三路名单全空 ⇒ 不发快照请求（§10：读取失败不造 0）');
+  } else {
+    try {
+      const snap = await fetchSnapshotChangePct(env, stockCodes);
+      Object.assign(stockPcts, (snap && snap.pctMap) || {});
+      logs.push('个股/ETF 快照可用 ' + Object.keys(stockPcts).length + '/' + stockCodes.length);
+    } catch (e) {
+      logs.push('⚠️ 个股/ETF 快照失败（相关行留空）: ' + (e && e.message));
+    }
+  }
+
+  // 前端用腾讯行情拿 ETF，Worker 统一用同花顺；computeBiddingCloseValues 的
+  // biddingPctLookup 兼容「带后缀 thscode」与「6 位代码」两种 key，无需在这里改 key 形态。
+  const etfPcts = stockPcts;
+  const indexPcts = await fetchIndexPcts(env, groups.allIndexCodes, logs);
+
+  const values = computeBiddingCloseValues({
+    ladderCodes, top10Codes, stockPcts, etfPcts, indexPcts
+  });
+  logs.push('算出收盘列 ' + JSON.stringify(values));
+
+  if (Object.keys(values).length === 0) {
+    logs.push('⛔ 五路快照全没数据 ⇒ 一行不写（绝不写 0）');
+    return { ok: false, date, written: 0, values, logs };
+  }
+
+  const rows = buildBiddingCloseWriteRows(existingRows, values, date, new Date().toISOString());
+  if (rows.length === 0) {
+    logs.push('✅ 收盘列已完整（或用户已手工填写）⇒ 幂等跳过，不覆盖');
+    return { ok: true, date, written: 0, values, logs };
+  }
+  logs.push('待写 ' + rows.length + ' 行: ' + rows.map(r => r.name + '=' + r.close).join(' / '));
+
+  try {
+    const url = CONFIG.SUPABASE_URL + '/rest/v1/bidding_data?on_conflict=date%2Cname';
+    const resp = await bcwFetch(url, {
+      method: 'POST',
+      headers: Object.assign(sbHeaders(env), { 'Prefer': 'resolution=merge-duplicates' }),
+      body: JSON.stringify(rows)
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error('HTTP ' + resp.status + ' ' + text.slice(0, 240));
+    }
+    logs.push('✅ 云端已写入 bidding_data.close ' + rows.length + ' 行（无需人工点保存）');
+    return { ok: true, date, written: rows.length, values, rows, logs };
+  } catch (e) {
+    logs.push('❌ 写 bidding_data.close 失败: ' + (e && e.message));
+    return { ok: false, date, written: 0, values, rows, logs };
+  }
+}
+
+
 // ────── bidding-auto-fetch/index.js ──────
 // index.js — bidding-auto-fetch Worker 入口
 //
@@ -5758,6 +6176,9 @@ async function runDailyLegsHeal(env, opts) {
 // [R20-CLOUD 2026-11-06] 同一趟 9:26 顺带把 20 日涨幅用逐日腿补缺（0 上游、0 额度）。
 
 // [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐，彻底替代本机 08:00 定时任务。
+
+// [BIDDING-CLOSE-CLOUD 2026-11-07] 竞价变化看板「收盘」列纯云端幂等落库：
+//   以前只能靠浏览器自动填表 + 人工点保存，漏点一天 ⇒ 次日「昨多板K线」断链。
 
 // [RUNLOG 2026-09-30] 把每轮的完整日志（含 ⏱ 埋点）落库到 bidding_fetch_log，
 //   否则 CF Worker 的埋点只进 Cloudflare Dashboard，事后无法复盘「9:26 为什么没数据」。
@@ -5932,6 +6353,20 @@ async function dispatch(point, env, logs, opts) {
         ' 日志=' + JSON.stringify(legs.logs || []));
     } catch (e) {
       console.error('[auto-fetch] close 逐日腿云端补齐异常（不影响收盘）:', e && e.message);
+    }
+    // [BIDDING-CLOSE-CLOUD 2026-11-07] 收盘列云端落库（幂等填空、只允许当天、失败不连坐）。
+    //   放在所有行情/涨幅写入之后：这一轮已经把当天收盘涨幅算完，快照此时是终态。
+    try {
+      const bcw = await runBiddingCloseWrite(env, { date: (opts && opts.date) || '' });
+      result.biddingCloseWritten = bcw.written;
+      if (Array.isArray(result.logs)) result.logs.push.apply(result.logs, (bcw.logs || []).map(l => '[bidding-close] ' + l));
+      console.log('[auto-fetch] close 竞价看板收盘列云端落库: ok=' + bcw.ok +
+        ' written=' + bcw.written + ' skipped=' + !!bcw.skipped + ' 日志=' + JSON.stringify(bcw.logs || []));
+    } catch (e) {
+      // 失败必须可见（§10），但绝不拖垮已经成功的 runClose
+      const msg = '[bidding-close] ❌ 云端落库异常（不影响收盘主流程）: ' + (e && e.message);
+      if (Array.isArray(result.logs)) result.logs.push(msg);
+      console.error('[auto-fetch] ' + msg);
     }
     await persistRunResult(env, point, result);
     return result;

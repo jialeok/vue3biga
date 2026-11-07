@@ -138,7 +138,9 @@ async function retryFuyao(fn, attempts, label, budgetMs, perCallMs) {
   throw lastErr;
 }
 
-async function fuyaoProxyGet(env, path, params, timeoutMs) {
+// [BIDDING-CLOSE-CLOUD 2026-11-07] 导出给 16:00 收盘列云端落库复用（883901 名单 / 指数快照）。
+// ⛔ 不要在别的模块复制一份 fuyao-proxy 请求逻辑（§6 单一数据入口）。
+export async function fuyaoProxyGet(env, path, params, timeoutMs) {
   const authKey = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_ANON_KEY;
   const url = new URL(CONFIG.FUYAO_PROXY_BASE);
   url.searchParams.set('path', path);

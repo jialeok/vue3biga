@@ -393,7 +393,12 @@ export function useBiddingBoard() {
       if (sectorEtfFilledValue !== null) {
         syncSectorEtfZhangNum(sectorEtfFilledValue);
       }
-      fetchStatus.value = '✅ 已填入 ' + point.label + ' 列共 ' + filledRows + ' 行，请检查后点"保存"';
+      // [BIDDING-CLOSE-CLOUD 2026-11-07] 11-04 事故：用户一直以为「自动获取」=「自动保存」，
+      //   实际只是填表；漏点一天保存 ⇒ 次日「昨多板K线」断链。这里把语义写死在文案里。
+      //   同时说明 16:00 云端会幂等补空值（不覆盖人工修正），让用户知道有兜底但别依赖它。
+      fetchStatus.value = point.col === 'close'
+        ? '✅ 已填入 收盘 列共 ' + filledRows + ' 行；⚠️ 仅填入表单，需点「保存」才写入数据库（16:00 云端会自动补空值，但不覆盖已填内容）'
+        : '✅ 已填入 ' + point.label + ' 列共 ' + filledRows + ' 行，请检查后点"保存"';
     } catch (err) {
       console.error('fetchBiddingSnapshotToForm 失败:', err);
       let msg = err && err.message ? err.message : '抓取失败';

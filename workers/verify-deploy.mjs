@@ -36,7 +36,9 @@ const REQUIRED = [
   'runDailyLegsHeal',       // 逐日腿云端补齐，替掉本机 08:00 定时任务
   'isRetriableFuyaoError',  // 883410「Data source unavailable」现在会被重试
   'ladder26',               // 新 cron 分发点
-  'metrics_close'           // 云端收盘腿标记（本机脚本写的是 src='metrics'）
+  'metrics_close',          // 云端收盘腿标记（本机脚本写的是 src='metrics'）
+  'runBiddingCloseWrite',   // [2026-11-07] 竞价变化看板「收盘」列纯云端幂等落库
+  'computeBiddingCloseValues' // 收盘取值口径：前端 / Worker 共用同一份纯函数
 ];
 
 async function cf(url, accept) {
