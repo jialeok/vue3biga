@@ -44,7 +44,12 @@ const REQUIRED = [
   // [2026-11-10] 20 日涨幅逐日腿改 Range 分页（根治 limit=1000 静默截断 ⇒ 冰山冷热迟到）。
   // ⚠️ 它是 supabase-write.js 错误消息里的字符串字面量 ⇒ 打包/压缩后仍在线上脚本里，
   //    能硬证明这次真的换了版本（⛔ 别换成注释里的标记，注释会被 esbuild 删掉）。
-  '[R20-LEGS-PAGED]'
+  '[R20-LEGS-PAGED]',
+  // [2026-11-11] 9:27 云端自愈 cron + 20 日涨幅二次补缺 + 半截名单闸门。
+  //   ⚠️ 字符串字面量（在 index.js 的 console.log / range20-prefill.js 的日志里），
+  //      注释会被 esbuild 删掉，只有它能证明「这一版真的上线了」。
+  //   ⚠️ cron 条数由 expectedCrons() 直读 toml 断言，不需要在这里列第 4 条。
+  '[CLOUD-0927-HEAL]'
 ];
 
 async function cf(url, accept) {

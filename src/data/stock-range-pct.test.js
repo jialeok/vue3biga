@@ -265,6 +265,10 @@ describe('healTodayRangePct · 当天云端为空的零上游自愈', function()
         expect(r.written).toBe(46);
         expect(url).toContain('range10=1');                 // 必须是「只算 10 日涨幅」那个零上游入口
         expect(url).toContain('range20-cron-2026');
+        // 🔴 [CLOUD-0927-HEAL 2026-11-11] Edge 对「当天」默认 overwrite=true：
+        //   不带 overwrite=0 ⇒ 前端会用逐日腿把 9:25 / 9:27 云端写的真值全量覆盖，
+        //   而且 9:27 runRangePctHeal 随后会发现「覆盖率已达标」零请求跳过 ⇒ 错口径留到收盘。
+        expect(url).toContain('overwrite=0');
         // 缓存已作废 ⇒ 再读会真的发一次请求
         rowsByDate[beijingToday()] = [row('大晟文化', '23.31')];
         const m = await readRangePctForDate(beijingToday());

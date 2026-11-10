@@ -5,15 +5,23 @@
 //   根因 = 结果表只有两个写入点，一个由 toggle 触发、一个只写它选出的 ~25 只龙头。
 //   `prefillRange20FromDailyLegs` 就是「进看板就顺带把结果表补齐」的那条 0 上游通路。
 //
-// 本文件锁的是它的三条红线（判据与 `ensureRange20` 阶段② 的 `finalRows` 必须同一份）：
+// 本文件锁的是它的几条红线（判据与 `ensureRange20` 阶段② 的 `finalRows` 必须同一份）：
 //   ① 腿不齐 ⛔ 不写（绝不把「只有当天涨幅」当 20 日涨幅落库，§10 宁缺勿错）
 //   ② 云端已有的票 ⛔ 不覆盖（那是 K 线算过的真值，重写只会把准的写粗）
 //   ③ 云端已全覆盖 ⇒ 一次查询就收工，不读原料表、不算、不写（常态路径）
+//   ④ [CLOUD-0927-HEAL 2026-11-11] 结果表读失败返回 null ⇒ 整轮 0 写（⛔ 不覆盖云端真值）
+//   ⑤ [CLOUD-0927-HEAL 2026-11-11] 目标名单 < RANGE20_MIN_TARGETS ⇒ 0 写（与云端同一份常量）
+//
+// ⚠️ 夹具票数必须用 N（= 共享下限常量），否则会撞下限闸门变红；下限常量一律从
+//    `range-window.js` 取，⛔ 不在测试里另写一个 20（§6 单一真相）。
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { RANGE20_MIN_TARGETS } from './range-window.js';
+
+const N = RANGE20_MIN_TARGETS;
 
 const h = vi.hoisted(() => ({
-  cloud: new Map(),      // 结果表内容：name -> {pct, days}
+  cloud: new Map(),      // 结果表内容：name -> {pct, days}；null = 加速层读失败
   saved: [],             // upsertRange20Rows 的入参留痕
   daily: null,           // 原料表：name -> Map(date -> pct)；null = 表读不到
   auctionData: {},       // 内存逐日行（T 腿来源）
@@ -22,7 +30,8 @@ const h = vi.hoisted(() => ({
 // ── Data 层：结果表 / 原料表 ───────────────────────────────────────────────
 vi.mock('../../data/stock-range20-cache.js', () => ({
   readRange20Rows: async () => h.cloud,
-  // 真实现按 leg 过滤；本测试只关心「这个名字云端有没有」，透传即可
+  // 真实现按 leg 过滤；本测试只关心「这个名字云端有没有」。
+  // ⚠️ 与真实 pickUsableRows 一致：null 会被静默转成空 Map（正是 §10 缺陷的复现条件）
   pickUsableRows: (map) => (map instanceof Map ? map : new Map()),
   upsertRange20Rows: async (date, rows, leg) => {
     h.saved.push({ date: date, rows: rows, leg: leg });
@@ -94,36 +103,36 @@ beforeEach(() => {
 describe('[R20-PREFILL] 腿齐的票 ⇒ 补进结果表', () => {
   it('★ 云端缺的票被写进去，且写入行数 = 缺口数（不是全量重写）', async () => {
     const dates = probeDatesOf();
-    const ok = mkHealthy(5, dates);
+    const ok = mkHealthy(N, dates);
     h.daily = ok.daily;
     h.auctionData[T] = ok.rows;
-    // 云端已经有前 3 只 ⇒ 只该补后 2 只
+    // 云端已经有前 3 只 ⇒ 只该补剩下的
     ok.names.slice(0, 3).forEach(function(n) { h.cloud.set(n, { pct: 30, days: 20 }); });
 
     const st = await prefillRange20FromDailyLegs(T, ok.names.map(function(n) { return { stock: n }; }));
 
-    expect(st.targets).toBe(5);
+    expect(st.targets).toBe(N);
     expect(st.covered).toBe(3);
-    expect(st.written).toBe(2);
+    expect(st.written).toBe(N - 3);
     expect(h.saved).toHaveLength(1);
     expect(h.saved[0].date).toBe(T);
     expect(h.saved[0].rows.map(function(r) { return r.stock; }).sort())
-      .toEqual(['HEALTHY3', 'HEALTHY4']);
+      .toEqual(ok.names.slice(3).sort());
     // 复利口径：19 天各 +1% 再叠加 T 腿 +1% ⇒ 20 根腿、数值 > 20%（不是简单相加的 20）
-    const r0 = h.saved[0].rows.find(function(r) { return r.stock === 'HEALTHY3'; });
+    const r0 = h.saved[0].rows.find(function(r) { return r.stock === ok.names[3]; });
     expect(r0.days).toBe(20);
     expect(r0.pct).toBeGreaterThan(20);
   });
 
   it('★ 云端已全覆盖 ⇒ 一次查询就收工：不读原料表、不计算、不写（常态路径）', async () => {
     const dates = probeDatesOf();
-    const ok = mkHealthy(3, dates);
+    const ok = mkHealthy(N, dates);
     h.daily = null;                  // 故意让原料表「读不到」：全覆盖时根本不该碰它
     ok.names.forEach(function(n) { h.cloud.set(n, { pct: 30, days: 20 }); });
 
     const st = await prefillRange20FromDailyLegs(T, ok.names.map(function(n) { return { stock: n }; }));
 
-    expect(st.covered).toBe(3);
+    expect(st.covered).toBe(N);
     expect(st.written).toBe(0);
     expect(h.saved).toHaveLength(0);
   });
@@ -132,24 +141,22 @@ describe('[R20-PREFILL] 腿齐的票 ⇒ 补进结果表', () => {
 describe('[R20-PREFILL] §10 宁缺勿错：腿不齐一律不写', () => {
   it('★ 只有 T 腿、没有历史腿的票 ⛔ 不写（否则「今天涨 1%」会被当成 20 日涨幅落库）', async () => {
     const dates = probeDatesOf();
-    const ok = mkHealthy(2, dates);
+    const ok = mkHealthy(N, dates);
     h.daily = ok.daily;
     // 第二只：原料表里一根腿都没有 —— 只有 T 腿
     h.daily.delete('HEALTHY1');
     h.auctionData[T] = ok.rows;
 
-    const st = await prefillRange20FromDailyLegs(T, [
-      { stock: 'HEALTHY0' }, { stock: 'HEALTHY1' }
-    ]);
+    const st = await prefillRange20FromDailyLegs(T, ok.names.map(function(n) { return { stock: n }; }));
 
-    expect(st.written).toBe(1);
+    expect(st.written).toBe(N - 1);
     expect(st.skipped).toBe(1);
-    expect(h.saved[0].rows.map(function(r) { return r.stock; })).toEqual(['HEALTHY0']);
+    expect(h.saved[0].rows.map(function(r) { return r.stock; })).not.toContain('HEALTHY1');
   });
 
   it('★ 原料表整张读不到 ⇒ 一只都不写（只剩 T 腿，全是假数）', async () => {
     const dates = probeDatesOf();
-    const ok = mkHealthy(3, dates);
+    const ok = mkHealthy(N, dates);
     h.daily = null;                  // 读失败
     h.auctionData[T] = ok.rows;
 
@@ -165,14 +172,51 @@ describe('[R20-PREFILL] §10 宁缺勿错：腿不齐一律不写', () => {
     const tIdx = asc.length - 1;
     const only5 = asc.slice(tIdx - 5, tIdx);      // 只有 5 天历史腿
     const daily = new Map();
-    const m = new Map();
-    only5.forEach(function(d) { m.set(d, 1); });
-    daily.set('SHORT', m);
+    const rows = [];
+    const names = [];
+    for (let i = 0; i < N; i++) {
+      const n = 'SHORT' + i;
+      names.push(n);
+      const m = new Map();
+      only5.forEach(function(d) { m.set(d, 1); });
+      daily.set(n, m);
+      rows.push({ stock: n, changePct: '1.00' });
+    }
     h.daily = daily;
-    h.auctionData[T] = [{ stock: 'SHORT', changePct: '1.00' }];
+    h.auctionData[T] = rows;
 
-    const st = await prefillRange20FromDailyLegs(T, [{ stock: 'SHORT' }]);
+    const st = await prefillRange20FromDailyLegs(T, names.map(function(n) { return { stock: n }; }));
 
+    expect(st.written).toBe(0);
+    expect(h.saved).toHaveLength(0);
+  });
+});
+
+describe('[CLOUD-0927-HEAL] §10/§11 读失败与半截名单绝不写库', () => {
+  it('★ 结果表读失败返回 null ⇒ 整轮 0 写（⛔ 绝不覆盖云端已有真值）', async () => {
+    const dates = probeDatesOf();
+    const ok = mkHealthy(N, dates);
+    h.daily = ok.daily;
+    h.auctionData[T] = ok.rows;
+    // 加速层契约：读失败返回 null，⛔ 不抛错。旧实现会让它变成空 Map 然后全量重写。
+    h.cloud = null;
+
+    const st = await prefillRange20FromDailyLegs(T, ok.names.map(function(n) { return { stock: n }; }));
+
+    expect(st.covered).toBe(0);
+    expect(st.written).toBe(0);
+    expect(h.saved).toHaveLength(0);
+  });
+
+  it('★ 目标名单少于共享下限 ⇒ 0 写（与云端 runRange20Prefill 同一份判据）', async () => {
+    const dates = probeDatesOf();
+    const ok = mkHealthy(N - 1, dates);
+    h.daily = ok.daily;
+    h.auctionData[T] = ok.rows;
+
+    const st = await prefillRange20FromDailyLegs(T, ok.names.map(function(n) { return { stock: n }; }));
+
+    expect(st.targets).toBe(N - 1);
     expect(st.written).toBe(0);
     expect(h.saved).toHaveLength(0);
   });
@@ -187,12 +231,12 @@ describe('[R20-PREFILL] 边界', () => {
 
   it('历史日（T 不是今天）不受影响：同样能补（收盘口径要求 T 腿存在，缺则不写）', async () => {
     const dates = probeDatesOf();
-    const ok = mkHealthy(2, dates);
+    const ok = mkHealthy(N, dates);
     h.daily = ok.daily;
     h.auctionData[T] = ok.rows;      // 内存里有 T 行 ⇒ 收盘口径也有 T 腿
 
     const st = await prefillRange20FromDailyLegs(T, ok.names.map(function(n) { return { stock: n }; }));
 
-    expect(st.written).toBe(2);
+    expect(st.written).toBe(N);
   });
 });

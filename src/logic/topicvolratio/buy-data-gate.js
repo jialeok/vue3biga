@@ -117,10 +117,11 @@ export function resolveBuyDataGate(ctx) {
       label: '十日涨幅',
       why: '本看板的「龙几」、进没进前十、够不够第二十九条候补，全部由十日涨幅的名次决定。' +
         '整表读不出来时，龙位与名次都算不出 ⇒ 选哪一只、选几只都是猜的。',
-      fix: '十日涨幅由云端按「逐日收盘涨幅腿」复利算好写库（`stock_range_pct`），不依赖任何上游请求。' +
-        '它整表为空通常不是「算不出来」而是「那一天没人算」：本板读到当天为空时会自动打一次零上游自愈' +
-        '（`healTodayRangePct` → Edge `?range10=1` + token，只读 `stock_daily_pct` + `market_metrics`），' +
-        '不用手动做什么。自愈后仍为空 ⇒ 那天的逐日腿表 `stock_daily_pct` 本身没数据，先补腿表。',
+      fix: '十日涨幅由【云端】算好写库（`stock_range_pct`）：9:25 早盘主流程写，9:27 云端自愈 cron' +
+        '（`runRangePctHeal`，覆盖率不足才发请求）在开盘前【自动】兜底，⛔ 不需要打开网页、不需要开电脑。' +
+        '本板读到当天为空时还会【自动】打一次零上游补缺（`healTodayRangePct` → Edge `?range10=1&overwrite=0`，' +
+        '只读 `stock_daily_pct` + `market_metrics`、只补缺不覆盖），不用手动做什么。' +
+        '自愈后仍为空 ⇒ 那天的逐日腿表 `stock_daily_pct` 本身没数据，先补腿表。',
       stat: pc.k + ' / ' + n + ' 只（' + _pct(pc.ratio) + '）'
     });
   }
@@ -133,10 +134,11 @@ export function resolveBuyDataGate(ctx) {
       label: '20 日涨幅前五',
       why: '退潮判定的「总龙一」就是 20 日涨幅第 1 名；弱势切抱团、补涨题材、总龙首次分歧' +
         '这三条买点也全都要看前五 / 前十的名次。榜是空的 ⇒ 这些规则要么不生效、要么按错的票算。',
-      fix: '20 日涨幅同样由云端按逐日收盘涨幅腿复利算好写库（`stock_range20_pct`，0 上游请求）。' +
-        '榜为空一般是「结果表没人算」而不是「算不出来」：打开一次「20日涨幅」开关即会按逐日腿补算' +
-        '（前端 `prefillRange20FromDailyLegs`，幂等、可重复触发）。' +
-        '若补算后仍为空 ⇒ 该日逐日腿表 `stock_daily_pct` 本身没数据，先补腿表。',
+      fix: '20 日涨幅同样由【云端】按逐日涨幅腿复利算好写库（`stock_range20_pct`，0 上游请求、0 猫抓额度）：' +
+        '9:26 `runRange20Prefill` 补缺、9:27 同一函数再幂等补一次（修 9:25/9:26 抢跑）。' +
+        '两趟都有「目标名单 ≥ ' + '20 行」的完整性闸门，半截名单宁可不写也不会产出残缺榜。' +
+        '⛔ 前端 `prefillRange20FromDailyLegs` 已退化为同等闸门下的辅助补缺，不再是修数指引。' +
+        '若仍为空 ⇒ 该日逐日腿表 `stock_daily_pct` 本身没数据，先补腿表。',
       stat: '前五 0 只'
     });
   }

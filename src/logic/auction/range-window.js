@@ -27,6 +27,24 @@
 export const RANGE_WINDOW_DAYS = 10;
 
 /**
+ * [CLOUD-0927-HEAL 2026-11-11 §11] 20 日涨幅「目标名单完整性下限」——前后端唯一一份常量。
+ *
+ * 为什么必须放共享模块：`workers/bidding-auto-fetch/logic/range20-prefill.js`（云端 9:26/9:27）
+ * 与 `src/logic/auction/range20.js#prefillRange20FromDailyLegs`（前端）都会写同一张
+ * `stock_range20_pct`，原先两边都只有「targets.length === 0 才拒」这一条 ⇒ 9:25 只落了 5 行
+ * 时两边都会拿这 5 行当全量算出一份残缺榜并打 ✅ 日志。下限各自写一份必然再次分叉（§6）。
+ *
+ * 20 与 `workers/.../ladder-heal.js#MIN_LADDER_ROWS` 同量级；正常交易日目标名单 75+ 行。
+ * ⚠️ 纯常量，不含任何环境判断，Worker 可安全打包。
+ */
+export const RANGE20_MIN_TARGETS = 20;
+
+/** 纯函数：目标名单是否足以支撑一次可信的 20 日涨幅补位 */
+export function isRange20TargetListReady(targets) {
+  return Array.isArray(targets) && targets.length >= RANGE20_MIN_TARGETS;
+}
+
+/**
  * 标准化涨幅值：接受 number / '2.34%' / '+2.34%' / '-7.71%' / '' / null。
  * 无法解析时返回 null（绝不返回 0 —— 0 是一个真实涨幅，不能拿来表示「没有数据」）。
  * @param {*} raw

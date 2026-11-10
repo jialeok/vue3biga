@@ -477,7 +477,12 @@ export async function readRange20TopForDate(env, date, limit) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range20_pct?date=eq.' +
     encodeURIComponent(date) + '&select=stock,pct,days,leg&limit=2000';
   const resp = await sbFetch(url, { headers: sbHeaders(env) });
-  if (!resp.ok) return [];
+  // [CLOUD-0927-HEAL 2026-11-11 §10] 同 readAuctionWatchlistForDate：读失败必须抛错，
+  //   由 9:25 组B 的 settled() 降级并计入汇总，⛔ 不伪装成「前一日 20 日榜为空」。
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error('读取 stock_range20_pct(' + date + ') 失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
+  }
   const data = await resp.json();
   const num = function (v) {
     if (v === null || v === undefined) return null;
@@ -517,7 +522,14 @@ export async function readAuctionWatchlistForDate(env, date) {
   //   否则会把补位票当成「最近多板成分股」写进今天的常规组。
   const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?date=eq.' + date + '&select=stock,code,obs_auto_added,source';
   const resp = await sbFetch(url, { headers: sbHeaders(env) });
-  if (!resp.ok) return [];
+  // 🔴 [CLOUD-0927-HEAL 2026-11-11 §10] 原来 `if (!resp.ok) return []`：
+  //   9:26 的 runRange20Prefill / runLadderRecheck 都是【基于这份名单再写库】的，
+  //   一次网络抖动被吞成「今天没有名单」⇒ 拿残缺数据补位、甚至触发降级兜底覆盖。
+  //   ⇒ 读取失败必须抛错，由各调用方的 try/catch 或 settled() 显式降级（失败≠空数据）。
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error('读取 auction_watchlist(' + date + ') 失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
+  }
   const data = await resp.json();
   // 【FIX 2026-08-15】不再过滤 code 为空的行：观察组/打标签股票在前一日 watchlist 里可能没有 code
   // （worker 从不写 code 到这些行，code 只在 stockcodemap 表），过滤掉会导致观察组股票不被抓取、
@@ -528,6 +540,32 @@ export async function readAuctionWatchlistForDate(env, date) {
     obs_auto_added: !!r.obs_auto_added,
     source: (r.source || '').trim()
   })).filter(s => s.name);
+}
+
+/**
+ * [CLOUD-0927-HEAL 2026-11-11] 读取 today 之前【最近一个有名单】的交易日及其正式成员。
+ *
+ * 用途：9:26 `runLadderRecheck` 的深度降级路径（9:25 整轮没写名单 + 883410 仍不可用）
+ *       需要用前一日正式成员写兜底名单；此前 index.js 从未传 `prevRows` ⇒ 这条救援实际永远失效。
+ * 为什么不走 `getRecentTradingDays`：那条会读用户假期设置 + fuyao 交易日历（上游请求），
+ *   9:26 的兜底路径不该再引一条外部依赖；直接问库里「最近一个有名单的日期」最准、0 上游。
+ * §10：读取失败必须抛错，由调用方 try/catch 记日志降级为「无兜底」，⛔ 不能吞成空名单。
+ *
+ * @returns {Promise<{date:string, rows:Array<{name,code,obs_auto_added,source}>}>}
+ */
+export async function readPreviousAuctionWatchlist(env, today) {
+  const base = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist';
+  const dUrl = base + '?date=lt.' + encodeURIComponent(today) +
+    '&select=date&order=date.desc&limit=1';
+  const dResp = await sbFetch(dUrl, { headers: sbHeaders(env) });
+  if (!dResp.ok) {
+    const text = await dResp.text().catch(() => '');
+    throw new Error('读取前一交易日失败: HTTP ' + dResp.status + ': ' + text.slice(0, 200));
+  }
+  const dRows = await dResp.json();
+  if (!Array.isArray(dRows) || dRows.length === 0 || !dRows[0].date) return { date: '', rows: [] };
+  const date = String(dRows[0].date).slice(0, 10);
+  return { date: date, rows: await readAuctionWatchlistForDate(env, date) };
 }
 
 // [FEAT 2026-09-08] 读取指定日期的「打标签」股票（auction_board_tags：buy / sell / hold）。
@@ -542,7 +580,12 @@ export async function readAuctionTagsForDate(env, date) {
   const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_board_tags?date=eq.' + date +
     '&select=stock,tag&limit=1000';
   const resp = await sbFetch(url, { headers: sbHeaders(env) });
-  if (!resp.ok) return [];
+  // [CLOUD-0927-HEAL 2026-11-11 §10] 原 `return []` 把「读失败」伪装成「没有标签」：
+  //   9:25 组B 用 settled() 接住（降级不中断），但汇总会把它计成一路失败 ⇒ 失败可见。
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error('读取 auction_board_tags(' + date + ') 失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
+  }
   const data = await resp.json();
   const out = [];
   const seen = new Set();
@@ -563,28 +606,30 @@ export async function readAuctionTagsForDate(env, date) {
  *      —— 避免「前端算一套、worker 算一套」的第二真相源（§6）。
  * 与 auction_watchlist / 打标签股票同款：只并入【抓取名单 constituents】，不写 auction_watchlist，
  *      不破坏「当日名单 = 9:25 快照」的锁定口径。
- * 失败返回 []（非致命：当次龙头数据缺失，但不该因此中断整轮早盘抓取）。
+ * [CLOUD-0927-HEAL 2026-11-11 §10] 原实现「HTTP 非 2xx / 网络异常一律 return []」，
+ *   与「前一交易日本来就没有名册」完全无法区分 ⇒ 9:25 抓取名单静默少一批龙头，
+ *   而 `bidding_fetch_log` 仍打 ✅。现改为抛错：9:25 组B 由 settled() 接住并计入
+ *   `groupBReadFailures`（降级不中断、但汇总留痕）；⛔ 绝不把读失败当空名册。
  */
 export async function readDragonLeadersForDate(env, date) {
   if (!date) return [];
   const url = CONFIG.SUPABASE_URL + '/rest/v1/dragon_leaders?date=eq.' + encodeURIComponent(date) +
     '&select=stock,code,topic&limit=500';
-  try {
-    const resp = await sbFetch(url, { headers: sbHeaders(env) });
-    if (!resp.ok) return [];
-    const data = await resp.json();
-    const out = [];
-    const seen = new Set();
-    (data || []).forEach(r => {
-      const name = (r.stock || '').trim();
-      if (!name || seen.has(name)) return;
-      seen.add(name);
-      out.push({ name: name, code: r.code || '', topic: (r.topic || '').trim() });
-    });
-    return out;
-  } catch (e) {
-    return [];
+  const resp = await sbFetch(url, { headers: sbHeaders(env) });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error('读取 dragon_leaders(' + date + ') 失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
   }
+  const data = await resp.json();
+  const out = [];
+  const seen = new Set();
+  (data || []).forEach(r => {
+    const name = (r.stock || '').trim();
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    out.push({ name: name, code: r.code || '', topic: (r.topic || '').trim() });
+  });
+  return out;
 }
 
 /**

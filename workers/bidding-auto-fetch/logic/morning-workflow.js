@@ -22,7 +22,7 @@ import { healLadderWatchlist } from './ladder-heal.js';
 // 窗口天数 / 复利累乘 / T 腿竞价占位判定 全部只此一份，前后端不会算出两个结果。
 // ⚠️ 跨目录引用会让 workers/_bundle.mjs 把该文件一并打进单文件产物（Cloudflare 复制粘贴部署），
 //    因此 src/logic/auction/range-window.js 必须保持「零 import 的纯函数」，不得引入 Vue / DOM 依赖。
-import { RANGE_WINDOW_DAYS, parsePct, buildRangeRows, isAuctionLegActive } from '../../../src/logic/auction/range-window.js';
+import { RANGE_WINDOW_DAYS, parsePct, buildRangeRows, isAuctionLegActive, RANGE20_MIN_TARGETS } from '../../../src/logic/auction/range-window.js';
 // [AUC-SANE 2026-10-12 用户口径] 竞价涨幅【物理越界】闸门 —— 唯一实现在 limit-up.js（§6），
 //   前端 isAuctionYiZi 用的是同一份判据。本文件只负责「写入前丢了它」。
 //   为什么必须放在 worker（用户原话：「直接改上游自动获取数据那里…彻底从根源解决掉」）：
@@ -302,6 +302,18 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
   const range20Stocks = (range20Res.ok && range20Res.v) || [];
   if (range20Res.e) logs.push('读取 20 日涨幅榜失败(非致命): ' + range20Res.e.message);
 
+  // [CLOUD-0927-HEAL 2026-11-11 §10] 组B 五路并行读的诊断结果随返回值带出给 runMorning，
+  //   让完整性汇总能看见「读失败」和「龙头名册为空」；⛔ 不在汇总处重复读、不引全局变量。
+  //   （这几个 settled 结果是本函数局部变量，runMorning 作用域里拿不到，必须显式传出。）
+  const groupBReadFailures = [prevWlRes, todayWlRes, tagRes, dragonRes, range20Res]
+    .filter(r => r && r.ok === false).length;
+  const dragonRosterEmpty = !!(dragonRes && dragonRes.ok && Array.isArray(dragonRes.v) && dragonRes.v.length === 0);
+  const groupBDiag = {
+    groupBReadFailures: groupBReadFailures,
+    dragonRosterEmpty: dragonRosterEmpty,
+    prevDay: prevDay
+  };
+
   let constituents = ladderConstituents;
 
   // [BUG-FIX] 合并前一日 auction_watchlist 表里的额外股票（打标签/观察组），
@@ -454,7 +466,10 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
 
   // [DEGRADE 2026-09-15] 降级后仍要求「有可抓取的标的」，否则整轮无从下手（§10 读失败≠空）
   if (constituents.length === 0) {
-    return { error: '抓取名单为空：883410 成分股不可用，且前一日名单/打标签/龙头名册/20日涨幅榜均无可用标的' };
+    return { error: '抓取名单为空：883410 成分股不可用，且前一日名单/打标签/龙头名册/20日涨幅榜均无可用标的',
+      groupBReadFailures: groupBDiag.groupBReadFailures,
+      dragonRosterEmpty: groupBDiag.dragonRosterEmpty,
+      prevDay: groupBDiag.prevDay };
   }
 
   // [DEGRADE 2026-09-15] 降级时【不在这里】写 auction_watchlist：绝不把残缺名册当 9:25 快照。
@@ -469,7 +484,10 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
     const fallbackCandidates = (prevWlRes.ok && prevWlRes.v) || [];
     return {
       constituents, watchlistRows: [], nowIso: new Date().toISOString(),
-      ladderDegraded: true, ladderCount, fallbackCandidates
+      ladderDegraded: true, ladderCount, fallbackCandidates,
+      groupBReadFailures: groupBDiag.groupBReadFailures,
+      dragonRosterEmpty: groupBDiag.dragonRosterEmpty,
+      prevDay: groupBDiag.prevDay
     };
   }
 
@@ -515,7 +533,12 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
     logs.push('写入 auction_watchlist 失败: ' + e.message);
     return { error: '写入 auction_watchlist 失败: ' + e.message };
   }
-  return { constituents, watchlistRows, nowIso, ladderCount };
+  return {
+    constituents, watchlistRows, nowIso, ladderCount,
+    groupBReadFailures: groupBDiag.groupBReadFailures,
+    dragonRosterEmpty: groupBDiag.dragonRosterEmpty,
+    prevDay: groupBDiag.prevDay
+  };
 }
 
 // 3. 调 numcat daily_auc 获取竞价数据（含"今天缺失"延迟重试）
@@ -1085,12 +1108,42 @@ async function writeMetricsForDates(env, metricsByDate, dateFilter, nowIso, logs
 }
 
 // 7. 构建数据完整性汇总
-function buildCompletenessSummary(today, missingDatesAfterNumcat, phantomDates, metricsWriteFailures, expectedDates, logs) {
+//
+// 🔴 [CLOUD-0927-HEAL 2026-11-11] 原版只看 3 项（今天这个「日期」在不在 daily_auc /
+//    phantomDates / market_metrics 写入失败批次），**不看任何行数、不看量比覆盖、不看
+//    stock_range_pct 有没有写进去、也不看组B 那些「非致命」读失败**。
+//    结果：11-10 日志写着「✅ 数据完整性汇总」，但 9:26 仍要补 54 行、9:27 又得再兜一次；
+//    运维拿着 ok=true + ✅ 根本看不出上游是残缺的（前端不读这个字段，纯日志，改它无副作用）。
+//    ⇒ 补 4 条硬判据，让 ✅ 真的代表「上游够 9:26/9:27 用」。
+function buildCompletenessSummary(today, missingDatesAfterNumcat, phantomDates, metricsWriteFailures, expectedDates, logs, extra) {
   const todayMissing = missingDatesAfterNumcat.includes(today);
+  const x = extra || {};
   const summaryParts = [];
   if (todayMissing) summaryParts.push('❌ 今天(' + today + ')竞价数据缺失，需手动补抓');
   if (phantomDates.length > 0) summaryParts.push('⚠️ 历史日 volume/yest_volume 缺失: ' + phantomDates.join(', '));
   if (metricsWriteFailures > 0) summaryParts.push('❌ market_metrics 写入失败 ' + metricsWriteFailures + ' 个批次');
+  // ① 今天竞价行情行数：9:26 / 9:27 的补位闸门以 RANGE20_MIN_TARGETS 为下限，
+  //    低于它 ⇒ 那两趟会明确拒写，✅ 必须是假的。
+  const todayRows = Number(x.todayMetricsRows);
+  if (isFinite(todayRows) && todayRows < RANGE20_MIN_TARGETS) {
+    summaryParts.push('❌ 今天 market_metrics 仅 ' + todayRows + ' 行（<' + RANGE20_MIN_TARGETS +
+      '）⇒ 9:26 / 9:27 补位会拒写');
+  }
+  // ② 十日涨幅是否真的落库（题材量比的排序依据）
+  const rangeRows = Number(x.rangeRows);
+  if (isFinite(rangeRows) && rangeRows <= 0) {
+    summaryParts.push('❌ 今天 stock_range_pct 写入 0 行 ⇒ 题材量比排序缺依据，等 9:27 自愈');
+  } else if (x.rangeWriteFailed) {
+    summaryParts.push('⚠️ 今天 stock_range_pct 部分批次写入失败');
+  }
+  // ③ 组B 非致命读失败：以前只散落在 logs 里，汇总仍是 ✅
+  const groupBFail = Number(x.groupBReadFailures) || 0;
+  if (groupBFail > 0) summaryParts.push('⚠️ 名单上游 ' + groupBFail + ' 路读取失败（已降级，名单可能不全）');
+  // ④ 前一交易日龙头名册为空：设计上是「盘后无人打开看板」导致的，
+  //    以前完全不可见，次日龙头组整组缺数据却没人知道（标 ⚠️ 不标 ❌，它可能是正常空）。
+  if (x.dragonRosterEmpty === true) {
+    summaryParts.push('⚠️ 前一交易日 dragon_leaders 为空 ⇒ 龙头组不进今日抓取名单（前端评选未执行或读失败）');
+  }
   const completenessSummary = summaryParts.length > 0 ? summaryParts.join('；') : '✅ 本次 ' + expectedDates.length + ' 个交易日数据完整';
   logs.push('数据完整性汇总: ' + completenessSummary);
   return { completenessSummary, todayMissing };
@@ -1217,7 +1270,10 @@ export async function runMorning(env) {
   if (watchlistResult.error) {
     return { ok: false, today, error: watchlistResult.error, logs };
   }
-  const { constituents, watchlistRows, nowIso, ladderDegraded, ladderCount } = watchlistResult;
+  // [CLOUD-0927-HEAL 2026-11-11 §10] 组B 诊断由 fetchAndWriteWatchlist 显式带出（该函数内的
+  //   settled 结果是局部作用域，这里⛔ 不能直接引用，否则 ReferenceError 整轮早盘崩）。
+  const { constituents, watchlistRows, nowIso, ladderDegraded, ladderCount,
+    groupBReadFailures, dragonRosterEmpty, prevDay } = watchlistResult;
   mark('名单落库' + (ladderDegraded ? '（⬇️ 降级：名单源不可用）' : ''));
 
   // ---- P0-② 竞价 daily_auc 与 收盘 daily【并发】（两者互不依赖）----
@@ -1302,7 +1358,25 @@ export async function runMorning(env) {
   const totalMetricsWritten = todayWrite.totalMetricsWritten + histWrite.totalMetricsWritten;
   const dateKeys = todayWrite.dateKeys.concat(histWrite.dateKeys);
 
-  const { completenessSummary, todayMissing } = buildCompletenessSummary(today, missingDatesAfterNumcat, phantomDates, metricsWriteFailures, expectedDates, logs);
+  // [CLOUD-0927-HEAL 2026-11-11] 组B 的五路并行读以前失败只散落在 logs 里，汇总仍打 ✅；
+  //   这里把「几路读失败」和「龙头名册为空」也变成汇总判据（§10 失败可见）。
+  const { completenessSummary, todayMissing } = buildCompletenessSummary(
+    today, missingDatesAfterNumcat, phantomDates, metricsWriteFailures, expectedDates, logs,
+    {
+      todayMetricsRows: todayWrite.totalMetricsWritten,
+      rangeRows: rangeWritten,
+      rangeWriteFailed: !!rangeWriteFailed,
+      groupBReadFailures: groupBReadFailures,
+      dragonRosterEmpty: dragonRosterEmpty
+    }
+  );
+  if (groupBReadFailures > 0) {
+    logs.push('⚠️ 名单上游读取失败 ' + groupBReadFailures + ' 路（降级不中断，但今日抓取名单可能不全）');
+  }
+  if (dragonRosterEmpty) {
+    logs.push('⚠️ 前一交易日(' + (prevDay || '-') + ') dragon_leaders 为空 ⇒ ' +
+      '龙头组不进今日抓取名单；名册由前端在收盘后评选，⛔ 电脑关机时这是已知边界');
+  }
 
   // ---- P4 [LADDER-FALLBACK 2026-11-06] 名单自愈（只在降级轮执行）----
   // 放在 P0/P1/P2/P3 之后：竞价数据/区间涨幅已经全部落库，这一步再慢也不会顶穿 9:26 硬指标。

@@ -25,7 +25,12 @@
 //   ⛔ 不需要用户在 Supabase Dashboard 手工重贴 Edge Function（这是选 worker 而不是 Edge 的原因）。
 // ============================================================================
 import { beijingNow, beijingToday } from '../../_shared-source/date-utils.js';
-import { parsePct, compoundPct } from '../../../src/logic/auction/range-window.js';
+import {
+  parsePct,
+  compoundPct,
+  RANGE20_MIN_TARGETS,
+  isRange20TargetListReady
+} from '../../../src/logic/auction/range-window.js';
 import {
   readAuctionWatchlistForDate,
   readMarketMetricsForDate,
@@ -39,6 +44,11 @@ export const RANGE20_LEG_DAYS = 19;
 
 /** 腿表回看窗口（自然日）：足够跨过春节/国庆凑满 19 个交易日，与 Edge shiftYmd(-60) 一致 */
 export const RANGE20_LOOKBACK_DAYS = 60;
+
+// [CLOUD-0927-HEAL 2026-11-11 §11] 名单完整性下限 RANGE20_MIN_TARGETS /
+// isRange20TargetListReady 从 `src/logic/auction/range-window.js` 引入（前后端唯一一份常量）。
+// 9:25 与 9:26 是两条独立 cron、没有锁；抢跑时读到的只是「刚写了几行」的半截名单。
+// 半截名单不许补位：宁可这一趟 0 写入，把机会留给 9:27 那一轮（幂等重跑）。
 
 /**
  * 纯函数：与 Edge `rangeFromLegs` 逐字等价。
@@ -129,6 +139,13 @@ export async function runRange20Prefill(env, opts) {
     logs.push('[r20-prefill] ⚠️ ' + out.skipped);
     return out;
   }
+  // [CLOUD-0927-HEAL 2026-11-11 §11] 半截名单不许补位：9:27 会幂等重跑，⛔ 别把残缺榜定稿。
+  if (!isRange20TargetListReady(targets)) {
+    out.skipped = '当日名单/行情仅 ' + targets.length + ' 行（<' + RANGE20_MIN_TARGETS +
+      '）⇒ 疑似 9:25 尚未落库完 / 9:26 抢跑，本趟 0 写入，交给 9:27 兜底';
+    logs.push('[r20-prefill] ⚠️ ' + out.skipped);
+    return out;
+  }
 
   // ② 云端已有一律不碰（纯加法）。有任何 leg 的行都视作已覆盖，⛔ 不混口径覆盖。
   let have;
@@ -209,5 +226,12 @@ export async function runRange20Prefill(env, opts) {
   logs.push('[r20-prefill] ✅ ' + today + ' leg=' + leg + ' 云端补缺 ' + rows.length + ' 行' +
     '（目标 ' + out.targets + ' / 已有 ' + out.covered + ' / 缺T腿 ' + out.noTLeg +
     ' / 腿不足 ' + out.shortLegs + ' / 读腿 ' + legRows.length + ' 行；0 上游请求、0 猫抓额度）');
+  // [CLOUD-0927-HEAL 2026-11-11] 覆盖度必须可观测：低于 80% 时前端买点闸门会拒绝定稿，
+  //   若不在这里点名，事后只能靠猜「为什么当天没出票」。9:27 会再补一次。
+  const finalCovered = out.covered + rows.length;
+  const finalCoverage = finalCovered / out.targets;
+  logs.push('[r20-prefill] 覆盖度 ' + finalCovered + '/' + out.targets +
+    ' = ' + (finalCoverage * 100).toFixed(0) + '%' +
+    (finalCoverage < 0.8 ? ' ⚠️ 未达 80% ⇒ 9:27 将再补一次；前端买点闸门暂不定稿' : ' ✅ 达标'));
   return out;
 }

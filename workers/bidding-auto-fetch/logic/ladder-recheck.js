@@ -321,10 +321,17 @@ export async function runLadderRecheck(env, opts) {
       const deleted = await deleteLadderFallbackRows(env, today);
       out.fallbackCleared = deleted;
       logs.push('[ladder26] ✅ 清理当日 source=worker-fallback 兜底行 ' + deleted + ' 行（带结果确认）');
-      const verify = await readAuctionWatchlistForDate(env, today);
-      if (countRealLadderRows(verify) < MIN_LADDER_ROWS) {
-        logs.push('[ladder26] ❌ 删除后复核：真实名单不足 ' + MIN_LADDER_ROWS + ' 行 → 报警，请人工检查');
-        out.ok = false;
+      // [CLOUD-0927-HEAL 2026-11-11] readAuctionWatchlistForDate 现在读失败会抛错（§10）。
+      //   删除后的复核必须单独接住，否则「复核读失败」会被下面那条 catch 误报成「清理兜底行失败」。
+      try {
+        const verify = await readAuctionWatchlistForDate(env, today);
+        if (countRealLadderRows(verify) < MIN_LADDER_ROWS) {
+          logs.push('[ladder26] ❌ 删除后复核：真实名单不足 ' + MIN_LADDER_ROWS + ' 行 → 报警，请人工检查');
+          out.ok = false;
+        }
+      } catch (ve) {
+        logs.push('[ladder26] ⚠️ 删除后复核读取失败（删除动作已成功，结果未确认）: ' +
+          ((ve && ve.message) || String(ve)));
       }
     } catch (e) {
       logs.push('[ladder26] ⚠️ 清理兜底行失败（不影响刚写入的真实名单）: ' +

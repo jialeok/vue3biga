@@ -205,8 +205,19 @@ export async function healTodayRangePct(date) {
         const timer = ctrl ? setTimeout(function() { ctrl.abort(); }, HEAL_TIMEOUT_MS) : null;
         const t0 = Date.now();
         try {
+            // 🔴🔴 [CLOUD-0927-HEAL 2026-11-11 §6/§11] 必须显式带 `&overwrite=0`。
+            //   Edge `db/edge/range20-precompute/index.ts#wantOverwrite` 的规则是：
+            //     target === 今天 且 未显式 overwrite=0 ⇒ 默认 **overwrite=true**。
+            //   原实现没带这个参数 ⇒ 只要页面在 15:00 前发现任一缺口，就会用
+            //   `stock_daily_pct` 腿复利把【当天全部 stock_range_pct 行覆盖重写一遍】，
+            //   包括 9:25 / 9:27 云端刚用猫抓 daily 算出的真值（两条腿口径不保证逐位相等）。
+            //   更坏的是：9:25 写完整、页面先跑了这轮覆盖，9:27 的 runRangePctHeal
+            //   读库发现覆盖率已达标 ⇒ 零请求跳过 ⇒ 浏览器腿表口径反而成了当天最终值。
+            //   Edge 注释也写明 overwrite=true「仅 9:25 竞价轮用」，前端兜底本就该是纯补缺。
+            //   ⇒ 加上 overwrite=0 后本函数退化为「只补缺、永不覆盖」，可安全保留为最后一层网。
             const resp = await fetch(
-                RANGE20_EDGE_URL + '?token=' + encodeURIComponent(RANGE20_EDGE_TOKEN) + '&range10=1',
+                RANGE20_EDGE_URL + '?token=' + encodeURIComponent(RANGE20_EDGE_TOKEN) +
+                '&range10=1&overwrite=0',
                 {
                     method: 'POST',
                     headers: { 'Authorization': 'Bearer ' + SUPABASE_ANON_KEY },

@@ -13,7 +13,9 @@
 //   ① `pct` 是【文本列】，必须按数值降序 —— 字典序会把 8.94 排在 78.46 前面（真实踩过的坑）；
 //   ② ' 8.94 % ' 这类脏写法要能解析（剥 % / 剥逗号 / trim）；
 //   ③ 非数值 / 空 pct 的行必须剔除，⛔ 绝不当 0 参与排名（§10）；
-//   ④ 读失败 → 返回 []（非致命），⛔ 不许抛错把整轮早盘流程打断（否则 9:25 一张表都不写）。
+//   ④ [CLOUD-0927-HEAL 2026-11-11 §10] 读失败必须【抛错】，⛔ 不许伪装成「前一日 20 日榜为空」；
+//      由 9:25 组B 的 settled() 显式降级并计入完整性汇总（非致命，但必须留痕），
+//      旧口径 return [] 会让上游网络抖动被误判成「昨天没有榜」，属于读取失败 ≠ 空数据。
 import { describe, it, expect, afterEach } from 'vitest';
 import { readRange20TopForDate } from '../data/supabase-write.js';
 
@@ -75,9 +77,15 @@ describe('readRange20TopForDate —— 20日涨幅榜取数口径', () => {
     expect(await readRange20TopForDate(ENV, '2026-11-05', 20)).toEqual([]);
   });
 
-  it('④b 读失败 → [] 且不抛错（非致命，不许打断早盘流程）', async () => {
+  it('④b [§10] 读失败必须抛错（⛔ 不许把 HTTP 500 伪装成「昨天榜为空」）', async () => {
     stubRows(null, { status: 500 });
-    await expect(readRange20TopForDate(ENV, '2026-11-04', 20)).resolves.toEqual([]);
+    await expect(readRange20TopForDate(ENV, '2026-11-04', 20))
+      .rejects.toThrow(/读取 stock_range20_pct\(2026-11-04\) 失败: HTTP 500/);
+  });
+
+  it('④c [§10] 表内确实 0 行才算空（返回 []，与读失败严格区分）', async () => {
+    stubRows([]);
+    await expect(readRange20TopForDate(ENV, '2026-11-05', 20)).resolves.toEqual([]);
   });
 
   it('取前 N 只：limit 生效，默认为 20', async () => {

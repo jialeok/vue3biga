@@ -4,13 +4,33 @@
 //   ① 复利口径与 Edge `rangeFromLegs` 逐字等价（19 根历史腿 + 1 根 T 腿，days=20）；
 //   ② 腿不够 19 根 / T 腿不是数值 ⇒ 一律不写（§10 宁缺勿错，⛔ 不折 0）；
 //   ③ 竞价/收盘 leg 的 15:00 边界与 Edge、前端 resolveT20LegMode 同源。
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   RANGE20_LEG_DAYS,
   compoundRange20,
   legModeOf,
-  groupLegs
+  groupLegs,
+  runRange20Prefill
 } from './range20-prefill.js';
+import { RANGE20_MIN_TARGETS, isRange20TargetListReady } from '../../../src/logic/auction/range-window.js';
+
+// [CLOUD-0927-HEAL 2026-11-11] 主流程闸门回归：mock 掉 Data 层，只验「该不该写」
+const h = vi.hoisted(() => ({
+  wl: [], metrics: [], have: [], legs: [], upserted: [], throwOnRead: ''
+}));
+vi.mock('../data/supabase-write.js', () => ({
+  readAuctionWatchlistForDate: async () => {
+    if (h.throwOnRead === 'wl') throw new Error('HTTP 503');
+    return h.wl;
+  },
+  readMarketMetricsForDate: async () => {
+    if (h.throwOnRead === 'metrics') throw new Error('HTTP 503');
+    return h.metrics;
+  },
+  readRange20StocksForDate: async () => new Set(h.have),
+  readDailyLegsForStocks: async () => h.legs,
+  upsertRange20Rows: async (env, rows) => { h.upserted.push(rows); }
+}));
 
 function n(v, k) { return new Array(k).fill(v); }
 
@@ -75,5 +95,47 @@ describe('groupLegs（腿表扁平行 → 升序数值腿）', () => {
   it('空输入返回空 Map，不抛错', () => {
     expect(groupLegs([]).size).toBe(0);
     expect(groupLegs(null).size).toBe(0);
+  });
+});
+
+describe('[CLOUD-0927-HEAL] §11 半截名单不许补位', () => {
+  beforeEach(() => {
+    h.wl = []; h.metrics = []; h.have = []; h.legs = []; h.upserted = []; h.throwOnRead = '';
+  });
+
+  it('★ 下限常量与前端共用同一份（⛔ 前后端各写一份必然分叉）', () => {
+    expect(RANGE20_MIN_TARGETS).toBe(20);
+    expect(isRange20TargetListReady(new Array(19).fill('A'))).toBe(false);
+    expect(isRange20TargetListReady(new Array(20).fill('A'))).toBe(true);
+  });
+
+  it('★ 9:25 只落了 5 行 ⇒ 0 写入、明确 skipped（⛔ 不打「✅ 补缺 5 行」）', async () => {
+    h.wl = new Array(5).fill(0).map((_, i) => ({ name: 'S' + i, code: '00000' + i }));
+    h.metrics = h.wl.map(s => ({ name: s.name, auc_pct_chg: '+1.00' }));
+    const r = await runRange20Prefill({}, { today: '2026-11-10' });
+    expect(r.targets).toBe(5);
+    expect(r.written).toBe(0);
+    expect(r.skipped).toMatch(/9:25 尚未落库完/);
+    expect(h.upserted).toHaveLength(0);
+  });
+
+  it('★ 名单读取失败 ⇒ 整轮停止、0 写入（§10 读失败 ≠ 空名单）', async () => {
+    h.throwOnRead = 'wl';
+    const r = await runRange20Prefill({}, { today: '2026-11-10' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/读取当日名单\/行情失败/);
+    expect(r.written).toBe(0);
+    expect(h.upserted).toHaveLength(0);
+  });
+
+  it('★ 云端已有行一律不覆盖（§11 纯加法、幂等）', async () => {
+    h.wl = new Array(RANGE20_MIN_TARGETS).fill(0).map((_, i) => ({ name: 'S' + i, code: '00000' + i }));
+    h.metrics = h.wl.map(s => ({ name: s.name, auc_pct_chg: '+1.00' }));
+    h.have = h.wl.map(s => s.name);
+    const r = await runRange20Prefill({}, { today: '2026-11-10' });
+    expect(r.ok).toBe(true);
+    expect(r.written).toBe(0);
+    expect(r.skipped).toMatch(/已全覆盖/);
+    expect(h.upserted).toHaveLength(0);
   });
 });

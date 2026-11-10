@@ -46,7 +46,10 @@ import { state } from '../app-state.js';
 import { getAuctionData } from '../app-core-api.js';
 import { isTradingDay } from '../date/trading-day-helpers.js';
 import { _getLocalTodayStr } from '../tagTitles/rules.js';
-import { compoundPct, parsePct, closeCoverUtcMs } from './range-window.js';
+import {
+  compoundPct, parsePct, closeCoverUtcMs,
+  RANGE20_MIN_TARGETS, isRange20TargetListReady
+} from './range-window.js';
 import { getDragonWindowDates } from './dragon-rank.js';
 import { ensureAuctionCodeMapping } from './auction-fetch-helpers.js';
 import { fetchDailyPctRange } from '../../data/daily-pct-range.js';
@@ -962,18 +965,37 @@ export async function prefillRange20FromDailyLegs(date, rows) {
   const targets = _targetsOf(rows);
   stat.targets = targets.length;
   if (targets.length === 0) return stat;
+  // [CLOUD-0927-HEAL 2026-11-11 §11] 与云端 runRange20Prefill 同一份下限常量：
+  //   半截名单（9:25 才刚写了几行 / 页面行还没加载完）算出来的是残缺榜，写进库反而更糟。
+  if (!isRange20TargetListReady(targets)) {
+    _dbgLog('[R20-PREFILL] ' + date + ' 目标名单仅 ' + targets.length + ' 行（<' +
+      RANGE20_MIN_TARGETS + '）⇒ 疑似上游尚未落库完，本轮 0 写入（交给云端 9:26 / 9:27）');
+    return stat;
+  }
 
   const tIsToday = (date === _getLocalTodayStr());
   const afterClose = isAfterCloseOf(date);
   const legMode = resolveT20LegMode(tIsToday, afterClose);
 
   // ① 先问云端表「已经有多少」—— 常态下这里就全覆盖了，只花 1 次查询、不读原料表
-  let cloudMap = new Map();
+  // 🔴🔴 [CLOUD-0927-HEAL 2026-11-11 §10/§11] 这里原有一处会**破坏云端真值**的隐藏缺陷：
+  //   `data/stock-range20-cache.js` 的契约是「读失败 ⇒ 返回 null（加速层，⛔ 不抛错）」，
+  //   而原代码只在 catch 里把读失败当空表 —— 真实失败根本不进 catch！
+  //   null 被 pickUsableRows 静默转成空 Map ⇒ `cloudMap.has(...)` 恒 false ⇒
+  //   下面覆盖式 upsert 会把云端已有的 20 日涨幅【全量重写成粗算值】。
+  //   ⇒ 必须在消费侧显式判 null：读失败就整轮不写，⛔ 绝不当成「这天没有数据」。
+  let rawCloud;
   try {
-    cloudMap = pickUsableRows(await readRange20Rows(date), legMode);
+    rawCloud = await readRange20Rows(date);
   } catch (e) {
-    cloudMap = new Map();                  // 读失败 ⇒ 当作「一行都没有」，走下面全量算
+    _dbgLog('[R20-PREFILL] ' + date + ' 结果表读取异常 ⇒ 跳过预填（不写任何行）: ' + ((e && e.message) || e));
+    return stat;
   }
+  if (rawCloud === null || rawCloud === undefined) {
+    _dbgLog('[R20-PREFILL] ' + date + ' 结果表不可读（加速层返回 null）⇒ 跳过预填，⛔ 不覆盖云端已有真值');
+    return stat;
+  }
+  const cloudMap = pickUsableRows(rawCloud, legMode);
   for (let i = 0; i < targets.length; i++) {
     if (cloudMap.has(targets[i].stock)) stat.covered++;
   }
