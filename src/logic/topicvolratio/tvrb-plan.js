@@ -122,18 +122,21 @@ export function _appendDragonDriftNote(blk, closeDragonMap, byOrder) {
  *
  * 文案纪律（★ 用户明确要求「你不要解释」）：
  *   · 只写「〔口径时间〕名称 涨幅 第几名」，⛔ 不写原因、⛔ 不写「这是正常的」这类辩解；
- *   · 两个口径并列摆出来（9:26 竞价 / 收盘），用户自己核对；
+ *   · ★★ [TVRB-AUC-BOARD 2026-11-10] 题材量比的 20 日涨幅候选池已【恒 9:25 竞价口径】，
+ *     `ebbCtx.top5[].rank20` 与 `aucMap` 现在是同一份榜 ⇒ 两组数值会完全相同。
+ *     ⇒ 这时【只输出竞价口径一段】，⛔ 不再并列一个写着「收盘口径」的假对照。
+ *     只有在回落路径（竞价榜判不出、两组确实不同）才保留历史的两口径并列。
  *   · §10：`aucMap` 里没有这只票（该日 20 日涨幅的 9:26 口径判不出）⇒ **一行都不写**，
  *     ⛔ 绝不拿收盘口径冒充、⛔ 不猜一个名次；
  *   · §11：`aucMap` 缺省（组合式没注入 / 没读到）⇒ 本函数直接返回，一个字都不多写。
  *
  * @param {object} out buildTopicVolRatioPlan 的产出（读 ebbBuy / newDragon / notes）
- * @param {Map|null} aucMap range20-auction-leg#readAuctionLegRange20Rank 的返回（name -> {pct, days, rank}）
- * @param {object|null} ebbCtx 采集层的事实（用来取那只票的【收盘口径】名次 rank20）
+ * @param {Map|null} aucMap 该日【9:25 竞价口径】20 日榜的名次表（name -> {pct, days, rank}）
+ * @param {object|null} ebbCtx 采集层的事实（top5 / newDragonPool 的 rank20；现在也是竞价口径榜）
  */
 export function _appendRange20AucNote(out, aucMap, ebbCtx) {
   if (!out || !aucMap || typeof aucMap.get !== 'function' || aucMap.size === 0) return;
-  // 收盘口径的名次：top5 / newDragonPool 的每一项都带 rank20（= 20日涨幅名次，§6 同一份事实）
+  // 榜上的名次（top5 / newDragonPool 每项都带 rank20）——现在与 aucMap 同源，仅用于判「是否同一口径」
   const closeInfo = new Map();
   const _put = function(arr) {
     (Array.isArray(arr) ? arr : []).forEach(function(t) {
@@ -167,10 +170,22 @@ export function _appendRange20AucNote(out, aucMap, ebbCtx) {
   if (rows.length === 0) return;
 
   const _a = rows.map(function(r) { return r.name + ' ' + _pct2(r.aucPct) + ' 第 ' + r.aucRank + ' 名'; }).join('；');
+  out.notes = Array.isArray(out.notes) ? out.notes : [];
+  // ★★ [TVRB-AUC-BOARD 2026-11-10] 两组完全同源（数值与名次都相同）⇒ 只报竞价口径这一段。
+  //   恒竞价口径后这是本板的主路径；⛔ 绝不能把同一组数字标成「收盘口径」再说一遍。
+  const _sameLeg = rows.every(function(r) {
+    return r.aucPct !== null && r.closePct !== null &&
+      Math.abs(r.closePct - r.aucPct) < 1e-9 && r.closeRank === r.aucRank;
+  });
+  if (_sameLeg) {
+    out.notes.push('ℹ️ 买点侧【20日涨幅通道】入选票的涨幅与名次' +
+      '〔9:25 竞价口径 · 本板唯一口径，收盘后不变〕' + _a + '。');
+    return;
+  }
+  // 回落路径（竞价榜判不出 ⇒ ebbCtx 仍是收盘口径发布榜）：保留历史的两口径并列对照。
   const _c = rows.map(function(r) {
     return r.name + ' ' + _pct2(r.closePct) + ' 第 ' + (r.closeRank === null ? '—' : r.closeRank) + ' 名';
   }).join('；');
-  out.notes = Array.isArray(out.notes) ? out.notes : [];
   out.notes.push('ℹ️ 买点侧【20日涨幅通道】入选票的涨幅与名次：' +
     '〔9:26 竞价口径〕' + _a + '。〔收盘口径〕' + _c + '。');
 }
@@ -419,12 +434,14 @@ export function pickNewDragon(top5, everInTop5, info) {
  *        range10Presence = ★★ [R10-BACKUP] 十日窗口的在列次数 `{counts:Map<name,{cnt}>, coveredDays}`、
  *                   （data/auction-presence.js#getPresenceForDate(date, 10) 的返回）；
  *                   缺省 / coveredDays=0 ⇒ 判不出「首次 / 二次在列」⇒ 候补不生效（§10）。
- *        range20Auc = ★★ [R20-926 2026-10-24 用户口径] 该日【20日涨幅 · 9:26 竞价口径】的主板名次
- *                   （logic/auction/range20-auction-leg.js#readAuctionLegRange20Rank 的返回：
- *                    `Map<股票名, {pct, days, rank}>`，pct 已把 T 腿反解回竞价口径）。
+ *        range20Auc = ★★ [TVRB-AUC-BOARD 2026-11-10] 该日【9:25 竞价口径】20 日榜的主板名次
+ *                   （`topicvolratio/tvrb-auction-board.js` 的 rankMap：
+ *                    `Map<股票名, {pct, days, rank}>`，与选股候选池【同一份榜】；
+ *                    判不出时才回落到 range20-auction-leg#readAuctionLegRange20Rank）。
  *                   用途【只有一个】：买点侧【20日涨幅通道】的入选票（退潮替补 / 切换日新龙）
  *                   在说明区写出「9:26 那一刻的涨幅 + 第几名」（只列事实，⛔ 不解释）。
- *                   ⛔ 不参与选股、⛔ 不影响 getRange20Leaders 的发布结果（退潮 / 总龙 / 展示仍走收盘口径）。
+ *                   ⛔ 不参与选股；⛔ 不改 getRange20Leaders 的发布结果（20日涨幅 toggle / 决策看板
+ *                   仍用收盘口径展示），但题材量比的【规则输入】已不读它。
  *                   缺省 / 判不出 ⇒ 一条说明都不写（§10 不猜名次；§11 零行为变化）。
  * @returns {{topics:Array, blocks:Array, buy:object, sell:Array, excludedTopics:Array,
  *            notes:Array, pickCount:number, buyNames:Set<string>, cashAlert:object, ebb:object|null}}

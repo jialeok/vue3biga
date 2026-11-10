@@ -26,8 +26,13 @@
 //   ⇒ 本文件的职责 = 【按展示日读回 9:26 口径那份】并注入买点侧（readAuctionLegRangeMap，
 //     纯只读、0 额度、可回溯历史）；判定 / 选股全在
 //     topic-vol-ratio-rules.js（_buildBlock）+ decision-rules.js（rankDragonsWithPctMap）。
-//   ⚠️ 只影响【买点侧选股 + 行上十日涨幅】：退潮判定 / 市场总龙 / 卖点一律仍用收盘口径
-//     （用户拍板「只改买点侧」，见 range-auction-leg.js 的文件头）。
+//   ★★ [TVRB-AUC-BOARD 2026-11-10 口径升级] 上面「只改买点侧、退潮/总龙仍用收盘口径」的旧结论
+//     **已作废**。用户最新原话：「题材量比选股，我一直强调是用竞价口径的，而且每天收盘后都不要改变」。
+//     ⇒ 现在【十日涨幅】(readAuctionLegRangeMap) 与【20 日涨幅榜】(tvrb-auction-board) 两条规则输入
+//       都恒用 9:25 竞价口径；因此退潮判定的总龙、第三十条候选池、第二十八/二十九条替补、
+//       主线题材计数、分歧买点、数据闸门全部不再随 15:00 / 16:30 的口径切换而变。
+//     ⚠️ 仍保留收盘口径的只有：卖点段 / 名次变化徽标 / 20日涨幅 toggle 的展示
+//       （它们是客观数据、不参与「今天买哪只」；`getRange20Leaders` 发布结果本身不改动）。
 //
 // ★ [2026-10-11 第二轮 用户口径] 本看板只替换【选股】，标签与展开面板全部复用别人的同一份实现：
 //   用户原话「要模仿决策看板的占比，卖出，持有，竞价卖，竞价买，尾盘买，尾盘卖，龙持有，跟龙
@@ -76,14 +81,28 @@ import { getPreviousTradingDay } from '../logic/date/trading-day-helpers.js';
 //   ⛔ 纯只读：`stock_range_pct` + `market_metrics` 各一次（都走会话缓存 + 单飞，§32），
 //     不发任何上游请求、不消耗猫抓额度。
 import { readAuctionLegRangeMap } from '../logic/auction/range-auction-leg.js';
-// ★★ [R20-926 2026-10-24 用户口径] 买点侧【20日涨幅 · 9:26 竞价口径】的名次：
+// ★★ [R20-926 2026-10-24 用户口径] 买点侧【20日涨幅 · 9:26 竞价口径】的主板名次（说明文案用）：
 //   用户原话「买点侧的10日涨幅和20日涨幅的股票，如果有入选时也应该按照9点26分的口径……
 //     在上面说明时间他们的涨幅是多少排名第几就行了」。
 //   实现 = 复用十日涨幅那套【T 腿反解】(range-window.js#recoverAuctionLeg)，把
 //   `stock_range20_pct`（收盘口径的 20 日复利）换成「前 19 根收盘 + 今天竞价」那一刻的值，再排主板名次。
-//   ⛔ 纯只读、不落库、不改 getRange20Leaders 的发布结果（退潮 / 总龙 / 展示仍走收盘口径）；
-//   ⛔ 只用于【说明文案】，不参与任何选股（选股口径由用户此前锁定，⛔ 不许在这里动）。
+//
+// ★★ [TVRB-AUC-BOARD 2026-11-10 用户口径 · 整类修复] 上面那份【名次】现在只是说明文案；
+//   【候选池】改由 `tvrb-auction-board.js` 提供：同样是 9:25 竞价口径，但候选池固定为当日 9:25 名单、
+//   只主板、腿数达标，产出与 getRange20Leaders* 同形状的前五 / 前八 / 前十。
+//   ⇒ 第三十 / 三十一 / 三十二 / 二十八 / 二十九条 + 退潮主线题材计数 + 总龙一 + 数据闸门
+//     全部恒用竞价口径，15:00 / 16:30 的口径切换与补位票都不会再改结论。
+//   ⚠️ 旧注释「退潮判定 / 市场总龙 / 卖点一律仍用收盘口径（用户拍板只改买点侧）」已作废：
+//     用户最新口径是「题材量比选股，都是按照竞价口径的，收盘改变不了」。
+//     ⛔ 但 `getRange20Leaders` 的发布结果本身不改（20日涨幅 toggle / 决策看板仍用收盘口径），
+//        本看板只是不再把它当规则输入；只在竞价榜判不出时回落并如实标注（§10）。
 import { readAuctionLegRange20Rank } from '../logic/auction/range20-auction-leg.js';
+import {
+  ensureTvrbAuctionBoard,
+  getTvrbAuctionBoard,
+  getTvrbAuctionBoardToken,
+  hasTvrbAuctionBoardVerdict
+} from '../logic/topicvolratio/tvrb-auction-board.js';
 // ★ [EBB-R20 2026-10-20 用户口径] 20日涨幅前五（总龙一~五）—— 退潮判定的总龙与买点侧替补的【唯一】来源：
 //   ensureRange20Leaders 触发计算（幂等 + 会话缓存 + 单飞，与「20日涨幅」toggle 共享同一份）；
 //   getRange20Leaders 读发布结果（null = 该日还没结论，⛔ 不等于「没有总龙」）；
@@ -999,7 +1018,9 @@ export function useTopicVolRatioBoard() {
     }
     // ①-c2 ★★ [R20-926 2026-10-24 用户口径] 展示日的【20日涨幅 · 9:26 竞价口径】主板名次。
     //   只服务一件事：买点侧走 20日涨幅通道的票（退潮替补 / 切换日新龙）在说明区写出
-    //   「9:26 那一刻的涨幅 + 第几名」。⛔ 不参与选股（用户此前锁定退潮 / 总龙走收盘口径）。
+    //   「9:26 那一刻的涨幅 + 第几名」。
+    //   ⚠️ [TVRB-AUC-BOARD 2026-11-10] 它本身【不参与选股】，但选股的候选池现在也恒用竞价口径
+    //     （见 tvrb-auction-board.js）⇒ 说明里的名次与真实选股榜同口径，不会再出现「名次对不上」。
     //   §26：一天只读一次（模块内会话缓存 + 单飞）；读不到 ⇒ null ⇒ 规则层一条说明都不写（§10）。
     if (d && r20AucDate.value !== d) {
       readAuctionLegRange20Rank(d).then(function(m) {
@@ -1013,9 +1034,20 @@ export function useTopicVolRatioBoard() {
         r20AucDate.value = d;
       });
     }
-    // ①-d ★ [EBB-R20 2026-10-20] 20日涨幅前五（总龙一~五）：为退潮判定 / 替补选股预热。
-    //   幂等 + 会话缓存 + 单飞（与「20日涨幅」toggle / 补位区块共享同一份，不会多烧请求）；
-    //   发布结果经 getRange20Leaders(d) 在 data computed 里同步读（指纹令牌保证发布后自动重算）。
+    // ★★ [TVRB-AUC-BOARD 2026-11-10] 题材量比【全部规则】的 20 日涨幅候选池。
+    //   恒 9:25 竞价口径 + 固定当日 9:25 名单（⛔ 排除 16:30 补位票）+ 只主板 + 腿数达标。
+    //   §32：与上面的 readAuctionLegRange20Rank 共用同一份 Data 层缓存/单飞 ⇒ 0 新增网络请求。
+    //   §10：失败 / 判不出 ⇒ 模块内记 ready=false；本看板回落旧榜并如实标注，
+    //        且今天会被 resolveBuySettle 挂住不定稿（⛔ 不让会变的收盘口径结论上屏）。
+    if (d) {
+      ensureTvrbAuctionBoard(d).catch(function(e) {
+        console.warn('[TVRB] 9:25 竞价口径 20 日榜计算失败（本日 20 日涨幅通道将如实标注）:', e && e.message);
+      });
+    }
+    // ①-d ★ [EBB-R20 2026-10-20] 20日涨幅前五（总龙一~五）仍要跑：
+    //   「20日涨幅」toggle / 决策看板 / 补位区块共用它，⛔ 不能因为题材量比换了数据源就停掉。
+    //   但本看板的规则输入已改读上面的竞价口径榜，⛔ 不再消费它的发布结果（仅在判不出时回落）。
+    //   幂等 + 会话缓存 + 单飞（不会多烧请求）。
     //   ⚠️ fire-and-forget：失败只留痕，⛔ 绝不阻塞看板（退潮规则本次不生效，§10 如实降级）。
     if (d) {
       // ★★ [DIVERGE-GATE-2 2026-10-24] 精算进度回报：占位里要能看见「20日涨幅精算 12/25」——
@@ -1161,6 +1193,9 @@ export function useTopicVolRatioBoard() {
     // ★★ [R20-926 2026-10-24] 20日涨幅 9:26 口径名次（异步读回）⇒ 到货后重算一帧：
     //   买点侧那两条 20日涨幅通道的说明文案才会带上「9:26 那一刻的涨幅 + 第几名」。
     void r20AucMap.value;
+    // ★★ [TVRB-AUC-BOARD 2026-11-10] 恒竞价口径 20 日榜（异步算好）⇒ 到货后重算一帧：
+    //   所有吃 20 日涨幅候选池的规则在这一帧统一切到「9:25 那一刻」的结论。
+    void getTvrbAuctionBoardToken();
     // ★ [EBB-R20] 20日涨幅前五（总龙一~五）：响应式指纹令牌 —— ensureRange20Leaders 发布后自动重算
     void getRange20LeadersFingerprintToken();
     // ★★ [CORE-CAT 2026-10-22] 核心词表（大类）变更信号：云端加载完成 / 用户改完核心词 ⇒ 本帧重算，
@@ -1210,6 +1245,24 @@ export function useTopicVolRatioBoard() {
       //     · readRangePctForDate 有会话级缓存 ⇒ 常见切换路径（如 10-14 ↔ 10-13，两份互为对方的
       //       prev / cur）里被核对的那份【已经在缓存**，核对几乎零延迟。
       const pd = getPreviousTradingDay(d);
+
+      // ★★ [TVRB-AUC-BOARD 2026-11-10 · 整类修复] 题材量比【全部规则】唯一合法的 20 日涨幅候选池。
+      //
+      //   🔴 事故链（11-10 冰山冷热「早上出现、下午消失」）：原来下面三个入参直接注入
+      //      `getRange20Leaders*` —— 那是浏览器现算、15:00 后随 `resolveT20LegMode` 从 auc 切 close
+      //      重新发布的榜；16:30 云端又用收盘口径覆盖 `stock_range20_pct` 并补进 9:25 名单外的票。
+      //      ⇒ 同一天早/晚候选池成员与名次都变 ⇒ 第三十条选出/收回了不同的票。
+      //   ✅ 现在恒读 9:25 竞价口径榜（名单固定、数值反解固定）⇒ 收盘后、刷新后、切日期回来
+      //      算出的都是同一批票。三个数组形状与发布榜逐字一致 ⇒ 采集层 / 规则层零改动（§11）。
+      //   §10：竞价榜判不出（读失败 / 当日无竞价涨幅 / 无主板票）⇒ _aucReady=false
+      //        ⇒ 回落旧发布榜 + 在说明区如实标注 + 今天由 resolveBuySettle 挂住不定稿。
+      //        ⛔ 历史日不强制（历史日口径本来就恒 close、结果稳定），避免历史日被永久锁死。
+      const _aucBoard = getTvrbAuctionBoard(d);
+      const _aucReady = !!(_aucBoard && _aucBoard.ready && _aucBoard.top5.length > 0);
+      const _r20Top = _aucReady ? _aucBoard.top5 : (getRange20Leaders(d) || null);
+      const _r20Wide = _aucReady ? _aucBoard.wide : (getRange20LeadersWide(d) || null);
+      const _r20Top10 = _aucReady ? _aucBoard.top10 : (getRange20LeadersTop10(d) || null);
+
       const rec = collectDecisionTopics(d, {
         mode: MODE_VOL_RATIO,
         actionContext: true,
@@ -1218,15 +1271,15 @@ export function useTopicVolRatioBoard() {
         // ★★ [EBB-R8] 展示日【当天】的十日涨幅（算买点侧唯一那只 = 当日口径）
         //   + 🔴 消除「切日期后 dragonState 尚未跟上」造成的空白期（见 curRangeMap 的注释）
         rangeMap: (curRangeMap.value && curRangeDate.value === d) ? curRangeMap.value : null,
-        // ★ [EBB-R20 2026-10-20] 20日涨幅前五（总龙一~五）—— 退潮判定的总龙与买点侧替补的【唯一】来源；
-        //   null = 该日还没发布结论（20日前五在后台算）⇒ 退潮规则本次不生效（§10，不猜）
-        range20Top: getRange20Leaders(d) || null,
-        // ★★ [NEW-DRAGON-08 2026-10-22 用户口径] 20日涨幅【前八】—— 只给第二十八条挑新龙当候选池
-        //   （用户「如果前五找不到，你就找前八的」）；⛔ 展示 / 分歧买点 / 总龙标签仍只用前五。
-        range20Wide: getRange20LeadersWide(d) || null,
-        // ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 20日涨幅【前十】—— 只给退潮判定的
-        //   「主线题材 ≥3 只同题材」计数（classifyMainTopic）。⛔ 不上屏（展示仍是前五）。
-        range20Top10: getRange20LeadersTop10(d) || null
+        // ★★ [TVRB-AUC-BOARD 2026-11-10] 20日涨幅前五（总龙一~五）—— 退潮判定的总龙与
+        //   买点侧替补的【唯一】来源。恒 9:25 竞价口径榜；判不出才回落收盘口径发布榜（§10）。
+        //   null = 该日还没发布结论 ⇒ 退潮规则本次不生效（§10，不猜）。
+        range20Top: _r20Top,
+        // ★★ [NEW-DRAGON-08 2026-10-22 用户口径] 20日涨幅【前八】—— 第二十八条挑新龙候选池。
+        range20Wide: _r20Wide,
+        // ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 20日涨幅【前十】—— 退潮判定
+        //   「主线题材 ≥3 只同题材」计数（classifyMainTopic）。⛔ 不上屏。
+        range20Top10: _r20Top10
       });
       if (!rec || !rec.ready) return _empty((rec && rec.reason) || DATA_INCOMPLETE_TEXT);
 
@@ -1237,8 +1290,11 @@ export function useTopicVolRatioBoard() {
       //     computeDragonRankMap），只把「算龙位用的十日涨幅」换成 9:26 那一份；
       //   · `pctMap` 同时下发 ⇒ 买点行上的十日涨幅与龙位【同一口径】（§6 内部自洽，
       //     ⛔ 绝不让「龙一」的标签配着收盘口径的数值）。
-      //   ⛔ 第 2 参仍是 rec.dragonMap（收盘口径）：卖点段 + finishBuyBlock 的题材统计走它，
-      //      退潮判定（rec.ebbCtx）在采集层就已经用收盘口径算好 ⇒ 逐字不变（用户「只改买点侧」）。
+      //   ⛔ 第 2 参仍是 rec.dragonMap：卖点段 + finishBuyBlock 的题材统计 + 名次变化徽标走它
+      //     （客观数据，不决定「今天买哪只」，保持原口径）。
+      //   ★★ [TVRB-AUC-BOARD 2026-11-10] 但 `rec.ebbCtx` 的 20 日涨幅候选池已【不再】是收盘口径：
+      //      `collectDecisionTopics` 的三个 20 日榜入参已换成恒 9:25 竞价口径榜 ⇒ 退潮判定的总龙、
+      //      第三十条池子、替补票全部跟着竞价口径走。旧注释「退潮判定用收盘口径、逐字不变」已作废。
       //   ⚠️ 日期核对（与上面两份 rangeMap 同一条红线）：异步读回的 ref 在切日期那一帧还挂着旧日期
       //      的数据 ⇒ 只认【日期对得上】的那份，⛔ 绝不拿 A 日的数据当 B 日选股。
       const buyMap = (buyRangeMap.value && buyRangeDate.value === d) ? buyRangeMap.value : null;
@@ -1258,7 +1314,8 @@ export function useTopicVolRatioBoard() {
       let leaderDivergeOpt = null;
       if (_ldVerdict && _ldVerdict.canJudge && _ldVerdict.todayFirstDivergence && _ldTop5.length > 0) {
         const _head = _ldTop5[0];
-        const _l0 = (getRange20Leaders(d) || [])[0] || null;
+        // ★ [TVRB-AUC-BOARD] 总龙一的 20 日涨幅也必须与候选池同源（⛔ 不再另读收盘口径发布榜）
+        const _l0 = (Array.isArray(_r20Top) ? _r20Top : [])[0] || null;
         leaderDivergeOpt = {
           todayFirst: true,
           firstBoardYmd: _ldVerdict.firstBoardYmd || '',
@@ -1298,8 +1355,10 @@ export function useTopicVolRatioBoard() {
         rows: _gateRows,
         // 20 日涨幅前五：结论到了但榜是空的 ⇒ 缺失；还没结论 ⇒ 交给 buy-settle 去等（⛔ 这里不抢）。
         // 「上游已放弃（硬兜底放行）却仍没结论」⇒ 按缺失处理，⛔ 不拿空榜当「今天没有龙头」。
-        range20Ready: hasRange20LeadersVerdictForDate(d),
-        range20Count: (getRange20Leaders(d) || []).length,
+        // ★ [TVRB-AUC-BOARD] 数据闸门也必须用同一份竞价口径榜（§6 判据与数据同源）：
+        //   竞价榜就绪 = 权威结论已到；未就绪才回落到收盘口径发布榜的「结论到了没有」。
+        range20Ready: _aucReady || hasRange20LeadersVerdictForDate(d),
+        range20Count: (Array.isArray(_r20Top) ? _r20Top : []).length,
         range20GaveUp: !!netHardStalled.value
       });
 
@@ -1365,10 +1424,15 @@ export function useTopicVolRatioBoard() {
         range10Presence: (range10PresenceDate.value === d && range10Presence.value)
           ? range10Presence.value
           : null,
-        // ★★ [R20-926 2026-10-24 用户口径] 20日涨幅的【9:26 竞价口径】主板名次 ——
-        //   只给说明区写事实（「9:26 那一刻 涨幅 + 第几名」），⛔ 不参与选股、⛔ 不影响退潮 / 总龙。
-        //   ⚠️ 日期核对红线（与上面几份 rangeMap 同一条）：读的不是这一天 ⇒ 传 null（§10 不拿旧日期顶替）。
-        range20Auc: (r20AucDate.value === d) ? r20AucMap.value : null
+        // ★★ [TVRB-AUC-BOARD 2026-11-10] 20日涨幅的【9:25 竞价口径】主板名次 ——
+        //   只给说明区写事实（「9:26 那一刻 涨幅 + 第几名」），⛔ 不参与选股。
+        //   🔴 必须与选股候选池【同一份 rank】：原来读的 `readAuctionLegRange20Rank` 没有
+        //      「当日 9:25 名单」白名单，含 16:30 补位票 ⇒ 说明里第 K 名与真实选股榜对不上。
+        //   ⚠️ 日期核对红线：读的不是这一天 ⇒ 传 null（§10 不拿旧日期顶替）。
+        //      竞价榜判不出 ⇒ 回落旧的说明名次（并已由上面的 notes 如实标注）。
+        range20Auc: _aucReady
+          ? _aucBoard.rankMap
+          : ((r20AucDate.value === d) ? r20AucMap.value : null)
       });
 
       // ★★ [TVRB-DATA-GATE 2026-11-04] 把判定结果挂进 plan（§6：一行结论只有一个出处）。
@@ -1376,6 +1440,16 @@ export function useTopicVolRatioBoard() {
       //   ⇒ 屏幕上的「不能选股 + 缺什么」与那一份选股结论永远同源，不会出现
       //   「票是 A 时刻的、提示是 B 时刻的」这种自相矛盾（§10）。
       plan.buyDataGate = _dataGate;
+      // ★★ [TVRB-AUC-BOARD 2026-11-10 · §10 失败必须可见]
+      //   今天竞价口径榜判不出（当日无竞价涨幅 / 无主板票 / 读失败）⇒ 已回落到【会随收盘变化的】
+      //   发布榜。必须如实标出来，⛔ 绝不静默拿它冒充「9:25 选出来的那批」。
+      //   ⚠️ 只标今天：历史日的口径本来就恒 close、结果稳定，天天挂这条警告只会制造噪音。
+      //   ⚠️ 只标「确实试过」的：异步还没回来时 hasTvrbAuctionBoardVerdict=false，首帧不打假告警。
+      if (!_aucReady && d === _getLocalTodayStr() && hasTvrbAuctionBoardVerdict(d)) {
+        plan.notes.unshift('⚠️ 本日【9:25 竞价口径 20 日涨幅榜】判不出（当日竞价名单 / 竞价涨幅 / 主板票不足）' +
+          '⇒ 20 日涨幅通道暂按收盘口径发布榜显示；本次结论已定稿冻结，不会随收盘再变，' +
+          '但它不是竞价口径，请复核云端 9:25 落库数据。');
+      }
       if (_dataGate.blocked) {
         // ⚠️ 只记一次（按「日期 + 缺项」去重）：data computed 会反复重算，每帧打一条会把
         //    `_dbgLog` 的环形缓冲冲掉、把真正有用的现场挤出去（与 buy-settle 那条同一做法）。
@@ -1549,7 +1623,13 @@ export function useTopicVolRatioBoard() {
         //   实测 10-30 的「AI应用 → 文投控股」就是这条，所以必须算进「选股输入」。
         range10PoolReady: rec.range10PoolComplete !== false,
         // ★★ [TVRB-R20-COVER 2026-11-10 · 第十二项] 只对今天生效；历史日恒 true（其它不变）。
-        range20CoverageReady: _r20CoverageReady
+        range20CoverageReady: _r20CoverageReady,
+        // ★★ [TVRB-AUC-BOARD 2026-11-10 · 第十三项] 只对今天生效。
+        //   竞价口径 20 日榜还没算完 ⇒ 这一帧的规则输入还是「会变的」发布榜 ⇒ ⛔ 不许定稿。
+        //   §10：「读过」就算落地（成功或失败），否则一次读失败会把买点侧永久锁死；
+        //        判不出的那一支已由上面的 plan.notes 如实标注，并由定稿冻结保证屏幕不再变。
+        auctionBoardToday: d === _getLocalTodayStr(),
+        auctionBoardTried: _aucReady || hasTvrbAuctionBoardVerdict(d)
       });
       if (!_settle.settled) {
         plan.buyPending = true;
