@@ -1747,11 +1747,28 @@ export async function backfillDisplayFromNumcat(opts?: { days?: number; includeT
 
 async function backfillRange20FromLegs(targetDate: string): Promise<Record<string, unknown>> {
   // ① 该日已有结果（只补缺的）
+  //
+  // 🔴🔴 [TVRB-AUC-LEG-PRESERVE 2026-11-10] 事故：原来这里固定带 `&leg=eq.close`。
+  //   `stock_range20_pct` 的主键是 **(date, stock)，不含 leg**（见 create_stock_range20_pct.sql:31），
+  //   同一天同一只票物理上只能存一行。9:25 那轮写的是 `leg='auc'`（竞价口径）⇒ 16:30 这个
+  //   `haveSet` 查 close 行必然为空 ⇒ 每一只票都被判成「还没有」⇒ 全部按收盘腿重算并
+  //   `on_conflict=date,stock` 覆盖 ⇒ **9:25 的竞价口径快照整表丢失**。
+  //   实测 2026-11-10：81 行全变成 leg='close'、updated_at=08:30 UTC(北京16:30)，两腿并存 0 只。
+  //   后果：15:00 后前端 resolveT20LegMode 切 close ⇒ 题材量比 `ebbCtx.top5` 换榜 ⇒
+  //   竞价期间选出的「冰山冷热 · 弱势切抱团(第三十条)」下午直接消失。用户铁口径：
+  //   「题材量比看板都是按照竞价口径的，收盘改变不了的」。
+  //
+  //   ⇒ 当天：只要【任意口径】已有行就跳过，⛔ 绝不用收盘口径覆盖竞价口径（竞价数据不可再生）。
+  //     真正缺行的票才补（它们本来就没有竞价口径值，补 close 属正常补缺）。
+  //   ⇒ 历史日：仍只认 close 行（历史日复盘要收盘口径，行为逐字不变，§11）。
+  const isTargetToday = targetDate === todayYmd();
+  const haveUrl = '/rest/v1/stock_range20_pct?select=stock&date=eq.' + targetDate
+    + (isTargetToday ? '' : '&leg=eq.close');
   const haveSet = new Set<string>();
   for (let from = 0; ; from += LEG_PAGE) {
     const page = await sbRest(
       'GET',
-      '/rest/v1/stock_range20_pct?select=stock&date=eq.' + targetDate + '&leg=eq.close',
+      haveUrl,
       undefined,
       [from, from + LEG_PAGE - 1],
     );
