@@ -675,6 +675,29 @@
     white-space: nowrap;
 }
 
+/* [TVRB-AUC-YIZI 2026-11-10 用户口径] 买点行【竞价一字涨停 · 等开板后进】徽标。
+   用户原话：「竞价涨停也可以选进，但是要标注竞价一字涨停，等开板后进，这样更清晰，
+              提醒样式稍微区分下，我一下子就看明白。」
+   ⚠️ 必须和行内其它胶囊【一眼分得开】：
+     · .tvrb-suspend 灰实线 / .tvrb-risk 深墨+明黄实线 / .tvrb-action-* 各色实线；
+     · 本徽标 = 浅橙底 + 橙色【虚线】框 + 左侧 3px 实心橙竖条 + 10px 加粗字。
+       虚线与竖条是刻意的：买点块可能被父级 filter:grayscale(1) 整段灰化，
+       颜色被抹掉后仍能靠【形状】认出来（⛔ 不能只靠色相区分）。
+   ⛔ 不用红色：整行红色系胶囊都是「今天要买」的动作标签，红色会被读成第二个买点信号。 */
+.tvrb-auction-yizi {
+    padding: 0 6px;
+    font-size: 10px;
+    font-weight: 800;
+    line-height: 15px;
+    color: #7c2d12;
+    background: #fff7ed;
+    border: 1px dashed #ea580c;
+    border-left: 3px solid #ea580c;
+    border-radius: 4px;
+    white-space: nowrap;
+    letter-spacing: 0.1px;
+}
+
 /* [BOARD-SUSPEND-GREY 2026-10-13 用户口径] 停牌票的买卖信号一律去色（与决策看板同口径、同色值）。
    用户原话：「停牌后，买点侧的竞价买，尾盘买，等标签变成灰色，竞价量比也是。」
    ⇒ 动作标签 .tvrb-action、竞价涨幅 .tvrb-auc、竞价量比 .tvrb-vratio、占比 .tvrb-share

@@ -77,6 +77,15 @@
           :title="penTip"
           @click.stop="togglePens(p.name)"
         >{{ p.name }}</span>
+        <!-- ★★ [TVRB-AUC-YIZI 2026-11-10 用户口径] 竞价一字涨停【照常选进】，但紧跟股票名
+             挂一枚醒目的「竞价一字涨停 · 等开板后进」徽标（橙色虚线 + 左侧竖条，与停牌 /
+             板块风险 / 动作标签都不同款）。字段与文案全由 Logic 层给（§21 模板零计算）；
+             ⛔ 这里只 v-if，不做任何判定，也不改变这一行是否被选出来。 -->
+        <span
+          v-if="p.auctionYiziTag"
+          class="tvrb-auction-yizi"
+          :title="AUCTION_YIZI_TITLE"
+        >{{ p.auctionYiziTag }}</span>
         <!-- [BOARD-SUSPEND 2026-10-13 用户口径] 当日停牌小标 —— 紧跟股票名（与决策看板同款）。
              停牌票当日无竞价、无分笔，本看板的量比 / 分笔明细都会是空的；
              贴名字放才能一眼分清「这一只今天停牌」与「数据没抓到」（§10 缺数据要说清原因）。 -->
@@ -228,6 +237,8 @@ import { inject } from 'vue';
 // [BOARD-SUSPEND 2026-10-13 用户口径] 「停牌」小标的悬停文案（唯一出处：suspend.js）；
 //   ⛔ 本组件不做判定，只读 Logic 层挂好的 p.suspendTag（§21 模板零计算）。
 import { SUSPEND_TAG_TITLE } from '../../logic/auction/suspend.js';
+// [TVRB-AUC-YIZI 2026-11-10] 悬停文案由 Logic 层给（§6 单一真相，模板零计算）
+import { AUCTION_YIZI_TITLE } from '../../logic/topicvolratio/auction-yizi-tag.js';
 import TvrbTopicHead from './TvrbTopicHead.vue';
 // ★ 分笔明细面板：直接复用分笔买卖看板的那一个组件（用户口径「设计和分笔买卖看板的股票展开图
 //   一样，包括图上文字」）。它是纯展示组件（4 个 props、零业务、零状态、零请求），

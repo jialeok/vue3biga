@@ -102,6 +102,9 @@ import {
   //   买点侧门控的输入之一：前五没到 ⇒ 退潮判定不生效 ⇒ 选股结果稍后必变（用户看到的换票）。
   //   ⛔ 别用 hasRange20LeadersVerdict（它要求 _state.date === date，多日期交替发布时会翻成 false）。
   hasRange20LeadersVerdictForDate,
+  // ★★ [TVRB-R20-COVER 2026-11-10] 该日 20 日涨幅表本轮读到的行数（0 额外请求）。
+  //   与上面「结论到没到」互补：结论可以从残表里算出来，定稿前必须再问一次「表盖全没有」。
+  getRange20CloudRowCountForDate,
   // ★★ [DIVERGE-GUESS 2026-10-24] 预热通道挑「总龙一候选」（纯函数，§15 可单测）；
   //   ⛔ 只在预热里用，正式判定仍以精算出的真·总龙一为准。
   pickLeaderFromUsableRows
@@ -170,7 +173,7 @@ import {
 } from '../logic/topicvolratio/topic-vol-ratio-rules.js';
 // ★★ [BUY-SETTLE 2026-10-31 用户口径] 买点侧「选股输入是否齐了」的唯一判据
 //   （纯函数，见其 JSDoc / 单测）—— ⛔ 别在 data computed 里另写一串行内比较。
-import { resolveBuySettle } from '../logic/topicvolratio/buy-settle.js';
+import { resolveBuySettle, isRange20CoverageReady } from '../logic/topicvolratio/buy-settle.js';
 // ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ 禁止选股（硬空仓）的判据。
 //   与 buy-settle 是两件事：那个管「还没到、等几秒」；这个管「根本不会有、必须直接给结论」。
 import { resolveBuyDataGate, TVRB_DATA_GATE_NONE } from '../logic/topicvolratio/buy-data-gate.js';
@@ -1504,6 +1507,17 @@ export function useTopicVolRatioBoard() {
       //   · 只认【日期对得上】的那份（切日期那一帧 ref 里还是旧日期 ⇒ 继续挂占位，§10 红线）；
       //   · 「读过」就算落地（成功/失败都写日期）⇒ ⛔ 不会因为一次读失败把买点侧永久锁死；
       //   · 同步可判、⛔ 无 setTimeout；任一输入落地 ⇒ 本 computed 自动重算 ⇒ 齐了自动放行。
+      // ★★ [TVRB-R20-COVER 2026-11-10] 「20 日涨幅榜盖全了没有」——定稿前的最后一道输入判据。
+      //   11-10 事故：9:26 云端补位被 limit=1000 截断 ⇒ 当天表只有 19/75 行，
+      //   但「前五结论」照样发布、买点侧照样定稿空仓；10:00 浏览器精算补齐榜单后
+      //   第三十条才选得出冰山冷热，却被定稿冻结挡住 ⇒ 必须切日期才看得到。
+      //   ⇒ 残缺表不允许定稿，继续挂「结果确认中：还差 20 日涨幅榜（云端补位中）」。
+      //   0 额外网络请求：行数由 range20-leaders 读表时顺手记下。
+      const _r20CoverageReady = isRange20CoverageReady({
+        isToday: d === _getLocalTodayStr(),
+        rowCount: getRange20CloudRowCountForDate(d),
+        listed: _gateRows.length
+      });
       const _settle = resolveBuySettle({
         date: d,
         prevDate: pd,
@@ -1533,7 +1547,9 @@ export function useTopicVolRatioBoard() {
         //   false ⇒ 规则层三条判据（第二题材入选 / 小题材收紧 / 十日涨幅候补）全部「判不出」⇒
         //   按老规则照常列出 ⇒ **多出一只票**；补位行到货后同一段说明改成「不入选」⇒ 票被收回。
         //   实测 10-30 的「AI应用 → 文投控股」就是这条，所以必须算进「选股输入」。
-        range10PoolReady: rec.range10PoolComplete !== false
+        range10PoolReady: rec.range10PoolComplete !== false,
+        // ★★ [TVRB-R20-COVER 2026-11-10 · 第十二项] 只对今天生效；历史日恒 true（其它不变）。
+        range20CoverageReady: _r20CoverageReady
       });
       if (!_settle.settled) {
         plan.buyPending = true;

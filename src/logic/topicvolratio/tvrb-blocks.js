@@ -775,7 +775,9 @@ export function _buildWeakHuddleBlock(pool, cashAlert, list, fOpts, coreRes) {
       '）⇒ 题材已退潮、下面那一块整段灰化不开新仓；' +
       '但它是【20日涨幅主板第 ' + ((me && me.rank20) || '—') + ' 名】（' + ((me && me.pctText) || '—') +
       '），在【前三】之内 ⇒ 行情差时资金会抱团最强的市场龙头，这一只今天可以买（弱势切抱团）。' +
-      '⚠️ 停牌 / 竞价一字的信息照常显示；买不进就买不进，别硬追。' +
+      // [TVRB-AUC-YIZI 2026-11-10 用户口径] 一字票照常选进，但必须说清「等开板后进」；
+      //   行上那枚橙色虚线徽标由 tvrb-plan.js 的统一后处理 annotateAuctionYizi 挂（§6 单一真相）。
+      '⚠️ 停牌 / 竞价一字的信息照常显示；竞价一字涨停的票【可以买，但要等开板后再进】，别在封板上硬追。' +
       (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : '');
   });
   return block;
@@ -903,7 +905,9 @@ export function _buildLeaderLimitDownHuddleBlock(pool, ld, list, fOpts) {
       ldTopic + '】的龙一【' + ldName + '】竞价就跌停（' + ldPctText + '）⇒ 那个题材今天【弱势】、不选股；' +
       '本股是【20日涨幅主板第 ' + (pick.rank20 || '—') + ' 名】（' + (pick.pctText || '—') +
       '）= 【市场总龙一】⇒ 题材走弱时资金会抱团最强的市场龙头，这一只今天可以买（弱势切抱团）。' +
-      '⚠️ 停牌 / 竞价一字的信息照常显示；买不进就买不进，别硬追。' +
+      // [TVRB-AUC-YIZI 2026-11-10 用户口径] 一字票照常选进，但必须说清「等开板后进」；
+      //   行上那枚橙色虚线徽标由 tvrb-plan.js 的统一后处理 annotateAuctionYizi 挂（§6 单一真相）。
+      '⚠️ 停牌 / 竞价一字的信息照常显示；竞价一字涨停的票【可以买，但要等开板后再进】，别在封板上硬追。' +
       (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : '');
   });
   return { block: block, reason: '' };
@@ -1077,7 +1081,9 @@ export function _buildCatchUpBlock(topicPool, cashAlert, list, fOpts, coreRes) {
       CATCH_UP_RANK_TO + ' 名】⇒ 属【低位补涨题材】；它是【主板第 ' + ((me && me.rank20) || '—') +
       ' 名】（' + ((me && me.pctText) || '—') + '）、' + ((me && me.streakText) || '连板天数未知') +
       '，是这几只里【最强势的连板票】⇒ 这一只今天可以买（补涨题材只选连板票）。' +
-      '⚠️ 停牌 / 竞价一字的信息照常显示；买不进就买不进，别硬追。' +
+      // [TVRB-AUC-YIZI 2026-11-10 用户口径] 一字票照常选进，但必须说清「等开板后进」；
+      //   行上那枚橙色虚线徽标由 tvrb-plan.js 的统一后处理 annotateAuctionYizi 挂（§6 单一真相）。
+      '⚠️ 停牌 / 竞价一字的信息照常显示；竞价一字涨停的票【可以买，但要等开板后再进】，别在封板上硬追。' +
       (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : '');
   });
   return { block: block, reason: 'hit', count: inRange.length, inRange: inRange };

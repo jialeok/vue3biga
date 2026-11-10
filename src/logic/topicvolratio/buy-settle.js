@@ -59,8 +59,32 @@
  *   top5HistDate         20日涨幅历史榜「读过」的日期
  *   range20Settled       ★ [BUY-SETTLE-2] 该日「20 日涨幅前五」的结论到了没有
  *                        （`hasRange20LeadersVerdictForDate(d)`，或调用方的宽限期已过）
+ *   range20CoverageReady ★ [TVRB-R20-COVER 2026-11-10] 该日 20 日涨幅【表盖全了没有】。
+ *                        与上一项不同：结论可以从一份残缺表里算出来（11-10 事故：表只有 19 行，
+ *                        结论照样发布 ⇒ 定稿出空仓，10:00 补齐后才又冒出一只票）。
+ *                        仅「展示日=今天」启用；缺省 undefined = 就绪（§11 老调用方零行为变化）。
  * @returns {{settled:boolean, missing:string[], text:string}} missing = 中文项名（给用户看）
  */
+/**
+ * ★★ [TVRB-R20-COVER 2026-11-10] 20 日涨幅榜「盖全了没有」的唯一判据（纯函数，可单测）。
+ *
+ * 口径：展示日=今天 + 本轮 `stock_range20_pct` 可用行数 ≥ 当日选股池票数 × 0.8。
+ *   · 0.8 是「允许个别票确实腿不足」的余量，不是拍脑袋的放行阈值：11-10 修好云端分页后
+ *     实测 71/75 = 94.7%，事故当时 19/75 = 25.3% ⇒ 两态离阈值都很远，不会误判。
+ *   · 历史日恒 true（表本来就可能稀疏，⛔ 不拿今天的标尺卡历史）。
+ *   · rowCount=null（还没读过表）≠ 0 行 ⇒ false（§10 读不到 ≠ 没有）。
+ */
+export const TVRB_R20_COVER_MIN = 0.8;
+export function isRange20CoverageReady(o) {
+  const x = o || {};
+  if (!x.isToday) return true;
+  const rows = Number(x.rowCount);
+  const listed = Number(x.listed);
+  if (!isFinite(rows) || rows <= 0) return false;
+  if (!isFinite(listed) || listed <= 0) return false;
+  return rows >= Math.ceil(listed * TVRB_R20_COVER_MIN);
+}
+
 export function resolveBuySettle(ctx) {
   const o = ctx || {};
   const d = String(o.date || '').trim();
@@ -110,6 +134,15 @@ export function resolveBuySettle(ctx) {
   //        因为读单一 `_state` 而给出 null —— 那一条已在 range20-leaders.js 按日期修掉）。
   //    ⚠️ 缺省（`undefined`）⇒ 视为就绪 ⇒ §11 零行为变化（老调用方 / 单测不受影响）。
   if (o.range10PoolReady === false) missing.push('十日涨幅补位行');
+  // ⑫ ★★ [TVRB-R20-COVER 2026-11-10 · 第六版] 20 日涨幅榜【覆盖度】。
+  //    ⓪ 为什么光有 ⑨「前五结论」不够：结论≠数据齐。9:26 云端补位被 limit=1000 截断时
+  //       表里只有 19/75 行，前端照样能算出前五并发布结论；用户首屏据此定稿「空仓」，
+  //       10:00 浏览器精算补齐全表后，第三十条「弱势切抱团」才选得出冰山冷热 ——
+  //       但定稿冻结不让上屏，只能靠切日期解冻（用户说的「换来换去/很久才出现」）。
+  //    ① 只对【今天】生效：历史日的表本来就可能稀疏，不能拿今天的标尺去卡（其它不变）。
+  //    ② 缺省 undefined ⇒ 就绪，保证老调用方 / 既有单测零行为变化（§11）。
+  //    ③ 与 ⑨ 一样，硬兜底（30s）能穿透：上游真补不齐时仍给一份带警示的定稿，⛔ 不永久挂起。
+  if (o.range20CoverageReady === false) missing.push('20 日涨幅榜（云端补位中）');
 
   if (missing.length === 0) return { settled: true, missing: [], text: '' };
   return {

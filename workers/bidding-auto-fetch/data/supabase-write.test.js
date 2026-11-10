@@ -30,7 +30,10 @@ function mockFetch(handler) {
   }));
 }
 
-const { bucketRowsByKeySet, upsertMarketMetrics, upsertAuctionWatchlist } = await import('./supabase-write.js');
+const {
+  bucketRowsByKeySet, upsertMarketMetrics, upsertAuctionWatchlist,
+  readDailyLegsForStocks, readRange20StocksForDate
+} = await import('./supabase-write.js');
 const ENV = { SUPABASE_SERVICE_ROLE_KEY: 'k' };
 
 beforeEach(() => {
@@ -135,5 +138,69 @@ describe('[PGRST102] upsertMarketMetrics：异键集不再整批丢失', () => {
     ]);
     expect(calls).toHaveLength(2);
     expect(calls[0].url).toContain('auction_watchlist?on_conflict=date,stock');
+  });
+});
+
+// ============================================================================
+// [R20-LEGS-PAGED 2026-11-10 P0] 9:26 云端 20 日涨幅补位读腿【不许截断】
+//
+// 事故：readDailyLegsForStocks 每批写死 limit=1000 且不分页。
+//   11-10：75 只票 × 44 根腿 ≈ 3300 行，被砍成 2×1000 ⇒ 21 只票（含冰山冷热）
+//   误判「腿不足 19 根」拒写 ⇒ 20 日涨幅主板前三里没有它 ⇒ 题材量比首屏只给空仓，
+//   10:00 浏览器精算补齐后才出现（用户切日期解冻定稿才看得到）。
+// ============================================================================
+describe('[R20-LEGS-PAGED] 逐日腿读取必须 Range 分页，⛔ 不许 limit 截断', () => {
+  const pageCalls = [];
+  function stubPaged(rows) {
+    pageCalls.length = 0;
+    vi.stubGlobal('fetch', vi.fn(async function (url, opts) {
+      const range = String((opts.headers && opts.headers.Range) || '0-999');
+      const from = Number(range.split('-')[0]) || 0;
+      const page = rows.slice(from, from + 1000);
+      pageCalls.push({ url: url, range: range });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => page,
+        text: async () => JSON.stringify(page)
+      };
+    }));
+  }
+
+  it('★ 1200 行（>单页 1000）⇒ 全部读回，旧实现只会拿到 1000 行', async () => {
+    const rows = Array.from({ length: 1200 }, function (_, i) {
+      return { stock: '测试票', date: '2026-10-' + String((i % 28) + 1).padStart(2, '0'), pct: '+1.00' };
+    });
+    stubPaged(rows);
+    const got = await readDailyLegsForStocks(ENV, '2026-09-01', '2026-11-10', ['测试票']);
+    expect(got).toHaveLength(1200);
+    expect(pageCalls).toHaveLength(2);
+    expect(pageCalls[0].range).toBe('0-999');
+    expect(pageCalls[1].range).toBe('1000-1999');
+  });
+
+  it('★ URL 里不再有 limit=1000，且带确定性 order（Range 分页前提）', async () => {
+    stubPaged([{ stock: '测试票', date: '2026-11-09', pct: '+1.00' }]);
+    await readDailyLegsForStocks(ENV, '2026-09-01', '2026-11-10', ['测试票']);
+    expect(pageCalls[0].url).not.toContain('limit=1000');
+    expect(pageCalls[0].url).toContain('order=stock.asc,date.asc');
+  });
+
+  it('★ 读取失败 ⇒ 抛错并带批次号（§10 不把读失败折成空数组）', async () => {
+    vi.stubGlobal('fetch', vi.fn(async function () {
+      return { ok: false, status: 500, text: async () => 'boom', json: async () => [] };
+    }));
+    await expect(readDailyLegsForStocks(ENV, '2026-09-01', '2026-11-10', ['测试票']))
+      .rejects.toThrow(/第 1 批/);
+  });
+
+  it('★ readRange20StocksForDate 同样分页（「已有行不覆盖」的判据不能漏行）', async () => {
+    const rows = Array.from({ length: 1200 }, function (_, i) {
+      return { stock: '票' + i };
+    });
+    stubPaged(rows);
+    const set = await readRange20StocksForDate(ENV, '2026-11-10');
+    expect(set.size).toBe(1200);
+    expect(pageCalls).toHaveLength(2);
   });
 });

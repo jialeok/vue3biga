@@ -185,6 +185,15 @@ const _warmRetry = new Map();
  *   这正是用户报的「变成一只 → 又跳转两只 → 又变成一只」。
  */
 const _verdictDates = new Set();
+/**
+ * ★★ [TVRB-R20-COVER 2026-11-10] date -> 本轮从 `stock_range20_pct` 读到的【可用行数】。
+ *   区别于 `_verdictDates`（「前五结论到了没有」）：结论可以从一份**残缺**的表里算出来，
+ *   那样的结论是错的，但门控看不出来。11-10 事故就是 9:26 云端补位被 `limit=1000` 截断，
+ *   表里只有 19 行却照样发布了「前五结论」⇒ 题材量比据此定稿出空仓，10:00 表格补齐后才又出现票。
+ *   ⇒ 买点侧定稿前必须同时问「这张表盖全了没有」。0 额外请求：读表时就顺手记下。
+ *   null / 无该日期 = 还没读过（§10：读不到 ≠ 0 行）。
+ */
+const _cloudRowCount = new Map();
 /** 退避间隔（毫秒）：由近到远，覆盖「首次打开应用后 2 分钟内索引补齐」这段窗口 */
 const WARM_RETRY_DELAYS = [3000, 10000, 30000, 60000];
 
@@ -274,7 +283,10 @@ export function hasRange20LeadersVerdict(date) {
 /** 增量渲染指纹令牌（异步到货必须让行缓存/视图失效，否则区块不出现或停在上一版） */
 export function getRange20LeadersFingerprintToken() {
   const s = _state.value;
-  return s.date + '|v' + s.version + '|n' + s.list.length + '|r' + (s.ready ? 1 : 0);
+  // [TVRB-R20-COVER 2026-11-10] 带上「云端表行数」：行数补齐但前五内容恰好没变时，
+  //   版本不会 bump，买点侧的覆盖度判据就永远等不到重算 ⇒ 必须让指纹也随行数变（§17）。
+  const cover = _cloudRowCount.has(s.date) ? _cloudRowCount.get(s.date) : -1;
+  return s.date + '|v' + s.version + '|n' + s.list.length + '|r' + (s.ready ? 1 : 0) + '|c' + cover;
 }
 
 /**
@@ -294,6 +306,18 @@ export function hasRange20LeadersVerdictForDate(date) {
   return !!(date && _verdictDates.has(date));
 }
 
+/**
+ * ★★ [TVRB-R20-COVER 2026-11-10] 该日 20 日涨幅【云端表本轮读到了多少行】。
+ * @returns {number|null} null = 还没读过这张表（⛔ 不等于「表里 0 行」，§10）
+ *
+ * 唯一消费方：题材量比看板买点侧定稿门控。判据是「表行数 ≥ 当日选股池票数 × 0.8」，
+ * 由 `useTopicVolRatioBoard` 与 `rec.topics` 摊平后的成员数比对（本模块只负责如实报数）。
+ */
+export function getRange20CloudRowCountForDate(date) {
+  if (!date || !_cloudRowCount.has(date)) return null;
+  return _cloudRowCount.get(date);
+}
+
 /** 清空会话缓存（仅供测试 / 换数据源） */
 export function clearRange20Leaders() {
   _sig.clear();
@@ -309,6 +333,7 @@ export function clearRange20Leaders() {
   _warmRetry.clear();
   // ★★ [BUY-SETTLE-2 2026-10-31] 会话缓存清空 ⇒ 「结论到没到」也一并作废（同生命周期）
   _verdictDates.clear();
+  _cloudRowCount.clear();
   _state.value = { date: '', list: [], ready: false, version: _state.value.version + 1 };
 }
 
@@ -805,6 +830,9 @@ export async function ensureRange20Leaders(date, opts) {
     const cloudAll = (opts && opts.skipCloud)
       ? new Map()
       : pickUsableRows(await readRange20Rows(date), legMode);
+    // [TVRB-R20-COVER 2026-11-10] 0 额外请求记下「这张表本轮有多少行」，
+    //   供题材量比买点侧判断能不能定稿。skipCloud 是诊断/单测路径，⛔ 不写脏数据。
+    if (!(opts && opts.skipCloud)) _cloudRowCount.set(date, cloudAll.size);
     const poolNames = new Set(pool.map(function(t) { return t.stock; }));
     const cloudMap = new Map();
     cloudAll.forEach(function(v, n) { if (poolNames.has(n)) cloudMap.set(n, v); });

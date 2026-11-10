@@ -208,14 +208,11 @@ export async function upsertStockRangePct(env, rows) {
 
 /** 当日 stock_range20_pct 已有行（按 stock 去重；不区分 leg —— 有任何一行就不写，避免覆盖口径） */
 export async function readRange20StocksForDate(env, date) {
+  // [R20-LEGS-PAGED 2026-11-10] 同 readDailyLegsForStocks：改 Range 分页，⛔ 不再写死 limit=2000。
+  //   这个 set 是「已有行不覆盖」的唯一判据，漏一行就会把云端真值当成缺失重算一遍。
   const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range20_pct?date=eq.' + encodeURIComponent(date) +
-    '&select=stock&limit=2000';
-  const resp = await sbFetch(url, { headers: sbHeaders(env) });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    throw new Error('读取 stock_range20_pct 失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
-  }
-  const data = await resp.json();
+    '&select=stock&order=stock.asc';
+  const data = await sbGetPaged(env, url);
   const set = new Set();
   (data || []).forEach(function (r) {
     const s = String((r && r.stock) || '').trim();
@@ -228,6 +225,17 @@ export async function readRange20StocksForDate(env, date) {
  * 读「逐日腿表」的历史腿（⛔ 不含目标日本身：T 腿由 market_metrics 提供）。
  * 按股票名分批 in 过滤，避免把 60 天 × 400 只 = 1.5 万行整表拉回来（§32 不做无意义请求）。
  * 实测 PostgREST `stock=in.("中文名","中文名")` 在中国股票名下可用（2026-11-06 生产验证 39 行）。
+ *
+ * 🔴🔴 [R20-LEGS-PAGED 2026-11-10 P0] 原实现每批写死 `limit=1000` 且【不分页】。
+ *   11-10 生产事故：75 只票 × 每只 44 根腿 ≈ 3300 行，分 2 批（40+35）各自被砍到 1000 行
+ *   ⇒ worker 日志「读腿 2000 行 / 腿不足 21」⇒ 21 只票（含【冰山冷热】）被误判「腿不足 19 根」
+ *   而拒写 stock_range20_pct。它们直到 10:00 才由浏览器 K 线精算补进榜单
+ *   （库内 updated_at 分两批：01:26 云端 19 行 / 02:00 浏览器 52 行）。
+ *   ⇒ 题材量比第三十条「弱势切抱团」的池子（20 日涨幅主板前三）里当时根本没有这只票
+ *   ⇒ 首屏只显示空仓 + 灰色题材；数据补齐后又被「定稿冻结」挡住，必须切日期才看得到。
+ *   用户看到的「很久才出现 / 换来换去」根因就在这里，⛔ 不是竞价涨停被过滤。
+ * ✅ 修法：改用本文件已有的 `sbGetPaged`（Range 头分页，0 截断）+ 确定性 order。
+ *   单批仍按股票名分片控制 URL 长度，但片内不再有行数上限（§10 读全 ≠ 读失败）。
  * @returns {Promise<Array<{stock:string,date:string,pct:string}>>}
  */
 export async function readDailyLegsForStocks(env, fromDate, beforeDate, stocks, chunkSize) {
@@ -243,14 +251,19 @@ export async function readDailyLegsForStocks(env, fromDate, beforeDate, stocks, 
     const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_daily_pct?select=stock,date,pct' +
       '&date=gte.' + encodeURIComponent(fromDate) +
       '&date=lt.' + encodeURIComponent(beforeDate) +
-      '&stock=in.' + inVal + '&limit=1000';
-    const resp = await sbFetch(url, { headers: sbHeaders(env) });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => '');
-      throw new Error('读取 stock_daily_pct 逐日腿失败（第 ' + (i / size + 1) + ' 批）: HTTP ' +
-        resp.status + ': ' + text.slice(0, 200));
+      '&stock=in.' + inVal +
+      // Range 分页必须有确定性顺序，否则跨页可能重复 / 漏行（§32）。
+      '&order=stock.asc,date.asc';
+    let data;
+    try {
+      data = await sbGetPaged(env, url);
+    } catch (e) {
+      // [R20-LEGS-PAGED] 是本轮上线的【可验证标记】：字符串字面量，打包 / 压缩都不会丢。
+      //   workers/verify-deploy.mjs 部署后直接在线上脚本里断言它 ⇒ 防「CI 假绿」重演
+      //   （2026-11-06 那次是 wrangler 没真部署、CI 却全绿）。⛔ 别把它挪进注释。
+      throw new Error('[R20-LEGS-PAGED] 读取 stock_daily_pct 逐日腿失败（第 ' + (i / size + 1) + ' 批）: ' +
+        (e && e.message ? e.message : String(e)));
     }
-    const data = await resp.json();
     (data || []).forEach(function (r) {
       const s = String((r && r.stock) || '').trim();
       const d = String((r && r.date) || '').slice(0, 10);

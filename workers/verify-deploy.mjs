@@ -40,7 +40,11 @@ const REQUIRED = [
   'runBiddingCloseWrite',   // [2026-11-07] 竞价变化看板「收盘」列纯云端幂等落库
   'computeBiddingCloseValues', // 收盘取值口径：前端 / Worker 共用同一份纯函数
   'runJiwangCloseWrite',    // [2026-11-08] 昨收盘结果(跌:涨) 云端落库 + 10 日窗口回补
-  'alignWindowTargets'      // 用真实交易日窗口推「下一交易日」，0 额外请求
+  'alignWindowTargets',     // 用真实交易日窗口推「下一交易日」，0 额外请求
+  // [2026-11-10] 20 日涨幅逐日腿改 Range 分页（根治 limit=1000 静默截断 ⇒ 冰山冷热迟到）。
+  // ⚠️ 它是 supabase-write.js 错误消息里的字符串字面量 ⇒ 打包/压缩后仍在线上脚本里，
+  //    能硬证明这次真的换了版本（⛔ 别换成注释里的标记，注释会被 esbuild 删掉）。
+  '[R20-LEGS-PAGED]'
 ];
 
 async function cf(url, accept) {

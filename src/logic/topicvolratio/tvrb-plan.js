@@ -18,6 +18,8 @@ import { makeCoreTopicResolver } from '../topic/core-category.js';
 import { pickRange10Backup, RANGE10_BACKUP_RULE_NO } from './range10-backup.js';
 import { PRESENCE_TOP_N } from '../auction/presence-label.js';
 import { getAuctionLimitState } from '../auction/limit-up.js';
+// [TVRB-AUC-YIZI 2026-11-10] 买点行「竞价一字涨停 · 等开板后进」统一标注（只挂展示字段，不改选股）
+import { annotateAuctionYizi } from './auction-yizi-tag.js';
 
 
 /**
@@ -1728,6 +1730,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   // 🔴 维护提醒：以后新增买点槽位（out.xxx / out.buy.xxx），**必须同步加进这个函数**，
   //   否则「数据缺失日」新槽位会把票漏出去。`buy-data-gate.test.js` 有锁。
   if (o.dataGateBlocked) _clearBuySideForDataGate(out);
+
+  // ★★ [TVRB-AUC-YIZI 2026-11-10 用户口径] 竞价一字涨停的票【照常选进】，但要统一标注
+  //   「竞价一字涨停 · 等开板后进」。⛔ 不改任何选股过滤（常规块的一字顺延是 10-15 用户拍板口径）。
+  //   收口在 return 前 + 数据闸门之后：既覆盖全部买点通道，也不会给「数据缺失硬空仓」日留脏标记。
+  annotateAuctionYizi(out);
 
   // ★★ [R10-NOEXCLUDE 2026-10-24] 「选股 N 只」按【去重后的股票数】算：
   //   同一只票可能同时出现在「灰化题材块 + 十日涨幅候补」或「题材买点 + 十日涨幅候补」里
