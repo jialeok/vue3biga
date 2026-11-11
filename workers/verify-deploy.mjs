@@ -64,7 +64,12 @@ const REQUIRED = [
   //   ⇒ 「是否超 9:27」无从核对；猫抓补量比也只有条数、没有补写名单。
   //   ⚠️ 前者是 console.log 的字符串字面量，后者是不被 mangle 的对象字段名。
   'ladder26 时序:',
-  'deadlineBj'
+  'deadlineBj',
+  // [AUC-RATIO-0927 2026-11-12] 9:27 必须兜一次竞价量比 —— 9:25/9:26 两次猫抓一旦都失手，
+  //   量比就要等到 16:30 收盘才回填，竞价期间用户看到的是一只没有量比的补位票（11-11 青岛食品）。
+  //   ⚠️ 前者是 console.log 的字符串字面量，后者是持久化字段名（都不被 mangle）。
+  '[AUC-RATIO-0927]',
+  'aucRatioWritten'
 ];
 
 async function cf(url, accept) {

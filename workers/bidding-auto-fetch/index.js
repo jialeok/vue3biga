@@ -46,7 +46,8 @@ import { runRangePctHeal } from './logic/range-heal.js';
 // [LADDER-FALLBACK 2026-11-06] 只补「最近多板 883410 正式名单」，不碰行情/猫抓/区间涨幅。
 import { healLadderWatchlist } from './logic/ladder-heal.js';
 // [LADDER26 2026-11-06] 北京 09:26 云端二次确认：真实名单 + 新进票猫抓竞价量比（1 次额度上限）。
-import { runLadderRecheck } from './logic/ladder-recheck.js';
+// [AUC-RATIO-0927 2026-11-12] 同时把「补竞价量比」那一步暴露出来，供 9:27 兜底复用（同一份实现，§6）。
+import { runLadderRecheck, fillAucFromNumcat } from './logic/ladder-recheck.js';
 // [R20-CLOUD 2026-11-06] 同一趟 9:26 顺带把 20 日涨幅用逐日腿补缺（0 上游、0 额度）。
 import { runRange20Prefill } from './logic/range20-prefill.js';
 // [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐，彻底替代本机 08:00 定时任务。
@@ -205,6 +206,11 @@ async function persistRunResult(env, point, result) {
       range20Targets: r.range20Targets === undefined ? null : r.range20Targets,
       range20Covered: r.range20Covered === undefined ? null : r.range20Covered,
       range20Skipped: r.range20Skipped || '',
+      // ★★ [AUC-RATIO-0927 2026-11-12] 9:27 竞价量比兜底的结构化留痕。
+      //   验收：aucRatioWritten>0 = 这一趟真的补回了量比；aucRatioHeal.skipped 含「0 次猫抓请求」
+      //   = 9:25/9:26 已补齐（正常日，0 额度）。⛔ 别只看 ok（它会把零补写伪装成成功）。
+      aucRatioWritten: r.aucRatioWritten === undefined ? null : r.aucRatioWritten,
+      aucRatioHeal: r.aucRatioHeal || null,
       upstreamReady: r.upstreamReady === true,
       upstreamRows: r.upstreamRows === undefined ? null : r.upstreamRows,
       // [AUC-SANE 2026-10-12] 竞价涨幅越界闸门：>0 说明上游 numcat 又给了物理不可能的坏值
@@ -405,6 +411,32 @@ async function dispatch(point, env, logs, opts) {
       r20 = { ok: false, written: 0, skipped: '', logs: [msg] };
       console.error('[auto-fetch] ' + msg);
     }
+    // ★★ [AUC-RATIO-0927 2026-11-12] 9:27 是开盘前【最后一个】云端时点，竞价量比也必须在这里兜一次。
+    //
+    //   用户 11-11 报障取证：「青岛食品」当天 market_metrics 有行、其它三要素齐全，
+    //   但 `auc_vol_ratio` 为 null；同为 20 日补位票的「海洋王」却有 1.94。
+    //     ① 该票近 15 个交易日里 14 天都有量比（11-10=6.01 / 11-09=6.58 / 11-04=13.63），
+    //        唯独 11-11 那天是空 ⇒ 上游返回空值时，`hasValue` 判假 ⇒ 该列被省略 ⇒ 全天 null；
+    //     ② 9:26 的补抓（[RANGE20-RATIO-HEAL]）给了第二次机会，但它自己也可能超时 / 403 额度用尽；
+    //     ③ 一旦 9:26 也失手，下一个能补量比的时点是 16:30 收盘 —— 竞价期间用户看到的就是空缺。
+    //   ⇒ 此处做【有缺口才发】的第三次补抓：量比齐全 ⇒ 0 请求 0 额度（§32）。
+    //   ⛔ 不覆盖已有值：pickNumcatTargets 遇到已有量比直接跳过；写库只带 auc_vol_ratio 一列（§11）。
+    //   ⛔ 不重建行：没有 market_metrics 行的票不在本函数的覆盖范围（它只补「已有行缺列」）。
+    const aucLogs = [];
+    let auc27 = { attempted: false, symbols: 0, written: 0, names: [], skipped: '未执行', error: '' };
+    try {
+      auc27 = await fillAucFromNumcat(env, date || beijingToday(), null, aucLogs);
+      console.log('[auto-fetch] [AUC-RATIO-0927] 9:27 竞价量比兜底: attempted=' + auc27.attempted +
+        ' symbols=' + auc27.symbols + ' written=' + auc27.written +
+        ' skipped=' + (auc27.skipped || '') + ' error=' + (auc27.error || '') +
+        (auc27.names && auc27.names.length ? ' 补写=' + auc27.names.join(',') : ''));
+      console.log('[auto-fetch] [AUC-RATIO-0927] 日志=' + JSON.stringify(aucLogs));
+    } catch (e) {
+      const msg = '[AUC-RATIO-0927] ❌ 9:27 竞价量比兜底异常（不影响本轮其它补写）: ' + ((e && e.message) || e);
+      auc27 = { attempted: false, symbols: 0, written: 0, names: [], skipped: '', error: String((e && e.message) || e) };
+      aucLogs.push(msg);
+      console.error('[auto-fetch] ' + msg);
+    }
     const result = {
       ok: snap.ok || range.ok || r20.ok,
       today: snap.today || (date || ''),
@@ -421,9 +453,14 @@ async function dispatch(point, env, logs, opts) {
       range20Targets: r20.targets === undefined ? null : r20.targets,
       range20Covered: r20.covered === undefined ? null : r20.covered,
       range20Skipped: r20.skipped || '',
+      // ★★ [AUC-RATIO-0927 2026-11-12] 9:27 竞价量比兜底的结构化验收字段。
+      //   验收口径：aucRatioWritten>0 表示这一趟真的补回了量比；
+      //   aucRatioHeal.skipped 含「0 次猫抓请求」表示 9:25/9:26 已补齐（正常日）。
+      aucRatioHeal: auc27,
+      aucRatioWritten: auc27.written || 0,
       upstreamReady: upstream.ready === true,
       upstreamRows: upstream.rows === null || upstream.rows === undefined ? null : upstream.rows,
-      logs: (upstream.logs || []).concat(snap.logs || [], range.logs || [], r20.logs || [])
+      logs: (upstream.logs || []).concat(snap.logs || [], range.logs || [], r20.logs || [], aucLogs)
     };
     await persistRunResult(env, point, result);
     return result;

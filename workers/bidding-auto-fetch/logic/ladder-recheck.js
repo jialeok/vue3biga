@@ -167,8 +167,13 @@ export function buildAucMetricsWriteRows(parsedToday, today, nowIso, targets) {
 /**
  * 用猫抓 daily_auc 补「真实名单里的新票 / 缺量比的票」。
  * ⛔ 整个函数最多 1 次 numcat 请求；额度用尽直接优雅退出，不重试（§32）。
+ *
+ * ★★ [AUC-RATIO-0927 2026-11-12] 现在有【两个调用点】：
+ *   ① 9:26 `runLadderRecheck` 的所有「数据可读」返回路径（走 finish()，ladder 可能是 null）；
+ *   ② 9:27 `snapshot` 兜底（index.js，ladder 恒 null）——开盘前最后一个云端时点。
+ *   两处都是【有缺口才发请求】：量比齐全 ⇒ 0 请求 0 额度；写入只带 auc_vol_ratio 一列（§11）。
  */
-async function fillAucFromNumcat(env, today, ladder, logs) {
+export async function fillAucFromNumcat(env, today, ladder, logs) {
   const out = { attempted: false, symbols: 0, written: 0, names: [], skipped: '', error: '' };
   let metricsRows;
   try {
