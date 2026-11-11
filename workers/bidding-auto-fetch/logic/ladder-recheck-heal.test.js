@@ -144,4 +144,25 @@ describe('[RANGE20-RATIO-HEAL] 9:26 skipped 路径也必须补竞价量比', () 
     expect(src).toContain('includeAllRows: true');
     expect(src).toContain('ladderForAuc');
   });
+
+  // ★★ [AUC-RATIO-0927 2026-11-12] 9:27 兜底锁。
+  //   为什么必须是静态锁：这条链在 index.js 的 snapshot 分支里，跑真实路径要起整套 Supabase mock；
+  //   而它真正怕的退化是「有人把这段删了 / 换个只在 9:26 跑的位置」——
+  //   字符串级断言正好能钉住「9:27 这一趟确实还会去补量比」。
+  it('静态锁：9:27 snapshot 必须再兜一次竞价量比，并落结构化留痕', async () => {
+    const { readFileSync } = await import('node:fs');
+    const idx = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+    const snapBranch = idx.slice(idx.indexOf("if (point === 'snapshot')"), idx.indexOf("if (point === 'extras')"));
+    // ① 必须在 snapshot 分支内调用（⛔ 不是只在 ladder26 里）
+    expect(snapBranch).toContain('fillAucFromNumcat(env, date || beijingToday(), null');
+    // ② 必须带可 grep 的标记（verify-deploy 用它证明线上真的换了版本）
+    expect(snapBranch).toContain('[AUC-RATIO-0927]');
+    // ③ 结果必须带结构化字段（⛔ 只看 ok 会把零补写伪装成成功）
+    expect(snapBranch).toContain('aucRatioWritten');
+    expect(snapBranch).toContain('aucRatioHeal');
+    // ④ 落库侧必须真的写进 bidding_fetch_log.detail
+    expect(idx).toContain('aucRatioWritten: r.aucRatioWritten');
+    // ⑤ 实现必须复用 9:26 同一份函数（§6 单一实现），⛔ 别在 index.js 里另写一套
+    expect(idx).toContain('runLadderRecheck, fillAucFromNumcat');
+  });
 });
