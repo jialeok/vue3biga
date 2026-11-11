@@ -196,6 +196,18 @@ describe('resolvePlanSnapshotFreshness · 输入完整度自愈（11-11 整类�
       { rulesSig: 'v1:aaaaaaaa', coreTopicsLoaded: true, inputsSig: DONE }
     )).toBe('hit');
   });
+
+  it('⑥ 🔴 库里还没有 inputs_sig 列（降级模式）⇒ 忽略这一位判 hit（⛔ 不许每次开页面都重算）', function() {
+    expect(resolvePlanSnapshotFreshness(
+      { status: 'hit', rulesSig: 'v1:aaaaaaaa', inputsSig: '' },
+      { rulesSig: 'v1:aaaaaaaa', coreTopicsLoaded: true, inputsSig: DONE, inputsSigSupported: false }
+    )).toBe('hit');
+    // 但规则指纹变了仍然要判 stale（降级只豁免「输入完整度」这一位，不豁免规则）
+    expect(resolvePlanSnapshotFreshness(
+      { status: 'hit', rulesSig: 'v1:aaaaaaaa', inputsSig: '' },
+      { rulesSig: 'v1:bbbbbbbb', coreTopicsLoaded: true, inputsSig: DONE, inputsSigSupported: false }
+    )).toBe('stale');
+  });
 });
 
 describe('shouldPersistPlanSnapshot · 写库准入（§11 覆盖保护 + §32 幂等）', function() {

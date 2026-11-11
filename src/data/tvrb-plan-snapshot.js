@@ -41,6 +41,30 @@ export const PLAN_SNAPSHOT_TABLE = 'tvrb_plan_snapshot';
 /** 表不存在（PGRST205 / 42P01 / 404）⇒ 本会话不再重试（§32） */
 let _tableMissing = false;
 
+/**
+ * ★★ [SNAPSHOT-INPUTS 2026-11-11] `inputs_sig` 列还不存在（用户尚未执行第三版 DDL）⇒ 降级读写。
+ *
+ * 🔴 为什么必须有：用户每天早上只用手机看线上网页、电脑常关。若新版前端把 `inputs_sig`
+ *   写进 select / upsert，而库里还没这一列，PostgREST 会返回 `42703 undefined column`
+ *   ⇒ **整张存档表读失败、写不进去** ⇒ 历史复盘/定稿冻结全部退化成「每次重算」。
+ *   宁可【少一个防复发字段也照常工作】，也不能因为一个新增列让整张表不可用（§11 渐进升级）。
+ *   ⚠️ 判定成功后本会话一直降级；用户下次执行 SQL 后刷新页面即自动恢复（本会话级，不写死）。
+ */
+let _inputsSigMissing = false;
+
+/** select 列清单：全量版 / 降级版（少 inputs_sig）。⛔ 两处必须与读写共用，别各处再写一份。 */
+const SEL_FULL = 'date,plan,leg,source,rules_sig,selection_sig,inputs_sig,revision,settled_at,created_at';
+const SEL_BASE = 'date,plan,leg,source,rules_sig,selection_sig,revision,settled_at,created_at';
+
+/** PostgREST：列不存在（42703）或 schema cache 里没这个字段（PGRST204） */
+function _isMissingColumn(error, col) {
+    if (!error) return false;
+    const code = String(error.code || '');
+    const msg = String(error.message || '') + ' ' + String(error.details || '') + ' ' + String(error.hint || '');
+    if (code !== '42703' && code !== 'PGRST204') return false;
+    return msg.indexOf(col) >= 0 || msg.indexOf('schema cache') >= 0;
+}
+
 /** date -> {status:'hit', plan} | null（null = 这天确实没有行） */
 const _cache = new Map();
 /** 单飞：date -> Promise */
@@ -60,16 +84,30 @@ function _isMissingTable(error) {
 async function _fetchOne(d) {
     let data = null;
     let error = null;
-    try {
-        const res = await getSupabase()
+    const query = function (cols) {
+        return getSupabase()
             .from(PLAN_SNAPSHOT_TABLE)
-            .select('date,plan,leg,source,rules_sig,selection_sig,inputs_sig,revision,settled_at,created_at')
+            .select(cols)
             .eq('date', d)
             .limit(1);
-        data = res.data;
-        error = res.error;
-    } catch (e) {
-        error = e;
+    };
+    const run = async function (cols) {
+        try {
+            const res = await query(cols);
+            return { data: res.data, error: res.error };
+        } catch (e) {
+            return { data: null, error: e };
+        }
+    };
+    let out = await run(_inputsSigMissing ? SEL_BASE : SEL_FULL);
+    data = out.data; error = out.error;
+    // ★ [SNAPSHOT-INPUTS] 库里还没 inputs_sig 这一列 ⇒ 降级重试一次，⛔ 不让新增列拖垮整张表
+    if (error && !_inputsSigMissing && _isMissingColumn(error, 'inputs_sig')) {
+        _inputsSigMissing = true;
+        _dbgLog('[TVRB-SNAPSHOT] tvrb_plan_snapshot 还没有 inputs_sig 列 ⇒ 本会话降级读写' +
+            '（不影响结论存取；执行 db/create_tvrb_plan_snapshot.sql 第三版后刷新即恢复完整校验）');
+        out = await run(SEL_BASE);
+        data = out.data; error = out.error;
     }
     if (error) {
         if (_isMissingTable(error)) {
@@ -151,13 +189,27 @@ export async function writePlanSnapshot(date, plain, meta) {
         settled_at: new Date().toISOString()
     };
     let error = null;
-    try {
-        const res = await getSupabase()
-            .from(PLAN_SNAPSHOT_TABLE)
-            .upsert(payload, { onConflict: 'date' });
-        error = res.error;
-    } catch (e) {
-        error = e;
+    const doUpsert = async function (p) {
+        try {
+            const res = await getSupabase()
+                .from(PLAN_SNAPSHOT_TABLE)
+                .upsert(p, { onConflict: 'date' });
+            return res.error;
+        } catch (e) {
+            return e;
+        }
+    };
+    const p1 = Object.assign({}, payload);
+    if (_inputsSigMissing) delete p1.inputs_sig;
+    error = await doUpsert(p1);
+    // ★ [SNAPSHOT-INPUTS] 库里还没这一列 ⇒ 去掉该字段重试一次，⛔ 不许因为新增列写不进结论
+    if (error && !_inputsSigMissing && _isMissingColumn(error, 'inputs_sig')) {
+        _inputsSigMissing = true;
+        _dbgLog('[TVRB-SNAPSHOT] tvrb_plan_snapshot 还没有 inputs_sig 列 ⇒ 本会话写入降级' +
+            '（结论照常存档；执行 db/create_tvrb_plan_snapshot.sql 第三版后刷新即恢复完整校验）');
+        const p2 = Object.assign({}, payload);
+        delete p2.inputs_sig;
+        error = await doUpsert(p2);
     }
     if (error) {
         if (_isMissingTable(error)) {
@@ -186,4 +238,19 @@ export function clearPlanSnapshotCache() {
 /** 仅测试用：把「表不存在」结论复位 */
 export function _resetPlanSnapshotTableMissing() {
     _tableMissing = false;
+}
+
+/** 仅测试用：把「缺 inputs_sig 列」降级结论复位（模拟用户执行完第三版 DDL 后刷新页面） */
+export function _resetPlanSnapshotColumns() {
+    _inputsSigMissing = false;
+}
+
+/**
+ * 当前会话是否支持 `inputs_sig` 列（false = 库里还没这一列，已降级）。
+ *
+ * 消费者：composable 的新鲜度判定 —— 不支持时⛔ 不能拿「存档里没有 inputs_sig」当过期，
+ * 否则每次打开页面都会判 stale 重算一遍（降级模式下永远补不上这一列）。
+ */
+export function isPlanSnapshotInputsSigSupported() {
+    return !_inputsSigMissing;
 }

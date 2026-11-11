@@ -15,11 +15,15 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import fs from 'node:fs';
 
 const calls = [];
-let mode = 'ok';       // 'ok' | 'missing' | 'readfail' | 'writefail'
+let mode = 'ok';       // 'ok' | 'missing' | 'readfail' | 'writefail' | 'nocol'
 let row = null;
 
 function missingError() {
   return { code: 'PGRST205', message: "Could not find the table 'public.tvrb_plan_snapshot' in the schema cache" };
+}
+/** 模拟「用户还没执行第三版 DDL」：库里有表、但没有 inputs_sig 列 */
+function missingColumnError() {
+  return { code: '42703', message: 'column tvrb_plan_snapshot.inputs_sig does not exist' };
 }
 
 const sb = {
@@ -29,6 +33,9 @@ const sb = {
     const done = function() {
       if (st.op === 'upsert') {
         if (mode === 'missing') return { data: null, error: missingError() };
+        if (mode === 'nocol' && st.payload && ('inputs_sig' in st.payload)) {
+          return { data: null, error: missingColumnError() };
+        }
         if (mode === 'writefail') return { data: null, error: { message: '权限不足' } };
         row = {
           date: st.payload.date,
@@ -43,9 +50,13 @@ const sb = {
           created_at: (row && row.date === st.payload.date && row.created_at)
             ? row.created_at : st.payload.settled_at
         };
+        if ('inputs_sig' in st.payload) row.inputs_sig = st.payload.inputs_sig;
         return { data: null, error: null };
       }
       if (mode === 'missing') return { data: null, error: missingError() };
+      if (mode === 'nocol' && String(st.selectCols || '').indexOf('inputs_sig') >= 0) {
+        return { data: null, error: missingColumnError() };
+      }
       if (mode === 'readfail') return { data: null, error: { message: '网络抖动' } };
       return { data: (row && row.date === st.eqVal) ? [Object.assign({}, row)] : [], error: null };
     };
@@ -70,7 +81,7 @@ vi.mock('./debug-log.js', function() {
 const mod = await import('./tvrb-plan-snapshot.js');
 const {
   PLAN_SNAPSHOT_TABLE, readPlanSnapshot, writePlanSnapshot,
-  clearPlanSnapshotCache, _resetPlanSnapshotTableMissing
+  clearPlanSnapshotCache, _resetPlanSnapshotTableMissing, _resetPlanSnapshotColumns
 } = mod;
 
 const D = '2026-11-10';
@@ -215,8 +226,55 @@ describe('tvrb-plan-snapshot · 定稿结论按日落库', function() {
     // ⚠️ 只锁【调用参数】，不锁「注释里提到这段历史」——注释必须能解释为什么删掉它
     expect(src).not.toContain('ignoreDuplicates: true');
     expect(src).not.toMatch(/\.upsert\([\s\S]{0,160}ignoreDuplicates/);
-    expect(src).toContain("upsert(payload, { onConflict: 'date' })");
+    expect(src).toContain("{ onConflict: 'date' }");
     expect(src).toContain('rules_sig');
     expect(src).toContain('revision');
+  });
+
+  /**
+   * ★★ [SNAPSHOT-INPUTS 2026-11-11] 渐进升级红线：**新增一列不许把整张存档表拖垮**。
+   *
+   * 场景：用户每天早上只用手机看线上网页、电脑常关。若前端把 inputs_sig 写进 select/upsert
+   *   而库里还没这一列，PostgREST 返回 42703 ⇒ 读档 / 写档全挂 ⇒ 历史复盘退化成「每次重算」。
+   * ⇒ 必须自动降级（少这一列也照常存取），用户执行 DDL 后刷新即恢复完整校验。
+   */
+  it('⑬ 🔴🔴 库里还没有 inputs_sig 列 ⇒ 读写各降级重试一次，结论照常存取（⛔ 不许整表不可用）', async function() {
+    clearPlanSnapshotCache();
+    _resetPlanSnapshotColumns();
+    mode = 'nocol';
+    // ── 读：第一次带 inputs_sig 失败 ⇒ 去掉该列重试成功
+    const r0 = await readPlanSnapshot('2026-11-20');
+    expect(r0.status).toBe('empty');            // 空表也算读成功，不是 error
+    const selCalls = calls.filter(function(c) { return c.op === 'select'; });
+    expect(selCalls).toHaveLength(2);
+    expect(selCalls[0].selectCols).toContain('inputs_sig');
+    expect(selCalls[1].selectCols).not.toContain('inputs_sig');
+    // ── 降级结论是会话级：之后的读不再白打一次失败请求
+    let before = calls.length;
+    await readPlanSnapshot('2026-11-21');
+    expect(calls.length - before).toBe(1);
+
+    // ── 写：单独验证（先复位，否则读那一步已经把标志置上、首写就不会带该字段）
+    _resetPlanSnapshotColumns();
+    mode = 'nocol';
+    const ok = await writePlanSnapshot('2026-11-20', { blocks: [], pickCount: 1 }, {
+      rulesSig: 'v1:aaaaaaaa', selectionSig: 'nA', inputsSig: 'v1:111', revision: 1
+    });
+    expect(ok).toBe(true);
+    const ups = calls.filter(function(c) { return c.op === 'upsert'; });
+    expect(ups).toHaveLength(2);
+    expect(ups[0].payload.inputs_sig).toBe('v1:111');
+    expect('inputs_sig' in ups[1].payload).toBe(false);
+    const afterRetry = ups[ups.length - 1];
+    expect(afterRetry.payload.rules_sig).toBe('v1:aaaaaaaa');   // 其余字段一个不丢
+    expect(afterRetry.payload.plan).toEqual({ blocks: [], pickCount: 1 });
+
+    // ── 用户执行完 DDL 刷新页面（标志复位）⇒ 立刻恢复完整校验
+    _resetPlanSnapshotColumns();
+    mode = 'ok';
+    clearPlanSnapshotCache();
+    const r = await readPlanSnapshot('2026-11-20');
+    expect(r.status).toBe('hit');
+    expect(r.row.plan.pickCount).toBe(1);
   });
 });

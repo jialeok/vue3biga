@@ -139,6 +139,9 @@ export function resolvePlanSnapshotFreshness(snap, opts) {
   if (!old) return 'stale';
   if (old !== cur) return 'stale';
   // ── 规则没变 ⇒ 再核对「输入完整度」（④⑤⑥）
+  //  ⚠️ 库里还没有 inputs_sig 列（降级模式）⇒ 这一位不支持，⛔ 不许把「没有该字段」当过期，
+  //     否则每次打开页面都会判 stale 重算一遍（而降级模式下永远补不上这一列）。
+  if (o.inputsSigSupported === false) return 'hit';
   const oldInputs = String(s.inputsSig || '').trim();
   if (!oldInputs) return 'stale';                 // ④ 元数据缺失 ⇒ 自愈一次
   const curInputs = String(o.inputsSig || '').trim();

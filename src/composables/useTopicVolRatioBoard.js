@@ -206,7 +206,7 @@ import { encodePlanSnapshot, decodePlanSnapshot, PLAN_SNAPSHOT_MAX_BYTES } from 
 import {
   buildRulesFingerprint, buildInputsFingerprint, resolvePlanSnapshotFreshness, shouldPersistPlanSnapshot
 } from '../logic/topicvolratio/plan-snapshot-rules.js';
-import { readPlanSnapshot, writePlanSnapshot } from '../data/tvrb-plan-snapshot.js';
+import { readPlanSnapshot, writePlanSnapshot, isPlanSnapshotInputsSigSupported } from '../data/tvrb-plan-snapshot.js';
 // ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ 禁止选股（硬空仓）的判据。
 //   与 buy-settle 是两件事：那个管「还没到、等几秒」；这个管「根本不会有、必须直接给结论」。
 import { resolveBuyDataGate, TVRB_DATA_GATE_NONE } from '../logic/topicvolratio/buy-data-gate.js';
@@ -1905,7 +1905,9 @@ export function useTopicVolRatioBoard() {
         const verdict = resolvePlanSnapshotFreshness(snap, {
           rulesSig: currentRulesSig.value,
           coreTopicsLoaded: isCoreTopicsCloudLoaded(),
-          inputsSig: currentInputsSig.value
+          inputsSig: currentInputsSig.value,
+          // 库里还没有 inputs_sig 列（已降级）⇒ ⛔ 不许把「缺字段」当过期，否则每次开页面都重算
+          inputsSigSupported: isPlanSnapshotInputsSigSupported()
         });
         snap.status = (verdict === 'stale') ? 'stale' : 'hit';
         planSnapshot.value = snap;
@@ -2071,7 +2073,9 @@ export function useTopicVolRatioBoard() {
     const verdict = resolvePlanSnapshotFreshness(s, {
       rulesSig: currentRulesSig.value,
       coreTopicsLoaded: isCoreTopicsCloudLoaded(),
-      inputsSig: currentInputsSig.value
+      inputsSig: currentInputsSig.value,
+      // 库里还没有 inputs_sig 列（已降级）⇒ ⛔ 不许把「缺字段」当过期，否则每次开页面都重算
+      inputsSigSupported: isPlanSnapshotInputsSigSupported()
     });
     if (verdict !== 'stale' || s.status === 'stale') return;
     planSnapshot.value = Object.assign({}, s, { status: 'stale', reason: reason || 'rules-changed' });
