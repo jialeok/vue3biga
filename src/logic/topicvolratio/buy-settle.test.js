@@ -143,4 +143,47 @@ describe('resolveBuySettle · 买点侧选股输入门控', function() {
       expect(isRange20CoverageReady({ isToday: false, rowCount: 3, listed: 75 })).toBe(true);
     });
   });
+
+  // ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11] 第 ⑬ 项改为【所有日期】一律要求。
+  //   取证：切到历史日期会 watch(currentDate) 解冻 ⇒ 用会漂移的当前库内数据重算；
+  //   11-10 的 stock_range20_pct 81 行全是 close 腿、market_metrics 的 11-10 行次日又被 worker 重写。
+  //   旧代码「只对今天生效」⇒ 历史日在异步竞价口径榜算完前就定稿冻结 ⇒ 票消失且再也改不回来。
+  //   ⚠️ 这是【所有历史日期 / 所有票】共用的坏链路，用户已明确指出「不是一只票问题，是整个类的问题」。
+  describe('[TVRB-PLAN-SNAPSHOT] 第 ⑬⑭ 项 · 历史日期也必须等齐', function() {
+    it('★ 回归锁：auctionBoardToday=false（历史日）+ 竞价榜没读过 ⇒ 仍不放行', function() {
+      const r = resolveBuySettle(full({ auctionBoardToday: false, auctionBoardTried: false }));
+      expect(r.settled).toBe(false);
+      expect(r.missing).toContain('9:25 竞价口径 20 日涨幅榜');
+    });
+
+    it('★ 竞价榜读过（成功或失败都算）⇒ 放行；缺省 undefined 兼容老调用方', function() {
+      expect(resolveBuySettle(full({ auctionBoardToday: false, auctionBoardTried: true })).settled).toBe(true);
+      expect(resolveBuySettle(full({ auctionBoardTried: undefined })).settled).toBe(true);
+    });
+
+    it('★ 今天同样受第 ⑬ 项约束（⛔ 不能因为改造把今天漏掉）', function() {
+      const r = resolveBuySettle(full({ auctionBoardToday: true, auctionBoardTried: false }));
+      expect(r.settled).toBe(false);
+      expect(r.missing).toContain('9:25 竞价口径 20 日涨幅榜');
+    });
+
+    it('★ 第 ⑭ 项：当日定稿存档还在读取中 ⇒ 不许定稿（否则存档命中后会被中间态覆盖）', function() {
+      const r = resolveBuySettle(full({ planSnapshotReady: false }));
+      expect(r.settled).toBe(false);
+      expect(r.missing).toContain('当日定稿存档读取');
+    });
+
+    it('★ 第 ⑭ 项：hit / empty / unavailable / error 都算「读过」，⛔ 不永久挂死买点侧（§10）', function() {
+      expect(resolveBuySettle(full({ planSnapshotReady: true })).settled).toBe(true);
+      expect(resolveBuySettle(full({ planSnapshotReady: undefined })).settled).toBe(true);
+    });
+
+    it('★ 两项同时缺 ⇒ 占位要点名两条（用户要看到「还差什么」）', function() {
+      const r = resolveBuySettle(full({ auctionBoardTried: false, planSnapshotReady: false }));
+      expect(r.settled).toBe(false);
+      expect(r.missing).toHaveLength(2);
+      expect(r.text).toContain('9:25 竞价口径 20 日涨幅榜');
+      expect(r.text).toContain('当日定稿存档读取');
+    });
+  });
 });

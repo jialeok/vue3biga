@@ -63,9 +63,13 @@
  *                        与上一项不同：结论可以从一份残缺表里算出来（11-10 事故：表只有 19 行，
  *                        结论照样发布 ⇒ 定稿出空仓，10:00 补齐后才又冒出一只票）。
  *                        仅「展示日=今天」启用；缺省 undefined = 就绪（§11 老调用方零行为变化）。
- *   auctionBoardToday    ★ [TVRB-AUC-BOARD 2026-11-10] 展示日是不是今天（只有今天强制竞价口径）。
- *   auctionBoardTried    ★ [TVRB-AUC-BOARD 2026-11-10] 9:25 竞价口径 20 日榜「读过」没有
- *                        （成功或失败都算）；false ⇒ 规则输入还是会变的发布榜 ⇒ 不许定稿。
+ *   auctionBoardToday    ★ [已废弃 2026-11-11] 保留仅为兼容老调用方，门控不再读它。
+ *                        原语义「只有今天强制竞价口径」是错的：历史日重算同样吃竞价口径榜，
+ *                        跳过它正是 11-10 复盘「冰山冷热消失」的成因（见 ⑬ 注释）。
+ *   auctionBoardTried    ★ [TVRB-AUC-BOARD 2026-11-10 / 整类修复 11-11] 9:25 竞价口径 20 日榜
+ *                        「读过」没有（成功或失败都算）；**所有日期一律要求**，false ⇒ 不许定稿。
+ *   planSnapshotReady    ★ [TVRB-PLAN-SNAPSHOT 2026-11-11] 当日定稿存档「读完了没有」；
+ *                        false(读取中) ⇒ 不许定稿。hit/empty/unavailable/error 都算读过（§10）。
  * @returns {{settled:boolean, missing:string[], text:string}} missing = 中文项名（给用户看）
  */
 /**
@@ -146,16 +150,32 @@ export function resolveBuySettle(ctx) {
   //    ② 缺省 undefined ⇒ 就绪，保证老调用方 / 既有单测零行为变化（§11）。
   //    ③ 与 ⑨ 一样，硬兜底（30s）能穿透：上游真补不齐时仍给一份带警示的定稿，⛔ 不永久挂起。
   if (o.range20CoverageReady === false) missing.push('20 日涨幅榜（云端补位中）');
-  // ⑬ ★★ [TVRB-AUC-BOARD 2026-11-10 · 第七版] 【9:25 竞价口径 20 日涨幅榜】算完了没有。
+  // ⑬ ★★ [TVRB-AUC-BOARD 2026-11-10 · 第七版 / 2026-11-11 整类修复] 【9:25 竞价口径 20 日涨幅榜】算完了没有。
   //    用户口径「题材量比选股，我一直强调是用竞价口径的，而且每天收盘后都不要改变」。
   //    这一项没算完时，规则输入仍是会随 15:00 切口径 / 16:30 补位票变化的发布榜
   //    ⇒ 那一刻定稿出来的票下午必然变（11-10 冰山冷热事故）。⇒ 必须先等竞价口径榜落地。
-  //    ① 只对【今天】生效（`auctionBoardToday`）：历史日口径本来就恒 close、结果稳定。
+  //
+  //    🔴🔴 [TVRB-PLAN-SNAPSHOT 2026-11-11] 原第 ① 条「只对今天生效：历史日口径本来就恒 close、
+  //       结果稳定」是**错误假设**，已删除。取证：切到历史日期会 watch(currentDate) 解冻 ⇒
+  //       用【当前库内数据】重算；11-10 的 stock_range20_pct 81 行全是 close 腿（16:30 被覆盖）、
+  //       market_metrics 的 11-10 行 11-11 09:25 又被 worker 重写 ⇒ 历史日输入恰恰最不稳定。
+  //       历史日跳过本门控 ⇒ 在异步竞价口径榜算完前就定稿冻结 ⇒ 票「消失」且再也改不回来。
+  //       ⇒ 这是【所有历史日期 / 所有票】共用的坏链路，不是单只票（用户已明确指出）。
+  //    ① 【所有日期】一律要求（⛔ 不再用 auctionBoardToday 限定今天）。
   //    ② 「读过」就算落地（成功或失败都算）：判不出时组合式会回落 + 在说明区如实标注，
   //       并由定稿冻结保证屏幕不再变；⛔ 不能因为一次读失败把买点侧永久锁死（§10）。
   //    ③ 缺省 undefined ⇒ 就绪，保证老调用方 / 既有单测零行为变化（§11）。
-  if (o.auctionBoardToday === true && o.auctionBoardTried === false) {
+  if (o.auctionBoardTried === false) {
     missing.push('9:25 竞价口径 20 日涨幅榜');
+  }
+  // ⑭ ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11] 【当日定稿存档】读完了没有。
+  //    切日期后要先问 Supabase「这天有没有存过结论」。在返回之前就定稿 ⇒ 会拿一份重算的
+  //    中间态去写库 / 上屏，存档命中后又被覆盖，等于存档形同虚设。
+  //    ⚠️ 只有「读取中」才拦；hit / empty / unavailable / error 都算「读过」（§10 读失败
+  //       不是没读完，不能把买点侧永久挂死），各自状态由说明区如实标注。
+  //    ⚠️ 缺省 undefined ⇒ 就绪（老调用方 / 既有单测零行为变化，§11）。
+  if (o.planSnapshotReady === false) {
+    missing.push('当日定稿存档读取');
   }
 
   if (missing.length === 0) return { settled: true, missing: [], text: '' };

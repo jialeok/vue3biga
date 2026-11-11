@@ -173,8 +173,13 @@ describe('ensureTvrbAuctionBoard — 会话缓存 / 单飞 / §10 判不出', ()
   });
 });
 
-// ── 定稿门控：今天竞价榜没算完 ⇒ 不许定稿 ─────────────────────────────────────
-describe('resolveBuySettle — 第⑬项（仅今天）', () => {
+// ── 定稿门控：竞价榜没算完 ⇒ 不许定稿（11-11 起【所有日期】，不再只限今天）────────
+// 🔴 旧标题里的「仅今天」、旧用例 ④「历史日不强制」都建立在错误假设上：
+//    「历史日口径本来就恒 close、结果稳定」。取证（11-11）：切历史日期会解冻重算，
+//    11-10 的 20 日结果表 81 行全是 16:30 写的 close 腿、0 行 auc 腿，market_metrics 的
+//    11-10 行 11-11 09:25 又被 worker 重写 ⇒ 历史输入恰恰最不稳定。
+//    ⇒ 历史日跳过本门控，会在异步竞价口径榜算完前把中间态定稿冻结，票「消失」且改不回来。
+describe('resolveBuySettle — 第⑬项（所有日期）', () => {
   const base = {
     date: '2026-11-10', prevDate: '', coreTopicsLoaded: true,
     buyRangeDate: '2026-11-10', curRangeDate: '2026-11-10',
@@ -197,9 +202,16 @@ describe('resolveBuySettle — 第⑬项（仅今天）', () => {
       auctionBoardToday: true, auctionBoardTried: true
     })).settled).toBe(true);
   });
-  it('④ 历史日不强制 ⇒ 不会被永久锁死', () => {
-    expect(resolveBuySettle(Object.assign({}, base, {
+  it('④ 🔴 [11-11 整类修复] 历史日同样强制 ⇒ 不许拿重算中间态定稿', () => {
+    const r = resolveBuySettle(Object.assign({}, base, {
       auctionBoardToday: false, auctionBoardTried: false
+    }));
+    expect(r.settled).toBe(false);
+    expect(r.missing).toContain('9:25 竞价口径 20 日涨幅榜');
+  });
+  it('⑤ 历史日「读过」（哪怕判不出）⇒ 放行（§10 读过就算落地，⛔ 不永久锁死）', () => {
+    expect(resolveBuySettle(Object.assign({}, base, {
+      auctionBoardToday: false, auctionBoardTried: true
     })).settled).toBe(true);
   });
 });
@@ -234,5 +246,20 @@ describe('★ 静态契约 [TVRB-AUC-BOARD 2026-11-10]', () => {
 
   it('④ §10 回落必须可见（说明区写明不是竞价口径）', () => {
     expect(SRC).toContain('⚠️ 本日【9:25 竞价口径 20 日涨幅榜】判不出');
+  });
+
+  it('⑤ 🔴 [11-11] 回落警示不许再限定「只标今天」（历史日同样吃竞价口径榜）', () => {
+    expect(SRC).not.toContain('只标今天：历史日的口径本来就恒 close');
+    expect(SRC).not.toContain("d === _getLocalTodayStr() && hasTvrbAuctionBoardVerdict(d)");
+    expect(SRC).toContain('if (!_aucReady && hasTvrbAuctionBoardVerdict(d))');
+  });
+
+  it('⑥ 🔴 [TVRB-PLAN-SNAPSHOT 11-11] 结论存档接线不许被拆掉（历史复盘稳定的唯一保障）', () => {
+    expect(SRC).toContain('_loadPlanSnapshot(d)');
+    expect(SRC).toContain('_persistPlanSnapshot(_pd, plan)');
+    expect(SRC).toContain("snap.status === 'hit'");
+    expect(SRC).toContain('planSnapshotReady: planSnapshotReady.value');
+    expect(SRC).toContain('readPlanSnapshot');
+    expect(SRC).toContain('writePlanSnapshot');
   });
 });

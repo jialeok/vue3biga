@@ -36,7 +36,8 @@
 //   ⇒ 页面里根本没有那个标签。v2 的 bg 更新只解决了"下次会好"，解决不了"这次要看"。
 //   再换一次缓存名 ⇒ 下一次导航 cache-miss ⇒ 必走网络拿当前 HTML ⇒ 立刻脱离旧版本。
 //   ⚠️ 以后再出现「线上已换版但用户看不到」，先换这个版本号，别先去改业务逻辑。
-var CACHE = 'biga-static-v29'; // [DDL-LEG 2026-11-11] v28 → v29：stock_range20_pct 主键升级 (date,stock,leg) 后，前端结果表读写改为「byLeg 两腿并存 + 按口径取行 + upsert 冲突键带 leg」。旧 SW 缓存的 v28 bundle 仍写两列 on_conflict ⇒ 400/42P10 ⇒ 当天结果表 0 行、前端退回浏览器现算 40+ 次 K 线（出结果慢）。⛔ 不升版本手机端会一直吃旧 JS
+var CACHE = 'biga-static-v30'; // [TVRB-PLAN-SNAPSHOT 2026-11-11] v29 → v30：题材量比【选股结论按日落库】。旧 v29 bundle 的结论只在内存 _buyPublished ⇒ 切日期解冻重算，且历史日门控跳过竞价口径榜 ⇒ 早盘那份结论被中间态冻结覆盖（用户「历史日期复盘冰山冷热又搞失踪」）。本版新增 tvrb_plan_snapshot 读档 + 定稿存档 + 第⑬⑭项门控。⛔ 不升版本手机端会一直吃旧 JS
+// 上一版 v29 [DDL-LEG]：stock_range20_pct 主键升级 (date,stock,leg) 后改为「byLeg 两腿并存 + 按口径取行 + upsert 冲突键带 leg」；旧 v28 bundle 写两列 on_conflict ⇒ 400/42P10 ⇒ 当天结果表 0 行、前端退回浏览器现算 40+ 次 K 线（出结果慢）。
 // ★★ [BOOT-SW-NAVFAST 2026-10-31] 从 4000 收到 1500。
 //   原因（实测）：这台机器的网络特征是「每个请求固定停顿 12~64 秒」（3.7KB 的 sw.js 要 64s），
 //   装好 SW 之后每次打开仍然要等「导航请求」这一次停顿 ⇒ 就是这 4 秒在拖。

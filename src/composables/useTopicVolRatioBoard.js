@@ -193,6 +193,14 @@ import {
 // ★★ [BUY-SETTLE 2026-10-31 用户口径] 买点侧「选股输入是否齐了」的唯一判据
 //   （纯函数，见其 JSDoc / 单测）—— ⛔ 别在 data computed 里另写一串行内比较。
 import { resolveBuySettle, isRange20CoverageReady } from '../logic/topicvolratio/buy-settle.js';
+// ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11] 历史日期复盘的【结论存档】：
+//   「昨天 11-10 冰山冷热又不见了……我有时要看历史日期复盘的，为什么老是搞失踪……
+//    这不是一只票问题，是整个类的问题」。取证：结论只存在内存 `_buyPublished`，全仓库无落库；
+//    切日期就解冻 ⇒ 拿【会漂移的库内行情】重算 ⇒ 早期残缺结论被定稿冻结 ⇒ 票消失且改不回来。
+//   ⇒ 定稿那一刻按日落库；历史日期命中存档即冻结显示，⛔ 永不重算（§6 单一真相 / §26）。
+//   ⚠️ plan 内含 Set / Map / Date / Proxy / 可能循环引用 ⇒ 必须过 codec，⛔ 不能直接 JSON.stringify。
+import { encodePlanSnapshot, decodePlanSnapshot, PLAN_SNAPSHOT_MAX_BYTES } from '../logic/topicvolratio/plan-snapshot-codec.js';
+import { readPlanSnapshot, writePlanSnapshot } from '../data/tvrb-plan-snapshot.js';
 // ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ 禁止选股（硬空仓）的判据。
 //   与 buy-settle 是两件事：那个管「还没到、等几秒」；这个管「根本不会有、必须直接给结论」。
 import { resolveBuyDataGate, TVRB_DATA_GATE_NONE } from '../logic/topicvolratio/buy-data-gate.js';
@@ -1170,8 +1178,52 @@ export function useTopicVolRatioBoard() {
     }
   }, { immediate: true });
 
+  // ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11] 当日「定稿存档」的状态（按日期，⛔ 不拿 A 日顶 B 日）。
+  //   状态：loading / hit / empty / unavailable / error / corrupt —— 与 Data 层四态一一对应，
+  //   corrupt 是 Logic 层解码失败/结构校验不过时追加的（§10：损坏 ≠ 没有存档，绝不能静默重算当成空）。
+  //   ⚠️ hit 时 `displayPlan` 直接读它，屏幕与「会漂移的库内行情」彻底脱钩。
+  const planSnapshot = ref(null);   // { date, status, plan?, reason?, settledAt? }
+  let _disposed = false;            // 异步读档回来时组件可能已卸载 ⇒ 不再回写任何结论（§32）
+
+  /** 第⑭项门控输入：这一天的存档【读完了没有】。只有 loading 拦，其余状态都算读过（§10）。 */
+  const planSnapshotReady = computed(function() {
+    const d = String(currentDate.value || '').trim();
+    if (!d) return true;
+    const s = planSnapshot.value;
+    if (!s || s.date !== d) return false;
+    return s.status !== 'loading';
+  });
+
+  /** 说明区警示：⛔ 不改存档 plan 里的 notes（那会污染「定稿那一刻」的原始内容）。 */
+  const planSnapshotNotice = computed(function() {
+    const d = String(currentDate.value || '').trim();
+    const s = planSnapshot.value;
+    if (!d || !s || s.date !== d || s.status === 'loading') return [];
+    if (s.status === 'hit') {
+      const at = s.settledAt ? String(s.settledAt).slice(0, 16).replace('T', ' ') : '当日竞价期';
+      return ['✅ 本日为【9:25 竞价口径定稿存档】（' + at +
+        '）⇒ 复盘直接读取当天那一份结论，收盘后数据变化、刷新、切走再切回都不会改变它。'];
+    }
+    if (s.status === 'empty') {
+      return ['⚠️ 该日【没有定稿存档】（建表前的历史日期）⇒ 当前结论是按恒竞价口径、用现有库内数据' +
+        '重算的复盘参考，可能与当天 9:25 屏幕上那份结论不同；此后新交易日起会自动存档。'];
+    }
+    if (s.status === 'unavailable') {
+      return ['⚠️ 结论存档表 tvrb_plan_snapshot 未建立 ⇒ 历史日期只能按恒竞价口径重算，' +
+        '无法保证与当天屏幕一致。在 Supabase SQL Editor 执行 db/create_tvrb_plan_snapshot.sql 后生效。'];
+    }
+    if (s.status === 'corrupt') {
+      return ['⚠️ 该日存档内容损坏（' + (s.reason || '结构校验未通过') +
+        '）⇒ 已拒绝把它当结论显示，改按恒竞价口径重算，仅供复盘参考。'];
+    }
+    return ['⚠️ 当日结论存档读取失败（' + (s.reason || '未知原因') +
+      '）⇒ 已按恒竞价口径重算，⛔ 不把读失败当成「那天没选股」。'];
+  });
+
   const data = computed(function() {
     void version.value;                 // 显式声明对刷新信号的依赖
+    // ★★ [TVRB-PLAN-SNAPSHOT] 存档状态是 resolveBuySettle 第⑭项输入 ⇒ 读完要重算一帧再决定能否定稿
+    void planSnapshot.value;
     // ★ [EBB] 昨日十日涨幅（异步读回）⇒ 读到之后重算一次，退潮首日规则才生效
     void prevRangeMap.value;
     // ★★ [BUY-SETTLE 2026-10-31] 「昨日十日涨幅读过没有」—— 买点侧门控的输入之一
@@ -1443,9 +1495,11 @@ export function useTopicVolRatioBoard() {
       // ★★ [TVRB-AUC-BOARD 2026-11-10 · §10 失败必须可见]
       //   今天竞价口径榜判不出（当日无竞价涨幅 / 无主板票 / 读失败）⇒ 已回落到【会随收盘变化的】
       //   发布榜。必须如实标出来，⛔ 绝不静默拿它冒充「9:25 选出来的那批」。
-      //   ⚠️ 只标今天：历史日的口径本来就恒 close、结果稳定，天天挂这条警告只会制造噪音。
+      //   🔴 [TVRB-PLAN-SNAPSHOT 11-11] 原「只标今天：历史日口径本来就恒 close、结果稳定」是**错误假设**，
+      //      已删除：历史日重算同样吃竞价口径榜（11-10 全是 close 腿 + 行情行被次日 worker 重写）。
+      //      ⇒ 所有日期一视同仁，判不出就如实标出来。
       //   ⚠️ 只标「确实试过」的：异步还没回来时 hasTvrbAuctionBoardVerdict=false，首帧不打假告警。
-      if (!_aucReady && d === _getLocalTodayStr() && hasTvrbAuctionBoardVerdict(d)) {
+      if (!_aucReady && hasTvrbAuctionBoardVerdict(d)) {
         plan.notes.unshift('⚠️ 本日【9:25 竞价口径 20 日涨幅榜】判不出（当日竞价名单 / 竞价涨幅 / 主板票不足）' +
           '⇒ 20 日涨幅通道暂按收盘口径发布榜显示；本次结论已定稿冻结，不会随收盘再变，' +
           '但它不是竞价口径，请复核云端 9:25 落库数据。');
@@ -1624,12 +1678,18 @@ export function useTopicVolRatioBoard() {
         range10PoolReady: rec.range10PoolComplete !== false,
         // ★★ [TVRB-R20-COVER 2026-11-10 · 第十二项] 只对今天生效；历史日恒 true（其它不变）。
         range20CoverageReady: _r20CoverageReady,
-        // ★★ [TVRB-AUC-BOARD 2026-11-10 · 第十三项] 只对今天生效。
+        // ★★ [TVRB-AUC-BOARD 2026-11-10 · 第十三项 / 11-11 整类修复] 【所有日期】一律要求。
         //   竞价口径 20 日榜还没算完 ⇒ 这一帧的规则输入还是「会变的」发布榜 ⇒ ⛔ 不许定稿。
+        //   🔴 原来这里限定「只对今天」，理由是「历史日恒 close、结果稳定」—— 该假设已被取证推翻：
+        //      切到历史日期会解冻重算，而 11-10 的 20 日结果表全是 close 腿、行情行次日又被重写。
+        //      历史日跳过本项 ⇒ 异步竞价榜算完前就把中间态定稿冻结 ⇒ 票「消失」且再也改不回来。
         //   §10：「读过」就算落地（成功或失败），否则一次读失败会把买点侧永久锁死；
-        //        判不出的那一支已由上面的 plan.notes 如实标注，并由定稿冻结保证屏幕不再变。
-        auctionBoardToday: d === _getLocalTodayStr(),
-        auctionBoardTried: _aucReady || hasTvrbAuctionBoardVerdict(d)
+        //        判不出的那一支已由上面的 plan.notes 如实标注。
+        auctionBoardToday: d === _getLocalTodayStr(),   // 兼容保留，纯函数已不再读它
+        auctionBoardTried: _aucReady || hasTvrbAuctionBoardVerdict(d),
+        // ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11 · 第十四项] 这天有没有存档，先问完再定稿。
+        //   没问完就定稿 ⇒ 拿重算中间态写库 / 上屏，等存档命中又被覆盖 = 存档形同虚设。
+        planSnapshotReady: planSnapshotReady.value
       });
       if (!_settle.settled) {
         plan.buyPending = true;
@@ -1692,8 +1752,13 @@ export function useTopicVolRatioBoard() {
    *    ⛔ 不许再直接读 `data.value.plan` —— 否则定稿就被绕过去了，跳变会从别处回来（§6）。
    */
   const displayPlan = computed(function() {
+    const d = String(currentDate.value || '').trim();
+    // ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11] 【第一优先级】命中当日定稿存档 ⇒ 恒返回那一份。
+    //   历史日期复盘的全部意义就是「看到当天 9:25 那份结论」；库内行情会被后续 worker / 收盘
+    //   覆盖（11-10 实证），⛔ 绝不能拿它重算。刷新、切走再切回、上游数据到货都不改变它。
+    const snap = planSnapshot.value;
+    if (snap && d && snap.date === d && snap.status === 'hit' && snap.plan) return snap.plan;
     const pub = _buyPublished.value;
-    const d = currentDate.value;
     if (pub && d && pub.date === d && pub.plan) return pub.plan;
     return (data.value && data.value.plan) || null;
   });
@@ -1723,8 +1788,106 @@ export function useTopicVolRatioBoard() {
   //
   //   保留下来的只有 `markNetLoadWindow()` —— 它不带任何「放行」语义，只负责在网络侧起一个装载窗口，
   //   供 20s 软超时 / 30s 硬兜底判定「是不是真读不出来了」。兜底放行同样**立即定稿**，屏幕不会再变。
+  /**
+   * ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11] 切到某一天 ⇒ 先问库里有没有【那天定稿的结论】。
+   *
+   * 🔴 为什么必须问在定稿之前：切日期会触发 `watch(currentDate)` 解冻，紧接着 `data` computed
+   *    会用「当前库内数据」重算。11-10 取证：那天的 20 日结果表 81 行全是 16:30 写的 close 腿，
+   *    `market_metrics` 的 11-10 行还在 11-11 09:25 被 worker 重写过 ⇒ 历史输入本身就漂移。
+   *    如果没有这道读取，重算出的中间态会先定稿冻结 / 甚至写库，存档命中后又被覆盖。
+   *
+   * 红线：
+   *   · 每一帧先置 `loading` ⇒ 第⑭项门控挂住，⛔ 不许在读取期间定稿 / 写库（§10）。
+   *   · 异步回来必须复核日期（用户可能已经切走）⇒ 不拿 A 日结果顶 B 日（§10）。
+   *   · hit ⇒ 解码 + 结构校验；损坏判 `corrupt`，⛔ 绝不当「没有存档」静默重算。
+   *   · 读失败 / 表不存在 / 空表是三种不同状态，各自在说明区可见（`planSnapshotNotice`）。
+   */
+  function _loadPlanSnapshot(d) {
+    const key = String(d || '').trim();
+    if (!key) {
+      planSnapshot.value = { date: '', status: 'empty' };
+      return;
+    }
+    planSnapshot.value = { date: key, status: 'loading' };
+    readPlanSnapshot(key).then(function(res) {
+      if (_disposed) return;
+      if (String(currentDate.value || '').trim() !== key) return;   // 竞态：已经切到别的日期
+      const r = res || { status: 'error', reason: 'empty-result' };
+      if (r.status === 'hit') {
+        const dec = decodePlanSnapshot(r.row && r.row.plan);
+        if (!dec.ok) {
+          planSnapshot.value = { date: key, status: 'corrupt', reason: dec.reason };
+          _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 存档损坏（' + dec.reason +
+            '）⇒ 拒绝当结论显示，改按恒竞价口径重算');
+          return;
+        }
+        planSnapshot.value = {
+          date: key, status: 'hit', plan: dec.plan,
+          settledAt: (r.row && r.row.settled_at) || ''
+        };
+        // 把定稿闩也占位：否则 buySelSig watch 会再发布一份【重算】结论盖在屏幕上。
+        // displayPlan 已经优先读存档，这一步是让「已定稿」语义保持一致（§6 同一真相）。
+        _buyPublished.value = { date: key, plan: dec.plan, fromSnapshot: true };
+        _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 命中定稿存档 ⇒ 历史复盘恒定稿显示，本次会话不再重算');
+        return;
+      }
+      planSnapshot.value = { date: key, status: r.status, reason: r.reason || '' };
+      _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 无可用存档（' + r.status +
+        '）⇒ 按恒竞价口径重算，说明区已如实标注');
+    }).catch(function(e) {
+      if (_disposed) return;
+      if (String(currentDate.value || '').trim() !== key) return;
+      planSnapshot.value = { date: key, status: 'error', reason: String((e && e.message) || e) };
+      _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 读取异常：' + String((e && e.message) || e));
+    });
+  }
+
+  /**
+   * ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11] 定稿 ⇒ 把【今天】那一份 plan 存一次。
+   *
+   * 🔴 四条准入（把「不完整的结论」固化成永久存档比没有存档更糟 —— ignoreDuplicates 不可覆盖）：
+   *   ① 只写今天（历史日重算结论 ⛔ 绝不入库，用户明确要「每天收盘后都不要改变」）；
+   *   ② 硬兜底放行 / 输入未齐 / 数据闸门拦下的降级结论不写；
+   *   ③ 当天已有存档不写（Data 层 ignoreDuplicates 再兜一道）；
+   *   ④ 编码失败 / 超过体积上限不写，且必须留痕（§10 禁止静默）。
+   * ⚠️ 写失败不抛、不影响看板：这次展示不该因为存不上而失败。
+   */
+  function _persistPlanSnapshot(d, plan) {
+    const key = String(d || '').trim();
+    if (!key || key !== _getLocalTodayStr()) return;
+    if (netHardStalled.value || !plan) return;
+    if (plan.buyPending) return;
+    if (plan.buyDataGate && plan.buyDataGate.blocked) return;
+    const snap = planSnapshot.value;
+    if (snap && snap.date === key && snap.status === 'hit') return;
+    const enc = encodePlanSnapshot(plan);
+    if (!enc.ok) {
+      _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 定稿编码失败（' + enc.reason + '）⇒ 本次不存档');
+      return;
+    }
+    if (enc.bytes > PLAN_SNAPSHOT_MAX_BYTES) {
+      _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 定稿体积 ' + enc.bytes + ' 超过上限 ⇒ 本次不存档');
+      return;
+    }
+    writePlanSnapshot(key, enc.plain).then(function(ok) {
+      if (_disposed || !ok) return;
+      if (String(currentDate.value || '').trim() !== key) return;
+      // 内容与刚定稿的 plan 是同一份（§6），这里只是把状态从 empty → hit，
+      // 让说明区显示「本日已存档」；displayPlan 读到的仍是屏幕上那一份结论。
+      planSnapshot.value = {
+        date: key, status: 'hit', plan: displayPlan.value || plan,
+        settledAt: new Date().toISOString(), justWritten: true
+      };
+      _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 定稿结论已存档（' + enc.bytes + ' 字节，9:25 竞价口径，盘后不覆盖）');
+    }).catch(function(e) {
+      _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 写入异常：' + String((e && e.message) || e));
+    });
+  }
+
   watch(currentDate, function(dateVal) {
     const d = String(dateVal || '').trim();
+    // ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11] 换日第一件事：问这一天的定稿存档（读取中 ⇒ 第⑭项挂住）
+    _loadPlanSnapshot(d);
     // ★★ [BUY-PUBLISH 2026-10-31 · 第五版] 换日 ⇒ **解冻**：新的一天要重新等数据、重新定稿。
     //   ⛔ 这里是唯一的自动解冻口（另一个是用户手动 `refresh()`）；两者都不在时，屏幕永不变。
     const _pub = _buyPublished.value;
@@ -1824,6 +1987,9 @@ export function useTopicVolRatioBoard() {
     const _pd = currentDate.value;
     if (_pd && plan) {
       _buyPublished.value = { date: _pd, plan: plan, degraded: !!netHardStalled.value };
+      // ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11] 定稿即按日落库（只写今天 / 只写一次 / 降级结论不写）。
+      //   历史日期复盘从此读这份存档，不再用会漂移的库内行情重算 ⇒ 「票搞失踪」整类根治。
+      _persistPlanSnapshot(_pd, plan);
       _dbgLog('[TVRB-BUY-PUBLISH] ' + _pd + ' 选股结论【定稿】—— 屏幕从此只读这份快照，' +
         '不再随数据到货变化' + (netHardStalled.value ? '（上游硬兜底，结论可能不完整，已标注）' : '') +
         '｜' + String(key.split('\u0000')[1] || '').slice(0, 70));
@@ -1847,9 +2013,11 @@ export function useTopicVolRatioBoard() {
     }
   }, { immediate: true });
   onUnmounted(function() {
+    _disposed = true;
     _buyQuiesce.dispose();
     // [BUY-PUBLISH 第五版] 定稿快照随组件销毁释放（⛔ 不再有宽限计时器要清）
     _buyPublished.value = null;
+    planSnapshot.value = null;
   });
 
   /**
@@ -1881,7 +2049,13 @@ export function useTopicVolRatioBoard() {
   const reasonText = computed(() => (data.value.ready ? '' : (data.value.reason || DATA_INCOMPLETE_TEXT)));
   const blocks = computed(() => (displayPlan.value ? displayPlan.value.blocks : []));
   const sellGroups = computed(() => (displayPlan.value ? (displayPlan.value.sell || []) : []));
-  const notes = computed(() => (displayPlan.value ? displayPlan.value.notes : []));
+  // ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11] 存档状态警示拼在说明区最前面。
+  //   ⛔ 不写进 plan.notes：存档里的 notes 是「定稿那一刻」的原始内容，改了就不是原存档（§6）。
+  const notes = computed(function() {
+    const base = (displayPlan.value && displayPlan.value.notes) || [];
+    const extra = planSnapshotNotice.value;
+    return extra.length ? extra.concat(base) : base;
+  });
   const excludedTopics = computed(() => (displayPlan.value ? displayPlan.value.excludedTopics : []));
   const pickCount = computed(() => (displayPlan.value ? displayPlan.value.pickCount : 0));
   /**
@@ -2253,9 +2427,15 @@ export function useTopicVolRatioBoard() {
     // ★★ [BUY-PUBLISH 2026-10-31 · 第五版] 用户手动刷新 ⇒ **解冻**（另一个解冻口是切日期）。
     //   这是「我就是想按最新数据重算一遍」的唯一入口：先解除定稿，让数据重新到齐后再定稿一次。
     //   ⛔ 不要做成「每次数据到货都自动解冻」—— 那就回到跳变了。
-    if (_buyPublished.value) {
+    // ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11] 但【命中存档的历史日】例外：刷新不该改写历史复盘结论。
+    //   `displayPlan` 本来就优先读存档，这里连闩都不解，避免出现「屏幕没变、内部却多定稿一份」的脏状态。
+    const _snap = planSnapshot.value;
+    const _snapHit = !!(_snap && _snap.date === currentDate.value && _snap.status === 'hit');
+    if (_buyPublished.value && !_snapHit) {
       _dbgLog('[TVRB-BUY-PUBLISH] 用户主动刷新 ⇒ 解除本日定稿，等数据重新到齐后再定稿一次');
       _buyPublished.value = null;
+    } else if (_snapHit) {
+      _dbgLog('[TVRB-SNAPSHOT] 用户刷新命中历史定稿存档 ⇒ 结论保持不变（只刷新分笔等辅助数据）');
     }
     bumpVersion();
     const d = currentDate.value;
