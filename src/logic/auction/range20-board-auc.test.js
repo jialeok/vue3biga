@@ -246,3 +246,30 @@ describe('接线静态锁 —— ⛔ 不许偷偷改回收盘口径', () => {
     expect(RANGE20_LEADER_MIN_LEGS).toBe(6);
   });
 });
+
+describe('会话缓存早退闸门 —— ⛔ 不许在算竞价榜之前就 return（静态锁）', () => {
+  const SRC = fs.readFileSync(
+    path.join(process.cwd(), 'src/logic/auction/range20-leaders.js'), 'utf8');
+
+  it('★ 早退必须同时问「该日的竞价口径成员榜试过了没有」', () => {
+    // 缺口：`_boardCache` 在精算段【末尾】才算，而开头有一条 `if (_cache.has(date)) return`
+    //   ⇒ 只要这一天先前算过一次，后续调用永远到不了算竞价榜那段 ⇒ 盘后一直回落收盘口径
+    //   ⇒ 「有时显示、有时不显示」—— 比完全不修更难排查。
+    expect(SRC).toContain('_needBoard');
+    expect(SRC).toContain('_boardTried');
+    // 判据必须是「盘后」才生效：早上 legMode==='auc' 时行为一字不变（§11）
+    expect(SRC).toContain("(legMode === 'close') && !_boardTried.has(date)");
+    // ⛔ 不许退化成「按 _boardCache 有没有判断」—— auc 腿一直不齐时会每次重算精算段（§32）
+    expect(SRC).not.toContain("(legMode === 'close') && !_boardCache.has(date)");
+  });
+
+  it('_boardTried 与 _cache 同生命周期：口径切换 + POOLGROW 都要清，clear 要全清', () => {
+    const dels = (SRC.match(/_boardTried\.delete\(date\)/g) || []).length;
+    expect(dels).toBeGreaterThanOrEqual(2);   // TSWITCH + POOLGROW
+    expect(SRC).toContain('_boardTried.clear()');
+  });
+
+  it('算完必须记「已尝试」（成功或回落都要记，否则每个 tick 都重算）', () => {
+    expect(SRC).toContain('_boardTried.add(date)');
+  });
+});

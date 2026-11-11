@@ -230,6 +230,23 @@ const _cloudRowCount = new Map();
  *   `delete` + 回落 `getRange20Leaders`，**早上行为一字不变** §11）。
  */
 const _boardCache = new Map();
+/**
+ * ★★ [BOARD-AUC-MEMBERS 2026-11-11 用户 P0] date 集合：该日的「竞价口径成员榜」**已经尝试算过一次**。
+ *
+ * 为什么必须单独记（否则本次修复会「有时生效、有时不生效」）：
+ *   本函数在开头有一条会话缓存早退 —— `if (_cache.has(date)) return ...`。
+ *   而 `_boardCache` 是在**精算段末尾**才算的 ⇒ 只要这一天先前算过一次（`_cache` 有结果），
+ *   后续每次调用都会在早退处返回，**永远不会走到算 `_boardCache` 的那段** ⇒ 盘后一直回落收盘口径。
+ *   实测路径：进入看板 → 先按 close 口径算完并缓存 → 切 20日 toggle / 切日期回来
+ *   ⇒ 早退命中 ⇒ 青岛食品依旧不在前五。
+ *   ⇒ 早退判据必须同时问「该日的竞价口径榜试过了没有」。
+ *
+ * 为什么是「试过」而不是「有没有」：auc 腿确实可能一直不齐（那天就没抓到），
+ *   若按「有没有」判断 ⇒ 每次调用都重算一遍精算段 ⇒ §32 重复请求红线。
+ *   ⇒ 试过一次就记下，之后无论成没成都走正常早退。
+ * 生命周期：与 `_cache` 同步（口径切换 / POOLGROW 作废缓存时必须一并清，否则池变大了也不会重算）。
+ */
+const _boardTried = new Set();
 /** 退避间隔（毫秒）：由近到远，覆盖「首次打开应用后 2 分钟内索引补齐」这段窗口 */
 const WARM_RETRY_DELAYS = [3000, 10000, 30000, 60000];
 
@@ -467,6 +484,7 @@ export function clearRange20Leaders() {
   _tenCache.clear();
   // ★★ [BOARD-AUC-MEMBERS 2026-11-11] 竞价口径成员榜与 `_cache` 同生命周期
   _boardCache.clear();
+  _boardTried.clear();
   _warmRetry.forEach(function(st) { if (st && st.timer) clearTimeout(st.timer); });
   _warmRetry.clear();
   // ★★ [BUY-SETTLE-2 2026-10-31] 会话缓存清空 ⇒ 「结论到没到」也一并作废（同生命周期）
@@ -896,6 +914,7 @@ export async function ensureRange20Leaders(date, opts) {
     _wideCache.delete(date);
     _tenCache.delete(date);
     _boardCache.delete(date);
+    _boardTried.delete(date);
     _sig.delete(date);
     _dbgLog('[RANGE20-TOP5-TSWITCH] ' + date + ' 口径 ' + prevLeg + ' → ' + legMode + '：作废缓存并重算');
   }
@@ -921,14 +940,20 @@ export async function ensureRange20Leaders(date, opts) {
     _wideCache.delete(date);
     _tenCache.delete(date);
     _boardCache.delete(date);
+    _boardTried.delete(date);
     _sig.delete(date);
     _dbgLog('[RANGE20-TOP5-POOLGROW] ' + date + ' 候选池 ' + prevPoolSig + ' → ' + poolSig + '：作废缓存重算');
   }
   // 已算完且有结果 ⇒ 直接用缓存（切日期回来不再请求，§24）
   //   ⚠️ 判据只看 `_cache`（非空结果才写），不看 `_sig` —— 空结论不缓存的理由见 _publish。
+  //   ★★ [BOARD-AUC-MEMBERS 2026-11-11] 但**盘后**还要多问一句「该日的竞价口径成员榜试过了没有」：
+  //     `_boardCache` 在精算段末尾才算 ⇒ 若这里直接早退，早先按 close 算过的那一天
+  //     永远不会再走到那段 ⇒ 补位区块一直回落收盘口径（青岛食品依旧不显示）。
+  //     `_boardTried` 保证最多多跑一次（§32），早上 `legMode==='auc'` 时该位恒 false ⇒ 行为不变（§11）。
   if (_cache.has(date)) {
     if (_state.value.date !== date) _publish(date, _cache.get(date));
-    if (!(opts && opts.force)) return _state.value.list;
+    const _needBoard = (legMode === 'close') && !_boardTried.has(date);
+    if (!(opts && opts.force) && !_needBoard) return _state.value.list;
   }
   const key = date + '|top5';
   const fly = _inflight.get(key);
@@ -1250,6 +1275,8 @@ export async function ensureRange20Leaders(date, opts) {
           + '；auc腿=' + (_aucAll ? _aucAll.size : 0) + ' close腿=' + _closeCnt
           + '）⇒ 补位区块回落当前口径');
       }
+      // 记「该日已尝试过」⇒ 上面的会话缓存早退判据不会为它无限重跑精算段（§32）
+      _boardTried.add(date);
     } else {
       // 早上（竞价口径就是主榜）⇒ 清掉旧缓存并回落 `getRange20Leaders`，行为一字不变（§11）
       _boardCache.delete(date);
