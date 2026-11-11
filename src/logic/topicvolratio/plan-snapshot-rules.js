@@ -23,6 +23,11 @@
 /** 规则代码版本。改了题材分组 / 选股规则的人必须手动 +1 ⇒ 所有历史存档按新规则重算一次。 */
 export const TVRB_RULES_VERSION = 1;
 
+/**
+ * 输入完整性指纹版本。新增 / 删除「完整性判据」时 +1 ⇒ 所有存档按新判据重算一次。
+ */
+export const TVRB_INPUTS_VERSION = 1;
+
 /** FNV-1a 32bit（纯函数、无依赖、跨设备一致；只用于「变没变」，不用于安全场景） */
 function _fnv1a(s) {
   let h = 0x811c9dc5;
@@ -58,6 +63,49 @@ export function buildRulesFingerprint(coreTopics) {
 }
 
 /**
+ * ★★ [SNAPSHOT-INPUTS 2026-11-11 · 整类修复] 选股结论的【输入完整性指纹】。
+ *
+ * 为什么必须有（11-11 P0 实证）：
+ *   21:22 把一份 `pickCount=1` 的结论按 `rules_sig` 命中写进了存档。当晚库里
+ *   `stock_range20_pct` 当天的 **auc 腿是 0 行**（9:26/9:27 云端预填撞 42P10 全灭），
+ *   前端拿「只有 close 腿」的表判「竞价口径还没有」⇒ 20 日补位池空。
+ *   ⇒ 结论是在**输入残缺**时算出来的。存档只记了 rules_sig（核心词没变），
+ *     于是它**永久 hit**：数据后来补全了，屏幕也永远显示那份残缺结论。
+ *     用户体感就是「昨天修好了，今天又不见」「越改越乱」。
+ *
+ * ⇒ 判据：把「这份结论是在什么完整度的输入上算出来的」也存进存档。
+ *   数据从「残缺」变「完整」时，存档必须判 stale ⇒ 重算并覆盖（用户口径：结果不是一成不变的）。
+ *
+ * 三位（顺序固定，⛔ 别改顺序 —— 改了等于换了语义，必须 bump TVRB_INPUTS_VERSION）：
+ *   ① 竞价口径 20 日涨幅榜是否就绪（`tvrb-auction-board` ready 且前五非空）
+ *   ② 量比闸门是否通过（`resolveBuyDataGate` 未 blocked ⇒ 整表量比覆盖达标）
+ *   ③ 20 日补位池是否非空（竞价榜 wide 或收盘口径发布榜任一有票）
+ *
+ * ⚠️ 刻意只记【布尔完整度】不记条数：行数在 9:25→16:00 之间本来就会正常增长，
+ *   若记条数，下午打开历史日会天天误判 stale ⇒ 天天重算覆盖（正是要避免的抖动）。
+ *
+ * @param {{aucBoardReady?:boolean, volRatioOk?:boolean, poolOk?:boolean}} o
+ * @returns {string} 形如 'v1:111'（空入参 ⇒ 'v1:000'）
+ */
+export function buildInputsFingerprint(o) {
+  const x = o || {};
+  const bits = [
+    x.aucBoardReady === true ? '1' : '0',
+    x.volRatioOk === true ? '1' : '0',
+    x.poolOk === true ? '1' : '0'
+  ].join('');
+  return 'v' + TVRB_INPUTS_VERSION + ':' + bits;
+}
+
+/** 指纹是否表示「三元判据全部达标」（='v1:111'）。算不出来 / 非字符串 ⇒ false（⛔ 不当成完整）。 */
+export function isInputsFingerprintComplete(sig) {
+  const s = String(sig || '').trim();
+  if (!s) return false;
+  const m = /^v\d+:([01]{3})$/.exec(s);
+  return !!m && m[1] === '111';
+}
+
+/**
  * 判断一份已读到的存档是「仍有效」还是「规则变了，需要重算覆盖」。
  *
  * 三条保护红线（⛔ 别「优化」掉）：
@@ -67,8 +115,17 @@ export function buildRulesFingerprint(coreTopics) {
  *   ③ 旧存档没记 rules_sig（升级前的行）⇒ 判 stale，重算一次补齐元数据；
  *      这是**有意的自愈**，不是误判。
  *
- * @param {object} snap { status, rulesSig }
- * @param {object} opts { rulesSig, coreTopicsLoaded }
+ * ★★ [SNAPSHOT-INPUTS 2026-11-11] 规则没变之后再比【输入完整性】：
+ *   ④ 存档没记 inputs_sig（升级前的行 / 上一版写的历史行）⇒ 判 stale，自愈一次。
+ *      这就是「11-11 21:22 那份 pickCount=1 的残缺存档」被自动重算覆盖的入口。
+ *   ⑤ 当前输入算不出来（''）或仍不完整（含 0）⇒ 判 hit：
+ *      数据还没齐时不反复重算（避免抖动 / 反复覆盖），等齐了自然走 ⑥。
+ *   ⑥ 存档的完整度和当前不一样 ⇒ 判 stale。
+ *      典型：存档时 `v1:110`（auc 腿缺失导致补位池空），现在 `v1:111`
+ *      ⇒ 必须用完整输入重算并覆盖，⛔ 不许把残缺结论冻结到今天以后。
+ *
+ * @param {object} snap { status, rulesSig, inputsSig }
+ * @param {object} opts { rulesSig, coreTopicsLoaded, inputsSig }
  * @returns {'hit'|'stale'|'unknown'} unknown = 不是有效存档状态，本判据不管
  */
 export function resolvePlanSnapshotFreshness(snap, opts) {
@@ -80,7 +137,15 @@ export function resolvePlanSnapshotFreshness(snap, opts) {
   if (!cur) return 'hit';
   const old = String(s.rulesSig || '').trim();
   if (!old) return 'stale';
-  return old === cur ? 'hit' : 'stale';
+  if (old !== cur) return 'stale';
+  // ── 规则没变 ⇒ 再核对「输入完整度」（④⑤⑥）
+  const oldInputs = String(s.inputsSig || '').trim();
+  if (!oldInputs) return 'stale';                 // ④ 元数据缺失 ⇒ 自愈一次
+  const curInputs = String(o.inputsSig || '').trim();
+  if (!curInputs) return 'hit';                   // ⑤ 当前算不出来 ⇒ 不动存档
+  if (!isInputsFingerprintComplete(curInputs)) return 'hit';  // ⑤ 数据还没齐 ⇒ 不抖动
+  if (oldInputs !== curInputs) return 'stale';    // ⑥ 从残缺变完整 ⇒ 用完整输入重算覆盖
+  return 'hit';
 }
 
 /**

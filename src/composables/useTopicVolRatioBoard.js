@@ -204,7 +204,7 @@ import { encodePlanSnapshot, decodePlanSnapshot, PLAN_SNAPSHOT_MAX_BYTES } from 
 //   核心词管理增删改同义词会改变题材分组 ⇒ 选票结论本来就该跟着变（用户主动纠错）。
 //   ⇒ 存档从「只写今天 / 只写一次」改为「任何日期都存 / 规则指纹变了就重算覆盖」。
 import {
-  buildRulesFingerprint, resolvePlanSnapshotFreshness, shouldPersistPlanSnapshot
+  buildRulesFingerprint, buildInputsFingerprint, resolvePlanSnapshotFreshness, shouldPersistPlanSnapshot
 } from '../logic/topicvolratio/plan-snapshot-rules.js';
 import { readPlanSnapshot, writePlanSnapshot } from '../data/tvrb-plan-snapshot.js';
 // ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ 禁止选股（硬空仓）的判据。
@@ -1228,6 +1228,11 @@ export function useTopicVolRatioBoard() {
         '若你在核心词管理里改了同义词，本日结论会按新规则重算并自动修订存档。'];
     }
     if (s.status === 'stale') {
+      // ★ [SNAPSHOT-INPUTS] 两种过期原因都要说人话，⛔ 别把「数据补全了」说成「你改了核心词」。
+      if (s.reason === 'inputs-healed') {
+        return ['🔄 检测到【本次竞价数据已补齐】（20日涨幅竞价口径榜 / 量比 / 补位池）' +
+          '⇒ 本日存档当时是在数据残缺时定稿的，正在用完整数据重算并自动修订（revision +1）。'];
+      }
       return ['🔄 检测到【核心词 / 题材规则已变更】⇒ 本日存档正在按新规则重算，' +
         '算出干净结论后会自动修订这一天的存档（revision +1）。这是你主动纠错后的正常更新。'];
     }
@@ -1745,6 +1750,37 @@ export function useTopicVolRatioBoard() {
   });
 
   /**
+   * ★★ [SNAPSHOT-INPUTS 2026-11-11 · 整类修复] 当前【输入完整度指纹】。
+   *
+   * 🔴 为什么必须要有（11-11 线上实证，用户原话「越改越乱」）：
+   *   当晚 `stock_range20_pct` 当天的 **auc 腿 0 行**（9:26/9:27 云端预填撞 42P10 全灭）⇒
+   *   前端判「竞价口径还没有」⇒ 20 日补位池空 ⇒ 结论是在输入残缺时算出来的。
+   *   存档只记了 `rules_sig`（核心词没变）⇒ **永久 hit** ⇒ 数据后来补齐了，屏幕也不变。
+   *   ⇒ 把「这份结论是在什么完整度上算出来的」也记进存档；数据补齐后自动重算覆盖。
+   *
+   * ⚠️ 只记【布尔完整度】不记条数：行数在 9:25→16:00 之间正常增长，记条数会让
+   *    下午打开历史日天天误判 stale ⇒ 天天重算覆盖（正是要避免的抖动）。
+   * ⚠️ 返回 ''（算不出来 / data 还没就绪）⇒ 新鲜度判据不拿它做决定（§10 不猜）。
+   */
+  const currentInputsSig = computed(function() {
+    const d = String(currentDate.value || '').trim();
+    if (!d) return '';
+    const r = data.value;
+    if (!r || !r.ready) return '';
+    const b = getTvrbAuctionBoard(d);
+    const aucBoardReady = !!(b && b.ready && Array.isArray(b.top5) && b.top5.length > 0);
+    const plan = r.plan || {};
+    const gate = plan.buyDataGate || null;
+    const volRatioOk = !(gate && gate.blocked);
+    // 补位池：竞价口径榜优先，判不出才看收盘口径发布榜（与 data 里的注入口径一致，§6）
+    const wide = aucBoardReady
+      ? b.wide
+      : getRange20LeadersWide(d);
+    const poolOk = !!(Array.isArray(wide) && wide.length > 0);
+    return buildInputsFingerprint({ aucBoardReady, volRatioOk, poolOk });
+  });
+
+  /**
    * ★★ [BUY-PUBLISH 2026-10-31 用户口径 · 第五版] 买点侧【已定稿】的选股结论快照（冻结）。
    *
    * 🔴 为什么必须定稿 —— 这是用户第五次报障，也是前四版都没根治的那「一类问题」：
@@ -1856,15 +1892,20 @@ export function useTopicVolRatioBoard() {
           plan: dec.plan,
           rulesSig: String(row.rules_sig || ''),
           selectionSig: String(row.selection_sig || ''),
+          inputsSig: String(row.inputs_sig || ''),
           revision: Number(row.revision) || 1,
           settledAt: row.settled_at || '',
           createdAt: row.created_at || ''
         };
         // ★★ [REVISABLE] 规则指纹变了（用户增删改核心词同义词 / 规则版本升级）⇒ stale。
         //    ⚠️ 核心词没加载完时判 hit（首屏默认词表会误判），加载完由 currentRulesSig watch 补校验。
+        // ★★ [SNAPSHOT-INPUTS] 规则没变时再比【输入完整度】：存档若是在 auc 腿缺失 / 补位池空
+        //    时算出来的（旧行 inputs_sig='' 也算），判 stale ⇒ 数据补齐后自动重算覆盖，
+        //    ⛔ 不再把残缺结论冻结成永久结论（11-11 用户「越改越乱」的根因）。
         const verdict = resolvePlanSnapshotFreshness(snap, {
           rulesSig: currentRulesSig.value,
-          coreTopicsLoaded: isCoreTopicsCloudLoaded()
+          coreTopicsLoaded: isCoreTopicsCloudLoaded(),
+          inputsSig: currentInputsSig.value
         });
         snap.status = (verdict === 'stale') ? 'stale' : 'hit';
         planSnapshot.value = snap;
@@ -1874,8 +1915,9 @@ export function useTopicVolRatioBoard() {
           _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 命中有效存档（第 ' + snap.revision +
             ' 版）⇒ 历史复盘恒定稿显示，本次会话不再重算');
         } else {
-          _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 规则指纹已变（存档 ' + snap.rulesSig +
-            ' / 当前 ' + currentRulesSig.value + '）⇒ 判 stale，按新规则重算并修订存档');
+          _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 存档已过期（rules_sig ' + snap.rulesSig +
+            ' → ' + currentRulesSig.value + '；inputs_sig ' + (snap.inputsSig || '(空)') +
+            ' → ' + (currentInputsSig.value || '(暂无)') + '）⇒ 判 stale，用当前完整输入重算并修订存档');
         }
         return;
       }
@@ -1945,9 +1987,11 @@ export function useTopicVolRatioBoard() {
     }
     const isRevision = (snap.status === 'stale' || snap.status === 'corrupt');
     const revision = isRevision ? (Number(snap.revision) || 1) + 1 : 1;
+    const inputsSig = String(currentInputsSig.value || '').trim();
     writePlanSnapshot(key, enc.plain, {
       rulesSig: rulesSig,
       selectionSig: nextSelectionSig,
+      inputsSig: inputsSig,
       revision: revision
     }).then(function(ok) {
       if (_disposed || !ok) return;
@@ -1956,11 +2000,13 @@ export function useTopicVolRatioBoard() {
       // 说明区随即显示「已存档 / 第 N 版」，displayPlan 读到的仍是屏幕上那一份结论。
       planSnapshot.value = {
         date: key, status: 'hit', plan: displayPlan.value || plan,
-        rulesSig: rulesSig, selectionSig: nextSelectionSig, revision: revision,
+        rulesSig: rulesSig, selectionSig: nextSelectionSig, inputsSig: inputsSig,
+        revision: revision,
         settledAt: new Date().toISOString(), justWritten: true
       };
       _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 定稿结论已' + (isRevision ? '修订（第 ' + revision + ' 版）' : '存档') +
-        '（' + enc.bytes + ' 字节，9:25 竞价口径，rules_sig=' + rulesSig + '）');
+        '（' + enc.bytes + ' 字节，9:25 竞价口径，rules_sig=' + rulesSig +
+        '，inputs_sig=' + (inputsSig || '(暂无)') + '）');
     }).catch(function(e) {
       _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 写入异常：' + String((e && e.message) || e));
     });
@@ -2024,14 +2070,15 @@ export function useTopicVolRatioBoard() {
     if (s.status !== 'hit' && s.status !== 'stale') return;
     const verdict = resolvePlanSnapshotFreshness(s, {
       rulesSig: currentRulesSig.value,
-      coreTopicsLoaded: isCoreTopicsCloudLoaded()
+      coreTopicsLoaded: isCoreTopicsCloudLoaded(),
+      inputsSig: currentInputsSig.value
     });
     if (verdict !== 'stale' || s.status === 'stale') return;
     planSnapshot.value = Object.assign({}, s, { status: 'stale', reason: reason || 'rules-changed' });
-    _buyPublished.value = null;   // 解冻：让 data.plan 按新核心词重算
+    _buyPublished.value = null;   // 解冻：让 data.plan 按新核心词 / 新输入重算
     _buyRelease.value = '';       // 放行闩也清掉，保证重新定稿并写入新指纹
-    _dbgLog('[TVRB-SNAPSHOT] ' + d + ' 规则指纹变化（' + (reason || 'rules-changed') +
-      '）⇒ 存档判 stale，按新规则重算并修订本日存档');
+    _dbgLog('[TVRB-SNAPSHOT] ' + d + ' 存档过期（' + (reason || 'rules-changed') +
+      '）⇒ 判 stale，用当前完整输入重算并修订本日存档');
   }
 
   // 核心词云端加载完成 / 用户增删改同义词 ⇒ 指纹变化 ⇒ 校验并按需修订当天（含历史日）存档。
@@ -2039,6 +2086,14 @@ export function useTopicVolRatioBoard() {
   watch(currentRulesSig, function(sig) {
     if (!sig) return;             // 核心词还没加载完 ⇒ 绝不判过期（§10）
     _recheckPlanSnapshotFreshness('core-topics-changed');
+  });
+
+  // ★★ [SNAPSHOT-INPUTS 2026-11-11] 输入完整度从「残缺」变「完整」⇒ 复核存档。
+  //   纯内存比较（0 新增请求）：只在指纹真的变了才跑一次，判据全在 Logic 层。
+  //   典型场景：auc 腿缺失导致补位池空时定了稿，之后云端把腿补齐 ⇒ 这里自动重算覆盖。
+  watch(currentInputsSig, function(sig) {
+    if (!sig) return;             // 输入还判不出 ⇒ 不拿它做决定（§10）
+    _recheckPlanSnapshotFreshness('inputs-healed');
   });
 
   /**

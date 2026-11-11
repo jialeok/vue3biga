@@ -28,6 +28,15 @@
 --   · `selection_sig` = 选股结论指纹，用于幂等：结论没变不重复写；
 --   · `revision` / `settled_at` 留痕：能看到这份结论被修订过几次、最后一次什么时候。
 --
+-- ── 🔴 第三版修订（同日 21:xx，又一次线上实证）────────────────────────────────
+--   事故：11-11 21:22 存进去一份 `pickCount=1` 的结论，`rules_sig` 命中 ⇒ 永久 hit。
+--     但当天 `stock_range20_pct` 的 **auc 腿是 0 行**（9:26/9:27 云端预填撞 42P10 全灭），
+--     前端判「竞价口径还没有」⇒ 20 日补位池空 ⇒ 结论是在**输入残缺**时算出来的。
+--     数据后来补全了，屏幕却永远显示那份残缺结论（用户体感：越改越乱）。
+--   ⇒ 存档必须同时记住「这份结论是在什么完整度的输入上算出来的」：
+--     `inputs_sig` = 竞价榜就绪 / 量比达标 / 补位池非空 三位布尔指纹。
+--     数据从残缺变完整 ⇒ 判 stale ⇒ 用完整输入重算并覆盖（结果不是一成不变的延续）。
+--
 -- ── 红线（⛔ 别改回去）──────────────────────────────────────────────────────
 --   · 仍然恒 `leg='auc'`：只存 9:25/9:26 竞价口径结论，收盘口径不进这张表。
 --   · ⛔ 不允许把【降级结论】写进来：网络硬兜底 / 输入未齐 / 数据闸门拦截的定稿不写，
@@ -49,6 +58,7 @@ create table if not exists tvrb_plan_snapshot (
   source         text        not null default 'tvrb-board',
   rules_sig      text        not null default '',          -- 规则输入指纹（核心词同义词等）
   selection_sig  text        not null default '',          -- 选股结论指纹（幂等用）
+  inputs_sig     text        not null default '',          -- 输入完整度指纹（竞价榜/量比/补位池 三位）
   revision       integer     not null default 1,           -- 第几版（用户纠错后 +1）
   settled_at     timestamptz not null default now(),       -- 最后一次定稿 / 修订时刻
   created_at     timestamptz not null default now(),       -- 首次落库时刻
@@ -58,6 +68,7 @@ create table if not exists tvrb_plan_snapshot (
 -- 第一版表已在生产库存在 ⇒ 幂等补列（Migration §13：执行一次 = 执行十次结果相同）
 alter table tvrb_plan_snapshot add column if not exists rules_sig     text    not null default '';
 alter table tvrb_plan_snapshot add column if not exists selection_sig text    not null default '';
+alter table tvrb_plan_snapshot add column if not exists inputs_sig    text    not null default '';
 alter table tvrb_plan_snapshot add column if not exists revision      integer not null default 1;
 
 comment on table tvrb_plan_snapshot is
@@ -69,6 +80,8 @@ comment on column tvrb_plan_snapshot.selection_sig is
   '选股结论指纹（buy-quiesce.js#buildBuySelectionSig）。结论没变则不重复写库；规则指纹变了即使结论相同也要写一次以更新 rules_sig';
 comment on column tvrb_plan_snapshot.revision is
   '该日结论的修订次数：首次=1，每次因规则/结论变化覆盖时 +1（用户核心词纠错留痕）';
+comment on column tvrb_plan_snapshot.inputs_sig is
+  '输入完整度指纹（plan-snapshot-rules.js#buildInputsFingerprint：竞价榜就绪|量比达标|补位池非空）。不等于当前值 ⇒ 判 stale ⇒ 用完整输入重算并覆盖，避免把「输入残缺时算出的结论」永久冻结';
 
 -- 行级安全：与 tvrb_ebb_days / auction_watchlist / market_metrics 一致（anon 全开放读写）
 alter table tvrb_plan_snapshot enable row level security;

@@ -13,7 +13,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   TVRB_RULES_VERSION,
+  TVRB_INPUTS_VERSION,
   buildRulesFingerprint,
+  buildInputsFingerprint,
+  isInputsFingerprintComplete,
   resolvePlanSnapshotFreshness,
   shouldPersistPlanSnapshot
 } from './plan-snapshot-rules.js';
@@ -68,35 +71,37 @@ describe('buildRulesFingerprint · 规则输入指纹（基于内容，不基于
 });
 
 describe('resolvePlanSnapshotFreshness · 存档是否已因规则变更而过期', function() {
-  const hit = { status: 'hit', rulesSig: 'v1:aaaaaaaa' };
+  // ⚠️ [SNAPSHOT-INPUTS] 现在有效的存档必须同时带 rulesSig + inputsSig 才算「元数据齐全」。
+  const hit = { status: 'hit', rulesSig: 'v1:aaaaaaaa', inputsSig: 'v1:111' };
+  const COMPLETE = 'v1:111';
 
   it('① 🔴 核心词还没从云端加载完 ⇒ 判 hit（⛔ 不许拿首屏默认词表误判过期）', function() {
     expect(resolvePlanSnapshotFreshness(hit, {
-      rulesSig: 'v1:bbbbbbbb', coreTopicsLoaded: false
+      rulesSig: 'v1:bbbbbbbb', coreTopicsLoaded: false, inputsSig: COMPLETE
     })).toBe('hit');
   });
 
   it('② 当前指纹算不出来 ⇒ 判 hit（§10 算不出 ≠ 变了）', function() {
     expect(resolvePlanSnapshotFreshness(hit, {
-      rulesSig: '', coreTopicsLoaded: true
+      rulesSig: '', coreTopicsLoaded: true, inputsSig: COMPLETE
     })).toBe('hit');
   });
 
-  it('③ 指纹相同 ⇒ hit（历史复盘稳定，不重算、不覆盖）', function() {
+  it('③ 指纹相同（规则 + 输入完整度都相同）⇒ hit（历史复盘稳定，不重算、不覆盖）', function() {
     expect(resolvePlanSnapshotFreshness(hit, {
-      rulesSig: 'v1:aaaaaaaa', coreTopicsLoaded: true
+      rulesSig: 'v1:aaaaaaaa', coreTopicsLoaded: true, inputsSig: COMPLETE
     })).toBe('hit');
   });
 
   it('④ 🔴 指纹不同 ⇒ stale（用户改了同义词 ⇒ 允许按新规则重算并修订存档）', function() {
     expect(resolvePlanSnapshotFreshness(hit, {
-      rulesSig: 'v1:bbbbbbbb', coreTopicsLoaded: true
+      rulesSig: 'v1:bbbbbbbb', coreTopicsLoaded: true, inputsSig: COMPLETE
     })).toBe('stale');
   });
 
   it('⑤ 旧存档没记 rules_sig（升级前的行）⇒ stale，重算一次自愈补齐元数据', function() {
-    expect(resolvePlanSnapshotFreshness({ status: 'hit', rulesSig: '' }, {
-      rulesSig: 'v1:aaaaaaaa', coreTopicsLoaded: true
+    expect(resolvePlanSnapshotFreshness({ status: 'hit', rulesSig: '', inputsSig: COMPLETE }, {
+      rulesSig: 'v1:aaaaaaaa', coreTopicsLoaded: true, inputsSig: COMPLETE
     })).toBe('stale');
   });
 
@@ -105,6 +110,91 @@ describe('resolvePlanSnapshotFreshness · 存档是否已因规则变更而过�
       rulesSig: 'v1:aaaaaaaa', coreTopicsLoaded: true
     })).toBe('unknown');
     expect(resolvePlanSnapshotFreshness(null, {})).toBe('unknown');
+  });
+});
+
+/**
+ * [SNAPSHOT-INPUTS 2026-11-11] 11-11 P0 实证的整类红线。
+ *
+ * 事故：`stock_range20_pct` 当天 auc 腿 0 行（云端预填撞 42P10 全灭）⇒ 20 日补位池空，
+ *   结论在【输入残缺】时定稿并按 `rules_sig` 命中 ⇒ 永久 hit ⇒ 数据补齐后屏幕也不变。
+ * 用户体感：「昨天刚修好今天又不见」「越改越乱」。
+ * ⇒ 存档必须记住「这份结论是在什么完整度上算出来的」，数据补齐后自动重算覆盖。
+ */
+describe('buildInputsFingerprint · 输入完整度指纹', function() {
+  it('① 三位顺序固定：竞价榜 | 量比 | 补位池；全达标 = v1:111', function() {
+    expect(buildInputsFingerprint({ aucBoardReady: true, volRatioOk: true, poolOk: true }))
+      .toBe('v' + TVRB_INPUTS_VERSION + ':111');
+    expect(buildInputsFingerprint({ aucBoardReady: false, volRatioOk: true, poolOk: true }))
+      .toBe('v' + TVRB_INPUTS_VERSION + ':011');
+    expect(buildInputsFingerprint({ aucBoardReady: true, volRatioOk: false, poolOk: true }))
+      .toBe('v' + TVRB_INPUTS_VERSION + ':101');
+    expect(buildInputsFingerprint({ aucBoardReady: true, volRatioOk: true, poolOk: false }))
+      .toBe('v' + TVRB_INPUTS_VERSION + ':110');
+  });
+
+  it('② 缺省 / null / 非 true 一律记 0（⛔ 不许把「不知道」当「完整」）', function() {
+    expect(buildInputsFingerprint(null)).toBe('v' + TVRB_INPUTS_VERSION + ':000');
+    expect(buildInputsFingerprint({ aucBoardReady: 1, volRatioOk: 'yes', poolOk: {} }))
+      .toBe('v' + TVRB_INPUTS_VERSION + ':000');
+  });
+
+  it('③ isInputsFingerprintComplete 只认 v<数字>:111', function() {
+    expect(isInputsFingerprintComplete('v1:111')).toBe(true);
+    expect(isInputsFingerprintComplete('v2:111')).toBe(true);
+    expect(isInputsFingerprintComplete('v1:110')).toBe(false);
+    expect(isInputsFingerprintComplete('')).toBe(false);
+    expect(isInputsFingerprintComplete('111')).toBe(false);
+    expect(isInputsFingerprintComplete(null)).toBe(false);
+  });
+});
+
+describe('resolvePlanSnapshotFreshness · 输入完整度自愈（11-11 整类修复）', function() {
+  const DONE = 'v1:111';
+
+  it('① 🔴 存档没记 inputs_sig（上一版写的历史行）⇒ stale，自愈一次（11-11 21:22 那条就是这种）', function() {
+    expect(resolvePlanSnapshotFreshness(
+      { status: 'hit', rulesSig: 'v1:aaaaaaaa', inputsSig: '' },
+      { rulesSig: 'v1:aaaaaaaa', coreTopicsLoaded: true, inputsSig: DONE }
+    )).toBe('stale');
+  });
+
+  it('② 🔴🔴 存档是「auc 腿缺失 / 补位池空」时算的（v1:110），数据补齐后 ⇒ stale ⇒ 重算覆盖', function() {
+    expect(resolvePlanSnapshotFreshness(
+      { status: 'hit', rulesSig: 'v1:aaaaaaaa', inputsSig: 'v1:110' },
+      { rulesSig: 'v1:aaaaaaaa', coreTopicsLoaded: true, inputsSig: DONE }
+    )).toBe('stale');
+    expect(resolvePlanSnapshotFreshness(
+      { status: 'hit', rulesSig: 'v1:aaaaaaaa', inputsSig: 'v1:011' },
+      { rulesSig: 'v1:aaaaaaaa', coreTopicsLoaded: true, inputsSig: DONE }
+    )).toBe('stale');
+  });
+
+  it('③ 当前输入还算不出来 / 仍不完整 ⇒ 判 hit（⛔ 数据没齐就不许反复重算覆盖）', function() {
+    const snap = { status: 'hit', rulesSig: 'v1:aaaaaaaa', inputsSig: 'v1:110' };
+    expect(resolvePlanSnapshotFreshness(snap, {
+      rulesSig: 'v1:aaaaaaaa', coreTopicsLoaded: true, inputsSig: ''
+    })).toBe('hit');
+    expect(resolvePlanSnapshotFreshness(snap, {
+      rulesSig: 'v1:aaaaaaaa', coreTopicsLoaded: true, inputsSig: 'v1:110'
+    })).toBe('hit');
+    expect(resolvePlanSnapshotFreshness(snap, {
+      rulesSig: 'v1:aaaaaaaa', coreTopicsLoaded: true, inputsSig: 'v1:100'
+    })).toBe('hit');
+  });
+
+  it('④ 规则变更优先于输入完整度（两个都变了也只判一次 stale）', function() {
+    expect(resolvePlanSnapshotFreshness(
+      { status: 'hit', rulesSig: 'v1:aaaaaaaa', inputsSig: 'v1:110' },
+      { rulesSig: 'v1:bbbbbbbb', coreTopicsLoaded: true, inputsSig: DONE }
+    )).toBe('stale');
+  });
+
+  it('⑤ 输入完整度完全一致 ⇒ hit（不制造无意义重算，§32）', function() {
+    expect(resolvePlanSnapshotFreshness(
+      { status: 'hit', rulesSig: 'v1:aaaaaaaa', inputsSig: DONE },
+      { rulesSig: 'v1:aaaaaaaa', coreTopicsLoaded: true, inputsSig: DONE }
+    )).toBe('hit');
   });
 });
 

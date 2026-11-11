@@ -8,8 +8,13 @@
 //   ⇒ 根治 = 把定稿那一刻的 plan 按日期存下来，历史日期优先读快照、永不重算（§6 单一真相）。
 //
 // ── 表结构（建表 SQL：db/create_tvrb_plan_snapshot.sql）───────────────────────
-//   date(pk) / plan(jsonb) / leg / source / rules_sig / selection_sig / revision /
-//   settled_at / created_at
+//   date(pk) / plan(jsonb) / leg / source / rules_sig / selection_sig / inputs_sig /
+//   revision / settled_at / created_at
+//
+// ★ [SNAPSHOT-INPUTS 2026-11-11] `inputs_sig` = 输入完整度指纹（竞价榜就绪|量比达标|补位池非空）。
+//   11-11 实证：当天 `stock_range20_pct` 的 auc 腿 0 行（云端预填撞 42P10 全灭）⇒ 补位池空，
+//   结论在输入残缺时算出、按 rules_sig 命中后**永久冻结** ⇒ 用户「越改越乱」。
+//   有了这一列：数据补齐 ⇒ 判 stale ⇒ 用完整输入重算并覆盖。
 //
 // 🔴 [TVRB-PLAN-SNAPSHOT-REVISABLE 2026-11-11] 第二版语义修正（用户明确要求）：
 //   「历史日期既然能计算出来也要存起来……结果不是一成不变的」。
@@ -58,7 +63,7 @@ async function _fetchOne(d) {
     try {
         const res = await getSupabase()
             .from(PLAN_SNAPSHOT_TABLE)
-            .select('date,plan,leg,source,rules_sig,selection_sig,revision,settled_at,created_at')
+            .select('date,plan,leg,source,rules_sig,selection_sig,inputs_sig,revision,settled_at,created_at')
             .eq('date', d)
             .limit(1);
         data = res.data;
@@ -124,7 +129,7 @@ export async function readPlanSnapshot(date) {
  *
  * @param {string} date
  * @param {object} plain 已由 encodePlanSnapshot 编码过的纯 JSON 对象
- * @param {object} meta { rulesSig, selectionSig, revision }
+ * @param {object} meta { rulesSig, selectionSig, inputsSig, revision }
  * @returns {Promise<boolean>} 是否真的写成功了
  */
 export async function writePlanSnapshot(date, plain, meta) {
@@ -139,6 +144,9 @@ export async function writePlanSnapshot(date, plain, meta) {
         source: 'tvrb-board',
         rules_sig: String(m.rulesSig || '').trim(),
         selection_sig: String(m.selectionSig || '').trim(),
+        // ★ [SNAPSHOT-INPUTS 2026-11-11] 输入完整度指纹：数据从残缺变完整时靠它判 stale，
+        //   避免把「auc 腿缺失 / 补位池空」时算出的残缺结论永久冻结（11-11 实证）。
+        inputs_sig: String(m.inputsSig || '').trim(),
         revision: Math.max(1, Number(m.revision) || 1),
         settled_at: new Date().toISOString()
     };

@@ -97,7 +97,7 @@ describe('tvrb-plan-snapshot · 定稿结论按日落库', function() {
   it('③ 有存档 ⇒ status=hit，原样带回 row 供 Logic 层解码（含规则/结论指纹）', async function() {
     row = {
       date: D, plan: { blocks: [], buy: {} }, leg: 'auc', source: 'tvrb-board',
-      rules_sig: 'v1:aaaaaaaa', selection_sig: 'nA|b|p1|x', revision: 2,
+      rules_sig: 'v1:aaaaaaaa', selection_sig: 'nA|b|p1|x', inputs_sig: 'v1:111', revision: 2,
       settled_at: '2026-11-10T01:25:40Z', created_at: '2026-11-10T01:25:40Z'
     };
     const r = await readPlanSnapshot(D);
@@ -105,6 +105,7 @@ describe('tvrb-plan-snapshot · 定稿结论按日落库', function() {
     expect(r.row.plan).toEqual({ blocks: [], buy: {} });
     expect(r.row.rules_sig).toBe('v1:aaaaaaaa');
     expect(r.row.selection_sig).toBe('nA|b|p1|x');
+    expect(r.row.inputs_sig).toBe('v1:111');
     expect(r.row.revision).toBe(2);
     expect(r.row.settled_at).toBe('2026-11-10T01:25:40Z');
     expect(calls[0].eqVal).toBe(D);
@@ -112,6 +113,8 @@ describe('tvrb-plan-snapshot · 定稿结论按日落库', function() {
     // 🔴 select 必须把新列一起读回来，否则前端永远判「规则指纹待补齐」⇒ 天天重算
     expect(calls[0].selectCols).toContain('rules_sig');
     expect(calls[0].selectCols).toContain('selection_sig');
+    // ★ [SNAPSHOT-INPUTS] 少了 inputs_sig ⇒ 前端永远判「输入完整度待补齐」⇒ 天天重算覆盖
+    expect(calls[0].selectCols).toContain('inputs_sig');
     expect(calls[0].selectCols).toContain('revision');
   });
 
@@ -145,7 +148,7 @@ describe('tvrb-plan-snapshot · 定稿结论按日落库', function() {
   it('⑦ 🔴 [REVISABLE] 写入是普通 upsert：onConflict=date，⛔ 绝不带 ignoreDuplicates', async function() {
     const plain = { blocks: [], buy: {}, notes: [], pickCount: 1 };
     const ok = await writePlanSnapshot('2026-11-11', plain, {
-      rulesSig: 'v1:aaaaaaaa', selectionSig: 'nA|b|p1|x', revision: 1
+      rulesSig: 'v1:aaaaaaaa', selectionSig: 'nA|b|p1|x', inputsSig: 'v1:111', revision: 1
     });
     expect(ok).toBe(true);
     const w = calls.filter(function(c) { return c.op === 'upsert'; })[0];
@@ -157,6 +160,8 @@ describe('tvrb-plan-snapshot · 定稿结论按日落库', function() {
     expect(w.payload.plan).toEqual(plain);
     expect(w.payload.rules_sig).toBe('v1:aaaaaaaa');
     expect(w.payload.selection_sig).toBe('nA|b|p1|x');
+    // ★ [SNAPSHOT-INPUTS] 输入完整度必须落库，否则下次无法判「数据补齐了要重算」
+    expect(w.payload.inputs_sig).toBe('v1:111');
     expect(w.payload.revision).toBe(1);
     expect(typeof w.payload.settled_at).toBe('string');
     // ⛔ 不传 created_at ⇒ 覆盖旧行时 DB 保留首次时间（修订留痕）
