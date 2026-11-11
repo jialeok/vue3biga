@@ -115,6 +115,16 @@ export const RANGE20_LEADER_MIN_LEGS = 6;
 export const RANGE20_LEADER_COARSE_MIN_LEGS = 2;
 /** 粗筛进入精算的只数（留 5 倍余量吸收粗筛误差，把请求数从 200+ 压到 25） */
 export const RANGE20_LEADER_PRESELECT = 25;
+/**
+ * ★★ [BOARD-AUC-MEMBERS 2026-11-11] 盘后单独评「竞价口径成员榜」时，auc 腿行数的最低覆盖率。
+ *
+ * 与 `isRange20CoverageReady`（题材量比定稿门控）同口径 0.8，理由也相同：
+ *   `stock_range20_pct` 的两条腿是**分别写入**的（9:25/9:26 写 auc、15:00 后写 close），
+ *   任何一侧都可能因为云端预填漏跑 / 分页截断而残缺。拿十几行 auc 去冒充「全池 20 日涨幅排名」，
+ *   会把真正的高涨幅票漏掉、换上一批弱票 —— 这正是 2026-10-20「补出来的全是负涨幅」的同一个病。
+ * ⇒ 覆盖率不达标就**整份不认**，让补位区块回落到当前口径（§10 如实降级，⛔ 不猜不凑）。
+ */
+export const RANGE20_BOARD_AUC_MIN_COVER = 0.8;
 
 // ===== 状态（模块级 ref，与 range20.js / dragonState 同款范式，§7 不进 Pinia）=====
 // list: Array<{stock, code, pct, days}>
@@ -194,6 +204,32 @@ const _verdictDates = new Set();
  *   null / 无该日期 = 还没读过（§10：读不到 ≠ 0 行）。
  */
 const _cloudRowCount = new Map();
+/**
+ * ★★ [BOARD-AUC-MEMBERS 2026-11-11 用户 P0] date -> 【竞价口径】成员榜（前五，只主板）。
+ *
+ * 事故（11-11 用户原话：「我打开早盘竞价看板20日toggle，还是没有看到青岛食品显示出来啊……你是不是
+ *   改错地方了，你要验证啊，没有竞价量比但有竞价涨幅也要显示啊，而不是删除」）：
+ *   `legMode` 一个变量同时承担了两件事，这是本模块的结构性缺陷 ——
+ *     ① **展示数值口径**：20日涨幅列该显示 auc 还是 close 的数 —— 15:00 后切 close 是**对的**；
+ *     ② **补位成员评选口径**：谁该被补进看板 —— 15:00 后跟着切 close 是**错的**。
+ *   实测 11-11（`.tmpdiag/verify-r20-inject-1111.cjs`，真实库数据复现）：
+ *     · auc 口径：福莱新材 / 东方海洋 / 襄阳轴承 / **青岛食品 93.57% 第 4 名** / 海洋王；
+ *     · close 口径：青岛食品 75.14% 掉到**第 8 名**。
+ *   青岛食品当天不在 `auction_watchlist`（`[]`）⇒ 它唯一的进入通道就是 20 日补位注入 ⇒
+ *   盘后前五不含它 ⇒ 不注入 ⇒ 不在 `renderList` ⇒ 「20日涨幅 toggle」里彻底消失。
+ *   ⇒ 用户看到的「早上有、晚上没」，本质是**竞价期间定下的补位名单被收盘口径重排了一遍**，
+ *     正是用户反复禁止的「每天收盘后改变竞价期间的结论」。
+ *
+ * 为什么用**独立缓存**而不是直接改 `getRange20Leaders` 的口径：
+ *   `getRange20Leaders` 同时服务决策看板（总龙一~五标签）/ 题材量比兜底 / 退潮判定，
+ *   改它的成员口径等于一次性改变四个业务模块的输入（§11 禁止顺手扩面）。
+ *   本表只服务【早盘竞价看板的 20 日补位区块】一个消费方，其余一律零改动。
+ *
+ * 生命周期与 `_cache` 完全同步：每一处 `_cache.delete` / `clearRange20Leaders` 都必须同步本表。
+ * 只在 `legMode === 'close'` 时写入（早上 `legMode === 'auc'` ⇒ 主榜本身就是竞价口径 ⇒
+ *   `delete` + 回落 `getRange20Leaders`，**早上行为一字不变** §11）。
+ */
+const _boardCache = new Map();
 /** 退避间隔（毫秒）：由近到远，覆盖「首次打开应用后 2 分钟内索引补齐」这段窗口 */
 const WARM_RETRY_DELAYS = [3000, 10000, 30000, 60000];
 
@@ -270,6 +306,106 @@ export function getRange20Leaders(date) {
 }
 
 /**
+ * ★★ [BOARD-AUC-MEMBERS 2026-11-11 用户 P0] 【纯函数】评选「早盘竞价看板 20日补位区块」的成员。
+ *
+ * 与 `rankLeaders(rankPool, ...)` 的唯一差别：**只用竞价口径（auc）的云端行**做真值层，
+ * ⛔ 绝不掺入 `fresh`（本轮 K 线精算）或 `_live`（主看板内存 Map）—— 那两个都是**当前口径
+ * （收盘后即 close）**算出来的，混进来等于把「收盘才知道的数」写进「竞价时点的名次」，
+ * 正是本次要根治的病（详见 `_boardCache` 的事故说明）。
+ *
+ * 三层准入（任何一层不过 ⇒ 整份不认，调用方回落到当前口径）：
+ *   ① auc 腿一行都没有 ⇒ `no-auc-rows`（例如 9:25 云端预填还没跑）；
+ *   ② auc 腿覆盖率 < `minCover`（默认 0.8）⇒ `cover-low`（§10：⛔ 不拿残缺行冒充全池排名）；
+ *   ③ 算出来 0 只（全被「只主板 / 腿数门槛」筛光）⇒ `empty`。
+ *
+ * @param {{
+ *   aucRows?: Map<string,{pct:number,days:number}>|null,  // pickUsableRows(readRange20Rows(d), 'auc')
+ *   closeCount?: number,          // 当前口径可用行数（做覆盖率分母；0 时退化用 auc 自身）
+ *   poolNames?: Set<string>|null, // 20 日候选池（不在池里的票不参与 —— 与主榜同口径）
+ *   poolCode?: Map<string,string>|null,
+ *   coarseTop?: Array<{stock:string, code?:string, pct:number, days:number}>,
+ *   minCover?: number,
+ *   minLegs?: number,
+ *   topN?: number
+ * }} input
+ * @returns {{members:Array<{stock:string,code:string,pct:number,days:number}>, reason:string}}
+ *          `members` 非空才可发布；`reason` 用于诊断日志（⛔ 不许静默降级，§10）
+ */
+export function buildAuctionBoardMembers(input) {
+  const o = input || {};
+  const minLegs = (o.minLegs === null || o.minLegs === undefined)
+    ? RANGE20_LEADER_MIN_LEGS : Number(o.minLegs);
+  const topN = (o.topN === null || o.topN === undefined)
+    ? RANGE20_LEADER_TOP_N : Number(o.topN);
+  const minCover = (o.minCover === null || o.minCover === undefined)
+    ? RANGE20_BOARD_AUC_MIN_COVER : Number(o.minCover);
+  const aucRows = (o.aucRows && typeof o.aucRows.forEach === 'function') ? o.aucRows : null;
+  const aucCount = aucRows ? aucRows.size : 0;
+  if (!aucRows || aucCount === 0) return { members: [], reason: 'no-auc-rows' };
+  const closeCount = Number(o.closeCount) || 0;
+  // 分母取「当前口径行数」，为 0 时退化用 auc 自身（⛔ 不用 0 当分母，否则覆盖率恒 Infinity）
+  const denom = closeCount > 0 ? closeCount : aucCount;
+  if (aucCount < Math.max(1, Math.ceil(denom * minCover))) {
+    return { members: [], reason: 'cover-low' };
+  }
+  const poolNames = o.poolNames || null;
+  const poolCode = (o.poolCode && typeof o.poolCode.get === 'function') ? o.poolCode : null;
+  const aucCloudMap = new Map();
+  aucRows.forEach(function(v, n) {
+    const nm = String(n || '').trim();
+    if (!nm || !v) return;
+    if (poolNames && !poolNames.has(nm)) return;   // 与主榜同一条闸门
+    if (v.pct === null || v.pct === undefined || isNaN(Number(v.pct))) return;
+    aucCloudMap.set(nm, { pct: Number(v.pct), days: Number(v.days) || 0 });
+  });
+  const rankPool = buildLeaderRankPool({
+    coarseTop: o.coarseTop,
+    cloudMap: aucCloudMap,
+    liveMap: null,     // ⛔ close 口径，不许进来
+    fresh: [],         // ⛔ close 口径，不许进来
+    poolNames: poolNames,
+    minLegs: minLegs
+  });
+  if (poolCode) {
+    rankPool.forEach(function(r) { if (!r.code) r.code = poolCode.get(r.stock) || ''; });
+  }
+  const coarseCode = new Map();
+  (o.coarseTop || []).forEach(function(t) { if (t && t.stock && t.code) coarseCode.set(t.stock, t.code); });
+  const members = rankLeaders(rankPool, {
+    limit: topN,
+    minDays: minLegs,
+    mainBoardOnly: true
+  });
+  members.forEach(function(t) {
+    if (!t.code) t.code = coarseCode.get(t.stock) || (poolCode ? (poolCode.get(t.stock) || '') : '');
+  });
+  return { members: members, reason: members.length > 0 ? 'ok' : 'empty' };
+}
+
+/**
+ * ★★ [BOARD-AUC-MEMBERS 2026-11-11 用户 P0] 早盘竞价看板「20日补位」区块的成员榜 ——
+ *   **恒取竞价口径（auc）评选出来的前五**，收盘后不随 15:00 的口径切换而重排。
+ *
+ * 唯一消费方：`row-groups/range20-group-rows.js#resolveRange20Group`（补位壳行注入）。
+ *
+ * 与 `getRange20Leaders` 的关系（⛔ 别互相替代）：
+ *   · `getRange20Leaders`  = 按当前 `legMode` 评选（早上 auc / 盘后 close），服务决策看板等；
+ *   · 本函数                = 盘后优先返回 `_boardCache`（auc 口径成员），没有则**回落** `getRange20Leaders`。
+ *   回落是必须的（§10）：auc 腿表还没落地（例如 9:25 刚开盘、云端预填还没跑）时，
+ *   `_boardCache` 为空 —— 此时绝不能让补位区块整块消失，而是照旧用当前口径的榜。
+ *
+ * @param {string} date 展示日
+ * @returns {Array<{stock:string, code:string, pct:number, days:number}>|null}
+ *          null = 该日【还没有任何结论】（§10：能不能 ≠ 有没有）
+ */
+export function getRange20LeadersForAuctionBoard(date) {
+  if (!date) return null;
+  const auc = _boardCache.get(date);
+  if (Array.isArray(auc) && auc.length > 0) return auc;
+  return getRange20Leaders(date);
+}
+
+/**
  * 该日【结论到了没有】（§10 铁律：`canJudgeX` = 能不能作证；`hasXVerdict` = 结论到了没有）。
  * 用途：视图层据此区分「还在算（不渲染区块）」与「算完了，前五都在当天列表里（不注入但也不报错）」。
  * @param {string} date
@@ -329,6 +465,8 @@ export function clearRange20Leaders() {
   _poolSig.clear();
   _wideCache.clear();
   _tenCache.clear();
+  // ★★ [BOARD-AUC-MEMBERS 2026-11-11] 竞价口径成员榜与 `_cache` 同生命周期
+  _boardCache.clear();
   _warmRetry.forEach(function(st) { if (st && st.timer) clearTimeout(st.timer); });
   _warmRetry.clear();
   // ★★ [BUY-SETTLE-2 2026-10-31] 会话缓存清空 ⇒ 「结论到没到」也一并作废（同生命周期）
@@ -757,6 +895,7 @@ export async function ensureRange20Leaders(date, opts) {
     _cache.delete(date);
     _wideCache.delete(date);
     _tenCache.delete(date);
+    _boardCache.delete(date);
     _sig.delete(date);
     _dbgLog('[RANGE20-TOP5-TSWITCH] ' + date + ' 口径 ' + prevLeg + ' → ' + legMode + '：作废缓存并重算');
   }
@@ -781,6 +920,7 @@ export async function ensureRange20Leaders(date, opts) {
     _cache.delete(date);
     _wideCache.delete(date);
     _tenCache.delete(date);
+    _boardCache.delete(date);
     _sig.delete(date);
     _dbgLog('[RANGE20-TOP5-POOLGROW] ' + date + ' 候选池 ' + prevPoolSig + ' → ' + poolSig + '：作废缓存重算');
   }
@@ -1075,6 +1215,45 @@ export async function ensureRange20Leaders(date, opts) {
         return t.stock + ' ' + t.pct.toFixed(2) + '%/' + t.days + 'd' + (r && r.approx ? '(近似)' : '');
       }).join(' , '));
     _publish(date, top, _warm);
+    // ★★ [BOARD-AUC-MEMBERS 2026-11-11 用户 P0] 盘后再独立评一份【竞价口径成员榜】，
+    //   只给「早盘竞价看板 → 20日补位区块」用。事故与取舍全部写在 `_boardCache` 的注释里。
+    //
+    //   为什么用 coarseTop 当近似底座、却**不传 fresh**：
+    //     · coarseTop 是「库内腿 + 逐日腿表」的近似排名，成员来自全池最强的一批 ⇒ 保证强票不消失；
+    //     · `fresh` 和 `_live` 都是**当前口径（close）**算出来的真值/内存值，
+    //       混进竞价榜会把「收盘才知道的数」写进「竞价时点的名次」—— 那正是本修复要杜绝的事。
+    //   ⇒ 竞价榜只认「auc 云端真值（③ 层）∪ 粗筛近似（④ 层）」，口径干净。
+    if (legMode === 'close') {
+      let _aucAll = null;
+      try { _aucAll = pickUsableRows(await readRange20Rows(date), 'auc'); } catch (e) { _aucAll = null; }
+      const _closeCnt = cloudAll ? cloudAll.size : 0;
+      const _boardRes = buildAuctionBoardMembers({
+        aucRows: _aucAll,
+        closeCount: _closeCnt,
+        poolNames: poolNames,
+        poolCode: poolCode,
+        coarseTop: coarseTop,
+        minCover: RANGE20_BOARD_AUC_MIN_COVER,
+        minLegs: RANGE20_LEADER_MIN_LEGS,
+        topN: RANGE20_LEADER_TOP_N
+      });
+      if (_boardRes.members.length > 0) {
+        _boardCache.set(date, _boardRes.members);
+        _dbgLog('[RANGE20-BOARD-AUC] ' + date + ' 盘后补位成员恒竞价口径 auc腿='
+          + (_aucAll ? _aucAll.size : 0) + '/' + _closeCnt + ' ⇒ ' + _boardRes.members.map(function(t) {
+            return t.stock + ' ' + Number(t.pct).toFixed(2) + '%/' + t.days + 'd';
+          }).join(' , '));
+      } else {
+        _boardCache.delete(date);
+        // §10 禁止静默降级：必须能一眼看出是哪一层没过（no-auc-rows / cover-low / empty）
+        _dbgLog('[RANGE20-BOARD-AUC] ' + date + ' 竞价口径成员榜未采用（' + _boardRes.reason
+          + '；auc腿=' + (_aucAll ? _aucAll.size : 0) + ' close腿=' + _closeCnt
+          + '）⇒ 补位区块回落当前口径');
+      }
+    } else {
+      // 早上（竞价口径就是主榜）⇒ 清掉旧缓存并回落 `getRange20Leaders`，行为一字不变（§11）
+      _boardCache.delete(date);
+    }
     // ★ [NEW-DRAGON-08 2026-10-22] 宽榜（前八）独立存一份：只给第二十八条挑新龙，
     //   ⛔ 不进 `_state.list`（否则 20日涨幅 toggle 会平白多出 3 只 —— 用户没让改那个）。
     if (wide.length > 0) _wideCache.set(date, wide); else _wideCache.delete(date);

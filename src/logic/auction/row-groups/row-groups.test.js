@@ -37,6 +37,13 @@ vi.mock('../dragon-group.js', () => ({
   },
 }));
 vi.mock('../range20-leaders.js', () => ({
+  // ★★ [BOARD-AUC-MEMBERS 2026-11-11] 补位名册改读「竞价口径成员榜」入口
+  //   （`getRange20LeadersForAuctionBoard`）。两个入口都 mock：
+  //   前者是本文件真正消费的；后者留着断言「⛔ 不许偷偷退回收盘口径的榜」。
+  getRange20LeadersForAuctionBoard: () => {
+    if (src.throwRange20) throw new Error('mock boom');
+    return src.range20;
+  },
   getRange20Leaders: () => {
     if (src.throwRange20) throw new Error('mock boom');
     return src.range20;
