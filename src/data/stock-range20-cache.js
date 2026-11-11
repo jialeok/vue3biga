@@ -77,10 +77,25 @@ async function _fetch(date) {
         if (!r || !r.stock) return;
         const name = String(r.stock).trim();
         if (!name) return;
-        map.set(name, {
+        const row = {
             pct: _num(r.pct),
             days: Number(r.days) || 0,
-            leg: r.leg ? String(r.leg) : 'close'
+            leg: String(r.leg || 'close').trim().toLowerCase() === 'auc' ? 'auc' : 'close'
+        };
+        // ★★ [DDL-LEG 2026-11-11] 主键已升级为 (date,stock,leg) ⇒ 同一只票当天可能有
+        //    auc / close 两行。旧实现 `map.set(name, 一行)` 会静默丢掉一腿（谁在后谁覆盖，
+        //    取决于 PostgREST 返回顺序）⇒ 竞价口径榜或收盘口径列随机缺失。
+        //    ⇒ byLeg 按口径各存一行；主行取 auc 优先（题材量比恒用竞价口径，§6）。
+        //    ⚠️ 对外 Map 形状保持 {pct,days,leg} 不变 ⇒ 老调用方零改动（§11）。
+        const cur = map.get(name);
+        const byLeg = (cur && cur.byLeg) ? cur.byLeg : {};
+        byLeg[row.leg] = row;
+        const primary = byLeg.auc || byLeg.close;
+        map.set(name, {
+            pct: primary.pct,
+            days: primary.days,
+            leg: primary.leg,
+            byLeg: byLeg
         });
     });
     return map;
@@ -135,9 +150,15 @@ export function pickUsableRows(map, leg) {
     if (!map || !map.size) return out;
     const want = leg === 'auc' ? 'auc' : 'close';
     map.forEach(function(v, name) {
-        if (!v || v.leg !== want) return;          // 🔴 口径不匹配 ⇒ 视为「还没有」，触发重算
-        if (v.pct === null || v.pct === undefined || isNaN(v.pct)) return;
-        out.set(name, { pct: v.pct, days: v.days || 0 });
+        if (!v) return;
+        // ★★ [DDL-LEG 2026-11-11] 两腿并存时优先从 byLeg 取【该口径自己的行】。
+        //    旧实现只看主行的 leg：主行取 auc 优先 ⇒ 收盘后 byLeg.close 明明有值却被判成
+        //    「还没有」⇒ 触发全量重算、反复覆盖，正是「出结果慢 / toggle 慢」的放大器。
+        //    ⚠️ 没有 byLeg 时（单测手工构造的 Map / 历史单腿数据）逐字走旧逻辑，零行为变化（§11）。
+        const row = (v.byLeg && v.byLeg[want]) ? v.byLeg[want] : v;
+        if (row.leg !== want) return;              // 🔴 口径不匹配 ⇒ 视为「还没有」，触发重算
+        if (row.pct === null || row.pct === undefined || isNaN(row.pct)) return;
+        out.set(name, { pct: row.pct, days: row.days || 0 });
     });
     return out;
 }
@@ -172,7 +193,12 @@ export async function upsertRange20Rows(date, rows, leg) {
         const sb = getSupabase();
         const { error } = await sb
             .from('stock_range20_pct')
-            .upsert(payload, { onConflict: 'date,stock' });
+            // ★ [DDL-LEG 2026-11-11] 线上主键已升级为 (date,stock,leg)。
+            //   ⛔ 继续写 `date,stock` 会 400 / 42P10「no unique or exclusion constraint
+            //      matching the ON CONFLICT specification」⇒ 整批一行不写（11-11 9:26/9:27
+            //      两次云端预填全挂、当天结果表 0 行的直接原因）。
+            //   带上 leg 后：9:25 的 auc 行与盘后 close 行各存各的，互不覆盖（§6）。
+            .upsert(payload, { onConflict: 'date,stock,leg' });
         if (error) throw error;
         // 写成功 ⇒ 该日会话缓存作废（保证「自己写、自己马上读」拿到新值）
         _cache.delete(d);

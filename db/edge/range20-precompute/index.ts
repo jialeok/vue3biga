@@ -37,7 +37,7 @@
 //                           翻 20 天仍只取 40 只 ⇒ 上游请求量与旧实现完全相同，不会触发限流。）
 //   读  stockcodemap       （★[R20-POOL] 补位票 code 缺失时的一次性批查；name→code 唯一真相源）
 //   读  stock_range20_pct  （目标日已有同 leg 行 ⇒ 跳过，幂等重跑不重复烧上游）
-//   写  stock_range20_pct  （on_conflict=date,stock，列与前端 upsertRange20Rows 完全一致）
+//   写  stock_range20_pct  （on_conflict=date,stock,leg，列与前端 upsertRange20Rows 完全一致）
 //   写  market_metrics     （★★[R20-METRICS 2026-10-23] 补位票的当日行情：volume / yest_volume /
 //                           change_pct / auc_pct_chg，scope='auction'、source='range20'。
 //                           ⛔ [AUC-RATIO-NUMCAT-ONLY 2026-11-04] 不含 auc_vol_ratio：竞价量比只认猫抓。
@@ -1752,18 +1752,28 @@ async function backfillRange20FromLegs(targetDate: string): Promise<Record<strin
   //   `stock_range20_pct` 的主键是 **(date, stock)，不含 leg**（见 create_stock_range20_pct.sql:31），
   //   同一天同一只票物理上只能存一行。9:25 那轮写的是 `leg='auc'`（竞价口径）⇒ 16:30 这个
   //   `haveSet` 查 close 行必然为空 ⇒ 每一只票都被判成「还没有」⇒ 全部按收盘腿重算并
-  //   `on_conflict=date,stock` 覆盖 ⇒ **9:25 的竞价口径快照整表丢失**。
+  //   `on_conflict=date,stock` 覆盖 ⇒ **结果表里 9:25 的竞价口径行整表被收盘口径覆盖**。
   //   实测 2026-11-10：81 行全变成 leg='close'、updated_at=08:30 UTC(北京16:30)，两腿并存 0 只。
   //   后果：15:00 后前端 resolveT20LegMode 切 close ⇒ 题材量比 `ebbCtx.top5` 换榜 ⇒
   //   竞价期间选出的「冰山冷热 · 弱势切抱团(第三十条)」下午直接消失。用户铁口径：
   //   「题材量比看板都是按照竞价口径的，收盘改变不了的」。
   //
-  //   ⇒ 当天：只要【任意口径】已有行就跳过，⛔ 绝不用收盘口径覆盖竞价口径（竞价数据不可再生）。
-  //     真正缺行的票才补（它们本来就没有竞价口径值，补 close 属正常补缺）。
-  //   ⇒ 历史日：仍只认 close 行（历史日复盘要收盘口径，行为逐字不变，§11）。
-  const isTargetToday = targetDate === todayYmd();
+  // ⚠️ 措辞更正（2026-11-11，用户亲自纠正）：⛔ 别写「竞价数据不可再生 / 算不出来 / 没存」。
+  //   auc_pct_chg + change_pct + 历史腿都还在库里，recoverAuctionLeg 可反解；
+  //   规则层整类修复已上线（tvrb-auction-board.js 恒竞价口径榜，commit b70eb4e）。
+  //   本函数改的是【存储层】止血，配合 DDL db/migrate_range20_pct_leg.sql 才两腿并存。
+  //
+  //   ⇒ 止血期（DDL 未执行、主键仍是 (date,stock)）：当天只要【任意口径】已有行就跳过，
+  //     ⛔ 绝不用收盘口径覆盖竞价口径行；历史日仍只认 close 行。
+  //
+  // ★★ [DDL-LEG 2026-11-11 · 第二批] DDL 已执行（唯一约束 = (date,stock,leg)），
+  //   且本文件所有 `on_conflict` 已同步带上 leg ⇒ 两腿可以并存、写 close 不会再覆盖 auc。
+  //   ⇒ 现在 haveSet **必须只认 close 行**：本函数 `backfillRange20FromLegs` 写的就是 close 腿，
+  //     若继续「任意口径算已有」，当天有 auc 行的票会被判成「已有」⇒ close 腿永远补不进去
+  //     ⇒ 收盘后「20日涨幅」toggle 判「口径不匹配」⇒ 又退回浏览器现算 40+ 次 K 线（慢）。
+  //   ⚠️ 与顺序强相关：⛔ DDL 未执行 / on_conflict 还是两列时，这条路会重新引发覆盖事故。
   const haveUrl = '/rest/v1/stock_range20_pct?select=stock&date=eq.' + targetDate
-    + (isTargetToday ? '' : '&leg=eq.close');
+    + '&leg=eq.close';
   const haveSet = new Set<string>();
   for (let from = 0; ; from += LEG_PAGE) {
     const page = await sbRest(
@@ -1828,7 +1838,7 @@ async function backfillRange20FromLegs(targetDate: string): Promise<Record<strin
 
   let written = 0;
   for (let k = 0; k < rows.length; k += 500) {
-    await sbRest('POST', '/rest/v1/stock_range20_pct?on_conflict=date,stock', rows.slice(k, k + 500));
+    await sbRest('POST', '/rest/v1/stock_range20_pct?on_conflict=date,stock,leg', rows.slice(k, k + 500));
     written += Math.min(500, rows.length - k);
   }
   if (written > 0) {
@@ -2472,7 +2482,7 @@ Deno.serve(async (req: Request) => {
       try {
         // 分批 500 行：一次 POST 上千行请求体过大 / 触发网关限制（前端 upsertRange20Rows 同款）
         for (let i = 0; i < fastRows.length; i += 500) {
-          await sbRest('POST', '/rest/v1/stock_range20_pct?on_conflict=date,stock', fastRows.slice(i, i + 500));
+          await sbRest('POST', '/rest/v1/stock_range20_pct?on_conflict=date,stock,leg', fastRows.slice(i, i + 500));
         }
         fastWritten = fastRows.length;
         console.log('[range20-precompute][R20-DAILY] 快路径已落库 ' + fastWritten + ' 行（0 个 K 线请求）');
@@ -2516,7 +2526,7 @@ Deno.serve(async (req: Request) => {
       if (buffer.length === 0) return;
       const batch = buffer.splice(0, buffer.length);
       try {
-        await sbRest('POST', '/rest/v1/stock_range20_pct?on_conflict=date,stock', batch);
+        await sbRest('POST', '/rest/v1/stock_range20_pct?on_conflict=date,stock,leg', batch);
         written += batch.length;
         console.log('[range20-precompute] 已落库 ' + (written + fastWritten) + ' / ' + todo.length);
       } catch (e) {
@@ -2628,7 +2638,7 @@ Deno.serve(async (req: Request) => {
           }
         }
         if (row) {
-          await sbRest('POST', '/rest/v1/stock_range20_pct?on_conflict=date,stock', [{
+          await sbRest('POST', '/rest/v1/stock_range20_pct?on_conflict=date,stock,leg', [{
             date: today,
             stock: t.stock,
             pct: row.pct,

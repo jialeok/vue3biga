@@ -72,7 +72,7 @@ function hasValue(v) {
  *   · 已有量比 ⇒ 完全不碰（幂等，避免重复写库）。
  * 只认 6 位代码；按 code 去重；不会返回空 symbols 让调用方白烧额度。
  */
-export function pickNumcatTargets(ladder, metricsRows) {
+export function pickNumcatTargets(ladder, metricsRows, opts) {
   const byName = new Map();
   (metricsRows || []).forEach(function (r) {
     if (r && r.name) byName.set(String(r.name).trim(), r);
@@ -81,18 +81,33 @@ export function pickNumcatTargets(ladder, metricsRows) {
   const fullRows = [];
   const ratioOnly = [];
   const symbols = [];
-  (ladder || []).forEach(function (c) {
-    if (!c) return;
-    const name = String(c.name || '').trim();
-    const code = String(c.code || '').trim();
+  const add = function (name, code) {
     if (!name || !/^\d{6}$/.test(code) || seenCode.has(code)) return;
     const m = byName.get(name);
-    if (m && hasValue(m.auc_vol_ratio)) return;
+    if (m && hasValue(m.auc_vol_ratio)) return;      // 已有量比 ⇒ 完全不碰（幂等）
     seenCode.add(code);
     symbols.push(code);
     if (!m) fullRows.push({ name: name, code: code });
-    else ratioOnly.push({ name: name, code: code });
+    else ratioOnly.push({ name: name, code: code }); // 有行缺量比 ⇒ 只补这一列（§11）
+  };
+  (ladder || []).forEach(function (c) {
+    if (!c) return;
+    add(String(c.name || '').trim(), String(c.code || '').trim());
   });
+  // ★★ [RANGE20-RATIO-HEAL 2026-11-11] 旧实现只遍历 `ladder`（883410 真实成分股），
+  //   ⇒ 20 日涨幅补位票（不写 watchlist、不在 ladder 里）即便当天有 market_metrics 行、
+  //     缺 `auc_vol_ratio`，9:26 也永远补不到 ⇒ 只能等 16:30 收盘后回填（用户竞价时间看不到）。
+  //   11-11 实测「青岛食品」就是这个形状：9:27 前端补出 ths-patch 壳行、量比永久为空，
+  //   而同为补位票的「海洋王」9:25 就抓到量比 1.94。
+  //   ⇒ 打开本开关后，把「当日已有行但缺量比」的票一并纳入 ratioOnly。
+  //   ⚠️ 仍然只在 `symbols.length > 0` 时才发 1 次猫抓请求；9:25 全抓全时 0 请求、0 额度（§32）。
+  //   ⚠️ 只补 `auc_vol_ratio` 一列，⛔ 不覆盖其它已有字段（buildAucMetricsWriteRows ratioOnly 路径）。
+  if (opts && opts.includeAllRows) {
+    (metricsRows || []).forEach(function (r) {
+      if (!r) return;
+      add(String(r.name || '').trim(), String(r.code || '').trim());
+    });
+  }
   return { symbols: symbols, fullRows: fullRows, ratioOnly: ratioOnly };
 }
 
@@ -163,10 +178,12 @@ async function fillAucFromNumcat(env, today, ladder, logs) {
     logs.push('[ladder26] ❌ ' + out.error);
     return out;
   }
-  const targets = pickNumcatTargets(ladder, metricsRows);
+  // ★ [RANGE20-RATIO-HEAL 2026-11-11] 打开「当日已有行但缺量比」的补抓（含 20 日补位票）。
+  //   仍严格只在有缺口时才发 1 次请求；9:25 全抓全时 0 请求、0 猫抓额度（§32）。
+  const targets = pickNumcatTargets(ladder, metricsRows, { includeAllRows: true });
   out.symbols = targets.symbols.length;
   if (targets.symbols.length === 0) {
-    out.skipped = '当日 market_metrics 已覆盖真实名单且竞价量比齐全 → 0 次猫抓请求';
+    out.skipped = '当日 9:25 名单竞价量比齐全 → 0 次猫抓请求';
     logs.push('[ladder26] ✅ ' + out.skipped);
     return out;
   }
@@ -187,7 +204,13 @@ async function fillAucFromNumcat(env, today, ladder, logs) {
     logs.push('[ladder26] ⚠️ ' + out.skipped);
     return out;
   }
-  const parsed = parseNumcatToMetrics(items, fields, ladder, logs, today);
+  // ★ [RANGE20-RATIO-HEAL 2026-11-11] 解析白名单要覆盖「补抓目标」而不只是 ladder：
+  //   `parseNumcatToMetrics` 用 codeToName 把猫抓 code 映射回库里的股票名， ladder 为 null
+  //   （9:25 名单已足、只补缺量比票）时不能传 null（会 .forEach 崩），也不能只靠猫抓返回的
+  //   name 兜底（别名/简繁不一致 ⇒ buildAucMetricsWriteRows 按库名匹配不上 ⇒ 白补一趟）。
+  const allowList = (ladder || []).concat(targets.fullRows || [], targets.ratioOnly || [])
+    .map(function (t) { return { name: t.name, code: t.code }; });
+  const parsed = parseNumcatToMetrics(items, fields, allowList, logs, today);
   const rows = buildAucMetricsWriteRows(parsed.metricsByDate[today] || [], today, new Date().toISOString(), targets);
   if (rows.length === 0) {
     out.skipped = '猫抓返回 ' + items.length + ' 行但无一行可写（名单/字段不匹配）→ 留空不猜';
@@ -223,6 +246,22 @@ export async function runLadderRecheck(env, opts) {
     logs: logs,
   };
 
+  // ★★ [RANGE20-RATIO-HEAL 2026-11-11] 「名单二次确认」和「竞价量比补缺」是两件事。
+  //   旧实现只在 ⑥（名单恢复成功路径）末尾补量比，而【9:25 名单足量】时 ① 就直接 return
+  //   ⇒ 20 日涨幅补位票 / stockcodemap 缺票 即便当天已有 market_metrics 行、只是缺
+  //     `auc_vol_ratio`，也永远补不到。11-11「青岛食品」就是这么丢的：9:25 名单 77 行足量
+  //     ⇒ 9:26 走 skipped 分支、0 次猫抓请求，全天量比为空（海洋王因 9:25 就在名单里有 1.94）。
+  //   ⇒ 统一收敛到 finish()：所有「数据可读」的返回路径都补一次，整轮最多 1 次猫抓，
+  //     且仅在确有缺口时发请求（9:25 全抓全时 0 请求、0 额度，§32）。
+  //   ⚠️ ladderForAuc：名单恢复成功时传真实 883410 名单（保留原有「新进成分股整行补写」）；
+  //     否则传 null ⇒ pickNumcatTargets 只靠 includeAllRows 覆盖「当日已有行但缺量比」的票。
+  let ladderForAuc = null;
+  const finish = async function () {
+    if (out.auc.attempted || out.auc.skipped || out.auc.error) return out;
+    out.auc = await fillAucFromNumcat(env, today, ladderForAuc, logs);
+    return out;
+  };
+
   // ① 当日名单现状。读取失败必须停（§10），绝不把它当「空名单」往下写。
   let todayRows;
   try {
@@ -235,8 +274,9 @@ export async function runLadderRecheck(env, opts) {
     out.ok = true;
     out.skipped = true;
     logs.push('[ladder26] ✅ 9:25 已写入 ' + countRealLadderRows(todayRows) +
-      ' 行真实 883410 名单（≥' + MIN_LADDER_ROWS + '）→ 本趟 0 上游请求、0 猫抓额度，直接返回');
-    return out;
+      ' 行真实 883410 名单（≥' + MIN_LADDER_ROWS + '）→ 不重查名单（0 上游请求）；' +
+      '仅检查当日缺竞价量比的行（含 20 日补位票），无缺口则 0 猫抓额度');
+    return finish();
   }
 
   const officialNames = new Set(todayRows.filter(r => !r.obs_auto_added).map(r => r.name));
@@ -250,6 +290,7 @@ export async function runLadderRecheck(env, opts) {
     const raw = await fetchLadderConstituents(env);
     if (Array.isArray(raw) && raw.length >= MIN_LADDER_ROWS) {
       ladder = raw;
+      ladderForAuc = raw;
       out.recovered = true;
       out.ladderCount = raw.length;
       logs.push('[ladder26] ✅ 883410 恢复，拿到 ' + raw.length + ' 只');
@@ -267,12 +308,12 @@ export async function runLadderRecheck(env, opts) {
       logs.push('[ladder26] 名单源未恢复，但当日已有 ' + officialNames.size +
         ' 行正式成员（含 9:25 兜底）⇒ 保留现状，⛔ 不覆盖、不删除');
       out.ok = true;
-      return out;
+      return finish();
     }
     const fb = pickFallbackWatchlistRows(o.prevRows, today, nowIso, MIN_FALLBACK_ROWS);
     if (fb.length === 0) {
       logs.push('[ladder26] ❌ 名单源未恢复且无足量前一日正式成员 → 不写名单，保留可观测的降级状态');
-      return out;
+      return finish();
     }
     try {
       await upsertAuctionWatchlist(env, fb);
@@ -282,7 +323,7 @@ export async function runLadderRecheck(env, opts) {
     } catch (e) {
       logs.push('[ladder26] ❌ 兜底名单写入失败: ' + (e && e.message ? e.message : String(e)));
     }
-    return out;
+    return finish();
   }
 
   // ④ 写真实名单。非 9:25 窗口且当日已有正式成员 ⇒ 名单锁定，只更新已存在的行。
@@ -295,7 +336,7 @@ export async function runLadderRecheck(env, opts) {
   }
   if (rows.length === 0) {
     logs.push('[ladder26] 名单锁定后无行可写 → 不写');
-    return out;
+    return finish();
   }
   try {
     await upsertAuctionWatchlist(env, rows);
@@ -342,6 +383,7 @@ export async function runLadderRecheck(env, opts) {
   }
 
   // ⑥ 猫抓补新进票 / 缺量比票。失败只记日志，绝不影响已写好的真实名单。
-  out.auc = await fillAucFromNumcat(env, today, ladder, logs);
-  return out;
+  //    [RANGE20-RATIO-HEAL] 统一走 finish()：ladderForAuc 带真实名单 ⇒ 既补新进成分股整行，
+  //    也靠 includeAllRows 补「当日已有行但缺 auc_vol_ratio」的 20 日补位票。
+  return finish();
 }

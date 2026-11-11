@@ -276,8 +276,13 @@ export async function readDailyLegsForStocks(env, fromDate, beforeDate, stocks, 
 /** 写 stock_range20_pct（与 Edge backfillRange20FromLegs 完全相同的 on_conflict / 列集合） */
 export async function upsertRange20Rows(env, rows) {
   if (!rows || rows.length === 0) return;
+  // ★ [DDL-LEG 2026-11-11] 线上主键已升级为 (date,stock,leg)。
+  //   11-11 9:26 / 9:27 两趟 r20-prefill 都因 `on_conflict=date,stock` 撞 400/42P10
+  //   （"there is no unique or exclusion constraint matching the ON CONFLICT specification"）
+  //   整批写不进去 ⇒ 当天 stock_range20_pct 0 行 ⇒ 前端退回浏览器现算 40+ 次 K 线（慢）。
+  //   ⚠️ DDL 已执行，此处必须带 leg；⛔ 别改回两列。
   await upsertBucketed(env, 'stock_range20_pct',
-    CONFIG.SUPABASE_URL + '/rest/v1/stock_range20_pct?on_conflict=date,stock', rows);
+    CONFIG.SUPABASE_URL + '/rest/v1/stock_range20_pct?on_conflict=date,stock,leg', rows);
 }
 
 // ============================================================================
@@ -474,16 +479,25 @@ export async function readStockRangePctForDate(env, date) {
  */
 export async function readRange20TopForDate(env, date, limit) {
   const n = Number(limit) > 0 ? Math.floor(Number(limit)) : 20;
+  // ★ [DDL-LEG 2026-11-11] 主键升级为 (date,stock,leg) 后，同一天可能出现 auc / close
+  //   两行 ⇒ 行数翻倍。原来 `limit=2000` 写死无分页正好踩 §2 Range 分页红线（11-10 P0 根因
+  //   `readDailyLegsForStocks` 就是这么静默截断的）⇒ 改 sbGetPaged + 确定性 order。
+  //   ⚠️ 口径不变：下面 byName 去重仍是「close 优先」，9:25 读的是【前一交易日完整榜】
+  //      （收盘口径），两腿并存时自然取到 close 行，⛔ 不改用竞价腿。
   const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range20_pct?date=eq.' +
-    encodeURIComponent(date) + '&select=stock,pct,days,leg&limit=2000';
-  const resp = await sbFetch(url, { headers: sbHeaders(env) });
-  // [CLOUD-0927-HEAL 2026-11-11 §10] 同 readAuctionWatchlistForDate：读失败必须抛错，
-  //   由 9:25 组B 的 settled() 降级并计入汇总，⛔ 不伪装成「前一日 20 日榜为空」。
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    throw new Error('读取 stock_range20_pct(' + date + ') 失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
+    encodeURIComponent(date) + '&select=stock,pct,days,leg&order=stock.asc,leg.asc';
+  // [CLOUD-0927-HEAL 2026-11-11 §10] 读失败必须抛错，由 9:25 组B 的 settled() 降级并计入汇总，
+  //   ⛔ 不伪装成「前一日 20 日榜为空」（空榜会让 9:25 继续跑出一份残缺名单）。
+  //   ⚠️ sbGetPaged 的原始消息带分页 from，缺少「哪张表 / 哪一天」的定位信息 ⇒
+  //      统一包回业务语义，保持既有日志与告警文案可被正则检索（§10 报错必须能定位）。
+  let data;
+  try {
+    data = await sbGetPaged(env, url);
+  } catch (e) {
+    const msg = (e && e.message) ? e.message : String(e);
+    const http = /HTTP \d+[\s\S]*/.exec(msg);
+    throw new Error('读取 stock_range20_pct(' + date + ') 失败: ' + (http ? http[0] : msg));
   }
-  const data = await resp.json();
   const num = function (v) {
     if (v === null || v === undefined) return null;
     const s = String(v).replace('%', '').replace(/,/g, '').trim();
@@ -658,6 +672,55 @@ export async function readStockCodeMapByNames(env, names) {
   } catch (e) {
     return {};
   }
+}
+
+/**
+ * [RANGE20-CODE-FALLBACK 2026-11-11] 按股票名从 `market_metrics` 补 code（二级兜底）。
+ *
+ *   取证（11-11）：`stockcodemap` 全表 1142 行里**没有**「青岛食品」，但有「海洋王」；
+ *   而 `market_metrics(scope=auction)` 近 10 天里两只票都带 code（001219 / 002724）。
+ *   9:25 合并「20日涨幅补位票」时 `codeMap[r.name] || ''` 取不到 ⇒ `if (!code) return`
+ *   把票整批丢掉 ⇒ 它不在猫抓 `daily_auc` 的 symbols 里 ⇒ 当天整行都不存在，
+ *   前端 9:27 只补得出 `ths-patch` 壳行（量比按红线禁用同花顺 ⇒ 永远空）。
+ *   ⇒ 同为 20 日补位票，海洋王量比 1.94 齐全、青岛食品空，就是这一处差异。
+ *
+ *   `market_metrics` 自带 `code` 列，且这些票历史上都在 9:25 名单里出现过 ⇒ 用它兜底
+ *   比让补位票「等下次进榜再说」更准确，且 0 上游请求 / 0 猫抓额度。
+ *
+ * §10：这是兜底层，读失败返回 {}（不抛错、不阻断 9:25）；调用方必须把「仍缺 code」
+ *      的只数写进日志，⛔ 不许静默丢票。
+ */
+export async function readCodesFromMetricsByNames(env, names) {
+  const clean = (names || []).map(n => String(n || '').trim()).filter(Boolean);
+  if (clean.length === 0) return {};
+  const uniq = Array.from(new Set(clean)).slice(0, 400);
+  const map = {};
+  // ★ [RANGE20-CODE-FALLBACK 2026-11-11] 按股票名分批 + 「日期降序优先」两点都很关键：
+  //   ① 单批 100 只，避免 URL 过长 / 单批行数超 PostgREST 1000 行上限（§2 Range 分页红线）。
+  //   ② order 必须是 `date.desc` 在前：code 与日期无关，最近的行情行先返回 ⇒ 即使某批
+  //      真的撞到 1000 行上限，被截掉的也只是更老的历史行，不会把「青 / 奥」这类
+  //      按 UTF-8 字节序排在后面的票整只丢掉（旧写法 stock.asc 在第一位正是这个隐患）。
+  //   ⚠️ 这是兜底层：任一批读取失败只记空，⛔ 不抛错、不阻断 9:25 主链路（§10）。
+  for (let i = 0; i < uniq.length; i += 100) {
+    const chunk = uniq.slice(i, i + 100);
+    const inList = chunk.map(n => '%22' + encodeURIComponent(n) + '%22').join(',');
+    const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?select=stock,code' +
+      '&scope=eq.auction&stock=in.(' + inList + ')&code=not.is.null' +
+      '&order=date.desc,stock.asc&limit=1000';
+    try {
+      const resp = await sbFetch(url, { headers: sbHeaders(env) });
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      (data || []).forEach(function (r) {
+        const name = String((r && r.stock) || '').trim();
+        const code = String((r && r.code) || '').replace(/\D/g, '');
+        if (name && /^\d{6}$/.test(code) && !map[name]) map[name] = code;
+      });
+    } catch (e) {
+      // 单批失败不影响其它批，也不影响 9:25 主流程
+    }
+  }
+  return map;
 }
 
 // [FIX 2026-08-15] 读取股票名称→代码映射表（stockcodemap），为 watchlist 里 code 为空的

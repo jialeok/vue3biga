@@ -88,6 +88,48 @@ describe('stock-range20-cache · 解析（§10 不做 0）', function() {
     });
 });
 
+// ★★ [DDL-LEG 2026-11-11] `stock_range20_pct` 主键升级为 (date,stock,leg) 后，
+//   同一只票当天可以【同时】存在 auc / close 两行。旧 `map.set(name, 一行)` 会按
+//   PostgREST 返回顺序静默丢掉一腿 ⇒ 竞价口径榜或收盘口径列随机缺失。
+describe('stock-range20-cache · ★ 两腿并存（DDL-LEG 2026-11-11）', function() {
+    it('★★ 同股 auc + close 两行 ⇒ 只占 1 个 Map 项，但 byLeg 两腿都保留', async function() {
+        rowsByDate['2026-11-11'] = [
+            row('青岛食品', '42.70', 20, 'auc'),
+            row('青岛食品', '39.10', 20, 'close'),
+        ];
+        const m = await readRange20Rows('2026-11-11');
+        expect(m.size).toBe(1);
+        expect(m.get('青岛食品').byLeg.auc.pct).toBe(42.70);
+        expect(m.get('青岛食品').byLeg.close.pct).toBe(39.10);
+        // 主行取 auc 优先（题材量比恒用 9:25 竞价口径，§6）
+        expect(m.get('青岛食品').pct).toBe(42.70);
+        expect(m.get('青岛食品').leg).toBe('auc');
+    });
+
+    it('★★ 两腿并存时 auc / close 各自取得自己的数（⛔ 不能再按主行 leg 一刀切）', async function() {
+        rowsByDate['2026-11-11'] = [
+            row('青岛食品', '42.70', 20, 'auc'),
+            row('青岛食品', '39.10', 20, 'close'),
+        ];
+        const m = await readRange20Rows('2026-11-11');
+        expect(pickUsableRows(m, 'auc').get('青岛食品')).toEqual({ pct: 42.70, days: 20 });
+        expect(pickUsableRows(m, 'close').get('青岛食品')).toEqual({ pct: 39.10, days: 20 });
+    });
+
+    it('只有 close 一行、要 auc ⇒ 判「还没有」触发重算（⛔ 不能拿收盘数冒充竞价口径）', async function() {
+        rowsByDate['2026-11-11'] = [row('青岛食品', '39.10', 20, 'close')];
+        const m = await readRange20Rows('2026-11-11');
+        expect(pickUsableRows(m, 'auc').size).toBe(0);
+        expect(pickUsableRows(m, 'close').size).toBe(1);
+    });
+
+    it('手工构造的无 byLeg 老形状 ⇒ 逐字走旧逻辑，零行为变化（§11 兼容）', function() {
+        const src = new Map([['甲票', { pct: 10, days: 20, leg: 'close' }]]);
+        expect(pickUsableRows(src, 'close').get('甲票')).toEqual({ pct: 10, days: 20 });
+        expect(pickUsableRows(src, 'auc').size).toBe(0);
+    });
+});
+
 describe('stock-range20-cache · ★ pickUsableRows 口径过滤（最关键）', function() {
     it('★★ 当前口径 auc ⇒ close 行必须被剔除（否则收盘后仍显示早上那份数）', async function() {
         rowsByDate['2026-10-19'] = [
@@ -197,14 +239,16 @@ describe('stock-range20-cache · §32 会话内缓存 + 单飞', function() {
 });
 
 describe('stock-range20-cache · upsertRange20Rows', function() {
-    it('按 (date,stock) upsert，pct 固定两位小数，leg 写本批口径', async function() {
+    it('按 (date,stock,leg) upsert，pct 固定两位小数，leg 写本批口径', async function() {
         const n = await upsertRange20Rows('2026-10-19',
             [{ stock: '新华传媒', pct: 210.981, days: 20 }], 'close');
         expect(n).toBe(1);
         const c = calls[0];
         expect(c.table).toBe('stock_range20_pct');
         expect(c.op).toBe('upsert');
-        expect(c.onConflict).toBe('date,stock');
+        // ★ [DDL-LEG 2026-11-11] 线上主键已升级为 (date,stock,leg)；
+        //   写回两列会 400/42P10 ⇒ 当天结果表 0 行 ⇒ 前端退回浏览器现算（出结果慢）。
+        expect(c.onConflict).toBe('date,stock,leg');
         expect(c.payload[0]).toEqual({
             date: '2026-10-19', stock: '新华传媒', pct: '210.98', days: 20,
             leg: 'close', updated_at: expect.any(String)

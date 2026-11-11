@@ -32,7 +32,8 @@ function mockFetch(handler) {
 
 const {
   bucketRowsByKeySet, upsertMarketMetrics, upsertAuctionWatchlist,
-  readDailyLegsForStocks, readRange20StocksForDate
+  readDailyLegsForStocks, readRange20StocksForDate,
+  upsertRange20Rows, readRange20TopForDate, readCodesFromMetricsByNames
 } = await import('./supabase-write.js');
 const ENV = { SUPABASE_SERVICE_ROLE_KEY: 'k' };
 
@@ -202,5 +203,93 @@ describe('[R20-LEGS-PAGED] 逐日腿读取必须 Range 分页，⛔ 不许 limit
     const set = await readRange20StocksForDate(ENV, '2026-11-10');
     expect(set.size).toBe(1200);
     expect(pageCalls).toHaveLength(2);
+  });
+});
+
+// ============================================================================
+// [DDL-LEG 2026-11-11 · 第二批] 用户已把 stock_range20_pct 主键改为 (date,stock,leg)。
+//   零写入探测实证：on_conflict=date,stock → 400/42P10；带 leg → 201。
+//   旧代码 9:26 / 9:27 两次 r20-prefill 全挂 ⇒ 当天结果表 0 行 ⇒ 前端退回浏览器
+//   现算 40+ 次 K 线（30~90s）⇒ 用户感知「题材量比出结果慢」。
+// ============================================================================
+describe('[DDL-LEG 2026-11-11] 20 日结果表读写必须带 leg', () => {
+  it('★★ upsertRange20Rows ⇒ on_conflict=date,stock,leg（⛔ 不许回退成两列）', async () => {
+    await upsertRange20Rows(ENV, [
+      { date: '2026-11-11', stock: '青岛食品', pct: '42.70', days: 20, leg: 'auc' }
+    ]);
+    expect(calls[0].url).toContain('stock_range20_pct?on_conflict=date,stock,leg');
+  });
+
+  it('★★ readRange20TopForDate 分页 + 两腿去重仍保持 close 优先（9:25 读前一日完整榜）', async () => {
+    const rows = [
+      { stock: '青岛食品', pct: '42.70', days: 20, leg: 'auc' },
+      { stock: '青岛食品', pct: '39.10', days: 20, leg: 'close' },
+      { stock: '海洋王', pct: '35.00', days: 20, leg: 'close' },
+    ];
+    const paged = [];
+    vi.stubGlobal('fetch', vi.fn(async function (url, opts) {
+      const range = String((opts.headers && opts.headers.Range) || '0-999');
+      const from = Number(range.split('-')[0]) || 0;
+      paged.push({ url: url, range: range });
+      return {
+        ok: true, status: 200,
+        json: async () => rows.slice(from, from + 1000),
+        text: async () => '[]'
+      };
+    }));
+    const top = await readRange20TopForDate(ENV, '2026-11-10', 20);
+    expect(top).toHaveLength(2);
+    expect(top[0]).toEqual({ name: '青岛食品', pct: 39.10, days: 20, leg: 'close' });
+    expect(paged[0].url).toContain('order=stock.asc,leg.asc');
+    expect(paged[0].url).not.toContain('limit=2000');
+  });
+});
+
+// ============================================================================
+// [RANGE20-CODE-FALLBACK 2026-11-11] stockcodemap 缺「青岛食品」「奥飞娱乐」整行，
+//   导致 9:25 合并 20 日补位票时 `if(!code) return` 静默丢票 ⇒ 全天无量比。
+//   market_metrics 自带 code 列 ⇒ 二级兜底。按名分批 + date.desc 优先是截断防护（§2）。
+// ============================================================================
+describe('[RANGE20-CODE-FALLBACK] market_metrics.code 二级补码', () => {
+  it('★★ 中文名按 date.desc 优先返回，code 能补到且不被 stock.asc 截断', async () => {
+    vi.stubGlobal('fetch', vi.fn(async function (url) {
+      calls.push({ url: url });
+      return {
+        ok: true, status: 200,
+        json: async () => [
+          { stock: '青岛食品', code: '001219' },
+          { stock: '奥飞娱乐', code: '002292' },
+        ],
+        text: async () => '[]'
+      };
+    }));
+    const map = await readCodesFromMetricsByNames(ENV, ['青岛食品', '奥飞娱乐']);
+    expect(map).toEqual({ '青岛食品': '001219', '奥飞娱乐': '002292' });
+    expect(calls[0].url).toContain('order=date.desc,stock.asc');
+    expect(calls[0].url).toContain('scope=eq.auction');
+  });
+
+  it('超过 100 只 ⇒ 分批请求（⛔ 单批 URL 过长 / 1000 行截断）', async () => {
+    const names = Array.from({ length: 120 }, function (_, i) { return '票' + i; });
+    await readCodesFromMetricsByNames(ENV, names);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('读取失败 ⇒ 返回空对象、不抛错（兜底层不阻断 9:25 主链路）', async () => {
+    vi.stubGlobal('fetch', vi.fn(async function () {
+      return { ok: false, status: 500, text: async () => 'boom', json: async () => [] };
+    }));
+    await expect(readCodesFromMetricsByNames(ENV, ['青岛食品'])).resolves.toEqual({});
+  });
+
+  it('非 6 位 code / 空 code ⇒ 不写进 map（⛔ 别让脏代码进猫抓 symbols）', async () => {
+    vi.stubGlobal('fetch', vi.fn(async function () {
+      return {
+        ok: true, status: 200,
+        json: async () => [{ stock: '甲票', code: '' }, { stock: '乙票', code: 'abc' }],
+        text: async () => '[]'
+      };
+    }));
+    await expect(readCodesFromMetricsByNames(ENV, ['甲票', '乙票'])).resolves.toEqual({});
   });
 });

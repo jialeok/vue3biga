@@ -70,8 +70,9 @@ async function sbGet(path) {
   return out;
 }
 async function sbUpsert(rows) {
-  const r = await fetch(SB + '/rest/v1/stock_range20_pct?on_conflict=date,stock', {
+  const r = await fetch(SB + '/rest/v1/stock_range20_pct?on_conflict=date,stock,leg', {
     method: 'POST',
+    // ★ [DDL-LEG 2026-11-11] 线上主键已升级为 (date,stock,leg)；两列 on_conflict 会 400/42P10。
     headers: Object.assign({}, H, { 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' }),
     body: JSON.stringify(rows),
   });

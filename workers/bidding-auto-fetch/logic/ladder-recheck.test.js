@@ -92,6 +92,38 @@ describe('pickNumcatTargets', () => {
     expect(t.symbols).toEqual(['600001']);
     expect(t.ratioOnly).toHaveLength(1);
   });
+
+  // ★★ [RANGE20-RATIO-HEAL 2026-11-11] 20 日涨幅补位票不写 watchlist、不在 ladder 里。
+  //   旧实现只遍历 ladder ⇒ 它们「有行但缺量比」时 9:26 永远补不到（青岛食品事故）。
+  it('★★ ladder 为空 + includeAllRows ⇒ 当日已有行但缺量比的票仍进入补抓', () => {
+    const metrics = [
+      { name: '青岛食品', code: '001219', auc_vol_ratio: '' },
+      { name: '海洋王', code: '002724', auc_vol_ratio: '1.94' },
+    ];
+    const off = pickNumcatTargets(null, metrics);
+    expect(off.symbols).toEqual([]);                 // 没开开关 ⇒ 一个都不补（旧行为）
+    const on = pickNumcatTargets(null, metrics, { includeAllRows: true });
+    expect(on.symbols).toEqual(['001219']);          // 只补缺的那只，已有量比的不碰
+    expect(on.ratioOnly).toEqual([{ name: '青岛食品', code: '001219' }]);
+    expect(on.fullRows).toEqual([]);                 // ⛔ 不新建整行
+  });
+
+  it('includeAllRows 与 ladder 叠加时按 code 去重，不重复请求同一只票', () => {
+    const ladder = [{ name: '青岛食品', code: '001219' }];
+    const metrics = [{ name: '青岛食品', code: '001219', auc_vol_ratio: '' }];
+    const on = pickNumcatTargets(ladder, metrics, { includeAllRows: true });
+    expect(on.symbols).toEqual(['001219']);
+    expect(on.ratioOnly).toHaveLength(1);
+  });
+
+  it('includeAllRows 只收 6 位 code 的行（ths-patch 壳行无 code 时不能白烧额度）', () => {
+    const metrics = [
+      { name: '无码票', code: '', auc_vol_ratio: '' },
+      { name: '青岛食品', code: '001219', auc_vol_ratio: '' },
+    ];
+    const on = pickNumcatTargets(null, metrics, { includeAllRows: true });
+    expect(on.symbols).toEqual(['001219']);
+  });
 });
 
 describe('buildAucMetricsWriteRows', () => {

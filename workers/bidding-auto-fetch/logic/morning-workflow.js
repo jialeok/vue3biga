@@ -8,7 +8,7 @@ import { fetchLadderConstituents, fuyaoCalendarTradingDays } from '../data/fuyao
 // [KEY-FALLBACK 2026-09-28] configuredKeys/maskKey 只用于把「key 候选链」回显到日志：
 //   小号 Secret 没配时兜底会静默失效，必须在日志里一眼看见（§10 禁止静默失败）。
 import { numcatDailyAuc, numcatDaily, configuredKeys, maskKey } from '../data/numcat-api.js';
-import { upsertAuctionWatchlist, upsertMarketMetrics, upsertStockRangePct, readAuctionWatchlistForDate, readAuctionTagsForDate, readDragonLeadersForDate, readRange20TopForDate, readStockCodeMap, readStockCodeMapByNames, readMarketMetricsSnapshotFieldsForDate } from '../data/supabase-write.js';
+import { upsertAuctionWatchlist, upsertMarketMetrics, upsertStockRangePct, readAuctionWatchlistForDate, readAuctionTagsForDate, readDragonLeadersForDate, readRange20TopForDate, readStockCodeMap, readStockCodeMapByNames, readCodesFromMetricsByNames, readMarketMetricsSnapshotFieldsForDate } from '../data/supabase-write.js';
 import { getRecentTradingDays } from './holiday-check.js';
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏。早盘放在【最后】跑一次（不阻塞 P0/P1/P2）：
 // 猫抓当日行给不给四要素由接口决定（09-11 那天没给，11-05 那天 58/58 全给）——
@@ -384,11 +384,27 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
     .map(s => s.name)
     .filter(n => n && !codeMap[n]);
   if (nameless.length > 0) {
-    const extra = await readStockCodeMapByNames(env, Array.from(new Set(nameless)));
+    const uniqNames = Array.from(new Set(nameless));
+    // ★★ [RANGE20-CODE-FALLBACK 2026-11-11] 两路补码【并行】，0 额外串行延迟、0 猫抓额度。
+    //   stockcodemap 是权威代码表，但它**会整只票缺行**（11-11 实测「青岛食品」「奥飞娱乐」
+    //   不在表里）；market_metrics 自带 code 列且这些票都在历史 9:25 名单里出现过。
+    //   ⇒ 先用权威表、再用行情表补缺，⛔ 别让「代码表没这一行」把 20 日补位票整批丢掉。
+    //   ⚠️ 两路都是兜底层：读失败各返回 {}，不抛错、不阻断 9:25（§10）。
+    const [extraMap, metricsMap] = await Promise.all([
+      settled(readStockCodeMapByNames(env, uniqNames)),
+      settled(readCodesFromMetricsByNames(env, uniqNames))
+    ]);
+    const extra = (extraMap.ok && extraMap.v) || {};
+    const fromMetrics = (metricsMap.ok && metricsMap.v) || {};
+    let fromMetricsAdded = 0;
+    Object.keys(fromMetrics).forEach(function (n) {
+      if (!extra[n] && !codeMap[n]) { extra[n] = fromMetrics[n]; fromMetricsAdded++; }
+    });
     const added = Object.keys(extra).length;
     if (added > 0) {
       Object.keys(extra).forEach(n => { codeMap[n] = extra[n]; });
-      logs.push('按名精确补 code: ' + added + ' 只（全表读被 1000 行上限截断的兜底）');
+      logs.push('按名精确补 code: ' + added + ' 只（stockcodemap 全表读 1000 行截断兜底 ' +
+        (added - fromMetricsAdded) + ' 只 / market_metrics.code 二级兜底 ' + fromMetricsAdded + ' 只）');
       // 用补到的 code 再并入一次名单
       const existingCodes = new Set(constituents.map(c => c.code));
       const existingNames = new Set(constituents.map(c => c.name));
@@ -447,10 +463,15 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
     const existingNames = new Set(constituents.map(c => c.name));
     const existingCodes = new Set(constituents.map(c => c.code));
     const range20Extra = [];
+    // ★ [RANGE20-CODE-FALLBACK 2026-11-11 §10] 以前「查不到 code」是静默 return，
+    //   日志只写「均已在名单内（或查不到 code）」⇒ 青岛食品这类票漏抓全天无人知晓，
+    //   用户只能在趋势图看到「无量比」。现在把被丢的名字逐只列出来，可观测、可追责。
+    const noCodeNames = [];
     range20Stocks.forEach(function (r) {
       if (!r || !r.name || existingNames.has(r.name)) return;
       const code = codeMap[r.name] || '';
-      if (!code || existingCodes.has(code)) return;
+      if (!code) { noCodeNames.push(r.name); return; }
+      if (existingCodes.has(code)) return;
       existingNames.add(r.name);
       existingCodes.add(code);
       range20Extra.push({ name: r.name, code: code });
@@ -460,7 +481,11 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
         range20Extra.length + ' 只，合并到抓取名单（不写 watchlist，0 猫抓额度）');
       constituents = constituents.concat(range20Extra);
     } else {
-      logs.push('20日涨幅补位: 榜上前 ' + range20Stocks.length + ' 名均已在抓取名单内（或查不到 code）');
+      logs.push('20日涨幅补位: 榜上前 ' + range20Stocks.length + ' 名均已在抓取名单内');
+    }
+    if (noCodeNames.length > 0) {
+      logs.push('⚠️ 20日涨幅补位有 ' + noCodeNames.length + ' 只查不到 code ⇒ 未进 9:25 抓取名单' +
+        '（当天竞价量比必然为空，需补 stockcodemap 或等 16:30 云端回填）: ' + noCodeNames.join('、'));
     }
   }
 

@@ -49,7 +49,16 @@ const REQUIRED = [
   //   ⚠️ 字符串字面量（在 index.js 的 console.log / range20-prefill.js 的日志里），
   //      注释会被 esbuild 删掉，只有它能证明「这一版真的上线了」。
   //   ⚠️ cron 条数由 expectedCrons() 直读 toml 断言，不需要在这里列第 4 条。
-  '[CLOUD-0927-HEAL]'
+  '[CLOUD-0927-HEAL]',
+  // [DDL-LEG / RANGE20-RATIO-HEAL 2026-11-11] 第二批：DDL 已把主键改成 (date,stock,leg)，
+  //   线上脚本必须同时具备「写结果表带 leg」和「9:26 补抓覆盖当日全部缺量比行」。
+  //   ⚠️ 全部是【字符串字面量 / 不被 mangle 的属性名】，打包压缩后仍在线上脚本里；
+  //      注释会被 esbuild 删掉，⛔ 别拿注释里的标记来断言。
+  //   缺第 1 项 ⇒ 9:26/9:27 r20-prefill 全部 400/42P10 ⇒ 当天结果表 0 行 ⇒ 出票慢；
+  //   缺后两项 ⇒ 20 日补位票（青岛食品）全天没有竞价量比。
+  'on_conflict=date,stock,leg',
+  'includeAllRows',
+  'readCodesFromMetricsByNames'
 ];
 
 async function cf(url, accept) {

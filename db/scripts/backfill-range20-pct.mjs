@@ -685,7 +685,8 @@ async function main() {
   let w2 = 0;
   for (let i = 0; i < toWrite.length; i += UPSERT_CHUNK) {
     const chunk = toWrite.slice(i, i + UPSERT_CHUNK);
-    await sbUpsert('stock_range20_pct', 'date,stock', chunk);
+    // ★ [DDL-LEG 2026-11-11] 主键 (date,stock,leg)；rows 均带 leg='close'。
+    await sbUpsert('stock_range20_pct', 'date,stock,leg', chunk);
     w2 += chunk.length;
     console.log('  ↳ stock_range20_pct 已写 ' + w2 + '/' + toWrite.length);
   }

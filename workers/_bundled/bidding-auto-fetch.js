@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-11-10 12:34:26
+// 生成时间: 2026-11-11 08:32:38
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 7107（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 7237（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
@@ -1269,8 +1269,13 @@ async function readDailyLegsForStocks(env, fromDate, beforeDate, stocks, chunkSi
 /** 写 stock_range20_pct（与 Edge backfillRange20FromLegs 完全相同的 on_conflict / 列集合） */
 async function upsertRange20Rows(env, rows) {
   if (!rows || rows.length === 0) return;
+  // ★ [DDL-LEG 2026-11-11] 线上主键已升级为 (date,stock,leg)。
+  //   11-11 9:26 / 9:27 两趟 r20-prefill 都因 `on_conflict=date,stock` 撞 400/42P10
+  //   （"there is no unique or exclusion constraint matching the ON CONFLICT specification"）
+  //   整批写不进去 ⇒ 当天 stock_range20_pct 0 行 ⇒ 前端退回浏览器现算 40+ 次 K 线（慢）。
+  //   ⚠️ DDL 已执行，此处必须带 leg；⛔ 别改回两列。
   await upsertBucketed(env, 'stock_range20_pct',
-    CONFIG.SUPABASE_URL + '/rest/v1/stock_range20_pct?on_conflict=date,stock', rows);
+    CONFIG.SUPABASE_URL + '/rest/v1/stock_range20_pct?on_conflict=date,stock,leg', rows);
 }
 
 // ============================================================================
@@ -1467,16 +1472,25 @@ async function readStockRangePctForDate(env, date) {
  */
 async function readRange20TopForDate(env, date, limit) {
   const n = Number(limit) > 0 ? Math.floor(Number(limit)) : 20;
+  // ★ [DDL-LEG 2026-11-11] 主键升级为 (date,stock,leg) 后，同一天可能出现 auc / close
+  //   两行 ⇒ 行数翻倍。原来 `limit=2000` 写死无分页正好踩 §2 Range 分页红线（11-10 P0 根因
+  //   `readDailyLegsForStocks` 就是这么静默截断的）⇒ 改 sbGetPaged + 确定性 order。
+  //   ⚠️ 口径不变：下面 byName 去重仍是「close 优先」，9:25 读的是【前一交易日完整榜】
+  //      （收盘口径），两腿并存时自然取到 close 行，⛔ 不改用竞价腿。
   const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range20_pct?date=eq.' +
-    encodeURIComponent(date) + '&select=stock,pct,days,leg&limit=2000';
-  const resp = await sbFetch(url, { headers: sbHeaders(env) });
-  // [CLOUD-0927-HEAL 2026-11-11 §10] 同 readAuctionWatchlistForDate：读失败必须抛错，
-  //   由 9:25 组B 的 settled() 降级并计入汇总，⛔ 不伪装成「前一日 20 日榜为空」。
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    throw new Error('读取 stock_range20_pct(' + date + ') 失败: HTTP ' + resp.status + ': ' + text.slice(0, 200));
+    encodeURIComponent(date) + '&select=stock,pct,days,leg&order=stock.asc,leg.asc';
+  // [CLOUD-0927-HEAL 2026-11-11 §10] 读失败必须抛错，由 9:25 组B 的 settled() 降级并计入汇总，
+  //   ⛔ 不伪装成「前一日 20 日榜为空」（空榜会让 9:25 继续跑出一份残缺名单）。
+  //   ⚠️ sbGetPaged 的原始消息带分页 from，缺少「哪张表 / 哪一天」的定位信息 ⇒
+  //      统一包回业务语义，保持既有日志与告警文案可被正则检索（§10 报错必须能定位）。
+  let data;
+  try {
+    data = await sbGetPaged(env, url);
+  } catch (e) {
+    const msg = (e && e.message) ? e.message : String(e);
+    const http = /HTTP \d+[\s\S]*/.exec(msg);
+    throw new Error('读取 stock_range20_pct(' + date + ') 失败: ' + (http ? http[0] : msg));
   }
-  const data = await resp.json();
   const num = function (v) {
     if (v === null || v === undefined) return null;
     const s = String(v).replace('%', '').replace(/,/g, '').trim();
@@ -1651,6 +1665,55 @@ async function readStockCodeMapByNames(env, names) {
   } catch (e) {
     return {};
   }
+}
+
+/**
+ * [RANGE20-CODE-FALLBACK 2026-11-11] 按股票名从 `market_metrics` 补 code（二级兜底）。
+ *
+ *   取证（11-11）：`stockcodemap` 全表 1142 行里**没有**「青岛食品」，但有「海洋王」；
+ *   而 `market_metrics(scope=auction)` 近 10 天里两只票都带 code（001219 / 002724）。
+ *   9:25 合并「20日涨幅补位票」时 `codeMap[r.name] || ''` 取不到 ⇒ `if (!code) return`
+ *   把票整批丢掉 ⇒ 它不在猫抓 `daily_auc` 的 symbols 里 ⇒ 当天整行都不存在，
+ *   前端 9:27 只补得出 `ths-patch` 壳行（量比按红线禁用同花顺 ⇒ 永远空）。
+ *   ⇒ 同为 20 日补位票，海洋王量比 1.94 齐全、青岛食品空，就是这一处差异。
+ *
+ *   `market_metrics` 自带 `code` 列，且这些票历史上都在 9:25 名单里出现过 ⇒ 用它兜底
+ *   比让补位票「等下次进榜再说」更准确，且 0 上游请求 / 0 猫抓额度。
+ *
+ * §10：这是兜底层，读失败返回 {}（不抛错、不阻断 9:25）；调用方必须把「仍缺 code」
+ *      的只数写进日志，⛔ 不许静默丢票。
+ */
+async function readCodesFromMetricsByNames(env, names) {
+  const clean = (names || []).map(n => String(n || '').trim()).filter(Boolean);
+  if (clean.length === 0) return {};
+  const uniq = Array.from(new Set(clean)).slice(0, 400);
+  const map = {};
+  // ★ [RANGE20-CODE-FALLBACK 2026-11-11] 按股票名分批 + 「日期降序优先」两点都很关键：
+  //   ① 单批 100 只，避免 URL 过长 / 单批行数超 PostgREST 1000 行上限（§2 Range 分页红线）。
+  //   ② order 必须是 `date.desc` 在前：code 与日期无关，最近的行情行先返回 ⇒ 即使某批
+  //      真的撞到 1000 行上限，被截掉的也只是更老的历史行，不会把「青 / 奥」这类
+  //      按 UTF-8 字节序排在后面的票整只丢掉（旧写法 stock.asc 在第一位正是这个隐患）。
+  //   ⚠️ 这是兜底层：任一批读取失败只记空，⛔ 不抛错、不阻断 9:25 主链路（§10）。
+  for (let i = 0; i < uniq.length; i += 100) {
+    const chunk = uniq.slice(i, i + 100);
+    const inList = chunk.map(n => '%22' + encodeURIComponent(n) + '%22').join(',');
+    const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?select=stock,code' +
+      '&scope=eq.auction&stock=in.(' + inList + ')&code=not.is.null' +
+      '&order=date.desc,stock.asc&limit=1000';
+    try {
+      const resp = await sbFetch(url, { headers: sbHeaders(env) });
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      (data || []).forEach(function (r) {
+        const name = String((r && r.stock) || '').trim();
+        const code = String((r && r.code) || '').replace(/\D/g, '');
+        if (name && /^\d{6}$/.test(code) && !map[name]) map[name] = code;
+      });
+    } catch (e) {
+      // 单批失败不影响其它批，也不影响 9:25 主流程
+    }
+  }
+  return map;
 }
 
 // [FIX 2026-08-15] 读取股票名称→代码映射表（stockcodemap），为 watchlist 里 code 为空的
@@ -3386,11 +3449,27 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
     .map(s => s.name)
     .filter(n => n && !codeMap[n]);
   if (nameless.length > 0) {
-    const extra = await readStockCodeMapByNames(env, Array.from(new Set(nameless)));
+    const uniqNames = Array.from(new Set(nameless));
+    // ★★ [RANGE20-CODE-FALLBACK 2026-11-11] 两路补码【并行】，0 额外串行延迟、0 猫抓额度。
+    //   stockcodemap 是权威代码表，但它**会整只票缺行**（11-11 实测「青岛食品」「奥飞娱乐」
+    //   不在表里）；market_metrics 自带 code 列且这些票都在历史 9:25 名单里出现过。
+    //   ⇒ 先用权威表、再用行情表补缺，⛔ 别让「代码表没这一行」把 20 日补位票整批丢掉。
+    //   ⚠️ 两路都是兜底层：读失败各返回 {}，不抛错、不阻断 9:25（§10）。
+    const [extraMap, metricsMap] = await Promise.all([
+      settled(readStockCodeMapByNames(env, uniqNames)),
+      settled(readCodesFromMetricsByNames(env, uniqNames))
+    ]);
+    const extra = (extraMap.ok && extraMap.v) || {};
+    const fromMetrics = (metricsMap.ok && metricsMap.v) || {};
+    let fromMetricsAdded = 0;
+    Object.keys(fromMetrics).forEach(function (n) {
+      if (!extra[n] && !codeMap[n]) { extra[n] = fromMetrics[n]; fromMetricsAdded++; }
+    });
     const added = Object.keys(extra).length;
     if (added > 0) {
       Object.keys(extra).forEach(n => { codeMap[n] = extra[n]; });
-      logs.push('按名精确补 code: ' + added + ' 只（全表读被 1000 行上限截断的兜底）');
+      logs.push('按名精确补 code: ' + added + ' 只（stockcodemap 全表读 1000 行截断兜底 ' +
+        (added - fromMetricsAdded) + ' 只 / market_metrics.code 二级兜底 ' + fromMetricsAdded + ' 只）');
       // 用补到的 code 再并入一次名单
       const existingCodes = new Set(constituents.map(c => c.code));
       const existingNames = new Set(constituents.map(c => c.name));
@@ -3449,10 +3528,15 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
     const existingNames = new Set(constituents.map(c => c.name));
     const existingCodes = new Set(constituents.map(c => c.code));
     const range20Extra = [];
+    // ★ [RANGE20-CODE-FALLBACK 2026-11-11 §10] 以前「查不到 code」是静默 return，
+    //   日志只写「均已在名单内（或查不到 code）」⇒ 青岛食品这类票漏抓全天无人知晓，
+    //   用户只能在趋势图看到「无量比」。现在把被丢的名字逐只列出来，可观测、可追责。
+    const noCodeNames = [];
     range20Stocks.forEach(function (r) {
       if (!r || !r.name || existingNames.has(r.name)) return;
       const code = codeMap[r.name] || '';
-      if (!code || existingCodes.has(code)) return;
+      if (!code) { noCodeNames.push(r.name); return; }
+      if (existingCodes.has(code)) return;
       existingNames.add(r.name);
       existingCodes.add(code);
       range20Extra.push({ name: r.name, code: code });
@@ -3462,7 +3546,11 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
         range20Extra.length + ' 只，合并到抓取名单（不写 watchlist，0 猫抓额度）');
       constituents = constituents.concat(range20Extra);
     } else {
-      logs.push('20日涨幅补位: 榜上前 ' + range20Stocks.length + ' 名均已在抓取名单内（或查不到 code）');
+      logs.push('20日涨幅补位: 榜上前 ' + range20Stocks.length + ' 名均已在抓取名单内');
+    }
+    if (noCodeNames.length > 0) {
+      logs.push('⚠️ 20日涨幅补位有 ' + noCodeNames.length + ' 只查不到 code ⇒ 未进 9:25 抓取名单' +
+        '（当天竞价量比必然为空，需补 stockcodemap 或等 16:30 云端回填）: ' + noCodeNames.join('、'));
     }
   }
 
@@ -5235,7 +5323,7 @@ function hasValue(v) {
  *   · 已有量比 ⇒ 完全不碰（幂等，避免重复写库）。
  * 只认 6 位代码；按 code 去重；不会返回空 symbols 让调用方白烧额度。
  */
-function pickNumcatTargets(ladder, metricsRows) {
+function pickNumcatTargets(ladder, metricsRows, opts) {
   const byName = new Map();
   (metricsRows || []).forEach(function (r) {
     if (r && r.name) byName.set(String(r.name).trim(), r);
@@ -5244,18 +5332,33 @@ function pickNumcatTargets(ladder, metricsRows) {
   const fullRows = [];
   const ratioOnly = [];
   const symbols = [];
-  (ladder || []).forEach(function (c) {
-    if (!c) return;
-    const name = String(c.name || '').trim();
-    const code = String(c.code || '').trim();
+  const add = function (name, code) {
     if (!name || !/^\d{6}$/.test(code) || seenCode.has(code)) return;
     const m = byName.get(name);
-    if (m && hasValue(m.auc_vol_ratio)) return;
+    if (m && hasValue(m.auc_vol_ratio)) return;      // 已有量比 ⇒ 完全不碰（幂等）
     seenCode.add(code);
     symbols.push(code);
     if (!m) fullRows.push({ name: name, code: code });
-    else ratioOnly.push({ name: name, code: code });
+    else ratioOnly.push({ name: name, code: code }); // 有行缺量比 ⇒ 只补这一列（§11）
+  };
+  (ladder || []).forEach(function (c) {
+    if (!c) return;
+    add(String(c.name || '').trim(), String(c.code || '').trim());
   });
+  // ★★ [RANGE20-RATIO-HEAL 2026-11-11] 旧实现只遍历 `ladder`（883410 真实成分股），
+  //   ⇒ 20 日涨幅补位票（不写 watchlist、不在 ladder 里）即便当天有 market_metrics 行、
+  //     缺 `auc_vol_ratio`，9:26 也永远补不到 ⇒ 只能等 16:30 收盘后回填（用户竞价时间看不到）。
+  //   11-11 实测「青岛食品」就是这个形状：9:27 前端补出 ths-patch 壳行、量比永久为空，
+  //   而同为补位票的「海洋王」9:25 就抓到量比 1.94。
+  //   ⇒ 打开本开关后，把「当日已有行但缺量比」的票一并纳入 ratioOnly。
+  //   ⚠️ 仍然只在 `symbols.length > 0` 时才发 1 次猫抓请求；9:25 全抓全时 0 请求、0 额度（§32）。
+  //   ⚠️ 只补 `auc_vol_ratio` 一列，⛔ 不覆盖其它已有字段（buildAucMetricsWriteRows ratioOnly 路径）。
+  if (opts && opts.includeAllRows) {
+    (metricsRows || []).forEach(function (r) {
+      if (!r) return;
+      add(String(r.name || '').trim(), String(r.code || '').trim());
+    });
+  }
   return { symbols: symbols, fullRows: fullRows, ratioOnly: ratioOnly };
 }
 
@@ -5326,10 +5429,12 @@ async function fillAucFromNumcat(env, today, ladder, logs) {
     logs.push('[ladder26] ❌ ' + out.error);
     return out;
   }
-  const targets = pickNumcatTargets(ladder, metricsRows);
+  // ★ [RANGE20-RATIO-HEAL 2026-11-11] 打开「当日已有行但缺量比」的补抓（含 20 日补位票）。
+  //   仍严格只在有缺口时才发 1 次请求；9:25 全抓全时 0 请求、0 猫抓额度（§32）。
+  const targets = pickNumcatTargets(ladder, metricsRows, { includeAllRows: true });
   out.symbols = targets.symbols.length;
   if (targets.symbols.length === 0) {
-    out.skipped = '当日 market_metrics 已覆盖真实名单且竞价量比齐全 → 0 次猫抓请求';
+    out.skipped = '当日 9:25 名单竞价量比齐全 → 0 次猫抓请求';
     logs.push('[ladder26] ✅ ' + out.skipped);
     return out;
   }
@@ -5350,7 +5455,13 @@ async function fillAucFromNumcat(env, today, ladder, logs) {
     logs.push('[ladder26] ⚠️ ' + out.skipped);
     return out;
   }
-  const parsed = parseNumcatToMetrics(items, fields, ladder, logs, today);
+  // ★ [RANGE20-RATIO-HEAL 2026-11-11] 解析白名单要覆盖「补抓目标」而不只是 ladder：
+  //   `parseNumcatToMetrics` 用 codeToName 把猫抓 code 映射回库里的股票名， ladder 为 null
+  //   （9:25 名单已足、只补缺量比票）时不能传 null（会 .forEach 崩），也不能只靠猫抓返回的
+  //   name 兜底（别名/简繁不一致 ⇒ buildAucMetricsWriteRows 按库名匹配不上 ⇒ 白补一趟）。
+  const allowList = (ladder || []).concat(targets.fullRows || [], targets.ratioOnly || [])
+    .map(function (t) { return { name: t.name, code: t.code }; });
+  const parsed = parseNumcatToMetrics(items, fields, allowList, logs, today);
   const rows = buildAucMetricsWriteRows(parsed.metricsByDate[today] || [], today, new Date().toISOString(), targets);
   if (rows.length === 0) {
     out.skipped = '猫抓返回 ' + items.length + ' 行但无一行可写（名单/字段不匹配）→ 留空不猜';
@@ -5386,6 +5497,22 @@ async function runLadderRecheck(env, opts) {
     logs: logs,
   };
 
+  // ★★ [RANGE20-RATIO-HEAL 2026-11-11] 「名单二次确认」和「竞价量比补缺」是两件事。
+  //   旧实现只在 ⑥（名单恢复成功路径）末尾补量比，而【9:25 名单足量】时 ① 就直接 return
+  //   ⇒ 20 日涨幅补位票 / stockcodemap 缺票 即便当天已有 market_metrics 行、只是缺
+  //     `auc_vol_ratio`，也永远补不到。11-11「青岛食品」就是这么丢的：9:25 名单 77 行足量
+  //     ⇒ 9:26 走 skipped 分支、0 次猫抓请求，全天量比为空（海洋王因 9:25 就在名单里有 1.94）。
+  //   ⇒ 统一收敛到 finish()：所有「数据可读」的返回路径都补一次，整轮最多 1 次猫抓，
+  //     且仅在确有缺口时发请求（9:25 全抓全时 0 请求、0 额度，§32）。
+  //   ⚠️ ladderForAuc：名单恢复成功时传真实 883410 名单（保留原有「新进成分股整行补写」）；
+  //     否则传 null ⇒ pickNumcatTargets 只靠 includeAllRows 覆盖「当日已有行但缺量比」的票。
+  let ladderForAuc = null;
+  const finish = async function () {
+    if (out.auc.attempted || out.auc.skipped || out.auc.error) return out;
+    out.auc = await fillAucFromNumcat(env, today, ladderForAuc, logs);
+    return out;
+  };
+
   // ① 当日名单现状。读取失败必须停（§10），绝不把它当「空名单」往下写。
   let todayRows;
   try {
@@ -5398,8 +5525,9 @@ async function runLadderRecheck(env, opts) {
     out.ok = true;
     out.skipped = true;
     logs.push('[ladder26] ✅ 9:25 已写入 ' + countRealLadderRows(todayRows) +
-      ' 行真实 883410 名单（≥' + MIN_LADDER_ROWS + '）→ 本趟 0 上游请求、0 猫抓额度，直接返回');
-    return out;
+      ' 行真实 883410 名单（≥' + MIN_LADDER_ROWS + '）→ 不重查名单（0 上游请求）；' +
+      '仅检查当日缺竞价量比的行（含 20 日补位票），无缺口则 0 猫抓额度');
+    return finish();
   }
 
   const officialNames = new Set(todayRows.filter(r => !r.obs_auto_added).map(r => r.name));
@@ -5413,6 +5541,7 @@ async function runLadderRecheck(env, opts) {
     const raw = await fetchLadderConstituents(env);
     if (Array.isArray(raw) && raw.length >= MIN_LADDER_ROWS) {
       ladder = raw;
+      ladderForAuc = raw;
       out.recovered = true;
       out.ladderCount = raw.length;
       logs.push('[ladder26] ✅ 883410 恢复，拿到 ' + raw.length + ' 只');
@@ -5430,12 +5559,12 @@ async function runLadderRecheck(env, opts) {
       logs.push('[ladder26] 名单源未恢复，但当日已有 ' + officialNames.size +
         ' 行正式成员（含 9:25 兜底）⇒ 保留现状，⛔ 不覆盖、不删除');
       out.ok = true;
-      return out;
+      return finish();
     }
     const fb = pickFallbackWatchlistRows(o.prevRows, today, nowIso, MIN_FALLBACK_ROWS);
     if (fb.length === 0) {
       logs.push('[ladder26] ❌ 名单源未恢复且无足量前一日正式成员 → 不写名单，保留可观测的降级状态');
-      return out;
+      return finish();
     }
     try {
       await upsertAuctionWatchlist(env, fb);
@@ -5445,7 +5574,7 @@ async function runLadderRecheck(env, opts) {
     } catch (e) {
       logs.push('[ladder26] ❌ 兜底名单写入失败: ' + (e && e.message ? e.message : String(e)));
     }
-    return out;
+    return finish();
   }
 
   // ④ 写真实名单。非 9:25 窗口且当日已有正式成员 ⇒ 名单锁定，只更新已存在的行。
@@ -5458,7 +5587,7 @@ async function runLadderRecheck(env, opts) {
   }
   if (rows.length === 0) {
     logs.push('[ladder26] 名单锁定后无行可写 → 不写');
-    return out;
+    return finish();
   }
   try {
     await upsertAuctionWatchlist(env, rows);
@@ -5505,8 +5634,9 @@ async function runLadderRecheck(env, opts) {
   }
 
   // ⑥ 猫抓补新进票 / 缺量比票。失败只记日志，绝不影响已写好的真实名单。
-  out.auc = await fillAucFromNumcat(env, today, ladder, logs);
-  return out;
+  //    [RANGE20-RATIO-HEAL] 统一走 finish()：ladderForAuc 带真实名单 ⇒ 既补新进成分股整行，
+  //    也靠 includeAllRows 补「当日已有行但缺 auc_vol_ratio」的 20 日补位票。
+  return finish();
 }
 
 
