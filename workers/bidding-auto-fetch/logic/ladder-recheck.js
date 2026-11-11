@@ -169,7 +169,7 @@ export function buildAucMetricsWriteRows(parsedToday, today, nowIso, targets) {
  * ⛔ 整个函数最多 1 次 numcat 请求；额度用尽直接优雅退出，不重试（§32）。
  */
 async function fillAucFromNumcat(env, today, ladder, logs) {
-  const out = { attempted: false, symbols: 0, written: 0, skipped: '', error: '' };
+  const out = { attempted: false, symbols: 0, written: 0, names: [], skipped: '', error: '' };
   let metricsRows;
   try {
     metricsRows = await readMarketMetricsSnapshotFieldsForDate(env, today);
@@ -225,8 +225,13 @@ async function fillAucFromNumcat(env, today, ladder, logs) {
     return out;
   }
   out.written = rows.length;
+  // ★★ [LADDER26-TIMING 2026-11-12] 记下「这次到底补了哪几只」。
+  //   用户报障是「青岛食品没量比，同是补位标签的海洋王却有」⇒ 只有条数不足以核对，
+  //   必须能一眼看到补写名单里有没有那只票。纯记录，⛔ 不影响写入行为。
+  out.names = rows.map(function (r) { return r.stock; }).filter(Boolean);
   logs.push('[ladder26] ✅ 猫抓 daily_auc 1 次请求 → 写入 market_metrics ' + rows.length +
-    ' 行（新票整行 / 已有票只补 auc_vol_ratio，来源=猫抓竞价时间段）');
+    ' 行（新票整行 / 已有票只补 auc_vol_ratio，来源=猫抓竞价时间段）' +
+    (out.names.length ? '：' + out.names.slice(0, 15).join(',') + (out.names.length > 15 ? ' …共 ' + out.names.length + ' 只' : '') : ''));
   return out;
 }
 

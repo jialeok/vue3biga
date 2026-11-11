@@ -58,7 +58,13 @@ const REQUIRED = [
   //   缺后两项 ⇒ 20 日补位票（青岛食品）全天没有竞价量比。
   'on_conflict=date,stock,leg',
   'includeAllRows',
-  'readCodesFromMetricsByNames'
+  'readCodesFromMetricsByNames',
+  // [LADDER26-TIMING 2026-11-12] 用户硬指标「9:26 完成、不超过 9:27」的度量必须上线。
+  //   实测缺口：11-09/10/11 三天的 ladder26 记录里 elapsedMs / finishedAtBj 全是 null
+  //   ⇒ 「是否超 9:27」无从核对；猫抓补量比也只有条数、没有补写名单。
+  //   ⚠️ 前者是 console.log 的字符串字面量，后者是不被 mangle 的对象字段名。
+  'ladder26 时序:',
+  'deadlineBj'
 ];
 
 async function cf(url, accept) {

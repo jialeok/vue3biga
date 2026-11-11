@@ -130,6 +130,36 @@ async function runSnapshotPatchSafely(env, result, tag) {
 }
 
 /**
+ * ★★ [LADDER26-TIMING 2026-11-12 用户硬指标] 9:26 这一趟的时序度量。
+ *
+ * 用户原话：「要在9点26分时，不要超过9点27分，题材量比选股结果计算是否正常，
+ *   注意我要求的全部在云端运行，不用打开本地电脑。」
+ *
+ * 为什么必须补（实测缺口）：
+ *   `bidding_fetch_log` 里 11-09 / 11-10 / 11-11 三天的 ladder26 记录中
+ *   `elapsedMs` / `finishedAtBj` 全是 **null** —— 9:25 morning 有（11225/9507/9512ms +
+ *   09:25:40 完成），唯独 9:26 这一趟没有任何耗时证据 ⇒ 「是否超过 9:27」无从核对。
+ *   ⇒ 本文件给 ladder26 补上三个字段（纯记录，⛔ 不改任何业务分支、不改执行顺序）。
+ *
+ * `persistRunResult` 已按 `r.elapsedMs / r.finishedAtBj / r.p0Overrun` 落库 ⇒ 只要 result26
+ * 带上这三个字段就自动进 `bidding_fetch_log.detail`，无需改写入侧（§11 最小改动）。
+ */
+const LADDER26_DEADLINE_BJ_SEC = 9 * 3600 + 27 * 60;   // 09:27:00（用户硬指标上界）
+const LADDER26_DEADLINE_LABEL = '09:27:00';
+/** 北京时钟 HH:MM:SS（beijingNow 的 UTC 字段装的就是北京值） */
+function bjClockNow() {
+  const d = beijingNow();
+  return String(d.getUTCHours()).padStart(2, '0') + ':' +
+    String(d.getUTCMinutes()).padStart(2, '0') + ':' +
+    String(d.getUTCSeconds()).padStart(2, '0');
+}
+/** 北京当日秒数（0 点起），用于和 09:27:00 比较 */
+function bjSecNow() {
+  const d = beijingNow();
+  return d.getUTCHours() * 3600 + d.getUTCMinutes() * 60 + d.getUTCSeconds();
+}
+
+/**
  * [RUNLOG 2026-09-30] 把这一轮的运行结果落库到 bidding_fetch_log（含 ⏱ 埋点断点）。
  * 只写日志表，失败静默（见 data/supabase-write.js#writeRunLog），绝不影响主流程。
  */
@@ -143,6 +173,9 @@ async function persistRunResult(env, point, result) {
       elapsedMs: r.elapsedMs === undefined ? null : r.elapsedMs,
       finishedAtBj: r.finishedAtBj || '',
       p0Overrun: !!r.p0Overrun,
+      // ★ [LADDER26-TIMING 2026-11-12] 该趟的硬截止时刻（ladder26 = 09:27:00）；
+      //   morning 不传 ⇒ 空串（它的截止 09:25:45 写在 logs 里，见 morning-workflow P0_DEADLINE_LABEL）
+      deadlineBj: r.deadlineBj || '',
       ladderDegraded: !!r.ladderDegraded,
       // [LADDER-SRC 2026-11-03 用户口径] 同花顺「最近多板」(883410) 源数据条数。
       //   前端 logic/auction/ladder-source.js 读这个字段显示在第一页（用户拿它对炒股软件）。
@@ -416,6 +449,7 @@ async function dispatch(point, env, logs, opts) {
     //   · ladder26  = 开盘前自动二次确认，名单 + 新进票猫抓补竞价量比 + 清理兜底行，
     //                 且「9:25 已成功」时 0 请求直接返回（幂等，不重复烧额度）。
     const logs26 = [];
+    const _t26 = Date.now();   // ★ [LADDER26-TIMING] 见 bjClockNow 的说明
     const d26 = (opts && opts.date) || beijingToday();
     // [CLOUD-0927-HEAL 2026-11-11] 修两处历史缺陷：
     //   ① 原来传 `{ date }`，而 runLadderRecheck 读的是 `o.today` ⇒ 手动 /fetch?point=ladder26&date=
@@ -463,12 +497,26 @@ async function dispatch(point, env, logs, opts) {
       dailyLegsWritten: legs26.written || 0,
       range20: r20,
       range20Written: r20.written || 0,
+      // ★★ [LADDER26-TIMING 2026-11-12] 用户硬指标「9:26 完成、不超过 9:27」的度量。
+      //   纯记录：⛔ 未在此加任何截止/跳过分支，执行顺序与业务分支一字未改。
+      //   明天 9:26 跑完直接查 bidding_fetch_log（time_point=ladder26）即可核对：
+      //     elapsedMs / finishedAtBj / p0Overrun（true = 晚于 09:27:00）
+      elapsedMs: Date.now() - _t26,
+      finishedAtBj: bjClockNow(),
+      p0Overrun: bjSecNow() > LADDER26_DEADLINE_BJ_SEC,
+      deadlineBj: LADDER26_DEADLINE_LABEL,
       logs: logs26
     };
     console.log('[auto-fetch] ladder26: ok=' + result26.ok + ' skipped=' + result26.skipped +
       ' recovered=' + result26.recovered + ' written=' + result26.written +
       ' 猫抓补写=' + (r26.auc && r26.auc.written) + ' 20日补缺=' + result26.range20Written +
       ' 日志=' + JSON.stringify(logs26));
+    // ★ [LADDER26-TIMING] 单行时序摘要：Cloudflare 控制台一眼可读，配合 bidding_fetch_log 双留存
+    console.log('[auto-fetch] ladder26 时序: 耗时=' + result26.elapsedMs + 'ms 完成@' + result26.finishedAtBj +
+      ' 截止=' + LADDER26_DEADLINE_LABEL + ' overrun=' + result26.p0Overrun +
+      ' | 猫抓补量比=' + ((r26.auc && r26.auc.written) || 0) + ' 只' +
+      (r26.auc && r26.auc.names && r26.auc.names.length ? '（' + r26.auc.names.slice(0, 12).join(',') + '）' : '') +
+      ' | 20日补缺=' + result26.range20Written + ' 行 | 逐日腿=' + result26.dailyLegsWritten + ' 行');
     await persistRunResult(env, point, result26);
     return result26;
   }
