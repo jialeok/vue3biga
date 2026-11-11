@@ -6,11 +6,13 @@
  * 本测试锁 5 条整类红线：
  *   ① 四态分明：hit / empty / unavailable(表不存在) / error(读失败)，⛔ 不许一律折成「没有存档」（§10）；
  *   ② 表不存在 / 读失败都不许伪装成「那天没选股」；读失败不缓存（下次可重试）；
- *   ③ 写入 ignoreDuplicates + onConflict=date ⇒ 先写的定稿永不被后写覆盖（用户硬口径）；
- *   ④ 已有存档不再发第二次写请求（§32），写失败不抛给调用方但留痕；
+ *   ③ [REVISABLE 2026-11-11] 写入是**普通 upsert（可修订）**：⛔ 不许再带 ignoreDuplicates；
+ *      任何日期都写、规则指纹变了就覆盖，且覆盖时保留 created_at、revision 递增；
+ *   ④ 幂等由 Logic 层 `shouldPersistPlanSnapshot` 决定，写失败不抛给调用方但留痕；
  *   ⑤ 同日并发读单飞，一天只查一次。
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import fs from 'node:fs';
 
 const calls = [];
 let mode = 'ok';       // 'ok' | 'missing' | 'readfail' | 'writefail'
@@ -33,7 +35,13 @@ const sb = {
           plan: st.payload.plan,
           leg: st.payload.leg,
           source: st.payload.source,
-          settled_at: st.payload.settled_at
+          rules_sig: st.payload.rules_sig || '',
+          selection_sig: st.payload.selection_sig || '',
+          revision: st.payload.revision || 1,
+          settled_at: st.payload.settled_at,
+          // 模拟 DB：覆盖旧行时 created_at 保持首次值，新行用本次时间
+          created_at: (row && row.date === st.payload.date && row.created_at)
+            ? row.created_at : st.payload.settled_at
         };
         return { data: null, error: null };
       }
@@ -42,7 +50,7 @@ const sb = {
       return { data: (row && row.date === st.eqVal) ? [Object.assign({}, row)] : [], error: null };
     };
     const b = {
-      select: function() { st.op = 'select'; return b; },
+      select: function(cols) { st.op = 'select'; st.selectCols = cols; return b; },
       eq: function(c, v) { st.eqCol = c; st.eqVal = v; return b; },
       limit: function() { return b; },
       upsert: function(p, o) { st.op = 'upsert'; st.payload = p; st.opts = o; return b; },
@@ -86,14 +94,25 @@ describe('tvrb-plan-snapshot · 定稿结论按日落库', function() {
     expect(calls.filter(function(c) { return c.op === 'select'; })).toHaveLength(1);
   });
 
-  it('③ 有存档 ⇒ status=hit，原样带回 row 供 Logic 层解码', async function() {
-    row = { date: D, plan: { blocks: [], buy: {} }, leg: 'auc', source: 'tvrb-board', settled_at: '2026-11-10T01:25:40Z' };
+  it('③ 有存档 ⇒ status=hit，原样带回 row 供 Logic 层解码（含规则/结论指纹）', async function() {
+    row = {
+      date: D, plan: { blocks: [], buy: {} }, leg: 'auc', source: 'tvrb-board',
+      rules_sig: 'v1:aaaaaaaa', selection_sig: 'nA|b|p1|x', revision: 2,
+      settled_at: '2026-11-10T01:25:40Z', created_at: '2026-11-10T01:25:40Z'
+    };
     const r = await readPlanSnapshot(D);
     expect(r.status).toBe('hit');
     expect(r.row.plan).toEqual({ blocks: [], buy: {} });
+    expect(r.row.rules_sig).toBe('v1:aaaaaaaa');
+    expect(r.row.selection_sig).toBe('nA|b|p1|x');
+    expect(r.row.revision).toBe(2);
     expect(r.row.settled_at).toBe('2026-11-10T01:25:40Z');
     expect(calls[0].eqVal).toBe(D);
     expect(calls[0].table).toBe('tvrb_plan_snapshot');
+    // 🔴 select 必须把新列一起读回来，否则前端永远判「规则指纹待补齐」⇒ 天天重算
+    expect(calls[0].selectCols).toContain('rules_sig');
+    expect(calls[0].selectCols).toContain('selection_sig');
+    expect(calls[0].selectCols).toContain('revision');
   });
 
   it('④ 表不存在 ⇒ unavailable，且本会话不再重试（§32）', async function() {
@@ -123,22 +142,45 @@ describe('tvrb-plan-snapshot · 定稿结论按日落库', function() {
     expect(calls).toHaveLength(1);
   });
 
-  it('⑦ 🔴 写入必须 ignoreDuplicates + onConflict=date（先写的定稿不被覆盖）', async function() {
-    const ok = await writePlanSnapshot('2026-11-11', { blocks: [], buy: {}, notes: [], pickCount: 1 });
+  it('⑦ 🔴 [REVISABLE] 写入是普通 upsert：onConflict=date，⛔ 绝不带 ignoreDuplicates', async function() {
+    const plain = { blocks: [], buy: {}, notes: [], pickCount: 1 };
+    const ok = await writePlanSnapshot('2026-11-11', plain, {
+      rulesSig: 'v1:aaaaaaaa', selectionSig: 'nA|b|p1|x', revision: 1
+    });
     expect(ok).toBe(true);
     const w = calls.filter(function(c) { return c.op === 'upsert'; })[0];
-    expect(w.opts).toEqual({ onConflict: 'date', ignoreDuplicates: true });
+    expect(w.opts).toEqual({ onConflict: 'date' });
+    expect(w.opts.ignoreDuplicates).toBeUndefined();
     expect(w.payload.date).toBe('2026-11-11');
     expect(w.payload.leg).toBe('auc');
     expect(w.payload.source).toBe('tvrb-board');
-    expect(w.payload.plan).toEqual({ blocks: [], buy: {}, notes: [], pickCount: 1 });
+    expect(w.payload.plan).toEqual(plain);
+    expect(w.payload.rules_sig).toBe('v1:aaaaaaaa');
+    expect(w.payload.selection_sig).toBe('nA|b|p1|x');
+    expect(w.payload.revision).toBe(1);
     expect(typeof w.payload.settled_at).toBe('string');
+    // ⛔ 不传 created_at ⇒ 覆盖旧行时 DB 保留首次时间（修订留痕）
+    expect('created_at' in w.payload).toBe(false);
   });
 
-  it('⑧ 已有存档 ⇒ 不再发第二次写（一天一行、只写一次）', async function() {
-    expect(await writePlanSnapshot('2026-11-11', { a: 1 })).toBe(true);
-    expect(await writePlanSnapshot('2026-11-11', { a: 2 })).toBe(false);
-    expect(calls.filter(function(c) { return c.op === 'upsert'; })).toHaveLength(1);
+  it('⑧ 🔴 [REVISABLE] 已有存档也允许【修订覆盖】：revision 递增、created_at 保留、缓存同步', async function() {
+    const plain = { blocks: [], buy: {}, notes: [], pickCount: 1 };
+    expect(await writePlanSnapshot('2026-11-11', plain, {
+      rulesSig: 'v1:aaaaaaaa', selectionSig: 'nA|b|p1|x', revision: 1
+    })).toBe(true);
+    const firstCreated = row.created_at;
+    expect(await writePlanSnapshot('2026-11-11', plain, {
+      rulesSig: 'v1:bbbbbbbb', selectionSig: 'nB|b|p1|x', revision: 2
+    })).toBe(true);
+    const ws = calls.filter(function(c) { return c.op === 'upsert'; });
+    expect(ws).toHaveLength(2);
+    expect(ws[1].payload.revision).toBe(2);
+    expect(row.rules_sig).toBe('v1:bbbbbbbb');
+    expect(row.selection_sig).toBe('nB|b|p1|x');
+    expect(row.created_at).toBe(firstCreated);
+    const r = await readPlanSnapshot('2026-11-11');
+    expect(r.status).toBe('hit');
+    expect(r.row.rules_sig).toBe('v1:bbbbbbbb');   // 会话缓存也是新版本
   });
 
   it('⑨ 写失败 / 表不存在 ⇒ 返回 false 且【不抛】给调用方（展示不该被存档拖垮）', async function() {
@@ -161,5 +203,15 @@ describe('tvrb-plan-snapshot · 定稿结论按日落库', function() {
     expect(r.status).toBe('hit');
     expect(r.row.plan).toEqual({ blocks: [], pickCount: 1 });
     expect(calls.filter(function(c) { return c.op === 'select'; })).toHaveLength(0);
+  });
+
+  it('⑫ 🔴 静态锁：upsert 调用 ⛔ 不许再带 ignoreDuplicates（一天锁死是错误设计）', function() {
+    const src = fs.readFileSync(new URL('./tvrb-plan-snapshot.js', import.meta.url), 'utf8');
+    // ⚠️ 只锁【调用参数】，不锁「注释里提到这段历史」——注释必须能解释为什么删掉它
+    expect(src).not.toContain('ignoreDuplicates: true');
+    expect(src).not.toMatch(/\.upsert\([\s\S]{0,160}ignoreDuplicates/);
+    expect(src).toContain("upsert(payload, { onConflict: 'date' })");
+    expect(src).toContain('rules_sig');
+    expect(src).toContain('revision');
   });
 });

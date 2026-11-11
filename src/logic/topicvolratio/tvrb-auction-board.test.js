@@ -262,4 +262,17 @@ describe('★ 静态契约 [TVRB-AUC-BOARD 2026-11-10]', () => {
     expect(SRC).toContain('readPlanSnapshot');
     expect(SRC).toContain('writePlanSnapshot');
   });
+
+  it('⑦ 🔴🔴 [REVISABLE 11-11] 历史日期必须能存、存档必须可修订（⛔ 不许退回「只写今天 / 只写一次」）', () => {
+    // 用户：「历史日期既然能计算出来也要存起来……结果不是一成不变的」
+    expect(SRC).toContain('currentRulesSig');
+    expect(SRC).toContain('_recheckPlanSnapshotFreshness');
+    expect(SRC).toContain('shouldPersistPlanSnapshot');
+    expect(SRC).toContain('buildRulesFingerprint');
+    expect(SRC).toContain("'stale'");
+    expect(SRC).toContain('_recheckPlanSnapshotFreshness(\'user-refresh\')');
+    // ⛔ 旧设计的两处标志，出现任意一处都说明被改回去了
+    expect(SRC).not.toContain("key !== _getLocalTodayStr()");
+    expect(SRC).not.toContain('ignoreDuplicates');
+  });
 });

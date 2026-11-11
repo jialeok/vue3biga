@@ -8,14 +8,22 @@
 //   ⇒ 根治 = 把定稿那一刻的 plan 按日期存下来，历史日期优先读快照、永不重算（§6 单一真相）。
 //
 // ── 表结构（建表 SQL：db/create_tvrb_plan_snapshot.sql）───────────────────────
-//   date(pk) / plan(jsonb) / leg / source / settled_at / created_at
+//   date(pk) / plan(jsonb) / leg / source / rules_sig / selection_sig / revision /
+//   settled_at / created_at
+//
+// 🔴 [TVRB-PLAN-SNAPSHOT-REVISABLE 2026-11-11] 第二版语义修正（用户明确要求）：
+//   「历史日期既然能计算出来也要存起来……结果不是一成不变的」。
+//   ⇒ 第一版的 `ignoreDuplicates / 只写一次 / 只写今天` **全部作废**：
+//     任何日期算出来都写；用户在核心词管理改同义词 ⇒ 规则指纹变 ⇒ 历史日重算并覆盖。
 //
 // ── 红线 ───────────────────────────────────────────────────────────────────
 //   · §10：四种状态必须分清 —— hit(有存档) / empty(表里确实没有) / unavailable(表不存在) /
-//     error(读失败或快照损坏)。⛔ 绝不允许把 error / unavailable 折成「没有存档」去重算还静默。
-//   · §11：本模块只 select / upsert，⛔ 绝无 delete；写入 ignoreDuplicates ⇒ 先写的定稿永不被覆盖。
-//   · §32：按日期会话内缓存 + 单飞，同一天只查一次。
-//   · 写入失败不抛给调用方（今天这次展示不该因为存不上而失败），但必须留痕（§10 禁止静默）。
+//     error(读失败)。⛔ 绝不允许把 error / unavailable 折成「没有存档」去重算还静默。
+//   · §11：本模块只 select / upsert，⛔ 绝无 delete。**覆盖是否安全由 Logic 层
+//     `shouldPersistPlanSnapshot` 判定**（读档失败 / 表不存在 / 降级结论一律不覆盖），
+//     ⛔ 本层不自行决定，也不再用 ignoreDuplicates 偷偷把「不许覆盖」写死。
+//   · §32：按日期会话内缓存 + 单飞，同一天只查一次；写成功后同步缓存。
+//   · 写入失败不抛给调用方（这次展示不该因为存不上而失败），但必须留痕（§10 禁止静默）。
 //
 // 状态范式与 ebb-days.js 一致（Data 层只读写自己那张表）。
 
@@ -50,7 +58,7 @@ async function _fetchOne(d) {
     try {
         const res = await getSupabase()
             .from(PLAN_SNAPSHOT_TABLE)
-            .select('date,plan,leg,source,settled_at')
+            .select('date,plan,leg,source,rules_sig,selection_sig,revision,settled_at,created_at')
             .eq('date', d)
             .limit(1);
         data = res.data;
@@ -104,32 +112,41 @@ export async function readPlanSnapshot(date) {
 }
 
 /**
- * 写入【今天】的定稿快照。幂等且只写一次：ignoreDuplicates ⇒ 已有行绝不覆盖（用户硬口径）。
+ * 写入 / 修订某日的定稿快照（**任何日期**，含历史日期复盘重算）。
  *
- * ⚠️ 「只写今天 / 只在定稿时调用」由 Logic 层保证；这里再挡一道「已缓存则跳过」，
- *     避免同一会话因意外二次调用重复发请求（§32）。
+ * 🔴 不再是「只写今天、只写一次」：用户明确要求「历史日期既然能计算出来也要存起来」，
+ *    且「核心词同义词变更 ⇒ 选票结果也要变（这是我本身纠错行为）」。
+ *    ⇒ `ignoreDuplicates` 已删除，正常 `upsert(on_conflict=date)` 允许修订。
+ *
+ * ⚠️ 「能不能覆盖」由 Logic 层 `shouldPersistPlanSnapshot` 判定后才调用本函数：
+ *    读档失败 / 表不存在 / 降级结论 / 结论与规则都没变 ⇒ 调用方根本不会走到这里（§11）。
+ * ⚠️ 不传 `created_at`：新行由 DB default 填首次时间；覆盖旧行时保持原值（修订留痕）。
  *
  * @param {string} date
  * @param {object} plain 已由 encodePlanSnapshot 编码过的纯 JSON 对象
+ * @param {object} meta { rulesSig, selectionSig, revision }
  * @returns {Promise<boolean>} 是否真的写成功了
  */
-export async function writePlanSnapshot(date, plain) {
+export async function writePlanSnapshot(date, plain, meta) {
     const d = String(date || '').trim();
     if (!d || !plain || typeof plain !== 'object') return false;
     if (_tableMissing) return false;
-    if (_cache.get(d)) return false;          // 已有存档 ⇒ 不覆盖（§11）
+    const m = meta || {};
     const payload = {
         date: d,
         plan: plain,
         leg: 'auc',
         source: 'tvrb-board',
+        rules_sig: String(m.rulesSig || '').trim(),
+        selection_sig: String(m.selectionSig || '').trim(),
+        revision: Math.max(1, Number(m.revision) || 1),
         settled_at: new Date().toISOString()
     };
     let error = null;
     try {
         const res = await getSupabase()
             .from(PLAN_SNAPSHOT_TABLE)
-            .upsert(payload, { onConflict: 'date', ignoreDuplicates: true });
+            .upsert(payload, { onConflict: 'date' });
         error = res.error;
     } catch (e) {
         error = e;
@@ -144,7 +161,11 @@ export async function writePlanSnapshot(date, plain) {
         _dbgLog('[TVRB-SNAPSHOT] 写入 ' + d + ' 失败：' + (error.message || error));
         return false;
     }
-    _cache.set(d, payload);                   // 写成功 ⇒ 会话缓存同步（下次读立刻命中）
+    // 写成功 ⇒ 会话缓存同步（下次读立刻命中新版本），并保留首次 created_at（§11 留痕）
+    const prev = _cache.get(d);
+    _cache.set(d, Object.assign({}, payload, {
+        created_at: (prev && prev.created_at) ? prev.created_at : payload.settled_at
+    }));
     return true;
 }
 
