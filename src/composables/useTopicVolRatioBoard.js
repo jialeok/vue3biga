@@ -207,6 +207,12 @@ import {
   buildRulesFingerprint, buildInputsFingerprint, resolvePlanSnapshotFreshness, shouldPersistPlanSnapshot
 } from '../logic/topicvolratio/plan-snapshot-rules.js';
 import { readPlanSnapshot, writePlanSnapshot, isPlanSnapshotInputsSigSupported } from '../data/tvrb-plan-snapshot.js';
+// ★★ [SELL-LIVE / TICK-LIVE 2026-11-12] 冻结的「买点结论」怎么和「实时事实」合流。
+//   🔴 报障：「打开昨天的最近多板长按买入 → 切到今天题材量比卖点列表，票没了、分笔也没了」。
+//   根因：定稿冻结的是**整份 plan**，而 `sell`（成员 = 用户昨天打的「买」标签，随时可补打）与
+//   分笔装饰（异步抓取，定稿时常常还没到）**本来就必须在定稿后继续变**。
+//   ⇒ 冻结只保留买点结论；卖点段与分笔装饰恒取实时（§6：判据唯一实现在这个模块里）。
+import { eachBuyBlock, overlayLiveOnFrozen } from '../logic/topicvolratio/plan-live-overlay.js';
 // ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ 禁止选股（硬空仓）的判据。
 //   与 buy-settle 是两件事：那个管「还没到、等几秒」；这个管「根本不会有、必须直接给结论」。
 import { resolveBuyDataGate, TVRB_DATA_GATE_NONE } from '../logic/topicvolratio/buy-data-gate.js';
@@ -1575,26 +1581,14 @@ export function useTopicVolRatioBoard() {
       // ⛔ 买点 pick 自带 code（由本看板的候选构造透传）⇒ 不需要 memberMap 反查；
       //    卖点行同样自带 code ⇒ 两边都传 null（与分笔看板的 buy 侧传 memberMap 等价，
       //    只是本看板在建 pick 时已经带上 code，省掉一次反查）。
-      // ⚠️ 退潮首日那只【唯一买点】(plan.ebbBuy) 【不在】plan.blocks 里 —— 它要渲染在灰化容器【之外】，
-      //    所以这里必须单独带上它走一遍；否则它拿不到分笔行（§6：装饰只有这一处，⛔ 别在组件里再铺一次）。
-      const buyBlockLists = [plan.blocks,
-        plan.ebbBuy ? [plan.ebbBuy] : [],
-        plan.divergeBuy ? [plan.divergeBuy] : [],
-        // ★★ [SWITCH 2026-10-22] 第二十八条的新龙那一行同样要拿分笔（它也在灰化容器之外）
-        plan.newDragon ? [plan.newDragon] : [],
-        // ★★ [R10-BACKUP 2026-10-24] 第二十九条的十日涨幅候补同样要拿分笔（它也在灰化容器之外）——
-        //   ⛔ 漏掉它，那只票点开就是「分笔明细暂不可用」（装饰只有这一处，§6）
-        plan.range10Backup ? [plan.range10Backup] : [],
-        // ★★ [WEAK-HUDDLE 2026-10-27] 第三十条的「弱势切抱团」同样要拿分笔（它也在灰化容器之外）——
-        //   ⛔ 漏掉它，那只票点开就是「分笔明细暂不可用」（装饰只有这一处，§6）
-        plan.weakHuddle ? [plan.weakHuddle] : [],
-        // ★★ [CATCH-UP 2026-10-27] 第三十一条的「补涨题材」同样要拿分笔（它也在灰化容器之外）
-        plan.catchUp ? [plan.catchUp] : []];
-      buyBlockLists.forEach(function(arr) {
-        arr.forEach(function(b) {
-          (b.picks || []).forEach(function(p) {
-            Object.assign(p, decorateTickRow(p, map, attempted, skipMap, null, 'buy'));
-          });
+      // ⚠️ 退潮首日那只【唯一买点】(plan.ebbBuy) / 新龙 / 十日候补 / 弱势抱团 / 补涨 都【不在】
+      //    plan.blocks 里 —— 它们渲染在灰化容器【之外】，必须一并走装饰，否则点开就是
+      //    「分笔明细暂不可用」。
+      // ★★ [SELL-LIVE 2026-11-12] 清单收口到 `plan-live-overlay#eachBuyBlock`（§6：只此一处遍历）：
+      //    原来这里手写了一份槽位列表，而 `displayPlan` 给冻结结论补分笔时又要一份 ⇒ 两份必然分叉。
+      eachBuyBlock(plan, function(b) {
+        (b.picks || []).forEach(function(p) {
+          Object.assign(p, decorateTickRow(p, map, attempted, skipMap, null, 'buy'));
         });
       });
       plan.sell.forEach(function(g) {
@@ -1815,15 +1809,48 @@ export function useTopicVolRatioBoard() {
    * ⚠️ 所有 UI 具名 computed（blocks / notes / pickCount / cashAlert / ebbBuy …）都必须走这里，
    *    ⛔ 不许再直接读 `data.value.plan` —— 否则定稿就被绕过去了，跳变会从别处回来（§6）。
    */
+  /**
+   * ★★ [SELL-LIVE / TICK-LIVE 2026-11-12] 冻结结论 × 实时事实的合流（唯一出口）。
+   *
+   * 🔴 报障（用户原话）：「打开昨天的最近多板长按买入 → 切到今天题材量比卖点列表，票没了；
+   *    之前还显示分笔成交，现在连卖点的票都没有。是不是从历史日期长按点击买入不行？」
+   *
+   * ✅ 结论：写入没问题（`auction_board_tags(2026-11-11)` 确有 2 条 `buy`：大东方 / 阳光照明），
+   *    也不是「必须今天打标签」。**是冻结冻错了范围**：
+   *      · `sell` 的成员来自「上一交易日的买标签」⇒ 用户在历史日补打标签，卖点段必须跟着变；
+   *      · 分笔装饰是异步抓的客观数据 ⇒ 定稿时没到，之后到了也必须补上。
+   *    11-12 实证：存档定稿于 09:28:46（那时 11-11 还是 0 条标签）⇒ 存档 `sell=[]`、
+   *    买点行 `hasTick=false / emptyText=未抓取`，之后全部不再更新 ⇒ 两个症状同源。
+   *
+   * ⇒ 冻结保留「买点选股结论」，`sell` 与「分笔装饰」恒取实时。
+   *   ⛔ 判据与其实现都在 `logic/topicvolratio/plan-live-overlay.js`（§6，这里只做接线）。
+   *
+   * §10：实时那份还没算出来（`data.plan` 为 null）⇒ 原样返回冻结结论，⛔ 不拿空值顶替。
+   */
+  function _frozenWithLive(frozen, d) {
+    const live = data.value && data.value.plan;
+    if (!live) return frozen;
+    const map = (tickMinuteDate.value === d) ? tickMinuteMap.value : EMPTY_MAP;
+    const attempted = tickMinuteAttempted.value.get(d) || EMPTY_SET;
+    const skipMap = _skipMapOf(d);
+    return overlayLiveOnFrozen(frozen, live, function(row) {
+      return decorateTickRow(row, map, attempted, skipMap, null, 'buy');
+    });
+  }
+
   const displayPlan = computed(function() {
     const d = String(currentDate.value || '').trim();
     // ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11] 【第一优先级】命中当日定稿存档 ⇒ 恒返回那一份。
     //   历史日期复盘的全部意义就是「看到当天 9:25 那份结论」；库内行情会被后续 worker / 收盘
     //   覆盖（11-10 实证），⛔ 绝不能拿它重算。刷新、切走再切回、上游数据到货都不改变它。
+    //   ★ [SELL-LIVE 2026-11-12] 「不改变」只约束**买点结论**；卖点段与分笔装饰恒取实时
+    //     （见 `_frozenWithLive` 的根因说明，⛔ 别把这两项也冻回去）。
     const snap = planSnapshot.value;
-    if (snap && d && snap.date === d && snap.status === 'hit' && snap.plan) return snap.plan;
+    if (snap && d && snap.date === d && snap.status === 'hit' && snap.plan) {
+      return _frozenWithLive(snap.plan, d);
+    }
     const pub = _buyPublished.value;
-    if (pub && d && pub.date === d && pub.plan) return pub.plan;
+    if (pub && d && pub.date === d && pub.plan) return _frozenWithLive(pub.plan, d);
     return (data.value && data.value.plan) || null;
   });
 
@@ -2000,8 +2027,11 @@ export function useTopicVolRatioBoard() {
       if (String(currentDate.value || '').trim() !== key) return;
       // 内容与刚定稿的 plan 是同一份（§6）；这里把状态收敛成 hit 并带上新指纹，
       // 说明区随即显示「已存档 / 第 N 版」，displayPlan 读到的仍是屏幕上那一份结论。
+      // ★ [SELL-LIVE 2026-11-12] 必须存**入参 plan**（= 刚落库的那一份），⛔ 不要存 `displayPlan`：
+      //   后者已经叠了实时卖点段与实时分笔，把它塞回内存存档会让「库里那份」和「内存那份」分叉，
+      //   而且下一帧 `_frozenWithLive` 会在叠加结果上再叠一次（重复劳动 + 体积虚高）。
       planSnapshot.value = {
-        date: key, status: 'hit', plan: displayPlan.value || plan,
+        date: key, status: 'hit', plan: plan,
         rulesSig: rulesSig, selectionSig: nextSelectionSig, inputsSig: inputsSig,
         revision: revision,
         settledAt: new Date().toISOString(), justWritten: true
