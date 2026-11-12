@@ -26,8 +26,12 @@
 
 import { recoverAuctionLeg } from './range-window.js';
 
-/** 数值解析：空 / 非法 ⇒ null（⛔ 不返回 0，§10） */
-function _num(v) {
+/**
+ * 数值解析：空 / 非法 ⇒ null（⛔ 不返回 0，§10）。
+ * ⚠️ 加 `Pct` 后缀：`workers/_bundle.mjs` 是朴素拼接式打包器（非 esbuild），
+ *    产物里已有多份 `_num`，顶层重名会被自检拦下。
+ */
+function _numPct(v) {
   if (v === null || v === undefined || v === '') return null;
   const n = Number(v);
   return isFinite(n) ? n : null;
@@ -56,7 +60,7 @@ export function buildAuctionLegPctMap(rangeRows, metricRows) {
   rangeRows.forEach(function (v, name) {
     const nm = String(name || '').trim();
     if (!nm || !v) return;
-    const raw = _num(v.pct);
+    const raw = _numPct(v.pct);
     if (raw === null) return;
     const leg = String(v.leg || 'close');
     let pct = raw;
@@ -64,7 +68,7 @@ export function buildAuctionLegPctMap(rangeRows, metricRows) {
       // leg='close' ⇒ T 腿是收盘腿 ⇒ 反解回竞价腿（前提不满足时 recoverAuctionLeg 原样返回）
       const m = mByName.get(nm);
       if (m) {
-        const rec = _num(recoverAuctionLeg(raw, m.auc_pct_chg, m.change_pct));
+        const rec = _numPct(recoverAuctionLeg(raw, m.auc_pct_chg, m.change_pct));
         if (rec !== null) pct = rec;
       }
     }

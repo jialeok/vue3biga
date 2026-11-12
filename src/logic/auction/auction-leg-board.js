@@ -33,8 +33,12 @@ import {
 // ⚠️ 这里引 `limit-up.js`（零 import 的纯模块），引不到 `range20-leaders.js`（那是浏览器模块）。
 import { getBoardKind, BOARD_MAIN } from './limit-up.js';
 
-/** 数值解析：空 / 非法 ⇒ null（⛔ 不返回 0，§10）；与 range20-auction-leg.js#_num 同口径 */
-function _num(v) {
+/**
+ * 数值解析：空 / 非法 ⇒ null（⛔ 不返回 0，§10）；与 range20-auction-leg.js#_num 同口径。
+ * ⚠️ 名字加 `Brd` 后缀是为了让 `workers/_bundle.mjs`（朴素拼接式打包器，非 esbuild）
+ *    的「顶层重名必须 0 处」自检通过 —— 同一份产物里已经有两份 `_num` 了。
+ */
+function _numBrd(v) {
   if (v === null || v === undefined || v === '') return null;
   const n = Number(String(v).replace('%', '').replace('+', '').replace(/,/g, '').trim());
   return isFinite(n) ? n : null;
@@ -80,7 +84,7 @@ export function buildAuctionLegBoard(pctMap, metricRows, opts) {
     if (!r || !r.stock) return;
     const name = String(r.stock).trim();
     if (!name) return;
-    if (_num(r.auc_pct_chg) === null) { excludedNoAuc++; return; }
+    if (_numBrd(r.auc_pct_chg) === null) { excludedNoAuc++; return; }
     listedSet.add(name);
     const c = String(r.code || '').replace(/\D/g, '');
     if (c && !codeByName.has(name)) codeByName.set(name, c);
@@ -94,7 +98,7 @@ export function buildAuctionLegBoard(pctMap, metricRows, opts) {
   pctMap.forEach(function (v, name) {
     const nm = String(name || '').trim();
     if (!nm || !listedSet.has(nm) || !v) return;
-    const pct = _num(v.pct);
+    const pct = _numBrd(v.pct);
     if (pct === null) return;
     covered++;
     const days = Number(v.days) || 0;

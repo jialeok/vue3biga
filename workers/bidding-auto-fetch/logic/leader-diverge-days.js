@@ -57,13 +57,6 @@ import {
 /** 一次最多补几个展示日（手动回补用；默认 1 = 只算今天） */
 export const LD_MAX_WRITE_DAYS = 20;
 
-/** 数值解析（空 / 非法 ⇒ null；⛔ 不折 0，§10） */
-function _num(v) {
-  if (v === null || v === undefined || v === '') return null;
-  const n = Number(String(v).replace('%', '').replace('+', '').replace(/,/g, '').trim());
-  return isFinite(n) ? n : null;
-}
-
 /** 口径阶段：北京 15:00 前 = intraday（今天还没有收盘腿），之后 = close */
 export function legPhaseOf(nowBj) {
   const d = nowBj || beijingNow();
