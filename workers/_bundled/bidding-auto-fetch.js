@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-11-11 08:32:38
+// 生成时间: 2026-11-12 18:58:17
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 7237（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 9944（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
@@ -1283,7 +1283,32 @@ async function upsertRange20Rows(env, rows) {
 //   §10：读取失败一律抛错；§32：按 Range 分页，不整表拉爆网关。
 // ============================================================================
 
-/** 分页 GET（PostgREST Range 头）；返回扁平数组，任何一页失败都抛错 */
+// [RANGE-416 2026-11-13] PostgREST 在「请求的 Range 起点 ≥ 总行数」时**不是**返回空数组，
+//   而是 416 + `PGRST103 Requested range not satisfiable`（details 还写着 limit >= 0，极具误导）。
+//   原实现把任何 `!resp.ok` 都当读失败抛错 ⇒ 只要某次读取的最后一页正好踩在
+//   「总行数 = 1000 的整数倍」这个边界上就整轮崩掉。
+//
+//   实测证据（2026-11-13 Actions 跑 point=divergedays 第 1 次）：
+//     "error": "分页读取失败 (from=1000): HTTP 416: {\"code\":\"PGRST103\",...}"
+//     at sbGetUntil → readRecentTradeDates → runLeaderDivergeDays
+//   —— 全市场 20 个交易日的 auction_watchlist 远超 1000 行，第 2 页起点必然越界。
+//
+//   ⇒ 判据：416 + Content-Range 形如 `*/<total>` 且 from >= total ⇒ **正常结束**（不是错误）；
+//     拿不到 total 时，from > 0 也按结束处理（第 0 页就 416 = 真异常，必须抛错）。
+function _rangePastEnd(resp, from) {
+  if (!resp || resp.status !== 416) return false;
+  let total = NaN;
+  try {
+    const cr = resp.headers && typeof resp.headers.get === 'function'
+      ? (resp.headers.get('content-range') || '') : '';
+    const m = /\*\/(\d+)/.exec(cr);
+    if (m) total = Number(m[1]);
+  } catch (e) { total = NaN; }
+  if (isFinite(total)) return from >= total;
+  return from > 0;
+}
+
+/** 分页 GET（PostgREST Range 头）；返回扁平数组，任何一页失败都抛错（416 越界除外） */
 async function sbGetPaged(env, url) {
   const PAGE = 1000;
   const out = [];
@@ -1295,6 +1320,7 @@ async function sbGetPaged(env, url) {
       })
     });
     if (!resp.ok) {
+      if (_rangePastEnd(resp, from)) break;
       const text = await resp.text().catch(() => '');
       throw new Error('分页读取失败 (from=' + from + '): HTTP ' + resp.status + ': ' + text.slice(0, 200));
     }
@@ -1732,6 +1758,199 @@ async function readStockCodeMap(env) {
   });
   return map;
 }
+// ============================================================================
+// [LD-CLOUD 2026-11-13] 第二十五条「总龙分歧」云端预计算要读的四张表 + 写的一张表
+// ----------------------------------------------------------------------------
+// 为什么这些读取单独写在这里、而不是复用「按日」的那几个读取器：
+//   分歧判定是【窗口级】的 —— 一次要 20 个交易日 × 4 张表。按日循环会变成 80 个请求，
+//   在 9:27 那一轮（本身还有补量比 / 自愈）里不可接受。⇒ 统一按 `date=in.(...)` 批量取，
+//   每个表 1~6 页（`sbGetPaged` 带确定性 order，§2 红线：⛔ 不许写死无分页的 limit）。
+//
+// ★ 为什么「日期列表」也从 auction_watchlist 取：
+//   本仓没有一份「云端权威交易日历」，而 auction_watchlist 是每天 9:25 必写的表
+//   ⇒ 它上面出现过的日期就是「有过早盘竞价的日子」。⛔ 不用 fuyao / 用户假期设置
+//   （那要多一条外部依赖，而且 9:27 / 16:00 这两个时点不该再引上游请求）。
+// ============================================================================
+
+/** PostgREST 的 in 列表（中文/文本值统一加双引号；⛔ 不用正则去引号，见 readDailyLegsForStocks 注） */
+function _sbInList(values) {
+  const arr = (values || []).map(function (v) { return '"' + String(v).split('"').join('') + '"'; });
+  return '(' + arr.join(',') + ')';
+}
+
+/** 按 Range 分页读，直到 enough(rows) 为真或页数用尽（用于「够了就停」的低成本读取） */
+async function sbGetUntil(env, url, enough, maxPages) {
+  const PAGE = 1000;
+  const cap = maxPages > 0 ? maxPages : 8;
+  const out = [];
+  for (let p = 0; p < cap; p++) {
+    const from = p * PAGE;
+    const resp = await sbFetch(url, {
+      headers: Object.assign(sbHeaders(env), {
+        'Range': from + '-' + (from + PAGE - 1),
+        'Range-Unit': 'items'
+      })
+    });
+    if (!resp.ok) {
+      // ★ 416 = Range 起点已越过总行数 ⇒ 读完了，⛔ 不是失败（见 _rangePastEnd 的实测证据）
+      if (_rangePastEnd(resp, from)) break;
+      const text = await resp.text().catch(() => '');
+      throw new Error('分页读取失败 (from=' + from + '): HTTP ' + resp.status + ': ' + text.slice(0, 200));
+    }
+    const page = await resp.json();
+    if (!Array.isArray(page) || page.length === 0) break;
+    page.forEach(function (r) { out.push(r); });
+    if (typeof enough === 'function' && enough(out)) break;
+    if (page.length < PAGE) break;
+  }
+  return out;
+}
+
+/**
+ * 取 throughDate（**不含**）往前的最近 wantDays 个交易日（升序返回）。
+ *
+ * 数据源：`auction_watchlist.date`（每天 9:25 必写）。实测每天 ~77~200 行
+ * ⇒ 1000 行约 10~13 天，wantDays=20 时通常 2 页即够。
+ *
+ * §10：读失败抛错（调用方据此报 ok=false，⛔ 不当「没有交易日」）；
+ *      返回的日期数不足 wantDays ⇒ 原样返回并由调用方如实记录（不猜、不补）。
+ *
+ * @param {object} env
+ * @param {string} throughDate YYYY-MM-DD（不含）
+ * @param {number} wantDays
+ * @returns {Promise<string[]>} 升序 YYYY-MM-DD
+ */
+async function readRecentTradeDates(env, throughDate, wantDays) {
+  const want = Number(wantDays) > 0 ? Math.floor(Number(wantDays)) : 20;
+  // 🔴 [RANGE-416 2026-11-13] ⛔ URL 里**不许**再写 `&limit=1000`：
+  //   PostgREST 会把它当成整条查询的硬上限，而 Range 头又要按 1000 一页推进，
+  //   两者相乘的结果是「第 2 页算出来的 limit = 1000 − 1000 = 0」⇒ 416 PGRST103
+  //   （details 还写着 "Limit should be greater than or equal to zero"，极具误导）。
+  //   去掉它以后，每页 1000 行由 Range 头 + 服务端 db-max-rows 各自约束，分页才真的成立。
+  //   ⚠️ 后果对照：带着 limit=1000 时这里最多只能拿到 1000 行（≈ 5~13 个交易日），
+  //      20 日窗口会被静默压成十来天，正是 860deee 那次「窗口只有 9 天」的同一族根因。
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?select=date' +
+    '&date=lt.' + encodeURIComponent(String(throughDate || '')) +
+    '&order=date.desc';
+  const dates = [];
+  const set = new Set();
+  const rows = await sbGetUntil(env, url, function (acc) {
+    const s = new Set();
+    acc.forEach(function (r) {
+      const d = String((r && r.date) || '').slice(0, 10);
+      if (d) s.add(d);
+    });
+    return s.size >= want;
+  }, 8);
+  rows.forEach(function (r) {
+    const d = String((r && r.date) || '').slice(0, 10);
+    if (d && !set.has(d)) { set.add(d); dates.push(d); }
+  });
+  // 降序收集 ⇒ 反转成升序（判定窗口按时间正序才有意义）
+  return dates.slice(0, want).reverse();
+}
+
+/**
+ * 读若干日的 auction_watchlist（只取分歧判定要的两列：当日竞价量 / 昨日成交量）。
+ * @returns {Promise<Array<{date:string,stock:string,volume:*,yest_volume:*}>>}
+ */
+async function readAuctionRowsForDates(env, dates) {
+  const list = Array.from(new Set((dates || []).filter(Boolean)));
+  if (list.length === 0) return [];
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist' +
+    '?select=date,stock,volume,yest_volume&date=in.' + _sbInList(list) +
+    '&order=date.asc,stock.asc';
+  const rows = await sbGetPaged(env, url);
+  return (rows || []).map(function (r) {
+    return {
+      date: String((r && r.date) || '').slice(0, 10),
+      stock: String((r && r.stock) || '').trim(),
+      volume: r && r.volume,
+      yest_volume: r && r.yest_volume
+    };
+  }).filter(function (r) { return r.date && r.stock; });
+}
+
+/**
+ * 读若干日的 market_metrics(scope='auction')：竞价涨幅（判 D1 低开）+ 收盘涨幅（反解 20 日涨幅的 T 腿）。
+ * ⚠️ `change_pct` 在 9:27 那一刻**还不是收盘值**（收盘覆盖的 pg_cron 从未真正生效，见
+ *    db/supabase_auction_close_cron.sql 注释）⇒ 反解 T 腿时它是「当时的 T 腿」，
+ *    与 `stock_range20_pct` 里那一行的 leg 是同一时点的，所以反解自洽；
+ *    **判「涨停 / 收绿」一律不用它**，用 `stock_daily_pct.pct`（见 leader-diverge.js 文件头）。
+ * @returns {Promise<Array<{date,stock,code,auc_pct_chg,change_pct}>>}
+ */
+async function readMetricsForDates(env, dates) {
+  const list = Array.from(new Set((dates || []).filter(Boolean)));
+  if (list.length === 0) return [];
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics' +
+    '?select=date,stock,code,auc_pct_chg,change_pct&scope=eq.auction&date=in.' + _sbInList(list) +
+    '&order=date.asc,stock.asc';
+  const rows = await sbGetPaged(env, url);
+  return (rows || []).map(function (r) {
+    return {
+      date: String((r && r.date) || '').slice(0, 10),
+      stock: String((r && r.stock) || '').trim(),
+      code: String((r && r.code) || '').trim(),
+      auc_pct_chg: r && r.auc_pct_chg,
+      change_pct: r && r.change_pct
+    };
+  }).filter(function (r) { return r.date && r.stock; });
+}
+
+/**
+ * 读若干日的 stock_range20_pct（原始行：pct / days / leg）。
+ * ⚠️ 主键是 (date,stock,leg) ⇒ 同一天同股可能有两行，去重交给调用方（见 leader-diverge-days.js：
+ *    **有 auc 腿就优先用它**，原值即 9:25 竞价口径，无需反解）。
+ * @returns {Promise<Array<{date,stock,pct,days,leg}>>}
+ */
+async function readRange20ForDates(env, dates) {
+  const list = Array.from(new Set((dates || []).filter(Boolean)));
+  if (list.length === 0) return [];
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range20_pct' +
+    '?select=date,stock,pct,days,leg&date=in.' + _sbInList(list) +
+    '&order=date.asc,stock.asc,leg.asc';
+  const rows = await sbGetPaged(env, url);
+  return (rows || []).map(function (r) {
+    return {
+      date: String((r && r.date) || '').slice(0, 10),
+      stock: String((r && r.stock) || '').trim(),
+      pct: r && r.pct,
+      days: r && r.days,
+      leg: String((r && r.leg) || '').trim()
+    };
+  }).filter(function (r) { return r.date && r.stock; });
+}
+
+/**
+ * 读若干日的 stock_daily_pct（收盘涨幅真值 —— 判涨停 / 判「高开低走收绿」的唯一来源）。
+ * @returns {Promise<Array<{date,stock,pct}>>}
+ */
+async function readDailyPctForDates(env, dates) {
+  const list = Array.from(new Set((dates || []).filter(Boolean)));
+  if (list.length === 0) return [];
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_daily_pct' +
+    '?select=date,stock,pct&date=in.' + _sbInList(list) +
+    '&order=date.asc,stock.asc';
+  const rows = await sbGetPaged(env, url);
+  return (rows || []).map(function (r) {
+    return {
+      date: String((r && r.date) || '').slice(0, 10),
+      stock: String((r && r.stock) || '').trim(),
+      pct: r && r.pct
+    };
+  }).filter(function (r) { return r.date && r.stock; });
+}
+
+/**
+ * 写 tvrb_leader_diverge（主键 date,stock；幂等覆盖）。
+ * §10：失败抛错，由调用方记日志（⛔ 不许静默）。
+ */
+async function upsertLeaderDivergeRows(env, rows) {
+  if (!rows || rows.length === 0) return;
+  await upsertBucketed(env, 'tvrb_leader_diverge',
+    CONFIG.SUPABASE_URL + '/rest/v1/tvrb_leader_diverge?on_conflict=date,stock', rows);
+}
+
 
 // ────── bidding-auto-fetch/logic/holiday-check.js ──────
 // holiday-check.js — 交易日判断（用户设置 > 周末 > fuyao 交易日历 > 本地硬编码表）
@@ -5418,9 +5637,14 @@ function buildAucMetricsWriteRows(parsedToday, today, nowIso, targets) {
 /**
  * 用猫抓 daily_auc 补「真实名单里的新票 / 缺量比的票」。
  * ⛔ 整个函数最多 1 次 numcat 请求；额度用尽直接优雅退出，不重试（§32）。
+ *
+ * ★★ [AUC-RATIO-0927 2026-11-12] 现在有【两个调用点】：
+ *   ① 9:26 `runLadderRecheck` 的所有「数据可读」返回路径（走 finish()，ladder 可能是 null）；
+ *   ② 9:27 `snapshot` 兜底（index.js，ladder 恒 null）——开盘前最后一个云端时点。
+ *   两处都是【有缺口才发请求】：量比齐全 ⇒ 0 请求 0 额度；写入只带 auc_vol_ratio 一列（§11）。
  */
 async function fillAucFromNumcat(env, today, ladder, logs) {
-  const out = { attempted: false, symbols: 0, written: 0, skipped: '', error: '' };
+  const out = { attempted: false, symbols: 0, written: 0, names: [], skipped: '', error: '' };
   let metricsRows;
   try {
     metricsRows = await readMarketMetricsSnapshotFieldsForDate(env, today);
@@ -5476,8 +5700,13 @@ async function fillAucFromNumcat(env, today, ladder, logs) {
     return out;
   }
   out.written = rows.length;
+  // ★★ [LADDER26-TIMING 2026-11-12] 记下「这次到底补了哪几只」。
+  //   用户报障是「青岛食品没量比，同是补位标签的海洋王却有」⇒ 只有条数不足以核对，
+  //   必须能一眼看到补写名单里有没有那只票。纯记录，⛔ 不影响写入行为。
+  out.names = rows.map(function (r) { return r.stock; }).filter(Boolean);
   logs.push('[ladder26] ✅ 猫抓 daily_auc 1 次请求 → 写入 market_metrics ' + rows.length +
-    ' 行（新票整行 / 已有票只补 auc_vol_ratio，来源=猫抓竞价时间段）');
+    ' 行（新票整行 / 已有票只补 auc_vol_ratio，来源=猫抓竞价时间段）' +
+    (out.names.length ? '：' + out.names.slice(0, 15).join(',') + (out.names.length > 15 ? ' …共 ' + out.names.length + ' 只' : '') : ''));
   return out;
 }
 
@@ -6020,6 +6249,2317 @@ async function runDailyLegsHeal(env, opts) {
     '，扫描 ' + out.scanned + ' / 已有 ' + out.already + ' / 竞价未覆盖拒 ' + out.rejected +
     '，src=metrics_close，0 上游请求）');
   return out;
+}
+
+
+// ────── ../src/logic/auction/auction-leg-pct.js ──────
+// auction-leg-pct.js — 20日涨幅「反解成 9:25 竞价口径」的【纯函数】唯一实现（Logic 层）
+//
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [AUCLEG-SPLIT 2026-11-13] 为什么从 range20-auction-leg.js 拆出来 ★★
+// ══════════════════════════════════════════════════════════════════════════════════════
+//   反解这件事现在有【三个】消费者：
+//     ① 浏览器：买点侧「9:26 口径总龙名次」/ 20日涨幅 toggle（range20-auction-leg.js）；
+//     ② 浏览器：第二十八条「老题材」要回看近 20 个交易日每天的竞价口径榜
+//        （leader-first-topic.js）；
+//     ③ **云端 Worker**：第二十五条「总龙分歧」要回看近 20 个交易日的竞价口径榜，
+//        算「它到底霸榜总龙一几天」（用户 2026-11-13 口径：「都是在云端运行，关电脑也能用」）。
+//   ①② 都在浏览器里，直接引 `range20-auction-leg.js` 就行；但那个文件顶部挂着
+//   `data/stock-range20-cache.js` / `data/market-metrics.js`（浏览器 Data 层）
+//   ⇒ ③ 一旦引它，Worker 打包就把浏览器 supabase-client 拖进去。
+//   ⇒ 把纯函数这一段单独成文件（零 Data 层 import），两边都引它：**口径只有一份**（§6）。
+//
+//   ⛔ 别在 Worker 里另写一段反解：那正是用户最反感的「同一个口径两个尺子」。
+//
+// ── 口径（与 range20-auction-leg.js 文件头一致）────────────────────────────────────
+//   `stock_range20_pct.pct` 在 `leg='close'` 时，T 腿 = 当日【收盘】涨幅；
+//   把今天那根腿换回 9:25 竞价涨幅、其余 19 根不动 ⇒ 就是 9:26 那一刻的 20 日涨幅：
+//     pct(close) / change_pct(收盘腿) / auc_pct_chg(竞价腿) → recoverAuctionLeg 反解
+//   `leg='auc'` 的行原值就是竞价口径 ⇒ ⛔ 不再反解。
+//
+// §10：`rangeRows` 为 null ⇒ 返回 null（判不出），⛔ 绝不返回空 Map 冒充「这天没有数据」。
+
+/**
+ * 数值解析：空 / 非法 ⇒ null（⛔ 不返回 0，§10）。
+ * ⚠️ 加 `Pct` 后缀：`workers/_bundle.mjs` 是朴素拼接式打包器（非 esbuild），
+ *    产物里已有多份 `_num`，顶层重名会被自检拦下。
+ */
+function _numPct(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return isFinite(n) ? n : null;
+}
+
+/**
+ * 【纯函数】把某日的「stock_range20_pct 原始行 + 当日竞价指标行」反解成
+ * 【全市场 · 9:25 竞价口径】的 20 日涨幅 Map（⛔ 不筛主板、⛔ 不筛天数）。
+ *
+ * @param {Map<string,{pct:*,days:*,leg:string}>|null} rangeRows 某日的 `stock_range20_pct` 行
+ * @param {Array<{stock:string, auc_pct_chg?:*, change_pct?:*}>|null} metricRows 该日 scope='auction' 行
+ * @returns {Map<string,{pct:number,days:number}>|null} null = 加速层不可用（判不出，§10）
+ */
+function buildAuctionLegPctMap(rangeRows, metricRows) {
+  // §10：加速层不可用 ⇒ 判不出（⛔ 不返回空 Map 冒充「这天没有数据」）
+  if (!rangeRows || typeof rangeRows.forEach !== 'function') return null;
+
+  const mByName = new Map();
+  (metricRows || []).forEach(function (r) {
+    if (!r || !r.stock) return;
+    const n = String(r.stock).trim();
+    if (n && !mByName.has(n)) mByName.set(n, r);
+  });
+
+  const out = new Map();
+  rangeRows.forEach(function (v, name) {
+    const nm = String(name || '').trim();
+    if (!nm || !v) return;
+    const raw = _numPct(v.pct);
+    if (raw === null) return;
+    const leg = String(v.leg || 'close');
+    let pct = raw;
+    if (leg !== 'auc') {
+      // leg='close' ⇒ T 腿是收盘腿 ⇒ 反解回竞价腿（前提不满足时 recoverAuctionLeg 原样返回）
+      const m = mByName.get(nm);
+      if (m) {
+        const rec = _numPct(recoverAuctionLeg(raw, m.auc_pct_chg, m.change_pct));
+        if (rec !== null) pct = rec;
+      }
+    }
+    out.set(nm, { pct: pct, days: Number(v.days) || 0 });
+  });
+  return out;
+}
+
+
+// ────── ../src/logic/auction/range20-board-consts.js ──────
+// range20-board-consts.js — 20 日涨幅榜单的【只数 / 可信门槛】常量（Logic 层，纯常量模块）
+//
+// ★★ [BOARD-CORE-SPLIT 2026-11-13] 为什么把这几行常量单独成文件 ★★
+//   这些常量原本内联在 `range20-leaders.js` 里。而 `range20-leaders.js` 顶部引着
+//   `vue` + `data/stock-range20-cache.js` 等浏览器 Data 层 ⇒ 任何想用「前五 / 前八 / 前十 /
+//   腿数门槛」的**纯函数模块**（尤其是跑在 Cloudflare Worker 上的第二十五条判定）
+//   都会被钉死在浏览器里（用户 2026-11-13 口径：「都是在云端运行，关电脑也能用」）。
+//
+//   ⇒ 数值搬到这里（零 import），`range20-leaders.js` 只做 import + 转出（§11 零行为变化），
+//     纯模块（`auction-leg-board.js`）直接引它 ⇒ **门槛只有一份**，⛔ 不出现「前端 6 天 / 云端 5 天」。
+//
+// ⛔ 改数值只改这里；⛔ 别在别的文件另写一个 5 / 8 / 10 / 6。
+
+/** 只取前 5 只（用户口径：「只选出5只」「取出排名前五的5只股票」） */
+const RANGE20_LEADER_TOP_N = 5;
+
+/**
+ * ★★ [NEW-DRAGON-08 2026-10-22 用户口径] 「宽榜」只数 = 8。
+ *
+ * 用户原话：「如果前五找到你就找前八的，不用前五的，改用排名前八的。注意竞价涨停一字涨停板
+ *   是买不进的，所以前八的，在这个节点上，你只能挑选非竞价一字涨停的主板」。
+ * ⇒ 第二十八条「切换日挑新龙」的候选池要看前 8 名，而「20日涨幅」toggle / 总龙一~五 标签 / 分歧买点
+ *   **仍然只用前 5 名**（用户没让改那些）。所以一次计算里裁两份：前 5 用于发布（展示不变），
+ *   前 8 另存一份宽榜供规则层取候选 —— ⛔ 绝不为此多算一轮 K 线（同一份 rankPool 裁两次即可）。
+ */
+const RANGE20_LEADER_WIDE_N = 8;
+
+/**
+ * ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 「题材榜」只数 = 10。
+ *
+ * 用户原话：「首先再说明下什么是主线龙头，20日涨幅中排名前10的，1.必须满足有3只以上同题材的
+ *   才叫主线题材，也就是说主线题材必须至少有3只排在前10。2.而且总龙一是该题材的。这叫主线题材。」
+ * ⇒ 退潮判定要数「前十里有几只同题材」，所以需要【前十】这一份。
+ * ⛔ 与 TOP_N(5) / WIDE_N(8) 是三个不同用途，别互相顶替：
+ *   · 5  = 展示（20日涨幅 toggle / 补位区块 / 总龙一~五 标签 / 退潮买点替补）
+ *   · 8  = 第二十八条「切换日挑新龙」的候选池
+ *   · 10 = 「主线题材成组」判定（只给规则层数题材，⛔ 不上屏）
+ */
+const RANGE20_LEADER_TEN_N = 10;
+
+/**
+ * 「可信门槛」：20 日窗口内至少这么多天有腿。
+ * ⚠️ 语义按阶段不同，⛔ 别混用（2026-10-20 就是因为混用才补出负涨幅的票）：
+ *   · 精算阶段 = **K 线腿数**（正常票 ≈20，停牌票 ≥6）⇒ 判断这个值可不可信；
+ *   · 粗筛阶段 = **库内上榜天数**（20 天里只有 4 天在名单里，数据本来就残）——
+ *     所以粗筛**不能**直接用这个门槛（见 range20-leaders.js#RANGE20_LEADER_COARSE_MIN_LEGS）。
+ */
+const RANGE20_LEADER_MIN_LEGS = 6;
+
+
+// ────── ../src/logic/auction/auction-leg-board.js ──────
+// auction-leg-board.js — 「恒 9:25 竞价口径」20 日涨幅榜的【纯函数】唯一实现（Logic 层，§6）
+//
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [BOARD-CORE-SPLIT 2026-11-13] 为什么从 tvrb-auction-board.js 拆出来 ★★
+// ══════════════════════════════════════════════════════════════════════════════════════
+//   这个榜现在有【两个运行环境】的消费者：
+//     ① 浏览器：题材量比的候选池（tvrb-auction-board.js → 第二十八/二十九/三十/三十一/三十二条、
+//        退潮主线题材计数、总龙一）；
+//     ② **云端 Cloudflare Worker**：第二十五条「总龙分歧」要回看近 20 个交易日【每天的榜】，
+//        才能算出「它到底霸榜总龙一几天」（用户 2026-11-13 口径：「都是在云端运行，关电脑也能用，
+//        不要电脑本地的」）。
+//   ① 所在的 `tvrb-auction-board.js` 顶部引着 `vue` + `data/` 层 ⇒ Worker 打包会被拖进浏览器
+//   supabase-client ⇒ 云端只能另写一份排队次的逻辑（§6 红线）。
+//   ⇒ 把**榜单本身**抽成零依赖纯函数，两边都调它；`tvrb-auction-board.js` 只保留取数 + 响应式状态。
+//
+//   ⛔ 别在别处再写一份「只主板 + 腿数门槛 + 9:25 名单白名单 + 涨幅降序」：那就是两个尺子。
+//
+// ── 口径（与 tvrb-auction-board.js 文件头一致，逐字不变）────────────────────────────
+//   ① 白名单 = 当日 `market_metrics(scope='auction')` 里【有竞价涨幅】的票（= 9:25 名单）
+//      ⇒ 16:30 收盘覆盖时塞进来的补位票恒不进榜；
+//   ② 逐票过滤：名单内 ∧ 有数值 ∧ 腿数 ≥ RANGE20_LEADER_MIN_LEGS ∧ 只主板；
+//   ③ 排序：涨幅降序 → 天数多者优先 → 名字升序（可复现）。
+//   §10：任一前提不满足 ⇒ 该票不进榜（⛔ 不补 0、不猜板块）；读失败 ⇒ ready=false（⛔ 不返空数组冒充
+//        「今天没有龙头」）。
+
+// 「只主板」的判据与发布侧同一个函数（`range20-leaders.js#isMainBoardOnly` 的实现就是这一行）。
+// ⚠️ 这里引 `limit-up.js`（零 import 的纯模块），引不到 `range20-leaders.js`（那是浏览器模块）。
+
+/**
+ * 数值解析：空 / 非法 ⇒ null（⛔ 不返回 0，§10）；与 range20-auction-leg.js#_num 同口径。
+ * ⚠️ 名字加 `Brd` 后缀是为了让 `workers/_bundle.mjs`（朴素拼接式打包器，非 esbuild）
+ *    的「顶层重名必须 0 处」自检通过 —— 同一份产物里已经有两份 `_num` 了。
+ */
+function _numBrd(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(String(v).replace('%', '').replace('+', '').replace(/,/g, '').trim());
+  return isFinite(n) ? n : null;
+}
+
+/**
+ * 【纯函数】把「竞价口径 20 日涨幅 Map + 当日 9:25 竞价指标行」组装成三份榜单。
+ *
+ * @param {Map<string,{pct:number,days:number}>|null} pctMap 9:25 竞价口径 20 日涨幅（全市场）
+ * @param {Array<{stock:string,code?:string,auc_pct_chg?:string|number}>|null} metricRows
+ *        当日 `market_metrics(scope='auction')` 的行 —— 同时充当【候选池白名单】与【代码来源】
+ * @param {{minDays?:number, codeOf?:(name:string)=>string}} [opts]
+ *        `codeOf` = 行内没带代码时的兜底代码源（浏览器传 getStockCode；Worker 传自己的 codeMap）。
+ *        ⛔ 不传 ⇒ 只认行内 code（拿不到代码的票不计入榜 —— 宁可少一只，也不猜板块，§10）
+ * @returns {{ready:boolean, reason:string, top5:Array, wide:Array, top10:Array,
+ *            rank:Array, rankMap:Map, rowCount:number, listed:number, covered:number,
+ *            excludedNoAuc:number, excludedNoCode:number}}
+ *          ready=false ⇒ 三个榜单一律 []，调用方必须回落且如实标注（§10）。
+ */
+function buildAuctionLegBoard(pctMap, metricRows, opts) {
+  const empty = function (reason) {
+    return {
+      ready: false, reason: reason,
+      top5: [], wide: [], top10: [], rank: [], rankMap: new Map(),
+      rowCount: 0, listed: 0, covered: 0,
+      excludedNoAuc: 0, excludedNoCode: 0
+    };
+  };
+  // §10：读失败 / 表不可用 ⇒ 判不出（⛔ 不返回空数组冒充「今天没有龙头」）
+  if (!pctMap || typeof pctMap.forEach !== 'function') return empty('range20-read-failed');
+  if (!Array.isArray(metricRows)) return empty('metrics-read-failed');
+
+  const o = opts || {};
+  const minDays = isFinite(Number(o.minDays)) && Number(o.minDays) > 0
+    ? Number(o.minDays) : RANGE20_LEADER_MIN_LEGS;
+  const codeOf = typeof o.codeOf === 'function' ? o.codeOf : null;
+
+  // ① 9:25 名单白名单（有竞价涨幅才算「当天在列表里」）
+  const listedSet = new Set();
+  const codeByName = new Map();
+  let excludedNoAuc = 0;
+  metricRows.forEach(function (r) {
+    if (!r || !r.stock) return;
+    const name = String(r.stock).trim();
+    if (!name) return;
+    if (_numBrd(r.auc_pct_chg) === null) { excludedNoAuc++; return; }
+    listedSet.add(name);
+    const c = String(r.code || '').replace(/\D/g, '');
+    if (c && !codeByName.has(name)) codeByName.set(name, c);
+  });
+  if (listedSet.size === 0) return empty('empty-auction-list');
+
+  // ② 逐票过滤：名单内 ∧ 有数值 ∧ 腿数够 ∧ 只主板
+  let covered = 0;
+  let excludedNoCode = 0;
+  const keep = [];
+  pctMap.forEach(function (v, name) {
+    const nm = String(name || '').trim();
+    if (!nm || !listedSet.has(nm) || !v) return;
+    const pct = _numBrd(v.pct);
+    if (pct === null) return;
+    covered++;
+    const days = Number(v.days) || 0;
+    if (days < minDays) return;
+    let code = codeByName.get(nm) || '';
+    if (!code && codeOf) {
+      try { code = String(codeOf(nm) || '').replace(/\D/g, ''); } catch (e) { code = ''; }
+    }
+    if (!code) { excludedNoCode++; return; }
+    // §6：只主板的判据与发布侧同一个函数，⛔ 不在这里另写一套代码段规则
+    if (getBoardKind(code) !== BOARD_MAIN) return;
+    keep.push({ stock: nm, code: code, pct: pct, days: days });
+  });
+
+  // ③ 排序与 `rankLeaders` 同构（涨幅降序 → 天数多者优先 → 名字升序），保证结果可复现
+  keep.sort(function (a, b) {
+    if (b.pct !== a.pct) return b.pct - a.pct;
+    if (b.days !== a.days) return b.days - a.days;
+    return a.stock < b.stock ? -1 : (a.stock > b.stock ? 1 : 0);
+  });
+  if (keep.length === 0) return empty('no-mainboard-rows');
+
+  return {
+    ready: true,
+    reason: '',
+    top5: keep.slice(0, RANGE20_LEADER_TOP_N),
+    wide: keep.slice(0, RANGE20_LEADER_WIDE_N),
+    top10: keep.slice(0, RANGE20_LEADER_TEN_N),
+    rank: keep,
+    // 说明区要用的「9:25 那一刻涨幅 + 第几名」——与选股榜【同一份 rank】，
+    // ⛔ 不再另起一份名次（11-10 之前这里读的是含 16:30 补位票的旧 Map，名次会对不上）。
+    rankMap: new Map(keep.map(function (r, i) {
+      return [r.stock, { pct: r.pct, days: r.days, rank: i + 1 }];
+    })),
+    rowCount: keep.length,
+    listed: listedSet.size,
+    covered: covered,
+    excludedNoAuc: excludedNoAuc,
+    excludedNoCode: excludedNoCode
+  };
+}
+
+
+// ────── ../src/logic/auction/range-pct-sort.js ──────
+// range-pct-sort.js — 「十日涨幅」toggle 专用排序纯函数（§15 独立业务模块，§6 单一真相）
+//
+// 产品口径（2026-10-14 用户口径）：
+//   · 原「三天竞跌」toggle【整体下线】，开关位改为「十日涨幅」；
+//   · 打开后：**全部股票**（龙头组 + 观察组 + 常规组，不分块）按「近 10 个交易日区间涨幅」
+//     由高到低排成一条列表，并逐行标出该数值 —— 用户要一眼看出「市场总龙头是谁、哪只更强」。
+//
+// 数据源（§6 单一真相）：`dragon-rank.js#getDragonRangePct(date)` 返回的
+//   `Map<股票名, { pct, days }>`（= 云端 `stock_range_pct`，与题材模式的龙一/龙二徽章、
+//   决策看板排名【同一个来源同一个字段】）。本模块【只读】该 Map，⛔ 不请求、不落库、不评选。
+//
+// §10 宁缺勿错：缺数据的票 → `pct = null`，**一律置底**且不参与 pct 比较，
+//   ⛔ 绝不补 0 参与排序（补 0 会让「没查到」的票凭空插到跌 5% 的票前面）。
+//
+// 本模块只含纯函数：无副作用、不依赖响应式状态，可独立单测。
+
+/**
+ * 读单只股票的「十日区间涨幅」。
+ * @param {Map<string, {pct:number|null, days:number}>|null} rangeMap
+ * @param {string} stockName
+ * @returns {number|null} 数值（可为负）；Map 未加载 / 没有这只票 / pct 缺失或非法 → null
+ */
+function readRangePct(rangeMap, stockName) {
+  if (!rangeMap || !stockName) return null;
+  const entry = rangeMap.get(String(stockName).trim());
+  if (!entry) return null;
+  const raw = entry.pct;
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  return isFinite(n) ? n : null;
+}
+
+/**
+ * 按「十日区间涨幅」由高到低重排渲染顺序。
+ *
+ * @param {number[]} order 当前渲染顺序（renderList 的索引数组）
+ * @param {Array<object>} rows renderList（索引 → 行对象，行需带 `stock`）
+ * @param {Map<string, {pct:number|null, days:number}>|null} rangeMap 十日涨幅（可能未加载 → null）
+ * @returns {number[]} 新的索引数组
+ *
+ * 排序键（三级，完全确定）：
+ *   ① 有涨幅的在前、缺数据的置底（§10 缺数据不冒充 0 参与比较）；
+ *   ② 同档内按 pct 由高到低；
+ *   ③ pct 相同 / 都缺数据 → 保持原有相对顺序（稳定排序，不依赖引擎实现）。
+ *
+ * 性能（§19/§23）：pct 在排序**之前**一次性取出（单次遍历），
+ *   ⛔ 不在比较器里做 Map 查找 / 字符串处理 —— 否则 n log n 次比较会被放大成 n log n 次解析。
+ */
+function sortIndicesByRangePct(order, rows, rangeMap) {
+  if (!order || order.length === 0) return [];
+  const keyed = order.map(function(idx, pos) {
+    const row = rows ? rows[idx] : null;
+    const name = row && row.stock ? String(row.stock).trim() : '';
+    return { idx: idx, pos: pos, pct: readRangePct(rangeMap, name) };
+  });
+  keyed.sort(function(a, b) {
+    const aMissing = (a.pct === null);
+    const bMissing = (b.pct === null);
+    if (aMissing !== bMissing) return aMissing ? 1 : -1;   // ① 缺数据置底
+    if (!aMissing && b.pct !== a.pct) return b.pct - a.pct; // ② 由高到低
+    return a.pos - b.pos;                                   // ③ 稳定
+  });
+  return keyed.map(function(k) { return k.idx; });
+}
+
+
+// ────── ../src/logic/auction/presence-label.js ──────
+/**
+ * presence-label.js — 「涨幅前十 · 在列次数」标签的【唯一判定实现】（Logic 层纯函数）。
+ *
+ * ============================================================================
+ * 用户口径（2026-10-23，逐字）：
+ *   「你在早盘竞价看板，10日涨幅 toggle 单独打开后，把排名前十的股票，在这 10 个交易日中
+ *     出现过几次标记起来，状态也存起来……也就是说在早盘竞价看板每天的列表中出现过几次，
+ *     打上小标签比如"5次在列"，"首次在列"，单独打开 20 日涨幅 toggle 时也要，20 个交易日的
+ *     也要存起来，也存在表里（排名前十的）。这样响应才快，我会用这个出现次数做分析。」
+ *   补充确认（AskUserQuestion）：「只给前十名标」/「Supabase 定时算好落表」/「含今天」。
+ * ============================================================================
+ *
+ * 职责边界（§3/§21）：
+ *   · 本模块【只做两件事】：① 次数 → 标签文案；② 给当前排序后的前 N 行挂字段。
+ *   · ⛔ 不取数、不请求、不排序、不判断「谁在名单里」——
+ *     次数由 Data 层（src/data/auction-presence.js）读预计算表 `auction_presence` 得到，
+ *     顺序由 view-helpers 的 `sortIndicesByRangePct`（range-pct-sort.js）给出。
+ *
+ * 「在列」的定义（§6 单一真相）：
+ *   = 该票当天在 `auction_watchlist`（早盘竞价看板的正式名单）里。
+ *   ⚠️ 补位的「20天」票是前端注入的展示行，**从不入库** ⇒ 历史日一律以 watchlist 为准；
+ *      它们若在整个窗口里都没进过名单，次数就是 0（标签为「未在列」），这是真实信息、不是缺数据。
+ *
+ * §10 宁缺勿错：
+ *   · 次数数据未到（counts = null）→ 全表不标（⛔ 绝不当 0 显示成「未在列」）；
+ *   · 没有区间涨幅的行不占名次（与 range20-top5-label.js 的「总龙N」同一套口径），
+ *     ⛔ 绝不因为「凑够 10 行」而给一只没有涨幅的票打标。
+ *
+ * [MAIN-BOARD-RANK 2026-10-24 用户口径] 「排名只算主板」：
+ *   非主板（创业板 / 科创板 / 北交所）**不占前十名额**，名次顺延给下一只主板票。
+ *   ⚠️ 只影响名次与标签，⛔ 不影响涨幅排序 —— 它们照旧按涨幅待在原位
+ *      （用户在同一次 AskUserQuestion 里明确选的是「排序不动，只不占名次」，
+ *        与 2026-10-07 龙标签「只排主板的，但十日涨幅排序不变」是同一条纪律）。
+ *   判据走 limit-up.js#isMainBoardRankEligible（唯一实现，§6）。
+ */
+
+// [MAIN-BOARD-RANK 2026-10-24 用户口径] 「排名只算主板」的判据走 limit-up.js 的唯一实现（§6），
+//   ⛔ 不在这里手写 /^30|68|43/ 前缀（板块分类只有 getBoardKind 一处真相）。
+
+/** 打标只数（用户口径：前十名）。与 range20-top5-label.js#RANGE20_TOTAL_DRAGON_TOP_N 是同族常量但含义不同。 */
+const PRESENCE_TOP_N = 10;
+/** 统计窗口（交易日数）：10 = 「10日涨幅」toggle；20 = 「20日涨幅」toggle。 */
+const PRESENCE_WINDOW_10 = 10;
+const PRESENCE_WINDOW_20 = 20;
+
+/**
+ * 【纯函数】次数 → 标签文案。
+ *
+ * 文案口径（用户给的样例是「5次在列」「首次在列」，其余档位按同一语感补齐）：
+ *   · 0 次 → 「未在列」（整个窗口里一次都没进过名单 —— 对新龙头 / 补位票来说这正是关键信息）
+ *   · 1 次 → 「首次在列」（窗口内只出现在今天 ⇒ 今天是它第一次上榜）
+ *   · n 次 → 「n次在列」
+ *
+ * ⚠️ 非法值（null / '' / NaN / 负数）→ ''（模板 v-if 直接不渲染）。
+ *   ⛔ 不把「没数据」写成「0次」：那是把「不知道」显示成「确认为零」（§10）。
+ *
+ * @param {number|string|null} cnt 窗口内（含今天）在列次数
+ * @returns {string}
+ */
+function presenceLabelOf(cnt) {
+  if (cnt === null || cnt === undefined || cnt === '') return '';
+  const n = Number(cnt);
+  if (!isFinite(n) || n < 0) return '';
+  const k = Math.floor(n);
+  if (k === 0) return '未在列';
+  if (k === 1) return '首次在列';
+  return k + '次在列';
+}
+
+/**
+ * 【纯函数】次数 → 序号「小方框」的 class（用户 2026-10-24 口径，逐字）：
+ *   「10日涨幅或者20日涨幅还有排名前十的（主板，有几次在列的股票），前面的序号要标记下颜色，
+ *     比如换成小方框里面有数字，这样更明显些，我打开后就可以看得更清晰，纯 UI 改动，其它不变」
+ *
+ * 为什么放在这里而不是模板里（§21 模板零计算 / §6 单一真相）：
+ *   「谁进前十、谁有在列次数」的唯一判定就是本文件的 assignPresenceLabels；
+ *   序号方框与「n次在列」小标签必须【同生同灭】—— 若模板另外判一次，
+ *   两条判据迟早在某只票上分叉（一边有标签、一边序号没框）。
+ *
+ * 三档配色与 .auction-presence-tag 的三档【刻意保持一致】（用户看起来是同一件事的两处表达）：
+ *   · 0 次（未在列）  → 灰框：一条「没上过榜」的信息，不该抢视觉权重；
+ *   · 1 次（首次在列）→ 红实底白字：窗口内新冒出来的强势票，是这枚标签要传达的最强信号；
+ *   · n 次（n次在列） → 青灰框：纯统计值。
+ * ⚠️ 非法值（null / '' / NaN / 负数）→ ''（模板仍渲染数字，只是没有方框，视觉与改动前一致）。
+ *
+ * @param {number|string|null} cnt 窗口内（含今天）在列次数
+ * @returns {string} 空格分隔的 class 串；'' = 不打方框
+ */
+function rankBoxClassOf(cnt) {
+  if (cnt === null || cnt === undefined || cnt === '') return '';
+  const n = Number(cnt);
+  if (!isFinite(n) || n < 0) return '';
+  const k = Math.floor(n);
+  if (k === 0) return 'auction-rank-box auction-rank-box-none';
+  if (k === 1) return 'auction-rank-box auction-rank-box-first';
+  return 'auction-rank-box';
+}
+
+/**
+ * 【纯函数】取该行在当前窗口下的区间涨幅（= 该 toggle 的排序键）。
+ * 10 日窗口读 `rangePct`（云端 stock_range_pct），20 日窗口读 `rangePct20`（range20.js 现算）。
+ * 两者语义不同（见 view-helpers 里这两个字段的长注释），⛔ 不可互相顶替。
+ *
+ * @param {{rangePct?:number|null, rangePct20?:number|null}|null} item
+ * @param {number} windowDays 10 / 20
+ * @returns {number|null} 缺值 → null（⛔ 不补 0）
+ */
+function presenceSortValueOf(item, windowDays) {
+  if (!item) return null;
+  const v = (Number(windowDays) === PRESENCE_WINDOW_20) ? item.rangePct20 : item.rangePct;
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return isFinite(n) ? n : null;
+}
+
+/**
+ * 【纯函数】按「items 的当前顺序」给前 N 只挂「在列次数」标签（就地写字段，返回实际打标只数）。
+ *
+ * 入参 items 的顺序【必须已经是】该窗口下的涨幅降序（由 view-helpers 保证），本函数不再排序。
+ * 对**每一个**非空行都会写这五个字段（模板只渲染字符串，§21 零计算）：
+ *   · `presenceCnt`         : number|null 次数（null = 不打标 / 没数据）
+ *   · `presenceLabel`       : '5次在列' / '首次在列' / '未在列' / ''
+ *   · `presenceRankClass`  : 序号小方框的 class（'' = 不打方框），由 rankBoxClassOf 生成
+ *   · `presenceWindowDays`  : 10 / 20（悬停文案用）
+ *   · `presenceCoveredDays` : 窗口内实际有名单数据的天数（悬停文案用，§10 如实用 n/N 报覆盖度）
+ *
+ * ★ 为什么「没选中的行也要显式写 null / ''」：这些行对象会进 incremental-view 的行缓存复用，
+ *   只要有一次残留了标签，切 toggle / 换日期后就会在别的视图里冒出「5次在列」（§11 默认无行为）。
+ *   与 assignTotalDragonRanks 同款结构性清零，不依赖三处默认值都写对。
+ *
+ * @param {Array<object>} items 已按涨幅降序的行数组
+ * @param {number} [topN] 打标只数，缺省 10
+ * @param {{windowDays?:number, counts?:Map<string,{cnt:number, dates?:string}>|null, coveredDays?:number}} [opts]
+ *        counts = null 表示【数据未到】（全表不标）；coveredDays = 0 表示窗口内没有任何名单数据（同样不标）。
+ * @returns {number} 实际打标只数（可能 < topN）
+ */
+function assignPresenceLabels(items, topN, opts) {
+  const list = items || [];
+  const options = opts || {};
+  const rawN = (topN === null || topN === undefined) ? PRESENCE_TOP_N : Number(topN);
+  const cap = (isFinite(rawN) && rawN > 0) ? Math.floor(rawN) : PRESENCE_TOP_N;
+  const windowDays = (Number(options.windowDays) === PRESENCE_WINDOW_20) ? PRESENCE_WINDOW_20 : PRESENCE_WINDOW_10;
+  const coveredDays = Number(options.coveredDays) > 0 ? Math.floor(Number(options.coveredDays)) : 0;
+  const counts = options.counts || null;
+  // §10：次数数据没到 / 窗口内一天名单都没有 ⇒ 一律不标（⛔ 不拿 0 冒充「未在列」）
+  const usable = !!(counts && coveredDays > 0);
+
+  let rank = 0;
+  for (let i = 0; i < list.length; i++) {
+    const it = list[i];
+    if (!it) continue;
+    // 先无条件清零，再按需赋值（结构性保证：任何残留都会被这一轮擦掉）
+    it.presenceCnt = null;
+    it.presenceLabel = '';
+    it.presenceRankClass = '';
+    it.presenceWindowDays = windowDays;
+    it.presenceCoveredDays = coveredDays;
+    if (!usable || rank >= cap) continue;
+    // §10：没有区间涨幅的行不占名次（与「总龙N」同口径），避免「数据没到」时按原顺序乱标
+    if (presenceSortValueOf(it, windowDays) === null) continue;
+    // [MAIN-BOARD-RANK 2026-10-24 用户口径] 非主板（创业板 / 科创板 / 北交所）**跳过且不占名次**：
+    //   它们照旧显示在涨幅排序里的原位（排序一点没动），但「前十」的名额只数主板，
+    //   名次自动顺延给下一只主板 ⇒ 屏幕上带标签的永远是主板票，且标签刚好十个。
+    //   ⚠️ 代码缺失按「未知」处理 = 有资格（§10：判不出 ≠ 判出非主板）。
+    if (!isMainBoardRankEligible(it.code)) continue;
+    rank += 1;
+    const name = it.stock ? String(it.stock).trim() : '';
+    const hit = name && counts.has(name) ? counts.get(name) : null;
+    // 命中率说明：今天在名单里的票 100% 能命中（它至少在 T 这天在列 ⇒ cnt >= 1）；
+    // 命中不到只可能是「补位票在整个窗口里都没进过名单」⇒ 真实次数就是 0。
+    const cnt = hit ? Number(hit.cnt) : 0;
+    it.presenceCnt = isFinite(cnt) && cnt >= 0 ? Math.floor(cnt) : 0;
+    it.presenceLabel = presenceLabelOf(it.presenceCnt);
+    // [RANK-BOX 2026-10-24 用户口径] 序号小方框：与上面那枚「n次在列」标签【同一个判据、
+    //   同一份次数】⇒ 有标签就一定有方框、没标签就没有（不会出现「标签在、序号没框」的分叉）。
+    it.presenceRankClass = rankBoxClassOf(it.presenceCnt);
+  }
+  return rank;
+}
+
+
+// ────── ../src/logic/topicvolratio/range10-backup.js ──────
+/**
+ * range10-backup.js — 「十日涨幅 · 在列次数候补」的【唯一判定实现】（Logic 层纯函数）。
+ *
+ * ============================================================================
+ * 用户口径（2026-10-24，逐字）：
+ *   「10月20日，主线题材二次确认退潮当天，龙头首次分歧次日，按照题材平均量比排名第二的题材，
+ *     比如松霖科技在的房地产，题材量比太小，只有 7.47，小于空仓门槛量比 25，题材量比太小禁止选入，
+ *     应该选十日涨幅首次在列龙头而且是排名前十的，进行替换，而且排名靠前的，首次在列，
+ *     排名靠前的是海洋王，排名第八。所以选它。」
+ *   「排名第二的题材如果量比太小就用 10 日涨幅，首次在列进行候补，如果排名前十没有首次在列标签，
+ *     就用二次在列排名靠前候补，因为龙头的量比都比题材大，那才是核心，应该用 10 日涨幅候补，
+ *     这样可以选出有潜质的新龙，因为 20 日老周期结束，现在轮到十日周期。」
+ *   「不管是首次在列，或者二次在列都要和 20 日涨幅的总龙一是不同题材，还有都是排名前十，
+ *     这几个条件同时满足，不然如果不符合都要空仓。」
+ *   「常规的是排名第一的题材如果平均量比小于标准 25，也一率作废。进入候选的是十日涨幅题材新股票的
+ *     排名靠前的新股票（首次在列或者二次在列），新面孔。有首次在列的只选一只，没有首次在列的，
+ *     选二次在列的。如果都没有，依旧空仓。」
+ * ============================================================================
+ * 用户口径（2026-10-24 第四次修正，9-29 雪龙集团事故）：
+ *   「9月29日，量比题材买点侧你选择，雪龙集团，十日涨幅雪龙股份2次在列，给出理由……
+ *     但是雪龙股份竞价是涨停一字板，买不进去啊，所以规则你要完善下，竞价涨幅是涨停的，
+ *     一字板的你说明下就可以了，不用把股票选进去，选进去没用，也买不了。你选票的时候要注意这点，
+ *     买不进去的，也不用替补，也不用选进去了。其它不变。」
+ *   ⇒ ★ 新增一道否决：最强的那只若是【竞价一字涨停】⇒ 本日候补【空仓】，
+ *      ⛔ **既不选入，也不顺延到下一名**（"也不用替补"）。
+ *      ⚠️ 与题材块「龙一一字 ⇒ 顺延龙二」【刻意相反】：那边是买满名额的打板口径，
+ *        这边是「候补只有一只」的替换口径 —— 换成第二名就用更弱的票顶掉了最强的票，
+ *        那不是用户要的东西（与 10-20「不许顺延」的纪律同源，只是这次的顺延理由是买不进）。
+ * ============================================================================
+ * 用户口径（2026-10-24 第三次修正，10-20 事故）：
+ *   「10月20日，十日候补题材你选了京城股份，实际上是海洋王，因为海洋王已经选在了下面题材
+ *     商业航天题材中，所以你选排在后一名的京城股份？这是不对的。……出现多只首次在列只选一只
+ *     最强的，也就是十日涨幅最高的，那就是海洋王。」
+ *   「是不是因为买点侧那里也有了题材的海洋王入选了，所以你又挑选了一只？……如果不是，
+ *     这种情况是题材和市场选票叠加的效果，这是好事啊，因为两边都选了海洋王，两个提示板
+ *     整合成一个叠加在一起就可以了，这是确定性啊。」
+ *   「意思是它即是题材选出来的，也是市场选出来的。两者叠加一起，也不用分开了。」
+ *   ⇒ ★ 本模块【不排除任何票】：即使某只票已经在某个题材块里当选买点、甚至已经是今天要买的票，
+ *     只要它是「十日涨幅前十 + 首次/二次在列 + 与总龙一不同题材」里【最强的那一只】，就选它。
+ *     两条通道选中同一只票 = 【叠加确认】（确定性更高），两处照旧各展示一行，
+ *     ⛔ 绝不允许「因为它已经被题材选中，就让它顺延到下一名」（10-20 事故就是这个顺延）。
+ *     10-20 真实数据：海洋王 29.51%（首次在列，主板第 7 名）在 商业航天 题材块里已当选，
+ *     却被排除后顺延到 京城股份 27.26%（首次在列，第 8 名）—— 更弱的票顶掉了最强的票。
+ * ============================================================================
+ *
+ * 职责边界（§3/§4/§21）：
+ *   · 本模块【只做一件事】：给一份「当日 10 日涨幅池」，挑出那【至多一只】候补票。
+ *   · ⛔ 不取数、不落库、不发请求；池子由采集层（decision-collect#range10Rows）注入，
+ *     在列次数由 Data 层（auction_presence）注入 —— 与本模块无关。
+ *   · ⛔ 不判题材量比门槛（谁作废由规则层用 TVRB_CASH_ALERT_AVG_VR 一处判），
+ *     本模块只回答「如果要用候补，该选谁 / 为什么选不出」。
+ *
+ * 「排名前十」的口径（§6 单一真相 —— 与屏幕上那枚标签同一把尺子）：
+ *   = 早盘竞价看板「10 日涨幅」toggle 里**带在列次数标签**的那十只
+ *     （presence-label.js#assignPresenceLabels：非主板【不占名次】、缺涨幅不占名次）。
+ *   ⚠️ 10-20 实测：海洋王 按「只数主板」的名次是第 7，按屏幕行号是第 8 ——
+ *      两种都能选中它；但口径必须唯一，故一律用「主板名次 ≤ PRESENCE_TOP_N」，
+ *      这样「前十」与「带标签的那十只」永远是同一批（用户看到什么就能选什么）。
+ *
+ * 「首次在列 / 二次在列」的口径：
+ *   · 首次在列 = 窗口内（含今天）在 `auction_watchlist` 只出现过 1 次；
+ *   · 二次在列 = 出现过 2 次；
+ *   · 次数由预计算表 auction_presence（window_days = 10）给出，标签文案复用 presenceLabelOf（§6）。
+ *   §10：次数数据未到（counts = null / coveredDays = 0）⇒ 判不出 ⇒ ⛔ 绝不当 0 次用。
+ *
+ * 排序（§6）：复用 range-pct-sort.js#sortIndicesByRangePct（与「10 日涨幅」toggle 同一个排序函数），
+ *   ⛔ 不在这里另写一份「按 pct 降序」—— 缺数据置底 / 稳定排序这两个细节一旦分叉，
+ *   候补就会从「屏幕上第 8 行」滑到别的票上。
+ */
+
+// [MAIN-BOARD-RANK] 「只有主板占名次」的判据走 limit-up.js 的唯一实现（§6），
+//   ⛔ 不在这里手写 /^30|68|43/ 前缀（板块分类只有 getBoardKind 一处真相）。
+
+
+/** 用户口径编号（规则手册「第二十九条」；本模块只供文案引用，⛔ 不参与判定） */
+const RANGE10_BACKUP_RULE_NO = '二十九';
+/** 窗口天数：候补看的是「10 日涨幅」周期（用户：「20 日老周期结束，现在轮到十日周期」） */
+const RANGE10_BACKUP_WINDOW_DAYS = PRESENCE_WINDOW_10;
+/** 首次在列的次数 */
+const RANGE10_CNT_FIRST = 1;
+/** 二次在列的次数 */
+const RANGE10_CNT_SECOND = 2;
+
+/**
+ * 涨幅 → 「+49.00%」文案（仅用于【说明文字】，⛔ 不参与任何判定）。
+ * §21：文案在 Logic 层拼好，模板零计算；缺值 ⇒ '—'（⛔ 不补 0，§10）。
+ * @param {number|null} n
+ * @returns {string}
+ */
+function _fmtPct(n) {
+  const v = (n === null || n === undefined || n === '') ? null : Number(n);
+  if (v === null || !isFinite(v)) return '—';
+  return (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+}
+
+/**
+ * 【纯函数】把注入的十日涨幅池排成「屏幕顺序 + 主板名次」。
+ *
+ * @param {Array<{name:string, code?:string, topic?:string, pct:number|string|null}>} pool
+ *        当日名单（decision-collect#range10Rows：name / code / topic / pct=十日涨幅）
+ * @returns {Array<{name:string, code:string, topic:string, pct:number|null,
+ *                  mainBoard:boolean, rank:number|null}>}
+ *         按涨幅降序（= 屏幕行序）；rank = 主板名次（非主板 / 缺涨幅 ⇒ null，不占名次）
+ */
+function buildRange10Ranked(pool) {
+  const items = [];
+  const seen = new Set();
+  (pool || []).forEach(function(r) {
+    if (!r) return;
+    const name = String(r.name || r.stock || '').trim();
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    const raw = r.pct;
+    let pct = null;
+    if (raw !== null && raw !== undefined && raw !== '') {
+      const n = Number(raw);
+      if (isFinite(n)) pct = n;
+    }
+    items.push({
+      name: name,
+      code: String(r.code || '').trim(),
+      topic: String(r.topic || '').trim(),
+      pct: pct,
+      // ★★ [R10-YIZI 2026-10-24] 该票【今日】是否竞价一字涨停（买不进）。
+      //   三态，⛔ 不许把「不知道」塌成 false（§10）：
+      //     true  = 采集层用 limit-up.js#isAuctionYiZi 判出来了（读 auc_pct_chg，唯一实现 §6）；
+      //     false = 明确不是一字；
+      //     null  = 拿不到该票今日的竞价数据（典型 = 「20天」补位行：它【不在】今日竞价名单里）
+      //             ⇒ 判不出，⛔ 不能当成「能买」也不当成「买不进」（见 pickRange10Backup 的说明）。
+      isYizi: (r.isYizi === true) ? true : (r.isYizi === false ? false : null),
+      // 竞价涨幅（%，仅用于说明文案：「竞价涨幅 +10.00% ⇒ 一字板」）；null = 缺数据
+      aucPct: (function() {
+        const v = r.aucPct;
+        if (v === null || v === undefined || v === '') return null;
+        const n = Number(v);
+        return isFinite(n) ? n : null;
+      })(),
+      // sortIndicesByRangePct 的行契约是 `row.stock`（与早盘竞价的 renderList 同形）
+      stock: name
+    });
+  });
+  if (items.length === 0) return [];
+
+  // 排序走【同一个实现】（§6）：把「池」映射成它要的 rows + rangeMap，索引数组自己造。
+  const rangeMap = new Map();
+  items.forEach(function(it) { rangeMap.set(it.name, { pct: it.pct }); });
+  const order = sortIndicesByRangePct(items.map(function(_, i) { return i; }), items, rangeMap);
+
+  const out = [];
+  let rank = 0;
+  order.forEach(function(idx, i) {
+    const it = items[idx];
+    const mainBoard = isMainBoardRankEligible(it.code);
+    let r = null;
+    // 与 presence-label.js#assignPresenceLabels 完全同序：缺涨幅 / 非主板 ⇒ 跳过且【不占名次】
+    if (it.pct !== null && mainBoard) {
+      rank += 1;
+      r = rank;
+    }
+    out.push({
+      name: it.name, code: it.code, topic: it.topic, pct: it.pct,
+      mainBoard: mainBoard, rank: r,
+      isYizi: it.isYizi, aucPct: it.aucPct,
+      // ⚠️ 屏幕行号（1 起，含非主板）—— 只用于【说明文案】帮用户核对，
+      //    ⛔ 绝不拿它当名次口径：用户问的是「排名前十」，而屏幕上的标签按【主板名次】发
+      //    （2026-10-23 实测：兆威机电 主板第 8 名 / 屏幕第 9 行 —— 两种数法都能进前十，但混用就会出现
+      //      「第 8 名」与「第 9 行」看着矛盾的口径争执）。
+      rowNo: i + 1
+    });
+  });
+  return out;
+}
+
+/**
+ * 【纯函数】挑出那至多一只「十日涨幅候补」。
+ *
+ * 判定顺序（每一步都写进 trail，可追溯 —— §10 结论必须能被复核）：
+ *   ① 取「主板名次 ≤ topN」的那十只（缺涨幅 / 非主板不占名次）；
+ *   ② 逐只剔除：题材未知（判不出是否同题材）/ 与排除题材同类；
+ *      ★ [R10-NOEXCLUDE 2026-10-24] ⛔ 不剔除「已在今日买点侧」的票 —— 见文件头的第三次修正：
+ *        题材通道与市场通道选中同一只票是【叠加确认】，顺延到下一名反而会选出更弱的票（10-20 事故）。
+ *   ③ 第一档 = 首次在列（cnt=1），第二档 = 二次在列（cnt=2）；
+ *      按名次从前往后取第一只（用户：「有首次在列的只选一只，没有首次在列的，选二次在列的」）。
+ *      ⚠️ 「没有首次在列」按【剔除后仍可用】解释：一档里全是同题材的，
+ *         等于「没有可用的首次在列」⇒ 才看二档；两档都空 ⇒ 返回 pick=null（= 空仓）。
+ *   ④ 选中即停，⛔ 绝不多选（用户：「有首次在列的只选一只」）。
+ *   ⑤ ★★ [R10-YIZI 2026-10-24] 若选中的那只【今日竞价一字涨停】⇒ 买不进 ⇒
+ *      pick=null、blockedBy='yizi'、blocked=那只票，⛔ **不换下一名替补**（本日候补空仓）。
+ *
+ * @param {Array} pool 见 buildRange10Ranked
+ * @param {{counts?:Map<string,{cnt:number}>|null, coveredDays?:number, topN?:number,
+ *          excludeTopics?:string[], sameTopic?:(a:string,b:string)=>boolean}} [opts]
+ *        counts        = auction_presence 的次数表（null ⇒ 数据未到 ⇒ 判不出）
+ *        coveredDays   = 窗口内实际有名单数据的天数（0 ⇒ 判不出）
+ *        excludeTopics = 必须避开的题材（20 日涨幅总龙一的题材）—— 这是本通道唯一的题材约束
+ *        sameTopic     = 题材认亲（规则层注入【大类归一】后的比较函数，§6）；缺省严格相等
+ *        ⛔ 没有 excludeName（2026-10-24 移除）：本通道是【从全市场选股】，
+ *           「是否已被题材块选中」不参与判定。要表达「同一只票两条通道都选中」，
+ *           请在规则层的说明文案里讲（_buildRange10BackupBlock 的 overlap）。
+ * @returns {{ready:boolean, reason:string, pick:object|null, tier:'first'|'second'|'',
+ *            trail:Array<object>, topN:number, coveredDays:number, windowDays:number,
+ *            blockedBy:string, blocked:object|null, yiziUnknown:boolean}}
+ */
+function pickRange10Backup(pool, opts) {
+  const o = opts || {};
+  const rawN = Number(o.topN);
+  const topN = (isFinite(rawN) && rawN > 0) ? Math.floor(rawN) : PRESENCE_TOP_N;
+  const counts = (o.counts && typeof o.counts.get === 'function') ? o.counts : null;
+  const coveredDays = Number(o.coveredDays) > 0 ? Math.floor(Number(o.coveredDays)) : 0;
+  const sameTopic = (typeof o.sameTopic === 'function')
+    ? o.sameTopic
+    : function(a, b) { return !!a && !!b && String(a) === String(b); };
+  const excludeTopics = (Array.isArray(o.excludeTopics) ? o.excludeTopics : [])
+    .map(function(t) { return String(t || '').trim(); })
+    .filter(function(t) { return !!t; });
+
+  const out = {
+    ready: false,
+    reason: '',
+    pick: null,
+    tier: '',
+    trail: [],
+    topN: topN,
+    coveredDays: coveredDays,
+    windowDays: RANGE10_BACKUP_WINDOW_DAYS,
+    // ★★ [R10-YIZI 2026-10-24 用户口径] 买不进（竞价一字涨停）的三件事实：
+    //   · blockedBy = 'yizi'  ⇒ 「不是选不出，是选出来的那只买不进」—— 规则层据此换文案；
+    //   · blocked   = 被否掉的那只（name/topic/pct/rank/cnt/label/aucPct），用于说明区点名；
+    //   · yiziUnknown = 选中的票今日竞价数据缺失（补位行）⇒ 无法确认是否一字，需用户自核。
+    //   ⚠️ 三个都是【附加信息】，缺省值 = 没有发生（§11：老调用方 / 老单测零行为变化）。
+    blockedBy: '',
+    blocked: null,
+    yiziUnknown: false
+  };
+
+  const ranked = buildRange10Ranked(pool);
+  if (ranked.length === 0) {
+    out.reason = '当日十日涨幅名单未就绪（数据未到）⇒ 判不出候补';
+    return out;
+  }
+  // §10：次数未到 ⇒ 判不出（⛔ 绝不把「不知道」当成「首次在列」）
+  if (!counts || coveredDays <= 0) {
+    out.reason = '十日窗口的在列次数（auction_presence）未读到 ⇒ 判不出「首次 / 二次在列」⇒ 候补不生效';
+    return out;
+  }
+  out.ready = true;
+
+  const top = ranked.filter(function(it) { return it.rank !== null && it.rank <= topN; });
+  if (top.length === 0) {
+    out.reason = '十日涨幅前 ' + topN + ' 名里没有主板票 ⇒ 无可选候补';
+    return out;
+  }
+
+  const judged = top.map(function(it) {
+    const hit = counts.get(it.name);
+    // 命中不到 ⇒ 窗口内真的一次都没进过名单（今天在名单里的票必然 cnt ≥ 1）⇒ 0 次
+    const rawCnt = hit ? Number(hit.cnt) : 0;
+    const cnt = (isFinite(rawCnt) && rawCnt >= 0) ? Math.floor(rawCnt) : 0;
+    let reason = '';
+    if (!it.topic) {
+      reason = '题材未知 ⇒ 判不出是否与总龙一同题材（§10 不猜）';
+    } else {
+      for (let i = 0; i < excludeTopics.length; i++) {
+        if (sameTopic(it.topic, excludeTopics[i])) {
+          reason = '与【' + excludeTopics[i] + '】同题材（老周期 / 已作废题材）';
+          break;
+        }
+      }
+    }
+    return {
+      name: it.name, code: it.code, topic: it.topic, pct: it.pct, rank: it.rank,
+      rowNo: it.rowNo,
+      cnt: cnt, label: presenceLabelOf(cnt), reason: reason,
+      // [R10-YIZI 2026-10-24] 今日竞价一字涨停（true / false / null=判不出，见 buildRange10Ranked）
+      isYizi: it.isYizi, aucPct: it.aucPct
+    };
+  });
+  out.trail = judged;
+
+  const first = judged.filter(function(j) { return !j.reason && j.cnt === RANGE10_CNT_FIRST; });
+  const second = judged.filter(function(j) { return !j.reason && j.cnt === RANGE10_CNT_SECOND; });
+  const tier1 = first[0] || null;
+  const tier2 = second[0] || null;
+  const pick = tier1 || tier2;
+  if (!pick) {
+    out.reason = '十日涨幅前 ' + topN + ' 名里没有【首次在列 / 二次在列】且与总龙一不同题材的主板票' +
+      '（有首次在列只选一只；没有首次在列才看二次在列）⇒ 今天空仓';
+    return out;
+  }
+  // ★★ [R10-YIZI 2026-10-24 用户口径] 「买不进去的，也不用替补，也不用选进去了」：
+  //   最强的那只若是【竞价一字涨停】⇒ 一字板竞价买不进（开盘也基本买不到）⇒
+  //   ⛔ 不选入，⛔ 也不顺延到下一名（下一名更弱，替换没有意义），本日候补直接空仓。
+  //   ⚠️ 只对【会被选中的那一只】生效：一字票若排在更后面（前面已有可用票），它不影响结论。
+  if (pick.isYizi === true) {
+    // 让「前十逐只去留」那段文字也能看见它被否掉的真实原因（可追溯，§10）
+    pick.reason = '今日【竞价涨停（一字板）】⇒ 竞价买不进 ⇒ 不选入，也不替补';
+    out.blockedBy = 'yizi';
+    out.blocked = {
+      name: pick.name, code: pick.code, topic: pick.topic,
+      pct: pick.pct, rank: pick.rank, rowNo: pick.rowNo,
+      cnt: pick.cnt, label: pick.label, aucPct: pick.aucPct
+    };
+    out.tier = '';          // ⛔ 一档都没成（别让下游误读成「首次在列档选出来的」）
+    out.pick = null;
+    out.reason = '十日涨幅前 ' + topN + ' 名里最强的那只【' + pick.name + '】' +
+      '（' + (pick.topic || '—') + '，十日涨幅 ' + _fmtPct(pick.pct) +
+      '，第 ' + pick.rank + ' 名，' + (pick.label || '次数未知') + '）' +
+      '今日【竞价涨停（一字板）】' +
+      (pick.aucPct === null ? '' : ('（竞价涨幅 ' + _fmtPct(pick.aucPct) + '）')) +
+      ' ⇒ 一字板竞价买不进、开盘也基本买不到；' +
+      '按用户口径【不选入、也不替补】⇒ 今天这只候补【空仓】（⛔ 没有换成下一名顶上来）';
+    return out;
+  }
+  out.pick = pick;
+  out.tier = tier1 ? 'first' : 'second';
+  // §10：补位行（「20天」票）不在今日竞价名单里 ⇒ 拿不到竞价涨幅 ⇒ 判不出是否一字。
+  //   仍然选它（⛔ 不因为「不知道」就否掉一个合格候选），但要把这个缺口如实说出去，
+  //   让用户自己核一眼 —— 这比「默默当成能买」安全。
+  if (pick.isYizi === null) out.yiziUnknown = true;
+  return out;
+}
+
+
+// ────── ../src/logic/topicvolratio/tvrb-constants.js ──────
+// tvrb-constants.js — 「题材量比」看板的【全部常量与文案】（纯数据，零逻辑，§15）
+//
+// 从 topic-vol-ratio-rules.js（5793 行）拆出。拆出的理由：
+//   用户改「规则文案 / 阈值 / 标签色」时，原来要在 5793 行里翻半天；这里只有常量。
+//
+// 口径红线（与拆分前逐字一致）：
+//   · 阈值用常量，⛔ 不在函数里写死 4 / 8 / 2；
+//   · 文案里的数字用常量拼接（buildTvrbRulesLines 依赖这条）；
+//   · TONE 一律引用已有的（EBB_NO_BUY_TONE 等），⛔ 别为每枚标签新造颜色。
+
+/**
+ * ★ [EBB-20D 2026-10-22 用户口径] 「退潮事件计数」的窗口 = 近【20 个交易日】。
+ *
+ * 用户原话：「时间太短没有检查到10月13日那天？」—— 旧窗口是 10 个交易日，跨不过一个完整的老周期：
+ *   老周期的首次退潮在 10-13，到 10-22 已隔 7 个交易日（还在窗口内），但要判「无第三次」必须
+ *   同时看见 10-14/10-15（首次事件）与 10-20（二次事件）—— 10 天窗口在节假日错位时会漏。
+ * ⇒ 窗口口径定为 20 个交易日（与「20日涨幅」的 20 日同量级，用户口径一致）。
+ *
+ * ⚠️ 组合式注入的 ebbHistory 必须【多给 2 天】（= 22 行）：连续退潮日要合并成一次事件，
+ *   最早那天如果正好是窗口第一天，需要它前一天那一行来证明「它不是延续」。
+ */
+const EBB_EVENT_WINDOW_DAYS = 20;
+
+// ══【主线题材 · 成组门槛】══════════════════════════════════════════════════════════════════
+// 用户口径（2026-10-25，逐字）：
+//   「首先再说明下什么是主线龙头，20日涨幅中排名前10的，
+//     1.必须满足有3只以上同题材的才叫主线题材，也就是说主线题材必须至少有3只排在前10。
+//     2.而且总龙一是该题材的。这叫主线题材。
+//     3.如果都是不同题材，或者一个题材只有两只，这个算是轮动行情，按照常规操作就行。」
+// ⇒ 退潮（分歧）规则的【前置条件】：这一天必须处在【主线题材】里，否则就是轮动行情 = 不触发。
+/** 数题材用的榜单长度上限：用户口径「20日涨幅中排名前10的」（= range20-leaders#RANGE20_LEADER_TEN_N） */
+const EBB_MAIN_TOPIC_TOP_N = 10;
+/** 同题材成组门槛：前十里同题材只数 ≥ 本值 且 总龙一属于该题材 ⇒ 主线题材（用户「至少有3只」） */
+const EBB_MAIN_TOPIC_MIN_COUNT = 3;
+/**
+ * ★★ [EBB-FAMILY-TOPIC 2026-11-12 用户口径] 【字号 / 字辈题材】的成组门槛 = 2 只。
+ *
+ * 用户原话：「20日涨幅排名前十的同题材有【2 只和两只以上羊字辈】，才能相互验证是该题材退潮，
+ *   当时还有海洋王，你就看 20 日涨幅在分歧的时候有多少只股票，按数量所以基本符合首次分歧占比不达标。」
+ *
+ * ⇒ 「羊字辈 / 东方」这类【字号炒作线】不是行业赛道，池子里本来就只会有 2~4 只，
+ *   用「≥3 只」去卡会永远判成轮动行情（11-10 实测：当日 9:25 名单前十只有【东方海洋第 1、
+ *   阳光照明第 4】两只羊字辈 ⇒ 旧门槛 ≥3 ⇒ 轮动 ⇒ 提示板什么都不显示，正是用户报的「这天你也没有标注」）。
+ * ⇒ 字号/字辈题材 = 【2 只即可互相验证】；行业题材仍按 3 只（用户 10-25 口径不动）。
+ *
+ * ⚠️ 「字号/字辈题材」的判据见 `tvrb-ebb.js#isFamilyTopicName`：
+ *   · 题材名以「字辈」结尾（羊字辈）；
+ *   · 或组内**全部**成员名都含这个题材串（东方海洋 / 大东方 / 日出东方 ⇒ 东方）。
+ *   ⛔ 不做「名字里有这个字就算」的全市场匹配（那会把 东方财富 也算进东方系）。
+ */
+const EBB_FAMILY_TOPIC_MIN_COUNT = 2;
+/**
+ * 【分歧】的必要条件：总龙前两个交易日【都是收盘涨停】⇒ 连板天数 ≥ 2。
+ *
+ * 用户原话：「看总龙一是不是分歧，要看它是不是连板涨停。比如前天涨停板，昨天涨停板，
+ *   今天占比不符合（或者停牌），这叫首次退潮。必须前面两天是涨停板，今天占比不符合（竞价口径）。
+ *   如果前两天不是涨停板，这不叫分歧，这叫趋势。按照常规操作就行。」
+ * ⚠️ 语义是「T-1 与 T-2 都涨停」，正好等价于 `computeStreak` 的 streak ≥ 2（首板=1 不够）。
+ * ⛔ 别放宽成 ≥ 1：一只首板票占比塌了是【趋势】，用户明确说「按照常规操作就行」。
+ */
+const EBB_DIVERGE_MIN_STREAK = 2;
+
+// ══ 第二十五条【总龙首次分歧 / 二次分歧】══════════════════════════════════════════════
+// 用户原话（2026-11-12，逐字）：「还有第二十五条，总龙首次分歧，定义，一条线：首板之后第一个
+//   竞价低开（个股分歧，不是题材退潮），东方海洋在 11月04日，首次分歧……它首次出现是在 11月6日
+//   变成总龙一主板的，然后霸榜三天，要霸榜总龙一至少三天把这个条件也添加上去，按照竞价口径，
+//   首板之后，第一个竞价低开日（按照竞价口径）或者涨幅高开低走收绿（竞价是高开的，但是收盘是
+//   负数绿的，按照收盘口径，这个要新增，之前没考虑过的），当时竞价低开在 11月10日又分歧一次，
+//   从现在开始这叫二次分歧，二次分歧等同于首次退潮了，所以从这天开始确认羊字辈退潮了，
+//   注意范围是 20 个交易日，分首次分歧和二次分歧，二次分歧 5 个交易日内至少有两个连板……
+//   到 11月12日时，提示应该是二次分歧等同该题材退潮。」
+/** 分歧判定窗口：20 个交易日（用户「注意范围是 20 个交易日」；⛔ 别与 EBB_EVENT_WINDOW_DAYS 合并，语义不同） */
+const DIVERGE_WINDOW_DAYS = 20;
+/** 【总龙资格】近 N 日当总龙一的天数 ≥ 本值才认（用户「要霸榜总龙一至少三天」） */
+const DIVERGE_TOTAL_DAYS_MIN = 3;
+/** 【二次分歧附加条件】首次分歧之后 N 个交易日内至少 M 个涨停（收盘口径） */
+const DIVERGE_SECOND_BOARD_WINDOW = 5;
+const DIVERGE_SECOND_MIN_BOARDS = 2;
+
+// ══ 档位常量（§6 唯一实现：本看板的「取几只」只由这里决定）════════════════════════════════
+// 用户口径：< 4 只不入选；4 ~ 8 只入选 1 只；> 8 只入选 2 只（早盘竞价股票少，只有这三档）。
+// ⛔ 别自行改成 ≥ 8 / > 10 之类：三个边界与用户原话「小于4」「大于等于4小于等于8」「大于8」逐字对应。
+/** 不入选门槛：题材股票数量 < 本值 ⇒ 该题材排除（顺延到下一题材） */
+const TVRB_MIN_COUNT = 4;
+/** 中档上界：TVRB_MIN_COUNT ~ 本值 ⇒ 取 1 只 */
+const TVRB_MID_MAX = 8;
+/** 中档取几只 */
+const TVRB_PICK_MID = 1;
+/** 大档（> TVRB_MID_MAX）取几只 */
+const TVRB_PICK_BIG = 2;
+/** 只取排名最靠前的【几个】入选题材（用户口径「排名第一和排名第二」，不足则顺延） */
+const TVRB_TOPIC_LIMIT = 2;
+
+/**
+ * ══【小题材收紧 · 排名第一且数量 4~6 只】════════════════════════════════════════════════════
+ *
+ * 用户原话（2026-10-24，逐字）：
+ *   「9月30日，入选排名第一的是新能源汽车，总数4只，平均量比32.55达到门槛。题材量比买点侧今天
+ *     选了江淮汽车，不够准确。原因就是因为总数太少，没有启动性，所以次日导致a杀。所以遇到入选排名
+ *     第一的题材数量在4-6只时（不是4-8只，那只是入选股票数量1只条件，我说的这个是选票范围），
+ *     条件要苛刻些。如果排名第一的题材数量4-6只，要看10日涨幅，看有没有同题材票进入前10，
+ *     如果有就选最靠前那一只，如果没有，就弃掉了。」
+ *   「因为这种数量少的，次日能存活下来的顶多有一只。所以就买最强的。要收紧下。」
+ *
+ * ⛔ 与 `TVRB_MID_MAX`（= 8）是【两个完全不同的东西】，绝不能互相替代（用户当场纠正过一字）：
+ *   · `TVRB_MID_MAX` = 8   ⇒ **取几只**：4~8 只这一档只取 1 只 —— 这是【只数】口径；
+ *   · 本常量 = 6           ⇒ **选票范围收紧**：4~6 只这一段的题材，票还必须进【当天十日涨幅前十】
+ *                            —— 这是【选票范围】口径。
+ *   ⇒ 7~8 只的题材【不受】本规则约束，照旧按龙位取票（用户：「不是4-8只」）。
+ *
+ * 口径（§6：两把尺子都与屏幕同源，⛔ 不另写一份）：
+ *   · 「当天十日涨幅前十」= `PRESENCE_TOP_N`（与「10日涨幅」toggle 那十枚标签同一个常量），
+ *     名次来自 `range10-backup.js#buildRange10Ranked`（与第二十九条候补、与屏幕同一个实现）；
+ *   · 「〔竞价口径〕」= 买点侧固定用的 9:26 那一份（`_withAuctionLegPct` 覆盖后的池子），
+ *     与龙位名册（`rankDragonsWithPctMap`）同源 —— 早上选出来，收盘翻回来还是同一批。
+ */
+const TVRB_SMALL_TOPIC_MAX = 6;
+
+/**
+ * ══ 【空仓提醒】门槛（第四轮 · 2026-10-13 用户口径）═══════════════════════════════════════
+ *
+ * 用户原话：「题材量比买点侧那里，帮我添加一个条件，数量筛选后，排名第一题材平均量比小于 25 的，
+ *   题材，在买点侧要提示醒目的空仓……比如今天，题材最高的电力新能源平均竞价量比是 45.92，
+ *   题材显示只有 3 只（排除创业板后，数量显示对的），这个题材排除入选，看排名第二的 AI 应用，
+ *   数量 14 只，（按照现有规则正常入选），题材平均竞价量比 21.51，相当于现在 AI 应用平均竞价量比
+ *   排名第一（能入选的），但是排名第一的 AI 应用平均竞价量比太低了，相当于题材退潮了，什么票都
+ *   跌得很厉害。（排名第二更不用说，因为是按题材的平均竞价量比排名第二，只有更低，所以看被选中的
+ *   题材排名第一的就可以了）……我的需求是，还是按照原来的正常方式选出排名第一，第二的题材的股票，
+ *   只是在这个低量比的节点，排名第一的题材平均竞价量比小于 25 时，需要文字提示空仓。……
+ *   记住就是按照正常流程选出股票，只是多添加了空仓提醒文字。其它不变。」
+ *
+ * ⇒ 判据（★ 只看【能入选的】题材里排名第一的那一个，也就是买点侧第一个题材块）：
+ *     avgVolRatio(blocks[0]) < TVRB_CASH_ALERT_AVG_VR  ⇒  买点侧顶部显示大字【建议空仓】。
+ *   ⛔ 不看排名第二：它按定义只会更低（排名就是按平均竞价量比降的），拿它判等于判了个更松的条件。
+ *   ⛔ 【不改变选股】：命中时股票照常按规则列出（用户原话「还是按照原来的正常方式选出……的股票」），
+ *      所以本判据只产出一条【提醒文案】，绝不删块 / 删票 / 改档位。
+ *   ⛔ 缺数据（该题材一行量比都没拿到 ⇒ avgVolRatio === null）⇒ 【不提示】（§10：未知 ≠ 低）。
+ *   ⛔ 一个题材都没入选（blocks 为空）⇒ 【不提示】—— 那属于「没有合格题材」，看板已有自己的说明，
+ *      与「入选了但量比太低」是两件事（⛔ 不拿这条去冒充）。
+ *
+ * ★ 25 这个数来自用户原话，是一个【经验阈值】而不是从数据推导出来的物理量 —— 原样写死在这里，
+ *   ⛔ 别自行调成 20 / 30：它决定「今天到底开不开仓」，只能用户改。
+ */
+const TVRB_CASH_ALERT_AVG_VR = 25;
+
+/**
+ * ══ 【退潮首日】卖点动作标签（第五轮 · 2026-10-13 用户口径）════════════════════════════════
+ *
+ * 用户原话：「市场上十日涨幅最高的那只股票所在的题材，在题材退潮首日（龙一停牌或者占比不达标），
+ *   卖点侧同题材龙二可以看分笔卖出，进行卖出，不看占比卖出，还有不同题材的龙一也可以这样，
+ *   但要有条件，不同题材的龙一必须是总市场的龙二……相当于选出两只可以等开盘卖出的。……
+ *   其它普通股票都可以竞价卖，降低风险。」
+ *
+ * ⇒ 退潮首日时，卖点侧只有【两类票】标这枚标签（= 允许「等开盘看分笔再卖」、不看占比）：
+ *     ① 同题材可用龙位（总龙所在题材里龙位最靠前、且非一字 / 非停牌的那只，可顺延）；
+ *     ② 市场总龙二（昨日十日涨幅第二、且是它自己题材的龙一、且与总龙不同题材、非一字 / 非停牌）。
+ *   其余（含原本标【持有】的）一律改【竞价卖】（SELL_OUT_TAG）—— 用户拍板「全部改竞价卖」。
+ *
+ * ⛔ 只在本看板用：决策看板 / 分笔看板零改动（用户「注意我说的题材量比看板的卖点侧」）。
+ */
+const EBB_PICK_TAG = '看分笔卖';
+/** 退潮标的配色档（本看板独有：洋红 #c026d3 + 虚线边 —— 与 竞价卖 的绿 / 持有 的蓝都不同） */
+const EBB_PICK_TONE = 'pen';
+/** 悬停说明（文案唯一出处；组件只渲染 Logic 给的值，§21） */
+const EBB_PICK_TITLE =
+  '退潮首日专用：市场总龙（昨日十日涨幅第一）今日停牌 / 竞价占比不达标 ⇒ 题材退潮。' +
+  '本股是【同题材可用龙位】或【市场总龙二】⇒ 允许【看分笔卖】（不看占比）：' +
+  '9:25 不竞价卖，等 9:30~9:31 点开分笔成交看结论 ——【冲高卖】等冲高再清、【立刻卖】直接止损。';
+
+/**
+ * ══ 【退潮首日】买点动作标签（第六轮 · 2026-10-13 用户口径补正）══════════════════════════
+ *
+ * 用户原话（2026-10-13 第二轮反馈）：
+ *   「退潮当天，只有卖没有买吗？新华文轩买点侧还标有 持有 竞价买，应该标的是，"退潮不买"，
+ *     ……还是我说的规则，标签改变下。其它不变。」
+ *
+ * ⇒ 退潮首日，买点侧【每一只票】的动作标签一律换成这一枚 ——
+ *   原本由 finishBuyBlock 给出的【持有】/【竞价买】/【尾盘买】/【先卖后买】… 全部作废
+ *   （用户口径「退潮当天，只有卖没有买」）。
+ *
+ * ⛔ 只在本看板用：决策看板 / 分笔看板零改动（用户「其它不变」）。
+ * ⚠️ 它是【覆盖式后处理】，与卖点的 _applyEbbSellRules 同一范式 —— ⛔ 绝不去改 finishBuyBlock 内部
+ *   （那是决策看板与本看板共用的同一份实现，在里面加本看板专有分支等于给决策看板也加了规则）。
+ */
+const EBB_NO_BUY_TAG = '退潮不买';
+/**
+ * 配色档（本看板独有）：深墨底 + 近白字。
+ *
+ * ⚠️ 为什么【不用红 / 绿】：行内所有红色系胶囊（#dc2626 竞价买 / #be123c 下杀买 / #f43f5e 补涨）
+ *   都是「今天要买」的动作标签，用红底会被一眼读成买点信号，正好帮倒忙（与 .tvrb-risk 同一取舍）。
+ * ⚠️ 为什么用【深底 + 亮字】而不是中性灰：买点侧整体挂着 `filter: grayscale(1)`（退潮空仓视觉），
+ *   grayscale 只去色相 / 饱和度、【保留明度】⇒ 深底亮字在灰化后仍是整行对比最强的元素，
+ *   中性灰标签反而会被灰化吞掉、读不出来。
+ */
+const EBB_NO_BUY_TONE = 'ebb-nobuy';
+
+/**
+ * ══ 【退潮首日】买点侧唯一那只【市场龙二】的专属标签（第八轮 · 2026-10-14 用户拍板）══════
+ *
+ * 用户原话：
+ *   【旧口径 · 2026-10-14】「买点只有一个，那就是市场的龙二（不是同题材的），是整个早盘竞价看板的股票列表中的
+ *     十日涨幅排名第二的龙二……」（标签拍板为【单独一枚「总龙二买」】）
+ *   【新口径 · 2026-10-20】「把原来按照10日涨幅改成20日涨幅选股……从20日涨幅中的总龙一到总龙五
+ *     选出两只排名靠前的。而且是不同总龙一题材的股票……也就是从这五只中，要判断是不是创业板，
+ *     科创板，北交所等非主板的股票，如果是先排除，剩下的看是不是和总龙一是同题材，是也排除，
+ *     剩下的就选排名靠前的那两只。只选好两只，已经完成任务，后面不选了。」
+ *
+ * ⇒ 退潮日，买点侧**可买的那几行** = 20日涨幅总龙一~五里选出的【替补 · 最多两只】，
+ *   每行挂这一枚标签（⛔ 不是 finishBuyBlock 的 竞价买 / 尾盘买 —— 用户明确要专属标签），
+ *   原始买点信号（占比达标与否）写进行内说明，信息一枚不丢。
+ * ⛔ 与 EBB_NO_BUY_TAG 是两枚不同的标签：那枚是「今天不买」，这枚是「今天唯一买点」。
+ */
+const EBB_SECOND_BUY_TAG = '退潮替补买';
+/**
+ * 配色档（本看板独有）：琥珀金底 + 近白字。
+ *
+ * ⚠️ 为什么不用红 / 也不用深墨：
+ *   · 红系（#dc2626 竞价买）是常规买点色，但它旁边就是【退潮不买】的深墨 —— 两枚都「买」字辈，
+ *     要有明显区分度才能一眼认出「这条是今天唯一能下手的那条」；
+ *   · 本行【不参与整体灰化】（它在 .tvrb-ebb 灰化容器之外）⇒ 琥珀金在灰化块旁边最跳。
+ *   ⛔ 涨=红是行情数字的口径，不是「标签底色」的口径：本看板的 竞价买 本身就是红底，
+ *     这里刻意用金，避免与「退潮不买」混读。
+ */
+const EBB_SECOND_BUY_TONE = 'ebb-second';
+/** 这一行引用的规则编号（= 规则手册第二十一条「退潮首日 · 买点侧唯一那只」） */
+const EBB_SECOND_RULE_NO = '二十一';
+/** 悬停说明（文案唯一出处；组件只渲染 Logic 给的值，§21） */
+const EBB_SECOND_BUY_TITLE =
+  '退潮首日【唯一买点】：市场龙二 = 当日十日涨幅在【早盘竞价全列表】里排名第二（有龙位）的那只。' +
+  '市场总龙（昨日十日涨幅第一）今日停牌 / 占比不达标 ⇒ 题材退潮，买点侧只留这一只；' +
+  '其余入选票一律【退潮不买】（灰色）。';
+
+/**
+ * ══ 【空仓提醒】买点动作标签（第十六轮 · 2026-10-16 用户口径）══════════════════════════════
+ *
+ * 用户原话：
+ *   「题材量比有这个提示时：⚠️ 今日建议空仓 · 不开仓……这个提示下的买点侧，全部变成灰色
+ *     （卖点侧不变），买点侧股票标签改成"分歧日不买"。那个灰色的样式类似 10月13日的退潮首日
+ *     那个买点侧整版灰色，你可以参考下。其它不变。」
+ *
+ * ⇒ 命中【空仓提醒】（能入选的排名第一题材 平均竞价量比 < TVRB_CASH_ALERT_AVG_VR）时，
+ *   买点侧【每一只票】的动作标签一律换成这一枚 —— 原本由 finishBuyBlock 给出的
+ *   【持有】/【竞价买】/【尾盘买】/【先卖后买】… 全部作废（用户口径「分歧日不买」）。
+ *
+ * ⛔ 只在本看板用（决策看板 / 分笔看板零改动，用户「其它不变」）。
+ * ⛔ 与 EBB_NO_BUY_TAG 是两枚【不同成因】的标签，同处一套灰化视觉：
+ *   · 【退潮不买】= 市场总龙停牌 / 占比不达标 ⇒ 退潮【首日】；
+ *   · 【分歧日不买】= 最强题材的平均量比 < 25 ⇒ 分歧日（题材退潮）但不是退潮首日。
+ *   用户本轮只讲「空仓提醒」这一种情形 ⇒ 退潮首日优先走它自己那一枚（见 buildTopicVolRatioPlan）。
+ */
+const CASH_NO_BUY_TAG = '分歧日不买';
+/**
+ * 配色档（本看板独有）：★ 与 EBB_NO_BUY_TONE【同一个值】—— 灰化容器下两枚「不买」标签共用同一配色档。
+ *
+ * ⚠️ 为什么必须是别名而不是新值：`.tvrb-buy-list.tvrb-ebb` 挂着 `filter: grayscale(1)`，
+ *   深底亮字是灰化后唯一还读得出来的档（见 EBB_NO_BUY_TONE 的长注释）。
+ *   新造一个同名值 = 同一条 CSS 规则写两处（§6 禁止的第二份真相）。
+ */
+const CASH_NO_BUY_TONE = EBB_NO_BUY_TONE;
+
+/**
+ * ══ 【弱势切抱团 · 买点】标签组（第三十条 · 2026-10-27 用户口径）══════════════════════════
+ *
+ * 用户原话：
+ *   「当有这个看板时（⚠️ 今日建议空仓 · 不开仓），下面会出现灰色的选股块，从灰色的题材块中核对
+ *    20日涨幅，看有没有排名前三的股票在其中（同题材），如果有再重新选入，因为行情差时，
+ *    选市场龙头（也是题材龙头），叫弱势切抱团。并放在最前面，添加文字，弱势切抱团。
+ *    这个也是之前的从市场的龙头选，而不是题材选，添加下规则和说明文字。」
+ *   「比如昨天10月26日的灰色题材块是工业4.0，灰色股票行是福莱新材和兆威机电这两只，你看下
+ *    这个题材在20日涨幅排名前三有没有股票，如果有选出来，放在最前面，这个是可以作为当天买入的票。
+ *    比如当天按照竞价口径就有大业股份 93.41% 排名主板第二，进入前三。」
+ *   「又比如今天的还是那个提示板，灰色题材块还是工业4.0，20日涨幅大业股份仍然排第二，又可以选入。」
+ *   「如果该题材的股票不是排名第三的话，还是要空仓的。」
+ *
+ * ⇒ 判据（★ 只在【空仓提醒命中】且【当日既不是退潮首日、也不是总龙首次分歧日】时生效）：
+ *   ① 池子 = 【20日涨幅主板前 WEAK_HUDDLE_TOP_N 名】。直接取 `ebbCtx.top5` 的前 3 只 ——
+ *      那条前五榜本来就是【只主板】（见 range20-leaders.js 的文件头：用户口径
+ *      「注意科创板，创业板，北交所等非主板的股票不要算进去」），与「20日涨幅」toggle 的
+ *      总龙一~五【同一把尺子】，⛔ 不在这里另排一次名次（§6）。
+ *   ② 其中【与灰色题材块同题材】的股票 ⇒ 选入（= 今天可以买的那几只）；
+ *   ③ 一只都没有 ⇒ 【仍然空仓】：不选、不替补，说明区如实写出「该题材没有票进 20日涨幅主板前三」。
+ *
+ * ⛔ 为什么是「前三」而不是「前五 / 前十」：用户原话最后一句「如果该题材的股票不是排名第三的话，
+ *   还是要空仓的」—— 要求的强度是「必须真在前三名里」，不是「前三之外降一档照收」。
+ * ⛔ 这不是【题材选股】：题材本身已经退潮（平均量比 < 25）、整段灰化且标签是【分歧日不买】；
+ *   本通道是【从市场龙头里选】（用户「这个也是之前的从市场的龙头选，而不是题材选」）——
+ *   行情差时资金会抱团最强的市场龙头，而它往往恰好就是退潮题材里唯一还活着的那一只
+ *   （10-26 / 10-27 都是：大业股份 = 工业4.0 的龙一，20日涨幅稳定排在主板前三）。
+ * ⚠️ 与第二十九条【十日涨幅候补】是两条【不同的】股票级通道，同一天可能同时出现：
+ *   那条看【十日涨幅 + 在列次数】（新面孔、且要与 20日涨幅总龙一不同题材）；
+ *   本条看【20日涨幅前三 + 与退潮题材同题材】（老龙头抱团）。两者语义相反，⛔ 不许互相顶替。
+ * ⚠️ 与第二十五条【总龙首次分歧】互斥：分歧日买点侧已由第二十五条接管（cashAlert 被分歧标语顶掉），
+ *   本规则只在【常规空仓提醒】那一条分支里生效。
+ */
+const WEAK_HUDDLE_RULE_NO = '三十';
+/** 动作标签（买点行上唯一那枚「买」字辈；与【分歧日不买】形成一买一不买的对照） */
+const WEAK_HUDDLE_TAG = '弱势切抱团';
+/** 独立买点块的合成题材头（渲染在灰化容器之外的那一段的标题） */
+const WEAK_HUDDLE_BLOCK_TOPIC = '弱势切抱团 · 买点';
+/** 只看 20日涨幅主板前几名（用户口径「排名前三」） */
+const WEAK_HUDDLE_TOP_N = 3;
+/**
+ * 配色档（本看板独有）：紫罗兰 —— 与既有四档特殊买点【都不同色】：
+ *   琥珀金 ebb-second（退潮替补 / 分歧买点 / 新龙）、青蓝 r10backup（十日候补）、
+ *   洋红 pen（看分笔卖）、深墨 ebb-nobuy（不买）。
+ * ⛔ 不用红（同页常规【竞价买】是红，两枚「买」字辈挨着会读混）；不用绿（绿 = 今天就走）。
+ */
+const WEAK_HUDDLE_TONE = 'weakhuddle';
+/** 悬停说明（文案唯一出处；组件只渲染 Logic 给的值，§21） */
+const WEAK_HUDDLE_TITLE =
+  '第三十条【弱势切抱团】：题材已经退潮（平均竞价量比 < 25、整段灰化），但这一只是【20日涨幅主板前三】' +
+  '且正好属于那个退潮题材 ⇒ 行情差时资金会抱团最强的市场龙头，它可以作为当天买入的票。' +
+  '⚠️ 它同时仍在下面的灰化块里出现一次（那块照旧灰化、不恢复）—— 题材结论与股票结论是两件事。';
+
+/**
+ * ══ 【补涨题材 · 买点】标签组（第三十一条 · 2026-10-27 用户口径）══════════════════════════
+ *
+ * 用户原话：
+ *   「如果20日涨幅（竞价口径），该题材的股票有2-3只处在6-10名中，也就是有该题材的2只或者3只票
+ *    排在后面，那么称做补涨题材，补涨题材一般处在低位，所以很多时候该题材的平均量比不符，
+ *    但是后期涨势却很好，但是选票的时候只选连板票比较强势，所以该题材的选大业股份。」
+ *
+ * ★ 用户随后在 AskUserQuestion 里逐条拍板（2026-10-27，三个都选了【最严格】那一档）：
+ *   ① 口径 = 【严格只数灰色题材本身】（不把该题材股票的其他标签并进来）
+ *      ⇒ 10-23 实测：工业4.0 在 6~10 名里只有大业股份 1 只（另一只成员海得控制没有 20日涨幅行）
+ *        ⇒ 【不达标 ⇒ 当天仍然空仓】。这是用户知情后仍选的结论，⛔ 不要"好心"放宽。
+ *   ② 数量门槛 = 【恰好 2 或 3 只】；4 只以上【不算】补涨题材（那已经是主线，不是低位补涨）。
+ *   ③ 该题材在 6~10 名里【一只连板都没有】⇒ 仍然空仓（严格执行"只选连板票比较强势"，不替补）。
+ *
+ * ⇒ 判据（★ 只在【空仓提醒命中】且【当日既不是退潮首日、也不是总龙首次分歧日】时生效）：
+ *   ① 池子 = 20日涨幅【主板第 CATCH_UP_RANK_FROM ~ CATCH_UP_RANK_TO 名】= 第 6~10 名。
+ *      取 `ebbCtx.topicPool`（前十富化，与「20日涨幅」toggle 同一把尺子、同一份富化，§6）——
+ *      ⛔ 不在这里另排一次名次。
+ *   ② 其中【与灰色题材块同题材】（严格相等，与第三十条同一个判据）的票数必须 == 2 或 3。
+ *   ③ 这些票里【只留连板票】：连板天数（`buildLimitStreakMapForDate`，收盘口径，与「连板天梯」
+ *      同一把尺子，§6）≥ CATCH_UP_MIN_STREAK（2）。streak 未知（null，停牌/缺行）⇒ 不当连板（§10 不猜）。
+ *   ④ 一只连板都没有 ⇒ 仍然空仓（不选、不替补）。
+ *
+ * ⚠️ 与第三十条【弱势切抱团】是两个【不同的名次区间】，互不影响、同一天可能各出一只：
+ *   前三（1~3）⇒ 第三十条；6~10 名且恰好 2~3 只 ⇒ 本条。⛔ 不许互相顶替或合并。
+ * ⛔ 这不是【题材选股】：题材本身仍然退潮（平均量比 < 25）、整段灰化、标签【分歧日不买】；
+ *   本条与第三十条同一条思路 —— 从【市场排名】里选，而不是从题材热度里选。
+ * ⚠️ 为什么是「6~10」而不是「4~10」：4~5 名按用户口径仍属"靠前"，真正处在后段（补涨位）的
+ *   是第 6 名之后；用户原话「排在后面」。
+ */
+const CATCH_UP_RULE_NO = '三十一';
+/** 动作标签 */
+const CATCH_UP_TAG = '补涨题材';
+/** 独立买点块的合成题材头 */
+const CATCH_UP_BLOCK_TOPIC = '补涨题材 · 买点';
+/** 名次区间（含两端）：第 6 名 ~ 第 10 名 */
+const CATCH_UP_RANK_FROM = 6;
+const CATCH_UP_RANK_TO = 10;
+/** 数量门槛：恰好 2 或 3 只（4 只以上不算 —— 那已是主线，不是低位补涨） */
+const CATCH_UP_MIN_COUNT = 2;
+const CATCH_UP_MAX_COUNT = 3;
+/** 连板天数门槛：1 = 首板，≥2 = 连板（与 limit-streak.js 的 label 口径一致） */
+const CATCH_UP_MIN_STREAK = 2;
+/**
+ * 配色档（本看板独有）：深橙 —— 与既有五档都不同色：
+ *   琥珀金 ebb-second / 青蓝 r10backup / 洋红 pen / 紫罗兰 weakhuddle / 深墨 ebb-nobuy。
+ * ⛔ 不用红（同页常规【竞价买】是红）；不用绿（绿 = 今天就走）。
+ */
+const CATCH_UP_TONE = 'catchup';
+/** 悬停说明（文案唯一出处；组件只渲染 Logic 给的值，§21） */
+const CATCH_UP_TITLE =
+  '第三十一条【补涨题材】：题材已经退潮（平均竞价量比 < 25、整段灰化），但该题材有【2~3 只】票同时' +
+  '落在【20日涨幅主板第 6~10 名】⇒ 说明这个题材处在【低位补涨】阶段，后期涨势往往很好。' +
+  '这类题材【只选连板票】（最强势的那只）。⚠️ 恰好 2~3 只才算；4 只以上属主线、1 只属个别票；' +
+  '一只连板都没有 ⇒ 仍然空仓。';
+
+/**
+ * ══ 【题材龙一竞价跌停 · 切抱团】标签组（第三十二条 · 2026-11-02 用户口径）══════════════════
+ *
+ * 用户原话（逐字）：
+ *   「添加下规则收紧，排名第一的题材，不管有多少只，题材内龙一如果跌停，就不要选，要从20日涨幅里
+ *    选市场总龙一，弱势切抱团，题材内的龙一都跌停了，说明弱势了，就要切抱团，从20日涨幅中选
+ *    市场总龙一，竞价口径。所以今天题材量比选的应该是九阳股份。」
+ *
+ * 触发当天的实况（2026-11-02，站库已核实）：
+ *   · 排名第一的入选题材平均竞价量比 = 50.02（≫ 25 ⇒ 空仓提醒【没有】命中，第三十条 / 三十一条
+ *     那两条「退潮题材」通道当天都不生效）；
+ *   · 该题材 4 只，按龙位取龙一 = 海洋王（002724）；
+ *   · 海洋王 9:25 竞价涨幅 = -9.99%（market_metrics.auc_pct_chg）⇒ getAuctionLimitState = 'down'
+ *     （主板 10%、容差 0.15）⇒ 它【竞价就跌停】，根本买不进，也说明这个题材今天是【弱势】的；
+ *   · 用户口径 ⇒ 当天应该买的是【20日涨幅市场总龙一】九阳股份，而不是跌停的海洋王。
+ *
+ * ⇒ 判据：
+ *   ① 只看【排名第一的入选题材】（= 扫描循环里第一块，`out.blocks.length === 0`）；
+ *      「不管有多少只」⇒ 本条【不带只数门槛】（与第三十条的 4~6 只收紧、第三十一条的 2~3 只无关）。
+ *   ② 该题材的【龙一】= `_dragonCandidates` 序列的第一只（= 买点侧官方龙位名册的第 1 名，§6 不另排序）。
+ *   ③ 龙一的【竞价涨幅】打在跌停价上 ⇒ 判据成立 ⇒ 该题材今天【不选股】，改从
+ *      `ebbCtx.top5` 取【第 1 名】= 20日涨幅市场总龙一（只主板、竞价口径，与「20日涨幅」toggle 同一把尺子）。
+ *   ④ 抱团对象就是那【一只】，⛔ 不取第二只、不替补。
+ *
+ * ⛔ 为什么是「整块不买」而不是「顺延到龙二」：用户原话「题材内的龙一都跌停了，说明弱势了」——
+ *   龙位是题材内【最强】的那只，最强的那只被摁在跌停板上，龙二龙三只会更弱；此时该题材已经
+ *   不成立为「当日主线」，从一个走弱的题材里挑次强的票，正是用户这次要否掉的选法。
+ * ⛔ 为什么不顺延到【排名第二的题材】：用户对今天的结果只给了一个答案 ——「选的应该是九阳股份」。
+ *   所以本条一旦成立，买点侧就只有【抱团那一只】（扫描到此为止，⛔ 不继续往下选）。
+ * ⚠️ 与第三十条【弱势切抱团】同名（同一枚【弱势切抱团】标签、同一档紫罗兰配色），但是【两个触发条件】：
+ *   那条 = 题材【退潮】（平均量比 < 25）+ 抱团对象是【与灰色题材同题材】的前三名票；
+ *   本条 = 题材【龙一竞价跌停】（量比可以很高）+ 抱团对象是【市场总龙一】。
+ *   同一天两条都能成立时，本条优先（它的信号更硬：最强的那只已经跌停），第三十条那一条的结果不再采用。
+ * ⚠️ §10 两条硬约束（缺一 ⇒ 本条不生效，⛔ 绝不猜）：
+ *   · 龙一的竞价涨幅读不到（`aucPct` = null）⇒ 判不出 ⇒ 保持原规则（⛔ 不把「没数据」当跌停）；
+ *   · `ebbCtx.top5` 为空 / 第一只取不到 ⇒ 判不出抱团对象 ⇒ 该题材照常按原规则列出，并如实写「判不出」。
+ * ⚠️ 只在【常规语境】生效（`r10Enabled`）：退潮首日（第二十一条）/ 切换日（第二十八条）/
+ *   总龙首次分歧日（第二十五条）各有专属规则接管买点侧，⛔ 不叠加（§6）。
+ */
+const TOPIC_LEADER_LIMITDOWN_RULE_NO = '三十二';
+/** 动作标签（与第三十条【同一枚】标签：用户对这两种情形用的是同一个词「弱势切抱团」） */
+const TOPIC_LEADER_LIMITDOWN_TAG = '弱势切抱团';
+/** 独立买点块的合成题材头（与第三十条的文案不同，用户能一眼看出是哪一条规则触发的） */
+const TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC = '弱势切抱团 · 买点（题材龙一竞价跌停）';
+/**
+ * 被否掉的那个题材块里，每只票的覆盖式标签。
+ * ⛔ 不复用【退潮不买】/【分歧日不买】：那两枚讲的是「整个买点侧都别买」，而这里只是
+ *   【这个题材】不买（同期还可能有抱团那一只可以买）—— 混用会让人以为今天又空仓了。
+ */
+const TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG = '龙一跌停不买';
+/**
+ * 该标签的配色档：与【退潮不买 / 分歧日不买 / 总龙分歧不买】**同一档**（深墨 + 亮字）。
+ * ⛔ 不为它新造一个颜色：这一块整块挂着 `filter: grayscale(1)`（下方灰化容器 / 块级 gray prop），
+ *   grayscale 只保留明度 —— 不同色相在灰化后看不出差别，新开一档只会多一份 CSS 与一份认知负担。
+ *   ⚠️ 与 CASH_NO_BUY_TONE / DIVERGE_NO_BUY_TONE 同一条理由（见那两处注释）。
+ */
+const TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE = EBB_NO_BUY_TONE;
+
+/**
+ * ══ 【总龙首次分歧 · 买点】标签组（第十九轮补丁⑧ · 2026-10-20 用户口径）══════════════════
+ *
+ * 用户原话：「市场总龙一，第一次出现分歧的时候，是买点。像新华传媒10月19日出现分歧，一般开盘
+ *   它会下杀，然后反弹，所以标签应该是下杀买。也就是题材量比买点侧只有市场总龙一，还有其它
+ *   不同题材的两只高标股票（20日涨幅前五的），同题材的不要……最多三只。」
+ *
+ * 三个概念（★ 全部定义在 leader-divergence.js 的文件头注释里，这里是展示口径）：
+ *   · 【首板】= 20 日窗口内第一个收盘涨停日 —— 分歧计数从首板日起算，之前的小阴小阳一概不算；
+ *   · 【首次分歧】= 首板后第一个【竞价涨幅 < 0】的日子（新华传媒 11 连板后 10-19 低开 -1.06%）；
+ *   · 【分歧转一致】= 分歧日后出现的涨停日（九阳股份 10-16）；转一致后再低开 = 二次分歧，依次类推。
+ *
+ * 三枚标签：
+ *   · DIVERGE_DIP_TAG（下杀买）= 总龙一自己在分歧日的买点（开盘下杀然后反弹，别追竞价）。
+ *     ⛔ 与 decision-rules 的「下杀买（竞价异常）」是【两条不同的规则、两个不同的文案】——
+ *     那条是中军三项指标正面异常的下杀买；这条是总龙首次分歧日的下杀买。文案按用户本轮原话取三字。
+ *   · DIVERGE_FOLLOW_TAG（高标跟随买）= 与总龙不同题材的主板高标（20日涨幅前五，≤2 只）。
+ *   · DIVERGE_NO_BUY_TAG（总龙分歧不买）= 分歧日其余入选票（照常列出、整段灰化，用户口径
+ *     「买点侧只有总龙一 + 高标」⇒ 其余票今天不开新仓）。
+ */
+const DIVERGE_DIP_TAG = '下杀买';
+const DIVERGE_FOLLOW_TAG = '高标跟随买';
+const DIVERGE_NO_BUY_TAG = '总龙分歧不买';
+/** 配色档：三枚全部复用既有档（§6 不新造 CSS）——「买」字辈用琥珀金（与替补同语义：今天真要买），
+ *  「不买」用深墨亮字（灰化后唯一读得出的档）。 */
+const DIVERGE_BUY_TONE = EBB_SECOND_BUY_TONE;
+const DIVERGE_NO_BUY_TONE = EBB_NO_BUY_TONE;
+/** 本行引用的规则编号（= 规则手册第二十五条「总龙首次分歧 · 买点」） */
+const DIVERGE_RULE_NO = '二十五';
+
+/** 未触发时的稳定返回值（同一引用 ⇒ 不白白触发下游重算 / 重渲染，§19） */
+const TVRB_CASH_ALERT_NONE = Object.freeze({
+  show: false,
+  topic: '',
+  rank: null,
+  avgVolRatio: null,
+  avgVolRatioText: '—',
+  threshold: TVRB_CASH_ALERT_AVG_VR,
+  headline: '',
+  detail: ''
+});
+
+/**
+ * ══【第二十八条 · 新龙 / 新题材切换日】══════════════════════════════════════════════════
+ *
+ * 用户口径（2026-10-22 原话，逐字）：
+ *   「二次退潮次日后一天，也就是10月22日，就要切换新题材或者寻找新题材了（这是核心思想）」
+ *   「20个交易日内，上述的时间点这只股票名称有没有上榜？今天是不是首次20日涨幅上榜前五？
+ *     如果是，看下一个条件，是不是和和老龙一是不是同个题材，如果不是，说明这是个新龙，
+ *     是要入选题材量比买点侧的。相当于又找新的周期或者题材的票。」
+ *   「规则要添加下：只选20日涨幅排名前五题材，没有出现过的新龙。」
+ *   「从常规中寻找新的题材，这个节点要收紧，和常规不同，这个节点只选一个题材，
+ *     只找排名靠前的一个符合条件题材的股票……（排名第一的房地产按照常规不符合选入条件，排除）」
+ *   「如果看20日涨幅没有符合条件（比如五只都是同题材的，5只20天都出现过的），
+ *     接下来就是常规班选股了，不做限制。」
+ *
+ * ── 时间轴（用户给的三段式，⛔ 别把 D+1 与 D+2 搞混）────────────────────────────────
+ *   D      = 总龙一【二次确认退潮】日（10-20）
+ *   D+1    = 退潮次日 ⇒ 主轴题材【禁止买入】（第二十六条，已实现；10-21）
+ *   D+2    = 【切换日】= 今天（10-22）⇒ 老周期结束，找【新龙】/【新题材】
+ *   ⇒ 判据 = 「二次确认退潮事件」正好发生在【前两个交易日】（prevPrevDate）。
+ *     复用 secondEbbTopicOfPrevDay（§6 同一把尺子：连它那套「事件 ≠ 天数」的合并口径一起复用），
+ *     ⛔ 绝不另写一份「昨天是不是二次确认」的计数。
+ *
+ * ── 新龙怎么选（用户逐条对应）──────────────────────────────────────────────────────
+ *   ① 候选 = 今日【20日涨幅前五】（与「20日涨幅」toggle 的总龙一~五同一份，§6）；
+ *   ② 自上而下逐只过闸：
+ *        · 老龙一自己 ⇒ 跳过（它是被交接的那一方，不是新龙）；
+ *        · 近 20 个交易日【已上过前五】⇒ 跳过（「20个交易日内……有没有上榜」）；
+ *        · 与老龙一【同题材】⇒ 跳过（老周期的票，退潮后基本不看）；
+ *        · 剩下第一只 = 【新龙】（= 老龙向新龙的交接）。
+ *   ③ 一只都不剩 ⇒ 本规则【不生效】，买点侧回落常规选股。
+ *      ★ [CYCLE 2026-10-22] 但「切换日只选一个题材、只取一只」这条收紧【仍然生效】：
+ *        用户原话「10月22日 = 选新龙头 + 常规只选排名第一的入选题材（只选最前面那个）」。
+ *
+ * ── 常规侧怎么收紧（切换日专属，⛔ 只在有【新龙】时才收紧）──────────────────────────
+ *   · 只选【一个】题材（排名最前、且数量达标的那一个 —— 数量不足照旧顺延，用户举例：房地产被排除）；
+ *   · 该题材只取【一只】票（龙位最前、非竞价一字、非连续停牌）；
+ *   · 跳过【退潮的那个老题材】与【新龙自己的题材】（老周期不买 / 避免同一题材出两只）。
+ *
+ * ⚠️ 为什么「收紧」必须依赖「新龙成立」：用户把两者写在同一个节点里 ——
+ *   「如果看20日涨幅没有符合条件……接下来就是常规班选股了，不做限制」。
+ *   ⇒ 判不出新龙（五只都不合格 / 历史榜读不到）⇒ 不收紧，且必须在说明里写清原因（§10）。
+ */
+/** 本行引用的规则编号（= 规则手册第二十八条「新龙 / 新题材切换日」） */
+const SWITCH_RULE_NO = '二十八';
+/** 新龙那一行的动作标签（⛔ 不复用「退潮替补买」：那是退潮日的语义，与「新周期开启」不同） */
+const NEW_DRAGON_TAG = '新龙买';
+/** 配色档：复用【退潮替补买】的琥珀金（本看板「今天真要买的例外」同一套语义色，⛔ 不新造一档） */
+const NEW_DRAGON_TONE = EBB_SECOND_BUY_TONE;
+/** 候选榜只数（用户口径：「如果前五找不到，你就找前八的，不用前五的，改用排名前八的」） */
+const NEW_DRAGON_TOP_N = 8;
+/**
+ * ★★ [NEW-DRAGON-CERTIFY 2026-11-12 用户口径] 「同题材择优」只看【前五】。
+ *
+ * 用户原话：「还要添加下前提：**前五没有同题材的票才可以**……因为这两只同题材的同时出现在
+ *   20 日涨幅【前五】，所以只买最靠前的那只襄阳轴承」。
+ * ⇒ 找同题材的兄弟票时窗口是**前五**（⛔ 不是候选池的前八）：
+ *   前八只是「前五找不到合格新龙时的顺延范围」，不是「同题材择优」的范围。
+ *   ⚠️ 与 `NEW_DRAGON_TOP_N(=8)` 是**两个不同用途**，⛔ 别合并。
+ */
+const NEW_DRAGON_CERTIFY_TOP_N = 5;
+
+/**
+ * ★★ [NEW-DRAGON-FAMILY 2026-11-12 用户口径 · 本版取代上面的「同题材择优 · 前五」] ★★
+ * 「新题材」的成立门槛：同一题材在前十里有几只才算数。
+ *
+ * 用户原话（11-12）：「当天出现东方这个新题材的股票占据 20 日涨幅竞价口径【2 只及以上】，
+ *   也说明这是补涨题材，新题材，换新龙没错……今天是三只，符合，所以选东方海洋，和这个题材的大东方。」
+ * ⇒ 门槛 = 2（11-12 东方组实测 3 只：东方海洋第 2、大东方第 7、日出东方第 8）。
+ *
+ * ⚠️ 与另外两个门槛**不是一回事**，⛔ 别混：
+ *   · `NEW_DRAGON_TOP_N(8)`            = 「前五找不到合格新龙」时的顺延候选范围；
+ *   · `NEW_DRAGON_CERTIFY_TOP_N(5)`    = 上一版「同题材择优」的窗口（已降级为兜底路径）；
+ *   · `EBB_MAIN_TOPIC_MIN_COUNT(3)`    = **退潮**判定的「主线题材」门槛（行业题材，另有一条尺子）。
+ */
+const NEW_DRAGON_FAMILY_MIN_COUNT = 2;
+/** 「有没有上过榜」的回看窗口（用户口径「20个交易日内」） */
+const NEW_DRAGON_LOOKBACK_DAYS = 20;
+
+// ══ ★★ [LEADER-FIRST-TOPIC 2026-11-12 用户口径] 第二十八条：老题材 = 老龙一【第一次霸榜总龙一】那天的题材大类 ══
+//
+// 用户原话：「要考究东方海洋的大类，首先要确定它老龙一霸榜的题材是什么，从第一次霸榜总龙一开始，
+//   你检索下历史20个交易日，它第一次霸榜总龙一是不是在11月4日，当时20日涨幅竞价口径，羊字辈就有
+//   5只……确定是羊字辈的题材。你在11月12日看来，这个就是作为老题材……而不是你说的农业。」
+//
+// ⚠️ 与 `NEW_DRAGON_LOOKBACK_DAYS(20)` 【数值相同但语义不同】，⛔ 别合并成一个常量：
+//   · 那个 = 「这只票近 20 日有没有上过前五」（新鲜度）；
+//   · 这个 = 「回看多少个交易日去找它的首霸日」（题材归属）。
+//   以后用户要调其中一个窗口时，合并过的常量会连带改错另一条规则。
+/** 找「第一次霸榜总龙一」的回看窗口（用户口径「历史20个交易日」） */
+const LEADER_FIRST_TOPIC_WINDOW_DAYS = 20;
+/**
+ * 首霸日那天，这只票所在【题材组】要成立的老题材门槛：组内 ≥2 只。
+ *
+ * 用户原话：「羊字辈就有5只，东方海洋总龙一，排名是，3百洋股份，4九阳股份，5海洋王，7阳光照明，
+ *   已经是超过标准了」⇒ 11-04 实测 羊字辈 5 只（1/3/4/5/7 名）✅，而 水产品 / 农业 各 2 只、
+ *   东方 1 只 ⇒ 「组内成员最多的那一段」= 羊字辈。
+ */
+const OLD_TOPIC_FAMILY_MIN_COUNT = 2;
+
+// ══ ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条：十日涨幅 · 在列次数候补 ═══════════════
+//
+// 用户原话（逐字，三段合起来才是完整口径）：
+//   ①「10月20日，主线题材二次确认退潮当天，龙头首次分歧次日，按照题材平均量比排名第二的题材，
+//      比如松霖科技在的房地产，题材量比太小，只有 7.47，小于空仓门槛量比 25，题材量比太小禁止选入，
+//      应该选十日涨幅首次在列龙头而且是排名前十的，进行替换，而且排名靠前的，首次在列，
+//      排名靠前的是海洋王，排名第八。所以选它。」
+//   ②「排名第二的题材如果量比太小就用 10 日涨幅，首次在列进行候补，如果排名前十没有首次在列标签，
+//      就用二次在列排名靠前候补……这样可以选出有潜质的新龙，因为 20 日老周期结束，现在轮到十日周期。」
+//   ③「常规的是排名第一的题材如果平均量比小于标准 25，也一率作废。进入候选的是十日涨幅题材新股票的
+//      排名靠前的新股票（首次在列或者二次在列），新面孔。有首次在列的只选一只，没有首次在列的，
+//      选二次在列的。如果都没有，依旧空仓。」
+//
+// AskUserQuestion 四答（2026-10-24，逐条拍板）：
+//   · 常规侧（第一题材 < 25）→「空仓标语保留 + 另给候补」（灰化与「建议空仓」照旧，另外多出一只可买）
+//   · 触发范围 →「任何一天都生效」（不再限定二次确认退潮日）
+//   · 被作废的第二题材 →「整块删除，只出候补」
+//   · 「排名前十」→「与在列次数标签同口径」（主板名次 ≤ PRESENCE_TOP_N）
+//
+// ⛔ 与第二十一条【退潮替补】的分工（别混）：
+//   · 退潮替补（20日涨幅总龙二~五）= 退潮【兜底】通道，只在「首次退潮」或「二次确认但常规选不出」时出来；
+//   · 本候补（十日涨幅前十 · 在列次数）= 常规通道【题材作废后的替换】，走的是「十日周期的新面孔」。
+//   两者不会同时出现：退潮兜底那一路（out.ebb && !ebbSecondRegular）与切换日（第二十八条）都排除本规则。
+/** 本行引用的规则编号（= 规则手册第二十九条）—— 定义在 range10-backup.js，这里转出给视图 / 单测用 */
+
+/** 配色档（视图 CSS 类名 tvrb-action-r10backup 的 tone 值） */
+const RANGE10_BACKUP_TONE = 'r10backup';
+/** 候补那一行的动作标签（⛔ 不复用「退潮替补买」/「新龙买」：它是「常规题材作废后的替换」，语义不同） */
+const RANGE10_BACKUP_TAG = '十日涨幅候补买';
+/** 全称文案（买点侧容器标题 / 行内说明用；§21 模板零计算） */
+const RANGE10_BACKUP_LABEL = '第十日周期候补 · 买点（第' + RANGE10_BACKUP_RULE_NO + '条）';
+
+// ────── ../src/logic/decision/auction-share.js ──────
+// auction-share.js — 「决策」看板：竞价占比（竞价量 ÷ 昨日成交量）的【唯一实现】（Logic 层）
+//
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [SHARE-RULE 2026-10-03 用户口径] 占比 = 决策看板买卖点的【主判据】★★
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话（给了 8/31、9/1、9/2 三天共 11 个已标注案例，是本文件的验收基准）：
+//   · 「所以最主要看占比，前面那两个（竞价涨幅、竞价量比）都涨，有时也没有用……
+//      只是说前面两个指标作为辅助，让占比更有确定性。」
+//   · 「占比对决策买入和卖出作用很大」「占比占重要决策，只要占比完全符合条件，就可以大胆持有」。
+//   · 「前排龙一龙二标准的占比是 4%，后排选手（非龙一龙二）标准占比 2%」。
+//   · 「昨日和今日龙一和龙二有容错率 0.5%」⇒ 前排门槛 = 4% − 0.5% = 3.5%。
+//   · 「竞价占比百分比后保留 1 位有效数字，这样更准确。比如金健米业实际是 0.0435，那就是 4.4%」。
+//   🔴 [DRAGON-TIER 2026-10-06 用户口径 · 9/8 翠微股份] 上面那条「龙一龙二」的划分【已收窄】：
+//      「龙头只有一个，那就是龙一。前排选手是龙二到龙四，后排选手就是龙四以下（不包含龙四，
+//        比如龙五，龙六，龙七……）」—— 门槛【只分两级】：只有【今日龙一 / 昨日龙头】走 3.5%，
+//      **龙二及以下一律 2%**（龙二曾经的「前排」身份是导致 9/8 翠微股份 2.6% 被误判成
+//      【竞价卖】的原因）。⛔ 三分法（龙头 / 中军 龙二~龙四 / 后排 龙五及以下）只管「跟不跟龙一卖」，
+//      不参与门槛 —— 它是同题材【强度】排序，不是门槛分档。
+//
+// ── 精确定义 ──────────────────────────────────────────────────────────────────────
+//   竞价占比 R(%) = 当日竞价量(volume) ÷ 昨日成交量(yestVolume) × 100
+//     ⚠️ 与早盘竞价第一页显示的那个占比【同一个公式】，但【显示精度不同】：
+//        早盘竞价第一页 = Math.round(R) → 整数（用户原话「那个是四舍五入算法，只取整数」）；
+//        决策看板     = R 保留 1 位小数（用户原话「这样更准确」）。
+//        ⇒ ⛔ 两者是【刻意不同】的展示精度，别互相「对齐」；本看板只改自己这一份。
+//
+//   门槛（两级，2026-10-06 收窄后）：
+//     龙头（今日【龙一】，或昨日在龙头名册里）→ 4%，可容错 0.5% ⇒ 实际门槛 3.5%
+//     其余（龙二及以下，含今日未成组的票）→ 2%
+//
+//   用户给的 11 个案例（R 全部由本公式算出，逐条对上，见 auction-share.test.js）：
+//     买点 → 竞价买：金健米业 4.4%(龙一) / 花溪科技 4.4% / 捷荣技术 7.0% / 楚天龙 5.5%
+//                   / 龙版传媒 6.9%(后排) / 花溪科技 3.6%(昨日龙一，用容错)
+//     买点 → 尾盘买：海登种业 0.2%（原始 0.15%，龙七 = 后排，远不到 2%）
+//     卖点 → 尾盘卖：金健米业 3.9%(昨日龙一，用容错) / 登海种业 2.6%(龙九) / 捷荣技术 9.4%
+//                   / 浙江世宝 2.6%(今日无题材=后排)
+//     卖点 → 竞价卖：华阳国际 1.8%(龙三 = 中军，非龙头，不到 2%) ｜ 楚天龙 9/3 2.5%(不达标 + 今日又进买点)
+//     卖点 → 尾盘卖（[DRAGON-TIER 2026-10-06] 新增）：翠微股份 9/8 2.6%(龙二 = 中军，走 2% 门槛 ⇒ 达标)
+//
+// ── §10 红线 ─────────────────────────────────────────────────────────────────────
+//   缺当日竞价量 / 缺昨日成交量 / 昨日成交量为 0（除不出来）⇒ 一律返回 null（未知），
+//   ⛔ 绝不当 0 或「很小」—— 「没抓到」与「占比确实很低」会给出完全相反的建议。
+//   缺值时规则层【回落旧口径】并如实写进说明文字，绝不假装算出来了。
+//
+// ── 边界（§4 / §32）────────────────────────────────────────────────────────────
+//   · 只读：不发请求、不落库、不消费猫抓额度；
+//   · 不碰 DOM、不 import 任何组件（禁止 Data → UI 反向依赖）；
+//   · 取数与 vol-ratio-trend.js 同源（都走 data/watchlist-helpers#getStockHistoryValue），
+//     ⛔ 绝不另起一套字段名（§6 单一真相）。
+
+// ★★ [SHARE-SPLIT 2026-11-13] 本文件现在是**纯口径模块**（无任何 Data 层 import）：
+//   `getAuctionShare` / `getAuctionVolume` 已搬到 `auction-share-read.js`（那两个要读内存真相）。
+//   原因：第二十五条（总龙分歧）的判定要在 **Cloudflare Worker** 里跑（用户 2026-11-13 口径
+//   「都是在云端运行，关电脑也能用」），而只要本文件还挂着 `data/watchlist-helpers.js`，
+//   任何引它的纯逻辑模块就都被钉在浏览器上 ⇒ 云端只能另写一份口径（§6 红线）。
+//   ⛔ 公式 / 门槛 / 展示精度仍然只有这一份实现；`auction-share-read.js` 只负责取数。
+
+/** 龙头（今日龙一 / 昨日龙头）标准占比（%）—— 用户口径「前排龙一龙二标准的占比是 4%」
+ *  ⚠️ [DRAGON-TIER 2026-10-06] 适用对象已收窄为【只认龙一】，⛔ 龙二不再享用它。 */
+const AUCTION_SHARE_FRONT_STD = 4;
+/** 龙一容错（%）—— 用户口径「昨日和今日龙一和龙二有容错率 0.5%」
+ *  ⚠️ [DRAGON-TIER 2026-10-06] 适用对象已收窄为【只认龙一】。 */
+const AUCTION_SHARE_TOLERANCE = 0.5;
+/** 龙头【实际门槛】（4 − 0.5 = 3.5）—— ⛔ 只从上面两个常量推导，别在这里另写一个 3.5 */
+const AUCTION_SHARE_FRONT_MIN = AUCTION_SHARE_FRONT_STD - AUCTION_SHARE_TOLERANCE;
+/** 其余（龙二及以下，含中军 龙二~龙四 / 后排 龙五及以下）标准占比（%）—— 用户口径「后排选手标准占比 2%」 */
+const AUCTION_SHARE_BACK_STD = 2;
+/** 显示精度：保留 1 位小数（用户口径「百分比后保留 1 位有效数字」） */
+const AUCTION_SHARE_DECIMALS = 1;
+
+/**
+ * 竞价占比（纯函数，可单测）。
+ * @param {*} volume      当日竞价量（原始值：字符串 / 数字 / null）
+ * @param {*} yestVolume  昨日成交量（原始值）
+ * @returns {number|null} 占比（%，已按 AUCTION_SHARE_DECIMALS 取整到 1 位）；null = 缺数据 / 除不出来
+ */
+function computeAuctionShare(volume, yestVolume) {
+  const v = _toNum(volume);
+  const y = _toNum(yestVolume);
+  if (v === null || y === null || y <= 0) return null;
+  return _roundShare((v / y) * 100);
+}
+
+/**
+ * 占比 → 展示文案（§21：格式化在 Logic 层做完，模板只渲染）。
+ * ⛔ 缺值 ⇒ 空串（模板 v-if 整个不渲染），绝不显示「0.0%」（§10）。
+ * @param {number|null} share
+ * @returns {string} 如「4.4%」；缺值「」
+ */
+function formatAuctionShare(share) {
+  const v = _shareNum(share);
+  if (v === null) return '';
+  return v.toFixed(AUCTION_SHARE_DECIMALS) + '%';
+}
+
+/**
+ * 该股适用的【占比门槛】（%）：龙头 3.5 / 其余 2。
+ * @param {boolean} isFront 是否龙头（今日【龙一】，或昨日在龙头名册里）—— ⛔ 龙二不算
+ * @returns {number}
+ */
+function auctionShareThresholdOf(isFront) {
+  return isFront ? AUCTION_SHARE_FRONT_MIN : AUCTION_SHARE_BACK_STD;
+}
+
+/**
+ * 占比是否【达到门槛】（= 用户说的「占比完全符合条件」）。
+ * §10：share 为 null ⇒ false（未知不算达标），由调用方走回落分支并如实说明。
+ * @param {number|null} share
+ * @param {boolean} isFront
+ * @returns {boolean}
+ */
+function passesAuctionShare(share, isFront) {
+  const v = _shareNum(share);
+  if (v === null) return false;
+  return v >= auctionShareThresholdOf(isFront);
+}
+
+/**
+ * 占比的【绝对强度档】—— 只描述这个数值本身有多强，与龙头 / 其余判定无关。
+ *   ≥ 龙头标准 4%  → 'strong'（完全达标，用户口径「更加确定」）
+ *   ≥ 其余标准 2%  → 'meet'（一般水平 / 龙头容错区）
+ *   其余           → 'weak'
+ * §10：缺值 ⇒ ''（模板回落默认底色，⛔ 不涂色、更不写 0.0%）。
+ * @param {number|null} share
+ * @returns {'strong'|'meet'|'weak'|''}
+ */
+function auctionShareZoneOf(share) {
+  const v = _shareNum(share);
+  if (v === null) return '';
+  if (v >= AUCTION_SHARE_FRONT_STD) return 'strong';
+  if (v >= AUCTION_SHARE_BACK_STD) return 'meet';
+  return 'weak';
+}
+
+// ★★ [SHARE-SPLIT 2026-11-13] `getAuctionShare` / `getAuctionVolume`（读内存真相那两个）
+//   已搬到 `./auction-share-read.js` —— 本文件保持【纯口径、零 Data 层依赖】，
+//   这样 Worker（云端）也能复用同一份占比公式 / 门槛（§6，见文件头的拆分说明）。
+//   ⛔ 别把取数搬回来：一搬回来，`leader-diverge.js` 就又只能在浏览器里跑了。
+
+/**
+ * 字符串 / 数字 → 数值；空串 / null / 非数字一律 → null（§10 缺数据 ≠ 0）。
+ * @param {*} v
+ * @returns {number|null}
+ */
+function _toNum(v) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  const s = String(v).trim().replace(/,/g, '');
+  if (s === '') return null;
+  const n = Number(s);
+  return isFinite(n) ? n : null;
+}
+
+/**
+ * 占比入参 → 【已按 AUCTION_SHARE_DECIMALS 取整】的数值；缺值 / 非数字 → null（§10）。
+ * ⚠️ 为什么要先取整再判定：让「行内标签显示的数值」与「规则实际比较的数值」是【同一个数】。
+ *   否则会出现「屏幕上写着占比 3.5%，规则却说不达标」这种自相矛盾的显示。
+ * ⚠️ 空串必须当缺值：Number('') === 0，不拦住就会被当成「占比 0.0%」（§10 红线）。
+ * @param {*} v
+ * @returns {number|null}
+ */
+function _shareNum(v) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'string' && v.trim() === '') return null;
+  const n = Number(v);
+  if (!isFinite(n)) return null;
+  return _roundShare(n);
+}
+
+/**
+ * 十进制「四舍五入到 AUCTION_SHARE_DECIMALS 位」（半值进位），并兜住 JS 浮点误差。
+ *
+ * ⚠️ 为什么不能直接 `Math.round(raw * 10) / 10`：
+ *   JS 浮点把 4.35 存成 4.3499999999999996、0.15 存成 0.14999999999999999，
+ *   ×10 后分别得到 43.49999999999999 / 1.4999999999999998，直接 Math.round 会【向下】跑到
+ *   4.3 / 0.1 —— 与用户口径「0.0435 → 4.4%」正面冲突（同一个数，除法算出来是 4.4、字面量却是 4.3）。
+ *   ⇒ 在进位判定前加一个【与自身量级成比例】的极小量（1e-12 倍）：
+ *       · 正好压在小数点后第 N 位为 5、被浮点压低的数（4.35 / 0.15 / 2.65 …）会被救回，正常进位；
+ *       · 真正小于半值的数（如 4.3499999）离半值差得远，不会被误抬。
+ * @param {number} raw
+ * @returns {number|null}
+ */
+function _roundShare(raw) {
+  const n = Number(raw);
+  if (!isFinite(n)) return null;
+  const f = Math.pow(10, AUCTION_SHARE_DECIMALS);
+  const scaled = n * f;
+  const eps = Math.abs(scaled) * 1e-12;
+  const r = n >= 0 ? Math.round(scaled + eps) : -Math.round(-scaled + eps);
+  return r / f;
+}
+
+
+// ────── ../src/logic/topicvolratio/leader-diverge.js ──────
+// leader-diverge.js — 第二十五条【总龙首次分歧 / 二次分歧】判定（Logic 层，纯函数，§15 可单测）
+//
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [LEADER-DIVERGE 2026-11-12 用户口径] 用户原话（逐字保留，本文件唯一需求来源）：
+// ══════════════════════════════════════════════════════════════════════════════════════
+//   「还有第二十五条，总龙首次分歧，定义，一条线：首板之后第一个竞价低开（个股分歧，
+//     不是题材退潮），东方海洋在 11月04日，首次分歧（当时还没成为市场总龙，只是从 11月12日
+//     倒推，它首次出现是在 11月6日变成总龙一主板的，然后霸榜三天，要霸榜总龙一至少三天
+//     把这个条件也添加上去，按照竞价口径），首板之后，第一个竞价低开日（按照竞价口径）
+//     或者涨幅高开低走收绿（竞价是高开的，但是收盘是负数绿的，按照收盘口径，这个要新增，
+//     之前没考虑过的），当时竞价低开在 11月10日又分歧一次，从现在开始这叫二次分歧，
+//     二次分歧等同于首次退潮了，所以从这天开始确认羊字辈退潮了，注意范围是 20 个交易日，
+//     分首次分歧和二次分歧，二次分歧 5 个交易日内至少有两个连板（第一次分歧之后它可能是
+//     大阳连板一起可能是纯连板，可能使和大阳一起排的趋势，如果是识别二次分歧就要看它是否
+//     竞价低开或者按照收盘口径，先高开，收盘是负数绿的），也要添加这个条件识别二次分歧。
+//     到 11月12日时，提示应该是二次分歧等同该题材退潮。二次分歧（退潮）还要看总龙一
+//     属不属于新题材，看有没有新题材出现。」
+//
+// ── 上一版错在哪 ────────────────────────────────────────────────────────────────
+//   上一版只有「题材退潮」一条线（占比塌 + 前两日连板），没有【个股分歧】这条线：
+//     · 判不出「11-04 是首次分歧」—— 那天竞价是 **+4.68% 高开**（不是低开），
+//       但收盘 **−4.09% 收绿** ⇒ 正是用户说「这个要新增，之前没考虑过的」那一条；
+//     · 没有「霸榜总龙一 ≥3 天」这个资格判据；
+//     · 没有「二次分歧 5 个交易日内至少两个连板」这个识别条件；
+//     · 二次分歧没有和「题材退潮」打通 ⇒ 11-10 只能靠占比塌来解释，说不到「羊字辈确认退潮」。
+//
+// ── 本版判据 ───────────────────────────────────────────────────────────────────
+//   ① 【总龙资格】`dragonDays ≥ DIVERGE_TOTAL_DAYS_MIN(3)`：这只票在近 20 个交易日里
+//      **当总龙一的天数 ≥3**（按 9:25 竞价口径，由调用方喂 `isDragonOne`）。没资格 ⇒ 一律不判。
+//      东方海洋：11-06 首次成为总龙一，11-06 / 11-09 / 11-10 霸榜三天 ⇒ 11-10 达标 ✅
+//   ② 【分歧形态】任一成立（`isDivergeShape`）：
+//        D1 竞价低开：`aucPct < 0`
+//        D2 高开低走收绿：`aucPct > 0 且 closePct < 0`   ← 本轮新增（用户「这个要新增」）
+//        D3 竞价占比塌陷：`share < 3.5%`（与第二十一条判据②同一把尺子，恒龙头档）
+//      ⚠️ D3 是「二次分歧 = 首次退潮」能对上的唯一桥梁 —— 11-10 竞价 +0.69%（不是低开），
+//         靠的是占比 2.93% 塌陷；用户对 11-10 的原话是「竞价低开」，
+//         但库内竞价涨幅是 +0.69%，如实按三种形态取并集判定（⛔ 不篡改行情）。
+//   ③ 【一次事件 = 连续满足日合并】（§6 与退潮事件计数同一口径）：
+//      11-04(D2) + 11-05(D3) 连续 ⇒ 算 **1 次** = 首次分歧；
+//      11-10(D3) + 11-11(D3) 连续 ⇒ 算 **1 次** = 二次分歧。
+//      否则 11-05、11-11 会被数成第三次、第四次（用户：「没有第三次了」）。
+//   ④ 【首板之后才有分歧】（用户「首板之后第一个竞价低开日」）：
+//      起点 = 窗口内**第一次涨停**那天；之前的分歧不计数（那还是启动前的震荡）。
+//   ⑤ 【二次分歧附加条件】首次分歧之后 `DIVERGE_SECOND_BOARD_WINDOW(5)` 个交易日内
+//      至少 `DIVERGE_SECOND_MIN_BOARDS(2)` 个涨停（收盘口径）。达不到 ⇒ 不算二次分歧
+//      （用户：「第一次分歧之后……可能是和大阳一起排的趋势」⇒ 连板不够就只是趋势）。
+//      11-04 首次分歧之后 5 个交易日内：11-05 +10.06、11-06 +9.97、11-09 +10.08 ⇒ 3 个涨停 ✅
+//   ⑥ 二次分歧 ⇒ **等同首次退潮**（用户原话）⇒ 题材从这天起确认退潮。
+//
+// ── 边界（§10 / §11）──────────────────────────────────────────────────────────
+//   · `rows` 为空 / 少于 2 行 / 没有涨停那行 ⇒ 返回 `kind:'unknown'`（⛔ 不返 'none' 冒充「没有分歧」）
+//   · `dragonDays` 读不到（null）⇒ `qualified:false` + `reason:'dragon-days-unknown'`，
+//     但**不阻断**已有退潮链路（调用方只在 `kind` 明确时改文案，⛔ 不拿未知去推翻结论）
+//   · ⛔ 本文件不读 state / 不发请求 / 不拼展示文案（§4 / §21：只给事实与短 reason）
+// ══════════════════════════════════════════════════════════════════════════════════════
+
+// §6 单一数据源：占比门槛 / 占比公式只认 auction-share 那一份实现（⛔ 不在这里另写一个 3.5 或 v/y*100）
+
+/** 分歧形态编码（留痕用，UI 不必读） */
+const DIVERGE_SHAPE_LOW_OPEN = 'low-open';      // D1 竞价低开
+const DIVERGE_SHAPE_OPEN_HIGH_CLOSE_RED = 'open-high-close-red'; // D2 高开低走收绿
+const DIVERGE_SHAPE_SHARE = 'share';            // D3 竞价占比塌陷
+
+function _n(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return isFinite(n) ? n : null;
+}
+
+/**
+ * 这一天是不是【分歧形态】？
+ *
+ * @param {{aucPct?:number|null, closePct?:number|null, share?:number|null}} row
+ *        aucPct = 9:25 竞价涨幅（%）；closePct = 当日收盘涨幅（%）；share = 竞价量/昨量（%）
+ * @returns {string} '' = 不是分歧；否则返回命中的形态编码（多个命中取第一个，按 D1→D2→D3）
+ */
+function isDivergeShape(row) {
+  const r = row || {};
+  const auc = _n(r.aucPct);
+  const close = _n(r.closePct);
+  const sh = _n(r.share);
+  // D1 竞价低开（用户口径：按竞价口径）
+  if (auc !== null && auc < 0) return DIVERGE_SHAPE_LOW_OPEN;
+  // D2 高开低走收绿（本轮新增：竞价是高开的，收盘是负数绿的 ⇒ 按收盘口径）
+  if (auc !== null && auc > 0 && close !== null && close < 0) return DIVERGE_SHAPE_OPEN_HIGH_CLOSE_RED;
+  // D3 竞价占比塌陷（= 第二十一条判据②同一把尺子，恒龙头档）
+  if (sh !== null && sh < auctionShareThresholdOf(true)) return DIVERGE_SHAPE_SHARE;
+  return '';
+}
+
+/**
+ * 把逐日行切成【分歧事件】：连续满足的日子合并成一次（§6 与退潮事件计数同一口径）。
+ *
+ * @param {Array<{date:string, aucPct?:number|null, closePct?:number|null, share?:number|null}>} rows
+ *        必须是**按日期升序**的同一只票的逐日行（顺序错了会数错，调用方负责，见 `classifyLeaderDiverge`）
+ * @param {string} [fromDate] 起点（含）：首板那天。传空 ⇒ 全文都算
+ * @returns {Array<{date:string, endDate:string, days:number, shapes:string[]}>}
+ */
+function buildDivergePhases(rows, fromDate) {
+  const list = Array.isArray(rows) ? rows : [];
+  const from = String(fromDate || '').trim();
+  const out = [];
+  let cur = null;
+  list.forEach(function (r) {
+    const d = String((r && r.date) || '').trim();
+    if (!d) return;
+    if (from && d < from) return;                 // 首板之前不算
+    const shape = isDivergeShape(r);
+    if (shape) {
+      if (cur) {
+        cur.endDate = d;
+        cur.days += 1;
+        cur.shapes.push(shape);
+      } else {
+        cur = { date: d, endDate: d, days: 1, shapes: [shape] };
+        out.push(cur);
+      }
+    } else {
+      cur = null;                                  // 断掉 ⇒ 下一次算新事件
+    }
+  });
+  return out;
+}
+
+/**
+ * ★★ [LEADER-DIVERGE] 总龙一的【首次分歧 / 二次分歧】判定。
+ *
+ * @param {Array<{date:string, aucPct?:number|null, closePct?:number|null, share?:number|null,
+ *          limitUp?:boolean, isDragonOne?:boolean}>} rows
+ *        同一只票近 20 个交易日逐日行（升序）。`limitUp` = 收盘涨停（含一字 / T字）。
+ * @param {{dragonDays?:number|null, windowDays?:number}} [info]
+ *        `dragonDays` = 该票近 N 日当【总龙一】的天数（竞价口径，调用方统计）；
+ *        null / undefined = 读不到（§10：未知 ≠ 0，结论标 unknown 且不推翻既有链路）
+ * @returns {{
+ *   kind:'none'|'first'|'second'|'unknown',
+ *   qualified:boolean,
+ *   reason:string,
+ *   firstDate:string, firstEndDate:string,
+ *   secondDate:string, secondEndDate:string,
+ *   eventCount:number,
+ *   boardsAfterFirst:number,
+ *   dragonDays:number|null,
+ *   startDate:string,
+ *   phases:Array
+ * }}
+ *        `kind:'second'` ⇒ **等同首次退潮**（用户原话），题材从 `secondDate` 那天起确认退潮。
+ */
+function classifyLeaderDiverge(rows, info) {
+  const o = info || {};
+  const list = (Array.isArray(rows) ? rows : [])
+    .filter(function (r) { return r && String(r.date || '').trim(); })
+    .slice()
+    .sort(function (a, b) { return String(a.date) < String(b.date) ? -1 : (String(a.date) > String(b.date) ? 1 : 0); });
+  const win = Number(o.windowDays) > 0 ? Number(o.windowDays) : DIVERGE_WINDOW_DAYS;
+  const winRows = list.slice(-win);
+
+  const empty = {
+    kind: 'unknown', qualified: false, reason: '', firstDate: '', firstEndDate: '',
+    secondDate: '', secondEndDate: '', eventCount: 0, boardsAfterFirst: 0,
+    dragonDays: null, startDate: '', phases: []
+  };
+  // §10：行不够 ⇒ 判不出（⛔ 不返 none）
+  if (winRows.length < 2) {
+    return Object.assign(empty, { reason: 'rows-missing' });
+  }
+
+  // ① 总龙资格：霸榜总龙一 ≥3 天（竞价口径）
+  const dd = _n(o.dragonDays);
+  const qualified = (dd !== null && dd >= DIVERGE_TOTAL_DAYS_MIN);
+
+  // ④ 起点 = 窗口内第一次涨停那天（用户「首板之后第一个竞价低开日」）
+  let startDate = '';
+  for (let i = 0; i < winRows.length; i++) {
+    if (winRows[i].limitUp === true) { startDate = String(winRows[i].date); break; }
+  }
+  if (!startDate) {
+    // 没有涨停 ⇒ 这只票根本没启动过，谈不上分歧（这是【判出「没有」】，不是判不出）
+    return Object.assign(empty, {
+      kind: 'none', qualified: qualified, reason: 'no-limit-up', dragonDays: dd, phases: []
+    });
+  }
+
+  const phases = buildDivergePhases(winRows, startDate);
+  const first = phases[0] || null;
+  const second = phases[1] || null;
+
+  // ⑤ 二次分歧附加条件：首次分歧之后 5 个交易日内至少 2 个涨停
+  let boardsAfterFirst = 0;
+  if (first) {
+    const iFirst = winRows.findIndex(function (r) { return String(r.date) === String(first.endDate); });
+    if (iFirst >= 0) {
+      winRows.slice(iFirst + 1, iFirst + 1 + DIVERGE_SECOND_BOARD_WINDOW).forEach(function (r) {
+        if (r.limitUp === true) boardsAfterFirst += 1;
+      });
+    }
+  }
+
+  const base = {
+    qualified: qualified,
+    reason: '',
+    dragonDays: dd,
+    startDate: startDate,
+    phases: phases,
+    eventCount: phases.length,
+    firstDate: first ? first.date : '',
+    firstEndDate: first ? first.endDate : '',
+    boardsAfterFirst: boardsAfterFirst,
+    secondDate: second ? second.date : '',
+    secondEndDate: second ? second.endDate : ''
+  };
+
+  // §10：总龙资格读不到 ⇒ 不硬判（调用方不会被这条推翻既有结论）
+  if (dd === null) {
+    return Object.assign({}, empty, base, { kind: 'unknown', reason: 'dragon-days-unknown' });
+  }
+  if (!qualified) {
+    return Object.assign({}, empty, base, { kind: 'none', reason: 'not-total-dragon' });
+  }
+  if (!first) {
+    return Object.assign({}, empty, base, { kind: 'none', reason: 'no-diverge-yet' });
+  }
+  if (!second) {
+    return Object.assign({}, empty, base, { kind: 'first', reason: 'first-diverge' });
+  }
+  if (boardsAfterFirst < DIVERGE_SECOND_MIN_BOARDS) {
+    // 用户：「第一次分歧之后可能是大阳连板，也可能是和大阳一起排的趋势」
+    //   ⇒ 连板不够就只是趋势，不认二次分歧；但首次分歧仍然成立。
+    return Object.assign({}, empty, base, { kind: 'first', reason: 'second-no-streak' });
+  }
+  return Object.assign({}, empty, base, { kind: 'second', reason: 'second-diverge' });
+}
+
+/**
+ * 二次分歧日 → 退潮提示语（用户：「提示应该是二次分歧等同该题材退潮」）。
+ * 只产出短语，标题拼装由调用方（§21：文案集中，但本函数只给可复用的短句）。
+ *
+ * @param {{kind:string, secondDate:string, firstDate:string, boardsAfterFirst:number}} d
+ * @param {string} topic 题材名
+ * @returns {string} 空串 = 不是二次分歧
+ */
+function divergeTitleOf(d, topic) {
+  const t = String(topic || '').trim() || '总龙题材';
+  const x = d || {};
+  if (x.kind !== 'second') return '';
+  return t + '二次分歧 · 等同退潮';
+}
+
+/** 二次分歧/首次分歧的一句话依据（判定可追溯，§10；⛔ 不含行情数值以外的推测） */
+function divergeNoteOf(d, topic) {
+  const x = d || {};
+  const t = String(topic || '').trim() || '总龙题材';
+  if (x.kind === 'second') {
+    return '（第二十五条：总龙霸榜总龙一 ' + String(x.dragonDays) + ' 天（门槛 ' + DIVERGE_TOTAL_DAYS_MIN +
+      '）；【首次分歧 ' + x.firstDate + '】之后 ' + DIVERGE_SECOND_BOARD_WINDOW + ' 个交易日内有 ' +
+      String(x.boardsAfterFirst) + ' 个涨停（门槛 ' + DIVERGE_SECOND_MIN_BOARDS +
+      '）；【二次分歧 ' + x.secondDate + '】⇒ 按用户口径【等同于首次退潮】，' + t + ' 从这天起确认退潮）';
+  }
+  if (x.kind === 'first') {
+    return '（第二十五条：总龙霸榜总龙一 ' + String(x.dragonDays) + ' 天；【首次分歧 ' + x.firstDate +
+      '】' + (x.reason === 'second-no-streak'
+        ? ('之后 ' + DIVERGE_SECOND_BOARD_WINDOW + ' 个交易日内只有 ' + String(x.boardsAfterFirst) +
+           ' 个涨停（门槛 ' + DIVERGE_SECOND_MIN_BOARDS + '）⇒ 属趋势，还不算二次分歧')
+        : '') + '）';
+  }
+  return '';
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [LEADER-DIVERGE-WIRE 2026-11-13] 第二个入口：由【逐日事实数组】直接出判定。
+//
+// 为什么需要它：`classifyLeaderDiverge` 要的是「一票一天一行、已排好序、已是竞价口径」
+// 的成品行。把「原始表行 → 成品行」这一步写在组合式里，就等于在 UI 层再实现一遍口径
+// （§5 / §6 双向违规），而且单测无法独立构造。⇒ 这里给一个纯函数收口：
+//   · `share` 走 `computeAuctionShare`（竞价量 ÷ 昨日成交量，§6 唯一实现）；
+//   · `limitUp` 走「当日收盘涨幅 ≥ 该股涨停幅度 − 容差」（涨停幅度复用 `getLimitUpPct`，
+//     主板 10 / 创业板科创板 20 / 北交所 30 / ST 5）；
+//   · `isDragonOne` 由调用方给（来自**同一份**竞价口径榜，⛔ 这里不自己排队次）。
+//
+// ⚠️ 为什么 `closePct` 另取 `dailyPct` 而不用 `market_metrics.change_pct`：
+//   那张表的 change_pct 长期停留在 9:25 竞价涨幅（收盘覆盖的 pg_cron 从未真正生效，
+//   见 db/supabase_auction_close_cron.sql 的注释）⇒ 拿它判「收盘是不是绿的 / 是不是涨停」
+//   会把 11-04 这种「高开低走收绿」的日子判反。`stock_daily_pct.pct` 才是收盘真值。
+// ══════════════════════════════════════════════════════════════════════════════════════
+
+/** 涨停判定的容差（%）：收盘涨幅常见 9.97 / 9.98 / 10.00 等四舍五入值，⛔ 不做精确相等 */
+const DIVERGE_LIMIT_UP_TOLERANCE = 0.15;
+
+/**
+ * 【纯函数】一天一行 → 判定输入行。
+ *
+ * @param {{date:string, isDragonOne?:boolean, aucPct?:*, closePct?:*, dailyPct?:*,
+ *          volume?:*, yestVolume?:*, limitUpPct?:*}} day
+ *        `aucPct` = 竞价涨幅（%）；`closePct` = 收盘涨幅（%，`market_metrics.change_pct`）；
+ *        `dailyPct` = 收盘涨幅（%，`stock_daily_pct.pct`，更可信，优先用它判涨停）；
+ *        `volume` / `yestVolume` = 当日竞价量 / 昨日成交量；`limitUpPct` = 该股涨停幅度
+ * @returns {{date:string, aucPct:number|null, closePct:number|null, share:number|null,
+ *            limitUp:boolean|null, isDragonOne:boolean}}
+ *          `limitUp = null` ⇒ 拿不到收盘真值（§10 未知 ≠ 没涨停，⛔ 不折成 false 参与判定）
+ */
+function buildDivergeDayRow(day) {
+  const d = day || {};
+  const auc = _n(d.aucPct);
+  // 收盘涨幅：`dailyPct`（stock_daily_pct 真值）优先，退化到 change_pct
+  const close = _n(d.dailyPct) !== null ? _n(d.dailyPct) : _n(d.closePct);
+  // 竞价占比：与决策看板同一条公式（§6：只认 auction-share 那一份实现）
+  const share = computeAuctionShare(d.volume, d.yestVolume);
+  const thr = _n(d.limitUpPct);
+  let limitUp = null;
+  if (close !== null && thr !== null && thr > 0) {
+    limitUp = close >= (thr - DIVERGE_LIMIT_UP_TOLERANCE);
+  } else if (close !== null) {
+    // 涨停幅度读不到（代码缺失）：按主板 10% 判，但只认「明显到 10%」的那一档 ——
+    // 20% 板块的 15% 会被漏掉（漏判 = 少一个起点），⛔ 不会误判出涨停。
+    limitUp = close >= (10 - DIVERGE_LIMIT_UP_TOLERANCE);
+  }
+  return {
+    date: String(d.date || '').trim(),
+    aucPct: auc,
+    closePct: close,
+    share: share,
+    limitUp: limitUp,
+    isDragonOne: !!d.isDragonOne
+  };
+}
+
+/**
+ * ★★ [LEADER-DIVERGE-WIRE] 逐日事实 → 第二十五条判定（组合式只调这一个函数）。
+ *
+ * @param {Array<object>} days 见 `buildDivergeDayRow`（顺序无所谓，内部按日期升序）
+ * @returns {ReturnType<typeof classifyLeaderDiverge> & {rows:Array, dragonDays:number, windowDays:number}}
+ *          `rows` 留痕（说明区可逐日追溯）；`kind:'unknown'` ⇒ 调用方不得据它改文案
+ */
+function runLeaderDiverge(days) {
+  const rows = (Array.isArray(days) ? days : [])
+    .map(buildDivergeDayRow)
+    .filter(function (r) { return !!r.date; })
+    .sort(function (a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
+  if (rows.length === 0) {
+    const empty = classifyLeaderDiverge([], { dragonDays: null });
+    return Object.assign(empty, { rows: [], dragonDays: 0, windowDays: DIVERGE_WINDOW_DAYS });
+  }
+  // 总龙资格：近 N 日当【总龙一】的天数（口径 = 调用方喂的 isDragonOne，来自同一份竞价榜）
+  const dragonDays = rows.filter(function (r) { return r.isDragonOne; }).length;
+  const win = rows.slice(-DIVERGE_WINDOW_DAYS);
+  const res = classifyLeaderDiverge(win, { dragonDays: dragonDays, windowDays: DIVERGE_WINDOW_DAYS });
+  return Object.assign(res, { rows: win, dragonDays: dragonDays, windowDays: DIVERGE_WINDOW_DAYS });
+}
+
+
+// ────── bidding-auto-fetch/logic/leader-diverge-days.js ──────
+// leader-diverge-days.js — 第二十五条「总龙首次分歧 / 二次分歧 ⇒ 等同退潮」的【云端】预计算
+//
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [LD-CLOUD 2026-11-13 用户口径 · 原话] ★★
+// ══════════════════════════════════════════════════════════════════════════════════════
+//   「你帮我完成啊，不要留着，记住都是在云端运行，关电脑也能用，不要电脑本地的，
+//     我之前强调好几次了，把没完成的完成」
+//
+// ── 为什么这件事必须搬到云端 ──────────────────────────────────────────────────────
+//   第二十五条的判定输入 = 这只票近 20 个交易日的【四列事实】：
+//     ① 每天的竞价涨幅      market_metrics(scope='auction').auc_pct_chg
+//     ② 每天的收盘涨幅      stock_daily_pct.pct        （判涨停 / 判「高开低走收绿」）
+//     ③ 每天的竞价占比      auction_watchlist.volume ÷ yest_volume（判占比塌陷）
+//     ④ 每天它是不是总龙一  ← 需要把【那一天】的 stock_range20_pct 反解成 9:25 竞价口径，
+//                            再过「9:25 名单白名单 + 腿数门槛 + 只主板」这道闸门排第一
+//   ④ 一天一次反解，20 天 = 20 次全套 —— 放在浏览器里就意味着「没开页面 = 没有判定」，
+//   而用户在 2026-11-13 明确否掉了这种形态。⇒ 整个判定在 Cloudflare Worker 里算完落库，
+//   前端只读一行（src/data/leader-diverge-days.js）。
+//
+// ── 与前端那条链的分工（⛔ 别混）────────────────────────────────────────────────
+//   · 前端 `tvrb_diverge_days`  —— 【首次分歧】结论（首板日 / 首次分歧日），K 线链路算；
+//   · 本文件 `tvrb_leader_diverge` —— 【首次 / 二次分歧】整段判定（kind / 霸榜天数 / 事件计数），
+//     云端算。第二十五条「二次分歧 ⇒ 等同退潮」只认这张表。
+//   ⚠️ 两边用的是**同一个纯函数** `runLeaderDiverge`（src/logic/topicvolratio/leader-diverge.js）
+//      ⇒ 口径只有一份（§6），⛔ 这里绝不另写一套「低开 / 收绿 / 占比」判据。
+//
+// ── 一天跑两次（都挂在已有 cron 上，⛔ 不新增 cron；免费账户上限 5 条已用 4 条）──────
+//   · 9:27 snapshot 末 ⇒ leg_phase='intraday'：今天的收盘腿还不存在 ⇒
+//     D2（高开低走收绿）对【今天】不可能成立，D1（竞价低开）/ D3（占比塌陷）照常成立；
+//   · 16:00 close 末   ⇒ leg_phase='close'：收盘腿齐全，三种形态全生效（用户要的 D2 靠这一趟）。
+//   ⇒ 同一 (date, stock) 会被写两次，第二次是【信息更全】的覆盖（不是改口径）。
+//     覆盖前后 kind 若发生变化会打日志（§10 判定可追溯，⛔ 不静默改写结论）。
+//
+// ── 红线 ────────────────────────────────────────────────────────────────────────────
+//   §10：任一表读失败 ⇒ 本轮 ok=false 并如实报错，⛔ 绝不写一行「猜的」判定；
+//        榜没就绪（少数据）⇒ 该展示日跳过并记日志（⛔ 不拿残缺榜挑总龙一）。
+//   §11：只写本表（+ 读四张表），⛔ 不碰 stock_range20_pct / market_metrics / auction_watchlist。
+//   §32：窗口级批量读（`date=in.(...)`），每个表 1~6 页；⛔ 不按日循环打 80 个请求。
+//   §6：反解 / 榜单 / 判定全部复用前端同一份纯函数实现（见 import）。
+// ============================================================================
+
+
+
+
+
+
+
+/** 一次最多补几个展示日（手动回补用；默认 1 = 只算今天） */
+const LD_MAX_WRITE_DAYS = 20;
+
+/** 口径阶段：北京 15:00 前 = intraday（今天还没有收盘腿），之后 = close */
+function legPhaseOf(nowBj) {
+  const d = nowBj || beijingNow();
+  return d.getUTCHours() < 15 ? 'intraday' : 'close';
+}
+
+/** 把「行数组」按某列分组进 Map（保持确定性：入参已按 date.asc,stock.asc 读回） */
+function _groupBy(rows, key) {
+  const out = new Map();
+  (rows || []).forEach(function (r) {
+    const k = String((r && r[key]) || '').slice(0, 10);
+    if (!k) return;
+    let arr = out.get(k);
+    if (!arr) { arr = []; out.set(k, arr); }
+    arr.push(r);
+  });
+  return out;
+}
+
+/**
+ * ★ 把「一天的全市场 20 日涨幅行」收成 `buildAuctionLegPctMap` 要的 Map<股票, {pct, days, leg}>。
+ *
+ * ⚠️ 主键 (date,stock,leg) ⇒ 同一天同股可能两行：
+ *   · `leg='auc'` = 页面在 15:00 前跑过、当时就用竞价腿算的 ⇒ **原值就是 9:25 口径**；
+ *   · `leg='close'` = 收盘腿的 20 日复利 ⇒ 需要反解。
+ *   ⇒ **有 auc 行就优先用 auc**（免反解、无误差）；两行都在也只留一行。
+ *   （与前端 `readRange20Rows` 的 byLeg 取舍同向：都用该口径自己的那一行。）
+ *
+ * @param {Array<{stock,pct,days,leg}>} dayRows
+ * @returns {Map<string,{pct:*,days:*,leg:string}>}
+ */
+function rangeRowsMapOf(dayRows) {
+  const m = new Map();
+  (dayRows || []).forEach(function (r) {
+    const nm = String((r && r.stock) || '').trim();
+    if (!nm) return;
+    const leg = String(r.leg || 'close').trim().toLowerCase() === 'auc' ? 'auc' : 'close';
+    const cur = m.get(nm);
+    if (!cur || (cur.leg !== 'auc' && leg === 'auc')) {
+      m.set(nm, { pct: r.pct, days: r.days, leg: leg });
+    }
+  });
+  return m;
+}
+
+/**
+ * 【纯函数】逐日事实 → 判定输入行（Worker 侧的「取哪几列」收口，⛔ 判据仍只在下游纯函数里）。
+ *
+ * @param {string[]} dates 升序窗口日期
+ * @param {string} stock 总龙一
+ * @param {{metrics:Map, daily:Map, auction:Map, leaderOfDay:Map<string,string>}} src
+ * @returns {Array<object>} 直接喂 `runLeaderDiverge` 的 days
+ */
+function buildDaysForStock(dates, stock, src) {
+  const name = String(stock || '').trim();
+  const out = [];
+  (dates || []).forEach(function (d) {
+    const m = (src.metrics.get(d) || new Map()).get(name) || null;
+    const open = src.daily.get(d) || new Map();
+    const au = src.auction.get(d) || new Map();
+    const code = String((m && m.code) || '').replace(/\D/g, '');
+    out.push({
+      date: d,
+      aucPct: m ? m.auc_pct_chg : null,
+      // 收盘涨幅：stock_daily_pct 是收盘真值（market_metrics.change_pct 在收盘覆盖失效时
+      // 仍停在 9:25 竞价涨幅 ⇒ 用它判「高开低走收绿 / 涨停」会判反，见 leader-diverge.js 文件头）
+      dailyPct: open.has(name) ? open.get(name) : null,
+      closePct: m ? m.change_pct : null,
+      volume: au.has(name) ? au.get(name).volume : null,
+      yestVolume: au.has(name) ? au.get(name).yest_volume : null,
+      limitUpPct: code ? getLimitUpPct(code, name) : null,
+      // 总龙一 = 【那一天】9:25 竞价口径榜的第 1 名（与前端同一份榜、同一把尺子）
+      isDragonOne: String((src.leaderOfDay.get(d) || '')) === name
+    });
+  });
+  return out;
+}
+
+/**
+ * ★★ 入口：算「最近若干展示日」的总龙分歧判定并落库。
+ *
+ * @param {object} env
+ * @param {{today?:string, days?:number, phase?:string, logs?:string[]}} [opts]
+ *        today = 截止日（含），缺省北京今天；
+ *        days  = 要写几个展示日（默认 1；手动回补可给 2~20）；
+ *        phase = 'intraday' | 'close'，缺省按时钟判；
+ *        logs  = 外部日志数组（与其它 point 同款留痕）
+ * @returns {Promise<{ok:boolean, error?:string, today:string, phase:string,
+ *          dates:string[], leaders:string[], written:number, skipped:Array, logs:string[]}>}
+ */
+async function runLeaderDivergeDays(env, opts) {
+  const o = opts || {};
+  const logs = Array.isArray(o.logs) ? o.logs : [];
+  const today = normalizeDate(o.today) || beijingToday();
+  const rawDays = Number(o.days);
+  const days = isFinite(rawDays) && rawDays > 0
+    ? Math.min(Math.floor(rawDays), LD_MAX_WRITE_DAYS) : 1;
+  const phase = (o.phase === 'close' || o.phase === 'intraday') ? o.phase : legPhaseOf();
+  // 窗口 = 20 个交易日；要写 days 个展示日 ⇒ 需要往前多取 days-1 天（每个展示日都用它自己那段 20 日）
+  const wantDates = DIVERGE_WINDOW_DAYS + days - 1;
+
+  const result = {
+    ok: false, today: today, phase: phase,
+    dates: [], leaders: [], written: 0, skipped: [], logs: logs
+  };
+
+  // ── ① 窗口日期（ascending，不含 today 之后；today 当天必须有名单行才算进窗口） ──
+  const past = await readRecentTradeDates(env, _nextDate(today), wantDates);
+  const dates = past.slice();
+  result.dates = dates;
+  if (dates.length === 0) {
+    logs.push('[LD-CLOUD] ' + today + ' 往前取不到任何交易日（auction_watchlist 无行）⇒ 判定跳过');
+    result.error = 'no-trade-dates';
+    return result;
+  }
+  if (dates.length < wantDates) {
+    logs.push('[LD-CLOUD] ⚠️ 窗口只取到 ' + dates.length + '/' + wantDates +
+      ' 个交易日（' + dates[0] + '~' + dates[dates.length - 1] + '）⇒ 霸榜天数可能偏少，如实记录（§10 不补天）');
+  }
+
+  // ── ② 四张表一次批量读（窗口级，§32） ──
+  const [aucRows, metricRows, rangeRows, dailyRows] = await Promise.all([
+    readAuctionRowsForDates(env, dates),
+    readMetricsForDates(env, dates),
+    readRange20ForDates(env, dates),
+    readDailyPctForDates(env, dates)
+  ]);
+  logs.push('[LD-CLOUD] ' + today + ' 窗口 ' + dates.length + ' 天（' + dates[0] + '~' +
+    dates[dates.length - 1] + '）读取: watchlist=' + aucRows.length +
+    ' metrics=' + metricRows.length + ' range20=' + rangeRows.length + ' daily=' + dailyRows.length);
+
+  // ── ③ 分组（按日） ──
+  //   ⚠️ `metricsByDate` 是 Map（按股票名取一行的 O(1) 查找），`metricsListByDate` 是**数组**
+  //      —— `buildAuctionLegBoard` 第 2 参要的就是「那天的 9:25 名单行数组」（它内部逐行过白名单），
+  //      给它 Map 会走到 `metrics-read-failed` 分支 ⇒ 整轮判不出（⛔ 别合并成一个）。
+  const metricsByDate = new Map();
+  const metricsListByDate = new Map();
+  const codeByName = new Map();
+  _groupBy(metricRows, 'date').forEach(function (arr, d) {
+    const m = new Map();
+    arr.forEach(function (r) {
+      if (!m.has(r.stock)) m.set(r.stock, r);
+      const c = String(r.code || '').replace(/\D/g, '');
+      if (c && !codeByName.has(r.stock)) codeByName.set(r.stock, c);
+    });
+    metricsByDate.set(d, m);
+    metricsListByDate.set(d, arr);
+  });
+  const dailyByDate = new Map();
+  _groupBy(dailyRows, 'date').forEach(function (arr, d) {
+    const m = new Map();
+    arr.forEach(function (r) { if (!m.has(r.stock)) m.set(r.stock, r.pct); });
+    dailyByDate.set(d, m);
+  });
+  const auctionByDate = new Map();
+  _groupBy(aucRows, 'date').forEach(function (arr, d) {
+    const m = new Map();
+    arr.forEach(function (r) { if (!m.has(r.stock)) m.set(r.stock, r); });
+    auctionByDate.set(d, m);
+  });
+  const rangeByDate = new Map();
+  _groupBy(rangeRows, 'date').forEach(function (arr, d) {
+    rangeByDate.set(d, rangeRowsMapOf(arr));
+  });
+
+  const codeOf = function (name) { return codeByName.get(String(name || '').trim()) || ''; };
+
+  // ── ④ 逐日算出【那天 9:25 竞价口径榜的总龙一】（与前端 buildTvrbAuctionBoard 同一实现） ──
+  const leaderOfDay = new Map();
+  const boardFail = [];
+  dates.forEach(function (d) {
+    const pctMap = buildAuctionLegPctMap(rangeByDate.get(d) || null, metricsListByDate.get(d) || null);
+    const board = buildAuctionLegBoard(pctMap, metricsListByDate.get(d) || null, { codeOf: codeOf });
+    if (board.ready && board.rank.length > 0) {
+      leaderOfDay.set(d, board.rank[0].stock);
+    } else {
+      boardFail.push(d + '(' + board.reason + ')');
+    }
+  });
+  if (boardFail.length > 0) {
+    logs.push('[LD-CLOUD] ⚠️ ' + boardFail.length + ' 天榜没就绪：' + boardFail.join(', ') +
+      ' ⇒ 那几天的「总龙一」记为未知（⛔ 不猜，霸榜天数只按已知的天数计）');
+  }
+
+  // ── ⑤ 要写哪几个展示日（窗口末尾 days 天） ──
+  const displayDates = dates.slice(-days);
+
+  // ── ⑥ 逐展示日：判定 + 落库 ──
+  const rowsToWrite = [];
+  displayDates.forEach(function (dDisp) {
+    const leader = leaderOfDay.get(dDisp) || '';
+    if (!leader) {
+      result.skipped.push({ date: dDisp, reason: 'board-not-ready' });
+      logs.push('[LD-CLOUD] ' + dDisp + ' 那天的总龙一判不出（榜没就绪）⇒ 跳过（§10 不猜）');
+      return;
+    }
+    // 该展示日的窗口 = 窗口内 ≤ 它的那些天（runLeaderDiverge 内部再按 20 截断）
+    const iDisp = dates.indexOf(dDisp);
+    const winDates = dates.slice(0, iDisp + 1);
+    const dayRows = buildDaysForStock(winDates, leader, {
+      metrics: metricsByDate,
+      daily: dailyByDate,
+      auction: auctionByDate,
+      leaderOfDay: leaderOfDay
+    });
+    const v = runLeaderDiverge(dayRows);
+    result.leaders.push(leader);
+    rowsToWrite.push({
+      date: dDisp,
+      stock: leader,
+      kind: v.kind,
+      qualified: !!v.qualified,
+      reason: String(v.reason || ''),
+      dragon_days: Number.isFinite(Number(v.dragonDays)) ? Number(v.dragonDays) : null,
+      event_count: Number(v.eventCount) || 0,
+      start_date: v.startDate || null,
+      first_date: v.firstDate || null,
+      first_end_date: v.firstEndDate || null,
+      second_date: v.secondDate || null,
+      second_end_date: v.secondEndDate || null,
+      boards_after_first: Number(v.boardsAfterFirst) || 0,
+      window_days: Number(v.windowDays) || DIVERGE_WINDOW_DAYS,
+      leg_phase: phase,
+      // 逐日留痕（说明区可追溯「它是哪一天低开 / 哪一天收绿 / 哪一天占比塌」）
+      rows: (v.rows || []).map(function (r) {
+        return {
+          date: r.date, aucPct: r.aucPct, closePct: r.closePct,
+          share: r.share, limitUp: r.limitUp, isDragonOne: !!r.isDragonOne
+        };
+      }),
+      updated_at: new Date().toISOString()
+    });
+    logs.push('[LD-CLOUD] ' + dDisp + ' 总龙=' + leader + ' kind=' + v.kind +
+      ' 霸榜=' + (v.dragonDays === null ? '未知' : v.dragonDays) + '天' +
+      ' 事件=' + v.eventCount + ' 首次=' + (v.firstDate || '—') +
+      ' 二次=' + (v.secondDate || '—') + ' 首次后涨停=' + v.boardsAfterFirst +
+      ' 阶段=' + phase + (v.reason ? ' 出口=' + v.reason : ''));
+  });
+
+  if (rowsToWrite.length === 0) {
+    result.error = 'nothing-to-write';
+    return result;
+  }
+
+  // ── ⑦ 落库（upsert，幂等；主键 date,stock） ──
+  try {
+    await upsertLeaderDivergeRows(env, rowsToWrite);
+  } catch (e) {
+    // §10：写失败必须可见（表还没建 / 网络）；⛔ 不影响 9:27 / 16:00 的其它步骤
+    logs.push('[LD-CLOUD] ✗ 写 tvrb_leader_diverge 失败（执行 db/create_tvrb_leader_diverge.sql？）: ' +
+      (e && e.message ? e.message : String(e)));
+    result.error = 'write-failed: ' + (e && e.message ? e.message : String(e));
+    return result;
+  }
+
+  result.written = rowsToWrite.length;
+  result.ok = true;
+  logs.push('[LD-CLOUD] ✓ 写入 ' + rowsToWrite.length + ' 行（' + rowsToWrite.map(function (r) {
+    return r.date + '/' + r.stock + '=' + r.kind;
+  }).join(', ') + '）阶段=' + phase);
+  return result;
+}
+
+/** today 的下一天（readRecentTradeDates 用 lt.，要含 today 本身 ⇒ 传 next day） */
+function _nextDate(dateStr) {
+  const s = normalizeDate(dateStr);
+  if (!s) return '';
+  const t = new Date(s + 'T00:00:00Z').getTime() + 24 * 3600 * 1000;
+  return new Date(t).toISOString().slice(0, 10);
 }
 
 
@@ -6696,10 +9236,15 @@ async function runJiwangCloseWrite(env) {
 // [LADDER-FALLBACK 2026-11-06] 只补「最近多板 883410 正式名单」，不碰行情/猫抓/区间涨幅。
 
 // [LADDER26 2026-11-06] 北京 09:26 云端二次确认：真实名单 + 新进票猫抓竞价量比（1 次额度上限）。
+// [AUC-RATIO-0927 2026-11-12] 同时把「补竞价量比」那一步暴露出来，供 9:27 兜底复用（同一份实现，§6）。
 
 // [R20-CLOUD 2026-11-06] 同一趟 9:26 顺带把 20 日涨幅用逐日腿补缺（0 上游、0 额度）。
 
 // [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐，彻底替代本机 08:00 定时任务。
+
+// ★★ [LD-CLOUD 2026-11-13 用户口径] 第二十五条「总龙首次/二次分歧」云端预计算：
+//   「都是在云端运行，关电脑也能用，不要电脑本地的」⇒ 判定全部在 Worker 里算完落 tvrb_leader_diverge，
+//   前端只读一行（src/data/leader-diverge-days.js）。9:27（intraday）+ 16:00（close）各跑一次。
 
 // [BIDDING-CLOSE-CLOUD 2026-11-07] 竞价变化看板「收盘」列纯云端幂等落库：
 //   以前只能靠浏览器自动填表 + 人工点保存，漏点一天 ⇒ 次日「昨多板K线」断链。
@@ -6779,6 +9324,36 @@ async function runSnapshotPatchSafely(env, result, tag) {
 }
 
 /**
+ * ★★ [LADDER26-TIMING 2026-11-12 用户硬指标] 9:26 这一趟的时序度量。
+ *
+ * 用户原话：「要在9点26分时，不要超过9点27分，题材量比选股结果计算是否正常，
+ *   注意我要求的全部在云端运行，不用打开本地电脑。」
+ *
+ * 为什么必须补（实测缺口）：
+ *   `bidding_fetch_log` 里 11-09 / 11-10 / 11-11 三天的 ladder26 记录中
+ *   `elapsedMs` / `finishedAtBj` 全是 **null** —— 9:25 morning 有（11225/9507/9512ms +
+ *   09:25:40 完成），唯独 9:26 这一趟没有任何耗时证据 ⇒ 「是否超过 9:27」无从核对。
+ *   ⇒ 本文件给 ladder26 补上三个字段（纯记录，⛔ 不改任何业务分支、不改执行顺序）。
+ *
+ * `persistRunResult` 已按 `r.elapsedMs / r.finishedAtBj / r.p0Overrun` 落库 ⇒ 只要 result26
+ * 带上这三个字段就自动进 `bidding_fetch_log.detail`，无需改写入侧（§11 最小改动）。
+ */
+const LADDER26_DEADLINE_BJ_SEC = 9 * 3600 + 27 * 60;   // 09:27:00（用户硬指标上界）
+const LADDER26_DEADLINE_LABEL = '09:27:00';
+/** 北京时钟 HH:MM:SS（beijingNow 的 UTC 字段装的就是北京值） */
+function bjClockNow() {
+  const d = beijingNow();
+  return String(d.getUTCHours()).padStart(2, '0') + ':' +
+    String(d.getUTCMinutes()).padStart(2, '0') + ':' +
+    String(d.getUTCSeconds()).padStart(2, '0');
+}
+/** 北京当日秒数（0 点起），用于和 09:27:00 比较 */
+function bjSecNow() {
+  const d = beijingNow();
+  return d.getUTCHours() * 3600 + d.getUTCMinutes() * 60 + d.getUTCSeconds();
+}
+
+/**
  * [RUNLOG 2026-09-30] 把这一轮的运行结果落库到 bidding_fetch_log（含 ⏱ 埋点断点）。
  * 只写日志表，失败静默（见 data/supabase-write.js#writeRunLog），绝不影响主流程。
  */
@@ -6792,6 +9367,9 @@ async function persistRunResult(env, point, result) {
       elapsedMs: r.elapsedMs === undefined ? null : r.elapsedMs,
       finishedAtBj: r.finishedAtBj || '',
       p0Overrun: !!r.p0Overrun,
+      // ★ [LADDER26-TIMING 2026-11-12] 该趟的硬截止时刻（ladder26 = 09:27:00）；
+      //   morning 不传 ⇒ 空串（它的截止 09:25:45 写在 logs 里，见 morning-workflow P0_DEADLINE_LABEL）
+      deadlineBj: r.deadlineBj || '',
       ladderDegraded: !!r.ladderDegraded,
       // [LADDER-SRC 2026-11-03 用户口径] 同花顺「最近多板」(883410) 源数据条数。
       //   前端 logic/auction/ladder-source.js 读这个字段显示在第一页（用户拿它对炒股软件）。
@@ -6821,6 +9399,11 @@ async function persistRunResult(env, point, result) {
       range20Targets: r.range20Targets === undefined ? null : r.range20Targets,
       range20Covered: r.range20Covered === undefined ? null : r.range20Covered,
       range20Skipped: r.range20Skipped || '',
+      // ★★ [AUC-RATIO-0927 2026-11-12] 9:27 竞价量比兜底的结构化留痕。
+      //   验收：aucRatioWritten>0 = 这一趟真的补回了量比；aucRatioHeal.skipped 含「0 次猫抓请求」
+      //   = 9:25/9:26 已补齐（正常日，0 额度）。⛔ 别只看 ok（它会把零补写伪装成成功）。
+      aucRatioWritten: r.aucRatioWritten === undefined ? null : r.aucRatioWritten,
+      aucRatioHeal: r.aucRatioHeal || null,
       upstreamReady: r.upstreamReady === true,
       upstreamRows: r.upstreamRows === undefined ? null : r.upstreamRows,
       // [AUC-SANE 2026-10-12] 竞价涨幅越界闸门：>0 说明上游 numcat 又给了物理不可能的坏值
@@ -6971,6 +9554,33 @@ async function dispatch(point, env, logs, opts) {
       if (Array.isArray(result.logs)) result.logs.push(msg);
       console.error('[auto-fetch] ' + msg);
     }
+    // ★★ [LD-CLOUD 2026-11-13 用户口径] 第二十五条「总龙分歧」第二阶段：收盘腿齐全后重算一次。
+    //
+    //   为什么必须有两趟（而不是只在 9:27 跑）：
+    //     用户给第二十五条定的三种分歧形态里，D2 =「竞价高开、收盘是负数绿的」**只能收盘后判**。
+    //     9:27 那一趟 leg_phase='intraday'，今天还没有收盘腿 ⇒ 今天这种日子判不出来；
+    //     16:00 这一趟（runClose + runDailyLegsHeal 之后 stock_daily_pct 已有今天那根腿）再算一次，
+    //     leg_phase='close' 覆盖同一行 —— 这是【信息更全】的覆盖，不是改口径。
+    //   ⚠️ 必须放在 runDailyLegsHeal 之后（上面那个 try 块）⇒ 收盘涨幅真值已在库里。
+    //   ⛔ 失败不连坐：只记日志 + result 字段。
+    try {
+      const ldLogs = [];
+      const ldClose = await runLeaderDivergeDays(env, {
+        today: (opts && opts.date) || beijingToday(),
+        phase: 'close',
+        logs: ldLogs
+      });
+      result.leaderDivergeClose = ldClose;
+      result.leaderDivergeCloseWritten = ldClose.written || 0;
+      if (Array.isArray(result.logs)) result.logs.push.apply(result.logs, ldLogs.map(l => l));
+      console.log('[auto-fetch] [LD-CLOUD] 16:00 总龙分歧云端预计算（收盘腿）: ok=' + ldClose.ok +
+        ' written=' + ldClose.written + ' phase=' + ldClose.phase + ' error=' + (ldClose.error || '') +
+        ' 日志=' + JSON.stringify(ldLogs));
+    } catch (e) {
+      const msg = '[LD-CLOUD] ❌ 16:00 总龙分歧预计算异常（不影响收盘主流程）: ' + (e && e.message);
+      if (Array.isArray(result.logs)) result.logs.push(msg);
+      console.error('[auto-fetch] ' + msg);
+    }
     await persistRunResult(env, point, result);
     return result;
   }
@@ -7021,6 +9631,57 @@ async function dispatch(point, env, logs, opts) {
       r20 = { ok: false, written: 0, skipped: '', logs: [msg] };
       console.error('[auto-fetch] ' + msg);
     }
+    // ★★ [AUC-RATIO-0927 2026-11-12] 9:27 是开盘前【最后一个】云端时点，竞价量比也必须在这里兜一次。
+    //
+    //   用户 11-11 报障取证：「青岛食品」当天 market_metrics 有行、其它三要素齐全，
+    //   但 `auc_vol_ratio` 为 null；同为 20 日补位票的「海洋王」却有 1.94。
+    //     ① 该票近 15 个交易日里 14 天都有量比（11-10=6.01 / 11-09=6.58 / 11-04=13.63），
+    //        唯独 11-11 那天是空 ⇒ 上游返回空值时，`hasValue` 判假 ⇒ 该列被省略 ⇒ 全天 null；
+    //     ② 9:26 的补抓（[RANGE20-RATIO-HEAL]）给了第二次机会，但它自己也可能超时 / 403 额度用尽；
+    //     ③ 一旦 9:26 也失手，下一个能补量比的时点是 16:30 收盘 —— 竞价期间用户看到的就是空缺。
+    //   ⇒ 此处做【有缺口才发】的第三次补抓：量比齐全 ⇒ 0 请求 0 额度（§32）。
+    //   ⛔ 不覆盖已有值：pickNumcatTargets 遇到已有量比直接跳过；写库只带 auc_vol_ratio 一列（§11）。
+    //   ⛔ 不重建行：没有 market_metrics 行的票不在本函数的覆盖范围（它只补「已有行缺列」）。
+    const aucLogs = [];
+    let auc27 = { attempted: false, symbols: 0, written: 0, names: [], skipped: '未执行', error: '' };
+    try {
+      auc27 = await fillAucFromNumcat(env, date || beijingToday(), null, aucLogs);
+      console.log('[auto-fetch] [AUC-RATIO-0927] 9:27 竞价量比兜底: attempted=' + auc27.attempted +
+        ' symbols=' + auc27.symbols + ' written=' + auc27.written +
+        ' skipped=' + (auc27.skipped || '') + ' error=' + (auc27.error || '') +
+        (auc27.names && auc27.names.length ? ' 补写=' + auc27.names.join(',') : ''));
+      console.log('[auto-fetch] [AUC-RATIO-0927] 日志=' + JSON.stringify(aucLogs));
+    } catch (e) {
+      const msg = '[AUC-RATIO-0927] ❌ 9:27 竞价量比兜底异常（不影响本轮其它补写）: ' + ((e && e.message) || e);
+      auc27 = { attempted: false, symbols: 0, written: 0, names: [], skipped: '', error: String((e && e.message) || e) };
+      aucLogs.push(msg);
+      console.error('[auto-fetch] ' + msg);
+    }
+    // ★★ [LD-CLOUD 2026-11-13 用户口径] 第二十五条「总龙分歧」云端预计算（9:27 这一趟）。
+    //
+    //   用户原话：「你帮我完成啊，不要留着，记住都是在云端运行，关电脑也能用，不要电脑本地的」。
+    //   为什么挂在 9:27 而不是新开 cron：免费账户 cron 上限 5 条、本 Worker 已用 4 条；而 9:27
+    //   本身就是「开盘前最后一个云端时点」，此时 20 日涨幅 /竞价涨幅 / 名单都已落库 ⇒ 数据齐。
+    //   ⚠️ 这一趟 leg_phase='intraday'：今天的收盘腿还不存在 ⇒ D2（高开低走收绿）对今天不可能成立，
+    //      D1（竞价低开）/ D3（占比塌陷）照常成立；16:00 close 那一趟会写 leg_phase='close' 的覆盖行。
+    //   ⛔ 失败不连坐：只记日志 + result 字段，不影响上面的量比兜底 / 区间自愈。
+    const ldLogs = [];
+    let ld27 = { ok: false, written: 0, skipped: '未执行', logs: ldLogs };
+    try {
+      ld27 = await runLeaderDivergeDays(env, {
+        today: date || beijingToday(),
+        phase: 'intraday',
+        logs: ldLogs
+      });
+      console.log('[auto-fetch] [LD-CLOUD] 9:27 总龙分歧云端预计算: ok=' + ld27.ok +
+        ' written=' + ld27.written + ' phase=' + ld27.phase + ' error=' + (ld27.error || ''));
+      console.log('[auto-fetch] [LD-CLOUD] 日志=' + JSON.stringify(ldLogs));
+    } catch (e) {
+      const msg = '[LD-CLOUD] ❌ 9:27 总龙分歧预计算异常（不影响本轮其它补写）: ' + ((e && e.message) || e);
+      ld27 = { ok: false, written: 0, skipped: '', error: String((e && e.message) || e), logs: ldLogs };
+      ldLogs.push(msg);
+      console.error('[auto-fetch] ' + msg);
+    }
     const result = {
       ok: snap.ok || range.ok || r20.ok,
       today: snap.today || (date || ''),
@@ -7037,9 +9698,19 @@ async function dispatch(point, env, logs, opts) {
       range20Targets: r20.targets === undefined ? null : r20.targets,
       range20Covered: r20.covered === undefined ? null : r20.covered,
       range20Skipped: r20.skipped || '',
+      // ★★ [AUC-RATIO-0927 2026-11-12] 9:27 竞价量比兜底的结构化验收字段。
+      //   验收口径：aucRatioWritten>0 表示这一趟真的补回了量比；
+      //   aucRatioHeal.skipped 含「0 次猫抓请求」表示 9:25/9:26 已补齐（正常日）。
+      aucRatioHeal: auc27,
+      aucRatioWritten: auc27.written || 0,
+      // ★★ [LD-CLOUD 2026-11-13] 第二十五条总龙分歧云端预计算的结构化验收字段：
+      //   leaderDivergeWritten>0 = 真的落了一行判定；leaderDiverge.ok=false 时看 logs 里的
+      //   'board-not-ready' / 'write-failed' / 'no-trade-dates' 定位（⛔ 不要只看 ok）。
+      leaderDiverge: ld27,
+      leaderDivergeWritten: ld27.written || 0,
       upstreamReady: upstream.ready === true,
       upstreamRows: upstream.rows === null || upstream.rows === undefined ? null : upstream.rows,
-      logs: (upstream.logs || []).concat(snap.logs || [], range.logs || [], r20.logs || [])
+      logs: (upstream.logs || []).concat(snap.logs || [], range.logs || [], r20.logs || [], aucLogs, ldLogs)
     };
     await persistRunResult(env, point, result);
     return result;
@@ -7065,6 +9736,7 @@ async function dispatch(point, env, logs, opts) {
     //   · ladder26  = 开盘前自动二次确认，名单 + 新进票猫抓补竞价量比 + 清理兜底行，
     //                 且「9:25 已成功」时 0 请求直接返回（幂等，不重复烧额度）。
     const logs26 = [];
+    const _t26 = Date.now();   // ★ [LADDER26-TIMING] 见 bjClockNow 的说明
     const d26 = (opts && opts.date) || beijingToday();
     // [CLOUD-0927-HEAL 2026-11-11] 修两处历史缺陷：
     //   ① 原来传 `{ date }`，而 runLadderRecheck 读的是 `o.today` ⇒ 手动 /fetch?point=ladder26&date=
@@ -7112,12 +9784,26 @@ async function dispatch(point, env, logs, opts) {
       dailyLegsWritten: legs26.written || 0,
       range20: r20,
       range20Written: r20.written || 0,
+      // ★★ [LADDER26-TIMING 2026-11-12] 用户硬指标「9:26 完成、不超过 9:27」的度量。
+      //   纯记录：⛔ 未在此加任何截止/跳过分支，执行顺序与业务分支一字未改。
+      //   明天 9:26 跑完直接查 bidding_fetch_log（time_point=ladder26）即可核对：
+      //     elapsedMs / finishedAtBj / p0Overrun（true = 晚于 09:27:00）
+      elapsedMs: Date.now() - _t26,
+      finishedAtBj: bjClockNow(),
+      p0Overrun: bjSecNow() > LADDER26_DEADLINE_BJ_SEC,
+      deadlineBj: LADDER26_DEADLINE_LABEL,
       logs: logs26
     };
     console.log('[auto-fetch] ladder26: ok=' + result26.ok + ' skipped=' + result26.skipped +
       ' recovered=' + result26.recovered + ' written=' + result26.written +
       ' 猫抓补写=' + (r26.auc && r26.auc.written) + ' 20日补缺=' + result26.range20Written +
       ' 日志=' + JSON.stringify(logs26));
+    // ★ [LADDER26-TIMING] 单行时序摘要：Cloudflare 控制台一眼可读，配合 bidding_fetch_log 双留存
+    console.log('[auto-fetch] ladder26 时序: 耗时=' + result26.elapsedMs + 'ms 完成@' + result26.finishedAtBj +
+      ' 截止=' + LADDER26_DEADLINE_LABEL + ' overrun=' + result26.p0Overrun +
+      ' | 猫抓补量比=' + ((r26.auc && r26.auc.written) || 0) + ' 只' +
+      (r26.auc && r26.auc.names && r26.auc.names.length ? '（' + r26.auc.names.slice(0, 12).join(',') + '）' : '') +
+      ' | 20日补缺=' + result26.range20Written + ' 行 | 逐日腿=' + result26.dailyLegsWritten + ' 行');
     await persistRunResult(env, point, result26);
     return result26;
   }
@@ -7130,6 +9816,24 @@ async function dispatch(point, env, logs, opts) {
       ' 日志=' + JSON.stringify(logs20));
     await persistRunResult(env, point, result20);
     return result20;
+  }
+  if (point === 'divergedays') {
+    // ★★ [LD-CLOUD 2026-11-13] 手动入口：立即（重）算「总龙分歧」判定并落库。
+    //   参数：&date=YYYY-MM-DD 指定截止日（缺省北京今天）；&days=N 补最近 N 个展示日（默认 1，上限 20）；
+    //         &phase=close|intraday 指定口径阶段（缺省按时钟判：15:00 后 = close）。
+    //   ⛔ 不读上游、不烧猫抓额度：全部输入来自库内（watchlist / market_metrics / range20 / daily_pct）。
+    const ldLogs = [];
+    const r = await runLeaderDivergeDays(env, {
+      today: (opts && opts.date) || '',
+      days: (opts && opts.days) || 1,
+      phase: (opts && opts.phase) || '',
+      logs: ldLogs
+    });
+    const out = Object.assign({}, r, { logs: ldLogs });
+    console.log('[auto-fetch] divergedays 云端预计算: ok=' + r.ok + ' written=' + r.written +
+      ' phase=' + r.phase + ' dates=' + JSON.stringify(r.dates) + ' 日志=' + JSON.stringify(ldLogs));
+    await persistRunResult(env, point, out);
+    return out;
   }
   if (point === 'ladder') {
     // [LADDER-FALLBACK 2026-11-06] 上游名单源 9:25 临时挂了之后，【只补正式名单】的恢复入口。
@@ -7199,8 +9903,8 @@ export default {
           return jsonResponse({ ok: false, error: '当前北京时间不在抓取时段（9:25~9:40=morning，15:00~16:30=close）' });
         }
       }
-      if (!['morning', 'close', 'extras', 'snapshot', 'ladder', 'ladder26', 'range20', 'jiwang'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|ladder|ladder26|range20|jiwang|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot / ladder / ladder26 / range20 可附 &date=YYYY-MM-DD；jiwang 立即回补昨收盘结果）' });
+      if (!['morning', 'close', 'extras', 'snapshot', 'ladder', 'ladder26', 'range20', 'divergedays', 'jiwang'].includes(point)) {
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|ladder|ladder26|range20|divergedays|jiwang|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot / ladder / ladder26 / range20 / divergedays 可附 &date=YYYY-MM-DD；divergedays 另可附 &days=N（补最近 N 个展示日，上限 20）与 &phase=close|intraday；jiwang 立即回补昨收盘结果）' });
       }
       // [JIWANG-SHOUGU-CLOUD 2026-11-08] 回补不受「当前时间必须在 9:25~16:30」限制，
       //   否则周末/夜间出事故时无法立即修复历史缺口。
@@ -7215,7 +9919,10 @@ export default {
       try {
         const result = await dispatch(point, env, [], {
           date: url.searchParams.get('date') || '',
-          includeToday: url.searchParams.get('today') === '1'
+          includeToday: url.searchParams.get('today') === '1',
+          // ★ [LD-CLOUD 2026-11-13] divergedays 专用：补几个展示日 / 指定口径阶段
+          days: Number(url.searchParams.get('days') || '0') || 0,
+          phase: url.searchParams.get('phase') || ''
         });
         return jsonResponse(result, result.ok ? 200 : 500);
       } catch (e) {
