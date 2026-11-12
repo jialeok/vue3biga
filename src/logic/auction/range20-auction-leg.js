@@ -56,7 +56,8 @@
 import { readRange20Rows } from '../../data/stock-range20-cache.js';
 import { readMarketMetricsForDate } from '../../data/market-metrics.js';
 import { getStockCode } from '../../data/stock-code-map.js';
-import { recoverAuctionLeg } from './range-window.js';
+// ★ [AUCLEG-SPLIT 2026-11-13] `recoverAuctionLeg` 的直接调用已随 `buildAuctionLegPctMap`
+//   搬到 `auction-leg-pct.js`（纯模块，云端 Worker 也引它）⇒ 这里不再需要 import（§6 一处实现）。
 // 「只主板」与「可信门槛」都用发布侧那一个常量 / 那一个判据（§6：⛔ 不在这里另写一份）
 import { RANGE20_LEADER_MIN_LEGS } from './range20-leaders.js';
 import { getBoardKind, BOARD_MAIN } from './limit-up.js';
@@ -125,46 +126,17 @@ export function rankMainBoardByPct(rows, opts) {
  * ★★ [LEADER-FIRST-TOPIC 2026-11-12] 【纯函数】把某日的「stock_range20_pct 原始行 + 当日竞价指标行」
  * 反解成【全市场 · 9:25 竞价口径】的 20 日涨幅 Map（⛔ 不筛主板、⛔ 不筛天数）。
  *
- * ⚠️ 为什么抽出来：第二十八条的「老题材 = 老龙一第一次霸榜总龙一那天的题材大类」需要
- *   **回看近 20 个交易日每一天的竞价口径榜**（`topicvolratio/leader-first-topic.js`）。
- *   那段历史不允许另写一套反解（§6：口径只有一份实现）⇒ 这里把 `_fetch` 里的循环原样提出来，
- *   `_fetch` 改为调用它 ⇒ 线上行为逐字节不变（§11）。
+ * ★ [AUCLEG-SPLIT 2026-11-13] **实现已搬到 `auction-leg-pct.js`**（零 Data 层 import 的纯模块），
+ *   这里只做转出，保证既有调用方（leader-first-topic.js / 单测）一行都不用改（§11）。
+ *   搬出去的原因：云端 Worker 的第二十五条判定要用同一份反解，但它在浏览器里跑不了
+ *   （本文件顶部引着 data/ 层）⇒ 纯函数单独成文件，两边都引它（§6 口径只有一份）。
  *
  * @param {Map<string,{pct:*,days:*,leg:string}>|null} rangeRows 某日的 `stock_range20_pct` 行
  * @param {Array<{stock:string, auc_pct_chg?:*, change_pct?:*}>|null} metricRows 该日 scope='auction' 行
  * @returns {Map<string,{pct:number,days:number}>|null} null = 加速层不可用（判不出，§10）
  */
-export function buildAuctionLegPctMap(rangeRows, metricRows) {
-  // §10：加速层不可用 ⇒ 判不出（⛔ 不返回空 Map 冒充「这天没有数据」）
-  if (!rangeRows || typeof rangeRows.forEach !== 'function') return null;
-
-  const mByName = new Map();
-  (metricRows || []).forEach(function(r) {
-    if (!r || !r.stock) return;
-    const n = String(r.stock).trim();
-    if (n && !mByName.has(n)) mByName.set(n, r);
-  });
-
-  const out = new Map();
-  rangeRows.forEach(function(v, name) {
-    const nm = String(name || '').trim();
-    if (!nm || !v) return;
-    const raw = _num(v.pct);
-    if (raw === null) return;
-    const leg = String(v.leg || 'close');
-    let pct = raw;
-    if (leg !== 'auc') {
-      // leg='close' ⇒ T 腿是收盘腿 ⇒ 反解回竞价腿（前提不满足时 recoverAuctionLeg 原样返回）
-      const m = mByName.get(nm);
-      if (m) {
-        const rec = _num(recoverAuctionLeg(raw, m.auc_pct_chg, m.change_pct));
-        if (rec !== null) pct = rec;
-      }
-    }
-    out.set(nm, { pct: pct, days: Number(v.days) || 0 });
-  });
-  return out;
-}
+import { buildAuctionLegPctMap } from './auction-leg-pct.js';
+export { buildAuctionLegPctMap };
 
 /**
  * 取数 + 反解（→ 【全市场】pct Map，⛔ 不筛主板、⛔ 不筛天数）。

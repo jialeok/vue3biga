@@ -739,3 +739,186 @@ export async function readStockCodeMap(env) {
   });
   return map;
 }
+// ============================================================================
+// [LD-CLOUD 2026-11-13] 第二十五条「总龙分歧」云端预计算要读的四张表 + 写的一张表
+// ----------------------------------------------------------------------------
+// 为什么这些读取单独写在这里、而不是复用「按日」的那几个读取器：
+//   分歧判定是【窗口级】的 —— 一次要 20 个交易日 × 4 张表。按日循环会变成 80 个请求，
+//   在 9:27 那一轮（本身还有补量比 / 自愈）里不可接受。⇒ 统一按 `date=in.(...)` 批量取，
+//   每个表 1~6 页（`sbGetPaged` 带确定性 order，§2 红线：⛔ 不许写死无分页的 limit）。
+//
+// ★ 为什么「日期列表」也从 auction_watchlist 取：
+//   本仓没有一份「云端权威交易日历」，而 auction_watchlist 是每天 9:25 必写的表
+//   ⇒ 它上面出现过的日期就是「有过早盘竞价的日子」。⛔ 不用 fuyao / 用户假期设置
+//   （那要多一条外部依赖，而且 9:27 / 16:00 这两个时点不该再引上游请求）。
+// ============================================================================
+
+/** PostgREST 的 in 列表（中文/文本值统一加双引号；⛔ 不用正则去引号，见 readDailyLegsForStocks 注） */
+function _sbInList(values) {
+  const arr = (values || []).map(function (v) { return '"' + String(v).split('"').join('') + '"'; });
+  return '(' + arr.join(',') + ')';
+}
+
+/** 按 Range 分页读，直到 enough(rows) 为真或页数用尽（用于「够了就停」的低成本读取） */
+async function sbGetUntil(env, url, enough, maxPages) {
+  const PAGE = 1000;
+  const cap = maxPages > 0 ? maxPages : 8;
+  const out = [];
+  for (let p = 0; p < cap; p++) {
+    const from = p * PAGE;
+    const resp = await sbFetch(url, {
+      headers: Object.assign(sbHeaders(env), {
+        'Range': from + '-' + (from + PAGE - 1),
+        'Range-Unit': 'items'
+      })
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error('分页读取失败 (from=' + from + '): HTTP ' + resp.status + ': ' + text.slice(0, 200));
+    }
+    const page = await resp.json();
+    if (!Array.isArray(page) || page.length === 0) break;
+    page.forEach(function (r) { out.push(r); });
+    if (typeof enough === 'function' && enough(out)) break;
+    if (page.length < PAGE) break;
+  }
+  return out;
+}
+
+/**
+ * 取 throughDate（**不含**）往前的最近 wantDays 个交易日（升序返回）。
+ *
+ * 数据源：`auction_watchlist.date`（每天 9:25 必写）。实测每天 ~77~200 行
+ * ⇒ 1000 行约 10~13 天，wantDays=20 时通常 2 页即够。
+ *
+ * §10：读失败抛错（调用方据此报 ok=false，⛔ 不当「没有交易日」）；
+ *      返回的日期数不足 wantDays ⇒ 原样返回并由调用方如实记录（不猜、不补）。
+ *
+ * @param {object} env
+ * @param {string} throughDate YYYY-MM-DD（不含）
+ * @param {number} wantDays
+ * @returns {Promise<string[]>} 升序 YYYY-MM-DD
+ */
+export async function readRecentTradeDates(env, throughDate, wantDays) {
+  const want = Number(wantDays) > 0 ? Math.floor(Number(wantDays)) : 20;
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?select=date' +
+    '&date=lt.' + encodeURIComponent(String(throughDate || '')) +
+    '&order=date.desc&limit=1000';
+  const dates = [];
+  const set = new Set();
+  const rows = await sbGetUntil(env, url, function (acc) {
+    const s = new Set();
+    acc.forEach(function (r) {
+      const d = String((r && r.date) || '').slice(0, 10);
+      if (d) s.add(d);
+    });
+    return s.size >= want;
+  }, 8);
+  rows.forEach(function (r) {
+    const d = String((r && r.date) || '').slice(0, 10);
+    if (d && !set.has(d)) { set.add(d); dates.push(d); }
+  });
+  // 降序收集 ⇒ 反转成升序（判定窗口按时间正序才有意义）
+  return dates.slice(0, want).reverse();
+}
+
+/**
+ * 读若干日的 auction_watchlist（只取分歧判定要的两列：当日竞价量 / 昨日成交量）。
+ * @returns {Promise<Array<{date:string,stock:string,volume:*,yest_volume:*}>>}
+ */
+export async function readAuctionRowsForDates(env, dates) {
+  const list = Array.from(new Set((dates || []).filter(Boolean)));
+  if (list.length === 0) return [];
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist' +
+    '?select=date,stock,volume,yest_volume&date=in.' + _sbInList(list) +
+    '&order=date.asc,stock.asc';
+  const rows = await sbGetPaged(env, url);
+  return (rows || []).map(function (r) {
+    return {
+      date: String((r && r.date) || '').slice(0, 10),
+      stock: String((r && r.stock) || '').trim(),
+      volume: r && r.volume,
+      yest_volume: r && r.yest_volume
+    };
+  }).filter(function (r) { return r.date && r.stock; });
+}
+
+/**
+ * 读若干日的 market_metrics(scope='auction')：竞价涨幅（判 D1 低开）+ 收盘涨幅（反解 20 日涨幅的 T 腿）。
+ * ⚠️ `change_pct` 在 9:27 那一刻**还不是收盘值**（收盘覆盖的 pg_cron 从未真正生效，见
+ *    db/supabase_auction_close_cron.sql 注释）⇒ 反解 T 腿时它是「当时的 T 腿」，
+ *    与 `stock_range20_pct` 里那一行的 leg 是同一时点的，所以反解自洽；
+ *    **判「涨停 / 收绿」一律不用它**，用 `stock_daily_pct.pct`（见 leader-diverge.js 文件头）。
+ * @returns {Promise<Array<{date,stock,code,auc_pct_chg,change_pct}>>}
+ */
+export async function readMetricsForDates(env, dates) {
+  const list = Array.from(new Set((dates || []).filter(Boolean)));
+  if (list.length === 0) return [];
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics' +
+    '?select=date,stock,code,auc_pct_chg,change_pct&scope=eq.auction&date=in.' + _sbInList(list) +
+    '&order=date.asc,stock.asc';
+  const rows = await sbGetPaged(env, url);
+  return (rows || []).map(function (r) {
+    return {
+      date: String((r && r.date) || '').slice(0, 10),
+      stock: String((r && r.stock) || '').trim(),
+      code: String((r && r.code) || '').trim(),
+      auc_pct_chg: r && r.auc_pct_chg,
+      change_pct: r && r.change_pct
+    };
+  }).filter(function (r) { return r.date && r.stock; });
+}
+
+/**
+ * 读若干日的 stock_range20_pct（原始行：pct / days / leg）。
+ * ⚠️ 主键是 (date,stock,leg) ⇒ 同一天同股可能有两行，去重交给调用方（见 leader-diverge-days.js：
+ *    **有 auc 腿就优先用它**，原值即 9:25 竞价口径，无需反解）。
+ * @returns {Promise<Array<{date,stock,pct,days,leg}>>}
+ */
+export async function readRange20ForDates(env, dates) {
+  const list = Array.from(new Set((dates || []).filter(Boolean)));
+  if (list.length === 0) return [];
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range20_pct' +
+    '?select=date,stock,pct,days,leg&date=in.' + _sbInList(list) +
+    '&order=date.asc,stock.asc,leg.asc';
+  const rows = await sbGetPaged(env, url);
+  return (rows || []).map(function (r) {
+    return {
+      date: String((r && r.date) || '').slice(0, 10),
+      stock: String((r && r.stock) || '').trim(),
+      pct: r && r.pct,
+      days: r && r.days,
+      leg: String((r && r.leg) || '').trim()
+    };
+  }).filter(function (r) { return r.date && r.stock; });
+}
+
+/**
+ * 读若干日的 stock_daily_pct（收盘涨幅真值 —— 判涨停 / 判「高开低走收绿」的唯一来源）。
+ * @returns {Promise<Array<{date,stock,pct}>>}
+ */
+export async function readDailyPctForDates(env, dates) {
+  const list = Array.from(new Set((dates || []).filter(Boolean)));
+  if (list.length === 0) return [];
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_daily_pct' +
+    '?select=date,stock,pct&date=in.' + _sbInList(list) +
+    '&order=date.asc,stock.asc';
+  const rows = await sbGetPaged(env, url);
+  return (rows || []).map(function (r) {
+    return {
+      date: String((r && r.date) || '').slice(0, 10),
+      stock: String((r && r.stock) || '').trim(),
+      pct: r && r.pct
+    };
+  }).filter(function (r) { return r.date && r.stock; });
+}
+
+/**
+ * 写 tvrb_leader_diverge（主键 date,stock；幂等覆盖）。
+ * §10：失败抛错，由调用方记日志（⛔ 不许静默）。
+ */
+export async function upsertLeaderDivergeRows(env, rows) {
+  if (!rows || rows.length === 0) return;
+  await upsertBucketed(env, 'tvrb_leader_diverge',
+    CONFIG.SUPABASE_URL + '/rest/v1/tvrb_leader_diverge?on_conflict=date,stock', rows);
+}

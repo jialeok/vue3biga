@@ -52,6 +52,10 @@ import { runLadderRecheck, fillAucFromNumcat } from './logic/ladder-recheck.js';
 import { runRange20Prefill } from './logic/range20-prefill.js';
 // [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐，彻底替代本机 08:00 定时任务。
 import { runDailyLegsHeal } from './logic/daily-legs-heal.js';
+// ★★ [LD-CLOUD 2026-11-13 用户口径] 第二十五条「总龙首次/二次分歧」云端预计算：
+//   「都是在云端运行，关电脑也能用，不要电脑本地的」⇒ 判定全部在 Worker 里算完落 tvrb_leader_diverge，
+//   前端只读一行（src/data/leader-diverge-days.js）。9:27（intraday）+ 16:00（close）各跑一次。
+import { runLeaderDivergeDays } from './logic/leader-diverge-days.js';
 // [BIDDING-CLOSE-CLOUD 2026-11-07] 竞价变化看板「收盘」列纯云端幂等落库：
 //   以前只能靠浏览器自动填表 + 人工点保存，漏点一天 ⇒ 次日「昨多板K线」断链。
 import { runBiddingCloseWrite } from './logic/bidding-close-write.js';
@@ -361,6 +365,33 @@ async function dispatch(point, env, logs, opts) {
       if (Array.isArray(result.logs)) result.logs.push(msg);
       console.error('[auto-fetch] ' + msg);
     }
+    // ★★ [LD-CLOUD 2026-11-13 用户口径] 第二十五条「总龙分歧」第二阶段：收盘腿齐全后重算一次。
+    //
+    //   为什么必须有两趟（而不是只在 9:27 跑）：
+    //     用户给第二十五条定的三种分歧形态里，D2 =「竞价高开、收盘是负数绿的」**只能收盘后判**。
+    //     9:27 那一趟 leg_phase='intraday'，今天还没有收盘腿 ⇒ 今天这种日子判不出来；
+    //     16:00 这一趟（runClose + runDailyLegsHeal 之后 stock_daily_pct 已有今天那根腿）再算一次，
+    //     leg_phase='close' 覆盖同一行 —— 这是【信息更全】的覆盖，不是改口径。
+    //   ⚠️ 必须放在 runDailyLegsHeal 之后（上面那个 try 块）⇒ 收盘涨幅真值已在库里。
+    //   ⛔ 失败不连坐：只记日志 + result 字段。
+    try {
+      const ldLogs = [];
+      const ldClose = await runLeaderDivergeDays(env, {
+        today: (opts && opts.date) || beijingToday(),
+        phase: 'close',
+        logs: ldLogs
+      });
+      result.leaderDivergeClose = ldClose;
+      result.leaderDivergeCloseWritten = ldClose.written || 0;
+      if (Array.isArray(result.logs)) result.logs.push.apply(result.logs, ldLogs.map(l => l));
+      console.log('[auto-fetch] [LD-CLOUD] 16:00 总龙分歧云端预计算（收盘腿）: ok=' + ldClose.ok +
+        ' written=' + ldClose.written + ' phase=' + ldClose.phase + ' error=' + (ldClose.error || '') +
+        ' 日志=' + JSON.stringify(ldLogs));
+    } catch (e) {
+      const msg = '[LD-CLOUD] ❌ 16:00 总龙分歧预计算异常（不影响收盘主流程）: ' + (e && e.message);
+      if (Array.isArray(result.logs)) result.logs.push(msg);
+      console.error('[auto-fetch] ' + msg);
+    }
     await persistRunResult(env, point, result);
     return result;
   }
@@ -437,6 +468,31 @@ async function dispatch(point, env, logs, opts) {
       aucLogs.push(msg);
       console.error('[auto-fetch] ' + msg);
     }
+    // ★★ [LD-CLOUD 2026-11-13 用户口径] 第二十五条「总龙分歧」云端预计算（9:27 这一趟）。
+    //
+    //   用户原话：「你帮我完成啊，不要留着，记住都是在云端运行，关电脑也能用，不要电脑本地的」。
+    //   为什么挂在 9:27 而不是新开 cron：免费账户 cron 上限 5 条、本 Worker 已用 4 条；而 9:27
+    //   本身就是「开盘前最后一个云端时点」，此时 20 日涨幅 /竞价涨幅 / 名单都已落库 ⇒ 数据齐。
+    //   ⚠️ 这一趟 leg_phase='intraday'：今天的收盘腿还不存在 ⇒ D2（高开低走收绿）对今天不可能成立，
+    //      D1（竞价低开）/ D3（占比塌陷）照常成立；16:00 close 那一趟会写 leg_phase='close' 的覆盖行。
+    //   ⛔ 失败不连坐：只记日志 + result 字段，不影响上面的量比兜底 / 区间自愈。
+    const ldLogs = [];
+    let ld27 = { ok: false, written: 0, skipped: '未执行', logs: ldLogs };
+    try {
+      ld27 = await runLeaderDivergeDays(env, {
+        today: date || beijingToday(),
+        phase: 'intraday',
+        logs: ldLogs
+      });
+      console.log('[auto-fetch] [LD-CLOUD] 9:27 总龙分歧云端预计算: ok=' + ld27.ok +
+        ' written=' + ld27.written + ' phase=' + ld27.phase + ' error=' + (ld27.error || ''));
+      console.log('[auto-fetch] [LD-CLOUD] 日志=' + JSON.stringify(ldLogs));
+    } catch (e) {
+      const msg = '[LD-CLOUD] ❌ 9:27 总龙分歧预计算异常（不影响本轮其它补写）: ' + ((e && e.message) || e);
+      ld27 = { ok: false, written: 0, skipped: '', error: String((e && e.message) || e), logs: ldLogs };
+      ldLogs.push(msg);
+      console.error('[auto-fetch] ' + msg);
+    }
     const result = {
       ok: snap.ok || range.ok || r20.ok,
       today: snap.today || (date || ''),
@@ -458,9 +514,14 @@ async function dispatch(point, env, logs, opts) {
       //   aucRatioHeal.skipped 含「0 次猫抓请求」表示 9:25/9:26 已补齐（正常日）。
       aucRatioHeal: auc27,
       aucRatioWritten: auc27.written || 0,
+      // ★★ [LD-CLOUD 2026-11-13] 第二十五条总龙分歧云端预计算的结构化验收字段：
+      //   leaderDivergeWritten>0 = 真的落了一行判定；leaderDiverge.ok=false 时看 logs 里的
+      //   'board-not-ready' / 'write-failed' / 'no-trade-dates' 定位（⛔ 不要只看 ok）。
+      leaderDiverge: ld27,
+      leaderDivergeWritten: ld27.written || 0,
       upstreamReady: upstream.ready === true,
       upstreamRows: upstream.rows === null || upstream.rows === undefined ? null : upstream.rows,
-      logs: (upstream.logs || []).concat(snap.logs || [], range.logs || [], r20.logs || [], aucLogs)
+      logs: (upstream.logs || []).concat(snap.logs || [], range.logs || [], r20.logs || [], aucLogs, ldLogs)
     };
     await persistRunResult(env, point, result);
     return result;
@@ -567,6 +628,24 @@ async function dispatch(point, env, logs, opts) {
     await persistRunResult(env, point, result20);
     return result20;
   }
+  if (point === 'divergedays') {
+    // ★★ [LD-CLOUD 2026-11-13] 手动入口：立即（重）算「总龙分歧」判定并落库。
+    //   参数：&date=YYYY-MM-DD 指定截止日（缺省北京今天）；&days=N 补最近 N 个展示日（默认 1，上限 20）；
+    //         &phase=close|intraday 指定口径阶段（缺省按时钟判：15:00 后 = close）。
+    //   ⛔ 不读上游、不烧猫抓额度：全部输入来自库内（watchlist / market_metrics / range20 / daily_pct）。
+    const ldLogs = [];
+    const r = await runLeaderDivergeDays(env, {
+      today: (opts && opts.date) || '',
+      days: (opts && opts.days) || 1,
+      phase: (opts && opts.phase) || '',
+      logs: ldLogs
+    });
+    const out = Object.assign({}, r, { logs: ldLogs });
+    console.log('[auto-fetch] divergedays 云端预计算: ok=' + r.ok + ' written=' + r.written +
+      ' phase=' + r.phase + ' dates=' + JSON.stringify(r.dates) + ' 日志=' + JSON.stringify(ldLogs));
+    await persistRunResult(env, point, out);
+    return out;
+  }
   if (point === 'ladder') {
     // [LADDER-FALLBACK 2026-11-06] 上游名单源 9:25 临时挂了之后，【只补正式名单】的恢复入口。
     // ⛔ 绝不重跑 runMorning：那样会在开盘后重算行情、再烧 1 次猫抓额度（用户硬口径：额度最贵）。
@@ -635,8 +714,8 @@ export default {
           return jsonResponse({ ok: false, error: '当前北京时间不在抓取时段（9:25~9:40=morning，15:00~16:30=close）' });
         }
       }
-      if (!['morning', 'close', 'extras', 'snapshot', 'ladder', 'ladder26', 'range20', 'jiwang'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|ladder|ladder26|range20|jiwang|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot / ladder / ladder26 / range20 可附 &date=YYYY-MM-DD；jiwang 立即回补昨收盘结果）' });
+      if (!['morning', 'close', 'extras', 'snapshot', 'ladder', 'ladder26', 'range20', 'divergedays', 'jiwang'].includes(point)) {
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|ladder|ladder26|range20|divergedays|jiwang|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot / ladder / ladder26 / range20 / divergedays 可附 &date=YYYY-MM-DD；divergedays 另可附 &days=N（补最近 N 个展示日，上限 20）与 &phase=close|intraday；jiwang 立即回补昨收盘结果）' });
       }
       // [JIWANG-SHOUGU-CLOUD 2026-11-08] 回补不受「当前时间必须在 9:25~16:30」限制，
       //   否则周末/夜间出事故时无法立即修复历史缺口。
@@ -651,7 +730,10 @@ export default {
       try {
         const result = await dispatch(point, env, [], {
           date: url.searchParams.get('date') || '',
-          includeToday: url.searchParams.get('today') === '1'
+          includeToday: url.searchParams.get('today') === '1',
+          // ★ [LD-CLOUD 2026-11-13] divergedays 专用：补几个展示日 / 指定口径阶段
+          days: Number(url.searchParams.get('days') || '0') || 0,
+          phase: url.searchParams.get('phase') || ''
         });
         return jsonResponse(result, result.ok ? 200 : 500);
       } catch (e) {

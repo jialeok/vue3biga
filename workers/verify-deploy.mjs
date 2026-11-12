@@ -69,7 +69,15 @@ const REQUIRED = [
   //   量比就要等到 16:30 收盘才回填，竞价期间用户看到的是一只没有量比的补位票（11-11 青岛食品）。
   //   ⚠️ 前者是 console.log 的字符串字面量，后者是持久化字段名（都不被 mangle）。
   '[AUC-RATIO-0927]',
-  'aucRatioWritten'
+  'aucRatioWritten',
+  // [LD-CLOUD 2026-11-13] 第二十五条「总龙分歧」云端预计算（9:27 intraday + 16:00 close）。
+  //   缺这些 ⇒ 前端读不到 tvrb_leader_diverge 的行，「二次分歧 ⇒ 等同退潮」永久不生效，
+  //   而且不会有任何报错（前端按 §11 静默退回旧口径）。
+  //   ⚠️ 'runLeaderDivergeDays' 是函数名（wrangler 不 mangle），'divergedays' 是分发点字符串，
+  //      'tvrb_leader_diverge' 是 upsert 里不被 mangle 的表名字面量 —— 都不靠注释。
+  'runLeaderDivergeDays',
+  'divergedays',
+  'tvrb_leader_diverge'
 ];
 
 async function cf(url, accept) {

@@ -48,7 +48,12 @@
 //   · 取数与 vol-ratio-trend.js 同源（都走 data/watchlist-helpers#getStockHistoryValue），
 //     ⛔ 绝不另起一套字段名（§6 单一真相）。
 
-import { getStockHistoryValue } from '../../data/watchlist-helpers.js';
+// ★★ [SHARE-SPLIT 2026-11-13] 本文件现在是**纯口径模块**（无任何 Data 层 import）：
+//   `getAuctionShare` / `getAuctionVolume` 已搬到 `auction-share-read.js`（那两个要读内存真相）。
+//   原因：第二十五条（总龙分歧）的判定要在 **Cloudflare Worker** 里跑（用户 2026-11-13 口径
+//   「都是在云端运行，关电脑也能用」），而只要本文件还挂着 `data/watchlist-helpers.js`，
+//   任何引它的纯逻辑模块就都被钉在浏览器上 ⇒ 云端只能另写一份口径（§6 红线）。
+//   ⛔ 公式 / 门槛 / 展示精度仍然只有这一份实现；`auction-share-read.js` 只负责取数。
 
 /** 龙头（今日龙一 / 昨日龙头）标准占比（%）—— 用户口径「前排龙一龙二标准的占比是 4%」
  *  ⚠️ [DRAGON-TIER 2026-10-06] 适用对象已收窄为【只认龙一】，⛔ 龙二不再享用它。 */
@@ -127,46 +132,10 @@ export function auctionShareZoneOf(share) {
   return 'weak';
 }
 
-/**
- * 取某只股票【展示日】的竞价占比（读内存真相，§6 与早盘竞价第一页的占比同源同公式）。
- *   当日竞价量   = auction_watchlist 该行的 volume
- *   昨日成交量   = 同一行的 yest_volume（云端）/ yestVolume（内存）
- * ⚠️ 两者都在【同一行】里，所以【不需要】走 getPreviousTradingDay —— 昨天是假期也无所谓，
- *    yest_volume 由抓取端按「上一交易日」填好（与早盘竞价第一页完全一致的口径）。
- * @param {string} date 展示日 YYYY-MM-DD
- * @param {string} stockName
- * @returns {number|null}
- */
-export function getAuctionShare(date, stockName) {
-  const name = String(stockName || '').trim();
-  if (!date || !name) return null;
-  return computeAuctionShare(
-    getStockHistoryValue(date, name, 'volume'),
-    getStockHistoryValue(date, name, 'yestVolume')
-  );
-}
-
-/**
- * 取某只股票【某日】的竞价量（原始数值）。
- *
- * 为什么要单独暴露它（§6 别在别处再读一遍 auction_watchlist）：
- *   「当日有没有参与竞价」= 退潮首日判据里【昨日停牌】那一条腿的判据 ——
- *   竞价量 0 / 取不到 ⇒ 那天它没有竞价（停牌；与 suspend.js 的『无竞价』同一语义）。
- *   而 getAuctionShare 在这两处都会返回 null（缺量 / 缺昨量除不出来），
- *   分不清「没竞价」与「昨量缺失」，所以必须把【量】本身单独取出来。
- *
- * §10：行不存在 / 空串 ⇒ null（= 未知），⛔ 绝不返回 0 去冒充「没竞价」；
- *   0 只可能来自行里真的写着 0（那才是「当日零竞价」这个事实）。
- *
- * @param {string} date 展示日 / 历史日 YYYY-MM-DD
- * @param {string} stockName
- * @returns {number|null} 竞价量（股/手，按库里的原值）；未知 ⇒ null
- */
-export function getAuctionVolume(date, stockName) {
-  const name = String(stockName || '').trim();
-  if (!date || !name) return null;
-  return getStockHistoryValue(date, name, 'volume');
-}
+// ★★ [SHARE-SPLIT 2026-11-13] `getAuctionShare` / `getAuctionVolume`（读内存真相那两个）
+//   已搬到 `./auction-share-read.js` —— 本文件保持【纯口径、零 Data 层依赖】，
+//   这样 Worker（云端）也能复用同一份占比公式 / 门槛（§6，见文件头的拆分说明）。
+//   ⛔ 别把取数搬回来：一搬回来，`leader-diverge.js` 就又只能在浏览器里跑了。
 
 /**
  * 字符串 / 数字 → 数值；空串 / null / 非数字一律 → null（§10 缺数据 ≠ 0）。

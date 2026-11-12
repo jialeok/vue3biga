@@ -37,6 +37,19 @@ on:
       # [BIDDING-CLOSE-CLOUD 2026-11-07] worker 16:00 收盘列落库直接 import 这份共享口径。
       #   ⛔ 不列进 paths ⇒ 改了取值口径却不会重新部署 Worker，线上继续用旧算法（又一例假绿）。
       - 'src/logic/bidding/snapshot-spec.js'
+      # ★ [LD-CLOUD 2026-11-13] 第二十五条「总龙分歧」云端预计算直接 import 下面这一整条纯函数链
+      #   （反解 → 竞价口径榜 → 判定）。⛔ 不列进 paths ⇒ 改了判定口径 Worker 不会重新部署，
+      #   线上继续用旧算法 —— 这正是本条注释上面说的「假绿」。新增 import 必须同步这里。
+      - 'src/logic/auction/auction-leg-pct.js'
+      - 'src/logic/auction/auction-leg-board.js'
+      - 'src/logic/auction/range20-board-consts.js'
+      - 'src/logic/auction/limit-up.js'
+      - 'src/logic/auction/range-pct-sort.js'
+      - 'src/logic/auction/presence-label.js'
+      - 'src/logic/topicvolratio/leader-diverge.js'
+      - 'src/logic/topicvolratio/tvrb-constants.js'
+      - 'src/logic/topicvolratio/range10-backup.js'
+      - 'src/logic/decision/auction-share.js'
       - 'workers/wrangler-bidding-auto-fetch.toml'
       - 'workers/verify-deploy.mjs'
       # [FAKE-GREEN 2026-11-06] 本文件自身也纳入触发：改了部署流水线却没重新部署，

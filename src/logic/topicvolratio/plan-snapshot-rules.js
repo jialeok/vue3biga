@@ -53,8 +53,17 @@
  *   ⚠️ 历史日不因 bump 重算（库内行情会漂移、会把复盘结论改写）—— 见
  *     `resolvePlanSnapshotFreshness` 的 `allowRulesInvalidation`。
  *   ★ 但【题材库内容变了】是例外：那一段指纹一变，历史日也重算（用户 11-12 口径）。
+ *
+ *   ── v6（2026-11-13）· [LD-CLOUD] 第二十五条「总龙首次/二次分歧」改由【云端】预计算 ──
+ *       用户原话：「你帮我完成啊，不要留着，记住都是在云端运行，关电脑也能用，不要电脑本地的」。
+ *       ① 判定不再由浏览器现算，而是 Worker 在 9:27 / 16:00 算完落 tvrb_leader_diverge，
+ *          前端只读一行注入 ebbCtx.leaderDiverge；
+ *       ② 二次分歧 ⇒ 按用户口径【等同首次退潮】⇒ 退潮结论（ebb / 提示板标题 /
+ *          「退潮不买」的范围）会因此变化；云端那一行没算出来 ⇒ 静默退回旧口径。
+ *       ⇒ 必须 bump（否则按 v5 定稿的存档会永久 hit，屏幕上永远没有「二次分歧 · 等同退潮」）。
+ *   ⚠️ 同上：历史日不因 bump 重算（见 resolvePlanSnapshotFreshness）。
  */
-export const TVRB_RULES_VERSION = 5;
+export const TVRB_RULES_VERSION = 6;
 
 /**
  * 输入完整性指纹版本。新增 / 删除「完整性判据」时 +1 ⇒ 所有存档按新判据重算一次。

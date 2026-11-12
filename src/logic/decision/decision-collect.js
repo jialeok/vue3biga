@@ -99,7 +99,11 @@ import {
 //   §10：取不到（缺数据 / 昨日成交量为 0）→ null ⇒ 规则层回落旧口径，绝不补 0。
 // [EBB-R8 2026-10-14] passesAuctionShare = 占比达标判据的唯一实现（§6）：
 //   首日判据要判「昨日占比是否达标」，门槛口径必须与今日那条腿同一个函数，⛔ 不手写 `share >= 门槛`。
-import { getAuctionShare, getAuctionVolume, passesAuctionShare } from './auction-share.js';
+// ★★ [SHARE-SPLIT 2026-11-13] 取数（读内存真相）那两只从 `auction-share-read.js` 拿，
+//   纯口径（passesAuctionShare）仍在 `auction-share.js` —— 后者已无 Data 层依赖，
+//   这样第二十五条的判定能在云端 Worker 里复用同一份表格（§6）。
+import { passesAuctionShare } from './auction-share.js';
+import { getAuctionShare, getAuctionVolume } from './auction-share-read.js';
 // [DRAGON-RANK-CHANGE 2026-10-09 用户口径] 龙标旁边的【名次变化】徽标（昨日龙几 → 今日龙几）。
 //   本文件只负责【把字段挂到每一行上】（与竞价量比同一处遍历收口，§6）；名次差怎么算、
 //   前一交易日的名次从哪来，全在 dragon-rank-change.js（纯映射）/ dragon-rank-change-store.js（取数）。

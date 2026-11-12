@@ -180,6 +180,8 @@ import {
 import { PRESENCE_WINDOW_10 } from '../logic/auction/presence-label.js';
 // ★ [DIVERGE-DAYS 2026-10-21] 总龙分歧判定落库：切换日期时读回即用（一次到位渲染分歧板，不用再等 K 线）
 import { readDivergeDay, upsertDivergeDay } from '../data/diverge-days.js';
+// ★★ [LD-CLOUD 2026-11-13] 第二十五条总龙分歧的**云端**判定（Worker 预计算，前端只读一行）
+import { readLeaderDivergeDay } from '../data/leader-diverge-days.js';
 // ★★ [DIVERGE-TODAY-AUC 2026-11-02] 竞价期「今天这只票的竞价涨幅」的唯一来源（腾讯实时行情直连）：
 //   `buildLeaderDivergence` 的展示日竞价涨幅原本只从 K 线 open 换算，而【今天这根 bar 收盘后才成型】
 //   ⇒ 9:26 恒拿不到 ⇒ canJudge=false ⇒ 分歧买点【从来不可能在竞价期生效】，门控只能挂占位干等。
@@ -855,6 +857,124 @@ export function useTopicVolRatioBoard() {
     _divergeWatchdog.set(d, timer);
   }
 
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  // ★★ [LD-CLOUD 2026-11-13 用户口径 · 原话] 第二十五条「总龙首次 / 二次分歧」—— **云端算，前端只读**
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  //   「你帮我完成啊，不要留着，记住都是在云端运行，关电脑也能用，不要电脑本地的，
+  //     我之前强调好几次了，把没完成的完成」
+  //
+  // ── 这条链与（上面那条）`ensureLeaderDivergence` 的分工，⛔ 别混 ──────────────────
+  //   · `ensureLeaderDivergence`：**浏览器**用总龙 K 线算「首次分歧日」→ 落 `tvrb_diverge_days`
+  //     → 给买点侧的「分歧板」用（第二十五条的买点侧展示）；
+  //   · 本函数：**云端 Worker** 用四张库表算完整判定（首次 + 二次 + 霸榜天数 + 事件计数）
+  //     → 落 `tvrb_leader_diverge` → 本函数只**读一行** → 注入 `ebbCtx.leaderDiverge`
+  //     → `tvrb-ebb.js#detectEbbDay` 据此把「二次分歧」按用户口径**等同首次退潮**。
+  //
+  // ⛔ 为什么不在这里重算：判定要回看近 20 个交易日【每天】的竞价口径全市场榜（反解 + 白名单 +
+  //    只主板 + 腿数门槛）。放浏览器 = 没开页面就没有判定，而用户在 11-13 明确否掉了这种形态。
+  // ⛔ 为什么不在模板 / computed 里读：会让每次重渲染都发请求（§32），而且 computed 必须无副作用。
+  const leaderDivergeDays = ref(null);
+  const leaderDivergeDate = ref('');
+  const leaderDivergeStock = ref('');
+  /** 单飞：date -> Promise */
+  const _lddInflight = new Map();
+  /** 退避重试：data 晚到（前端 9:26 打开、Worker 9:27 才写）时自动补一次，4 次封顶 */
+  const _lddRetry = new Map();
+  const LDD_RETRY_DELAYS = [6000, 18000, 45000, 90000];
+
+  function _scheduleLddRetry(d, reason) {
+    const st = _lddRetry.get(d) || { n: 0, timer: 0 };
+    if (st.n >= LDD_RETRY_DELAYS.length) return;
+    const delay = LDD_RETRY_DELAYS[st.n];
+    if (st.timer) clearTimeout(st.timer);
+    st.timer = setTimeout(function() {
+      _lddRetry.set(d, { n: st.n + 1, timer: 0 });
+      ensureLeaderDivergeDays(d);
+    }, delay);
+    _lddRetry.set(d, st);
+    _dbgLog('[LD-DAYS] ' + d + ' 云端判定未到（' + reason + '），' + (delay / 1000) + 's 后第 ' + (st.n + 1) + ' 次重试');
+  }
+
+  /**
+   * 确保某日「总龙首次/二次分歧」的**云端判定**已读回（幂等 / 单飞 / 退避重试）。
+   *
+   * ⚠️ 三条纪律：
+   *   ① 总龙一的身份取自 `ensureRange20Leaders`（与退潮 / 分歧判定同一份事实、同一份缓存，§6）；
+   *   ② 云端没有这一格 ⇒ 保持 null ⇒ 退潮判定与加这张表之前**逐字相同**（§11 零行为变化）；
+   *   ③ 读失败 ⇒ 留痕 + 退回旧口径，⛔ 绝不拿「读不到」去改结论（§10）。
+   *
+   * @param {string} d 展示日
+   * @returns {Promise<void>}
+   */
+  function ensureLeaderDivergeDays(d) {
+    if (!d) return Promise.resolve();
+    // 已有同一格的结论 ⇒ 短路（换日期 / 云端更正会写新的一格）
+    if (leaderDivergeDate.value === d && leaderDivergeDays.value) return Promise.resolve();
+    const fly = _lddInflight.get(d);
+    if (fly) return fly;
+    const p = (async function() {
+      const leaders = await ensureRange20Leaders(d);
+      if (currentDate.value !== d) return;                 // 竞态：期间切了日期 ⇒ 丢弃
+      const l0 = Array.isArray(leaders) ? leaders[0] : null;
+      const stock = String((l0 && l0.stock) || '').trim();
+      if (!stock) {
+        _scheduleLddRetry(d, '20日涨幅前五未发布（拿不到总龙一身份）');
+        return;
+      }
+      let row = null;
+      try {
+        row = await readLeaderDivergeDay(d, stock);
+      } catch (e) {
+        _dbgLog('[LD-DAYS] ' + d + ' 云端判定读取失败（第二十五条本次按旧口径）: ' + (e && e.message));
+        return;
+      }
+      if (currentDate.value !== d) return;
+      if (!row) {
+        _dbgLog('[LD-DAYS] ' + d + ' 总龙=' + stock +
+          ' 云端还没有判定行（Worker 未跑 / 表未建）⇒ 第二十五条本次不生效，退潮规则按旧口径（§11）');
+        _scheduleLddRetry(d, '云端判定行尚未写入');
+        return;
+      }
+      leaderDivergeDays.value = row;
+      leaderDivergeDate.value = d;
+      leaderDivergeStock.value = stock;
+      _dbgLog('[LD-DAYS] ' + d + ' 云端判定读回: 总龙=' + stock + ' kind=' + row.kind +
+        ' 霸榜=' + (row.dragonDays === null ? '未知' : row.dragonDays) + '天' +
+        ' 首次=' + (row.firstDate || '—') + ' 二次=' + (row.secondDate || '—') +
+        ' 阶段=' + row.legPhase);
+    })().catch(function(e) {
+      // §10：失败必须可见，但⛔ 绝不连坐看板（退潮规则退回旧口径即可）
+      _dbgLog('[LD-DAYS] ' + d + ' 云端判定链路异常（第二十五条本次按旧口径）: ' + (e && e.message || e));
+    }).finally(function() {
+      if (_lddInflight.get(d) === p) _lddInflight.delete(d);
+    });
+    _lddInflight.set(d, p);
+    return p;
+  }
+
+  /**
+   * 把云端判定挂到 `ebbCtx` 上（唯一注入点，§6）。
+   *
+   * ⚠️ 三重核对，少一条就等于「拿 A 日的判定 / 别人的判定去改今天」：
+   *   ① 判定的展示日 == d；
+   *   ② 判定的股票 == 采集层认定的市场总龙一（**同名才认**）；
+   *   ③ 任一条不满足 ⇒ 原对象原样返回（引用不变 ⇒ 下游 computed 不白重算，§19）。
+   *
+   * @param {object|null} ctx collectDecisionTopics 出口的 ebbCtx
+   * @param {string} d 展示日
+   * @returns {object|null}
+   */
+  function _ebbCtxWithLeaderDiverge(ctx, d) {
+    const base = ctx || null;
+    if (!base) return null;
+    if (leaderDivergeDate.value !== d) return base;
+    const row = leaderDivergeDays.value;
+    if (!row) return base;
+    const leaderName = String((base.leader && base.leader.name) || '').trim();
+    if (!leaderName || leaderName !== String(row.stock || '').trim()) return base;
+    return Object.assign({}, base, { leaderDiverge: row });
+  }
+
   /**
    * 确保某日的「总龙首次分歧」判定已就绪（幂等 / 单飞 / 结论缓存）。
    * ⛔ 判不出（窗口无首板 / K 线缺）⇒ verdict.canJudge=false ⇒ plan 的 divergeActive 恒 false
@@ -1180,6 +1300,10 @@ export function useTopicVolRatioBoard() {
       // ★ [DIVERGE 2026-10-20] 总龙首次分歧判定预热（内部自带 ensureRange20Leaders 单飞，
       //   不会重复请求；K 线 = 同花顺免费通道 0 额度）。fire-and-forget，失败如实降级。
       ensureLeaderDivergence(d);
+      // ★★ [LD-CLOUD 2026-11-13] 第二十五条「首次 / 二次分歧」的**云端**判定（只读一行，不重算）：
+      //   与上面那条【同帧起跑】——它的输入全在库里，不依赖 K 线；Worker 9:27 写完就能读到。
+      //   ⛔ 失败只留痕（退潮规则退回旧口径），绝不阻塞看板。
+      void ensureLeaderDivergeDays(d);
       // ★★ [DIVERGE-GUESS 2026-10-24] 猜测通道与上面两条【同帧起跑】（不等 rec 就绪）：
       //   它是「今天要不要先挂占位」的唯一输入，越早起跑越接近用户要的「秒显示」。
       void ensureDivergeGuess(d);
@@ -1660,7 +1784,11 @@ export function useTopicVolRatioBoard() {
         sellMemberStats: rec.sellMemberStats || null,
         // ★ [EBB 2026-10-13] 退潮首日的【事实】（市场总龙 / 今日停牌 / 今日占比 / 同题材龙位成员 /
         //   市场总龙二）；ready=false ⇒ 不是退潮日（⛔ 不猜）
-        ebbCtx: rec.ebbCtx || null,
+        // ★★ [LD-CLOUD 2026-11-13 用户口径] 第二十五条「总龙首次/二次分歧」的云端判定挂在这里：
+        //   `tvrb-ebb.js#detectEbbDay` 读到 `leaderDiverge.kind==='second' && qualified!==false`
+        //   ⇒ 按用户口径「二次分歧等同于首次退潮」直接判成退潮日，标题写「羊字辈二次分歧 · 等同退潮」。
+        //   注入前必须过三重核对（日期 / 同名总龙 / 云端有没有这一行），见 _ebbCtxWithLeaderDiverge。
+        ebbCtx: _ebbCtxWithLeaderDiverge(rec.ebbCtx, d),
         // ★ [EBB-R8 2026-10-14] 上一交易日【落库的退潮判定】那一行（tvrb_ebb_days）
         //   —— 昨日闸门的输入；缺省 ⇒ 规则层退化为「用昨日行情行推断」，再取不到按可触发处理。
         prevEbbDay: prevEbbDay.value,
