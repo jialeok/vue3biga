@@ -169,10 +169,21 @@ function _prevBoughtNames(prevDate) {
 function _prevDayTagMap(prevDate) {
   if (!prevDate) return null;
   try {
-    const tags = useAuctionTagStore().tags || {};
+    const st = useAuctionTagStore();
+    const tags = st.tags || {};
     const dayTags = tags[prevDate];
-    if (dayTags === undefined) return {};            // 这一天确实没有任何标签（有效空）
-    return (dayTags && typeof dayTags === 'object') ? dayTags : null;
+    if (dayTags !== undefined) {
+      return (dayTags && typeof dayTags === 'object') ? dayTags : null;
+    }
+    // ★★ [SELL-EMPTY-GUARD 2026-11-12] 🔴 §10：这一格【没有值】有两种完全不同的含义 ——
+    //   ① 云端标签库已经读回来了（`_cloudLoaded === true`）⇒ 这一天【确实】一条标签都没有 = 有效空；
+    //   ② 标签库还没读回来 / 那次读失败了 ⇒ **未知**，⛔ 绝不能折成「昨天一只都没打标签」。
+    //   报障（用户原话）：「长按买入 → 切到今天卖点列表，连卖点的票都没有」——
+    //   事故链就是这里把 ② 当成 ① ⇒ 卖点成员 0 只 ⇒ 整段卖点空，而用户明明打过标签。
+    //   ⚠️ `_cloudLoaded` 由 auctionTagStore#loadTagsFromCloud 置位；缺省（老 store）按未知处理，
+    //     §11：宁可如实说「未知」，也不给一个「看起来像真的」的空结论。
+    if (st._cloudLoaded === true) return {};
+    return null;
   } catch (e) {
     return null;                                      // 标签库未加载 = 未知（§10）
   }

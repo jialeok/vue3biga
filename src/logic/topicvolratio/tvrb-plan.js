@@ -7,8 +7,8 @@
 //   opts.dataGateBlocked 为真时，必须走 _clearBuySideForDataGate 把买点侧清空；
 //   ⛔ 只在视图层 v-if 挡不住未来新增的买点通道。
 
-import { TVRB_MIN_COUNT, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_TOP_N, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TVRB_CASH_ALERT_NONE, NEW_DRAGON_TAG, NEW_DRAGON_LOOKBACK_DAYS } from './tvrb-constants.js';
-import { _normTopic, _sameTopicLoose, _num, _pct2, _streakWord, _secondTopicLeaderInTop10, _range10RankMapOf, _closeRankOf, _rankTopEntries, _topicTop10Hits, _windowTextOf, _todayRankPhrase } from './tvrb-utils.js';
+import { TVRB_MIN_COUNT, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_TOP_N, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TVRB_CASH_ALERT_NONE, NEW_DRAGON_TAG, NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N } from './tvrb-constants.js';
+import { _normTopic, _sameTopicLoose, _num, _pct2, _streakWord, _secondTopicLeaderInTop10, _range10RankMapOf, _closeRankOf, _rankTopEntries, _topicTop10Hits, _windowTextOf, _todayRankPhrase, _rankLabelOf } from './tvrb-utils.js';
 import { detectEbbDay, secondEbbTopicOfPrevDay, buildEbbDayRecord } from './tvrb-ebb.js';
 import { _applyPrevEbbSecondNoBuy, _applyLeaderLimitDownNoBuy, _applyEbbSellRules, _buildEbbPicksBlock, _applyEbbBuyRules, _applyCashAlertBuyRules, _applyDivergeNoBuyRules, _buildDivergeBuyBlock, _buildDivergeCashAlert, _buildWeakHuddleBlock, _buildLeaderLimitDownHuddleBlock, _buildCatchUpBlock, resolveTvrbTier, avgVolRatioOf, formatAvgVolRatio, buildCashAlert, _dragonCandidates, _buildBlock, _buildNewDragonBlock, _withAuctionLegPct, _buildRange10BackupBlock } from './tvrb-blocks.js';
 
@@ -369,7 +369,96 @@ export function pickNewDragon(top5, everInTop5, info) {
         + _todayRankPhrase(rank20) + ' + 与老龙一【不同题材】⇒ 新龙（老龙→新龙交接）' });
     pick = c;
   }
-  return { pick: pick, trail: trail, oldTopic: lt };
+
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  // ★★ [NEW-DRAGON-CERTIFY 2026-11-12 用户口径] 【同题材认证龙】—— 第二十八条的收紧前提。
+  //
+  // 用户原话（11-12，原话尽量保留）：
+  //   「寻找新龙的方法，这个没错，但是还要添加下前提：**前五没有同题材的票才可以**，
+  //     也就是同题材的票如果排在它前面，那么买点侧这个就会被同题材的票取代。
+  //     像今天 11 月 12 日，买点侧判断的是光洋股份进入的理由也是第 28 条规则，但是同题材的
+  //     襄阳轴承竞价口径排名第三，所以应该选襄阳轴承，而不是选光洋股份。因为这两只同题材的
+  //     同时出现在 20 日涨幅前五，所以只买最靠前的那只襄阳轴承（工业 4.0）。」
+  //   「光洋股份首次进前五，判断出题材，是工业 4.0，但还要看工业 4.0 是否有股票也进去前五
+  //     （可能工业 4.0 排前五的不是第一次），像襄阳轴承同样是工业 4.0（它已经二次进入了），
+  //     竞价口径排名前三，对比下选择靠前的，当然选它，而不是光洋股份，
+  //     **光洋股份只做为判断条件**；当然如果没有同题材进去前五……那只有选它光洋股份作为新龙。」
+  //   「襄阳轴承是叫【认证龙】。因为出现好几次在 20 日涨幅前五，靠同题材的光洋股份去认证它。」
+  //   「（我说的同题材和主线题材不同的题材，这个要注意，不要搞混了）」
+  //
+  // ⇒ 规则（在原有四道闸之后再加一道「同题材择优」）：
+  //   ① 候选 X = 上面挑出的「首次进入前五」的那只 —— 它的作用只是【证明这个题材是新的】；
+  //   ② 到【前五】(rank20 ≤ 5) 里找**同题材**的其它票（同题材 = 细分题材，⛔ 不做大类归一，
+  //      ⛔ 与退潮判定的「主线题材 ≥3 只」完全是两件事 —— 用户特意点明了这条）；
+  //   ③ 有 ⇒ 取竞价口径【最靠前】的那只当买点（= 认证龙；X 退为「认证依据」，⛔ 不再单独买）；
+  //      没有 ⇒ 仍然选 X（= 10-22 冰山冷热那次：该题材只有它一只进前五）。
+  //   ④ 认证龙照样要过「可买」三道闸（非竞价一字 / 非停牌 / 主板）——
+  //      买不进就退到下一个同题材票，全买不进才退回 X（⛔ 绝不因为「它是认证龙」就破例）。
+  //   ⛔ 与其它规则不冲突：最终 pick 仍然进 `out.buyNames` ⇒ 别的买点块不会重复选它（§6 同一套去重）。
+  let pickKind = pick ? 'new' : '';
+  let certifier = null;
+  if (pick) {
+    const xName = String(pick.name).trim();
+    // ⚠️ 同题材比较【不做大类归一】：`_normTopic(raw)` 只清洗，`_sameTopicLoose(..., 无 coreRes)`
+    //    按细分题材（含分段串认亲）比 —— 正是用户强调的「同题材 ≠ 主线题材」。
+    const xTopic = _normTopic(pick.topic);
+    if (xTopic) {
+      const peers = [];
+      for (let j = 0; j < top.length; j++) {
+        const c = top[j];
+        if (!c || !c.name) continue;
+        const nm = String(c.name).trim();
+        if (nm === xName) continue;
+        if (ln && nm === ln) continue;                 // 老龙一永远不算
+        const rk = Number(c.rank20) || (j + 1);
+        if (rk > NEW_DRAGON_CERTIFY_TOP_N) continue;   // 用户口径：只看【前五】（⛔ 不是前八）
+        if (c.mainBoard === false) continue;           // 非主板买不了（与上面同一条尺子）
+        if (c.isYizi) continue;                        // 竞价一字买不进
+        if (c.suspended) continue;                     // 停牌买不进
+        if (!_sameTopicLoose(c.topic, xTopic)) continue;   // ⛔ 不做大类归一
+        peers.push({ c: c, rank20: rk });
+      }
+      if (peers.length > 0) {
+        peers.sort(function(a, b) { return a.rank20 - b.rank20; });   // 竞价口径最靠前优先
+        const best = peers[0];
+        const bestName = String(best.c.name).trim();
+        pickKind = 'certify';
+        certifier = {
+          name: xName,
+          topic: xTopic,
+          rank20: Number(pick.rank20) || 0,
+          // 认证龙自己是「第几次进前五」—— 说明文案要用它写清「它已经进过前五」
+          everBefore: ever.has(bestName)
+        };
+        // trail 改写：X 从「已选中」降为「认证依据」，最终 pick 换成认证龙
+        trail.forEach(function(t) {
+          if (t.name === xName) {
+            t.picked = false;
+            t.reason = '该题材【首次进入前五】的那只是它 ⇒ 用来「认证」这个新题材；' +
+              '但同题材的【' + bestName + '】（' + _rankLabelOf(best.rank20) +
+              '）更靠前 ⇒ 按用户口径只买最靠前的那一只，本只不再单独买';
+          } else if (t.name === bestName) {
+            t.picked = true;
+            t.reason = '同题材【' + xTopic + '】里有首次进前五的【' + xName + '】（' +
+              _rankLabelOf(certifier.rank20) + '）⇒ 该题材是新题材，本只' +
+              (certifier.everBefore ? '此前已进过前五（≥2 次）' : '也已在前五') +
+              '且竞价口径更靠前（' + _rankLabelOf(best.rank20) + '）⇒ 作【认证龙】买入';
+          }
+        });
+        // 认证龙若本来不在 trail 末尾（rank 更靠前 ⇒ 循环早就把后面标成「已选出更靠前的新龙」），
+        // 那些「已选出 X」的说明现在指向了错的票 ⇒ 统一改成指向认证龙。
+        trail.forEach(function(t) {
+          if (t.picked || t.name === xName) return;
+          if (t.reason && t.reason.indexOf('前面已选出更靠前的新龙【' + xName + '】') === 0) {
+            t.reason = '前面已选出更靠前的新龙【' + bestName + '】' +
+              '（同题材认证龙，竞价口径更靠前）⇒ 切换日只买一只新龙，本只不再考虑';
+          }
+        });
+        pick = best.c;
+      }
+    }
+  }
+  return { pick: pick, trail: trail, oldTopic: lt, pickKind: pickKind, certifier: certifier };
 }
 
 /**
@@ -1110,10 +1199,18 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         : ''
     );
     if (out.newDragon) out.buy.newDragon = out.newDragon;
+    // ★★ [NEW-DRAGON-CERTIFY 2026-11-12] 认证龙时把「谁认证的谁」写进看板级说明（用户要「标清楚」）
+    const _cert = ndResult && ndResult.certifier;
     out.notes.push('⚠️【第二十八条 · 切换日】' + (out.switchDay.leaderName || '老龙一') + '（' +
       (out.switchDay.topic || '—') + '）二次确认退潮（' + out.switchDay.ebbDate +
-      '）后第 2 个交易日 ⇒ 老周期结束、找新龙：买点侧 = 【新龙】' + ndName + '（' + (ndResult.pick.topic || '—') +
-      '）+ 常规收紧后的【一只】（只选一个题材、只取一只）。');
+      '）后第 2 个交易日 ⇒ 老周期结束、找新龙：买点侧 = 【' +
+      (_cert ? '认证龙' : '新龙') + '】' + ndName + '（' + (ndResult.pick.topic || '—') + '）' +
+      (_cert
+        ? ('〔同题材【' + (_cert.topic || '—') + '】里首次进前五的是【' + _cert.name + '】（' +
+           (_rankLabelOf(_cert.rank20) || '—') + '），那只只作判断条件；前五里同题材最靠前的是本只 ⇒ ' +
+           '按口径只买最靠前的那一只〕')
+        : '') +
+      ' + 常规收紧后的【一只】（只选一个题材、只取一只）。');
   } else if (out.switchDay) {
     // §10：切换日到了但判不出新龙 ⇒ 必须说清原因，并明确「回落常规（但仍只取排名第一的那一个题材）」
     // ★ [CYCLE 2026-10-22] 收紧不因「判不出新龙」而取消：用户原话「10月22日……常规只选排名第一的
@@ -1700,6 +1797,10 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   // ★ 卖点段 —— decision-rules 的【同一份实现】；⛔ 候选池不依赖本看板选股（= 昨日打过买标签的票），
   //   只有「今天又进买点」这一条换成【本看板自己的名单】（本看板内部自洽）。
   const sellRows = o.sellRows || [];
+  // ★★ [SELL-EMPTY-GUARD 2026-11-12] 卖点成员来源统计（auto/buy/hold/excludedSell/planKnown/tagsKnown）——
+  //   只给 UI 判「空态该说什么」（「没有票」vs「标签库没读回，可能缺票」，§10）。
+  //   ⛔ 不参与任何选股 / 卖出判定。
+  if (o.sellMemberStats) out.sellMemberStats = o.sellMemberStats;
   if (sellRows.length > 0 && list.length > 0) {
     out.sell = buildSellPlan(sellRows, list, dragonMap, ctx.prevDragonNames || null, out.buyNames);
     // ★ [SELL-AVG-VR 2026-10-11 用户报障] 卖点侧题材标题行也要显示【平均竞价量比】——

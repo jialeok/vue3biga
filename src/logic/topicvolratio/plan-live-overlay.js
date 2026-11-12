@@ -177,7 +177,21 @@ export function overlayLiveOnFrozen(frozen, live, decorateBuy) {
   if (!live) return frozen;
   const out = cloneShape(frozen);
   // ① 卖点段：恒取实时（含「用户取消了标签 ⇒ 该行应当消失」）
-  if (Array.isArray(live.sell)) out.sell = live.sell;
+  //
+  // 🔴 [SELL-EMPTY-GUARD 2026-11-12] §10 例外：**实时那份明确「没算出来」时不许拿空抹掉冻结段**。
+  //   报障（用户原话）：「长按买入 → 切到今天卖点列表，连卖点的票都没有」。
+  //   事故链：`_empty()`（未就绪）返回的 plan 里 `sell: []`，它是**形状占位**、不是「今天没有卖点」；
+  //   若原样覆盖，冻结段里本来有票也会被抹成空 —— 这正是「读失败被当成空」的第 11 条红线。
+  //   ⇒ 判据：`live.ready === false` 且 realtime sell 为空 ⇒ 保留 frozen.sell（有票时才有意义；
+  //     frozen 也空就无所谓，照常取实时，保持「取消标签 ⇒ 该行消失」的既有语义）。
+  const liveSell = Array.isArray(live.sell) ? live.sell : null;
+  const liveNotReady = live.ready === false;
+  const frozenHasSell = Array.isArray(out.sell) && out.sell.length > 0;
+  if (liveSell && !(liveNotReady && liveSell.length === 0 && frozenHasSell)) {
+    out.sell = liveSell;
+  }
+  // ①-b 卖点成员来源统计：跟着实时那份走（空态文案要据此区分「没有票」/「标签库没读回」）
+  if (live.sellMemberStats) out.sellMemberStats = live.sellMemberStats;
   // ② 买点行分笔：单调升级
   if (typeof decorateBuy === 'function') {
     eachBuyBlock(out, function (b) {

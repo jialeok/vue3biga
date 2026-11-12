@@ -424,7 +424,7 @@
             v-if="sellGroups.length === 0"
             class="tvrb-empty tvrb-selectable"
           >
-            昨日没有打「买」标签的股票，无需卖出
+            {{ sellEmptyText }}
           </div>
         </div>
 
@@ -469,6 +469,8 @@ const {
   reasonText,
   blocks,
   sellGroups,
+  // ★ [SELL-EMPTY-GUARD 2026-11-12] 卖点空态文案：区分「真的没票」/「标签库没读回」/「昨日存档未知」
+  sellEmptyText,
   notes,
   cashAlert,
   ebb,

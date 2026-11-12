@@ -150,3 +150,38 @@ describe('静态锁 — 买点侧绝不被卖点侧的新来源污染', () => {
     expect(src).toContain("import { buildSellMembers } from '../topicvolratio/sell-members.js';");
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// [SELL-EMPTY-GUARD 2026-11-12] 「标签库未知」≠「这一天没有标签」。
+//
+// 报障（用户原话）：「长按买入 → 切到今天卖点列表，连卖点的票都没有」。
+// 事故链：标签库那次没读回来 ⇒ `_prevDayTagMap` 以前返回 `{}` ⇒ 被当成「昨天一只都没打标签」
+//   ⇒ 成员 0 只 ⇒ 整段卖点空，而且界面「看不出任何异常」（§10 最坏的那种静默空）。
+// ⇒ 现在 null = 未知，必须能从 stats 上分辨出来（`tagsKnown === false`）。
+// ══════════════════════════════════════════════════════════════════════════════════════════
+describe('tvrb · [SELL-EMPTY-GUARD] 标签库未知 vs 这一天没有标签', () => {
+  it('prevDayTags = null（标签库没读回）⇒ tagsKnown=false，⛔ 不许当成「没有标签」', () => {
+    const r = buildSellMembers(null, ['A票']);
+    expect(r.stats.tagsKnown).toBe(false);
+    expect(r.stats.planKnown).toBe(true);
+    // 仍然用「昨日买点侧」兜住（这就是自动继承的价值：标签库挂了也不至于整段空）
+    expect(byName(r.members).get('A票')).toBe(SELL_SOURCE_AUTO);
+  });
+
+  it('prevDayTags = undefined（老调用方不传）⇒ 同样按未知处理', () => {
+    expect(buildSellMembers(undefined, null).stats.tagsKnown).toBe(false);
+  });
+
+  it('prevDayTags = {}（确实读过、这一天没有标签）⇒ tagsKnown=true', () => {
+    const r = buildSellMembers({}, ['A票']);
+    expect(r.stats.tagsKnown).toBe(true);
+    expect(r.stats.total).toBe(1);
+  });
+
+  it('标签库未知 + 昨日买点侧也未知 ⇒ 0 只，但两个「未知」都如实上报（不冒充结论）', () => {
+    const r = buildSellMembers(null, null);
+    expect(r.stats.total).toBe(0);
+    expect(r.stats.tagsKnown).toBe(false);
+    expect(r.stats.planKnown).toBe(false);
+  });
+});

@@ -20,8 +20,19 @@
 // §6 单一真相：本模块是「规则输入有没有变」的唯一判据，⛔ 别在 composable 里另写比较。
 // §10：指纹算不出来 / 核心词没加载完 ⇒ 一律判「存档有效」，⛔ 绝不拿中间态当「规则变了」。
 
-/** 规则代码版本。改了题材分组 / 选股规则的人必须手动 +1 ⇒ 所有历史存档按新规则重算一次。 */
-export const TVRB_RULES_VERSION = 1;
+/**
+ * 规则代码版本。改了题材分组 / 选股规则的人必须手动 +1 ⇒ 存档判过期、按新规则重算一次。
+ *
+ * 版本史：
+ *   v1 = 初版（核心词表内容 hash）。
+ *   v2 = ★★ [NEW-DRAGON-CERTIFY 2026-11-12 用户口径] 第二十八条新增【同题材择优】：
+ *        同题材在前五有两只及以上时，只买竞价口径最靠前的那只（认证龙），
+ *        首次进前五的那只只作判断条件。**选股结论会变**（11-12：光洋股份 → 襄阳轴承）
+ *        ⇒ 必须 bump，否则那一份按 v1 规则定稿的存档会永久 hit，屏幕上一直是错的那只。
+ *   ⚠️ 历史日不因 bump 重算（库内行情会漂移、会把复盘结论改写）—— 见
+ *     `resolvePlanSnapshotFreshness` 的 `allowRulesInvalidation`。
+ */
+export const TVRB_RULES_VERSION = 2;
 
 /**
  * 输入完整性指纹版本。新增 / 删除「完整性判据」时 +1 ⇒ 所有存档按新判据重算一次。
@@ -137,7 +148,15 @@ export function resolvePlanSnapshotFreshness(snap, opts) {
   if (!cur) return 'hit';
   const old = String(s.rulesSig || '').trim();
   if (!old) return 'stale';
-  if (old !== cur) return 'stale';
+  if (old !== cur) {
+    // ★★ [RULES-BUMP-GUARD 2026-11-12] 规则升级（bump `TVRB_RULES_VERSION` / 改核心词）时：
+    //   · 当日（还在用它做决策的那一天）⇒ 判 stale，按新规则重算并修订存档（revision +1）；
+    //   · 历史日 ⇒ 判 hit，**保持定稿**。理由：历史日的库内行情会被后续 worker / 收盘覆盖，
+    //     拿它重算会把「当天 9:25 那份结论」改写成另一份（11-10 实证过）⇒ 复盘失真。
+    //     这里刻意把「改规则」和「改历史」解耦：新规则服务今天与以后，历史照样冻结。
+    if (o.allowRulesInvalidation === false) return 'hit';
+    return 'stale';
+  }
   // ── 规则没变 ⇒ 再核对「输入完整度」（④⑤⑥）
   //  ⚠️ 库里还没有 inputs_sig 列（降级模式）⇒ 这一位不支持，⛔ 不许把「没有该字段」当过期，
   //     否则每次打开页面都会判 stale 重算一遍（而降级模式下永远补不上这一列）。

@@ -239,3 +239,50 @@ describe('静态锁 — 接线不许被改回去', () => {
     expect(src).not.toContain('plan: displayPlan.value || plan');
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// [SELL-EMPTY-GUARD 2026-11-12] 实时那份「没算出来」时，⛔ 不许拿空把冻结卖点抹掉。
+//
+// §10 第 11 条红线：读取失败 ≠ 空数据 ≠ 0。
+// `_empty()`（未就绪）返回的 plan 里 `sell: []` 只是【形状占位】，不是「今天没有卖点」；
+// 原样覆盖 ⇒ 冻结段里本来有票也会被抹成空（用户看到的就是「连卖点的票都没有」）。
+// ══════════════════════════════════════════════════════════════════════════════════════════
+describe('tvrb · [SELL-EMPTY-GUARD] 未就绪的实时 plan 不许抹掉冻结卖点', () => {
+  function frozenWithSell() {
+    return { ready: true, sell: [{ groupKey: 'g1', topic: '工业4.0', items: [{ name: '光洋股份' }] }], blocks: [] };
+  }
+
+  it('live.ready=false 且 live.sell=[] ⇒ 保留冻结卖点（§10）', () => {
+    const out = overlayLiveOnFrozen(frozenWithSell(), { ready: false, sell: [], blocks: [] }, null);
+    expect(out.sell.length).toBe(1);
+    expect(out.sell[0].items[0].name).toBe('光洋股份');
+  });
+
+  it('live.ready=true 且 live.sell=[] ⇒ 照旧取实时（用户取消标签后该行必须消失）', () => {
+    const out = overlayLiveOnFrozen(frozenWithSell(), { ready: true, sell: [], blocks: [] }, null);
+    expect(out.sell.length).toBe(0);
+  });
+
+  it('live.ready=false 但实时确实算出了卖点 ⇒ 取实时（不是「未就绪就一定保留」）', () => {
+    const live = { ready: false, sell: [{ groupKey: 'g2', topic: '算力', items: [{ name: '某票' }] }], blocks: [] };
+    const out = overlayLiveOnFrozen(frozenWithSell(), live, null);
+    expect(out.sell[0].topic).toBe('算力');
+  });
+
+  it('冻结段本来就是空 ⇒ 未就绪时照常取实时（空对空，不制造假数据）', () => {
+    const out = overlayLiveOnFrozen({ ready: true, sell: [], blocks: [] }, { ready: false, sell: [], blocks: [] }, null);
+    expect(out.sell.length).toBe(0);
+  });
+
+  it('实时那份的卖点来源统计要跟着合流结果走（空态文案据此区分「没票」/「没读回」）', () => {
+    const live = { ready: true, sell: [], blocks: [], sellMemberStats: { total: 0, tagsKnown: true } };
+    const out = overlayLiveOnFrozen({ ready: true, sell: [], blocks: [] }, live, null);
+    expect(out.sellMemberStats.tagsKnown).toBe(true);
+  });
+
+  it('⛔ 不许修改传入的 frozen（存档那份要能反复使用，§11 只读不覆盖）', () => {
+    const frozen = frozenWithSell();
+    overlayLiveOnFrozen(frozen, { ready: true, sell: [], blocks: [] }, null);
+    expect(frozen.sell.length).toBe(1);
+  });
+});

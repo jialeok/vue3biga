@@ -54,6 +54,9 @@
 
 import { ref, shallowRef, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useUiStore } from '../stores/uiStore.js';
+// ★★ [TAG-ENSURE 2026-11-12] 卖点侧成员 = 昨日标签 + 昨日买点侧 ⇒ 必须保证标签库真的读回来了。
+//   ⛔ 只读 `_cloudLoaded` 标志 + 掉线时补一次 `ensureLoaded()`，不在这里另存一份标签（§6 单一真相）。
+import { useAuctionTagStore } from '../stores/auctionTagStore.js';
 import { _on, _off } from '../stores/eventBus.js';
 import {
   collectDecisionTopics,
@@ -1217,12 +1220,35 @@ export function useTopicVolRatioBoard() {
   const prevBuyPlanNames = ref({ date: '', names: null, status: 'idle' });
 
   /**
+   * ★★ [RULES-BUMP-GUARD 2026-11-12] 北京「今天」的日期串（YYYY-MM-DD）。
+   *   只用于一个判断：**规则升级（`TVRB_RULES_VERSION` bump）要不要让这一天的存档过期**。
+   *   · 今天 ⇒ 要（新规则立刻生效，屏幕上那只票必须跟着改，例：11-12 光洋股份 → 襄阳轴承）；
+   *   · 历史日 ⇒ 不要（库内行情会被收盘覆盖，重算会改写复盘结论 —— 11-10 实证过）。
+   */
+  function _bjTodayKey() {
+    return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+  }
+
+  /**
    * 读前一交易日的买点侧名单。切日期时调用（与 `_loadPlanSnapshot` 同一个入口）。
    * ⛔ 只有「定稿存档」算数：`stale` / `corrupt` / `empty` / `error` / `unavailable` 一律 names=null，
    *    ⛔ 绝不拿「会漂移的库内行情重算一遍」当昨日买点侧（那正是 11-11 用户「越改越乱」的根源）。
    */
   function _loadPrevBuyPlanNames(d) {
     const key = String(d || '').trim();
+    // ★★ [TAG-ENSURE 2026-11-12] 进入本看板先保证【标签库】真的读回来了。
+    //   卖点侧成员有一半来自 `auction_board_tags(前一交易日)`，而那个库只在 App 启动读一次、
+    //   **失败不重试** ⇒ 一次网络抖动就会整场会话都「没有标签」⇒ 卖点侧整段空，
+    //   而界面看不出任何异常（§10 静默空最难查）。这里只在「没读过」时补一次（§32 不重复请求）。
+    try {
+      const _tagStore = useAuctionTagStore();
+      if (_tagStore && typeof _tagStore.ensureLoaded === 'function' && _tagStore._cloudLoaded !== true) {
+        _tagStore.ensureLoaded().then(function(ok) {
+          if (_disposed) return;
+          _dbgLog('[TVRB-TAG-ENSURE] 标签库补读' + (ok ? '成功' : '失败（卖点侧可能缺票）'));
+        });
+      }
+    } catch (e) { /* 标签库不可用不阻断本看板（§10 由说明区如实标注） */ }
     const prev = key ? getPreviousTradingDay(key) : '';
     if (!prev) {
       prevBuyPlanNames.value = { date: '', names: null, status: 'no-prev-day' };
@@ -1531,6 +1557,9 @@ export function useTopicVolRatioBoard() {
           topicStreakPast: rec.topicStreakPast
         },
         sellRows: rec.sellRows || [],
+        // ★★ [SELL-EMPTY-GUARD 2026-11-12] 卖点成员来源统计 —— 只用来判空态文案
+        //   （「昨日没有票」vs「标签库没读回来，可能缺票」，§10）⛔ 不参与选股 / 卖出判定。
+        sellMemberStats: rec.sellMemberStats || null,
         // ★ [EBB 2026-10-13] 退潮首日的【事实】（市场总龙 / 今日停牌 / 今日占比 / 同题材龙位成员 /
         //   市场总龙二）；ready=false ⇒ 不是退潮日（⛔ 不猜）
         ebbCtx: rec.ebbCtx || null,
@@ -1616,6 +1645,12 @@ export function useTopicVolRatioBoard() {
       //        ⛔ 绝不静默按「昨天没买过任何票」处理。
       const _smStat = rec.sellMemberStats;
       if (_smStat) {
+        // ★★ [SELL-EMPTY-GUARD 2026-11-12] 标签库本身没读回来 ⇒ 先说不确定性（§10，最高优先级）。
+        if (_smStat.tagsKnown === false) {
+          plan.notes.unshift('⚠️ 标签库（auction_board_tags）本次【没读回来】⇒ 今日卖点侧' +
+            '【只按昨日买点侧自动继承】构建，昨日你手动打的「买入 / 持有」标签可能没进来。' +
+            '这不是「昨天没打标签」，是标签库没读到 —— 刷新页面会重试。');
+        }
         if (!_smStat.planKnown) {
           plan.notes.unshift('⚠️ 昨日（' + (pd || '上一交易日') + '）的选股存档读不到 ⇒ 今日卖点侧' +
             '【只按昨日「买入 / 持有」标签】构建，可能缺票（昨天买点侧选中的票不会自动补进来）。' +
@@ -2022,7 +2057,9 @@ export function useTopicVolRatioBoard() {
           coreTopicsLoaded: isCoreTopicsCloudLoaded(),
           inputsSig: currentInputsSig.value,
           // 库里还没有 inputs_sig 列（已降级）⇒ ⛔ 不许把「缺字段」当过期，否则每次开页面都重算
-          inputsSigSupported: isPlanSnapshotInputsSigSupported()
+          inputsSigSupported: isPlanSnapshotInputsSigSupported(),
+          // ★ [RULES-BUMP-GUARD] 规则版本升级只让【今天】的存档过期；历史日保持定稿
+          allowRulesInvalidation: key === _bjTodayKey()
         });
         snap.status = (verdict === 'stale') ? 'stale' : 'hit';
         planSnapshot.value = snap;
@@ -2197,7 +2234,9 @@ export function useTopicVolRatioBoard() {
       coreTopicsLoaded: isCoreTopicsCloudLoaded(),
       inputsSig: currentInputsSig.value,
       // 库里还没有 inputs_sig 列（已降级）⇒ ⛔ 不许把「缺字段」当过期，否则每次开页面都重算
-      inputsSigSupported: isPlanSnapshotInputsSigSupported()
+      inputsSigSupported: isPlanSnapshotInputsSigSupported(),
+      // ★ [RULES-BUMP-GUARD] 同上：只有今天会因规则升级而重算
+      allowRulesInvalidation: d === _bjTodayKey()
     });
     if (verdict !== 'stale' || s.status === 'stale') return;
     planSnapshot.value = Object.assign({}, s, { status: 'stale', reason: reason || 'rules-changed' });
@@ -2349,6 +2388,29 @@ export function useTopicVolRatioBoard() {
   const reasonText = computed(() => (data.value.ready ? '' : (data.value.reason || DATA_INCOMPLETE_TEXT)));
   const blocks = computed(() => (displayPlan.value ? displayPlan.value.blocks : []));
   const sellGroups = computed(() => (displayPlan.value ? (displayPlan.value.sell || []) : []));
+
+  /**
+   * ★★ [SELL-EMPTY-GUARD 2026-11-12] 卖点段【空态该说什么】（§21 文案在 Logic，模板零判断）。
+   *
+   * 🔴 报障背景：用户「长按买入 → 切到今天卖点列表，连卖点的票都没有」，而旧空态文案写的是
+   *   「昨日没有打「买」标签的股票，无需卖出」—— 在新口径（昨日买点侧自动继承）下这句话**已经是错的**，
+   *   而且它把「标签库没读回来」也写成了「没有票」，正好掩盖了故障（§10 最坏的那种）。
+   * ⇒ 三态分开：
+   *   · 标签库未读回 ⇒ 明确说「可能缺票、刷新重试」；
+   *   · 昨日存档也未知 ⇒ 说「卖点侧未知」，⛔ 不说「无需卖出」；
+   *   · 两者都已知且 0 只 ⇒ 才是真的「今天没有要卖的票」。
+   */
+  const sellEmptyText = computed(function() {
+    const st = (displayPlan.value && displayPlan.value.sellMemberStats) || null;
+    if (st && st.tagsKnown === false) {
+      return '⚠️ 标签库没读回来（昨日「买入 / 持有」标签可能没进来），卖点侧可能缺票 —— 请刷新页面重试';
+    }
+    if (st && !st.planKnown) {
+      return '⚠️ 昨日的选股存档读不到，卖点侧本次【未知】（不是「没有票」）—— 请刷新页面重试';
+    }
+    return '昨日买点侧与「买入 / 持有」标签都没有可卖的票 ⇒ 今日无需卖出';
+  });
+
   // ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11] 存档状态警示拼在说明区最前面。
   //   ⛔ 不写进 plan.notes：存档里的 notes 是「定稿那一刻」的原始内容，改了就不是原存档（§6）。
   const notes = computed(function() {
@@ -2825,6 +2887,8 @@ export function useTopicVolRatioBoard() {
     reasonText,
     blocks,
     sellGroups,
+    // ★ [SELL-EMPTY-GUARD] 卖点空态文案（三态区分，⛔ 模板不自己判断）
+    sellEmptyText,
     notes,
     excludedTopics,
     pickCount,

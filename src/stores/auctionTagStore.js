@@ -48,25 +48,59 @@ export const useAuctionTagStore = defineStore('auctionTag', {
       const sb = getSupabase();
       if (!sb) return;
       try {
-        const { data, error } = await sb.from(TABLE).select('date,stock,tag');
-        if (error) {
-          console.error('[auctionTagStore] 云端标签读取失败：', error.message || error);
-          return;
-        }
+        // ★★ [TAG-PAGED 2026-11-12] 🔴 必须分页读：PostgREST 单次默认 1000 行封顶，
+        //   写死一次 `select` 会在总量过千后【静默截断】—— 而截断掉的恰好是最新那几天
+        //   （物理顺序 Append）⇒ 用户昨天打的标签凭空消失、次日卖点侧整段空，
+        //   且零报错、零日志。这条坑本项目在 `sbGetPaged` 上已经踩过（见 MEMORY §2）。
+        //   现在总量 237 行，离上限还远，但这条通道会一直用下去 ⇒ 提前按 Range 翻页。
+        const PAGE = 1000;
         const merged = { ...this.tags };
-        (data || []).forEach((r) => {
-          const d = r.date;
-          const s = String(r.stock == null ? '' : r.stock).trim();
-          if (!d || !s) return;
-          if (!merged[d]) merged[d] = {};
-          if (r.tag) merged[d][s] = r.tag;
-          else delete merged[d][s];
-        });
+        let from = 0;
+        for (;;) {
+          const { data, error } = await sb
+            .from(TABLE)
+            .select('date,stock,tag')
+            .order('date', { ascending: true })
+            .order('stock', { ascending: true })
+            .range(from, from + PAGE - 1);
+          if (error) {
+            console.error('[auctionTagStore] 云端标签读取失败：', error.message || error);
+            return;                       // §10：整次读失败 ⇒ 不置 _cloudLoaded（= 未知，不是「没标签」）
+          }
+          const rows = data || [];
+          rows.forEach((r) => {
+            const d = r.date;
+            const s = String(r.stock == null ? '' : r.stock).trim();
+            if (!d || !s) return;
+            if (!merged[d]) merged[d] = {};
+            if (r.tag) merged[d][s] = r.tag;
+            else delete merged[d][s];
+          });
+          if (rows.length < PAGE) break;
+          from += PAGE;
+          if (from > 50000) break;        // 防御：绝不死循环
+        }
         this.tags = merged;
         this._cloudLoaded = true;
       } catch (e) {
+        // §10：异常同样不置 _cloudLoaded ⇒ 下游知道「标签未知」而不是「没有标签」
         console.error('[auctionTagStore] 云端标签读取异常：', e && e.message);
       }
+    },
+    /**
+     * ★★ [TAG-ENSURE 2026-11-12] 「保证标签库已读过」—— 幂等，已读过（`_cloudLoaded`）就立即返回。
+     *
+     * 🔴 为什么需要它：`loadTagsFromCloud` 只在 App 启动调一次，**失败不重试**。
+     *   本机/手机网络抖动一次 ⇒ 整个会话内 `tags` 恒为空 ⇒ 次日卖点侧整段空、
+     *   买点侧【持有/加仓】也打不出来，而界面看不出任何异常（用户原话：
+     *   「之前就可以显示，现在连卖点的票都没有」—— 就是这种「静默空」）。
+     *   ⇒ 进入一个【依赖昨日标签】的看板时补一次（只在没读过时发，§32 不重复请求）。
+     * @returns {Promise<boolean>} 是否已就绪
+     */
+    async ensureLoaded() {
+      if (this._cloudLoaded) return true;
+      await this.loadTagsFromCloud();
+      return this._cloudLoaded === true;
     },
     getTagState(date, stock) {
       if (!date || !stock) return null;

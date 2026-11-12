@@ -11,6 +11,7 @@
  *   ③ 写入准入：读档失败绝不覆盖；stale 即使选票没变也必须写一次更新 rules_sig。
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   TVRB_RULES_VERSION,
   TVRB_INPUTS_VERSION,
@@ -60,7 +61,9 @@ describe('buildRulesFingerprint · 规则输入指纹（基于内容，不基于
   it('④ 空表 / null / 怪数据也返回稳定非空指纹，⛔ 不抛异常', function() {
     expect(buildRulesFingerprint([])).toBe(buildRulesFingerprint([]));
     expect(buildRulesFingerprint(null)).toBe(buildRulesFingerprint(undefined));
-    expect(buildRulesFingerprint([null, {}, { name: 'X', synonyms: null }])).toMatch(/^v1:/);
+    // ★ [RULES-BUMP-GUARD] 前缀跟着 TVRB_RULES_VERSION 走，⛔ 不写死版本号（bump 时不用改测试）
+    expect(buildRulesFingerprint([null, {}, { name: 'X', synonyms: null }]))
+      .toMatch(new RegExp('^v' + TVRB_RULES_VERSION + ':'));
   });
 
   it('⑤ 同义词顺序调整也算一次编辑（保守，结论不变时由幂等写兜住）', function() {
@@ -254,5 +257,45 @@ describe('shouldPersistPlanSnapshot · 写库准入（§11 覆盖保护 + §32 �
   it('⑦ 存档损坏 ⇒ 允许用干净结论修复覆盖', function() {
     expect(shouldPersistPlanSnapshot({ status: 'corrupt' }).reason).toBe('repair-corrupt');
     expect(shouldPersistPlanSnapshot({ status: 'corrupt' }).write).toBe(true);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// [RULES-BUMP-GUARD 2026-11-12] 规则版本升级（bump `TVRB_RULES_VERSION`）只让【今天】的存档过期。
+//
+// 背景：第二十八条收紧（同题材择优）会改变选股结论（11-12：光洋股份 → 襄阳轴承）。
+//   不 bump ⇒ 那份按旧规则定稿的存档永久 hit ⇒ 屏幕上一直是错的那只；
+//   bump 又不能让【历史日】跟着重算 —— 历史日的库内行情会被收盘覆盖，重算会改写复盘结论。
+// ══════════════════════════════════════════════════════════════════════════════════════════
+describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日保持定稿', () => {
+  const SNAP = { status: 'hit', rulesSig: 'v1:aaaaaaaa', inputsSig: 'v1:111' };
+  const OPTS = { rulesSig: 'v2:bbbbbbbb', coreTopicsLoaded: true, inputsSig: 'v1:111' };
+
+  it('今天（allowRulesInvalidation !== false）⇒ stale（按新规则重算并修订存档）', () => {
+    expect(resolvePlanSnapshotFreshness(SNAP, OPTS)).toBe('stale');
+    expect(resolvePlanSnapshotFreshness(SNAP, Object.assign({}, OPTS, { allowRulesInvalidation: true }))).toBe('stale');
+  });
+
+  it('历史日（allowRulesInvalidation === false）⇒ hit（保持那一份定稿，⛔ 不被新规则改写）', () => {
+    expect(resolvePlanSnapshotFreshness(SNAP, Object.assign({}, OPTS, { allowRulesInvalidation: false }))).toBe('hit');
+  });
+
+  it('规则没变时该选项不影响任何既有判据（§11 零行为变化）', () => {
+    const same = { status: 'hit', rulesSig: 'v2:bbbbbbbb', inputsSig: 'v1:111' };
+    expect(resolvePlanSnapshotFreshness(same, Object.assign({}, OPTS, { allowRulesInvalidation: false }))).toBe('hit');
+    const broken = { status: 'hit', rulesSig: 'v2:bbbbbbbb', inputsSig: 'v1:110' };
+    expect(resolvePlanSnapshotFreshness(broken, Object.assign({}, OPTS, { allowRulesInvalidation: false }))).toBe('stale');
+  });
+
+  it('版本常量已 bump 到 2（认证龙口径 = v2）', () => {
+    expect(TVRB_RULES_VERSION).toBe(2);
+  });
+
+  it('composable 两处调用都带上该选项（静态锁：漏一处 ⇒ 历史日会被改写）', () => {
+    const src = readFileSync('src/composables/useTopicVolRatioBoard.js', 'utf8');
+    const n = (src.match(/allowRulesInvalidation: /g) || []).length;
+    expect(n).toBe(2);
+    expect(src).toContain('allowRulesInvalidation: key === _bjTodayKey()');
+    expect(src).toContain('allowRulesInvalidation: d === _bjTodayKey()');
   });
 });

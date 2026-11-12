@@ -488,6 +488,16 @@ export const NEW_DRAGON_TAG = '新龙买';
 export const NEW_DRAGON_TONE = EBB_SECOND_BUY_TONE;
 /** 候选榜只数（用户口径：「如果前五找不到，你就找前八的，不用前五的，改用排名前八的」） */
 export const NEW_DRAGON_TOP_N = 8;
+/**
+ * ★★ [NEW-DRAGON-CERTIFY 2026-11-12 用户口径] 「同题材择优」只看【前五】。
+ *
+ * 用户原话：「还要添加下前提：**前五没有同题材的票才可以**……因为这两只同题材的同时出现在
+ *   20 日涨幅【前五】，所以只买最靠前的那只襄阳轴承」。
+ * ⇒ 找同题材的兄弟票时窗口是**前五**（⛔ 不是候选池的前八）：
+ *   前八只是「前五找不到合格新龙时的顺延范围」，不是「同题材择优」的范围。
+ *   ⚠️ 与 `NEW_DRAGON_TOP_N(=8)` 是**两个不同用途**，⛔ 别合并。
+ */
+export const NEW_DRAGON_CERTIFY_TOP_N = 5;
 /** 「有没有上过榜」的回看窗口（用户口径「20个交易日内」） */
 export const NEW_DRAGON_LOOKBACK_DAYS = 20;
 

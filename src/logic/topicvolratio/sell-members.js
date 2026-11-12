@@ -76,6 +76,10 @@ export function sellSourceTitle(source) {
  *          stats = { total, auto, buy, hold, excludedSell, planCount, planKnown }
  */
 export function buildSellMembers(prevDayTags, prevBuyPlanNames) {
+  // ★★ [SELL-EMPTY-GUARD 2026-11-12] `prevDayTags === null` = **标签库未知**（没读回来 / 读失败），
+  //   ⛔ 与「这一天确实没有标签」（`{}`）是两件事 —— 统计里必须能分开，否则说明区会把
+  //   「看不见」写成「没有」（§10）。下游据此显示「可能缺票」而不是「无需卖出」。
+  const tagsKnown = !(prevDayTags === null || prevDayTags === undefined);
   const tags = (prevDayTags && typeof prevDayTags === 'object') ? prevDayTags : {};
   const planKnown = Array.isArray(prevBuyPlanNames)
     || (prevBuyPlanNames && typeof prevBuyPlanNames.forEach === 'function');
@@ -126,7 +130,9 @@ export function buildSellMembers(prevDayTags, prevBuyPlanNames) {
       hold: hold,
       excludedSell: excludedSell.length,
       planCount: planNames.length,
-      planKnown: !!planKnown
+      planKnown: !!planKnown,
+      // ★ [SELL-EMPTY-GUARD] 标签库是否已知（false ⇒ 卖点侧可能缺票，⛔ 不许写成「没有票」）
+      tagsKnown: tagsKnown
     }
   };
 }

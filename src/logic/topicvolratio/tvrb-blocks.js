@@ -1475,6 +1475,9 @@ export function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tie
   const name = String(p.name).trim();
   const topic = String(p.topic || '').trim();
   const oldTopic = String(nd.oldTopic || '').trim() || '老龙题材';
+  // ★★ [NEW-DRAGON-CERTIFY 2026-11-12] 认证龙 vs 新龙本身（两者都用第二十八条同一个买点信号）
+  const cert = (nd && nd.certifier) || null;
+  const isCert = !!cert && cert.name !== name;
 
   // 真实成员行（与退潮替补同一取法：先按题材块找，再全表按名字兜一次）
   let member = null;
@@ -1513,11 +1516,19 @@ export function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tie
     },
     rankWord: '',
     pickRank: null,
-    reason: '【' + SWITCH_RULE_NO + '】切换日新龙：' + (oldTopic) + '（老龙一 ' + (switchDay.leaderName || '—') +
-      '）二次确认退潮后的第 2 个交易日 ⇒ 老周期结束。' + name + '（' + (topic || '—') +
-      '，20日涨幅 ' + formatRangePct(_num(p.pct)) + '，' + _rankLabelOf(p.rank20) +
-      '）近 ' + windowText + '【首次】进入前列（此前未进前五），' + _todayRankPhrase(p.rank20) +
-      '，且与老龙一【不同题材】⇒ 新龙（老龙→新龙交接）。',
+    reason: '【' + SWITCH_RULE_NO + '】切换日' + (isCert ? '新龙·认证龙' : '新龙') + '：' + (oldTopic) +
+      '（老龙一 ' + (switchDay.leaderName || '—') +
+      '）二次确认退潮后的第 2 个交易日 ⇒ 老周期结束。' +
+      (isCert
+        ? (name + '（' + (topic || '—') + '，20日涨幅 ' + formatRangePct(_num(p.pct)) + '，' +
+           _rankLabelOf(p.rank20) + '）为【认证龙】：同题材【' + (cert.topic || topic || '—') +
+           '】里由【' + cert.name + '】（' + _rankLabelOf(cert.rank20) + '，近 ' + windowText +
+           '【首次】进入前五）认证该题材为新题材；' + name + ' 同题材且竞价口径【更靠前】' +
+           '（' + _rankLabelOf(p.rank20) + '）⇒ 按口径只买最靠前的那一只，' + cert.name +
+           ' 只作为判断条件。且与老龙一【不同题材】⇒ 新龙（老龙→新龙交接）。')
+        : (name + '（' + (topic || '—') + '，20日涨幅 ' + formatRangePct(_num(p.pct)) + '，' +
+           _rankLabelOf(p.rank20) + '）近 ' + windowText + '【首次】进入前列（此前未进前五），' +
+           _todayRankPhrase(p.rank20) + '，且与老龙一【不同题材】⇒ 新龙（老龙→新龙交接）。')),
     mode: 'newdragon',
     ruleNo: SWITCH_RULE_NO,
     isCandidate: false,
@@ -1531,6 +1542,15 @@ export function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tie
         ' 已上过前五的（不是首次上榜）→ 跳过与老龙一同题材的（老周期）⇒ 剩下第一只即新龙。'
         + '⚠️ 名次按【当前时点】口径：15:00 前 = 前 19 日收盘 × 今日竞价（auc），15:00 后 = 20 日全收盘（close）'
         + '—— 同一只票早晚名次会不一样，属正常。',
+      // ★★ [NEW-DRAGON-CERTIFY 2026-11-12 用户口径] 同题材择优（认证龙）—— 这一步写清楚才可复核
+      ('【同题材择优 · 前五】新龙那只只用来【证明这个题材是新的】：拿到它的题材后，再回【前五】里找' +
+        '同题材的其它票（同题材 = 细分题材；⛔ 与退潮判定的「主线题材 ≥3 只」不是一回事），' +
+        '有 ⇒ 只买【竞价口径最靠前】的那只（= 认证龙），首次进前五的那只【只作判断条件、不单独买】；' +
+        '没有 ⇒ 就买它自己（例：10-22 冰山冷热）。认证龙同样要能买进（非主板 / 竞价一字 / 停牌一律跳过）。' +
+        (isCert
+          ? '本日命中：' + cert.name + '（' + _rankLabelOf(cert.rank20) + '）⇒ ' + name +
+            '（' + _rankLabelOf(p.rank20) + '，同题材 ' + (cert.topic || topic || '—') + '）。'
+          : '本日未命中：前五里没有与它同题材的其它票 ⇒ 直接买它自己。')),
       (trailText ? ('八只去留（判定可追溯）：' + trailText + '。') : ''),
       '⚠️ 常规侧同日【收紧】：切换日只选一个题材、只取一只（排名最前且数量达标，退潮题材与新龙题材跳过）'
         + (tierPick ? ('——本日常规那只 = ' + tierPick + '。') : '。')
@@ -1547,15 +1567,23 @@ export function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tie
     row.buyActionTone = NEW_DRAGON_TONE;
     row.holdTag = '';       // 与「今天要买」互斥
     row.position = '';
-    row.actionNote = '【第二十八条 · 新龙】' + oldTopic + '（老龙一 ' + (switchDay.leaderName || '—') +
-      '）二次确认退潮后第 2 个交易日 = 切换日：老周期结束、新周期开启。它近 ' + windowText +
-      '【首次】进入前列（此前未进前五），' + _todayRankPhrase(p.rank20) + '，且与老龙一【不同题材】（' + (topic || '—') + '）⇒ 判定为新龙。' +
+    row.actionNote = '【第二十八条 · ' + (isCert ? '新龙 · 认证龙' : '新龙') + '】' + oldTopic +
+      '（老龙一 ' + (switchDay.leaderName || '—') +
+      '）二次确认退潮后第 2 个交易日 = 切换日：老周期结束、新周期开启。' +
+      (isCert
+        ? ('它【不是】首次进前五的那只 —— 首次进前五的是同题材的【' + cert.name + '】（' +
+           _rankLabelOf(cert.rank20) + '），那只只用来认证「' + (cert.topic || topic || '—') +
+           ' 是新题材」；本只同样是 ' + (cert.topic || topic || '—') + '，且竞价口径【更靠前】（' +
+           _rankLabelOf(p.rank20) + '）⇒ 按用户口径只买最靠前的那一只 ⇒ 判定为【认证龙】。' +
+           '与老龙一【不同题材】⇒ 新龙（老龙→新龙交接）。')
+        : ('它近 ' + windowText + '【首次】进入前列（此前未进前五），' + _todayRankPhrase(p.rank20) +
+           '，且与老龙一【不同题材】（' + (topic || '—') + '）⇒ 判定为新龙（前五里没有同题材的其它票）。')) +
       (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : '') +
-      ' 切换日买点侧只有【新龙】+ 常规收紧后的那【一只】（第二十八条）。';
+      ' 切换日买点侧只有【' + (isCert ? '认证龙' : '新龙') + '】+ 常规收紧后的那【一只】（第二十八条）。';
   });
 
   // 本看板平铺字段
-  block.topic = '新龙 · ' + (topic || '—');
+  block.topic = (isCert ? '认证龙 · ' : '新龙 · ') + (topic || '—');
   block.rank = null;
   block.count = null;
   block.yiziCount = null;
@@ -1566,6 +1594,8 @@ export function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tie
   block.rangeText = '';
   block.skippedNames = [];
   block.isNewDragon = true;
+  // ★ [NEW-DRAGON-CERTIFY] 认证龙标记（UI / 说明 / 复盘据此区分「新龙」与「认证龙」）
+  block.isCertifyDragon = isCert;
   return block;
 }
 
