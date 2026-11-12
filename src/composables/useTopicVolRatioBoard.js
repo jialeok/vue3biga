@@ -157,6 +157,16 @@ import { readEbbDays, upsertEbbDay } from '../data/ebb-days.js';
 //   readTop5History / everInTop5Set = 近 20 个交易日的【每日 20日涨幅前五榜】（回库读 stock_range20_pct，
 //   一次 in 查询 + 会话缓存；⛔ 不新增表、不改表结构）。
 import { readTop5History, everInTop5Set } from '../data/range20-top5-history.js';
+// ★★ [LEADER-FIRST-TOPIC 2026-11-12 用户口径] 第二十八条「老题材（大类）」的取数 + 判定：
+//   用户原话：「要考究东方海洋的大类，首先要确定它老龙一霸榜的题材是什么，从第一次霸榜总龙一开始，
+//   你检索下历史20个交易日，它第一次霸榜总龙一是不是在11月4日……这个就是作为老题材，也就是羊字辈。」
+//   · readLeaderRankInputsForDates = 近 N 个交易日 `stock_range20_pct` + `market_metrics(auction)`
+//     的原始行（**一次 in 查询**，⛔ 不是每天两次请求；§32）；
+//   · detectLeaderFirstTopic = 纯函数（Logic 层）：首霸日 + 当天题材组 + 霸榜天数。
+//   ⛔ 本文件不自己算竞价口径榜（§6：口径只有 range20-auction-leg / tvrb-auction-board 那一份）。
+import { readLeaderRankInputsForDates } from '../data/leader-rank-history.js';
+import { detectLeaderFirstTopic } from '../logic/topicvolratio/leader-first-topic.js';
+import { LEADER_FIRST_TOPIC_WINDOW_DAYS } from '../logic/topicvolratio/tvrb-constants.js';
 // ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条「十日涨幅 · 在列次数候补」的次数来源：
 //   预计算表 auction_presence（data/auction-presence.js，会话缓存 + 单飞 + 30s 失败冷却）。
 //   getPresenceForDate = 同步读（不发请求）；ensurePresence = 触发加载；getPresenceFingerprintToken
@@ -247,7 +257,7 @@ import { makeCoreTopicResolver } from '../logic/topic/core-category.js';
 // ★★ [BUY-SETTLE-2 2026-10-31 用户口径] 题材库（stock_topics）「就绪了吗」——
 //   买点侧门控的输入之一。判据语义见其 JSDoc：**为空即「题材分类结果不可信」**（§10 读取失败 ≠ 空）。
 //   ⛔ 别用 isCloudTopicsLoaded（那个回答的是「现在写回云端安全吗」，两个判据用途不同）。
-import { isTopicLibraryReady, isCloudTopicsLoaded, getTopicLibraryDigest, getTopicLibraryVersion } from '../data/stock-topics.js';
+import { isTopicLibraryReady, isCloudTopicsLoaded, getTopicLibraryDigest, getTopicLibraryVersion, lookupTopicsByName, buildTopicCache } from '../data/stock-topics.js';
 // ★ 分笔：与「分笔买卖」看板【同一份取数编排 + 同一份逐行实现】（§6 单一真相，⛔ 不另写一份）
 import { decorateTickRow } from '../logic/tick/tick-minute.js';
 import {
@@ -487,6 +497,87 @@ export function useTopicVolRatioBoard() {
       if (_top5HistInflight.get(d) === p) _top5HistInflight.delete(d);
     });
     _top5HistInflight.set(d, p);
+  }
+  /**
+   * ★★ [LEADER-FIRST-TOPIC 2026-11-12 用户口径] 第二十八条「老题材（大类）」的唯一取数入口。
+   *
+   * 用户原话（逐字）：
+   *   「提到题材的时候要说大类，你说农业（老龙一 东方海洋），要考究东方海洋的大类，首先要确定它
+   *    老龙一霸榜的题材是什么，从第一次霸榜总龙一开始，你检索下历史20个交易日，它第一次霸榜总龙一
+   *    是不是在11月4日，当时20日涨幅竞价口径，羊字辈就有5只……确定是羊字辈的题材。你在11月12日看来，
+   *    这个就是作为老题材……而不是你说的农业」
+   *
+   * ⇒ 输入 = ① 近 20 个交易日的【每日竞价口径 20日涨幅榜】（回库读原始行，**一次 in 查询**）；
+   *          ② 题材库（股票名 → 题材串，组合式持有，规则层不读库 §5）；
+   *   输出 = `{ready, firstDate, topic, count, members, leaderDays, ...}` ⇒ 注入规则层
+   *          `oldLeaderTopic`（规则层只读、不重算，§4 / §6）。
+   *
+   * ⚠️ §10：读失败 / 判不出首霸日 ⇒ `null`（规则层退回退潮行落库的题材，并在说明里如实标注），
+   *    ⛔ 绝不拿「没读到」当成「它没霸榜过」。
+   * ⚠️ §32：只在【真的可能是切换日】时才去读（与 `ensureTop5History` 同一道闸门）；
+   *    Data 层按【单日】缓存，切日期只补没读过的日期。
+   * @param {string} d 展示日 YYYY-MM-DD
+   * @param {string} leaderName 退潮那一行上的老龙一
+   */
+  const leaderFirstTopic = ref(null);
+  const leaderFirstTopicDate = ref('');
+  /** 单飞：date -> Promise */
+  const _lftInflight = new Map();
+
+  function ensureLeaderFirstTopic(d, leaderName) {
+    const nm = String(leaderName || '').trim();
+    if (!d || !nm) return;
+    if (leaderFirstTopicDate.value === d) return;          // 该日已读过（成功或失败都已定论）
+    if (_lftInflight.has(d)) return;
+    const dates = [];
+    let cur = d;
+    for (let i = 0; i < LEADER_FIRST_TOPIC_WINDOW_DAYS; i++) {
+      cur = getPreviousTradingDay(cur);
+      if (!cur) break;
+      dates.push(cur);
+    }
+    if (dates.length === 0) {
+      leaderFirstTopic.value = null;
+      leaderFirstTopicDate.value = d;
+      return;
+    }
+    const p = readLeaderRankInputsForDates(dates).then(function(inputs) {
+      if (currentDate.value !== d) return;                 // 竞态保护：期间切了日期 ⇒ 丢弃
+      // 题材库：股票名 → 题材串。库还没建好 ⇒ 现建一次（⛔ 不因此静默退化成「没有题材」）。
+      let cacheTried = false;
+      const topicOf = function(name) {
+        let set = lookupTopicsByName(name);
+        if (!set && !cacheTried) {
+          cacheTried = true;
+          try { buildTopicCache(); } catch (e) { /* 题材库不可用 ⇒ 按判不出处理 */ }
+          set = lookupTopicsByName(name);
+        }
+        return (set && set.size > 0) ? Array.from(set).join(',') : '';
+      };
+      const res = detectLeaderFirstTopic(inputs, nm, {
+        topicOf: topicOf,
+        // ★ 核心词（大类）归一：用户原话「我会随时改核心词……你提就要提核心词（大类）」
+        coreRes: makeCoreTopicResolver(getCoreTopics()),
+        windowDays: LEADER_FIRST_TOPIC_WINDOW_DAYS
+      });
+      leaderFirstTopic.value = res;
+      leaderFirstTopicDate.value = d;
+      if (res && res.ready) {
+        console.info('[TVRB] 老题材（大类）= ' + res.topic + '（' + nm + ' 首霸总龙一 ' + res.firstDate +
+          '，当天 ' + res.count + ' 只，窗口内霸榜 ' + res.leaderDays + ' 天）');
+      } else if (res) {
+        console.warn('[TVRB] 老题材判不出（' + res.reason + '）⇒ 暂用退潮行落库题材');
+      }
+    }).catch(function(e) {
+      if (currentDate.value !== d) return;
+      // §10：读失败 ⇒ null（规则层退回落库题材 + 说明可见），⛔ 不伪造首霸日
+      console.warn('[TVRB] 老题材（首次霸榜总日）读取失败，暂用退潮行落库题材:', e && e.message);
+      leaderFirstTopic.value = null;
+      leaderFirstTopicDate.value = d;
+    }).finally(function() {
+      if (_lftInflight.get(d) === p) _lftInflight.delete(d);
+    });
+    _lftInflight.set(d, p);
   }
   /**
    * ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条「十日涨幅候补」的【在列次数】（10 日窗口）。
@@ -1175,8 +1266,12 @@ export function useTopicVolRatioBoard() {
           //   ★ [CORE-CAT 2026-10-22] 第三个入参传大类归一函数：否则「文化传媒 vs AI应用」
           //     跨不过去，切换日会在题材名漂移的那天静默失效（与 10-22 误判同一根因）。
           const ppd = pd ? getPreviousTradingDay(pd) : '';
-          if (ppd && detectSwitchDay(rows, ppd, makeCoreTopicResolver(getCoreTopics()), winFrom)) {
+          const _sw = ppd ? detectSwitchDay(rows, ppd, makeCoreTopicResolver(getCoreTopics()), winFrom) : null;
+          if (_sw) {
             ensureTop5History(d);
+            // ★★ [LEADER-FIRST-TOPIC 2026-11-12 用户口径] 顺带算「老题材（大类）」——
+            //   只在切换日触发（普通日子多读 20 天原始行纯属浪费，§32）。
+            ensureLeaderFirstTopic(d, _sw.leaderName);
           }
         }).catch(function(e) {
           // §10：读失败 ⇒ 按「没有历史」处理（规则层按 0 次事件 = 首次退潮）—— 但必须可见
@@ -1597,6 +1692,12 @@ export function useTopicVolRatioBoard() {
         prevPrevDate: pd ? (getPreviousTradingDay(pd) || '') : '',
         top5HistoryEver: (top5HistDate.value === d) ? top5HistEver.value : null,
         top5HistoryDays: (top5HistDate.value === d) ? top5HistDays.value : 0,
+        // ★★ [LEADER-FIRST-TOPIC 2026-11-12 用户口径] 「老题材（大类）」= 老龙一在近 20 个交易日
+        //   【第一次霸榜总龙一】那天的题材大类（东方海洋 ⇒ 11-04 ⇒ 羊字辈 5 只）。
+        //   用户原话：「这个就是作为老题材，也就是羊字辈，而不是你说的农业」。
+        //   ⚠️ 日期核对（与 top5HistoryEver 同一条红线）：读的不是这一天 ⇒ 传 null（§10 不拿旧日期顶替）；
+        //      null ⇒ 规则层退回「退潮行落库的题材」（= 上一版行为，§11 零行为变化）。
+        oldLeaderTopic: (leaderFirstTopicDate.value === d) ? leaderFirstTopic.value : null,
         // ★★ [CORE-CAT 2026-10-22 用户口径] 题材【大类】映射（核心管理那张表）——
         //   规则层据此把「文化传媒」认成「AI应用」。用户原话：「那个大类就是我说的题材」。
         //   ⛔ 规则层不自己读表（§5），这里注入；取不到 ⇒ 退化为恒等（§11 零行为变化）。

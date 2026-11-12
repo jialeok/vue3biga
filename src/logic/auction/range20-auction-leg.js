@@ -122,20 +122,21 @@ export function rankMainBoardByPct(rows, opts) {
 }
 
 /**
- * 取数 + 反解（→ 【全市场】pct Map，⛔ 不筛主板、⛔ 不筛天数）。
- * @param {string} date
- * @returns {Promise<Map<string,{pct:number,days:number}>|null>}
- *          null = 加速层不可用（判不出，§10）
+ * ★★ [LEADER-FIRST-TOPIC 2026-11-12] 【纯函数】把某日的「stock_range20_pct 原始行 + 当日竞价指标行」
+ * 反解成【全市场 · 9:25 竞价口径】的 20 日涨幅 Map（⛔ 不筛主板、⛔ 不筛天数）。
+ *
+ * ⚠️ 为什么抽出来：第二十八条的「老题材 = 老龙一第一次霸榜总龙一那天的题材大类」需要
+ *   **回看近 20 个交易日每一天的竞价口径榜**（`topicvolratio/leader-first-topic.js`）。
+ *   那段历史不允许另写一套反解（§6：口径只有一份实现）⇒ 这里把 `_fetch` 里的循环原样提出来，
+ *   `_fetch` 改为调用它 ⇒ 线上行为逐字节不变（§11）。
+ *
+ * @param {Map<string,{pct:*,days:*,leg:string}>|null} rangeRows 某日的 `stock_range20_pct` 行
+ * @param {Array<{stock:string, auc_pct_chg?:*, change_pct?:*}>|null} metricRows 该日 scope='auction' 行
+ * @returns {Map<string,{pct:number,days:number}>|null} null = 加速层不可用（判不出，§10）
  */
-async function _fetch(date) {
-  const pair = await Promise.all([
-    readRange20Rows(date),
-    readMarketMetricsForDate(date, 'auction')
-  ]);
-  const rows = pair[0];
-  const metricRows = pair[1];
+export function buildAuctionLegPctMap(rangeRows, metricRows) {
   // §10：加速层不可用 ⇒ 判不出（⛔ 不返回空 Map 冒充「这天没有数据」）
-  if (!rows || typeof rows.forEach !== 'function') return null;
+  if (!rangeRows || typeof rangeRows.forEach !== 'function') return null;
 
   const mByName = new Map();
   (metricRows || []).forEach(function(r) {
@@ -145,7 +146,7 @@ async function _fetch(date) {
   });
 
   const out = new Map();
-  rows.forEach(function(v, name) {
+  rangeRows.forEach(function(v, name) {
     const nm = String(name || '').trim();
     if (!nm || !v) return;
     const raw = _num(v.pct);
@@ -163,6 +164,22 @@ async function _fetch(date) {
     out.set(nm, { pct: pct, days: Number(v.days) || 0 });
   });
   return out;
+}
+
+/**
+ * 取数 + 反解（→ 【全市场】pct Map，⛔ 不筛主板、⛔ 不筛天数）。
+ * @param {string} date
+ * @returns {Promise<Map<string,{pct:number,days:number}>|null>}
+ *          null = 加速层不可用（判不出，§10）
+ */
+async function _fetch(date) {
+  const pair = await Promise.all([
+    readRange20Rows(date),
+    readMarketMetricsForDate(date, 'auction')
+  ]);
+  // ★ [LEADER-FIRST-TOPIC 2026-11-12] 反解循环抽到 `buildAuctionLegPctMap`（§6 一份实现，
+  //   历史窗口也要用它）⇒ 这里只负责「取数 + 交给它」，行为逐字节不变（§11）。
+  return buildAuctionLegPctMap(pair[0], pair[1]);
 }
 
 /**

@@ -287,8 +287,8 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
     expect(resolvePlanSnapshotFreshness(broken, Object.assign({}, OPTS, { allowRulesInvalidation: false }))).toBe('stale');
   });
 
-  it('版本常量已 bump 到 4（新题材排除老题材 + 退潮锚字辈线 = v4）', () => {
-    expect(TVRB_RULES_VERSION).toBe(4);
+  it('版本常量已 bump 到 5（老题材 = 首霸日题材大类 = v5）', () => {
+    expect(TVRB_RULES_VERSION).toBe(5);
   });
 
   it('composable 两处调用都带上该选项（静态锁：漏一处 ⇒ 历史日会被改写）', () => {

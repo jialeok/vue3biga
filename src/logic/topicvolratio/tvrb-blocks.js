@@ -11,7 +11,7 @@
 // 外部依赖的口径说明（原 topic-vol-ratio-rules.js 头部的 import 注释，逐条搬过来）：
 
 import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_PICK_TONE, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, EBB_SECOND_BUY_TAG, EBB_SECOND_BUY_TONE, EBB_SECOND_RULE_NO, CASH_NO_BUY_TAG, CASH_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_BLOCK_TOPIC, WEAK_HUDDLE_TOP_N, WEAK_HUDDLE_TONE, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_BLOCK_TOPIC, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, CATCH_UP_TONE, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE, DIVERGE_DIP_TAG, DIVERGE_FOLLOW_TAG, DIVERGE_NO_BUY_TAG, DIVERGE_BUY_TONE, DIVERGE_NO_BUY_TONE, DIVERGE_RULE_NO, TVRB_CASH_ALERT_NONE, SWITCH_RULE_NO, NEW_DRAGON_TAG, NEW_DRAGON_TONE, RANGE10_BACKUP_TONE, RANGE10_BACKUP_TAG } from './tvrb-constants.js';
-import { _normTopic, _sameTopicLoose, _ebbEligibleNames, _ebbBuyPickNames, _num, _pct2, _findMemberByName, _streakWord, _closeRankOf, _windowTextOf, _todayRankPhrase, _rankLabelOf } from './tvrb-utils.js';
+import { _normTopic, _sameTopicLoose, _ebbEligibleNames, _ebbBuyPickNames, _num, _pct2, _findMemberByName, _streakWord, _closeRankOf, _windowTextOf, _todayRankPhrase, _rankLabelOf, _oldTopicNameOf, _oldTopicBasisOf } from './tvrb-utils.js';
 
 import { formatRangePct, RULE_NO, finishBuyBlock, SELL_OUT_TAG, SELL_ACTION_TONE_OUT, HOLD_TAG } from '../decision/decision-rules.js';
 import { getDragonLabel } from '../auction/dragon-rank.js';
@@ -1475,8 +1475,14 @@ export function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tie
   const p = nd && nd.pick;
   if (!p || !p.name) return null;
   const name = String(p.name).trim();
-  const topic = String(p.topic || '').trim();
-  const oldTopic = String(nd.oldTopic || '').trim() || '老龙题材';
+  // ★★ [R3 2026-11-12 用户口径] 题材按【核心词（大类）】印（规则层已归一，见 `nd.topicText`）。
+  //   用户原话：「你提就要提核心词（大类）不要说一些同义词细分」。
+  const topic = String((nd && nd.topicText) || '').trim() || String(p.topic || '').trim();
+  const oldTopic = _oldTopicNameOf(switchDay) || String(nd.oldTopic || '').trim() || '老龙题材';
+  // ★★ [LEADER-FIRST-TOPIC 2026-11-12 用户口径] 「老题材怎么定」的完整依据（判定日 + 成员 + 霸榜天数）。
+  //   用户原话：「顺便你把判断的日期选股逻辑写进选股提示那里，这样更清晰。」
+  //   ⛔ 判不出首霸日 ⇒ 空串（不硬编一句话），说明文案里自然不会出现这段。
+  const oldTopicBasis = _oldTopicBasisOf(switchDay);
   // ★★ [NEW-DRAGON-CERTIFY 2026-11-12] 认证龙 vs 新龙本身（两者都用第二十八条同一个买点信号）
   const cert = (nd && nd.certifier) || null;
   const isCert = !!cert && cert.name !== name;
@@ -1541,6 +1547,8 @@ export function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tie
   const famReason = fam
     ? ('【' + SWITCH_RULE_NO + '】切换日新龙·新题材【' + fam.topic + '】：' + oldTopic +
        '（老龙一 ' + (switchDay.leaderName || '—') + '）二次确认退潮（= 第二十五条【二次分歧】）后的第 2 个交易日 ⇒ 老周期结束。' +
+       // ★ [LEADER-FIRST-TOPIC] 「老题材」为什么是它 —— 判定日 + 当天十几成员 + 霸榜天数（用户要的「逻辑写进提示」）
+       (oldTopicBasis ? ('〔老题材怎么定：' + oldTopicBasis + '〕') : '') +
        '今日 20日涨幅（9:25 竞价口径）前十里有 ' + fam.count + ' 只【' + fam.topic + '】：' +
        famMemberText + ' ⇒ 同一题材 ≥' + fam.count + ' 只，构成【补涨新题材】。' +
        '最强的那只是【' + fam.primaryName + '】（' + _rankLabelOf(fam.bestRank) + '）' +
@@ -1562,6 +1570,7 @@ export function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tie
     : ('【' + SWITCH_RULE_NO + '】切换日' + (isCert ? '新龙·认证龙' : '新龙') + '：' + (oldTopic) +
       '（老龙一 ' + (switchDay.leaderName || '—') +
       '）二次确认退潮后的第 2 个交易日 ⇒ 老周期结束。' +
+      (oldTopicBasis ? ('〔老题材怎么定：' + oldTopicBasis + '〕') : '') +
       (isCert
         ? (name + '（' + (topic || '—') + '，20日涨幅 ' + formatRangePct(_num(p.pct)) + '，' +
            _rankLabelOf(p.rank20) + '）为【认证龙】：同题材【' + (cert.topic || topic || '—') +
@@ -1592,6 +1601,16 @@ export function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tie
     notQualifiedText: '',
     picks: picks,
     notes: [
+      // ★★ [LEADER-FIRST-TOPIC 2026-11-12 用户口径] 「老题材」是怎么定出来的 —— 放在第一条，
+      //   因为下面所有句子里的「老题材」都取它（用户：「顺便你把判断的日期选股逻辑写进选股提示」）。
+      ('【老题材怎么定】= 老龙一在近 20 个交易日内【第一次霸榜总龙一】那天，' +
+       '它所在的题材组里【成员最多的那一段】（≥2 只才算）⇒ 那就是老周期炒的那条线（大类）。' +
+       '⛔ 不拿「退潮当天那条落库题材」直接下结论 —— 那一条可能只是核心词归一出来的细分' +
+       '（例：东方海洋的「水产品」被归成「农业」），不是它霸榜时的炒作线。' +
+       (oldTopicBasis
+         ? ('本日命中：' + oldTopicBasis + '。')
+         : ('本日【没算出首霸日】（组合式未读到历史竞价榜 / 当天题材不足 2 只）⇒ 暂用退潮行落库题材【' +
+            oldTopic + '】。'))),
       // ★★ [NEW-DRAGON-FAMILY 2026-11-12] 新题材（字号 / 字辈）—— 本轮口径，放在第一条
       (fam
         ? ('【新题材怎么找 · 字号字辈】把今日 20日涨幅（9:25 竞价口径）前十按【题材段】分组' +
@@ -1640,6 +1659,11 @@ export function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tie
     row.actionNote = '【第二十八条 · ' + (fam ? '新题材' : (isCert ? '新龙 · 认证龙' : '新龙')) + '】' + oldTopic +
       '（老龙一 ' + (switchDay.leaderName || '—') +
       '）二次确认退潮后第 2 个交易日 = 切换日：老周期结束、新周期开启。' +
+      // ★ [LEADER-FIRST-TOPIC] 行内只印「首霸日 + 当天几只」（完整成员在说明区，⛔ 不让行内说明失控）
+      (oldTopicBasis
+        ? ('〔老题材 ' + oldTopic + ' = 它第一次霸榜总龙一那天（' + String(switchDay.oldTopicDate || '—') +
+           '）的题材大类，当天前十有 ' + (Number(switchDay.oldTopicCount) || 0) + ' 只〕')
+        : '') +
       (fam
         ? ('今日 20日涨幅前十里有 ' + fam.count + ' 只【' + fam.topic + '】⇒ 构成补涨新题材；本只是该题材' +
            (fam.primaryName === String(row.name || '').trim()

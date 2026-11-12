@@ -396,4 +396,60 @@ export function _rankLabelOf(rank20) {
   if (r <= 0) return '20日涨幅榜外';
   const lb = totalDragonLabel(r);
   return lb || ('20日涨幅第 ' + r + ' 名');
-}
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [LEADER-FIRST-TOPIC 2026-11-12 用户口径] 「老题材（大类）」的两条文案 —— §6 唯一实现
+//
+// 用户原话：「我都说了提到题材的时候要说大类，你说农业（老龙一 东方海洋），要考究东方海洋的大类，
+//   首先要确定它老龙一霸榜的题材是什么，从第一次霸榜总龙一开始……确定是羊字辈的题材。」
+//   「顺便你把判断的日期选股逻辑写进选股提示那里，这样更清晰。」
+//
+// ⇒ 两种粒度，⛔ 别在三个消费点各拼一遍（上一版就是四处各写一句「X（老龙一 Y）」，
+//   于是「农业 / 羊字辈」不一致时没有一处说得出「为什么是它」）：
+//   · `_oldTopicNameOf`  = 只给题材名（行内短语、常规侧排除说明用）；
+//   · `_oldTopicBasisOf` = 给「判定日 + 当天前十成员 + 霸榜天数」的完整依据（提示板 / 说明区用）。
+// ══════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 【纯函数】老题材（大类）的名字。判不出首霸日 ⇒ 退回退潮行落库的题材（= 上一版行为，§11）。
+ * @param {{oldTopic?:string, topic?:string}} switchDay
+ * @returns {string} 空串 = 真的没有（调用方自己决定写「—」还是不出这句）
+ */
+export function _oldTopicNameOf(switchDay) {
+  const s = switchDay || {};
+  return String(s.oldTopic || s.topic || '').trim();
+}
+
+/**
+ * 【纯函数】「老题材是怎么定出来的」—— 判定日 + 当天十几成员 + 霸榜天数。
+ * ⛔ 判不出（`oldTopicSource !== 'first-leader-day'`）⇒ 返回 ''，由调用方说明「退回落库题材」。
+ *
+ * @param {{oldTopicSource?:string, oldTopicDate?:string, oldTopicCount?:number,
+ *          oldTopicMembers?:Array<{name:string,rank20:number}>, oldTopicLeaderDays?:number|null,
+ *          oldTopicTopPct?:number|null, oldTopicDays?:number}} switchDay
+ * @returns {string} 例：`近 20 个交易日它第一次霸榜总龙一 = 2026-11-04（当日 20日涨幅 92.48%·
+ *                   9:25 竞价口径 第 1 名），那天前十里有 5 只【羊字辈】（…）⇒ 老题材（大类）= 羊字辈`
+ */
+export function _oldTopicBasisOf(switchDay) {
+  const s = switchDay || {};
+  if (String(s.oldTopicSource || '') !== 'first-leader-day') return '';
+  const d = String(s.oldTopicDate || '').trim();
+  const cnt = Number(s.oldTopicCount) || 0;
+  const topic = _oldTopicNameOf(s);
+  if (!d || !topic) return '';
+  const pct = (s.oldTopicTopPct === null || s.oldTopicTopPct === undefined)
+    ? ''
+    : ('，当日 20日涨幅 ' + (Number(s.oldTopicTopPct)).toFixed(2) + '% · 9:25 竞价口径 第 1 名');
+  const days = Number(s.oldTopicDays) || 0;
+  const cover = days > 0 ? ('近 ' + days + ' 个交易日') : '近 20 个交易日';
+  const members = (Array.isArray(s.oldTopicMembers) ? s.oldTopicMembers : [])
+    .map(function(m) { return String(m.name || '').trim() + '（' + _rankLabelOf(m.rank20) + '）'; })
+    .join('、');
+  const leaderDays = Number(s.oldTopicLeaderDays) || 0;
+  return cover + '它第一次霸榜总龙一 = ' + d + pct +
+    (cnt > 0 && members ? ('，那天前十里有 ' + cnt + ' 只【' + topic + '】：' + members) : '') +
+    ' ⇒ 老题材（大类）= ' + topic +
+    (leaderDays > 0 ? ('；窗口内共霸榜 ' + leaderDays + ' 天') : '');
+}
+

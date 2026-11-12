@@ -9,7 +9,7 @@
 
 import { TVRB_MIN_COUNT, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_TOP_N, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TVRB_CASH_ALERT_NONE, NEW_DRAGON_TAG, NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N, NEW_DRAGON_FAMILY_MIN_COUNT } from './tvrb-constants.js';
 import { pickFamilyNewDragon, splitTopicSegs, isLineageTopic } from './new-dragon-family.js';
-import { _normTopic, _sameTopicLoose, _num, _pct2, _streakWord, _secondTopicLeaderInTop10, _range10RankMapOf, _closeRankOf, _rankTopEntries, _topicTop10Hits, _windowTextOf, _todayRankPhrase, _rankLabelOf } from './tvrb-utils.js';
+import { _normTopic, _sameTopicLoose, _num, _pct2, _streakWord, _secondTopicLeaderInTop10, _range10RankMapOf, _closeRankOf, _rankTopEntries, _topicTop10Hits, _windowTextOf, _todayRankPhrase, _rankLabelOf, _oldTopicNameOf, _oldTopicBasisOf } from './tvrb-utils.js';
 import { detectEbbDay, secondEbbTopicOfPrevDay, buildEbbDayRecord } from './tvrb-ebb.js';
 import { _applyPrevEbbSecondNoBuy, _applyLeaderLimitDownNoBuy, _applyEbbSellRules, _buildEbbPicksBlock, _applyEbbBuyRules, _applyCashAlertBuyRules, _applyDivergeNoBuyRules, _buildDivergeBuyBlock, _buildDivergeCashAlert, _buildWeakHuddleBlock, _buildLeaderLimitDownHuddleBlock, _buildCatchUpBlock, resolveTvrbTier, avgVolRatioOf, formatAvgVolRatio, buildCashAlert, _dragonCandidates, _buildBlock, _buildNewDragonBlock, _withAuctionLegPct, _buildRange10BackupBlock } from './tvrb-blocks.js';
 
@@ -436,11 +436,17 @@ export function pickNewDragon(top5, everInTop5, info) {
     : null;
   if (fam) {
     pickKind = 'family';
+    // ★★ [LEADER-FIRST-TOPIC / R3 2026-11-12 用户口径] 题材一律按【核心词（大类）】展示：
+    //   「我会随时改核心词，选股有时也会根据核心词的同义词进行调整，你提就要提核心词（大类）
+    //    不要说一些同义词细分，这个我之前有要求过的。」
+    //   ⚠️ 分组仍然按【原始题材段】（那是「同一个炒作线有几只」的事实），只是**印出来的名字**
+    //     过一遍核心词归一 ⇒ 用户改了核心词，屏幕上的大类名跟着变（§6 一份实现）。
+    const famTopicText = _normTopic(fam.topic, coreRes) || String(fam.topic || '').trim();
     pick = fam.pick;
     extras = fam.extras;
     certifier = fam.certifier ? {
       name: fam.certifier.name,
-      topic: fam.topic,
+      topic: famTopicText,
       rank20: fam.certifier.rank20,
       everBefore: !!fam.certifier.everBefore,
       reason: fam.certifier.reason || '',
@@ -452,7 +458,7 @@ export function pickNewDragon(top5, everInTop5, info) {
       role: (fam.certifier.reason === 'yizi') ? 'wait-buy' : 'certify-only'
     } : null;
     family = {
-      topic: fam.topic,
+      topic: famTopicText,
       count: fam.count,
       bestRank: fam.primary.rank20,
       primaryName: fam.primary.name,
@@ -466,7 +472,8 @@ export function pickNewDragon(top5, everInTop5, info) {
         };
       }),
       groups: fam.groups.map(function(g) {
-        return { topic: g.topic, count: g.count, freshCount: g.freshCount };
+        // ★ [R3 用户口径] 组名同样按核心词（大类）印，⛔ 不出现同义词细分
+        return { topic: _normTopic(g.topic, coreRes) || String(g.topic || ''), count: g.count, freshCount: g.freshCount };
       })
     };
     // trail 按【前十】逐只重建（判定可追溯，§10：用户要能复核「为什么不是其它几只」）
@@ -484,24 +491,24 @@ export function pickNewDragon(top5, everInTop5, info) {
       const rk = Number(c && c.rank20) || (i + 1);
       let reason;
       if (nm === certName) {
-        reason = '题材【' + fam.topic + '】里最靠前的那只（' + _rankLabelOf(rk) + '），但今日【' + certWhy + '】⇒ ' +
+        reason = '题材【' + famTopicText + '】里最靠前的那只（' + _rankLabelOf(rk) + '），但今日【' + certWhy + '】⇒ ' +
           (certifier.role === 'wait-buy'
             ? '买点侧照样列出、挂【' + AUCTION_YIZI_WAIT_TAG + '】'
             : '只作题材认证，不进买点');
       } else if (buySet.has(nm)) {
         if (nm === fam.primary.name) {
-          reason = '题材【' + fam.topic + '】里竞价口径最靠前（' + _rankLabelOf(rk) + '），且本身就是老周期总龙 ⇒ ' +
+          reason = '题材【' + famTopicText + '】里竞价口径最靠前（' + _rankLabelOf(rk) + '），且本身就是老周期总龙 ⇒ ' +
             '【双重属性】既是老龙又是新龙，本只作新题材的主选';
         } else if (extras.some(function(m) { return m.name === nm; })) {
-          reason = '题材【' + fam.topic + '】里的【新面孔】（' + _rankLabelOf(rk) + '，近 ' +
+          reason = '题材【' + famTopicText + '】里的【新面孔】（' + _rankLabelOf(rk) + '，近 ' +
             _windowTextOf(windowDays) + '没进过前五）⇒ 与老龙换题材的【' + fam.primary.name +
             '】一起买（双重属性：老龙 + 一只纯新票）';
         } else {
-          reason = '题材【' + fam.topic + '】里最靠前的【' + fam.primary.name + '】（' + _rankLabelOf(fam.primary.rank20) +
+          reason = '题材【' + famTopicText + '】里最靠前的【' + fam.primary.name + '】（' + _rankLabelOf(fam.primary.rank20) +
             '）今日【' + certWhy + '】⇒ 买点顺延到本只（' + _rankLabelOf(rk) + '）';
         }
       } else {
-        reason = '不在新题材【' + fam.topic + '】的买点里（该题材已选出 ' + buyNames.join('、') +
+        reason = '不在新题材【' + famTopicText + '】的买点里（该题材已选出 ' + buyNames.join('、') +
           '）⇒ 切换日不再考虑它';
       }
       trail.push({ name: nm, rank20: rk, picked: buySet.has(nm), reason: reason });
@@ -571,6 +578,9 @@ export function pickNewDragon(top5, everInTop5, info) {
   }
   return {
     pick: pick, trail: trail, oldTopic: lt, pickKind: pickKind, certifier: certifier,
+    // ★★ [R3 2026-11-12 用户口径] 这只票的题材按【核心词（大类）】印（"文化传媒" ⇒ "AI应用"）。
+    //   ⛔ 不改 `pick.topic` 本体：它还带着分段串，是成员归属的事实（§6 单一数据源不改原值）。
+    topicText: pick ? _normTopic(pick.topic, coreRes) : '',
     // ★★ [NEW-DRAGON-FAMILY 2026-11-12] 新题材（字号/字辈）相关事实 —— 供文案层拼说明
     family: family,          // null = 本次走的是旧路径
     extras: extras           // 补选（最多 1 只：老龙换题材时的那只纯新票）
@@ -786,15 +796,67 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //            · 买点侧只走第二十八条（新龙 + 常规收紧一只），⛔ 不再走「退潮替补」。
   //   ⛔ 因此 detectEbbDay 必须在【已知今天是不是切换日】之后才决定要不要跑。
   out.switchDay = detectSwitchDay(o.ebbHistory || null, o.prevPrevDate || '', coreRes, o.ebbWindowFrom || '');
+
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  // ★★ [LEADER-FIRST-TOPIC 2026-11-12 用户口径] 【老题材（大类）】的唯一出处 —— 必须紧随
+  //   `detectSwitchDay` 之后定稿，排在所有消费点之前（§6：一条结论只有一个来源）。
+  //
+  // 用户原话（逐字）：「我都说了提到题材的时候要说大类，你说农业（老龙一 东方海洋），
+  //   要考究东方海洋的大类，首先要确定它老龙一霸榜的题材是什么，从第一次霸榜总龙一开始，
+  //   你检索下历史20个交易日，它第一次霸榜总龙一是不是在11月4日，当时20日涨幅竞价口径，
+  //   羊字辈就有5只……确定是羊字辈的题材。你在11月12日看来，这个就是作为老题材。」
+  //
+  // ── 上一版错在哪 ──────────────────────────────────────────────────────────────
+  //   直接拿【退潮日落库行】的 leader_topic 当老题材（11-10 ⇒ 「农业」，因为 东方海洋 的题材串
+  //   「水产品,农业,东方,羊字辈」经核心词归一后 `水产品 → 农业`）⇒ 提示板写成
+  //   「农业（老龙一 东方海洋）」。
+  //   而真值 = 【羊字辈】：11-04 它第一次霸榜总龙一（竞价口径第 1 名 92.48%），那天前十里有
+  //   5 只羊字辈（东方海洋 1 / 百洋股份 3 / 九阳股份 4 / 海洋王 5 / 阳光照明 7）。
+  //
+  // ── 本版 ─────────────────────────────────────────────────────────────────────
+  //   · `o.oldLeaderTopic` = 组合式（`data/leader-rank-history.js` + `leader-first-topic.js`）
+  //     回看近 20 个交易日算出的判定结果，本层**只读**、不重算、不发请求（§4 / §5）；
+  //   · 判得出（ready=true）⇒ `oldTopic` = 首霸日那天的题材大类（已过核心词归一），
+  //     并留痕 `oldTopicDate / oldTopicCount / oldTopicMembers / oldTopicLeaderDays`；
+  //   · 判不出（没传 / 读失败 / 首霸日那天题材不足 2 只）⇒ 退回原来的落库题材，
+  //     由 `oldTopicSource` 如实标注（§10：⛔ 不拿「判不出」冒充「没有」）。
+  //   ⚠️ §11：老调用方 / 单测不传 `oldLeaderTopic` ⇒ `oldTopic` 与 `switchDay.topic` 逐字相同
+  //      ⇒ 行为与本参数引入前完全一致。
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  if (out.switchDay) {
+    const lft = o.oldLeaderTopic || null;
+    const lftReady = !!(lft && lft.ready && String(lft.topic || '').trim() &&
+      String(lft.firstDate || '').trim());
+    const ebbTopic = _normTopic(out.switchDay.topic, coreRes);
+    out.switchDay.oldTopic = lftReady ? _normTopic(lft.topic, coreRes) : ebbTopic;
+    out.switchDay.oldTopicRaw = lftReady ? String(lft.rawTopic || lft.topic || '').trim() : '';
+    out.switchDay.oldTopicDate = lftReady ? String(lft.firstDate || '').trim() : '';
+    out.switchDay.oldTopicCount = lftReady ? (Number(lft.count) || 0) : 0;
+    out.switchDay.oldTopicMembers = lftReady && Array.isArray(lft.members)
+      ? lft.members.map(function(m) { return { name: String(m.name || '').trim(), rank20: Number(m.rank20) || 0 }; })
+      : [];
+    out.switchDay.oldTopicLeaderDays = (lftReady && Number(lft.leaderDays) > 0) ? Number(lft.leaderDays) : null;
+    out.switchDay.oldTopicTopPct = (lftReady && isFinite(Number(lft.topPct))) ? Number(lft.topPct) : null;
+    out.switchDay.oldTopicDays = lftReady ? (Number(lft.days) || 0) : 0;
+    out.switchDay.oldTopicSource = lftReady ? 'first-leader-day' : (lft ? 'fallback-' + String(lft.reason || 'unknown') : 'fallback-ebb-row');
+    // 退潮那一行落库的题材（事实留痕）：判得出老题材时它与 oldTopic 可能不同（农业 vs 羊字辈），
+    // 说明区要能解释「为什么印的不是这个」（§10 判定可追溯，⛔ 不静默改写历史事实）。
+    out.switchDay.ebbTopic = ebbTopic;
+  }
   out.ebb = out.switchDay
     ? null
     : detectEbbDay(o.ebbCtx || null, o.prevEbbDay || null, o.ebbHistory || null, coreRes, o.ebbWindowFrom || '');
   if (out.switchDay && o.ebbCtx && o.ebbCtx.ready) {
     // §10：把「今天为什么没有退潮判定」写清楚，⛔ 不能让人误以为「今天没退潮」
+    // ★★ [LEADER-FIRST-TOPIC 2026-11-12] 题材一律写【老题材（大类）】而不是退潮行落库的那一段
+    //   （用户原话：「我都说了提到题材的时候要说大类，你说农业（老龙一 东方海洋）」）。
     out.notes.push('ℹ️【第二十八条 · 周期状态】' + (out.switchDay.leaderName || '老龙一') + '（' +
-      (out.switchDay.topic || '—') + '）已于 ' + out.switchDay.ebbDate +
+      (_oldTopicNameOf(out.switchDay) || '—') + '）已于 ' + out.switchDay.ebbDate +
       ' 【二次确认退潮】⇒ 老周期结束；今天（第 2 个交易日）=【切换日】，按第二十八条选新龙，' +
-      '今天【不再判退潮】（占比 / 停牌不再重开退潮事件）。');
+      '今天【不再判退潮】（占比 / 停牌不再重开退潮事件）。' +
+      // ★ [LEADER-FIRST-TOPIC] 用户要求「把判断的日期选股逻辑写进选股提示」⇒ 依据必须可见，
+      //   ⛔ 不能只印一个题材名让人无法复核（§10 判定可追溯）。
+      (_oldTopicBasisOf(out.switchDay) ? (' 老题材怎么定：' + _oldTopicBasisOf(out.switchDay) + '。') : ''));
   }
   // ★ [EBB-R20b 2026-10-20 用户口径] 二次确认退潮 ⇒ 买点侧【先按常规选股】（排除退潮题材本身）：
   //   用户原话：「二次确认退潮的时候，应该先看常规选股，就是按题材平均量比选股（注意是新题材，
@@ -889,13 +951,17 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       ndJudgeFail = '20日涨幅历史榜未读到 ⇒ 无法判定「今天是否首次上榜」⇒ 新龙判定不生效';
     } else {
       // ★★ [NEW-DRAGON-FAMILY-OLD 2026-11-12 用户口径] 「正在退潮的老题材」清单
-      //   = ① 退潮日落库的那一段题材（switchDay.topic，例如「羊字辈」/「农业」）
+      //   = ① 【老题材（大类）】—— ★ [LEADER-FIRST-TOPIC] 现在取「第一次霸榜总龙一那天」
+      //        算出来的那段（东方海洋 ⇒ 羊字辈），⛔ 不再是退潮行落库的那一段（那是「农业」）。
+      //        判不出首霸日 ⇒ `oldTopic` 逐字回落成落库题材（= 上一版行为，§11）。
       //     ② 老龙一自己题材串里的【字辈线】（东方海洋 ⇒「羊字辈」）
       //   ⇒ 新题材候选里直接排除它们（用户：「退潮的是羊字辈，新题材的是东方，你搞混了吧？」）
+      // ⚠️ 判得出首霸日时【不再】把落库那段（农业）也塞进来：那只是「水产品 → 农业」这条
+      //   核心词归一的产物，不是老周期另立的一条线；塞进来会把真正的新【农业】题材一起排掉。
       const oldTopics = (function() {
         const arr = [];
         const push = function(v) { const s = String(v || '').trim(); if (s && arr.indexOf(s) < 0) arr.push(s); };
-        push(out.switchDay.topic);
+        push(_oldTopicNameOf(out.switchDay));
         const oldLeader = String(out.switchDay.leaderName || '').trim();
         if (oldLeader) {
           const src = (o.ebbCtx && Array.isArray(o.ebbCtx.topicPool)) ? o.ebbCtx.topicPool : pool;
@@ -905,7 +971,8 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         return arr;
       })();
       ndResult = pickNewDragon(pool, ever, {
-        oldTopic: out.switchDay.topic,
+        // ★ [LEADER-FIRST-TOPIC 2026-11-12] 提示板上那句「X（老龙一 东方海洋）」的 X = 老题材（大类）
+        oldTopic: _oldTopicNameOf(out.switchDay),
         oldLeaderName: out.switchDay.leaderName,
         windowDays: winDays,
         coreRes: coreRes,
@@ -946,7 +1013,9 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     //     老周期已结束，⛔ 不能因为「新龙没选出来」就把退潮题材重新放进买点侧。
     if (out.switchDay) {
       const bt = String(b.topic || '').trim();
-      const oldTopic = _normTopic(out.switchDay.topic, coreRes);
+      // ★ [LEADER-FIRST-TOPIC 2026-11-12] 老题材（大类）已由 `_oldTopicNameOf` 归一过，
+      //   ⛔ 不再现场 `_normTopic(switchDay.topic)`（那是落库的那一段，可能与老题材不同）。
+      const oldTopic = _oldTopicNameOf(out.switchDay);
       if (oldTopic && _sameTopicLoose(bt, oldTopic, coreRes)) {
         out.notes.push('⚠️【第二十八条 · 切换日】题材【' + b.topic +
           '】= 老周期（' + oldTopic + ' 二次确认退潮）⇒ 今天不参与常规选股。');
@@ -1344,8 +1413,10 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     const _extras = (ndResult && Array.isArray(ndResult.extras)) ? ndResult.extras : [];
     const _buyAll = [ndName].concat(_extras.map(function(x) { return String(x.name || '').trim(); })).join('、');
     out.notes.push('⚠️【第二十八条 · 切换日】' + (out.switchDay.leaderName || '老龙一') + '（' +
-      (out.switchDay.topic || '—') + '）二次确认退潮（' + out.switchDay.ebbDate +
+      (_oldTopicNameOf(out.switchDay) || '—') + '）二次确认退潮（' + out.switchDay.ebbDate +
       '）后第 2 个交易日 ⇒ 老周期结束、找新龙：' +
+      // ★ [LEADER-FIRST-TOPIC 2026-11-12] 用户要求「把判断的日期 / 逻辑写进选股提示」⇒ 老题材的依据写在这里
+      (_oldTopicBasisOf(out.switchDay) ? ('〔老题材怎么定：' + _oldTopicBasisOf(out.switchDay) + '〕') : '') +
       (_fam
         ? ('20日涨幅（9:25 竞价口径）前十里有 ' + _fam.count + ' 只【' + _fam.topic + '】（' +
            _fam.members.map(function(m) { return m.name + (m.everBefore ? '·老面孔' : '·新面孔'); }).join('、') +
@@ -1356,7 +1427,8 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
                 '·买不进】⇒ 只作题材认证')
              : '') +
            ' ⇒ 买点侧 = 【新题材】' + _buyAll + '（' + (1 + _extras.length) + ' 只）')
-        : ('买点侧 = 【' + (_cert ? '认证龙' : '新龙') + '】' + ndName + '（' + (ndResult.pick.topic || '—') + '）' +
+        : ('买点侧 = 【' + (_cert ? '认证龙' : '新龙') + '】' + ndName + '（' +
+           ((ndResult && ndResult.topicText) || (ndResult.pick.topic || '—')) + '）' +
            (_cert
              ? ('〔同题材【' + (_cert.topic || '—') + '】里首次进前五的是【' + _cert.name + '】（' +
                 (_rankLabelOf(_cert.rank20) || '—') + '），那只只作判断条件；前五里同题材最靠前的是本只 ⇒ ' +
@@ -1368,7 +1440,7 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     // ★ [CYCLE 2026-10-22] 收紧不因「判不出新龙」而取消：用户原话「10月22日……常规只选排名第一的
     //   入选题材（只选最前面那个）」—— 老周期已在昨天结束，今天不可能再买两个题材。
     out.notes.push('⚠️【第二十八条 · 切换日】' + (out.switchDay.leaderName || '老龙一') + '（' +
-      (out.switchDay.topic || '—') + '）二次确认退潮后第 2 个交易日 = 切换日，' +
+      (_oldTopicNameOf(out.switchDay) || '—') + '）二次确认退潮后第 2 个交易日 = 切换日，' +
       (ndJudgeFail ? (ndJudgeFail + '。') : '但 20日涨幅前八里【没有】符合「首次上榜 + 不同题材」的新龙。') +
       ' ⇒ 买点侧【回落常规选股：只选排名第一的入选题材、只取一只】（第二十八条）。' +
       ((ndResult && ndResult.trail && ndResult.trail.length > 0)
