@@ -60,8 +60,8 @@ import {
   DIVERGE_SECOND_BOARD_WINDOW,
   DIVERGE_WINDOW_DAYS
 } from './tvrb-constants.js';
-// §6 单一数据源：占比门槛只认 auction-share 那一份实现（⛔ 不在这里另写一个 3.5）
-import { auctionShareThresholdOf } from '../decision/auction-share.js';
+// §6 单一数据源：占比门槛 / 占比公式只认 auction-share 那一份实现（⛔ 不在这里另写一个 3.5 或 v/y*100）
+import { auctionShareThresholdOf, computeAuctionShare } from '../decision/auction-share.js';
 
 /** 分歧形态编码（留痕用，UI 不必读） */
 export const DIVERGE_SHAPE_LOW_OPEN = 'low-open';      // D1 竞价低开
@@ -270,4 +270,85 @@ export function divergeNoteOf(d, topic) {
         : '') + '）';
   }
   return '';
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [LEADER-DIVERGE-WIRE 2026-11-13] 第二个入口：由【逐日事实数组】直接出判定。
+//
+// 为什么需要它：`classifyLeaderDiverge` 要的是「一票一天一行、已排好序、已是竞价口径」
+// 的成品行。把「原始表行 → 成品行」这一步写在组合式里，就等于在 UI 层再实现一遍口径
+// （§5 / §6 双向违规），而且单测无法独立构造。⇒ 这里给一个纯函数收口：
+//   · `share` 走 `computeAuctionShare`（竞价量 ÷ 昨日成交量，§6 唯一实现）；
+//   · `limitUp` 走「当日收盘涨幅 ≥ 该股涨停幅度 − 容差」（涨停幅度复用 `getLimitUpPct`，
+//     主板 10 / 创业板科创板 20 / 北交所 30 / ST 5）；
+//   · `isDragonOne` 由调用方给（来自**同一份**竞价口径榜，⛔ 这里不自己排队次）。
+//
+// ⚠️ 为什么 `closePct` 另取 `dailyPct` 而不用 `market_metrics.change_pct`：
+//   那张表的 change_pct 长期停留在 9:25 竞价涨幅（收盘覆盖的 pg_cron 从未真正生效，
+//   见 db/supabase_auction_close_cron.sql 的注释）⇒ 拿它判「收盘是不是绿的 / 是不是涨停」
+//   会把 11-04 这种「高开低走收绿」的日子判反。`stock_daily_pct.pct` 才是收盘真值。
+// ══════════════════════════════════════════════════════════════════════════════════════
+
+/** 涨停判定的容差（%）：收盘涨幅常见 9.97 / 9.98 / 10.00 等四舍五入值，⛔ 不做精确相等 */
+export const DIVERGE_LIMIT_UP_TOLERANCE = 0.15;
+
+/**
+ * 【纯函数】一天一行 → 判定输入行。
+ *
+ * @param {{date:string, isDragonOne?:boolean, aucPct?:*, closePct?:*, dailyPct?:*,
+ *          volume?:*, yestVolume?:*, limitUpPct?:*}} day
+ *        `aucPct` = 竞价涨幅（%）；`closePct` = 收盘涨幅（%，`market_metrics.change_pct`）；
+ *        `dailyPct` = 收盘涨幅（%，`stock_daily_pct.pct`，更可信，优先用它判涨停）；
+ *        `volume` / `yestVolume` = 当日竞价量 / 昨日成交量；`limitUpPct` = 该股涨停幅度
+ * @returns {{date:string, aucPct:number|null, closePct:number|null, share:number|null,
+ *            limitUp:boolean|null, isDragonOne:boolean}}
+ *          `limitUp = null` ⇒ 拿不到收盘真值（§10 未知 ≠ 没涨停，⛔ 不折成 false 参与判定）
+ */
+export function buildDivergeDayRow(day) {
+  const d = day || {};
+  const auc = _n(d.aucPct);
+  // 收盘涨幅：`dailyPct`（stock_daily_pct 真值）优先，退化到 change_pct
+  const close = _n(d.dailyPct) !== null ? _n(d.dailyPct) : _n(d.closePct);
+  // 竞价占比：与决策看板同一条公式（§6：只认 auction-share 那一份实现）
+  const share = computeAuctionShare(d.volume, d.yestVolume);
+  const thr = _n(d.limitUpPct);
+  let limitUp = null;
+  if (close !== null && thr !== null && thr > 0) {
+    limitUp = close >= (thr - DIVERGE_LIMIT_UP_TOLERANCE);
+  } else if (close !== null) {
+    // 涨停幅度读不到（代码缺失）：按主板 10% 判，但只认「明显到 10%」的那一档 ——
+    // 20% 板块的 15% 会被漏掉（漏判 = 少一个起点），⛔ 不会误判出涨停。
+    limitUp = close >= (10 - DIVERGE_LIMIT_UP_TOLERANCE);
+  }
+  return {
+    date: String(d.date || '').trim(),
+    aucPct: auc,
+    closePct: close,
+    share: share,
+    limitUp: limitUp,
+    isDragonOne: !!d.isDragonOne
+  };
+}
+
+/**
+ * ★★ [LEADER-DIVERGE-WIRE] 逐日事实 → 第二十五条判定（组合式只调这一个函数）。
+ *
+ * @param {Array<object>} days 见 `buildDivergeDayRow`（顺序无所谓，内部按日期升序）
+ * @returns {ReturnType<typeof classifyLeaderDiverge> & {rows:Array, dragonDays:number, windowDays:number}}
+ *          `rows` 留痕（说明区可逐日追溯）；`kind:'unknown'` ⇒ 调用方不得据它改文案
+ */
+export function runLeaderDiverge(days) {
+  const rows = (Array.isArray(days) ? days : [])
+    .map(buildDivergeDayRow)
+    .filter(function (r) { return !!r.date; })
+    .sort(function (a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
+  if (rows.length === 0) {
+    const empty = classifyLeaderDiverge([], { dragonDays: null });
+    return Object.assign(empty, { rows: [], dragonDays: 0, windowDays: DIVERGE_WINDOW_DAYS });
+  }
+  // 总龙资格：近 N 日当【总龙一】的天数（口径 = 调用方喂的 isDragonOne，来自同一份竞价榜）
+  const dragonDays = rows.filter(function (r) { return r.isDragonOne; }).length;
+  const win = rows.slice(-DIVERGE_WINDOW_DAYS);
+  const res = classifyLeaderDiverge(win, { dragonDays: dragonDays, windowDays: DIVERGE_WINDOW_DAYS });
+  return Object.assign(res, { rows: win, dragonDays: dragonDays, windowDays: DIVERGE_WINDOW_DAYS });
 }
