@@ -290,7 +290,32 @@ export async function upsertRange20Rows(env, rows) {
 //   §10：读取失败一律抛错；§32：按 Range 分页，不整表拉爆网关。
 // ============================================================================
 
-/** 分页 GET（PostgREST Range 头）；返回扁平数组，任何一页失败都抛错 */
+// [RANGE-416 2026-11-13] PostgREST 在「请求的 Range 起点 ≥ 总行数」时**不是**返回空数组，
+//   而是 416 + `PGRST103 Requested range not satisfiable`（details 还写着 limit >= 0，极具误导）。
+//   原实现把任何 `!resp.ok` 都当读失败抛错 ⇒ 只要某次读取的最后一页正好踩在
+//   「总行数 = 1000 的整数倍」这个边界上就整轮崩掉。
+//
+//   实测证据（2026-11-13 Actions 跑 point=divergedays 第 1 次）：
+//     "error": "分页读取失败 (from=1000): HTTP 416: {\"code\":\"PGRST103\",...}"
+//     at sbGetUntil → readRecentTradeDates → runLeaderDivergeDays
+//   —— 全市场 20 个交易日的 auction_watchlist 远超 1000 行，第 2 页起点必然越界。
+//
+//   ⇒ 判据：416 + Content-Range 形如 `*/<total>` 且 from >= total ⇒ **正常结束**（不是错误）；
+//     拿不到 total 时，from > 0 也按结束处理（第 0 页就 416 = 真异常，必须抛错）。
+function _rangePastEnd(resp, from) {
+  if (!resp || resp.status !== 416) return false;
+  let total = NaN;
+  try {
+    const cr = resp.headers && typeof resp.headers.get === 'function'
+      ? (resp.headers.get('content-range') || '') : '';
+    const m = /\*\/(\d+)/.exec(cr);
+    if (m) total = Number(m[1]);
+  } catch (e) { total = NaN; }
+  if (isFinite(total)) return from >= total;
+  return from > 0;
+}
+
+/** 分页 GET（PostgREST Range 头）；返回扁平数组，任何一页失败都抛错（416 越界除外） */
 async function sbGetPaged(env, url) {
   const PAGE = 1000;
   const out = [];
@@ -302,6 +327,7 @@ async function sbGetPaged(env, url) {
       })
     });
     if (!resp.ok) {
+      if (_rangePastEnd(resp, from)) break;
       const text = await resp.text().catch(() => '');
       throw new Error('分页读取失败 (from=' + from + '): HTTP ' + resp.status + ': ' + text.slice(0, 200));
     }
@@ -773,6 +799,8 @@ async function sbGetUntil(env, url, enough, maxPages) {
       })
     });
     if (!resp.ok) {
+      // ★ 416 = Range 起点已越过总行数 ⇒ 读完了，⛔ 不是失败（见 _rangePastEnd 的实测证据）
+      if (_rangePastEnd(resp, from)) break;
       const text = await resp.text().catch(() => '');
       throw new Error('分页读取失败 (from=' + from + '): HTTP ' + resp.status + ': ' + text.slice(0, 200));
     }
@@ -801,9 +829,16 @@ async function sbGetUntil(env, url, enough, maxPages) {
  */
 export async function readRecentTradeDates(env, throughDate, wantDays) {
   const want = Number(wantDays) > 0 ? Math.floor(Number(wantDays)) : 20;
+  // 🔴 [RANGE-416 2026-11-13] ⛔ URL 里**不许**再写 `&limit=1000`：
+  //   PostgREST 会把它当成整条查询的硬上限，而 Range 头又要按 1000 一页推进，
+  //   两者相乘的结果是「第 2 页算出来的 limit = 1000 − 1000 = 0」⇒ 416 PGRST103
+  //   （details 还写着 "Limit should be greater than or equal to zero"，极具误导）。
+  //   去掉它以后，每页 1000 行由 Range 头 + 服务端 db-max-rows 各自约束，分页才真的成立。
+  //   ⚠️ 后果对照：带着 limit=1000 时这里最多只能拿到 1000 行（≈ 5~13 个交易日），
+  //      20 日窗口会被静默压成十来天，正是 860deee 那次「窗口只有 9 天」的同一族根因。
   const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?select=date' +
     '&date=lt.' + encodeURIComponent(String(throughDate || '')) +
-    '&order=date.desc&limit=1000';
+    '&order=date.desc';
   const dates = [];
   const set = new Set();
   const rows = await sbGetUntil(env, url, function (acc) {

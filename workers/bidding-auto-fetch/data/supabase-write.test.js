@@ -33,7 +33,8 @@ function mockFetch(handler) {
 const {
   bucketRowsByKeySet, upsertMarketMetrics, upsertAuctionWatchlist,
   readDailyLegsForStocks, readRange20StocksForDate,
-  upsertRange20Rows, readRange20TopForDate, readCodesFromMetricsByNames
+  upsertRange20Rows, readRange20TopForDate, readCodesFromMetricsByNames,
+  readRecentTradeDates, readMetricsLegsWindow
 } = await import('./supabase-write.js');
 const ENV = { SUPABASE_SERVICE_ROLE_KEY: 'k' };
 
@@ -291,5 +292,79 @@ describe('[RANGE20-CODE-FALLBACK] market_metrics.code 二级补码', () => {
       };
     }));
     await expect(readCodesFromMetricsByNames(ENV, ['甲票', '乙票'])).resolves.toEqual({});
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// [RANGE-416 2026-11-13] PostgREST 在「Range 起点 ≥ 总行数」时返回
+//   416 + PGRST103（details 写成 "Limit should be greater than or equal to zero"），
+//   ⛔ **不是**空数组。原实现把 416 混在「读失败」里抛错 ⇒ 只要最后一页踩在
+//   1000 的整数倍边界上，整轮就崩（实测见 runLeaderDivergeDays 第一次云端实跑）。
+// ════════════════════════════════════════════════════════════════════════════
+function _resp416(total) {
+  return {
+    ok: false,
+    status: 416,
+    headers: { get: (k) => (String(k).toLowerCase() === 'content-range' ? '*/' + total : null) },
+    text: async () => '{"code":"PGRST103","message":"Requested range not satisfiable"}',
+    json: async () => []
+  };
+}
+
+describe('[RANGE-416] 分页读到尾部 ⇒ 正常收尾，⛔ 不许当读失败', () => {
+  it('★ readRecentTradeDates：第二页 416 ⇒ 不抛错、升序返回、且 URL 里没有 limit=1000', async () => {
+    // 第 1 页：1000 行，只覆盖 10 个日期（每天 100 行）⇒ 远不够 wantDays=40，必然要第 2 页
+    const page0 = [];
+    for (let d = 0; d < 10; d++) {
+      const day = '2026-10-' + String(20 - d).padStart(2, '0');
+      for (let i = 0; i < 100; i++) page0.push({ date: day });
+    }
+    const ranges = [];
+    vi.stubGlobal('fetch', vi.fn(async function (url, opts) {
+      const range = String((opts && opts.headers && opts.headers.Range) || '');
+      calls.push({ url: url, headers: opts && opts.headers });
+      ranges.push(range);
+      if (ranges.length === 1) return { ok: true, status: 200, json: async () => page0, text: async () => '' };
+      expect(range).toBe('1000-1999');   // 第二页起点必须正好 1000
+      return _resp416(1000);
+    }));
+
+    const dates = await readRecentTradeDates(ENV, '2026-11-13', 40);
+    // 没有抛错 = 关键断言（旧实现在这里 throw「分页读取失败 (from=1000)」）
+    expect(dates).toHaveLength(10);
+    expect(dates[0]).toBe('2026-10-11');            // 升序（判定窗口按时间正序才有意义）
+    expect(dates[9]).toBe('2026-10-20');
+    // ⛔ 不许再写死 limit：它会被当成整条查询的硬上限，与 Range 分页相乘 = 416 + 窗口被压短
+    expect(calls[0].url).not.toMatch(/[?&]limit=/);
+    expect(calls[0].url).toMatch(/order=date\.desc/);
+  });
+
+  it('★ sbGetPaged：恰好 1000 行（总行数=1000）⇒ 第二页 416 仍返回全部 1000 行', async () => {
+    const page0 = [];
+    for (let i = 0; i < 1000; i++) page0.push({ stock: 's' + i, date: '2026-11-12', change_pct: '1' });
+    vi.stubGlobal('fetch', vi.fn(async function () {
+      calls.push({ url: 'x' });
+      if (calls.length === 1) return { ok: true, status: 200, json: async () => page0, text: async () => '' };
+      return _resp416(1000);
+    }));
+
+    const rows = await readMetricsLegsWindow(ENV, '2026-11-01', '2026-11-13');
+    expect(rows).toHaveLength(1000);
+  });
+
+  it('★ 416 但拿不到 Content-Range 且 from=0 ⇒ 仍然抛错（真异常不许被吞成「没有数据」）', async () => {
+    vi.stubGlobal('fetch', vi.fn(async function () {
+      calls.push({ url: 'x' });
+      return { ok: false, status: 416, headers: { get: () => null }, text: async () => 'bad', json: async () => [] };
+    }));
+    await expect(readMetricsLegsWindow(ENV, '2026-11-01', '2026-11-13')).rejects.toThrow(/416/);
+  });
+
+  it('读失败仍是读失败（500 不许被 416 逻辑顺带放过）', async () => {
+    vi.stubGlobal('fetch', vi.fn(async function () {
+      calls.push({ url: 'x' });
+      return { ok: false, status: 500, text: async () => 'boom', json: async () => [] };
+    }));
+    await expect(readRecentTradeDates(ENV, '2026-11-13', 20)).rejects.toThrow(/HTTP 500/);
   });
 });
