@@ -130,6 +130,10 @@ export const state = reactive({
     //   `topic/rules.js` 的模块级变量里（非响应式）⇒ 云端加载完成 / 用户改完核心词后，
     //   已渲染的 computed 不会重算。这里只放一个「变了」的信号，消费方 `void` 一下即可建立依赖。
     _coreTopicsVersion: 0,
+    // ★ [TOPIC-LIB-SIG 2026-11-12] 个股题材库（stock_topics）版本号 —— 与 `_coreTopicsVersion` 同款：
+    //   纯响应式信号（非真相源）。用户手动改题材 / 云端刷新后 +1，让「选股存档的规则指纹」computed
+    //   重算 ⇒ 指纹变 ⇒ 存档判过期 ⇒ 连历史日期一起按新题材重算（用户口径）。
+    _topicLibVersion: 0,
     _topicRankByDateCache: null,
     currentTrackEditId: null,
     isStrengthSortEnabled: false,

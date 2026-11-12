@@ -287,8 +287,8 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
     expect(resolvePlanSnapshotFreshness(broken, Object.assign({}, OPTS, { allowRulesInvalidation: false }))).toBe('stale');
   });
 
-  it('版本常量已 bump 到 2（认证龙口径 = v2）', () => {
-    expect(TVRB_RULES_VERSION).toBe(2);
+  it('版本常量已 bump 到 3（新题材 = 字号/字辈口径 = v3）', () => {
+    expect(TVRB_RULES_VERSION).toBe(3);
   });
 
   it('composable 两处调用都带上该选项（静态锁：漏一处 ⇒ 历史日会被改写）', () => {
@@ -297,5 +297,57 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
     expect(n).toBe(2);
     expect(src).toContain('allowRulesInvalidation: key === _bjTodayKey()');
     expect(src).toContain('allowRulesInvalidation: d === _bjTodayKey()');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// ★★ [TOPIC-LIB-SIG 2026-11-12 用户口径] 题材库（个股题材）变了 ⇒ **历史日也要重算**。
+//
+// 用户原话：「比如我在今天改了题材，我希望历史日期题材量比选股也会根据这个题材改变做改变……
+//   之前那些选票也要根据我手动改的题材变化」。
+// ⚠️ 与 [RULES-BUMP-GUARD] 恰好相反：规则/核心词变了只重算今天，题材库变了连历史一起重算。
+// ══════════════════════════════════════════════════════════════════════════════════════════
+describe('tvrb · [TOPIC-LIB-SIG] 题材库指纹变了 ⇒ 历史日也重算', () => {
+  const CORE = [{ name: 'AI应用', synonyms: ['人工智能'] }];
+
+  it('指纹第二段相同、第三段不同 ⇒ stale（哪怕 allowRulesInvalidation=false）', () => {
+    const oldSig = buildRulesFingerprint(CORE, 'tl1:aaaa1111');
+    const newSig = buildRulesFingerprint(CORE, 'tl1:bbbb2222');
+    const snap = { status: 'hit', rulesSig: oldSig, inputsSig: 'v1:111' };
+    const opts = {
+      rulesSig: newSig, coreTopicsLoaded: true, inputsSig: 'v1:111',
+      allowRulesInvalidation: false                       // 历史日
+    };
+    expect(resolvePlanSnapshotFreshness(snap, opts)).toBe('stale');
+  });
+
+  it('题材库没变 ⇒ hit（不抖动）', () => {
+    const sig = buildRulesFingerprint(CORE, 'tl1:aaaa1111');
+    const snap = { status: 'hit', rulesSig: sig, inputsSig: 'v1:111' };
+    const opts = { rulesSig: sig, coreTopicsLoaded: true, inputsSig: 'v1:111', allowRulesInvalidation: false };
+    expect(resolvePlanSnapshotFreshness(snap, opts)).toBe('hit');
+  });
+
+  it('当前算不出题材库指纹（空）⇒ hit（§10：算不出来 ≠ 变了）', () => {
+    const snap = { status: 'hit', rulesSig: 'v3:bbbbbbbb:tl1:aaaa1111', inputsSig: 'v1:111' };
+    const opts = {
+      rulesSig: 'v3:bbbbbbbb', coreTopicsLoaded: true, inputsSig: 'v1:111',
+      allowRulesInvalidation: false
+    };
+    expect(resolvePlanSnapshotFreshness(snap, opts)).toBe('hit');
+  });
+
+  it('老存档没有第三段（升级前的行）⇒ 自愈一次（stale）', () => {
+    const snap = { status: 'hit', rulesSig: 'v3:bbbbbbbb', inputsSig: 'v1:111' };
+    const opts = {
+      rulesSig: 'v3:bbbbbbbb:tl1:aaaa1111', coreTopicsLoaded: true, inputsSig: 'v1:111',
+      allowRulesInvalidation: false
+    };
+    expect(resolvePlanSnapshotFreshness(snap, opts)).toBe('stale');
+  });
+
+  it('指纹确定性：内容相同 ⇒ 跨调用恒相同；内容不同 ⇒ 不同', () => {
+    expect(buildRulesFingerprint(CORE, 'tl1:aaaa1111')).toBe(buildRulesFingerprint(CORE, 'tl1:aaaa1111'));
+    expect(buildRulesFingerprint(CORE, 'tl1:aaaa1111')).not.toBe(buildRulesFingerprint(CORE, 'tl1:bbbb'));
   });
 });

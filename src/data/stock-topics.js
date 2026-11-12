@@ -61,6 +61,62 @@ import { state } from '../logic/app-state.js';
             _topicsMemo.bust(_TOPICS_KEY);
         }
 
+        // ══════════════════════════════════════════════════════════════════════════════
+        // ★★ [TOPIC-LIB-SIG 2026-11-12 用户口径] 题材库内容指纹（给「选股存档」判过期用）
+        //
+        // 用户原话：「比如我在今天改了题材，我希望历史日期题材量比选股也会根据这个题材改变做改变，
+        //   而不是之前的那些固定选出来的，因为这个市场在变化，我自己也要调整，之前那些选票也要
+        //   根据我手动改的题材变化」。
+        //
+        // ⇒ 存档里除了「规则版本 + 核心词」（只重算今天），还要记一份**题材库内容指纹**：
+        //   只要用户改过任意一只股票的题材，指纹就变 ⇒ `plan-snapshot-rules#resolvePlanSnapshotFreshness`
+        //   判 stale ⇒ **连同历史日期一起重算**（用户明确要求；⛔ 与「规则升级只重算今天」区分开）。
+        //
+        // ⚠️ 必须基于【内容】而不是写入次数：页面刷新 / 换设备后必须得到同一个值，
+        //   否则每次打开都误判「题材变了」⇒ 历史天天重算、天天覆盖。
+        // §10：库还没拉（null）⇒ 返回 ''（算不出来 ≠ 变了）—— 调用方据此「不动存档」。
+        // ══════════════════════════════════════════════════════════════════════════════
+        /** FNV-1a 32bit（只用于「变没变」，不用于安全场景） */
+        function _fnv1aHex(s) {
+            let h = 0x811c9dc5;
+            for (let i = 0; i < s.length; i++) {
+                h ^= s.charCodeAt(i);
+                h = Math.imul(h, 0x01000193) >>> 0;
+            }
+            return ('00000000' + (h >>> 0).toString(16)).slice(-8);
+        }
+
+        /**
+         * 题材库内容指纹（确定性；与设备 / 会话无关）。
+         * @returns {string} 形如 'tl1:1a2b3c4d'；库未加载 / 空库 ⇒ ''
+         */
+        export function getTopicLibraryDigest() {
+            const cache = state._cloudTopicsCache;
+            if (!cache || typeof cache !== 'object') return '';
+            const names = Object.keys(cache).sort();
+            if (names.length === 0) return '';
+            const parts = [];
+            names.forEach(function(name) {
+                const set = cache[name];
+                if (!set || set.size === 0) { parts.push(name + '='); return; }
+                const arr = [];
+                set.forEach(function(t) { const v = String(t == null ? '' : t).trim(); if (v) arr.push(v); });
+                arr.sort();
+                parts.push(name + '=' + arr.join('|'));
+            });
+            return 'tl1:' + _fnv1aHex(parts.join(';'));
+        }
+
+        /**
+         * 题材库版本号（纯响应式信号，非真相源）。
+         * 用途：`getTopicLibraryDigest()` 读的是模块外缓存（非响应式），computed 建立不了依赖 ⇒
+         *   用这个计数器 `void` 一下，用户改完题材 / 云端刷新后已渲染的 computed 才会重算（§17）。
+         * @returns {number}
+         */
+        export function getTopicLibraryVersion() {
+            return state._topicLibVersion || 0;
+        }
+
         /** 仅供测试 / 诊断 */
         export function _resetStockTopicsMemo() {
             _topicsMemo.reset();
@@ -145,6 +201,9 @@ import { state } from '../logic/app-state.js';
             // 同步更新本地缓存，避免下次 buildTopicCache 时丢失
             if (!state._cloudTopicsCache) state._cloudTopicsCache = {};
             state._cloudTopicsCache[trimmedName] = new Set(mergedTopics);
+            // ★ [TOPIC-LIB-SIG 2026-11-12] 用户手动改题材 ⇒ 版本号 +1（指纹随之变 ⇒ 选股存档判过期、
+            //   连历史日期一起重算 —— 用户口径「之前那些选票也要根据我手动改的题材变化」）
+            state._topicLibVersion = (state._topicLibVersion || 0) + 1;
             if (state._topicCacheBuilt && state._topicCache) {
                 state._topicCache[trimmedName] = new Set(mergedTopics);
                 if (replaceMode) {
@@ -172,6 +231,8 @@ import { state } from '../logic/app-state.js';
         export async function loadCloudTopics() {
             try {
                 state._cloudTopicsCache = await pullStockTopicsFromCloud();
+                // ★ [TOPIC-LIB-SIG 2026-11-12] 内容变了 ⇒ 版本号 +1（computed 依赖它重算指纹）
+                state._topicLibVersion = (state._topicLibVersion || 0) + 1;
                 console.log('题材库加载完成:', Object.keys(state._cloudTopicsCache).length, '只股票');
             } catch (e) {
                 console.warn('loadCloudTopics 失败，回退到本地扫描:', e.message);

@@ -7,7 +7,8 @@
 //   opts.dataGateBlocked 为真时，必须走 _clearBuySideForDataGate 把买点侧清空；
 //   ⛔ 只在视图层 v-if 挡不住未来新增的买点通道。
 
-import { TVRB_MIN_COUNT, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_TOP_N, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TVRB_CASH_ALERT_NONE, NEW_DRAGON_TAG, NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N } from './tvrb-constants.js';
+import { TVRB_MIN_COUNT, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_TOP_N, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TVRB_CASH_ALERT_NONE, NEW_DRAGON_TAG, NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N, NEW_DRAGON_FAMILY_MIN_COUNT } from './tvrb-constants.js';
+import { pickFamilyNewDragon } from './new-dragon-family.js';
 import { _normTopic, _sameTopicLoose, _num, _pct2, _streakWord, _secondTopicLeaderInTop10, _range10RankMapOf, _closeRankOf, _rankTopEntries, _topicTop10Hits, _windowTextOf, _todayRankPhrase, _rankLabelOf } from './tvrb-utils.js';
 import { detectEbbDay, secondEbbTopicOfPrevDay, buildEbbDayRecord } from './tvrb-ebb.js';
 import { _applyPrevEbbSecondNoBuy, _applyLeaderLimitDownNoBuy, _applyEbbSellRules, _buildEbbPicksBlock, _applyEbbBuyRules, _applyCashAlertBuyRules, _applyDivergeNoBuyRules, _buildDivergeBuyBlock, _buildDivergeCashAlert, _buildWeakHuddleBlock, _buildLeaderLimitDownHuddleBlock, _buildCatchUpBlock, resolveTvrbTier, avgVolRatioOf, formatAvgVolRatio, buildCashAlert, _dragonCandidates, _buildBlock, _buildNewDragonBlock, _withAuctionLegPct, _buildRange10BackupBlock } from './tvrb-blocks.js';
@@ -397,7 +398,103 @@ export function pickNewDragon(top5, everInTop5, info) {
   //   ⛔ 与其它规则不冲突：最终 pick 仍然进 `out.buyNames` ⇒ 别的买点块不会重复选它（§6 同一套去重）。
   let pickKind = pick ? 'new' : '';
   let certifier = null;
-  if (pick) {
+  let family = null;
+  let extras = [];
+
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  // ★★ [NEW-DRAGON-FAMILY 2026-11-12 用户口径] 新题材 = 【字号 / 字辈题材】（本版口径）
+  //
+  // 用户原话（11-12，逐字）：
+  //   「11月12日，20日涨幅 toggle 竞价口径排名前十的，东方题材的有三只，东方海洋排第二，
+  //     大东方7，日出东方8，所以东方应该作为新题材。所以应该选东方海洋和大东方，
+  //     东方海洋因为是之前老周期羊字辈的总龙一，老龙，现在它切换成了东方这个新题材，
+  //     就是它即是老龙，又是新龙。这是题材原因，不能把它一棒子打死。」
+  //   「如果它不是老龙变新龙（也就是不换题材，或者这只股票没有东方这个题材），
+  //     那么就应该选一只，大东方。」
+  //   「如果最强那一只含有老周期也可以选入，因为它有双重属性。」
+  //
+  // ⇒ 规则本体在 `new-dragon-family.js`（纯函数 + 单测，§15），这里只负责接线与留痕：
+  //   · 候选池 = **当日 9:25 竞价口径 20日涨幅前十**（= 组合式注入的 `ebbCtx.topicPool`，
+  //     就是「20日涨幅 toggle」上用户看到的那一份 `market_metrics(scope=auction)` 名单）；
+  //   · 判出新题材 ⇒ 直接接管 pick（可能 1 只，也可能 2 只：老龙换题材 + 一只新面孔）；
+  //   · 判不出（没有任何题材组同时满足「≥2 只 + 含新面孔」）⇒ 落回下面的旧路径
+  //     （10-22 冰山冷热那次就是旧路径，用户确认「寻找新龙的方法，这个没错」⇒ 保留）。
+  //   ⚠️ 上一版「同题材择优 · 前五（认证龙）」不再优先，只在 family 判不出时兜底 ——
+  //      它把「同题材」当成细分行业（工业4.0），11-12 因此选出福莱新材，与用户口径不符。
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  //   ⚠️ **只有调用方显式注入 `topicPool10` 才走本路径**（老调用方 / 单测不传 ⇒ 行为与上一版逐字相同，§11）。
+  //      不拿候选池（前八）冒充前十：前十是「20日涨幅 toggle」上用户看到的那份名单，条数与口径都不同。
+  const pool10 = (Array.isArray(o.topicPool10) && o.topicPool10.length > 0) ? o.topicPool10 : null;
+  const fam = pool10
+    ? pickFamilyNewDragon(pool10, { everInTop5: ever, minCount: NEW_DRAGON_FAMILY_MIN_COUNT })
+    : null;
+  if (fam) {
+    pickKind = 'family';
+    pick = fam.pick;
+    extras = fam.extras;
+    certifier = fam.certifier ? {
+      name: fam.certifier.name,
+      topic: fam.topic,
+      rank20: fam.certifier.rank20,
+      everBefore: !!fam.certifier.everBefore,
+      reason: fam.certifier.reason || '',
+      role: 'certify-only'      // ⛔ 不进买点：竞价一字 / 停牌 / 非主板 ⇒ 买不进
+    } : null;
+    family = {
+      topic: fam.topic,
+      count: fam.count,
+      bestRank: fam.primary.rank20,
+      primaryName: fam.primary.name,
+      primaryEverBefore: !!fam.primary.everBefore,
+      members: fam.members.map(function(m) {
+        return {
+          name: m.name, rank20: m.rank20,
+          everBefore: !!m.everBefore, isYizi: !!m.isYizi,
+          suspended: !!m.suspended, mainBoard: m.mainBoard !== false
+        };
+      }),
+      groups: fam.groups.map(function(g) {
+        return { topic: g.topic, count: g.count, freshCount: g.freshCount };
+      })
+    };
+    // trail 按【前十】逐只重建（判定可追溯，§10：用户要能复核「为什么不是其它几只」）
+    const buyNames = [pick.name].concat(extras.map(function(m) { return m.name; }));
+    const buySet = new Set(buyNames);
+    const certName = certifier ? certifier.name : '';
+    const certWhy = certifier
+      ? (certifier.reason === 'yizi' ? '竞价一字涨停（买不进）'
+        : (certifier.reason === 'suspended' ? '停牌（买不进）' : '非主板（买不进）'))
+      : '';
+    trail.length = 0;
+    pool10.forEach(function(c, i) {
+      const nm = String((c && c.name) || '').trim();
+      if (!nm) return;
+      const rk = Number(c && c.rank20) || (i + 1);
+      let reason;
+      if (nm === certName) {
+        reason = '题材【' + fam.topic + '】里最靠前的那只（' + _rankLabelOf(rk) + '），但今日【' + certWhy +
+          '】⇒ 只作题材认证，不进买点';
+      } else if (buySet.has(nm)) {
+        if (nm === fam.primary.name) {
+          reason = '题材【' + fam.topic + '】里竞价口径最靠前（' + _rankLabelOf(rk) + '），且本身就是老周期总龙 ⇒ ' +
+            '【双重属性】既是老龙又是新龙，本只作新题材的主选';
+        } else if (extras.some(function(m) { return m.name === nm; })) {
+          reason = '题材【' + fam.topic + '】里的【新面孔】（' + _rankLabelOf(rk) + '，近 ' +
+            _windowTextOf(windowDays) + '没进过前五）⇒ 与老龙换题材的【' + fam.primary.name +
+            '】一起买（双重属性：老龙 + 一只纯新票）';
+        } else {
+          reason = '题材【' + fam.topic + '】里最靠前的【' + fam.primary.name + '】（' + _rankLabelOf(fam.primary.rank20) +
+            '）今日【' + certWhy + '】⇒ 买点顺延到本只（' + _rankLabelOf(rk) + '）';
+        }
+      } else {
+        reason = '不在新题材【' + fam.topic + '】的买点里（该题材已选出 ' + buyNames.join('、') +
+          '）⇒ 切换日不再考虑它';
+      }
+      trail.push({ name: nm, rank20: rk, picked: buySet.has(nm), reason: reason });
+    });
+  }
+
+  if (!family && pick) {
     const xName = String(pick.name).trim();
     // ⚠️ 同题材比较【不做大类归一】：`_normTopic(raw)` 只清洗，`_sameTopicLoose(..., 无 coreRes)`
     //    按细分题材（含分段串认亲）比 —— 正是用户强调的「同题材 ≠ 主线题材」。
@@ -458,7 +555,12 @@ export function pickNewDragon(top5, everInTop5, info) {
       }
     }
   }
-  return { pick: pick, trail: trail, oldTopic: lt, pickKind: pickKind, certifier: certifier };
+  return {
+    pick: pick, trail: trail, oldTopic: lt, pickKind: pickKind, certifier: certifier,
+    // ★★ [NEW-DRAGON-FAMILY 2026-11-12] 新题材（字号/字辈）相关事实 —— 供文案层拼说明
+    family: family,          // null = 本次走的是旧路径
+    extras: extras           // 补选（最多 1 只：老龙换题材时的那只纯新票）
+  };
 }
 
 /**
@@ -776,7 +878,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         oldTopic: out.switchDay.topic,
         oldLeaderName: out.switchDay.leaderName,
         windowDays: winDays,
-        coreRes: coreRes
+        coreRes: coreRes,
+        // ★★ [NEW-DRAGON-FAMILY 2026-11-12] 新题材判定用【前十】（= 20日涨幅 toggle 上那份名单，
+        //   采集层 ebbCtx.topicPool 已是「9:25 竞价口径 + market_metrics(scope=auction) 白名单」的富化结果）。
+        //   缺省 ⇒ 退回候选池（老调用方/单测零行为变化，§11）。
+        topicPool10: (o.ebbCtx && Array.isArray(o.ebbCtx.topicPool)) ? o.ebbCtx.topicPool : null
       });
     }
   }
@@ -1199,17 +1305,31 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         : ''
     );
     if (out.newDragon) out.buy.newDragon = out.newDragon;
-    // ★★ [NEW-DRAGON-CERTIFY 2026-11-12] 认证龙时把「谁认证的谁」写进看板级说明（用户要「标清楚」）
+    // ★★ [NEW-DRAGON-CERTIFY / NEW-DRAGON-FAMILY 2026-11-12] 把「谁认证的谁、一共买几只」写进
+    //   看板级说明（用户要「标清楚」）。family 路径（新题材 = 字号/字辈）优先，旧认证龙路径作兜底。
     const _cert = ndResult && ndResult.certifier;
+    const _fam = ndResult && ndResult.family;
+    const _extras = (ndResult && Array.isArray(ndResult.extras)) ? ndResult.extras : [];
+    const _buyAll = [ndName].concat(_extras.map(function(x) { return String(x.name || '').trim(); })).join('、');
     out.notes.push('⚠️【第二十八条 · 切换日】' + (out.switchDay.leaderName || '老龙一') + '（' +
       (out.switchDay.topic || '—') + '）二次确认退潮（' + out.switchDay.ebbDate +
-      '）后第 2 个交易日 ⇒ 老周期结束、找新龙：买点侧 = 【' +
-      (_cert ? '认证龙' : '新龙') + '】' + ndName + '（' + (ndResult.pick.topic || '—') + '）' +
-      (_cert
-        ? ('〔同题材【' + (_cert.topic || '—') + '】里首次进前五的是【' + _cert.name + '】（' +
-           (_rankLabelOf(_cert.rank20) || '—') + '），那只只作判断条件；前五里同题材最靠前的是本只 ⇒ ' +
-           '按口径只买最靠前的那一只〕')
-        : '') +
+      '）后第 2 个交易日 ⇒ 老周期结束、找新龙：' +
+      (_fam
+        ? ('20日涨幅（9:25 竞价口径）前十里有 ' + _fam.count + ' 只【' + _fam.topic + '】（' +
+           _fam.members.map(function(m) { return m.name + (m.everBefore ? '·老面孔' : '·新面孔'); }).join('、') +
+           '）⇒ 构成【补涨新题材】；最强的是【' + _fam.primaryName + '】（' + _rankLabelOf(_fam.bestRank) + '）' +
+           (_fam.primaryEverBefore ? '，它本身就是老周期总龙 ⇒【双重属性】既是老龙又是新龙 ⇒ 可以选入' : '') +
+           (_cert && _cert.role === 'certify-only'
+             ? ('；但它今日【' + (_cert.reason === 'yizi' ? '竞价一字涨停' : (_cert.reason === 'suspended' ? '停牌' : '非主板')) +
+                '·买不进】⇒ 只作题材认证')
+             : '') +
+           ' ⇒ 买点侧 = 【新题材】' + _buyAll + '（' + (1 + _extras.length) + ' 只）')
+        : ('买点侧 = 【' + (_cert ? '认证龙' : '新龙') + '】' + ndName + '（' + (ndResult.pick.topic || '—') + '）' +
+           (_cert
+             ? ('〔同题材【' + (_cert.topic || '—') + '】里首次进前五的是【' + _cert.name + '】（' +
+                (_rankLabelOf(_cert.rank20) || '—') + '），那只只作判断条件；前五里同题材最靠前的是本只 ⇒ ' +
+                '按口径只买最靠前的那一只〕')
+             : ''))) +
       ' + 常规收紧后的【一只】（只选一个题材、只取一只）。');
   } else if (out.switchDay) {
     // §10：切换日到了但判不出新龙 ⇒ 必须说清原因，并明确「回落常规（但仍只取排名第一的那一个题材）」

@@ -964,7 +964,39 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
     if (!r || !r.name || rowByName.has(r.name)) return;
     rowByName.set(String(r.name), r);
   });
+  // ★★ [TOPIC-LIB-FIRST 2026-11-12 用户口径] 【题材库（用户手动整理）= 权威，优先级最高】
+  //
+  // 用户原话：「比如我在今天改了题材，我希望历史日期题材量比选股也会根据这个题材改变做改变，
+  //   而不是之前的那些固定选出来的，因为这个市场在变化，我自己也要调整，之前那些选票也要
+  //   根据我手动改的题材变化」。
+  // 11-12 实证：光洋股份的题材库是「机器人概念,低空经济,羊字辈」，但当日的行情行 note 括号里写的是
+  //   「工业4.0」⇒ 旧实现（今日行优先）把它算成工业4.0 ⇒ 第二十八条选出福莱新材，
+  //   而用户要的是【东方】这个字号题材（东方海洋2 / 大东方7 / 日出东方8）。
+  // ⇒ 与 `data/stock-topics.js` 2026-09-19 的全局口径一致：共享题材库是跨看板题材的**唯一权威**，
+  //   历史 note 只作「库里没有这只票」时的兜底。⛔ 别再把今日行放回第一位。
+  // ⚠️ 保留整串（逗号连接）：第二十八条要按【题材段】（东方 / 羊字辈）认亲，只取一个会丢掉字辈线。
+  const _libTopicOf = function(name) {
+    try {
+      const set = lookupTopicsByName(name);
+      if (!set || set.size === 0) return '';
+      const all = [];
+      set.forEach(function(t) {
+        const c = _cleanTopicText(t);
+        if (!c) return;
+        if (/^题材\d+$/.test(c)) return;      // 「题材30」这类占位编号不是真题材
+        if (c.length < 2) return;             // 单字符不是题材（§10 从紧）
+        if (all.indexOf(c) < 0) all.push(c);
+      });
+      if (all.length === 0) return '';
+      all.sort();                             // 确定性顺序（§6：不随 Set 插入序漂移）
+      return all.join(',');
+    } catch (e) {
+      return '';                              // 题材库不可用 ⇒ 如实空串，退回下面的旧链路（§10）
+    }
+  };
   const _topicOf = function(name) {
+    const lib = _libTopicOf(name);
+    if (lib) return lib;
     const r = rowByName.get(name);
     const rt = _cleanTopicText(r && r.topic);
     if (rt) return rt;
@@ -972,33 +1004,14 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
       const t = _cleanTopicText(getStockHistoryValue(prevDate, name, 'topics'));
       if (t) return t;
     }
-    // ★ [EBB-TOPIC-FIX 2026-10-22] 第三层退路 = 题材库（停牌补位票在今日列表与昨日 watchlist 里
-    //   都可能是空题材）。取法：优先取「今天真的成组」的那个题材名 —— 这样下面 siblings 的
-    //   `b.topic === leaderTopic` 反查才能命中；否则按名字排序取第一个（可复现，不随 Set 插入序漂移）。
-    try {
-      const set = lookupTopicsByName(name);
-      if (set && set.size > 0) {
-        const all = [];
-        set.forEach(function(t) {
-          const c = _cleanTopicText(t);
-          if (c && all.indexOf(c) < 0) all.push(c);
-        });
-        all.sort();
-        for (let i = 0; i < all.length; i++) {
-          for (let k = 0; k < L.length; k++) {
-            if (String((L[k] && L[k].topic) || '').trim() === all[i]) return all[i];
-          }
-        }
-        if (all.length > 0) return all[0];
-      }
-    } catch (e) { /* 题材库未构建 ⇒ 如实返回空串（§10 不猜） */ }
     return '';
   };
   // ★★ [NEW-DRAGON-08 2026-10-22 用户口径] 候选池由「前五」放宽到「前八」：
   //   用户原话「如果前五找不到，你就找前八的，不用前五的，改用排名前八的」。
   //   ⚠️ top5 仍是【前五】（分歧买点 / 退潮替补 / 总龙一~五 标签都用它，⛔ 别一起放宽）；
   //      newDragonPool 才是前八 —— 两个数组共用下面【同一份富化实现】（§6：题材解析只有一处）。
-  //   ★ 富化每一只：题材（今日行 → 昨日 topics → 题材库）、今日龙位、竞价一字、停牌、是否主板。
+  //   ★ 富化每一只：题材（★ [TOPIC-LIB-FIRST 2026-11-12] 题材库 → 今日行 → 昨日 topics）、
+  //     今日龙位、竞价一字、停牌、是否主板。
   //     `mainBoard` 的判据用 isMainBoardOnly（§6 唯一实现），规则层不另写代码段规则。
   const _enrich = function(t, i) {
     const name = String(t.stock).trim();

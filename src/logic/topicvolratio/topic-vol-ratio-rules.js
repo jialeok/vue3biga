@@ -98,11 +98,13 @@ export {
   TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE, DIVERGE_DIP_TAG, DIVERGE_FOLLOW_TAG,
   DIVERGE_NO_BUY_TAG, DIVERGE_BUY_TONE, DIVERGE_NO_BUY_TONE, DIVERGE_RULE_NO,
   TVRB_CASH_ALERT_NONE, SWITCH_RULE_NO, NEW_DRAGON_TAG, NEW_DRAGON_TONE, NEW_DRAGON_TOP_N,
-  NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N, RANGE10_BACKUP_TONE, RANGE10_BACKUP_TAG, RANGE10_BACKUP_LABEL,
+  NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N, NEW_DRAGON_FAMILY_MIN_COUNT, RANGE10_BACKUP_TONE, RANGE10_BACKUP_TAG, RANGE10_BACKUP_LABEL,
 } from './tvrb-constants.js';
 
 export {
   classifyMainTopic, detectEbbDay, secondEbbTopicOfPrevDay, buildEbbDayRecord,
+  // ★★ [EBB-FAMILY-TOPIC 2026-11-12] 字号/字辈题材判据 + 总龙「真正在炒的那一段」选取
+  isFamilyTopicName, pickLeaderTopicSegment,
 } from './tvrb-ebb.js';
 
 export {
@@ -112,6 +114,11 @@ export {
 export {
   detectSwitchDay, pickNewDragon, buildTopicVolRatioPlan,
 } from './tvrb-plan.js';
+
+// ★★ [NEW-DRAGON-FAMILY 2026-11-12] 新题材（字号/字辈）判定 —— 纯函数，独立成模块（§15）
+export {
+  pickFamilyNewDragon, buildFamilyGroups, splitTopicSegs,
+} from './new-dragon-family.js';
 
 export {
   buildTvrbRulesLines,

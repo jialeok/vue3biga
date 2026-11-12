@@ -247,7 +247,7 @@ import { makeCoreTopicResolver } from '../logic/topic/core-category.js';
 // ★★ [BUY-SETTLE-2 2026-10-31 用户口径] 题材库（stock_topics）「就绪了吗」——
 //   买点侧门控的输入之一。判据语义见其 JSDoc：**为空即「题材分类结果不可信」**（§10 读取失败 ≠ 空）。
 //   ⛔ 别用 isCloudTopicsLoaded（那个回答的是「现在写回云端安全吗」，两个判据用途不同）。
-import { isTopicLibraryReady, isCloudTopicsLoaded } from '../data/stock-topics.js';
+import { isTopicLibraryReady, isCloudTopicsLoaded, getTopicLibraryDigest, getTopicLibraryVersion } from '../data/stock-topics.js';
 // ★ 分笔：与「分笔买卖」看板【同一份取数编排 + 同一份逐行实现】（§6 单一真相，⛔ 不另写一份）
 import { decorateTickRow } from '../logic/tick/tick-minute.js';
 import {
@@ -1302,8 +1302,11 @@ export function useTopicVolRatioBoard() {
    */
   const currentRulesSig = computed(function() {
     void getCoreTopicsVersion();                    // 增删改核心词 ⇒ 版本号变 ⇒ 重算指纹
+    void getTopicLibraryVersion();                  // ★ [TOPIC-LIB-SIG] 手动改个股题材 ⇒ 指纹最后一段变
     if (!isCoreTopicsCloudLoaded()) return '';
-    return buildRulesFingerprint(getCoreTopics());
+    // ★★ [TOPIC-LIB-SIG 2026-11-12] 第三段 = 个股题材库内容指纹：它变了 ⇒ 存档判过期，
+    //   而且【历史日期也要重算】（用户口径：改了题材，历史选票跟着改）。
+    return buildRulesFingerprint(getCoreTopics(), getTopicLibraryDigest());
   });
 
   /** 说明区警示：⛔ 不改存档 plan 里的 notes（那会污染「定稿那一刻」的原始内容）。 */

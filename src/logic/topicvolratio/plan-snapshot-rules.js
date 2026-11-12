@@ -29,10 +29,16 @@
  *        同题材在前五有两只及以上时，只买竞价口径最靠前的那只（认证龙），
  *        首次进前五的那只只作判断条件。**选股结论会变**（11-12：光洋股份 → 襄阳轴承）
  *        ⇒ 必须 bump，否则那一份按 v1 规则定稿的存档会永久 hit，屏幕上一直是错的那只。
+ *   v3 = ★★ [NEW-DRAGON-FAMILY 2026-11-12 用户口径] 第二十八条改成【新题材 = 字号/字辈题材】：
+ *        当日 20日涨幅（竞价口径）前十按题材段分组，同题材 ≥2 只且有新面孔 ⇒ 新题材成立；
+ *        老龙换题材（双重属性）可入选，并再补一只该题材的新面孔（最多 2 只）。
+ *        **选股结论会变**（11-12：福莱新材 → 东方海洋/大东方）⇒ 必须 bump。
+ *        上一版 v2 的「同题材择优 · 前五（认证龙）」降级为兜底路径。
  *   ⚠️ 历史日不因 bump 重算（库内行情会漂移、会把复盘结论改写）—— 见
  *     `resolvePlanSnapshotFreshness` 的 `allowRulesInvalidation`。
+ *   ★ 但【题材库内容变了】是例外：那一段指纹一变，历史日也重算（用户 11-12 口径）。
  */
-export const TVRB_RULES_VERSION = 2;
+export const TVRB_RULES_VERSION = 3;
 
 /**
  * 输入完整性指纹版本。新增 / 删除「完整性判据」时 +1 ⇒ 所有存档按新判据重算一次。
@@ -61,7 +67,7 @@ function _fnv1a(s) {
  * @param {Array<{name:string, synonyms?:string[]}>|null} coreTopics
  * @returns {string} 形如 'v1:1a2b3c4d'
  */
-export function buildRulesFingerprint(coreTopics) {
+export function buildRulesFingerprint(coreTopics, topicDigest) {
   const arr = Array.isArray(coreTopics) ? coreTopics : [];
   const parts = arr.map(function (t) {
     if (!t || typeof t !== 'object') return '';
@@ -70,7 +76,15 @@ export function buildRulesFingerprint(coreTopics) {
     const syn = raw.map(function (s) { return String(s == null ? '' : s).trim(); }).join(',');
     return name + '=' + syn;
   });
-  return 'v' + TVRB_RULES_VERSION + ':' + _fnv1a(parts.join('|'));
+  const base = 'v' + TVRB_RULES_VERSION + ':' + _fnv1a(parts.join('|'));
+  // ★★ [TOPIC-LIB-SIG 2026-11-12 用户口径] 第三段 = 【个股题材库】内容指纹
+  //   用户原话：「比如我在今天改了题材，我希望历史日期题材量比选股也会根据这个题材改变做改变
+  //     ……之前那些选票也要根据我手动改的题材变化」。
+  //   ⚠️ 刻意**独立成一段**：与规则版本 / 核心词的处置相反 ——
+  //     规则升级只重算【今天】（历史保持定稿），而【题材库变了，历史也要重算】（用户明确要求）。
+  //     两段拆开才能在 `resolvePlanSnapshotFreshness` 里分别放行。
+  const td = String(topicDigest || '').trim();
+  return td ? (base + ':' + td) : base;
 }
 
 /**
@@ -149,6 +163,21 @@ export function resolvePlanSnapshotFreshness(snap, opts) {
   const old = String(s.rulesSig || '').trim();
   if (!old) return 'stale';
   if (old !== cur) {
+    // ★★ [TOPIC-LIB-SIG 2026-11-12] 先看是【哪一段】变了 —— 两段的处置相反：
+    //   · 第 1~2 段（规则版本 / 核心词）变了 ⇒ 只有【今天】重算，历史日保持定稿（[RULES-BUMP-GUARD]）；
+    //   · 第 3 段（个股题材库）变了 ⇒ **历史日也重算**（用户口径：他改了题材，历史选票要跟着改）。
+    const os = old.split(':');
+    const cs = cur.split(':');
+    const oldBase = os.slice(0, 2).join(':');
+    const curBase = cs.slice(0, 2).join(':');
+    const oldTop = os.slice(2).join(':');     // ⚠️ 题材库指纹自带冒号（'tl1:xxxx'）⇒ 必须把余下各段拼回去
+    const curTop = cs.slice(2).join(':');
+    if (oldBase === curBase) {
+      // 只差题材库那一段
+      if (!curTop) return 'hit';                 // 当前算不出题材库指纹 ⇒ 不动存档（§10）
+      if (oldTop !== curTop) return 'stale';     // ★ 题材库变了 ⇒ 含历史日一律重算
+      return 'hit';
+    }
     // ★★ [RULES-BUMP-GUARD 2026-11-12] 规则升级（bump `TVRB_RULES_VERSION` / 改核心词）时：
     //   · 当日（还在用它做决策的那一天）⇒ 判 stale，按新规则重算并修订存档（revision +1）；
     //   · 历史日 ⇒ 判 hit，**保持定稿**。理由：历史日的库内行情会被后续 worker / 收盘覆盖，

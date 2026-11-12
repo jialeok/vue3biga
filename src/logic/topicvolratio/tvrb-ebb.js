@@ -8,7 +8,7 @@
 //
 // ⛔ 买点块一律在 tvrb-blocks.js 里组装（本文件不碰 blocks）。
 
-import { EBB_EVENT_WINDOW_DAYS, EBB_MAIN_TOPIC_TOP_N, EBB_MAIN_TOPIC_MIN_COUNT, EBB_DIVERGE_MIN_STREAK, EBB_PICK_TAG, EBB_NO_BUY_TAG, EBB_SECOND_BUY_TAG } from './tvrb-constants.js';
+import { EBB_EVENT_WINDOW_DAYS, EBB_MAIN_TOPIC_TOP_N, EBB_MAIN_TOPIC_MIN_COUNT, EBB_FAMILY_TOPIC_MIN_COUNT, EBB_DIVERGE_MIN_STREAK, EBB_PICK_TAG, EBB_NO_BUY_TAG, EBB_SECOND_BUY_TAG } from './tvrb-constants.js';
 import { _normTopic, _sameTopicLoose, _num } from './tvrb-utils.js';
 
 import { formatRangePct, SELL_OUT_TAG, HOLD_TAG } from '../decision/decision-rules.js';
@@ -16,6 +16,77 @@ import { passesAuctionShare, formatAuctionShare, auctionShareThresholdOf } from 
 import { getDragonLabel } from '../auction/dragon-rank.js';
 import { totalDragonLabel } from '../auction/range20-top5-label.js';
 
+
+/**
+ * ★★ [EBB-FAMILY-TOPIC 2026-11-12 用户口径] 这个题材是不是【字号 / 字辈炒作线】？
+ *
+ * 用户原话：「20日涨幅排名前十的同题材有 2 只和两只以上【羊字辈】，才能相互验证是该题材退潮」。
+ *
+ * 判据（两条，任一成立）：
+ *   ① 题材名以「字辈」结尾（题材库里就是这么标的：羊字辈）；
+ *   ② 组内**全部**成员名都含这个题材串（东方海洋 / 大东方 / 日出东方 ⇒ 「东方」是字号线）。
+ * ⛔ 不做「全市场名字里有这个字就算」的匹配：那会把 东方财富 / 东方通信 这类无关票拉进来，
+ *   而这里只看【已经在实体内组内】的成员，天然不会误伤。
+ *
+ * @param {string} topic 题材名（单个题材段）
+ * @param {string[]} names 组内成员名
+ * @returns {boolean}
+ */
+export function isFamilyTopicName(topic, names) {
+  const t = String(topic || '').trim();
+  if (!t) return false;
+  if (/字辈$/.test(t)) return true;
+  const core = t.replace(/字辈$/, '').trim();
+  if (core.length < 2) return false;          // 单字不判（「中」「东」这种会误伤太多）
+  const list = (Array.isArray(names) ? names : [])
+    .map(function(n) { return String(n === null || n === undefined ? '' : n).trim(); })
+    .filter(Boolean);
+  if (list.length < 2) return false;
+  return list.every(function(n) { return n.indexOf(core) >= 0; });
+}
+
+/**
+ * ★★ [EBB-FAMILY-TOPIC 2026-11-12] 从【总龙一的多个题材段】里挑出「它真正在炒的那一个」。
+ *
+ * 为什么必须有：`TOPIC-LIB-FIRST` 之后，一只票的题材是题材库里**整串**（如东方海洋 =
+ *   「水产品,农业,东方,羊字辈」）。直接拿整串去分组，会把「凡是与它共享任意一段的票」全算进来
+ *   （11-12 前十会算出 6 只同题材）⇒ 主线题材判定虚高。
+ * ⇒ 取【在前十成员数最多】的那一段；并列 ⇒ 更长的题材串优先；再并列 ⇒ 字典序（确定性，§6）。
+ *
+ * @param {Array<{name:string, topic:string}>} pool 20日涨幅前十
+ * @param {string} leaderName 总龙一名
+ * @param {string} leaderTopic 总龙一题材串（可多段）
+ * @param {(raw:string)=>string} [coreRes]
+ * @returns {{topic:string, segments:string[]}}
+ */
+export function pickLeaderTopicSegment(pool, leaderName, leaderTopic, coreRes) {
+  const raw = _normTopic(leaderTopic, coreRes);
+  if (!raw) return { topic: '', segments: [] };
+  const segs = raw.split(',').map(function(s) { return String(s || '').trim(); }).filter(Boolean);
+  if (segs.length <= 1) return { topic: raw, segments: segs };
+  const list = Array.isArray(pool) ? pool : [];
+  const lname = String(leaderName || '').trim();
+  const countOf = function(seg) {
+    let n = 0;
+    list.forEach(function(t) {
+      if (!t || !t.name) return;
+      const nm = String(t.name).trim();
+      if ((lname && nm === lname) || _sameTopicLoose(t.topic, seg, coreRes)) n++;
+    });
+    return n;
+  };
+  let best = segs[0];
+  let bestN = -1;
+  let bestLen = -1;
+  segs.forEach(function(seg) {
+    const n = countOf(seg);
+    const better = (n > bestN)
+      || (n === bestN && seg.length > bestLen)
+      || (n === bestN && seg.length === bestLen && seg < best);
+    if (better) { best = seg; bestN = n; bestLen = seg.length; }
+  });
+  return { topic: best || raw, segments: segs };
+}
 
 /**
  * ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 【主线题材 or 轮动行情】—— 退潮规则的前置闸门（纯函数，可单测）。
@@ -43,13 +114,16 @@ import { totalDragonLabel } from '../auction/range20-top5-label.js';
  *          total = 参与统计的只数（= 榜单长度，通常 10；不够 10 只的日期如实小）
  */
 export function classifyMainTopic(pool, leaderName, leaderTopic, coreRes) {
-  const topic = _normTopic(leaderTopic, coreRes);
   const list = Array.isArray(pool) ? pool : [];
   const total = list.length;
   const members = [];
+  // ★★ [EBB-FAMILY-TOPIC 2026-11-12] 多段题材 ⇒ 先挑出「总龙真正在炒的那一段」再分组。
+  const picked = pickLeaderTopicSegment(list, leaderName, leaderTopic, coreRes);
+  const topic = picked.topic;
   if (!topic) {
     // §10：题材读不到 ⇒ 分组无从谈起（⛔ 不把「未知」当成「每组只有 1 只」的轮动）
-    return { kind: 'unknown', count: 0, total: total, topic: '', members: members };
+    return { kind: 'unknown', count: 0, total: total, topic: '', members: members,
+      minCount: EBB_MAIN_TOPIC_MIN_COUNT, isFamilyTopic: false, leaderSegments: picked.segments };
   }
   const lname = String(leaderName || '').trim();
   list.forEach(function(t) {
@@ -62,6 +136,9 @@ export function classifyMainTopic(pool, leaderName, leaderTopic, coreRes) {
     members.push({ name: nm, pct: _num(t.pct) });
   });
   const count = members.length;
+  // ★★ [EBB-FAMILY-TOPIC] 字号/字辈题材 ⇒ 门槛 2；行业题材 ⇒ 门槛 3（用户 10-25 口径不动）
+  const isFam = isFamilyTopicName(topic, members.map(function(m) { return m.name; }));
+  const minCount = isFam ? EBB_FAMILY_TOPIC_MIN_COUNT : EBB_MAIN_TOPIC_MIN_COUNT;
   // ★ 能不能下「轮动行情」这个【否定结论】，取决于榜单够不够长（§10：判不出 ≠ 判出 false）：
   //   · 组内已经 ≥ 门槛 ⇒ 一定是主线题材（榜单再长也只会更多，结论不会翻）；
   //   · 组内 < 门槛，但榜单本身就是【完整的前十】⇒ 才是轮动行情；
@@ -70,7 +147,7 @@ export function classifyMainTopic(pool, leaderName, leaderTopic, coreRes) {
   //   这一档正是「榜单没就绪」与「真的是轮动」的分水岭 —— 两者混为一谈会让规则在数据缺失时静默失效。
   const enough = total >= EBB_MAIN_TOPIC_TOP_N;
   let kind;
-  if (count >= EBB_MAIN_TOPIC_MIN_COUNT) kind = 'main';
+  if (count >= minCount) kind = 'main';
   else if (enough) kind = 'rotation';
   else kind = 'unknown';
   return {
@@ -78,7 +155,10 @@ export function classifyMainTopic(pool, leaderName, leaderTopic, coreRes) {
     count: count,
     total: total,
     topic: topic,
-    members: members
+    members: members,
+    minCount: minCount,
+    isFamilyTopic: isFam,
+    leaderSegments: picked.segments
   };
 }
 
@@ -181,7 +261,7 @@ export function detectEbbDay(ebbCtx, prevEbbDay, ebbHistory, coreRes, windowFrom
   // ★ [EBB-TOPIC-FIX 2026-10-22] 题材串归一：纯数字（= 脏值，实测 '16950' / '26728'）视作未知，
   //   否则标题会渲染成「主线16950首次退潮」，且按题材认亲会全部落空（见文件头 [EBB-TOPIC-FIX]）。
   // ★★ [CORE-CAT 2026-10-22] 再归到【大类】：'文化传媒' ⇒ 'AI应用'（用户口径，见 _normTopic）。
-  const leaderTopic = _normTopic(leader.topic, coreRes);
+  let leaderTopic = _normTopic(leader.topic, coreRes);
   const leaderPct = _num(leader.pct);
   if (!leaderName || leaderPct === null) return null;      // §10：涨幅读不到 ⇒ 不判
 
@@ -217,6 +297,9 @@ export function detectEbbDay(ebbCtx, prevEbbDay, ebbHistory, coreRes, windowFrom
   // ══════════════════════════════════════════════════════════════════════════════════════
   const mt = classifyMainTopic(ebbCtx.topicPool, leaderName, leader.topic, coreRes);
   if (mt.kind === 'rotation') return null;
+  // ★★ [EBB-FAMILY-TOPIC 2026-11-12] 多段题材 ⇒ 后续标题 / 事件计数 / 龙二对比一律用
+  //   「总龙真正在炒的那一段」（如 东方海洋 ⇒ 羊字辈 / 东方），⛔ 不用整串。
+  if (mt.topic) leaderTopic = mt.topic;
 
   // ══════════════════════════════════════════════════════════════════════════════════════
   // ★★ [EBB-STREAK 2026-10-25 用户口径] 闸门 B：总龙一【前两个交易日是不是都涨停】？
@@ -260,7 +343,8 @@ export function detectEbbDay(ebbCtx, prevEbbDay, ebbHistory, coreRes, windowFrom
   //   ① 主线题材：前十里同题材几只、分别是谁（用户是照着这个数去核对的）；
   //   ② 连板分歧：前两个交易日是不是都涨停（streak ≥ 2 = 二板起）。
   const mainTopicText = (mt.kind === 'main')
-    ? ('主线题材确认：20日涨幅前 ' + mt.total + ' 名里有 ' + mt.count + ' 只【' + mt.topic + '】（' +
+    ? ('主线题材确认：20日涨幅前 ' + mt.total + ' 名里有 ' + mt.count + ' 只【' + mt.topic + '】' +
+       (mt.isFamilyTopic ? '（字号/字辈题材，互相验证门槛 ' + mt.minCount + ' 只）' : '') + '（' +
        mt.members.map(function(m) { return m.name; }).join('、') + '）；')
     : (mt.topic
       ? ('⚠️ 20日涨幅榜只拿到 ' + mt.total + ' 只（不足 ' + EBB_MAIN_TOPIC_TOP_N + '）、组内 ' + mt.count +
@@ -284,7 +368,9 @@ export function detectEbbDay(ebbCtx, prevEbbDay, ebbHistory, coreRes, windowFrom
   const si = ebbCtx.secondInfo;
   const secondOk = !!(si &&
     Number(si.rank) === 1 && !si.isYizi && !si.suspended &&
-    String(si.topic || '').trim() !== leaderTopic &&
+    // ★ [TOPIC-LIB-FIRST 2026-11-12] 题材串现在是「多段」的（题材库整串，如「零售,食品饮料,东方」），
+    //   逐字比会几乎恒不相等 ⇒ 改用同一把尺子 `_sameTopicLoose` 按【题材段】认亲。
+    !_sameTopicLoose(si.topic, leaderTopic) &&
     String(si.name || '').trim() !== leaderName);
 
   const leaderPctText = formatRangePct(leaderPct);
@@ -668,7 +754,14 @@ export function buildEbbDayRecord(ebb, ebbCtx, date) {
     leaderStock: name,
     // ★ [EBB-TOPIC-FIX 2026-10-22] 落库前同样清洗：⛔ 绝不再把「纯数字」（= 误取的成交量）当题材写进表，
     //   否则明天读回来又要靠 _normTopic 兜一次（错值不进库才是根治）。
-    leaderTopic: _normTopic(leader.topic),
+    // ★★ [EBB-FAMILY-TOPIC 2026-11-12] 落【总龙真正在炒的那一段】，⛔ 不落整串：
+    //   事件计数 / 次日「首日 vs 二次确认」都按这一个题材段认亲；落整串会让「共享任意一段」的票
+    //   全部算进同题材，退潮事件数会虚高。
+    leaderTopic: _normTopic(
+      (ebb && ebb.leaderTopic ? ebb.leaderTopic : '') ||
+      pickLeaderTopicSegment(ebbCtx.topicPool, name, leader.topic).topic ||
+      leader.topic
+    ),
     leaderPct: _num(leader.pct),
     leaderRank: _num(leader.rank),
     suspended: suspended,
