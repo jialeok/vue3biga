@@ -53,6 +53,12 @@ import { getStockHistoryValue } from '../../data/watchlist-helpers.js';
 import { lookupTopicsByName } from '../../data/stock-topics.js';
 import { _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
 import { useAuctionTagStore } from '../../stores/auctionTagStore.js';
+// ★★ [SELL-AUTO 2026-11-12 用户口径] 「次日卖点侧成员」的唯一判定（纯函数，§15 可单测）。
+//   用户原话：「你把昨日的买点侧统一放到次日的卖点侧，这样就不要我手动添加，因为我早上也是
+//   按照买点侧那里买的……那些持有、卖出的标签你看怎么不冲突，要区分开来。还有手动的添加买入也不要冲突。」
+//   ⇒ 成员 = 昨日【买点侧】(auto) ∪ 昨日「买入」标签(buy) ∪ 昨日「持有」标签(hold)，
+//     昨日「卖出」一律否决。口径表与理由全在那个模块里，⛔ 别在本文件另写一份。
+import { buildSellMembers } from '../topicvolratio/sell-members.js';
 // [TWO-MODES 2026-10-02 用户口径] 买点分两套模式，由早盘竞价的题材 / 一字 toggle 决定
 //   （判据与分派都在 decision-mode.js，§6 单一真相）。两套模式对【本文件】的差别只有两处：
 //     ① 题材排名口径（rankDecisionTopics 的第 2 参 mode）—— 一字模式按一字数量排、量比模式按量比排；
@@ -147,6 +153,48 @@ function _prevBoughtNames(prevDate) {
     // 标签库没加载 → 返回空集（由上层 ready 判定处理，绝不抛给渲染层）
   }
   return out;
+}
+
+/**
+ * 前一交易日的**完整**标签表 `{ 股票名: 'buy'|'sell'|'hold' }`。
+ *
+ * ⚠️ 与 `_prevBoughtNames` 的区别：那个只抽 `buy`（供买点侧的【持有】/【加仓】用，口径不能动）；
+ *   本函数给**卖点侧成员**用 —— 它还要看 `hold`（还拿着 ⇒ 继续留在卖点侧）和
+ *   `sell`（已经卖了 ⇒ 一票否决，⛔ 不许再自动推回来）。
+ *
+ * §10：标签库读不到 ⇒ 返回 null（= 未知），⛔ 绝不返回 `{}` 冒充「昨天一只都没打标签」。
+ * @param {string|null} prevDate
+ * @returns {object|null}
+ */
+function _prevDayTagMap(prevDate) {
+  if (!prevDate) return null;
+  try {
+    const tags = useAuctionTagStore().tags || {};
+    const dayTags = tags[prevDate];
+    if (dayTags === undefined) return {};            // 这一天确实没有任何标签（有效空）
+    return (dayTags && typeof dayTags === 'object') ? dayTags : null;
+  } catch (e) {
+    return null;                                      // 标签库未加载 = 未知（§10）
+  }
+}
+
+/**
+ * 【次日卖点侧成员】的唯一入口（§6）。
+ *
+ * 成员分三个来源（详见 `logic/topicvolratio/sell-members.js` 的口径表）：
+ *   auto = 昨日【买点侧】选中的票（自动继承，不用手动打标签）
+ *   buy  = 昨日手动「买入」标签（与 auto 去重，手动优先）
+ *   hold = 昨日手动「持有」标签（还拿着，继续看卖点）
+ *   昨日「卖出」⇒ 一律不进。
+ *
+ * ⛔ 只服务卖点侧。⛔ 绝不影响 `prevBought`（它驱动买点侧的持有 / 加仓，动了就是动定稿结论）。
+ *
+ * @param {string|null} prevDate 前一交易日
+ * @param {string[]|Set<string>|null} prevBuyPlanNames 前一交易日买点侧的股票名；null = 未知（§10）
+ * @returns {{members:Array<{name:string,source:string}>, stats:object}}
+ */
+function _sellMembersOf(prevDate, prevBuyPlanNames) {
+  return buildSellMembers(_prevDayTagMap(prevDate), prevBuyPlanNames || null);
 }
 
 /** 从买点方案里抽出全部股票名（heavy / light / 各兜底方案的 blocks 都算「买点列表」） */
@@ -590,18 +638,35 @@ function _actionContext(p) {
  *      仍取不到就是 null / ''（缺数据），⛔ 绝不补 0、绝不猜方向 —— 用户手上还拿着这只票，
  *      给一个「看着很像真的」的假方向比不给更坏。
  *
- * @param {Set<string>} prevBought 上一交易日打过「买」标签的股票名
+ * @param {Array<{name:string,source:string}>|Set<string>} prevBought 卖点侧成员
+ *        （`_sellMembersOf` 产出的带来源列表；为了兼容老调用方 / 单测，也接受纯名字集合）
  * @param {Map<string,object>} byName 今日 股票名 → 行（含 topic / pct / code / aucPct / aucShare …）
  * @param {string} date 展示日
  * @returns {Array<object>} buildSellPlan 的 rows 入参
  */
 function _buildSellRows(prevBought, byName, date) {
   const out = [];
-  (prevBought || new Set()).forEach(function(nm) {
+  // ★ [SELL-AUTO 2026-11-12] 归一成 [{name, source}]：数组（新口径）原样用；
+  //   Set / 其它可 forEach 的（老调用方、单测直接传名字集合）→ 包成无来源的成员。
+  let members;
+  if (Array.isArray(prevBought)) {
+    members = prevBought;
+  } else if (prevBought && typeof prevBought.forEach === 'function') {
+    members = [];
+    prevBought.forEach(function(nm) { members.push({ name: nm, source: '' }); });
+  } else {
+    members = [];
+  }
+  members.forEach(function(m) {
+    const nm = String((m && m.name) || '').trim();
+    if (!nm) return;
     const row = byName ? byName.get(nm) : null;
     // 今日不在列表里（继承过来的观察组票）也要给出卖出建议 —— 用户手上还拿着它
     out.push({
       name: nm,
+      // ★ [SELL-AUTO 2026-11-12] 这一行为什么在卖点侧（auto / buy / hold / ''）。
+      //   ⛔ 只做展示与排查用，不参与任何卖出判定；判据的唯一实现在 sell-members.js。
+      memberSource: String((m && m.source) || ''),
       topic: row ? row.topic : '',
       pct: row ? row.pct : null,
       // [SELL-LIMIT-UP 2026-10-07 用户口径] 股票代码 —— 判「竞价是不是一字涨停」要用它：
@@ -1450,7 +1515,11 @@ export function collectDecisionData(date, opts) {
       out.prevBought = act.prevBought;
       out.prevBoughtTopics = act.prevBoughtTopics;
       out.topicStreakPast = act.topicStreakPast;
-      out.sellRows = _buildSellRows(act.prevBought, byName, date);
+      // ★ [SELL-AUTO 2026-11-12] 卖点侧成员 = 昨日买点侧(auto) ∪ 昨日标签(buy/hold)，昨日 sell 否决。
+      //   ⚠️ 这里【只】喂卖点侧；`act.prevBought` 仍原样透出给买点侧用（两者口径不同，⛔ 别合并）。
+      const sm = _sellMembersOf(prevDate, opts && opts.prevBuyPlanNames);
+      out.sellRows = _buildSellRows(sm.members, byName, date);
+      out.sellMemberStats = sm.stats;
       // ★ [EBB-R20 2026-10-20] 退潮判定所需的事实：市场总龙（20日涨幅第一）+ 买点侧替补两只
       //   （range20Top 注入）＋ 卖点侧总龙二（昨日十日涨幅第二，prevRangeMap 注入，口径不变）。
       //   + 它今天停不停牌 / 占比多少。涨幅必须用【昨日】那份（停牌票当天没有涨幅），
@@ -1577,8 +1646,12 @@ export function collectDecisionData(date, opts) {
 
   // 昨日龙头名册的名字集合已在【买点之前】算好（prevDragonNames）—— 买卖两侧共用同一份，⛔ 不重复取第二次。
 
-  // 卖点候选行 = 昨日打过「买」标签的股票（构造收口在 _buildSellRows，§6）
-  const sellRows = _buildSellRows(prevBought, byName, date);
+  // ★★ [SELL-AUTO 2026-11-12 用户口径] 卖点候选行不再只认「昨日打过买标签」：
+  //   成员 = 昨日【买点侧】(auto) ∪ 昨日「买入」标签(buy) ∪ 昨日「持有」标签(hold)，昨日「卖出」一律否决。
+  //   用户原话：「把昨日的买点侧统一放到次日的卖点侧，这样就不要我手动添加，因为我早上也是按照买点侧那里买的」。
+  //   ⛔ `prevBought` 原样不动（它还驱动买点侧【持有】/【加仓】），这里只是【多加了一个来源】。
+  const _smMain = _sellMembersOf(prevDate, opts && opts.prevBuyPlanNames);
+  const sellRows = _buildSellRows(_smMain.members, byName, date);
   // 【三 · 持有 / 加仓（卖点侧）】今天又在买点里的卖点候选 = 连续两天被选中 = 强势股，标【持有 / 加仓】
   const todayBuyNames = _buyPlanNames(buy);
   const sell = buildSellPlan(sellRows, topics, dragonMap, prevDragonNames, todayBuyNames);
@@ -1633,6 +1706,9 @@ export function collectDecisionData(date, opts) {
     buy: buy,
     sell: sell,
     sellTimes: sellTimes,
+    // ★ [SELL-AUTO 2026-11-12] 卖点侧成员来源统计（auto/buy/hold/excludedSell/planKnown）——
+    //   只给说明区写事实用（「今日卖点侧有 N 只来自昨日买点侧自动继承」），⛔ 不参与任何判定。
+    sellMemberStats: _smMain.stats,
     // 规则面板要用到的常量（UI 不硬编码时间点，避免与规则层分叉）
     times: { midday: SELL_TIME_MIDDAY, close: SELL_TIME_CLOSE }
   };
@@ -1760,7 +1836,12 @@ export function collectDecisionTopics(date, opts) {
     // ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 20日涨幅【前十】（getRange20LeadersTop10 的发布结果）——
     //   只给退潮判定的「主线题材 ≥3 只同题材」计数（classifyMainTopic）。
     //   缺省 ⇒ 退回 range20Wide → range20Top（见 _ebbCtxOf），§11：老调用方不传时行为不变。
-    range20Top10: (opts && opts.range20Top10) || null
+    range20Top10: (opts && opts.range20Top10) || null,
+    // ★★ [SELL-AUTO 2026-11-12 用户口径] 前一交易日【买点侧】的股票名（`collectBuyNames(昨日 plan)` 产出）——
+    //   卖点侧成员的主力来源：用户早上按买点侧买进去，次日自动进卖点侧，不用逐只补打「买入」标签。
+    //   ⚠️ 由调用方按 prevDate 从 `tvrb_plan_snapshot` 读回后注入（§4：拿数据的只管拿，本文件不读云）。
+    //   ⛔ 缺省（null）= 「昨日买点侧未知」⇒ 只用昨日标签，⛔ 绝不折成空集当「昨天买点侧一只都没有」。
+    prevBuyPlanNames: (opts && opts.prevBuyPlanNames) || null
   });
   // 命中内部出口 ⇒ 中间产物带 dragonRankOnly 标记（_notReady 的返回没有这个键）
   if (rec && rec.dragonRankOnly) {
@@ -1780,6 +1861,9 @@ export function collectDecisionTopics(date, opts) {
       out.prevBoughtTopics = rec.prevBoughtTopics || null;
       out.topicStreakPast = rec.topicStreakPast || null;
       out.sellRows = rec.sellRows;
+      // ★ [SELL-AUTO 2026-11-12] 成员来源统计（auto/buy/hold/excludedSell/planKnown）——
+      //   看板说明区据此写事实（含「昨日买点侧存档读不到 ⇒ 本次只用标签」的如实标注，§10）。
+      if (rec.sellMemberStats) out.sellMemberStats = rec.sellMemberStats;
       // ★ [EBB 2026-10-13] 退潮首日的事实（市场总龙 + 今日状态）；ready=false 表示昨日涨幅尚未注入
       if (rec.ebbCtx) out.ebbCtx = rec.ebbCtx;
     }

@@ -659,6 +659,46 @@
     font-weight: 700;
 }
 
+/* ★★ [SELL-AUTO 2026-11-12 用户口径] 卖点行【成员来源】小标（紧跟股票名）。
+   用户原话：「那些持有，卖出的标签你看怎么不冲突，要区分开来。还有手动的添加买入也不要冲突。」
+   三档语义（判据唯一实现在 logic/topicvolratio/sell-members.js）：
+     · auto 自动   —— 昨日【买点侧】选中的票，自动继承进今日卖点侧，**不写任何标签**；
+     · buy  手动买 —— 昨日手动打过「买入」标签（与 auto 去重，手动优先）；
+     · hold 持有   —— 昨日手动打过「持有」标签（还拿着，继续看卖点）。
+   ⚠️ 必须与行内其它胶囊一眼分得开，且⛔ 不能抢「卖出动作」的视觉：
+     · .tvrb-suspend 灰实线 / .tvrb-risk 墨黄实线 / .tvrb-action-* 各色实线（动作结论）；
+     · 本组都压在 9px + 浅底，且 auto 用【虚线框】—— 明确「这不是你打的标签」；
+     · ⛔ 不用绿 / 不用高饱和红：绿色在竞价语义里是跌，实心红会被读成又一个卖出/买入动作。 */
+.tvrb-sell-src {
+    padding: 0 5px;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 14px;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+/* 自动继承：虚线框（形状本身就在说「机器给的，不是你标的」） */
+.tvrb-sell-src-auto {
+    color: #475569;
+    background: #f8fafc;
+    border: 1px dashed #94a3b8;
+}
+
+/* 手动「买入」：浅红实线（与买入标签的红同源，但不填充 —— 不抢动作胶囊） */
+.tvrb-sell-src-buy {
+    color: #b91c1c;
+    background: #fef2f2;
+    border: 1px solid #fca5a5;
+}
+
+/* 手动「持有」：浅靛实线（沿用「持有」在全站的蓝系） */
+.tvrb-sell-src-hold {
+    color: #4338ca;
+    background: #eef2ff;
+    border: 1px solid #a5b4fc;
+}
+
 /* [BOARD-SUSPEND 2026-10-13 用户口径] 当日停牌小标（买卖两侧都挂，紧跟股票名）。
    口径 = 同花顺 fuyao 明确返回「该票无竞价 / 无成交」（唯一实现 logic/auction/suspend.js）。
    ⛔ 不用红 / 绿（停牌既非涨也非跌）；视觉与决策看板 .dcb-suspend、早盘竞价

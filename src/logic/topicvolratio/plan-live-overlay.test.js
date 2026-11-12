@@ -18,7 +18,8 @@ import {
   eachBuyBlock,
   shouldReplaceTick,
   mergeTickRow,
-  overlayLiveOnFrozen
+  overlayLiveOnFrozen,
+  collectBuyNames
 } from './plan-live-overlay.js';
 
 /** 造一份「冻结的买点结论」——刻意带上 11-12 真实存档的形状：sell=[]、hasTick=false */
@@ -183,6 +184,30 @@ describe('overlayLiveOnFrozen — 冻结买点结论 × 实时事实', () => {
     frozen.sell = [{ topic: 'AI应用', items: [{ name: '大东方' }] }];
     const out = overlayLiveOnFrozen(frozen, { sell: null }, null);
     expect(out.sell).toHaveLength(1);
+  });
+});
+
+describe('collectBuyNames — 昨日买点侧的股票名（次日卖点侧自动继承的来源）', () => {
+  it('收全 plan.blocks / buy 槽位 / candidates / 灰化容器外的独立行，并去重排序', () => {
+    const plan = frozenPlan();
+    plan.divergeBuy = { topic: 'AI应用', picks: [{ name: '日出东方' }] };
+    plan.weakHuddle = { topic: '大消费', picks: [{ name: '惠发食品' }] };   // 与 candidates 重名 ⇒ 去重
+    expect(collectBuyNames(plan)).toEqual(
+      ['南侨食品', '大东方', '惠发食品', '日出东方', '光洋股份'].sort()
+    );
+  });
+
+  it('⛔ 只收 picks，不收 members（题材成员池 ≠ 买点）', () => {
+    const names = collectBuyNames({
+      blocks: [{ topic: 'AI应用', picks: [{ name: '大东方' }], members: [{ name: '不该出现' }] }]
+    });
+    expect(names).toEqual(['大东方']);
+  });
+
+  it('空 plan / 空 picks ⇒ 空数组（不抛）', () => {
+    expect(collectBuyNames(null)).toEqual([]);
+    expect(collectBuyNames({})).toEqual([]);
+    expect(collectBuyNames({ blocks: [{ picks: null }] })).toEqual([]);
   });
 });
 

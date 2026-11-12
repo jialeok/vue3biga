@@ -58,6 +58,16 @@
           :title="penTip"
           @click.stop="togglePens(it.name)"
         >{{ it.name }}</span>
+        <!-- ★★ [SELL-AUTO 2026-11-12 用户口径] 这一行「为什么在卖点侧」的来源小标：
+             「自动」= 昨日买点侧选中（自动继承，没打过标签）/「手动买」/「持有」。
+             用户原话「那些持有，卖出的标签你看怎么不冲突，要区分开来」——
+             ⛔ 文案与悬停说明全由 Logic 层给（§21 模板零计算）；空串 ⇒ 整个不渲染（§10 无占位符）。 -->
+        <span
+          v-if="it.memberSourceText"
+          class="tvrb-sell-src"
+          :class="'tvrb-sell-src-' + it.memberSource"
+          :title="it.memberSourceTitle"
+        >{{ it.memberSourceText }}</span>
         <!-- [BOARD-SUSPEND 2026-10-13 用户口径] 当日停牌小标 —— 卖点侧同样要标：
              停牌票卖不掉，与「今天没卖点」是两回事，必须让人一眼分清。 -->
         <span

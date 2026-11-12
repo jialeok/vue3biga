@@ -212,7 +212,7 @@ import { readPlanSnapshot, writePlanSnapshot, isPlanSnapshotInputsSigSupported }
 //   根因：定稿冻结的是**整份 plan**，而 `sell`（成员 = 用户昨天打的「买」标签，随时可补打）与
 //   分笔装饰（异步抓取，定稿时常常还没到）**本来就必须在定稿后继续变**。
 //   ⇒ 冻结只保留买点结论；卖点段与分笔装饰恒取实时（§6：判据唯一实现在这个模块里）。
-import { eachBuyBlock, overlayLiveOnFrozen } from '../logic/topicvolratio/plan-live-overlay.js';
+import { eachBuyBlock, overlayLiveOnFrozen, collectBuyNames } from '../logic/topicvolratio/plan-live-overlay.js';
 // ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ 禁止选股（硬空仓）的判据。
 //   与 buy-settle 是两件事：那个管「还没到、等几秒」；这个管「根本不会有、必须直接给结论」。
 import { resolveBuyDataGate, TVRB_DATA_GATE_NONE } from '../logic/topicvolratio/buy-data-gate.js';
@@ -1199,6 +1199,65 @@ export function useTopicVolRatioBoard() {
   const planSnapshot = ref(null);   // { date, status, plan?, rulesSig?, selectionSig?, revision?, settledAt? }
   let _disposed = false;            // 异步读档回来时组件可能已卸载 ⇒ 不再回写任何结论（§32）
 
+  /**
+   * ★★ [SELL-AUTO 2026-11-12 用户口径] 【前一交易日买点侧】的股票名（卖点侧成员的主力来源）。
+   *
+   * 用户原话：「你把昨日的买点侧统一放到次日的卖点侧，这样就不要我手动添加，
+   *   因为我早上也是按照买点侧那里买的……那些持有、卖出的标签你看怎么不冲突，要区分开来。」
+   *
+   * 为什么必须是异步 + ref：昨日买点侧的唯一可信来源 = `tvrb_plan_snapshot(前一日)` 的定稿结论
+   * （`readPlanSnapshot` 有会话缓存 + 单飞，§32）；解码 / 取名单是纯函数，放在
+   * `plan-live-overlay#collectBuyNames`（与「买点块清单」同一套遍历，§6）。
+   *
+   * ⚠️ 形状 = `{ date, names: string[]|null, status }`：
+   *    · `names === null` ⇒ **未知**（读不到 / 表不存在 / 存档损坏 / 那天没定稿）⇒ 卖点侧只用标签，
+   *      并在说明区如实标注（§10：⛔ 绝不把「读不到」折成「昨天买点侧一只都没有」）。
+   *    · 消费侧必须**核对日期**（`state.date === prevDate`）⇒ 切日期那一帧不会拿 A 日顶 B 日。
+   */
+  const prevBuyPlanNames = ref({ date: '', names: null, status: 'idle' });
+
+  /**
+   * 读前一交易日的买点侧名单。切日期时调用（与 `_loadPlanSnapshot` 同一个入口）。
+   * ⛔ 只有「定稿存档」算数：`stale` / `corrupt` / `empty` / `error` / `unavailable` 一律 names=null，
+   *    ⛔ 绝不拿「会漂移的库内行情重算一遍」当昨日买点侧（那正是 11-11 用户「越改越乱」的根源）。
+   */
+  function _loadPrevBuyPlanNames(d) {
+    const key = String(d || '').trim();
+    const prev = key ? getPreviousTradingDay(key) : '';
+    if (!prev) {
+      prevBuyPlanNames.value = { date: '', names: null, status: 'no-prev-day' };
+      return;
+    }
+    prevBuyPlanNames.value = { date: prev, names: null, status: 'loading' };
+    readPlanSnapshot(prev).then(function(res) {
+      if (_disposed) return;
+      if (String(currentDate.value || '').trim() !== key) return;   // 竞态：用户已经切走
+      const r = res || { status: 'error', reason: 'empty-result' };
+      if (r.status !== 'hit') {
+        prevBuyPlanNames.value = { date: prev, names: null, status: r.status || 'error' };
+        _dbgLog('[TVRB-SELL-AUTO] 昨日 ' + prev + ' 的定稿存档不可用（' + (r.status || 'error') +
+          '）⇒ 今日卖点侧只用「昨日买入/持有」标签，可能缺票（不会瞎猜）');
+        return;
+      }
+      const dec = decodePlanSnapshot(r.row && r.row.plan);
+      if (!dec.ok) {
+        prevBuyPlanNames.value = { date: prev, names: null, status: 'corrupt' };
+        _dbgLog('[TVRB-SELL-AUTO] 昨日 ' + prev + ' 存档解码失败（' + dec.reason +
+          '）⇒ 今日卖点侧只用标签');
+        return;
+      }
+      const names = collectBuyNames(dec.plan);
+      prevBuyPlanNames.value = { date: prev, names: names, status: 'hit' };
+      _dbgLog('[TVRB-SELL-AUTO] 昨日 ' + prev + ' 买点侧 ' + names.length + ' 只 ⇒ 今日卖点侧自动继承：' +
+        (names.slice(0, 12).join('、') || '(空)') + (names.length > 12 ? ' …' : ''));
+    }).catch(function(e) {
+      if (_disposed) return;
+      if (String(currentDate.value || '').trim() !== key) return;
+      prevBuyPlanNames.value = { date: prev, names: null, status: 'error' };
+      _dbgLog('[TVRB-SELL-AUTO] 读昨日买点侧异常：' + String((e && e.message) || e));
+    });
+  }
+
   /** 第⑭项门控输入：这一天的存档【读完了没有】。只有 loading 拦，其余状态都算读过（§10）。 */
   const planSnapshotReady = computed(function() {
     const d = String(currentDate.value || '').trim();
@@ -1370,7 +1429,14 @@ export function useTopicVolRatioBoard() {
         range20Wide: _r20Wide,
         // ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 20日涨幅【前十】—— 退潮判定
         //   「主线题材 ≥3 只同题材」计数（classifyMainTopic）。⛔ 不上屏。
-        range20Top10: _r20Top10
+        range20Top10: _r20Top10,
+        // ★★ [SELL-AUTO 2026-11-12 用户口径] 昨日【买点侧】的股票名 ⇒ 今日卖点侧自动继承，
+        //   用户不用再逐只补打「买入」标签（他早上本来就是照买点侧买的）。
+        //   ⚠️ 日期核对红线（与上面两份 rangeMap 同款）：不是这一天的 ⇒ 传 null（§10 不拿旧日期顶替）。
+        //   null = 昨日买点侧未知 ⇒ 卖点侧只用昨日「买入/持有」标签，说明区会如实标注缺什么。
+        prevBuyPlanNames: (prevBuyPlanNames.value && prevBuyPlanNames.value.date === pd)
+          ? prevBuyPlanNames.value.names
+          : null
       });
       if (!rec || !rec.ready) return _empty((rec && rec.reason) || DATA_INCOMPLETE_TEXT);
 
@@ -1542,6 +1608,28 @@ export function useTopicVolRatioBoard() {
         plan.notes.unshift('⚠️ 本日【9:25 竞价口径 20 日涨幅榜】判不出（当日竞价名单 / 竞价涨幅 / 主板票不足）' +
           '⇒ 20 日涨幅通道暂按收盘口径发布榜显示；本次结论已定稿冻结，不会随收盘再变，' +
           '但它不是竞价口径，请复核云端 9:25 落库数据。');
+      }
+      // ★★ [SELL-AUTO 2026-11-12 用户口径] 卖点侧成员的来源，在说明区【如实交代】。
+      //   为什么必须写出来：用户原话「那些持有，卖出的标签你看怎么不冲突，要区分开来」——
+      //   现在卖点侧多了一个「昨日买点侧自动继承」的来源，不写清楚他会以为「我没打标签它怎么在」。
+      //   §10：昨日存档读不到（error / unavailable / empty / corrupt）⇒ 必须标明「本次只用标签、可能缺票」，
+      //        ⛔ 绝不静默按「昨天没买过任何票」处理。
+      const _smStat = rec.sellMemberStats;
+      if (_smStat) {
+        if (!_smStat.planKnown) {
+          plan.notes.unshift('⚠️ 昨日（' + (pd || '上一交易日') + '）的选股存档读不到 ⇒ 今日卖点侧' +
+            '【只按昨日「买入 / 持有」标签】构建，可能缺票（昨天买点侧选中的票不会自动补进来）。' +
+            '这不是「昨天没有买点」，是那份存档没读到 —— 刷新页面或重进该日会重试。');
+        } else if (_smStat.total > 0) {
+          plan.notes.push('卖点侧成员来源：昨日买点侧【自动继承】' + _smStat.auto + ' 只' +
+            (function() {
+              const parts = [];
+              if (_smStat.buy) parts.push('手动「买入」' + _smStat.buy + ' 只');
+              if (_smStat.hold) parts.push('手动「持有」' + _smStat.hold + ' 只');
+              if (_smStat.excludedSell) parts.push('昨日标「卖出」' + _smStat.excludedSell + ' 只不再自动进入');
+              return parts.length ? '；' + parts.join('，') : '';
+            })() + '。⛔ 自动继承不写标签，你的标签只由你手动打。');
+        }
       }
       if (_dataGate.blocked) {
         // ⚠️ 只记一次（按「日期 + 缺项」去重）：data computed 会反复重算，每帧打一条会把
@@ -2048,6 +2136,10 @@ export function useTopicVolRatioBoard() {
     const d = String(dateVal || '').trim();
     // ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11] 换日第一件事：问这一天的定稿存档（读取中 ⇒ 第⑭项挂住）
     _loadPlanSnapshot(d);
+    // ★★ [SELL-AUTO 2026-11-12] 同时问【前一交易日】的定稿存档 ⇒ 取出它的买点侧名单，
+    //   供今日卖点侧自动继承（用户不用再逐只补打「买入」标签）。
+    //   ⚠️ 与 `_loadPlanSnapshot` 同一个入口、同一套竞态复核（回来时核对 currentDate 没被切走）。
+    _loadPrevBuyPlanNames(d);
     // ★★ [BUY-PUBLISH 2026-10-31 · 第五版] 换日 ⇒ **解冻**：新的一天要重新等数据、重新定稿。
     //   ⛔ 这里是唯一的自动解冻口（另一个是用户手动 `refresh()`）；两者都不在时，屏幕永不变。
     const _pub = _buyPublished.value;

@@ -136,6 +136,9 @@ import {
   AUCTION_SHARE_FRONT_STD, AUCTION_SHARE_TOLERANCE, AUCTION_SHARE_FRONT_MIN, AUCTION_SHARE_BACK_STD,
   formatAuctionShare, auctionShareThresholdOf, passesAuctionShare, auctionShareZoneOf
 } from './auction-share.js';
+// ★★ [SELL-AUTO 2026-11-12 用户口径] 卖点行「为什么在这一侧」的来源文案 / 悬停说明。
+//   ⛔ 只取文案，判据本体在 topicvolratio/sell-members.js（§6 单一真相，⛔ 别在这里再写一份映射）。
+import { sellSourceLabel, sellSourceTitle } from '../topicvolratio/sell-members.js';
 
 /** 题材成组门槛：与早盘竞价统计条（topic-stats.js#TOPIC_STATS_MIN_GROUP）同源 —— 不足 2 只不成题材 */
 export const DECISION_MIN_GROUP = 2;
@@ -3555,6 +3558,15 @@ export function buildSellPlan(rows, blocks, dragonMap, prevDragonNames, todayBuy
       aucShareThresholdText: _thresholdText(isFront),
       aucSharePass: sharePass,
       inTodayList: !!r.inTodayList,
+      // ★★ [SELL-AUTO 2026-11-12 用户口径] 这一行为什么在今日卖点侧（昨日来源）：
+      //   'auto' = 昨日【买点侧】选中 ⇒ 自动继承（用户早上就是照买点侧买的，不该再逼他补打标签）
+      //   'buy'  = 昨日手动「买入」标签（与 auto 去重后手动优先）
+      //   'hold' = 昨日手动「持有」标签（还拿着，继续看卖点）
+      //   ''     = 老调用方 / 单测直接传名字集合（无来源信息）⇒ 组件不渲染徽标（§10 不显示占位符）
+      //   ⛔ 纯展示与排查用，不参与任何卖出档位判定（判据唯一实现在 topicvolratio/sell-members.js）。
+      memberSource: String(r.memberSource || ''),
+      memberSourceText: sellSourceLabel(String(r.memberSource || '')),
+      memberSourceTitle: sellSourceTitle(String(r.memberSource || '')),
       holdTag: holdTag,
       // [SHARE-RULE 2026-10-03 用户口径] 卖点【动作】（共七档，按判定的先后排列）：
       //   [SELL-LIMIT-UP 2026-10-07] 竞价涨停卖（⛔ 最优先，压过其余全部六档）

@@ -72,6 +72,33 @@ export function eachBuyBlock(plan, fn) {
 }
 
 /**
+ * 取一份 plan 里【买点侧】全部股票名（唯一实现，遍历复用 `eachBuyBlock`）。
+ *
+ * ★★ [SELL-AUTO 2026-11-12 用户口径] 用户原话：
+ *   「卖点侧那里，要不你把昨日的买点侧，统一放到次日的卖点侧，这样就不要我手动添加，
+ *     因为我早上也是按照买点侧那里买的」。
+ *   ⇒ 次日的卖点侧成员 = 「昨日买点侧」（本函数产出）+「昨日手动标签」，不再要求用户逐只打「买入」。
+ *
+ * ⚠️ 只收「真会买」的行：`picks` 里的票（含退潮首日唯一买点 / 新龙 / 十日候补 / 弱势抱团 / 补涨
+ *    这些渲染在灰化容器之外的独立行）。⛔ 不收 `members`（那是题材成员池，不是买点）。
+ * ⚠️ 去重后按名字排序输出 ⇒ 结果是确定性的，便于存档比对与单测。
+ *
+ * @param {object|null} plan 某一天的 plan（可以是解码后的存档，memory plan 亦可）
+ * @returns {string[]} 股票名数组（trim 后、去重、升序）
+ */
+export function collectBuyNames(plan) {
+  const names = new Set();
+  eachBuyBlock(plan, function (b) {
+    (b.picks || []).forEach(function (p) {
+      if (!p) return;
+      const nm = String(p.name || p.stock || '').trim();
+      if (nm) names.add(nm);
+    });
+  });
+  return Array.from(names).sort();
+}
+
+/**
  * 实时那一份分笔装饰是否应该覆盖冻结行上的旧值。
  *
  * 规则 = **单调升级**（只允许「从没有到有」，⛔ 绝不把已经抓到的降级）：
