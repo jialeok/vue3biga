@@ -21,6 +21,16 @@
 //     ① 题材认亲只认一个大类串，看不到「东方 / 羊字辈」这类【字号、字辈】炒作线；
 //     ② 「老龙一」被无条件排除（`if (ln && name === ln) continue`）⇒ 老龙换题材被一棒子打死。
 //
+// ── ★★ 又错了一次（11-12 用户当场纠正）：「退潮的是羊字辈，新题材的是东方，你搞混了吧？」──────
+//   东方海洋的题材串 =「水产品,农业,东方,羊字辈」⇒ 它【同时属于】东方组和羊字辈组，
+//   两个组的 `bestRank` 都是 2（都是它）⇒ 上一版平局时按【成员数】排序 ⇒ 羊字辈(4 只) 赢
+//   ⇒ 选出来的还是【正在退潮的那个老周期题材】，实际给出 光洋股份 / 阳光照明 / 襄阳轴承 之类。
+//   ⇒ 两条修正（本版）：
+//     ★ ① `oldTopics`：调用方把【正在退潮的老题材】显式传进来，候选组里直接排除它。
+//     ★ ② 平局排序改成「新面孔多的优先 → 字辈线靠后」：字辈线（「羊字辈」）在库里就是
+//          【老周期阵营】的标记，字号线（「东方」）才是老龙可以切过去的新方向。
+//          11-12 实测：东方 3 只（新面孔 2） vs 羊字辈 4 只（新面孔 1）⇒ 东方胜出 ✅（不再靠 count）
+//
 // ── 本版规则（三步，全部基于【当日 9:25 竞价口径 20日涨幅前十】）──────────────────────
 //   ① 把前十按【题材段】分组（一个题材串里可以有多个题材，如「水产品,农业,东方,羊字辈」）。
 //   ② 什么算【新题材】—— 同时满足：
@@ -52,6 +62,27 @@ import { NEW_DRAGON_FAMILY_MIN_COUNT } from './tvrb-constants.js';
 
 /** 题材串分隔符（与 core-category.js#splitTopicSegments 同一批；本模块保持零依赖） */
 const SEG_SPLIT_RE = /[,，、;；/+|]/;
+
+/**
+ * ★★ [NEW-DRAGON-FAMILY-OLD 2026-11-12 用户口径] 这个题材是不是【字辈线】？
+ *
+ * 用户原话：「退潮的是【羊字辈】，新题材的是【东方】，你搞混了吧？」
+ * ⇒ 题材库里以「字辈」结尾的那条线（羊字辈）就是【老周期阵营】的标记 ——
+ *   它记录的是「哪一批老人一起炒起来的」，退潮退的就是它；
+ *   老龙切过去的那条线（东方 / 中字头 …）才是【新题材】。
+ * ⛔ 只认字面「字辈」后缀，不做任何名字猜测（§40 不猜）。
+ *
+ * @param {string} topic 单个题材段
+ * @returns {boolean}
+ */
+export function isLineageTopic(topic) {
+  return /字辈$/.test(String(topic || '').trim());
+}
+
+/** 题材名归一（只 trim + lower，用于 oldTopics 比对；⛔ 不做大类归一 —— 那正是上一版搞混的来源） */
+function _tkey(s) {
+  return String(s === null || s === undefined ? '' : s).trim().toLowerCase();
+}
 
 /**
  * 题材串 → 题材段数组（去空、去重、保序）。
@@ -125,12 +156,18 @@ export function buildFamilyGroups(pool, ever) {
       count: members.length,
       bestRank: members.length > 0 ? members[0].rank20 : 0,
       freshCount: freshCount,
-      oldestEver: freshCount === 0
+      oldestEver: freshCount === 0,
+      // ★ [NEW-DRAGON-FAMILY-OLD] 字辈线 = 老周期阵营标记（「羊字辈」）
+      isLineage: isLineageTopic(g.topic)
     });
   });
-  // 确定性排序（§6）：最靠前名次 → 成员多 → 题材名字典序（⛔ 不随 Map 插入序漂移）
+  // 确定性排序（§6）：最靠前名次 → ★新面孔多的优先 → ★字辈线靠后 → 成员多 → 题材名字典序
+  //   ⚠️ 上一版是「成员多」排在新面孔之前 ⇒ 东方海洋同时属于两段时，羊字辈(4 只) 压过东方(3 只)
+  //      ⇒ 11-12 选到了正在退潮的老题材。用户当场纠正：「退潮的是羊字辈，新题材的是东方」。
   out.sort(function (a, b) {
     if (a.bestRank !== b.bestRank) return a.bestRank - b.bestRank;
+    if (a.freshCount !== b.freshCount) return b.freshCount - a.freshCount;
+    if (a.isLineage !== b.isLineage) return a.isLineage ? 1 : -1;   // 字号线在前
     if (a.count !== b.count) return b.count - a.count;
     return a.topic < b.topic ? -1 : (a.topic > b.topic ? 1 : 0);
   });
@@ -155,7 +192,9 @@ function _blockReason(m) {
  * ★★ [NEW-DRAGON-FAMILY] 切换日：从【前十】里挑出新题材的买点（最多 2 只）。
  *
  * @param {Array} pool 当日 9:25 竞价口径 20日涨幅【前十】（含题材 / 名次 / 一字 / 停牌 / 主板）
- * @param {{everInTop5?:Set<string>, minCount?:number}} [info]
+ * @param {{everInTop5?:Set<string>, minCount?:number, oldTopics?:string[]}} [info]
+ *        `oldTopics` = 正在退潮的老题材（如 ['羊字辈']），候选组里排除它；
+ *        ⛔ 不传 ⇒ 行为与上一版逐字相同（老调用方 / 老单测零变化，§11）。
  * @returns {null|{
  *   topic:string, count:number,
  *   pick:object,            // 最终买点那一只（一定可买）
@@ -172,10 +211,22 @@ export function pickFamilyNewDragon(pool, info) {
   const minCount = Number(o.minCount) > 0 ? Number(o.minCount) : NEW_DRAGON_FAMILY_MIN_COUNT;
   const groups = buildFamilyGroups(pool, o.everInTop5);
 
-  // ② 新题材 = 组内 ≥minCount 只 且 至少一只新面孔
-  const cands = groups.filter(function (g) {
-    return g.count >= minCount && g.freshCount >= 1;
-  });
+  // ★ [NEW-DRAGON-FAMILY-OLD] 正在退潮的老题材 —— 候选里排除掉。
+  const oldTopics = (Array.isArray(o.oldTopics) ? o.oldTopics : [])
+    .map(_tkey).filter(Boolean);
+  const oldSet = new Set(oldTopics);
+  const isOld = function (g) { return oldSet.has(_tkey(g.topic)); };
+
+  // ② 新题材 = 组内 ≥minCount 只 且 至少一只新面孔 且 ⛔ 不是正在退潮的老题材
+  const pass = function (g) { return g.count >= minCount && g.freshCount >= 1; };
+  let cands = groups.filter(function (g) { return pass(g) && !isOld(g); });
+  let oldExcluded = true;
+  if (cands.length === 0) {
+    // §10：排除老题材之后一个都不剩 ⇒ 不能让「新题材」整条静默失效，
+    //   退回不排除（行为 = 上一版），由 `oldExcluded=false` 如实留痕给文案层。
+    cands = groups.filter(pass);
+    oldExcluded = false;
+  }
   if (cands.length === 0) return null;
 
   // ③ 取最强（groups 已排序 ⇒ cands[0] 就是最靠前的那个新题材）
@@ -228,6 +279,10 @@ export function pickFamilyNewDragon(pool, info) {
     certifier: certifier,
     primary: primary,
     members: members,
-    groups: groups
+    groups: groups,
+    // ★ [NEW-DRAGON-FAMILY-OLD] 判定留痕：被排除的老题材 / 是否真的排除了（§10 判定可追溯）
+    oldTopics: oldTopics,
+    oldExcluded: oldExcluded,
+    excluded: groups.filter(isOld).map(function (x) { return x.topic; })
   };
 }

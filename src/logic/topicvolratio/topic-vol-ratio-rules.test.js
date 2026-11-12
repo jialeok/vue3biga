@@ -2873,11 +2873,45 @@ describe('tvrb · [NEW-DRAGON-CERTIFY] 常量与文案落点（静态锁）', fu
     expect(r.family.topic).toBe('东方');
     expect(r.family.count).toBe(3);
     expect(r.certifier.name).toBe('东方海洋');
-    expect(r.certifier.role).toBe('certify-only');
+    // ★ [NEW-DRAGON-FAMILY-OLD 2026-11-12] 竞价一字那只【也要进买点侧】⇒ role 是 wait-buy 不是 certify-only
+    expect(r.certifier.role).toBe('wait-buy');
     expect(r.pick.name).toBe('大东方');
     // 不传 topicPool10（老调用方 / 单测）⇒ 走旧路径，行为与上一版一致（§11）
     const old = pickNewDragon(pool10.slice(0, 8), ever, { oldTopic: '农业', oldLeaderName: '东方海洋', windowDays: 20 });
     expect(old.pickKind === 'family').toBe(false);
+  });
+
+  it('🔴 [NEW-DRAGON-FAMILY-OLD] 真实 ever（襄阳轴承不在近20日前五）⇒ 羊字辈(4只·新面孔1) 不许压过 东方(3只·新面孔2)', function() {
+    // 真库 of 11-12「近 20 日上过前五」= 这 6 只（襄阳轴承不在里面 ⇒ 羊字辈组也会有一张新面孔）
+    //   ⇒ 上一版平局按【成员数】排 ⇒ 羊字辈 4 只赢 ⇒ 选出 光洋股份 / 阳光照明（用户报的那个错）
+    const ever = new Set(['东方海洋', '福莱新材', '冰山冷热', '阳光照明', '浙文影业', '光洋股份']);
+    const pool10 = [
+      { name: '福莱新材', rank20: 1, pct: 150.27, topic: '灵巧手,成人用品' },
+      { name: '东方海洋', rank20: 2, pct: 146.92, topic: '水产品,农业,东方,羊字辈', isYizi: true },
+      { name: '襄阳轴承', rank20: 3, pct: 127.23, topic: '机器人概念,汽车零部件,羊字辈' },
+      { name: '光洋股份', rank20: 4, pct: 93.52, topic: '机器人概念,低空经济,羊字辈' },
+      { name: '阳光照明', rank20: 5, pct: 92.78, topic: '外贸,氢能源,羊字辈' },
+      { name: '文投控股', rank20: 6, pct: 89.28, topic: 'AI视频,AI应用' },
+      { name: '大东方', rank20: 7, pct: 72.75, topic: '零售,食品饮料,东方' },
+      { name: '日出东方', rank20: 8, pct: 65.35, topic: '家电,热泵,东方' },
+      { name: '浙文影业', rank20: 9, pct: 65.30, topic: 'AI视频,AI应用' },
+      { name: '冰山冷热', rank20: 10, pct: 63.48, topic: '冰雪产业,算力' }
+    ].map(function(r) { return Object.assign({ code: '6000' + r.rank20, mainBoard: true, suspended: false }, r); });
+    // 不传 oldTopics 也必须选对（排序规则本身就把字辈线压下去了）
+    const r = pickNewDragon(pool10.slice(0, 8), ever, {
+      oldTopic: '农业', oldLeaderName: '东方海洋', windowDays: 20, topicPool10: pool10
+    });
+    expect(r.pickKind).toBe('family');
+    expect(r.family.topic).toBe('东方');          // ⛔ 不是羊字辈
+    expect(r.pick.name).toBe('大东方');
+    expect(r.certifier.name).toBe('东方海洋');
+    // 传了 oldTopics（退潮中的老题材 = 羊字辈）⇒ 羊字辈组直接不进候选
+    const r2 = pickNewDragon(pool10.slice(0, 8), ever, {
+      oldTopic: '羊字辈', oldLeaderName: '东方海洋', windowDays: 20, topicPool10: pool10,
+      oldTopics: ['羊字辈']
+    });
+    expect(r2.family.topic).toBe('东方');
+    expect(r2.pick.name).toBe('大东方');
   });
 
   it('⛔ 同题材比较不许走大类归一（那是退潮「主线题材」的口径，别搞混）', function() {
@@ -3174,11 +3208,12 @@ describe('tvrb · [CORE-CAT] 题材按【核心词大类】认亲（文化传媒
   ];
   const coreRes = makeCoreTopicResolver(CORES);
 
-  it('⛔ 不传大类映射（旧行为）⇒ 文化传媒 认不上 AI应用 ⇒ 误报【首次退潮】（这就是用户报障的现象）', function() {
-    const r = detectEbbDay(EBB_CTX, null, HIST);
-    expect(r).not.toBeNull();
-    expect(r.phase).toBe('first');
-    expect(r.phaseTitle).toBe('主线文化传媒首次退潮');
+  it('★ [EBB-PHASE-KEY 2026-11-12] 不传大类映射也【不再】误报首次退潮：同一只总龙 ⇒ 同一周期', function() {
+    // 上一版按【题材串】认亲 ⇒ 文化传媒 认不上 AI应用 ⇒ 计数被重置成 0 ⇒ 误报「首次退潮」。
+    // [EBB-PHASE-KEY] 起改成「同一只总龙 **或** 同题材线」⇒ 这条就算不传 coreRes 也数得到 2 次事件
+    //   ⇒ 与传了 coreRes 的结论一致（用户 11-12 口径：「二次分歧数的是同一只总龙的坏状态次数」，
+    //     题材改名不该把计数清零 —— 11-05 落库「农业」、11-10 算出「羊字辈」正是同一件事）。
+    expect(detectEbbDay(EBB_CTX, null, HIST)).toBeNull();
   });
 
   it('★ 传大类映射 ⇒ 文化传媒 ⇒ AI应用 ⇒ 20 日内已有 2 次事件 ⇒ 不再判退潮', function() {

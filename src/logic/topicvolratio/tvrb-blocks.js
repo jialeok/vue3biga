@@ -19,6 +19,8 @@ import { readRangePct } from '../auction/range-pct-sort.js';
 import { totalDragonLabel } from '../auction/range20-top5-label.js';
 import { pickDivergeFollowers } from '../auction/leader-divergence.js';
 import { RANGE10_BACKUP_RULE_NO } from './range10-backup.js';
+// ★ [AUCTION-YIZI-WAIT 2026-11-12] 竞价一字那只进买点侧时的专用标签
+import { AUCTION_YIZI_WAIT_TAG } from './auction-yizi-tag.js';
 
 
 /**
@@ -1509,7 +1511,17 @@ export function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tie
       position: ''
     };
   };
-  const picks = [_mkPick(p, 1)].concat(extraList.map(function(x, i) { return _mkPick(x, i + 2); }));
+  // ★★ [NEW-DRAGON-FAMILY-OLD 2026-11-12 用户口径] 竞价一字那只【也要进买点侧】，挂「等下杀买」。
+  //   用户原话：「东方海洋是竞价一字涨停，所以打上标签【竞价一字涨停 等下杀买】，买点侧一样要有。」
+  //   ⚠️ 停牌 / 非主板 仍然只作题材认证（真的买不进），只有 `role==='wait-buy'` 才进 picks。
+  const waitBuy = !!(cert && cert.role === 'wait-buy' && String(cert.name || '').trim() !== name);
+  const certSrc = (waitBuy && fam)
+    ? (fam.members || []).filter(function(m) { return String(m.name || '').trim() === String(cert.name || '').trim(); })[0]
+    : null;
+  const certRow = waitBuy ? Object.assign(_mkPick(certSrc || cert, 1), { waitBuyTag: AUCTION_YIZI_WAIT_TAG }) : null;
+  const picks = (certRow ? [certRow] : [])
+    .concat([_mkPick(p, certRow ? 2 : 1)])
+    .concat(extraList.map(function(x, i) { return _mkPick(x, i + (certRow ? 3 : 2)); }));
 
   const windowText = _windowTextOf(windowDays);
   const trailText = (nd.trail || []).map(function(t) {
@@ -1523,20 +1535,26 @@ export function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tie
     }).join('、')
     : '';
   const famBuyText = [name].concat(extraList.map(function(x) { return String(x.name || '').trim(); })).join('、');
+  // ★ [NEW-DRAGON-FAMILY-OLD] 一字那只进买点侧后，「买点」要把两只都算上（用户「买点侧一样要有」）
+  const famBuyAllText = (waitBuy ? [String(cert.name || '').trim()].concat([name]) : [name])
+    .concat(extraList.map(function(x) { return String(x.name || '').trim(); })).join('、');
   const famReason = fam
     ? ('【' + SWITCH_RULE_NO + '】切换日新龙·新题材【' + fam.topic + '】：' + oldTopic +
-       '（老龙一 ' + (switchDay.leaderName || '—') + '）二次确认退潮后的第 2 个交易日 ⇒ 老周期结束。' +
+       '（老龙一 ' + (switchDay.leaderName || '—') + '）二次确认退潮（= 第二十五条【二次分歧】）后的第 2 个交易日 ⇒ 老周期结束。' +
        '今日 20日涨幅（9:25 竞价口径）前十里有 ' + fam.count + ' 只【' + fam.topic + '】：' +
        famMemberText + ' ⇒ 同一题材 ≥' + fam.count + ' 只，构成【补涨新题材】。' +
        '最强的那只是【' + fam.primaryName + '】（' + _rankLabelOf(fam.bestRank) + '）' +
        (fam.primaryEverBefore
          ? '，它本身就是老周期总龙 ⇒ 具备【双重属性】（既是老龙、又是新龙），按用户口径不能一棒子打死 ⇒ 可以选入；'
          : '（不是老面孔）⇒ 只买它这一只；') +
-       (cert && cert.role === 'certify-only'
-         ? ('但它今日【' + (cert.reason === 'yizi' ? '竞价一字涨停' : (cert.reason === 'suspended' ? '停牌' : '非主板')) +
-            '·买不进】⇒ 只作题材认证，实际买点 = ' + famBuyText + '。')
-         : '') +
-       '⇒ 买点 = 【' + famBuyText + '】。')
+       (cert && cert.role === 'wait-buy'
+         ? ('但它今日【竞价一字涨停】⇒ 买点侧照样列出、挂【' + AUCTION_YIZI_WAIT_TAG +
+            '】；实际能竞价成交的买点 = ' + famBuyText + '。')
+         : (cert && cert.role === 'certify-only'
+           ? ('但它今日【' + (cert.reason === 'suspended' ? '停牌' : '非主板') +
+              '·买不进】⇒ 只作题材认证，实际买点 = ' + famBuyText + '。')
+           : '')) +
+       '⇒ 买点 = 【' + famBuyAllText + '】。')
     : null;
 
   const reason = fam
@@ -1638,6 +1656,11 @@ export function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tie
              '，且与老龙一【不同题材】（' + (topic || '—') + '）⇒ 判定为新龙（前五里没有同题材的其它票）。'))) +
       (rawTag ? ('它的常规买点信号是【' + rawTag + '】——' + (rawNote || '')) : '') +
       ' 切换日买点侧只有【' + (fam ? '新题材' : (isCert ? '认证龙' : '新龙')) + '】+ 常规收紧后的那【一只】（第二十八条）。';
+    // ★ [AUCTION-YIZI-WAIT] 一字那只：明确「竞价买不进 / 等下杀接」
+    if (row.waitBuyTag) {
+      row.actionNote = row.actionNote + ' ⚠️ 本只今日【竞价一字涨停】⇒ 竞价阶段买不进，' +
+        '按【' + AUCTION_YIZI_WAIT_TAG + '】处理：等开板、等一次下杀再接；真正能在竞价成交的是同题材的另一只。';
+    }
   });
 
   // 本看板平铺字段
@@ -1660,6 +1683,9 @@ export function _buildNewDragonBlock(nd, list, fOpts, switchDay, windowDays, tie
   block.familyMembers = fam ? fam.members.map(function(m) { return m.name + (m.everBefore ? '·老' : '·新'); }) : [];
   // 认证那只（竞价一字 / 停牌 / 非主板）不进 picks，但必须在行上标出来「它只作题材认证」
   block.certifiedOnlyName = (cert && cert.role === 'certify-only') ? cert.name : '';
+  // ★ [NEW-DRAGON-FAMILY-OLD] 竞价一字那只已进买点侧 ⇒ 单独留痕（复盘能看出「这只是等下杀买」）
+  block.waitBuyName = (cert && cert.role === 'wait-buy') ? String(cert.name || '') : '';
+  block.waitBuyTag = block.waitBuyName ? AUCTION_YIZI_WAIT_TAG : '';
   return block;
 }
 

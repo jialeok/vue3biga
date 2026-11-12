@@ -10,6 +10,8 @@
 
 import { EBB_EVENT_WINDOW_DAYS, EBB_MAIN_TOPIC_TOP_N, EBB_MAIN_TOPIC_MIN_COUNT, EBB_FAMILY_TOPIC_MIN_COUNT, EBB_DIVERGE_MIN_STREAK, EBB_PICK_TAG, EBB_NO_BUY_TAG, EBB_SECOND_BUY_TAG } from './tvrb-constants.js';
 import { _normTopic, _sameTopicLoose, _num } from './tvrb-utils.js';
+// ★ [LEADER-DIVERGE 2026-11-12] 第二十五条：二次分歧的文案（只给短句，不读 state）
+import { divergeNoteOf } from './leader-diverge.js';
 
 import { formatRangePct, SELL_OUT_TAG, HOLD_TAG } from '../decision/decision-rules.js';
 import { passesAuctionShare, formatAuctionShare, auctionShareThresholdOf } from '../decision/auction-share.js';
@@ -51,7 +53,15 @@ export function isFamilyTopicName(topic, names) {
  * 为什么必须有：`TOPIC-LIB-FIRST` 之后，一只票的题材是题材库里**整串**（如东方海洋 =
  *   「水产品,农业,东方,羊字辈」）。直接拿整串去分组，会把「凡是与它共享任意一段的票」全算进来
  *   （11-12 前十会算出 6 只同题材）⇒ 主线题材判定虚高。
- * ⇒ 取【在前十成员数最多】的那一段；并列 ⇒ 更长的题材串优先；再并列 ⇒ 字典序（确定性，§6）。
+ *
+ * ★★ [EBB-LINEAGE-FIRST 2026-11-12 用户口径] 选哪一段：**字辈线优先**。
+ *   用户原话：「退潮的是【羊字辈】，新题材的是【东方】，你搞混了吧？」
+ *   ⇒ 退潮的主体是【老周期那条线】，而字辈线（「羊字辈」，题材库里以「字辈」结尾）就是老周期的标记；
+ *     字号线（「东方」）是老龙【可以切过去】的新方向 —— 它属于第二十八条（新题材），不属于退潮。
+ *   上一版取「成员数最多」的那一段 ⇒ 11-10 拿到「东方」（4 只）⇒ 屏幕上写成「主线东方首次退潮」，
+ *   与用户口径正面冲突。
+ *   ⇒ 现在的顺序：① 有字辈线且组内 ≥`EBB_FAMILY_TOPIC_MIN_COUNT`(2) 只 ⇒ 就它；
+ *                 ② 否则退回「前十成员数最多」那一段（并列 ⇒ 更长 ⇒ 字典序，确定性 §6）。
  *
  * @param {Array<{name:string, topic:string}>} pool 20日涨幅前十
  * @param {string} leaderName 总龙一名
@@ -75,6 +85,13 @@ export function pickLeaderTopicSegment(pool, leaderName, leaderTopic, coreRes) {
     });
     return n;
   };
+  // ★ [EBB-LINEAGE-FIRST] ① 字辈线优先（老周期那条线）
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i];
+    if (!/字辈$/.test(seg)) continue;
+    if (countOf(seg) >= EBB_FAMILY_TOPIC_MIN_COUNT) return { topic: seg, segments: segs };
+  }
+  // ② 退回：前十成员数最多那一段（旧口径，行为逐字保留）
   let best = segs[0];
   let bestN = -1;
   let bestLen = -1;
@@ -315,7 +332,20 @@ export function detectEbbDay(ebbCtx, prevEbbDay, ebbHistory, coreRes, windowFrom
   const streakRaw = ebbCtx.leaderStreak;
   const streak = (streakRaw === null || streakRaw === undefined || !isFinite(Number(streakRaw)))
     ? null : Number(streakRaw);
-  if (streak !== null && streak < EBB_DIVERGE_MIN_STREAK) return null;
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  // ★★ [LEADER-DIVERGE 2026-11-12 用户口径] 第二十五条：二次分歧【等同首次退潮】。
+  //   用户原话：「……当时竞价低开在 11月10日又分歧一次，从现在开始这叫二次分歧，
+  //     二次分歧等同于首次退潮了，所以从这天开始确认羊字辈退潮了。」
+  //   ⇒ 闸门B（前两日连板）与第二十五条是【两条独立口径】，满足任一条即可：
+  //     · 闸门B 成立 ⇒ 连板被砸开（10-25 口径）；
+  //     · 第二十五条 `kind==='second'` 且总龙资格达标 ⇒ 二次分歧（含占比塌陷形态 D3 兜住
+  //       「连板不够但占比已塌」的日子，11-11 东方海洋就是这种：占比 2.00%、前两日只 1 个涨停）。
+  //   ⛔ 只在 `kind==='second'` 这一档放行：首次分歧 / 趋势（`kind==='first'`）不放宽，
+  //     8-03「这叫趋势」那条红线一字不动。
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  const dv = ebbCtx.leaderDiverge || null;
+  const dvSecond = !!(dv && dv.kind === 'second' && dv.qualified !== false);
+  if (streak !== null && streak < EBB_DIVERGE_MIN_STREAK && !dvSecond) return null;
 
   // ── ★★【昨日闸门】（第八轮，保留）──
   const prev = _prevLeaderDayState(ebbCtx, prevEbbDay, leaderName);
@@ -326,18 +356,29 @@ export function detectEbbDay(ebbCtx, prevEbbDay, ebbHistory, coreRes, windowFrom
   //   ≥2 ⇒ 无第三次 ⇒ 本规则不再触发（返回 null，按平常日子选股 —— 用户「退潮后基本不看了这个题材了」）。
   //   ★ [EBB-20D 2026-10-22 用户口径] 窗口 10 → 20 个交易日；且题材按【大类】认亲（coreRes）。
   const phase = _ebbPhaseOf(leaderTopic, leaderName, ebbHistory, coreRes, windowFrom);
-  if (phase.count >= 2) return null;
-  const isFirst = (phase.count === 0);
+  if (phase.count >= 2 && !dvSecond) return null;
+  const isFirst = dvSecond ? false : (phase.count === 0);
   // 提示语（用户给的原样示例）：首日 = 「主线AI应用首次退潮」；第二次 = 「AI应用二次确认退潮」
+  // ★ [LEADER-DIVERGE] 命中第二十五条二次分歧 ⇒ 「羊字辈二次分歧 · 等同退潮」（用户 11-12 口径：
+  //   「到 11月12日时，提示应该是二次分歧等同该题材退潮」）。
   const topicText0 = leaderTopic || '总龙题材';
-  const phaseTitle = isFirst
-    ? ('主线' + topicText0 + '首次退潮')
-    : (topicText0 + '二次确认退潮');
-  const phaseNote = isFirst
-    ? ('（近 ' + EBB_EVENT_WINDOW_DAYS + ' 个交易日内【' + topicText0 + '】没有退潮事件 ⇒ 本次为【首次退潮】' +
-       (prev.source === 'unknown' ? '；昨日状态两处都取不到 ⇒ 按【可触发】处理，宁可多提醒一次' : '') + '）')
-    : ('（近 ' + EBB_EVENT_WINDOW_DAYS + ' 个交易日内【' + topicText0 + '】已出现过 ' + phase.count + ' 次退潮事件' +
-       (phase.lastDate ? ('，最近一次 ' + phase.lastDate) : '') + ' ⇒ 本次为【二次确认退潮】）');
+  const phaseTitle = dvSecond
+    ? (topicText0 + '二次分歧 · 等同退潮')
+    : (isFirst
+      ? ('主线' + topicText0 + '首次退潮')
+      : (topicText0 + '二次确认退潮'));
+  const dvNote = dvSecond ? divergeNoteOf(dv, topicText0) : '';
+  const phaseNote = dvSecond
+    ? ('（第二十五条：二次分歧【等同于首次退潮】⇒ 从 ' + String(dv.secondDate || '—') +
+       ' 起确认【' + topicText0 + '】退潮）')
+    : (isFirst
+      ? ('（近 ' + EBB_EVENT_WINDOW_DAYS + ' 个交易日内【' + topicText0 + '】没有退潮事件 ⇒ 本次为【首次退潮】' +
+         (prev.source === 'unknown' ? '；昨日状态两处都取不到 ⇒ 按【可触发】处理，宁可多提醒一次' : '') + '）')
+      : ('（近 ' + EBB_EVENT_WINDOW_DAYS + ' 个交易日内【' + topicText0 + '】已出现过 ' + phase.count + ' 次退潮事件' +
+         (phase.lastDate ? ('，最近一次 ' + phase.lastDate) : '') +
+         ' ⇒ 本次为【二次确认退潮】；按第二十五条口径这次就是【二次分歧】——' +
+         '同一只总龙第二次出现分歧形态（占比塌陷 / 高开低走收绿 / 竞价低开）⇒ 等同首次退潮，' +
+         topicText0 + ' 从今天起确认退潮）'));
 
   // ── 两道新闸的判定留痕（§10：判定必须可追溯，⛔ 不静默）──
   //   ① 主线题材：前十里同题材几只、分别是谁（用户是照着这个数去核对的）；
@@ -457,6 +498,14 @@ export function detectEbbDay(ebbCtx, prevEbbDay, ebbHistory, coreRes, windowFrom
     phaseTitle: phaseTitle,
     phaseCount: phase.count,
     phaseNote: phaseNote,
+    // ★ [LEADER-DIVERGE 2026-11-12] 第二十五条 判定留痕（'second' ⇒ 本次结论来自二次分歧）
+    divergeKind: dv ? String(dv.kind || '') : '',
+    divergeFirstDate: dv ? String(dv.firstDate || '') : '',
+    divergeSecondDate: dv ? String(dv.secondDate || '') : '',
+    divergeBoards: dv ? Number(dv.boardsAfterFirst) || 0 : 0,
+    divergeDragonDays: dv && dv.dragonDays !== null && dv.dragonDays !== undefined ? Number(dv.dragonDays) : null,
+    divergeNote: dvNote,
+    divergeHit: dvSecond,
     // ★★ [EBB-MAIN-TOPIC 2026-10-25] 闸门 A 的判定事实（'main' | 'unknown'；'rotation' 已在上文返回 null）
     //   count = 前十里与总龙同题材的只数，total = 该榜实际长度（不够 10 只的日期如实小）。
     mainTopicKind: mt.kind,
@@ -503,7 +552,7 @@ export function detectEbbDay(ebbCtx, prevEbbDay, ebbHistory, coreRes, windowFrom
     headline: '⚠️ ' + phaseTitle + ' · 卖点收紧',
     detail: '市场总龙【' + leaderName + '】（' + topicText + '，20日涨幅 ' + leaderPctText + '）' +
       whyText + ' ⇒ 判定为【' + phaseTitle + '】（题材退潮：总龙停牌 / 占比不符 ⇒ 整个题材的股票预期走势差）。' +
-      firstDayNote + phaseNote + basisNote + '卖点侧：' +
+      firstDayNote + phaseNote + dvNote + basisNote + '卖点侧：' +
       (picksText.length > 0
         ? ('只有 ' + picksText.join('、') + ' 可以【' + EBB_PICK_TAG + '】（等开盘看分笔，不看占比）；')
         : '今天没有符合条件的【同题材可用龙位】【市场总龙二】；') +
@@ -579,10 +628,23 @@ export function _ebbPhaseOf(topic, name, history, coreRes, windowFrom) {
     const winSet = new Set(Array.from(dateSet).sort().slice(-EBB_EVENT_WINDOW_DAYS));
     rows = all.filter(function(r) { return winSet.has(String(r.date)); });
   }
+  // ★★ [EBB-PHASE-KEY 2026-11-12 用户口径] 事件归属从「只认题材串」改成「同一只总龙 **或** 同题材」。
+  //
+  //   为什么必须改：用户 11-12 的原话是「从 11月10日 开始，东方海洋就是首次退潮……当时竞价低开在
+  //   11月10日又分歧一次，从现在开始这叫二次分歧，二次分歧等同于首次退潮了」——
+  //   也就是说【首次分歧 / 二次分歧数的是同一只总龙的坏状态次数】，不是「题材名字」的次数。
+  //   而 `TOPIC-LIB-FIRST` 之后题材串会变（11-05 落库是「农业」，11-10 算出来是「羊字辈」），
+  //   只按题材串认亲 ⇒ 计数被重置成 0 ⇒ 11-10 永远被写成「首次退潮」，与用户口径正面冲突
+  //   （这正是他上一轮问「11月10日没提示首日退潮是不是这个原因：近20交易日同题材退潮事件 = 0」的根源）。
+  //   ⇒ 现在的口径：**同一只总龙**（最贴用户「总龙分歧」的语义）或**同一题材线**（含改名）都算同一周期。
+  //   ⚠️ 与「连续退潮日合并成一次事件」的 prevDate 闸门配合 ⇒ 11-04/11-05 连续 = 1 次，
+  //      11-10/11-11 连续 = 1 次 ⇒ 11-10 恰为【第二次】= 二次分歧 ✅（用户 11-12 叙述完全一致）。
   const hit = function(r) {
     const rt = _normTopic(r.leaderTopic, coreRes);
-    if (t0 && rt) return _sameTopicLoose(rt, t0, coreRes);
-    return String(r.leaderStock || '').trim() === n0 && !!n0;
+    const rs = String(r.leaderStock || '').trim();
+    if (n0 && rs && rs === n0) return true;           // 同一只总龙 ⇒ 同一周期（题材改名不影响）
+    if (t0 && rt) return _sameTopicLoose(rt, t0, coreRes);   // 同题材线 ⇒ 同一周期
+    return false;
   };
   // ⚠️ byDate 必须用【未截断】的 all：窗口第一天那行要看它的 prevDate 是否也在退潮（否则会把
   //   延续日误算成新事件）。prevDate 不在 rows 里 ⇒ 视作「不在退潮」⇒ 该行算新事件 —— 正确。

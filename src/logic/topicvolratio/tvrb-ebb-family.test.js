@@ -7,7 +7,7 @@
 // 夹具 = 2026-11-10 / 11-12 当日 9:25 竞价口径前十（真值，见 .tmpdiag/audit-topic-legs.mjs）。
 
 import { describe, it, expect } from 'vitest';
-import { classifyMainTopic, isFamilyTopicName, pickLeaderTopicSegment } from './tvrb-ebb.js';
+import { classifyMainTopic, isFamilyTopicName, pickLeaderTopicSegment, detectEbbDay } from './tvrb-ebb.js';
 import { EBB_MAIN_TOPIC_MIN_COUNT, EBB_FAMILY_TOPIC_MIN_COUNT } from './tvrb-constants.js';
 
 /** 11-10 当日 9:25 名单前十（真值） */
@@ -65,16 +65,36 @@ describe('[EBB-FAMILY-TOPIC] isFamilyTopicName', function() {
   });
 });
 
-describe('[EBB-FAMILY-TOPIC] pickLeaderTopicSegment：多段题材取「真正在炒的那一段」', function() {
-  it('11-10 东方海洋（水产品,农业,东方,羊字辈）⇒ 取成员最多的【东方】(4 只)', function() {
+describe('[EBB-LINEAGE-FIRST] pickLeaderTopicSegment：退潮题材 = 字辈线（老周期），⛔ 不是字号线', function() {
+  it('★ 11-10 东方海洋（水产品,农业,东方,羊字辈）⇒ 取【羊字辈】(2 只)—— 用户「退潮的是羊字辈」', function() {
+    // ⚠️ 上一版取「成员数最多」⇒ 拿到【东方】(4 只) ⇒ 屏幕上写成「主线东方首次退潮」，
+    //    与用户口径正面冲突（「你搞混了吧？」）。退潮主体是老周期那条线 = 字辈线。
     const r = pickLeaderTopicSegment(pool1110(), '东方海洋', '水产品,农业,东方,羊字辈');
-    expect(r.topic).toBe('东方');
+    expect(r.topic).toBe('羊字辈');
     expect(r.segments).toEqual(['水产品', '农业', '东方', '羊字辈']);
   });
 
-  it('11-12 东方海洋 ⇒ 取成员最多的【羊字辈】(4 只)', function() {
+  it('★ 11-12 东方海洋 ⇒ 同样是【羊字辈】(4 只)', function() {
     const r = pickLeaderTopicSegment(pool1112(), '东方海洋', '水产品,农业,东方,羊字辈');
     expect(r.topic).toBe('羊字辈');
+  });
+
+  it('没有字辈线 ⇒ 退回「成员数最多」那一段（旧口径逐字保留）', function() {
+    const pool = [
+      { name: '甲', pct: 90, topic: 'AI应用,文化传媒' },
+      { name: '乙', pct: 80, topic: 'AI应用' },
+      { name: '丙', pct: 70, topic: '文化传媒' }
+    ];
+    expect(pickLeaderTopicSegment(pool, '甲', 'AI应用,文化传媒').topic).toBe('AI应用');
+  });
+
+  it('字辈线不足 2 只 ⇒ 不认（构不成互相验证），退回成员数最多', function() {
+    const pool = [
+      { name: '东方海洋', pct: 90, topic: '水产品,农业,东方,羊字辈' },
+      { name: '大东方', pct: 80, topic: '零售,东方' },
+      { name: '日出东方', pct: 70, topic: '家电,东方' }
+    ];
+    expect(pickLeaderTopicSegment(pool, '东方海洋', '水产品,农业,东方,羊字辈').topic).toBe('东方');
   });
 
   it('单段题材原样返回（老调用方零行为变化）', function() {
@@ -83,12 +103,12 @@ describe('[EBB-FAMILY-TOPIC] pickLeaderTopicSegment：多段题材取「真正�
   });
 });
 
-describe('[EBB-FAMILY-TOPIC] classifyMainTopic：11-10 必须判成主线题材（旧门槛 ≥3 会判成轮动）', function() {
+describe('[EBB-FAMILY-TOPIC] classifyMainTopic：11-10 必须判成主线题材（羊字辈 2 只 ≥ 门槛 2）', function() {
   const mt = classifyMainTopic(pool1110(), '东方海洋', '水产品,农业,东方,羊字辈');
 
-  it('总龙那一段 = 东方（4 只），门槛按【字号题材 2 只】', function() {
-    expect(mt.topic).toBe('东方');
-    expect(mt.count).toBe(4);
+  it('★ 总龙那一段 = 羊字辈（2 只），门槛按【字号/字辈题材 2 只】', function() {
+    expect(mt.topic).toBe('羊字辈');
+    expect(mt.count).toBe(2);
     expect(mt.isFamilyTopic).toBe(true);
     expect(mt.minCount).toBe(EBB_FAMILY_TOPIC_MIN_COUNT);
     expect(mt.minCount).toBe(2);
@@ -96,7 +116,7 @@ describe('[EBB-FAMILY-TOPIC] classifyMainTopic：11-10 必须判成主线题材�
 
   it('⇒ kind = main（不是 rotation）—— 这就是「提示板终于会显示」的那一步', function() {
     expect(mt.kind).toBe('main');
-    expect(mt.members.map(function(m) { return m.name; })).toEqual(['东方海洋', '大东方', '东方嘉盛', '日出东方']);
+    expect(mt.members.map(function(m) { return m.name; })).toEqual(['东方海洋', '阳光照明']);
   });
 
   it('行业题材仍按 ≥3 只（用户 10-25 口径不动）', function() {
@@ -124,5 +144,49 @@ describe('[EBB-FAMILY-TOPIC] classifyMainTopic：11-10 必须判成主线题材�
     const r = classifyMainTopic(pool1110().slice(0, 5), '东方海洋', '水产品,农业,东方,羊字辈');
     expect(r.total).toBe(5);
     expect(r.kind === 'unknown' || r.kind === 'main').toBe(true);
+  });
+});
+
+describe('★★ [EBB-LINEAGE-FIRST + EBB-PHASE-KEY] 11-10 端到端：提示板写【羊字辈二次确认退潮】', function() {
+  // 用户 11-12 原话：「从 11月10日 开始，东方海洋就是首次退潮……当时竞价低开在 11月10日又分歧一次，
+  //   从现在开始这叫二次分歧，二次分歧等同于首次退潮了，所以从这天开始确认羊字辈退潮了。」
+  // ⚠️ 落库历史里 11-05 那行的 leader_topic 是「农业」（旧口径写的），
+  //   [EBB-PHASE-KEY] 起按【同一只总龙】认周期 ⇒ 题材改名不会把计数清零。
+  const HIST = [
+    { date: '2026-11-04', prevDate: '2026-11-03', leaderStock: '九阳股份', leaderTopic: '家电', ebb: true },
+    { date: '2026-11-05', prevDate: '2026-11-04', leaderStock: '东方海洋', leaderTopic: '农业', ebb: true },
+    { date: '2026-11-06', prevDate: '2026-11-05', leaderStock: '东方海洋', leaderTopic: '农业', ebb: false },
+    { date: '2026-11-09', prevDate: '2026-11-06', leaderStock: '东方海洋', leaderTopic: '农业', ebb: false }
+  ];
+  const CTX = {
+    ready: true,
+    leader: { name: '东方海洋', pct: 104.68, topic: '水产品,农业,东方,羊字辈' },
+    leaderSuspended: false,
+    leaderShare: 2.93,          // 真值：2175.4 / 74246
+    siblingDragons: [], secondInfo: null, prevLeader: null, buyPicks: [], buyTrail: [],
+    topicPool: pool1110(),
+    leaderStreak: 2,            // 11-06 +9.97、11-09 +10.08 都涨停
+    leaderStreakLabel: '2板'
+  };
+  const prevDay = { date: '2026-11-09', leader_stock: '东方海洋', ebb: false };
+
+  it('★ phase = second、标题 = 羊字辈二次确认退潮（⛔ 不是「主线东方首次退潮」）', function() {
+    const r = detectEbbDay(CTX, prevDay, HIST);
+    expect(r).not.toBeNull();
+    expect(r.phase).toBe('second');
+    expect(r.leaderTopic).toBe('羊字辈');
+    expect(r.phaseTitle).toBe('羊字辈二次确认退潮');
+    expect(r.headline).toContain('羊字辈二次确认退潮');
+    // 用户要求写清「二次分歧等同该题材退潮」
+    expect(r.phaseNote).toContain('二次分歧');
+    expect(r.phaseNote).toContain('等同首次退潮');
+    // 闸门 A 的留痕也要是羊字辈、2 只（用户「字辈是羊字辈，因为占两只，也满足条件啊」）
+    expect(r.mainTopicKind).toBe('main');
+    expect(r.mainTopicTopic).toBe('羊字辈');
+    expect(r.mainTopicCount).toBe(2);
+  });
+
+  it('★ 同一套数据换成「11-09 也已退潮」⇒ 昨日闸门拦下（延续不算新事件）', function() {
+    expect(detectEbbDay(CTX, { date: '2026-11-09', leader_stock: '东方海洋', ebb: true }, HIST)).toBeNull();
   });
 });

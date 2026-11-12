@@ -27,6 +27,16 @@ import { getAuctionLimitState } from '../auction/limit-up.js';
 /** 徽标文案（视图层只读，不在模板里拼字符串，§6 单一真相） */
 export const AUCTION_YIZI_TAG = '竞价一字涨停 · 等开板后进';
 
+/**
+ * ★★ [AUCTION-YIZI-WAIT 2026-11-12 用户口径] 第二十八条「新题材里最靠前那只」专用文案。
+ *
+ * 用户原话：「不过东方海洋是竞价一字涨停，所以打上标签【竞价一字涨停 等下杀买】，
+ *   买点侧一样要有。」
+ * ⇒ 与上面那条的区别只在【怎么买】：通用档是「等开板后进」，这一档明确要【等下杀再接】。
+ * ⚠️ 只在行上显式设置了 `waitBuyTag` 时生效（见 `annotateAuctionYizi`）⇒ 其它通道一字不动（§11）。
+ */
+export const AUCTION_YIZI_WAIT_TAG = '竞价一字涨停 · 等下杀买';
+
 /** 悬停说明：把「为什么还选它」和「怎么买」一次说清（用户要「我一下子就看明白」） */
 export const AUCTION_YIZI_TITLE =
   '9:25 竞价涨幅已达涨停幅度（按代码分板块 10% / 20% / 30%、ST 5%）⇒ 竞价阶段封在板上、买不进；' +
@@ -101,7 +111,9 @@ export function annotateAuctionYizi(out) {
   collectBuyBlocks(out).forEach(function(blk) {
     (blk.picks || []).forEach(function(p) {
       if (!p) return;
-      p.auctionYiziTag = isAuctionYiziPick(p) ? AUCTION_YIZI_TAG : '';
+      // ★ [AUCTION-YIZI-WAIT] 行上显式点名「等下杀买」⇒ 用那一份文案（只有第二十八条新题材那只走这条）
+      const waitTag = String(p.waitBuyTag || '').trim();
+      p.auctionYiziTag = isAuctionYiziPick(p) ? (waitTag || AUCTION_YIZI_TAG) : '';
       // ⚠️ 非一字也要【显式清空】：计划对象可能被复用 / 重算，⛔ 不留上一帧的脏标记（§6）。
     });
   });

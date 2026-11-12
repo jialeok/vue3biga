@@ -8,7 +8,7 @@
 //   ⛔ 只在视图层 v-if 挡不住未来新增的买点通道。
 
 import { TVRB_MIN_COUNT, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_TOP_N, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TVRB_CASH_ALERT_NONE, NEW_DRAGON_TAG, NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N, NEW_DRAGON_FAMILY_MIN_COUNT } from './tvrb-constants.js';
-import { pickFamilyNewDragon } from './new-dragon-family.js';
+import { pickFamilyNewDragon, splitTopicSegs, isLineageTopic } from './new-dragon-family.js';
 import { _normTopic, _sameTopicLoose, _num, _pct2, _streakWord, _secondTopicLeaderInTop10, _range10RankMapOf, _closeRankOf, _rankTopEntries, _topicTop10Hits, _windowTextOf, _todayRankPhrase, _rankLabelOf } from './tvrb-utils.js';
 import { detectEbbDay, secondEbbTopicOfPrevDay, buildEbbDayRecord } from './tvrb-ebb.js';
 import { _applyPrevEbbSecondNoBuy, _applyLeaderLimitDownNoBuy, _applyEbbSellRules, _buildEbbPicksBlock, _applyEbbBuyRules, _applyCashAlertBuyRules, _applyDivergeNoBuyRules, _buildDivergeBuyBlock, _buildDivergeCashAlert, _buildWeakHuddleBlock, _buildLeaderLimitDownHuddleBlock, _buildCatchUpBlock, resolveTvrbTier, avgVolRatioOf, formatAvgVolRatio, buildCashAlert, _dragonCandidates, _buildBlock, _buildNewDragonBlock, _withAuctionLegPct, _buildRange10BackupBlock } from './tvrb-blocks.js';
@@ -20,7 +20,7 @@ import { pickRange10Backup, RANGE10_BACKUP_RULE_NO } from './range10-backup.js';
 import { PRESENCE_TOP_N } from '../auction/presence-label.js';
 import { getAuctionLimitState } from '../auction/limit-up.js';
 // [TVRB-AUC-YIZI 2026-11-10] 买点行「竞价一字涨停 · 等开板后进」统一标注（只挂展示字段，不改选股）
-import { annotateAuctionYizi } from './auction-yizi-tag.js';
+import { annotateAuctionYizi, AUCTION_YIZI_WAIT_TAG } from './auction-yizi-tag.js';
 
 
 /**
@@ -426,7 +426,13 @@ export function pickNewDragon(top5, everInTop5, info) {
   //      不拿候选池（前八）冒充前十：前十是「20日涨幅 toggle」上用户看到的那份名单，条数与口径都不同。
   const pool10 = (Array.isArray(o.topicPool10) && o.topicPool10.length > 0) ? o.topicPool10 : null;
   const fam = pool10
-    ? pickFamilyNewDragon(pool10, { everInTop5: ever, minCount: NEW_DRAGON_FAMILY_MIN_COUNT })
+    ? pickFamilyNewDragon(pool10, {
+      everInTop5: ever,
+      minCount: NEW_DRAGON_FAMILY_MIN_COUNT,
+      // ★★ [NEW-DRAGON-FAMILY-OLD 2026-11-12 用户口径] 正在退潮的老题材不进候选。
+      //   用户原话：「退潮的是【羊字辈】，新题材的是【东方】，你搞混了吧？」
+      oldTopics: Array.isArray(o.oldTopics) ? o.oldTopics : null
+    })
     : null;
   if (fam) {
     pickKind = 'family';
@@ -438,7 +444,12 @@ export function pickNewDragon(top5, everInTop5, info) {
       rank20: fam.certifier.rank20,
       everBefore: !!fam.certifier.everBefore,
       reason: fam.certifier.reason || '',
-      role: 'certify-only'      // ⛔ 不进买点：竞价一字 / 停牌 / 非主板 ⇒ 买不进
+      // ★★ [NEW-DRAGON-FAMILY-OLD 2026-11-12 用户口径 · 一字那只也要进买点侧]
+      //   用户原话：「不过东方海洋是竞价一字涨停，所以打上标签【竞价一字涨停 等下杀买】，
+      //     买点侧一样要有。」
+      //   ⇒ 竞价一字 = 竞价买不进，但**要在买点侧列出来**、挂「等下杀买」标签（开板下杀再接）；
+      //     停牌 / 非主板 = 真的买不进 ⇒ 仍然只作题材认证（role='certify-only'，不进买点）。
+      role: (fam.certifier.reason === 'yizi') ? 'wait-buy' : 'certify-only'
     } : null;
     family = {
       topic: fam.topic,
@@ -449,6 +460,7 @@ export function pickNewDragon(top5, everInTop5, info) {
       members: fam.members.map(function(m) {
         return {
           name: m.name, rank20: m.rank20,
+          pct: _num(m.pct), code: String(m.code || ''),
           everBefore: !!m.everBefore, isYizi: !!m.isYizi,
           suspended: !!m.suspended, mainBoard: m.mainBoard !== false
         };
@@ -472,8 +484,10 @@ export function pickNewDragon(top5, everInTop5, info) {
       const rk = Number(c && c.rank20) || (i + 1);
       let reason;
       if (nm === certName) {
-        reason = '题材【' + fam.topic + '】里最靠前的那只（' + _rankLabelOf(rk) + '），但今日【' + certWhy +
-          '】⇒ 只作题材认证，不进买点';
+        reason = '题材【' + fam.topic + '】里最靠前的那只（' + _rankLabelOf(rk) + '），但今日【' + certWhy + '】⇒ ' +
+          (certifier.role === 'wait-buy'
+            ? '买点侧照样列出、挂【' + AUCTION_YIZI_WAIT_TAG + '】'
+            : '只作题材认证，不进买点');
       } else if (buySet.has(nm)) {
         if (nm === fam.primary.name) {
           reason = '题材【' + fam.topic + '】里竞价口径最靠前（' + _rankLabelOf(rk) + '），且本身就是老周期总龙 ⇒ ' +
@@ -874,6 +888,22 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       // ⛔ 历史榜读不到 ⇒ 无法回答「今天是不是首次上榜」⇒ 判不出（⛔ 绝不把「没数据」当「首次」）
       ndJudgeFail = '20日涨幅历史榜未读到 ⇒ 无法判定「今天是否首次上榜」⇒ 新龙判定不生效';
     } else {
+      // ★★ [NEW-DRAGON-FAMILY-OLD 2026-11-12 用户口径] 「正在退潮的老题材」清单
+      //   = ① 退潮日落库的那一段题材（switchDay.topic，例如「羊字辈」/「农业」）
+      //     ② 老龙一自己题材串里的【字辈线】（东方海洋 ⇒「羊字辈」）
+      //   ⇒ 新题材候选里直接排除它们（用户：「退潮的是羊字辈，新题材的是东方，你搞混了吧？」）
+      const oldTopics = (function() {
+        const arr = [];
+        const push = function(v) { const s = String(v || '').trim(); if (s && arr.indexOf(s) < 0) arr.push(s); };
+        push(out.switchDay.topic);
+        const oldLeader = String(out.switchDay.leaderName || '').trim();
+        if (oldLeader) {
+          const src = (o.ebbCtx && Array.isArray(o.ebbCtx.topicPool)) ? o.ebbCtx.topicPool : pool;
+          const row = (src || []).filter(function(c) { return String((c && c.name) || '').trim() === oldLeader; })[0];
+          if (row) splitTopicSegs(row.topic).filter(isLineageTopic).forEach(push);
+        }
+        return arr;
+      })();
       ndResult = pickNewDragon(pool, ever, {
         oldTopic: out.switchDay.topic,
         oldLeaderName: out.switchDay.leaderName,
@@ -882,7 +912,9 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         // ★★ [NEW-DRAGON-FAMILY 2026-11-12] 新题材判定用【前十】（= 20日涨幅 toggle 上那份名单，
         //   采集层 ebbCtx.topicPool 已是「9:25 竞价口径 + market_metrics(scope=auction) 白名单」的富化结果）。
         //   缺省 ⇒ 退回候选池（老调用方/单测零行为变化，§11）。
-        topicPool10: (o.ebbCtx && Array.isArray(o.ebbCtx.topicPool)) ? o.ebbCtx.topicPool : null
+        topicPool10: (o.ebbCtx && Array.isArray(o.ebbCtx.topicPool)) ? o.ebbCtx.topicPool : null,
+        // ★ [NEW-DRAGON-FAMILY-OLD] 退潮中的老题材（候选组里排除）
+        oldTopics: oldTopics
       });
     }
   }
