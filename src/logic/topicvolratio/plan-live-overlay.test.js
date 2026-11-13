@@ -218,8 +218,11 @@ describe('静态锁 — 接线不许被改回去', () => {
     const start = src.indexOf('const displayPlan = computed(');
     expect(start).toBeGreaterThan(0);
     const body = src.slice(start, src.indexOf('// ══', start));
-    expect(body).toContain('return _frozenWithLive(snap.plan, d)');
-    expect(body).toContain('return _frozenWithLive(pub.plan, d)');
+    // ★ [ABNORMAL-ALL 2026-11-13] 两条出口从「直接 return」改成「先赋 base 再叠加总约束」，
+    //   约束本意不变：⛔ 绝不能把存档 plan 原样返回上屏。
+    expect(body).toContain('base = _frozenWithLive(snap.plan, d)');
+    expect(body).toContain('_frozenWithLive(pub.plan, d)');
+    expect(body).toContain('return applyAbnormalOverlay(base, _abnormalFactForDisplay(d))');
     expect(body).not.toContain('return snap.plan;');
     expect(body).not.toContain('return pub.plan;');
   });

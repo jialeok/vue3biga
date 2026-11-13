@@ -41,6 +41,34 @@ function _rangePctOfMap(map, name) {
 }
 
 /**
+ * ★★ [ABNORMAL-ALL 2026-11-13] 某份【竞价口径十日涨幅 Map】里数值最高的那只票。
+ *
+ * 为什么需要（用户原话「昨天异动，11月12日买点侧也应该是灰色整片啊……现在还显示着
+ * 东方海洋和大东方，这不合理的」）：第三十四条是【全市场硬约束】——「所有大a主板10日涨幅
+ * 不能超过100%」，⛔ 不能只盯 20 日涨幅总龙一那一只。11-12 的 20 日涨幅总龙一是福莱新材
+ * (150.27)，真正十日涨幅 100.78% 严重异动的是【总龙二东方海洋】(146.92)，旧判据直接漏掉。
+ *
+ * ⚠️ 只吃 `readAuctionLegRangeMap` 产出的【9:26 竞价口径】Map：
+ *   `stock_range_pct.range_pct` 那条是收盘口径，11-11 东方海洋收盘 100.43（≥100）
+ *   但竞价口径只有 95.71（未达红线）⇒ 拿收盘口径比会误判一整天。
+ * §10：读不到 / 非法值一律跳过，⛔ 不补 0；空 Map ⇒ null。
+ *
+ * @param {Map<string,{pct:number|string|null}>|null} map
+ * @returns {{name:string, pct:number}|null}
+ */
+export function maxRangePctOf(map) {
+  if (!(map instanceof Map) || map.size === 0) return null;
+  let best = null;
+  map.forEach(function (v, name) {
+    const pct = v ? _num(v.pct) : null;
+    const nm = String(name || '').trim();
+    if (pct === null || !nm) return;
+    if (!best || pct > best.pct) best = { name: nm, pct: pct };
+  });
+  return best;
+}
+
+/**
  * 【小件】总龙一不在今日名单里时的兜底：从题材块成员行上取它的十日涨幅
  * （= 屏幕上那一列，§6 同一份真相）。
  * §10：找不到 ⇒ null（⛔ 不补 0、⛔ 不拿别的票顶替）。
@@ -2112,12 +2140,36 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   const _abnPctPrevClose = _rangePctOfMap(o.prevRange10, _abnLeaderName);
   const _abnPctPrev = (_abnPctPrevAuc !== null) ? _abnPctPrevAuc
     : (_abnPctPrevClose !== null ? _abnPctPrevClose : _nearestMemberPct(list, _abnLeaderName));
+  // ★★ [ABNORMAL-ALL 2026-11-13 用户口径] 补一层【全市场竞价口径最高票】接管。
+  //   监管异动是总约束（「所有大a主板10日涨幅不能超过100%」），只看 top5[0] 会漏掉
+  //   11-12 的总龙二东方海洋（10日 100.78%，当天 20日涨幅总龙一是福莱新材）。
+  //   ⚠️ 仅当它【比总龙一更极端】才接管 ⇒ 其余日期逐字保留旧行为（§11）。
+  //   ⚠️ 两份 Map 都恒 9:26 竞价口径；收盘口径那份只作「昨日竞价读不到」的退路，且 basis 如实写。
+  const _abnMarketPrevAuc = maxRangePctOf(o.prevAuctionLeg10);
+  const _abnMarketPrevClose = maxRangePctOf(o.prevRange10);
+  const _abnMarketPrev = _abnMarketPrevAuc || _abnMarketPrevClose;
+  const _abnMarketToday = maxRangePctOf(o.pctMap);
+  let _abnName = _abnLeaderName;
+  let _abnTopic = _abnLeaderTopic;
+  let _abnToday = (_abnPctToday !== null) ? _abnPctToday : _nearestMemberPct(list, _abnLeaderName);
+  let _abnPrev = _abnPctPrev;
+  let _abnBasis = (_abnPctPrevAuc !== null) ? 'auction' : (_abnPctPrevClose !== null ? 'close' : '');
+  if (_abnMarketToday && (_abnToday === null || _abnMarketToday.pct > _abnToday)) {
+    _abnName = _abnMarketToday.name;
+    _abnTopic = '';
+    _abnToday = _abnMarketToday.pct;
+  }
+  if (_abnMarketPrev && (_abnPrev === null || _abnMarketPrev.pct > _abnPrev)) {
+    _abnPrev = _abnMarketPrev.pct;
+    _abnBasis = _abnMarketPrevAuc ? 'auction' : 'close';
+    if (_abnName === _abnLeaderName) _abnName = _abnMarketPrev.name;
+  }
   _applyAbnormalSweep(out, {
-    leaderName: _abnLeaderName,
-    leaderTopic: _abnLeaderTopic,
-    leaderPctToday: (_abnPctToday !== null) ? _abnPctToday : _nearestMemberPct(list, _abnLeaderName),
-    leaderPctPrev: _abnPctPrev,
-    leaderPctPrevBasis: (_abnPctPrevAuc !== null) ? 'auction' : (_abnPctPrevClose !== null ? 'close' : '')
+    leaderName: _abnName,
+    leaderTopic: _abnTopic,
+    leaderPctToday: _abnToday,
+    leaderPctPrev: _abnPrev,
+    leaderPctPrevBasis: _abnBasis
   });
 
   // ★ 卖点段 —— decision-rules 的【同一份实现】；⛔ 候选池不依赖本看板选股（= 昨日打过买标签的票），

@@ -228,6 +228,9 @@ import { readPlanSnapshot, writePlanSnapshot, isPlanSnapshotInputsSigSupported }
 //   分笔装饰（异步抓取，定稿时常常还没到）**本来就必须在定稿后继续变**。
 //   ⇒ 冻结只保留买点结论；卖点段与分笔装饰恒取实时（§6：判据唯一实现在这个模块里）。
 import { eachBuyBlock, overlayLiveOnFrozen, collectBuyNames } from '../logic/topicvolratio/plan-live-overlay.js';
+// ★★ [ABNORMAL-ALL 2026-11-13 用户口径] 监管异动是【显示层总约束】：历史日读定稿存档（v4）
+//   时第三十四条规则层结果会被整个丢弃 ⇒ 上屏前统一叠加一次「空仓 + 全灰 + 不买」（⛔ 不改写存档）。
+import { applyAbnormalOverlay, isAbnormalAllGray, buildAbnormalFactFromMaps } from '../logic/topicvolratio/abnormal-overlay.js';
 // ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ 禁止选股（硬空仓）的判据。
 //   与 buy-settle 是两件事：那个管「还没到、等几秒」；这个管「根本不会有、必须直接给结论」。
 import { resolveBuyDataGate, TVRB_DATA_GATE_NONE } from '../logic/topicvolratio/buy-data-gate.js';
@@ -2238,6 +2241,21 @@ export function useTopicVolRatioBoard() {
     });
   }
 
+  /**
+   * ★★ [ABNORMAL-ALL 2026-11-13] 显示层用的异动事实：规则层优先，云端 Map 兜底。
+   *   ⚠️ 只认【日期对得上】的那份（切日期竞态红线，与 prevRangeMap / buyRangeMap 同一条）。
+   */
+  function _abnormalFactForDisplay(d) {
+    const live = data.value && data.value.plan;
+    if (live && live.abnormal && live.abnormal.show === true) return live.abnormal;
+    const pd = getPreviousTradingDay(d);
+    return buildAbnormalFactFromMaps({
+      todayMap: (buyRangeDate.value === d) ? buyRangeMap.value : null,
+      prevAucMap: (prevAuctionLeg10Date.value === pd) ? prevAuctionLeg10.value : null,
+      prevCloseMap: (prevRangeDate.value === pd) ? prevRangeMap.value : null
+    });
+  }
+
   const displayPlan = computed(function() {
     const d = String(currentDate.value || '').trim();
     // ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11] 【第一优先级】命中当日定稿存档 ⇒ 恒返回那一份。
@@ -2246,12 +2264,23 @@ export function useTopicVolRatioBoard() {
     //   ★ [SELL-LIVE 2026-11-12] 「不改变」只约束**买点结论**；卖点段与分笔装饰恒取实时
     //     （见 `_frozenWithLive` 的根因说明，⛔ 别把这两项也冻回去）。
     const snap = planSnapshot.value;
+    let base = null;
     if (snap && d && snap.date === d && snap.status === 'hit' && snap.plan) {
-      return _frozenWithLive(snap.plan, d);
+      base = _frozenWithLive(snap.plan, d);
+    } else {
+      const pub = _buyPublished.value;
+      base = (pub && d && pub.date === d && pub.plan)
+        ? _frozenWithLive(pub.plan, d)
+        : ((data.value && data.value.plan) || null);
     }
-    const pub = _buyPublished.value;
-    if (pub && d && pub.date === d && pub.plan) return _frozenWithLive(pub.plan, d);
-    return (data.value && data.value.plan) || null;
+    // ★★ [ABNORMAL-ALL 2026-11-13 用户口径] 「昨天异动，11月12日买点侧也应该是灰色整片啊，
+    //   也要提醒空仓啊……现在还显示着东方海洋和大东方，这不合理的」。
+    //   历史日按红线【保持定稿】不重算，但监管异动是覆盖所有规则的总约束 ⇒ 上屏前叠加：
+    //   fact = 规则层那份优先；历史日实时计划还是中间态 ⇒ 由 `_abnormalFactForDisplay`
+    //   用三份【云端竞价口径 Map】兜底判一次（同一批纯函数，§6 一把尺子）。
+    //   ⛔ 三份都读不到 ⇒ 不叠加（§10 绝不拿「没算出来」当「没有异动」）。
+    //   ⛔ 叠加函数不改写存档、不删票、幂等（实时路径已收口时会原样返回）。
+    return applyAbnormalOverlay(base, _abnormalFactForDisplay(d));
   });
 
   // ════════════════════════════════════════════════════════════════════════════════════════
@@ -2705,6 +2734,17 @@ export function useTopicVolRatioBoard() {
   const cashAlert = computed(function() {
     const a = displayPlan.value && displayPlan.value.cashAlert;
     return a || TVRB_CASH_ALERT_NONE;
+  });
+  /**
+   * ★★ [ABNORMAL-ALL 2026-11-13 用户口径] 「要买点侧全部灰色」的【唯一开关】。
+   *   常规题材块 / 选股标题已由 cashAlert.show 驱动既有灰化；但新龙 / 补涨 / 退潮替补 /
+   *   分歧 / 抱团 / 十日候补这六个独立容器渲染在 .tvrb-buy-list 之外（父级 filter 管不到），
+   *   11-12 的东方海洋 / 大东方正是挂在 newDragon 里 ⇒ 必须由这个开关单独接管。
+   *   ⛔ 判据只读 abnormal.show，⛔ 不看 cashAlert.show：退潮 / 量比低时那些独立块是
+   *     「今天真要买的票」，必须保持不灰（§11 零行为变化）。
+   */
+  const abnormalGray = computed(function() {
+    return isAbnormalAllGray(displayPlan.value);
   });
   /**
    * ★ [EBB 2026-10-13 第五轮用户口径] 退潮首日 —— 判据全在 Logic 层（detectEbbDay），
@@ -3171,6 +3211,8 @@ export function useTopicVolRatioBoard() {
     pickCount,
     sellCount,
     cashAlert,
+    // ★★ [ABNORMAL-ALL] 监管异动 ⇒ 六个独立买点容器一起灰（用户「买点侧全部灰色」）
+    abnormalGray,
     ebb,
     ebbBuy,
     ebbNodeNote,

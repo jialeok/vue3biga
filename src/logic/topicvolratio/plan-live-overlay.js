@@ -36,14 +36,15 @@
  * 买点槽位（与 `decision-collect#_buyBlocksOf` 的键一一对应）。
  * ⚠️ 新增槽位必须**同时**改这里和 `_buyBlocksOf` —— 两处都是「一个买点块」的清单。
  */
-const BUY_SLOT_KEYS = ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopic',
+export const BUY_SLOT_KEYS = ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopic',
   'ebbSecond', 'newDragon', 'range10Backup'];
 
 /**
  * 渲染在【灰化容器之外】的独立买点行（它们不在 `plan.blocks` 里，但同样是「今天真要买」的行）。
  * ⚠️ 漏掉任何一个 ⇒ 那一行点开就是「分笔明细暂不可用」。
  */
-const EXTRA_BLOCK_KEYS = ['ebbBuy', 'divergeBuy', 'newDragon', 'range10Backup', 'weakHuddle', 'catchUp'];
+// ★ [ABNORMAL-ALL 2026-11-13] 导出给 abnormal-overlay 复用（§6 买点块清单只有一个出处）。
+export const EXTRA_BLOCK_KEYS = ['ebbBuy', 'divergeBuy', 'newDragon', 'range10Backup', 'weakHuddle', 'catchUp'];
 
 /**
  * 遍历一份 plan 里【所有】会渲染买点行的块（唯一实现，§6）。

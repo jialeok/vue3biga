@@ -287,8 +287,8 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
     expect(resolvePlanSnapshotFreshness(broken, Object.assign({}, OPTS, { allowRulesInvalidation: false }))).toBe('stale');
   });
 
-  it('版本常量已 bump 到 7（第三十四条监管异动改变选股结论 = v7）', () => {
-    expect(TVRB_RULES_VERSION).toBe(7);
+  it('版本常量已 bump 到 8（监管异动升级为显示层总约束 = v8）', () => {
+    expect(TVRB_RULES_VERSION).toBe(8);
   });
 
   // ★★ [RULE-BUMP-GUARD 2026-11-13] 用户报障「现在刷新并没有生效」的整类根因锁。

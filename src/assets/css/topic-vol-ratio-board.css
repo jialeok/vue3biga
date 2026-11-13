@@ -438,6 +438,18 @@
     opacity: 0.5;
 }
 
+/* ---- ★★ [ABNORMAL-ALL 2026-11-13 用户口径] 「要买点侧全部灰色」----
+   六个独立买点容器（弱势抱团 / 补涨 / 退潮替补 / 分歧 / 新龙 / 十日候补）刻意渲染在
+   .tvrb-buy-list.tvrb-ebb 之外（平时它们是「今天真要买的票」，不能被灰掉），
+   所以 cashAlert.show 那套父级 filter 管不到 ⇒ 监管异动日必须单独接管：
+   11-12 的东方海洋 / 大东方正是挂在 newDragon 里，不接管就还是彩色「新龙买」。
+   ⚠️ 值与上面两套灰化逐字相同（§6 不造第二套观感），差别只在作用域：挂在容器上，
+      label / note / 票行一次全灰。⛔ TvrbCashAlert 不在这些容器里 —— 那条大字标语保持醒目。 */
+.tvrb-abnormal-gray {
+    filter: grayscale(1);
+    opacity: 0.5;
+}
+
 /* 蚂蚁线：选股段与卖点段之间的分隔（与决策看板同款行进虚线语言）。
    ⛔ 动画名必须独立（tvrbAnts），共用 decisionAnts 等于把两个看板耦成一体。 */
 .tvrb-sep {

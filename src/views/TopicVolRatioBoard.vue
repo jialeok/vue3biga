@@ -245,6 +245,7 @@
               <div
                 v-if="weakHuddle"
                 class="tvrb-weak-huddle-only-buy"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray }"
               >
                 <div class="tvrb-weak-huddle-only-label tvrb-selectable">
                   弱势切抱团 · 买点（第三十条 · 从市场龙头选，不是选题材）
@@ -272,6 +273,7 @@
               <div
                 v-if="catchUp"
                 class="tvrb-catchup-only-buy"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray }"
               >
                 <div class="tvrb-catchup-only-label tvrb-selectable">
                   补涨题材 · 买点（第三十一条 · 20日涨幅第 6~10 名里只选连板票）
@@ -295,6 +297,7 @@
               <div
                 v-if="ebbBuy"
                 class="tvrb-ebb-only-buy"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray }"
               >
                 <div class="tvrb-ebb-only-label tvrb-selectable">
                   {{ ebb && ebb.buyOnlyLabelText ? ebb.buyOnlyLabelText : '退潮替补 · 买点' }}
@@ -311,6 +314,7 @@
               <div
                 v-if="divergeBuy"
                 class="tvrb-diverge-only-buy"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray }"
               >
                 <div class="tvrb-diverge-only-label tvrb-selectable">
                   总龙首次分歧 · 买点（第二十五条）
@@ -334,6 +338,7 @@
               <div
                 v-if="newDragon"
                 class="tvrb-newdragon-only-buy"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray }"
               >
                 <div class="tvrb-newdragon-only-label tvrb-selectable">
                   新龙 / 新题材切换日 · 买点（第二十八条）
@@ -355,6 +360,7 @@
               <div
                 v-if="range10Backup"
                 class="tvrb-r10backup-only-buy"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray }"
               >
                 <div class="tvrb-r10backup-only-label tvrb-selectable">
                   十日涨幅候补 · 买点（第二十九条 · 全市场选股，不是选题材）
@@ -473,6 +479,9 @@ const {
   sellEmptyText,
   notes,
   cashAlert,
+  // ★★ [ABNORMAL-ALL 2026-11-13] 监管异动 ⇒ 买点侧【全部】灰色（含六个灰化容器之外的独立块）。
+  //   判据只在 Logic 层（abnormal-overlay#isAbnormalAllGray），模板零计算（§21）。
+  abnormalGray,
   ebb,
   ebbBuy,
   ebbNodeNote,
