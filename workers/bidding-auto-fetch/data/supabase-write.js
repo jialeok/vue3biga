@@ -65,9 +65,15 @@ export async function writeRunLog(env, entry) {
     if (!resp.ok) {
       const text = await resp.text().catch(() => '');
       console.error('写 bidding_fetch_log 失败（已忽略）: HTTP ' + resp.status + ': ' + text.slice(0, 200));
+      return { ok: false, error: 'HTTP ' + resp.status + ' ' + text.slice(0, 160) };
     }
+    return { ok: true };
   } catch (err) {
     console.error('写 bidding_fetch_log 失败（已忽略）:', err && err.message);
+    // ★★ [RUNLOG-VISIBLE 2026-11-13] 返回错误原因（而不是只 console.error 吞掉）：
+    //   11-12/11-13 收盘列空了两天、`bidding_fetch_log` 里连一条 closepost 都没有，
+    //   就是因为这一句在「subrequest 配额耗尽」时静默失败 —— 排障只能靠猜。
+    return { ok: false, error: String((err && err.message) || err) };
   }
 }
 

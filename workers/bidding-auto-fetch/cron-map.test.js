@@ -85,19 +85,57 @@ describe('[CLOUD-0927-HEAL] cron ↔ point 映射必须双向一致', () => {
     expect(mapEntries().some(e => e.key === '3 8' && e.point === 'closepost')).toBe(true);
   });
 
-  it('[CLOSE-POST] 三个补写任务只在 closepost 分支，⛔ 不许再塞回 16:00 close 轮', () => {
+  it('[CLOSE-POST] 重活（收盘列 / LD）只在 closepost，⛔ 不许再塞回 16:00 close 轮', () => {
     const closeBranch = /if \(point === 'close'\) \{([\s\S]*?)\n  \}\n  if \(point === 'closepost'\)/.exec(INDEX);
     expect(closeBranch).not.toBeNull();
     const closeBody = closeBranch[1];
-    ['runBiddingCloseWrite', 'runJiwangCloseWrite', 'runLeaderDivergeDays'].forEach(function(fn) {
+    ['runBiddingCloseWrite', 'runLeaderDivergeDays'].forEach(function(fn) {
       expect(closeBody).not.toContain('await ' + fn);
     });
     const postBranch = /if \(point === 'closepost'\) \{([\s\S]*?)\n  \}\n  if \(point === 'snapshot'\)/.exec(INDEX);
     expect(postBranch).not.toBeNull();
-    ['runBiddingCloseWrite', 'runJiwangCloseWrite', 'runLeaderDivergeDays', 'persistRunResult']
+    ['runBiddingCloseWrite', 'persistRunResult']
       .forEach(function(fn) { expect(postBranch[1]).toContain(fn); });
+    // ⛔ LD 收盘腿一次要分页读 4 张表 × 20 天（约 30 页），塞回 closepost 会把 50 次配额顶爆
+    expect(postBranch[1]).not.toContain('await runLeaderDivergeDays');
     // 手动回补白名单也要放行，否则出事故时无法在 Actions 里立即补
     expect(INDEX).toContain("'close', 'closepost', 'extras'");
+  });
+
+  // ★★ [JIWANG-SLOT 2026-11-13] 记忘是唯一例外：必须留在 16:00 close 轮，且必须是第一步。
+  //
+  //   事故链：挪到 16:03 closepost 后日志报「今日调用额度已用完」，我一度以为 16:00 也跑不了。
+  //   数据库反证（jiwang_data.updated_at）：11-16 行 = 2026-11-13T08:00:18Z = 北京 16:00:18
+  //   ⇒ 16:00 这跑是【成功】的；猫抓当天额度恰好卡在「16:00 够 1 次、16:03 再要就没有」。
+  //   ⇒ 位置就是功能：必须在 close 轮，且排在 runClose / dailyLegsHeal 之前（那时配额最充裕）。
+  it('[JIWANG-SLOT] 记忘必须在 16:00 close 轮、且排在 runClose 之前', () => {
+    const closeBranch = /if \(point === 'close'\) \{([\s\S]*?)\n  \}\n  if \(point === 'closepost'\)/.exec(INDEX);
+    expect(closeBranch).not.toBeNull();
+    const body = closeBranch[1];
+    const atJiwang = body.indexOf('await runJiwangCloseWrite(env)');
+    const atClose = body.indexOf('await runClose(env');
+    expect(atJiwang).toBeGreaterThan(-1);          // 真的在跑
+    expect(atClose).toBeGreaterThan(-1);
+    expect(atJiwang).toBeLessThan(atClose);        // ★ 顺序约束：记忘先于 runClose
+    // ⛔ 16:03 那一轮不许再跑记忘（会和 16:00 抢同一份当天额度，必然失败还白占 subrequest）
+    const postBranch = /if \(point === 'closepost'\) \{([\s\S]*?)\n  \}\n  if \(point === 'snapshot'\)/.exec(INDEX);
+    expect(postBranch).not.toBeNull();
+    expect(postBranch[1]).not.toContain('await runJiwangCloseWrite');
+  });
+
+  it('[JIWANG-SLOT] 08:50 云端自愈工作流兜底跑一次 point=jiwang', () => {
+    const wf = fs.readFileSync(path.join(HERE, '../../.github/workflows/supabase-heal.yml'), 'utf8');
+    expect(wf).toContain('point=jiwang');
+    // 兜底轮必须限定在 08:50 北京那一轮（16:30 那轮不准跑，会和 16:00 抢额度）
+    expect(wf).toContain("github.event.schedule == '50 0 * * 1-5'");
+  });
+
+  it('[CLOSE-POST] LD 收盘腿挂在 16:30 云端自愈工作流，且只在那一轮跑', () => {
+    const wf = fs.readFileSync(path.join(HERE, '../../.github/workflows/supabase-heal.yml'), 'utf8');
+    expect(wf).toContain('point=divergedays&days=1&phase=close');
+    expect(wf).toContain("github.event.schedule == '30 8 * * 1-5'");
+    expect(wf).toContain("github.event_name != 'schedule' ||");   // 08:50 那轮必须被挡掉
+    expect(wf).toContain('secrets.WORKER_FETCH_TOKEN');
   });
 
   it('[CLOSE-POST] 线上复核 REQUIRED 与运行日志验收字段都带上了', () => {

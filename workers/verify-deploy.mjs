@@ -84,7 +84,18 @@ const REQUIRED = [
   //      是不被 mangle 的对象字段名；⛔ 都不能换成注释里的标记（esbuild 会删注释）。
   //   ⚠️ cron 条数由 expectedCrons() 直读 toml 断言 ⇒ 第 5 条会自动被核对。
   'closepost',
-  'leaderDivergeCloseWritten'
+  'leaderDivergeCloseWritten',
+  // [ETF-TENCENT 2026-11-13] 「大盘ETF / 板块ETF」收盘列长期为空的根因是【数据源错配】：
+  //   Worker 把 49 只 ETF 混进同花顺 `/api/a-share/prices/snapshot`，而该接口对 ETF
+  //   一律回 `code=3001 Target not found`（`.SH` / `.SZ` 完全一样，混批时静默丢弃）
+  //   ⇒ 日志只剩 `个股/ETF 快照可用 61/110`，61 = 883410(51) + 883901(10)，差正好 49 只 ETF。
+  //   前端一直正常，是因为它的 ETF 走腾讯行情。现在 Worker 与前端同口径。
+  //   ⚠️ 'qt.gtimg.cn' / 'ETF 快照可用（腾讯）' 都是字符串字面量，⛔ 不靠注释断言。
+  'fetchTencentSnapshotPcts',
+  'qt.gtimg.cn',
+  'ETF 快照可用（腾讯）',
+  // [JIWANG-SLOT 2026-11-13] 记忘必须是 16:00 主轮第一步（16:03 再要额度就没了）。
+  'jiwangShouguWritten'
 ];
 
 async function cf(url, accept) {

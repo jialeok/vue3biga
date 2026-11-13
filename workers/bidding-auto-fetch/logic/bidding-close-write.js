@@ -30,6 +30,7 @@
 import { CONFIG } from '../config.js';
 import { beijingToday } from '../../_shared-source/date-utils.js';
 import { fuyaoProxyGet, fetchLadderConstituents, fetchSnapshotChangePct } from '../data/fuyao-api.js';
+import { fetchTencentSnapshotPcts } from '../data/tencent-snapshot.js';
 import { sbHeaders } from '../data/supabase-write.js';
 import {
   TOP10_THSCODE,
@@ -153,25 +154,62 @@ export async function runBiddingCloseWrite(env, opts) {
   }
   const top10Codes = await fetchTop10Codes(env, logs);
   const groups = biddingSnapshotCodeGroups();
-  const etfBare = groups.etfCodes.map(bareCode).filter(Boolean);
-  const stockCodes = Array.from(new Set([].concat(ladderCodes, top10Codes, etfBare, BIDDING_BIG_ETFS)));
+  const etfCodes = groups.etfCodes;                                   // 45 个板块标的（带后缀）
+  const bigEtfCodes = BIDDING_BIG_ETFS.map(c => c + '.SH');           // 4 个宽基（沪市 ETF）
+  // ★★ [ETF-TENCENT 2026-11-13] ETF 【绝不能】混进同花顺快照批次。
+  //   实测 `/api/a-share/prices/snapshot?thscodes=510300.SH`（以及 .SZ / 159995.SZ）
+  //   一律 `code=3001 Target not found`，混批时坏代码被静默丢弃 —— 这就是
+  //   `个股/ETF 快照可用 61/110`（110−61=49 = 全部 ETF，一只不剩）的真正原因。
+  //   ⇒ ETF 单独走腾讯行情（与前端 helpers.js#fetchBiddingSnapshotToForm 同一口径）。
+  const stockCodes = Array.from(new Set([].concat(ladderCodes, top10Codes)));
 
   const stockPcts = {};
-  if (ladderCodes.length === 0 && top10Codes.length === 0 && etfBare.length === 0) {
-    logs.push('⛔ 三路名单全空 ⇒ 不发快照请求（§10：读取失败不造 0）');
+  if (stockCodes.length === 0) {
+    logs.push('⛔ 个股两路名单全空（883410 / 883901）⇒ 不发同花顺快照请求（§10：读取失败不造 0）');
   } else {
     try {
       const snap = await fetchSnapshotChangePct(env, stockCodes);
       Object.assign(stockPcts, (snap && snap.pctMap) || {});
-      logs.push('个股/ETF 快照可用 ' + Object.keys(stockPcts).length + '/' + stockCodes.length);
+      // ★★ [CLOSE-COL-TRACE 2026-11-13] 命中率必须整条打出来 —— 收盘列空了两天都查不出原因，
+      //   就是因为这里只打了 `61/110` 一个比例，看不出「ETF 一只都没取到」。
+      //   现在个股（同花顺）与 ETF（腾讯）分开打，谁缺一眼可见。
+      const st = (snap && snap.stats) || {};
+      logs.push('个股快照可用 ' + Object.keys(stockPcts).length + '/' + stockCodes.length +
+        '（批 ok=' + (st.batchOk || 0) + ' fail=' + (st.batchFail || 0) +
+        '／逐只 ok=' + (st.singleOk || 0) + ' fail=' + (st.singleFail || 0) +
+        '／上游返回=' + (st.itemsReturned || 0) + ' 空涨幅=' + (st.emptyField || 0) +
+        ' 未匹配=' + (st.notMatched || 0) + '）');
+      if (st.batchFail > 0) logs.push('⚠️ 有 ' + st.batchFail + ' 批快照失败并降级逐只（会多烧 subrequest）');
     } catch (e) {
-      logs.push('⚠️ 个股/ETF 快照失败（相关行留空）: ' + (e && e.message));
+      logs.push('⚠️ 个股快照失败（相关行留空）: ' + (e && e.message));
     }
   }
 
-  // 前端用腾讯行情拿 ETF，Worker 统一用同花顺；computeBiddingCloseValues 的
-  // biddingPctLookup 兼容「带后缀 thscode」与「6 位代码」两种 key，无需在这里改 key 形态。
-  const etfPcts = stockPcts;
+  // ★★ [ETF-TENCENT 2026-11-13] ETF 走腾讯行情 —— 同花顺 A 股快照不含 ETF（已实测 3001），
+  //   这条腿就是「大盘ETF / 板块ETF」两行长期为空的根因，别再改回同花顺。
+  const etfPcts = {};
+  {
+    const etfAll = Array.from(new Set([].concat(etfCodes, bigEtfCodes)));
+    if (etfAll.length === 0) {
+      logs.push('⛔ 无 ETF 代码 ⇒ 大盘ETF / 板块ETF 两行留空');
+    } else {
+      try {
+        const ts = await fetchTencentSnapshotPcts(etfAll);
+        Object.assign(etfPcts, (ts && ts.pctMap) || {});
+        const st = (ts && ts.stats) || {};
+        logs.push('ETF 快照可用（腾讯）' + Object.keys(etfPcts).length + '/' + etfAll.length +
+          '（批 ok=' + (st.batchOk || 0) + ' fail=' + (st.batchFail || 0) +
+          '／上游返回=' + (st.itemsReturned || 0) + ' 空涨幅=' + (st.emptyField || 0) + '）');
+        if (st.batchFail > 0) logs.push('⚠️ 有 ' + st.batchFail + ' 批腾讯 ETF 快照失败（对应行留空，绝不写 0）');
+        if (st.symbolOk < etfAll.length) {
+          logs.push('⚠️ 有 ' + (etfAll.length - st.symbolOk) + ' 个 ETF 代码无法生成腾讯 symbol（北交所等，已跳过）');
+        }
+      } catch (e) {
+        logs.push('⚠️ 腾讯 ETF 快照失败（大盘ETF / 板块ETF 留空）: ' + (e && e.message));
+      }
+    }
+  }
+
   const indexPcts = await fetchIndexPcts(env, groups.allIndexCodes, logs);
 
   const values = computeBiddingCloseValues({

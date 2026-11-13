@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-11-13 02:53:03
+// 生成时间: 2026-11-13 14:56:44
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 10019（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 10409（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
@@ -491,6 +491,17 @@ function tickerToThscode(code) {
   if (c.slice(0, 2) === '92') return c + '.BJ';
   if (c.startsWith('6') || c.startsWith('9')) return c + '.SH';
   if (c.startsWith('4') || c.startsWith('8')) return c + '.BJ';
+  // [ETF-5SH 2026-11-13] 5 开头 = 沪市 ETF / LOF（510/511/512/513/515/516/517/518/560/
+  //    561/562/563/588/589…）。旧代码全部落到最后的 `.SZ` ⇒ thscode 形式是错的。
+  //    A 股 6 位代码里 5 开头没有个股（沪市个股 6xx / 深市 0xx、3xx / 北交所 4xx、8xx、920）
+  //    ⇒ 判 `.SH` 不会误伤任何股票；且与前端 snapshot-spec.js#biddingEtfToSnapshotCode 同口径。
+  //
+  //    ⚠️ **但这条修不了「大盘ETF / 板块ETF 收盘列为空」**（我第一版就是这么误判的，已纠正）：
+  //    `/api/a-share/prices/snapshot` 无论 `.SH` 还是 `.SZ`，对 ETF 一律回
+  //    `code=3001 Target not found` —— 这个接口【根本不含 ETF】，混批时坏代码被静默丢弃。
+  //    实测取证见 `.tmpdiag/_etf-snap-probe.mjs`；ETF 现已改走腾讯行情
+  //    （`data/tencent-snapshot.js`），不再经过本函数。
+  if (c.startsWith('5')) return c + '.SH';
   return c + '.SZ';
 }
 
@@ -1058,9 +1069,15 @@ async function writeRunLog(env, entry) {
     if (!resp.ok) {
       const text = await resp.text().catch(() => '');
       console.error('写 bidding_fetch_log 失败（已忽略）: HTTP ' + resp.status + ': ' + text.slice(0, 200));
+      return { ok: false, error: 'HTTP ' + resp.status + ' ' + text.slice(0, 160) };
     }
+    return { ok: true };
   } catch (err) {
     console.error('写 bidding_fetch_log 失败（已忽略）:', err && err.message);
+    // ★★ [RUNLOG-VISIBLE 2026-11-13] 返回错误原因（而不是只 console.error 吞掉）：
+    //   11-12/11-13 收盘列空了两天、`bidding_fetch_log` 里连一条 closepost 都没有，
+    //   就是因为这一句在「subrequest 配额耗尽」时静默失败 —— 排障只能靠猜。
+    return { ok: false, error: String((err && err.message) || err) };
   }
 }
 
@@ -7726,6 +7743,97 @@ const RANGE10_BACKUP_TAG = '十日涨幅候补买';
 /** 全称文案（买点侧容器标题 / 行内说明用；§21 模板零计算） */
 const RANGE10_BACKUP_LABEL = '第十日周期候补 · 买点（第' + RANGE10_BACKUP_RULE_NO + '条）';
 
+/**
+ * ══【第三十四条 · 监管异动 · 十日涨幅硬上限】══════════════════════════════════════════
+ *
+ * 用户口径（2026-11-13 原话，逐字）：
+ *   「昨天11月12日，题材量比选股那里忽略了一个重要判断依据那就是，监管异动，所有大a主板
+ *     10日涨幅不能超过100%，东方海洋，昨天竞价口径就超过100%了，属于严重异动了，这个异动很要紧，
+ *     几乎所有的规则都适合，一旦总龙一股票异动，所在题材的股票次日都会崩盘，甚至带动情绪崩盘，
+ *     所以规则你还要新增总约束，十日涨幅竞价口径不能超过95%（这是自定义标准，不能超过），
+ *     之所以设置比100%低，这是以防万一，有的99%就开始有题材崩盘节奏了，所以更新下规则，
+ *     题材量比那里，有文字提醒说明醒目些，十日达到100%异动，提示空仓，选出的票整块变灰色
+ *     （不用去掉），还有总龙一异动次日，一般大盘环境都不太好，也要空仓，不再选票，这个异动很严重，
+ *     会带崩情绪，市场几乎所有的票都不好，所以异动次日（像今天），要提示空仓，不在买进任何股票。」
+ *
+ * ── ★★ [FULL-MARKET 2026-11-13 用户当场纠正 · 最高口径] 只有一条触发线 ──────────────
+ *   用户原话（逐字）：「是整个题材的，你没听懂吗？也就是全场整片灰，整个市场也是灰色，
+ *     没有票可以买，我都说了总龙一影响范围很大的。这个波及到所有的票。」
+ *   ⇒ **十日涨幅（竞价口径）> 97% 就是【全场级监管异动】**：
+ *       · 后果一律 = 整个市场整片灰 + 大字【空仓】+ 一张票都不买；
+ *       · 触发源可以是总龙一 / 昨日总龙一 / 任何一只会被选中的票，
+ *         但【后果波及所有票】——⛔ 不是「跳过那只、顺延下一只」，⛔ 不是「只该题材不买」；
+ *       · 之前把 97~100 做成「票级顺延」是**理解错误**，已被用户当场否掉。
+ *   ⇒ 实现：`isOverRange10Cap`（near || abnormal）是【唯一全场禁买判据】；
+ *      near 与 abnormal 只是【文案程度分级】，**后果完全相同**。
+ *      ⚠️ 100%（TVRB_RANGE10_ABNORMAL）只表示「交易所严重异常波动、程度更重」，
+ *          ⛔ 不再作为「要不要全场空仓」的分界线。
+ *   ★ [CAP-97 2026-11-13 晚间用户修订] 自定义上限 95 → **97**：11-11 东方海洋真实竞价口径
+ *     `95.711445%` 必须落在【正常】区间（用户「11月11日这样能正常运行」）。
+ *     用户原话（逐字）：「不是这样的，超过95%该题材或者股票就比较危险，你把它调到97%吧，
+ *     这样就比较合理些，11月11日这样能正常运行，超过97%该题材或者股票就不能选，监管异动了」。
+ *     ⛔ 上面 609~617 行的 11-13 早间原话「不能超过95%」保留作历史，【以本修订为准】。
+ *
+ * ── 三种触发形态（kind，见 logic/topicvolratio/abnormal-10d.js）──────────────────────
+ *   三者判据统一 > 97%，后果【完全相同】(全场空仓)：
+ *   'nextDay'   总龙一 / 全市场最高票【昨日】> 97% ⇒ 今天是【异动次日】⇒ 空仓，
+ *               并清掉所有「今天还能买」的特殊通道（退潮替补 / 新龙 / 十日候补 /
+ *               弱势抱团 / 补涨题材）—— 用户「不再选票」「不再买进任何股票」。
+ *   'leaderNow' 总龙一 / 全市场最高票【今日】（9:26 竞价口径）> 97% ⇒ 当日异动 ⇒ 同样空仓。
+ *   'stock'     某只【会被选中的票】> 97% ⇒ 空仓（整片灰、票保留）。
+ *   ⚠️ 票【照常列出】（用户「不用去掉」），但不给买点、不计入「选出 N 只」。
+ *
+ * ── 实测（这条口径的来历，真实落地数据）────────────────────────────────────────────────
+ *   东方海洋 十日涨幅（竞价口径）：11-11 = **95.711445%**（97 线以下 ⇒ 正常运行）、
+ *   11-12 = **100.78%**（异动成立）、11-13 = 73.14%；
+ *   它在 11-12 是 20日涨幅第 1 名（收盘 146.92%），11-13 仍是第 1 名（竞价 135.61%）。
+ *   ⇒ 若只看【今日】数值，11-13 这条规则根本不会触发（73.14% ＜ 97%）——
+ *     所以【必须】同时看【昨日】那份（组合式注入的 prevRange10），这正是用户说的「异动次日」。
+ *
+ * ⚠️ 为什么本条第优先级最高（排在退潮 / 总龙分歧 / 空仓提醒之前）：
+ *   用户「几乎所有的规则都适合」「会带崩情绪，市场几乎所有的票都不好」——
+ *   退潮是【单个题材】的预期差，异动是【全市场】的风险，两者同一天成立时以后者为准。
+ */
+const ABNORMAL_RULE_NO = '三十四';
+/** 自定义禁选上限（%）：十日涨幅（竞价口径）**超过它** ⇒ 判【全场级监管异动】
+ *  = 整个市场整片灰 + 空仓 + 一张票都不买。
+ *  ★ [CAP-97 2026-11-13 晚间] 用户把 95 上调到 97（让 11-11 的 95.711445% 正常运行）。
+ *  ★★ [FULL-MARKET] ⛔ 这不是「票级禁选线」：越过它一声令下全场不买，
+ *     ⛔ 不许跳过该票顺延下一只；100% 只表示程度更重，⛔ 不是是否空仓的分界。
+ *  ⛔ 全项目只此一处定义，文案一律动态拼本常量，不许再写死 95 / 97。 */
+const TVRB_RANGE10_CAP = 97;
+/** 交易所「严重异常波动」红线（%）：★ [FULL-MARKET] 只用于文案【程度分级】，
+ *  ⛔ 不再作为「要不要全场空仓」的分界线（> 97 就已经全场空仓）。 */
+const TVRB_RANGE10_ABNORMAL = 100;
+/** 异动 / 超限票的动作标签（⛔ 不复用【退潮不买】/【分歧日不买】：成因不同，文案必须能区分） */
+const ABNORMAL_NO_BUY_TAG = '异动不买';
+/** 配色档：与【退潮不买 / 分歧日不买 / 总龙分歧不买 / 龙一跌停不买】**同一档**（深墨亮字，
+ *  灰化容器下唯一还读得出来的档）。⛔ 不为它新造颜色 —— 整段都挂着 grayscale。 */
+const ABNORMAL_NO_BUY_TONE = EBB_NO_BUY_TONE;
+/** 触发形态：总龙一【昨日】十日涨幅 > TVRB_RANGE10_CAP ⇒ 异动次日（全场空仓） */
+const ABNORMAL_KIND_NEXT_DAY = 'nextDay';
+/** 触发形态：总龙一【今日】十日涨幅 > TVRB_RANGE10_CAP ⇒ 当日异动（全场空仓） */
+const ABNORMAL_KIND_LEADER_NOW = 'leaderNow';
+/** 触发形态：某只入选票十日涨幅 > TVRB_RANGE10_CAP（全场空仓） */
+const ABNORMAL_KIND_STOCK = 'stock';
+/** 未触发时的稳定返回值（同一引用 ⇒ 不白白触发下游重算 / 重渲染，§19） */
+const TVRB_ABNORMAL_NONE = Object.freeze({
+  show: false,
+  kind: '',
+  ruleNo: ABNORMAL_RULE_NO,
+  leaderName: '',
+  leaderTopic: '',
+  leaderPctPrev: null,
+  leaderPctPrevText: '—',
+  leaderPctToday: null,
+  leaderPctTodayText: '—',
+  names: Object.freeze([]),
+  nearNames: Object.freeze([]),
+  unknownLeader: false,
+  headline: '',
+  detail: ''
+});
+
 // ────── ../src/logic/util/num-text.js ──────
 // num-text.js — 数据库「文本型数字」的统一解析（§6 单一实现）
 //
@@ -8638,6 +8746,176 @@ function _nextDate(dateStr) {
 }
 
 
+// ────── bidding-auto-fetch/data/tencent-snapshot.js ──────
+// tencent-snapshot.js — 腾讯行情快照（ETF 唯一来源）
+//
+// ============================================================================
+// [ETF-TENCENT 2026-11-13] 为什么 Worker 必须单独走腾讯拿 ETF
+// ----------------------------------------------------------------------------
+// 事故：竞价变化看板「收盘」列的 `大盘ETF` / `板块ETF` 两行【长期为空】，
+//   用户报障原话「这两天收盘列都没有数据，只有 9:15~9:25 那几列有」。
+//
+// 生产取证（`.tmpdiag/_etf-snap-probe.mjs`，2026-11-13 直打 fuyao-proxy）：
+//     · `/api/a-share/prices/snapshot?thscodes=510300.SH` → `code=3001 Target not found`
+//     · `/api/a-share/prices/snapshot?thscodes=510300.SZ` → `code=3001 Target not found`
+//     · `/api/a-share/prices/snapshot?thscodes=159995.SZ` → `code=3001 Target not found`
+//     · 混批（2 沪 ETF + 1 深 ETF + 1 个股）→ `code=0 item=1`（**坏代码被静默丢弃**，只回个股）
+//     · `/api/a-share-index/prices/snapshot?thscodes=510300.SH` → 同样 `Target not found`
+//   ⇒ **同花顺 A 股快照接口根本不含 ETF，与代码后缀无关。**
+//     所以「把 5 开头从 .SZ 改成 .SH」修不了这两行（我第一版就是这么误判的，已纠正）。
+//     后续批次日志 `个股/ETF 快照可用 61/110` 也印证：61 = 883410 的 51 只 + 883901 的 10 只，
+//     110 − 61 = 49 正好是全部 ETF ⇒ **49 只一只都没拿到**，不是缺几只。
+//
+// 前端为什么正常：`src/logic/bidding/helpers.js#fetchBiddingSnapshotToForm` 里
+//   ETF 走的是 `https://qt.gtimg.cn/q=sh510300,sz159995,...`（腾讯行情），
+//   只有个股 / 指数走同花顺。Worker 侧当年照抄了「个股 + ETF 混一个批次」的写法，
+//   于是浏览器有值、云端恒定空 —— 这正是「我这边一直好好的，你们改了才坏」的由来。
+//
+// 实测（同日，49 只真实 ETF 代码全打一遍）：**腾讯 49/49 全中**，字段 32 = 涨幅%。
+//   `sh510300=-0.75` / `sz159995=-2.04` / `sh512480=-2.46` …（与 11-13 收盘一致，时间戳
+//   `20261113161454`，现价 0.769 / 昨收 0.785 ⇒ -2.038% 自洽）
+//
+// 【红线】
+//   ⛔ 读失败 ≠ 0：任何一只没拿到就不放进 pctMap，调用方据此「不给该行赋值」（§10）。
+//   ⛔ 不猜值：涨跌幅只认上游字段，绝不拿同花顺个股口径 / 竞价涨幅冒充收盘。
+//   ⛔ 失败不连坐：本模块抛错由调用方 catch，只记日志，不影响个股 / 指数两路。
+// ============================================================================
+
+const TENCENT_SNAPSHOT_URL = 'https://qt.gtimg.cn/q=';
+const TENCENT_TIMEOUT_MS = 9000;
+// 腾讯地址是 GET query，49 只 ETF × 9 字符 ≈ 441 字符已足够；留到 60 只/批仍远低于 URL 上限。
+const TENCENT_BATCH_SIZE = 60;
+// ⚠️ [BUNDLE-SCANNER] 这里【不能】写成正则字面量 `/v_([a-z]{2}\d{6})="([^"]*)"/g`。
+//   `workers/_check_bundle.mjs` 的顶层声明扫描器是个简易字符串状态机，
+//   它【不识别正则字面量】：正则体里一旦出现 `"`，扫描器会从那个引号起误入「双引号字符串」
+//   状态并长期失步 —— 其后所有顶层声明都扫不到，出包体检就把本来存在的
+//   `dispatch` / `jsonResponse` 报成「缺必需标识符」而拒绝出包（fail-safe，但会卡住 CI）。
+//   改用字符串拼 RegExp：引号落在真实字符串里，状态机认得。
+//   该局限的原文档见 workers/_check_bundle.mjs 末尾「已知局限（2026-09-15 实测）」。
+const TENCENT_LINE_SRC = 'v_([a-z]{2}\\d{6})="([^"]*)"';
+
+/**
+ * 6 位代码 / thscode → 腾讯行情 symbol。
+ * 口径与前端 helpers.js#biddingGetTencentPcts 完全一致（`.SZ` → sz，其余 → sh），
+ * 不带后缀时按 A 股板块规则推断（5/6/9 → sh，其余 → sz）。
+ * @param {string} code  '510300.SH' | '159995.SZ' | '510300'
+ * @returns {string} 'sh510300' | 'sz159995' | ''（非法）
+ */
+function tencentSymOf(code) {
+  const raw = String(code || '').trim();
+  if (!raw) return '';
+  const dot = raw.lastIndexOf('.');
+  const bare = dot > 0 ? raw.slice(0, dot) : raw;
+  const suffix = dot > 0 ? raw.slice(dot + 1).toUpperCase() : '';
+  if (!/^\d{6}$/.test(bare)) return '';
+  if (suffix === 'SH') return 'sh' + bare;
+  if (suffix === 'SZ') return 'sz' + bare;
+  if (suffix === 'BJ') return ''; // 北交所不在腾讯 qt 口径内，不硬凑
+  // 无后缀：5/6/9 开头是沪市（5 = 沪市 ETF/LOF，6 = 沪市个股，9 = 沪市 B 股），其余深市
+  return (bare.charAt(0) === '5' || bare.charAt(0) === '6' || bare.charAt(0) === '9' ? 'sh' : 'sz') + bare;
+}
+
+/**
+ * 纯函数：解析腾讯行情文本 → { pctMap, stats }
+ *
+ * 上游是 `text/html; charset=GBK`，我们只取 ASCII 结构的 `v_<symbol>="字段~字段~…"`。
+ * 为了不让 GBK 解码问题干扰，调用方应传【字节补 latin1 后的字符串】（见 decodeLatin1）。
+ * 中文名变乱码无所谓 —— 数值字段（33 = 涨幅%）全是 ASCII。
+ *
+ * @param {string} text
+ * @returns {{pctMap: Record<string, number>, stats: {itemsReturned:number, emptyField:number}}}
+ */
+function parseTencentSnapshot(text) {
+  const pctMap = {};
+  const stats = { itemsReturned: 0, emptyField: 0 };
+  const re = new RegExp(TENCENT_LINE_SRC, 'g');
+  let m;
+  while ((m = re.exec(String(text || ''))) !== null) {
+    const sym = m[1];
+    const fields = m[2].split('~');
+    stats.itemsReturned++;
+    // 字段 32（0 基）= 涨跌幅 %。安全兜底：没有就按 现价(3) / 昨收(4) 算。
+    let pct = fields.length > 32 ? Number(fields[32]) : NaN;
+    if (!isFinite(pct) || (fields[32] === '' && fields.length > 4)) {
+      const curr = Number(fields[3]);
+      const prev = Number(fields[4]);
+      pct = (isFinite(curr) && isFinite(prev) && prev > 0) ? ((curr - prev) / prev) * 100 : NaN;
+    }
+    if (!isFinite(pct)) { stats.emptyField++; continue; }
+    const bare = sym.slice(2);
+    // key 用【带后缀 thscode】—— 与前端 biddingGetTencentPcts 一致，
+    // computeBiddingCloseValues 的 biddingPctLookup 先按完整 thscode 找，命中最快。
+    pctMap[bare + (sym.slice(0, 2) === 'sz' ? '.SZ' : '.SH')] = Math.round(pct * 100) / 100;
+  }
+  return { pctMap, stats };
+}
+
+/** 字节 → latin1 字符串（保持 1:1，不触发 UTF-8 解码替换），分块避免超长参数栈 */
+function decodeLatin1(buf) {
+  const bytes = new Uint8Array(buf);
+  let out = '';
+  const CHUNK = 8192;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    const slice = bytes.subarray(i, i + CHUNK);
+    out += String.fromCharCode.apply(null, slice);
+  }
+  return out;
+}
+
+/**
+ * 拉一批 ETF 的收盘涨幅。
+ *
+ * @param {string[]} codes 带后缀 thscode（见 src/logic/bidding/snapshot-spec.js#biddingEtfToSnapshotCode）
+ * @param {{timeoutMs?:number}} [opts]
+ * @returns {Promise<{pctMap: Record<string, number>, stats: object}>}
+ *   stats: { totalInput, batches, batchOk, batchFail, itemsReturned, emptyField, success }
+ *   ⛔ 整批失败不抛错，只累计 batchFail —— 调用方按 pctMap 缺项留空（§10）。
+ */
+async function fetchTencentSnapshotPcts(codes, opts) {
+  const list = Array.from(new Set((codes || []).map(c => String(c || '').trim()).filter(Boolean)));
+  const symPairs = list
+    .map(c => ({ code: c, sym: tencentSymOf(c) }))
+    .filter(p => p.sym);
+  const stats = {
+    totalInput: list.length,
+    symbolOk: symPairs.length,
+    batches: 0,
+    batchOk: 0,
+    batchFail: 0,
+    itemsReturned: 0,
+    emptyField: 0,
+    success: 0
+  };
+  const pctMap = {};
+  const timeoutMs = (opts && opts.timeoutMs) || TENCENT_TIMEOUT_MS;
+
+  for (let i = 0; i < symPairs.length; i += TENCENT_BATCH_SIZE) {
+    const chunk = symPairs.slice(i, i + TENCENT_BATCH_SIZE);
+    const url = TENCENT_SNAPSHOT_URL + chunk.map(p => p.sym).join(',');
+    stats.batches++;
+    try {
+      const fetchOpts = { headers: { 'User-Agent': 'Mozilla/5.0' } };
+      if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+        fetchOpts.signal = AbortSignal.timeout(timeoutMs);
+      }
+      const resp = await fetch(url, fetchOpts);
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const text = decodeLatin1(await resp.arrayBuffer());
+      const parsed = parseTencentSnapshot(text);
+      stats.batchOk++;
+      stats.itemsReturned += parsed.stats.itemsReturned;
+      stats.emptyField += parsed.stats.emptyField;
+      Object.assign(pctMap, parsed.pctMap);
+    } catch (e) {
+      stats.batchFail++;
+      console.warn('[TENCENT-ETF] 批次 ' + (stats.batches) + ' 失败（该批留空，不写 0）: ' + (e && e.message));
+    }
+  }
+  stats.success = Object.keys(pctMap).length;
+  return { pctMap, stats };
+}
+
+
 // ────── ../src/logic/bidding/snapshot-spec.js ──────
 // snapshot-spec.js — 竞价变化看板「快照取值口径」唯一真相（§6）
 //
@@ -8883,6 +9161,7 @@ function resolveBiddingRowTargets(existingRows, values) {
 
 
 
+
 const SB_TIMEOUT_MS = 12000;
 const PROXY_TIMEOUT_MS = 9000;
 const BCW_LADDER_ROW = '最近多板%';
@@ -8996,25 +9275,62 @@ async function runBiddingCloseWrite(env, opts) {
   }
   const top10Codes = await fetchTop10Codes(env, logs);
   const groups = biddingSnapshotCodeGroups();
-  const etfBare = groups.etfCodes.map(bareCode).filter(Boolean);
-  const stockCodes = Array.from(new Set([].concat(ladderCodes, top10Codes, etfBare, BIDDING_BIG_ETFS)));
+  const etfCodes = groups.etfCodes;                                   // 45 个板块标的（带后缀）
+  const bigEtfCodes = BIDDING_BIG_ETFS.map(c => c + '.SH');           // 4 个宽基（沪市 ETF）
+  // ★★ [ETF-TENCENT 2026-11-13] ETF 【绝不能】混进同花顺快照批次。
+  //   实测 `/api/a-share/prices/snapshot?thscodes=510300.SH`（以及 .SZ / 159995.SZ）
+  //   一律 `code=3001 Target not found`，混批时坏代码被静默丢弃 —— 这就是
+  //   `个股/ETF 快照可用 61/110`（110−61=49 = 全部 ETF，一只不剩）的真正原因。
+  //   ⇒ ETF 单独走腾讯行情（与前端 helpers.js#fetchBiddingSnapshotToForm 同一口径）。
+  const stockCodes = Array.from(new Set([].concat(ladderCodes, top10Codes)));
 
   const stockPcts = {};
-  if (ladderCodes.length === 0 && top10Codes.length === 0 && etfBare.length === 0) {
-    logs.push('⛔ 三路名单全空 ⇒ 不发快照请求（§10：读取失败不造 0）');
+  if (stockCodes.length === 0) {
+    logs.push('⛔ 个股两路名单全空（883410 / 883901）⇒ 不发同花顺快照请求（§10：读取失败不造 0）');
   } else {
     try {
       const snap = await fetchSnapshotChangePct(env, stockCodes);
       Object.assign(stockPcts, (snap && snap.pctMap) || {});
-      logs.push('个股/ETF 快照可用 ' + Object.keys(stockPcts).length + '/' + stockCodes.length);
+      // ★★ [CLOSE-COL-TRACE 2026-11-13] 命中率必须整条打出来 —— 收盘列空了两天都查不出原因，
+      //   就是因为这里只打了 `61/110` 一个比例，看不出「ETF 一只都没取到」。
+      //   现在个股（同花顺）与 ETF（腾讯）分开打，谁缺一眼可见。
+      const st = (snap && snap.stats) || {};
+      logs.push('个股快照可用 ' + Object.keys(stockPcts).length + '/' + stockCodes.length +
+        '（批 ok=' + (st.batchOk || 0) + ' fail=' + (st.batchFail || 0) +
+        '／逐只 ok=' + (st.singleOk || 0) + ' fail=' + (st.singleFail || 0) +
+        '／上游返回=' + (st.itemsReturned || 0) + ' 空涨幅=' + (st.emptyField || 0) +
+        ' 未匹配=' + (st.notMatched || 0) + '）');
+      if (st.batchFail > 0) logs.push('⚠️ 有 ' + st.batchFail + ' 批快照失败并降级逐只（会多烧 subrequest）');
     } catch (e) {
-      logs.push('⚠️ 个股/ETF 快照失败（相关行留空）: ' + (e && e.message));
+      logs.push('⚠️ 个股快照失败（相关行留空）: ' + (e && e.message));
     }
   }
 
-  // 前端用腾讯行情拿 ETF，Worker 统一用同花顺；computeBiddingCloseValues 的
-  // biddingPctLookup 兼容「带后缀 thscode」与「6 位代码」两种 key，无需在这里改 key 形态。
-  const etfPcts = stockPcts;
+  // ★★ [ETF-TENCENT 2026-11-13] ETF 走腾讯行情 —— 同花顺 A 股快照不含 ETF（已实测 3001），
+  //   这条腿就是「大盘ETF / 板块ETF」两行长期为空的根因，别再改回同花顺。
+  const etfPcts = {};
+  {
+    const etfAll = Array.from(new Set([].concat(etfCodes, bigEtfCodes)));
+    if (etfAll.length === 0) {
+      logs.push('⛔ 无 ETF 代码 ⇒ 大盘ETF / 板块ETF 两行留空');
+    } else {
+      try {
+        const ts = await fetchTencentSnapshotPcts(etfAll);
+        Object.assign(etfPcts, (ts && ts.pctMap) || {});
+        const st = (ts && ts.stats) || {};
+        logs.push('ETF 快照可用（腾讯）' + Object.keys(etfPcts).length + '/' + etfAll.length +
+          '（批 ok=' + (st.batchOk || 0) + ' fail=' + (st.batchFail || 0) +
+          '／上游返回=' + (st.itemsReturned || 0) + ' 空涨幅=' + (st.emptyField || 0) + '）');
+        if (st.batchFail > 0) logs.push('⚠️ 有 ' + st.batchFail + ' 批腾讯 ETF 快照失败（对应行留空，绝不写 0）');
+        if (st.symbolOk < etfAll.length) {
+          logs.push('⚠️ 有 ' + (etfAll.length - st.symbolOk) + ' 个 ETF 代码无法生成腾讯 symbol（北交所等，已跳过）');
+        }
+      } catch (e) {
+        logs.push('⚠️ 腾讯 ETF 快照失败（大盘ETF / 板块ETF 留空）: ' + (e && e.message));
+      }
+    }
+  }
+
   const indexPcts = await fetchIndexPcts(env, groups.allIndexCodes, logs);
 
   const values = computeBiddingCloseValues({
@@ -9371,12 +9687,16 @@ function cronToPoint(cronExpr) {
   // [LADDER26 2026-11-06] 01:26 UTC = 北京 09:26：名单源二次确认。
   //   11-06 的 P0 里上游 9:25 挂、9:4x 就恢复，只靠 9:25 内重试救不回来；
   //   这条 cron 在开盘前 4 分钟再问一次，且「9:25 已成功」时 0 请求直接返回（幂等）。
+  // [CLOSE-POST 2026-11-13] 08:03 UTC = 北京 16:03：收盘后补写轮（独立 invocation）。
+  //   ⚠️ 见 dispatch('closepost') 的文件头长注释：Cloudflare 单次 invocation 只有 50 次
+  //      subrequest，16:00 主轮连带这些补写任务必爆配额 ⇒ 必须拆出来单独跑。
   const MAP = {
     '25 1': 'morning',
     '26 1': 'ladder26',
     '27 1': 'snapshot',
     '35 1': 'snapshot',
-    '0 8': 'close'
+    '0 8': 'close',
+    '3 8': 'closepost'
   };
   return MAP[key] || null;
 }
@@ -9434,7 +9754,12 @@ function bjSecNow() {
  */
 async function persistRunResult(env, point, result) {
   const r = result || {};
-  await writeRunLog(env, {
+  // ★★ [RUNLOG-VISIBLE 2026-11-13] 必须接住返回值：`writeRunLog` 已改为返回
+  //   `{ ok, error }`（不再静默吞掉失败），下面据此把「日志没写进去」这件事变得可见。
+  //   ⚠️ 忘了接住 = `w is not defined` ⇒ 每次落库都 ReferenceError ⇒ 整轮崩。
+  //      这类「引用未定义局部变量」vitest 全绿也抓不到，只有 eslint 的 no-undef 能拦
+  //      （2026-11-10 就是这么把 9:25 整轮写崩的）。
+  const w = await writeRunLog(env, {
     time_point: point,
     run_date: r.today || r.date || '',
     ok: r.ok === true,
@@ -9484,10 +9809,22 @@ async function persistRunResult(env, point, result) {
       // [AUC-SANE 2026-10-12] 竞价涨幅越界闸门：>0 说明上游 numcat 又给了物理不可能的坏值
       aucPctOutOfRange: r.aucPctOutOfRange === undefined ? null : r.aucPctOutOfRange,
       aucPctRepaired: r.aucPctRepaired === undefined ? null : r.aucPctRepaired,
+      // ★★ [CLOSE-POST 2026-11-13] 收盘后补写轮的结构化验收字段。
+      //   收盘列空了两天却排查不出来，就是因为旧日志里没有这几位 ⇒ 只能靠翻 Actions 输出。
+      //   ⛔ 验收别只看 ok：biddingCloseWritten>0 才代表 close 真的写进 bidding_data。
+      biddingCloseWritten: r.biddingCloseWritten === undefined ? null : r.biddingCloseWritten,
+      jiwangShouguWritten: r.jiwangShouguWritten === undefined ? null : r.jiwangShouguWritten,
+      leaderDivergeCloseWritten: r.leaderDivergeCloseWritten === undefined ? null : r.leaderDivergeCloseWritten,
       completenessSummary: r.completenessSummary || '',
       logs: Array.isArray(r.logs) ? r.logs : []
     }
   });
+  // ★★ [RUNLOG-VISIBLE 2026-11-13] 日志本身没写进去必须【可见】：
+  //   「closepost 跑了但库里一条日志都没有」就是被静默吞掉的，只能靠翻 Actions 百思不解。
+  //   配额耗尽时它必然失败 ⇒ 把原因塞进 result.logs，随 /fetch 的 JSON 响应一起返回。
+  if (w && w.ok === false && Array.isArray(r.logs)) {
+    r.logs.push('[run-log] ⚠️ 运行日志【未落库】（本次任务结果不受影响）: ' + (w.error || '未知原因'));
+  }
 }
 
 /**
@@ -9568,6 +9905,11 @@ async function dispatch(point, env, logs, opts) {
     const r = await runJiwangCloseWrite(env);
     console.log('[auto-fetch] jiwang 昨收盘结果云端落库: ok=' + r.ok + ' written=' + r.written +
       ' 日志=' + JSON.stringify(r.logs || []));
+    // ★★ [JIWANG-LOG 2026-11-13] 原来这里【不落运行日志】—— 跑没跑、写了几行，库里查不到，
+    //   只能翻 Actions 输出。「closepost 跑了但 bidding_fetch_log 一条都没有」的教训就在眼前。
+    //   ⇒ 与其它 point 一致：结果（含失败原因）必须进 bidding_fetch_log，
+    //     并把 written 映射成结构化字段 jiwangShouguWritten（⛔ 别拿 ok 验收，ok 会把 0 写伪装成成功）。
+    await persistRunResult(env, point, Object.assign({}, r, { jiwangShouguWritten: r.written }));
     return r;
   }
   if (point === 'morning') {
@@ -9581,6 +9923,31 @@ async function dispatch(point, env, logs, opts) {
     return result;
   }
   if (point === 'close') {
+    // ★★ [JIWANG-SLOT 2026-11-13] 记忘「昨收盘结果（跌:涨）」必须放在【16:00 主轮的第一个动作】。
+    //
+    // 【为什么不是 closepost / 16:03】用户报障期间我把它挪到 16:03，实跑日志是
+    //   `[jiwang-shougu] ❌ 猫抓 emoindic_daily 失败: 今日调用额度已用完`。
+    //   数据库取证（jiwang_data.updated_at，UTC）反证了真实情况：
+    //     · 2026-11-16 行 = 2026-11-13T08:00:18Z = 北京 **16:00:18** ⇒ 16:00 这一跑是成功的；
+    //     · 2026-11-13 行 = 2026-11-13T08:21:34Z = 北京 16:21（人工补 kxian）。
+    //   ⇒ 猫抓当天额度恰好卡在「16:00 够 1 次、16:03 再要就没有」。
+    //     把它放在 16:03 等于【必然失败】，而且失败前还白占 subrequest 把收盘列挤掉。
+    //
+    // 【为什么放在 runClose 之前】记忘只依赖猫抓 emoindic 收盘跌涨家数，与 runClose 的
+    //   行情/涨幅写入没有任何依赖关系 ⇒ 放最前面既不影响口径，又能拿到最充裕的
+    //   subrequest 配额（后面 dailyLegsHeal 等才是吃配额的大户）。
+    //   顺带：即使 runClose 整轮失败，记忘也已经落库（失败不连坐，§11 的反向应用）。
+    //
+    // 【兜底】`.github/workflows/supabase-heal.yml` 08:50 那轮再跑一次（额度午夜已重置）。
+    //   两处都幂等（只填空、已有非空值绝不覆盖），重复跑无副作用。
+    let jiwangFirst = null;
+    try {
+      jiwangFirst = await runJiwangCloseWrite(env);
+      console.log('[auto-fetch] close 首步 记忘昨收盘结果: ok=' + jiwangFirst.ok +
+        ' written=' + jiwangFirst.written + ' 日志=' + JSON.stringify(jiwangFirst.logs || []));
+    } catch (e) {
+      console.error('[auto-fetch] close 首步 记忘异常（不影响收盘主流程）:', e && e.message);
+    }
     // [REPAIR-DATE 2026-09-11] 支持 ?date=YYYY-MM-DD 指定要覆盖/修复的交易日（默认北京今天）。
     const result = await runClose(env, { date: opts && opts.date });
     console.log('[auto-fetch] runClose 完成 ok=' + result.ok + ' today=' + (result.today || '') +
@@ -9602,60 +9969,83 @@ async function dispatch(point, env, logs, opts) {
     } catch (e) {
       console.error('[auto-fetch] close 逐日腿云端补齐异常（不影响收盘）:', e && e.message);
     }
-    // [BIDDING-CLOSE-CLOUD 2026-11-07] 收盘列云端落库（幂等填空、只允许当天、失败不连坐）。
-    //   放在所有行情/涨幅写入之后：这一轮已经把当天收盘涨幅算完，快照此时是终态。
+    // ★★ [CLOSE-POST 2026-11-13 · 生产事故修复] 收盘列 / 总龙分歧收盘腿
+    //   已整体迁到 16:03 的 `closepost`【独立一轮】（见下方分支的长注释）。
+    //   根因：Cloudflare 免费版单次 invocation 只有 50 次 subrequest，16:00 主轮跑完
+    //   runClose + snapshotPatch + dailyLegsHeal 后已接近上限，再挂这三个补写任务必爆
+    //   `Too many subrequests by single Worker invocation`：收盘列写不进 close、记忘 / LD 全灭，
+    //   连下面这行 persistRunResult 都发不出去（11-09 起 close 运行日志消失）。
+    //   ⇒ 本轮只保留行情/涨幅写入 + 运行日志；补写任务由独立 invocation 接管。
+    //   ⚠️ 记忘是例外：它在【本轮最前面】跑（见函数开头 JIWANG-SLOT 注释）——
+    //      它只占 3~6 次 subrequest 且额度卡在 16:00 之后就没有了，放 16:03 必失败。
+    if (jiwangFirst) {
+      result.jiwangShouguWritten = jiwangFirst.written;
+      (jiwangFirst.logs || []).forEach(l => result.logs.push('[jiwang] ' + l));
+    }
+    await persistRunResult(env, point, result);
+    return result;
+  }
+  if (point === 'closepost') {
+    // ★★ [CLOSE-POST 2026-11-13] 收盘后补写轮（北京 16:03，cron '3 8 * * 2-6'）。
+    //
+    // 【事故根因 · 生产日志取证】用户报障「应用最顶部的竞价变化看板，收盘时收盘列没有数据，
+    //   已经两天了；9:15~9:25 都有数据，只有收盘列异常」。
+    //   11-13 手动触发 point=close 的 Actions 日志逐行实证：
+    //     [bidding-close] 个股/ETF 快照可用 61/110
+    //     [bidding-close] ⚠️ 指数快照失败: Too many subrequests by single Worker invocation
+    //     [bidding-close] ❌ 写 bidding_data.close 失败: 同上
+    //     [jiwang-shougu] ❌ 猫抓 emoindic_daily 失败: 同上
+    //     [LD-CLOUD] ❌ 16:00 总龙分歧预计算异常: 同上
+    //   ⇒ 不是前端、不是字段、不是同花顺接口挂了，是【单次 invocation 50 次 subrequest 上限】：
+    //     11-07 / 11-08 / 11-13 陆续把三个补写任务塞进 16:00 主轮，把配额顶爆，
+    //     连 persistRunResult 也发不出去 ⇒ 11-09 起连 close 运行日志都消失。
+    //
+    // 【修复】拆成两次【独立 invocation】：Cloudflare 每次 cron 触发各自有 50 次额度。
+    //   16:00 close     = runClose + snapshotPatch + dailyLegsHeal + 运行日志；
+    //   16:03 closepost = 收盘列 + 记忘 + 运行日志；
+    //   16:30 (GitHub Actions) = 总龙分歧收盘腿，见下方 ③ 的长注释。
+    //   16:03 时 16:00 主轮早已落库（实测约 18s），收盘腿真值齐备，LD 口径不变。
+    //
+    // 【红线不变】只允许当天 / 只填空不覆盖 / 读失败不写 0 / 失败不连坐 / 收盘列 0 猫抓额度。
+    // 【验收】⛔ 别只看 ok：看 biddingCloseWritten 与 bidding_fetch_log 里 closepost 那一行。
+    const result = {
+      ok: true,
+      today: beijingToday(),
+      logs: [],
+      biddingCloseWritten: 0,
+      jiwangShouguWritten: null,        // 本轮不跑记忘（见 ②），null = 未执行
+      leaderDivergeCloseWritten: null   // 本轮不跑 LD（见 ③），null = 未执行
+    };
+    // ① 竞价变化看板「收盘」列（同花顺快照，纯云端填空）
     try {
       const bcw = await runBiddingCloseWrite(env, { date: (opts && opts.date) || '' });
       result.biddingCloseWritten = bcw.written;
-      if (Array.isArray(result.logs)) result.logs.push.apply(result.logs, (bcw.logs || []).map(l => '[bidding-close] ' + l));
-      console.log('[auto-fetch] close 竞价看板收盘列云端落库: ok=' + bcw.ok +
+      (bcw.logs || []).forEach(l => result.logs.push('[bidding-close] ' + l));
+      console.log('[auto-fetch] closepost 竞价看板收盘列云端落库: ok=' + bcw.ok +
         ' written=' + bcw.written + ' skipped=' + !!bcw.skipped + ' 日志=' + JSON.stringify(bcw.logs || []));
     } catch (e) {
-      // 失败必须可见（§10），但绝不拖垮已经成功的 runClose
-      const msg = '[bidding-close] ❌ 云端落库异常（不影响收盘主流程）: ' + (e && e.message);
-      if (Array.isArray(result.logs)) result.logs.push(msg);
+      const msg = '[bidding-close] ❌ 云端落库异常（不影响本轮其它任务）: ' + (e && e.message);
+      result.logs.push(msg);
       console.error('[auto-fetch] ' + msg);
     }
-    // [JIWANG-SHOUGU-CLOUD 2026-11-08] 昨收盘结果（跌:涨）云端落库 + 10 日窗口回补历史缺口。
-    //   放在最后：与上面的竞价看板收盘列互不依赖，任一失败都不连坐。
-    try {
-      const jw = await runJiwangCloseWrite(env);
-      result.jiwangShouguWritten = jw.written;
-      if (Array.isArray(result.logs)) result.logs.push.apply(result.logs, (jw.logs || []).map(l => '[jiwang-shougu] ' + l));
-      console.log('[auto-fetch] close 昨收盘结果云端落库: ok=' + jw.ok + ' written=' + jw.written +
-        ' 日志=' + JSON.stringify(jw.logs || []));
-    } catch (e) {
-      const msg = '[jiwang-shougu] ❌ 云端落库异常（不影响收盘主流程）: ' + (e && e.message);
-      if (Array.isArray(result.logs)) result.logs.push(msg);
-      console.error('[auto-fetch] ' + msg);
-    }
-    // ★★ [LD-CLOUD 2026-11-13 用户口径] 第二十五条「总龙分歧」第二阶段：收盘腿齐全后重算一次。
-    //
-    //   为什么必须有两趟（而不是只在 9:27 跑）：
-    //     用户给第二十五条定的三种分歧形态里，D2 =「竞价高开、收盘是负数绿的」**只能收盘后判**。
-    //     9:27 那一趟 leg_phase='intraday'，今天还没有收盘腿 ⇒ 今天这种日子判不出来；
-    //     16:00 这一趟（runClose + runDailyLegsHeal 之后 stock_daily_pct 已有今天那根腿）再算一次，
-    //     leg_phase='close' 覆盖同一行 —— 这是【信息更全】的覆盖，不是改口径。
-    //   ⚠️ 必须放在 runDailyLegsHeal 之后（上面那个 try 块）⇒ 收盘涨幅真值已在库里。
-    //   ⛔ 失败不连坐：只记日志 + result 字段。
-    try {
-      const ldLogs = [];
-      const ldClose = await runLeaderDivergeDays(env, {
-        today: (opts && opts.date) || beijingToday(),
-        phase: 'close',
-        logs: ldLogs
-      });
-      result.leaderDivergeClose = ldClose;
-      result.leaderDivergeCloseWritten = ldClose.written || 0;
-      if (Array.isArray(result.logs)) result.logs.push.apply(result.logs, ldLogs.map(l => l));
-      console.log('[auto-fetch] [LD-CLOUD] 16:00 总龙分歧云端预计算（收盘腿）: ok=' + ldClose.ok +
-        ' written=' + ldClose.written + ' phase=' + ldClose.phase + ' error=' + (ldClose.error || '') +
-        ' 日志=' + JSON.stringify(ldLogs));
-    } catch (e) {
-      const msg = '[LD-CLOUD] ❌ 16:00 总龙分歧预计算异常（不影响收盘主流程）: ' + (e && e.message);
-      if (Array.isArray(result.logs)) result.logs.push(msg);
-      console.error('[auto-fetch] ' + msg);
-    }
+    // ② ⛔ 记忘「昨收盘结果（跌:涨）」【不在本轮跑】。
+    //    11-13 实测：它在 closepost 里拿不到数据（日志原文「今日调用额度已用完」），
+    //    又白占 subrequest ⇒ 把收盘列的配额挤掉。
+    //    数据库反证（jiwang_data.updated_at）：11-16 那行是 11-13T08:00:18Z（北京 16:00:18）
+    //    写成的 ⇒ **16:00 主轮是成功的**，16:03 再要一次就没有了。
+    //    ⇒ 已改到 `point === 'close'` 分支的【第一个动作】（见该分支 JIWANG-SLOT 长注释）；
+    //      `.github/workflows/supabase-heal.yml` 08:50 那轮再兜一次（额度午夜已重置）。
+    //    ⚠️ 留 null 而不是 0：0 会被误读成「这轮算过、写了 0 行」。
+    result.jiwangShouguWritten = null;
+    // ③ ⛔ 第二十五条「总龙分歧」收盘腿【不在本轮跑】。
+    //    11-13 首轮 closepost 实测：收盘列写成功后，LD 仍报
+    //    `Too many subrequests by single Worker invocation` —— 它一次要读 4 张表 × 20 天
+    //    （sbGetPaged 约 30 页），和收盘列 + 记忘挤在同一次 invocation 里照样顶爆 50 次配额。
+    //    ⇒ 改由 `.github/workflows/supabase-heal.yml` 16:30 那轮单独发一次
+    //      `/fetch?point=divergedays&days=1&phase=close`（独立 invocation、配额独立、纯云端定时）。
+    //    9:27 snapshot 的 intraday 版本仍在；16:30 close 版本覆盖同一行（信息更全、口径不变）。
+    //    ⚠️ 留 null 而不是 0：0 会被误读成「这轮算过、写了 0 行」，⛔ 不许拿它验收。
+    result.leaderDivergeCloseWritten = null;
     await persistRunResult(env, point, result);
     return result;
   }
@@ -9978,8 +10368,8 @@ export default {
           return jsonResponse({ ok: false, error: '当前北京时间不在抓取时段（9:25~9:40=morning，15:00~16:30=close）' });
         }
       }
-      if (!['morning', 'close', 'extras', 'snapshot', 'ladder', 'ladder26', 'range20', 'divergedays', 'jiwang'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|ladder|ladder26|range20|divergedays|jiwang|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot / ladder / ladder26 / range20 / divergedays 可附 &date=YYYY-MM-DD；divergedays 另可附 &days=N（补最近 N 个展示日，上限 20）与 &phase=close|intraday；jiwang 立即回补昨收盘结果）' });
+      if (!['morning', 'close', 'closepost', 'extras', 'snapshot', 'ladder', 'ladder26', 'range20', 'divergedays', 'jiwang'].includes(point)) {
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|closepost|extras|snapshot|ladder|ladder26|range20|divergedays|jiwang|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；closepost 立即补写当天收盘列 / 记忘 / 总龙分歧收盘腿；extras 可附 &today=1 含当天；snapshot / ladder / ladder26 / range20 / divergedays 可附 &date=YYYY-MM-DD；divergedays 另可附 &days=N（补最近 N 个展示日，上限 20）与 &phase=close|intraday；jiwang 立即回补昨收盘结果）' });
       }
       // [JIWANG-SHOUGU-CLOUD 2026-11-08] 回补不受「当前时间必须在 9:25~16:30」限制，
       //   否则周末/夜间出事故时无法立即修复历史缺口。

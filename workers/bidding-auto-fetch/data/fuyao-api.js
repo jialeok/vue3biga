@@ -215,6 +215,17 @@ function tickerToThscode(code) {
   if (c.slice(0, 2) === '92') return c + '.BJ';
   if (c.startsWith('6') || c.startsWith('9')) return c + '.SH';
   if (c.startsWith('4') || c.startsWith('8')) return c + '.BJ';
+  // [ETF-5SH 2026-11-13] 5 开头 = 沪市 ETF / LOF（510/511/512/513/515/516/517/518/560/
+  //    561/562/563/588/589…）。旧代码全部落到最后的 `.SZ` ⇒ thscode 形式是错的。
+  //    A 股 6 位代码里 5 开头没有个股（沪市个股 6xx / 深市 0xx、3xx / 北交所 4xx、8xx、920）
+  //    ⇒ 判 `.SH` 不会误伤任何股票；且与前端 snapshot-spec.js#biddingEtfToSnapshotCode 同口径。
+  //
+  //    ⚠️ **但这条修不了「大盘ETF / 板块ETF 收盘列为空」**（我第一版就是这么误判的，已纠正）：
+  //    `/api/a-share/prices/snapshot` 无论 `.SH` 还是 `.SZ`，对 ETF 一律回
+  //    `code=3001 Target not found` —— 这个接口【根本不含 ETF】，混批时坏代码被静默丢弃。
+  //    实测取证见 `.tmpdiag/_etf-snap-probe.mjs`；ETF 现已改走腾讯行情
+  //    （`data/tencent-snapshot.js`），不再经过本函数。
+  if (c.startsWith('5')) return c + '.SH';
   return c + '.SZ';
 }
 

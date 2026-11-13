@@ -174,7 +174,12 @@ function bjSecNow() {
  */
 async function persistRunResult(env, point, result) {
   const r = result || {};
-  await writeRunLog(env, {
+  // ★★ [RUNLOG-VISIBLE 2026-11-13] 必须接住返回值：`writeRunLog` 已改为返回
+  //   `{ ok, error }`（不再静默吞掉失败），下面据此把「日志没写进去」这件事变得可见。
+  //   ⚠️ 忘了接住 = `w is not defined` ⇒ 每次落库都 ReferenceError ⇒ 整轮崩。
+  //      这类「引用未定义局部变量」vitest 全绿也抓不到，只有 eslint 的 no-undef 能拦
+  //      （2026-11-10 就是这么把 9:25 整轮写崩的）。
+  const w = await writeRunLog(env, {
     time_point: point,
     run_date: r.today || r.date || '',
     ok: r.ok === true,
@@ -234,6 +239,12 @@ async function persistRunResult(env, point, result) {
       logs: Array.isArray(r.logs) ? r.logs : []
     }
   });
+  // ★★ [RUNLOG-VISIBLE 2026-11-13] 日志本身没写进去必须【可见】：
+  //   「closepost 跑了但库里一条日志都没有」就是被静默吞掉的，只能靠翻 Actions 百思不解。
+  //   配额耗尽时它必然失败 ⇒ 把原因塞进 result.logs，随 /fetch 的 JSON 响应一起返回。
+  if (w && w.ok === false && Array.isArray(r.logs)) {
+    r.logs.push('[run-log] ⚠️ 运行日志【未落库】（本次任务结果不受影响）: ' + (w.error || '未知原因'));
+  }
 }
 
 /**
@@ -314,6 +325,11 @@ async function dispatch(point, env, logs, opts) {
     const r = await runJiwangCloseWrite(env);
     console.log('[auto-fetch] jiwang 昨收盘结果云端落库: ok=' + r.ok + ' written=' + r.written +
       ' 日志=' + JSON.stringify(r.logs || []));
+    // ★★ [JIWANG-LOG 2026-11-13] 原来这里【不落运行日志】—— 跑没跑、写了几行，库里查不到，
+    //   只能翻 Actions 输出。「closepost 跑了但 bidding_fetch_log 一条都没有」的教训就在眼前。
+    //   ⇒ 与其它 point 一致：结果（含失败原因）必须进 bidding_fetch_log，
+    //     并把 written 映射成结构化字段 jiwangShouguWritten（⛔ 别拿 ok 验收，ok 会把 0 写伪装成成功）。
+    await persistRunResult(env, point, Object.assign({}, r, { jiwangShouguWritten: r.written }));
     return r;
   }
   if (point === 'morning') {
@@ -327,6 +343,31 @@ async function dispatch(point, env, logs, opts) {
     return result;
   }
   if (point === 'close') {
+    // ★★ [JIWANG-SLOT 2026-11-13] 记忘「昨收盘结果（跌:涨）」必须放在【16:00 主轮的第一个动作】。
+    //
+    // 【为什么不是 closepost / 16:03】用户报障期间我把它挪到 16:03，实跑日志是
+    //   `[jiwang-shougu] ❌ 猫抓 emoindic_daily 失败: 今日调用额度已用完`。
+    //   数据库取证（jiwang_data.updated_at，UTC）反证了真实情况：
+    //     · 2026-11-16 行 = 2026-11-13T08:00:18Z = 北京 **16:00:18** ⇒ 16:00 这一跑是成功的；
+    //     · 2026-11-13 行 = 2026-11-13T08:21:34Z = 北京 16:21（人工补 kxian）。
+    //   ⇒ 猫抓当天额度恰好卡在「16:00 够 1 次、16:03 再要就没有」。
+    //     把它放在 16:03 等于【必然失败】，而且失败前还白占 subrequest 把收盘列挤掉。
+    //
+    // 【为什么放在 runClose 之前】记忘只依赖猫抓 emoindic 收盘跌涨家数，与 runClose 的
+    //   行情/涨幅写入没有任何依赖关系 ⇒ 放最前面既不影响口径，又能拿到最充裕的
+    //   subrequest 配额（后面 dailyLegsHeal 等才是吃配额的大户）。
+    //   顺带：即使 runClose 整轮失败，记忘也已经落库（失败不连坐，§11 的反向应用）。
+    //
+    // 【兜底】`.github/workflows/supabase-heal.yml` 08:50 那轮再跑一次（额度午夜已重置）。
+    //   两处都幂等（只填空、已有非空值绝不覆盖），重复跑无副作用。
+    let jiwangFirst = null;
+    try {
+      jiwangFirst = await runJiwangCloseWrite(env);
+      console.log('[auto-fetch] close 首步 记忘昨收盘结果: ok=' + jiwangFirst.ok +
+        ' written=' + jiwangFirst.written + ' 日志=' + JSON.stringify(jiwangFirst.logs || []));
+    } catch (e) {
+      console.error('[auto-fetch] close 首步 记忘异常（不影响收盘主流程）:', e && e.message);
+    }
     // [REPAIR-DATE 2026-09-11] 支持 ?date=YYYY-MM-DD 指定要覆盖/修复的交易日（默认北京今天）。
     const result = await runClose(env, { date: opts && opts.date });
     console.log('[auto-fetch] runClose 完成 ok=' + result.ok + ' today=' + (result.today || '') +
@@ -348,13 +389,19 @@ async function dispatch(point, env, logs, opts) {
     } catch (e) {
       console.error('[auto-fetch] close 逐日腿云端补齐异常（不影响收盘）:', e && e.message);
     }
-    // ★★ [CLOSE-POST 2026-11-13 · 生产事故修复] 收盘列 / 记忘 / 总龙分歧收盘腿
+    // ★★ [CLOSE-POST 2026-11-13 · 生产事故修复] 收盘列 / 总龙分歧收盘腿
     //   已整体迁到 16:03 的 `closepost`【独立一轮】（见下方分支的长注释）。
     //   根因：Cloudflare 免费版单次 invocation 只有 50 次 subrequest，16:00 主轮跑完
     //   runClose + snapshotPatch + dailyLegsHeal 后已接近上限，再挂这三个补写任务必爆
     //   `Too many subrequests by single Worker invocation`：收盘列写不进 close、记忘 / LD 全灭，
     //   连下面这行 persistRunResult 都发不出去（11-09 起 close 运行日志消失）。
     //   ⇒ 本轮只保留行情/涨幅写入 + 运行日志；补写任务由独立 invocation 接管。
+    //   ⚠️ 记忘是例外：它在【本轮最前面】跑（见函数开头 JIWANG-SLOT 注释）——
+    //      它只占 3~6 次 subrequest 且额度卡在 16:00 之后就没有了，放 16:03 必失败。
+    if (jiwangFirst) {
+      result.jiwangShouguWritten = jiwangFirst.written;
+      (jiwangFirst.logs || []).forEach(l => result.logs.push('[jiwang] ' + l));
+    }
     await persistRunResult(env, point, result);
     return result;
   }
@@ -375,7 +422,8 @@ async function dispatch(point, env, logs, opts) {
     //
     // 【修复】拆成两次【独立 invocation】：Cloudflare 每次 cron 触发各自有 50 次额度。
     //   16:00 close     = runClose + snapshotPatch + dailyLegsHeal + 运行日志；
-    //   16:03 closepost = 收盘列 + 记忘 + 总龙分歧收盘腿 + 运行日志。
+    //   16:03 closepost = 收盘列 + 记忘 + 运行日志；
+    //   16:30 (GitHub Actions) = 总龙分歧收盘腿，见下方 ③ 的长注释。
     //   16:03 时 16:00 主轮早已落库（实测约 18s），收盘腿真值齐备，LD 口径不变。
     //
     // 【红线不变】只允许当天 / 只填空不覆盖 / 读失败不写 0 / 失败不连坐 / 收盘列 0 猫抓额度。
@@ -385,8 +433,8 @@ async function dispatch(point, env, logs, opts) {
       today: beijingToday(),
       logs: [],
       biddingCloseWritten: 0,
-      jiwangShouguWritten: 0,
-      leaderDivergeCloseWritten: 0
+      jiwangShouguWritten: null,        // 本轮不跑记忘（见 ②），null = 未执行
+      leaderDivergeCloseWritten: null   // 本轮不跑 LD（见 ③），null = 未执行
     };
     // ① 竞价变化看板「收盘」列（同花顺快照，纯云端填空）
     try {
@@ -400,37 +448,24 @@ async function dispatch(point, env, logs, opts) {
       result.logs.push(msg);
       console.error('[auto-fetch] ' + msg);
     }
-    // ② 记忘「昨收盘结果（跌:涨）」+ 10 日窗口回补历史缺口
-    try {
-      const jw = await runJiwangCloseWrite(env);
-      result.jiwangShouguWritten = jw.written;
-      (jw.logs || []).forEach(l => result.logs.push('[jiwang-shougu] ' + l));
-      console.log('[auto-fetch] closepost 昨收盘结果云端落库: ok=' + jw.ok + ' written=' + jw.written +
-        ' 日志=' + JSON.stringify(jw.logs || []));
-    } catch (e) {
-      const msg = '[jiwang-shougu] ❌ 云端落库异常（不影响本轮其它任务）: ' + (e && e.message);
-      result.logs.push(msg);
-      console.error('[auto-fetch] ' + msg);
-    }
-    // ③ 第二十五条「总龙分歧」收盘腿重算（必须在 16:00 dailyLegsHeal 之后）
-    try {
-      const ldLogs = [];
-      const ldClose = await runLeaderDivergeDays(env, {
-        today: (opts && opts.date) || beijingToday(),
-        phase: 'close',
-        logs: ldLogs
-      });
-      result.leaderDivergeClose = ldClose;
-      result.leaderDivergeCloseWritten = ldClose.written || 0;
-      ldLogs.forEach(l => result.logs.push(l));
-      console.log('[auto-fetch] [LD-CLOUD] closepost 总龙分歧云端预计算（收盘腿）: ok=' + ldClose.ok +
-        ' written=' + ldClose.written + ' phase=' + ldClose.phase + ' error=' + (ldClose.error || '') +
-        ' 日志=' + JSON.stringify(ldLogs));
-    } catch (e) {
-      const msg = '[LD-CLOUD] ❌ closepost 总龙分歧预计算异常（不影响本轮其它任务）: ' + (e && e.message);
-      result.logs.push(msg);
-      console.error('[auto-fetch] ' + msg);
-    }
+    // ② ⛔ 记忘「昨收盘结果（跌:涨）」【不在本轮跑】。
+    //    11-13 实测：它在 closepost 里拿不到数据（日志原文「今日调用额度已用完」），
+    //    又白占 subrequest ⇒ 把收盘列的配额挤掉。
+    //    数据库反证（jiwang_data.updated_at）：11-16 那行是 11-13T08:00:18Z（北京 16:00:18）
+    //    写成的 ⇒ **16:00 主轮是成功的**，16:03 再要一次就没有了。
+    //    ⇒ 已改到 `point === 'close'` 分支的【第一个动作】（见该分支 JIWANG-SLOT 长注释）；
+    //      `.github/workflows/supabase-heal.yml` 08:50 那轮再兜一次（额度午夜已重置）。
+    //    ⚠️ 留 null 而不是 0：0 会被误读成「这轮算过、写了 0 行」。
+    result.jiwangShouguWritten = null;
+    // ③ ⛔ 第二十五条「总龙分歧」收盘腿【不在本轮跑】。
+    //    11-13 首轮 closepost 实测：收盘列写成功后，LD 仍报
+    //    `Too many subrequests by single Worker invocation` —— 它一次要读 4 张表 × 20 天
+    //    （sbGetPaged 约 30 页），和收盘列 + 记忘挤在同一次 invocation 里照样顶爆 50 次配额。
+    //    ⇒ 改由 `.github/workflows/supabase-heal.yml` 16:30 那轮单独发一次
+    //      `/fetch?point=divergedays&days=1&phase=close`（独立 invocation、配额独立、纯云端定时）。
+    //    9:27 snapshot 的 intraday 版本仍在；16:30 close 版本覆盖同一行（信息更全、口径不变）。
+    //    ⚠️ 留 null 而不是 0：0 会被误读成「这轮算过、写了 0 行」，⛔ 不许拿它验收。
+    result.leaderDivergeCloseWritten = null;
     await persistRunResult(env, point, result);
     return result;
   }
