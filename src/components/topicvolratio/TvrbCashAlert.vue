@@ -8,8 +8,13 @@
       有空仓提醒。文字大些，醒目些，看到这些文字，我就不开仓了。记住就是按照正常流程选出股票，
       只是多添加了空仓提醒文字。其它不变。」
 
+  ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条【监管异动】复用同一个组件（§6 不造第二个标语板）：
+    「十日达到100%异动，提示空仓，选出的票整块变灰色（不用去掉）……有文字提醒说明醒目些」
+    ⇒ 只多一个【样式修饰类】`.tvrb-cash-alert-abnormal`（边框更粗、大字更大），
+      判据 = `alert.kind` 非空（只有异动那几种才会带 kind，见 buildCashAlert 的 abnormal 分支）。
+
   ⇒ 定位：一个【纯展示】组件（§21 模板零计算 / §11 可安全删除）——
-      · 判据（< 25）在 logic/topicvolratio/topic-vol-ratio-rules.js#buildCashAlert；
+      · 判据（< 25 / 退潮 / 监管异动）全在 Logic 层（tvrb-blocks#buildCashAlert）；
       · 文案（大字标语 + 说明）也在那一份 Logic 里拼好，本组件只负责摆放与配色；
       · ⛔ 它不删票、不改档位、不隐藏任何股票行：命中时股票照常在下方按原规则列出。
 
@@ -27,6 +32,7 @@
   <div
     v-if="alert && alert.show"
     class="tvrb-cash-alert tvrb-selectable"
+    :class="{ 'tvrb-cash-alert-abnormal': isAbnormal }"
   >
     <div class="tvrb-cash-alert-head">
       {{ alert.headline }}
@@ -38,11 +44,19 @@
 </template>
 
 <script setup>
-// ⛔ 零业务计算：只接一个由 Logic 层算好的对象（§21 / §34）
-defineProps({
+// ⛔ 零业务计算：只接一个由 Logic 层算好的对象（§21 / §34）。
+// ⚠️ isAbnormal 只看「有没有 kind」—— kind 是 buildCashAlert 在【监管异动】分支才挂的字段
+//   （量比低 / 退潮那两条不带它），所以这不是「在组件里重判规则」，只是把已有事实映射成类名。
+import { computed } from 'vue';
+
+const props = defineProps({
   alert: {
     type: Object,
     required: true
   }
+});
+
+const isAbnormal = computed(function() {
+  return !!(props.alert && props.alert.show && props.alert.kind);
 });
 </script>
