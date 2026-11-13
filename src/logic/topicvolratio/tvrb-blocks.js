@@ -1577,7 +1577,10 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
     skippedNames: skippedNames,
     // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条：本块里踩到红线的【异动票】
     //   `{name, code, topic, pct, pctText}`；null = 本块没有异动票（§11 零行为变化）。
-    //   规则层据此把整块标 abnormalGray（灰化 + 不计入「选出 N 只」），并升起全局【空仓】标语。
+    //   ⚠️ [审查订正 2026-11-13] 这是【留痕 / 排障】字段，⛔ 没有 `abnormalGray` 这个字段：
+    //      整块灰化由 `buildCashAlert` 产出的 `cashAlert.show` 驱动视图既有的
+    //      `.tvrb-buy-list.tvrb-ebb`（§6 同一套灰化），"不计入选出 N 只" 由
+    //      `_applyAbnormalSweep` 清空 `out.buyNames` 实现。旧注释把人往不存在的实现上引。
     abnormalPick: abnormalCand ? {
       name: abnormalCand.name,
       code: String(abnormalCand.code || '').trim(),

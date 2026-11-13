@@ -13,8 +13,11 @@
 //   · ⛔ 不取数、不落库、不发请求：昨日十日涨幅 / 今日十日涨幅 / 总龙一身份全部由
 //     组合式（useTopicVolRatioBoard）与采集层注入 —— 与本模块无关；
 //   · ⛔ 不判「要不要顺延下一龙位」：那是 _buildBlock 的事（用本模块的 classifyRange10 一处判据）；
-//   · ⛔ 不删任何票：本模块只产出文案 + 事实，票的去留由规则层（_applyAbnormalNoBuyRules /
-//     abnormalGray 标记）决定 —— 用户「不用去掉」。
+//   · ⛔ 不删任何票：本模块只产出文案 + 事实，票的去留由规则层决定 —— 用户「不用去掉」。
+//     ⚠️ [审查订正 2026-11-13] 整块灰化【不是】靠某个 `abnormalGray` 字段（代码里没有这个字段，
+//        旧注释把人往不存在的实现上引）：规则层把 fact 交给 buildCashAlert ⇒ cashAlert.show
+//        驱动视图既有的 `.tvrb-buy-list.tvrb-ebb`（§6 不造第二套灰化）；
+//        `_applyAbnormalNoBuyRules` 只把逐行标签改成【异动不买】。`abnormalPick` 是留痕字段。
 //
 // §10 红线（⛔ 一次都不能破）：
 //   · 涨幅读不到（null / 空串 / 非法）⇒ 分级 = 'unknown'，⛔ 绝不补 0、⛔ 绝不当成「没异动」下结论；
@@ -167,7 +170,7 @@ export function resolveAbnormalFact(input) {
     '% = 交易所「严重异常波动」⇒ 整段灰化、一枚买点都不给（票照常列出，供你核对，⛔ 不删）。';
   const whyLine = '★ 为什么：单只票十日涨幅到达 ' + TVRB_RANGE10_ABNORMAL +
     '% 就是监管异动；一旦【总龙一】异动，它所在题材的股票【次日基本都会崩】，甚至带崩整个市场情绪。' +
-    '所以第 ' + ABNORMAL_RULE_NO + ' 条是【总约束】—— 比 ' + TVRB_RANGE10_CAP +
+    '所以第' + ABNORMAL_RULE_NO + '条是【总约束】—— 比 ' + TVRB_RANGE10_CAP +
     '% 还低 ' + (TVRB_RANGE10_ABNORMAL - TVRB_RANGE10_CAP) + ' 个点，就是防「99% 就开始有题材崩盘节奏」。';
 
   const prevBasisText = (i.leaderPctPrevBasis === 'auction')
@@ -177,7 +180,7 @@ export function resolveAbnormalFact(input) {
   if (kind === ABNORMAL_KIND_NEXT_DAY) {
     lead = '市场总龙一' + _pointOf(leaderName, leaderTopic, prev.pctText) +
       '【昨日（上一交易日）】就已触发监管异动（≥ ' + TVRB_RANGE10_ABNORMAL + '%）⇒ 今天是【异动次日】：' +
-      '按第 ' + ABNORMAL_RULE_NO + ' 条，今天【空仓】—— 不买任何票（' + ABNORMAL_NO_BUY_TAG + '）。';
+      '按第' + ABNORMAL_RULE_NO + '条，今天【空仓】—— 不买任何票（' + ABNORMAL_NO_BUY_TAG + '）。';
   } else if (kind === ABNORMAL_KIND_LEADER_NOW) {
     lead = '市场总龙一' + _pointOf(leaderName, leaderTopic, today.pctText) +
       '【今日】（9:26 竞价口径）触发监管异动（≥ ' + TVRB_RANGE10_ABNORMAL + '%）⇒ 按第 ' +
