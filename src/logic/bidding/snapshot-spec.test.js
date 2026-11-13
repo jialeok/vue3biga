@@ -183,4 +183,26 @@ describe('resolveBiddingRowTargets · 幂等填空', () => {
   it('空 existingRows ⇒ 不造行', () => {
     expect(resolveBiddingRowTargets([], values)).toEqual([]);
   });
+
+  // ★★ [OVERWRITE 2026-11-13] 只给「人工修历史错值」用，默认必须关闭：
+  //   错值一旦落库就被「不覆盖」永久冻住（11-13 板块ETF 写成 0、正确值 8）。
+  it('★ 显式 overwrite=1 才允许改写，且记下旧值', () => {
+    const locked = rows.map(r => r.name === '板块ETF(48)' ? { ...r, close: '0' } : r);
+    const t = resolveBiddingRowTargets(locked, values, { overwrite: true });
+    const etf = t.find(x => x.name === '板块ETF(48)');
+    expect(etf.close).toBe('37');
+    expect(etf.overwritten).toBe('0');
+  });
+
+  it('★ overwrite 时「值相同」仍然不写（避免无意义 upsert）', () => {
+    const same = rows.map(r => r.name === '板块ETF(48)' ? { ...r, close: '37' } : r);
+    const t = resolveBiddingRowTargets(same, values, { overwrite: true });
+    expect(t.some(x => x.name === '板块ETF(48)')).toBe(false);
+  });
+
+  it('默认（opts 省略）行为与历史完全一致：一律不覆盖', () => {
+    const locked = rows.map(r => r.name === '板块ETF(48)' ? { ...r, close: '0' } : r);
+    const t = resolveBiddingRowTargets(locked, values);
+    expect(t.some(x => x.name === '板块ETF(48)')).toBe(false);
+  });
 });

@@ -102,8 +102,8 @@ async function fetchIndexPcts(env, allIndexCodes, logs) {
 }
 
 /** 纯函数：组装最终要 upsert 的行（便于单测锁住幂等 / 只填当天 / 键集一致） */
-export function buildBiddingCloseWriteRows(existingRows, values, date, nowIso) {
-  const targets = resolveBiddingRowTargets(existingRows, values);
+export function buildBiddingCloseWriteRows(existingRows, values, date, nowIso, opts) {
+  const targets = resolveBiddingRowTargets(existingRows, values, opts);
   const names = {};
   (existingRows || []).forEach(r => { names[String((r && r.name) || '').trim()] = true; });
   // 当天已有别的行，但「最近多板%」这一行不存在（9:25 漏写）⇒ 允许补建该行。
@@ -113,18 +113,27 @@ export function buildBiddingCloseWriteRows(existingRows, values, date, nowIso) {
       String(values[BCW_LADDER_ROW]).trim() !== '') {
     targets.push({ name: BCW_LADDER_ROW, close: String(values[BCW_LADDER_ROW]).trim(), from: BCW_LADDER_ROW });
   }
-  return targets.map(t => ({
-    date: date,
-    name: t.name,
-    close: t.close,
-    updated_at: nowIso || new Date().toISOString()
-  }));
+  return targets.map(t => {
+    const row = {
+      date: date,
+      name: t.name,
+      close: t.close,
+      updated_at: nowIso || new Date().toISOString()
+    };
+    // ⚠️ 仅用于日志（「覆盖旧值 X」），⛔ 不许进 Supabase 请求体 —— 它不是列名。
+    if (t.overwritten !== undefined) row.overwritten = t.overwritten;
+    return row;
+  });
 }
 
 export async function runBiddingCloseWrite(env, opts) {
   const logs = [];
   const today = beijingToday();
   const date = (opts && opts.date) || today;
+  // ★★ [OVERWRITE 2026-11-13] 显式覆盖开关，默认 false。
+  //   只为「人工修历史错值」存在（如 11-13 板块ETF 被旧逻辑写成 0、正确值 8）。
+  //   ⛔ cron 自动轮拿不到它：scheduled 走 dispatch(point, env, [])，opts 是 undefined。
+  const overwrite = !!(opts && opts.overwrite);
 
   // ★ 硬闸：/api/a-share/prices/snapshot 只返回「最近一个交易日」，历史日期绝不写。
   if (date !== today) {
@@ -222,19 +231,28 @@ export async function runBiddingCloseWrite(env, opts) {
     return { ok: false, date, written: 0, values, logs };
   }
 
-  const rows = buildBiddingCloseWriteRows(existingRows, values, date, new Date().toISOString());
+  if (overwrite) logs.push('⚠️ 已启用 overwrite=1（人工修错值模式）：已有非空 close 也可能被改写');
+  const rows = buildBiddingCloseWriteRows(existingRows, values, date, new Date().toISOString(), { overwrite });
   if (rows.length === 0) {
     logs.push('✅ 收盘列已完整（或用户已手工填写）⇒ 幂等跳过，不覆盖');
     return { ok: true, date, written: 0, values, logs };
   }
-  logs.push('待写 ' + rows.length + ' 行: ' + rows.map(r => r.name + '=' + r.close).join(' / '));
+  logs.push('待写 ' + rows.length + ' 行: ' + rows.map(function (r) {
+    return r.overwritten !== undefined
+      ? r.name + '=' + r.close + '（覆盖旧值 ' + r.overwritten + '）'
+      : r.name + '=' + r.close;
+  }).join(' / '));
 
   try {
     const url = CONFIG.SUPABASE_URL + '/rest/v1/bidding_data?on_conflict=date%2Cname';
+    // ⛔ 只发真实列：`overwritten` 是日志用字段，混进请求体会被 PostgREST 判 400（PGRST204）。
+    const body = rows.map(function (r) {
+      return { date: r.date, name: r.name, close: r.close, updated_at: r.updated_at };
+    });
     const resp = await bcwFetch(url, {
       method: 'POST',
       headers: Object.assign(sbHeaders(env), { 'Prefer': 'resolution=merge-duplicates' }),
-      body: JSON.stringify(rows)
+      body: JSON.stringify(body)
     });
     if (!resp.ok) {
       const text = await resp.text().catch(() => '');

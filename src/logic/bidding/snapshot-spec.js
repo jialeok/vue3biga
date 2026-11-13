@@ -185,24 +185,39 @@ export function computeBiddingCloseValues(input) {
  * ★ 幂等 / 数据安全（§11）：已有非空 close 一律不覆盖 —— 用户手工修正优先于云端自动值。
  * ★ 不硬编码 '板块ETF(48)' 这种带数字后缀的行名，从 existingRows 里找前缀匹配。
  *
+ * ★★ [OVERWRITE 2026-11-13] 唯一例外：显式 `opts.overwrite === true` 才允许改写已有非空值。
+ *   为什么必须留这个口子：11-13 的 `板块ETF(48)` 收盘被旧逻辑写成 `0`（48 个标的没有一个上涨，
+ *   物理上不可能），而正确值是 `8`。「不覆盖」把它永久冻住了 —— 错值一旦落库就再也修不掉，
+ *   用户看到的永远错的。但默认必须仍然关闭：⛔ cron / 自动轮永远拿不到这个开关，
+ *   只有人拿着 token 手动 `&overwrite=1` 才能触发，且【同值不写】避免无意义 upsert。
+ *
  * @param {Array<{name:string,close?:string|null}>} existingRows 当天 bidding_data 已有行
  * @param {Record<string,string>} values computeBiddingCloseValues 的结果
+ * @param {{overwrite?:boolean}} [opts]
  * @returns {Array<{name:string,close:string,from:string}>}
  */
-export function resolveBiddingRowTargets(existingRows, values) {
+export function resolveBiddingRowTargets(existingRows, values, opts) {
   const v = values || {};
+  const allowOverwrite = !!(opts && opts.overwrite);
   const out = [];
   (existingRows || []).forEach(function (row) {
     const name = String((row && row.name) || '').trim();
     if (!name) return;
-    const closed = row && row.close !== null && row.close !== undefined && String(row.close).trim() !== '';
-    if (closed) return;
+    const cur = (row && row.close !== null && row.close !== undefined) ? String(row.close).trim() : '';
+    const closed = cur !== '';
     let from = '';
     let value;
     if (v[name] !== undefined) { value = v[name]; from = name; }
     else if (name.indexOf('板块ETF') === 0 && v['板块ETF'] !== undefined) { value = v['板块ETF']; from = '板块ETF'; }
     if (value === undefined || value === null || String(value).trim() === '') return;
-    out.push({ name: name, close: String(value).trim(), from: from });
+    const next = String(value).trim();
+    if (closed) {
+      // 默认绝不覆盖；显式 overwrite 时也只在「值真的不同」才写
+      if (!allowOverwrite || next === cur) return;
+      out.push({ name: name, close: next, from: from, overwritten: cur });
+      return;
+    }
+    out.push({ name: name, close: next, from: from });
   });
   return out;
 }

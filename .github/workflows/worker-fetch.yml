@@ -5,7 +5,7 @@
 #   令牌放在仓库 Secret，用户在 Actions 页面点 Run workflow 即可，⛔ 不需要本机、不需要粘贴。
 #   常用 point：
 #     jiwang    → 回补 jiwang_data.shouguJieguo（10 日窗口，只填空、不覆盖人工修正）
-#     closepost → [CLOSE-POST 2026-11-13] 立即补写当天竞价看板「收盘」列 + 记忘 + 总龙分歧收盘腿
+#     closepost → [CLOSE-POST 2026-11-13] 立即补写当天竞价看板「收盘」列 + 记忘（独立 invocation）
 #     ladder26  → 「最近多板 883410」名单二次确认
 #     range20   → 20 日涨幅补位
 #     extras    → 竞价四要素补漏
@@ -22,6 +22,13 @@ on:
         description: '填 YES 才会真正执行'
         required: true
         default: 'YES'
+      overwrite:
+        # [OVERWRITE 2026-11-13] 只给 closepost 用：允许改写「已有非空」的收盘值。
+        #   场景：11-13 的 板块ETF 被旧逻辑写成 0（48 个标的没有一个上涨，物理不可能），
+        #   正确值是 8；不改就永远冻着错值。默认留空 = 不覆盖，保持「人工修正优先」红线。
+        description: '仅 closepost：填 1 = 允许覆盖已有收盘值（修错值用，平时留空）'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -40,6 +47,7 @@ jobs:
         env:
           TOKEN: ${{ secrets.WORKER_FETCH_TOKEN }}
           POINT: ${{ inputs.point }}
+          OVERWRITE: ${{ inputs.overwrite }}
         run: |
           set -euo pipefail
           if [ -z "$TOKEN" ]; then
@@ -47,6 +55,10 @@ jobs:
             exit 1
           fi
           URL="https://bidding-auto-fetch.cctopid.workers.dev/fetch?point=${POINT}&token=${TOKEN}"
+          if [ "${OVERWRITE}" = "1" ]; then
+            URL="${URL}&overwrite=1"
+            echo "⚠️ overwrite=1：本次允许覆盖已有非空收盘值"
+          fi
           echo "触发 ${POINT}"
           code="$(curl -sS -o /tmp/worker-resp.json -w '%{http_code}' --max-time 180 "$URL")"
           echo "HTTP ${code}"

@@ -95,7 +95,11 @@ const REQUIRED = [
   'qt.gtimg.cn',
   'ETF 快照可用（腾讯）',
   // [JIWANG-SLOT 2026-11-13] 记忘必须是 16:00 主轮第一步（16:03 再要额度就没了）。
-  'jiwangShouguWritten'
+  'jiwangShouguWritten',
+  // [OVERWRITE 2026-11-13] 「已有非空 close 不覆盖」是红线，但错值一旦落库就永久冻住
+  //   （11-13 板块ETF 被旧逻辑写成 0、正确值 8）。留一个【显式且默认关闭】的口子：
+  //   只有人手动 `&overwrite=1` 才能改写，cron 恒 false。
+  'overwrite'
 ];
 
 async function cf(url, accept) {

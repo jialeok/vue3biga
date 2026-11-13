@@ -438,7 +438,12 @@ async function dispatch(point, env, logs, opts) {
     };
     // ① 竞价变化看板「收盘」列（同花顺快照，纯云端填空）
     try {
-      const bcw = await runBiddingCloseWrite(env, { date: (opts && opts.date) || '' });
+      const bcw = await runBiddingCloseWrite(env, {
+        date: (opts && opts.date) || '',
+        // ★★ [OVERWRITE 2026-11-13] 只有人手动 &overwrite=1 才会传 true；
+        //   cron 走 dispatch(point, env, []) ⇒ opts 为 undefined ⇒ 恒 false，自动轮永不覆盖。
+        overwrite: !!(opts && opts.overwrite)
+      });
       result.biddingCloseWritten = bcw.written;
       (bcw.logs || []).forEach(l => result.logs.push('[bidding-close] ' + l));
       console.log('[auto-fetch] closepost 竞价看板收盘列云端落库: ok=' + bcw.ok +
@@ -807,7 +812,11 @@ export default {
           includeToday: url.searchParams.get('today') === '1',
           // ★ [LD-CLOUD 2026-11-13] divergedays 专用：补几个展示日 / 指定口径阶段
           days: Number(url.searchParams.get('days') || '0') || 0,
-          phase: url.searchParams.get('phase') || ''
+          phase: url.searchParams.get('phase') || '',
+          // ★★ [OVERWRITE 2026-11-13] closepost 修历史错值专用：`&overwrite=1` 才允许改写
+          //   已有非空收盘值（如 11-13 板块ETF 被旧逻辑写成 0、正确值 8）。
+          //   ⛔ 只有这个手动入口能开；cron 恒 false。
+          overwrite: url.searchParams.get('overwrite') === '1'
         });
         return jsonResponse(result, result.ok ? 200 : 500);
       } catch (e) {

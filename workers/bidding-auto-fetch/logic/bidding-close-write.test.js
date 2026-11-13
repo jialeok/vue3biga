@@ -1,5 +1,6 @@
 // [BIDDING-CLOSE-CLOUD 2026-11-07] 收盘列云端落库：幂等 / 只填当天 / 不造 0
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { buildBiddingCloseWriteRows, runBiddingCloseWrite } from './bidding-close-write.js';
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -62,6 +63,62 @@ describe('buildBiddingCloseWriteRows', () => {
     rows.forEach(r => {
       expect(r.date).toBe('2026-11-07');
       expect(r.updated_at).toBe('FIXED-ISO');
+    });
+  });
+
+  // ★★ [OVERWRITE 2026-11-13] 「不覆盖」是红线，但错值一旦落库就永久冻住 ——
+  //   11-13 的 板块ETF(48) 被旧逻辑写成 0（48 个标的没有一个上涨，物理不可能），
+  //   而正确值是 8。必须有一个【显式且默认关闭】的口子来修它。
+  describe('[OVERWRITE] 覆盖开关', () => {
+    /* 11-13 真实形状：板块ETF 已被写成 0，其余已填 */
+    const ROWS_1113 = ROWS_1104.map(r => ({
+      ...r,
+      close: r.name === '板块ETF(48)' ? '0' : (r.name === '大盘ETF' ? '' : '1.00')
+    }));
+
+    it('默认（不传 opts）绝不覆盖已有非空值', () => {
+      const out = buildBiddingCloseWriteRows(ROWS_1113, VALUES, '2026-11-13', 'T');
+      expect(out.some(r => r.name === '板块ETF(48)')).toBe(false);
+      // 只补空的那一行
+      expect(out.map(r => r.name)).toEqual(['大盘ETF']);
+    });
+
+    it('opts.overwrite = true ⇒ 允许把错的 0 改成正确的 37，并记下旧值', () => {
+      const out = buildBiddingCloseWriteRows(ROWS_1113, VALUES, '2026-11-13', 'T', { overwrite: true });
+      const etf = out.find(r => r.name === '板块ETF(48)');
+      expect(etf).toBeTruthy();
+      expect(etf.close).toBe('37');
+      expect(etf.overwritten).toBe('0');
+    });
+
+    it('★ overwrite 也只在「值真的不同」才写（同值不写，避免无意义 upsert）', () => {
+      const same = ROWS_1113.map(r => ({ ...r, close: r.name === '板块ETF(48)' ? '37' : '1.00' }));
+      const out = buildBiddingCloseWriteRows(same, VALUES, '2026-11-13', 'T', { overwrite: true });
+      expect(out.some(r => r.name === '板块ETF(48)')).toBe(false);
+    });
+
+    it('★ 只有「值真的不同」的行才带 overwritten；落库前该字段必须被剔除', () => {
+      // 造一行「当前值 == 正确值」+ 一行「当前值 != 正确值」
+      // ⚠️ 必须带上「最近多板%」：它缺席时 buildBiddingCloseWriteRows 会按「9:25 漏写」规则补建。
+      const rows = [
+        { name: '最近多板%', close: VALUES['最近多板%'] },   // 相同 ⇒ 不写
+        { name: '大盘（%）', close: VALUES['大盘（%）'] },     // 相同 ⇒ 不写
+        { name: '板块ETF(48)', close: '0' }                   // 不同 ⇒ 覆盖并记旧值
+      ];
+      const out = buildBiddingCloseWriteRows(rows, VALUES, '2026-11-13', 'T', { overwrite: true });
+      expect(out.map(r => r.name)).toEqual(['板块ETF(48)']);
+      expect(out[0].overwritten).toBe('0');
+      // 不带 overwritten 的行键集必须仍是 4 列（PGRST102 键集一致红线）
+      expect(Object.keys({ date: 1, name: 1, close: 1, updated_at: 1 }).sort().join(','))
+        .toBe('close,date,name,updated_at');
+      // 带 overwritten 的行 ⛔ 不能原样进请求体 —— runBiddingCloseWrite 会重映射成 4 列
+      const src = readFileSync(new URL('./bidding-close-write.js', import.meta.url), 'utf8');
+      expect(src).toContain('return { date: r.date, name: r.name, close: r.close, updated_at: r.updated_at };');
+    });
+
+    it('⛔ 空值 + overwrite 仍不造值（读取失败 ≠ 0 不变）', () => {
+      const out = buildBiddingCloseWriteRows(ROWS_1113, { '板块ETF': '' }, '2026-11-13', 'T', { overwrite: true });
+      expect(out).toEqual([]);
     });
   });
 });
