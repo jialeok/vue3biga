@@ -77,7 +77,14 @@ const REQUIRED = [
   //      'tvrb_leader_diverge' 是 upsert 里不被 mangle 的表名字面量 —— 都不靠注释。
   'runLeaderDivergeDays',
   'divergedays',
-  'tvrb_leader_diverge'
+  'tvrb_leader_diverge',
+  // [CLOSE-POST 2026-11-13] 收盘列空了两天 = 16:00 主轮把单次 invocation 的 50 次
+  //   subrequest 配额跑爆 ⇒ 收盘列 / 记忘 / LD / 运行日志全部发不出去。
+  //   ⚠️ 'closepost' 是 point / time_point 的字符串字面量，'leaderDivergeCloseWritten'
+  //      是不被 mangle 的对象字段名；⛔ 都不能换成注释里的标记（esbuild 会删注释）。
+  //   ⚠️ cron 条数由 expectedCrons() 直读 toml 断言 ⇒ 第 5 条会自动被核对。
+  'closepost',
+  'leaderDivergeCloseWritten'
 ];
 
 async function cf(url, accept) {

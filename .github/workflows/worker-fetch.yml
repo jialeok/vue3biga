@@ -4,17 +4,18 @@
 #   本工作流把这一步搬到 GitHub Actions：Actions 的网络可直达 workers.dev，
 #   令牌放在仓库 Secret，用户在 Actions 页面点 Run workflow 即可，⛔ 不需要本机、不需要粘贴。
 #   常用 point：
-#     jiwang   → 回补 jiwang_data.shouguJieguo（10 日窗口，只填空、不覆盖人工修正）
-#     ladder26 → 「最近多板 883410」名单二次确认
-#     range20  → 20 日涨幅补位
-#     extras   → 竞价四要素补漏
+#     jiwang    → 回补 jiwang_data.shouguJieguo（10 日窗口，只填空、不覆盖人工修正）
+#     closepost → [CLOSE-POST 2026-11-13] 立即补写当天竞价看板「收盘」列 + 记忘 + 总龙分歧收盘腿
+#     ladder26  → 「最近多板 883410」名单二次确认
+#     range20   → 20 日涨幅补位
+#     extras    → 竞价四要素补漏
 name: Worker 云端手动回补
 
 on:
   workflow_dispatch:
     inputs:
       point:
-        description: 'point: jiwang | ladder26 | range20 | extras | morning | close | snapshot | ladder'
+        description: 'point: jiwang | closepost | ladder26 | range20 | extras | morning | close | snapshot | ladder'
         required: true
         default: 'jiwang'
       confirm:

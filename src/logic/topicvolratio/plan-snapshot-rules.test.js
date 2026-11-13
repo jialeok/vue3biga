@@ -287,8 +287,8 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
     expect(resolvePlanSnapshotFreshness(broken, Object.assign({}, OPTS, { allowRulesInvalidation: false }))).toBe('stale');
   });
 
-  it('版本常量已 bump 到 9（[CAP-97] 自定义禁选上限 95 → 97 改了选股结论 = v9）', () => {
-    expect(TVRB_RULES_VERSION).toBe(9);
+  it('版本常量已 bump 到 10（[FULL-MARKET] ＞97% 升格为全场禁买，改了选股结论 = v10）', () => {
+    expect(TVRB_RULES_VERSION).toBe(10);
   });
 
   // ★★ [CAP-97 2026-11-13 晚间] 阈值改动必须三件套同时落地，漏一件就等于没改：
@@ -297,9 +297,31 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
     const { TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL } = await import('./tvrb-constants.js');
     expect(TVRB_RANGE10_CAP).toBe(97);
     expect(TVRB_RANGE10_ABNORMAL).toBe(100);
-    expect(TVRB_RULES_VERSION).toBeGreaterThanOrEqual(9);
+    expect(TVRB_RULES_VERSION).toBeGreaterThanOrEqual(10);
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v44'");
+    expect(sw).toContain("var CACHE = 'biga-static-v45'");
+  });
+
+  // ★★ [FULL-MARKET-GUARD 2026-11-13 用户当场纠正] 整类护栏：
+  //   ＞97% 不许再被做成「票级顺延」，否则 11-13 那次「我理解错了」会原样复发。
+  it('[FULL-MARKET-GUARD] near 与 abnormal 后果相同：全场禁买判据 + 无票级顺延 + 手册口径', async () => {
+    const { isOverRange10Cap, resolveAbnormalFact } = await import('./abnormal-10d.js');
+    // ① 97~100 与 ≥100 都判【全场禁买】
+    expect(isOverRange10Cap(98)).toBe(true);
+    expect(isOverRange10Cap(101)).toBe(true);
+    expect(isOverRange10Cap(97)).toBe(false);
+    expect(resolveAbnormalFact({ leaderName: 'L', leaderPctToday: 98, leaderPctPrev: 70, rows: [] }).show).toBe(true);
+    // ② ⛔ 不许再有「跳过该龙位、顺延下一只」的票级实现
+    const blocks = readFileSync('src/logic/topicvolratio/tvrb-blocks.js', 'utf8');
+    expect(blocks).not.toContain('skippedAbnormal.map');
+    expect(blocks).toContain('skippedAbnormalNames: []');
+    // ③ 规则手册写明「全场整片灰 / 波及所有票」，⛔ 不再写「顺延下一只」当结论
+    const lines = readFileSync('src/logic/topicvolratio/tvrb-rules-lines.js', 'utf8');
+    expect(lines).toContain('波及到所有的票');
+    expect(lines).toContain('整个市场【整片灰');
+    // ④ 三件套版本链
+    expect(TVRB_RULES_VERSION).toBe(10);
+    expect(readFileSync('public/sw.js', 'utf8')).toContain("var CACHE = 'biga-static-v45'");
   });
 
   // ★★ [RULE-BUMP-GUARD 2026-11-13] 用户报障「现在刷新并没有生效」的整类根因锁。

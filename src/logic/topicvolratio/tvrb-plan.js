@@ -1842,11 +1842,12 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         '20日涨幅总龙一（及其题材）还没就绪 ⇒ 无法验证用户要求的「必须与总龙一不同题材」这道闸门 ⇒ ' +
         '不猜（§10：判不出 ≠ 今天没有候补）。');
     } else if (r10Res && r10Res.pick) {
-      // ★★ [CAP-97 2026-11-13 晚间用户修订] 第三十四条：候补那只的十日涨幅若超过
-      //   自定义禁选上限 TVRB_RANGE10_CAP（97%，原 95%）⇒ 【监管异动预警 · 不能选】、
-      //   【不选入、也不替补】。★ 11-11 东方海洋 95.711445% 在 97 线以下 ⇒ 候补通道不再被整条下线。
-      //   与 [R10-YIZI]「一字板不选入也不替补」同一条纪律：换成第二名是用更弱的票顶掉更强的票；
-      //   而且十日涨幅前十本身就是当期最热的一批，退一位还是热的 ⇒ 替补没有意义，直接空仓。
+      // ★★ [FULL-MARKET 2026-11-13 用户当场纠正] 第三十四条：候补那只的十日涨幅若超过
+      //   自定义禁选上限 TVRB_RANGE10_CAP（97%，[CAP-97] 由 95 上调）⇒ 【全场级监管异动】：
+      //   ⛔ 不是「这条候补空仓、换一只买」，而是整个市场整片灰 + 空仓
+      //   （全场收口由 _applyAbnormalSweep / 显示层叠加统一完成）。
+      //   这里只做「这条候补不选入、也不替补」，⛔ 绝不顺延到第二名（用户：波及到所有的票）。
+      //   ★ 11-11 东方海洋 95.711445% 在 97 线以下 ⇒ 候补通道按原规则正常运行。
       const _r10Lv = classifyRange10(r10Res.pick.pct);
       if (_r10Lv.level === ABNORMAL_LEVEL_NEAR || _r10Lv.level === ABNORMAL_LEVEL_ABNORMAL) {
         const _blkName = r10Res.pick.name;
@@ -1860,8 +1861,8 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         r10Res.tier = '';
         r10Res.reason = '十日涨幅前 ' + (r10Res.topN || PRESENCE_TOP_N) + ' 名里最强的那只【' + _blkName +
           '】（' + (r10Res.pick.topic || '—') + '，十日涨幅 ' + _r10Lv.pctText + '）' +
-          '超过自定义禁选上限 ' + TVRB_RANGE10_CAP + '% ⇒ 【监管异动预警 · 不能选】，按用户口径【不选入、也不替补】' +
-          ' ⇒ 今天这只候补【空仓】。';
+          '超过自定义禁选上限 ' + TVRB_RANGE10_CAP + '% ⇒ 【全场监管异动】，按用户口径【不选入、也不替补】' +
+          ' ⇒ 整个市场【整片灰 + 空仓】（⛔ 不顺延、不换次强的买）。';
         r10Res.pick = null;
       }
     }
@@ -1942,8 +1943,8 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         out.notes.push('⚠️【第' + RANGE10_BACKUP_RULE_NO + '条 · 十日涨幅候补】今天这只候补【空仓】：' +
           (r10Res.reason || '选出来的那只今日竞价一字涨停，买不进') + '。' + r10TrailText);
       } else if (r10Res && r10Res.blockedBy === 'abnormal') {
-        // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条：它不是「选不出」，是「选出来的那只涨幅已踩
-        //   自定义上限 / 监管红线」⇒ 与「一字买不进」同一条纪律：不选入、也不替补（措辞必须能区分）。
+        // ★★ [FULL-MARKET 2026-11-13] 第三十四条：它不是「选不出」，是「选出来的那只涨幅已踩
+        //   自定义上限」⇒ 全场监管异动（整片灰 + 空仓），⛔ 不顺延、不替补（措辞与「一字买不进」分开）。
         out.notes.push('🚨【第' + ABNORMAL_RULE_NO + '条 · 监管异动】今天这只十日涨幅候补【空仓】：' +
           (r10Res.reason || '选出来的那只十日涨幅已超过上限') + '。' + r10TrailText);
       } else {
@@ -2383,21 +2384,21 @@ export function _applyAbnormalSweep(out, opts) {
   }
   out.buyNames = new Set();
 
-  out.notes.push('🚨【第' + ABNORMAL_RULE_NO + '条 · 监管异动】' +
+  out.notes.push('🚨【第' + ABNORMAL_RULE_NO + '条 · 全场监管异动】' +
     (fact.kind === ABNORMAL_KIND_NEXT_DAY
       ? ('市场总龙一【' + (fact.leaderName || '—') + '】昨日十日涨幅 ' +
-         (fact.leaderPctPrevText || '—') + ' ≥ ' + TVRB_RANGE10_ABNORMAL + '% ⇒ 今天是【异动次日】')
+         (fact.leaderPctPrevText || '—') + ' ＞ ' + TVRB_RANGE10_CAP + '% ⇒ 今天是【异动次日】')
       : (fact.kind === ABNORMAL_KIND_LEADER_NOW
         ? ('市场总龙一【' + (fact.leaderName || '—') + '】今日十日涨幅 ' +
-           (fact.leaderPctTodayText || '—') + ' ≥ ' + TVRB_RANGE10_ABNORMAL + '% ⇒ 今日异动')
-        : ('入选票 ' + (fact.names || []).join('、') + ' 十日涨幅达到 ' +
-           TVRB_RANGE10_ABNORMAL + '%'))) +
-    ' ⇒ 今天【空仓】、不买任何票。⚙️ 已同时下线：退潮替补 / 新龙 / 十日涨幅候补 / 弱势切抱团 / 补涨题材 ' +
+           (fact.leaderPctTodayText || '—') + ' ＞ ' + TVRB_RANGE10_CAP + '% ⇒ 今日异动')
+        : ('入选票 ' + (fact.names || []).join('、') + ' 十日涨幅 ＞ ' + TVRB_RANGE10_CAP + '%'))) +
+    ' ⇒ 【整个市场整片灰 + 空仓】，今天一张票都不买（用户：总龙一影响范围波及到所有的票）。' +
+    '⚙️ 已同时下线：退潮替补 / 新龙 / 十日涨幅候补 / 弱势切抱团 / 补涨题材 ' +
     '（用户口径：「不再选票」「不再买进任何股票」）。⚠️ 下方股票仍照原规则列出（不删不改），' +
     '买点标签一律【' + ABNORMAL_NO_BUY_TAG + '】、不计入「选出 N 只」；卖点侧不受影响。' +
-    '📌 判定口径：自定义禁选上限 ' + TVRB_RANGE10_CAP + '%（超过即【监管异动预警 · 不能选】，' +
-    '11-13 晚间由 95 上调，11-11 的 95.71% 正常运行）／交易所严重异常波动 ' +
-    TVRB_RANGE10_ABNORMAL + '%（达到即【全市场空仓】）；十日涨幅 = ' +
+    '📌 判定口径：十日涨幅（竞价口径）＞ ' + TVRB_RANGE10_CAP + '% 即【全场禁买】' +
+    '（[CAP-97] 由 95 上调，11-11 的 95.71% 正常运行）；达到 ' + TVRB_RANGE10_ABNORMAL +
+    '% 是交易所「严重异常波动」，只说明程度更重、⛔ 后果完全相同（⛔ 不再有票级顺延）；十日涨幅 = ' +
     (fact.leaderPctPrevBasis === 'auction' ? '昨日按【竞价口径】' : '昨日按【收盘口径】（竞价口径那份未读到）') + '。');
   return fact;
 }

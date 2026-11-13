@@ -1411,8 +1411,8 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
   // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条：碰到【异动票】（十日涨幅 ≥ 100%）时，
   //   该题材块【只展示这一只】、标【异动不买】，⛔ 不再往下选别的龙位（理由见下面循环里的长注释）。
   let abnormalCand = null;
-  // 自定义禁选上限~100% 被【不选入】的候选（文案要能交代「它被跳过了」，⛔ 不许静默丢掉）
-  const skippedAbnormal = [];
+  // ★ [FULL-MARKET] 不再有「被跳过、顺延下一只」的候选：> 自定义禁选上限的票一律
+  //   整块停止选股（见下面循环）。旧 skippedAbnormal 数组已随口径撤销。
   for (let i = 0; i < cands.length && slotsUsed < tier.pickCount; i++) {
     const c = cands[i];
     // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条【监管异动 · 十日涨幅硬上限】：
@@ -1422,25 +1422,22 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
     //   ★★ [CAP-97 2026-11-13 晚间修订] 95% → **97%**（用户「调到97%，11月11日这样能正常运行，
     //     超过97%该题材或者股票就不能选，监管异动了」）⇒ 11-11 东方海洋 95.711445% 落回【正常】。
     //
-    //   ① pct ≥ 100（异动）⇒ 【保留展示】、停止选股：block.abnormalPick = 这一只。
-    //      ⛔ 不是「跳过并顺延下一只」—— 顺延等于从一只马上要崩的题材里挑次强的票，
-    //         正是用户这次要否掉的选法（与第三十二条「龙一跌停不顺延」同一条理由）。
-    //      ⛔ 也不是「删掉」—— 用户明确「不用去掉」，要能看见是哪只票踩了红线。
-    //   ② TVRB_RANGE10_CAP < pct < 100（监管异动预警）⇒ 该票【不能选】、顺延下一只（名额照买满）；
-    //      十日涨幅候补通道踩到同一条线时整条不替补（见 tvrb-plan#blockedBy='abnormal'）。
-    //      理由 = 用户「有的 99% 就开始有题材崩盘节奏了」⇒ 不到 100 也别买这一只。
-    //   ③ pct ≤ TVRB_RANGE10_CAP（含 95.71%）⇒ 完全不介入，按原规则正常选股。
-    //   ④ pct 读不到（null）⇒ 分级 = 'unknown' ⇒ ⛔ 既不跳过也不判异动（§10 不猜）。
+    //   ★★ [FULL-MARKET 2026-11-13 用户当场纠正] near（>97 且 <100）与 abnormal（≥100）
+    //      后果【完全相同】：本题材块【只展示这一只】、停止选股，⛔ 绝不顺延下一只。
+    //      用户原话：「是整个题材的……也就是全场整片灰，整个市场也是灰色，没有票可以买，
+    //      总龙一影响范围很大的，这个波及到所有的票」。
+    //      ⇒ 顺延 = 从马上要崩的题材里挑次强的票，正是用户否掉的选法。
+    //      ⇒ 全市场整片灰 / 空仓由 _applyAbnormalSweep（规则层）与 abnormal-overlay（显示层）收口。
+    //   ① pct > TVRB_RANGE10_CAP（near / abnormal）⇒ 保留展示 + 停止选股：abnormalPick = 这一只。
+    //      ⛔ 不是「删掉」—— 用户明确「不用去掉」，要能看见是哪只票踩了线。
+    //   ② pct ≤ TVRB_RANGE10_CAP（含 11-11 的 95.71%）⇒ 完全不介入，按原规则正常选股。
+    //   ③ pct 读不到（null）⇒ 分级 = 'unknown' ⇒ ⛔ 既不跳过也不判异动（§10 不猜）。
     const lv10 = classifyRange10(c.pct);
-    if (lv10.level === ABNORMAL_LEVEL_ABNORMAL) {
+    if (lv10.level === ABNORMAL_LEVEL_ABNORMAL || lv10.level === ABNORMAL_LEVEL_NEAR) {
       abnormalCand = c;
       picked.push(c);
       slotsUsed++;
       break;
-    }
-    if (lv10.level === ABNORMAL_LEVEL_NEAR) {
-      skippedAbnormal.push({ cand: c, level: lv10 });
-      continue;
     }
     if (c.isYizi) { skipped.push(c); continue; }   // 竞价涨停 → 买不进 ⇒ 顺延下一龙位（⛔ 不占档位）
     // ★★ [SUSPEND-NOBUY 2026-10-14 用户口径] 连续停牌（第 2 天及以上）⇒ 买不进 ⇒ 占档位、不补位。
@@ -1529,23 +1526,17 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
       : ('⚠️ 本题材有龙位、且可买入（非竞价涨停、非连续停牌）的票不足 ' + tier.pickCount +
          ' 只 ⇒ 实际取 ' + picks.length + ' 只（⛔ 不从其它题材补位）。'));
   }
-  // ★★ [CAP-97 2026-11-13 晚间修订] 第三十四条：超过自定义禁选上限（97%）被跳过的票必须点名，
-  //   ⛔ 不许静默丢掉 —— 用户要能核对「为什么这只没选」，且要写清是【监管异动预警 · 不能选】。
-  if (skippedAbnormal.length > 0) {
-    notes.push('🚨 龙位 ' + skippedAbnormal.map(function(s) {
-      return (s.cand.rank ? getDragonLabel(s.cand.rank) : '') + s.cand.name +
-        '（十日涨幅 ' + s.level.pctText + '）';
-    }).join('、') + ' 的十日涨幅（竞价口径）【超过自定义上限 ' + TVRB_RANGE10_CAP +
-      '%】⇒ 按第 ' + ABNORMAL_RULE_NO + ' 条判定【监管异动预警 · 不能选】：该票【不选入】、' +
-      '已顺延到下一个龙位（' + TVRB_RANGE10_ABNORMAL + '% = 交易所严重异常波动 ⇒ 全市场空仓；' +
-      TVRB_RANGE10_CAP + '% 是用户自定义的预防线：有的 99% 就开始有题材崩盘节奏了）。');
-  }
   if (abnormalCand) {
+    const _lv = classifyRange10(abnormalCand.pct);
     notes.push('🚨 本题材的' + (abnormalCand.rank ? getDragonLabel(abnormalCand.rank) : '') +
-      abnormalCand.name + ' 十日涨幅（竞价口径）' + classifyRange10(abnormalCand.pct).pctText +
-      ' ≥ ' + TVRB_RANGE10_ABNORMAL + '%（交易所【严重异常波动】）⇒ 按第 ' + ABNORMAL_RULE_NO +
-      ' 条判定【监管异动】：本块今天【不选股、不买】（⛔ 不顺延下一龙位 —— 这只票踩红线说明' +
-      '整个题材次日大概率崩，换次强的票没有意义）。⚠️ 该票仍【照常列出】（用户口径：不用去掉），' +
+      abnormalCand.name + ' 十日涨幅（竞价口径）' + _lv.pctText +
+      ' ＞ ' + TVRB_RANGE10_CAP + '%（自定义禁选上限' +
+      (_lv.level === ABNORMAL_LEVEL_ABNORMAL
+        ? '；已达 ' + TVRB_RANGE10_ABNORMAL + '% 交易所【严重异常波动】'
+        : '，尚未到 ' + TVRB_RANGE10_ABNORMAL + '% 红线，但后果相同') +
+      '）⇒ 按第 ' + ABNORMAL_RULE_NO + ' 条判定【全场监管异动】：本块今天【不选股、不买】' +
+      '（⛔ 不顺延下一龙位 —— 总龙一影响范围波及所有票，换次强的没有意义；' +
+      '整个市场整片灰 + 空仓由收口统一叠加）。⚠️ 该票仍【照常列出】（用户口径：不用去掉），' +
       '只是买点标签为【' + ABNORMAL_NO_BUY_TAG + '】。');
   }
 
@@ -1593,10 +1584,13 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
       pct: classifyRange10(abnormalCand.pct).pct,
       pctText: classifyRange10(abnormalCand.pct).pctText
     } : null,
-    /** 本块里被【自定义禁选上限（CAP-97 起 = 97%）】跳过、已顺延下一龙位的票（只作说明，⛔ 不参与判定） */
-    skippedAbnormalNames: skippedAbnormal.map(function(s) {
-      return (s.cand.rank ? getDragonLabel(s.cand.rank) : '') + s.cand.name;
-    })
+    /**
+     * ★★ [FULL-MARKET 2026-11-13 用户当场纠正] 「被跳过、顺延下一龙位」的**票级概念已撤销**：
+     *   > 自定义禁选上限 ⇒ 全场整片灰 + 空仓（⛔ 不顺延任何票、不换次强的买）。
+     *   ⇒ 本字段恒为空数组。保留字段名只是为了兼容历史存档 / 视图读取（§11 不删字段、只撤语义），
+     *     真正踩线的那只票留在 `abnormalPick` 与 `picks` 里供核对（用户「不用去掉」）。
+     */
+    skippedAbnormalNames: []
   };
 }
 

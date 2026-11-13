@@ -11,15 +11,25 @@
 // ★★ [CAP-97 2026-11-13 晚间用户修订] ① 的自定义上限 95 → **97**：
 //     用户原话：「不是这样的，超过95%该题材或者股票就比较危险，你把它调到97%吧，
 //     这样就比较合理些，11月11日这样能正常运行，超过97%该题材或者股票就不能选，监管异动了」。
-//     ⇒ 11-11 东方海洋真实竞价口径 95.711445% 必须落在【正常】区间（⛔ 不再顺延 / 不再下线候补）；
-//       >97 且 <100 ⇒ 票 / 题材级【监管异动预警 · 不能选】；≥100 ⇒ 仍是【全市场空仓 + 整片灰】。
-//     ⛔ 两条线不许合并：97 是禁选预警，100 才是全场空仓。
+//     ⇒ 11-11 东方海洋真实竞价口径 95.711445% 必须落在【正常】区间（⛔ 不再顺延 / 不再下线候补）。
+//
+// ★★★ [FULL-MARKET 2026-11-13 用户当场纠正，最高口径] ★★★
+//     用户原话：「是整个题材的，你没听懂吗？也就是全场整片灰，整个市场也是灰色，没有票可以买，
+//     我都说了总龙一影响范围很大的。这个波及到所有的票。」
+//     ⇒ **> 97% 就是【全场级监管异动】**：不是「跳过那只、顺延下一只」，不是「该题材不选」，
+//       而是【整个市场】整片灰 + 空仓 + 一张票都不买。触发源可以是总龙一 / 昨日总龙一 /
+//       任何一只会被选中的票，但【后果一律波及所有票】（总龙一影响范围很大）。
+//     ⇒ 实现：isOverRange10Cap（near || abnormal）就是【全场禁买判据】；
+//       resolveAbnormalFact 用它判三种 kind，显示层叠加据此整片灰，规则层收口据此清空 buyNames。
+//     ⚠️ 100% 仍保留为文案里的「交易所严重异常波动」分级，只说明【严重程度】，
+//        ⛔ 不再作为「要不要全场空仓」的分界线。
 //
 // 职责边界（§3 / §4 / §21）：
 //   · 本模块【只做两件事】：把涨幅分级（ok / near / abnormal）+ 把事实拼成一块可渲染的标语；
 //   · ⛔ 不取数、不落库、不发请求：昨日十日涨幅 / 今日十日涨幅 / 总龙一身份全部由
 //     组合式（useTopicVolRatioBoard）与采集层注入 —— 与本模块无关；
-//   · ⛔ 不判「要不要顺延下一龙位」：那是 _buildBlock 的事（用本模块的 classifyRange10 一处判据）；
+//   · ⛔ 不判「要不要顺延下一龙位」：[FULL-MARKET] 口径下**根本没有顺延**；
+//     _buildBlock 只负责「踩线票保留展示 + 本块停止选股」，全场整片灰由收口与显示层叠加；
 //   · ⛔ 不删任何票：本模块只产出文案 + 事实，票的去留由规则层决定 —— 用户「不用去掉」。
 //     ⚠️ [审查订正 2026-11-13] 整块灰化【不是】靠某个 `abnormalGray` 字段（代码里没有这个字段，
 //        旧注释把人往不存在的实现上引）：规则层把 fact 交给 buildCashAlert ⇒ cashAlert.show
@@ -38,7 +48,8 @@ import {
 } from './tvrb-constants.js';
 import { _num, _pct2 } from './tvrb-utils.js';
 
-/** 分级：未知（读不到） / 正常 / 监管异动预警（自定义上限~100） / 异动（≥100） */
+/** 分级：未知（读不到） / 正常 / 已触发全场监管异动（>97 且 <100） / 程度更重的异动（≥100）
+ *  ⚠️ [FULL-MARKET] near 与 abnormal 只是【文案程度分级】，**后果完全相同**（全场空仓）。 */
 export const ABNORMAL_LEVEL_UNKNOWN = 'unknown';
 export const ABNORMAL_LEVEL_OK = 'ok';
 export const ABNORMAL_LEVEL_NEAR = 'near';
@@ -47,11 +58,13 @@ export const ABNORMAL_LEVEL_ABNORMAL = 'abnormal';
 /**
  * 【纯函数】十日涨幅（竞价口径，单位 = %）→ 分级。
  *
- * 边界口径（[CAP-97 2026-11-13 晚间用户修订] ⛔ 别改，改了与规则手册条文不一致）：
- *   · pct ≥ 100              ⇒ 'abnormal'（全市场空仓，含恰好 100）
- *   · pct >  TVRB_RANGE10_CAP ⇒ 'near'（监管异动预警：该票 / 该题材不能选，但未到交易所红线）
+ * 边界口径（[CAP-97] + [FULL-MARKET] ⛔ 别改，改了与规则手册条文不一致）：
+ *   · pct ≥ 100              ⇒ 'abnormal'（程度更重；后果与 near **完全相同**）
+ *   · pct >  TVRB_RANGE10_CAP ⇒ 'near'（已触发【全场级监管异动】：整片灰 + 全市场空仓）
  *   · pct ≤  TVRB_RANGE10_CAP ⇒ 'ok'（含 11-11 真实的 95.711445% ⇒ 正常运行）
  *   · 读不到                  ⇒ 'unknown'（§10 不补 0）
+ *   ⚠️ near / abnormal 的区别【只在文案】，`isOverRange10Cap` 对两者都返回 true。
+ *      ⛔ 不许再把它读成「票级禁选预警」或「顺延下一只」。
  *
  * @param {number|string|null|undefined} pct
  * @returns {{level:string, pct:number|null, pctText:string}}
@@ -71,15 +84,19 @@ export function classifyRange10(pct) {
 }
 
 /**
- * 【纯函数】某只票是不是「超过自定义禁选上限、今天不该买」（CAP < pct < 100，或含 100 的展示口径另算）。
+ * 【纯函数 · §15 唯一「全场禁买」判据】某只票的十日涨幅是否触发【全场级监管异动】。
  *
- * ⚠️ 调用方（tvrb-blocks#_buildBlock）用它做选股闸门：
- *   pct ≥ 100 ⇒ 走【异动】那条（保留展示 + 整段灰化 + 全市场空仓），⛔ 不是「跳过」；
- *   CAP < pct < 100 ⇒ 监管异动预警：跳过该龙位、顺延下一只（名额照买满）；
- *   pct ≤ CAP（含 11-11 的 95.711445%）⇒ 完全不介入，按原规则正常选股。
+ * ★ [FULL-MARKET 2026-11-13] 这是第三十四条**唯一的触发尺子**：near（>97 且 <100）
+ *   与 abnormal（≥100）后果**完全相同** —— 全场整片灰、空仓、一张票都不买。
+ *   ⛔ 不再有「near 只跳过这一只、顺延下一只」这种票级处理（用户当场否掉）。
+ *
+ * 调用方：
+ *   · resolveAbnormalFact —— 判三种 kind（异动次日 / 当日异动 / 票级异动）；
+ *   · tvrb-blocks#_buildBlock —— 踩线票所在块【只展示这一只、停止选股】；
+ *   · pct ≤ CAP（含 11-11 的 95.711445%）⇒ false，按原规则正常选股。
  *
  * @param {number|string|null} pct
- * @returns {boolean} true = 超过自定义禁选上限（含异动）
+ * @returns {boolean} true = 触发全场禁买
  */
 export function isOverRange10Cap(pct) {
   const lv = classifyRange10(pct).level;
@@ -117,9 +134,11 @@ export function resolveAbnormalFact(input) {
   const prev = classifyRange10(i.leaderPctPrev);
   const rows = Array.isArray(i.rows) ? i.rows : [];
 
-  // ① 点名：哪些票已经异动（≥100） / 哪些只是监管异动预警（自定义上限~100）
+  // ① 点名：★ [FULL-MARKET] > 自定义禁选上限的票【一律是全场禁买触发源】。
+  //    near 与 abnormal 都进 hits（后果完全相同）；near / severe 另留一份供说明区点名分级。
   const hits = [];
   const near = [];
+  const severe = [];
   const seen = new Set();
   rows.forEach(function(r) {
     if (!r) return;
@@ -127,17 +146,17 @@ export function resolveAbnormalFact(input) {
     if (!nm || seen.has(nm)) return;
     seen.add(nm);
     const lv = classifyRange10(r.pct);
-    if (lv.level === ABNORMAL_LEVEL_ABNORMAL) {
-      hits.push({ name: nm, topic: String(r.topic || '').trim(), pct: lv.pct, pctText: lv.pctText });
-    } else if (lv.level === ABNORMAL_LEVEL_NEAR) {
-      near.push({ name: nm, topic: String(r.topic || '').trim(), pct: lv.pct, pctText: lv.pctText });
-    }
+    const item = { name: nm, topic: String(r.topic || '').trim(), pct: lv.pct, pctText: lv.pctText };
+    if (lv.level === ABNORMAL_LEVEL_ABNORMAL) { hits.push(item); severe.push(item); }
+    else if (lv.level === ABNORMAL_LEVEL_NEAR) { hits.push(item); near.push(item); }
   });
 
   // ② 触发形态（优先级：异动次日 > 当日异动 > 入选票异动）
+  // ★ [FULL-MARKET] 判据统一走 isOverRange10Cap（near || abnormal）——
+  //   ⛔ 不再只认 abnormal：97~100 一样要【全场整片灰 + 空仓】，绝不顺延下一只。
   let kind = '';
-  if (prev.level === ABNORMAL_LEVEL_ABNORMAL) kind = ABNORMAL_KIND_NEXT_DAY;
-  else if (today.level === ABNORMAL_LEVEL_ABNORMAL) kind = ABNORMAL_KIND_LEADER_NOW;
+  if (isOverRange10Cap(i.leaderPctPrev)) kind = ABNORMAL_KIND_NEXT_DAY;
+  else if (isOverRange10Cap(i.leaderPctToday)) kind = ABNORMAL_KIND_LEADER_NOW;
   else if (hits.length > 0) kind = ABNORMAL_KIND_STOCK;
 
   // ③ §10：总龙一的十日涨幅两份都读不到 ⇒ 如实标记「判不出」（⛔ 不假装没有异动）
@@ -174,32 +193,38 @@ export function resolveAbnormalFact(input) {
 
   // ④ 文案（§21：★ 大字标语 + 说明全部在 Logic 层拼好，模板零计算）
   const capLine = '★ 硬上限口径（第' + ABNORMAL_RULE_NO + '条）：十日涨幅（竞价口径）' +
-    '＞ ' + TVRB_RANGE10_CAP + '% 的票【一律不选入】⇒ 【监管异动预警 · 不能选】，说明区醒目点名；' +
-    '达到 ' + TVRB_RANGE10_ABNORMAL + '% = 交易所「严重异常波动」⇒ 全市场空仓、整段灰化、' +
-    '一枚买点都不给（票照常列出，供你核对，⛔ 不删）。';
-  const whyLine = '★ 为什么：单只票十日涨幅到达 ' + TVRB_RANGE10_ABNORMAL +
-    '% 就是监管异动；一旦【总龙一】异动，它所在题材的股票【次日基本都会崩】，甚至带崩整个市场情绪。' +
-    '所以第' + ABNORMAL_RULE_NO + '条是【总约束】—— 在交易所红线前 ' +
-    (TVRB_RANGE10_ABNORMAL - TVRB_RANGE10_CAP) + ' 个点先设【禁选线】，' +
-    '就是防「99% 就开始有题材崩盘节奏」。★ [CAP-97 2026-11-13 晚间用户修订] 这条线由 95% 上调到 ' +
-    TVRB_RANGE10_CAP + '%：11-11 东方海洋真实的 95.71% 不该被误判危险，必须按原规则正常运行。';
+    '＞ ' + TVRB_RANGE10_CAP + '% ⇒ 【全场监管异动】：整个市场整片灰、【空仓、一张票都不买】；' +
+    '达到 ' + TVRB_RANGE10_ABNORMAL + '% 是交易所「严重异常波动」（程度更重，后果相同）。' +
+    '票照常列出供你核对，⛔ 不删。';
+  const whyLine = '★ 为什么：用户「总龙一影响范围很大的，这个波及到所有的票」——' +
+    '一旦总龙一（或任何一只会被选中的票）十日涨幅异动，它所在题材次日大概率崩，' +
+    '甚至带崩整个市场情绪 ⇒ 不是「换一只次强的买」，而是【整个市场今天都不买】。' +
+    '自定义禁选上限设在交易所红线前 ' + (TVRB_RANGE10_ABNORMAL - TVRB_RANGE10_CAP) +
+    ' 个点，就是防「99% 就开始有题材崩盘节奏」。★ [CAP-97 2026-11-13 晚间用户修订] ' +
+    '由 95% 上调到 ' + TVRB_RANGE10_CAP + '%：11-11 东方海洋真实的 95.71% 正常运行。';
 
+  const _trig = function(lv) {
+    return '＞ ' + TVRB_RANGE10_CAP + '%（全场监管异动）' +
+      (lv.level === ABNORMAL_LEVEL_ABNORMAL
+        ? '，且已达 ' + TVRB_RANGE10_ABNORMAL + '% 交易所「严重异常波动」'
+        : '');
+  };
   const prevBasisText = (i.leaderPctPrevBasis === 'auction')
     ? '（昨日竞价口径）'
     : (i.leaderPctPrevBasis === 'close' ? '（昨日收盘口径 —— 昨日竞价那份没读到）' : '');
   let lead = '';
   if (kind === ABNORMAL_KIND_NEXT_DAY) {
     lead = '市场总龙一' + _pointOf(leaderName, leaderTopic, prev.pctText) +
-      '【昨日（上一交易日）】就已触发监管异动（≥ ' + TVRB_RANGE10_ABNORMAL + '%）⇒ 今天是【异动次日】：' +
+      '【昨日（上一交易日）】十日涨幅 ' + _trig(prev) + ' ⇒ 今天是【异动次日】：' +
       '按第' + ABNORMAL_RULE_NO + '条，今天【空仓】—— 不买任何票（' + ABNORMAL_NO_BUY_TAG + '）。';
   } else if (kind === ABNORMAL_KIND_LEADER_NOW) {
     lead = '市场总龙一' + _pointOf(leaderName, leaderTopic, today.pctText) +
-      '【今日】（9:26 竞价口径）触发监管异动（≥ ' + TVRB_RANGE10_ABNORMAL + '%）⇒ 按第 ' +
+      '【今日】（9:26 竞价口径）十日涨幅 ' + _trig(today) + ' ⇒ 按第 ' +
       ABNORMAL_RULE_NO + ' 条，今天【空仓】—— 不买任何票（' + ABNORMAL_NO_BUY_TAG + '）。';
   } else {
     lead = '入选票 ' + hits.map(function(x) {
       return _pointOf(x.name, x.topic, x.pctText);
-    }).join('、') + ' 十日涨幅达到 ' + TVRB_RANGE10_ABNORMAL + '%（监管异动）⇒ 按第 ' +
+    }).join('、') + ' 十日涨幅 ＞ ' + TVRB_RANGE10_CAP + '%（全场监管异动）⇒ 按第 ' +
       ABNORMAL_RULE_NO + ' 条，今天【空仓】—— 不买任何票（' + ABNORMAL_NO_BUY_TAG + '）。';
   }
 
@@ -214,9 +239,15 @@ export function resolveAbnormalFact(input) {
       '「异动次日」这一条【判不出】（§10：判不出 ≠ 没有异动）。');
   }
   if (near.length > 0) {
-    tail.push('🚨 另有【监管异动预警 · 不能选】的票（十日涨幅超过自定义禁选上限 ' +
-      TVRB_RANGE10_CAP + '% ⇒ 已跳过该龙位、顺延下一只；候选通道整条不替补）：' +
-      near.map(function(x) { return _pointOf(x.name, x.topic, x.pctText); }).join('、') + '。');
+    tail.push('⚠️ 其中 ' + near.map(function(x) {
+      return _pointOf(x.name, x.topic, x.pctText);
+    }).join('、') + ' 落在 ' + TVRB_RANGE10_CAP + '%~' + TVRB_RANGE10_ABNORMAL +
+      '%（已超自定义禁选上限、未到交易所红线）—— ★ 按【全场监管异动】口径一样是' +
+      '【整片灰 + 全市场空仓】，⛔ 不顺延任何票、不换次强的买。');
+  }
+  if (severe.length > 0) {
+    tail.push('⚠️ 达到 ' + TVRB_RANGE10_ABNORMAL + '% 交易所「严重异常波动」的票：' +
+      severe.map(function(x) { return _pointOf(x.name, x.topic, x.pctText); }).join('、') + '。');
   }
   tail.push('⚠️ 下方股票仍按原规则【照常列出】（不删不改），但买点标签一律为【' + ABNORMAL_NO_BUY_TAG +
     '】，不计入「选出 N 只」。');

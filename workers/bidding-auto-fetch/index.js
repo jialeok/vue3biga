@@ -107,12 +107,16 @@ function cronToPoint(cronExpr) {
   // [LADDER26 2026-11-06] 01:26 UTC = 北京 09:26：名单源二次确认。
   //   11-06 的 P0 里上游 9:25 挂、9:4x 就恢复，只靠 9:25 内重试救不回来；
   //   这条 cron 在开盘前 4 分钟再问一次，且「9:25 已成功」时 0 请求直接返回（幂等）。
+  // [CLOSE-POST 2026-11-13] 08:03 UTC = 北京 16:03：收盘后补写轮（独立 invocation）。
+  //   ⚠️ 见 dispatch('closepost') 的文件头长注释：Cloudflare 单次 invocation 只有 50 次
+  //      subrequest，16:00 主轮连带这些补写任务必爆配额 ⇒ 必须拆出来单独跑。
   const MAP = {
     '25 1': 'morning',
     '26 1': 'ladder26',
     '27 1': 'snapshot',
     '35 1': 'snapshot',
-    '0 8': 'close'
+    '0 8': 'close',
+    '3 8': 'closepost'
   };
   return MAP[key] || null;
 }
@@ -220,6 +224,12 @@ async function persistRunResult(env, point, result) {
       // [AUC-SANE 2026-10-12] 竞价涨幅越界闸门：>0 说明上游 numcat 又给了物理不可能的坏值
       aucPctOutOfRange: r.aucPctOutOfRange === undefined ? null : r.aucPctOutOfRange,
       aucPctRepaired: r.aucPctRepaired === undefined ? null : r.aucPctRepaired,
+      // ★★ [CLOSE-POST 2026-11-13] 收盘后补写轮的结构化验收字段。
+      //   收盘列空了两天却排查不出来，就是因为旧日志里没有这几位 ⇒ 只能靠翻 Actions 输出。
+      //   ⛔ 验收别只看 ok：biddingCloseWritten>0 才代表 close 真的写进 bidding_data。
+      biddingCloseWritten: r.biddingCloseWritten === undefined ? null : r.biddingCloseWritten,
+      jiwangShouguWritten: r.jiwangShouguWritten === undefined ? null : r.jiwangShouguWritten,
+      leaderDivergeCloseWritten: r.leaderDivergeCloseWritten === undefined ? null : r.leaderDivergeCloseWritten,
       completenessSummary: r.completenessSummary || '',
       logs: Array.isArray(r.logs) ? r.logs : []
     }
@@ -338,42 +348,71 @@ async function dispatch(point, env, logs, opts) {
     } catch (e) {
       console.error('[auto-fetch] close 逐日腿云端补齐异常（不影响收盘）:', e && e.message);
     }
-    // [BIDDING-CLOSE-CLOUD 2026-11-07] 收盘列云端落库（幂等填空、只允许当天、失败不连坐）。
-    //   放在所有行情/涨幅写入之后：这一轮已经把当天收盘涨幅算完，快照此时是终态。
+    // ★★ [CLOSE-POST 2026-11-13 · 生产事故修复] 收盘列 / 记忘 / 总龙分歧收盘腿
+    //   已整体迁到 16:03 的 `closepost`【独立一轮】（见下方分支的长注释）。
+    //   根因：Cloudflare 免费版单次 invocation 只有 50 次 subrequest，16:00 主轮跑完
+    //   runClose + snapshotPatch + dailyLegsHeal 后已接近上限，再挂这三个补写任务必爆
+    //   `Too many subrequests by single Worker invocation`：收盘列写不进 close、记忘 / LD 全灭，
+    //   连下面这行 persistRunResult 都发不出去（11-09 起 close 运行日志消失）。
+    //   ⇒ 本轮只保留行情/涨幅写入 + 运行日志；补写任务由独立 invocation 接管。
+    await persistRunResult(env, point, result);
+    return result;
+  }
+  if (point === 'closepost') {
+    // ★★ [CLOSE-POST 2026-11-13] 收盘后补写轮（北京 16:03，cron '3 8 * * 2-6'）。
+    //
+    // 【事故根因 · 生产日志取证】用户报障「应用最顶部的竞价变化看板，收盘时收盘列没有数据，
+    //   已经两天了；9:15~9:25 都有数据，只有收盘列异常」。
+    //   11-13 手动触发 point=close 的 Actions 日志逐行实证：
+    //     [bidding-close] 个股/ETF 快照可用 61/110
+    //     [bidding-close] ⚠️ 指数快照失败: Too many subrequests by single Worker invocation
+    //     [bidding-close] ❌ 写 bidding_data.close 失败: 同上
+    //     [jiwang-shougu] ❌ 猫抓 emoindic_daily 失败: 同上
+    //     [LD-CLOUD] ❌ 16:00 总龙分歧预计算异常: 同上
+    //   ⇒ 不是前端、不是字段、不是同花顺接口挂了，是【单次 invocation 50 次 subrequest 上限】：
+    //     11-07 / 11-08 / 11-13 陆续把三个补写任务塞进 16:00 主轮，把配额顶爆，
+    //     连 persistRunResult 也发不出去 ⇒ 11-09 起连 close 运行日志都消失。
+    //
+    // 【修复】拆成两次【独立 invocation】：Cloudflare 每次 cron 触发各自有 50 次额度。
+    //   16:00 close     = runClose + snapshotPatch + dailyLegsHeal + 运行日志；
+    //   16:03 closepost = 收盘列 + 记忘 + 总龙分歧收盘腿 + 运行日志。
+    //   16:03 时 16:00 主轮早已落库（实测约 18s），收盘腿真值齐备，LD 口径不变。
+    //
+    // 【红线不变】只允许当天 / 只填空不覆盖 / 读失败不写 0 / 失败不连坐 / 收盘列 0 猫抓额度。
+    // 【验收】⛔ 别只看 ok：看 biddingCloseWritten 与 bidding_fetch_log 里 closepost 那一行。
+    const result = {
+      ok: true,
+      today: beijingToday(),
+      logs: [],
+      biddingCloseWritten: 0,
+      jiwangShouguWritten: 0,
+      leaderDivergeCloseWritten: 0
+    };
+    // ① 竞价变化看板「收盘」列（同花顺快照，纯云端填空）
     try {
       const bcw = await runBiddingCloseWrite(env, { date: (opts && opts.date) || '' });
       result.biddingCloseWritten = bcw.written;
-      if (Array.isArray(result.logs)) result.logs.push.apply(result.logs, (bcw.logs || []).map(l => '[bidding-close] ' + l));
-      console.log('[auto-fetch] close 竞价看板收盘列云端落库: ok=' + bcw.ok +
+      (bcw.logs || []).forEach(l => result.logs.push('[bidding-close] ' + l));
+      console.log('[auto-fetch] closepost 竞价看板收盘列云端落库: ok=' + bcw.ok +
         ' written=' + bcw.written + ' skipped=' + !!bcw.skipped + ' 日志=' + JSON.stringify(bcw.logs || []));
     } catch (e) {
-      // 失败必须可见（§10），但绝不拖垮已经成功的 runClose
-      const msg = '[bidding-close] ❌ 云端落库异常（不影响收盘主流程）: ' + (e && e.message);
-      if (Array.isArray(result.logs)) result.logs.push(msg);
+      const msg = '[bidding-close] ❌ 云端落库异常（不影响本轮其它任务）: ' + (e && e.message);
+      result.logs.push(msg);
       console.error('[auto-fetch] ' + msg);
     }
-    // [JIWANG-SHOUGU-CLOUD 2026-11-08] 昨收盘结果（跌:涨）云端落库 + 10 日窗口回补历史缺口。
-    //   放在最后：与上面的竞价看板收盘列互不依赖，任一失败都不连坐。
+    // ② 记忘「昨收盘结果（跌:涨）」+ 10 日窗口回补历史缺口
     try {
       const jw = await runJiwangCloseWrite(env);
       result.jiwangShouguWritten = jw.written;
-      if (Array.isArray(result.logs)) result.logs.push.apply(result.logs, (jw.logs || []).map(l => '[jiwang-shougu] ' + l));
-      console.log('[auto-fetch] close 昨收盘结果云端落库: ok=' + jw.ok + ' written=' + jw.written +
+      (jw.logs || []).forEach(l => result.logs.push('[jiwang-shougu] ' + l));
+      console.log('[auto-fetch] closepost 昨收盘结果云端落库: ok=' + jw.ok + ' written=' + jw.written +
         ' 日志=' + JSON.stringify(jw.logs || []));
     } catch (e) {
-      const msg = '[jiwang-shougu] ❌ 云端落库异常（不影响收盘主流程）: ' + (e && e.message);
-      if (Array.isArray(result.logs)) result.logs.push(msg);
+      const msg = '[jiwang-shougu] ❌ 云端落库异常（不影响本轮其它任务）: ' + (e && e.message);
+      result.logs.push(msg);
       console.error('[auto-fetch] ' + msg);
     }
-    // ★★ [LD-CLOUD 2026-11-13 用户口径] 第二十五条「总龙分歧」第二阶段：收盘腿齐全后重算一次。
-    //
-    //   为什么必须有两趟（而不是只在 9:27 跑）：
-    //     用户给第二十五条定的三种分歧形态里，D2 =「竞价高开、收盘是负数绿的」**只能收盘后判**。
-    //     9:27 那一趟 leg_phase='intraday'，今天还没有收盘腿 ⇒ 今天这种日子判不出来；
-    //     16:00 这一趟（runClose + runDailyLegsHeal 之后 stock_daily_pct 已有今天那根腿）再算一次，
-    //     leg_phase='close' 覆盖同一行 —— 这是【信息更全】的覆盖，不是改口径。
-    //   ⚠️ 必须放在 runDailyLegsHeal 之后（上面那个 try 块）⇒ 收盘涨幅真值已在库里。
-    //   ⛔ 失败不连坐：只记日志 + result 字段。
+    // ③ 第二十五条「总龙分歧」收盘腿重算（必须在 16:00 dailyLegsHeal 之后）
     try {
       const ldLogs = [];
       const ldClose = await runLeaderDivergeDays(env, {
@@ -383,13 +422,13 @@ async function dispatch(point, env, logs, opts) {
       });
       result.leaderDivergeClose = ldClose;
       result.leaderDivergeCloseWritten = ldClose.written || 0;
-      if (Array.isArray(result.logs)) result.logs.push.apply(result.logs, ldLogs.map(l => l));
-      console.log('[auto-fetch] [LD-CLOUD] 16:00 总龙分歧云端预计算（收盘腿）: ok=' + ldClose.ok +
+      ldLogs.forEach(l => result.logs.push(l));
+      console.log('[auto-fetch] [LD-CLOUD] closepost 总龙分歧云端预计算（收盘腿）: ok=' + ldClose.ok +
         ' written=' + ldClose.written + ' phase=' + ldClose.phase + ' error=' + (ldClose.error || '') +
         ' 日志=' + JSON.stringify(ldLogs));
     } catch (e) {
-      const msg = '[LD-CLOUD] ❌ 16:00 总龙分歧预计算异常（不影响收盘主流程）: ' + (e && e.message);
-      if (Array.isArray(result.logs)) result.logs.push(msg);
+      const msg = '[LD-CLOUD] ❌ closepost 总龙分歧预计算异常（不影响本轮其它任务）: ' + (e && e.message);
+      result.logs.push(msg);
       console.error('[auto-fetch] ' + msg);
     }
     await persistRunResult(env, point, result);
@@ -714,8 +753,8 @@ export default {
           return jsonResponse({ ok: false, error: '当前北京时间不在抓取时段（9:25~9:40=morning，15:00~16:30=close）' });
         }
       }
-      if (!['morning', 'close', 'extras', 'snapshot', 'ladder', 'ladder26', 'range20', 'divergedays', 'jiwang'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|extras|snapshot|ladder|ladder26|range20|divergedays|jiwang|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；extras 可附 &today=1 含当天；snapshot / ladder / ladder26 / range20 / divergedays 可附 &date=YYYY-MM-DD；divergedays 另可附 &days=N（补最近 N 个展示日，上限 20）与 &phase=close|intraday；jiwang 立即回补昨收盘结果）' });
+      if (!['morning', 'close', 'closepost', 'extras', 'snapshot', 'ladder', 'ladder26', 'range20', 'divergedays', 'jiwang'].includes(point)) {
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|closepost|extras|snapshot|ladder|ladder26|range20|divergedays|jiwang|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；closepost 立即补写当天收盘列 / 记忘 / 总龙分歧收盘腿；extras 可附 &today=1 含当天；snapshot / ladder / ladder26 / range20 / divergedays 可附 &date=YYYY-MM-DD；divergedays 另可附 &days=N（补最近 N 个展示日，上限 20）与 &phase=close|intraday；jiwang 立即回补昨收盘结果）' });
       }
       // [JIWANG-SHOUGU-CLOUD 2026-11-08] 回补不受「当前时间必须在 9:25~16:30」限制，
       //   否则周末/夜间出事故时无法立即修复历史缺口。

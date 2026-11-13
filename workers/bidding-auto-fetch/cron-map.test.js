@@ -70,9 +70,41 @@ describe('[CLOUD-0927-HEAL] cron ↔ point 映射必须双向一致', () => {
     });
   });
 
-  it('免费账户 5 条上限：当前 4 条，⛔ 不静默超配', () => {
+  it('免费账户 5 条上限：[CLOSE-POST] 起用满 5 条，⛔ 不静默超配', () => {
     expect(crons().length).toBeLessThanOrEqual(5);
-    expect(crons().length).toBe(4);
+    expect(crons().length).toBe(5);
+  });
+
+  // ★★ [CLOSE-POST 2026-11-13] 收盘列全空事故（生产日志实证）：
+  //   Cloudflare 免费版单次 invocation 只有 50 次 subrequest；16:00 主轮跑完
+  //   runClose + snapshotPatch + dailyLegsHeal 已接近上限，再挂「收盘列 / 记忘 / LD」必爆
+  //   `Too many subrequests` ⇒ 收盘列写不进 close、连运行日志都发不出去。
+  //   ⇒ 拆成 16:00 close + 16:03 closepost 两次独立 invocation。
+  it('[CLOSE-POST] 16:03 独立 cron 真的挂上，且映射为 closepost', () => {
+    expect(crons()).toContain('3 8 * * 2-6');
+    expect(mapEntries().some(e => e.key === '3 8' && e.point === 'closepost')).toBe(true);
+  });
+
+  it('[CLOSE-POST] 三个补写任务只在 closepost 分支，⛔ 不许再塞回 16:00 close 轮', () => {
+    const closeBranch = /if \(point === 'close'\) \{([\s\S]*?)\n  \}\n  if \(point === 'closepost'\)/.exec(INDEX);
+    expect(closeBranch).not.toBeNull();
+    const closeBody = closeBranch[1];
+    ['runBiddingCloseWrite', 'runJiwangCloseWrite', 'runLeaderDivergeDays'].forEach(function(fn) {
+      expect(closeBody).not.toContain('await ' + fn);
+    });
+    const postBranch = /if \(point === 'closepost'\) \{([\s\S]*?)\n  \}\n  if \(point === 'snapshot'\)/.exec(INDEX);
+    expect(postBranch).not.toBeNull();
+    ['runBiddingCloseWrite', 'runJiwangCloseWrite', 'runLeaderDivergeDays', 'persistRunResult']
+      .forEach(function(fn) { expect(postBranch[1]).toContain(fn); });
+    // 手动回补白名单也要放行，否则出事故时无法在 Actions 里立即补
+    expect(INDEX).toContain("'close', 'closepost', 'extras'");
+  });
+
+  it('[CLOSE-POST] 线上复核 REQUIRED 与运行日志验收字段都带上了', () => {
+    const verify = fs.readFileSync(path.join(HERE, '../verify-deploy.mjs'), 'utf8');
+    expect(verify).toContain("'closepost'");
+    expect(INDEX).toContain('biddingCloseWritten: r.biddingCloseWritten');
+    expect(INDEX).toContain('leaderDivergeCloseWritten: r.leaderDivergeCloseWritten');
   });
 
   it('9:27 这一趟必须含三段云端动作且落 bidding_fetch_log', () => {

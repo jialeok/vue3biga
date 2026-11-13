@@ -194,11 +194,11 @@ describe('[ABNORMAL-ALL 接线静态锁] 漏一处 ⇒ 11-12 仍显示彩色「�
     expect(css).toContain('grayscale(1)');
   });
 
-  it('版本：规则指纹 v9 + SW v44（[CAP-97] 阈值改了，漏一个手机端就吃旧 JS）', () => {
+  it('版本：规则指纹 v10 + SW v45（[FULL-MARKET] 改了选股结论，漏一个手机端就吃旧 JS）', () => {
     const r = readFileSync('src/logic/topicvolratio/plan-snapshot-rules.js', 'utf8');
-    expect(r).toContain('TVRB_RULES_VERSION = 9');
+    expect(r).toContain('TVRB_RULES_VERSION = 10');
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v44'");
+    expect(sw).toContain("var CACHE = 'biga-static-v45'");
   });
 
   it('[CAP-97] 11-11 真实 95.711445% 不该触发任何显示层总约束', () => {
@@ -215,5 +215,25 @@ describe('[ABNORMAL-ALL 接线静态锁] 漏一处 ⇒ 11-12 仍显示彩色「�
     expect(out).toBe(base);                       // §11 零副作用
     expect(isAbnormalAllGray(out)).toBe(false);   // 不灰
     expect(out.cashAlert.show).toBe(false);       // 不空仓
+  });
+
+  it('★ [FULL-MARKET] 总龙一 98%（未到 100）⇒ 历史日照样【整片灰 + 空仓 + 一张票都不买】', () => {
+    const fact = resolveAbnormalFact({
+      leaderName: '东方海洋', leaderTopic: '东方',
+      leaderPctToday: 98, leaderPctPrev: 80,
+      leaderPctPrevBasis: 'auction', rows: []
+    });
+    expect(fact.show).toBe(true);
+    expect(fact.kind).toBe(ABNORMAL_KIND_LEADER_NOW);
+    const out = applyAbnormalOverlay(frozenPlan(), fact);
+    expect(isAbnormalAllGray(out)).toBe(true);
+    expect(out.cashAlert.show).toBe(true);
+    expect(out.pickCount).toBe(0);
+    expect(out.buyNames.size).toBe(0);
+    // ⛔ 票不删（用户「不用去掉」），只是标签一律【异动不买】
+    expect(out.newDragon.picks.map(function(p) { return p.name; })).toEqual(['东方海洋', '大东方']);
+    out.newDragon.picks.forEach(function(p) {
+      expect(p.buyActionTag).toBe(ABNORMAL_NO_BUY_TAG);
+    });
   });
 });

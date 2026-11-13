@@ -3,8 +3,16 @@
 // 覆盖四层（缺一层就会漏掉一类回归）：
 //   ① classifyRange10  —— 自定义禁选上限 / 100 两个阈值的边界（含恰好等于）；
 //   ② resolveAbnormalFact —— 三种触发形态（异动次日 / 当日异动 / 票级异动）+ §10 判不出；
-//   ③ _buildBlock —— 自定义上限「跳过顺延」与 100% 红线「保留展示 + 停止选股」两种语义；
-//   ④ _applyAbnormalSweep / _applyAbnormalNoBuyRules —— 空仓标语接管 + 逐行改写 + 下线特殊通道。
+//   ③ _buildBlock —— ★★ [FULL-MARKET] near / abnormal【同一种语义】：踩线票保留展示 + 本块停止选股，
+//      ⛔ 绝不顺延下一只（旧版「自定义上限跳过顺延」已被用户当场否掉）；
+//   ④ _applyAbnormalSweep / _applyAbnormalNoBuyRules —— 全场空仓标语接管 + 逐行改写 + 下线特殊通道。
+//
+// ★★ [FULL-MARKET 2026-11-13 用户当场纠正 · 最高口径]
+//   「是整个题材的……也就是全场整片灰，整个市场也是灰色，没有票可以买，
+//    我都说了总龙一影响范围很大的。这个波及到所有的票。」
+//   ⇒ 97~100（near）与 ≥100（abnormal）**后果完全相同**：全场整片灰 + 空仓 + 一张票都不买。
+//     100% 只是文案上的程度分级，⛔ 不是「要不要空仓」的分界线。
+//   ⇒ 本文件所有 near 用例都必须断言 show=true，⛔ 不许再出现「near 只点名、不空仓」的旧断言。
 //
 // ⚠️ 真实数据锚点（2026-11-11 / 11-12 / 11-13，东方海洋）：
 //     11-11 = 95.711445%（★ [CAP-97] 用户要求「11月11日这样能正常运行」⇒ 必须判 ok）、
@@ -28,7 +36,7 @@ describe('classifyRange10 · ' + TVRB_RANGE10_CAP + ' / ' + TVRB_RANGE10_ABNORMA
   it('[CAP-97] 自定义禁选上限 = 97（用户 2026-11-13 晚间把 95 上调到 97）', () => {
     expect(TVRB_RANGE10_CAP).toBe(97);
     expect(TVRB_RANGE10_ABNORMAL).toBe(100);
-    // ⛔ 97 = 禁选预警线，100 = 全市场空仓线，两条不许合并
+    // ★ [FULL-MARKET] 97 = **全场禁买触发线**；100 只表示程度更重，⛔ 不是空仓分界。
     expect(TVRB_RANGE10_CAP).toBeLessThan(TVRB_RANGE10_ABNORMAL);
   });
 
@@ -55,7 +63,7 @@ describe('classifyRange10 · ' + TVRB_RANGE10_CAP + ' / ' + TVRB_RANGE10_ABNORMA
     expect(classifyRange10(97).pctText).toBe('+97.00%');
   });
 
-  it(TVRB_RANGE10_CAP + ' < pct < ' + TVRB_RANGE10_ABNORMAL + ' ⇒ near（监管异动预警 · 不能选）', () => {
+  it(TVRB_RANGE10_CAP + ' < pct < ' + TVRB_RANGE10_ABNORMAL + ' ⇒ near（已触发【全场监管异动】）', () => {
     expect(classifyRange10(97.01).level).toBe(ABNORMAL_LEVEL_NEAR);
     expect(classifyRange10(98).level).toBe(ABNORMAL_LEVEL_NEAR);
     expect(classifyRange10(99).level).toBe(ABNORMAL_LEVEL_NEAR);
@@ -137,14 +145,42 @@ describe('resolveAbnormalFact · 三种触发形态', () => {
     expect(f.kind).toBe(ABNORMAL_KIND_NEXT_DAY);
   });
 
-  it('都没到 100 ⇒ show=false（但监管异动预警票照实点名，供说明区用）', () => {
+  // ★★ [FULL-MARKET 2026-11-13 用户当场纠正] ＞97 就不是「点个名」了，而是【全场空仓】。
+  it('★ [FULL-MARKET] 入选票 98%（未到 100）⇒ 仍然【全场空仓】，⛔ 不再只是点名', () => {
     const f = resolveAbnormalFact({
       leaderName: 'L', leaderPctToday: 80, leaderPctPrev: 70,
       rows: [{ name: '丙股份', topic: 'T', pct: 98 }]
     });
-    expect(f.show).toBe(false);
-    expect(f.headline).toBe('');
+    expect(f.show).toBe(true);
+    expect(f.kind).toBe(ABNORMAL_KIND_STOCK);
+    expect(f.names).toEqual(['丙股份']);
     expect(f.nearNames).toEqual(['丙股份']);
+    expect(f.headline).toContain('空仓');
+    expect(f.detail).toContain('整片灰');
+    expect(f.detail).toContain('不顺延');
+  });
+
+  it('★ [FULL-MARKET] 总龙一今日 98% ⇒ 当日全场异动（与 ≥100 后果相同）', () => {
+    const f = resolveAbnormalFact({
+      leaderName: '东方海洋', leaderPctToday: 98, leaderPctPrev: 70, rows: []
+    });
+    expect(f.show).toBe(true);
+    expect(f.kind).toBe(ABNORMAL_KIND_LEADER_NOW);
+  });
+
+  it('★ [FULL-MARKET] 总龙一昨日 98% ⇒ 异动次日全场空仓', () => {
+    const f = resolveAbnormalFact({
+      leaderName: '东方海洋', leaderPctToday: 40, leaderPctPrev: 98,
+      leaderPctPrevBasis: 'auction', rows: []
+    });
+    expect(f.show).toBe(true);
+    expect(f.kind).toBe(ABNORMAL_KIND_NEXT_DAY);
+  });
+
+  it('★ [FULL-MARKET] 恰好 97% 与 11-11 的 95.71% 都不触发（阈值边界不动）', () => {
+    expect(resolveAbnormalFact({ leaderName: 'L', leaderPctToday: 97, leaderPctPrev: 70, rows: [] }).show).toBe(false);
+    expect(resolveAbnormalFact({ leaderName: 'L', leaderPctToday: 95.71144503546094, leaderPctPrev: 70, rows: [] }).show).toBe(false);
+    expect(isOverRange10Cap(97.01)).toBe(true);   // §15 唯一全场禁买判据
   });
 
   it('★ [CAP-97] 11-11 真实形态：今日 95.711445 / 昨日更低 ⇒ 不空仓、不灰、不点名', () => {
@@ -230,15 +266,17 @@ describe('_buildBlock · ' + TVRB_RANGE10_CAP + '% 禁选线与 100% 红线', ()
     expect(blk.notes.join('')).not.toContain('监管异动');
   });
 
-  it('龙一 98%（监管异动预警、未到红线）⇒ 不选入、顺延龙二', () => {
+  it('★ [FULL-MARKET] 龙一 98%（未到红线）⇒ 保留展示 + 停止选股，⛔ 不顺延龙二', () => {
     const blk = _buildBlock(
       mkBlock([['甲股份', '600001', 98], ['乙股份', '600002', 80]]),
       mkDragonMap(['甲股份', '乙股份']), TIER_1
     );
-    expect(blk.picks.map(function(p) { return p.name; })).toEqual(['乙股份']);
-    expect(blk.abnormalPick).toBeNull();
-    expect(blk.skippedAbnormalNames).toEqual(['龙一甲股份']);
-    expect(blk.notes.join('')).toContain('超过自定义上限');
+    expect(blk.picks.map(function(p) { return p.name; })).toEqual(['甲股份']);
+    expect(blk.abnormalPick).not.toBeNull();
+    expect(blk.abnormalPick.name).toBe('甲股份');
+    expect(blk.skippedAbnormalNames).toEqual([]);   // ⛔ 票级顺延已撤销，恒空
+    expect(blk.notes.join('')).toContain('全场监管异动');
+    expect(blk.notes.join('')).toContain('不顺延');
   });
 
   it('龙一 101%（异动）⇒ 保留展示 + 停止选股（⛔ 不顺延龙二）', () => {
@@ -364,6 +402,24 @@ describe('_applyAbnormalSweep · 收口', () => {
     // ★ 票不删（用户「不用去掉」）
     expect(out.blocks.length).toBe(2);
     expect(out.notes.join('')).toContain('监管异动');
+  });
+
+  it('★ [FULL-MARKET] 入选票 98%（near、未到 100）⇒ 收口同样【全量】生效', () => {
+    const out = mkOut();
+    out.blocks[1].picks[0].pct = 98;          // 只把踩线票从 101 调到 98，其余一行不动
+    const fact = _applyAbnormalSweep(out, {
+      leaderName: '东方海洋', leaderPctToday: 60, leaderPctPrev: 60
+    });
+    expect(fact.show).toBe(true);
+    expect(fact.kind).toBe(ABNORMAL_KIND_STOCK);
+    expect(out.cashAlert.show).toBe(true);
+    expect(out.buyNames.size).toBe(0);
+    expect(out.newDragon).toBeNull();
+    expect(out.range10Backup).toBeNull();
+    out.blocks.forEach(function(b) {
+      b.picks.forEach(function(p) { expect(p.buyActionTag).toBe(ABNORMAL_NO_BUY_TAG); });
+    });
+    expect(out.notes.join('')).toContain('整片灰');
   });
 
   it('无异动 ⇒ 完全不介入（cashAlert / 通道 / 标签一律不动，§11）', () => {
