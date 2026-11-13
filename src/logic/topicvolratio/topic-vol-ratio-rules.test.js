@@ -40,6 +40,7 @@
 //   手写字面量会让这个测试变成「挡住正确改名」的绊脚石。
 
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   TVRB_MIN_COUNT,
   TVRB_MID_MAX,
@@ -82,6 +83,9 @@ import {
   NEW_DRAGON_TONE,
   NEW_DRAGON_TOP_N,
   NEW_DRAGON_LOOKBACK_DAYS,
+  NEW_DRAGON_CERTIFY_TOP_N,
+  // ★★ [NEW-DRAGON-FAMILY 2026-11-12] 新题材（字号/字辈）门槛
+  NEW_DRAGON_FAMILY_MIN_COUNT,
   detectSwitchDay,
   pickNewDragon,
   // ★★ [EBB-20D 2026-10-22] 退潮事件计数窗口（用户「时间太短没有检查到10月13日那天」）
@@ -2685,6 +2689,242 @@ describe('tvrb · [SWITCH] pickNewDragon（首次上榜前五 + 与老龙一不�
   });
 });
 
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// ★★ 第二十八条【收紧】同题材择优 = 认证龙（2026-11-12 用户口径）
+//
+// 用户原话（逐条对应下面的用例）：
+//   「寻找新龙的方法，这个没错，但是还要添加下前提：前五没有同题材的票才可以，
+//     也就是同题材的票如果排在它前面，那么买点侧这个就会被同题材的票取代。」
+//   「像今天 11 月 12 日，买点侧判断的是光洋股份进入的理由也是第 28 条规则，但是同题材的
+//     襄阳轴承竞价口径排名第三，所以应该选襄阳轴承，而不是选光洋股份。」
+//   「同题材有出现在前五两只及以上的票，只选竞价口径靠前的那只。
+//     （我说的同题材和主线题材不同的题材，这个要注意，不要搞混了）」
+//   「光洋股份只做为判断条件……当然如果没有同题材进去前五，那只有选它光洋股份作为新龙。」
+//   「襄阳轴承是叫认证龙。因为出现好几次在 20 日涨幅前五，靠同题材的光洋股份去认证它。」
+// ══════════════════════════════════════════════════════════════════════════════════════════
+describe('tvrb · [NEW-DRAGON-CERTIFY] 同题材择优：前五里有同题材更靠前的 ⇒ 买认证龙', function() {
+  /** 11-12 真实结构：光洋股份（工业4.0，第 5，首次进前五）/ 襄阳轴承（工业4.0，第 3，进过前五） */
+  function top5Real() {
+    return [
+      { name: '老龙一', code: '600001', topic: 'AI应用', pct: 150.0, rank20: 1 },
+      { name: '某算力', code: '600002', topic: '算力', pct: 120.0, rank20: 2 },
+      { name: '襄阳轴承', code: '000678', topic: '工业4.0', pct: 110.0, rank20: 3 },
+      { name: '某消费', code: '600004', topic: '大消费', pct: 100.0, rank20: 4 },
+      { name: '光洋股份', code: '002708', topic: '工业4.0', pct: 90.0, rank20: 5 }
+    ];
+  }
+  function everReal() {
+    // 11-12 真实结构：襄阳轴承「已经二次进入了」⇒ 历史上过前五；光洋股份【首次】进前五。
+    // 其余三只（老龙一 / 某算力 / 某消费）也都在历史上过榜 ⇒ 全部按「不是首次上榜」跳过，
+    // 这样唯一走到「新龙候选」的就是光洋股份，能干净地隔离出「同题材择优」这一步。
+    return new Set(['老龙一', '某算力', '襄阳轴承', '某消费']);
+  }
+  const INFO = { oldTopic: 'AI应用', oldLeaderName: '老龙一', windowDays: 20 };
+
+  it('★ 11-12 实测：同题材（工业4.0）里襄阳轴承第 3 更靠前 ⇒ 选它，⛔ 不选光洋股份', function() {
+    const r = pickNewDragon(top5Real(), everReal(), INFO);
+    expect(r.pick).not.toBeNull();
+    expect(r.pick.name).toBe('襄阳轴承');
+    expect(r.pickKind).toBe('certify');
+    expect(r.certifier.name).toBe('光洋股份');       // 认证依据 = 首次进前五的那只
+    expect(r.certifier.topic).toBe('工业4.0');
+    expect(r.certifier.rank20).toBe(5);
+    expect(r.certifier.everBefore).toBe(true);       // 认证龙自己进过前五 ⇒ 「认证龙」而非「新龙」
+  });
+
+  it('光洋股份只作判断条件：去留表里标「未选中」且说明写清被认证龙取代', function() {
+    const r = pickNewDragon(top5Real(), everReal(), INFO);
+    const byName = {};
+    r.trail.forEach(function(t) { byName[t.name] = t; });
+    expect(byName['光洋股份'].picked).toBe(false);
+    expect(byName['光洋股份'].reason).toContain('认证');
+    expect(byName['襄阳轴承'].picked).toBe(true);
+    expect(byName['襄阳轴承'].reason).toContain('认证龙');
+    expect(byName['襄阳轴承'].reason).toContain('光洋股份');
+  });
+
+  it('★ 无同题材兄弟 ⇒ 仍然买首次进前五的那只自己（10-22 冰山冷热那种）', function() {
+    const top5 = top5Real().filter(function(c) { return c.name !== '襄阳轴承'; });
+    const r = pickNewDragon(top5, everReal(), INFO);
+    expect(r.pick.name).toBe('光洋股份');
+    expect(r.pickKind).toBe('new');
+    expect(r.certifier).toBeNull();
+  });
+
+  it('同题材兄弟【竞价一字涨停】买不进 ⇒ 退回首次进前五的那只（⛔ 不破例）', function() {
+    const top5 = top5Real().map(function(c) {
+      return c.name === '襄阳轴承' ? Object.assign({}, c, { isYizi: true }) : c;
+    });
+    const r = pickNewDragon(top5, everReal(), INFO);
+    expect(r.pick.name).toBe('光洋股份');
+    expect(r.pickKind).toBe('new');
+  });
+
+  it('同题材兄弟【停牌】/【非主板】同理买不进 ⇒ 退回', function() {
+    const susp = top5Real().map(function(c) {
+      return c.name === '襄阳轴承' ? Object.assign({}, c, { suspended: true }) : c;
+    });
+    expect(pickNewDragon(susp, everReal(), INFO).pick.name).toBe('光洋股份');
+    const gem = top5Real().map(function(c) {
+      return c.name === '襄阳轴承' ? Object.assign({}, c, { mainBoard: false }) : c;
+    });
+    expect(pickNewDragon(gem, everReal(), INFO).pick.name).toBe('光洋股份');
+  });
+
+  it('同题材兄弟只到【第 6 名】⇒ 不算（用户口径只看前五）', function() {
+    const top5 = top5Real().map(function(c) {
+      return c.name === '襄阳轴承' ? Object.assign({}, c, { rank20: 6 }) : c;
+    });
+    const r = pickNewDragon(top5, everReal(), INFO);
+    expect(r.pick.name).toBe('光洋股份');
+    expect(r.pickKind).toBe('new');
+  });
+
+  it('★ 同【大类】但不同【细分题材】⇒ 不算同题材（用户：同题材 ≠ 主线题材，别搞混）', function() {
+    // 两只都被归到「高端制造」大类，但细分一个是工业4.0、一个是工业母机
+    const coreRes = function(raw) { return (raw === '工业母机') ? '高端制造' : raw; };
+    const top5 = top5Real().map(function(c) {
+      return c.name === '襄阳轴承' ? Object.assign({}, c, { topic: '工业母机' }) : c;
+    });
+    const r = pickNewDragon(top5, everReal(), Object.assign({}, INFO, { coreRes: coreRes }));
+    expect(r.pick.name).toBe('光洋股份');            // ⛔ 不因大类相同就被取代
+    expect(r.pickKind).toBe('new');
+  });
+
+  it('★ 老龙一永远不参与同题材择优（它是被交接的一方）', function() {
+    const top5 = top5Real().map(function(c) {
+      return c.name === '老龙一' ? Object.assign({}, c, { topic: '工业4.0' }) : c;
+    });
+    const r = pickNewDragon(top5, everReal(), INFO);
+    // 老龙一被跳过（⛔ 即使它今天挂了工业4.0 也不参与择优）；光洋首次进前五（工业4.0）；
+    // 襄阳第 3 同题材更靠前 ⇒ 认证龙
+    expect(r.pick.name).toBe('襄阳轴承');
+    expect(r.pickKind).toBe('certify');
+  });
+
+  it('判不出新龙（pick=null）⇒ pickKind 为空串、certifier null（⛔ 不硬造认证龙）', function() {
+    const r = pickNewDragon([], new Set(), INFO);
+    expect(r.pick).toBeNull();
+    expect(r.pickKind).toBe('');
+    expect(r.certifier).toBeNull();
+  });
+
+  it('确定性：同一份输入跑两次结果完全一致（说明文案可复核）', function() {
+    const a = pickNewDragon(top5Real(), everReal(), INFO);
+    const b = pickNewDragon(top5Real(), everReal(), INFO);
+    expect(a.pick.name).toBe(b.pick.name);
+    expect(JSON.stringify(a.trail)).toBe(JSON.stringify(b.trail));
+  });
+});
+
+describe('tvrb · [NEW-DRAGON-CERTIFY] 常量与文案落点（静态锁）', function() {
+  it('「同题材择优」只看前五（⛔ 不是候选池的前八）', function() {
+    expect(NEW_DRAGON_CERTIFY_TOP_N).toBe(5);
+    expect(NEW_DRAGON_TOP_N).toBe(8);      // 两者是不同用途，⛔ 不许合并
+  });
+
+  it('买点块标题 / 动作标签 / 说明区都写清「认证龙」', function() {
+    const blocks = readFileSync('src/logic/topicvolratio/tvrb-blocks.js', 'utf8');
+    // ★ [NEW-DRAGON-FAMILY 2026-11-12] 标题改成三态：新题材 / 认证龙 / 新龙
+    expect(blocks).toContain("(fam ? '新题材 · ' : (isCert ? '认证龙 · ' : '新龙 · '))");
+    expect(blocks).toContain("'【第二十八条 · ' + (fam ? '新题材' : (isCert ? '新龙 · 认证龙' : '新龙'))");
+    expect(blocks).toContain('isCertifyDragon');
+    const plan = readFileSync('src/logic/topicvolratio/tvrb-plan.js', 'utf8');
+    expect(plan).toContain('ndResult.certifier');
+    // ★ [NEW-DRAGON-FAMILY] 新题材路径（字号 / 字辈）必须接进主计划
+    expect(plan).toContain('pickFamilyNewDragon');
+    expect(plan).toContain('topicPool10');
+    const rules = readFileSync('src/logic/topicvolratio/tvrb-rules-lines.js', 'utf8');
+    expect(rules).toContain('同题材择优 · 前五');
+    expect(rules).toContain('认证龙');
+  });
+
+  it('★ [NEW-DRAGON-FAMILY] 新题材 = 字号/字辈题材（≥2 只 + 含新面孔）', function() {
+    expect(NEW_DRAGON_FAMILY_MIN_COUNT).toBe(2);
+    const fam = readFileSync('src/logic/topicvolratio/new-dragon-family.js', 'utf8');
+    // 双重属性 / 老龙换题材是这条规则的核心，⛔ 不许被后人「优化」掉
+    expect(fam).toContain('双重属性');
+    expect(fam).toContain('老龙换题材');
+    expect(fam).toContain('freshCount');
+    // ⛔ 不能因为「它就是老龙一」就排除（上一版的 `if (ln && name === ln) continue` 那类一棒子打死）
+    expect(fam).not.toContain('oldLeaderName) continue');
+  });
+
+  it('★ [NEW-DRAGON-FAMILY] pickNewDragon 接上 topicPool10：11-12 真值 ⇒ 东方海洋作认证、买大东方', function() {
+    // 11-12 当日 9:25 竞价口径前十（真值）
+    const ever = new Set(['福莱新材', '东方海洋', '襄阳轴承', '光洋股份', '阳光照明', '文投控股', '浙文影业', '冰山冷热']);
+    const pool10 = [
+      { name: '福莱新材', rank20: 1, pct: 150.27, topic: '灵巧手,成人用品' },
+      { name: '东方海洋', rank20: 2, pct: 146.92, topic: '水产品,农业,东方,羊字辈', isYizi: true },
+      { name: '襄阳轴承', rank20: 3, pct: 127.23, topic: '机器人概念,汽车零部件,羊字辈' },
+      { name: '光洋股份', rank20: 4, pct: 93.52, topic: '机器人概念,低空经济,羊字辈' },
+      { name: '阳光照明', rank20: 5, pct: 92.78, topic: '外贸,氢能源,羊字辈' },
+      { name: '文投控股', rank20: 6, pct: 89.28, topic: 'AI视频,AI应用' },
+      { name: '大东方', rank20: 7, pct: 72.75, topic: '零售,食品饮料,东方' },
+      { name: '日出东方', rank20: 8, pct: 65.35, topic: '家电,热泵,东方' },
+      { name: '浙文影业', rank20: 9, pct: 65.30, topic: 'AI视频,AI应用' },
+      { name: '冰山冷热', rank20: 10, pct: 63.48, topic: '冰雪产业,算力' }
+    ].map(function(r) { return Object.assign({ code: '6000' + r.rank20, mainBoard: true, suspended: false }, r); });
+    const r = pickNewDragon(pool10.slice(0, 8), ever, {
+      oldTopic: '农业',
+      oldLeaderName: '东方海洋',
+      windowDays: 20,
+      topicPool10: pool10
+    });
+    expect(r.pickKind).toBe('family');
+    expect(r.family.topic).toBe('东方');
+    expect(r.family.count).toBe(3);
+    expect(r.certifier.name).toBe('东方海洋');
+    // ★ [NEW-DRAGON-FAMILY-OLD 2026-11-12] 竞价一字那只【也要进买点侧】⇒ role 是 wait-buy 不是 certify-only
+    expect(r.certifier.role).toBe('wait-buy');
+    expect(r.pick.name).toBe('大东方');
+    // 不传 topicPool10（老调用方 / 单测）⇒ 走旧路径，行为与上一版一致（§11）
+    const old = pickNewDragon(pool10.slice(0, 8), ever, { oldTopic: '农业', oldLeaderName: '东方海洋', windowDays: 20 });
+    expect(old.pickKind === 'family').toBe(false);
+  });
+
+  it('🔴 [NEW-DRAGON-FAMILY-OLD] 真实 ever（襄阳轴承不在近20日前五）⇒ 羊字辈(4只·新面孔1) 不许压过 东方(3只·新面孔2)', function() {
+    // 真库 of 11-12「近 20 日上过前五」= 这 6 只（襄阳轴承不在里面 ⇒ 羊字辈组也会有一张新面孔）
+    //   ⇒ 上一版平局按【成员数】排 ⇒ 羊字辈 4 只赢 ⇒ 选出 光洋股份 / 阳光照明（用户报的那个错）
+    const ever = new Set(['东方海洋', '福莱新材', '冰山冷热', '阳光照明', '浙文影业', '光洋股份']);
+    const pool10 = [
+      { name: '福莱新材', rank20: 1, pct: 150.27, topic: '灵巧手,成人用品' },
+      { name: '东方海洋', rank20: 2, pct: 146.92, topic: '水产品,农业,东方,羊字辈', isYizi: true },
+      { name: '襄阳轴承', rank20: 3, pct: 127.23, topic: '机器人概念,汽车零部件,羊字辈' },
+      { name: '光洋股份', rank20: 4, pct: 93.52, topic: '机器人概念,低空经济,羊字辈' },
+      { name: '阳光照明', rank20: 5, pct: 92.78, topic: '外贸,氢能源,羊字辈' },
+      { name: '文投控股', rank20: 6, pct: 89.28, topic: 'AI视频,AI应用' },
+      { name: '大东方', rank20: 7, pct: 72.75, topic: '零售,食品饮料,东方' },
+      { name: '日出东方', rank20: 8, pct: 65.35, topic: '家电,热泵,东方' },
+      { name: '浙文影业', rank20: 9, pct: 65.30, topic: 'AI视频,AI应用' },
+      { name: '冰山冷热', rank20: 10, pct: 63.48, topic: '冰雪产业,算力' }
+    ].map(function(r) { return Object.assign({ code: '6000' + r.rank20, mainBoard: true, suspended: false }, r); });
+    // 不传 oldTopics 也必须选对（排序规则本身就把字辈线压下去了）
+    const r = pickNewDragon(pool10.slice(0, 8), ever, {
+      oldTopic: '农业', oldLeaderName: '东方海洋', windowDays: 20, topicPool10: pool10
+    });
+    expect(r.pickKind).toBe('family');
+    expect(r.family.topic).toBe('东方');          // ⛔ 不是羊字辈
+    expect(r.pick.name).toBe('大东方');
+    expect(r.certifier.name).toBe('东方海洋');
+    // 传了 oldTopics（退潮中的老题材 = 羊字辈）⇒ 羊字辈组直接不进候选
+    const r2 = pickNewDragon(pool10.slice(0, 8), ever, {
+      oldTopic: '羊字辈', oldLeaderName: '东方海洋', windowDays: 20, topicPool10: pool10,
+      oldTopics: ['羊字辈']
+    });
+    expect(r2.family.topic).toBe('东方');
+    expect(r2.pick.name).toBe('大东方');
+  });
+
+  it('⛔ 同题材比较不许走大类归一（那是退潮「主线题材」的口径，别搞混）', function() {
+    const plan = readFileSync('src/logic/topicvolratio/tvrb-plan.js', 'utf8');
+    // 兄弟票的题材比较必须是「无 coreRes」的双参调用
+    expect(plan).toContain('if (!_sameTopicLoose(c.topic, xTopic)) continue;');
+    // 取题材时不做大类归一
+    expect(plan).toContain('const xTopic = _normTopic(pick.topic);');
+  });
+});
+
 describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新龙 + 常规收紧一只', function() {
   /** 高量比题材（平均量比 ≥ 25 ⇒ 不触发空仓提醒，隔离本规则） */
   function hiBlock(topic, rank, names) {
@@ -2970,11 +3210,12 @@ describe('tvrb · [CORE-CAT] 题材按【核心词大类】认亲（文化传媒
   ];
   const coreRes = makeCoreTopicResolver(CORES);
 
-  it('⛔ 不传大类映射（旧行为）⇒ 文化传媒 认不上 AI应用 ⇒ 误报【首次退潮】（这就是用户报障的现象）', function() {
-    const r = detectEbbDay(EBB_CTX, null, HIST);
-    expect(r).not.toBeNull();
-    expect(r.phase).toBe('first');
-    expect(r.phaseTitle).toBe('主线文化传媒首次退潮');
+  it('★ [EBB-PHASE-KEY 2026-11-12] 不传大类映射也【不再】误报首次退潮：同一只总龙 ⇒ 同一周期', function() {
+    // 上一版按【题材串】认亲 ⇒ 文化传媒 认不上 AI应用 ⇒ 计数被重置成 0 ⇒ 误报「首次退潮」。
+    // [EBB-PHASE-KEY] 起改成「同一只总龙 **或** 同题材线」⇒ 这条就算不传 coreRes 也数得到 2 次事件
+    //   ⇒ 与传了 coreRes 的结论一致（用户 11-12 口径：「二次分歧数的是同一只总龙的坏状态次数」，
+    //     题材改名不该把计数清零 —— 11-05 落库「农业」、11-10 算出「羊字辈」正是同一件事）。
+    expect(detectEbbDay(EBB_CTX, null, HIST)).toBeNull();
   });
 
   it('★ 传大类映射 ⇒ 文化传媒 ⇒ AI应用 ⇒ 20 日内已有 2 次事件 ⇒ 不再判退潮', function() {
@@ -3495,6 +3736,8 @@ describe('tvrb · 第二十九条 十日涨幅 · 在列次数候补', function(
 
   it('⛔ 今日【确实要买】的票不再被排除：它若是最强首次在列，候补也选它（叠加）', function() {
     const f = twoTopics();
+    // ⚠️ [ABNORMAL-10D 2026-11-13] 十日涨幅刻意为 80（不是 99）：本用例钉的是「今日确实要买的票也会当选候补
+    //   ⇒ 叠加确认」，99 会先被第三十四条的 95% 上限拦掉，走不到这条通道。
     const pool = [{ name: '强题材一', code: '600100', topic: '强题材', pct: 80 }].concat(POOL);
     const cnt = Object.assign({}, CNT, { 强题材一: 1 });   // 前十第 1 名 + 首次在列
     const plan = buildTopicVolRatioPlan(f.topics, f.dm, {

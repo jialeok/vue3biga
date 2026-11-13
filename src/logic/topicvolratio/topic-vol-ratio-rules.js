@@ -98,7 +98,7 @@ export {
   TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE, DIVERGE_DIP_TAG, DIVERGE_FOLLOW_TAG,
   DIVERGE_NO_BUY_TAG, DIVERGE_BUY_TONE, DIVERGE_NO_BUY_TONE, DIVERGE_RULE_NO,
   TVRB_CASH_ALERT_NONE, SWITCH_RULE_NO, NEW_DRAGON_TAG, NEW_DRAGON_TONE, NEW_DRAGON_TOP_N,
-  NEW_DRAGON_LOOKBACK_DAYS, RANGE10_BACKUP_TONE, RANGE10_BACKUP_TAG, RANGE10_BACKUP_LABEL,
+  NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N, NEW_DRAGON_FAMILY_MIN_COUNT, RANGE10_BACKUP_TONE, RANGE10_BACKUP_TAG, RANGE10_BACKUP_LABEL,
   // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条【监管异动 · 十日涨幅硬上限】的常量
   ABNORMAL_RULE_NO, TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL, ABNORMAL_NO_BUY_TAG,
   ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, ABNORMAL_KIND_STOCK,
@@ -113,6 +113,8 @@ export {
 
 export {
   classifyMainTopic, detectEbbDay, secondEbbTopicOfPrevDay, buildEbbDayRecord,
+  // ★★ [EBB-FAMILY-TOPIC 2026-11-12] 字号/字辈题材判据 + 总龙「真正在炒的那一段」选取
+  isFamilyTopicName, pickLeaderTopicSegment,
 } from './tvrb-ebb.js';
 
 export {
@@ -124,6 +126,11 @@ export {
   // ★★ [ABNORMAL-10D 2026-11-13] 第三十四条的【收口】（判定 + 灰化 + 清特殊通道），导出供单测与排障
   _applyAbnormalSweep,
 } from './tvrb-plan.js';
+
+// ★★ [NEW-DRAGON-FAMILY 2026-11-12] 新题材（字号/字辈）判定 —— 纯函数，独立成模块（§15）
+export {
+  pickFamilyNewDragon, buildFamilyGroups, splitTopicSegs,
+} from './new-dragon-family.js';
 
 export {
   buildTvrbRulesLines,
