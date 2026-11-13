@@ -50,6 +50,9 @@ on:
       - 'src/logic/topicvolratio/tvrb-constants.js'
       - 'src/logic/topicvolratio/range10-backup.js'
       - 'src/logic/decision/auction-share.js'
+      # [NUM-TEXT 2026-11-13] worker 侧数值解析（'+2.30%' 这种 DB 文本）走这份共享实现。
+      #   ⛔ 不列进 paths ⇒ 修了解析口径 Worker 不会重新部署，线上继续 D1/D2 判不出来。
+      - 'src/logic/util/num-text.js'
       - 'workers/wrangler-bidding-auto-fetch.toml'
       - 'workers/verify-deploy.mjs'
       # [FAKE-GREEN 2026-11-06] 本文件自身也纳入触发：改了部署流水线却没重新部署，

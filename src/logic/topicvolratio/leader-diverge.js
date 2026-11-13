@@ -62,16 +62,19 @@ import {
 } from './tvrb-constants.js';
 // §6 单一数据源：占比门槛 / 占比公式只认 auction-share 那一份实现（⛔ 不在这里另写一个 3.5 或 v/y*100）
 import { auctionShareThresholdOf, computeAuctionShare } from '../decision/auction-share.js';
+// §6 单一数据源：DB 文本型数字（'+2.30%'）的解析只认 num-text 那一份实现
+import { numOfText } from '../util/num-text.js';
 
 /** 分歧形态编码（留痕用，UI 不必读） */
 export const DIVERGE_SHAPE_LOW_OPEN = 'low-open';      // D1 竞价低开
 export const DIVERGE_SHAPE_OPEN_HIGH_CLOSE_RED = 'open-high-close-red'; // D2 高开低走收绿
 export const DIVERGE_SHAPE_SHARE = 'share';            // D3 竞价占比塌陷
 
+// ★ [NUM-TEXT 2026-11-13] 数值解析必须走共享实现：库里 `auc_pct_chg` 是 '+2.30%' 这种
+//   带百分号的**字符串**，直接 `Number()` = NaN ⇒ 静默变 null ⇒ D1/D2 两类判据永不触发。
+//   实测现场见 src/logic/util/num-text.js 文件头（线上逐日留痕 aucPct 全 null 那次）。
 function _n(v) {
-  if (v === null || v === undefined || v === '') return null;
-  const n = Number(v);
-  return isFinite(n) ? n : null;
+  return numOfText(v);
 }
 
 /**

@@ -55,6 +55,9 @@
 //   任何引它的纯逻辑模块就都被钉在浏览器上 ⇒ 云端只能另写一份口径（§6 红线）。
 //   ⛔ 公式 / 门槛 / 展示精度仍然只有这一份实现；`auction-share-read.js` 只负责取数。
 
+// [NUM-TEXT 2026-11-13] DB 文本型数字（'+2.30%' / '1,234'）的解析只认这一份实现（§6）
+import { numOfText } from '../util/num-text.js';
+
 /** 龙头（今日龙一 / 昨日龙头）标准占比（%）—— 用户口径「前排龙一龙二标准的占比是 4%」
  *  ⚠️ [DRAGON-TIER 2026-10-06] 适用对象已收窄为【只认龙一】，⛔ 龙二不再享用它。 */
 export const AUCTION_SHARE_FRONT_STD = 4;
@@ -143,12 +146,9 @@ export function auctionShareZoneOf(share) {
  * @returns {number|null}
  */
 function _toNum(v) {
-  if (v === null || v === undefined) return null;
-  if (typeof v === 'number') return isFinite(v) ? v : null;
-  const s = String(v).trim().replace(/,/g, '');
-  if (s === '') return null;
-  const n = Number(s);
-  return isFinite(n) ? n : null;
+  // ★ [NUM-TEXT 2026-11-13] 走共享解析：库里 `volume` / `yest_volume` 可能是文本，
+  //   而 `Number('1,234')` = NaN（不带 % 也一样会静默变 null）。见 util/num-text.js 文件头。
+  return numOfText(v);
 }
 
 /**

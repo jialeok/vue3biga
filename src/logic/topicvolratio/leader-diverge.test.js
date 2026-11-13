@@ -13,6 +13,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   isDivergeShape, buildDivergePhases, classifyLeaderDiverge, divergeTitleOf, divergeNoteOf,
+  buildDivergeDayRow,
   DIVERGE_SHAPE_LOW_OPEN, DIVERGE_SHAPE_OPEN_HIGH_CLOSE_RED, DIVERGE_SHAPE_SHARE
 } from './leader-diverge.js';
 import { DIVERGE_TOTAL_DAYS_MIN, DIVERGE_SECOND_MIN_BOARDS, DIVERGE_WINDOW_DAYS } from './tvrb-constants.js';
@@ -171,5 +172,49 @@ describe('divergeTitleOf / divergeNoteOf —— 提示语（用户「提示应�
     expect(t).toContain('霸榜总龙一 3 天');
     expect(t).toContain('3 个涨停');
     expect(t).toContain('羊字辈');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// [NUM-TEXT 2026-11-13] 线上实证的回归锁：库里 `auc_pct_chg` 是 '+2.30%' 这种**字符串**。
+//   上面所有夹具都是数字 ⇒ 旧实现 `Number('+4.68%') = NaN ⇒ null` 时测试根本不红。
+//   于是线上出现：写入 tvrb_leader_diverge 的逐日留痕 aucPct 全 null，
+//   D1（竞价低开）/ D2（高开低走收绿）两类判据永不触发，只剩 D3 占比塌陷在工作。
+//   ⇒ 这里用【真实形态】再测一遍，谁把 numOfText 换回 Number() 就立刻红。
+// ════════════════════════════════════════════════════════════════════════════
+describe('[NUM-TEXT] DB 真实形态（带 % 的字符串）必须判得出 D1 / D2', function() {
+  it('★ 11-04 竞价 "+4.68%" 收 "-4.09%" ⇒ D2 高开低走收绿', function() {
+    const row = buildDivergeDayRow({
+      date: '2026-11-04', aucPct: '+4.68%', dailyPct: '-4.09', volume: 1493, yestVolume: 100, limitUpPct: 10
+    });
+    expect(row.aucPct).toBe(4.68);
+    expect(row.closePct).toBe(-4.09);
+    expect(isDivergeShape(row)).toBe(DIVERGE_SHAPE_OPEN_HIGH_CLOSE_RED);
+  });
+
+  it('★ 11-11 竞价 "-0.87%" ⇒ D1 竞价低开', function() {
+    const row = buildDivergeDayRow({
+      date: '2026-11-11', aucPct: '-0.87%', dailyPct: '+1.52%', volume: '200', yestVolume: '100', limitUpPct: 10
+    });
+    expect(row.aucPct).toBe(-0.87);
+    expect(isDivergeShape(row)).toBe(DIVERGE_SHAPE_LOW_OPEN);
+  });
+
+  it('成交量的文本千分位也要能算占比（1,234 / 100 ⇒ 1234%）', function() {
+    const row = buildDivergeDayRow({ date: 'd', aucPct: '+1.00%', dailyPct: '1', volume: '1,234', yestVolume: '100' });
+    expect(row.share).toBe(1234);
+  });
+
+  it('§10 解析不出来 ⇒ null（不硬判、不折 0）', function() {
+    const row = buildDivergeDayRow({ date: 'd', aucPct: '—', dailyPct: '', volume: null, yestVolume: null });
+    expect(row.aucPct).toBeNull();
+    expect(row.closePct).toBeNull();
+    expect(row.share).toBeNull();
+    expect(isDivergeShape(row)).toBe('');
+  });
+
+  it('涨停判定同样吃文本收盘涨幅（"+10.05%" ≥ 10 − 容差）', function() {
+    const row = buildDivergeDayRow({ date: 'd', aucPct: '0', dailyPct: '+10.05%', limitUpPct: 10 });
+    expect(row.limitUp).toBe(true);
   });
 });
