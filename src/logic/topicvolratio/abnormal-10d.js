@@ -200,6 +200,16 @@ function _pointOf(name, topic, pctText) {
 }
 
 /**
+ * 只带名字 / 题材的点名（涨幅放到后一句）。
+ * ★ [ABN-SAME-SOURCE] 触发源那句要写成「…【昨日】十日涨幅 100.78% ＞ 97%」，
+ *   如果这里也带一遍涨幅，就会变成「十日涨幅 100.78%…十日涨幅 ＞ 97%」两句重复。
+ */
+function _pointOfName(name, topic) {
+  const t = String(topic || '').trim();
+  return '【' + String(name || '—') + '】' + (t ? '（' + t + '）' : '');
+}
+
+/**
  * 【纯函数】把注入的「事实」判成一块可渲染的异动标语（= cashAlert 的同形状对象）。
  *
  * @param {object} [input]
@@ -322,18 +332,19 @@ export function resolveAbnormalFact(input) {
     : (i.leaderPctPrevBasis === 'close' ? '（昨日收盘口径 —— 昨日竞价那份没读到）' : '');
   let lead = '';
   if (kind === ABNORMAL_KIND_NEXT_DAY) {
-    lead = leaderLabel + _pointOf(leaderName, leaderTopic, prev.pctText) +
-      '【昨日（上一交易日）】十日涨幅 ' + _trig(prev) + ' ⇒ 今天是【异动次日】：' +
+    lead = leaderLabel + _pointOfName(leaderName, leaderTopic) +
+      '【昨日（上一交易日）】十日涨幅 ' + prev.pctText + ' ' + _trig(prev) +
+      ' ⇒ 今天是【异动次日】：' +
       '按第' + ABNORMAL_RULE_NO + '条，今天【空仓】—— 不买任何票（' + ABNORMAL_NO_BUY_TAG + '）。';
   } else if (kind === ABNORMAL_KIND_LEADER_NOW) {
-    lead = leaderLabel + _pointOf(leaderName, leaderTopic, today.pctText) +
-      '【今日】（9:26 竞价口径）十日涨幅 ' + _trig(today) + ' ⇒ 按第 ' +
-      ABNORMAL_RULE_NO + ' 条，今天【空仓】—— 不买任何票（' + ABNORMAL_NO_BUY_TAG + '）。';
+    lead = leaderLabel + _pointOfName(leaderName, leaderTopic) +
+      '【今日】（9:26 竞价口径）十日涨幅 ' + today.pctText + ' ' + _trig(today) +
+      ' ⇒ 按第' + ABNORMAL_RULE_NO + '条，今天【空仓】—— 不买任何票（' + ABNORMAL_NO_BUY_TAG + '）。';
   } else {
     lead = '入选票 ' + hits.map(function(x) {
       return _pointOf(x.name, x.topic, x.pctText);
-    }).join('、') + ' 十日涨幅 ＞ ' + TVRB_RANGE10_CAP + '%（全场监管异动）⇒ 按第 ' +
-      ABNORMAL_RULE_NO + ' 条，今天【空仓】—— 不买任何票（' + ABNORMAL_NO_BUY_TAG + '）。';
+    }).join('、') + ' 十日涨幅 ＞ ' + TVRB_RANGE10_CAP + '%（全场监管异动）⇒ 按第' +
+      ABNORMAL_RULE_NO + '条，今天【空仓】—— 不买任何票（' + ABNORMAL_NO_BUY_TAG + '）。';
   }
 
   const tail = [];
