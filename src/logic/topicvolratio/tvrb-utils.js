@@ -1,4 +1,4 @@
-// tvrb-utils.js — 「题材量比」规则层的【纯工具函数】（无副作用，无外部依赖）
+// tvrb-utils.js — 「题材量比」规则层的【纯工具函数】（无副作用；数值解析统一走 numOfText）
 //
 // 从 topic-vol-ratio-rules.js 拆出。这一层只做「取数 / 归一 / 算词」：
 //   _normTopic（题材串清洗 + 大类归一）、_sameTopicLoose（宽松认亲）、
@@ -6,6 +6,7 @@
 //   _streakWord / _windowTextOf / _todayRankPhrase / _rankLabelOf（文案词）、
 //   以及几个排名表读取小件（_range10RankMapOf / _closeRankOf / _rankTopEntries ...）。
 
+import { numOfText } from '../util/num-text.js';
 import { NEW_DRAGON_LOOKBACK_DAYS } from './tvrb-constants.js';
 
 import { totalDragonLabel } from '../auction/range20-top5-label.js';
@@ -90,10 +91,19 @@ export function _ebbBuyPickNames(ebb) {
   return set;
 }
 
+/**
+ * ★★ [NUM-TEXT 2026-11-13 · 第三十四条加固] 数值解析的【唯一实现】。
+ *
+ * ⛔ 旧写法 `Number(v)` 踩过两次整类事故：`market_metrics.auc_pct_chg` / `change_pct` 存的是
+ *    `'+2.30%'` / `'-0.84%'` 这类【带百分号的文本】，`Number()` 恒 NaN ⇒ 静默折成 null ⇒
+ *    判据「读不到」⇒ 规则从不触发，而单测夹具全用纯数字 ⇒ 全绿假象（见 [NUM-TEXT] 事故记录）。
+ *    第三十四条 `classifyRange10` / `_rangePctOfMap` 都走本函数，一旦上游把十日涨幅也存成
+ *    `'+100.78%'`，95% / 100% 两条红线会一起失效且零报错。
+ * ⇒ 统一委托 `logic/util/num-text.js#numOfText`（§6 一把尺子）：去 % / 千分位 / 空白 /
+ *    全半角 +，解析不出才返回 null（§10 不补 0）。数字与纯数字字符串行为与旧版逐字一致。
+ */
 export function _num(v) {
-  if (v === null || v === undefined || v === '') return null;
-  const n = Number(v);
-  return isFinite(n) ? n : null;
+  return numOfText(v);
 }
 
 /**

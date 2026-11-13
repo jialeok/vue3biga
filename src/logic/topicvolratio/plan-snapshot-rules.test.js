@@ -287,8 +287,29 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
     expect(resolvePlanSnapshotFreshness(broken, Object.assign({}, OPTS, { allowRulesInvalidation: false }))).toBe('stale');
   });
 
-  it('版本常量已 bump 到 6（第二十五条二次分歧改由云端预计算 = v6）', () => {
-    expect(TVRB_RULES_VERSION).toBe(6);
+  it('版本常量已 bump 到 7（第三十四条监管异动改变选股结论 = v7）', () => {
+    expect(TVRB_RULES_VERSION).toBe(7);
+  });
+
+  // ★★ [RULE-BUMP-GUARD 2026-11-13] 用户报障「现在刷新并没有生效」的整类根因锁。
+  //   第三十四条上线时 `TVRB_RULES_VERSION` 忘了 bump ⇒ 11-13 那份 v6 定稿存档 rules_sig
+  //   与当前指纹一致 ⇒ resolvePlanSnapshotFreshness 判 hit ⇒ 直接读旧结论，新规则永不参与重算。
+  //   ⛔ 以后凡改了选股结论（龙位 / 买点通道 / 空仓标语），必须同步 bump 本常量，否则改了等于没改。
+  it('[RULE-BUMP-GUARD] 规则手册已含第三十四条 ⇒ 规则版本不得停留在 v6', () => {
+    const lines = readFileSync('src/logic/topicvolratio/tvrb-rules-lines.js', 'utf8');
+    expect(lines).toContain('第三十四');
+    expect(TVRB_RULES_VERSION).toBeGreaterThanOrEqual(7);
+  });
+
+  it('[SW-BUMP-GUARD] 规则版本变了 ⇒ sw.js 的 CACHE 名必须同步换掉', () => {
+    // 只锁【单向】：规则升级却没换缓存名 ⇒ 手机端仍吃旧 index.html / 旧 JS。
+    // 反过来（只换缓存名、规则没变）是合法的前端修版，⛔ 不能在这里误伤。
+    const sw = readFileSync('public/sw.js', 'utf8');
+    const m = /var CACHE = 'biga-static-v(\d+)'/.exec(sw);
+    expect(m).not.toBeNull();
+    if (TVRB_RULES_VERSION > 6) {
+      expect(Number(m[1])).toBeGreaterThan(41);
+    }
   });
 
   it('composable 两处调用都带上该选项（静态锁：漏一处 ⇒ 历史日会被改写）', () => {

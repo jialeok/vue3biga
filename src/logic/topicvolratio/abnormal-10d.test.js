@@ -354,3 +354,34 @@ describe('_applyAbnormalSweep · 收口', () => {
     expect(fact.names).toContain('候补甲');
   });
 });
+
+// ── ⑤ [NUM-TEXT 2026-11-13] 真实库内文本形态：防止「夹具全是数字」的假绿 ──────────
+//   本项目两次踩过同一类坑：market_metrics 的涨幅列存成 '+2.30%' / '-0.84%' 字符串，
+//   裸 Number() 恒 NaN ⇒ 静默折 null ⇒ 判据「读不到」⇒ 规则从不触发，而纯数字夹具全绿。
+//   第三十四条 95% / 100% 两条红线全部经 tvrb-utils#_num 解析，必须锁住真实形态。
+describe('[NUM-TEXT] 文本型涨幅不得静默判不出（§10 不补 0）', () => {
+  it('带 % / 全角+ / 千分位的文本按同一口径分级', () => {
+    expect(classifyRange10('+100.78%').level).toBe(ABNORMAL_LEVEL_ABNORMAL);
+    expect(classifyRange10('＋100.78%').pct).toBeCloseTo(100.78, 2);
+    expect(classifyRange10('96.20%').level).toBe(ABNORMAL_LEVEL_NEAR);
+    expect(classifyRange10('1,234%').level).toBe(ABNORMAL_LEVEL_ABNORMAL);
+    expect(classifyRange10('-0.84%').level).toBe(ABNORMAL_LEVEL_OK);
+  });
+
+  it('脏值仍返回 unknown（⛔ 不折 0 / 不折「没异动」）', () => {
+    expect(classifyRange10('—').level).toBe(ABNORMAL_LEVEL_UNKNOWN);
+    expect(classifyRange10('  ').level).toBe(ABNORMAL_LEVEL_UNKNOWN);
+    expect(isOverRange10Cap('%')).toBe(false);
+  });
+
+  it('★ 异动次日用文本型昨日涨幅照样触发空仓', () => {
+    const f = resolveAbnormalFact({
+      leaderName: '东方海洋', leaderTopic: '东方',
+      leaderPctToday: '73.14%', leaderPctPrev: '+100.78%',
+      leaderPctPrevBasis: 'auction', rows: []
+    });
+    expect(f.show).toBe(true);
+    expect(f.kind).toBe(ABNORMAL_KIND_NEXT_DAY);
+    expect(f.leaderPctPrevText).toBe('+100.78%');
+  });
+});
