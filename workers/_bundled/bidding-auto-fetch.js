@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-11-13 14:56:44
+// 生成时间: 2026-11-13 15:23:27
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 10409（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 10451（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
@@ -9104,24 +9104,39 @@ function computeBiddingCloseValues(input) {
  * ★ 幂等 / 数据安全（§11）：已有非空 close 一律不覆盖 —— 用户手工修正优先于云端自动值。
  * ★ 不硬编码 '板块ETF(48)' 这种带数字后缀的行名，从 existingRows 里找前缀匹配。
  *
+ * ★★ [OVERWRITE 2026-11-13] 唯一例外：显式 `opts.overwrite === true` 才允许改写已有非空值。
+ *   为什么必须留这个口子：11-13 的 `板块ETF(48)` 收盘被旧逻辑写成 `0`（48 个标的没有一个上涨，
+ *   物理上不可能），而正确值是 `8`。「不覆盖」把它永久冻住了 —— 错值一旦落库就再也修不掉，
+ *   用户看到的永远错的。但默认必须仍然关闭：⛔ cron / 自动轮永远拿不到这个开关，
+ *   只有人拿着 token 手动 `&overwrite=1` 才能触发，且【同值不写】避免无意义 upsert。
+ *
  * @param {Array<{name:string,close?:string|null}>} existingRows 当天 bidding_data 已有行
  * @param {Record<string,string>} values computeBiddingCloseValues 的结果
+ * @param {{overwrite?:boolean}} [opts]
  * @returns {Array<{name:string,close:string,from:string}>}
  */
-function resolveBiddingRowTargets(existingRows, values) {
+function resolveBiddingRowTargets(existingRows, values, opts) {
   const v = values || {};
+  const allowOverwrite = !!(opts && opts.overwrite);
   const out = [];
   (existingRows || []).forEach(function (row) {
     const name = String((row && row.name) || '').trim();
     if (!name) return;
-    const closed = row && row.close !== null && row.close !== undefined && String(row.close).trim() !== '';
-    if (closed) return;
+    const cur = (row && row.close !== null && row.close !== undefined) ? String(row.close).trim() : '';
+    const closed = cur !== '';
     let from = '';
     let value;
     if (v[name] !== undefined) { value = v[name]; from = name; }
     else if (name.indexOf('板块ETF') === 0 && v['板块ETF'] !== undefined) { value = v['板块ETF']; from = '板块ETF'; }
     if (value === undefined || value === null || String(value).trim() === '') return;
-    out.push({ name: name, close: String(value).trim(), from: from });
+    const next = String(value).trim();
+    if (closed) {
+      // 默认绝不覆盖；显式 overwrite 时也只在「值真的不同」才写
+      if (!allowOverwrite || next === cur) return;
+      out.push({ name: name, close: next, from: from, overwritten: cur });
+      return;
+    }
+    out.push({ name: name, close: next, from: from });
   });
   return out;
 }
@@ -9223,8 +9238,8 @@ async function fetchIndexPcts(env, allIndexCodes, logs) {
 }
 
 /** 纯函数：组装最终要 upsert 的行（便于单测锁住幂等 / 只填当天 / 键集一致） */
-function buildBiddingCloseWriteRows(existingRows, values, date, nowIso) {
-  const targets = resolveBiddingRowTargets(existingRows, values);
+function buildBiddingCloseWriteRows(existingRows, values, date, nowIso, opts) {
+  const targets = resolveBiddingRowTargets(existingRows, values, opts);
   const names = {};
   (existingRows || []).forEach(r => { names[String((r && r.name) || '').trim()] = true; });
   // 当天已有别的行，但「最近多板%」这一行不存在（9:25 漏写）⇒ 允许补建该行。
@@ -9234,18 +9249,27 @@ function buildBiddingCloseWriteRows(existingRows, values, date, nowIso) {
       String(values[BCW_LADDER_ROW]).trim() !== '') {
     targets.push({ name: BCW_LADDER_ROW, close: String(values[BCW_LADDER_ROW]).trim(), from: BCW_LADDER_ROW });
   }
-  return targets.map(t => ({
-    date: date,
-    name: t.name,
-    close: t.close,
-    updated_at: nowIso || new Date().toISOString()
-  }));
+  return targets.map(t => {
+    const row = {
+      date: date,
+      name: t.name,
+      close: t.close,
+      updated_at: nowIso || new Date().toISOString()
+    };
+    // ⚠️ 仅用于日志（「覆盖旧值 X」），⛔ 不许进 Supabase 请求体 —— 它不是列名。
+    if (t.overwritten !== undefined) row.overwritten = t.overwritten;
+    return row;
+  });
 }
 
 async function runBiddingCloseWrite(env, opts) {
   const logs = [];
   const today = beijingToday();
   const date = (opts && opts.date) || today;
+  // ★★ [OVERWRITE 2026-11-13] 显式覆盖开关，默认 false。
+  //   只为「人工修历史错值」存在（如 11-13 板块ETF 被旧逻辑写成 0、正确值 8）。
+  //   ⛔ cron 自动轮拿不到它：scheduled 走 dispatch(point, env, [])，opts 是 undefined。
+  const overwrite = !!(opts && opts.overwrite);
 
   // ★ 硬闸：/api/a-share/prices/snapshot 只返回「最近一个交易日」，历史日期绝不写。
   if (date !== today) {
@@ -9343,19 +9367,28 @@ async function runBiddingCloseWrite(env, opts) {
     return { ok: false, date, written: 0, values, logs };
   }
 
-  const rows = buildBiddingCloseWriteRows(existingRows, values, date, new Date().toISOString());
+  if (overwrite) logs.push('⚠️ 已启用 overwrite=1（人工修错值模式）：已有非空 close 也可能被改写');
+  const rows = buildBiddingCloseWriteRows(existingRows, values, date, new Date().toISOString(), { overwrite });
   if (rows.length === 0) {
     logs.push('✅ 收盘列已完整（或用户已手工填写）⇒ 幂等跳过，不覆盖');
     return { ok: true, date, written: 0, values, logs };
   }
-  logs.push('待写 ' + rows.length + ' 行: ' + rows.map(r => r.name + '=' + r.close).join(' / '));
+  logs.push('待写 ' + rows.length + ' 行: ' + rows.map(function (r) {
+    return r.overwritten !== undefined
+      ? r.name + '=' + r.close + '（覆盖旧值 ' + r.overwritten + '）'
+      : r.name + '=' + r.close;
+  }).join(' / '));
 
   try {
     const url = CONFIG.SUPABASE_URL + '/rest/v1/bidding_data?on_conflict=date%2Cname';
+    // ⛔ 只发真实列：`overwritten` 是日志用字段，混进请求体会被 PostgREST 判 400（PGRST204）。
+    const body = rows.map(function (r) {
+      return { date: r.date, name: r.name, close: r.close, updated_at: r.updated_at };
+    });
     const resp = await bcwFetch(url, {
       method: 'POST',
       headers: Object.assign(sbHeaders(env), { 'Prefer': 'resolution=merge-duplicates' }),
-      body: JSON.stringify(rows)
+      body: JSON.stringify(body)
     });
     if (!resp.ok) {
       const text = await resp.text().catch(() => '');
@@ -10018,7 +10051,12 @@ async function dispatch(point, env, logs, opts) {
     };
     // ① 竞价变化看板「收盘」列（同花顺快照，纯云端填空）
     try {
-      const bcw = await runBiddingCloseWrite(env, { date: (opts && opts.date) || '' });
+      const bcw = await runBiddingCloseWrite(env, {
+        date: (opts && opts.date) || '',
+        // ★★ [OVERWRITE 2026-11-13] 只有人手动 &overwrite=1 才会传 true；
+        //   cron 走 dispatch(point, env, []) ⇒ opts 为 undefined ⇒ 恒 false，自动轮永不覆盖。
+        overwrite: !!(opts && opts.overwrite)
+      });
       result.biddingCloseWritten = bcw.written;
       (bcw.logs || []).forEach(l => result.logs.push('[bidding-close] ' + l));
       console.log('[auto-fetch] closepost 竞价看板收盘列云端落库: ok=' + bcw.ok +
@@ -10387,7 +10425,11 @@ export default {
           includeToday: url.searchParams.get('today') === '1',
           // ★ [LD-CLOUD 2026-11-13] divergedays 专用：补几个展示日 / 指定口径阶段
           days: Number(url.searchParams.get('days') || '0') || 0,
-          phase: url.searchParams.get('phase') || ''
+          phase: url.searchParams.get('phase') || '',
+          // ★★ [OVERWRITE 2026-11-13] closepost 修历史错值专用：`&overwrite=1` 才允许改写
+          //   已有非空收盘值（如 11-13 板块ETF 被旧逻辑写成 0、正确值 8）。
+          //   ⛔ 只有这个手动入口能开；cron 恒 false。
+          overwrite: url.searchParams.get('overwrite') === '1'
         });
         return jsonResponse(result, result.ok ? 200 : 500);
       } catch (e) {
