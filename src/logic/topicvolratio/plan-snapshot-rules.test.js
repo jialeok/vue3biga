@@ -287,8 +287,19 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
     expect(resolvePlanSnapshotFreshness(broken, Object.assign({}, OPTS, { allowRulesInvalidation: false }))).toBe('stale');
   });
 
-  it('版本常量已 bump 到 8（监管异动升级为显示层总约束 = v8）', () => {
-    expect(TVRB_RULES_VERSION).toBe(8);
+  it('版本常量已 bump 到 9（[CAP-97] 自定义禁选上限 95 → 97 改了选股结论 = v9）', () => {
+    expect(TVRB_RULES_VERSION).toBe(9);
+  });
+
+  // ★★ [CAP-97 2026-11-13 晚间] 阈值改动必须三件套同时落地，漏一件就等于没改：
+  //   ① 常量 97  ② 规则指纹 bump  ③ sw.js CACHE 换名。
+  it('[CAP-97-GUARD] 禁选上限 = 97，且规则指纹 / SW 缓存都已随阈值升级', async () => {
+    const { TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL } = await import('./tvrb-constants.js');
+    expect(TVRB_RANGE10_CAP).toBe(97);
+    expect(TVRB_RANGE10_ABNORMAL).toBe(100);
+    expect(TVRB_RULES_VERSION).toBeGreaterThanOrEqual(9);
+    const sw = readFileSync('public/sw.js', 'utf8');
+    expect(sw).toContain("var CACHE = 'biga-static-v44'");
   });
 
   // ★★ [RULE-BUMP-GUARD 2026-11-13] 用户报障「现在刷新并没有生效」的整类根因锁。

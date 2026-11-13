@@ -1,14 +1,15 @@
 // abnormal-10d.test.js — 第三十四条【监管异动 · 十日涨幅硬上限】的单测
 //
 // 覆盖四层（缺一层就会漏掉一类回归）：
-//   ① classifyRange10  —— 95 / 100 两个阈值的边界（含恰好等于）；
+//   ① classifyRange10  —— 自定义禁选上限 / 100 两个阈值的边界（含恰好等于）；
 //   ② resolveAbnormalFact —— 三种触发形态（异动次日 / 当日异动 / 票级异动）+ §10 判不出；
-//   ③ _buildBlock —— 95% 上限「跳过顺延」与 100% 红线「保留展示 + 停止选股」两种语义；
+//   ③ _buildBlock —— 自定义上限「跳过顺延」与 100% 红线「保留展示 + 停止选股」两种语义；
 //   ④ _applyAbnormalSweep / _applyAbnormalNoBuyRules —— 空仓标语接管 + 逐行改写 + 下线特殊通道。
 //
-// ⚠️ 真实数据锚点（2026-11-12 / 11-13，东方海洋）：
-//     11-12 十日涨幅 100.78%（异动成立）、11-13 回落到 73.14% ⇒ 只看今日判不出「异动次日」。
-//     所以下面专门有一条「今日 73 / 昨日 100.78 ⇒ 仍判异动次日」的用例。
+// ⚠️ 真实数据锚点（2026-11-11 / 11-12 / 11-13，东方海洋）：
+//     11-11 = 95.711445%（★ [CAP-97] 用户要求「11月11日这样能正常运行」⇒ 必须判 ok）、
+//     11-12 = 100.78%（异动成立）、11-13 回落到 73.14% ⇒ 只看今日判不出「异动次日」。
+//     所以下面专门有「11-11 正常」与「今日 73 / 昨日 100.78 ⇒ 仍判异动次日」两组用例。
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -23,7 +24,14 @@ import { _buildBlock, _applyAbnormalNoBuyRules } from './tvrb-blocks.js';
 import { _applyAbnormalSweep } from './tvrb-plan.js';
 
 // ── ① 分级边界 ────────────────────────────────────────────────────────────────
-describe('classifyRange10 · 95 / 100 两个阈值', () => {
+describe('classifyRange10 · ' + TVRB_RANGE10_CAP + ' / ' + TVRB_RANGE10_ABNORMAL + ' 两个阈值', () => {
+  it('[CAP-97] 自定义禁选上限 = 97（用户 2026-11-13 晚间把 95 上调到 97）', () => {
+    expect(TVRB_RANGE10_CAP).toBe(97);
+    expect(TVRB_RANGE10_ABNORMAL).toBe(100);
+    // ⛔ 97 = 禁选预警线，100 = 全市场空仓线，两条不许合并
+    expect(TVRB_RANGE10_CAP).toBeLessThan(TVRB_RANGE10_ABNORMAL);
+  });
+
   it('读不到 ⇒ unknown（§10 不补 0）', () => {
     [null, undefined, '', 'abc', NaN].forEach(function(v) {
       const r = classifyRange10(v);
@@ -33,17 +41,25 @@ describe('classifyRange10 · 95 / 100 两个阈值', () => {
     });
   });
 
-  it('≤ 95 ⇒ ok（含恰好 95）', () => {
-    expect(classifyRange10(0).level).toBe(ABNORMAL_LEVEL_OK);
-    expect(classifyRange10(94.99).level).toBe(ABNORMAL_LEVEL_OK);
-    expect(classifyRange10(TVRB_RANGE10_CAP).level).toBe(ABNORMAL_LEVEL_OK);
+  it('★ [CAP-97] 11-11 真实值 95.711445% ⇒ ok（用户「11月11日这样能正常运行」）', () => {
+    expect(classifyRange10(95.71144503546094).level).toBe(ABNORMAL_LEVEL_OK);
+    expect(classifyRange10('95.71%').level).toBe(ABNORMAL_LEVEL_OK);
+    expect(isOverRange10Cap(95.71144503546094)).toBe(false);
   });
 
-  it('95 < pct < 100 ⇒ near（超出自定义上限）', () => {
-    expect(classifyRange10(95.01).level).toBe(ABNORMAL_LEVEL_NEAR);
+  it('≤ ' + TVRB_RANGE10_CAP + ' ⇒ ok（含恰好等于上限）', () => {
+    expect(classifyRange10(0).level).toBe(ABNORMAL_LEVEL_OK);
+    expect(classifyRange10(94.99).level).toBe(ABNORMAL_LEVEL_OK);
+    expect(classifyRange10(96.2).level).toBe(ABNORMAL_LEVEL_OK);
+    expect(classifyRange10(TVRB_RANGE10_CAP).level).toBe(ABNORMAL_LEVEL_OK);
+    expect(classifyRange10(97).pctText).toBe('+97.00%');
+  });
+
+  it(TVRB_RANGE10_CAP + ' < pct < ' + TVRB_RANGE10_ABNORMAL + ' ⇒ near（监管异动预警 · 不能选）', () => {
+    expect(classifyRange10(97.01).level).toBe(ABNORMAL_LEVEL_NEAR);
+    expect(classifyRange10(98).level).toBe(ABNORMAL_LEVEL_NEAR);
     expect(classifyRange10(99).level).toBe(ABNORMAL_LEVEL_NEAR);
     expect(classifyRange10(99.99).level).toBe(ABNORMAL_LEVEL_NEAR);
-    expect(classifyRange10(97).pctText).toBe('+97.00%');
   });
 
   it('≥ 100 ⇒ abnormal（含恰好 100）', () => {
@@ -54,12 +70,16 @@ describe('classifyRange10 · 95 / 100 两个阈值', () => {
 
   it('字符串数字按同一口径解析（表里 pct 是文本列）', () => {
     expect(classifyRange10('100.78').level).toBe(ABNORMAL_LEVEL_ABNORMAL);
-    expect(classifyRange10('96.2').level).toBe(ABNORMAL_LEVEL_NEAR);
+    expect(classifyRange10('95.71').level).toBe(ABNORMAL_LEVEL_OK);
+    expect(classifyRange10('98.2').level).toBe(ABNORMAL_LEVEL_NEAR);
   });
 
   it('isOverRange10Cap：near + abnormal 都为真，ok / unknown 为假', () => {
     expect(isOverRange10Cap(94)).toBe(false);
-    expect(isOverRange10Cap(96)).toBe(true);
+    expect(isOverRange10Cap(95.71144503546094)).toBe(false);
+    expect(isOverRange10Cap(96)).toBe(false);
+    expect(isOverRange10Cap(97)).toBe(false);
+    expect(isOverRange10Cap(98)).toBe(true);
     expect(isOverRange10Cap(120)).toBe(true);
     expect(isOverRange10Cap(null)).toBe(false);
   });
@@ -117,14 +137,30 @@ describe('resolveAbnormalFact · 三种触发形态', () => {
     expect(f.kind).toBe(ABNORMAL_KIND_NEXT_DAY);
   });
 
-  it('都没到 100 ⇒ show=false（但超限票照实点名，供说明区用）', () => {
+  it('都没到 100 ⇒ show=false（但监管异动预警票照实点名，供说明区用）', () => {
     const f = resolveAbnormalFact({
       leaderName: 'L', leaderPctToday: 80, leaderPctPrev: 70,
-      rows: [{ name: '丙股份', topic: 'T', pct: 97 }]
+      rows: [{ name: '丙股份', topic: 'T', pct: 98 }]
     });
     expect(f.show).toBe(false);
     expect(f.headline).toBe('');
     expect(f.nearNames).toEqual(['丙股份']);
+  });
+
+  it('★ [CAP-97] 11-11 真实形态：今日 95.711445 / 昨日更低 ⇒ 不空仓、不灰、不点名', () => {
+    const f = resolveAbnormalFact({
+      leaderName: '东方海洋', leaderTopic: '羊字辈',
+      leaderPctToday: 95.71144503546094,
+      leaderPctPrev: 82.44,
+      leaderPctPrevBasis: 'auction',
+      rows: [{ name: '东方海洋', topic: '羊字辈', pct: 95.71144503546094 }]
+    });
+    expect(f.show).toBe(false);
+    expect(f.kind).toBe('');
+    expect(f.headline).toBe('');
+    expect(f.nearNames).toEqual([]);
+    expect(f.names).toEqual([]);
+    expect(f.unknownLeader).toBe(false);
   });
 
   it('§10：总龙一缺数据 ⇒ unknownLeader，不当成「没异动」', () => {
@@ -152,7 +188,7 @@ describe('resolveAbnormalFact · 三种触发形态', () => {
     expect(f.detail).toContain('收盘口径');
   });
 
-  it('阈值常量与文案一致（95 / 100 不许写死在别处）', () => {
+  it('阈值常量与文案一致（自定义上限 / 100 不许写死在别处）', () => {
     const f = resolveAbnormalFact({
       leaderName: 'L', leaderPctToday: 50, leaderPctPrev: 101, rows: []
     });
@@ -181,10 +217,22 @@ function mkDragonMap(names) {
 }
 const TIER_1 = { tier: 'mid', count: 5, pickCount: 1, rangeText: '4 ~ 8 只' };
 
-describe('_buildBlock · 95% 上限与 100% 红线', () => {
-  it('龙一 97%（超限、未到红线）⇒ 不选入、顺延龙二', () => {
+describe('_buildBlock · ' + TVRB_RANGE10_CAP + '% 禁选线与 100% 红线', () => {
+  it('★ [CAP-97] 龙一 95.711445%（11-11 东方海洋真实值）⇒ 正常选中，零异动标记', () => {
     const blk = _buildBlock(
-      mkBlock([['甲股份', '600001', 97], ['乙股份', '600002', 80]]),
+      mkBlock([['东方海洋', '600001', 95.71144503546094], ['乙股份', '600002', 80]]),
+      mkDragonMap(['东方海洋', '乙股份']), TIER_1
+    );
+    expect(blk.picks.map(function(p) { return p.name; })).toEqual(['东方海洋']);
+    expect(blk.abnormalPick).toBeNull();
+    expect(blk.skippedAbnormalNames).toEqual([]);
+    expect(blk.notes.join('')).not.toContain('超过自定义上限');
+    expect(blk.notes.join('')).not.toContain('监管异动');
+  });
+
+  it('龙一 98%（监管异动预警、未到红线）⇒ 不选入、顺延龙二', () => {
+    const blk = _buildBlock(
+      mkBlock([['甲股份', '600001', 98], ['乙股份', '600002', 80]]),
       mkDragonMap(['甲股份', '乙股份']), TIER_1
     );
     expect(blk.picks.map(function(p) { return p.name; })).toEqual(['乙股份']);
@@ -358,12 +406,14 @@ describe('_applyAbnormalSweep · 收口', () => {
 // ── ⑤ [NUM-TEXT 2026-11-13] 真实库内文本形态：防止「夹具全是数字」的假绿 ──────────
 //   本项目两次踩过同一类坑：market_metrics 的涨幅列存成 '+2.30%' / '-0.84%' 字符串，
 //   裸 Number() 恒 NaN ⇒ 静默折 null ⇒ 判据「读不到」⇒ 规则从不触发，而纯数字夹具全绿。
-//   第三十四条 95% / 100% 两条红线全部经 tvrb-utils#_num 解析，必须锁住真实形态。
+//   第三十四条 自定义禁选上限 / 100% 两条线全部经 tvrb-utils#_num 解析，必须锁住真实形态。
 describe('[NUM-TEXT] 文本型涨幅不得静默判不出（§10 不补 0）', () => {
   it('带 % / 全角+ / 千分位的文本按同一口径分级', () => {
     expect(classifyRange10('+100.78%').level).toBe(ABNORMAL_LEVEL_ABNORMAL);
     expect(classifyRange10('＋100.78%').pct).toBeCloseTo(100.78, 2);
-    expect(classifyRange10('96.20%').level).toBe(ABNORMAL_LEVEL_NEAR);
+    expect(classifyRange10('95.71%').level).toBe(ABNORMAL_LEVEL_OK);
+    expect(classifyRange10('96.20%').level).toBe(ABNORMAL_LEVEL_OK);
+    expect(classifyRange10('98.20%').level).toBe(ABNORMAL_LEVEL_NEAR);
     expect(classifyRange10('1,234%').level).toBe(ABNORMAL_LEVEL_ABNORMAL);
     expect(classifyRange10('-0.84%').level).toBe(ABNORMAL_LEVEL_OK);
   });

@@ -13,7 +13,7 @@ import { resolveAbnormalFact } from './abnormal-10d.js';
 import { maxRangePctOf } from './tvrb-plan.js';
 import { collectBuyNames } from './plan-live-overlay.js';
 import {
-  ABNORMAL_KIND_LEADER_NOW, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_NO_BUY_TAG
+  ABNORMAL_KIND_LEADER_NOW, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_NO_BUY_TAG, TVRB_RANGE10_CAP
 } from './tvrb-constants.js';
 
 function abnormalFact() {
@@ -194,10 +194,26 @@ describe('[ABNORMAL-ALL 接线静态锁] 漏一处 ⇒ 11-12 仍显示彩色「�
     expect(css).toContain('grayscale(1)');
   });
 
-  it('版本：规则指纹 v8 + SW v43（漏一个手机端就吃旧 JS）', () => {
+  it('版本：规则指纹 v9 + SW v44（[CAP-97] 阈值改了，漏一个手机端就吃旧 JS）', () => {
     const r = readFileSync('src/logic/topicvolratio/plan-snapshot-rules.js', 'utf8');
-    expect(r).toContain('TVRB_RULES_VERSION = 8');
+    expect(r).toContain('TVRB_RULES_VERSION = 9');
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v43'");
+    expect(sw).toContain("var CACHE = 'biga-static-v44'");
+  });
+
+  it('[CAP-97] 11-11 真实 95.711445% 不该触发任何显示层总约束', () => {
+    expect(TVRB_RANGE10_CAP).toBe(97);
+    const fact = resolveAbnormalFact({
+      leaderName: '东方海洋', leaderTopic: '羊字辈',
+      leaderPctToday: 95.71144503546094, leaderPctPrev: 82.44,
+      leaderPctPrevBasis: 'auction',
+      rows: [{ name: '东方海洋', pct: 95.71144503546094 }]
+    });
+    expect(fact.show).toBe(false);
+    const base = frozenPlan();
+    const out = applyAbnormalOverlay(base, fact);
+    expect(out).toBe(base);                       // §11 零副作用
+    expect(isAbnormalAllGray(out)).toBe(false);   // 不灰
+    expect(out.cashAlert.show).toBe(false);       // 不空仓
   });
 });

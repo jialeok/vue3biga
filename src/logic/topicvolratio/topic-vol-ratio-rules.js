@@ -106,7 +106,8 @@ export {
 } from './tvrb-constants.js';
 
 // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条的【唯一判定实现】（纯函数，可单测）：
-//   classifyRange10 = 分级（ok / near / abnormal，阈值 95 / 100）；resolveAbnormalFact = 拼标语事实。
+//   classifyRange10 = 分级（ok / near / abnormal，阈值 [CAP-97] 97 / 100 只在 tvrb-constants 定义）；
+//   resolveAbnormalFact = 拼标语事实。⛔ 别在本文件写死阈值数字。
 export {
   classifyRange10, isOverRange10Cap, resolveAbnormalFact,
 } from './abnormal-10d.js';

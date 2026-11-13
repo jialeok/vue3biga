@@ -3,10 +3,17 @@
 // ══════════════════════════════════════════════════════════════════════════════════════
 // ★★ 用户口径（2026-11-13 原话，逐字）★★ 见 tvrb-constants.js 的第三十四条常量块
 // ══════════════════════════════════════════════════════════════════════════════════════
-//   核心三句：
+//   核心三句（① 的阈值已被 2026-11-13 晚间用户修订，见下）：
 //     ① 「新增总约束，十日涨幅竞价口径不能超过 95%」—— 95 是【自定义选股上限】；
 //     ② 「十日达到 100% 异动，提示空仓，选出的票整块变灰色（不用去掉）」；
 //     ③ 「总龙一异动次日……也要空仓，不再选票……不在买进任何股票」。
+//
+// ★★ [CAP-97 2026-11-13 晚间用户修订] ① 的自定义上限 95 → **97**：
+//     用户原话：「不是这样的，超过95%该题材或者股票就比较危险，你把它调到97%吧，
+//     这样就比较合理些，11月11日这样能正常运行，超过97%该题材或者股票就不能选，监管异动了」。
+//     ⇒ 11-11 东方海洋真实竞价口径 95.711445% 必须落在【正常】区间（⛔ 不再顺延 / 不再下线候补）；
+//       >97 且 <100 ⇒ 票 / 题材级【监管异动预警 · 不能选】；≥100 ⇒ 仍是【全市场空仓 + 整片灰】。
+//     ⛔ 两条线不许合并：97 是禁选预警，100 才是全场空仓。
 //
 // 职责边界（§3 / §4 / §21）：
 //   · 本模块【只做两件事】：把涨幅分级（ok / near / abnormal）+ 把事实拼成一块可渲染的标语；
@@ -31,7 +38,7 @@ import {
 } from './tvrb-constants.js';
 import { _num, _pct2 } from './tvrb-utils.js';
 
-/** 分级：未知（读不到） / 正常 / 超限（95~100） / 异动（≥100） */
+/** 分级：未知（读不到） / 正常 / 监管异动预警（自定义上限~100） / 异动（≥100） */
 export const ABNORMAL_LEVEL_UNKNOWN = 'unknown';
 export const ABNORMAL_LEVEL_OK = 'ok';
 export const ABNORMAL_LEVEL_NEAR = 'near';
@@ -40,11 +47,11 @@ export const ABNORMAL_LEVEL_ABNORMAL = 'abnormal';
 /**
  * 【纯函数】十日涨幅（竞价口径，单位 = %）→ 分级。
  *
- * 边界口径（⛔ 别改，改了与规则手册条文不一致）：
- *   · pct ≥ 100  ⇒ 'abnormal'（异动，含恰好 100）
- *   · pct >  95  ⇒ 'near'    （超出自定义上限，但未到交易所红线）
- *   · pct ≤ 95   ⇒ 'ok'
- *   · 读不到     ⇒ 'unknown'（§10 不补 0）
+ * 边界口径（[CAP-97 2026-11-13 晚间用户修订] ⛔ 别改，改了与规则手册条文不一致）：
+ *   · pct ≥ 100              ⇒ 'abnormal'（全市场空仓，含恰好 100）
+ *   · pct >  TVRB_RANGE10_CAP ⇒ 'near'（监管异动预警：该票 / 该题材不能选，但未到交易所红线）
+ *   · pct ≤  TVRB_RANGE10_CAP ⇒ 'ok'（含 11-11 真实的 95.711445% ⇒ 正常运行）
+ *   · 读不到                  ⇒ 'unknown'（§10 不补 0）
  *
  * @param {number|string|null|undefined} pct
  * @returns {{level:string, pct:number|null, pctText:string}}
@@ -64,14 +71,15 @@ export function classifyRange10(pct) {
 }
 
 /**
- * 【纯函数】某只票是不是「超出自定义上限、今天不该买」（95 < pct < 100，或恰好也含 100 的展示口径另算）。
+ * 【纯函数】某只票是不是「超过自定义禁选上限、今天不该买」（CAP < pct < 100，或含 100 的展示口径另算）。
  *
  * ⚠️ 调用方（tvrb-blocks#_buildBlock）用它做选股闸门：
- *   pct ≥ 100 ⇒ 走【异动】那条（保留展示 + 整段灰化），⛔ 不是「跳过」；
- *   95 < pct < 100 ⇒ 跳过错该龙位、顺延下一只（名额照买满）。
+ *   pct ≥ 100 ⇒ 走【异动】那条（保留展示 + 整段灰化 + 全市场空仓），⛔ 不是「跳过」；
+ *   CAP < pct < 100 ⇒ 监管异动预警：跳过该龙位、顺延下一只（名额照买满）；
+ *   pct ≤ CAP（含 11-11 的 95.711445%）⇒ 完全不介入，按原规则正常选股。
  *
  * @param {number|string|null} pct
- * @returns {boolean} true = 超过 95% 上限（含异动）
+ * @returns {boolean} true = 超过自定义禁选上限（含异动）
  */
 export function isOverRange10Cap(pct) {
   const lv = classifyRange10(pct).level;
@@ -98,7 +106,7 @@ function _pointOf(name, topic, pctText) {
  * @param {Array<{name:string, topic?:string, pct:number|string|null}>} [input.rows]
  *        今天【会被选中的票】—— 常规题材块 picks + 十日涨幅候补（口径都是十日涨幅）
  *        ⚠️ ⛔ 别把「20日涨幅」通道的票（退潮替补 / 新龙 / 抱团 / 补涨）塞进来：
- *           那些行的 pct 是 20日涨幅，拿它比 95/100 是【口径串用】，比不判更坏。
+ *           那些行的 pct 是 20日涨幅，拿它比 TVRB_RANGE10_CAP / 100 是【口径串用】，比不判更坏。
  * @returns {object} 与 TVRB_ABNORMAL_NONE 同形状（show=false ⇒ 一字不动，§11）
  */
 export function resolveAbnormalFact(input) {
@@ -109,7 +117,7 @@ export function resolveAbnormalFact(input) {
   const prev = classifyRange10(i.leaderPctPrev);
   const rows = Array.isArray(i.rows) ? i.rows : [];
 
-  // ① 点名：哪些票已经异动（≥100） / 哪些只是超限（95~100）
+  // ① 点名：哪些票已经异动（≥100） / 哪些只是监管异动预警（自定义上限~100）
   const hits = [];
   const near = [];
   const seen = new Set();
@@ -166,12 +174,15 @@ export function resolveAbnormalFact(input) {
 
   // ④ 文案（§21：★ 大字标语 + 说明全部在 Logic 层拼好，模板零计算）
   const capLine = '★ 硬上限口径（第' + ABNORMAL_RULE_NO + '条）：十日涨幅（竞价口径）' +
-    '＞ ' + TVRB_RANGE10_CAP + '% 的票【一律不选】；达到 ' + TVRB_RANGE10_ABNORMAL +
-    '% = 交易所「严重异常波动」⇒ 整段灰化、一枚买点都不给（票照常列出，供你核对，⛔ 不删）。';
+    '＞ ' + TVRB_RANGE10_CAP + '% 的票【一律不选入】⇒ 【监管异动预警 · 不能选】，说明区醒目点名；' +
+    '达到 ' + TVRB_RANGE10_ABNORMAL + '% = 交易所「严重异常波动」⇒ 全市场空仓、整段灰化、' +
+    '一枚买点都不给（票照常列出，供你核对，⛔ 不删）。';
   const whyLine = '★ 为什么：单只票十日涨幅到达 ' + TVRB_RANGE10_ABNORMAL +
     '% 就是监管异动；一旦【总龙一】异动，它所在题材的股票【次日基本都会崩】，甚至带崩整个市场情绪。' +
-    '所以第' + ABNORMAL_RULE_NO + '条是【总约束】—— 比 ' + TVRB_RANGE10_CAP +
-    '% 还低 ' + (TVRB_RANGE10_ABNORMAL - TVRB_RANGE10_CAP) + ' 个点，就是防「99% 就开始有题材崩盘节奏」。';
+    '所以第' + ABNORMAL_RULE_NO + '条是【总约束】—— 在交易所红线前 ' +
+    (TVRB_RANGE10_ABNORMAL - TVRB_RANGE10_CAP) + ' 个点先设【禁选线】，' +
+    '就是防「99% 就开始有题材崩盘节奏」。★ [CAP-97 2026-11-13 晚间用户修订] 这条线由 95% 上调到 ' +
+    TVRB_RANGE10_CAP + '%：11-11 东方海洋真实的 95.71% 不该被误判危险，必须按原规则正常运行。';
 
   const prevBasisText = (i.leaderPctPrevBasis === 'auction')
     ? '（昨日竞价口径）'
@@ -203,7 +214,8 @@ export function resolveAbnormalFact(input) {
       '「异动次日」这一条【判不出】（§10：判不出 ≠ 没有异动）。');
   }
   if (near.length > 0) {
-    tail.push('⚠️ 另有超出自定义上限 ' + TVRB_RANGE10_CAP + '% 的票（已按【不选入】处理、顺延下一只）：' +
+    tail.push('🚨 另有【监管异动预警 · 不能选】的票（十日涨幅超过自定义禁选上限 ' +
+      TVRB_RANGE10_CAP + '% ⇒ 已跳过该龙位、顺延下一只；候选通道整条不替补）：' +
       near.map(function(x) { return _pointOf(x.name, x.topic, x.pctText); }).join('、') + '。');
   }
   tail.push('⚠️ 下方股票仍按原规则【照常列出】（不删不改），但买点标签一律为【' + ABNORMAL_NO_BUY_TAG +
