@@ -287,8 +287,34 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
     expect(resolvePlanSnapshotFreshness(broken, Object.assign({}, OPTS, { allowRulesInvalidation: false }))).toBe('stale');
   });
 
-  it('版本常量已 bump 到 11（[ABN-SAME-SOURCE] 异动点名同源修复，上屏文案变了 = v11）', () => {
-    expect(TVRB_RULES_VERSION).toBe(11);
+  it('版本常量已 bump 到 12（[ABN-MAINBOARD] 第三十四条只认主板，7 天历史结论变了 = v12）', () => {
+    expect(TVRB_RULES_VERSION).toBe(12);
+  });
+
+  // ★★ [ABN-MAINBOARD-GUARD 2026-11-14] 第三十四条「全场十日涨幅最高票」只认主板。
+  //   用户原话（逐字）：「我要求的是主板的异动的有提醒，非主板就不要考虑在里面，
+  //   像历史日期的10月28日，为什么把非主板的也考虑在里面呢……只有主板的才有这个条件。」
+  //   配套约束：候选池【一行未改】仍是 883410 + 观察组 + 龙头组 + 20 日补位
+  //   （用户明确否决过「收窄成 883410 名单」的提议：「不要乱改啊……不要画蛇添足。」）
+  it('[ABN-MAINBOARD-GUARD] 6 处异动取数全部带主板过滤，且过滤只按板块不按名单收窄', () => {
+    const plan = readFileSync('src/logic/topicvolratio/tvrb-plan.js', 'utf8');
+    const eligibleLine = 'makeAbnMainBoardFilter(isMainBoardRankEligible, getStockCode)';
+    // ① 工厂在规则层就位，且只依赖「板块资格 + 代码查询」两件事
+    expect(plan).toContain(eligibleLine);
+    expect(plan).toContain('export function makeAbnMainBoardFilter');
+    // ② 规则层三处候选池一律走过滤后的 maxRangePctOf
+    expect(plan).toContain('maxRangePctOf(o.pctMap, _abnEligible)');
+    expect(plan).toContain('maxRangePctOf(o.prevAuctionLeg10, _abnEligible)');
+    expect(plan).toContain('maxRangePctOf(o.prevRange10, _abnEligible)');
+    // ③ 显示层总约束同样过滤（历史定稿日走另一条路，漏了就等于没改）
+    const overlay = readFileSync('src/logic/topicvolratio/abnormal-overlay.js', 'utf8');
+    expect(overlay).toContain(eligibleLine);
+    expect(overlay).toContain('maxRangePctOf(x.todayMap, eligible)');
+    expect(overlay).toContain('maxRangePctOf(x.prevAucMap, eligible)');
+    expect(overlay).toContain('maxRangePctOf(x.prevCloseMap, eligible)');
+    // ④ ⛔ 不许把候选池收窄成「只有 883410 / 只有观察组」——用户点名禁止画蛇添足
+    expect(plan).not.toContain('883410');
+    expect(overlay).not.toContain('883410');
   });
 
   // ★★ [CAP-97 2026-11-13 晚间] 阈值改动必须三件套同时落地，漏一件就等于没改：
@@ -299,7 +325,7 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
     expect(TVRB_RANGE10_ABNORMAL).toBe(100);
     expect(TVRB_RULES_VERSION).toBeGreaterThanOrEqual(10);
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v46'");
+    expect(sw).toContain("var CACHE = 'biga-static-v47'");
   });
 
   // ★★ [FULL-MARKET-GUARD 2026-11-13 用户当场纠正] 整类护栏：
@@ -320,8 +346,8 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
     expect(lines).toContain('波及到所有的票');
     expect(lines).toContain('整个市场【整片灰');
     // ④ 三件套版本链
-    expect(TVRB_RULES_VERSION).toBe(11);
-    expect(readFileSync('public/sw.js', 'utf8')).toContain("var CACHE = 'biga-static-v46'");
+    expect(TVRB_RULES_VERSION).toBe(12);
+    expect(readFileSync('public/sw.js', 'utf8')).toContain("var CACHE = 'biga-static-v47'");
   });
 
   // ★★ [RULE-BUMP-GUARD 2026-11-13] 用户报障「现在刷新并没有生效」的整类根因锁。

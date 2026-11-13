@@ -10,7 +10,8 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { applyAbnormalOverlay, isAbnormalAllGray, buildAbnormalFactFromMaps } from './abnormal-overlay.js';
 import { resolveAbnormalFact } from './abnormal-10d.js';
-import { maxRangePctOf } from './tvrb-plan.js';
+import { maxRangePctOf, makeAbnMainBoardFilter } from './tvrb-plan.js';
+import { state } from '../app-state.js';
 import { collectBuyNames } from './plan-live-overlay.js';
 import {
   ABNORMAL_KIND_LEADER_NOW, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_NO_BUY_TAG, TVRB_RANGE10_CAP
@@ -194,11 +195,11 @@ describe('[ABNORMAL-ALL 接线静态锁] 漏一处 ⇒ 11-12 仍显示彩色「�
     expect(css).toContain('grayscale(1)');
   });
 
-  it('版本：规则指纹 v11 + SW v46（[ABN-SAME-SOURCE] 文案变了，漏一个手机端就吃旧 JS）', () => {
+  it('版本：规则指纹 v12 + SW v47（[ABN-MAINBOARD] 7 天历史结论变了，漏一个手机端就吃旧 JS）', () => {
     const r = readFileSync('src/logic/topicvolratio/plan-snapshot-rules.js', 'utf8');
-    expect(r).toContain('TVRB_RULES_VERSION = 11');
+    expect(r).toContain('TVRB_RULES_VERSION = 12');
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v46'");
+    expect(sw).toContain("var CACHE = 'biga-static-v47'");
   });
 
   it('[CAP-97] 11-11 真实 95.711445% 不该触发任何显示层总约束', () => {
@@ -300,5 +301,109 @@ describe('[ABN-SAME-SOURCE] buildAbnormalFactFromMaps 不许把「今日的名�
   it('§10：三份都读不到 ⇒ null（⛔ 不造空仓）', () => {
     expect(buildAbnormalFactFromMaps({ todayMap: null, prevAucMap: null, prevCloseMap: null })).toBeNull();
     expect(buildAbnormalFactFromMaps(null)).toBeNull();
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// [ABN-MAINBOARD 2026-11-13] 第三十四条【只认主板】—— 非主板不参与异动判定
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话：「我要求的是主板的异动的有提醒，非主板就不要考虑在里面，像历史日期的10月28日，
+//   为什么把非主板的也考虑在里面呢，这个不作为考虑，只考虑列表里的主板的，其它非主板不做考虑。
+//   这个不做判断标准，只有主板的才有这个条件。」
+//
+// 全历史取证（`.tmpdiag/_abn-history-scan.mjs`，09-08 ~ 11-13）：
+//   旧口径（全池扫描）触发 17 天，只主板口径只有 10 天 ⇒ 7 天完全是非主板在触发，
+//   而【旧口径漏触发 0 天】⇒ 加过滤不会漏掉任何一次真正的主板异动。
+describe('[ABN-MAINBOARD] 只认主板', () => {
+  /** 只把「已知代码」当判据的桩：等价于 isMainBoardRankEligible 的语义（未知 ⇒ 有资格） */
+  function stubEligible(code) {
+    const c = String(code || '');
+    if (!/^\d{6}$/.test(c)) return true;                       // 代码未知 ⇒ 保留
+    return !/^(30|68|4|8|92)/.test(c);                         // 创业板/科创板/北交所 ⇒ 排除
+  }
+  const byTable = tbl => name => tbl[name] || '';
+
+  it('maxRangePctOf 带过滤：10-26 凡拓数创(创业板 134.65) 让位给冰山冷热(主板 82.92)', () => {
+    const m = new Map([
+      ['凡拓数创', { pct: 134.65 }],
+      ['冰山冷热', { pct: 82.92 }],
+      ['大业股份', { pct: 71.10 }]
+    ]);
+    // 不过滤 = 旧行为（会误触发全场空仓）
+    expect(maxRangePctOf(m)).toEqual({ name: '凡拓数创', pct: 134.65 });
+    // 只主板 = 新行为
+    const eligible = makeAbnMainBoardFilter(stubEligible, byTable({ 凡拓数创: '301313', 冰山冷热: '000530', 大业股份: '603278' }));
+    expect(maxRangePctOf(m, eligible)).toEqual({ name: '冰山冷热', pct: 82.92 });
+  });
+
+  it('maxRangePctOf 带过滤：10-28 用户点名那天 —— 创业板 89.51 让位给主板 78.54', () => {
+    const m = new Map([
+      ['凡拓数创', { pct: 89.51 }],
+      ['大业股份', { pct: 78.54 }],
+      ['海洋王', { pct: 69.65 }]
+    ]);
+    const eligible = makeAbnMainBoardFilter(stubEligible, byTable({ 凡拓数创: '301313', 大业股份: '603278', 海洋王: '002724' }));
+    expect(maxRangePctOf(m, eligible)).toEqual({ name: '大业股份', pct: 78.54 });
+  });
+
+  it('maxRangePctOf 带过滤：09-08 北交所花溪科技 121.70（920895）被排除', () => {
+    const m = new Map([
+      ['花溪科技', { pct: 121.70 }],
+      ['国芳集团', { pct: 84.23 }]
+    ]);
+    const eligible = makeAbnMainBoardFilter(stubEligible, byTable({ 花溪科技: '920895', 国芳集团: '601086' }));
+    expect(maxRangePctOf(m, eligible)).toEqual({ name: '国芳集团', pct: 84.23 });
+  });
+
+  it('★ §10 方向性：名册查不到代码 ⇒ 保留（判不出≠非主板，宁可多算也不漏主板异动）', () => {
+    const eligible = makeAbnMainBoardFilter(stubEligible, () => '');
+    expect(eligible('某只查不到的票')).toBe(true);
+    const m = new Map([['某只查不到的票', { pct: 99 }], ['主板票', { pct: 60 }]]);
+    expect(maxRangePctOf(m, eligible)).toEqual({ name: '某只查不到的票', pct: 99 });
+  });
+
+  it('makeAbnMainBoardFilter：空名 ⇒ false（无名字不参与评选，避免把空键当最高票）', () => {
+    const eligible = makeAbnMainBoardFilter(stubEligible, byTable({}));
+    expect(eligible('')).toBe(false);
+    expect(eligible('   ')).toBe(false);
+    expect(eligible(null)).toBe(false);
+  });
+
+  it('makeAbnMainBoardFilter：注入函数抛错 ⇒ 按「保留」处理（⛔ 不许因查代码失败就全场放开/收紧）', () => {
+    const eligible = makeAbnMainBoardFilter(stubEligible, () => { throw new Error('boom'); });
+    expect(eligible('任意票')).toBe(true);
+  });
+
+  it('★ 显示层端到端：10-26 全池最高是非主板 ⇒ 不再整片灰（旧行为会误判空仓）', () => {
+    const prev = state._scMapCache;
+    state._scMapCache = { 凡拓数创: '301313', 冰山冷热: '000530' };
+    try {
+      const f = buildAbnormalFactFromMaps({
+        todayMap: new Map([['凡拓数创', { pct: 134.65 }], ['冰山冷热', { pct: 82.92 }]]),
+        prevAucMap: null,
+        prevCloseMap: null
+      });
+      expect(f).not.toBeNull();
+      expect(f.show).toBe(false);            // 主板最高 82.92 < 97 ⇒ 不是异动日
+      expect(f.leaderName).toBe('冰山冷热'); // 触发源只能是主板那只
+    } finally {
+      state._scMapCache = prev;
+    }
+  });
+
+  it('★ 显示层端到端：主板真的超线 ⇒ 照常触发（⛔ 别把过滤做成「永不触发」）', () => {
+    const prev = state._scMapCache;
+    state._scMapCache = { 东方海洋: '002086', 凡拓数创: '301313' };
+    try {
+      const f = buildAbnormalFactFromMaps({
+        todayMap: new Map([['凡拓数创', { pct: 120 }], ['东方海洋', { pct: 100.78 }]]),
+        prevAucMap: null,
+        prevCloseMap: null
+      });
+      expect(f.show).toBe(true);
+      expect(f.leaderName).toBe('东方海洋');
+    } finally {
+      state._scMapCache = prev;
+    }
   });
 });

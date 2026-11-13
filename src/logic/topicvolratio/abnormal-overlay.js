@@ -27,7 +27,9 @@
 
 import { buildCashAlert } from './tvrb-blocks.js';
 import { resolveAbnormalFact, pickAbnormalSource } from './abnormal-10d.js';
-import { maxRangePctOf } from './tvrb-plan.js';
+import { maxRangePctOf, makeAbnMainBoardFilter } from './tvrb-plan.js';
+import { isMainBoardRankEligible } from '../auction/limit-up.js';
+import { getStockCode } from '../../data/stock-code-map.js';
 import { _num } from './tvrb-utils.js';
 import {
   ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE
@@ -143,9 +145,14 @@ export function isAbnormalAllGray(plan) {
  */
 export function buildAbnormalFactFromMaps(o) {
   const x = o || {};
-  const t = maxRangePctOf(x.todayMap);
-  const pa = maxRangePctOf(x.prevAucMap);
-  const pc = maxRangePctOf(x.prevCloseMap);
+  // ★★ [ABN-MAINBOARD 2026-11-13 用户口径] 与规则层同一把尺子：第三十四条【只认主板】。
+  //   非主板（创业板/科创板/北交所）不参与「最高票」评选 ⇒ 不可能是触发源。
+  //   ⛔ 判据不在这里另写代码段规则：isMainBoardRankEligible + getStockCode（§6）。
+  //   §10 方向性：名册查不到代码 ⇒ 判「有资格」保留，宁可多算也不漏掉主板异动。
+  const eligible = makeAbnMainBoardFilter(isMainBoardRankEligible, getStockCode);
+  const t = maxRangePctOf(x.todayMap, eligible);
+  const pa = maxRangePctOf(x.prevAucMap, eligible);
+  const pc = maxRangePctOf(x.prevCloseMap, eligible);
   if (!t && !pa && !pc) return null;
 
   // ★★ [ABN-SAME-SOURCE 2026-11-13 用户报错后修] 这里原来写的是

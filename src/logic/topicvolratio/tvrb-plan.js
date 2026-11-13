@@ -16,13 +16,17 @@ import { _applyPrevEbbSecondNoBuy, _applyLeaderLimitDownNoBuy, _applyEbbSellRule
 //   （纯函数：把「总龙一昨日/今日十日涨幅 + 会被选中的票的十日涨幅」判成一块空仓标语）。
 //   ⛔ 阈值 / 文案全在 abnormal-10d.js + tvrb-constants.js，本文件只负责【注入事实】与【收口】。
 import { resolveAbnormalFact, classifyRange10, pickAbnormalSource, ABNORMAL_LEVEL_NEAR, ABNORMAL_LEVEL_ABNORMAL } from './abnormal-10d.js';
+// ★★ [ABN-MAINBOARD 2026-11-13] 第三十四条「只主板」判据工厂（本文件内定义并导出，见 maxRangePctOf 下方）。
 
 import { formatRangePct, RULE_NO, finishBuyBlock, buildSellPlan } from '../decision/decision-rules.js';
 import { totalDragonLabel } from '../auction/range20-top5-label.js';
 import { makeCoreTopicResolver } from '../topic/core-category.js';
 import { pickRange10Backup, RANGE10_BACKUP_RULE_NO } from './range10-backup.js';
 import { PRESENCE_TOP_N } from '../auction/presence-label.js';
-import { getAuctionLimitState } from '../auction/limit-up.js';
+import { getAuctionLimitState, isMainBoardRankEligible } from '../auction/limit-up.js';
+// ★★ [ABN-MAINBOARD 2026-11-13] 第三十四条只认主板 ⇒ 需要「股票名 → 6 位代码」。
+//   同步读内存缓存、0 请求；查不到 ⇒ ''（此时 isMainBoardRankEligible 判「有资格」= 保留，§10 方向性）。
+import { getStockCode } from '../../data/stock-code-map.js';
 // [TVRB-AUC-YIZI 2026-11-10] 买点行「竞价一字涨停 · 等开板后进」统一标注（只挂展示字段，不改选股）
 import { annotateAuctionYizi, AUCTION_YIZI_WAIT_TAG } from './auction-yizi-tag.js';
 
@@ -53,19 +57,67 @@ function _rangePctOfMap(map, name) {
  *   但竞价口径只有 95.71（未达红线）⇒ 拿收盘口径比会误判一整天。
  * §10：读不到 / 非法值一律跳过，⛔ 不补 0；空 Map ⇒ null。
  *
+ * ★★ [ABN-MAINBOARD 2026-11-13 用户口径] 必须【只认主板】：
+ *   用户原话「我要求的是主板的异动的有提醒，非主板就不要考虑在里面，像历史日期的
+ *   10月28日，为什么把非主板的也考虑在里面呢……只有主板的才有这个条件」。
+ *   注意用户最初立这条规矩时说的就是「所有大a**主板**10日涨幅不能超过100%」——
+ *   是**实现漂移成了全池扫描**，这次改回原意。
+ *
+ *   生产取证（`.tmpdiag/_abn-history-scan.mjs`，2026-09-08 ~ 11-13 全扫）：
+ *     旧口径（全池）触发 17 天，只主板口径只有 10 天 ⇒ **7 天完完全全是非主板在触发**：
+ *       09-08 花溪科技 920895 北交所 121.70%（主板最高 国芳集团 84.23%）
+ *       09-10 花溪科技 920895 北交所 103.00%（主板最高 龙版传媒 95.09%）
+ *       10-26 凡拓数创 301313 创业板 134.65%（主板最高 冰山冷热 82.92%）
+ *       10-27 凡拓数创 301313 创业板 102.59%（主板最高 大业股份 72.31%）
+ *       10-28 凡拓数创 301313 创业板  89.51%（主板最高 大业股份 78.54%）← 用户点名的这天
+ *     同时【旧口径漏触发 0 天】⇒ 加主板过滤不会漏掉任何一次真正的主板异动。
+ *
+ * ⛔ 判据不在这里另写一套代码段规则：用 `limit-up.js#isMainBoardRankEligible`
+ *   （= 主板 + 代码未知 ⇒ 有资格；创业板/科创板/北交所 ⇒ 无资格）。
+ *   与「十日涨幅 / 20日涨幅 只排主板」是同一把尺子（§6）。
+ *   §10 方向性：代码未知一律【保留】—— 判不出板块 ≠ 判出「不是主板」，
+ *   把「没查到」当「非主板」会静默漏掉本该提醒的主板异动，那比多算一只更危险。
+ *
  * @param {Map<string,{pct:number|string|null}>|null} map
+ * @param {(name:string)=>boolean} [isEligible] 可选：这只票要不要参与「最高票」评选
  * @returns {{name:string, pct:number}|null}
  */
-export function maxRangePctOf(map) {
+export function maxRangePctOf(map, isEligible) {
   if (!(map instanceof Map) || map.size === 0) return null;
+  const allow = (typeof isEligible === 'function') ? isEligible : null;
   let best = null;
   map.forEach(function (v, name) {
     const pct = v ? _num(v.pct) : null;
     const nm = String(name || '').trim();
     if (pct === null || !nm) return;
+    if (allow && !allow(nm)) return;
     if (!best || pct > best.pct) best = { name: nm, pct: pct };
   });
   return best;
+}
+
+/**
+ * ★★ [ABN-MAINBOARD 2026-11-13] 第三十四条专用「只主板」判据（股票名 → 要不要参与异动评选）。
+ *
+ * 为什么需要 name→code：`stock_range_pct` / `market_metrics` 都只按【股票名】索引，
+ *   板块只能从代码前缀判（⛔ §40 绝不按名字猜板块）。
+ * 代码来源 = `data/stock-code-map.js#getStockCode`（内存缓存，同步、0 请求）。
+ * 名册查不到 ⇒ `isMainBoardRankEligible('')` = true ⇒ 保留（见上方 §10 方向性说明）。
+ *
+ * @param {(name:string)=>boolean} _isMainBoardRankEligible 注入（便于单测，⛔ 不在此写死实现）
+ * @param {(name:string)=>string} _getStockCode
+ * @returns {(name:string)=>boolean}
+ */
+export function makeAbnMainBoardFilter(_isMainBoardRankEligible, _getStockCode) {
+  const eligible = (typeof _isMainBoardRankEligible === 'function') ? _isMainBoardRankEligible : function () { return true; };
+  const codeOf = (typeof _getStockCode === 'function') ? _getStockCode : function () { return ''; };
+  return function (name) {
+    const nm = String(name || '').trim();
+    if (!nm) return false;
+    let code = '';
+    try { code = String(codeOf(nm) || '').trim(); } catch (e) { code = ''; }
+    return eligible(code) !== false;
+  };
 }
 
 /**
@@ -2151,15 +2203,18 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //   东方海洋的 100.78%；③ 文案还硬写「市场总龙一」⇒ 拼出「闵发铝业 100.78%」，
   //   数值差 13~16 个点、称谓也错。
   //   ★ 修复 = 判据抽成纯函数 `pickAbnormalSource`（§15 可单测），本文件只负责【从 Map 取候选】。
+  // ★★ [ABN-MAINBOARD 2026-11-13 用户口径] 第三十四条只认主板 —— 非主板（创业板/科创板/北交所）
+  //   既不参与「全市场十日涨幅最高票」评选，也不作为触发源。判据 = isMainBoardRankEligible（§6 同一把尺子）。
+  const _abnEligible = makeAbnMainBoardFilter(isMainBoardRankEligible, getStockCode);
   const _abnPick = pickAbnormalSource({
     leaderName: _abnLeaderName,
     leaderTopic: _abnLeaderTopic,
     leaderToday: _abnPctToday,
     leaderPrevAuc: _abnPctPrevAuc,
     leaderPrevClose: _abnPctPrevClose,
-    marketToday: maxRangePctOf(o.pctMap),
-    marketPrevAuc: maxRangePctOf(o.prevAuctionLeg10),
-    marketPrevClose: maxRangePctOf(o.prevRange10)
+    marketToday: maxRangePctOf(o.pctMap, _abnEligible),
+    marketPrevAuc: maxRangePctOf(o.prevAuctionLeg10, _abnEligible),
+    marketPrevClose: maxRangePctOf(o.prevRange10, _abnEligible)
   });
 
   // 定了触发源之后，两个数字都【按这个名字重新取】—— ⛔ 绝不用别的票的数值顶替
