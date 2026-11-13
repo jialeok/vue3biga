@@ -337,6 +337,11 @@ describe('[RANGE-416] 分页读到尾部 ⇒ 正常收尾，⛔ 不许当读失�
     // ⛔ 不许再写死 limit：它会被当成整条查询的硬上限，与 Range 分页相乘 = 416 + 窗口被压短
     expect(calls[0].url).not.toMatch(/[?&]limit=/);
     expect(calls[0].url).toMatch(/order=date\.desc/);
+    // ★ [TRADE-DAYS-SRC 2026-11-13] 交易日来源必须是 market_metrics 竞价腿，
+    //   ⛔ 不许回退到 auction_watchlist（它在国庆假期被写了 11 行垃圾 ⇒ 窗口混进 7 个假天）
+    expect(calls[0].url).toMatch(/\/market_metrics\?/);
+    expect(calls[0].url).toMatch(/scope=eq\.auction/);
+    expect(calls[0].url).not.toMatch(/auction_watchlist/);
   });
 
   it('★ sbGetPaged：恰好 1000 行（总行数=1000）⇒ 第二页 416 仍返回全部 1000 行', async () => {

@@ -168,7 +168,7 @@ export async function runLeaderDivergeDays(env, opts) {
   const dates = past.slice();
   result.dates = dates;
   if (dates.length === 0) {
-    logs.push('[LD-CLOUD] ' + today + ' 往前取不到任何交易日（auction_watchlist 无行）⇒ 判定跳过');
+    logs.push('[LD-CLOUD] ' + today + ' 往前取不到任何交易日（market_metrics 竞价腿无行）⇒ 判定跳过');
     result.error = 'no-trade-dates';
     return result;
   }

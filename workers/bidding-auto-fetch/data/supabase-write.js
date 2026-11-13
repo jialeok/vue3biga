@@ -773,10 +773,15 @@ export async function readStockCodeMap(env) {
 //   在 9:27 那一轮（本身还有补量比 / 自愈）里不可接受。⇒ 统一按 `date=in.(...)` 批量取，
 //   每个表 1~6 页（`sbGetPaged` 带确定性 order，§2 红线：⛔ 不许写死无分页的 limit）。
 //
-// ★ 为什么「日期列表」也从 auction_watchlist 取：
-//   本仓没有一份「云端权威交易日历」，而 auction_watchlist 是每天 9:25 必写的表
-//   ⇒ 它上面出现过的日期就是「有过早盘竞价的日子」。⛔ 不用 fuyao / 用户假期设置
-//   （那要多一条外部依赖，而且 9:27 / 16:00 这两个时点不该再引上游请求）。
+// ★ 为什么「日期列表」从 market_metrics(scope=auction) 取（⛔ 不再是 auction_watchlist）：
+//   本仓没有一份「云端权威交易日历」，只能从数据本身反推。原写法用 auction_watchlist
+//   （每天 9:25 必写），但 2026-11-13 实测发现它在国庆假期那几天被写了 11 行垃圾
+//   ⇒ 20 日窗口里混进 7 个非交易日，霸榜天数 / 事件计数全偏。
+//   改判据后：`market_metrics(scope=auction)` 假期 = 0 行、真实交易日 85~96 行，
+//   不需要任何魔法阈值。⛔ 不用 fuyao / 用户假期设置（那要多一条外部依赖，
+//   9:27 / 16:00 这两个时点不该再引上游请求）。
+//   逐日腿 `stock_daily_pct` 虽然假期也是 0 行，但它 16:30 才补齐（收盘前 0 行）
+//   ⇒ 拿它当来源会把「今天」整个丢掉，⛔ 不行。
 // ============================================================================
 
 /** PostgREST 的 in 列表（中文/文本值统一加双引号；⛔ 不用正则去引号，见 readDailyLegsForStocks 注） */
@@ -816,8 +821,30 @@ async function sbGetUntil(env, url, enough, maxPages) {
 /**
  * 取 throughDate（**不含**）往前的最近 wantDays 个交易日（升序返回）。
  *
- * 数据源：`auction_watchlist.date`（每天 9:25 必写）。实测每天 ~77~200 行
- * ⇒ 1000 行约 10~13 天，wantDays=20 时通常 2 页即够。
+ * 🔴🔴 [TRADE-DAYS-SRC 2026-11-13] 数据源 = `market_metrics(scope=auction).date`，
+ *   ⛔ **不是** `auction_watchlist.date`（我上一版就是这么写的，踩了坑，实测数据在下面）。
+ *
+ *   事故：2026-11-13 首次云端实跑 `point=divergedays&days=20`，日志显示
+ *     「窗口 39 天（2026-09-22~2026-11-13）」——里面塞进了
+ *     2026-10-01 / 10-02 / 10-05 / 10-06 / 10-07（国庆假期，共 7 个非交易日）。
+ *   逐表点数（`Prefer: count=exact`，2026-11-13 实测）：
+ *     日期          auction_watchlist  market_metrics(auction)  stock_daily_pct
+ *     2026-09-30          42                   96                   484
+ *     2026-10-01          11                    0                     0     ← 假期
+ *     2026-10-02          11                    0                     0
+ *     2026-10-05          11                    0                     0
+ *     2026-10-06          11                    0                     0
+ *     2026-10-07          11                    0                     0
+ *     2026-10-08          85                   85                   482
+ *   ⇒ 假期那几天 `auction_watchlist` 被写了 **11 行垃圾**（真实交易日 40~200 行），
+ *     拿它当「交易日」来源 ⇒ 20 日窗口被 7 个假天稀释成 13 个真交易日：
+ *     霸榜天数、事件计数、「首次分歧后 5 日内涨停数」全部会偏 —— 又一族「窗口被压短」。
+ *
+ *   为什么选 `market_metrics(scope=auction)`：
+ *     ① 它在假期是 **0 行**，真实交易日 85~96 行 ⇒ 无需任何魔法阈值（不是 `>= 20` 那种猜的常数）；
+ *     ② 它是 9:25 主流程必写的表，9:27 那一轮读到的就是当天；
+ *     ③ 逐日腿 `stock_daily_pct` 收盘前是 0 行（16:30 才补齐），⛔ 不能拿它当来源，
+ *        否则 9:27 与盘中手动回补会把「今天」整个丢掉。
  *
  * §10：读失败抛错（调用方据此报 ok=false，⛔ 不当「没有交易日」）；
  *      返回的日期数不足 wantDays ⇒ 原样返回并由调用方如实记录（不猜、不补）。
@@ -836,7 +863,10 @@ export async function readRecentTradeDates(env, throughDate, wantDays) {
   //   去掉它以后，每页 1000 行由 Range 头 + 服务端 db-max-rows 各自约束，分页才真的成立。
   //   ⚠️ 后果对照：带着 limit=1000 时这里最多只能拿到 1000 行（≈ 5~13 个交易日），
   //      20 日窗口会被静默压成十来天，正是 860deee 那次「窗口只有 9 天」的同一族根因。
-  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?select=date' +
+  //
+  // ⚠️ 每天 ~85~96 行 ⇒ 1000 行约 11~12 天，wantDays=39（20 窗口 + 19 天回看）约 4 页。
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?select=date' +
+    '&scope=eq.auction' +
     '&date=lt.' + encodeURIComponent(String(throughDate || '')) +
     '&order=date.desc';
   const dates = [];
