@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-11-12 18:58:17
+// 生成时间: 2026-11-13 02:53:03
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 9944（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 10019（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
@@ -1766,10 +1766,15 @@ async function readStockCodeMap(env) {
 //   在 9:27 那一轮（本身还有补量比 / 自愈）里不可接受。⇒ 统一按 `date=in.(...)` 批量取，
 //   每个表 1~6 页（`sbGetPaged` 带确定性 order，§2 红线：⛔ 不许写死无分页的 limit）。
 //
-// ★ 为什么「日期列表」也从 auction_watchlist 取：
-//   本仓没有一份「云端权威交易日历」，而 auction_watchlist 是每天 9:25 必写的表
-//   ⇒ 它上面出现过的日期就是「有过早盘竞价的日子」。⛔ 不用 fuyao / 用户假期设置
-//   （那要多一条外部依赖，而且 9:27 / 16:00 这两个时点不该再引上游请求）。
+// ★ 为什么「日期列表」从 market_metrics(scope=auction) 取（⛔ 不再是 auction_watchlist）：
+//   本仓没有一份「云端权威交易日历」，只能从数据本身反推。原写法用 auction_watchlist
+//   （每天 9:25 必写），但 2026-11-13 实测发现它在国庆假期那几天被写了 11 行垃圾
+//   ⇒ 20 日窗口里混进 7 个非交易日，霸榜天数 / 事件计数全偏。
+//   改判据后：`market_metrics(scope=auction)` 假期 = 0 行、真实交易日 85~96 行，
+//   不需要任何魔法阈值。⛔ 不用 fuyao / 用户假期设置（那要多一条外部依赖，
+//   9:27 / 16:00 这两个时点不该再引上游请求）。
+//   逐日腿 `stock_daily_pct` 虽然假期也是 0 行，但它 16:30 才补齐（收盘前 0 行）
+//   ⇒ 拿它当来源会把「今天」整个丢掉，⛔ 不行。
 // ============================================================================
 
 /** PostgREST 的 in 列表（中文/文本值统一加双引号；⛔ 不用正则去引号，见 readDailyLegsForStocks 注） */
@@ -1809,8 +1814,30 @@ async function sbGetUntil(env, url, enough, maxPages) {
 /**
  * 取 throughDate（**不含**）往前的最近 wantDays 个交易日（升序返回）。
  *
- * 数据源：`auction_watchlist.date`（每天 9:25 必写）。实测每天 ~77~200 行
- * ⇒ 1000 行约 10~13 天，wantDays=20 时通常 2 页即够。
+ * 🔴🔴 [TRADE-DAYS-SRC 2026-11-13] 数据源 = `market_metrics(scope=auction).date`，
+ *   ⛔ **不是** `auction_watchlist.date`（我上一版就是这么写的，踩了坑，实测数据在下面）。
+ *
+ *   事故：2026-11-13 首次云端实跑 `point=divergedays&days=20`，日志显示
+ *     「窗口 39 天（2026-09-22~2026-11-13）」——里面塞进了
+ *     2026-10-01 / 10-02 / 10-05 / 10-06 / 10-07（国庆假期，共 7 个非交易日）。
+ *   逐表点数（`Prefer: count=exact`，2026-11-13 实测）：
+ *     日期          auction_watchlist  market_metrics(auction)  stock_daily_pct
+ *     2026-09-30          42                   96                   484
+ *     2026-10-01          11                    0                     0     ← 假期
+ *     2026-10-02          11                    0                     0
+ *     2026-10-05          11                    0                     0
+ *     2026-10-06          11                    0                     0
+ *     2026-10-07          11                    0                     0
+ *     2026-10-08          85                   85                   482
+ *   ⇒ 假期那几天 `auction_watchlist` 被写了 **11 行垃圾**（真实交易日 40~200 行），
+ *     拿它当「交易日」来源 ⇒ 20 日窗口被 7 个假天稀释成 13 个真交易日：
+ *     霸榜天数、事件计数、「首次分歧后 5 日内涨停数」全部会偏 —— 又一族「窗口被压短」。
+ *
+ *   为什么选 `market_metrics(scope=auction)`：
+ *     ① 它在假期是 **0 行**，真实交易日 85~96 行 ⇒ 无需任何魔法阈值（不是 `>= 20` 那种猜的常数）；
+ *     ② 它是 9:25 主流程必写的表，9:27 那一轮读到的就是当天；
+ *     ③ 逐日腿 `stock_daily_pct` 收盘前是 0 行（16:30 才补齐），⛔ 不能拿它当来源，
+ *        否则 9:27 与盘中手动回补会把「今天」整个丢掉。
  *
  * §10：读失败抛错（调用方据此报 ok=false，⛔ 不当「没有交易日」）；
  *      返回的日期数不足 wantDays ⇒ 原样返回并由调用方如实记录（不猜、不补）。
@@ -1829,7 +1856,10 @@ async function readRecentTradeDates(env, throughDate, wantDays) {
   //   去掉它以后，每页 1000 行由 Range 头 + 服务端 db-max-rows 各自约束，分页才真的成立。
   //   ⚠️ 后果对照：带着 limit=1000 时这里最多只能拿到 1000 行（≈ 5~13 个交易日），
   //      20 日窗口会被静默压成十来天，正是 860deee 那次「窗口只有 9 天」的同一族根因。
-  const url = CONFIG.SUPABASE_URL + '/rest/v1/auction_watchlist?select=date' +
+  //
+  // ⚠️ 每天 ~85~96 行 ⇒ 1000 行约 11~12 天，wantDays=39（20 窗口 + 19 天回看）约 4 页。
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?select=date' +
+    '&scope=eq.auction' +
     '&date=lt.' + encodeURIComponent(String(throughDate || '')) +
     '&order=date.desc';
   const dates = [];
@@ -7696,6 +7726,49 @@ const RANGE10_BACKUP_TAG = '十日涨幅候补买';
 /** 全称文案（买点侧容器标题 / 行内说明用；§21 模板零计算） */
 const RANGE10_BACKUP_LABEL = '第十日周期候补 · 买点（第' + RANGE10_BACKUP_RULE_NO + '条）';
 
+// ────── ../src/logic/util/num-text.js ──────
+// num-text.js — 数据库「文本型数字」的统一解析（§6 单一实现）
+//
+// 【为什么需要它 · 2026-11-13 线上实证】
+//   `market_metrics.auc_pct_chg` / `change_pct` 存的是**带百分号的字符串**：
+//     '+2.30%' / '-0.84%' / '+10.02%'
+//   而 `Number('+2.30%') === NaN`。原来各处直接 `Number(v)` 后再 `isFinite` 判否 ⇒ 静默变 null。
+//   后果（第二十五条）：
+//     D1「竞价低开（aucPct < 0）」和 D2「高开低走收绿（aucPct > 0 且 closePct < 0）」
+//     两类判据**永远不会触发**，只剩 D3「占比塌陷」在工作 —— 而且**完全不报错**。
+//   实测现场：`point=divergedays` 写入 tvrb_leader_diverge 的 11-13 那行，
+//     逐日留痕 20 天的 `aucPct` 全是 null（同期库里 `auc_pct_chg` 明明有 '+2.30%'），
+//     于是「11-04 高开 +4.68% 却收 −4.09%」这种最典型的 D2 分歧被判成了「不是分歧」。
+//
+// ⚠️ 单测为什么没抓到：夹具里全是数字（`R('2026-11-04', 4.68, -4.09, 14.93, false)`），
+//    而真实数据是字符串。⇒ 凡「来自 DB 文本列」的数值，夹具必须用**真实形态**，
+//    本文件配套的 num-text.test.js 与 leader-diverge.test.js 的 [NUM-TEXT] 用例就是补这一课。
+//
+// 规则（宁缺勿错，§10）：
+//   · null / undefined ⇒ null（缺数据不是 0）
+//   · 数字 ⇒ 原样（非有限数 ⇒ null）
+//   · 字符串 ⇒ 去掉 `%`、千分位 `,`/`，`、全/半角空白、全/半角 `+` 后再 parse
+//   · 解析不出来（'-'、'—'、'N/A'、''）⇒ null
+//   · ⛔ 绝不返回 0 冒充「没有」
+
+/**
+ * @param {*} v 原始值（DB 里的 text / numeric / null）
+ * @returns {number|null} 有限数；否则 null
+ */
+function numOfText(v) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  const s = String(v)
+    .replace(/[%％]/g, '')
+    .replace(/[,，]/g, '')
+    .replace(/[\s\u3000]/g, '')
+    .replace(/^[+＋]/, '');
+  if (s === '') return null;
+  const n = Number(s);
+  return isFinite(n) ? n : null;
+}
+
+
 // ────── ../src/logic/decision/auction-share.js ──────
 // auction-share.js — 「决策」看板：竞价占比（竞价量 ÷ 昨日成交量）的【唯一实现】（Logic 层）
 //
@@ -7753,6 +7826,8 @@ const RANGE10_BACKUP_LABEL = '第十日周期候补 · 买点（第' + RANGE10_B
 //   「都是在云端运行，关电脑也能用」），而只要本文件还挂着 `data/watchlist-helpers.js`，
 //   任何引它的纯逻辑模块就都被钉在浏览器上 ⇒ 云端只能另写一份口径（§6 红线）。
 //   ⛔ 公式 / 门槛 / 展示精度仍然只有这一份实现；`auction-share-read.js` 只负责取数。
+
+// [NUM-TEXT 2026-11-13] DB 文本型数字（'+2.30%' / '1,234'）的解析只认这一份实现（§6）
 
 /** 龙头（今日龙一 / 昨日龙头）标准占比（%）—— 用户口径「前排龙一龙二标准的占比是 4%」
  *  ⚠️ [DRAGON-TIER 2026-10-06] 适用对象已收窄为【只认龙一】，⛔ 龙二不再享用它。 */
@@ -7842,12 +7917,9 @@ function auctionShareZoneOf(share) {
  * @returns {number|null}
  */
 function _toNum(v) {
-  if (v === null || v === undefined) return null;
-  if (typeof v === 'number') return isFinite(v) ? v : null;
-  const s = String(v).trim().replace(/,/g, '');
-  if (s === '') return null;
-  const n = Number(s);
-  return isFinite(n) ? n : null;
+  // ★ [NUM-TEXT 2026-11-13] 走共享解析：库里 `volume` / `yest_volume` 可能是文本，
+  //   而 `Number('1,234')` = NaN（不带 % 也一样会静默变 null）。见 util/num-text.js 文件头。
+  return numOfText(v);
 }
 
 /**
@@ -7949,15 +8021,18 @@ function _roundShare(raw) {
 
 // §6 单一数据源：占比门槛 / 占比公式只认 auction-share 那一份实现（⛔ 不在这里另写一个 3.5 或 v/y*100）
 
+// §6 单一数据源：DB 文本型数字（'+2.30%'）的解析只认 num-text 那一份实现
+
 /** 分歧形态编码（留痕用，UI 不必读） */
 const DIVERGE_SHAPE_LOW_OPEN = 'low-open';      // D1 竞价低开
 const DIVERGE_SHAPE_OPEN_HIGH_CLOSE_RED = 'open-high-close-red'; // D2 高开低走收绿
 const DIVERGE_SHAPE_SHARE = 'share';            // D3 竞价占比塌陷
 
+// ★ [NUM-TEXT 2026-11-13] 数值解析必须走共享实现：库里 `auc_pct_chg` 是 '+2.30%' 这种
+//   带百分号的**字符串**，直接 `Number()` = NaN ⇒ 静默变 null ⇒ D1/D2 两类判据永不触发。
+//   实测现场见 src/logic/util/num-text.js 文件头（线上逐日留痕 aucPct 全 null 那次）。
 function _n(v) {
-  if (v === null || v === undefined || v === '') return null;
-  const n = Number(v);
-  return isFinite(n) ? n : null;
+  return numOfText(v);
 }
 
 /**
@@ -8402,7 +8477,7 @@ async function runLeaderDivergeDays(env, opts) {
   const dates = past.slice();
   result.dates = dates;
   if (dates.length === 0) {
-    logs.push('[LD-CLOUD] ' + today + ' 往前取不到任何交易日（auction_watchlist 无行）⇒ 判定跳过');
+    logs.push('[LD-CLOUD] ' + today + ' 往前取不到任何交易日（market_metrics 竞价腿无行）⇒ 判定跳过');
     result.error = 'no-trade-dates';
     return result;
   }
