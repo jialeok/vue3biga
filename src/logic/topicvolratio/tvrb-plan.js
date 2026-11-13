@@ -15,7 +15,7 @@ import { _applyPrevEbbSecondNoBuy, _applyLeaderLimitDownNoBuy, _applyEbbSellRule
 // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条「监管异动 · 十日涨幅硬上限」的事实判定
 //   （纯函数：把「总龙一昨日/今日十日涨幅 + 会被选中的票的十日涨幅」判成一块空仓标语）。
 //   ⛔ 阈值 / 文案全在 abnormal-10d.js + tvrb-constants.js，本文件只负责【注入事实】与【收口】。
-import { resolveAbnormalFact, classifyRange10, ABNORMAL_LEVEL_NEAR, ABNORMAL_LEVEL_ABNORMAL } from './abnormal-10d.js';
+import { resolveAbnormalFact, classifyRange10, pickAbnormalSource, ABNORMAL_LEVEL_NEAR, ABNORMAL_LEVEL_ABNORMAL } from './abnormal-10d.js';
 
 import { formatRangePct, RULE_NO, finishBuyBlock, buildSellPlan } from '../decision/decision-rules.js';
 import { totalDragonLabel } from '../auction/range20-top5-label.js';
@@ -2135,40 +2135,49 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     ? String(o.ebbCtx.top5[0].topic || '').trim() : '';
   // 今日十日涨幅：9:26 竞价口径优先（与买点侧选股同一把尺子 §6）；缺 ⇒ 成员行（= 屏幕同一列）；再缺 ⇒ null（§10）
   const _abnPctToday = _rangePctOfMap(o.pctMap, _abnLeaderName);
-  // 昨日十日涨幅：用户原话「东方海洋，昨天竞价口径就超过 100% 了」
-  //   ⇒ 昨日【竞价口径】优先（prevAuctionLeg10）；读不到才退回昨日【收盘口径】（prevRange10），
-  //     并把用了哪一份（basis）如实带到文案里（§10：口径不许含糊）。
+  // 昨日：竞价口径（prevAuctionLeg10）优先，读不到才退回收盘口径（prevRange10）—— 用户原话
+  //   「东方海洋，昨天竞价口径就超过 100% 了」；用了哪一份要如实带出（§10 口径不许含糊）。
   const _abnPctPrevAuc = _rangePctOfMap(o.prevAuctionLeg10, _abnLeaderName);
   const _abnPctPrevClose = _rangePctOfMap(o.prevRange10, _abnLeaderName);
-  const _abnPctPrev = (_abnPctPrevAuc !== null) ? _abnPctPrevAuc
-    : (_abnPctPrevClose !== null ? _abnPctPrevClose : _nearestMemberPct(list, _abnLeaderName));
-  // ★★ [ABNORMAL-ALL 2026-11-13 用户口径] 补一层【全市场竞价口径最高票】接管。
-  //   监管异动是总约束（「所有大a主板10日涨幅不能超过100%」），只看 top5[0] 会漏掉
-  //   11-12 的总龙二东方海洋（10日 100.78%，当天 20日涨幅总龙一是福莱新材）。
-  //   ⚠️ 仅当它【比总龙一更极端】才接管 ⇒ 其余日期逐字保留旧行为（§11）。
-  //   ⚠️ 两份 Map 都恒 9:26 竞价口径；收盘口径那份只作「昨日竞价读不到」的退路，且 basis 如实写。
-  const _abnMarketPrevAuc = maxRangePctOf(o.prevAuctionLeg10);
-  const _abnMarketPrevClose = maxRangePctOf(o.prevRange10);
-  const _abnMarketPrev = _abnMarketPrevAuc || _abnMarketPrevClose;
-  const _abnMarketToday = maxRangePctOf(o.pctMap);
-  let _abnName = _abnLeaderName;
-  let _abnTopic = _abnLeaderTopic;
-  let _abnToday = (_abnPctToday !== null) ? _abnPctToday : _nearestMemberPct(list, _abnLeaderName);
-  let _abnPrev = _abnPctPrev;
-  let _abnBasis = (_abnPctPrevAuc !== null) ? 'auction' : (_abnPctPrevClose !== null ? 'close' : '');
-  if (_abnMarketToday && (_abnToday === null || _abnMarketToday.pct > _abnToday)) {
-    _abnName = _abnMarketToday.name;
-    _abnTopic = '';
-    _abnToday = _abnMarketToday.pct;
-  }
-  if (_abnMarketPrev && (_abnPrev === null || _abnMarketPrev.pct > _abnPrev)) {
-    _abnPrev = _abnMarketPrev.pct;
-    _abnBasis = _abnMarketPrevAuc ? 'auction' : 'close';
-    if (_abnName === _abnLeaderName) _abnName = _abnMarketPrev.name;
-  }
+  // ★★ [ABN-SAME-SOURCE 2026-11-13 用户报错后修] 第三十四条触发源的取数铁律：
+  //   【名字 / 涨幅 / 口径 / 是不是总龙一】永远绑定在同一只票上，⛔ 不许拆开赋值。
+  //
+  //   事故现场（用户原话）：「11月13日提示那个就有错误，上面说市场总龙一闵发铝业十日涨幅
+  //   100.78%，根本不是，不知道这些数据从哪里来，相差太大了」。库内真实数据：
+  //     · 11-13 今日竞价口径最高 = 闽发铝业 84.88%（它昨日 87.04%）
+  //     · 11-12 昨日竞价口径最高 = 东方海洋 100.78%
+  //     · 闽发铝业 11-13 二十日涨幅仅 48.56%，二十日总龙一 = 东方海洋 135.61%
+  //   旧实现的三处错误：①「今日分支」把名字换成闽发铝业；②「昨日分支」只把数值换成
+  //   东方海洋的 100.78%；③ 文案还硬写「市场总龙一」⇒ 拼出「闵发铝业 100.78%」，
+  //   数值差 13~16 个点、称谓也错。
+  //   ★ 修复 = 判据抽成纯函数 `pickAbnormalSource`（§15 可单测），本文件只负责【从 Map 取候选】。
+  const _abnPick = pickAbnormalSource({
+    leaderName: _abnLeaderName,
+    leaderTopic: _abnLeaderTopic,
+    leaderToday: _abnPctToday,
+    leaderPrevAuc: _abnPctPrevAuc,
+    leaderPrevClose: _abnPctPrevClose,
+    marketToday: maxRangePctOf(o.pctMap),
+    marketPrevAuc: maxRangePctOf(o.prevAuctionLeg10),
+    marketPrevClose: maxRangePctOf(o.prevRange10)
+  });
+
+  // 定了触发源之后，两个数字都【按这个名字重新取】—— ⛔ 绝不用别的票的数值顶替
+  let _abnName = _abnPick.name || _abnLeaderName;
+  let _abnTopic = _abnPick.topic || (_abnPick.triggered ? '' : _abnLeaderTopic);
+  let _abnIsTop1 = _abnPick.isTop1;
+  let _abnToday = _rangePctOfMap(o.pctMap, _abnName);
+  let _abnPrevAuc = _rangePctOfMap(o.prevAuctionLeg10, _abnName);
+  let _abnPrevClose = _rangePctOfMap(o.prevRange10, _abnName);
+  let _abnPrev = (_abnPrevAuc !== null) ? _abnPrevAuc : _abnPrevClose;
+  let _abnBasis = (_abnPrevAuc !== null) ? 'auction' : (_abnPrevClose !== null ? 'close' : '');
+  // §10：同一只票的数字读不到 ⇒ 用成员行那份（屏幕同一列，§6 同一份真相），⛔ 不补 0
+  if (_abnToday === null) _abnToday = _nearestMemberPct(list, _abnName);
+  if (_abnPrev === null) _abnPrev = _nearestMemberPct(list, _abnName);
   _applyAbnormalSweep(out, {
     leaderName: _abnName,
     leaderTopic: _abnTopic,
+    leaderIsTop1: _abnIsTop1,
     leaderPctToday: _abnToday,
     leaderPctPrev: _abnPrev,
     leaderPctPrevBasis: _abnBasis
@@ -2330,8 +2339,12 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
  * ⛔ 卖点侧一行不动。
  *
  * @param {object} out buildTopicVolRatioPlan 正在组装的计划对象（原地改）
- * @param {{leaderName?:string, leaderTopic?:string, leaderPctToday?:number|string|null,
- *          leaderPctPrev?:number|string|null, leaderPctPrevBasis?:string}} [opts]
+ * @param {{leaderName?:string, leaderTopic?:string, leaderIsTop1?:boolean,
+ *          leaderPctToday?:number|string|null, leaderPctPrev?:number|string|null,
+ *          leaderPctPrevBasis?:string}} [opts]
+ *        ★ [ABN-SAME-SOURCE] 这几个字段必须描述【同一只票】：`leaderName` 是触发源那
+ *        一只，`leaderPctToday` / `leaderPctPrev` 都是它自己的数值，`leaderIsTop1`
+ *        说明它是不是二十日涨幅总龙一（false ⇒ 文案写「市场十日涨幅最高票」）。
  * @returns {object} 判定出的异动事实（与 TVRB_ABNORMAL_NONE 同形状；show=false ⇒ 零改动）
  */
 export function _applyAbnormalSweep(out, opts) {
@@ -2353,6 +2366,7 @@ export function _applyAbnormalSweep(out, opts) {
   const fact = resolveAbnormalFact({
     leaderName: o.leaderName,
     leaderTopic: o.leaderTopic,
+    leaderIsTop1: o.leaderIsTop1,
     leaderPctToday: o.leaderPctToday,
     leaderPctPrev: o.leaderPctPrev,
     leaderPctPrevBasis: o.leaderPctPrevBasis,
@@ -2386,10 +2400,10 @@ export function _applyAbnormalSweep(out, opts) {
 
   out.notes.push('🚨【第' + ABNORMAL_RULE_NO + '条 · 全场监管异动】' +
     (fact.kind === ABNORMAL_KIND_NEXT_DAY
-      ? ('市场总龙一【' + (fact.leaderName || '—') + '】昨日十日涨幅 ' +
+      ? ((fact.leaderLabel || '市场总龙一') + '【' + (fact.leaderName || '—') + '】昨日十日涨幅 ' +
          (fact.leaderPctPrevText || '—') + ' ＞ ' + TVRB_RANGE10_CAP + '% ⇒ 今天是【异动次日】')
       : (fact.kind === ABNORMAL_KIND_LEADER_NOW
-        ? ('市场总龙一【' + (fact.leaderName || '—') + '】今日十日涨幅 ' +
+        ? ((fact.leaderLabel || '市场总龙一') + '【' + (fact.leaderName || '—') + '】今日十日涨幅 ' +
            (fact.leaderPctTodayText || '—') + ' ＞ ' + TVRB_RANGE10_CAP + '% ⇒ 今日异动')
         : ('入选票 ' + (fact.names || []).join('、') + ' 十日涨幅 ＞ ' + TVRB_RANGE10_CAP + '%'))) +
     ' ⇒ 【整个市场整片灰 + 空仓】，今天一张票都不买（用户：总龙一影响范围波及到所有的票）。' +

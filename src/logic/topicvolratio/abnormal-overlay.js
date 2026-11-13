@@ -26,14 +26,22 @@
 // ══════════════════════════════════════════════════════════════════════════════════════
 
 import { buildCashAlert } from './tvrb-blocks.js';
-import { resolveAbnormalFact } from './abnormal-10d.js';
+import { resolveAbnormalFact, pickAbnormalSource } from './abnormal-10d.js';
 import { maxRangePctOf } from './tvrb-plan.js';
+import { _num } from './tvrb-utils.js';
 import {
   ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE
 } from './tvrb-constants.js';
 import {
   eachBuyBlock, BUY_SLOT_KEYS, EXTRA_BLOCK_KEYS
 } from './plan-live-overlay.js';
+
+/** 按【票名】从一份竞价口径 Map 里取那只票自己的涨幅（§10：取不到 ⇒ null，⛔ 不补 0） */
+function _pctOf(map, name) {
+  if (!(map instanceof Map) || !name) return null;
+  const hit = map.get(String(name).trim());
+  return hit ? _num(hit.pct) : null;
+}
 
 /** 块 / 票行各拷贝一层：够改标签，又不会把存档对象污染掉 */
 function _cloneBlock(b) {
@@ -138,14 +146,40 @@ export function buildAbnormalFactFromMaps(o) {
   const t = maxRangePctOf(x.todayMap);
   const pa = maxRangePctOf(x.prevAucMap);
   const pc = maxRangePctOf(x.prevCloseMap);
-  const p = pa || pc;
-  if (!t && !p) return null;
+  if (!t && !pa && !pc) return null;
+
+  // ★★ [ABN-SAME-SOURCE 2026-11-13 用户报错后修] 这里原来写的是
+  //     `leaderName: (t || p).name` + `leaderPctPrev: p.pct`
+  //   ⇒ 「名字取【今日】最高票、数值取【昨日】最高票」—— 正是用户看到的那句话：
+  //     「11月13日提示……市场总龙一闵发铝业十日涨幅100.78%，根本不是，相差太大了」。
+  //   11-13 实测：今日最高 = 闽发铝业 84.88%，昨日最高 = 东方海洋 100.78%
+  //   ⇒ 拼出「闽发铝业 100.78%」（差 13.74 个点）。
+  //   修复：先定【触发源是哪只票】（择一走同一把纯函数 pickAbnormalSource），
+  //   再按这个名字分别取今日 / 昨日的值；两个数字永远同属一只票。
+  const pick = pickAbnormalSource({
+    leaderName: '',            // ★ 本路径没有「二十日涨幅总龙一」的信息（§10 不猜）
+    leaderToday: null,
+    leaderPrevAuc: null,
+    leaderPrevClose: null,
+    marketToday: t,
+    marketPrevAuc: pa,
+    marketPrevClose: pc
+  });
+  const name = (pick.triggered ? pick.name : ((t || pa || pc).name));
+  const todayPct = _pctOf(x.todayMap, name);
+  const prevAucPct = _pctOf(x.prevAucMap, name);
+  const prevClosePct = _pctOf(x.prevCloseMap, name);
+  const prevPct = (prevAucPct !== null) ? prevAucPct : prevClosePct;
+  const basis = (prevAucPct !== null) ? 'auction' : (prevClosePct !== null ? 'close' : '');
+
   return resolveAbnormalFact({
-    leaderName: (t || p).name,
+    leaderName: name,
     leaderTopic: '',
-    leaderPctToday: t ? t.pct : null,
-    leaderPctPrev: p ? p.pct : null,
-    leaderPctPrevBasis: pa ? 'auction' : (pc ? 'close' : ''),
+    // ⛔ 不许自称「市场总龙一」：这条路径拿不到二十日涨幅榜，只能如实说「十日涨幅最高票」
+    leaderIsTop1: false,
+    leaderPctToday: todayPct,
+    leaderPctPrev: prevPct,
+    leaderPctPrevBasis: basis,
     rows: []
   });
 }

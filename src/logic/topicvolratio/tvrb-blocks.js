@@ -473,16 +473,19 @@ export function _applyCashAlertBuyRules(blocks, cashAlert) {
  */
 export function _applyAbnormalNoBuyRules(blocks, abnormal) {
   if (!abnormal || !abnormal.show) return;
+  // ★ [ABN-SAME-SOURCE] 称谓/阈值都必须与判定同源：不是总龙一就不这么叫；触发线是
+  //   ＞ CAP（97%）而不是 ≥ 100% —— 旧文案写「≥ 100%」与 FULL-MARKET 口径自相矛盾。
+  const _lbl = abnormal.leaderLabel || '市场总龙一';
   const lead = '【第' + ABNORMAL_RULE_NO + '条 · 监管异动】' +
     (abnormal.kind === ABNORMAL_KIND_NEXT_DAY
-      ? ('市场总龙一【' + (abnormal.leaderName || '—') + '】昨日十日涨幅 ' +
-         (abnormal.leaderPctPrevText || '—') + ' ≥ ' + TVRB_RANGE10_ABNORMAL +
+      ? (_lbl + '【' + (abnormal.leaderName || '—') + '】昨日十日涨幅 ' +
+         (abnormal.leaderPctPrevText || '—') + ' ＞ ' + TVRB_RANGE10_CAP +
          '% ⇒ 今天是异动次日（异动次日市场情绪普遍崩坏）')
       : (abnormal.kind === ABNORMAL_KIND_LEADER_NOW
-        ? ('市场总龙一【' + (abnormal.leaderName || '—') + '】今日十日涨幅 ' +
-           (abnormal.leaderPctTodayText || '—') + ' ≥ ' + TVRB_RANGE10_ABNORMAL + '% ⇒ 今日异动')
-        : ('入选票 ' + (abnormal.names || []).join('、') + ' 十日涨幅 ≥ ' +
-           TVRB_RANGE10_ABNORMAL + '% ⇒ 监管异动'))) +
+        ? (_lbl + '【' + (abnormal.leaderName || '—') + '】今日十日涨幅 ' +
+           (abnormal.leaderPctTodayText || '—') + ' ＞ ' + TVRB_RANGE10_CAP + '% ⇒ 今日异动')
+        : ('入选票 ' + (abnormal.names || []).join('、') + ' 十日涨幅 ＞ ' +
+           TVRB_RANGE10_CAP + '% ⇒ 监管异动'))) +
     ' ⇒ 今天【空仓、不买任何票】。';
   (blocks || []).forEach(function(b) {
     (b.picks || []).forEach(function(p) {

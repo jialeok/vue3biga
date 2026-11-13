@@ -194,11 +194,11 @@ describe('[ABNORMAL-ALL 接线静态锁] 漏一处 ⇒ 11-12 仍显示彩色「�
     expect(css).toContain('grayscale(1)');
   });
 
-  it('版本：规则指纹 v10 + SW v45（[FULL-MARKET] 改了选股结论，漏一个手机端就吃旧 JS）', () => {
+  it('版本：规则指纹 v11 + SW v46（[ABN-SAME-SOURCE] 文案变了，漏一个手机端就吃旧 JS）', () => {
     const r = readFileSync('src/logic/topicvolratio/plan-snapshot-rules.js', 'utf8');
-    expect(r).toContain('TVRB_RULES_VERSION = 10');
+    expect(r).toContain('TVRB_RULES_VERSION = 11');
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v45'");
+    expect(sw).toContain("var CACHE = 'biga-static-v46'");
   });
 
   it('[CAP-97] 11-11 真实 95.711445% 不该触发任何显示层总约束', () => {
@@ -235,5 +235,70 @@ describe('[ABNORMAL-ALL 接线静态锁] 漏一处 ⇒ 11-12 仍显示彩色「�
     out.newDragon.picks.forEach(function(p) {
       expect(p.buyActionTag).toBe(ABNORMAL_NO_BUY_TAG);
     });
+  });
+});
+
+// ── [ABN-SAME-SOURCE 2026-11-13] 显示层兜底判据：名字 / 数值必须同源 ──────────────
+//
+// 用户报错原话：「11月13日提示那个就有错误，上面说市场总龙一闵发铝业十日涨幅100.78%，
+//   根本不是，不知道这些数据从哪里来，相差太大了」。
+// 这个函数就是那句提示的真凶：`leaderName: (t || p).name` 取【今日】最高票，
+// `leaderPctPrev: p.pct` 取【昨日】最高票 ⇒ 11-13 拼出「闽发铝业 84.88 + 东方海洋的 100.78」。
+describe('[ABN-SAME-SOURCE] buildAbnormalFactFromMaps 不许把「今日的名」配「昨日的数」', () => {
+  it('11-13 真实数据：昨日触发 ⇒ 点名【东方海洋】100.78%，⛔ 不是闽发铝业', () => {
+    const f = buildAbnormalFactFromMaps({
+      todayMap: new Map([['闽发铝业', { pct: 84.88 }], ['东方海洋', { pct: 73.15 }]]),
+      prevAucMap: new Map([['东方海洋', { pct: 100.78 }], ['闽发铝业', { pct: 87.04 }]]),
+      prevCloseMap: null
+    });
+    expect(f.show).toBe(true);
+    expect(f.kind).toBe(ABNORMAL_KIND_NEXT_DAY);
+    expect(f.leaderName).toBe('东方海洋');          // ★ 旧实现给「闽发铝业」
+    expect(f.leaderPctPrev).toBeCloseTo(100.78, 2);
+    expect(f.leaderPctToday).toBeCloseTo(73.15, 2); // 同一只票自己的今日值
+    expect(f.detail).toContain('东方海洋');
+    expect(f.detail).toContain('100.78%');
+    expect(f.detail).not.toContain('闽发铝业');
+    // 这条路径拿不到二十日涨幅榜 ⇒ ⛔ 不许自称「市场总龙一」
+    expect(f.leaderLabel).toBe('市场十日涨幅最高票');
+  });
+
+  it('11-12 真实数据：今日触发 ⇒ 点名【东方海洋】100.78%（昨日 95.71 未触发）', () => {
+    const f = buildAbnormalFactFromMaps({
+      todayMap: new Map([['东方海洋', { pct: 100.78 }], ['大东方', { pct: 70.05 }]]),
+      prevAucMap: new Map([['东方海洋', { pct: 95.71 }], ['大东方', { pct: 60 }]]),
+      prevCloseMap: null
+    });
+    expect(f.show).toBe(true);
+    expect(f.kind).toBe(ABNORMAL_KIND_LEADER_NOW);
+    expect(f.leaderName).toBe('东方海洋');
+    expect(f.leaderPctToday).toBeCloseTo(100.78, 2);
+    expect(f.leaderPctPrev).toBeCloseTo(95.71, 2);
+  });
+
+  it('昨日与今日各有触发票 ⇒ 异动次日优先，且名字跟着【昨日】那只走', () => {
+    const f = buildAbnormalFactFromMaps({
+      todayMap: new Map([['甲股份', { pct: 99 }], ['乙股份', { pct: 50 }]]),
+      prevAucMap: new Map([['乙股份', { pct: 98 }], ['甲股份', { pct: 60 }]]),
+      prevCloseMap: null
+    });
+    expect(f.kind).toBe(ABNORMAL_KIND_NEXT_DAY);
+    expect(f.leaderName).toBe('乙股份');
+    expect(f.leaderPctPrev).toBeCloseTo(98, 2);
+    expect(f.leaderPctToday).toBeCloseTo(50, 2);
+  });
+
+  it('竞价口径优先：昨日收盘 100.43 / 竞价 95.71 ⇒ 不许拿收盘判空仓（11-11 正常运行）', () => {
+    const f = buildAbnormalFactFromMaps({
+      todayMap: new Map([['东方海洋', { pct: 95.711445 }]]),
+      prevAucMap: new Map([['东方海洋', { pct: 92.5 }]]),
+      prevCloseMap: new Map([['东方海洋', { pct: 100.43 }]])
+    });
+    expect(f.show).toBe(false);
+  });
+
+  it('§10：三份都读不到 ⇒ null（⛔ 不造空仓）', () => {
+    expect(buildAbnormalFactFromMaps({ todayMap: null, prevAucMap: null, prevCloseMap: null })).toBeNull();
+    expect(buildAbnormalFactFromMaps(null)).toBeNull();
   });
 });

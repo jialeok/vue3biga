@@ -119,12 +119,18 @@ describe('[LD-CLOUD] Worker 侧', () => {
     expect(s).toContain("'divergedays'");
   });
 
-  it('9:27 snapshot 与 16:00 close 各调一次（intraday / close 两阶段）', () => {
+  it('9:27 snapshot 跑 intraday；close 相位改由 16:30 自愈工作流独立发一次', () => {
+    // ★ [CLOSE-POST 2026-11-13] 收盘腿不再挂在 16:00 close 轮里：那一轮会把免费版 50 次
+    //   subrequest 配额耗尽（实测 `Too many subrequests`），导致收盘列 / LD / 日志全部发不出去。
+    //   现在拆成 16:30 的独立 invocation ⇒ 断言改为「工作流确实发了 phase=close」。
     expect(s).toContain('runLeaderDivergeDays');
     expect(s).toContain("phase: 'intraday'");
-    expect(s).toContain("phase: 'close'");
     expect(s).toContain('leaderDivergeWritten');
     expect(s).toContain('leaderDivergeCloseWritten');
+    expect(s).toContain("phase: (opts && opts.phase) || ''");
+    const heal = read('.github/workflows/supabase-heal.yml');
+    expect(heal).toContain('point=divergedays');
+    expect(heal).toContain('phase=close');
   });
 
   it('部署后复核（verify-deploy）把这轮的新标识符列进 REQUIRED', () => {

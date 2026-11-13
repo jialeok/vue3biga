@@ -103,6 +103,96 @@ export function isOverRange10Cap(pct) {
   return lv === ABNORMAL_LEVEL_NEAR || lv === ABNORMAL_LEVEL_ABNORMAL;
 }
 
+/**
+ * 【纯函数 · §15】第三十四条【触发源】的择一：把几份候选拼成「一只票的完整事实」。
+ *
+ * ★★ [ABN-SAME-SOURCE 2026-11-13 用户报错后修] 为什么必须有这一步：
+ *   用户原话「11月13日提示那个就有错误，上面说市场总龙一闵发铝业十日涨幅100.78%，
+ *   根本不是……相差太大了」。库内真实数据：11-13 今日竞价最高 = 闽发铝业 84.88%，
+ *   11-12 昨日竞价最高 = 东方海洋 100.78% ⇒ 旧实现把「今日的名」和「昨日的数」拼一起，
+ *   差 13~16 个点，还把二十日涨幅只排到 48.56% 的票叫成「市场总龙一」。
+ *
+ * 判据（⛔ 不许改，改了就是重演事故）：
+ *   ① 候选 = { name, topic, pct, basis, isTop1 } **四件套整体存在**，禁止拆开取用；
+ *   ② 昨日【竞价口径】优先于【收盘口径】—— 11-11 东方海洋收盘 100.43 / 竞价 95.71，
+ *      取收盘会把它误判成异动（用户明确要竞价口径）；
+ *   ③ 同一口径内取 pct 最高那只（全市场硬约束「所有大a主板10日涨幅」不能只盯总龙一）；
+ *   ④ 触发优先级：昨日（异动次日）> 今日（当日异动），与 resolveAbnormalFact 的 kind 一致；
+ *   ⑤ 没触发 ⇒ `triggered:false`，`name` 回落总龙一（保持旧行为，§11）。
+ *
+ * @param {object} [input]
+ * @param {string} [input.leaderName]   20日涨幅主板第 1 名
+ * @param {string} [input.leaderTopic]
+ * @param {number|string|null} [input.leaderToday]      总龙一今日十日涨幅（竞价口径）
+ * @param {number|string|null} [input.leaderPrevAuc]    总龙一昨日十日涨幅（竞价口径）
+ * @param {number|string|null} [input.leaderPrevClose]  总龙一昨日十日涨幅（收盘口径，退路）
+ * @param {{name:string,pct:number}|null} [input.marketToday]     全市场今日竞价最高票
+ * @param {{name:string,pct:number}|null} [input.marketPrevAuc]   全市场昨日竞价最高票
+ * @param {{name:string,pct:number}|null} [input.marketPrevClose] 全市场昨日收盘最高票
+ * @returns {{triggered:boolean, name:string, topic:string, isTop1:boolean,
+ *            basis:string, prevHit:object|null, todayHit:object|null}}
+ *          注意：返回值只交代【是哪只票、哪一份口径触发的】，两个具体数值由调用方
+ *          **按这个名字重新取**（⛔ 不许在这里顺手塞别的票的数字）。
+ */
+export function pickAbnormalSource(input) {
+  const i = input || {};
+  const leaderName = String(i.leaderName || '').trim();
+  const leaderTopic = String(i.leaderTopic || '').trim();
+
+  const _cand = function(name, topic, pct, basis, isTop1) {
+    const nm = String(name || '').trim();
+    const v = _num(pct);
+    if (!nm || v === null) return null;
+    return { name: nm, topic: String(topic || '').trim(), pct: v, basis: basis || '', isTop1: !!isTop1 };
+  };
+  const _bestOf = function(cands) {
+    let best = null;
+    (cands || []).forEach(function(c) { if (c && (!best || c.pct > best.pct)) best = c; });
+    return best;
+  };
+  const _mktName = function(m) { return (m && m.name) ? m.name : ''; };
+  const _mktPct = function(m) { return (m && m.pct !== undefined) ? m.pct : null; };
+
+  const prevAucHit = _bestOf([
+    _cand(leaderName, leaderTopic, i.leaderPrevAuc, 'auction', true),
+    _cand(_mktName(i.marketPrevAuc), '', _mktPct(i.marketPrevAuc), 'auction', false)
+  ]);
+  const prevCloseHit = _bestOf([
+    _cand(leaderName, leaderTopic, i.leaderPrevClose, 'close', true),
+    _cand(_mktName(i.marketPrevClose), '', _mktPct(i.marketPrevClose), 'close', false)
+  ]);
+  const todayHit = _bestOf([
+    _cand(leaderName, leaderTopic, i.leaderToday, 'auction', true),
+    _cand(_mktName(i.marketToday), '', _mktPct(i.marketToday), 'auction', false)
+  ]);
+  const prevHit = prevAucHit || prevCloseHit;
+
+  let hit = null;
+  if (prevHit && isOverRange10Cap(prevHit.pct)) hit = prevHit;
+  else if (todayHit && isOverRange10Cap(todayHit.pct)) hit = todayHit;
+
+  if (!hit) {
+    return {
+      triggered: false,
+      name: leaderName,
+      topic: leaderTopic,
+      isTop1: true,
+      basis: '',
+      prevHit: prevHit,
+      todayHit: todayHit
+    };
+  }
+  return {
+    triggered: true,
+    name: hit.name,
+    topic: hit.topic,
+    isTop1: hit.isTop1,
+    basis: hit.basis,
+    prevHit: prevHit,
+    todayHit: todayHit
+  };
+}
+
 /** 「X（题材 +101.20%）」这类点名文案（⛔ 只用于说明，不参与判定，§21 文案在 Logic 层拼好） */
 function _pointOf(name, topic, pctText) {
   const t = String(topic || '').trim();
@@ -113,8 +203,20 @@ function _pointOf(name, topic, pctText) {
  * 【纯函数】把注入的「事实」判成一块可渲染的异动标语（= cashAlert 的同形状对象）。
  *
  * @param {object} [input]
- * @param {string} [input.leaderName]      市场总龙一 = 20日涨幅主板第 1 名（采集层 ebbCtx.top5[0]）
+ * ★★ [ABN-SAME-SOURCE 2026-11-13 用户报错后修] 本函数吃的是【一只票的完整事实】：
+ *   `leaderName` 与 `leaderPctToday` / `leaderPctPrev` **必须同属那一只票**。
+ *   用户原话：「11月13日提示那个就有错误，上面说市场总龙一闵发铝业十日涨幅100.78%，
+ *   根本不是，不知道这些数据从哪里来，相差太大了」——实测 11-13 闽发铝业竞价口径只有
+ *   84.88%（11-12 是 87.04%），100.78% 是【东方海洋】11-12 的十日涨幅 ⇒ 典型的
+ *   「名字取今日最高票、数值取昨日最高票」张冠李戴。⛔ 调用方不许把两份不同来源的
+ *   名字 / 数值拼进来；拼对了才准传（取数侧见 tvrb-plan#_abnBestOf）。
+ *
+ * @param {string} [input.leaderName]      触发源那【一只】票的名字
+ *        （正常 = 20日涨幅主板第 1 名；若被全市场最高票接管 ⇒ 是那只票，见 leaderIsTop1）
  * @param {string} [input.leaderTopic]     它的题材（只用于点名，⛔ 不参与判定）
+ * @param {boolean} [input.leaderIsTop1]   它到底是不是「20日涨幅主板第 1 名」。
+ *        true / 缺省 ⇒ 文案写「市场总龙一」（保持旧行为，旧测试不受影响）；
+ *        false ⇒ 写「市场十日涨幅最高票」，⛔ 不许把普通票叫成总龙一。
  * @param {number|string|null} [input.leaderPctToday] 它【今日】的十日涨幅（9:26 竞价口径，pctMap）
  * @param {number|string|null} [input.leaderPctPrev]  它【昨日】的十日涨幅（组合式 prevRange10）
  * @param {'auction'|'close'|''} [input.leaderPctPrevBasis] 昨日那份用的是【竞价口径】还是【收盘口径】
@@ -130,6 +232,8 @@ export function resolveAbnormalFact(input) {
   const i = input || {};
   const leaderName = String(i.leaderName || '').trim();
   const leaderTopic = String(i.leaderTopic || '').trim();
+  // ★ [ABN-SAME-SOURCE] 称谓必须与事实一致：不是二十日涨幅总龙一就不许这么叫。
+  const leaderLabel = (i.leaderIsTop1 === false) ? '市场十日涨幅最高票' : '市场总龙一';
   const today = classifyRange10(i.leaderPctToday);
   const prev = classifyRange10(i.leaderPctPrev);
   const rows = Array.isArray(i.rows) ? i.rows : [];
@@ -168,6 +272,8 @@ export function resolveAbnormalFact(input) {
     ruleNo: ABNORMAL_RULE_NO,
     leaderName: leaderName,
     leaderTopic: leaderTopic,
+    leaderLabel: leaderLabel,
+    leaderIsTop1: (i.leaderIsTop1 === false) ? false : true,
     leaderPctPrev: prev.pct,
     leaderPctPrevText: prev.pctText,
     leaderPctToday: today.pct,
@@ -183,6 +289,8 @@ export function resolveAbnormalFact(input) {
     // 没有异动也要把「判没判过」带出去：说明区靠 unknownLeader / nearNames 交代缺口与超限票。
     leaderName: base.leaderName,
     leaderTopic: base.leaderTopic,
+    leaderLabel: base.leaderLabel,
+    leaderIsTop1: base.leaderIsTop1,
     leaderPctPrev: base.leaderPctPrev,
     leaderPctPrevText: base.leaderPctPrevText,
     leaderPctToday: base.leaderPctToday,
@@ -214,11 +322,11 @@ export function resolveAbnormalFact(input) {
     : (i.leaderPctPrevBasis === 'close' ? '（昨日收盘口径 —— 昨日竞价那份没读到）' : '');
   let lead = '';
   if (kind === ABNORMAL_KIND_NEXT_DAY) {
-    lead = '市场总龙一' + _pointOf(leaderName, leaderTopic, prev.pctText) +
+    lead = leaderLabel + _pointOf(leaderName, leaderTopic, prev.pctText) +
       '【昨日（上一交易日）】十日涨幅 ' + _trig(prev) + ' ⇒ 今天是【异动次日】：' +
       '按第' + ABNORMAL_RULE_NO + '条，今天【空仓】—— 不买任何票（' + ABNORMAL_NO_BUY_TAG + '）。';
   } else if (kind === ABNORMAL_KIND_LEADER_NOW) {
-    lead = '市场总龙一' + _pointOf(leaderName, leaderTopic, today.pctText) +
+    lead = leaderLabel + _pointOf(leaderName, leaderTopic, today.pctText) +
       '【今日】（9:26 竞价口径）十日涨幅 ' + _trig(today) + ' ⇒ 按第 ' +
       ABNORMAL_RULE_NO + ' 条，今天【空仓】—— 不买任何票（' + ABNORMAL_NO_BUY_TAG + '）。';
   } else {
@@ -230,10 +338,13 @@ export function resolveAbnormalFact(input) {
 
   const tail = [];
   if (leaderName) {
-    tail.push('（自核用）总龙一 ' + leaderName + '：今日十日涨幅 ' + today.pctText +
+    // ★ [ABN-SAME-SOURCE] 这里两个数字**必须同属这一只票**（同名、同日口径），
+    //   用户就是靠这一行自核的：11-13 曾把闽发铝业（84.88%）和东方海洋的 100.78% 拼在一起。
+    tail.push('（自核用）' + leaderLabel + ' ' + leaderName + '：今日十日涨幅 ' + today.pctText +
       (prev.level === ABNORMAL_LEVEL_UNKNOWN
         ? '，昨日那份未读到（判不出异动次日）'
-        : '，昨日 ' + prev.pctText + prevBasisText) + '。');
+        : '，昨日 ' + prev.pctText + prevBasisText) +
+      '（以上两个数字取自【同一只票】的同一套口径，可逐个核对）。');
   } else {
     tail.push('⚠️ 总龙一（20日涨幅主板第 1 名）还没读到 ⇒ 只判了入选票自身，' +
       '「异动次日」这一条【判不出】（§10：判不出 ≠ 没有异动）。');

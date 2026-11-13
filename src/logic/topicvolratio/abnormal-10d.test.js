@@ -20,8 +20,9 @@
 //     所以下面专门有「11-11 正常」与「今日 73 / 昨日 100.78 ⇒ 仍判异动次日」两组用例。
 
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
-  classifyRange10, isOverRange10Cap, resolveAbnormalFact,
+  classifyRange10, isOverRange10Cap, resolveAbnormalFact, pickAbnormalSource,
   ABNORMAL_LEVEL_UNKNOWN, ABNORMAL_LEVEL_OK, ABNORMAL_LEVEL_NEAR, ABNORMAL_LEVEL_ABNORMAL
 } from './abnormal-10d.js';
 import {
@@ -489,5 +490,161 @@ describe('[NUM-TEXT] 文本型涨幅不得静默判不出（§10 不补 0）', (
     expect(f.show).toBe(true);
     expect(f.kind).toBe(ABNORMAL_KIND_NEXT_DAY);
     expect(f.leaderPctPrevText).toBe('+100.78%');
+  });
+});
+
+// ── ⑥ [ABN-SAME-SOURCE 2026-11-13] 触发源「名字 / 涨幅 / 称谓」必须同源 ──────────
+//
+// 用户报错原话：「11月13日提示那个就有错误，上面说市场总龙一闵发铝业十日涨幅100.78%，
+//   根本不是，不知道这些数据从哪里来，相差太大了，是不是逻辑错误……
+//   还有计算问题，看是否计算正确，不要乱来。」
+//
+// 库内真实数据（stock_range_pct + market_metrics 反解，本节全部用它）：
+//   · 11-12 东方海洋 100.78%（竞价口径，收/竞同腿）、闽发铝业 87.04%
+//   · 11-13 闽发铝业 84.88%（全市场最高）、东方海洋 73.15%
+//   · 二十日涨幅：11-12 第一 = 福莱新材 150.27；11-13 第一 = 东方海洋 135.61（闽发铝业仅 48.56%）
+// ⇒ 旧实现拼出「闽发铝业 + 100.78%」：数值差 13.74 个点，称谓也错。
+describe('[ABN-SAME-SOURCE] 触发源同源（用户报错「闽发铝业 100.78%」的复现场景）', () => {
+  it('11-13 真实数据：点名必须是【东方海洋】100.78%（昨日异动），⛔ 不是闽发铝业 84.88%', () => {
+    const s = pickAbnormalSource({
+      leaderName: '东方海洋', leaderTopic: '东方',
+      leaderToday: 73.15,
+      leaderPrevAuc: 100.78, leaderPrevClose: 70.32,
+      marketToday: { name: '闽发铝业', pct: 84.88 },
+      marketPrevAuc: { name: '东方海洋', pct: 100.78 },
+      marketPrevClose: { name: '东方海洋', pct: 70.32 }
+    });
+    expect(s.triggered).toBe(true);
+    expect(s.name).toBe('东方海洋');
+    expect(s.isTop1).toBe(true);                       // 11-13 二十日总龙一 = 东方海洋 135.61
+    expect(s.prevHit.pct).toBeCloseTo(100.78, 2);
+    expect(s.basis).toBe('auction');
+  });
+
+  it('昨日票触发的，点名的必须是【昨日】那只（⛔ 不许借今日最高票的名字）', () => {
+    // 极端复现：今日全市场最高 = 闽发铝业 84.88；昨日全市场最高 = 东方海洋 100.78
+    const s = pickAbnormalSource({
+      leaderName: '闽发铝业', leaderTopic: '铝',
+      leaderToday: 84.88,
+      leaderPrevAuc: 87.04, leaderPrevClose: 86.42,
+      marketToday: { name: '闽发铝业', pct: 84.88 },
+      marketPrevAuc: { name: '东方海洋', pct: 100.78 },
+      marketPrevClose: { name: '东方海洋', pct: 100.78 }
+    });
+    expect(s.triggered).toBe(true);
+    expect(s.name).toBe('东方海洋');                   // ★ 旧实现这里给的是「闽发铝业」
+    expect(s.isTop1).toBe(false);                      // 它不是二十日总龙一
+    expect(s.prevHit.name).toBe('东方海洋');
+    expect(s.prevHit.pct).toBeCloseTo(100.78, 2);
+  });
+
+  it('11-12 真实数据：当日异动点【东方海洋】100.78%，isTop1=false（二十日总龙一是福莱新材）', () => {
+    const s = pickAbnormalSource({
+      leaderName: '福莱新材', leaderTopic: '新材料',
+      leaderToday: 33.53,
+      leaderPrevAuc: 23.42, leaderPrevClose: 29.66,
+      marketToday: { name: '东方海洋', pct: 100.78 },
+      marketPrevAuc: { name: '东方海洋', pct: 95.71 },
+      marketPrevClose: { name: '东方海洋', pct: 100.43 }
+    });
+    expect(s.name).toBe('东方海洋');
+    expect(s.isTop1).toBe(false);
+    // ★ 昨日那一天竞价 95.71 / 收盘 100.43 ⇒ 必须取竞价那份，⛔ 不许取收盘
+    expect(s.prevHit.pct).toBeCloseTo(95.71, 2);
+    expect(s.prevHit.basis).toBe('auction');
+  });
+
+  it('11-11 真实数据：竞价 95.71% 必须不触发（用户要求「11月11日这样能正常运行」）', () => {
+    const s = pickAbnormalSource({
+      leaderName: '东方海洋', leaderTopic: '东方',
+      leaderToday: 95.711445,
+      leaderPrevAuc: 92.5, leaderPrevClose: 96.0,
+      marketToday: { name: '东方海洋', pct: 95.711445 },
+      marketPrevAuc: { name: '东方海洋', pct: 92.5 },
+      // ⚠️ 收盘口径 100.43 已经超线，但竞价口径 95.71 没超 ⇒ ⛔ 绝不能拿收盘口径判空仓
+      marketPrevClose: { name: '东方海洋', pct: 100.43 }
+    });
+    expect(s.triggered).toBe(false);
+    expect(s.prevHit.pct).toBeCloseTo(92.5, 2);
+  });
+
+  it('竞价那份一只都读不到 ⇒ 才退回收盘口径（basis=close 如实标出，§10）', () => {
+    const s = pickAbnormalSource({
+      leaderName: '东方海洋', leaderTopic: '东方',
+      leaderToday: null,
+      leaderPrevAuc: null, leaderPrevClose: 100.5,
+      marketToday: null,
+      marketPrevAuc: null,
+      marketPrevClose: { name: '东方海洋', pct: 100.5 }
+    });
+    expect(s.triggered).toBe(true);
+    expect(s.name).toBe('东方海洋');
+    expect(s.basis).toBe('close');
+  });
+
+  it('没触发 ⇒ 回落总龙一（§11 零行为变化）', () => {
+    const s = pickAbnormalSource({
+      leaderName: '福莱新材', leaderTopic: '新材料',
+      leaderToday: 33.53, leaderPrevAuc: 23.42, leaderPrevClose: 29.66,
+      marketToday: { name: '东方海洋', pct: 60 },
+      marketPrevAuc: { name: '东方海洋', pct: 55 },
+      marketPrevClose: { name: '东方海洋', pct: 55 }
+    });
+    expect(s.triggered).toBe(false);
+    expect(s.name).toBe('福莱新材');
+    expect(s.isTop1).toBe(true);
+  });
+});
+
+describe('[ABN-SAME-SOURCE] 文案称谓：不是总龙一就不许这么叫', () => {
+  it('leaderIsTop1=false ⇒ 写「市场十日涨幅最高票」，⛔ 不出现「市场总龙一」', () => {
+    const f = resolveAbnormalFact({
+      leaderName: '东方海洋', leaderTopic: '东方', leaderIsTop1: false,
+      leaderPctToday: 100.78, leaderPctPrev: 95.71,
+      leaderPctPrevBasis: 'auction', rows: []
+    });
+    expect(f.show).toBe(true);
+    expect(f.leaderLabel).toBe('市场十日涨幅最高票');
+    expect(f.headline).toContain('监管异动');
+    expect(f.detail).toContain('市场十日涨幅最高票');
+    expect(f.detail).not.toContain('市场总龙一');
+    // 自核行也必须如实：两个数字同属一只票
+    expect(f.detail).toContain('东方海洋');
+    expect(f.detail).toContain('100.78%');
+    expect(f.detail).toContain('同一只票');
+  });
+
+  it('leaderIsTop1 缺省 / true ⇒ 保持「市场总龙一」（旧行为不受影响）', () => {
+    const f = resolveAbnormalFact({
+      leaderName: '东方海洋', leaderTopic: '东方',
+      leaderPctToday: 73.15, leaderPctPrev: 100.78,
+      leaderPctPrevBasis: 'auction', rows: []
+    });
+    expect(f.leaderLabel).toBe('市场总龙一');
+    expect(f.detail).toContain('市场总龙一');
+  });
+
+  it('逐行标签文案用 ＞ 自定义禁选上限（97%），⛔ 不是「≥ 100%」', () => {
+    const blk = {
+      picks: [{ name: '东方海洋', pct: 100.78, buyActionTag: '', buyActionTone: '', position: 'X', holdTag: 'Y' }]
+    };
+    const f = resolveAbnormalFact({
+      leaderName: '东方海洋', leaderIsTop1: false,
+      leaderPctToday: 100.78, leaderPctPrev: 95.71,
+      leaderPctPrevBasis: 'auction', rows: []
+    });
+    _applyAbnormalNoBuyRules([blk], f);
+    const note = blk.picks[0].actionNote;
+    expect(note).toContain('市场十日涨幅最高票');
+    expect(note).toContain('＞ ' + TVRB_RANGE10_CAP + '%');
+    expect(note).not.toContain('≥ ' + TVRB_RANGE10_ABNORMAL + '% ⇒');
+  });
+
+  it('源码静态锁：⛔ 不许再出现「只换数值不换名字」的旧赋值模式', () => {
+    const s = readFileSync('src/logic/topicvolratio/tvrb-plan.js', 'utf8');
+    // 旧 bug 的字面形态：名字被单独「补」回去
+    expect(s).not.toContain('if (_abnName === _abnLeaderName) _abnName = _abnMarketPrev.name');
+    expect(s).toContain('pickAbnormalSource');
+    expect(s).toContain('leaderIsTop1: _abnIsTop1');
   });
 });

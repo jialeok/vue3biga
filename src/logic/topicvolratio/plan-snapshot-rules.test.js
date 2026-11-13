@@ -287,8 +287,8 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
     expect(resolvePlanSnapshotFreshness(broken, Object.assign({}, OPTS, { allowRulesInvalidation: false }))).toBe('stale');
   });
 
-  it('版本常量已 bump 到 10（[FULL-MARKET] ＞97% 升格为全场禁买，改了选股结论 = v10）', () => {
-    expect(TVRB_RULES_VERSION).toBe(10);
+  it('版本常量已 bump 到 11（[ABN-SAME-SOURCE] 异动点名同源修复，上屏文案变了 = v11）', () => {
+    expect(TVRB_RULES_VERSION).toBe(11);
   });
 
   // ★★ [CAP-97 2026-11-13 晚间] 阈值改动必须三件套同时落地，漏一件就等于没改：
@@ -299,7 +299,7 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
     expect(TVRB_RANGE10_ABNORMAL).toBe(100);
     expect(TVRB_RULES_VERSION).toBeGreaterThanOrEqual(10);
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v45'");
+    expect(sw).toContain("var CACHE = 'biga-static-v46'");
   });
 
   // ★★ [FULL-MARKET-GUARD 2026-11-13 用户当场纠正] 整类护栏：
@@ -320,8 +320,8 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
     expect(lines).toContain('波及到所有的票');
     expect(lines).toContain('整个市场【整片灰');
     // ④ 三件套版本链
-    expect(TVRB_RULES_VERSION).toBe(10);
-    expect(readFileSync('public/sw.js', 'utf8')).toContain("var CACHE = 'biga-static-v45'");
+    expect(TVRB_RULES_VERSION).toBe(11);
+    expect(readFileSync('public/sw.js', 'utf8')).toContain("var CACHE = 'biga-static-v46'");
   });
 
   // ★★ [RULE-BUMP-GUARD 2026-11-13] 用户报障「现在刷新并没有生效」的整类根因锁。
