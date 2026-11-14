@@ -41,8 +41,16 @@ export const INDEX_LEG_TARGETS = [
   { code: 'sh000688', name: '科创50' }
 ];
 
-/** 每次回补多少个自然日（≈ 12 个交易日，足够覆盖周末 + 小长假 + 漏跑一天） */
-export const INDEX_LEGS_LOOKBACK_DAYS = 20;
+/**
+ * 每次回补多少个自然日。
+ *
+ * 🔴 [ABN-DEV-FIX 2026-11-14] 由 20 改成 70 —— 20 个自然日只够 ~14 根腿，
+ *   而官方【30 日偏离】要 30 根腿 ⇒ `cumulativeDeviation(stock, idx, 30)` 恒判 null
+ *   ⇒ 面板上 5 只票「覆盖 0/5」，一个偏离值都出不来（11-14 亲测）。
+ *   30 交易日 ≈ 44 自然日，留到 70 天兜住国庆 / 春节长假。
+ *   行数：~48 个交易日 × 4 个指数 = 192 行，1 次 upsert，不占额外 subrequest。
+ */
+export const INDEX_LEGS_LOOKBACK_DAYS = 70;
 
 function _ymd(d) { return d.toISOString().slice(0, 10); }
 function _shift(ymd, n) {

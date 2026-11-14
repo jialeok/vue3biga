@@ -1717,6 +1717,23 @@ export function useTopicVolRatioBoard() {
       if (_top10Names.join('|') !== (_devTop10Names.value || []).join('|')) {
         _devTop10Names.value = _top10Names;
       }
+      // 顺带把代码也记下来（`getStockCode` 名册常缺票，11-14 实测新华传媒查不到 ⇒ 那一只白丢）
+      const _top10Code = new Map();
+      (_r20Top10 || []).forEach(function (x) {
+        if (!x) return;
+        const n = String(x.stock || x.name || '').trim();
+        const c = String(x.code || '').trim();
+        if (n && c) _top10Code.set(n, c);
+      });
+      if (_top10Code.size !== _devTop10Code.value.size) {
+        _devTop10Code.value = _top10Code;
+      } else {
+        let _diff = false;
+        _top10Code.forEach(function (c, n) {
+          if (!_diff && _devTop10Code.value.get(n) !== c) _diff = true;
+        });
+        if (_diff) _devTop10Code.value = _top10Code;
+      }
 
       const rec = collectDecisionTopics(d, {
         mode: MODE_VOL_RATIO,
@@ -2324,10 +2341,38 @@ export function useTopicVolRatioBoard() {
   const _dev = useAbnormalDeviation();
   /** 20日涨幅主板前十（= 「市场前十」那张参考榜的顺序来源，由 `data` computed 写入） */
   const _devTop10Names = ref([]);
+  /** 那十只票的代码（⛔ 名册 `getStockCode` 常缺票 —— 11-14 实测新华传媒就查不到，白丢一只） */
+  const _devTop10Code = ref(new Map());
+  /** 买点行自带的 code（`p.code`，由 tvrb-blocks 组行时写入）—— 比名册更可靠 */
+  const _devPickCode = computed(function() {
+    const m = new Map();
+    const plan = _displayPlanBase.value;
+    if (plan) {
+      eachBuyBlock(plan, function (b) {
+        (b.picks || []).forEach(function (p) {
+          if (p && p.name && p.code) m.set(String(p.name).trim(), String(p.code).trim());
+        });
+      });
+    }
+    return m;
+  });
   /** 北京「今天」（本地时区 ≈ 北京时间；仅用于判「是不是当天 ⇒ 要不要用竞价口径」） */
   function _bjToday() { return beijingTodayStr(); }
-  /** 票名 → 6 位代码（⛔ 不猜：名册查不到就返回空串，偏离值那侧会自动判「数据未就绪」） */
-  function _codeOfName(name) { return getStockCode(name) || ''; }
+  /**
+   * 票名 → 6 位代码。取值顺序（§10：拿不到就认「判不出」，⛔ 不猜）：
+   *   ① 买点行自带的 code（最可靠，行本身就是按名册建的）
+   *   ② 20日涨幅前十行自带的 code
+   *   ③ `stockcodemap` 内存名册
+   */
+  function _codeOfName(name) {
+    const n = String(name || '').trim();
+    if (!n) return '';
+    const a = _devPickCode.value.get(n);
+    if (a) return a;
+    const b = _devTop10Code.value.get(n);
+    if (b) return b;
+    return getStockCode(n) || '';
+  }
   /** 该日的 9:25 竞价口径 20 日涨幅榜是否可用（可用 ⇒ 当天的偏离值用竞价腿） */
   function _aucReadyForDate(d) {
     const b = getTvrbAuctionBoard(d);
