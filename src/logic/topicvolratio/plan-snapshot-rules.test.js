@@ -325,7 +325,7 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
     expect(TVRB_RANGE10_ABNORMAL).toBe(100);
     expect(TVRB_RULES_VERSION).toBeGreaterThanOrEqual(10);
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v49'");
+    expect(sw).toContain("var CACHE = 'biga-static-v50'");
   });
 
   // ★★ [FULL-MARKET-GUARD 2026-11-13 用户当场纠正] 整类护栏：
@@ -347,7 +347,7 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
     expect(lines).toContain('整个市场【整片灰');
     // ④ 三件套版本链
     expect(TVRB_RULES_VERSION).toBe(12);
-    expect(readFileSync('public/sw.js', 'utf8')).toContain("var CACHE = 'biga-static-v49'");
+    expect(readFileSync('public/sw.js', 'utf8')).toContain("var CACHE = 'biga-static-v50'");
   });
 
   // ★★ [RULE-BUMP-GUARD 2026-11-13] 用户报障「现在刷新并没有生效」的整类根因锁。
@@ -429,5 +429,42 @@ describe('tvrb · [TOPIC-LIB-SIG] 题材库指纹变了 ⇒ 历史日也重算',
   it('指纹确定性：内容相同 ⇒ 跨调用恒相同；内容不同 ⇒ 不同', () => {
     expect(buildRulesFingerprint(CORE, 'tl1:aaaa1111')).toBe(buildRulesFingerprint(CORE, 'tl1:aaaa1111'));
     expect(buildRulesFingerprint(CORE, 'tl1:aaaa1111')).not.toBe(buildRulesFingerprint(CORE, 'tl1:bbbb'));
+  });
+
+  // ★★ [CORE-PURGE-SYNC 2026-11-14 用户报障] 11-05 回归：
+  //   用户原话「比如11月5日，还显示羊字辈题材选择理由，我都删除了，为什么还显示呢？」
+  //   库内：11-05 存档 = `v11:d83ebd81:tl1:7404491d`，当时规则版本已 bump 到 12。
+  //   旧实现先比 base 段（v11≠v12）⇒ 直接落到「规则升级」分支 ⇒ 历史日 hit
+  //   ⇒ **永远走不到「题材库变了」那一支**，历史日的题材更新被规则版本升级永久挡住。
+  it('★ 11-05 回归：规则版本段变了 + 题材库段也变了 ⇒ 历史日必须 stale', () => {
+    const snap = { status: 'hit', rulesSig: 'v11:d83ebd81:tl1:7404491d', inputsSig: 'v1:111' };
+    const opts = {
+      rulesSig: 'v12:11112222:tl1:99998888',   // 规则 bump v11→v12 + 删了题材（指纹变）
+      coreTopicsLoaded: true, inputsSig: 'v1:111',
+      allowRulesInvalidation: false            // 历史日
+    };
+    expect(resolvePlanSnapshotFreshness(snap, opts)).toBe('stale');
+  });
+
+  it('规则版本变了但题材库没变 ⇒ 历史日仍 hit（[RULES-BUMP-GUARD] 未被破坏）', () => {
+    const snap = { status: 'hit', rulesSig: 'v11:d83ebd81:tl1:7404491d', inputsSig: 'v1:111' };
+    const opts = {
+      rulesSig: 'v12:11112222:tl1:7404491d',
+      coreTopicsLoaded: true, inputsSig: 'v1:111',
+      allowRulesInvalidation: false
+    };
+    expect(resolvePlanSnapshotFreshness(snap, opts)).toBe('hit');
+    // 今天照常重算
+    expect(resolvePlanSnapshotFreshness(snap, Object.assign({}, opts, { allowRulesInvalidation: true }))).toBe('stale');
+  });
+
+  it('★ 判据顺序锁：题材库段的比较必须在 base 段之前（否则规则一 bump 历史就永久不更新）', () => {
+    const src = readFileSync('src/logic/topicvolratio/plan-snapshot-rules.js', 'utf8');
+    const iTop = src.indexOf("if (curTop && oldTop !== curTop) return 'stale';");
+    const iBase = src.indexOf("if (oldBase === curBase) return 'hit';");
+    expect(iTop).toBeGreaterThan(-1);
+    expect(iBase).toBeGreaterThan(iTop);
+    // ⛔ 不许再出现「先按 base 相等分叉，再在里面比 top」的旧写法
+    expect(src).not.toContain('if (oldBase === curBase) {\n      // 只差题材库那一段');
   });
 });

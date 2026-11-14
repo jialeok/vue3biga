@@ -264,21 +264,33 @@ export function resolvePlanSnapshotFreshness(snap, opts) {
   const old = String(s.rulesSig || '').trim();
   if (!old) return 'stale';
   if (old !== cur) {
-    // ★★ [TOPIC-LIB-SIG 2026-11-12] 先看是【哪一段】变了 —— 两段的处置相反：
-    //   · 第 1~2 段（规则版本 / 核心词）变了 ⇒ 只有【今天】重算，历史日保持定稿（[RULES-BUMP-GUARD]）；
-    //   · 第 3 段（个股题材库）变了 ⇒ **历史日也重算**（用户口径：他改了题材，历史选票要跟着改）。
+    // ★★ [TOPIC-LIB-SIG 2026-11-12] 按【哪一段变了】分流 —— 两段的处置相反：
+    //   · 第 3 段（个股题材库）变了 ⇒ **历史日也重算**（用户口径：他改了题材，历史选票要跟着改）；
+    //   · 第 1~2 段（规则版本 / 核心词）变了 ⇒ 只有【今天】重算，历史日保持定稿（[RULES-BUMP-GUARD]）。
+    // ⚠️ 顺序由 [CORE-PURGE-SYNC 2026-11-14] 定为「**题材库段先判**」：两段同时变时必须走题材库那条
+    //    （否则规则一 bump，历史日的题材更新就被永久挡住 —— 11-05 就是这么坏的）。
     const os = old.split(':');
     const cs = cur.split(':');
     const oldBase = os.slice(0, 2).join(':');
     const curBase = cs.slice(0, 2).join(':');
     const oldTop = os.slice(2).join(':');     // ⚠️ 题材库指纹自带冒号（'tl1:xxxx'）⇒ 必须把余下各段拼回去
     const curTop = cs.slice(2).join(':');
-    if (oldBase === curBase) {
-      // 只差题材库那一段
-      if (!curTop) return 'hit';                 // 当前算不出题材库指纹 ⇒ 不动存档（§10）
-      if (oldTop !== curTop) return 'stale';     // ★ 题材库变了 ⇒ 含历史日一律重算
-      return 'hit';
-    }
+
+    // ★★ [CORE-PURGE-SYNC 2026-11-14 用户报障后修] 题材库那一段必须【先判、且与 base 段是否相同无关】。
+    //
+    //   事故现场（用户原话）：「题材量比提示板原版那里也要啊，非简洁版的，有很多文字那版，
+    //   比如11月5日，还显示羊字辈题材选择理由，我都删除了，为什么还显示呢？」
+    //   库内取证：11-05 存档 rules_sig = `v11:d83ebd81:tl1:7404491d`，而当时规则版本已 bump 到 12
+    //   ⇒ 旧实现先比 base 段：v11≠v12 ⇒ 直接落到下面的「规则升级」分支
+    //   ⇒ `allowRulesInvalidation:false`（历史日）⇒ 返回 hit ⇒ **永远走不到「题材库变了」那一支**。
+    //   也就是说：只要规则版本也动过，历史日的题材更新就永久失效 —— 这是旧实现的整类缺陷，
+    //   不只 11-05 一天（实测 11-02/11-03/11-04/11-05/11-12/11-13 六天全部卡住）。
+    //
+    //   ⇒ 现在的优先级：**题材库变了 = 最高优先**（用户口径「题材要更新，不管简洁版还是原版都要同步」），
+    //     规则升级只在「题材库没变」时才按 [RULES-BUMP-GUARD] 只重算今天。
+    //   §10：当前算不出题材库指纹（curTop 为空）⇒ 不拿它做决定，继续按 base 段判。
+    if (curTop && oldTop !== curTop) return 'stale';   // ★ 含历史日一律重算
+    if (oldBase === curBase) return 'hit';             // 题材库没变、规则也没变
     // ★★ [RULES-BUMP-GUARD 2026-11-12] 规则升级（bump `TVRB_RULES_VERSION` / 改核心词）时：
     //   · 当日（还在用它做决策的那一天）⇒ 判 stale，按新规则重算并修订存档（revision +1）；
     //   · 历史日 ⇒ 判 hit，**保持定稿**。理由：历史日的库内行情会被后续 worker / 收盘覆盖，
