@@ -5,6 +5,7 @@
 //   ② ⛔ 绝不动选股结论（buyActionTag / position / holdTag / pickCount / buyNames）；
 //   ③ §10：判不出的票【不加徽标、不写 0%】，但**必须出现在 deviation 的覆盖统计里**。
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { attachDeviationFacts, hasDeviationAlert, devToneOf } from './deviation-overlay.js';
 import {
   computeDeviation, buildDeviationMap, DEV_STAGE_SEVERE, DEV_STAGE_NEAR
@@ -166,6 +167,50 @@ describe('[ABN-DEV-UI] attachDeviationFacts · 只加显示字段', () => {
     expect(out.deviation.note).toContain('九阳股份');
     expect(out.deviation.note).toContain('对应指数按板块取');
     expect(out.deviation.alertNames).toContain('九阳股份');
+  });
+});
+
+describe('[ABN-DEV-UX] 面板版式（2026-11-14 用户定的「一只票两行 + 公式上头」）', () => {
+  const BOARD = readFileSync('src/components/topicvolratio/TvrbDeviationBoard.vue', 'utf8');
+  const CSS = readFileSync('src/assets/css/topic-vol-ratio-board.css', 'utf8');
+
+  it('一只票两行：第一行三个短数字，第二行整行横排「距红线 + 自核算式」', () => {
+    expect(BOARD).toContain('class="tvrb-dev-row-main"');
+    expect(BOARD).toContain('class="tvrb-dev-row-gap"');
+    expect(BOARD).toContain('colspan="3"');                 // 「距红线」独占整行
+    // 第一行只有票 / 10日 / 30日 三列，⛔ 「距红线」不许再当第 4 列挤在那里
+    const th = BOARD.match(/<thead>[\s\S]*?<\/thead>/)[0];
+    expect(th.match(/<th>/g).length).toBe(3);
+    expect(th).not.toContain('距红线');
+    // 两行都在同一个 <template v-for> 里 ⇒ 不会出现「某只票只有一行」
+    const body = BOARD.match(/<tbody>[\s\S]*?<\/tbody>/)[0];
+    expect(body.match(/<template[\s\S]*?<\/template>/)[0].match(/<tr/g).length).toBe(2);
+  });
+
+  it('第二行同时给「点差 + 股价」与「自核算式」（用户要自己验证）', () => {
+    expect(BOARD).toContain('tvrb-dev-gap-main');
+    expect(BOARD).toContain('tvrb-dev-gap-calc');
+    expect(BOARD).toContain('{{ r.gapText }}');
+    expect(BOARD).toContain('{{ r.calcText }}');
+  });
+
+  it('计算公式印在表头上方（不是只放 title 里 —— 用户看不到 title）', () => {
+    const formula = BOARD.indexOf('tvrb-dev-formula');
+    const table = BOARD.indexOf('<table');
+    expect(formula).toBeGreaterThan(0);
+    expect(formula).toBeLessThan(table);
+    expect(BOARD).toContain('v-for="(line, i) in meta.formulaLines"');
+  });
+
+  it('§21：模板里零计算（⛔ 不出现 toFixed / 减阈值 / 除汇率）', () => {
+    const tpl = BOARD.slice(0, BOARD.indexOf('<script'));
+    expect(tpl).not.toContain('toFixed(');
+    expect(tpl).not.toContain('need30');
+    expect(tpl).not.toContain('Math.');
+  });
+
+  it('简洁版（.tvrb-compact）隐藏整块面板，原版才显示', () => {
+    expect(CSS).toContain('.tvrb-board.tvrb-compact .tvrb-dev-board');
   });
 });
 

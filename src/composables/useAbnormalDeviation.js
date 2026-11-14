@@ -29,7 +29,7 @@ import {
   readIndexLegsForDates, indexLegsOf, indexLegsGapText, shiftYmd
 } from '../data/index-daily-pct.js';
 import {
-  buildDeviationMap, devText, deviationDetailLine,
+  buildDeviationMap, devText, deviationDetailLine, DEV_FORMULA_LINES,
   DEV_STAGE_NEAR, DEV_STAGE_SEVERE, DEV_STAGE_WATCH
 } from '../logic/auction/abnormal-deviation.js';
 import { _dbgLog } from '../data/debug-log.js';
@@ -46,7 +46,10 @@ function _emptyMeta(asOf) {
     loading: false,
     basis: '',
     error: '',
-    note: ''
+    note: '',
+    // ★ [ABN-DEV-UX 2026-11-14] 面板顶部「计算公式」三行 —— 用户「我自己也要验证下」。
+    //   静态常量，视图只 v-for（§21 模板零计算）。
+    formulaLines: DEV_FORMULA_LINES
   };
 }
 
@@ -169,8 +172,9 @@ export function useAbnormalDeviation() {
    * ⛔ 不隐藏（§10：缺数据必须看得见，不能当成「没有异动」悄悄消失）。
    *
    * @param {string[]} names 有序票名
-   * @returns {Array<{name:string, dev10Text:string, dev30Text:string,
-   *                  gapText:string, stage:number|string, tone:string, ok:boolean, title:string}>}
+   * @returns {Array<{name:string, dev10Text:string, dev30Text:string} &
+   *   {gapText:string, calcText:string, stageText:string, stage:number|string,
+   *    tone:string, ok:boolean, title:string}>}
    */
   function rowsFor(names) {
     const out = [];
@@ -185,7 +189,11 @@ export function useAbnormalDeviation() {
         dev10Text: f && f.ok ? devText(f.dev10) : '—',
         dev30Text: f && f.ok ? devText(f.dev30) : '—',
         gapText: f && f.ok ? (f.gapText || '') : '未就绪',
+        // ★ [ABN-DEV-UX 2026-11-14] 第二行右侧那句「自核 30日：+178.9% − (-6.6%) = +185.5%」
+        //   —— 用户要「自己验证一下」，光有结论没有算式他验不了。
+        calcText: f && f.ok ? (f.calcText || '') : '',
         stage: f && f.ok ? f.stage : '',
+        stageText: f && f.ok ? (f.stageText || '') : '',
         tone: _toneOf(f),
         need10: f && f.ok ? f.need10 : null,
         need30: f && f.ok ? f.need30 : null,

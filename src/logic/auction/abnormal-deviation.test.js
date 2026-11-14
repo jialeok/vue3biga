@@ -19,8 +19,8 @@ import {
   STAGE_TEXT, STAGE_TONE,
   pickBaseIndexForCode, devIndexName, thresholdsForBoard,
   cumulativeDeviation, needGainToThreshold, classifyDeviation,
-  computeDeviation, devText, needText, deviationBadge, deviationGapText,
-  deviationDetailLine, isDeviationSevere, isDeviationAlert
+  computeDeviation, devText, needText, deviationBadge, deviationGapText, deviationCalcText,
+  deviationDetailLine, isDeviationSevere, isDeviationAlert, DEV_FORMULA_LINES
 } from './abnormal-deviation.js';
 
 /** 夹具里的腿是紧凑形态 {d,p}（省体积），这里统一转成业务形态 {date,pct} */
@@ -382,6 +382,47 @@ describe('[ABN-DEV] 上屏文案（§21 模板零计算）', () => {
     expect(line).toContain('口径：截至最近一个收盘日');
     const auc = deviationDetailLine(Object.assign({}, s, { basis: 'auction' }));
     expect(auc).toContain('9:25 竞价');
+  });
+
+  it('🔴 自核算式：个股区间涨幅 − 对应指数同期涨幅 = 偏离值（屏幕上三个数能相加对上）', () => {
+    const f = computeDeviation({
+      code: '600825', stockLegs: legsOf('600825'), indexLegs: idxOf('600825'), asOf: '2026-10-28'
+    });
+    expect(f.calcText).toBe('自核 30日：+178.9% − (-6.6%) = +185.5%');
+    // 三个数真能对上：178.9 − (−6.6) = 185.5（只取冒号后面，⛔ 别把「30日」里的 30 也算进来）
+    const nums = f.calcText.split('：')[1].match(/[+-]?\d+(?:\.\d+)?/g).map(Number);
+    expect(nums[0] - nums[1]).toBeCloseTo(nums[2], 6);
+    // 10 日那档同理（闽发铝业：+74.9 − (+2.2) = +72.7）
+    const g = computeDeviation({ code: '002578', stockLegs: legsOf('002578'), indexLegs: idxOf('002578') });
+    expect(g.calcText).toBe('自核 10日：+74.9% − (+2.2%) = +72.7%');
+    const gn = g.calcText.split('：')[1].match(/[+-]?\d+(?:\.\d+)?/g).map(Number);
+    expect(gn[0] - gn[1]).toBeCloseTo(gn[2], 6);
+  });
+
+  it('自核算式与徽标/点差【同一档、同一精度】（⛔ 不许算式说 10 日、点差算 30 日）', () => {
+    [f242, f578].forEach(function (f) {
+      const tag = String(f.badge).indexOf('30日') === 0 ? '30日' : '10日';
+      expect(f.calcText.indexOf('自核 ' + tag)).toBe(0);
+      // 等号右边的数必须与徽标里那个数逐字相同
+      const shown = String(f.badge).match(/([+-]?\d+(?:\.\d+)?)%$/)[1];
+      expect(f.calcText.slice(f.calcText.lastIndexOf('= ') + 2)).toBe(shown + '%');
+    });
+  });
+
+  it('判不出 ⇒ calcText 是空串（⛔ 不写「— = —」占位）', () => {
+    expect(computeDeviation({ code: '830799' }).calcText).toBe('');
+    expect(deviationCalcText(null)).toBe('');
+    expect(deviationCalcText({ ok: true, dev10: 50, thr10: 100, stockChain10: null, indexChain10: 1 })).toBe('');
+  });
+
+  it('计算公式三行必须与实现的等式逐字一致（算法一改，这里就该红）', () => {
+    expect(DEV_FORMULA_LINES.length).toBeGreaterThanOrEqual(3);
+    expect(DEV_FORMULA_LINES[0]).toContain('个股区间涨幅 − 对应指数同期涨幅');
+    expect(DEV_FORMULA_LINES[1]).toContain('点差 = 阈值 − 偏离值');
+    expect(DEV_FORMULA_LINES[2]).toContain('点差 ÷ (1 + 个股区间涨幅)');
+    // 算例里的数字必须是真实行情（新华传媒 10-28），⛔ 不许手编一个好看的数
+    expect(DEV_FORMULA_LINES[3]).toContain('+178.9%');
+    expect(DEV_FORMULA_LINES[3]).toContain('+185.5%');
   });
 
   it('判不出 ⇒ detailLine 如实说「未就绪」，⛔ 不说成「没有异动」', () => {

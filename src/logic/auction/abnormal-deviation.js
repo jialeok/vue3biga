@@ -387,6 +387,7 @@ export function computeDeviation(o) {
     badge: '',
     gapText: '',
     gapShort: '',
+    calcText: '',
     line: ''
   }; };
   if (!idx) return makeEmpty();                          // 北交所 / 代码缺失 ⇒ 判不出
@@ -437,6 +438,7 @@ export function computeDeviation(o) {
   fact.badge = deviationBadge(fact);
   fact.gapText = deviationGapText(fact);
   fact.gapShort = deviationGapShort(fact);       // 买点行用短版（只留点差），⛔ 别把长句塞进行内
+  fact.calcText = deviationCalcText(fact);       // 面板第二行「自核」：个股 − 指数 = 偏离
   fact.line = fact.badge + (fact.gapText ? ' · ' + fact.gapText : '');
   return fact;
 }
@@ -638,6 +640,49 @@ export function deviationDetailLine(fact) {
   }
   return s;
 }
+
+/**
+ * 【纯函数】单只票的【自核算例行】—— 把「偏离值是怎么减出来的」摊开给用户自己对一遍。
+ *
+ * ★ [ABN-DEV-UX 2026-11-14 用户原话]「还有把计算公式具体的也一起标注在上头，我自己也要验证下。」
+ *   所以这一行必须与「距红线」那一行走**同一个窗口、同一份精度**（都用 `_nearestWindow` + `_devGapPair`），
+ *   否则用户算出来差 0.1 个点又会来问（§10/th 那条取整病的同源）。
+ *
+ *   输出例：'自核 30日：+178.9% − (-6.6%) = +185.5%'
+ *     ↑ 个股区间涨幅 − 对应指数区间涨幅 = 偏离值（三个数都是屏幕上能相加对上的）
+ *   判不出 ⇒ ''（视图不渲染，⛔ 不写「— = —」占位）
+ *
+ * @param {object} fact computeDeviation 的返回值
+ * @returns {string}
+ */
+export function deviationCalcText(fact) {
+  const f = fact || {};
+  if (!f.ok) return '';
+  const w = _nearestWindow(f);
+  if (w.thr === null || w.dev === null) return '';
+  const isD30 = w.code === 'D30';
+  const sc = numOfText(isD30 ? f.stockChain30 : f.stockChain10);
+  const ic = numOfText(isD30 ? f.indexChain30 : f.indexChain10);
+  if (sc === null || ic === null) return '';
+  const p = _devGapPair(w.dev, w.thr);              // 与徽标/点差同一精度
+  return '自核 ' + (isD30 ? '30日' : '10日') + '：' +
+    _devTextDp(sc, p.dp) + ' − (' + _devTextDp(ic, p.dp) + ') = ' + _devTextDp(p.shown, p.dp);
+}
+
+/**
+ * 面板顶部那张「计算公式」说明（§21：文案在 Logic 层，视图只 v-for）。
+ *
+ * ★ [ABN-DEV-UX 2026-11-14] 用户连着两轮问「怎么算的」「我自己也要验证下」——
+ *   ⇒ 把三行公式直接印在表头上方，而不是只放在悬停 title 里（他看不到 title）。
+ * ⚠️ 每条都必须与代码里的等式**逐字一致**，改算法就要回来改这张表（否则说明与实现分叉）。
+ */
+export const DEV_FORMULA_LINES = [
+  '① 偏离值（点）= 个股区间涨幅 − 对应指数同期涨幅（交易所《交易规则》5.4.2，已扣指数）',
+  '② 距红线点差 = 阈值 − 偏离值 ⇒ 屏幕上「偏离值 + 点差」必然刚好等于阈值，可以直接相加对账',
+  '③ 股价还需涨幅 = 点差 ÷ (1 + 个股区间涨幅) —— 涨得越多，涨 1% 换来的点数越多',
+  '例：新华传媒 10-28 三十日 = 个股 +178.9% − 上证A股指数 -6.6% = +185.5%；' +
+    '差 14.5 点 ÷ (1+1.789) ≈ 5.2%'
+];
 
 /**
  * 【纯函数】第三十四条用：这只票的偏离值是否已触发【官方严重异常波动】。

@@ -1231,6 +1231,34 @@
     color: #6b7280;
 }
 
+/* ★★ [ABN-DEV-UX 2026-11-14] 「计算公式（可自核）」块 —— 用户原话：
+      「还有把计算公式具体的也一起标注在上头，我自己也要验证下。」
+   ⇒ 印在表格上方、浅紫底 + 左侧细竖线，属于「说明」层级，⛔ 不许抢过下面那些数字。
+   三条公式 + 一个真实算例都由 Logic 层给（DEV_FORMULA_LINES），这里只管排版。 */
+.tvrb-dev-formula {
+    margin: 0 0 7px;
+    padding: 5px 8px 6px;
+    background: #f5f3ff;
+    border-left: 2px solid #a78bfa;
+    border-radius: 4px;
+    text-align: left;
+}
+
+.tvrb-dev-formula-head {
+    margin-bottom: 3px;
+    font-size: 10px;
+    font-weight: 800;
+    color: #5b21b6;
+}
+
+.tvrb-dev-formula-line {
+    font-size: 10px;
+    line-height: 1.55;
+    color: #4b5563;
+    /* 公式里有「−」「÷」等符号，允许换行但不要断开算式：用平衡换行更好读 */
+    text-wrap: pretty;
+}
+
 .tvrb-dev-table {
     width: 100%;
     border-collapse: collapse;
@@ -1251,19 +1279,86 @@
     text-align: left;
 }
 
+/* ---- 一只票两行（2026-11-14 用户定的版式）----
+   第 1 行 `-row-main`：票 + 档位小标签｜10日偏离｜30日偏离（三个短数字，右对齐成列）；
+   第 2 行 `-row-gap` ：整行横排的「距 200% 差 130.8 点（股价再涨约 +80%）」+ 自核算式，
+                       左对齐、跨 3 列。虚线只画在【组尾】（第二行）⇒ 两行看起来是一组。 */
 .tvrb-dev-table td {
-    padding: 2px 6px;
+    padding: 3px 6px 0;
     text-align: right;
     color: #334155;
+    white-space: nowrap;
+}
+
+.tvrb-dev-table tr.tvrb-dev-row-gap td {
+    padding: 0 6px 6px;
+    text-align: left;
+    white-space: normal;
     border-bottom: 1px dashed #f1f5f9;
 }
 
-.tvrb-dev-table tr.tvrb-dev-row-severe td {
+.tvrb-dev-name {
+    font-weight: 700;
+}
+
+/* 档位小标签（逼近 / 已触发 / 留意 / 正常）—— 颜色与买点行那枚徽标同一套语义色 */
+.tvrb-dev-stage {
+    margin-left: 5px;
+    padding: 0 4px;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 13px;
+    border-radius: 4px;
+    border: 1px solid transparent;
+    white-space: nowrap;
+}
+
+.tvrb-dev-stage-severe {
+    color: #b91c1c;
+    background: #fef2f2;
+    border-color: #fecaca;
+}
+
+.tvrb-dev-stage-near {
+    color: #b45309;
+    background: #fffbeb;
+    border-color: #fde68a;
+}
+
+.tvrb-dev-stage-watch {
+    color: #6d28d9;
+    background: #f5f3ff;
+    border-color: #ddd6fe;
+}
+
+.tvrb-dev-stage-normal,
+.tvrb-dev-stage-muted {
+    color: #64748b;
+    background: #f1f5f9;
+    border-color: #e2e8f0;
+}
+
+.tvrb-dev-gap-main {
+    font-weight: 800;
+    font-size: 11px;
+}
+
+/* 自核算式（个股区间涨幅 − 指数区间涨幅 = 偏离值）：灰一档，它是给用户对账用的，不是结论 */
+.tvrb-dev-gap-calc {
+    margin-left: 8px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #94a3b8;
+}
+
+.tvrb-dev-row-main.tvrb-dev-tone-severe td,
+.tvrb-dev-row-gap.tvrb-dev-tone-severe .tvrb-dev-gap-main {
     color: #b91c1c;
     font-weight: 700;
 }
 
-.tvrb-dev-table tr.tvrb-dev-row-near td {
+.tvrb-dev-row-main.tvrb-dev-tone-near td,
+.tvrb-dev-row-gap.tvrb-dev-tone-near .tvrb-dev-gap-main {
     color: #b45309;
     font-weight: 700;
 }
