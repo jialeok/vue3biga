@@ -484,7 +484,9 @@ export function deviationGapText(fact) {
   const t10 = numOfText(f.thr10);
   // 30 日那档更近（差得不足 5 个点）⇒ 用「距 200% 仅 X 点」的说法，与用户原话一致
   if (g30 !== null && t30 !== null && g30 <= 5 && (g10 === null || g10 > 5)) {
-    return '距 ' + t30 + '% 仅 ' + g30.toFixed(1) + ' 点';
+    // 🔴 [ABN-DEV-FIX 2026-11-14] 差 < 1 个点时给两位小数 —— 否则「差 0.03 点」会印成
+    //   「仅 0.0 点」，用户（尤其九阳股份 30 日偏离卡线那种）会以为算错了。
+    return '距 ' + t30 + '% 仅 ' + (g30 < 1 ? g30.toFixed(2) : g30.toFixed(1)) + ' 点';
   }
   const n10 = numOfText(f.need10);
   const n30 = numOfText(f.need30);

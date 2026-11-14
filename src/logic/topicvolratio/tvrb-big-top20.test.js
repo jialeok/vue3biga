@@ -297,7 +297,7 @@ describe('tvrb · [AUTO-PICK-TOP20] 边界与回归锁', function() {
     expect(rules).toContain('[AUTO-PICK-TOP20]');
     expect(rules).toContain('[MID-TOP20]');
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v54'");
+    expect(sw).toContain("var CACHE = 'biga-static-v55'");
     const vue = readFileSync('src/components/topicvolratio/TvrbBuyBlock.vue', 'utf8');
     expect(vue).toContain('p.range20Label');
     const css = readFileSync('src/assets/css/topic-vol-ratio-board.css', 'utf8');

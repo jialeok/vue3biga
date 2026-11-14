@@ -150,7 +150,8 @@ describe('[ABN-DEV] 11-13 收盘实物（用户点名的那四只）', () => {
     expect(f.stage).toBe(DEV_STAGE_NEAR);            // 未越线 ⇒ near，不是 severe
     expect(f.gap30).toBeLessThan(0.5);
     expect(f.need30).toBeLessThan(1);                 // 「周一只要不跌就构成」
-    expect(f.gapText).toContain('仅 0.1 点');
+    // ⚠️ 差 < 1 个点时给两位小数（0.05 点），⛔ 不许印成「仅 0.0 点」
+    expect(f.gapText).toMatch(/^距 200% 仅 0\.\d+ 点$/);
   });
 
   it('闽发铝业 002578：10 日偏离 72.7，还需约 +16%', () => {
@@ -286,8 +287,20 @@ describe('[ABN-DEV] 上屏文案（§21 模板零计算）', () => {
   });
 
   it('gapText：30 日差 ≤5 个点 ⇒ 「距 200% 仅 X 点」（用户原话口径）', () => {
-    expect(f242.gapText).toContain('距 200% 仅 0.1 点');
+    expect(f242.gapText).toMatch(/^距 200% 仅 0\.\d+ 点$/);
     expect(f578.gapText).toBe('还需 +16%');
+  });
+
+  it('差 < 1 个点给两位小数（⛔ 不许印成「仅 0.0 点」—— 九阳那种卡线票会被当成算错）', () => {
+    const near = {
+      ok: true, stage: 'near', dev10: 40, dev30: 199.97, gap10: 60, gap30: 0.03,
+      need10: 30, need30: 0.02, thr10: 100, thr30: 200, hits: []
+    };
+    expect(deviationGapText(near)).toBe('距 200% 仅 0.03 点');
+    const near2 = Object.assign({}, near, { dev30: 199.4, gap30: 0.6, need30: 0.4 });
+    expect(deviationGapText(near2)).toBe('距 200% 仅 0.60 点');
+    const near3 = Object.assign({}, near, { dev30: 196, gap30: 4, need30: 2 });
+    expect(deviationGapText(near3)).toBe('距 200% 仅 4.0 点');
   });
 
   it('line = badge + gapText（买点行徽标直接用，模板不拼字符串）', () => {
