@@ -51,8 +51,7 @@ export function qtSymOf(code) {
  * @returns {Promise<Map<string, Array<{ymd:string, open:number|null, close:number, volHand:number|null}>>>}
  *          code6 -> 日线（正序）。取不到 / 失败的票【不在 Map 里】（⛔ 不用空数组冒充「没有数据」）。
  */
-export async function fetchQtDailyBars(codes6, fromYmd, toYmd, opts) {
-    const o = opts || {};
+export async function fetchQtDailyBars(codes6, fromYmd, toYmd, opts) {    const o = opts || {};
     const timeoutMs = o.timeoutMs || 8000;
     const conc = o.concurrency || 4;
     const list = (codes6 || []).map(function (c) { return String(c || '').trim(); }).filter(Boolean);
@@ -104,6 +103,85 @@ export async function fetchQtDailyBars(codes6, fromYmd, toYmd, opts) {
             } catch (e) {
                 // 单票失败不连坐整批（其余票照常返回），调用方对缺席票补 null（§10）
                 _dbgLog('[QT-KLINE] ' + code + ' 拉取失败: ' + ((e && e.message) || e));
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(conc, list.length) }, worker));
+    return out;
+}
+
+// ────────────────────────────────────────────────────────────────────────────────
+// 【指数日线】2026-11-14 新增：官方「收盘价格涨跌幅偏离值」要用【对应指数】的同期涨幅。
+//
+// ⛔ 为什么不能复用上面的 fetchQtDailyBars：
+//   它按「6 位数字代码」拼 `sz000002`。而官方对应指数写的是 `sh000002`（上证A股指数）——
+//   同样是 6 位数字，但前两位就成了「000002 = 万科A（深市）」⇒ 拿地产股当指数扣，
+//   偏离值全错而且**零报错**。这是本项目血泪教训里最典型的「契约形态」坑。
+//   ⇒ 指数必须【带市场前缀原样传】，单独一条通道。
+//
+// 指数不像个股：没有前复权（不需要）、不停牌 ⇒ 只用 `day` 段，缺失即上游问题。
+// ────────────────────────────────────────────────────────────────────────────────
+
+/** 指数代码规范化：'sh000002' / 'SZ399107' → 小写带前缀；非法 ⇒ ''（⛔ 不猜市场） */
+export function qtIndexSymOf(indexCode) {
+    const c = String(indexCode || '').trim().toLowerCase();
+    return /^(sh|sz|bj)\d{6}$/.test(c) ? c : '';
+}
+
+/**
+ * 拉一批【指数】的日线收盘序列。
+ *
+ * @param {string[]} indexCodes 带前缀代码 ['sh000002','sz399107']
+ * @param {string} fromYmd 'YYYY-MM-DD'
+ * @param {string} toYmd 'YYYY-MM-DD'
+ * @param {object} [opts] { timeoutMs=8000, concurrency=4 }
+ * @returns {Promise<Map<string, Array<{date:string, close:number}>>>}
+ *          取不到 / 失败的指数【不在 Map 里】（⛔ 不用空数组冒充「没有数据」）
+ */
+export async function fetchQtIndexBars(indexCodes, fromYmd, toYmd, opts) {
+    const o = opts || {};
+    const timeoutMs = o.timeoutMs || 8000;
+    const conc = o.concurrency || 4;
+    const list = (indexCodes || []).map(qtIndexSymOf).filter(Boolean);
+    const out = new Map();
+    if (list.length === 0 || !fromYmd || !toYmd) return out;
+
+    let cursor = 0;
+    const worker = async function () {
+        for (;;) {
+            const i = cursor++;
+            if (i >= list.length) return;
+            const sym = list[i];
+            try {
+                // 与个股同一形态 `...,320,qfq`：2026-11-14 实测指数也认这个形态（返回 day 段）。
+                // ⛔ 别改成 `,320,` 或省略末位 —— 未验证的形态一律不用。
+                const url = QT_BASE + '?param=' + sym + ',day,' + fromYmd + ',' + toYmd + ',320,qfq';
+                const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+                const timer = ctrl ? setTimeout(function () { ctrl.abort(); }, timeoutMs) : null;
+                let resp;
+                try {
+                    resp = await fetch(url, {
+                        headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://gu.qq.com/' },
+                        signal: ctrl ? ctrl.signal : undefined
+                    });
+                } finally {
+                    if (timer) clearTimeout(timer);
+                }
+                if (!resp.ok) throw new Error('qt HTTP ' + resp.status);
+                const j = await resp.json();
+                const d = (j && j.data && j.data[sym]) || {};
+                const rows = d.qfqday || d.day || [];
+                const bars = [];
+                for (let k = 0; k < rows.length; k++) {
+                    const b = rows[k];
+                    if (!Array.isArray(b) || !b[0]) continue;
+                    const close = Number(b[2]);
+                    if (!isFinite(close) || close <= 0) continue;
+                    bars.push({ date: String(b[0]).slice(0, 10), close: close });
+                }
+                if (bars.length > 0) out.set(sym, bars);
+            } catch (e) {
+                _dbgLog('[QT-INDEX] ' + sym + ' 拉取失败: ' + ((e && e.message) || e));
             }
         }
     };

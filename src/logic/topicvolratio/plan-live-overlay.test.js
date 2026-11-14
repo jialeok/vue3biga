@@ -215,7 +215,12 @@ describe('静态锁 — 接线不许被改回去', () => {
   const src = readFileSync(new URL('../../composables/useTopicVolRatioBoard.js', import.meta.url), 'utf8');
 
   it('displayPlan 的两条冻结出口都必须经过 `_frozenWithLive`（⛔ 不许直接 return 存档 plan）', () => {
-    const start = src.indexOf('const displayPlan = computed(');
+    // ★ [ABN-DEV 2026-11-14] 原 `displayPlan` 改名为 `_displayPlanBase`（第一层：定稿 + 总约束），
+    //   `displayPlan` 变成一层纯叠加（第二层：官方偏离值徽标）。
+    //   ⚠️ 锁的**本意不变**：⛔ 绝不能把存档 plan 原样返回上屏 —— 所以锚点跟到 `_displayPlanBase`，
+    //      并额外锁死「displayPlan 必须建立在 _displayPlanBase 之上」，
+    //      ⛔ 不许有人绕过第一层直接用 data.plan 组装屏幕。
+    const start = src.indexOf('const _displayPlanBase = computed(');
     expect(start).toBeGreaterThan(0);
     const body = src.slice(start, src.indexOf('// ══', start));
     // ★ [ABNORMAL-ALL 2026-11-13] 两条出口从「直接 return」改成「先赋 base 再叠加总约束」，
@@ -225,6 +230,8 @@ describe('静态锁 — 接线不许被改回去', () => {
     expect(body).toContain('return applyAbnormalOverlay(base, _abnormalFactForDisplay(d))');
     expect(body).not.toContain('return snap.plan;');
     expect(body).not.toContain('return pub.plan;');
+    // 第二层必须在第一层之上叠加，⛔ 不许各自独立从 data.plan 起算
+    expect(src).toContain('attachDeviationFacts(_displayPlanBase.value');
   });
 
   it('合流必须「卖点段取实时 + 买点行补分笔」，且走 Logic 层唯一实现', () => {

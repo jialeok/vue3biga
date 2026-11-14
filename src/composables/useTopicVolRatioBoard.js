@@ -137,6 +137,7 @@ import {
 import { readRange20Rows, pickUsableRows } from '../data/stock-range20-cache.js';
 // 名册兜底取代码（云表行里没有 code，K 线请求必须有 6 位代码）——与采集层同一个入口（§6）
 import { getStockCode } from '../data/stock-code-map.js';
+import { beijingTodayStr } from '../logic/auction/auction-pull-window.js';
 // ★ [DIVERGE 2026-10-20 用户口径] 市场总龙一【首次分歧】判定：
 //   buildLeaderDivergence = 纯函数判定（首板 / 首次分歧 / 分歧转一致，§15 唯一实现）；
 //   shouldGateBuySide    = 买点侧「该不该先挂占位」的唯一判据（纯函数，见其 JSDoc）；
@@ -231,6 +232,13 @@ import { eachBuyBlock, overlayLiveOnFrozen, collectBuyNames } from '../logic/top
 // ★★ [ABNORMAL-ALL 2026-11-13 用户口径] 监管异动是【显示层总约束】：历史日读定稿存档（v4）
 //   时第三十四条规则层结果会被整个丢弃 ⇒ 上屏前统一叠加一次「空仓 + 全灰 + 不买」（⛔ 不改写存档）。
 import { applyAbnormalOverlay, isAbnormalAllGray, buildAbnormalFactFromMaps } from '../logic/topicvolratio/abnormal-overlay.js';
+// ★★ [ABN-DEV 2026-11-14 用户口径] 交易所官方「收盘价格涨跌幅偏离值」（10 日 +100% / 30 日 +200%）：
+//   用户原话「现在我自己计算的 20 日涨幅 100% 股票成异动不是很准确，它要计算和大盘指数的偏值」
+//   「这些在买点侧，也说明下，很重要，特别是竞价时，或者收盘后」。
+//   ⇒ 与上面第三十四条**并存但不同尺子**：这里只做「解释性事实」的显示层叠加
+//     （⛔ 不改选股结论、不改存档、不删票），判据与文案在 logic/auction/abnormal-deviation.js。
+import { attachDeviationFacts } from '../logic/topicvolratio/deviation-overlay.js';
+import { useAbnormalDeviation } from './useAbnormalDeviation.js';
 // ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ 禁止选股（硬空仓）的判据。
 //   与 buy-settle 是两件事：那个管「还没到、等几秒」；这个管「根本不会有、必须直接给结论」。
 import { resolveBuyDataGate, TVRB_DATA_GATE_NONE } from '../logic/topicvolratio/buy-data-gate.js';
@@ -1698,6 +1706,18 @@ export function useTopicVolRatioBoard() {
       const _r20Wide = _aucReady ? _aucBoard.wide : (getRange20LeadersWide(d) || null);
       const _r20Top10 = _aucReady ? _aucBoard.top10 : (getRange20LeadersTop10(d) || null);
 
+      // ★★ [ABN-DEV 2026-11-14 用户口径] 「我看一遍股票或者市场前十，就知道怎么参考了」
+      //   ⇒ 把 20 日涨幅主板前十的名字记下来，作为偏离值面板的【参考顺序】。
+      //   ⚠️ 只喂显示（面板排序），⛔ 不参与任何选股判定；日期对不上时下面会因 rec.ready=false 提前返回。
+      //   §10：竞价榜判不出时这里是收盘口径发布榜 —— 面板表头会写明「口径」。
+      const _top10Names = (_r20Top10 || [])
+        .map(function (x) { return (x && (x.stock || x.name)) || ''; })
+        .map(function (n) { return String(n).trim(); })
+        .filter(Boolean);
+      if (_top10Names.join('|') !== (_devTop10Names.value || []).join('|')) {
+        _devTop10Names.value = _top10Names;
+      }
+
       const rec = collectDecisionTopics(d, {
         mode: MODE_VOL_RATIO,
         actionContext: true,
@@ -2257,10 +2277,9 @@ export function useTopicVolRatioBoard() {
     });
   }
 
-  const displayPlan = computed(function() {
+  const _displayPlanBase = computed(function() {
     const d = String(currentDate.value || '').trim();
-    // ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11] 【第一优先级】命中当日定稿存档 ⇒ 恒返回那一份。
-    //   历史日期复盘的全部意义就是「看到当天 9:25 那份结论」；库内行情会被后续 worker / 收盘
+    // ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11] 【第一优先级】命中当日定稿存档 ⇒ 恒返回那一份。    //   历史日期复盘的全部意义就是「看到当天 9:25 那份结论」；库内行情会被后续 worker / 收盘
     //   覆盖（11-10 实证），⛔ 绝不能拿它重算。刷新、切走再切回、上游数据到货都不改变它。
     //   ★ [SELL-LIVE 2026-11-12] 「不改变」只约束**买点结论**；卖点段与分笔装饰恒取实时
     //     （见 `_frozenWithLive` 的根因说明，⛔ 别把这两项也冻回去）。
@@ -2282,6 +2301,137 @@ export function useTopicVolRatioBoard() {
     //   ⛔ 三份都读不到 ⇒ 不叠加（§10 绝不拿「没算出来」当「没有异动」）。
     //   ⛔ 叠加函数不改写存档、不删票、幂等（实时路径已收口时会原样返回）。
     return applyAbnormalOverlay(base, _abnormalFactForDisplay(d));
+  });
+
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  // ★★ [ABN-DEV 2026-11-14 用户口径] 【第二层叠加】交易所官方偏离值 ⇒ 买点行徽标
+  //
+  // 用户原话：「这些在买点侧，也说明下，很重要，特别是竞价时，或者收盘后，我看一遍股票或者
+  //   市场前十，就知道怎么参考了」「九阳股份 002242 30日偏离 199.9 ⇒ 距 200% 只差 0.1 个点，
+  //   周一只要不跌就构成严重异常波动」。
+  //
+  // 为什么是【两层】而不是并进 `_displayPlanBase`：
+  //   · 第一层（第三十四条）是**规则**——它改选股结论/标签，必须进定稿存档；
+  //   · 第二层（偏离值）是**解释性事实**——只贴「离红线还有多远」，⛔ 不改任何结论；
+  //     它依赖异步取数（逐日腿 + 指数腿），塞进同一个 computed 会让「结论」跟着取数抖动。
+  //   ⇒ 两层分开算、最后合成同一个 `displayPlan`，下游所有具名 computed 一个字都不用改。
+  //
+  // ⚠️ §10：`devMap` 空 / 某只票判不出 ⇒ 那一行**不加徽标**（⛔ 不写 0%、不写「—」），
+  //    覆盖情况由 `deviationMeta` 在说明区如实交代（缺数据必须看得见）。
+  // ⚠️ 幂等：`attachDeviationFacts` 是纯函数、全量重算，⛔ 不依赖「叠过就跳过」的状态。
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  // ── [ABN-DEV 2026-11-14] 官方偏离值的取数器与依赖的小工具 ─────────────────────────
+  const _dev = useAbnormalDeviation();
+  /** 20日涨幅主板前十（= 「市场前十」那张参考榜的顺序来源，由 `data` computed 写入） */
+  const _devTop10Names = ref([]);
+  /** 北京「今天」（本地时区 ≈ 北京时间；仅用于判「是不是当天 ⇒ 要不要用竞价口径」） */
+  function _bjToday() { return beijingTodayStr(); }
+  /** 票名 → 6 位代码（⛔ 不猜：名册查不到就返回空串，偏离值那侧会自动判「数据未就绪」） */
+  function _codeOfName(name) { return getStockCode(name) || ''; }
+  /** 该日的 9:25 竞价口径 20 日涨幅榜是否可用（可用 ⇒ 当天的偏离值用竞价腿） */
+  function _aucReadyForDate(d) {
+    const b = getTvrbAuctionBoard(d);
+    return !!(b && b.ready);
+  }
+
+  const displayPlan = computed(function() {
+    return attachDeviationFacts(_displayPlanBase.value, _dev.devMap.value, _dev.meta.value);
+  });
+
+  /** 偏离值面板要展示的票：市场前十（20日涨幅主板口径）优先，再补买点侧的行（⛔ 顺序即参考顺序） */
+  const deviationUniverse = computed(function() {
+    const out = [];
+    const seen = new Set();
+    const push = function (n) {
+      const name = String(n || '').trim();
+      if (!name || seen.has(name)) return;
+      seen.add(name);
+      out.push(name);
+    };
+    (_devTop10Names.value || []).forEach(push);
+    const plan = _displayPlanBase.value;
+    if (plan) {
+      eachBuyBlock(plan, function (b) {
+        (b.picks || []).forEach(function (p) { if (p && p.name) push(p.name); });
+      });
+    }
+    return out;
+  });
+
+  /**
+   * 触发一次偏离值取数。
+   * ★ 时点口径（用户点名「特别是竞价时，或者收盘后」）：
+   *   · 竞价时点（今天、且 9:26 竞价档可用）⇒ `basis='auction'`，用今日竞价涨幅顶替末腿
+   *     （指数没有集合竞价成交价 ⇒ 按「指数不动」计，与用户 11-13 那张表的假设一致）；
+   *   · 收盘后 / 历史日 ⇒ `basis='close'`，直接用库里的收盘腿。
+   *   ⛔ 收盘后绝不回填任何「9:25 那一刻」的偏离值 —— 竞价时点那份只在当时算、只用于当时上屏。
+   */
+  function _reloadDeviation() {
+    const d = String(currentDate.value || '').trim();
+    if (!d) { _dev.clear(); return; }
+    const names = deviationUniverse.value;
+    if (!names || names.length === 0) { _dev.clear(); return; }
+    const isToday = d === _bjToday();
+    // ★ 竞价口径只在「今天 + 竞价档可用」时启用：历史日重算一律收盘腿（§11 稳定复盘）
+    const useAuc = isToday && _aucReadyForDate(d);
+    _dev.load({
+      names: names,
+      asOf: d,
+      codeOf: _codeOfName,
+      basis: useAuc ? 'auction' : 'close',
+      todayPctOf: useAuc
+        ? function (name) {
+            const m = buyRangeMap.value;
+            if (!(m instanceof Map)) return null;
+            const hit = m.get(String(name || '').trim());
+            return hit ? hit.pct : null;
+          }
+        : null
+    });
+  }
+
+  // 只在「日期 / 票集合」变化时重取（§32：⛔ 不许跟着每一帧重算）
+  watch(
+    function () { return [String(currentDate.value || ''), deviationUniverse.value.join('|')].join('#'); },
+    function () { _reloadDeviation(); },
+    { immediate: true }
+  );
+
+  /** 面板行（市场前十 → 买点票；判不出的票仍出行、数值写「—」，§10 缺数据必须看得见） */
+  const deviationRows = computed(function() {
+    return _dev.rowsFor(deviationUniverse.value);
+  });
+
+  /**
+   * 面板表头 / 说明（§21：文案全部在 Logic 层拼好，视图零计算）。
+   * ⚠️ `visible=false` ⇒ 视图整块不渲染（⛔ 不挂一个空壳占位）。
+   */
+  const deviationMeta = computed(function() {
+    const m = _dev.meta.value || {};
+    const rows = deviationRows.value;
+    const okCount = rows.filter(function (r) { return r.ok; }).length;
+    const basisText = m.basis === 'auction'
+      ? '9:25 竞价口径（今日指数按「不动」计）'
+      : '收盘口径（截至最近一个收盘日）';
+    let warnText = '';
+    if (m.loading && rows.length === 0) warnText = '偏离值读取中…';
+    else if (m.error) warnText = '⚠️ ' + m.error + ' ⇒ 本次偏离值判不出（这不是「没有异动」，§10）';
+    else if (m.note) warnText = m.note;
+    else if (rows.length > 0 && okCount === 0) warnText = '⚠️ 逐日腿 / 指数腿未就绪 ⇒ 偏离值一个都算不出';
+    return {
+      visible: rows.length > 0,
+      asOf: m.asOf || '',
+      basis: m.basis || 'close',
+      basisText: basisText,
+      ready: typeof m.ready === 'number' ? m.ready : 0,
+      total: typeof m.total === 'number' ? m.total : rows.length,
+      loading: !!m.loading,
+      title: '官方偏离值 · 离严重异常波动还有多远',
+      subText: basisText + '｜口径 = 交易所《交易规则》' +
+        '「收盘价格涨跌幅偏离值累计值」（已扣对应指数：沪主板=上证A股指数／深主板=深证A股指数／' +
+        '创业板=创业板综指／科创板=科创50）｜10 日 ≥ +100% 或 30 日 ≥ +200% 即触发严重异常波动',
+      warnText: warnText
+    };
   });
 
   // ════════════════════════════════════════════════════════════════════════════════════════
@@ -3241,6 +3391,13 @@ export function useTopicVolRatioBoard() {
     // ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条「十日涨幅 · 在列次数候补」
     range10Backup,
     summaryText,
+    // ★★ [ABN-DEV 2026-11-14 用户口径] 官方偏离值面板（「看一遍市场前十就知道怎么参考」）：
+    //   deviationRows = 有序行（市场前十 → 买点侧票），每行 { name, dev10Text, dev30Text,
+    //                   gapText, tone, ok, title }，文案已由 Logic 层拼好（§21 模板零计算）；
+    //   deviationMeta = { ready, total, asOf, basis, note, error, loading } —— 缺口如实交代（§10）。
+    //   ⛔ 面板只读，绝不参与选股；买点行徽标走 displayPlan 的 p.devBadge（同一个 devMap）。
+    deviationRows,
+    deviationMeta,
     toggleExpand,
     toggleCompact,
     setRulesOpen,

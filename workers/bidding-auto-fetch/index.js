@@ -52,6 +52,9 @@ import { runLadderRecheck, fillAucFromNumcat } from './logic/ladder-recheck.js';
 import { runRange20Prefill } from './logic/range20-prefill.js';
 // [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐，彻底替代本机 08:00 定时任务。
 import { runDailyLegsHeal } from './logic/daily-legs-heal.js';
+// ★★ [ABN-DEV 2026-11-14 用户口径] 官方「对应指数」逐日涨幅腿（market_metrics, scope='index'）
+//   —— 前端「交易所偏离值」的唯一云端来源（关电脑也要能算）。
+import { runIndexLegsWrite } from './logic/index-legs.js';
 // ★★ [LD-CLOUD 2026-11-13 用户口径] 第二十五条「总龙首次/二次分歧」云端预计算：
 //   「都是在云端运行，关电脑也能用，不要电脑本地的」⇒ 判定全部在 Worker 里算完落 tvrb_leader_diverge，
 //   前端只读一行（src/data/leader-diverge-days.js）。9:27（intraday）+ 16:00（close）各跑一次。
@@ -471,6 +474,30 @@ async function dispatch(point, env, logs, opts) {
     //    9:27 snapshot 的 intraday 版本仍在；16:30 close 版本覆盖同一行（信息更全、口径不变）。
     //    ⚠️ 留 null 而不是 0：0 会被误读成「这轮算过、写了 0 行」，⛔ 不许拿它验收。
     result.leaderDivergeCloseWritten = null;
+    // ④ ★★ [ABN-DEV 2026-11-14 用户口径] 「官方对应指数的逐日涨幅腿」落库。
+    //
+    // 【为什么在本轮】用户硬红线「全部云端运行、关电脑也能用」⇒ 指数腿必须由云端写，
+    //   ⛔ 不能只在浏览器里现拉腾讯（换台电脑 / 关机就打不开那张偏离值表）。
+    //   而 16:00 主轮的 50 次 subrequest 已经被 runClose + snapshotPatch + dailyLegsHeal 吃满
+    //   （见上面 ②③ 的事故记录），本任务要 4 次腾讯日线 + 1 次 upsert = 5 次 ⇒ 必须放这里。
+    //
+    // 【它服务谁】前端「官方偏离值」面板 + 买点行徽标：10 日偏离 ≥ +100% / 30 日 ≥ +200%
+    //   就是交易所认定的【严重异常波动】（用户 11-14 点名「九阳股份 30 日偏离 199.9」那一套）。
+    //   ⛔ 与第三十四条的「十日原始涨幅 97%」是两把尺子，互不替代。
+    // 【失败不连坐】取不到 / 写失败只记日志，⛔ 不影响收盘列与运行日志的落库。
+    // 【幂等】PK=(date,stock,scope)，重复跑不产生新行，⛔ 不删任何行。
+    try {
+      const il = await runIndexLegsWrite(env, { date: (opts && opts.date) || '' });
+      result.indexLegsWritten = il.written;
+      result.indexLegsMissing = il.missing;
+      (il.logs || []).forEach(l => result.logs.push('[index-legs] ' + l));
+      console.log('[auto-fetch] closepost 指数逐日腿: ok=' + il.ok + ' written=' + il.written +
+        ' 日志=' + JSON.stringify(il.logs || []));
+    } catch (e) {
+      const msg = '[index-legs] ❌ 异常（不影响本轮其它任务）: ' + (e && e.message);
+      result.logs.push(msg);
+      console.error('[auto-fetch] ' + msg);
+    }
     await persistRunResult(env, point, result);
     return result;
   }

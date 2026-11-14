@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-11-13 15:23:27
+// 生成时间: 2026-11-14 08:05:41
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 10451（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 10659（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
@@ -6299,6 +6299,187 @@ async function runDailyLegsHeal(env, opts) {
 }
 
 
+// ────── bidding-auto-fetch/logic/index-legs.js ──────
+// index-legs.js — 云端写「官方对应指数的逐日涨幅腿」（market_metrics, scope='index'）
+//
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 【它解决什么】前端算「交易所官方收盘价格涨跌幅偏离值」需要【对应指数】的逐日涨幅
+//   （沪主板=上证A股指数 sh000002／深主板=深证A股指数 sz399107／
+//     创业板=创业板综指 sz399102／科创板=科创50 sh000688）。
+//   用户硬红线「全部云端运行、关电脑也能用」⇒ 这个序列必须由 Worker 落库，
+//   ⛔ 不许只在浏览器里现拉腾讯（那样换台电脑就得重拉，且离线打不开）。
+//
+// 【为什么挂在 closepost（16:03）而不是 close（16:00）】
+//   🔴 血泪教训（11-13 生产日志）：免费版单次 invocation 只有 **50 次 subrequest**。
+//   16:00 主轮跑完 runClose + snapshotPatch + dailyLegsHeal 已接近上限，再塞任何补写任务
+//   就会爆 `Too many subrequests by single Worker invocation`，连运行日志都发不出去。
+//   本模块 = 4 次腾讯日线 + 1 次 upsert = 5 次 subrequest，必须放在**独立的闭市后一轮**。
+//
+// 【为什么用腾讯而不是同花顺】
+//   · 0 猫抓额度（额度 10 次/天要留给 9:25 竞价量比）；
+//   · `qt-kline` 与 `stock_daily_pct` 逐日腿【同一个源】，偏差口径一致；
+//   · 指数不需要前复权，日线稳定。
+//
+// 【§10 / §11】
+//   · 取不到的指数 ⇒ 不写行（⛔ 不补 0、⛔ 不拿别的指数顶替）；
+//   · 只 upsert 最近 N 个自然日的腿（幂等：PK=(date,stock,scope)，重复写不产生新行）；
+//   · ⛔ 不删任何行、⛔ 不碰 scope='auction' / 'hot' 的数据。
+// ══════════════════════════════════════════════════════════════════════════════════════
+
+
+const QT_BASE = 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get';
+const QT_TIMEOUT_MS = 9000;
+
+/**
+ * 官方对应指数（⛔ 与前端 `logic/auction/abnormal-deviation.js#DEV_INDEX` 必须逐字一致；
+ * 四家指数是交易所条文规定的，不是本项目自选）。
+ */
+const INDEX_LEG_TARGETS = [
+  { code: 'sh000002', name: '上证A股指数' },
+  { code: 'sz399107', name: '深证A股指数' },
+  { code: 'sz399102', name: '创业板综指' },
+  { code: 'sh000688', name: '科创50' }
+];
+
+/** 每次回补多少个自然日（≈ 12 个交易日，足够覆盖周末 + 小长假 + 漏跑一天） */
+const INDEX_LEGS_LOOKBACK_DAYS = 20;
+
+function _ymd(d) { return d.toISOString().slice(0, 10); }
+function _shift(ymd, n) {
+  const t = Date.parse(String(ymd) + 'T00:00:00Z');
+  if (!Number.isFinite(t)) return String(ymd);
+  return _ymd(new Date(t + n * 86400000));
+}
+
+/** '+0.55' 这种文本（与 market_metrics 其它 scope 的 change_pct 同一约定） */
+function fmtPct(v) {
+  // ⚠️ `Number(null) === 0` ⇒ 必须先挡掉 null/空串，否则「缺数据」会被写成 +0.00%（§10 事故经典）
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  return (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+}
+
+/**
+ * 【纯函数】收盘序列 → 逐日涨幅腿（第一根没有前收 ⇒ 不出腿）。
+ * @param {Array<{date:string, close:number}>} bars
+ * @returns {Array<{date:string, pct:number}>}
+ */
+function barsToLegs(bars) {
+  const out = [];
+  const arr = Array.isArray(bars) ? bars : [];
+  for (let i = 1; i < arr.length; i++) {
+    const a = Number(arr[i - 1] && arr[i - 1].close);
+    const b = Number(arr[i] && arr[i].close);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b <= 0) continue;
+    out.push({ date: String(arr[i].date).slice(0, 10), pct: (b / a - 1) * 100 });
+  }
+  return out;
+}
+
+/**
+ * 【纯函数】把「每只指数的日线」拼成要 upsert 的行（便于单测锁住形状 / 幂等 / §10 语义）。
+ *
+ * @param {Map<string, Array<{date:string, close:number}>>} barsByCode
+ * @param {string} [fromDate] 只写 ≥ 这一天的腿（缺省 = 全写）
+ * @returns {Array<{date:string, stock:string, code:string, change_pct:string, scope:string, updated_at:string}>}
+ */
+function buildIndexLegRows(barsByCode, fromDate, nowIso) {
+  const rows = [];
+  const from = fromDate ? String(fromDate).slice(0, 10) : '';
+  INDEX_LEG_TARGETS.forEach(function (t) {
+    const bars = barsByCode && typeof barsByCode.get === 'function' ? barsByCode.get(t.code) : null;
+    if (!bars || !bars.length) return;                    // §10：取不到 ⇒ 不写，⛔ 不补 0
+    barsToLegs(bars).forEach(function (l) {
+      if (from && l.date < from) return;
+      const pct = fmtPct(l.pct);
+      if (pct === null) return;
+      rows.push({
+        date: l.date,
+        stock: t.name,
+        code: t.code,
+        change_pct: pct,
+        scope: 'index',
+        updated_at: nowIso || new Date().toISOString()
+      });
+    });
+  });
+  return rows;
+}
+
+/** 拉一只指数的日线（腾讯 ifzq；失败 ⇒ 空数组，⛔ 不抛） */
+async function _fetchIndexBars(sym, fromYmd, toYmd) {
+  const url = QT_BASE + '?param=' + sym + ',day,' + fromYmd + ',' + toYmd + ',320,qfq';
+  try {
+    const resp = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://gu.qq.com/' },
+      signal: (typeof AbortSignal !== 'undefined' && AbortSignal.timeout)
+        ? AbortSignal.timeout(QT_TIMEOUT_MS) : undefined
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const j = await resp.json();
+    const d = (j && j.data && j.data[sym]) || {};
+    const raw = d.qfqday || d.day || [];
+    const out = [];
+    raw.forEach(function (b) {
+      if (!Array.isArray(b) || !b[0]) return;
+      const close = Number(b[2]);
+      if (!Number.isFinite(close) || close <= 0) return;
+      out.push({ date: String(b[0]).slice(0, 10), close: close });
+    });
+    return out;
+  } catch (e) {
+    return [];
+  }
+}
+
+/**
+ * 收盘后写「指数逐日腿」。
+ *
+ * @param {object} env
+ * @param {object} [opts] { date='YYYY-MM-DD', lookbackDays=20 }
+ * @returns {Promise<{ok:boolean, written:number, dates:number, missing:string[], logs:string[]}>}
+ */
+async function runIndexLegsWrite(env, opts) {
+  const o = opts || {};
+  const logs = [];
+  const today = String(o.date || beijingToday()).slice(0, 10);
+  const lookback = Number(o.lookbackDays) > 0 ? Number(o.lookbackDays) : INDEX_LEGS_LOOKBACK_DAYS;
+  const from = _shift(today, -lookback);
+
+  const barsByCode = new Map();
+  const missing = [];
+  for (let i = 0; i < INDEX_LEG_TARGETS.length; i++) {
+    const t = INDEX_LEG_TARGETS[i];
+    // ⚠️ 串行而不是并发：4 次请求不值得为并发多占一次 subrequest 预算判断的心智，
+    //    而且串行失败隔离更清楚（哪只挂了一眼能看出来）。
+    const bars = await _fetchIndexBars(t.code, from, today);
+    if (!bars.length) { missing.push(t.code); continue; }
+    barsByCode.set(t.code, bars);
+  }
+  logs.push('指数日线可用 ' + (INDEX_LEG_TARGETS.length - missing.length) + '/' +
+    INDEX_LEG_TARGETS.length + '（' + from + '~' + today + '）');
+  if (missing.length > 0) {
+    logs.push('⚠️ 取不到（这些板块的偏离值将算不出）: ' + missing.join('、'));
+  }
+
+  const rows = buildIndexLegRows(barsByCode, from, new Date().toISOString());
+  if (rows.length === 0) {
+    logs.push('⛔ 一条腿都没有 ⇒ 不写库（§10 缺数据不补 0）');
+    return { ok: false, written: 0, dates: 0, missing: missing, logs: logs };
+  }
+  const dates = new Set(rows.map(function (r) { return r.date; })).size;
+  try {
+    await upsertMarketMetrics(env, rows);
+    logs.push('✅ 写入指数腿 ' + rows.length + ' 行 / ' + dates + ' 个交易日');
+    return { ok: true, written: rows.length, dates: dates, missing: missing, logs: logs };
+  } catch (e) {
+    logs.push('❌ 写 market_metrics(scope=index) 失败: ' + ((e && e.message) || e));
+    return { ok: false, written: 0, dates: dates, missing: missing, logs: logs };
+  }
+}
+
+
 // ────── ../src/logic/auction/auction-leg-pct.js ──────
 // auction-leg-pct.js — 20日涨幅「反解成 9:25 竞价口径」的【纯函数】唯一实现（Logic 层）
 //
@@ -9666,6 +9847,9 @@ async function runJiwangCloseWrite(env) {
 
 // [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐，彻底替代本机 08:00 定时任务。
 
+// ★★ [ABN-DEV 2026-11-14 用户口径] 官方「对应指数」逐日涨幅腿（market_metrics, scope='index'）
+//   —— 前端「交易所偏离值」的唯一云端来源（关电脑也要能算）。
+
 // ★★ [LD-CLOUD 2026-11-13 用户口径] 第二十五条「总龙首次/二次分歧」云端预计算：
 //   「都是在云端运行，关电脑也能用，不要电脑本地的」⇒ 判定全部在 Worker 里算完落 tvrb_leader_diverge，
 //   前端只读一行（src/data/leader-diverge-days.js）。9:27（intraday）+ 16:00（close）各跑一次。
@@ -10084,6 +10268,30 @@ async function dispatch(point, env, logs, opts) {
     //    9:27 snapshot 的 intraday 版本仍在；16:30 close 版本覆盖同一行（信息更全、口径不变）。
     //    ⚠️ 留 null 而不是 0：0 会被误读成「这轮算过、写了 0 行」，⛔ 不许拿它验收。
     result.leaderDivergeCloseWritten = null;
+    // ④ ★★ [ABN-DEV 2026-11-14 用户口径] 「官方对应指数的逐日涨幅腿」落库。
+    //
+    // 【为什么在本轮】用户硬红线「全部云端运行、关电脑也能用」⇒ 指数腿必须由云端写，
+    //   ⛔ 不能只在浏览器里现拉腾讯（换台电脑 / 关机就打不开那张偏离值表）。
+    //   而 16:00 主轮的 50 次 subrequest 已经被 runClose + snapshotPatch + dailyLegsHeal 吃满
+    //   （见上面 ②③ 的事故记录），本任务要 4 次腾讯日线 + 1 次 upsert = 5 次 ⇒ 必须放这里。
+    //
+    // 【它服务谁】前端「官方偏离值」面板 + 买点行徽标：10 日偏离 ≥ +100% / 30 日 ≥ +200%
+    //   就是交易所认定的【严重异常波动】（用户 11-14 点名「九阳股份 30 日偏离 199.9」那一套）。
+    //   ⛔ 与第三十四条的「十日原始涨幅 97%」是两把尺子，互不替代。
+    // 【失败不连坐】取不到 / 写失败只记日志，⛔ 不影响收盘列与运行日志的落库。
+    // 【幂等】PK=(date,stock,scope)，重复跑不产生新行，⛔ 不删任何行。
+    try {
+      const il = await runIndexLegsWrite(env, { date: (opts && opts.date) || '' });
+      result.indexLegsWritten = il.written;
+      result.indexLegsMissing = il.missing;
+      (il.logs || []).forEach(l => result.logs.push('[index-legs] ' + l));
+      console.log('[auto-fetch] closepost 指数逐日腿: ok=' + il.ok + ' written=' + il.written +
+        ' 日志=' + JSON.stringify(il.logs || []));
+    } catch (e) {
+      const msg = '[index-legs] ❌ 异常（不影响本轮其它任务）: ' + (e && e.message);
+      result.logs.push(msg);
+      console.error('[auto-fetch] ' + msg);
+    }
     await persistRunResult(env, point, result);
     return result;
   }

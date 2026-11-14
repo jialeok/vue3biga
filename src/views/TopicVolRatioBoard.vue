@@ -233,6 +233,15 @@
                 </div>
               </div>
               <TvrbCashAlert :alert="cashAlert" />
+              <!-- ★★ [ABN-DEV 2026-11-14 用户口径] 官方偏离值参考面板：
+                 「特别是竞价时，或者收盘后，我看一遍股票或者市场前十，就知道怎么参考了」。
+                 ⚠️ 它渲染在灰化容器【之外】：偏离值是客观行情事实，买点侧整片灰（监管异动）时
+                    更需要看 —— 灰色会让用户以为是「被禁的票」，而这张表说的是「离红线多远」。
+                 ⛔ 面板与选股结论无关：只读，不参与任何判定。 -->
+              <TvrbDeviationBoard
+                :rows="deviationRows"
+                :meta="deviationMeta"
+              />
               <!-- ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】买点：
                用户原话「…从灰色的题材块中核对 20 日涨幅，看有没有排名前三的股票在其中（同题材），
                如果有再重新选入，因为行情差时，选市场龙头（也是题材龙头），叫弱势切抱团。
@@ -452,6 +461,8 @@ import { computed, provide } from 'vue';
 import TvrbRulesHint from '../components/topicvolratio/TvrbRulesHint.vue';
 import TvrbBuyBlock from '../components/topicvolratio/TvrbBuyBlock.vue';
 import TvrbCashAlert from '../components/topicvolratio/TvrbCashAlert.vue';
+// ★★ [ABN-DEV 2026-11-14 用户口径] 官方偏离值参考面板（「看一遍市场前十就知道怎么参考」）
+import TvrbDeviationBoard from '../components/topicvolratio/TvrbDeviationBoard.vue';
 // ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ 不能选股的专用提示板
 import TvrbDataGate from '../components/topicvolratio/TvrbDataGate.vue';
 import TvrbSellBlock from '../components/topicvolratio/TvrbSellBlock.vue';
@@ -479,6 +490,9 @@ const {
   sellEmptyText,
   notes,
   cashAlert,
+  // ★★ [ABN-DEV 2026-11-14 用户口径] 官方偏离值面板的两份数据（行 + 表头/说明，文案全在 Logic 层）
+  deviationRows,
+  deviationMeta,
   // ★★ [ABNORMAL-ALL 2026-11-13] 监管异动 ⇒ 买点侧【全部】灰色（含六个灰化容器之外的独立块）。
   //   判据只在 Logic 层（abnormal-overlay#isAbnormalAllGray），模板零计算（§21）。
   abnormalGray,

@@ -293,11 +293,11 @@ describe('tvrb · [AUTO-PICK-TOP20] 边界与回归锁', function() {
 
   it('三件套：规则指纹 v14 + SW v52 + 模板/样式都接上了 range20Label', function() {
     const rules = readFileSync('src/logic/topicvolratio/plan-snapshot-rules.js', 'utf8');
-    expect(rules).toContain('TVRB_RULES_VERSION = 14');
+    expect(rules).toContain('TVRB_RULES_VERSION = 15');
     expect(rules).toContain('[AUTO-PICK-TOP20]');
     expect(rules).toContain('[MID-TOP20]');
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v52'");
+    expect(sw).toContain("var CACHE = 'biga-static-v53'");
     const vue = readFileSync('src/components/topicvolratio/TvrbBuyBlock.vue', 'utf8');
     expect(vue).toContain('p.range20Label');
     const css = readFileSync('src/assets/css/topic-vol-ratio-board.css', 'utf8');

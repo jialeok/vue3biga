@@ -122,6 +122,23 @@
           class="tvrb-r20-label"
           title="20日涨幅主板名次（只算主板：创业板 300/301、科创板 688/689、北交所不算名次）—— 与本页「20日涨幅」toggle 的选出同一把尺子"
         >{{ p.range20Label }}</span>
+        <!-- ★★ [ABN-DEV 2026-11-14 用户口径] 交易所官方「收盘价格涨跌幅偏离值」徽标。
+             用户原话：「这些在买点侧，也说明下，很重要，特别是竞价时，或者收盘后，
+             我看一遍股票或者市场前十，就知道怎么参考了」。
+             ⚠️ 它与 pctText（十日原始涨幅）/ range20Label（20日涨幅名次）是【三个口径】，
+                ⛔ 谁也替代不了谁：原始涨幅不扣指数，官方异动判定扣指数。
+             文案（「10日偏离 +72.7%」/「· 还需 +16%」）已由 Logic 层
+             `logic/topicvolratio/deviation-overlay.js` 拼好，模板零计算（§21）；
+             缺数据 ⇒ devBadge 为空串 ⇒ 整个徽标不渲染（§10 绝不用 0% 或「—」占位）。 -->
+        <span
+          v-if="p.devBadge"
+          class="tvrb-dev-label"
+          :class="'tvrb-dev-' + (p.devTone || 'muted')"
+          :title="p.devTitle"
+        >{{ p.devBadge }}<span
+          v-if="p.devGap"
+          class="tvrb-dev-gap"
+        > · {{ p.devGap }}</span></span>
         <!-- 龙标旁边的名次变化（'+3' 上升红 / '-2' 下降绿；无可比 ⇒ 空串 ⇒ 不渲染，§10） -->
         <span
           v-if="p.dragonDeltaText"

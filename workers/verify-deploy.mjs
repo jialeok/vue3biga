@@ -50,6 +50,12 @@ const REQUIRED = [
   //      注释会被 esbuild 删掉，只有它能证明「这一版真的上线了」。
   //   ⚠️ cron 条数由 expectedCrons() 直读 toml 断言，不需要在这里列第 4 条。
   '[CLOUD-0927-HEAL]',
+  // [ABN-DEV 2026-11-14] 官方「对应指数」逐日腿（market_metrics, scope='index'），
+  //   closepost(16:03) 独立一轮写入 —— 前端「交易所偏离值」的唯一云端来源。
+  //   ⚠️ 两条都是「打包后仍在产物里」的实体：函数名（跨文件被 index.js 调用，压缩不删）
+  //      + 日志前缀字面量（⛔ 不能用注释，esbuild 会删）。
+  'runIndexLegsWrite',
+  '[index-legs]',
   // [DDL-LEG / RANGE20-RATIO-HEAL 2026-11-11] 第二批：DDL 已把主键改成 (date,stock,leg)，
   //   线上脚本必须同时具备「写结果表带 leg」和「9:26 补抓覆盖当日全部缺量比行」。
   //   ⚠️ 全部是【字符串字面量 / 不被 mangle 的属性名】，打包压缩后仍在线上脚本里；
