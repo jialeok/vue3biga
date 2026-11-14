@@ -28,7 +28,8 @@
 //   ⇒ 必须先把「将影响 N 只股票的这些词」摆给用户看，绝不静默连坐。
 // ══════════════════════════════════════════════════════════════════════════════════════
 
-import { pullStockTopicsFromCloud, pushStockTopicsBatch } from '../../data/stock-topics.js';
+import { pullStockTopicsFromCloud, pushStockTopicsBatch, loadCloudTopics } from '../../data/stock-topics.js';
+import { state } from '../app-state.js';
 import { _dbgLog } from '../../data/debug-log.js';
 
 /**
@@ -153,7 +154,16 @@ export async function previewCoreWordPurge(coreWord) {
 }
 
 /**
- * 执行清理：读 → 计划 → 批量写 → **重新读回验证**（§11 执行后必须验证）。
+ * 执行清理：读 → 计划 → 批量写 → **刷新全局题材库缓存 + 重新读回验证**（§11 执行后必须验证）。
+ *
+ * ★★ [CORE-PURGE-SYNC 2026-11-14 用户口径] 为什么写完必须调 `loadCloudTopics()`：
+ *   用户原话：「提示板那里就不要出现那东方和羊字辈的题材字样了，选股逻辑也是，也要跟着刷新」。
+ *   联动是靠【题材库内容指纹】触发的：`getTopicLibraryDigest()` 读的是 `state._cloudTopicsCache`，
+ *   它变了 ⇒ `currentRulesSig` 变 ⇒ `resolvePlanSnapshotFreshness` 判 stale（且**历史日也重算**）
+ *   ⇒ `_buyPublished` 解冻 ⇒ 选股与提示板按现有题材重算并修订存档。
+ *   ⚠️ 而 `pushStockTopicsBatch` 只在 `_cloudTopicsCache` 【已存在】时逐只更新 ——
+ *      若当时库还没拉过（null），指纹就恒为空 ⇒ 存档判不出过期 ⇒ **什么都不刷新**。
+ *   ⇒ 这里显式整库重拉一次：既保证指纹一定变，又让验证读的与 UI 读的是同一份（§6 不留两个真相）。
  *
  * 幂等：同一核心词重复调用，第二次 `affectedStocks = 0`、`written = 0`。
  *
@@ -172,12 +182,26 @@ export async function purgeCoreWordFromLibrary(coreWord) {
     _dbgLog('[CORE-PURGE] 已从 ' + written + ' 只股票移除 ' + plan.removedWords + ' 个题材词：' +
         plan.words.join('、'));
 
-    // ── §11 执行后验证：重新读云端（pushStockTopicsBatch 已 bust 读缓存，这里拿到的是新值）──
+    // ── ① 整库重拉：让 `_cloudTopicsCache`（= 题材库指纹的来源）与云端一致 ──
+    //   `loadCloudTopics` 内部会 `_topicLibVersion + 1` ⇒ 各看板的 computed 重算一帧。
     let after = null;
     try {
-        after = await pullStockTopicsFromCloud();
+        await loadCloudTopics();
+        after = state._cloudTopicsCache || null;
     } catch (e) {
-        _dbgLog('[CORE-PURGE] 写后校验读取失败: ' + (e && e.message || e));
+        _dbgLog('[CORE-PURGE] 写后重拉题材库失败（改用直读校验）: ' + (e && e.message || e));
+    }
+
+    // ── ② 回读校验：目标词必须真的从这些股票里消失（§11 执行后验证）──
+    if (!after) {
+        try {
+            after = await pullStockTopicsFromCloud();
+            // ★ 重拉失败时，把这份「直读到的全库」写回缓存：指纹的来源就是它（§6 单一真相），
+            //   否则 `_cloudTopicsCache` 为 null ⇒ 指纹恒空 ⇒ 存档判不出过期 ⇒ 联动断掉。
+            if (after) state._cloudTopicsCache = after;
+        } catch (e) {
+            _dbgLog('[CORE-PURGE] 写后校验读取失败: ' + (e && e.message || e));
+        }
     }
     const tokenSet = new Set(plan.tokens);
     const stillBad = [];
@@ -194,6 +218,7 @@ export async function purgeCoreWordFromLibrary(coreWord) {
     return Object.assign(plan, {
         written: written,
         verified: !!after && stillBad.length === 0,
-        stillBad: stillBad
+        stillBad: stillBad,
+        libraryRows: after ? Object.keys(after).length : 0
     });
 }

@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { coreWordTokens, planCoreWordPurge } from './core-word-purge.js';
+import { state } from '../app-state.js';
+import { getTopicLibraryDigest } from '../../data/stock-topics.js';
+import {
+  buildRulesFingerprint,
+  resolvePlanSnapshotFreshness
+} from '../topicvolratio/plan-snapshot-rules.js';
 
 /**
  * [CORE-PURGE 2026-11-14 用户口径] 删除核心词 ⇒ 同步清理股票题材库。
@@ -109,6 +115,110 @@ describe('[CORE-PURGE] 删除核心词 ⇒ 只摘掉精确相同的细分题材'
     expect(plan.affectedStocks).toBe(500);
     expect(plan.removedWords).toBe(1000);
     expect(plan.rows[0].kept).toEqual(['其它0']);
+  });
+});
+
+describe('[CORE-PURGE-SYNC] 清理后必须联动提示板与选股结果', () => {
+  const CORE = [{ name: '羊字辈', synonyms: ['羊字辈'] }, { name: '农业', synonyms: ['种业'] }];
+
+  /** 造一份「清理前」的题材库（真实形态：Set<题材>） */
+  function seedBefore() {
+    return {
+      东方海洋: new Set(['羊字辈', '东方', '水产品', '农业']),
+      阳光照明: new Set(['外贸', '氢能源', '羊字辈']),
+      红太阳: new Set(['羊字辈', '农业'])
+    };
+  }
+
+  it('① 删掉「羊字辈」后，题材库内容指纹必须变（这是全看板联动的唯一触发器）', () => {
+    const prev = state._cloudTopicsCache;
+    try {
+      state._cloudTopicsCache = seedBefore();
+      const before = getTopicLibraryDigest();
+      expect(before.startsWith('tl1:')).toBe(true);
+
+      // 用真实计划算出「清理后的库」，再像 pushStockTopicsBatch 那样落到缓存
+      const plan = planCoreWordPurge(state._cloudTopicsCache, { name: '羊字辈', synonyms: ['羊字辈'] });
+      expect(plan.affectedStocks).toBe(3);
+      plan.rows.forEach(function(r) { state._cloudTopicsCache[r.stock] = new Set(r.kept); });
+
+      const after = getTopicLibraryDigest();
+      expect(after).not.toBe(before);
+      expect(after.startsWith('tl1:')).toBe(true);
+    } finally {
+      state._cloudTopicsCache = prev;
+    }
+  });
+
+  it('② 指纹一变 ⇒ 存档判 stale，且【历史日也重算】（提示板/选股跟着刷新的根）', () => {
+    const prev = state._cloudTopicsCache;
+    try {
+      state._cloudTopicsCache = seedBefore();
+      const sigBefore = buildRulesFingerprint(CORE, getTopicLibraryDigest());
+      const plan = planCoreWordPurge(state._cloudTopicsCache, { name: '羊字辈', synonyms: ['羊字辈'] });
+      plan.rows.forEach(function(r) { state._cloudTopicsCache[r.stock] = new Set(r.kept); });
+      const sigAfter = buildRulesFingerprint(CORE, getTopicLibraryDigest());
+      expect(sigAfter).not.toBe(sigBefore);
+
+      const snap = { status: 'hit', rulesSig: sigBefore, inputsSig: 'v1:111' };
+      // ⚠️ allowRulesInvalidation:false = 历史日（规则升级不许动历史）
+      //   但【题材库那一段】变了必须照样 stale —— 这正是用户「删了题材，选股和提示板要跟着变」。
+      expect(resolvePlanSnapshotFreshness(snap, {
+        rulesSig: sigAfter, coreTopicsLoaded: true, inputsSig: 'v1:111', allowRulesInvalidation: false
+      })).toBe('stale');
+      // 今天（allow=true）自然也是 stale
+      expect(resolvePlanSnapshotFreshness(snap, {
+        rulesSig: sigAfter, coreTopicsLoaded: true, inputsSig: 'v1:111', allowRulesInvalidation: true
+      })).toBe('stale');
+    } finally {
+      state._cloudTopicsCache = prev;
+    }
+  });
+
+  it('③ 反例：只改核心词表（不动题材库）时，历史日仍然保持定稿（不被误刷）', () => {
+    const prev = state._cloudTopicsCache;
+    try {
+      state._cloudTopicsCache = seedBefore();
+      const digest = getTopicLibraryDigest();
+      const sigBefore = buildRulesFingerprint(CORE, digest);
+      const CORE2 = [{ name: '羊字辈', synonyms: ['羊字辈', '羊年概念'] }, CORE[1]];
+      const sigAfter = buildRulesFingerprint(CORE2, digest);
+      expect(sigAfter).not.toBe(sigBefore);
+      const snap = { status: 'hit', rulesSig: sigBefore, inputsSig: 'v1:111' };
+      // 历史日：允许保持不变
+      expect(resolvePlanSnapshotFreshness(snap, {
+        rulesSig: sigAfter, coreTopicsLoaded: true, inputsSig: 'v1:111', allowRulesInvalidation: false
+      })).toBe('hit');
+      // 今天：重算
+      expect(resolvePlanSnapshotFreshness(snap, {
+        rulesSig: sigAfter, coreTopicsLoaded: true, inputsSig: 'v1:111', allowRulesInvalidation: true
+      })).toBe('stale');
+    } finally {
+      state._cloudTopicsCache = prev;
+    }
+  });
+
+  it('④ 清理完必须整库重拉（否则 _cloudTopicsCache 为 null 时指纹恒空 ⇒ 什么都不刷新）', () => {
+    const src = readFileSync('src/logic/topic/core-word-purge.js', 'utf8');
+    expect(src).toContain('loadCloudTopics');
+    // 顺序：先批量写 → 再整库重拉 → 再回读校验
+    const iWrite = src.indexOf('await pushStockTopicsBatch(');
+    const iReload = src.indexOf('await loadCloudTopics()');
+    const iVerify = src.indexOf('const tokenSet = new Set(plan.tokens)');
+    expect(iWrite).toBeGreaterThan(-1);
+    expect(iReload).toBeGreaterThan(iWrite);
+    expect(iVerify).toBeGreaterThan(iReload);
+    // 验证读的是 UI 也在读的那一份（§6 单一真相）
+    expect(src).toContain('state._cloudTopicsCache');
+  });
+
+  it('⑤ 提示板/选股消费的是「重算后的 plan」，不许读旧存档里的题材名', () => {
+    // 存档被判 stale 后必须解冻并重算 —— 判据在组合式里，这里锁住那两个动作都在
+    const board = readFileSync('src/composables/useTopicVolRatioBoard.js', 'utf8');
+    expect(board).toContain('_buyPublished.value = null');
+    // 当前指纹必须依赖题材库版本（否则清理后 computed 不重算）
+    expect(board).toContain('void getTopicLibraryVersion()');
+    expect(board).toContain('buildRulesFingerprint(getCoreTopics(), getTopicLibraryDigest())');
   });
 });
 
