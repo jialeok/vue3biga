@@ -227,6 +227,58 @@ import { state } from '../logic/app-state.js';
             return { ok: true, mode: replaceMode ? 'replace' : 'merge', topics: mergedTopics };
         }
 
+        // ══════════════════════════════════════════════════════════════════════════════
+        // ★★ [CORE-PURGE 2026-11-14 用户口径] 批量改写多只股票的题材（「删除核心词 ⇒ 清理题材库」专用）
+        //
+        // 为什么不能循环调 pushStockTopicsToCloud：
+        //   ① 那是【每只一请求】，删羊字辈 15 只还行，删「电子/通信/算力」是 309 只 = 309 个往返；
+        //   ② 每调一次都会重算一遍 buildNormalizedTopicIndex（O(库规模)）⇒ 309 × 1921；
+        //   ③ 每调一次 _topicLibVersion +1 ⇒ 选股存档指纹被抖 309 次。
+        //   ⇒ 这里一次 upsert 写完整批，缓存与版本号只在末尾同步一次。
+        //
+        // 🔴 键集必须完全一致（PostgREST 批量 upsert 的硬约束，否则整批 400 PGRST102）：
+        //   body 里每一行都【只】有 stock / topics / updated_at 三个键。
+        //   ⛔ 刻意不带 code 列：调用方拿不到代码，写空串会把库里已有的好代码清掉（与
+        //      pushStockTopicsToCloud 里「code 为空则省略该列」是同一条教训）。不带 = 不动这一列。
+        //
+        // §11：本函数只负责「按给定结果写入」，【不做】任何删除判断 —— 计划由 Logic 层
+        //   `logic/topic/core-word-purge.js#planCoreWordPurge` 算好，纯函数可单测。
+        //
+        // @param {Array<{stock:string, topics:string[]}>} rows 目标结果（每行 = 该股最终的完整题材集合）
+        // @returns {Promise<{ok:boolean, written:number}>}
+        // ══════════════════════════════════════════════════════════════════════════════
+        export async function pushStockTopicsBatch(rows) {
+            const list = Array.isArray(rows) ? rows.filter(function(r) { return r && r.stock; }) : [];
+            if (list.length === 0) return { ok: true, written: 0 };
+            const sb = getSupabase();
+            if (!sb) throw new Error('Supabase 未就绪，无法批量写入共享题材库');
+            const nowIso = new Date().toISOString();
+            const body = list.map(function(r) {
+                const topics = Array.isArray(r.topics) ? r.topics : [];
+                return { stock: String(r.stock).trim(), topics: topics.join(','), updated_at: nowIso };
+            });
+            const { error } = await sb.from('stock_topics').upsert(body, { onConflict: 'stock' });
+            if (error) throw error;
+
+            // 写入成功立刻作废 30s 读缓存（否则「刚清掉 → 又被别的看板读回旧集合」）
+            bustStockTopicsCache();
+
+            // 内存缓存同步（三份索引一起对齐，§6 不留两个真相）
+            list.forEach(function(r) {
+                const set = new Set(Array.isArray(r.topics) ? r.topics : []);
+                if (state._cloudTopicsCache) state._cloudTopicsCache[r.stock] = set;
+                if (state._topicCacheBuilt && state._topicCache) state._topicCache[r.stock] = set;
+            });
+            if (state._topicCacheBuilt && state._topicCache) {
+                // 别名索引必须整体重建：被删掉的题材留在 bucket 里就会「精确名查不到、归一化名还能查到」
+                state._topicCacheNorm = buildNormalizedTopicIndex(state._topicCache);
+            }
+            // [TOPIC-LIB-SIG 2026-11-12] 内容变 ⇒ 版本号 +1 ⇒ 选股存档判过期、连历史日期一起重算
+            state._topicLibVersion = (state._topicLibVersion || 0) + 1;
+            _dbgLog('[TOPIC-LIB] 批量改写 ' + body.length + ' 只股票的题材');
+            return { ok: true, written: body.length };
+        }
+
         // 从云端加载题材库到内存缓存（非阻塞，失败只打日志）
         export async function loadCloudTopics() {
             try {

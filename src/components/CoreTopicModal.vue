@@ -90,7 +90,7 @@
           </div>
           <button
             type="button"
-            :disabled="saving"
+            :disabled="saving || purging"
             style="padding: 4px 8px; font-size: 12px; background: #e0e7ff; color: #4f46e5; border: none; border-radius: 4px; cursor: pointer; margin-right: 4px;"
             @click="editCoreTopic(index)"
           >
@@ -98,7 +98,7 @@
           </button>
           <button
             type="button"
-            :disabled="saving"
+            :disabled="saving || purging"
             style="padding: 4px 8px; font-size: 12px; background: #fee2e2; color: #dc2626; border: none; border-radius: 4px; cursor: pointer;"
             @click="deleteCoreTopic(index)"
           >
@@ -224,6 +224,11 @@ import { ref } from 'vue';
 // [TOPIC-SEP 2026-10-02] splitTopicWords = 题材词拆分的【唯一实现】（§6 单一真相），
 //   本组件的 synonyms 输入必须与股票侧标签用同一套分隔符（含顿号），⛔ 不许再自己写正则。
 import { getCoreTopics, saveCoreTopics, splitTopicWords } from '../logic/topic/rules.js';
+// ★★ [CORE-PURGE 2026-11-14 用户口径] 删除核心词必须【同时】把股票题材库里精确等于
+//   该核心词 / 其同义词的细分题材一起摘掉，否则「羊字辈」这类临时题材删了还留在库里、
+//   并且会自己变成一个题材分组（详见 logic/topic/core-word-purge.js 顶部说明）。
+//   只删精确相等的段，⛔ 不动同一只股票的其它细分题材。
+import { previewCoreWordPurge, purgeCoreWordFromLibrary } from '../logic/topic/core-word-purge.js';
 // ⚠️ 原 `import { state } from '../logic/app-state.js'` 随「恢复默认」一起移除：
 //    它是本文件里唯一用到 state.defaultCoreTopics 的地方，留下即 dead code（§42）。
 //    ⛔ 不要删 logic/app-state.js 里的 defaultCoreTopics 本身 —— 它仍是 logic/topic/rules.js
@@ -237,6 +242,9 @@ const newName = ref('');
 const newSynonyms = ref('');
 const formError = ref('');
 const saving = ref(false);
+// [CORE-PURGE 2026-11-14] 删除前的「影响面预览」是一次云端读（题材库全表），单独一个态：
+//   期间禁用删除按钮，避免连点触发两次预览/两次删除。
+const purging = ref(false);
 const editVisible = ref(false);
 const editIndex = ref(null);
 const editName = ref('');
@@ -339,15 +347,112 @@ async function saveEdit() {
 function deleteCoreTopic(index) {
   const core = coreTopics.value[index];
   if (!core) return;
+  void doDeleteCoreTopic(index, core);
+}
+
+/**
+ * ★★ [CORE-PURGE 2026-11-14 用户口径] 删除核心词 = 删核心词 + 清理股票题材库（两步）。
+ *
+ * 顺序为什么是「先删核心词、再清题材库」：
+ *   反过来（先清库、后删词）一旦第二步失败，股票标签已经没了、核心词还挂着 ⇒ 变成空组，
+ *   且不可逆；而「先删词、后清库」失败时只是残留，用户再删一次（幂等）就能补上。
+ *
+ * §10/§11：影响面是【先读出来给用户看】再执行的，读失败就什么都不做。
+ */
+async function doDeleteCoreTopic(index, core) {
+  purging.value = true;
+  let plan = null;
+  try {
+    plan = await previewCoreWordPurge(core);   // 只读，不写
+  } catch (e) {
+    console.error('[CORE-TOPICS] 预览清理影响面失败:', e);
+    showWarningToast('❌ 读取题材库失败，已取消删除（未做任何改动）：' +
+      (e && e.message ? e.message : '未知错误'), 9000);
+    return;
+  } finally {
+    purging.value = false;
+  }
   askConfirm(
     '确定删除核心词「' + core.name + '」？',
-    '删除会同步到云端，三个看板（涨跌停 / 竞价一字 / 早盘竞价）的题材分组都会立即按新核心词重算。',
+    purgeConfirmDesc(core, plan),
     '确定删除',
     async () => {
+      // ① 删核心词
       const next = coreTopics.value.filter((_, i) => i !== index);
-      await commit(next, '✅ 已删除核心词「' + core.name + '」');
+      const ok = await commit(next, '✅ 已删除核心词「' + core.name + '」');
+      if (!ok) return;
+      // ② 清题材库（0 命中 ⇒ 直接结束，不发请求）
+      if (!plan || plan.affectedStocks === 0) {
+        if (plan && plan.substringOnly.length > 0) {
+          showWarningToast('ℹ️ 另有 ' + plan.substringOnly.length +
+            ' 只股票的题材只是【包含】这些词（不是完全相同），按规则未删除。', 8000);
+        }
+        return;
+      }
+      await runPurge(core);
     }
   );
+}
+
+/** 清理失败自动重试一次（题材库写入偶发网络失败），仍失败则如实报错并说明残留范围 */
+async function runPurge(core) {
+  saving.value = true;
+  let lastErr = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await purgeCoreWordFromLibrary(core);
+      if (res.written === 0) {
+        showToast('✅ 已删除核心词「' + core.name + '」（题材库无需清理）');
+      } else if (res.verified) {
+        showToast('🧹 已同步清理 ' + res.written + ' 只股票的题材（移除 ' + res.removedWords + ' 个词）');
+        if (res.blocked && res.blocked.length > 0) {
+          showWarningToast('ℹ️ 有 ' + res.blocked.length + ' 只股票的题材只有这个词，' +
+            '为避免整只股票被清空已跳过：' + res.blocked.slice(0, 6).map(function(b) { return b.stock; }).join('、'), 9000);
+        }
+      } else {
+        showWarningToast('⚠️ 核心词已删除、题材库已写 ' + res.written +
+          ' 只，但回读校验未通过（' + res.stillBad.length + ' 只仍有残留）。刷新后若仍在，请再删一次该核心词重试。', 10000);
+      }
+      _emit('auction-refresh');
+      saving.value = false;
+      return;
+    } catch (e) {
+      lastErr = e;
+      console.error('[CORE-TOPICS] 题材库清理失败（第 ' + (attempt + 1) + ' 次）:', e);
+    }
+  }
+  saving.value = false;
+  showWarningToast('⚠️ 核心词已删除，但【股票题材库清理失败】：' +
+    (lastErr && lastErr.message ? lastErr.message : '未知错误') +
+    '。这些股票的旧题材词还在（下次删除同一核心词可重试）。', 12000);
+}
+
+/** 把影响面写成一句人话（§10 不许让用户「盲删」） */
+function purgeConfirmDesc(core, plan) {
+  const base = '删除会同步到云端，三个看板（涨跌停 / 竞价一字 / 早盘竞价）的题材分组都会立即按新核心词重算。';
+  if (!plan) return base;
+  const words = plan.words && plan.words.length > 0 ? '「' + plan.words.join('、') + '」' : '这些词';
+  if (plan.affectedStocks === 0) {
+    let s = base + '\n题材库里没有与' + words + '完全相同的题材，因此不会改动任何股票。';
+    if (plan.substringOnly.length > 0) {
+      s += '\n另有 ' + plan.substringOnly.length + ' 只股票的题材只是包含这些词，按「精确相同才删」的规则不会删除。';
+    }
+    return s;
+  }
+  const names = plan.rows.slice(0, 8).map(function(r) { return r.stock; }).join('、');
+  const more = plan.affectedStocks > 8 ? ' 等' : '';
+  let s = base + '\n\n同时会从 ' + plan.affectedStocks + ' 只股票的题材里移除' + words +
+    '（共 ' + plan.removedWords + ' 个词）：' + names + more + '。\n' +
+    '⚠️ 只删与这些词【完全相同】的细分题材，同一只股票的其它题材原样保留。';
+  if (plan.blocked && plan.blocked.length > 0) {
+    s += '\nℹ️ 有 ' + plan.blocked.length + ' 只股票的题材只有这个词（' +
+      plan.blocked.slice(0, 6).map(function(b) { return b.stock; }).join('、') +
+      '），为避免整只股票被清空，这些跳过不改。';
+  }
+  if (plan.substringOnly.length > 0) {
+    s += '\nℹ️ 另有 ' + plan.substringOnly.length + ' 只股票的题材只是包含这些词，不会删除。';
+  }
+  return s;
 }
 function askConfirm(title, desc, okText, onOk) {
   confirmState.value = { visible: true, title, desc, okText, onOk };
@@ -398,6 +503,11 @@ defineExpose({ open, close });
   color: #6b7280;
   line-height: 1.6;
   margin-bottom: 18px;
+  /* [CORE-PURGE 2026-11-14] 影响面描述是多行文本（「将从 N 只股票移除…」逐条列出），
+     必须 pre-line 才会换行；否则挤成一整段看不清删的是什么。 */
+  white-space: pre-line;
+  max-height: 42vh;
+  overflow-y: auto;
 }
 .ctm-confirm-actions {
   display: flex;
