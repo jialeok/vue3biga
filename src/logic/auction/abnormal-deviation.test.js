@@ -20,6 +20,7 @@ import {
   pickBaseIndexForCode, devIndexName, thresholdsForBoard,
   cumulativeDeviation, needGainToThreshold, classifyDeviation,
   computeDeviation, devText, needText, deviationBadge, deviationGapText, deviationCalcText,
+  deviationCellTexts,
   deviationNeedValueText, deviationNeedAlert, deviationIndexBeta, deviationNeedWithIndexMove,
   deviationDetailLine, isDeviationSevere, isDeviationAlert,
   DEV_FORMULA_LINES, DEV_NEED_HINT
@@ -166,7 +167,7 @@ describe('[ABN-DEV] 11-13 收盘实物（用户点名的那四只）', () => {
     expect(f.stage).toBe(DEV_STAGE_NEAR);            // 未越线 ⇒ near，不是 severe
     expect(f.gap30).toBeLessThan(0.5);
     expect(f.need30).toBeLessThan(1);                 // 「周一只要不跌就构成」
-    expect(f.badge).toMatch(/^30日偏离 \+199\.\d%$/);
+    expect(f.badge).toMatch(/^30日偏离 \+199\.\d{1,2}%$/);
     expect(f.gapText).toMatch(/^距 200% 差 0\.\d+ 点（股价再涨约 \+0\.\d+%）$/);
     const g = shownGap(f);
     expect(g.thr).toBe(200);
@@ -379,7 +380,8 @@ describe('[ABN-DEV] 上屏文案（§21 模板零计算）', () => {
     expect(line).toContain('30日偏离');
     expect(line).toContain('★ 距红线：距 100% 差 27.3 点');
     // 自核句：让用户自己能验「为什么 27.3 个点只值 +16%」
-    expect(line).toContain('自核：30 日偏离 = 个股区间涨幅');
+    // 自核算式跟点差走【同一档】（闽发最近的是 10 日那档）
+    expect(line).toContain('自核：10 日偏离 = 个股区间涨幅');
     expect(line).toContain('股价每再涨 1%，偏离约增加');
     expect(line).toContain('口径：截至最近一个收盘日');
     const auc = deviationDetailLine(Object.assign({}, s, { basis: 'auction' }));
@@ -448,7 +450,9 @@ describe('[ABN-DEV] 上屏文案（§21 模板零计算）', () => {
     const f = computeDeviation({
       code: '600825', stockLegs: legsOf('600825'), indexLegs: idxOf('600825'), asOf: '2026-10-28'
     });
-    const n0 = Number(f.need30);
+    // ⚠️ 基线必须取「显示出来的那个 need」（由屏幕点差 14.5 ÷ cs 反推），
+    //   ⛔ 不能用 f.need30 的原始值 —— 两者差 0.0075 点，是取整造成的（ABN-CHECK）。
+    const n0 = deviationNeedWithIndexMove(f, 0);
     expect(n0).toBeCloseTo(5.2, 1);
     [[1, 5.535], [-1, 4.865], [2, 5.87], [-2, 4.53]].forEach(function (c) {
       const v = deviationNeedWithIndexMove(f, c[0]);
@@ -511,6 +515,48 @@ describe('[ABN-DEV] 上屏文案（§21 模板零计算）', () => {
     expect(isDeviationAlert(severe)).toBe(true);
     expect(isDeviationAlert({ ok: true, stage: DEV_STAGE_OK })).toBe(false);
     expect(isDeviationAlert({ ok: true, stage: DEV_STAGE_WATCH })).toBe(false);
+  });
+});
+
+describe('[ABN-CHECK 2026-11-14] 真实库 11-13 九阳股份：五处上屏数字必须逐字对得上', () => {
+  // ★ 这组数字来自真实库（.tmpdiag/_abn-002242-1113.mjs，stock_daily_pct + market_metrics scope=index）：
+  //   cs=2.848747、ci=0.849155 ⇒ dev30 = 199.9592 点，10 日 dev10 = 18.6137 点。
+  //   ⛔ 别改成手编的「好看数字」：正是 199.9592 卡在 1 位小数会印成 200.0 的边界上，
+  //      才会暴露「表格 +200.0% / 徽标 +199.96% / 自核 184.87−(-15.08)=199.95」三处打架。
+  const f = {
+    ok: true, code: '002242', board: 'main', indexName: '深证A股指数',
+    stage: 'near', stageText: '逼近交易所偏离红线',
+    dev10: 18.6137, dev30: 199.9592,
+    stockChain10: 20.8277, indexChain10: 2.2140,
+    stockChain30: 184.8747, indexChain30: -15.0845,
+    thr10: 100, thr30: 200, need10: 81.3863, need30: 0.0143,
+    indexBeta: 0.298, hits: [], missingLegs: 0, basis: 'close'
+  };
+  f.badge = deviationBadge(f);
+  f.gapText = deviationGapText(f);
+  f.calcText = deviationCalcText(f);
+
+  it('🔴 表格列不许印成 +200.0%（那会被读成「已越线」）', () => {
+    const c = deviationCellTexts(f);
+    expect(c.dev10Text).toBe('+18.6%');
+    expect(c.dev30Text).toBe('+199.95%');
+    expect(c.dev30Text).not.toBe('+200.0%');
+    expect(deviationDetailLine(f)).toContain('30日偏离 +199.95%');
+    expect(deviationDetailLine(f)).not.toContain('+200.0%');
+  });
+
+  it('🔴 徽标 / 点差 / 自核算式是同一组数，且等号真的加得起来', () => {
+    expect(f.badge).toBe('30日偏离 +199.95%');
+    expect(f.gapText).toBe('距 200% 差 0.05 点（股价再涨约 +0.02%）');
+    expect(f.calcText).toBe('自核 30日：+184.87% − (-15.08%) = +199.95%');
+    const n = f.calcText.split('：')[1].match(/[+-]?\d+(?:\.\d+)?/g).map(Number);
+    expect(n[0] - n[1]).toBeCloseTo(n[2], 6);
+    expect(shownDev(f) + shownGap(f).gap).toBeCloseTo(200, 6);
+  });
+
+  it('🔴「股价再涨」按屏幕上的点差反推（0.05 ÷ 2.849 ≈ 0.02%），⛔ 不许拿原始 dev 另算', () => {
+    expect(f.gapText).toContain('+0.02%');
+    expect(f.gapText).not.toContain('+0.01%');
   });
 });
 

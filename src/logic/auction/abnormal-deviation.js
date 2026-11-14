@@ -528,12 +528,73 @@ function _needPctText(v) {
 }
 
 /**
+ * 🔴🔴 【纯函数 · 一个窗口所有上屏数字的唯一来源】
+ *
+ * [ABN-CHECK 2026-11-14] 用户「查下 11月13日九阳股份偏离值是多少？我核对下」时实测抓到：
+ *   真实库 dev30 = 199.9592 点。徽标按 2 位印 `+199.96%`，但表格「30日偏离」列和
+ *   detailLine 仍用固定 1 位的 `devText()` ⇒ 印成 **`+200.0%`**（看起来已经越线！），
+ *   而自核算式 `+184.87% − (-15.08%)` 又只加到 199.95，等号右边却是 199.96 ⇒ 三处互相打架。
+ *
+ * 根因：`round(a,dp) − round(b,dp) ≠ round(a−b,dp)`。⛔ 只修一处必然留下别处不一致。
+ * ⇒ 改成【先按同一精度取整两条区间涨幅，再用它们的差作为显示的偏离值】：
+ *     scS = round(个股区间涨幅, dp)、icS = round(指数区间涨幅, dp)
+ *     shown = scS − icS、gap = thr − shown
+ *   这样 徽标 / 点差 / 表格列 / 自核算式 / detailLine 五处**逐字相加都对得上**。
+ *   dp 仍由 `_devGapPair` 定；若取整后 shown 会把「未越线」说成「已达阈值」⇒ 自动再加一位。
+ *
+ * @returns {{code:string, thr:number, dp:number, shown:number, gap:number,
+ *            scS:number|null, icS:number|null}|null} 判不出 ⇒ null
+ */
+function _windowDisplay(f) {
+  const x = f || {};
+  if (!x.ok) return null;
+  const w = _nearestWindow(x);
+  if (w.dev === null || w.thr === null) return null;
+  const base = _devGapPair(w.dev, w.thr);
+  const isD30 = w.code === 'D30';
+  const sc = numOfText(isD30 ? x.stockChain30 : x.stockChain10);
+  const ic = numOfText(isD30 ? x.indexChain30 : x.indexChain10);
+  if (sc === null || ic === null) {
+    // 合成/残缺 fact（单测夹具常缺腿）⇒ 退回旧口径，⛔ 不编造两条区间涨幅
+    return { code: w.code, thr: w.thr, dp: base.dp, shown: base.shown, gap: base.gap, scS: null, icS: null };
+  }
+  let dp = base.dp;
+  let scS, icS, shown;
+  for (let k = 0; k < 3; k++) {
+    scS = Number(sc.toFixed(dp));
+    icS = Number(ic.toFixed(dp));
+    shown = Number((scS - icS).toFixed(dp));
+    if (!(shown >= w.thr && w.dev < w.thr)) break;
+    dp += 1;
+  }
+  const gap = Math.max(0, Number((w.thr - shown).toFixed(dp)));
+  return { code: w.code, thr: w.thr, dp: dp, shown: shown, gap: gap, scS: scS, icS: icS };
+}
+
+/**
+ * 【纯函数】面板「10日偏离 / 30日偏离」两列的文本（§21 视图零计算）。
+ * 🔴 离红线最近的那一档必须与徽标**同一个数、同一精度**，否则表格印 `+200.0%`、
+ *    徽标却印 `+199.96%`，用户会以为已经触发严重异动。
+ */
+export function deviationCellTexts(fact) {
+  const f = fact || {};
+  const fallback = { dev10Text: devText(f.dev10), dev30Text: devText(f.dev30) };
+  const d = _windowDisplay(f);
+  if (!d) return fallback;
+  if (f.stage === DEV_STAGE_SEVERE || d.shown === null) return fallback;
+  const t = _devTextDp(d.shown, d.dp);
+  return d.code === 'D30'
+    ? { dev10Text: fallback.dev10Text, dev30Text: t }
+    : { dev10Text: t, dev30Text: fallback.dev30Text };
+}
+
+/**
  * 【纯函数】徽标短文本 —— 挑「离红线最近的那一档」来说，⛔ 不说废话。
  *   已触发   ⇒ '30日偏离 +200.3%'
  *   逼近     ⇒ '10日偏离 +72.7%'
  *   正常     ⇒ '10日偏离 +48.8%'
  *   判不出   ⇒ ''（视图据此不渲染，⛔ 不写「—」占位）
- * ⚠️ 取整精度与 `deviationGapText` 的点差**共用 `_devGapPair`**，保证两者相加等于阈值。
+ * ⚠️ 取整精度与点差 / 表格列 / 自核算式**共用 `_windowDisplay`**，保证五处相加都对得上。
  */
 export function deviationBadge(fact) {
   const f = fact || {};
@@ -543,8 +604,9 @@ export function deviationBadge(fact) {
   if (f.stage === DEV_STAGE_SEVERE) {
     return (w.code === 'D30' ? '30日偏离 ' : '10日偏离 ') + devText(w.dev);
   }
-  const p = _devGapPair(w.dev, w.thr);
-  return (w.code === 'D30' ? '30日偏离 ' : '10日偏离 ') + _devTextDp(p.shown, p.dp);
+  const d = _windowDisplay(f);
+  if (!d) return '';
+  return (d.code === 'D30' ? '30日偏离 ' : '10日偏离 ') + _devTextDp(d.shown, d.dp);
 }
 
 /**
@@ -597,12 +659,17 @@ function _gapCore(fact) {
   }
   if (f.stage === DEV_STAGE_UNKNOWN) return none;
 
-  const w = _nearestWindow(f);                       // 与徽标同一个窗口，⛔ 不许各选各的
-  if (w.thr === null || w.dev === null) return none;
-  const p = _devGapPair(w.dev, w.thr);               // 与徽标同一精度 ⇒ 相加必等于阈值
-  if (p.gap === null) return none;
-  const need = numOfText(w.code === 'D30' ? f.need30 : f.need10);
-  const short = '距 ' + w.thr + '% 差 ' + p.gap.toFixed(p.dp) + ' 点';
+  const d = _windowDisplay(f);                        // 与徽标/表格列/自核算式同一组显示数字
+  if (!d) return none;
+  const w = d;                                       // code / thr 与 _nearestWindow 一致
+  const scRaw = numOfText(w.code === 'D30' ? f.stockChain30 : f.stockChain10);
+  const cs = scRaw === null ? null : 1 + scRaw / 100;
+  // 🔴 用【屏幕上那个点差】反推股价涨幅，⛔ 别拿原始 dev 另算 —— 否则
+  //    「差 0.05 点」与「股价再涨 +0.01%」对不上（0.05/2.849 ≈ 0.02%）。
+  const need = (cs !== null && cs > 0)
+    ? d.gap / cs
+    : numOfText(w.code === 'D30' ? f.need30 : f.need10);
+  const short = '距 ' + w.thr + '% 差 ' + d.gap.toFixed(d.dp) + ' 点';
   const needValueText = (need !== null && need > 0) ? _needPctText(need) : '';
   const long = needValueText
     ? short + '（股价再涨约 ' + needValueText + '）'
@@ -610,7 +677,7 @@ function _gapCore(fact) {
   return {
     gapText: long, gapShort: short,
     needValue: need, needValueText: needValueText,
-    win: w, gap: p.gap
+    win: w, gap: d.gap
   };
 }
 
@@ -726,18 +793,21 @@ export function deviationDetailLine(fact) {
     return '偏离值：' + (f.board ? '数据未就绪' : '北交所/代码不全 ⇒ 官方不吃这套口径，不计算');
   }
   const idxName = f.indexName || f.indexCode;
+  const cells = deviationCellTexts(f);                 // 🔴 与徽标同一个数（⛔ 别再印 +200.0%）
   const parts = [];
-  parts.push('10日偏离 ' + devText(f.dev10) + '（' + idxName + ' 同期 ' + devText(f.indexChain10) + '）');
-  parts.push('30日偏离 ' + devText(f.dev30) + '（' + idxName + ' 同期 ' + devText(f.indexChain30) + '）');
+  parts.push('10日偏离 ' + cells.dev10Text + '（' + idxName + ' 同期 ' + devText(f.indexChain10) + '）');
+  parts.push('30日偏离 ' + cells.dev30Text + '（' + idxName + ' 同期 ' + devText(f.indexChain30) + '）');
   let s = parts.join('；');
   if (f.gapText) s += '；★ 距红线：' + f.gapText;
-  const sc30 = numOfText(f.stockChain30);
-  if (sc30 !== null) {
+  const d = _windowDisplay(f);
+  if (d && d.scS !== null && d.icS !== null) {
     // 让用户能自核「为什么差 14.5 个点只需涨 5%」：偏离 = 个股区间涨幅 − 指数区间涨幅，
     // 而股价再涨 g 带来的是 (1+S)·g 个点（复利）—— 这个乘数就是两个单位之间的汇率。
-    s += '；自核：30 日偏离 = 个股区间涨幅 ' + devText(sc30) + ' − 指数区间涨幅 ' +
-      devText(f.indexChain30) + '；股价每再涨 1%，偏离约增加 ' +
-      _ptsText(1 + sc30 / 100) + ' 个点';
+    // ★ [ABN-CHECK] 与 calcText 同一档、同一组已取整的数，⛔ 一堆 30 日、一堆 10 日会读乱。
+    s += '；自核：' + (d.code === 'D30' ? '30 日' : '10 日') + '偏离 = 个股区间涨幅 ' +
+      _devTextDp(d.scS, d.dp) + ' − 指数区间涨幅 ' + _devTextDp(d.icS, d.dp) +
+      ' = ' + _devTextDp(d.shown, d.dp) +
+      '；股价每再涨 1%，偏离约增加 ' + _ptsText(1 + d.scS / 100) + ' 个点';
   }
   const beta = numOfText(f.indexBeta);
   if (beta !== null) {
@@ -772,17 +842,13 @@ export function deviationDetailLine(fact) {
  * @returns {string}
  */
 export function deviationCalcText(fact) {
-  const f = fact || {};
-  if (!f.ok) return '';
-  const w = _nearestWindow(f);
-  if (w.thr === null || w.dev === null) return '';
-  const isD30 = w.code === 'D30';
-  const sc = numOfText(isD30 ? f.stockChain30 : f.stockChain10);
-  const ic = numOfText(isD30 ? f.indexChain30 : f.indexChain10);
-  if (sc === null || ic === null) return '';
-  const p = _devGapPair(w.dev, w.thr);              // 与徽标/点差同一精度
-  return '自核 ' + (isD30 ? '30日' : '10日') + '：' +
-    _devTextDp(sc, p.dp) + ' − (' + _devTextDp(ic, p.dp) + ') = ' + _devTextDp(p.shown, p.dp);
+  const d = _windowDisplay(fact);
+  if (!d || d.scS === null || d.icS === null) return '';
+  // 🔴 等号两边都取自同一组【已取整】的数 ⇒ 屏幕上真的加得起来（⛔ 不许一边 round(dev)、
+  //    一边 round(sc)−round(ic)，那会差 0.01 点，正是用户核对时会抓到的那种不一致）
+  return '自核 ' + (d.code === 'D30' ? '30日' : '10日') + '：' +
+    _devTextDp(d.scS, d.dp) + ' − (' + _devTextDp(d.icS, d.dp) + ') = ' +
+    _devTextDp(d.shown, d.dp);
 }
 
 /**

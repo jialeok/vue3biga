@@ -29,7 +29,8 @@ import {
   readIndexLegsForDates, indexLegsOf, indexLegsGapText, shiftYmd
 } from '../data/index-daily-pct.js';
 import {
-  buildDeviationMap, devText, deviationDetailLine, DEV_FORMULA_LINES, DEV_NEED_HINT,
+  buildDeviationMap, deviationCellTexts, deviationDetailLine,
+  DEV_FORMULA_LINES, DEV_NEED_HINT,
   DEV_STAGE_NEAR, DEV_STAGE_SEVERE, DEV_STAGE_WATCH
 } from '../logic/auction/abnormal-deviation.js';
 import { _dbgLog } from '../data/debug-log.js';
@@ -185,11 +186,15 @@ export function useAbnormalDeviation() {
       if (!name) return;
       const f = (m instanceof Map) ? m.get(name) : null;
       const needText = f && f.ok ? (f.needValueText || '') : '';
+      // 🔴 [ABN-CHECK 2026-11-14] 表格列必须与徽标/自核用【同一个已取整的数】：
+      //   真实库九阳 11-13 dev30=199.9592，固定 1 位会印成 +200.0%（看着像已越线），
+      //   而徽标是 +199.96% ⇒ 三个地方打架。统一走 deviationCellTexts。
+      const cells = (f && f.ok) ? deviationCellTexts(f) : null;
       out.push({
         name: name,
         ok: !!(f && f.ok === true),
-        dev10Text: f && f.ok ? devText(f.dev10) : '—',
-        dev30Text: f && f.ok ? devText(f.dev30) : '—',
+        dev10Text: cells ? cells.dev10Text : '—',
+        dev30Text: cells ? cells.dev30Text : '—',
         gapText: f && f.ok ? (f.gapText || '') : '未就绪',
         // ★ [IDX-MOVE 2026-11-14 用户定的第二行顺序]
         //   主段「股价再涨约 +5.2%（同期指数不动 · 条件估算）」→ 灰字「自核…」→
