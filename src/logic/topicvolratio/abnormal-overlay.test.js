@@ -199,7 +199,7 @@ describe('[ABNORMAL-ALL 接线静态锁] 漏一处 ⇒ 11-12 仍显示彩色「�
     const r = readFileSync('src/logic/topicvolratio/plan-snapshot-rules.js', 'utf8');
     expect(r).toContain('TVRB_RULES_VERSION = 15');
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v61'");
+    expect(sw).toContain("var CACHE = 'biga-static-v62'");
   });
 
   it('[CAP-97] 11-11 真实 95.711445% 不该触发任何显示层总约束', () => {

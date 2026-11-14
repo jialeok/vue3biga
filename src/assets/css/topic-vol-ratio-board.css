@@ -1212,6 +1212,12 @@
     border-left-width: 3px;
     border-left-color: #7c3aed;
     border-radius: 6px;
+    /* ★ [DEV-LAYOUT 2026-11-15 用户「右边文字超出了看板边界」] 面板自身先收住：
+       max-width + border-box 保证连 3px 左边框/padding 都算进父宽，min-width:0 让它在
+       flex/grid 父级里可以收缩到内容以下（父级默认 min-width:auto 会顶住不缩 ⇒ 整块溢出）。 */
+    box-sizing: border-box;
+    max-width: 100%;
+    min-width: 0;
 }
 
 .tvrb-dev-board-head {
@@ -1223,12 +1229,17 @@
     font-size: 12px;
     font-weight: 800;
     color: #4c1d95;
+    min-width: 0;
 }
 
 .tvrb-dev-board-sub {
     font-size: 10px;
     font-weight: 600;
     color: #6b7280;
+    /* subText 是一整句中文长串：flex item 不许撑宽头部，长串允许在任意字符后折行 */
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow-wrap: anywhere;
 }
 
 /* ★★ [IDX-LABEL 2026-11-14] 「对应指数是什么？」说明块 —— 用户「在提示板上面说明下」。
@@ -1255,6 +1266,9 @@
     line-height: 1.55;
     color: #475569;
     text-wrap: pretty;
+    /* 板块映射行里有 sh000002 / 000/001/002/003 这类长代号串，窄屏必须能断 */
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 /* ★★ [ABN-DEV-UX 2026-11-14] 「计算公式（可自核）」块 —— 用户原话：
@@ -1283,10 +1297,20 @@
     color: #4b5563;
     /* 公式里有「−」「÷」等符号，允许换行但不要断开算式：用平衡换行更好读 */
     text-wrap: pretty;
+    /* ★ [DEV-LAYOUT] 公式行含 +199.95% / β0.335 等长串，窄屏兜底允许断行 */
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
+/* ★★ [DEV-LAYOUT 2026-11-15 用户「排版出现问题，右边文字超出了看板边界」]
+   🔴 根因：原来只有 width:100% 但表格是【auto 布局】——width 只是「首选宽度」，
+      一旦某列内容更宽，整张表就会突破 100%。加了 [IDX-LABEL] 的「票名 + 指数标签 + 档位 chip」
+      且 td 全是 white-space:nowrap ⇒ 第一列被撑宽 ⇒ 10日/30日两列被推到父容器右边、直接被裁。
+   ✅ 修法：table-layout:fixed 让宽度【严格等于】父容器（内容再长也不许撑破），
+      列宽由第一行的 th 定死；长内容一律靠折行消化，⛔ 不用 overflow:hidden 把字切掉。 */
 .tvrb-dev-table {
     width: 100%;
+    table-layout: fixed;
     border-collapse: collapse;
     font-size: 11px;
 }
@@ -1300,9 +1324,22 @@
     white-space: nowrap;
 }
 
+/* 第一列要装「票名 + 指数标签 + 档位 chip」，比两个短数字列宽；
+   fixed 布局下这三个百分比就是全部列宽，第二行 colspan=3 自动占满 100%。 */
+.tvrb-dev-table th:nth-child(1) { width: 52%; }
+.tvrb-dev-table th:nth-child(2) { width: 24%; }
+.tvrb-dev-table th:nth-child(3) { width: 24%; }
+
 .tvrb-dev-table th:first-child,
 .tvrb-dev-table td:first-child {
     text-align: left;
+}
+
+/* 票名列允许折行：窄屏时「指数标签 / 档位 chip」整体挪到下一行，⛔ 不再把表格顶宽 */
+.tvrb-dev-table td:first-child {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 /* ---- 一只票两行（2026-11-14 用户定的版式）----
@@ -1313,7 +1350,8 @@
     padding: 3px 6px 0;
     text-align: right;
     color: #334155;
-    white-space: nowrap;
+    white-space: nowrap;                 /* 两个短数字列不折行；票名列由上面的 :first-child 覆盖 */
+    box-sizing: border-box;
 }
 
 .tvrb-dev-table tr.tvrb-dev-row-gap td {
@@ -1321,6 +1359,12 @@
     text-align: left;
     white-space: normal;
     border-bottom: 1px dashed #f1f5f9;
+    /* ★ [DEV-LAYOUT] 第二行是横排长文案（自核算式 / 点差 / 指数 ±1% 影响），
+       fixed 布局下它必须自己折行消化；overflow-wrap 让 +199.95% 这种长串也不会顶破边界。
+       加一点行高，折成 2~3 行时仍然好读，⛔ 不改变「横排文字」的版式约定。 */
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.55;
 }
 
 .tvrb-dev-name {
@@ -1342,6 +1386,11 @@
     border-radius: 4px;
     white-space: nowrap;
     cursor: help;
+    /* ★ [DEV-LAYOUT] 作为整体折行：窄屏放不下时整枚标签挪到下一行，
+       ⛔ 不让半个标签被劈开，也不让它把第一列顶宽 */
+    display: inline-block;
+    vertical-align: baseline;
+    max-width: 100%;
 }
 
 /* 档位小标签（逼近 / 已触发 / 留意 / 正常）—— 颜色与买点行那枚徽标同一套语义色 */
@@ -1354,6 +1403,10 @@
     border-radius: 4px;
     border: 1px solid transparent;
     white-space: nowrap;
+    /* ★ [DEV-LAYOUT] 同指数标签：整枚折行，⛔ 不撑宽第一列 */
+    display: inline-block;
+    vertical-align: baseline;
+    max-width: 100%;
 }
 
 .tvrb-dev-stage-severe {

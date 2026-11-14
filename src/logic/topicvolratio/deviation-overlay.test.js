@@ -247,6 +247,45 @@ describe('[ABN-DEV-UX] 面板版式（2026-11-14 用户定的「一只票两行 
   it('简洁版（.tvrb-compact）隐藏整块面板，原版才显示', () => {
     expect(CSS).toContain('.tvrb-board.tvrb-compact .tvrb-dev-board');
   });
+
+  // ★★ [DEV-LAYOUT 2026-11-15 用户「排版出现问题，右边文字超出了看板边界」]
+  //   根因：auto 表格布局 + 全部 td nowrap，新增「票名 + 指数标签 + 档位 chip」把第一列撑宽后，
+  //   整张表突破 width:100%，10日/30日两列被推到父容器右侧直接裁掉。
+  //   ⛔ 这几条锁就是防「改回去」：固定布局 + 定死列宽 + 长内容折行，⛔ 不许用 overflow:hidden 把字切掉。
+  it('★ [DEV-LAYOUT] 表格固定布局 + 三列定宽，⛔ 内容再长也不许撑破看板', () => {
+    expect(CSS).toMatch(/\.tvrb-dev-table\s*\{[^}]*width:\s*100%/);
+    expect(CSS).toMatch(/\.tvrb-dev-table\s*\{[^}]*table-layout:\s*fixed/);
+    // fixed 布局下列宽必须由第一行 th 定死，三列加起来正好 100%
+    expect(CSS).toMatch(/\.tvrb-dev-table th:nth-child\(1\)\s*\{\s*width:\s*\d+%/);
+    expect(CSS).toMatch(/\.tvrb-dev-table th:nth-child\(2\)\s*\{\s*width:\s*\d+%/);
+    expect(CSS).toMatch(/\.tvrb-dev-table th:nth-child\(3\)\s*\{\s*width:\s*\d+%/);
+    const w = [1, 2, 3].map(function (n) {
+      const m = new RegExp('\\.tvrb-dev-table th:nth-child\\(' + n + '\\)\\s*\\{\\s*width:\\s*(\\d+)%').exec(CSS);
+      return m ? Number(m[1]) : 0;
+    });
+    expect(w[0] + w[1] + w[2]).toBe(100);
+    // ⛔ 不许拿裁切当「修复」：字必须看得见
+    const tableRule = /\.tvrb-dev-table\s*\{[^}]*\}/.exec(CSS)[0];
+    expect(tableRule).not.toContain('overflow: hidden');
+  });
+
+  it('★ [DEV-LAYOUT] 票名列与整行横排文案允许折行，长算式不会顶破右边界', () => {
+    expect(CSS).toMatch(/\.tvrb-dev-table td:first-child\s*\{[^}]*white-space:\s*normal/);
+    expect(CSS).toMatch(/\.tvrb-dev-table tr\.tvrb-dev-row-gap td\s*\{[^}]*overflow-wrap:\s*anywhere/);
+    expect(CSS).toMatch(/\.tvrb-dev-table tr\.tvrb-dev-row-gap td\s*\{[^}]*white-space:\s*normal/);
+    // 顶部两段说明里的长代号串 / 公式串同样要能断
+    expect(CSS).toMatch(/\.tvrb-dev-index-note-line\s*\{[^}]*overflow-wrap:\s*anywhere/);
+    expect(CSS).toMatch(/\.tvrb-dev-formula-line\s*\{[^}]*overflow-wrap:\s*anywhere/);
+    // 两枚 chip 作为整体换行，⛔ 不许被劈成两半
+    expect(CSS).toMatch(/\.tvrb-dev-index-tag\s*\{[^}]*display:\s*inline-block/);
+    expect(CSS).toMatch(/\.tvrb-dev-stage\s*\{[^}]*display:\s*inline-block/);
+  });
+
+  it('★ [DEV-LAYOUT] 面板自身也要能收缩（flex 父级 min-width:auto 会顶住不缩）', () => {
+    expect(CSS).toMatch(/\.tvrb-dev-board\s*\{[^}]*box-sizing:\s*border-box/);
+    expect(CSS).toMatch(/\.tvrb-dev-board\s*\{[^}]*max-width:\s*100%/);
+    expect(CSS).toMatch(/\.tvrb-dev-board\s*\{[^}]*min-width:\s*0/);
+  });
 });
 
 describe('[ABN-DEV-UI] hasDeviationAlert / devToneOf', () => {
