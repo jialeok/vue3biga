@@ -1051,6 +1051,14 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //   §11：调用方没传 9:26 口径（buyPctMap 缺省）⇒ 上面那份 = 原样池子 ⇒ 两张表逐项相同
   //        ⇒ _range10DualTopText 判「没有差异」⇒ 一个字都不出现（零噪声）。
   const r10RankClose = _range10RankMapOf(o.range10Rows || null);
+  // ★★ [AUTO-PICK-TOP20 2026-11-14 用户口径] 20日涨幅榜的【口径文案】—— 只进说明文字，⛔ 不参与判定。
+  //   选股用的池子恒为 `ebbCtx.topicPool`（= tvrb-auction-board 的 9:25 竞价口径榜，§6）。
+  //   §10：竞价榜判不出时组合式会回落【收盘口径发布榜】并传 `range20AucReady === false`
+  //        ⇒ 文案必须如实写成「收盘口径」，⛔ 不许默认冒充「竞价口径」。
+  //   缺省（老调用方 / 单测不传）⇒ 按正常态「9:25 竞价口径」—— 此时 topicPool 通常也没注入 ⇒ 该口径不生效。
+  const r20BaseText = (o.range20AucReady === false)
+    ? '收盘口径发布榜（9:25 竞价榜未就绪）'
+    : '9:25 竞价口径';
 
 
   // ★★ [SWITCH 2026-10-22 用户口径] 第二十八条【新龙 / 新题材切换日】—— 必须排在【选股扫描之前】：
@@ -1285,7 +1293,17 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         }
       }
     }
-    const blk = _buildBlock(b, buyDragonMap, tier, buyPctMap, buySkipNames, smallOpt);
+    // ★★ [AUTO-PICK-TOP20 2026-11-14 用户口径] big 档（> 8 只）改用「同题材 20日涨幅前十最靠前两只」：
+    //   池子 = 采集层 `ebbCtx.topicPool`（恒 9:25 竞价口径的 20日涨幅前十，见 tvrb-auction-board.js）。
+    //   ⛔ 池子没注入（老调用方 / 单测 / 采集层没给）⇒ 连这个 opt 都不构造 ⇒ 规则层逐字退回
+    //   「龙位顺延」旧口径、一条说明都不加（§11 零行为变化）。
+    const bigPool = (o.ebbCtx && Array.isArray(o.ebbCtx.topicPool)) ? o.ebbCtx.topicPool : null;
+    const bigOpt = (tier.tier === 'big' && !smallOpt && Array.isArray(bigPool)) ? {
+      topicPool: bigPool,
+      coreRes: coreRes,
+      top20Text: r20BaseText
+    } : null;
+    const blk = _buildBlock(b, buyDragonMap, tier, buyPctMap, buySkipNames, smallOpt || bigOpt);
     out.blocks.push(blk);
     // ★ 收紧档：把「本题材有哪几只进了前十、最后买了最强的那只」写成事实（用户要能逐只核对）
     if (smallTrace) {

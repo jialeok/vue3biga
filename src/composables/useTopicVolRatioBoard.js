@@ -1831,6 +1831,12 @@ export function useTopicVolRatioBoard() {
         //   ⇒ 按用户口径「二次分歧等同于首次退潮」直接判成退潮日，标题写「羊字辈二次分歧 · 等同退潮」。
         //   注入前必须过三重核对（日期 / 同名总龙 / 云端有没有这一行），见 _ebbCtxWithLeaderDiverge。
         ebbCtx: _ebbCtxWithLeaderDiverge(rec.ebbCtx, d),
+        // ★★ [AUTO-PICK-TOP20 2026-11-14 用户口径] 20日涨幅榜【口径是否 = 9:25 竞价榜】——
+        //   big 档（> 8 只）现在按「同题材 20日涨幅前十最靠前两只」取票，说明文字里要写清口径。
+        //   ⛔ 只喂文案（规则层拼说明用），不参与任何判定：池子本身就是 rec.ebbCtx.topicPool，
+        //   而它 = _aucReady ? 竞价榜 : 收盘口径发布榜（见上面 _r20Top10 那三行）。
+        //   §10：竞价榜判不出（_aucReady=false）时如实写「收盘口径」，不许默认冒充竞价口径。
+        range20AucReady: _aucReady,
         // ★ [EBB-R8 2026-10-14] 上一交易日【落库的退潮判定】那一行（tvrb_ebb_days）
         //   —— 昨日闸门的输入；缺省 ⇒ 规则层退化为「用昨日行情行推断」，再取不到按可触发处理。
         prevEbbDay: prevEbbDay.value,

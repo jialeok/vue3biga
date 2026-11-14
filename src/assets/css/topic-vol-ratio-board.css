@@ -1139,6 +1139,21 @@
     outline-offset: -2px;
 }
 
+/* ★★ [AUTO-PICK-TOP20 2026-11-14 用户口径] 「数量 > 8 只」那档的买点行上，
+   标注「20日涨幅第 N 名 +值」—— 告诉用户「这两只凭什么被选」（就是 20日涨幅前排那两只）。
+   与上面 .tvrb-r10-label（十日涨幅候补行）刻意不同色（靛蓝 vs 青），避免两个口径看混。 */
+.tvrb-r20-label {
+    padding: 0 4px;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 13px;
+    color: #4338ca;
+    background: #eef2ff;
+    border: 1px solid #c7d2fe;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
 /* ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】容器 ——
    前提与另外四段完全一样：⛔ 必须渲染在 .tvrb-buy-list.tvrb-ebb（父级 grayscale + opacity）【之外】，
    CSS 的 filter 不能被后代撤销，放进去等于把今天要买的这只也灰掉。

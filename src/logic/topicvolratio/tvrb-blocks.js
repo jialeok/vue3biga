@@ -26,6 +26,8 @@ import { pickDivergeFollowers } from '../auction/leader-divergence.js';
 import { RANGE10_BACKUP_RULE_NO } from './range10-backup.js';
 // ★ [AUCTION-YIZI-WAIT 2026-11-12] 竞价一字那只进买点侧时的专用标签
 import { AUCTION_YIZI_WAIT_TAG } from './auction-yizi-tag.js';
+// ★★ [AUTO-PICK-TOP20 2026-11-14] 「前十」的唯一定义（与「10日涨幅」toggle 那十枚标签同一常量，§6）
+import { PRESENCE_TOP_N } from '../auction/presence-label.js';
 
 
 /**
@@ -1290,6 +1292,82 @@ export function buildCashAlert(leadBlock, ebb, abnormal) {
 }
 
 /**
+ * ══ ★★ [AUTO-PICK-TOP20 2026-11-14 用户口径] 「数量 > 8 只」的题材：只选【同题材 20日涨幅前十】里最靠前的两只 ══
+ *
+ * 用户原话（逐字，10-30 大消费 17 只那天给的验收基准）：
+ *   「10月30弃大消费17只，选2只没错，青岛食品也应该选入，买侧点应该是青岛食品和九阳股份……
+ *     因为这两只是核心，当题材大于8数量时，选两只，只选同题材20日涨幅排名前十的最靠前两只……
+ *     比如出现3只，就选排名靠前那两只，第三只不选，如果刚好两只，那就选那两只。
+ *     如果有竞价涨停的，你就标注下股票标签。之前的那个顺位，就是一字涨停买不进，看下一个龙位，
+ *     这个有些不准，因为核心股票基本是那些20日涨幅前排的，在题材中下一个龙位有可能是后排。
+ *     所以现在竞价涨停的票也放进去，打上标签就可以，这样更加清晰些。
+ *     如果只有一只出现在排名前十的，你在同题材的再找一只补上，同题材靠前的。
+ *     如果没有排名前十的，你再考虑常规的。」
+ *
+ * ⇒ 口径四段（本函数只做第 ① 段：**在不在前十、名次多少**；取几只、怎么补位在 _buildBlock 里）：
+ *   ① 池子 = `ebbCtx.topicPool` = 【20日涨幅 · 9:25 竞价口径 · 只主板】的前十
+ *      （tvrb-auction-board.js，与「20日涨幅」toggle 的总龙一~五同一把尺子，§6）；
+ *      ⛔ 不自己再排一次名次，只认池子给的 `rank20`。
+ *   ② 同题材判定走【核心词大类归一】（`_sameTopicLoose` + coreRes）——
+ *      块名是大类（「大消费」），池里是行上细分串（九阳股份 = 「家电」）⇒ 严格相等会漏掉它。
+ *   ③ 只认 `rank20 ≤ PRESENCE_TOP_N`（前十），按名次升序。
+ *   ④ 三态返回（§10：判不出 ≠ 判出「一只都没有」）：
+ *      · `no-pool` ⇒ 池子没读到 / 没注入 ⇒ 判不出 ⇒ 退回常规龙位口径 + 说明「未校验」；
+ *      · `none`    ⇒ 判出来了：前十【没有】本题材的票 ⇒ 按用户口径退回常规龙位口径；
+ *      · `hit`     ⇒ 前十里有 N 只 ⇒ 用它们（N < 名额时由 _buildBlock 从同题材补位）。
+ *
+ * ⚠️ 为什么候选必须来自【池子】而不是【块成员】：10-30 实测 —— 大消费块的 17 个成员是
+ *   `auction_watchlist` 的行，而九阳股份当天【不在】那张名单里（它在 market_metrics 有竞价行、
+ *   所以在 20日涨幅榜内，但不在板块成员里）⇒ 只从成员里筛恒为「一只都没有」，
+ *   用户要的「青岛食品 + 九阳股份」永远出不来。
+ *
+ * @param {object} block 题材块（读 `topic`；⛔ 不读 members）
+ * @param {Array} topicPool `ebbCtx.topicPool`（20日涨幅前十富化：name/pct/days/code/topic/rank20/rank/isYizi/suspended）
+ * @param {(raw:string)=>string} [coreRes] 题材大类归一函数（缺省 ⇒ 只清洗，不归一）
+ * @param {number} pickCount 本档名额（big 档 = 2）
+ * @returns {{judge:'no-pool'|'none'|'hit', hits:Array<{name:string,code:string,topic:string,
+ *            pct:number|null,rank20:number,isYizi:boolean,suspended:boolean,dragonRank:number|null}>,
+ *            pickCount:number}}
+ */
+export function pickBigTopicTop20(block, topicPool, coreRes, pickCount) {
+  const rawN = _num(pickCount);
+  const want = (rawN === null || rawN < 1) ? 0 : Math.floor(rawN);
+  const topic = String((block && block.topic) || '').trim();
+  // 名额 / 题材名不可用 ⇒ 判不出（不是「一只都没有」）—— 调用方照旧走常规口径（§11）
+  if (!topic || want < 1) return { judge: 'no-pool', hits: [], pickCount: want };
+  // ⛔ 没注入池子（老调用方 / 单测）⇒ 判不出；注入空数组同样是判不出（§10 不拿「没数据」当「没有票」）
+  if (!Array.isArray(topicPool) || topicPool.length === 0) {
+    return { judge: 'no-pool', hits: [], pickCount: want };
+  }
+  const hits = [];
+  topicPool.forEach(function(t) {
+    if (!t || !t.name) return;
+    const r = Number(t.rank20);
+    // 名次读不到 / 不在前十 ⇒ 不进候选（⛔ 不拿「没名次」当「第十一名」）
+    if (!isFinite(r) || r <= 0 || r > PRESENCE_TOP_N) return;
+    if (!_sameTopicLoose(t.topic, topic, coreRes)) return;
+    const dr = Number(t.rank);
+    hits.push({
+      name: String(t.name).trim(),
+      code: String(t.code || '').trim(),
+      topic: String(t.topic || ''),
+      pct: _num(t.pct),
+      rank20: r,
+      isYizi: !!t.isYizi,
+      suspended: !!t.suspended,
+      // 池子里的「今日龙位」是采集层用 rec.dragonMap 算的；本看板买点侧用的是【9:26 名册】
+      //   ⇒ 只当参考字段留着，⛔ 不直接当龙标用（龙标一律由 _buildBlock 从 buyDragonMap 取，§6）。
+      dragonRank: (t.rank === null || t.rank === undefined || !isFinite(dr)) ? null : dr
+    });
+  });
+  hits.sort(function(a, b) {
+    if (a.rank20 !== b.rank20) return a.rank20 - b.rank20;
+    return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+  });
+  return { judge: hits.length > 0 ? 'hit' : 'none', hits: hits, pickCount: want };
+}
+
+/**
  * 题材块 → 本看板的【可买候选序列】（按【龙位升序】：龙一 → 龙二 → …）。
  *
  * 成分（§6：只做「成员 × 龙位名册」的联结与排序，⛔ 不自己判板块）：
@@ -1355,8 +1433,12 @@ export function _dragonCandidates(block, dragonMap, pctMap) {
  * 选股（用户口径「按龙一龙二……，龙一竞价涨停的看龙二……」）：
  *   ① 候选序列 = _dragonCandidates(block, dragonMap, pctMap) —— 已剔除无龙位票（创业板 / 科创板）、
  *      已按【龙位升序】排好（龙一 → 龙二 → …）；
+ *      ★★ [AUTO-PICK-TOP20 2026-11-14] **big 档（> 8 只）另走一条**：候选改「同题材 20日涨幅前十
+ *      （按名次升序）→ 同题材其余成员（按龙位升序）」，见下面 `bigTop20` 那一段；
  *   ② 从高到低依次取票，直到【名额】用满（本档只数 1 或 2 个名额）；
  *   ③ 【竞价涨停（竞价一字）】买不进 ⇒ 跳过、**不占名额**（顺延补位）；
+ *      ★ 例外：big 档（> 8 只）【照选 + 打标签】（用户 2026-11-14 口径「竞价涨停的票也放进去，
+ *        打上标签就可以，这样更加清晰些」）；
  *      【连续停牌】买不进 ⇒ 跳过、**占掉一个名额**（不补位，题材跟着少取）。
  *      ⛔ 与决策看板的「占名次不递补」不同：本看板用户明确要求往下顺延（一字）／名额作废（停牌）。
  *
@@ -1379,20 +1461,73 @@ export function _dragonCandidates(block, dragonMap, pctMap) {
  *                    取组内最强的那一只」），⛔ 不传 ⇒ 文案与加规则之前逐字相同（§11 零行为变化）。
  *   · `baseText`   = 十日涨幅池的口径时间文案（'9:26 竞价口径' / '收盘口径（…未读到）'），只进文案。
  *
+ * ★★ [AUTO-PICK-TOP20 2026-11-14 用户口径] `opt.topicPool` / `opt.coreRes` / `opt.top20Text` —— big 档（> 8 只）专用：
+ *   · 给了 `topicPool`（数组，哪怕是空数组）⇒ big 档改走「只选【同题材 20日涨幅前十】里最靠前的两只」，
+ *     **竞价一字不再跳过、改为照选 + 打标签**（见 pickBigTopicTop20 的注释与下面循环里那一段）；
+ *   · ⛔ 没给（`undefined`，老调用方 / 单测）⇒ 逐字退回「龙位顺延」旧口径（§11 零行为变化）；
+ *   · `top20Text` = 20日涨幅榜的口径文案，只进说明文字（§10：不拿默认值冒充「竞价口径」）。
+ *
  * @param {object} block   题材块（含 rank / topic / count / yiziCount / members）
  * @param {Map} dragonMap  龙位名册（rankDragons / rankDragonsWithPctMap 的返回）
  * @param {object} tier    resolveTvrbTier 的返回
  * @param {Map} [pctMap]   ★ [TVRB-926] 9:26 口径区间涨幅（行上十日涨幅取它；缺 ⇒ 退回成员自带值）
  * @param {Set} [skipBuyNames] 连续停牌第 2 天及以上的票（买不进 ⇒ 占档不补位）
- * @param {object} [opt]   ★★ [SMALL-TOPIC 2026-10-24] 收紧可选开关：{order, smallTopic, baseText}
+ * @param {object} [opt]   {order, smallTopic, baseText}（SMALL-TOPIC）+ {topicPool, coreRes, top20Text}（AUTO-PICK-TOP20）
  * @returns {object} 决策看板形状的买点块（+ 本看板自己的几个平铺别名，见返回值末尾）
  */
 export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
   const o = opt || {};
   const avg = avgVolRatioOf(block);
-  const cands = (Array.isArray(o.order) && o.order.length > 0)
+  // ★★ [AUTO-PICK-TOP20 2026-11-14 用户口径] 「数量 > 8 只」⇒ 只选【同题材 20日涨幅前十】最靠前的两只。
+  //   ⛔ 只在 big 档生效（< 4 不入选 / 4~8 只仍按龙位取 1 只，用户本轮只改 >8 这一档）；
+  //   ⛔ 也不与 SMALL-TOPIC 的 `opt.order` 抢通道（那个只用于 mid 档，两个条件天然互斥，这里再挡一次）。
+  //   ⚠️ 启用的判据是【`o.topicPool` 是不是数组】—— 老调用方 / 单测根本不传这个键 ⇒ 整段不跑、
+  //      一条说明都不加（§11 零行为变化，与 SMALL-TOPIC 的 `r10PoolGiven` 同一套写法）；
+  //      传了【空数组】才算「读到了但没有数据」⇒ 由 pickBigTopicTop20 回 'no-pool' 并如实写「未校验」。
+  const bigTop20 = (tier.tier === 'big' && Array.isArray(o.topicPool) &&
+      !(Array.isArray(o.order) && o.order.length > 0))
+    ? pickBigTopicTop20(block, o.topicPool, o.coreRes, tier.pickCount)
+    : null;
+  const useTop20 = !!(bigTop20 && bigTop20.judge === 'hit');
+  const dragonCands = (Array.isArray(o.order) && o.order.length > 0)
     ? o.order
     : _dragonCandidates(block, dragonMap, pctMap);
+  // ── 候选序列 ────────────────────────────────────────────────────────────────
+  // 常规 = 龙位升序（_dragonCandidates）；big 档命中前十 ⇒ 【前十先排（按 20日涨幅名次升序）】，
+  // 其后接【同题材其余成员（仍按龙位升序）】—— 这一截正是用户说的
+  // 「如果只有一只出现在排名前十的，你在同题材的再找一只补上，同题材靠前的」。
+  let cands = dragonCands;
+  if (useTop20) {
+    const byName = new Map();
+    dragonCands.forEach(function(c) { if (c && c.name) byName.set(String(c.name).trim(), c); });
+    const hitNames = new Set();
+    const head = bigTop20.hits.map(function(h) {
+      hitNames.add(h.name);
+      const dm = byName.get(h.name) || null;
+      if (dm) {
+        // 是今日题材成员 ⇒ 客观数据（量比 / 占比 / code / 一字）全用它，只补上 20日涨幅名次
+        return {
+          name: dm.name, isYizi: dm.isYizi, pct: dm.pct,
+          aucPct: dm.aucPct, aucVolRatio: dm.aucVolRatio, aucShare: dm.aucShare,
+          code: dm.code, rank: dm.rank,
+          rank20: h.rank20, poolPct: h.pct, inMembers: true
+        };
+      }
+      // ⛔ 不在今日题材成员里（不在 9:25 名单，10-30 的九阳股份就是这种）：
+      //   · 十日涨幅【只从 9:26 口径那份读】，读不到 ⇒ null（⛔ 绝不拿 20日涨幅去冒充十日涨幅）；
+      //   · 龙位同理留空（买点侧名册里没有它）⇒ 行上不显示龙标，改用 20日涨幅名次徽标标识；
+      //   · 量比 / 占比 / 竞价涨幅都没有成员行 ⇒ null（§10 交给视图显示为空，不补 0）。
+      return {
+        name: h.name, isYizi: h.isYizi, pct: readRangePct(pctMap, h.name),
+        aucPct: null, aucVolRatio: null, aucShare: null,
+        code: h.code, rank: null,
+        rank20: h.rank20, poolPct: h.pct, inMembers: false,
+        suspended: h.suspended
+      };
+    });
+    const tail = dragonCands.filter(function(c) { return c && !hitNames.has(String(c.name).trim()); });
+    cands = head.concat(tail);
+  }
   const picked = [];
   const skipped = [];
   const skippedSuspend = [];
@@ -1442,19 +1577,36 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
       slotsUsed++;
       break;
     }
-    if (c.isYizi) { skipped.push(c); continue; }   // 竞价涨停 → 买不进 ⇒ 顺延下一龙位（⛔ 不占档位）
+    if (c.isYizi) {
+      // ★★ [AUTO-PICK-TOP20 2026-11-14 用户口径] big 档（> 8 只）**不再顺延**：竞价涨停的票【照常选进】，
+      //   只打一枚标签（「竞价一字涨停 · 等下杀买」，由 auction-yizi-tag#annotateAuctionYizi 统一挂）。
+      //   用户原话：「之前的那个顺位，就是一字涨停买不进，看下一个龙位，这个有些不准，因为核心股票
+      //   基本是那些20日涨幅前排的，在题材中下一个龙位有可能是后排。所以现在竞价涨停的票也放进去，
+      //   打上标签就可以，这样更加清晰些。」
+      //   ⚠️ 只改 big 档：mid（4~8 只，取 1 只）的用户口径（2026-10-15「龙一是一字，那就可以买龙二
+      //   和龙三」）本轮【没有被推翻】，仍走下面「跳过 + 不占档位」的旧口径。
+      //   同时它【照常占一档】—— 它本来就是被选中的那一只（不像旧口径那样「让位给下一龙位」）。
+      if (!useTop20) { skipped.push(c); continue; }   // 竞价涨停 → 买不进 ⇒ 顺延下一龙位（⛔ 不占档位）
+      picked.push(c);
+      slotsUsed++;
+      continue;
+    }
     // ★★ [SUSPEND-NOBUY 2026-10-14 用户口径] 连续停牌（第 2 天及以上）⇒ 买不进 ⇒ 占档位、不补位。
     //   用户原话：「停牌的股票根本不能买，也买不进……停牌首日可选入（已实现），
     //   次日还是停牌（没有竞价涨幅，竞价量，昨日成交量等），就不要选进去了……
     //   相当于一字买不进」（[SUSPEND-OCCUPY 2026-10-15] 名额语义已按用户口径区分，见上）。
     //   ⛔ 这里只【跳过 + 占一档】，不改 tier（题材只数照旧按全部成员算，用户：「当天有 14 只，选 2 只」）。
+    //   ★ [AUTO-PICK-TOP20 2026-11-14] 来自 20日涨幅榜、**没有成员行**的候选（`inMembers === false`）没有
+    //     `skipBuyNames` 那条记录 ⇒ 用采集层富化的 `suspended` 判：当日停牌同样买不进 ⇒ 占档不补位（§10
+    //     判不出时它是 false ⇒ 照常选，⛔ 不把「没数据」当停牌）。
     if (skipBuyNames && skipBuyNames.has(c.name)) { skippedSuspend.push(c); slotsUsed++; continue; }
+    if (c.inMembers === false && c.suspended === true) { skippedSuspend.push(c); slotsUsed++; continue; }
     picked.push(c);
     slotsUsed++;
   }
 
   const picks = picked.map(function(c, i) {
-    return {
+    const p = {
       seq: i + 1,
       name: c.name,
       dragonLabel: c.rank ? getDragonLabel(c.rank) : '',
@@ -1470,6 +1622,19 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
       // ⛔ 见函数头：本看板无仓位口径，留空；昨天买过的会被 _markPrevBought 改写为【持有】
       position: ''
     };
+    // ★★ [AUTO-PICK-TOP20 2026-11-14 用户口径] big 档：把「20日涨幅主板第 N 名（值）」挂进行上 ——
+    //   用户要「更加清晰些」，能一眼看出这几只凭什么被选（就是 20日涨幅前排那两只）。
+    //   ⛔ 它【不是】十日涨幅：别塞进 pctText（那只认 9:26 口径的十日涨幅，口径混用 = 最难查的一类错）。
+    if (useTop20) {
+      p.rank20 = c.rank20;
+      p.range20Pct = (c.poolPct === null || c.poolPct === undefined) ? null : c.poolPct;
+      p.range20Label = c.rank20
+        ? ('20日涨幅第 ' + c.rank20 + ' 名' + (p.range20Pct === null ? '' : ' ' + formatRangePct(p.range20Pct)))
+        : '';
+      // ★ 竞价一字那只（10-30 青岛食品）：挂「等下杀买」的专属文案 —— 由 annotateAuctionYizi 读 p.waitBuyTag。
+      if (c.isYizi) p.waitBuyTag = AUCTION_YIZI_WAIT_TAG;
+    }
+    return p;
   });
 
   const skippedNames = skipped.map(function(c) {
@@ -1484,6 +1649,20 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
   //   用户原话「如果排名第一的题材数量4-6只，要看10日涨幅，看有没有同题材票进入前10，
   //   如果有就选最靠前那一只」⇒ 这一档【不是】按龙一 → 龙二 顺序取票，而是按【当天十日涨幅名次】取。
   //   ⛔ 文案与判定同处一处（§6）：改取票口径时这两句必须一起改。
+  // ★★ [AUTO-PICK-TOP20 2026-11-14 用户口径] big 档（> 8 只）的取票口径说明 ——
+  //   用户原话：「当题材大于8数量时，选两只，只选同题材20日涨幅排名前十的最靠前两只……
+  //   之前的那个顺位，就是一字涨停买不进，看下一个龙位，这个有些不准……所以现在竞价涨停的票
+  //   也放进去，打上标签就可以，这样更加清晰些。」
+  //   ⛔ 文案与判定同处一处（§6）：改取票口径时这两句必须一起改。
+  const top20Text = String(o.top20Text || '指数口径未知').trim();
+  const top20Expr = '【同题材的 20日涨幅〔' + top20Text + '〕前十】';
+  // 命中前十的那几只（按名次升序）→ 「第 1 名 九阳股份 +135.78%；…」一行文案（判定可追溯）
+  const top20TraceText = (useTop20 ? bigTop20.hits : []).slice(0, 6).map(function(h) {
+    return '第 ' + h.rank20 + ' 名 ' + h.name +
+      (h.pct === null ? '' : ' ' + formatRangePct(h.pct));
+  }).join('；');
+  const top20YiziNames = picked.filter(function(c) { return useTop20 && c.isYizi; })
+    .map(function(c) { return c.name; });
   const reason = o.smallTopic
     ? ('按【平均竞价量比 ' + formatAvgVolRatio(avg) + '】排第 ' + block.rank +
        '，股票数量 ' + tier.count + ' 只（' + tier.rangeText + '）⇒ 取 ' + tier.pickCount +
@@ -1491,10 +1670,18 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
        ' 只】且是排名第一 ⇒ 收紧：只在【当天十日涨幅〔' + (o.baseText || '9:26 竞价口径') +
        '〕前十】的同题材票里取【组内最强（龙位最前）】的那一只（数量少的题材次日顶多活一只，' +
        '只买最强的）；买不进照旧：竞价一字顺延、连续停牌作废。')
-    : ('按【平均竞价量比 ' + formatAvgVolRatio(avg) + '】排第 ' + block.rank +
-       '，股票数量 ' + tier.count + ' 只（' + tier.rangeText + '）⇒ 取 ' + tier.pickCount +
-       ' 只；按【龙一 → 龙二 → …】从高到低依次取票：遇到【竞价涨停（竞价一字）】买不进 ⇒ ' +
-       '顺延到下一个龙位；遇到【连续停牌】买不进 ⇒ 该龙位【不再补位】（本题材实际少取相应只数）。');
+    : (useTop20
+      ? ('按【平均竞价量比 ' + formatAvgVolRatio(avg) + '】排第 ' + block.rank +
+         '，股票数量 ' + tier.count + ' 只（' + tier.rangeText + '）⇒ 取 ' + tier.pickCount +
+         ' 只；★ 本题材数量 > ' + TVRB_MID_MAX + ' 只 ⇒ 只选' + top20Expr +
+         '里【排名最靠前的 ' + tier.pickCount + ' 只】（出现第 3 只起不选）；' +
+         '竞价涨停的票【照常选进、只打标签】（⛔ 不再顺延下一龙位）；' +
+         '前十不足 ' + tier.pickCount + ' 只时用【同题材靠前的票】补足；' +
+         '前十一只都没有 ⇒ 退回常规龙位口径。')
+      : ('按【平均竞价量比 ' + formatAvgVolRatio(avg) + '】排第 ' + block.rank +
+         '，股票数量 ' + tier.count + ' 只（' + tier.rangeText + '）⇒ 取 ' + tier.pickCount +
+         ' 只；按【龙一 → 龙二 → …】从高到低依次取票：遇到【竞价涨停（竞价一字）】买不进 ⇒ ' +
+         '顺延到下一个龙位；遇到【连续停牌】买不进 ⇒ 该龙位【不再补位】（本题材实际少取相应只数）。'));
 
   const notes = [];
   notes.push(o.smallTopic
@@ -1504,19 +1691,69 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
        ' 只且是排名第一 ⇒ 不按全部龙位取票，只在【当天十日涨幅〔' + (o.baseText || '9:26 竞价口径') +
        '〕前十】的同题材票里取【组内最强（龙位最前）】的那一只（用户口径：这种数量少的，' +
        '次日能存活下来的顶多有一只，所以就买最强的）。买不进照旧：竞价一字顺延下一只、连续停牌该名额作废。')
-    : ('本题材按平均竞价量比排第 ' + block.rank + '（量比 ' + formatAvgVolRatio(avg) +
-       '），数量 ' + tier.count + ' 只 → ' + tier.rangeText + ' ⇒ 取 ' + tier.pickCount +
-       ' 只；入选股票按龙位从高到低依次取：' +
-       '【竞价涨停（竞价一字）】买不进 ⇒ 顺延到下一个龙位（名额照买满）；' +
-       '【连续停牌】买不进 ⇒ 该龙位【不再补位】（停牌票连竞价都没有，占着龙位也买不到，名额跟着作废）。'));
+    : (useTop20
+      ? ('本题材按平均竞价量比排第 ' + block.rank + '（量比 ' + formatAvgVolRatio(avg) +
+         '），数量 ' + tier.count + ' 只 → ' + tier.rangeText + ' ⇒ 取 ' + tier.pickCount +
+         ' 只；★【大题材口径】数量 > ' + TVRB_MID_MAX + ' 只 ⇒ 不从龙位往下顺延，只选' + top20Expr +
+         '里【排名最靠前的 ' + tier.pickCount + ' 只】—— 核心票基本就是 20日涨幅前排那几只，' +
+         '题材内的下一个龙位很可能是后排。' +
+         '【竞价涨停】的票照常选进（只打标签，见下）；【连续停牌】仍买不进 ⇒ 该名额作废、不补位。')
+      : ('本题材按平均竞价量比排第 ' + block.rank + '（量比 ' + formatAvgVolRatio(avg) +
+         '），数量 ' + tier.count + ' 只 → ' + tier.rangeText + ' ⇒ 取 ' + tier.pickCount +
+         ' 只；入选股票按龙位从高到低依次取：' +
+         '【竞价涨停（竞价一字）】买不进 ⇒ 顺延到下一个龙位（名额照买满）；' +
+         '【连续停牌】买不进 ⇒ 该龙位【不再补位】（停牌票连竞价都没有，占着龙位也买不到，名额跟着作废）。')));
+  // ★★ [AUTO-PICK-TOP20] 判定可追溯：前十命中哪几只、取的是哪几只、第 3 只为什么没选（用户要能逐只核对）
+  if (useTop20) {
+    const got = picks.map(function(p) { return String(p.name || '').trim(); }).filter(Boolean);
+    notes.push('★【大题材口径 · 判定可追溯】20日涨幅〔' + top20Text + '〕前十里有本题材的票 ' +
+      bigTop20.hits.length + ' 只：' + top20TraceText +
+      ' ⇒ 按名次取最靠前的 ' + Math.min(bigTop20.hits.length, tier.pickCount) + ' 只' +
+      (got.length > 0 ? '：' + got.join('、') : '（全被停牌占档，实际 0 只）') +
+      (bigTop20.hits.length > tier.pickCount
+        ? '（第 ' + (tier.pickCount + 1) + ' 名起的 ' +
+          bigTop20.hits.slice(tier.pickCount).map(function(h) { return h.name; }).join('、') +
+          ' 不再选）'
+        : '') + '。');
+    if (bigTop20.hits.length < tier.pickCount) {
+      notes.push('⚠️ 前十只有 ' + bigTop20.hits.length + ' 只本题材的票 ⇒ 剩下的 ' +
+        (tier.pickCount - bigTop20.hits.length) + ' 只从【同题材其余票里按龙位靠前的】补上' +
+        '（用户口径：「如果只有一只出现在排名前十的，你在同题材的再找一只补上，同题材靠前的」）。');
+    }
+    if (top20YiziNames.length > 0) {
+      notes.push('★ ' + top20YiziNames.join('、') + ' 是【竞价一字涨停】（9:25 竞价就封在板上、' +
+        '竞价阶段买不进）⇒ 按用户口径【照常选入】、只打标签【' + AUCTION_YIZI_WAIT_TAG +
+        '】：等它开板 / 下杀再接，别在封板上硬追。⛔ 不再顺延到下一个龙位' +
+        '（顺延到的往往是后排，不如这只核心票清晰）。');
+    }
+    // §10：从 20日涨幅榜取来的票如果【不在今日早盘竞价名单】里，它就没有十日涨幅 / 竞价涨幅 /
+    //   量比 / 占比 / 龙位这五样（本看板的一切客观数据都来自成员行）。⛔ 不补 0、不拿 20日涨幅顶替，
+    //   但必须【说清为什么这一行是空的】，否则用户会以为「数据丢了」。
+    const offList = picked.filter(function(c) { return useTop20 && c.inMembers === false; })
+      .map(function(c) { return c.name; });
+    if (offList.length > 0) {
+      notes.push('ℹ️ ' + offList.join('、') + ' 当日【不在早盘竞价名单】里（它只在 20日涨幅榜内）⇒ ' +
+        '十日涨幅 / 竞价涨幅 / 竞价量比 / 竞价占比 / 龙位 这几列【都没有数据】（§10 不补 0、不拿 20日涨幅冒充）；' +
+        '它进买点侧的唯一依据 = ' + top20Expr + '的名次。');
+    }
+  } else if (bigTop20 && bigTop20.judge === 'none') {
+    // ★ 判出来了、确实一只都没有 ⇒ 按用户口径退回常规龙位口径（⛔ 不弃题材）
+    notes.push('⚠️【大题材口径 · 未命中】20日涨幅〔' + top20Text + '〕前十【没有】本题材的票 ⇒ ' +
+      '按用户口径退回【常规龙位口径】取票（龙一 → 龙二 → …；竞价一字顺延、连续停牌作废）。');
+  } else if (bigTop20 && bigTop20.judge === 'no-pool') {
+    // §10：判不出 ≠ 一只都没有 ⇒ 本次不生效、如实写「未校验」
+    notes.push('⚠️【大题材口径 · 未校验】20日涨幅前十名单没读到（本日还没发布 / 读失败 / 为空）⇒ ' +
+      '判不出「前十有没有本题材的票」⇒ 本条【本次不生效】，退回常规龙位口径取票；' +
+      '数据到货后自动重判。');
+  }
   if (skippedNames.length > 0) {
     notes.push('⚠️ 龙位 ' + skippedNames.join('、') +
       ' 竞价涨停（买不进）⇒ 已顺延到下一个龙位（用户口径：龙一涨停看龙二，龙二涨停看龙三……）。');
   }
   if (skippedSuspendNames.length > 0) {
-    notes.push('⚠️ 龙位 ' + skippedSuspendNames.join('、') +
+    notes.push('⚠️ ' + skippedSuspendNames.join('、') +
       ' 【连续停牌】（今天停牌、昨天也停牌：没有竞价涨幅 / 竞价量 / 昨日成交量）⇒ 买不进，' +
-      '该龙位【不再补位】（⛔ 与「竞价一字」不同：一字是顺延补位把那一名额买满，' +
+      '该名额【不再补位】（⛔ 与「竞价一字」不同：一字是顺延补位把那一名额买满，' +
       '停牌是该名额直接作废、本题材少取 ' + skippedSuspendNames.length + ' 只）。' +
       '⚠️ 停牌【首日】不跳（用户口径：昨天首日停牌还可以入选）——' +
       '只有连着第 2 天及以上停牌才按「买不进」处理。');
@@ -1526,8 +1763,11 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
       ? ('⚠️ 本题材【当天十日涨幅前十】里可买入（非竞价涨停、非连续停牌）的票不足 ' +
          tier.pickCount + ' 只 ⇒ 实际取 ' + picks.length +
          ' 只（⛔ 不从第十名之外补位 —— 收紧口径就是【只买最强的】）。')
-      : ('⚠️ 本题材有龙位、且可买入（非竞价涨停、非连续停牌）的票不足 ' + tier.pickCount +
-         ' 只 ⇒ 实际取 ' + picks.length + ' 只（⛔ 不从其它题材补位）。'));
+      : (useTop20
+        ? ('⚠️ 本题材可买入（非连续停牌）的票不足 ' + tier.pickCount + ' 只 ⇒ 实际取 ' +
+           picks.length + ' 只（⛔ 不从其它题材补位）。')
+        : ('⚠️ 本题材有龙位、且可买入（非竞价涨停、非连续停牌）的票不足 ' + tier.pickCount +
+           ' 只 ⇒ 实际取 ' + picks.length + ' 只（⛔ 不从其它题材补位）。')));
   }
   if (abnormalCand) {
     const _lv = classifyRange10(abnormalCand.pct);
@@ -1593,7 +1833,17 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
      *   ⇒ 本字段恒为空数组。保留字段名只是为了兼容历史存档 / 视图读取（§11 不删字段、只撤语义），
      *     真正踩线的那只票留在 `abnormalPick` 与 `picks` 里供核对（用户「不用去掉」）。
      */
-    skippedAbnormalNames: []
+    skippedAbnormalNames: [],
+    /**
+     * ★★ [AUTO-PICK-TOP20 2026-11-14 用户口径] big 档取票口径的【留痕】（排障 / 复盘用，视图不读）：
+     *   · `top20Judge` = `'hit'` 命中前十 / `'none'` 前十没有本题材 / `''` 本档没走这条口径；
+     *   · `top20Hits`  = 命中的那几只（按 20日涨幅名次升序）`{name, rank20, pct}`。
+     *   ⛔ 只做记录，不改任何结论 —— 结论在 `picks` 里。
+     */
+    top20Judge: (bigTop20 && useTop20) ? bigTop20.judge : ((bigTop20 && bigTop20.judge === 'hit') ? 'hit' : ''),
+    top20Hits: useTop20 ? bigTop20.hits.map(function(h) {
+      return { name: h.name, rank20: h.rank20, pct: h.pct };
+    }) : []
   };
 }
 
