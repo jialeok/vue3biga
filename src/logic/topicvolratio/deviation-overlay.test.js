@@ -62,6 +62,19 @@ describe('[ABN-DEV-UI] attachDeviationFacts · 只加显示字段', () => {
     expect(p.devStage).toBe(DEV_STAGE_NEAR);
   });
 
+  it('🔴 行上只印【点差】短版，「股价再涨」那句进 title（⛔ 行内塞长句会折行挤乱整行）', () => {
+    const plan = makePlan();
+    const out = attachDeviationFacts(plan, devMapOf(), { ready: 2, total: 2 });
+    const p = out.buy.heavy.picks[1];               // 闽发铝业 10日 +72.7 ⇒ 差 27.3 点
+    expect(p.devGap).toBe('距 100% 差 27.3 点');
+    expect(p.devGap).not.toContain('股价再涨');
+    expect(p.devTitle).toContain('股价再涨约');
+    // 行上的「徽标 + 点差」必须能相加等于阈值（用户就是照这行做加法的）
+    const dev = Number(String(p.devBadge).match(/([+-]?\d+(?:\.\d+)?)%$/)[1]);
+    const gap = Number(String(p.devGap).match(/差 (\d+(?:\.\d+)?) 点/)[1]);
+    expect(dev + gap).toBeCloseTo(100, 6);
+  });
+
   it('⛔ 不改选股结论与客观数据（标签 / 仓位 / 涨幅 / 数量）', () => {
     const plan = makePlan();
     const out = attachDeviationFacts(plan, devMapOf(), { ready: 2, total: 2 });

@@ -29,7 +29,8 @@ import {
   readIndexLegsForDates, indexLegsOf, indexLegsGapText, shiftYmd
 } from '../data/index-daily-pct.js';
 import {
-  buildDeviationMap, devText, DEV_STAGE_NEAR, DEV_STAGE_SEVERE, DEV_STAGE_WATCH
+  buildDeviationMap, devText, deviationDetailLine,
+  DEV_STAGE_NEAR, DEV_STAGE_SEVERE, DEV_STAGE_WATCH
 } from '../logic/auction/abnormal-deviation.js';
 import { _dbgLog } from '../data/debug-log.js';
 
@@ -188,7 +189,10 @@ export function useAbnormalDeviation() {
         tone: _toneOf(f),
         need10: f && f.ok ? f.need10 : null,
         need30: f && f.ok ? f.need30 : null,
-        title: f && f.ok ? (f.line + '。' + (f.stageText || '')) : '偏离值未就绪（指数腿或逐日腿缺）'
+        // ★ [ABN-DEV-UNIT 2026-11-14] 悬停给【完整说明】：两张偏离值 + 指数同期 + 距红线 +
+        //   「自核：30 日偏离 = 个股区间涨幅 − 指数区间涨幅；股价每再涨 1%，偏离约增加 N 个点」+ 口径。
+        //   用户就是靠这一句自己验「差 14.5 个点为什么只值 +5.2%」，⛔ 别只给一行摘要。
+        title: f && f.ok ? deviationDetailLine(f) : '偏离值未就绪（指数腿或逐日腿缺）'
       });
     });
     return out;

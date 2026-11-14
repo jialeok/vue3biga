@@ -1665,6 +1665,11 @@
 .tvrb-board.tvrb-compact .tvrb-diverge-mantra,
 .tvrb-board.tvrb-compact .tvrb-ebb-banner,
 .tvrb-board.tvrb-compact .tvrb-cash-alert,
+/* ★★ [ABN-DEV 2026-11-14 用户口径] 官方偏离值面板 = 【解释性事实】，不进简洁版。
+   用户原话：「还有把这个提示板放到题材量比原版中，简洁版默认没有，不显示」。
+   ⇒ 与上面 .tvrb-cash-alert / .tvrb-block-note 同一处理：只在这里隐藏，模板不加 v-if 分支
+     （⛔ 不留两套渲染路径）。买点行上的单枚偏离值徽标【不隐藏】—— 那是行内标签，属于「简洁版保留」的那类。 */
+.tvrb-board.tvrb-compact .tvrb-dev-board,
 .tvrb-board.tvrb-compact .tvrb-block-note:not(.tvrb-note-empty) {
     display: none;
 }

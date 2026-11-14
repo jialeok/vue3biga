@@ -386,6 +386,7 @@ export function computeDeviation(o) {
     missingLegs: 0,
     badge: '',
     gapText: '',
+    gapShort: '',
     line: ''
   }; };
   if (!idx) return makeEmpty();                          // 北交所 / 代码缺失 ⇒ 判不出
@@ -435,8 +436,84 @@ export function computeDeviation(o) {
   });
   fact.badge = deviationBadge(fact);
   fact.gapText = deviationGapText(fact);
+  fact.gapShort = deviationGapShort(fact);       // 买点行用短版（只留点差），⛔ 别把长句塞进行内
   fact.line = fact.badge + (fact.gapText ? ' · ' + fact.gapText : '');
   return fact;
+}
+
+/**
+ * 【纯函数】挑「离红线最近的那一档」—— 偏离值 / 阈值 的比值越大就越近。
+ * ★ 徽标与「距红线」**必须共用同一个选择器**，否则会出现
+ *   「徽标说 30日、括号里算的却是 10日」这种自相矛盾（2026-11-14 用户就是靠这行自核的）。
+ * @returns {{code:'D10'|'D30', thr:number|null, dev:number|null, ratio:number|null}}
+ */
+function _nearestWindow(f) {
+  const d10 = numOfText(f.dev10);
+  const d30 = numOfText(f.dev30);
+  const t10 = numOfText(f.thr10);
+  const t30 = numOfText(f.thr30);
+  const r10 = (d10 !== null && t10) ? d10 / t10 : null;
+  const r30 = (d30 !== null && t30) ? d30 / t30 : null;
+  const use30 = (r30 !== null) && (r10 === null || r30 >= r10);
+  return use30
+    ? { code: 'D30', thr: t30, dev: d30, ratio: r30 }
+    : { code: 'D10', thr: t10, dev: d10, ratio: r10 };
+}
+
+/** 百分点差值的显示精度：< 1 点给两位小数（否则「差 0.05 点」会印成「0.0 点」） */
+function _ptsText(v) {
+  const n = numOfText(v);
+  if (n === null) return '—';
+  if (n === 0) return '0';
+  return n < 1 ? n.toFixed(2) : n.toFixed(1);
+}
+
+/**
+ * 🔴🔴 【纯函数 · 屏幕上必须能相加对上】把「偏离值」与「距阈值点差」按**同一个精度**取整。
+ *
+ * 用户 2026-11-14 两次质疑同一个病根：「185.5% + 5.2% = 190.7%，还没到 200%」——
+ *   第一次是【单位混用】（点差 vs 股价涨幅），第二次是【取整不一致】：
+ *   真实偏离 199.95，徽标 `toFixed(1)` 印成 +199.9%，点差却按 199.95 算成 0.05 点
+ *   ⇒ 199.9 + 0.05 = 199.95 ≠ 200，照样对不上。
+ *
+ * 规则（⛔ 别改，改了屏幕上就会重新出现「加起来不等于阈值」）：
+ *   ① 默认 1 位小数；
+ *   ② 若 1 位小数会把【未越线】显示成「已达阈值」（199.96 → 200.0），退到 2 位小数；
+ *   ③ 点差 = 阈值 − 【显示出来的那个数】，精度与 ① ② 一致。
+ *   ⇒ 保证 `显示偏离 + 点差 === 阈值` 逐字成立。
+ *
+ * @param {number} dev 真实偏离值（百分点）
+ * @param {number} thr 阈值（百分点）
+ * @returns {{shown:number, dp:number, gap:number}}
+ */
+function _devGapPair(dev, thr) {
+  const d = numOfText(dev);
+  const t = numOfText(thr);
+  if (d === null || t === null) return { shown: null, dp: 1, gap: null };
+  let dp = 1;
+  let shown = Number(d.toFixed(dp));
+  if (shown >= t && d < t) {              // ② 取整把「还没到」说成「到了」⇒ 加精度
+    dp = 2;
+    shown = Number(d.toFixed(dp));
+  }
+  const gap = Math.max(0, Number((t - shown).toFixed(dp)));
+  return { shown: shown, dp: dp, gap: gap };
+}
+
+/** 按指定小数位印偏离值（'+199.9%' / '+199.96%'） */
+function _devTextDp(v, dp) {
+  const n = numOfText(v);
+  if (n === null) return '—';
+  return (n >= 0 ? '+' : '') + n.toFixed(dp) + '%';
+}
+
+/** 股价还需涨幅的显示精度：< 1% 给两位小数（卡线票），< 10% 给一位，其余取整 */
+function _needPctText(v) {
+  const n = numOfText(v);
+  if (n === null) return '';
+  if (n <= 0) return '+0%';
+  const s = n < 1 ? n.toFixed(2) : (n < 10 ? n.toFixed(1) : String(Math.round(n)));
+  return '+' + s + '%';
 }
 
 /**
@@ -445,66 +522,90 @@ export function computeDeviation(o) {
  *   逼近     ⇒ '10日偏离 +72.7%'
  *   正常     ⇒ '10日偏离 +48.8%'
  *   判不出   ⇒ ''（视图据此不渲染，⛔ 不写「—」占位）
+ * ⚠️ 取整精度与 `deviationGapText` 的点差**共用 `_devGapPair`**，保证两者相加等于阈值。
  */
 export function deviationBadge(fact) {
   const f = fact || {};
   if (!f.ok) return '';
-  const d10 = numOfText(f.dev10);
-  const d30 = numOfText(f.dev30);
-  const t10 = numOfText(f.thr10);
-  const t30 = numOfText(f.thr30);
-  const r10 = (d10 !== null && t10) ? d10 / t10 : null;
-  const r30 = (d30 !== null && t30) ? d30 / t30 : null;
-  const use30 = (r30 !== null) && (r10 === null || r30 > r10);
-  if (use30) return '30日偏离 ' + devText(d30);
-  if (r10 !== null) return '10日偏离 ' + devText(d10);
-  return '';
+  const w = _nearestWindow(f);
+  if (w.ratio === null || w.dev === null) return '';
+  if (f.stage === DEV_STAGE_SEVERE) {
+    return (w.code === 'D30' ? '30日偏离 ' : '10日偏离 ') + devText(w.dev);
+  }
+  const p = _devGapPair(w.dev, w.thr);
+  return (w.code === 'D30' ? '30日偏离 ' : '10日偏离 ') + _devTextDp(p.shown, p.dp);
 }
 
 /**
- * 【纯函数】「还差多少」短文本。
- *   已触发     ⇒ '已触发严重异动'（⛔ 不写「还需 +0%」）
- *   逼近/正常  ⇒ '还需 +16%'  ← 用户 11-13 的表就是这个口径
- *   30 日那档更近 ⇒ '距 200% 仅 0.1 点'
+ * 【纯函数】「距红线还有多远」—— ★ 必须同时给【偏离点差】与【股价还需涨幅】两个单位。
+ *
+ * 🔴🔴 [ABN-DEV-UNIT 2026-11-14 用户当场质疑] 用户原话：
+ *   「为什么还需 5.2% 呢？185.5% + 5.2% = 190.7%，30 日还没到 200% 啊，怎么算的？」
+ *
+ *   他没错，是原来那行**只写了股价涨幅、没写点数差**，两个单位混在一行里没法自核。
+ *     偏离（点） = 个股区间涨幅 − 指数区间涨幅      ← 官方条文原式，⛔ 不是 (1+S)/(1+I)−1
+ *     股价再涨 g ⇒ 偏离增加 (1+S)·g **个点**，不是 g 个点（S = 个股区间涨幅）
+ *     ⇒ 股价还需涨幅 = 点差 ÷ (1+S)，这个除法就是两个单位之间的汇率。
+ *   新华传媒 30 日 S ≈ +150% ⇒ (1+S) ≈ 2.5 ⇒ 差 14.5 个点只要涨 14.5/2.5 ≈ 5.2%。
+ *   ⇒ 现在固定写成 `距 200% 差 14.5 点（股价再涨约 +5.2%）`：
+ *     前半句能与表里的「30日偏离 +185.5%」直接相加核对，后半句才是可执行的「还能涨多少」。
+ *   ⚠️ 别把它俩写成同一个数：差 14.5 点 ≠ 涨 14.5%，用户第一眼就是在这里对不上。
+ *
+ *   已触发   ⇒ '已触发（30日偏离 +200.3%）'
+ *   判不出   ⇒ ''（视图不渲染）
  */
 export function deviationGapText(fact) {
+  return _gapCore(fact).gapText;
+}
+
+/**
+ * 【纯函数】「距红线」的**短版**（只留点差、不带「股价再涨约」那句）。
+ *
+ * 买点行是横向挤在一行的（龙标 + 名次 + 涨幅 + 竞价 + 量比…），塞进
+ * `距 100% 差 27.3 点（股价再涨约 +16%）` 会折行、把整行挤乱。
+ * ⇒ 行上印短版，完整版在「距红线」面板与鼠标悬停的 title 里。
+ * ⚠️ 短版仍然是【能与徽标相加的那个数】，⛔ 不许改成股价涨幅（那正是用户对不上的原因）。
+ */
+export function deviationGapShort(fact) {
+  return _gapCore(fact).gapShort;
+}
+
+/** 两版共用同一份计算，⛔ 不许各写一份（一旦分叉，两个地方会印出不同的数） */
+function _gapCore(fact) {
   const f = fact || {};
-  if (!f.ok) return '';
+  if (!f.ok) return { gapText: '', gapShort: '' };
   if (f.stage === DEV_STAGE_SEVERE) {
     const parts = [];
     if (f.hits && f.hits.length) {
       f.hits.forEach(function (h) { parts.push(h.label + ' ' + devText(h.value)); });
     }
-    return parts.length ? '已触发（' + parts.join('、') + '）' : '已触发严重异动';
+    const s = parts.length ? '已触发（' + parts.join('、') + '）' : '已触发严重异动';
+    return { gapText: s, gapShort: s };
   }
-  if (f.stage === DEV_STAGE_UNKNOWN) return '';
-  const g30 = numOfText(f.gap30);
-  const g10 = numOfText(f.gap10);
-  const t30 = numOfText(f.thr30);
-  const t10 = numOfText(f.thr10);
-  // 30 日那档更近（差得不足 5 个点）⇒ 用「距 200% 仅 X 点」的说法，与用户原话一致
-  if (g30 !== null && t30 !== null && g30 <= 5 && (g10 === null || g10 > 5)) {
-    // 🔴 [ABN-DEV-FIX 2026-11-14] 差 < 1 个点时给两位小数 —— 否则「差 0.03 点」会印成
-    //   「仅 0.0 点」，用户（尤其九阳股份 30 日偏离卡线那种）会以为算错了。
-    return '距 ' + t30 + '% 仅 ' + (g30 < 1 ? g30.toFixed(2) : g30.toFixed(1)) + ' 点';
-  }
-  const n10 = numOfText(f.need10);
-  const n30 = numOfText(f.need30);
-  // 两档都要涨才到 ⇒ 取「更近的那一档」的还需涨幅（哪个先到说哪个）
-  const cands = [];
-  if (n10 !== null && n10 > 0) cands.push(n10);
-  if (n30 !== null && n30 > 0) cands.push(n30);
-  if (cands.length === 0) {
-    if (g10 !== null && g10 > 0 && t10 !== null) return '距 ' + t10 + '% 还差 ' + g10.toFixed(1) + ' 点';
-    return '';
-  }
-  const best = Math.min.apply(null, cands);
-  return needText(best);
+  if (f.stage === DEV_STAGE_UNKNOWN) return { gapText: '', gapShort: '' };
+
+  const w = _nearestWindow(f);                       // 与徽标同一个窗口，⛔ 不许各选各的
+  if (w.thr === null || w.dev === null) return { gapText: '', gapShort: '' };
+  const p = _devGapPair(w.dev, w.thr);               // 与徽标同一精度 ⇒ 相加必等于阈值
+  if (p.gap === null) return { gapText: '', gapShort: '' };
+  const need = numOfText(w.code === 'D30' ? f.need30 : f.need10);
+  const short = '距 ' + w.thr + '% 差 ' + p.gap.toFixed(p.dp) + ' 点';
+  const long = (need !== null && need > 0)
+    ? short + '（股价再涨约 ' + _needPctText(need) + '）'
+    : short;
+  return { gapText: long, gapShort: short };
 }
 
 /**
  * 【纯函数】说明区用的一整行（含指数名与停牌提示，§10 如实交代口径）。
- * 例：'10日偏离 +72.7%（闽发铝业 vs 深证A股指数 +5.1%，还需 +16%）；30日偏离 +48.4%'
+ *
+ * ★ [ABN-DEV-UNIT 2026-11-14] `gapText` 现在自带「哪一档 + 点数差 + 股价还需涨幅」三段，
+ *   而它说的那一档**可能是 30 日**（挑最近的那档）。⛔ 不许再把它塞进「10日偏离（…）」的括号里
+ *   —— 那就变成「10 日偏离 +9.8%（…距 200% 差 14.5 点…）」，两个窗口混在一句里，正是用户质疑的那类表述。
+ *   现在它单独成句放在最后。
+ *
+ * 例：'10日偏离 +9.8%（上证A股指数 同期 +12.6%）；30日偏离 +185.5%（上证A股指数 同期 +35.5%）；
+ *      ★ 距红线：距 200% 差 14.5 点（股价再涨约 +5.2%）；口径：截至最近一个收盘日'
  */
 export function deviationDetailLine(fact) {
   const f = fact || {};
@@ -512,13 +613,20 @@ export function deviationDetailLine(fact) {
     if (!f.code) return '';
     return '偏离值：' + (f.board ? '数据未就绪' : '北交所/代码不全 ⇒ 官方不吃这套口径，不计算');
   }
+  const idxName = f.indexName || f.indexCode;
   const parts = [];
-  parts.push('10日偏离 ' + devText(f.dev10) +
-    '（' + (f.indexName || f.indexCode) + ' 同期 ' + devText(f.indexChain10) + '，' +
-    (f.gapText || '—') + '）');
-  parts.push('30日偏离 ' + devText(f.dev30) +
-    '（' + (f.indexName || f.indexCode) + ' 同期 ' + devText(f.indexChain30) + '）');
+  parts.push('10日偏离 ' + devText(f.dev10) + '（' + idxName + ' 同期 ' + devText(f.indexChain10) + '）');
+  parts.push('30日偏离 ' + devText(f.dev30) + '（' + idxName + ' 同期 ' + devText(f.indexChain30) + '）');
   let s = parts.join('；');
+  if (f.gapText) s += '；★ 距红线：' + f.gapText;
+  const sc30 = numOfText(f.stockChain30);
+  if (sc30 !== null) {
+    // 让用户能自核「为什么差 14.5 个点只需涨 5%」：偏离 = 个股区间涨幅 − 指数区间涨幅，
+    // 而股价再涨 g 带来的是 (1+S)·g 个点（复利）—— 这个乘数就是两个单位之间的汇率。
+    s += '；自核：30 日偏离 = 个股区间涨幅 ' + devText(sc30) + ' − 指数区间涨幅 ' +
+      devText(f.indexChain30) + '；股价每再涨 1%，偏离约增加 ' +
+      _ptsText(1 + sc30 / 100) + ' 个点';
+  }
   if (f.missingLegs > 0) {
     s += '；⚠️ 窗口内有 ' + f.missingLegs + ' 个交易日无成交腿（停牌/未采集），已按 0 计入';
   }

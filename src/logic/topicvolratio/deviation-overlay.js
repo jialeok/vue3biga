@@ -94,7 +94,10 @@ export function attachDeviationFacts(plan, devMap, meta) {
       p.devStage = f.stage;
       p.devStageText = f.stageText || STAGE_TEXT[f.stage] || '';
       p.devBadge = f.badge || '';
-      p.devGap = f.gapText || '';
+      // ⚠️ 买点行是横向挤着的一行（龙标+名次+涨幅+竞价+量比…）⇒ 只印【短版点差】，
+      //    「股价再涨约 +16%」那句留给面板和 title（完整版在 f.gapText / f.line）。
+      //    ⛔ 不许为了「短」就改成股价涨幅 —— 那正是用户 11-14 对不上账的原因。
+      p.devGap = f.gapShort || f.gapText || '';
       p.devTone = f.tone || 'muted';
       p.devTitle = f.line ? (f.line + '。' + (f.stageText || '')) : (f.stageText || '');
       if (f.stage === DEV_STAGE_SEVERE) severeNames.push(p.name);

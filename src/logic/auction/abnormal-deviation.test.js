@@ -142,25 +142,54 @@ describe('[ABN-DEV] 官方公式 · 用真实行情复核交易所名单', () =>
   });
 });
 
+// ── 屏幕自核解析器 ─────────────────────────────────────────────────────────────
+// 🔴🔴 [ABN-DEV-UNIT 2026-11-14] 用户是【照屏幕做加法】的：
+//   「185.5% + 5.2% = 190.7%，30 日还没到 200% 啊」⇒ 他拿徽标上的偏离值加括号里的百分数。
+//   所以测试必须把【屏幕上那两个数】抠出来相加，⛔ 不许改成复算内部变量 ——
+//   内部算对了、屏幕上印错了，用户照样会来问。
+const shownDev = function (f) {          // '30日偏离 +199.9%' ⇒ 199.9
+  const m = String(f.badge).match(/([+-]?\d+(?:\.\d+)?)%$/);
+  return m ? Number(m[1]) : null;
+};
+const shownGap = function (f) {          // '距 200% 差 0.1 点（…）' ⇒ {thr:200, gap:0.1}
+  const m = String(f.gapText).match(/^距 (\d+(?:\.\d+)?)% 差 (\d+(?:\.\d+)?) 点/);
+  return m ? { thr: Number(m[1]), gap: Number(m[2]) } : null;
+};
+
 describe('[ABN-DEV] 11-13 收盘实物（用户点名的那四只）', () => {
-  it('九阳股份 002242：30 日偏离 199.9，距 200 只差 0.1 个点', () => {
+  it('九阳股份 002242：30 日偏离 199.9，距 200 差 0.1 点 —— 屏幕上相加刚好等于 200', () => {
     const f = computeDeviation({ code: '002242', stockLegs: legsOf('002242'), indexLegs: idxOf('002242') });
     expect(f.ok).toBe(true);
     expect(f.dev30).toBeCloseTo(199.9, 0);
     expect(f.stage).toBe(DEV_STAGE_NEAR);            // 未越线 ⇒ near，不是 severe
     expect(f.gap30).toBeLessThan(0.5);
     expect(f.need30).toBeLessThan(1);                 // 「周一只要不跌就构成」
-    // ⚠️ 差 < 1 个点时给两位小数（0.05 点），⛔ 不许印成「仅 0.0 点」
-    expect(f.gapText).toMatch(/^距 200% 仅 0\.\d+ 点$/);
+    expect(f.badge).toMatch(/^30日偏离 \+199\.\d%$/);
+    expect(f.gapText).toMatch(/^距 200% 差 0\.\d+ 点（股价再涨约 \+0\.\d+%）$/);
+    const g = shownGap(f);
+    expect(g.thr).toBe(200);
+    expect(shownDev(f) + g.gap).toBeCloseTo(200, 6);  // 🔴 用户的自核动作，必须成立
   });
 
-  it('闽发铝业 002578：10 日偏离 72.7，还需约 +16%', () => {
+  it('闽发铝业 002578：10 日偏离 72.7 ⇒ 差 27.3 点 ⇒ 股价再涨约 +16%（两个单位都给）', () => {
     const f = computeDeviation({ code: '002578', stockLegs: legsOf('002578'), indexLegs: idxOf('002578') });
     expect(f.dev10).toBeCloseTo(72.7, 0);
     expect(f.need10).toBeGreaterThan(12);
     expect(f.need10).toBeLessThan(20);
     expect(f.stage).toBe(DEV_STAGE_WATCH);            // 72.7 ≥ 70% × 100
-    expect(f.gapText).toBe('还需 +16%');
+    expect(f.gapText).toBe('距 100% 差 27.3 点（股价再涨约 +16%）');
+    expect(shownDev(f) + shownGap(f).gap).toBeCloseTo(100, 6);
+  });
+
+  it('🔴 点差 ≠ 股价涨幅：need = 点差 / (1 + 个股区间涨幅)（这就是 14.5 点只值 5.2% 的原因）', () => {
+    [['002242', 'need30', 'thr30', 'dev30', 'stockChain30'],
+      ['002578', 'need10', 'thr10', 'dev10', 'stockChain10']].forEach(function (c) {
+      const f = computeDeviation({ code: c[0], stockLegs: legsOf(c[0]), indexLegs: idxOf(c[0]) });
+      const pts = f[c[2]] - f[c[3]];                    // 还差的【点】数
+      const rate = 1 + f[c[4]] / 100;                   // 复利汇率 (1+S)
+      expect(pts / rate).toBeCloseTo(f[c[1]], 6);       // 换算成【股价涨幅】
+      expect(f[c[1]]).toBeLessThan(pts);                // 涨幅永远小于点数（只要 S > 0）
+    });
   });
 });
 
@@ -286,33 +315,54 @@ describe('[ABN-DEV] 上屏文案（§21 模板零计算）', () => {
     expect(f578.badge).toBe('10日偏离 +72.7%');
   });
 
-  it('gapText：30 日差 ≤5 个点 ⇒ 「距 200% 仅 X 点」（用户原话口径）', () => {
-    expect(f242.gapText).toMatch(/^距 200% 仅 0\.\d+ 点$/);
-    expect(f578.gapText).toBe('还需 +16%');
+  it('🔴 徽标与「距红线」必须说同一档（⛔ 徽标说 30日、括号里算 10日 —— 正是用户质疑的那类自相矛盾）', () => {
+    [[f242, '30日偏离', 200], [f578, '10日偏离', 100]].forEach(function (c) {
+      expect(c[0].badge.indexOf(c[1])).toBe(0);
+      expect(c[0].gapText.indexOf('距 ' + c[2] + '% 差 ')).toBe(0);
+    });
   });
 
-  it('差 < 1 个点给两位小数（⛔ 不许印成「仅 0.0 点」—— 九阳那种卡线票会被当成算错）', () => {
-    const near = {
-      ok: true, stage: 'near', dev10: 40, dev30: 199.97, gap10: 60, gap30: 0.03,
-      need10: 30, need30: 0.02, thr10: 100, thr30: 200, hits: []
+  it('gapText 双单位：「差 N 点」能直接和徽标相加，「股价再涨」才是可执行的那一步', () => {
+    expect(f242.gapText).toMatch(/^距 200% 差 0\.\d+ 点（股价再涨约 \+0\.\d+%）$/);
+    expect(f578.gapText).toBe('距 100% 差 27.3 点（股价再涨约 +16%）');
+  });
+
+  it('🔴 取整一致性：显示偏离 + 点差 === 阈值（199.96 那种会印成 200.0 的卡线票也要对上）', () => {
+    const mk = function (dev30) {
+      const f = {
+        ok: true, stage: 'near', dev10: 40, dev30: dev30, gap10: 60, gap30: 200 - dev30,
+        need10: 30, need30: (200 - dev30) / 2.5, thr10: 100, thr30: 200, hits: []
+      };
+      f.badge = deviationBadge(f);       // 徽标与点差必须同一精度，⛔ 不在这里手写
+      f.gapText = deviationGapText(f);
+      return f;
     };
-    expect(deviationGapText(near)).toBe('距 200% 仅 0.03 点');
-    const near2 = Object.assign({}, near, { dev30: 199.4, gap30: 0.6, need30: 0.4 });
-    expect(deviationGapText(near2)).toBe('距 200% 仅 0.60 点');
-    const near3 = Object.assign({}, near, { dev30: 196, gap30: 4, need30: 2 });
-    expect(deviationGapText(near3)).toBe('距 200% 仅 4.0 点');
+    // [真实偏离, 期望点差文案] —— 199.96 是「1 位小数会把未越线印成 200.0」的边界
+    [[199.9454, '差 0.1 点'], [199.96, '差 0.04 点'], [199.4, '差 0.6 点'], [196, '差 4.0 点']]
+      .forEach(function (c) {
+        const f = mk(c[0]);
+        expect(deviationGapText(f)).toContain(c[1]);
+        expect(shownDev(f) + shownGap(f).gap).toBeCloseTo(200, 6);   // 🔴 屏幕相加 === 阈值
+        expect(shownDev(f)).toBeLessThan(200);                        // 未越线就是未越线
+      });
+    // 差 < 1 点给两位小数（⛔ 不许印成「差 0.0 点」）
+    expect(deviationGapText(mk(199.96))).toContain('差 0.04 点');
   });
 
   it('line = badge + gapText（买点行徽标直接用，模板不拼字符串）', () => {
-    expect(f578.line).toBe('10日偏离 +72.7% · 还需 +16%');
+    expect(f578.line).toBe('10日偏离 +72.7% · 距 100% 差 27.3 点（股价再涨约 +16%）');
   });
 
-  it('detailLine 交代指数名 + 停牌缺腿 + 口径', () => {
+  it('detailLine 交代指数名 + 距红线 + 自核算式 + 口径', () => {
     const s = f578;
     const line = deviationDetailLine(s);
     expect(line).toContain('深证A股指数');
     expect(line).toContain('10日偏离');
     expect(line).toContain('30日偏离');
+    expect(line).toContain('★ 距红线：距 100% 差 27.3 点');
+    // 自核句：让用户自己能验「为什么 27.3 个点只值 +16%」
+    expect(line).toContain('自核：30 日偏离 = 个股区间涨幅');
+    expect(line).toContain('股价每再涨 1%，偏离约增加');
     expect(line).toContain('口径：截至最近一个收盘日');
     const auc = deviationDetailLine(Object.assign({}, s, { basis: 'auction' }));
     expect(auc).toContain('9:25 竞价');
