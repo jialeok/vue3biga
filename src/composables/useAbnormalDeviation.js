@@ -29,8 +29,8 @@ import {
   readIndexLegsForDates, indexLegsOf, indexLegsGapText, shiftYmd
 } from '../data/index-daily-pct.js';
 import {
-  buildDeviationMap, deviationCellTexts, deviationDetailLine,
-  DEV_FORMULA_LINES, DEV_NEED_HINT,
+  buildDeviationMap, deviationCellTexts, deviationDetailLine, deviationIndexLabel,
+  DEV_FORMULA_LINES, DEV_INDEX_NOTE_LINES, DEV_NEED_HINT,
   DEV_STAGE_NEAR, DEV_STAGE_SEVERE, DEV_STAGE_WATCH
 } from '../logic/auction/abnormal-deviation.js';
 import { _dbgLog } from '../data/debug-log.js';
@@ -50,7 +50,10 @@ function _emptyMeta(asOf) {
     note: '',
     // ★ [ABN-DEV-UX 2026-11-14] 面板顶部「计算公式」三行 —— 用户「我自己也要验证下」。
     //   静态常量，视图只 v-for（§21 模板零计算）。
-    formulaLines: DEV_FORMULA_LINES
+    formulaLines: DEV_FORMULA_LINES,
+    // ★ [IDX-LABEL 2026-11-14] 「对应指数是什么」说明（用户「顺便在提示板上面说明下」）。
+    //   与公式块分开排版：这块回答「减的是谁」，公式块回答「怎么减」。
+    indexNoteLines: DEV_INDEX_NOTE_LINES
   };
 }
 
@@ -173,7 +176,8 @@ export function useAbnormalDeviation() {
    * ⛔ 不隐藏（§10：缺数据必须看得见，不能当成「没有异动」悄悄消失）。
    *
    * @param {string[]} names 有序票名
-   * @returns {Array<{name:string, dev10Text:string, dev30Text:string} &
+   * @returns {Array<{name:string, indexLabelText:string, indexLabelTitle:string,
+   *   dev10Text:string, dev30Text:string} &
    *   {gapText:string, calcText:string, needValueText:string, needHintText:string,
    *    needTone:string, gapTailText:string, indexMoveText:string, stageText:string,
    *    stage:number|string, tone:string, ok:boolean, title:string}>}
@@ -190,9 +194,13 @@ export function useAbnormalDeviation() {
       //   真实库九阳 11-13 dev30=199.9592，固定 1 位会印成 +200.0%（看着像已越线），
       //   而徽标是 +199.96% ⇒ 三个地方打架。统一走 deviationCellTexts。
       const cells = (f && f.ok) ? deviationCellTexts(f) : null;
+      const idxLabel = f ? deviationIndexLabel(f) : { text: '', title: '' };
       out.push({
         name: name,
         ok: !!(f && f.ok === true),
+        // ★ [IDX-LABEL] 票名后那枚「对应指数」小标签：每行各自那一个，判不出 ⇒ 空串（§10）
+        indexLabelText: idxLabel.text,
+        indexLabelTitle: idxLabel.title,
         dev10Text: cells ? cells.dev10Text : '—',
         dev30Text: cells ? cells.dev30Text : '—',
         gapText: f && f.ok ? (f.gapText || '') : '未就绪',

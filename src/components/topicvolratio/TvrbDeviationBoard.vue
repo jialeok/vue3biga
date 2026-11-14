@@ -13,9 +13,10 @@
     用户原话：「你在UI设计上把『距 200% 差 130.8 点（股价再涨约 +80%）』单独一行，
       相当于一只股票有两行，横排文字，这样更美观简洁，还有把计算公式具体的也一起标注在上头，
       我自己也要验证下。」
-    第二轮补充：「把距 200%/100% 差几个点放到计算公式、自核 30日 后面，灰色；
-      股价再涨百分之几后面的数值如果接近警示再标为红色」+「同期指数也在变，这只是大概推测吧？
-      指数涨/跌几个点具体影响多少，在上面说明下」。
+    第三轮补充：「对应指数指的是什么？大盘指数？还是沪市指数，还是深市指数？
+      你在股票名称后面标注下，顺便在提示板上面说明下」。
+    ⇒ 面板顶部加「对应指数是什么？」四行说明（板块 → 指数名 + 代码，明确排除三大误用指数）；
+      第一行票名后加一枚「深证A股指数」式小标签，悬停给代码与板块，判不出 ⇒ 不渲染（§10）。
 
     ⇒ 版式固定成【一只票两行】：
         第 1 行：票（含档位小标签） | 10日偏离 | 30日偏离
@@ -40,6 +41,24 @@
     <div class="tvrb-dev-board-head">
       <span>{{ meta.title }}</span>
       <span class="tvrb-dev-board-sub">{{ meta.subText }}</span>
+    </div>
+    <!-- ★★ [IDX-LABEL 2026-11-14 用户「对应指数指的是什么？顺便在提示板上面说明下」]：
+         这块回答「减的是谁」，下面公式块回答「怎么减」。四行映射由 Logic 层给
+         （DEV_INDEX_NOTE_LINES，源表 DEV_INDEX），⛔ 视图里不手写指数名或代码（§6）。 -->
+    <div
+      v-if="meta.indexNoteLines && meta.indexNoteLines.length"
+      class="tvrb-dev-index-note tvrb-selectable"
+    >
+      <div class="tvrb-dev-index-note-head">
+        对应指数是什么？
+      </div>
+      <div
+        v-for="(line, i) in meta.indexNoteLines"
+        :key="i"
+        class="tvrb-dev-index-note-line"
+      >
+        {{ line }}
+      </div>
     </div>
     <!-- ★ [ABN-DEV-UX 2026-11-14] 计算公式（用户「我自己也要验证下」）：
          三行公式 + 一个真实算例，由 Logic 层给（DEV_FORMULA_LINES），模板只 v-for。 -->
@@ -78,6 +97,10 @@
           >
             <td class="tvrb-dev-cell-name">
               <span class="tvrb-dev-name">{{ r.name }}</span><span
+                v-if="r.indexLabelText"
+                class="tvrb-dev-index-tag"
+                :title="r.indexLabelTitle"
+              >{{ r.indexLabelText }}</span><span
                 v-if="r.stageText"
                 class="tvrb-dev-stage"
                 :class="'tvrb-dev-stage-' + (r.tone || 'muted')"
@@ -143,11 +166,14 @@
 defineProps({
   /**
    * 有序行，一只票一个元素（视图负责展开成两行）：
-   * [{ name, dev10Text, dev30Text, gapText, calcText, stageText, stage, tone, ok, title }]
+   * [{ name, indexLabelText, indexLabelTitle, dev10Text, dev30Text, gapText, calcText,
+   *    needValueText, needHintText, needTone, gapTailText, indexMoveText,
+   *    stageText, stage, tone, ok, title }]
    * 文案已拼好（§21）
    */
   rows: { type: Array, default: () => [] },
-  /** { visible, title, subText, warnText, ready, total, basisText, formulaLines } —— 全部由 Logic 层算好 */
+  /** { visible, title, subText, warnText, ready, total, basisText,
+   *    indexNoteLines, formulaLines } —— 全部由 Logic 层算好 */
   meta: { type: Object, default: () => ({}) }
 });
 </script>

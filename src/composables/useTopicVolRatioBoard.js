@@ -2472,11 +2472,11 @@ export function useTopicVolRatioBoard() {
       total: typeof m.total === 'number' ? m.total : rows.length,
       loading: !!m.loading,
       title: '官方偏离值 · 离严重异常波动还有多远',
-      subText: basisText + '｜口径 = 交易所《交易规则》' +
-        '「收盘价格涨跌幅偏离值累计值」（已扣对应指数：沪主板=上证A股指数／深主板=深证A股指数／' +
-        '创业板=创业板综指／科创板=科创50）｜10 日 ≥ +100% 或 30 日 ≥ +200% 即触发严重异常波动',
-      // ★ [ABN-DEV-UX 2026-11-14] 计算公式三行 + 真实算例（用户「我自己也要验证下」）。
-      //   常量在 logic 层（DEV_FORMULA_LINES），这里只透传，⛔ 不在视图里拼公式。
+      subText: basisText + '｜口径 = 交易所《交易规则》「收盘价格涨跌幅偏离值累计值」' +
+        '（已扣对应指数，板块映射见下方说明）｜10 日 ≥ +100% 或 30 日 ≥ +200% 即触发严重异常波动',
+      // ★ [IDX-LABEL 2026-11-14] 「对应指数是什么」四行说明（用户「在提示板上面说明下」）。
+      //   常量在 logic 层（DEV_INDEX_NOTE_LINES），这里只透传，⛔ 不在视图里手写映射（§6）。
+      indexNoteLines: m.indexNoteLines || [],
       formulaLines: m.formulaLines || [],
       warnText: warnText
     };

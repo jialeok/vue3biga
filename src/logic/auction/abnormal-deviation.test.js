@@ -20,10 +20,10 @@ import {
   pickBaseIndexForCode, devIndexName, thresholdsForBoard,
   cumulativeDeviation, needGainToThreshold, classifyDeviation,
   computeDeviation, devText, needText, deviationBadge, deviationGapText, deviationCalcText,
-  deviationCellTexts,
+  deviationCellTexts, deviationIndexLabel,
   deviationNeedValueText, deviationNeedAlert, deviationIndexBeta, deviationNeedWithIndexMove,
   deviationDetailLine, isDeviationSevere, isDeviationAlert,
-  DEV_FORMULA_LINES, DEV_NEED_HINT
+  DEV_FORMULA_LINES, DEV_NEED_HINT, DEV_INDEX_NOTE_LINES
 } from './abnormal-deviation.js';
 
 /** 夹具里的腿是紧凑形态 {d,p}（省体积），这里统一转成业务形态 {date,pct} */
@@ -515,6 +515,53 @@ describe('[ABN-DEV] 上屏文案（§21 模板零计算）', () => {
     expect(isDeviationAlert(severe)).toBe(true);
     expect(isDeviationAlert({ ok: true, stage: DEV_STAGE_OK })).toBe(false);
     expect(isDeviationAlert({ ok: true, stage: DEV_STAGE_WATCH })).toBe(false);
+  });
+});
+
+describe('[IDX-LABEL 2026-11-14] 「对应指数」到底是哪个指数（用户「大盘？沪市？深市？」）', () => {
+  it('顶部说明四行：按板块取，并点名排除三个常被误用的指数', () => {
+    expect(DEV_INDEX_NOTE_LINES.length).toBe(4);
+    const all = DEV_INDEX_NOTE_LINES.join('');
+    expect(all).toContain('按上市板块指定');
+    expect(all).toContain('不是笼统的「大盘指数」');
+    ['sh000002', 'sz399107', 'sz399102', 'sh000688'].forEach(function (c) {
+      expect(all).toContain(c);
+    });
+    // ⛔ 三大误用指数必须明写出来，只写「不是大盘」不够
+    ['000001', '399001', '399006'].forEach(function (c) {
+      expect(all).toContain(c);
+    });
+    expect(all).toContain('北交所不计算');
+  });
+
+  it('票名后小标签按【该票自己的板块】给，不是全表同一个指数', () => {
+    const cases = [
+      ['600825', 'sh000002', '上证A股指数', '沪市主板'],
+      ['002242', 'sz399107', '深证A股指数', '深市主板'],
+      ['301313', 'sz399102', '创业板综指', '深市创业板'],
+      ['688137', 'sh000688', '科创50', '沪市科创板']
+    ];
+    cases.forEach(function (c) {
+      // 腿给空 ⇒ dev 判不出，但指数映射只由代码决定 ⇒ 标签照样要有（口径不藏）
+      const f = computeDeviation({ code: c[0], stockLegs: [], indexLegs: [] });
+      const label = deviationIndexLabel(f);
+      expect(label.text).toBe(c[2]);
+      expect(label.title).toContain(c[1]);
+      expect(label.title).toContain(c[3]);
+      expect(label.title).toContain('⛔ 不是上证综指');
+    });
+  });
+
+  it('§10 判不出 / 北交所 ⇒ 标签是空串（⛔ 不编一个指数名挂上去）', () => {
+    expect(deviationIndexLabel(null)).toEqual({ text: '', title: '' });
+    expect(deviationIndexLabel({ ok: false })).toEqual({ text: '', title: '' });
+    expect(deviationIndexLabel({ ok: true, indexName: '', indexCode: '' })).toEqual({ text: '', title: '' });
+    expect(deviationIndexLabel(computeDeviation({ code: '830799' }))).toEqual({ text: '', title: '' });
+  });
+
+  it('悬停说明里也要写指数代码（用户不用猜是哪个指数）', () => {
+    const f = computeDeviation({ code: '002578', stockLegs: legsOf('002578'), indexLegs: idxOf('002578') });
+    expect(deviationDetailLine(f)).toContain('深证A股指数 sz399107');
   });
 });
 

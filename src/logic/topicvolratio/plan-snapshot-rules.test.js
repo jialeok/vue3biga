@@ -337,7 +337,7 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     expect(TVRB_RANGE10_ABNORMAL).toBe(100);
     expect(TVRB_RULES_VERSION).toBeGreaterThanOrEqual(10);
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v60'");
+    expect(sw).toContain("var CACHE = 'biga-static-v61'");
   });
 
   // ★★ [FULL-MARKET-GUARD 2026-11-13 用户当场纠正] 整类护栏：
@@ -359,7 +359,7 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     expect(lines).toContain('整个市场【整片灰');
     // ④ 三件套版本链
     expect(TVRB_RULES_VERSION).toBe(15);
-    expect(readFileSync('public/sw.js', 'utf8')).toContain("var CACHE = 'biga-static-v60'");
+    expect(readFileSync('public/sw.js', 'utf8')).toContain("var CACHE = 'biga-static-v61'");
   });
 
   // ★★ [RULE-BUMP-GUARD 2026-11-13] 用户报障「现在刷新并没有生效」的整类根因锁。

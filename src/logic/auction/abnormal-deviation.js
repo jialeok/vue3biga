@@ -69,6 +69,49 @@ export const DEV_INDEX = {
   star: { code: 'sh000688', name: '科创50', board: 'star' }
 };
 
+/**
+ * ★ [IDX-LABEL 2026-11-14 用户原话]「对应指数同期涨幅，这个对应指数指的是什么？
+ *   大盘指数？还是沪市指数，还是深市指数？你在股票名称后面标注下，顺便在提示板上面说明下」
+ *
+ *   答：是交易所《交易规则》异常波动指标里【按上市板块指定】的那一个，
+ *   ⛔ 不是笼统的「大盘」，也⛔ 不是上证综指 000001 / 深证成指 399001 / 创业板指 399006。
+ *   沪主板扣沪市的、深主板扣深市的，创业/科创扣各自板块的。
+ *   ⇒ 说明文字放面板顶部（用户看得到），票名后放一枚短标签（每行各自那一个）。
+ *   ⚠️ 文案必须来自 DEV_INDEX 这张表，⛔ 不许在视图里手写映射（§6 单一数据源）。
+ */
+export const DEV_INDEX_NOTE_LINES = [
+  '「对应指数」= 交易所《交易规则》异常波动指标里【按上市板块指定】的那一个指数；' +
+    '⛔ 不是笼统的「大盘指数」，也不是上证综指 000001 / 深证成指 399001 / 创业板指 399006。',
+  '沪主板 60x → 上证A股指数 sh000002　｜　深主板 000/001/002/003 → 深证A股指数 sz399107',
+  '创业板 300/301 → 创业板综指 sz399102　｜　科创板 688/689 → 科创50 sh000688　｜　北交所不计算',
+  '偏离值 = 个股区间涨幅 − 该指数同期区间涨幅。票名后面的小标签就是本行用的那一个（悬停可看代码与板块）。'
+];
+
+/**
+ * 【纯函数】票名后那枚「对应指数」小标签（§21 模板零计算）。
+ * @returns {{text:string, title:string}} 判不出 ⇒ 两个空串（§10 ⛔ 不编指数名）
+ */
+export function deviationIndexLabel(fact) {
+  const f = fact || {};
+  const empty = { text: '', title: '' };
+  const code = String(f.indexCode || '').trim();
+  if (!code) return empty;                            // 代码都没有 ⇒ 判不出（§10 不编）
+  // ⚠️ 即使 dev 值判不出（缺腿），只要代码在，【该用哪个指数】是确定的 ⇒ 照常标注。
+  //   这正是用户要的「这行减的是谁」，⛔ 别因为数值未就绪就把口径也藏起来。
+  const name = f.indexName || devIndexName(code);
+  if (!name || name === code) return empty;           // 查不到中文名 ⇒ 原样返回的是代码，不编名字
+  const pick = pickBaseIndexForCode(f.code);
+  const boardText = { main: '主板', growth: '创业板', star: '科创板' }[pick && pick.board] || '';
+  const market = /^sh/.test(code)
+    ? '沪市'
+    : (/^sz/.test(code) ? '深市' : '');
+  return {
+    text: name,
+    title: '对应指数：' + name + '（' + code + '）· ' + market + boardText +
+      '；按上市板块取，⛔ 不是上证综指/深证成指/创业板指。偏离值要减的就是它同期的区间涨幅'
+  };
+}
+
 /** 所有需要采集的指数代码（Worker 收盘写腿 / 前端兜底拉取共用，§6 单一清单） */
 export const DEV_INDEX_CODES = [
   DEV_INDEX.shMain.code, DEV_INDEX.szMain.code, DEV_INDEX.growth.code, DEV_INDEX.star.code
@@ -792,11 +835,14 @@ export function deviationDetailLine(fact) {
     if (!f.code) return '';
     return '偏离值：' + (f.board ? '数据未就绪' : '北交所/代码不全 ⇒ 官方不吃这套口径，不计算');
   }
-  const idxName = f.indexName || f.indexCode;
+  const idxName = f.indexName || devIndexName(f.indexCode);
+  const idxCode = String(f.indexCode || '').trim();
+  // ★ [IDX-LABEL] 连指数代码一起写，用户才不用猜「这到底是哪个指数」
+  const idxTag = idxName + (idxCode ? ' ' + idxCode : '');
   const cells = deviationCellTexts(f);                 // 🔴 与徽标同一个数（⛔ 别再印 +200.0%）
   const parts = [];
-  parts.push('10日偏离 ' + cells.dev10Text + '（' + idxName + ' 同期 ' + devText(f.indexChain10) + '）');
-  parts.push('30日偏离 ' + cells.dev30Text + '（' + idxName + ' 同期 ' + devText(f.indexChain30) + '）');
+  parts.push('10日偏离 ' + cells.dev10Text + '（' + idxTag + ' 同期 ' + devText(f.indexChain10) + '）');
+  parts.push('30日偏离 ' + cells.dev30Text + '（' + idxTag + ' 同期 ' + devText(f.indexChain30) + '）');
   let s = parts.join('；');
   if (f.gapText) s += '；★ 距红线：' + f.gapText;
   const d = _windowDisplay(f);

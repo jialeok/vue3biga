@@ -221,6 +221,22 @@ describe('[ABN-DEV-UX] 面板版式（2026-11-14 用户定的「一只票两行 
     expect(BOARD).toContain('v-for="(line, i) in meta.formulaLines"');
   });
 
+  it('★ [IDX-LABEL] 「对应指数是什么」说明块在公式块之前；票名后带该行自己的指数标签', () => {
+    const note = BOARD.indexOf('tvrb-dev-index-note');
+    const formula = BOARD.indexOf('tvrb-dev-formula');
+    const table = BOARD.indexOf('<table');
+    expect(note).toBeGreaterThan(0);
+    expect(note).toBeLessThan(formula);          // 先回答「减的是谁」，再讲「怎么减」
+    expect(formula).toBeLessThan(table);
+    expect(BOARD).toContain('v-for="(line, i) in meta.indexNoteLines"');
+    expect(BOARD).toContain('tvrb-dev-index-tag');
+    expect(BOARD).toContain('{{ r.indexLabelText }}');
+    expect(BOARD).toContain(':title="r.indexLabelTitle"');
+    // 标签必须在票名后、档位 chip 前（⛔ 别飘到第二行去）
+    expect(BOARD.indexOf('{{ r.indexLabelText }}')).toBeGreaterThan(BOARD.indexOf('tvrb-dev-name'));
+    expect(BOARD.indexOf('{{ r.indexLabelText }}')).toBeLessThan(BOARD.indexOf('tvrb-dev-stage-'));
+  });
+
   it('§21：模板里零计算（⛔ 不出现 toFixed / 减阈值 / 除汇率）', () => {
     const tpl = BOARD.slice(0, BOARD.indexOf('<script'));
     expect(tpl).not.toContain('toFixed(');

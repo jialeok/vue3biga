@@ -1231,6 +1231,32 @@
     color: #6b7280;
 }
 
+/* ★★ [IDX-LABEL 2026-11-14] 「对应指数是什么？」说明块 —— 用户「在提示板上面说明下」。
+   语义与下面的「计算公式」分开：这块回答【减的是谁】，公式块回答【怎么减】。
+   用蓝灰底而不是紫底，两块一眼能分开；同样属于说明层级，⛔ 不抢表格里的数字。 */
+.tvrb-dev-index-note {
+    margin: 0 0 7px;
+    padding: 5px 8px 6px;
+    background: #f0f9ff;
+    border-left: 2px solid #7dd3fc;
+    border-radius: 4px;
+    text-align: left;
+}
+
+.tvrb-dev-index-note-head {
+    margin-bottom: 3px;
+    font-size: 10px;
+    font-weight: 800;
+    color: #075985;
+}
+
+.tvrb-dev-index-note-line {
+    font-size: 10px;
+    line-height: 1.55;
+    color: #475569;
+    text-wrap: pretty;
+}
+
 /* ★★ [ABN-DEV-UX 2026-11-14] 「计算公式（可自核）」块 —— 用户原话：
       「还有把计算公式具体的也一起标注在上头，我自己也要验证下。」
    ⇒ 印在表格上方、浅紫底 + 左侧细竖线，属于「说明」层级，⛔ 不许抢过下面那些数字。
@@ -1299,6 +1325,23 @@
 
 .tvrb-dev-name {
     font-weight: 700;
+}
+
+/* ★ [IDX-LABEL 2026-11-14] 票名后那枚「对应指数」小标签（深证A股指数 / 上证A股指数 / …）。
+   蓝灰调，与档位 chip（语义色）刻意区分：这枚是【口径说明】，不是风险等级。
+   悬停 title 给指数代码与板块（Logic 层拼好）。判不出 ⇒ 空串 ⇒ 不渲染（§10）。 */
+.tvrb-dev-index-tag {
+    margin-left: 5px;
+    padding: 0 4px;
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 13px;
+    color: #0369a1;
+    background: #f0f9ff;
+    border: 1px solid #bae6fd;
+    border-radius: 4px;
+    white-space: nowrap;
+    cursor: help;
 }
 
 /* 档位小标签（逼近 / 已触发 / 留意 / 正常）—— 颜色与买点行那枚徽标同一套语义色 */
