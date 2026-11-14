@@ -181,6 +181,22 @@ describe('[ABN-DEV] 11-13 收盘实物（用户点名的那四只）', () => {
     expect(shownDev(f) + shownGap(f).gap).toBeCloseTo(100, 6);
   });
 
+  it('🔴 用户当场看到的那一行（新华传媒 10-28：30日偏离 +185.5%，还需 +5.2%）—— 两个单位怎么换算', () => {
+    const f = computeDeviation({
+      code: '600825', stockLegs: legsOf('600825'), indexLegs: idxOf('600825'), asOf: '2026-10-28'
+    });
+    expect(f.ok).toBe(true);
+    expect(f.dev30).toBeCloseTo(185.5, 1);           // 面板上印的 +185.5%
+    expect(f.stockChain30).toBeCloseTo(178.9, 1);    // 个股 30 日区间涨幅 +178.91%
+    expect(f.indexChain30).toBeCloseTo(-6.6, 1);     // 上证A股指数同期 −6.57%
+    expect(f.need30).toBeCloseTo(5.2, 1);            // 括号里的「股价再涨约 +5.2%」
+    // 现场效果：14.5 个点 ÷ 汇率 2.789 ≈ 5.2% —— 两个数不一样大是对的，⛔ 不是算错
+    expect(f.gapText).toBe('距 200% 差 14.5 点（股价再涨约 +5.2%）');
+    expect(shownDev(f) + shownGap(f).gap).toBeCloseTo(200, 6);
+    // detailLine 里那句自核必须能把这条路走通（汇率按 1 位小数印：2.789 ⇒ 2.8）
+    expect(deviationDetailLine(f)).toContain('股价每再涨 1%，偏离约增加 2.8 个点');
+  });
+
   it('🔴 点差 ≠ 股价涨幅：need = 点差 / (1 + 个股区间涨幅)（这就是 14.5 点只值 5.2% 的原因）', () => {
     [['002242', 'need30', 'thr30', 'dev30', 'stockChain30'],
       ['002578', 'need10', 'thr10', 'dev10', 'stockChain10']].forEach(function (c) {
