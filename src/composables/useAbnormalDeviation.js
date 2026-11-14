@@ -29,7 +29,7 @@ import {
   readIndexLegsForDates, indexLegsOf, indexLegsGapText, shiftYmd
 } from '../data/index-daily-pct.js';
 import {
-  buildDeviationMap, devText, deviationDetailLine, DEV_FORMULA_LINES,
+  buildDeviationMap, devText, deviationDetailLine, DEV_FORMULA_LINES, DEV_NEED_HINT,
   DEV_STAGE_NEAR, DEV_STAGE_SEVERE, DEV_STAGE_WATCH
 } from '../logic/auction/abnormal-deviation.js';
 import { _dbgLog } from '../data/debug-log.js';
@@ -173,8 +173,9 @@ export function useAbnormalDeviation() {
    *
    * @param {string[]} names 有序票名
    * @returns {Array<{name:string, dev10Text:string, dev30Text:string} &
-   *   {gapText:string, calcText:string, stageText:string, stage:number|string,
-   *    tone:string, ok:boolean, title:string}>}
+   *   {gapText:string, calcText:string, needValueText:string, needHintText:string,
+   *    needTone:string, gapTailText:string, indexMoveText:string, stageText:string,
+   *    stage:number|string, tone:string, ok:boolean, title:string}>}
    */
   function rowsFor(names) {
     const out = [];
@@ -183,15 +184,23 @@ export function useAbnormalDeviation() {
       const name = String(raw || '').trim();
       if (!name) return;
       const f = (m instanceof Map) ? m.get(name) : null;
+      const needText = f && f.ok ? (f.needValueText || '') : '';
       out.push({
         name: name,
         ok: !!(f && f.ok === true),
         dev10Text: f && f.ok ? devText(f.dev10) : '—',
         dev30Text: f && f.ok ? devText(f.dev30) : '—',
         gapText: f && f.ok ? (f.gapText || '') : '未就绪',
-        // ★ [ABN-DEV-UX 2026-11-14] 第二行右侧那句「自核 30日：+178.9% − (-6.6%) = +185.5%」
-        //   —— 用户要「自己验证一下」，光有结论没有算式他验不了。
+        // ★ [IDX-MOVE 2026-11-14 用户定的第二行顺序]
+        //   主段「股价再涨约 +5.2%（同期指数不动 · 条件估算）」→ 灰字「自核…」→
+        //   灰字「距 200% 差 14.5 点」→ 灰字「指数 ±1% ⇒ 需涨 …（β…）」。
+        //   ⛔ 点差不再抢主位，但仍是能与徽标相加核对的那个数。
+        needValueText: needText,
+        needHintText: needText ? DEV_NEED_HINT : '',
+        needTone: (f && f.ok && f.needAlert) ? 'alert' : '',   // 接近警示 ⇒ 数值标红（§21 判据在 Logic）
         calcText: f && f.ok ? (f.calcText || '') : '',
+        gapTailText: needText ? (f.gapShort || '') : '',
+        indexMoveText: f && f.ok ? (f.indexMoveText || '') : '',
         stage: f && f.ok ? f.stage : '',
         stageText: f && f.ok ? (f.stageText || '') : '',
         tone: _toneOf(f),

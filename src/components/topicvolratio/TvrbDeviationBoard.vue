@@ -13,13 +13,15 @@
     用户原话：「你在UI设计上把『距 200% 差 130.8 点（股价再涨约 +80%）』单独一行，
       相当于一只股票有两行，横排文字，这样更美观简洁，还有把计算公式具体的也一起标注在上头，
       我自己也要验证下。」
+    第二轮补充：「把距 200%/100% 差几个点放到计算公式、自核 30日 后面，灰色；
+      股价再涨百分之几后面的数值如果接近警示再标为红色」+「同期指数也在变，这只是大概推测吧？
+      指数涨/跌几个点具体影响多少，在上面说明下」。
 
     ⇒ 版式固定成【一只票两行】：
         第 1 行：票（含档位小标签） | 10日偏离 | 30日偏离
-        第 2 行：整行横排的「距红线」句（左对齐、跨 3 列）
-      「距红线」原来是第 4 列，句子太长把 10日/30日两列挤成斜着读；
-      移到独占一行后，三列都是短数字，对齐干净，长句也不会被压成两截。
-    计算公式印在表头上方（不是只放在悬停 title 里 —— 他看不到 title）。
+        第 2 行：股价再涨约 +5.2%（数值条件标红 + 灰字「同期指数不动 · 条件估算」）
+                 → 灰字「自核 30日：…」→ 灰字「距 200% 差 14.5 点」→ 灰字「指数 ±1% ⇒ …（β…）」
+      顶部「计算公式（可自核）」五条：三条等式 + 指数敏感度 β 通式与窗口滚动声明 + ±1%/±2% 具体算例。
 
   ── 红线 ────────────────────────────────────────────────────────────────────────
     · §21 模板零计算：所有文本（含「距 200% 差 0.1 点（股价再涨约 +0.02%）」「自核 30日：
@@ -90,11 +92,32 @@
             :title="r.title"
           >
             <td colspan="3">
-              <span class="tvrb-dev-gap-main">{{ r.gapText }}</span>
+              <!-- ★ [IDX-MOVE 2026-11-14 用户定的第二行] 主段只留「股价再涨约 +5.2%」，
+                   数值接近警示（near / severe / 需涨 ≤10%）标红；后面三段全灰：
+                   自核算式 → 距红线点差 → 指数 ±1% 的具体影响。 -->
+              <span
+                v-if="r.needValueText"
+                class="tvrb-dev-need-main"
+              >股价再涨约 <span
+                class="tvrb-dev-need-value"
+                :class="r.needTone === 'alert' ? 'tvrb-dev-need-alert' : ''"
+              >{{ r.needValueText }}</span><span class="tvrb-dev-need-hint">{{ r.needHintText }}</span></span>
+              <span
+                v-else
+                class="tvrb-dev-need-main"
+              >{{ r.gapText }}</span>
               <span
                 v-if="r.calcText"
                 class="tvrb-dev-gap-calc"
               >{{ r.calcText }}</span>
+              <span
+                v-if="r.gapTailText"
+                class="tvrb-dev-gap-calc"
+              >{{ r.gapTailText }}</span>
+              <span
+                v-if="r.indexMoveText"
+                class="tvrb-dev-gap-calc"
+              >{{ r.indexMoveText }}</span>
             </td>
           </tr>
         </template>

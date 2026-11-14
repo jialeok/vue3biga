@@ -1338,12 +1338,33 @@
     border-color: #e2e8f0;
 }
 
-.tvrb-dev-gap-main {
-    font-weight: 800;
+/* 第二行主段：「股价再涨约 +5.2%（同期指数不动 · 条件估算）」 */
+.tvrb-dev-need-main {
+    font-weight: 700;
     font-size: 11px;
+    color: #334155;
 }
 
-/* 自核算式（个股区间涨幅 − 指数区间涨幅 = 偏离值）：灰一档，它是给用户对账用的，不是结论 */
+.tvrb-dev-need-value {
+    font-weight: 800;
+}
+
+/* ★ [IDX-MOVE 2026-11-14 用户「接近警示再标为红色」]：
+   判据由 Logic 层 `deviationNeedAlert` 给（near / severe / 需涨 ≤10%）⇒ 视图只映射类名（§21）。
+   ⚠️ 涨=红是 A 股口径；这里标的是「快碰到监管红线」的风险，同色不冲突。 */
+.tvrb-dev-need-alert {
+    color: #dc2626;
+}
+
+/* 「条件估算」这半句必须常驻：用户当场指出同期指数也在变，⛔ 不许省掉限定语 */
+.tvrb-dev-need-hint {
+    margin-left: 2px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #94a3b8;
+}
+
+/* 灰字段：自核算式 / 距红线点差 / 指数 ±1% 影响（用户「放到后面，灰色」） */
 .tvrb-dev-gap-calc {
     margin-left: 8px;
     font-size: 10px;
@@ -1352,13 +1373,13 @@
 }
 
 .tvrb-dev-row-main.tvrb-dev-tone-severe td,
-.tvrb-dev-row-gap.tvrb-dev-tone-severe .tvrb-dev-gap-main {
+.tvrb-dev-row-gap.tvrb-dev-tone-severe .tvrb-dev-need-main {
     color: #b91c1c;
     font-weight: 700;
 }
 
 .tvrb-dev-row-main.tvrb-dev-tone-near td,
-.tvrb-dev-row-gap.tvrb-dev-tone-near .tvrb-dev-gap-main {
+.tvrb-dev-row-gap.tvrb-dev-tone-near .tvrb-dev-need-main {
     color: #b45309;
     font-weight: 700;
 }

@@ -187,11 +187,30 @@ describe('[ABN-DEV-UX] 面板版式（2026-11-14 用户定的「一只票两行 
     expect(body.match(/<template[\s\S]*?<\/template>/)[0].match(/<tr/g).length).toBe(2);
   });
 
-  it('第二行同时给「点差 + 股价」与「自核算式」（用户要自己验证）', () => {
-    expect(BOARD).toContain('tvrb-dev-gap-main');
-    expect(BOARD).toContain('tvrb-dev-gap-calc');
-    expect(BOARD).toContain('{{ r.gapText }}');
+  it('🔴 第二行顺序（用户 11-14 定稿）：股价再涨数值 → 自核 → 距红线点差 → 指数 ±1% 影响', () => {
+    expect(BOARD).toContain('tvrb-dev-need-main');
+    expect(BOARD).toContain('tvrb-dev-need-alert');
+    expect(BOARD).toContain('{{ r.needValueText }}');
+    expect(BOARD).toContain('{{ r.needHintText }}');
     expect(BOARD).toContain('{{ r.calcText }}');
+    expect(BOARD).toContain('{{ r.gapTailText }}');
+    expect(BOARD).toContain('{{ r.indexMoveText }}');
+    const posNeed = BOARD.indexOf('{{ r.needValueText }}');
+    const posCalc = BOARD.indexOf('{{ r.calcText }}');
+    const posTail = BOARD.indexOf('{{ r.gapTailText }}');
+    const posMove = BOARD.indexOf('{{ r.indexMoveText }}');
+    expect(posNeed).toBeLessThan(posCalc);
+    expect(posCalc).toBeLessThan(posTail);          // 「距…差几个点」放在自核后面
+    expect(posTail).toBeLessThan(posMove);
+    // 点差与自核同属灰字段（用户「灰色」），⛔ 不许再回到粗黑主位
+    expect(BOARD).not.toContain('tvrb-dev-gap-main');
+    expect(BOARD.indexOf('{{ r.gapTailText }}')).toBeGreaterThan(0);
+  });
+
+  it('红色只由 Logic 给的 needTone 决定，模板不判数字（§21）', () => {
+    expect(BOARD).toContain("r.needTone === 'alert' ? 'tvrb-dev-need-alert' : ''");
+    expect(BOARD).not.toContain('need30');
+    expect(BOARD).not.toContain('toFixed(');
   });
 
   it('计算公式印在表头上方（不是只放 title 里 —— 用户看不到 title）', () => {

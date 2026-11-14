@@ -388,6 +388,10 @@ export function computeDeviation(o) {
     gapText: '',
     gapShort: '',
     calcText: '',
+    needValueText: '',
+    needAlert: false,
+    indexBeta: null,
+    indexMoveText: '',
     line: ''
   }; };
   if (!idx) return makeEmpty();                          // 北交所 / 代码缺失 ⇒ 判不出
@@ -439,6 +443,11 @@ export function computeDeviation(o) {
   fact.gapText = deviationGapText(fact);
   fact.gapShort = deviationGapShort(fact);       // 买点行用短版（只留点差），⛔ 别把长句塞进行内
   fact.calcText = deviationCalcText(fact);       // 面板第二行「自核」：个股 − 指数 = 偏离
+  // ★ [IDX-MOVE 2026-11-14] 「股价再涨」是条件估算 ⇒ 数值、警示色、指数敏感度都由 Logic 层给
+  fact.needValueText = deviationNeedValueText(fact);
+  fact.needAlert = deviationNeedAlert(fact);
+  fact.indexBeta = deviationIndexBeta(fact);
+  fact.indexMoveText = deviationIndexMoveText(fact);
   fact.line = fact.badge + (fact.gapText ? ' · ' + fact.gapText : '');
   return fact;
 }
@@ -576,28 +585,128 @@ export function deviationGapShort(fact) {
 /** 两版共用同一份计算，⛔ 不许各写一份（一旦分叉，两个地方会印出不同的数） */
 function _gapCore(fact) {
   const f = fact || {};
-  if (!f.ok) return { gapText: '', gapShort: '' };
+  const none = { gapText: '', gapShort: '', needValue: null, needValueText: '', win: null, gap: null };
+  if (!f.ok) return none;
   if (f.stage === DEV_STAGE_SEVERE) {
     const parts = [];
     if (f.hits && f.hits.length) {
       f.hits.forEach(function (h) { parts.push(h.label + ' ' + devText(h.value)); });
     }
     const s = parts.length ? '已触发（' + parts.join('、') + '）' : '已触发严重异动';
-    return { gapText: s, gapShort: s };
+    return Object.assign({}, none, { gapText: s, gapShort: s });
   }
-  if (f.stage === DEV_STAGE_UNKNOWN) return { gapText: '', gapShort: '' };
+  if (f.stage === DEV_STAGE_UNKNOWN) return none;
 
   const w = _nearestWindow(f);                       // 与徽标同一个窗口，⛔ 不许各选各的
-  if (w.thr === null || w.dev === null) return { gapText: '', gapShort: '' };
+  if (w.thr === null || w.dev === null) return none;
   const p = _devGapPair(w.dev, w.thr);               // 与徽标同一精度 ⇒ 相加必等于阈值
-  if (p.gap === null) return { gapText: '', gapShort: '' };
+  if (p.gap === null) return none;
   const need = numOfText(w.code === 'D30' ? f.need30 : f.need10);
   const short = '距 ' + w.thr + '% 差 ' + p.gap.toFixed(p.dp) + ' 点';
-  const long = (need !== null && need > 0)
-    ? short + '（股价再涨约 ' + _needPctText(need) + '）'
+  const needValueText = (need !== null && need > 0) ? _needPctText(need) : '';
+  const long = needValueText
+    ? short + '（股价再涨约 ' + needValueText + '）'
     : short;
-  return { gapText: long, gapShort: short };
+  return {
+    gapText: long, gapShort: short,
+    needValue: need, needValueText: needValueText,
+    win: w, gap: p.gap
+  };
 }
+
+/**
+ * 【纯函数】「股价再涨」那个数值（'+5.2%'），已越线/判不出 ⇒ ''。
+ * ★ 视图要把它单独上色（接近警示标红），⛔ 不许在模板里从句子里切字符串。
+ */
+export function deviationNeedValueText(fact) {
+  return _gapCore(fact).needValueText;
+}
+
+/**
+ * 🔴🔴 【纯函数 · 指数敏感度 β】(2026-11-14 用户原话)
+ *   「这个不是和同期的指数一起吗？如果同期指数变化，这个股价再涨百分之几，
+ *     这个不是很准确吧？只能做一个大概的推测对吧？」
+ *
+ *   他完全说对了。推导（本模块口径 dev = cs − ci，cs=个股复利因子、ci=指数复利因子）：
+ *     股价再涨 g、指数额外涨 h  ⇒  cs(1+g) − ci(1+h) = thr/100
+ *     ⇒ g(h) = g₀ + (ci/cs)·h       其中 g₀ = needGainToThreshold 给的就是「指数不动」那个数
+ *     ⇒ **β = ci/cs = (1 + 指数区间涨幅) / (1 + 个股区间涨幅)**
+ *
+ *   因为个股涨得比指数多 ⇒ β < 1 ⇒ 指数涨跌的影响被压缩：
+ *     指数【涨】⇒ 偏离被扣得更多 ⇒ 要涨【更多】；指数【跌】⇒ 更容易触发 ⇒ 要涨【更少】。
+ *   新华传媒 10-28：cs=2.789、ci=0.934 ⇒ β=0.335 ⇒ 指数 ±1% 只让所需涨幅动 ±0.335 个点。
+ *
+ *   ⚠️ 而且 h 指的是【整段窗口指数因子的额外变动】。30 日窗口每天滚动（最老一天滚出、
+ *      新一天滚进），所以「指数不动」严格说是「新进那天与滚出那天的涨幅相抵」，
+ *      ⛔ 不是「明天指数不涨」。⇒ 这一列只能是**大概推测**，不是精确预测，上屏必须如实写。
+ *
+ * @returns {number|null} β；判不出 ⇒ null（§10 不补 0）
+ */
+export function deviationIndexBeta(fact) {
+  const f = fact || {};
+  const c = _gapCore(fact);
+  if (!c.win) return null;                            // 与点差同一档（⛔ 不许拿 30 日的 β 配 10 日的 need）
+  const isD30 = c.win.code === 'D30';
+  const S = numOfText(isD30 ? f.stockChain30 : f.stockChain10);
+  const I = numOfText(isD30 ? f.indexChain30 : f.indexChain10);
+  if (S === null || I === null) return null;
+  const cs = 1 + S / 100;
+  const ci = 1 + I / 100;
+  if (!(cs > 0) || !(ci > 0)) return null;
+  const beta = ci / cs;
+  return isFinite(beta) ? beta : null;
+}
+
+/**
+ * 【纯函数】指数额外变动 hPct 个百分点时，「股价还需涨幅」变成多少（百分数）。
+ * 负数结果 = 光靠指数下跌就已经触发，股价不用涨 ⇒ 视图写「已触发」。
+ * ⚠️ 条件估算，⛔ 别当预测用（见 deviationIndexBeta 的窗口滚动说明）。
+ */
+export function deviationNeedWithIndexMove(fact, hPct) {
+  const c = _gapCore(fact);
+  const h = numOfText(hPct);
+  const beta = deviationIndexBeta(fact);
+  if (!c.win || c.needValue === null || h === null || beta === null) return null;
+  return c.needValue + beta * h;
+}
+
+/** 指数敏感度那行的显示文本：<=0 ⇒ 「已触发」，⛔ 不写 '+0%'（会读成「还得涨 0%」） */
+function _movePctText(v) {
+  if (v === null) return '—';
+  if (v <= 0) return '已触发';
+  return _needPctText(v);
+}
+
+/**
+ * 【纯函数】每只票第二行尾部的「指数 ±1% 会怎样」小字（用户要「具体影响多少」）。
+ * 例：'指数 ±1% ⇒ 需涨 +5.5% / +4.9%（β0.33）'
+ */
+export function deviationIndexMoveText(fact) {
+  const beta = deviationIndexBeta(fact);
+  if (beta === null) return '';
+  const up = deviationNeedWithIndexMove(fact, 1);
+  const dn = deviationNeedWithIndexMove(fact, -1);
+  if (up === null || dn === null) return '';
+  return '指数 ±1% ⇒ 需涨 ' + _movePctText(up) + ' / ' + _movePctText(dn) +
+    '（β' + beta.toFixed(3) + '）';
+}
+
+/**
+ * 【纯函数】「股价再涨」那个数值要不要标红（2026-11-14 用户「接近警示再标为红色」）。
+ * 判据 = 已进预警带（near / severe）**或** 所需涨幅 ≤ 10%（再涨一点就触发）。
+ * ⛔ 别用「距红线比率」另起一把尺子 —— 与 `isDeviationAlert` 同源，避免满屏红。
+ */
+export function deviationNeedAlert(fact) {
+  const f = fact || {};
+  if (!f.ok) return false;
+  const c = _gapCore(fact);
+  if (!c.needValueText || c.needValue === null) return false;
+  return f.stage === DEV_STAGE_NEAR || f.stage === DEV_STAGE_SEVERE ||
+    (c.needValue > 0 && c.needValue <= 10);
+}
+
+/** 「股价再涨」后面的限定语（用户质疑精度 ⇒ 这半句必须常驻，⛔ 不许省） */
+export const DEV_NEED_HINT = '（同期指数不动 · 条件估算）';
 
 /**
  * 【纯函数】说明区用的一整行（含指数名与停牌提示，§10 如实交代口径）。
@@ -629,6 +738,13 @@ export function deviationDetailLine(fact) {
     s += '；自核：30 日偏离 = 个股区间涨幅 ' + devText(sc30) + ' − 指数区间涨幅 ' +
       devText(f.indexChain30) + '；股价每再涨 1%，偏离约增加 ' +
       _ptsText(1 + sc30 / 100) + ' 个点';
+  }
+  const beta = numOfText(f.indexBeta);
+  if (beta !== null) {
+    // [IDX-MOVE 2026-11-14] 用户当场指出「同期指数也在变」⇒ 悬停说明里也必须交代这是条件估算
+    s += '；⚠️「股价再涨」按同期指数不动估算：指数每额外涨 1%，所需股价涨幅约 +' +
+      beta.toFixed(3) + ' 个点，跌 1% 则少这么多（β=' + beta.toFixed(3) +
+      '，窗口每日滚动，仅作推测）';
   }
   if (f.missingLegs > 0) {
     s += '；⚠️ 窗口内有 ' + f.missingLegs + ' 个交易日无成交腿（停牌/未采集），已按 0 计入';
@@ -677,11 +793,18 @@ export function deviationCalcText(fact) {
  * ⚠️ 每条都必须与代码里的等式**逐字一致**，改算法就要回来改这张表（否则说明与实现分叉）。
  */
 export const DEV_FORMULA_LINES = [
-  '① 偏离值（点）= 个股区间涨幅 − 对应指数同期涨幅（交易所《交易规则》5.4.2，已扣指数）',
-  '② 距红线点差 = 阈值 − 偏离值 ⇒ 屏幕上「偏离值 + 点差」必然刚好等于阈值，可以直接相加对账',
-  '③ 股价还需涨幅 = 点差 ÷ (1 + 个股区间涨幅) —— 涨得越多，涨 1% 换来的点数越多',
-  '例：新华传媒 10-28 三十日 = 个股 +178.9% − 上证A股指数 -6.6% = +185.5%；' +
-    '差 14.5 点 ÷ (1+1.789) ≈ 5.2%'
+  '① 偏离值（点）= 个股区间涨幅 − 对应指数同期涨幅（交易规则 5.4.2）；' +
+    '例：新华传媒 10-28 三十日 +178.9% − (-6.6%) = +185.5%',
+  '② 距红线点差 = 阈值 − 偏离值 ⇒ 「偏离值 + 点差」刚好等于阈值，可直接相加对账；' +
+    '例：200 − 185.5 = 14.5 点',
+  '③ 股价还需涨幅 = 点差 ÷ (1 + 个股区间涨幅)；例：14.5 ÷ 2.789 ≈ +5.2%' +
+    '（涨得越多，涨 1% 换来的点数越多）',
+  '④ 「股价再涨」只是【同期指数不动】下的条件估算，⛔ 不是精确预测：指数额外涨 h% ⇒ ' +
+    '所需涨幅 + β·h%，β = (1+指数区间涨幅) ÷ (1+个股区间涨幅)；30 日窗口每天滚动' +
+    '（最老一天滚出、新一天滚进），「指数不动」严格说是新进与滚出两天的涨幅相抵',
+  '⑤ 指数涨 ⇒ 偏离被扣得更多 ⇒ 要涨更多；指数跌 ⇒ 更容易触发 ⇒ 要涨更少。' +
+    '例（10-28 新华传媒 β=0.335）：+1% ⇒ 需涨 +5.5%，−1% ⇒ +4.9%，' +
+    '+2% ⇒ +5.9%，−2% ⇒ +4.5%；每行末尾另给该票自己的 β 与 ±1% 影响'
 ];
 
 /**

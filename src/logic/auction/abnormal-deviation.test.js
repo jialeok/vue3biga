@@ -20,7 +20,9 @@ import {
   pickBaseIndexForCode, devIndexName, thresholdsForBoard,
   cumulativeDeviation, needGainToThreshold, classifyDeviation,
   computeDeviation, devText, needText, deviationBadge, deviationGapText, deviationCalcText,
-  deviationDetailLine, isDeviationSevere, isDeviationAlert, DEV_FORMULA_LINES
+  deviationNeedValueText, deviationNeedAlert, deviationIndexBeta, deviationNeedWithIndexMove,
+  deviationDetailLine, isDeviationSevere, isDeviationAlert,
+  DEV_FORMULA_LINES, DEV_NEED_HINT
 } from './abnormal-deviation.js';
 
 /** 夹具里的腿是紧凑形态 {d,p}（省体积），这里统一转成业务形态 {date,pct} */
@@ -415,14 +417,81 @@ describe('[ABN-DEV] 上屏文案（§21 模板零计算）', () => {
     expect(deviationCalcText({ ok: true, dev10: 50, thr10: 100, stockChain10: null, indexChain10: 1 })).toBe('');
   });
 
-  it('计算公式三行必须与实现的等式逐字一致（算法一改，这里就该红）', () => {
-    expect(DEV_FORMULA_LINES.length).toBeGreaterThanOrEqual(3);
+  it('计算公式五条必须与实现的等式逐字一致（算法一改，这里就该红）', () => {
+    expect(DEV_FORMULA_LINES.length).toBe(5);
     expect(DEV_FORMULA_LINES[0]).toContain('个股区间涨幅 − 对应指数同期涨幅');
     expect(DEV_FORMULA_LINES[1]).toContain('点差 = 阈值 − 偏离值');
     expect(DEV_FORMULA_LINES[2]).toContain('点差 ÷ (1 + 个股区间涨幅)');
     // 算例里的数字必须是真实行情（新华传媒 10-28），⛔ 不许手编一个好看的数
-    expect(DEV_FORMULA_LINES[3]).toContain('+178.9%');
-    expect(DEV_FORMULA_LINES[3]).toContain('+185.5%');
+    expect(DEV_FORMULA_LINES[0]).toContain('+178.9%');
+    expect(DEV_FORMULA_LINES[0]).toContain('+185.5%');
+    // ★ [IDX-MOVE] ④⑤ 必须如实交代「指数不动 = 条件估算」与窗口滚动，⛔ 不许写成精确预测
+    expect(DEV_FORMULA_LINES[3]).toContain('条件估算');
+    expect(DEV_FORMULA_LINES[3]).toContain('β = (1+指数区间涨幅) ÷ (1+个股区间涨幅)');
+    expect(DEV_FORMULA_LINES[3]).toContain('窗口每天滚动');
+    expect(DEV_FORMULA_LINES[4]).toContain('+1% ⇒ 需涨 +5.5%');
+    expect(DEV_FORMULA_LINES[4]).toContain('−2% ⇒ +4.5%');
+  });
+
+  it('🔴 用户质疑「指数也在变，这只是大概推测吧」⇒ β = (1+指数区间涨幅)/(1+个股区间涨幅)', () => {
+    const f = computeDeviation({
+      code: '600825', stockLegs: legsOf('600825'), indexLegs: idxOf('600825'), asOf: '2026-10-28'
+    });
+    // 10-28 实测：cs=2.7891、ci=0.9343 ⇒ β=0.33498
+    expect(f.indexBeta).toBeCloseTo((1 + f.indexChain30 / 100) / (1 + f.stockChain30 / 100), 8);
+    expect(f.indexBeta).toBeCloseTo(0.335, 2);
+    expect(f.indexBeta).toBeLessThan(1);              // 个股涨得比指数多 ⇒ 影响被压缩
+    expect(deviationIndexBeta(null)).toBe(null);      // §10 判不出不补 0
+  });
+
+  it('🔴 指数涨跌对「股价再涨」的具体影响：need(h) = need0 + β·h，方向不能搞反', () => {
+    const f = computeDeviation({
+      code: '600825', stockLegs: legsOf('600825'), indexLegs: idxOf('600825'), asOf: '2026-10-28'
+    });
+    const n0 = Number(f.need30);
+    expect(n0).toBeCloseTo(5.2, 1);
+    [[1, 5.535], [-1, 4.865], [2, 5.87], [-2, 4.53]].forEach(function (c) {
+      const v = deviationNeedWithIndexMove(f, c[0]);
+      expect(v).toBeCloseTo(c[1], 1);
+      expect(v - n0).toBeCloseTo(f.indexBeta * c[0], 6);
+    });
+    // 指数【涨】⇒ 偏离被扣得更多 ⇒ 要涨【更多】；指数【跌】⇒ 要涨【更少】
+    expect(deviationNeedWithIndexMove(f, 1)).toBeGreaterThan(n0);
+    expect(deviationNeedWithIndexMove(f, -1)).toBeLessThan(n0);
+    // 九阳卡线票：指数跌 1% 光靠指数就触发了 ⇒ 写「已触发」，⛔ 不写 '+0%'
+    const g = computeDeviation({ code: '002242', stockLegs: legsOf('002242'), indexLegs: idxOf('002242') });
+    expect(deviationNeedWithIndexMove(g, -1)).toBeLessThan(0);
+    expect(g.indexMoveText).toContain('已触发');
+    expect(g.indexMoveText).not.toContain('+0%');
+  });
+
+  it('上屏数值与警示色判据：+5.2% 红、+16% 不红、判不出不红', () => {
+    const a = computeDeviation({
+      code: '600825', stockLegs: legsOf('600825'), indexLegs: idxOf('600825'), asOf: '2026-10-28'
+    });
+    expect(a.needValueText).toBe('+5.2%');
+    expect(a.needAlert).toBe(true);                   // 需涨 ≤10% ⇒ 接近警示
+    expect(deviationNeedValueText(a)).toBe('+5.2%');
+    const b = computeDeviation({ code: '002578', stockLegs: legsOf('002578'), indexLegs: idxOf('002578') });
+    expect(b.needValueText).toBe('+16%');
+    expect(b.needAlert).toBe(false);
+    const c = computeDeviation({ code: '830799' });
+    expect(c.needValueText).toBe('');
+    expect(c.needAlert).toBe(false);
+    expect(c.indexBeta).toBe(null);
+    expect(c.indexMoveText).toBe('');
+    // 限定语必须常驻（用户质疑精度，⛔ 不许印一个没有前提的预测值）
+    expect(DEV_NEED_HINT).toContain('同期指数不动');
+    expect(DEV_NEED_HINT).toContain('条件估算');
+  });
+
+  it('detailLine / 每行小字都得交代 β 与「仅作推测」', () => {
+    const f = computeDeviation({
+      code: '600825', stockLegs: legsOf('600825'), indexLegs: idxOf('600825'), asOf: '2026-10-28'
+    });
+    expect(deviationDetailLine(f)).toContain('同期指数不动估算');
+    expect(deviationDetailLine(f)).toContain('β=0.335');
+    expect(f.indexMoveText).toBe('指数 ±1% ⇒ 需涨 +5.5% / +4.9%（β0.335）');
   });
 
   it('判不出 ⇒ detailLine 如实说「未就绪」，⛔ 不说成「没有异动」', () => {
