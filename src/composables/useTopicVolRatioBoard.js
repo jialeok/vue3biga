@@ -1477,15 +1477,10 @@ export function useTopicVolRatioBoard() {
    */
   const prevBuyPlanNames = ref({ date: '', names: null, status: 'idle' });
 
-  /**
-   * ★★ [RULES-BUMP-GUARD 2026-11-12] 北京「今天」的日期串（YYYY-MM-DD）。
-   *   只用于一个判断：**规则升级（`TVRB_RULES_VERSION` bump）要不要让这一天的存档过期**。
-   *   · 今天 ⇒ 要（新规则立刻生效，屏幕上那只票必须跟着改，例：11-12 光洋股份 → 襄阳轴承）；
-   *   · 历史日 ⇒ 不要（库内行情会被收盘覆盖，重算会改写复盘结论 —— 11-10 实证过）。
-   */
-  function _bjTodayKey() {
-    return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
-  }
+  // ★★ [RULES-BUMP-ALL 2026-11-14 用户口径] 这里原有一个 `_bjTodayKey()`（北京「今天」日期串），
+  //   唯一用途是给 `allowRulesInvalidation` 传「今天 true / 历史日 false」，让规则升级只重算今天。
+  //   用户本轮明确推翻（原话「这个和规则没有关吧？你重算一遍」）⇒ 该选项与它一起删除，
+  //   ⛔ 别再复活「历史日不重算」这条护栏（切日期不飘移由内容 hash 指纹 + revision 幂等保证）。
 
   /**
    * 读前一交易日的买点侧名单。切日期时调用（与 `_loadPlanSnapshot` 同一个入口）。
@@ -2369,9 +2364,10 @@ export function useTopicVolRatioBoard() {
           coreTopicsLoaded: isCoreTopicsCloudLoaded(),
           inputsSig: currentInputsSig.value,
           // 库里还没有 inputs_sig 列（已降级）⇒ ⛔ 不许把「缺字段」当过期，否则每次开页面都重算
-          inputsSigSupported: isPlanSnapshotInputsSigSupported(),
-          // ★ [RULES-BUMP-GUARD] 规则版本升级只让【今天】的存档过期；历史日保持定稿
-          allowRulesInvalidation: key === _bjTodayKey()
+          inputsSigSupported: isPlanSnapshotInputsSigSupported()
+          // ★ [RULES-BUMP-ALL 2026-11-14 用户口径] ⛔ 不再传 `allowRulesInvalidation`：
+          //   用户明确要求「规则升级后历史日也要重算一遍」（原话「这个和规则没有关吧？你重算一遍」）
+          //   ⇒ 历史日与今天走同一条判据。切日期不飘移由内容 hash 指纹 + revision 幂等保证。
         });
         snap.status = (verdict === 'stale') ? 'stale' : 'hit';
         planSnapshot.value = snap;
@@ -2546,9 +2542,8 @@ export function useTopicVolRatioBoard() {
       coreTopicsLoaded: isCoreTopicsCloudLoaded(),
       inputsSig: currentInputsSig.value,
       // 库里还没有 inputs_sig 列（已降级）⇒ ⛔ 不许把「缺字段」当过期，否则每次开页面都重算
-      inputsSigSupported: isPlanSnapshotInputsSigSupported(),
-      // ★ [RULES-BUMP-GUARD] 同上：只有今天会因规则升级而重算
-      allowRulesInvalidation: d === _bjTodayKey()
+      inputsSigSupported: isPlanSnapshotInputsSigSupported()
+      // ★ [RULES-BUMP-ALL 2026-11-14] 同上：历史日也按新规则重算（该选项已删除）
     });
     if (verdict !== 'stale' || s.status === 'stale') return;
     planSnapshot.value = Object.assign({}, s, { status: 'stale', reason: reason || 'rules-changed' });

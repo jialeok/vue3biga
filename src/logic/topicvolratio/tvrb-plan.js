@@ -1295,10 +1295,15 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     }
     // ★★ [AUTO-PICK-TOP20 2026-11-14 用户口径] big 档（> 8 只）改用「同题材 20日涨幅前十最靠前两只」：
     //   池子 = 采集层 `ebbCtx.topicPool`（恒 9:25 竞价口径的 20日涨幅前十，见 tvrb-auction-board.js）。
+    //   ★★ [MID-TOP20 2026-11-14 用户口径] **mid 档（4~8 只，取 1 只）同步扩进来** —— 用户原话
+    //   （10-21 商业航天 7 只）：「题材总数量7按理来说选一只最强的，那就是海洋王，海洋王20日涨幅
+    //   竞价口径刚好排名第十，前十有它的出现，这个才是核心，但是竞价涨停，没办法，你打上那个涨停标签，
+    //   下杀买。」⇒ 旧口径选出的是顺延来的「龙三长春一东」，用户明确否决。
     //   ⛔ 池子没注入（老调用方 / 单测 / 采集层没给）⇒ 连这个 opt 都不构造 ⇒ 规则层逐字退回
     //   「龙位顺延」旧口径、一条说明都不加（§11 零行为变化）。
+    //   ⚠️ `smallOpt`（= 排名第一 + 4~6 只的十日涨幅收紧档）优先：两者互斥，它命中时不再走 20日涨幅口径。
     const bigPool = (o.ebbCtx && Array.isArray(o.ebbCtx.topicPool)) ? o.ebbCtx.topicPool : null;
-    const bigOpt = (tier.tier === 'big' && !smallOpt && Array.isArray(bigPool)) ? {
+    const bigOpt = ((tier.tier === 'big' || tier.tier === 'mid') && !smallOpt && Array.isArray(bigPool)) ? {
       topicPool: bigPool,
       coreRes: coreRes,
       top20Text: r20BaseText

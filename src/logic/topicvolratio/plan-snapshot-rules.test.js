@@ -261,34 +261,46 @@ describe('shouldPersistPlanSnapshot · 写库准入（§11 覆盖保护 + §32 �
 });
 
 // ══════════════════════════════════════════════════════════════════════════════════════════
-// [RULES-BUMP-GUARD 2026-11-12] 规则版本升级（bump `TVRB_RULES_VERSION`）只让【今天】的存档过期。
+// ★★ [RULES-BUMP-ALL 2026-11-14 用户口径] 规则版本升级（bump `TVRB_RULES_VERSION`）⇒ **任何日期都重算**。
 //
-// 背景：第二十八条收紧（同题材择优）会改变选股结论（11-12：光洋股份 → 襄阳轴承）。
-//   不 bump ⇒ 那份按旧规则定稿的存档永久 hit ⇒ 屏幕上一直是错的那只；
-//   bump 又不能让【历史日】跟着重算 —— 历史日的库内行情会被收盘覆盖，重算会改写复盘结论。
+// 用户原话（逐字）：「这不是很合理吧，我之前那次因为切换日期它总是换结果，我想它一次给结果，
+//   切换日期也不用结果总是换来换去会误导判断，他们才冻住，这不是我想要的，**这个和规则没有关吧**？
+//   你重算一遍」
+// ⇒ 推翻既有的 [RULES-BUMP-GUARD]（那条只让今天过期、历史日保持定稿）。
+//   当初冻住历史日的真实目的只是「同一天反复重算导致结果飘移」，与「规则升级要不要回算历史」无关。
+//   「不飘移」由别处保证：内容 hash 指纹 + revision 幂等 + shouldPersistPlanSnapshot 的「结论没变不写」。
 // ══════════════════════════════════════════════════════════════════════════════════════════
-describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日保持定稿', () => {
+describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
   const SNAP = { status: 'hit', rulesSig: 'v1:aaaaaaaa', inputsSig: 'v1:111' };
   const OPTS = { rulesSig: 'v2:bbbbbbbb', coreTopicsLoaded: true, inputsSig: 'v1:111' };
 
-  it('今天（allowRulesInvalidation !== false）⇒ stale（按新规则重算并修订存档）', () => {
+  it('规则变了 ⇒ stale（今天与历史日同一判据，⛔ 不再有「历史日例外」）', () => {
     expect(resolvePlanSnapshotFreshness(SNAP, OPTS)).toBe('stale');
+  });
+
+  it('⛔ 已删除 `allowRulesInvalidation` 入参：传 false 也不再能冻结历史日（回归锁）', () => {
+    // 旧实现：allowRulesInvalidation === false ⇒ 'hit'（历史日保持定稿）。
+    // 用户本轮明确否决 ⇒ 即使老调用方还传这个键，也必须判 stale。
+    expect(resolvePlanSnapshotFreshness(SNAP, Object.assign({}, OPTS, { allowRulesInvalidation: false }))).toBe('stale');
     expect(resolvePlanSnapshotFreshness(SNAP, Object.assign({}, OPTS, { allowRulesInvalidation: true }))).toBe('stale');
+    const src = readFileSync('src/logic/topicvolratio/plan-snapshot-rules.js', 'utf8');
+    expect(src).not.toContain("if (o.allowRulesInvalidation === false) return 'hit';");
+    // composable 两处调用点也不许再传
+    const comp = readFileSync('src/composables/useTopicVolRatioBoard.js', 'utf8');
+    expect((comp.match(/allowRulesInvalidation: /g) || []).length).toBe(0);
+    // ⚠️ 只锁【调用形态】：保留的注释里还会提到 `_bjTodayKey`（记录这条护栏的历史），那不算调用。
+    expect(comp).not.toContain('_bjTodayKey() {');
   });
 
-  it('历史日（allowRulesInvalidation === false）⇒ hit（保持那一份定稿，⛔ 不被新规则改写）', () => {
-    expect(resolvePlanSnapshotFreshness(SNAP, Object.assign({}, OPTS, { allowRulesInvalidation: false }))).toBe('hit');
-  });
-
-  it('规则没变时该选项不影响任何既有判据（§11 零行为变化）', () => {
+  it('规则没变时不受影响（§11 零行为变化）', () => {
     const same = { status: 'hit', rulesSig: 'v2:bbbbbbbb', inputsSig: 'v1:111' };
-    expect(resolvePlanSnapshotFreshness(same, Object.assign({}, OPTS, { allowRulesInvalidation: false }))).toBe('hit');
+    expect(resolvePlanSnapshotFreshness(same, OPTS)).toBe('hit');
     const broken = { status: 'hit', rulesSig: 'v2:bbbbbbbb', inputsSig: 'v1:110' };
-    expect(resolvePlanSnapshotFreshness(broken, Object.assign({}, OPTS, { allowRulesInvalidation: false }))).toBe('stale');
+    expect(resolvePlanSnapshotFreshness(broken, OPTS)).toBe('stale');
   });
 
-  it('版本常量已 bump 到 13（[AUTO-PICK-TOP20] big 档取票口径变了 = v13）', () => {
-    expect(TVRB_RULES_VERSION).toBe(13);
+  it('版本常量已 bump 到 14（[RULES-BUMP-ALL] + [MID-TOP20] 都改了选股结论 = v14）', () => {
+    expect(TVRB_RULES_VERSION).toBe(14);
   });
 
   // ★★ [ABN-MAINBOARD-GUARD 2026-11-14] 第三十四条「全场十日涨幅最高票」只认主板。
@@ -325,7 +337,7 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
     expect(TVRB_RANGE10_ABNORMAL).toBe(100);
     expect(TVRB_RULES_VERSION).toBeGreaterThanOrEqual(10);
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v51'");
+    expect(sw).toContain("var CACHE = 'biga-static-v52'");
   });
 
   // ★★ [FULL-MARKET-GUARD 2026-11-13 用户当场纠正] 整类护栏：
@@ -346,8 +358,8 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
     expect(lines).toContain('波及到所有的票');
     expect(lines).toContain('整个市场【整片灰');
     // ④ 三件套版本链
-    expect(TVRB_RULES_VERSION).toBe(13);
-    expect(readFileSync('public/sw.js', 'utf8')).toContain("var CACHE = 'biga-static-v51'");
+    expect(TVRB_RULES_VERSION).toBe(14);
+    expect(readFileSync('public/sw.js', 'utf8')).toContain("var CACHE = 'biga-static-v52'");
   });
 
   // ★★ [RULE-BUMP-GUARD 2026-11-13] 用户报障「现在刷新并没有生效」的整类根因锁。
@@ -371,13 +383,6 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
     }
   });
 
-  it('composable 两处调用都带上该选项（静态锁：漏一处 ⇒ 历史日会被改写）', () => {
-    const src = readFileSync('src/composables/useTopicVolRatioBoard.js', 'utf8');
-    const n = (src.match(/allowRulesInvalidation: /g) || []).length;
-    expect(n).toBe(2);
-    expect(src).toContain('allowRulesInvalidation: key === _bjTodayKey()');
-    expect(src).toContain('allowRulesInvalidation: d === _bjTodayKey()');
-  });
 });
 
 // ══════════════════════════════════════════════════════════════════════════════════════════
@@ -385,44 +390,35 @@ describe('tvrb · [RULES-BUMP-GUARD] 规则升级只让今天过期，历史日�
 //
 // 用户原话：「比如我在今天改了题材，我希望历史日期题材量比选股也会根据这个题材改变做改变……
 //   之前那些选票也要根据我手动改的题材变化」。
-// ⚠️ 与 [RULES-BUMP-GUARD] 恰好相反：规则/核心词变了只重算今天，题材库变了连历史一起重算。
+// ⚠️ [RULES-BUMP-ALL 2026-11-14] 起两者一致：规则/核心词变了、题材库变了，**都连历史一起重算**。
 // ══════════════════════════════════════════════════════════════════════════════════════════
 describe('tvrb · [TOPIC-LIB-SIG] 题材库指纹变了 ⇒ 历史日也重算', () => {
   const CORE = [{ name: 'AI应用', synonyms: ['人工智能'] }];
 
-  it('指纹第二段相同、第三段不同 ⇒ stale（哪怕 allowRulesInvalidation=false）', () => {
+  it('指纹第二段相同、第三段不同 ⇒ stale（历史日也一样）', () => {
     const oldSig = buildRulesFingerprint(CORE, 'tl1:aaaa1111');
     const newSig = buildRulesFingerprint(CORE, 'tl1:bbbb2222');
     const snap = { status: 'hit', rulesSig: oldSig, inputsSig: 'v1:111' };
-    const opts = {
-      rulesSig: newSig, coreTopicsLoaded: true, inputsSig: 'v1:111',
-      allowRulesInvalidation: false                       // 历史日
-    };
+    const opts = { rulesSig: newSig, coreTopicsLoaded: true, inputsSig: 'v1:111' };
     expect(resolvePlanSnapshotFreshness(snap, opts)).toBe('stale');
   });
 
   it('题材库没变 ⇒ hit（不抖动）', () => {
     const sig = buildRulesFingerprint(CORE, 'tl1:aaaa1111');
     const snap = { status: 'hit', rulesSig: sig, inputsSig: 'v1:111' };
-    const opts = { rulesSig: sig, coreTopicsLoaded: true, inputsSig: 'v1:111', allowRulesInvalidation: false };
+    const opts = { rulesSig: sig, coreTopicsLoaded: true, inputsSig: 'v1:111' };
     expect(resolvePlanSnapshotFreshness(snap, opts)).toBe('hit');
   });
 
   it('当前算不出题材库指纹（空）⇒ hit（§10：算不出来 ≠ 变了）', () => {
     const snap = { status: 'hit', rulesSig: 'v3:bbbbbbbb:tl1:aaaa1111', inputsSig: 'v1:111' };
-    const opts = {
-      rulesSig: 'v3:bbbbbbbb', coreTopicsLoaded: true, inputsSig: 'v1:111',
-      allowRulesInvalidation: false
-    };
+    const opts = { rulesSig: 'v3:bbbbbbbb', coreTopicsLoaded: true, inputsSig: 'v1:111' };
     expect(resolvePlanSnapshotFreshness(snap, opts)).toBe('hit');
   });
 
   it('老存档没有第三段（升级前的行）⇒ 自愈一次（stale）', () => {
     const snap = { status: 'hit', rulesSig: 'v3:bbbbbbbb', inputsSig: 'v1:111' };
-    const opts = {
-      rulesSig: 'v3:bbbbbbbb:tl1:aaaa1111', coreTopicsLoaded: true, inputsSig: 'v1:111',
-      allowRulesInvalidation: false
-    };
+    const opts = { rulesSig: 'v3:bbbbbbbb:tl1:aaaa1111', coreTopicsLoaded: true, inputsSig: 'v1:111' };
     expect(resolvePlanSnapshotFreshness(snap, opts)).toBe('stale');
   });
 
@@ -440,22 +436,16 @@ describe('tvrb · [TOPIC-LIB-SIG] 题材库指纹变了 ⇒ 历史日也重算',
     const snap = { status: 'hit', rulesSig: 'v11:d83ebd81:tl1:7404491d', inputsSig: 'v1:111' };
     const opts = {
       rulesSig: 'v12:11112222:tl1:99998888',   // 规则 bump v11→v12 + 删了题材（指纹变）
-      coreTopicsLoaded: true, inputsSig: 'v1:111',
-      allowRulesInvalidation: false            // 历史日
+      coreTopicsLoaded: true, inputsSig: 'v1:111'
     };
     expect(resolvePlanSnapshotFreshness(snap, opts)).toBe('stale');
   });
 
-  it('规则版本变了但题材库没变 ⇒ 历史日仍 hit（[RULES-BUMP-GUARD] 未被破坏）', () => {
+  it('★ [RULES-BUMP-ALL] 规则版本变了、题材库没变 ⇒ 现在【也】stale（历史日不再冻结）', () => {
     const snap = { status: 'hit', rulesSig: 'v11:d83ebd81:tl1:7404491d', inputsSig: 'v1:111' };
-    const opts = {
-      rulesSig: 'v12:11112222:tl1:7404491d',
-      coreTopicsLoaded: true, inputsSig: 'v1:111',
-      allowRulesInvalidation: false
-    };
-    expect(resolvePlanSnapshotFreshness(snap, opts)).toBe('hit');
-    // 今天照常重算
-    expect(resolvePlanSnapshotFreshness(snap, Object.assign({}, opts, { allowRulesInvalidation: true }))).toBe('stale');
+    const opts = { rulesSig: 'v12:11112222:tl1:7404491d', coreTopicsLoaded: true, inputsSig: 'v1:111' };
+    // 用户 2026-11-14 明确要求「规则和冻历史没有关系，你重算一遍」⇒ 这里从 'hit' 改成 'stale'。
+    expect(resolvePlanSnapshotFreshness(snap, opts)).toBe('stale');
   });
 
   it('★ 判据顺序锁：题材库段的比较必须在 base 段之前（否则规则一 bump 历史就永久不更新）', () => {

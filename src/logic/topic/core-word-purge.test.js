@@ -161,21 +161,17 @@ describe('[CORE-PURGE-SYNC] 清理后必须联动提示板与选股结果', () =
       expect(sigAfter).not.toBe(sigBefore);
 
       const snap = { status: 'hit', rulesSig: sigBefore, inputsSig: 'v1:111' };
-      // ⚠️ allowRulesInvalidation:false = 历史日（规则升级不许动历史）
-      //   但【题材库那一段】变了必须照样 stale —— 这正是用户「删了题材，选股和提示板要跟着变」。
+      // 【题材库那一段】变了必须 stale（历史日也一样）—— 用户「删了题材，选股和提示板要跟着变」。
+      // ★ [RULES-BUMP-ALL 2026-11-14] 起历史日与今天同一判据，`allowRulesInvalidation` 已删除。
       expect(resolvePlanSnapshotFreshness(snap, {
-        rulesSig: sigAfter, coreTopicsLoaded: true, inputsSig: 'v1:111', allowRulesInvalidation: false
-      })).toBe('stale');
-      // 今天（allow=true）自然也是 stale
-      expect(resolvePlanSnapshotFreshness(snap, {
-        rulesSig: sigAfter, coreTopicsLoaded: true, inputsSig: 'v1:111', allowRulesInvalidation: true
+        rulesSig: sigAfter, coreTopicsLoaded: true, inputsSig: 'v1:111'
       })).toBe('stale');
     } finally {
       state._cloudTopicsCache = prev;
     }
   });
 
-  it('③ 反例：只改核心词表（不动题材库）时，历史日仍然保持定稿（不被误刷）', () => {
+  it('③ 只改核心词表（不动题材库）⇒ v14 起历史日也重算（[RULES-BUMP-ALL] 推翻旧护栏）', () => {
     const prev = state._cloudTopicsCache;
     try {
       state._cloudTopicsCache = seedBefore();
@@ -185,13 +181,9 @@ describe('[CORE-PURGE-SYNC] 清理后必须联动提示板与选股结果', () =
       const sigAfter = buildRulesFingerprint(CORE2, digest);
       expect(sigAfter).not.toBe(sigBefore);
       const snap = { status: 'hit', rulesSig: sigBefore, inputsSig: 'v1:111' };
-      // 历史日：允许保持不变
+      // 用户 2026-11-14 明确要求：规则/核心词变了，历史日也按新规则重算一遍。
       expect(resolvePlanSnapshotFreshness(snap, {
-        rulesSig: sigAfter, coreTopicsLoaded: true, inputsSig: 'v1:111', allowRulesInvalidation: false
-      })).toBe('hit');
-      // 今天：重算
-      expect(resolvePlanSnapshotFreshness(snap, {
-        rulesSig: sigAfter, coreTopicsLoaded: true, inputsSig: 'v1:111', allowRulesInvalidation: true
+        rulesSig: sigAfter, coreTopicsLoaded: true, inputsSig: 'v1:111'
       })).toBe('stale');
     } finally {
       state._cloudTopicsCache = prev;

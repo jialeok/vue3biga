@@ -165,12 +165,21 @@ describe('tvrb · ★★ [AUTO-PICK-TOP20] 数量 > 8 只 ⇒ 只选同题材 20
   });
 
   it('前十只有 1 只 ⇒ 从同题材其余票里按【龙位靠前】补 1 只（用户口径原话）', function() {
-    // 只剩 九阳股份 一只同题材（把 青岛食品 / 上海九百 换成别的大类）
-    const pool = POOL30.map(function(t) {
-      if (t.name === '青岛食品') return Object.assign({}, t, { topic: '水产品,农业' });
-      if (t.name === '上海九百') return Object.assign({}, t, { topic: 'LED,军工' });
-      return t;
-    });
+    // ⚠️ [MID-TOP20 实证修正] 「同题材」以【块成员名单】为准（优先于题材串），
+    //   所以「把 青岛食品/上海九百 的 topic 改成别的大类」已经【无效】—— 它们本来就是大消费的成员。
+    //   要造「前十只有 1 只命中」，只能让前十【不含】它们（下面是 10-30 前十的另一种构成）。
+    const pool = [
+      pool20('九阳股份', 1, '家电,电子商务', 135.78, { code: '002242' }),
+      pool20('新华传媒', 2, '文化传媒', 128.77, { code: '600825' }),
+      pool20('海洋王', 3, 'LED,军工', 86.81, { code: '002724' }),
+      pool20('襄阳轴承', 4, '机器人概念,汽车零部件', 86.77, { code: '000678' }),
+      pool20('大业股份', 5, '机器人概念,工业4.0', 84.82, { code: '603278' }),
+      pool20('百洋股份', 6, '水产品,农业', 67.23, { code: '002696' }),
+      pool20('冰山冷热', 7, '冰雪产业,算力', 52.31, { code: '000530' }),
+      pool20('宁波东力', 8, '机器人概念,减速器', 45.73, { code: '002164' }),
+      pool20('澳弘电子', 9, 'PCB,通信', 44.5, { code: '605058' }),
+      pool20('吉大正元', 10, 'AI应用', 43.1, { code: '003029' })
+    ];
     const blk = _buildBlock(mkBlock('大消费', 2, MEMBERS17), DM30, bigTier, PCT30, null,
       { topicPool: pool, coreRes: coreRes, top20Text: '9:25 竞价口径' });
     expect(names(blk)).toEqual(['九阳股份', '上海九百']);   // 补位 = 组内龙一（上海九百）
@@ -180,14 +189,19 @@ describe('tvrb · ★★ [AUTO-PICK-TOP20] 数量 > 8 只 ⇒ 只选同题材 20
   });
 
   it('前十一只都没有 ⇒ 退回常规龙位口径（⛔ 不弃题材），并如实写「未命中」', function() {
-    const pool = POOL30.map(function(t) { return Object.assign({}, t, { topic: 'LED,军工' }); });
-    const blk = _buildBlock(mkBlock('大消费', 2, MEMBERS17), DM30, bigTier, PCT30, null,
-      { topicPool: pool, coreRes: coreRes, top20Text: '9:25 竞价口径' });
-    expect(names(blk)).toEqual(['上海九百', '东贝集团']);    // 常规龙位（一字照旧顺延）
+    // ⚠️ [MID-TOP20 实证修正] 「同题材」= 名字在块成员里（优先）或题材串核心词归一命中。
+    //   所以要造「前十没有本题材的票」，块成员必须与池子完全不相交、题材串也不归一命中
+    //   （★ 只把池子的 topic 改成 'LED,军工' 是不够的：上海九百/青岛食品 本来就是成员）。
+    const other = [m('甲', { pct: 40 }), m('乙', { pct: 30 }), m('丙', { pct: 20 }),
+      m('丁', { pct: 10 }), m('戊', { pct: 5 }), m('己', { pct: 3 }), m('庚', { pct: 1 }),
+      m('辛', { pct: 0.5 }), m('壬', { pct: 0.2 })];
+    const dm = dragonMap(['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬']
+      .map(function(n, i) { return [n, i + 1]; }));
+    const blk = _buildBlock(mkBlock('商业航天', 2, other), dm, bigTier, null, null,
+      { topicPool: POOL30, coreRes: coreRes, top20Text: '9:25 竞价口径' });
+    expect(names(blk)).toEqual(['甲', '乙']);                // 常规龙位
     expect(blk.top20Judge).toBe('');
     expect((blk.notes || []).join('\n')).toContain('大题材口径 · 未命中');
-    // 退回常规口径后，一字顺延这件事【照旧】（不是 big 档的 bug）
-    expect(blk.skippedNames).toEqual(['龙二青岛食品']);
   });
 
   it('§10：池子给了但是【空数组】⇒ 判不出 ⇒ 写「未校验」并退回常规口径', function() {
@@ -229,7 +243,7 @@ describe('tvrb · ★★ [AUTO-PICK-TOP20] 数量 > 8 只 ⇒ 只选同题材 20
 });
 
 describe('tvrb · [AUTO-PICK-TOP20] 边界与回归锁', function() {
-  it('mid 档（4~8 只，取 1 只）【不变】：竞价一字仍顺延下一龙位', function() {
+  it('★ [MID-TOP20] mid 档（4~8 只，取 1 只）也走 20日涨幅前十：只取第 1 名，一字照选打标签', function() {
     const members = [
       m('甲', { isYizi: true, pct: 30 }), m('乙', { pct: 20 }), m('丙', { pct: 10 }),
       m('丁', { pct: 5, isYizi: false })
@@ -237,11 +251,22 @@ describe('tvrb · [AUTO-PICK-TOP20] 边界与回归锁', function() {
     const dm = dragonMap([['甲', 1], ['乙', 2], ['丙', 3], ['丁', 4]]);
     const tier = resolveTvrbTier(5);
     expect(tier.tier).toBe('mid');
+    // 旧口径（池子没注入）＝ 甲是一字 ⇒ 顺延到乙（§11 零行为变化仍在）
+    const old = _buildBlock(mkBlock('大消费', 1, members), dm, tier, null, null, null);
+    expect(names(old)).toEqual(['乙']);
+    expect(old.skippedNames).toEqual(['龙一甲']);
+    // 新口径：命中前十 ⇒ 只取第 1 名（九阳股份），⛔ 不再顺延
     const blk = _buildBlock(mkBlock('大消费', 1, members), dm, tier, null, null,
       { topicPool: POOL30, coreRes: coreRes, top20Text: '9:25 竞价口径' });
-    expect(names(blk)).toEqual(['乙']);          // 甲是一字 ⇒ 顺延到乙（旧口径）
-    expect(blk.skippedNames).toEqual(['龙一甲']);
-    expect((blk.notes || []).join('\n')).not.toContain('大题材口径');   // big 口径不许沾到 mid
+    expect(names(blk)).toEqual(['九阳股份']);
+    expect(blk.skippedNames).toEqual([]);
+    expect(blk.top20Judge).toBe('hit');
+    const txt = (blk.notes || []).join('\n');
+    expect(txt).toContain('中档 20日涨幅口径');
+    expect(txt).not.toContain('大题材口径');   // ⛔ 7 只不许说成「大题材」，用户会当成错
+    // 「第 2 只起不选」在 reason 里（notes 里对应的是「第 2 名起的 X、Y 不再选」）
+    expect(blk.reason).toContain('第 2 只起不选');
+    expect(txt).toContain('第 2 名起的');
   });
 
   it('big 档：来自榜单、当日【停牌】的票买不进 ⇒ 占档不补位（§10 判不出时不占）', function() {
@@ -266,12 +291,13 @@ describe('tvrb · [AUTO-PICK-TOP20] 边界与回归锁', function() {
     expect((blk.notes || []).join('\n')).toContain('监管异动');
   });
 
-  it('三件套：规则指纹 v13 + SW v51 + 模板/样式都接上了 range20Label', function() {
+  it('三件套：规则指纹 v14 + SW v52 + 模板/样式都接上了 range20Label', function() {
     const rules = readFileSync('src/logic/topicvolratio/plan-snapshot-rules.js', 'utf8');
-    expect(rules).toContain('TVRB_RULES_VERSION = 13');
+    expect(rules).toContain('TVRB_RULES_VERSION = 14');
     expect(rules).toContain('[AUTO-PICK-TOP20]');
+    expect(rules).toContain('[MID-TOP20]');
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v51'");
+    expect(sw).toContain("var CACHE = 'biga-static-v52'");
     const vue = readFileSync('src/components/topicvolratio/TvrbBuyBlock.vue', 'utf8');
     expect(vue).toContain('p.range20Label');
     const css = readFileSync('src/assets/css/topic-vol-ratio-board.css', 'utf8');
@@ -283,6 +309,8 @@ describe('tvrb · [AUTO-PICK-TOP20] 边界与回归锁', function() {
     expect(plan).toContain('const bigPool = (o.ebbCtx && Array.isArray(o.ebbCtx.topicPool))');
     expect(plan).toContain('_buildBlock(b, buyDragonMap, tier, buyPctMap, buySkipNames, smallOpt || bigOpt)');
     expect(plan).toContain('top20Text: r20BaseText');
+    // ★ [MID-TOP20] big/mid 两档共用同一个 opt（只差 pickCount）
+    expect(plan).toContain("(tier.tier === 'big' || tier.tier === 'mid')");
     // 口径文案：竞价榜没就绪时必须如实写成收盘口径（§10 不许默认冒充）
     expect(plan).toContain("o.range20AucReady === false");
   });
@@ -297,5 +325,115 @@ describe('tvrb · [AUTO-PICK-TOP20] 边界与回归锁', function() {
     expect(seg).toContain('a.rank20 - b.rank20');
     expect(seg).not.toContain('aucVolRatio');
     expect(seg).not.toContain('b.pct - a.pct');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// ★★ [MID-TOP20 2026-11-14 用户口径] mid 档（4~8 只，取 1 只）也要「20日涨幅前十优先」
+//
+// 用户原话（逐字，10-21 商业航天 7 只那天为验收基准）：
+//   「10月21日，长春一东不该选，理由，题材总数量7按理来说选一只最强的，那就是海洋王，
+//    海洋王20日涨幅竞价口径刚好排名第十，前十有它的出现，这个才是核心，但是竞价涨停，没办法，
+//    你打上那个涨停标签，下杀买。」
+//
+// 库内取证（2026-10-21 定稿快照 + stock_range20_pct + market_metrics 反解）：
+//   商业航天 7 只 —— 旧口径 = 龙三长春一东（龙一海洋王 / 龙二东安动力 竞价一字被顺延跳过）；
+//   20日涨幅（9:25 竞价口径·只主板）前十：海洋王 = 第 9 名 54.16%，长春一东不在前十。
+//   ⚠️ 海洋王的题材串是「LED,军工」（不是「商业航天」）⇒ 只按题材串比永远判不出同题材，
+//     所以「同题材」必须以【块成员名单】为准（本组用例锁死这一条）。
+// ══════════════════════════════════════════════════════════════════════════════════════════
+
+/** 10-21 商业航天 7 只（库内真实十日涨幅 / 竞价涨幅 / 量比） */
+const MEMBERS21 = [
+  m('万丰奥威', { pct: 20.06, aucPct: -1.21, aucVolRatio: 9.91, code: '002085' }),
+  m('东安动力', { pct: 38.02, aucPct: 9.99, aucVolRatio: 294.71, isYizi: true, code: '600178' }),
+  m('保隆科技', { pct: 2.75, aucPct: -3.09, aucVolRatio: 30.56, code: '603197' }),
+  m('文灿股份', { pct: 8.42, aucPct: -1.33, aucVolRatio: 17.95, code: '603348' }),
+  m('海洋王', { pct: 45.99, aucPct: 10.04, aucVolRatio: 10.87, isYizi: true, code: '002724' }),
+  m('航发科技', { pct: 5.39, aucPct: 0.47, aucVolRatio: 1.39, code: '600391' }),
+  m('长春一东', { pct: 13.48, aucPct: -3.3, aucVolRatio: 45.45, code: '600148' })
+];
+/** 10-21 买点侧龙位（9:26 口径）：海洋王 1 / 东安动力 2 / 长春一东 3 */
+const DM21 = dragonMap([
+  ['海洋王', 1], ['东安动力', 2], ['长春一东', 3], ['万丰奥威', 4],
+  ['文灿股份', 5], ['保隆科技', 6], ['航发科技', 7]
+]);
+const PCT21 = new Map(MEMBERS21.map(function(x) { return [x.name, { pct: x.pct, days: 10 }]; }));
+/** 10-21 真实 20日涨幅【主板】前十（9:25 竞价口径反解） */
+const POOL21 = [
+  pool20('新华传媒', 1, '文化传媒', 210.29, { code: '600825' }),
+  pool20('九阳股份', 2, '家电,电子商务', 121.83, { code: '002242' }),
+  pool20('新华文轩', 3, '文化传媒,人工智能', 101.11, { code: '601811' }),
+  pool20('慈文传媒', 4, 'AI视频,AI应用', 87.97, { code: '002343' }),
+  pool20('澳弘电子', 5, 'PCB,通信', 78.52, { code: '605058' }),
+  pool20('宁波东力', 6, '机器人概念,减速器', 58.43, { code: '002164' }),
+  pool20('吉大正元', 7, 'AI应用', 57.05, { code: '003029' }),
+  pool20('三峡新材', 8, '玻璃,国有企业', 55.74, { code: '600293' }),
+  // ★ 海洋王：题材串是「LED,军工」，但它是【商业航天】块的成员 ⇒ 必须算同题材
+  pool20('海洋王', 9, 'LED,军工', 54.16, { code: '002724' }),
+  pool20('百洋股份', 10, '水产品,农业', 53.39, { code: '002696' })
+];
+const mid21 = resolveTvrbTier(7);
+
+describe('tvrb · ★★ [MID-TOP20] 4~8 只的题材也按 20日涨幅前十取（只取 1 只）', function() {
+  it('10-21 商业航天 7 只：旧口径 = 龙三长春一东（一字顺延来的，用户明确否决）', function() {
+    expect(mid21.tier).toBe('mid');
+    const old = _buildBlock(mkBlock('商业航天', 1, MEMBERS21), DM21, mid21, PCT21, null, null);
+    expect(names(old)).toEqual(['长春一东']);
+    expect(old.skippedNames).toEqual(['龙一海洋王', '龙二东安动力']);
+    expect(old.top20Judge).toBe('');
+  });
+
+  it('★ 新口径 = 海洋王（20日涨幅第 9 名 + 竞价一字 ⇒ 打「等下杀买」标签）', function() {
+    const blk = _buildBlock(mkBlock('商业航天', 1, MEMBERS21), DM21, mid21, PCT21, null,
+      { topicPool: POOL21, coreRes: coreRes, top20Text: '9:25 竞价口径' });
+    expect(names(blk)).toEqual(['海洋王']);
+    // ⛔ 不再「顺延到龙三」
+    expect(blk.skippedNames).toEqual([]);
+    expect(blk.top20Judge).toBe('hit');
+    expect(blk.top20Hits.map(function(h) { return h.rank20 + '.' + h.name; })).toEqual(['9.海洋王']);
+    const hy = blk.picks[0];
+    expect(hy.dragonLabel).toBe('龙一');
+    expect(hy.range20Label).toContain('第 9 名');
+    expect(hy.waitBuyTag).toBe(AUCTION_YIZI_WAIT_TAG);   // 「竞价一字涨停 · 等下杀买」
+    const txt = (blk.notes || []).join('\n');
+    expect(txt).toContain('中档 20日涨幅口径');
+    expect(txt).toContain('照常选入');
+  });
+
+  it('★ 同题材判定以【块成员】为准：海洋王题材串是「LED,军工」也照样命中', function() {
+    const blk = mkBlock('商业航天', 1, MEMBERS21);
+    const r = pickBigTopicTop20(blk, POOL21, coreRes, 1);
+    expect(r.judge).toBe('hit');
+    expect(r.hits.map(function(h) { return h.name; })).toEqual(['海洋王']);
+    expect(r.hits[0].inMembers).toBe(true);
+    // 反证：把海洋王从成员里摘掉 ⇒ 只剩题材串「LED,军工」，与大类不同 ⇒ 判 none
+    const noHy = MEMBERS21.filter(function(x) { return x.name !== '海洋王'; });
+    const r2 = pickBigTopicTop20(mkBlock('商业航天', 1, noHy), POOL21, coreRes, 1);
+    expect(r2.judge).toBe('none');
+  });
+
+  it('榜单里一只都没有本题材 ⇒ mid 档退回常规龙位口径（⛔ 不弃题材）', function() {
+    const other = ['甲', '乙', '丙', '丁', '戊'].map(function(n) { return m(n, { pct: 5 }); });
+    const dm = dragonMap([['甲', 1], ['乙', 2], ['丙', 3], ['丁', 4], ['戊', 5]]);
+    const blk = _buildBlock(mkBlock('商业航天', 1, other), dm, resolveTvrbTier(5), null, null,
+      { topicPool: POOL21, coreRes: coreRes, top20Text: '9:25 竞价口径' });
+    expect(names(blk)).toEqual(['甲']);
+    expect((blk.notes || []).join('\n')).toContain('中档 20日涨幅口径 · 未命中');
+  });
+
+  it('SMALL-TOPIC 的十日涨幅口径优先（`opt.order` 有值时本口径整段不跑）', function() {
+    // 排名第一 + 4~6 只 ⇒ 走十日涨幅收紧档（[SMALL-TOPIC]），⛔ 不被 20日涨幅口径顶掉
+    const members = [
+      m('甲', { pct: 30 }), m('乙', { pct: 20 }), m('丙', { pct: 10 }), m('丁', { pct: 5 })
+    ];
+    const dm = dragonMap([['甲', 1], ['乙', 2], ['丙', 3], ['丁', 4]]);
+    const order = [members[1], members[0]];    // SMALL-TOPIC 给的候选序列（乙 → 甲）
+    const blk = _buildBlock(mkBlock('大消费', 1, members), dm, resolveTvrbTier(4), null, null,
+      { order: order, smallTopic: true, baseText: '9:26 竞价口径',
+        topicPool: POOL30, coreRes: coreRes, top20Text: '9:25 竞价口径' });
+    expect(names(blk)).toEqual(['乙']);
+    expect(blk.top20Judge).toBe('');
+    expect((blk.notes || []).join('\n')).not.toContain('20日涨幅口径');
   });
 });
