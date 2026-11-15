@@ -195,11 +195,11 @@ describe('[ABNORMAL-ALL 接线静态锁] 漏一处 ⇒ 11-12 仍显示彩色「�
     expect(css).toContain('grayscale(1)');
   });
 
-  it('版本：规则指纹 v16 + SW v63（[DIVERGE-TOPIC] 改了选股结论，漏一个手机端就吃旧 JS）', () => {
+  it('版本：规则指纹 v17 + SW v64（[TOPIC-OWNER] 改了选股结论，漏一个手机端就吃旧 JS）', () => {
     const r = readFileSync('src/logic/topicvolratio/plan-snapshot-rules.js', 'utf8');
-    expect(r).toContain('TVRB_RULES_VERSION = 16');
+    expect(r).toContain('TVRB_RULES_VERSION = 17');
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v63'");
+    expect(sw).toContain("var CACHE = 'biga-static-v64'");
   });
 
   it('[CAP-97] 11-11 真实 95.711445% 不该触发任何显示层总约束', () => {

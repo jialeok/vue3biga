@@ -1315,6 +1315,8 @@ export function buildCashAlert(leadBlock, ebb, abnormal) {
  *      ⛔ 不自己再排一次名次，只认池子给的 `rank20`。
  *   ② 同题材判定走【核心词大类归一】（`_sameTopicLoose` + coreRes）——
  *      块名是大类（「大消费」），池里是行上细分串（九阳股份 = 「家电」）⇒ 严格相等会漏掉它。
+ *      ★★ [TOPIC-OWNER 2026-11-15 用户口径] 但【当日名单里已明确归属本题材块】的票，
+ *      必须先过 `topicOwner` 这道闸门 —— 见下方「一只票只能属于一个块」的长注释。
  *   ③ 只认 `rank20 ≤ PRESENCE_TOP_N`（前十），按名次升序。
  *   ④ 三态返回（§10：判不出 ≠ 判出「一只都没有」）：
  *      · `no-pool` ⇒ 池子没读到 / 没注入 ⇒ 判不出 ⇒ 退回常规龙位口径 + 说明「未校验」；
@@ -1330,11 +1332,15 @@ export function buildCashAlert(leadBlock, ebb, abnormal) {
  * @param {Array} topicPool `ebbCtx.topicPool`（20日涨幅前十富化：name/pct/days/code/topic/rank20/rank/isYizi/suspended）
  * @param {(raw:string)=>string} [coreRes] 题材大类归一函数（缺省 ⇒ 只清洗，不归一）
  * @param {number} pickCount 本档名额（big 档 = 2 / mid 档 = 1）
+ * @param {Map<string,string>} [topicOwner] ★★ [TOPIC-OWNER 2026-11-15 用户口径]
+ *        「股票名 → 它所属的【唯一】题材块名」（由 `buildTopicVolRatioPlan` 从 `rec.topics` 摊平，
+ *        即【早盘竞价题材 toggle 的分组结果】，§6 单一真相）。
+ *        ⛔ 缺省（老调用方 / 单测）⇒ 整段不生效，退回「大类集合有交集」旧口径（§11 零行为变化）。
  * @returns {{judge:'no-pool'|'none'|'hit', hits:Array<{name:string,code:string,topic:string,
  *            pct:number|null,rank20:number,isYizi:boolean,suspended:boolean,dragonRank:number|null}>,
  *            pickCount:number}}
  */
-export function pickBigTopicTop20(block, topicPool, coreRes, pickCount) {
+export function pickBigTopicTop20(block, topicPool, coreRes, pickCount, topicOwner) {
   const rawN = _num(pickCount);
   const want = (rawN === null || rawN < 1) ? 0 : Math.floor(rawN);
   const topic = String((block && block.topic) || '').trim();
@@ -1352,17 +1358,42 @@ export function pickBigTopicTop20(block, topicPool, coreRes, pickCount) {
   //   两条判据取并集：
   //     ① 名字在块成员里 ⇒ 同题材（块怎么分的，它就是怎么归的，§6 不另判）；
   //     ② 不在成员里（例如 10-30 的 九阳股份：只在榜内、不在当日 9:25 名单）⇒ 退回题材串的核心词归一。
+  //
+  // ★★ [TOPIC-OWNER 2026-11-15 用户报障 · 10-13 新华文轩] 判据 ② 必须再加一道【归属闸门】：
+  //   用户原话：「10月13日，新华文轩又进入了大消费题材，怎么回事……你要按照早盘竞价看板题材
+  //   toggle 的题材来啊，为什么都解决不了呢？灰色块虽然不买但也不能出现样错误信息啊」
+  //
+  //   实测（真实库）：10-13 新华文轩 的题材串 = 「人工智能,体育产业,平台经济,文化传媒」。
+  //     平台经济 ∈ 大消费 的同义词、文化传媒/人工智能 ∈ AI应用 的同义词
+  //     ⇒ `coreRes` 归一成【两个大类】：'AI应用,大消费,体育产业'
+  //     ⇒ `_sameTopicLoose(..., '大消费', coreRes)` 因为「大消费」这一段沾边就返回 true
+  //     ⇒ 明明【早盘竞价题材 toggle 把新华文轩归到了 AI应用】（19 只 > 大消费 7 只，站队数量多的一边），
+  //        它却被 mid 档当成「大消费同题材」选进大消费块 ⇒ 同一只票同时挂在两个块下面（用户截图）。
+  //   🔴 本质：`_sameTopicLoose` 是「两个题材【描述】是否同线」的认亲尺子（多段串取交集），
+  //      而本题问的是「这只票【归哪个块】」—— 归块是【唯一】的，必须用 toggle 那一套
+  //      （`getPrimaryTopicMap` 的「站队到数量多的一边」）。两件事不能共用一把尺子（§6 各司其职）。
+  //   ⇒ 当日名单内的票：`topicOwner` 查到 = 别的块 ⇒ ⛔ 直接排除（哪怕大类沾边）；
+  //      查不到（块被 <2 只过滤 / 不在当日名单，如 10-30 九阳股份）⇒ 才退回判据 ② 的核心词归一。
   const memberSet = new Set();
   ((block && block.members) || []).forEach(function(m) {
     if (m && m.name) memberSet.add(String(m.name).trim());
   });
+  const ownerMap = (topicOwner instanceof Map && topicOwner.size > 0) ? topicOwner : null;
   topicPool.forEach(function(t) {
     if (!t || !t.name) return;
     const r = Number(t.rank20);
     // 名次读不到 / 不在前十 ⇒ 不进候选（⛔ 不拿「没名次」当「第十一名」）
     if (!isFinite(r) || r <= 0 || r > PRESENCE_TOP_N) return;
     const nm = String(t.name).trim();
-    if (!memberSet.has(nm) && !_sameTopicLoose(t.topic, topic, coreRes)) return;
+    if (!memberSet.has(nm)) {
+      const owner = ownerMap ? ownerMap.get(nm) : undefined;
+      if (owner !== undefined) {
+        // 当日名单里已明确归属【别的题材块】⇒ ⛔ 不认亲（这正是用户要的「按早盘竞价题材 toggle 来」）
+        if (owner !== topic) return;
+      } else if (!_sameTopicLoose(t.topic, topic, coreRes)) {
+        return;   // 归属查不到 ⇒ 退回核心词大类归一（既有口径，§11）
+      }
+    }
     const dr = Number(t.rank);
     hits.push({
       name: nm,
@@ -1493,7 +1524,7 @@ export function _dragonCandidates(block, dragonMap, pctMap) {
  * @param {object} tier    resolveTvrbTier 的返回
  * @param {Map} [pctMap]   ★ [TVRB-926] 9:26 口径区间涨幅（行上十日涨幅取它；缺 ⇒ 退回成员自带值）
  * @param {Set} [skipBuyNames] 连续停牌第 2 天及以上的票（买不进 ⇒ 占档不补位）
- * @param {object} [opt]   {order, smallTopic, baseText}（SMALL-TOPIC）+ {topicPool, coreRes, top20Text}（AUTO-PICK-TOP20）
+ * @param {object} [opt]   {order, smallTopic, baseText}（SMALL-TOPIC）+ {topicPool, coreRes, top20Text, topicOwner}（AUTO-PICK-TOP20）
  * @returns {object} 决策看板形状的买点块（+ 本看板自己的几个平铺别名，见返回值末尾）
  */
 export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
@@ -1515,7 +1546,7 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
   const tierIsMid = tier.tier === 'mid';
   const topicTop20 = ((tierIsBig || tierIsMid) && Array.isArray(o.topicPool) &&
       !(Array.isArray(o.order) && o.order.length > 0))
-    ? pickBigTopicTop20(block, o.topicPool, o.coreRes, tier.pickCount)
+    ? pickBigTopicTop20(block, o.topicPool, o.coreRes, tier.pickCount, o.topicOwner)
     : null;
   const useTop20 = !!(topicTop20 && topicTop20.judge === 'hit');
   const dragonCands = (Array.isArray(o.order) && o.order.length > 0)

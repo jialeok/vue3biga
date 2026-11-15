@@ -291,13 +291,13 @@ describe('tvrb · [AUTO-PICK-TOP20] 边界与回归锁', function() {
     expect((blk.notes || []).join('\n')).toContain('监管异动');
   });
 
-  it('三件套：规则指纹 v16 + SW v63 + 模板/样式都接上了 range20Label', function() {
+  it('三件套：规则指纹 v17 + SW v64 + 模板/样式都接上了 range20Label', function() {
     const rules = readFileSync('src/logic/topicvolratio/plan-snapshot-rules.js', 'utf8');
-    expect(rules).toContain('TVRB_RULES_VERSION = 16');
+    expect(rules).toContain('TVRB_RULES_VERSION = 17');
     expect(rules).toContain('[AUTO-PICK-TOP20]');
     expect(rules).toContain('[MID-TOP20]');
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v63'");
+    expect(sw).toContain("var CACHE = 'biga-static-v64'");
     const vue = readFileSync('src/components/topicvolratio/TvrbBuyBlock.vue', 'utf8');
     expect(vue).toContain('p.range20Label');
     const css = readFileSync('src/assets/css/topic-vol-ratio-board.css', 'utf8');
@@ -435,5 +435,112 @@ describe('tvrb · ★★ [MID-TOP20] 4~8 只的题材也按 20日涨幅前十取
     expect(names(blk)).toEqual(['乙']);
     expect(blk.top20Judge).toBe('');
     expect((blk.notes || []).join('\n')).not.toContain('20日涨幅口径');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// ★★ [TOPIC-OWNER 2026-11-15 用户报障 · 10-13 新华文轩] ★★
+//
+// 用户原话（逐字）：「10月13日，新华文轩又进入了大消费题材，怎么回事……你要按照早盘竞价看板
+//   题材 toggle 的题材来啊，为什么都解决不了呢？灰色块虽然不买但也不能出现样错误信息啊」
+//
+// 库内取证（2026-10-13 真实库 + auction-leg-pct 反解成 9:25 竞价口径）：
+//   · 大消费块成员【6 只】：东百集团、丽人丽妆、九阳股份、均瑶健康、皇台酒业、阳光乳业
+//     （平均竞价量比 49.00 —— 与用户截图的「数量 6 / 量比 49.00」逐字一致）
+//   · 20日涨幅榜：第 1 名 新华传媒 182.38%、【第 2 名 新华文轩 95.09%】、第 3 名 澳弘电子、
+//     第 4 名 九阳股份 84.16%
+//   · 新华文轩的题材串 = 「人工智能,体育产业,平台经济,文化传媒」
+//     平台经济 ∈ 大消费、文化传媒/人工智能 ∈ AI应用 ⇒ coreRes 归一成【两个大类】，
+//     于是「大类集合有交集」的认亲尺子把它判成大消费同题材 ⇒ mid 档选中它挂在大消费块下面。
+//   而早盘竞价题材 toggle 的归属是【唯一】的：AI应用 19 只 > 大消费 6 只 ⇒ 新华文轩归 AI应用。
+//   🔴 归块（唯一）≠ 认亲（交集）—— 两件事不能共用一把尺子。
+describe('[TOPIC-OWNER] 一只票只属于一个题材块（按早盘竞价题材 toggle 的归属，⛔ 不许大类沾边就抢）', function () {
+  // 真实核心词（云端 core_topics 的同类条目；关键 = 平台经济 ∈ 大消费）
+  const CORE2 = [
+    { name: 'AI应用', synonyms: ['人工智能', 'AI', '大模型', '文化传媒', '传媒', '游戏'] },
+    { name: '大消费', synonyms: ['食品', '饮料', '服装', '家电', '零售', '商业百货', '白酒', '平台经济'] },
+    { name: '电子/通信/算力', synonyms: ['PCB', '通信'] }
+  ];
+  const coreRes2 = makeCoreTopicResolver(CORE2);
+
+  // 大消费块 6 只（与库里逐字一致）
+  const DXFMEM = ['东百集团', '丽人丽妆', '九阳股份', '均瑶健康', '皇台酒业', '阳光乳业']
+    .map(function (n) { return m(n, { pct: 10 }); });
+  // 20日涨幅前十（9:25 竞价口径 · 只主板）—— 名次与真实值一致
+  const POOL1013 = [
+    pool20('新华传媒', 1, '文化传媒', 182.38),
+    pool20('新华文轩', 2, '人工智能,体育产业,平台经济,文化传媒', 95.09),
+    pool20('澳弘电子', 3, 'PCB,通信', 93.69),
+    pool20('九阳股份', 4, '家电,电子商务', 84.16),
+    pool20('时代万恒', 5, '电源', 72.77),
+    pool20('龙版传媒', 6, 'AI应用,AI视频', 52.53),
+    pool20('内蒙新华', 7, '文化传媒,版权', 40.80),
+    pool20('深物业A', 8, '地产链,房地产', 40.45),
+    pool20('中新赛克', 9, 'AI应用', 40.29),
+    pool20('华北制药', 10, '医药,霍乱概念', 39.26)
+  ];
+  // topicOwner = 早盘竞价题材 toggle 的分组结果（新华文轩 → AI应用，九阳股份 → 大消费）
+  const OWNER = new Map([
+    ['新华传媒', 'AI应用'], ['新华文轩', 'AI应用'], ['龙版传媒', 'AI应用'],
+    ['内蒙新华', 'AI应用'], ['中新赛克', 'AI应用'],
+    ['东百集团', '大消费'], ['丽人丽妆', '大消费'], ['九阳股份', '大消费'],
+    ['均瑶健康', '大消费'], ['皇台酒业', '大消费'], ['阳光乳业', '大消费']
+  ]);
+
+  it('反例锁：不传 topicOwner（旧口径）⇒ 新华文轩被大消费块抢走（用户截图就是这一行）', function () {
+    const r = pickBigTopicTop20(mkBlock('大消费', 1, DXFMEM), POOL1013, coreRes2, 1);
+    expect(r.judge).toBe('hit');
+    // 旧口径的错：第 2 名 新华文轩 被当成「大消费同题材」排在最前
+    expect(r.hits.map(function (h) { return h.name; })).toEqual(['新华文轩', '九阳股份']);
+    expect(r.hits[0].rank20).toBe(2);
+  });
+
+  it('★ 修后：大消费块只认自己的成员 ⇒ mid 档选 九阳股份（第 4 名）', function () {
+    const r = pickBigTopicTop20(mkBlock('大消费', 1, DXFMEM), POOL1013, coreRes2, 1, OWNER);
+    expect(r.judge).toBe('hit');
+    expect(r.hits.map(function (h) { return h.name; })).toEqual(['九阳股份']);
+    expect(r.hits[0].rank20).toBe(4);
+  });
+
+  it('反向不误伤：AI应用块照样认得出新华文轩（它本来就归 AI应用）', function () {
+    const aiMembers = ['新华传媒', '内蒙新华', '龙版传媒', '中新赛克', '慈文传媒']
+      .map(function (n) { return m(n, { pct: 10 }); });
+    const r = pickBigTopicTop20(mkBlock('AI应用', 1, aiMembers), POOL1013, coreRes2, 1, OWNER);
+    // 榜内属于 AI应用 的 5 只全在（含第 2 名 新华文轩）—— 闸门只挡「归别的块」的票
+    expect(r.hits.map(function (h) { return h.name; }))
+      .toEqual(['新华传媒', '新华文轩', '龙版传媒', '内蒙新华', '中新赛克']);
+    expect(r.hits.map(function (h) { return h.rank20; })).toEqual([1, 2, 6, 7, 9]);
+  });
+
+  it('无归属的票（不在当日任何块里）⇒ 退回题材串大类归一，照旧认得出', function () {
+    // 10-30 九阳股份就是这一类：在 20日涨幅榜内，但不在当日 9:25 板块成员里 ⇒ 查不到归属
+    const noOwner = new Map([['青岛食品', '大消费']]);
+    const r = pickBigTopicTop20(mkBlock('大消费', 1, [m('青岛食品', { pct: 10 })]),
+      [pool20('九阳股份', 1, '家电,电子商务', 91.89)], coreRes2, 1, noOwner);
+    expect(r.judge).toBe('hit');
+    expect(r.hits.map(function (h) { return h.name; })).toEqual(['九阳股份']);
+  });
+
+  it('_buildBlock 全链：大消费块 mid 档出 九阳股份，说明区不再出现 新华文轩', function () {
+    const dm = dragonMap([['东百集团', 1], ['丽人丽妆', 2], ['九阳股份', 3],
+      ['均瑶健康', 4], ['皇台酒业', 5], ['阳光乳业', 6]]);
+    const blk = _buildBlock(mkBlock('大消费', 1, DXFMEM), dm, resolveTvrbTier(6), null, null,
+      { topicPool: POOL1013, coreRes: coreRes2, top20Text: '9:25 竞价口径', topicOwner: OWNER });
+    expect(names(blk)).toEqual(['九阳股份']);
+    const txt = [blk.reason || ''].concat(blk.notes || []).join('\n');
+    expect(txt).toContain('九阳股份');
+    expect(txt).not.toContain('新华文轩');
+  });
+
+  it('调用链锁：计划层构造 topicOwner 并注入 bigOpt，块层透传给 pickBigTopicTop20', function () {
+    const plan = readFileSync('src/logic/topicvolratio/tvrb-plan.js', 'utf8');
+    expect(plan).toContain('const topicOwner = new Map();');
+    expect(plan).toContain('topicOwner: topicOwner');
+    // 来源必须是「本函数第 1 参 list（= rankDecisionTopics 的块）」⇒ 与早盘竞价 toggle 同源
+    expect(plan).toContain('list.forEach(function(bk) {');
+    const blkSrc = readFileSync('src/logic/topicvolratio/tvrb-blocks.js', 'utf8');
+    expect(blkSrc).toContain('pickBigTopicTop20(block, o.topicPool, o.coreRes, tier.pickCount, o.topicOwner)');
+    // ⛔ topicOwner 缺省时必须逐字退回旧口径（§11）
+    expect(blkSrc).toContain("const ownerMap = (topicOwner instanceof Map && topicOwner.size > 0) ? topicOwner : null;");
   });
 });

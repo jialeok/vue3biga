@@ -1126,6 +1126,26 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   const topicLimit = (switchNewDragon || out.switchDay) ? 1 : TVRB_TOPIC_LIMIT;
   const ndTopic = switchNewDragon ? _normTopic(ndResult.pick.topic, coreRes) : '';
   const ndName = switchNewDragon ? String(ndResult.pick.name || '').trim() : '';
+  // ★★ [TOPIC-OWNER 2026-11-15 用户口径] 「这只票属于哪个题材块」的【唯一】答案 = 早盘竞价题材 toggle
+  //   的分组结果 —— 本函数的第 1 参 `list` 就是 `rankDecisionTopics` 的产物，每块的名字来自
+  //   `getPrimaryTopicMap`（站队到当日股票数多的一边），一只票【只会出现在一个块里】。
+  //   用户原话：「你要按照早盘竞价看板题材 toggle 的题材来啊……灰色块虽然不买但也不能出现错误信息」。
+  //   🔴 为什么必须单独做一份：mid/big 档「同题材 20日涨幅前十」用的是 `_sameTopicLoose`（认亲尺子，
+  //      多段题材串取大类交集）——10-13 新华文轩的串归一后同时含「AI应用」和「大消费」，
+  //      于是被大消费块抢走、与大消费 6 只成员重叠展示（用户截图）。归块是【唯一】的，必须用这份表。
+  //   ⚠️ 只在真的要走 20日涨幅口径时才用得上（bigOpt 里），⛔ 不影响其它通道（§11）。
+  //   ⚠️ 边界的如实交代：本闸门只接在 `pickBigTopicTop20`（big / mid 档）—— 弱势抱团
+  //      `_buildWeakHuddleBlock` 与补涨 `_buildCatchUpBlock` 仍是「认亲」口径（10-29 用户要
+  //      「大消费 vs 家电」能认上）。若那两条通道再出现同类「跨块抢票」，按同一闸门接上。
+  const topicOwner = new Map();
+  list.forEach(function(bk) {
+    const tn = String((bk && bk.topic) || '').trim();
+    if (!tn) return;
+    ((bk && bk.members) || []).forEach(function(m) {
+      const nm = (m && m.name) ? String(m.name).trim() : '';
+      if (nm && !topicOwner.has(nm)) topicOwner.set(nm, tn);
+    });
+  });
 
   // 沿题材排名（平均竞价量比降序）往下扫：数量不足的排除并顺延，直到选够 topicLimit 个。
   for (let i = 0; i < list.length; i++) {
@@ -1303,10 +1323,12 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     //   「龙位顺延」旧口径、一条说明都不加（§11 零行为变化）。
     //   ⚠️ `smallOpt`（= 排名第一 + 4~6 只的十日涨幅收紧档）优先：两者互斥，它命中时不再走 20日涨幅口径。
     const bigPool = (o.ebbCtx && Array.isArray(o.ebbCtx.topicPool)) ? o.ebbCtx.topicPool : null;
+    // ★ [TOPIC-OWNER 2026-11-15] `topicOwner` 在循环外算好（见 `ndName` 下方那段长注释），这里只注入。
     const bigOpt = ((tier.tier === 'big' || tier.tier === 'mid') && !smallOpt && Array.isArray(bigPool)) ? {
       topicPool: bigPool,
       coreRes: coreRes,
-      top20Text: r20BaseText
+      top20Text: r20BaseText,
+      topicOwner: topicOwner
     } : null;
     const blk = _buildBlock(b, buyDragonMap, tier, buyPctMap, buySkipNames, smallOpt || bigOpt);
     out.blocks.push(blk);
