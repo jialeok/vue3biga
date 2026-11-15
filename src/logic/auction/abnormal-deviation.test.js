@@ -11,6 +11,7 @@
 //     688137 近岸蛋白 start 2026-10-08 ⇒ 首次越线 2026-09-30
 //   官方「公布即从次一交易日重新计算」⇒ 触发日 = start − 1 个交易日，这是【判据本身】，
 //   ⛔ 不是「差一天」的误差。
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import fx from './abnormal-dev-cases.json';
 import {
@@ -23,7 +24,9 @@ import {
   deviationCellTexts, deviationIndexLabel,
   deviationNeedValueText, deviationNeedAlert, deviationIndexBeta, deviationNeedWithIndexMove,
   deviationDetailLine, isDeviationSevere, isDeviationAlert,
-  DEV_FORMULA_LINES, DEV_NEED_HINT, DEV_INDEX_NOTE_LINES
+  DEV_FORMULA_LINES, DEV_NEED_HINT, DEV_INDEX_NOTE_LINES,
+  countSevereTriggers, severeOrdinalText, ABN_TRIGGER_LOOKBACK_DAYS,
+  buildDeviationMap
 } from './abnormal-deviation.js';
 
 /** 夹具里的腿是紧凑形态 {d,p}（省体积），这里统一转成业务形态 {date,pct} */
@@ -622,5 +625,191 @@ describe('[ABN-DEV] 档位常量齐全（视图只读字符串，⛔ 不在模�
     expect(rank[DEV_STAGE_SEVERE]).toBeGreaterThan(rank[DEV_STAGE_NEAR]);
     expect(rank[DEV_STAGE_NEAR]).toBeGreaterThan(rank[DEV_STAGE_WATCH]);
     expect(rank[DEV_STAGE_WATCH]).toBeGreaterThan(rank[DEV_STAGE_OK]);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// ★★ [ABN-TRIGGER 2026-11-15 用户口径] 「首次触发 / 二次触发 / 三次触发」
+//
+// 用户原话：「你在官方偏离值那里（原版）给已达到交易所严重异常波动标准的股票，打上标签，
+//   首次触发，二次触发，三次触发等字样，这样我就知道它是第几次，这样我好采取不同策略」
+//
+// 验收基准（真实夹具）：600825 新华传媒 官方严重异动 start_date = 2026-10-09，
+//   ⇒ 首次越线必然是 2026-10-08（官方「公布即从次一交易日重算」，所以触发日 = start − 1 个交易日）。
+//   ⇒ `asOf='2026-10-08'` 必须是【首次触发】，这是本功能与官方口径唯一的对齐点。
+// ══════════════════════════════════════════════════════════════════════════════════════════
+describe('[ABN-TRIGGER] 严重异常波动的「第几次触发」', function () {
+  it('序号文案：1 首次 / 2 二次 / 3 三次 / 10 十次 / 11 第 11 次 / 0 空串', function () {
+    expect(severeOrdinalText(1)).toBe('首次触发');
+    expect(severeOrdinalText(2)).toBe('二次触发');
+    expect(severeOrdinalText(3)).toBe('三次触发');
+    expect(severeOrdinalText(10)).toBe('十次触发');
+    expect(severeOrdinalText(11)).toBe('第 11 次触发');
+    expect(severeOrdinalText(0)).toBe('');
+    expect(severeOrdinalText(null)).toBe('');
+    expect(severeOrdinalText(-1)).toBe('');
+    expect(severeOrdinalText('2')).toBe('二次触发');
+  });
+
+  it('★ 真实夹具：新华传媒 600825 首次越线那天（10-08）⇒ 首次触发', function () {
+    const r = countSevereTriggers({
+      code: '600825', stockLegs: legsOf('600825'), indexLegs: idxOf('600825'), asOf: '2026-10-08'
+    });
+    expect(r.ok).toBe(true);
+    expect(r.ordinal).toBe(1);
+    expect(r.text).toBe('首次触发');
+    expect(r.tone).toBe('first');
+    expect(r.count).toBeGreaterThanOrEqual(1);
+    // 第一段事件必须从 10-08 起（与官方 start_date 10-09 的 −1 个交易日对齐）
+    expect(r.events[0].start).toBe('2026-10-08');
+  });
+
+  it('官方口径差一天是【判据本身】：10-07 还不是首次（那天还没越线）', function () {
+    const r = countSevereTriggers({
+      code: '600825', stockLegs: legsOf('600825'), indexLegs: idxOf('600825'), asOf: '2026-10-07'
+    });
+    // 要么那天判不出（腿不够），要么判出「未触发」—— ⛔ 绝不能是「首次触发」
+    expect(r.text).not.toBe('首次触发');
+  });
+
+  it('★ 连续触发日合并为【一次】，断开后再触发才是下一次（40 日可手算构造）', function () {
+    // 构造（⛔ 不用复利噪声，每天要么 0 要么一次性 +150%，便于手算）：
+    //   d1~d19 平；d20 单日 +150%；d21~d39 平；d40 再来一次 +150%
+    //   ⇒ 10 日窗口里只要含 d20 就 ≥ +100%（d20 ~ d29，连续 10 天 = 【一次】触发）
+    //   ⇒ d30 起 d20 掉出 10 日窗口 ⇒ dev10 = 0 ⇒ 断开
+    //   ⇒ d40 再越线 ⇒ 第二次触发
+    //   ⇒ 30 日窗口全程 < +200%（1.5 / 1.5×2.5=275% 只在 d40 而且用的是 d11~d40 = 1.5×2.5=3.75? 见下核算）
+    const dates = [];
+    for (let i = 1; i <= 30; i++) dates.push('2026-04-' + String(i).padStart(2, '0'));
+    for (let i = 1; i <= 10; i++) dates.push('2026-05-' + String(i).padStart(2, '0'));
+    const pct = new Array(40).fill(0);
+    pct[19] = 150;      // d20
+    pct[39] = 150;      // d40
+    const stockLegs = dates.map(function (d, i) { return { date: d, pct: pct[i] }; });
+    const indexLegs = dates.map(function (d) { return { date: d, pct: 0 }; });
+    const run = function (d) {
+      return countSevereTriggers({ code: '600825', stockLegs: stockLegs, indexLegs: indexLegs, asOf: d });
+    };
+
+    // ① d20 第一次越线 ⇒ 首次触发
+    const d20 = run(dates[19]);
+    expect(d20.ok).toBe(true);
+    expect(d20.ordinal).toBe(1);
+    expect(d20.text).toBe('首次触发');
+    expect(d20.tone).toBe('first');
+
+    // ② d25 / d29 仍在【同一段】里 ⇒ 依然「首次」，⛔ 不按天累加成二次三次
+    expect(run(dates[24]).ordinal).toBe(1);
+    expect(run(dates[28]).ordinal).toBe(1);
+    expect(run(dates[28]).text).toBe('首次触发');
+
+    // ③ d30 已回落 ⇒ 今天不是触发日 ⇒ 不显示标签（⛔ 不沿用上一次的序号）
+    const d30 = run(dates[29]);
+    expect(d30.ordinal).toBe(0);
+    expect(d30.text).toBe('');
+    expect(d30.count).toBe(1);
+
+    // ④ d40 再次越线 ⇒ 二次触发
+    const d40 = run(dates[39]);
+    expect(d40.ordinal).toBe(2);
+    expect(d40.text).toBe('二次触发');
+    expect(d40.tone).toBe('repeat');
+    expect(d40.events.length).toBe(2);
+    expect(d40.events[0].start).toBe(dates[19]);
+    expect(d40.events[0].end).toBe(dates[28]);
+    expect(d40.events[0].days).toBe(10);
+    expect(d40.events[1].start).toBe(dates[39]);
+  });
+
+  it('§10：腿不够一天都判不出 ⇒ ok=false 且 text 为空（⛔ 绝不返回「首次」）', function () {
+    const few = [{ date: '2026-03-01', pct: 1 }, { date: '2026-03-02', pct: 1 }];
+    const r = countSevereTriggers({ code: '600825', stockLegs: few, indexLegs: few, asOf: '2026-03-02' });
+    expect(r.ok).toBe(false);
+    expect(r.text).toBe('');
+    expect(r.ordinal).toBe(0);
+    expect(r.reason.length).toBeGreaterThan(0);
+  });
+
+  it('§10：指数腿一股都没有 / 个股腿一股都没有 ⇒ ok=false（⛔ 不拿空当「没触发」）', function () {
+    const legs = [{ date: '2026-03-01', pct: 1 }];
+    expect(countSevereTriggers({ code: '600825', stockLegs: legs, indexLegs: [], asOf: '2026-03-01' }).ok).toBe(false);
+    expect(countSevereTriggers({ code: '600825', stockLegs: [], indexLegs: legs, asOf: '2026-03-01' }).ok).toBe(false);
+    // 北交所 / 代码不全 ⇒ 官方口径不适用
+    expect(countSevereTriggers({ code: '830799', stockLegs: legs, indexLegs: legs, asOf: '2026-03-01' }).ok).toBe(false);
+    expect(countSevereTriggers({ code: '', stockLegs: legs, indexLegs: legs, asOf: '2026-03-01' }).ok).toBe(false);
+  });
+
+  it('title 必须交代：口径是复算、官方公布后会重算、判不出的天数', function () {
+    const r = countSevereTriggers({
+      code: '600825', stockLegs: legsOf('600825'), indexLegs: idxOf('600825'), asOf: '2026-10-08'
+    });
+    expect(r.title).toContain('不是交易所公布的官方计数');
+    expect(r.title).toContain('重新计算');
+    expect(r.title).toContain('历次触发');
+    expect(r.title).toContain('可判定');
+  });
+
+  it('默认回看窗口 = ABN_TRIGGER_LOOKBACK_DAYS；显式传 maxLookback 会被采纳', function () {
+    expect(ABN_TRIGGER_LOOKBACK_DAYS).toBeGreaterThanOrEqual(30);
+    const legs = [];
+    for (let i = 1; i <= 60; i++) legs.push({ date: '2026-04-' + String(i).padStart(2, '0'), pct: 0 });
+    const r1 = countSevereTriggers({ code: '600825', stockLegs: legs, indexLegs: legs, asOf: '2026-04-60' });
+    const r2 = countSevereTriggers({
+      code: '600825', stockLegs: legs, indexLegs: legs, asOf: '2026-04-60', maxLookback: 40
+    });
+    expect(r1.lookback).toBe(60);
+    expect(r2.lookback).toBe(40);
+  });
+});
+
+describe('[ABN-TRIGGER] 接线锁：默认零耗时，只有面板要才复算', function () {
+  it('computeDeviation 默认不挂 trigger（§11：买点行徽标那条老路径零行为变化）', function () {
+    const base = {
+      code: '600825', stockLegs: legsOf('600825'), indexLegs: idxOf('600825'), asOf: '2026-10-08'
+    };
+    const off = computeDeviation(base);
+    expect(off.trigger).toBe(null);
+    expect(off.triggerText).toBe('');
+    expect(off.triggerOrdinal).toBe(0);
+    const on = computeDeviation(Object.assign({}, base, { withTrigger: true }));
+    expect(on.trigger).toBeTruthy();
+    expect(on.triggerOrdinal).toBe(1);
+    expect(on.triggerText).toBe('首次触发');
+    // ★ 开关不影响任何既有字段（偏离值本身必须逐字相同）
+    expect(on.dev10).toBe(off.dev10);
+    expect(on.dev30).toBe(off.dev30);
+    expect(on.stage).toBe(off.stage);
+    expect(on.badge).toBe(off.badge);
+  });
+
+  it('buildDeviationMap 透传 withTrigger；不传时一次都不多算', function () {
+    const daily = new Map([['新华传媒', new Map(legsOf('600825').map(function (l) { return [l.date, l.pct]; }))]]);
+    const idxMap = new Map([['sh000002', idxOf('600825')]]);
+    const off = buildDeviationMap({
+      names: ['新华传媒'], dailyByStock: daily, indexLegs: idxMap,
+      codeOf: function () { return '600825'; }, asOf: '2026-10-08'
+    });
+    expect(off.map.get('新华传媒').trigger).toBe(null);
+    const on = buildDeviationMap({
+      names: ['新华传媒'], dailyByStock: daily, indexLegs: idxMap,
+      codeOf: function () { return '600825'; }, asOf: '2026-10-08', withTrigger: true
+    });
+    expect(on.map.get('新华传媒').triggerOrdinal).toBe(1);
+  });
+
+  it('源码锁：composable 开启复算 + 视图与样式都接上了 trigger', function () {
+    const comp = readFileSync('src/composables/useAbnormalDeviation.js', 'utf8');
+    expect(comp).toContain('withTrigger: true');
+    expect(comp).toContain('triggerText:');
+    // 双闸门：达到标准 ∧ 复算出序号，才给文字（⛔ 不许只判一个）
+    expect(comp).toContain('f.stage === DEV_STAGE_SEVERE && f.triggerOrdinal > 0');
+    const vue = readFileSync('src/components/topicvolratio/TvrbDeviationBoard.vue', 'utf8');
+    expect(vue).toContain('r.triggerText');
+    expect(vue).toContain('tvrb-dev-trigger');
+    const css = readFileSync('src/assets/css/topic-vol-ratio-board.css', 'utf8');
+    expect(css).toContain('.tvrb-dev-trigger-first');
+    expect(css).toContain('.tvrb-dev-trigger-repeat');
+    // ⛔ 不许用裁切来「解决」窄屏拥挤
+    expect(css).not.toMatch(/\.tvrb-dev-trigger[a-z-]*\s*\{[^}]*overflow:\s*hidden/);
   });
 });

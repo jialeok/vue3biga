@@ -35,8 +35,13 @@ import {
 } from '../logic/auction/abnormal-deviation.js';
 import { _dbgLog } from '../data/debug-log.js';
 
-/** 窗口向前取多少自然日：30 交易日 ≈ 42 自然日，留到 75 天以防长假 */
-const LOOKBACK_DAYS = 75;
+/**
+ * 窗口向前取多少自然日。
+ * ★ [ABN-TRIGGER 2026-11-15] 75 → 120：面板要给「首次 / 二次 / 三次触发」标序号，
+ *   就必须有足够长的历史做【逐日复算】（30 日窗口本身要吃 30 根腿）。
+ *   ⚠️ 这只加宽【同一次查询】的日期范围（同一张表、同一批票），**不是新增请求**（§32）。
+ */
+const LOOKBACK_DAYS = 120;
 
 function _emptyMeta(asOf) {
   return {
@@ -145,7 +150,10 @@ export function useAbnormalDeviation() {
         codeOf: typeof opt.codeOf === 'function' ? opt.codeOf : function () { return ''; },
         asOf: asOf,
         todayPctOf: typeof opt.todayPctOf === 'function' ? opt.todayPctOf : null,
-        basis: basis
+        basis: basis,
+        // ★★ [ABN-TRIGGER 2026-11-15 用户口径] 面板要「首次 / 二次 / 三次触发」——
+        //   逐票在同一份腿上复算历史（零新增请求）。买点行徽标不走本函数，不受影响。
+        withTrigger: true
       });
       if (my !== _seq) return;
 
@@ -177,6 +185,7 @@ export function useAbnormalDeviation() {
    *
    * @param {string[]} names 有序票名
    * @returns {Array<{name:string, indexLabelText:string, indexLabelTitle:string,
+   *   triggerText:string, triggerTone:string, triggerTitle:string, triggerCount:number,
    *   dev10Text:string, dev30Text:string} &
    *   {gapText:string, calcText:string, needValueText:string, needHintText:string,
    *    needTone:string, gapTailText:string, indexMoveText:string, stageText:string,
@@ -201,6 +210,19 @@ export function useAbnormalDeviation() {
         // ★ [IDX-LABEL] 票名后那枚「对应指数」小标签：每行各自那一个，判不出 ⇒ 空串（§10）
         indexLabelText: idxLabel.text,
         indexLabelTitle: idxLabel.title,
+        // ★★ [ABN-TRIGGER 2026-11-15 用户口径] 「首次触发 / 二次触发 / 三次触发」——
+        //   用户原话：「给已达到交易所严重异常波动标准的股票，打上标签……这样我就知道它是第几次，
+        //   这样我好采取不同策略」。⇒ 双闸门都满足才渲染：
+        //     ① `stage === DEV_STAGE_SEVERE`（今天真的已达标准 —— 用户要的就是这批票）；
+        //     ② `triggerOrdinal > 0`（历史复算也认为今天是触发日）。
+        //   任一不满足 ⇒ 空串（⛔ 绝不写「首次」占位：那是最危险的假结论，§10）。
+        triggerText: (f && f.ok && f.stage === DEV_STAGE_SEVERE && f.triggerOrdinal > 0)
+          ? (f.triggerText || '') : '',
+        triggerTone: (f && f.ok && f.stage === DEV_STAGE_SEVERE && f.triggerOrdinal > 0)
+          ? (f.triggerTone || '') : '',
+        triggerTitle: (f && f.ok && f.trigger) ? (f.triggerTitle || '') : '',
+        // 累计触发过一次以上的票（哪怕今天不是触发日）也要能看出来 ⇒ 悬停有据可查
+        triggerCount: (f && f.ok && f.trigger) ? (f.triggerCount || 0) : 0,
         dev10Text: cells ? cells.dev10Text : '—',
         dev30Text: cells ? cells.dev30Text : '—',
         gapText: f && f.ok ? (f.gapText || '') : '未就绪',

@@ -201,6 +201,51 @@ function _legMap(legs) {
 }
 
 /**
+ * 【内部纯函数 · 窗口核心】在【已建好、已按 asOf 过滤并排序】的日期表上取一段窗口。
+ *
+ * ⛔ 这是 `cumulativeDeviation` 的唯一实现体。抽出来只为让 [ABN-TRIGGER] 的逐日复算
+ *    不必每天重建两次 `_legMap`（O(N) → O(窗口)），**语义与原来逐字一致**。
+ *
+ * @param {Map<string, number|null>} s 个股腿 Map
+ * @param {Map<string, number|null>} ix 指数腿 Map
+ * @param {number} k 窗口交易日数
+ * @param {string[]} dates 已排序、已按 asOf 过滤的指数交易日数组
+ * @param {number} endIdx 窗口末日在该数组中的下标
+ */
+function _deviationCore(s, ix, k, dates, endIdx) {
+  if (!(k > 0)) return null;
+  if (!ix || ix.size === 0) return null;
+  const end = (endIdx === undefined || endIdx === null) ? dates.length - 1 : endIdx;
+  if (!(end >= 0) || end + 1 < k) return null;          // 指数腿不够一整个窗口
+  const win = dates.slice(end + 1 - k, end + 1);
+  const lastDate = win[win.length - 1];
+  if (!s.has(lastDate) || s.get(lastDate) === null) return null;  // 末腿没有 ⇒ 这个窗口判不了
+
+  let cs = 1;
+  let ci = 1;
+  let missing = 0;
+  for (let i = 0; i < win.length; i++) {
+    const d = win[i];
+    const iv = ix.get(d);
+    if (iv === null || iv === undefined) return null;   // 指数缺腿 ⇒ 判不出（⛔ 不补 0）
+    let sv = s.has(d) ? s.get(d) : null;
+    if (sv === null) { missing++; sv = 0; }            // 个股缺腿 = 当日无成交（停牌）⇒ 按 0，但记账
+    cs *= 1 + sv / 100;
+    ci *= 1 + iv / 100;
+  }
+  const dev = (cs - ci) * 100;
+  if (!isFinite(dev)) return null;
+  return {
+    dev: dev,
+    stockChain: (cs - 1) * 100,
+    indexChain: (ci - 1) * 100,
+    from: win[0],
+    to: lastDate,
+    missingLegs: missing
+  };
+}
+
+/**
  * 【纯函数 · 官方公式】连续 n 个交易日的收盘价格涨跌幅偏离值累计值（单位 = %）。
  *
  * ★★ 这是整个模块的心脏，⛔ 三个要害一个都不能省：
@@ -229,32 +274,7 @@ export function cumulativeDeviation(stockLegs, indexLegs, n, asOf) {
   let dates = Array.from(ix.keys()).sort();
   if (cutoff) dates = dates.filter(function (d) { return d <= cutoff; });
   if (dates.length < k) return null;                    // 指数腿不够一整个窗口
-  const win = dates.slice(dates.length - k);
-  const lastDate = win[win.length - 1];
-  if (!s.has(lastDate) || s.get(lastDate) === null) return null;  // 末腿没有 ⇒ 这个窗口判不了
-
-  let cs = 1;
-  let ci = 1;
-  let missing = 0;
-  for (let i = 0; i < win.length; i++) {
-    const d = win[i];
-    const iv = ix.get(d);
-    if (iv === null || iv === undefined) return null;   // 指数缺腿 ⇒ 判不出（⛔ 不补 0）
-    let sv = s.has(d) ? s.get(d) : null;
-    if (sv === null) { missing++; sv = 0; }            // 个股缺腿 = 当日无成交（停牌）⇒ 按 0，但记账
-    cs *= 1 + sv / 100;
-    ci *= 1 + iv / 100;
-  }
-  const dev = (cs - ci) * 100;
-  if (!isFinite(dev)) return null;
-  return {
-    dev: dev,
-    stockChain: (cs - 1) * 100,
-    indexChain: (ci - 1) * 100,
-    from: win[0],
-    to: lastDate,
-    missingLegs: missing
-  };
+  return _deviationCore(s, ix, k, dates, dates.length - 1);
 }
 
 /**
@@ -357,6 +377,176 @@ export function classifyDeviation(o) {
   };
 }
 
+// ────────────────────────────────────────────────────────────────────────────────
+// ④-b [ABN-TRIGGER 2026-11-15 用户口径] 严重异常波动的「第几次触发」
+// ────────────────────────────────────────────────────────────────────────────────
+// 用户原话：「你在官方偏离值那里（原版）给已达到交易所严重异常波动标准的股票，打上标签，
+//   首次触发，二次触发，三次触发等字样，这样我就知道它是第几次，这样我好采取不同策略」
+//
+// ── 口径（必须写清楚，因为它不是交易所原文里的一个字段）─────────────────────────
+//   · 「触发日」= 该交易日【收盘后】这只票的 10 日偏离或 30 日偏离任一向越线
+//     （10 日 ≥ +100% 或 ≤ −50%；30 日 ≥ +200% 或 ≤ −70%；板块阈值见 DEV_THRESHOLDS）；
+//   · 「一次触发」= 连续的触发日合并成一次（中间有一天判出「未触发」就断开）；
+//   · 「第 N 次」= 截至 asOf，这只票在【可观测窗口】内第几次进入该状态。
+//   ⚠️ 官方原文：「异常/严重异常波动指标自交易所公布的次一交易日或复牌之日起重新计算」
+//      ⇒ 交易所公布后窗口会重算，所以本函数算的是【按连续区间合并的复算值】，
+//        可能比官方实际公布次数更细。这句话必须进 title，⛔ 不许让用户以为这是官方计数。
+//
+// ── §10 红线 ────────────────────────────────────────────────────────────────────
+//   · 指数腿 / 个股腿不足 ⇒ ok=false + reason，⛔ 绝不返回「首次」（那是最危险的假结论）；
+//   · 某一天窗口算不出 ⇒ 跳过并计入 gapDays，**不打断事件**（不能证明它回落了），
+//     但要在 title 里如实写出「有 N 天判不出」；
+//   · asOf 当天判不出 ⇒ ordinal=0 ⇒ 不显示标签（⛔ 不拿上一次的序号冒充这次）。
+
+/** 回看多少个交易日（更早的触发对「这次是第几次」没有意义，且指数腿未必覆盖） */
+export const ABN_TRIGGER_LOOKBACK_DAYS = 60;
+
+const _ORDINAL_CN = ['', '首次', '二次', '三次', '四次', '五次', '六次', '七次', '八次', '九次', '十次'];
+
+/**
+ * 【纯函数】触发序号 → 中文标签。
+ *   1 ⇒ '首次触发'，2 ⇒ '二次触发'，…，10 ⇒ '十次触发'，11+ ⇒ '第 11 次触发'
+ *   非法 / 0 ⇒ ''（视图据此不渲染，⛔ 不写占位）
+ */
+export function severeOrdinalText(n) {
+  const k = Math.floor(Number(n));
+  if (!(k > 0)) return '';
+  const cn = (k <= 10) ? _ORDINAL_CN[k] : ('第 ' + k + ' 次');
+  return cn + '触发';
+}
+
+/**
+ * 【纯函数】统计「严重异常波动」的触发次数（逐日复算 + 连续区间合并）。
+ *
+ * @param {object} o
+ * @param {string} o.code 6 位代码（决定板块阈值与对应指数，⛔ 不猜）
+ * @param {Array<{date:string,pct:number|string}>} o.stockLegs 个股升序逐日腿
+ *        ⚠️ 竞价时点调用方已把 asOf 那根换成竞价涨幅（`buildDeviationMap` 的 todayPctOf），
+ *           本函数直接用 —— 这样「面板显示今天已触发」与「今天是第几次」不会互相打架。
+ * @param {Array<{date:string,pct:number|string}>} o.indexLegs 对应指数升序逐日腿
+ * @param {string} o.asOf 截至哪一天（含）
+ * @param {number} [o.maxLookback] 最多回看多少个交易日（默认 ABN_TRIGGER_LOOKBACK_DAYS）
+ * @returns {{ok:boolean, reason:string, count:number, ordinal:number,
+ *            text:string, tone:string, events:Array, judgedDays:number, gapDays:number,
+ *            from:string, to:string, lookback:number, title:string}}
+ *          ok=false ⇒ 判不出（⛔ 不返回「首次」）；ordinal=0 ⇒ asOf 当天未触发/判不出。
+ */
+export function countSevereTriggers(o) {
+  const x = o || {};
+  const blank = function (reason) {
+    return {
+      ok: false, reason: reason || '',
+      count: 0, ordinal: 0, text: '', tone: '',
+      events: [], judgedDays: 0, gapDays: 0,
+      from: '', to: '', lookback: 0, title: reason || ''
+    };
+  };
+  const idx = pickBaseIndexForCode(x.code);
+  if (!idx) return blank('北交所 / 代码不全 ⇒ 官方这套口径不适用，不计数');
+  const th = thresholdsForBoard(idx.board);
+  if (!th) return blank('板块判不出 ⇒ 不计数');
+
+  const sMap = _legMap(x.stockLegs);
+  const ixMap = _legMap(x.indexLegs);
+  if (ixMap.size === 0) return blank('对应指数腿未就绪 ⇒ 判不出第几次（不是「首次」）');
+  if (sMap.size === 0) return blank('个股逐日腿未就绪 ⇒ 判不出第几次（不是「首次」）');
+
+  const asOf = String(x.asOf || '').slice(0, 10);
+  const allDates = Array.from(ixMap.keys()).sort().filter(function (d) {
+    return !asOf || d <= asOf;
+  });
+  if (allDates.length === 0) return blank('截至 ' + (asOf || '该日') + ' 没有任何指数腿 ⇒ 判不出');
+
+  const capRaw = Math.floor(Number(x.maxLookback));
+  const cap = (isFinite(capRaw) && capRaw > 0) ? capRaw : ABN_TRIGGER_LOOKBACK_DAYS;
+  const startIdx = Math.max(0, allDates.length - cap);
+
+  const events = [];
+  let cur = null;
+  let judged = 0;
+  let gap = 0;
+  let prevSevere = false;
+
+  for (let i = startIdx; i < allDates.length; i++) {
+    const d = allDates[i];
+    const d10 = _deviationCore(sMap, ixMap, 10, allDates, i);
+    const d30 = _deviationCore(sMap, ixMap, 30, allDates, i);
+    const v10 = d10 ? d10.dev : null;
+    const v30 = d30 ? d30.dev : null;
+    if (v10 === null && v30 === null) { gap++; continue; }   // 判不出 ⇒ 不打断事件（§10）
+    judged++;
+    const severe = (v10 !== null && (v10 >= th.dev10 || v10 <= th.neg10)) ||
+      (v30 !== null && (v30 >= th.dev30 || v30 <= th.neg30));
+    if (severe) {
+      if (!prevSevere || !cur) {
+        cur = { start: d, end: d, days: 1, peakDev10: v10, peakDev30: v30 };
+        events.push(cur);
+      } else {
+        cur.end = d;
+        cur.days++;
+        if (v10 !== null && (cur.peakDev10 === null || v10 > cur.peakDev10)) cur.peakDev10 = v10;
+        if (v30 !== null && (cur.peakDev30 === null || v30 > cur.peakDev30)) cur.peakDev30 = v30;
+      }
+      prevSevere = true;
+    } else {
+      prevSevere = false;
+      cur = null;
+    }
+  }
+
+  if (judged === 0) {
+    return blank('指数腿不足一个完整窗口（10 日 / 30 日）⇒ 一天都判不出，不计数');
+  }
+
+  const lastDate = allDates[allDates.length - 1];
+  const lastEvent = events.length ? events[events.length - 1] : null;
+  // asOf 当天必须【自己就是触发日】才算「本次是第几次」—— 判不出/未触发 ⇒ 0（⛔ 不沿用上一次）
+  const ordinal = (lastEvent && lastEvent.end === lastDate && asOf === lastDate) ? events.length : 0;
+  const tone = ordinal === 0 ? '' : (ordinal === 1 ? 'first' : 'repeat');
+  const from = allDates[startIdx];
+  const lookback = allDates.length - startIdx;
+
+  const fmt = function (v) {
+    if (v === null || v === undefined) return '—';
+    return (v >= 0 ? '+' : '') + Number(v).toFixed(1) + '%';
+  };
+  const parts = [];
+  parts.push('触发次数口径（本项目复算，⛔ 不是交易所公布的官方计数）：对近 ' + lookback +
+    ' 个交易日【逐日复算】10 日 / 30 日偏离值，任一向越线（10 日 ≥ +' + th.dev10 + '% 或 ≤ ' +
+    th.neg10 + '%；30 日 ≥ +' + th.dev30 + '% 或 ≤ ' + th.neg30 + '%）即算「当日触发」；' +
+    '连续的触发日合并为【一次】触发。');
+  parts.push('官方原文：「异常/严重异常波动指标自交易所公布的次一交易日或复牌之日起重新计算」' +
+    '⇒ 交易所公布后窗口会重算，所以这里的次数可能比官方实际公布次数更细。');
+  if (events.length) {
+    parts.push('历次触发：' + events.map(function (e, i) {
+      return '第 ' + (i + 1) + ' 次 ' + e.start + '~' + e.end + '（' + e.days + ' 个交易日，峰值 10 日 ' +
+        fmt(e.peakDev10) + ' / 30 日 ' + fmt(e.peakDev30) + '）';
+    }).join('；'));
+  } else {
+    parts.push('近 ' + judged + ' 个可判定交易日里【一次都没有】触发。');
+  }
+  if (gap > 0) {
+    parts.push('⚠️ 其中 ' + gap + ' 个交易日因腿不足判不出（已跳过，⛔ 未当成「未触发」，也不打断事件）');
+  }
+  parts.push('可判定 ' + judged + ' 天（指数腿覆盖 ' + from + ' → ' + lastDate + '）；对应指数 ' +
+    idx.name + '（' + idx.code + '）');
+
+  return {
+    ok: true, reason: '',
+    count: events.length,
+    ordinal: ordinal,
+    text: severeOrdinalText(ordinal),
+    tone: tone,
+    events: events,
+    judgedDays: judged,
+    gapDays: gap,
+    from: from,
+    to: lastDate,
+    lookback: lookback,
+    title: parts.join(' ')
+  };
+}
+
 /** 档位中文（§21：文案在 Logic 层拼好，模板零计算） */
 export const STAGE_TEXT = {
   [DEV_STAGE_UNKNOWN]: '偏离值判不出',
@@ -435,6 +625,14 @@ export function computeDeviation(o) {
     needAlert: false,
     indexBeta: null,
     indexMoveText: '',
+    // ★ [ABN-TRIGGER 2026-11-15 用户口径] 「严重异常波动第几次触发」——
+    //   缺省全空 / 0（⛔ 绝不写「首次」占位：那是最危险的假结论，§10）。
+    trigger: null,
+    triggerText: '',
+    triggerTone: '',
+    triggerTitle: '',
+    triggerCount: 0,
+    triggerOrdinal: 0,
     line: ''
   }; };
   if (!idx) return makeEmpty();                          // 北交所 / 代码缺失 ⇒ 判不出
@@ -492,6 +690,24 @@ export function computeDeviation(o) {
   fact.indexBeta = deviationIndexBeta(fact);
   fact.indexMoveText = deviationIndexMoveText(fact);
   fact.line = fact.badge + (fact.gapText ? ' · ' + fact.gapText : '');
+  // ★★ [ABN-TRIGGER 2026-11-15 用户口径] 「首次触发 / 二次触发 / 三次触发」
+  //   ⛔ 默认不跑（`withTrigger !== true`）⇒ 买点行徽标那条老路径的耗时与结果【零变化】（§11）。
+  //   ⚠️ 只在面板需要逐行标序号时由 `buildDeviationMap` 透传 true。
+  if (x.withTrigger === true) {
+    const trg = countSevereTriggers({
+      code: code,
+      stockLegs: x.stockLegs,
+      indexLegs: x.indexLegs,
+      asOf: asOf,
+      maxLookback: x.triggerLookback
+    });
+    fact.trigger = trg;
+    fact.triggerText = trg.text;
+    fact.triggerTone = trg.tone;
+    fact.triggerTitle = trg.title;
+    fact.triggerCount = trg.count;
+    fact.triggerOrdinal = trg.ordinal;
+  }
   return fact;
 }
 
@@ -949,6 +1165,9 @@ export function isDeviationAlert(fact) {
  * @param {function(string):(number|string|null)} [o.todayPctOf]
  *        末腿替换：竞价时点用「今日竞价涨幅」顶替当日收盘腿（收盘后不传）
  * @param {'close'|'auction'} [o.basis='close']
+ * @param {boolean} [o.withTrigger=false] ★ [ABN-TRIGGER 2026-11-15] 是否额外复算「第几次触发」
+ *        （面板要逐行标序号 ⇒ true；买点行徽标 ⇒ 不传，零额外耗时）
+ * @param {number} [o.triggerLookback] 回看多少个交易日（缺省 ABN_TRIGGER_LOOKBACK_DAYS）
  * @returns {{ map: Map<string, object>, ready: number, total: number }}
  *          map = 票名 → computeDeviation 的 fact（判不出也有 fact，ok=false）
  */
@@ -997,7 +1216,11 @@ export function buildDeviationMap(o) {
       stockLegs: stockLegs,
       indexLegs: iLegs,
       asOf: asOf,
-      basis: x.basis || 'close'
+      basis: x.basis || 'close',
+      // ★ [ABN-TRIGGER 2026-11-15] 只有面板明确要「第几次触发」才逐票复算历史；
+      //   买点行徽标那条路径不传 ⇒ 一次都不多算（§11 零行为变化 / 零额外耗时）。
+      withTrigger: x.withTrigger === true,
+      triggerLookback: x.triggerLookback
     });
     if (fact.ok) ready++;
     out.set(name, fact);

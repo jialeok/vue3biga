@@ -1371,6 +1371,42 @@
     font-weight: 700;
 }
 
+/* ★★ [ABN-TRIGGER 2026-11-15 用户口径] 「首次触发 / 二次触发 / 三次触发」——
+   用户原话：「给已达到交易所严重异常波动标准的股票，打上标签，首次触发，二次触发，三次触发等字样，
+   这样我就知道它是第几次，这样我好采取不同策略」。
+   ⇒ 首次与二次以上必须【一眼分得开】（策略不同）：
+     首次 = 琥珀底（风险刚起，仍可参与）；
+     二次及以上 = 实心红（已被反复监管，风险升级）。
+   ⚠️ [DEV-LAYOUT] 同款约束：整枚 inline-block + nowrap，放不下就整体折到下一行，
+      ⛔ 不许撑宽第一列、⛔ 不许用 overflow:hidden 裁字。
+   §10：判不出 / 今天没触发 ⇒ 不渲染（视图 v-if），⛔ 不写占位。 */
+.tvrb-dev-trigger {
+    margin-left: 5px;
+    padding: 0 4px;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 13px;
+    border-radius: 4px;
+    border: 1px solid transparent;
+    white-space: nowrap;
+    cursor: help;
+    display: inline-block;
+    vertical-align: baseline;
+    max-width: 100%;
+}
+
+.tvrb-dev-trigger-first {
+    color: #b45309;
+    background: #fff7ed;
+    border-color: #fed7aa;
+}
+
+.tvrb-dev-trigger-repeat {
+    color: #ffffff;
+    background: #dc2626;
+    border-color: #b91c1c;
+}
+
 /* ★ [IDX-LABEL 2026-11-14] 票名后那枚「对应指数」小标签（深证A股指数 / 上证A股指数 / …）。
    蓝灰调，与档位 chip（语义色）刻意区分：这枚是【口径说明】，不是风险等级。
    悬停 title 给指数代码与板块（Logic 层拼好）。判不出 ⇒ 空串 ⇒ 不渲染（§10）。 */

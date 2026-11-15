@@ -103,7 +103,19 @@
             :class="r.tone ? ('tvrb-dev-tone-' + r.tone) : ''"
           >
             <td class="tvrb-dev-cell-name">
-              <span class="tvrb-dev-name">{{ r.name }}</span><span
+              <span class="tvrb-dev-name">{{ r.name }}</span><!--
+             ★★ [ABN-TRIGGER 2026-11-15 用户口径] 「首次触发 / 二次触发 / 三次触发」——
+               用户原话：「给已达到交易所严重异常波动标准的股票，打上标签……这样我就知道它是第几次，
+               这样我好采取不同策略」。文字与色调全部由 Logic 层给（`triggerText` / `triggerTone`），
+               悬停 `triggerTitle` 里写着口径、历次触发的起止与峰值，⛔ 视图零计算（§21）。
+               §10：判不出 / 今天没触发 ⇒ `triggerText` 是空串 ⇒ 这枚标签【不渲染】，
+               ⛔ 绝不写「首次」或「—」占位（把「没算出来」显示成「首次」是最危险的假结论）。
+           --><span
+                v-if="r.triggerText"
+                class="tvrb-dev-trigger"
+                :class="'tvrb-dev-trigger-' + (r.triggerTone || 'repeat')"
+                :title="r.triggerTitle"
+              >{{ r.triggerText }}</span><span
                 v-if="r.indexLabelText"
                 class="tvrb-dev-index-tag"
                 :title="r.indexLabelTitle"
