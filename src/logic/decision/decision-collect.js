@@ -22,6 +22,8 @@ import { isAuctionYiZi, parseAucPct } from '../auction/limit-up.js';
 import { getDragonRangePct } from '../auction/dragon-rank.js';
 import { getDragonLeadersForDisplay } from '../auction/dragon-group.js';
 import { getPrevSoldInheritedSet } from '../auction/inherited-sold.js';
+// [DIVERGE-TOPIC 2026-11-15] 同题材认亲统一用这一份「题材串切段」实现（§6 不另写正则）
+import { splitTopicSegments } from '../topic/core-category.js';
 // [GRAY-DRAGON 2026-09-26] 灰行（不在当日正式列表的继承票）的观察组来源，与早盘竞价同款（§6）
 import { getJingYestHighlightSetForDate } from '../auction/sort-rules.js';
 // [SEAL 2026-10-11 用户口径] 决策看板逐票「封单额 + 变化 + 连板」：口径与读取全在 seal-volume.js
@@ -885,18 +887,37 @@ export function nonFirstDaySuspendNames(rows, date, prevDate) {
 
 /**
  * [DIVERGE 2026-10-20] 题材串「是否同题材」的唯一判据（原 _ebbCtxOf 内私有闭包提升，§6）。
- * 退路题材可能来自上一交易日行情行的 topics 串（如「AI应用,数据中心」）⇒ 按分段匹配。
  * 消费方：ebb 替补选股（本文件）+ 总龙分歧跟随选股（leader-divergence.js）。
+ *
+ * ★★ [DIVERGE-TOPIC 2026-11-15 用户「10-19 新华文轩不该选，它也是 AI应用 大类」]
+ *   🔴 旧实现只切【第一个参数】，再拿每段去和【整个第二个串】全等比较 ⇒
+ *      只要 b 是多题材串就恒 false。真实库 10-19：总龙一「文化传媒」、新华文轩
+ *      「文化传媒,人工智能,平台经济,体育产业」明明共有「文化传媒」，却判成不同题材 ⇒ 误选。
+ *      ⚠️ 光接大类归一也修不好：sameTopicText('AI应用','AI应用,体育产业,大消费') 同样恒 false。
+ *   ✅ 正确语义 = 【两边都切成题材段，任一共同段即同题材】（用户「同题材的不要」）。
+ *      可选第三参 coreRes = makeCoreTopicResolver 的返回 ⇒ 先按核心词【大类】归一再比，
+ *      与 10-22 已定的「题材按大类认亲」同一把尺子（§6）。不传 ⇒ 只修双向分段（§11 影响可控）。
+ *
+ * §10：任一边为空 ⇒ false（判不出「同题材」绝不猜）。
  * @param {string} a 题材串 A（可含分段分隔符）
- * @param {string} b 题材串 B
+ * @param {string} b 题材串 B（可含分段分隔符）
+ * @param {(raw:string)=>string} [coreRes] 大类归一函数（makeCoreTopicResolver 的返回）
  * @returns {boolean}
  */
-export function sameTopicText(a, b) {
+export function sameTopicText(a, b, coreRes) {
   const x = String(a || '').trim();
   const y = String(b || '').trim();
   if (!x || !y) return false;
   if (x === y) return true;
-  return x.split(/[,，/、+;；|]/).some(function(seg) { return seg.trim() === y; });
+  const norm = (typeof coreRes === 'function') ? coreRes : null;
+  const segs = function (t) {
+    return splitTopicSegments(norm ? norm(t) : t);
+  };
+  const xs = segs(x);
+  const ys = segs(y);
+  if (xs.length === 0 || ys.length === 0) return false;
+  const ySet = new Set(ys);
+  return xs.some(function (seg) { return ySet.has(seg); });
 }
 
 /**

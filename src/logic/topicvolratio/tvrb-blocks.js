@@ -556,11 +556,13 @@ export function _applyDivergeNoBuyRules(blocks, ld) {
  * @param {object} ld 组合式下发的 leaderDiverge（todayFirst=true；含 top5 / firstBoardYmd 等）
  * @param {Array} list 今日题材块（rankDecisionTopics 的返回，成员行 = 客观数据来源）
  * @param {object} fOpts finishBuyBlock 的选项（与常规块共用同一份，§6）
+ * @param {(raw:string)=>string} [coreRes] ★ [DIVERGE-TOPIC 2026-11-15] 题材【大类】归一函数
+ *        —— 与退潮事件 / 弱势抱团 / 补涨同一把尺子（§6）；缺省 ⇒ 只按细分串双向分段认亲（§11）
  * @returns {object|null} null = 不渲染（调用方保证 todayFirst 才调）
  */
-export function _buildDivergeBuyBlock(ld, list, fOpts) {
+export function _buildDivergeBuyBlock(ld, list, fOpts, coreRes) {
   if (!ld || !ld.todayFirst || !ld.leaderName) return null;
-  const sel = pickDivergeFollowers(ld.top5 || [], ld.leaderName, ld.leaderTopic || '');
+  const sel = pickDivergeFollowers(ld.top5 || [], ld.leaderName, ld.leaderTopic || '', coreRes);
   const buyPicks = [{ name: ld.leaderName, label: '总龙一', topic: ld.leaderTopic || '',
     code: ld.leaderCode || '', pct: ld.leaderPct, pctText: ld.leaderPctText || '',
     rank20: 1, isDip: true }].concat(sel.followers.map(function(c) {

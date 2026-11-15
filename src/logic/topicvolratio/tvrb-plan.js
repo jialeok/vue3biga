@@ -1615,7 +1615,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   } else if (divergeActive) {
     // ★ [DIVERGE] 分歧日：其余入选票【总龙分歧不买】（照常列出 + 灰化），
     //   大字标语接管 cashAlert（同一消费通道，视图灰化判据 = cashAlert.show 不变）。
-    out.divergeBuy = _buildDivergeBuyBlock(ld, list, fOpts);
+    // ★★ [DIVERGE-TOPIC 2026-11-15 用户「10-19 新华文轩不该选，它也是 AI应用 大类」]
+    //   coreRes 本来只传给了弱势抱团(:1645) / 补涨(:1687)，分歧块漏了 ⇒
+    //   「文化传媒 ⇒ AI应用」的大类认亲没生效，加上 sameTopicText 单向切分 ⇒ 同题材票被误选。
+    //   ⛔ 这里必须传，且分歧块与其余买点块共用【同一份】coreRes（§6 单一真相）。
+    out.divergeBuy = _buildDivergeBuyBlock(ld, list, fOpts, coreRes);
     out.cashAlert = _buildDivergeCashAlert(ld, out.divergeBuy ? (out.divergeBuy.picks || []).length : 1);
     _applyDivergeNoBuyRules(out.blocks, ld);
     out.notes.push('⚠️【总龙首次分歧】市场总龙一【' + (ld.leaderName || '—') + '】' +

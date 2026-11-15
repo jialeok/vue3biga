@@ -5,7 +5,10 @@
 //   · 首次分歧 = 首板后第一个竞价涨幅 < 0 的日子（新华传媒 11 连板后 10-19 低开 -1.06%）；
 //   · 分歧转一致 = 分歧日后的涨停日（九阳 10-13 低开 → 10-16 涨停）；再低开 = 二次分歧，依次类推。
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { buildLeaderDivergence, pickDivergeFollowers, shouldGateBuySide } from './leader-divergence.js';
+import { makeCoreTopicResolver } from '../topic/core-category.js';
+import { sameTopicText } from '../decision/decision-collect.js';
 
 /** 便捷构造：{ 'YYYY-MM-DD': [closePct, openPct] } → 两份 Map（键 = YYYYMMDD） */
 function mkBars(spec) {
@@ -215,6 +218,84 @@ describe('tvrb · [DIVERGE] pickDivergeFollowers（分歧日跟随高标 ≤2 �
     const r2 = pickDivergeFollowers(noTopic5, '甲一', '');
     expect(r2.followers.length).toBe(0);
     expect(r2.trail[0].reason).toContain('题材解析不到');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ★★ [DIVERGE-TOPIC 2026-11-15 用户「10-19 新华文轩不该选，它也是 AI应用 大类」]
+//   真实库形态（.tmpdiag/_xhw-1019.mjs 只读实测，⛔ 不用夹具臆造）：
+//     stock_topics.新华传媒 = 「文化传媒」
+//     stock_topics.新华文轩 = 「文化传媒,人工智能,平台经济,体育产业」
+//     core_topics.AI应用.synonyms 含「人工智能」「文化传媒」「传媒」
+//   🔴 上面那组 10-19 夹具把两只票都写成【已归一的 'AI应用'】⇒ 与真实细分串形态不符
+//      ⇒ 假绿，锁不住「单向切分 + 分歧块漏传 coreRes」这两个真 bug。
+//   ⇒ 本组一律用【细分题材串】，并显式注入 coreRes 复刻线上调用链。
+// ════════════════════════════════════════════════════════════════════════════════
+describe('tvrb · [DIVERGE-TOPIC] 细分题材串 + 大类归一（10-19 新华文轩误选回归）', function() {
+  const CORES = [
+    { name: 'AI应用', synonyms: ['人工智能', '文化传媒', '传媒', '游戏'] },
+    { name: '大消费', synonyms: ['平台经济', '零售'] }
+  ];
+  const coreRes = makeCoreTopicResolver(CORES);
+  const realTop5 = [
+    { name: '新华传媒', code: '600825', topic: '文化传媒', rank20: 1, pct: 210.98 },
+    { name: '善水科技', code: '301190', topic: '化工', rank20: 2, pct: 208.31 },
+    { name: '澳弘电子', code: '605058', topic: '电子/通信/算力', rank20: 3, pct: 117.38 },
+    { name: '新华文轩', code: '601811', topic: '文化传媒,人工智能,平台经济,体育产业', rank20: 4, pct: 116.68 },
+    { name: '九阳股份', code: '002242', topic: '大消费', rank20: 5, pct: 91.89 }
+  ];
+  const trailOf = function (r) {
+    const m = {};
+    r.trail.forEach(function (t) { m[t.name] = t; });
+    return m;
+  };
+
+  it('① 双向分段：不传 coreRes 时，共有「文化传媒」也必须判同题材 ⇒ 排除', function() {
+    const r = pickDivergeFollowers(realTop5, '新华传媒', '文化传媒');
+    expect(trailOf(r)['新华文轩'].picked).toBe(false);
+    expect(trailOf(r)['新华文轩'].reason).toContain('同题材');
+  });
+
+  it('② 大类归一：留痕印【AI应用】而不是细分串，用户能自核「为什么算同题材」', function() {
+    const r = pickDivergeFollowers(realTop5, '新华传媒', '文化传媒', coreRes);
+    expect(trailOf(r)['新华文轩'].picked).toBe(false);
+    expect(trailOf(r)['新华文轩'].reason).toContain('AI应用');
+  });
+
+  it('③ 细分写法不同但大类相同 ⇒ 仍判同题材（用户「按题材数量也该归 AI应用」）', function() {
+    const one = [
+      { name: '总龙', code: '600001', topic: 'AI应用', rank20: 1, pct: 200 },
+      { name: '文化票', code: '600002', topic: '文化传媒,游戏', rank20: 2, pct: 100 }
+    ];
+    // 不归一 ⇒ 只能判「不同题材」⇒ 入选；传了 coreRes ⇒ 同属 AI应用 ⇒ 排除
+    expect(pickDivergeFollowers(one, '总龙', 'AI应用').followers.map(function(c) { return c.name; }))
+      .toEqual(['文化票']);
+    expect(pickDivergeFollowers(one, '总龙', 'AI应用', coreRes).followers.length).toBe(0);
+  });
+
+  it('④ 10-19 真实形态：新华文轩不再入选，不同题材主板票照常入选', function() {
+    const r = pickDivergeFollowers(realTop5, '新华传媒', '文化传媒', coreRes);
+    expect(r.followers.map(function(c) { return c.name; })).toEqual(['澳弘电子', '九阳股份']);
+    expect(trailOf(r)['善水科技'].reason).toContain('非主板');
+  });
+
+  it('⑤ sameTopicText：双向、空串（§10）、可选大类归一', function() {
+    expect(sameTopicText('文化传媒', '文化传媒,人工智能')).toBe(true);
+    expect(sameTopicText('文化传媒,人工智能', '文化传媒')).toBe(true);   // 旧实现恒 false
+    expect(sameTopicText('文化传媒', '大消费')).toBe(false);
+    expect(sameTopicText('', '文化传媒')).toBe(false);
+    expect(sameTopicText('文化传媒', '')).toBe(false);
+    expect(sameTopicText('文化传媒', 'AI应用')).toBe(false);             // 不归一 ⇒ 不同
+    expect(sameTopicText('文化传媒', 'AI应用', coreRes)).toBe(true);     // 归一 ⇒ 同
+    // 🔴 光接大类归一也修不好：第二串仍是多段 ⇒ 必须同时双向分段
+    expect(sameTopicText('AI应用', 'AI应用,体育产业,大消费', coreRes)).toBe(true);
+  });
+
+  it('⑥ 静态锁：分歧块必须把 coreRes 传下去（10-22 给别处接了，唯独这里漏了）', function() {
+    const plan = readFileSync('src/logic/topicvolratio/tvrb-plan.js', 'utf8');
+    const blocks = readFileSync('src/logic/topicvolratio/tvrb-blocks.js', 'utf8');
+    expect(plan).toContain('_buildDivergeBuyBlock(ld, list, fOpts, coreRes)');
+    expect(blocks).toContain("pickDivergeFollowers(ld.top5 || [], ld.leaderName, ld.leaderTopic || '', coreRes)");
   });
 });
 

@@ -46,17 +46,27 @@ import { sameTopicText } from '../decision/decision-collect.js';
  *   ④ 剩下的按 20日涨幅排名（rank20 升序）取前 2 只。
  * §10：题材解析不到 ⇒ 无法证明「与总龙不同题材」⇒ 保守排除（trail 留痕，⛔ 不猜）。
  *
+ * ★★ [DIVERGE-TOPIC 2026-11-15 用户「10-19 新华文轩不该选，它也是 AI应用 大类」]
+ *   `ebbCtx.top5` 装的是【细分题材串】（真实库：总龙一「文化传媒」、
+ *   新华文轩「文化传媒,人工智能,平台经济,体育产业」），⛔ 不是夹具里那种已归一的「AI应用」。
+ *   ⇒ 必须把规则层的 `coreRes`（makeCoreTopicResolver）透进来，两边先按核心词【大类】归一再认亲；
+ *     否则「文化传媒 ⇒ AI应用」这条 10-22 定下的口径在分歧块完全没生效。
+ *
  * @param {Array<{name:string, code:string, topic:string, rank20:number}>|null} top5
- *        ebbCtx.top5（decision-collect 前五事实化结果，已含今日题材）
+ *        ebbCtx.top5（decision-collect 前五事实化结果，已含今日【细分】题材串）
  * @param {string} leaderName 总龙名
- * @param {string} leaderTopic 总龙题材
+ * @param {string} leaderTopic 总龙题材（细分串）
+ * @param {(raw:string)=>string} [coreRes] 大类归一函数（tvrb-plan 注入；缺省 ⇒ 只按细分串双向分段认亲）
  * @returns {{followers:Array<object>, trail:Array<{name:string, picked:boolean, reason:string}>}}
  */
-export function pickDivergeFollowers(top5, leaderName, leaderTopic) {
+export function pickDivergeFollowers(top5, leaderName, leaderTopic, coreRes) {
   const followers = [];
   const trail = [];
   const ln = String(leaderName || '').trim();
   const lt = String(leaderTopic || '').trim();
+  const norm = (typeof coreRes === 'function') ? coreRes : null;
+  // 留痕里印【大类】，用户才核对得出「为什么算同题材」（§10 判据可见）
+  const ltShown = (norm && lt) ? norm(lt) : lt;
   ((top5 || [])).forEach(function(c) {
     if (!c || !c.name) return;
     const name = String(c.name).trim();
@@ -70,8 +80,8 @@ export function pickDivergeFollowers(top5, leaderName, leaderTopic) {
       trail.push({ name: name, picked: false, reason: '题材解析不到 ⇒ 无法证明与总龙不同题材，保守排除' });
       return;
     }
-    if (sameTopicText(lt, tp)) {
-      trail.push({ name: name, picked: false, reason: '与总龙一同题材（' + lt + '）⇒ 排除' });
+    if (sameTopicText(lt, tp, norm)) {
+      trail.push({ name: name, picked: false, reason: '与总龙一同题材（' + ltShown + '）⇒ 排除' });
       return;
     }
     if (followers.length < 2) {

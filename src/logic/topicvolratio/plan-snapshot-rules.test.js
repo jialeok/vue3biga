@@ -299,8 +299,8 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     expect(resolvePlanSnapshotFreshness(broken, OPTS)).toBe('stale');
   });
 
-  it('版本常量已 bump 到 14（[RULES-BUMP-ALL] + [MID-TOP20] 都改了选股结论 = v14）', () => {
-    expect(TVRB_RULES_VERSION).toBe(15);
+  it('版本常量已 bump 到 16（[DIVERGE-TOPIC] 改了 10-19 的选股结论 ⇒ 历史日也要重算 = v16）', () => {
+    expect(TVRB_RULES_VERSION).toBe(16);
   });
 
   // ★★ [ABN-MAINBOARD-GUARD 2026-11-14] 第三十四条「全场十日涨幅最高票」只认主板。
@@ -337,7 +337,7 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     expect(TVRB_RANGE10_ABNORMAL).toBe(100);
     expect(TVRB_RULES_VERSION).toBeGreaterThanOrEqual(10);
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v62'");
+    expect(sw).toContain("var CACHE = 'biga-static-v63'");
   });
 
   // ★★ [FULL-MARKET-GUARD 2026-11-13 用户当场纠正] 整类护栏：
@@ -358,8 +358,8 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     expect(lines).toContain('波及到所有的票');
     expect(lines).toContain('整个市场【整片灰');
     // ④ 三件套版本链
-    expect(TVRB_RULES_VERSION).toBe(15);
-    expect(readFileSync('public/sw.js', 'utf8')).toContain("var CACHE = 'biga-static-v62'");
+    expect(TVRB_RULES_VERSION).toBe(16);
+    expect(readFileSync('public/sw.js', 'utf8')).toContain("var CACHE = 'biga-static-v63'");
   });
 
   // ★★ [RULE-BUMP-GUARD 2026-11-13] 用户报障「现在刷新并没有生效」的整类根因锁。
