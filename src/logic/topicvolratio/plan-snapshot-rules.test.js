@@ -13,6 +13,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
+
   TVRB_RULES_VERSION,
   TVRB_INPUTS_VERSION,
   buildRulesFingerprint,
@@ -21,6 +22,14 @@ import {
   resolvePlanSnapshotFreshness,
   shouldPersistPlanSnapshot
 } from './plan-snapshot-rules.js';
+
+/** [SW-CACHE] sw.js 的 CACHE 版本号。断言写成「≥ 基线」：
+ *  既能抓住「改了文案却忘记 bump」（版本还停在旧号，一定小于基线），
+ *  又不用每轮发布都回来改数字（旧的精确断言每轮都要改 4 处，改漏就是假红）。 */
+function _swCacheNo(text) {
+  const m = /var CACHE = 'biga-static-v(\d+)'/.exec(String(text || ''));
+  return m ? Number(m[1]) : 0;
+}
 
 function topics() {
   return [
@@ -337,7 +346,7 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     expect(TVRB_RANGE10_ABNORMAL).toBe(100);
     expect(TVRB_RULES_VERSION).toBeGreaterThanOrEqual(10);
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v65'");
+    expect(_swCacheNo(sw)).toBeGreaterThanOrEqual(66);   // [SW-CACHE] ≥ 本轮基线即可，⛔ 不用每轮改数字
   });
 
   // ★★ [FULL-MARKET-GUARD 2026-11-13 用户当场纠正] 整类护栏：
@@ -359,7 +368,7 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     expect(lines).toContain('整个市场【整片灰');
     // ④ 三件套版本链
     expect(TVRB_RULES_VERSION).toBe(17);
-    expect(readFileSync('public/sw.js', 'utf8')).toContain("var CACHE = 'biga-static-v65'");
+    expect(_swCacheNo(readFileSync('public/sw.js', 'utf8'))).toBeGreaterThanOrEqual(66);
   });
 
   // ★★ [RULE-BUMP-GUARD 2026-11-13] 用户报障「现在刷新并没有生效」的整类根因锁。

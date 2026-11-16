@@ -21,6 +21,14 @@ import {
 import { makeCoreTopicResolver } from '../topic/core-category.js';
 import { AUCTION_YIZI_WAIT_TAG } from './auction-yizi-tag.js';
 
+/** [SW-CACHE] sw.js 的 CACHE 版本号。断言写成「≥ 基线」：
+ *  既能抓住「改了文案却忘记 bump」（版本还停在旧号，一定小于基线），
+ *  又不用每轮发布都回来改数字（旧的精确断言每轮都要改 4 处，改漏就是假红）。 */
+function _swCacheNo(text) {
+  const m = /var CACHE = 'biga-static-v(\d+)'/.exec(String(text || ''));
+  return m ? Number(m[1]) : 0;
+}
+
 // ── 真实核心词表（只留本用例需要的几个大类；匹配语义与云端 24 个逐字一致）──────────────
 const CORE = [
   { name: '大消费', synonyms: ['食品', '饮料', '服装', '家电', '旅游', '零售', '商业百货', '白酒'] },
@@ -291,13 +299,13 @@ describe('tvrb · [AUTO-PICK-TOP20] 边界与回归锁', function() {
     expect((blk.notes || []).join('\n')).toContain('监管异动');
   });
 
-  it('三件套：规则指纹 v17 + SW v65 + 模板/样式都接上了 range20Label', function() {
+  it('三件套：规则指纹 v17 + SW v66 + 模板/样式都接上了 range20Label', function() {
     const rules = readFileSync('src/logic/topicvolratio/plan-snapshot-rules.js', 'utf8');
     expect(rules).toContain('TVRB_RULES_VERSION = 17');
     expect(rules).toContain('[AUTO-PICK-TOP20]');
     expect(rules).toContain('[MID-TOP20]');
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v65'");
+    expect(_swCacheNo(sw)).toBeGreaterThanOrEqual(66);   // [SW-CACHE] ≥ 本轮基线即可，⛔ 不用每轮改数字
     const vue = readFileSync('src/components/topicvolratio/TvrbBuyBlock.vue', 'utf8');
     expect(vue).toContain('p.range20Label');
     const css = readFileSync('src/assets/css/topic-vol-ratio-board.css', 'utf8');

@@ -14,8 +14,17 @@ import { maxRangePctOf, makeAbnMainBoardFilter } from './tvrb-plan.js';
 import { state } from '../app-state.js';
 import { collectBuyNames } from './plan-live-overlay.js';
 import {
+
   ABNORMAL_KIND_LEADER_NOW, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_NO_BUY_TAG, TVRB_RANGE10_CAP
 } from './tvrb-constants.js';
+
+/** [SW-CACHE] sw.js 的 CACHE 版本号。断言写成「≥ 基线」：
+ *  既能抓住「改了文案却忘记 bump」（版本还停在旧号，一定小于基线），
+ *  又不用每轮发布都回来改数字（旧的精确断言每轮都要改 4 处，改漏就是假红）。 */
+function _swCacheNo(text) {
+  const m = /var CACHE = 'biga-static-v(\d+)'/.exec(String(text || ''));
+  return m ? Number(m[1]) : 0;
+}
 
 function abnormalFact() {
   return resolveAbnormalFact({
@@ -195,11 +204,11 @@ describe('[ABNORMAL-ALL 接线静态锁] 漏一处 ⇒ 11-12 仍显示彩色「�
     expect(css).toContain('grayscale(1)');
   });
 
-  it('版本：规则指纹 v17 + SW v65（[TOPIC-OWNER] 改了选股结论，漏一个手机端就吃旧 JS）', () => {
+  it('版本：规则指纹 v17 + SW v66（[TOPIC-OWNER] 改了选股结论，漏一个手机端就吃旧 JS）', () => {
     const r = readFileSync('src/logic/topicvolratio/plan-snapshot-rules.js', 'utf8');
     expect(r).toContain('TVRB_RULES_VERSION = 17');
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(sw).toContain("var CACHE = 'biga-static-v65'");
+    expect(_swCacheNo(sw)).toBeGreaterThanOrEqual(66);   // [SW-CACHE] ≥ 本轮基线即可，⛔ 不用每轮改数字
   });
 
   it('[CAP-97] 11-11 真实 95.711445% 不该触发任何显示层总约束', () => {

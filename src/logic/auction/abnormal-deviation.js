@@ -386,17 +386,25 @@ export function classifyDeviation(o) {
 // ── 口径（必须写清楚，因为它不是交易所原文里的一个字段）─────────────────────────
 //   · 「触发日」= 该交易日【收盘后】这只票的 10 日偏离或 30 日偏离任一向越线
 //     （10 日 ≥ +100% 或 ≤ −50%；30 日 ≥ +200% 或 ≤ −70%；板块阈值见 DEV_THRESHOLDS）；
-//   · 「一次触发」= 连续的触发日合并成一次（中间有一天判出「未触发」就断开）；
-//   · 「第 N 次」= 截至 asOf，这只票在【可观测窗口】内第几次进入该状态。
+//   · 「第 N 次」= asOf 当天是连续第几个触发日 ⇒ **逐日递增，不是按事件合并**。
+//     🔴🔴 [ABN-TRIGGER-2 2026-11-16 用户当场纠正] 旧实现把「连续的触发日合并成一次」，
+//        于是 10-08 / 10-09 / 10-12（新华传媒连续 3 天越线）**三天全印「首次触发」**。
+//        用户原话：「10月8日新华传媒显示首次触发，10月9日显示也是首次触发，明显不对
+//        你的代码有问题……要精准啊，不要瞎改」。
+//        ⇒ 「第几次」只能有一个读法：第几个触发日。10-08 首次 / 10-09 二次 / 10-12 三次。
+//   · 断开条件：某一天**明确判出「未触发」**才归零（下次再从「首次」起）。
+//     判不出 ≠ 未触发 ⇒ streak 保持不变（§10：不能证明它回落了）。
+//   · 同时保留「累计几次独立触发」（断开计一次）：这是「被监管过几次」的信息，
+//     进 title，⛔ 不上主标签（主标签一个数字就够，两个数字用户会看错）。
 //   ⚠️ 官方原文：「异常/严重异常波动指标自交易所公布的次一交易日或复牌之日起重新计算」
-//      ⇒ 交易所公布后窗口会重算，所以本函数算的是【按连续区间合并的复算值】，
-//        可能比官方实际公布次数更细。这句话必须进 title，⛔ 不许让用户以为这是官方计数。
+//      ⇒ 交易所公布后窗口会重算，所以本函数的序号是【本项目复算值】，可能比官方更细。
+//        这句话必须进 title，⛔ 不许让用户以为这是官方公布的次数。
 //
 // ── §10 红线 ────────────────────────────────────────────────────────────────────
 //   · 指数腿 / 个股腿不足 ⇒ ok=false + reason，⛔ 绝不返回「首次」（那是最危险的假结论）；
-//   · 某一天窗口算不出 ⇒ 跳过并计入 gapDays，**不打断事件**（不能证明它回落了），
-//     但要在 title 里如实写出「有 N 天判不出」；
-//   · asOf 当天判不出 ⇒ ordinal=0 ⇒ 不显示标签（⛔ 不拿上一次的序号冒充这次）。
+//   · 某一天窗口算不出 ⇒ 跳过并计入 gapDays，**streak 与事件都保持不变**
+//     （不能证明它回落了），但要在 title 里如实写出「有 N 天判不出」；
+//   · asOf 当天判不出 / 未触发 ⇒ ordinal=0 ⇒ 不显示标签（⛔ 不拿上一次的序号冒充这次）。
 
 /** 回看多少个交易日（更早的触发对「这次是第几次」没有意义，且指数腿未必覆盖） */
 export const ABN_TRIGGER_LOOKBACK_DAYS = 60;
@@ -416,7 +424,7 @@ export function severeOrdinalText(n) {
 }
 
 /**
- * 【纯函数】统计「严重异常波动」的触发次数（逐日复算 + 连续区间合并）。
+ * 【纯函数】统计「严重异常波动」的触发序号（逐日复算 + 连续天数）。
  *
  * @param {object} o
  * @param {string} o.code 6 位代码（决定板块阈值与对应指数，⛔ 不猜）
@@ -429,7 +437,9 @@ export function severeOrdinalText(n) {
  * @returns {{ok:boolean, reason:string, count:number, ordinal:number,
  *            text:string, tone:string, events:Array, judgedDays:number, gapDays:number,
  *            from:string, to:string, lookback:number, title:string}}
- *          ok=false ⇒ 判不出（⛔ 不返回「首次」）；ordinal=0 ⇒ asOf 当天未触发/判不出。
+ *          ok=false ⇒ 判不出（⛔ 不返回「首次」）；
+ *          ordinal = asOf 当天是**连续第几个触发日**（1 = 首次），未触发/判不出 ⇒ 0；
+ *          count  = 窗口内**独立触发次数**（断开计一次，只进 title，⛔ 不上主标签）。
  */
 export function countSevereTriggers(o) {
   const x = o || {};
@@ -461,24 +471,33 @@ export function countSevereTriggers(o) {
   const cap = (isFinite(capRaw) && capRaw > 0) ? capRaw : ABN_TRIGGER_LOOKBACK_DAYS;
   const startIdx = Math.max(0, allDates.length - cap);
 
-  const events = [];
+  const events = [];       // 独立事件（断开计一次），只用于 title
   let cur = null;
+  let streak = 0;          // ★ 连续触发天数 = 本次事件内的第 N 天 ⇒ 主标签就用它
   let judged = 0;
   let gap = 0;
-  let prevSevere = false;
+  let asOfStreak = 0;      // asOf【当天自己】是触发日时的 streak，否则 0
 
   for (let i = startIdx; i < allDates.length; i++) {
     const d = allDates[i];
+    const isLast = (i === allDates.length - 1);
     const d10 = _deviationCore(sMap, ixMap, 10, allDates, i);
     const d30 = _deviationCore(sMap, ixMap, 30, allDates, i);
     const v10 = d10 ? d10.dev : null;
     const v30 = d30 ? d30.dev : null;
-    if (v10 === null && v30 === null) { gap++; continue; }   // 判不出 ⇒ 不打断事件（§10）
+    if (v10 === null && v30 === null) {
+      // §10：判不出 ≠ 未触发（不能证明它回落了）⇒ streak 与事件都【保持不变】；
+      //     但 asOf 当天判不出 ⇒ 不许拿上一次的序号冒充（§10 红线）
+      gap++;
+      if (isLast) asOfStreak = 0;
+      continue;
+    }
     judged++;
     const severe = (v10 !== null && (v10 >= th.dev10 || v10 <= th.neg10)) ||
       (v30 !== null && (v30 >= th.dev30 || v30 <= th.neg30));
     if (severe) {
-      if (!prevSevere || !cur) {
+      streak++;                       // ★ 逐日递增：10-08=1、10-09=2、10-12=3
+      if (!cur) {
         cur = { start: d, end: d, days: 1, peakDev10: v10, peakDev30: v30 };
         events.push(cur);
       } else {
@@ -487,10 +506,11 @@ export function countSevereTriggers(o) {
         if (v10 !== null && (cur.peakDev10 === null || v10 > cur.peakDev10)) cur.peakDev10 = v10;
         if (v30 !== null && (cur.peakDev30 === null || v30 > cur.peakDev30)) cur.peakDev30 = v30;
       }
-      prevSevere = true;
+      if (isLast) asOfStreak = streak;
     } else {
-      prevSevere = false;
+      streak = 0;                     // 明确判出「未触发」⇒ 归零，下次再从「首次」起
       cur = null;
+      if (isLast) asOfStreak = 0;
     }
   }
 
@@ -499,9 +519,10 @@ export function countSevereTriggers(o) {
   }
 
   const lastDate = allDates[allDates.length - 1];
-  const lastEvent = events.length ? events[events.length - 1] : null;
-  // asOf 当天必须【自己就是触发日】才算「本次是第几次」—— 判不出/未触发 ⇒ 0（⛔ 不沿用上一次）
-  const ordinal = (lastEvent && lastEvent.end === lastDate && asOf === lastDate) ? events.length : 0;
+  // 🔴 asOf 必须【自己就是触发日】才算「本次是第几次」：
+  //    · asOf 与最后一天不是同一天（当天没有指数腿）⇒ 0；
+  //    · 当天判不出 / 未触发 ⇒ asOfStreak 已被置 0（⛔ 不沿用上一次的序号）
+  const ordinal = (asOf && asOf === lastDate) ? asOfStreak : 0;
   const tone = ordinal === 0 ? '' : (ordinal === 1 ? 'first' : 'repeat');
   const from = allDates[startIdx];
   const lookback = allDates.length - startIdx;
@@ -511,22 +532,27 @@ export function countSevereTriggers(o) {
     return (v >= 0 ? '+' : '') + Number(v).toFixed(1) + '%';
   };
   const parts = [];
-  parts.push('触发次数口径（本项目复算，⛔ 不是交易所公布的官方计数）：对近 ' + lookback +
+  parts.push('「第几次触发」口径（本项目复算，⛔ 不是交易所公布的官方计数）：对近 ' + lookback +
     ' 个交易日【逐日复算】10 日 / 30 日偏离值，任一向越线（10 日 ≥ +' + th.dev10 + '% 或 ≤ ' +
     th.neg10 + '%；30 日 ≥ +' + th.dev30 + '% 或 ≤ ' + th.neg30 + '%）即算「当日触发」；' +
-    '连续的触发日合并为【一次】触发。');
+    '序号 = 这是连续第几个触发日（逐日递增），某天明确判出「未触发」才归零。');
   parts.push('官方原文：「异常/严重异常波动指标自交易所公布的次一交易日或复牌之日起重新计算」' +
-    '⇒ 交易所公布后窗口会重算，所以这里的次数可能比官方实际公布次数更细。');
+    '⇒ 交易所公布后窗口会重算，所以这里的序号可能比官方实际公布次数更细。');
+  if (ordinal > 0) {
+    parts.push('本次：连续第 ' + ordinal + ' 个触发日。');
+  }
   if (events.length) {
-    parts.push('历次触发：' + events.map(function (e, i) {
-      return '第 ' + (i + 1) + ' 次 ' + e.start + '~' + e.end + '（' + e.days + ' 个交易日，峰值 10 日 ' +
-        fmt(e.peakDev10) + ' / 30 日 ' + fmt(e.peakDev30) + '）';
-    }).join('；'));
+    parts.push('近 ' + lookback + ' 个交易日内共 ' + events.length + ' 次独立触发（断开计一次）：' +
+      events.map(function (e, i) {
+        return '第 ' + (i + 1) + ' 段 ' + e.start + '~' + e.end + '（' + e.days + ' 个触发日，峰值 10 日 ' +
+          fmt(e.peakDev10) + ' / 30 日 ' + fmt(e.peakDev30) + '）';
+      }).join('；'));
   } else {
     parts.push('近 ' + judged + ' 个可判定交易日里【一次都没有】触发。');
   }
   if (gap > 0) {
-    parts.push('⚠️ 其中 ' + gap + ' 个交易日因腿不足判不出（已跳过，⛔ 未当成「未触发」，也不打断事件）');
+    parts.push('⚠️ 其中 ' + gap + ' 个交易日因腿不足判不出（已跳过，⛔ 未当成「未触发」，' +
+      '也不打断连续计数）');
   }
   parts.push('可判定 ' + judged + ' 天（指数腿覆盖 ' + from + ' → ' + lastDate + '）；对应指数 ' +
     idx.name + '（' + idx.code + '）');

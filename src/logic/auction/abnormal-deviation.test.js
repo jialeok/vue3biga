@@ -630,13 +630,18 @@ describe('[ABN-DEV] 档位常量齐全（视图只读字符串，⛔ 不在模�
 
 // ══════════════════════════════════════════════════════════════════════════════════════════
 // ★★ [ABN-TRIGGER 2026-11-15 用户口径] 「首次触发 / 二次触发 / 三次触发」
+// ★★ [ABN-TRIGGER-2 2026-11-16 用户当场纠正] 「第几次」= 连续第几个触发日（⛔ 不按事件合并）
 //
-// 用户原话：「你在官方偏离值那里（原版）给已达到交易所严重异常波动标准的股票，打上标签，
-//   首次触发，二次触发，三次触发等字样，这样我就知道它是第几次，这样我好采取不同策略」
+// 用户原话（11-15）：「你在官方偏离值那里（原版）给已达到交易所严重异常波动标准的股票，
+//   打上标签，首次触发，二次触发，三次触发等字样，这样我就知道它是第几次，这样我好采取不同策略」
+// 用户原话（11-16 纠正）：「10月8日新华传媒显示首次触发，10月9日显示也是首次触发，明显不对
+//   你的代码有问题……要精准啊，不要瞎改」
 //
-// 验收基准（真实夹具）：600825 新华传媒 官方严重异动 start_date = 2026-10-09，
-//   ⇒ 首次越线必然是 2026-10-08（官方「公布即从次一交易日重算」，所以触发日 = start − 1 个交易日）。
-//   ⇒ `asOf='2026-10-08'` 必须是【首次触发】，这是本功能与官方口径唯一的对齐点。
+// 验收基准（真实夹具，600825 新华传媒，与云端库逐字一致）：
+//   10-08 10日偏离 +116.6%（首次） / 10-09 +137.6%（二次） / 10-12 +162.5%（三次）
+//   10-13~10-15 个股腿缺 ⇒ 判不出（streak 保持不变）
+//   10-16 +99.6% 未越线 ⇒ 归零
+// 官方严重异动 start_date = 2026-10-09 ⇒ 首次越线必然是 10-08（「公布即从次一交易日重算」）。
 // ══════════════════════════════════════════════════════════════════════════════════════════
 describe('[ABN-TRIGGER] 严重异常波动的「第几次触发」', function () {
   it('序号文案：1 首次 / 2 二次 / 3 三次 / 10 十次 / 11 第 11 次 / 0 空串', function () {
@@ -664,6 +669,28 @@ describe('[ABN-TRIGGER] 严重异常波动的「第几次触发」', function ()
     expect(r.events[0].start).toBe('2026-10-08');
   });
 
+  it('🔴🔴 [ABN-TRIGGER-2] 同一次事件内必须逐日递增：10-09 二次、10-12 三次', function () {
+    // 用户 11-16 当场纠正的就是这一条：旧实现把连续触发日合并成一次 ⇒ 三天全印「首次触发」
+    const run = function (d) {
+      return countSevereTriggers({
+        code: '600825', stockLegs: legsOf('600825'), indexLegs: idxOf('600825'), asOf: d
+      });
+    };
+    const d09 = run('2026-10-09');
+    expect(d09.ok).toBe(true);
+    expect(d09.ordinal).toBe(2);
+    expect(d09.text).toBe('二次触发');
+    expect(d09.tone).toBe('repeat');
+    // 三次以上仍是同一档色调（实心红），⛔ 不另开第三档
+    const d12 = run('2026-10-12');
+    expect(d12.ordinal).toBe(3);
+    expect(d12.text).toBe('三次触发');
+    expect(d12.tone).toBe('repeat');
+    // 独立事件数（「被监管过几次」）依然是 1，与逐日序号是两个不同的数
+    expect(d09.count).toBe(1);
+    expect(d12.count).toBe(1);
+  });
+
   it('官方口径差一天是【判据本身】：10-07 还不是首次（那天还没越线）', function () {
     const r = countSevereTriggers({
       code: '600825', stockLegs: legsOf('600825'), indexLegs: idxOf('600825'), asOf: '2026-10-07'
@@ -672,13 +699,12 @@ describe('[ABN-TRIGGER] 严重异常波动的「第几次触发」', function ()
     expect(r.text).not.toBe('首次触发');
   });
 
-  it('★ 连续触发日合并为【一次】，断开后再触发才是下一次（40 日可手算构造）', function () {
+  it('★ 逐日递增 + 断开归零 + 判不出不断链（40 日可手算构造）', function () {
     // 构造（⛔ 不用复利噪声，每天要么 0 要么一次性 +150%，便于手算）：
     //   d1~d19 平；d20 单日 +150%；d21~d39 平；d40 再来一次 +150%
-    //   ⇒ 10 日窗口里只要含 d20 就 ≥ +100%（d20 ~ d29，连续 10 天 = 【一次】触发）
-    //   ⇒ d30 起 d20 掉出 10 日窗口 ⇒ dev10 = 0 ⇒ 断开
-    //   ⇒ d40 再越线 ⇒ 第二次触发
-    //   ⇒ 30 日窗口全程 < +200%（1.5 / 1.5×2.5=275% 只在 d40 而且用的是 d11~d40 = 1.5×2.5=3.75? 见下核算）
+    //   ⇒ 10 日窗口里只要含 d20 就 ≥ +100%（d20 ~ d29，连续 10 个触发日）
+    //   ⇒ d30 起 d20 掉出 10 日窗口 ⇒ dev10 = 0 ⇒ 归零
+    //   ⇒ d40 再越线 ⇒ 又从「首次」起，独立事件数变 2
     const dates = [];
     for (let i = 1; i <= 30; i++) dates.push('2026-04-' + String(i).padStart(2, '0'));
     for (let i = 1; i <= 10; i++) dates.push('2026-05-' + String(i).padStart(2, '0'));
@@ -698,10 +724,11 @@ describe('[ABN-TRIGGER] 严重异常波动的「第几次触发」', function ()
     expect(d20.text).toBe('首次触发');
     expect(d20.tone).toBe('first');
 
-    // ② d25 / d29 仍在【同一段】里 ⇒ 依然「首次」，⛔ 不按天累加成二次三次
-    expect(run(dates[24]).ordinal).toBe(1);
-    expect(run(dates[28]).ordinal).toBe(1);
-    expect(run(dates[28]).text).toBe('首次触发');
+    // ② 🔴 d25 / d29 仍在连续触发区间 ⇒ 必须累加（这次纠正的核心）
+    expect(run(dates[24]).ordinal).toBe(6);
+    expect(run(dates[24]).text).toBe('六次触发');
+    expect(run(dates[28]).ordinal).toBe(10);
+    expect(run(dates[28]).text).toBe('十次触发');
 
     // ③ d30 已回落 ⇒ 今天不是触发日 ⇒ 不显示标签（⛔ 不沿用上一次的序号）
     const d30 = run(dates[29]);
@@ -709,16 +736,35 @@ describe('[ABN-TRIGGER] 严重异常波动的「第几次触发」', function ()
     expect(d30.text).toBe('');
     expect(d30.count).toBe(1);
 
-    // ④ d40 再次越线 ⇒ 二次触发
+    // ④ d40 再次越线 ⇒ 归零后重新从「首次」起；独立事件数 = 2
     const d40 = run(dates[39]);
-    expect(d40.ordinal).toBe(2);
-    expect(d40.text).toBe('二次触发');
-    expect(d40.tone).toBe('repeat');
-    expect(d40.events.length).toBe(2);
+    expect(d40.ordinal).toBe(1);
+    expect(d40.text).toBe('首次触发');
+    expect(d40.tone).toBe('first');
+    expect(d40.count).toBe(2);
     expect(d40.events[0].start).toBe(dates[19]);
     expect(d40.events[0].end).toBe(dates[28]);
     expect(d40.events[0].days).toBe(10);
     expect(d40.events[1].start).toBe(dates[39]);
+  });
+
+  it('§10：判不出【不打断】连续计数（不能证明它回落了），但当天判不出就不显示序号', function () {
+    // 把 10-09 的个股腿抠掉 ⇒ 那天「判不出」（末腿缺失）⇒ 不能当成「未触发」
+    // 于是 10-12 应是连续第 2 个【可判定的】触发日（10-08=1 → 10-09 判不出 → 10-12=2）；
+    // 若错把判不出当归零，10-12 会掉成 1 —— 这条断言就是用来锁住这个区别的。
+    const s = legsOf('600825').filter(function (l) { return l.date !== '2026-10-09'; });
+    const r = countSevereTriggers({
+      code: '600825', stockLegs: s, indexLegs: idxOf('600825'), asOf: '2026-10-12'
+    });
+    expect(r.gapDays).toBeGreaterThan(0);
+    expect(r.ordinal).toBe(2);
+    expect(r.text).toBe('二次触发');
+    // 而「asOf 当天判不出」时，⛔ 不许拿上一次的序号冒充
+    const r2 = countSevereTriggers({
+      code: '600825', stockLegs: legsOf('600825'), indexLegs: idxOf('600825'), asOf: '2026-10-13'
+    });
+    expect(r2.ordinal).toBe(0);
+    expect(r2.text).toBe('');
   });
 
   it('§10：腿不够一天都判不出 ⇒ ok=false 且 text 为空（⛔ 绝不返回「首次」）', function () {
@@ -739,13 +785,14 @@ describe('[ABN-TRIGGER] 严重异常波动的「第几次触发」', function ()
     expect(countSevereTriggers({ code: '', stockLegs: legs, indexLegs: legs, asOf: '2026-03-01' }).ok).toBe(false);
   });
 
-  it('title 必须交代：口径是复算、官方公布后会重算、判不出的天数', function () {
+  it('title 必须交代：口径是逐日递增的复算、官方公布后会重算、判不出的天数', function () {
     const r = countSevereTriggers({
-      code: '600825', stockLegs: legsOf('600825'), indexLegs: idxOf('600825'), asOf: '2026-10-08'
+      code: '600825', stockLegs: legsOf('600825'), indexLegs: idxOf('600825'), asOf: '2026-10-09'
     });
     expect(r.title).toContain('不是交易所公布的官方计数');
     expect(r.title).toContain('重新计算');
-    expect(r.title).toContain('历次触发');
+    expect(r.title).toContain('连续第几个触发日');
+    expect(r.title).toContain('次独立触发');     // 「被监管几次」的信息在 title，⛔ 不上主标签
     expect(r.title).toContain('可判定');
   });
 
