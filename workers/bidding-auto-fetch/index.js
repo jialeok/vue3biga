@@ -66,6 +66,7 @@ import { runBiddingCloseWrite } from './logic/bidding-close-write.js';
 //   原来只靠另一个账号/查不到的 worker-b 在 16:00 写下一交易日，且日志带不存在的 worker 列被吞，
 //   11-05 16:00 那轮没跑 ⇒ jiwang_data 缺 11-06 整行 ⇒ 昨日跌涨/昨收盘结果/昨日情绪一起空。
 import { runJiwangCloseWrite } from './logic/jiwang-close-write.js';
+import { runPresenceRecompute } from './logic/presence-recompute.js';
 // [RUNLOG 2026-09-30] 把每轮的完整日志（含 ⏱ 埋点）落库到 bidding_fetch_log，
 //   否则 CF Worker 的埋点只进 Cloudflare Dashboard，事后无法复盘「9:26 为什么没数据」。
 import { writeRunLog, readPreviousAuctionWatchlist, readMarketMetricsForDate } from './data/supabase-write.js';
@@ -688,6 +689,24 @@ async function dispatch(point, env, logs, opts) {
       r20 = { ok: false, written: 0, logs: ['[r20-prefill] 异常: ' + ((e && e.message) || e)] };
       logs26.push(r20.logs[0]);
     }
+    // ★★ [PRESENCE-0926 2026-11-16 用户报障「每到收盘又变了」] 在列次数必须赶在 09:27 定稿之前。
+    //
+    //   病根：第二十九条（排名第二的题材量比太小 ⇒ 整块作废）要读 `auction_presence`
+    //   （某票在最近 10 个交易日名单里出现过几天），而这张派生表原来只由 pg_cron 在北京 **09:30**
+    //   生成 —— 比 09:27 的定稿晚 3 分钟 ⇒ `tvrb-plan.js#r10DataReady` 恒 false
+    //   ⇒ 规则每天都被 §10「数据没到就放行」跳过 ⇒ 早上多选一个题材，等表到货后页面重算就翻脸
+    //   （11-16 实测：09:27 定稿 3 只 → 16:27 重算 1 只）。
+    //   ⇒ 名单此刻（09:25:28 已落库）就是最终版，这里直接调库内函数算一遍，把到货时间拉到 09:26。
+    //   §10：失败**不阻断**本轮（这是派生表，正确性不依赖它），但必须如实进日志。
+    //   ⚠️ 放在 r20 之后：`recompute_auction_presence` 只读 auction_watchlist，与本轮写入顺序无关，
+    //      放最后只是为了让「名单最终版」毫无疑问已经落库。
+    let pres26 = { ok: false, rows: 0, logs: ['[presence] 未执行'] };
+    try {
+      pres26 = await runPresenceRecompute(env, { date: d26, logs: logs26 });
+    } catch (e) {
+      pres26 = { ok: false, rows: 0, logs: ['[presence] 异常: ' + ((e && e.message) || e)] };
+      logs26.push(pres26.logs[0]);
+    }
     const result26 = {
       ok: r26.ok || r20.ok,
       today: r26.today,
@@ -701,6 +720,9 @@ async function dispatch(point, env, logs, opts) {
       dailyLegsWritten: legs26.written || 0,
       range20: r20,
       range20Written: r20.written || 0,
+      // ★ [PRESENCE-0926] 第二十九条的必需输入（10/20 日窗口在列次数）本次重算留痕
+      presence: pres26,
+      presenceRows: pres26.rows || 0,
       // ★★ [LADDER26-TIMING 2026-11-12] 用户硬指标「9:26 完成、不超过 9:27」的度量。
       //   纯记录：⛔ 未在此加任何截止/跳过分支，执行顺序与业务分支一字未改。
       //   明天 9:26 跑完直接查 bidding_fetch_log（time_point=ladder26）即可核对：
@@ -720,7 +742,8 @@ async function dispatch(point, env, logs, opts) {
       ' 截止=' + LADDER26_DEADLINE_LABEL + ' overrun=' + result26.p0Overrun +
       ' | 猫抓补量比=' + ((r26.auc && r26.auc.written) || 0) + ' 只' +
       (r26.auc && r26.auc.names && r26.auc.names.length ? '（' + r26.auc.names.slice(0, 12).join(',') + '）' : '') +
-      ' | 20日补缺=' + result26.range20Written + ' 行 | 逐日腿=' + result26.dailyLegsWritten + ' 行');
+      ' | 20日补缺=' + result26.range20Written + ' 行 | 逐日腿=' + result26.dailyLegsWritten + ' 行' +
+      ' | 在列次数=' + result26.presenceRows + ' 行');
     await persistRunResult(env, point, result26);
     return result26;
   }

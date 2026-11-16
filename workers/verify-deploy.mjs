@@ -105,7 +105,15 @@ const REQUIRED = [
   // [OVERWRITE 2026-11-13] 「已有非空 close 不覆盖」是红线，但错值一旦落库就永久冻住
   //   （11-13 板块ETF 被旧逻辑写成 0、正确值 8）。留一个【显式且默认关闭】的口子：
   //   只有人手动 `&overwrite=1` 才能改写，cron 恒 false。
-  'overwrite'
+  'overwrite',
+  // [PRESENCE-0926 2026-11-16] 第二十九条的必需输入「十日涨幅在列次数」必须在 09:27 定稿前就位。
+  //   原来只由 pg_cron 在北京 09:30 生成 ⇒ 定稿时恒缺 ⇒ 规则每天被 §10「数据没到就放行」跳过
+  //   ⇒ 早上多选一个题材，等表到货后页面一重算就翻脸（11-16：3 只 → 1 只）。
+  //   现在 ladder26 直接调 RPC 算一遍。
+  //   ⚠️ 前者是函数名（跨文件被 index.js 调用，压缩不删），后者是日志字符串字面量；
+  //      ⛔ 都不能换成注释里的标记（esbuild 会删注释）。
+  'runPresenceRecompute',
+  '[presence] ✅ 在列次数'
 ];
 
 async function cf(url, accept) {
