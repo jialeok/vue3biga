@@ -36,6 +36,21 @@ const PASTE_SEP_RE = /[\s\u3000,，、;；|:：/／#*]+/;
 const LEADING_INDEX_RE = /^\s*\d+\s*[.、)）]\s*/;
 const PLAIN_CODE_RE = /^\d{6}$/;
 const CODE_WITH_SUFFIX_RE = /^(\d{6})\.(SH|SZ|BJ)$/i;
+/**
+ * ★★ [PASTE-HEADER-GUARD 2026-11-16] 粘贴文本的【表头】词。
+ *
+ * 为什么必须有：用户从网页 / 表格复制题材时，表头会跟着进去。11-16 实测库里被写进一条脏行
+ * `stock='股票名称', topics='所属概念'` —— 它不是股票，却会进题材归一表：
+ *   · 让「所属概念」变成一个题材名（污染大类归一）；
+ *   · 让归一表里多一只不存在的票（`getPrimaryTopicMap` 的股票数统计被它占位）。
+ * 而且每条这样的行都会 push 一次 ⇒ 题材库指纹变化 ⇒ 选股存档判过期（当天结论被无谓重算）。
+ *
+ * 判据刻意**保守**：只有「第一列本身就是表头词」才丢这一行，⛔ 绝不按「像不像股票」去猜，
+ * 免得把真股票（如「东方财富」「中国平安」之类）误杀。
+ */
+const PASTE_HEADER_STOCK_RE = /^(股票名称|股票简称|证券名称|证券简称|股票|名称|股票代码|证券代码|代码|序号|no\.?)$/i;
+/** 表头里的「题材列」名（仅当第一列也是表头时才用于整行判定；见下） */
+const PASTE_HEADER_TOPIC_RE = /^(所属概念|所属行业|所属板块|所属题材|概念|题材|板块|行业)$/;
 
 /**
  * 取某一行在「题材分组」里的主题材。
@@ -267,6 +282,18 @@ export function parseTopicPaste(text) {
         totalLines++;
         const tokens = line.split(PASTE_SEP_RE).map(function(t) { return t.trim(); }).filter(Boolean);
         if (tokens.length < 2) { skipped++; return; }
+
+        // ★★ [PASTE-HEADER-GUARD 2026-11-16] 表头行整行丢弃（实测 11-16 写进过 '股票名称/所属概念'）。
+        //   两条都要满足才算表头：① 第一列是表头词 ② 其余列里有表头题材词或全是表头词
+        //   ⇒ 保守到不会误杀任何「名字像表头」的真股票（它们第二列是真题材，不会命中 ②）。
+        if (PASTE_HEADER_STOCK_RE.test(tokens[0] || '')) {
+            const rest = tokens.slice(1);
+            const allHeader = rest.every(function(t) { return PASTE_HEADER_TOPIC_RE.test(t) || PASTE_HEADER_STOCK_RE.test(t); });
+            if (allHeader || rest.some(function(t) { return PASTE_HEADER_TOPIC_RE.test(t); })) {
+                skipped++;
+                return;
+            }
+        }
 
         let stock = '';
         let code = '';

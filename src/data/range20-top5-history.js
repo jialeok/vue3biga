@@ -49,13 +49,46 @@ function _num(raw) {
 }
 
 /**
- * 同一天两腿并存时取哪一行：'close'（收盘口径 = 当天最终值）优先，其次 'auc'。
- * ⚠️ 只影响「历史榜」的取数，不影响任何展示口径（本模块只输出【名字清单】）。
+ * 同一天两腿并存时取哪一行。
+ *
+ * 🔴🔴 [T5-TODAY-AUC 2026-11-16 用户报障 · 整类修复]
+ *   用户原话：「每到收盘又变了，早上还是北纬科技，文投控股，日出东方，现在收盘又变成了
+ *   我只有日出东方了……我都说了按照竞价口径来，收盘后也不能变，现在为什么还在变？」
+ *
+ *   病根：原实现【不分日期一律优先 'close'】。而 `stock_range20_pct` 的今天那 70 行
+ *   `leg='close'` 是 15:00 后才由收盘流程写进去的 ⇒ 早上只有 `auc` 腿、收盘后两腿并存
+ *   ⇒ 「近 20 个交易日每天的前五榜」里**今天那一天的数值被换成了收盘口径**
+ *   ⇒ `everInTop5Set` / 首次上榜判定变 ⇒ 新龙 / 切换日判定翻转
+ *   ⇒ `tvrb-plan.js` 的 `topicLimit = (switchNewDragon || out.switchDay) ? 1 : 2` 从 2 掉到 1
+ *   ⇒ 买点侧从「2 个题材 3 只票」变成「1 个题材 1 只票」。
+ *
+ *   实测（11-16 真实库）：北纬科技 51.12 / 文投控股 62.94 / 日出东方 66.55（竞价反解）
+ *   而收盘口径下日出东方只剩 50.00 —— 那只票当天收在 −10%，正是「收盘把竞价涨幅吃掉」。
+ *
+ *   ⇒ 口径：**今天**（= 正在看的这一天就是今天）优先 `'auc'`（9:25 竞价腿，定值、永不改）；
+ *     历史日维持 `'close'` 优先（那些日子两腿要么只有 close，要么 close 才是当天最终值，
+ *     且用户要的是「历史复盘结论稳定」—— 改它会让已定稿的历史选股全体漂移，⛔ 不在本次范围）。
+ *
+ *   ⚠️ 只影响「历史榜」的取数，不影响任何展示口径（本模块只输出【名字清单】）。
+ * @param {{pct:number, leg:string}|undefined} prev
+ * @param {{pct:number, leg:string}} next
+ * @param {boolean} preferAuc 该日是否是「今天」（是 ⇒ 竞价腿赢）
  */
-function _preferLeg(prev, next) {
+function _preferLeg(prev, next, preferAuc) {
   if (!prev) return next;
-  const rank = function(leg) { return String(leg || '') === 'close' ? 2 : (String(leg || '') === 'auc' ? 1 : 0); };
-  return rank(next.leg) > rank(prev.leg) ? next : prev;
+  const w = function(leg) {
+    const s = String(leg || '');
+    if (preferAuc) return s === 'auc' ? 2 : (s === 'close' ? 1 : 0);
+    return s === 'close' ? 2 : (s === 'auc' ? 1 : 0);
+  };
+  return w(next.leg) > w(prev.leg) ? next : prev;
+}
+
+/** 北京「今天」YYYY-MM-DD（与 workers/_shared-source/date-utils.js#beijingToday 同口径） */
+function _beijingToday() {
+  const d = new Date(Date.now() + 8 * 3600 * 1000);
+  const p = function(n) { return String(n).padStart(2, '0'); };
+  return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate());
 }
 
 /**
@@ -69,6 +102,7 @@ async function _fetch(dates) {
   const list = Array.from(new Set((dates || []).map(function(d) { return String(d || '').trim(); }).filter(Boolean)));
   const out = new Map();
   if (list.length === 0) return out;
+  const todayStr = _beijingToday();
   const sb = getSupabase();
   // 一次 in 查询取全部日期（§32：同一天不会打两次；单次响应上限 1000 行，20 天 × ~80 只 ≈ 1600
   // ⇒ 分页拉取，避免「只拿到前 1000 行」把后面的日期截掉 —— 那会让「首次上榜」被判错）。
@@ -92,7 +126,8 @@ async function _fetch(dates) {
       if (pct === null) return;      // 算不出的行不进榜（§10 不拿 0 冒充）
       if (!out.has(d)) out.set(d, new Map());
       const day = out.get(d);
-      day.set(name, _preferLeg(day.get(name), { pct: pct, leg: String(r.leg || '') }));
+      // ★ [T5-TODAY-AUC 2026-11-16] 今天优先竞价腿（收盘腿一出现就会把今天的涨幅换掉 ⇒ 结论漂移）
+      day.set(name, _preferLeg(day.get(name), { pct: pct, leg: String(r.leg || '') }, d === todayStr));
     });
     if (rows.length < PAGE) break;
     from += PAGE;
@@ -115,7 +150,8 @@ async function _fetch(dates) {
 export async function readTop5History(dates, opts) {
   const o = opts || {};
   const topN = (Number(o.topN) > 0) ? Math.floor(Number(o.topN)) : TOP5_HISTORY_N;
-  const key = (dates || []).slice().sort().join(',') + '|' + topN;
+  // ★ [T5-TODAY-AUC 2026-11-16] key 里带上「今天」—— 取哪条腿依赖它（跨零点 / 换日不能吃到旧缓存）
+  const key = (dates || []).slice().sort().join(',') + '|' + topN + '|' + _beijingToday();
   const hit = _cache.get(key);
   if (hit) return hit;
   const fly = _inflight.get(key);

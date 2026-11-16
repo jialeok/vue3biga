@@ -309,7 +309,7 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
   });
 
   it('版本常量已 bump 到 17（[TOPIC-OWNER] 改了 10-13 的选股结论 ⇒ 历史日也要重算 = v17）', () => {
-    expect(TVRB_RULES_VERSION).toBe(17);
+    expect(TVRB_RULES_VERSION).toBe(18);
   });
 
   // ★★ [ABN-MAINBOARD-GUARD 2026-11-14] 第三十四条「全场十日涨幅最高票」只认主板。
@@ -346,7 +346,7 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     expect(TVRB_RANGE10_ABNORMAL).toBe(100);
     expect(TVRB_RULES_VERSION).toBeGreaterThanOrEqual(10);
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(_swCacheNo(sw)).toBeGreaterThanOrEqual(66);   // [SW-CACHE] ≥ 本轮基线即可，⛔ 不用每轮改数字
+    expect(_swCacheNo(sw)).toBeGreaterThanOrEqual(67);   // [SW-CACHE] ≥ 本轮基线即可，⛔ 不用每轮改数字
   });
 
   // ★★ [FULL-MARKET-GUARD 2026-11-13 用户当场纠正] 整类护栏：
@@ -367,8 +367,8 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     expect(lines).toContain('波及到所有的票');
     expect(lines).toContain('整个市场【整片灰');
     // ④ 三件套版本链
-    expect(TVRB_RULES_VERSION).toBe(17);
-    expect(_swCacheNo(readFileSync('public/sw.js', 'utf8'))).toBeGreaterThanOrEqual(66);
+    expect(TVRB_RULES_VERSION).toBe(18);
+    expect(_swCacheNo(readFileSync('public/sw.js', 'utf8'))).toBeGreaterThanOrEqual(67);
   });
 
   // ★★ [RULE-BUMP-GUARD 2026-11-13] 用户报障「现在刷新并没有生效」的整类根因锁。
@@ -459,11 +459,89 @@ describe('tvrb · [TOPIC-LIB-SIG] 题材库指纹变了 ⇒ 历史日也重算',
 
   it('★ 判据顺序锁：题材库段的比较必须在 base 段之前（否则规则一 bump 历史就永久不更新）', () => {
     const src = readFileSync('src/logic/topicvolratio/plan-snapshot-rules.js', 'utf8');
-    const iTop = src.indexOf("if (curTop && oldTop !== curTop) return 'stale';");
+    // ⚠️ [TDAY-FREEZE 2026-11-16] 这一句从单行 return 变成了带分支的块（先判 freezeSettledDay），
+    //   所以按「判据首行」定位，⛔ 不再匹配整句 return。
+    const iTop = src.indexOf('if (curTop && oldTop !== curTop) {');
     const iBase = src.indexOf("if (oldBase === curBase) return 'hit';");
     expect(iTop).toBeGreaterThan(-1);
     expect(iBase).toBeGreaterThan(iTop);
     // ⛔ 不许再出现「先按 base 相等分叉，再在里面比 top」的旧写法
     expect(src).not.toContain('if (oldBase === curBase) {\n      // 只差题材库那一段');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// ★★ [TDAY-FREEZE 2026-11-16 用户报障 · 整类修复] **当天已定稿 ⇒ 题材库段变化不改当天结论**。
+//
+// 用户原话（逐字）：「今天11月16日，题材量比选股不知道为什么？每到收盘又变了，
+//   早上还是北纬科技，文投控股，日出东方，现在收盘又变成了我只有日出东方了，
+//   之前修过好几次，我都说了按照竞价口径来，收盘后也不能变，现在为什么还在变？
+//   是不是我手动导入涨跌停看板股票题材原因？还是什么原因？」
+//
+// 库内取证（11-16 真实时间戳，不是推测）：
+//   · `tvrb_plan_snapshot(2026-11-16)`：`created_at=01:27:54Z`(09:27 北京) `revision=1`
+//     ⇒ `settled_at=08:27:01Z`(16:27 北京) `revision=2` ⇒ 选票从 3 只变 1 只
+//   · `stock_topics` 在 `08:25:08Z ~ 08:25:15Z`(16:25 北京) 被写入 10 行
+//   · 那 10 只票【全部不在】当日 51 只 `auction_watchlist` 名单里
+// ⇒ 题材内容对「当天选股」零信息增益，但指纹变了 ⇒ 旧实现无条件 stale ⇒ 白重算一次。
+//
+// ⛔ 冻结范围严格三条（越界就是新 bug）：
+//   ① 只冻结【题材库段】；base 段（规则版本 / 核心词）照旧比，用户主动改规则必须立即生效；
+//   ② 只冻结【今天】的存档（调用方按 `date === 今天` 传 freezeSettledDay）；
+//   ③ 只冻结【输入完整】(v1:111)的存档；残缺结论仍允许数据补齐后自愈一次（§10）。
+// ══════════════════════════════════════════════════════════════════════════════════════════
+describe('tvrb · [TDAY-FREEZE] 当天定稿不被题材库导入戳穿', () => {
+  const CORE = [{ name: 'AI应用', synonyms: ['人工智能'] }];
+  const SIG_A = buildRulesFingerprint(CORE, 'tl1:aaaa1111');
+  const SIG_B = buildRulesFingerprint(CORE, 'tl1:bbbb2222');   // 同一份核心词，只是个股题材串变了
+  const SIG_RULE = 'v99:ffffffff:tl1:aaaa1111';                // base 段也变了（模拟 bump / 改核心词）
+
+  it('① 🔴 今天 + 输入完整 + 只有题材库段变 ⇒ hit（11-16 那 10 行导入不该改今天的票）', () => {
+    expect(resolvePlanSnapshotFreshness(
+      { status: 'hit', rulesSig: SIG_A, inputsSig: 'v1:111' },
+      { rulesSig: SIG_B, coreTopicsLoaded: true, inputsSig: 'v1:111', freezeSettledDay: true }
+    )).toBe('hit');
+  });
+
+  it('② 🔴 今天 + 输入完整 + base 段也变了（用户主动改核心词 / bump）⇒ 仍 stale', () => {
+    expect(resolvePlanSnapshotFreshness(
+      { status: 'hit', rulesSig: SIG_A, inputsSig: 'v1:111' },
+      { rulesSig: SIG_RULE, coreTopicsLoaded: true, inputsSig: 'v1:111', freezeSettledDay: true }
+    )).toBe('stale');
+  });
+
+  it('③ 🔴 今天 + 输入【残缺】(v1:110) ⇒ 不冻结，仍 stale（数据补齐要允许自愈）', () => {
+    expect(resolvePlanSnapshotFreshness(
+      { status: 'hit', rulesSig: SIG_A, inputsSig: 'v1:110' },
+      { rulesSig: SIG_B, coreTopicsLoaded: true, inputsSig: 'v1:111', freezeSettledDay: true }
+    )).toBe('stale');
+    // 没记 inputs_sig 的老行同理（不完整 ⇒ 不冻结）
+    expect(resolvePlanSnapshotFreshness(
+      { status: 'hit', rulesSig: SIG_A, inputsSig: '' },
+      { rulesSig: SIG_B, coreTopicsLoaded: true, inputsSig: 'v1:111', freezeSettledDay: true }
+    )).toBe('stale');
+  });
+
+  it('④ 🔴 历史日（freezeSettledDay 缺省 / false）⇒ 行为与原来逐字一致：题材库变就 stale', () => {
+    const snap = { status: 'hit', rulesSig: SIG_A, inputsSig: 'v1:111' };
+    const opts = { rulesSig: SIG_B, coreTopicsLoaded: true, inputsSig: 'v1:111' };
+    expect(resolvePlanSnapshotFreshness(snap, opts)).toBe('stale');
+    expect(resolvePlanSnapshotFreshness(snap, Object.assign({}, opts, { freezeSettledDay: false }))).toBe('stale');
+  });
+
+  it('⑤ 今天 + 题材库段没变 ⇒ 与冻结开关无关（§11 零行为变化）', () => {
+    const snap = { status: 'hit', rulesSig: SIG_A, inputsSig: 'v1:111' };
+    const opts = { rulesSig: SIG_A, coreTopicsLoaded: true, inputsSig: 'v1:111', freezeSettledDay: true };
+    expect(resolvePlanSnapshotFreshness(snap, opts)).toBe('hit');
+  });
+
+  it('⑥ 🔴 接线锁：composable 两处都必须按「这一天是不是今天」传，⛔ 不许写死 true', () => {
+    const comp = readFileSync('src/composables/useTopicVolRatioBoard.js', 'utf8');
+    const hits = comp.match(/freezeSettledDay:[^\n]*/g) || [];
+    expect(hits.length).toBe(2);                                  // _loadPlanSnapshot + _recheckPlanSnapshotFreshness
+    hits.forEach(function(line) {
+      expect(line).toContain('_getLocalTodayStr()');               // 必须与「今天」比较
+      expect(line).not.toMatch(/freezeSettledDay:\s*true\b/);      // ⛔ 写死 true 会把历史日也冻住
+    });
   });
 });

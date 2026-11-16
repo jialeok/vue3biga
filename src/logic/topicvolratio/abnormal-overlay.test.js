@@ -204,11 +204,12 @@ describe('[ABNORMAL-ALL 接线静态锁] 漏一处 ⇒ 11-12 仍显示彩色「�
     expect(css).toContain('grayscale(1)');
   });
 
-  it('版本：规则指纹 v17 + SW v66（[TOPIC-OWNER] 改了选股结论，漏一个手机端就吃旧 JS）', () => {
+  it('版本链：规则指纹 ≥ v18 + SW ≥ v67（改了选股结论，漏一个手机端就吃旧 JS）', () => {
     const r = readFileSync('src/logic/topicvolratio/plan-snapshot-rules.js', 'utf8');
-    expect(r).toContain('TVRB_RULES_VERSION = 17');
+    const _rv = Number((/TVRB_RULES_VERSION = (\d+)/.exec(r) || [])[1]);
+    expect(_rv).toBeGreaterThanOrEqual(17);   // [RULE-BUMP] 只锁「不得倒退」，bump 时不用改测试
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(_swCacheNo(sw)).toBeGreaterThanOrEqual(66);   // [SW-CACHE] ≥ 本轮基线即可，⛔ 不用每轮改数字
+    expect(_swCacheNo(sw)).toBeGreaterThanOrEqual(67);   // [SW-CACHE] ≥ 本轮基线即可，⛔ 不用每轮改数字
   });
 
   it('[CAP-97] 11-11 真实 95.711445% 不该触发任何显示层总约束', () => {

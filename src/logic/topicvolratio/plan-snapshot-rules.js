@@ -216,8 +216,24 @@
  *         ⇒ 10-13 大消费 mid 档由「新华文轩（榜第 2）」改为「九阳股份（榜第 4，本来就是它成员）」。
  *       ★ [RULES-BUMP-ALL 2026-11-14] 任何日期都重算，历史日也不例外。
  *       sw.js 同步 v63 → v64。
+ *
+ *   v18 [TDAY-FREEZE + T5-TODAY-AUC + PASTE-HEADER-GUARD 2026-11-16 用户报障
+ *        「每到收盘又变了，早上还是北纬科技，文投控股，日出东方，现在收盘又变成了我只有日出东方了」]
+ *       ★ 这次【选股结论真的变了】，因为「前五榜今天取哪条腿」变了：
+ *         ① `range20-top5-history.js#_preferLeg` 原本【不分日期一律优先 close】。今天是唯一
+ *            「早上只有 auc 腿、15:00 后两腿并存」的日子 ⇒ 收盘后今天那一天的数值被换成收盘口径
+ *            ⇒ `everInTop5Set` / 首次上榜判定变 ⇒ 新龙 / 切换日翻转
+ *            ⇒ `topicLimit = (switchNewDragon || out.switchDay) ? 1 : 2` 从 2 掉到 1
+ *            ⇒ 买点侧从「2 个题材 3 只票」变成「1 个题材 1 只票」（11-16 现场）。
+ *            修法：今天优先 auc，历史日维持 close。
+ *         ② 配套护栏 `resolvePlanSnapshotFreshness` 的 `freezeSettledDay`：今天已定稿
+ *            ⇒ 个股题材串（`stock_topics` 手动导入 / 别的看板同步）再变也不再改今天的票；
+ *            规则版本 / 核心词（base 段）变了仍然立即重算。
+ *         ③ `parseTopicPaste` 丢弃粘贴表头行（11-16 库内实见 `stock='股票名称'`）。
+ *       ★ [RULES-BUMP-ALL 2026-11-14] 任何日期都重算，历史日也不例外。
+ *       sw.js 同步 v66 → v67。
  */
-export const TVRB_RULES_VERSION = 17;
+export const TVRB_RULES_VERSION = 18;
 
 /**
  * 输入完整性指纹版本。新增 / 删除「完整性判据」时 +1 ⇒ 所有存档按新判据重算一次。
@@ -330,6 +346,9 @@ export function isInputsFingerprintComplete(sig) {
  *
  * @param {object} snap { status, rulesSig, inputsSig }
  * @param {object} opts { rulesSig, coreTopicsLoaded, inputsSig }
+ *        ★ [TDAY-FREEZE 2026-11-16] `freezeSettledDay`：本存档是不是【今天】的（`date === 今天`）。
+ *          为 true 且存档输入完整 ⇒ 题材库段变化**不**判 stale（当天结论只出一次）；
+ *          规则段（版本 / 核心词）变化仍判 stale。历史日传 false ⇒ 行为与原来逐字一致。
  * @returns {'hit'|'stale'|'unknown'} unknown = 不是有效存档状态，本判据不管
  */
 export function resolvePlanSnapshotFreshness(snap, opts) {
@@ -369,7 +388,36 @@ export function resolvePlanSnapshotFreshness(snap, opts) {
     //   ⇒ 现在的优先级：**题材库变了 = 最高优先**（用户口径「题材要更新，不管简洁版还是原版都要同步」），
     //     规则升级只在「题材库没变」时才按 [RULES-BUMP-GUARD] 只重算今天。
     //   §10：当前算不出题材库指纹（curTop 为空）⇒ 不拿它做决定，继续按 base 段判。
-    if (curTop && oldTop !== curTop) return 'stale';   // ★ 含历史日一律重算
+    // ★★ [TDAY-FREEZE 2026-11-16 用户口径] **当天已定稿 ⇒ 题材库段变化不改当天结论**。
+    //
+    //   用户原话：「今天11月16日，题材量比选股……每到收盘又变了，早上还是北纬科技，文投控股，
+    //   日出东方，现在收盘又变成了我只有日出东方了，之前修过好几次，我都说了按照竞价口径来，
+    //   收盘后也不能变，现在为什么还在变？」
+    //
+    //   库内取证（11-16）：存档 `created_at=09:27`、`revision=2`、`settled_at=16:27`
+    //   —— 早上按竞价口径定稿，收盘后被**重写**了一次。
+    //   触发链（真实时间戳，不是推测）：
+    //     16:25 用户手动导入涨跌停看板题材 ⇒ 写 `stock_topics` 10 行 ⇒ `getTopicLibraryDigest()`
+    //           内容变了 ⇒ 本函数原实现**无条件** `return 'stale'`
+    //     16:27 页面重算 + 覆盖存档 ⇒ 结论从 3 只变 1 只
+    //   但那 10 只票【都不在】当日 51 只名单里 ⇒ **它们的题材根本进不了当天的块**
+    //   ⇒ 也就是说：这次重算对「当天选股」没有任何信息增益，纯粹是「重算了一次」，
+    //     而重算期间 `readTop5History` 已经能读到今天的 `leg='close'` 腿（见 F1 修复）
+    //     ⇒ 切换日 / 新龙判定翻转 ⇒ `topicLimit` 从 2 掉到 1 ⇒ 买点侧只剩 1 个题材。
+    //
+    //   ⇒ 口径：**同一个交易日的选股结论只出一次**。定稿之后，个股题材串（外部导入 / 别的看板同步）
+    //     再变也不再改今天的票；要不要改，由用户在【核心词管理】里改核心词（base 段）来触发。
+    //   ⛔ 只冻结【今天】：历史日是复盘，用户 11-14 明确要求「改了题材，历史选票也要跟着改」，
+    //     那条口径原样保留（`freezeSettledDay` 只会在 `date === 今天` 时为 true）。
+    //   ⛔ 也不冻结「规则版本 / 核心词」：那是用户主动改规则，必须立即生效（base 段照旧比）。
+    //   §10：存档输入不完整（不是 v1:111）⇒ **不冻结** —— 残缺结论允许数据补齐后自动纠错一次。
+    if (curTop && oldTop !== curTop) {
+      if (o.freezeSettledDay === true && isInputsFingerprintComplete(s.inputsSig)) {
+        if (oldBase === curBase) return 'hit';      // 规则没变 ⇒ 今天的结论就是定稿，不许再动
+        return 'stale';                             // 规则变了（用户主动）⇒ 仍然重算
+      }
+      return 'stale';                               // ★ 历史日：按用户口径一律重算
+    }
     if (oldBase === curBase) return 'hit';             // 题材库没变、规则也没变
     // ★★ [RULES-BUMP-ALL 2026-11-14 用户口径 · 推翻 [RULES-BUMP-GUARD]] 规则升级（bump
     //   `TVRB_RULES_VERSION` / 改核心词）⇒ **任何日期都重算**，历史日也一样。

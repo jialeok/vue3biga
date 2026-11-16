@@ -2562,7 +2562,11 @@ export function useTopicVolRatioBoard() {
           coreTopicsLoaded: isCoreTopicsCloudLoaded(),
           inputsSig: currentInputsSig.value,
           // 库里还没有 inputs_sig 列（已降级）⇒ ⛔ 不许把「缺字段」当过期，否则每次开页面都重算
-          inputsSigSupported: isPlanSnapshotInputsSigSupported()
+          inputsSigSupported: isPlanSnapshotInputsSigSupported(),
+          // ★★ [TDAY-FREEZE 2026-11-16 用户口径] 「收盘后也不能变」——
+          //   当天（= 正在看的这一天就是今天）已定稿且输入完整 ⇒ 个股题材串再变也不改今天的票。
+          //   历史日传 false ⇒ 复盘口径不变（用户 11-14：改了题材历史选票也要跟着改）。
+          freezeSettledDay: key === _getLocalTodayStr()
           // ★ [RULES-BUMP-ALL 2026-11-14 用户口径] ⛔ 不再传 `allowRulesInvalidation`：
           //   用户明确要求「规则升级后历史日也要重算一遍」（原话「这个和规则没有关吧？你重算一遍」）
           //   ⇒ 历史日与今天走同一条判据。切日期不飘移由内容 hash 指纹 + revision 幂等保证。
@@ -2740,7 +2744,9 @@ export function useTopicVolRatioBoard() {
       coreTopicsLoaded: isCoreTopicsCloudLoaded(),
       inputsSig: currentInputsSig.value,
       // 库里还没有 inputs_sig 列（已降级）⇒ ⛔ 不许把「缺字段」当过期，否则每次开页面都重算
-      inputsSigSupported: isPlanSnapshotInputsSigSupported()
+      inputsSigSupported: isPlanSnapshotInputsSigSupported(),
+      // ★★ [TDAY-FREEZE 2026-11-16] 同 `_loadPlanSnapshot`：当天已定稿 ⇒ 题材库变化不改今天的结论
+      freezeSettledDay: d === _getLocalTodayStr()
       // ★ [RULES-BUMP-ALL 2026-11-14] 同上：历史日也按新规则重算（该选项已删除）
     });
     if (verdict !== 'stale' || s.status === 'stale') return;

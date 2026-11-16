@@ -4,7 +4,11 @@
 //   「20 个交易日内，这只股票有没有上过前五」——它只可能由【历史每天的榜】回答。
 //   这里一旦判错，后果不是「少选一只」而是【把老龙当新龙买进去】。三条不可退让的判据：
 //
-//   ① 同一天两腿（leg='auc' 9:25 / leg='close' 15:05）必须【只认一腿】且优先 close。
+//   ① 同一天两腿（leg='auc' 9:25 / leg='close' 15:05）必须【只认一腿】：
+//      · 历史日优先 close（那才是当天最终值，且多数历史日只有 close）；
+//      · ★ [T5-TODAY-AUC 2026-11-16] **今天优先 auc** —— 收盘腿一出现就把今天的涨幅换掉，
+//        「首次上榜」判定跟着翻转 ⇒ 新龙 / 切换日判定翻转 ⇒ topicLimit 从 2 掉到 1
+//        ⇒ 买点侧从「2 个题材 3 只票」变「1 个题材 1 只票」（用户 11-16 报障的整类根因）。
 //      漏了 ⇒ 同一只票在榜上出现两次、名次被它自己挤掉别人 ⇒ 「首次上榜」判错。
 //   ② 分页必须真的翻页：20 天 × 80 只 ≈ 1600 行 > 单次 1000 行上限。
 //      漏了 ⇒ 后面的日期整段读不到 ⇒ 那些天上过榜的老票被当成「首次上榜」。
@@ -65,7 +69,28 @@ function dayPcts(date, entries) {
 }
 
 describe('range20-top5-history · 单日两腿（auc / close）只认一腿', function() {
-  it('同一天同时有 auc 与 close ⇒ 取 close 的值，且该票只出现一次', async function() {
+  it('★ [T5-TODAY-AUC] **今天**两腿并存 ⇒ 必须取 auc（竞价腿），⛔ 不许被收盘腿吃掉', async function() {
+    // 真实事故：11-16 北纬科技 51.12 / 文投控股 62.94 / 日出东方 66.55（竞价反解），
+    //   而日出东方收盘跌停 ⇒ 收盘口径只剩 50.00 ⇒ 前五榜成员与名次都可能变。
+    const today = (function() {
+      const d = new Date(Date.now() + 8 * 3600 * 1000);
+      const p = function(n) { return String(n).padStart(2, '0'); };
+      return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate());
+    })();
+    rowsByDate[today] = [
+      { date: today, stock: '日出东方', pct: 66.55, leg: 'auc' },
+      { date: today, stock: '日出东方', pct: 50.0, leg: 'close' },
+      { date: today, stock: '文投控股', pct: 62.94, leg: 'auc' },
+      { date: today, stock: '文投控股', pct: 66.96, leg: 'close' }
+    ];
+    const r = await readTop5History([today]);
+    // 用 auc 值排序 ⇒ 日出东方(66.55) > 文投控股(62.94)
+    expect(r.byDate.get(today)).toEqual(['日出东方', '文投控股']);
+    // 且每只票只出现一次
+    expect(r.byDate.get(today).length).toBe(2);
+  });
+
+  it('历史日两腿并存 ⇒ 仍取 close 的值（复盘口径不变，⛔ 本次不改历史）', async function() {
     rowsByDate['2026-10-20'] = [
       { date: '2026-10-20', stock: '新华传媒', pct: 182.5, leg: 'auc' },
       { date: '2026-10-20', stock: '新华传媒', pct: 188.12, leg: 'close' },

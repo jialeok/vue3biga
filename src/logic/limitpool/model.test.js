@@ -52,6 +52,51 @@ describe('parseTopicPaste 粘贴解析', () => {
     });
 });
 
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// ★★ [PASTE-HEADER-GUARD 2026-11-16] 粘贴时把 Excel 表头一起带进来 ⇒ 库里多一行脏数据。
+//
+// 现场取证（11-16 16:25 那次导入）：`stock_topics` 里出现
+//   `stock='股票名称', topics='所属概念'` —— 这条脏行本身不影响选股（它不在任何当日名单里），
+//   但它是「手动导入」这个动作留下的可核验痕迹，而且会永久污染题材库内容指纹。
+// ⇒ 整行丢弃，不计入 rows；但**要计入 skipped**（用户能看到「跳过了几行」，不是静默吞掉）。
+//
+// ⛔ 反向红线：不许把「名字长得像表头」的真股票误杀。判据是【两条同时满足】——
+//   ① 第一列是表头词 ② 其余列里出现表头题材词（或全是表头词）。
+//   真实行的第二列是题材（如「券商」），不会命中 ②。
+// ══════════════════════════════════════════════════════════════════════════════════════════
+describe('parseTopicPaste · [PASTE-HEADER-GUARD] 表头行整行丢弃', () => {
+    it('🔴 「股票名称 所属概念」表头行被丢弃，只留真实数据行', () => {
+        const r = parseTopicPaste('股票名称 所属概念\n北纬科技 游戏,通信');
+        expect(r.rows.length).toBe(1);
+        expect(r.rows[0].stock).toBe('北纬科技');
+        expect(r.skipped).toBe(1);
+        expect(r.totalLines).toBe(2);          // totalLines 是「读到的非空行数」，如实计数
+    });
+
+    it('Tab / 逗号分隔、多列表头（股票代码 股票名称 所属概念 所属行业）同样丢弃', () => {
+        expect(parseTopicPaste('股票名称\t所属概念\t所属行业').rows).toEqual([]);
+        expect(parseTopicPaste('股票名称,所属概念,所属行业').skipped).toBe(1);
+        expect(parseTopicPaste('股票代码 股票名称 所属概念').rows).toEqual([]);
+        expect(parseTopicPaste('序号 股票名称 所属概念').skipped).toBe(1);
+    });
+
+    it('⛔ 反证：名字长得像表头、但第二列是真题材 ⇒ 照常导入（不许误杀）', () => {
+        const r = parseTopicPaste('东方财富 券商');
+        expect(r.rows).toEqual([{ stock: '东方财富', code: '', topics: ['券商'] }]);
+        expect(r.skipped).toBe(0);
+        // 「名称」本身是表头词，但后面跟的是真题材 ⇒ 不丢
+        const r2 = parseTopicPaste('名称 白酒');
+        expect(r2.rows.length).toBe(1);
+        expect(r2.rows[0].topics).toEqual(['白酒']);
+    });
+
+    it('表头 + 真实数据混排 ⇒ 表头只丢一次，数据行不受影响', () => {
+        const r = parseTopicPaste('股票名称 所属概念\n兆易创新 存储芯片\n贵州茅台 白酒');
+        expect(r.rows.map(x => x.stock)).toEqual(['兆易创新', '贵州茅台']);
+        expect(r.skipped).toBe(1);
+    });
+});
+
 describe('formatRangePct 十日涨幅展示口径', () => {
     it('无值 → "-"（绝不补 0）', () => {
         expect(formatRangePct(null, 0)).toBe('-');

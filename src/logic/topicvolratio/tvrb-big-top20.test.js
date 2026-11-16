@@ -299,13 +299,14 @@ describe('tvrb · [AUTO-PICK-TOP20] 边界与回归锁', function() {
     expect((blk.notes || []).join('\n')).toContain('监管异动');
   });
 
-  it('三件套：规则指纹 v17 + SW v66 + 模板/样式都接上了 range20Label', function() {
+  it('三件套：规则指纹 ≥ v18 + SW ≥ v67 + 模板/样式都接上了 range20Label', function() {
     const rules = readFileSync('src/logic/topicvolratio/plan-snapshot-rules.js', 'utf8');
-    expect(rules).toContain('TVRB_RULES_VERSION = 17');
+    const _rv = Number((/TVRB_RULES_VERSION = (\d+)/.exec(rules) || [])[1]);
+    expect(_rv).toBeGreaterThanOrEqual(17);   // [RULE-BUMP] 只锁「不得倒退」，bump 时不用改测试
     expect(rules).toContain('[AUTO-PICK-TOP20]');
     expect(rules).toContain('[MID-TOP20]');
     const sw = readFileSync('public/sw.js', 'utf8');
-    expect(_swCacheNo(sw)).toBeGreaterThanOrEqual(66);   // [SW-CACHE] ≥ 本轮基线即可，⛔ 不用每轮改数字
+    expect(_swCacheNo(sw)).toBeGreaterThanOrEqual(67);   // [SW-CACHE] ≥ 本轮基线即可，⛔ 不用每轮改数字
     const vue = readFileSync('src/components/topicvolratio/TvrbBuyBlock.vue', 'utf8');
     expect(vue).toContain('p.range20Label');
     const css = readFileSync('src/assets/css/topic-vol-ratio-board.css', 'utf8');
