@@ -1402,6 +1402,26 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     }
   }
 
+  // ── ★★ [OR-SPLIT 2026-11-16 用户口径] 第二题材走哪条路 ——【唯一判定点】，互斥（或）关系 ──
+  //   用户原话：「第三条和第二十九条是或的关系，应该不冲突吧，今天就是AI应用16.82不符合，
+  //             改用候补不是吗？」
+  //   ⇒ 排名第二的题材，两条路**只能走一条**：
+  //       平均量比 ≥ 25 ⇒ 'gate'   走第三条（含龙一进十日前十这道闸门）
+  //       平均量比 < 25 ⇒ 'backup' 走第二十九条（整块作废 + 十日涨幅候补）
+  //   ⛔ 别把它拆回两段各自独立的 if —— 那样「谁先删块谁赢」，读代码看不出是「或」，
+  //      而且 audit-rules.mjs 第 3 段无法验证结构（C5 登记于 rules-catalog.md）。
+  //   §10：平均量比读不出来（null）⇒ 不判「太小」⇒ 走 'gate'（闸门自己有自己的判不出处理），
+  //       ⛔ 绝不把「没数据」当成「量比低」去作废一个题材。
+  //   ⚠️ 这里不加 `!r10Blocked`：切换日（第二十八条）只屏蔽第二十九条，不屏蔽第三条的闸门。
+  let secondTopicRoute = '';
+  let secondTopicRouteAvg = null;
+  if (r10Enabled && out.blocks.length >= 2) {
+    secondTopicRouteAvg = avgVolRatioOf(out.blocks[1] && out.blocks[1].block);
+    secondTopicRoute = (secondTopicRouteAvg !== null && secondTopicRouteAvg < TVRB_CASH_ALERT_AVG_VR)
+      ? 'backup'
+      : 'gate';
+  }
+
   // ── ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条 · 第一段：排名【第二】的题材量比太小 ⇒ 整块作废 ──
   //   用户原话：「排名第二的题材如果量比太小就用十日涨幅首次在列进行候补……题材量比太小禁止选入」
   //           + AskUserQuestion「整块删除，只出候补」。
@@ -1412,9 +1432,9 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //        等于因为一次数据缺口白扔掉一个题材还宣布空仓；此时保持原规则并在说明区写明「判不出」。
   //   ⚠️ 删除后必须重建 heavy / light 槽位：否则 buy.light 还挂着一个已删除的块，
   //      四个装饰器会遍历到幽灵块（那是「静默多渲染一段」的最短路径）。
-  if (!r10Blocked && out.blocks.length >= 2) {
+  if (secondTopicRoute === 'backup' && !r10Blocked) {
     const secondBlk = out.blocks[1];
-    const secondAvg = avgVolRatioOf(secondBlk && secondBlk.block);
+    const secondAvg = secondTopicRouteAvg;
     if (secondAvg !== null && secondAvg < TVRB_CASH_ALERT_AVG_VR) {
       const weakInfo = {
         topic: String((secondBlk && secondBlk.block && secondBlk.block.topic) || ''),
@@ -1476,8 +1496,9 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //   为什么是【必要条件】（⛔ 不许有人改成「判不出就放行」）：用户给的判据是「没有带动性 ⇒
   //     上涨概率不大、风险很高」—— 没被验证过的带动性，按用户口径就是不能买。
   //
-  //   ⚠️ 顺序铁律（⛔ 别把这段挪到上面）：必须排在【题材量比太小 ⇒ 整块作废 + 走十日涨幅候补】之后。
-  //     那一档要留 `r10RemovedSecond` 给候补当扳机；本段若抢先摘块，候补就永远不会被触发。
+  //   ⚠️ 顺序铁律（⛔ 别把这段挪到上面）：本段是**第三条那条路**的闸门，
+  //     与第二十九条【互斥（或）】—— 判据是上面的 `secondTopicRoute === 'gate'`，
+  //     不再靠「谁先删块谁赢」。第二十九那条路走 'backup'，压根不会进这里。
   //   ⚠️ 用户明说「只选排名第一的那个题材股票」⇒ 被否后【不顺延到排名第三】：
   //     ⛔ 不补位、不 continue，第 2 个槽位直接空着（更弱的题材更不可能过这道闸）。
   //   ⚠️ §11：调用方【根本没传十日涨幅池】（老调用方 / 单测）⇒ 整段跳过，行为与加本规则之前逐字节相同。
@@ -1486,7 +1507,7 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //     （那与第二十九条「数据缺口 ⇒ 暂不作废」是同一把尺子，两处口径必须一致）。
   //   ✅ 只有【真的算出了名次】**且名次 > 前十**（或龙一在池子里却排不出名次）时，才否掉该题材。
   let r10SecondNoLead = null;      // 本轮被这道闸否掉的第二题材（供尾部说明避免自相矛盾）
-  if (r10Enabled && out.blocks.length >= 2 && r10PoolGiven) {
+  if (secondTopicRoute === 'gate' && r10Enabled && out.blocks.length >= 2 && r10PoolGiven) {
     const secondBlk = out.blocks[1];
     const secondTopic = String((secondBlk && secondBlk.block && secondBlk.block.topic) || '').trim();
     const firstTopic = String((out.blocks[0] && out.blocks[0].block && out.blocks[0].block.topic) || '').trim();
@@ -2010,14 +2031,22 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
                (r10Overlap.tag || '买') + '）—— 【题材通道】和【市场通道】同时选中了同一只票，' +
                '这是叠加确认（确定性更高），不是重复选错；两处照旧各展示一行，不用合并也不用再选第二只。）')
             : ''));
-        // ★★ [R10-YIZI 2026-10-24] §10：这只候补【今日竞价数据缺失】⇒ 判不出是否一字板。
-        //   仍然选它（⛔ 不因为「不知道」就否掉一个合格候选），但必须把这个缺口如实说出来 ——
-        //   「默默当成能买」正是 9-29 雪龙集团那次事故的同款风险（一字板买不进）。
+        // ★★ [R10-YIZI 2026-10-24 · 2026-11-16 改口径] §10：这只候补【今日竞价数据缺失】
+        //   ⇒ 判不出是否一字板。仍然选它（⛔ 不因为「不知道」就否掉一个合格候选），
+        //   但必须把这个缺口如实说出来 —— 让用户自己核一眼能不能买。「默默当成能买」不安全。
         if (r10Res.yiziUnknown) {
           out.notes.push('⚠️【第' + RANGE10_BACKUP_RULE_NO + '条 · 十日涨幅候补】注意：' +
             r10Res.pick.name + ' 今日不在竞价名单里（属于「20天」补位行）⇒ 拿不到它的竞价涨幅，' +
-            '【无法确认是否竞价一字涨停】⇒ 下单前自己核一眼；若它已一字涨停，按本规则的口径' +
-            '【不选入、也不替补】= 今天这只候补视为空仓。');
+            '【无法确认是否竞价一字涨停】⇒ 下单前自己核一眼；' +
+            '若它已一字涨停，按口径【照常选入 + 挂「' + AUCTION_YIZI_WAIT_TAG + '」标签】，' +
+            '等开板 / 下杀再接，⛔ 不在封板上硬追。');
+        }
+        // ★★ [R10-YIZI-REPEAL 2026-11-16 用户口径] 一字票【照选】，标签由 annotateAuctionYizi 挂。
+        //   这里补一句留痕，让用户一眼看见「为什么它是一字票却还在买点侧」。
+        if (r10Res.yiziPicked) {
+          out.notes.push('ℹ️【第' + RANGE10_BACKUP_RULE_NO + '条 · 十日涨幅候补】' +
+            r10Res.pick.name + ' 今日【竞价一字涨停】⇒ 按用户口径【照常选入】（⛔ 不空仓、⛔ 不换下一名），' +
+            '已挂标签【' + AUCTION_YIZI_WAIT_TAG + '】：盘中会开板，等下杀再接，别在封板上硬追。');
         }
         // ★★ [TOPIC-CASCADE 2026-10-28] 原来这里有一段「第一题材量比 < 25 ⇒ 空仓标语里补一句
         //   『另有 1 只十日周期候补可以买』」—— 随 `r10Need` 加上 `!r10LeadWeak` 硬闸门，
@@ -2040,10 +2069,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         : '';
       // ★★ [R10-YIZI 2026-10-24 用户口径] 「不是选不出来，是选出来的那只买不进」——
       //   这两种空仓的原因完全不同，措辞必须分开（否则用户会以为规则又选错了票）。
-      if (r10Res && r10Res.blockedBy === 'yizi') {
-        out.notes.push('⚠️【第' + RANGE10_BACKUP_RULE_NO + '条 · 十日涨幅候补】今天这只候补【空仓】：' +
-          (r10Res.reason || '选出来的那只今日竞价一字涨停，买不进') + '。' + r10TrailText);
-      } else if (r10Res && r10Res.blockedBy === 'abnormal') {
+      // ★★ [R10-YIZI-REPEAL 2026-11-16] 原来这里还有一条 `blockedBy === 'yizi'` 的
+      //   「今天这只候补【空仓】：竞价一字涨停买不进」分支 —— 已随用户 11-16 口径
+      //   「一字涨停可以入选，等下杀买」**整段删除**（旧分支留着就是死代码 + 误导后人）。
+      //   现在 blockedBy 只剩 'abnormal' 一种（第三十四条全场监管异动）。
+      if (r10Res && r10Res.blockedBy === 'abnormal') {
         // ★★ [FULL-MARKET 2026-11-13] 第三十四条：它不是「选不出」，是「选出来的那只涨幅已踩
         //   自定义上限」⇒ 全场监管异动（整片灰 + 空仓），⛔ 不顺延、不替补（措辞与「一字买不进」分开）。
         out.notes.push('🚨【第' + ABNORMAL_RULE_NO + '条 · 监管异动】今天这只十日涨幅候补【空仓】：' +

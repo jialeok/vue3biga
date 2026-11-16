@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   AUCTION_YIZI_TAG,
+  AUCTION_YIZI_WAIT_TAG,
   TVRB_BUY_BLOCK_KEYS,
   isAuctionYiziPick,
   collectBuyBlocks,
@@ -80,7 +81,11 @@ describe('[TVRB-AUC-YIZI] 统一后处理：全通道覆盖 + 零行为变化', 
     all.forEach(function(b) {
       expect(b.picks[0].auctionYiziTag).toBe(AUCTION_YIZI_TAG);
     });
-    expect(AUCTION_YIZI_TAG).toContain('等开板后进');
+    // ★ [AUCTION-YIZI-UNIFY 2026-11-16 用户口径] 两枚标签合并成一枚 ⇒ 断言文案唯一。
+    expect(AUCTION_YIZI_TAG).toContain('等下杀买');
+    expect(AUCTION_YIZI_TAG).toBe(AUCTION_YIZI_WAIT_TAG);
+    // ⛔ 旧文案「等开板后进」不许再作为活标签出现（只在历史注释里允许）
+    expect(AUCTION_YIZI_TAG).not.toContain('等开板后进');
   });
 
   it('out.buy.* 与 out.* 是同一批对象的两份引用 ⇒ 按引用去重、只标一次', () => {

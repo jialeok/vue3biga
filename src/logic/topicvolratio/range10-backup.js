@@ -84,18 +84,6 @@ export const RANGE10_CNT_FIRST = 1;
 export const RANGE10_CNT_SECOND = 2;
 
 /**
- * 涨幅 → 「+49.00%」文案（仅用于【说明文字】，⛔ 不参与任何判定）。
- * §21：文案在 Logic 层拼好，模板零计算；缺值 ⇒ '—'（⛔ 不补 0，§10）。
- * @param {number|null} n
- * @returns {string}
- */
-function _fmtPct(n) {
-  const v = (n === null || n === undefined || n === '') ? null : Number(n);
-  if (v === null || !isFinite(v)) return '—';
-  return (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
-}
-
-/**
  * 【纯函数】把注入的十日涨幅池排成「屏幕顺序 + 主板名次」。
  *
  * @param {Array<{name:string, code?:string, topic?:string, pct:number|string|null}>} pool
@@ -186,8 +174,11 @@ export function buildRange10Ranked(pool) {
  *      ⚠️ 「没有首次在列」按【剔除后仍可用】解释：一档里全是同题材的，
  *         等于「没有可用的首次在列」⇒ 才看二档；两档都空 ⇒ 返回 pick=null（= 空仓）。
  *   ④ 选中即停，⛔ 绝不多选（用户：「有首次在列的只选一只」）。
- *   ⑤ ★★ [R10-YIZI 2026-10-24] 若选中的那只【今日竞价一字涨停】⇒ 买不进 ⇒
- *      pick=null、blockedBy='yizi'、blocked=那只票，⛔ **不换下一名替补**（本日候补空仓）。
+ *   ⑤ ★★ [R10-YIZI-REPEAL 2026-11-16 用户口径] 选中的那只【今日竞价一字涨停】⇒ **照选**，
+ *      由 `auction-yizi-tag.js#annotateAuctionYizi` 统一挂「竞价一字涨停 · 等下杀买」标签。
+ *      ⛔ 已废除的旧口径（2026-10-24 ~ 11-16）：一字 ⇒ pick=null、blockedBy='yizi'、不换下一名 ⇒ 候补空仓。
+ *      废除依据（用户原话）：「一字涨停可以入选……也没叫你去掉啊」「盘中它有时候会开板」。
+ *      ⚠️ 仍然【不换下一名替补】：选中的是它，就是它 —— 一字只是买点时机问题，不是换票理由。
  *
  * @param {Array} pool 见 buildRange10Ranked
  * @param {{counts?:Map<string,{cnt:number}>|null, coveredDays?:number, topN?:number,
@@ -201,7 +192,7 @@ export function buildRange10Ranked(pool) {
  *           请在规则层的说明文案里讲（_buildRange10BackupBlock 的 overlap）。
  * @returns {{ready:boolean, reason:string, pick:object|null, tier:'first'|'second'|'',
  *            trail:Array<object>, topN:number, coveredDays:number, windowDays:number,
- *            blockedBy:string, blocked:object|null, yiziUnknown:boolean}}
+ *            blockedBy:string, blocked:object|null, yiziUnknown:boolean, yiziPicked:boolean}}
  */
 export function pickRange10Backup(pool, opts) {
   const o = opts || {};
@@ -225,14 +216,18 @@ export function pickRange10Backup(pool, opts) {
     topN: topN,
     coveredDays: coveredDays,
     windowDays: RANGE10_BACKUP_WINDOW_DAYS,
-    // ★★ [R10-YIZI 2026-10-24 用户口径] 买不进（竞价一字涨停）的三件事实：
-    //   · blockedBy = 'yizi'  ⇒ 「不是选不出，是选出来的那只买不进」—— 规则层据此换文案；
-    //   · blocked   = 被否掉的那只（name/topic/pct/rank/cnt/label/aucPct），用于说明区点名；
+    // ★★ [R10-YIZI 2026-10-24 用户口径 · 2026-11-16 部分废除] 买不进（竞价一字涨停）的三件事实：
+    //   · blockedBy = 'yizi'  ⇒ **11-16 起不再产生**（一字票照选 + 挂标签，见函数体尾段）；
+    //                            字段保留只为不打断既有下游 shape，恒为空串。
+    //   · blocked   = 被否掉的那只 —— 现仅剩 'abnormal'（第三十四条全场监管异动）会写；
     //   · yiziUnknown = 选中的票今日竞价数据缺失（补位行）⇒ 无法确认是否一字，需用户自核。
     //   ⚠️ 三个都是【附加信息】，缺省值 = 没有发生（§11：老调用方 / 老单测零行为变化）。
     blockedBy: '',
     blocked: null,
-    yiziUnknown: false
+    yiziUnknown: false,
+    // ★ [R10-YIZI-REPEAL 2026-11-16] 候补选中的是一只竞价一字涨停票（照选 + 挂标签）。
+    //   纯留痕标记，⛔ 不参与任何判定；规则层据此在说明区补一句「已挂等下杀买标签」。
+    yiziPicked: false
   };
 
   const ranked = buildRange10Ranked(pool);
@@ -289,35 +284,20 @@ export function pickRange10Backup(pool, opts) {
       '（有首次在列只选一只；没有首次在列才看二次在列）⇒ 今天空仓';
     return out;
   }
-  // ★★ [R10-YIZI 2026-10-24 用户口径] 「买不进去的，也不用替补，也不用选进去了」：
-  //   最强的那只若是【竞价一字涨停】⇒ 一字板竞价买不进（开盘也基本买不到）⇒
-  //   ⛔ 不选入，⛔ 也不顺延到下一名（下一名更弱，替换没有意义），本日候补直接空仓。
-  //   ⚠️ 只对【会被选中的那一只】生效：一字票若排在更后面（前面已有可用票），它不影响结论。
-  if (pick.isYizi === true) {
-    // 让「前十逐只去留」那段文字也能看见它被否掉的真实原因（可追溯，§10）
-    pick.reason = '今日【竞价涨停（一字板）】⇒ 竞价买不进 ⇒ 不选入，也不替补';
-    out.blockedBy = 'yizi';
-    out.blocked = {
-      name: pick.name, code: pick.code, topic: pick.topic,
-      pct: pick.pct, rank: pick.rank, rowNo: pick.rowNo,
-      cnt: pick.cnt, label: pick.label, aucPct: pick.aucPct
-    };
-    out.tier = '';          // ⛔ 一档都没成（别让下游误读成「首次在列档选出来的」）
-    out.pick = null;
-    out.reason = '十日涨幅前 ' + topN + ' 名里最强的那只【' + pick.name + '】' +
-      '（' + (pick.topic || '—') + '，十日涨幅 ' + _fmtPct(pick.pct) +
-      '，第 ' + pick.rank + ' 名，' + (pick.label || '次数未知') + '）' +
-      '今日【竞价涨停（一字板）】' +
-      (pick.aucPct === null ? '' : ('（竞价涨幅 ' + _fmtPct(pick.aucPct) + '）')) +
-      ' ⇒ 一字板竞价买不进、开盘也基本买不到；' +
-      '按用户口径【不选入、也不替补】⇒ 今天这只候补【空仓】（⛔ 没有换成下一名顶上来）';
-    return out;
-  }
+  // ★★ [R10-YIZI-REPEAL 2026-11-16 用户口径】「一字涨停可以入选……也没叫你去掉啊」
+  //   ⇒ 原 2026-10-24 那段「竞价一字 ⇒ 不选入、也不替补（本日候补空仓）」【整段废除】。
+  //   现在：一字票**照选**，标签由 `annotateAuctionYizi` 统一挂（唯一来源 = auction-yizi-tag.js）。
+  //   ⛔ 仍然不换下一名：一字只是「什么时候买」的问题（等下杀/开板），不是「换成更弱那只」的理由。
+  //   ⛔ 别把这段改回 return null —— 11-16 盘中实测：北纬科技一字，按旧口径候补直接空仓，
+  //      收盘只剩日出东方一只，用户当场指出规则被改错（`.workbuddy/memory/2026-11-16.md` 第 9 轮）。
   out.pick = pick;
   out.tier = tier1 ? 'first' : 'second';
   // §10：补位行（「20天」票）不在今日竞价名单里 ⇒ 拿不到竞价涨幅 ⇒ 判不出是否一字。
   //   仍然选它（⛔ 不因为「不知道」就否掉一个合格候选），但要把这个缺口如实说出去，
   //   让用户自己核一眼 —— 这比「默默当成能买」安全。
   if (pick.isYizi === null) out.yiziUnknown = true;
+  // ★ 可追溯留痕：一字票照选时记一笔，规则层据此在说明区写明「已挂等下杀买标签」。
+  //   ⛔ 只读标记，不参与判定（§21）。
+  if (pick.isYizi === true) out.yiziPicked = true;
   return out;
 }

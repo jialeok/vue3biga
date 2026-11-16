@@ -2369,7 +2369,24 @@ export function _buildRange10BackupBlock(bk, list, fOpts, info) {
       rank: null,          // ⛔ 不给圆点：本行不是题材排名
       count: null,
       yiziCount: null,
-      members: member ? [member] : []
+      // ★ [R10-YIZI-REPEAL 2026-11-16] 候补票是【从全市场十日涨幅榜】选的，很可能不属于今天入选的
+      //   任何题材块 ⇒ 按名字在 list 里查不到 member；即便查到了，那条 member 也可能没有 aucPct
+      //   ⇒ finishBuyBlock 的 _decorateAucBadge 反查不到竞价涨幅 ⇒ aucLimitUp 恒 false
+      //   ⇒ 「竞价一字涨停 · 等下杀买」标签挂不上（用户明确要求候补一字票必须有这枚标签）。
+      //   ⇒ 用池子里的 aucPct 补上（池子是同一份 9:26 竞价腿，§6 不引入第二套数据）；
+      //     **只喂反查表**，⛔ 不参与任何判定、不改名次/涨幅。
+      //   补位行（aucPct 缺失）仍然不补 —— §10 判不出就不标，⛔ 不猜。
+      members: (function() {
+        const base = member || null;
+        const baseAuc = base ? _num(base.aucPct) : null;
+        const poolAuc = _num(p.aucPct);
+        if (baseAuc !== null) return [base];
+        if (poolAuc === null) return base ? [base] : [];
+        return [Object.assign(
+          base || { name: name, code: String(p.code || '').trim() },
+          { aucPct: poolAuc }
+        )];
+      })()
     },
     rankWord: '',
     pickRank: null,

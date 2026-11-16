@@ -231,9 +231,13 @@
  *            规则版本 / 核心词（base 段）变了仍然立即重算。
  *         ③ `parseTopicPaste` 丢弃粘贴表头行（11-16 库内实见 `stock='股票名称'`）。
  *       ★ [RULES-BUMP-ALL 2026-11-14] 任何日期都重算，历史日也不例外。
- *       sw.js 同步 v66 → v67。
+ *       ★ [R10-YIZI-REPEAL 2026-11-16] 18 → 19：第二十九条「候补一字 ⇒ 空仓不替补」废除，
+ *          改成【照选 + 挂「竞价一字涨停 · 等下杀买」】。**这是选股结论变化**（候补会多出一只），
+ *          ⇒ 必须 bump，否则 11-16 那份已定稿的存档（revision 3、只有日出东方）永远不会重算。
+ *          配套：标签两枚合并为一枚（`AUCTION_YIZI_TAG` = `AUCTION_YIZI_WAIT_TAG`）。
+ *       sw.js 同步 v68 → v69。
  */
-export const TVRB_RULES_VERSION = 18;
+export const TVRB_RULES_VERSION = 19;
 
 /**
  * 输入完整性指纹版本。新增 / 删除「完整性判据」时 +1 ⇒ 所有存档按新判据重算一次。

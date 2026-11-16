@@ -338,7 +338,7 @@ describe('range10-backup · 2026-10-23 真实快照（含「20天」补位行）
 //     ② ⛔ 【不许替补】—— 下一名（京城股份）不许顶上来（哪怕它也是二次在列）；
 //     ③ §10 ——「20天」补位行拿不到竞价涨幅（null）⇒ 仍选它，但必须标 yiziUnknown。
 // ══════════════════════════════════════════════════════════════════════════════════════════
-describe('range10-backup · 竞价一字涨停（买不进 ⇒ 不选入、不替补）', () => {
+describe('range10-backup · 竞价一字涨停（2026-11-16 新口径 ⇒ 照选 + 挂标签）', () => {
   /** 2026-09-29 场景：雪龙集团 = 主板第 6 名 · 二次在列 · 农业（≠ 总龙一 澳弘电子 的 电子） */
   function pool0929() {
     return [
@@ -376,43 +376,44 @@ describe('range10-backup · 竞价一字涨停（买不进 ⇒ 不选入、不�
     expect(r.yiziUnknown).toBe(false);
   });
 
-  it('★★ 事故回归：雪龙集团竞价一字涨停 ⇒ 空仓（⛔ 不许选进买点）', () => {
+  // ★★ [R10-YIZI-REPEAL 2026-11-16 用户口径] 这条用例是**旧口径的反向锁定**：
+  //   9-29 雪龙集团当时被判「一字 ⇒ 空仓」，11-16 用户明确推翻：
+  //   「一字涨停可以入选……也没叫你去掉啊」「盘中它有时候会开板」
+  //   ⇒ 现在必须【照选】，只挂一枚「竞价一字涨停 · 等下杀买」标签（标签由 annotateAuctionYizi 挂）。
+  //   ⛔ 一旦有人把这段改回 return null（空仓），这条用例就是第一道报警。
+  it('★★ 11-16 新口径：雪龙集团竞价一字涨停 ⇒ 照选（⛔ 不空仓、⛔ 不换下一名）', () => {
     const pool = pool0929().map(function(p) {
       return p.name === '雪龙集团' ? Object.assign({}, p, { isYizi: true, aucPct: 10.00 }) : p;
     });
     const r = pickRange10Backup(pool, opts0929());
-    expect(r.ready).toBe(true);              // ⛔ 不是「判不出」，是「判出来了但买不进」
-    expect(r.pick).toBeNull();
-    expect(r.tier).toBe('');
-    expect(r.blockedBy).toBe('yizi');
-    expect(r.blocked && r.blocked.name).toBe('雪龙集团');
-    expect(r.blocked.aucPct).toBe(10);
-    // 说明文案要点名：谁 / 多少涨幅 / 第几名 / 几次在列 / 为什么放弃 / 不替补
-    expect(r.reason).toContain('雪龙集团');
-    expect(r.reason).toContain('一字');
-    expect(r.reason).toContain('+49.00%');
-    expect(r.reason).toContain('+10.00%');
-    expect(r.reason).toContain('第 6 名');
-    expect(r.reason).toContain('2次在列');
-    expect(r.reason).toContain('不替补');
-    expect(r.reason).toContain('空仓');
-    // trail 里那只票的原因要能被核对（「十个名次去留」那段文字会打印它）
-    const xl = r.trail.filter(function(t) { return t.name === '雪龙集团'; })[0];
-    expect(xl.reason).toContain('一字');
+    expect(r.ready).toBe(true);
+    // ① 照选：就是它，pick 不为 null
+    expect(r.pick && r.pick.name).toBe('雪龙集团');
+    expect(r.tier).toBe('second');
+    // ② 不再有「买不进」这个否决标记
+    expect(r.blockedBy).toBe('');
+    expect(r.blocked).toBeNull();
+    // ③ 留痕：规则层据此在说明区写「已挂等下杀买标签」
+    expect(r.yiziPicked).toBe(true);
+    // ④ 它是判得出一字的（不是补位行那种「判不出」）
+    expect(r.yiziUnknown).toBe(false);
+    // ⑤ 可追溯：它的名次 / 涨幅事实还在（供说明区点名）
+    expect(r.pick.rank).toBe(6);
+    expect(r.pick.pct).toBe(49);
+    // ⑥ ⛔ 不换下一名：绝不能变成更弱的京城股份
+    expect(r.pick.name).not.toBe('京城股份');
   });
 
-  it('★ ⛔ 不许替补：下一名（京城股份，同为二次在列、非一字）不许顶上来', () => {
+  it('★ ⛔ 不许替补：雪龙集团一字 ⇒ 仍然是雪龙集团，下一名（京城股份）不许顶上来', () => {
     const pool = pool0929().map(function(p) {
       return p.name === '雪龙集团' ? Object.assign({}, p, { isYizi: true }) : p;
     });
     const r = pickRange10Backup(pool, opts0929());
-    expect(r.pick).toBeNull();
-    // 京城股份在 trail 里【仍然是干净的候选】（reason 为空）—— 证明它不是「被剔除」，
-    // 而是「用户口径不允许拿它替补」⇒ 这一条断言就是「换成更弱的票」这个错误方案的防线。
+    expect(r.pick && r.pick.name).toBe('雪龙集团');
+    // 京城股份在 trail 里仍然是干净候选，但【没有】被选中 —— 这条就是「换成更弱的票」这个错误方案的防线
     const jc = r.trail.filter(function(t) { return t.name === '京城股份'; })[0];
     expect(jc.reason).toBe('');
     expect(jc.cnt).toBe(2);
-    expect(r.reason).not.toContain('京城股份');
   });
 
   it('一字只在更后面出现 ⇒ 不影响结论（前面已有可买的票就照常选它）', () => {

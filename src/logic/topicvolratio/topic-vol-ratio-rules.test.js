@@ -119,6 +119,8 @@ import {
 } from './topic-vol-ratio-rules.js';
 // ★★ [CORE-CAT 2026-10-22] 「题材 → 核心词大类」归一的唯一实现（文化传媒 ⇒ AI应用）
 import { makeCoreTopicResolver } from '../topic/core-category.js';
+// ★ [AUCTION-YIZI-UNIFY 2026-11-16] 一字标签唯一来源（断言必须比对常量，⛔ 不写字面量）
+import { AUCTION_YIZI_WAIT_TAG } from './auction-yizi-tag.js';
 import {
   RULE_NO,
   HOLD_TAG,
@@ -3770,15 +3772,14 @@ describe('tvrb · 第二十九条 十日涨幅 · 在列次数候补', function(
     expect(plan.range10Backup.notes.join('\n')).toContain('重复出现');
   });
 
-  // ★★ [R10-YIZI 2026-10-24 第四次修正 · 9-29 雪龙集团事故]
-  //   用户原话：「9月29日，量比题材买点侧你选择，雪龙集团，十日涨幅雪龙股份2次在列，给出理由……
-  //     但是雪龙股份竞价是涨停一字板，买不进去啊，所以规则你要完善下，竞价涨幅是涨停的，
-  //     一字板的你说明下就可以了，不用把股票选进去，选进去没用，也买不了。你选票的时候要注意这点，
-  //     买不进去的，也不用替补，也不用选进去了。其它不变。」
-  //   ⇒ ① 不选入（range10Backup=null，买点名单里没有它）；
-  //     ② ⛔ 不替补（京城股份同样合格也不许顶上来）；
-  //     ③ 必须说明（说明区点名「一字板 ⇒ 买不进 ⇒ 空仓」，而不是含糊的「没有候补」）。
-  it('★★ 9-29 事故回归：候补那只竞价一字涨停 ⇒ 不选入、不替补，说明区点名原因', function() {
+  // ★★ [R10-YIZI 2026-10-24 → R10-YIZI-REPEAL 2026-11-16 用户口径反转]
+  //   10-24 的旧口径：一字 ⇒ 不选入、不替补、空仓（9-29 雪龙集团事故）。
+  //   11-16 用户明确推翻：「一字涨停可以入选，要打上标签竞价涨停，等下杀买，也没叫你去掉啊」
+  //     「盘中它有时候会开板」。
+  //   ⇒ ① 照选（range10Backup 非空，买点名单里有它）；
+  //     ② 挂统一标签「竞价一字涨停 · 等下杀买」（标签唯一来源 auction-yizi-tag.js）；
+  //     ③ ⛔ 仍不换下一名（京城股份不许顶掉它）。
+  it('★★ 11-16 新口径：候补那只竞价一字涨停 ⇒ 照选 + 挂「等下杀买」标签（⛔ 不空仓、⛔ 不换下一名）', function() {
     const f = twoTopics();     // 强题材（60）+ 房地产（7.47 < 25 ⇒ 整块作废）⇒ 触发候补
     const pool = [
       { name: '九阳股份', code: '002242', topic: '家电', pct: 88.00 },
@@ -3786,7 +3787,7 @@ describe('tvrb · 第二十九条 十日涨幅 · 在列次数候补', function(
       { name: '新华传媒', code: '600825', topic: '文化传媒', pct: 61.00 },
       { name: '冰山冷热', code: '000530', topic: '冰雪产业', pct: 56.00 },
       { name: '吉大正元', code: '003029', topic: 'AI应用', pct: 50.00 },
-      // ★ 事故票：农业 ≠ 文化传媒，主板第 6 名，2次在列，但当天是【竞价一字涨停】
+      // 农业 ≠ 文化传媒，主板第 6 名，2次在列，当天是【竞价一字涨停】
       { name: '雪龙集团', code: '603949', topic: '农业', pct: 49.00, isYizi: true, aucPct: 10.00 },
       { name: '京城股份', code: '600860', topic: '机器人概念', pct: 44.00, isYizi: false, aucPct: 2.0 },
       { name: '百洋股份', code: '002696', topic: '水产品', pct: 40.00 },
@@ -3802,20 +3803,21 @@ describe('tvrb · 第二十九条 十日涨幅 · 在列次数候补', function(
       range10Presence: presence(cnt),
       ebbCtx: ebbCtxOf()
     });
-    // ① 不选入：候补行不出现，也不进买点名单
-    expect(plan.range10Backup).toBeNull();
-    expect(plan.buy.range10Backup).toBeNull();
-    expect(plan.buyNames.has('雪龙集团')).toBe(false);
-    // ② ⛔ 不替补：下一名（京城股份）同样合格也不许顶上来
+    // ① 照选：候补行出现，并进买点名单
+    expect(plan.range10Backup).not.toBeNull();
+    expect(plan.buy.range10Backup).not.toBeNull();
+    expect(plan.range10Backup.picks[0].name).toBe('雪龙集团');
+    expect(plan.buyNames.has('雪龙集团')).toBe(true);
+    // ② 挂统一标签（唯一来源 = auction-yizi-tag.js）
+    expect(plan.range10Backup.picks[0].auctionYiziTag).toBe(AUCTION_YIZI_WAIT_TAG);
+    expect(plan.range10Backup.picks[0].auctionYiziTag).toContain('等下杀买');
+    // ③ ⛔ 不换下一名
     expect(plan.buyNames.has('京城股份')).toBe(false);
-    // ③ 说明区点名原因（用户要的「说明一下就可以了」）
+    // ④ 说明区必须讲清「为什么一字票还在买点侧」（用户要的「说明一下就可以了」）
     const notes = plan.notes.join('\n');
     expect(notes).toContain('雪龙集团');
-    expect(notes).toContain('一字');
-    expect(notes).toContain('不替补');
-    expect(notes).toContain('空仓');
-    // ⛔ 措辞必须与「确实没有候补」区分开（否则用户会以为规则又选不出票）
-    expect(notes).not.toContain('本次【没有候补】');
+    expect(notes).toContain('竞价一字涨停');
+    expect(notes).toContain('照常选入');
     // 题材级结论照旧：房地产那块仍然整块作废
     expect(plan.blocks.map(function(b) { return b.block.topic; })).toEqual(['强题材']);
   });
@@ -4147,6 +4149,42 @@ describe('tvrb · [SECOND-LEADER-10] 排名第二题材：龙一必须进当天�
     const plan = buildTopicVolRatioPlan(TOPICS, dm, { range10Rows: poolOf(11, true) });
     expect(plan.blocks).toHaveLength(2);
     expect(plan.notes.join('\n')).toContain('不在当天的十日涨幅名单里');
+  });
+
+  // ★★ [OR-SPLIT 2026-11-16 用户口径] 这两条是「或」关系的双向锁：
+  //   用户原话：「第三条和第二十九条是或的关系，应该不冲突吧，今天就是AI应用16.82不符合，
+  //             改用候补不是吗？」
+  //   ⇒ 量比 <25 走第二十九条（候补），第三条的龙一闸门**不参与**；
+  //     量比 ≥25 走第三条款的龙一闸门，第二十九条**不参与**。
+  //   ⛔ 一旦有人把实现改回两段独立 if 靠执行顺序决定，这两条必然有一条红。
+  it('★ 互斥（或）· 量比 <25 ⇒ 走第二十九条候补，第三条的龙一闸门【不参与】', function() {
+    const T2weak = topicOf(SECOND, 2, 7.47);          // 房地产 7.47 < 25 ⇒ 走候补
+    const topics = [T1.b, T2weak.b, T3.b];
+    const cnt = {};
+    for (let i = 1; i <= 12; i++) cnt[i === 5 ? (SECOND + '一') : ('外票' + i)] = (i === 5 ? 1 : 5);
+    const counts = new Map();
+    Object.keys(cnt).forEach(function(k) { counts.set(k, { cnt: cnt[k] }); });
+    const plan = buildTopicVolRatioPlan(topics, dm, {
+      range10Rows: poolOf(5),
+      range10Presence: { counts: counts, coveredDays: 10 }
+    });
+    const txt = plan.notes.join('\n');
+    // 走的是「题材量比太小 ⇒ 整块作废 + 候补」这条路
+    expect(txt).toContain('题材量比太小');
+    expect(plan.blocks).toHaveLength(1);
+    // ⛔ 第三条那条路的闸门文案一个字都不许出现
+    expect(txt).not.toContain('排名第二题材的入选条件');
+  });
+
+  it('★ 互斥（或）· 量比 ≥25 ⇒ 走第三条龙一闸门，第二十九条候补【不参与】', function() {
+    const plan = buildTopicVolRatioPlan(TOPICS, dm, { range10Rows: poolOf(5) });
+    const txt = plan.notes.join('\n');
+    expect(txt).toContain('排名第二题材的入选条件');
+    expect(txt).toContain('通过');
+    // ⛔ 第二块没被作废 ⇒ 候补那条路压根不启动
+    expect(plan.range10Backup).toBeNull();
+    expect(txt).not.toContain('题材量比太小');
+    expect(txt).not.toContain('十日涨幅候补');
   });
 
   it('规则面板里写明了这条新规（文案与判定同处一处，§6）', function() {
