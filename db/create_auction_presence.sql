@@ -208,7 +208,14 @@ end $$;
 
 select cron.schedule(
   'auction-presence-open',
-  '30 1 * * 1-5',   -- UTC 01:30 周一~周五 = 北京 09:30
+  '26 1 * * 1-5',   -- UTC 01:26 周一~周五 = 北京 09:26
+  -- ★★ [PRESENCE-0926 2026-11-16 用户报障「每到收盘又变了」] 原来是 '30 1' = 北京 09:30。
+  --   而选股定稿是 **09:27**（bidding_fetch_log 的 snapshot 那一轮，created_at 01:27:30Z）
+  --   ⇒ 09:27 算第二十九条时这张表【当天还没有行】⇒ tvrb-plan 的 r10DataReady 恒 false
+  --   ⇒ 「排名第二的题材量比太小 ⇒ 整块作废」每天早上都不会生效（被 §10 放行）
+  --   ⇒ 等表到货后页面一重算，结论就翻脸（11-16：3 只 → 1 只）。
+  --   09:26 安全：当天 auction_watchlist 09:25:28 已落库，本函数只读 watchlist + 交易日表，
+  --   纯库内计算、零上游请求，秒级完成 ⇒ 09:27 定稿前必然可读。
   $job$
   select recompute_auction_presence((now() at time zone 'Asia/Shanghai')::date);
   $job$
