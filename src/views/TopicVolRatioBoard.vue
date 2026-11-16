@@ -391,12 +391,15 @@
                  ★★ [LEADER-LIMITDOWN 2026-11-02] b.leaderLimitDownGray ⇒ 第三十二条【题材龙一竞价跌停】
                  那一个题材块同样整块灰化（块内票标签 = 【龙一跌停不买】）——
                  判断口径只有 Logic 层的旗子，⛔ 视图不自己比对涨幅 / 跌停（§6 判定唯一）。
+                 ★★ [TOPIC-INNER-SELECT 2026-11-17] b.topicVolWeakGray ⇒ 第二十九条【灰块】
+                 （排名第二的题材量比不达标、且在本题材内按十日涨幅前十也选不出合格票）——
+                 块照常列出但整块灰化、每只票挂【题材量比不达标 · 不开新仓】。
                  ⛔ 走 TvrbBuyBlock 的可选 prop（§11 缺省 false = 其它消费方零行为），不新造灰化 CSS。 -->
                 <TvrbBuyBlock
                   v-for="b in blocks"
                   :key="'tvrb-buy-' + b.topic"
                   :block="b"
-                  :gray="!!b.prevEbbGray || !!b.leaderLimitDownGray"
+                  :gray="!!b.prevEbbGray || !!b.leaderLimitDownGray || !!b.topicVolWeakGray"
                 />
               </div>
               <div

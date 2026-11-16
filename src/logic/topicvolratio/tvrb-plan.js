@@ -7,11 +7,11 @@
 //   opts.dataGateBlocked 为真时，必须走 _clearBuySideForDataGate 把买点侧清空；
 //   ⛔ 只在视图层 v-if 挡不住未来新增的买点通道。
 
-import { TVRB_MIN_COUNT, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_TOP_N, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TVRB_CASH_ALERT_NONE, NEW_DRAGON_TAG, NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N, NEW_DRAGON_FAMILY_MIN_COUNT, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL, TVRB_ABNORMAL_NONE } from './tvrb-constants.js';
+import { TVRB_MIN_COUNT, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_TOP_N, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TVRB_CASH_ALERT_NONE, NEW_DRAGON_TAG, NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N, NEW_DRAGON_FAMILY_MIN_COUNT, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL, TVRB_ABNORMAL_NONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG } from './tvrb-constants.js';
 import { pickFamilyNewDragon, splitTopicSegs, isLineageTopic } from './new-dragon-family.js';
 import { _normTopic, _sameTopicLoose, _num, _pct2, _streakWord, _secondTopicLeaderInTop10, _range10RankMapOf, _closeRankOf, _rankTopEntries, _topicTop10Hits, _windowTextOf, _todayRankPhrase, _rankLabelOf, _oldTopicNameOf, _oldTopicBasisOf } from './tvrb-utils.js';
 import { detectEbbDay, secondEbbTopicOfPrevDay, buildEbbDayRecord } from './tvrb-ebb.js';
-import { _applyPrevEbbSecondNoBuy, _applyLeaderLimitDownNoBuy, _applyEbbSellRules, _buildEbbPicksBlock, _applyEbbBuyRules, _applyCashAlertBuyRules, _applyDivergeNoBuyRules, _applyAbnormalNoBuyRules, _buildDivergeBuyBlock, _buildDivergeCashAlert, _buildWeakHuddleBlock, _buildLeaderLimitDownHuddleBlock, _buildCatchUpBlock, resolveTvrbTier, avgVolRatioOf, formatAvgVolRatio, buildCashAlert, _dragonCandidates, _buildBlock, _buildNewDragonBlock, _withAuctionLegPct, _buildRange10BackupBlock } from './tvrb-blocks.js';
+import { _applyPrevEbbSecondNoBuy, _applyLeaderLimitDownNoBuy, _applySecondTopicVolWeakNoBuy, _applyEbbSellRules, _buildEbbPicksBlock, _applyEbbBuyRules, _applyCashAlertBuyRules, _applyDivergeNoBuyRules, _applyAbnormalNoBuyRules, _buildDivergeBuyBlock, _buildDivergeCashAlert, _buildWeakHuddleBlock, _buildLeaderLimitDownHuddleBlock, _buildCatchUpBlock, resolveTvrbTier, avgVolRatioOf, formatAvgVolRatio, buildCashAlert, _dragonCandidates, _buildBlock, _buildNewDragonBlock, _withAuctionLegPct, _buildRange10BackupBlock } from './tvrb-blocks.js';
 // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条「监管异动 · 十日涨幅硬上限」的事实判定
 //   （纯函数：把「总龙一昨日/今日十日涨幅 + 会被选中的票的十日涨幅」判成一块空仓标语）。
 //   ⛔ 阈值 / 文案全在 abnormal-10d.js + tvrb-constants.js，本文件只负责【注入事实】与【收口】。
@@ -22,6 +22,10 @@ import { formatRangePct, RULE_NO, finishBuyBlock, buildSellPlan } from '../decis
 import { totalDragonLabel } from '../auction/range20-top5-label.js';
 import { makeCoreTopicResolver } from '../topic/core-category.js';
 import { pickRange10Backup, RANGE10_BACKUP_RULE_NO } from './range10-backup.js';
+// ★★ [TOPIC-INNER-SELECT 2026-11-17 用户口径] 第二十九条【唯一判定实现】：
+//   `secondTopicRouteOf` = 第二题材走「第三条闸门」还是「第二十九条题材内选票」的唯一分支点；
+//   `pickSecondTopicBackup` = 「该题材内 ∩ 十日涨幅前十 ∩ 首次/二次在列」按档位取票。
+import { secondTopicRouteOf, pickSecondTopicBackup } from './second-topic-backup.js';
 import { PRESENCE_TOP_N } from '../auction/presence-label.js';
 import { getAuctionLimitState, isMainBoardRankEligible } from '../auction/limit-up.js';
 // ★★ [ABN-MAINBOARD 2026-11-13] 第三十四条只认主板 ⇒ 需要「股票名 → 6 位代码」。
@@ -1024,12 +1028,27 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   const r10DataReady = !!(r10PoolGiven && r10PoolComplete && o.range10Rows.length > 0 &&
     o.range10Presence && o.range10Presence.counts &&
     Number(o.range10Presence.coveredDays) > 0);
+  // ★ [TOPIC-INNER-SELECT 2026-11-17] 在列次数表（「首次 / 二次在列」的唯一数据源）。
+  //   ⚠️ 这里只是【提前取出来】给选股扫描用（扫描阶段就要定第二题材选哪几只票）；
+  //      候选通道（第二十九条的全市场候补）在后面 1951 行那一带另取一次 —— 两处读的是同一个对象，
+  //      ⛔ 不存在第二份数据。
+  const r10Counts = (o.range10Presence && o.range10Presence.counts) ? o.range10Presence.counts : null;
+  // ★★ [TOPIC-INNER-SELECT 2026-11-17] 第二题材走「题材内选票」的结果（选股扫描里赋值，循环后使用）：
+  //   · `secondTopicInnerOpt`  = 有合格票 ⇒ 直接交给 _buildBlock 的 opt（order + yiziKeep）
+  //   · `secondTopicInnerInfo` = 选不出票（empty）/ 判不出（no-pool / no-row / no-counts）⇒ 供说明与灰化
+  //   ⛔ 必须是【函数作用域】里的 let：扫描循环结束后才组装说明文案与灰化。
+  let secondTopicInnerOpt = null;
+  let secondTopicInnerInfo = null;
   // 被作废的题材（供候补的「不同题材」闸门 + 说明文案用）
   const r10WeakTopics = [];
   // 「整块作废」那一块里的票（名字 -> {topic, tag}）：块被删掉了，但它们仍可能是股票级候补的候选，
   // 说明文案要能交代「它来自刚被作废的那块」（⛔ 不代表它被禁买，只是要让判定可追溯）。
   const r10RemovedPicks = new Map();
   let r10RemovedSecond = null;   // 记录「第二题材因量比太小被整块删除」，供尾部的说明文案使用
+  // ★★ [TOPIC-INNER-SELECT 2026-11-17] 第二题材「灰块」事实（选不出合格票）。
+  //   `null` = 没有灰块；有值 ⇒ finishBuyBlock 之后由 `_applySecondTopicVolWeakNoBuy` 做覆盖式灰化。
+  //   ⛔ 块【不删除】：用户要能看见「今天这个题材被调出来了、为什么不能买」（原话「就是灰色块」）。
+  let r10SecondGray = null;
   let r10SecondWeak = null;      // 记录「第二题材量比太小」这个事实（即使因数据缺口没删）
   let r10GapNoted = false;       // 「数据缺口已说明」旗子：同一件事只说一次（⛔ 不叠两条告警）
   // ★ [SMALL-TOPIC 2026-10-24 用户口径] 被【小题材收紧】弃掉的题材（排名第一、数量 4~6 只、
@@ -1313,6 +1332,68 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         }
       }
     }
+    // ══ ★★ [TOPIC-INNER-SELECT 2026-11-17 用户口径] 第二十九条 · 第二题材量比不达标 ⇒ 题材内选票 ══
+    //
+    // 用户原话（逐字，指着 11-16 的看板）：
+    //   「文投控股也是ai应用的啊，为什么不选？我都说了排名第二的题材平均量比达不到，要看它竞价口径
+    //     有没有在10日涨幅排名前十的，按照题材数量选，现在ai应用是9只，选两只。也是从十日涨幅里面
+    //     选出来，如果他平均量比不符合，10日涨幅前十又没有票，就是灰色块。」
+    //
+    // ⇒ 旧口径（整块作废 + 从【全市场】挑 1 只）**已废除**：那个做题方式会把该题材自己的票扔掉，
+    //   选出来的却是别的题材的票 —— 用户看到的就是「AI应用明明有票进了前十，你却选别人」。
+    // ⇒ 新口径：候选范围收紧到【该题材自己的成员】，条件仍是「十日涨幅前十 + 首次/二次在列」，
+    //   名额按第二条档位（9 只 ⇒ 2 只；4~8 只 ⇒ 1 只）。
+    //
+    // 四个前置（缺一 ⇒ 本次不介入，⛔ 绝不「拿没数据当没票」去灰掉一个题材 —— §10）：
+    //   ① `out.blocks.length === 1` ⇒ 正在处理的是【排名第二】那个块（第一块已 push）；
+    //   ② `r10Enabled`             ⇒ 退潮首日 / 切换日 / 总龙首次分歧日各有专属规则接管（§6 不叠加）；
+    //   ③ `r10PoolGiven`           ⇒ 调用方没传十日涨幅池（老调用方 / 单测）⇒ 整段跳过（§11 零行为变化）；
+    //   ④ `r10PoolComplete`        ⇒ 20 天补位行未就绪 ⇒ 名次会整体错位 ⇒ 判不出（只能写「未校验」）。
+    //
+    // ⚠️ 判据 `secondTopicRouteOf` 与循环后那一段【同一个函数】（§6 唯一判定点）：
+    //   扫描阶段必须提前知道走哪条路（决定这一块取哪几只票），循环后那一段只负责写说明 / 灰化。
+    if (out.blocks.length === 1 && r10Enabled && r10PoolGiven && r10PoolComplete) {
+      const secondAvg = avgVolRatioOf(b);
+      if (secondTopicRouteOf(secondAvg) === 'backup') {
+        const innerRes = pickSecondTopicBackup(b, {
+          rankMap: r10Rank926,
+          counts: r10Counts,
+          // 名额按【第二条档位】：count 4~8 ⇒ 1 只；count > 8 ⇒ 2 只（用户「9只选两只」同口径）
+          pickCount: tier.pickCount
+        });
+        // 候选形状必须来自 `_dragonCandidates`（与 SMALL-TOPIC 的 `opt.order` 同一契约）：
+        //   一字 / 停牌 / 异动 / 量比 / 占比 / 龙标 全部由 _buildBlock 那一套原样处理，⛔ 不在这里另造行。
+        const innerCands = _dragonCandidates(b, buyDragonMap, buyPctMap);
+        const innerByName = new Map();
+        innerCands.forEach(function(c) {
+          if (c && c.name) innerByName.set(String(c.name).trim(), c);
+        });
+        const innerOrder = innerRes.picked.map(function(p) {
+          return innerByName.get(String(p.name).trim()) || null;
+        }).filter(Boolean);
+        // §10：hits 里有票、龙位名册里却挑不出来（十日涨幅缺值 / 名称对不上）⇒ 判不出 ⇒ 保持原规则。
+        const innerOrderComplete = (innerOrder.length === innerRes.picked.length && innerOrder.length > 0);
+        if (innerRes.judge === 'ok' && innerOrderComplete) {
+          secondTopicInnerOpt = {
+            order: innerOrder,
+            // ★ 一字票【照选 + 占一档】：候选本来就只在前十那几只里，跳过一个就只剩更弱的（用户 11-16 口径）
+            yiziKeep: true,
+            secondTopic: innerRes,
+            baseText: r10BaseText,
+            avgText: formatAvgVolRatio(secondAvg)
+          };
+        } else {
+          // empty（选不出票 ⇒ 灰块）/ no-pool / no-row / no-counts / 名次对不上 ⇒ 交给循环后那一段处理
+          secondTopicInnerInfo = {
+            res: innerRes,
+            avgText: formatAvgVolRatio(secondAvg),
+            avgVolRatio: secondAvg,
+            topic: String(b.topic || ''),
+            count: b.count
+          };
+        }
+      }
+    }
     // ★★ [AUTO-PICK-TOP20 2026-11-14 用户口径] big 档（> 8 只）改用「同题材 20日涨幅前十最靠前两只」：
     //   池子 = 采集层 `ebbCtx.topicPool`（恒 9:25 竞价口径的 20日涨幅前十，见 tvrb-auction-board.js）。
     //   ★★ [MID-TOP20 2026-11-14 用户口径] **mid 档（4~8 只，取 1 只）同步扩进来** —— 用户原话
@@ -1330,7 +1411,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       top20Text: r20BaseText,
       topicOwner: topicOwner
     } : null;
-    const blk = _buildBlock(b, buyDragonMap, tier, buyPctMap, buySkipNames, smallOpt || bigOpt);
+    const blk = _buildBlock(b, buyDragonMap, tier, buyPctMap, buySkipNames,
+      // ★★ [TOPIC-INNER-SELECT 2026-11-17] 第二题材走「题材内选票」时它的 opt 优先：
+      //   此时绝不能落进 bigOpt（那是「同题材 20日涨幅前十」的口径，与本条不是一回事）。
+      //   ⚠️ 判 `out.blocks.length === 1`（而不是只看 opt 有没有值）：保证它只作用于排名第二那一块。
+      (out.blocks.length === 1 && secondTopicInnerOpt) ? secondTopicInnerOpt : (smallOpt || bigOpt));
     out.blocks.push(blk);
     // ★ 收紧档：把「本题材有哪几只进了前十、最后买了最强的那只」写成事实（用户要能逐只核对）
     if (smallTrace) {
@@ -1413,25 +1498,37 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //   §10：平均量比读不出来（null）⇒ 不判「太小」⇒ 走 'gate'（闸门自己有自己的判不出处理），
   //       ⛔ 绝不把「没数据」当成「量比低」去作废一个题材。
   //   ⚠️ 这里不加 `!r10Blocked`：切换日（第二十八条）只屏蔽第二十九条，不屏蔽第三条的闸门。
+  //   ★★ [TOPIC-INNER-SELECT 2026-11-17] 判据收口到 `secondTopicRouteOf`（§6 唯一实现）：
+  //      扫描阶段（决定第二题材取哪几只票）与这里（决定写什么说明 / 灰不灰块）调的是【同一个函数】，
+  //      ⛔ 不许任何一处再写 `avg < TVRB_CASH_ALERT_AVG_VR` 的裸比较 —— 那正是「两处口径分叉」的起点。
+  //   ⚠️ 这里不加 `!r10Blocked`：切换日（第二十八条）只屏蔽第二十九条，不屏蔽第三条的闸门。
   let secondTopicRoute = '';
   let secondTopicRouteAvg = null;
   if (r10Enabled && out.blocks.length >= 2) {
     secondTopicRouteAvg = avgVolRatioOf(out.blocks[1] && out.blocks[1].block);
-    secondTopicRoute = (secondTopicRouteAvg !== null && secondTopicRouteAvg < TVRB_CASH_ALERT_AVG_VR)
-      ? 'backup'
-      : 'gate';
+    secondTopicRoute = secondTopicRouteOf(secondTopicRouteAvg);
   }
 
-  // ── ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条 · 第一段：排名【第二】的题材量比太小 ⇒ 整块作废 ──
-  //   用户原话：「排名第二的题材如果量比太小就用十日涨幅首次在列进行候补……题材量比太小禁止选入」
-  //           + AskUserQuestion「整块删除，只出候补」。
-  //   判据 = 该题材平均竞价量比 < TVRB_CASH_ALERT_AVG_VR（与空仓提醒【同一个门槛常量】，§6 不另立数字）。
-  //   §10 两条硬约束（缺一不可，⛔ 否则会「拿没数据当成量比低」把整个题材误作废）：
-  //     ① 平均量比读不出来（null）⇒ 【不作废】（未知 ≠ 量比低）；
-  //     ② 候补的两个输入（十日涨幅池 + 在列次数）没就绪 ⇒ 【不作废】—— 作废了却给不出替换票，
-  //        等于因为一次数据缺口白扔掉一个题材还宣布空仓；此时保持原规则并在说明区写明「判不出」。
-  //   ⚠️ 删除后必须重建 heavy / light 槽位：否则 buy.light 还挂着一个已删除的块，
-  //      四个装饰器会遍历到幽灵块（那是「静默多渲染一段」的最短路径）。
+  // ── ★★ [TOPIC-INNER-SELECT 2026-11-17 用户口径] 第二十九条 · 第一段：排名【第二】的题材量比太小 ──
+  //   ⇒ 不再「整块作废」，改成【在本题材内按十日涨幅前十选票】（选票在扫描阶段已经完成）；
+  //     本段只负责：① 有票 ⇒ 写「选了哪几只、为什么是它们」；② 选不出 ⇒ 记「灰块」事实 + 说明；
+  //     ③ 判不出 ⇒ 保持原规则并如实写「未校验」（§10）。
+  //
+  //   用户原话（2026-11-17，逐字）：
+  //     「文投控股也是ai应用的啊，为什么不选？我都说了排名第二的题材平均量比达不到，要看它竞价口径
+  //       有没有在10日涨幅排名前十的，按照题材数量选，现在ai应用是9只，选两只。也是从十日涨幅里面
+  //       选出来，如果他平均量比不符合，10日涨幅前十又没有票，就是灰色块。」
+  //   ⛔ 旧口径（2026-10-24 ~ 11-16）：量比太小 ⇒ `_dropSecondBlockSlot` 整块删除 + 全市场候补 1 只。
+  //      它把该题材自己的票扔掉了 —— 11-16 AI应用 有【文投控股 / 北纬科技】两只进了十日前十，
+  //      结果块被删、票被换掉，用户当场指出规则没按他的口径做。
+  //
+  //   判据 = `secondTopicRouteOf`（与扫描阶段同一个函数，§6）。
+  //   §10 硬约束（⛔ 否则会「拿没数据当成量比低 / 当成没票」误伤一个题材）：
+  //     ① 平均量比读不出来（null）⇒ 两条路都不判 ⇒ 保持原规则；
+  //     ② 十日涨幅池 / 在列次数没就绪 ⇒ 判不出 ⇒ 保持原规则并说明（⛔ 不灰块、不换票）。
+  //
+  //   ★ 灰块（选不出票）时【仍然产出旧的「全市场十日涨幅候补」块】——
+  //     用户 2026-11-17 拍板「保留并存」。有票可选时不再额外产出，避免同一只票在两处重复出现。
   if (secondTopicRoute === 'backup' && !r10Blocked) {
     const secondBlk = out.blocks[1];
     const secondAvg = secondTopicRouteAvg;
@@ -1442,6 +1539,7 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         avgText: formatAvgVolRatio(secondAvg)
       };
       r10SecondWeak = weakInfo;
+      const innerRes = (secondTopicInnerInfo && secondTopicInnerInfo.res) ? secondTopicInnerInfo.res : null;
       if (!r10DataReady) {
         // §10：数据缺口必须可见 —— 但只在「调用方确实给了池子」时提示（老调用方 / 单测不传 ⇒ 零打扰）
         if (r10PoolGiven) {
@@ -1455,32 +1553,62 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
             : '【十日窗口在列次数】还没读到';
           out.notes.push('⚠️【第' + RANGE10_BACKUP_RULE_NO + '条 · 题材量比太小】排名第二的入选题材【' +
             weakInfo.topic + '】平均竞价量比 ' + weakInfo.avgText + ' ＜ ' + TVRB_CASH_ALERT_AVG_VR +
-            '，本该禁止选入；但' + r10GapWhy + ' ⇒ 判不出候补票，' +
-            '本次【暂不作废】该题材（保持原规则照常列出）。数据到货后会自动重判（§10：判不出 ≠ 作废）。');
+            '，本该改成【本题材内按十日涨幅前十选票】；但' + r10GapWhy + ' ⇒ 判不出该选哪几只，' +
+            '本次【保持原规则照常列出】（数据到货后自动重判；§10：判不出 ≠ 作废）。');
         }
-      } else {
+      } else if (secondTopicInnerOpt && secondTopicInnerOpt.secondTopic) {
+        // ① 有合格票：扫描阶段已按「首次优先 + 名次升序 + 档位名额」取好，这里只写判定过程
+        const okRes = secondTopicInnerOpt.secondTopic;
+        const hitText = (okRes.hits || []).map(function(h) {
+          return '第 ' + h.rank + ' 名 ' + h.name + '（' + (h.label || '—') + '）';
+        }).join('；');
+        const pickText = (okRes.picked || []).map(function(p) {
+          return p.name + '（' + (p.label || '—') + '，第 ' + p.rank + ' 名）';
+        }).join('、');
+        const rejText = (okRes.rejected || []).length
+          ? ('；未选：' + okRes.rejected.map(function(j) {
+              return j.name + '（' + (j.label || '—') + '，不是首次/二次在列）';
+            }).join('、'))
+          : '';
+        out.notes.push('⚠️【第' + RANGE10_BACKUP_RULE_NO + '条 · 题材量比不达标 ⇒ 题材内选票】排名第二的入选题材【' +
+          weakInfo.topic + '】（' + okRes.count + ' 只，平均竞价量比 ' + weakInfo.avgText + ' ＜ ' +
+          TVRB_CASH_ALERT_AVG_VR + '）⇒ 该题材【不作废】，改在【本题材内】按十日涨幅〔' + r10BaseText +
+          '〕前十 + 首次/二次在列选票：前十里有本题材的票 ' + (okRes.hits || []).length + ' 只（' + hitText +
+          '）⇒ 档位名额 ' + okRes.slots + ' 只（' + okRes.count + ' 只' +
+          (okRes.slots > 1 ? ' > 8' : ' 4~8') + ' ⇒ ' + okRes.slots + ' 只），合格的是【' + pickText + '】' +
+          rejText +
+          (okRes.shortBy > 0
+            ? ('；名额还差 ' + okRes.shortBy + ' 只，按口径【只选现有的，⛔ 不补位】')
+            : '') + '。');
+      } else if (innerRes && innerRes.judge === 'empty') {
+        // ② 选不出票 ⇒ 灰块（块保留、整块灰化、今天不买）+ 旧的全局候补块照旧产出
         r10RemovedSecond = weakInfo;
+        r10SecondGray = {
+          topic: weakInfo.topic,
+          avgText: weakInfo.avgText,
+          avgVolRatio: secondAvg,
+          whyText: innerRes.reason || '',
+          why: innerRes.why || ''
+        };
         r10WeakTopics.push({
           topic: weakInfo.topic,
           avgText: weakInfo.avgText,
-          reasonText: '排名第二的入选题材，题材量比太小 ⇒ 禁止选入（整块作废）'
+          reasonText: '排名第二的入选题材，题材量比太小 ⇒ 按口径改在本题材内选票，但选不出合格票（灰块）'
         });
-        // ★ [R10-STOCK-LEVEL 2026-10-24] 记下这一块里的票：块会被整块删除，但【股票级通道】的候补
-        //   有可能正好选中其中一只（题材不选 ≠ 这只票不能被选）⇒ 说明文案要能讲清它的来历。
-        (secondBlk.picks || []).forEach(function(p) {
-          if (p && p.name) {
-            const nm = String(p.name).trim();
-            if (!r10RemovedPicks.has(nm)) {
-              r10RemovedPicks.set(nm, { topic: weakInfo.topic, tag: '整块作废' });
-            }
-          }
-        });
-        // ⚠️ 槽位必须一起重建（§6 唯一实现：_dropSecondBlockSlot）
-        _dropSecondBlockSlot(out);
-        out.notes.push('⚠️【第' + RANGE10_BACKUP_RULE_NO + '条 · 题材量比太小】排名第二的入选题材【' +
-          weakInfo.topic + '】平均竞价量比 ' + weakInfo.avgText + ' ＜ ' +
-          TVRB_CASH_ALERT_AVG_VR + ' ⇒ 该题材【禁止选入】（已整块作废，不列股票），' +
-          '改用【十日涨幅前十 + 首次在列】的主板新面孔候补。');
+        out.notes.push('⛔【第' + RANGE10_BACKUP_RULE_NO + '条 · 灰色块】排名第二的入选题材【' +
+          weakInfo.topic + '】（' + (secondTopicInnerInfo.count || 0) + ' 只，平均竞价量比 ' +
+          weakInfo.avgText + ' ＜ ' + TVRB_CASH_ALERT_AVG_VR + '）⇒ 按口径改在【本题材内】按十日涨幅〔' +
+          r10BaseText + '〕前十 + 首次/二次在列选票，但' + (innerRes.reason || '选不出票') +
+          ' ⇒ 本题材今天【灰块】：整块照常列出但灰化、每只票挂【' + SECOND_TOPIC_VOLWEAK_NO_BUY_TAG +
+          '】、今天不买。同时按旧口径给一只【全市场十日涨幅候补】。');
+      } else {
+        // ③ 判不出（no-pool / no-row / no-counts / 名次对不上）⇒ 保持原规则，如实写「未校验」
+        r10GapNoted = true;
+        out.notes.push('⚠️【第' + RANGE10_BACKUP_RULE_NO + '条 · 未校验】排名第二的入选题材【' +
+          weakInfo.topic + '】平均竞价量比 ' + weakInfo.avgText + ' ＜ ' + TVRB_CASH_ALERT_AVG_VR +
+          '，本该改成【本题材内按十日涨幅前十选票】，但' +
+          (innerRes ? (innerRes.reason || '判不出') : '十日涨幅名单 / 在列次数还没读到') +
+          ' ⇒ 判不出 ⇒ 本次【保持原规则照常列出】，既不作废也不灰块（§10：判不出 ≠ 没有票）。');
       }
     }
   }
@@ -1580,6 +1708,12 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     ruleNo: RULE_NO.FIRST
   };
   out.blocks.forEach(function(b) { finishBuyBlock(b, fOpts); });
+
+  // ★★ [TOPIC-INNER-SELECT 2026-11-17 用户口径] 第二十九条 · 灰块：整块照常列出、今天不买。
+  //   ⛔ 必须排在 `finishBuyBlock`【之后】：那一步才算出每行的原始买点标签，这里做覆盖式改写
+  //      （与 `_applyLeaderLimitDownNoBuy` 同一范式，§6 唯一实现里也只做「覆盖那三处」）。
+  //   ⚠️ 只灰【排名第二那个题材块】：第一题材与自己走通的题材块一个字节都不动。
+  if (r10SecondGray) _applySecondTopicVolWeakNoBuy(out.blocks, r10SecondGray);
 
   // ★★ [LEADER-LIMITDOWN 2026-11-02 用户口径] 第三十二条：龙一竞价跌停的那个题材【照常列出但今天不买】。
   //   ⛔ 必须排在 finishBuyBlock【之后】：那一步才算出每行的原始买点标签，这里做覆盖式改写。
@@ -2246,6 +2380,14 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       (b.picks || []).forEach(function(p) { if (p && p.name) out.buyNames.delete(p.name); });
     });
   }
+  // ★★ [TOPIC-INNER-SELECT 2026-11-17 用户口径] 第二十九条的【灰块】（第二题材量比不达标且
+  //   在本题材内选不出合格票）⇒ 这个题材今天【不买】⇒ 它的票不进买点名单。
+  //   ⛔ 否则卖点侧会因「今天又进买点」把它们标成【持有】，与「今天不买」正面矛盾。
+  //   与上面 [EBB-D1] / [LEADER-LIMITDOWN] 是同一不变式（展示保留、名单剔除）。
+  out.blocks.forEach(function(b) {
+    if (!b || !b.topicVolWeakGray) return;
+    (b.picks || []).forEach(function(p) { if (p && p.name) out.buyNames.delete(p.name); });
+  });
   // ★★ [LEADER-LIMITDOWN 2026-11-02 用户口径] 反面同理：抱团那一只（市场总龙一）是【今天真要买】的票
   //   ⇒ 进买点名单（同一不变式：它若昨天已在卖点侧候选里，卖点侧要标【持有】而不是「竞价清仓」）。
   //   ⚠️ 只在本条命中时加 —— 第三十条那条通道进不进名单是它自己的既有行为，⛔ 不顺手改动（§11）。
@@ -2389,8 +2531,9 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   };
   // ★★ [LEADER-LIMITDOWN 2026-11-02] 第三十二条：龙一竞价跌停那个题材【今天不买】⇒ 它的票不计入
   //   「实际选出几只」（用户口径「数只数」数的是【今天能下单的】；那一块的票只作展示）。
+  // ★★ [TOPIC-INNER-SELECT 2026-11-17] 第二十九条的【灰块】同理：整块灰化、今天不买 ⇒ 不计入。
   out.blocks.forEach(function(blk) {
-    if (blk && blk.leaderLimitDownGray) return;
+    if (blk && (blk.leaderLimitDownGray || blk.topicVolWeakGray)) return;
     _countUnique(blk.picks);
   });
   // ★ [SWITCH 2026-10-22] 新龙那一只也要计入「实际选出几只」（summary 文案读它）

@@ -431,6 +431,20 @@ export const TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG = '龙一跌停不买';
 export const TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE = EBB_NO_BUY_TONE;
 
 /**
+ * ══ 【第二十九条 · 第二题材量比不达标 ⇒ 灰块】的覆盖式标签 ══
+ *    ★★ [TOPIC-INNER-SELECT 2026-11-17 用户口径]
+ *
+ * 用户原话：「如果他平均量比不符合，10日涨幅前十又没有票，就是灰色块。」
+ * ⇒ 这个题材【照常列出】（⛔ 不再整块删除），整块灰化、票上一律挂这枚标签 = 今天不买。
+ *
+ * ⛔ 复用【退潮不买】/【分歧日不买】/【龙一跌停不买】都不行 —— 三枚讲的是三种不同的成因，
+ *   用户恰恰是靠成因来核对判定对不对的（本次事故就是「成因对了、选票范围错了」）。
+ */
+export const SECOND_TOPIC_VOLWEAK_NO_BUY_TAG = '题材量比不达标 · 不开新仓';
+/** 配色档：与前几枚「不开新仓」标签同一档（理由见 TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE 的长注释） */
+export const SECOND_TOPIC_VOLWEAK_NO_BUY_TONE = EBB_NO_BUY_TONE;
+
+/**
  * ══ 【总龙首次分歧 · 买点】标签组（第十九轮补丁⑧ · 2026-10-20 用户口径）══════════════════
  *
  * 用户原话：「市场总龙一，第一次出现分歧的时候，是买点。像新华传媒10月19日出现分歧，一般开盘

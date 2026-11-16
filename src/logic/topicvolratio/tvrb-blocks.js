@@ -10,7 +10,7 @@
 //
 // 外部依赖的口径说明（原 topic-vol-ratio-rules.js 头部的 import 注释，逐条搬过来）：
 
-import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_PICK_TONE, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, EBB_SECOND_BUY_TAG, EBB_SECOND_BUY_TONE, EBB_SECOND_RULE_NO, CASH_NO_BUY_TAG, CASH_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_BLOCK_TOPIC, WEAK_HUDDLE_TOP_N, WEAK_HUDDLE_TONE, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_BLOCK_TOPIC, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, CATCH_UP_TONE, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE, DIVERGE_DIP_TAG, DIVERGE_FOLLOW_TAG, DIVERGE_NO_BUY_TAG, DIVERGE_BUY_TONE, DIVERGE_NO_BUY_TONE, DIVERGE_RULE_NO, TVRB_CASH_ALERT_NONE, SWITCH_RULE_NO, NEW_DRAGON_TAG, NEW_DRAGON_TONE, RANGE10_BACKUP_TONE, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL } from './tvrb-constants.js';
+import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_PICK_TONE, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, EBB_SECOND_BUY_TAG, EBB_SECOND_BUY_TONE, EBB_SECOND_RULE_NO, CASH_NO_BUY_TAG, CASH_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_BLOCK_TOPIC, WEAK_HUDDLE_TOP_N, WEAK_HUDDLE_TONE, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_BLOCK_TOPIC, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, CATCH_UP_TONE, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, SECOND_TOPIC_VOLWEAK_NO_BUY_TONE, DIVERGE_DIP_TAG, DIVERGE_FOLLOW_TAG, DIVERGE_NO_BUY_TAG, DIVERGE_BUY_TONE, DIVERGE_NO_BUY_TONE, DIVERGE_RULE_NO, TVRB_CASH_ALERT_NONE, SWITCH_RULE_NO, NEW_DRAGON_TAG, NEW_DRAGON_TONE, RANGE10_BACKUP_TONE, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL } from './tvrb-constants.js';
 // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条「监管异动 · 十日涨幅硬上限」的唯一判定实现：
 //   classifyRange10 = 分级（ok / near / abnormal，阈值 97 / 100 都在 tvrb-constants 一处定义；
 //   [CAP-97 2026-11-13 晚间] 用户把自定义禁选上限 95 → 97，让 11-11 的 95.71% 正常运行）。
@@ -122,6 +122,53 @@ export function _applyLeaderLimitDownNoBuy(blocks, ld) {
       p.actionNote = lead +
         '本股今天【不开新仓】—— 原本的【' + HOLD_TAG + '】/ 竞价买 / 尾盘买 / 先卖后买 等买点信号' +
         '一律作废。（等这个题材重新走强 —— 龙一不再跌停、竞价占比回升 —— 再看买点。）';
+    });
+  });
+}
+
+/**
+ * 【第二十九条 · 第二题材量比不达标 ⇒ 灰块】（覆盖式后处理 —— ⛔ 绝不去改 _buildBlock / finishBuyBlock 内部）
+ *
+ * ★★ [TOPIC-INNER-SELECT 2026-11-17 用户口径]
+ *   用户原话：「文投控股也是ai应用的啊，为什么不选？……如果他平均量比不符合，10日涨幅前十
+ *     又没有票，就是灰色块。」
+ *
+ * 旧口径（2026-10-24 ~ 11-16，**已废除**）：第二题材量比 < 25 ⇒ 整块删除（`_dropSecondBlockSlot`）。
+ * 新口径：只有「在该题材内按十日涨幅前十选不出任何合格票」时才落到这里 ——
+ *   而且**不再删块**：块照常列出（用户要能看见「今天这个题材被调出来了、为什么不能买」），
+ *   整块灰化 + 每只票改挂【题材量比不达标 · 不开新仓】。
+ *
+ * ⛔ 与 _applyLeaderLimitDownNoBuy 同一范式（先按原口径算完，再覆盖那三处）：
+ *   ① `b.topicVolWeakGray = true` ⇒ 视图层给该块挂灰化类（只灰这一个题材块）；
+ *   ② picks 的 position / holdTag 清空（今天不买 ⇒ 也就不存在「持有」）；
+ *   ③ buyActionTag / buyActionTone 覆盖成「不开新仓」。
+ * ⛔ 保留一切【客观数据】（十日涨幅 / 竞价涨幅 / 量比 / 占比 / 龙标）—— 灰化只讲「今天怎么买」。
+ *
+ * @param {Array} blocks buildTopicVolRatioPlan 的入选题材块数组
+ * @param {object|null} info `{ topic, avgText, whyText, count, slots, hitsText }`；null ⇒ 零副作用（§11）
+ */
+export function _applySecondTopicVolWeakNoBuy(blocks, info) {
+  if (!info || !info.topic) return;
+  const lead = '【第' + RANGE10_BACKUP_RULE_NO + '条 · 题材量比不达标】排名第二的入选题材【' +
+    info.topic + '】平均竞价量比 ' + (info.avgText || '—') + ' ＜ ' + TVRB_CASH_ALERT_AVG_VR +
+    '（门槛），按口径要改成【在本题材内按十日涨幅前十选票】，但' +
+    (info.whyText || '当日十日涨幅前十没有一只本题材的票') +
+    ' ⇒ 本题材今天【选不出票】= 灰色块：题目照常列出、整块灰化、今天不买。';
+  (blocks || []).forEach(function(b) {
+    if (!b) return;
+    const bt = String((b.block && b.block.topic) || b.topic || '').trim();
+    if (bt !== String(info.topic).trim()) return;
+    b.topicVolWeakGray = true;            // ★ 视图层据此给该块挂灰化类（只灰这一个题材块）
+    if (!Array.isArray(b.notes)) b.notes = [];
+    b.notes.push('⚠️ ' + lead +
+      '（等这个题材重新放量、或它的票重新进入十日前十，再看买点。）');
+    (b.picks || []).forEach(function(p) {
+      if (!p || !p.name) return;
+      p.position = '';
+      p.holdTag = '';
+      p.buyActionTag = SECOND_TOPIC_VOLWEAK_NO_BUY_TAG;
+      p.buyActionTone = SECOND_TOPIC_VOLWEAK_NO_BUY_TONE;
+      p.actionNote = lead;
     });
   });
 }
@@ -1649,7 +1696,13 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
       //   ⚠️ 只有【没走 TOP20 口径】的块（前十没有本题材票 / 池子没读到）才保留旧的
       //   「跳过 + 不占名额」顺延口径（用户 2026-10-15：「龙一是一字，那就可以买龙二和龙三」）。
       //   同时它【照常占一档】—— 它本来就是被选中的那一只（不像旧口径那样「让位给下一龙位」）。
-      if (!useTop20) { skipped.push(c); continue; }   // 竞价涨停 → 买不进 ⇒ 顺延下一龙位（⛔ 不占档位）
+      // ★★ [TOPIC-INNER-SELECT 2026-11-17] `opt.yiziKeep`（缺省 false ⇒ 逐字退回上面的旧口径，§11）：
+      //   第二十九条「第二题材内按十日涨幅前十选票」这条通道给的候选**本身就只是前十里的那几只**，
+      //   一旦按旧口径「一字 ⇒ 跳过顺延」，跳过之后剩下的都是更弱的票（甚至一只不剩）——
+      //   而用户 2026-11-16 已明确「一字涨停可以入选……也没叫你去掉啊」「盘中它有时候会开板」。
+      //   ⇒ 该通道下【照选 + 占一档】，标签由 auction-yizi-tag.js 统一挂（唯一来源 §6）。
+      //   ⚠️ 只在本开关为 true 时生效；SMALL-TOPIC 的 `opt.order`（不带这个开关）仍是旧口径。
+      if (!useTop20 && !o.yiziKeep) { skipped.push(c); continue; }   // 竞价涨停 → 买不进 ⇒ 顺延下一龙位（⛔ 不占档位）
       picked.push(c);
       slotsUsed++;
       continue;
