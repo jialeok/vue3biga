@@ -14,7 +14,8 @@ name: Deploy Cloudflare Worker (bidding-auto-fetch)
 #      26 1 * * 2-6  ladder26   最近多板 883410 名单二次确认 + 猫抓补新进票 + 20 日涨幅补缺
 #      27 1 * * 2-6  snapshot   竞价期间云端自愈（竞价字段 / 十日涨幅 / 20 日涨幅二次补缺）
 #      0  8 * * 2-6  close      收盘覆盖 + 逐日腿云端补齐 + 运行日志
-#      3  8 * * 2-6  closepost  [CLOSE-POST 2026-11-13] 收盘列 / 记忘 / 总龙分歧收盘腿 + 运行日志
+#      3  8 * * 2-6  closepost  [CLOSE-POST 2026-11-13] 收盘列 / 记忘 + 运行日志
+#      16:30 总龙分歧收盘腿由 supabase-heal.yml 单独调（独立 invocation，⛔ 不占 cron 额度）
 #    ★ 16:03 这一条是修「收盘列全空」的：Cloudflare 单次 invocation 只有 50 次 subrequest，
 #      补写任务塞在 16:00 主轮里会把配额顶爆，连日志都写不出去 ⇒ 必须拆成独立 invocation。
 #    免费账户 5 条 cron，⛔ 已用满；Supabase pg_cron / GitHub Actions 不占这个额度。
