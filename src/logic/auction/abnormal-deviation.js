@@ -937,9 +937,14 @@ function _gapCore(fact) {
   if (f.stage === DEV_STAGE_SEVERE) {
     const parts = [];
     if (f.hits && f.hits.length) {
-      f.hits.forEach(function (h) { parts.push(h.label + ' ' + devText(h.value)); });
+      // ★ [DEV-WRAP 2026-11-16] 每段省掉重复的「偏离」二字（徽标本身已写「10日偏离」），
+      //   两段并排时从「10日偏离 +178.6%、30日偏离 +223.4%」缩到「10日 +178.6% · 30日 +223.4%」，
+      //   手机端才不会撑出卡片右边（配套 CSS 也已允许折行，双保险）。
+      f.hits.forEach(function (h) {
+        parts.push(String(h.label || '').replace('偏离', '') + ' ' + devText(h.value));
+      });
     }
-    const s = parts.length ? '已触发（' + parts.join('、') + '）' : '已触发严重异动';
+    const s = parts.length ? '已触发（' + parts.join(' · ') + '）' : '已触发严重异动';
     return Object.assign({}, none, { gapText: s, gapShort: s });
   }
   if (f.stage === DEV_STAGE_UNKNOWN) return none;

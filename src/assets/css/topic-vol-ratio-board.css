@@ -1165,7 +1165,18 @@
     font-weight: 700;
     line-height: 13px;
     border-radius: 4px;
-    white-space: nowrap;
+    /* 🔴🔴 [DEV-WRAP 2026-11-16 用户手机端截图] 「10日偏离 +178.6% · 已触发（10日偏离 +178.6%、
+       30日偏离 +223.4%）」这一串在 9px 下也撑到 ~300px，而卡片内宽手机端只有 ~280px
+       ⇒ 原来写 `white-space: nowrap` 直接顶出右边框（用户原话「你看文字都超出右边了」）。
+       ⇒ 改成【允许在徽标内部折行】+ 定死最大宽度 + 任意位置可断，⛔ 不许再用 nowrap
+         （nowrap 在 flex 行里会让子项溢出父容器，`overflow:hidden` 又会裁字）。 */
+    display: inline-block;
+    box-sizing: border-box;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    vertical-align: baseline;
     border: 1px solid transparent;
 }
 

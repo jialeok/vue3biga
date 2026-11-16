@@ -326,6 +326,32 @@ export function isInputsFingerprintComplete(sig) {
 }
 
 /**
+ * 取输入指纹的【第 1 位】= 竞价口径 20 日涨幅榜是否就绪（'1' / '0'；算不出来 ⇒ ''）。
+ * ★ [TDAY-CLOSE-FREEZE 2026-11-16] 只用来回答一个问题：
+ *   「这份存档当时是不是连竞价榜都没就绪」—— 是 ⇒ 允许数据到货后自愈（11-11 那类）。
+ *   ⛔ 别拿它当「输入好不好」的通用判据，其余两位不参与冻结判断。
+ */
+function _aucBoardBit(sig) {
+  const m = /^v\d+:([01])([01])([01])$/.exec(String(sig || '').trim());
+  return m ? m[1] : '';
+}
+
+/**
+ * 「这份存档当时算得够不够扎实，扎实到今天可以不再改」= 竞价口径 20 日涨幅榜已就绪。
+ *
+ * ★ [TDAY-CLOSE-FREEZE 2026-11-16] 为什么【只认第 1 位】而不是「三位全 1」：
+ *   · 第 1 位 = 竞价榜就绪 —— 它没就绪时连量比 / 竞价涨幅都没有，那种结论是残废的，
+ *     必须允许数据到货后自愈（11-11 21:22 那份 pickCount=1 的坑就是这一类）；
+ *   · 第 2 / 3 位（量比达标 / 补位池非空）在盘中本来就会陆续变 —— 恰恰是 11-16 事故的形状：
+ *     09:27 池子还没写完（当天 auc 腿 09:26~11:09 才写完），定稿时第二十九条按 §10 放行，
+ *     收盘后池子齐了就不能再翻案。
+ *   ⇒ 竞价榜就绪 + 今天 ⇒ 冻结（只允许「用户主动改规则」推翻）。
+ */
+function _frozenOk(sig) {
+  return _aucBoardBit(sig) === '1';
+}
+
+/**
  * 判断一份已读到的存档是「仍有效」还是「规则变了，需要重算覆盖」。
  *
  * 三条保护红线（⛔ 别「优化」掉）：
@@ -347,8 +373,12 @@ export function isInputsFingerprintComplete(sig) {
  * @param {object} snap { status, rulesSig, inputsSig }
  * @param {object} opts { rulesSig, coreTopicsLoaded, inputsSig }
  *        ★ [TDAY-FREEZE 2026-11-16] `freezeSettledDay`：本存档是不是【今天】的（`date === 今天`）。
- *          为 true 且存档输入完整 ⇒ 题材库段变化**不**判 stale（当天结论只出一次）；
- *          规则段（版本 / 核心词）变化仍判 stale。历史日传 false ⇒ 行为与原来逐字一致。
+ *          为 true 且存档输入完整 ⇒ **当天的结论只出一次**：
+ *            · 个股题材串（`stock_topics` 手动导入 / 别的看板同步）变了 ⇒ 不重算；
+ *            · 「股票池 / 量比后来补齐」导致输入完整度变了 ⇒ 也不重算；
+ *            · 唯一例外 = 存档当时竞价榜就没就绪（`v?:0xx` → `v?:1xx`）⇒ 仍重算（11-11 那类残缺自愈）。
+ *          规则段（版本 / 核心词）变化一律仍判 stale（用户主动改规则必须立即生效）。
+ *          历史日传 false ⇒ 行为与原来逐字一致。
  * @returns {'hit'|'stale'|'unknown'} unknown = 不是有效存档状态，本判据不管
  */
 export function resolvePlanSnapshotFreshness(snap, opts) {
@@ -412,7 +442,7 @@ export function resolvePlanSnapshotFreshness(snap, opts) {
     //   ⛔ 也不冻结「规则版本 / 核心词」：那是用户主动改规则，必须立即生效（base 段照旧比）。
     //   §10：存档输入不完整（不是 v1:111）⇒ **不冻结** —— 残缺结论允许数据补齐后自动纠错一次。
     if (curTop && oldTop !== curTop) {
-      if (o.freezeSettledDay === true && isInputsFingerprintComplete(s.inputsSig)) {
+      if (o.freezeSettledDay === true && _frozenOk(s.inputsSig)) {
         if (oldBase === curBase) return 'hit';      // 规则没变 ⇒ 今天的结论就是定稿，不许再动
         return 'stale';                             // 规则变了（用户主动）⇒ 仍然重算
       }
@@ -445,6 +475,29 @@ export function resolvePlanSnapshotFreshness(snap, opts) {
   const curInputs = String(o.inputsSig || '').trim();
   if (!curInputs) return 'hit';                   // ⑤ 当前算不出来 ⇒ 不动存档
   if (!isInputsFingerprintComplete(curInputs)) return 'hit';  // ⑤ 数据还没齐 ⇒ 不抖动
+  // ★★ [TDAY-CLOSE-FREEZE 2026-11-16 第二轮] 今天已定稿 ⇒ 「数据晚到」不再改今天的票。
+  //
+  //   事故（11-16 真实时间戳，非推测）：
+  //     · 09:27 定稿（revision 1）= 大消费 1 只 + AI应用 2 只 = 3 只
+  //     · 09:26:29 ~ 11:09:29 当天 `stock_range20_pct` 的 **auc 腿才陆续写完**（70 行分 ~100 分钟）
+  //       ⇒ 09:27 定稿时第二十九条的「十日涨幅候补池 / 在列次数」还没就绪
+  //       ⇒ 按 §10 那条闸门【暂不作废】AI应用（代码里原话「数据到货后会自动重判」）
+  //     · 16:00 收盘流程把量比等重新 upsert；16:25 用户手动导入题材 ⇒ 存档被重算
+  //       ⇒ 此时池子已就绪 ⇒ 第二十九条 生效：AI应用 平均竞价量比 16.62 < 25 ⇒ 整块作废
+  //       ⇒ 候补落在 北纬科技（当日竞价一字 +10.06%，买不进）⇒ 空仓 ⇒ 只剩日出东方 1 只
+  //   用户原话：「我都说了按照竞价口径来，收盘后也不能变，现在为什么还在变？」
+  //
+  //   ⇒ 口径：**同一个交易日的选股结论只出一次**。今天这份存档只要
+  //     ① 输入是完整的（v1:111，即算的时候竞价榜 / 量比 / 补位池都齐）
+  //     ② 规则段（版本 / 核心词）没变
+  //     就【不许】再因为「股票池后来补齐了」而重算 —— 那正是「收盘后偷偷换结论」。
+  //
+  //   ⛔ 唯一的例外，必须保留（11-11 那种灾难不能重演）：
+  //     存档当时【竞价榜就没就绪】（inputsSig 第 1 位 = '0'），后来变成 '1'
+  //     ⇒ 那说明当时连量比 / 竞价涨幅都没有，结论是残缺的 ⇒ 必须自愈重算。
+  //     （11-11 21:22 那份 pickCount=1 的坑就是这一类。）
+  //   其余位（量比达标 / 补位池非空）之后才变 ⇒ 冻结，不改今天的票。
+  if (o.freezeSettledDay === true && _frozenOk(oldInputs)) return 'hit';
   if (oldInputs !== curInputs) return 'stale';    // ⑥ 从残缺变完整 ⇒ 用完整输入重算覆盖
   return 'hit';
 }

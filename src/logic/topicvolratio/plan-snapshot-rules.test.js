@@ -510,9 +510,9 @@ describe('tvrb · [TDAY-FREEZE] 当天定稿不被题材库导入戳穿', () => 
     )).toBe('stale');
   });
 
-  it('③ 🔴 今天 + 输入【残缺】(v1:110) ⇒ 不冻结，仍 stale（数据补齐要允许自愈）', () => {
+  it('③ 🔴 今天 + 竞价榜没就绪(v1:0xx) ⇒ 不冻结，仍 stale（11-11 那类残缺必须自愈）', () => {
     expect(resolvePlanSnapshotFreshness(
-      { status: 'hit', rulesSig: SIG_A, inputsSig: 'v1:110' },
+      { status: 'hit', rulesSig: SIG_A, inputsSig: 'v1:011' },
       { rulesSig: SIG_B, coreTopicsLoaded: true, inputsSig: 'v1:111', freezeSettledDay: true }
     )).toBe('stale');
     // 没记 inputs_sig 的老行同理（不完整 ⇒ 不冻结）
@@ -543,5 +543,69 @@ describe('tvrb · [TDAY-FREEZE] 当天定稿不被题材库导入戳穿', () => 
       expect(line).toContain('_getLocalTodayStr()');               // 必须与「今天」比较
       expect(line).not.toMatch(/freezeSettledDay:\s*true\b/);      // ⛔ 写死 true 会把历史日也冻住
     });
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════════
+// ★★ [TDAY-CLOSE-FREEZE 2026-11-16 第二轮] 「数据晚到」不许改今天的票 —— 11-16 事故的完整链条。
+//
+// 真实时间戳（库内取证，不是推测）：
+//   09:27:54 定稿 revision 1（大消费 1 只 + AI应用 2 只 = 3 只）
+//   09:26:29 ~ 11:09:29 当天 `stock_range20_pct` 的 auc 腿才陆续写完（70 行分 ~100 分钟）
+//   ⇒ 09:27 第二十九条的候补池 / 在列次数未就绪 ⇒ §10 放行（代码原话「数据到货后会自动重判」）
+//   16:00 收盘流程重写量比；16:25 用户导入题材 ⇒ 存档重算 ⇒ 池子已就绪 ⇒ AI应用 量比 16.62 < 25
+//   ⇒ 整块作废 ⇒ 候补落在北纬科技（竞价一字买不进）⇒ 空仓 ⇒ 只剩日出东方 1 只
+//
+// 用户原话：「我都说了按照竞价口径来，收盘后也不能变，现在为什么还在变？」
+// ⇒ 今天这份【完整输入】的定稿，只允许被两件事推翻：① 规则段变了（用户主动）；② 当时竞价榜就没就绪。
+// ══════════════════════════════════════════════════════════════════════════════════════════
+describe('tvrb · [TDAY-CLOSE-FREEZE] 数据晚到不改今天的票', () => {
+  const SIG = 'v18:79cb50e9:tl1:d285102e';
+  const snapOf = function(inputsSig) {
+    return { status: 'hit', rulesSig: SIG, inputsSig: inputsSig };
+  };
+  const optsOf = function(inputsSig, freeze) {
+    return { rulesSig: SIG, coreTopicsLoaded: true, inputsSig: inputsSig, freezeSettledDay: freeze !== false };
+  };
+
+  it('① 🔴 今天 + 存档时竞价榜已就绪(第1位=1) + 池子/量比后来补齐 ⇒ hit（11-16 的形状）', () => {
+    // 09:27 第二十九条 因补位池没就绪被 §10 放行 ⇒ 存档 v1:110；收盘后池子齐了 ⇒ v1:111
+    expect(resolvePlanSnapshotFreshness(snapOf('v1:110'), optsOf('v1:111', true))).toBe('hit');
+    expect(resolvePlanSnapshotFreshness(snapOf('v1:101'), optsOf('v1:111', true))).toBe('hit');
+    expect(resolvePlanSnapshotFreshness(snapOf('v1:111'), optsOf('v1:111', true))).toBe('hit');
+  });
+
+  it('② 🔴 例外必须保留：存档当时【竞价榜没就绪】(第1位=0) ⇒ 不冻结，照旧自愈（11-11 残缺）', () => {
+    expect(resolvePlanSnapshotFreshness(snapOf('v1:011'), optsOf('v1:111', true))).toBe('stale');
+    expect(resolvePlanSnapshotFreshness(snapOf('v1:000'), optsOf('v1:111', true))).toBe('stale');
+    // 当前也还是 0 ⇒ 停在 ⑤「数据没齐不抖动」
+    expect(resolvePlanSnapshotFreshness(snapOf('v1:011'), optsOf('v1:010', true))).toBe('hit');
+  });
+
+  it('③ 今天 + 存档本身不完整 / 没记 inputs_sig ⇒ 不冻结（§10 残缺结论允许自愈一次）', () => {
+    expect(resolvePlanSnapshotFreshness(
+      { status: 'hit', rulesSig: SIG, inputsSig: '' }, optsOf('v1:111', true)
+    )).toBe('stale');
+    // 当前仍不完整 ⇒ 停在 ⑤「数据没齐 ⇒ 不抖动」，压根到不了冻结那一段（§10）
+    expect(resolvePlanSnapshotFreshness(snapOf('v1:110'), optsOf('v1:110', true))).toBe('hit');
+  });
+
+  it('④ 历史日（freezeSettledDay=false）⇒ 与原来逐字一致：输入完整度一变就 stale', () => {
+    expect(resolvePlanSnapshotFreshness(snapOf('v1:110'), optsOf('v1:111', false))).toBe('stale');
+    expect(resolvePlanSnapshotFreshness(snapOf('v1:111'), optsOf('v1:111', false))).toBe('hit');
+  });
+
+  it('⑤ 规则段变了 ⇒ 今天也照样重算（冻结不豁免用户主动改规则）', () => {
+    expect(resolvePlanSnapshotFreshness(
+      { status: 'hit', rulesSig: SIG, inputsSig: 'v1:110' },
+      { rulesSig: 'v19:aaaaaaaa:tl1:d285102e', coreTopicsLoaded: true, inputsSig: 'v1:111', freezeSettledDay: true }
+    )).toBe('stale');
+  });
+
+  it('⑥ 降级模式（库里没 inputs_sig 列）不受影响', () => {
+    expect(resolvePlanSnapshotFreshness(
+      { status: 'hit', rulesSig: SIG, inputsSig: '' },
+      { rulesSig: SIG, coreTopicsLoaded: true, inputsSig: 'v1:111', freezeSettledDay: true, inputsSigSupported: false }
+    )).toBe('hit');
   });
 });
