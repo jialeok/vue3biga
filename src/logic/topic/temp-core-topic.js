@@ -86,6 +86,71 @@ export function isTempCoreActiveOn(row, date, nextTradingDay) {
   return true;
 }
 
+const TOPIC_SEG_RE = /[,，、;；/+|]/;
+
+/**
+ * 该日期要【隐藏】的题材段 token（关停后用户的可见效果：股票名后那枚标签一起消失）。
+ *
+ * 用户口径（2026-11-17）：「关停临时题材后，我希望那个原先标在股票名称后的同义词也一起消失」。
+ * ⚠️ 只在【显示 / 分组层】过滤，⛔ 绝不改 auction_watchlist.note / stock_topics ——
+ *    那些是持久化的业务真相，按 §11 删除红线不能为了显示效果去删；恢复后标签自然回来。
+ *
+ * 隐藏区间严格限定：start_date ≤ date ≤ end_date 且 date ≥ disabled_from。
+ *   · 设置日之前（历史日）⇒ 临时词从未生效过 ⇒ 用户原有标签照常显示；
+ *   · 区间末之后（未来日）⇒ 已换回主流题材 ⇒ 原有标签照常显示；
+ *   · 只有【关停当日及之后、区间内】才隐藏，正好对应「提前结束」这段人为干预。
+ *
+ * @param {string} date
+ * @param {Array<object>} temps
+ * @param {(dateStr:string)=>string|null} [nextTradingDay]
+ * @returns {Set<string>} 小写 token 集合（核心词名 + 全部同义词）
+ */
+export function hiddenTempCoreTokensOn(date, temps, nextTradingDay) {
+  const list = Array.isArray(temps) ? temps : [];
+  const nextFn = nextTradingDay;
+  const d = _date(date);
+  const out = new Set();
+  if (!d) return out;
+  list.forEach(function(row) {
+    const s = _date(row && (row.startDate !== undefined ? row.startDate : row.start_date));
+    if (!s || d < s) return;
+    const dis = _date(row && (row.disabledFrom !== undefined ? row.disabledFrom : row.disabled_from));
+    if (!dis || d < dis) return;       // 没关停 / 关停日还没到 ⇒ 标签照常显示
+    const end = endDateOf(s, row.days, nextFn);
+    if (end && d > end) return;        // 已过期 ⇒ 换回主流题材，标签照常显示
+    const toks = [row.name].concat(Array.isArray(row.synonyms) ? row.synonyms : []);
+    toks.forEach(function(t) {
+      const k = String(t == null ? '' : t).trim().toLowerCase();
+      if (k) out.add(k);
+    });
+  });
+  return out;
+}
+
+/**
+ * 按【精确等于】把隐藏 token 从题材串里摘掉（与 core-word-purge 的删除口径一致）。
+ * ⛔ 不用子串：关停「东方」不能把「东方通信」这种题材一起干掉。
+ * @param {string} text 题材串
+ * @param {Set<string>|string[]|null} tokens hiddenTempCoreTokensOn 的返回
+ * @returns {string} 过滤后的题材串（段以 ',' 连接）
+ */
+export function filterHiddenTopicText(text, tokens) {
+  const raw = String(text == null ? '' : text).trim();
+  if (!raw) return '';
+  const ban = tokens instanceof Set ? tokens : new Set((Array.isArray(tokens) ? tokens : []).map(function(t) {
+    return String(t == null ? '' : t).trim().toLowerCase();
+  }));
+  if (ban.size === 0) return raw;
+  const out = [];
+  raw.split(TOPIC_SEG_RE).forEach(function(seg) {
+    const v = String(seg || '').trim();
+    if (!v) return;
+    if (ban.has(v.toLowerCase())) return;
+    if (out.indexOf(v) < 0) out.push(v);
+  });
+  return out.join(',');
+}
+
 /**
  * 取某日期真正生效的核心词表：base ∪ 生效中的临时词。
  *

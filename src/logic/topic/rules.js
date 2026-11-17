@@ -1,4 +1,6 @@
 import { _dbgLog } from '../../data/debug-log.js';
+// [TEMP-CORE 关停隐藏] 纯函数（零依赖）：关停后只过滤显示/分组，⛔ 不改 note / stock_topics
+import { filterHiddenTopicText } from './temp-core-topic.js';
 import { _emit } from '../../stores/eventBus.js';
 import { getPreviousTradingDay, isTradingDay } from '../date/trading-day-helpers.js';
 import { buildTopicCache } from '../../data/stock-topics.js';
@@ -132,6 +134,23 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
                 if (Array.isArray(eff)) return eff;
             }
             return getCoreTopics();
+        }
+
+        // [TEMP-CORE 关停隐藏] 与上面同一套注入模式：Logic 层不 import Data 层，
+        //   由 ui-bridge 注册「该日要隐藏哪些题材段」（仅显示/分组层过滤，⛔ 不改任何业务表）。
+        let _hiddenTopicTokensResolver = null;
+        export function _setHiddenTopicTokensResolver(fn) {
+            _hiddenTopicTokensResolver = typeof fn === 'function' ? fn : null;
+            _topicGroupsFp = null;
+            _topicGroupsCache = null;
+        }
+        export function getHiddenTopicTokensForDate(date) {
+            const d = String(date || '').trim();
+            if (d && typeof _hiddenTopicTokensResolver === 'function') {
+                const v = _hiddenTopicTokensResolver(d);
+                if (v instanceof Set || Array.isArray(v)) return v;
+            }
+            return new Set();
         }
 
         /**
@@ -507,9 +526,11 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
             // [ARCH-V3 §6] 分组只用「可分组核心词」：伪题材(并购重组)不建组、不参与 matchTopicToCore，
             // 命中它的股票因此落到自己的其它真实题材组，没有任何真实题材时才进「其它」兜底组。
             const coreTopics = __d ? getGroupableCoreTopicsForDate(__d) : getGroupableCoreTopics();
+            // [TEMP-CORE 关停隐藏] 关停后这些段要从分组里消失 ⇒ 必须进指纹，否则缓存命中旧分组
+            const __hidden = __d ? getHiddenTopicTokensForDate(__d) : new Set();
             const __coreFp = __d + '|' + coreTopics.map(function(c) {
                 return String(c && c.name || '') + '=' + JSON.stringify((c && c.synonyms) || []);
-            }).join('§');
+            }).join('§') + '|H=' + Array.from(__hidden).sort().join(',');
             const __fp = __d + '|' + auctionList.length + '|' + auctionList.map(function(i) { return (i.stock||'') + ':' + (i.topics||''); }).join('\u00a7') + '|' + __coreFp;
             if (_topicGroupsFp === __fp && _topicGroupsCache) return _topicGroupsCache;
             const __tgT0 = performance.now();
@@ -542,6 +563,12 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
                     if (historyNote) {
                         topics = extractTopics(historyNote);
                     }
+                }
+                // ★★ [TEMP-CORE 关停隐藏] 在【历史题材回退之后】统一过滤：
+                //   关停当日及之后，临时词对应的题材段在分组里一并消失（与股票行后显示同源），
+                //   ⛔ 只影响派生分组，note / stock_topics 里的原始数据一个字不动。
+                if (__hidden.size > 0 && topics.length > 0) {
+                    topics = topics.map(function(t) { return filterHiddenTopicText(t, __hidden); }).filter(Boolean);
                 }
                 const volume = parseFloat(item.volume) || 0;
                 const yestVolume = parseFloat(item.yestVolume) || 0;

@@ -1,5 +1,5 @@
-import { _setCoreTopicsFns, _setCoreTopicsByDateResolver, getCoreTopics } from './topic/rules.js';
-import { effectiveCoreTopicsFor } from './topic/temp-core-topic.js';
+import { _setCoreTopicsFns, _setCoreTopicsByDateResolver, _setHiddenTopicTokensResolver, getCoreTopics } from './topic/rules.js';
+import { effectiveCoreTopicsFor, hiddenTempCoreTokensOn } from './topic/temp-core-topic.js';
 import { getTempCoreTopics } from '../data/temp-core-topics.js';
 import { _emit } from '../stores/eventBus.js';
 import { getPreviousTradingDay, getNextTradingDay } from './date/trading-day-helpers.js';
@@ -132,6 +132,12 @@ if (typeof _setCoreTopicsFns === 'function') {
 if (typeof _setCoreTopicsByDateResolver === 'function') {
   _setCoreTopicsByDateResolver(function(date) {
     return effectiveCoreTopicsFor(date, getCoreTopics(), getTempCoreTopics(), getNextTradingDay);
+  });
+}
+// 关停后隐藏股票名后的标签：只过滤显示/分组，⛔ 不写回 note / stock_topics。
+if (typeof _setHiddenTopicTokensResolver === 'function') {
+  _setHiddenTopicTokensResolver(function(date) {
+    return hiddenTempCoreTokensOn(date, getTempCoreTopics(), getNextTradingDay);
   });
 }
 

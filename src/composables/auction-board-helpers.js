@@ -6,7 +6,8 @@
 // 本模块不引入任何有状态/有副作用逻辑。
 
 import { getStockHistoryTopics } from '../logic/stocks/stocks.js';
-import { getTopicRankCountThisWeek, isPseudoTopic } from '../logic/topic/rules.js';
+import { getTopicRankCountThisWeek, isPseudoTopic, getHiddenTopicTokensForDate } from '../logic/topic/rules.js';
+import { filterHiddenTopicText } from '../logic/topic/temp-core-topic.js';
 // [SUSPEND 2026-10-13] 当日停牌：题材页「涨幅」列原本对停牌票显示 '-'，与「没抓到数据」
 // 无法区分。判定唯一实现在 logic/auction/suspend.js（同花顺 fuyao，免费/不限量），
 // 这里只同步读取结果用于展示，不做判定、不发请求。
@@ -109,14 +110,22 @@ export function getChangeClass(stock) {
  * @param {object} stock
  * @returns {string}
  */
-export function getTopicsDisplay(stock) {
+export function getTopicsDisplay(stock, date) {
     let topics = stock.topics ? stock.topics.join(',') : '';
     if (!topics.trim() && stock.stock) {
         const hist = getStockHistoryTopics(stock.stock);
         if (hist) topics = hist.replace(/[()（）]/g, '').replace(/[，、;；]/g, ',');
     }
     const trimmed = topics.replace(/[，、;；]/g, ',').trim();
-    return trimmed ? trimmed : '-';
+    // ★★ [TEMP-CORE 关停隐藏] 第二参 date 可选：临时词关停当日及之后，股票名后那枚标签
+    //   与分组同步消失。⛔ 只过滤显示文本，note / stock_topics 原始数据一个字不动。
+    let d = String(date || '').trim();
+    if (!d) {
+        try { d = String(useUiStore().currentDate || '').trim(); } catch (e) { d = ''; }
+    }
+    const hidden = d ? getHiddenTopicTokensForDate(d) : null;
+    const shown = hidden && hidden.size > 0 ? filterHiddenTopicText(trimmed, hidden) : trimmed;
+    return shown ? shown : '-';
 }
 
 /**

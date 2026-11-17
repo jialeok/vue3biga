@@ -3,7 +3,9 @@ import {
   TEMP_CORE_TRADING_DAYS,
   endDateOf,
   isTempCoreActiveOn,
-  effectiveCoreTopicsFor
+  effectiveCoreTopicsFor,
+  hiddenTempCoreTokensOn,
+  filterHiddenTopicText
 } from './temp-core-topic.js';
 
 // 交易日链：11-12(四) → 11-13(五) → 11-16(一)；11-17 是第 4 个交易日。
@@ -101,5 +103,39 @@ describe('临时核心词 · 按日期生效（规则 〇·a）', () => {
     expect(isTempCoreActiveOn(TEMP, '', nextTradingDay)).toBe(false);
     expect(effectiveCoreTopicsFor('', BASE, [TEMP], nextTradingDay)).toBe(BASE);
     expect(effectiveCoreTopicsFor('2026-11-13', BASE, [Object.assign({}, TEMP, { startDate: 'x' })], nextTradingDay)).toBe(BASE);
+  });
+});
+
+describe('临时词关停后隐藏股票后面的标签（只过滤显示，不删库）', () => {
+  const STOPPED = { id: 1, name: '东方', synonyms: ['东方', '羊字辈'], startDate: '2026-11-12', disabledFrom: '2026-11-13' };
+
+  it('未关停 ⇒ 不隐藏任何标签', () => {
+    expect(hiddenTempCoreTokensOn('2026-11-12', [TEMP], nextTradingDay).size).toBe(0);
+  });
+
+  it('关停当日及之后（区间内）⇒ 隐藏 name + 全部同义词', () => {
+    ['2026-11-13', '2026-11-16'].forEach(function(d) {
+      const ban = hiddenTempCoreTokensOn(d, [STOPPED], nextTradingDay);
+      expect(ban.has('东方')).toBe(true);
+      expect(ban.has('羊字辈')).toBe(true);
+    });
+  });
+
+  it('设置日之前（历史日）⇒ 不隐藏（临时词从未生效过）', () => {
+    expect(hiddenTempCoreTokensOn('2026-11-11', [STOPPED], nextTradingDay).size).toBe(0);
+  });
+
+  it('区间末之后（未来日）⇒ 不隐藏（已换回主流题材）', () => {
+    expect(hiddenTempCoreTokensOn('2026-11-17', [STOPPED], nextTradingDay).size).toBe(0);
+  });
+
+  it('精确匹配：只摘「东方」，不动「东方通信」「东方财富」', () => {
+    const ban = hiddenTempCoreTokensOn('2026-11-13', [STOPPED], nextTradingDay);
+    expect(filterHiddenTopicText('水产品,农业,东方,羊字辈', ban)).toBe('水产品,农业');
+    expect(filterHiddenTopicText('通信,东方通信,东方财富', ban)).toBe('通信,东方通信,东方财富');
+  });
+
+  it('隐藏集合为空 ⇒ 题材串逐字节不变（§11）', () => {
+    expect(filterHiddenTopicText('水产品,农业,东方', new Set())).toBe('水产品,农业,东方');
   });
 });
