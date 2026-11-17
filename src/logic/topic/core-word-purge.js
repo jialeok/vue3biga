@@ -31,6 +31,11 @@
 import { pullStockTopicsFromCloud, pushStockTopicsBatch, loadCloudTopics } from '../../data/stock-topics.js';
 import { state } from '../app-state.js';
 import { _dbgLog } from '../../data/debug-log.js';
+// ★★ [CORE-PURGE-STRING 2026-11-17 用户口径] 「删除核心词后，连同同义词一起删除……早盘竞价看板的股票
+//   双击竞价量出来的那个 note 字段和单击昨日成交量列显示的那个 toast，也要把对应的同义词删除」。
+//   ⇒ 除了下面这张 `stock_topics`（一票一行），还必须同步清理 `auction_watchlist` 的 note / topics
+//   （一日一票一行）。两套清理各有唯一实现，本文件只做编排，⛔ 不在两处各写一份「什么叫命中」。
+import { previewTopicStringPurge, applyTopicStringPurge } from './core-word-string-purge.js';
 
 /**
  * 把核心词摊平成「要删的词」列表（核心词名 + 全部同义词；去空白、去重，保持原顺序）。
@@ -139,8 +144,11 @@ export function planCoreWordPurge(library, coreWord) {
  *      读到 0 只 ⇒ 视为异常快照并抛错（实测库内 1921 只，0 只必然是读取异常，
  *      此时若继续「清理」，就会在空数据上做出判断 —— 正是 §11 明令禁止的形态）。
  *
+ * ★ [CORE-PURGE-STRING 2026-11-17] 返回里多一份 `stringPlan`：竞价名单 note / topics 两列的影响面。
+ *   两处都读失败才取消删除（读不到就不给计划，⛔ 不拿「0 行」冒充「库里没有」）。
+ *
  * @param {{name?:string, synonyms?:string[]}|null} coreWord
- * @returns {Promise<object>} planCoreWordPurge 的返回 + `libraryRows`
+ * @returns {Promise<object>} planCoreWordPurge 的返回 + `libraryRows` + `stringPlan`
  */
 export async function previewCoreWordPurge(coreWord) {
     const library = await pullStockTopicsFromCloud();
@@ -150,6 +158,9 @@ export async function previewCoreWordPurge(coreWord) {
     }
     const plan = planCoreWordPurge(library, coreWord);
     plan.libraryRows = rows;
+    // ★ 竞价名单里「note / topics 写着这些词」的行：不清理就会在
+    //   双击竞价量弹窗 / 单击昨成交量 toast 里继续显示被删的核心词（用户报的就是这一条）。
+    plan.stringPlan = await previewTopicStringPurge(plan.words);
     return plan;
 }
 
@@ -165,24 +176,63 @@ export async function previewCoreWordPurge(coreWord) {
  *      若当时库还没拉过（null），指纹就恒为空 ⇒ 存档判不出过期 ⇒ **什么都不刷新**。
  *   ⇒ 这里显式整库重拉一次：既保证指纹一定变，又让验证读的与 UI 读的是同一份（§6 不留两个真相）。
  *
- * 幂等：同一核心词重复调用，第二次 `affectedStocks = 0`、`written = 0`。
+ * ★★ [CORE-PURGE-STRING 2026-11-17 用户口径] 除了 `stock_topics`，还要清理竞价名单的
+ *   `note` / `topics` 两列（早盘竞价看板双击竞价量弹窗 + 单击昨成交量 toast 读的就是它们）。
+ *   两处都成功才算「清理完成」；题材串失败时如实上报（§10），核心词本身不回滚
+ *   ——用户口径是「先删词、再清库」，残留可以再删一次（幂等）补上，回滚却会让词又冒出来。
+ *
+ * 幂等：同一核心词重复调用，第二次 `affectedStocks = 0`、`written = 0`、`stringWritten = 0`。
  *
  * @param {{name?:string, synonyms?:string[]}|null} coreWord
- * @returns {Promise<object>} plan + { written, verified, stillBad, libraryRows }
+ * @returns {Promise<object>} plan + { written, verified, stillBad, libraryRows,
+ *                                    stringWritten, stringVerified, stringStillBad, stringError }
  */
 export async function purgeCoreWordFromLibrary(coreWord) {
     const plan = await previewCoreWordPurge(coreWord);
-    if (plan.affectedStocks === 0) {
-        _dbgLog('[CORE-PURGE] 无需清理：' + (plan.words.join('、') || '(空)') + ' 在题材库里没有精确命中');
-        return Object.assign(plan, { written: 0, verified: true, stillBad: [] });
-    }
-    const { written } = await pushStockTopicsBatch(plan.rows.map(function(r) {
-        return { stock: r.stock, topics: r.kept };
-    }));
-    _dbgLog('[CORE-PURGE] 已从 ' + written + ' 只股票移除 ' + plan.removedWords + ' 个题材词：' +
-        plan.words.join('、'));
+    const stringPlan = plan.stringPlan || { affectedRows: 0, rows: [] };
 
-    // ── ① 整库重拉：让 `_cloudTopicsCache`（= 题材库指纹的来源）与云端一致 ──
+    // ── 两处都没命中 ⇒ 什么都不用写（纯读，不发写请求）──────────────────────────
+    if (plan.affectedStocks === 0 && stringPlan.affectedRows === 0) {
+        _dbgLog('[CORE-PURGE] 无需清理：' + (plan.words.join('、') || '(空)') +
+            ' 在题材库与竞价名单里都没有精确命中');
+        return Object.assign(plan, {
+            written: 0, verified: true, stillBad: [], stringWritten: 0,
+            stringVerified: true, stringStillBad: [], stringError: null
+        });
+    }
+
+    // ── ① 共享题材库（stock_topics，一票一行）────────────────────────────────
+    let written = 0;
+    if (plan.affectedStocks > 0) {
+        const r = await pushStockTopicsBatch(plan.rows.map(function(r) {
+            return { stock: r.stock, topics: r.kept };
+        }));
+        written = r.written;
+        _dbgLog('[CORE-PURGE] 已从 ' + written + ' 只股票移除 ' + plan.removedWords + ' 个题材词：' +
+            plan.words.join('、'));
+    }
+
+    // ── ② 竞价名单 note / topics（一日一票一行）──────────────────────────────
+    //   ⚠️ 失败不抛：§10 要求「让用户看见」，但不能因此把①的成果变成「整体失败」的假象；
+    //      这里把错误带回去，由调用方（CoreTopicModal）用醒目 toast 说明残留范围。
+    let stringWritten = 0;
+    let stringVerified = true;
+    let stringStillBad = [];
+    let stringError = null;
+    if (stringPlan.affectedRows > 0) {
+        try {
+            const sr = await applyTopicStringPurge(stringPlan);
+            stringWritten = sr.written;
+            stringVerified = sr.verified;
+            stringStillBad = sr.stillBad;
+        } catch (e) {
+            stringError = e;
+            stringVerified = false;
+            _dbgLog('[CORE-PURGE] 竞价名单题材串清理失败: ' + (e && e.message || e));
+        }
+    }
+
+    // ── ③ 整库重拉：让 `_cloudTopicsCache`（= 题材库指纹的来源）与云端一致 ──
     //   `loadCloudTopics` 内部会 `_topicLibVersion + 1` ⇒ 各看板的 computed 重算一帧。
     let after = null;
     try {
@@ -192,7 +242,7 @@ export async function purgeCoreWordFromLibrary(coreWord) {
         _dbgLog('[CORE-PURGE] 写后重拉题材库失败（改用直读校验）: ' + (e && e.message || e));
     }
 
-    // ── ② 回读校验：目标词必须真的从这些股票里消失（§11 执行后验证）──
+    // ── ④ 回读校验：目标词必须真的从这些股票里消失（§11 执行后验证）──
     if (!after) {
         try {
             after = await pullStockTopicsFromCloud();
@@ -219,6 +269,10 @@ export async function purgeCoreWordFromLibrary(coreWord) {
         written: written,
         verified: !!after && stillBad.length === 0,
         stillBad: stillBad,
-        libraryRows: after ? Object.keys(after).length : 0
+        libraryRows: after ? Object.keys(after).length : 0,
+        stringWritten: stringWritten,
+        stringVerified: stringVerified,
+        stringStillBad: stringStillBad,
+        stringError: stringError
     });
 }

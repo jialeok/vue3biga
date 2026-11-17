@@ -467,9 +467,31 @@ async function toggleTemp(t) {
     saving.value = false;
   }
 }
+// ★★ [CORE-PURGE-STRING 2026-11-17 用户口径] 删除临时题材 = 删词 + 清理题材串（与正式核心词同一套）。
+//
+// 用户原话：「我删除核心词东方后，变成只显示东方海洋(水产品,农业,羊字辈)」——
+//   「东方」正是【临时题材】（core_topic_temp），所以删除入口也必须走清理，
+//   否则删完临时词，双击竞价量弹出来的 note 里照样是 `(水产品,农业,东方,羊字辈)`。
+//
+// §11：先读出影响面再让用户确认，读失败就什么都不做（⛔ 不静默、不盲删）。
 function removeTemp(t) {
+  void doRemoveTemp(t);
+}
+async function doRemoveTemp(t) {
+  purging.value = true;
+  let plan = null;
+  try {
+    plan = await previewCoreWordPurge(t);   // 只读，不写
+  } catch (e) {
+    console.error('[TEMP-CORE] 预览清理影响面失败:', e);
+    showWarningToast('❌ 读取题材库失败，已取消删除（未做任何改动）：' +
+      (e && e.message ? e.message : '未知错误'), 9000);
+    return;
+  } finally {
+    purging.value = false;
+  }
   askConfirm('确定删除临时题材「' + t.name + '」？',
-    '删除后它在所有日期都不再生效，且不可撤销。若只是想提前结束，请用【关停】。',
+    purgeConfirmDesc(t, plan) + '\n\n删除后它在所有日期都不再生效，且不可撤销。若只是想提前结束，请用【关停】。',
     '确定删除',
     async () => {
       saving.value = true;
@@ -477,13 +499,18 @@ function removeTemp(t) {
         await deleteTempCoreTopic(t.id);
         refreshList();
         showToast('✅ 已删除临时题材「' + t.name + '」');
-        _emit('auction-refresh');
       } catch (e) {
         console.error('[TEMP-CORE] 删除失败:', e);
         showWarningToast('❌ 删除失败：' + (e && e.message ? e.message : '未知错误'), 8000);
-      } finally {
         saving.value = false;
+        return;
       }
+      saving.value = false;
+      // 词删掉之后再清题材库 / 题材串（顺序同正式核心词：先删词，失败只剩残留，可幂等重试）
+      const needPurge = plan && (plan.affectedStocks > 0 ||
+        (plan.stringPlan && plan.stringPlan.affectedRows > 0));
+      if (needPurge) await runPurge(t);
+      else _emit('auction-refresh');
     });
 }
 async function saveEdit() {
@@ -535,8 +562,9 @@ async function doDeleteCoreTopic(index, core) {
       const next = coreTopics.value.filter((_, i) => i !== index);
       const ok = await commit(next, '✅ 已删除核心词「' + core.name + '」');
       if (!ok) return;
-      // ② 清题材库（0 命中 ⇒ 直接结束，不发请求）
-      if (!plan || plan.affectedStocks === 0) {
+      // ② 清题材库 / 题材串（两处都 0 命中 ⇒ 直接结束，不发写请求）
+      const stringRows = plan && plan.stringPlan ? plan.stringPlan.affectedRows : 0;
+      if (!plan || (plan.affectedStocks === 0 && stringRows === 0)) {
         if (plan && plan.substringOnly.length > 0) {
           showWarningToast('ℹ️ 另有 ' + plan.substringOnly.length +
             ' 只股票的题材只是【包含】这些词（不是完全相同），按规则未删除。', 8000);
@@ -555,17 +583,35 @@ async function runPurge(core) {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const res = await purgeCoreWordFromLibrary(core);
-      if (res.written === 0) {
-        showToast('✅ 已删除核心词「' + core.name + '」（题材库无需清理）');
-      } else if (res.verified) {
-        showToast('🧹 已同步清理 ' + res.written + ' 只股票的题材（移除 ' + res.removedWords + ' 个词）');
+      // ★ [CORE-PURGE-STRING 2026-11-17] 一处成功一处失败时，必须分别说清：
+      //   两处（共享题材库 / 竞价名单题材串）都干净才给 ✅，否则用 ⚠️ 报残留范围（§10）。
+      const libDone = res.written;
+      const strDone = res.stringWritten || 0;
+      const strBad = (res.stringStillBad || []).length;
+      const libClean = res.verified || res.written === 0;
+      const strClean = res.stringVerified !== false && strBad === 0;
+
+      if (libDone === 0 && strDone === 0) {
+        showToast('✅ 已删除核心词「' + core.name + '」（题材库与竞价名单都不需要清理）');
+      } else if (libClean && strClean) {
+        const bits = [];
+        if (libDone > 0) bits.push('共享题材库 ' + libDone + ' 只股票');
+        if (strDone > 0) bits.push('竞价名单 ' + strDone + ' 行（' + (res.stringPlan ? res.stringPlan.dateCount : 0) + ' 个交易日）');
+        showToast('🧹 已同步清理 ' + bits.join('、') + ' 的题材');
         if (res.blocked && res.blocked.length > 0) {
           showWarningToast('ℹ️ 有 ' + res.blocked.length + ' 只股票的题材只有这个词，' +
             '为避免整只股票被清空已跳过：' + res.blocked.slice(0, 6).map(function(b) { return b.stock; }).join('、'), 9000);
         }
       } else {
-        showWarningToast('⚠️ 核心词已删除、题材库已写 ' + res.written +
-          ' 只，但回读校验未通过（' + res.stillBad.length + ' 只仍有残留）。刷新后若仍在，请再删一次该核心词重试。', 10000);
+        // 分别列出两处的残留，⛔ 不合并成一句「部分失败」（用户要能判断该再删哪一处）
+        const parts = [];
+        if (!libClean) parts.push('共享题材库（' + (res.stillBad || []).length + ' 只仍有残留）');
+        if (!strClean) {
+          const n = strBad || (res.stringError ? 1 : 0);
+          parts.push('竞价名单题材串（' + (res.stringError ? '写入失败：' + (res.stringError.message || '未知错误') : n + ' 行仍有残留') + '）');
+        }
+        showWarningToast('⚠️ 核心词已删除，但' + parts.join('、') +
+          '未清理干净。刷新后若仍在，请再删一次该核心词重试（幂等）。', 12000);
       }
       _emit('auction-refresh');
       saving.value = false;
@@ -586,8 +632,16 @@ function purgeConfirmDesc(core, plan) {
   const base = '删除会同步到云端，三个看板（涨跌停 / 竞价一字 / 早盘竞价）的题材分组都会立即按新核心词重算。';
   if (!plan) return base;
   const words = plan.words && plan.words.length > 0 ? '「' + plan.words.join('、') + '」' : '这些词';
+  // ★ [CORE-PURGE-STRING 2026-11-17] 竞价名单的 note / topics 也要一起清 —— 这里必须写清楚，
+  //   否则用户会以为「只动了题材库」，看到「双击竞价量弹窗里的题材也变了」时觉得是误删。
+  const sp = plan.stringPlan || null;
+  const stringLine = (sp && sp.affectedRows > 0)
+    ? '\n\n同时会从竞价名单（早盘竞价看板）的 ' + sp.affectedRows + ' 行里移除这些词，跨 ' +
+      sp.dateCount + ' 个交易日 —— 双击竞价量弹出的备注、单击昨日成交量的黑色提示都会同步变。'
+    : '';
   if (plan.affectedStocks === 0) {
-    let s = base + '\n题材库里没有与' + words + '完全相同的题材，因此不会改动任何股票。';
+    let s = base + stringLine +
+      (sp && sp.affectedRows > 0 ? '' : '\n题材库里没有与' + words + '完全相同的题材，因此不会改动任何股票。');
     if (plan.substringOnly.length > 0) {
       s += '\n另有 ' + plan.substringOnly.length + ' 只股票的题材只是包含这些词，按「精确相同才删」的规则不会删除。';
     }
@@ -596,12 +650,17 @@ function purgeConfirmDesc(core, plan) {
   const names = plan.rows.slice(0, 8).map(function(r) { return r.stock; }).join('、');
   const more = plan.affectedStocks > 8 ? ' 等' : '';
   let s = base + '\n\n同时会从 ' + plan.affectedStocks + ' 只股票的题材里移除' + words +
-    '（共 ' + plan.removedWords + ' 个词）：' + names + more + '。\n' +
-    '⚠️ 只删与这些词【完全相同】的细分题材，同一只股票的其它题材原样保留。';
+    '（共 ' + plan.removedWords + ' 个词）：' + names + more + '。' + stringLine +
+    '\n⚠️ 只删与这些词【完全相同】的细分题材，同一只股票的其它题材原样保留。';
   if (plan.blocked && plan.blocked.length > 0) {
     s += '\nℹ️ 有 ' + plan.blocked.length + ' 只股票的题材只有这个词（' +
       plan.blocked.slice(0, 6).map(function(b) { return b.stock; }).join('、') +
       '），为避免整只股票被清空，这些跳过不改。';
+  }
+  if (sp && sp.blocked && sp.blocked.length > 0) {
+    // 竞价名单侧单独统计：同一只票在不同日期，可能只有某一天「整行都是这个词」
+    s += '\nℹ️ 竞价名单里有 ' + sp.blocked.length + ' 行（同一只票按天计）题材只有这个词，' +
+      '为避免整行清空已跳过：' + sp.blocked.slice(0, 6).map(function(b) { return b.stock + '(' + b.date + ')'; }).join('、');
   }
   if (plan.substringOnly.length > 0) {
     s += '\nℹ️ 另有 ' + plan.substringOnly.length + ' 只股票的题材只是包含这些词，不会删除。';
