@@ -1,6 +1,7 @@
 import { _dbgLog } from '../../data/debug-log.js';
 // [TEMP-CORE 关停隐藏] 纯函数（零依赖）：关停后只过滤显示/分组，⛔ 不改 note / stock_topics
-import { filterHiddenTopicText } from './temp-core-topic.js';
+// [TEMP-CORE 窗口延续] collectTempCoreHits：把窗口内命中过临时词的股票补回当天分组（纯函数，可单测）
+import { filterHiddenTopicText, collectTempCoreHits } from './temp-core-topic.js';
 import { _emit } from '../../stores/eventBus.js';
 import { getPreviousTradingDay, isTradingDay } from '../date/trading-day-helpers.js';
 import { buildTopicCache } from '../../data/stock-topics.js';
@@ -151,6 +152,89 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
                 if (v instanceof Set || Array.isArray(v)) return v;
             }
             return new Set();
+        }
+
+        // ===== [TEMP-CORE 2026-11-17] 临时题材「窗口内标签延续」（修 11-12 只有设置日生效）=====
+        // 用户实测：临时词「东方」区间 11-12 ~ 11-16（3 个交易日）只有 11-12 生效。
+        // 根因（真实库取证）：日期判定三天都对，缺的是【标签供给】——
+        //   11-12 的 auction_watchlist.note 里有「东方」段 ⇒ 分得出组；
+        //   11-13 / 11-16 的 note 是空的 ⇒ 回退共享题材库（东方创业 = 物流,外贸），库里没有「东方」
+        //   ⇒ 东方组 0 只（getTopicGroups 里 <2 只不建组）⇒ 看着像「没生效」。
+        // 修法：窗口内任意一天（**只到当前展示日，不读未来**）在该票题材里出现过的临时词段，
+        //   补进当天归类输入。⛔ 只补派生分组输入，不写 auction_watchlist.note / stock_topics /
+        //   core_topics（§11 删除红线），关停后自然消失（hiddenTempCoreTokensOn 已有闸门）。
+        let _tempWindowsResolver = null;
+        export function _setTempCoreWindowsResolver(fn) {
+            _tempWindowsResolver = typeof fn === 'function' ? fn : null;
+            _topicGroupsFp = null;
+            _topicGroupsCache = null;
+        }
+
+        /**
+         * 当日生效的临时词窗口：[{name, synonyms, dates}]，dates 已截到「≤ 当日」。
+         * 未注入 resolver ⇒ []（§11 零行为变化）。
+         * @param {string} date YYYY-MM-DD
+         */
+        export function getTempCoreWindowsForDate(date) {
+            const d = String(date || '').trim();
+            if (!d || typeof _tempWindowsResolver !== 'function') return [];
+            const v = _tempWindowsResolver(d);
+            return Array.isArray(v) ? v : [];
+        }
+
+        // 命中股票集合缓存：只留最近一次（按「参与扫描的日数组引用 + 窗口签名」判等，§22 局部更新）
+        let _tempHitCache = { key: '', refs: [], map: new Map() };
+
+        function _tempCoreHitsFor(windows) {
+            const dates = [];
+            windows.forEach(function(w) {
+                (w.dates || []).forEach(function(d) { if (dates.indexOf(d) < 0) dates.push(d); });
+            });
+            if (dates.length === 0) return new Map();
+            const mem = state._auctionMemCache || {};
+            const refs = dates.map(function(d) { return mem[d] || null; });
+            const key = windows.map(function(w) {
+                return String(w.name) + '@' + (w.dates || []).join(',');
+            }).join('§');
+            if (_tempHitCache.key === key && _tempHitCache.refs.length === refs.length
+                && _tempHitCache.refs.every(function(r, i) { return r === refs[i]; })) {
+                return _tempHitCache.map;
+            }
+            const topicsByDate = {};
+            dates.forEach(function(d, i) {
+                const rows = refs[i] || [];
+                const byStock = {};
+                rows.forEach(function(item) {
+                    const name = String(item && item.stock || '').trim();
+                    if (!name) return;
+                    let segs = byStock[name];
+                    if (!segs) { segs = []; byStock[name] = segs; }
+                    if (item.topics) {
+                        String(item.topics).split(TOPIC_WORD_SEP_RE).forEach(function(t) {
+                            const v = String(t == null ? '' : t).trim();
+                            if (v && segs.indexOf(v) < 0) segs.push(v);
+                        });
+                    }
+                    extractTopics(getDisplayNote(item)).forEach(function(t) {
+                        if (t && segs.indexOf(t) < 0) segs.push(t);
+                    });
+                });
+                topicsByDate[d] = byStock;
+            });
+            const map = collectTempCoreHits(windows, topicsByDate);
+            _tempHitCache = { key: key, refs: refs, map: map };
+            return map;
+        }
+
+        /** 分组指纹段：窗口 + 参与扫描的每日行数（窗口内某天补了标签也要重算） */
+        function _tempWindowsFpOf(windows) {
+            if (!windows || windows.length === 0) return '';
+            const mem = state._auctionMemCache || {};
+            return windows.map(function(w) {
+                const dates = w.dates || [];
+                return String(w.name) + '@' + dates.join(',') + '#'
+                    + dates.map(function(d) { return (mem[d] || []).length; }).join(',');
+            }).join('§');
         }
 
         /**
@@ -528,9 +612,13 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
             const coreTopics = __d ? getGroupableCoreTopicsForDate(__d) : getGroupableCoreTopics();
             // [TEMP-CORE 关停隐藏] 关停后这些段要从分组里消失 ⇒ 必须进指纹，否则缓存命中旧分组
             const __hidden = __d ? getHiddenTopicTokensForDate(__d) : new Set();
+            // [TEMP-CORE 窗口延续] 当日生效的临时词窗口 + 窗口内命中股票（无临时词 ⇒ 空，旧行为不变）
+            const __tempWindows = __d ? getTempCoreWindowsForDate(__d) : [];
+            const __tempHits = __tempWindows.length > 0 ? _tempCoreHitsFor(__tempWindows) : null;
             const __coreFp = __d + '|' + coreTopics.map(function(c) {
                 return String(c && c.name || '') + '=' + JSON.stringify((c && c.synonyms) || []);
-            }).join('§') + '|H=' + Array.from(__hidden).sort().join(',');
+            }).join('§') + '|H=' + Array.from(__hidden).sort().join(',')
+                + '|T=' + _tempWindowsFpOf(__tempWindows);
             const __fp = __d + '|' + auctionList.length + '|' + auctionList.map(function(i) { return (i.stock||'') + ':' + (i.topics||''); }).join('\u00a7') + '|' + __coreFp;
             if (_topicGroupsFp === __fp && _topicGroupsCache) return _topicGroupsCache;
             const __tgT0 = performance.now();
@@ -569,6 +657,22 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
                 //   ⛔ 只影响派生分组，note / stock_topics 里的原始数据一个字不动。
                 if (__hidden.size > 0 && topics.length > 0) {
                     topics = topics.map(function(t) { return filterHiddenTopicText(t, __hidden); }).filter(Boolean);
+                }
+                // ★★ [TEMP-CORE 窗口延续 2026-11-17] 窗口内命中过临时词的票，当天补回该题材段 ⇒
+                //   临时题材「3 天有效」才真正成立（否则第 2、3 天因 note 为空/库里没这词而掉组）。
+                //   ⛔ 只改派生分组的输入，note / stock_topics 一个字不动（§11）。
+                if (__tempHits && __tempHits.size > 0) {
+                    let __added = false;
+                    __tempHits.forEach(function(stocks, coreName) {
+                        if (stocks.has(item.stock) && topics.indexOf(coreName) < 0) {
+                            topics.push(coreName);
+                            __added = true;
+                        }
+                    });
+                    // 补进来的段同样受「关停隐藏」约束（关停的临时词不在 __tempHits 里，双保险）
+                    if (__added && __hidden.size > 0) {
+                        topics = topics.map(function(t) { return filterHiddenTopicText(t, __hidden); }).filter(Boolean);
+                    }
                 }
                 const volume = parseFloat(item.volume) || 0;
                 const yestVolume = parseFloat(item.yestVolume) || 0;

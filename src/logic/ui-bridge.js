@@ -1,5 +1,5 @@
-import { _setCoreTopicsFns, _setCoreTopicsByDateResolver, _setHiddenTopicTokensResolver, getCoreTopics } from './topic/rules.js';
-import { effectiveCoreTopicsFor, hiddenTempCoreTokensOn } from './topic/temp-core-topic.js';
+import { _setCoreTopicsFns, _setCoreTopicsByDateResolver, _setHiddenTopicTokensResolver, _setTempCoreWindowsResolver, getCoreTopics } from './topic/rules.js';
+import { effectiveCoreTopicsFor, hiddenTempCoreTokensOn, isTempCoreActiveOn, tempCoreWindowDates } from './topic/temp-core-topic.js';
 import { getTempCoreTopics } from '../data/temp-core-topics.js';
 import { _emit } from '../stores/eventBus.js';
 import { getPreviousTradingDay, getNextTradingDay } from './date/trading-day-helpers.js';
@@ -138,6 +138,21 @@ if (typeof _setCoreTopicsByDateResolver === 'function') {
 if (typeof _setHiddenTopicTokensResolver === 'function') {
   _setHiddenTopicTokensResolver(function(date) {
     return hiddenTempCoreTokensOn(date, getTempCoreTopics(), getNextTradingDay);
+  });
+}
+// [TEMP-CORE 窗口延续 2026-11-17] 注册「当日生效的临时词窗口」给分组层：
+//   窗口内任意一天（只到当天，不读未来）命中过该词的票，当天也归入该题材。
+//   根因见 rules.js#_tempCoreHitsFor 注释（11-13 / 11-16 的 note 为空 ⇒ 旧实现直接掉组）。
+if (typeof _setTempCoreWindowsResolver === 'function') {
+  _setTempCoreWindowsResolver(function(date) {
+    const out = [];
+    getTempCoreTopics().forEach(function(r) {
+      if (!isTempCoreActiveOn(r, date, getNextTradingDay)) return;
+      const dates = tempCoreWindowDates(r, getNextTradingDay).filter(function(d) { return d <= date; });
+      if (dates.length === 0) return;
+      out.push({ name: r.name, synonyms: r.synonyms, dates: dates });
+    });
+    return out;
   });
 }
 

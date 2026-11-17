@@ -86,6 +86,82 @@ export function isTempCoreActiveOn(row, date, nextTradingDay) {
   return true;
 }
 
+/**
+ * 该临时词「在窗口内真正算数的交易日」列表（含设置日；已关停则截到关停前一日）。
+ *
+ * 🔴 2026-11-17 用户实测 bug（本函数的来由）：
+ *   设置日 11-12 建的临时词「东方」，区间 11-12 ~ 11-16（3 个交易日），
+ *   结果【只有 11-12 生效】，11-13 / 11-16 的分类里根本没有「东方」。
+ *   根因不在日期判定（isTempCoreActiveOn 三天都判 true），而在【标签供给】：
+ *     11-12 那天用户的 note 里有「东方」段 ⇒ 分得出组；
+ *     11-13 / 11-16 的 note 是空的 ⇒ 走共享题材库（东方创业 = 物流,外贸），库里没有「东方」
+ *     ⇒ 东方组 0 只（<2 只不建组）⇒ 看着像「没生效」。
+ *   ⇒ 临时题材的语义是「打一次标，3 天有效」，所以窗口内要能取到【区间内出现过的标签】。
+ *
+ * @param {object} row 临时词行
+ * @param {(dateStr:string)=>string|null} [nextTradingDay]
+ * @returns {string[]} 升序交易日，如 ['2026-11-12','2026-11-13','2026-11-16']
+ */
+export function tempCoreWindowDates(row, nextTradingDay) {
+  const s = _date(row && (row.startDate !== undefined ? row.startDate : row.start_date));
+  if (!s) return [];
+  const raw = Number(row && row.days);
+  const n = isFinite(raw) && raw > 0 ? Math.min(365, Math.floor(raw)) : TEMP_CORE_TRADING_DAYS;
+  const next = typeof nextTradingDay === 'function' ? nextTradingDay : _nextWeekday;
+  const dis = _date(row && (row.disabledFrom !== undefined ? row.disabledFrom : row.disabled_from));
+  const out = [];
+  let d = s;
+  for (let i = 0; i < n; i++) {
+    if (dis && d >= dis) break;      // 关停当日（含）起不再算数
+    out.push(d);
+    const nx = _date(next(d));
+    if (!nx) break;
+    d = nx;
+  }
+  return out;
+}
+
+/**
+ * 窗口内「命中临时词」的股票集合（供分组层在窗口的每一天都补回该题材段）。
+ *
+ * 纯函数（§5 零 Data 依赖）：调用方把「日期 → 股票 → 题材段数组」喂进来即可，便于单测。
+ * 命中口径与 matchTopicToCore 同向（段里包含词即命中），⛔ 不做模糊/单字匹配，
+ * 避免「东方」把「东方通信」以外的无关题材一起吞进来。
+ *
+ * @param {Array<{name:string, synonyms?:string[], dates:string[]}>} windows
+ * @param {Object<string, Object<string, string[]>>} topicsByDate 日期 → 股票名 → 题材段
+ * @returns {Map<string, Set<string>>} 核心词名 → 命中股票名集合
+ */
+export function collectTempCoreHits(windows, topicsByDate) {
+  const out = new Map();
+  const list = Array.isArray(windows) ? windows : [];
+  if (list.length === 0) return out;
+  const byDate = topicsByDate && typeof topicsByDate === 'object' ? topicsByDate : {};
+  list.forEach(function(w) {
+    const name = String(w && w.name || '').trim();
+    if (!name) return;
+    const toks = [name].concat(Array.isArray(w && w.synonyms) ? w.synonyms : [])
+      .map(function(t) { return String(t == null ? '' : t).trim().toLowerCase(); })
+      .filter(Boolean);
+    if (toks.length === 0) return;
+    const hit = new Set();
+    (Array.isArray(w && w.dates) ? w.dates : []).forEach(function(d) {
+      const byStock = byDate[d];
+      if (!byStock) return;
+      Object.keys(byStock).forEach(function(stock) {
+        const segs = byStock[stock] || [];
+        for (let i = 0; i < segs.length; i++) {
+          const seg = String(segs[i] == null ? '' : segs[i]).trim().toLowerCase();
+          if (!seg) continue;
+          if (toks.some(function(t) { return seg.indexOf(t) >= 0; })) { hit.add(stock); break; }
+        }
+      });
+    });
+    if (hit.size > 0) out.set(name, hit);
+  });
+  return out;
+}
+
 const TOPIC_SEG_RE = /[,，、;；/+|]/;
 
 /**

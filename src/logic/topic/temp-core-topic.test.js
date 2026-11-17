@@ -5,7 +5,9 @@ import {
   isTempCoreActiveOn,
   effectiveCoreTopicsFor,
   hiddenTempCoreTokensOn,
-  filterHiddenTopicText
+  filterHiddenTopicText,
+  tempCoreWindowDates,
+  collectTempCoreHits
 } from './temp-core-topic.js';
 
 // 交易日链：11-12(四) → 11-13(五) → 11-16(一)；11-17 是第 4 个交易日。
@@ -137,5 +139,61 @@ describe('临时词关停后隐藏股票后面的标签（只过滤显示，不�
 
   it('隐藏集合为空 ⇒ 题材串逐字节不变（§11）', () => {
     expect(filterHiddenTopicText('水产品,农业,东方', new Set())).toBe('水产品,农业,东方');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// [TEMP-CORE 窗口延续 2026-11-17] 用户实测 bug 的回归锁：
+//   「11-12 设的临时核心词东方，区间 12~16，只有 12 号生效，13/16 的题材分类里没有东方」
+//   根因 = 标签供给：12 号 note 里有「东方」，13/16 note 是空的（回退共享库 = 物流,外贸）。
+//   ⇒ 窗口内任意一天命中过该词的票，当天也必须归入该题材。
+// ══════════════════════════════════════════════════════════════════════════════════════
+describe('临时题材 · 窗口内标签延续（修「只有设置日生效」）', () => {
+  const W = { name: '东方', synonyms: ['东方'], dates: ['2026-11-12', '2026-11-13', '2026-11-16'] };
+
+  it('窗口 = 设置日 + 后 2 个交易日（11-12 → 11-13 → 11-16）', () => {
+    expect(tempCoreWindowDates(TEMP, nextTradingDay)).toEqual(['2026-11-12', '2026-11-13', '2026-11-16']);
+  });
+
+  it('已关停 ⇒ 窗口截到关停前一日', () => {
+    const stopped = Object.assign({}, TEMP, { disabledFrom: '2026-11-13' });
+    expect(tempCoreWindowDates(stopped, nextTradingDay)).toEqual(['2026-11-12']);
+  });
+
+  it('设置日非法 ⇒ 窗口为空（⛔ 不猜日期）', () => {
+    expect(tempCoreWindowDates({ name: '东方', startDate: '' }, nextTradingDay)).toEqual([]);
+  });
+
+  it('【核心回归】设置日有标签、第 2/3 天 note 为空 ⇒ 仍算命中（不再掉组）', () => {
+    const topicsByDate = {
+      '2026-11-12': {
+        '东方创业': ['物流', '外贸', '东方'],
+        '东方通信': ['通信', 'AI应用', '东方'],
+        '东方海洋': ['水产品', '农业', '东方', '羊字辈']
+      },
+      '2026-11-13': {
+        '东方创业': ['物流', '外贸'],          // 当天 note 空 ⇒ 回退共享库，没有「东方」
+        '东方通信': ['通信', 'AI应用'],
+        '东方海洋': ['水产品', '农业']
+      },
+      '2026-11-16': {
+        '东方创业': ['物流', '外贸'],
+        '日出东方': ['家电', '热泵']           // 设置日没打标 ⇒ 不补（不靠股票名猜）
+      }
+    };
+    const hits = collectTempCoreHits([W], topicsByDate);
+    expect(Array.from(hits.get('东方') || []).sort()).toEqual(['东方创业', '东方通信', '东方海洋'].sort());
+    expect(hits.get('东方').has('日出东方')).toBe(false);
+  });
+
+  it('窗口内没有任何命中 ⇒ 返回空 Map（分组旧行为不变）', () => {
+    const hits = collectTempCoreHits([W], { '2026-11-13': { '东方创业': ['物流', '外贸'] } });
+    expect(hits.size).toBe(0);
+  });
+
+  it('同义词也参与命中（羊字辈）', () => {
+    const w2 = { name: '羊字辈', synonyms: ['羊字辈'], dates: ['2026-11-12'] };
+    const hits = collectTempCoreHits([w2], { '2026-11-12': { '东方海洋': ['水产品', '羊字辈'] } });
+    expect(hits.get('羊字辈').has('东方海洋')).toBe(true);
   });
 });
