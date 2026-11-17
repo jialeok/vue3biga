@@ -4,7 +4,7 @@
 // ⛔ 文案里的数字必须用 tvrb-constants.js 的常量拼接，不许写死 ——
 //   否则用户点开规则看到的条文与实际选股不一致（那比没有说明更坏）。
 
-import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_NO_BUY_TAG, EBB_SECOND_BUY_TAG, CASH_NO_BUY_TAG, WEAK_HUDDLE_TAG, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, NEW_DRAGON_TAG, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL } from './tvrb-constants.js';
+import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_NO_BUY_TAG, EBB_SECOND_BUY_TAG, CASH_NO_BUY_TAG, WEAK_HUDDLE_TAG, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, NEW_DRAGON_TAG, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL, ABNORMAL_TOPIC_BAN_TAG, ABNORMAL_TOPIC_BAN_DAY_OFFSET } from './tvrb-constants.js';
 
 import { SELL_OUT_TAG, HOLD_TAG } from '../decision/decision-rules.js';
 import { PRESENCE_TOP_N } from '../auction/presence-label.js';
@@ -566,6 +566,29 @@ export function buildTvrbRulesLines() {
       '「不再买进任何股票」：留着它们等于在空仓日还给一份买入清单。' +
       '★ 为什么它是【最高优先级】：退潮是【单个题材】的预期差，异动是【全市场】的风险' +
       '（用户「会带崩情绪，市场几乎所有的票都不好」）⇒ 同一天都成立时以本条为准。' +
+      // ── ★★ [ABN-TB 2026-11-17 用户口径 · 原话] 本条的【延伸】分支：第三天只禁同题材。
+      '　★【延伸 · 异动后的第三天 ⇒ 同题材不买】用户原话（逐字）：「记住总龙一第一次监管异动，' +
+      '之后两天，次日本来现在的规则不能买，不变，在第三天都不能买它题材的股票，比如东方海洋，' +
+      '细分题材有(水产品,农业,东方,羊字辈)，第三天，不能选入其它同题材的股票进入买点侧，' +
+      '临时题材包括在内。比如日出东方不该选入11月16日的买点侧，日出东方(家电,热泵,东方)，' +
+      '含有题材窜东方就不行，如果它题材窜含有水产品，或者农业，或者羊字辈也不行……' +
+      '也就是重点监控第三天，第四天按照正常流程走。」' +
+      '　· 时间轴：异动日 D0（例 11-12）⇒ 次日 D+1（11-13）= 本条正文【全场空仓】⇒ ' +
+      '第三天 D+' + ABNORMAL_TOPIC_BAN_DAY_OFFSET + '（11-16）= 【只禁同题材】⇒ ' +
+      '第四天 D+' + (ABNORMAL_TOPIC_BAN_DAY_OFFSET + 1) + '（11-17）= 【恢复正常流程】。' +
+      '　· 判据：D-2（前两个交易日）9:26 竞价口径里【主板】十日涨幅最高票 ＞ ' + TVRB_RANGE10_CAP +
+      '% ⇒ D-2 就是异动日，它就是触发源（⛔ 不是拿今天的总龙一去顶替）。' +
+      '　· 禁令集合 = 触发源在 D-2 当天竞价名单 note 括号里的【细分题材串】+ 它在题材库里的题材。' +
+      '　　⚠️ 必须用 note 那一份：题材库里 东方海洋 只有「水产品,农业」，缺「东方 / 羊字辈」——' +
+      '　　而「东方」正是临时核心词（规则〇·a），只查库会把日出东方放行，那正是本次要修的错。' +
+      '　· 认亲 = 【整段相等】（不模糊）：「家电,热泵,东方」命中「东方」；「东方海洋」不会被当成题材。' +
+      '　· 表现方式：命中的票标签改【' + ABNORMAL_TOPIC_BAN_TAG + '】、那一块整块灰化、' +
+      '不计入「选出 N 只」、并从买点名单剔除（否则卖点侧会把它标成【持有】）；' +
+      '⛔ 票不删、客观数据不动、卖点侧不动。' +
+      '　· ⛔ 与正文【刻意不同】：第三天【只禁同题材，不接管空仓标语】—— 其它题材今天该买照买；' +
+      '提示板是独立的一块（琥珀色），⛔ 不共用 cashAlert 那条整段灰化通道。' +
+      '　· ⛔ 次日 / 当日异动（全场空仓）成立时本条【让位】（空仓比部分禁买更严）。' +
+      '　· §10：D-2 那两份读不到 ⇒ 提示板写明「判不出」，⛔ 不当成「今天没有同题材」静默放行。' +
       '⚠️ 判不出就如实说（§10）：总龙一的十日涨幅两份都读不到 ⇒ 「异动次日」判不出，' +
       '⛔ 不假装「总龙一没异动」；个别票缺涨幅 ⇒ 那几只既不判超限也不判异动。',
     // ── ★★ [CASE-BOOK 2026-10-28 用户口径] 历史案例对照（用户要求：「我每次说的案例你可以放在

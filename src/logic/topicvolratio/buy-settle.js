@@ -116,6 +116,15 @@ export function resolveBuySettle(ctx) {
   if (at(o.range10PresenceDate) !== d) missing.push('十日涨幅在列次数');
   // ⑧ 仅切换日才要：20 日涨幅历史榜（判「首次上榜」）
   if (o.switchDay && at(o.top5HistDate) !== d) missing.push('20 日涨幅历史榜');
+  // ⑮ ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】「异动第三天 ⇒ 同题材禁入」的两份输入
+  //   （D-2 的 9:26 竞价口径十日涨幅 + D-2 竞价名单的题材串）。
+  //   与 ⑦ 同一类理由：它们到货【之前】就定稿 ⇒ 到货后会有票被剔除 ⇒ 屏幕上的票「消失」，
+  //   正是用户反复说的「很容易买错票」。⛔ 不许靠「大概几秒就到了」赌（§10 判据必须可判定）。
+  //   ⚠️ 只在存在「前两个交易日」时才要求（月初 / 空日历 ⇒ 空串 ⇒ 跳过，⛔ 不永久锁死）。
+  const abnD2 = at(o.abnThirdTarget);
+  if (abnD2 && (at(o.abnPrev2Date) !== abnD2 || at(o.abnPrev2NoteDate) !== abnD2)) {
+    missing.push('异动第三天监控');
+  }
   // ⑨ ★ [BUY-SETTLE-2 2026-10-31] 20 日涨幅前五的【结论】。
   //    为什么它必须算「选股输入」：`ebbCtx` 的总龙一就是它 → 前五没到 ⇒ 退潮规则不生效 ⇒ 按常规选股；
   //    到货后若判出退潮 ⇒ 整段换成退潮替补（用户看到的「变成一只 → 又跳转两只 → 又变成一只」）。

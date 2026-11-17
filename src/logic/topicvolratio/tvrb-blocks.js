@@ -10,7 +10,7 @@
 //
 // 外部依赖的口径说明（原 topic-vol-ratio-rules.js 头部的 import 注释，逐条搬过来）：
 
-import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_PICK_TONE, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, EBB_SECOND_BUY_TAG, EBB_SECOND_BUY_TONE, EBB_SECOND_RULE_NO, CASH_NO_BUY_TAG, CASH_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_BLOCK_TOPIC, WEAK_HUDDLE_TOP_N, WEAK_HUDDLE_TONE, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_BLOCK_TOPIC, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, CATCH_UP_TONE, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, SECOND_TOPIC_VOLWEAK_NO_BUY_TONE, DIVERGE_DIP_TAG, DIVERGE_FOLLOW_TAG, DIVERGE_NO_BUY_TAG, DIVERGE_BUY_TONE, DIVERGE_NO_BUY_TONE, DIVERGE_RULE_NO, TVRB_CASH_ALERT_NONE, SWITCH_RULE_NO, NEW_DRAGON_TAG, NEW_DRAGON_TONE, RANGE10_BACKUP_TONE, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL } from './tvrb-constants.js';
+import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_PICK_TONE, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, EBB_SECOND_BUY_TAG, EBB_SECOND_BUY_TONE, EBB_SECOND_RULE_NO, CASH_NO_BUY_TAG, CASH_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_BLOCK_TOPIC, WEAK_HUDDLE_TOP_N, WEAK_HUDDLE_TONE, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_BLOCK_TOPIC, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, CATCH_UP_TONE, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, SECOND_TOPIC_VOLWEAK_NO_BUY_TONE, DIVERGE_DIP_TAG, DIVERGE_FOLLOW_TAG, DIVERGE_NO_BUY_TAG, DIVERGE_BUY_TONE, DIVERGE_NO_BUY_TONE, DIVERGE_RULE_NO, TVRB_CASH_ALERT_NONE, SWITCH_RULE_NO, NEW_DRAGON_TAG, NEW_DRAGON_TONE, RANGE10_BACKUP_TONE, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL, ABNORMAL_TOPIC_BAN_TAG, ABNORMAL_TOPIC_BAN_TONE } from './tvrb-constants.js';
 // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条「监管异动 · 十日涨幅硬上限」的唯一判定实现：
 //   classifyRange10 = 分级（ok / near / abnormal，阈值 97 / 100 都在 tvrb-constants 一处定义；
 //   [CAP-97 2026-11-13 晚间] 用户把自定义禁选上限 95 → 97，让 11-11 的 95.71% 正常运行）。
@@ -28,6 +28,15 @@ import { RANGE10_BACKUP_RULE_NO } from './range10-backup.js';
 import { AUCTION_YIZI_WAIT_TAG } from './auction-yizi-tag.js';
 // ★★ [AUTO-PICK-TOP20 2026-11-14] 「前十」的唯一定义（与「10日涨幅」toggle 那十枚标签同一常量，§6）
 import { PRESENCE_TOP_N } from '../auction/presence-label.js';
+// ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸分支】：总龙一首次异动后的【第三天】
+//   ⇒ 它所在细分题材的票一律不进买点侧（临时题材也算）。判据只有一处实现（§6）：
+//   `abnormal-topic-ban.js#abnormalTopicBanHit`（整段相等认亲，⛔ 不做子串模糊）。
+import { abnormalTopicBanHit } from './abnormal-topic-ban.js';
+// ★ [ABN-TB] 题材串切段（与核心词归一同一套分隔符，§6 不另写 split）
+import { splitTopicSegments } from '../topic/core-category.js';
+// ★ [ABN-TB] 「买点块清单」的唯一遍历（plan.blocks + buy 八槽 + 六个独立通道）——
+//   ⛔ 本文件不手写枚举：历史上「新槽位忘了加进枚举」已经踩过多次（见 plan-live-overlay 头注释）。
+import { eachBuyBlock } from './plan-live-overlay.js';
 
 
 /**
@@ -552,6 +561,96 @@ export function _applyAbnormalNoBuyRules(blocks, abnormal) {
         '】），供你核对为什么今天不买。';
     });
   });
+}
+
+/**
+ * ══ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】· 异动后的【第三天】⇒ 同题材禁入 ══════════
+ *
+ * 用户原话（逐字，见 tvrb-constants.js 的 ABN-TB 常量块）：
+ *   「记住总龙一第一次监管异动，之后两天，次日本来现在的规则不能买，不变，在第三天都不能买
+ *     它题材的股票……比如日出东方不该选入11月16日的买点侧，日出东方(家电,热泵,东方)，
+ *     含有题材窜东方就不行……临时题材包括在内。也就是重点监控第三天，第四天按照正常流程走。」
+ *
+ * ⛔ 与「次日空仓」（`_applyAbnormalNoBuyRules`）**刻意不同**（用户口径就是这么分的）：
+ *   · 次日 ⇒ **全场空仓**：cashAlert 接管 + 全部买点通道下线 + 整片灰；
+ *   · 第三天 ⇒ **只禁同题材**：其它题材今天该买照买 ⇒ ⛔ 不碰 cashAlert（那个 show 会整段灰化）、
+ *     ⛔ 不下线任何买点通道；只把命中的票灰化 + 改标签 + 剔出 `buyNames`。
+ *
+ * 认亲分两层（缺一不可）：
+ *   ① 【块级】块标题（`b.block.topic || b.topic` = 题材组名，如「东方」/「农业」）命中禁令集合
+ *      ⇒ 整块灰化（`b.abnormalTopicGray = true`），块内所有票一律不买；
+ *   ② 【票级】块标题没命中时，逐票用注入的题材解析（`topicsOf(name)` → 该票在题材库里的
+ *      全部题材段）再判一次 —— 因为票可能挂在别的块里（日出东方同时属于「家电」「热泵」「东方」）。
+ *      命中则只改那一只（块不灰），块内全命中时才顺带灰化整块。
+ *
+ * ⛔ 客观数据（十日涨幅 / 竞价涨幅 / 量比 / 占比 / 龙标 / 连板 / 封单）一行不动。
+ * ⛔ 票【绝不删】（用户「不能选入买点侧」= 不给买点，不是让它从屏幕上消失）。
+ * ⛔ 卖点侧一行不动。
+ *
+ * @param {object} out buildTopicVolRatioPlan 正在组装的计划对象（原地改）
+ * @param {object|null} ban buildAbnormalTopicBan 的返回（`active !== true` ⇒ 零副作用，§11）
+ * @param {(name:string)=>string} [topicsOf] 票名 → 该票的题材串（题材库；取不到 ⇒ ''，§10 不猜）
+ * @returns {{count:number, names:string[], grayBlocks:number}} 本次剔除的票（供提示板点名）
+ */
+export function _applyAbnormalTopicBan(out, ban, topicsOf) {
+  const res = { count: 0, names: [], grayBlocks: 0 };
+  if (!out || !ban || ban.active !== true) return res;
+  // ★ 当天已经有【全场空仓】结论（次日 / 当日 / 入选票异动）⇒ 本条让位（空仓已经更严）
+  if (out.abnormal && out.abnormal.show) return res;
+
+  const segOf = function(text) {
+    try {
+      return splitTopicSegments(text);
+    } catch (e) {
+      return [];                        // §10：切不出来 ⇒ 空段 ⇒ 不误判成命中
+    }
+  };
+  const resolveTopics = (typeof topicsOf === 'function') ? topicsOf : null;
+
+  const lead = '【第' + ABNORMAL_RULE_NO + '条 · 延伸 · 异动第三天】' +
+    (ban.triggerDate ? ban.triggerDate + ' ' : '') + '总龙一【' + (ban.leaderName || '—') + '】' +
+    '十日涨幅 ' + (ban.leaderPctText || '—') + ' ＞ ' + TVRB_RANGE10_CAP +
+    '% ⇒ 它所在细分题材【' + (ban.segments || []).join('、') + '】今天是异动后的【第三天】：' +
+    '同题材的票一律不进买点侧（临时题材也算）。';
+
+  eachBuyBlock(out, function(b) {
+    if (!b || typeof b !== 'object') return;
+    const blockText = String((b.block && b.block.topic) || b.topic || '').trim();
+    const blockHit = abnormalTopicBanHit(segOf(blockText), ban);
+    const picks = Array.isArray(b.picks) ? b.picks : [];
+    let ownHit = 0;
+    picks.forEach(function(p) {
+      if (!p || !p.name) return;
+      const ownText = blockHit ? '' : (resolveTopics ? resolveTopics(p.name) : '');
+      const hit = blockHit || abnormalTopicBanHit(segOf(ownText), ban);
+      if (!hit) return;
+      ownHit++;
+      p.position = '';
+      p.holdTag = '';
+      p.buyActionTag = ABNORMAL_TOPIC_BAN_TAG;
+      p.buyActionTone = ABNORMAL_TOPIC_BAN_TONE;
+      // ★ 标记位：`pickCount` 要据此不数它（「选出 N 只」数的是今天能下单的）
+      p.abnormalTopicBlocked = true;
+      p.actionNote = lead +
+        '本股今天【不开新仓】—— 原本的【' + HOLD_TAG + '】/ 竞价买 / 尾盘买 / 先卖后买 / 龙一字持有 等' +
+        '买点信号一律作废。★ 为什么：异动当天全场空仓、次日继续空仓，但题材的崩盘节奏往往会拖到' +
+        '第三天（11-16 的日出东方就是这样被选出来的）⇒ 第三天只禁同题材，其它题材照常。' +
+        '⚠️ 明天（第四天）按正常流程走。' +
+        '⚠️ 股票仍【照常列出】（灰化显示）供你核对，只是今天不给买点。';
+      res.names.push(String(p.name).trim());
+      if (out.buyNames && typeof out.buyNames.delete === 'function') out.buyNames.delete(p.name);
+    });
+    // 块级命中 ⇒ 整块灰；票级全命中 ⇒ 也灰（否则会出现「一个块里所有票都写着不买、块却没灰」）
+    const gray = blockHit || (picks.length > 0 && ownHit === picks.length);
+    if (gray) {
+      b.abnormalTopicGray = true;
+      res.grayBlocks++;
+      if (!Array.isArray(b.notes)) b.notes = [];
+      b.notes.push('⚠️ ' + lead + '本题材的票今天【一律不买】，其它题材不受影响（明天第四天恢复正常）。');
+    }
+    res.count += ownHit;
+  });
+  return res;
 }
 
 /**

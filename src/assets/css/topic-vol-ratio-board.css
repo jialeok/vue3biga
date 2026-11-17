@@ -209,6 +209,37 @@
     line-height: 1.6;
 }
 
+/* ---- ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】· 异动第三天「同题材不买」提示板 ----
+   用户原话：「也就是重点监控第三天，第四天按照正常流程走，你添加下这个规则并在提示板上标明。」
+   ⚠️ 与 .tvrb-cash-alert（空仓标语）【刻意不同色】：那块是「今天全场别开仓」（深红 + 整段灰化），
+      本条只是「这几个题材今天别买，其它照常」⇒ 用【琥珀告警色】一眼区分，
+      字号也比空仓标语小一档（它是局部禁令，不是「今天不开仓」）。
+   ⚠️ 不在任何 [COMPACT] 隐藏选择器里 ⇒ 简洁模式下同样显示（用户要求「标明」，必须被看见）。
+   ⛔ 不做闪烁动画：与空仓标语同一理由（用户拿它做即时判断，闪动干扰阅读）。 */
+.tvrb-abn-tb {
+    margin: 2px 0 8px;
+    padding: 8px 10px;
+    background: #fffbeb;
+    border: 2px solid #f59e0b;
+    border-radius: 10px;
+}
+
+.tvrb-abn-tb-head {
+    font-size: 16px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    text-align: center;
+    line-height: 1.3;
+    color: #b45309;
+}
+
+.tvrb-abn-tb-detail {
+    margin-top: 5px;
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: #92400e;
+}
+
 /* ---- ★ [EBB 2026-10-13 第五轮用户口径] 退潮首日 ----
    1) 卖点侧的【说明】横幅：用户「你帮我完善下题材量比规则，并改下标签和说明」里的「说明」。
       文案全在 Logic 层（detectEbbDay）；配色沿用本看板的【风险告警】色系（与 .tvrb-cash-alert 同语义）。

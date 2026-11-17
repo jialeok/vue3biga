@@ -185,5 +185,29 @@ describe('resolveBuySettle · 买点侧选股输入门控', function() {
       expect(r.text).toContain('9:25 竞价口径 20 日涨幅榜');
       expect(r.text).toContain('当日定稿存档读取');
     });
+
+    // ★★ [ABN-TB 2026-11-17 用户口径] 第 ⑮ 项：第三十四条【延伸】「异动第三天 ⇒ 同题材禁入」
+    //   的两份输入（D-2 竞价口径十日涨幅 + D-2 竞价名单题材串）。
+    //   到货前定稿 ⇒ 到货后会有票被剔除 ⇒ 屏幕上的票「消失」（用户最反感的换票）。
+    it('★ 第 ⑮ 项：异动第三天监控的两份输入没读到 ⇒ 不许定稿（会换票）', function() {
+      const D2 = '2026-11-11';
+      const r = resolveBuySettle(full({
+        abnThirdTarget: D2, abnPrev2Date: PD, abnPrev2NoteDate: D2
+      }));
+      expect(r.settled).toBe(false);
+      expect(r.missing).toContain('异动第三天监控');
+    });
+
+    it('★ 第 ⑮ 项：两份都读到该日期 ⇒ 放行（⛔ 不永久挂死）', function() {
+      const D2 = '2026-11-11';
+      expect(resolveBuySettle(full({
+        abnThirdTarget: D2, abnPrev2Date: D2, abnPrev2NoteDate: D2
+      })).settled).toBe(true);
+    });
+
+    it('★ 第 ⑮ 项：没有「前两个交易日」（月初 / 空日历）⇒ 跳过，⛔ 不锁死', function() {
+      expect(resolveBuySettle(full({ abnThirdTarget: '' })).settled).toBe(true);
+      expect(resolveBuySettle(full({})).settled).toBe(true);
+    });
   });
 });

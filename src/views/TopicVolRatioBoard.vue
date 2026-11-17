@@ -233,6 +233,14 @@
                 </div>
               </div>
               <TvrbCashAlert :alert="cashAlert" />
+              <!-- ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】「异动第三天 · 同题材不买」提示板。
+                 用户原话：「也就是重点监控第三天，第四天按照正常流程走，你添加下这个规则并在提示板上标明。」
+                 ⛔ 与上面那块空仓标语【刻意分开】：空仓标语（cashAlert.show）驱动买点侧【整段灰化】，
+                    那是「全场空仓」的语义；本条只禁【同题材】，其它题材今天该买照买 ⇒
+                    借用那块会让今天真要买的票也被灰掉（§6 结论各自一处，⛔ 不混用一个开关）。
+                 ⚠️ 判据 / 文案 / 剔除名单全在 Logic 层（abnormal-topic-ban.js + _applyAbnormalTopicBan），
+                    模板只摆放（§21 零计算）。不是第三天 / 判不出且无缺口 ⇒ 组件自己 v-if 不渲染。 -->
+              <TvrbAbnormalTopicBan :notice="abnormalTopicBanNotice" />
               <!-- ★★ [ABN-DEV 2026-11-14 用户口径] 官方偏离值参考面板：
                  「特别是竞价时，或者收盘后，我看一遍股票或者市场前十，就知道怎么参考了」。
                  ⚠️ 它渲染在灰化容器【之外】：偏离值是客观行情事实，买点侧整片灰（监管异动）时
@@ -254,7 +262,7 @@
               <div
                 v-if="weakHuddle"
                 class="tvrb-weak-huddle-only-buy"
-                :class="{ 'tvrb-abnormal-gray': abnormalGray }"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || !!weakHuddle.abnormalTopicGray }"
               >
                 <div class="tvrb-weak-huddle-only-label tvrb-selectable">
                   弱势切抱团 · 买点（第三十条 · 从市场龙头选，不是选题材）
@@ -282,7 +290,7 @@
               <div
                 v-if="catchUp"
                 class="tvrb-catchup-only-buy"
-                :class="{ 'tvrb-abnormal-gray': abnormalGray }"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || !!catchUp.abnormalTopicGray }"
               >
                 <div class="tvrb-catchup-only-label tvrb-selectable">
                   补涨题材 · 买点（第三十一条 · 20日涨幅第 6~10 名里只选连板票）
@@ -306,7 +314,7 @@
               <div
                 v-if="ebbBuy"
                 class="tvrb-ebb-only-buy"
-                :class="{ 'tvrb-abnormal-gray': abnormalGray }"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || !!ebbBuy.abnormalTopicGray }"
               >
                 <div class="tvrb-ebb-only-label tvrb-selectable">
                   {{ ebb && ebb.buyOnlyLabelText ? ebb.buyOnlyLabelText : '退潮替补 · 买点' }}
@@ -323,7 +331,7 @@
               <div
                 v-if="divergeBuy"
                 class="tvrb-diverge-only-buy"
-                :class="{ 'tvrb-abnormal-gray': abnormalGray }"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || !!divergeBuy.abnormalTopicGray }"
               >
                 <div class="tvrb-diverge-only-label tvrb-selectable">
                   总龙首次分歧 · 买点（第二十五条）
@@ -347,7 +355,7 @@
               <div
                 v-if="newDragon"
                 class="tvrb-newdragon-only-buy"
-                :class="{ 'tvrb-abnormal-gray': abnormalGray }"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || !!newDragon.abnormalTopicGray }"
               >
                 <div class="tvrb-newdragon-only-label tvrb-selectable">
                   新龙 / 新题材切换日 · 买点（第二十八条）
@@ -369,7 +377,7 @@
               <div
                 v-if="range10Backup"
                 class="tvrb-r10backup-only-buy"
-                :class="{ 'tvrb-abnormal-gray': abnormalGray }"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || !!range10Backup.abnormalTopicGray }"
               >
                 <div class="tvrb-r10backup-only-label tvrb-selectable">
                   十日涨幅候补 · 买点（第二十九条 · 全市场选股，不是选题材）
@@ -394,12 +402,15 @@
                  ★★ [TOPIC-INNER-SELECT 2026-11-17] b.topicVolWeakGray ⇒ 第二十九条【灰块】
                  （排名第二的题材量比不达标、且在本题材内按十日涨幅前十也选不出合格票）——
                  块照常列出但整块灰化、每只票挂【题材量比不达标 · 不开新仓】。
-                 ⛔ 走 TvrbBuyBlock 的可选 prop（§11 缺省 false = 其它消费方零行为），不新造灰化 CSS。 -->
+                 ⛔ 走 TvrbBuyBlock 的可选 prop（§11 缺省 false = 其它消费方零行为），不新造灰化 CSS。
+                 ★★ [ABN-TB 2026-11-17] b.abnormalTopicGray ⇒ 第三十四条【延伸】异动第三天
+                 「同题材不买」那一个题材块（块内票标签 = 【异动同题材不买】）——
+                 只灰这一个块，其它题材块照常（用户「其它题材不受影响」）。 -->
                 <TvrbBuyBlock
                   v-for="b in blocks"
                   :key="'tvrb-buy-' + b.topic"
                   :block="b"
-                  :gray="!!b.prevEbbGray || !!b.leaderLimitDownGray || !!b.topicVolWeakGray"
+                  :gray="!!b.prevEbbGray || !!b.leaderLimitDownGray || !!b.topicVolWeakGray || !!b.abnormalTopicGray"
                 />
               </div>
               <div
@@ -464,6 +475,8 @@ import { computed, provide } from 'vue';
 import TvrbRulesHint from '../components/topicvolratio/TvrbRulesHint.vue';
 import TvrbBuyBlock from '../components/topicvolratio/TvrbBuyBlock.vue';
 import TvrbCashAlert from '../components/topicvolratio/TvrbCashAlert.vue';
+// ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】异动第三天「同题材不买」提示板（纯展示）
+import TvrbAbnormalTopicBan from '../components/topicvolratio/TvrbAbnormalTopicBan.vue';
 // ★★ [ABN-DEV 2026-11-14 用户口径] 官方偏离值参考面板（「看一遍市场前十就知道怎么参考」）
 import TvrbDeviationBoard from '../components/topicvolratio/TvrbDeviationBoard.vue';
 // ★★ [TVRB-DATA-GATE 2026-11-04 用户口径 · 第七轮] 数据缺失 ⇒ 不能选股的专用提示板
@@ -499,6 +512,9 @@ const {
   // ★★ [ABNORMAL-ALL 2026-11-13] 监管异动 ⇒ 买点侧【全部】灰色（含六个灰化容器之外的独立块）。
   //   判据只在 Logic 层（abnormal-overlay#isAbnormalAllGray），模板零计算（§21）。
   abnormalGray,
+  // ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】异动第三天「同题材不买」的提示板
+  //   （{headline, detail}，文案全在 Logic 层 abnormal-topic-ban.js，模板零计算 §21）
+  abnormalTopicBanNotice,
   ebb,
   ebbBuy,
   ebbNodeNote,

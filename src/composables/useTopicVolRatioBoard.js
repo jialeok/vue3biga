@@ -84,6 +84,18 @@ import { getPreviousTradingDay } from '../logic/date/trading-day-helpers.js';
 //   ⛔ 纯只读：`stock_range_pct` + `market_metrics` 各一次（都走会话缓存 + 单飞，§32），
 //     不发任何上游请求、不消耗猫抓额度。
 import { readAuctionLegRangeMap } from '../logic/auction/range-auction-leg.js';
+// ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】「异动后的第三天 ⇒ 同题材禁入」的两个取数/判定件：
+//   · readAuctionNoteTopicsForDate = 读【前两个交易日】竞价名单的 note（取出触发源当天的细分题材串）；
+//   · parseNoteTopics / buildAbnormalTopicBan = 纯函数（拆题材段 / 判今天是不是第三天 + 禁令集合）。
+//   ⛔ 组合式只负责「按哪一天读、读到了什么」，判定与文案一律在 Logic 层（§21 / §34）。
+import { readAuctionNoteTopicsForDate } from '../data/auction-note-topics.js';
+import { parseNoteTopics, buildAbnormalTopicBan } from '../logic/topicvolratio/abnormal-topic-ban.js';
+import { TVRB_ABNORMAL_TOPIC_BAN_NONE } from '../logic/topicvolratio/tvrb-constants.js';
+import { isOverRange10Cap } from '../logic/topicvolratio/abnormal-10d.js';
+// ★ [ABN-TB] 「全市场最高票」的判据与规则层【同一把尺子】（§6）：maxRangePctOf + 只主板过滤。
+//   ⛔ 组合式不另写一遍「扫 Map 找最大值 / 按代码前缀判主板」。
+import { maxRangePctOf, makeAbnMainBoardFilter } from '../logic/topicvolratio/tvrb-plan.js';
+import { isMainBoardRankEligible } from '../logic/auction/limit-up.js';
 // ★★ [R20-926 2026-10-24 用户口径] 买点侧【20日涨幅 · 9:26 竞价口径】的主板名次（说明文案用）：
 //   用户原话「买点侧的10日涨幅和20日涨幅的股票，如果有入选时也应该按照9点26分的口径……
 //     在上面说明时间他们的涨幅是多少排名第几就行了」。
@@ -370,6 +382,37 @@ function _skipMapOf(date) {
   return out;
 }
 
+/**
+ * ★★ [ABN-TB 2026-11-17 用户口径] 票名 → 该票的【全部题材段】（逗号连接），供第三十四条延伸
+ * 「异动第三天 ⇒ 同题材禁入」做【票级】认亲（块标题只是大类，票可能挂在别的块里）。
+ *
+ * ⚠️ 数据来源 = 共享题材库 `stock_topics`（用户口径「题材库 = 权威」，[TOPIC-LIB-FIRST]）——
+ *   ⛔ 不读当日 note：那是「那一天的分组结果」，用它等于拿结果去验结果（§6 单一真相）。
+ * §10：库还没建好 ⇒ 先建一次（幂等、纯内存）；仍然查不到 ⇒ 返回空串（该票不参与票级命判，
+ *   但【块级】判据照常生效 —— ⛔ 不因为一只票查不到库就把整条规则关掉）。
+ */
+function _tvrbStockTopicsText(name) {
+  const nm = String(name || '').trim();
+  if (!nm) return '';
+  try {
+    let set = lookupTopicsByName(nm);
+    if (!set || set.size === 0) {
+      buildTopicCache();                    // 幂等：已建过直接返回同一份
+      set = lookupTopicsByName(nm);
+    }
+    if (!set || set.size === 0) return '';
+    const arr = [];
+    set.forEach(function(t) {
+      const v = String(t === null || t === undefined ? '' : t).trim();
+      if (v && arr.indexOf(v) < 0) arr.push(v);
+    });
+    arr.sort();                             // 确定性顺序（§6 不随 Set 插入序漂移）
+    return arr.join(',');
+  } catch (e) {
+    return '';                              // 题材库不可用 ⇒ 如实空串，退回块级判据（§10）
+  }
+}
+
 export function useTopicVolRatioBoard() {
   const uiStore = useUiStore();
   const currentDate = computed(() => uiStore.currentDate);
@@ -434,6 +477,24 @@ export function useTopicVolRatioBoard() {
    */
   const prevAuctionLeg10 = ref(null);
   const prevAuctionLeg10Date = ref('');
+  /**
+   * ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】「异动后的第三天 ⇒ 同题材禁入」的两份输入：
+   *   `abnPrev2`      = 【前两个交易日】的 9:26 竞价口径十日涨幅（`readAuctionLegRangeMap(pd2)`，
+   *                     与买点侧今日选股同一个函数，§6）—— 用来找出「异动日那一天的触发源」；
+   *   `abnPrev2Notes` = 【前两个交易日】竞价名单每行的 note（`auction_watchlist`，一次 REST）——
+   *                     用来取出触发源当天的【细分题材串】，例：11-12 东方海洋 =
+   *                     `10.02%(水产品,农业,东方,羊字辈)` ⇒ 这就是用户点名的「它题材的股票」。
+   *   ⚠️ 为什么是「前两个交易日」而不是「上一个」：用户口径「次日本来现在的规则不能买，不变，
+   *     在第三天都不能买它题材的股票」—— 次日由第三十四条原口径（全场空仓）负责，
+   *     本条只在 D+2（= 前两个交易日那次异动）生效，D+3 起自动不生效（「第四天按正常流程走」）。
+   *   ⚠️ 日期核对红线（与上面两份 rangeMap 同一条）：只认【日期对得上】的那份（§10 不拿旧日期顶替）。
+   *   ⚠️ 纯只读：合计 3 次 REST（竞价口径 2 次 + 名单 1 次），全部会话缓存 + 单飞（§32），
+   *     不消耗猫抓额度、不发任何上游请求。
+   */
+  const abnPrev2 = ref(null);
+  const abnPrev2Date = ref('');
+  const abnPrev2Notes = ref(null);
+  const abnPrev2NoteDate = ref('');
   /**
    * ★★ [BUY-PUBLISH 2026-10-31 · 第五版] 这里**原来是一个 `gateGraceDate` 宽限日期（6s → 12s）**：
    *   `range20Settled: hasRange20LeadersVerdictForDate(d) || gateGraceDate.value === d`
@@ -1343,6 +1404,9 @@ export function useTopicVolRatioBoard() {
       prevRangeMap.value = null; prevRangeDate.value = '';
       // ★★ [ABNORMAL-10D 2026-11-13] 没有上一交易日 ⇒ 「异动次日」判不出（判据缺一天，§10 不猜）
       prevAuctionLeg10.value = null; prevAuctionLeg10Date.value = '';
+      // ★★ [ABN-TB 2026-11-17] 没有上一交易日 ⇒ 更没有「前两个交易日」⇒ 第三天同题材监控判不出
+      abnPrev2.value = null; abnPrev2Date.value = '';
+      abnPrev2Notes.value = null; abnPrev2NoteDate.value = '';
       // ★ [BUY-SETTLE] 没有上一交易日 ⇒ 与「昨日」相关的两项不参与门控（见门控调用处传的 prevDate）
       prevRangeTriedDate.value = '';
       prevEbbDay.value = null; prevEbbDayDate.value = '';
@@ -1386,6 +1450,47 @@ export function useTopicVolRatioBoard() {
         prevAuctionLeg10.value = null;
         prevAuctionLeg10Date.value = pd;
       });
+    }
+    // ①-b3 ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】「异动后的第三天 ⇒ 同题材禁入」的输入。
+    //   为什么读【前两个交易日】而不是上一个：用户把时间轴切得很清楚 ——
+    //     异动日 D0（11-12）⇒ 次日 D+1（11-13）由原口径【全场空仓】⇒ 第三天 D+2（11-16）
+    //     只禁【同题材】⇒ 第四天 D+3（11-17）恢复正常。所以本条只需要 D-2 这一天的两份事实。
+    //   ⚠️ 只判「前两个交易日」，⛔ 不做「再往前再找一次异动」的扩展：用户口径是
+    //     「记住总龙一【第一次】监管异动……重点监控第三天，第四天按照正常流程走」，
+    //     找更早的日子会让禁令无限延长（那是与用户口径相反的方向）。
+    const pd2 = getPreviousTradingDay(pd) || '';
+    if (!pd2) {
+      abnPrev2.value = null; abnPrev2Date.value = '';
+      abnPrev2Notes.value = null; abnPrev2NoteDate.value = '';
+    } else {
+      // ① D-2 的 9:26 竞价口径十日涨幅（判「那一天有没有异动、异动的是哪只票」）
+      if (abnPrev2Date.value !== pd2) {
+        readAuctionLegRangeMap(pd2).then(function(m) {
+          if (getPreviousTradingDay(getPreviousTradingDay(currentDate.value)) !== pd2) return;  // 竞态：期间切了日期 ⇒ 丢弃
+          abnPrev2.value = (m && m.size > 0) ? m : null;
+          abnPrev2Date.value = pd2;
+        }).catch(function(e) {
+          if (getPreviousTradingDay(getPreviousTradingDay(currentDate.value)) !== pd2) return;
+          console.warn('[TVRB] 前两个交易日 9:26 竞价口径十日涨幅读取失败，异动第三天监控判不出:', e && e.message);
+          abnPrev2.value = null;
+          abnPrev2Date.value = pd2;
+        });
+      }
+      // ② D-2 竞价名单每行的 note（取那只票当天的【细分题材串】——
+      //   题材库里 东方海洋 只有 「水产品,农业」，缺「东方 / 羊字辈」，只有 note 写全了）
+      if (abnPrev2NoteDate.value !== pd2) {
+        readAuctionNoteTopicsForDate(pd2).then(function(m) {
+          if (getPreviousTradingDay(getPreviousTradingDay(currentDate.value)) !== pd2) return;
+          abnPrev2Notes.value = (m && m.size > 0) ? m : null;
+          abnPrev2NoteDate.value = pd2;
+        }).catch(function(e) {
+          if (getPreviousTradingDay(getPreviousTradingDay(currentDate.value)) !== pd2) return;
+          // §10：读失败 ⇒ 本条【判不出】（提示板会如实写），⛔ 绝不当作「那天没有同题材」
+          console.warn('[TVRB] 前两个交易日竞价名单题材读取失败，异动第三天监控判不出:', e && e.message);
+          abnPrev2Notes.value = null;
+          abnPrev2NoteDate.value = pd2;
+        });
+      }
     }
     // ② tvrb_ebb_days：一次读【今天 + 上一交易日】两行（§32 一次 in 查询；
     //    今天那行用不着判首日，但读回来能让 upsert 前的判断看到「今天已经写过什么」——幂等且省一次往返）
@@ -1852,6 +1957,51 @@ export function useTopicVolRatioBoard() {
         range20GaveUp: !!netHardStalled.value
       });
 
+      // ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】「异动后的第三天 ⇒ 同题材禁入」。
+      //
+      //   用户原话：「记住总龙一第一次监管异动，之后两天，次日本来现在的规则不能买，不变，
+      //     在第三天都不能买它题材的股票……也就是重点监控第三天，第四天按照正常流程走。」
+      //
+      //   ★ 判据（全部只读、无副作用）：
+      //     ① 目标日 = 【前两个交易日】= D-2（次日 D-1 由第三十四条原口径「全场空仓」负责）；
+      //     ② D-2 的 9:26 竞价口径里，主板票十日涨幅最高那只 ＞ 97% ⇒ D-2 就是异动日，它就是触发源；
+      //     ③ 禁令集合 = 它 D-2 当天的细分题材（竞价名单 note）+ 它在题材库里的题材；
+      //     ④ 今天（D）= 异动日 + 2 个交易日 ⇒ 禁令生效（`dayOffset = 2`，常量在 tvrb-constants）。
+      //   §10：D-2 那两份没读到 / 最高票没超线 ⇒ 返回当前 NONE / 缺项版（提示板会如实写「判不出」），
+      //     ⛔ 绝不把「没读到」当成「D-2 没异动」静默放行 —— 所以这里返回的是 `unknown` 版而不是 null。
+      const _abnTbTarget = pd ? (getPreviousTradingDay(pd) || '') : '';
+      const _abnTbInput = (function() {
+        // 没有「前两个交易日」（月初 / 空日历）⇒ 本条不适用（⛔ 不是「判不出」，是「用不上」）
+        if (!_abnTbTarget) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
+        // 还没读到 ⇒ 门控（buy-settle 第十五项）正在挂住买点侧；
+        //   此刻给 NONE（= 不生效）而不是「判不出」，因为「还在读」不是结论（§10 不许把等待当结论）。
+        if (abnPrev2Date.value !== _abnTbTarget) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
+        const eligible = makeAbnMainBoardFilter(isMainBoardRankEligible, getStockCode);
+        const top = maxRangePctOf(abnPrev2.value, eligible);
+        // D-2 没有异动（最高票没超 97% / 一只都排不出）⇒ 今天不是「异动第三天」⇒ 稳定 NONE（§19）
+        if (!top || !isOverRange10Cap(top.pct)) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
+        // ★ 到这里才确定「今天 = 异动后的第三天」。细分题材取【D-2 当天竞价名单的 note】——
+        //   题材库里 东方海洋 只有「水产品,农业」，缺「东方 / 羊字辈」（而「东方」正是临时核心词），
+        //   只查库会把日出东方放行 —— 那正是本条要修的那个错。
+        const noteRow = (abnPrev2NoteDate.value === _abnTbTarget && abnPrev2Notes.value)
+          ? abnPrev2Notes.value.get(top.name) : null;
+        const libArr = [];
+        try {
+          const set = lookupTopicsByName(top.name);
+          if (set) set.forEach(function(t) { libArr.push(t); });
+        } catch (e) { /* 题材库不可用 ⇒ 只用 note 那一份（§10 如实降级，⛔ 不猜） */ }
+        // ⚠️ 两份都为空 ⇒ buildAbnormalTopicBan 返回 `unknown`（提示板写明「判不出」，§10 不静默放行）
+        return buildAbnormalTopicBan({
+          dayOffset: 2,
+          triggerDate: _abnTbTarget,
+          todayDate: d,
+          leaderName: top.name,
+          leaderPct: top.pct,
+          noteTopics: noteRow ? parseNoteTopics(noteRow.note) : [],
+          libTopics: libArr
+        });
+      })();
+
       const plan = buildTopicVolRatioPlan(rec.topics, rec.dragonMap, {
         date: d,
         // ★★ [TVRB-DATA-GATE] 数据缺失 ⇒ 规则层直接清空买点侧（见 _clearBuySideForDataGate）
@@ -1948,7 +2098,12 @@ export function useTopicVolRatioBoard() {
         //   prevRange10      = 上一交易日【收盘口径】的十日涨幅（竞价那份读不到时的退路）。
         //   ⚠️ 日期核对红线（与上面几份 rangeMap 同一条）：不是这一天的 ⇒ 传 null（§10 不拿旧日期顶替）。
         prevAuctionLeg10: (prevAuctionLeg10Date.value === pd) ? prevAuctionLeg10.value : null,
-        prevRange10: (prevRangeDate.value === pd) ? prevRangeMap.value : null
+        prevRange10: (prevRangeDate.value === pd) ? prevRangeMap.value : null,
+        // ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】「异动后的第三天 ⇒ 同题材禁入」：
+        //   `abnormalTopicBan` = 今天要不要执行 + 禁令题材集合（纯函数产出，见上方 _abnTbInput）；
+        //   `stockTopicsOf`   = 票级认亲用的题材解析（块级命中的那一批不再逐票查，省开销）。
+        abnormalTopicBan: _abnTbInput,
+        stockTopicsOf: _tvrbStockTopicsText
       });
 
       // ★★ [TVRB-DATA-GATE 2026-11-04] 把判定结果挂进 plan（§6：一行结论只有一个出处）。
@@ -2169,7 +2324,14 @@ export function useTopicVolRatioBoard() {
         auctionBoardTried: _aucReady || hasTvrbAuctionBoardVerdict(d),
         // ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11 · 第十四项] 这天有没有存档，先问完再定稿。
         //   没问完就定稿 ⇒ 拿重算中间态写库 / 上屏，等存档命中又被覆盖 = 存档形同虚设。
-        planSnapshotReady: planSnapshotReady.value
+        planSnapshotReady: planSnapshotReady.value,
+        // ★★ [ABN-TB 2026-11-17 用户口径 · 第十五项] 第三十四条【延伸】「异动第三天 ⇒ 同题材禁入」
+        //   的两份输入（D-2 竞价口径十日涨幅 + D-2 竞价名单题材串）。
+        //   没读到就定稿 ⇒ 到货后会有票被剔除 ⇒ 屏幕上的票「消失」，正是用户最反感的换票。
+        //   ⚠️ 目标日期在这里算（规则层 / 纯函数都不碰交易日历，§26）。
+        abnThirdTarget: pd ? (getPreviousTradingDay(pd) || '') : '',
+        abnPrev2Date: abnPrev2Date.value,
+        abnPrev2NoteDate: abnPrev2NoteDate.value
       });
       if (!_settle.settled) {
         plan.buyPending = true;
@@ -2964,6 +3126,22 @@ export function useTopicVolRatioBoard() {
     return isAbnormalAllGray(displayPlan.value);
   });
   /**
+   * ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】「异动第三天 · 同题材不买」的【提示板】。
+   *
+   * 用户原话：「你添加下这个规则并在提示板上标明」。
+   * ⇒ 与空仓标语【刻意分开】（§6 不造第二套结论，但这是另一条结论）：
+   *   · 空仓标语（`cashAlert`）= 全场空仓语义，它的 `show` 会驱动买点侧【整段灰化】；
+   *   · 本条只禁【同题材】⇒ 用独立的 `{ headline, detail }`，⛔ 绝不借用 cashAlert 的灰化通道，
+   *     否则其它题材（今天真要买的票）会被一起灰掉。
+   * ⚠️ 文案与判据全在 Logic 层（`abnormal-topic-ban.js#buildAbnormalTopicBanNotice`，§21）；
+   *   本处只透传。判不出（unknown）时也有一块提示板 —— §10「判不出」必须让用户看见。
+   * ⛔ 未就绪 / 不是第三天 ⇒ null（模板 v-if 不渲染），绝不显示一条空标语。
+   */
+  const abnormalTopicBanNotice = computed(function() {
+    const a = displayPlan.value && displayPlan.value.abnormalTopicBanNotice;
+    return (a && a.headline) ? a : null;
+  });
+  /**
    * ★ [EBB 2026-10-13 第五轮用户口径] 退潮首日 —— 判据全在 Logic 层（detectEbbDay），
    *   本处只把它透给模板（§21 模板零计算；§34 UI 不判业务）。
    *   ⛔ 未就绪 / 不是退潮日 ⇒ null（模板 v-if 不渲染），绝不会拿「没算出来」当「今天退潮」（§10）。
@@ -3430,6 +3608,8 @@ export function useTopicVolRatioBoard() {
     cashAlert,
     // ★★ [ABNORMAL-ALL] 监管异动 ⇒ 六个独立买点容器一起灰（用户「买点侧全部灰色」）
     abnormalGray,
+    // ★★ [ABN-TB 2026-11-17] 第三十四条【延伸】异动第三天「同题材不买」的提示板（{headline, detail}）
+    abnormalTopicBanNotice,
     ebb,
     ebbBuy,
     ebbNodeNote,

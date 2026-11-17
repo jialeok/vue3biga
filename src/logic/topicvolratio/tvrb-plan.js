@@ -11,11 +11,14 @@ import { TVRB_MIN_COUNT, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT
 import { pickFamilyNewDragon, splitTopicSegs, isLineageTopic } from './new-dragon-family.js';
 import { _normTopic, _sameTopicLoose, _num, _pct2, _streakWord, _secondTopicLeaderInTop10, _range10RankMapOf, _closeRankOf, _rankTopEntries, _topicTop10Hits, _windowTextOf, _todayRankPhrase, _rankLabelOf, _oldTopicNameOf, _oldTopicBasisOf } from './tvrb-utils.js';
 import { detectEbbDay, secondEbbTopicOfPrevDay, buildEbbDayRecord } from './tvrb-ebb.js';
-import { _applyPrevEbbSecondNoBuy, _applyLeaderLimitDownNoBuy, _applySecondTopicVolWeakNoBuy, _applyEbbSellRules, _buildEbbPicksBlock, _applyEbbBuyRules, _applyCashAlertBuyRules, _applyDivergeNoBuyRules, _applyAbnormalNoBuyRules, _buildDivergeBuyBlock, _buildDivergeCashAlert, _buildWeakHuddleBlock, _buildLeaderLimitDownHuddleBlock, _buildCatchUpBlock, resolveTvrbTier, avgVolRatioOf, formatAvgVolRatio, buildCashAlert, _dragonCandidates, _buildBlock, _buildNewDragonBlock, _withAuctionLegPct, _buildRange10BackupBlock } from './tvrb-blocks.js';
+import { _applyPrevEbbSecondNoBuy, _applyLeaderLimitDownNoBuy, _applySecondTopicVolWeakNoBuy, _applyEbbSellRules, _buildEbbPicksBlock, _applyEbbBuyRules, _applyCashAlertBuyRules, _applyDivergeNoBuyRules, _applyAbnormalNoBuyRules, _buildDivergeBuyBlock, _buildDivergeCashAlert, _buildWeakHuddleBlock, _buildLeaderLimitDownHuddleBlock, _buildCatchUpBlock, resolveTvrbTier, avgVolRatioOf, formatAvgVolRatio, buildCashAlert, _dragonCandidates, _buildBlock, _buildNewDragonBlock, _withAuctionLegPct, _buildRange10BackupBlock, _applyAbnormalTopicBan } from './tvrb-blocks.js';
 // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条「监管异动 · 十日涨幅硬上限」的事实判定
 //   （纯函数：把「总龙一昨日/今日十日涨幅 + 会被选中的票的十日涨幅」判成一块空仓标语）。
 //   ⛔ 阈值 / 文案全在 abnormal-10d.js + tvrb-constants.js，本文件只负责【注入事实】与【收口】。
 import { resolveAbnormalFact, classifyRange10, pickAbnormalSource, ABNORMAL_LEVEL_NEAR, ABNORMAL_LEVEL_ABNORMAL } from './abnormal-10d.js';
+// ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】：总龙一首次异动后的【第三天】⇒ 同题材禁入。
+//   提示板文案在 Logic 层拼好（§21），⛔ 模板不参与任何判定或拼接。
+import { buildAbnormalTopicBanNotice } from './abnormal-topic-ban.js';
 // ★★ [ABN-MAINBOARD 2026-11-13] 第三十四条「只主板」判据工厂（本文件内定义并导出，见 maxRangePctOf 下方）。
 
 import { formatRangePct, RULE_NO, finishBuyBlock, buildSellPlan } from '../decision/decision-rules.js';
@@ -2459,6 +2462,39 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     leaderPctPrevBasis: _abnBasis
   });
 
+  // ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸分支】：总龙一首次监管异动后的【第三天】
+  //   ⇒ 它所在细分题材的票一律不进买点侧（临时题材包括在内），第四天恢复正常。
+  //
+  //   ★ 为什么必须【紧跟 _applyAbnormalSweep 之后】、且在【卖点段之前】：
+  //     · 紧跟其后 ⇒ 当天若是「次日 / 当日异动」，abnormal.show 已为真，本条自动让位
+  //       （全场空仓比「只禁同题材」更严，⛔ 不允许反过来把空仓降级成部分禁买）；
+  //     · 在卖点段之前 ⇒ 被剔除的票要同步从 `buyNames` 里删掉，
+  //       否则卖点侧会因「今天又进买点」把它们标成【持有】，与「今天不给买点」正面矛盾
+  //       （与 [EBB-D1] / [LEADER-LIMITDOWN] / [TOPIC-INNER-SELECT] 同一条不变式）。
+  //   ⛔ 票不删、客观数据不动、卖点侧不动；⛔ 不碰 cashAlert（那个 show 会整段灰化 = 空仓语义）。
+  //   ⚠️ `o.abnormalTopicBan` 由组合式算好注入（交易日链在那边，规则层保持纯函数）。
+  const _abnTb = o.abnormalTopicBan || null;
+  if (_abnTb && (_abnTb.active === true || _abnTb.unknown === true)) {
+    const _tb = _applyAbnormalTopicBan(out, _abnTb, o.stockTopicsOf);
+    const _tbNotice = buildAbnormalTopicBanNotice(_abnTb, _tb.names);
+    out.abnormalTopicBan = _abnTb;
+    out.abnormalTopicBanNotice = _tbNotice.headline ? _tbNotice : null;
+    if (_tbNotice.headline) {
+      out.notes.push('⚠️【第' + ABNORMAL_RULE_NO + '条 · 延伸 · 异动第三天】' +
+        (_abnTb.active === true
+          ? ('异动日 ' + (_abnTb.triggerDate || '—') + ' 的总龙一【' + (_abnTb.leaderName || '—') +
+             '】十日涨幅 ' + (_abnTb.leaderPctText || '—') + ' ＞ ' + TVRB_RANGE10_CAP +
+             '% ⇒ 今天是异动后的【第三天】⇒ 它所在细分题材【' + (_abnTb.segments || []).join('、') +
+             '】的票今天【一律不进买点侧】（临时题材也算）。本次剔除 ' + _tb.count + ' 只' +
+             (_tb.names.length ? '：' + _tb.names.join('、') : '') +
+             '；已从买点名单移除（卖点侧不会把昨天买过的标成「持有」）。' +
+             '⚠️ 其它题材不受影响；明天（第四天）按正常流程走。')
+          : ('今天是异动日 ' + (_abnTb.triggerDate || '—') + ' 后的【第三天】，但' +
+             (_abnTb.leaderName ? '读不到它的细分题材' : '判不出异动日那只票') +
+             '（§10：判不出 ≠ 没有同题材）⇒ 本条本次【没有执行同题材剔除】，请复核云端当日数据。')));
+    }
+  }
+
   // ★ 卖点段 —— decision-rules 的【同一份实现】；⛔ 候选池不依赖本看板选股（= 昨日打过买标签的票），
   //   只有「今天又进买点」这一条换成【本看板自己的名单】（本看板内部自洽）。
   const sellRows = o.sellRows || [];
@@ -2526,14 +2562,17 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   const _countUnique = function(arr) {
     (arr || []).forEach(function(p) {
       const nm = String((p && p.name) || '').trim();
-      if (nm) _pickSeen.add(nm);
+      // ★★ [ABN-TB 2026-11-17] 异动第三天被剔除的同题材票【不计入】（它今天没有买点）；
+      //   与下面「整块灰化」那条同一个口径：数的是【今天能下单的只数】。
+      if (nm && !(p && p.abnormalTopicBlocked)) _pickSeen.add(nm);
     });
   };
   // ★★ [LEADER-LIMITDOWN 2026-11-02] 第三十二条：龙一竞价跌停那个题材【今天不买】⇒ 它的票不计入
   //   「实际选出几只」（用户口径「数只数」数的是【今天能下单的】；那一块的票只作展示）。
   // ★★ [TOPIC-INNER-SELECT 2026-11-17] 第二十九条的【灰块】同理：整块灰化、今天不买 ⇒ 不计入。
+  // ★★ [ABN-TB 2026-11-17] 第三十四条延伸的【同题材块】同理：整块灰化 ⇒ 不计入。
   out.blocks.forEach(function(blk) {
-    if (blk && (blk.leaderLimitDownGray || blk.topicVolWeakGray)) return;
+    if (blk && (blk.leaderLimitDownGray || blk.topicVolWeakGray || blk.abnormalTopicGray)) return;
     _countUnique(blk.picks);
   });
   // ★ [SWITCH 2026-10-22] 新龙那一只也要计入「实际选出几只」（summary 文案读它）
@@ -2733,6 +2772,10 @@ export function _clearBuySideForDataGate(out) {
   // 空仓提醒换成「未触发」常量：数据缺失日由提示板（TvrbDataGate）说话，
   // ⛔ 不能让「平均量比 < 25」那种基于数值的标语在没数值时出现（那就是编出来的结论）。
   out.cashAlert = TVRB_CASH_ALERT_NONE;
+  // ★★ [ABN-TB 2026-11-17] 同题材禁令的提示板同理：数据缺失日由 TvrbDataGate 说话，
+  //   ⛔ 不能同时挂两块板（一块说「数据缺失」、一块说「同题材不买」，用户会以为两条都成立）。
+  //   ⚠️ 只清【提示板】，`out.abnormalTopicBan` 这份事实保留（排障要看它判过什么）。
+  out.abnormalTopicBanNotice = null;
   // ② 买点对象里的第二份引用（四个装饰器遍历的那一批）
   if (out.buy) {
     out.buy.heavy = null;
