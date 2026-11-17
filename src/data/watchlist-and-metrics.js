@@ -11,6 +11,7 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         import { normalizeAucVolume } from './metrics-normalize.js';
         import { _dbgLog, _dbgLogVerbose } from './debug-log.js';
 import { startStockTopicsRealtime, stopStockTopicsRealtime, startCoreTopicsRealtime, stopCoreTopicsRealtime } from './stock-topics.js';
+import { startTempCoreTopicsRealtime, stopTempCoreTopicsRealtime } from './temp-core-topics.js';
 import { startStockCodeMapRealtime, stopStockCodeMapRealtime } from './stock-code-map.js';
 import { startBiddingRealtime, stopBiddingRealtime } from './bidding-data.js';
 import { startJiwangRealtime, stopJiwangRealtime } from './jiwang-data.js';
@@ -205,6 +206,7 @@ import { createQueryMemo } from './query-memo.js';
             startAuctionRealtime(); // 同时启动 auction_watchlist / market_metrics 表的 Realtime 订阅
             startStockTopicsRealtime(); // 同时启动 stock_topics 表的 Realtime 订阅（题材库）
             startCoreTopicsRealtime(); // 同时启动 core_topics 表的 Realtime 订阅（核心词，多端编辑实时刷新题材分组）
+            startTempCoreTopicsRealtime(); // 临时核心词（〇·a）：一端关停/恢复 ⇒ 其它端题材分类实时跟着变
             startStockCodeMapRealtime(); // 同时启动 stockcodemap 表的 Realtime 订阅（股票代码映射唯一真相源）
             startBiddingRealtime(); // 同时启动 bidding_data 表的 Realtime 订阅（竞价变化看板）
             startJiwangRealtime(); // 同时启动 jiwang_data 表的 Realtime 订阅（记忘看板）
@@ -255,6 +257,7 @@ import { createQueryMemo } from './query-memo.js';
             stopAuctionRealtime();
             stopStockTopicsRealtime();
             stopCoreTopicsRealtime();
+            stopTempCoreTopicsRealtime();
             stopStockCodeMapRealtime();
             stopBiddingRealtime();
             stopJiwangRealtime();

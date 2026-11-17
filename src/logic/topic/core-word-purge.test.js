@@ -210,7 +210,10 @@ describe('[CORE-PURGE-SYNC] 清理后必须联动提示板与选股结果', () =
     expect(board).toContain('_buyPublished.value = null');
     // 当前指纹必须依赖题材库版本（否则清理后 computed 不重算）
     expect(board).toContain('void getTopicLibraryVersion()');
-    expect(board).toContain('buildRulesFingerprint(getCoreTopics(), getTopicLibraryDigest())');
+    // [TEMP-CORE 2026-11-17] 第一段改为【当日有效词表】：临时词只在生效区间内改指纹，
+    //   ⛔ 不能退回全局 getCoreTopics()（那会让历史日也重算，违反「历史日期不受影响」）。
+    expect(board).toContain('buildRulesFingerprint(getCoreTopicsForDate(currentDate.value), getTopicLibraryDigest())');
+    expect(board).toContain('void getTempCoreTopicsToken()');
   });
 });
 

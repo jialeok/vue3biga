@@ -265,7 +265,9 @@ import { _isAuctionWatchlistIndexReady } from '../data/watchlist-and-metrics.js'
 //   getCoreTopics() = 核心管理里那张表（用户「我在核心管理里把文化传媒放到 AI应用 那个大类了」）；
 //   getCoreTopicsVersion() = 响应式版本号（云端加载完成 / 用户改完核心词 ⇒ computed 自动重算）。
 //   ⛔ 规则层拿到的永远是「数组」而不是「自己去读表」（§5 Data 层职责）。
-import { getCoreTopics, getCoreTopicsVersion, isCoreTopicsCloudLoaded } from '../logic/topic/rules.js';
+import { getCoreTopics, getCoreTopicsForDate, getCoreTopicsVersion, isCoreTopicsCloudLoaded } from '../logic/topic/rules.js';
+// [TEMP-CORE 2026-11-17] 临时核心词：只在输入侧按当日换一张词表（规则 〇·a）
+import { getTempCoreTopicsToken, isTempCoreTopicsLoaded } from '../data/temp-core-topics.js';
 import { makeCoreTopicResolver } from '../logic/topic/core-category.js';
 // ★★ [BUY-SETTLE-2 2026-10-31 用户口径] 题材库（stock_topics）「就绪了吗」——
 //   买点侧门控的输入之一。判据语义见其 JSDoc：**为空即「题材分类结果不可信」**（§10 读取失败 ≠ 空）。
@@ -587,7 +589,8 @@ export function useTopicVolRatioBoard() {
       const res = detectLeaderFirstTopic(inputs, nm, {
         topicOf: topicOf,
         // ★ 核心词（大类）归一：用户原话「我会随时改核心词……你提就要提核心词（大类）」
-        coreRes: makeCoreTopicResolver(getCoreTopics()),
+        // [TEMP-CORE] 老题材也按【该日】有效词表归一（历史补录临时词时，老题材跟着变）
+        coreRes: makeCoreTopicResolver(getCoreTopicsForDate(d)),
         windowDays: LEADER_FIRST_TOPIC_WINDOW_DAYS
       });
       leaderFirstTopic.value = res;
@@ -1437,7 +1440,7 @@ export function useTopicVolRatioBoard() {
           //   ★ [CORE-CAT 2026-10-22] 第三个入参传大类归一函数：否则「文化传媒 vs AI应用」
           //     跨不过去，切换日会在题材名漂移的那天静默失效（与 10-22 误判同一根因）。
           const ppd = pd ? getPreviousTradingDay(pd) : '';
-          const _sw = ppd ? detectSwitchDay(rows, ppd, makeCoreTopicResolver(getCoreTopics()), winFrom) : null;
+          const _sw = ppd ? detectSwitchDay(rows, ppd, makeCoreTopicResolver(getCoreTopicsForDate(d)), winFrom) : null;
           if (_sw) {
             ensureTop5History(d);
             // ★★ [LEADER-FIRST-TOPIC 2026-11-12 用户口径] 顺带算「老题材（大类）」——
@@ -1563,11 +1566,17 @@ export function useTopicVolRatioBoard() {
    */
   const currentRulesSig = computed(function() {
     void getCoreTopicsVersion();                    // 增删改核心词 ⇒ 版本号变 ⇒ 重算指纹
+    void getTempCoreTopicsToken();                  // [TEMP-CORE] 临时词新增/关停/恢复 ⇒ 指纹重算
     void getTopicLibraryVersion();                  // ★ [TOPIC-LIB-SIG] 手动改个股题材 ⇒ 指纹最后一段变
     if (!isCoreTopicsCloudLoaded()) return '';
+    // 🔴 [TEMP-CORE] 临时词没读过之前【禁止算指纹】：此刻会退回主流表，指纹与存档不同 ⇒
+    //   在数据没齐时把好存档判 stale 覆盖（§10/§11）。读失败也算「读过」，不会永久挂起。
+    if (!isTempCoreTopicsLoaded()) return '';
     // ★★ [TOPIC-LIB-SIG 2026-11-12] 第三段 = 个股题材库内容指纹：它变了 ⇒ 存档判过期，
     //   而且【历史日期也要重算】（用户口径：改了题材，历史选票跟着改）。
-    return buildRulesFingerprint(getCoreTopics(), getTopicLibraryDigest());
+    // [TEMP-CORE] 第一段改按【当天有效词表】算：只有临时词生效的那几天指纹会变 ⇒
+    //   历史日 / 区间外日期的存档原样命中，不需要额外机制（〇·a）。
+    return buildRulesFingerprint(getCoreTopicsForDate(currentDate.value), getTopicLibraryDigest());
   });
 
   /** 说明区警示：⛔ 不改存档 plan 里的 notes（那会污染「定稿那一刻」的原始内容）。 */
@@ -1644,6 +1653,8 @@ export function useTopicVolRatioBoard() {
     // ★★ [CORE-CAT 2026-10-22] 核心词表（大类）变更信号：云端加载完成 / 用户改完核心词 ⇒ 本帧重算，
     //   否则「文化传媒 ⇒ AI应用」的归一结果会停在首帧那份默认核心词上（§10 不能静默用旧口径）。
     void getCoreTopicsVersion();
+    void getTempCoreTopicsToken();   // [TEMP-CORE] 临时词加载 / 关停 / 恢复 ⇒ 选股立即重算一帧
+    void isTempCoreTopicsLoaded();   // [TEMP-CORE] 读过（成功或失败）才算就绪，⛔ 不让门控永久挂起
     // ★ [EBB-R20] 近 20 个交易日的退潮判定历史（异步读回）⇒「首次 / 二次确认」阶段判定才生效
     void ebbHistory.value;
     void ebbHistoryFrom.value;
@@ -1909,7 +1920,8 @@ export function useTopicVolRatioBoard() {
         // ★★ [CORE-CAT 2026-10-22 用户口径] 题材【大类】映射（核心管理那张表）——
         //   规则层据此把「文化传媒」认成「AI应用」。用户原话：「那个大类就是我说的题材」。
         //   ⛔ 规则层不自己读表（§5），这里注入；取不到 ⇒ 退化为恒等（§11 零行为变化）。
-        coreTopics: getCoreTopics(),
+        // [TEMP-CORE] 规则层拿到的永远是【当日有效】那一份；临时词不生效时是同一个 base 引用（§11）
+        coreTopics: getCoreTopicsForDate(d),
         // ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条「十日涨幅 · 在列次数候补」的输入：
         //   range10Rows     = 十日涨幅候选池（采集层出口）——**含「20天」补位行**。
         //                     🔴 10-23 事故：漏了补位行（屏幕第 3 行慈文传媒）⇒ 名次整体前移一位

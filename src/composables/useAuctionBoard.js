@@ -691,7 +691,7 @@ export function useAuctionBoard() {
     void uiStore.currentDate;
     const auctionList = getTodayGroupList('auction');
     if (!auctionList || auctionList.length === 0) return [];
-    return getTopicGroups(auctionList);
+    return getTopicGroups(auctionList, uiStore.currentDate);
   });
 
   const itemsByIndex = computed(() => {
@@ -1077,7 +1077,8 @@ export function useAuctionBoard() {
     allTradingDays.forEach(dateStr => {
       const dayAuctionList = auctionData[dateStr] || [];
       if (dayAuctionList.length === 0) return;
-      const groups = getTopicGroups(dayAuctionList);
+      // [TEMP-CORE] 趋势图按历史日期逐日分组 ⇒ 必须传该日自己的日期
+      const groups = getTopicGroups(dayAuctionList, dateStr);
       groups.forEach(group => {
         // [ARCH-V3 §6] 单一真相：伪题材黑名单统一走 rules.js#isPseudoTopic
         if (group.topic === '其它' || isPseudoTopic(group.topic)) return;
@@ -1188,7 +1189,7 @@ export function useAuctionBoard() {
     const prevDate = getPreviousTradingDay(uiStore.currentDate);
     const auctionData = getGroupData('auction');
     const prevAuctionList = prevDate ? (auctionData[prevDate] || []) : [];
-    const groups = getTopicGroups(auctionList);
+    const groups = getTopicGroups(auctionList, uiStore.currentDate);
     const topicGroup = groups.find(g => g.topic === topic);
     if (!topicGroup || !topicGroup.stocks || topicGroup.stocks.length === 0) return;
     const stocksToCopy = topicGroup.stocks.sort((a, b) => b.ratioValue - a.ratioValue);
@@ -1218,7 +1219,7 @@ export function useAuctionBoard() {
     const prevDate = getPreviousTradingDay(uiStore.currentDate);
     const auctionData = getGroupData('auction');
     const prevAuctionList = prevDate ? (auctionData[prevDate] || []) : [];
-    const groups = getTopicGroups(auctionList);
+    const groups = getTopicGroups(auctionList, uiStore.currentDate);
     const topicGroup = groups.find(g => g.topic === topic);
     if (!topicGroup || !topicGroup.stocks || topicGroup.stocks.length === 0) return;
     const stocksToCopy = topicGroup.stocks.filter(s => Math.round(s.ratioValue) >= minRatio).sort((a, b) => b.ratioValue - a.ratioValue);

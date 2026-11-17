@@ -108,6 +108,32 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
             return state.defaultCoreTopics || [];
         }
 
+        // ===== [TEMP-CORE 2026-11-17] 按日期取【有效】核心词表（规则 〇·a）=====
+        // 〇·a 只做一件事：在【输入侧】按日期把临时核心词叠进主流词表；
+        // ⛔ 不改 any 选股判定、⛔ 不动 core_topics 本体。
+        //
+        // 依赖方向：rules.js（Logic）不 import Data 层临时词表（避免 ui-bridge ↔ rules 环），
+        //   由 ui-bridge.js 在启动时注入 resolver；未注入 / 无日期 ⇒ 原样走 getCoreTopics()（§11 零行为变化）。
+        let _coreTopicsByDateResolver = null;
+        export function _setCoreTopicsByDateResolver(fn) {
+            _coreTopicsByDateResolver = typeof fn === 'function' ? fn : null;
+            _topicGroupsFp = null;
+            _topicGroupsCache = null;
+        }
+
+        /**
+         * 指定日期实际生效的核心词表。
+         * @param {string} date YYYY-MM-DD；空 ⇒ 退化成主流词表（旧行为）
+         */
+        export function getCoreTopicsForDate(date) {
+            const d = String(date || '').trim();
+            if (d && typeof _coreTopicsByDateResolver === 'function') {
+                const eff = _coreTopicsByDateResolver(d);
+                if (Array.isArray(eff)) return eff;
+            }
+            return getCoreTopics();
+        }
+
         /**
          * [CORE-VER 2026-10-22] 核心词表版本号（响应式）。消费方在 computed 里 `void` 一下，
          * 即可在「云端加载完成 / 用户改完核心词」后自动重算 —— 见 `_bumpCoreTopicsVersion`。
@@ -207,6 +233,13 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
          */
         export function getGroupableCoreTopics() {
             const all = getCoreTopics();
+            if (!all || all.length === 0) return [];
+            return all.filter(function(c) { return c && !isPseudoTopic(c.name); });
+        }
+
+        /** [TEMP-CORE] 按日期取可分组核心词（临时词生效期用临时表，其余同 getGroupableCoreTopics） */
+        export function getGroupableCoreTopicsForDate(date) {
+            const all = getCoreTopicsForDate(date);
             if (!all || all.length === 0) return [];
             return all.filter(function(c) { return c && !isPseudoTopic(c.name); });
         }
@@ -460,14 +493,26 @@ export function _setCoreTopicsFns(pull, push) { _pullCoreTopicsFromCloudFn = pul
         let _topicGroupsFp = null;
         let _topicGroupsCache = null;
         // 获取题材分组（使用核心词匹配）
-        export function getTopicGroups(auctionList) {
-            const __coreFp = getCoreTopics().map(c => c.name).join(',');
-            const __fp = auctionList.length + '|' + auctionList.map(function(i) { return (i.stock||'') + ':' + (i.topics||''); }).join('\u00a7') + '|' + __coreFp;
-            if (_topicGroupsFp === __fp && _topicGroupsCache) return _topicGroupsCache;
-            const __tgT0 = performance.now();
+        export function getTopicGroups(auctionList, date) {
+            // ★★ [TEMP-CORE 2026-11-17] 第二参 date = 该批行所属交易日（历史日期趋势必须传 dateStr）。
+            //   ⚠️ 指纹必须含【日期 + 同义词全文】：旧实现只取 name，临时词加了同义词也不会刷新分组，
+            //      且切到另一天后临时词生效状态不同却命中同一份缓存 ⇒ 日期串组（整类问题，不只第二页）。
+            //   不传 date ⇒ 退化成主流词表且指纹无日期段（§11 零行为变化）。
+            // 不传 date ⇒ 取当前展示交易日（Pinia 未激活时兜底空串 = 旧行为）。
+            // 这样各看板不显式传日期也会与第二页用同一份「当日有效词表」，不产生第二份真相。
+            let __d = String(date || '').trim();
+            if (!__d) {
+                try { __d = String(useUiStore().currentDate || '').trim(); } catch (e) { __d = ''; }
+            }
             // [ARCH-V3 §6] 分组只用「可分组核心词」：伪题材(并购重组)不建组、不参与 matchTopicToCore，
             // 命中它的股票因此落到自己的其它真实题材组，没有任何真实题材时才进「其它」兜底组。
-            const coreTopics = getGroupableCoreTopics();
+            const coreTopics = __d ? getGroupableCoreTopicsForDate(__d) : getGroupableCoreTopics();
+            const __coreFp = __d + '|' + coreTopics.map(function(c) {
+                return String(c && c.name || '') + '=' + JSON.stringify((c && c.synonyms) || []);
+            }).join('§');
+            const __fp = __d + '|' + auctionList.length + '|' + auctionList.map(function(i) { return (i.stock||'') + ':' + (i.topics||''); }).join('\u00a7') + '|' + __coreFp;
+            if (_topicGroupsFp === __fp && _topicGroupsCache) return _topicGroupsCache;
+            const __tgT0 = performance.now();
             const __tgAfterCore = performance.now();
             // 预构建历史题材缓存，供当日 note 为空时回退使用
             buildTopicCache();

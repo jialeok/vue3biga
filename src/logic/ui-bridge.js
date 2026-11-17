@@ -1,6 +1,8 @@
-import { _setCoreTopicsFns } from './topic/rules.js';
+import { _setCoreTopicsFns, _setCoreTopicsByDateResolver, getCoreTopics } from './topic/rules.js';
+import { effectiveCoreTopicsFor } from './topic/temp-core-topic.js';
+import { getTempCoreTopics } from '../data/temp-core-topics.js';
 import { _emit } from '../stores/eventBus.js';
-import { getPreviousTradingDay } from './date/trading-day-helpers.js';
+import { getPreviousTradingDay, getNextTradingDay } from './date/trading-day-helpers.js';
 import { state } from './app-state.js';
 import { getAuctionData, getGroupData } from './app-core-api.js';
 import { getTopicGroups, isPseudoTopic } from './topic/rules.js';
@@ -124,6 +126,15 @@ if (typeof _setCoreTopicsFns === 'function') {
   console.warn('[ui-bridge] 循环依赖下 _setCoreTopicsFns 未就绪，核心词云同步本次未注册');
 }
 
+// [TEMP-CORE 2026-11-17] 注册「按日期取有效核心词表」的 resolver（规则 〇·a）。
+// ⚠️ 只在输入侧换表：临时词不生效时 effectiveCoreTopicsFor 返回 base 原引用 ⇒ 主流题材逐字节不变。
+// 交易日推进注入真实 getNextTradingDay，才能正确跳过周末/节假日。
+if (typeof _setCoreTopicsByDateResolver === 'function') {
+  _setCoreTopicsByDateResolver(function(date) {
+    return effectiveCoreTopicsFor(date, getCoreTopics(), getTempCoreTopics(), getNextTradingDay);
+  });
+}
+
 export function getAuctionTagState(stockName, date) {
   const d = date || useUiStore().currentDate;
   const prevDay = getPreviousTradingDay(d);
@@ -142,8 +153,9 @@ export function getStarTagsForStock(stockName) {
   const prevAuctionList = prevDate ? (auctionData[prevDate] || []) : [];
   if (todayAuctionList.length === 0) { _starTagCache.set(cacheKey, null); return null; }
 
-  const todayGroups = getTopicGroups(todayAuctionList);
-  const prevGroups = prevDate ? getTopicGroups(prevAuctionList) : [];
+  // [TEMP-CORE] 历史日期那批行必须传它自己的日期，否则会套用今天的临时核心词表
+  const todayGroups = getTopicGroups(todayAuctionList, useUiStore().currentDate);
+  const prevGroups = prevDate ? getTopicGroups(prevAuctionList, prevDate) : [];
 
   const stockTopics = [];
   todayGroups.forEach(group => {

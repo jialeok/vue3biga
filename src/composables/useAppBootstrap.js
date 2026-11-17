@@ -8,6 +8,7 @@ import { startSessionPoll, pullAuctionMarketDataForDate, _isAuctionWatchlistInde
 import { pullDailyHighlights } from '../data/daily-highlights.js';
 import { pullHotStocksHighlights, loadHotStocksFromCloud } from '../data/hot-stocks.js';
 import { loadCoreTopicsFromCloud } from '../logic/topic/rules.js';
+import { ensureTempCoreTopics } from '../data/temp-core-topics.js';
 import { pullFromCloud } from '../logic/workflows/auction-sync.js';
 import { initApp, getCurrentDate } from '../logic/app-core.js';
 import { migrateAuctionToTable, migrateAuctionDataToNewTables } from '../data/legacy-migration.js';
@@ -283,6 +284,8 @@ export function useAppBootstrap(loginRef) {
     loadHotStocksFromCloud().then(() => _emit('auction-refresh')).catch(e => console.warn('hot_stocks:', e.message));
     pullBiddingForDate(getCurrentDate()).then(() => _emit('bidding-refresh')).catch(e => _dbgLog('[BIDDING] 首屏快速加载失败 ' + (e && e.message || e)));
     loadCoreTopicsFromCloud().then(() => _emit('auction-refresh')).catch(e => console.warn('core_topics:', e && e.message || e));
+    // [TEMP-CORE] 临时词全量只读一次（切日期只做内存筛选，§32）；与主流词表并行加载，互不阻塞。
+    ensureTempCoreTopics().then(() => _emit('auction-refresh')).catch(e => console.warn('core_topic_temp:', e && e.message || e));
     hydrateEtfBoardData().then(() => _emit('etf-refresh')).catch(e => _dbgLog('[ETF] 启动 hydrate 失败: ' + (e && e.message || e)));
     loadFumianTopics().then(() => _emit('etf-refresh')).catch(e => _dbgLog('[FUMIAN] 启动 hydrate 失败: ' + (e && e.message || e)));
 

@@ -71,7 +71,7 @@ export function getStockTopicsDisplay(item) {
 // [TOPIC-SEP 2026-10-02] TOPIC_WORD_SEP_RE = 题材词分隔符的【唯一定义】（§6 单一真相）。
 //   ⛔ 本文件原先内联写死 /[，、,;；]/，与核心词弹窗那侧的 /[,，]/ 分叉 ⇒
 //      顿号粘贴的核心词被当成一整项、静默失效。现在两侧共用同一个常量。
-import { getTopicGroups, getGroupableCoreTopics, matchTopicToCore, TOPIC_WORD_SEP_RE } from '../topic/rules.js';
+import { getTopicGroups, getGroupableCoreTopics, getGroupableCoreTopicsForDate, matchTopicToCore, TOPIC_WORD_SEP_RE } from '../topic/rules.js';
 
 /** 「其它」组名（无题材 / 未命中核心词 / 组不足 2 只的兜底组） */
 export const OTHER_TOPIC = '其它';
@@ -174,10 +174,11 @@ export function buildTopicSizeMap(primaryMap) {
  * @param {object[]} auctionList - 当日完整列表（getTodayGroupList 返回，与第二页一致）
  * @returns {Map<string,string>} stockName(trim) → 主题材(core name 或 '其它')
  */
-export function getPrimaryTopicMap(auctionList) {
+export function getPrimaryTopicMap(auctionList, date) {
     const map = new Map();
     if (!auctionList || auctionList.length === 0) return map;
-    const groups = getTopicGroups(auctionList);
+    // [TEMP-CORE] 第二参 date = 该批行的交易日；不传时 getTopicGroups 自动取当前展示日 ⇒ 与第二页同源
+    const groups = getTopicGroups(auctionList, date);
 
     // ① 题材规模（= 当日该题材的股票数）与原顺序 —— 供「站队」比较用
     const sizeOf = new Map();
@@ -217,11 +218,12 @@ export function getPrimaryTopicMap(auctionList) {
  *        传了才启用「数量多的一边」裁决；不传退化为「取第一个命中的核心词」（既有行为，一行不变）。
  * @returns {string}
  */
-export function classifyStockPrimaryTopic(item, sizeHint) {
+export function classifyStockPrimaryTopic(item, sizeHint, date) {
     const topics = getStockTopicArr(item);
     if (topics.length === 0) return OTHER_TOPIC;
     // [ARCH-V3 §6] 与 getTopicGroups 共用同一份「可分组核心词」，伪题材不作为主题材
-    const cores = getGroupableCoreTopics();
+    // [TEMP-CORE] 第三参 date：临时词生效期按当日有效表归类
+    const cores = date ? getGroupableCoreTopicsForDate(date) : getGroupableCoreTopics();
     const matched = [];
     for (const topic of topics) {
         const arr = matchTopicToCore(topic, cores);
