@@ -31,6 +31,15 @@
 //   ★ 粗筛门槛 `>= 3 根腿`：少于 3 根的是次新股 / 长期停牌，30 日窗口根本算不出来（§10 不补 0）。
 //   ★ 粗筛留 20 而不是 5：复利近似与比值真值会有出入，留 4 倍余量吸收误差。
 //
+// ★★ [RANGE30-LEADERS-FIRSTPAINT 2026-11-18] 上面那两级只是**兜底路径**了。
+//   用户报障：「有30天补标签的票很久才出现……20天补的票出来更快，基本打开就出来了」
+//   实测：粗筛那一跳是 9 个串行请求 / 8566 行 / **6800ms**，之后还要打腾讯精算，
+//        且**全部跑完才第一次 `_publish`** ⇒ 区块很久才出现。
+//   现在主路径是【阶段⓪ 首帧直出】：直接拿云端结果表 `stock_range30_pct`（读一天 409ms，
+//        实测对候选池「池内缺 0」）排序并立即发布 ⇒ 打开就有。粗筛 + 精算降级为
+//        「云端表覆盖不完整时才跑」的修正路径（§10：缺票仍然要去补，只是不再阻塞首屏）。
+//   ⛔ 别再改回「等粗筛跑完才发布」——那正是本次要修的问题。
+//
 // 【额度红线（用户反复强调）】
 //   ⛔ 零猫抓额度：只用库内表（Supabase）+ 腾讯日线（免费）。本模块不 import 任何猫抓通道。
 //
@@ -44,6 +53,7 @@
 import { ref } from 'vue';
 import { _dbgLog } from '../../data/debug-log.js';
 import { readDailyPctRowsFor } from '../../data/stock-daily-pct.js';
+import { readRange30Rows } from '../../data/stock-range30-cache.js';
 import { _getAuctionFormalRowsForDate, _isAuctionWatchlistIndexReady } from '../../data/watchlist-and-metrics.js';
 import { isTradingDay } from '../date/trading-day-helpers.js';
 import { _getLocalTodayStr } from '../tagTitles/rules.js';
@@ -196,6 +206,49 @@ function _formalRowsByDate(dates) {
 }
 
 /**
+ * 【纯函数】用「云端结果表」直接排出补位前五（0 网络请求、0 逐日腿查询）。
+ *
+ * ★★ [RANGE30-LEADERS-FIRSTPAINT 2026-11-18 用户口径]
+ *   用户原话：「有30天补标签的票很久才出现，优化下响应速度……20天补的票出来更快，基本打开就出来了，
+ *   30日补的票为什么那么慢」
+ *
+ *   实测病根（本地跑真实 Supabase，⛔ 不是推测）：
+ *     · 粗筛那一跳 `readDailyPctRowsFor(池, 60天前, T)` = **9 个串行请求 / 8566 行 / 6800ms**；
+ *     · 之后还要 `await ensureRange30()` 打腾讯精算，**全部跑完才第一次 `_publish`**
+ *       ⇒ 用户看到的「区块很久才出现」就是这个 await 链的总时长。
+ *     · 而 `stock_range30_pct` 读一天只要 **409ms**，且云端定时任务（09:40 / 16:45 / 18:30）
+ *       与回填已经把它写满：实测 11-18 候选池 286 只「池内缺 0」、11-17 池 281 只「缺 0」。
+ *   ⇒ 云端表就是**真值本身**（与精算同一个算式、同一张表），拿它排序既最快又最准 ——
+ *     比原来「先复利近似挑 20 只、再精算」还多一层好处：⛔ 不会因为近似误差把真龙头挡在前 20 之外。
+ *
+ * @param {Array<{stock:string, code?:string}>} pool 候选池（近 30 个交易日名单并集）
+ * @param {Map<string,{pct:number, days:number}>|null} cloudMap 云端结果表（null = 加速层不可用）
+ * @param {number} limit 取几只
+ * @returns {Array<{stock:string, code:string, pct:number, days:number}>} 空 = 判不出（§10 不造数）
+ */
+function _rankFromCloud(pool, cloudMap, limit) {
+  if (!cloudMap || typeof cloudMap.get !== 'function' || cloudMap.size === 0) return [];
+  const rows = [];
+  for (let i = 0; i < pool.length; i++) {
+    const t = pool[i];
+    if (!t || !t.stock) continue;
+    const v = cloudMap.get(t.stock);
+    if (!v || v.pct === null || v.pct === undefined) continue;   // §10 缺值不参与（⛔ 不补 0）
+    rows.push({
+      stock: t.stock,
+      code: t.code || codeOfRow({ stock: t.stock }),
+      pct: Number(v.pct),
+      days: Number(v.days) || 0
+    });
+  }
+  return rankLeaders(rows, {
+    limit: limit,
+    minDays: RANGE30_MIN_LEGS,
+    mainBoardOnly: true
+  });
+}
+
+/**
  * 确保某日的「30日涨幅前五（30天补位）」已就绪（幂等 / 单飞 / 会话缓存）。
  *
  * @param {string} date 展示日 T
@@ -258,6 +311,43 @@ export async function ensureRange30Leaders(date, opts) {
       return _state.value.list;
     }
 
+    // ── 阶段⓪ 首帧直出（0 网络请求）：云端结果表覆盖完整就【立刻出块】，6.8 秒的粗筛直接跳过 ──
+    //   ★★ [RANGE30-LEADERS-FIRSTPAINT 2026-11-18] 详见 `_rankFromCloud` 的注释（含实测数字）。
+    //   ⚠️ `readRange30Rows` 带按日会话缓存 + 单飞 ⇒ 30日涨幅 toggle 刚读过的话这里是 **0 请求**；
+    //     最坏也只是那 409ms 的一次读表，仍然远快于「粗筛 6800ms + 精算」。
+    //   ⚠️ 读失败 ⇒ 返回 null ⇒ 不发布、落回老路径（§10：加速层不可用 ≠ 这天没有补位）。
+    let cloudMap = null;
+    try {
+      cloudMap = await readRange30Rows(d);
+    } catch (e) {
+      cloudMap = null;
+    }
+    const fastTop = _rankFromCloud(pool, cloudMap, RANGE30_LEADER_TOP_N);
+    if (fastTop.length > 0) {
+      _dbgLog('[RANGE30-TOP5-FAST] ' + d + ' 云端表直出前五（云端 ' + cloudMap.size
+        + ' 行 · 0 请求）：' + fastTop.map(function(t) {
+          return t.stock + ' ' + Number(t.pct).toFixed(2) + '%/' + t.days + 'd';
+        }).join(' , '));
+      _publish(d, fastTop);
+    }
+    // 覆盖是否完整：池内还有没有云端没给值的票（次新 / 长时间停牌天然没有 ⇒ 也算「缺」，
+    //   但那种票本来就算不出 30 日涨幅，落到老路径也只是白跑一次，不会得出不同的前五）。
+    //   ★ 覆盖完整 ⇒ 云端表就是真值，老路径（粗筛 + 精算）跑完也是同一个答案 ⇒ 直接结束，§32 不浪费请求。
+    let cloudMissing = 0;
+    for (let i = 0; i < pool.length; i++) {
+      if (!cloudMap || !cloudMap.has(pool[i].stock)) cloudMissing++;
+    }
+    if (cloudMissing === 0 && fastTop.length > 0) {
+      _dbgLog('[RANGE30-TOP5-FAST] ' + d + ' 云端表已覆盖候选池全部 ' + pool.length
+        + ' 只 ⇒ 跳过粗筛/精算（原路径约 8~15 秒）');
+      _poolSig.set(d, poolSig);
+      return _state.value.list;
+    }
+    if (cloudMap && cloudMap.size > 0) {
+      _dbgLog('[RANGE30-TOP5-FAST] ' + d + ' 云端表覆盖不完整（池 ' + pool.length
+        + ' 只 · 缺 ' + cloudMissing + ' 只）⇒ 先出块，再走粗筛+精算修正');
+    }
+
     // ── 阶段① 粗筛（0 网络请求：只读逐日腿原料表）──────────────────────────────
     const poolNames = pool.map(function(t) { return t.stock; });
     let dailyMap = null;
@@ -289,7 +379,10 @@ export async function ensureRange30Leaders(date, opts) {
     _dbgLog('[RANGE30-TOP5] ' + d + ' 候选池=' + pool.length + ' 有腿=' + coarseAll.length
       + ' 进精算=' + coarseTop.length + '（只主板）');
     if (coarseTop.length === 0) {
-      _publish(d, []);
+      // ★★ [RANGE30-LEADERS-FIRSTPAINT 2026-11-18] 首帧已经出块时 ⛔ 不许拿粗筛的空结论把它抹掉。
+      //   粗筛读的是 `stock_daily_pct` 原料表，那张表可能只覆盖一部分票（甚至整天没灌）；
+      //   而云端表已经给出真值前五 ⇒ 「粗筛 0 只」只说明**这个兜底路径没数据**，不是「今天没有补位」（§10）。
+      if (fastTop.length === 0) _publish(d, []);
       _poolSig.set(d, poolSig);
       return _state.value.list;
     }
@@ -324,7 +417,10 @@ export async function ensureRange30Leaders(date, opts) {
           + (rankPool.filter(function(x) { return x.stock === t.stock && x.approx; }).length ? '(近似)' : '');
       }).join(' , '));
     _poolSig.set(d, poolSig);
-    _publish(d, top);
+    // ★★ [RANGE30-LEADERS-FIRSTPAINT 2026-11-18] 同上：首帧已有真值前五时，⛔ 不许被这一轮的
+    //   空结论覆盖（能走到这里说明云端表覆盖不完整，精算却没算出来 —— 那是「这一轮没算出来」，
+    //   不是「今天没有补位」（§10）。首帧那份云端真值仍然更可信 ⇒ 保留，等下一轮再修正。
+    if (top.length > 0 || fastTop.length === 0) _publish(d, top);
     return _state.value.list;
   })().finally(function() {
     if (_inflight.get(d) === p) _inflight.delete(d);
