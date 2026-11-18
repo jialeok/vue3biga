@@ -29,8 +29,19 @@
 //   ⇒ 候选池 = 当天名单 ∪ 近 40 个交易日名单（实测去重 318 只，约 2 分钟跑完）。
 //   40 > 30（30天补位窗口）+ 龙头名册回看余量；即使通道中途被限流，当天名单也排在最前面先算完。
 //
-// 交易日历：用【上证指数 sh000001 的日线日期】当真实交易日序列。
-//   为什么不用 weekday 近似：长假/调休会错位，而指数永不停止交易，它的 bar 日期就是真值。
+// 数据源（2026-11-18 用户口径，⛔ 别改回只用腾讯）
+//   「同花顺接口不是更稳定吗？因为一直都在用。竞价口径和收盘口径都可以随时拿到。」
+//   ⇒ 首选 **同花顺 `/api/a-share/prices/historical-batch`**（走 Supabase 边缘函数 fuyao-proxy）：
+//     · 原生批量：单次最多 10 只 ⇒ 364 只只要 37 个请求（腾讯是 364 个）；
+//     · 收盘后**立刻**有当天那根日线（实测 16:40 就拿到 11-18 收盘价）；
+//       腾讯的前复权日线 16:20 还没有当天那根 ⇒ `days` 只能是 29，算出来的是「截至昨收」；
+//     · 与看板其它涨幅（十日 / 20 日 / 涨停）同一个上游、同一个前复权口径 ⇒ 用户能逐票对账；
+//     · 官方口径「不限制累计调用次数」，只有瞬时限流（HTTP 429 / code=4001）。
+//   腾讯保留为**兜底**：同花顺整批失败或某只拿不到时，逐只回退（10-30 那次 fuyao 整条断掉的教训）。
+//
+// 交易日历：用【上证指数】日线日期当真实交易日序列（指数永不停止交易，bar 日期就是真值）。
+//   同花顺 `000001.SH` 优先（同样收盘后就有当天），失败回退腾讯 `sh000001`。
+//   为什么不用 weekday 近似：长假/调休会错位。
 //
 // 用法
 //   node db/scripts/compute-range30-pct.mjs                     # 干跑：只报能算出几只（不写库）
@@ -46,7 +57,7 @@ const SB = process.env.SUPABASE_URL || 'https://tonqfgeyxnnwicjopshn.supabase.co
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
   || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRvbnFmZ2V5eG5ud2ljam9wc2huIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NjY3NzEsImV4cCI6MjA5NDI0Mjc3MX0.el-W10JIjr9iQXEKNxV7nLNdhZfOQp6waTY7ZSH27Jg';
 
-// ── 腾讯通道（两个 host 都试；`web.` 子域 2026-11-18 起整站 501）────────────────────
+// ── 腾讯通道（**兜底**，不是首选；见文件头「数据源」）────────────────────────────────
 const QT_HOSTS = ['https://ifzq.gtimg.cn', 'https://web.ifzq.gtimg.cn'];
 const QT_PATH = '/appstock/app/fqkline/get';
 const QT_GAP_MS = 300;          // 单请求最小间隔：打太快必被 WAF 拦（见文件头）
@@ -93,6 +104,82 @@ async function sbUpsert(table, onConflict, rows) {
   });
   if (!r.ok) throw new Error('upsert ' + table + ' → HTTP ' + r.status + ' ' + (await r.text()).slice(0, 300));
   return rows.length;
+}
+
+// ── 同花顺通道（首选）────────────────────────────────────────────────────────────
+// 走 Supabase 边缘函数 fuyao-proxy（与前端 `src/data/api/fuyao-proxy.js` 同一条路）。
+// ⚠️ 前端那个 FUYAO_OFF 总闸是**前端专用**的（防浏览器无超时请求占满标签页网络），
+//   本脚本是服务端批量任务，每个请求都带超时，不受它约束、也不需要改它。
+const FY_PROXY = (process.env.FUYAO_PROXY_URL || (SB + '/functions/v1/fuyao-proxy')).replace(/\/+$/, '');
+const FY_BATCH_MAX = 10;        // 官方上限：单次最多 10 个代码
+const FY_TIMEOUT_MS = 25000;    // 单请求超时（实测一次 10 只 ≈ 1.5~2.5s）
+const FY_GAP_MS = 250;          // 批次之间的最小间隔（官方：瞬时高并发会 429 / code=4001）
+const FY_CONCURRENCY = 3;       // 并发批次数（worker 实测：再高会返回被截断的少数几根 K 线）
+
+let _fyNextAt = 0;
+
+/**
+ * 6 位代码 → 同花顺 thscode。
+ * ⚠️ 与 `src/data/api/fuyao-proxy.js#tickerToThscode` **逐字同款**（§6：同一套代码映射规则）。
+ *   重点是 `92` 段必须排在 `9` 之前 —— 北交所 920xxx 落到 .SH 会 K 线恒空。
+ */
+function thscodeOf(code) {
+  const t = String(code || '').replace(/\D/g, '');
+  if (t.length !== 6) return '';
+  if (t.charAt(0) === '6') return t + '.SH';
+  if (t.charAt(0) === '0' || t.charAt(0) === '3') return t + '.SZ';
+  if (t.charAt(0) === '8' || t.charAt(0) === '4') return t + '.BJ';
+  if (t.slice(0, 2) === '92') return t + '.BJ';
+  if (t.charAt(0) === '9') return t + '.SH';
+  return t + '.SZ';
+}
+
+/** date_ms（北京时间零点的 UTC 毫秒） → 'YYYY-MM-DD' */
+function msToYmd(ms) {
+  return new Date(Number(ms) + 8 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+/** 调 fuyao-proxy，返回 data；信封 code !== 0 视为失败（调用方决定回退） */
+async function fyGet(path, params) {
+  const url = new URL(FY_PROXY);
+  url.searchParams.set('path', path);
+  for (const k in params) {
+    if (params[k] !== undefined && params[k] !== null) url.searchParams.set(k, params[k]);
+  }
+  const r = await fetch(url.toString(), { headers: sbHeaders, signal: AbortSignal.timeout(FY_TIMEOUT_MS) });
+  if (!r.ok) throw new Error('fuyao-proxy HTTP ' + r.status);
+  const j = await r.json();
+  if (!j || j.code !== 0) throw new Error('fuyao code=' + (j && j.code) + ' ' + ((j && j.message) || ''));
+  return j.data || {};
+}
+
+/** 同花顺 item 数组 → [{ymd, close}]（只要 close>0 的合法 bar） */
+function fyBarsOf(items) {
+  const out = [];
+  for (const it of items || []) {
+    if (!it || it.date_ms === null || it.date_ms === undefined) continue;
+    const close = Number(it.close_price);
+    if (!isFinite(close) || close <= 0) continue;
+    out.push({ ymd: msToYmd(it.date_ms), close: close });
+  }
+  return out;
+}
+
+/** 批量取前复权日线：一次最多 10 只 → Map<6位代码, [{ymd,close}]> */
+async function fyBatchBars(codes, startMs, endMs) {
+  const data = await fyGet('/api/a-share/prices/historical-batch', {
+    thscodes: codes.map(thscodeOf).join(','),
+    interval: '1d',
+    start: String(startMs),
+    end: String(endMs),
+    adjust: 'forward'
+  });
+  const out = new Map();
+  for (const g of data.item || []) {
+    const code = String(g.thscode || '').slice(0, 6).replace(/\D/g, '');
+    if (code.length === 6) out.set(code, fyBarsOf(g.item));
+  }
+  return out;
 }
 
 // ── 腾讯日线（host 失败切换 + 请求间隔 + 连续失败熔断）───────────────────────────
@@ -155,6 +242,88 @@ async function qtBarsBySym(sym, fromYmd, toYmd) {
 // ── 主流程 ──────────────────────────────────────────────────────────────────────
 
 /**
+ * 取交易日序列。同花顺上证指数优先（收盘后就有当天那根），失败回退腾讯。
+ * @returns {Promise<string[]>} 升序 'YYYY-MM-DD'，已过滤到 ≤ d
+ */
+async function tradingCalendar(d, logs) {
+  const startMs = Date.parse(shiftYmd(d, -180) + 'T00:00:00Z');
+  const endMs = Date.parse(d + 'T00:00:00Z') + 86400000 - 1;
+  try {
+    const data = await fyGet('/api/a-share-index/prices/historical', {
+      thscode: '000001.SH', interval: '1d', start: String(startMs), end: String(endMs), adjust: 'none'
+    });
+    const cal = fyBarsOf(data.item).map((b) => b.ymd).filter((x) => x <= d).sort();
+    // 需要 31 天才能构造「30 日窗口 + 基准日」，不够就回退
+    if (cal.length >= RANGE30_WINDOW_DAYS + 1) {
+      logs.push('交易日历：同花顺 000001.SH（' + cal.length + ' 天，最新 ' + cal[cal.length - 1] + '）');
+      return cal;
+    }
+    logs.push('同花顺交易日历只有 ' + cal.length + ' 天，回退腾讯');
+  } catch (e) {
+    logs.push('同花顺交易日历失败，回退腾讯: ' + e.message);
+  }
+  const qt = await qtBarsBySym('sh000001', shiftYmd(d, -180), d).catch(() => []);
+  const cal = qt.map((b) => b.ymd).filter((x) => x <= d).sort();
+  logs.push('交易日历：腾讯 sh000001（' + cal.length + ' 天，最新 ' + (cal[cal.length - 1] || '-') + '）');
+  return cal;
+}
+
+/**
+ * 批量取前复权日线：同花顺批次优先，缺的逐只回退腾讯。
+ * @returns {Promise<{map:Map<string,Array>, fy:number, qt:number, miss:number}>}
+ */
+async function fetchBarsAll(codes, d, logs) {
+  const startMs = Date.parse(shiftYmd(d, -QT_PROBE_DAYS) + 'T00:00:00Z');
+  const endMs = Date.parse(d + 'T00:00:00Z') + 86400000 - 1;
+  const uniq = Array.from(new Set(codes.filter((c) => c && c.length === 6)));
+  const map = new Map();
+  if (uniq.length === 0) return { map, fy: 0, qt: 0, miss: 0 };
+
+  // ① 同花顺：10 只一批，分批并发（批内不并发，批间 FY_CONCURRENCY）
+  const chunks = [];
+  for (let i = 0; i < uniq.length; i += FY_BATCH_MAX) chunks.push(uniq.slice(i, i + FY_BATCH_MAX));
+  let fyOk = 0, fyFailChunk = 0;
+  for (let i = 0; i < chunks.length; i += FY_CONCURRENCY) {
+    const batch = chunks.slice(i, i + FY_CONCURRENCY);
+    await Promise.all(batch.map(async (ch) => {
+      const wait = _fyNextAt - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      _fyNextAt = Date.now() + FY_GAP_MS;
+      try {
+        const got = await fyBatchBars(ch, startMs, endMs);
+        ch.forEach((c) => {
+          const bars = got.get(c);
+          if (bars && bars.length) { map.set(c, bars); fyOk++; }
+        });
+      } catch (e) {
+        fyFailChunk++;
+        logs.push('同花顺批量失败（' + ch.length + ' 只）: ' + e.message);
+      }
+    }));
+  }
+  logs.push('同花顺取价 ' + fyOk + '/' + uniq.length + ' 只（' + chunks.length + ' 批，失败 ' + fyFailChunk + ' 批）');
+
+  // ② 兜底：同花顺没给的逐只回退腾讯（10-30 fuyao 整条断掉的教训，⛔ 别删这段）
+  const missing = uniq.filter((c) => !map.has(c));
+  let qtOk = 0;
+  for (const c of missing) {
+    if (_consecFail >= CIRCUIT_LIMIT) {
+      logs.push('腾讯兜底连续 ' + CIRCUIT_LIMIT + ' 只失败 ⇒ 停止兜底（已补 ' + qtOk + ' 只）');
+      break;
+    }
+    try {
+      const bars = await qtBars(c, shiftYmd(d, -QT_PROBE_DAYS), d);
+      _consecFail = 0;
+      if (bars && bars.length) { map.set(c, bars); qtOk++; }
+    } catch (e) {
+      _consecFail++;
+    }
+  }
+  if (missing.length) logs.push('腾讯兜底取价 ' + qtOk + '/' + missing.length + ' 只');
+  return { map, fy: fyOk, qt: qtOk, miss: uniq.length - map.size };
+}
+
+/**
  * 候选池深度（交易日）。为什么不是「只算当天名单的 32 只」：
  *   早盘竞价看板在 30日涨幅 toggle 下渲染的不只是当天正式名单，还有三类【注入行】——
  *     · 「30天」补位（近 30 个交易日名单里 30 日涨幅前五、但今天不在名单）；
@@ -215,12 +384,10 @@ async function computeOneDay(date) {
   const d = date;
   const logs = [];
 
-  // ① 交易日历（早于候选池：候选池要按「最近 N 个交易日」切；上证指数不会停牌，它的 bar 日期就是真值）
-  const calFrom = shiftYmd(d, -180);
-  const calBars = await qtBarsBySym('sh000001', calFrom, d).catch(() => []);
-  const cal = calBars.map((b) => b.ymd).filter((x) => x <= d);
+  // ① 交易日历（早于候选池：候选池要按「最近 N 个交易日」切）
+  const cal = await tradingCalendar(d, logs);
   const win = windowFromTradingDays(cal, d, RANGE30_WINDOW_DAYS);
-  if (!win || !win.baseDate) return { ok: false, date: d, reason: '交易日历不足（指数日线拿不到）', logs };
+  if (!win || !win.baseDate) return { ok: false, date: d, reason: '交易日历不足（同花顺/腾讯指数日线都拿不到）', logs };
   logs.push('窗口 ' + win.start + '~' + win.end + '，基准日 ' + win.baseDate);
 
   // ② 候选池（今天名单 ∪ 近 N 个交易日名单 —— 覆盖 30天/20天 补位与龙头组这三类注入行）
@@ -257,25 +424,15 @@ async function computeOneDay(date) {
   const todo = targets.filter((t) => !existing.has(t.stock));
   if (todo.length === 0) return { ok: true, date: d, targets: targets.length, computed: 0, written: 0, skipped: targets.length, logs };
 
-  // ⑤ 逐只取价现算
-  const from = shiftYmd(d, -QT_PROBE_DAYS);
+  // ⑤ 批量取价（同花顺 10 只/批优先，缺的兜底腾讯）→ 逐只套用同一个算式
+  const codes = todo.filter((t) => t.code.length === 6).map((t) => t.code);
+  const barsInfo = await fetchBarsAll(codes, d, logs);
   const writeRows = [];
   const failed = [];
   for (const t of todo) {
-    if (_consecFail >= CIRCUIT_LIMIT) {
-      logs.push('连续 ' + CIRCUIT_LIMIT + ' 只取不到日线 ⇒ 判定腾讯通道被限流/WAF，本轮提前停止（已写 ' + writeRows.length + ' 行）');
-      break;
-    }
     if (t.code.length !== 6) { failed.push(t.stock + '(无代码)'); continue; }
-    let bars = [];
-    try {
-      bars = await qtBars(t.code, from, d);
-      _consecFail = 0;
-    } catch (e) {
-      _consecFail++;
-      failed.push(t.stock + '(' + (e.message || e) + ')');
-      continue;
-    }
+    const bars = barsInfo.map.get(t.code);
+    if (!bars) { failed.push(t.stock + '(无日线)'); continue; }
     const got = range30InWindow(bars, win, {});
     if (!got) { failed.push(t.stock + '(判不出)'); continue; }
     writeRows.push({
@@ -297,6 +454,7 @@ async function computeOneDay(date) {
     baseDate: win.baseDate,
     targets: targets.length,
     todo: todo.length,
+    source: { fuyao: barsInfo.fy, tencent: barsInfo.qt, noBars: barsInfo.miss },
     computed: writeRows.length,
     written: written,
     skipped: existing.size,
