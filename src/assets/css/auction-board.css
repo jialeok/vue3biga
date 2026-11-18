@@ -523,6 +523,27 @@
             line-height: 12px;
         }
 
+        /* ★ [RANGE30 2026-11-18 用户口径] 「30日强势补位」区块标题：与上面的「20日强势补位」同结构同尺寸，
+           只换配色（青）—— 两组是并列身份（一只票只会是其中一组），配色区分让人一眼看出在哪一组。 */
+        .auction-r30-group-label {
+            color: #0f766e;
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .auction-r30-group-title {
+            font-weight: 700;
+        }
+
+        .auction-r30-group-hint {
+            font-size: 9px;
+            font-weight: 400;
+            color: #64748b;
+            line-height: 12px;
+        }
+
         /* 行上「20天」标签：与「龙」（紫）/「停牌」（灰蓝边框）同一位、同尺寸，
            只换配色 —— 中性蓝底 + 深蓝字，一眼可辨但绝不喧宾夺主。 */
         .auction-r20-tag {
@@ -532,6 +553,23 @@
             border-radius: 2px;
             background: #e0f2fe;
             color: #0369a1;
+            font-size: 9px;
+            font-weight: 700;
+            line-height: 12px;
+            vertical-align: 1px;
+            white-space: nowrap;
+        }
+
+        /* ★ [RANGE30 2026-11-18 用户口径] 行上「30天」标签：与「20天」同尺寸同位置，只换配色
+           —— 中性青底 + 深青字。两组身份互斥（一只票只会是其中一组），配色区分只是让人一眼
+           看出「这是 30 日窗口那一批」，不是警示色。 */
+        .auction-r30-tag {
+            display: inline-block;
+            margin-left: 3px;
+            padding: 0 3px;
+            border-radius: 2px;
+            background: #ccfbf1;
+            color: #0f766e;
             font-size: 9px;
             font-weight: 700;
             line-height: 12px;
@@ -1735,13 +1773,18 @@
     color: #94a3b8;
 }
 
-/* 四个区块色 —— 与下面各区块标题同色，形成「数字 ↔ 区块」的对应关系 */
+/* 五个区块色 —— 与下面各区块标题同色，形成「数字 ↔ 区块」的对应关系 */
 .auction-row-counts-dragon {
     color: #6d28d9;
 }
 
 .auction-row-counts-r20 {
     color: #0369a1;
+}
+
+/* ★ [RANGE30 2026-11-18] 30天补位（与区块标题同一个青色，见 .auction-r30-group-label） */
+.auction-row-counts-r30 {
+    color: #0f766e;
 }
 
 .auction-row-counts-obs {
@@ -1764,6 +1807,13 @@
     font-size: 10px;
     font-weight: 700;
     color: #0369a1;
+}
+
+/* ★ [RANGE30 2026-11-18] 「30日强势补位」区块的数量（与 r20 同款，只换青色） */
+.auction-r30-group-count {
+    font-size: 10px;
+    font-weight: 700;
+    color: #0f766e;
 }
 
 /* [ROW-CLASS 2026-11-02] 常规组标题（原本没有标题）。

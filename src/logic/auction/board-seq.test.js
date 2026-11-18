@@ -89,7 +89,7 @@ describe('board-seq · 其它模式不接管（§11）', function() {
         const items = [row('甲', true), row('创业A', false), row('乙', true)];
         [
             undefined, null, {},
-            { byTopic: true }, { byJingYest: true }, { byJingYestRatio: true },
+            { byTopic: true }, { byJingYest: true },
             { byAuctionLeg: true }        // 「竞价口径」是修饰开关，单独打开不算排名模式
         ].forEach(function(st) {
             const seq = buildMainBoardSeq(items, st);

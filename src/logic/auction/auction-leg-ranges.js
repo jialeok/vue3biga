@@ -44,6 +44,8 @@
 import { ref } from 'vue';
 import { readAuctionLegRangeMap } from './range-auction-leg.js';
 import { readAuctionLegRange20Pct } from './range20-auction-leg.js';
+// ★ [RANGE30 2026-11-18] 30日涨幅的竞价口径（与上面两个同一条反解思路，§6）
+import { readAuctionLegRange30Pct } from './range30-auction-leg.js';
 
 /** 模块级状态（§7：不进 Pinia，与 dragonState / range20 的 _state 同款 ref-driven 范式） */
 const _state = ref({
@@ -51,6 +53,7 @@ const _state = ref({
   loaded: false,   // true = 这一天已经尝试取过数（成功或失败都算「不再等」）
   map10: null,     // Map<股票名, {pct, days}> | null（null = 判不出）
   map20: null,     // Map<股票名, {pct, days}> | null（null = 判不出）
+  map30: null,     // ★ [RANGE30] 30日涨幅的竞价口径（同上）
   version: 0
 });
 
@@ -83,7 +86,9 @@ export function ensureAuctionLegRanges(date) {
     // 十日那份读取器按契约会 throw（§10）；这里降级为 null，而不是让整个 ensure 失败 ——
     // 二十日那一侧能出来就仍然可用（两侧互不拖累）。
     readAuctionLegRangeMap(d).catch(function() { return null; }),
-    readAuctionLegRange20Pct(d).catch(function() { return null; })
+    readAuctionLegRange20Pct(d).catch(function() { return null; }),
+    // ★ [RANGE30] 30日：同款「一侧失败不拖累另两侧」
+    readAuctionLegRange30Pct(d).catch(function() { return null; })
   ]).then(function(pair) {
     // ⚠️ 期间用户可能已经切走日期 ⇒ 别用旧日期的结果污染新日期。
     //   判据 = 「这次结果是不是【最新那个请求】的」（与 _latestDate 比，⛔ 不是与已发布的 state.date 比，
@@ -94,6 +99,7 @@ export function ensureAuctionLegRanges(date) {
       loaded: true,
       map10: pair[0] || null,     // 只有 null/undefined 才塌成「判不出」；空 Map 是「这天确实没有行」（§10 两者不混）
       map20: pair[1] || null,
+      map30: pair[2] || null,
       version: _state.value.version + 1
     };
   }).finally(function() {
@@ -127,6 +133,17 @@ export function getAuctionLegRange20(date) {
 }
 
 /**
+ * 读【竞价口径】三十日涨幅（同步）。日期不匹配 / 未加载 / 判不出 ⇒ null。
+ * @param {string} date
+ * @returns {Map<string,{pct:number,days:number}>|null}
+ */
+export function getAuctionLegRange30(date) {
+  const s = _state.value;
+  if (!date || s.date !== String(date) || !s.loaded) return null;
+  return s.map30;
+}
+
+/**
  * 该日是否「已经尝试取过数」（不论成功失败）。
  * 用途：视图层区分「还在读」与「读完了但判不出」——这两种给用户的话术不同（§10）。
  * @param {string} date
@@ -144,12 +161,13 @@ export function isAuctionLegRangesLoaded(date) {
 export function getAuctionLegRangesFingerprintToken() {
   const s = _state.value;
   if (!s.date || !s.loaded) return 'off';
-  return s.date + '|v' + s.version + '|n' + (s.map10 ? s.map10.size : '-') + '|n' + (s.map20 ? s.map20.size : '-');
+  return s.date + '|v' + s.version + '|n' + (s.map10 ? s.map10.size : '-') + '|n' + (s.map20 ? s.map20.size : '-')
+    + '|n' + (s.map30 ? s.map30.size : '-');
 }
 
 /** 清空（仅供测试 / 换数据源时调用；⛔ 正常业务流程无需调用） */
 export function clearAuctionLegRanges() {
   _inflight = null;
   _latestDate = '';
-  _state.value = { date: '', loaded: false, map10: null, map20: null, version: _state.value.version + 1 };
+  _state.value = { date: '', loaded: false, map10: null, map20: null, map30: null, version: _state.value.version + 1 };
 }

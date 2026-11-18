@@ -3,10 +3,10 @@
 // 为什么值得单独测：这段以前挤在 computeAuctionViewData（1090 行）里，只能靠真机看板验证。
 // 抽成纯函数后，四条主排序分支 + 档位判定可以逐条锁死：
 //   ① 默认（所有 toggle 关闭）⇒ 顺序必须**原样不动**（§11 零行为变化）
-//   ② 十日 / 20日涨幅 ⇒ 走同一个比较器，缺数据置底
+//   ② 十日 / 20日 / 30日涨幅 ⇒ 走同一个比较器，缺数据置底
 //   ③ 竞/昨（分层）⇒ tier0 高光 → tier1 平行 → tier2 其它，同档按竞价涨幅降序
-//   ④ 竞/昨占比（分层）⇒ tier0 高光 → tier1 其它，同档按量比降序
-//   ⑤ 档位判定 resolveTopicTierOf 必须与 ③④ 逐字一致（否则题材块内高光票会跑到下面）
+//   ④ [DEL-JINGYESTRATIO 2026-11-18] 原「竞/昨占比」分层分支与用例已随该 toggle 下线整体删除
+//   ⑤ 档位判定 resolveTopicTierOf 必须与 ③ 逐字一致（否则题材块内高光票会跑到下面）
 //   ⑥ 惰性：关掉的 toggle 绝不去读那一份 Map（§32 不做无用功）
 
 import { describe, it, expect, vi } from 'vitest';
@@ -21,7 +21,7 @@ function rows(list) {
 function idx(n) { return Array.from({ length: n }, function(_, i) { return i; }); }
 function names(list, order) { return order.map(function(i) { return list[i].stock; }); }
 
-const noToggle = { byJingYest: false, byJingYestRatio: false, byRangePct: false, byRangePct20: false, byAuctionLeg: false };
+const noToggle = { byJingYest: false, byRangePct: false, byRangePct20: false, byRangePct30: false, byAuctionLeg: false };
 
 describe('[SORT-ORDER] 默认：没有任何 toggle ⇒ 顺序原样不动（§11）', () => {
   it('返回的索引数组与输入逐项相等', () => {
@@ -115,35 +115,6 @@ describe('[SORT-ORDER] 竞/昨（分层）', () => {
   });
 });
 
-describe('[SORT-ORDER] 竞/昨占比（分层）', () => {
-  it('★ tier0 高光优先；同档按 volume/yestVolume 降序', () => {
-    // A 高光 比 0.1 / B 其它 比 3 / C 其它 比 0.5
-    const list = rows([{ n: 'A', v: 10, y: 100 }, { n: 'B', v: 30, y: 10 }, { n: 'C', v: 5, y: 10 }]);
-    const out = buildRenderOrder({
-      renderOrder: idx(3), renderList: list,
-      sortState: Object.assign({}, noToggle, { byJingYestRatio: true }),
-      jingYestHighlightSet: new Set(['A']), parallelStocksToday: new Set(),
-      rangeMapOf10: function() { return null; },
-      rangeMapOf20: function() { return null; },
-      auctionPctOf: function() { return null; }
-    });
-    expect(names(list, out)).toEqual(['A', 'B', 'C']);
-  });
-
-  it('★ 量比算不出（yestVolume=0）⇒ 当缺失置底，⛔ 不当 0 参与比较', () => {
-    const list = rows([{ n: 'A', v: 10, y: 0 }, { n: 'B', v: 1, y: 100 }]);
-    const out = buildRenderOrder({
-      renderOrder: idx(2), renderList: list,
-      sortState: Object.assign({}, noToggle, { byJingYestRatio: true }),
-      jingYestHighlightSet: new Set(), parallelStocksToday: new Set(),
-      rangeMapOf10: function() { return null; },
-      rangeMapOf20: function() { return null; },
-      auctionPctOf: function() { return null; }
-    });
-    expect(names(list, out)).toEqual(['B', 'A']);
-  });
-});
-
 describe('[SORT-ORDER] 档位判定必须与排序分支逐字一致', () => {
   const list = rows([{ n: 'A' }, { n: 'B' }, { n: 'C' }]);
   const sets = { jingYestHighlightSet: new Set(['A']), parallelStocksToday: new Set(['A', 'B']) };
@@ -153,16 +124,12 @@ describe('[SORT-ORDER] 档位判定必须与排序分支逐字一致', () => {
     expect([0, 1, 2].map(function(i) { return resolveTopicTierOf(list, i, o); })).toEqual([0, 1, 2]);
   });
 
-  it('★ 竞/昨占比：高光 0 / 其它 1（只有两档）', () => {
-    const o = { sortState: Object.assign({}, noToggle, { byJingYestRatio: true }), jingYestHighlightSet: sets.jingYestHighlightSet, parallelStocksToday: sets.parallelStocksToday };
-    expect([0, 1, 2].map(function(i) { return resolveTopicTierOf(list, i, o); })).toEqual([0, 1, 1]);
-  });
-
-  it('★ 默认 / 十日 / 20日：一律单档 0（⛔ 竞价口径不占档位）', () => {
+  it('★ 默认 / 十日 / 20日 / 30日：一律单档 0（⛔ 竞价口径不占档位）', () => {
     [noToggle,
       Object.assign({}, noToggle, { byRangePct: true }),
       Object.assign({}, noToggle, { byRangePct20: true }),
-      Object.assign({}, noToggle, { byRangePct20: true, byAuctionLeg: true })
+      Object.assign({}, noToggle, { byRangePct20: true, byAuctionLeg: true }),
+      Object.assign({}, noToggle, { byRangePct30: true })
     ].forEach(function(st) {
       const o = { sortState: st, jingYestHighlightSet: sets.jingYestHighlightSet, parallelStocksToday: sets.parallelStocksToday };
       expect([0, 1, 2].map(function(i) { return resolveTopicTierOf(list, i, o); })).toEqual([0, 0, 0]);

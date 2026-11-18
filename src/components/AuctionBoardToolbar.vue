@@ -98,23 +98,17 @@
         <span class="auction-toggle-slider" />
       </label>
     </div>
-    <div class="auction-toggle-item">
-      <span class="auction-toggle-label">竞/昨占比</span>
-      <label class="auction-toggle-switch">
-        <input
-          type="checkbox"
-          :checked="sortState.byJingYestRatio"
-          @change="toggleSort('byJingYestRatio')"
-        >
-        <span class="auction-toggle-slider" />
-      </label>
-    </div>
+    <!-- ★ [RANGE30 2026-11-18 用户口径] 这个开关位原来是「竞/昨占比」，现整体换成「30日涨幅」：
+         旧的「竞/昨占比」（按 竞价量/昨量 分层 + 同档按占比降序）UI 与功能一并删除，⛔ 不留残留。
+         开关本身抽成独立组件（用户口径：「新建一个组件给30日涨幅 toggle，不要和其它搞混在一起」）。
+         互斥关系（与 十日 / 20日 / 竞/昨 互斥）由 Logic 层 useAuctionBoard#toggleSort 维护。 -->
+    <AuctionBoardRange30Toggle />
     <!-- ★ [RANGE-PCT 2026-10-14 用户口径] 这个开关位原来是「三天竞跌」，现改为「十日涨幅」：
          打开后 = **全部股票一条列表**（龙头组 + 观察组 + 常规组不再分块），按「近 10 个交易日
          区间涨幅」由高到低排，并在每行股票名旁标出该数值 —— 用户要的是「一眼找到市场总龙头」。
          ⛔ 原「三天竞跌」功能（竞价量连续递减）已整体删除，不是改名：排序键与数据源都换了
             （三天竞跌 = 内存逐日 volume 现算；十日涨幅 = 云端 stock_range_pct，与题材龙位徽章同源）。
-         ⚠️ 与其它主排序 toggle（20日涨幅 / 竞/昨 / 竞/昨占比）互斥，由 Logic 层保证；
+         ⚠️ 与其它主排序 toggle（20日涨幅 / 30日涨幅 / 竞/昨）互斥，由 Logic 层保证；
             「竞价口径」是口径修饰开关，⛔ 不在互斥组里（可以和本开关同时打开）。 -->
     <div class="auction-toggle-item">
       <span class="auction-toggle-label">十日涨幅</span>
@@ -323,6 +317,7 @@ import { inject, computed } from 'vue';
 import { apiStatusMap } from '../logic/ui-bridge.js';
 import AuctionHeaderSearch from './AuctionHeaderSearch.vue';
 import AuctionBoardTopicToggle from './AuctionBoardTopicToggle.vue';
+import AuctionBoardRange30Toggle from './AuctionBoardRange30Toggle.vue';
 import AuctionYiziSupplementToggle from './AuctionYiziSupplementToggle.vue';
 const board = inject('auctionBoard');
 const {
@@ -357,7 +352,8 @@ const highRatioCountText = computed(() => (viewData.value.stats && viewData.valu
 //   与 AuctionEntityRow.vue 里的同名 computed 【逐字相同】—— 表头与数据列必须同增同减，
 //   任何一侧多/少渲染一格，剩下的列会整体平移 ⇒ 表头文字与数据错位。
 //   ⛔ 改这里就要同步改那边（两处都写了交叉引用注释，别只改一边）。
-const rangeColsMode = computed(() => !!(sortState.byRangePct20 || sortState.byRangePct));
+// ★ [RANGE30 2026-11-18] 30日涨幅沿用同一套列结构 ⇒ 判据里加 byRangePct30（与那边逐字一致）。
+const rangeColsMode = computed(() => !!(sortState.byRangePct20 || sortState.byRangePct30 || sortState.byRangePct));
 
 const thsStatus = computed(() => apiStatusMap['thsApiStatus'] || {});
 const numcatStatus = computed(() => apiStatusMap['numcatApiStatus'] || {});

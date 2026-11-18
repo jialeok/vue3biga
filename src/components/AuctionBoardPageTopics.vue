@@ -49,17 +49,11 @@
           <span class="auction-toggle-slider" />
         </label>
       </div>
-      <div class="auction-toggle-item">
-        <span class="auction-toggle-label">竞/昨占比</span>
-        <label class="auction-toggle-switch">
-          <input
-            type="checkbox"
-            :checked="sortState2.byJingYestRatio"
-            @change="toggleSort2('byJingYestRatio')"
-          >
-          <span class="auction-toggle-slider" />
-        </label>
-      </div>
+      <!-- ★ [DEL-JINGYESTRATIO 2026-11-18 用户口径] 本页原「竞/昨占比」开关【整体删除】：
+           用户口径「竞/昨占比 toggle UI 和功能去掉，不要残留」。它在第二页本来就没有消费方
+           （sortedTopicGroups 只按强度排）⇒ UI 与 `sortState2.byJingYestRatio` 状态一起清掉（§16）。
+           ⛔ 30日涨幅 toggle 不放在这里：它是【第一页】的主排序（那里才有龙头组/观察组/常规组
+           全表），落在 AuctionBoardToolbar → AuctionBoardRange30Toggle（独立组件）。 -->
       <!-- [RANGE-PCT 2026-10-14 用户口径] ⛔ 本页原「三天竞跌」开关已【直接删除】（不是改名）：
            它在本页没有任何消费方 —— sortedTopicGroups 只按「强度」排序，byThreeDayJingDie
            从未参与任何计算，是个「点了没反应」的死开关（§16 不留死代码）。

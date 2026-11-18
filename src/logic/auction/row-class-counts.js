@@ -29,6 +29,7 @@
  * @property {number} [hidden]   被折叠掉的行数（竞昨高光模式下不命中高光且非正式成员的观察组行）
  * @property {number} [dragon]   龙头组区块行数
  * @property {number} [range20]  20日强势补位区块行数
+ * @property {number} [range30]  ★ [RANGE30 2026-11-18] 30天强势补位区块行数（第五组，独立区块）
  * @property {number} [obs]      观察组区块行数
  * @property {number} [regular]  常规组区块行数
  * @property {boolean} [split]   本模式是否分块显示（只有默认模式为 true）
@@ -44,7 +45,7 @@
  *
  * @param {RowClassCountInput} [input]
  * @returns {{total:number, formal:number, injected:number, hidden:number, dragon:number,
- *            range20:number, obs:number, regular:number, split:boolean,
+ *            range20:number, range30:number, obs:number, regular:number, split:boolean,
  *            blocksSum:number, balanced:boolean}}
  */
 export function buildRowClassCounts(input) {
@@ -60,13 +61,16 @@ export function buildRowClassCounts(input) {
   const hidden = num(src.hidden);
   const dragon = num(src.dragon);
   const range20 = num(src.range20);
+  // ★ [RANGE30 2026-11-18] 第五组（30天补位）—— 必须计入 blocksSum，否则默认模式下
+  //   「区块合计 ≠ 渲染行数」会天天报假警，而真正的分账错误就被噪音淹没。
+  const range30 = num(src.range30);
   const obs = num(src.obs);
   const regular = num(src.regular);
   const split = src.split === true;
-  // 四块之和：分块模式下它必须等于 total（互斥且穷尽）；其它模式下三块恒为 0，剩下那块就是全部。
-  const blocksSum = dragon + range20 + obs + regular;
+  // 各块之和：分块模式下它必须等于 total（互斥且穷尽）；其它模式下除 regular 外恒为 0。
+  const blocksSum = dragon + range20 + range30 + obs + regular;
   return {
-    total, formal, injected, hidden, dragon, range20, obs, regular, split,
+    total, formal, injected, hidden, dragon, range20, range30, obs, regular, split,
     blocksSum,
     // total 为 0（空态）时不判「不齐」——没有行就无所谓分账，⛔ 别在空状态下报假警。
     balanced: total === 0 ? true : blocksSum === total
@@ -81,7 +85,8 @@ export function buildRowClassCounts(input) {
 export function describeRowClassMismatch(c) {
   const x = c || buildRowClassCounts();
   return '[ROW-CLASS] 四类行数对不上：区块合计 ' + x.blocksSum + ' 行 ≠ 渲染 ' + x.total +
-    ' 行（龙头组 ' + x.dragon + ' / 20日补位 ' + x.range20 + ' / 观察组 ' + x.obs +
+    ' 行（龙头组 ' + x.dragon + ' / 20日补位 ' + x.range20 + ' / 30天补位 ' + x.range30 +
+    ' / 观察组 ' + x.obs +
     ' / 常规组 ' + x.regular + '；正式成员 ' + x.formal + ' + 自动补 ' + x.injected +
     ' − 折叠 ' + x.hidden + '）。有行没被分到任何区块，或某行被重复分组。';
 }

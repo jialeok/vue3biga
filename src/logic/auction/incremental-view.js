@@ -24,8 +24,13 @@ import { deriveAuctionTagState } from '../tagTitles/rules.js';
 // 同花顺补缺，两次发布）。不进全局指纹 ⇒ 数据到货后行缓存不失效 ⇒ 行上数值与整表顺序都陈旧
 // （与 dragon= / suspend= 同款问题）。
 import { getRange20FingerprintToken } from './range20.js';
+// ★ [RANGE30 2026-11-18] 「30日涨幅」同款异步输入（range30.js 读结果表 → 缺的拉腾讯日线现算）。
+//   不进全局指纹 ⇒ 到货后行缓存不失效 ⇒ 行上数值与整表顺序停在「还没算完」那一帧。
+import { getRange30FingerprintToken } from './range30.js';
 // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」的结果签名（恒参与全局指纹，见下方 r20top5= 的说明）。
 import { getRange20LeadersFingerprintToken } from './range20-leaders.js';
+// ★ [RANGE30 2026-11-18] 「30日涨幅前五 · 30天补位」的结果签名（恒参与全局指纹，见下方 r30top5=）。
+import { getRange30LeadersFingerprintToken } from './range30-leaders.js';
 // [PRESENCE 2026-10-23] 「涨幅前十 · 在列次数」预计算表的加载版本（受两个涨幅 toggle 门控）。
 import { getPresenceFingerprintToken } from '../../data/auction-presence.js';
 import { getPrevRankFingerprintToken, resolveTodayLeg } from './prev-rank-table.js';
@@ -96,19 +101,20 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
     //   直接决定【同题材组内的顺序与龙位徽章】（view-helpers#_buildDragonRankMap 走同一个口径
     //   分支点）⇒ 数据到货必须让行缓存与整表顺序失效，否则「打开了却还是原来的排法」。
     //   ⛔ 只有「题材开着」而不是无条件：题材关着时这份数据没有消费方（§11 默认零行为）。
-    'aleg=' + ((s.byAuctionLeg && (s.byRangePct || s.byRangePct20 || s.byTopic)) ? getAuctionLegRangesFingerprintToken() : 'off'),
+    'aleg=' + ((s.byAuctionLeg && (s.byRangePct || s.byRangePct20 || s.byRangePct30 || s.byTopic)) ? getAuctionLegRangesFingerprintToken() : 'off'),
     // [RANGE20 2026-10-19] ⛔ 原 `byRatio=`（量比抢筹）已随该 toggle 删除；开关位改成 `byRangePct20=`。
     // [TWO-MODES 2026-10-02] 原 `byParallel=` 已删（平行 toggle → 一字 toggle、平行并入竞/昨）；
     //   改成题材【排序口径】：它决定题材组的组间顺序 ⇒ 必须入签名，否则切「题材 / 一字」时
     //   行缓存会复用旧顺序（用户会看到「打开了却还是原来的排法」）。
     'topicOrderBy=' + (s.topicOrderBy === TOPIC_ORDER_YIZI ? TOPIC_ORDER_YIZI : TOPIC_ORDER_VOL_RATIO),
     'byJingYest=' + (s.byJingYest ? 1 : 0),
-    'byJingYestRatio=' + (s.byJingYestRatio ? 1 : 0),
     // [RANGE-PCT 2026-10-14] 键名随功能改名（三天竞跌 → 十日涨幅）；它进指纹的理由不变：
     //   排序开关决定整表的行顺序 ⇒ 开关一变必须清空行缓存，否则「打开了却还是原来的排法」。
     'byRangePct=' + (s.byRangePct ? 1 : 0),
     // [RANGE20 2026-10-19] 「20日涨幅」开关：同款理由必须入指纹（决定整表顺序）。
     'byRangePct20=' + (s.byRangePct20 ? 1 : 0),
+    // ★ [RANGE30 2026-11-18] 「30日涨幅」开关：与上面两个涨幅开关同款理由必须入指纹（决定整表顺序）。
+    'byRangePct30=' + (s.byRangePct30 ? 1 : 0),
     'byTopic=' + (s.byTopic ? 1 : 0),
     'high=' + high,
     'jing=' + jing,
@@ -122,11 +128,18 @@ function computeGlobalFingerprint(dataSource, date, sortState) {
     //   ⇒ 整个看板（42 行 × 全量 enrich + 排序）重排一次。关掉还卡，就是这么来的。
     //   关闭状态下 ctx.rangePct20Map 恒为 null、行上也不显示 20 日数值 ⇒ 不重排是安全的（§11）。
     'range20=' + (s.byRangePct20 ? getRange20FingerprintToken() : 'off'),
+    // ★ [RANGE30 2026-11-18] 30 日涨幅结果签名（日期 + 版本 + 条数）。
+    //   与上面 `range20=` 逐字同款：**必须受开关门控**（关闭时恒 'off'），否则用户在后台补算期间
+    //   每次 `_publish` 都会让整张表重排一次（2026-11-02「点开 20日涨幅就卡死」的同一条链）。
+    'range30=' + (s.byRangePct30 ? getRange30FingerprintToken() : 'off'),
     // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」结果签名（日期 + 版本 + 条数 + 结论标志）。
     //   它决定【有没有补位区块、区块里是哪几行】⇒ 变化必须让行缓存与视图整体失效。
     //   ⚠️ 与上面的 `range20=` 不同：那个受 toggle 门控，这个【恒参与】——
     //     因为补位行是「不需要打开任何开关就要出现在看板上」的（用户：「每天都要检索」）。
     'r20top5=' + getRange20LeadersFingerprintToken(),
+    // ★ [RANGE30 2026-11-18] 「30日涨幅前五 · 30天补位」结果签名（与前一个逐字同款，【恒参与】）：
+    //   它决定【有没有 30 天补位区块、区块里是哪几行】⇒ 变化必须让行缓存与视图整体失效。
+    'r30top5=' + getRange30LeadersFingerprintToken(),
     // [PRESENCE 2026-10-23 用户口径] 「在列次数」预计算结果的加载版本。
     //   ⚠️ 受开关门控（与上面 `range20=` 同款理由）：两个涨幅 toggle 都关着时恒为 'off' ⇒
     //     结果到货也不会让整张表白重排一次；打开时到货 ⇒ 版本变 ⇒ 行缓存失效 ⇒ 标签出现。
@@ -176,7 +189,7 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume) {
     //   换成题材排序口径 —— 它决定该行落在哪个题材组的哪个位置，属结构性输入，必须入行签名。
     'tob=' + (s.topicOrderBy === TOPIC_ORDER_YIZI ? TOPIC_ORDER_YIZI : TOPIC_ORDER_VOL_RATIO),
     // [RANGE20 2026-10-19] `s.byRatio`（量比抢筹）→ `s.byRangePct20`（20日涨幅）。
-    s.byJingYest ? 1 : 0, s.byJingYestRatio ? 1 : 0, s.byRangePct ? 1 : 0, s.byRangePct20 ? 1 : 0, s.byTopic ? 1 : 0,
+    s.byJingYest ? 1 : 0, s.byRangePct ? 1 : 0, s.byRangePct20 ? 1 : 0, s.byRangePct30 ? 1 : 0, s.byTopic ? 1 : 0,
     'yizi=' + (item.isYiZi ? 1 : 0), // [YIZI 2026-09-09] 竞价一字状态（竞价涨幅达标）变化需触发重派生，否则红线标记陈旧
     // [DRAGON-COLOR 2026-09-11] 龙头徽章底色 = 当天竞价涨幅符号（红/绿/灰）→ 该数值必须入签名，
     // 否则增量缓存会复用旧行对象、徽章底色陈旧。注意不能用上方 yizi= 代替：yizi 只捕捉「跨过涨停线」
@@ -199,6 +212,10 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume) {
     //   与 rp= 同款理由单独入签名：模板直接读这两个字段。
     'rp20=' + (item.rangePct20 === null || item.rangePct20 === undefined ? '' : item.rangePct20) +
       '/' + (item.rangePct20Days || 0),
+    // ★ [RANGE30 2026-11-18] 「30日涨幅」模式下行上显示的数值 + 窗口内实际成交天数（悬停「n/30日」）。
+    //   与 rp=/rp20= 同款理由单独入签名：模板直接读这两个字段，且它们由异步现算派生。
+    'rp30=' + (item.rangePct30 === null || item.rangePct30 === undefined ? '' : item.rangePct30) +
+      '/' + (item.rangePct30Days || 0),
     // [R20-DELTA 2026-10-28 用户口径] 「名次变化」文案（+6 / -7 / —）。模板直接读它 ⇒ 按红线单独入签名：
     //   它由异步到货的昨日名次表派生，行内输入可以完全没变（与 rp20= 同款理由）。
     //   ★ 2026-10-28 第二次修正：把【口径】也带进来 —— 竞价口径与收盘口径是两张不同的表，
@@ -211,6 +228,12 @@ function computeRowSig(item, sortState, date, prevVolume, prevYestVolume) {
     'r20l=' + (item.range20Leader ? 1 : 0) +
       '/' + (item.range20LeaderPct === null || item.range20LeaderPct === undefined ? '' : item.range20LeaderPct) +
       '/' + (item.range20LeaderDays || 0),
+    // ★ [RANGE30 2026-11-18] 「30天补位」行的标记与数值（模板直接读这三个字段：
+    //   「30天」标签 + 该票 30 个交易日区间涨幅 + 有效天数）。
+    //   与 r20l= 同款理由必须单独入签名，否则增量缓存会复用「没有 30 天标签」的旧行对象。
+    'r30l=' + (item.range30Leader ? 1 : 0) +
+      '/' + (item.range30LeaderPct === null || item.range30LeaderPct === undefined ? '' : item.range30LeaderPct) +
+      '/' + (item.range30LeaderDays || 0),
     // [LIMIT-STREAK 2026-09-11] 趋势/连板标记文案（前 9 个历史交易日收盘涨幅派生，见 limit-streak.js）。
     //   它不由本行行内输入（volume/note…）派生，而依赖「前若干日的历史日行」——
     //   历史日数据在首屏整段拉入，但 worker 收盘覆盖 / 历史日回填会改写 change_pct → 连板状态可能变化，

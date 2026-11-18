@@ -5,7 +5,7 @@
 //   用户 2026-11-05：「有大到小，由复杂到简单，拆解文件……不要把所以的逻辑和功能都挤到
 //   一个文件里」。`view-helpers.js#computeAuctionViewData` 当时 1090 行，其中这一段
 //   「谁排在前面」的矩阵是**最容易被误改的一块**：
-//     · 竞/昨（分层）· 竞/昨占比（分层）· 十日涨幅（单层）· 20日涨幅（单层）四条主排序
+//     · 竞/昨（分层）· 十日涨幅（单层）· 20日涨幅（单层）· 30日涨幅（单层）三条涨幅主排序
 //     · 外加 resolveTopicTier（题材分组时用的「档位」判定，必须与上面四条的口径逐字一致）
 //   以前档位判定和排序分支隔了 60 行，改一处忘一处就会出现「档位边界错位」——
 //   特征是同题材块里高光票跑到下面去了。现在两者在同一个文件里，一眼能对照。
@@ -49,6 +49,7 @@ function _byRangePct(order, list, rangeMap) {
  * @param {Set<string>} o.parallelStocksToday  平行达标集合（竞/昨的 tier1 判据）
  * @param {Function} o.rangeMapOf10      () => 十日涨幅 Map（**惰性**：只在对应分支里调）
  * @param {Function} o.rangeMapOf20      () => 20日涨幅 Map（同上）
+ * @param {Function} o.rangeMapOf30      () => 30日涨幅 Map（同上）
  * @param {Function} o.auctionPctOf      (row) => 竞价涨幅（竞/昨同档排序键）
  * @returns {number[]} 新的索引顺序
  */
@@ -87,22 +88,6 @@ export function buildRenderOrder(o) {
       return b.pctVal - a.pctVal;
     }).map(x => x.idx);
 
-  } else if (sortState.byJingYestRatio) {
-    renderOrder = renderOrder.map((idx, pos) => {
-      const stockName = renderList[idx] && renderList[idx].stock ? renderList[idx].stock.trim() : '';
-      const isHighlight = stockName && jingYestHighlightSet && jingYestHighlightSet.has(stockName);
-      const tier = isHighlight ? 0 : 1;
-      const vol = renderList[idx] ? (parseFloat(renderList[idx].volume) || 0) : 0;
-      const yvol = renderList[idx] ? (parseFloat(renderList[idx].yestVolume) || 0) : 0;
-      const jr = (vol > 0 && yvol > 0) ? (vol / yvol) : null;
-      return { idx, pos, jr, tier };
-    }).sort((a, b) => {
-      if (a.tier !== b.tier) return a.tier - b.tier;
-      if (a.jr === null && b.jr === null) return a.pos - b.pos;
-      if (a.jr === null) return 1;
-      if (b.jr === null) return -1;
-      return b.jr - a.jr;
-    }).map(x => x.idx);
   } else if (sortState.byRangePct) {
     // [RANGE-PCT 2026-10-14 用户口径] 「十日涨幅」toggle（开关位由原「三天竞跌」改造）：
     //   ★ 全部股票（龙头组 + 观察组 + 常规组，不分块）按「近 10 个交易日区间涨幅」由高到低排。
@@ -121,6 +106,14 @@ export function buildRenderOrder(o) {
     //   ⚠️ 两个 map 各自独立：十日读云端 stock_range_pct；20 日读 range20.js 现算结果
     //      （云端没有 20 日行 —— 表主键 (date,stock)，写进去会覆盖 10 日行，见 range20.js 文件头）。
     renderOrder = _byRangePct(renderOrder, renderList, o.rangeMapOf20());
+  } else if (sortState.byRangePct30) {
+    // ★ [RANGE30 2026-11-18 用户口径] 「30日涨幅」toggle（开关位由原「竞/昨占比」改造）：
+    //   ★ 全部股票（龙头组 + 观察组 + 常规组，不分块）按「含今天在内的 30 个交易日区间涨幅」
+    //     由高到低排，并逐行标出该数值 —— 与十日 / 20日 同款，只是时间段不同。
+    //   数据源 = range30.js 现算（期末收盘 / 期初前收盘 − 1，一次性比值）；
+    //   竞价口径打开时换成 range30-auction-leg.js 反解后的那一份（同一个分支点，§6）。
+    //   ⚠️ Map 未就绪 ⇒ 该行置底且不参与比较（由 _byRangePct 统一处理，⛔ 不补 0）。
+    renderOrder = _byRangePct(renderOrder, renderList, o.rangeMapOf30());
   }
   // [TWO-MODES 2026-10-02 用户口径] ⛔ 这里原有 `else if (sortState.byParallel)` 主排序分支（平行达标档
   //   按 digitGap 升序 → diff 降序；内层还套了一个永远走不到的 `if (sortState.byJingYest)` 子分支）
@@ -158,10 +151,9 @@ export function resolveTopicTierOf(renderList, idx, o) {
   const nm = it && it.stock ? it.stock.trim() : '';
   // [AUCTION-LEG-TOGGLE 2026-10-25] ⛔ 原「弱转强达标 ⇒ tier0 / 否则 tier1」已随该 toggle 删除。
   //   「竞价口径」不是分层排序（它只换数值来源、不改档位）⇒ 本函数不需要为它开分支。
-  if (sortState.byJingYestRatio) {
-    const ih = nm && jingYestHighlightSet && jingYestHighlightSet.has(nm);
-    return ih ? 0 : 1;
-  }
+  // ★ [DEL-JINGYESTRATIO 2026-11-18 用户口径] 「竞/昨占比」整体下线（按 (竞价量/昨量) 分层 +
+  //   同档按占比降序）。用户原话：「把早盘竞价看板的竞/昨占比 toggle UI 和功能去掉，不要残留，
+  //   因为这个功能现在用不到了」。⇒ 本函数只保留「竞/昨」这一条分层口径，⛔ 不留死分支（§16）。
   if (sortState.byJingYest) {
     const ih = nm && jingYestHighlightSet && jingYestHighlightSet.has(nm);
     const ip = nm && parallelStocksToday && parallelStocksToday.has(nm);

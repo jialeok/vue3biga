@@ -66,8 +66,11 @@ function createSortState() {
     //   开关位换成 `byAuctionLeg`（竞价口径）：打开 ⇒ 十日 / 20日涨幅两列改用 9:26 竞价口径的数值；
     //   关闭 ⇒ 收盘口径（与原来逐字相同）。⚠️ 键名与初值必须与 useAuctionBoard#sortState、
     //   view-helpers 的兜底默认值逐字一致（§6：三处默认值不同会让「store 读不到」那一瞬间的口径跳变）。
-    auction: { byAuctionLeg: false, byRangePct20: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI },
-    hot: { byAuctionLeg: false, byRangePct20: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI }
+    // ★ [RANGE30 2026-11-18 用户口径] `byJingYestRatio`（竞/昨占比）整体下线，开关位换成
+    //   `byRangePct30`（30日涨幅）。⚠️ 三处默认值必须逐字一致（§6）：本文件 / useAuctionBoard#sortState /
+    //   view-helpers 的 `_defaultSortState`。
+    auction: { byAuctionLeg: false, byRangePct20: false, byRangePct30: false, byJingYest: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI },
+    hot: { byAuctionLeg: false, byRangePct20: false, byRangePct30: false, byJingYest: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI }
   };
 }
 
@@ -75,9 +78,10 @@ function createSortStateP2() {
   // [RANGE20 2026-10-19 用户口径] 第二页的「量比抢筹」开关【删除】（用户：「顺手删掉」）。
   //   它在本页从来没有任何消费方（sortedTopicGroups 只按强度排），属死开关（§16）——
   //   与 2026-10-14 删掉的「三天竞跌」完全同性质：点了没反应，删掉不影响任何显示。
+  // ★ [DEL-JINGYESTRATIO 2026-11-18] 第二页的 `byJingYestRatio` 已随「竞/昨占比」整体下线删除。
   return {
-    auction: { byParallel: false, byJingYest: false, byJingYestRatio: false, byTopic: false },
-    hot: { byParallel: false, byJingYest: false, byJingYestRatio: false, byTopic: false }
+    auction: { byParallel: false, byJingYest: false, byTopic: false },
+    hot: { byParallel: false, byJingYest: false, byTopic: false }
   };
 }
 

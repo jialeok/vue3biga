@@ -41,7 +41,8 @@
 /** 区间涨幅模式判定（唯一一处，⛔ 别在调用方各写一份） */
 export function isRangeRankMode(sortState) {
   const s = sortState || {};
-  return !!(s.byRangePct || s.byRangePct20);
+  // ★ [RANGE30 2026-11-18] 30日涨幅与十日 / 20日涨幅同为「序号 = 涨幅排名」的区间模式。
+  return !!(s.byRangePct || s.byRangePct20 || s.byRangePct30);
 }
 
 /**

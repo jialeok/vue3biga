@@ -78,6 +78,11 @@
       v-if="rowClassCounts.range20 > 0"
       class="auction-row-counts-item auction-row-counts-r20"
     >20日补位 {{ rowClassCounts.range20 }}</span>
+    <!-- ★ [RANGE30 2026-11-18] 第五组分账：不加这一项，区块合计就会比「合计行数」少，对账立刻失真 -->
+    <span
+      v-if="rowClassCounts.range30 > 0"
+      class="auction-row-counts-item auction-row-counts-r30"
+    >30天补位 {{ rowClassCounts.range30 }}</span>
     <span
       v-if="rowClassCounts.obs > 0"
       class="auction-row-counts-item auction-row-counts-obs"
@@ -102,6 +107,12 @@
        ⚠️ 与龙头组区块【分开渲染】：用户要求「新建一个小组件给它们，这样就不会乱，以后改的时候也方便」
        —— 补位票在行上另有「20天」标签，两者身份不混。空数组时本组件整体不渲染。 -->
   <AuctionRange20Leaders :items="filteredRange20LeaderItems" />
+
+  <!-- ★ [RANGE30 2026-11-18 用户口径] 「30日强势补位」独立小组件（紧跟 20 日补位之后、观察组之前）。
+       数据/索引全部来自 Logic 层（viewData.range30LeaderIndices，由 range30-leaders.js 检索）。
+       用户要求：「取前五进行补位，标签是30天，这个和20天补的逻辑差不多」⇒ 与 20 日区块并列但**分开渲染**，
+       行上打「30天」标签。空数组时本组件整体不渲染（没得补就不出现，⛔ 不留空标题）。 -->
+  <AuctionRange30Leaders :items="filteredRange30LeaderItems" />
 
   <!-- [ROW-CLASS 2026-11-02] 观察组标题带数量（与区块行数同源：Logic 层的 obsIndices.length）。
        ⛔ 不要改成 filteredObsItems.length：搜索过滤一旦启用，两者就会分叉。 -->
@@ -196,6 +207,8 @@ import { computed, inject, watch, nextTick } from 'vue';
 import AuctionDragonGroup from './AuctionDragonGroup.vue';
 // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」独立小组件（用户：「新建一个小组件给它们」）。
 import AuctionRange20Leaders from './AuctionRange20Leaders.vue';
+// ★ [RANGE30 2026-11-18] 「30日涨幅前五补位」独立小组件（第五组，与 20 日补位并列）。
+import AuctionRange30Leaders from './AuctionRange30Leaders.vue';
 import AuctionEntityRow from './AuctionEntityRow.vue';
 import AuctionYiziSupplementRow from './AuctionYiziSupplementRow.vue';
 import AuctionYiziSupplementStatus from './AuctionYiziSupplementStatus.vue';
@@ -208,6 +221,8 @@ const {
   filteredObsItems, filteredRegularItems, filteredDragonItems,
   // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」区块的行（同样支持搜索过滤）。
   filteredRange20LeaderItems,
+  // ★ [RANGE30 2026-11-18] 30 天补位行（第五组，与上面 20 日同款：同一套搜索过滤）
+  filteredRange30LeaderItems,
   showObsSeparator, showDragonSeparator,
   // [ROW-CLASS 2026-11-02 用户口径] 四类行分账（Logic 层唯一真相的只读透出）
   rowClassCounts,

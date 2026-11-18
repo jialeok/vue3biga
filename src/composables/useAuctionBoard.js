@@ -60,6 +60,17 @@ import { ensureRange20, prefillRange20FromDailyLegs, getRange20FingerprintToken,
 //     —— 用户要求「每天都要检索」，所以与开关状态无关，进看板/切日期就跑一次（幂等 + 会话缓存）。
 //   ⛔ 零猫抓额度（用户特别强调）：只用库内正式列表 + 同花顺 K 线（免费），见 range20-leaders.js。
 import { ensureRange20Leaders } from '../logic/auction/range20-leaders.js';
+// ★ [RANGE30 2026-11-18 用户口径] 「30日涨幅前五 · 30天补位」的取数入口 —— 与上面 20 日那条【并列独立】：
+//   名册、区块、「30天」标签、结果表（stock_range30_pct）全部各一份，⛔ 不共用。
+//   用户原话：「还有要最近多板看板的30日所有的股票，取前五进行补位，标签是30天，
+//     这个和20天补的逻辑差不多，你看下怎么实现，可以参考20日补的。」
+import { ensureRange30Leaders } from '../logic/auction/range30-leaders.js';
+// ★ [RANGE30 2026-11-18 用户口径] 「30日涨幅」toggle 的取数入口（独立功能，与十日/20日并列）。
+//   算法与 20 日【不同】：不走逐日复利连乘，而是「期末收盘价 / 期初前收盘价 − 1」一次性比值
+//   （数学等价，见 range30.js 头注释；实测新华传媒 10-28 两法都得 +178.91%）。
+//   数据源 = 腾讯前复权日线（批量、免费、0 猫抓额度），结果落 stock_range30_pct 加速层。
+//   ⚠️ 只在 toggle 打开时触发（§11 默认零行为）。
+import { ensureRange30, getRange30Pct } from '../logic/auction/range30.js';
 // [PRESENCE 2026-10-23 用户口径] 「涨幅前十 · 在列次数」预计算表的取数入口（Data 层）。
 //   ⛔ 零上游请求：只读 Supabase 表 auction_presence（由 pg_cron 在 09:30 / 15:05 算好）。
 //   为什么走表而不是现场算：现场算要回读 10~20 天的历史名单；落表后前端只读 ≤400 行结论，
@@ -133,6 +144,10 @@ let _suspendWatchBound = false;
 let _r20WatchBound = false;
 // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」取数 watch 同样只挂载一次。
 let _r20Top5WatchBound = false;
+// ★ [RANGE30 2026-11-18] 「30日涨幅」取数 watch 同样只挂载一次。
+let _r30WatchBound = false;
+// ★ [RANGE30 2026-11-18] 「30日涨幅前五 · 30天补位」检索 watch 同样只挂载一次。
+let _r30Top5WatchBound = false;
 // [PRESENCE 2026-10-23] 「涨幅前十 · 在列次数」预计算表取数 watch 同样只挂载一次。
 let _presenceWatchBound = false;
 // [R20-DELTA 2026-10-28] 「昨日 20日涨幅名次」取数 watch 同样只挂载一次。
@@ -175,7 +190,11 @@ export function useAuctionBoard() {
     //   ⚠️ 键名与初值必须与 auctionStore#createSortState 逐字一致（§6）。
     byRangePct20: false,
     byJingYest: false,
-    byJingYestRatio: false,
+    // ★ [RANGE30 2026-11-18 用户口径] 开关位由「竞/昨占比」改造而来：
+    //   「把早盘竞价看板的竞/昨占比 toggle UI 和功能去掉，不要残留……换成30日涨幅 toggle」。
+    //   ⛔ 与「十日 / 20日涨幅」同为【单层主排序】（全部股票一条列表，按 30 日区间涨幅降序 + 逐行标数值），
+    //     三者互斥；「竞价口径」(byAuctionLeg) 是口径修饰开关，可与本开关同时打开。
+    byRangePct30: false,
     // [RANGE-PCT 2026-10-14 用户口径] 原 `byThreeDayJingDie`（三天竞跌）→ 改为 `byRangePct`（十日涨幅）。
     //   ⚠️ 键名与初值必须与 auctionStore#createSortState 逐字一致（§6：两处默认值不同会让
     //      「store 读不到」那一瞬间的口径跳变）。
@@ -214,8 +233,8 @@ export function useAuctionBoard() {
   const viewData = computed(() => {
     void auctionStore.dataVersions['auction'];
     void uiStore.currentDate;
-    void sortState.byAuctionLeg; void sortState.byRangePct20;
-    void sortState.byJingYest; void sortState.byJingYestRatio; void sortState.byRangePct; void sortState.byTopic;
+    void sortState.byAuctionLeg; void sortState.byRangePct20; void sortState.byRangePct30;
+    void sortState.byJingYest; void sortState.byRangePct; void sortState.byTopic;
     // [TWO-MODES 2026-10-02] 题材排序口径也进依赖：切「题材 / 一字」必须重算视图（顺序不同）
     void sortState.topicOrderBy;
     // A3-01：经增量行缓存层，单格编辑只重新派生变化的行（logic/auction/incremental-view.js）
@@ -230,14 +249,14 @@ export function useAuctionBoard() {
   if (!_alegWatchBound) {
     _alegWatchBound = true;
     watch(
-      () => [sortState.byAuctionLeg, sortState.byRangePct, sortState.byRangePct20, sortState.byTopic, uiStore.currentDate],
+      () => [sortState.byAuctionLeg, sortState.byRangePct, sortState.byRangePct20, sortState.byRangePct30, sortState.byTopic, uiStore.currentDate],
       () => {
         if (!sortState.byAuctionLeg) return;
         // ★ [TOPIC-AUCTION-LEG 2026-11-01 用户口径] 题材 toggle 也是消费方：
         //   题材模式下竞价口径决定【同题材组内顺序 + 龙位徽章】（view-helpers#_buildDragonRankMap
         //   与统计条都走 _range10MapFor 这一个口径分支点）；不在这里放行，用户会看到
         //   「题材 + 竞价口径都打开了，组内顺序一点没变」—— 正是 2026-11-01 的报障。
-        if (!sortState.byRangePct && !sortState.byRangePct20 && !sortState.byTopic) return;
+        if (!sortState.byRangePct && !sortState.byRangePct20 && !sortState.byRangePct30 && !sortState.byTopic) return;
         ensureAuctionLegRanges(uiStore.currentDate).catch(function(e) {
           // §10：读失败必须留痕（视图层表现为「这两列暂时没有数值」，绝不拿收盘口径顶替）
           console.warn('[AUCTION-LEG] 竞价口径区间涨幅读取失败:', (e && e.message) || e);
@@ -387,6 +406,70 @@ export function useAuctionBoard() {
         } catch (e) {
           console.warn('[RANGE20] 20日涨幅取数失败:', e && e.message);
           setApiStatus('numcatApiStatus', '❌ 20日涨幅取数失败：' + (e && e.message || e), false);
+        }
+      },
+      { immediate: true }
+    );
+  }
+  // ★★ [RANGE30 2026-11-18 用户口径] 「30日涨幅」toggle 的取数入口（只挂载一次，幂等/单飞在 range30.js 内）。
+  //
+  // 与上面 20 日那条链【刻意分开写、不复用】：
+  //   · 算法不同 —— 30 日是一次性比值（期末收盘 / 期初前收盘 − 1），20 日是逐日复利连乘；
+  //   · 数据源不同 —— 30 日走腾讯前复权日线批量接口（一次请求覆盖多只），20 日走库内逐日腿 + 同花顺补缺；
+  //   · 落库表不同 —— stock_range30_pct（只落收盘口径）。两条链共用任何一段代码都会让日后改其一
+  //     时误伤另一条（§37 影响范围审查）。
+  //
+  // 依赖三件（数组源 + 每项一个 getter，⛔ 不写 `() => [a,b,c]`）：
+  //   ① 开关本身 —— 关着时一行不动（§11）；
+  //   ② 当前日期 —— 切日期要重算；
+  //   ③ 看板渲染名单的签名 —— 9:25 名单是逐步到达的，后到的票必须被补算。
+  //   🔴 为何必须是数组源：回调会 await ensureRange30，而它结束时会 `_publish` ⇒ version+1 ⇒
+  //      viewData 重算；若源是 getter 返回新数组，比较恒真 ⇒ 回调再触发 ⇒ 自激卡死
+  //      （与 2026-11-02「点开 20日涨幅就卡死」同一条链）。
+  if (!_r30WatchBound) {
+    _r30WatchBound = true;
+    const _r30RowsSig = function(rows) {
+      const names = [];
+      for (let i = 0; i < rows.length; i++) {
+        const n = rows[i] && rows[i].stock ? String(rows[i].stock).trim() : '';
+        if (n) names.push(n);
+      }
+      names.sort();
+      return names.join(',');
+    };
+    watch(
+      [() => sortState.byRangePct30,
+        () => uiStore.currentDate,
+        // ⚠️ 这里**刻意不**把 `getRange30FingerprintToken()` 放进依赖：数据到货本身不需要再触发取数
+        //   （那会造成「到货 → 再跑一次 → 立刻短路」的无效往返，状态条还会闪一下）。
+        //   到货 ⇒ 版本变 ⇒ incremental-view 的 `range30=` 指纹变 ⇒ 视图重排，这条路已经够了。
+        () => _r30RowsSig((viewData.value && viewData.value.items) || [])],
+      async () => {
+        if (!sortState.byRangePct30) return;
+        const _date = uiStore.currentDate;
+        const _rows = (viewData.value && viewData.value.items) || [];
+        if (!_date || _rows.length === 0) return;
+        setApiStatus('numcatApiStatus', '⏳ 30日涨幅计算中（腾讯日线）', false);
+        try {
+          await ensureRange30(_date, _rows, {});
+          // §10 失败必须可见，但也⛔ 不能把「判不出」说成「失败」：
+          //   次新股 / 长期停牌 / 无代码映射的票本来就该没有值（range30.js 明确返回 null）。
+          const _map = getRange30Pct(_date);
+          const _got = _map ? _map.size : 0;
+          const _miss = _rows.filter(function(r) {
+            const n = r && r.stock ? String(r.stock).trim() : '';
+            return n && !(_map && _map.has(n));
+          }).length;
+          if (_miss > 0) {
+            setApiStatus('numcatApiStatus',
+              '30日涨幅：算出 ' + _got + '/' + _rows.length + ' 只；其余 ' + _miss
+              + ' 只判不出（次新股 / 停牌 / 无代码），按规范不补 0', false);
+          } else {
+            setApiStatus('numcatApiStatus', '', true);
+          }
+        } catch (e) {
+          console.warn('[RANGE30] 30日涨幅取数失败:', e && e.message);
+          setApiStatus('numcatApiStatus', '❌ 30日涨幅取数失败：' + (e && e.message || e), false);
         }
       },
       { immediate: true }
@@ -549,6 +632,35 @@ export function useAuctionBoard() {
       [() => uiStore.currentDate,
         () => (viewData.value && viewData.value.items ? viewData.value.items.length : 0)],
       () => { ensureRange20LeadersForCurrentBoard(); },
+      { immediate: true }
+    );
+  }
+  // ★ [RANGE30 2026-11-18 用户口径] 「30日涨幅前五 · 30天补位」的唯一触发点（与上面的 20 日补位同构）。
+  //
+  // 与 30日涨幅 toggle **无关**：进看板 / 切日期 / 当日行数变化就跑（用户「每天都要检索」）。
+  // 重复触发完全安全：模块内有单飞（`_inflight`）+ 会话缓存（只缓存非空结果）+ 池变大才重算。
+  //   ⚠️ 为什么依赖里必须带行数：immediate 首跑发生在数据到达之前，那一刻正式列表索引还是空的
+  //   ⇒ 候选池为空 ⇒ 本次不产出。若只依赖 currentDate，之后数据到了也不会再跑，区块永远不出现。
+  //   ⚠️ 成本有界：粗筛 0 请求（只读逐日腿表），精算 ≤20 只腾讯日线（批量通道，免费、0 猫抓额度）。
+  function ensureRange30LeadersForCurrentBoard() {
+    const date = uiStore.currentDate;
+    if (!date) return;
+    setApiStatus('numcatApiStatus', '⏳ 30日涨幅前五检索中（腾讯日线）', false);
+    ensureRange30Leaders(date).then(function() {
+      setApiStatus('numcatApiStatus', '', true);
+    }).catch(function(e) {
+      // §10 禁止静默失败：⛔ 不能把「没算出来」显示成「今天没有补位」
+      console.warn('[RANGE30-TOP5] 30日涨幅前五检索失败:', (e && e.message) || e);
+      setApiStatus('numcatApiStatus', '❌ 30日涨幅前五检索失败：' + ((e && e.message) || e), false);
+    });
+  }
+  if (!_r30Top5WatchBound) {
+    _r30Top5WatchBound = true;
+    watch(
+      // 数组源（逐项比较）—— 与上面 20 日那条逐字同款，⛔ 别改成 `() => [a, b]`（恒触发 ⇒ 自激）
+      [() => uiStore.currentDate,
+        () => (viewData.value && viewData.value.items ? viewData.value.items.length : 0)],
+      () => { ensureRange30LeadersForCurrentBoard(); },
       { immediate: true }
     );
   }
@@ -726,6 +838,13 @@ export function useAuctionBoard() {
     const m = itemsByIndex.value;
     return viewData.value.regularIndices.map(i => m.get(i)).filter(Boolean);
   });
+  // ★ [RANGE30 2026-11-18 用户口径] 「30日涨幅前五补位」→ 独立小组件（AuctionRange30Leaders，第五组）。
+  // 与上面 range20LeaderItems 逐字同构：只按 Logic 层给的索引取行对象，⛔ 不在视图层再排序。
+  const range30LeaderItems = computed(() => {
+    if (!viewData.value.range30LeaderIndices) return [];
+    const m = itemsByIndex.value;
+    return viewData.value.range30LeaderIndices.map(i => m.get(i)).filter(Boolean);
+  });
   const allItems = computed(() => {
     return [...dragonItems.value, ...obsItems.value, ...regularItems.value];
   });
@@ -759,6 +878,12 @@ export function useAuctionBoard() {
     if (!searchKeyword.value.trim()) return range20LeaderItems.value;
     const kw = searchKeyword.value.trim().toLowerCase();
     return range20LeaderItems.value.filter(item => item.stock && item.stock.toLowerCase().includes(kw));
+  });
+  // ★ [RANGE30 2026-11-18] 与上面 20 日补位同一套搜索过滤（搜索时区块跟着一起筛）。
+  const filteredRange30LeaderItems = computed(() => {
+    if (!searchKeyword.value.trim()) return range30LeaderItems.value;
+    const kw = searchKeyword.value.trim().toLowerCase();
+    return range30LeaderItems.value.filter(item => item.stock && item.stock.toLowerCase().includes(kw));
   });
   const filteredRegularItems = computed(() => {
     if (!searchKeyword.value.trim()) return regularItems.value;
@@ -796,7 +921,9 @@ export function useAuctionBoard() {
   // [RANGE20 2026-10-19 用户口径] ⛔ 已移除 `byRatio`：本页的「量比抢筹」开关与 2026-10-14 删掉的
   //   「三天竞跌」同性质 —— sortedTopicGroups 只按强度排，它在本页【没有任何消费方】（死开关，§16）。
   //   用户本轮明确「顺手删掉」，故连状态位一并移除。
-  const sortState2 = reactive({ byParallel: false, byJingYest: false, byJingYestRatio: false });
+  // ★ [DEL-JINGYESTRATIO 2026-11-18] 第二页的 `byJingYestRatio` 已随「竞/昨占比」整体下线删除
+  //   （它在本页从来没有消费方 —— `sortedTopicGroups` 只按强度排，属死开关，§16 不留死状态）。
+  const sortState2 = reactive({ byParallel: false, byJingYest: false });
   const isStrengthSortEnabled = ref(false);
   const p2ExpandedSet = ref(new Set());
   const p2TrendHistory = ref({});
@@ -942,15 +1069,11 @@ export function useAuctionBoard() {
       //   前者是本页「量比抢筹」死开关（本轮移除）；后者原本只是在 byRatio 打开时把它置 false，
       //   没有可联动的对象后就只剩一个空块（§16 不留死分支）。
       if (key === 'byJingYest') {
-        sortState2.byJingYestRatio = false;
         sortState2.byParallel = true;
-      } else if (key === 'byJingYestRatio') {
-        sortState2.byParallel = false;
-        sortState2.byJingYest = false;
       }
     } else {
       if (key === 'byParallel') {
-        sortState2.byJingYest = false; sortState2.byJingYestRatio = false;
+        sortState2.byJingYest = false;
       } else if (key === 'byJingYest') {
         sortState2.byParallel = false;
       }
@@ -1344,8 +1467,8 @@ export function useAuctionBoard() {
       const s = auctionStore.sortState['auction'];
       s.byAuctionLeg = sortState.byAuctionLeg;
       s.byRangePct20 = sortState.byRangePct20;
+      s.byRangePct30 = sortState.byRangePct30;
       s.byJingYest = sortState.byJingYest;
-      s.byJingYestRatio = sortState.byJingYestRatio;
       s.byRangePct = sortState.byRangePct;
       s.byTopic = sortState.byTopic;
       // [TWO-MODES 2026-10-02] 题材排序口径（决策看板据它选买点模式，见 decision-mode.js）
@@ -1451,11 +1574,15 @@ export function useAuctionBoard() {
         //   本模式的取数由下方 watch 驱动（sortState.byRangePct20 已在依赖里）⇒ 点开即
         //   ensureRange20：阶段①读库内逐日行（同步可算，立刻出版）、阶段②同花顺补缺（无额度限制）。
         //   ⚠️ 这里【不 await】—— 取数慢不该阻塞 toggle 的视觉反馈（列表先按已有数据重排）。
-        sortState.byJingYest = false; sortState.byJingYestRatio = false; sortState.byRangePct = false;
+        sortState.byJingYest = false; sortState.byRangePct = false;
+        sortState.byRangePct30 = false;
       } else if (key === 'byJingYest') {
         sortState.byRangePct20 = false;
-        sortState.byJingYestRatio = false; sortState.byRangePct = false;
-      } else if (key === 'byJingYestRatio') {
+        sortState.byRangePct = false;
+        sortState.byRangePct30 = false;
+      } else if (key === 'byRangePct30') {
+        // ★ [RANGE30 2026-11-18] 30日涨幅：与十日 / 20日 / 竞昨同为互斥的主排序。
+        //   取数由下方 range30 watch 驱动（点开即 ensureRange30：库内结果 → 缺的才拉 K 线）。
         sortState.byRangePct20 = false;
         sortState.byJingYest = false; sortState.byRangePct = false;
       } else if (key === 'byRangePct') {
@@ -1464,7 +1591,8 @@ export function useAuctionBoard() {
         //   `sortState.byRangePct` 纳入依赖 ⇒ 一打开就会 ensureDragonRangePct（数据在就秒回、
         //   不在才发一次请求），所以点开不会出现「空白等数据」的空窗。
         sortState.byRangePct20 = false;
-        sortState.byJingYest = false; sortState.byJingYestRatio = false;
+        sortState.byJingYest = false;
+        sortState.byRangePct30 = false;
       }
       // [TWO-MODES 2026-10-02] ⛔ 原 `byParallel` 的互斥分支（toogle 时强置 byParallel=true）已删除：
       //   平行 toggle 不存在了，「平行」语义现在是「竞/昨」的一个 tier（见 view-helpers 的 tier 解析），
@@ -1487,6 +1615,18 @@ export function useAuctionBoard() {
       if (_fd && _frows.length > 0) {
         Promise.resolve(ensureRange20(_fd, _frows, { force: true })).catch(function(e) {
           console.warn('[RANGE20] 强制重试失败:', (e && e.message) || e);
+        });
+      }
+    }
+    // ★ [RANGE30 2026-11-18] 同款语义：点开 30日涨幅 = 用户手动重试。
+    //   K 线失败的票在 range30.js 的 `_tried` 里登记着，不显式 force 就永远不会再试 ⇒
+    //   屏幕上那一列 `—` 看起来「点了也没反应」。仍只补没有值的票（⛔ 不是全量重拉，§32）。
+    if (key === 'byRangePct30' && sortState.byRangePct30) {
+      const _fd30 = uiStore.currentDate;
+      const _frows30 = (viewData.value && viewData.value.items) || [];
+      if (_fd30 && _frows30.length > 0) {
+        Promise.resolve(ensureRange30(_fd30, _frows30, { force: true })).catch(function(e) {
+          console.warn('[RANGE30] 强制重试失败:', (e && e.message) || e);
         });
       }
     }
@@ -2294,6 +2434,8 @@ export function useAuctionBoard() {
     filteredRegularItems,
     filteredDragonItems,
     filteredRange20LeaderItems,
+    // ★ [RANGE30 2026-11-18] 30 天补位行（第五组）
+    filteredRange30LeaderItems,
     showObsSeparator,
     showDragonSeparator,
     // [ROW-CLASS 2026-11-02 用户口径] 四类行分账（Logic 层唯一真相的只读透出，见定义处说明）

@@ -4,6 +4,10 @@
 //   常规组  、观察组 、龙头组 、20日补位
 //   用户口径：「列表里面有正式成员、龙头组、观察组、20日补的，要分清楚啊」
 //              「四组互斥且相加 = 合计」
+// ★ [RANGE30 2026-11-18] 新增【第五组：30天补位】——
+//   用户口径：「还有要最近多板看板的30日所有的股票，取前五进行补位，标签是30天，
+//     这个和20天补的逻辑差不多」。它与 20 日补位是**并列的独立组**（独立名册、独立区块、「30天」标签），
+//   不是把 20 日那组的窗口改长 —— 两组可以同时在屏上，所以去重顺序必须确定（见下方注入顺序）。
 //
 // 【为什么拆成四个文件】
 //   用户原话（2026-11-05）：「这四组你可以为他们拆成四个组件，这样哪个组件出现问题就修复哪个，
@@ -31,6 +35,8 @@ import { createInjectionRegistry } from './registry.js';
 import { resolveObsGroup, injectObsRows } from './obs-group.js';
 import { resolveDragonGroup, injectDragonRows } from './dragon-group-rows.js';
 import { resolveRange20Group, injectRange20Rows } from './range20-group-rows.js';
+// ★ [RANGE30 2026-11-18] 第五组：30 天补位（与 20 日补位同构、独立名册、独立区块）
+import { resolveRange30Group, injectRange30Rows } from './range30-group-rows.js';
 
 /**
  * 装配四组行。
@@ -49,6 +55,8 @@ import { resolveRange20Group, injectRange20Rows } from './range20-group-rows.js'
  *   dragon: Map|null,       // 龙头名册
  *   range20: Array|null,    // 20日补位名册
  *   range20Meta: Map,
+ *   range30: Array|null,    // 30日补位名册
+ *   range30Meta: Map,
  *   existingNames: Set<string>,
  *   injectedNames: Set<string>
  * }}
@@ -63,6 +71,8 @@ export function collectRowGroups(opts) {
   const obs = resolveObsGroup({ date: date, prevDate: prevDate, dataSource: o.dataSource });
   const dragon = resolveDragonGroup(date);
   const range20 = resolveRange20Group(date);
+  // ★ [RANGE30 2026-11-18] 与 range20 并列读一份自己的名册（同步读内存，不发请求）
+  const range30 = resolveRange30Group(date);
 
   const reg = createInjectionRegistry({
     list: list,
@@ -70,10 +80,13 @@ export function collectRowGroups(opts) {
     codeOf: o.codeOf,
   });
 
-  // 顺序 = 与拆分前逐字一致（观察组 → 龙头组 → 20日补位），见文件头说明
+  // 顺序 = 观察组 → 龙头组 → 20日补位 → 30日补位
+  //   ★ [RANGE30 2026-11-18] 30 日排在最后：同名的票如果已经进了 20 日补位区块，就不再重复注入
+  //     （一只票只能有一行）。两组的交集很小（30 日窗口 ⊇ 20 日窗口），但去重必须确定。
   injectObsRows(obs, reg);
   injectDragonRows(dragon, reg);
   const r20 = injectRange20Rows(range20, reg);
+  const r30 = injectRange30Rows(range30, reg);
 
   const injectedRows = reg.rows;
   return {
@@ -84,6 +97,8 @@ export function collectRowGroups(opts) {
     dragon: dragon,
     range20: range20,
     range20Meta: r20.meta,
+    range30: range30,
+    range30Meta: r30.meta,
     existingNames: reg.existingNames,
     injectedNames: reg.injectNames,
   };

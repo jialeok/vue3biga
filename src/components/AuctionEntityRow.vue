@@ -121,6 +121,16 @@
         class="auction-r20-tag"
         :title="range20LeaderTagTitle(item)"
       >20天</span>
+      <!-- ★ [RANGE30 2026-11-18 用户口径] 「30天」标签：该行是「近 30 个交易日竞价名单里
+           30 日涨幅前五、但今天不在正式列表」的补位票，由 Logic 层（range30-leaders.js）检索。
+           用户要求：「取前五进行补位，标签是30天」。
+           ⚠️ 与上面的「20天」是【两组互斥身份】（registry 保证一只票只归一组），不会同时出现；
+           判定只读 item.range30Leader，本组件不做任何检索/请求（§3）。 -->
+      <span
+        v-if="item.range30Leader"
+        class="auction-r30-tag"
+        :title="range30LeaderTagTitle(item)"
+      >30天</span>
       <!-- [DRAGON-GROUP 2026-09-15 → RANGE-PCT 2026-10-14] 股票名旁的「十日区间涨幅」数值。
            两种模式共用这一处渲染（样式 / 配色 / 位置一字未变，⛔ 不新增 CSS）：
              · 默认模式      → 龙头组行的名册十日涨幅（= 龙头组区块的排序键）；
@@ -386,7 +396,9 @@ const {
 //   ⛔ AuctionBoardToolbar 的表头必须用【同一个表达式】，否则表头与数据列错位
 //      （列少了一格，后面的列整体左移 —— 2026-10-20 已踩过一次）。
 //   ⚠️ 其它 toggle / 默认模式恒 false ⇒ 渲染与改动前逐字一致（§11 默认无行为）。
-const rangeColsMode = computed(() => !!(sortState.byRangePct20 || sortState.byRangePct));
+// ★ [RANGE30 2026-11-18] 「30日涨幅」沿用同一套列结构（用户：「30日涨幅和20日涨幅功能差不多」）。
+//   ⚠️ 改动这一行必须【逐字同步】AuctionBoardToolbar.vue 里的同名 computed，否则表头与数据列错位。
+const rangeColsMode = computed(() => !!(sortState.byRangePct20 || sortState.byRangePct30 || sortState.byRangePct));
 
 // 趋势图显示判定：整条序列是否有任一有效点（渲染结果与原先内联写法 100% 一致）。
 function aucPctHasData(stock) {
@@ -503,14 +515,35 @@ function range20LeaderTagTitle(item) {
   return bits.join('｜');
 }
 
+// ★ [RANGE30 2026-11-18] 「30天」标签的悬停说明 —— 与上面「20天」同款，但把**算法**也说清：
+//   30 日不是逐日累乘，而是「期末收盘价 / 期初前收盘价 − 1」一次性比值（用户要拿它跟炒股软件对账）。
+function range30LeaderTagTitle(item) {
+  if (!item) return '';
+  const bits = ['近 30 个交易日（含今天）竞价名单中的 30 日涨幅前五'];
+  const v = item.range30LeaderPct;
+  if (v !== null && v !== undefined && !isNaN(Number(v))) {
+    const n = Number(v);
+    const days = item.range30LeaderDays || 0;
+    bits.push('30日区间涨幅 ' + (n >= 0 ? '+' : '') + n.toFixed(2) + '%'
+      + (days > 0 && days < 30 ? '（' + days + '/30个交易日有成交）' : '（30个交易日）'));
+  }
+  bits.push('算法：期末收盘价 / 期初前收盘价 − 1（数学上等价于逐日累乘，但与炒股软件口径一致）');
+  bits.push('今天不在正式列表 ⇒ 自动补位显示（否则这只票在看板上会消失）');
+  return bits.join('｜');
+}
+
 function rangePctValue(item) {
   if (!item) return null;
-  // [RANGE20 2026-10-19] 两个 toggle 互斥，判断顺序不影响结果；20 日放前面便于阅读。
+  // [RANGE20 2026-10-19] 主排序 toggle 互斥，判断顺序不影响结果。
+  // ★ [RANGE30 2026-11-18] 30 日放最前面：它是最新加的，且与另两个互斥，读起来最短。
+  if (sortState.byRangePct30) return item.rangePct30;
   if (sortState.byRangePct20) return item.rangePct20;
   if (sortState.byRangePct) return item.rangePct;
   // [RANGE20-TOP5 2026-10-19] 补位行：**恒**显示它的 20 个交易日区间涨幅（不需要打开任何 toggle）。
   //   它是这只票被补进看板的唯一理由，藏在开关后面等于没补 —— 用户要的是「一眼看到它涨了多少」。
   if (item.range20Leader) return item.range20LeaderPct;
+  // ★ [RANGE30 2026-11-18] 30 天补位行同理（恒显示它自己的 30 日区间涨幅，⛔ 不借用 20 天那份）。
+  if (item.range30Leader) return item.range30LeaderPct;
   if (item.isDragonGroupMember && !sortState.byTopic) return item.dragonGroupPct;
   return null;
 }
@@ -541,6 +574,16 @@ function rangePctTitle(item) {
   //   历史日的库内涨幅不可靠（早盘写入的竞价涨幅 / 缺行），所以这一列在 K 线补算完成前
   //   一律显示 `—`（§10 宁缺勿错）—— 这里告诉用户「是在补算」，而不是「涨了 0%」。
   if (!txt) {
+    // ★ [RANGE30 2026-11-18] 30 日靠腾讯日线批量现算（一次请求覆盖多只，正常 1~3 秒）。
+    //   还空着通常是这三种：次新股（上市不满 30 个交易日）/ 窗口内成交不足 10 天 / 拿不到代码 ——
+    //   range30.js 对这三种一律返回 null（§10 ⛔ 不补 0）。两种可能都说出来，用户不用猜。
+    if (sortState.byRangePct30) {
+      if (sortState.byAuctionLeg) {
+        return '30日区间涨幅：正在读取该日【竞价口径（9:26）】的数值（读不到就不显示，绝不拿收盘口径冒充）。';
+      }
+      return '30日区间涨幅：正在用腾讯日线补算（期末收盘 / 期初前收盘 − 1）。'
+        + '若一直为空，说明这只票判不出（次新股 / 窗口内成交不足 10 天 / 无代码映射），按规范不补 0。';
+    }
     if (sortState.byRangePct20) {
       // §10：竞价口径那份还没读到 / 判不出时同样要说清「是在读」，⛔ 不许拿收盘口径顶替
       if (sortState.byAuctionLeg) {
@@ -557,6 +600,18 @@ function rangePctTitle(item) {
   // [RANGE20 2026-10-19] 20 日模式：口径文案换成 20 日，并如实标出「实际参与累乘的天数」——
   //   停牌日没有日涨幅腿（复利里 ×(1+0%) 是恒等变换，数值不受影响），所以停过牌的票会是 17/20 日；
   //   用户口径是「停牌也算进去」，这里用 n/20 让它一眼可核对，而不是悄悄当作满窗。
+  // ★ [RANGE30 2026-11-18] 30 日同款：`rangePct30Days` = 窗口内有成交的 K 线根数。
+  //   它的口径与 20 日【不一样】，悬停必须说清（用户要拿它跟炒股软件逐票对账）：
+  //   不是逐日累乘，而是「期末收盘价 / 期初前收盘价 − 1」一次性比值。
+  if (sortState.byRangePct30) {
+    const days30 = item.rangePct30Days || 0;
+    const tail30 = (days30 > 0 && days30 < 30)
+      ? '（' + days30 + '/30个交易日有成交，停牌期间价格不变）'
+      : '（30个交易日）';
+    return '30日区间涨幅 ' + txt + tail30 + '｜口径：' + (sortState.byAuctionLeg
+      ? '【竞价口径（9:26）】今日那根腿用 9:25 竞价价，其余 29 天取收盘价 ⇒ 早上 9:26 那一刻看到的数'
+      : '【收盘口径】期末收盘价 / 期初前收盘价 − 1（基准 = 30 个交易日前那一日的收盘，与炒股软件一致）');
+  }
   // [R20-TSWITCH 2026-10-19] 口径一句写清（用户要拿它跟炒股软件逐票对账）：
   //   前 19 天收盘 + 今日「盘中竞价 / 收盘后收盘」—— 两种时刻都说出来，省掉视图层判断时刻的计算。
   // ★ [AUCTION-LEG-TOGGLE] 打开「竞价口径」时，今日那一根腿被【钉死】在 9:25 竞价（不再随 15:00 换腿）
@@ -573,6 +628,14 @@ function rangePctTitle(item) {
     const days = item.range20LeaderDays || 0;
     const tail = (days > 0 && days < 20) ? '（' + days + '/20日）' : '（20个交易日）';
     return '20日区间涨幅 ' + txt + tail + '｜近20个交易日竞价名单里涨幅前五、但今天不在正式列表 ⇒ 补位显示';
+  }
+  // ★ [RANGE30 2026-11-18] 30 天补位行同款：口径 + 为什么它在这里（算法与 20 日不同，必须写清）。
+  if (item.range30Leader) {
+    const days30 = item.range30LeaderDays || 0;
+    const tail30 = (days30 > 0 && days30 < 30) ? '（' + days30 + '/30个交易日有成交）' : '（30个交易日）';
+    return '30日区间涨幅 ' + txt + tail30
+      + '｜算法：期末收盘价 / 期初前收盘价 − 1（与逐日累乘等价，与炒股软件一致）'
+      + '｜近30个交易日竞价名单里涨幅前五、但今天不在正式列表 ⇒ 补位显示';
   }
   // 龙头组行沿用原口径（附题材，方便核对它是哪个题材的龙头）；
   // 十日涨幅模式是【全市场】排序，题材在行内另有列展示，不在这里重复附（避免提示过长）。

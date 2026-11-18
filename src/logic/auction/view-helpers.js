@@ -8,7 +8,7 @@ import { getHighRatioStocksForDate, getParallelStocksForDate, getJingYestHighlig
 import { ensureBoughtStocksForDate, ensureObservationStocks, deriveAuctionTagState, _buildTagStateCache } from '../tagTitles/rules.js';
 // ★★ [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] 「竞价口径」toggle 的取值入口（把十日 / 20日涨幅
 //   的今天那一根腿反解回 9:25 竞价）。⛔ 只读、本层不请求 —— 取数由 useAuctionBoard 的 watch 触发。
-import { getAuctionLegRange10, getAuctionLegRange20 } from './auction-leg-ranges.js';
+import { getAuctionLegRange10, getAuctionLegRange20, getAuctionLegRange30 } from './auction-leg-ranges.js';
 // [SORT-ORDER 2026-11-05] 主排序矩阵 + 档位判定已搬到 view-sort-order.js（唯一实现，§6）。
 //   ⛔ 本文件不再 import `sortIndicesByRangePct` —— 比较器只允许存在于那个模块里一次，
 //      否则「十日/20日排序」与「题材组内档位」又是两把尺子。
@@ -21,6 +21,7 @@ import { applyRange20RankDelta, applyTopicStatsAndSeqNo } from './view-decorate.
 //   与十日涨幅的最大差别：云端【没有】20 日行（表主键 (date,stock)，20 日行会覆盖 10 日行）
 //   ⇒ 数据由 range20.js 在客户端按 20 个交易日复利现算、只放会话内存（详见该模块文件头）。
 import { getRange20Pct } from './range20.js';
+import { getRange30Pct } from './range30.js';
 // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五 · 龙头补位」：候选池 = 近 20 个交易日【每天正式列表】的并集
 //   （⛔ 不是当天列表），只主板、取前五；当天列表里没有的注入独立区块（打「20天」标）。
 //   ★ 只读本模块的会话内存（ref-driven），⛔ 本层不请求、不落库（取数由 useAuctionBoard 的 watch 触发）。
@@ -250,6 +251,9 @@ function _enrichAuctionItem(rawItem, index, ctx) {
   // [RANGE20-TOP5 2026-10-19] 该股是否是「20日涨幅前五补位」注入的票（见 computeAuctionViewData 的注入段）。
   //   meta 里带 pct/days ⇒ 行上恒显示它的 20 个交易日区间涨幅（不需要打开 20日涨幅 toggle）。
   const _r20Meta = (ctx.range20LeaderMeta && stockName) ? ctx.range20LeaderMeta.get(stockName) : null;
+  // ★ [RANGE30 2026-11-18] 同款：该股是否是「30日涨幅前五补位」（第五组）注入的票。
+  //   ⚠️ 与上面 _r20Meta **必须是两份**：同一只票可能两个窗口都在榜，行上要显示的是自己那一组的窗口涨幅。
+  const _r30Meta = (ctx.range30LeaderMeta && stockName) ? ctx.range30LeaderMeta.get(stockName) : null;
 
   // [YIZI 2026-09-09] 竞价一字（竞价涨幅达到该股涨停幅度）→ 股票名下方红色下划线标记。
   // 仅题材 toggle 开启时判定（与龙头徽章同一显示口径），避免无谓计算。
@@ -356,6 +360,13 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     range20Leader: !!_r20Meta,
     range20LeaderPct: _r20Meta ? _r20Meta.pct : null,
     range20LeaderDays: (_r20Meta && _r20Meta.days) ? _r20Meta.days : 0,
+    // ★ [RANGE30 2026-11-18 用户口径] 「30天补位」字段（第五组，与上面三行同构）。
+    //   · range30Leader → 模板据此打「30天」标签（用户：「标签是30天」）；
+    //   · range30LeaderPct / Days → 该票【30 个交易日区间涨幅】与窗口内有成交的天数，恒显示（不看 toggle）；
+    //   §10：没取到就 null / 0，⛔ 不显示成 0%（与 20 天同一条红线）。
+    range30Leader: !!_r30Meta,
+    range30LeaderPct: _r30Meta ? _r30Meta.pct : null,
+    range30LeaderDays: (_r30Meta && _r30Meta.days) ? _r30Meta.days : 0,
     // [FEAT 2026-08-20] 题材 toggle：题材数量（供排序）与题材展示文本（供题材列显示）
     topicCount: getStockTopicCount(rawItem),
     topicsDisplay: getStockTopicsDisplay(rawItem),
@@ -406,6 +417,25 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     rangePct20Days: (function() {
       if (!ctx.sortByRangePct20Enabled || !ctx.rangePct20Map || !stockName) return 0;
       const _e = ctx.rangePct20Map.get(stockName);
+      const _d = _e ? Number(_e.days) : 0;
+      return isFinite(_d) && _d > 0 ? _d : 0;
+    })(),
+    // ★ [RANGE30 2026-11-18 用户口径] 「30日涨幅」toggle 下每行显示的数值（= 该模式排序键）。
+    //   来源 = ctx.rangePct30Map（range30.js 现算：期末收盘 / 期初前收盘 − 1，一次性比值）。
+    //   §10：取不到 → null（模板不渲染，⛔ 绝不当 0 显示）。
+    //   `rangePct30Days` = 窗口内实际有成交的 K 线根数（停牌/次新股会 < 30），只用于悬停提示。
+    rangePct30: (function() {
+      if (!ctx.sortByRangePct30Enabled || !ctx.rangePct30Map || !stockName) return null;
+      const _e = ctx.rangePct30Map.get(stockName);
+      if (!_e) return null;
+      const _v = _e.pct;
+      if (_v === null || _v === undefined || _v === '') return null;
+      const _n = Number(_v);
+      return isFinite(_n) ? _n : null;
+    })(),
+    rangePct30Days: (function() {
+      if (!ctx.sortByRangePct30Enabled || !ctx.rangePct30Map || !stockName) return 0;
+      const _e = ctx.rangePct30Map.get(stockName);
       const _d = _e ? Number(_e.days) : 0;
       return isFinite(_d) && _d > 0 ? _d : 0;
     })(),
@@ -490,7 +520,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     // [ROW-CLASS 2026-11-02] 空态也必须给出同形状的 rowClassCounts（全 0 + split:false）：
     //   ⛔ 让下游读到 undefined 再各自兜底，就等于把「没有数据」和「字段没人写」混成一件事（§10）。
     //   形状由 buildRowClassCounts 统一产出（与正常路径同一个实现，§6）。
-    return { items: [], obsIndices: [], regularIndices: [], dragonIndices: [], range20LeaderIndices: [], hiddenObsIndices: [], rowClassCounts: buildRowClassCounts(), stats: { todayStrength: null, yesterdayStrength: null, strongCount: 0, totalCount: 0, highRatioCount: 0, jingYestCount: 0 }, rawCount: 0, date: currentDate, dataSource };
+    return { items: [], obsIndices: [], regularIndices: [], dragonIndices: [], range20LeaderIndices: [], range30LeaderIndices: [], hiddenObsIndices: [], rowClassCounts: buildRowClassCounts(), stats: { todayStrength: null, yesterdayStrength: null, strongCount: 0, totalCount: 0, highRatioCount: 0, jingYestCount: 0 }, rawCount: 0, date: currentDate, dataSource };
   }
 
   const prevDate = getPreviousTradingDay(currentDate);
@@ -540,6 +570,10 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   const _range20Names = new Set(_groups.range20Meta.keys());  // 本组真正补进来的股票名
   const _range20Meta = _groups.range20Meta;                   // 股票名 -> {pct, days}
   const _range20Leaders = _groups.range20;                    // 20日补位名册原件（区块排序要用它的顺序）
+  // ★ [RANGE30 2026-11-18] 30 天补位（第五组）：与 20 日同构三件套，各自独立（§6 不共用判据）
+  const _range30Names = new Set(_groups.range30Meta.keys());
+  const _range30Meta = _groups.range30Meta;                   // 股票名 -> {pct, days}
+  const _range30Leaders = _groups.range30;                    // 30日补位名册原件（区块排序要用它的顺序）
 
   // renderList 仅服务于视图渲染；真实业务数据(auctionList)保持不变，统计口径仍基于 auctionList。
   const renderList = _injectedRows.length ? auctionList.concat(_injectedRows) : auctionList;
@@ -590,7 +624,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   //   开关位换成 `byAuctionLeg`（竞价口径）。⚠️ 键名 / 默认值必须与 useAuctionBoard#sortState
   //   和 auctionStore#createSortState 逐字一致（§6：三处默认值不同，会让「store 读不到」那一瞬间
   //   的口径跳变）。默认关闭 = 收盘口径，与加本功能之前逐字相同（§11）。
-  const _defaultSortState = { byAuctionLeg: false, byRangePct20: false, byJingYest: false, byJingYestRatio: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI };
+  // ★ [RANGE30 2026-11-18] `byJingYestRatio`（竞/昨占比）已整体下线，换成 `byRangePct30`。
+  const _defaultSortState = { byAuctionLeg: false, byRangePct20: false, byRangePct30: false, byJingYest: false, byRangePct: false, byTopic: false, topicOrderBy: TOPIC_ORDER_YIZI };
   let sortState;
   if (sortStateOverride) {
     sortState = sortStateOverride;
@@ -615,6 +650,13 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   const _range20MapFor = function() {
     return sortState.byAuctionLeg ? getAuctionLegRange20(currentDate) : getRange20Pct(currentDate);
   };
+  // ★ [RANGE30 2026-11-18] 30日涨幅的同一个口径分支点：
+  //   关闭 = 收盘口径（range30.js 现算的「期末收盘 / 期初前收盘 − 1」）；
+  //   打开 = 9:26 竞价口径（把今天那根腿反解回竞价，range30-auction-leg.js）。
+  //   ⛔ 排序键与行上数值必须取【同一个 Map】（§6），§10 判不出 ⇒ null ⇒ 不显示数值 + 置底。
+  const _range30MapFor = function() {
+    return sortState.byAuctionLeg ? getAuctionLegRange30(currentDate) : getRange30Pct(currentDate);
+  };
 
   // [LIMIT-STREAK 2026-09-11] 趋势/连板映射：只在题材模式计算（需求：「单独打开题材 toggle」看趋势/连板）。
   // 预构建一次（不是逐行现算），供下方 ctx → _enrichAuctionItem 逐行读取。
@@ -632,7 +674,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   const highRatioToday = getHighRatioStocksForDate(currentDate, dataSource);
   const jingYestHighlightSet = getJingYestHighlightSetForDate(currentDate, dataSource);
   const parallelStocksToday = getParallelStocksForDate(currentDate, dataSource);
-  const jingYestToggleChecked = sortState.byJingYest || sortState.byJingYestRatio;
+  const jingYestToggleChecked = !!sortState.byJingYest;
 
   // [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] ⛔ 原「弱转强达标集合 / 竞价转向集合」两行已随
   //   「弱转强」toggle 整体下线（用户：「把原来弱转强toggle功能去掉换成我说的竞价口径toggle」）。
@@ -736,6 +778,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     // ⛔ 传函数不传值：`_range10MapFor()` 只在对应分支里才该被调用（惰性，保持改造前逐字行为）
     rangeMapOf10: _range10MapFor,
     rangeMapOf20: _range20MapFor,
+    rangeMapOf30: _range30MapFor,
     auctionPctOf: _auctionPctOf
   });
   // [TWO-MODES 2026-10-02 用户口径] ⛔ 这里原有 `else if (sortState.byParallel)` 主排序分支（平行达标档
@@ -751,7 +794,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // 复用第二页题材分类(getTopicGroups) 的同一套核心词匹配口径：把同题材股票聚到一起，
   // 哪个题材股票多哪个排前面，"其它"(无题材/未匹配核心词/组<2只) 置底。
   // 主排序档位(tier)顺序保持不变——竞昨高光/达标(tier0)整体置顶，档位【内部】再按题材组大小降序。
-  // 覆盖 竞/昨、竞/昨占比（分层）与 默认/十日涨幅/20日涨幅（单层，等同全局分组）。
+  // 覆盖 竞/昨（分层）与 默认/十日涨幅/20日涨幅/30日涨幅（单层，等同全局分组）。
   // 修复点：v1 按「单只股票题材数量」排序（一只股题材多就排前），与用户要的「题材分组」不符；
   //       现改为与第二页一致的主题材分组，高光档位整体仍置顶、组内按题材聚并组大者居前。
 
@@ -769,7 +812,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
 
   // [TOPIC-MERGE 2026-09-09] 题材 toggle「单独开启」判定：没有任何主排序 toggle 参与时为真。
   // 单独开启题材 = 用户只想按题材看当日全量（含观察组继承票），不再区分观察组/常规组两块；
-  // 一旦叠加任一主排序 toggle（竞昨/竞昨占比/十日涨幅/20日涨幅），
+  // 一旦叠加任一主排序 toggle（竞昨/十日涨幅/20日涨幅/30日涨幅），
   // 观察组与常规组的既有显示方式保持不变（下方分组分支的 else/各专属分支原逻辑不动）。
   // ⚠️ [AUCTION-LEG-TOGGLE 2026-10-25] 「竞价口径」【不算】主排序 toggle（它只换数值来源，
   //   不改变分组 / 排序档位）⇒ ⛔ 不要把它加进下面这个判定，否则单独开题材时的分组方式会莫名改变。
@@ -782,7 +825,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   const topicOnlyMode = !!sortState.byTopic
     && !jingYestToggleChecked
     && !sortState.byRangePct
-    && !sortState.byRangePct20;
+    && !sortState.byRangePct20
+    && !sortState.byRangePct30;
 
   // 题材背景色映射：仅在 byTopic 开启时计算，供下方 enrich 步骤给每行附上浅色背景。
   // 不同题材不同浅色、仅成员>=2 的真实题材上色、"其它"不上色（详细口径见 buildTopicColorMap）。
@@ -1028,6 +1072,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // 其余模式（题材 / 十日涨幅 / 20日涨幅 / 竞昨）一律折叠为 [] ——
   //   十日·20日涨幅模式下全部股票本来就折成一条降序表，补位行自然排在里面（和龙头组同款折叠）。
   let range20LeaderIndices = [];
+  // ★ [RANGE30 2026-11-18] 「30天补位」区块索引（与 20 日补位同款：独立的第五组，独立小区块）。
+  //   其余模式下同样折叠为 [] —— 涨幅模式下全部股票本来就折成一条降序表，补位行自然排在里面。
+  let range30LeaderIndices = [];
   if (topicOnlyMode) {
     // [TOPIC-MERGE 2026-09-09] 题材单独开启：观察组与常规组融合为【单一列表】。
     // - obsIndices=[] → 模板不再渲染观察组区块与蚂蚁线分隔（showObsSeparator 自动为 false）；
@@ -1037,7 +1084,7 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     obsIndices = [];
     regularIndices = renderOrder.slice();
     hiddenObsIndices = [];
-  } else if (sortState.byRangePct || sortState.byRangePct20) {
+  } else if (sortState.byRangePct || sortState.byRangePct20 || sortState.byRangePct30) {
     // [RANGE-PCT 2026-10-14] 十日涨幅模式：折叠龙头组与观察组（dragonIndices 保持 []、obsIndices=[]）
     // → 模板不渲染两个独立区块与蚂蚁线；三组股票【全部】进 regularIndices 这一条列表，
     // 总数与默认模式一致（不隐藏、不增不减，§6 唯一数据源 = 9:25 列表 + 观察组/龙头继承壳）。
@@ -1131,9 +1178,27 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
         .filter(function(i) { return i >= 0 && !_dragonSet.has(i); });
     }
     const _r20Set = new Set(range20LeaderIndices);
+    // ★ [RANGE30 2026-11-18] 30 天补位区块抽取（第五组），逻辑与上面 20 日逐字同构：
+    //   判据同样是「本次真正注入的名单」`_range30Names`（⛔ 不是全量前五），否则会把今天本来就在
+    //   正式列表里的票从原组强行搬到补位区块，区块里出现无标签行（20 日在 2026-10-19 踩过）。
+    if (_range30Names.size > 0) {
+      const _idxByName30 = new Map();
+      renderList.forEach(function(row, i) {
+        const nm = row && row.stock ? String(row.stock).trim() : '';
+        if (nm && !_idxByName30.has(nm)) _idxByName30.set(nm, i);
+      });
+      range30LeaderIndices = (_range30Leaders || [])
+        .map(function(m) {
+          const nm = m && m.stock ? String(m.stock).trim() : '';
+          if (!nm || !_range30Names.has(nm) || !_idxByName30.has(nm)) return -1;
+          return _idxByName30.get(nm);
+        })
+        .filter(function(i) { return i >= 0 && !_dragonSet.has(i) && !_r20Set.has(i); });
+    }
+    const _r30Set = new Set(range30LeaderIndices);
     const _obsSet = new Set(obsIndices);
     regularIndices = renderOrder.filter(function(i) {
-      return !_dragonSet.has(i) && !_obsSet.has(i) && !_r20Set.has(i);
+      return !_dragonSet.has(i) && !_obsSet.has(i) && !_r20Set.has(i) && !_r30Set.has(i);
     });
     hiddenObsIndices = [];
   }
@@ -1196,11 +1261,20 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     //      失效由 incremental-view 的 `range20=` / `rp20=` 指纹保证。
     sortByRangePct20Enabled: !!sortState.byRangePct20,
     rangePct20Map: sortState.byRangePct20 ? _range20MapFor() : null,
+    // ★ [RANGE30 2026-11-18] 「30日涨幅」toggle：同款只读入口，数据源 = range30.js 的会话内存 Map。
+    //   ⛔ 同样只读、本层不请求（取数由 useAuctionBoard 的 watch 触发 ensureRange30）；
+    //      失效由 incremental-view 的 `range30=` / `rp30=` 指纹保证。
+    sortByRangePct30Enabled: !!sortState.byRangePct30,
+    rangePct30Map: sortState.byRangePct30 ? _range30MapFor() : null,
     // [RANGE20-TOP5 2026-10-19] 「20日涨幅前五补位」的元数据（股票名 -> {pct, days}）与本轮真正补进来的名单。
     //   ⚠️ 与上面的 rangePct20Map 不是一回事：那个只覆盖「屏幕上已有的 41 行」且只在 toggle 打开时有值；
     //   这里覆盖「近 20 日曾经上榜、今天不在列表」的补位行，且【恒有值】（它就是这些行存在的理由）。
     range20LeaderMeta: _range20Meta,
     range20LeaderSet: _range20Names,
+    // ★ [RANGE30 2026-11-18] 30 天补位的元数据与名单（与上面两行同款，但**独立一份**：
+    //   行上「30天」标签的数值绝不能从 20 日那份取，否则同一行会显示另一个窗口的涨幅）。
+    range30LeaderMeta: _range30Meta,
+    range30LeaderSet: _range30Names,
     // ★★ [AUCTION-LEG-TOGGLE 2026-10-25 用户口径] 当前这两个涨幅列用的是哪套口径 —— 传给行组件，
     //   让悬停文案写明「竞价口径（9:26）」而不是让用户自己猜（§21：模板零计算，判定在这里做完）。
     //   ⚠️ 只影响文案；选值已经在上面 rangePctMap / rangePct20Map 一处定掉（§6 不加第二个分支点）。
@@ -1209,7 +1283,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // [DRAGON-GROUP 2026-09-14] 最终渲染顺序 = 龙头组 → 观察组 → 常规组（龙头组排最前，需求 3）。
   // [RANGE20-TOP5 2026-10-19] 20日补位区块插在【龙头组之后、观察组之前】：
   //   它和龙头组同属「昨天/近 20 日挑出来的强势票」，放在一起看得顺，但块是分开的 ⇒ 不打乱既有分组。
-  const fullOrder = dragonIndices.concat(range20LeaderIndices).concat(obsIndices).concat(regularIndices);
+  // ★ [RANGE30 2026-11-18] 30 天补位区块紧跟 20 日补位之后、观察组之前（同属「近期强势票」，块分开）。
+  const fullOrder = dragonIndices.concat(range20LeaderIndices).concat(range30LeaderIndices).concat(obsIndices).concat(regularIndices);
 
   // 非「题材单独开启」时（叠加主排序 / 未开题材），fullOrder 可能与 renderOrder 不同
   // （折叠观察组会剔除未命中行）→ 必须按【最终展示集合】重算一次排名，避免被隐藏的票占用龙一位次。
@@ -1350,6 +1425,8 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     hidden: hiddenObsIndices.length,
     dragon: dragonIndices.length,
     range20: range20LeaderIndices.length,
+    // ★ [RANGE30 2026-11-18] 第五组必须计入分账，否则默认模式下 blocksSum ≠ total 天天报假警
+    range30: range30LeaderIndices.length,
     obs: obsIndices.length,
     regular: regularIndices.length,
     split: _blocksSplit
@@ -1371,6 +1448,9 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
     //   [] = 该模式/该日没有可补的票（前五都在当天列表里，或还没算完 —— 两者的区别由 getRange20Leaders
     //   的 ready 标志表达，视图层不需要区分：没得补就是不渲染区块）。
     range20LeaderIndices,
+    // ★ [RANGE30 2026-11-18] 「30天补位」区块索引（第五组，紧跟 20 日补位之后）。
+    //   [] 与 range20LeaderIndices 同款语义：该模式/该日没有可补的票（或还没算完）。
+    range30LeaderIndices,
     hiddenObsIndices,
     // [ROW-CLASS 2026-11-02 用户口径] 四类行分账（见上方整段说明）。纯计数事实，只读、可复算。
     rowClassCounts,
