@@ -20,7 +20,9 @@
 //   · 能入选的排名第一题材 平均竞价量比 < 25 ⇒ cashAlert.show = true（判据看【能入选的】，
 //     量比更高但数量不足被排除的题材不算）；
 //   · 边界 25 不触发（用户说的是「小于 25」）；缺量比 / 无入选题材都不触发（§10）；
-//   · ★ 命中提醒时【选股一行未改】（票名 / 档位 / 只数 / notes 与量比达标时逐项一致）。
+//   · ★ 命中提醒时【选股行未改】（票名 / 档位 / notes 与量比达标时逐项一致）。
+//     ★★ [BUYABLE-COUNT 2026-11-19 用户口径] 例外：顶部「选股 N 只」改为【今天能下单的只数】，
+//        命中提醒时每行都是【分歧日不买】⇒ 计数为 0（选股行本身一行未改，只是不给买点）。
 //
 // 覆盖【第十六轮 · 空仓提醒下的买点改写】（2026-10-16 用户口径）：
 //   · 命中空仓提醒（非退潮日）⇒ 买点侧每行的动作标签【覆盖式】改写成【分歧日不买】
@@ -714,7 +716,12 @@ describe('tvrb · 空仓提醒（入选题材里排名第一 平均量比 < 25 �
     expect(plan.cashAlert).toEqual(buildCashAlert(null));
   });
 
-  it('★ 命中提醒时【选股一行未改】：档位 / 只数 / 票名 / notes 与「量比达标」时逐项一致', function() {
+  // ★★ [BUYABLE-COUNT 2026-11-19 用户口径] 标题与「只数」断言改了，但**选股行仍然一行未改**：
+  //   「选股 N 只」现在数的是【今天真能下单】的只数（判据 `_isBuyablePick`）——
+  //   命中空仓提醒时每一行都挂着【分歧日不买】⇒ 一只都不能下单 ⇒ 计数必然是 0。
+  //   ⚠️ 这是用户明确要的口径（「可以改下计数那里」），⛔ 不是选股行变了：
+  //     块档位 / 块名额 / 票名 / 客观数据 仍然逐项一致（下面继续断言）。
+  it('★ 命中提醒时【选股行未改】：档位 / 票名 / notes 一致；但「能下单只数」按新口径为 0', function() {
     const low = todayFixtures(21.51);
     const ok = todayFixtures(30);
     const pLow = buildTopicVolRatioPlan(low.topics, low.dm, {});
@@ -727,8 +734,10 @@ describe('tvrb · 空仓提醒（入选题材里排名第一 平均量比 < 25 �
       .toEqual(pOk.blocks.map(function(b) { return b.topic + '|' + b.tier + '|' + b.pickCount; }));
     expect(pLow.blocks[0].picks.map(function(p) { return p.name; }))
       .toEqual(pOk.blocks[0].picks.map(function(p) { return p.name; }));
-    expect(pLow.pickCount).toBe(pOk.pickCount);
-    expect(pLow.pickCount).toBe(2);
+    // ★★ [BUYABLE-COUNT 2026-11-19] 「选股 N 只」= 今天能下单的只数：
+    //   命中提醒 ⇒ 两行都被覆盖成【分歧日不买】⇒ 0 只；未命中 ⇒ 2 只（big 档取 2）。
+    expect(pLow.pickCount).toBe(0);
+    expect(pOk.pickCount).toBe(2);
     // 说明文字：★★ [WEAK-HUDDLE 2026-10-27] 命中提醒时说明区【只多一条】第三十条的留痕
     //   （用户口径要求本条必须写明「判不出 / 仍然空仓」，所以「提醒不进 notes」这条旧契约放宽为
     //     「常规选股说明一行未改、只追加第三十条那一条」）；未命中时那条不出现。
@@ -821,9 +830,11 @@ describe('tvrb · 空仓提醒下的买点改写（非退潮日 ⇒ 分歧日不
     expect(p.ebb).toBe(null);                  // 没有 ebbCtx ⇒ 不是退潮日（只有空仓提醒这一种成因）
     expect(p.cashAlert.show).toBe(true);
     expect(p.cashAlert.avgVolRatioText).toBe('10.00');
-    // 选股照旧：AI应用 10 只 ⇒ big 档 ⇒ 取 2 只
-    expect(p.pickCount).toBe(2);
+    // 选股照旧：AI应用 10 只 ⇒ big 档 ⇒ 取 2 只（行照常列出）
     expect(p.blocks[0].picks.map(function(x) { return x.name; })).toEqual(['甲一', '甲二']);
+    // ★★ [BUYABLE-COUNT 2026-11-19 用户口径] 但「选股 N 只」数的是【今天能下单的只数】：
+    //   两行都被覆盖成【分歧日不买】⇒ 一只都不能下单 ⇒ 0（旧断言写的是 2，即数行数）。
+    expect(p.pickCount).toBe(0);
     p.blocks[0].picks.forEach(function(x) {
       expect(x.buyActionTag).toBe(CASH_NO_BUY_TAG);
       expect(x.buyActionTone).toBe(CASH_NO_BUY_TONE);
@@ -5007,8 +5018,11 @@ describe('tvrb · 第三十条【弱势切抱团】', function() {
     plan.blocks.forEach(function(b) { (b.picks || []).forEach(function(p) { grayNames.push(p.name); }); });
     // 大业股份是灰块的龙一 ⇒ 一定在灰块里出现过
     expect(grayNames).toContain('大业股份');
-    // ⇒ 去重后仍 = 灰块只数（抱团那只不额外加一）
-    expect(plan.pickCount).toBe(Array.from(new Set(grayNames)).length);
+    // ★★ [BUYABLE-COUNT 2026-11-19 用户口径] 旧断言 = 「去重后仍等于灰块只数」（数行数）。
+    //   新口径：灰块那一整批挂着【分歧日不买】⇒ 一只都不计入；能下单的只有抱团那只 ⇒ 1。
+    expect(grayNames.length).toBeGreaterThan(0);        // 灰块确实照常列出（用户「不用去掉」）
+    expect(plan.pickCount).toBe(1);
+    expect(plan.weakHuddle.picks.map(function(p) { return p.name; })).toHaveLength(1);
   });
 
   it('规则手册：第三十条必须写清「触发时机 / 从市场龙头选 / 前三 / 没有就还是空仓 / 放最前面」', function() {
@@ -5350,7 +5364,10 @@ describe('tvrb · 第三十一条【补涨题材】', function() {
     const grayNames = [];
     plan.blocks.forEach(function(b) { (b.picks || []).forEach(function(p) { grayNames.push(p.name); }); });
     expect(grayNames).toContain('大业股份');          // 补涨那只一定在灰块里出现过
-    expect(plan.pickCount).toBe(Array.from(new Set(grayNames)).length);
+    // ★★ [BUYABLE-COUNT 2026-11-19 用户口径] 灰块挂着【分歧日不买】⇒ 不计入；
+    //   能下单的只有补涨那一只 ⇒ 1（旧断言数的是「去重后的灰块只数」= 数行数）。
+    expect(plan.pickCount).toBe(1);
+    expect(plan.catchUp.picks.map(function(p) { return p.name; })).toHaveLength(1);
   });
 
   it('规则手册：第三十一条必须写清「从 6~10 名挑 / 恰好 2~3 只 / 只选连板票 / 没有就连板都没有就空仓」', function() {

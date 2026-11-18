@@ -7,7 +7,7 @@
 //   以及几个排名表读取小件（_range10RankMapOf / _closeRankOf / _rankTopEntries ...）。
 
 import { numOfText } from '../util/num-text.js';
-import { NEW_DRAGON_LOOKBACK_DAYS } from './tvrb-constants.js';
+import { NEW_DRAGON_LOOKBACK_DAYS, NO_BUY_ACTION_TAGS } from './tvrb-constants.js';
 
 import { totalDragonLabel } from '../auction/range20-top5-label.js';
 import { buildRange10Ranked } from './range10-backup.js';
@@ -462,4 +462,29 @@ export function _oldTopicBasisOf(switchDay) {
     ' ⇒ 老题材（大类）= ' + topic +
     (leaderDays > 0 ? ('；窗口内共霸榜 ' + leaderDays + ' 天') : '');
 }
-
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [BUYABLE-COUNT 2026-11-19 用户口径] 「这一行今天真的能下单吗」—— 计数唯一判据（§6）
+//
+// 为什么单独成一个纯函数：`_countUnique`（tvrb-plan.js）只该问「能下单吗」，
+//   ⛔ 不该在计数循环里再抄一遍标签比对（那会变成第二份口径）。
+//
+// 判据（三条，缺一即不可下单）：
+//   ① 行上没有名字 ⇒ 不是一行（历史行为，保持不变）；
+//   ② `abnormalTopicBlocked`（第三十四条延伸：异动第三天同题材禁入）⇒ 不买；
+//   ③ `buyActionTag` 命中 `NO_BUY_ACTION_TAGS`（七枚「不买 / 不开新仓」标签）⇒ 不买。
+//
+// ⚠️ ③ 只看【标签】不看块：块级灰化由 `_countUnique` 的调用方（blocks 循环里那几个
+//   `xxxGray` 判断）负责，两处各管一层，⛔ 不合并（合并后漏一个标记位就又数错）。
+// §10：标签判不出（undefined / 空串）⇒ 按【能买】处理 —— 那是「正常买点行」的既定形态，
+//   若反过来按「不能买」处理，任何一条新通道忘了打标签都会让计数静默变 0（更糟）。
+//
+// @param {object|null} p 买点行
+// @returns {boolean} true = 今天能下单（可计入「选股 N 只」）
+export function _isBuyablePick(p) {
+  if (!p || !String(p.name || '').trim()) return false;
+  if (p.abnormalTopicBlocked) return false;
+  const tag = String(p.buyActionTag || '').trim();
+  if (tag && NO_BUY_ACTION_TAGS.indexOf(tag) >= 0) return false;
+  return true;
+}

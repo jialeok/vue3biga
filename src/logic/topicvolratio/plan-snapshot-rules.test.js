@@ -308,8 +308,8 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     expect(resolvePlanSnapshotFreshness(broken, OPTS)).toBe('stale');
   });
 
-  it('版本常量已 bump 到 25（[RULE-35-FORWARD] 30 日池参数没转发 + 没有渲染通道 ⇒ 历史日也要重算 = v25）', () => {
-    expect(TVRB_RULES_VERSION).toBe(25);
+  it('版本常量已 bump 到 26（[BUYABLE-COUNT] 「选股 N 只」改数能下单的只数 ⇒ 历史日也要重算 = v26）', () => {
+    expect(TVRB_RULES_VERSION).toBe(26);
   });
 
   // ★★ [ABN-MAINBOARD-GUARD 2026-11-14] 第三十四条「全场十日涨幅最高票」只认主板。
@@ -370,8 +370,9 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     //   ★★ [RULE-35 2026-11-18] 第三十五条【30日涨幅抱团】上线【改变选股结论】⇒ 21 → 22；
     //   ★★ [RULE-35-SETTLE 2026-11-19] 第三十五条定稿门控 + 成员行兜底修复 ⇒ 22 → 23；
     //   ★★ [RULE-35-SRC 2026-11-19] 30 日榜数据源优先级修复（空 Map 挡住结果表）⇒ 23 → 24；
-    //   ★★ [RULE-35-FORWARD 2026-11-19] 第三十五条的池子参数没转发 + 那一块没有渲染通道 ⇒ 24 → 25）
-    expect(TVRB_RULES_VERSION).toBe(25);
+    //   ★★ [RULE-35-FORWARD 2026-11-19] 第三十五条的池子参数没转发 + 那一块没有渲染通道 ⇒ 24 → 25；
+    //   ★★ [BUYABLE-COUNT 2026-11-19] 「选股 N 只」改数能下单的只数（pickCount 是屏幕上直接看到的数字）⇒ 25 → 26）
+    expect(TVRB_RULES_VERSION).toBe(26);
     expect(_swCacheNo(readFileSync('public/sw.js', 'utf8'))).toBeGreaterThanOrEqual(67);
   });
 
