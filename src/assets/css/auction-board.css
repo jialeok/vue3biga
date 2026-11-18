@@ -594,6 +594,27 @@
             white-space: nowrap;
         }
 
+        /* ★★ [MARKET-DRAGON 2026-11-18 用户口径] 「市龙一…市龙五」：只在「30日涨幅」toggle 下出现，
+           标在该模式 30 日涨幅前五只的股票名后（位置与「总龙N」同一槽位 —— 两个 toggle 互斥，
+           同一屏不会同时出现两枚名次标）。
+           配色取【紫】：它与「总龙N」的红【刻意不同】，因为用户把两者当两套独立名次
+           （20 日窗口 vs 30 日窗口，用户原话「行情非常差时，市龙一是比20日总龙一要强的」），
+           颜色一样会让人以为「换了个 toggle 但名次没变」。
+           尺寸/圆角/内距与既有标签族逐字一致，⛔ 不另做一套度量（会把行高顶开）。 */
+        .auction-marketdragon-tag {
+            display: inline-block;
+            margin-left: 3px;
+            padding: 0 3px;
+            border-radius: 2px;
+            background: #ede9fe;
+            color: #6d28d9;
+            font-size: 9px;
+            font-weight: 700;
+            line-height: 12px;
+            vertical-align: 1px;
+            white-space: nowrap;
+        }
+
         /* [PRESENCE 2026-10-23 用户口径] 「在列次数」小标签（「5次在列」「首次在列」「未在列」）。
            位置：区间涨幅数值【之后】，与「龙」「20天」「总龙N」同族同尺寸，只换配色。
            配色取【青灰】：它是"分析用的统计值"，既不是身份（龙/20天=蓝）、也不是名次（总龙=红），

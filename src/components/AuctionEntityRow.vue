@@ -84,6 +84,19 @@
         class="auction-totaldragon-tag"
         :title="totalDragonTagTitle(item)"
       >{{ item.totalDragonLabel }}</span>
+      <!-- ★★ [MARKET-DRAGON 2026-11-18 用户口径] 「市龙一…市龙五」：只在「30日涨幅」toggle 下出现，
+           由 Logic 层 market-dragon-top5-label.js 按 30 日涨幅降序给前五只赋值
+           （item.marketDragonRank/Label），其它模式该字段恒为 0/'' ⇒ 本标签不渲染。
+           用户原话：「按30天涨幅排名前五股票后面分别标上，市龙一，市龙二……市龙五，只标这五只，
+           就是全市场的龙一（我自认为的），在行情非常差时，市龙一是比20日总龙一要强的」。
+           ⚠️ 与上面的「总龙N」是【两套独立名次】（20 日窗口 vs 30 日窗口），两者所在的 toggle
+             互斥（byRangePct30 会关掉 byRangePct20）⇒ 同一行不会同时出现两枚名次标。
+           ⚠️ 纯展示：本组件不做任何排名/取值判定（§3/§21）。 -->
+      <span
+        v-if="item.marketDragonRank > 0"
+        class="auction-marketdragon-tag"
+        :title="marketDragonTagTitle(item)"
+      >{{ item.marketDragonLabel }}</span>
       <!-- [SUSPEND 2026-10-13] 当日停牌小标：上游（猫抓/同花顺）都拿不到该票的竞价与成交，
            于是本行竞价量/占比会显示 '-' —— 外观与「上游没抓到数据」完全一致，极易误读
            （2026-10-13 新华传媒 600825.SH 实例）。命中即明示「停牌」，一眼区分
@@ -464,6 +477,27 @@ function totalDragonTagTitle(item) {
       + (days > 0 && days < 20 ? '（' + days + '/20日）' : '（20个交易日）'));
   }
   bits.push('只给前五只打标（总龙一…总龙五），其它票不标');
+  return bits.join('｜');
+}
+
+// ★★ [MARKET-DRAGON 2026-11-18 用户口径] 「市龙N」标签的悬停说明。
+//   必须说清两件容易被误解的事：
+//     ① 名次口径是【30 个交易日】窗口，不是 20 日 —— 所以它和「总龙N」是两个不同的数；
+//     ② 名次只数主板（创业板/科创板/北交所不占名额），⛔ 不能写成「全市场第 N 名」，
+//        否则用户会去跟全市场榜单对账、对不上（「总龙N」在 2026-10-24 踩过同款）。
+//   §21 模板零计算：文案在这里拼好，模板只渲染。
+function marketDragonTagTitle(item) {
+  if (!item) return '';
+  const bits = ['「30日涨幅」排序下【主板】第 ' + item.marketDragonRank + ' 名（创业板/科创板/北交所不占名次）'];
+  const v = item.rangePct30;
+  if (v !== null && v !== undefined && !isNaN(Number(v))) {
+    const n = Number(v);
+    const days = item.rangePct30Days || 0;
+    bits.push('30日区间涨幅 ' + (n >= 0 ? '+' : '') + n.toFixed(2) + '%'
+      + (days > 0 && days < 30 ? '（' + days + '/30日）' : '（30个交易日）'));
+  }
+  bits.push('与「总龙N」是两套名次：市龙按 30 个交易日窗口排名，总龙按 20 个交易日窗口排名');
+  bits.push('只给前五只打标（市龙一…市龙五），其它票不标');
   return bits.join('｜');
 }
 

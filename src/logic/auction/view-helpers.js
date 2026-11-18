@@ -83,6 +83,9 @@ import { isSuspended } from './suspend.js';
 // [RANGE20-TOTAL-DRAGON 2026-10-20 用户口径] 「20日涨幅」toggle 专属显示层：前五标「总龙一…总龙五」。
 //   纯函数独立成模块（可单测），⛔ 与其它 toggle 的显示口径无关 —— 其它模式一律不标。
 import { assignTotalDragonRanks, RANGE20_TOTAL_DRAGON_TOP_N } from './range20-top5-label.js';
+// ★ [MARKET-DRAGON 2026-11-18 用户口径] 「30日涨幅」toggle 专属的「市龙一…市龙五」名次
+//   （与上面「总龙N」同构，但口径是 30 个交易日窗口 —— 两套名次独立，详见该模块头注释）。
+import { assignMarketDragonRanks, MARKET_DRAGON_TOP_N } from './market-dragon-top5-label.js';
 // [PRESENCE 2026-10-23 用户口径] 「涨幅前十 · 在列次数」标签（「5次在列」「首次在列」）：
 //   判定/文案全在 presence-label.js（纯函数、可单测），次数来自预计算表 auction_presence
 //   （Data 层 auction-presence.js，⛔ 本层不发请求，只同步读会话缓存）。
@@ -455,6 +458,12 @@ function _enrichAuctionItem(rawItem, index, ctx) {
     //     若只有某个模式写、其它模式不写，切 toggle 时残留的旧标签会串到别的视图里（§11 默认无行为）。
     totalDragonRank: 0,
     totalDragonLabel: '',
+    // ★ [MARKET-DRAGON 2026-11-18 用户口径] 「30日涨幅」toggle 专属的「市龙一…市龙五」名次。
+    //   默认 0 / ''（= 不打标），只有该 toggle 打开时由 market-dragon-top5-label.js 后置赋值 1..5。
+    //   ⚠️ 同款理由必须在这里给默认值：items 会经增量视图缓存复用，缺省值不一致会让
+    //     残留的「市龙N」串到别的视图里（§11 默认无行为）。
+    marketDragonRank: 0,
+    marketDragonLabel: '',
     // [PRESENCE 2026-10-23 用户口径] 「在列次数」标签的默认值 = 不标。
     //   只有「10日涨幅」/「20日涨幅」toggle 打开时才由 presence-label.js 后置赋值。
     //   ⚠️ 必须在这里显式给默认值（而不是只在那个模式里写）：items 会经增量视图缓存复用，
@@ -1334,6 +1343,27 @@ export function computeAuctionViewData(dataSource, sortStateOverride) {
   // ==========================================================================
   if (sortState.byRangePct20 && !topicOnlyMode) {
     assignTotalDragonRanks(items, RANGE20_TOTAL_DRAGON_TOP_N);
+  }
+
+  // ==========================================================================
+  // ★★ [MARKET-DRAGON 2026-11-18 用户口径] 「30日涨幅」toggle 专属显示层：
+  //   按 30 日涨幅由高到低给前五只打「市龙一…市龙五」，其它票一律不标（用户「只标这五只」）。
+  //
+  // 用户原话：「单独打开30天涨幅，按30天涨幅排名前五股票后面分别标上，市龙一，市龙二……市龙五，
+  //   只标这五只，就是全市场的龙一（我自认为的），在行情非常差时，市龙一是比20日总龙一要强的」。
+  //
+  // ★ 位置与判定与上面「总龙N」【完全同构】，⛔ 不要另起一套写法：
+  //   ① 此时 items 的顺序 = 最终渲染顺序，且 `byRangePct30` 分支已把三组折叠成一条列表
+  //      （见上方 `else if (sortState.byRangePct || byRangePct20 || byRangePct30)`）⇒ 下标 0..4 就是前五；
+  //   ② 顺序由 sortIndicesByRangePct（十日/20日/30日同一个比较器）给出，本层⛔ 不再排序（§6）；
+  //   ③ 排名键用行上的 `rangePct30` —— 它已经跟着「竞价口径」toggle 切换（`_range30MapFor`），
+  //      所以开着竞价口径时这里的名次也跟着竞价口径走，不需要另做分支。
+  // ★ 只在 `byRangePct30` 打开时赋值 —— 其它 toggle 走 _enrichAuctionItem 的默认值 0/''
+  //   ⇒ 用户要求的「其它 toggle 保留原样、其它票不标」是结构性保证，不靠模板再判一次。
+  // ⚠️ 题材单独模式下顺序是「按题材分组」而非涨幅降序 ⇒ 不打标（§10 宁可没有标签，也不给错名次）。
+  // ==========================================================================
+  if (sortState.byRangePct30 && !topicOnlyMode) {
+    assignMarketDragonRanks(items, MARKET_DRAGON_TOP_N);
   }
 
   // ==========================================================================
