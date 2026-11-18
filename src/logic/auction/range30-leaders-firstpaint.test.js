@@ -48,7 +48,21 @@ describe('[R30-FIRSTPAINT] 首帧必须比粗筛先发出来', () => {
       "import { readRange30Rows } from '../../data/stock-range30-cache.js';"
     );
     expect(norm(SRC)).toContain('cloudMap = await readRange30Rows(d);');
-    expect(norm(SRC)).toContain('const fastTop = _rankFromCloud(pool, cloudMap, RANGE30_LEADER_TOP_N);');
+    expect(norm(SRC)).toContain(
+      'const fastTop = cloudCoverageOk ? _rankFromCloud(pool, cloudMap, RANGE30_LEADER_TOP_N) : [];'
+    );
+  });
+
+  it('★ 覆盖率闸门：云端表只写了一半时 ⛔ 不许拿残缺名单抢发首帧', () => {
+    // 残缺名单比空白更有害：真值算出来的「错前五」，用户会照着买
+    expect(norm(SRC)).toContain(
+      'const cloudCoverageOk = cloudMissing <= Math.max(5, Math.ceil(pool.length * 0.05));'
+    );
+    // 闸门必须真的作用在 fastTop 上（否则形同虚设）
+    const iGuard = norm(SRC).indexOf('const cloudCoverageOk =');
+    const iFast = norm(SRC).indexOf('const fastTop = cloudCoverageOk ?');
+    expect(iGuard).toBeGreaterThan(-1);
+    expect(iFast).toBeGreaterThan(iGuard);
   });
 
   it('云端表覆盖完整 ⇒ 直接结束，⛔ 不许再跑粗筛/精算', () => {

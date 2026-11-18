@@ -322,29 +322,39 @@ export async function ensureRange30Leaders(date, opts) {
     } catch (e) {
       cloudMap = null;
     }
-    const fastTop = _rankFromCloud(pool, cloudMap, RANGE30_LEADER_TOP_N);
-    if (fastTop.length > 0) {
-      _dbgLog('[RANGE30-TOP5-FAST] ' + d + ' 云端表直出前五（云端 ' + cloudMap.size
-        + ' 行 · 0 请求）：' + fastTop.map(function(t) {
-          return t.stock + ' ' + Number(t.pct).toFixed(2) + '%/' + t.days + 'd';
-        }).join(' , '));
-      _publish(d, fastTop);
-    }
-    // 覆盖是否完整：池内还有没有云端没给值的票（次新 / 长时间停牌天然没有 ⇒ 也算「缺」，
-    //   但那种票本来就算不出 30 日涨幅，落到老路径也只是白跑一次，不会得出不同的前五）。
-    //   ★ 覆盖完整 ⇒ 云端表就是真值，老路径（粗筛 + 精算）跑完也是同一个答案 ⇒ 直接结束，§32 不浪费请求。
+    // 覆盖是否完整：池内还有没有云端没给值的票（次新 / 长时间停牌天然没有 ⇒ 也算「缺」）。
     let cloudMissing = 0;
     for (let i = 0; i < pool.length; i++) {
       if (!cloudMap || !cloudMap.has(pool[i].stock)) cloudMissing++;
     }
+    // 🔴 [RANGE30-FIRSTPAINT-GUARD 2026-11-18] 覆盖太差时 ⛔ 不许拿残缺名单抢发首帧 ——
+    //   云端表可能只写了一半（上游批量中途限流 / 当天云端任务还没跑完）。那时按剩下的票排名，
+    //   得到的「前五」是真值算出来的**错名单**（漏掉最强的那批），比空白更有害：用户会照着买。
+    //   ⇒ 覆盖率达到 95%（且至少容忍 5 只天然的次新/停牌缺口）才允许直出；
+    //     达不到就老实走粗筛 + 精算（慢，但结论是全池的）。
+    const cloudCoverageOk = cloudMissing <= Math.max(5, Math.ceil(pool.length * 0.05));
+    const fastTop = cloudCoverageOk ? _rankFromCloud(pool, cloudMap, RANGE30_LEADER_TOP_N) : [];
+    if (fastTop.length > 0) {
+      _dbgLog('[RANGE30-TOP5-FAST] ' + d + ' 云端表直出前五（云端 ' + cloudMap.size
+        + ' 行 · 池 ' + pool.length + ' 只 · 缺 ' + cloudMissing + ' 只）：'
+        + fastTop.map(function(t) {
+          return t.stock + ' ' + Number(t.pct).toFixed(2) + '%/' + t.days + 'd';
+        }).join(' , '));
+      _publish(d, fastTop);
+    }
+    // ★ 覆盖完整 ⇒ 云端表就是真值，老路径（粗筛 + 精算）跑完也是同一个答案
+    //   ⇒ 直接结束，§32 不浪费请求。
     if (cloudMissing === 0 && fastTop.length > 0) {
       _dbgLog('[RANGE30-TOP5-FAST] ' + d + ' 云端表已覆盖候选池全部 ' + pool.length
         + ' 只 ⇒ 跳过粗筛/精算（原路径约 8~15 秒）');
       _poolSig.set(d, poolSig);
       return _state.value.list;
     }
-    if (cloudMap && cloudMap.size > 0) {
-      _dbgLog('[RANGE30-TOP5-FAST] ' + d + ' 云端表覆盖不完整（池 ' + pool.length
+    if (!cloudCoverageOk) {
+      _dbgLog('[RANGE30-TOP5-FAST] ' + d + ' 云端表覆盖不足（池 ' + pool.length
+        + ' 只 · 缺 ' + cloudMissing + ' 只）⇒ ⛔ 不用残缺名单直出，走粗筛+精算');
+    } else if (cloudMap && cloudMap.size > 0) {
+      _dbgLog('[RANGE30-TOP5-FAST] ' + d + ' 云端表基本覆盖（池 ' + pool.length
         + ' 只 · 缺 ' + cloudMissing + ' 只）⇒ 先出块，再走粗筛+精算修正');
     }
 
