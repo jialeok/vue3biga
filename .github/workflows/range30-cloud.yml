@@ -1,0 +1,89 @@
+name: 30日涨幅云端计算（工作日 09:40 / 16:20 北京）
+
+# ════════════════════════════════════════════════════════════════════════════════════════
+# [RANGE30-CLOUD 2026-11-18 用户口径]
+#   「你是不是只在本地运行了，我一直要求在云端运行的，关了电脑也能够在手机正常看到线上应用正常运行」
+#
+# 为什么要有这个 workflow：
+#   30 日涨幅原来只由**手机浏览器**现打腾讯日线现算。腾讯那个接口对「短时间一批并发请求」
+#   直接回 WAF 拦截页（HTTP 501 + HTML，域名 `waf.tencent.com/501page.html`）——
+#   一旦被拦，32 只全部判不出 ⇒ 行上空白、也不排序；关掉电脑/换设备都救不回来，
+#   因为 `stock_range30_pct` 里一条记录都没有。
+#   ⇒ 把「取价 + 算比值 + 落库」放到 GitHub Actions（云端、独立出口 IP、不占电脑也不占手机），
+#     前端只读表 —— 与 20 日涨幅（stock_range20_pct）同一条路径。
+#
+# ⚠️ 时间都是 UTC：01:40 = 北京 09:40（开盘后，给当天看板一份「含当天」的值）；
+#    08:20 = 北京 16:20（收盘后，改成真实收盘价口径）。1-5 = 周一~周五。
+# ⚠️ 脚本自身幂等：已有行不覆盖（`--overwrite` 才重算），可反复重跑。
+# ════════════════════════════════════════════════════════════════════════════════════════
+
+on:
+  schedule:
+    - cron: '40 1 * * 1-5'    # 北京 09:40
+    - cron: '20 8 * * 1-5'    # 北京 16:20
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '可选：指定日期 YYYY-MM-DD（留空=北京今天）'
+        required: false
+        default: ''
+      days:
+        description: '可选：回填最近 N 个日历日（留空=只算一天）'
+        required: false
+        default: ''
+
+concurrency:
+  group: range30-cloud
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  compute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 计算并落库 stock_range30_pct
+        env:
+          # anon public key 已公开在前端 bundle / SQL 文件里，属公开钥匙，不是机密；
+          # 表 RLS 策略是 allow_all（见 db/create_stock_range30_pct.sql）。
+          SUPABASE_URL: https://tonqfgeyxnnwicjopshn.supabase.co
+          SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRvbnFmZ2V5eG5ud2ljam9wc2huIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NjY3NzEsImV4cCI6MjA5NDI0Mjc3MX0.el-W10JIjr9iQXEKNxV7nLNdhZfOQp6waTY7ZSH27Jg
+          TARGET_DATE: ${{ inputs.date }}
+          TARGET_DAYS: ${{ inputs.days }}
+        run: |
+          set -euo pipefail
+          ARGS="--run"
+          if [ -n "${TARGET_DATE}" ]; then ARGS="${ARGS} --date=${TARGET_DATE}"; fi
+          if [ -n "${TARGET_DAYS}" ]; then ARGS="${ARGS} --days=${TARGET_DAYS}"; fi
+          echo "node db/scripts/compute-range30-pct.mjs ${ARGS}"
+          node db/scripts/compute-range30-pct.mjs ${ARGS} | tee /tmp/range30.log
+
+      # 验收：不能只看退出码（脚本对「当天名单为空」也返回 0）。
+      # 判据 = 日志里至少出现过一次 ok:true 且 computed>0，否则视为失败（§10 不许假绿）。
+      - name: 验收（必须真的算出并写入行数）
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("node:fs");
+            const raw = fs.readFileSync("/tmp/range30.log", "utf8");
+            const blocks = raw.split(/\n(?=\{)/);
+            let okAny = false, written = 0, computed = 0;
+            for (const b of blocks) {
+              const s = b.indexOf("{");
+              if (s < 0) continue;
+              let j;
+              try { j = JSON.parse(b.slice(s)); } catch (e) { continue; }
+              if (j && j.ok === true) { okAny = true; computed += j.computed || 0; written += j.written || 0; }
+            }
+            if (!okAny) { console.error("::error::没有任何一天返回 ok:true（看日志里的 reason）"); process.exit(1); }
+            if (computed <= 0) { console.error("::error::算出 0 只 ⇒ 判定失败（上游/WAF 或日历问题），⛔ 不假绿"); process.exit(1); }
+            console.log("✅ 30日涨幅云端计算完成：算出 " + computed + " 只，写入 " + written + " 行");
+          '

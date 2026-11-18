@@ -42,9 +42,19 @@ import { getStockCode } from '../../data/stock-code-map.js';
 import { readRange30Rows, upsertRange30Rows } from '../../data/stock-range30-cache.js';
 import { getPreviousTradingDay, isTradingDay } from '../date/trading-day-helpers.js';
 import { _dbgLog } from '../../data/debug-log.js';
+// ★ [RANGE30-CLOUD 2026-11-18] 数学部分搬到 `range30-math.js`（零 import 的纯函数）——
+//   那样 Cloudflare Worker 也能直接用同一份公式算完落库，前端不必依赖「手机能不能连上腾讯」。
+import {
+  RANGE30_WINDOW_DAYS,
+  RANGE30_MIN_LEGS,
+  normalizeBars,
+  barOnOrBefore,
+  windowFromTradingDays,
+  range30InWindow
+} from './range30-math.js';
 
-/** 窗口长度：含当天在内的 30 个交易日（用户口径：「30日涨幅」） */
-export const RANGE30_WINDOW_DAYS = 30;
+// 纯函数原样再导出：单测与既有调用方一直从本文件取这些名字，⛔ 不要改导出面。
+export { RANGE30_WINDOW_DAYS, RANGE30_MIN_LEGS, normalizeBars, barOnOrBefore };
 
 /**
  * K 线探测的自然日跨度。
@@ -53,72 +63,38 @@ export const RANGE30_WINDOW_DAYS = 30;
 export const RANGE30_PROBE_DAYS = 60;
 
 /**
- * 可信门槛：窗口内至少这么多根成交腿才算得出可信的 30 日涨幅。
- * 与二十日门槛同比例（RANGE20 是 6/20 = 30%）⇒ 30 日对应 10/30 ≈ 33%。
- * ⚠️ 别拍脑袋调大：长期停牌的票（实测新华传媒 30 日窗口内只有 19 根腿）必须仍能出值。
- */
-export const RANGE30_MIN_LEGS = 10;
-
-const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-/**
- * 【纯函数】构造 30 日窗口。
+ * 【纯函数】构造 30 日窗口（前端口径：日历来自 `trading-day-helpers`）。
+ *
+ * ⚠️ 真正的窗口数学在 `range30-math.js#windowFromTradingDays`（worker 也用它）——
+ *    本函数只负责「按前端的交易日历凑出 31 个升序交易日」，⛔ 不另写一套取窗逻辑。
  *
  * @param {string} asOf 窗口末日 YYYY-MM-DD（非交易日 ⇒ 自动退到最近交易日）
  * @param {number} [n] 窗口交易日数，默认 30
  * @returns {{dates:string[], start:string, end:string, baseDate:string}|null}
- *          baseDate = 窗口首日的前一个交易日（期初前收盘所属日）；历史尽头取不到 ⇒ ''
  */
 export function buildRange30Window(asOf, n) {
   const want = Math.max(1, Number(n) || RANGE30_WINDOW_DAYS);
   const endIn = String(asOf || '').slice(0, 10);
-  if (!YMD_RE.test(endIn)) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(endIn)) return null;
   const end = isTradingDay(endIn) ? endIn : getPreviousTradingDay(endIn);
   if (!end) return null;
-  const dates = [end];
+  // 多取 1 天：升序列表里最前面那天就是 baseDate（窗口首日的前一个交易日）
+  const asc = [];
   let cur = end;
-  for (let i = 1; i < want; i++) {
+  for (let i = 0; i <= want; i++) {
+    if (!cur) break;
+    asc.unshift(cur);
+    if (i === want) break;
     cur = getPreviousTradingDay(cur);
-    if (!cur) return null;
-    dates.unshift(cur);
   }
-  return {
-    dates: dates,
-    start: dates[0],
-    end: dates[dates.length - 1],
-    baseDate: getPreviousTradingDay(dates[0]) || ''
-  };
-}
-
-/** 【纯函数】K 线标准化：只留 close>0 的合法 bar，按日期升序、同日去重（后者优先） */
-export function normalizeBars(bars) {
-  const byDate = new Map();
-  (bars || []).forEach(function (b) {
-    if (!b) return;
-    const ymd = String(b.ymd || '').slice(0, 10);
-    if (!YMD_RE.test(ymd)) return;
-    const close = Number(b.close);
-    if (!isFinite(close) || close <= 0) return;
-    byDate.set(ymd, { ymd: ymd, close: close });
-  });
-  return Array.from(byDate.values()).sort(function (a, b) {
-    return a.ymd < b.ymd ? -1 : (a.ymd > b.ymd ? 1 : 0);
-  });
-}
-
-/** 【纯函数】取「≤ ymd 的最后一个 bar」（停牌期间前收盘不变 ⇒ 等价于当日收盘） */
-export function barOnOrBefore(series, ymd) {
-  if (!ymd || !Array.isArray(series)) return null;
-  let out = null;
-  for (let i = 0; i < series.length; i++) {
-    if (series[i].ymd <= ymd) out = series[i];
-    else break;
-  }
-  return out;
+  return windowFromTradingDays(asc, endIn, want);
 }
 
 /**
  * 【纯函数】用日 K 序列算 30 日涨幅（一次性比值）。
+ *
+ * ⚠️ 真正的算式在 `range30-math.js#range30InWindow`（云端 worker 同一份）；
+ *    本函数只负责「把前端的交易日历拼成窗口」。⛔ 别在这里复制第二份比例公式。
  *
  * @param {Array<{ymd:string, close:number}>} bars 该票日 K（任意顺序）
  * @param {string} asOf 窗口末日
@@ -129,41 +105,7 @@ export function barOnOrBefore(series, ymd) {
  */
 export function range30FromBars(bars, asOf, opts) {
   const o = opts || {};
-  const win = buildRange30Window(asOf, o.days);
-  if (!win || !win.baseDate) return null;
-  const series = normalizeBars(bars);
-  if (series.length === 0) return null;
-
-  const endBar = barOnOrBefore(series, win.end);
-  const baseBar = barOnOrBefore(series, win.baseDate);
-  // ① 拿不到基准 / 期末价 ⇒ 判不出。
-  //   ★ 次新股天然落在这里：它的 K 线从上市日开始，`barOnOrBefore(baseDate)` 找不到任何 bar
-  //     ⇒ baseBar=null ⇒ 直接不出值。⛔ 绝不拿「上市首日」当 30 日前的基准凑数（那不是 30 日涨幅）。
-  if (!endBar || !baseBar) return null;
-  // ② 期初与期末是同一根 bar（区间内完全没有成交）⇒ 判不出（⛔ 不返回 0%）
-  if (endBar.ymd <= baseBar.ymd) return null;
-
-  // ③ 腿数门槛：窗口内实际有成交的根数（停牌 / 次新股会 < 30）
-  let legs = 0;
-  for (let i = 0; i < series.length; i++) {
-    const d = series[i].ymd;
-    if (d >= win.start && d <= win.end) legs++;
-  }
-  const minLegs = (o.minLegs === undefined || o.minLegs === null) ? RANGE30_MIN_LEGS : Number(o.minLegs);
-  if (isFinite(minLegs) && minLegs > 0 && legs < minLegs) return null;
-
-  const pct = (endBar.close / baseBar.close - 1) * 100;
-  if (!isFinite(pct)) return null;
-  return {
-    pct: pct,
-    days: legs,
-    start: win.start,
-    end: win.end,
-    baseDate: baseBar.ymd,
-    baseClose: baseBar.close,
-    endDate: endBar.ymd,
-    endClose: endBar.close
-  };
+  return range30InWindow(bars, buildRange30Window(asOf, o.days), o);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════════
@@ -291,6 +233,15 @@ export function ensureRange30(date, rows, opts) {
     }
     const map = new Map();
     if (cached) cached.forEach(function (v, k) { map.set(k, v); });
+
+    // ★★ [RANGE30-CLOUD 2026-11-18] 结果表一读到就【先发布一次】，再去拉 K 线补缺。
+    //   为什么必须分两次发布（这是「手机上一片空白」的第二道病根）：
+    //     · 云端 worker 已把当天数值算好落库 ⇒ 常态下这一步就有全部数值，
+    //       用户点开 toggle 应当「立刻看到」，而不是等 K 线（32 只 × 4 并发最多几十秒）；
+    //     · 手机网络到不了腾讯时（2026-11-18 现场就是这样），若只在最后才发布，
+    //       屏幕会一直空白 —— 库里明明有值却显示不出来。
+    //   ⛔ 只发布真实读到的行，不造数（§10）。
+    if (_latestDate === d && map.size > 0) _publish(d, new Map(map));
 
     // ② 缺的票批量拉 K 线现算
     const tried = _tried.get(d) || new Set();
