@@ -906,8 +906,22 @@ export async function ensureRange20Leaders(date, opts) {
   //   并写进 `_cache`；此后真·第一（10-19 新华传媒 210.98%）永远进不了池 ⇒ 区块显示的是
   //   「残缺池里的第一」。E2E 实测：同一日期两次会话，一次 候选池=175（正确）、一次 43（错）。
   //   判据：池变大 ⇒ 作废缓存重算。池只会单调增长（索引只加不减）⇒ 必然收敛，不会反复重算。
-  const rowsByDate = _formalRowsByDate(probeDates);
-  const pool = unionPoolFromDates(rowsByDate);
+  const probeRowsByDate = _formalRowsByDate(probeDates);
+  // ★★ [POOL-RANGE 2026-11-18 用户口径] 候选【范围】必须等于标签含义：20天补 = 近 20 个交易日名单并集。
+  //   用户原话：「有30天补的标签是三十个交易日内的股票吧？不是像20日补的，范围只有20个交易日，这个你要区分？」
+  //   🔴 之前把「探测期」（RANGE20_PROBE_DAYS=45）直接当候选范围用了 —— 那是【取腿的回溯深度】
+  //   （假期/停牌票要多往前够几天才凑得满 20 根腿），不是业务范围。后果：一只 40 个交易日没进过
+  //   名单的票，照样能被选成「20天补」打进看板，与标签说的「近 20 个交易日」不符。
+  //   实测（11-18）：近 20 个交易日并集 225 只、近 45 个 357 只 ⇒ 旧口径多出 132 只候选。
+  //   ⇒ 两者分开：`probeDates` 仍 45（只给 legs20FromRows / compound20 / 索引预热用），
+  //     候选池只取近 RANGE20_WINDOW_DAYS(20) 个交易日的名单。
+  const poolDates = new Set(getRange20WindowDates(date, RANGE20_WINDOW_DAYS));
+  const poolRowsByDate = new Map();
+  probeRowsByDate.forEach(function(v, k) {
+    if (poolDates.has(k)) poolRowsByDate.set(k, v);
+  });
+  const rowsByDate = probeRowsByDate;
+  const pool = unionPoolFromDates(poolRowsByDate);
   const poolSig = pool.length;
   // 🔴 [R20-WARM 2026-10-20] 索引预热判据：候选池来自「日 -> 正式列表」索引，索引是按日分批加载的。
   //   未预热完时算出来的前五是从「只加载了一部分日期」的池里选的（实测 10-19 池只有 43 只 =
@@ -1316,13 +1330,20 @@ function _fillCodes(targets) {
 
 /**
  * 诊断：20 天候选池的规模画像（供调试/日志，不在生产路径上）。
+ * ★★ [POOL-RANGE 2026-11-18] 必须和真·生产路径同口径 —— 报「近 RANGE20_WINDOW_DAYS(20) 个交易日的池」，
+ *   同时把探测深度单独报出来，否则诊断出来的数字会跟看板上的「20天补」名单对不上（§10：诊断也不许撒谎）。
  * @param {string} date
- * @returns {{poolSize:number, dates:number, byBoard:object}}
+ * @returns {{poolSize:number, dates:number, probeDates:number, byBoard:object}}
  */
 export function inspectRange20Pool(date) {
   const probeDates = getRange20WindowDates(date, RANGE20_PROBE_DAYS);
-  const rowsByDate = _formalRowsByDate(probeDates);
-  const pool = unionPoolFromDates(rowsByDate);
+  const probeRowsByDate = _formalRowsByDate(probeDates);
+  const poolDateSet = new Set(getRange20WindowDates(date, RANGE20_WINDOW_DAYS));
+  const windowRowsByDate = new Map();
+  probeRowsByDate.forEach(function(v, k) {
+    if (poolDateSet.has(k)) windowRowsByDate.set(k, v);
+  });
+  const pool = unionPoolFromDates(windowRowsByDate);
   const byBoard = { main: 0, growth: 0, star: 0, bj: 0, unknown: 0 };
   pool.forEach(function(t) {
     const k = getBoardKind(String(t.code || ''));
@@ -1332,5 +1353,10 @@ export function inspectRange20Pool(date) {
     else if (k === BOARD_BJ) byBoard.bj++;
     else byBoard.unknown++;
   });
-  return { poolSize: pool.length, dates: probeDates.length, byBoard: byBoard };
+  return {
+    poolSize: pool.length,
+    dates: poolDateSet.size,
+    probeDates: probeDates.length,
+    byBoard: byBoard
+  };
 }

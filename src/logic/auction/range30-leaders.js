@@ -221,8 +221,17 @@ export async function ensureRange30Leaders(date, opts) {
     _dbgLog('[RANGE30-TOP5] ' + d + ' 窗口构造失败（日历不足），本次不产出');
     return _state.value.list;
   }
+  // ★★ [POOL-RANGE 2026-11-18 用户口径] 候选【范围】= 近 30 个交易日名单并集，与「30天」标签一致。
+  //   用户原话：「有30天补的标签是三十个交易日内的股票吧？不是像20日补的，范围只有20个交易日，这个你要区分？」
+  //   🔴 之前把「探测期」（上面那 60 个槽位）直接当候选范围用了 —— 那是【取腿的回溯深度】
+  //   （假期 / 停牌票要多往前够几天才凑得满 30 根腿），不是业务范围。后果：一只 50 个交易日
+  //   没进过名单的票照样能被选成「30天补」，与标签说的「近 30 个交易日」不符。
+  //   实测（11-18）：近 30 个交易日并集 286 只、近 60 个 479 只 ⇒ 旧口径多出 193 只候选。
+  //   ⇒ 候选范围直接取**涨幅窗口那 30 个交易日**（`win.dates`，同一份日历、同一个窗口，§6 不分叉）；
+  //     `probeDates`（60）保留给取腿 / 粗筛用。
+  const poolDates = win.dates;
 
-  const rowsByDate = _formalRowsByDate(probeDates);
+  const rowsByDate = _formalRowsByDate(poolDates);
   const pool = unionPoolFromDates(rowsByDate);
   const poolSig = pool.length;
 
