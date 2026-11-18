@@ -22,6 +22,13 @@
 //   · 停牌等价：取「≤ 目标日的最后一根 bar」；次新股 / 腿数 < 10 一律判不出（§10 不补 0）。
 //   数学部分 import `src/logic/auction/range30-math.js`（前端/云端唯一一份）。
 //
+// 候选池（2026-11-18 第二次报障后修正，⛔ 别改回「只算当天名单」）：
+//   30日涨幅 toggle 下看板渲染的不只是当天正式名单，还有「30天」补位 / 「20天」补位 / 龙头组
+//   这三类**注入行**——它们不在当天的 auction_watchlist 里。只算当天 32 只 ⇒ 这些行查不到值 ⇒
+//   用户看到「带 20天/30天 标签的行、灰色行 股票名后面一片空白」(原话)。
+//   ⇒ 候选池 = 当天名单 ∪ 近 40 个交易日名单（实测去重 318 只，约 2 分钟跑完）。
+//   40 > 30（30天补位窗口）+ 龙头名册回看余量；即使通道中途被限流，当天名单也排在最前面先算完。
+//
 // 交易日历：用【上证指数 sh000001 的日线日期】当真实交易日序列。
 //   为什么不用 weekday 近似：长假/调休会错位，而指数永不停止交易，它的 bar 日期就是真值。
 //
@@ -146,39 +153,102 @@ async function qtBarsBySym(sym, fromYmd, toYmd) {
 }
 
 // ── 主流程 ──────────────────────────────────────────────────────────────────────
+
+/**
+ * 候选池深度（交易日）。为什么不是「只算当天名单的 32 只」：
+ *   早盘竞价看板在 30日涨幅 toggle 下渲染的不只是当天正式名单，还有三类【注入行】——
+ *     · 「30天」补位（近 30 个交易日名单里 30 日涨幅前五、但今天不在名单）；
+ *     · 「20天」补位（近 20 个交易日名单里 20 日涨幅前五）；
+ *     · 龙头组（来自前一交易日的龙头名册，名册又来自更早的名单）。
+ *   这三类票【不在当天的 auction_watchlist 里】，只算 32 只的话它们查不到值 ⇒
+ *   用户看到的就是「带 20天/30天 标签的行、灰色行 股票名后面一片空白」（2026-11-18 报障）。
+ *   ⇒ 候选池改为「今天 ∪ 近 N 个交易日名单」，超集覆盖上述三类，一次算完全月复用。
+ *   40 > 30（30天补位窗口）+ 龙头名册回看余量。
+ */
+const UNIVERSE_TRADING_DAYS = 40;
+
+/**
+ * 取「今天名单 ∪ 近 N 个交易日名单」作为候选池。
+ * 行内 code 是真值（auction_watchlist.code 实测 32/32 有值）；同名多行时优先保留有 code 的那行。
+ * 失败 ⇒ 退化为「只要今天名单」（保持旧行为，不因为候选池查询失败就整天不出值）。
+ */
+async function buildUniverse(d, cal, logs) {
+  const names = new Map();          // stock -> code（'' = 还没有）
+  const pushRows = (rows) => {
+    for (const r of rows || []) {
+      const n = String(r.stock || '').trim();
+      if (!n) continue;
+      const c = String(r.code || '').replace(/\D/g, '');
+      const old = names.get(n);
+      if (old === undefined) names.set(n, c.length === 6 ? c : '');
+      else if (old.length !== 6 && c.length === 6) names.set(n, c);
+    }
+  };
+
+  try {
+    pushRows(await sbGet('auction_watchlist?date=eq.' + encodeURIComponent(d) + '&select=stock,code'));
+  } catch (e) {
+    logs.push('当天名单读取失败: ' + e.message);
+  }
+
+  const uniStart = cal.length > UNIVERSE_TRADING_DAYS
+    ? cal[cal.length - UNIVERSE_TRADING_DAYS]
+    : (cal[0] || d);
+  try {
+    // PostgREST 单页上限 1000 行 ⇒ 翻页取全（40 个交易日 × ~40 只 ≈ 1600 行）
+    for (let off = 0; off < 20000; off += 1000) {
+      const page = await sbGet('auction_watchlist?date=gte.' + encodeURIComponent(uniStart)
+        + '&date=lte.' + encodeURIComponent(d) + '&select=stock,code'
+        + '&limit=1000&offset=' + off);
+      pushRows(page);
+      if (!page || page.length < 1000) break;
+    }
+    logs.push('候选池 ' + uniStart + '~' + d + '（近 ' + UNIVERSE_TRADING_DAYS + ' 个交易日名单）');
+  } catch (e) {
+    logs.push('候选池读取失败（退化为只要今天名单）: ' + e.message);
+  }
+
+  return Array.from(names.entries()).map(([stock, code]) => ({ stock, code }));
+}
+
 async function computeOneDay(date) {
   const d = date;
   const logs = [];
-  // ① 名单（行内 code 是真值；缺失才回退 stockcodemap）
-  const wl = await sbGet('auction_watchlist?date=eq.' + encodeURIComponent(d) + '&select=stock,code');
-  const targets = [];
-  const seen = new Set();
-  for (const r of wl) {
-    const name = String(r.stock || '').trim();
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    targets.push({ stock: name, code: String(r.code || '').replace(/\D/g, '') });
-  }
+
+  // ① 交易日历（早于候选池：候选池要按「最近 N 个交易日」切；上证指数不会停牌，它的 bar 日期就是真值）
+  const calFrom = shiftYmd(d, -180);
+  const calBars = await qtBarsBySym('sh000001', calFrom, d).catch(() => []);
+  const cal = calBars.map((b) => b.ymd).filter((x) => x <= d);
+  const win = windowFromTradingDays(cal, d, RANGE30_WINDOW_DAYS);
+  if (!win || !win.baseDate) return { ok: false, date: d, reason: '交易日历不足（指数日线拿不到）', logs };
+  logs.push('窗口 ' + win.start + '~' + win.end + '，基准日 ' + win.baseDate);
+
+  // ② 候选池（今天名单 ∪ 近 N 个交易日名单 —— 覆盖 30天/20天 补位与龙头组这三类注入行）
+  const targets = await buildUniverse(d, cal, logs);
   if (targets.length === 0) return { ok: false, date: d, reason: '当天名单为空', logs };
 
+  // ③ 代码补全（缺 code 的才回退 stockcodemap；分块，避免 in.(...) URL 过长）
   const missingCode = targets.filter((t) => t.code.length !== 6).map((t) => t.stock);
   if (missingCode.length) {
-    const inList = missingCode.slice(0, 300).map((n) => '%22' + encodeURIComponent(n) + '%22').join(',');
-    try {
-      const rows = await sbGet('stockcodemap?select=stock,code&stock=in.(' + inList + ')');
-      const map = new Map(rows.map((r) => [String(r.stock || '').trim(), String(r.code || '').replace(/\D/g, '')]));
-      targets.forEach((t) => {
-        if (t.code.length !== 6) {
-          const c = map.get(t.stock) || '';
-          if (c.length === 6) t.code = c;
-        }
-      });
-    } catch (e) {
-      logs.push('stockcodemap 读取失败（该批票按判不出处理）: ' + e.message);
+    for (let i = 0; i < missingCode.length; i += 100) {
+      const chunk = missingCode.slice(i, i + 100);
+      const inList = chunk.map((n) => '%22' + encodeURIComponent(n) + '%22').join(',');
+      try {
+        const rows = await sbGet('stockcodemap?select=stock,code&stock=in.(' + inList + ')');
+        const map = new Map(rows.map((r) => [String(r.stock || '').trim(), String(r.code || '').replace(/\D/g, '')]));
+        targets.forEach((t) => {
+          if (t.code.length !== 6) {
+            const c = map.get(t.stock) || '';
+            if (c.length === 6) t.code = c;
+          }
+        });
+      } catch (e) {
+        logs.push('stockcodemap 读取失败（该批票按判不出处理）: ' + e.message);
+      }
     }
   }
 
-  // ② 已有行（不覆盖；--overwrite 才重算）
+  // ④ 已有行（不覆盖；--overwrite 才重算）
   let existing = new Set();
   if (!OVERWRITE) {
     const rows = await sbGet('stock_range30_pct?date=eq.' + encodeURIComponent(d) + '&select=stock');
@@ -187,15 +257,7 @@ async function computeOneDay(date) {
   const todo = targets.filter((t) => !existing.has(t.stock));
   if (todo.length === 0) return { ok: true, date: d, targets: targets.length, computed: 0, written: 0, skipped: targets.length, logs };
 
-  // ③ 交易日历（上证指数 sh000001 的日线日期 = 真实交易日；指数不会停牌）
-  const calFrom = shiftYmd(d, -180);
-  const calBars = await qtBarsBySym('sh000001', calFrom, d).catch(() => []);
-  const cal = calBars.map((b) => b.ymd).filter((x) => x <= d);
-  const win = windowFromTradingDays(cal, d, RANGE30_WINDOW_DAYS);
-  if (!win || !win.baseDate) return { ok: false, date: d, reason: '交易日历不足（指数日线拿不到）', logs };
-  logs.push('窗口 ' + win.start + '~' + win.end + '，基准日 ' + win.baseDate);
-
-  // ④ 逐只取价现算
+  // ⑤ 逐只取价现算
   const from = shiftYmd(d, -QT_PROBE_DAYS);
   const writeRows = [];
   const failed = [];
@@ -234,10 +296,13 @@ async function computeOneDay(date) {
     window: win.start + '~' + win.end,
     baseDate: win.baseDate,
     targets: targets.length,
+    todo: todo.length,
     computed: writeRows.length,
     written: written,
     skipped: existing.size,
     failed: failed.length,
+    // 判不出的票名只留前 25 个（候选池 400+ 时全打印会把日志撑爆）
+    failedSample: failed.slice(0, 25),
     sample: writeRows.slice(0, 5).map((r) => r.stock + ' ' + r.pct + '%'),
     logs
   };
