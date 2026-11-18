@@ -26,6 +26,8 @@ import { getHighRatioStocksForDate, getJingYestHighlightSetForDate, getParallelS
 //   ⛔ 原「弱转强」toggle（loadWeakStrongSet / weakStrongSetRef）已随该功能整体删除。
 import { ensureAuctionLegRanges } from '../logic/auction/auction-leg-ranges.js';
 import { syncStockCloseFromAuction, syncStockTopicsFromAuction } from '../logic/auction/stock-sync.js';
+// [NOTE-EDIT-SHADOW 2026-11-18] 备注编辑的目标行解析（按股票名，不按下标）——纯函数，可单测（§15）
+import { resolveNoteEditTarget } from '../logic/auction/note-edit-target.js';
 import { getStockCode } from '../data/stock-code-map.js';
 // [HIGH-LIMIT-BOARD 2026-09-21] 第二页题材列表的浅灰删除线：板块判定只用 Logic 层这一份（§6）
 import { isHighLimitBoard } from '../logic/auction/limit-up.js';
@@ -1827,19 +1829,49 @@ export function useAuctionBoard() {
   // 原 onShowNote（双击股票名 prompt）已移除——改为竞价量列双击弹 Vue EditModal（§4 不用原生 prompt）。
   const volumeNoteModalActive = ref(false);
   const volumeNoteDraft = ref('');
-  let volumeNoteIndex = -1;
+  // ★★ [NOTE-EDIT-SHADOW 2026-11-18 用户报障] 编辑目标从【列表下标】改成【股票名】。
+  //
+  // 故障现象（用户原话）：「灰色行：锋龙股份（龙头组），20日强势补位三只也是灰色行，
+  //   东方海洋，阳光照明，光洋股份，这四只，在对应竞价量列双击打开 note 编辑时，
+  //   没有题材和涨幅显示，里面的编辑框是空白，但是对应点击昨日成交量列却显示涨幅和题材 toast」。
+  //
+  // 根因：行上的 `item.index` 是 **renderList 的下标**（`row-groups/index.js`：正式列表 concat 注入行），
+  //   而注入行（龙头组 / 观察组 / 20日补位）追加在末尾 ⇒ 下标 ≥ 正式列表长度。
+  //   旧实现拿这个下标去 `getTodayGroupList('auction')[index]`（**只含正式成员**）取行 ⇒ undefined
+  //   ⇒ `getDisplayNote(undefined)` 恒为 '' ⇒ 编辑框一片空白。
+  //   而「单击昨日成交量」的 toast 走 `onYestClick(item)`，直接拿视图行 ⇒ 一直是对的，两者因此不一致。
+  //   ⚠️ 同一个下标还让保存变成【静默空转】：`_persistVolumeNote` 取不到行就 `return`，
+  //      用户以为保存了、其实一个字没写（§10 禁止静默失败）。
+  //
+  // 为什么用股票名定位而不是下标：下标会随排序 / 分组 / 注入数量漂移
+  //   （历史注释：`onExpandTrend` 就因为用 index 出现过「展开错误」），股票名在一天内唯一且稳定。
+  let volumeNoteStock = '';
+  // 兜底载体：注入壳行可能【完全不在】 auction_watchlist / market_metrics 里（纯壳），
+  // 那时没有「内存行」可写，只能把视图行当显示载体，云端写入交给 patchAuctionField 按 (date,stock) 处理。
+  let volumeNoteRow = null;
 
-  // [FIX 2026-08-16] 题材补全（toast 与编辑框共用）：行内 topics 为空时（早盘竞价行只存涨幅、
-  // §P1-6：_normalizeNotePunct / _buildFullNoteWithTopics 已迁至 ../composables/auction-board-helpers.js（同名 import）。
-  // 题材在共享题材库 stock_topics），回退查 getStockHistoryTopics——与第二页题材分组 getTopicsDisplay 同口径。
-  // 输出统一英文标点：-2.6%(机器人,人工智能,AI应用)
-
-  function onEditVolumeNote(index) {
-    volumeNoteIndex = index;
-    const auctionList = getTodayGroupList('auction');
-    const rawNote = auctionList[index] ? getDisplayNote(auctionList[index]) : '';
+  /**
+   * 打开「竞价量」列的备注编辑框（双击）。
+   *
+   * @param {object|number} rowOrIndex 视图行（**推荐**，正式行 / 注入行都适用）；
+   *        传数字是旧契约，只对正式成员有效（保留以兼容可能的旧调用点）。
+   */
+  function onEditVolumeNote(rowOrIndex) {
+    // 解析逻辑全部收敛到 Logic 层纯函数（§15 可单测）：按**股票名**定位，⛔ 不按下标。
+    const t = resolveNoteEditTarget({
+      target: rowOrIndex,
+      formalList: getTodayGroupList('auction'),   // 只含正式成员
+      dayRows: getGroupData('auction')[uiStore.currentDate] || []  // 正式成员 + 影子行
+    });
+    if (t.reason !== 'ok' || !t.display) {
+      // §10：按钮点了却什么都没发生，也要让用户知道（⛔ 不静默）
+      showWarningToast('⚠️ 这只票没有识别到股票名，无法打开备注编辑（请刷新后重试）', 6000);
+      return;
+    }
+    volumeNoteStock = t.name;
+    volumeNoteRow = t.display;  // 内存行优先（刷新后还在的那一份）；纯壳注入行才退化成视图行
     // 编辑框内容与黑色 toast 同步：补全题材、统一英文标点（双向同步：保存后 toast 也显示同一格式）
-    volumeNoteDraft.value = _buildFullNoteWithTopics(auctionList[index], rawNote);
+    volumeNoteDraft.value = _buildFullNoteWithTopics(t.display, getDisplayNote(t.display));
     volumeNoteModalActive.value = true;
   }
 
@@ -1863,11 +1895,31 @@ export function useAuctionBoard() {
   //      历史日期的 change_pct 是当日真实竞价涨幅，写它会直接污染十日涨幅等派生指标（§M 红线）。
   //   ③ 当前日期额外写 note/change_pct（用户编辑的就是这一天的显示内容）。
   async function _persistVolumeNote(normalizedNote) {
-    if (volumeNoteIndex < 0) return;
-    const auctionList = getTodayGroupList('auction');
-    const item = auctionList[volumeNoteIndex];
-    if (!item) return;
-    const stockName = item.stock;
+    // ★★ [NOTE-EDIT-SHADOW 2026-11-18] 与 onEditVolumeNote 同一把钥匙（resolveNoteEditTarget）。
+    //   旧实现按下标取行，注入行（龙头组 / 观察组 / 20日补位）取不到 ⇒ 直接 return ⇒
+    //   用户点了保存却一个字没写，且界面上还弹了「已保存」（§10 明令禁止的静默失败）。
+    const t = resolveNoteEditTarget({
+      // 打开编辑框时记下的视图行作载体；行对象可能已被重新渲染替换，退化成「只用股票名」也能解析
+      target: volumeNoteRow || { stock: volumeNoteStock },
+      formalList: getTodayGroupList('auction'),
+      dayRows: getGroupData('auction')[uiStore.currentDate] || []
+    });
+    const stockName = t.name || volumeNoteStock;
+    if (!stockName) {
+      showWarningToast('⚠️ 没有识别到要保存的股票，本次修改未保存（请重新双击该行）', 8000);
+      return;
+    }
+    // 内存行优先（正式成员与影子行都在 getGroupData 里）；纯壳的注入行没有内存行 ⇒ 用视图行兜底显示
+    const item = t.display || volumeNoteRow;
+    if (!item) {
+      showWarningToast('⚠️ 找不到「' + stockName + '」这一行，本次修改未保存（请刷新后重试）', 8000);
+      return;
+    }
+    // 是否今日正式成员：决定 note 文本有没有「家」——
+    //   `auction_watchlist` 只存正式成员行；影子行（只有 market_metrics）没有 note 列可写。
+    //   影子行的显示口径本来就是「涨幅 + 共享题材库」现拼（getDisplayNote → _buildFullNoteWithTopics），
+    //   ⇒ 只写 change_pct（market_metrics）+ 题材（stock_topics）就能完整还原用户看到的那串文本。
+    const isFormalRow = t.isFormal;
     const parsed = parseNoteToFields(normalizedNote);
     const topicsArr = extractTopics(normalizedNote);
     const topicsStr = topicsArr.join(',');
@@ -1922,7 +1974,12 @@ export function useAuctionBoard() {
     syncStockCloseFromAuction(stockName, normalizedNote, uiStore.currentDate);
     syncStockTopicsFromAuction(uiStore.currentDate);
     saveModule('stocks');
-    showToast('✅ 题材已保存并同步到三个看板');
+    // ★ [NOTE-EDIT-SHADOW 2026-11-18] 非正式成员（龙头组壳 / 观察组壳 / 20日补位）没有
+    //   `auction_watchlist` 行 ⇒ note 文本不落库，但涨幅进 market_metrics、题材进 stock_topics，
+    //   显示仍是同一串文本（getDisplayNote 现拼）。这里如实说明，⛔ 不让用户以为「note 存下来了」。
+    showToast(isFormalRow
+      ? '✅ 题材已保存并同步到三个看板'
+      : '✅ 题材已保存并同步到三个看板（该票今日不在正式名单：涨幅写行情表、题材写共享库，显示不变）');
   }
 
   // 把某只股票的题材写进【其它日期】的 topics 列（跨日期单一真相的落地动作）。
@@ -1980,13 +2037,16 @@ export function useAuctionBoard() {
     const normalizedNote = _normalizeNotePunct(volumeNoteDraft.value || '');
     _persistVolumeNote(normalizedNote);
     volumeNoteModalActive.value = false;
-    volumeNoteIndex = -1;
+    // [NOTE-EDIT-SHADOW 2026-11-18] 目标改用股票名 ⇒ 复位也是清名字（旧的下标态已删除）
+    volumeNoteStock = '';
+    volumeNoteRow = null;
   }
 
   async function clearVolumeNote() {
     _persistVolumeNote('');
     volumeNoteModalActive.value = false;
-    volumeNoteIndex = -1;
+    volumeNoteStock = '';
+    volumeNoteRow = null;
   }
 
   // 昨成交量单击 → 黑色小 toast（贴数值下方，点击/滚动关闭）
@@ -2091,6 +2151,10 @@ export function useAuctionBoard() {
     expandedSet.value = new Set();
     trendHistory.value = {};
     trendPatchStore.value = {};   // [TREND-PATCH-STORE 2026-10-23] 补缺仓库与趋势缓存同生命周期
+    // [NOTE-EDIT-SHADOW 2026-11-18] 备注编辑的目标行属于「某一天」，切日期后必须作废，
+    //   ⛔ 否则会把 A 日的编辑写进 B 日（同一股票名在两天都存在，按名字+日期定位才安全）。
+    volumeNoteStock = '';
+    volumeNoteRow = null;
     if (v) prepareAuctionData(v);
     refresh();
     // [VOL-COVER 2026-11-05] 切到当天时也检查一次（切回来往往就是因为"当天数据没补上"）

@@ -168,7 +168,7 @@
       <div
         v-if="!rangeColsMode"
         class="auction-volume"
-        @dblclick.stop="onEditVolumeNote(item.index)"
+        @dblclick.stop="onEditVolumeNote(item)"
       >
         {{ item.volumeDisplay }}
       </div>
