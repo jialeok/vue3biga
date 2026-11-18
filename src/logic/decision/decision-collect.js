@@ -938,7 +938,7 @@ export function _cleanTopicText(raw) {
   return s;
 }
 
-function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDate, range20Top, range20Wide, range20Top10) {
+function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDate, range20Top, range20Wide, range20Top10, range30Top) {
   const none = {
     ready: false, leader: null, second: null,
     leaderSuspended: false, leaderShare: null, leaderAucPct: null,
@@ -947,6 +947,7 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
     top5: [],        // [DIVERGE 2026-10-20] 缺省空数组（前五没就绪 ⇒ 分歧规则同样不生效）
     newDragonPool: [], // [NEW-DRAGON-08 2026-10-22] 前八候选（切换日新龙判定用）
     topicPool: [],     // [EBB-MAIN-TOPIC 2026-10-25] 前十（主线题材成组计数用）
+    top30: [],         // [RULE-35 2026-11-18] 30日涨幅榜（第三十五条候选池；空 = 判不出，§10）
     leaderStreak: null, // [EBB-STREAK 2026-10-25] 总龙连板天数（null = 无从判定）
     leaderStreakLabel: ''
   };
@@ -1086,7 +1087,41 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
       : ((Array.isArray(range20Wide) && range20Wide.length > 0) ? range20Wide : range20Top),
     0
   );
-  if (top.length === 0) return none;
+  // ★★ [RULE-35 2026-11-18 用户口径] 第三十五条【30日涨幅抱团】的候选池。
+  //   与上面三份共用同一份 `_enrich`（题材 / 龙位 / 一字 / 停牌 / 是否主板都只有一处实现，§6），
+  //   唯一差别：名次字段写 `rank30`（⛔ 不覆盖 `rank20` —— 两条规则各用各的名次）。
+  //   入参 `range30Top` 已由 `tvrb-auction-board30.js` 排好（只主板 + 30日涨幅降序 + 9:26 竞价口径）。
+  //   ⚠️ 不截断（cap=0）：第三十五条只需要前三，但"前三"由规则层用 `TOP30_HUDDLE_TOP_N` 切，
+  //      ⛔ 不在数据层写死一个 3（两处数字会各自漂移）。
+  //   §10：空 ⇒ 判不出（规则层据此不接管并如实标注，⛔ 不猜）。
+  const top30 = (function() {
+    const src = Array.isArray(range30Top) ? range30Top : null;
+    if (!src) return [];
+    const arr = [];
+    const seen = new Set();
+    src.forEach(function(t, i) {
+      if (!t || !t.stock) return;
+      const name = String(t.stock).trim();
+      if (!name || seen.has(name)) return;
+      seen.add(name);
+      const pct = Number(t.pct);
+      if (t.pct === null || t.pct === undefined || !isFinite(pct)) return;   // §10 无值不参排
+      const e = _enrich(t, i);
+      // ⚠️ `_enrich` 会把 `rank20` 填成「传进来的下标 +1」—— 在这条链上那个下标是 **30日** 的名次，
+      //   留着它等于给未来的人埋一颗雷（`top30[0].rank20 === 1` 会被误读成「20日涨幅第 1 名」）。
+      //   ⇒ 显式清空，只留 `rank30`。要 20 日名次请读 `top5` / `topicPool`（§6 各榜各的名次）。
+      e.rank20 = null;
+      e.rank30 = i + 1;
+      arr.push(e);
+    });
+    return arr;
+  })();
+  if (top.length === 0) {
+    // ★★ [RULE-35 2026-11-18] 20日榜没就绪 ⇒ 退潮 / 分歧 / 三十 / 三十一 那批规则全部不生效，
+    //   但【30日榜可能已经就绪】—— 第三十五条用的是另一把尺子，不该被 20 日榜拖死。
+    //   ⇒ 把这个池子带出去（`ready:false` 不变，其余事实仍是缺省值，⛔ 不让退潮规则复活）。
+    return Object.assign({}, none, { top30: top30 });
+  }
   const head = top[0];
   // 总龙 = 20日涨幅第一（全市场，含创业板 —— 与「20日涨幅」toggle 的总龙一同一只），
   //   并把【它今天】的龙位 / 一字一并带上：规则层判「占比不达标」要按龙头门槛（龙位=1 时）取档。
@@ -1299,6 +1334,14 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
     // ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 20日涨幅【前十】富化结果 —— 退潮判定的
     //   「主线题材 ≥3 只同题材」计数用（规则层 classifyMainTopic）。⚠️ 与 top5 同一份富化，只是更长。
     topicPool: topicPool,
+    // ★★ [RULE-35 2026-11-18 用户口径] 30日涨幅（**9:26 竞价口径** · 只主板）全量降序富化 ——
+    //   第三十五条【30日涨幅抱团】的**唯一**候选池。
+    //   ⚠️ 与 top5 / topicPool 共用同一份 `_enrich`（题材解析只有这一处，§6），
+    //      但名次字段是 `rank30`（⛔ 不覆盖 rank20 —— 两把尺子各自的第 N 名）。
+    //   ⚠️ 它【恒可用性与 20 日榜无关】：两条规则尺子不同，20日榜没就绪不该把 35 一起拖死
+    //      （见上面 `if (top.length === 0)` 那段的 Object.assign 出口）。
+    //   ⚠️ 缺省 `[]` = 判不出（§10）；⛔ 绝不返回一份「今天没有 30 日龙头」的假结论。
+    top30: top30,
     // ★★ [EBB-STREAK 2026-10-25 用户口径] 总龙连板天数（null = 无从判定，见上面事实⑥）
     leaderStreak: leaderStreakInfo ? leaderStreakInfo.n : null,
     leaderStreakLabel: leaderStreakInfo ? leaderStreakInfo.label : ''
@@ -1582,7 +1625,7 @@ export function collectDecisionData(date, opts) {
       //     由调用方（组合式）ensureRange20Leaders 后注入；缺省 ⇒ ebbCtx.ready=false，退潮规则不生效（§10）。
       out.ebbCtx = _ebbCtxOf(rows, topics, dragonMap, date,
         opts && opts.prevRangeMap, rangeMap, prevDate, opts && opts.range20Top,
-        opts && opts.range20Wide, opts && opts.range20Top10);
+        opts && opts.range20Wide, opts && opts.range20Top10, opts && opts.range30Top);
     }
     // ★★ [SUSPEND-NOBUY 2026-10-14 用户口径] 买点侧「买不进名单」= 连续停牌第 2 天及以上的票。
     //   放在本出口的【公共段】（⛔ 不在上面 topicActionContext 分支里）：这份名单只依赖

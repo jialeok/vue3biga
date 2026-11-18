@@ -308,8 +308,8 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     expect(resolvePlanSnapshotFreshness(broken, OPTS)).toBe('stale');
   });
 
-  it('版本常量已 bump 到 21（[ABN-TB] 第三十四条延伸「异动第三天同题材禁入」⇒ 历史日也要重算 = v21）', () => {
-    expect(TVRB_RULES_VERSION).toBe(21);
+  it('版本常量已 bump 到 22（[RULE-35] 第三十五条「30日涨幅抱团」上线 ⇒ 历史日也要重算 = v22）', () => {
+    expect(TVRB_RULES_VERSION).toBe(22);
   });
 
   // ★★ [ABN-MAINBOARD-GUARD 2026-11-14] 第三十四条「全场十日涨幅最高票」只认主板。
@@ -366,8 +366,9 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     const lines = readFileSync('src/logic/topicvolratio/tvrb-rules-lines.js', 'utf8');
     expect(lines).toContain('波及到所有的票');
     expect(lines).toContain('整个市场【整片灰');
-    // ④ 三件套版本链（★ [ABN-TB 2026-11-17] 第三十四条延伸上线 ⇒ 20 → 21）
-    expect(TVRB_RULES_VERSION).toBe(21);
+    // ④ 三件套版本链（★ [ABN-TB 2026-11-17] 第三十四条延伸上线 ⇒ 20 → 21；
+    //   ★★ [RULE-35 2026-11-18] 第三十五条【30日涨幅抱团】上线【改变选股结论】⇒ 21 → 22）
+    expect(TVRB_RULES_VERSION).toBe(22);
     expect(_swCacheNo(readFileSync('public/sw.js', 'utf8'))).toBeGreaterThanOrEqual(67);
   });
 

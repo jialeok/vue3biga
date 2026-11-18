@@ -4,7 +4,7 @@
 // ⛔ 文案里的数字必须用 tvrb-constants.js 的常量拼接，不许写死 ——
 //   否则用户点开规则看到的条文与实际选股不一致（那比没有说明更坏）。
 
-import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_NO_BUY_TAG, EBB_SECOND_BUY_TAG, CASH_NO_BUY_TAG, WEAK_HUDDLE_TAG, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, NEW_DRAGON_TAG, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL, ABNORMAL_TOPIC_BAN_TAG, ABNORMAL_TOPIC_BAN_DAY_OFFSET } from './tvrb-constants.js';
+import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_NO_BUY_TAG, EBB_SECOND_BUY_TAG, CASH_NO_BUY_TAG, WEAK_HUDDLE_TAG, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, NEW_DRAGON_TAG, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL, ABNORMAL_TOPIC_BAN_TAG, ABNORMAL_TOPIC_BAN_DAY_OFFSET, TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG, TOP30_HUDDLE_TOP_N, TOP30_HUDDLE_PICK_COUNT } from './tvrb-constants.js';
 
 import { SELL_OUT_TAG, HOLD_TAG } from '../decision/decision-rules.js';
 import { PRESENCE_TOP_N } from '../auction/presence-label.js';
@@ -530,6 +530,35 @@ export function buildTvrbRulesLines() {
       '本条 = 题材【龙一竞价跌停】（量比可以很高）+ 买【市场总龙一】。两条同一天都成立时以本条为准。' +
       '⚠️ 判不出就如实说（§10）：龙一的竞价涨幅读不到 ⇒ 本条不生效（⛔ 不把「没数据」当跌停）；' +
       '20日涨幅前五没读到 / 第 1 名就是那只跌停票 ⇒ 抱团那只不出现，说明区写明是哪个缺口。',
+    // ── ★★ [RULE-35 2026-11-18 用户口径 · 原话] 30日涨幅新增后，补涨题材要给「同题材的龙」让路。
+    '三十五、【' + TOP30_HUDDLE_TAG + '】（第' + TOP30_HUDDLE_RULE_NO + '条 · 补涨让路版）' +
+      '★ 用户原话：「现在新增了30日涨幅，需要在约束下，需要再新添新规，当天三十日涨幅中排名第三的是' +
+      '九阳股份（大消费），冰山冷热，东方海洋，如果有同题材的股票在30日涨幅中排前三，那么就优先选，' +
+      '记住是竞价口径，上面的那个补涨题材选票要让路（也就是三十一条让路，不选，不用这条），' +
+      '因为同题材的龙在30日涨幅前三，说明强势，还没死透，在行情差时，会抱团，所以还没轮到补涨，' +
+      '应该继续抱团选最强的，假如30日涨幅当天排前三没有同题材的股票排名前三，' +
+      '再考虑原有的补涨票也就是那条三十一条。」' +
+      '★ 判据（只在【空仓提醒命中】这条分支里跑，与第三十/三十一/三十二条同一语境）：' +
+      '① 池子 = 【30日涨幅 · 9:26 竞价口径 · 只主板 · 前 ' + TOP30_HUDDLE_TOP_N + ' 名】' +
+      '（与「30日涨幅」toggle 同一类数据，但口径固定为竞价口径，⛔ 不另排一次名次）；' +
+      '② 在这三只里找【与本灰色题材块同大类】的票（核心词大类归一，与第三十条同一把尺子 —— ' +
+      '行上是「家电」、块名是「大消费」也必须认成同题材）；' +
+      '③ 有 ⇒ 选其中【名次最靠前的那 1 只】（只 ' + TOP30_HUDDLE_PICK_COUNT + ' 只，' +
+      '⛔ 不是「前三里同题材的全部选」），标【' + TOP30_HUDDLE_TAG + '】、独立渲染在灰化容器【之外】并排最前；' +
+      '④ 没有 ⇒ 本条不生效，原样回到第三十一条（补涨票）。' +
+      '★ 为什么（用户口径）：「同题材的龙在30日涨幅前三，说明强势，还没死透，在行情差时，会抱团，' +
+      '所以还没轮到补涨」—— 30 日涨幅看的是一个月的趋势，比 20 日更稳；龙还在前三说明这个题材的钱没走，' +
+      '这时候去选补涨票是【跳级】（补涨是「龙头死了之后」的下一棒）。' +
+      '★ 与第三十条的区别只在一把尺子：第三十条 = **20日**涨幅前三、同题材的【全部】选；' +
+      '本条 = **30日**涨幅前三、同题材【只选最强的 1 只】。' +
+      '★ 覆盖面（用户 2026-11-18 拍板）：本条命中时，【第三十条（20日涨幅抱团）/ 第三十一条（补涨题材）/' +
+      '第三十二条（题材龙一竞价跌停切抱团）三条全部让路，一条都不出票】—— 避免同一天几条抱团通道各选一只。' +
+      '（例 11-18：灰色块【大消费】、题材龙一竞价跌停 ⇒ 第三十二条原本要选市场总龙一【东方海洋】；' +
+      '但 30 日涨幅前三里有同为【大消费】的【九阳股份 159.99% · 第 1 名】⇒ 本条接管，只选九阳股份。' +
+      ' 例 11-17：第三十一条原本选【广百股份】；30 日涨幅前三 = 九阳股份（大消费）148.76% / 冰山冷热 105.56% / ' +
+      '文投控股 104.24% ⇒ 九阳股份与灰色块同大类 ⇒ 本条接管，广百股份让路。）' +
+      '⚠️ 判不出就如实说（§10）：30日涨幅榜没读到 ⇒ 本条【不接管】，第三十/三十一/三十二条照常生效，' +
+      '说明区写明「判不出」—— ⛔ 绝不拿「没数据」当成「前三没有同题材」，那会静默回到补涨票。',
     // ── ★★ [ABNORMAL-10D 2026-11-13 用户口径 · 原话] 监管异动是【总约束】，优先级最高。
     '三十四、【监管异动 · 十日涨幅硬上限】（第' + ABNORMAL_RULE_NO + '条 · 总约束，优先级最高）' +
       '★ 用户原话（11-13 早间，逐字保留作历史）：「所有大a主板10日涨幅不能超过100%，东方海洋，昨天竞价口径就超过100%了，属于严重异动了，' +

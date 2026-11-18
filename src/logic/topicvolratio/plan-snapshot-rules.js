@@ -237,7 +237,7 @@
  *          配套：标签两枚合并为一枚（`AUCTION_YIZI_TAG` = `AUCTION_YIZI_WAIT_TAG`）。
  *       sw.js 同步 v68 → v69。
  */
-export const TVRB_RULES_VERSION = 21;
+export const TVRB_RULES_VERSION = 22;
 
 /**
  * 输入完整性指纹版本。新增 / 删除「完整性判据」时 +1 ⇒ 所有存档按新判据重算一次。

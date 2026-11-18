@@ -118,6 +118,14 @@ import {
   getTvrbAuctionBoardToken,
   hasTvrbAuctionBoardVerdict
 } from '../logic/topicvolratio/tvrb-auction-board.js';
+// ★★ [RULE-35 2026-11-18 用户口径] 第三十五条【30日涨幅抱团】的候选池（9:26 竞价口径 · 只主板）。
+//   与 20 日榜同款 API：ensure 触发计算（幂等 / 会话缓存 / 单飞）→ Token 建立响应式依赖 →
+//   get 读发布结果（ready=false ⇒ 判不出，规则层不接管并如实标注，§10）。
+import {
+  ensureTvrbAuctionBoard30,
+  getTvrbAuctionBoard30,
+  getTvrbAuctionBoard30Token
+} from '../logic/topicvolratio/tvrb-auction-board30.js';
 // ★ [EBB-R20 2026-10-20 用户口径] 20日涨幅前五（总龙一~五）—— 退潮判定的总龙与买点侧替补的【唯一】来源：
 //   ensureRange20Leaders 触发计算（幂等 + 会话缓存 + 单飞，与「20日涨幅」toggle 共享同一份）；
 //   getRange20Leaders 读发布结果（null = 该日还没结论，⛔ 不等于「没有总龙」）；
@@ -1370,6 +1378,16 @@ export function useTopicVolRatioBoard() {
         console.warn('[TVRB] 9:25 竞价口径 20 日榜计算失败（本日 20 日涨幅通道将如实标注）:', e && e.message);
       });
     }
+    // ★★ [RULE-35 2026-11-18 用户口径] 第三十五条【30日涨幅抱团】的候选池。
+    //   恒 9:26 **竞价口径**（用户原话「记住是竞价口径」）+ 固定当日 9:25 名单 + 只主板 + 腿数 ≥ 10。
+    //   与上面的 20 日榜【同一套路、同一份指标行】⇒ §32 0 新增网络请求。
+    //   §10：失败 / 判不出 ⇒ 模块内记 ready=false ⇒ 规则层【不接管】并如实标注「判不出」，
+    //        ⛔ 绝不回落成「今天没有 30 日龙头」这种假结论。
+    if (d) {
+      ensureTvrbAuctionBoard30(d).catch(function(e) {
+        console.warn('[TVRB] 9:26 竞价口径 30 日榜计算失败（第三十五条今日将如实标注判不出）:', e && e.message);
+      });
+    }
     // ①-d ★ [EBB-R20 2026-10-20] 20日涨幅前五（总龙一~五）仍要跑：
     //   「20日涨幅」toggle / 决策看板 / 补位区块共用它，⛔ 不能因为题材量比换了数据源就停掉。
     //   但本看板的规则输入已改读上面的竞价口径榜，⛔ 不再消费它的发布结果（仅在判不出时回落）。
@@ -1753,6 +1771,9 @@ export function useTopicVolRatioBoard() {
     // ★★ [TVRB-AUC-BOARD 2026-11-10] 恒竞价口径 20 日榜（异步算好）⇒ 到货后重算一帧：
     //   所有吃 20 日涨幅候选池的规则在这一帧统一切到「9:25 那一刻」的结论。
     void getTvrbAuctionBoardToken();
+    // ★★ [RULE-35 2026-11-18] 30日涨幅榜（9:26 竞价口径）到货 ⇒ 重算一帧，
+    //   第三十五条才会在该出票时出票（否则首帧永远拿到「还没就绪」，看起来像规则没生效）。
+    void getTvrbAuctionBoard30Token();
     // ★ [EBB-R20] 20日涨幅前五（总龙一~五）：响应式指纹令牌 —— ensureRange20Leaders 发布后自动重算
     void getRange20LeadersFingerprintToken();
     // ★★ [CORE-CAT 2026-10-22] 核心词表（大类）变更信号：云端加载完成 / 用户改完核心词 ⇒ 本帧重算，
@@ -1821,6 +1842,15 @@ export function useTopicVolRatioBoard() {
       const _r20Top = _aucReady ? _aucBoard.top5 : (getRange20Leaders(d) || null);
       const _r20Wide = _aucReady ? _aucBoard.wide : (getRange20LeadersWide(d) || null);
       const _r20Top10 = _aucReady ? _aucBoard.top10 : (getRange20LeadersTop10(d) || null);
+      // ★★ [RULE-35 2026-11-18 用户口径] 第三十五条【30日涨幅抱团】的候选池 =
+      //   30日涨幅 **9:26 竞价口径** 榜（只主板 + 腿数达标 + 当日 9:25 名单内，降序）。
+      //   ⚠️ 与 20 日榜【不共用 ready 判定】：两条规则尺子不同，20 日榜判不出不该把 35 一起拖死。
+      //   §10：判不出 ⇒ null ⇒ 采集层 top30=[] ⇒ 规则层如实标注「判不出」且**不接管**
+      //        （⛔ 绝不回落收盘口径冒充，那等于拿错尺子下结论）。
+      const _board30 = getTvrbAuctionBoard30(d);
+      const _r30Top = (_board30 && _board30.ready && Array.isArray(_board30.rank) && _board30.rank.length > 0)
+        ? _board30.rank
+        : null;
 
       // ★★ [ABN-DEV 2026-11-14 用户口径] 「我看一遍股票或者市场前十，就知道怎么参考了」
       //   ⇒ 把 20 日涨幅主板前十的名字记下来，作为偏离值面板的【参考顺序】。
@@ -1868,6 +1898,9 @@ export function useTopicVolRatioBoard() {
         // ★★ [EBB-MAIN-TOPIC 2026-10-25 用户口径] 20日涨幅【前十】—— 退潮判定
         //   「主线题材 ≥3 只同题材」计数（classifyMainTopic）。⛔ 不上屏。
         range20Top10: _r20Top10,
+        // ★★ [RULE-35 2026-11-18 用户口径] 30日涨幅（9:26 竞价口径 · 只主板）全量降序 ——
+        //   第三十五条【30日涨幅抱团】的唯一候选池。null = 判不出（§10，规则层不接管）。
+        range30Top: _r30Top,
         // ★★ [SELL-AUTO 2026-11-12 用户口径] 昨日【买点侧】的股票名 ⇒ 今日卖点侧自动继承，
         //   用户不用再逐只补打「买入」标签（他早上本来就是照买点侧买的）。
         //   ⚠️ 日期核对红线（与上面两份 rangeMap 同款）：不是这一天的 ⇒ 传 null（§10 不拿旧日期顶替）。

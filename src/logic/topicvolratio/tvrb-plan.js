@@ -7,11 +7,11 @@
 //   opts.dataGateBlocked 为真时，必须走 _clearBuySideForDataGate 把买点侧清空；
 //   ⛔ 只在视图层 v-if 挡不住未来新增的买点通道。
 
-import { TVRB_MIN_COUNT, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_TOP_N, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TVRB_CASH_ALERT_NONE, NEW_DRAGON_TAG, NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N, NEW_DRAGON_FAMILY_MIN_COUNT, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL, TVRB_ABNORMAL_NONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG } from './tvrb-constants.js';
+import { TVRB_MIN_COUNT, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_TOP_N, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TVRB_CASH_ALERT_NONE, NEW_DRAGON_TAG, NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N, NEW_DRAGON_FAMILY_MIN_COUNT, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL, TVRB_ABNORMAL_NONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG } from './tvrb-constants.js';
 import { pickFamilyNewDragon, splitTopicSegs, isLineageTopic } from './new-dragon-family.js';
 import { _normTopic, _sameTopicLoose, _num, _pct2, _streakWord, _secondTopicLeaderInTop10, _range10RankMapOf, _closeRankOf, _rankTopEntries, _topicTop10Hits, _windowTextOf, _todayRankPhrase, _rankLabelOf, _oldTopicNameOf, _oldTopicBasisOf } from './tvrb-utils.js';
 import { detectEbbDay, secondEbbTopicOfPrevDay, buildEbbDayRecord } from './tvrb-ebb.js';
-import { _applyPrevEbbSecondNoBuy, _applyLeaderLimitDownNoBuy, _applySecondTopicVolWeakNoBuy, _applyEbbSellRules, _buildEbbPicksBlock, _applyEbbBuyRules, _applyCashAlertBuyRules, _applyDivergeNoBuyRules, _applyAbnormalNoBuyRules, _buildDivergeBuyBlock, _buildDivergeCashAlert, _buildWeakHuddleBlock, _buildLeaderLimitDownHuddleBlock, _buildCatchUpBlock, resolveTvrbTier, avgVolRatioOf, formatAvgVolRatio, buildCashAlert, _dragonCandidates, _buildBlock, _buildNewDragonBlock, _withAuctionLegPct, _buildRange10BackupBlock, _applyAbnormalTopicBan } from './tvrb-blocks.js';
+import { _applyPrevEbbSecondNoBuy, _applyLeaderLimitDownNoBuy, _applySecondTopicVolWeakNoBuy, _applyEbbSellRules, _buildEbbPicksBlock, _applyEbbBuyRules, _applyCashAlertBuyRules, _applyDivergeNoBuyRules, _applyAbnormalNoBuyRules, _buildDivergeBuyBlock, _buildDivergeCashAlert, _buildWeakHuddleBlock, _buildLeaderLimitDownHuddleBlock, _buildCatchUpBlock, _buildTop30HuddleBlock, resolveTvrbTier, avgVolRatioOf, formatAvgVolRatio, buildCashAlert, _dragonCandidates, _buildBlock, _buildNewDragonBlock, _withAuctionLegPct, _buildRange10BackupBlock, _applyAbnormalTopicBan } from './tvrb-blocks.js';
 // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条「监管异动 · 十日涨幅硬上限」的事实判定
 //   （纯函数：把「总龙一昨日/今日十日涨幅 + 会被选中的票的十日涨幅」判成一块空仓标语）。
 //   ⛔ 阈值 / 文案全在 abnormal-10d.js + tvrb-constants.js，本文件只负责【注入事实】与【收口】。
@@ -836,7 +836,10 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       //   四个装饰器（量比趋势 / 名次变化 / 封单额 / 停牌）都经它取块（§6）。
       weakHuddle: null,
       // ★★ [CATCH-UP 2026-10-27] 第三十一条：补涨题材（6~10 名里的连板票）。同一理由挂在这里。
-      catchUp: null
+      catchUp: null,
+      // ★★ [RULE-35 2026-11-18 用户口径] 第三十五条：30日涨幅抱团（补涨让路版）。
+      //   ⚠️ 与 weakHuddle / catchUp 同一理由——买点槽位必须齐全，否则 _buyBlocksOf 会漏掉它。
+      top30Huddle: null
     },
     sell: [],
     excludedTopics: [],
@@ -872,6 +875,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     //   该灰色题材恰好占 2~3 只，且其中有连板票 ⇒ 选连板票放在最前面）。
     //   只在「空仓提醒命中 ∧ 非退潮首日 ∧ 非分歧日 ∧ 数量恰好 2~3 ∧ 至少 1 只连板」时非 null。
     catchUp: null,
+    // ★★ [RULE-35 2026-11-18 用户口径] 第三十五条【30日涨幅抱团（补涨让路版）】买点块
+    //   （空仓日里，30日涨幅主板前三有与本灰色题材块【同大类】的票 ⇒ 选名次最靠前那 1 只抱团）。
+    //   ★ 它命中时【三十 / 三十一 / 三十二 三条全部不出票】（用户拍板，catalog C10）。
+    //   ⚠️ §11：不命中 / 判不出 ⇒ 恒为 null ⇒ 三条原链路逐字不变。
+    top30Huddle: null,
     // ★★ [LEADER-LIMITDOWN 2026-11-02 用户口径] 第三十二条【题材龙一竞价跌停 ⇒ 切抱团】的事实：
     //   `{topic, name, code, aucPct, aucPctText, count, avgText}` —— 由扫描循环在发现
     //   「排名第一的入选题材的龙一竞价跌停」时写下；没命中 ⇒ 恒为 null（§11 零行为变化）。
@@ -1820,7 +1828,65 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     //      ⛔ 不在这里另排一次名次，那是第二份真相（§6）。
     const whPool = (o.ebbCtx && Array.isArray(o.ebbCtx.top5)) ? o.ebbCtx.top5 : null;
     const whTopic = String((out.cashAlert && out.cashAlert.topic) || '').trim();
-    if (!whPool || whPool.length === 0) {
+
+    // ★★ [RULE-35 2026-11-18 用户口径] 第三十五条【30日涨幅抱团 · 补涨让路版】：
+    //   空仓日先看【30日涨幅主板前三】（**9:26 竞价口径**）有没有与本灰色题材块【同大类】的票 ——
+    //   有 ⇒ 说明这个题材的龙还强势、没死透，行情差时会继续抱团最强的那个，**还没轮到补涨**
+    //        ⇒ 选名次最靠前那 1 只抱团，且**三十 / 三十一 / 三十二 三条全部让路**（用户拍板，catalog C10）；
+    //   没有 ⇒ 本条不生效，原样走第三十一条（补涨票）。
+    //
+    //   ⛔ 为什么必须排在【第三十条之前】：它是【覆盖式】的优先级最高的一条 ——
+    //      判定要是放在三十之后，那两只票会同时进买点侧（用户明确要的是「让路、不选」）。
+    //   ⛔ 池子取 `ebbCtx.top30`（已由 `tvrb-auction-board30.js` 排好：只主板 + 30日涨幅降序 + 9:26 竞价口径）
+    //      —— ⛔ 不在这里另排一次名次，那是第二份真相（§6）。
+    //   ⚠️ §10：池子不可用（还没就绪 / 判不出）⇒ **不接管**、只写一条「判不出」，
+    //      三十/三十一/三十二 照常生效。⛔ 绝不因为「30日没数据」就替用户默认一条结论
+    //      （与 二十九·iv1「数据缺口暂不作废」同一范式）。
+    const t30Pool = (o.ebbCtx && Array.isArray(o.ebbCtx.top30)) ? o.ebbCtx.top30 : null;
+    if (!whTopic) {
+      // 灰色题材名取不到 ⇒ 无从比对（与第三十条 / 第三十一条同一处理：不写噪音说明）
+    } else {
+      const t30 = _buildTop30HuddleBlock(t30Pool, out.cashAlert, list, fOpts, coreRes);
+      if (t30.block) {
+        out.top30Huddle = t30.block;
+        // §6：同一份对象挂进买点槽位（四个装饰器经 _buyBlocksOf 遍历，⛔ 别在组合式里再铺一遍）
+        out.buy.top30Huddle = out.top30Huddle;
+        const t30Names = (out.top30Huddle.picks || []).map(function(p) {
+          return '【' + (p.dragonLabel || '') + p.name + '】（' + (p.pctText || '—') + '）';
+        }).join('、');
+        out.notes.push('⚠️【第' + TOP30_HUDDLE_RULE_NO + '条 · 30日涨幅抱团】灰色题材块【' + whTopic +
+          '】已退潮（平均竞价量比 ' + out.cashAlert.avgVolRatioText + ' ＜ ' + out.cashAlert.threshold +
+          '）⇒ 买点侧整段灰化；但【30日涨幅主板前三】（9:26 竞价口径）= ' + (t30.topNames || '—') +
+          ' 里有与本题材【同大类】的龙 ⇒ 说明它强势、还没死透，行情差时资金会继续抱团最强的那个，' +
+          '**还没轮到补涨** ⇒ 选 ' + t30Names + ' 作为【今天可以买】的票（标签【' + TOP30_HUDDLE_TAG + '】）。' +
+          '⚠️ 本条命中 ⇒ 第三十条（20日涨幅抱团）/ 第三十一条（补涨题材）/ 第三十二条（龙一跌停切抱团）' +
+          '**今天一条都不出票**（让路）。⚠️ 它仍会在下面那个灰化块里出现一次（题材结论 ≠ 股票结论）。');
+      } else if (t30.reason === 'no-match') {
+        out.notes.push('⚠️【第' + TOP30_HUDDLE_RULE_NO + '条 · 30日涨幅抱团】30日涨幅主板前三（9:26 竞价口径）= ' +
+          (t30.topNames || '—') + '，其中【没有】与灰色题材块【' + whTopic + '】同大类的股票 ⇒ ' +
+          '本条不生效（同题材的龙不在前三 = 已经死透，轮得到补涨了）⇒ 按原有第三十一条（补涨票）继续。' +
+          '（口径：上面括号里是每只票行上的【细分题材】归一后的【核心词大类】，与块名【' + whTopic + '】同一个层级。）');
+      } else if (t30.reason === 'no-member') {
+        // §10：榜上有它、但今日题材块里找不到它的成员行 ⇒ 客观数据（占比/分笔/停牌）整片会空。
+        //   与其造一行「有名字没数据」的买点，不如如实说判不出、不接管（⛔ 不硬造）。
+        out.notes.push('⚠️【第' + TOP30_HUDDLE_RULE_NO + '条 · 30日涨幅抱团】30日涨幅前三（9:26 竞价口径）= ' +
+          (t30.topNames || '—') + ' 里虽有与【' + whTopic + '】同大类的票，但取不到它今日的行情成员行' +
+          '（占比 / 分笔 / 停牌都算不出）⇒ 本次【判不出】，本条不接管；第三十条/第三十一条/第三十二条照常生效。');
+      } else {
+        // 'no-pool'（榜还没就绪 / 判不出）/ 'no-topic'（上面已分流）
+        out.notes.push('⚠️【第' + TOP30_HUDDLE_RULE_NO + '条 · 30日涨幅抱团】30日涨幅榜（9:26 竞价口径 · 只主板）' +
+          '还没就绪 ⇒ 本次【判不出】灰色题材块【' + whTopic + '】有没有票进前三 ⇒ ' +
+          '本条不接管，第三十条/第三十一条/第三十二条照常生效。（§10：判不出 ≠ 今天没有，也 ≠ 一定要空仓。）');
+      }
+    }
+
+    if (out.top30Huddle) {
+      // ★ 第三十五条已接管：三十 / 三十一 整段跳过（用户拍板「全部让路」）。
+      //   ⚠️ 这里用「提前分支」而不是在各处加 if：读代码时一眼能看出「要么 35、要么 30/31」，
+      //      与 C5「会把或写进代码形状」是同一条纪律。
+      out.notes.push('ℹ️【第三十 / 三十一条 · 今日让路】第三十五条已按 30 日涨幅选出抱团票 ⇒ ' +
+        '第三十条（20日涨幅抱团）与第三十一条（补涨题材）今天不参与，避免同一天两条通道各选一只、结论打架。');
+    } else if (!whPool || whPool.length === 0) {
       // §10：判不出就如实说（⛔ 沉默会让人以为「今天本来就没有抱团票」）
       out.notes.push('⚠️【第' + WEAK_HUDDLE_RULE_NO + '条 · 弱势切抱团】20日涨幅前五（只主板）还没就绪 ⇒ ' +
         '本次【判不出】灰色题材块里有没有票进前三名。数据到货后会自动重算 —— ' +
@@ -1923,7 +1989,15 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //     （题材内最强的那只已经跌停），说明里会讲清为什么换掉第三十条那几只。
   //   ⚠️ §11：`out.leaderLimitDown` 为 null（没命中 / 不在常规语境 / 龙一竞价涨幅读不到）⇒ 整段跳过，
   //      行为与加本规则之前逐字节相同。
-  if (out.leaderLimitDown) {
+  //   ★★ [RULE-35 2026-11-18 用户口径] 第三十五条命中时，本条**也让路**（用户拍板「三十/三十一/三十二全部让路」）。
+  //      事故现场（11-18）：灰色块【大消费】、题材龙一竞价跌停 ⇒ 本条原本要选市场总龙一【东方海洋】；
+  //      但同为 30 日涨幅前三的【九阳股份】才与该题材同大类、且名次更高 ⇒ 三十五接管，本条不出票。
+  if (out.leaderLimitDown && out.top30Huddle) {
+    out.notes.push('ℹ️【第' + TOPIC_LEADER_LIMITDOWN_RULE_NO + '条 · 今日让路】本日题材龙一确实竞价跌停' +
+      '（' + ((out.leaderLimitDown && out.leaderLimitDown.name) || '—') + '），但【第' +
+      TOP30_HUDDLE_RULE_NO + '条 · 30日涨幅抱团】已选出同大类的抱团票 ⇒ 本条今天不另出票' +
+      '（避免同一天两条抱团通道各选一只、结论打架）。');
+  } else if (out.leaderLimitDown) {
     const hdPool = (o.ebbCtx && Array.isArray(o.ebbCtx.top5)) ? o.ebbCtx.top5 : null;
     const tookOverWeakHuddle = !!out.weakHuddle;
     const hdBuilt = (hdPool && hdPool.length > 0)
@@ -2397,6 +2471,13 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   if (out.leaderLimitDown && out.weakHuddle) {
     (out.weakHuddle.picks || []).forEach(function(p) { if (p && p.name) out.buyNames.add(p.name); });
   }
+  // ★★ [RULE-35 2026-11-18 用户口径] 第三十五条抱团那一只也是【今天真要买】的票 ⇒ 必须进买点名单。
+  //   理由与上面第三十二条逐字相同（同一不变式）：它若昨天已在卖点侧候选里，
+  //   卖点侧要标【持有】而不是「竞价清仓」—— 否则屏幕上会同时出现「今天买」和「今天清仓」。
+  //   ⚠️ 它是【新增通道】，所以必须显式加；⛔ 不去动三十条/三十一条那条既有行为（§11）。
+  if (out.top30Huddle) {
+    (out.top30Huddle.picks || []).forEach(function(p) { if (p && p.name) out.buyNames.add(p.name); });
+  }
 
   // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条【监管异动 · 十日涨幅硬上限】——
   //   ★ 为什么收口放在【这里】（所有买点通道都建完之后、卖点段之前）：
@@ -2585,6 +2666,9 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   if (out.weakHuddle) _countUnique(out.weakHuddle.picks);
   // ★★ [CATCH-UP 2026-10-27] 补涨题材那几只同理（与弱抱团同一个理由：按名字去重，不数多）。
   if (out.catchUp) _countUnique(out.catchUp.picks);
+  // ★★ [RULE-35 2026-11-18] 30日涨幅抱团那一只同理（今天唯一还能买的就是它）。
+  //   与第三十/三十一条同一条口径：_pickSeen 按名字去重，不会把「实际能下单的只数」数多。
+  if (out.top30Huddle) _countUnique(out.top30Huddle.picks);
   out.pickCount = _pickSeen.size;
   // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条：监管异动日「不再选票」⇒ 一律按 0 只计。
   //   ⚠️ 票【仍然列在屏幕上】（用户「不用去掉」），只是不计入「选出 N 只」——
@@ -2704,6 +2788,7 @@ export function _applyAbnormalSweep(out, opts) {
   out.range10Backup = null;
   out.weakHuddle = null;
   out.catchUp = null;
+  out.top30Huddle = null;
   out.ebbNodeNote = null;
   if (out.buy) {
     out.buy.ebbSecond = null;
@@ -2711,6 +2796,7 @@ export function _applyAbnormalSweep(out, opts) {
     out.buy.range10Backup = null;
     out.buy.weakHuddle = null;
     out.buy.catchUp = null;
+    out.buy.top30Huddle = null;
   }
   out.buyNames = new Set();
 
@@ -2768,6 +2854,7 @@ export function _clearBuySideForDataGate(out) {
   out.range10Backup = null;
   out.weakHuddle = null;
   out.catchUp = null;
+  out.top30Huddle = null;
   out.ebbNodeNote = null;
   // 空仓提醒换成「未触发」常量：数据缺失日由提示板（TvrbDataGate）说话，
   // ⛔ 不能让「平均量比 < 25」那种基于数值的标语在没数值时出现（那就是编出来的结论）。
@@ -2789,6 +2876,7 @@ export function _clearBuySideForDataGate(out) {
     out.buy.range10Backup = null;
     out.buy.weakHuddle = null;
     out.buy.catchUp = null;
+    out.buy.top30Huddle = null;
   }
   out.buyNames = new Set();
   out.pickCount = 0;

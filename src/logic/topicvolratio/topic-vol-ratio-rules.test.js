@@ -100,6 +100,9 @@ import {
   WEAK_HUDDLE_TONE,
   WEAK_HUDDLE_BLOCK_TOPIC,
   WEAK_HUDDLE_TOP_N,
+  // ★★ [RULE-35 2026-11-18 用户口径] 第三十五条【30日涨幅抱团（补涨让路版）】
+  TOP30_HUDDLE_RULE_NO,
+  TOP30_HUDDLE_TAG,
   // ★★ [CATCH-UP 2026-10-27 用户口径] 第三十一条【补涨题材】
   CATCH_UP_RULE_NO,
   CATCH_UP_TAG,
@@ -735,10 +738,20 @@ describe('tvrb · 空仓提醒（入选题材里排名第一 平均量比 < 25 �
     const _isR10GateNote = function(s) {
       return String(s).indexOf('· 十日涨幅候补】排名第一的入选题材') >= 0;
     };
-    const _isWhNote = function(s) {
-      return !_isR10GateNote(s) && String(s).indexOf('第' + WEAK_HUDDLE_RULE_NO + '条') >= 0;
+    // ★★ [RULE-35 2026-11-18] 第三十五条的留痕也算「额外说明」（空仓日必然产出一条：
+    //   要么「判不出 ⇒ 不接管」，要么「前三没有同题材 ⇒ 回到三十一条」）。
+    //   ⚠️ 这一条【必须写在 _isWhNote 之前】：35 的说明文本里会提到「第三十条」三个字
+    //      （「第三十条/第三十一条/第三十二条照常生效」），宽松匹配会把它误算进第三十条那一条。
+    const _isT30Note = function(s) {
+      return String(s).indexOf('第' + TOP30_HUDDLE_RULE_NO + '条') >= 0;
     };
-    const _isExtra = function(s) { return _isWhNote(s) || _isR10GateNote(s); };
+    const _isWhNote = function(s) {
+      // ⚠️ 精确到【第三十条 · 弱势切抱团】这个带标签的形状，⛔ 不用宽松的「含第N条」——
+      //   宽松匹配会被别的规则说明里顺口提到的「第三十条」污染（本轮已实测踩到）。
+      return !_isR10GateNote(s) && !_isT30Note(s) &&
+        String(s).indexOf('【第' + WEAK_HUDDLE_RULE_NO + '条 · ') >= 0;
+    };
+    const _isExtra = function(s) { return _isWhNote(s) || _isR10GateNote(s) || _isT30Note(s); };
     expect(pLow.notes.filter(function(s) { return !_isExtra(s); })).toEqual(pOk.notes);
     expect(pLow.notes.filter(_isWhNote)).toHaveLength(1);
     expect(pLow.notes.filter(_isR10GateNote)).toHaveLength(1);
