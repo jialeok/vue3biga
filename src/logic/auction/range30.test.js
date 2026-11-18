@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ⚠️ 交易日历必须桩掉：真实实现（logic/date/trading-day-helpers.js）要经 supabase-client#loadAllData
 //   读 localStorage / 做迁移，在 node 单测环境里根本没有这些依赖。
@@ -27,14 +27,38 @@ vi.mock('../date/trading-day-helpers.js', function() {
   return { isTradingDay: isTradingDay, getPreviousTradingDay: getPreviousTradingDay };
 });
 
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 下面三个桩只服务 `ensureRange30` 的【代码解析】回归测试（2026-11-18 线上事故）：
+//   · 腾讯日线 / 结果表 / 代码映射全是网络或 Supabase 依赖，单测里必须桩掉；
+//   · ⚠️ 别在这里桩 localStorage —— 会连环踩到 supabase-client 的迁移分支（上一轮踩过）。
+// ══════════════════════════════════════════════════════════════════════════════════════
+vi.mock('../../data/api/qt-kline.js', function() {
+  return { fetchQtDailyBars: vi.fn(async function() { return new Map(); }) };
+});
+vi.mock('../../data/stock-range30-cache.js', function() {
+  return {
+    readRange30Rows: vi.fn(async function() { return null; }),
+    upsertRange30Rows: vi.fn(async function() {})
+  };
+});
+vi.mock('../../data/stock-code-map.js', function() {
+  return { getStockCode: vi.fn(function() { return ''; }) };
+});
+
 import {
   RANGE30_WINDOW_DAYS,
   RANGE30_MIN_LEGS,
   buildRange30Window,
   normalizeBars,
   barOnOrBefore,
-  range30FromBars
+  range30FromBars,
+  ensureRange30,
+  getRange30Pct,
+  clearRange30
 } from './range30.js';
+import { fetchQtDailyBars } from '../../data/api/qt-kline.js';
+import { getStockCode } from '../../data/stock-code-map.js';
+
 
 // ══════════════════════════════════════════════════════════════════════════════════════
 // 这一组测试锁死的是「30 日涨幅 = 期末收盘 / 期初前收盘 − 1」这条用户口径（2026-11-18）：
@@ -208,5 +232,97 @@ describe('range30FromBars 30 日涨幅（一次性比值）', () => {
     ];
     const got = range30FromBars(bars, ASOF, { minLegs: 1 });
     expect(got.pct).toBeCloseTo(-40, 6);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ 2026-11-18 线上事故回归：「打开 30日涨幅 toggle 后，行上一列数值全空」★★
+//
+//   根因（已实测取证）：`ensureRange30` 当时只用 `getStockCode(名称)` 解析代码，而它读的
+//   `stockcodemap` 表**只有 1184 行**（全市场 5000+）。当天正式名单 32 行里 16 行在这张表
+//   根本不存在 ⇒ 被 `if (code.length !== 6) return` 静默跳过 ⇒ 屏幕上就是「整列空白」。
+//   而这 32 行在 `auction_watchlist.code` 是 **32/32 有值**的（worker 落的真值）。
+//
+//   ⇒ 契约：**行内 code 优先**，`getStockCode` 仅兜底；两者都拿不到 ⇒ 不出值（§10 不猜）。
+//   下面这几条就是把这个优先级钉死，⛔ 别再改回「只看 stockcodemap」。
+// ══════════════════════════════════════════════════════════════════════════════════════
+describe('ensureRange30 代码解析（2026-11-18「数值一列全空」回归）', () => {
+  const ASOF = '2026-10-28';
+  const win = buildRange30Window(ASOF);
+
+  /** 造一份「腿数过门槛 + 首尾有价」的日 K（数值 = 新华传媒那组真值 5.31 → 14.81） */
+  function barsFor() {
+    const bars = [{ ymd: win.baseDate, close: 5.31 }];
+    for (let i = 0; i < 12; i++) bars.push({ ymd: win.dates[i], close: 5.31 + i * 0.1 });
+    bars.push({ ymd: win.end, close: 14.81 });
+    return bars;
+  }
+
+  beforeEach(() => {
+    clearRange30();
+    vi.clearAllMocks();
+    getStockCode.mockImplementation(function() { return ''; });
+    fetchQtDailyBars.mockImplementation(async function(codes) {
+      const m = new Map();
+      (codes || []).forEach(function(c) { m.set(c, barsFor()); });
+      return m;
+    });
+  });
+
+  it('★ 行内 code 优先：stockcodemap 里查不到这只票，也必须算得出值', async () => {
+    // 事故实况：亚玛顿 002623 在 stockcodemap 里没有记录（该表只覆盖 1184 只）。
+    expect(getStockCode('亚玛顿')).toBe('');
+    await ensureRange30(ASOF, [{ stock: '亚玛顿', code: '002623' }], {});
+    expect(fetchQtDailyBars).toHaveBeenCalledTimes(1);
+    expect(fetchQtDailyBars.mock.calls[0][0]).toEqual(['002623']);
+    const map = getRange30Pct(ASOF);
+    expect(map).not.toBeNull();
+    expect(map.get('亚玛顿').pct).toBeCloseTo(178.91, 1);
+    expect(map.get('亚玛顿').days).toBeGreaterThanOrEqual(RANGE30_MIN_LEGS);
+  });
+
+  it('行内 code 带市场前后缀 ⇒ 归一成 6 位数字（⛔ 不因为格式漏掉）', async () => {
+    await ensureRange30(ASOF, [
+      { stock: 'A票', code: 'SZ002623' },
+      { stock: 'B票', code: '600410.SH' }
+    ], {});
+    const asked = fetchQtDailyBars.mock.calls[0][0];
+    expect(asked.slice().sort()).toEqual(['002623', '600410']);
+  });
+
+  it('同一只票重复出现 ⇒ 只请求一次（§32 不重复烧请求）', async () => {
+    await ensureRange30(ASOF, [
+      { stock: '亚玛顿', code: '002623' },
+      { stock: '亚玛顿', code: '002623' }
+    ], {});
+    expect(fetchQtDailyBars.mock.calls[0][0]).toEqual(['002623']);
+  });
+
+  it('行内没 code ⇒ 回退 stockcodemap（§6 与 range20 同一套解析优先级）', async () => {
+    getStockCode.mockImplementation(function(n) { return n === '新华传媒' ? '600825' : ''; });
+    await ensureRange30(ASOF, [{ stock: '新华传媒' }], {});
+    expect(fetchQtDailyBars.mock.calls[0][0]).toEqual(['600825']);
+    expect(getRange30Pct(ASOF).get('新华传媒').pct).toBeCloseTo(178.91, 1);
+  });
+
+  it('行内 code 与 stockcodemap 都没有 ⇒ 一个请求都不发（§10 判不出 ≠ 补 0）', async () => {
+    await ensureRange30(ASOF, [{ stock: '查不到代码的票' }], {});
+    expect(fetchQtDailyBars).not.toHaveBeenCalled();
+    const map = getRange30Pct(ASOF);
+    expect(map).not.toBeNull();
+    expect(map.has('查不到代码的票')).toBe(false);
+  });
+
+  it('已覆盖 ⇒ 再调用不重复请求（幂等）', async () => {
+    const rows = [{ stock: '亚玛顿', code: '002623' }];
+    await ensureRange30(ASOF, rows, {});
+    await ensureRange30(ASOF, rows, {});
+    expect(fetchQtDailyBars).toHaveBeenCalledTimes(1);
+  });
+
+  it('行字符串数组入参（["名称"]）仍兼容：靠 stockcodemap 兜底解析', async () => {
+    getStockCode.mockImplementation(function(n) { return n === '新华传媒' ? '600825' : ''; });
+    await ensureRange30(ASOF, ['新华传媒'], {});
+    expect(getRange30Pct(ASOF).get('新华传媒').pct).toBeCloseTo(178.91, 1);
   });
 });

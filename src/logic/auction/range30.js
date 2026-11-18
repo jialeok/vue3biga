@@ -214,15 +214,30 @@ export function getRange30FingerprintToken() {
   return s.date + '|v' + s.version + '|n' + (s.map ? s.map.size : '-');
 }
 
-/** 从各种形状的入参里抽股票名（rows = [{stock}] 或 ['名称']） */
-function _namesOf(rows) {
+/**
+ * 从入参抽 `{stock, code6}` —— 【行内 code 优先】，这是 2026-11-18 报障的修复点。
+ *
+ * 🔴 为什么必须优先行内 code（实测取证，别再改回只看 getStockCode）：
+ *   `getStockCode` 读的是 `stockcodemap` 表，实测**只有 1184 行**（全市场 5000+）。
+ *   2026-11-18 当天正式名单 32 行实测：`stockcodemap` 只命中 **16 行**，另一半（亚玛顿 / 北纬科技 /
+ *   华东重机 / 华胜天成 …）在表里根本没有 ⇒ 全部被跳过 ⇒ 用户看到「30日涨幅一列全空」。
+ *   而这 32 行在 `auction_watchlist` 里 **code 列 32/32 都有值**（worker 抓取时落的真值）。
+ *   ⇒ 行内 code 是事件真值，永远先用它（与 `range20-leaders.js#codeOfRow` 同一个解析优先级，§6）。
+ *
+ * @param {Array} rows [{stock, code}] / ['名称']
+ * @returns {Array<{stock:string, code:string}>} code = 6 位数字，判不出时为空串（§10 不猜）
+ */
+function _targetsOf(rows) {
   const out = [];
   const seen = new Set();
   (rows || []).forEach(function (r) {
     const n = String((r && r.stock) || r || '').trim();
     if (!n || seen.has(n)) return;
     seen.add(n);
-    out.push(n);
+    const raw = (r && (r.code !== undefined ? r.code : r.stock_code)) || '';
+    let code = String(raw).replace(/\D/g, '');
+    if (code.length !== 6) code = String(getStockCode(n) || '').replace(/\D/g, '');
+    out.push({ stock: n, code: code.length === 6 ? code : '' });
   });
   return out;
 }
@@ -245,7 +260,8 @@ function _publish(date, map) {
  *   ③ 写回结果表（写失败静默）+ 发布内存 Map。
  *
  * @param {string} date 窗口末日
- * @param {Array<{stock:string}>|string[]} rows 需要出值的票（看板行 / 补位候选池）
+ * @param {Array<{stock:string, code?:string}>|string[]} rows 需要出值的票（看板行 / 补位候选池）
+ *        ★ 行里带 `code` 就优先用它（事件真值）；缺才回退 `getStockCode`（见 `_targetsOf` 注释）。
  * @param {{force?:boolean}} [opts] force = 用户点开开关的手动重试 ⇒ 清空「已试过」登记
  * @returns {Promise<void>} 永不 reject
  */
@@ -253,15 +269,17 @@ export function ensureRange30(date, rows, opts) {
   const d = String(date || '').trim();
   if (!d) return Promise.resolve();
   const o = opts || {};
-  const names = _namesOf(rows);
+  // ★ 目标 = {stock, code}：code 用【行内真值优先】解析，⛔ 不再只认 stockcodemap（那是 2026-11-18
+  //   「30日涨幅一列全空」的根因，详见 `_targetsOf` 注释）。
+  const targets = _targetsOf(rows);
   _latestDate = d;
 
   const s = _state.value;
   if (o.force) _tried.delete(d);
   // 同一天、已加载、且本次要的票都在结果里 ⇒ 无需重算（名单 9:25 逐步到达时不重复打请求）
-  if (!o.force && s.date === d && s.loaded && _covers(s.map, names)) return Promise.resolve();
+  if (!o.force && s.date === d && s.loaded && _coversAll(s.map, targets, _tried.get(d))) return Promise.resolve();
   if (_inflight && _inflight.date === d) return _inflight.promise;
-  if (names.length === 0) return Promise.resolve();
+  if (targets.length === 0) return Promise.resolve();
 
   const promise = (async function () {
     // ① 结果表
@@ -276,17 +294,20 @@ export function ensureRange30(date, rows, opts) {
 
     // ② 缺的票批量拉 K 线现算
     const tried = _tried.get(d) || new Set();
-    const missing = names.filter(function (n) { return !map.has(n) && !tried.has(n); });
+    const missing = targets.filter(function (t) {
+      return !map.has(t.stock) && !tried.has(t.stock);
+    });
     if (missing.length > 0) {
       const codes = [];
+      const codeSet = new Set();
       const codeOfName = new Map();
-      missing.forEach(function (n) {
-        const code = String(getStockCode(n) || '').replace(/\D/g, '');
-        if (code.length !== 6) return;      // ⛔ 拿不到代码 ⇒ 判不出（不猜）
-        codes.push(code);
-        codeOfName.set(n, code);
+      missing.forEach(function (t) {
+        if (!t.code) return;               // ⛔ 拿不到代码 ⇒ 判不出（不猜）
+        if (!codeSet.has(t.code)) { codeSet.add(t.code); codes.push(t.code); }
+        codeOfName.set(t.stock, t.code);
       });
-      missing.forEach(function (n) { tried.add(n); });
+      // 登记「已请求过」（含判不出代码的）：次新股 / 长期停牌 / 真没代码的票不重复烧请求（§32）
+      missing.forEach(function (t) { tried.add(t.stock); });
       _tried.set(d, tried);
 
       if (codes.length > 0) {
@@ -309,6 +330,11 @@ export function ensureRange30(date, rows, opts) {
           // ③ 落库（失败静默：下次打开重算一遍而已，不影响正确性）
           try { await upsertRange30Rows(d, writeRows); } catch (e) { /* 加速层，忽略 */ }
         }
+        // ★ [RANGE30-DIAG 2026-11-18] 「一列全空」这类报障必须能从日志里分清是哪一段断掉的（§10）：
+        //   请求了 N 只 → 算出 M 只。M=0 且 N>0 ⇒ 腾讯侧没给 bar 或窗口构造失败（日历未就绪）；
+        //   0<N<请求数 ⇒ 部分票次新 / 停牌（正常判不出）。⛔ 这只是留痕，不改变任何行为。
+        _dbgLog('[RANGE30] ' + d + ' 请求 ' + codes.length + ' 只 → 算出 ' + writeRows.length + ' 只'
+          + '（名单 ' + targets.length + ' 只）');
       }
     }
 
@@ -327,11 +353,22 @@ export function ensureRange30(date, rows, opts) {
   return promise;
 }
 
-/** 名单是否已被结果完全覆盖（缺一个就得重算 —— 9:25 名单是逐步到达的） */
-function _covers(map, names) {
+/**
+ * 名单是否已被结果完全覆盖（缺一个就得重算 —— 9:25 名单是逐步到达的）。
+ *
+ * ★ 两条「不阻塞」豁免（⛔ 少了任一条，同一天每次调用都会重算一遍）：
+ *   ① 目标本身解析不出代码 ⇒ 它永远不会有值，不能拿它把「已覆盖」永久卡成 false；
+ *   ② 目标本轮已请求过却没出值（次新股 / 长期停牌 / 腿数不足）⇒ 那是 §10 的「判不出」，
+ *      不是「还没算」，force 之前不该重复打请求。
+ */
+function _coversAll(map, targets, tried) {
   if (!map) return false;
-  for (let i = 0; i < names.length; i++) {
-    if (!map.has(names[i])) return false;
+  for (let i = 0; i < targets.length; i++) {
+    const t = targets[i];
+    if (map.has(t.stock)) continue;
+    if (!t.code) continue;
+    if (tried && tried.has(t.stock)) continue;
+    return false;
   }
   return true;
 }
