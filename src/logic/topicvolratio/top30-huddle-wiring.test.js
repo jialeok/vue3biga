@@ -87,9 +87,17 @@ describe('第三十五条 · §10 判不出必须与「真的没有」分开', (
     expect(PLAN).toContain('按原有第三十一条（补涨票）继续');
   });
 
-  it('取不到成员行（no-member）如实说，⛔ 不硬造一行没数据的买点', () => {
-    expect(PLAN).toContain("t30.reason === 'no-member'");
-    expect(PLAN).toContain('本条不接管；第三十条/第三十一条/第三十二条照常生效');
+  it('取不到成员行【不再】当成判不出（no-member 已废除，与第三十二条同款兜底）', () => {
+    // 🔴 事故：上一版 `if (!member) return { block:null, reason:'no-member' }` 把
+    //   「取不到题材块成员行」当成「判不出」。而本条候选池比块成员宽得多 ——
+    //   实测 11-17 九阳股份在 75 行竞价指标里、不在 40 行正式名单里 ⇒ 永远找不到成员行
+    //   ⇒ 用户要的那只票永远选不出来（用户原话「17日选广百股份不对吧」）。
+    expect(PLAN).not.toContain("t30.reason === 'no-member'");
+    // 块组装里必须是「取不到也照常出票」的形状（members 空数组 + 占比留空）
+    expect(BLOCKS).toContain('const members = member ? [member] : [];');
+    expect(BLOCKS).toContain('aucShare: member ? _num(member.aucShare) : null');
+    // §10：缺的是展示用的占比 ⇒ 必须如实说出来，⛔ 不静默
+    expect(BLOCKS).toContain('ℹ️【占比留空的原因】');
   });
 });
 

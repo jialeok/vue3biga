@@ -124,7 +124,8 @@ import {
 import {
   ensureTvrbAuctionBoard30,
   getTvrbAuctionBoard30,
-  getTvrbAuctionBoard30Token
+  getTvrbAuctionBoard30Token,
+  hasTvrbAuctionBoard30Verdict
 } from '../logic/topicvolratio/tvrb-auction-board30.js';
 // ★ [EBB-R20 2026-10-20 用户口径] 20日涨幅前五（总龙一~五）—— 退潮判定的总龙与买点侧替补的【唯一】来源：
 //   ensureRange20Leaders 触发计算（幂等 + 会话缓存 + 单飞，与「20日涨幅」toggle 共享同一份）；
@@ -1848,9 +1849,8 @@ export function useTopicVolRatioBoard() {
       //   §10：判不出 ⇒ null ⇒ 采集层 top30=[] ⇒ 规则层如实标注「判不出」且**不接管**
       //        （⛔ 绝不回落收盘口径冒充，那等于拿错尺子下结论）。
       const _board30 = getTvrbAuctionBoard30(d);
-      const _r30Top = (_board30 && _board30.ready && Array.isArray(_board30.rank) && _board30.rank.length > 0)
-        ? _board30.rank
-        : null;
+      const _r30Ready = !!(_board30 && _board30.ready && Array.isArray(_board30.rank) && _board30.rank.length > 0);
+      const _r30Top = _r30Ready ? _board30.rank : null;
 
       // ★★ [ABN-DEV 2026-11-14 用户口径] 「我看一遍股票或者市场前十，就知道怎么参考了」
       //   ⇒ 把 20 日涨幅主板前十的名字记下来，作为偏离值面板的【参考顺序】。
@@ -2358,6 +2358,14 @@ export function useTopicVolRatioBoard() {
         // ★★ [TVRB-PLAN-SNAPSHOT 2026-11-11 · 第十四项] 这天有没有存档，先问完再定稿。
         //   没问完就定稿 ⇒ 拿重算中间态写库 / 上屏，等存档命中又被覆盖 = 存档形同虚设。
         planSnapshotReady: planSnapshotReady.value,
+        // ★★ [RULE-35-SETTLE 2026-11-19 用户口径 · 第十六项] 9:26 竞价口径 **30 日榜**读过没有。
+        //   🔴 用户报障「11-17 / 11-18 都没生效，还是原来的票」。取证：存档 sig 已是 v22（新代码在跑），
+        //      数据层实测 `ensureTvrbAuctionBoard30('2026-11-17')` → ready=true 69 行，
+        //      但存档里 top30Huddle=null、说明写「还没就绪」⇒ 说明**首帧算完就定稿冻结了**，
+        //      2.2s 后 30 日榜到货触发的重算被 `_buyPublished` 挡住，永远上不了屏。
+        //   ⇒ 与 ⑬（20 日榜）同一个病：第三十五条吃的是另一把尺子，必须有自己的门。
+        //   §10：「读过」就算落地（成功或失败）；判不出那支由 plan.notes 如实标注且不接管。
+        top30BoardTried: _r30Ready || hasTvrbAuctionBoard30Verdict(d),
         // ★★ [ABN-TB 2026-11-17 用户口径 · 第十五项] 第三十四条【延伸】「异动第三天 ⇒ 同题材禁入」
         //   的两份输入（D-2 竞价口径十日涨幅 + D-2 竞价名单题材串）。
         //   没读到就定稿 ⇒ 到货后会有票被剔除 ⇒ 屏幕上的票「消失」，正是用户最反感的换票。

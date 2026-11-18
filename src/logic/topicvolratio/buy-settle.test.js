@@ -198,6 +198,38 @@ describe('resolveBuySettle · 买点侧选股输入门控', function() {
       expect(r.missing).toContain('异动第三天监控');
     });
 
+    // ★★ [RULE-35-SETTLE 2026-11-19 用户报障] 第 ⑯ 项：9:26 竞价口径【30 日涨幅榜】。
+    //
+    //   🔴 这是 11-17 / 11-18「第三十五条没生效」的真因（不是数据、不是部署、不是缓存）：
+    //     ① `data` 首帧读 30 日榜 = null（实测要 2.2s 才回）；
+    //     ② 本节 ①~⑮ 全齐 ⇒ 立刻 settled=true ⇒ `_buyPublished` 把那一帧定稿冻结；
+    //     ③ 30 日榜到货后 data 重算出正确买点，但冻结不让它上屏、也不写存档
+    //     ④ ⇒ 用户永远看到「判不出」+ 原来的票（11-17 广百股份 / 11-18 东方海洋）。
+    //   ⇒ 门控必须等它，且**与第 ⑬ 项各管各的**：两条尺子不同（20 日 vs 30 日、腿数 20 vs 10），
+    //     20 日榜落地不代表 30 日榜落地。
+    it('★ 第 ⑯ 项：30 日榜没读过 ⇒ 不许定稿（否则第三十五条永远上不了屏）', function() {
+      const r = resolveBuySettle(full({ top30BoardTried: false }));
+      expect(r.settled).toBe(false);
+      expect(r.missing).toContain('9:26 竞价口径 30 日涨幅榜');
+      // 读过（成功或失败都算）⇒ 放行（§10：一次读失败不能把买点侧永久锁死）
+      expect(resolveBuySettle(full({ top30BoardTried: true })).settled).toBe(true);
+      // 缺省 undefined ⇒ 就绪（§11：老调用方 / 既有单测零行为变化）
+      expect(resolveBuySettle(full({ top30BoardTried: undefined })).settled).toBe(true);
+    });
+
+    it('★ 第 ⑬ / ⑯ 项互不顶替：只落地 20 日榜不许放行，只落地 30 日榜也不许', function() {
+      const only20 = resolveBuySettle(full({ auctionBoardTried: true, top30BoardTried: false }));
+      expect(only20.settled).toBe(false);
+      expect(only20.missing).toEqual(['9:26 竞价口径 30 日涨幅榜']);
+
+      const only30 = resolveBuySettle(full({ auctionBoardTried: false, top30BoardTried: true }));
+      expect(only30.settled).toBe(false);
+      expect(only30.missing).toEqual(['9:25 竞价口径 20 日涨幅榜']);
+
+      const both = resolveBuySettle(full({ auctionBoardTried: true, top30BoardTried: true }));
+      expect(both.settled).toBe(true);
+    });
+
     it('★ 第 ⑮ 项：两份都读到该日期 ⇒ 放行（⛔ 不永久挂死）', function() {
       const D2 = '2026-11-11';
       expect(resolveBuySettle(full({

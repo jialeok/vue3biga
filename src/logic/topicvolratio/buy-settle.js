@@ -70,6 +70,10 @@
  *                        「读过」没有（成功或失败都算）；**所有日期一律要求**，false ⇒ 不许定稿。
  *   planSnapshotReady    ★ [TVRB-PLAN-SNAPSHOT 2026-11-11] 当日定稿存档「读完了没有」；
  *                        false(读取中) ⇒ 不许定稿。hit/empty/unavailable/error 都算读过（§10）。
+ *   top30BoardTried      ★ [RULE-35-SETTLE 2026-11-19] 9:26 竞价口径 **30 日榜**（第三十五条的
+ *                        候选池）「读过」没有（成功或失败都算）；false ⇒ 不许定稿。
+ *                        与 ⑬ `auctionBoardTried` 同理，但**各管各的通道** —— 两条尺子不同
+ *                        （20 日 vs 30 日、腿数门槛 20 vs 10），20 日榜落地不代表 30 日榜落地。
  * @returns {{settled:boolean, missing:string[], text:string}} missing = 中文项名（给用户看）
  */
 /**
@@ -185,6 +189,28 @@ export function resolveBuySettle(ctx) {
   //    ⚠️ 缺省 undefined ⇒ 就绪（老调用方 / 既有单测零行为变化，§11）。
   if (o.planSnapshotReady === false) {
     missing.push('当日定稿存档读取');
+  }
+  // ⑯ ★★ [RULE-35-SETTLE 2026-11-19 用户口径] 【9:26 竞价口径 30 日涨幅榜】算完了没有。
+  //
+  //   🔴 为什么必须单列（11-17 / 11-18 两条真实事故链）：
+  //     用户报障「11月17日和18日都没有生效啊，还是显示原来的票，没有变化」。
+  //     取证：两天的存档 `rules_sig` 都是 `v22:…`（新代码确实在跑），但 `buy.top30Huddle = null`，
+  //     说明里写的是「30日涨幅榜还没就绪 ⇒ 本次【判不出】」。而数据层实测是好的：
+  //     `ensureTvrbAuctionBoard30('2026-11-17')` → `ready=true`、rank 69 行、九阳股份 148.76%。
+  //
+  //     ⇒ 根因不是数据、不是部署，是**定稿门控没等它**：
+  //       ① `data` 首帧读 30 日榜 = null（它要 2.2s 才回，比 20 日榜还慢一截）；
+  //       ② 本函数 ①~⑮ 全齐 ⇒ 立刻 `settled=true` ⇒ **plan 定稿冻结**（`_buyPublished`）；
+  //       ③ 2.2s 后 30 日榜到货、`_state` 变、`data` 重算出**正确**的第三十五条买点；
+  //       ④ 但冻结不让它上屏、也不写进存档 ⇒ 用户永远看到「判不出」+ 原来的票。
+  //     ⚠️ 这和第 ⑬ 项（20 日榜）是**同一个病**，只是当时只有 20 日榜这一条通道；
+  //        第三十五条吃的是另一把尺子（30 日 / 竞价口径 / 腿数 ≥10），必须有自己的门。
+  //
+  //   ⚠️ 与 ⑬ 一样「读过就算落地」（成功或失败都算）：判不出时规则层会如实标注「判不出」且
+  //      **不接管**，由冻结保证屏幕不再变；⛔ 不能因为一次读失败把买点侧永久锁死（§10）。
+  //   ⚠️ 缺省 undefined ⇒ 就绪（§11：老调用方 / 既有单测零行为变化）。
+  if (o.top30BoardTried === false) {
+    missing.push('9:26 竞价口径 30 日涨幅榜');
   }
 
   if (missing.length === 0) return { settled: true, missing: [], text: '' };

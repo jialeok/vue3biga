@@ -1018,7 +1018,7 @@ export function _buildWeakHuddleBlock(pool, cashAlert, list, fOpts, coreRes) {
  * @param {(raw:string)=>string} [coreRes] 题材大类归一函数
  * @returns {{block:object|null, reason:string, topNames:string, greyCore:string}}
  *          reason: '' 成功 / 'no-pool' 池子不可用 / 'no-topic' 灰色题材名缺失 /
- *                  'no-match' 前三没有同题材 / 'no-member' 命中的票取不到真实成员行（§10 不硬造）
+ *                  'no-match' 前三没有同题材（'no-member' 已废除，见下）
  */
 export function _buildTop30HuddleBlock(pool, cashAlert, list, fOpts, coreRes) {
   const res = pickTop30Huddle(pool, (cashAlert && cashAlert.topic) || '', coreRes, TOP30_HUDDLE_TOP_N);
@@ -1035,11 +1035,22 @@ export function _buildTop30HuddleBlock(pool, cashAlert, list, fOpts, coreRes) {
 
   // 真实成员行：全题材按名字兜一次（§6 唯一实现 = _findMemberByName，第三十条 / 三十二条共用同一份查找）
   const member = _findMemberByName(list, p0.name);
-  // §10：连成员行都取不到 ⇒ 客观数据（占比 / 分笔 / 停牌）整片会空，
-  //   与其造一行「有名字没数据」的买点，不如如实回报判不出（⛔ 不硬造）。
-  if (!member) {
-    return { block: null, reason: 'no-member', topNames: res.topNames, greyCore: res.greyCore };
-  }
+  // ★★ [RULE-35-MEMBER 2026-11-19] ⚠️ 取不到成员行 **不再等于「不接管」**（与第三十二条逐字同款）。
+  //
+  //   🔴 上一版这里 `if (!member) return { block:null, reason:'no-member' }`，是**错的判据**：
+  //     本条候选池 = 当日 `market_metrics(scope='auction')` 的行（含龙头组 / 观察组 / 20日补位票），
+  //     比「入选题材块的 members」宽得多。实测 11-17：九阳股份在指标 75 行里，却**不在**
+  //     `auction_watchlist` 那 40 行正式名单里 ⇒ 它永远不可能出现在任何题材块的 members 上
+  //     ⇒ 本条对「九阳股份」这种票【永远判 no-member】⇒ 用户要的那只票永远选不出来。
+  //     （对照第三十一条：它同样是按【核心词大类】从榜里认亲，不要求票在块成员里 —— 11-18 说明原文
+  //      「第 6~10 名里灰色题材块【大消费】有 2 只：九阳股份（第 7 名）、青岛食品」就是这种认法。）
+  //
+  //   ⇒ 口径（照抄第三十二条 `_buildLeaderLimitDownHuddleBlock`）：member 取不到也照常出票，
+  //     只是【占比】这一项展示数据留空（`aucShare: null` / `members: []`），并在 notes 如实说明。
+  //   §10 边界：缺的是「展示用的竞价占比」，它**不参与本条判定**；本条的判定依据
+  //     （30日涨幅名次 + 同大类题材）是完整判得出来的 ⇒ 这属于「判得出但某项展示数据缺」，
+  //     ⛔ 不是「判不出」，不能拿它当不选的理由。
+  const members = member ? [member] : [];
 
   const pctText = isFinite(Number(p0.pct)) ? Number(p0.pct).toFixed(2) + '%' : '';
   const namesText = '【' + p0.name + '】（' + (p0.topic || '—') + '，30日涨幅 ' + (pctText || '—') +
@@ -1065,7 +1076,7 @@ export function _buildTop30HuddleBlock(pool, cashAlert, list, fOpts, coreRes) {
       rank: null,
       count: null,
       yiziCount: null,
-      members: [member]
+      members: members
     },
     rankWord: '',
     pickRank: null,
@@ -1096,7 +1107,13 @@ export function _buildTop30HuddleBlock(pool, cashAlert, list, fOpts, coreRes) {
         '⛔ 不用合并、也不用删掉任何一处。',
       '⚠️ 涨幅口径 = 【30日涨幅 · 9:26 竞价口径】；与「30日涨幅」toggle 上那套「市龙一~五」' +
         '（收盘口径 / 竞价 toggle 打开时才竞价）**不是同一份名次**，行上写的是「30日第 N 名」。'
-    ],
+    ].concat(member ? [] : [
+      // ★★ [RULE-35-MEMBER 2026-11-19] §10：缺什么就说什么，⛔ 不静默（否则用户会以为「占比也是 0」）。
+      'ℹ️【占比留空的原因】' + p0.name + ' 在当日【9:26 竞价指标行】里有涨幅与排名（本条据此选中它），' +
+        '但它不在「本日入选题材块的成员名单」里（例如它只是龙头组 / 观察组 / 20日补位票，' +
+        '或在 `auction_watchlist` 正式名单之外）⇒ 行上的【竞价占比】取不到值，留空显示。' +
+        '⚠️ 这不影响本条的选择结论：本条判的是【30日涨幅名次 + 同核心词大类】，这两项都是完整判定的。'
+    ]),
     topic: TOP30_HUDDLE_BLOCK_TOPIC,
     rank: null,
     count: null,
