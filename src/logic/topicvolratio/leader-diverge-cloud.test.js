@@ -86,7 +86,9 @@ describe('[LD-CLOUD] 组合式接线', () => {
 
   it('注入走唯一入口 _ebbCtxWithLeaderDiverge（⛔ 直接在模板里拼 ebbCtx）', () => {
     expect(s).toContain('function _ebbCtxWithLeaderDiverge(');
-    expect(s).toContain('ebbCtx: _ebbCtxWithLeaderDiverge(rec.ebbCtx, d)');
+    // ★★ [RULE-35-DIAG 2026-11-19] 外面多包了一层「30 日榜诊断串」（`_ebbCtxWithTop30Diag`）——
+    //   它只透传一句诊断、⛔ 不改任何事实；分歧的那一层仍然是**唯一的事实入口**，不许绕过。
+    expect(s).toContain('_ebbCtxWithLeaderDiverge(rec.ebbCtx, d)');
     // 唯一入口必须同时核对「日期」与「同名总龙」，否则等于拿 A 日结论改今天
     expect(s).toContain('leaderDivergeDate.value !== d');
     expect(s).toContain('leaderName !== String(row.stock');

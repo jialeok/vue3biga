@@ -1077,6 +1077,18 @@ export function useTopicVolRatioBoard() {
   }
 
   /**
+   * ★★ [RULE-35-DIAG 2026-11-19 用户报障] 把 30 日榜的【诊断串】挂进 `ebbCtx`。
+   *   只读透传、⛔ 不改任何事实：plan 层只在「top30 为空 ⇒ 判不出」那条说明里拼一句，
+   *   有票时一个字都不显示（↑ 上面 `_r30Diag` 在有票时返回空串，这里也就不会覆盖）。
+   */
+  function _ebbCtxWithTop30Diag(ctx, diag) {
+    const base = ctx || null;
+    if (!base) return null;
+    const s = String(diag || '').trim();
+    return s ? Object.assign({}, base, { top30Diag: s }) : base;
+  }
+
+  /**
    * 确保某日的「总龙首次分歧」判定已就绪（幂等 / 单飞 / 结论缓存）。
    * ⛔ 判不出（窗口无首板 / K 线缺）⇒ verdict.canJudge=false ⇒ plan 的 divergeActive 恒 false
    *   （分歧买点静默不生效 —— 宁缺勿错，§10）。
@@ -1851,6 +1863,27 @@ export function useTopicVolRatioBoard() {
       const _board30 = getTvrbAuctionBoard30(d);
       const _r30Ready = !!(_board30 && _board30.ready && Array.isArray(_board30.rank) && _board30.rank.length > 0);
       const _r30Top = _r30Ready ? _board30.rank : null;
+      // ★★ [RULE-35-DIAG 2026-11-19 用户报障] 判不出时把【为什么】带进说明区。
+      //   上一版只说「还没就绪」，而「还没算完」和「算完但 0 只入榜」在屏幕上长得一模一样
+      //   ⇒ 用户连刷好几次也不知道卡在哪，这边也只能靠猜（§10：失败必须可分辨）。
+      //   这里只产一句诊断串，⛔ 不参与任何判定：只在 `top30` 为空时才会被拼进 notes。
+      const _r30Diag = (function() {
+        if (!_board30) {
+          return hasTvrbAuctionBoard30Verdict(d)
+            ? '榜对象为空（已发布过这一天但没有 board）'
+            : '还没算完（ensure 尚未发布这一天）';
+        }
+        if (!_board30.ready) {
+          return 'ready=false · reason=' + (_board30.reason || '(空)') +
+            ' · 9:25名单=' + (_board30.listed || 0) +
+            ' · 有涨幅=' + (_board30.covered || 0) +
+            ' · 无竞价涨幅=' + (_board30.excludedNoAuc || 0) +
+            ' · 无代码=' + (_board30.excludedNoCode || 0) +
+            ' · 入榜=' + (_board30.rowCount || 0);
+        }
+        if (!Array.isArray(_board30.rank) || _board30.rank.length === 0) return 'ready=true 但 rank 为空';
+        return '';
+      })();
 
       // ★★ [ABN-DEV 2026-11-14 用户口径] 「我看一遍股票或者市场前十，就知道怎么参考了」
       //   ⇒ 把 20 日涨幅主板前十的名字记下来，作为偏离值面板的【参考顺序】。
@@ -2056,7 +2089,7 @@ export function useTopicVolRatioBoard() {
         //   `tvrb-ebb.js#detectEbbDay` 读到 `leaderDiverge.kind==='second' && qualified!==false`
         //   ⇒ 按用户口径「二次分歧等同于首次退潮」直接判成退潮日，标题写「羊字辈二次分歧 · 等同退潮」。
         //   注入前必须过三重核对（日期 / 同名总龙 / 云端有没有这一行），见 _ebbCtxWithLeaderDiverge。
-        ebbCtx: _ebbCtxWithLeaderDiverge(rec.ebbCtx, d),
+        ebbCtx: _ebbCtxWithTop30Diag(_ebbCtxWithLeaderDiverge(rec.ebbCtx, d), _r30Diag),
         // ★★ [AUTO-PICK-TOP20 2026-11-14 用户口径] 20日涨幅榜【口径是否 = 9:25 竞价榜】——
         //   big 档（> 8 只）现在按「同题材 20日涨幅前十最靠前两只」取票，说明文字里要写清口径。
         //   ⛔ 只喂文案（规则层拼说明用），不参与任何判定：池子本身就是 rec.ebbCtx.topicPool，

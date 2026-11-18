@@ -93,8 +93,13 @@ describe('[R30-AUCLEG] 接线静态锁 —— 竞价口径开着时排序键必�
 
   it('④ 竞价口径的 30 日 Map 必须由 close 口径反解而来（⛔ 不许另写第二套换算）', () => {
     expect(R30_AUCLEG).toContain('buildAuctionLegPctMap(closeMap, metricRows)');
-    // 收盘口径优先取「已发布的现算结果」，没有再读结果表 —— 两者都不行必须判不出（§10）
-    expect(norm(R30_AUCLEG)).toContain('const closeMap = published || await readRange30Rows(date);');
+    // ★★ [RULE-35-SRC 2026-11-19] 数据源选择已抽成纯函数 `pickCloseRange30Source`（可单测）。
+    //   ⚠️ 旧断言锁的是 `const closeMap = published || await readRange30Rows(date);` ——
+    //   那一行本身就是 11-17/11-18「永远判不出」的根因：`getRange30Pct` 返回的**空 Map 也是真值**
+    //   ⇒ 永远挡住结果表 ⇒ 0 只入榜 ⇒ ready=false。⛔ 别把这个形状锁回来。
+    expect(R30_AUCLEG).toContain('const closeMap = pickCloseRange30Source(rows, published);');
+    // §10：两份都没有 ⇒ 必须判不出（⛔ 不许拿空 Map 冒充「这天没有 30 日龙头」）
+    expect(R30_AUCLEG).toContain('if (!closeMap) return null;');
   });
 });
 
