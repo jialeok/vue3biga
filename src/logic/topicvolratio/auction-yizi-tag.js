@@ -65,7 +65,10 @@ export const AUCTION_YIZI_TITLE =
  */
 export const TVRB_BUY_BLOCK_KEYS = [
   'blocks', 'ebbBuy', 'divergeBuy', 'newDragon',
-  'range10Backup', 'weakHuddle', 'catchUp'
+  'range10Backup', 'weakHuddle', 'catchUp',
+  // ★★ [RULE-35-RENDER 2026-11-19] 第三十五条槽位（`out.top30Huddle`，见 tvrb-plan.js）
+  //   漏了它 ⇒ 那一行的一字票不会挂「竞价一字涨停」标签（同一类静默漏标）。
+  'top30Huddle'
 ];
 
 /**

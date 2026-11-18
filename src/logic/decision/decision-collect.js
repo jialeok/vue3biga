@@ -1886,7 +1886,7 @@ export function collectDragonRankMap(date, opts) {
  *
  * @param {string} date 展示日 YYYY-MM-DD
  * @param {{mode?:string, actionContext?:boolean, prevRangeMap?:Map, rangeMap?:Map, range20Top?:Array,
- *          range20Wide?:Array, range20Top10?:Array}} [opts] mode = 题材组序口径
+ *          range20Wide?:Array, range20Top10?:Array, range30Top?:Array}} [opts] mode = 题材组序口径
  *        （「题材量比」看板传 MODE_VOL_RATIO；缺省回落 MODE_VOL_RATIO —— 见 normalizeDecisionMode）；
  *        actionContext 见上（缺省 false ⇒ 与原行为逐字一致）；
  *        prevRangeMap 见上（缺省 ⇒ 退潮首日规则不生效，§10 ⛔ 不退化成「今天没有总龙」）；
@@ -1929,6 +1929,21 @@ export function collectDecisionTopics(date, opts) {
     //   只给退潮判定的「主线题材 ≥3 只同题材」计数（classifyMainTopic）。
     //   缺省 ⇒ 退回 range20Wide → range20Top（见 _ebbCtxOf），§11：老调用方不传时行为不变。
     range20Top10: (opts && opts.range20Top10) || null,
+    // ★★ [RULE-35-FORWARD 2026-11-19 用户报障 · 决定性真因] 30日涨幅（9:26 竞价口径 · 只主板）全量降序 ——
+    //   第三十五条【30日涨幅抱团】的【唯一】候选池。
+    //
+    //   🔴 这一行漏了整整两轮报障（11-17 / 11-18 一直显示第三十一条的补涨票，用户连刷数次都不变）：
+    //      `collectDecisionData` 的签名、`_ebbCtxOf` 的第 11 参、组合式的注入【全都写好了】，
+    //      偏偏本函数把 opts 重排成显式字面量时**没有把它带过去** ⇒ 下游恒收到 undefined
+    //      ⇒ `ebbCtx.top30` 恒为 [] ⇒ 规则层永远走「判不出」那条分支（不接管），
+    //      而 20 日那几个参数（range20Top / Wide / Top10）都在这个字面量里 ——
+    //      这正是用户那句「是不是只是认可了20日的，30日的根本没生效」的实指（原话）。
+    //   ⚠️ 它的症状极像缓存 / 部署问题：30 日榜本身算得好好的（真机实测 ready=true / rank 69 /
+    //      九阳股份 148.76%），诊断串还是空串（有票时故意留空），于是屏幕上只有一句「判不出」，
+    //      连「为什么」都没有 —— §10 的失败可分辨在这里被「参数没转发」吃掉了。
+    //   ⛔ 以后往 `collectDecisionData` 加任何新入参，必须【同时】在这个字面量里加一份
+    //      （单测 decision-collect-forward.test.js 静态守着这一条）。
+    range30Top: (opts && opts.range30Top) || null,
     // ★★ [SELL-AUTO 2026-11-12 用户口径] 前一交易日【买点侧】的股票名（`collectBuyNames(昨日 plan)` 产出）——
     //   卖点侧成员的主力来源：用户早上按买点侧买进去，次日自动进卖点侧，不用逐只补打「买入」标签。
     //   ⚠️ 由调用方按 prevDate 从 `tvrb_plan_snapshot` 读回后注入（§4：拿数据的只管拿，本文件不读云）。

@@ -196,9 +196,12 @@ describe('[ABNORMAL-ALL 接线静态锁] 漏一处 ⇒ 11-12 仍显示彩色「�
     expect(s).toContain('abnormalGray,');
   });
 
-  it('六个独立买点容器全挂上全灰类，CSS 有定义', () => {
+  it('七个独立买点容器全挂上全灰类，CSS 有定义', () => {
     const v = readFileSync('src/views/TopicVolRatioBoard.vue', 'utf8');
-    expect((v.match(/'tvrb-abnormal-gray': abnormalGray/g) || []).length).toBe(6);
+    // ★★ [RULE-35-RENDER 2026-11-19] 6 → 7：第三十五条「30日涨幅抱团」那一块同样是
+    //   渲染在灰化容器【之外】的独立买点容器 ⇒ 监管异动日它也必须一起灰
+    //   （漏挂 = 异动日屏幕上仍有一块彩色的「可以买」，用户会照着下单）。
+    expect((v.match(/'tvrb-abnormal-gray': abnormalGray/g) || []).length).toBe(7);
     const css = readFileSync('src/assets/css/topic-vol-ratio-board.css', 'utf8');
     expect(css).toContain('.tvrb-abnormal-gray');
     expect(css).toContain('grayscale(1)');

@@ -3254,6 +3254,22 @@ export function useTopicVolRatioBoard() {
    */
   const range10Backup = computed(() => (displayPlan.value && displayPlan.value.range10Backup) || null);
   /**
+   * ★★ [RULE-35-RENDER 2026-11-19 用户三次报障的决定性一环] 第三十五条【30日涨幅抱团】那一块。
+   *
+   * 🔴 为什么它必须单独一条通道（而不是顺手塞进 weakHuddle 槽位）：
+   *   plan 层早就把这一块算出来挂在 `plan.top30Huddle` 上了（规则本身是对的），但**视图从来没有
+   *   读过这个键** —— `EXTRA_BLOCK_KEYS` / `tickTargets` / 返回对象三处全都没有它。
+   *   ⇒ 屏幕上永远不会出现那一行，用户看到的是「三十条/三十一条照旧出票」的样子，
+   *     连续三轮报障「还是一样、根本没生效」。§6 的教训：算出来了 ≠ 上得了屏，
+   *     一条规则要有【判定 + 槽位 + 渲染 + 分笔 + 装饰器】五件套才算接通。
+   *
+   * ⚠️ 与 weakHuddle / catchUp 同一约定：它【不在 blocks 里】，视图必须渲染在灰化容器
+   *   （.tvrb-buy-list.tvrb-ebb，父级 grayscale）【之外】，并且排在最前面 ——
+   *   因为第三十五条命中时 三十/三十一/三十二 三条全部让路，它就是今天【唯一】能买的那一只。
+   *   判不出 / 同大类不在前三 ⇒ null ⇒ 视图 v-if 不渲染（§10 不拿空壳冒充结论）。
+   */
+  const top30Huddle = computed(() => (displayPlan.value && displayPlan.value.top30Huddle) || null);
+  /**
    * ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】那一块（20日涨幅主板前三 ∧ 与退潮题材同题材）。
    * ⚠️ 与 ebbBuy / divergeBuy / newDragon / range10Backup 同一约定：它【不在 blocks 里】，
    *   视图必须渲染在灰化容器（.tvrb-buy-list.tvrb-ebb）【之外】—— 它是今天唯一还能买的那一只，
@@ -3506,6 +3522,8 @@ export function useTopicVolRatioBoard() {
     // ★★ [WEAK-HUDDLE 2026-10-27] 「弱势切抱团」同理（第三十条，同样不在 blocks 里）
     [blocks.value,
       ebbBuy.value ? [ebbBuy.value] : [],
+      // ★★ [RULE-35-RENDER 2026-11-19] 30日涨幅抱团那一只也要抓分笔（它同样不在 blocks 里）
+      top30Huddle.value ? [top30Huddle.value] : [],
       weakHuddle.value ? [weakHuddle.value] : [],
       // ★★ [CATCH-UP 2026-10-27] 补涨题材同理（第三十一条，同样不在 blocks 里）
       catchUp.value ? [catchUp.value] : []].forEach(function(arr) {
@@ -3688,6 +3706,8 @@ export function useTopicVolRatioBoard() {
     ebbBuy,
     ebbNodeNote,
     divergeBuy,
+    // ★★ [RULE-35-RENDER 2026-11-19] 第三十五条「30日涨幅抱团」买点块（渲染在灰化容器之外、最前面）
+    top30Huddle,
     // ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条「弱势切抱团」买点块（渲染在灰化容器之外、最前面）
     weakHuddle,
     // ★★ [CATCH-UP 2026-10-27] 第三十一条「补涨题材」买点块

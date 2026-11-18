@@ -44,7 +44,9 @@ export const BUY_SLOT_KEYS = ['heavy', 'light', 'noYizi', 'smallTopic', 'bigTopi
  * ⚠️ 漏掉任何一个 ⇒ 那一行点开就是「分笔明细暂不可用」。
  */
 // ★ [ABNORMAL-ALL 2026-11-13] 导出给 abnormal-overlay 复用（§6 买点块清单只有一个出处）。
-export const EXTRA_BLOCK_KEYS = ['ebbBuy', 'divergeBuy', 'newDragon', 'range10Backup', 'weakHuddle', 'catchUp'];
+// ★★ [RULE-35-RENDER 2026-11-19] 第三十五条的槽位同样渲染在灰化容器之外 ⇒ 必须在这张清单里，
+//   否则那一行点开是「分笔明细暂不可用」（用户会以为数据没抓）。
+export const EXTRA_BLOCK_KEYS = ['ebbBuy', 'divergeBuy', 'newDragon', 'range10Backup', 'top30Huddle', 'weakHuddle', 'catchUp'];
 
 /**
  * 遍历一份 plan 里【所有】会渲染买点行的块（唯一实现，§6）。

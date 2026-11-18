@@ -281,8 +281,35 @@
  *       ⚠️ 必须 bump：11-17/11-18 的存档已经按 v23 把这天定稿成「判不出 + 原来的票」，
  *         不 bump 就被判 hit 直接复用 ⇒ 用户刷新多少次都看不到修复。
  *       sw.js 同步 v87 → v88。
+ *
+ *   v25 [RULE-35-FORWARD 2026-11-19 用户三次报障「还是一样啊……你说没计算完，但是也没有提示说计算过程，
+ *        你看20日涨幅的怎么实现，是不是只是认可了20日的，30日的根本没生效。肯定是代码有问题，
+ *        代码正常的话刷新一次它会出来的」]
+ *       ★ 用户这三句话**全对**，而且指的就是真因（这一轮用真实浏览器取证，不再靠 node 探针推断）：
+ *         ① 真实浏览器（headless Chrome + CDP，带代理，页面直连 Supabase）切到 11-17，
+ *            买点侧仍是「补涨题材 · 买点（第三十一条）→ 广百股份」；
+ *         ② 同一个页面里直接调模块：`ensureTvrbAuctionBoard30('2026-11-17')` → `ready=true`、
+ *            `rank=69`、`top1=九阳股份 148.76%`、`hasVerdict=true` —— **数据层完全正常**；
+ *         ③ 于是读存档：`buy.top30Huddle=null`、说明「判不出」，但**没有〔诊断：…〕串**
+ *            ⇒ 诊断串为空只有一种解释：`board30` 是 ready 的（有票时故意留空），
+ *            可 `plan` 层拿到的池子却是空的 ⇒ 参数在【某一层转发】时丢了。
+ *       ★ 真因（两处，缺一不可）：
+ *         a) `decision-collect.js#collectDecisionTopics` 把 opts 重排成显式字面量时
+ *            **没有带 `range30Top`**（20 日的三个参数都在）
+ *            ⇒ `_ebbCtxOf` 第 11 参恒 undefined ⇒ `ebbCtx.top30` 恒 [] ⇒ 第三十五条永远「判不出」。
+ *            → 补上 `range30Top: (opts && opts.range30Top) || null`。
+ *         b) `plan.top30Huddle` **从来没有渲染通道**：组合式没有对应的 computed、
+ *            `tickTargets` / `EXTRA_BLOCK_KEYS` / `buy-quiesce` / `auction-yizi-tag` 四处清单
+ *            也都没有它 ⇒ 就算规则算对了，屏幕上也不会出现那一行（用户「根本没生效」的观感来源）。
+ *            → 新增 `<div class="tvrb-top30-huddle-only-buy">`（深青配色、排在弱势切抱团之前）
+ *              + 组合式 `top30Huddle` computed / 分笔目标 / 返回对象 + 三张清单各补一项。
+ *       ★ 必须 bump：所有吃第三十五条的日期（11-17、11-18、11-04、11-03…）的存档都是
+ *         「把 30 日池当成空」定稿的，不 bump 就永久 hit 在那份结论上 —— 刷新多少次都不变。
+ *       ⚠️ 结论会变：11-17 ⇒ 九阳股份（30日第1 · 148.76% · 大消费），
+ *          11-18 ⇒ 九阳股份（30日第1 · 159.99% · 大消费）；三十 / 三十一 / 三十二让路。
+ *       sw.js 同步 v88 → v89。
  */
-export const TVRB_RULES_VERSION = 24;
+export const TVRB_RULES_VERSION = 25;
 
 /**
  * 输入完整性指纹版本。新增 / 删除「完整性判据」时 +1 ⇒ 所有存档按新判据重算一次。

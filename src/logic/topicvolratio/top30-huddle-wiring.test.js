@@ -166,3 +166,71 @@ describe('第三十五条 · 块组装（只选 1 只 + 口径写清楚）', () 
     expect(PLAN).toContain('if (out.top30Huddle) _countUnique(out.top30Huddle.picks);');
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [RULE-35-FORWARD 2026-11-19] 补两段锁 —— 上一版接线锁①~⑥ 全都绿着，第三十五条却
+//    **连续三轮在屏幕上不生效**（用户 11-17 / 11-18 一直显示广百股份、东方海洋）。原因：
+//    ①~⑥ 只锁了「两端」（组合式注入 + `_ebbCtxOf` 内部），**中间那一层转发**没人锁：
+//       `collectDecisionTopics` 会把 opts 重排成一个显式字面量再交给 `collectDecisionData`，
+//       20 日那三个参数都在字面量里，偏偏 `range30Top` 没进去 ⇒ 下游恒 undefined ⇒ top30 恒 []。
+//    另外「算出来」≠「上得了屏」：`plan.top30Huddle` 当时没有任何渲染通道（组合式没有 computed、
+//    四张清单都没有它）⇒ 规则对了、结论也写进存档了，屏幕上仍然什么都没有。
+//    ⇒ 现在两端各加一段静态锁：中间转发必须带全 4 个榜参数；渲染五件套必须齐全。
+// ══════════════════════════════════════════════════════════════════════════════════════
+describe('第三十五条 · 转发层（collectDecisionTopics 重排 opts 时不许丢掉榜参数）', () => {
+  /** 取出 `collectDecisionTopics` 里那段 `collectDecisionData(date, { ... })` 的字面量文本 */
+  function forwardLiteral() {
+    const i = COLLECT.indexOf('export function collectDecisionTopics(');
+    expect(i).toBeGreaterThan(-1);
+    const seg = COLLECT.slice(i);
+    const start = seg.indexOf('collectDecisionData(date, {');
+    expect(start).toBeGreaterThan(-1);
+    const end = seg.indexOf('\n  });', start);
+    expect(end).toBeGreaterThan(start);
+    return seg.slice(start, end);
+  }
+
+  it('四个榜参数必须一起转发（20 日三个 + 30 日一个，缺一即静默失效）', () => {
+    const lit = forwardLiteral();
+    expect(lit).toContain('range20Top: (opts && opts.range20Top) || null,');
+    expect(lit).toContain('range20Wide: (opts && opts.range20Wide) || null,');
+    expect(lit).toContain('range20Top10: (opts && opts.range20Top10) || null,');
+    // 🔴 就是这一行漏了整整两轮报障（_ebbCtxOf 第 11 参恒 undefined）
+    expect(lit).toContain('range30Top: (opts && opts.range30Top) || null,');
+  });
+
+  it('_ebbCtxOf 的第 11 参就是 range30Top（签名与调用两处必须同名同位）', () => {
+    expect(COLLECT).toContain('range30Top) {');
+    expect(COLLECT).toContain('opts && opts.range20Top10, opts && opts.range30Top);');
+  });
+});
+
+describe('第三十五条 · 渲染通道五件套（判定 / 槽位 / 渲染 / 分笔 / 装饰器）', () => {
+  const VUE = fs.readFileSync(path.join(ROOT, 'src/views/TopicVolRatioBoard.vue'), 'utf8');
+  const OVERLAY = fs.readFileSync(path.join(ROOT, 'src/logic/topicvolratio/plan-live-overlay.js'), 'utf8');
+  const QUIESCE = fs.readFileSync(path.join(ROOT, 'src/logic/topicvolratio/buy-quiesce.js'), 'utf8');
+  const YIZI = fs.readFileSync(path.join(ROOT, 'src/logic/topicvolratio/auction-yizi-tag.js'), 'utf8');
+
+  it('组合式：有 top30Huddle computed，并进了 tickTargets + 返回对象', () => {
+    expect(COMPOSABLE).toContain('const top30Huddle = computed(() => (displayPlan.value && displayPlan.value.top30Huddle) || null);');
+    expect(COMPOSABLE).toContain('top30Huddle.value ? [top30Huddle.value] : [],');
+    expect(COMPOSABLE).toContain('    top30Huddle,\n');
+  });
+
+  it('视图：v-if="top30Huddle" 且渲染在灰化容器之外（最前面）', () => {
+    expect(VUE).toContain('v-if="top30Huddle"');
+    expect(VUE).toContain('tvrb-top30-huddle-only-buy');
+    expect(VUE).toContain(':block="top30Huddle"');
+    // 它必须排在「弱势切抱团」之前：命中时那条要「让路」，位置本身就是口径
+    expect(VUE.indexOf('v-if="top30Huddle"')).toBeLessThan(VUE.indexOf('v-if="weakHuddle"'));
+    // 解构里也要有它（漏了 ⇒ 模板取到 undefined，永远不渲染）
+    expect(VUE).toContain('  top30Huddle,\n');
+  });
+
+  it('三张清单都带 top30Huddle（漏任一处 ⇒ 分笔不可用 / 一字漏标 / 换票不重算）', () => {
+    expect(OVERLAY).toContain("'top30Huddle'");
+    expect(QUIESCE).toContain("'top30Huddle'");
+    expect(QUIESCE).toContain("top30Huddle: 't30'");
+    expect(YIZI).toContain("'top30Huddle'");
+  });
+});

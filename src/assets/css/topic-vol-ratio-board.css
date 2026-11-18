@@ -1565,6 +1565,36 @@
     color: #b45309;
 }
 
+/* ★★ [RULE-35-RENDER 2026-11-19 用户口径] 第三十五条【30日涨幅抱团】容器 ——
+   前提与另外五段完全一样：⛔ 必须渲染在 .tvrb-buy-list.tvrb-ebb（父级 grayscale + opacity）【之外】。
+   ⚠️ 配色用【深青 teal-700】而不是紫罗兰（第三十条）/ 橙色（第三十一条）：
+      三条规则同一天互斥（第三十五条命中 ⇒ 另两条让路），颜色必须能一眼区分是谁出的票。
+   ⚠️ 边框比第三十条【更粗】（4px 左侧）：它是优先级最高的一条（覆盖式，另三条让路）。 */
+.tvrb-top30-huddle-only-buy {
+    margin: 2px 0 8px;
+    padding: 7px 9px 8px;
+    background: #f0fdfa;
+    border: 2px solid #0f766e;
+    border-left-width: 4px;
+    border-radius: 10px;
+}
+
+.tvrb-top30-huddle-only-label {
+    margin-bottom: 4px;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    color: #115e59;
+}
+
+/* 容器内说明：把「题材退潮 ⇄ 这只还能买」的矛盾讲清，⛔ 与行内说明不重复 */
+.tvrb-top30-huddle-only-note {
+    margin-bottom: 5px;
+    font-size: 10px;
+    line-height: 1.6;
+    color: #0f766e;
+}
+
 /* ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】容器 ——
    前提与另外四段完全一样：⛔ 必须渲染在 .tvrb-buy-list.tvrb-ebb（父级 grayscale + opacity）【之外】，
    CSS 的 filter 不能被后代撤销，放进去等于把今天要买的这只也灰掉。

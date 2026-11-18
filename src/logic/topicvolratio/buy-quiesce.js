@@ -74,8 +74,10 @@ export function buildBuySelectionSig(plan, eachRow) {
     }
   }
   const blocks = [];
-  const FLAGS = ['ebbBuy', 'divergeBuy', 'newDragon', 'range10Backup', 'weakHuddle', 'catchUp'];
-  const TAGS = { ebbBuy: 'eb', divergeBuy: 'dv', newDragon: 'nd', range10Backup: 'r10', weakHuddle: 'wh', catchUp: 'cu' };
+  // ★★ [RULE-35-RENDER 2026-11-19] 第三十五条槽位也在计划根上（不在 plan.blocks 里）⇒ 必须纳入指纹，
+  //   否则它换票时「买点侧静默判定」不会重算（分笔 / 实时标签会停在上一只票上）。
+  const FLAGS = ['ebbBuy', 'divergeBuy', 'newDragon', 'range10Backup', 'top30Huddle', 'weakHuddle', 'catchUp'];
+  const TAGS = { ebbBuy: 'eb', divergeBuy: 'dv', newDragon: 'nd', range10Backup: 'r10', top30Huddle: 't30', weakHuddle: 'wh', catchUp: 'cu' };
   for (let i = 0; i < FLAGS.length; i++) {
     const b = plan[FLAGS[i]];
     if (!b) continue;

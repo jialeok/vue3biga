@@ -250,6 +250,32 @@
                 :rows="deviationRows"
                 :meta="deviationMeta"
               />
+              <!-- ★★ [RULE-35-RENDER 2026-11-19 用户口径] 第三十五条【30日涨幅抱团】买点：
+               用户原话「11月17日……如果有同题材的股票在30日涨幅中排前三，那么就优先选，记住是竞价口径，
+               上面的那个补涨题材选票要让路（也就是三十一条让路，不选，不用这条）」。
+               ⛔ 必须渲染在 .tvrb-buy-list 之外（那个容器挂着父级 filter: grayscale(1)，
+                  放进去等于把今天要买的那只也灰掉），且排在【最前面】—— 它是【覆盖式】的一条，
+                  命中时 三十 / 三十一 / 三十二 全部让路，今天唯一能买的就是这一只。
+               ⛔ 类名独立（.tvrb-top30-huddle-only-*）—— 六条规则各不相同，DOM 查询不能混。
+               ⚠️ 判不出 / 同大类不在前三 ⇒ null ⇒ 不渲染（= 回到三十/三十一，§10 不拿空壳冒充结论）。 -->
+              <div
+                v-if="top30Huddle"
+                class="tvrb-top30-huddle-only-buy"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || !!top30Huddle.abnormalTopicGray }"
+              >
+                <div class="tvrb-top30-huddle-only-label tvrb-selectable">
+                  30日涨幅抱团 · 买点（第三十五条 · 从30日涨幅前三选，不是选题材）
+                </div>
+                <div class="tvrb-top30-huddle-only-note tvrb-selectable">
+                  题材已退潮（整段灰化），但它的票仍在【30日涨幅主板前三】之内（9:26 竞价口径）⇒
+                  行情差时资金会继续抱团最强的那个，还没轮到补涨 —— 这一只是今天可以买的，
+                  第三十条 / 第三十一条 / 第三十二条今天一条都不出票。
+                </div>
+                <TvrbBuyBlock
+                  :block="top30Huddle"
+                  :head-text="top30Huddle.block.topic"
+                />
+              </div>
               <!-- ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条【弱势切抱团】买点：
                用户原话「…从灰色的题材块中核对 20 日涨幅，看有没有排名前三的股票在其中（同题材），
                如果有再重新选入，因为行情差时，选市场龙头（也是题材龙头），叫弱势切抱团。
@@ -537,6 +563,9 @@ const {
   // ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条「十日涨幅 · 在列次数候补」那一只
   //   （同样渲染在灰化容器【之外】：题材量比太小被作废后，它才是今天真正要买的那一只）
   range10Backup,
+  // ★★ [RULE-35-RENDER 2026-11-19] 第三十五条「30日涨幅抱团」买点块
+  //   （渲染在灰化容器【之外】、排在【最前面】—— 它命中时 三十/三十一/三十二 三条全部让路）
+  top30Huddle,
   // ★★ [WEAK-HUDDLE 2026-10-27 用户口径] 第三十条「弱势切抱团」买点块
   //   （渲染在灰化容器【之外】且排在所有前置买点的【第一位】—— 用户「放在最前面」）
   weakHuddle,
