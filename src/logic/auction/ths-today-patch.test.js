@@ -212,6 +212,21 @@ describe('patchTodayAuctionFromThs — 组装（库里 0 行的场景 = 今天�
     expect(row.source).toBe('ths-patch');
     expect(row.updated_by).toBe('ths-patch');
   });
+  it('今日 metrics 里的龙位/补位壳行不在展示名单时，也要并入补数目标（2026-11-19）', async () => {
+    setUpstream({
+      pct: { 票A: [['20261026', -3.77]], 壳行B: [['20261026', 2.5]] },
+      open: { 票A: [['20261026', -2.5]], 壳行B: [['20261026', 1.5]] },
+      vol: { 票A: [['20261023', 61370000]], 壳行B: [['20261023', 40000000]] },
+    });
+    readAuctionMetrics.mockResolvedValue([
+      { stock: '票A', code: '600001', change_pct: '', auc_pct_chg: '', volume: '', yest_volume: '', auc_vol_ratio: '', auc_turnover: '' },
+      { stock: '壳行B', code: '600002', change_pct: '', auc_pct_chg: '', volume: '', yest_volume: '', auc_vol_ratio: '', auc_turnover: '' },
+    ]);
+    await patchTodayAuctionFromThs(TODAY);
+    const names = upsertAuctionMetrics.mock.calls[0][0].map(function(r) { return r.stock; });
+    expect(names).toContain('票A');
+    expect(names).toContain('壳行B');
+  });
 });
 
 describe('patchTodayAuctionFromThs — ⛔ 只填空，已有值不覆盖（幂等）', () => {

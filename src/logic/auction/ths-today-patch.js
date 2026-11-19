@@ -324,13 +324,10 @@ export async function patchTodayAuctionFromThs(date, opts) {
       return { ok: false, date: d, roster: 0, patchedRows: 0, filled: _emptyFilled(), reason: '当天名单为空', logs: logs };
     }
     // 只有 6 位代码的才能查上游（§40 不猜代码）
-    const targets = roster
+    let targets = roster
       .map(function(r) { return { stock: String(r.stock || '').trim(), code: String(r.code || '').trim() }; })
       .filter(function(t) { return t.stock && /^\d{6}$/.test(t.code); });
     log('展示名单 ' + roster.length + ' 只，其中带 6 位代码 ' + targets.length + ' 只');
-    if (targets.length === 0) {
-      return { ok: false, date: d, roster: roster.length, patchedRows: 0, filled: _emptyFilled(), reason: '名单没有可用代码', logs: logs };
-    }
 
     // ② 库里现状 —— 决定"哪些字段还空着"
     const existing = await readAuctionMetrics(d);
@@ -340,6 +337,32 @@ export async function patchTodayAuctionFromThs(date, opts) {
       if (k) byStock.set(k, r);
     });
     log('库内已有 ' + existing.length + ' 行（缺字段的会被补，已有的绝不覆盖）');
+
+    // ★ [METRICS-SHELL 2026-11-19] 龙位组 / 20天补 / 30天补的注入行有一部分**不在**展示名单里，
+    //   但它们确实显示在第一页，而且代码只存在于 market_metrics（不是 auction_watchlist）。
+    //   11-19 线上实测：38 行 metrics 里 7 只这类行被漏掉 ⇒ 补完 31 行后页面仍有 6 行 '-'。
+    //   这里把「今日 metrics 里有 6 位代码的行」并入补数目标（§6：正式名单真相仍是 watchlist；
+    //   这里只是把「会显示出来的行」补全，不新增 watchlist 成员，也绝不覆盖已有值）。
+    const rosterNames = new Set();
+    roster.forEach(function(r) { rosterNames.add(String((r && r.stock) || '').trim()); });
+    let shellAdded = 0;
+    existing.forEach(function(r) {
+      const nm = String((r && r.stock) || '').trim();
+      const code = String((r && r.code) || '').trim();
+      if (!nm || !/^\d{6}$/.test(code) || rosterNames.has(nm)) return;
+      rosterNames.add(nm);
+      roster.push({ stock: nm, code: code });
+      shellAdded++;
+    });
+    if (shellAdded > 0) {
+      targets = roster
+        .map(function(r) { return { stock: String(r.stock || '').trim(), code: String(r.code || '').trim() }; })
+        .filter(function(t) { return t.stock && /^\d{6}$/.test(t.code); });
+      log('并入今日 metrics 里的注入行 ' + shellAdded + ' 只（龙位/补位壳行，只填空不改名单）');
+    }
+    if (targets.length === 0) {
+      return { ok: false, date: d, roster: roster.length, patchedRows: 0, filled: _emptyFilled(), reason: '名单没有可用代码', logs: logs };
+    }
 
     // ③ K 线腿：涨幅 / 开盘涨幅(竞价) / 昨日成交量 —— 一次请求三样，0 猫抓额度
     //    ★ [VOL-COVER 2026-11-05] `onlyVolume` 时【整条跳过】：自动补只关心竞价量，
