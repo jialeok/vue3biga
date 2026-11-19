@@ -65,9 +65,9 @@ describe('pickNumcatTargets', () => {
     { name: 'D', code: '600004' }
   ];
 
-  it('无行→整行补；有行缺量比→只补量比；已有量比→完全不碰', () => {
+  it('无行→整行补；有行缺量比→补量比+空字段；已有量比→完全不碰', () => {
     const metrics = [
-      { name: 'B', code: '600002', auc_vol_ratio: '' },
+      { name: 'B', code: '600002', auc_vol_ratio: '', volume: '123', yest_volume: '' },
       { name: 'C', code: '600003', auc_vol_ratio: '3.21' }
     ];
     const t = pickNumcatTargets(ladder, metrics);
@@ -76,7 +76,11 @@ describe('pickNumcatTargets', () => {
       { name: 'A', code: '600001' },
       { name: 'D', code: '600004' }
     ]);
-    expect(t.ratioOnly).toEqual([{ name: 'B', code: '600002' }]);
+    // [WL-CANDIDATES 2026-11-19] ratioOnly 带上已有行快照（供「只填空」判据用）
+    expect(t.ratioOnly).toEqual([
+      { name: 'B', code: '600002', existing: metrics[0] }
+    ]);
+    expect(t.checked).toBe(4);
   });
 
   it('全都有量比 ⇒ symbols 为空（调用方据此跳过，绝不白烧 1 次猫抓额度）', () => {
@@ -104,8 +108,42 @@ describe('pickNumcatTargets', () => {
     expect(off.symbols).toEqual([]);                 // 没开开关 ⇒ 一个都不补（旧行为）
     const on = pickNumcatTargets(null, metrics, { includeAllRows: true });
     expect(on.symbols).toEqual(['001219']);          // 只补缺的那只，已有量比的不碰
-    expect(on.ratioOnly).toEqual([{ name: '青岛食品', code: '001219' }]);
+    expect(on.ratioOnly).toEqual([{ name: '青岛食品', code: '001219', existing: metrics[0] }]);
     expect(on.fullRows).toEqual([]);                 // ⛔ 不新建整行
+  });
+
+  // ★★ [WL-CANDIDATES 2026-11-19] 11-19 事故锁：metrics 0 行 + ladder 残缺（null）时，
+  //   正式名单候选（watchlist 行，带 code）必须进入补抓 —— 否则 9:26/9:27 两趟云端兜底
+  //   全部空转还谎报「量比齐全」（实测 morning 403 额度用尽后整天无人补）。
+  it('★★ extraCandidates：metrics 0 行时正式名单候选照样进补抓（fullRows 整行补）', () => {
+    const wl = [
+      { name: '世龙实业', code: '002748', obs_auto_added: false },
+      { name: '全筑股份', code: '603030', obs_auto_added: false },
+      { name: '观察壳', code: '', obs_auto_added: true }     // 壳行 / 无 code ⇒ 不进
+    ];
+    const t = pickNumcatTargets(null, [], { extraCandidates: wl, includeAllRows: true });
+    expect(t.symbols).toEqual(['002748', '603030']);
+    expect(t.fullRows).toEqual([
+      { name: '世龙实业', code: '002748' },
+      { name: '全筑股份', code: '603030' }
+    ]);
+    expect(t.ratioOnly).toEqual([]);
+    expect(t.checked).toBe(2);
+  });
+
+  it('★★ extraCandidates：名单成员已有 metrics 行缺量比 ⇒ ratioOnly（带 existing），有量比 ⇒ 不碰', () => {
+    const wl = [
+      { name: '甲', code: '600100', obs_auto_added: false },
+      { name: '乙', code: '600101', obs_auto_added: false }
+    ];
+    const metrics = [
+      { name: '甲', code: '600100', auc_vol_ratio: '' },
+      { name: '乙', code: '600101', auc_vol_ratio: '4.44' }
+    ];
+    const t = pickNumcatTargets(null, metrics, { extraCandidates: wl });
+    expect(t.symbols).toEqual(['600100']);
+    expect(t.ratioOnly).toEqual([{ name: '甲', code: '600100', existing: metrics[0] }]);
+    expect(t.checked).toBe(2);
   });
 
   it('includeAllRows 与 ladder 叠加时按 code 去重，不重复请求同一只票', () => {
@@ -134,13 +172,17 @@ describe('buildAucMetricsWriteRows', () => {
       auc_vol_ratio: '5.43', auc_turnover: '0.80'
     },
     {
-      stock: 'B', code: '600002', volume: '', change_pct: '', yest_volume: '',
+      stock: 'B', code: '600002', volume: '', change_pct: '', yest_volume: '999',
       auc_pct_chg: '', um_vol: '', open_bid_pct: '', auc_vol_ratio: '2.10', auc_turnover: ''
     }
   ];
   const targets = {
     fullRows: [{ name: 'A', code: '600001' }],
-    ratioOnly: [{ name: 'B', code: '600002' }]
+    ratioOnly: [{
+      name: 'B', code: '600002',
+      // [FULLFIELDS 2026-11-19] 已有行快照：volume 有值 / yest_volume 与 change_pct 为空
+      existing: { name: 'B', code: '600002', volume: '66', yest_volume: '', change_pct: '', auc_vol_ratio: '' }
+    }]
   };
 
   it('新票写整行，但只带猫抓实际给了值的字段（空值不覆盖成 ""）', () => {
@@ -154,15 +196,33 @@ describe('buildAucMetricsWriteRows', () => {
     expect(full.updated_by).toBe('auto-fetch-worker');
   });
 
-  it('已有票只带 auc_vol_ratio 一列，⛔ 不带 volume / change_pct / source（§11）', () => {
+  it('★★ [FULLFIELDS] 已有票：量比 + 行内【为空】字段照补；已有值字段绝不多写（§11）', () => {
     const rows = buildAucMetricsWriteRows(parsed, TODAY, NOW, targets);
+    const ratio = rows.find(r => r.stock === 'B');
+    // 量比（本路径主目标）
+    expect(ratio.auc_vol_ratio).toBe('2.10');
+    // 行内为空（existing.yest_volume=''）⇒ 猫抓给了（'999'）就补（同源同口径，只填空）
+    expect(ratio.yest_volume).toBe('999');
+    // 猫抓没给值的字段（change_pct=''）⇒ 不写（空值不覆盖成 ""，§10 宁缺勿错）
+    expect(ratio.change_pct).toBeUndefined();
+    // 行内已有值（existing.volume='66'）⇒ 绝不出现在 payload（⛔ 不覆盖）
+    expect(ratio.volume).toBeUndefined();
+    expect(ratio.auc_pct_chg).toBeUndefined();
+    expect(ratio.source).toBeUndefined();
+    expect(ratio.scope).toBe('auction');
+  });
+
+  it('★★ 旧形状（ratioOnly 不带 existing）⇒ 退回只补量比一列（向后兼容）', () => {
+    const rows = buildAucMetricsWriteRows(parsed, TODAY, NOW, {
+      fullRows: [],
+      ratioOnly: [{ name: 'B', code: '600002' }]
+    });
     const ratio = rows.find(r => r.stock === 'B');
     expect(Object.keys(ratio).sort()).toEqual(
       ['auc_vol_ratio', 'date', 'scope', 'stock', 'updated_at', 'updated_by'].sort()
     );
     expect(ratio.auc_vol_ratio).toBe('2.10');
-    expect(ratio.volume).toBeUndefined();
-    expect(ratio.source).toBeUndefined();
+    expect(ratio.yest_volume).toBeUndefined();
   });
 
   it('猫抓没给量比 / 没这只票 ⇒ 一行都不写（宁缺勿错，⛔ 不拿同花顺顶替）', () => {

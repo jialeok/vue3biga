@@ -24,6 +24,25 @@
 // 【数据安全】§10 读取失败一律停止；§11 删除只针对当日 `source='worker-fallback'`，
 //  且必须发生在「真实名单写入成功 + 重读复核达标」之后，删除后再复核一次。
 // ============================================================================
+// [WL-CANDIDATES 2026-11-19 事故修复] 「9:26/9:27 补抓空转 + 谎报齐全」时序盲区
+// ----------------------------------------------------------------------------
+// 11-19 实测（bidding_fetch_log 取证）：
+//   ① 9:25 morning：猫抓两把 key 全 403「今日调用额度已用完」⇒ daily_auc 一行没拿到，
+//      auction_watchlist 29 行名单写成功（行情列全空），market_metrics 当日 0 行 ⇒ ok=false；
+//   ② 9:26 ladder26：883410 只回 29 只（<30）⇒ 判残缺 ⇒ ladderForAuc=null；
+//      fillAucFromNumcat 读 market_metrics = 0 行 ⇒ symbols=0 ⇒
+//      日志「✅ 当日 9:25 名单竞价量比齐全 → 0 次猫抓请求」——实际量比 0/38 全空，纯假话；
+//   ③ 9:27 snapshot：同样 metrics 0 行 ⇒ 同样谎报；
+//   ④ 9:29 前端 ths-patch 才把 38 行行情壳写进 metrics（竞价量/竞价涨幅来自同花顺，
+//      量比按红线留空）⇒ 但云端兜底时点已全部过完，量比/昨量/涨幅整天无人再补。
+// 修复三件事（全部幂等，正常日行为不变）：
+//   A. fillAucFromNumcat 把今日 auction_watchlist 正式成员（带 6 位 code）纳入补抓候选
+//      —— metrics 0 行时名单就是唯一可靠的目标来源；
+//   B. pickNumcatTargets 返回 checked（真实审过的候选数），日志区分「齐全」与「无候选」；
+//   C. ratioOnly 从「只补量比一列」扩为「量比 + 该行当前为空的 FULL_FIELDS 字段」
+//      （supabase-write.js#readMarketMetricsSnapshotFieldsForDate 同步扩列），
+//      yest_volume / change_pct 与量比同源（猫抓 daily_auc 权威输出），只填空不覆盖（§11）。
+// ============================================================================
 import { beijingNow, beijingToday } from '../../_shared-source/date-utils.js';
 import { fetchLadderConstituents } from '../data/fuyao-api.js';
 import { numcatDailyAuc } from '../data/numcat-api.js';
@@ -68,9 +87,17 @@ function hasValue(v) {
 /**
  * 纯函数：算出这一趟需要猫抓补哪些票。
  *   · 库里今天连行都没有 ⇒ 需要写【整行】；
- *   · 有行但 auc_vol_ratio 为空 ⇒ 只补这一列（⛔ 不覆盖其它已有值，§11）；
+ *   · 有行但 auc_vol_ratio 为空 ⇒ 补量比 + 该行【其它为空字段】（见下方 [FULLFIELDS]）；
  *   · 已有量比 ⇒ 完全不碰（幂等，避免重复写库）。
  * 只认 6 位代码；按 code 去重；不会返回空 symbols 让调用方白烧额度。
+ *
+ * ★★ [WL-CANDIDATES 2026-11-19] 新增 `opts.extraCandidates`（今日 auction_watchlist 正式成员，
+ *   {name, code}）：修复 11-19 事故里的【时序盲区误判】——
+ *   9:25 morning 猫抓 403 额度用尽 ⇒ market_metrics 当日 0 行 ⇒ 9:26/9:27 兜底读 metrics
+ *   也是 0 行 + ladder 又被判残缺（null）⇒ symbols=0 ⇒ 日志谎报「竞价量比齐全 → 0 次猫抓请求」，
+ *   实际上名单里 29 只正式成员全都缺量比。⇒ 候选源必须把【正式名单】也算上：
+ *   名单行有 code、缺量比 ⇒ 照样进入补抓（metrics 0 行时走 fullRows 整行补写）。
+ *   正常日（morning 成功）名单成员的量比都在 ⇒ 全部被 `已有量比 ⇒ 不碰` 挡掉 ⇒ 仍然 0 请求（§32）。
  */
 export function pickNumcatTargets(ladder, metricsRows, opts) {
   const byName = new Map();
@@ -81,34 +108,41 @@ export function pickNumcatTargets(ladder, metricsRows, opts) {
   const fullRows = [];
   const ratioOnly = [];
   const symbols = [];
-  const add = function (name, code) {
+  let checked = 0;   // 本趟真正审过的「有 6 位 code」的候选数（供日志如实区分「齐全」与「无候选」）
+  const add = function (name, code, existing) {
     if (!name || !/^\d{6}$/.test(code) || seenCode.has(code)) return;
-    const m = byName.get(name);
+    const m = existing !== undefined ? existing : byName.get(name);
+    checked++;
     if (m && hasValue(m.auc_vol_ratio)) return;      // 已有量比 ⇒ 完全不碰（幂等）
     seenCode.add(code);
     symbols.push(code);
     if (!m) fullRows.push({ name: name, code: code });
-    else ratioOnly.push({ name: name, code: code }); // 有行缺量比 ⇒ 只补这一列（§11）
+    else ratioOnly.push({ name: name, code: code, existing: m }); // 有行缺量比 ⇒ 补量比 + 空字段（§11）
   };
   (ladder || []).forEach(function (c) {
     if (!c) return;
     add(String(c.name || '').trim(), String(c.code || '').trim());
   });
-  // ★★ [RANGE20-RATIO-HEAL 2026-11-11] 旧实现只遍历 `ladder`（883410 真实成分股），
+  // ★ [WL-CANDIDATES 2026-11-19] 正式名单候选（在 ladder 之后追加；同名同码被 seenCode 去重）。
+  //   ⛔ 只收正式成员（观察壳行 / 无 code 行在 add() 里被 6 位码判据挡掉，这里再显式滤一遍）。
+  ((opts && opts.extraCandidates) || []).forEach(function (c) {
+    if (!c || c.obs_auto_added) return;
+    add(String(c.name || '').trim(), String(c.code || '').trim());
+  });
+  // ★ [RANGE20-RATIO-HEAL 2026-11-11] 旧实现只遍历 `ladder`（883410 真实成分股），
   //   ⇒ 20 日涨幅补位票（不写 watchlist、不在 ladder 里）即便当天有 market_metrics 行、
   //     缺 `auc_vol_ratio`，9:26 也永远补不到 ⇒ 只能等 16:30 收盘后回填（用户竞价时间看不到）。
   //   11-11 实测「青岛食品」就是这个形状：9:27 前端补出 ths-patch 壳行、量比永久为空，
   //   而同为补位票的「海洋王」9:25 就抓到量比 1.94。
   //   ⇒ 打开本开关后，把「当日已有行但缺量比」的票一并纳入 ratioOnly。
   //   ⚠️ 仍然只在 `symbols.length > 0` 时才发 1 次猫抓请求；9:25 全抓全时 0 请求、0 额度（§32）。
-  //   ⚠️ 只补 `auc_vol_ratio` 一列，⛔ 不覆盖其它已有字段（buildAucMetricsWriteRows ratioOnly 路径）。
   if (opts && opts.includeAllRows) {
     (metricsRows || []).forEach(function (r) {
       if (!r) return;
       add(String(r.name || '').trim(), String(r.code || '').trim());
     });
   }
-  return { symbols: symbols, fullRows: fullRows, ratioOnly: ratioOnly };
+  return { symbols: symbols, fullRows: fullRows, ratioOnly: ratioOnly, checked: checked };
 }
 
 const FULL_FIELDS = [
@@ -150,16 +184,33 @@ export function buildAucMetricsWriteRows(parsedToday, today, nowIso, targets) {
   (targets.ratioOnly || []).forEach(function (t) {
     const m = byName.get(t.name);
     if (!m || !hasValue(m.auc_vol_ratio)) return;
-    // ⛔ 只带这一列：resolution=merge-duplicates 只更新 payload 里出现的列，
-    //    绝不把 worker / 猫抓历史回填写好的其它字段抹掉（§11 覆盖即高风险）。
-    rows.push({
+    // ★ [FULLFIELDS 2026-11-19] 旧实现只带 auc_vol_ratio 一列 ⇒ 11-19 事故里已有行的
+    //   yest_volume / change_pct 全空却永远补不上（昨成交量列 / 当天涨幅列整天空白）。
+    //   现改为「量比 + 该行【当前为空】的 FULL_FIELDS 字段」：
+    //     · 只填空：t.existing 是写库前刚读的行快照（readMarketMetricsSnapshotFieldsForDate
+    //       已扩展到 FULL_FIELDS 全集），非空字段绝不出现在 payload ⇒ merge-duplicates 不会覆盖（§11）；
+    //     · 数据源仍是猫抓 daily_auc（yest_volume / change_pct 本来就是它的权威输出，
+    //       与 9:25 morning 整行写入同源同口径，⛔ 不引入同花顺）；
+    //     · 兼容：t.existing 缺失（旧调用方 / 测试直接手造 targets）⇒ 退回只补量比一列。
+    const existing = t.existing || null;
+    const row = {
       date: today,
       stock: t.name,
       scope: 'auction',
       auc_vol_ratio: m.auc_vol_ratio,
       updated_at: nowIso,
       updated_by: 'auto-fetch-worker',
-    });
+    };
+    // ⛔ 没有 existing（拿不到行内现状）⇒ 绝不敢写其它字段：只能补量比一列
+    //    （merge-duplicates 是 SET col=EXCLUDED.col，盲写会把 worker 已写好的值抹掉，§11）。
+    if (existing) {
+      FULL_FIELDS.forEach(function (k) {
+        if (k === 'auc_vol_ratio') return;               // 上面已带
+        if (hasValue(existing[k])) return;               // 行内已有值 ⇒ 绝不覆盖（§11）
+        if (hasValue(m[k])) row[k] = m[k];               // 猫抓确实给了值才带（空值不写库）
+      });
+    }
+    rows.push(row);
   });
   return rows;
 }
@@ -183,12 +234,30 @@ export async function fillAucFromNumcat(env, today, ladder, logs) {
     logs.push('[ladder26] ❌ ' + out.error);
     return out;
   }
+  // ★★ [WL-CANDIDATES 2026-11-19] 把今日 auction_watchlist 正式成员也纳入候选（⛔ 失败不阻断）：
+  //   修复「metrics 0 行 + ladder 残缺 ⇒ symbols=0 ⇒ 谎报量比齐全」的时序盲区（11-19 实测）。
+  //   morning 整轮 403 / 超时失败时，metrics 一行都没有，但名单 9:25 已落库（含 code）——
+  //   名单成员就是这趟该补的对象。读失败只降级为「metrics 候选」，与旧行为一致。
+  let extraCandidates = [];
+  try {
+    const wl = await readAuctionWatchlistForDate(env, today);
+    extraCandidates = (wl || []).filter(function (r) {
+      return r && !r.obs_auto_added && /^\d{6}$/.test(String(r.code || '').trim());
+    });
+  } catch (e) {
+    logs.push('[ladder26] ⚠️ 读取当日 auction_watchlist 失败（候选退化为仅 metrics 行）: ' +
+      ((e && e.message) || String(e)));
+  }
   // ★ [RANGE20-RATIO-HEAL 2026-11-11] 打开「当日已有行但缺量比」的补抓（含 20 日补位票）。
   //   仍严格只在有缺口时才发 1 次请求；9:25 全抓全时 0 请求、0 猫抓额度（§32）。
-  const targets = pickNumcatTargets(ladder, metricsRows, { includeAllRows: true });
+  const targets = pickNumcatTargets(ladder, metricsRows, { includeAllRows: true, extraCandidates: extraCandidates });
   out.symbols = targets.symbols.length;
   if (targets.symbols.length === 0) {
-    out.skipped = '当日 9:25 名单竞价量比齐全 → 0 次猫抓请求';
+    // ★ [WL-CANDIDATES 2026-11-19] 日志必须如实区分「真齐全」与「根本没候选」——
+    //   11-19 的「量比齐全」就是一条掩盖了空转的假话（§10）。
+    out.skipped = targets.checked > 0
+      ? '当日 ' + targets.checked + ' 只候选竞价量比齐全 → 0 次猫抓请求'
+      : '当日无带 6 位 code 的候选（metrics 行与正式名单均为空）→ 0 次猫抓请求';
     logs.push('[ladder26] ✅ ' + out.skipped);
     return out;
   }

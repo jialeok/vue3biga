@@ -437,9 +437,16 @@ export async function readMarketMetricsExtrasForDate(env, date) {
  * ⚠️ 读取失败必须抛错（§10：读取失败 ≠ 空数据）：否则会把「读不到」误判成「全都缺」。
  */
 export async function readMarketMetricsSnapshotFieldsForDate(env, date) {
+  // ★ [RATIO-HEAL-FULLFIELDS 2026-11-19] select 从「快照三字段」扩到 FULL_FIELDS 全集：
+  //   9:26/9:27 猫抓补缺（ladder-recheck.js#fillAucFromNumcat）的 ratioOnly 路径需要知道
+  //   已有行的 yest_volume / change_pct / um_vol / open_bid_pct 是否为空 —— 空 ⇒ 猫抓整行值
+  //   可以只填空补上（§11 只填空不覆盖）；不知道就永远只补 auc_vol_ratio 一列，
+  //   11-19 事故里 yest_volume / change_pct 全空却无人补（见 ladder-recheck.js 文件头）。
+  //   ⚠️ 纯增量字段：其余两个调用方（extras-workflow / morning-workflow#repairOutOfRangeAucPct）
+  //      只读 code / volume / auc_pct_chg，多返回字段不影响它们（§11 默认无行为）。
   const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?date=eq.' + encodeURIComponent(date) +
     '&scope=eq.auction' +
-    '&select=stock,code,auc_pct_chg,auc_vol_ratio,auc_turnover,volume&limit=2000';
+    '&select=stock,code,volume,yest_volume,change_pct,auc_pct_chg,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover&limit=2000';
   const resp = await sbFetch(url, { headers: sbHeaders(env) });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
@@ -450,10 +457,14 @@ export async function readMarketMetricsSnapshotFieldsForDate(env, date) {
   return (data || []).map(r => ({
     name: (r.stock || '').trim(),
     code: (r.code || '').trim(),
+    volume: pick(r.volume),
+    yest_volume: pick(r.yest_volume),
+    change_pct: pick(r.change_pct),
     auc_pct_chg: pick(r.auc_pct_chg),
+    um_vol: pick(r.um_vol),
+    open_bid_pct: pick(r.open_bid_pct),
     auc_vol_ratio: pick(r.auc_vol_ratio),
-    auc_turnover: pick(r.auc_turnover),
-    volume: pick(r.volume)
+    auc_turnover: pick(r.auc_turnover)
   })).filter(r => r.name);
 }
 
@@ -993,3 +1004,4 @@ export async function upsertLeaderDivergeRows(env, rows) {
   await upsertBucketed(env, 'tvrb_leader_diverge',
     CONFIG.SUPABASE_URL + '/rest/v1/tvrb_leader_diverge?on_conflict=date,stock', rows);
 }
+
