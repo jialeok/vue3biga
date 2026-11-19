@@ -117,9 +117,12 @@ describe('applyAbnormalOverlay · 定稿计划上屏前的总约束叠加', () =
     expect(out.notes.length).toBe(2);
     expect(out.notes[1]).toContain('定稿存档');
 
-    // 「不用去掉」：三个通道的票全在，且客观数据一行不动
+    // 「不用去掉」：三个通道的票在屏幕上全在，且客观数据一行不动
     expect(out.newDragon).toBeTruthy();
-    expect(collectBuyNames(out)).toEqual(['东方海洋', '大东方', '阳光照明']);
+    // ★ [SELL-INHERIT-BUYABLE 2026-11-19] 旧断言这里期望『三只照样被继承』——那正是卖点侧
+    //   继承到旧规则票的根因。三枚都被改写成【异动不买】⇒ 按「今天能不能下单」的统一判据
+    //   `_isBuyablePick`，它们一只都不能继承到次日卖点侧（票仍照常显示，只是不继承）。
+    expect(collectBuyNames(out)).toEqual([]);
     expect(out.newDragon.picks[0].pct).toBe(146.92);
     expect(out.blocks[0].picks[0].pct).toBe(44);
 

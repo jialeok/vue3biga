@@ -322,8 +322,17 @@
  *       ⚠️ 必须 bump：存档里 `plan.pickCount` 是用户直接看到的数字，
  *         不 bump 就永远显示旧的虚高只数。
  *       sw.js 同步 v89 → v90。
+ *
+ *   ★ [SELL-INHERIT-BUYABLE 2026-11-19] v26 → v27：卖点侧「昨日买点侧自动继承」改按【能买】口径。
+ *       根因：`collectBuyNames` 注释写着「只收真会买的行」，实现却收了 `picks` 里的每一行，
+ *       包括 `buyActionTag='分歧日不买'` 的灰块行。第三十五条上线后，11-17 真买点只有九阳股份，
+ *       但广百股份 / 日出东方（灰块、分歧日不买）仍被继承到 11-18 卖点侧 ⇒ 用户看到「还是旧规则的票」。
+ *       修法：继承判据复用 `_isBuyablePick`（与顶部「选股 N 只」同一把尺子，§6），
+ *       ⛔ 不买 / 不开新仓 / 禁入 / abnormalTopicBlocked 一律不继承。
+ *       ⚠️ 行为变化：`prevBuyPlanNames` 的内容变了 ⇒ **卖点成员会变** ⇒ 必须 bump 让历史日重算。
+ *       sw.js 同步 v90 → v91。
  */
-export const TVRB_RULES_VERSION = 26;
+export const TVRB_RULES_VERSION = 27;
 
 /**
  * 输入完整性指纹版本。新增 / 删除「完整性判据」时 +1 ⇒ 所有存档按新判据重算一次。

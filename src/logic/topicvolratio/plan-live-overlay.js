@@ -32,6 +32,9 @@
 //   一律返回新对象 / 新数组（§11 只读不覆盖）。
 // §10：实时那一份还没算出来（live 为 null）⇒ 原样返回 frozen，⛔ 绝不拿空值顶替。
 
+// ★ [SELL-INHERIT-BUYABLE 2026-11-19] 「今天能不能下单」的唯一判据（与头部「选股 N 只」同一个，§6）
+import { _isBuyablePick } from './tvrb-utils.js';
+
 /**
  * 买点槽位（与 `decision-collect#_buyBlocksOf` 的键一一对应）。
  * ⚠️ 新增槽位必须**同时**改这里和 `_buyBlocksOf` —— 两处都是「一个买点块」的清单。
@@ -86,6 +89,19 @@ export function eachBuyBlock(plan, fn) {
  *    这些渲染在灰化容器之外的独立行）。⛔ 不收 `members`（那是题材成员池，不是买点）。
  * ⚠️ 去重后按名字排序输出 ⇒ 结果是确定性的，便于存档比对与单测。
  *
+ * ★★ [SELL-INHERIT-BUYABLE 2026-11-19 用户报障] 「题材量比卖点侧的继承的股票就是对不上，
+ *    还是原来的那些旧规则的票，并没有同步更新」。
+ *
+ *    🔴 根因：本函数原来的注释写着「只收『真会买』的行」，但**实现上收了 `picks` 里的每一只**
+ *      ——包括 `buyActionTag = '分歧日不买'` 这种**明确不买**的灰块行。
+ *      第三十五条上线后，真实买点从「灰色题材块里的补涨票」换成了「30日涨幅抱团」那 1 只，
+ *      灰块里的旧票（11-17 的 广百股份 / 日出东方）虽然被重写成「分歧日不买」，却仍然被本函数
+ *      继承到次日卖点侧 ⇒ 次日卖点列表还是旧规则的票，用户看到「没同步更新」。
+ *
+ *    ⇒ 判据统一到 `_isBuyablePick`（「今天能不能下单」的**唯一**实现，与头部「选股 N 只」同一个）：
+ *      带【不买 / 不开新仓 / 禁入】标签、或 `abnormalTopicBlocked` 的行 **不继承**。
+ *      ⛔ 不许在本文件另写一份标签判断（§6：两把尺子必然分叉，这正是本次事故的成因）。
+ *
  * @param {object|null} plan 某一天的 plan（可以是解码后的存档，memory plan 亦可）
  * @returns {string[]} 股票名数组（trim 后、去重、升序）
  */
@@ -94,6 +110,7 @@ export function collectBuyNames(plan) {
   eachBuyBlock(plan, function (b) {
     (b.picks || []).forEach(function (p) {
       if (!p) return;
+      if (!_isBuyablePick(p)) return;      // ★ 不买的行不继承（见上方 [SELL-INHERIT-BUYABLE]）
       const nm = String(p.name || p.stock || '').trim();
       if (nm) names.add(nm);
     });
