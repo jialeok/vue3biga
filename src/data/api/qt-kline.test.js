@@ -4,6 +4,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('../debug-log.js', function() {
   return { _dbgLog: vi.fn() };
 });
+// 同花顺是第三兜底腿；单测里桩掉，避免把 supabase-client 等重依赖拉进传输层测试。
+vi.mock('./fuyao-proxy.js', function() {
+  return {
+    fuyaoApiGet: vi.fn(async function() { throw new Error('同花顺未配置'); }),
+    tickerToThscode: function(c) { return /^\d{6}$/.test(c) ? (c.charAt(0) === '6' ? c + '.SH' : c + '.SZ') : c; }
+  };
+});
 
 // ══════════════════════════════════════════════════════════════════════════════════════
 // 2026-11-18 线上事故回归：`web.ifzq.gtimg.cn` 整站开始返回 **501 + WAF 挑战页（HTML）**
@@ -51,10 +58,14 @@ function emJson(n) {
 }
 
 let mod;
+let fuyaoMock;
 
 beforeEach(async function() {
   vi.resetModules();                       // `_hostIdx` 是模块级状态，每个用例都要从头开始
   global.fetch = vi.fn();
+  fuyaoMock = (await import('./fuyao-proxy.js')).fuyaoApiGet;
+  fuyaoMock.mockClear();
+  fuyaoMock.mockRejectedValue(new Error('同花顺未配置'));
   mod = await import('./qt-kline.js');
 });
 
@@ -129,6 +140,25 @@ describe('fetchQtDailyBars 的 host 失败切换（2026-11-18 WAF 事故）', ()
     });
     const out = await mod.fetchQtDailyBars(['002748'], '2026-10-30', '2026-11-21', { timeoutMs: 500, concurrency: 1 });
     expect(out.size).toBe(0);
+  });
+
+  it('腾讯/东财全挂 ⇒ 同花顺前复权日线兜底（受控放行：路径+allowWhenOff+timeout）', async function() {
+    global.fetch.mockImplementation(async function() {
+      return resp(WAF_HTML, { ok: false, status: 501 });
+    });
+    fuyaoMock.mockResolvedValue({
+      item: [{
+        date_ms: Date.parse('2026-10-10T00:00:00+08:00'),
+        open_price: 10.0, close_price: 11.0, volume: 24625800   // 股 → 246258 手
+      }]
+    });
+    const out = await mod.fetchQtDailyBars(['002748'], '2026-10-30', '2026-11-21', { timeoutMs: 500, concurrency: 1 });
+    expect(out.has('002748')).toBe(true);
+    expect(out.get('002748')[0].volHand).toBe(246258);
+    expect(fuyaoMock).toHaveBeenCalledTimes(1);
+    expect(fuyaoMock.mock.calls[0][0]).toBe('/api/a-share/prices/historical');
+    expect(fuyaoMock.mock.calls[0][2].allowWhenOff).toBe(true);
+    expect(fuyaoMock.mock.calls[0][2].timeoutMs).toBeGreaterThan(0);
   });
 
   it('一旦某个 host 成功 ⇒ 后续只打它（锁定，不每次先撞一遍坏 host）', async function() {

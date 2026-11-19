@@ -29,6 +29,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { _dbgLog } from '../debug-log.js';
+import { fuyaoApiGet, tickerToThscode } from './fuyao-proxy.js';
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // 【2026-11-18 线上事故：`web.ifzq.gtimg.cn` 开始整站返回 WAF 挑战页】
@@ -187,6 +188,40 @@ async function _fetchQtJson(qs, timeoutMs) {
     throw lastErr || new Error('qt 全部 host 均不可用');
 }
 
+/**
+ * 第三腿：同花顺前复权日线（Data 层唯一入口 fuyao-proxy 的受控放行）。
+ * ⛔ 只在腾讯 WAF + 东财限流两条都失败后才用；⛔ 必须带 allowWhenOff + timeoutMs。
+ */
+async function _fetchFuyaoDailyBars(code6, fromYmd, toYmd, timeoutMs) {
+    const thscode = tickerToThscode(code6);
+    if (!thscode) throw new Error('同花顺 thscode 解析失败: ' + code6);
+    const data = await fuyaoApiGet('/api/a-share/prices/historical', {
+        thscode: thscode,
+        interval: '1d',
+        start: Date.parse(String(fromYmd) + 'T00:00:00+08:00'),
+        end: Date.parse(String(toYmd) + 'T00:00:00+08:00'),
+        adjust: 'forward'
+    }, { allowWhenOff: true, timeoutMs: timeoutMs || 12000 });
+    const rows = (data && data.item) || [];
+    const bars = [];
+    for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        if (!r || r.date_ms == null || r.close_price == null) continue;
+        const close = Number(r.close_price);
+        if (!isFinite(close) || close <= 0) continue;
+        const openRaw = Number(r.open_price);
+        const volRaw = Number(r.volume);   // 同花顺给【股】，换成手与腾讯/东财同形
+        bars.push({
+            ymd: new Date(Number(r.date_ms) + 8 * 3600 * 1000).toISOString().slice(0, 10),
+            open: (isFinite(openRaw) && openRaw > 0) ? openRaw : null,
+            close: close,
+            volHand: (isFinite(volRaw) && volRaw >= 0) ? volRaw / 100 : null
+        });
+    }
+    if (bars.length === 0) throw new Error('同花顺返回空 K 线');
+    return bars;
+}
+
 /** 6 位代码 → 腾讯符号（与 db/edge/range20-precompute/index.ts#fetchQtBars 同一条规则，⛔ 两处别改岔） */
 export function qtSymOf(code) {
     const c = String(code || '').trim();
@@ -253,9 +288,20 @@ export async function fetchQtDailyBars(codes6, fromYmd, toYmd, opts) {    const 
                         _dbgLog('[QT-KLINE] ' + code + ' 腾讯不可用，已切东财 qfq 日线（' + bars.length + ' 根）');
                     }
                 } catch (emErr) {
-                    // §10：两腿都失败必须留痕，且该票不进 Map（调用方显示 '--'，不补 0）
-                    _dbgLog('[QT-KLINE] ' + code + ' 拉取失败: 腾讯=' + ((qtErr && qtErr.message) || qtErr)
-                        + ' 东财=' + ((emErr && emErr.message) || emErr));
+                    // ★ [FUYAO-KLINE 2026-11-19] 最后一腿：同花顺历史 K 线（受控放行，0 猫抓额度）。
+                    //   11-19 实测东财 burst 后 11 只票连备用 host 也全挂，而同花顺仍 200/15 根。
+                    try {
+                        const bars = await _fetchFuyaoDailyBars(code, fromYmd, toYmd, timeoutMs);
+                        if (bars.length > 0) {
+                            out.set(code, bars);
+                            _dbgLog('[QT-KLINE] ' + code + ' 腾讯/东财均不可用，已切同花顺前复权日线（' + bars.length + ' 根）');
+                        }
+                    } catch (fyErr) {
+                        // §10：三腿都失败必须留痕，且该票不进 Map（调用方显示 '--'，不补 0）
+                        _dbgLog('[QT-KLINE] ' + code + ' 拉取失败: 腾讯=' + ((qtErr && qtErr.message) || qtErr)
+                            + ' 东财=' + ((emErr && emErr.message) || emErr)
+                            + ' 同花顺=' + ((fyErr && fyErr.message) || fyErr));
+                    }
                 }
             }
         }
