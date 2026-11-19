@@ -226,6 +226,22 @@ describe('patchTodayAuctionFromThs — ⛔ 只填空，已有值不覆盖（幂�
     expect(upsertAuctionMetrics).not.toHaveBeenCalled();
   });
 
+  it('上游全挂但字段为空 ⇒ 必须报「上游未返回」，⛔ 不许说"已完整"（2026-11-19 事故）', async () => {
+    fetchDailyPctRange.mockRejectedValue(new Error('qt all hosts down'));
+    fuyaoApiGet.mockResolvedValue({ timestamp: TS_TODAY, data_status: 'final', item: [] });
+    readAuctionMetrics.mockResolvedValue([{
+      stock: '票A', change_pct: '', auc_pct_chg: '-1.08%',
+      volume: '29', yest_volume: '', auc_vol_ratio: '', auc_turnover: '',
+    }]);
+    const r = await patchTodayAuctionFromThs(TODAY);
+    expect(r.ok).toBe(false);
+    expect(r.patchedRows).toBe(0);
+    expect(r.reason).toContain('上游未返回');
+    expect(r.reason).toContain('昨成交量');
+    expect(r.reason).toContain('K线腿失败');
+    expect(upsertAuctionMetrics).not.toHaveBeenCalled();
+  });
+
   it('auc_turnover 已有值 ⇒ 不覆盖（它也是"只填空"的一员）', async () => {
     // 留一个空字段（auc_pct_chg）保证这一行确实会提交，才能观察到"换手没被覆盖"
     readAuctionMetrics.mockResolvedValue([{

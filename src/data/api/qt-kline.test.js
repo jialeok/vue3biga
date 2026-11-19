@@ -41,6 +41,15 @@ function qfqJson(sym, n) {
   return JSON.stringify({ code: 0, msg: '', data: data });
 }
 
+/** 东财 qfq 日线样例（fields2=f51..f57：日期,开,收,高,低,成交量(手),成交额） */
+function emJson(n) {
+  const lines = [];
+  for (let i = 0; i < (n || 3); i++) {
+    lines.push('2026-10-' + String(10 + i).padStart(2, '0') + ',10.0,' + String(11 + i) + ',11.5,9.8,246258,319663354.30');
+  }
+  return JSON.stringify({ rc: 0, data: { klines: lines } });
+}
+
 let mod;
 
 beforeEach(async function() {
@@ -92,6 +101,33 @@ describe('fetchQtDailyBars 的 host 失败切换（2026-11-18 WAF 事故）', ()
       return resp(WAF_HTML, { ok: false, status: 501 });
     });
     const out = await mod.fetchQtDailyBars(['600519', '000001'], '2026-10-01', '2026-11-18', { timeoutMs: 500, concurrency: 1 });
+    expect(out.size).toBe(0);
+  });
+
+  it('腾讯两 host 全挂 ⇒ 切东财 qfq 日线兜底（2026-11-19 WAF 双杀）', async function() {
+    global.fetch.mockImplementation(async function(url) {
+      if (url.indexOf('ifzq.gtimg.cn') !== -1) return resp(WAF_HTML, { ok: false, status: 501 });
+      if (url.indexOf('48.push2his.eastmoney.com') !== -1) return resp(emJson(4));
+      return resp(WAF_HTML, { ok: false, status: 501 });
+    });
+    const out = await mod.fetchQtDailyBars(['002748'], '2026-10-30', '2026-11-21', { timeoutMs: 500, concurrency: 1 });
+    expect(out.has('002748')).toBe(true);
+    expect(out.get('002748').length).toBe(4);
+    expect(out.get('002748')[0].volHand).toBe(246258);
+    expect(global.fetch.mock.calls.some(function(c) { return c[0].indexOf('48.push2his.eastmoney.com') !== -1; })).toBe(true);
+    // 东财请求必须是 fqt=1（前复权）+ klt=101（日线），否则昨量口径会变
+    const emCall = global.fetch.mock.calls.find(function(c) { return c[0].indexOf('eastmoney.com') !== -1; });
+    expect(emCall[0]).toContain('fqt=1');
+    expect(emCall[0]).toContain('klt=101');
+    expect(mod.emSecidOf('002748')).toBe('0.002748');
+    expect(mod.emSecidOf('600519')).toBe('1.600519');
+  });
+
+  it('东财也返回 HTML 挑战页 ⇒ 该票仍不进 Map（⛔ 不把挑战页当数据）', async function() {
+    global.fetch.mockImplementation(async function() {
+      return resp(WAF_HTML, { ok: true, status: 200, ctype: 'text/html' });
+    });
+    const out = await mod.fetchQtDailyBars(['002748'], '2026-10-30', '2026-11-21', { timeoutMs: 500, concurrency: 1 });
     expect(out.size).toBe(0);
   });
 
