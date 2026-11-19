@@ -109,7 +109,29 @@ async function onPatch() {
   }
 }
 
-watch(() => uiStore.currentDate, _refresh, { immediate: true });
+// ★★ [YEST-COL-REFRESH 2026-11-19] 首帧诊断时内存行可能还没到（异步拉取），
+//   diagnoseTodayAuction 会因「今天一行都没有」直接返回 need=false ⇒ hint 永久为 null ——
+//   即使 3 秒后昨量整列仍全空，提示条与补数按钮也不会出现（11-19 实测：sw 已是新版本、
+//   sw.js 带新判据，但页面上 hint 元素数为 0）。
+//   修法：挂载后做【限次、轻量】重判（只重跑 diagnose，不发起行情请求，§32 不空转）：
+//   名单到达会 emit 'auction-refresh'（已有监听），这里再补一个 3 次退避重判兜住
+//   「数据静默到货、没有任何 emit」的路径；一旦 hint 出现就停止。
+let _recheckTimer = null;
+let _recheckLeft = 0;
+function _scheduleRecheck() {
+  if (_recheckTimer) clearTimeout(_recheckTimer);
+  _recheckLeft = 3;
+  const step = async function() {
+    if (_recheckLeft-- <= 0) return;
+    await _refresh();
+    if (hint.value || uiStore.currentDate !== _lastDate) return; // 已出提示 / 日期变了 ⇒ 停
+    _recheckTimer = setTimeout(step, 3000);
+  };
+  _recheckTimer = setTimeout(step, 2500);
+}
+let _lastDate = '';
+
+watch(() => uiStore.currentDate, function(d) { _lastDate = d; _refresh(); _scheduleRecheck(); }, { immediate: true });
 
 onMounted(function() {
   // 行情到齐 / 抓取重跑后都要重判一次（morning-sync 拿到数据会 emit）
@@ -118,5 +140,6 @@ onMounted(function() {
 
 onUnmounted(function() {
   _off('auction-refresh', _refresh);
+  if (_recheckTimer) clearTimeout(_recheckTimer);
 });
 </script>
