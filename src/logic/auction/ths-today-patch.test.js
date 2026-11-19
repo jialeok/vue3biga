@@ -10,6 +10,7 @@
 //   ④ ⛔ 只允许补「今天」；读名单失败 / 名单为空 必须如实返回 ok:false，不伪装成功
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 const TODAY = '2026-10-26';
 
@@ -19,7 +20,7 @@ vi.mock('../../data/auction-metrics-patch.js', () => ({
   upsertAuctionMetrics: vi.fn(),
   AUCTION_SCOPE: 'auction',
 }));
-vi.mock('../../data/daily-pct-range.js', () => ({ fetchDailyPctRange: vi.fn() }));
+vi.mock('../../data/daily-pct-range.js', () => ({ fetchFuyaoDailyPctForPatch: vi.fn() }));
 vi.mock('../../data/api/fuyao-proxy.js', () => ({
   fuyaoApiGet: vi.fn(),
   tickerToThscode: function(c) { return /^\d{6}$/.test(c) ? c + '.SH' : c; },
@@ -55,7 +56,7 @@ import {
   _resetThsPatchForTest,
 } from './ths-today-patch.js';
 import { readAuctionRoster, readAuctionMetrics, upsertAuctionMetrics } from '../../data/auction-metrics-patch.js';
-import { fetchDailyPctRange } from '../../data/daily-pct-range.js';
+import { fetchFuyaoDailyPctForPatch } from '../../data/daily-pct-range.js';
 import { fuyaoApiGet } from '../../data/api/fuyao-proxy.js';
 import { getDragonTargetRows } from './dragon-rank.js';
 
@@ -66,7 +67,7 @@ const TS_PREV = Date.parse('2026-10-23T15:00:00+08:00');
 /** 默认上游夹具：票A 有完整三腿，票B 只有 K 线腿 */
 function setUpstream(over) {
   const o = over || {};
-  fetchDailyPctRange.mockImplementation(async function(items, dates, opts) {
+  fetchFuyaoDailyPctForPatch.mockImplementation(async function(items, dates, opts) {
     const out = new Map();
     items.forEach(function(it) {
       out.set(it.stock, new Map(o.pct && o.pct[it.stock] ? o.pct[it.stock] : []));
@@ -99,6 +100,21 @@ beforeEach(() => {
     pct: { 票A: [['20261026', -3.77]] },
     open: { 票A: [['20261026', -2.5]] },
     vol: { 票A: [['20261023', 61370000]] },   // 前一交易日成交量（股）→ 6137 万股
+  });
+});
+
+describe('补数来源红线（用户口径 2026-11-19：只用同花顺 fuyao）', () => {
+  it('补今日 K 线腿只能调 fetchFuyaoDailyPctForPatch，⛔ 不许出现腾讯 / 东财来源', () => {
+    const src = readFileSync(new URL('./ths-today-patch.js', import.meta.url), 'utf8');
+    expect(src).toContain('fetchFuyaoDailyPctForPatch');
+    expect(src).not.toMatch(/fetchDailyPctRange|qt-kline|qtDaily|eastmoney|push2his|ifzq/);
+  });
+
+  it('⛔ 竞价量比只能来自猫抓：补数源码里不许出现任何给 auc_vol_ratio 赋值', () => {
+    const src = readFileSync(new URL('./ths-today-patch.js', import.meta.url), 'utf8');
+    // 只保留注释后的实体代码里若有 row.auc_vol_ratio = 才算违规（当前只有说明文字）
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    expect(code).not.toMatch(/row\.auc_vol_ratio\s*=|auc_vol_ratio\s*:/);
   });
 });
 
@@ -227,7 +243,7 @@ describe('patchTodayAuctionFromThs — ⛔ 只填空，已有值不覆盖（幂�
   });
 
   it('上游全挂但字段为空 ⇒ 必须报「上游未返回」，⛔ 不许说"已完整"（2026-11-19 事故）', async () => {
-    fetchDailyPctRange.mockRejectedValue(new Error('qt all hosts down'));
+    fetchFuyaoDailyPctForPatch.mockRejectedValue(new Error('qt all hosts down'));
     fuyaoApiGet.mockResolvedValue({ timestamp: TS_TODAY, data_status: 'final', item: [] });
     readAuctionMetrics.mockResolvedValue([{
       stock: '票A', change_pct: '', auc_pct_chg: '-1.08%',
@@ -282,7 +298,7 @@ describe('patchTodayAuctionFromThs — 快照双重日期闸门（防把上一�
   });
 
   it('K 线腿失败 ⇒ 只降级该腿，快照腿仍然补（不整体失败）', async () => {
-    fetchDailyPctRange.mockRejectedValue(new Error('kline down'));
+    fetchFuyaoDailyPctForPatch.mockRejectedValue(new Error('kline down'));
     const r = await patchTodayAuctionFromThs(TODAY);
     expect(r.ok).toBe(true);
     const row = upsertAuctionMetrics.mock.calls[0][0][0];
@@ -405,7 +421,7 @@ describe('autoFillTodayAuctionVolume — 自动补的闸门', () => {
     const r = await autoFillTodayAuctionVolume(TODAY);
     expect(r.ok).toBe(true);
     expect(r.patchedRows).toBeGreaterThan(0);
-    expect(fetchDailyPctRange).not.toHaveBeenCalled();
+    expect(fetchFuyaoDailyPctForPatch).not.toHaveBeenCalled();
     expect(fuyaoApiGet).toHaveBeenCalled();
   });
 

@@ -206,6 +206,17 @@ describe('fetchFuyaoDailyPctRange · FUYAO-OFF', function() {
         } catch (e) { caught = e; }
         expect(caught).toBeInstanceOf(Error);   // ⛔ 不能是 return new Map()
     });
+
+    it('[FY-PATCH-ONLY] 补今日显式 allowWhenOff+timeout ⇒ 越过总闸交给受控代理（2026-11-19）', async function() {
+        const { fetchFuyaoDailyPctRange } = await import('./stock-range-pct.js');
+        // 这里没有打开总闸：只是让「补数按钮」这一条链能被放行。
+        // mock 里的 fuyaoApiGet 一律抛「不应被调用」⇒ 放行后按单票失败处理（返回空 Map），
+        // 没放行则会在入口就 reject「同花顺通道已临时停用」。两种结果可明确区分。
+        const out = await fetchFuyaoDailyPctRange(
+            [{ stock: '甲', code: '600000' }], ['2026-10-20'],
+            { allowWhenOff: true, requestTimeoutMs: 20000 });
+        expect(out.size).toBe(0);   // 没被总闸挡住（若挡住这里会是 reject）
+    });
 });
 
 // ===========================================================================

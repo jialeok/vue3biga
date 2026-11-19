@@ -357,9 +357,13 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
     //   读取失败绝不能伪装成「没有数据」（否则上层会误判为「这些票本来就没涨幅」）。
     //   历史腿的正路是 `stock_daily_pct`（已用腾讯前复权日线补齐，口径与同花顺 524 条真值 100% 一致），
     //   各调用方的 catch 分支会把这一腿降级掉，继续用原料表的腿出数。
-    if (isFuyaoOff()) {
+    //   ★ [FY-PATCH-ONLY 2026-11-19] 唯一例外：`ths-today-patch.js` 的「补今日」按钮显式传
+    //     `allowWhenOff:true` + 正 timeoutMs —— 用户口径「补数据只用同花顺 fuyao 接口」。
+    //     放行仍受 fuyao-proxy 的三道闸门约束（路径精确 + 显式开关 + 超时），总闸没打开。
+    if (isFuyaoOff() && !(opts && opts.allowWhenOff)) {
         throw new Error('同花顺通道已临时停用（上游不可用，见 data/api/fuyao-proxy.js 的 FUYAO-OFF）');
     }
+    const _fyPatchBypass = !!(opts && opts.allowWhenOff);
     const list = (items || []).filter(function(it) { return it && it.stock && it.code; });
     const ymdList = (dates || []).map(function(d) { return String(d).replace(/-/g, ''); }).filter(Boolean);
     const out = new Map();
@@ -429,7 +433,7 @@ export async function fetchFuyaoDailyPctRange(items, dates, opts) {
             // （猫抓 daily 的 pct_chg）不可比 → 同一题材内用不同通道算出的票排名会错乱。
             // 前复权价按同一复权因子缩放，日间比值 = 真实涨幅（含分红送转），与涨跌幅口径一致。
             adjust: 'forward'
-        }, { timeoutMs: reqTimeoutMs });
+        }, { timeoutMs: reqTimeoutMs, allowWhenOff: _fyPatchBypass });
         const rows = (data && data.item) || [];
         const series = [];
         rows.forEach(function(r) {

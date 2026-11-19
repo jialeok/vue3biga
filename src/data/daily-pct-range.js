@@ -181,3 +181,27 @@ export async function fetchDailyPctRange(items, dates, opts) {
     }
     return _fetchQtDailyPctRange(items, dates, opts);
 }
+
+/**
+ * ★ [FY-PATCH-ONLY 2026-11-19] 「用同花顺补今日」按钮的**唯一** K 线腿（用户明确口径：
+ *   「补数据用同花顺 fuyao 接口，不要用其它的接口」）。
+ *
+ * ⛔ 与上面的 `fetchDailyPctRange` 严格分开：那个函数是**其它看板**的通用 K 线入口
+ *   （FUYAO-OFF 时走腾讯），一行都不动；本函数只服务手动补数这一条链，永远只打同花顺。
+ *   §6：这里仍是 Data 唯一入口（`stock-range-pct.js#fetchFuyaoDailyPctRange`），
+ *   输出契约完全同形（keep / openOut / volOut），调用方零额外换算。
+ *
+ * 放行仍是**受控**的：`stock-range-pct.js` 与 `fuyao-proxy.js` 三道闸门不变
+ *   （显式 allowWhenOff + 路径精确匹配 + timeoutMs>0），FUYAO_OFF 总闸不打开。
+ * ⛔ 竞价量比（auc_vol_ratio）不在本腿能力/口径内 —— 只认猫抓，额度用尽就空着。
+ *
+ * @returns {Promise<Map<string, Map<string, number>>>} 股票名 -> (YYYYMMDD -> 收盘涨幅%)
+ */
+export function fetchFuyaoDailyPctForPatch(items, dates, opts) {
+    const o = Object.assign({}, opts || {}, {
+        allowWhenOff: true,
+        requestTimeoutMs: (opts && opts.requestTimeoutMs) || 20000,
+        minCoverage: 1
+    });
+    return fetchFuyaoDailyPctRange(items, dates, o);
+}

@@ -14,7 +14,7 @@ vi.mock('./api/qt-kline.js', () => ({ fetchQtDailyBars: vi.fn() }));
 vi.mock('./stock-range-pct.js', () => ({ fetchFuyaoDailyPctRange: vi.fn() }));
 vi.mock('./debug-log.js', () => ({ _dbgLog: () => {} }));
 
-import { fetchDailyPctRange } from './daily-pct-range.js';
+import { fetchDailyPctRange, fetchFuyaoDailyPctForPatch } from './daily-pct-range.js';
 import { isFuyaoOff } from './api/fuyao-proxy.js';
 import { fetchQtDailyBars } from './api/qt-kline.js';
 import { fetchFuyaoDailyPctRange } from './stock-range-pct.js';
@@ -95,6 +95,23 @@ describe('fetchDailyPctRange · FUYAO-OFF（腾讯腿）', function() {
         fetchQtDailyBars.mockRejectedValue(new Error('network down'));
         const out = await fetchDailyPctRange([{ stock: '甲', code: '600000' }]);
         expect(out.size).toBe(0);
+    });
+});
+
+describe('fetchFuyaoDailyPctForPatch · 补今日专用腿（用户口径：只用同花顺 fuyao）', function() {
+    it('即使 FUYAO-OFF 也只透传同花顺，腾讯腿一个请求都不发', async function() {
+        isFuyaoOff.mockReturnValue(true);
+        const fake = new Map([['甲', new Map([['20261019', 10]])]]);
+        fetchFuyaoDailyPctRange.mockResolvedValue(fake);
+        const out = await fetchFuyaoDailyPctForPatch(
+            [{ stock: '甲', code: '600000' }], ['2026-11-19'], { openOut: new Map(), volOut: new Map() });
+        expect(out).toBe(fake);
+        expect(fetchFuyaoDailyPctRange).toHaveBeenCalledTimes(1);
+        const o = fetchFuyaoDailyPctRange.mock.calls[0][2];
+        expect(o.allowWhenOff).toBe(true);
+        expect(o.requestTimeoutMs).toBe(20000);
+        expect(o.minCoverage).toBe(1);
+        expect(fetchQtDailyBars).not.toHaveBeenCalled();
     });
 });
 

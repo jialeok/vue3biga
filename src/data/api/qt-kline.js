@@ -29,7 +29,6 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { _dbgLog } from '../debug-log.js';
-import { fuyaoApiGet, tickerToThscode } from './fuyao-proxy.js';
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // 【2026-11-18 线上事故：`web.ifzq.gtimg.cn` 开始整站返回 WAF 挑战页】
@@ -55,79 +54,6 @@ const QT_PATH = '/appstock/app/fqkline/get';
  *     `web.ifzq.gtimg.cn` 保留作兜底（万一哪天反过来）。
  */
 const QT_HOSTS = ['https://ifzq.gtimg.cn', 'https://web.ifzq.gtimg.cn'];
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// 【2026-11-19 线上事故：腾讯两个 host 同日先后被 WAF 拦住 ⇒ 第三腿东财兜底】
-//   真实浏览器取证（11:15~11:20，CDP）：
-//     · `ifzq.gtimg.cn` 从「200 JSON」翻成 **501 + WAF 挑战页**（和 11-18 的 `web.` 一样）；
-//     · `web.ifzq.gtimg.cn` TLS 握手失败（net::ERR_FAILED）；
-//     · 两条腿全挂 ⇒ `[QT-KLINE] xxx 拉取失败: Failed to fetch` × 31 票 ⇒ 昨量列整列 '-'，
-//       补数按钮点完还回报「库内字段已完整」（上游失败被误判为没缺口，见 ths-today-patch.js）。
-//   东财 push2his qfq 日线（实测 2026-11-19 浏览器直连可用，CORS 放行）：
-//     `https://48.push2his.eastmoney.com/api/qt/stock/kline/get?secid=0.002748&...&klt=101&fqt=1`
-//     世龙实业 11-18 volume=246258 手，与腾讯 qfq 同日值逐字一致 ⇒ 口径可信（同一前复权量纲）。
-//   ⚠️ 只在腾讯两 host 都失败后才走它；⛔ 不换字段语义（仍输出 万股 / 前复权 / 日线）。
-// ════════════════════════════════════════════════════════════════════════════════════════
-const EM_HOSTS = ['https://48.push2his.eastmoney.com', 'https://push2his.eastmoney.com'];
-const EM_PATH = '/api/qt/stock/kline/get';
-const EM_FIELDS1 = 'f1,f2,f3,f4,f5';
-const EM_FIELDS2 = 'f51,f52,f53,f54,f55,f56,f57';
-
-/** 6 位代码 → 东财 secid（沪市 1.，深/北 0.；⛔ 与腾讯 sh/sz 前缀是两套口径，别混用） */
-export function emSecidOf(code) {
-    const c = String(code || '').trim();
-    if (!/^\d{6}$/.test(c)) return '';
-    return (/^(6|9)/.test(c) ? '1.' : '0.') + c;
-}
-
-/** 东财 qfq 日线兜底；失败抛错（由调用方按「取不到」处理，§10 不伪造空数组） */
-async function _fetchEmDailyBars(code6, fromYmd, toYmd, timeoutMs) {
-    const secid = emSecidOf(code6);
-    if (!secid) throw new Error('EM secid 解析失败: ' + code6);
-    const qs = 'secid=' + secid
-        + '&fields1=' + EM_FIELDS1 + '&fields2=' + EM_FIELDS2
-        + '&klt=101&fqt=1'
-        + '&beg=' + String(fromYmd).replace(/-/g, '')
-        + '&end=' + String(toYmd).replace(/-/g, '');
-    let lastErr = null;
-    for (let h = 0; h < EM_HOSTS.length; h++) {
-        const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-        const timer = ctrl ? setTimeout(function () { ctrl.abort(); }, timeoutMs) : null;
-        try {
-            const resp = await fetch(EM_HOSTS[h] + EM_PATH + '?' + qs, {
-                cache: 'no-store',
-                signal: ctrl ? ctrl.signal : undefined
-            });
-            if (!resp.ok) throw new Error('EM HTTP ' + resp.status);
-            const text = await resp.text();
-            const ctype = String((resp.headers && resp.headers.get && resp.headers.get('content-type')) || '');
-            if (ctype.indexOf('html') !== -1 || text.charAt(0) !== '{') throw new Error('EM 非 JSON 响应');
-            const j = JSON.parse(text);
-            const lines = (j && j.data && j.data.klines) || [];
-            const bars = [];
-            for (let i = 0; i < lines.length; i++) {
-                const a = String(lines[i]).split(',');
-                const close = Number(a[2]);
-                if (!a[0] || !isFinite(close) || close <= 0) continue;
-                const openRaw = Number(a[1]);
-                const volRaw = Number(a[5]);
-                bars.push({
-                    ymd: String(a[0]).slice(0, 10),
-                    open: (isFinite(openRaw) && openRaw > 0) ? openRaw : null,
-                    close: close,
-                    volHand: (isFinite(volRaw) && volRaw >= 0) ? volRaw : null
-                });
-            }
-            if (bars.length === 0) throw new Error('EM 返回空 K 线');
-            return bars;
-        } catch (e) {
-            lastErr = e;
-        } finally {
-            if (timer) clearTimeout(timer);
-        }
-    }
-    throw lastErr || new Error('EM 全部 host 均不可用');
-}
 
 /** 会话内优先使用的 host 下标（成功后锁定，失败的 host 不再每次先撞一遍） */
 let _hostIdx = 0;
@@ -188,40 +114,6 @@ async function _fetchQtJson(qs, timeoutMs) {
     throw lastErr || new Error('qt 全部 host 均不可用');
 }
 
-/**
- * 第三腿：同花顺前复权日线（Data 层唯一入口 fuyao-proxy 的受控放行）。
- * ⛔ 只在腾讯 WAF + 东财限流两条都失败后才用；⛔ 必须带 allowWhenOff + timeoutMs。
- */
-async function _fetchFuyaoDailyBars(code6, fromYmd, toYmd, timeoutMs) {
-    const thscode = tickerToThscode(code6);
-    if (!thscode) throw new Error('同花顺 thscode 解析失败: ' + code6);
-    const data = await fuyaoApiGet('/api/a-share/prices/historical', {
-        thscode: thscode,
-        interval: '1d',
-        start: Date.parse(String(fromYmd) + 'T00:00:00+08:00'),
-        end: Date.parse(String(toYmd) + 'T00:00:00+08:00'),
-        adjust: 'forward'
-    }, { allowWhenOff: true, timeoutMs: timeoutMs || 12000 });
-    const rows = (data && data.item) || [];
-    const bars = [];
-    for (let i = 0; i < rows.length; i++) {
-        const r = rows[i];
-        if (!r || r.date_ms == null || r.close_price == null) continue;
-        const close = Number(r.close_price);
-        if (!isFinite(close) || close <= 0) continue;
-        const openRaw = Number(r.open_price);
-        const volRaw = Number(r.volume);   // 同花顺给【股】，换成手与腾讯/东财同形
-        bars.push({
-            ymd: new Date(Number(r.date_ms) + 8 * 3600 * 1000).toISOString().slice(0, 10),
-            open: (isFinite(openRaw) && openRaw > 0) ? openRaw : null,
-            close: close,
-            volHand: (isFinite(volRaw) && volRaw >= 0) ? volRaw / 100 : null
-        });
-    }
-    if (bars.length === 0) throw new Error('同花顺返回空 K 线');
-    return bars;
-}
-
 /** 6 位代码 → 腾讯符号（与 db/edge/range20-precompute/index.ts#fetchQtBars 同一条规则，⛔ 两处别改岔） */
 export function qtSymOf(code) {
     const c = String(code || '').trim();
@@ -278,31 +170,9 @@ export async function fetchQtDailyBars(codes6, fromYmd, toYmd, opts) {    const 
                 }
                 if (bars.length > 0) out.set(code, bars);
                 // 空序列 = 该票区间无 bar（停牌 / 北交所）⇒ 不进 Map，调用方按取不到处理（§10）
-            } catch (qtErr) {
-                // ★ [EM-FALLBACK 2026-11-19] 腾讯两 host 同时不可用 ⇒ 切东财 qfq 日线。
-                //   两腿输出同形（ymd/open/close/volHand），调用方零改动；⛔ 空结果不伪造。
-                try {
-                    const bars = await _fetchEmDailyBars(code, fromYmd, toYmd, timeoutMs);
-                    if (bars.length > 0) {
-                        out.set(code, bars);
-                        _dbgLog('[QT-KLINE] ' + code + ' 腾讯不可用，已切东财 qfq 日线（' + bars.length + ' 根）');
-                    }
-                } catch (emErr) {
-                    // ★ [FUYAO-KLINE 2026-11-19] 最后一腿：同花顺历史 K 线（受控放行，0 猫抓额度）。
-                    //   11-19 实测东财 burst 后 11 只票连备用 host 也全挂，而同花顺仍 200/15 根。
-                    try {
-                        const bars = await _fetchFuyaoDailyBars(code, fromYmd, toYmd, timeoutMs);
-                        if (bars.length > 0) {
-                            out.set(code, bars);
-                            _dbgLog('[QT-KLINE] ' + code + ' 腾讯/东财均不可用，已切同花顺前复权日线（' + bars.length + ' 根）');
-                        }
-                    } catch (fyErr) {
-                        // §10：三腿都失败必须留痕，且该票不进 Map（调用方显示 '--'，不补 0）
-                        _dbgLog('[QT-KLINE] ' + code + ' 拉取失败: 腾讯=' + ((qtErr && qtErr.message) || qtErr)
-                            + ' 东财=' + ((emErr && emErr.message) || emErr)
-                            + ' 同花顺=' + ((fyErr && fyErr.message) || fyErr));
-                    }
-                }
+            } catch (e) {
+                // 单票失败不连坐整批（其余票照常返回），调用方对缺席票补 null（§10）
+                _dbgLog('[QT-KLINE] ' + code + ' 拉取失败: ' + ((e && e.message) || e));
             }
         }
     };
