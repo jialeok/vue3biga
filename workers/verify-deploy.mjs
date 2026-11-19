@@ -113,7 +113,13 @@ const REQUIRED = [
   //   ⚠️ 前者是函数名（跨文件被 index.js 调用，压缩不删），后者是日志字符串字面量；
   //      ⛔ 都不能换成注释里的标记（esbuild 会删注释）。
   'runPresenceRecompute',
-  '[presence] ✅ 在列次数'
+  '[presence] ✅ 在列次数',
+  // [WL-CANDIDATES 2026-11-19] ladder26 名单扩到候选池全集：观察组成员走
+  //   _getAuctionFormalRowsForDate 的 obs 继承行进入候选，20/30 天补候选池量纲收敛为
+  //   RANGE20/30_WINDOW_DAYS（45/60 只用于取腿粗筛）。
+  //   ⚠️ 'extraCandidates' 是不被 mangle 的对象属性名（ladder-recheck.js 持久化字段），
+  //      打包后仍在产物里；⛔ 不能用注释标记断言（esbuild 会删注释）。
+  'extraCandidates'
 ];
 
 async function cf(url, accept) {
