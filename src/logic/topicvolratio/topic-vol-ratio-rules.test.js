@@ -142,7 +142,8 @@ import {
 
 // ── 夹具 ─────────────────────────────────────────────────────────────────────────────────
 function m(name, opts) {
-  return Object.assign({
+  const o = opts || {};
+  const row = Object.assign({
     name: name,
     isYizi: false,
     pct: 20,
@@ -153,7 +154,14 @@ function m(name, opts) {
     code: '000001',
     countable: true,
     inheritSold: false
-  }, opts || {});
+  }, o);
+  // ★ [YIZI-FIXTURE 2026-11-20] `isYizi: true` ⇒ 竞价涨幅必须同时到涨停幅度（默认主板 10%）。
+  //   真实数据里这两件事【同源】：`isYizi` 就是「aucPct 打到涨停」的结论，不可能只标 true 而涨幅 5%。
+  //   ⚠️ 为什么必须补：竞价一字标签的唯一判据是 `auction-yizi-tag.js#isAuctionYiziPick`
+  //   （读 aucLimitUp / aucPct + 代码分板块），只写 `isYizi: true` 它【判不出】⇒ 标签为空 ⇒
+  //   断言「照选 + 挂标签」时会假红（[YIZI-NO-SHIFT] 改造中实际踩过一次）。
+  if (row.isYizi && o.aucPct === undefined) row.aucPct = 10;
+  return row;
 }
 
 function block(topic, rank, members) {
@@ -258,7 +266,7 @@ describe('tvrb · buildTopicVolRatioPlan（用户 2026-10-11 举例）', functio
   ]);
   // AI应用 5 只（平均量比 68，排 2 ⇒ 取 1 只）；龙一竞价涨停 ⇒ 顺延龙二
   const ai = block('AI应用', 2, [
-    m('金山办公', { aucVolRatio: 100, isYizi: true }),
+    m('金山办公', { aucVolRatio: 100, isYizi: true, aucPct: 10 }),
     m('三六零', { aucVolRatio: 60 }),
     m('昆仑万维', { aucVolRatio: 60 }),
     m('万兴科技', { aucVolRatio: 60 }),
@@ -266,7 +274,7 @@ describe('tvrb · buildTopicVolRatioPlan（用户 2026-10-11 举例）', functio
   ]);
   // 大消费 10 只（平均量比 45，排 3 ⇒ 取 2 只）；龙一竞价涨停 ⇒ 顺延龙二、龙三
   const cons = block('大消费', 3, [
-    m('贵州茅台', { aucVolRatio: 45, isYizi: true }),
+    m('贵州茅台', { aucVolRatio: 45, isYizi: true, aucPct: 10 }),
     m('五粮液', { aucVolRatio: 45 }),
     m('泸州老窖', { aucVolRatio: 45 }),
     m('洋河股份', { aucVolRatio: 45 }),
@@ -293,27 +301,32 @@ describe('tvrb · buildTopicVolRatioPlan（用户 2026-10-11 举例）', functio
     expect(plan.blocks.map(function(b) { return b.topic; })).toEqual(['AI应用', '大消费']);
   });
 
-  it('AI应用（5 只 → mid）：龙一竞价涨停 ⇒ 顺延取龙二三六零', function() {
+  it('AI应用（5 只 → mid）：龙一竞价一字 ⇒ 【照选 + 打标签】，⛔ 不再顺延龙二', function() {
     const aiBlk = plan.blocks[0];
     expect(aiBlk.tier).toBe('mid');
     expect(aiBlk.pickCount).toBe(1);
-    expect(aiBlk.picks.map(function(p) { return p.name; })).toEqual(['三六零']);
-    expect(aiBlk.picks[0].dragonLabel).toBe('龙二');
+    // ★ [YIZI-NO-SHIFT 2026-11-20 用户口径] 一字照选 + 占一档（旧口径「顺延取龙二 三六零」已废除）
+    expect(aiBlk.picks.map(function(p) { return p.name; })).toEqual(['金山办公']);
+    expect(aiBlk.picks[0].dragonLabel).toBe('龙一');
+    // 标签唯一来源 = auction-yizi-tag.js（plan 层 annotateAuctionYizi 统一挂）
+    expect(aiBlk.picks[0].auctionYiziTag).toBeTruthy();
   });
 
-  it('大消费（10 只 → big）：龙一竞价涨停 ⇒ 顺延取龙二、龙三', function() {
+  it('大消费（10 只 → big）：龙一竞价一字 ⇒ 照选占一档，另一只取龙二', function() {
     const cBlk = plan.blocks[1];
     expect(cBlk.tier).toBe('big');
     expect(cBlk.pickCount).toBe(2);
-    expect(cBlk.picks.map(function(p) { return p.name; })).toEqual(['五粮液', '泸州老窖']);
-    expect(cBlk.picks.map(function(p) { return p.dragonLabel; })).toEqual(['龙二', '龙三']);
+    // 名额还是 2 只（用户「选股数量要求还是和原来一样」）⇒ 龙一（一字）+ 龙二
+    expect(cBlk.picks.map(function(p) { return p.name; })).toEqual(['贵州茅台', '五粮液']);
+    expect(cBlk.picks.map(function(p) { return p.dragonLabel; })).toEqual(['龙一', '龙二']);
   });
 
-  it('序号连续（1 起）、被顺延的竞价涨停票写进 skippedNames', function() {
+  it('序号连续（1 起）；一字不再进 skippedNames', function() {
     expect(plan.blocks[0].picks[0].seq).toBe(1);
     expect(plan.blocks[1].picks.map(function(p) { return p.seq; })).toEqual([1, 2]);
-    expect(plan.blocks[0].skippedNames).toEqual(['龙一金山办公']);
-    expect(plan.blocks[1].skippedNames).toEqual(['龙一贵州茅台']);
+    // ⛔ 旧口径「被顺延的竞价涨停票写进 skippedNames」已废除：一字照选，skipped 恒空
+    expect(plan.blocks[0].skippedNames).toEqual([]);
+    expect(plan.blocks[1].skippedNames).toEqual([]);
   });
 
   it('平均量比按【有值行的均值】算出并写进块', function() {
@@ -335,15 +348,21 @@ describe('tvrb · buildTopicVolRatioPlan（用户 2026-10-11 举例）', functio
 
 // ── 边界与 §10 ───────────────────────────────────────────────────────────────────────────
 describe('tvrb · 边界与 §10', function() {
-  it('题材内成员全部竞价涨停 ⇒ qualified=false、picks 为空（不递补其它题材）', function() {
+  it('题材内成员全部竞价涨停 ⇒ 照常选（全挂待下杀买标签），⛔ 不再判「没有可买的票」', function() {
+    // ⚠️ 量比给 60（≥ 25）：本条要验的是【一字能不能被选出来】。若沿用夹具默认的 5 会触发
+    //    空仓提醒（每个题材的平均竞价量比 < 25）⇒ 每行改标【分歧日不买】⇒ 「选股 N 只」按
+    //    可下单只数计就是 0，与「一字照选」这件事纠缠在一起，测不出本条要验的口径。
     const b = block('X', 1, [
-      m('甲', { isYizi: true }), m('乙', { isYizi: true }),
-      m('丙', { isYizi: true }), m('丁', { isYizi: true })
+      m('甲', { isYizi: true, aucVolRatio: 60 }), m('乙', { isYizi: true, aucVolRatio: 60 }),
+      m('丙', { isYizi: true, aucVolRatio: 60 }), m('丁', { isYizi: true, aucVolRatio: 60 })
     ]);
     const plan = buildTopicVolRatioPlan([b], dragonMap([['甲', 1], ['乙', 2], ['丙', 3], ['丁', 4]]), {});
-    expect(plan.blocks[0].qualified).toBe(false);
-    expect(plan.blocks[0].picks).toHaveLength(0);
-    expect(plan.pickCount).toBe(0);
+    // ★ [YIZI-NO-SHIFT 2026-11-20] 一字算可买 ⇒ 4 只（mid 档）取 1 只 = 龙一，且带标签。
+    //   旧口径「qualified=false / picks 为空」已废除（那正是用户 11-20 否掉的「顺延不出票」）。
+    expect(plan.blocks[0].qualified).toBe(true);
+    expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['甲']);
+    expect(plan.blocks[0].picks[0].auctionYiziTag).toBe(AUCTION_YIZI_WAIT_TAG);
+    expect(plan.pickCount).toBe(1);
   });
 
   it('无龙位（创业板 / 科创板）的成员不进候选', function() {
@@ -355,8 +374,9 @@ describe('tvrb · 边界与 §10', function() {
     expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['主板甲']);
   });
 
-  it('可买（非一字）的票不足本档只数 ⇒ 少取，⛔ 不补位', function() {
-    // big 档要 2 只，但只有 1 只非一字
+  it('big 档名额 2 只：一字【算可买】⇒ 龙一（一字）+ 龙二买满，⛔ 不再因一字「少取」', function() {
+    // ★ [YIZI-NO-SHIFT 2026-11-20] 旧口径只数「非一字」的票 ⇒ 以为只有 1 只可买 ⇒ 少取。
+    //   现在一字照选占一档 ⇒ 名额照旧买满 2 只（用户「选股数量要求还是和原来一样」）。
     const b = block('Z', 1, [
       m('龙一', { isYizi: true }), m('龙二'), m('龙三', { isYizi: true }),
       m('龙四', { isYizi: true }), m('龙五', { isYizi: true }),
@@ -367,8 +387,21 @@ describe('tvrb · 边界与 §10', function() {
       ['龙六', 6], ['龙七', 7], ['龙八', 8], ['龙九', 9]]);
     const plan = buildTopicVolRatioPlan([b], dm, {});
     expect(plan.blocks[0].tier).toBe('big');
+    expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['龙一', '龙二']);
+    expect(plan.blocks[0].notes.join('\n')).not.toContain('不足 2 只');
+  });
+
+  it('【连续停牌】仍占档不补位（与一字的差异是本轮刻意保留的）', function() {
+    // 龙一停牌 ⇒ 占掉一档 ⇒ big 档 2 只名额只剩 1 个 ⇒ 只取龙二
+    const b = block('S', 1, [
+      m('停一'), m('龙二'), m('龙三'), m('龙四'), m('龙五'),
+      m('龙六'), m('龙七'), m('龙八'), m('龙九')
+    ]);
+    const dm = dragonMap([['停一', 1], ['龙二', 2], ['龙三', 3], ['龙四', 4], ['龙五', 5],
+      ['龙六', 6], ['龙七', 7], ['龙八', 8], ['龙九', 9]]);
+    const plan = buildTopicVolRatioPlan([b], dm, { buySkipNames: new Set(['停一']) });
     expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['龙二']);
-    expect(plan.blocks[0].notes.join('\n')).toContain('不足 2 只');
+    expect(plan.blocks[0].notes.join('\n')).toContain('连续停牌');
   });
 
   it('空题材列表 ⇒ 空计划（不抛错）', function() {
@@ -388,21 +421,29 @@ describe('tvrb · 边界与 §10', function() {
 
 // ── 第二轮 · 买点块 = 决策看板形状 + finishBuyBlock 收口 ────────────────────────────────────
 describe('tvrb · 买点块由决策看板的收口函数打标签', function() {
-  // AI应用 4 只（mid 档 ⇒ 取 1 只）：龙一竞价一字 ⇒ 顺延取龙二【三六零】
+  // AI应用 4 只（mid 档 ⇒ 取 1 只）：龙位最前 = 龙一【三六零】
+  //
+  // ★★ [YIZI-NO-SHIFT 2026-11-20] 本组夹具刻意让【龙一】是普通票、不是竞价一字，两个原因：
+  //   ① 一字那一路（照选 + 占一档 + 挂「竞价一字涨停 · 等下杀买」）已由本文件前两组用例验完
+  //      （「AI应用 mid」「题材内成员全部竞价涨停」「big 档名额买满」）；
+  //   ② 这里要验的是【决策看板收口函数在常规买点行上打的占比 / 动作标签】。龙一若是一字，
+  //      它同时会带「竞价一字涨停 · 等下杀买」这枚展示标签，本组断言会被两套措辞纠缠。
+  //   ⚠️ 金山办公保留在本题材里但【不给龙位】（真实数据里是 688 科创板，本来就没龙位）
+  //      ⇒ 顺带锁住「无龙位的成员不进候选」这条既有口径。
   function aiTopic() {
     return block('AI应用', 1, [
-      m('金山办公', { aucVolRatio: 60, isYizi: true, aucShare: 9, aucPct: 10 }),
-      m('三六零', { aucVolRatio: 60, aucShare: 6, code: '601360' }),
+      m('三六零', { aucVolRatio: 60, aucShare: 9, code: '601360' }),
       m('昆仑万维', { aucVolRatio: 60, aucShare: 6, code: '300418' }),
-      m('汤姆猫', { aucVolRatio: 60, aucShare: 6, code: '300459' })
+      m('汤姆猫', { aucVolRatio: 60, aucShare: 6, code: '300459' }),
+      m('金山办公', { aucVolRatio: 60, aucShare: 6, code: '688111' })
     ]);
   }
-  const dm = dragonMap([['金山办公', 1], ['三六零', 2], ['昆仑万维', 3], ['汤姆猫', 4]]);
+  const dm = dragonMap([['三六零', 1], ['昆仑万维', 2], ['汤姆猫', 3]]);
 
   /** 一个完整的标记上下文（= decision-collect#_actionContext 的出口形状） */
   function fullCtx(over) {
     return Object.assign({
-      prevDragonNames: new Set(['金山办公']),
+      prevDragonNames: new Set(['三六零']),
       prevBuyNames: new Set(['三六零']),
       prevBought: new Set(),
       prevBoughtTopics: new Set(['AI应用']),
@@ -419,8 +460,8 @@ describe('tvrb · 买点块由决策看板的收口函数打标签', function() 
     expect(b.block.members).toHaveLength(4);
     // picks 上必须预置 aucShare / dragonRank（收口跑在派生徽标之前，缺了就判不出先卖后买）
     expect(b.picks[0].name).toBe('三六零');
-    expect(b.picks[0].dragonRank).toBe(2);
-    expect(b.picks[0].aucShare).toBe(6);
+    expect(b.picks[0].dragonRank).toBe(1);
+    expect(b.picks[0].aucShare).toBe(9);
     expect(b.picks[0].code).toBe('601360');
     // 规则编号借决策看板买点段的 ①（⛔ 不另立一套编号）
     expect(b.ruleNo).toBe(RULE_NO.FIRST);
@@ -463,7 +504,7 @@ describe('tvrb · 买点块由决策看板的收口函数打标签', function() 
   it('占比达标 ⇒ 动作标签 = 决策看板的【竞价买】', function() {
     const plan = buildTopicVolRatioPlan([aiTopic()], dm, { ctx: fullCtx() });
     const p = plan.blocks[0].picks[0];
-    expect(p.aucShareText).toBe('6.0%');       // 占比展示（1 位小数，缺数据才不渲染）
+    expect(p.aucShareText).toBe('9.0%');       // 占比展示（1 位小数，缺数据才不渲染）
     expect(p.aucShareTone).toBe('strong');
     expect(p.aucSharePass).toBe(true);
     expect(p.buyActionTag).toBe(BUY_NOW_TAG);
@@ -471,7 +512,7 @@ describe('tvrb · 买点块由决策看板的收口函数打标签', function() 
   });
 
   it('占比不达标 + 昨天真买过 ⇒ 【尾盘买（先卖后买）】（先卖后买档，⛔ 不标持有）', function() {
-    // ⚠️ 刻意【不给龙一龙位】：本题材龙一（金山办公）在真实数据里是 688 科创板，本来就没有龙位。
+    // ⚠️ 刻意【不给龙一龙位】：金山办公在真实数据里是 688 科创板，本来就没有龙位。
     //    若给它 rank 1 且标成竞价一字，这一档会被【龙一字持有】接管（见下一条用例）——
     //    那条是另一条规则，本用例要验的是【纯先卖后买】。
     const topics = [block('AI应用', 1, [
@@ -492,20 +533,38 @@ describe('tvrb · 买点块由决策看板的收口函数打标签', function() 
     expect(p.position).toBe('');
   });
 
-  it('同题材今日龙一竞价一字 ⇒ 占比不达标改标【龙一字持有】（同一份规则的另一档，自动生效）', function() {
+  it('同题材今日龙一竞价一字 ⇒ 后排改标【龙一字持有】（同一份规则的另一档，自动生效）', function() {
+    // ★★ [YIZI-NO-SHIFT 2026-11-20] 一字【照选】之后，买点里会【同时】有龙一和龙二（big 档 2 只）：
+    //   · picks[0] = 龙一 金山办公（一字本身，照选占一档）；
+    //   · picks[1] = 龙二 三六零（占比 0.4% 不达标 + 昨天真买过 ⇒ 原本该给【尾盘买（先卖后买）】）。
+    //   这一档落在【龙二】身上：`_isDragonYiziHoldPick` 要求「本股不是龙一」
+    //   ⇒ 龙一自己不会被本档接管（它也不会被判成「被龙一带上去的后排」）。
+    //   ⚠️ 改口径前这条用例是 mid 档（龙一被跳过、只剩龙二 1 只）⇒ 现在必须 big 档才能同时拿到两只。
     const topics = [block('AI应用', 1, [
       m('金山办公', { aucVolRatio: 60, isYizi: true, aucShare: 9 }),
       m('三六零', { aucVolRatio: 60, aucShare: 0.4 }),
       m('昆仑万维', { aucVolRatio: 60, aucShare: 0.4 }),
-      m('汤姆猫', { aucVolRatio: 60, aucShare: 0.4 })
+      m('汤姆猫', { aucVolRatio: 60, aucShare: 0.4 }),
+      m('甲股', { aucVolRatio: 60 }), m('乙股', { aucVolRatio: 60 }),
+      m('丙股', { aucVolRatio: 60 }), m('丁股', { aucVolRatio: 60 }), m('戊股', { aucVolRatio: 60 })
     ])];
-    const plan = buildTopicVolRatioPlan(topics, dm, {
+    const bigDm = dragonMap([
+      ['金山办公', 1], ['三六零', 2], ['昆仑万维', 3], ['汤姆猫', 4],
+      ['甲股', 5], ['乙股', 6], ['丙股', 7], ['丁股', 8], ['戊股', 9]
+    ]);
+    const plan = buildTopicVolRatioPlan(topics, bigDm, {
       ctx: fullCtx({ prevBought: new Set(['三六零']) })
     });
-    const p = plan.blocks[0].picks[0];
-    expect(p.aucSharePass).toBe(false);
-    // 被龙一带着走 ⇒ 不算走弱 ⇒ 不改【先卖后买】
-    expect(p.buyActionTag).toBe(DRAGON_YIZI_HOLD_TAG);
+    const blk = plan.blocks[0];
+    expect(blk.tier).toBe('big');
+    expect(blk.picks.map(function(x) { return x.name; })).toEqual(['金山办公', '三六零']);
+    // 龙一（一字）自己：照选 + 挂「等下杀买」标签，⛔ 不会被【龙一字持有】接管
+    expect(blk.picks[0].auctionYiziTag).toBe(AUCTION_YIZI_WAIT_TAG);
+    expect(blk.picks[0].buyActionTag).not.toBe(DRAGON_YIZI_HOLD_TAG);
+    // 后排（龙二）：占比不达标，但被一字封板的龙一带上去 ⇒ 标【龙一字持有】，不改【先卖后买】
+    const back = blk.picks[1];
+    expect(back.aucSharePass).toBe(false);
+    expect(back.buyActionTag).toBe(DRAGON_YIZI_HOLD_TAG);
   });
 
   it('buy 槽位：第 1 块 → heavy、第 2 块 → light；三个兜底槽位恒 null（形状契约）', function() {
@@ -2364,21 +2423,25 @@ describe('tvrb · ★ 买点侧【连续停牌】占掉名额、不再补位（S
     expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['票01', '票02']);
   });
 
-  it('★ 与【竞价一字】并存 ⇒ 语义不同：一字顺延补位（不占名额）、停牌占名额不补', function() {
+  it('★ 与【竞价一字】并存 ⇒ 语义不同：一字【占一档并出票】、停牌【占一档不出票】', function() {
     const members = [
-      m('一字票', { pct: 90, isYizi: true, code: '600001' }),   // 龙一：一字 ⇒ 顺延，不占名额
-      m('停牌票', { pct: 80, code: '600002' }),                  // 龙二：连续停牌 ⇒ 占掉 1 个名额
-      m('正常甲', { pct: 70, code: '600003' }),                  // 龙三：补上第 2 个名额
+      m('一字票', { pct: 90, isYizi: true, code: '600001' }),   // 龙一：一字 ⇒ 照选、占一档、出票
+      m('停牌票', { pct: 80, code: '600002' }),                  // 龙二：连续停牌 ⇒ 吃掉 1 个名额，但不出票
+      m('正常甲', { pct: 70, code: '600003' }),                  // 龙三：名额已用满 ⇒ 轮不到
       m('正常乙', { pct: 60, code: '600004' })
     ];
     for (let i = 5; i <= 14; i++) members.push(m('票' + i, { pct: 60 - i, code: '6000' + i }));
     const topics = [block('AI应用', 1, members)];
     const dm = rankDragonsWithPctMap(topics, null);
     const plan = buildTopicVolRatioPlan(topics, dm, { buySkipNames: new Set(['停牌票']) });
-    // 2 个名额：一字票不占 ⇒ 关键在停牌票占掉一个 ⇒ 只剩「正常甲」1 只
-    expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['正常甲']);
+    // ★★ [YIZI-NO-SHIFT 2026-11-20] 旧口径是「一字不占名额 ⇒ 只剩正常甲」；现在：
+    //   一字【占一档 + 出票 + 挂「等下杀买」】，停牌【占一档但不出票】⇒ 2 档用尽 ⇒ 只有一字那一只。
+    //   两件事的差别不再是「占不占名额」，而是【出不出票】—— 这正是用户 11-20 要的口径：
+    //   名额不被一白白浪费，也不再顺延到后排（顺延 = 可能买进后排票）。
+    expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual(['一字票']);
+    expect(plan.blocks[0].picks[0].auctionYiziTag).toBe(AUCTION_YIZI_WAIT_TAG);
     const notes = plan.blocks[0].notes.join('\n');
-    expect(notes).toContain('竞价涨停');
+    expect(notes).toContain('竞价一字涨停');
     expect(notes).toContain('连续停牌');
   });
 
@@ -3925,32 +3988,46 @@ describe('tvrb · 早盘 9:26 龙位 vs 收盘龙位 的差异说明（9-24 房�
     return map;
   }
 
-  const names = ['大亚圣象', '世联行', '我爱我家', '三峡新材', '华远控股', '绿地控股'];
+  // ★★ [YIZI-NO-SHIFT 2026-11-20] 本组夹具从 9-24 真实的 6 只扩到 10 只（big 档 ⇒ 取 2 只）：
+  //   一字【照选】之后 9-24 那只龙一 大亚圣象 自己就进买点了，而它在两个口径下都是【龙一】
+  //   ⇒ 单看它「两个口径完全一致」⇒ 按 §11 说明区一个字都不该写，漂移说明就没人验了。
+  //   扩到 big 档让【龙一 + 龙二】同时进买点：龙二 华远控股 9:26 是第 2、收盘掉到第 5
+  //   ⇒ 漂移真的发生 ⇒ `_appendDragonDriftNote` 的两个口径并列才有落脚点（口径本身一行未改）。
+  const names = ['大亚圣象', '世联行', '我爱我家', '三峡新材', '华远控股', '绿地控股',
+    '荣盛发展', '金科股份', '中南建设', '阳光城'];
   const b = block('房地产', 1, names.map(function(n) { return m(n, { aucVolRatio: 20 }); }));
-  // 龙一 大亚圣象 = 竞价一字（买不进 ⇒ 顺延）
+  // 龙一 大亚圣象 = 竞价一字（★ 现在【照选】+ 挂「等下杀买」，⛔ 不再顺延）
+  // ⚠️ 直接改 isYizi 时【必须同时】把竞价涨幅写成涨停幅度：标签判据读的是 aucPct（`m()` 的
+  //    isYizi 自动补只对构造时生效，事后赋值绕不过去 —— 这里踩过一次）。
   b.members[0].isYizi = true;
+  b.members[0].aucPct = 10;
 
   // 9:26 口径（早上那一刻）
   const buyDm = closeMap([
     ['大亚圣象', 1, 54.74], ['华远控股', 2, 35.21], ['我爱我家', 3, 32.08],
-    ['世联行', 4, 29.29], ['三峡新材', 5, 20.00], ['绿地控股', 6, 13.64]
+    ['世联行', 4, 29.29], ['三峡新材', 5, 20.00], ['绿地控股', 6, 13.64],
+    ['荣盛发展', 7, 11.00], ['金科股份', 8, 9.00], ['中南建设', 9, 7.00], ['阳光城', 10, 5.00]
   ]);
   // 收盘口径（15:00 后 T 腿被换成收盘涨幅 ⇒ 组内重排）
   const closeDm = closeMap([
     ['大亚圣象', 1, 41.00], ['世联行', 2, 36.40], ['我爱我家', 3, 24.91],
-    ['三峡新材', 4, 21.93], ['华远控股', 5, 20.18], ['绿地控股', 6, 8.33]
+    ['三峡新材', 4, 21.93], ['华远控股', 5, 20.18], ['绿地控股', 6, 8.33],
+    ['荣盛发展', 7, 7.00], ['金科股份', 8, 5.00], ['中南建设', 9, 3.00], ['阳光城', 10, 1.00]
   ]);
 
   const plan = buildTopicVolRatioPlan([b], closeDm, { buyDragonMap: buyDm, pctMap: buyDm });
 
-  it('选股按【早上 9:26 龙位】：龙一一字顺延 ⇒ 取龙二 华远控股（不是收盘龙二 世联行）', function() {
+  it('选股按【早上 9:26 龙位】：龙一竞价一字 ⇒ 【照选 + 打标签】，⛔ 不再顺延到龙二', function() {
     const blk = plan.blocks[0];
-    expect(blk.tier).toBe('mid');
-    expect(blk.pickCount).toBe(1);
-    expect(blk.picks.map(function(p) { return p.name; })).toEqual(['华远控股']);
+    expect(blk.tier).toBe('big');
+    expect(blk.pickCount).toBe(2);
+    // ★ [YIZI-NO-SHIFT 2026-11-20] 旧口径「龙一一字买不进 ⇒ 顺延取龙二 华远控股、世联行」已废除：
+    //   一字照选占一档 ⇒ 取到的就是【龙一 大亚圣象 + 龙二 华远控股】。
+    expect(blk.picks.map(function(p) { return p.name; })).toEqual(['大亚圣象', '华远控股']);
     // 行上的龙标 / 十日涨幅也必须是 9:26 那一个（§6：龙标与选股同一口径）
-    expect(blk.picks[0].dragonLabel).toBe('龙二');
-    expect(blk.picks[0].pct).toBe(35.21);
+    expect(blk.picks.map(function(p) { return p.dragonLabel; })).toEqual(['龙一', '龙二']);
+    expect(blk.picks[0].pct).toBe(54.74);
+    expect(blk.picks[0].auctionYiziTag).toBe(AUCTION_YIZI_WAIT_TAG);
   });
 
   // ★★ [TVRB-926-FACT 2026-10-24 用户口径] 说明区只写【口径时间 + 涨幅 + 第几名】，⛔ 不解释。
@@ -3958,12 +4035,12 @@ describe('tvrb · 早盘 9:26 龙位 vs 收盘龙位 的差异说明（9-24 房�
   //   在上面说明时间他们的涨幅是多少排名第几就行了」。
   it('说明区只摆事实：两个口径的【涨幅 + 第几名】并列，且不写原因', function() {
     const txt = plan.blocks[0].notes.join('\n');
-    // ① 9:26 竞价口径：被选中的那只，带涨幅 + 名次
+    // ① 9:26 竞价口径：被选中的两只，带涨幅 + 名次
     expect(txt).toContain('〔9:26 竞价口径〕');
+    expect(txt).toContain('大亚圣象 +54.74% 第 1 名（选入）');
     expect(txt).toContain('华远控股 +35.21% 第 2 名（选入）');
-    // ② 收盘口径：同样带涨幅 + 名次（用户会追问的世联行在这里）
+    // ② 收盘口径：华远控股 从第 2 掉到第 5 —— 这正是用户复盘时会追问的那处差异
     expect(txt).toContain('〔收盘口径〕');
-    expect(txt).toContain('世联行 +36.40% 第 2 名');
     expect(txt).toContain('华远控股 +20.18% 第 5 名');
     // ③ ⛔ 不许解释（上一版被用户否掉的那几段：根因 / 第二十三条 / 「没有选错票」/「不是按量比」）
     expect(txt).not.toContain('第二十三');
@@ -4306,18 +4383,22 @@ describe('tvrb · [SMALL-TOPIC] 排名第一题材数量 4~6 只：只买当天�
     expect(txt).toContain('小题材收紧 · 本题材不入选');
   });
 
-  it('★ 龙一竞价一字（买不进）且前十只剩它一只 ⇒ 实际 0 只，⛔ 不从第十名之外补位', function() {
+  it('★ 龙一竞价一字且前十只剩它一只 ⇒ 【照选这一只】（= 用户 11-20 盛剑科技场景），⛔ 仍不从第十名之外补位', function() {
     const f = topicsOf(4);
     // 龙一 45 ⇒ 第 10 名（前十最后一位）；龙二/三/四 -5/-6/-7 ⇒ 第 15~17 名（前十之外）
     const pool = poolOf(f.t1.names, [45, -5, -6, -7], 9);
     f.topics[0].members[0].isYizi = true;                    // 龙一 = 竞价一字
+    f.topics[0].members[0].aucPct = 10;                      // 同源：一字 ⇔ 竞价涨幅到涨停幅度
     const plan = buildTopicVolRatioPlan(f.topics, f.dm, { range10Rows: pool });
     expect(plan.blocks).toHaveLength(2);
-    expect(plan.blocks[0].picks).toHaveLength(0);
+    // ★★ [YIZI-NO-SHIFT 2026-11-20] 这条就是用户 11-20 报障的原型：
+    //   「6 只、排名第一、龙一 盛剑科技 竞价涨停（买不进）⇒ 已顺延到下一个龙位（兴欣新材）」，
+    //   用户明确「正确的选股应该是盛剑科技」。旧口径在这里给【实际 0 只 / 顺延龙二】，已废除。
+    //   ⇒ 一字【照选】+ 挂标签，且【仍在「前十以内」这个约束里】：龙二不在前十，照样不许顶上来。
+    expect(plan.blocks[0].picks.map(function(p) { return p.name; })).toEqual([FIRST + '1']);
+    expect(plan.blocks[0].picks[0].auctionYiziTag).toBe(AUCTION_YIZI_WAIT_TAG);
+    expect(plan.buyNames.has(FIRST + '1')).toBe(true);
     expect(plan.buyNames.has(FIRST + '2')).toBe(false);      // 龙二不在前十 ⇒ 不许顶上来
-    const notes = plan.blocks[0].notes.join('\n');
-    expect(notes).toContain('实际 0 只');
-    expect(notes).toContain('不从前十之外补位');
   });
 
   it('§11：调用方没传十日涨幅池 ⇒ 整段跳过（行为与加规则之前逐字节相同）', function() {

@@ -254,7 +254,9 @@
       v-if="!block.qualified"
       class="tvrb-block-note tvrb-note-box unqualified tvrb-note-empty tvrb-selectable"
     >
-      该题材没有可买入（非竞价涨停）的股票
+      <!-- ★ [YIZI-NO-SHIFT 2026-11-20] 一字已算可买（照选 + 只打标签）⇒ 这里不能再写「非竞价涨停」，
+           否则空态文案会和买点侧口径打架（同一条口径两种说法是本类事故的第一成因）。 -->
+      该题材没有可买入（非连续停牌）的股票
     </div>
   </div>
 </template>

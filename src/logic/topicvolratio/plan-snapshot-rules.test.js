@@ -308,8 +308,10 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     expect(resolvePlanSnapshotFreshness(broken, OPTS)).toBe('stale');
   });
 
-  it('版本常量已 bump 到 26（[BUYABLE-COUNT] 「选股 N 只」改数能下单的只数 ⇒ 历史日也要重算 = v26）', () => {
-    expect(TVRB_RULES_VERSION).toBe(27);
+  it('版本常量已 bump 到 28（[YIZI-NO-SHIFT] 竞价一字不再顺延 ⇒ 历史日也要重算 = v28）', () => {
+    // ★★ [YIZI-NO-SHIFT 2026-11-20 用户口径] 竞价一字【照选 + 占一档】取代「顺延下一龙位」
+    //   ⇒ 选股结论会变（11-20 盛剑科技 / 兴欣新材就是这一条翻的）⇒ 历史日必须重算，版本 27 → 28。
+    expect(TVRB_RULES_VERSION).toBe(28);
   });
 
   // ★★ [ABN-MAINBOARD-GUARD 2026-11-14] 第三十四条「全场十日涨幅最高票」只认主板。
@@ -372,7 +374,8 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     //   ★★ [RULE-35-SRC 2026-11-19] 30 日榜数据源优先级修复（空 Map 挡住结果表）⇒ 23 → 24；
     //   ★★ [RULE-35-FORWARD 2026-11-19] 第三十五条的池子参数没转发 + 那一块没有渲染通道 ⇒ 24 → 25；
     //   ★★ [BUYABLE-COUNT 2026-11-19] 「选股 N 只」改数能下单的只数（pickCount 是屏幕上直接看到的数字）⇒ 25 → 26）
-    expect(TVRB_RULES_VERSION).toBe(27);
+    //   ★★ [YIZI-NO-SHIFT 2026-11-20] 竞价一字【照选 + 占一档】取代「顺延下一龙位」⇒ 选股结论变 ⇒ 26 → 27 → 28
+    expect(TVRB_RULES_VERSION).toBe(28);
     expect(_swCacheNo(readFileSync('public/sw.js', 'utf8'))).toBeGreaterThanOrEqual(67);
   });
 

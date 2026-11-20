@@ -2120,7 +2120,9 @@ export function useTopicVolRatioBoard() {
         pctMap: buyMap,
         // ★★ [SUSPEND-NOBUY 2026-10-14 用户口径] 买点侧「买不进名单」= 【连续停牌第 2 天及以上】的票
         //   （collectDecisionTopics 出口已用库里当日/昨日竞价行算好，见 decision-collect
-        //    #nonFirstDaySuspendNames）。规则层把它与「竞价一字」走同一条【跳过并顺延下一龙位】。
+        //    #nonFirstDaySuspendNames）。规则层对它的处理是【占一档、但不出票】（名额作废、不补位）。
+        //   ⚠️ 别与「竞价一字」混为一谈：[YIZI-NO-SHIFT 2026-11-20] 一字是【照选 + 占一档 + 出票 + 挂标签】，
+        //      ⛔ 早已不是「跳过并顺延下一龙位」；两者现在唯一的差别就是「出不出票」。
         //   ⛔ 缺省 ⇒ 规则层退回旧行为（停牌票照旧可选，§11）；停牌【首日】不在名单里（仍可入选）。
         buySkipNames: rec.buySkipSuspend || null,
         // ★ [DIVERGE 2026-10-20] 总龙首次分歧判定（null = 判不出 / 不是首次分歧日 ⇒ 规则层零行为）

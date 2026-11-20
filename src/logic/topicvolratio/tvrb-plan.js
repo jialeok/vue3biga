@@ -750,8 +750,9 @@ export function pickNewDragon(top5, everInTop5, info) {
  *                   行上「十日涨幅」取它；缺省 ⇒ 退回成员自带值 = 旧行为。
  *        buySkipNames = ★★ [SUSPEND-NOBUY 2026-10-14 用户口径] 买点侧的【买不进名单】
  *                   （= 连续停牌第 2 天及以上的票，decision-collect#nonFirstDaySuspendNames 的返回）；
- *                   命中者【买不进 ⇒ 占掉一个名额、不再补位】（与「竞价一字」的顺延补位刻意不同，
- *                   见 _buildBlock 的 [SUSPEND-OCCUPY 2026-10-15] 注释）。
+ *                   命中者【买不进 ⇒ 占掉一个名额、不再补位】（⛔ 与【竞价一字】不同：
+ *                   一字自 2026-11-20 起【照常选进、占一档、只打标签】，见 _buildBlock 的
+ *                   [YIZI-NO-SHIFT 2026-11-20] 注释；停牌名额作废的语义不变）。
  *                   ⛔ 缺省 / 空集 ⇒ 与旧行为逐字一致（§11）；停牌【首日】不在本名单里（仍可入选）。
  *        prevDate = ★ [EBB-D1 2026-10-21] 展示日的【上一交易日】（组合式用 getPreviousTradingDay
  *                   算好注入，§6 日期口径不进纯函数）—— 「昨日二次确认退潮 ⇒ 次日禁入买点侧」
@@ -1387,8 +1388,10 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         if (innerRes.judge === 'ok' && innerOrderComplete) {
           secondTopicInnerOpt = {
             order: innerOrder,
-            // ★ 一字票【照选 + 占一档】：候选本来就只在前十那几只里，跳过一个就只剩更弱的（用户 11-16 口径）
-            yiziKeep: true,
+            // ★ [YIZI-NO-SHIFT 2026-11-20] `yiziKeep` 已【作废】：一字现在【全通道】照选 + 占一档，
+            //   _buildBlock 里不再有任何「一字 ⇒ 跳过」的分支 ⇒ 本开关没有任何作用。
+            //   ⚠️ 刻意留一行说明而不是删注释：将来谁想「给某条通道恢复顺延」，必须先推翻 11-20 用户口径。
+            //   （参数本身已从 _buildBlock 的读取处删除，见 tvrb-blocks.js 的 isYizi 分支。）
             secondTopic: innerRes,
             baseText: r10BaseText,
             avgText: formatAvgVolRatio(secondAvg)
@@ -2635,7 +2638,8 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   if (o.dataGateBlocked) _clearBuySideForDataGate(out);
 
   // ★★ [TVRB-AUC-YIZI 2026-11-10 用户口径] 竞价一字涨停的票【照常选进】，但要统一标注
-  //   「竞价一字涨停 · 等开板后进」。⛔ 不改任何选股过滤（常规块的一字顺延是 10-15 用户拍板口径）。
+  //   「竞价一字涨停 · 等下杀买」（标签唯一来源 = auction-yizi-tag.js）。
+  //   ★ [YIZI-NO-SHIFT 2026-11-20] 选股侧也已全通道统一：一字照选 + 占一档，⛔ 不再顺延下一龙位。
   //   收口在 return 前 + 数据闸门之后：既覆盖全部买点通道，也不会给「数据缺失硬空仓」日留脏标记。
   annotateAuctionYizi(out);
 

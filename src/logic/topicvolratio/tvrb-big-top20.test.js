@@ -119,11 +119,14 @@ function names(blk) {
 }
 
 describe('tvrb · ★★ [AUTO-PICK-TOP20] 数量 > 8 只 ⇒ 只选同题材 20日涨幅前十最靠前两只', function() {
-  it('10-30 真实 17 只：旧口径 = 上海九百+东贝集团（青岛食品被一字顺延跳过）', function() {
-    // 不注入 topicPool ⇒ 逐字退回旧口径（§11 零行为变化，且一条新说明都不许加）
+  it('10-30 真实 17 只：不注入池子 ⇒ 退回【常规龙位】：上海九百 + 青岛食品（⛔ 一字不再被跳过）', function() {
+    // 不注入 topicPool ⇒ 退回常规龙位口径（判据一行未改）。
+    // ★★ [YIZI-NO-SHIFT 2026-11-20 用户口径] 旧口径这里给的是「上海九百 + 东贝集团」——
+    //   龙二 青岛食品 竞价一字 ⇒ 被跳过 ⇒ 顺延龙三 东贝集团。该口径已废除：
+    //   一字【照选 + 占一档 + 挂「等下杀买」】，所以退回常规龙位时取到的就是龙二 青岛食品。
     const old = _buildBlock(mkBlock('大消费', 2, MEMBERS17), DM30, bigTier, PCT30, null, null);
-    expect(names(old)).toEqual(['上海九百', '东贝集团']);
-    expect(old.skippedNames).toEqual(['龙二青岛食品']);
+    expect(names(old)).toEqual(['上海九百', '青岛食品']);
+    expect(old.skippedNames).toEqual([]);   // ⛔ 一字不再进 skippedNames
     expect(old.top20Judge).toBe('');
     expect((old.notes || []).join('\n')).not.toContain('大题材口径');
   });
@@ -215,7 +218,8 @@ describe('tvrb · ★★ [AUTO-PICK-TOP20] 数量 > 8 只 ⇒ 只选同题材 20
   it('§10：池子给了但是【空数组】⇒ 判不出 ⇒ 写「未校验」并退回常规口径', function() {
     const blk = _buildBlock(mkBlock('大消费', 2, MEMBERS17), DM30, bigTier, PCT30, null,
       { topicPool: [], coreRes: coreRes, top20Text: '9:25 竞价口径' });
-    expect(names(blk)).toEqual(['上海九百', '东贝集团']);
+    // 退回常规龙位 ⇒ 龙一 上海九百 + 龙二 青岛食品（★ [YIZI-NO-SHIFT 2026-11-20] 一字不再被跳过）
+    expect(names(blk)).toEqual(['上海九百', '青岛食品']);
     expect((blk.notes || []).join('\n')).toContain('大题材口径 · 未校验');
   });
 
@@ -259,10 +263,11 @@ describe('tvrb · [AUTO-PICK-TOP20] 边界与回归锁', function() {
     const dm = dragonMap([['甲', 1], ['乙', 2], ['丙', 3], ['丁', 4]]);
     const tier = resolveTvrbTier(5);
     expect(tier.tier).toBe('mid');
-    // 旧口径（池子没注入）＝ 甲是一字 ⇒ 顺延到乙（§11 零行为变化仍在）
+    // 退回常规龙位口径 ⇒ 龙一 甲（一字）【照选 + 占一档】。
+    // ★ [YIZI-NO-SHIFT 2026-11-20] 旧口径这里是「顺延到乙」，已废除。
     const old = _buildBlock(mkBlock('大消费', 1, members), dm, tier, null, null, null);
-    expect(names(old)).toEqual(['乙']);
-    expect(old.skippedNames).toEqual(['龙一甲']);
+    expect(names(old)).toEqual(['甲']);
+    expect(old.skippedNames).toEqual([]);
     // 新口径：命中前十 ⇒ 只取第 1 名（九阳股份），⛔ 不再顺延
     const blk = _buildBlock(mkBlock('大消费', 1, members), dm, tier, null, null,
       { topicPool: POOL30, coreRes: coreRes, top20Text: '9:25 竞价口径' });
@@ -349,7 +354,8 @@ describe('tvrb · [AUTO-PICK-TOP20] 边界与回归锁', function() {
 //    你打上那个涨停标签，下杀买。」
 //
 // 库内取证（2026-10-21 定稿快照 + stock_range20_pct + market_metrics 反解）：
-//   商业航天 7 只 —— 旧口径 = 龙三长春一东（龙一海洋王 / 龙二东安动力 竞价一字被顺延跳过）；
+//   商业航天 7 只 —— 【当时的】旧口径 = 龙三长春一东（龙一海洋王 / 龙二东安动力 竞价一字被顺延跳过）；
+//   ⚠️ [YIZI-NO-SHIFT 2026-11-20] 这条「顺延」口径已废除：一字照选 ⇒ 同一天现在取到的是龙一 海洋王。
 //   20日涨幅（9:25 竞价口径·只主板）前十：海洋王 = 第 9 名 54.16%，长春一东不在前十。
 //   ⚠️ 海洋王的题材串是「LED,军工」（不是「商业航天」）⇒ 只按题材串比永远判不出同题材，
 //     所以「同题材」必须以【块成员名单】为准（本组用例锁死这一条）。
@@ -388,11 +394,15 @@ const POOL21 = [
 const mid21 = resolveTvrbTier(7);
 
 describe('tvrb · ★★ [MID-TOP20] 4~8 只的题材也按 20日涨幅前十取（只取 1 只）', function() {
-  it('10-21 商业航天 7 只：旧口径 = 龙三长春一东（一字顺延来的，用户明确否决）', function() {
+  it('10-21 商业航天 7 只：退回常规龙位 ⇒ 龙一 海洋王（一字照选），⛔ 不再顺延到龙三 长春一东', function() {
     expect(mid21.tier).toBe('mid');
     const old = _buildBlock(mkBlock('商业航天', 1, MEMBERS21), DM21, mid21, PCT21, null, null);
-    expect(names(old)).toEqual(['长春一东']);
-    expect(old.skippedNames).toEqual(['龙一海洋王', '龙二东安动力']);
+    // ★★ [YIZI-NO-SHIFT 2026-11-20] 旧口径这里是「龙一海洋王 / 龙二东安动力 竞价一字被顺延跳过
+    //   ⇒ 取龙三 长春一东」—— 用户当时就明确否决过（原话见本组标题上方注释：
+    //   「长春一东不该选……就是海洋王……你打上那个涨停标签，下杀买」）。
+    //   一字照选之后，退回常规龙位口径取到的正是龙一 海洋王。
+    expect(names(old)).toEqual(['海洋王']);
+    expect(old.skippedNames).toEqual([]);
     expect(old.top20Judge).toBe('');
   });
 
