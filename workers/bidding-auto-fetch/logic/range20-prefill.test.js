@@ -19,7 +19,7 @@ import { RANGE20_MIN_TARGETS, isRange20TargetListReady } from '../../../src/logi
 const h = vi.hoisted(() => ({
   wl: [], metrics: [], have: [], legs: [], upserted: [], throwOnRead: '',
   // ★★ 补腿通道：批量日线返回值 / 交易日序列 / 逐日腿写入留痕
-  bars: new Map(), tradeDates: [], legUpserted: [], failBars: false
+  bars: new Map(), tradeDates: [], legUpserted: [], failBars: false, barArgs: []
 }));
 vi.mock('../data/supabase-write.js', () => ({
   readAuctionWatchlistForDate: async () => {
@@ -40,7 +40,8 @@ vi.mock('../data/fuyao-api.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,                       // 纯函数 barsToDailyPctMap 用【真实实现】，不许 copy 一份假的
-    fetchFuyaoBatchBars: async () => {
+    fetchFuyaoBatchBars: async (env, codes, from, to) => {
+      h.barArgs.push({ codes: codes.slice(), from: from, to: to });
       if (h.failBars) throw new Error('fuyao 429');
       return h.bars;
     }
@@ -157,7 +158,7 @@ describe('[CLOUD-0927-HEAL] §11 半截名单不许补位', () => {
 
 describe('[LEGS-FILL-CLOUD 2026-11-20] 新面孔缺腿 ⇒ 云端批量补腿', () => {
   beforeEach(() => {
-    h.bars = new Map(); h.tradeDates = []; h.legUpserted = []; h.failBars = false;
+    h.bars = new Map(); h.tradeDates = []; h.legUpserted = []; h.failBars = false; h.barArgs = [];
     h.wl = []; h.metrics = []; h.have = []; h.legs = []; h.upserted = []; h.throwOnRead = '';
   });
 
@@ -192,6 +193,18 @@ describe('[LEGS-FILL-CLOUD 2026-11-20] 新面孔缺腿 ⇒ 云端批量补腿', 
     const picked = h.upserted[0].find(x => x.stock === '京蓝科技');
     expect(picked).toBeDefined();
     expect(picked.days).toBe(20);
+  });
+
+  it('★ [FILL-START-BAR] 取日线的起点必须早于 19 日窗口首日（否则首日没基准 bar，19 根补不满）', async () => {
+    const dates = tradeDates(19);
+    h.bars = new Map([['000711', dates.map((d, i) => ({ ymd: d, close: 100 + i }))]]);
+    await fillLegsFromKline({}, {
+      stocks: ['京蓝科技'], tradeDates: dates,
+      codeOf: () => '000711', haveOf: () => null
+    });
+    expect(h.barArgs).toHaveLength(1);
+    expect(h.barArgs[0].from < dates[0]).toBe(true);
+    expect(h.barArgs[0].to).toBe(dates[dates.length - 1]);
   });
 
   it('★ 批量日线拿不到 ⇒ 0 写入（§10 宁缺勿错，⛔ 不拿 0 当涨幅）', async () => {

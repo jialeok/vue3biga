@@ -46,6 +46,14 @@ import { CONFIG } from '../config.js';
 /** 与 Edge WINDOW_DAYS-1 完全一致：19 根历史腿 + 1 根 T 腿 = 20 日 */
 export const RANGE20_LEG_DAYS = 19;
 
+/** [FILL-START-BAR] 批量日线起点要比窗口首日早这么多自然日，才能拿到首日涨幅的基准 bar */
+export const R20_FILL_BAR_LEAD_DAYS = 20;
+
+// ⚠️ 单文件打包共作用域 ⇒ 顶层名必须全局唯一（与 r20ShiftDays / r30ShiftDays 区分）
+function r20FillShiftDays(dateStr, delta) {
+  return new Date(Date.parse(dateStr + 'T00:00:00Z') + delta * 86400000).toISOString().slice(0, 10);
+}
+
 /** 腿表回看窗口（自然日）：足够跨过春节/国庆凑满 19 个交易日，与 Edge shiftYmd(-60) 一致 */
 export const RANGE20_LOOKBACK_DAYS = 60;
 
@@ -123,9 +131,17 @@ export async function fillLegsFromKline(env, opts) {
 
   let bars;
   try {
-    // 起点用窗口首日（19 个交易日 ≈ 30 自然日，取窗口本身就够：首日涨幅要的是它的前一根 bar，
-    // 批量接口会连带返回更早的 bar，`barsToDailyPctMap` 用「上一根 bar」做基准）。
-    bars = await fetchFuyaoBatchBars(env, codes, tradeDates[0], tradeDates[tradeDates.length - 1]);
+    // 🔴 [FILL-START-BAR 2026-11-20 生产日志实锤] 起点必须【早于】窗口首日！
+    //   首日那根日涨幅 = 首日收盘 / 前一根 bar 收盘 − 1，接口只返回请求区间内的 bar
+    //   （不会白送更早的）⇒ 从窗口首日开始取会丢掉首日涨幅，19 根只补到 17~18 根，
+    //   `compoundRange20` 仍判腿不足。11-17 实测：补了 205 行却只写出 1 行 20 日涨幅、
+    //   覆盖度停在 86% —— 就是这个缺一根造成的整类失败。
+    //   前移 20 个自然日（≈14 个交易日，够跨一次小长假），⛔ 不省这一个请求。
+    bars = await fetchFuyaoBatchBars(
+      env, codes,
+      r20FillShiftDays(tradeDates[0], -R20_FILL_BAR_LEAD_DAYS),
+      tradeDates[tradeDates.length - 1]
+    );
   } catch (e) {
     out.error = '批量日线失败: ' + ((e && e.message) || e);
     logs.push('[legs-fill] ❌ ' + out.error);
