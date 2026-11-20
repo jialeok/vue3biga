@@ -6,7 +6,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   STALE_WATCHLIST_MAX_DAYS,
+  OBS_CARRY_MAX_DAYS,
   isStaleWatchlistRow,
+  isObsoleteObsRow,
   filterStaleWatchlistRows
 } from './stale-watchlist-row.js';
 
@@ -60,6 +62,40 @@ describe('isStaleWatchlistRow — 与日期、source 均无关的通用判据', 
     });
   });
 
+  // ★ 观察组 = 临时继承身份（前一日竞昨高光 + 打标签），只活一交易日。
+  //   批量写入未来多天的 obs 行必须在【读侧】剔除，否则复盘时「观察组像好几天堆在一起」。
+  it('阈值 = 4 自然日（跨周末周五→周一 3 天 + 1 天缓冲）', () => {
+    expect(OBS_CARRY_MAX_DAYS).toBe(4);
+  });
+
+  it('★ 10-08 的 obs 行创建于 09-30（隔 8 天）⇒ 判跨天复制残留', () => {
+    const r = row({ obs_auto_added: true, created_at: '2026-09-30T18:22:01+00:00', updated_at: '2026-10-08T13:59:16+00:00' });
+    // 注意：updated_at 贴近目标日（10-08 当天有人改过）也【不】算真继承 —— 创建时的跨天复制才是根因
+    expect(isObsoleteObsRow(r, '2026-10-08')).toBe(true);
+  });
+
+  it('★ 正常继承：11-19 的 obs 行创建于 11-18（前一交易日）⇒ 保留', () => {
+    const r = row({ obs_auto_added: true, created_at: '2026-11-18T16:44:26+00:00', updated_at: '2026-11-18T16:44:24+00:00' });
+    expect(isObsoleteObsRow(r, '2026-11-19')).toBe(false);
+  });
+
+  it('★ 跨周末：周一(11-23)的 obs 行创建于周五(11-20) ⇒ 保留', () => {
+    const r = row({ obs_auto_added: true, created_at: '2026-11-20T01:25:27+00:00', updated_at: '2026-11-20T01:25:27+00:00' });
+    expect(isObsoleteObsRow(r, '2026-11-23')).toBe(false);
+  });
+
+  it('★ 有 note / topics 的 obs 行是人工确认过的 ⇒ 保留', () => {
+    const far = { obs_auto_added: true, created_at: '2026-09-30T18:21:23+00:00', updated_at: '2026-09-30T18:21:23+00:00' };
+    expect(isObsoleteObsRow(row(Object.assign({}, far, { note: '手动记一笔' })), '2026-10-08')).toBe(false);
+    expect(isObsoleteObsRow(row(Object.assign({}, far, { topics: '半导体' })), '2026-10-08')).toBe(false);
+  });
+
+  it('§10：非 obs 行 / 无时间信息 ⇒ 本判据不插手', () => {
+    expect(isObsoleteObsRow(row({ created_at: '2026-09-30T18:21:23+00:00' }), '2026-10-08')).toBe(false);
+    expect(isObsoleteObsRow(row({ obs_auto_added: true }), '2026-10-08')).toBe(false);
+    expect(isObsoleteObsRow(row({ obs_auto_added: true, created_at: '2026-09-30T18:21:23+00:00' }), '')).toBe(false);
+  });
+
   it('§10：无时间信息 / 目标日未知 ⇒ 不猜，保留', () => {
     expect(isStaleWatchlistRow(row({}), '2026-10-30')).toBe(false);
     expect(isStaleWatchlistRow(row({ created_at: 'garbage' }), '2026-10-30')).toBe(false);
@@ -89,6 +125,14 @@ describe('filterStaleWatchlistRows — Data 层两个入口共用的批量过滤
     const dirty = row({ stock: '脏票', created_at: '2026-11-18T16:42:34+00:00', date: undefined });
     const out = filterStaleWatchlistRows([dirty], function () { return '2026-10-30'; });
     expect(out).toHaveLength(0);
+  });
+
+  it('★ 跨天复制的 obs 行也一并剔除（与迁移行同一道闸）', () => {
+    const stale = row({ stock: '迁移票', date: '2026-10-30', created_at: '2026-11-18T16:42:34+00:00' });
+    const obs = row({ stock: '跨天观察', date: '2026-10-08', obs_auto_added: true, created_at: '2026-09-30T18:21:23+00:00' });
+    const good = row({ stock: '真继承', date: '2026-11-19', obs_auto_added: true, created_at: '2026-11-18T16:44:26+00:00' });
+    const out = filterStaleWatchlistRows([stale, obs, good]);
+    expect(out.map(r => r.stock)).toEqual(['真继承']);
   });
 
   it('空 / null 输入返回空数组，不抛错（§10 空 ≠ 读失败，由调用方区分）', () => {

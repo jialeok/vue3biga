@@ -35,6 +35,15 @@
 /** 写入时间距目标日的最大自然日；⛔ 别调小：事后补记的历史行会被误杀 */
 export const STALE_WATCHLIST_MAX_DAYS = 7;
 
+/**
+ * [OBS-CARRY 2026-11-20 用户报障「观察组有点多，感觉是好几天数据，只要求继承上一交易日」]
+ * 观察组行的最大存活天数。观察组是【临时继承身份】（前一日竞昨高光 + 打标签），只活一交易日。
+ * 取证：批量操作把同一批 obs 行写进未来 6 个交易日（会稽山 10-01/02/05/06/07/08 全部
+ * created_at=2026-09-30T18:21~18:22），正常继承行（11-19 obs 建于 11-18）只差一天。
+ * 4 天 = 跨周末周五→周一 3 自然日 + 1 天缓冲；⛔ 不能套用 7 天（会放进 10-05 那批跨周复制）。
+ */
+export const OBS_CARRY_MAX_DAYS = 4;
+
 const DAY_MS = 86400000;
 
 function _hasText(v) {
@@ -75,7 +84,39 @@ export function isStaleWatchlistRow(row, date) {
 }
 
 /**
+ * 【纯函数】一行 obs 观察组行是否为「跨天复制残留」。
+ *
+ * 观察组只继承【上一交易日】：正常 obs 行的 created_at 就在目标日或前一交易日（跨周末最多 3 天）。
+ * 若创建时间距目标日 > OBS_CARRY_MAX_DAYS，说明是一次性批量写进未来多天的历史残留，
+ * 复盘时会把好几天的观察组堆在同一屏 —— 必须在读侧剔除。
+ *
+ * 保护（§10/§11）：
+ *   · 有 note / topics ⇒ 人工确认过的观察行，保留；
+ *   · 目标日未知 / 无时间信息 ⇒ 不猜，保留；
+ *   · 非 obs 行 ⇒ 本判据不插手。
+ *   ⛔ updated_at 贴近目标日也【不】豁免：批量复制后当天有人改过一行（10-08 的 180/6.17%）
+ *      仍是同一批残留，不能因为一次编辑就把整批放回来。
+ *
+ * @param {object} row
+ * @param {string} date 目标日 YYYY-MM-DD
+ * @returns {boolean} true = 跨天复制残留，不应上屏
+ */
+export function isObsoleteObsRow(row, date) {
+  if (!row || row.obs_auto_added !== true) return false;
+  if (_hasText(row.note) || _hasText(row.topics)) return false;
+  const target = _dayMs(date === undefined || date === null ? row.date : date);
+  if (target === null) return false;
+  const created = _dayMs(row.created_at);
+  const updated = _dayMs(row.updated_at);
+  if (created === null && updated === null) return false;
+  // 只看创建时间：它决定「这一行是何时被继承进这一天」；updated 只可能是后来的编辑。
+  const born = created === null ? updated : created;
+  return Math.abs(born - target) > OBS_CARRY_MAX_DAYS * DAY_MS;
+}
+
+/**
  * 【纯函数】批量过滤；getDate 缺省读 row.date（按日查询时可传 () => date）。
+ * 两道闸共用：① 陈旧迁移行 ② 跨天复制的 obs 继承行。
  * 输入数组不被修改（§11 纯读）。
  *
  * @param {Array} rows
@@ -86,5 +127,8 @@ export function filterStaleWatchlistRows(rows, getDate) {
   const list = Array.isArray(rows) ? rows : [];
   if (list.length === 0) return list;
   const dateOf = typeof getDate === 'function' ? getDate : function (r) { return r && r.date; };
-  return list.filter(function (r) { return !isStaleWatchlistRow(r, dateOf(r)); });
+  return list.filter(function (r) {
+    const d = dateOf(r);
+    return !isStaleWatchlistRow(r, d) && !isObsoleteObsRow(r, d);
+  });
 }
