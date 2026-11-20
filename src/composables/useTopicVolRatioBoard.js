@@ -241,7 +241,8 @@ import { encodePlanSnapshot, decodePlanSnapshot, PLAN_SNAPSHOT_MAX_BYTES } from 
 //   核心词管理增删改同义词会改变题材分组 ⇒ 选票结论本来就该跟着变（用户主动纠错）。
 //   ⇒ 存档从「只写今天 / 只写一次」改为「任何日期都存 / 规则指纹变了就重算覆盖」。
 import {
-  buildRulesFingerprint, buildInputsFingerprint, resolvePlanSnapshotFreshness, shouldPersistPlanSnapshot
+  buildRulesFingerprint, buildInputsFingerprint, resolvePlanSnapshotFreshness, shouldPersistPlanSnapshot,
+  isSnapshotPlaceholderFrame
 } from '../logic/topicvolratio/plan-snapshot-rules.js';
 import { readPlanSnapshot, writePlanSnapshot, isPlanSnapshotInputsSigSupported } from '../data/tvrb-plan-snapshot.js';
 // ★★ [SELL-LIVE / TICK-LIVE 2026-11-12] 冻结的「买点结论」怎么和「实时事实」合流。
@@ -942,7 +943,15 @@ export function useTopicVolRatioBoard() {
 
   function _armDivergeWatchdog(d) {
     if (!d) return;
-    _clearDivergeWatchdog(d);
+    // ★★ [DIVERGE-WATCHDOG-STICKY 2026-11-20 事故] **同一日的保险丝只上第一次，⛔ 不许被后续调用反复重置。**
+    //   🔴 事故：`ensureLeaderDivergence` 被 watch / 退避重试反复调用（每次 5s / 15s / 40s / 80s），
+    //      每进一次就 `clearTimeout + 重设 20s` ⇒ 截止时间被一路往后推（实测可推到 140s+，
+    //      只要期间还有任何数据到货触发重算就继续推）⇒ 注释里承诺的「20s 硬上限」形同虚设，
+    //      用户看到的就是「一直停留在『总龙分歧判定计算中』」。
+    //   ✅ 现在：该日已有保险丝 ⇒ 直接返回，**截止时间永远是第一次的那一个**。
+    //   ⚠️ 触发时先 `delete` 再判日期（见下）⇒ 若那一帧 `currentDate` 还没落到 d，本次不落终态，
+    //      但记录已清 ⇒ 下一次调用会重新上保险丝（⛔ 不会因此永久挂死）。
+    if (_divergeWatchdog.has(d)) return;
     const timer = setTimeout(function() {
       _divergeWatchdog.delete(d);
       // ⚠️ 两道守卫与退避重试的终态完全同款：过期日期不许覆盖当前日的结论（DIVERGE-RACE）
@@ -2788,6 +2797,23 @@ export function useTopicVolRatioBoard() {
             '）⇒ 拒绝当结论显示，改按恒竞价口径重算并修复');
           return;
         }
+        // ★★ [DIVERGE-FREEZE 2026-11-20 事故 · 用户报障「一直停留在总龙分歧判定计算中，标题却显示 3 只」]
+        //   🔴 根因：定稿闸门只挡了 `plan.buyPending` / `buyDataGate.blocked`，**漏了 `divergePending`**
+        //      ⇒ 买点侧「判定计算中」那一帧（占位 + 已经算出的 3 只票）被当成「稳定定稿」冻结并写进
+        //      `tvrb_plan_snapshot`（11-20 实测：plan.divergePending=true / pickCount=3）
+        //      ⇒ 之后每次打开/刷新/切日期都读回这同一份坏存档 ⇒ 占位永远解除不了（看门狗再跑也没用，
+        //      屏幕读的是快照不是实时 plan）。标题那 3 只也是这份存档的 pickCount（summaryText 缺占位分支）。
+        //   ✅ 读侧防御（§11 判断→保护→执行→验证，⛔ 不删任何行）：存档自带「占位标记」⇒ 它根本不是结论
+        //      ⇒ 判 corrupt ⇒ `shouldPersistPlanSnapshot(repair-corrupt)` 允许重算并覆盖修订，
+        //      库里那行会被一次干净定稿自然修好。判据在 `isSnapshotPlaceholderFrame`（纯函数 + 单测）。
+        //   ⚠️ 只看 plan 自身的占位标记，⛔ 不猜 rules_sig / inputs_sig（那是「输入是否完整」，另一件事）。
+        if (isSnapshotPlaceholderFrame(dec.plan)) {
+          planSnapshot.value = { date: key, status: 'corrupt', reason: 'frozen-placeholder-frame' };
+          _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 存档里冻结的是买点侧【占位帧】（pickCount=' +
+            (dec.plan.pickCount || 0) + '，divergePending=' + !!dec.plan.divergePending +
+            '，buyPending=' + !!dec.plan.buyPending + '）⇒ 它不是结论，判 corrupt，用当前完整输入重算并覆盖修复');
+          return;
+        }
         const row = r.row || {};
         const snap = {
           date: key,
@@ -3078,6 +3104,17 @@ export function useTopicVolRatioBoard() {
     //    ⚠️ 硬兜底（30s）必须能穿透这一条：上游真的算不出来时，宁可给一份「带警示的定稿」，
     //      也不能让买点侧永久停在占位（那就是用户说的「打不开」）。
     if (plan && plan.buyPending && !netHardStalled.value) return;
+    // ★★ [DIVERGE-FREEZE 2026-11-20 事故] 买点侧还在挂「总龙分歧判定计算中」占位 ⇒ **不是结论，不许定稿**。
+    //   🔴 事故（用户原话）：「题材量比那里没有出结果，一直停留在这样提示中，总龙分歧判定计算中……，
+    //      但是那个计数标题头却显示 3 只」。
+    //      11-20 库内实证：`tvrb_plan_snapshot(2026-11-20)` 里 `plan.divergePending=true` / `pickCount=3`
+    //      ⇒ 占位帧被冻成当天存档 ⇒ 之后每次打开都读回它 ⇒ 占位永远不解除、标题永远写 3 只。
+    //   ✅ 与 `plan.buyPending` 完全同款的位置与语义：占位 = 「在等」，不是「结论」（§10 拿没数据当结论）。
+    //   ⚠️ 硬兜底（`netHardStalled`）必须能穿透：上游真的算不出来时，宁可定稿一份带警示的结论，
+    //      ⛔ 也不能让买点侧永久停在占位 —— 这正是「占位挂死」的来源。
+    //   ⚠️ 与分歧判定自身的出口配套：判定落地（含 20s 看门狗落「判不出」终态）⇒ divergePending 消失
+    //      ⇒ 下一帧照常定稿。⛔ 别在这里另起超时把占位强行摘掉（§35）。
+    if (plan && plan.divergePending && !netHardStalled.value) return;
     _buyRelease.value = key;
     // ★★★ [BUY-PUBLISH 2026-10-31 · 第五版] **放行 = 定稿**：把这一刻的 plan 冻结成屏幕的唯一来源。
     //   ⛔ 同一天只发布一次 —— 之后再怎么放行、指纹再怎么变都不覆盖（覆盖就等于「又变了」）。
@@ -3471,6 +3508,16 @@ export function useTopicVolRatioBoard() {
     // ★ [BUY-SETTLE 2026-10-31] 口径确认中 ⇒ 头部不能写「选股 2 只」（列表已经收起来了，
     //   写数字会让人以为那两只就是要买的票）。⛔ 也不写「0 只」——那是空仓结论（§10）。
     //   把「还差哪几项」摆出来，用户才知道为什么还没有结果（他自己要的那句提示语）。
+    // ★★ [DIVERGE-FREEZE 2026-11-20 事故 · 用户原话]「那个计数标题头却显示 3 只，要修复下」。
+    //   分歧占位（`divergePending`）与 `buyPending` 是同一类「在等」状态：买点侧不显示选票，
+    //   标题就 ⛔ 不许出现「选股 N 只」—— 那个 N 是已经算出来但被占位挡住的中间结果，写出来必然误导
+    //   （用户做决定只看标题那一行）。⚠️ 顺序必须与模板一致：数据闸门 > 分歧占位 > 结果确认中。
+    if (divergePending.value) {
+      let g = '⏳ 分歧判定计算中…（判定落地前不显示选票）';
+      if (sellCount.value > 0) g += ' · 卖点 ' + sellCount.value + ' 只（不受影响）';
+      if (loading.value) g += ' · 分笔抓取中…';
+      return g;
+    }
     if (buyPending.value) {
       let s = '⏳ 结果确认中…' + (buyPendingText.value ? '（' + buyPendingText.value + '）' : '');
       if (sellCount.value > 0) s += ' · 卖点 ' + sellCount.value + ' 只（不受影响）';

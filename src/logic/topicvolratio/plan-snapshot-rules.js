@@ -602,6 +602,40 @@ export function resolvePlanSnapshotFreshness(snap, opts) {
 }
 
 /**
+ * 这份存档里冻住的到底是不是「结论」—— 还是买点侧的**占位帧**（§15 判据抽纯函数，可单测）。
+ *
+ * ★★ [DIVERGE-FREEZE 2026-11-20 事故] ★★
+ *   🔴 用户原话：「题材量比那里没有出结果，一直停留在这样提示中，总龙分歧判定计算中……
+ *      但是那个计数标题头却显示 3 只，要修复下。」
+ *   库内实证（11-20）：`tvrb_plan_snapshot` 当天那行的 `plan` 里
+ *     `divergePending: true` + `pickCount: 3`
+ *   ⇒ 买点侧「分歧判定计算中」的那一帧（占位 + 已经算出来的 3 只票）被当成稳定定稿冻结并存档。
+ *   ⇒ 之后每次打开 / 刷新 / 切日期都读回这同一份 ⇒ **占位永远解除不了**（实时链路的 20s 看门狗
+ *     再正常也没用：屏幕读的是快照），而标题那 3 只正是这份存档的 pickCount。
+ *
+ * 判据（与定稿闸门 `plan.buyPending` 同一语义：占位 = 「在等」，不是「结论」）：
+ *   · `buyPending`            —— 买点侧输入没齐，占位「结果确认中」；
+ *   · `divergePending`        —— 总龙分歧判定没落地，占位「判定计算中」；
+ *   · `buyDataGate.blocked`   —— 数据缺失闸门（「今天不能选股」是结论，但它有自己的提示板，
+ *                                按既有口径也不入库存档）。
+ *   ⚠️ 三者都不是「算出来的结论」，存进去就等于把「在等」永久固化。
+ *
+ * ⚠️ 反例（⛔ 别把这些当占位）：`pickCount === 0` 的空仓结论、带 `cashAlert` 的空仓提醒、
+ *    `divergeBuy` 分歧板 —— 那些都是**真结论**，必须照常存档。
+ *
+ * @param {object|null} plan 存档里解出来的 plan
+ * @returns {boolean} true = 这是占位帧，不是结论 ⇒ 判 corrupt 并重算覆盖（§11：⛔ 不删行）
+ */
+export function isSnapshotPlaceholderFrame(plan) {
+  const p = plan || null;
+  if (!p) return false;
+  if (p.buyPending) return true;
+  if (p.divergePending) return true;
+  if (p.buyDataGate && p.buyDataGate.blocked) return true;
+  return false;
+}
+
+/**
  * 这次定稿要不要真的写库（§32 幂等 + §11 覆盖保护）。
  *
  * ① 读档失败 ⇒ 绝不写：不知道库里那天有没有行，贸然 upsert 可能覆盖好存档（§10）。
