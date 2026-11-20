@@ -31,6 +31,15 @@ function expectedCrons() {
 // 本次上线必须能在【线上脚本】里看到的标识符。
 // ⛔ 只写本轮新增、且线上目前确实没有的项 —— 才能证明真的换了版本，而不是读到缓存旧脚本。
 const REQUIRED = [
+  // ★★ [LEGS/R30-CLOUD 2026-11-20] 本轮新增的四个硬证据（全是打包后仍在产物里的实体）：
+  //   函数名（被 index.js 调用，压缩不删）+ 日志前缀 / src 标记的字符串字面量。
+  //   ⛔ 不能用注释里的字：esbuild 会删注释，那样就证明不了线上真的换了版本。
+  'runRange30Fill',          // 30 日涨幅：Worker 9:26 填空 + 16:03 收盘覆盖
+  'fillLegsFromKline',       // 20 日涨幅：腿不足时用同花顺批量日线在云端补腿
+  '[legs-fill]',             // 补腿日志（可观测「新面孔为什么空白」）
+  '[r30-fill]',              // 30 日补位日志（可观测「Actions 漂移」后谁接了盘）
+  'fuyao_kline',             // 新腿来源标记（与 metrics_close / 本机 metrics 区分）
+  'historical-batch',        // 批量日线接口（10 只/批，0 配额打穿）
   'runLadderRecheck',       // 9:26 最近多板 883410 二次确认 + 猫抓补新进票
   'runRange20Prefill',      // 9:26 云端补 20 日涨幅（0 上游请求）
   'runDailyLegsHeal',       // 逐日腿云端补齐，替掉本机 08:00 定时任务

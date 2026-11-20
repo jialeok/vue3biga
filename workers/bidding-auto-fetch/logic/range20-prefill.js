@@ -37,7 +37,11 @@ import {
   readRange20StocksForDate,
   readDailyLegsForStocks,
   upsertRange20Rows,
+  readRecentTradeDates,
+  upsertDailyPctRows,
 } from '../data/supabase-write.js';
+import { fetchFuyaoBatchBars, barsToDailyPctMap } from '../data/fuyao-api.js';
+import { CONFIG } from '../config.js';
 
 /** 与 Edge WINDOW_DAYS-1 完全一致：19 根历史腿 + 1 根 T 腿 = 20 日 */
 export const RANGE20_LEG_DAYS = 19;
@@ -68,6 +72,111 @@ export function compoundRange20(hist, tLeg) {
 /** 北京 15:00 前 = 竞价口径(auc)，之后 = 收盘口径(close)——与 Edge 选腿、前端 resolveT20LegMode 同源 */
 export function legModeOf(nowBj) {
   return nowBj.getUTCHours() < 15 ? 'auc' : 'close';
+}
+
+/**
+ * ★★ [LEGS-FILL-CLOUD 2026-11-20 用户报障] 「20 日涨幅有些票是空的，历史日期也有很多」
+ *
+ * 根因（生产实测，不是渲染 bug）：
+ *   `stock_daily_pct`（逐日腿缓存）**只覆盖「进过当天名单的票」**——
+ *   `daily-legs-heal.js` 从 `market_metrics` 取票，而 market_metrics 只有名单里的票。
+ *   于是**新面孔**（11-20 首次出现的京蓝科技 / 海立股份等）在腿表里只有 2~4 行，
+ *   远不足 `RANGE20_LEG_DAYS = 19` ⇒ 本函数一直判 `shortLegs` 一律不写
+ *   ⇒ 那只票的 20 日涨幅**永远是空白**（历史日同理：那天的新面孔全部缺）。
+ *   对照：有值的票（上海电影 38 行 / 世龙实业 31 行 / 东方海洋 38 行）腿是齐的。
+ *
+ * 修法：腿不够就**在云端现补腿**，用同花顺批量前复权日线（10 只/批）把
+ *   「19 个交易日里缺的那几根」写进 `stock_daily_pct`，再把 20 日涨幅算出来。
+ *   · 只补窗口内**确实缺**的 (date,stock)，已有腿一根都不碰（§11 纯加法、幂等）；
+ *   · `src='fuyao_kline'` 与云端 `metrics_close` / 本机 `metrics` 明确区分，事后可对账；
+ *   · 前复权口径与 `compute-range30-pct.mjs` / 前端 K 线补算完全一致（§6）；
+ *   · 分批 10 只 ⇒ 33 只只要 4 次 subrequest（⛔ 逐只打会顶爆 Cloudflare 50 次配额）。
+ *   · §10：拿不到就不写（⛔ 绝不补 0、绝不伪造腿），留给下一次幂等重跑。
+ *
+ * @param {object} env
+ * @param {{stocks:string[], tradeDates:string[], codeOf:Function, haveOf:Function,
+ *          logs?:string[], budgetMs?:number}} opts
+ * @returns {Promise<{ok:boolean, requested:number, fetched:number, written:number,
+ *          skipped:string, error:string, rows:Array}>}
+ */
+export async function fillLegsFromKline(env, opts) {
+  const o = opts || {};
+  const logs = o.logs || [];
+  const stocks = Array.from(new Set((o.stocks || []).map(s => String(s || '').trim()).filter(Boolean)));
+  const tradeDates = (o.tradeDates || []).map(d => String(d || '').slice(0, 10))
+    .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+  const out = { ok: false, requested: 0, fetched: 0, written: 0, skipped: '', error: '', rows: [] };
+  if (stocks.length === 0 || tradeDates.length < RANGE20_LEG_DAYS) {
+    out.skipped = '待补票 ' + stocks.length + ' 只 / 交易日 ' + tradeDates.length +
+      ' 天（<' + RANGE20_LEG_DAYS + '）⇒ 不补';
+    return out;
+  }
+  const codeOf = typeof o.codeOf === 'function' ? o.codeOf : function () { return ''; };
+  const haveOf = typeof o.haveOf === 'function' ? o.haveOf : function () { return null; };
+  const codes = stocks.map(s => String(codeOf(s) || '')).filter(c => /^\d{6}$/.test(c));
+  if (codes.length === 0) {
+    out.skipped = '待补 ' + stocks.length + ' 只全部没有 6 位代码（stockcodemap 也查不到）⇒ 无法取日线';
+    logs.push('[legs-fill] ⚠️ ' + out.skipped);
+    return out;
+  }
+  out.requested = codes.length;
+
+  let bars;
+  try {
+    // 起点用窗口首日（19 个交易日 ≈ 30 自然日，取窗口本身就够：首日涨幅要的是它的前一根 bar，
+    // 批量接口会连带返回更早的 bar，`barsToDailyPctMap` 用「上一根 bar」做基准）。
+    bars = await fetchFuyaoBatchBars(env, codes, tradeDates[0], tradeDates[tradeDates.length - 1]);
+  } catch (e) {
+    out.error = '批量日线失败: ' + ((e && e.message) || e);
+    logs.push('[legs-fill] ❌ ' + out.error);
+    return out;
+  }
+  out.fetched = bars.size;
+
+  const nowIso = new Date().toISOString();
+  const rows = [];
+  for (let i = 0; i < stocks.length; i++) {
+    const s = stocks[i];
+    const code = String(codeOf(s) || '');
+    if (!/^\d{6}$/.test(code)) continue;
+    const b = bars.get(code);
+    if (!b || b.length === 0) continue;
+    const pctMap = barsToDailyPctMap(b);
+    const have = haveOf(s);
+    for (let k = 0; k < tradeDates.length; k++) {
+      const d = tradeDates[k];
+      if (have && typeof have.has === 'function' && have.has(d)) continue;
+      const p = pctMap.get(d);
+      if (!isFinite(p)) continue;                       // §10 取不到就不写，⛔ 不当 0%
+      rows.push({
+        date: d,
+        stock: s,
+        pct: (p < 0 ? '' : '+') + p.toFixed(2),
+        src: 'fuyao_kline',
+        updated_at: nowIso
+      });
+    }
+  }
+  if (rows.length === 0) {
+    out.ok = true;
+    out.skipped = '批量日线取到 ' + bars.size + '/' + codes.length +
+      ' 只，但 19 个交易日里没有可补的新腿';
+    logs.push('[legs-fill] ✅ ' + out.skipped);
+    return out;
+  }
+  try {
+    await upsertDailyPctRows(env, rows);
+  } catch (e) {
+    out.error = '写 stock_daily_pct 失败: ' + ((e && e.message) || e);
+    logs.push('[legs-fill] ❌ ' + out.error);
+    return out;
+  }
+  out.written = rows.length;
+  out.rows = rows;
+  out.ok = true;
+  logs.push('[legs-fill] ✅ 同花顺批量日线补腿 ' + rows.length + ' 行（' +
+    out.fetched + '/' + codes.length + ' 只取到，src=fuyao_kline）');
+  return out;
 }
 
 /** 纯函数：把腿表扁平行按股票归集成升序数值腿（坏值跳过，不折 0） */
@@ -109,7 +218,10 @@ export async function runRange20Prefill(env, opts) {
   const leg = o.leg || legModeOf(beijingNow());
   const out = {
     ok: false, today: today, leg: leg, targets: 0, covered: 0, need: 0,
-    written: 0, shortLegs: 0, noTLeg: 0, skipped: '', error: '', logs: logs
+    written: 0, shortLegs: 0, noTLeg: 0, skipped: '', error: '', logs: logs,
+    // ★★ [LEGS-FILL-CLOUD 2026-11-20] 补腿留痕（验收用，⛔ 别只看 ok）
+    shortBefore: 0,
+    legsFill: null
   };
 
   // ① 今日名单（正式成员 + 观察组）与今日行情（T 腿）。§10：任一读取失败立即停，不写任何行。
@@ -188,7 +300,68 @@ export async function runRange20Prefill(env, opts) {
     logs.push('[r20-prefill] ❌ ' + out.error);
     return out;
   }
-  const legs = groupLegs(legRows);
+  let legs = groupLegs(legRows);
+
+  // ★★ [LEGS-FILL-CLOUD 2026-11-20] 腿不足 19 根 ⇒ 云端现补（这才是「新面孔 / 历史日空白」的根因修法）。
+  //   顺序不能反：必须先有腿，下面的复利才算得出来。
+  //   `o.fillLegs === false` 时跳过（给纯读场景 / 单测用，不产生上游请求）。
+  const shortList = need.filter(function (s) {
+    const hist = legs.get(s);
+    return !hist || hist.length < RANGE20_LEG_DAYS;
+  });
+  out.shortBefore = shortList.length;
+  out.legsFill = null;
+  if (shortList.length > 0 && o.fillLegs !== false) {
+    let tradeDates = [];
+    try {
+      // 交易日来源必须是 market_metrics（§已固化）：⛔ 不能拿 auction_watchlist.date
+      // （国庆每天被写进 11 行垃圾）。want=19 = 19 根历史腿，不含 today 本身。
+      tradeDates = await readRecentTradeDates(env, today, RANGE20_LEG_DAYS);
+    } catch (e) {
+      logs.push('[legs-fill] ⚠️ 读交易日序列失败（本轮不补腿，留给下一趟）: ' +
+        ((e && e.message) || e));
+      tradeDates = [];
+    }
+    if (tradeDates.length >= RANGE20_LEG_DAYS) {
+      // code：market_metrics 的 code 是真值（9:25 主流程写入）；没有再回退一份名称索引。
+      const codeByStock = new Map();
+      metrics.forEach(function (r) {
+        if (!r || !r.name) return;
+        const c = String(r.code || '').replace(/\D/g, '');
+        if (c.length === 6) codeByStock.set(r.name, c);
+      });
+      // 已有腿集合（按股票）⇒ 只补缺的那几天，已有腿一根都不碰。
+      const haveByStock = new Map();
+      legRows.forEach(function (r) {
+        if (!r || !r.stock || !r.date) return;
+        let set = haveByStock.get(r.stock);
+        if (!set) { set = new Set(); haveByStock.set(r.stock, set); }
+        set.add(String(r.date).slice(0, 10));
+      });
+      const fill = await fillLegsFromKline(env, {
+        stocks: shortList,
+        tradeDates: tradeDates,
+        codeOf: function (s) { return codeByStock.get(s) || ''; },
+        haveOf: function (s) { return haveByStock.get(s) || null; },
+        logs: logs,
+        budgetMs: (o.budgetMs === undefined ? CONFIG.BARS_FILL_BUDGET_MS : o.budgetMs)
+      });
+      out.legsFill = {
+        requested: fill.requested, fetched: fill.fetched, written: fill.written,
+        skipped: fill.skipped, error: fill.error
+      };
+      if (fill.written > 0) {
+        // 合并后重新归集：groupLegs 会按日期升序排好，compoundRange20 再取最后 19 根。
+        legs = groupLegs(legRows.concat(fill.rows.map(function (r) {
+          return { stock: r.stock, date: r.date, pct: r.pct };
+        })));
+      }
+    } else if (tradeDates.length > 0) {
+      logs.push('[legs-fill] ⚠️ 交易日仅 ' + tradeDates.length + ' 天（<' + RANGE20_LEG_DAYS +
+        '）⇒ 本轮不补腿');
+    }
+  }
+
   const nowIso = new Date().toISOString();
   const rows = [];
   need.forEach(function (s) {
@@ -204,8 +377,7 @@ export async function runRange20Prefill(env, opts) {
       leg: leg,
       updated_at: nowIso
     });
-  });
-  if (rows.length === 0) {
+  });  if (rows.length === 0) {
     out.ok = true;
     out.skipped = '待补 ' + need.length + ' 只，但腿不足 ' + RANGE20_LEG_DAYS + ' 根的有 ' +
       out.shortLegs + ' 只 ⇒ 一只都不写（宁缺勿错）';
@@ -226,6 +398,14 @@ export async function runRange20Prefill(env, opts) {
   logs.push('[r20-prefill] ✅ ' + today + ' leg=' + leg + ' 云端补缺 ' + rows.length + ' 行' +
     '（目标 ' + out.targets + ' / 已有 ' + out.covered + ' / 缺T腿 ' + out.noTLeg +
     ' / 腿不足 ' + out.shortLegs + ' / 读腿 ' + legRows.length + ' 行；0 上游请求、0 猫抓额度）');
+  // ★ [LEGS-FILL-CLOUD 2026-11-20] 补腿必须可观测：这是「新面孔 20 日涨幅空白」的唯一证据链。
+  if (out.legsFill) {
+    logs.push('[r20-prefill] 腿不足 ' + out.shortBefore + ' 只 ⇒ 云端批量补腿 ' +
+      (out.legsFill.written || 0) + ' 行（取到 ' + (out.legsFill.fetched || 0) + '/' +
+      (out.legsFill.requested || 0) + ' 只' +
+      (out.legsFill.skipped ? ' / ' + out.legsFill.skipped : '') +
+      (out.legsFill.error ? ' / ❌ ' + out.legsFill.error : '') + '）');
+  }
   // [CLOUD-0927-HEAL 2026-11-11] 覆盖度必须可观测：低于 80% 时前端买点闸门会拒绝定稿，
   //   若不在这里点名，事后只能靠猜「为什么当天没出票」。9:27 会再补一次。
   const finalCovered = out.covered + rows.length;

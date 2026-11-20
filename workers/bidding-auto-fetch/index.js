@@ -50,6 +50,9 @@ import { healLadderWatchlist } from './logic/ladder-heal.js';
 import { runLadderRecheck, fillAucFromNumcat } from './logic/ladder-recheck.js';
 // [R20-CLOUD 2026-11-06] 同一趟 9:26 顺带把 20 日涨幅用逐日腿补缺（0 上游、0 额度）。
 import { runRange20Prefill } from './logic/range20-prefill.js';
+// ★★ [R30-CLOUD 2026-11-20] Actions 的 30 日涨幅 cron 实测漂移/丢趟 ⇒ 当天名单那一块
+//   必须由本 Worker 在可靠时点补齐（9:26 填空 / 16:03 覆盖），否则「今天新冒出来的票」全空。
+import { runRange30Fill } from './logic/range30-fill.js';
 // [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐，彻底替代本机 08:00 定时任务。
 import { runDailyLegsHeal } from './logic/daily-legs-heal.js';
 // ★★ [ABN-DEV 2026-11-14 用户口径] 官方「对应指数」逐日涨幅腿（market_metrics, scope='index'）
@@ -499,6 +502,25 @@ async function dispatch(point, env, logs, opts) {
       result.logs.push(msg);
       console.error('[auto-fetch] ' + msg);
     }
+    // ★★ [R30-CLOUD 2026-11-20] 30 日涨幅收盘口径：把 9:26 写的「截至昨收」覆盖成
+    //   当天真实收盘价（与 Actions 16:45 的 --overwrite 同一口径）。⛔ 只算当天名单，
+    //   近 40 日宽池仍由 Actions 负责；算不出的票不写，已有值不被清空（§10/§11）。
+    try {
+      const r30 = await runRange30Fill(env, {
+        date: (opts && opts.date) || '',
+        logs: result.logs,
+        endAtDate: true,
+        overwrite: true
+      });
+      result.range30Written = r30.written;
+      (r30.logs || []).forEach(l => result.logs.push('[r30-fill] ' + l));
+      console.log('[auto-fetch] closepost 30 日涨幅收盘覆盖: ok=' + r30.ok +
+        ' written=' + r30.written + ' 日志=' + JSON.stringify(r30.logs || []));
+    } catch (e) {
+      const msg = '[r30-fill] ❌ 异常（不影响本轮其它任务）: ' + ((e && e.message) || e);
+      result.logs.push(msg);
+      console.error('[auto-fetch] ' + msg);
+    }
     await persistRunResult(env, point, result);
     return result;
   }
@@ -689,6 +711,24 @@ async function dispatch(point, env, logs, opts) {
       r20 = { ok: false, written: 0, logs: ['[r20-prefill] 异常: ' + ((e && e.message) || e)] };
       logs26.push(r20.logs[0]);
     }
+    // ★★ [R30-CLOUD 2026-11-20] 当天名单的 30 日涨幅补缺（开盘前 = 截至昨收口径）。
+    //   GitHub Actions 的 09:28 那趟实测漂移到凌晨、且经常整趟丢失 ⇒ 「今天首次出现的票」
+    //   因为候选池退化成近 40 日历史名单而整天空白（11-20 实测缺 5 只）。
+    //   这里只补「当天名单 ∪ 当天行情」这一小块（33 只 ≈ 4 次批量请求），
+    //   Actions 继续负责近 40 日宽池（30天/20天补位、龙头组那些注入行）。
+    //   ⛔ 只填空不覆盖（o.overwrite=false）；16:03 那趟才用真实收盘价覆盖。
+    let r30 = { ok: false, written: 0, logs: ['[r30-fill] 未执行'] };
+    try {
+      r30 = await runRange30Fill(env, {
+        date: d26,
+        logs: logs26,
+        endAtDate: false,
+        overwrite: false
+      });
+    } catch (e) {
+      r30 = { ok: false, written: 0, logs: ['[r30-fill] 异常: ' + ((e && e.message) || e)] };
+      logs26.push(r30.logs[0]);
+    }
     // ★★ [PRESENCE-0926 2026-11-16 用户报障「每到收盘又变了」] 在列次数必须赶在 09:27 定稿之前。
     //
     //   病根：第二十九条（排名第二的题材量比太小 ⇒ 整块作废）要读 `auction_presence`
@@ -720,6 +760,9 @@ async function dispatch(point, env, logs, opts) {
       dailyLegsWritten: legs26.written || 0,
       range20: r20,
       range20Written: r20.written || 0,
+      // ★★ [R30-CLOUD 2026-11-20] 30 日涨幅当天名单补位留痕
+      range30: r30,
+      range30Written: r30.written || 0,
       // ★ [PRESENCE-0926] 第二十九条的必需输入（10/20 日窗口在列次数）本次重算留痕
       presence: pres26,
       presenceRows: pres26.rows || 0,
@@ -743,6 +786,7 @@ async function dispatch(point, env, logs, opts) {
       ' | 猫抓补量比=' + ((r26.auc && r26.auc.written) || 0) + ' 只' +
       (r26.auc && r26.auc.names && r26.auc.names.length ? '（' + r26.auc.names.slice(0, 12).join(',') + '）' : '') +
       ' | 20日补缺=' + result26.range20Written + ' 行 | 逐日腿=' + result26.dailyLegsWritten + ' 行' +
+      ' | 30日补缺=' + result26.range30Written + ' 行' +
       ' | 在列次数=' + result26.presenceRows + ' 行');
     await persistRunResult(env, point, result26);
     return result26;
@@ -756,6 +800,24 @@ async function dispatch(point, env, logs, opts) {
       ' 日志=' + JSON.stringify(logs20));
     await persistRunResult(env, point, result20);
     return result20;
+  }
+  if (point === 'range30') {
+    // [R30-CLOUD 2026-11-20] 手动补 30 日涨幅（当天名单）。
+    //   &date=YYYY-MM-DD 指定历史日；&overwrite=1 覆盖已有行（收盘回补必须开）；
+    //   &endAtDate=1 让窗口末日取 date 当天（默认：15:00 前取昨天、之后取今天）。
+    const logs30 = [];
+    const r30 = await runRange30Fill(env, {
+      date: (opts && opts.date) || '',
+      logs: logs30,
+      overwrite: !!(opts && opts.overwrite),
+      endAtDate: opts && opts.endAtDate === undefined
+        ? undefined : !!(opts && opts.endAtDate)
+    });
+    const result30 = Object.assign({}, r30, { logs: logs30 });
+    console.log('[auto-fetch] range30 云端补缺: ok=' + r30.ok + ' written=' + r30.written +
+      ' 目标=' + r30.targets + ' 日志=' + JSON.stringify(logs30));
+    await persistRunResult(env, point, result30);
+    return result30;
   }
   if (point === 'divergedays') {
     // ★★ [LD-CLOUD 2026-11-13] 手动入口：立即（重）算「总龙分歧」判定并落库。
@@ -843,8 +905,8 @@ export default {
           return jsonResponse({ ok: false, error: '当前北京时间不在抓取时段（9:25~9:40=morning，15:00~16:30=close）' });
         }
       }
-      if (!['morning', 'close', 'closepost', 'extras', 'snapshot', 'ladder', 'ladder26', 'range20', 'divergedays', 'jiwang'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|closepost|extras|snapshot|ladder|ladder26|range20|divergedays|jiwang|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；closepost 立即补写当天收盘列 / 记忘 / 总龙分歧收盘腿；extras 可附 &today=1 含当天；snapshot / ladder / ladder26 / range20 / divergedays 可附 &date=YYYY-MM-DD；divergedays 另可附 &days=N（补最近 N 个展示日，上限 20）与 &phase=close|intraday；jiwang 立即回补昨收盘结果）' });
+      if (!['morning', 'close', 'closepost', 'extras', 'snapshot', 'ladder', 'ladder26', 'range20', 'range30', 'divergedays', 'jiwang'].includes(point)) {
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|closepost|extras|snapshot|ladder|ladder26|range20|range30|divergedays|jiwang|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；closepost 立即补写当天收盘列 / 记忘 / 总龙分歧收盘腿；extras 可附 &today=1 含当天；snapshot / ladder / ladder26 / range20 / range30 / divergedays 可附 &date=YYYY-MM-DD；range30 另可附 &overwrite=1 与 &endAtDate=1；divergedays 另可附 &days=N（补最近 N 个展示日，上限 20）与 &phase=close|intraday；jiwang 立即回补昨收盘结果）' });
       }
       // [JIWANG-SHOUGU-CLOUD 2026-11-08] 回补不受「当前时间必须在 9:25~16:30」限制，
       //   否则周末/夜间出事故时无法立即修复历史缺口。
@@ -866,7 +928,11 @@ export default {
           // ★★ [OVERWRITE 2026-11-13] closepost 修历史错值专用：`&overwrite=1` 才允许改写
           //   已有非空收盘值（如 11-13 板块ETF 被旧逻辑写成 0、正确值 8）。
           //   ⛔ 只有这个手动入口能开；cron 恒 false。
-          overwrite: url.searchParams.get('overwrite') === '1'
+          overwrite: url.searchParams.get('overwrite') === '1',
+          // ★★ [R30-CLOUD 2026-11-20] 不传 = 由运行时钟决定窗口末日（9:26 取昨收 / 16:03 取今收）；
+          //   历史日回补必须显式传 endAtDate=1，否则窗口末日会错退到目标日的前一天。
+          endAtDate: url.searchParams.has('endAtDate')
+            ? url.searchParams.get('endAtDate') === '1' : undefined
         });
         return jsonResponse(result, result.ok ? 200 : 500);
       } catch (e) {

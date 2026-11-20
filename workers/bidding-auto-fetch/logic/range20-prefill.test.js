@@ -10,13 +10,16 @@ import {
   compoundRange20,
   legModeOf,
   groupLegs,
-  runRange20Prefill
+  runRange20Prefill,
+  fillLegsFromKline
 } from './range20-prefill.js';
 import { RANGE20_MIN_TARGETS, isRange20TargetListReady } from '../../../src/logic/auction/range-window.js';
 
-// [CLOUD-0927-HEAL 2026-11-11] 主流程闸门回归：mock 掉 Data 层，只验「该不该写」
+// [LEGS-FILL-CLOUD 2026-11-20] 新面孔缺腿的根因回归：mock 掉 Data 层，只验「补不补、写什么」
 const h = vi.hoisted(() => ({
-  wl: [], metrics: [], have: [], legs: [], upserted: [], throwOnRead: ''
+  wl: [], metrics: [], have: [], legs: [], upserted: [], throwOnRead: '',
+  // ★★ 补腿通道：批量日线返回值 / 交易日序列 / 逐日腿写入留痕
+  bars: new Map(), tradeDates: [], legUpserted: [], failBars: false
 }));
 vi.mock('../data/supabase-write.js', () => ({
   readAuctionWatchlistForDate: async () => {
@@ -29,8 +32,20 @@ vi.mock('../data/supabase-write.js', () => ({
   },
   readRange20StocksForDate: async () => new Set(h.have),
   readDailyLegsForStocks: async () => h.legs,
-  upsertRange20Rows: async (env, rows) => { h.upserted.push(rows); }
+  upsertRange20Rows: async (env, rows) => { h.upserted.push(rows); },
+  readRecentTradeDates: async () => h.tradeDates,
+  upsertDailyPctRows: async (env, rows) => { h.legUpserted.push(rows); }
 }));
+vi.mock('../data/fuyao-api.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,                       // 纯函数 barsToDailyPctMap 用【真实实现】，不许 copy 一份假的
+    fetchFuyaoBatchBars: async () => {
+      if (h.failBars) throw new Error('fuyao 429');
+      return h.bars;
+    }
+  };
+});
 
 function n(v, k) { return new Array(k).fill(v); }
 
@@ -137,5 +152,82 @@ describe('[CLOUD-0927-HEAL] §11 半截名单不许补位', () => {
     expect(r.written).toBe(0);
     expect(r.skipped).toMatch(/已全覆盖/);
     expect(h.upserted).toHaveLength(0);
+  });
+});
+
+describe('[LEGS-FILL-CLOUD 2026-11-20] 新面孔缺腿 ⇒ 云端批量补腿', () => {
+  beforeEach(() => {
+    h.bars = new Map(); h.tradeDates = []; h.legUpserted = []; h.failBars = false;
+    h.wl = []; h.metrics = []; h.have = []; h.legs = []; h.upserted = []; h.throwOnRead = '';
+  });
+
+  function tradeDates(n) {
+    return new Array(n).fill(0).map((_, i) => '2026-10-' + String(i + 1).padStart(2, '0'));
+  }
+
+  it('★ 只有 3 根腿的新面孔：批量日线补齐 19 根 ⇒ 20 日涨幅真的写入（不再永远空白）', async () => {
+    const dates = tradeDates(19);
+    const bars = dates.map((d, i) => ({ ymd: d, close: 100 + i }));   // 每日约 +1%
+    h.bars = new Map([['000711', bars]]);
+    h.tradeDates = dates;
+    h.wl = new Array(RANGE20_MIN_TARGETS).fill(0).map((_, i) => ({ name: 'S' + i, code: '00000' + i }));
+    h.wl[0] = { name: '京蓝科技', code: '000711' };
+    h.metrics = h.wl.map(s => ({
+      name: s.name, code: s.code, auc_pct_chg: '+1.00'
+    }));
+    // 京蓝科技故意只给 3 根腿（新面孔的实测形态），其它票给满 19 根
+    h.legs = [];
+    h.wl.forEach((s, idx) => {
+      for (let k = 0; k < (idx === 0 ? 3 : 19); k++) {
+        h.legs.push({ stock: s.name, date: dates[k], pct: '+1.00' });
+      }
+    });
+    const r = await runRange20Prefill({}, { today: '2026-11-20' });
+    expect(r.legsFill).not.toBeNull();
+    expect(r.legsFill.written).toBeGreaterThan(0);
+    expect(h.legUpserted).toHaveLength(1);
+    // 只补缺的那 16 天，已有 3 天一根都不碰（§11 纯加法）
+    expect(h.legUpserted[0]).toHaveLength(16);
+    expect(h.legUpserted[0].every(x => x.src === 'fuyao_kline' && x.stock === '京蓝科技')).toBe(true);
+    const picked = h.upserted[0].find(x => x.stock === '京蓝科技');
+    expect(picked).toBeDefined();
+    expect(picked.days).toBe(20);
+  });
+
+  it('★ 批量日线拿不到 ⇒ 0 写入（§10 宁缺勿错，⛔ 不拿 0 当涨幅）', async () => {
+    const dates = tradeDates(19);
+    h.tradeDates = dates;
+    h.failBars = true;
+    const r = await fillLegsFromKline({}, {
+      stocks: ['京蓝科技'], tradeDates: dates,
+      codeOf: () => '000711', haveOf: () => new Set()
+    });
+    expect(r.ok).toBe(false);
+    expect(r.written).toBe(0);
+    expect(h.legUpserted).toHaveLength(0);
+  });
+
+  it('★ 已有腿一根都不重写（幂等；重跑只填空不覆盖）', async () => {
+    const dates = tradeDates(19);
+    h.bars = new Map([['000711', dates.map((d, i) => ({ ymd: d, close: 100 + i }))]]);
+    const r = await fillLegsFromKline({}, {
+      stocks: ['京蓝科技'], tradeDates: dates,
+      codeOf: () => '000711', haveOf: () => new Set(dates)
+    });
+    expect(r.ok).toBe(true);
+    expect(r.written).toBe(0);
+    expect(h.legUpserted).toHaveLength(0);
+  });
+
+  it('★ 没有 6 位代码 ⇒ 不发上游请求（⛔ 别拿乱代码打接口）', async () => {
+    const dates = tradeDates(19);
+    h.tradeDates = dates;
+    const r = await fillLegsFromKline({}, {
+      stocks: ['未知票'], tradeDates: dates,
+      codeOf: () => '', haveOf: () => null
+    });
+    expect(r.requested).toBe(0);
+    expect(r.skipped).toMatch(/没有 6 位代码/);
+    expect(h.legUpserted).toHaveLength(0);
   });
 });

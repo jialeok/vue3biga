@@ -531,3 +531,111 @@ export async function fetchFuyaoKlineWindowPct(env, items, dates, opts) {
 
   return out;
 }
+
+/**
+ * ★★ [BARS-BATCH-CLOUD 2026-11-20 用户报障「20/30 日涨幅有些票是空的，历史日期也很多」]
+ *
+ * 同花顺**批量**历史日线：`/api/a-share/prices/historical-batch`，单次最多 10 只。
+ *
+ * 为什么必须新增（⛔ 别再逐只打 historical）：
+ *   20 日涨幅要 19 根历史腿、30 日涨幅要 31 根。缺腿的票一次 10~33 只，
+ *   逐只打就是 10~33 次 subrequest —— Cloudflare 免费版**单次 invocation 只有 50 次**，
+ *   而 9:26/9:27 那两趟已经有 30+ 次（名单 / 量比 / 逐日腿 / 名单在列次数）。
+ *   ⇒ 逐只会把配额顶爆（[CLOSE-POST 2026-11-13] 就是这么把收盘列挤没的）。
+ *   批量后 33 只只要 4 次，代价降一个数量级。
+ *
+ * 口径与 `compute-range30-pct.mjs#fyBatchBars` 逐字一致（§6 同一套取值）：
+ *   · adjust='forward' 前复权（不复权在除权除息日会出现假暴跌）；
+ *   · date_ms 是北京时间午夜 ⇒ `msToDateStr` 内部已按 +8h 取日期；
+ *   · 只留 close_price > 0 的合法 bar，按日期升序。
+ *   ⚠️ 返回的 ymd 是 **'YYYY-MM-DD'**（带横线）—— 与 `range30-math.js#normalizeBars`
+ *      的 `YMD_RE` 以及 `stock_daily_pct.date` 同格式。⛔ 别去横线。
+ *
+ * §10：整批失败只记日志并跳过该批（调用方按「拿不到」处理，⛔ 绝不补 0、绝不伪造腿）。
+ *
+ * @param {object} env
+ * @param {string[]} codes 6 位股票代码（自动去重 / 过滤非法）
+ * @param {string} fromYmd 'YYYY-MM-DD' 起始（自然日）
+ * @param {string} toYmd   'YYYY-MM-DD' 结束（自然日，含当天）
+ * @returns {Promise<Map<string, Array<{ymd:string, close:number}>>>} code -> 升序 K 线
+ */
+export async function fetchFuyaoBatchBars(env, codes, fromYmd, toYmd) {
+  const out = new Map();
+  const uniq = Array.from(new Set((codes || [])
+    .map(c => String(c || '').trim())
+    .filter(c => /^\d{6}$/.test(c))));
+  if (uniq.length === 0) return out;
+  const startMs = dateStrToMs(String(fromYmd).slice(0, 10));
+  const endMs = dateStrToMs(String(toYmd).slice(0, 10)) + 86400000 - 1;
+  if (!isFinite(startMs) || !isFinite(endMs)) return out;
+  const batchSize = CONFIG.HISTORICAL_BATCH_SIZE || 10;
+
+  for (let i = 0; i < uniq.length; i += batchSize) {
+    const chunk = uniq.slice(i, i + batchSize);
+    const thscodes = chunk.map(c => tickerToThscode(c)).filter(Boolean).join(',');
+    if (!thscodes) continue;
+    let data;
+    try {
+      data = await fuyaoProxyGet(env, '/api/a-share/prices/historical-batch', {
+        thscodes: thscodes,
+        interval: '1d',
+        start: String(startMs),
+        end: String(endMs),
+        adjust: 'forward'
+      }, FUYAO_SLOW_CALL_TIMEOUT_MS);
+    } catch (e) {
+      // 单批失败不连坐：其它批照样写（§11 失败不扩散）
+      console.warn('[bars-batch] 批量日线失败（' + chunk.length + ' 只，第 ' +
+        (Math.floor(i / batchSize) + 1) + ' 批）: ' + ((e && e.message) || e));
+      continue;
+    }
+    const groups = (data && data.item) || [];
+    for (let g = 0; g < groups.length; g++) {
+      const grp = groups[g];
+      if (!grp) continue;
+      const code = String(grp.thscode || '').slice(0, 6).replace(/\D/g, '');
+      if (code.length !== 6) continue;
+      const bars = [];
+      const raw = grp.item || [];
+      for (let k = 0; k < raw.length; k++) {
+        const it = raw[k];
+        if (!it || it.date_ms === null || it.date_ms === undefined) continue;
+        const close = Number(it.close_price);
+        if (!isFinite(close) || close <= 0) continue;
+        bars.push({ ymd: msToDateStr(Number(it.date_ms)), close: close });
+      }
+      if (bars.length === 0) continue;
+      bars.sort((a, b) => (a.ymd < b.ymd ? -1 : (a.ymd > b.ymd ? 1 : 0)));
+      out.set(code, bars);
+    }
+  }
+  return out;
+}
+
+/**
+ * 【纯函数】K 线 → 逐日涨幅（% 数值）：`close[t] / close[上一根 bar] − 1`。
+ *
+ * ⚠️ 与 `fetchFuyaoKlineWindowPct` 内部算法逐字相同（§6），区别只是**不筛窗口**：
+ *   这里要把整段 K 线换成逐日腿，交给调用方决定写哪几天。
+ * ⚠️ 「上一根 bar」是序列里的上一根，**不是日历上的前一天** —— 停牌期间前收盘不变，
+ *   复牌当天涨幅正是相对停牌前收盘算的，所以取上一根 bar 才是交易所口径。
+ * §10：第一根 bar 没有前收盘 ⇒ 不产出（⛔ 不拿 0 当前收）。
+ *
+ * @param {Array<{ymd:string, close:number}>} bars 升序 K 线
+ * @returns {Map<string, number>} ymd -> 涨幅%（可正可负）
+ */
+export function barsToDailyPctMap(bars) {
+  const out = new Map();
+  const list = Array.isArray(bars) ? bars : [];
+  let lastValidClose = null;   // 上一根【合法】bar；坏 bar 直接跳过，不污染后一根的基准
+  for (let i = 0; i < list.length; i++) {
+    const curr = Number(list[i] && list[i].close);
+    const d = String((list[i] && list[i].ymd) || '').slice(0, 10);
+    if (!d || !isFinite(curr) || curr <= 0) continue;
+    if (lastValidClose !== null && lastValidClose > 0) {
+      out.set(d, (curr / lastValidClose - 1) * 100);
+    }
+    lastValidClose = curr;
+  }
+  return out;
+}

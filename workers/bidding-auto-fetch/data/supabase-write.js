@@ -292,6 +292,38 @@ export async function upsertRange20Rows(env, rows) {
 }
 
 // ============================================================================
+// [R30-CLOUD 2026-11-20 用户报障] 30 日涨幅结果表的读写。
+//
+// 为什么现在才需要：30 日涨幅原来**只由 GitHub Actions**（`compute-range30-pct.mjs`）写。
+// 生产取证（2026-11-20）发现 Actions 的 schedule 严重漂移：cron 配的是北京 09:28 / 16:45 / 18:30，
+// 实际跑在**北京 01:43 / 03:07**，11-20 当天那三趟一趟都没跑。凌晨跑时当天 `auction_watchlist`
+// 还没生成 ⇒ 候选池退化成「近 40 个交易日名单」⇒ **当天首次出现的票（京蓝科技 / 华升股份 /
+// 格林达 / 江化微 / 海立股份）整天没有 30 日涨幅**，用户看到的就是行上空白。
+// ⇒ Worker 必须在自己的可靠时间线（09:26 / 09:27 / 16:03）把「当天名单」这一块补齐。
+//   Actions 继续负责「近 40 日宽池」（30天/20天补位与龙头组那些注入行）。
+// ============================================================================
+
+/** 当日 stock_range30_pct 已有行（只按 stock 去重：有行就跳过，⛔ 不混 leg 覆盖） */
+export async function readRange30StocksForDate(env, date) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range30_pct?date=eq.' + encodeURIComponent(date) +
+    '&select=stock&order=stock.asc';
+  const data = await sbGetPaged(env, url);
+  const set = new Set();
+  (data || []).forEach(function (r) {
+    const s = String((r && r.stock) || '').trim();
+    if (s) set.add(s);
+  });
+  return set;
+}
+
+/** 写 stock_range30_pct（与 compute-range30-pct.mjs 同一 on_conflict：date,stock,leg） */
+export async function upsertRange30Rows(env, rows) {
+  if (!rows || rows.length === 0) return;
+  await upsertBucketed(env, 'stock_range30_pct',
+    CONFIG.SUPABASE_URL + '/rest/v1/stock_range30_pct?on_conflict=date,stock,leg', rows);
+}
+
+// ============================================================================
 // [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐（替代本机 08:00 定时任务）
 //   §10：读取失败一律抛错；§32：按 Range 分页，不整表拉爆网关。
 // ============================================================================
