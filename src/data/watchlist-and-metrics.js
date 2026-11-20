@@ -9,6 +9,8 @@ function _getAuctionStore() { try { return useAuctionStore(); } catch { return n
         import { getSupabase, getNumericVolume } from './supabase-client.js';
         // [AUC-VOL-GUARD 2026-11-04] 竞价量归一（假 0 ⇒ 缺失）。唯一实现在 metrics-normalize.js。
         import { normalizeAucVolume } from './metrics-normalize.js';
+// ★★ [STALE-WATCHLIST 2026-11-20] 与 data/auction-data.js 共用同一份陈旧名单行判据（§6）。
+import { filterStaleWatchlistRows } from '../logic/auction/stale-watchlist-row.js';
         import { _dbgLog, _dbgLogVerbose } from './debug-log.js';
 import { startStockTopicsRealtime, stopStockTopicsRealtime, startCoreTopicsRealtime, stopCoreTopicsRealtime } from './stock-topics.js';
 import { startTempCoreTopicsRealtime, stopTempCoreTopicsRealtime } from './temp-core-topics.js';
@@ -425,10 +427,12 @@ import { createQueryMemo } from './query-memo.js';
             // 1) 读取 auction_watchlist（正式列表成员）
             try {
                 const { data, error } = await sb.from('auction_watchlist')
-                    .select('stock,code,volume,yest_volume,note,change_pct,topics,source,obs_auto_added,selected,bought,sold,fixed,updated_at,updated_by')
+                    .select('stock,code,volume,yest_volume,note,change_pct,topics,source,obs_auto_added,selected,bought,sold,fixed,created_at,updated_at,updated_by')
                     .eq('date', date);
                 if (error) throw error;
-                (data || []).forEach(function(row) {
+                // ★★ [STALE-WATCHLIST 2026-11-20] 全局剔除陈旧迁移行（按日查询，date 由入参给出）。
+                //   ⛔ 必须在建 cloudByStock / newWatchlistSet 之前过滤，否则 300+ 只会被当成正式成员。
+                filterStaleWatchlistRows(data, function () { return date; }).forEach(function(row) {
                     const key = (row.stock || '').trim();
                     if (!key) return;
                     cloudByStock[key] = {

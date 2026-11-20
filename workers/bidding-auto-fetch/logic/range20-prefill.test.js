@@ -173,8 +173,10 @@ describe('[LEGS-FILL-CLOUD 2026-11-20] 新面孔缺腿 ⇒ 云端批量补腿', 
     h.tradeDates = dates;
     h.wl = new Array(RANGE20_MIN_TARGETS).fill(0).map((_, i) => ({ name: 'S' + i, code: '00000' + i }));
     h.wl[0] = { name: '京蓝科技', code: '000711' };
+    // ★ 两列都给：legModeOf 以北京 15:00 分口径，夹具只写 auc_pct_chg 会在收盘后
+    //   被 parsePct(change_pct) 判成「无 T 腿」⇒ 同一条用例早上绿、晚上红（时段依赖的假红）。
     h.metrics = h.wl.map(s => ({
-      name: s.name, code: s.code, auc_pct_chg: '+1.00'
+      name: s.name, code: s.code, auc_pct_chg: '+1.00', change_pct: '+1.00'
     }));
     // 京蓝科技故意只给 3 根腿（新面孔的实测形态），其它票给满 19 根
     h.legs = [];
@@ -183,7 +185,8 @@ describe('[LEGS-FILL-CLOUD 2026-11-20] 新面孔缺腿 ⇒ 云端批量补腿', 
         h.legs.push({ stock: s.name, date: dates[k], pct: '+1.00' });
       }
     });
-    const r = await runRange20Prefill({}, { today: '2026-11-20' });
+    // 显式钉住竞价口径：本用例验「补腿」，不该随跑测时辰改变口径
+    const r = await runRange20Prefill({}, { today: '2026-11-20', leg: 'auc' });
     expect(r.legsFill).not.toBeNull();
     expect(r.legsFill.written).toBeGreaterThan(0);
     expect(h.legUpserted).toHaveLength(1);

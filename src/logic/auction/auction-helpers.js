@@ -5,6 +5,7 @@ import { showToast } from '../../composables/useToast.js';
 import { fuyaoApiGet, tickerToThscode, LADDER_THSCODE } from '../../data/api/fuyao-proxy.js';
 import { numcatApiPost } from '../../data/api/numcat-proxy.js';
 import { normalizeAuctionNotes, pullAuctionFromTable, setAuctionDateData, _setInvalidateTopicCacheFn } from '../../data/auction-data.js';
+import { filterStaleWatchlistRows } from './stale-watchlist-row.js';
 import { _dbgLog, _dbgLogVerbose } from '../../data/debug-log.js';
 import { pushHotTrendsToCloud } from '../../data/hot-stocks.js';
 import { pushJiwangNow, scheduleJiwangPush } from '../../data/jiwang-data.js';
@@ -51,23 +52,30 @@ export async function repairAuctionInWatchlistForDate(dateArg) {
     const sb = getSupabase();
     try {
         _dbgLog('[REPAIR] repairAuctionInWatchlistForDate 开始 date=' + date);
+        // ★ [STALE-WATCHLIST 2026-11-20] note/topics/created_at/updated_at 都是陈旧迁移判据的必要输入：
+        //   缺列会把「事后补记的人工行」误判成脏行（§10 不猜）。本入口是 UI 手动「恢复」按钮，
+        //   若不走同一判据，历史日一点恢复就会把 300+ 迁移行重新灌回正式成员索引。
         const { data: cloudRows, error: readErr } = await sb.from('auction_watchlist')
-            .select('stock, selected, bought, sold, fixed, obs_auto_added').eq('date', date);
+            .select('stock, selected, bought, sold, fixed, obs_auto_added, note, topics, created_at, updated_at')
+            .eq('date', date);
         if (readErr) throw readErr;
 
-        if (!cloudRows || cloudRows.length === 0) {
-            _dbgLog('[REPAIR] date=' + date + ' 云端 watchlist 无任何记录，无需恢复');
-            throw new Error(date + ' 云端 watchlist 没有任何记录，无法恢复（不是"被隐藏"，而是本来就没有数据）');
+        const validRows = filterStaleWatchlistRows(cloudRows, function () { return date; });
+        if (validRows.length === 0) {
+            _dbgLog('[REPAIR] date=' + date + ' 云端 watchlist 无有效正式记录（原始' +
+                ((cloudRows && cloudRows.length) || 0) + '条，陈旧迁移行已剔除），无需恢复');
+            throw new Error(date + ' 云端 watchlist 没有有效正式记录，无法恢复（不是"被隐藏"，而是没有可用的正式名单）');
         }
 
         // §6 红线：观察组（obs_auto_added=true）绝不并入正式成员索引（与 pullAuctionMarketDataForDate /
         // pullAuctionFromTable / syncAuctionListForDate 同口径）。云端 auction_watchlist 含 obs 行
         // （d94b4bc 后同步层推送全部行含 obs），若不过滤会把观察组算进「最近多板总数量」→ 84≠78。
-        const cloudStocks = new Set((cloudRows || []).filter(function(r) { return r && r.obs_auto_added !== true; })
+        const cloudStocks = new Set(validRows.filter(function(r) { return r && r.obs_auto_added !== true; })
             .map(function(r) { return (r.stock || '').trim(); }));
-        const obsStocks = (cloudRows || []).filter(function(r) { return r && r.obs_auto_added === true; })
+        const obsStocks = validRows.filter(function(r) { return r && r.obs_auto_added === true; })
             .map(function(r) { return (r.stock || '').trim(); });
-        _dbgLog('[REPAIR] date=' + date + ' 云端 watchlist 共' + cloudRows.length + '条（正式' + cloudStocks.size + ' + 观察组' + obsStocks.length + '）：' +
+        _dbgLog('[REPAIR] date=' + date + ' 云端 watchlist 原始' + cloudRows.length + '条 → 有效' + validRows.length + '条' +
+            '（剔除陈旧迁移' + (cloudRows.length - validRows.length) + '条；正式' + cloudStocks.size + ' + 观察组' + obsStocks.length + '）：' +
             Array.from(cloudStocks).join('、') + (obsStocks.length ? '；观察组不并入索引：' + obsStocks.join('、') : ''));
 
         // 方案2：把云端 watchlist 正式成员名单合并进本地正式成员索引（只增不删，影子记录保持原样）
@@ -82,7 +90,7 @@ export async function repairAuctionInWatchlistForDate(dateArg) {
         });
 
         _dbgLog('[REPAIR] date=' + date + ' 恢复完成，云端 watchlist 正式成员 ' + cloudStocks.size + '条，修复本地异常' + repairedCount + '条（观察组 ' + obsStocks.length + ' 条未并入索引）');
-        console.log('✅ 已恢复 ' + date + '：云端 watchlist 共 ' + cloudRows.length + ' 条，' + repairedCount + ' 条本地显示异常已修复（影子记录未改动）');
+        console.log('✅ 已恢复 ' + date + '：云端 watchlist 有效 ' + validRows.length + ' 条（陈旧迁移已剔除），' + repairedCount + ' 条本地显示异常已修复（影子记录未改动）');
 
         if (date === useUiStore().currentDate) {
             renderAuction();
