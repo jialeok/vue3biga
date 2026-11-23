@@ -128,7 +128,15 @@ const REQUIRED = [
   //   RANGE20/30_WINDOW_DAYS（45/60 只用于取腿粗筛）。
   //   ⚠️ 'extraCandidates' 是不被 mangle 的对象属性名（ladder-recheck.js 持久化字段），
   //      打包后仍在产物里；⛔ 不能用注释标记断言（esbuild 会删注释）。
-  'extraCandidates'
+  'extraCandidates',
+  // [R30-FETCH 2026-11-23 用户报障] 「30日强势补位的票五日趋势几乎空白、量比整列 '-'」的根因是
+  //   9:25 抓取名单里**从来没有 30 日榜**（只有 20 日榜）⇒ 补位票当天在 market_metrics 无行。
+  //   本轮把组B 扩到 6 路并让两条榜走同一个合并函数（mergeRankedStocksIntoConstituents）。
+  //   ⚠️ '[R30-FETCH]' 是 supabase-write.js#readRange30TopForDate 抛错消息里的字符串字面量、
+  //      'readRange30TopForDate' 是跨文件被 morning-workflow.js 调用的函数名 —— 打包压缩后都还在。
+  //      ⛔ 不能换成注释里的标记（esbuild 会删注释）。
+  'readRange30TopForDate',
+  '[R30-FETCH]'
 ];
 
 async function cf(url, accept) {

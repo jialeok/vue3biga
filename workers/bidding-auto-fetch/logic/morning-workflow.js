@@ -8,7 +8,7 @@ import { fetchLadderConstituents, fuyaoCalendarTradingDays } from '../data/fuyao
 // [KEY-FALLBACK 2026-09-28] configuredKeys/maskKey 只用于把「key 候选链」回显到日志：
 //   小号 Secret 没配时兜底会静默失效，必须在日志里一眼看见（§10 禁止静默失败）。
 import { numcatDailyAuc, numcatDaily, configuredKeys, maskKey } from '../data/numcat-api.js';
-import { upsertAuctionWatchlist, upsertMarketMetrics, upsertStockRangePct, readAuctionWatchlistForDate, readAuctionTagsForDate, readDragonLeadersForDate, readRange20TopForDate, readStockCodeMap, readStockCodeMapByNames, readCodesFromMetricsByNames, readMarketMetricsSnapshotFieldsForDate } from '../data/supabase-write.js';
+import { upsertAuctionWatchlist, upsertMarketMetrics, upsertStockRangePct, readAuctionWatchlistForDate, readAuctionTagsForDate, readDragonLeadersForDate, readRange20TopForDate, readRange30TopForDate, readStockCodeMap, readStockCodeMapByNames, readCodesFromMetricsByNames, readMarketMetricsSnapshotFieldsForDate } from '../data/supabase-write.js';
 import { getRecentTradingDays } from './holiday-check.js';
 // [EXTRAS-PATCH 2026-09-11] 竞价四要素补漏。早盘放在【最后】跑一次（不阻塞 P0/P1/P2）：
 // 猫抓当日行给不给四要素由接口决定（09-11 那天没给，11-05 那天 58/58 全给）——
@@ -237,11 +237,85 @@ async function checkTradingDay(env, today, cache, logs) {
  */
 const RANGE20_FETCH_TOP_N = 25;
 
+/**
+ * ★★ [R30-FETCH 2026-11-23 用户报障] 30 日涨幅榜并进 9:25 抓取名单的取数只数 ——
+ *   `RANGE20_FETCH_TOP_N` 的对称常量（用户原话：「30日强势补位……获取数据的标准和20日强势补位一样」）。
+ *
+ * 🔴 为什么 30 日必须取 50，而 20 日只用 25（**实测数字，不是凭感觉**）：
+ *   30 日涨幅是「期末收盘 ÷ 期初前收盘」的【一次性比值】，窗口每天滚动一天 —— 期初那天滚出窗口时，
+ *   如果滚出的是一根大涨 / 大跌的日子，30 日涨幅会**整体跳一大截**，名次抖得远比 20 日（逐日复利、
+ *   平滑）厉害。真实库实测（2026-11-20 的 30 日榜，502 行）：
+ *     · 第 15 名 慈文传媒 33.45%（在 25 名以内 ⇒ 按 20 日的 25 这个数能覆盖）
+ *     · 第 45 名 百洋股份  9.77% ← ⛔ 25 名覆盖不到
+ *   而 11-23 用户截图里的「30日强势补位」第一名**正好就是百洋股份 +70.10%**
+ *   （它 11-21 的 30 日值还是 −8.88%，一天之内因为期初日滚出而翻到 +70% ⇒ 名次从第 45 跳到补位第一）。
+ *   ⇒ 取 25 等于「修了代码但修不好用户看到的那只票」。取 50（该日门槛 7.28%）才真正兜住这批票。
+ *
+ * ⛔ 成本仍然是 0：`fetchNumcatWithRetry` 把整个名单的 code 用逗号拼成**一次**请求
+ *   （`numcatDailyAuc(env, symbols, ...)`，见该函数 `symbols = constituents.map(c => c.code).join(',')`），
+ *   猫抓额度按【请求次数】算、不按 symbols 个数算 ⇒ 名单多 25 个 code 不多烧一次额度。
+ */
+const RANGE30_FETCH_TOP_N = 50;
+
 // 2. 获取最近多板成分股 + 写入 auction_watchlist
 // [LATENCY 2026-09-11] 原来这一步是 9 次串行网络调用（≈11.6s），现改为 3 组并行（≈3s）：
 //   组A：成分股 ∥ 代码表 ∥ 交易日历       ← 三者互不依赖
-//   组B：前日名单 ∥ 今日名单 ∥ 前日标签 ∥ 前日龙头 ∥ 前日20日涨幅榜  ← 只依赖组A的交易日历
+//   组B：前日名单 ∥ 今日名单 ∥ 前日标签 ∥ 前日龙头 ∥ 前日20日涨幅榜 ∥ 前日30日涨幅榜  ← 只依赖组A的交易日历
 //   组C：仅对「仍缺 code 的名字」做一次按名精确补码（通常 0 次或 1 次小请求）
+
+/**
+ * ★★ [R30-FETCH 2026-11-23] 把「涨幅榜类」候选（20 日 / 30 日）并入 9:25 抓取名单 —— 唯一实现（§6）。
+ *
+ * 为什么需要一个共用函数：20 日与 30 日两张结果表**形状完全一样**
+ *   （`stock_range20_pct` / `stock_range30_pct` 都只有 stock/pct/days/leg，没有 code 列），
+ *   合并动作也完全一样（按名查 code、按 code 去重、查不到 code 的逐只留痕）。
+ *   本轮事故正是「20 日加了、30 日没加」这个**类根因** ⇒ 抄成两份必然还会漏第二份。
+ *
+ * 【红线】
+ *   · ⛔ 只并入 `constituents`（= market_metrics 抓取名单），⛔ 不写 `auction_watchlist`：
+ *     补位票是视图注入壳行，写进名单会破坏「当日名单 = 9:25 快照」的锁定口径（§6）。
+ *   · ⛔ 成本 = 0：猫抓 `daily_auc` 一次请求一批 symbols，额度按【请求次数】算、不按股票数算。
+ *   · §10 查不到 code 的票【必须逐只打印】，⛔ 不许静默 return —— 青岛食品（11-11）就是这么
+ *     全天无量比而无人知晓的（`[RANGE20-CODE-FALLBACK]`）。
+ *
+ * @param {Array<{name:string,code:string}>} constituents 当前抓取名单（不修改，返回新数组）
+ * @param {Array<{name:string,pct:number,days:number,leg:string}>} ranked 榜单前 N（来自 supabase-write）
+ * @param {Object<string,string>} codeMap 股票名 → code（已被组C 按名补码增强过）
+ * @param {{label:string, prevDay:string, logs:string[]}} o label 是日志里的统一前缀
+ *        （'20日涨幅补位' / '30日涨幅补位'），⛔ 别在调用处再拼一次
+ * @returns {Array<{name:string,code:string}>} 合并后的名单（无新增时原样返回）
+ */
+export function mergeRankedStocksIntoConstituents(constituents, ranked, codeMap, o) {
+  const list = Array.isArray(ranked) ? ranked : [];
+  const logs = (o && o.logs) || [];
+  const label = (o && o.label) || '涨幅补位';
+  if (list.length === 0) return constituents;
+  const existingNames = new Set(constituents.map(c => c.name));
+  const existingCodes = new Set(constituents.map(c => c.code));
+  const extra = [];
+  const noCodeNames = [];
+  list.forEach(function (r) {
+    if (!r || !r.name || existingNames.has(r.name)) return;
+    const code = codeMap[r.name] || '';
+    if (!code) { noCodeNames.push(r.name); return; }          // §10 留痕，见函数头红线
+    if (existingCodes.has(code)) return;
+    existingNames.add(r.name);
+    existingCodes.add(code);
+    extra.push({ name: r.name, code: code });
+  });
+  if (extra.length > 0) {
+    logs.push(label + '(基于 ' + o.prevDay + ' 完整榜, 前 ' + list.length + ' 名): ' +
+      extra.length + ' 只，合并到抓取名单（不写 watchlist，0 猫抓额度）');
+  } else {
+    logs.push(label + ': 榜上前 ' + list.length + ' 名均已在抓取名单内');
+  }
+  if (noCodeNames.length > 0) {
+    logs.push('⚠️ ' + label + '有 ' + noCodeNames.length + ' 只查不到 code ⇒ 未进 9:25 抓取名单' +
+      '（当天竞价量比必然为空，需补 stockcodemap 或等 16:30 云端回填）: ' + noCodeNames.join('、'));
+  }
+  return extra.length > 0 ? constituents.concat(extra) : constituents;
+}
+
 async function fetchAndWriteWatchlist(env, today, cache, logs) {
   logs.push('步骤1：并行获取 成分股 / 代码表 / 交易日历...');
   const [ladderRes, codeMapRes, tdRes] = await Promise.all([
@@ -287,8 +361,8 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
   const prevDay = recentDays.length >= 2 ? recentDays[recentDays.length - 2] : null;
 
   // 组B：名单来源并行（原来串行 3 次 + 中间夹着 2 次重复的代码表读取）
-  logs.push('步骤1b：并行读取 前日名单 / 今日名单 / 前日标签 / 前日龙头 / 20日涨幅榜...');
-  const [prevWlRes, todayWlRes, tagRes, dragonRes, range20Res] = await Promise.all([
+  logs.push('步骤1b：并行读取 前日名单 / 今日名单 / 前日标签 / 前日龙头 / 20日涨幅榜 / 30日涨幅榜...');
+  const [prevWlRes, todayWlRes, tagRes, dragonRes, range20Res, range30Res] = await Promise.all([
     settled(prevDay ? readAuctionWatchlistForDate(env, prevDay) : Promise.resolve([])),
     settled(readAuctionWatchlistForDate(env, today)),
     settled(prevDay ? readAuctionTagsForDate(env, prevDay) : Promise.resolve([])),
@@ -296,16 +370,26 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
     settled(prevDay ? readDragonLeadersForDate(env, prevDay) : Promise.resolve([])),
     // [RANGE20-FETCH 2026-11-05] 前一交易日的 20 日涨幅榜（供「20日补位组」数据完整获取）。
     //   放进组B 并行，是为了【不增加任何额外延迟】—— 它和上面 4 个读互不依赖。
-    settled(prevDay ? readRange20TopForDate(env, prevDay, RANGE20_FETCH_TOP_N) : Promise.resolve([]))
+    settled(prevDay ? readRange20TopForDate(env, prevDay, RANGE20_FETCH_TOP_N) : Promise.resolve([])),
+    // ★★ [R30-FETCH 2026-11-23 用户报障] 前一交易日的 30 日涨幅榜（供「30日补位组」数据完整获取）。
+    //   用户原话：「30日强势补位的票为什么没有显示完整数据……我之前要求它获取数据的标准和
+    //   20日强势补位一样，20日的强势补位票是放到worker中的，和同花顺最近多板源股票一起获取数据」。
+    //   ★ 审查结论：此前【完全没有这一路】—— 30 日榜从没进过 9:25 抓取名单，所以 30天补位票
+    //     当天在 market_metrics 无行、量比（唯一来源=猫抓，§1）永远补不上。
+    //   ⛔ 同样放进组B 并行：与上面 5 个读互不依赖，0 额外延迟、0 猫抓额度。
+    settled(prevDay ? readRange30TopForDate(env, prevDay, RANGE30_FETCH_TOP_N) : Promise.resolve([]))
   ]);
   // 20日补位候选：只有名字+涨幅，code 由下方 codeMap / 按名补码 两路补（该表没有 code 列）
   const range20Stocks = (range20Res.ok && range20Res.v) || [];
   if (range20Res.e) logs.push('读取 20 日涨幅榜失败(非致命): ' + range20Res.e.message);
+  // 30日补位候选：同上（只有名字+涨幅，code 由 codeMap / 按名补码补）
+  const range30Stocks = (range30Res.ok && range30Res.v) || [];
+  if (range30Res.e) logs.push('读取 30 日涨幅榜失败(非致命): ' + range30Res.e.message);
 
-  // [CLOUD-0927-HEAL 2026-11-11 §10] 组B 五路并行读的诊断结果随返回值带出给 runMorning，
+  // [CLOUD-0927-HEAL 2026-11-11 §10] 组B 六路并行读的诊断结果随返回值带出给 runMorning，
   //   让完整性汇总能看见「读失败」和「龙头名册为空」；⛔ 不在汇总处重复读、不引全局变量。
   //   （这几个 settled 结果是本函数局部变量，runMorning 作用域里拿不到，必须显式传出。）
-  const groupBReadFailures = [prevWlRes, todayWlRes, tagRes, dragonRes, range20Res]
+  const groupBReadFailures = [prevWlRes, todayWlRes, tagRes, dragonRes, range20Res, range30Res]
     .filter(r => r && r.ok === false).length;
   const dragonRosterEmpty = !!(dragonRes && dragonRes.ok && Array.isArray(dragonRes.v) && dragonRes.v.length === 0);
   const groupBDiag = {
@@ -381,6 +465,9 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
     //   **恰好最容易不在 stockcodemap 里**（它们多半不在 883410 成分股内）。
     //   不放进这里按名补码 ⇒ 下方 `if (!code) return` 会把它们整批丢掉，等于没做。
     .concat(range20Stocks)
+    // ★ [R30-FETCH 2026-11-23] 30 日榜同理：该表也没有 code 列，且「30天补位票」同样大概率
+    //   不在 stockcodemap（多半不在 883410 成分股内）⇒ 不一起按名补码就会被 `if (!code)` 整批丢掉。
+    .concat(range30Stocks)
     .map(s => s.name)
     .filter(n => n && !codeMap[n]);
   if (nameless.length > 0) {
@@ -459,39 +546,35 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
   //   ⛔ 成本 = 0：猫抓 `daily_auc` 一次请求一批 symbols，额度按【请求次数】算。
   //   ⛔ 不写 auction_watchlist：与打标签/龙头同一处理，只并入 constituents，
   //      不破坏「当日名单 = 9:25 快照」的锁定口径（§6）。
-  if (range20Stocks.length > 0) {
-    const existingNames = new Set(constituents.map(c => c.name));
-    const existingCodes = new Set(constituents.map(c => c.code));
-    const range20Extra = [];
-    // ★ [RANGE20-CODE-FALLBACK 2026-11-11 §10] 以前「查不到 code」是静默 return，
-    //   日志只写「均已在名单内（或查不到 code）」⇒ 青岛食品这类票漏抓全天无人知晓，
-    //   用户只能在趋势图看到「无量比」。现在把被丢的名字逐只列出来，可观测、可追责。
-    const noCodeNames = [];
-    range20Stocks.forEach(function (r) {
-      if (!r || !r.name || existingNames.has(r.name)) return;
-      const code = codeMap[r.name] || '';
-      if (!code) { noCodeNames.push(r.name); return; }
-      if (existingCodes.has(code)) return;
-      existingNames.add(r.name);
-      existingCodes.add(code);
-      range20Extra.push({ name: r.name, code: code });
-    });
-    if (range20Extra.length > 0) {
-      logs.push('20日涨幅补位(基于 ' + prevDay + ' 完整榜, 前 ' + range20Stocks.length + ' 名): ' +
-        range20Extra.length + ' 只，合并到抓取名单（不写 watchlist，0 猫抓额度）');
-      constituents = constituents.concat(range20Extra);
-    } else {
-      logs.push('20日涨幅补位: 榜上前 ' + range20Stocks.length + ' 名均已在抓取名单内');
-    }
-    if (noCodeNames.length > 0) {
-      logs.push('⚠️ 20日涨幅补位有 ' + noCodeNames.length + ' 只查不到 code ⇒ 未进 9:25 抓取名单' +
-        '（当天竞价量比必然为空，需补 stockcodemap 或等 16:30 云端回填）: ' + noCodeNames.join('、'));
-    }
-  }
+  //
+  // ★★ [R30-FETCH 2026-11-23] 20 日 / 30 日两条榜的合并逻辑本来一模一样（只有名字+涨幅、没有
+  //   code 列、都要按名补码、都要逐只留痕被丢的名字）⇒ 抽成 `mergeRankedStocksIntoConstituents`
+  //   一份实现（§6）。⛔ 别再把其中一条抄成第二份 —— 抄一份就会漏一份的修复（本轮 30 日缺抓
+  //   就是「20 日加了、30 日没加」这个类根因）。
+  constituents = mergeRankedStocksIntoConstituents(constituents, range20Stocks, codeMap, {
+    label: '20日涨幅补位', prevDay: prevDay, logs: logs
+  });
+
+  // ★★ [R30-FETCH 2026-11-23 用户报障] 合并「30日涨幅补位票」到抓取名单（与上面 20 日同一条通道）。
+  //
+  //   用户原话：「30日强势补位的票为什么没有显示完整数据，五日趋势图几乎是空白，只有当天三个数据，
+  //   其余都没数据……我之前要求它获取数据的标准和20日强势补位一样，20日的强势补位票是放到worker中的，
+  //   和同花顺最近多板源股票一起获取数据，这样就是消耗同一个额度……你审查下30日强势补位的票是不是
+  //   这个逻辑，如果不是的话，要完善下。」
+  //
+  //   ★ 审查结论：此前【不是】。组B 只读了 20 日榜，30 日榜从没进来过 ⇒ 30天补位票当天
+  //     `market_metrics` 无行 ⇒ 竞价量比（唯一来源=猫抓，§1 铁律）整列 `-`；
+  //     前端 `trend-patch.js` 只能用腾讯日线/实时行情补「涨幅/竞价涨幅/昨日量」三项 ⇒
+  //     用户看到的正是「当天三个数据 + 两个 -」。
+  //   ⇒ 现在与 20 日完全同标准：并入 constituents，与最近多板 883410 同批抓取，
+  //     0 额外额度、⛔ 不写 auction_watchlist（当日名单仍 = 9:25 快照，§6）。
+  constituents = mergeRankedStocksIntoConstituents(constituents, range30Stocks, codeMap, {
+    label: '30日涨幅补位', prevDay: prevDay, logs: logs
+  });
 
   // [DEGRADE 2026-09-15] 降级后仍要求「有可抓取的标的」，否则整轮无从下手（§10 读失败≠空）
   if (constituents.length === 0) {
-    return { error: '抓取名单为空：883410 成分股不可用，且前一日名单/打标签/龙头名册/20日涨幅榜均无可用标的',
+    return { error: '抓取名单为空：883410 成分股不可用，且前一日名单/打标签/龙头名册/20日涨幅榜/30日涨幅榜均无可用标的',
       groupBReadFailures: groupBDiag.groupBReadFailures,
       dragonRosterEmpty: groupBDiag.dragonRosterEmpty,
       prevDay: groupBDiag.prevDay };

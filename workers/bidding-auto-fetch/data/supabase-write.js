@@ -323,6 +323,76 @@ export async function upsertRange30Rows(env, rows) {
     CONFIG.SUPABASE_URL + '/rest/v1/stock_range30_pct?on_conflict=date,stock,leg', rows);
 }
 
+/**
+ * ★★ [R30-FETCH 2026-11-23 用户报障] 读某日「30 日涨幅榜前 N」—— `readRange20TopForDate` 的对称实现。
+ *
+ * 【为什么必须有它】
+ *   用户原话：「30日强势补位的票为什么没有显示完整数据，五日趋势图几乎是空白，只有当天三个数据，
+ *   其余都没数据……我之前要求它获取数据的标准和20日强势补位一样，20日的强势补位票是放到worker中的，
+ *   和同花顺最近多板源股票一起获取数据，这样就是消耗同一个额度……30日的是不是这个逻辑」
+ *
+ *   审查结论：**不是**。`fetchAndWriteWatchlist` 的组B 只读了 `readRange20TopForDate` 并把
+ *   `range20Stocks` 并入 `constituents`；30 日榜从头到尾没进过 9:25 抓取名单 ⇒
+ *     · 30天补位票当天在 `market_metrics` 【无行】⇒ 竞价量比整列 `-`（猫抓只给名单内的票）；
+ *     · 展示日那一格只能靠前端 `trend-patch.js` 用腾讯日线/实时行情补「涨幅/竞价涨幅/昨日量」，
+ *       量比（唯一来源=猫抓，§1 铁律）永远补不上 —— 这正是用户截图里「三个数据 + 两个 -」的形状。
+ *   ⇒ 30 日补位票必须和 20 日补位票走同一条通道：并入 constituents，与最近多板 883410 同批抓取。
+ *
+ * 【⛔ 成本 = 0】猫抓 `daily_auc` 一次请求一批 symbols，额度按【请求次数】算，不按股票数算。
+ *   ⛔ 本函数以及调用方都【不写 auction_watchlist】—— 只并抓取名单，不破坏「当日名单 = 9:25 快照」
+ *   （§6；与打标签/龙头/20日补位同一处理）。
+ *
+ * ⚠️ 与 20 日同一条【结构性一天延迟】：当天榜要等收盘后才算得出来，所以这里读的是
+ *   【前一交易日】的完整榜（截至昨收）。今天才冲进前 N 的票明天 9:25 才会被抓到 —— 这条两边一致，
+ *   用户要的就是「和 20 日同一标准」。
+ *
+ * 🔴 `pct` 是【文本列】⇒ ⛔ 绝不能用 `order=pct.desc`（字典序会把 '8.94' 排在 '78.46' 前面）；
+ *   必须取回后按 Number() 排（与 `readRange20TopForDate` 同一个坑，11-05 实测）。
+ *
+ * ⚠️ 口径：该表目前只有 `leg='close'`（`range30-fill.js` / `compute-range30-pct.mjs` 都只写 close），
+ *   但主键含 leg ⇒ 未来若出现双腿，仍按「close 优先、auc 兜底保留」去重，不混口径、不丢票。
+ *
+ * @returns {Promise<Array<{name:string,pct:number,days:number,leg:string}>>}
+ */
+export async function readRange30TopForDate(env, date, limit) {
+  const n = Number(limit) > 0 ? Math.floor(Number(limit)) : 20;
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/stock_range30_pct?date=eq.' +
+    encodeURIComponent(date) + '&select=stock,pct,days,leg&order=stock.asc,leg.asc';
+  // §10 读失败必须抛错，由 9:25 组B 的 settled() 降级并计入 groupBReadFailures，
+  //   ⛔ 不伪装成「前一日 30 日榜为空」（空榜会让 30 天补位票静默全天无量比，正是本轮要修的病）。
+  let data;
+  try {
+    data = await sbGetPaged(env, url);
+  } catch (e) {
+    const msg = (e && e.message) ? e.message : String(e);
+    const http = /HTTP \d+[\s\S]*/.exec(msg);
+    throw new Error('[R30-FETCH] 读取 stock_range30_pct(' + date + ') 失败: ' + (http ? http[0] : msg));
+  }
+  const num = function (v) {
+    if (v === null || v === undefined) return null;
+    const s = String(v).replace('%', '').replace(/,/g, '').trim();
+    if (s === '') return null;
+    const x = Number(s);
+    return isNaN(x) ? null : x;
+  };
+  const byName = new Map();
+  (data || []).forEach(function (r) {
+    const name = (r.stock || '').trim();
+    if (!name) return;
+    const pct = num(r.pct);
+    if (pct === null) return;                       // §10 缺值不得当 0 参与排名
+    const leg = (String(r.leg || 'close').trim().toLowerCase() === 'auc') ? 'auc' : 'close';
+    const cur = byName.get(name);
+    if (!cur) { byName.set(name, { name: name, pct: pct, days: Number(r.days) || 0, leg: leg }); return; }
+    if (cur.leg !== 'close' && leg === 'close') {
+      byName.set(name, { name: name, pct: pct, days: Number(r.days) || 0, leg: leg });
+    }
+  });
+  return Array.from(byName.values())
+    .sort(function (a, b) { return b.pct - a.pct; })
+    .slice(0, n);
+}
+
 // ============================================================================
 // [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐（替代本机 08:00 定时任务）
 //   §10：读取失败一律抛错；§32：按 Range 分页，不整表拉爆网关。
