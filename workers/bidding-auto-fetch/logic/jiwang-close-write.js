@@ -29,18 +29,58 @@
 //   ⛔ 不造数：s2/s6 必须是有效正数；绝不用 market_metrics / 竞价涨幅 / 前一交易日值冒充。
 //   ⛔ 交易日映射不靠猜：窗口内相邻两个交易日天然互为 next（0 请求，自动含节假日）；
 //      只有窗口最后一天才用 isTradingDay 逐日推下一个交易日。
+//
+// ★★ [JIWANG-MON-2026-11-23] 「每到周一三个字段全空」事故 —— 两个独立缺陷
+//
+//   【缺陷一 · 时点】16:00 那次 jiwang 排在当日所有猫抓调用【最后】。
+//     bidding_fetch_log 逐日取证（time_point=jiwang，全部 ok=false，连 11-16~11-20 五天无一例外）：
+//       ❌ 猫抓 emoindic_daily 失败（本次一行不写）: 今日调用额度已用完，请于北京时间次日零点后重试
+//     ⇒ 猫抓 10 次/天，9:25 morning、yizi-0925、yizi-trend、close 的 daily 早就用光，
+//       16:00 再要 emoindic 必然拿不到 ⇒ 「明天的行」写不进去 ⇒ 周一打开看到的「上周五」
+//       永远是空。真正的兜底（supabase-heal 的 08:50 那轮）又被 GitHub Actions 的
+//       schedule 延迟 6~8 小时（实测 00:50Z 的 cron 实际跑在 07:22~08:35Z = 北京 15:22~16:35），
+//       落到的仍是「额度已用尽」的时段 ⇒ 兜底形同不存在。
+//     ✅ 修法：① 接上 `postNumcat` 的主 key → 小号 fallback（本模块原来只读一把 key，
+//        主账号用尽就直接放弃，而其它模块早就自动退小号了）；
+//        ② 9:25 morning 轮也跑一次（额度刚在北京 0 点重置，是全天最富裕的时点，
+//        见 index.js 的 JIWANG-MORNING-SLOT）。9:25 跑时窗口最后一天=昨天 ⇒ 写的正是
+//        「今天这一行的昨收盘结果」，也就是周一早上要看的那一格。
+//
+//   【缺陷二 · 逻辑】盘中跑会把「今天的盘中快照」当成收盘值写进【明天】那一行。
+//     实证（2026-11-23 11:29 手动触发）：窗口 11-10~11-23，猫抓对 11-23 已经返回
+//     s2/s6=1717/3763（盘中实时家数，不是收盘值），alignWindowTargets 把它当
+//     「11-23 的收盘结果」写进了 `jiwang_data[2026-11-24].shouguJieguo=3763:1717`。
+//     而本模块「只填空、不覆盖」⇒ 这个错值会被永久固化，明天 16:00 也改不回来。
+//     ✅ 修法：`pickWindowRows` —— 同一交易日在 15:05 之前一律视为【未收盘】，
+//        整行剔除，既不当值写出去，也不参与「下一交易日」推演。
+//        ⇒ 盘中只可能写「今天」那一行（值来自昨天，已收盘，安全）；
+//           收盘后才会写「明天」那一行（值来自今天，已收盘）。
 
 import { CONFIG } from '../config.js';
-import { beijingToday, normalizeDate } from '../../_shared-source/date-utils.js';
+import { beijingNow, beijingToday, normalizeDate } from '../../_shared-source/date-utils.js';
 import { isTradingDay } from './holiday-check.js';
 import { sbHeaders } from '../data/supabase-write.js';
+// ★ [JIWANG-MON-2026-11-23] 走统一客户端：主 key 额度用尽自动退小号 + 瞬态失败同 key 重试。
+//   ⛔ 原来自己拼 POST 只读一把 key，主账号一用尽就整轮放弃（缺陷一见文件头）。
+import { postNumcat } from '../data/numcat-api.js';
 
 const NUMCAT_EMOINDIC_URL = 'https://numcat.net/api/reference-proxy/market/emoindic-daily';
 const NUMCAT_APINAME = 'emoindic_daily';
 const JW_RECENT_DAYS = 10;
-const JW_HTTP_TIMEOUT_MS = 15000;
 const JW_SB_TIMEOUT_MS = 12000;
 const ROW_COLUMN = 'shouguJieguo';
+/**
+ * 「当日已收盘」的判定线（北京）。
+ * 15:05 早于收盘集合竞价结束 + 数据商给值所需的最短延迟；宁可晚写 5 分钟，
+ * 也不能把一个 10:30 的盘中家数当成收盘结果永久固化。
+ */
+export const JW_CLOSE_HHMM = '15:05';
+
+/** 北京 HH:MM（补零，可直接按字符串比较） */
+export function beijingHHMM() {
+  const d = beijingNow();
+  return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0');
+}
 
 function jiwangFetch(url, opts, ms) {
   if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
@@ -51,7 +91,11 @@ function jiwangFetch(url, opts, ms) {
 
 /** 猫抓 10 日情绪窗口 → [{ date, up, down }]（升序）。字段缺失绝不折 0。 */
 export function parseEmoindicRows(payload) {
-  const data = payload && payload.data;
+  // 兼容两种入参形态：
+  //   ① 上游原始 json `{ code, data: { fields, items } }`（旧调用方式 / 测试夹具）
+  //   ② `postNumcat` 已剥掉外壳直接返回 `{ fields, items }`
+  // ⛔ 不要只认 ①，否则接了统一客户端之后会静默解析出 0 行（契约型故障，零报错）。
+  const data = (payload && payload.data) ? payload.data : payload;
   const fields = data && data.fields;
   const items = data && data.items;
   if (!Array.isArray(fields) || !Array.isArray(items)) return [];
@@ -70,6 +114,28 @@ export function parseEmoindicRows(payload) {
   });
   out.sort(function (a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
   return out;
+}
+
+/**
+ * ★ [JIWANG-MON-2026-11-23] 剔除「未收盘的今天」这一行。
+ *
+ * 为什么必须剔除：猫抓 emoindic_daily 对【当天】返回的是**盘中实时家数**，
+ *   而本模块语义是「某交易日的收盘跌涨家数」。盘中拿到它并当成收盘值写进下一交易日，
+ *   就会把 11:29 的快照固化成「昨收盘结果」（实测事故，见文件头缺陷二）。
+ *
+ * 判据只有一条：`date === today && hhmm < 15:05` ⇒ 未收盘。
+ *   收盘后（>= 15:05）保留，此时写的是「明天」那一行，值是今天收盘的真值。
+ *   窗口里没有今天（比如早上猫抓还没给今天）⇒ 原样返回，最后一天是昨天，依然安全。
+ *
+ * @param {Array<{date:string,up:number,down:number}>} rows 升序窗口
+ * @param {string} today 北京今天 YYYY-MM-DD
+ * @param {string} hhmm 北京 HH:MM
+ * @returns {Array} 可安全当作「收盘值来源」的行
+ */
+export function pickWindowRows(rows, today, hhmm) {
+  if (!Array.isArray(rows)) return [];
+  if (!today || !hhmm || hhmm >= JW_CLOSE_HHMM) return rows;
+  return rows.filter(function (r) { return r && r.date !== today; });
 }
 
 /**
@@ -107,18 +173,18 @@ export function buildJiwangShouguWriteRows(targets, existingRows, nowIso) {
   return rows;
 }
 
-async function fetchEmoindicWindow(env) {
-  const key = env.NUMCAT_API_KEY || env.NUMCAT_API_KEY_YIZI || '';
-  if (!key) throw new Error('缺少 NUMCAT_API_KEY / NUMCAT_API_KEY_YIZI，无法取收盘跌涨家数');
-  const resp = await jiwangFetch(NUMCAT_EMOINDIC_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ apiname: NUMCAT_APINAME, apikey: key, params: { recentdays: JW_RECENT_DAYS } })
-  }, JW_HTTP_TIMEOUT_MS);
-  if (!resp.ok) throw new Error('猫抓 emoindic_daily HTTP ' + resp.status);
-  const json = await resp.json();
-  if (json && json.code !== 200) throw new Error('猫抓 emoindic_daily 错误: ' + (json.message || 'code=' + json.code));
-  return json;
+async function fetchEmoindicWindow(env, logs) {
+  // ★ [JIWANG-MON-2026-11-23] 改走 postNumcat：主 key 额度用尽 → 自动退小号；
+  //   瞬态超时 → 同 key 重试一次。原来这里只读一把 key，主账号一耗尽就整轮放弃，
+  //   这正是 11-16~11-20 连续五天 ok=false 的直接原因。
+  const r = await postNumcat(env, {
+    apiname: NUMCAT_APINAME,
+    url: NUMCAT_EMOINDIC_URL,
+    params: { recentdays: JW_RECENT_DAYS },
+    logs: logs
+  });
+  // postNumcat 返回的是已剥壳的 data（{fields,items}），parseEmoindicRows 两种形态都认。
+  return { code: 200, data: r.data, keyName: r.keyName };
 }
 
 async function readExistingJiwang(env, dates) {
@@ -143,28 +209,68 @@ async function nextTradingDayAfter(env, dateStr, maxDays) {
   return '';
 }
 
-export async function runJiwangCloseWrite(env) {
+/**
+ * @param {object} env worker env
+ * @param {object} [opts]
+ * @param {boolean} [opts.skipIfTodayFilled] true ⇒ 先花 1 次【Supabase 读】（0 猫抓额度）看
+ *   今天这一行是不是已经有 shouguJieguo，有就直接返回、不碰猫抓。
+ *   仅供 9:27 兜底轮使用：它唯一目标就是「今天这行」，正常日早被前一天 16:00 写好了
+ *   ⇒ 0 次猫抓请求，不白烧额度（§32）。⛔ 16:00 那轮绝不能开这个开关：
+ *   它要写的是【明天】那一行，今天有值不代表明天有值。
+ */
+export async function runJiwangCloseWrite(env, opts) {
+  const o = opts || {};
   const logs = [];
   const today = beijingToday();
+  const hhmm = beijingHHMM();
+
+  // ★ [JIWANG-MON-SLOT 2026-11-23] 「今天已有值 ⇒ 0 次猫抓」的廉价前置判断。
+  //   读失败不能当成「已有值」跳过（§10）：读失败就照常往下走，让猫抓兜底去判断。
+  if (o.skipIfTodayFilled) {
+    try {
+      const pre = await readExistingJiwang(env, [today]);
+      const cur = pre.find(function (r) { return r && r.date === today; });
+      const v = cur && cur[ROW_COLUMN];
+      if (v !== null && v !== undefined && String(v).trim() !== '') {
+        logs.push('✅ 今天(' + today + ')已有昨收盘结果 ' + String(v) + ' ⇒ 0 次猫抓请求（§32）');
+        return { ok: true, written: 0, skipped: 'today-filled', logs, targets: [], today };
+      }
+      logs.push('今天(' + today + ')还没有昨收盘结果 ⇒ 需要向猫抓取一次（额度刚重置，9:27 最充裕）');
+    } catch (e) {
+      logs.push('⚠️ 前置查询失败（不当成已有值，继续兜底）: ' + (e && e.message));
+    }
+  }
 
   let payload;
   try {
-    payload = await fetchEmoindicWindow(env);
+    payload = await fetchEmoindicWindow(env, logs);
   } catch (e) {
     logs.push('❌ 猫抓 emoindic_daily 失败（本次一行不写）: ' + (e && e.message));
     return { ok: false, written: 0, logs, targets: [] };
   }
-  const rows = parseEmoindicRows(payload);
-  logs.push('猫抓窗口 ' + rows.length + ' 个交易日: ' + (rows.length ? rows[0].date + ' ~ ' + rows[rows.length - 1].date : '空'));
-  if (rows.length < 2) {
+  const rawRows = parseEmoindicRows(payload);
+  logs.push('猫抓窗口 ' + rawRows.length + ' 个交易日: ' + (rawRows.length ? rawRows[0].date + ' ~ ' + rawRows[rawRows.length - 1].date : '空'));
+  if (rawRows.length < 2) {
     logs.push('❌ 窗口不足 2 天或 s2/s6 全缺 ⇒ 一行不写（读取失败不造 0）');
+    return { ok: false, written: 0, logs, targets: [] };
+  }
+
+  // ★ [JIWANG-MON-2026-11-23] 盘中（< 15:05）的「今天」是实时快照，不是收盘值 ⇒ 整行剔除。
+  const rows = pickWindowRows(rawRows, today, hhmm);
+  if (rows.length !== rawRows.length) {
+    logs.push('⏱ 北京 ' + hhmm + ' 未到收盘判定线 ' + JW_CLOSE_HHMM +
+      ' ⇒ 剔除今天(' + today + ')的盘中家数，只写已收盘交易日（不把盘中值当收盘结果）');
+  }
+  if (rows.length < 1) {
+    logs.push('❌ 剔除盘中行后无可用交易日 ⇒ 一行不写');
     return { ok: false, written: 0, logs, targets: [] };
   }
 
   let lastNext = '';
   try {
     lastNext = await nextTradingDayAfter(env, rows[rows.length - 1].date);
-    logs.push('窗口最后一天 ' + rows[rows.length - 1].date + ' 的下一交易日 = ' + (lastNext || '未算出'));
+    logs.push('窗口最后一天 ' + rows[rows.length - 1].date + ' 的下一交易日 = ' + (lastNext || '未算出') +
+      '（北京 ' + hhmm + '，收盘线 ' + JW_CLOSE_HHMM + '）');
   } catch (e) {
     logs.push('⚠️ 下一交易日推算失败（最后一天不写，其余照常回补）: ' + (e && e.message));
   }

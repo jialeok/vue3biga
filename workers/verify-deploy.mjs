@@ -50,6 +50,11 @@ const REQUIRED = [
   'computeBiddingCloseValues', // 收盘取值口径：前端 / Worker 共用同一份纯函数
   'runJiwangCloseWrite',    // [2026-11-08] 昨收盘结果(跌:涨) 云端落库 + 10 日窗口回补
   'alignWindowTargets',     // 用真实交易日窗口推「下一交易日」，0 额外请求
+  // [JIWANG-MON 2026-11-23] 「每到周一三个字段全空」的两个缺陷修复证据：
+  //   ① pickWindowRows   —— 盘中(<15:05)的「今天」整行剔除，⛔ 不把盘中家数当收盘值写进明天；
+  //   ② skipIfTodayFilled —— 9:27 兜底轮前置判「今天已有值 ⇒ 0 次猫抓」，对象键压缩后仍在。
+  'pickWindowRows',
+  'skipIfTodayFilled',
   // [2026-11-10] 20 日涨幅逐日腿改 Range 分页（根治 limit=1000 静默截断 ⇒ 冰山冷热迟到）。
   // ⚠️ 它是 supabase-write.js 错误消息里的字符串字面量 ⇒ 打包/压缩后仍在线上脚本里，
   //    能硬证明这次真的换了版本（⛔ 别换成注释里的标记，注释会被 esbuild 删掉）。

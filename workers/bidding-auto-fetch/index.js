@@ -540,6 +540,35 @@ async function dispatch(point, env, logs, opts) {
     //      还没落库」一只不写且没有重试；9:27 是开盘前最后一个云端时点，这里幂等重跑一次
     //      （只补当天缺行、已有值永不覆盖）即可把残缺榜补齐，不需要任何人打开网页。
     const date = (opts && opts.date) || '';
+    // ★★ [JIWANG-MON-SLOT 2026-11-23] 记忘「昨收盘结果」的第二道机会 —— 放在本分支最前面。
+    //
+    // 【为什么需要第二道】16:00 close 那次是主路径（写的是【明天】那行），但它排在当日所有
+    //   猫抓调用之后 ⇒ 额度经常已经用光。取证：bidding_fetch_log 里 time_point=jiwang
+    //   11-16~11-20 连续五天全 ok=false，原因逐字都是「今日调用额度已用完」。
+    //   ⇒ 周五那次失败 ⇒ 周一【一整行】不存在 ⇒ 用户看到的「昨日跌涨/昨收盘结果/昨日情绪」
+    //     三个一起是 '-'（用户 11-23 报障原话）。
+    //
+    // 【为什么是 9:27 这个时点】猫抓额度按北京时间 0 点重置，9:27 是开盘前最后一个云端时点
+    //   ⇒ 此时额度最充裕、必然拿得到。而盘中（< 15:05）跑时 `pickWindowRows` 会剔除
+    //   「今天的盘中家数」，窗口最后一天自然退到上一交易日 ⇒ 写的正是
+    //   `jiwang_data[今天].shouguJieguo = 上一交易日的收盘跌:涨`，也就是周一早上要看的那一格。
+    //   ⛔ 绝不会把 9:27 的盘中家数写成「明天」的值（那是缺陷二，已在 pickWindowRows 里堵死）。
+    //
+    // 【为什么放最前面】它在 9:27 这一轮的其它动作之前跑：① 不受后面 range/auc 补漏的
+    //   subrequest 消耗影响；② 失败只记日志，⛔ 不连坐（后面每一步本来各自 try/catch）。
+    // 【幂等】只填空，不覆盖任何已有非空值（§11）⇒ 与 16:00 那次重复跑没有任何副作用。
+    let jiwang27 = null;
+    try {
+      // skipIfTodayFilled：正常日「今天这行」早被前一天 16:00 写好了 ⇒ 0 次猫抓请求直接返回；
+      // 只有真缺（典型就是周一 —— 周五 16:00 额度用尽没写进来）才发那 1 次请求。
+      jiwang27 = await runJiwangCloseWrite(env, { skipIfTodayFilled: true });
+      console.log('[auto-fetch] [JIWANG-MON-SLOT] 9:27 记忘昨收盘结果兜底: ok=' + jiwang27.ok +
+        ' written=' + jiwang27.written + ' 日志=' + JSON.stringify(jiwang27.logs || []));
+    } catch (e) {
+      const msg = '[JIWANG-MON-SLOT] ❌ 记忘兜底异常（不影响本轮其它补写）: ' + ((e && e.message) || e);
+      console.error('[auto-fetch] ' + msg);
+      jiwang27 = { ok: false, written: 0, logs: [msg] };
+    }
     // 只对【今天】等上游；手动回补历史日时数据是固化的，等也没有意义（§32）。
     const upstream = (!date || date === beijingToday())
       ? await waitForMorningUpstream(env, date)
@@ -650,9 +679,17 @@ async function dispatch(point, env, logs, opts) {
       //   'board-not-ready' / 'write-failed' / 'no-trade-dates' 定位（⛔ 不要只看 ok）。
       leaderDiverge: ld27,
       leaderDivergeWritten: ld27.written || 0,
+      // ★★ [JIWANG-MON-SLOT 2026-11-23] 记忘昨收盘结果的结构化留痕。
+      //   验收口径：jiwangShouguWritten>0 = 本趟真的补上了「今天那一行」；
+      //   0 且 jiwang.ok=true = 本来就不缺（幂等跳过，正常日）。
+      //   ⛔ 别只看 ok：ok=false 时看 jiwang.logs 里是「额度用尽」还是「窗口不足」。
+      jiwang27: jiwang27,
+      jiwangShouguWritten: jiwang27 && jiwang27.written !== undefined ? jiwang27.written : null,
       upstreamReady: upstream.ready === true,
       upstreamRows: upstream.rows === null || upstream.rows === undefined ? null : upstream.rows,
-      logs: (upstream.logs || []).concat(snap.logs || [], range.logs || [], r20.logs || [], aucLogs, ldLogs)
+      logs: (upstream.logs || [])
+        .concat((jiwang27 && jiwang27.logs || []).map(function (l) { return '[jiwang] ' + l; }))
+        .concat(snap.logs || [], range.logs || [], r20.logs || [], aucLogs, ldLogs)
     };
     await persistRunResult(env, point, result);
     return result;
