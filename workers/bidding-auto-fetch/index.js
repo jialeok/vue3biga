@@ -53,6 +53,8 @@ import { runRange20Prefill } from './logic/range20-prefill.js';
 // ★★ [R30-CLOUD 2026-11-20] Actions 的 30 日涨幅 cron 实测漂移/丢趟 ⇒ 当天名单那一块
 //   必须由本 Worker 在可靠时点补齐（9:26 填空 / 16:03 覆盖），否则「今天新冒出来的票」全空。
 import { runRange30Fill } from './logic/range30-fill.js';
+// ★★ [R30-METRICS-HEAL 2026-11-23] 补位票「历史日整行都不存在」的云端补建（point=r30backfill）
+import { runInjectedMetricsBackfill } from './logic/inject-metrics-heal.js';
 // [DAILY-LEGS-CLOUD 2026-11-06] 逐日腿云端补齐，彻底替代本机 08:00 定时任务。
 import { runDailyLegsHeal } from './logic/daily-legs-heal.js';
 // ★★ [ABN-DEV 2026-11-14 用户口径] 官方「对应指数」逐日涨幅腿（market_metrics, scope='index'）
@@ -819,6 +821,28 @@ async function dispatch(point, env, logs, opts) {
     await persistRunResult(env, point, result30);
     return result30;
   }
+  if (point === 'r30backfill') {
+    // ★★ [R30-METRICS-HEAL 2026-11-23 用户口径「今天不能重补下30日强势补位票的数据吗？也就是那两只，
+    //   现在数据只有三个，趋势图也是几乎空白的，能补吗？」]
+    //   补的正是「补位票在历史日【整行都不存在】」这个洞 —— extras 只补已存在行的字段，补不了没行。
+    //   参数：&date=YYYY-MM-DD 目标日（缺省北京今天）；&days=N 回看交易日数（默认 6）；
+    //         &stocks=名字A,名字B 只补指定票（缺省 = 前一交易日 30 日榜前 50 ∪ 20 日榜前 25）。
+    //   ⚠️ 花 1 次猫抓额度（区间一次请求）+ 0 额度的同花顺批量日线；
+    //      ⛔ 只写 market_metrics，不碰 auction_watchlist / 不改任何选股规则。
+    const bfLogs = [];
+    const bfStocks = String((opts && opts.stocks) || '').split(',').map(s => s.trim()).filter(Boolean);
+    const bf = await runInjectedMetricsBackfill(env, {
+      date: (opts && opts.date) || '',
+      days: (opts && opts.days) || 0,
+      stocks: bfStocks,
+      logs: bfLogs
+    });
+    const bfOut = Object.assign({}, bf, { logs: bfLogs });
+    console.log('[auto-fetch] r30backfill 补位票行情补建: ok=' + bf.ok + ' created=' + bf.created +
+      ' filled=' + bf.filled + ' 窗口=' + JSON.stringify(bf.dates) + ' 日志=' + JSON.stringify(bfLogs));
+    await persistRunResult(env, point, bfOut);
+    return bfOut;
+  }
   if (point === 'divergedays') {
     // ★★ [LD-CLOUD 2026-11-13] 手动入口：立即（重）算「总龙分歧」判定并落库。
     //   参数：&date=YYYY-MM-DD 指定截止日（缺省北京今天）；&days=N 补最近 N 个展示日（默认 1，上限 20）；
@@ -932,7 +956,10 @@ export default {
           // ★★ [R30-CLOUD 2026-11-20] 不传 = 由运行时钟决定窗口末日（9:26 取昨收 / 16:03 取今收）；
           //   历史日回补必须显式传 endAtDate=1，否则窗口末日会错退到目标日的前一天。
           endAtDate: url.searchParams.has('endAtDate')
-            ? url.searchParams.get('endAtDate') === '1' : undefined
+            ? url.searchParams.get('endAtDate') === '1' : undefined,
+          // ★★ [R30-METRICS-HEAL 2026-11-23] r30backfill 专用：只补指定股票名（逗号分隔）。
+          //   留空 = 前一交易日 30 日榜前 50 ∪ 20 日榜前 25（数据驱动，不写死票名）。
+          stocks: url.searchParams.get('stocks') || ''
         });
         return jsonResponse(result, result.ok ? 200 : 500);
       } catch (e) {

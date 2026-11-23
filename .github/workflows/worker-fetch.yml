@@ -15,9 +15,16 @@ on:
   workflow_dispatch:
     inputs:
       point:
-        description: 'point: jiwang | closepost | ladder26 | range20 | range30 | extras | morning | close | snapshot | ladder'
+        description: 'point: jiwang | closepost | ladder26 | range20 | range30 | r30backfill | extras | morning | close | snapshot | ladder'
         required: true
         default: 'jiwang'
+      stocks:
+        # ★★ [R30-METRICS-HEAL 2026-11-23] 只给 r30backfill 用：逗号分隔的股票名，
+        #   只补这几只（留空 = 前一交易日 30 日榜前 50 ∪ 20 日榜前 25）。
+        #   场景：用户当场指着某两只票说「今天能补吗」⇒ 不必等整批。
+        description: '可选（仅 r30backfill）：只补这些股票名，逗号分隔，如 百洋股份,慈文传媒'
+        required: false
+        default: ''
       dates:
         # ★★ [LEGS/R30-CLOUD 2026-11-20] 历史日批量回补：逗号分隔的 YYYY-MM-DD。
         #   每次【单独一次 Worker invocation】(各有 50 次 subrequest 配额)，⛔ 不在本机跑。
@@ -61,6 +68,7 @@ jobs:
           OVERWRITE: ${{ inputs.overwrite }}
           DATES: ${{ inputs.dates }}
           ENDATDATE: ${{ inputs.endAtDate }}
+          STOCKS: ${{ inputs.stocks }}
         run: |
           set -euo pipefail
           if [ -z "$TOKEN" ]; then
@@ -73,6 +81,12 @@ jobs:
           for D in "${DAY_LIST[@]}"; do
             D="$(echo "$D" | xargs)"
             URL="https://bidding-auto-fetch.cctopid.workers.dev/fetch?point=${POINT}&token=${TOKEN}"
+            # ★★ [R30-METRICS-HEAL 2026-11-23] 只补指定票时带上 stocks（URL 编码由 curl --get --data-urlencode 不好拼接，
+            #   这里直接对中文名做 percent-encode，避免空格/中文把 query 打断）
+            if [ -n "${STOCKS:-}" ] && [ "${POINT}" = "r30backfill" ]; then
+              ENC="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$STOCKS")"
+              URL="${URL}&stocks=${ENC}"
+            fi
             if [ "$D" != "today" ]; then
               URL="${URL}&date=${D}"
               echo "=== ${POINT} 历史回补 ${D} ==="

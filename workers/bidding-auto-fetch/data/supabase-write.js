@@ -503,6 +503,63 @@ export async function readMarketMetricsForDate(env, date, scope) {
 }
 
 /**
+ * ★★ [R30-METRICS-HEAL 2026-11-23 用户报障「今天不能重补下30日强势补位票的数据吗？也就是那两只」]
+ * 读取「指定日 + 指定股票名」的完整竞价行（九列全套，⛔ 不是只读四要素）。
+ *
+ * 【为什么需要它】
+ *   `readMarketMetricsExtrasForDate` 只 select 四要素 + auc_pct_chg，**判断不了**
+ *   「这一天到底有没有这一只票的行」，更判断不了 volume / change_pct / yest_volume 是否为空。
+ *   而补位票的真实病是【整行都不存在】（百洋股份 11-17~11-20 零行）——
+ *   只补字段的 extras 链路对它完全无效，必须先知道「哪些 (date, stock) 需要新建」。
+ *
+ * 🔴 `stock=in.(...)` 的坑（2026-11-23 实测）：⛔ 不能把整段 `("A","B")` 交给
+ *   encodeURIComponent —— 引号被转成 %22 后 PostgREST 直接回 `PGRST125 Invalid path`。
+ *   股票名里没有逗号，逐个名字 encode 后裸拼即可。
+ *
+ * §10：读失败一律抛错（⛔ 不许返回 []）—— 空数组会被上游误判成「这一天没有行」而重复新建。
+ *
+ * @returns {Promise<Array<{name:string, code:string, volume:string, yest_volume:string,
+ *   change_pct:string, auc_pct_chg:string, um_vol:string, open_bid_pct:string,
+ *   auc_vol_ratio:string, auc_turnover:string}>>}
+ */
+export async function readMarketMetricsRowsForDate(env, date, names) {
+  const uniq = Array.from(new Set((names || []).map(s => String(s || '').trim()).filter(Boolean)));
+  if (uniq.length === 0) return [];
+  const cols = 'stock,code,volume,yest_volume,change_pct,auc_pct_chg,um_vol,open_bid_pct,auc_vol_ratio,auc_turnover';
+  const s = v => (v === undefined || v === null ? '' : String(v));
+  const out = [];
+  const CHUNK = 40;          // 与 readDailyLegsForStocks 同一分片，控制 URL 长度
+  for (let i = 0; i < uniq.length; i += CHUNK) {
+    const chunk = uniq.slice(i, i + CHUNK);
+    const inVal = '(' + chunk.map(n => encodeURIComponent(n)).join(',') + ')';
+    const url = CONFIG.SUPABASE_URL + '/rest/v1/market_metrics?date=eq.' + encodeURIComponent(date) +
+      '&scope=eq.auction' +
+      '&stock=in.' + inVal +
+      '&select=' + cols +
+      // Range 分页（sbGetPaged）必须有确定性顺序，否则跨页可能重复/漏行（§32）
+      '&order=stock.asc';
+    const data = await sbGetPaged(env, url);
+    (data || []).forEach(function (r) {
+      const name = (r.stock || '').trim();
+      if (!name) return;
+      out.push({
+        name: name,
+        code: (r.code || '').trim(),
+        volume: s(r.volume),
+        yest_volume: s(r.yest_volume),
+        change_pct: s(r.change_pct),
+        auc_pct_chg: s(r.auc_pct_chg),
+        um_vol: s(r.um_vol),
+        open_bid_pct: s(r.open_bid_pct),
+        auc_vol_ratio: s(r.auc_vol_ratio),
+        auc_turnover: s(r.auc_turnover)
+      });
+    });
+  }
+  return out;
+}
+
+/**
  * [EXTRAS-PATCH 2026-09-11] 读取某日 market_metrics 竞价行的「竞价四要素 + 竞价涨幅」现状。
  * 供 runAuctionExtrasPatch 判断哪些行还缺字段 —— 只补缺失的，不重复写已有值（幂等）。
  * ⚠️ 读取失败必须抛错（§10：读取失败 ≠ 空数据）：否则会把「读不到」误判成「全都缺」，

@@ -136,7 +136,13 @@ const REQUIRED = [
   //      'readRange30TopForDate' 是跨文件被 morning-workflow.js 调用的函数名 —— 打包压缩后都还在。
   //      ⛔ 不能换成注释里的标记（esbuild 会删注释）。
   'readRange30TopForDate',
-  '[R30-FETCH]'
+  '[R30-FETCH]',
+  // [R30-METRICS-HEAL 2026-11-23 用户口径「今天不能重补下30日强势补位票的数据吗？……能补吗？」]
+  //   补位票在历史日【整行都不存在】（百洋股份 11-17~11-20 零行），extras 只补已存在行的字段 ⇒
+  //   必须有一条能**新建行**的云端链路。point=r30backfill 走这里。
+  //   ⚠️ 函数名（被 index.js 跨文件调用，压缩不删）+ 日志字面量（⛔ 不能靠注释，esbuild 会删）。
+  'runInjectedMetricsBackfill',
+  '[r30backfill]'
 ];
 
 async function cf(url, accept) {
