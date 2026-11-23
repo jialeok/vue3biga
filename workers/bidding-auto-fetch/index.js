@@ -561,7 +561,12 @@ async function dispatch(point, env, logs, opts) {
     try {
       // skipIfTodayFilled：正常日「今天这行」早被前一天 16:00 写好了 ⇒ 0 次猫抓请求直接返回；
       // 只有真缺（典型就是周一 —— 周五 16:00 额度用尽没写进来）才发那 1 次请求。
-      jiwang27 = await runJiwangCloseWrite(env, { skipIfTodayFilled: true });
+      // ⛔ 手动回补历史日（&date=过去）时整段跳过：记忘永远只服务「今天」，与历史日无关（§32）。
+      if (!date || date === beijingToday()) {
+        jiwang27 = await runJiwangCloseWrite(env, { skipIfTodayFilled: true });
+      } else {
+        jiwang27 = { ok: true, written: 0, skipped: 'historical-date', logs: ['[jiwang] 手动回补历史日 ⇒ 记忘不参与'] };
+      }
       console.log('[auto-fetch] [JIWANG-MON-SLOT] 9:27 记忘昨收盘结果兜底: ok=' + jiwang27.ok +
         ' written=' + jiwang27.written + ' 日志=' + JSON.stringify(jiwang27.logs || []));
     } catch (e) {

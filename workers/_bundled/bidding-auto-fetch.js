@@ -1,12 +1,12 @@
 // ===== bidding-auto-fetch — 单文件打包版（用于 Cloudflare Dashboard 复制粘贴）=====
-// 生成时间: 2026-11-23 03:50:19
+// 生成时间: 2026-11-23 03:58:03
 // 注意: 此文件自动生成，请勿手动编辑
 //
 // ⚠️ 部署自检（粘贴前务必做完这三步）:
 //   1) 编辑器【先全选 (Ctrl+A) 再删除】清空后，再粘贴本文件 ——
 //      若把本文件粘在旧代码下面，会报 Identifier 'beijingNow' has already been declared
 //      （实测行号 = 旧文件行数 + 8）。
-//   2) 粘贴后核对编辑器总行数 = 12467（少了=没粘全，约翻倍=粘重了）。
+//   2) 粘贴后核对编辑器总行数 = 12472（少了=没粘全，约翻倍=粘重了）。
 //   3) Ctrl+F 搜「function beijingNow」→ 正常命中 2 处（本行说明 1 处 + 真函数定义 1 处）；>2 处 = 粘重。
 
 // ────── _shared-source/date-utils.js ──────
@@ -12007,7 +12007,12 @@ async function dispatch(point, env, logs, opts) {
     try {
       // skipIfTodayFilled：正常日「今天这行」早被前一天 16:00 写好了 ⇒ 0 次猫抓请求直接返回；
       // 只有真缺（典型就是周一 —— 周五 16:00 额度用尽没写进来）才发那 1 次请求。
-      jiwang27 = await runJiwangCloseWrite(env, { skipIfTodayFilled: true });
+      // ⛔ 手动回补历史日（&date=过去）时整段跳过：记忘永远只服务「今天」，与历史日无关（§32）。
+      if (!date || date === beijingToday()) {
+        jiwang27 = await runJiwangCloseWrite(env, { skipIfTodayFilled: true });
+      } else {
+        jiwang27 = { ok: true, written: 0, skipped: 'historical-date', logs: ['[jiwang] 手动回补历史日 ⇒ 记忘不参与'] };
+      }
       console.log('[auto-fetch] [JIWANG-MON-SLOT] 9:27 记忘昨收盘结果兜底: ok=' + jiwang27.ok +
         ' written=' + jiwang27.written + ' 日志=' + JSON.stringify(jiwang27.logs || []));
     } catch (e) {
