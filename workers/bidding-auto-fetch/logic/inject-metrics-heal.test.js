@@ -15,6 +15,7 @@
 //   ⑤ 查不到 code 的票 ⇒ 不发请求、逐只留痕；
 //   ⑥ 猫抓失败 ⇒ ok=false，且一行都不写。
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { runInjectedMetricsBackfill } from './inject-metrics-heal.js';
 
 const h = vi.hoisted(() => ({
@@ -203,5 +204,47 @@ describe('runInjectedMetricsBackfill — 补位票历史行情补建', () => {
     // ⛔ 只写行情表，不带任何名单字段
     expect(row.selected).toBeUndefined();
     expect(row.obs_auto_added).toBeUndefined();
+  });
+});
+
+// ★ [R30-METRICS-HEAL 2026-11-23] 实战踩到的坑，单独锁一道：
+//   `index.js` 里有【两份】point 清单 —— ① 入口白名单（决定要不要 400）
+//   ② dispatch 分支 if (point === 'xxx')。当时只加了 ②，请求在 ① 就被拒，
+//   表现为「HTTP 200 + point 必须是 …」，日志里连一行 r30backfill 都没有。
+//   ⇒ 今后任何新 point 都必须两份同改，这里用源码断言把它焊住。
+describe('[R30-METRICS-HEAL] /fetch 入口白名单必须与 dispatch 分支对齐', () => {
+  const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+
+  // 抽出白名单数组里的字面量
+  function whitelist() {
+    const m = src.match(/if \(!\[([^\]]*)\]\.includes\(point\)\)/);
+    expect(m).toBeTruthy();
+    return (m[1].match(/'([a-z0-9]+)'/g) || []).map(s => s.replace(/'/g, ''));
+  }
+  // 抽出 dispatch 里所有 `if (point === 'xxx')` 分支（排除 'auto'，它不是分发目标）
+  function branches() {
+    const out = [];
+    const re = /if \(point === '([a-z0-9]+)'\)/g;
+    let m;
+    while ((m = re.exec(src)) !== null) out.push(m[1]);
+    return out.filter(p => p !== 'auto');
+  }
+
+  it('r30backfill 在白名单里，且错误文案枚举串也含它', () => {
+    expect(whitelist()).toContain('r30backfill');
+    expect(src).toContain("'point 必须是 morning|close|closepost|extras|snapshot|ladder|ladder26|range20|range30|r30backfill|divergedays|jiwang|auto");
+  });
+
+  it('每个 dispatch 分支都在白名单里（⛔ 不许再出现「加了分支忘加白名单」）', () => {
+    const wl = whitelist();
+    const missing = branches().filter(p => wl.indexOf(p) < 0);
+    expect(missing).toEqual([]);
+  });
+
+  it('白名单里没有「死条目」（有白名单无分支）', () => {
+    const br = branches();
+    // jiwang 在 /fetch 里是提前单独返回的（不受时段限制），分支不在 dispatch 内
+    const dead = whitelist().filter(p => br.indexOf(p) < 0 && p !== 'jiwang');
+    expect(dead).toEqual([]);
   });
 });

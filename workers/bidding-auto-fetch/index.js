@@ -929,8 +929,11 @@ export default {
           return jsonResponse({ ok: false, error: '当前北京时间不在抓取时段（9:25~9:40=morning，15:00~16:30=close）' });
         }
       }
-      if (!['morning', 'close', 'closepost', 'extras', 'snapshot', 'ladder', 'ladder26', 'range20', 'range30', 'divergedays', 'jiwang'].includes(point)) {
-        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|closepost|extras|snapshot|ladder|ladder26|range20|range30|divergedays|jiwang|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；closepost 立即补写当天收盘列 / 记忘 / 总龙分歧收盘腿；extras 可附 &today=1 含当天；snapshot / ladder / ladder26 / range20 / range30 / divergedays 可附 &date=YYYY-MM-DD；range30 另可附 &overwrite=1 与 &endAtDate=1；divergedays 另可附 &days=N（补最近 N 个展示日，上限 20）与 &phase=close|intraday；jiwang 立即回补昨收盘结果）' });
+      // ★★ [R30-METRICS-HEAL 2026-11-23] 白名单必须与 dispatch 分支逐字对齐。
+      //   ⛔ 只加 dispatch 分支、忘了加这份白名单 ⇒ 请求在分发前就被拒（表现为
+      //   「改了代码但一点反应都没有」，比报错更难查）。两份清单永远同改。
+      if (!['morning', 'close', 'closepost', 'extras', 'snapshot', 'ladder', 'ladder26', 'range20', 'range30', 'r30backfill', 'divergedays', 'jiwang'].includes(point)) {
+        return jsonResponse({ ok: false, error: 'point 必须是 morning|close|closepost|extras|snapshot|ladder|ladder26|range20|range30|r30backfill|divergedays|jiwang|auto（close 可附 &date=YYYY-MM-DD 指定修复的历史交易日；closepost 立即补写当天收盘列 / 记忘 / 总龙分歧收盘腿；extras 可附 &today=1 含当天；snapshot / ladder / ladder26 / range20 / range30 / divergedays 可附 &date=YYYY-MM-DD；range30 另可附 &overwrite=1 与 &endAtDate=1；r30backfill 另可附 &days=N（默认 6 个交易日）与 &stocks=股票名1,股票名2（留空 = 30日榜前 50 ∪ 20日榜前 25）；divergedays 另可附 &days=N（补最近 N 个展示日，上限 20）与 &phase=close|intraday；jiwang 立即回补昨收盘结果）' });
       }
       // [JIWANG-SHOUGU-CLOUD 2026-11-08] 回补不受「当前时间必须在 9:25~16:30」限制，
       //   否则周末/夜间出事故时无法立即修复历史缺口。
