@@ -249,6 +249,7 @@
               <TvrbDeviationBoard
                 :rows="deviationRows"
                 :meta="deviationMeta"
+                @toggle-basis="toggleDeviationBasis"
               />
               <!-- ★★ [RULE-35-RENDER 2026-11-19 用户口径] 第三十五条【30日涨幅抱团】买点：
                用户原话「11月17日……如果有同题材的股票在30日涨幅中排前三，那么就优先选，记住是竞价口径，
@@ -535,6 +536,8 @@ const {
   // ★★ [ABN-DEV 2026-11-14 用户口径] 官方偏离值面板的两份数据（行 + 表头/说明，文案全在 Logic 层）
   deviationRows,
   deviationMeta,
+  // ★★ [DEV-BASIS 2026-11-24 用户口径] 「竞价口径 toggle」—— 切「看哪一套」，不重新取数
+  toggleDeviationBasis,
   // ★★ [ABNORMAL-ALL 2026-11-13] 监管异动 ⇒ 买点侧【全部】灰色（含六个灰化容器之外的独立块）。
   //   判据只在 Logic 层（abnormal-overlay#isAbnormalAllGray），模板零计算（§21）。
   abnormalGray,

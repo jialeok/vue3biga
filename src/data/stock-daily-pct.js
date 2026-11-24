@@ -229,10 +229,17 @@ async function _fetchAll(sb, f, t) {
  * @param {string[]} stocks 只读这些票（去重后）
  * @param {string} from 起始日（含）
  * @param {string} to   结束日（含）
+ * @param {object} [opts]
+ * @param {boolean} [opts.fresh=false] ★ [DEV-AUC-WIN 2026-11-24] 跳过会话缓存【读】、强制回库。
+ *        为什么需要：收盘覆盖（16:00 后 worker 才写当天收盘腿）之后必须能看见「今天那根腿」，
+ *        而 `_subCache` 里存的是 9:25 时读的、**还没有今天**的旧结果 ⇒ 不绕过就永远看不出
+ *        「收盘腿已就绪」，面板会整晚停在竞价口径。只在「判定要为今天切回收盘口径」时才传，
+ *        ⛔ 别默认全开（那就等于把缓存删了，切日期会重新打接口）。
  * @returns {Promise<Map<string, Map<string, number>>|null>}
  *          结构同 readDailyPctRows；null = 读失败 ⇒ 调用方回退到全量读（⛔ 不要当空数据）
  */
-export async function readDailyPctRowsFor(stocks, from, to) {
+export async function readDailyPctRowsFor(stocks, from, to, opts) {
+    const fresh = !!(opts && opts.fresh === true);
     const f = String(from || '').trim();
     const t = String(to || '').trim();
     const names = [];
@@ -264,21 +271,24 @@ export async function readDailyPctRowsFor(stocks, from, to) {
         return out;
     };
 
-    const hit = _subCache.get(key);
-    if (hit && _isSubset(want, hit.names)) return _slice(hit.map);
-    // 覆盖命中（区间更宽 + 票集合更全）⇒ 0 请求
-    let best = null;
-    Array.from(_subCache.entries()).forEach(function(e) {
-        const parts = e[0].split('|');
-        const cf = parts[0], ct = parts[1];
-        if (!(cf <= f && ct >= t)) return;
-        if (!_isSubset(want, e[1].names)) return;
-        best = e[1];
-    });
-    if (best) return _slice(best.map);
+    // ★ fresh：跳过缓存【读】，强制回库（收盘覆盖后要靠它看见「今天那根收盘腿」）
+    if (!fresh) {
+        const hit = _subCache.get(key);
+        if (hit && _isSubset(want, hit.names)) return _slice(hit.map);
+        // 覆盖命中（区间更宽 + 票集合更全）⇒ 0 请求
+        let best = null;
+        Array.from(_subCache.entries()).forEach(function(e) {
+            const parts = e[0].split('|');
+            const cf = parts[0], ct = parts[1];
+            if (!(cf <= f && ct >= t)) return;
+            if (!_isSubset(want, e[1].names)) return;
+            best = e[1];
+        });
+        if (best) return _slice(best.map);
+    }
 
     const fly = _subInflight.get(key + '|' + names.length);
-    if (fly) return fly;
+    if (fly && !fresh) return fly;
 
     const p = (async function() {
         const sb = getSupabase();

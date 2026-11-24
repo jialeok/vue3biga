@@ -34,6 +34,18 @@ export function beijingTodayStr() {
     return local.toISOString().slice(0, 10);
 }
 
+/**
+ * 北京时区当前 HH:MM（'09:26' / '15:03'）。
+ * ★ [DEV-BASIS 2026-11-24] 判「收盘了没有 ⇒ 偏离值该不该切回收盘口径」用。
+ *   ⛔ 不要用 `new Date().getHours()` 直接取：那取的是【本机时区】，与「北京」不是一回事。
+ *   ⛔ 也不要用 UTC（会差 8 小时，15:00 收盘会被判成 07:00 还没收盘）。
+ */
+export function beijingNowHHMM() {
+    const d = new Date();
+    const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+    return local.toISOString().slice(11, 16);
+}
+
 /** 首屏窗口起点日期：今天往前推 AUCTION_RECENT_WINDOW_DAYS 个自然日 */
 export function getAuctionRecentSinceDate() {
     const now = new Date();

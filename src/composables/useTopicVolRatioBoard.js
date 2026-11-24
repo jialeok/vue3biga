@@ -2632,12 +2632,6 @@ export function useTopicVolRatioBoard() {
     if (b) return b;
     return getStockCode(n) || '';
   }
-  /** 该日的 9:25 竞价口径 20 日涨幅榜是否可用（可用 ⇒ 当天的偏离值用竞价腿） */
-  function _aucReadyForDate(d) {
-    const b = getTvrbAuctionBoard(d);
-    return !!(b && b.ready);
-  }
-
   const displayPlan = computed(function() {
     return attachDeviationFacts(_displayPlanBase.value, _dev.devMap.value, _dev.meta.value);
   });
@@ -2664,39 +2658,38 @@ export function useTopicVolRatioBoard() {
 
   /**
    * 触发一次偏离值取数。
-   * ★ 时点口径（用户点名「特别是竞价时，或者收盘后」）：
-   *   · 竞价时点（今天、且 9:26 竞价档可用）⇒ `basis='auction'`，用今日竞价涨幅顶替末腿
-   *     （指数没有集合竞价成交价 ⇒ 按「指数不动」计，与用户 11-13 那张表的假设一致）；
-   *   · 收盘后 / 历史日 ⇒ `basis='close'`，直接用库里的收盘腿。
-   *   ⛔ 收盘后绝不回填任何「9:25 那一刻」的偏离值 —— 竞价时点那份只在当时算、只用于当时上屏。
+   * ★★ [DEV-BASIS 2026-11-24 用户原话]
+   *   「我要求的是在竞价时间就可以知道它的偏离值看是否触发，所以用竞价口径，等到收盘，
+   *     再覆盖下，再计算……再添加一个竞价口径 toggle，我点开的时候，就可以看到竞价时间的
+   *     看是否触发，这样我就可以对比收盘口径。」
+   *
+   * ⇒ 这里**不再决定口径**：一次把两套都算好（收盘 / 竞价），默认口径由
+   *   `abnormal-deviation.js#deviationBasisFor` 按时点判（竞价时点 = 竞价口径、收盘后 = 收盘口径），
+   *   用户点 toggle 只切「看哪一套」，⛔ 不重新取数（§32）。
+   *   ⚠️ 旧实现传 `todayPctOf: buyRangeMap.pct` —— 那是**10 日区间涨幅**，不是今日竞价涨幅（契约错配），
+   *     现在由 `useAbnormalDeviation` 直接读 `market_metrics.auc_pct_chg`，这里不再传任何涨幅。
    */
   function _reloadDeviation() {
     const d = String(currentDate.value || '').trim();
     if (!d) { _dev.clear(); return; }
     const names = deviationUniverse.value;
     if (!names || names.length === 0) { _dev.clear(); return; }
-    const isToday = d === _bjToday();
-    // ★ 竞价口径只在「今天 + 竞价档可用」时启用：历史日重算一律收盘腿（§11 稳定复盘）
-    const useAuc = isToday && _aucReadyForDate(d);
     _dev.load({
       names: names,
       asOf: d,
-      codeOf: _codeOfName,
-      basis: useAuc ? 'auction' : 'close',
-      todayPctOf: useAuc
-        ? function (name) {
-            const m = buyRangeMap.value;
-            if (!(m instanceof Map)) return null;
-            const hit = m.get(String(name || '').trim());
-            return hit ? hit.pct : null;
-          }
-        : null
+      codeOf: _codeOfName
+      // ⚠️ 不再传「竞价档是否就绪」：默认口径由 `useAbnormalDeviation` 用**真正到货的竞价涨幅**
+      //   （`aucBuilt.ready > 0`）自己判 —— 那比「20 日涨幅榜就绪」更贴近事实（§10）。
     });
   }
 
-  // 只在「日期 / 票集合」变化时重取（§32：⛔ 不许跟着每一帧重算）
+  // 只在「日期 / 票集合 / 数据刷新版本」变化时重取（§32：⛔ 不许跟着每一帧重算）。
+  // ★ [DEV-BASIS] version 入键是必需的：收盘覆盖（16:00）后要靠它重算一次 ——
+  //   否则面板会整晚停在早上那份竞价口径（用户明确要求「等到收盘，再覆盖下，再计算」）。
   watch(
-    function () { return [String(currentDate.value || ''), deviationUniverse.value.join('|')].join('#'); },
+    function () {
+      return [String(currentDate.value || ''), deviationUniverse.value.join('|'), version.value].join('#');
+    },
     function () { _reloadDeviation(); },
     { immediate: true }
   );
@@ -2709,24 +2702,43 @@ export function useTopicVolRatioBoard() {
   /**
    * 面板表头 / 说明（§21：文案全部在 Logic 层拼好，视图零计算）。
    * ⚠️ `visible=false` ⇒ 视图整块不渲染（⛔ 不挂一个空壳占位）。
+   *
+   * ★★ [DEV-BASIS 2026-11-24] 口径文案现在由 `abnormal-deviation.js#deviationBasisNote` 给
+   *   （它会如实写「收盘腿还没入库 ⇒ 现在是上一交易日」这种事实），这里只补充 toggle 相关字段。
    */
   const deviationMeta = computed(function() {
     const m = _dev.meta.value || {};
     const rows = deviationRows.value;
     const okCount = rows.filter(function (r) { return r.ok; }).length;
-    const basisText = m.basis === 'auction'
-      ? '9:25 竞价口径（今日指数按「不动」计）'
-      : '收盘口径（截至最近一个收盘日）';
+    const isAuc = m.basis === 'auction';
+    const basisText = m.basisText || (isAuc
+      ? '9:25 竞价口径（今日个股用竞价涨幅、对应指数按「不动」计）'
+      : '收盘口径（截至最近一个收盘日）');
     let warnText = '';
     if (m.loading && rows.length === 0) warnText = '偏离值读取中…';
     else if (m.error) warnText = '⚠️ ' + m.error + ' ⇒ 本次偏离值判不出（这不是「没有异动」，§10）';
-    else if (m.note) warnText = m.note;
+    else if (isAuc && m.aucReady !== true) {
+      warnText = '⚠️ 这一天的 9:25 竞价涨幅没落库 ⇒ 竞价口径算不出（不是「没有异动」）。' +
+        (m.closeReady ? '可切回「收盘口径」看。' : '');
+    } else if (!isAuc && m.closeReady !== true && m.asOf) {
+      warnText = '⚠️ 这一天的收盘腿还没入库 ⇒ 收盘口径算不出。' +
+        (m.aucReady ? '可切到「竞价口径」看 9:25 那一刻。' : '');
+    } else if (m.note) warnText = m.note;
     else if (rows.length > 0 && okCount === 0) warnText = '⚠️ 逐日腿 / 指数腿未就绪 ⇒ 偏离值一个都算不出';
     return {
       visible: rows.length > 0,
       asOf: m.asOf || '',
       basis: m.basis || 'close',
       basisText: basisText,
+      // ★ toggle 三件套：状态 + 是否可用 + 说明（视图只读，⛔ 不自己算口径）
+      auctionView: isAuc,
+      canToggle: !!(m.aucReady || m.closeReady),
+      toggleHint: isAuc
+        ? '当前：竞价口径（9:25 那一刻，用来判断「开盘前是否会触发」）｜点一下看收盘口径'
+        : '当前：收盘口径（当日收盘后）｜点一下看竞价口径（9:25 那一刻）',
+      toggleNote: m.aucReady && m.closeReady
+        ? '两个口径都已算出，可直接对比。'
+        : (m.aucReady ? '竞价口径已算出；收盘腿还没入库。' : '收盘口径已算出；竞价涨幅没落库 ⇒ 竞价口径算不出。'),
       ready: typeof m.ready === 'number' ? m.ready : 0,
       total: typeof m.total === 'number' ? m.total : rows.length,
       loading: !!m.loading,
@@ -2740,6 +2752,11 @@ export function useTopicVolRatioBoard() {
       warnText: warnText
     };
   });
+
+  /** 用户点「竞价口径」toggle：只切看哪一套，⛔ 不重新取数、⛔ 不改任何选股结论 */
+  function toggleDeviationBasis() {
+    _dev.toggleBasis();
+  }
 
   // ════════════════════════════════════════════════════════════════════════════════════════
   // ★★ [BUY-SETTLE-2 2026-10-31 用户口径 · 第三版] 买点侧「结果确认」的两道闸门
@@ -3787,6 +3804,10 @@ export function useTopicVolRatioBoard() {
     //   ⛔ 面板只读，绝不参与选股；买点行徽标走 displayPlan 的 p.devBadge（同一个 devMap）。
     deviationRows,
     deviationMeta,
+    // ★★ [DEV-BASIS 2026-11-24 用户口径] 「竞价口径 toggle」—— 点一下切「看哪一套」，
+    //   两套都已经算好（收盘 = 当日收盘腿；竞价 = 9:25 竞价涨幅 + 指数按不动），
+    //   ⛔ 切换不重新请求、⛔ 不改任何选股结论，只换屏幕上那一列数字。
+    toggleDeviationBasis,
     toggleExpand,
     toggleCompact,
     setRulesOpen,

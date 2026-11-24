@@ -144,6 +144,34 @@ export const DEV_THRESHOLDS = {
   star: { dev3: 30, dev10: 100, dev30: 200, neg10: -50, neg30: -70, times10: 3 }
 };
 
+/**
+ * 深市 ST / *ST 的三日阈值。
+ * 来源：深交所《交易规则》5.4.3「ST 和 *ST 股票连续三个交易日内日收盘价涨跌幅偏离值累计达到 ±12%」。
+ * ⚠️ 沪市 ST 的对应条款【未核实】⇒ 沪市 ST 仍按主板 20% 判（§40 不猜数字），详情里如实注明。
+ * ⚠️ 严重异常波动那两档（10 日 +100%/−50%、30 日 +200%/−70%）官方【不区分 ST】⇒ 沿用 main。
+ */
+export const DEV_THRESHOLDS_SZ_ST = { dev3: 12, dev10: 100, dev30: 200, neg10: -50, neg30: -70, times10: 4 };
+
+/** 【纯函数】票名是否 ST / *ST / 退市整理（深市三日阈值要降到 ±12%） */
+export function isStName(name) {
+  const s = String(name || '').replace(/\s/g, '').toUpperCase();
+  return /^(S?\*?ST|退市)/.test(s);
+}
+
+/**
+ * 【纯函数】按「板块 + 市场 + 是否 ST」取阈值（§6 一份实现）。
+ * @param {string} board 'main' | 'growth' | 'star'
+ * @param {string} [code] 6 位代码（用来区分沪深；深市 = 0 开头）
+ * @param {string} [name] 票名（用来判 ST）
+ */
+export function thresholdsForStock(board, code, name) {
+  const th = thresholdsForBoard(board);
+  if (!th) return null;
+  // 深市 ST/*ST 三日阈值 ±12%（沪市未核实 ⇒ 不动）
+  if (isStName(name) && /^0/.test(String(code || '').trim())) return DEV_THRESHOLDS_SZ_ST;
+  return th;
+}
+
 /** 「接近」系数：dev10 ≥ 90 / dev30 ≥ 180 就进预警带（= 官方红线的 90%） */
 export const DEV_NEAR_RATIO = 0.9;
 /** 「留意」系数：dev10 ≥ 70 / dev30 ≥ 140（只用于榜单单行提示，不吓人） */
@@ -183,6 +211,68 @@ export function pickBaseIndexForCode(code) {
 export function thresholdsForBoard(board) {
   const b = String(board || '').trim();
   return DEV_THRESHOLDS[b] || null;
+}
+
+// ────────────────────────────────────────────────────────────────────────────────
+// ②-b 竞价口径 / 收盘口径（时点判据，纯函数 —— ⛔ 别把这段散落在 composable 里）
+// ────────────────────────────────────────────────────────────────────────────────
+/**
+ * 收盘判定线（北京时区）。过了这条线，当天就应该用【收盘口径】重算。
+ * 与 `jiwang-close-write.js#JW_CLOSE_HHMM` 同一口径（15:05 是给记忘留的抓取余量，这里只判口径）。
+ */
+export const DEV_CLOSE_HHMM = '15:00';
+
+/**
+ * 【纯函数】这一屏该用哪个口径。
+ *
+ * 🔴🔴 [DEV-BASIS 2026-11-24 用户原话]「我要求的是在竞价时间就可以知道它的偏离值看是否触发，
+ *   所以用竞价口径，等到收盘，再覆盖下，再计算，这是原来我一直要求的。」
+ *
+ * 判据（顺序即优先级，⛔ 别调换）：
+ *   ① 不是今天（复盘历史日）⇒ close —— 历史日永远收盘腿（§11 稳定复盘）
+ *   ② 今天的收盘腿已经入库 ⇒ close —— **收盘覆盖**：哪怕还在 15:00 前后，只要有真收盘涨幅就用它
+ *   ③ 已过 15:00 但收盘腿还没入库（16:00 才写）⇒ close（此时窗口自然停在上一交易日，靠文案交代）
+ *   ④ 9:25 竞价档就绪 ⇒ auction —— 今日个股用竞价涨幅、对应指数按不动计
+ *   ⑤ 其余（竞价档没就绪 / 还没到 9:26）⇒ close
+ *
+ * @param {{date:string, today:string, hhmm:string,
+ *          auctionReady?:boolean, closeLegReady?:boolean}} o
+ * @returns {'auction'|'close'}
+ */
+export function deviationBasisFor(o) {
+  const x = o || {};
+  const date = String(x.date || '').slice(0, 10);
+  const today = String(x.today || '').slice(0, 10);
+  if (!date || !today || date !== today) return 'close';
+  if (x.closeLegReady === true) return 'close';
+  if (String(x.hhmm || '') >= DEV_CLOSE_HHMM) return 'close';
+  return x.auctionReady === true ? 'auction' : 'close';
+}
+
+/**
+ * 【纯函数】口径说明句（面板 `meta.warnText` / 悬停用）。
+ * §10：口径与事实不符是最坏的一种错 —— 所以这里必须如实写「现在算到哪一天」。
+ *
+ * @param {{basis:string, asOf:string, today:string, hhmm:string,
+ *          auctionReady?:boolean, closeLegReady?:boolean}} o
+ * @returns {string} 无需提示 ⇒ ''
+ */
+export function deviationBasisNote(o) {
+  const x = o || {};
+  const asOf = String(x.asOf || '').slice(0, 10);
+  const today = String(x.today || '').slice(0, 10);
+  if (x.basis === 'auction') {
+    return '竞价口径：今日个股用 9:25 竞价涨幅、对应指数按不动计；收盘后自动改为收盘口径重算。';
+  }
+  if (!asOf || !today || asOf !== today) return '';
+  if (x.closeLegReady === true) return '收盘口径：今日收盘腿已入库，已按收盘涨幅重算。';
+  if (String(x.hhmm || '') >= DEV_CLOSE_HHMM) {
+    return '⚠️ 今日收盘腿尚未入库（16:00 后生成）⇒ 当前显示的是【截至上一交易日收盘】的偏离值，稍后自动刷新。';
+  }
+  if (x.auctionReady !== true) {
+    return '⚠️ 今日 9:25 竞价档还没就绪 ⇒ 当前显示的是【截至上一交易日收盘】的偏离值（不是「没有异动」）。';
+  }
+  return '';
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
@@ -325,12 +415,18 @@ function _hit(code, label, thr, value, stageWhenOver) {
 /**
  * 【纯函数】把三档偏离值判成一个档位 + 一串命中项。
  *
- * @param {{board:string, dev3?:number|null, dev10?:number|null, dev30?:number|null}} o
+ * 🔴 [DEV-NEG-WARN 2026-11-24] 用户要求「竞价时就知道会不会触发」之后复核出的缺陷：
+ *   预警带（near / watch）原来只判【正向】（`d10 >= thr*0.9`）⇒ 一只 30 日跌 60.2%
+ *   （距 −70% 只差 9.8 点）会被判成「正常」，而官方负向红线跟正向一样是要公告的。
+ *   ⇒ 现在两个方向都判：正向比 dev10/dev30，负向比 neg10/neg30（−50 / −70）。
+ *
+ * @param {{board:string, code?:string, name?:string,
+ *          dev3?:number|null, dev10?:number|null, dev30?:number|null}} o
  * @returns {{stage:string, stageText:string, hits:Array, hasSevere10:boolean, hasSevere30:boolean}}
  */
 export function classifyDeviation(o) {
   const x = o || {};
-  const th = thresholdsForBoard(x.board);
+  const th = thresholdsForStock(x.board, x.code, x.name);
   const d3 = numOfText(x.dev3);
   const d10 = numOfText(x.dev10);
   const d30 = numOfText(x.dev30);
@@ -348,7 +444,7 @@ export function classifyDeviation(o) {
   // 严重异动③：连续 30 日偏离 ≥ +200% / ≤ −70%
   push(_hit('D30', '30日偏离', th.dev30, d30, DEV_STAGE_SEVERE));
   push(_hit('N30', '30日偏离（跌）', th.neg30, d30, DEV_STAGE_SEVERE));
-  // 异常波动：连续 3 日偏离 ≥ ±dev3
+  // 异常波动：连续 3 日偏离 ≥ ±dev3（ST 深市 ±12%，见 thresholdsForStock）
   push(_hit('D3', '3日偏离', th.dev3, d3, DEV_STAGE_WATCH));
   push(_hit('N3', '3日偏离（跌）', -th.dev3, d3, DEV_STAGE_WATCH));
 
@@ -356,12 +452,19 @@ export function classifyDeviation(o) {
   const hitCodes = new Set(hits.filter(function (h) { return h.over; }).map(function (h) { return h.code; }));
   let stage = _pickStage(hits);
   if (stage !== DEV_STAGE_SEVERE) {
-    const near10 = d10 !== null && d10 >= th.dev10 * DEV_NEAR_RATIO && !hitCodes.has('D10');
-    const near30 = d30 !== null && d30 >= th.dev30 * DEV_NEAR_RATIO && !hitCodes.has('D30');
+    // ★ [DEV-NEG-WARN] 两个方向都判：正向比 dev10/dev30，负向比 neg10/neg30
+    const near10 = d10 !== null &&
+      (d10 >= th.dev10 * DEV_NEAR_RATIO || d10 <= th.neg10 * DEV_NEAR_RATIO) &&
+      !hitCodes.has('D10') && !hitCodes.has('N10');
+    const near30 = d30 !== null &&
+      (d30 >= th.dev30 * DEV_NEAR_RATIO || d30 <= th.neg30 * DEV_NEAR_RATIO) &&
+      !hitCodes.has('D30') && !hitCodes.has('N30');
     if (near10 || near30) stage = DEV_STAGE_NEAR;
     else if (stage !== DEV_STAGE_WATCH) {
-      const watch10 = d10 !== null && d10 >= th.dev10 * DEV_WATCH_RATIO;
-      const watch30 = d30 !== null && d30 >= th.dev30 * DEV_WATCH_RATIO;
+      const watch10 = d10 !== null &&
+        (d10 >= th.dev10 * DEV_WATCH_RATIO || d10 <= th.neg10 * DEV_WATCH_RATIO);
+      const watch30 = d30 !== null &&
+        (d30 >= th.dev30 * DEV_WATCH_RATIO || d30 <= th.neg30 * DEV_WATCH_RATIO);
       if (watch10 || watch30) stage = DEV_STAGE_WATCH;
     }
   }
@@ -453,7 +556,7 @@ export function countSevereTriggers(o) {
   };
   const idx = pickBaseIndexForCode(x.code);
   if (!idx) return blank('北交所 / 代码不全 ⇒ 官方这套口径不适用，不计数');
-  const th = thresholdsForBoard(idx.board);
+  const th = thresholdsForStock(idx.board, x.code, x.name);
   if (!th) return blank('板块判不出 ⇒ 不计数');
 
   const sMap = _legMap(x.stockLegs);
@@ -538,6 +641,10 @@ export function countSevereTriggers(o) {
     '序号 = 这是连续第几个触发日（逐日递增），某天明确判出「未触发」才归零。');
   parts.push('官方原文：「异常/严重异常波动指标自交易所公布的次一交易日或复牌之日起重新计算」' +
     '⇒ 交易所公布后窗口会重算，所以这里的序号可能比官方实际公布次数更细。');
+  // ★ [DEV-TIMES10 2026-11-24] 官方第①条判据（10 日内 4 次同向异动）本模块没算 —— 如实交代，
+  //   ⛔ 别让用户以为「序号是 0」就等于「官方不会认定严重异动」。
+  parts.push('⚠️ 官方判据①（连续 10 个交易日内 4 次同向异常波动，创业板/科创板 3 次）本面板未接入，' +
+    '这里只按判据②③（10 日 / 30 日偏离）复算。');
   if (ordinal > 0) {
     parts.push('本次：连续第 ' + ordinal + ' 个触发日。');
   }
@@ -610,14 +717,50 @@ export function needText(n) {
 }
 
 /**
+ * 【纯函数】把「今天是竞价口径」这件事落成一根真实的指数腿（pct = 0）。
+ *
+ * 🔴🔴 [DEV-AUC-WIN 2026-11-24 用户原话]「我要求的是在竞价时间就可以知道它的偏离值看是否触发，
+ *   所以用竞价口径，等到收盘，再覆盖下，再计算，这是原来我一直要求的。」
+ *
+ *   旧实现的死结：窗口锚在**指数腿**上，而指数没有集合竞价价 ⇒ 库里/接口里都没有「今天」那根腿
+ *   ⇒ `cumulativeDeviation` 的窗口静默前移一天 ⇒ `todayPctOf` 注入的今日竞价涨幅落在窗口**外面**，
+ *   被直接丢弃。表现为：9:25 显示的数与昨晚收盘一模一样，而文案却写「截至今日 9:25 竞价」。
+ *   ⇒ 竞价口径下显式补一根 `{date: asOf, pct: 0}`（= 指数不动），窗口才真正含今天。
+ *
+ * ⚠️ `force=true`（竞价口径专用）时，即使 asOf 那天已有指数腿也**覆盖成 0** ——
+ *    因为「9:25 那一刻」指数根本还没有价格，拿收盘/盘中涨幅去算就不是竞价口径了。
+ *    ⛔ 只动 asOf 那一天，别的日期一律不碰（给历史日补 0 = 编造）。
+ * @param {Array} indexLegs 指数逐日腿
+ * @param {string} asOf 窗口末日
+ * @param {number|string} [pct=0] 指数当日的假定涨幅（竞价时点 = 0）
+ * @param {boolean} [force=false] 已存在也覆盖
+ * @returns {Array} 新数组（不修改入参，§11）
+ */
+export function withIndexFlatLeg(indexLegs, asOf, pct, force) {
+  const d = String(asOf || '').slice(0, 10);
+  const src = Array.isArray(indexLegs) ? indexLegs : [];
+  if (!d) return src.slice();
+  const v = numOfText(pct);
+  const flat = (v === null ? 0 : v);
+  const has = src.some(function (x) { return x && String(x.date).slice(0, 10) === d; });
+  if (has && force !== true) return src.slice();
+  const a = src.filter(function (x) { return !(x && String(x.date).slice(0, 10) === d); });
+  a.push({ date: d, pct: flat });
+  a.sort(function (p, q) { return p.date < q.date ? -1 : (p.date > q.date ? 1 : 0); });
+  return a;
+}
+
+/**
  * 【纯函数】偏离值 → 一行可渲染的事实（买点行徽标 / 榜单行 / 说明区共用同一份）。
  *
  * @param {object} o
  * @param {string} o.code 6 位代码
+ * @param {string} [o.name] 票名（只用来判 ST：深市 ST/*ST 三日阈值 ±12%）
  * @param {Array}  o.stockLegs 升序逐日腿 [{date,pct}]
  * @param {Array}  o.indexLegs 对应指数升序逐日腿
  * @param {'close'|'auction'} [o.basis='close'] 末腿口径（只用于文案，⛔ 不参与计算）
  * @param {string} [o.asOf] 窗口末日（复盘历史日必须传，见 cumulativeDeviation）
+ * @param {boolean} [o.indexTodayFlat=false] 竞价口径：指数缺 asOf 腿时补一根 pct=0（见 withIndexFlatLeg）
  * @returns {object} 形状见返回值；判不出 ⇒ { ok:false, ... } 且 dev10/dev30 全 null（§10）
  */
 export function computeDeviation(o) {
@@ -635,7 +778,7 @@ export function computeDeviation(o) {
     dev3: null, dev10: null, dev30: null,
     stockChain3: null, stockChain10: null, stockChain30: null,
     indexChain3: null, indexChain10: null, indexChain30: null,
-    thr3: null, thr10: null, thr30: null,
+    thr3: null, thr10: null, thr30: null, thr10Neg: null, thr30Neg: null,
     gap10: null, gap30: null,
     need10: null, need30: null,
     stage: DEV_STAGE_UNKNOWN,
@@ -648,6 +791,7 @@ export function computeDeviation(o) {
     gapShort: '',
     calcText: '',
     needValueText: '',
+    needDir: '涨',
     needAlert: false,
     indexBeta: null,
     indexMoveText: '',
@@ -663,17 +807,24 @@ export function computeDeviation(o) {
   }; };
   if (!idx) return makeEmpty();                          // 北交所 / 代码缺失 ⇒ 判不出
 
-  const th = thresholdsForBoard(idx.board);
+  const th = thresholdsForStock(idx.board, code, x.name);
   const asOf = x.asOf || '';
-  const d3 = cumulativeDeviation(x.stockLegs, x.indexLegs, 3, asOf);
-  const d10 = cumulativeDeviation(x.stockLegs, x.indexLegs, 10, asOf);
-  const d30 = cumulativeDeviation(x.stockLegs, x.indexLegs, 30, asOf);
+  // ★ [DEV-AUC-WIN] 竞价口径：对应指数「当日那一根」强制按 0（9:25 指数还没有价格）
+  const iLegs = x.indexTodayFlat === true ? withIndexFlatLeg(x.indexLegs, asOf, 0, true) : x.indexLegs;
+  const d3 = cumulativeDeviation(x.stockLegs, iLegs, 3, asOf);
+  const d10 = cumulativeDeviation(x.stockLegs, iLegs, 10, asOf);
+  const d30 = cumulativeDeviation(x.stockLegs, iLegs, 30, asOf);
   if (!d3 && !d10 && !d30) {
-    return Object.assign(makeEmpty(), { thr3: th.dev3, thr10: th.dev10, thr30: th.dev30 });
+    return Object.assign(makeEmpty(), {
+      thr3: th.dev3, thr10: th.dev10, thr30: th.dev30,
+      thr10Neg: th.neg10, thr30Neg: th.neg30
+    });
   }
 
   const cls = classifyDeviation({
     board: idx.board,
+    code: code,
+    name: x.name,
     dev3: d3 ? d3.dev : null,
     dev10: d10 ? d10.dev : null,
     dev30: d30 ? d30.dev : null
@@ -687,6 +838,7 @@ export function computeDeviation(o) {
   const fact = Object.assign(makeEmpty(), {
     ok: true,
     thr3: th.dev3, thr10: th.dev10, thr30: th.dev30,
+    thr10Neg: th.neg10, thr30Neg: th.neg30,
     dev3: d3 ? d3.dev : null,
     dev10: d10 ? d10.dev : null,
     dev30: d30 ? d30.dev : null,
@@ -712,6 +864,7 @@ export function computeDeviation(o) {
   fact.calcText = deviationCalcText(fact);       // 面板第二行「自核」：个股 − 指数 = 偏离
   // ★ [IDX-MOVE 2026-11-14] 「股价再涨」是条件估算 ⇒ 数值、警示色、指数敏感度都由 Logic 层给
   fact.needValueText = deviationNeedValueText(fact);
+  fact.needDir = deviationNeedDir(fact);         // '涨' / '跌'（视图据此选词，⛔ 不自己判数字）
   fact.needAlert = deviationNeedAlert(fact);
   fact.indexBeta = deviationIndexBeta(fact);
   fact.indexMoveText = deviationIndexMoveText(fact);
@@ -722,8 +875,11 @@ export function computeDeviation(o) {
   if (x.withTrigger === true) {
     const trg = countSevereTriggers({
       code: code,
+      name: x.name,
       stockLegs: x.stockLegs,
-      indexLegs: x.indexLegs,
+      // ⚠️ 必须用【补齐后的】指数腿（竞价口径那根 pct=0）：逐日复算与「今天的数」必须是同一份尺子，
+      //   否则 9:25 会出现「面板说已触发、序号却说没触发」这种自相矛盾。
+      indexLegs: iLegs,
       asOf: asOf,
       maxLookback: x.triggerLookback
     });
@@ -738,23 +894,46 @@ export function computeDeviation(o) {
 }
 
 /**
- * 【纯函数】挑「离红线最近的那一档」—— 偏离值 / 阈值 的比值越大就越近。
+ * 【纯函数】挑「离红线最近的那一档」—— 「占本方向红线的比例」越大就越近。
  * ★ 徽标与「距红线」**必须共用同一个选择器**，否则会出现
  *   「徽标说 30日、括号里算的却是 10日」这种自相矛盾（2026-11-14 用户就是靠这行自核的）。
- * @returns {{code:'D10'|'D30', thr:number|null, dev:number|null, ratio:number|null}}
+ *
+ * 🔴 [DEV-NEG-WARN 2026-11-24] 旧实现只用 `dev / 正阈值` 当比值 ⇒ 负偏离的比值恒为负，
+ *   四个候选里永远挑不出「离负向红线最近」的那一档（−60.2% 会被配到 +200% 上去）。
+ *   ⇒ 现在按【方向】取各自的阈值：dev ≥ 0 比 thr10/thr30，dev < 0 比 neg10/neg30。
+ *
+ * @returns {{code:'D10'|'D30'|'N10'|'N30', thr:number|null, dev:number|null, ratio:number|null}}
+ *          ⚠️ thr 带符号：负向档返回 −50 / −70（下游「距 X% 差 N 点」直接印它）
  */
 function _nearestWindow(f) {
-  const d10 = numOfText(f.dev10);
-  const d30 = numOfText(f.dev30);
-  const t10 = numOfText(f.thr10);
-  const t30 = numOfText(f.thr30);
-  const r10 = (d10 !== null && t10) ? d10 / t10 : null;
-  const r30 = (d30 !== null && t30) ? d30 / t30 : null;
-  const use30 = (r30 !== null) && (r10 === null || r30 >= r10);
-  return use30
-    ? { code: 'D30', thr: t30, dev: d30, ratio: r30 }
-    : { code: 'D10', thr: t10, dev: d10, ratio: r10 };
+  const cand = [];
+  const add = function (code, dev, thr) {
+    const d = numOfText(dev);
+    const t = numOfText(thr);
+    if (d === null || t === null || t === 0) return;
+    if (d >= 0 && t < 0) return;             // 正向偏离不配负向阈值
+    if (d < 0 && t > 0) return;              // 负向偏离不配正向阈值
+    cand.push({ code: code, thr: t, dev: d, ratio: Math.abs(d) / Math.abs(t) });
+  };
+  add('D10', f.dev10, f.thr10);
+  add('N10', f.dev10, f.thr10Neg);
+  add('D30', f.dev30, f.thr30);
+  add('N30', f.dev30, f.thr30Neg);
+  if (cand.length === 0) return { code: 'D10', thr: null, dev: null, ratio: null };
+  // 比例最大者优先；相同则取更长窗口（与旧行为一致：r30 >= r10 时用 30 日）
+  let best = cand[0];
+  cand.forEach(function (c) {
+    if (c.ratio > best.ratio) best = c;
+    else if (c.ratio === best.ratio && _winIsLong(c.code) && !_winIsLong(best.code)) best = c;
+  });
+  return best;
 }
+
+/** 这一档是不是 30 日窗口（D30 / N30） */
+function _winIsLong(code) { return code === 'D30' || code === 'N30'; }
+
+/** 档位代码 → 「30 日 / 10 日」（上屏文案唯一来源，⛔ 别在视图里判 code） */
+function _winName(code) { return _winIsLong(code) ? '30 日' : '10 日'; }
 
 /** 百分点差值的显示精度：< 1 点给两位小数（否则「差 0.05 点」会印成「0.0 点」） */
 function _ptsText(v) {
@@ -786,13 +965,17 @@ function _devGapPair(dev, thr) {
   const d = numOfText(dev);
   const t = numOfText(thr);
   if (d === null || t === null) return { shown: null, dp: 1, gap: null };
+  /** 取整后看着「已越线」但真值没越线 ⇒ 要加精度（负向阈值比较方向相反） */
+  const shownOver = function (v) { return t >= 0 ? v >= t : v <= t; };
+  const reallyOver = shownOver(d);
   let dp = 1;
   let shown = Number(d.toFixed(dp));
-  if (shown >= t && d < t) {              // ② 取整把「还没到」说成「到了」⇒ 加精度
+  if (shownOver(shown) && !reallyOver) {   // ② 取整把「还没到」说成「到了」⇒ 加精度
     dp = 2;
     shown = Number(d.toFixed(dp));
   }
-  const gap = Math.max(0, Number((t - shown).toFixed(dp)));
+  // 正向：差 = 阈值 − 显示值；负向：差 = 显示值 − 阈值（都是「还差多少点」，恒 ≥ 0）
+  const gap = Math.max(0, Number((t >= 0 ? (t - shown) : (shown - t)).toFixed(dp)));
   return { shown: shown, dp: dp, gap: gap };
 }
 
@@ -803,13 +986,17 @@ function _devTextDp(v, dp) {
   return (n >= 0 ? '+' : '') + n.toFixed(dp) + '%';
 }
 
-/** 股价还需涨幅的显示精度：< 1% 给两位小数（卡线票），< 10% 给一位，其余取整 */
-function _needPctText(v) {
+/**
+ * 股价还需涨幅的显示精度：< 1% 给两位小数（卡线票），< 10% 给一位，其余取整。
+ * @param {number} v 需要变动多少（正数 = 幅度）
+ * @param {'涨'|'跌'} [dir] 负向档传 '跌' ⇒ 不带 '+'（否则会读成「还要涨」）
+ */
+function _needPctText(v, dir) {
   const n = numOfText(v);
   if (n === null) return '';
   if (n <= 0) return '+0%';
   const s = n < 1 ? n.toFixed(2) : (n < 10 ? n.toFixed(1) : String(Math.round(n)));
-  return '+' + s + '%';
+  return (dir === '跌' ? '' : '+') + s + '%';
 }
 
 /**
@@ -836,23 +1023,24 @@ function _windowDisplay(f) {
   const w = _nearestWindow(x);
   if (w.dev === null || w.thr === null) return null;
   const base = _devGapPair(w.dev, w.thr);
-  const isD30 = w.code === 'D30';
-  const sc = numOfText(isD30 ? x.stockChain30 : x.stockChain10);
-  const ic = numOfText(isD30 ? x.indexChain30 : x.indexChain10);
+  const isLong = _winIsLong(w.code);
+  const sc = numOfText(isLong ? x.stockChain30 : x.stockChain10);
+  const ic = numOfText(isLong ? x.indexChain30 : x.indexChain10);
   if (sc === null || ic === null) {
     // 合成/残缺 fact（单测夹具常缺腿）⇒ 退回旧口径，⛔ 不编造两条区间涨幅
     return { code: w.code, thr: w.thr, dp: base.dp, shown: base.shown, gap: base.gap, scS: null, icS: null };
   }
+  const over = function (v) { return w.thr >= 0 ? v >= w.thr : v <= w.thr; };
   let dp = base.dp;
   let scS, icS, shown;
   for (let k = 0; k < 3; k++) {
     scS = Number(sc.toFixed(dp));
     icS = Number(ic.toFixed(dp));
     shown = Number((scS - icS).toFixed(dp));
-    if (!(shown >= w.thr && w.dev < w.thr)) break;
+    if (!(over(shown) && !over(w.dev))) break;
     dp += 1;
   }
-  const gap = Math.max(0, Number((w.thr - shown).toFixed(dp)));
+  const gap = Math.max(0, Number((w.thr >= 0 ? (w.thr - shown) : (shown - w.thr)).toFixed(dp)));
   return { code: w.code, thr: w.thr, dp: dp, shown: shown, gap: gap, scS: scS, icS: icS };
 }
 
@@ -868,7 +1056,7 @@ export function deviationCellTexts(fact) {
   if (!d) return fallback;
   if (f.stage === DEV_STAGE_SEVERE || d.shown === null) return fallback;
   const t = _devTextDp(d.shown, d.dp);
-  return d.code === 'D30'
+  return _winIsLong(d.code)
     ? { dev10Text: fallback.dev10Text, dev30Text: t }
     : { dev10Text: t, dev30Text: fallback.dev30Text };
 }
@@ -886,12 +1074,11 @@ export function deviationBadge(fact) {
   if (!f.ok) return '';
   const w = _nearestWindow(f);
   if (w.ratio === null || w.dev === null) return '';
-  if (f.stage === DEV_STAGE_SEVERE) {
-    return (w.code === 'D30' ? '30日偏离 ' : '10日偏离 ') + devText(w.dev);
-  }
+  const label = _winIsLong(w.code) ? '30日偏离 ' : '10日偏离 ';
+  if (f.stage === DEV_STAGE_SEVERE) return label + devText(w.dev);
   const d = _windowDisplay(f);
   if (!d) return '';
-  return (d.code === 'D30' ? '30日偏离 ' : '10日偏离 ') + _devTextDp(d.shown, d.dp);
+  return label + _devTextDp(d.shown, d.dp);
 }
 
 /**
@@ -941,7 +1128,10 @@ function _gapCore(fact) {
       //   两段并排时从「10日偏离 +178.6%、30日偏离 +223.4%」缩到「10日 +178.6% · 30日 +223.4%」，
       //   手机端才不会撑出卡片右边（配套 CSS 也已允许折行，双保险）。
       f.hits.forEach(function (h) {
-        parts.push(String(h.label || '').replace('偏离', '') + ' ' + devText(h.value));
+        // ★ [DEV-NEG-WARN] 负方向的 label 是「10日偏离（跌）」，再套进 `已触发（…）` 会变成
+        //   `已触发（10日（跌） -52.8%）`（括号套括号）。跌幅本身带负号，方向已一目了然
+        //   ⇒ 上屏时把「（跌）」去掉，title / hits 里仍保留完整 label。
+        parts.push(String(h.label || '').replace('偏离', '').replace('（跌）', '') + ' ' + devText(h.value));
       });
     }
     const s = parts.length ? '已触发（' + parts.join(' · ') + '）' : '已触发严重异动';
@@ -952,23 +1142,32 @@ function _gapCore(fact) {
   const d = _windowDisplay(f);                        // 与徽标/表格列/自核算式同一组显示数字
   if (!d) return none;
   const w = d;                                       // code / thr 与 _nearestWindow 一致
-  const scRaw = numOfText(w.code === 'D30' ? f.stockChain30 : f.stockChain10);
+  const scRaw = numOfText(_winIsLong(w.code) ? f.stockChain30 : f.stockChain10);
   const cs = scRaw === null ? null : 1 + scRaw / 100;
   // 🔴 用【屏幕上那个点差】反推股价涨幅，⛔ 别拿原始 dev 另算 —— 否则
   //    「差 0.05 点」与「股价再涨 +0.01%」对不上（0.05/2.849 ≈ 0.02%）。
   const need = (cs !== null && cs > 0)
     ? d.gap / cs
-    : numOfText(w.code === 'D30' ? f.need30 : f.need10);
+    : numOfText(_winIsLong(w.code) ? f.need30 : f.need10);
+  // ★ [DEV-NEG-WARN 2026-11-24] 负向档印「距 -70% 差 9.8 点（股价再跌约 24.6%）」；
+  //   ⛔ 旧的「差 260 点（股价再涨约 +654%）」是拿 +200 套在跌 60% 的票上，必须消失。
+  const dir = w.thr >= 0 ? '涨' : '跌';
   const short = '距 ' + w.thr + '% 差 ' + d.gap.toFixed(d.dp) + ' 点';
-  const needValueText = (need !== null && need > 0) ? _needPctText(need) : '';
+  const needValueText = (need !== null && need > 0) ? _needPctText(need, dir) : '';
   const long = needValueText
-    ? short + '（股价再涨约 ' + needValueText + '）'
+    ? short + '（股价再' + dir + '约 ' + needValueText + '）'
     : short;
   return {
     gapText: long, gapShort: short,
-    needValue: need, needValueText: needValueText,
+    needValue: need, needValueText: needValueText, needDir: dir,
     win: w, gap: d.gap
   };
+}
+
+/** 【纯函数】「股价再涨 / 再跌」的方向字（'涨' / '跌'）—— 视图据此选词，⛔ 不自己判数字 */
+export function deviationNeedDir(fact) {
+  const c = _gapCore(fact);
+  return c.needDir || '涨';
 }
 
 /**
@@ -1003,9 +1202,9 @@ export function deviationIndexBeta(fact) {
   const f = fact || {};
   const c = _gapCore(fact);
   if (!c.win) return null;                            // 与点差同一档（⛔ 不许拿 30 日的 β 配 10 日的 need）
-  const isD30 = c.win.code === 'D30';
-  const S = numOfText(isD30 ? f.stockChain30 : f.stockChain10);
-  const I = numOfText(isD30 ? f.indexChain30 : f.indexChain10);
+  const isLong = _winIsLong(c.win.code);
+  const S = numOfText(isLong ? f.stockChain30 : f.stockChain10);
+  const I = numOfText(isLong ? f.indexChain30 : f.indexChain10);
   if (S === null || I === null) return null;
   const cs = 1 + S / 100;
   const ci = 1 + I / 100;
@@ -1024,19 +1223,23 @@ export function deviationNeedWithIndexMove(fact, hPct) {
   const h = numOfText(hPct);
   const beta = deviationIndexBeta(fact);
   if (!c.win || c.needValue === null || h === null || beta === null) return null;
-  return c.needValue + beta * h;
+  // ★ [DEV-NEG-WARN] 正负两个方向的符号相反（同一式推出来的）：
+  //   正向 dev' = cs(1+g) − ci(1+h) = thr ⇒ g = g₀ + β·h（指数涨 ⇒ 要多涨）
+  //   负向 dev' = cs(1−g) − ci(1+h) = thr ⇒ g = g₀ − β·h（指数涨 ⇒ 偏离更负 ⇒ 少跌即可）
+  return c.needDir === '跌' ? (c.needValue - beta * h) : (c.needValue + beta * h);
 }
 
 /** 指数敏感度那行的显示文本：<=0 ⇒ 「已触发」，⛔ 不写 '+0%'（会读成「还得涨 0%」） */
-function _movePctText(v) {
+function _movePctText(v, dir) {
   if (v === null) return '—';
   if (v <= 0) return '已触发';
-  return _needPctText(v);
+  return _needPctText(v, dir);
 }
 
 /**
  * 【纯函数】每只票第二行尾部的「指数 ±1% 会怎样」小字（用户要「具体影响多少」）。
  * 例：'指数 ±1% ⇒ 需涨 +5.5% / +4.9%（β0.33）'
+ *     负向档 → '指数 ±1% ⇒ 需跌 24.7% / 24.5%（β0.42）'
  */
 export function deviationIndexMoveText(fact) {
   const beta = deviationIndexBeta(fact);
@@ -1044,7 +1247,8 @@ export function deviationIndexMoveText(fact) {
   const up = deviationNeedWithIndexMove(fact, 1);
   const dn = deviationNeedWithIndexMove(fact, -1);
   if (up === null || dn === null) return '';
-  return '指数 ±1% ⇒ 需涨 ' + _movePctText(up) + ' / ' + _movePctText(dn) +
+  const dir = deviationNeedDir(fact);
+  return '指数 ±1% ⇒ 需' + dir + ' ' + _movePctText(up, dir) + ' / ' + _movePctText(dn, dir) +
     '（β' + beta.toFixed(3) + '）';
 }
 
@@ -1097,23 +1301,30 @@ export function deviationDetailLine(fact) {
     // 让用户能自核「为什么差 14.5 个点只需涨 5%」：偏离 = 个股区间涨幅 − 指数区间涨幅，
     // 而股价再涨 g 带来的是 (1+S)·g 个点（复利）—— 这个乘数就是两个单位之间的汇率。
     // ★ [ABN-CHECK] 与 calcText 同一档、同一组已取整的数，⛔ 一堆 30 日、一堆 10 日会读乱。
-    s += '；自核：' + (d.code === 'D30' ? '30 日' : '10 日') + '偏离 = 个股区间涨幅 ' +
+    const mkt = (1 + d.scS / 100);
+    s += '；自核：' + _winName(d.code) + '偏离 = 个股区间涨幅 ' +
       _devTextDp(d.scS, d.dp) + ' − 指数区间涨幅 ' + _devTextDp(d.icS, d.dp) +
       ' = ' + _devTextDp(d.shown, d.dp) +
-      '；股价每再涨 1%，偏离约增加 ' + _ptsText(1 + d.scS / 100) + ' 个点';
+      // ★ [DEV-NEG-WARN] 负向档股价在跌 ⇒ 措辞必须跟着换，⛔ 别让跌 60% 的票说「再涨」
+      (d.thr >= 0
+        ? '；股价每再涨 1%，偏离约增加 ' + _ptsText(mkt) + ' 个点'
+        : '；股价每再跌 1%，偏离约再降 ' + _ptsText(mkt) + ' 个点');
   }
   const beta = numOfText(f.indexBeta);
   if (beta !== null) {
     // [IDX-MOVE 2026-11-14] 用户当场指出「同期指数也在变」⇒ 悬停说明里也必须交代这是条件估算
-    s += '；⚠️「股价再涨」按同期指数不动估算：指数每额外涨 1%，所需股价涨幅约 +' +
-      beta.toFixed(3) + ' 个点，跌 1% 则少这么多（β=' + beta.toFixed(3) +
+    const dir = deviationNeedDir(f);
+    s += '；⚠️「股价再' + dir + '」按同期指数不动估算：指数每额外涨 1%，所需股价' + dir +
+      '幅度约 ' + (dir === '跌' ? '-' : '+') + beta.toFixed(3) + ' 个点，' +
+      (dir === '跌' ? '跌 1% 则反向' : '跌 1% 则少这么多') + '（β=' + beta.toFixed(3) +
       '，窗口每日滚动，仅作推测）';
   }
   if (f.missingLegs > 0) {
     s += '；⚠️ 窗口内有 ' + f.missingLegs + ' 个交易日无成交腿（停牌/未采集），已按 0 计入';
   }
   if (f.basis === 'auction') {
-    s += '；口径：截至今日 9:25 竞价（今日指数按不动计）';
+    // ★ [DEV-AUC-WIN 2026-11-24] 这句现在**真的成立**了：今日竞价涨幅已进窗口，指数按不动计。
+    s += '；口径：截至今日 9:25 竞价（今日个股用竞价涨幅、对应指数按不动计；收盘后自动改为收盘口径重算）';
   } else {
     s += '；口径：截至最近一个收盘日';
   }
@@ -1139,7 +1350,7 @@ export function deviationCalcText(fact) {
   if (!d || d.scS === null || d.icS === null) return '';
   // 🔴 等号两边都取自同一组【已取整】的数 ⇒ 屏幕上真的加得起来（⛔ 不许一边 round(dev)、
   //    一边 round(sc)−round(ic)，那会差 0.01 点，正是用户核对时会抓到的那种不一致）
-  return '自核 ' + (d.code === 'D30' ? '30日' : '10日') + '：' +
+  return '自核 ' + _winName(d.code).replace(' ', '') + '：' +
     _devTextDp(d.scS, d.dp) + ' − (' + _devTextDp(d.icS, d.dp) + ') = ' +
     _devTextDp(d.shown, d.dp);
 }
@@ -1163,7 +1374,16 @@ export const DEV_FORMULA_LINES = [
     '（最老一天滚出、新一天滚进），「指数不动」严格说是新进与滚出两天的涨幅相抵',
   '⑤ 指数涨 ⇒ 偏离被扣得更多 ⇒ 要涨更多；指数跌 ⇒ 更容易触发 ⇒ 要涨更少。' +
     '例（10-28 新华传媒 β=0.335）：+1% ⇒ 需涨 +5.5%，−1% ⇒ +4.9%，' +
-    '+2% ⇒ +5.9%，−2% ⇒ +4.5%；每行末尾另给该票自己的 β 与 ±1% 影响'
+    '+2% ⇒ +5.9%，−2% ⇒ +4.5%；每行末尾另给该票自己的 β 与 ±1% 影响',
+  // ★ [DEV-NEG-WARN 2026-11-24] 负向（杀跌）同一套算法、阈值不同，必须一起印出来，
+  //   否则用户看到「距 -70% 差 9.8 点（股价再跌约 24.6%）」会不知道 -70% 是哪来的。
+  '⑥ 跌的方向同一套算法，只是阈值不同：10 日 ≤ −50%、30 日 ≤ −70%（交易所原文与正向并列）；' +
+    '此时点差 = 偏离值 − 阈值，股价还需「跌」多少 = 点差 ÷ (1 + 个股区间涨幅)',
+  // ★ [DEV-TIMES10 2026-11-24] 官方严重异常波动有三条判据，本面板只算其中两条 —— 必须如实写，
+  //   否则「面板说正常」会被误读成「官方不会认定严重异动」。
+  '⑦ 官方「严重异常波动」共三条判据：① 连续 10 个交易日内 4 次（创业板/科创板 3 次）同向异常波动；' +
+    '② 10 日偏离 ≥ +100%（≤ −50%）；③ 30 日偏离 ≥ +200%（≤ −70%）。' +
+    '本面板只算 ②③（① 需要交易所异动名单，暂未接入）⇒ 显示「正常」不等于官方一定不认定严重异动'
 ];
 
 /**
@@ -1196,6 +1416,7 @@ export function isDeviationAlert(fact) {
  * @param {function(string):(number|string|null)} [o.todayPctOf]
  *        末腿替换：竞价时点用「今日竞价涨幅」顶替当日收盘腿（收盘后不传）
  * @param {'close'|'auction'} [o.basis='close']
+ * @param {boolean} [o.indexTodayFlat=false] ★ [DEV-AUC-WIN] 竞价口径：指数缺 asOf 腿时补 pct=0
  * @param {boolean} [o.withTrigger=false] ★ [ABN-TRIGGER 2026-11-15] 是否额外复算「第几次触发」
  *        （面板要逐行标序号 ⇒ true；买点行徽标 ⇒ 不传，零额外耗时）
  * @param {number} [o.triggerLookback] 回看多少个交易日（缺省 ABN_TRIGGER_LOOKBACK_DAYS）
@@ -1244,10 +1465,13 @@ export function buildDeviationMap(o) {
       : [];
     const fact = computeDeviation({
       code: code,
+      name: name,                                  // ★ 只用来判 ST（深市三日阈值 ±12%）
       stockLegs: stockLegs,
       indexLegs: iLegs,
       asOf: asOf,
       basis: x.basis || 'close',
+      // ★ [DEV-AUC-WIN 2026-11-24] 竞价口径：指数缺今天那根腿 ⇒ 补 pct=0，否则今日竞价涨幅被窗口丢掉
+      indexTodayFlat: x.indexTodayFlat === true,
       // ★ [ABN-TRIGGER 2026-11-15] 只有面板明确要「第几次触发」才逐票复算历史；
       //   买点行徽标那条路径不传 ⇒ 一次都不多算（§11 零行为变化 / 零额外耗时）。
       withTrigger: x.withTrigger === true,
