@@ -135,16 +135,20 @@ describe('[DEV-AUC-WAIT] 默认口径：早上就是竞价口径，收盘才切�
     expect(aucFact.dev10).not.toBeCloseTo(prevFact.dev10, 6);   // ✅ 今日涨幅真的进了窗口
   });
 
-  it('⑤ 竞价涨幅没落库（9:25:10 那一刻）⇒ close + 如实说明「不是没有异动」', async () => {
+  it('⑤ 竞价涨幅没落库（9:25:10 那一刻）⇒ 【仍是 auction】+ 如实说明「抓取中 / 不是没有异动」', async () => {
     MOCK = buildDaily(false);
     MOCK.auc = [];                                        // 还没写
     const dev = useAbnormalDeviation();
     await dev.load(Object.assign({}, ARGS, { asOf: D_LAST, today: D_LAST, hhmm: '09:26' }));
     const m = dev.meta.value;
     expect(m.aucReady).toBe(false);
-    expect(m.basis).toBe('close');
-    expect(m.basisText).toContain('竞价档还没就绪');
+    // [DEV-BASIS-DEFAULT] 没数据不许被翻译成「换个口径」—— 口径仍是竞价，只是暂时显示「—」
+    expect(m.basis).toBe('auction');
+    expect(m.basisText).toContain('抓取中');
     expect(m.basisText).toContain('不是「没有异动」');
+    // 这一屏确实算不出来（§10 不猜），但不能拿昨收的数冒充
+    expect(dev.devMap.value.size).toBe(0);
+    expect(dev.meta.value.ready).toBe(0);
   });
 
   it('⑥ toggle 只切「看哪一套」，两套都已算好（⛔ 不重新取数）', async () => {
@@ -158,5 +162,32 @@ describe('[DEV-AUC-WAIT] 默认口径：早上就是竞价口径，收盘才切�
     dev.toggleBasis();
     expect(dev.basis.value).toBe('auction');
     expect(dev.devMap.value.get('北纬科技').ok).toBe(true);
+  });
+
+  it('⑦ 用户点开「收盘口径」后，同一天行情刷新（version++ 重算）⛔ 不许把他弹回竞价', async () => {
+    MOCK = buildDaily(true);
+    const dev = useAbnormalDeviation();
+    await dev.load(Object.assign({}, ARGS, { asOf: D_LAST, today: D_LAST, hhmm: '16:30' }));
+    expect(dev.basis.value).toBe('close');                    // 收盘后默认就是 close
+    dev.toggleBasis();                                        // 点开对比竞价口径
+    expect(dev.basis.value).toBe('auction');
+    // 模拟行情刷新：同参数再跑一次 load（原来这里会被自动判据弹回 close）
+    await dev.load(Object.assign({}, ARGS, { asOf: D_LAST, today: D_LAST, hhmm: '16:31' }));
+    expect(dev.basis.value).toBe('auction');
+    expect(dev.meta.value.basis).toBe('auction');
+    expect(dev.meta.value.autoBasis).toBe('close');           // 自动判据仍是 close，只是展示听用户的
+  });
+
+  it('⑧ 用户的选择按日期各记一份（复盘别的日期不会改掉这一天的口径）', async () => {
+    MOCK = buildDaily(true);
+    const dev = useAbnormalDeviation();
+    await dev.load(Object.assign({}, ARGS, { asOf: D_LAST, today: D_LAST, hhmm: '16:30' }));
+    dev.toggleBasis();                                        // D_LAST 上选竞价
+    expect(dev.basis.value).toBe('auction');
+    // 切到前一日（历史日 ⇒ 默认 close），再切回 D_LAST
+    await dev.load(Object.assign({}, ARGS, { asOf: D_PREV, today: D_LAST, hhmm: '16:30' }));
+    expect(dev.basis.value).toBe('close');
+    await dev.load(Object.assign({}, ARGS, { asOf: D_LAST, today: D_LAST, hhmm: '16:30' }));
+    expect(dev.basis.value).toBe('auction');                  // 那天的选择还在
   });
 });

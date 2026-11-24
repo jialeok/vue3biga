@@ -50,21 +50,22 @@
       <span>{{ meta.title }}</span>
       <span class="tvrb-dev-board-sub">{{ meta.subText }}</span>
     </div>
-    <!-- ★★ [DEV-BASIS 2026-11-24 用户原话]
-         「再添加一个竞价口径 toggle，我点开的时候，就可以看到竞价时间的看是否触发，
-           这样我就可以对比收盘口径……也就是早上是竞价口径，收盘时是收盘口径。」
-         ⇒ 按钮只负责「换看哪一套」（两套都已算好），口径文案由 Logic 层给；
-           ⛔ 视图不判时间、不判数字、不重新取数（§21 / §32）。 -->
+    <!-- ★★ [DEV-BASIS-DEFAULT 2026-11-24 用户第二轮原话]
+         「不用点竞价口径，默认是竞价口径，点开后才变成收盘口径。
+           你应该把竞价口径 toggle 变成收盘口径，我想看收盘口径时点开就可以看了。」
+         ⇒ 按钮固定叫「收盘口径」：默认（竞价口径）不高亮，点一下 → 看收盘口径（高亮）。
+           `closeView` 由 Logic 层给（当前是不是在看收盘口径），⛔ 视图不判时间、不判数字、
+           不重新取数（§21 / §32）。 -->
     <div class="tvrb-dev-basis-row">
       <button
         type="button"
         class="tvrb-dev-basis-btn"
-        :class="meta.auctionView ? 'is-on' : ''"
+        :class="meta.closeView ? 'is-on' : ''"
         :disabled="!meta.canToggle"
         :title="meta.toggleHint"
         @click="$emit('toggle-basis')"
       >
-        竞价口径
+        收盘口径
       </button>
       <span class="tvrb-dev-basis-text">{{ meta.basisText }}</span>
       <span class="tvrb-dev-basis-note">{{ meta.toggleNote }}</span>
@@ -212,7 +213,7 @@ defineProps({
    */
   rows: { type: Array, default: () => [] },
   /** { visible, title, subText, warnText, ready, total, basis, basisText,
-   *    auctionView, canToggle, toggleHint, toggleNote,
+   *    auctionView, closeView, canToggle, toggleHint, toggleNote,
    *    indexNoteLines, formulaLines } —— 全部由 Logic 层算好 */
   meta: { type: Object, default: () => ({}) }
 });

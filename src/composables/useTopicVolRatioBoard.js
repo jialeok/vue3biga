@@ -2715,14 +2715,19 @@ export function useTopicVolRatioBoard() {
       ? '9:25 竞价口径（今日个股用竞价涨幅、对应指数按「不动」计）'
       : '收盘口径（截至最近一个收盘日）');
     let warnText = '';
+    const isTodayAsOf = !!m.asOf && m.asOf === _bjToday();
     if (m.loading && rows.length === 0) warnText = '偏离值读取中…';
     else if (m.error) warnText = '⚠️ ' + m.error + ' ⇒ 本次偏离值判不出（这不是「没有异动」，§10）';
     else if (isAuc && m.aucReady !== true) {
-      warnText = '⚠️ 这一天的 9:25 竞价涨幅没落库 ⇒ 竞价口径算不出（不是「没有异动」）。' +
-        (m.closeReady ? '可切回「收盘口径」看。' : '');
+      // ★ [DEV-BASIS-DEFAULT] 默认口径就是竞价 ⇒ 早上 9:25 那几十秒「还没落库」必须说成
+      //   「抓取中、到货自动出数」，⛔ 不许让用户以为算错了、也不许说成「没有异动」。
+      warnText = (isTodayAsOf
+        ? '⏳ 今日 9:25 竞价涨幅还在抓取中（约 09:25:32 落库）⇒ 这一屏暂时是「—」，到货自动出数（不是「没有异动」）。'
+        : '⚠️ 这一天的 9:25 竞价涨幅没落库 ⇒ 竞价口径算不出（不是「没有异动」）。') +
+        (m.closeReady ? '要看收盘口径就点上面的「收盘口径」。' : '');
     } else if (!isAuc && m.closeReady !== true && m.asOf) {
       warnText = '⚠️ 这一天的收盘腿还没入库 ⇒ 收盘口径算不出。' +
-        (m.aucReady ? '可切到「竞价口径」看 9:25 那一刻。' : '');
+        (m.aucReady ? '再点一下「收盘口径」按钮可回到竞价口径。' : '');
     } else if (m.note) warnText = m.note;
     else if (rows.length > 0 && okCount === 0) warnText = '⚠️ 逐日腿 / 指数腿未就绪 ⇒ 偏离值一个都算不出';
     return {
@@ -2730,15 +2735,22 @@ export function useTopicVolRatioBoard() {
       asOf: m.asOf || '',
       basis: m.basis || 'close',
       basisText: basisText,
-      // ★ toggle 三件套：状态 + 是否可用 + 说明（视图只读，⛔ 不自己算口径）
+      // ★★ [DEV-BASIS-DEFAULT 2026-11-24 用户第二轮原话]
+      //   「不用点竞价口径，默认是竞价口径，点开后才变成收盘口径。你应该把竞价口径 toggle
+      //     变成收盘口径，我想看收盘口径时点开就可以看了。」
+      //   ⇒ 按钮固定叫「收盘口径」，`closeView` = 正在看收盘（高亮）；默认（竞价口径）不高亮。
+      //     视图只读这两个字段，⛔ 不自己判口径（§21）。
       auctionView: isAuc,
+      closeView: !isAuc,
       canToggle: !!(m.aucReady || m.closeReady),
       toggleHint: isAuc
-        ? '当前：竞价口径（9:25 那一刻，用来判断「开盘前是否会触发」）｜点一下看收盘口径'
-        : '当前：收盘口径（当日收盘后）｜点一下看竞价口径（9:25 那一刻）',
-      toggleNote: m.aucReady && m.closeReady
+        ? '当前：竞价口径（默认 · 9:25 那一刻，用来判断「开盘前是否会触发」）｜点一下看收盘口径'
+        : '当前：收盘口径（当日收盘后，复盘用）｜再点一下回到竞价口径（默认）',
+      toggleNote: (m.aucReady && m.closeReady)
         ? '两个口径都已算出，可直接对比。'
-        : (m.aucReady ? '竞价口径已算出；收盘腿还没入库。' : '收盘口径已算出；竞价涨幅没落库 ⇒ 竞价口径算不出。'),
+        : (!m.aucReady && !m.closeReady
+          ? '这一屏两个口径都还没算出（等 9:25 抓取 / 收盘腿入库）。'
+          : (m.aucReady ? '竞价口径已算出；收盘腿还没入库。' : '收盘口径已算出；竞价涨幅没落库 ⇒ 竞价口径算不出。')),
       ready: typeof m.ready === 'number' ? m.ready : 0,
       total: typeof m.total === 'number' ? m.total : rows.length,
       loading: !!m.loading,

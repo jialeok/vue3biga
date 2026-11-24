@@ -914,9 +914,14 @@ describe('[DEV-BASIS] 竞价口径 / 收盘口径的判据（纯函数，⛔ 不
     expect(deviationBasisFor({ ...base, auctionReady: true, closeLegReady: false })).toBe('auction');
   });
 
-  it('今天 + 竞价档没就绪 ⇒ close（§10 宁可显示上一交易日，也不显示假数）', () => {
-    expect(deviationBasisFor({ ...base, auctionReady: false, closeLegReady: false })).toBe('close');
-    expect(deviationBasisFor({ ...base })).toBe('close');
+  it('今天 + 竞价档没就绪 ⇒ 【仍是 auction】（[DEV-BASIS-DEFAULT] 没数据 ≠ 换口径）', () => {
+    // 用户第二轮原话：「默认是竞价口径，点开后才变成收盘口径」
+    // ⇒ 09:25:10 那一刻数据还没落库，屏幕该显示「—」+「抓取中」，⛔ 不许偷偷退回昨天的收盘数
+    expect(deviationBasisFor({ ...base, auctionReady: false, closeLegReady: false })).toBe('auction');
+    expect(deviationBasisFor({ ...base })).toBe('auction');
+    // 唯一的换口径出口是「过了 15:00」（收盘）
+    expect(deviationBasisFor({ ...base, auctionReady: false, closeLegReady: false,
+      hhmm: '15:00' })).toBe('close');
   });
 
   it('缺日期 ⇒ close（⛔ 不许默认成竞价，那会把历史日算错）', () => {
@@ -940,9 +945,15 @@ describe('[DEV-BASIS] 竞价口径 / 收盘口径的判据（纯函数，⛔ 不
     // 今天 + 过 15:00 还没落库 ⇒ 必须说「截至上一交易日」
     expect(deviationBasisNote({ ...base, basis: 'close', hhmm: '15:30' }))
       .toContain('上一交易日');
-    // 今天 + 竞价档没就绪 ⇒ 必须说「不是没有异动」（防误读）
-    expect(deviationBasisNote({ ...base, basis: 'close', hhmm: '09:26', auctionReady: false }))
-      .toContain('不是「没有异动」');
+    // 今天 + 竞价档没就绪 ⇒ 口径仍是竞价，但必须说清「抓取中」+「不是没有异动」（防误读）
+    const notReady = deviationBasisNote({ ...base, basis: 'auction', hhmm: '09:26',
+      auctionReady: false });
+    expect(notReady).toContain('竞价口径');
+    expect(notReady).toContain('抓取中');
+    expect(notReady).toContain('不是「没有异动」');
+    // 就绪之后 ⛔ 不许还挂着「抓取中」
+    expect(deviationBasisNote({ ...base, basis: 'auction', hhmm: '09:26',
+      auctionReady: true })).not.toContain('抓取中');
   });
 });
 
@@ -1206,6 +1217,69 @@ describe('[DEV-BASIS-TOGGLE] 竞价口径 toggle 的全链路（源码锁：断�
     expect(board).toContain('_reloadDeviation');
     // 口径判据只允许在 Logic 层，⛔ 板层不许自己判 hhmm >= '15:00'
     expect(board).not.toContain('>= DEV_CLOSE_HHMM');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ★★ [DEV-BASIS-DEFAULT 2026-11-24 第二轮用户当场纠正 —— toggle 语义做反了]
+//   「我说默认打开时是竞价口径，现在怎么又是收盘口径，竞价口径要点一次才是变成竞价口径？
+//     我的意思是不用点竞价口径，默认是竞价口径，点开后才变成收盘口径。
+//     你应该把竞价口径 toggle 变成收盘口径，我想看收盘口径时点开就可以看了。」
+//
+//   ⇒ 语义：**按钮 = 收盘口径**（想复盘才点）；不点 = 默认竞价口径（早上 9:25 一眼看到的那屏）。
+//     上一版把按钮叫「竞价口径」、默认高亮、点一下才切到竞价 —— 正好做反。
+//     这组锁住三件：① 按钮文字 ② 高亮判据 ③ 用户点过之后不许被行情刷新弹回去。
+// ════════════════════════════════════════════════════════════════════════════════
+describe('[DEV-BASIS-DEFAULT] 默认竞价口径、按钮叫「收盘口径」（源码锁：改反了这里该红）', () => {
+  const vue = readFileSync('src/components/topicvolratio/TvrbDeviationBoard.vue', 'utf8');
+  const board = readFileSync('src/composables/useTopicVolRatioBoard.js', 'utf8');
+  const comp = readFileSync('src/composables/useAbnormalDeviation.js', 'utf8');
+
+  it('按钮文字必须是「收盘口径」，⛔ 不许写成「竞价口径」', () => {
+    // 只锁模板里那颗按钮的可见文字（注释里讲历史时会提到「竞价口径」）
+    const i = vue.indexOf('tvrb-dev-basis-btn');
+    const btn = vue.slice(i, i + 900);
+    expect(btn).toContain('收盘口径');
+    // 按钮自己的文字里不许出现「竞价口径」
+    const text = btn.slice(btn.indexOf(':disabled'), btn.indexOf('</button>'));
+    expect(text).not.toContain('竞价口径');
+  });
+
+  it('高亮（is-on）由 closeView 判 —— 默认不高亮 = 默认就是竞价口径', () => {
+    expect(vue).toContain(":class=\"meta.closeView ? 'is-on' : ''\"");
+    // ⛔ 不许再拿 auctionView 判高亮（那等于默认高亮竞价，语义反了）
+    expect(vue).not.toMatch(/:class="meta\.auctionView\s*\?\s*'is-on'/);
+    // 板层必须提供 closeView
+    expect(board).toContain('closeView: !isAuc');
+    expect(board).toContain('closeView');
+  });
+
+  it('两个方向的悬停文案都得说清「现在是哪个口径 / 点一下会变成哪个」', () => {
+    expect(board).toContain('当前：竞价口径（默认');
+    expect(board).toContain('当前：收盘口径');
+    // 默认这条必须写明「点一下看收盘口径（复盘用）」
+    expect(board).toMatch(/当前：竞价口径（默认[^']*收盘口径/);
+  });
+
+  it('早盘数据没到 ⇒ 文案是「抓取中 / 到货自动出数」，⛔ 不是「换个口径」', () => {
+    expect(board).toContain('9:25 竞价涨幅还在抓取中');
+    expect(board).toContain('到货自动出数');
+    expect(board).toContain('要看收盘口径就点上面的「收盘口径」');
+  });
+
+  it('用户点过口径 ⇒ 记进 _userBasis，当天行情刷新（version++）不许把他弹回去', () => {
+    expect(comp).toContain('const _userBasis = new Map()');
+    // setBasis 必须记录
+    const setBody = comp.slice(comp.indexOf('function setBasis'), comp.indexOf('function toggleBasis'));
+    expect(setBody).toContain('_userBasis.set(d, v)');
+    // 展示口径 = 用户选择优先，否则跟自动判据
+    expect(comp).toContain('const shownBasis = _userBasis.get(asOf) || autoBasis');
+    // ⛔ 不许「自动判据一变就把用户的选择作废」——否则 16:30 之后想看竞价口径对比，
+    //   一次行情刷新就弹回收盘，「翻开历史日期比较复盘」也就成了一次性动作
+    expect(comp).not.toContain("if (autoBasis === 'close') _userBasis.delete(asOf)");
+    // 面板上的口径 + 数字都必须用 shownBasis，⛔ 不许一半自动一半用户
+    expect(comp).toContain('basis.value = shownBasis');
+    expect(comp).toContain('basis: shownBasis');
   });
 });
 

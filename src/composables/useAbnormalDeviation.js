@@ -219,6 +219,16 @@ export function useAbnormalDeviation() {
   });
   const meta = shallowRef(_emptyMeta(''));
   let _seq = 0;
+  /**
+   * 用户在当前日期上手动选过的口径（date -> 'auction'|'close'）。
+   * ★ [DEV-BASIS-DEFAULT 2026-11-24] 用户第二轮原话：「不用点竞价口径，默认是竞价口径，
+   *   点开后才变成收盘口径。我想看收盘口径时点开就可以看了。」
+   * ⇒ 默认（没点过）= 竞价口径；点了之后**在本日期内保持**，不许被行情刷新（version++）弹回去
+   *   —— 否则他刚点开看收盘，几秒后又被弹回竞价，等于点了没用。
+   *   ⛔ 也**不设「自动判据变了就作废」**：16:30 之后自动判据本来就是 close，那样会让
+   *   「收盘后想看竞价口径对比」变成刷新即丢失，与「翻开历史日期比较复盘」的诉求相冲。
+   */
+  const _userBasis = new Map();
   // ── 「等竞价档到货」的有界重试（见 AUC_WAIT_* 注释）──────────────────────────
   let _aucTimer = null;
   let _aucLeft = 0;
@@ -242,6 +252,9 @@ export function useAbnormalDeviation() {
     const v = b === 'auction' ? 'auction' : 'close';
     if (basis.value === v) return;
     basis.value = v;
+    // 记住「这个日期上用户想看哪一套」（同一天内的重算不许把他弹回去）
+    const d = String(meta.value.asOf || '').slice(0, 10);
+    if (d) _userBasis.set(d, v);
     // 口径切换要顺带刷新 meta 上的「当前口径」字段（视图靠它显示 toggle 状态与说明）
     meta.value = Object.assign({}, meta.value, {
       basis: v,
@@ -379,17 +392,23 @@ export function useAbnormalDeviation() {
         auctionReady: aucReady,
         closeLegReady: closeLegReady
       });
-      basis.value = autoBasis;
+      // ★ [DEV-BASIS-DEFAULT] 默认 = 自动判（交易时间内 = 竞价）；用户在本日期点过则以他为准，
+      //   ⛔ 不许被行情刷新（version++）弹回去 —— 否则他刚点开收盘口径对比，几秒后又弹回竞价，等于点了没用。
+      //   ⛔ 也不许「自动判据变了就把记录作废」：16:30 之后自动判据本来就是 close，那样会让
+      //      「收盘后想看竞价口径对比」变成一次性动作（刷新即丢失），与「翻开历史日期比较复盘」相冲。
+      const shownBasis = _userBasis.get(asOf) || autoBasis;
+      basis.value = shownBasis;
       const basisText = deviationBasisNote({
-        basis: autoBasis, asOf: asOf, today: today, hhmm: hhmm,
+        basis: shownBasis, asOf: asOf, today: today, hhmm: hhmm,
         auctionReady: aucReady,
         closeLegReady: closeLegReady
       });
 
       const gapNote = indexLegsGapText(idxRes);
-      const built = autoBasis === 'auction' && aucBuilt ? aucBuilt : closeBuilt;
+      // ⚠️ 用 shownBasis（可能是用户点出来的收盘口径），⛔ 别用 autoBasis —— 否则点了还显示竞价那套数
+      const built = shownBasis === 'auction' && aucBuilt ? aucBuilt : closeBuilt;
       meta.value = Object.assign(_emptyMeta(asOf), {
-        basis: autoBasis,
+        basis: shownBasis,
         autoBasis: autoBasis,
         basisText: basisText,
         basisNoteAuto: basisText,

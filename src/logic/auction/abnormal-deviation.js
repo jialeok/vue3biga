@@ -225,15 +225,23 @@ export const DEV_CLOSE_HHMM = '15:00';
 /**
  * 【纯函数】这一屏该用哪个口径。
  *
- * 🔴🔴 [DEV-BASIS 2026-11-24 用户原话]「我要求的是在竞价时间就可以知道它的偏离值看是否触发，
+ * 🔴🔴 [DEV-BASIS 2026-11-24 用户原话第一轮]「我要求的是在竞价时间就可以知道它的偏离值看是否触发，
  *   所以用竞价口径，等到收盘，再覆盖下，再计算，这是原来我一直要求的。」
+ * 🔴🔴 [DEV-BASIS-DEFAULT 2026-11-24 第二轮用户当场纠正]
+ *   「我说默认打开时是竞价口径，现在怎么又是收盘口径，竞价口径要点一次才是变成竞价口径？
+ *     我的意思是不用点竞价口径，默认是竞价口径，点开后才变成收盘口径。
+ *     你应该把竞价口径 toggle 变成收盘口径，我想看收盘口径时点开就可以看了。」
+ *   ⇒ **交易时间内的默认口径永远是 auction**，哪怕 9:25 竞价涨幅还没落库（那时面板显示「—」
+ *     + 文案「竞价涨幅 09:25 抓取中，到货自动出数」，而不是退回昨天的收盘数）。
+ *     「没数据」不许被翻译成「换个口径」—— 那是两种完全不同的语义（§10）。
  *
  * 判据（顺序即优先级，⛔ 别调换）：
  *   ① 不是今天（复盘历史日）⇒ close —— 历史日永远收盘腿（§11 稳定复盘）
  *   ② 今天的收盘腿已经入库 ⇒ close —— **收盘覆盖**：哪怕还在 15:00 前后，只要有真收盘涨幅就用它
  *   ③ 已过 15:00 但收盘腿还没入库（16:00 才写）⇒ close（此时窗口自然停在上一交易日，靠文案交代）
- *   ④ 9:25 竞价档就绪 ⇒ auction —— 今日个股用竞价涨幅、对应指数按不动计
- *   ⑤ 其余（竞价档没就绪 / 还没到 9:26）⇒ close
+ *   ④ 其余（今天且 15:00 前）⇒ auction —— **默认口径，不看数据到没到**
+ *      ⚠️ 数据没到 ⇒ `deviationBasisNote` 会如实写「09:25 抓取中」，并且 `[DEV-AUC-WAIT]`
+ *         每 12 秒重读一次，到货当片切成真竞价口径。
  *
  * @param {{date:string, today:string, hhmm:string,
  *          auctionReady?:boolean, closeLegReady?:boolean}} o
@@ -246,12 +254,12 @@ export function deviationBasisFor(o) {
   if (!date || !today || date !== today) return 'close';
   if (x.closeLegReady === true) return 'close';
   if (String(x.hhmm || '') >= DEV_CLOSE_HHMM) return 'close';
-  return x.auctionReady === true ? 'auction' : 'close';
+  return 'auction';                      // ★ [DEV-BASIS-DEFAULT] 交易时间内默认就是竞价口径
 }
 
 /**
  * 【纯函数】口径说明句（面板 `meta.warnText` / 悬停用）。
- * §10：口径与事实不符是最坏的一种错 —— 所以这里必须如实写「现在算到哪一天」。
+ * §10：口径与事实不符是最坏的一种错 —— 所以这里必须如实写「现在算到哪一天 / 数据到没到」。
  *
  * @param {{basis:string, asOf:string, today:string, hhmm:string,
  *          auctionReady?:boolean, closeLegReady?:boolean}} o
@@ -262,15 +270,17 @@ export function deviationBasisNote(o) {
   const asOf = String(x.asOf || '').slice(0, 10);
   const today = String(x.today || '').slice(0, 10);
   if (x.basis === 'auction') {
-    return '竞价口径：今日个股用 9:25 竞价涨幅、对应指数按不动计；收盘后自动改为收盘口径重算。';
+    // ★ [DEV-BASIS-DEFAULT] 默认口径 = 竞价；但「数据还没到」必须说清楚，⛔ 不许含糊成「就是竞价数」
+    if (x.auctionReady !== true) {
+      return '竞价口径（默认）：今日 9:25 竞价涨幅还没落库（09:25 抓取中）⇒ 这一屏暂时是「—」，' +
+        '到货自动出数（不是「没有异动」）；收盘后自动改为收盘口径。';
+    }
+    return '竞价口径（默认）：今日个股用 9:25 竞价涨幅、对应指数按不动计；收盘后自动改为收盘口径。';
   }
   if (!asOf || !today || asOf !== today) return '';
   if (x.closeLegReady === true) return '收盘口径：今日收盘腿已入库，已按收盘涨幅重算。';
   if (String(x.hhmm || '') >= DEV_CLOSE_HHMM) {
     return '⚠️ 今日收盘腿尚未入库（16:00 后生成）⇒ 当前显示的是【截至上一交易日收盘】的偏离值，稍后自动刷新。';
-  }
-  if (x.auctionReady !== true) {
-    return '⚠️ 今日 9:25 竞价档还没就绪 ⇒ 当前显示的是【截至上一交易日收盘】的偏离值（不是「没有异动」）。';
   }
   return '';
 }
