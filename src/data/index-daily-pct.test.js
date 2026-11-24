@@ -6,7 +6,8 @@
 //   ③ `indexLegsGapText` 的 §10 语义：缺数据必须能被看见（⛔ 不说成「没有异动」）。
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  barsToPctLegs, mergeLegs, indexLegsOf, indexLegsGapText, shiftYmd, clearIndexDailyPctCache
+  barsToPctLegs, mergeLegs, indexLegsOf, indexLegsGapText, shiftYmd, clearIndexDailyPctCache,
+  indicesNeedingQt, qtCooldownLeftMs
 } from './index-daily-pct.js';
 
 beforeEach(function () { clearIndexDailyPctCache(); });
@@ -109,5 +110,62 @@ describe('[ABN-DEV-DATA] shiftYmd · 时区无关的日期加减', () => {
   it('非法输入原样返回（⛔ 不抛）', () => {
     expect(shiftYmd('', -3)).toBe('');
     expect(shiftYmd('abc', -3)).toBe('abc');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ★ [IDX-QT-BREAKER 2026-11-24 用户报障「题材量比的响应速度有些变慢了」]
+//   真实链路实测（node 直连真库）：冷启动 11 个请求里 **8 个是腾讯指数日线，全部 HTTP 501**，
+//   冷启动 4.7s。根因不是「腾讯慢」，是**判据错了** —— `m.size < list.length` 拿条数比日期数，
+//   而云端指数腿只从 09-08 开始有行、个股腿能回溯到 08-12 ⇒ 19 天的「前缀缺口」恒定存在
+//   ⇒ 每次都判「需要兜底」⇒ 每次都白打 8 个必败请求。
+// ════════════════════════════════════════════════════════════════════════════════
+describe('[IDX-QT-BREAKER] 哪些指数才真的需要去腾讯补（⛔ 前缀缺口不算）', () => {
+  it('云端起点之前那段（前缀）不是缺口 ⇒ 一根都不打', () => {
+    // 真实形态：horizon 59 天（08-12 起），云端只覆盖最后 40 天（09-08 起）
+    const horizon = [];
+    for (let i = 1; i <= 59; i++) horizon.push('D' + String(i).padStart(2, '0'));
+    const m = new Map();
+    horizon.slice(19).forEach(function (d) { m.set(d, 0.5); });   // 少了前 19 天
+    const map = new Map([['sz399107', m]]);
+    expect(indicesNeedingQt(['sz399107'], map, horizon)).toEqual([]);
+  });
+
+  it('覆盖区间内部的空洞 ⇒ 要补（那是真漏了）', () => {
+    const horizon = ['D01', 'D02', 'D03', 'D04', 'D05'];
+    const m = new Map([['D01', 1], ['D02', 1], ['D04', 1], ['D05', 1]]);   // 缺 D03
+    const map = new Map([['sz399107', m]]);
+    expect(indicesNeedingQt(['sz399107'], map, horizon)).toEqual(['sz399107']);
+  });
+
+  it('云端一根都没有 ⇒ 要补（根本算不出）', () => {
+    const map = new Map([['sh000688', new Map()]]);
+    expect(indicesNeedingQt(['sh000688'], map, ['D01', 'D02'])).toEqual(['sh000688']);
+    // 连 key 都没有（调用方只关心这一只，云端没返回行）
+    expect(indicesNeedingQt(['sh000688'], new Map(), ['D01'])).toEqual(['sh000688']);
+  });
+
+  it('没有窗口信息 / 空代码表 ⇒ 一律不打（⛔ 不凭空请求上游）', () => {
+    const map = new Map([['sz399107', new Map([['D01', 1]])]]);
+    expect(indicesNeedingQt(['sz399107'], map, [])).toEqual([]);
+    expect(indicesNeedingQt([], map, ['D01'])).toEqual([]);
+    expect(indicesNeedingQt(['sz399107'], null, ['D01'])).toEqual(['sz399107']);
+  });
+
+  it('只判调用方给的那几只（codes 收窄 = 腾讯 fan-out 减半）', () => {
+    const horizon = ['D01', 'D02'];
+    const map = new Map([
+      ['sz399107', new Map([['D01', 1], ['D02', 1]])],   // 够用
+      ['sh000688', new Map()]                            // 空
+    ]);
+    // 只要深主板那只 ⇒ 不该因为「科创 50 空着」就去打腾讯
+    expect(indicesNeedingQt(['sz399107'], map, horizon)).toEqual([]);
+    expect(indicesNeedingQt(['sz399107', 'sh000688'], map, horizon)).toEqual(['sh000688']);
+  });
+});
+
+describe('[IDX-QT-BREAKER] 熔断器状态', () => {
+  it('初始 = 不在熔断（0ms）', () => {
+    expect(qtCooldownLeftMs()).toBe(0);
   });
 });

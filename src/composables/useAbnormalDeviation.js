@@ -45,7 +45,7 @@ import {
 } from '../data/index-daily-pct.js';
 import {
   buildDeviationMap, deviationCellTexts, deviationDetailLine, deviationIndexLabel,
-  deviationBasisFor, deviationBasisNote, DEV_CLOSE_HHMM,
+  deviationBasisFor, deviationBasisNote, DEV_CLOSE_HHMM, pickBaseIndexForCode,
   DEV_FORMULA_LINES, DEV_INDEX_NOTE_LINES, DEV_NEED_HINT,
   DEV_STAGE_NEAR, DEV_STAGE_SEVERE, DEV_STAGE_WATCH
 } from '../logic/auction/abnormal-deviation.js';
@@ -60,6 +60,34 @@ import { _dbgLog } from '../data/debug-log.js';
  *   ⚠️ 这只加宽【同一次查询】的日期范围（同一张表、同一批票），**不是新增请求**（§32）。
  */
 const LOOKBACK_DAYS = 120;
+
+// ── 会话级缓存：把「每片数据都要重读一次」变成「一个交易日只读一次」────────────────
+//
+// 🔴 [PERF-DEV 2026-11-24 用户报障「题材量比的响应速度有些变慢了」] 真实链路计时（node 直连真库）：
+//   冷启动 4733ms / 11 个请求；其中 8 个是腾讯指数日线（全 501，见 index-daily-pct 的 [IDX-QT-BREAKER]）、
+//   1 个 stock_daily_pct、1 个 market_metrics(index)、1 个 market_metrics(auction)。
+//   热重算 545ms / 1 个请求 —— 说明「每片都重读」的代价完全可控，但那 1 个请求必须去掉：
+//   · `auc_pct_chg` 是 9:25 一次性写入的，**当日不会再变** ⇒ 按日缓存，读一次就够；
+//   · 当日收盘腿（16:00 写入）只影响「该不该切回收盘口径」，见 `_closeSeen`。
+const _aucPctCache = new Map();          // date -> Map<票名, 竞价涨幅>（只存非空结果）
+const _closeSeen = new Set();            // date 已确认「当日收盘腿入库」⇒ 之后不再强制 fresh
+const CACHE_MAX_DATES = 12;
+
+function _putAucCache(date, m) {
+  if (!date || !(m instanceof Map) || m.size === 0) return;   // ⛔ 空结果不缓存：9:25 还没落库时要能重试
+  _aucPctCache.set(date, m);
+  while (_aucPctCache.size > CACHE_MAX_DATES) {
+    const oldest = _aucPctCache.keys().next().value;
+    if (oldest === undefined) break;
+    _aucPctCache.delete(oldest);
+  }
+}
+
+/** 仅供测试 / 诊断 */
+export function clearDeviationSessionCaches() {
+  _aucPctCache.clear();
+  _closeSeen.clear();
+}
 
 function _emptyMeta(asOf) {
   return {
@@ -117,9 +145,14 @@ function _hasLegAt(dailyMap, date) {
 /**
  * 读某日的【9:25 竞价涨幅】（`market_metrics(scope=auction).auc_pct_chg`）。
  * ⛔ 这是「今日竞价涨幅」的**唯一**来源：不许拿 10 日区间涨幅、也不许拿收盘涨幅顶替。
+ * ★ [PERF-DEV] 按日缓存：竞价涨幅是 9:25 一次性写入的，当日不会再变 ⇒ 一次读取、整日复用。
+ *   ⚠️ 只在**读到行**时缓存；9:25 还没落库那次返回空 Map 必须能重试（见 `_scheduleAucWait`）。
  * @returns {Promise<Map<string, number>|null>} null = 读取失败（§10，⛔ 不当空数据）
  */
 async function _readAucPctMap(date) {
+  const d = String(date || '').slice(0, 10);
+  const hit = _aucPctCache.get(d);
+  if (hit) return hit;
   try {
     const rows = await readMarketMetricsForDate(date, 'auction');
     const m = new Map();
@@ -130,6 +163,7 @@ async function _readAucPctMap(date) {
       const n = String(r.stock).trim();
       if (n && !m.has(n)) m.set(n, v);
     });
+    _putAucCache(d, m);
     return m;
   } catch (e) {
     _dbgLog('[ABN-DEV] ' + date + ' 竞价涨幅（auc_pct_chg）读取失败：' + ((e && e.message) || e));
@@ -145,6 +179,28 @@ function _toneOf(fact) {
   if (fact.stage === DEV_STAGE_WATCH) return 'watch';
   return 'normal';
 }
+
+/**
+ * 等「今日 9:25 竞价档」落库的重试参数。
+ *
+ * ★★ [DEV-AUC-WAIT 2026-11-24 用户原话]
+ *   「那个官方偏离值竞价口径是默认打开的……早上 9 点 25 分左右，我就可以看到的是竞价口径，
+ *     而不是昨天的收盘口径，这个很重要」。收盘口径只是复盘用。
+ *
+ * 🔴 真实时点取证（11-24 `bidding_fetch_log`）：09:25:05 起抓、**09:25:32 morning 收工**、
+ *   09:26:39 ladder26、09:27:25 snapshot 把量比补齐。也就是说 9:25:35 之后 `auc_pct_chg` 才在库里。
+ *   ⇒ 用户在 9:24 打开页面、或者 9:25:10 就打开，那一刻**数据客观上还不存在**。
+ *     这不是「算错了」，是「还没到货」—— 所以不能永远停在收盘口径（那就是昨天的数），
+ *     也不能假装竞价口径（会显示一片「—」）。
+ *   ⇒ 有界重试：竞价窗口内、竞价档没就绪、且当日收盘腿也还没入库时，每 12 秒重读一次，
+ *     最多 15 次（≈3 分钟）。数据一落地就当片切成竞价口径并停止。
+ *   ⛔ 这不是「用 setTimeout 掩盖根因」（§35）：根因是上游写入时刻，我们只负责「到货即见」；
+ *      次数与时长都写死上限，绝不常驻轮询。
+ */
+const AUC_WAIT_MS = 12000;
+const AUC_WAIT_MAX = 15;
+/** 竞价窗口起点：9:15 开始集合竞价，之前没必要等（那时候连竞价数据都不该有） */
+const AUC_WINDOW_FROM = '09:10';
 
 /**
  * @returns {{
@@ -163,6 +219,24 @@ export function useAbnormalDeviation() {
   });
   const meta = shallowRef(_emptyMeta(''));
   let _seq = 0;
+  // ── 「等竞价档到货」的有界重试（见 AUC_WAIT_* 注释）──────────────────────────
+  let _aucTimer = null;
+  let _aucLeft = 0;
+  let _lastArgs = null;
+
+  function _stopAucWait() {
+    if (_aucTimer) { clearTimeout(_aucTimer); _aucTimer = null; }
+    _aucLeft = 0;
+  }
+
+  function _scheduleAucWait() {
+    if (_aucTimer || _aucLeft <= 0) return;
+    _aucTimer = setTimeout(function () {
+      _aucTimer = null;
+      _aucLeft--;
+      if (_lastArgs) void load(Object.assign({}, _lastArgs, { quiet: true }));
+    }, AUC_WAIT_MS);
+  }
 
   function setBasis(b) {
     const v = b === 'auction' ? 'auction' : 'close';
@@ -191,6 +265,8 @@ export function useAbnormalDeviation() {
 
   function clear() {
     _seq++;
+    _stopAucWait();
+    _lastArgs = null;
     mapClose.value = new Map();
     mapAuc.value = new Map();
     meta.value = _emptyMeta('');
@@ -219,18 +295,25 @@ export function useAbnormalDeviation() {
     const isToday = asOf === today;
 
     const my = ++_seq;
-    meta.value = Object.assign(_emptyMeta(asOf), {
-      loading: true, total: names.length, basis: basis.value
-    });
+    _lastArgs = { names: names, asOf: asOf, codeOf: opt.codeOf, today: opt.today, hhmm: opt.hhmm };
+    // 重试时用 quiet：不把 meta 打回 loading（否则每 12 秒闪一次「读取中…」）
+    if (opt.quiet !== true) {
+      meta.value = Object.assign(_emptyMeta(asOf), {
+        loading: true, total: names.length, basis: basis.value
+      });
+    }
 
     try {
       const from = shiftYmd(asOf, -LOOKBACK_DAYS);
       // 🔴 [DEV-BASIS] 收盘后（≥15:00）的当天必须绕过会话缓存：`_subCache` 里可能是 9:25 读的、
       //   还没有「今天那根收盘腿」的旧结果 ⇒ 不绕过就永远判不出「收盘腿已就绪」，
       //   面板会整晚停在竞价口径（实测 16:01 全表才写入）。
-      const daily = await readDailyPctRowsFor(names, from, asOf, {
-        fresh: isToday && hhmm >= DEV_CLOSE_HHMM
-      });
+      // ★ [PERF-DEV] 但只绕过到「第一次确认今天收盘腿已入库」为止：之后每片都强制 fresh
+      //   就等于把缓存删了（切日期 / 每次刷新都重打一次 stock_daily_pct）。
+      const fresh = isToday && hhmm >= DEV_CLOSE_HHMM && !_closeSeen.has(asOf);
+      // ★ [PERF-DEV] 竞价涨幅与个股逐日腿**互不依赖** ⇒ 同时发出，别串行等（冷启动实测省 ~1/3）
+      const aucPromise = _readAucPctMap(asOf);
+      const daily = await readDailyPctRowsFor(names, from, asOf, { fresh: fresh });
       if (my !== _seq) return;                                  // 切日期了，丢弃
       if (!daily) {
         // §10：读失败 ≠ 没有数据。⛔ 不拿空 Map 顶替，也不清空已有结果（可能是同一份数据的旧值）
@@ -243,8 +326,15 @@ export function useAbnormalDeviation() {
       }
 
       const closeLegReady = _hasLegAt(daily, asOf);
+      if (closeLegReady) _closeSeen.add(asOf);
       const dates = _datesOf(daily);
-      const idxRes = await readIndexLegsForDates(dates, {});
+      // ★ [IDX-QT-BREAKER] 只取这批票真正用到的对应指数（通常 1~2 只，不是 4 只）
+      const idxCodes = Array.from(new Set(names.map(function (n) {
+        const c = String((typeof opt.codeOf === 'function' ? opt.codeOf(n) : '') || '').trim();
+        const info = c ? pickBaseIndexForCode(c) : null;
+        return info ? info.code : '';
+      }).filter(Boolean)));
+      const idxRes = await readIndexLegsForDates(dates, idxCodes.length ? { codes: idxCodes } : {});
       if (my !== _seq) return;
 
       const idxLegs = new Map();
@@ -266,7 +356,7 @@ export function useAbnormalDeviation() {
       const closeBuilt = buildDeviationMap(Object.assign({}, base, { basis: 'close' }));
 
       // ② 竞价口径：当日个股腿换成 9:25 竞价涨幅；对应指数当日那根**强制按 0**
-      const aucMap = await _readAucPctMap(asOf);
+      const aucMap = await aucPromise;
       if (my !== _seq) return;
       let aucBuilt = null;
       if (aucMap && aucMap.size > 0) {
@@ -283,15 +373,16 @@ export function useAbnormalDeviation() {
       mapClose.value = closeBuilt.map;
       mapAuc.value = aucBuilt ? aucBuilt.map : new Map();
 
+      const aucReady = !!aucBuilt && aucBuilt.ready > 0;
       const autoBasis = deviationBasisFor({
         date: asOf, today: today, hhmm: hhmm,
-        auctionReady: !!aucBuilt && aucBuilt.ready > 0,
+        auctionReady: aucReady,
         closeLegReady: closeLegReady
       });
       basis.value = autoBasis;
       const basisText = deviationBasisNote({
         basis: autoBasis, asOf: asOf, today: today, hhmm: hhmm,
-        auctionReady: !!aucBuilt && aucBuilt.ready > 0,
+        auctionReady: aucReady,
         closeLegReady: closeLegReady
       });
 
@@ -302,7 +393,7 @@ export function useAbnormalDeviation() {
         autoBasis: autoBasis,
         basisText: basisText,
         basisNoteAuto: basisText,
-        aucReady: !!aucBuilt && aucBuilt.ready > 0,
+        aucReady: aucReady,
         closeReady: closeBuilt.ready > 0,
         ready: built.ready,
         total: built.total,
@@ -313,6 +404,17 @@ export function useAbnormalDeviation() {
       _dbgLog('[ABN-DEV] ' + asOf + ' 偏离值 收盘 ' + closeBuilt.ready + '/' + closeBuilt.total +
         ' · 竞价 ' + (aucBuilt ? (aucBuilt.ready + '/' + aucBuilt.total) : '0/' + closeBuilt.total) +
         '（默认口径 ' + autoBasis + '，指数腿来源 ' + idxRes.src + '，北京 ' + hhmm + '）');
+
+      // ★★ [DEV-AUC-WAIT] 早盘「到货即切竞价口径」：
+      //   竞价窗口内（09:10~15:00）+ 今天 + 竞价档还没就绪 + 当日收盘腿也还没入库
+      //   ⇒ 数据客观上还没到（9:25:32 morning 才收工），有界重试；一旦就绪立刻停。
+      const inAucWindow = isToday && hhmm >= AUC_WINDOW_FROM && hhmm < DEV_CLOSE_HHMM;
+      if (inAucWindow && !aucReady && !closeLegReady) {
+        if (_aucLeft <= 0) _aucLeft = AUC_WAIT_MAX;
+        _scheduleAucWait();
+      } else {
+        _stopAucWait();                     // 已就绪 / 已收盘 / 历史日 ⇒ 一次都不再等
+      }
     } catch (e) {
       if (my !== _seq) return;
       meta.value = Object.assign(_emptyMeta(asOf), {

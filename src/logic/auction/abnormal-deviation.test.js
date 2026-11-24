@@ -1179,7 +1179,8 @@ describe('[DEV-BASIS-TOGGLE] 竞价口径 toggle 的全链路（源码锁：断�
   });
 
   it('收盘后必须绕过 9:25 的读缓存，否则切到收盘口径还是旧数', () => {
-    expect(comp).toContain('fresh: isToday && hhmm >= DEV_CLOSE_HHMM');
+    // ★ [PERF-DEV] 但只绕到「第一次确认今天收盘腿已入库」为止（见 [PERF-DEV] 那组）
+    expect(comp).toContain('const fresh = isToday && hhmm >= DEV_CLOSE_HHMM && !_closeSeen.has(asOf)');
     // 数据层真的实现了 fresh（精确命中 + 覆盖命中 + inflight 三条都要让路）
     expect(daily).toContain('opts.fresh');
     expect(daily).toContain('_subCache');
@@ -1205,5 +1206,100 @@ describe('[DEV-BASIS-TOGGLE] 竞价口径 toggle 的全链路（源码锁：断�
     expect(board).toContain('_reloadDeviation');
     // 口径判据只允许在 Logic 层，⛔ 板层不许自己判 hhmm >= '15:00'
     expect(board).not.toContain('>= DEV_CLOSE_HHMM');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ★★ [DEV-AUC-WAIT 2026-11-24 用户原话]
+//   「那个官方偏离值竞价口径是默认打开的（默认是竞价口径数值），这样早上我就能一眼看到竞价口径
+//     进行选股判断……也就是早上 9 点 25 分左右，我就可以看到的是竞价口径，而不是昨天的收盘口径，
+//     这个很重要。收盘口径只是复盘用。」
+//
+// 真实时点取证（11-24 `bidding_fetch_log`）：09:25:05 起抓、09:25:32 morning 收工、
+// 09:26:39 ladder26、09:27:25 snapshot 补量比 ⇒ **auc_pct_chg 在 09:25:35 之后才在库里**。
+// ⇒ 「9:25:10 就打开页面」那次，收盘口径是【数据还没到】而不是【判据错了】，
+//   所以必须有「到货即切」的有界重试；否则会一直停在昨天的收盘数。
+// ════════════════════════════════════════════════════════════════════════════════
+describe('[DEV-AUC-WAIT] 早盘默认竞价口径 + 到货即切（源码锁：断开任一环这里该红）', () => {
+  const comp = readFileSync('src/composables/useAbnormalDeviation.js', 'utf8');
+
+  it('竞价窗口内、竞价档没就绪 ⇒ 有界重试（⛔ 不许常驻轮询）', () => {
+    expect(comp).toContain('AUC_WAIT_MS');
+    expect(comp).toContain('AUC_WAIT_MAX');
+    expect(comp).toContain('AUC_WINDOW_FROM');
+    expect(comp).toContain('function _scheduleAucWait');
+    expect(comp).toContain('function _stopAucWait');
+    // 触发条件必须三个都在：竞价窗口内 + 竞价档没就绪 + 收盘腿也没到
+    expect(comp).toContain('inAucWindow && !aucReady && !closeLegReady');
+    // ⛔ 不许 setInterval 常驻
+    expect(comp).not.toContain('setInterval');
+    // 上限必须写死（15 次 × 12s ≈ 3 分钟），超出就停
+    expect(comp).toMatch(/AUC_WAIT_MAX\s*=\s*\d+/);
+  });
+
+  it('重试时不许把面板打回「读取中…」（否则每 12 秒闪一次）', () => {
+    expect(comp).toContain('quiet');
+    expect(comp).toContain('opt.quiet !== true');
+    expect(comp).toContain('{ quiet: true }');
+  });
+
+  it('清空/切日期必须掐掉重试（⛔ 不许后台继续跑）', () => {
+    const body = comp.slice(comp.indexOf('function clear()'), comp.indexOf('function clear()') + 400);
+    expect(body).toContain('_stopAucWait()');
+  });
+
+  it('数据一就绪就停：竞价档就绪 / 收盘腿到了 / 非今天 都不等', () => {
+    expect(comp).toContain('} else {');
+    expect(comp).toContain('_stopAucWait();');
+    // 历史日永远不等（复盘不需要等今日竞价）
+    expect(comp).toContain('const inAucWindow = isToday && hhmm >= AUC_WINDOW_FROM');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ★ [PERF-DEV 2026-11-24 用户报障「题材量比的响应速度有些变慢了，你主要看上次的修改是否拖慢」]
+//   真实链路计时（node 直连真库，14 只票）：
+//     冷启动  4733ms / 11 请求 → 2162ms / 3 请求（8 个腾讯 501 消失 + 并行化）
+//     热重算   545ms /  1 请求 →   17ms / 0 请求（auc 按日缓存 + daily/index 缓存命中）
+// ════════════════════════════════════════════════════════════════════════════════
+describe('[PERF-DEV] 重算必须 0 额外请求（会话内一次读取、反复重算）', () => {
+  const comp = readFileSync('src/composables/useAbnormalDeviation.js', 'utf8');
+  const daily = readFileSync('src/data/stock-daily-pct.js', 'utf8');
+  const idx = readFileSync('src/data/index-daily-pct.js', 'utf8');
+
+  it('竞价涨幅按日缓存，且【空结果不缓存】（9:25 还没落库要能重试）', () => {
+    expect(comp).toContain('_aucPctCache');
+    expect(comp).toContain('function _putAucCache');
+    expect(comp).toContain('if (!date || !(m instanceof Map) || m.size === 0) return');
+    expect(comp).toContain('const hit = _aucPctCache.get(d)');
+  });
+
+  it('fresh 只绕到「第一次确认今天收盘腿入库」为止（否则等于把缓存删了）', () => {
+    expect(comp).toContain('_closeSeen');
+    expect(comp).toContain('!_closeSeen.has(asOf)');
+    expect(comp).toContain('if (closeLegReady) _closeSeen.add(asOf)');
+    expect(daily).toContain('opts.fresh');
+  });
+
+  it('竞价涨幅与个股腿并行发（互不依赖，⛔ 别串行等）', () => {
+    expect(comp).toContain('const aucPromise = _readAucPctMap(asOf)');
+    expect(comp).toContain('const aucMap = await aucPromise');
+    // ⛔ 不许又回到「先 await daily 再读 auc」
+    expect(comp).not.toContain('await _readAucPctMap(asOf);');
+  });
+
+  it('只取这批票真正用到的对应指数（不是 4 只全取）', () => {
+    expect(comp).toContain('idxCodes');
+    expect(comp).toContain('readIndexLegsForDates(dates, idxCodes.length ? { codes: idxCodes } : {})');
+  });
+
+  it('腾讯兜底熔断：整批失败后 10 分钟内不再打（⛔ 每片都白打 8 个 501）', () => {
+    expect(idx).toContain('_qtCooldownUntil');
+    expect(idx).toContain('QT_FAIL_COOLDOWN_MS');
+    expect(idx).toContain('indicesNeedingQt');
+    // 旧判据（拿条数比日期数 ⇒ 前缀缺口恒为真）必须已经从【代码】里消失。
+    // ⚠️ 注释里仍会写它（讲清踩过什么坑），所以只锁「有没有再这样算」。
+    expect(idx).not.toMatch(/const need = DEV_INDEX_CODES\.filter/);
+    expect(idx).toContain('const need = indicesNeedingQt(wantCodes, map, horizon)');
   });
 });
