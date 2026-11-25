@@ -77,6 +77,10 @@
  *   devFactsReady       ★ [DEV-RULE 2026-11-25] 官方偏离值事实（第三十四 / 三十六 / 三十六·b 的
  *                        输入）「落地」没有：日期对得上 + (算出了结果 或 确认不再重试)。
  *                        false ⇒ 不许定稿（否则异动规则会按「判不出」放行并被冻结）。
+ *   hotDerivedTopicsReady ★ [HOT-TOPIC-SYNC 2026-11-25] hot_stocks note 派生题材是否已并入题材缓存。
+ *                        false ⇒ 不许定稿 —— 否则只存在于 hot note 的题材（如原尚股份「跨境电商」
+ *                        属大消费）还没进缓存，定稿在 3 只、hot 到货重建后变 4 只 ⇒ 屏幕变来变去。
+ *                        缺省 undefined ⇒ 就绪（§11 老调用方 / 既有单测零行为变化）。
  * @returns {{settled:boolean, missing:string[], text:string}} missing = 中文项名（给用户看）
  */
 /**
@@ -231,6 +235,21 @@ export function resolveBuySettle(ctx) {
   //   ⚠️ 缺省 undefined ⇒ 就绪（§11：老调用方 / 既有单测零行为变化）。
   if (o.devFactsReady === false) {
     missing.push('官方偏离值（异动判定）');
+  }
+  // ⑱ ★★ [HOT-TOPIC-SYNC 2026-11-25 用户口径] 【hot note 派生题材已并入缓存】读入没有。
+  //
+  //   🔴 为什么必须新增这一项：有些股票的题材【只】存在于 hot_stocks.note（如原尚股份 07-31
+  //      `摘帽+汽车物流+跨境电商+氢能源`），`stock_topics` 库与当日 auction_watchlist 都没有。
+  //      题材缓存 `buildTopicCache` 幂等，常在 hot 数据到货前已首次建成 ⇒ 那一刻扫不到 hot ⇒
+  //      该票题材显示 '-'。而 ⑩ `topicLibraryReady` 只看 stock_topics 库、不看 hot 派生题材 ⇒
+  //      门控在题材还是 '-'（大消费 3 只、无九阳股份）时就放行定稿；1~2 秒后 hot 到货、
+  //      某处重建缓存 ⇒ 题材变「跨境电商」⇒ 大消费 4 只、九阳股份进出 ⇒ 用户看到「变来变去」。
+  //
+  //   ✅ 判据：hot 数据到货并重建题材缓存后由 Data 层置 `isHotDerivedTopicsReady()`=true
+  //      （一次性里程碑，含读失败分支 —— §10「读过就算落地」，⛌ 不因一次读失败永久锁死）。
+  //   ⚠️ 缺省 undefined ⇒ 就绪（§11：老调用方 / 既有单测零行为变化）。
+  if (o.hotDerivedTopicsReady === false) {
+    missing.push('热门股票题材归类');
   }
 
   if (missing.length === 0) return { settled: true, missing: [], text: '' };

@@ -2870,6 +2870,10 @@ export function _applyDeviationNearRule(out, opts) {
       p.buyActionTone = ABNORMAL_NO_BUY_TONE;
       p.actionNote = deviationRuleBuyNote(f, { basis: basis });
       p.devRuleStage = st;                   // 留痕（排障 / 存档对比用）
+      // ★★ [ROW-GRAY 2026-11-25 用户口径] 「不能买 ⇒ 这一只股票是灰色块（非题材块）」。
+      //   规则层只交旗子，⛔ 不在 Logic 里拼 CSS / 不在 UI 里重判偏离档位（§6 / §21）：
+      //   TvrbBuyBlock.vue 只读本旗子给【这一行】挂灰化类，同题材其它票不受影响。
+      p.noBuyRowGray = true;
       hitNames.add(name);
     });
   });

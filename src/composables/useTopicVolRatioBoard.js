@@ -296,7 +296,7 @@ import { makeCoreTopicResolver } from '../logic/topic/core-category.js';
 // ★★ [BUY-SETTLE-2 2026-10-31 用户口径] 题材库（stock_topics）「就绪了吗」——
 //   买点侧门控的输入之一。判据语义见其 JSDoc：**为空即「题材分类结果不可信」**（§10 读取失败 ≠ 空）。
 //   ⛔ 别用 isCloudTopicsLoaded（那个回答的是「现在写回云端安全吗」，两个判据用途不同）。
-import { isTopicLibraryReady, isCloudTopicsLoaded, getTopicLibraryDigest, getTopicLibraryVersion, lookupTopicsByName, buildTopicCache } from '../data/stock-topics.js';
+import { isTopicLibraryReady, isCloudTopicsLoaded, getTopicLibraryDigest, getTopicLibraryVersion, lookupTopicsByName, buildTopicCache, isHotDerivedTopicsReady } from '../data/stock-topics.js';
 // ★ 分笔：与「分笔买卖」看板【同一份取数编排 + 同一份逐行实现】（§6 单一真相，⛔ 不另写一份）
 import { decorateTickRow } from '../logic/tick/tick-minute.js';
 import {
@@ -2511,7 +2511,12 @@ export function useTopicVolRatioBoard() {
         //      · 算出了结果（`ready>0`）⇒ 放行；
         //      · 算不出但也不再等（`pending=false`：已过 09:30 / 已收盘 / 历史日 / 重试用完）⇒ 放行并降级。
         //      · 一只票都不用算（空仓日 / 还没算出候选）⇒ 不挂（否则空仓日会被永久挂起）。
-        devFactsReady: _devFactsGate(d)
+        devFactsReady: _devFactsGate(d),
+        // ★★ [HOT-TOPIC-SYNC 2026-11-25 用户口径 · 第十八项] hot note 派生题材已并入缓存。
+        //   与 ⑩ topicLibraryReady（只看 stock_topics 库）不同：原尚股份这类票的题材只在 hot
+        //   note 里，库里没有。不等它 ⇒ 题材还是 '-'（大消费 3 只）时就定稿，hot 到货重建后
+        //   变 4 只、九阳股份进出 ⇒「变来变去」。标志由 Data 层重建后置位（reactive，可读可追踪）。
+        hotDerivedTopicsReady: isHotDerivedTopicsReady()
       });
       if (!_settle.settled) {
         plan.buyPending = true;

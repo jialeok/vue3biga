@@ -271,6 +271,9 @@ describe('_applyDeviationNearRule · 逼近红线只禁这一只（第三十六�
     expect(p1.buyActionTone).toBe('ebb-nobuy');
     expect(p1.actionNote).toContain('不给买点');
     expect(p1.devRuleStage).toBe('near');
+    // ★★ [ROW-GRAY 2026-11-25] 「不能买 ⇒ 那一只灰色块（非题材）」必须下发行级旗子
+    expect(p1.noBuyRowGray).toBe(true);
+    expect(p2.noBuyRowGray).toBeFalsy();
     expect(p2.buyActionTag).toBe('');
     expect(out.buyNames.has('甲')).toBe(false);      // ★ 必须剔出（否则卖点侧会标【持有】）
     expect(out.buyNames.has('乙')).toBe(true);

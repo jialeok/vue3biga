@@ -66,7 +66,13 @@
       v-for="p in block.picks"
       :key="p.name"
     >
-      <div class="tvrb-row">
+      <!-- ★★ [ROW-GRAY 2026-11-25 用户口径] 第三十六条「逼近红线不买」的那一只 ⇒【只灰这一行】。
+           ⛔ 旗子由 Logic 层给（p.noBuyRowGray），模板零判定；⛔ 不灰整个题材块
+           （同题材其它票照常买，用户原话「是这只股票范围灰色块（非题材）」）。 -->
+      <div
+        class="tvrb-row"
+        :class="{ 'tvrb-row-nobuy-gray': p.noBuyRowGray }"
+      >
         <span
           class="tvrb-seq tvrb-pen-trigger"
           :title="penTip"

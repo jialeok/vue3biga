@@ -8,6 +8,8 @@ import { _emit } from '../stores/eventBus.js';
 import { state } from '../logic/app-state.js';
 import { getSupabase } from './supabase-client.js';
 import { loadHotStocksFromCloud, pullHotStocksHighlights, loadHotTrendsFromCloud } from './hot-stocks-cloud.js';
+// ★★ [HOT-TOPIC-SYNC 2026-11-25] hot 到货后重建题材缓存的唯一入口（§6 单一数据源）
+import { rebuildTopicCacheForHotData } from './stock-topics.js';
 
 // 热门股票tap：三张表（hot_stocks / hot_stocks_highlights / hot_stock_trends）的
 // Realtime 订阅共用同一个"统一防抖池"。
@@ -45,6 +47,10 @@ export function _scheduleHotRealtimeReload() {
             }));
         }
         Promise.all(tasks).then(function() {
+            // ★★ [HOT-TOPIC-SYNC 2026-11-25] Realtime 的 hot 数据到货同样要重建题材缓存——
+            //   否则只在 hot note 里的题材（原尚股份「跨境电商」）直到无关 invalidate 才出现。
+            //   与启动路径共用 Data 层唯一入口（§6）；buildTopicCache 幂等，build 前必先 invalidate。
+            rebuildTopicCacheForHotData();
             _emit('data:realtime-update', { boards: 'hot' }); // 三张表变化只触发这一次整体重渲染
         });
     }, 800);

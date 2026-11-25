@@ -241,5 +241,28 @@ describe('resolveBuySettle · 买点侧选股输入门控', function() {
       expect(resolveBuySettle(full({ abnThirdTarget: '' })).settled).toBe(true);
       expect(resolveBuySettle(full({})).settled).toBe(true);
     });
+
+    // ★★ [HOT-TOPIC-SYNC 2026-11-25 用户报障] 第 ⑱ 项：hot note 派生题材已并入缓存。
+    //   原尚股份题材只在 hot_stocks.note（stock_topics 库 / 当日 watchlist 都没有），
+    //   题材缓存早于 hot 幂等建成 ⇒ 题材显示 '-'。门控不等它 ⇒ 3 只定稿后又变 4 只（九阳股份进出）。
+    it('★ 第 ⑱ 项：hot 派生题材未就绪 ⇒ 不许定稿（否则题材还没归类就冻结成 3 只）', function() {
+      const r = resolveBuySettle(full({ hotDerivedTopicsReady: false }));
+      expect(r.settled).toBe(false);
+      expect(r.missing).toContain('热门股票题材归类');
+      expect(r.text).toContain('热门股票题材归类');
+      // 就绪（hot 到货并重建完成）⇒ 放行
+      expect(resolveBuySettle(full({ hotDerivedTopicsReady: true })).settled).toBe(true);
+      // 缺省 undefined ⇒ 就绪（§11：老调用方 / 既有单测零行为变化）
+      expect(resolveBuySettle(full({ hotDerivedTopicsReady: undefined })).settled).toBe(true);
+    });
+
+    it('★ 第 ⑱ 项与第 ⑩ 项（题材库）互不顶替：stock_topics 库就绪 ≠ hot 派生题材就绪', function() {
+      // 题材库 ready 但 hot 派生题材未就绪 ⇒ 仍不许定稿（这正是原尚股份事故的形状）
+      const onlyTopicLib = resolveBuySettle(full({
+        topicLibraryReady: true, hotDerivedTopicsReady: false
+      }));
+      expect(onlyTopicLib.settled).toBe(false);
+      expect(onlyTopicLib.missing).toEqual(['热门股票题材归类']);
+    });
   });
 });

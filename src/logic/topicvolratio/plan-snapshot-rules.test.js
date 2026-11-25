@@ -308,12 +308,12 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     expect(resolvePlanSnapshotFreshness(broken, OPTS)).toBe('stale');
   });
 
-  it('版本常量已 bump 到 29（[DEV-RULE] 监管异动换官方偏离值口径 ⇒ 历史日也要重算 = v29）', () => {
+  it('版本常量已 bump（[HOT-TOPIC-SYNC] hot 派生题材缓存重建 ⇒ 11-25 大消费补 4 只 ⇒ 历史日重算）', () => {
     // ★★ [YIZI-NO-SHIFT 2026-11-20 用户口径] 竞价一字【照选 + 占一档】取代「顺延下一龙位」
     //   ⇒ 选股结论会变（11-20 盛剑科技 / 兴欣新材就是这一条翻的）⇒ 历史日必须重算，版本 27 → 28。
     // ★★ [DEV-RULE 2026-11-25 用户口径] 监管异动从「自定义十日涨幅 ＞ 97%」换成「官方严重异常波动」
     //   ⇒ 异动日整体位移（11-12 → 11-11 等）⇒ 历史日必须按新口径重算覆盖，版本 28 → 29。
-    expect(TVRB_RULES_VERSION).toBe(30);
+    expect(TVRB_RULES_VERSION).toBe(32);
   });
 
   // ★★ [ABN-MAINBOARD-GUARD 2026-11-14] 第三十四条「全场十日涨幅最高票」只认主板。
@@ -433,8 +433,25 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     //   ★★ [BUYABLE-COUNT 2026-11-19] 「选股 N 只」改数能下单的只数（pickCount 是屏幕上直接看到的数字）⇒ 25 → 26）
     //   ★★ [YIZI-NO-SHIFT 2026-11-20] 竞价一字【照选 + 占一档】取代「顺延下一龙位」⇒ 选股结论变 ⇒ 26 → 27 → 28
     //   ★★ [DEV-RULE 2026-11-25] 监管异动换官方偏离值口径（异动日位移 11-12 → 11-11）⇒ 28 → 29
-    expect(TVRB_RULES_VERSION).toBe(30);
+    //   ★★ [MARKET-DRAGON-ONLY 2026-11-25] 第三十四条只认市龙一 ⇒ 29 → 30
+    //   ★★ [ROW-GRAY 2026-11-25] 第三十六条补【行级灰块】渲染旗子 ⇒ 30 → 31
+    //   ★★ [HOT-TOPIC-SYNC 2026-11-25] hot 派生题材缓存重建（11-25 大消费补 4 只）⇒ 31 → 32
+    expect(TVRB_RULES_VERSION).toBe(32);
     expect(_swCacheNo(readFileSync('public/sw.js', 'utf8'))).toBeGreaterThanOrEqual(67);
+  });
+
+  // ★★ [ROW-GRAY 2026-11-25 用户报障] 「逼近红线不买」只打标签、没有那一只股票的灰色块。
+  //   三段契约必须同时存在，缺一段就又回到「标签说不能买、看板上还是彩色可买」：
+  //   Logic 下发旗子 → UI 只给这一行挂类 → CSS 用既有灰化值渲染（⛔ 不灰整个题材块）。
+  it('[ROW-GRAY] 第三十六条的行级灰化从 Logic 到 UI 到 CSS 闭环', () => {
+    const plan = readFileSync('src/logic/topicvolratio/tvrb-plan.js', 'utf8');
+    expect(plan).toContain('p.noBuyRowGray = true');
+    const vue = readFileSync('src/components/topicvolratio/TvrbBuyBlock.vue', 'utf8');
+    expect(vue).toContain("'tvrb-row-nobuy-gray': p.noBuyRowGray");
+    expect(vue).not.toContain("'tvrb-row-nobuy-gray': block.noBuyRowGray"); // ⛔ 只灰行，不灰块
+    const css = readFileSync('src/assets/css/topic-vol-ratio-board.css', 'utf8');
+    expect(css).toContain('.tvrb-row.tvrb-row-nobuy-gray');
+    expect(css).toContain('grayscale(1)');
   });
 
   // ★★ [RULE-BUMP-GUARD 2026-11-13] 用户报障「现在刷新并没有生效」的整类根因锁。

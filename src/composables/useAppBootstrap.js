@@ -8,6 +8,8 @@ import { startSessionPoll, pullAuctionMarketDataForDate, _isAuctionWatchlistInde
 import { pullDailyHighlights } from '../data/daily-highlights.js';
 import { pullHotStocksHighlights, loadHotStocksFromCloud } from '../data/hot-stocks.js';
 import { loadCoreTopicsFromCloud } from '../logic/topic/rules.js';
+// ★★ [HOT-TOPIC-SYNC 2026-11-25] hot 到货后重建题材缓存的唯一入口（§6 单一数据源）
+import { rebuildTopicCacheForHotData } from '../data/stock-topics.js';
 import { ensureTempCoreTopics } from '../data/temp-core-topics.js';
 import { pullFromCloud } from '../logic/workflows/auction-sync.js';
 import { initApp, getCurrentDate } from '../logic/app-core.js';
@@ -281,7 +283,19 @@ export function useAppBootstrap(loginRef) {
 
     pullDailyHighlights().then(() => _emit('auction-refresh')).catch(e => _dbgLog('[AUCTION-ERR] daily_highlights ' + (e && e.message || e)));
     pullHotStocksHighlights().catch(e => console.warn('hot_stocks_highlights:', e.message));
-    loadHotStocksFromCloud().then(() => _emit('auction-refresh')).catch(e => console.warn('hot_stocks:', e.message));
+    // ★★ [HOT-TOPIC-SYNC 2026-11-25] hot 到货后必须重建题材缓存，再 emit 刷新——
+    //   只存在于 hot note 里的题材（如原尚股份「跨境电商」）靠 buildTopicCache 扫 hot 数据拿到；
+    //   题材缓存常在 hot 到货前已幂等建立，不 invalidate+build 就永远缺这批题材（显示 '-'）。
+    //   统一走 Data 层 rebuildTopicCacheForHotData（§6），⛌ 不在这里另写一遍。
+    loadHotStocksFromCloud()
+      .then(() => { rebuildTopicCacheForHotData(); _emit('auction-refresh'); })
+      .catch(e => {
+        // §10：读失败也算「读过」——同样要置就绪标志 + 重建（用现有 hot 数据，可能为空），
+        // ⛌ 否则门控第⑱项永久挂起买点侧。rebuildTopicCacheForHotData 内含 finally 置位。
+        console.warn('hot_stocks:', e.message);
+        rebuildTopicCacheForHotData();
+        _emit('auction-refresh');
+      });
     pullBiddingForDate(getCurrentDate()).then(() => _emit('bidding-refresh')).catch(e => _dbgLog('[BIDDING] 首屏快速加载失败 ' + (e && e.message || e)));
     loadCoreTopicsFromCloud().then(() => _emit('auction-refresh')).catch(e => console.warn('core_topics:', e && e.message || e));
     // [TEMP-CORE] 临时词全量只读一次（切日期只做内存筛选，§32）；与主流词表并行加载，互不阻塞。
