@@ -15,6 +15,8 @@
 // ⚠️ 夹具里的指数腿只到「昨日」——这正是 9:25 的真实处境（指数没有集合竞价价），
 //   竞价口径靠 `indexTodayFlat` 补一根 pct=0 才让窗口含今天。⛔ 别给它补今日指数腿。
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { buildTvrbRulesLines } from '../logic/topicvolratio/tvrb-rules-lines.js';
 
 const D_TODAY = '2026-11-24';
 const D_PREV = '2026-11-23';
@@ -111,11 +113,45 @@ describe('[DEV-AUC-WAIT] 默认口径：早上就是竞价口径，收盘才切�
     expect(m.basisText).toContain('收盘腿已入库');
   });
 
-  it('③ 复盘历史日 ⇒ 永远 close（⛔ 不拿竞价涨幅改历史）', async () => {
+  it('③ 复盘历史日 ⇒ 面板永远 close（⛔ 不拿竞价涨幅改历史）', async () => {
     MOCK = buildDaily(true);
     const dev = useAbnormalDeviation();
     await dev.load(Object.assign({}, ARGS, { asOf: D_LAST, today: D_TODAY, hhmm: '09:26' }));
     expect(dev.meta.value.basis).toBe('close');
+  });
+
+  // ★★ [DEV-RULE-AUC-ONLY 2026-11-25 用户报障] 选股侧口径与面板口径【解耦】：
+  //   面板历史日默认 close（复盘，用户认可）；但选股规则（三十六 near 等）一律竞价。
+  //   11-24 华东重机就是历史日错吃收盘口径（94.29% near）被灰，竞价其实 83.32% watch。
+  it('③-b 历史日：面板显示 close，但 devFacts.auto（选股规则输入）必须是竞价口径', async () => {
+    MOCK = buildDaily(true);
+    const dev = useAbnormalDeviation();
+    // asOf = 历史日（D_LAST ≠ today），autoBasis 判 close → 面板 close
+    await dev.load(Object.assign({}, ARGS, { asOf: D_LAST, today: D_TODAY, hhmm: '09:26' }));
+    expect(dev.meta.value.basis).toBe('close');                 // 面板：复盘收盘（不变）
+    const facts = dev.devFacts.value;
+    expect(facts.asOf).toBe(D_LAST);
+    // ★ 规则层读的 basis 也必须恒 auction（否则说明文案会写「收盘口径」与竞价事实自相矛盾）
+    expect(facts.basis).toBe('auction');
+    expect(facts.viewBasis).toBe('close');                      // 展示口径仍是复盘收盘
+    expect(facts.autoBasis).toBe('close');                      // 自动判据只留诊断，不喂规则
+    // 选股事实：有竞价涨幅 ⇒ ok=true 且 basis=auction（不是 close）
+    const aucFact = facts.auto.get('北纬科技');
+    expect(aucFact.ok).toBe(true);
+    expect(aucFact.basis).toBe('auction');
+    // 与面板那套（close，含 +3.07% 收盘腿）数值必须不同 —— 证明选股侧真的用竞价
+    const panelClose = dev.devMap.value.get('北纬科技');
+    expect(aucFact.dev10).not.toBe(panelClose.dev10);
+  });
+
+  it('③-c 历史日某票【缺竞价涨幅】⇒ 选股事实判不出（ok:false），⛌ 不回退收盘腿', async () => {
+    MOCK = buildDaily(true);
+    MOCK.auc = [];                                             // 该日完全没有竞价涨幅
+    const dev = useAbnormalDeviation();
+    await dev.load(Object.assign({}, ARGS, { asOf: D_LAST, today: D_TODAY, hhmm: '09:26' }));
+    const f = dev.devFacts.value.auto.get('北纬科技');
+    expect(f.ok).toBe(false);                                  // 判不出，不施加限制（§10）
+    expect(f.basis).toBe('auction');
   });
 
   it('④ 竞价口径的数真的含「今日竞价涨幅」：与「昨天的数」必须不同', async () => {
@@ -189,5 +225,24 @@ describe('[DEV-AUC-WAIT] 默认口径：早上就是竞价口径，收盘才切�
     expect(dev.basis.value).toBe('close');
     await dev.load(Object.assign({}, ARGS, { asOf: D_LAST, today: D_LAST, hhmm: '16:30' }));
     expect(dev.basis.value).toBe('auction');                  // 那天的选择还在
+  });
+
+  // ★★ [DEV-RULE-AUC-ONLY 2026-11-25] 静态锁：锁【调用/赋值形态】，⛌ 不锁注释
+  //   （esbuild 会删注释；锁裸标识符又会被正当的历史注释误伤 —— §红线6 两次踩过的坑）
+  it('⑨ 静态锁：选股侧口径恒竞价的写法⛌ 不许回退 + 手册口径自洽', () => {
+    const src = readFileSync('src/composables/useAbnormalDeviation.js', 'utf8');
+    // 旧写法（auto 跟随 autoBasis ⇒ 历史日 close）必须彻底消失
+    expect(src).not.toContain("(autoBasis === 'auction' && aucBuilt) ? aucBuilt.map : closeBuilt.map");
+    // 新形态：竞价事实经 ok 闸门进 _autoMap（调用形态，不是裸标识符）
+    expect(src).toContain('_autoMap.set(name, (aucFact && aucFact.ok === true)');
+    expect(src).toContain('const _aucFactMap = aucBuilt && (aucBuilt.map instanceof Map)');
+    // 规则口径字段恒竞价（赋值形态）
+    expect(src).toContain("basis: 'auction',\n        autoBasis: autoBasis,");
+    // 手册第三十六条口径自洽（运行时文案，不是源码注释）
+    const lines = buildTvrbRulesLines();
+    const flat = Array.isArray(lines) ? lines.join('\n') : String(lines);
+    expect(flat).toContain('选股侧一律 9:25 竞价');
+    expect(flat).toContain('不跟面板 toggle');
+    expect(flat).toContain('⛌ 不因历史日或收盘后改吃收盘口径');
   });
 });

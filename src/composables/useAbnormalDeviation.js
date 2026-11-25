@@ -37,15 +37,22 @@
 //
 //   ⇒ 第三十四条（全场异动）/ 第三十六条（逼近红线不买）/ 三十六·b（异动卖）的尺子换成
 //     **官方偏离值**。但它们都在【规则层纯函数】里，⛔ 不许自己取数（§4/§5）⇒ 事实由本文件注入：
-//       `devFacts = { auto, byDate, prevDate, basis, viewBasis, asOf, ready }`
-//         · `auto`    = **自动口径**（`deviationBasisFor` 判出来的那一套）在 asOf 当天的 Map
-//         · `byDate`  = date → Map，**收盘口径**（三十四「异动次日」看的是昨日收盘偏离）
+//       `devFacts = { auto, byDate, prevDate, basis, viewBasis, autoBasis, asOf, ready }`
+//         · `auto`    = **选股侧口径，恒 9:25 竞价**（历史日/今日/收盘后都一样）在 asOf 当天的 Map
+//         · `byDate`  = date → Map，**收盘口径**（三十四「异动次日」看的是昨日收盘偏离；复盘用）
 //         · `prevDate`= 上一交易日（由调用方注入，本文件不碰交易日历）
+//         · `basis`   = 'auction'（规则输入口径，与 auto 配对；说明文案也读它）
+//         · `viewBasis` = 面板展示口径（历史日默认 close —— 用户认可的复盘行为）
+//         · `autoBasis` = 自动判据（历史日 close），只留诊断，⛌ 不再喂给规则
 //
-//   🔴 为什么 `auto` 用【自动口径】而不是用户 toggle 选的那一套：
-//     toggle 是「我要对比着看」（复盘动作），⛔ 不该把选股结论一起换掉 ——
-//     否则收盘后点一下「竞价口径」，买点名单就跟着变，与 §26「切日期/切视图不是重算按钮」相冲。
-//     口径的历史事实两套都留在 `_factsByDate`，只是**规则只吃自动那一套**。
+//   🔴 为什么 `auto` 恒竞价、而不是用户 toggle 选的那一套 / 也不是 `deviationBasisFor`：
+//     ★★ [DEV-RULE-AUC-ONLY 2026-11-25 用户口径]「选股侧都是用竞价口径（包括官方偏离也是用竞价
+//       口径，这样就能统一起来，自己复盘才用收盘口径），而且题材量比看板买点侧是不会跟随收盘
+//       口径变化的。这个我强调很多次。」
+//     🔴 事故：`auto` 曾跟随 `deviationBasisFor`，而它对历史日返回 close ⇒ 11-24 华东重机
+//       收盘 +94.29% near 被灰（竞价其实 +83.32% watch）—— 口径混用。现在两套彻底解耦：
+//       toggle / 历史日只改「看哪一套」（viewBasis / meta.basis），⛌ 不改选股结论。
+//       竞价涨幅缺失 ⇒ ok:false 判不出、不施加限制（§10），⛌ 绝不回退收盘腿顶替。
 //   🔴 为什么做成 `shallowRef` 一次赋值而不是 `computed`：`data` 里那个
 //     `buildTopicVolRatioPlan` 很重，若跟着 mapClose/mapAuc/meta/basis 四个 ref 各重算一次，
 //     一次 load 会把主计划重建 4 遍。这里只在 load 收尾赋值一次 ⇒ 主计划只重建 1 遍。
@@ -144,7 +151,7 @@ function _emptyMeta(asOf) {
  * 规则层输入的「空事实」（§10：判不出时**显式**给出空 Map，⛔ 不是 undefined）。
  * 形状必须与填充后的完全一致 ⇒ 规则层只认一种契约（`tvrb-plan.js#o.devFacts`）。
  * @param {string} asOf
- * @param {string} [basis] 自动口径
+ * @param {string} [basis] 展示口径（历史日 close）；⛔ 不是规则口径 —— 见下方 basis 字段注
  * @returns {{auto:Map, byDate:Map, prevDate:string, basis:string, viewBasis:string,
  *            asOf:string, ready:number, pending:boolean}}
  */
@@ -153,7 +160,10 @@ function _emptyFacts(asOf, basis) {
     auto: new Map(),
     byDate: new Map(),
     prevDate: '',
-    basis: basis === 'auction' ? 'auction' : 'close',
+    // ★★ [DEV-RULE-AUC-ONLY 2026-11-25] `basis` = 【选股规则输入口径】恒 auction，
+    //   `viewBasis` = 面板展示口径（历史日 close，用户复盘）。两者刻意解耦：
+    //   tvrb-plan 的说明文案读 basis（现在恒竞价），⛌ 不许被历史日 close 带偏。
+    basis: 'auction',
     viewBasis: basis === 'auction' ? 'auction' : 'close',
     asOf: String(asOf || '').slice(0, 10),
     ready: 0,
@@ -568,7 +578,30 @@ export function useAbnormalDeviation() {
       //   `byDate` = 收盘口径：asOf 一份 + 每个历史日各一份（三十四「异动次日」/ 三十四·b「第三天」）
       //   ⚠️ 收盘腿还没入库时 closeBuilt.map 里是「ok:false」的占位事实（不是空 Map）——
       //     规则层 `deviationRuleStage` 只认 `ok===true` ⇒ 自动视为判不出（§10 一致）。
-      const _autoMap = (autoBasis === 'auction' && aucBuilt) ? aucBuilt.map : closeBuilt.map;
+      // ★★ [DEV-RULE-AUC-ONLY 2026-11-25 用户口径，逐字] 「选股侧都是用竞价口径（包括官方偏离
+      //   也是用竞价口径，这样就能统一起来，自己复盘才用收盘口径），而且题材量比看板买点侧
+      //   是不会跟随收盘口径变化的。这个我强调很多次。」
+      //
+      //   🔴 事故：上一版 `_autoMap` 跟随 `autoBasis`，而 deviationBasisFor 对【历史日】返回 close
+      //      ⇒ 选股规则（三十六 near / 三十六·b / 三十四形态②当日异动）在历史日错吃收盘口径。
+      //      11-24 华东重机：收盘 +94.29% = near（被灰 + 逼近红线不买）、竞价 +83.32% = watch
+      //      （按用户口径不该灰）—— 用户报障「这个是不是搞混了」。
+      //
+      //   ✅ 修复：`auto`（选股规则输入）【一律 9:25 竞价】，与面板显示口径彻底解耦：
+      //      · 有竞价事实 ⇒ 用 aucBuilt.map（竞价口径，历史日同样适用）；
+      //      · 某票竞价涨幅缺失 ⇒ 给 ok:false 占位 = 判不出、不施加限制（§10），
+      //        ⛌ 绝不回退 closeBuilt.map —— 那等于把收盘口径又混进选股侧；
+      //      · `byDate` 保持收盘（三十四「异动次日看昨日收盘」/ 三十四·b / 用户复盘面板）。
+      //      · 面板 `shownBasis` / `basis` 不变（历史日默认收盘 = 用户认可的复盘行为，只管「看」）。
+      const _aucFactMap = aucBuilt && (aucBuilt.map instanceof Map) ? aucBuilt.map : null;
+      const _autoMap = new Map();
+      closeBuilt.map.forEach(function (_closeFact, name) {
+        const aucFact = _aucFactMap ? _aucFactMap.get(name) : null;
+        // 只收竞价口径里【真的算出来】的事实；缺竞价涨幅 / 判不出 ⇒ ok:false 占位（§10）
+        _autoMap.set(name, (aucFact && aucFact.ok === true)
+          ? aucFact
+          : { ok: false, code: aucFact ? aucFact.code : '', basis: 'auction', dev10: null, dev30: null, stage: 'unknown', gapText: '9:25 竞价涨幅缺失 ⇒ 选股侧判不出（不用收盘口径顶替）' });
+      });
       const _byDate = new Map();
       _byDate.set(asOf, closeBuilt.map);
       prevBuiltMap.forEach(function (b, d) { if (b && b.map) _byDate.set(d, b.map); });
@@ -599,7 +632,10 @@ export function useAbnormalDeviation() {
         byDate: _byDate,
         prevDate: prevDate,
         prevDates: prevDates.slice(),
-        basis: autoBasis,
+        // ★★ [DEV-RULE-AUC-ONLY] 规则输入口径恒竞价（与 auto 这套竞价事实配对）；
+        //   `autoBasis` 保留自动判据（历史日 close）只给诊断，面板展示走 viewBasis / meta.basis。
+        basis: 'auction',
+        autoBasis: autoBasis,
         viewBasis: shownBasis,
         asOf: asOf,
         ready: _ready,

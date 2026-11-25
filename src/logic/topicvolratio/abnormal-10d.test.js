@@ -289,6 +289,50 @@ describe('_applyDeviationNearRule · 逼近红线只禁这一只（第三十六�
     expect(out.buyNames.size).toBe(6);
   });
 
+  // ★★ [GOLDEN · DEV-RULE-AUC-ONLY 2026-11-25] 华东重机两日真库回放
+  //   真库 .tmpdiag/_dev-basis-e2e.mjs 取证（11-24）：
+  //     收盘 dev10=94.29 / dev30=91.48 ⇒ near（旧口径在此被灰 —— 用户报障的那一次）
+  //     竞价 dev10=83.32 / dev30=81.08 ⇒ watch（按用户口径【不该灰】）
+  //     11-25 真库：收盘 100.03 / 99.05 ⇒ severe，竞价 95.05 / 94.26 ⇒ near（该灰）。
+  it('★ GOLDEN 11-24 华东重机：竞价 watch 不灰；反证误吃收盘 near 就会灰', () => {
+    function outOf1124() {
+      const out = makeOut();
+      out.blocks[0].picks[0].name = '华东重机';
+      out.buyNames.delete('甲');
+      out.buyNames.add('华东重机');
+      return out;
+    }
+
+    // ✅ 修复后：选股侧一律竞价 ⇒ watch ⇒ 不灰、不剔出
+    const good = outOf1124();
+    const n = _applyDeviationNearRule(good, {
+      devAuto: new Map([['华东重机', fact('watch', 83.32, 81.08)]]),
+      basis: 'auction'
+    });
+    expect(n).toBe(0);
+    expect(good.blocks[0].picks[0].noBuyRowGray).toBeFalsy();
+    expect(good.blocks[0].picks[0].buyActionTag).toBe('');
+    expect(good.buyNames.has('华东重机')).toBe(true);
+
+    // 🔴 反证：若错吃收盘（旧 bug），11-24 就会被灰 + 剔出 —— 锁死口径不能回退
+    const bad = outOf1124();
+    _applyDeviationNearRule(bad, {
+      devAuto: new Map([['华东重机', fact('near', 94.29, 91.48)]]),
+      basis: 'close'
+    });
+    expect(bad.blocks[0].picks[0].noBuyRowGray).toBe(true);
+    expect(bad.buyNames.has('华东重机')).toBe(false);
+
+    // ✅ 11-25 竞价 near ⇒ 当日确实该灰（用户口径不变，别把 11-24 的修复做成「永不灰」）
+    const d25 = outOf1124();
+    _applyDeviationNearRule(d25, {
+      devAuto: new Map([['华东重机', fact('near', 95.05, 94.26)]]),
+      basis: 'auction'
+    });
+    expect(d25.blocks[0].picks[0].noBuyRowGray).toBe(true);
+    expect(d25.blocks[0].picks[0].actionNote).toContain('9:25 竞价');
+  });
+
   it('§10：判不出的票不施加限制，但必须写明「不是已确认安全」', () => {
     const out = makeOut();
     _applyDeviationNearRule(out, { devAuto: new Map([['甲', UNKNOWN()], ['乙', UNKNOWN()]]) });

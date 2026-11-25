@@ -308,12 +308,15 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     expect(resolvePlanSnapshotFreshness(broken, OPTS)).toBe('stale');
   });
 
-  it('版本常量已 bump（[HOT-TOPIC-SYNC] hot 派生题材缓存重建 ⇒ 11-25 大消费补 4 只 ⇒ 历史日重算）', () => {
+  it('版本常量已 bump（[DEV-RULE-AUC-ONLY] 选股侧偏离一律竞价 ⇒ 11-24 华东重机解灰 ⇒ 历史日重算）', () => {
     // ★★ [YIZI-NO-SHIFT 2026-11-20 用户口径] 竞价一字【照选 + 占一档】取代「顺延下一龙位」
     //   ⇒ 选股结论会变（11-20 盛剑科技 / 兴欣新材就是这一条翻的）⇒ 历史日必须重算，版本 27 → 28。
     // ★★ [DEV-RULE 2026-11-25 用户口径] 监管异动从「自定义十日涨幅 ＞ 97%」换成「官方严重异常波动」
     //   ⇒ 异动日整体位移（11-12 → 11-11 等）⇒ 历史日必须按新口径重算覆盖，版本 28 → 29。
-    expect(TVRB_RULES_VERSION).toBe(32);
+    // ★★ [MARKET-DRAGON-ONLY / ROW-GRAY / HOT-TOPIC-SYNC] 29 → 30 → 31 → 32（各次选股结论变化）。
+    // ★★ [DEV-RULE-AUC-ONLY 2026-11-25 用户报障] 选股侧偏离值一律 9:25 竞价，历史日不再吃收盘
+    //   ⇒ 11-24 华东重机（收盘 near / 竞价 watch）解除灰化、回到买点侧 ⇒ 32 → 33。
+    expect(TVRB_RULES_VERSION).toBe(33);
   });
 
   // ★★ [ABN-MAINBOARD-GUARD 2026-11-14] 第三十四条「全场十日涨幅最高票」只认主板。
@@ -436,7 +439,8 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     //   ★★ [MARKET-DRAGON-ONLY 2026-11-25] 第三十四条只认市龙一 ⇒ 29 → 30
     //   ★★ [ROW-GRAY 2026-11-25] 第三十六条补【行级灰块】渲染旗子 ⇒ 30 → 31
     //   ★★ [HOT-TOPIC-SYNC 2026-11-25] hot 派生题材缓存重建（11-25 大消费补 4 只）⇒ 31 → 32
-    expect(TVRB_RULES_VERSION).toBe(32);
+    //   ★★ [DEV-RULE-AUC-ONLY 2026-11-25] 选股侧偏离一律竞价（11-24 华东重机解灰）⇒ 32 → 33
+    expect(TVRB_RULES_VERSION).toBe(33);
     expect(_swCacheNo(readFileSync('public/sw.js', 'utf8'))).toBeGreaterThanOrEqual(67);
   });
 
