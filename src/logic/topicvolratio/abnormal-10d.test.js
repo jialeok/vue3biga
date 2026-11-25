@@ -162,11 +162,14 @@ describe('resolveAbnormalFact · 两种触发形态（判定对象唯一 = 市�
     expect(f.unknownLeader).toBe(true);
   });
 
-  it('文案必须写明官方红线与「旧自定义口径已废除」', () => {
+  it('文案只写官方红线，⛔ 不许再出现旧自定义口径（95/97/「自定义」字样）', () => {
     const f = resolveAbnormalFact(Object.assign({}, base, { leaderDevToday: SEVERE() }));
     expect(f.detail).toContain('+100%');
     expect(f.detail).toContain('+200%');
-    expect(f.detail).toContain('已废除');
+    // ★ [2026-11-26 用户口径] 界面文案里不许再提旧口径 —— 用户已明确「不需要保留之前自定义那个规则了」。
+    expect(f.detail).not.toContain('自定义');
+    expect(f.detail).not.toContain('97%');
+    expect(f.detail).not.toContain('95%');
     expect(f.detail).toContain('偏离值 = 个股累计涨幅 − 对应指数累计涨幅');
   });
 

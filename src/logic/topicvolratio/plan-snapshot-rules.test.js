@@ -362,15 +362,19 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     expect(overlay).not.toContain('883410');
   });
 
-  // ★★ [CAP-97 2026-11-13 晚间] 阈值改动必须三件套同时落地，漏一件就等于没改：
-  //   ① 常量 97  ② 规则指纹 bump  ③ sw.js CACHE 换名。
-  //   ★★ [DEV-RULE 2026-11-25] 97 / 100 这把自定义尺子**已 repealed**（判据换成官方偏离值），
-  //     这两个常量只剩「历史对照文案」一个用途。本用例降级为「常量仍在 + 版本链没倒退」，
-  //     ⛔ 别再把它读成「现役禁选上限 = 97」——曾经的误读正是本轮要修的那类事故。
-  it('[CAP-97-GUARD] 旧自定义上限常量仍在（repealed，仅作文案对照）+ 版本链未倒退', async () => {
-    const { TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL } = await import('./tvrb-constants.js');
-    expect(TVRB_RANGE10_CAP).toBe(97);
-    expect(TVRB_RANGE10_ABNORMAL).toBe(100);
+  // ★★ [CAP-97-GUARD 2026-11-26 用户口径：旧自定义阈值彻底退役]
+  //   用户原话：「我今天都去掉自定义的设定95%了，怎么还提到自定义的监管异动，不是已经去除干净了吗？
+  //     现在都是以官方偏离值为准了……不需要保留之前自定义那个规则了。」
+  //   ⇒ 本用例从「常量仍在」【反向改成】「常量必须不存在」：
+  //     旧常量只要还留在仓库里，就会有人拿它写文案，进而被读成「现役禁选上限」——
+  //     本轮事故（界面上还在讲 97%）就是这么来的。⛔ 别再改回 toBe(97)。
+  it('[CAP-97-GUARD] 旧自定义阈值常量必须已删除 + 版本链未倒退', async () => {
+    const consts = await import('./tvrb-constants.js');
+    expect(consts.TVRB_RANGE10_CAP).toBeUndefined();
+    expect(consts.TVRB_RANGE10_ABNORMAL).toBeUndefined();
+    const raw = readFileSync('src/logic/topicvolratio/tvrb-constants.js', 'utf8');
+    expect(raw).not.toMatch(/export const TVRB_RANGE10_CAP/);
+    expect(raw).not.toMatch(/export const TVRB_RANGE10_ABNORMAL/);
     expect(TVRB_RULES_VERSION).toBeGreaterThanOrEqual(10);
     const sw = readFileSync('public/sw.js', 'utf8');
     expect(_swCacheNo(sw)).toBeGreaterThanOrEqual(67);   // [SW-CACHE] ≥ 本轮基线即可，⛔ 不用每轮改数字

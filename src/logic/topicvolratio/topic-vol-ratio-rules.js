@@ -103,8 +103,10 @@ export {
   DIVERGE_NO_BUY_TAG, DIVERGE_BUY_TONE, DIVERGE_NO_BUY_TONE, DIVERGE_RULE_NO,
   TVRB_CASH_ALERT_NONE, SWITCH_RULE_NO, NEW_DRAGON_TAG, NEW_DRAGON_TONE, NEW_DRAGON_TOP_N,
   NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N, NEW_DRAGON_FAMILY_MIN_COUNT, RANGE10_BACKUP_TONE, RANGE10_BACKUP_TAG, RANGE10_BACKUP_LABEL,
-  // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条【监管异动 · 十日涨幅硬上限】的常量
-  ABNORMAL_RULE_NO, TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL, ABNORMAL_NO_BUY_TAG,
+  // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条【监管异动】的常量
+  //   ★ [2026-11-26] 旧的 `TVRB_RANGE10_CAP` / `TVRB_RANGE10_ABNORMAL` 已随旧口径一起删除，
+  //     ⛔ 不要再从这里（或任何地方）导出「自定义涨幅上限」。
+  ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG,
   ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, ABNORMAL_KIND_STOCK,
   TVRB_ABNORMAL_NONE,
   // ★★ [TOPIC-INNER-SELECT 2026-11-17 用户口径] 第二十九条【灰块】的覆盖式标签 / 配色
@@ -115,7 +117,7 @@ export {
 //   classifyDeviation   = 官方偏离值 → 分级（unknown / ok / near / abnormal）；
 //   isOverOfficialRedLine = 是否越「严重异常波动」红线（第三十四条唯一触发尺子）；
 //   resolveAbnormalFact = 拼标语事实。
-//   ⛔ 旧的 `classifyRange10` / `isOverRange10Cap`（十日涨幅 97%）已废除；
+//   ⛔ 旧口径的分级函数（按原始涨幅 95/97 分级）已整体删除，⛔ 不要加回来；
 //   ⛔ 别在本文件写死任何阈值数字（阈值只在 abnormal-deviation#DEV_THRESHOLDS）。
 export {
   classifyDeviation, isOverOfficialRedLine, isDeviationNearOrOver,

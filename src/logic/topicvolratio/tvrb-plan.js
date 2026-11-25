@@ -7,7 +7,7 @@
 //   opts.dataGateBlocked 为真时，必须走 _clearBuySideForDataGate 把买点侧清空；
 //   ⛔ 只在视图层 v-if 挡不住未来新增的买点通道。
 
-import { TVRB_MIN_COUNT, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_TOP_N, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TVRB_CASH_ALERT_NONE, NEW_DRAGON_TAG, NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N, NEW_DRAGON_FAMILY_MIN_COUNT, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, TVRB_RANGE10_CAP, TVRB_ABNORMAL_NONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG } from './tvrb-constants.js';
+import { TVRB_MIN_COUNT, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_TOP_N, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TVRB_CASH_ALERT_NONE, NEW_DRAGON_TAG, NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N, NEW_DRAGON_FAMILY_MIN_COUNT, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, TVRB_ABNORMAL_NONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG } from './tvrb-constants.js';
 import { pickFamilyNewDragon, splitTopicSegs, isLineageTopic } from './new-dragon-family.js';
 import { _normTopic, _sameTopicLoose, _num, _pct2, _streakWord, _secondTopicLeaderInTop10, _range10RankMapOf, _closeRankOf, _rankTopEntries, _topicTop10Hits, _windowTextOf, _todayRankPhrase, _rankLabelOf, _oldTopicNameOf, _oldTopicBasisOf, _isBuyablePick } from './tvrb-utils.js';
 import { detectEbbDay, secondEbbTopicOfPrevDay, buildEbbDayRecord } from './tvrb-ebb.js';
@@ -2281,8 +2281,8 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       //   「一字涨停可以入选，等下杀买」**整段删除**（旧分支留着就是死代码 + 误导后人）。
       //   现在 blockedBy 只剩 'abnormal' 一种（第三十四条全场监管异动）。
       if (r10Res && r10Res.blockedBy === 'abnormal') {
-        // ★★ [FULL-MARKET 2026-11-13] 第三十四条：它不是「选不出」，是「选出来的那只涨幅已踩
-        //   自定义上限」⇒ 全场监管异动（整片灰 + 空仓），⛔ 不顺延、不替补（措辞与「一字买不进」分开）。
+        // ★★ [FULL-MARKET 2026-11-13] 第三十四条：它不是「选不出」，是「选出来的那只已越
+        //   官方红线」⇒ 全场监管异动（整片灰 + 空仓），⛔ 不顺延、不替补（措辞与「一字买不进」分开）。
         out.notes.push('🚨【第' + ABNORMAL_RULE_NO + '条 · 监管异动】今天这只十日涨幅候补【空仓】：' +
           (r10Res.reason || '选出来的那只十日涨幅已超过上限') + '。' + r10TrailText);
       } else {
@@ -2478,7 +2478,7 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条【监管异动 · 十日涨幅硬上限】——
   //   ★ 为什么收口放在【这里】（所有买点通道都建完之后、卖点段之前）：
   //     · 常规题材块（out.blocks）/ 退潮替补 / 新龙 / 十日候补 / 弱势抱团 / 补涨题材 的票
-  //       到这一刻才全部齐活 ⇒ 才能一次判「今天有没有票踩到自定义禁选上限 / 100% 红线」；
+  //       到这一刻才全部齐活 ⇒ 才能一次判「今天有没有票踩到官方红线」；
   //     · 它必须在【卖点段之前】：异动日「不买任何票」⇒ out.buyNames 要清空，
   //       否则卖点侧会把昨天买过的票标成【持有】（= 「今天又进买点」），与空仓直接矛盾。
   //   ⛔ 本调用只做「判定 + 收口」，⛔ 不取数：总龙一身份/涨幅由组合式注入（opts），§4 无副作用。
@@ -2811,8 +2811,7 @@ export function _applyAbnormalSweep(out, opts) {
     '买点标签一律【' + ABNORMAL_NO_BUY_TAG + '】、不计入「选出 N 只」；卖点侧另行按第三十六条处理。' +
     '📌 判定口径（2026-11-25 换官方口径 + 只认市龙一）：交易所「严重异常波动」= 连续 10 日偏离 ≥ +' +
     DEV_OFFICIAL_RED_LINE_10D + '% 或 30 日 ≥ +' + DEV_OFFICIAL_RED_LINE_30D + '%（负向 ≤ −50% / ≤ −70%），' +
-    '且**只判市龙一**（30 日涨幅第 1 名·主板）；⛔ 旧的「十日涨幅 ＞ ' + TVRB_RANGE10_CAP + '%」自定义口径已废除；' +
-    '⛔ 非市龙一的票越线只算【个股异动】，不触发本空仓。');
+    '且**只判市龙一**（30 日涨幅第 1 名·主板）；⛔ 非市龙一的票越线只算【个股异动】，不触发本空仓。');
   return fact;
 }
 

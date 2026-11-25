@@ -14,12 +14,11 @@ import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_SMALL_
 // ★★ [RULE-35 2026-11-18 用户口径] 第三十五条【30日涨幅抱团】的判定纯函数（§6 唯一实现：
 //   「30日涨幅前三里与本灰色题材块同大类的、名次最靠前的那 1 只」只在这里算一次）。
 import { pickTop30Huddle } from './top30-huddle.js';
-// ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条「监管异动 · 十日涨幅硬上限」的唯一判定实现：
-//   classifyRange10 = 分级（ok / near / abnormal，阈值 97 / 100 都在 tvrb-constants 一处定义；
-//   [CAP-97 2026-11-13 晚间] 用户把自定义禁选上限 95 → 97，让 11-11 的 95.71% 正常运行）。
-//   ⛔ 本文件不另写「> 95」「> 97」「>= 100」这类字面量比较 —— 那会变成第二份规则（§6）。
-// ★ [DEV-RULE 2026-11-25] 本层不再判「十日涨幅 97%」（旧口径已废除）；官方红线数值从
-//   deviation-rule-facts 取（阈值本体在 abnormal-deviation#DEV_THRESHOLDS，§6 一份实现）。
+// ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条「监管异动」的判定层不再由本文件做分级：
+//   ★ [DEV-RULE 2026-11-25 + 2026-11-26 清残留] 旧的自定义分级（按十日原始涨幅 95/97 分档）
+//     **已整体删除**，本文件不再 import 任何「涨幅分级」函数。
+//   官方红线数值从 deviation-rule-facts 取（阈值本体在 abnormal-deviation#DEV_THRESHOLDS，§6 一份实现）。
+//   ⛔ 本文件不写任何「> 95 / > 97 / >= 100」这类字面量比较 —— 那会变成第二份规则（§6）。
 import { DEV_OFFICIAL_RED_LINE_10D } from '../auction/deviation-rule-facts.js';
 import { _normTopic, _sameTopicLoose, _ebbEligibleNames, _ebbBuyPickNames, _num, _pct2, _findMemberByName, _streakWord, _closeRankOf, _windowTextOf, _todayRankPhrase, _rankLabelOf, _oldTopicNameOf, _oldTopicBasisOf } from './tvrb-utils.js';
 
@@ -538,7 +537,7 @@ export function _applyAbnormalNoBuyRules(blocks, abnormal) {
   if (!abnormal || !abnormal.show) return;
   // ★ [ABN-SAME-SOURCE] 称谓必须与判定同源：不是总龙一就不这么叫。
   // ★★ [DEV-RULE 2026-11-25] 口径换成官方偏离值：文案只说【10日/30日偏离值 vs 红线】，
-  //   ⛔ 不许再写「十日涨幅 ＞ 97%」（那是已废除的自定义口径，用户：「那个有些不准」）。
+  //   ⛔ 不许再写任何原始涨幅阈值（旧的自定义口径已彻底删除，用户：「那个有些不准」）。
   // ★★ [MARKET-DRAGON-ONLY 2026-11-25] 触发源唯一 = 市龙一 ⇒ 原来的第三个分支
   //   「入选票 A、B 已越红线」**已删除**（那种形态不复存在，留着就是一段永远不可达的死文案）。
   const _lbl = abnormal.leaderLabel || '市龙一';
