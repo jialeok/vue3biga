@@ -26,10 +26,10 @@
 // ══════════════════════════════════════════════════════════════════════════════════════
 
 import { buildCashAlert } from './tvrb-blocks.js';
-import { resolveAbnormalFact, pickRedLineSource } from './abnormal-10d.js';
-import { makeAbnMainBoardFilter } from './tvrb-plan.js';
-import { isMainBoardRankEligible } from '../auction/limit-up.js';
-import { getStockCode } from '../../data/stock-code-map.js';
+// ★★ [MARKET-DRAGON-ONLY 2026-11-25] 只留 `resolveAbnormalFact`：判定对象唯一是市龙一，
+//   所以 `pickRedLineSource`（从一批票里挑越线最严重那只）+ 主板过滤 + 代码表三条 import
+//   全部删掉。主板上限现在由「市龙一本身就是 30 日榜第 1 名·主板」结构性保证。
+import { resolveAbnormalFact } from './abnormal-10d.js';
 import {
   ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE
 } from './tvrb-constants.js';
@@ -121,48 +121,46 @@ export function isAbnormalAllGray(plan) {
 }
 
 /**
- * 【显示层兜底】直接按【官方偏离值事实】判一次异动（历史日中间态用）。
+ * 【显示层兜底】按【市龙一的官方偏离值事实】判一次异动（历史日中间态用）。
  *
  * 为什么需要：历史日 `data.value.plan` 可能还是「异步未就绪」的中间态（偏离事实还没回），
- * 只取 `plan.abnormal` 会漏掉 11-12 这种定稿日。事实由组合式算好传进来，⛔ 本函数不取数。
+ * 只取 `plan.abnormal` 会漏掉异动日。事实由组合式算好传进来，⛔ 本函数不取数。
  *
- * ★★ [DEV-RULE 2026-11-25 口径整体替换] 入参从「三份十日涨幅 Map」换成「两份偏离事实 Map」：
+ * ★★ [MARKET-DRAGON-ONLY 2026-11-25 用户当场纠正] ★★
+ *   判定对象**只有市龙一**（30 日涨幅第 1 的主板票，名字由调用方传入）。用户原话：
+ *   「不是每只股票一异动，都要提示这个的，因为很多股票都不是市龙一……他们只是属于个股异动，
+ *     和题材无关。」
+ *   ⇒ ⛔ 删掉「在这两张 Map 里挑偏离值最高的票」的择一逻辑 —— 那正是 11-24 误报的根因
+ *     （北纬科技 +100.11% 最高，但它不是市龙一，市龙一是冰山冷热）。
+ *
+ * ★★ [DEV-RULE 2026-11-25 口径整体替换] 入参从「三份十日涨幅 Map」换成「两份偏离事实 Map」+
+ *   市龙一名字：
  *   · 旧：`{todayMap, prevAucMap, prevCloseMap}` + `maxRangePctOf` + `pickAbnormalSource`（97% 口径）
- *   · 新：`{todayDev, prevDev}` + `pickRedLineSource`（官方严重异常波动）
- *   ⛔ 旧口径已废除（用户：「那个有些不准」）；这里不许再出现「十日涨幅最高票」的择一逻辑。
+ *   · 新：`{dragonName, todayDev, prevDev}`（官方严重异常波动，只查市龙一那一只）
  *
- * §10：两份都读不到 ⇒ null（⛔ 不拿「没算出来」当「没有异动」，也不凭空造空仓）。
+ * §10：市龙一名字没读到 / 两份 Map 都没有 ⇒ null（⛔ 不拿「没算出来」当「没有异动」，
+ *   也 ⛔ 不凭空造空仓；⛔ 更不拿别的票冒充市龙一）。
  *
- * @param {{todayDev?:Map<string,object>, prevDev?:Map<string,object>,
- *          isEligible?:function(string,object):boolean}|null} o
+ * @param {{dragonName?:string, todayDev?:Map<string,object>, prevDev?:Map<string,object>}|null} o
  * @returns {object|null} resolveAbnormalFact 的返回；判不出 ⇒ null
  */
 export function buildAbnormalFactFromMaps(o) {
   const x = o || {};
+  const dragonName = String(x.dragonName || '').trim();
   const todayDev = (x.todayDev instanceof Map) ? x.todayDev : null;
   const prevDev = (x.prevDev instanceof Map) ? x.prevDev : null;
+  if (!dragonName) return null;                       // 市龙一判不出 ⇒ 本条判不出（§10）
   if (!todayDev && !prevDev) return null;
 
-  // ★★ [ABN-MAINBOARD 2026-11-13 用户口径] 第三十四条【只认主板】—— 非主板不可能是触发源。
-  //   判据与规则层同一把尺子（`isMainBoardRankEligible` + `getStockCode`），⛔ 不在这里另写代码段规则。
-  //   §10 方向性：名册查不到代码 ⇒ 判「有资格」保留（宁可多算也不漏掉主板异动）。
-  const eligible = (typeof x.isEligible === 'function')
-    ? x.isEligible
-    : makeAbnMainBoardFilter(isMainBoardRankEligible, getStockCode);
+  // 只取【市龙一这一只】的两份事实，⛔ 不再遍历 / 择一
+  const todayFact = todayDev ? (todayDev.get(dragonName) || null) : null;
+  const prevFact = prevDev ? (prevDev.get(dragonName) || null) : null;
+  if (!todayFact && !prevFact) return null;
 
-  // 触发源优先级与第三十四条一致：昨日（异动次日）> 今日（当日异动）
-  const prevPick = pickRedLineSource({ facts: prevDev, isEligible: eligible });
-  const todayPick = prevPick.found ? prevPick : pickRedLineSource({ facts: todayDev, isEligible: eligible });
-  if (!todayPick.found) return null;
-
-  const name = todayPick.name;
   return resolveAbnormalFact({
-    leaderName: name,
+    leaderName: dragonName,
     leaderTopic: '',
-    // ⛔ 不许自称「市场总龙一」：这条路径拿不到二十日涨幅榜，只能如实说「市场偏离值最高票」
-    leaderIsTop1: false,
-    leaderDevToday: (todayDev && todayDev.get(name)) || null,
-    leaderDevPrev: (prevDev && prevDev.get(name)) || null,
-    rows: []
+    leaderDevToday: todayFact,
+    leaderDevPrev: prevFact
   });
 }

@@ -20,9 +20,7 @@ import { readFileSync } from 'node:fs';
 import { applyAbnormalOverlay, isAbnormalAllGray, buildAbnormalFactFromMaps } from './abnormal-overlay.js';
 import { resolveAbnormalFact } from './abnormal-10d.js';
 import { maxRangePctOf, makeAbnMainBoardFilter } from './tvrb-plan.js';
-import { pickRedLineSource } from './abnormal-10d.js';
 import { DEV_OFFICIAL_RED_LINE_10D, DEV_NEAR_RATIO } from '../auction/deviation-rule-facts.js';
-import { state } from '../app-state.js';
 import { collectBuyNames } from './plan-live-overlay.js';
 import {
   ABNORMAL_KIND_LEADER_NOW, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_NO_BUY_TAG
@@ -56,8 +54,7 @@ const UNKNOWN = { ok: false, stage: 'unknown', dev10: null, dev30: null };
 function abnormalFact() {
   return resolveAbnormalFact({
     leaderName: '东方海洋', leaderTopic: '东方',
-    leaderDevToday: SEVERE(100.01), leaderDevPrev: NEAR(95.71),
-    rows: []
+    leaderDevToday: SEVERE(100.01), leaderDevPrev: NEAR(95.71)
   });
 }
 
@@ -89,6 +86,8 @@ function frozenPlan() {
 // ══════════════════════════════════════════════════════════════════════════════════════
 // 三十四·b 的「D-2 触发源」仍要走 maxRangePctOf（D-2 当天十日涨幅最高的主板票），
 // 但「它是否越线」改用官方偏离值 —— 两件事别混。
+// ⛔ [MARKET-DRAGON-ONLY 2026-11-25] pickRedLineSource（从一批票里挑越线最严重那只）
+//    已废除：第三十四条的触发源**唯一确定**是市龙一，不存在「挑一只」。
 // ══════════════════════════════════════════════════════════════════════════════════════
 describe('maxRangePctOf · 全市场竞价口径十日涨幅最高票（三十四·b 的 D-2 触发源）', () => {
   it('11-12 形态：总龙二东方海洋 100.78 压过总龙一 ⇒ 被扫出来', () => {
@@ -98,10 +97,8 @@ describe('maxRangePctOf · 全市场竞价口径十日涨幅最高票（三十�
       ['大东方', { pct: 72.75 }]
     ]);
     expect(maxRangePctOf(m)).toEqual({ name: '东方海洋', pct: 100.78 });
-    // ⛔ 但「谁越线」不再看十日涨幅名次：同一只票的偏离事实才是判据
-    expect(pickRedLineSource({
-      facts: new Map([['东方海洋', SEVERE(100.01)], ['福莱新材', NEAR(80)]])
-    })).toMatchObject({ found: true, name: '东方海洋' });
+    // ⛔ 但「谁越线」不看十日涨幅名次：第三十四条只问市龙一那一只自己的偏离事实
+    expect(m.size).toBe(3);
   });
 
   it('[NUM-TEXT] 文本型涨幅同样按数值取最大', () => {
@@ -187,9 +184,10 @@ describe('applyAbnormalOverlay · 定稿计划上屏前的总约束叠加', () =
   });
 });
 
-describe('buildAbnormalFactFromMaps · 历史日官方偏离值事实兜底', () => {
-  it('★ 11-11 真实形态：今日 10日偏离 +100.01 / 昨日 +95.71 ⇒ 当日异动（不依赖实时计划）', () => {
+describe('buildAbnormalFactFromMaps · 历史日官方偏离值事实兜底（只认市龙一）', () => {
+  it('★ 11-11 真实形态：市龙一今日 10日偏离 +100.01 / 昨日 +95.71 ⇒ 当日异动（不依赖实时计划）', () => {
     const f = buildAbnormalFactFromMaps({
+      dragonName: '东方海洋',
       todayDev: new Map([['东方海洋', SEVERE(100.01)], ['福莱新材', NEAR(60)]]),
       prevDev: new Map([['东方海洋', NEAR(95.71)]])
     });
@@ -198,8 +196,9 @@ describe('buildAbnormalFactFromMaps · 历史日官方偏离值事实兜底', ()
     expect(f.leaderName).toBe('东方海洋');
   });
 
-  it('★ 11-12 真实形态：今日 +96.3 / 昨日 +100.01 ⇒ 异动次日', () => {
+  it('★ 11-12 真实形态：市龙一今日 +96.3 / 昨日 +100.01 ⇒ 异动次日', () => {
     const f = buildAbnormalFactFromMaps({
+      dragonName: '东方海洋',
       todayDev: new Map([['东方海洋', NEAR(96.3)]]),
       prevDev: new Map([['东方海洋', SEVERE(100.01)]])
     });
@@ -207,24 +206,45 @@ describe('buildAbnormalFactFromMaps · 历史日官方偏离值事实兜底', ()
     expect(f.kind).toBe(ABNORMAL_KIND_NEXT_DAY);
   });
 
-  it('§10：两份都缺 ⇒ null（⛔ 不造空仓）；只有今日 ⇒ 照判，但昨日「判不出」如实留空', () => {
+  it('§10：市龙一名字读不到 ⇒ null（⛔ 绝不随便挑一只顶替）', () => {
     expect(buildAbnormalFactFromMaps({})).toBeNull();
     expect(buildAbnormalFactFromMaps(null)).toBeNull();
-    const f = buildAbnormalFactFromMaps({ todayDev: new Map([['甲', SEVERE(101)]]) });
+    // 名字空着、但两份 Map 里塞了越线票 ⇒ 仍然 null（这正是 11-24 误报的入口，必须堵死）
+    expect(buildAbnormalFactFromMaps({
+      dragonName: '',
+      todayDev: new Map([['北纬科技', SEVERE(130)]]),
+      prevDev: new Map([['北纬科技', SEVERE(120)]])
+    })).toBeNull();
+  });
+
+  it('§10：只有今日 ⇒ 照判，但昨日「判不出」如实留空（⛔ 不拿今日的值冒充昨日）', () => {
+    const f = buildAbnormalFactFromMaps({
+      dragonName: '甲',
+      todayDev: new Map([['甲', SEVERE(101)]])
+    });
     expect(f.kind).toBe(ABNORMAL_KIND_LEADER_NOW);
-    expect(f.leaderDevPrev).toBeNull();                 // ⛔ 不拿今日的值冒充昨日
+    expect(f.leaderDevPrev).toBeNull();
     expect(f.leaderDevPrevText).toBe('—');
   });
 
-  it('★ near 一只 / severe 一只 ⇒ 只认 severe（逼近红线不构成监管异动）', () => {
+  it('★★ [MARKET-DRAGON-ONLY] 非市龙一的票越线 ⇒ 一条都不抓（个股异动 ≠ 全场空仓）', () => {
+    // 11-24 真实形态：北纬科技（非市龙一）越线，市龙一冰山冷热只有 watch ⇒ 不空仓
     const f = buildAbnormalFactFromMaps({
-      todayDev: new Map([['逼近票', NEAR(95)], ['越线票', SEVERE(100.4)]])
+      dragonName: '冰山冷热',
+      todayDev: new Map([['北纬科技', SEVERE(130)], ['冰山冷热', NEAR(60)]]),
+      prevDev: new Map([['北纬科技', SEVERE(120)], ['冰山冷热', NEAR(50)]])
     });
-    expect(f.show).toBe(true);
-    expect(f.leaderName).toBe('越线票');
-    // 全是 near ⇒ 一个都不抓（这才是「不含偏离放大」那条口径的落地）
-    const only = buildAbnormalFactFromMaps({ todayDev: new Map([['逼近票', NEAR(95)]]) });
-    expect(only).toBeNull();
+    // ★ 返回的是「没有异动」的事实（show=false），**不是 null**：
+    //   市龙一的事实读到了（NEAR）⇒ 不能当成「判不出」，只是不构成异动（§10 两个方向都要对）
+    expect(f.show).toBe(false);
+    expect(f.leaderName).toBe('冰山冷热');
+    // 反过来：市龙一自己越线 ⇒ 照常触发，且点名的是市龙一
+    const hit = buildAbnormalFactFromMaps({
+      dragonName: '冰山冷热',
+      todayDev: new Map([['北纬科技', SEVERE(130)], ['冰山冷热', SEVERE(101)]])
+    });
+    expect(hit.show).toBe(true);
+    expect(hit.leaderName).toBe('冰山冷热');
   });
 });
 
@@ -238,12 +258,28 @@ describe('[ABNORMAL-ALL 接线静态锁] 漏一处 ⇒ 异动日仍显示彩色�
     // ★★ [DEV-RULE 2026-11-25] 入参键名必须已换成新口径那两个：
     //   ⛔ 传旧键名（todayMap / prevAucMap / prevCloseMap）不会报错 —— 两个新键都 undefined
     //   ⇒ 函数直接 return null ⇒「历史日不灰、不空仓」的静默失效。这是上一轮真实踩过的坑。
+    //   ★★ [MARKET-DRAGON-ONLY 2026-11-25] 还必须有 `dragonName`：缺了它函数直接 return null，
+    //   表现与上面同一个坑（历史日不灰、不空仓），所以三件套一个都不能少。
     const seg = s.slice(s.indexOf('function _abnormalFactForDisplay'), s.indexOf('const _displayPlanBase'));
+    expect(seg).toContain('dragonName');
+    expect(seg).toContain('getTvrbAuctionBoard30(d)');
     expect(seg).toContain('todayDev');
     expect(seg).toContain('prevDev');
     expect(seg).not.toContain('todayMap');
     expect(seg).not.toContain('prevAucMap');
     expect(seg).not.toContain('prevCloseMap');
+  });
+
+  it('★ [MARKET-DRAGON-ONLY] 市龙一唯一注入点：ebbCtx.mktDragon1 来自 30 日榜第 1 名', () => {
+    const s = readFileSync('src/composables/useTopicVolRatioBoard.js', 'utf8');
+    // 注入器必须存在，且来源是 _r30Top（30 日榜全量降序）
+    expect(s).toContain('function _ebbCtxWithMktDragon(ctx, r30Top)');
+    expect(s).toContain('_ebbCtxWithMktDragon(');
+    expect(s).toContain('mktDragon1: name');
+    // 规则层的触发源必须是 mktDragon1，⛔ 不许退回二十日总龙一 top5[0]
+    const plan = readFileSync('src/logic/topicvolratio/tvrb-plan.js', 'utf8');
+    expect(plan).toContain('o.ebbCtx.mktDragon1');
+    expect(plan).not.toContain('_abnLeaderName');
   });
 
   it('七个独立买点容器全挂上全灰类，CSS 有定义', () => {
@@ -272,11 +308,10 @@ describe('[ABNORMAL-ALL 接线静态锁] 漏一处 ⇒ 异动日仍显示彩色�
     expect(DEV_NEAR_RATIO).toBe(0.9);
     const near = resolveAbnormalFact({
       leaderName: '东方海洋', leaderTopic: '羊字辈',
-      leaderDevToday: NEAR(95.71), leaderDevPrev: NEAR(82.44),
-      rows: [{ name: '东方海洋', dev: NEAR(95.71) }]
+      leaderDevToday: NEAR(95.71), leaderDevPrev: NEAR(82.44)
     });
     expect(near.show).toBe(false);                // near ⇒ 不进第三十四条（⛔ 不空仓）
-    expect(near.nearNames).toEqual(['东方海洋']);  // 但要点名交代（第三十六条接着禁这一只）
+    expect(near.leaderDevTodayLevel).toBe('near'); // 事实照样带出去（第三十六条接着禁这一只）
     const base = frozenPlan();
     const out = applyAbnormalOverlay(base, near);
     expect(out).toBe(base);                       // §11 零副作用
@@ -287,8 +322,7 @@ describe('[ABNORMAL-ALL 接线静态锁] 漏一处 ⇒ 异动日仍显示彩色�
   it('★ [FULL-MARKET] 总龙一越线（+100.14）⇒ 历史日照样【整片灰 + 空仓 + 一张票都不买】', () => {
     const fact36 = resolveAbnormalFact({
       leaderName: '大业股份', leaderTopic: '光伏',
-      leaderDevToday: SEVERE(100.14), leaderDevPrev: NEAR(80),
-      rows: []
+      leaderDevToday: SEVERE(100.14), leaderDevPrev: NEAR(80)
     });
     expect(fact36.show).toBe(true);
     expect(fact36.kind).toBe(ABNORMAL_KIND_LEADER_NOW);
@@ -311,10 +345,12 @@ describe('[ABNORMAL-ALL 接线静态锁] 漏一处 ⇒ 异动日仍显示彩色�
 //   根本不是，不知道这些数据从哪里来，相差太大了」。
 // 这个函数就是那句提示的真凶：取【今日】最高票的名字，却取【昨日】最高票的数值
 // ⇒ 11-13 拼出「闽发铝业 84.88 + 东方海洋的 100.78」。
-// 新实现：先定【一个触发源名字】（昨日优先，其次今日），再从两份 Map 里各取**同一只票**的事实。
+// 新实现（[MARKET-DRAGON-ONLY] 后又收紧一层）：触发源**由外部给定且唯一**（市龙一），
+//   本函数只从两份 Map 里各取【这个名字】的事实 —— ⛔ 不再「先挑一只、再取名、再取数」。
 describe('[ABN-SAME-SOURCE] buildAbnormalFactFromMaps 不许把「今日的名」配「昨日的数」', () => {
-  it('11-13 真实数据：昨日触发 ⇒ 点名【东方海洋】+100.78%，⛔ 不是闽发铝业', () => {
+  it('11-13 真实数据：市龙一昨日触发 ⇒ 点名【东方海洋】+100.78%，⛔ 不是闽发铝业', () => {
     const f = buildAbnormalFactFromMaps({
+      dragonName: '东方海洋',
       todayDev: new Map([['闽发铝业', NEAR(84.88)], ['东方海洋', NEAR(73.15)]]),
       prevDev: new Map([['东方海洋', SEVERE(100.78)], ['闽发铝业', NEAR(87.04)]])
     });
@@ -326,12 +362,14 @@ describe('[ABN-SAME-SOURCE] buildAbnormalFactFromMaps 不许把「今日的名�
     expect(f.detail).toContain('东方海洋');
     expect(f.detail).toContain('100.78%');
     expect(f.detail).not.toContain('闽发铝业');
-    // 这条路径拿不到二十日涨幅榜 ⇒ ⛔ 不许自称「市场总龙一」
-    expect(f.leaderLabel).toBe('市场偏离值最高票');
+    // ★ [MARKET-DRAGON-ONLY] 称谓恒为「市龙一（30日涨幅第1·主板）」——
+    //   ⛔ 不再有「市场偏离值最高票 / 市场总龙一」两套叫法（那两套叫法本身就是误判的产物）
+    expect(f.leaderLabel).toBe('市龙一（30日涨幅第1·主板）');
   });
 
   it('11-11 真实数据：今日触发 ⇒ 点名【东方海洋】+100.01%（昨日 +95.71 未越线）', () => {
     const f = buildAbnormalFactFromMaps({
+      dragonName: '东方海洋',
       todayDev: new Map([['东方海洋', SEVERE(100.01)], ['大东方', NEAR(70.05)]]),
       prevDev: new Map([['东方海洋', NEAR(95.71)], ['大东方', NEAR(60)]])
     });
@@ -342,8 +380,9 @@ describe('[ABN-SAME-SOURCE] buildAbnormalFactFromMaps 不许把「今日的名�
     expect(f.leaderDevPrev).toBeCloseTo(95.71, 2);
   });
 
-  it('昨日与今日各有触发票 ⇒ 异动次日优先，且名字跟着【昨日】那只走', () => {
+  it('市龙一昨日越线 ⇒ 异动次日优先（哪怕今日它自己也不低）', () => {
     const f = buildAbnormalFactFromMaps({
+      dragonName: '乙股份',
       todayDev: new Map([['甲股份', SEVERE(100.5)], ['乙股份', NEAR(50)]]),
       prevDev: new Map([['乙股份', SEVERE(101)], ['甲股份', NEAR(60)]])
     });
@@ -351,27 +390,24 @@ describe('[ABN-SAME-SOURCE] buildAbnormalFactFromMaps 不许把「今日的名�
     expect(f.leaderName).toBe('乙股份');
     expect(f.leaderDevPrev).toBeCloseTo(101, 2);
     expect(f.leaderDevToday).toBeCloseTo(50, 2);
+    // 另一只（甲股份）今日越线也⛔ 不影响结论：它不是市龙一
+    expect(f.detail).not.toContain('甲股份 已越');
   });
 
-  it('「越线最严重」的口径：10日按 +100 红线归一、30日按 +200 归一，不可直接比大小', () => {
-    const f = buildAbnormalFactFromMaps({
-      // 30日 +205% ⇒ 205/200 = 1.025；10日 +101% ⇒ 101/100 = 1.01 ⇒ 30日那只更严重
-      todayDev: new Map([
-        ['十日票', SEVERE(101, 150)],
-        ['三十日票', SEVERE(98, 205)]
-      ])
-    });
-    expect(f.leaderName).toBe('三十日票');
-  });
-
-  it('§10：两份都读不到 ⇒ null（⛔ 不造空仓）', () => {
-    expect(buildAbnormalFactFromMaps({ todayDev: null, prevDev: null })).toBeNull();
-    expect(buildAbnormalFactFromMaps(null)).toBeNull();
+  it('§10：市龙一在两份 Map 里都没有事实 ⇒ null（⛔ 不造空仓）', () => {
+    expect(buildAbnormalFactFromMaps({
+      dragonName: '东方海洋', todayDev: null, prevDev: null
+    })).toBeNull();
+    expect(buildAbnormalFactFromMaps({
+      dragonName: '东方海洋',
+      todayDev: new Map([['别的票', SEVERE(150)]]),
+      prevDev: new Map([['另一只', SEVERE(150)]])
+    })).toBeNull();
   });
 });
 
 // ══════════════════════════════════════════════════════════════════════════════════════
-// [ABN-MAINBOARD 2026-11-13] 第三十四条【只认主板】—— 非主板不参与异动判定
+// [ABN-MAINBOARD 2026-11-13] 「只主板」判据 —— 现在只服务【三十四·b 的 D-2 触发源】
 // ══════════════════════════════════════════════════════════════════════════════════════
 // 用户原话：「我要求的是主板的异动的有提醒，非主板就不要考虑在里面，像历史日期的10月28日，
 //   为什么把非主板的也考虑在里面呢，这个不作为考虑，只考虑列表里的主板的，其它非主板不做考虑。
@@ -380,7 +416,13 @@ describe('[ABN-SAME-SOURCE] buildAbnormalFactFromMaps 不许把「今日的名�
 // 全历史取证（`.tmpdiag/_abn-history-scan.mjs`，09-08 ~ 11-13）：
 //   旧口径（全池扫描）触发 17 天，只主板口径只有 10 天 ⇒ 7 天完全是非主板在触发，
 //   而【旧口径漏触发 0 天】⇒ 加过滤不会漏掉任何一次真正的主板异动。
-describe('[ABN-MAINBOARD] 只认主板', () => {
+//
+// ★★ [MARKET-DRAGON-ONLY 2026-11-25] 适用范围收窄：第三十四条的触发源已固定为市龙一
+//   （`getTvrbAuctionBoard30` 本身就是「只主板」，主板约束**结构性满足**），
+//   所以这层显式过滤**不再参与第三十四条**；它现在只给「三十四·b 的 D-2 触发源」
+//   （D-2 当天十日涨幅最高的主板票）用 —— 那里扫的是全市场 pctMap，必须显式剔非主板。
+//   ⛔ 不要把这段测试改回「第三十四条只认主板」的口径描述，那会让人以为第三十四条还在扫全市场。
+describe('[ABN-MAINBOARD] 只主板（现仅服务三十四·b 的 D-2 触发源）', () => {
   /** 只把「已知代码」当判据的桩：等价于 isMainBoardRankEligible 的语义（未知 ⇒ 有资格） */
   function stubEligible(code) {
     const c = String(code || '');
@@ -439,46 +481,57 @@ describe('[ABN-MAINBOARD] 只认主板', () => {
     const eligible = makeAbnMainBoardFilter(stubEligible, () => { throw new Error('boom'); });
     expect(eligible('任意票')).toBe(true);
   });
+});
 
-  it('★ 显示层端到端：10-26 越线的只有非主板 ⇒ 不再整片灰（旧行为会误判空仓）', () => {
-    const prev = state._scMapCache;
-    state._scMapCache = { 凡拓数创: '301313', 冰山冷热: '000530' };
-    try {
-      const f = buildAbnormalFactFromMaps({
-        todayDev: new Map([['凡拓数创', SEVERE(134.65)], ['冰山冷热', NEAR(82.92)]]),
-        prevDev: null
-      });
-      // 唯一一只越线的是创业板 ⇒ 过滤后一只不剩（§10 判不出 ≠ 造空仓）
-      expect(f).toBeNull();
-    } finally {
-      state._scMapCache = prev;
-    }
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [MARKET-DRAGON-ONLY 2026-11-25 用户当场纠正] 第三十四条的判定对象**只有市龙一**
+// ══════════════════════════════════════════════════════════════════════════════════════
+// 用户原话（逐字）：「首先你要明白我说的市龙一就是 30 日涨幅 toggle 涨幅排名第一的那只股票
+//   （主板），如果它触发异动（非逼近红线），才会有原来那个红色提示空仓大板，异动监管……等，
+//   不是每只股票一异动，都要提示这个的，因为很多股票都不是市龙一。这个你没理解，
+//   他们只是属于个股异动，和题材无关。」
+//
+// 11-24 实测反例（旧实现 = 二十日总龙一 / 偏离值最高票）：
+//   市龙一 = 冰山冷热（30日 +134.21%，**未**越线）｜北纬科技（三十日 +79.12%，二十日榜第 1）
+//   十日偏离 +70.32% ⇒ 旧实现按「总龙一」判成异动日 ⇒ 整屏空仓，
+//   把本该正常选出的华东重机（11-24 只是 watch 偏离放大）/ 盛剑科技一起灰掉。用户判定 11-24 是正常日。
+describe('[MARKET-DRAGON-ONLY] 只有市龙一越线才空仓；其它票越线 = 个股异动', () => {
+  it('★ 11-24 真实形态：非市龙一越线 + 市龙一未越线 ⇒ 不空仓（那天该正常选股）', () => {
+    const f = buildAbnormalFactFromMaps({
+      dragonName: '冰山冷热',
+      todayDev: new Map([['北纬科技', SEVERE(120)], ['冰山冷热', NEAR(60)]]),
+      prevDev: new Map([['北纬科技', SEVERE(110)], ['冰山冷热', NEAR(50)]])
+    });
+    // 市龙一读到、只是没越线 ⇒ show=false（⛔ 不空仓）；非市龙一越线一律无视
+    expect(f.show).toBe(false);
+    expect(f.leaderDevTodayLevel).toBe('near');
   });
 
-  it('★ 显示层端到端：主板真的越线 ⇒ 照常触发（⛔ 别把过滤做成「永不触发」）', () => {
-    const prev = state._scMapCache;
-    state._scMapCache = { 东方海洋: '002086', 凡拓数创: '301313' };
-    try {
-      const f = buildAbnormalFactFromMaps({
-        todayDev: new Map([['凡拓数创', SEVERE(120)], ['东方海洋', SEVERE(100.78)]]),
-        prevDev: null
-      });
-      expect(f.show).toBe(true);
-      expect(f.leaderName).toBe('东方海洋');   // 创业板 120 更「严重」也不选它
-    } finally {
-      state._scMapCache = prev;
-    }
+  it('★ 11-24 真实形态（反向）：市龙一真越线 ⇒ 照常整片灰 + 空仓', () => {
+    const f = buildAbnormalFactFromMaps({
+      dragonName: '冰山冷热',
+      todayDev: new Map([['北纬科技', SEVERE(120)], ['冰山冷热', SEVERE(100.4)]])
+    });
+    expect(f.show).toBe(true);
+    expect(f.leaderName).toBe('冰山冷热');
+    expect(f.leaderLabel).toBe('市龙一（30日涨幅第1·主板）');
   });
 
-  it('§10：两只都判不出（腿缺）⇒ 不误报空仓', () => {
-    const prev = state._scMapCache;
-    state._scMapCache = { 东方海洋: '002086' };
-    try {
-      expect(buildAbnormalFactFromMaps({
-        todayDev: new Map([['东方海洋', UNKNOWN]]), prevDev: null
-      })).toBeNull();
-    } finally {
-      state._scMapCache = prev;
-    }
+  it('§10：市龙一的事实判不出（腿缺）⇒ 不误报空仓（⛔ 判不出 ≠ 没有异动，但更 ≠ 有异动）', () => {
+    expect(buildAbnormalFactFromMaps({
+      dragonName: '东方海洋',
+      todayDev: new Map([['东方海洋', UNKNOWN]]),
+      prevDev: null
+    })).toMatchObject({ show: false, unknownLeader: true });
+  });
+
+  it('文案口径：说明里必须写清「只认市龙一」以及「其它票越线只算个股异动」', () => {
+    const f = buildAbnormalFactFromMaps({
+      dragonName: '冰山冷热',
+      todayDev: new Map([['冰山冷热', SEVERE(101)]])
+    });
+    expect(f.detail).toContain('只认市龙一');
+    expect(f.detail).toContain('个股异动');
+    expect(f.detail).toContain('30日涨幅');
   });
 });

@@ -1100,6 +1100,34 @@ export function useTopicVolRatioBoard() {
   }
 
   /**
+   * ★★ [MARKET-DRAGON-ONLY 2026-11-25 用户口径，逐字] 把「市龙一」注入 `ebbCtx`（唯一注入点，§6）。
+   *
+   *   「首先你要明白我说的市龙一就是 30 日涨幅 toggle 涨幅排名第一的那只股票（主板），
+   *     如果它触发异动（非逼近红线），才会有原来那个红色提示空仓大板……」
+   *
+   * 来源 = `getTvrbAuctionBoard30(d).rank[0].stock`（= 本看板 `_r30Top`，与「市龙一~五」标签同一份
+   * 竞价口径 30 日榜、同一套「只主板 + 腿数达标 + 降序」判据，§6 不另起一份名次）。
+   *
+   * ⚠️ 为什么必须显式注入、而不是让规则层自己去读：§4 规则层不取数；§10 判不出时规则层必须看到
+   *   **空名**（→ `unknownLeader`），⛔ 绝不能让它自己「随便挑一只」冒充市龙一。
+   * ⚠️ 引用不变原则（§19）：值没变就返回原对象，下游 computed 不白重算。
+   *
+   * @param {object|null} ctx collectDecisionTopics 出口的 ebbCtx
+   * @param {Array<{stock:string}>|null} r30Top 竞价口径 30 日榜全量降序（null = 判不出，§10）
+   * @returns {object|null}
+   */
+  function _ebbCtxWithMktDragon(ctx, r30Top) {
+    const base = ctx || null;
+    if (!base) return null;
+    const name = (Array.isArray(r30Top) && r30Top.length > 0 && r30Top[0])
+      ? String(r30Top[0].stock || '').trim()
+      : '';
+    // §10：判不出就写空串（覆盖掉可能残留的旧值），⛔ 不留 undefined 让规则层去猜
+    if (base.mktDragon1 === name) return base;
+    return Object.assign({}, base, { mktDragon1: name });
+  }
+
+  /**
    * 确保某日的「总龙首次分歧」判定已就绪（幂等 / 单飞 / 结论缓存）。
    * ⛔ 判不出（窗口无首板 / K 线缺）⇒ verdict.canJudge=false ⇒ plan 的 divergeActive 恒 false
    *   （分歧买点静默不生效 —— 宁缺勿错，§10）。
@@ -2149,7 +2177,9 @@ export function useTopicVolRatioBoard() {
         //   `tvrb-ebb.js#detectEbbDay` 读到 `leaderDiverge.kind==='second' && qualified!==false`
         //   ⇒ 按用户口径「二次分歧等同于首次退潮」直接判成退潮日，标题写「羊字辈二次分歧 · 等同退潮」。
         //   注入前必须过三重核对（日期 / 同名总龙 / 云端有没有这一行），见 _ebbCtxWithLeaderDiverge。
-        ebbCtx: _ebbCtxWithTop30Diag(_ebbCtxWithLeaderDiverge(rec.ebbCtx, d), _r30Diag),
+        //   ★★ [MARKET-DRAGON-ONLY 2026-11-25] 另注入 `mktDragon1` = 市龙一（30 日涨幅第 1 名·主板），
+        //     第三十四条的【唯一】判定对象。⛔ 不是 `top5[0]`（20 日总龙一）。
+        ebbCtx: _ebbCtxWithMktDragon(_ebbCtxWithTop30Diag(_ebbCtxWithLeaderDiverge(rec.ebbCtx, d), _r30Diag), _r30Top),
         // ★★ [AUTO-PICK-TOP20 2026-11-14 用户口径] 20日涨幅榜【口径是否 = 9:25 竞价榜】——
         //   big 档（> 8 只）现在按「同题材 20日涨幅前十最靠前两只」取票，说明文字里要写清口径。
         //   ⛔ 只喂文案（规则层拼说明用），不参与任何判定：池子本身就是 rec.ebbCtx.topicPool，
@@ -2615,6 +2645,13 @@ export function useTopicVolRatioBoard() {
    *      并有静态锁盯着这两个键名（见 abnormal-overlay.test.js）。
    *   新：当日事实 = `devFacts.auto`（自动口径那一套，asOf 已与 d 对齐）；
    *      昨日事实 = `devFacts.byDate.get(前一交易日)`（收盘口径，load 时顺带算好，0 额外请求）。
+   *
+   * ★★ [MARKET-DRAGON-ONLY 2026-11-25 用户口径] 判定对象再加一条硬约束：**只有市龙一**
+   *   （30 日涨幅第 1 名·主板，`dragonName` 从同一份 `getTvrbAuctionBoard30(d)` 取）。
+   *   用户原话：「不是每只股票一异动，都要提示这个的，因为很多股票都不是市龙一……
+   *     他们只是属于个股异动，和题材无关。」
+   *   ⇒ 旧实现按「昨日/今日偏离值最高的那只票」择一，11-24 就挑了北纬科技（+100.11%）
+   *     而非市龙一冰山冷热（+134.21%，未越线）⇒ 历史日被误判成异动日、整屏灰。
    */
   function _abnormalFactForDisplay(d) {
     const live = data.value && data.value.plan;
@@ -2627,7 +2664,15 @@ export function useTopicVolRatioBoard() {
     const pd = getPreviousTradingDay(d);
     const todayDev = (f.auto instanceof Map) ? f.auto : (byDate ? (byDate.get(d) || null) : null);
     const prevDev = byDate ? (byDate.get(pd) || null) : null;
-    return buildAbnormalFactFromMaps({ todayDev: todayDev, prevDev: prevDev });
+    // ★★ [MARKET-DRAGON-ONLY 2026-11-25] 判定对象只有市龙一（30 日涨幅第 1 名·主板）。
+    //   `getTvrbAuctionBoard30(d)` 自带日期校验（不是这一天的 ⇒ null）⇒ 切日期竞态天然被挡住。
+    //   §10：判不出（榜未就绪 / 空榜）⇒ 交空名，`buildAbnormalFactFromMaps` 直接 return null
+    //   （= 本条判不出，⛔ 绝不退回「随便挑一只越线票」）。
+    const board30 = getTvrbAuctionBoard30(d);
+    const dragonName = (board30 && board30.ready && Array.isArray(board30.rank) && board30.rank.length > 0)
+      ? String(board30.rank[0].stock || '').trim()
+      : '';
+    return buildAbnormalFactFromMaps({ dragonName: dragonName, todayDev: todayDev, prevDev: prevDev });
   }
 
   const _displayPlanBase = computed(function() {

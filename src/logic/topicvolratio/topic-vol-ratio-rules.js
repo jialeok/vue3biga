@@ -119,7 +119,9 @@ export {
 //   ⛔ 别在本文件写死任何阈值数字（阈值只在 abnormal-deviation#DEV_THRESHOLDS）。
 export {
   classifyDeviation, isOverOfficialRedLine, isDeviationNearOrOver,
-  pickRedLineSource, devPctText, resolveAbnormalFact,
+  // ★★ [MARKET-DRAGON-ONLY 2026-11-25] `pickRedLineSource` 已随「从一批票里挑越线最严重那只」
+  //   的错口径一起删除（判定对象唯一是市龙一）⇒ 这里同步去掉，⛔ 不要再从别处补回来。
+  devPctText, resolveAbnormalFact,
 } from './abnormal-10d.js';
 export {
   deviationRuleStage, isDeviationRuleHit, pickSevereDeviation,

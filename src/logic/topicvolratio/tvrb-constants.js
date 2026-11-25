@@ -745,13 +745,24 @@ export const ABNORMAL_NO_BUY_TAG = '异动不买';
 /** 配色档：与【退潮不买 / 分歧日不买 / 总龙分歧不买 / 龙一跌停不买】**同一档**（深墨亮字，
  *  灰化容器下唯一还读得出来的档）。⛔ 不为它新造颜色 —— 整段都挂着 grayscale。 */
 export const ABNORMAL_NO_BUY_TONE = EBB_NO_BUY_TONE;
-/** 触发形态：总龙一【昨日】越【官方严重异常波动】红线 ⇒ 异动次日（全场空仓）
- *  ★ [DEV-RULE 2026-11-25] 判据 = `deviation-rule-facts.js#isDeviationOverRedLine`（10日偏离 ≥ +100% / 30日 ≥ +200%），
- *  ⛔ 不再是「十日涨幅 > 97%」。 */
+/** 触发形态：市龙一【昨日】越【官方严重异常波动】红线 ⇒ 异动次日（全场空仓）
+ *  ★ [DEV-RULE 2026-11-25] 判据 = 官方严重异常波动（10日偏离 ≥ +100% / 30日 ≥ +200%），
+ *  ⛔ 不再是「十日涨幅 > 97%」。
+ *  ★★ [MARKET-DRAGON-ONLY 2026-11-25] 判定对象**只有市龙一**（30 日涨幅第 1 名·主板），
+ *  ⛔ 不是二十日总龙一、⛔ 不是偏离值最高的票。 */
 export const ABNORMAL_KIND_NEXT_DAY = 'nextDay';
-/** 触发形态：总龙一【今日】越官方红线 ⇒ 当日异动（全场空仓）。同上，判据已换官方偏离值。 */
+/** 触发形态：市龙一【今日】越官方红线 ⇒ 当日异动（全场空仓）。同上，判定对象只有市龙一。 */
 export const ABNORMAL_KIND_LEADER_NOW = 'leaderNow';
-/** 触发形态：某只【会被选中的票】越官方红线 ⇒ 同样全场空仓（后果一律波及所有票）。 */
+/**
+ * ★★ [MARKET-DRAGON-ONLY 2026-11-25] `ABNORMAL_KIND_STOCK = 'stock'`【已废除（repealed），值保留】。
+ *
+ *   它代表形态 ③「某只会被选中的票越线 ⇒ 也全场空仓」。用户当场纠正：
+ *   「不是每只股票一异动，都要提示这个的，因为很多股票都不是市龙一。这个你没理解，
+ *     他们只是属于个股异动，和题材无关。」
+ *   ⇒ 该形态**已从 `resolveAbnormalFact` 里彻底删除**，个股越线只走第三十六条（灰那一只、不空仓）。
+ *   ⚠️ 常量本身留着只为「历史快照 / 老存档里可能有这个字符串」不报错；
+ *     ⛔ 现役代码不许再产生或判断这个值 —— 一旦出现，就说明有人把错口径接回来了。
+ */
 export const ABNORMAL_KIND_STOCK = 'stock';
 
 /**
@@ -840,7 +851,9 @@ export const TVRB_ABNORMAL_NONE = Object.freeze({
   leaderDevToday30Text: '—',
   leaderDevTodayLevel: 'unknown',
   names: Object.freeze([]),
-  nearNames: Object.freeze([]),
+  // ★ [MARKET-DRAGON-ONLY 2026-11-25] `nearNames` 随「入选票异动」形态一起删除：
+  //   near 从来不是第三十四条的事（它归第三十六条逐只灰），当年把它的名单塞进这里，
+  //   正是「一批票一起判」那套错口径的残留。⛔ 别再往这里加第二份名字清单。
   unknownLeader: false,
   headline: '',
   detail: ''

@@ -23,12 +23,12 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
-  classifyDeviation, isOverOfficialRedLine, isDeviationNearOrOver, pickRedLineSource,
+  classifyDeviation, isOverOfficialRedLine, isDeviationNearOrOver,
   resolveAbnormalFact, devPctText,
   ABNORMAL_LEVEL_UNKNOWN, ABNORMAL_LEVEL_OK, ABNORMAL_LEVEL_NEAR, ABNORMAL_LEVEL_ABNORMAL
 } from './abnormal-10d.js';
 import {
-  ABNORMAL_NO_BUY_TAG, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, ABNORMAL_KIND_STOCK
+  ABNORMAL_NO_BUY_TAG, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW
 } from './tvrb-constants.js';
 import { _applyAbnormalSweep, _applyDeviationNearRule, _applyDeviationSellOverlay } from './tvrb-plan.js';
 import { DEV_NEAR_RULE_TAG, DEVIATION_SELL_TAG, DEVIATION_SELL_TONE } from '../auction/deviation-rule-facts.js';
@@ -94,19 +94,12 @@ describe('classifyDeviation · 官方「严重异常波动」口径', () => {
   });
 });
 
-describe('pickRedLineSource · 触发源（官方口径）', () => {
-  it('只有越线的才算；一只都没有 ⇒ found=false', () => {
-    const m = new Map([['逼近票', NEAR()]]);
-    expect(pickRedLineSource({ facts: m }).found).toBe(false);
-    const m2 = new Map([['逼近票', NEAR()], ['越线票', SEVERE()]]);
-    const r = pickRedLineSource({ facts: m2 });
-    expect(r.found).toBe(true);
-    expect(r.name).toBe('越线票');
-  });
-});
+// ★★ [MARKET-DRAGON-ONLY 2026-11-25] 原 `pickRedLineSource`（从一批票里挑越线最严重那只）
+//   的整段测试已随函数一起删除 —— 触发源唯一是市龙一，不存在「挑一只」这件事。
+//   ⛔ 不要因为它「看起来覆盖了某条边界」就把它加回来：那会重新引入「按偏离值最高票触发」的错口径。
 
-// ── ② resolveAbnormalFact：三种形态 + 优先级 ──────────────────────────────────
-describe('resolveAbnormalFact · 三种触发形态（结构与旧口径一字不变）', () => {
+// ── ② resolveAbnormalFact：两种形态 + 优先级（★ [MARKET-DRAGON-ONLY] 第三种已删除）────
+describe('resolveAbnormalFact · 两种触发形态（判定对象唯一 = 市龙一）', () => {
   const base = { leaderName: '东方海洋', leaderTopic: '水产品' };
 
   it('★ 异动次日：昨日越线、今日回落 ⇒ 仍判空仓', () => {
@@ -129,32 +122,38 @@ describe('resolveAbnormalFact · 三种触发形态（结构与旧口径一字�
     expect(f.detail).toContain('9:25 竞价口径');
   });
 
-  it('票级异动：入选票越线 ⇒ 同样【全场】空仓并点名', () => {
+  it('★★ 已删除的形态：「入选票异动」不再存在（个股越线 ≠ 全场空仓）', () => {
+    // 市龙一自己都只是 ok，却另有一只票越线 ⇒ 本条【判不出异动】（那只票归第三十六条）
     const f = resolveAbnormalFact(Object.assign({}, base, {
-      leaderDevToday: OK(), leaderDevPrev: OK(),
-      rows: [{ name: '九阳股份', topic: '大消费', dev: SEVERE(100.11) }]
+      leaderDevToday: OK(), leaderDevPrev: OK()
     }));
-    expect(f.show).toBe(true);
-    expect(f.kind).toBe(ABNORMAL_KIND_STOCK);
-    expect(f.detail).toContain('九阳股份');
-    expect(f.detail).toContain('100.11');
+    expect(f.show).toBe(false);
+    expect(f.kind).toBe('');
+    // 函数签名里已经没有 rows / leaderIsTop1 了，多传也不会改变结论（⛔ 不许被它们影响）
+    const g = resolveAbnormalFact(Object.assign({}, base, {
+      leaderDevToday: OK(), leaderDevPrev: OK(),
+      rows: [{ name: '九阳股份', topic: '大消费', dev: SEVERE(100.11) }],
+      leaderIsTop1: false
+    }));
+    expect(g.show).toBe(false);
+    expect(g.detail).toBe('');
   });
 
-  it('优先级：异动次日 > 当日异动 > 票级', () => {
+  it('优先级：异动次日 > 当日异动', () => {
     const f = resolveAbnormalFact(Object.assign({}, base, {
-      leaderDevToday: SEVERE(), leaderDevPrev: SEVERE(),
-      rows: [{ name: '甲', dev: SEVERE() }]
+      leaderDevToday: SEVERE(), leaderDevPrev: SEVERE()
     }));
     expect(f.kind).toBe(ABNORMAL_KIND_NEXT_DAY);
   });
 
   it('★ near 只记不空仓（第三十六条接管，⛔ 不许让它触发全场空仓）', () => {
     const f = resolveAbnormalFact(Object.assign({}, base, {
-      leaderDevToday: NEAR(), leaderDevPrev: NEAR(),
-      rows: [{ name: '逼近票', dev: NEAR() }]
+      leaderDevToday: NEAR(), leaderDevPrev: NEAR()
     }));
     expect(f.show).toBe(false);
-    expect(f.nearNames).toEqual(['逼近票']);
+    // 事实照样带出去（第三十六条逐只灰靠它），但⛔ 没有「名单」这种东西了
+    expect(f.leaderDevTodayLevel).toBe('near');
+    expect(f.nearNames).toBeUndefined();
   });
 
   it('§10：两份都判不出 ⇒ show=false 且如实标 unknownLeader', () => {
@@ -171,12 +170,20 @@ describe('resolveAbnormalFact · 三种触发形态（结构与旧口径一字�
     expect(f.detail).toContain('偏离值 = 个股累计涨幅 − 对应指数累计涨幅');
   });
 
-  it('不是总龙一 ⇒ 文案写「市场偏离值最高票」，⛔ 不许冒充总龙一', () => {
+  it('称谓恒为「市龙一（30日涨幅第1·主板）」—— ⛔ 不再有第二套叫法', () => {
     const f = resolveAbnormalFact({
-      leaderName: '福莱新材', leaderIsTop1: false, leaderDevToday: SEVERE()
+      leaderName: '福莱新材', leaderDevToday: SEVERE()
     });
-    expect(f.leaderLabel).toBe('市场偏离值最高票');
+    expect(f.leaderLabel).toBe('市龙一（30日涨幅第1·主板）');
+    expect(f.detail).toContain('只认市龙一');
     expect(f.detail).not.toContain('市场总龙一');
+    expect(f.detail).not.toContain('市场偏离值最高票');
+  });
+
+  it('★ §10：市龙一名字读不到 ⇒ 判不出（⛔ 绝不拿别的票顶替）', () => {
+    const f = resolveAbnormalFact({ leaderDevToday: SEVERE(), leaderDevPrev: SEVERE() });
+    expect(f.show).toBe(false);
+    expect(f.unknownLeader).toBe(true);
   });
 });
 
@@ -199,10 +206,10 @@ function makeOut() {
 }
 
 describe('_applyAbnormalSweep · 越线 ⇒ 全场空仓收口', () => {
-  it('票级越线 ⇒ 标语接管 + 全行改【异动不买】+ 特殊通道全下线 + buyNames 清空', () => {
+  it('市龙一越线 ⇒ 标语接管 + 全行改【异动不买】+ 特殊通道全下线 + buyNames 清空', () => {
     const out = makeOut();
     const f = _applyAbnormalSweep(out, {
-      leaderName: '',
+      leaderName: '甲',
       devAuto: new Map([['甲', SEVERE()], ['乙', OK()]])
     });
     expect(f.show).toBe(true);
@@ -215,13 +222,13 @@ describe('_applyAbnormalSweep · 越线 ⇒ 全场空仓收口', () => {
     expect(out.newDragon).toBe(null);
     expect(out.range10Backup).toBe(null);
     expect(out.buyNames.size).toBe(0);
-    expect(out.notes.join('\n')).toContain('全场监管异动');
+    expect(out.notes.join('\n')).toContain('市龙一监管异动');
   });
 
   it('★ 只有 near ⇒ 本条【不收口】（那是第三十六条的事，只禁这一只）', () => {
     const out = makeOut();
     const f = _applyAbnormalSweep(out, {
-      leaderName: '',
+      leaderName: '甲',
       devAuto: new Map([['甲', NEAR()], ['乙', NEAR()]])
     });
     expect(f.show).toBe(false);

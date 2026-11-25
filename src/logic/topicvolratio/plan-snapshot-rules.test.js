@@ -313,7 +313,7 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     //   ⇒ 选股结论会变（11-20 盛剑科技 / 兴欣新材就是这一条翻的）⇒ 历史日必须重算，版本 27 → 28。
     // ★★ [DEV-RULE 2026-11-25 用户口径] 监管异动从「自定义十日涨幅 ＞ 97%」换成「官方严重异常波动」
     //   ⇒ 异动日整体位移（11-12 → 11-11 等）⇒ 历史日必须按新口径重算覆盖，版本 28 → 29。
-    expect(TVRB_RULES_VERSION).toBe(29);
+    expect(TVRB_RULES_VERSION).toBe(30);
   });
 
   // ★★ [ABN-MAINBOARD-GUARD 2026-11-14] 第三十四条「全场十日涨幅最高票」只认主板。
@@ -321,24 +321,37 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
   //   像历史日期的10月28日，为什么把非主板的也考虑在里面呢……只有主板的才有这个条件。」
   //   配套约束：候选池【一行未改】仍是 883410 + 观察组 + 龙头组 + 20 日补位
   //   （用户明确否决过「收窄成 883410 名单」的提议：「不要乱改啊……不要画蛇添足。」）
-  it('[ABN-MAINBOARD-GUARD] 异动取数全部带主板过滤，且过滤只按板块不按名单收窄', () => {
+  it('[ABN-MAINBOARD-GUARD] 主板过滤只剩「三十四·b 的 D-2 触发源」一个用点', () => {
     const plan = readFileSync('src/logic/topicvolratio/tvrb-plan.js', 'utf8');
     const eligibleLine = 'makeAbnMainBoardFilter(isMainBoardRankEligible, getStockCode)';
     // ① 工厂仍住在规则层（`tvrb-plan.js`）并对外导出 —— 判据唯一来源，⛔ 不许在视图里另写一份
     expect(plan).toContain('export function makeAbnMainBoardFilter');
-    // ② 两个调用点：显示层兜底（abnormal-overlay）+ 组合式（三十四·b 的触发源择一）
+    // ② ★★ [MARKET-DRAGON-ONLY 2026-11-25] 用点从「两个」收回到「一个」：
+    //   第三十四条的触发源已固定为市龙一（30 日榜本身只主板 ⇒ 结构性满足），
+    //   所以 **显示层兜底（abnormal-overlay）里不应再出现这层过滤** —— 出现就说明
+    //   有人把「扫全市场挑最高票」那套错口径又接了回来。
     const overlay = readFileSync('src/logic/topicvolratio/abnormal-overlay.js', 'utf8');
-    expect(overlay).toContain(eligibleLine);
+    // ⚠️ 断言必须锁【调用/导入形态】，⛔ 不能锁裸标识符：头注释里还会提到这两个名字
+    //   （记的是「为什么删掉」的历史），锁裸词会把一段正当注释判成违规 —— 本项目踩过这个坑。
+    expect(overlay).not.toContain('makeAbnMainBoardFilter(');
+    expect(overlay).not.toContain('pickRedLineSource(');
+    expect(overlay).not.toContain("import { resolveAbnormalFact, pickRedLineSource }");
     const board = readFileSync('src/composables/useTopicVolRatioBoard.js', 'utf8');
     expect(board).toContain(eligibleLine);
     // ③ 择「全市场最高票」的那条路（三十四·b）仍走 maxRangePctOf + 同一个 eligible 过滤
     expect(plan).toContain('export function maxRangePctOf');
     expect(board).toContain('maxRangePctOf(abnPrev2.value, eligible)');
-    // ④ ⛔ 第三十四条自己的触发源已换成官方偏离值（10-30 大业股份十日涨幅只有 82.75% 也能被抓到）
+    // ④ ★★ [MARKET-DRAGON-ONLY 2026-11-25] 第三十四条的触发源：唯一 = 市龙一
+    //   （`ebbCtx.mktDragon1`，来自 30 日涨幅榜第 1 名·主板）。「从一批票里挑越线最严重那只」
+    //   的函数与它的依赖必须消失 —— 它们就是 11-24 误报全场空仓的直接来源。
     const abn = readFileSync('src/logic/topicvolratio/abnormal-10d.js', 'utf8');
-    expect(abn).toContain('export function pickRedLineSource');
-    expect(abn).toContain('pickSevereDeviation');
+    // ⚠️ 同样锁【调用/导入形态】，⛔ 不锁裸词（头注释里正当地提到这两个名字，记的是删除理由）
+    expect(abn).not.toContain('export function pickRedLineSource');
+    expect(abn).not.toContain('pickSevereDeviation(');
+    expect(abn).not.toContain('pickSevereDeviation }');
     expect(abn).not.toContain('export function pickAbnormalSource');   // 旧「十日涨幅最高票」已废除
+    expect(abn).not.toContain('ABNORMAL_KIND_STOCK');                  // 「入选票异动」形态已删除
+    expect(plan).toContain('o.ebbCtx.mktDragon1');
     // ⑤ ⛔ 不许把候选池收窄成「只有 883410 / 只有观察组」——用户点名禁止画蛇添足
     expect(plan).not.toContain('883410');
     expect(overlay).not.toContain('883410');
@@ -371,23 +384,26 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     const near = { ok: true, stage: 'near', dev10: 95.2, dev30: null };
     const severe = { ok: true, stage: 'severe', dev10: 100.14, dev30: null };
     const unknown = { ok: false, stage: 'unknown', dev10: null, dev30: null };
-    // ① near ⇒ 进第三十六条（这只票不买），但【不】构成监管异动（⛔ 不空仓）
+    // ④ near ⇒ 只进第三十六条（这只票不买），不构成监管异动（⛔ 不空仓）
     expect(isDeviationNearOrOver(near)).toBe(true);
     expect(isOverOfficialRedLine(near)).toBe(false);
     expect(resolveAbnormalFact({
-      leaderName: 'L', leaderDevToday: near, leaderDevPrev: near, rows: []
+      leaderName: 'L', leaderDevToday: near, leaderDevPrev: near
     }).show).toBe(false);
     // ② severe 才构成监管异动 ⇒ 第三十四条全场空仓
     expect(isDeviationNearOrOver(severe)).toBe(true);
     expect(isOverOfficialRedLine(severe)).toBe(true);
     expect(resolveAbnormalFact({
-      leaderName: 'L', leaderDevToday: severe, leaderDevPrev: severe, rows: []
+      leaderName: 'L', leaderDevToday: severe, leaderDevPrev: severe
     }).show).toBe(true);
     // ③ §10 判不出 ⇒ 两个判据都 false，⛔ 不许把「没算出来」当成「越线」也不当成「安全」
     expect(isDeviationNearOrOver(unknown)).toBe(false);
     expect(isOverOfficialRedLine(unknown)).toBe(false);
     expect(isOverOfficialRedLine(null)).toBe(false);
-    // ④ 入选票触发是【同一把尺子】：一只 near 票不许空仓，一只 severe 票必须空仓
+    // ④ ★★ [MARKET-DRAGON-ONLY 2026-11-25] 「入选票触发」这一支**已删除**：
+    //   市龙一自己判不出 / 没越线时，多传一份 rows 也不许改变结论。
+    //   ⛔ 用户原话：「不是每只股票一异动，都要提示这个的，因为很多股票都不是市龙一……
+    //     他们只是属于个股异动，和题材无关。」
     expect(resolveAbnormalFact({
       leaderName: 'L', leaderDevToday: unknown, leaderDevPrev: unknown,
       rows: [{ name: '逼近票', dev: near }]
@@ -396,8 +412,8 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
       leaderName: 'L', leaderDevToday: unknown, leaderDevPrev: unknown,
       rows: [{ name: '越线票', dev: severe }]
     });
-    expect(byStock.show).toBe(true);
-    expect(byStock.kind).toBe('stock');
+    expect(byStock.show).toBe(false);      // ★ 旧口径这里是 true + kind='stock'（11-24 误报的入口）
+    expect(byStock.kind).toBe('');
     // ⑤ ⛔ 不许再有「跳过该龙位、顺延下一只」的票级实现
     const blocks = readFileSync('src/logic/topicvolratio/tvrb-blocks.js', 'utf8');
     expect(blocks).not.toContain('skippedAbnormal.map');
@@ -417,7 +433,7 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     //   ★★ [BUYABLE-COUNT 2026-11-19] 「选股 N 只」改数能下单的只数（pickCount 是屏幕上直接看到的数字）⇒ 25 → 26）
     //   ★★ [YIZI-NO-SHIFT 2026-11-20] 竞价一字【照选 + 占一档】取代「顺延下一龙位」⇒ 选股结论变 ⇒ 26 → 27 → 28
     //   ★★ [DEV-RULE 2026-11-25] 监管异动换官方偏离值口径（异动日位移 11-12 → 11-11）⇒ 28 → 29
-    expect(TVRB_RULES_VERSION).toBe(29);
+    expect(TVRB_RULES_VERSION).toBe(30);
     expect(_swCacheNo(readFileSync('public/sw.js', 'utf8'))).toBeGreaterThanOrEqual(67);
   });
 
