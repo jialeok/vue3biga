@@ -160,7 +160,7 @@ import {
 import { readRange20Rows, pickUsableRows } from '../data/stock-range20-cache.js';
 // 名册兜底取代码（云表行里没有 code，K 线请求必须有 6 位代码）——与采集层同一个入口（§6）
 import { getStockCode } from '../data/stock-code-map.js';
-import { beijingTodayStr } from '../logic/auction/auction-pull-window.js';
+import { beijingTodayStr, beijingNowHHMM } from '../logic/auction/auction-pull-window.js';
 // ★ [DIVERGE 2026-10-20 用户口径] 市场总龙一【首次分歧】判定：
 //   buildLeaderDivergence = 纯函数判定（首板 / 首次分歧 / 分歧转一致，§15 唯一实现）；
 //   shouldGateBuySide    = 买点侧「该不该先挂占位」的唯一判据（纯函数，见其 JSDoc）；
@@ -697,28 +697,76 @@ export function useTopicVolRatioBoard() {
    *   说明区会写出原因（⛔ 绝不把「没数据」当成「0 次在列」更不当成「今天空仓」）。
    */
   const range10Presence = ref(null);
+  /**
+   * ★★ [CASE-1123-HAILI 2026-11-26 用户报障] `range10PresenceDate` = **真数据就绪**的日期，
+   *   ⛔ 不再表示「已经问过一次」。旧实现无论成功失败都置它 ⇒ 买点侧定稿门控第⑦项误判就绪 ⇒
+   *   09:27 放行定稿（当时 `auction_presence` 当天行还没产出 ⇒ 第二十九条判不出），
+   *   09:30/15:05 cron 写入后只要重算一次，结论就翻脸 —— 用户原话：
+   *   「我之前当天都没见这个买点侧有这只股票啊，现在怎么又冒出来了」。
+   *   ⇒ 现在只有 `rec && coveredDays > 0` 才置位；空结果只记 `range10PresenceTried`（供重试用）。
+   */
   const range10PresenceDate = ref('');
-  function ensureRange10Presence(d) {
+  /** 已经问过一次的日期（防止并发重复请求；空结果 + 早盘窗口内会定时重试） */
+  const range10PresenceTried = ref('');
+  let _presenceTimer = null;
+  let _presenceTryLeft = 0;
+  function _stopPresenceWait() {
+    if (_presenceTimer) { clearTimeout(_presenceTimer); _presenceTimer = null; }
+  }
+  /** §10 放行判据：历史日（表里本来就没有未来数据）/ 今天已过 09:35 ⇒ 不再等，如实按「判不出」放行 */
+  function _presenceGaveUp(d) {
+    if (!d) return true;
+    if (String(d) !== _bjToday()) return true;
+    return beijingNowHHMM() >= '09:35';
+  }
+  function ensureRange10Presence(d, _retry) {
     if (!d) return;
     const hit = getPresenceForDate(d, PRESENCE_WINDOW_10);
-    if (hit) {
-      if (range10PresenceDate.value !== d) {
-        range10Presence.value = hit;
-        range10PresenceDate.value = d;
-      }
+    if (hit && Number(hit.coveredDays) > 0) {
+      _stopPresenceWait();
+      range10Presence.value = hit;
+      range10PresenceDate.value = d;
+      range10PresenceTried.value = d;
       return;
     }
-    if (range10PresenceDate.value === d) return;   // 这一天要过了（成功或失败都已定论）
+    if (range10PresenceTried.value === d && !_retry) return;   // 同一天已经问过（重试时放行）
     ensurePresence(d, PRESENCE_WINDOW_10).then(function(rec) {
       if (currentDate.value !== d) return;         // 竞态保护：期间切了日期 ⇒ 丢弃
-      range10Presence.value = rec || null;
-      range10PresenceDate.value = d;
+      range10PresenceTried.value = d;
+      if (rec && Number(rec.coveredDays) > 0) {
+        _stopPresenceWait();
+        range10Presence.value = rec;
+        range10PresenceDate.value = d;
+        return;
+      }
+      // ★ 空结果 = 这一天还没算（cron 未跑 / 名单未落库）⇒ ⛔ 不许置就绪
+      range10Presence.value = null;
+      // 早盘窗口（09:25~09:35）内到点重试：`auction_presence-open` 是 09:26 的 pg_cron，
+      // 名单 09:25:28 落库 ⇒ 正常情况几秒内就有；这里只兜「慢一点 / cron 晚了」。
+      if (!_presenceGaveUp(d) && _presenceTryLeft > 0) {
+        _presenceTryLeft -= 1;
+        if (!_presenceTimer) {
+          _presenceTimer = setTimeout(function() {
+            _presenceTimer = null;
+            ensureRange10Presence(d, true);
+          }, 20000);
+        }
+      }
     }).catch(function(e) {
       if (currentDate.value !== d) return;
       console.warn('[TVRB] 在列次数（auction_presence · 10日窗口）读取失败，十日涨幅候补本次不生效:',
         e && e.message);
-      range10Presence.value = null;
-      range10PresenceDate.value = d;
+      range10PresenceTried.value = d;
+      range10Presence.value = null;                // ⛔ 不置就绪（同空结果）
+      if (!_presenceGaveUp(d) && _presenceTryLeft > 0) {
+        _presenceTryLeft -= 1;
+        if (!_presenceTimer) {
+          _presenceTimer = setTimeout(function() {
+            _presenceTimer = null;
+            ensureRange10Presence(d, true);
+          }, 20000);
+        }
+      }
     });
   }
   // ★ [DIVERGE 2026-10-20] 市场总龙一【首次分歧】判定（异步算出后经 data computed 重算生效）。
@@ -2454,6 +2502,9 @@ export function useTopicVolRatioBoard() {
         prevEbbDayDate: prevEbbDayDate.value,
         ebbHistoryDate: ebbHistoryDate.value,
         range10PresenceDate: range10PresenceDate.value,
+        // ★★ [CASE-1123-HAILI 2026-11-26] 「不再等」判据：历史日 / 今天已过 09:35 ⇒ 放行并按判不出如实标注。
+        //   历史日必须放行（表里本来就没有未来数据），否则翻历史日期会永久卡在「定稿中」。
+        range10PresenceGaveUp: _presenceGaveUp(currentDate.value),
         switchDay: !!plan.switchDay,
         top5HistDate: top5HistDate.value,
         // ★★ [BUY-SETTLE-2] / [BUY-PUBLISH 第五版] 20 日涨幅前五的结论（退潮判定的总龙一就靠它）：
@@ -3906,7 +3957,13 @@ export function useTopicVolRatioBoard() {
   // ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条的【在列次数】按展示日补齐（切日期就补一次）。
   //   幂等 + 会话缓存 + 单飞都在 Data 层（auction-presence.js）⇒ 这里重复触发也只是命中缓存（§32）。
   //   ⚠️ 用 immediate：首屏那一次也要读（否则第一帧永远判不出「首次在列」）。
-  watch(currentDate, function(d) { ensureRange10Presence(d); }, { immediate: true });
+  watch(currentDate, function(d) {
+    _stopPresenceWait();
+    // 早盘窗口（今天 + 09:35 前）最多重试 6 次 ≈ 2 分钟：等 `auction_presence-open`（09:26）落库；
+    // 历史日 / 已过窗口 ⇒ 0 次，立即按「判不出」放行（⛔ 不让买点侧永久锁死）。
+    _presenceTryLeft = _presenceGaveUp(d) ? 0 : 6;
+    ensureRange10Presence(d);
+  }, { immediate: true });
 
   // §17 数据刷新（早盘竞价抓取 / 导入 / 收盘覆盖）→ 重算 + 补一次分笔读取。
   const _onRefresh = function() {

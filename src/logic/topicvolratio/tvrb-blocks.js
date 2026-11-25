@@ -2044,6 +2044,12 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
   const YIZI_KEEP_TEXT_SENTENCE =
     '竞价一字涨停的票【照常选进、只打标签】「' + AUCTION_YIZI_WAIT_TAG + '」（⛔ 不再顺延下一个龙位：' +
     '盘中它常会下杀后回封，跳过就可能错过大票）；';
+  // ★★ [CASE-1123-HAILI 2026-11-26 用户报障] 第二十九条（题材量比不达标 ⇒ 题材内选票）通道：
+  //   本块实际按 `o.order`（= 本题材内十日涨幅〔9:26 竞价口径〕排序，再过「首次/二次在列」闸门）
+  //   取票，⛔ 不是「龙一 → 龙二」；照抄龙位口径会与判定相反 —— 11-23 半导体选「海立股份」
+  //   就是这么被误读成「龙位第 3 名被选、第 1/2 名被跳过」（用户原话：「是不是口径没对上啊，非常乱」）。
+  //   `o.smallTopic` 是「排名第一 + 4~6 只」的另一条收紧档，文案已单列，⛔ 不要重复命中。
+  const useSecondTopicInner = !!(o.secondTopic && Array.isArray(o.order) && o.order.length > 0) && !o.smallTopic;
   const reason = o.smallTopic
     ? ('按【平均竞价量比 ' + formatAvgVolRatio(avg) + '】排第 ' + block.rank +
        '，股票数量 ' + tier.count + ' 只（' + tier.rangeText + '）⇒ 取 ' + tier.pickCount +
@@ -2051,18 +2057,24 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
        ' 只】且是排名第一 ⇒ 收紧：只在【当天十日涨幅〔' + (o.baseText || '9:26 竞价口径') +
        '〕前十】的同题材票里取【组内最强（龙位最前）】的那一只（数量少的题材次日顶多活一只，' +
        '只买最强的）；' + YIZI_KEEP_TEXT_SENTENCE + '连续停牌作废。')
-    : (useTop20
+    : (useSecondTopicInner
       ? ('按【平均竞价量比 ' + formatAvgVolRatio(avg) + '】排第 ' + block.rank +
          '，股票数量 ' + tier.count + ' 只（' + tier.rangeText + '）⇒ 取 ' + tier.pickCount +
-         ' 只；★ ' + top20ScopeLead + top20Expr +
-         '里【排名最靠前的 ' + tier.pickCount + ' 只】（出现第 ' + (tier.pickCount + 1) + ' 只起不选）—— ' +
-         '核心票基本就是 20日涨幅前排那几只；' + YIZI_KEEP_TEXT_SENTENCE +
-         '前十不足 ' + tier.pickCount + ' 只时用【同题材靠前的票】补足；' +
-         '前十一只都没有 ⇒ 退回常规龙位口径。')
-      : ('按【平均竞价量比 ' + formatAvgVolRatio(avg) + '】排第 ' + block.rank +
-         '，股票数量 ' + tier.count + ' 只（' + tier.rangeText + '）⇒ 取 ' + tier.pickCount +
-         ' 只；按【龙一 → 龙二 → …】从高到低依次取票：' + YIZI_KEEP_TEXT_SENTENCE +
-         '遇到【连续停牌】买不进 ⇒ 该龙位【不再补位】（本题材实际少取相应只数）。'));
+         ' 只；★【第二十九条 · 题材量比不达标 ⇒ 题材内选票】本题材【不作废】，改在' +
+         '【本题材内十日涨幅〔' + (o.baseText || '9:26 竞价口径') + '〕前十】里按【首次在列 > 二次在列】选票' +
+         '（⛔ 不按龙位取票，龙位只作对照）：' + YIZI_KEEP_TEXT_SENTENCE + '连续停牌作废。')
+      : (useTop20
+        ? ('按【平均竞价量比 ' + formatAvgVolRatio(avg) + '】排第 ' + block.rank +
+           '，股票数量 ' + tier.count + ' 只（' + tier.rangeText + '）⇒ 取 ' + tier.pickCount +
+           ' 只；★ ' + top20ScopeLead + top20Expr +
+           '里【排名最靠前的 ' + tier.pickCount + ' 只】（出现第 ' + (tier.pickCount + 1) + ' 只起不选）—— ' +
+           '核心票基本就是 20日涨幅前排那几只；' + YIZI_KEEP_TEXT_SENTENCE +
+           '前十不足 ' + tier.pickCount + ' 只时用【同题材靠前的票】补足；' +
+           '前十一只都没有 ⇒ 退回常规龙位口径。')
+        : ('按【平均竞价量比 ' + formatAvgVolRatio(avg) + '】排第 ' + block.rank +
+           '，股票数量 ' + tier.count + ' 只（' + tier.rangeText + '）⇒ 取 ' + tier.pickCount +
+           ' 只；按【龙一 → 龙二 → …】从高到低依次取票：' + YIZI_KEEP_TEXT_SENTENCE +
+           '遇到【连续停牌】买不进 ⇒ 该龙位【不再补位】（本题材实际少取相应只数）。')));
 
   const notes = [];
   notes.push(o.smallTopic
@@ -2073,17 +2085,24 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
        '〕前十】的同题材票里取【组内最强（龙位最前）】的那一只（用户口径：这种数量少的，' +
        '次日能存活下来的顶多有一只，所以就买最强的）。' + YIZI_KEEP_TEXT_SENTENCE +
        '【连续停牌】仍买不进 ⇒ 该名额作废。')
-    : (useTop20
+    : (useSecondTopicInner
       ? ('本题材按平均竞价量比排第 ' + block.rank + '（量比 ' + formatAvgVolRatio(avg) +
          '），数量 ' + tier.count + ' 只 → ' + tier.rangeText + ' ⇒ 取 ' + tier.pickCount +
-         ' 只；★【' + top20Label + '】' + top20ScopeLead + top20Expr +
-         '里【排名最靠前的 ' + tier.pickCount + ' 只】—— 不从龙位往下顺延，' +
-         '核心票基本就是 20日涨幅前排那几只，题材内的下一个龙位很可能是后排。' +
-         YIZI_KEEP_TEXT_SENTENCE + '【连续停牌】仍买不进 ⇒ 该名额作废、不补位。')
-      : ('本题材按平均竞价量比排第 ' + block.rank + '（量比 ' + formatAvgVolRatio(avg) +
-         '），数量 ' + tier.count + ' 只 → ' + tier.rangeText + ' ⇒ 取 ' + tier.pickCount +
-         ' 只；入选股票按龙位从高到低依次取：' + YIZI_KEEP_TEXT_SENTENCE +
-         '【连续停牌】买不进 ⇒ 该龙位【不再补位】（停牌票连竞价都没有，占着龙位也买不到，名额跟着作废）。')));
+         ' 只；★【第二十九条 · 题材量比不达标 ⇒ 题材内选票】本题材【不作废】，' +
+         '改在【本题材内十日涨幅〔' + (o.baseText || '9:26 竞价口径') + '〕前十】里按' +
+         '【首次在列（1 次）> 二次在列（2 次）】选票 ⇒ ⛔ 不按龙位取票（本题材的龙位只作对照，见下一条）。' +
+         YIZI_KEEP_TEXT_SENTENCE + '【连续停牌】仍买不进 ⇒ 该名额作废。')
+        : (useTop20
+          ? ('本题材按平均竞价量比排第 ' + block.rank + '（量比 ' + formatAvgVolRatio(avg) +
+             '），数量 ' + tier.count + ' 只 → ' + tier.rangeText + ' ⇒ 取 ' + tier.pickCount +
+             ' 只；★【' + top20Label + '】' + top20ScopeLead + top20Expr +
+             '里【排名最靠前的 ' + tier.pickCount + ' 只】—— 不从龙位往下顺延，' +
+             '核心票基本就是 20日涨幅前排那几只，题材内的下一个龙位很可能是后排。' +
+             YIZI_KEEP_TEXT_SENTENCE + '【连续停牌】仍买不进 ⇒ 该名额作废、不补位。')
+          : ('本题材按平均竞价量比排第 ' + block.rank + '（量比 ' + formatAvgVolRatio(avg) +
+             '），数量 ' + tier.count + ' 只 → ' + tier.rangeText + ' ⇒ 取 ' + tier.pickCount +
+             ' 只；入选股票按龙位从高到低依次取：' + YIZI_KEEP_TEXT_SENTENCE +
+             '【连续停牌】买不进 ⇒ 该龙位【不再补位】（停牌票连竞价都没有，占着龙位也买不到，名额跟着作废）。'))));
   // ★★ [AUTO-PICK-TOP20] / [MID-TOP20] 判定可追溯：前十命中哪几只、取的是哪几只、第几名起不再选（用户要能逐只核对）
   if (useTop20) {
     const got = picks.map(function(p) { return String(p.name || '').trim(); }).filter(Boolean);

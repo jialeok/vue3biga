@@ -316,7 +316,9 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     // ★★ [MARKET-DRAGON-ONLY / ROW-GRAY / HOT-TOPIC-SYNC] 29 → 30 → 31 → 32（各次选股结论变化）。
     // ★★ [DEV-RULE-AUC-ONLY 2026-11-25 用户报障] 选股侧偏离值一律 9:25 竞价，历史日不再吃收盘
     //   ⇒ 11-24 华东重机（收盘 near / 竞价 watch）解除灰化、回到买点侧 ⇒ 32 → 33。
-    expect(TVRB_RULES_VERSION).toBe(33);
+    // ★★ [CASE-1123-HAILI 2026-11-26] 第二十九条通道文案与判定一致化 + 在列次数门控只认真数据
+    //   （11-23 海立股份的说明从「按龙位」改成「题材内选票」）⇒ 存档文案变 ⇒ 33 → 34。
+    expect(TVRB_RULES_VERSION).toBe(34);
   });
 
   // ★★ [ABN-MAINBOARD-GUARD 2026-11-14] 第三十四条「全场十日涨幅最高票」只认主板。
@@ -440,7 +442,8 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     //   ★★ [ROW-GRAY 2026-11-25] 第三十六条补【行级灰块】渲染旗子 ⇒ 30 → 31
     //   ★★ [HOT-TOPIC-SYNC 2026-11-25] hot 派生题材缓存重建（11-25 大消费补 4 只）⇒ 31 → 32
     //   ★★ [DEV-RULE-AUC-ONLY 2026-11-25] 选股侧偏离一律竞价（11-24 华东重机解灰）⇒ 32 → 33
-    expect(TVRB_RULES_VERSION).toBe(33);
+    //   ★★ [CASE-1123-HAILI 2026-11-26] 第二十九条通道文案 + 在列次数门控 ⇒ 33 → 34
+    expect(TVRB_RULES_VERSION).toBe(34);
     expect(_swCacheNo(readFileSync('public/sw.js', 'utf8'))).toBeGreaterThanOrEqual(67);
   });
 

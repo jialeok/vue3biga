@@ -329,7 +329,12 @@ describe('tvrb · [AUTO-PICK-TOP20] 边界与回归锁', function() {
     // ★★ [TOPIC-INNER-SELECT 2026-11-17] 调用形态变了（第二题材走题材内选票时它的 opt 优先），
     //   但契约不变：`smallOpt || bigOpt` 仍是「没走特殊通道时的默认」，⛔ 不许只剩一个 opt。
     expect(plan).toContain('_buildBlock(b, buyDragonMap, tier, buyPctMap, buySkipNames,');
-    expect(plan).toContain('(out.blocks.length === 1 && secondTopicInnerOpt) ? secondTopicInnerOpt : (smallOpt || bigOpt)');
+    // ★★ [CASE-1123-HAILI 2026-11-26] 判据提成 `_usedSecondTopicInner`（龙位文案也要用它），
+    //   契约不变：`smallOpt || bigOpt` 仍是「没走第二十九条题材内选票时的默认」。
+    expect(plan).toContain('const _usedSecondTopicInner = !!(out.blocks.length === 1 && secondTopicInnerOpt);');
+    expect(plan).toContain('_usedSecondTopicInner ? secondTopicInnerOpt : (smallOpt || bigOpt)');
+    // 龙位说明的措辞必须跟着这条通道走（⛔ 不许写成「并按它选股」）
+    expect(plan).toContain('!!smallOpt || _usedSecondTopicInner');
     expect(plan).toContain('top20Text: r20BaseText');
     // ★ [MID-TOP20] big/mid 两档共用同一个 opt（只差 pickCount）
     expect(plan).toContain("(tier.tier === 'big' || tier.tier === 'mid')");

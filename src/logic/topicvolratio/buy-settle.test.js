@@ -96,6 +96,21 @@ describe('resolveBuySettle · 买点侧选股输入门控', function() {
     expect(resolveBuySettle(full({ buyRangeDate: D + ' ' })).settled).toBe(true);
   });
 
+  // ★★ [CASE-1123-HAILI 2026-11-26 用户报障] 「在列次数」只读过不算就绪：
+  //   11-23 09:27 定稿时 `auction_presence` 当天行还没产出（09:26 的 pg_cron 慢/未跑）⇒
+  //   旧实现仍把 `range10PresenceDate = d` 传进来 ⇒ 本项恒通过 ⇒ 先定稿、数据到货后重算翻脸。
+  it('⑦-b 在列次数【读过但当天还没算】⇒ 不放行，且点名「十日涨幅在列次数」', function() {
+    const r = resolveBuySettle(full({ range10PresenceDate: '', range10PresenceGaveUp: false }));
+    expect(r.settled).toBe(false);
+    expect(r.missing).toContain('十日涨幅在列次数');
+  });
+
+  it('⑦-c 调用方明确「不再等」（历史日 / 今天已过 09:35）⇒ 放行并按判不出处理（⛔ 不永久锁死）', function() {
+    const r = resolveBuySettle(full({ range10PresenceDate: '', range10PresenceGaveUp: true }));
+    expect(r.settled).toBe(true);
+    expect(r.missing).toEqual([]);
+  });
+
   // ★★ [BUY-SETTLE-2 2026-10-31] 第 ⑨ 项：20 日涨幅前五的结论。
   //   它最慢（K 线精算）且能整段换板（常规选股 ↔ 退潮替补）—— 用户第三次报障的
   //   「变成一只 → 又跳转两只 → 又变成一只」就可能是它在迟到。

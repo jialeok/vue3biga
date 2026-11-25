@@ -3927,6 +3927,32 @@ describe('tvrb · 第二十九条 十日涨幅 · 题材内选票（2026-11-17 �
     expect(notes).toContain('题材内选票');
   });
 
+  // ★★ [CASE-1123-HAILI 2026-11-26 用户报障] 11-23 半导体（6 只、量比 11.54）走第二十九条
+  //   选出「海立股份」（十日涨幅第 10 名 + 二次在列），但块内文案照抄了龙位口径 ⇒
+  //   被读成「龙位第 3 名被选、第 1/2 名被跳过」。文案必须与判定一致：
+  //   ⛔ 不许出现「按龙位从高到低依次取票」「并按它选股」，必须写「不按龙位取票」。
+  it('★ [CASE-1123-HAILI] 第二十九条通道的块内文案必须写「不按龙位取票」', function() {
+    const f = nov16();
+    const plan = buildTopicVolRatioPlan(f.topics, f.dm, {
+      range10Rows: NOV16_POOL,
+      range10Presence: presence(NOV16_CNT),
+      ebbCtx: ebbCtxOf()
+    });
+    const blk = plan.blocks[1];
+    const blkNotes = (blk.notes || []).join('\n');
+    const blkReason = String(blk.reason || '');
+    // ① 基础说明（reason / notes）不能再写龙位取票
+    expect(blkReason).not.toContain('按【龙一 → 龙二 → …】');
+    expect(blkNotes).not.toContain('按龙位从高到低依次取票');
+    // ② 必须点名第二十九条 + 明确「不按龙位」
+    expect(blkReason).toContain('第二十九条');
+    expect(blkReason).toContain('不按龙位取票');
+    expect(blkNotes).toContain('第二十九条 · 题材量比不达标');
+    expect(blkNotes).toContain('不按龙位取票');
+    // ③ 龙位说明里那句「并按它选股」同样不许出现（该通道根本不是按龙位选）
+    expect(blkNotes).not.toContain('并按它选股');
+  });
+
   // ═══════════════════════════════════════════════════════════════════════════
   // 9:26 竞价口径：名次按早上那一刻算（不是收盘）
   // ═══════════════════════════════════════════════════════════════════════════

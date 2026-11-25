@@ -1408,11 +1408,15 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
       top20Text: r20BaseText,
       topicOwner: topicOwner
     } : null;
+    // ★★ [CASE-1123-HAILI 2026-11-26] 记下「本块是不是走第二十九条题材内选票」——
+    //   龙位说明的措辞由它决定：该通道按「十日涨幅前十 + 首次/二次在列」选票，⛔ 不是按龙位，
+    //   写「并按它选股」会与判定相反（11-23 半导体选海立股份被误读的直接原因）。
+    const _usedSecondTopicInner = !!(out.blocks.length === 1 && secondTopicInnerOpt);
     const blk = _buildBlock(b, buyDragonMap, tier, buyPctMap, buySkipNames,
       // ★★ [TOPIC-INNER-SELECT 2026-11-17] 第二题材走「题材内选票」时它的 opt 优先：
       //   此时绝不能落进 bigOpt（那是「同题材 20日涨幅前十」的口径，与本条不是一回事）。
       //   ⚠️ 判 `out.blocks.length === 1`（而不是只看 opt 有没有值）：保证它只作用于排名第二那一块。
-      (out.blocks.length === 1 && secondTopicInnerOpt) ? secondTopicInnerOpt : (smallOpt || bigOpt));
+      _usedSecondTopicInner ? secondTopicInnerOpt : (smallOpt || bigOpt));
     out.blocks.push(blk);
     // ★ 收紧档：把「本题材有哪几只进了前十、最后买了最强的那只」写成事实（用户要能逐只核对）
     if (smallTrace) {
@@ -1428,7 +1432,9 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     // ★★ [TVRB-926-DRIFT 2026-10-24 用户口径] 「早上 9:26 龙位」与「收盘龙位」不一致时，
     //   在本题材的说明区讲清「为什么收盘回看时不选那只看似更靠前的票」——
     //   只在【真的不一致】时追加一条，口径一致时一个字都不写（§11 零行为变化）。
-    _appendDragonDriftNote(out.blocks[out.blocks.length - 1], dragonMap, !!smallOpt);
+    // ★★ [CASE-1123-HAILI 2026-11-26] `byOrder` = 「本块不是按龙位取票」——小题材收紧档与
+    //   第二十九条题材内选票都属此类；照抄「并按它选股」会与判定相反。
+    _appendDragonDriftNote(out.blocks[out.blocks.length - 1], dragonMap, !!smallOpt || _usedSecondTopicInner);
     // ★★ [LEADER-LIMITDOWN 2026-11-02 用户口径] 第三十二条一旦成立 ⇒ 买点侧就【只有抱团那一只】：
     //   用户对这次的情形只给了一个答案 ——「选的应该是九阳股份」⇒ ⛔ 不继续顺延到排名第二、第三的题材
     //   （那个题材的龙一都已跌停，往下的题材只会更弱；再选一个就成了「买两只」，与口径不符）。

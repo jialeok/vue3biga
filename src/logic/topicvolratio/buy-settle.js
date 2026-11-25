@@ -124,7 +124,12 @@ export function resolveBuySettle(ctx) {
   // ⑥ 近 20 日退潮历史（首次 / 二次确认 / 无第三次）
   if (at(o.ebbHistoryDate) !== d) missing.push('近 20 日退潮历史');
   // ⑦ 十日涨幅在列次数（第二十九条候补 / 小题材收紧）
-  if (at(o.range10PresenceDate) !== d) missing.push('十日涨幅在列次数');
+  //   ★★ [CASE-1123-HAILI 2026-11-26] 必须区分「读过但当天还没算」与「真的就绪」：
+  //     旧调用方无论成败都传 `range10PresenceDate = d` ⇒ 本项恒通过 ⇒ 09:27 定稿，
+  //     而 `auction_presence` 当天行由 09:26 pg_cron 产出 ⇒ 缺这份输入时第二十九条判不出，
+  //     数据到货后重算就翻结论（用户：「当天没见这只票，现在又冒出来了」）。
+  //     `range10PresenceGaveUp` = 调用方明确表示「不再等」（历史日 / 今天已过 09:35）⇒ 放行，如实标判不出。
+  if (at(o.range10PresenceDate) !== d && !o.range10PresenceGaveUp) missing.push('十日涨幅在列次数');
   // ⑧ 仅切换日才要：20 日涨幅历史榜（判「首次上榜」）
   if (o.switchDay && at(o.top5HistDate) !== d) missing.push('20 日涨幅历史榜');
   // ⑮ ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】「异动第三天 ⇒ 同题材禁入」的两份输入
