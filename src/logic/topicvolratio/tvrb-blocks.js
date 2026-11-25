@@ -10,7 +10,7 @@
 //
 // 外部依赖的口径说明（原 topic-vol-ratio-rules.js 头部的 import 注释，逐条搬过来）：
 
-import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_PICK_TONE, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, EBB_SECOND_BUY_TAG, EBB_SECOND_BUY_TONE, EBB_SECOND_RULE_NO, CASH_NO_BUY_TAG, CASH_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_BLOCK_TOPIC, WEAK_HUDDLE_TOP_N, WEAK_HUDDLE_TONE, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_BLOCK_TOPIC, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, CATCH_UP_TONE, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, SECOND_TOPIC_VOLWEAK_NO_BUY_TONE, DIVERGE_DIP_TAG, DIVERGE_FOLLOW_TAG, DIVERGE_NO_BUY_TAG, DIVERGE_BUY_TONE, DIVERGE_NO_BUY_TONE, DIVERGE_RULE_NO, TVRB_CASH_ALERT_NONE, SWITCH_RULE_NO, NEW_DRAGON_TAG, NEW_DRAGON_TONE, RANGE10_BACKUP_TONE, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL, ABNORMAL_TOPIC_BAN_TAG, ABNORMAL_TOPIC_BAN_TONE, TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG, TOP30_HUDDLE_BLOCK_TOPIC, TOP30_HUDDLE_TONE, TOP30_HUDDLE_TOP_N } from './tvrb-constants.js';
+import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_PICK_TONE, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, EBB_SECOND_BUY_TAG, EBB_SECOND_BUY_TONE, EBB_SECOND_RULE_NO, CASH_NO_BUY_TAG, CASH_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_BLOCK_TOPIC, WEAK_HUDDLE_TOP_N, WEAK_HUDDLE_TONE, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_BLOCK_TOPIC, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, CATCH_UP_TONE, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, SECOND_TOPIC_VOLWEAK_NO_BUY_TONE, DIVERGE_DIP_TAG, DIVERGE_FOLLOW_TAG, DIVERGE_NO_BUY_TAG, DIVERGE_BUY_TONE, DIVERGE_NO_BUY_TONE, DIVERGE_RULE_NO, TVRB_CASH_ALERT_NONE, SWITCH_RULE_NO, NEW_DRAGON_TAG, NEW_DRAGON_TONE, RANGE10_BACKUP_TONE, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, ABNORMAL_TOPIC_BAN_TAG, ABNORMAL_TOPIC_BAN_TONE, TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG, TOP30_HUDDLE_BLOCK_TOPIC, TOP30_HUDDLE_TONE, TOP30_HUDDLE_TOP_N } from './tvrb-constants.js';
 // ★★ [RULE-35 2026-11-18 用户口径] 第三十五条【30日涨幅抱团】的判定纯函数（§6 唯一实现：
 //   「30日涨幅前三里与本灰色题材块同大类的、名次最靠前的那 1 只」只在这里算一次）。
 import { pickTop30Huddle } from './top30-huddle.js';
@@ -18,7 +18,9 @@ import { pickTop30Huddle } from './top30-huddle.js';
 //   classifyRange10 = 分级（ok / near / abnormal，阈值 97 / 100 都在 tvrb-constants 一处定义；
 //   [CAP-97 2026-11-13 晚间] 用户把自定义禁选上限 95 → 97，让 11-11 的 95.71% 正常运行）。
 //   ⛔ 本文件不另写「> 95」「> 97」「>= 100」这类字面量比较 —— 那会变成第二份规则（§6）。
-import { classifyRange10, ABNORMAL_LEVEL_ABNORMAL, ABNORMAL_LEVEL_NEAR } from './abnormal-10d.js';
+// ★ [DEV-RULE 2026-11-25] 本层不再判「十日涨幅 97%」（旧口径已废除）；官方红线数值从
+//   deviation-rule-facts 取（阈值本体在 abnormal-deviation#DEV_THRESHOLDS，§6 一份实现）。
+import { DEV_OFFICIAL_RED_LINE_10D } from '../auction/deviation-rule-facts.js';
 import { _normTopic, _sameTopicLoose, _ebbEligibleNames, _ebbBuyPickNames, _num, _pct2, _findMemberByName, _streakWord, _closeRankOf, _windowTextOf, _todayRankPhrase, _rankLabelOf, _oldTopicNameOf, _oldTopicBasisOf } from './tvrb-utils.js';
 
 import { formatRangePct, RULE_NO, finishBuyBlock, SELL_OUT_TAG, SELL_ACTION_TONE_OUT, HOLD_TAG } from '../decision/decision-rules.js';
@@ -534,19 +536,21 @@ export function _applyCashAlertBuyRules(blocks, cashAlert) {
  */
 export function _applyAbnormalNoBuyRules(blocks, abnormal) {
   if (!abnormal || !abnormal.show) return;
-  // ★ [ABN-SAME-SOURCE] 称谓/阈值都必须与判定同源：不是总龙一就不这么叫；触发线是
-  //   ＞ CAP（97%）而不是 ≥ 100% —— 旧文案写「≥ 100%」与 FULL-MARKET 口径自相矛盾。
+  // ★ [ABN-SAME-SOURCE] 称谓必须与判定同源：不是总龙一就不这么叫。
+  // ★★ [DEV-RULE 2026-11-25] 口径换成官方偏离值：文案只说【10日/30日偏离值 vs 红线】，
+  //   ⛔ 不许再写「十日涨幅 ＞ 97%」（那是已废除的自定义口径，用户：「那个有些不准」）。
   const _lbl = abnormal.leaderLabel || '市场总龙一';
   const lead = '【第' + ABNORMAL_RULE_NO + '条 · 监管异动】' +
     (abnormal.kind === ABNORMAL_KIND_NEXT_DAY
-      ? (_lbl + '【' + (abnormal.leaderName || '—') + '】昨日十日涨幅 ' +
-         (abnormal.leaderPctPrevText || '—') + ' ＞ ' + TVRB_RANGE10_CAP +
-         '% ⇒ 今天是异动次日（异动次日市场情绪普遍崩坏）')
+      ? (_lbl + '【' + (abnormal.leaderName || '—') + '】昨日（收盘口径）10日偏离 ' +
+         (abnormal.leaderDevPrevText || '—') + ' / 30日 ' + (abnormal.leaderDevPrev30Text || '—') +
+         ' ⇒ 已越「严重异常波动」红线（+100% / +200%）⇒ 今天是异动次日（异动次日市场情绪普遍崩坏）')
       : (abnormal.kind === ABNORMAL_KIND_LEADER_NOW
-        ? (_lbl + '【' + (abnormal.leaderName || '—') + '】今日十日涨幅 ' +
-           (abnormal.leaderPctTodayText || '—') + ' ＞ ' + TVRB_RANGE10_CAP + '% ⇒ 今日异动')
-        : ('入选票 ' + (abnormal.names || []).join('、') + ' 十日涨幅 ＞ ' +
-           TVRB_RANGE10_CAP + '% ⇒ 监管异动'))) +
+        ? (_lbl + '【' + (abnormal.leaderName || '—') + '】今日（9:25 竞价口径）10日偏离 ' +
+           (abnormal.leaderDevTodayText || '—') + ' / 30日 ' + (abnormal.leaderDevToday30Text || '—') +
+           ' ⇒ 已越「严重异常波动」红线 ⇒ 今日异动')
+        : ('入选票 ' + (abnormal.names || []).join('、') +
+           ' 已越「严重异常波动」红线（10日偏离 ≥ +100%）⇒ 监管异动'))) +
     ' ⇒ 今天【空仓、不买任何票】。';
   (blocks || []).forEach(function(b) {
     (b.picks || []).forEach(function(p) {
@@ -557,8 +561,8 @@ export function _applyAbnormalNoBuyRules(blocks, abnormal) {
       p.buyActionTone = ABNORMAL_NO_BUY_TONE;
       p.actionNote = lead +
         '本股今天【不开新仓】—— 原本的【' + HOLD_TAG + '】/ 竞价买 / 尾盘买 / 先卖后买 / 龙一字持有 等' +
-        '买点信号一律作废。★ 为什么整段灰化：十日涨幅（竞价口径）> ' + TVRB_RANGE10_CAP +
-        '% 一律不选，达到 ' + TVRB_RANGE10_ABNORMAL + '% = 交易所严重异常波动；' +
+        '买点信号一律作废。★ 为什么整段灰化：官方口径【严重异常波动】= 连续 10 日偏离 ≥ +100% / ' +
+        '30 日 ≥ +200%（负向 ≤ −50% / ≤ −70%）⇒ 全场空仓；' +
         '一旦总龙一异动，它所在题材的票次日几乎都会崩，甚至带崩整个市场情绪。' +
         '⚠️ 下方股票仍按原规则【照常列出】（买点标签已改为【' + ABNORMAL_NO_BUY_TAG +
         '】），供你核对为什么今天不买。';
@@ -612,8 +616,8 @@ export function _applyAbnormalTopicBan(out, ban, topicsOf) {
 
   const lead = '【第' + ABNORMAL_RULE_NO + '条 · 延伸 · 异动第三天】' +
     (ban.triggerDate ? ban.triggerDate + ' ' : '') + '总龙一【' + (ban.leaderName || '—') + '】' +
-    '十日涨幅 ' + (ban.leaderPctText || '—') + ' ＞ ' + TVRB_RANGE10_CAP +
-    '% ⇒ 它所在细分题材【' + (ban.segments || []).join('、') + '】今天是异动后的【第三天】：' +
+    '（异动日）10日偏离 ' + (ban.leaderDevText || '—') + ' 已越「严重异常波动」红线（+100%）' +
+    ' ⇒ 它所在细分题材【' + (ban.segments || []).join('、') + '】今天是异动后的【第三天】：' +
     '同题材的票一律不进买点侧（临时题材也算）。';
 
   eachBuyBlock(out, function(b) {
@@ -1550,7 +1554,7 @@ export function buildCashAlert(leadBlock, ebb, abnormal) {
       rank: null,
       avgVolRatio: null,
       avgVolRatioText: '—',
-      threshold: TVRB_RANGE10_CAP,
+      threshold: DEV_OFFICIAL_RED_LINE_10D,   // [DEV-RULE 2026-11-25] 官方 10 日红线（+100%）
       headline: abnormal.headline,
       detail: abnormal.detail,
       // ★ 附加事实（视图不读、单测 / 排障读）：与「量比低」「退潮」两种成因区分开
@@ -1910,37 +1914,15 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
   //     实测（2026-10-14 AI应用，13 只 ⇒ 取 2 只）：龙一 新华传媒【连续停牌】占掉 1 档
   //     ⇒ 只选龙二 慈文传媒 1 只（用户口径：「AI应用题材当天只选一只更加合理」）。
   let slotsUsed = 0;
-  // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条：碰到【异动票】（十日涨幅 ≥ 100%）时，
-  //   该题材块【只展示这一只】、标【异动不买】，⛔ 不再往下选别的龙位（理由见下面循环里的长注释）。
-  let abnormalCand = null;
-  // ★ [FULL-MARKET] 不再有「被跳过、顺延下一只」的候选：> 自定义禁选上限的票一律
-  //   整块停止选股（见下面循环）。旧 skippedAbnormal 数组已随口径撤销。
   for (let i = 0; i < cands.length && slotsUsed < tier.pickCount; i++) {
     const c = cands[i];
-    // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条【监管异动 · 十日涨幅硬上限】：
-    //
-    //   用户 11-13 早间原话：「新增总约束，十日涨幅竞价口径不能超过 95%（这是自定义标准，不能超过）……
-    //     十日达到 100% 异动，提示空仓，选出的票整块变灰色（不用去掉）」
-    //   ★★ [CAP-97 2026-11-13 晚间修订] 95% → **97%**（用户「调到97%，11月11日这样能正常运行，
-    //     超过97%该题材或者股票就不能选，监管异动了」）⇒ 11-11 东方海洋 95.711445% 落回【正常】。
-    //
-    //   ★★ [FULL-MARKET 2026-11-13 用户当场纠正] near（>97 且 <100）与 abnormal（≥100）
-    //      后果【完全相同】：本题材块【只展示这一只】、停止选股，⛔ 绝不顺延下一只。
-    //      用户原话：「是整个题材的……也就是全场整片灰，整个市场也是灰色，没有票可以买，
-    //      总龙一影响范围很大的，这个波及到所有的票」。
-    //      ⇒ 顺延 = 从马上要崩的题材里挑次强的票，正是用户否掉的选法。
-    //      ⇒ 全市场整片灰 / 空仓由 _applyAbnormalSweep（规则层）与 abnormal-overlay（显示层）收口。
-    //   ① pct > TVRB_RANGE10_CAP（near / abnormal）⇒ 保留展示 + 停止选股：abnormalPick = 这一只。
-    //      ⛔ 不是「删掉」—— 用户明确「不用去掉」，要能看见是哪只票踩了线。
-    //   ② pct ≤ TVRB_RANGE10_CAP（含 11-11 的 95.71%）⇒ 完全不介入，按原规则正常选股。
-    //   ③ pct 读不到（null）⇒ 分级 = 'unknown' ⇒ ⛔ 既不跳过也不判异动（§10 不猜）。
-    const lv10 = classifyRange10(c.pct);
-    if (lv10.level === ABNORMAL_LEVEL_ABNORMAL || lv10.level === ABNORMAL_LEVEL_NEAR) {
-      abnormalCand = c;
-      picked.push(c);
-      slotsUsed++;
-      break;
-    }
+    // ★★ [DEV-RULE 2026-11-25 口径整体替换] 这里原来有一段「候选票十日涨幅 > 97% ⇒ 本块只展示这一只、
+    //   停止选股」的分支（[ABNORMAL-10D] / [FULL-MARKET]）。**已删除**：
+    //   · 用户 2026-11-25 换了口径（官方偏离值），并明确「只灰这一行，不灰整个题材块」；
+    //   · 本层（题材块）手里只有十日涨幅、拿不到官方偏离值（那要逐日腿 + 指数腿）⇒ 在这里判必然是另一把尺子；
+    //   · 现在改由规则层收口后的【第三十六条】统一处理：买点票里档位 ∈ {near, severe} 的**那一行**灰化 +
+    //     标签【逼近红线不买】+ 不计入「选出 N 只」，⛔ 不再影响同块其它票（见 tvrb-plan#_applyDeviationNearRule）。
+    //   §11：只删「停止选股」这个副作用，票本身照常参与选股 → 由后置通道改标签，用户仍然看得见它。
     if (c.isYizi) {
       // ═══════════════════════════════════════════════════════════════════════════════════
       // ★★ [YIZI-NO-SHIFT 2026-11-20 用户口径 · 全通道统一] 竞价一字涨停 ⇒ **照常选进、只打标签**。
@@ -2170,20 +2152,6 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
         : ('⚠️ 本题材有龙位、且可买入（非连续停牌；竞价一字算可买）的票不足 ' + tier.pickCount +
            ' 只 ⇒ 实际取 ' + picks.length + ' 只（⛔ 不从其它题材补位）。')));
   }
-  if (abnormalCand) {
-    const _lv = classifyRange10(abnormalCand.pct);
-    notes.push('🚨 本题材的' + (abnormalCand.rank ? getDragonLabel(abnormalCand.rank) : '') +
-      abnormalCand.name + ' 十日涨幅（竞价口径）' + _lv.pctText +
-      ' ＞ ' + TVRB_RANGE10_CAP + '%（自定义禁选上限' +
-      (_lv.level === ABNORMAL_LEVEL_ABNORMAL
-        ? '；已达 ' + TVRB_RANGE10_ABNORMAL + '% 交易所【严重异常波动】'
-        : '，尚未到 ' + TVRB_RANGE10_ABNORMAL + '% 红线，但后果相同') +
-      '）⇒ 按第 ' + ABNORMAL_RULE_NO + ' 条判定【全场监管异动】：本块今天【不选股、不买】' +
-      '（⛔ 不顺延下一龙位 —— 总龙一影响范围波及所有票，换次强的没有意义；' +
-      '整个市场整片灰 + 空仓由收口统一叠加）。⚠️ 该票仍【照常列出】（用户口径：不用去掉），' +
-      '只是买点标签为【' + ABNORMAL_NO_BUY_TAG + '】。');
-  }
-
   return {
     // ── ① 决策看板形状的字段（finishBuyBlock / decorateDecisionRows / 通用装饰器要读的）──
     block: block,
@@ -2221,18 +2189,20 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
     //      整块灰化由 `buildCashAlert` 产出的 `cashAlert.show` 驱动视图既有的
     //      `.tvrb-buy-list.tvrb-ebb`（§6 同一套灰化），"不计入选出 N 只" 由
     //      `_applyAbnormalSweep` 清空 `out.buyNames` 实现。旧注释把人往不存在的实现上引。
-    abnormalPick: abnormalCand ? {
-      name: abnormalCand.name,
-      code: String(abnormalCand.code || '').trim(),
-      topic: String(block.topic || ''),
-      pct: classifyRange10(abnormalCand.pct).pct,
-      pctText: classifyRange10(abnormalCand.pct).pctText
-    } : null,
+    abnormalPick: null,
+    /**
+     * ★★ [DEV-RULE 2026-11-25 口径整体替换] `abnormalPick` **恒为 null，保留字段只为兼容历史存档 / 视图读取**。
+     *   旧语义：候选票十日涨幅 ＞ 97% ⇒ 本块「只展示这一只」、停止选股 ⇒ 写在这里。
+     *   新口径下这一段**整段删除**：偏离值要逐日腿、`_buildBlock` 这一层拿不到，
+     *   而且「谁越线 ⇒ 全场空仓」已经由 `_applyAbnormalSweep`（规则层）+ `applyAbnormalOverlay`（显示层）收口，
+     *   本条不再从中间截断选股（用户 11-25：「不含偏离放大（留意），因为这个不是很严重」）。
+     *   ⛔ 别在这里补一个「后置写入」的通道：会造出第二套判据。
+     */
     /**
      * ★★ [FULL-MARKET 2026-11-13 用户当场纠正] 「被跳过、顺延下一龙位」的**票级概念已撤销**：
-     *   > 自定义禁选上限 ⇒ 全场整片灰 + 空仓（⛔ 不顺延任何票、不换次强的买）。
+     *   > 越线 ⇒ 全场整片灰 + 空仓（⛔ 不顺延任何票、不换次强的买）。
      *   ⇒ 本字段恒为空数组。保留字段名只是为了兼容历史存档 / 视图读取（§11 不删字段、只撤语义），
-     *     真正踩线的那只票留在 `abnormalPick` 与 `picks` 里供核对（用户「不用去掉」）。
+     *     真正踩线的那只票由规则层的异动事实点名（`cashAlert.detail` 里）供核对（用户「不用去掉」）。
      */
     skippedAbnormalNames: [],
     /**

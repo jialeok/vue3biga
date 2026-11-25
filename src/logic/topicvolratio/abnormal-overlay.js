@@ -26,24 +26,16 @@
 // ══════════════════════════════════════════════════════════════════════════════════════
 
 import { buildCashAlert } from './tvrb-blocks.js';
-import { resolveAbnormalFact, pickAbnormalSource } from './abnormal-10d.js';
-import { maxRangePctOf, makeAbnMainBoardFilter } from './tvrb-plan.js';
+import { resolveAbnormalFact, pickRedLineSource } from './abnormal-10d.js';
+import { makeAbnMainBoardFilter } from './tvrb-plan.js';
 import { isMainBoardRankEligible } from '../auction/limit-up.js';
 import { getStockCode } from '../../data/stock-code-map.js';
-import { _num } from './tvrb-utils.js';
 import {
   ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE
 } from './tvrb-constants.js';
 import {
   eachBuyBlock, BUY_SLOT_KEYS, EXTRA_BLOCK_KEYS
 } from './plan-live-overlay.js';
-
-/** 按【票名】从一份竞价口径 Map 里取那只票自己的涨幅（§10：取不到 ⇒ null，⛔ 不补 0） */
-function _pctOf(map, name) {
-  if (!(map instanceof Map) || !name) return null;
-  const hit = map.get(String(name).trim());
-  return hit ? _num(hit.pct) : null;
-}
 
 /** 块 / 票行各拷贝一层：够改标签，又不会把存档对象污染掉 */
 function _cloneBlock(b) {
@@ -129,64 +121,48 @@ export function isAbnormalAllGray(plan) {
 }
 
 /**
- * 【显示层兜底】直接按三份【云端竞价口径 Map】判一次异动事实。
+ * 【显示层兜底】直接按【官方偏离值事实】判一次异动（历史日中间态用）。
  *
- * 为什么需要：历史日 `data.value.plan` 可能还是「异步未就绪」的中间态（buyRangeMap 还没回来），
- * 只取 `plan.abnormal` 会漏掉 11-12 这种定稿日。三份 Map 都由 `readAuctionLegRangeMap` /
- * `readRangePctForDate` 从 Supabase 读回，⛔ 不是本机算的，关电脑后别人打开页面照样判得出。
+ * 为什么需要：历史日 `data.value.plan` 可能还是「异步未就绪」的中间态（偏离事实还没回），
+ * 只取 `plan.abnormal` 会漏掉 11-12 这种定稿日。事实由组合式算好传进来，⛔ 本函数不取数。
  *
- * ⚠️ 与规则层 `buildTopicVolRatioPlan` 用的是【同一批纯函数】（maxRangePctOf +
- *    resolveAbnormalFact），判据仍是一把尺子（§6）；规则层额外有「入选票异动」形态，
- *    所以调用方【优先】取规则层那份，本函数只作补位。
- * §10：三份都读不到 ⇒ null（⛔ 不拿「没算出来」当「没有异动」，也不凭空造空仓）。
+ * ★★ [DEV-RULE 2026-11-25 口径整体替换] 入参从「三份十日涨幅 Map」换成「两份偏离事实 Map」：
+ *   · 旧：`{todayMap, prevAucMap, prevCloseMap}` + `maxRangePctOf` + `pickAbnormalSource`（97% 口径）
+ *   · 新：`{todayDev, prevDev}` + `pickRedLineSource`（官方严重异常波动）
+ *   ⛔ 旧口径已废除（用户：「那个有些不准」）；这里不许再出现「十日涨幅最高票」的择一逻辑。
  *
- * @param {{todayMap?:Map, prevAucMap?:Map, prevCloseMap?:Map}|null} o
+ * §10：两份都读不到 ⇒ null（⛔ 不拿「没算出来」当「没有异动」，也不凭空造空仓）。
+ *
+ * @param {{todayDev?:Map<string,object>, prevDev?:Map<string,object>,
+ *          isEligible?:function(string,object):boolean}|null} o
  * @returns {object|null} resolveAbnormalFact 的返回；判不出 ⇒ null
  */
 export function buildAbnormalFactFromMaps(o) {
   const x = o || {};
-  // ★★ [ABN-MAINBOARD 2026-11-13 用户口径] 与规则层同一把尺子：第三十四条【只认主板】。
-  //   非主板（创业板/科创板/北交所）不参与「最高票」评选 ⇒ 不可能是触发源。
-  //   ⛔ 判据不在这里另写代码段规则：isMainBoardRankEligible + getStockCode（§6）。
-  //   §10 方向性：名册查不到代码 ⇒ 判「有资格」保留，宁可多算也不漏掉主板异动。
-  const eligible = makeAbnMainBoardFilter(isMainBoardRankEligible, getStockCode);
-  const t = maxRangePctOf(x.todayMap, eligible);
-  const pa = maxRangePctOf(x.prevAucMap, eligible);
-  const pc = maxRangePctOf(x.prevCloseMap, eligible);
-  if (!t && !pa && !pc) return null;
+  const todayDev = (x.todayDev instanceof Map) ? x.todayDev : null;
+  const prevDev = (x.prevDev instanceof Map) ? x.prevDev : null;
+  if (!todayDev && !prevDev) return null;
 
-  // ★★ [ABN-SAME-SOURCE 2026-11-13 用户报错后修] 这里原来写的是
-  //     `leaderName: (t || p).name` + `leaderPctPrev: p.pct`
-  //   ⇒ 「名字取【今日】最高票、数值取【昨日】最高票」—— 正是用户看到的那句话：
-  //     「11月13日提示……市场总龙一闵发铝业十日涨幅100.78%，根本不是，相差太大了」。
-  //   11-13 实测：今日最高 = 闽发铝业 84.88%，昨日最高 = 东方海洋 100.78%
-  //   ⇒ 拼出「闽发铝业 100.78%」（差 13.74 个点）。
-  //   修复：先定【触发源是哪只票】（择一走同一把纯函数 pickAbnormalSource），
-  //   再按这个名字分别取今日 / 昨日的值；两个数字永远同属一只票。
-  const pick = pickAbnormalSource({
-    leaderName: '',            // ★ 本路径没有「二十日涨幅总龙一」的信息（§10 不猜）
-    leaderToday: null,
-    leaderPrevAuc: null,
-    leaderPrevClose: null,
-    marketToday: t,
-    marketPrevAuc: pa,
-    marketPrevClose: pc
-  });
-  const name = (pick.triggered ? pick.name : ((t || pa || pc).name));
-  const todayPct = _pctOf(x.todayMap, name);
-  const prevAucPct = _pctOf(x.prevAucMap, name);
-  const prevClosePct = _pctOf(x.prevCloseMap, name);
-  const prevPct = (prevAucPct !== null) ? prevAucPct : prevClosePct;
-  const basis = (prevAucPct !== null) ? 'auction' : (prevClosePct !== null ? 'close' : '');
+  // ★★ [ABN-MAINBOARD 2026-11-13 用户口径] 第三十四条【只认主板】—— 非主板不可能是触发源。
+  //   判据与规则层同一把尺子（`isMainBoardRankEligible` + `getStockCode`），⛔ 不在这里另写代码段规则。
+  //   §10 方向性：名册查不到代码 ⇒ 判「有资格」保留（宁可多算也不漏掉主板异动）。
+  const eligible = (typeof x.isEligible === 'function')
+    ? x.isEligible
+    : makeAbnMainBoardFilter(isMainBoardRankEligible, getStockCode);
 
+  // 触发源优先级与第三十四条一致：昨日（异动次日）> 今日（当日异动）
+  const prevPick = pickRedLineSource({ facts: prevDev, isEligible: eligible });
+  const todayPick = prevPick.found ? prevPick : pickRedLineSource({ facts: todayDev, isEligible: eligible });
+  if (!todayPick.found) return null;
+
+  const name = todayPick.name;
   return resolveAbnormalFact({
     leaderName: name,
     leaderTopic: '',
-    // ⛔ 不许自称「市场总龙一」：这条路径拿不到二十日涨幅榜，只能如实说「十日涨幅最高票」
+    // ⛔ 不许自称「市场总龙一」：这条路径拿不到二十日涨幅榜，只能如实说「市场偏离值最高票」
     leaderIsTop1: false,
-    leaderPctToday: todayPct,
-    leaderPctPrev: prevPct,
-    leaderPctPrevBasis: basis,
+    leaderDevToday: (todayDev && todayDev.get(name)) || null,
+    leaderDevPrev: (prevDev && prevDev.get(name)) || null,
     rows: []
   });
 }

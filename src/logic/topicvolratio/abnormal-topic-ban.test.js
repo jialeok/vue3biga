@@ -32,6 +32,17 @@ const LIB_RCDF = ['家电', '热泵', '东方'];              // 日出东方的
 const LIB_DFCY = ['物流', '外贸'];                      // 东方创业（不该被禁）
 const LIB_DDF = ['零售', '食品饮料', '东方'];           // 大东方（含东方 ⇒ 该被禁）
 
+/**
+ * ★★ [DEV-RULE 2026-11-25] 偏离事实夹具：本条判据已换成【官方偏离值】，不再是十日涨幅。
+ *   11-11 东方海洋的真实偏离值 = **+100.01%**（旧口径那天的十日涨幅只有 95.71% ⇒ 判不出来）。
+ */
+function SEVERE(d10) {
+  return { ok: true, dev10: d10 === undefined ? 100.01 : d10, dev30: 150.2, stage: 'severe' };
+}
+function NEAR(d10) {
+  return { ok: true, dev10: d10 === undefined ? 95.5 : d10, dev30: 150.2, stage: 'near' };
+}
+
 /** 组装一份「第三天」的 ban（dayOffset=2，触发源东方海洋） */
 function banOf(extra) {
   return buildAbnormalTopicBan(Object.assign({
@@ -39,6 +50,8 @@ function banOf(extra) {
     triggerDate: '2026-11-12',
     todayDate: '2026-11-16',
     leaderName: '东方海洋',
+    // ★ [DEV-RULE 2026-11-25] 尺子换成官方偏离值：11-11 东方海洋偏离值 +100.01%（结算口径）
+    leaderDev: SEVERE(),
     leaderPct: 100.78,
     noteTopics: parseNoteTopics(NOTE_DFHY),
     libTopics: LIB_DFHY
@@ -107,15 +120,21 @@ describe('ABN-TB · buildAbnormalTopicBan（只有第三天生效）', function(
     expect(b.unknown).toBe(false);
     expect(b.segments).toEqual(['水产品', '农业', '东方', '羊字辈']);
     expect(b.leaderName).toBe('东方海洋');
-    expect(b.leaderPctText).toBe('+100.78%');
+    // ★ 换官方口径：文案里的数 = **10日偏离**（+100.01%），⛔ 不再是十日涨幅 100.78%
+    expect(b.leaderDevText).toBe('+100.01%');
+    expect(b.leaderPctText).toBe('+100.01%');   // 兼容字段同值（= 偏离值文本）
   });
 
-  it('★ 触发线自检：给了具体数值但没超过 97% ⇒ 一律不生效（⛔ 反向错误比漏禁更坏）', function() {
-    // 11-11 东方海洋真实 95.711445% —— 那天【不是】异动日，⛔ 不许把 11-13 的 D-2 当成异动
-    expect(banOf({ leaderPct: 95.711445 })).toBe(TVRB_ABNORMAL_TOPIC_BAN_NONE);
-    expect(banOf({ leaderPct: 97 })).toBe(TVRB_ABNORMAL_TOPIC_BAN_NONE);       // ＝97 不算超
-    expect(banOf({ leaderPct: 97.01 }).active).toBe(true);                     // 刚过线就算
-    expect(banOf({ leaderPct: 84.88 })).toBe(TVRB_ABNORMAL_TOPIC_BAN_NONE);    // 11-13 闽发铝业
+  it('★ 触发线自检（官方偏离值）：没越红线 ⇒ 一律不生效（⛔ 反向错误比漏禁更坏）', function() {
+    // 逼近（红线 ×0.9）不算异动日 ⇒ 今天不该禁同题材
+    expect(banOf({ leaderDev: NEAR() })).toBe(TVRB_ABNORMAL_TOPIC_BAN_NONE);
+    // 判不出（ok:false）同样不算异动日
+    expect(banOf({ leaderDev: { ok: false, dev10: null, dev30: null, stage: 'unknown' } }))
+      .toBe(TVRB_ABNORMAL_TOPIC_BAN_NONE);
+    // 刚好越线就算（11-11 东方海洋 +100.01%）
+    expect(banOf({ leaderDev: SEVERE(100.01) }).active).toBe(true);
+    // 老调用方只传十日涨幅：只做「明显没到线」的粗筛（< 100% ⇒ 不生效）
+    expect(banOf({ leaderDev: null, leaderPct: 84.88 })).toBe(TVRB_ABNORMAL_TOPIC_BAN_NONE);
   });
 
   it('dayOffset=1（次日）与 dayOffset=3（第四天）⇒ 返回同一个 NONE 引用（§19 不触发重算）', function() {

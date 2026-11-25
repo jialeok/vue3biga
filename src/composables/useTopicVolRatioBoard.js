@@ -91,7 +91,9 @@ import { readAuctionLegRangeMap } from '../logic/auction/range-auction-leg.js';
 import { readAuctionNoteTopicsForDate } from '../data/auction-note-topics.js';
 import { parseNoteTopics, buildAbnormalTopicBan } from '../logic/topicvolratio/abnormal-topic-ban.js';
 import { TVRB_ABNORMAL_TOPIC_BAN_NONE } from '../logic/topicvolratio/tvrb-constants.js';
-import { isOverRange10Cap } from '../logic/topicvolratio/abnormal-10d.js';
+// ★★ [DEV-RULE 2026-11-25] 三十四条·b 的尺子从「十日涨幅 ＞97%（自定义）」换成
+//   「官方偏离值越「严重异常波动」红线」⇒ 判据统一走 `deviation-rule-facts.js`（§6 一把尺子）。
+import { isDeviationOverRedLine } from '../logic/auction/deviation-rule-facts.js';
 // ★ [ABN-TB] 「全市场最高票」的判据与规则层【同一把尺子】（§6）：maxRangePctOf + 只主板过滤。
 //   ⛔ 组合式不另写一遍「扫 Map 找最大值 / 按代码前缀判主板」。
 import { maxRangePctOf, makeAbnMainBoardFilter } from '../logic/topicvolratio/tvrb-plan.js';
@@ -1762,8 +1764,39 @@ export function useTopicVolRatioBoard() {
       '⛔ 绝不拿重算结果去覆盖（§10 / §11）。'];
   });
 
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  // ★★ [DEV-RULE 2026-11-25] 官方偏离值取数器 —— **必须声明在 `data` 之前**：
+  //   本轮起偏离值事实是【规则输入】（第三十四条全场异动 / 三十六条逼近不买 / 三十六·b 异动卖），
+  //   而 `data` 里的 `buildTopicVolRatioPlan` 要读 `_dev.devFacts`。声明在 `data` 之后会踩 TDZ
+  //   （`data` 是 computed，若在任何一行把它求值在声明之前 ⇒ ReferenceError），故提前到这里。
+  //   ⚠️ 面板/徽标那套（`devMap` / `rowsFor` / `meta`）仍在下方用到，只是取数器本体挪上来了。
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  const _dev = useAbnormalDeviation();
+
+  /**
+   * ★★ [DEV-RULE 2026-11-25] 官方偏离值事实「落地了没有」—— 买点侧定稿门控第⑰项的判据。
+   *
+   * 三态（§10：判据必须可判定，⛔ 不靠「等够几秒」猜）：
+   *   · 日期对不上（还没为这一天读完）⇒ false（等）；
+   *   · 算出了结果（`ready>0`）⇒ true；
+   *   · 没结果但**不再重试**（`pending=false`：已过 09:30 / 已收盘 / 历史日 / 一只票都不用算）
+   *     ⇒ true（放行并如实降级，说明区会写「N 只算不出、没有施加限制」）。
+   * ⛔ 不读 `deviationUniverse`（它依赖主计划 ⇒ 会构成 computed 环）；「没有票要算」这一支
+   *    已在 `useAbnormalDeviation#load([])` 里落成空事实（asOf 正确、pending=false）。
+   */
+  function _devFactsGate(d) {
+    if (!d) return true;
+    const f = _dev.devFacts.value || {};
+    if (String(f.asOf || '') !== String(d)) return false;
+    if (Number(f.ready) > 0) return true;
+    return f.pending !== true;
+  }
+
   const data = computed(function() {
     void version.value;                 // 显式声明对刷新信号的依赖
+    // ★★ [DEV-RULE 2026-11-25] 官方偏离值事实（异步算好）⇒ 读到之后主计划必须重算一次，
+    //   否则「逼近红线不买 / 异动卖 / 全场异动」三条永远吃不到事实（会一直按「判不出」放行）。
+    void _dev.devFacts.value;
     // ★★ [TVRB-PLAN-SNAPSHOT] 存档状态是 resolveBuySettle 第⑭项输入 ⇒ 读完要重算一帧再决定能否定稿
     void planSnapshot.value;
     // ★ [EBB] 昨日十日涨幅（异步读回）⇒ 读到之后重算一次，退潮首日规则才生效
@@ -2039,11 +2072,19 @@ export function useTopicVolRatioBoard() {
       //
       //   ★ 判据（全部只读、无副作用）：
       //     ① 目标日 = 【前两个交易日】= D-2（次日 D-1 由第三十四条原口径「全场空仓」负责）；
-      //     ② D-2 的 9:26 竞价口径里，主板票十日涨幅最高那只 ＞ 97% ⇒ D-2 就是异动日，它就是触发源；
+      //     ② D-2 的 9:26 竞价口径里，主板票十日涨幅最高的那一只，**它自己的官方偏离值（D-2 收盘口径）
+      //        已越「严重异常波动」红线** ⇒ D-2 就是异动日，它就是触发源；
+      //     ★★ [DEV-RULE 2026-11-25 用户口径 · 第 4 点「接受位移，要按新口径覆盖的」]
+      //        ② 这一步的尺子从「十日涨幅 ＞97%（自定义）」换成**官方偏离值越红线**。
+      //        实测位移（11-25 真库 36 个交易日逐日复算）：异动日 11-12 → **11-11**（东方海洋 100.01%），
+      //        于是本条禁入日 11-16 → **11-13**。用户已确认接受这个位移并按要求重算历史。
+      //        ⚠️ 「哪一只」仍取十日涨幅最高的主板票（= 老口径的候选排序），只把「越没越线」换尺子——
+      //          偏离值要逐日腿，全市场扫描不可行，而「十日涨幅最高的那只」在事实上就是越线的那只。
       //     ③ 禁令集合 = 它 D-2 当天的细分题材（竞价名单 note）+ 它在题材库里的题材；
       //     ④ 今天（D）= 异动日 + 2 个交易日 ⇒ 禁令生效（`dayOffset = 2`，常量在 tvrb-constants）。
-      //   §10：D-2 那两份没读到 / 最高票没超线 ⇒ 返回当前 NONE / 缺项版（提示板会如实写「判不出」），
-      //     ⛔ 绝不把「没读到」当成「D-2 没异动」静默放行 —— 所以这里返回的是 `unknown` 版而不是 null。
+      //   §10：D-2 那两份没读到 / 最高票的偏离值判不出 / 没越线 ⇒ 返回 NONE（= 不生效），
+      //     ⛔ 绝不把「没读到」当成「D-2 没异动」静默放行 —— 所以「读到了但题材缺失」返回的是
+      //     `unknown` 版（提示板会如实写「判不出」）。
       const _abnTbTarget = pd ? (getPreviousTradingDay(pd) || '') : '';
       const _abnTbInput = (function() {
         // 没有「前两个交易日」（月初 / 空日历）⇒ 本条不适用（⛔ 不是「判不出」，是「用不上」）
@@ -2053,8 +2094,15 @@ export function useTopicVolRatioBoard() {
         if (abnPrev2Date.value !== _abnTbTarget) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
         const eligible = makeAbnMainBoardFilter(isMainBoardRankEligible, getStockCode);
         const top = maxRangePctOf(abnPrev2.value, eligible);
-        // D-2 没有异动（最高票没超 97% / 一只都排不出）⇒ 今天不是「异动第三天」⇒ 稳定 NONE（§19）
-        if (!top || !isOverRange10Cap(top.pct)) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
+        if (!top) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
+        // ★ [DEV-RULE] D-2 那只票的**官方偏离值（D-2 收盘口径）** —— 由组合式算好注入（`byDate`）。
+        //   判不出（腿缺 / 还没算回来）⇒ 不生效：买点侧另有门控（buy-settle 第⑰项）会等它落地，
+        //   ⛔ 这里不许「等不到就当成没异动」还往下走（那是静默放行）。
+        const _dvByDate = (_dev.devFacts.value && _dev.devFacts.value.byDate instanceof Map)
+          ? _dev.devFacts.value.byDate : null;
+        const _dvD2Map = _dvByDate ? (_dvByDate.get(_abnTbTarget) || null) : null;
+        const _dvD2 = (_dvD2Map instanceof Map) ? (_dvD2Map.get(String(top.name).trim()) || null) : null;
+        if (!_dvD2 || !isDeviationOverRedLine(_dvD2)) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
         // ★ 到这里才确定「今天 = 异动后的第三天」。细分题材取【D-2 当天竞价名单的 note】——
         //   题材库里 东方海洋 只有「水产品,农业」，缺「东方 / 羊字辈」（而「东方」正是临时核心词），
         //   只查库会把日出东方放行 —— 那正是本条要修的那个错。
@@ -2072,6 +2120,9 @@ export function useTopicVolRatioBoard() {
           todayDate: d,
           leaderName: top.name,
           leaderPct: top.pct,
+          // ★ [DEV-RULE] 换口径后必须把偏离事实一起交进去：阈值判据在纯函数里（§6 一把尺子），
+          //   文案也要写「10日偏离 X 已越官方红线」而不是十日涨幅。
+          leaderDev: _dvD2,
           noteTopics: noteRow ? parseNoteTopics(noteRow.note) : [],
           libTopics: libArr
         });
@@ -2180,7 +2231,12 @@ export function useTopicVolRatioBoard() {
         //   `abnormalTopicBan` = 今天要不要执行 + 禁令题材集合（纯函数产出，见上方 _abnTbInput）；
         //   `stockTopicsOf`   = 票级认亲用的题材解析（块级命中的那一批不再逐票查，省开销）。
         abnormalTopicBan: _abnTbInput,
-        stockTopicsOf: _tvrbStockTopicsText
+        stockTopicsOf: _tvrbStockTopicsText,
+        // ★★ [DEV-RULE 2026-11-25 用户口径] 官方偏离值事实（规则输入，⛔ 规则层不取数）：
+        //   auto   = 自动口径（9:25 竞价 / 收盘）在今天的 Map ⇒ 第三十六条「逼近不买」+ 三十六·b「异动卖」
+        //   byDate = 收盘口径的历史日 Map（含上一交易日）⇒ 第三十四条「异动次日」
+        //   ⚠️ 空事实（判不出）时规则层一律「不施加限制」，并由 `deviationRuleGapText` 在说明区交代。
+        devFacts: _dev.devFacts.value
       });
 
       // ★★ [TVRB-DATA-GATE 2026-11-04] 把判定结果挂进 plan（§6：一行结论只有一个出处）。
@@ -2416,7 +2472,16 @@ export function useTopicVolRatioBoard() {
         //   ⚠️ 目标日期在这里算（规则层 / 纯函数都不碰交易日历，§26）。
         abnThirdTarget: pd ? (getPreviousTradingDay(pd) || '') : '',
         abnPrev2Date: abnPrev2Date.value,
-        abnPrev2NoteDate: abnPrev2NoteDate.value
+        abnPrev2NoteDate: abnPrev2NoteDate.value,
+        // ★★ [DEV-RULE 2026-11-25 用户口径 · 第十七项] 官方偏离值事实（第三十四 / 三十六 / 三十六·b
+        //   的规则输入）落地没有。与 ⑬ 20 日榜 / ⑯ 30 日榜同一个病：事实没到就定稿 ⇒
+        //   定稿的是一份「异动规则全部按判不出放行」的结论，12 秒后数据到货重算又被冻结挡住。
+        //   ⚠️ 判据（纯事实，⛔ 不看时间猜）：
+        //      · 这一天的读取还没完成（`asOf` 对不上）且**确实有票要算** ⇒ 等；
+        //      · 算出了结果（`ready>0`）⇒ 放行；
+        //      · 算不出但也不再等（`pending=false`：已过 09:30 / 已收盘 / 历史日 / 重试用完）⇒ 放行并降级。
+        //      · 一只票都不用算（空仓日 / 还没算出候选）⇒ 不挂（否则空仓日会被永久挂起）。
+        devFactsReady: _devFactsGate(d)
       });
       if (!_settle.settled) {
         plan.buyPending = true;
@@ -2539,18 +2604,30 @@ export function useTopicVolRatioBoard() {
   }
 
   /**
-   * ★★ [ABNORMAL-ALL 2026-11-13] 显示层用的异动事实：规则层优先，云端 Map 兜底。
+   * ★★ [ABNORMAL-ALL 2026-11-13] 显示层用的异动事实：规则层优先，云端事实兜底。
    *   ⚠️ 只认【日期对得上】的那份（切日期竞态红线，与 prevRangeMap / buyRangeMap 同一条）。
+   *
+   * ★★ [DEV-RULE 2026-11-25 口径整体替换] 入参从「三份十日涨幅 Map」换成「两份官方偏离值事实」：
+   *   旧 `{todayMap: buyRangeMap, prevAucMap: prevAuctionLeg10, prevCloseMap: prevRangeMap}`
+   *      —— 那套是 97% 自定义口径，函数已按新签名改收 `{todayDev, prevDev}`，
+   *      ⛔ 再传旧键名不会报错（`todayDev`/`prevDev` 都 undefined ⇒ 直接 return null），
+   *      表现为「历史日不灰、不空仓」这种**静默失效** —— 所以下面这份注释要留着，
+   *      并有静态锁盯着这两个键名（见 abnormal-overlay.test.js）。
+   *   新：当日事实 = `devFacts.auto`（自动口径那一套，asOf 已与 d 对齐）；
+   *      昨日事实 = `devFacts.byDate.get(前一交易日)`（收盘口径，load 时顺带算好，0 额外请求）。
    */
   function _abnormalFactForDisplay(d) {
     const live = data.value && data.value.plan;
     if (live && live.abnormal && live.abnormal.show === true) return live.abnormal;
+    const f = _dev.devFacts.value || {};
+    // 切日期竞态：事实那一份还是别的日期 ⇒ 不判（§11 零副作用，⛔ 别拿 11-11 的事实灰 11-12 的屏）
+    if (String(f.asOf || '') !== String(d)) return null;
+    const byDate = (f.byDate instanceof Map) ? f.byDate : null;
+    if (!byDate && !(f.auto instanceof Map)) return null;
     const pd = getPreviousTradingDay(d);
-    return buildAbnormalFactFromMaps({
-      todayMap: (buyRangeDate.value === d) ? buyRangeMap.value : null,
-      prevAucMap: (prevAuctionLeg10Date.value === pd) ? prevAuctionLeg10.value : null,
-      prevCloseMap: (prevRangeDate.value === pd) ? prevRangeMap.value : null
-    });
+    const todayDev = (f.auto instanceof Map) ? f.auto : (byDate ? (byDate.get(d) || null) : null);
+    const prevDev = byDate ? (byDate.get(pd) || null) : null;
+    return buildAbnormalFactFromMaps({ todayDev: todayDev, prevDev: prevDev });
   }
 
   const _displayPlanBase = computed(function() {
@@ -2597,7 +2674,7 @@ export function useTopicVolRatioBoard() {
   // ⚠️ 幂等：`attachDeviationFacts` 是纯函数、全量重算，⛔ 不依赖「叠过就跳过」的状态。
   // ════════════════════════════════════════════════════════════════════════════════════════
   // ── [ABN-DEV 2026-11-14] 官方偏离值的取数器与依赖的小工具 ─────────────────────────
-  const _dev = useAbnormalDeviation();
+  // ⚠️ `_dev` 本体已提到 `data` computed 之前声明（[DEV-RULE] 规则输入，见那里的注释）。
   /** 20日涨幅主板前十（= 「市场前十」那张参考榜的顺序来源，由 `data` computed 写入） */
   const _devTop10Names = ref([]);
   /** 那十只票的代码（⛔ 名册 `getStockCode` 常缺票 —— 11-14 实测新华传媒就查不到，白丢一只） */
@@ -2636,7 +2713,11 @@ export function useTopicVolRatioBoard() {
     return attachDeviationFacts(_displayPlanBase.value, _dev.devMap.value, _dev.meta.value);
   });
 
-  /** 偏离值面板要展示的票：市场前十（20日涨幅主板口径）优先，再补买点侧的行（⛔ 顺序即参考顺序） */
+  /**
+   * 偏离值面板要展示的票：市场前十（20日涨幅主板口径）优先，再补买点侧的行（⛔ 顺序即参考顺序）。
+   * ★ [DEV-RULE 2026-11-25] 卖点侧（= 昨天买过、今天要决定怎么卖的票）也必须算 ——
+   *   第三十六条·b「异动卖」要判的就是它们；⛔ 少算了就会出现「该异动卖的票没打标签」。
+   */
   const deviationUniverse = computed(function() {
     const out = [];
     const seen = new Set();
@@ -2652,8 +2733,33 @@ export function useTopicVolRatioBoard() {
       eachBuyBlock(plan, function (b) {
         (b.picks || []).forEach(function (p) { if (p && p.name) push(p.name); });
       });
+      // 卖点侧：昨天买过 / 打过持有标签的票（三十六·b 的判定对象）
+      (Array.isArray(plan.sell) ? plan.sell : []).forEach(function (g) {
+        ((g && g.items) || []).forEach(function (it) { if (it && it.name) push(it.name); });
+      });
     }
     return out;
+  });
+
+  /**
+   * ★ [DEV-RULE 2026-11-25] 三十四·b 的「D-2 触发源」票名 —— 必须也进偏离值取数名单。
+   *   为什么单独加：它是**前两个交易日**十日涨幅最高的主板票，今天多半既不在前十也不在买点侧，
+   *   不加进来，`byDate` 里就没有它 D-2 的偏离事实 ⇒ 三十四·b 永远判不出（静默失效）。
+   *   ⚠️ 只进「取数名单」，⛔ 不进面板展示名单（`deviationUniverse`）。
+   */
+  const _abnTbLeaderName = computed(function() {
+    const d = String(currentDate.value || '').trim();
+    if (!d) return '';
+    const pd = getPreviousTradingDay(d);
+    const target = pd ? (getPreviousTradingDay(pd) || '') : '';
+    if (!target || abnPrev2Date.value !== target) return '';
+    try {
+      const top = maxRangePctOf(abnPrev2.value,
+        makeAbnMainBoardFilter(isMainBoardRankEligible, getStockCode));
+      return top && top.name ? String(top.name).trim() : '';
+    } catch (e) {
+      return '';                          // 名册不可用 ⇒ 判不出（§10 如实降级，⛔ 不猜）
+    }
   });
 
   /**
@@ -2668,15 +2774,26 @@ export function useTopicVolRatioBoard() {
    *   用户点 toggle 只切「看哪一套」，⛔ 不重新取数（§32）。
    *   ⚠️ 旧实现传 `todayPctOf: buyRangeMap.pct` —— 那是**10 日区间涨幅**，不是今日竞价涨幅（契约错配），
    *     现在由 `useAbnormalDeviation` 直接读 `market_metrics.auc_pct_chg`，这里不再传任何涨幅。
+   *
+   * ★★ [DEV-RULE 2026-11-25] 本轮起它还是【规则输入】的来源 ⇒ 要顺带把两个历史日算出来：
+   *   · 上一交易日（D-1）—— 三十四条「异动次日」看它的收盘偏离；
+   *   · 前两个交易日（D-2）—— 三十四·b「第三天禁同题材」看它的收盘偏离。
+   *   两天都复用同一批逐日腿 / 指数腿 ⇒ **0 额外请求**（§32）。
    */
   function _reloadDeviation() {
     const d = String(currentDate.value || '').trim();
     if (!d) { _dev.clear(); return; }
-    const names = deviationUniverse.value;
-    if (!names || names.length === 0) { _dev.clear(); return; }
+    const pd = getPreviousTradingDay(d);
+    const pd2 = pd ? (getPreviousTradingDay(pd) || '') : '';
+    const uni = deviationUniverse.value || [];
+    const extra = _abnTbLeaderName.value;
+    const names = Array.from(new Set(uni.concat(extra ? [extra] : [])));
+    // ⚠️ 一只票都没有时也要走 load（⛔ 不要 clear）：`load([])` 会把「这一天没有可判对象」
+    //   如实落成空事实（asOf 正确、pending=false），买点侧门控才不会被永久挂起。
     _dev.load({
       names: names,
       asOf: d,
+      prevDates: [pd, pd2].filter(Boolean),
       codeOf: _codeOfName
       // ⚠️ 不再传「竞价档是否就绪」：默认口径由 `useAbnormalDeviation` 用**真正到货的竞价涨幅**
       //   （`aucBuilt.ready > 0`）自己判 —— 那比「20 日涨幅榜就绪」更贴近事实（§10）。
@@ -2688,7 +2805,9 @@ export function useTopicVolRatioBoard() {
   //   否则面板会整晚停在早上那份竞价口径（用户明确要求「等到收盘，再覆盖下，再计算」）。
   watch(
     function () {
-      return [String(currentDate.value || ''), deviationUniverse.value.join('|'), version.value].join('#');
+      // ★ [DEV-RULE 2026-11-25] D-2 触发源票名也要入键：它到货要补一次取数（否则三十四·b 判不出）
+      return [String(currentDate.value || ''), deviationUniverse.value.join('|'),
+        _abnTbLeaderName.value, version.value].join('#');
     },
     function () { _reloadDeviation(); },
     { immediate: true }

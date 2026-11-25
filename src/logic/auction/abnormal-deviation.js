@@ -1398,10 +1398,13 @@ export const DEV_FORMULA_LINES = [
 
 /**
  * 【纯函数】第三十四条用：这只票的偏离值是否已触发【官方严重异常波动】。
- * ⚠️ 与 `abnormal-10d.js#isOverRange10Cap`（自定义 97% 原始涨幅上限）是**两把不同的尺子**：
- *   · 本函数 = 官方口径，只认 10 日 / 30 日偏离；
- *   · isOverRange10Cap = 项目自定义的保守兜底，认十日原始涨幅。
- *   ⛔ 不许把两者混成一个布尔——口径混用是这类事故里最难查的一类。
+ *
+ * ★★ [DEV-RULE 2026-11-25 用户口径] 现在全项目**只剩这一把尺子**：
+ *   旧的自定义尺子 `abnormal-10d.js#isOverRange10Cap`（十日原始涨幅 ＞ 97%）**已删除（repealed）** ——
+ *   用户原话：「之前我自定义的100%涨幅那个就触发监管异动，那个有些不准……确实是需要改下统一口径
+ *   是官方偏离值那里产生异动监管，而不是自定义的。」
+ *   ⇒ 规则层要判「越没越线」请用 `deviation-rule-facts.js#isDeviationOverRedLine`（同一份事实的适配层），
+ *     ⛔ 不要再造第三把尺子，也 ⛔ 不要复活 97%。
  */
 export function isDeviationSevere(fact) {
   return !!(fact && fact.ok && fact.stage === DEV_STAGE_SEVERE);

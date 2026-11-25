@@ -9,6 +9,9 @@
 //   · TONE 一律引用已有的（EBB_NO_BUY_TONE 等），⛔ 别为每枚标签新造颜色。
 
 import { RANGE10_BACKUP_RULE_NO } from './range10-backup.js';
+// ★ [DEV-RULE 2026-11-25] 第三十六条「逼近红线不买」标签的唯一来源（§6 不另写字面量）。
+//   ⚠️ 只 import 一个常量，且 deviation-rule-facts 不反向依赖本文件 ⇒ 无循环。
+import { DEV_NEAR_RULE_TAG } from '../auction/deviation-rule-facts.js';
 
 
 /**
@@ -798,10 +801,19 @@ export const TVRB_ABNORMAL_NONE = Object.freeze({
   ruleNo: ABNORMAL_RULE_NO,
   leaderName: '',
   leaderTopic: '',
-  leaderPctPrev: null,
-  leaderPctPrevText: '—',
-  leaderPctToday: null,
-  leaderPctTodayText: '—',
+  // ★★ [DEV-RULE 2026-11-25] 口径换成「官方偏离值」后，这两个字段的含义是
+  //   **10日偏离 / 30日偏离**（不是十日涨幅）。旧名 leaderPctPrev/leaderPctToday 已废除 ——
+  //   留着旧名会让下一个人以为还是涨幅，正是口径串用的温床。
+  leaderDevPrev: null,
+  leaderDevPrev30: null,
+  leaderDevPrevText: '—',
+  leaderDevPrev30Text: '—',
+  leaderDevPrevLevel: 'unknown',
+  leaderDevToday: null,
+  leaderDevToday30: null,
+  leaderDevTodayText: '—',
+  leaderDevToday30Text: '—',
+  leaderDevTodayLevel: 'unknown',
   names: Object.freeze([]),
   nearNames: Object.freeze([]),
   unknownLeader: false,
@@ -836,5 +848,8 @@ export const NO_BUY_ACTION_TAGS = [
     SECOND_TOPIC_VOLWEAK_NO_BUY_TAG,       // 题材量比不达标 · 不开新仓
     DIVERGE_NO_BUY_TAG,                    // 总龙分歧不买
     ABNORMAL_NO_BUY_TAG,                   // 异动不买
-    ABNORMAL_TOPIC_BAN_TAG                 // 异动同题材不买
+    ABNORMAL_TOPIC_BAN_TAG,                // 异动同题材不买
+    // ★ [DEV-RULE 2026-11-25 用户口径] 第三十六条：官方偏离值【逼近红线】⇒ 这只票不给买点。
+    //   「有这个标签的，当天买点侧如果出现这只股票，是不能买的（可以显示灰块）」
+    DEV_NEAR_RULE_TAG                      // 逼近红线不买
 ];

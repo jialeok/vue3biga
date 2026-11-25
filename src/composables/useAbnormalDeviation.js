@@ -30,6 +30,29 @@
 //   历史日 ⇒ close（§11 稳定复盘）｜今天且收盘腿已入库 ⇒ close（收盘覆盖）｜
 //   今天且 9:25 竞价档就绪且未过 15:00 ⇒ auction｜其余 ⇒ close（并在 meta 里如实交代）
 //
+// ── ★★ [DEV-RULE 2026-11-25] 规则层的输入：`devFacts` ─────────────────────────────
+//   用户原话：「之前我自定义的 100% 涨幅那个就触发监管异动，那个有些不准……确实是需要改下
+//     统一口径是官方偏离值那里产生异动监管，而不是自定义的。也是按照原来的规则要记录首次异动、
+//     异动次日等规则不变，只是口径要改变。」
+//
+//   ⇒ 第三十四条（全场异动）/ 第三十六条（逼近红线不买）/ 三十六·b（异动卖）的尺子换成
+//     **官方偏离值**。但它们都在【规则层纯函数】里，⛔ 不许自己取数（§4/§5）⇒ 事实由本文件注入：
+//       `devFacts = { auto, byDate, prevDate, basis, viewBasis, asOf, ready }`
+//         · `auto`    = **自动口径**（`deviationBasisFor` 判出来的那一套）在 asOf 当天的 Map
+//         · `byDate`  = date → Map，**收盘口径**（三十四「异动次日」看的是昨日收盘偏离）
+//         · `prevDate`= 上一交易日（由调用方注入，本文件不碰交易日历）
+//
+//   🔴 为什么 `auto` 用【自动口径】而不是用户 toggle 选的那一套：
+//     toggle 是「我要对比着看」（复盘动作），⛔ 不该把选股结论一起换掉 ——
+//     否则收盘后点一下「竞价口径」，买点名单就跟着变，与 §26「切日期/切视图不是重算按钮」相冲。
+//     口径的历史事实两套都留在 `_factsByDate`，只是**规则只吃自动那一套**。
+//   🔴 为什么做成 `shallowRef` 一次赋值而不是 `computed`：`data` 里那个
+//     `buildTopicVolRatioPlan` 很重，若跟着 mapClose/mapAuc/meta/basis 四个 ref 各重算一次，
+//     一次 load 会把主计划重建 4 遍。这里只在 load 收尾赋值一次 ⇒ 主计划只重建 1 遍。
+//   ⚠️ 循环依赖排查（已核）：`devFacts` ← load() ← `deviationUniverse` ← `_displayPlanBase` ← …，
+//     `devFacts` 本身不反读主计划 ⇒ 不构成 computed 环；票名集合变化（三十四清空通道）会让
+//     universe 收窄一次，第二轮即收敛（票名不再变，只有标签变）。
+//
 // ── 红线 ────────────────────────────────────────────────────────────────────────
 //   · ⛔ 只读：不写库、不改 stock_daily_pct、不改任何选股结论；
 //   · §10：日腿读失败 / 指数缺腿 / 竞价涨幅缺 ⇒ meta.ready 如实反映，⛔ 绝不把「没算出来」当「没有异动」；
@@ -117,8 +140,41 @@ function _emptyMeta(asOf) {
   };
 }
 
-/** 腿 Map（票名 → {日期→涨幅}）里出现过的全部交易日（升序） */
-function _datesOf(dailyMap) {
+/**
+ * 规则层输入的「空事实」（§10：判不出时**显式**给出空 Map，⛔ 不是 undefined）。
+ * 形状必须与填充后的完全一致 ⇒ 规则层只认一种契约（`tvrb-plan.js#o.devFacts`）。
+ * @param {string} asOf
+ * @param {string} [basis] 自动口径
+ * @returns {{auto:Map, byDate:Map, prevDate:string, basis:string, viewBasis:string,
+ *            asOf:string, ready:number, pending:boolean}}
+ */
+function _emptyFacts(asOf, basis) {
+  return {
+    auto: new Map(),
+    byDate: new Map(),
+    prevDate: '',
+    basis: basis === 'auction' ? 'auction' : 'close',
+    viewBasis: basis === 'auction' ? 'auction' : 'close',
+    asOf: String(asOf || '').slice(0, 10),
+    ready: 0,
+    /**
+     * 是否「还会再试」（= 竞价窗口内、竞价档还没到货、当日收盘腿也还没入库）。
+     * ★ [DEV-RULE] 买点侧定稿门控（`buy-settle.js` 第⑰项）靠它区分：
+     *   `ready===0 && pending===true`  ⇒ **还在等**（9:25:32 才落库）⇒ 不许定稿；
+     *   `ready===0 && pending===false` ⇒ **力竭**（有界重试已用完 / 已收盘）⇒ 放行并如实降级（§10）。
+     */
+    pending: false
+  };
+}
+
+/** 一张偏离事实 Map 里「真的算出来了」的只数（`ok===true`） */
+function _okCountOf(m) {
+  let n = 0;
+  if (m instanceof Map) m.forEach(function (f) { if (f && f.ok === true) n++; });
+  return n;
+}
+
+/** 腿 Map（票名 → {日期→涨幅}）里出现过的全部交易日（升序） */function _datesOf(dailyMap) {
   const set = new Set();
   if (dailyMap && typeof dailyMap.forEach === 'function') {
     dailyMap.forEach(function (dayMap) {
@@ -201,16 +257,36 @@ const AUC_WAIT_MS = 12000;
 const AUC_WAIT_MAX = 15;
 /** 竞价窗口起点：9:15 开始集合竞价，之前没必要等（那时候连竞价数据都不该有） */
 const AUC_WINDOW_FROM = '09:10';
+/**
+ * ★ [DEV-RULE 2026-11-25] 「等竞价档到货」的**绝对时钟上限**（不再是「每轮重置 15 次」）。
+ *
+ * 为什么要加这条上限（两个必须一起解决的老问题）：
+ *   ① 旧实现的 `if (_aucLeft <= 0) _aucLeft = AUC_WAIT_MAX;` 会在**每次 load 时把预算重置**，
+ *      于是 09:10~15:00 之间每 12 秒重试一次、永不终止（≈1750 次 load，§32 红线）；
+ *   ② 买点侧定稿门控（`buy-settle.js` 第⑰项）要看「还在等」还是「力竭了」——
+ *      没有绝对上限的话，上游真挂了就会把买点侧**整上午挂死**（比闪一下糟得多）。
+ *
+ * 取值依据（有取证）：11-24 `bidding_fetch_log` 显示 morning 抓取 **09:25:32** 收工、
+ *   09:27:25 snapshot 补齐 ⇒ 09:30 是「正常情况早就到货、异常情况不能再等」的分界。
+ *   ⚠️ 用户硬时间线是「最迟 9:27、竞价期间出结论」⇒ 09:30 之后必须放行并**如实降级**
+ *      （说明区写「N 只算不出 / 没有施加限制」），⛔ 不许继续挂着等。§10 缺数据要可见。
+ */
+const AUC_WAIT_UNTIL = '09:30';
 
 /**
  * @returns {{
  *   devMap: object, meta: object, basis: object, load: Function, rowsFor: Function,
- *   setBasis: Function, toggleBasis: Function, clear: Function
+ *   setBasis: Function, toggleBasis: Function, clear: Function, devFacts: object
  * }}
  */
 export function useAbnormalDeviation() {
   const mapClose = shallowRef(new Map());
   const mapAuc = shallowRef(new Map());
+  /**
+   * ★★ [DEV-RULE 2026-11-25] 规则层输入（见文件头「规则层的输入」一节）。
+   *   ⚠️ 每次 `load()` **收尾赋值一次**（不是 computed）：主计划只重建 1 遍。
+   */
+  const devFacts = shallowRef(_emptyFacts(''));
   /** 当前展示口径（用户 toggle 之后以用户为准；切换时只切 Map，⛔ 不重新取数） */
   const basis = ref('close');
   /** 当前口径对应的 Map —— 买点行徽标与面板必须读同一份（§6 一把尺子） */
@@ -232,6 +308,8 @@ export function useAbnormalDeviation() {
   // ── 「等竞价档到货」的有界重试（见 AUC_WAIT_* 注释）──────────────────────────
   let _aucTimer = null;
   let _aucLeft = 0;
+  /** ★ [DEV-RULE] 这一次有界重试属于哪一天 —— 预算按日期只发一次（⛔ 同一天里不许重置，否则无限轮询） */
+  let _aucWaitDate = '';
   let _lastArgs = null;
 
   function _stopAucWait() {
@@ -279,10 +357,12 @@ export function useAbnormalDeviation() {
   function clear() {
     _seq++;
     _stopAucWait();
+    _aucWaitDate = '';
     _lastArgs = null;
     mapClose.value = new Map();
     mapAuc.value = new Map();
     meta.value = _emptyMeta('');
+    devFacts.value = _emptyFacts('');
   }
 
   /**
@@ -293,6 +373,10 @@ export function useAbnormalDeviation() {
    * @param {function(string):string} o.codeOf 票名 → 6 位代码
    * @param {string} [o.today] 北京今天（缺省现取；仅供测试注入）
    * @param {string} [o.hhmm] 北京当前 HH:MM（缺省现取；仅供测试注入）
+   * @param {string} [o.prevDate] 上一交易日（★ [DEV-RULE] 三十四条「异动次日」要它的收盘偏离；
+   *   交易日历由调用方注入，缺省 ⇒ 规则层判不出 ⇒ 不施加限制，§10）
+   * @param {string[]} [o.prevDates] 需要额外算收盘口径事实的历史日（上一交易日 / D-2 …），
+   *   必须都 < asOf；`o.prevDate` 是它只有一个元素时的简写。缺省 ⇒ 只算 asOf 一天。
    * @returns {Promise<void>}
    */
   async function load(o) {
@@ -301,14 +385,46 @@ export function useAbnormalDeviation() {
       .map(function (n) { return String(n || '').trim(); })
       .filter(Boolean)));
     const asOf = String(opt.asOf || '').slice(0, 10);
-    if (names.length === 0 || !asOf) { clear(); return; }
+    if (!asOf) { clear(); return; }
+    /**
+     * ★ [DEV-RULE 2026-11-25] 「这一天一只票都不用算」⇒ 事实 = **空但已落地**（不是「判不出」）。
+     *   为什么要专门处理：`devFacts` 同时是买点侧定稿门控（buy-settle ⑰）的输入，
+     *   若此时仍让 `asOf` 停在上一天 / 空串，空仓日 / 还没算出候选的那一帧会把买点侧
+     *   **永久挂起**（比闪一下更糟，见 buy-settle 红线 ②）。
+     */
+    if (names.length === 0) {
+      _seq++;
+      _stopAucWait();
+      mapClose.value = new Map();
+      mapAuc.value = new Map();
+      meta.value = Object.assign(_emptyMeta(asOf), { total: 0 });
+      devFacts.value = _emptyFacts(asOf);
+      return;
+    }
 
     const today = String(opt.today || '').slice(0, 10) || beijingTodayStr();
     const hhmm = String(opt.hhmm || '').slice(0, 5) || beijingNowHHMM();
     const isToday = asOf === today;
+    /**
+     * ★ [DEV-RULE 2026-11-25] 需要【额外】算一份收盘口径事实的历史日（全部必须 < asOf）：
+     *   · 上一交易日 —— 三十四条「异动次日」要看**昨日收盘偏离**；
+     *   · 前两个交易日（D-2）—— 三十四·b「异动后的第三天禁同题材」要看**D-2 那天**的偏离。
+     *   ⚠️ 交易日历由调用方注入（§5：本文件只管偏离值，不碰交易日链）；缺省 ⇒ 只算 asOf 一天，
+     *     规则层会因为 `byDate` 里没有那两天而判不出 ⇒ 不施加限制（§10 如实降级，⛔ 不猜）。
+     */
+    const prevDates = Array.from(new Set(
+      (Array.isArray(opt.prevDates) ? opt.prevDates : (opt.prevDate ? [opt.prevDate] : []))
+        .map(function (x) { return String(x || '').slice(0, 10); })
+        .filter(function (x) { return !!x && x < asOf; })
+    )).sort();
+    /** 最近的那个历史日（= 上一交易日）；`byDate` 里一定有它 */
+    const prevDate = prevDates.length ? prevDates[prevDates.length - 1] : '';
 
     const my = ++_seq;
-    _lastArgs = { names: names, asOf: asOf, codeOf: opt.codeOf, today: opt.today, hhmm: opt.hhmm };
+    _lastArgs = {
+      names: names, asOf: asOf, codeOf: opt.codeOf, today: opt.today, hhmm: opt.hhmm,
+      prevDates: prevDates
+    };
     // 重试时用 quiet：不把 meta 打回 loading（否则每 12 秒闪一次「读取中…」）
     if (opt.quiet !== true) {
       meta.value = Object.assign(_emptyMeta(asOf), {
@@ -334,6 +450,9 @@ export function useAbnormalDeviation() {
           total: names.length,
           error: '逐日涨幅腿（stock_daily_pct）读取失败'
         });
+        // ★ [DEV-RULE] 规则层：判不出 ⇒ 显式给空事实（⛔ 不留上一次日期的旧事实，那会把别的
+        //   交易日的结论套到今天）。第三十四条 / 三十六条命中「判不出 ⇒ 不施加限制」，§10 一致。
+        devFacts.value = _emptyFacts(asOf);
         _dbgLog('[ABN-DEV] ' + asOf + ' 逐日腿读取失败 ⇒ 本次偏离值判不出（§10）');
         return;
       }
@@ -386,6 +505,26 @@ export function useAbnormalDeviation() {
       mapClose.value = closeBuilt.map;
       mapAuc.value = aucBuilt ? aucBuilt.map : new Map();
 
+      // ③ ★★ [DEV-RULE 2026-11-25] 历史日（上一交易日 / D-2）的【收盘口径】事实。
+      //   🔴 复用【同一份】逐日腿与指数腿，只把窗口末日换掉 ⇒ **0 额外请求**（§32）。
+      //      · 指数腿要按各自日期重新裁一刀（`indexLegsOf(...,d)`）—— 上面那份是按 asOf 裁的，
+      //        直接拿去算历史日会把 asOf 之后的腿也算进区间（§38：契约看入参形态，别想当然）；
+      //      · `withTrigger:false`：历史日只要它自己的档位（`stage`），不需要「第几次触发」。
+      //   ⚠️ 某一天算不出（腿缺）⇒ 那张 Map 里是 `ok:false` 的占位事实 ⇒ 规则层自然判不出。
+      const prevBuiltMap = new Map();       // date -> built（含 .map / .ready）
+      prevDates.forEach(function (pd) {
+        const prevIdxLegs = new Map();
+        idxRes.map.forEach(function (_m, code) {
+          prevIdxLegs.set(code, indexLegsOf(idxRes.map, code, pd));
+        });
+        prevBuiltMap.set(pd, buildDeviationMap(Object.assign({}, base, {
+          asOf: pd,
+          indexLegs: prevIdxLegs,
+          basis: 'close',
+          withTrigger: false
+        })));
+      });
+
       const aucReady = !!aucBuilt && aucBuilt.ready > 0;
       const autoBasis = deviationBasisFor({
         date: asOf, today: today, hhmm: hhmm,
@@ -424,22 +563,56 @@ export function useAbnormalDeviation() {
         ' · 竞价 ' + (aucBuilt ? (aucBuilt.ready + '/' + aucBuilt.total) : '0/' + closeBuilt.total) +
         '（默认口径 ' + autoBasis + '，指数腿来源 ' + idxRes.src + '，北京 ' + hhmm + '）');
 
+      // ★★ [DEV-RULE 2026-11-25] 规则层输入 —— **本处只赋值一次**（不是 computed，见文件头）。
+      //   `auto` = 自动口径那一套（⛔ 不是 shownBasis：点 toggle 只是「看」，不该换选股结论）。
+      //   `byDate` = 收盘口径：asOf 一份 + 每个历史日各一份（三十四「异动次日」/ 三十四·b「第三天」）
+      //   ⚠️ 收盘腿还没入库时 closeBuilt.map 里是「ok:false」的占位事实（不是空 Map）——
+      //     规则层 `deviationRuleStage` 只认 `ok===true` ⇒ 自动视为判不出（§10 一致）。
+      const _autoMap = (autoBasis === 'auction' && aucBuilt) ? aucBuilt.map : closeBuilt.map;
+      const _byDate = new Map();
+      _byDate.set(asOf, closeBuilt.map);
+      prevBuiltMap.forEach(function (b, d) { if (b && b.map) _byDate.set(d, b.map); });
+      const _ready = _okCountOf(_autoMap);
+
       // ★★ [DEV-AUC-WAIT] 早盘「到货即切竞价口径」：
-      //   竞价窗口内（09:10~15:00）+ 今天 + 竞价档还没就绪 + 当日收盘腿也还没入库
-      //   ⇒ 数据客观上还没到（9:25:32 morning 才收工），有界重试；一旦就绪立刻停。
-      const inAucWindow = isToday && hhmm >= AUC_WINDOW_FROM && hhmm < DEV_CLOSE_HHMM;
-      if (inAucWindow && !aucReady && !closeLegReady) {
-        if (_aucLeft <= 0) _aucLeft = AUC_WAIT_MAX;
+      //   竞价窗口内（09:10~09:30）+ 今天 + 竞价档还没就绪 + 当日收盘腿也还没入库
+      //   ⇒ 数据客观上还没到（9:25:32 morning 才收工），有界重试；一旦就绪 / 过 09:30 立刻停。
+      //   🔴 [DEV-RULE 2026-11-25] 上限从「每轮重置 15 次」改成**绝对时钟 09:30**：
+      //      旧写法在 09:10~15:00 之间永不终止（每 12 秒一次，≈1750 次 load），见 AUC_WAIT_UNTIL 注释。
+      const inAucWindow = isToday && hhmm >= AUC_WINDOW_FROM && hhmm < AUC_WAIT_UNTIL;
+      const aucWaiting = inAucWindow && !aucReady && !closeLegReady;
+      if (aucWaiting) {
+        // 预算按【日期】只发一次：同一天里不再重置（否则又是无限轮询）
+        if (_aucWaitDate !== asOf) { _aucWaitDate = asOf; _aucLeft = AUC_WAIT_MAX; }
         _scheduleAucWait();
       } else {
-        _stopAucWait();                     // 已就绪 / 已收盘 / 历史日 ⇒ 一次都不再等
+        _stopAucWait();                     // 已就绪 / 已过 09:30 / 已收盘 / 历史日 ⇒ 一次都不再等
       }
+      /**
+       * 「还在等」= 今天、还没到 09:30、竞价档没到货、收盘腿也没入库。
+       * 买点侧定稿门控（buy-settle 第⑰项）读它：true ⇒ 不许定稿（此时算出的异动规则必然是「判不出」）。
+       */
+      const _pending = aucWaiting && _aucLeft > 0;
+
+      devFacts.value = {
+        auto: (_autoMap instanceof Map) ? _autoMap : new Map(),
+        byDate: _byDate,
+        prevDate: prevDate,
+        prevDates: prevDates.slice(),
+        basis: autoBasis,
+        viewBasis: shownBasis,
+        asOf: asOf,
+        ready: _ready,
+        // ★ [DEV-RULE] 买点侧定稿门控靠它区分「还在等 9:25 落库」与「力竭了」（见 _emptyFacts.pending）
+        pending: _pending
+      };
     } catch (e) {
       if (my !== _seq) return;
       meta.value = Object.assign(_emptyMeta(asOf), {
         total: names.length,
         error: (e && e.message) || String(e)
       });
+      devFacts.value = _emptyFacts(asOf);      // 见上面 §10 说明：判不出 ⇒ 显式空事实
       _dbgLog('[ABN-DEV] ' + asOf + ' 计算失败：' + ((e && e.message) || e));
     }
   }
@@ -519,6 +692,8 @@ export function useAbnormalDeviation() {
 
   return {
     devMap: devMap, meta: meta, basis: basis,
-    load: load, rowsFor: rowsFor, setBasis: setBasis, toggleBasis: toggleBasis, clear: clear
+    load: load, rowsFor: rowsFor, setBasis: setBasis, toggleBasis: toggleBasis, clear: clear,
+    // ★ [DEV-RULE 2026-11-25] 规则层（第三十四 / 三十六 / 三十六·b）的输入，见文件头专节
+    devFacts: devFacts
   };
 }

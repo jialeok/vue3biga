@@ -292,16 +292,21 @@ describe('tvrb · [AUTO-PICK-TOP20] 边界与回归锁', function() {
     expect(names(blk)).toEqual(['青岛食品']);
   });
 
-  it('big 档：异动票（十日涨幅 > 97%）仍【独占整块】，新口径不许绕过它', function() {
-    // ★ 十日涨幅必须从 pctMap（9:26 口径）给 —— 成员自带的 pct 会被 pctMap 覆盖（§6 同源），
-    //   所以在 members 上改 pct 是【假绿】（这条一开始就是这么写错、被这条用例当场抓到的）。
+  it('★ [DEV-RULE 2026-11-25] 十日涨幅再高也【不再拦选股】：_buildBlock 只管选，异动由规则层收口', function() {
+    // 🔴 口径整体替换后，_buildBlock 里「候选票十日涨幅 > 97% ⇒ 本块只展示这一只、停止选股」
+    //   那一段**已整段删除**（连同 abnormalPick 的写值）：尺子换成官方偏离值，而偏离值要逐日腿
+    //   + 对应指数，块级函数拿不到、也不该拿（§4 规则层不取数）。
+    //   ⇒ 现在：块照常选出两只；「异动票 ⇒ 全场空仓」由 buildTopicVolRatioPlan 的
+    //     _applyAbnormalSweep（第三十四条）统一收口，由 abnormal-10d.test.js 锁住。
+    //   ⚠️ 这条用例的价值从「锁独占行为」变成「锁【不许复活】」：若哪天有人把块级拦选加回来，
+    //      它会把第二只票吞掉 ⇒ 这里立刻红。
     const pct2 = new Map(PCT30);
-    pct2.set('九阳股份', { pct: 120, days: 10 });   // 20日涨幅第 1 名踩到第三十四条红线
+    pct2.set('九阳股份', { pct: 120, days: 10 });   // 十日涨幅 120%（旧口径下会独占整块）
     const blk = _buildBlock(mkBlock('大消费', 2, MEMBERS17), DM30, bigTier, pct2, null,
       { topicPool: POOL30, coreRes: coreRes, top20Text: '9:25 竞价口径' });
-    expect(names(blk)).toEqual(['九阳股份']);        // 只展示这一只、⛔ 不顺延到 青岛食品
-    expect(blk.abnormalPick && blk.abnormalPick.name).toBe('九阳股份');
-    expect((blk.notes || []).join('\n')).toContain('监管异动');
+    expect(names(blk)).toEqual(['九阳股份', '青岛食品']);   // ⛔ 不再因为「涨幅高」而吞掉第二只
+    expect(blk.abnormalPick).toBe(null);                   // 字段保留为留痕位，但恒 null
+    expect((blk.notes || []).join('\n')).not.toContain('监管异动');
   });
 
   it('三件套：规则指纹 ≥ v18 + SW ≥ v67 + 模板/样式都接上了 range20Label', function() {

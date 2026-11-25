@@ -8,7 +8,7 @@
 //
 // 这条链只有一处判据（`tvrb-utils.js#_isBuyablePick`）和一处清单（`tvrb-constants.js#NO_BUY_ACTION_TAGS`），
 // 但「新加一枚不买标签却忘了登记」这种漏，屏幕上看不出来（只是数字虚高）—— 所以用静态锁钉死：
-//   ① 七枚已知「不买」标签必须都在清单里；
+//   ① 八枚已知「不买」标签必须都在清单里（八枚 = 11-25 新增的 `DEV_NEAR_RULE_TAG`「逼近红线不买」）；
 //   ② 源码里任何 `buyActionTag = XXX_NO_BUY_TAG / XXX_BAN_TAG` 必须已被清单覆盖（新增标签没登记 ⇒ 直接红）。
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
@@ -28,6 +28,8 @@ import {
   AUCTION_YIZI_WAIT_TAG
 } from './tvrb-constants.js';
 import { _isBuyablePick } from './tvrb-utils.js';
+// 第三十六条的「逼近红线不买」标签定义在适配层（⛔ 不在 tvrb-constants.js），所以单独引。
+import { DEV_NEAR_RULE_TAG } from '../auction/deviation-rule-facts.js';
 
 const ROOT = path.resolve(__dirname, '../../..');
 function read(rel) {
@@ -35,7 +37,7 @@ function read(rel) {
 }
 
 describe('[BUYABLE-COUNT] 「不买」标签总表', () => {
-  it('七枚已知「不买 / 不开新仓」标签全部登记', () => {
+  it('八枚已知「不买 / 不开新仓」标签全部登记', () => {
     expect(NO_BUY_ACTION_TAGS).toEqual([
       EBB_NO_BUY_TAG,
       CASH_NO_BUY_TAG,
@@ -43,7 +45,8 @@ describe('[BUYABLE-COUNT] 「不买」标签总表', () => {
       SECOND_TOPIC_VOLWEAK_NO_BUY_TAG,
       DIVERGE_NO_BUY_TAG,
       ABNORMAL_NO_BUY_TAG,
-      ABNORMAL_TOPIC_BAN_TAG
+      ABNORMAL_TOPIC_BAN_TAG,
+      DEV_NEAR_RULE_TAG
     ]);
     expect(new Set(NO_BUY_ACTION_TAGS).size).toBe(NO_BUY_ACTION_TAGS.length);   // 不许重复
   });
@@ -68,7 +71,7 @@ describe('[BUYABLE-COUNT] _isBuyablePick 判据', () => {
     expect(_isBuyablePick({ name: '九阳股份', buyActionTag: null })).toBe(true);
   });
 
-  it('七枚「不买」标签逐一判定 ⇒ 一律不能下单', () => {
+  it('八枚「不买」标签逐一判定 ⇒ 一律不能下单', () => {
     NO_BUY_ACTION_TAGS.forEach(function(tag) {
       expect(_isBuyablePick({ name: '广百股份', buyActionTag: tag })).toBe(false);
     });
@@ -102,7 +105,11 @@ describe('[BUYABLE-COUNT] 接线锁：计数只能走这一处判据', () => {
       'src/logic/topicvolratio/abnormal-overlay.js',
       'src/logic/topicvolratio/tvrb-plan.js'
     ];
-    const consts = read('src/logic/topicvolratio/tvrb-constants.js');
+    // 常量可能定义在两个文件：主表 + 第三十六条的适配层（11-25 起）
+    const consts = [
+      read('src/logic/topicvolratio/tvrb-constants.js'),
+      read('src/logic/auction/deviation-rule-facts.js')
+    ].join('\n');
     // 常量名 → 实际字符串值（从常量文件里抓 `export const X = '...'`）
     const nameToValue = {};
     (consts.match(/export const ([A-Z0-9_]+) = '([^']*)';/g) || []).forEach(function(line) {
@@ -114,7 +121,7 @@ describe('[BUYABLE-COUNT] 接线锁：计数只能走这一处判据', () => {
       const src = read(f);
       (src.match(/buyActionTag = ([A-Z0-9_]+);/g) || []).forEach(function(hit) {
         const name = /buyActionTag = ([A-Z0-9_]+);/.exec(hit)[1];
-        if (!/NO_BUY|_BAN_TAG$/.test(name)) return;          // 只盯「不买 / 禁入」这一类
+        if (!/NO_BUY|_BAN_TAG$|_RULE_TAG$/.test(name)) return;   // 只盯「不买 / 禁入」这一类
         const val = nameToValue[name];
         if (val === undefined) return;                        // 不是本文件的字符串常量（如函数参数），跳过
         if (NO_BUY_ACTION_TAGS.indexOf(val) < 0) missing.push(f + ' → ' + name + '（' + val + '）');

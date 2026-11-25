@@ -111,12 +111,22 @@ export {
   SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, SECOND_TOPIC_VOLWEAK_NO_BUY_TONE,
 } from './tvrb-constants.js';
 
-// ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条的【唯一判定实现】（纯函数，可单测）：
-//   classifyRange10 = 分级（ok / near / abnormal，阈值 [CAP-97] 97 / 100 只在 tvrb-constants 定义）；
-//   resolveAbnormalFact = 拼标语事实。⛔ 别在本文件写死阈值数字。
+// ★★ [DEV-RULE 2026-11-25 口径整体替换] 第三十四条 / 第三十六条的【唯一判定实现】（纯函数，可单测）：
+//   classifyDeviation   = 官方偏离值 → 分级（unknown / ok / near / abnormal）；
+//   isOverOfficialRedLine = 是否越「严重异常波动」红线（第三十四条唯一触发尺子）；
+//   resolveAbnormalFact = 拼标语事实。
+//   ⛔ 旧的 `classifyRange10` / `isOverRange10Cap`（十日涨幅 97%）已废除；
+//   ⛔ 别在本文件写死任何阈值数字（阈值只在 abnormal-deviation#DEV_THRESHOLDS）。
 export {
-  classifyRange10, isOverRange10Cap, resolveAbnormalFact,
+  classifyDeviation, isOverOfficialRedLine, isDeviationNearOrOver,
+  pickRedLineSource, devPctText, resolveAbnormalFact,
 } from './abnormal-10d.js';
+export {
+  deviationRuleStage, isDeviationRuleHit, pickSevereDeviation,
+  deviationRuleBuyNote, deviationSellNote, deviationRuleGapText,
+  DEV_NEAR_RULE_TAG, DEVIATION_SELL_TAG, DEV_RULE_NO,
+  DEV_OFFICIAL_RED_LINE_10D, DEV_OFFICIAL_RED_LINE_30D,
+} from '../auction/deviation-rule-facts.js';
 
 export {
   classifyMainTopic, detectEbbDay, secondEbbTopicOfPrevDay, buildEbbDayRecord,

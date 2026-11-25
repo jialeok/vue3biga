@@ -1,650 +1,360 @@
-// abnormal-10d.test.js — 第三十四条【监管异动 · 十日涨幅硬上限】的单测
+// abnormal-10d.test.js — 第三十四条【监管异动】的单测（★ 2026-11-25 换【官方偏离值】口径后重写）
 //
-// 覆盖四层（缺一层就会漏掉一类回归）：
-//   ① classifyRange10  —— 自定义禁选上限 / 100 两个阈值的边界（含恰好等于）；
-//   ② resolveAbnormalFact —— 三种触发形态（异动次日 / 当日异动 / 票级异动）+ §10 判不出；
-//   ③ _buildBlock —— ★★ [FULL-MARKET] near / abnormal【同一种语义】：踩线票保留展示 + 本块停止选股，
-//      ⛔ 绝不顺延下一只（旧版「自定义上限跳过顺延」已被用户当场否掉）；
-//   ④ _applyAbnormalSweep / _applyAbnormalNoBuyRules —— 全场空仓标语接管 + 逐行改写 + 下线特殊通道。
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [DEV-RULE 2026-11-25 用户口径，逐字]
+//   「之前我自定义的 100% 涨幅那个就触发监管异动，那个有些不准……确实是需要改下统一口径是
+//     官方偏离值那里产生异动监管，而不是自定义的。也是按照原来的规则要记录首次异动、
+//     异动次日等规则不变，只是口径要改变。」
 //
-// ★★ [FULL-MARKET 2026-11-13 用户当场纠正 · 最高口径]
-//   「是整个题材的……也就是全场整片灰，整个市场也是灰色，没有票可以买，
-//    我都说了总龙一影响范围很大的。这个波及到所有的票。」
-//   ⇒ 97~100（near）与 ≥100（abnormal）**后果完全相同**：全场整片灰 + 空仓 + 一张票都不买。
-//     100% 只是文案上的程度分级，⛔ 不是「要不要空仓」的分界线。
-//   ⇒ 本文件所有 near 用例都必须断言 show=true，⛔ 不许再出现「near 只点名、不空仓」的旧断言。
+//   ⇒ 覆盖四层（与旧版一一对应，只换了尺子）：
+//     ① 分级 `classifyDeviation` —— 官方「严重异常波动」红线（10日 ≥ +100% / 30日 ≥ +200%）；
+//     ② `resolveAbnormalFact` —— 三种形态（异动次日 / 当日异动 / 票级）+ §10 判不出；
+//     ③ `_applyAbnormalSweep` —— 全场空仓标语接管 + 逐行改写 + 下线特殊通道 + 清空 buyNames；
+//     ④ `_applyDeviationNearRule` / `_applyDeviationSellOverlay` —— 第三十六 / 三十六·b。
 //
-// ⚠️ 真实数据锚点（2026-11-11 / 11-12 / 11-13，东方海洋）：
-//     11-11 = 95.711445%（★ [CAP-97] 用户要求「11月11日这样能正常运行」⇒ 必须判 ok）、
-//     11-12 = 100.78%（异动成立）、11-13 回落到 73.14% ⇒ 只看今日判不出「异动次日」。
-//     所以下面专门有「11-11 正常」与「今日 73 / 昨日 100.78 ⇒ 仍判异动次日」两组用例。
+// ⚠️ 真实数据锚点（11-25 真库 36 个交易日逐日复算，「位移」就是这四天造成的）：
+//     · 11-11 东方海洋：十日涨幅 95.71%（旧口径 ⇒ 不算），**偏离值 +100.01%**（官方 ⇒ 异动）；
+//     · 11-12 东方海洋：十日涨幅 100.78%（旧口径 ⇒ 异动），**偏离值 +99.14%**（官方 ⇒ 差 0.86 点，不算）；
+//     · 10-30 大业股份：偏离值 +100.14%（官方独有）；
+//     · 11-24 北纬科技：偏离值 +100.11%（官方独有）。
+//   ⇒ 异动日 11-12 → **11-11**；「异动后第三天」禁入日 11-16 → **11-13**（用户已拍板接受）。
+// ══════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
-  classifyRange10, isOverRange10Cap, resolveAbnormalFact, pickAbnormalSource,
+  classifyDeviation, isOverOfficialRedLine, isDeviationNearOrOver, pickRedLineSource,
+  resolveAbnormalFact, devPctText,
   ABNORMAL_LEVEL_UNKNOWN, ABNORMAL_LEVEL_OK, ABNORMAL_LEVEL_NEAR, ABNORMAL_LEVEL_ABNORMAL
 } from './abnormal-10d.js';
 import {
-  TVRB_RANGE10_CAP, TVRB_RANGE10_ABNORMAL, ABNORMAL_NO_BUY_TAG,
-  ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, ABNORMAL_KIND_STOCK
+  ABNORMAL_NO_BUY_TAG, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, ABNORMAL_KIND_STOCK
 } from './tvrb-constants.js';
-import { _buildBlock, _applyAbnormalNoBuyRules } from './tvrb-blocks.js';
-import { _applyAbnormalSweep } from './tvrb-plan.js';
+import { _applyAbnormalSweep, _applyDeviationNearRule, _applyDeviationSellOverlay } from './tvrb-plan.js';
+import { DEV_NEAR_RULE_TAG, DEVIATION_SELL_TAG, DEVIATION_SELL_TONE } from '../auction/deviation-rule-facts.js';
 
-// ── ① 分级边界 ────────────────────────────────────────────────────────────────
-describe('classifyRange10 · ' + TVRB_RANGE10_CAP + ' / ' + TVRB_RANGE10_ABNORMAL + ' 两个阈值', () => {
-  it('[CAP-97] 自定义禁选上限 = 97（用户 2026-11-13 晚间把 95 上调到 97）', () => {
-    expect(TVRB_RANGE10_CAP).toBe(97);
-    expect(TVRB_RANGE10_ABNORMAL).toBe(100);
-    // ★ [FULL-MARKET] 97 = **全场禁买触发线**；100 只表示程度更重，⛔ 不是空仓分界。
-    expect(TVRB_RANGE10_CAP).toBeLessThan(TVRB_RANGE10_ABNORMAL);
-  });
+// ── 夹具：直接造「偏离事实」（本文件测的是【判定 + 收口】，不是偏离值怎么算）──────
+//   `deviationRuleStage` 只读 `ok` / `stage`，所以这里必须**同时**给对 stage 与数字，
+//   否则测的就不是同一件事。档位与数字的自洽性由 deviation-rule-facts.test.js 用真实腿锁住。
+function fact(stage, dev10, dev30) {
+  return {
+    ok: true,
+    dev10: dev10 === undefined ? null : dev10,
+    dev30: dev30 === undefined ? null : dev30,
+    stage: stage,
+    stageText: stage
+  };
+}
+const OK = function () { return fact('ok', 34.4, 60.2); };
+const WATCH = function () { return fact('watch', 70.8, 120.5); };
+const NEAR = function (d10) { return fact('near', d10 === undefined ? 91.1 : d10, 150.2); };
+const SEVERE = function (d10) { return fact('severe', d10 === undefined ? 100.42 : d10, 150.2); };
+const UNKNOWN = function () { return { ok: false, dev10: null, dev30: null, stage: 'unknown' }; };
 
-  it('读不到 ⇒ unknown（§10 不补 0）', () => {
-    [null, undefined, '', 'abc', NaN].forEach(function(v) {
-      const r = classifyRange10(v);
+// ── ① 分级 ────────────────────────────────────────────────────────────────────
+describe('classifyDeviation · 官方「严重异常波动」口径', () => {
+  it('判不出 ⇒ unknown，⛔ 不折 0、⛔ 不折成「没异动」', () => {
+    [null, undefined, {}, UNKNOWN()].forEach(function (f) {
+      const r = classifyDeviation(f);
       expect(r.level).toBe(ABNORMAL_LEVEL_UNKNOWN);
-      expect(r.pct).toBeNull();
-      expect(r.pctText).toBe('—');
+      expect(r.dev10).toBe(null);
     });
+    expect(devPctText(null)).toBe('—');
   });
 
-  it('★ [CAP-97] 11-11 真实值 95.711445% ⇒ ok（用户「11月11日这样能正常运行」）', () => {
-    expect(classifyRange10(95.71144503546094).level).toBe(ABNORMAL_LEVEL_OK);
-    expect(classifyRange10('95.71%').level).toBe(ABNORMAL_LEVEL_OK);
-    expect(isOverRange10Cap(95.71144503546094)).toBe(false);
+  it('ok / watch 都算「没进规则」（用户：偏离放大·留意 不算）', () => {
+    expect(classifyDeviation(OK()).level).toBe(ABNORMAL_LEVEL_OK);
+    expect(classifyDeviation(WATCH()).level).toBe(ABNORMAL_LEVEL_OK);
   });
 
-  it('≤ ' + TVRB_RANGE10_CAP + ' ⇒ ok（含恰好等于上限）', () => {
-    expect(classifyRange10(0).level).toBe(ABNORMAL_LEVEL_OK);
-    expect(classifyRange10(94.99).level).toBe(ABNORMAL_LEVEL_OK);
-    expect(classifyRange10(96.2).level).toBe(ABNORMAL_LEVEL_OK);
-    expect(classifyRange10(TVRB_RANGE10_CAP).level).toBe(ABNORMAL_LEVEL_OK);
-    expect(classifyRange10(97).pctText).toBe('+97.00%');
+  it('near ⇒ 逼近（还没越线）', () => {
+    const r = classifyDeviation(NEAR());
+    expect(r.level).toBe(ABNORMAL_LEVEL_NEAR);
+    expect(isDeviationNearOrOver(NEAR())).toBe(true);
+    expect(isOverOfficialRedLine(NEAR())).toBe(false);
   });
 
-  it(TVRB_RANGE10_CAP + ' < pct < ' + TVRB_RANGE10_ABNORMAL + ' ⇒ near（已触发【全场监管异动】）', () => {
-    expect(classifyRange10(97.01).level).toBe(ABNORMAL_LEVEL_NEAR);
-    expect(classifyRange10(98).level).toBe(ABNORMAL_LEVEL_NEAR);
-    expect(classifyRange10(99).level).toBe(ABNORMAL_LEVEL_NEAR);
-    expect(classifyRange10(99.99).level).toBe(ABNORMAL_LEVEL_NEAR);
+  it('severe ⇒ 越线（唯一构成「监管异动」的档位）', () => {
+    const r = classifyDeviation(SEVERE());
+    expect(r.level).toBe(ABNORMAL_LEVEL_ABNORMAL);
+    expect(isOverOfficialRedLine(SEVERE())).toBe(true);
+    expect(isDeviationNearOrOver(SEVERE())).toBe(true);
   });
 
-  it('≥ 100 ⇒ abnormal（含恰好 100）', () => {
-    expect(classifyRange10(TVRB_RANGE10_ABNORMAL).level).toBe(ABNORMAL_LEVEL_ABNORMAL);
-    expect(classifyRange10(100.78).level).toBe(ABNORMAL_LEVEL_ABNORMAL);
-    expect(classifyRange10(180).level).toBe(ABNORMAL_LEVEL_ABNORMAL);
+  it('文本型偏离值（库里可能带 % / 正号）按同一口径解析', () => {
+    expect(classifyDeviation(fact('severe', '100.11%', '+150.2%')).level).toBe(ABNORMAL_LEVEL_ABNORMAL);
+    expect(devPctText('100.11%')).toBe('+100.11%');
+    expect(devPctText(-45.5)).toBe('-45.50%');
   });
 
-  it('字符串数字按同一口径解析（表里 pct 是文本列）', () => {
-    expect(classifyRange10('100.78').level).toBe(ABNORMAL_LEVEL_ABNORMAL);
-    expect(classifyRange10('95.71').level).toBe(ABNORMAL_LEVEL_OK);
-    expect(classifyRange10('98.2').level).toBe(ABNORMAL_LEVEL_NEAR);
-  });
-
-  it('isOverRange10Cap：near + abnormal 都为真，ok / unknown 为假', () => {
-    expect(isOverRange10Cap(94)).toBe(false);
-    expect(isOverRange10Cap(95.71144503546094)).toBe(false);
-    expect(isOverRange10Cap(96)).toBe(false);
-    expect(isOverRange10Cap(97)).toBe(false);
-    expect(isOverRange10Cap(98)).toBe(true);
-    expect(isOverRange10Cap(120)).toBe(true);
-    expect(isOverRange10Cap(null)).toBe(false);
+  it('★ 位移锚点：11-11 +100.01 是异动；11-12 +99.14 只是逼近（差 0.86 点）', () => {
+    expect(isOverOfficialRedLine(SEVERE(100.01))).toBe(true);      // 11-11 东方海洋 ⇒ 异动
+    expect(isOverOfficialRedLine(NEAR(99.14))).toBe(false);        // 11-12 ⇒ 不异动（旧口径误判）
+    expect(classifyDeviation(NEAR(99.14)).level).toBe(ABNORMAL_LEVEL_NEAR);
   });
 });
 
-// ── ② 事实判定 ────────────────────────────────────────────────────────────────
-describe('resolveAbnormalFact · 三种触发形态', () => {
-  it('★ 真实锚点：今日 73.14 / 昨日 100.78 ⇒ 仍判【异动次日】空仓', () => {
-    const f = resolveAbnormalFact({
-      leaderName: '东方海洋',
-      leaderTopic: '海洋经济',
-      leaderPctToday: 73.14,
-      leaderPctPrev: 100.78,
-      leaderPctPrevBasis: 'auction',
-      rows: [{ name: '某某股份', topic: '机器人', pct: 60 }]
-    });
+describe('pickRedLineSource · 触发源（官方口径）', () => {
+  it('只有越线的才算；一只都没有 ⇒ found=false', () => {
+    const m = new Map([['逼近票', NEAR()]]);
+    expect(pickRedLineSource({ facts: m }).found).toBe(false);
+    const m2 = new Map([['逼近票', NEAR()], ['越线票', SEVERE()]]);
+    const r = pickRedLineSource({ facts: m2 });
+    expect(r.found).toBe(true);
+    expect(r.name).toBe('越线票');
+  });
+});
+
+// ── ② resolveAbnormalFact：三种形态 + 优先级 ──────────────────────────────────
+describe('resolveAbnormalFact · 三种触发形态（结构与旧口径一字不变）', () => {
+  const base = { leaderName: '东方海洋', leaderTopic: '水产品' };
+
+  it('★ 异动次日：昨日越线、今日回落 ⇒ 仍判空仓', () => {
+    const f = resolveAbnormalFact(Object.assign({}, base, {
+      leaderDevToday: NEAR(73.14), leaderDevPrev: SEVERE(100.01)
+    }));
     expect(f.show).toBe(true);
     expect(f.kind).toBe(ABNORMAL_KIND_NEXT_DAY);
-    expect(f.headline).toContain('空仓');
-    expect(f.detail).toContain('东方海洋');
-    expect(f.detail).toContain('100.78%');
+    expect(f.leaderDevPrevText).toBe('+100.01%');
     expect(f.detail).toContain('异动次日');
     expect(f.detail).toContain(ABNORMAL_NO_BUY_TAG);
   });
 
-  it('总龙一【今日】≥100 ⇒ 当日异动', () => {
-    const f = resolveAbnormalFact({
-      leaderName: '东方海洋', leaderTopic: '海洋经济',
-      leaderPctToday: 102, leaderPctPrev: 90, rows: []
-    });
+  it('当日异动：今日越线 ⇒ 今天空仓', () => {
+    const f = resolveAbnormalFact(Object.assign({}, base, {
+      leaderDevToday: SEVERE(100.42), leaderDevPrev: OK()
+    }));
     expect(f.show).toBe(true);
     expect(f.kind).toBe(ABNORMAL_KIND_LEADER_NOW);
-    expect(f.detail).toContain('今日');
+    expect(f.detail).toContain('9:25 竞价口径');
   });
 
-  it('入选票 ≥100 ⇒ 票级异动，并点名', () => {
-    const f = resolveAbnormalFact({
-      leaderName: '东方海洋', leaderPctToday: 60, leaderPctPrev: 60,
-      rows: [
-        { name: '甲股份', topic: '机器人', pct: 100 },
-        { name: '乙股份', topic: '机器人', pct: 40 }
-      ]
-    });
+  it('票级异动：入选票越线 ⇒ 同样【全场】空仓并点名', () => {
+    const f = resolveAbnormalFact(Object.assign({}, base, {
+      leaderDevToday: OK(), leaderDevPrev: OK(),
+      rows: [{ name: '九阳股份', topic: '大消费', dev: SEVERE(100.11) }]
+    }));
     expect(f.show).toBe(true);
     expect(f.kind).toBe(ABNORMAL_KIND_STOCK);
-    expect(f.names).toEqual(['甲股份']);
-    expect(f.detail).toContain('甲股份');
+    expect(f.detail).toContain('九阳股份');
+    expect(f.detail).toContain('100.11');
   });
 
-  it('优先级的顺序：异动次日 > 当日异动 > 票级', () => {
-    const f = resolveAbnormalFact({
-      leaderName: 'L', leaderPctToday: 130, leaderPctPrev: 120,
-      rows: [{ name: 'X', pct: 150 }]
-    });
+  it('优先级：异动次日 > 当日异动 > 票级', () => {
+    const f = resolveAbnormalFact(Object.assign({}, base, {
+      leaderDevToday: SEVERE(), leaderDevPrev: SEVERE(),
+      rows: [{ name: '甲', dev: SEVERE() }]
+    }));
     expect(f.kind).toBe(ABNORMAL_KIND_NEXT_DAY);
   });
 
-  // ★★ [FULL-MARKET 2026-11-13 用户当场纠正] ＞97 就不是「点个名」了，而是【全场空仓】。
-  it('★ [FULL-MARKET] 入选票 98%（未到 100）⇒ 仍然【全场空仓】，⛔ 不再只是点名', () => {
-    const f = resolveAbnormalFact({
-      leaderName: 'L', leaderPctToday: 80, leaderPctPrev: 70,
-      rows: [{ name: '丙股份', topic: 'T', pct: 98 }]
-    });
-    expect(f.show).toBe(true);
-    expect(f.kind).toBe(ABNORMAL_KIND_STOCK);
-    expect(f.names).toEqual(['丙股份']);
-    expect(f.nearNames).toEqual(['丙股份']);
-    expect(f.headline).toContain('空仓');
-    expect(f.detail).toContain('整片灰');
-    expect(f.detail).toContain('不顺延');
-  });
-
-  it('★ [FULL-MARKET] 总龙一今日 98% ⇒ 当日全场异动（与 ≥100 后果相同）', () => {
-    const f = resolveAbnormalFact({
-      leaderName: '东方海洋', leaderPctToday: 98, leaderPctPrev: 70, rows: []
-    });
-    expect(f.show).toBe(true);
-    expect(f.kind).toBe(ABNORMAL_KIND_LEADER_NOW);
-  });
-
-  it('★ [FULL-MARKET] 总龙一昨日 98% ⇒ 异动次日全场空仓', () => {
-    const f = resolveAbnormalFact({
-      leaderName: '东方海洋', leaderPctToday: 40, leaderPctPrev: 98,
-      leaderPctPrevBasis: 'auction', rows: []
-    });
-    expect(f.show).toBe(true);
-    expect(f.kind).toBe(ABNORMAL_KIND_NEXT_DAY);
-  });
-
-  it('★ [FULL-MARKET] 恰好 97% 与 11-11 的 95.71% 都不触发（阈值边界不动）', () => {
-    expect(resolveAbnormalFact({ leaderName: 'L', leaderPctToday: 97, leaderPctPrev: 70, rows: [] }).show).toBe(false);
-    expect(resolveAbnormalFact({ leaderName: 'L', leaderPctToday: 95.71144503546094, leaderPctPrev: 70, rows: [] }).show).toBe(false);
-    expect(isOverRange10Cap(97.01)).toBe(true);   // §15 唯一全场禁买判据
-  });
-
-  it('★ [CAP-97] 11-11 真实形态：今日 95.711445 / 昨日更低 ⇒ 不空仓、不灰、不点名', () => {
-    const f = resolveAbnormalFact({
-      leaderName: '东方海洋', leaderTopic: '羊字辈',
-      leaderPctToday: 95.71144503546094,
-      leaderPctPrev: 82.44,
-      leaderPctPrevBasis: 'auction',
-      rows: [{ name: '东方海洋', topic: '羊字辈', pct: 95.71144503546094 }]
-    });
+  it('★ near 只记不空仓（第三十六条接管，⛔ 不许让它触发全场空仓）', () => {
+    const f = resolveAbnormalFact(Object.assign({}, base, {
+      leaderDevToday: NEAR(), leaderDevPrev: NEAR(),
+      rows: [{ name: '逼近票', dev: NEAR() }]
+    }));
     expect(f.show).toBe(false);
-    expect(f.kind).toBe('');
-    expect(f.headline).toBe('');
-    expect(f.nearNames).toEqual([]);
-    expect(f.names).toEqual([]);
-    expect(f.unknownLeader).toBe(false);
+    expect(f.nearNames).toEqual(['逼近票']);
   });
 
-  it('§10：总龙一缺数据 ⇒ unknownLeader，不当成「没异动」', () => {
-    const f = resolveAbnormalFact({
-      leaderName: '东方海洋', leaderPctToday: null, leaderPctPrev: null, rows: []
-    });
+  it('§10：两份都判不出 ⇒ show=false 且如实标 unknownLeader', () => {
+    const f = resolveAbnormalFact({ leaderDevToday: UNKNOWN(), leaderDevPrev: UNKNOWN() });
     expect(f.show).toBe(false);
     expect(f.unknownLeader).toBe(true);
   });
 
-  it('§10：昨日读不到但今日有值 ⇒ 判得出「不是异动次日」，不误报', () => {
-    const f = resolveAbnormalFact({
-      leaderName: '东方海洋', leaderPctToday: 40, leaderPctPrev: null, rows: []
-    });
-    expect(f.show).toBe(false);
-    expect(f.unknownLeader).toBe(false);
+  it('文案必须写明官方红线与「旧自定义口径已废除」', () => {
+    const f = resolveAbnormalFact(Object.assign({}, base, { leaderDevToday: SEVERE() }));
+    expect(f.detail).toContain('+100%');
+    expect(f.detail).toContain('+200%');
+    expect(f.detail).toContain('已废除');
+    expect(f.detail).toContain('偏离值 = 个股累计涨幅 − 对应指数累计涨幅');
   });
 
-  it('昨日用收盘口径兜底时，文案必须标明口径（不许含糊）', () => {
+  it('不是总龙一 ⇒ 文案写「市场偏离值最高票」，⛔ 不许冒充总龙一', () => {
     const f = resolveAbnormalFact({
-      leaderName: '东方海洋', leaderPctToday: 50, leaderPctPrev: 101,
-      leaderPctPrevBasis: 'close', rows: []
+      leaderName: '福莱新材', leaderIsTop1: false, leaderDevToday: SEVERE()
+    });
+    expect(f.leaderLabel).toBe('市场偏离值最高票');
+    expect(f.detail).not.toContain('市场总龙一');
+  });
+});
+
+// ── ③ 收口：全场空仓 ──────────────────────────────────────────────────────────
+function makeOut() {
+  return {
+    blocks: [{ topic: 'AI应用', picks: [{ name: '甲', buyActionTag: '' }, { name: '乙', buyActionTag: '' }] }],
+    range10Backup: { topic: '十日涨幅候补', picks: [{ name: '丙', buyActionTag: '' }] },
+    ebbBuy: { picks: [{ name: '丁' }] },
+    divergeBuy: { picks: [{ name: '戊' }] },
+    newDragon: { picks: [{ name: '己' }] },
+    weakHuddle: { picks: [] },
+    catchUp: { picks: [] },
+    top30Huddle: { picks: [] },
+    ebbNodeNote: 'x',
+    buy: { newDragon: { picks: [{ name: '己' }] } },
+    buyNames: new Set(['甲', '乙', '丙', '丁', '戊', '己']),
+    notes: []
+  };
+}
+
+describe('_applyAbnormalSweep · 越线 ⇒ 全场空仓收口', () => {
+  it('票级越线 ⇒ 标语接管 + 全行改【异动不买】+ 特殊通道全下线 + buyNames 清空', () => {
+    const out = makeOut();
+    const f = _applyAbnormalSweep(out, {
+      leaderName: '',
+      devAuto: new Map([['甲', SEVERE()], ['乙', OK()]])
     });
     expect(f.show).toBe(true);
-    expect(f.detail).toContain('收盘口径');
-  });
-
-  it('阈值常量与文案一致（自定义上限 / 100 不许写死在别处）', () => {
-    const f = resolveAbnormalFact({
-      leaderName: 'L', leaderPctToday: 50, leaderPctPrev: 101, rows: []
-    });
-    expect(f.detail).toContain(String(TVRB_RANGE10_CAP) + '%');
-    expect(f.detail).toContain(String(TVRB_RANGE10_ABNORMAL) + '%');
-  });
-});
-
-// ── ③ 选股闸门（_buildBlock）────────────────────────────────────────────────────
-/** 造一个最小题材块（members 形状与 rankDecisionTopics 的出口一致） */
-function mkBlock(members) {
-  const ms = members.map(function(m) {
-    return {
-      name: m[0], code: m[1], pct: m[2], isYizi: false,
-      aucPct: 3, aucVolRatio: 40, aucShare: 2
-    };
-  });
-  return {
-    topic: '机器人', rank: 1, count: ms.length, yiziCount: 0, members: ms
-  };
-}
-function mkDragonMap(names) {
-  const m = new Map();
-  names.forEach(function(n, i) { m.set(n, { rank: i + 1, pct: null }); });
-  return m;
-}
-const TIER_1 = { tier: 'mid', count: 5, pickCount: 1, rangeText: '4 ~ 8 只' };
-
-describe('_buildBlock · ' + TVRB_RANGE10_CAP + '% 禁选线与 100% 红线', () => {
-  it('★ [CAP-97] 龙一 95.711445%（11-11 东方海洋真实值）⇒ 正常选中，零异动标记', () => {
-    const blk = _buildBlock(
-      mkBlock([['东方海洋', '600001', 95.71144503546094], ['乙股份', '600002', 80]]),
-      mkDragonMap(['东方海洋', '乙股份']), TIER_1
-    );
-    expect(blk.picks.map(function(p) { return p.name; })).toEqual(['东方海洋']);
-    expect(blk.abnormalPick).toBeNull();
-    expect(blk.skippedAbnormalNames).toEqual([]);
-    expect(blk.notes.join('')).not.toContain('超过自定义上限');
-    expect(blk.notes.join('')).not.toContain('监管异动');
-  });
-
-  it('★ [FULL-MARKET] 龙一 98%（未到红线）⇒ 保留展示 + 停止选股，⛔ 不顺延龙二', () => {
-    const blk = _buildBlock(
-      mkBlock([['甲股份', '600001', 98], ['乙股份', '600002', 80]]),
-      mkDragonMap(['甲股份', '乙股份']), TIER_1
-    );
-    expect(blk.picks.map(function(p) { return p.name; })).toEqual(['甲股份']);
-    expect(blk.abnormalPick).not.toBeNull();
-    expect(blk.abnormalPick.name).toBe('甲股份');
-    expect(blk.skippedAbnormalNames).toEqual([]);   // ⛔ 票级顺延已撤销，恒空
-    expect(blk.notes.join('')).toContain('全场监管异动');
-    expect(blk.notes.join('')).toContain('不顺延');
-  });
-
-  it('龙一 101%（异动）⇒ 保留展示 + 停止选股（⛔ 不顺延龙二）', () => {
-    const blk = _buildBlock(
-      mkBlock([['甲股份', '600001', 101], ['乙股份', '600002', 80]]),
-      mkDragonMap(['甲股份', '乙股份']), TIER_1
-    );
-    expect(blk.picks.map(function(p) { return p.name; })).toEqual(['甲股份']);
-    expect(blk.abnormalPick).not.toBeNull();
-    expect(blk.abnormalPick.name).toBe('甲股份');
-    expect(blk.abnormalPick.topic).toBe('机器人');
-    expect(blk.notes.join('')).toContain('监管异动');
-  });
-
-  it('龙一 90% ⇒ 正常选中，零异动标记（§11 老行为不变）', () => {
-    const blk = _buildBlock(
-      mkBlock([['甲股份', '600001', 90], ['乙股份', '600002', 80]]),
-      mkDragonMap(['甲股份', '乙股份']), TIER_1
-    );
-    expect(blk.picks.map(function(p) { return p.name; })).toEqual(['甲股份']);
-    expect(blk.abnormalPick).toBeNull();
-    expect(blk.skippedAbnormalNames).toEqual([]);
-  });
-
-  it('pct 读不到 ⇒ 既不跳过也不判异动（§10 不猜）', () => {
-    const blk = _buildBlock(
-      mkBlock([['甲股份', '600001', null], ['乙股份', '600002', null]]),
-      mkDragonMap(['甲股份', '乙股份']), TIER_1
-    );
-    expect(blk.picks.map(function(p) { return p.name; })).toEqual(['甲股份']);
-    expect(blk.abnormalPick).toBeNull();
-  });
-});
-
-// ── ④ 收口：标语接管 + 逐行改写 + 下线特殊通道 ────────────────────────────────────
-function mkPick(name, pct) {
-  return {
-    name: name, pct: pct, dragonLabel: '龙一', dragonRank: 1,
-    position: '重仓', holdTag: '持有', buyActionTag: '竞价买', buyActionTone: 'x',
-    actionNote: '原始说明'
-  };
-}
-
-describe('_applyAbnormalNoBuyRules · 逐行覆盖', () => {
-  it('标签改【异动不买】、仓位与持有清空、客观数据不动', () => {
-    const blocks = [{ topic: '机器人', picks: [mkPick('甲股份', 101)] }];
-    _applyAbnormalNoBuyRules(blocks, {
-      show: true, kind: ABNORMAL_KIND_NEXT_DAY,
-      leaderName: '东方海洋', leaderPctPrevText: '+100.78%', names: []
-    });
-    const p = blocks[0].picks[0];
-    expect(p.buyActionTag).toBe(ABNORMAL_NO_BUY_TAG);
-    expect(p.position).toBe('');
-    expect(p.holdTag).toBe('');
-    expect(p.pct).toBe(101);                 // ★ 客观数据一行不动
-    expect(p.actionNote).toContain(ABNORMAL_NO_BUY_TAG);
-    expect(p.actionNote).toContain('东方海洋');
-  });
-
-  it('show=false ⇒ 零副作用（§11）', () => {
-    const blocks = [{ topic: '机器人', picks: [mkPick('甲股份', 101)] }];
-    _applyAbnormalNoBuyRules(blocks, { show: false });
-    expect(blocks[0].picks[0].buyActionTag).toBe('竞价买');
-    expect(blocks[0].picks[0].position).toBe('重仓');
-  });
-});
-
-describe('_applyAbnormalSweep · 收口', () => {
-  function mkOut(withAbnormalPick) {
-    const blk = { topic: '机器人', picks: [mkPick('乙股份', 60)], notes: [] };
-    const abnBlk = withAbnormalPick === false
-      ? { topic: '海洋经济', picks: [mkPick('甲股份', 55)], notes: [], abnormalPick: null }
-      : { topic: '海洋经济', picks: [mkPick('甲股份', 101)], notes: [], abnormalPick: { name: '甲股份' } };
-    const backup = { topic: '十日涨幅候补', picks: [mkPick('丙股份', 88)], notes: [] };
-    return {
-      blocks: [blk, abnBlk],
-      range10Backup: backup,
-      weakHuddle: { picks: [mkPick('丁股份', null)] },
-      catchUp: { picks: [mkPick('戊股份', null)] },
-      newDragon: { picks: [mkPick('己股份', null)] },
-      ebbBuy: { picks: [mkPick('庚股份', null)] },
-      divergeBuy: { picks: [mkPick('辛股份', null)] },
-      ebbNodeNote: { headline: 'x' },
-      buy: {
-        heavy: blk, light: null, candidates: [], noYizi: null, smallTopic: null, bigTopic: null,
-        ebbSecond: { picks: [] }, newDragon: { picks: [] }, range10Backup: backup,
-        weakHuddle: { picks: [] }, catchUp: { picks: [] }
-      },
-      buyNames: new Set(['甲股份', '乙股份']),
-      cashAlert: { show: false, headline: '', detail: '' },
-      abnormal: { show: false },
-      notes: [],
-      pickCount: 3
-    };
-  }
-
-  it('票级异动 ⇒ 空仓标语接管 + 全行改标签 + 特殊通道全下线 + buyNames 清空', () => {
-    const out = mkOut();
-    const fact = _applyAbnormalSweep(out, {
-      leaderName: '东方海洋', leaderPctToday: 60, leaderPctPrev: 60
-    });
-    expect(fact.show).toBe(true);
-    expect(fact.kind).toBe(ABNORMAL_KIND_STOCK);
     expect(out.cashAlert.show).toBe(true);
-    expect(out.cashAlert.headline).toContain('空仓');
-    // 所有买入行都不可买（含没有异动票的那个题材块 —— 用户「不再买进任何股票」）
-    out.blocks.forEach(function(b) {
-      b.picks.forEach(function(p) { expect(p.buyActionTag).toBe(ABNORMAL_NO_BUY_TAG); });
+    (out.blocks[0].picks || []).forEach(function (p) {
+      expect(p.buyActionTag).toBe(ABNORMAL_NO_BUY_TAG);   // 行不删、只改标签
     });
-    // 特殊通道全下线（否则空仓日还会给一份买入清单）
-    expect(out.weakHuddle).toBeNull();
-    expect(out.catchUp).toBeNull();
-    expect(out.newDragon).toBeNull();
-    expect(out.ebbBuy).toBeNull();
-    expect(out.divergeBuy).toBeNull();
-    expect(out.ebbNodeNote).toBeNull();
-    expect(out.buy.weakHuddle).toBeNull();
-    expect(out.buy.catchUp).toBeNull();
-    expect(out.buy.newDragon).toBeNull();
-    expect(out.buy.range10Backup).toBeNull();
-    // buyNames 清空 ⇒ 卖点侧不会把昨天买过的票标成【持有】
+    expect(out.ebbBuy).toBe(null);
+    expect(out.divergeBuy).toBe(null);
+    expect(out.newDragon).toBe(null);
+    expect(out.range10Backup).toBe(null);
     expect(out.buyNames.size).toBe(0);
-    // ★ 票不删（用户「不用去掉」）
-    expect(out.blocks.length).toBe(2);
-    expect(out.notes.join('')).toContain('监管异动');
+    expect(out.notes.join('\n')).toContain('全场监管异动');
   });
 
-  it('★ [FULL-MARKET] 入选票 98%（near、未到 100）⇒ 收口同样【全量】生效', () => {
-    const out = mkOut();
-    out.blocks[1].picks[0].pct = 98;          // 只把踩线票从 101 调到 98，其余一行不动
-    const fact = _applyAbnormalSweep(out, {
-      leaderName: '东方海洋', leaderPctToday: 60, leaderPctPrev: 60
+  it('★ 只有 near ⇒ 本条【不收口】（那是第三十六条的事，只禁这一只）', () => {
+    const out = makeOut();
+    const f = _applyAbnormalSweep(out, {
+      leaderName: '',
+      devAuto: new Map([['甲', NEAR()], ['乙', NEAR()]])
     });
-    expect(fact.show).toBe(true);
-    expect(fact.kind).toBe(ABNORMAL_KIND_STOCK);
-    expect(out.cashAlert.show).toBe(true);
-    expect(out.buyNames.size).toBe(0);
-    expect(out.newDragon).toBeNull();
-    expect(out.range10Backup).toBeNull();
-    out.blocks.forEach(function(b) {
-      b.picks.forEach(function(p) { expect(p.buyActionTag).toBe(ABNORMAL_NO_BUY_TAG); });
-    });
-    expect(out.notes.join('')).toContain('整片灰');
-  });
-
-  it('无异动 ⇒ 完全不介入（cashAlert / 通道 / 标签一律不动，§11）', () => {
-    const out = mkOut(false);
-    const fact = _applyAbnormalSweep(out, {
-      leaderName: '东方海洋', leaderPctToday: 60, leaderPctPrev: 70
-    });
-    expect(fact.show).toBe(false);
-    expect(out.cashAlert.show).toBe(false);
-    expect(out.weakHuddle).not.toBeNull();
-    expect(out.buy.weakHuddle).not.toBeNull();
-    expect(out.buyNames.size).toBe(2);
-    expect(out.blocks[0].picks[0].buyActionTag).toBe('竞价买');
-    expect(out.notes.length).toBe(0);
+    expect(f.show).toBe(false);
+    expect(out.ebbBuy).not.toBe(null);
+    expect(out.blocks[0].picks[0].buyActionTag).toBe('');
+    expect(out.buyNames.size).toBe(6);
   });
 
   it('★ 异动次日：只看昨日那份（今日已回落到 73%）', () => {
-    const out = mkOut();
-    const fact = _applyAbnormalSweep(out, {
-      leaderName: '东方海洋', leaderPctToday: 73.14, leaderPctPrev: 100.78,
-      leaderPctPrevBasis: 'auction'
-    });
-    expect(fact.show).toBe(true);
-    expect(fact.kind).toBe(ABNORMAL_KIND_NEXT_DAY);
-    expect(out.cashAlert.detail).toContain('100.78%');
-  });
-
-  it('十日涨幅候补那只异动 ⇒ 也被点名（它是「会被选中的票」）', () => {
-    const out = mkOut();
-    out.blocks = [];
-    out.range10Backup.picks = [mkPick('候补甲', 130)];
-    const fact = _applyAbnormalSweep(out, {
-      leaderName: '东方海洋', leaderPctToday: 50, leaderPctPrev: 50
-    });
-    expect(fact.show).toBe(true);
-    expect(fact.names).toContain('候补甲');
-  });
-});
-
-// ── ⑤ [NUM-TEXT 2026-11-13] 真实库内文本形态：防止「夹具全是数字」的假绿 ──────────
-//   本项目两次踩过同一类坑：market_metrics 的涨幅列存成 '+2.30%' / '-0.84%' 字符串，
-//   裸 Number() 恒 NaN ⇒ 静默折 null ⇒ 判据「读不到」⇒ 规则从不触发，而纯数字夹具全绿。
-//   第三十四条 自定义禁选上限 / 100% 两条线全部经 tvrb-utils#_num 解析，必须锁住真实形态。
-describe('[NUM-TEXT] 文本型涨幅不得静默判不出（§10 不补 0）', () => {
-  it('带 % / 全角+ / 千分位的文本按同一口径分级', () => {
-    expect(classifyRange10('+100.78%').level).toBe(ABNORMAL_LEVEL_ABNORMAL);
-    expect(classifyRange10('＋100.78%').pct).toBeCloseTo(100.78, 2);
-    expect(classifyRange10('95.71%').level).toBe(ABNORMAL_LEVEL_OK);
-    expect(classifyRange10('96.20%').level).toBe(ABNORMAL_LEVEL_OK);
-    expect(classifyRange10('98.20%').level).toBe(ABNORMAL_LEVEL_NEAR);
-    expect(classifyRange10('1,234%').level).toBe(ABNORMAL_LEVEL_ABNORMAL);
-    expect(classifyRange10('-0.84%').level).toBe(ABNORMAL_LEVEL_OK);
-  });
-
-  it('脏值仍返回 unknown（⛔ 不折 0 / 不折「没异动」）', () => {
-    expect(classifyRange10('—').level).toBe(ABNORMAL_LEVEL_UNKNOWN);
-    expect(classifyRange10('  ').level).toBe(ABNORMAL_LEVEL_UNKNOWN);
-    expect(isOverRange10Cap('%')).toBe(false);
-  });
-
-  it('★ 异动次日用文本型昨日涨幅照样触发空仓', () => {
-    const f = resolveAbnormalFact({
-      leaderName: '东方海洋', leaderTopic: '东方',
-      leaderPctToday: '73.14%', leaderPctPrev: '+100.78%',
-      leaderPctPrevBasis: 'auction', rows: []
+    const out = makeOut();
+    const f = _applyAbnormalSweep(out, {
+      leaderName: '东方海洋',
+      devAuto: new Map([['东方海洋', NEAR(73.14)]]),
+      devPrev: new Map([['东方海洋', SEVERE(100.01)]])
     });
     expect(f.show).toBe(true);
     expect(f.kind).toBe(ABNORMAL_KIND_NEXT_DAY);
-    expect(f.leaderPctPrevText).toBe('+100.78%');
+    expect(out.notes.join('\n')).toContain('昨日（收盘口径）10日偏离 +100.01%');
+  });
+
+  it('§10：一张事实都没有 ⇒ 不收口（判不出 ≠ 没异动，由说明区交代）', () => {
+    const out = makeOut();
+    const f = _applyAbnormalSweep(out, { leaderName: '', devAuto: new Map() });
+    expect(f.show).toBe(false);
+    expect(out.buyNames.size).toBe(6);
   });
 });
 
-// ── ⑥ [ABN-SAME-SOURCE 2026-11-13] 触发源「名字 / 涨幅 / 称谓」必须同源 ──────────
-//
-// 用户报错原话：「11月13日提示那个就有错误，上面说市场总龙一闵发铝业十日涨幅100.78%，
-//   根本不是，不知道这些数据从哪里来，相差太大了，是不是逻辑错误……
-//   还有计算问题，看是否计算正确，不要乱来。」
-//
-// 库内真实数据（stock_range_pct + market_metrics 反解，本节全部用它）：
-//   · 11-12 东方海洋 100.78%（竞价口径，收/竞同腿）、闽发铝业 87.04%
-//   · 11-13 闽发铝业 84.88%（全市场最高）、东方海洋 73.15%
-//   · 二十日涨幅：11-12 第一 = 福莱新材 150.27；11-13 第一 = 东方海洋 135.61（闽发铝业仅 48.56%）
-// ⇒ 旧实现拼出「闽发铝业 + 100.78%」：数值差 13.74 个点，称谓也错。
-describe('[ABN-SAME-SOURCE] 触发源同源（用户报错「闽发铝业 100.78%」的复现场景）', () => {
-  it('11-13 真实数据：点名必须是【东方海洋】100.78%（昨日异动），⛔ 不是闽发铝业 84.88%', () => {
-    const s = pickAbnormalSource({
-      leaderName: '东方海洋', leaderTopic: '东方',
-      leaderToday: 73.15,
-      leaderPrevAuc: 100.78, leaderPrevClose: 70.32,
-      marketToday: { name: '闽发铝业', pct: 84.88 },
-      marketPrevAuc: { name: '东方海洋', pct: 100.78 },
-      marketPrevClose: { name: '东方海洋', pct: 70.32 }
+// ── ④ 第三十六 / 三十六·b ────────────────────────────────────────────────────
+describe('_applyDeviationNearRule · 逼近红线只禁这一只（第三十六条）', () => {
+  it('near / severe 的行改标签 + 灰块 + 剔出 buyNames；同块其它票照常', () => {
+    const out = makeOut();
+    const n = _applyDeviationNearRule(out, {
+      devAuto: new Map([['甲', NEAR()], ['乙', OK()]]),
+      basis: 'auction'
     });
-    expect(s.triggered).toBe(true);
-    expect(s.name).toBe('东方海洋');
-    expect(s.isTop1).toBe(true);                       // 11-13 二十日总龙一 = 东方海洋 135.61
-    expect(s.prevHit.pct).toBeCloseTo(100.78, 2);
-    expect(s.basis).toBe('auction');
+    expect(n).toBe(1);
+    const [p1, p2] = out.blocks[0].picks;
+    expect(p1.buyActionTag).toBe(DEV_NEAR_RULE_TAG);
+    expect(p1.buyActionTone).toBe('ebb-nobuy');
+    expect(p1.actionNote).toContain('不给买点');
+    expect(p1.devRuleStage).toBe('near');
+    expect(p2.buyActionTag).toBe('');
+    expect(out.buyNames.has('甲')).toBe(false);      // ★ 必须剔出（否则卖点侧会标【持有】）
+    expect(out.buyNames.has('乙')).toBe(true);
+    expect(out.notes.join('\n')).toContain(DEV_NEAR_RULE_TAG);
+    expect(out.notes.join('\n')).toContain('其它票照常');
   });
 
-  it('昨日票触发的，点名的必须是【昨日】那只（⛔ 不许借今日最高票的名字）', () => {
-    // 极端复现：今日全市场最高 = 闽发铝业 84.88；昨日全市场最高 = 东方海洋 100.78
-    const s = pickAbnormalSource({
-      leaderName: '闽发铝业', leaderTopic: '铝',
-      leaderToday: 84.88,
-      leaderPrevAuc: 87.04, leaderPrevClose: 86.42,
-      marketToday: { name: '闽发铝业', pct: 84.88 },
-      marketPrevAuc: { name: '东方海洋', pct: 100.78 },
-      marketPrevClose: { name: '东方海洋', pct: 100.78 }
-    });
-    expect(s.triggered).toBe(true);
-    expect(s.name).toBe('东方海洋');                   // ★ 旧实现这里给的是「闽发铝业」
-    expect(s.isTop1).toBe(false);                      // 它不是二十日总龙一
-    expect(s.prevHit.name).toBe('东方海洋');
-    expect(s.prevHit.pct).toBeCloseTo(100.78, 2);
+  it('★ watch（偏离放大·留意）不施加任何限制（用户明确不算）', () => {
+    const out = makeOut();
+    const n = _applyDeviationNearRule(out, { devAuto: new Map([['甲', WATCH()]]), basis: 'close' });
+    expect(n).toBe(0);
+    expect(out.blocks[0].picks[0].buyActionTag).toBe('');
+    expect(out.buyNames.size).toBe(6);
   });
 
-  it('11-12 真实数据：当日异动点【东方海洋】100.78%，isTop1=false（二十日总龙一是福莱新材）', () => {
-    const s = pickAbnormalSource({
-      leaderName: '福莱新材', leaderTopic: '新材料',
-      leaderToday: 33.53,
-      leaderPrevAuc: 23.42, leaderPrevClose: 29.66,
-      marketToday: { name: '东方海洋', pct: 100.78 },
-      marketPrevAuc: { name: '东方海洋', pct: 95.71 },
-      marketPrevClose: { name: '东方海洋', pct: 100.43 }
-    });
-    expect(s.name).toBe('东方海洋');
-    expect(s.isTop1).toBe(false);
-    // ★ 昨日那一天竞价 95.71 / 收盘 100.43 ⇒ 必须取竞价那份，⛔ 不许取收盘
-    expect(s.prevHit.pct).toBeCloseTo(95.71, 2);
-    expect(s.prevHit.basis).toBe('auction');
+  it('§10：判不出的票不施加限制，但必须写明「不是已确认安全」', () => {
+    const out = makeOut();
+    _applyDeviationNearRule(out, { devAuto: new Map([['甲', UNKNOWN()], ['乙', UNKNOWN()]]) });
+    expect(out.buyNames.size).toBe(6);
+    expect(out.notes.join('\n')).toContain('没有施加');
+    expect(out.notes.join('\n')).toContain('不是「已确认安全」');
   });
 
-  it('11-11 真实数据：竞价 95.71% 必须不触发（用户要求「11月11日这样能正常运行」）', () => {
-    const s = pickAbnormalSource({
-      leaderName: '东方海洋', leaderTopic: '东方',
-      leaderToday: 95.711445,
-      leaderPrevAuc: 92.5, leaderPrevClose: 96.0,
-      marketToday: { name: '东方海洋', pct: 95.711445 },
-      marketPrevAuc: { name: '东方海洋', pct: 92.5 },
-      // ⚠️ 收盘口径 100.43 已经超线，但竞价口径 95.71 没超 ⇒ ⛔ 绝不能拿收盘口径判空仓
-      marketPrevClose: { name: '东方海洋', pct: 100.43 }
-    });
-    expect(s.triggered).toBe(false);
-    expect(s.prevHit.pct).toBeCloseTo(92.5, 2);
-  });
-
-  it('竞价那份一只都读不到 ⇒ 才退回收盘口径（basis=close 如实标出，§10）', () => {
-    const s = pickAbnormalSource({
-      leaderName: '东方海洋', leaderTopic: '东方',
-      leaderToday: null,
-      leaderPrevAuc: null, leaderPrevClose: 100.5,
-      marketToday: null,
-      marketPrevAuc: null,
-      marketPrevClose: { name: '东方海洋', pct: 100.5 }
-    });
-    expect(s.triggered).toBe(true);
-    expect(s.name).toBe('东方海洋');
-    expect(s.basis).toBe('close');
-  });
-
-  it('没触发 ⇒ 回落总龙一（§11 零行为变化）', () => {
-    const s = pickAbnormalSource({
-      leaderName: '福莱新材', leaderTopic: '新材料',
-      leaderToday: 33.53, leaderPrevAuc: 23.42, leaderPrevClose: 29.66,
-      marketToday: { name: '东方海洋', pct: 60 },
-      marketPrevAuc: { name: '东方海洋', pct: 55 },
-      marketPrevClose: { name: '东方海洋', pct: 55 }
-    });
-    expect(s.triggered).toBe(false);
-    expect(s.name).toBe('福莱新材');
-    expect(s.isTop1).toBe(true);
+  it('覆盖全部买点通道（含 out.buy.* 的第二份引用）', () => {
+    const out = makeOut();
+    _applyDeviationNearRule(out, { devAuto: new Map([['己', SEVERE()]]), basis: 'auction' });
+    expect(out.newDragon.picks[0].buyActionTag).toBe(DEV_NEAR_RULE_TAG);
+    expect(out.buy.newDragon.picks[0].buyActionTag).toBe(DEV_NEAR_RULE_TAG);
+    expect(out.buyNames.has('己')).toBe(false);
   });
 });
 
-describe('[ABN-SAME-SOURCE] 文案称谓：不是总龙一就不许这么叫', () => {
-  it('leaderIsTop1=false ⇒ 写「市场十日涨幅最高票」，⛔ 不出现「市场总龙一」', () => {
-    const f = resolveAbnormalFact({
-      leaderName: '东方海洋', leaderTopic: '东方', leaderIsTop1: false,
-      leaderPctToday: 100.78, leaderPctPrev: 95.71,
-      leaderPctPrevBasis: 'auction', rows: []
-    });
-    expect(f.show).toBe(true);
-    expect(f.leaderLabel).toBe('市场十日涨幅最高票');
-    expect(f.headline).toContain('监管异动');
-    expect(f.detail).toContain('市场十日涨幅最高票');
-    expect(f.detail).not.toContain('市场总龙一');
-    // 自核行也必须如实：两个数字同属一只票
-    expect(f.detail).toContain('东方海洋');
-    expect(f.detail).toContain('100.78%');
-    expect(f.detail).toContain('同一只票');
-  });
-
-  it('leaderIsTop1 缺省 / true ⇒ 保持「市场总龙一」（旧行为不受影响）', () => {
-    const f = resolveAbnormalFact({
-      leaderName: '东方海洋', leaderTopic: '东方',
-      leaderPctToday: 73.15, leaderPctPrev: 100.78,
-      leaderPctPrevBasis: 'auction', rows: []
-    });
-    expect(f.leaderLabel).toBe('市场总龙一');
-    expect(f.detail).toContain('市场总龙一');
-  });
-
-  it('逐行标签文案用 ＞ 自定义禁选上限（97%），⛔ 不是「≥ 100%」', () => {
-    const blk = {
-      picks: [{ name: '东方海洋', pct: 100.78, buyActionTag: '', buyActionTone: '', position: 'X', holdTag: 'Y' }]
+describe('_applyDeviationSellOverlay · 异动卖（三十六·b）', () => {
+  function sellOut() {
+    return {
+      sell: [{
+        topic: '水产品',
+        items: [
+          { name: '东方海洋', sellActionTag: '竞价卖', sellActionTone: 'out', holdTag: '', buyActionTag: '' },
+          { name: '其它票', sellActionTag: '持有', sellActionTone: 'hold', holdTag: '持有', buyActionTag: '' }
+        ]
+      }]
     };
-    const f = resolveAbnormalFact({
-      leaderName: '东方海洋', leaderIsTop1: false,
-      leaderPctToday: 100.78, leaderPctPrev: 95.71,
-      leaderPctPrevBasis: 'auction', rows: []
+  }
+
+  it('逼近 / 越线的持仓 ⇒ 动作改【异动卖】+ 专属色调 + 写清原本的动作', () => {
+    const out = sellOut();
+    const n = _applyDeviationSellOverlay(out, {
+      devAuto: new Map([['东方海洋', NEAR()]]), basis: 'auction'
     });
-    _applyAbnormalNoBuyRules([blk], f);
-    const note = blk.picks[0].actionNote;
-    expect(note).toContain('市场十日涨幅最高票');
-    expect(note).toContain('＞ ' + TVRB_RANGE10_CAP + '%');
-    expect(note).not.toContain('≥ ' + TVRB_RANGE10_ABNORMAL + '% ⇒');
+    expect(n).toBe(1);
+    const it = out.sell[0].items[0];
+    expect(it.sellActionTag).toBe(DEVIATION_SELL_TAG);
+    expect(it.sellActionTone).toBe(DEVIATION_SELL_TONE);
+    expect(it.actionNote).toContain('当天出掉');
+    expect(it.actionNote).toContain('原卖点动作：竞价卖');
+    // ⛔ 不许再挂「持有」——「今天必须走」与「持有」正面矛盾
+    expect(it.holdTag).toBe('');
+    expect(it.buyActionTag).toBe('');
+    // 另一只不受影响
+    expect(out.sell[0].items[1].sellActionTag).toBe('持有');
   });
 
-  it('源码静态锁：⛔ 不许再出现「只换数值不换名字」的旧赋值模式', () => {
-    const s = readFileSync('src/logic/topicvolratio/tvrb-plan.js', 'utf8');
-    // 旧 bug 的字面形态：名字被单独「补」回去
-    expect(s).not.toContain('if (_abnName === _abnLeaderName) _abnName = _abnMarketPrev.name');
-    expect(s).toContain('pickAbnormalSource');
-    expect(s).toContain('leaderIsTop1: _abnIsTop1');
+  it('watch / 判不出 ⇒ 一律不动', () => {
+    const out = sellOut();
+    const n = _applyDeviationSellOverlay(out, {
+      devAuto: new Map([['东方海洋', WATCH()], ['其它票', UNKNOWN()]])
+    });
+    expect(n).toBe(0);
+    expect(out.sell[0].items[0].sellActionTag).toBe('竞价卖');
+  });
+
+  it('没有卖点段 / 空事实 ⇒ 零行为（§11）', () => {
+    expect(_applyDeviationSellOverlay({}, { devAuto: new Map() })).toBe(0);
+    expect(_applyDeviationSellOverlay(null, {})).toBe(0);
+    expect(_applyDeviationSellOverlay(sellOut(), { devAuto: null })).toBe(0);
+  });
+});
+
+// ── 源码静态锁：旧口径的判据不许复活 ─────────────────────────────────────────
+describe('源码静态锁 · 旧自定义口径（95 / 97 / 100）必须彻底消失', () => {
+  const src = readFileSync('src/logic/topicvolratio/abnormal-10d.js', 'utf8');
+
+  it('⛔ 不再导出 classifyRange10 / isOverRange10Cap / pickAbnormalSource', () => {
+    expect(src).not.toMatch(/export function classifyRange10/);
+    expect(src).not.toMatch(/export function isOverRange10Cap/);
+    expect(src).not.toMatch(/export function pickAbnormalSource/);
+  });
+
+  it('✅ 新判据只走 deviation-rule-facts（§6 一把尺子）', () => {
+    expect(src).toContain("from '../auction/deviation-rule-facts.js'");
+    expect(src).toContain('deviationRuleStage');
   });
 });
