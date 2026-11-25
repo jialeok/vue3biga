@@ -3131,7 +3131,8 @@ export function useTopicVolRatioBoard() {
    *    现在【任何日期】算出干净定稿都入库；规则指纹变了就重算并**覆盖修订**。
    *
    * 🔴 仍然保留的准入（把不完整结论固化成存档比没有存档更糟）：
-   *   ① 硬兜底放行 / 输入未齐 / 数据闸门拦下的降级结论不写；
+   *   ① 输入未齐 / 分歧占位 / 数据闸门拦下的降级结论不写；
+   *      ★ [HARD-STALL-PERSIST 2026-11-26] 「网络硬兜底」**不再**算降级 —— 理由见下面函数体首段。
    *   ② 读档失败 / 表不存在 ⇒ **绝不覆盖**（§10 / §11 不知道库里原来有没有好存档）；
    *   ③ 规则指纹未就绪（核心词没加载完）不写，避免存入空指纹导致下次必判 stale；
    *   ④ 编码失败 / 超过体积上限不写，且必须留痕（§10 禁止静默）；
@@ -3144,9 +3145,47 @@ export function useTopicVolRatioBoard() {
     const key = String(d || '').trim();
     if (!key || !plan) return;
     // ① 降级结论不入库（与日期无关，今天 / 历史日一视同仁）
-    if (netHardStalled.value) return;
-    if (plan.buyPending) return;
-    if (plan.buyDataGate && plan.buyDataGate.blocked) return;
+    //
+    // ★★ [HARD-STALL-PERSIST 2026-11-26 用户报障「11-23 当天没见这只票，现在又冒出来了」]
+    //   这里原本第一行是一条「硬兜底就算降级、直接 return」的守卫 —— **本轮删除**，理由如下。
+    //
+    //   🔴 事故链（11-23，页面 `[TVRB-*]` 日志原文，不是推测）：
+    //     · 02:21:47 `[TVRB-BUY-SETTLE] 2026-11-23 选股输入已齐 ⇒ 买点侧放行`
+    //                ⇒ 规则层判九项输入**全齐**（`plan.buyPending === false`），结论是完整的；
+    //     · 02:22:06 `netHardStalled` 到点（装载窗口 02:21:21 + `NET_HARD_MS` 45s）；
+    //     · 02:22:08 `[TVRB-BUY-PUBLISH] 2026-11-23 选股结论【定稿】（上游硬兜底，结论可能不完整，已标注）`
+    //                ⇒ 被本函数第一行整份丢弃，**一次重算的机会都没留下**；
+    //     · 02:24 起轮询 160s，库里一直是 `v28:79cb50e9 rev=2`（远早于 v34）
+    //                ⇒ 页面自己显示新文案，别人打开那天读到的还是旧存档。
+    //   ⇒ 后果是**整类**的：只要尾部请求拖过 45s（慢网 / 冷启动 / 历史日请求本来就多 / 走代理），
+    //     那一天的定稿就永远不入库。而 `_buyPublished` 已把这一天闩死（同一天不再定稿），
+    //     所以连「等网络静默后再补写一次」都没有 —— 彻底没机会。
+    //     用户体感正是：「口径没对上、非常乱、当天没见、现在又冒出来」。
+    //
+    //   ✅ 口径纠正：`netHardStalled` ≠「结论残缺」。它只表示「窗口到期仍有请求在途，我们不等了」
+    //     （`net-activity.js` 硬兜底计时器是无条件置 true 的）。
+    //     结论残不残缺，权威判据只有下面三条，全部来自规则层的实际产出：
+    //       · `plan.buyPending`          —— 买点侧输入没齐（`resolveBuySettle` 判的）；
+    //       · `plan.divergePending`      —— 总龙分歧判定未落地（占位帧，与读侧判据同源）；
+    //       · `plan.buyDataGate.blocked` —— 数据缺失闸门「今天不能选股」。
+    //     ⚠️ 硬兜底能穿透定稿门控（`&& !netHardStalled.value`）⇒ 真降级时 `buyPending` 仍为 true
+    //       ⇒ 下面第一条照样拦住。所以删掉硬兜底判断**不会**把残缺结论写进库（单测已钉死）。
+    //   ⚠️ `_buyPublished.degraded` 原样保留：UI 仍要如实提示「读取超时」，只是它不再影响落库。
+    // §10 禁止静默：三条准入拦下都要留痕 —— 这次排查绕远路，正是因为库里看不出「为什么没写」。
+    if (plan.buyPending) {
+      _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 买点侧输入未齐（buyPending）⇒ 本次不存档');
+      return;
+    }
+    // ★ [DIVERGE-FREEZE 2026-11-20 写读对称补齐] 读侧把 `divergePending` 判 corrupt，
+    //   写侧原来没挡它（只靠读侧兜底）。现在两侧同源：占位帧根本不入库。
+    if (plan.divergePending) {
+      _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 买点侧仍是分歧占位帧（divergePending）⇒ 本次不存档');
+      return;
+    }
+    if (plan.buyDataGate && plan.buyDataGate.blocked) {
+      _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 数据闸门已拦（buyDataGate.blocked）⇒ 本次不存档');
+      return;
+    }
     const snap = planSnapshot.value;
     if (!snap || snap.date !== key) return;      // 状态不属于这天 ⇒ 不写（§10）
     const rulesSig = String(currentRulesSig.value || '').trim();
