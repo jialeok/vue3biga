@@ -123,12 +123,13 @@
           </div>
           <div style="margin-top: 7px; display: flex; gap: 6px;">
             <button
+              v-if="t.visual.stopLabel"
               type="button"
               :disabled="saving"
               style="padding: 4px 8px; font-size: 12px; border: none; border-radius: 4px; cursor: pointer; background: #fee2e2; color: #dc2626;"
               @click="toggleTemp(t)"
             >
-              {{ t.disabledFrom ? '恢复' : '关停' }}
+              {{ t.visual.stopLabel }}
             </button>
             <button
               type="button"
@@ -354,6 +355,8 @@ function tempVisual(t, viewDate) {
   const d = String(viewDate || '').trim();
   let text = '生效中';
   let dim = false;
+  // 过期后「关停 / 恢复」没有任何作用（窗口已结束）⇒ 不显示，只留「删除」，避免误以为还能改变什么
+  const expired = !!(d && end && end !== '—' && d > end);
   if (t.disabledFrom) { text = '已关停'; dim = true; }
   else if (d && end && d !== '—' && d > end) { text = '已过期'; dim = true; }
   else if (d && t.startDate && d < t.startDate) { text = '未生效'; }
@@ -363,7 +366,8 @@ function tempVisual(t, viewDate) {
       card: 'padding: 10px; border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 8px; background: #f3f4f6;',
       title: 'font-weight: 600; font-size: 13px; color: #9ca3af;',
       sub: 'font-size: 12px; color: #9ca3af; margin-top: 3px;',
-      badge: 'font-size: 11px; margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: #e5e7eb; color: #6b7280;'
+      badge: 'font-size: 11px; margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: #e5e7eb; color: #6b7280;',
+      stopLabel: expired ? '' : '恢复'
     };
   }
   if (text === '未生效') {
@@ -372,7 +376,8 @@ function tempVisual(t, viewDate) {
       card: 'padding: 10px; border: 1px dashed #fde68a; border-radius: 6px; margin-bottom: 8px; background: #fffbeb;',
       title: 'font-weight: 600; font-size: 13px; color: #78350f;',
       sub: 'font-size: 12px; color: #92400e; margin-top: 3px;',
-      badge: 'font-size: 11px; margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: #fef3c7; color: #b45309;'
+      badge: 'font-size: 11px; margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: #fef3c7; color: #b45309;',
+      stopLabel: '关停'
     };
   }
   return {
@@ -380,7 +385,8 @@ function tempVisual(t, viewDate) {
     card: 'padding: 10px; border: 1px solid #fde68a; border-radius: 6px; margin-bottom: 8px; background: #fffbeb;',
     title: 'font-weight: 600; font-size: 13px; color: #78350f;',
     sub: 'font-size: 12px; color: #92400e; margin-top: 3px;',
-    badge: 'font-size: 11px; margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: #ecfdf5; color: #047857;'
+    badge: 'font-size: 11px; margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: #ecfdf5; color: #047857;',
+    stopLabel: '关停'
   };
 }
 
