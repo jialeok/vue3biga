@@ -101,7 +101,7 @@ import { isDeviationOverRedLine } from '../logic/auction/deviation-rule-facts.js
 //     `buildTvrbAuctionBoard30`（只主板 + 腿数达标 + 当日 9:25 名单内 + 降序），取 `rank[0]`。
 //   ⛔ 旧「D-2 十日涨幅最高票」已废除（那会把个股异动误升格成市龙一级异动）。
 import { readAuctionLegRange30Pct } from '../logic/auction/range30-auction-leg.js';
-import { readMarketMetricsForDate } from '../../data/market-metrics.js';
+import { readMarketMetricsForDate } from '../data/market-metrics.js';
 import { buildTvrbAuctionBoard30 } from '../logic/topicvolratio/tvrb-auction-board30.js';
 // ★★ [R20-926 2026-10-24 用户口径] 买点侧【20日涨幅 · 9:26 竞价口径】的主板名次（说明文案用）：
 //   用户原话「买点侧的10日涨幅和20日涨幅的股票，如果有入选时也应该按照9点26分的口径……
