@@ -163,41 +163,78 @@ export function collectTempCoreHits(windows, topicsByDate) {
 }
 
 const TOPIC_SEG_RE = /[,，、;；/+|]/;
+/** note 里的括号段（半角 + 全角，不允许嵌套；与 core-word-string-purge 同口径） */
+const NOTE_BRACKET_RE = /[(（]([^()（）]*)[)）]/g;
+
+/** 把任意「词表 / 词集合」压成小写 token 集合（主流词豁免用） */
+function _tokenSetOf(input) {
+  const out = new Set();
+  const push = function(t) {
+    const k = String(t == null ? '' : t).trim().toLowerCase();
+    if (k) out.add(k);
+  };
+  if (input instanceof Set) {
+    input.forEach(push);
+    return out;
+  }
+  const list = Array.isArray(input) ? input : [];
+  list.forEach(function(c) {
+    if (typeof c === 'string') { push(c); return; }
+    push(c && c.name);
+    (Array.isArray(c && c.synonyms) ? c.synonyms : []).forEach(push);
+  });
+  return out;
+}
 
 /**
- * 该日期要【隐藏】的题材段 token（关停后用户的可见效果：股票名后那枚标签一起消失）。
+ * 主流核心词（getCoreTopics()）的全部 token 集合（name + 同义词，小写）。
+ * 用途：临时题材的日期隔离必须给主流词让路 —— 用户把「农业」临时设过 3 天，
+ *   不能因为过了窗口就把「农业」这个主流大类从所有历史日期里抹掉。
+ * @param {Array<{name:string, synonyms?:string[]}>} list
+ * @returns {Set<string>}
+ */
+export function coreTopicTokenSet(list) {
+  return _tokenSetOf(list);
+}
+
+/**
+ * 该日期要【隔离】的题材段 token —— 临时题材只在生效窗口内可用。
  *
- * 用户口径（2026-11-17）：「关停临时题材后，我希望那个原先标在股票名称后的同义词也一起消失」。
- * ⚠️ 只在【显示 / 分组层】过滤，⛔ 绝不改 auction_watchlist.note / stock_topics ——
- *    那些是持久化的业务真相，按 §11 删除红线不能为了显示效果去删；恢复后标签自然回来。
+ * 🔴 2026-11-27 用户口径（原话）：
+ *   「临时题材只在有效期那里生效，历史日期怎么会生效呢？……为什么不能在历史日期或者
+ *     临时题材非生效日期做好隔离呢？这样历史日期就没办法用临时题材了，未来日期也没办法用，
+ *     只有指定的时间可以。」
  *
- * 隐藏区间严格限定：start_date ≤ date ≤ end_date 且 date ≥ disabled_from。
- *   · 设置日之前（历史日）⇒ 临时词从未生效过 ⇒ 用户原有标签照常显示；
- *   · 区间末之后（未来日）⇒ 已换回主流题材 ⇒ 原有标签照常显示；
- *   · 只有【关停当日及之后、区间内】才隐藏，正好对应「提前结束」这段人为干预。
+ * ⇒ 语义从「关停后隐藏」升级为「当天不生效就隔离」，一条判据覆盖全部四种不生效形态：
+ *   · 设置日之前（历史日）  · 区间末之后（未来日）  · 关停当日及之后  · 日期/设置日读不出（§10 判不出）
+ *
+ * ⚠️ 只在【显示 / 派生（分组、标签、选择理由、toast、备注框）】层过滤，
+ *    ⛔ 绝不改 auction_watchlist.note / stock_topics / core_topics ——
+ *    它们是持久化业务真相（§11 删除红线），恢复生效后标签自然回来。
+ *
+ * ⚠️ 主流词豁免（mainstreamTokens）：临时词与主流核心词同名/同义时，主流语义优先，
+ *    ⛔ 永远不隐藏。否则「临时设了 3 天的农业」过期后会把历史日期的主类一起抹掉。
  *
  * @param {string} date
- * @param {Array<object>} temps
+ * @param {Array<object>} temps 临时词全量（getTempCoreTopics()）
  * @param {(dateStr:string)=>string|null} [nextTradingDay]
+ * @param {Set<string>|string[]|Array<{name:string,synonyms?:string[]}>} [mainstreamTokens]
+ *        主流词 token 集合（可直接传 getCoreTopics()）
  * @returns {Set<string>} 小写 token 集合（核心词名 + 全部同义词）
  */
-export function hiddenTempCoreTokensOn(date, temps, nextTradingDay) {
+export function hiddenTempCoreTokensOn(date, temps, nextTradingDay, mainstreamTokens) {
   const list = Array.isArray(temps) ? temps : [];
-  const nextFn = nextTradingDay;
   const d = _date(date);
   const out = new Set();
   if (!d) return out;
+  const protect = _tokenSetOf(mainstreamTokens);
   list.forEach(function(row) {
-    const s = _date(row && (row.startDate !== undefined ? row.startDate : row.start_date));
-    if (!s || d < s) return;
-    const dis = _date(row && (row.disabledFrom !== undefined ? row.disabledFrom : row.disabled_from));
-    if (!dis || d < dis) return;       // 没关停 / 关停日还没到 ⇒ 标签照常显示
-    const end = endDateOf(s, row.days, nextFn);
-    if (end && d > end) return;        // 已过期 ⇒ 换回主流题材，标签照常显示
+    if (isTempCoreActiveOn(row, d, nextTradingDay)) return;   // 生效期内 ⇒ 正常使用，不隔离
     const toks = [row.name].concat(Array.isArray(row.synonyms) ? row.synonyms : []);
     toks.forEach(function(t) {
       const k = String(t == null ? '' : t).trim().toLowerCase();
-      if (k) out.add(k);
+      if (!k || protect.has(k)) return;
+      out.add(k);
     });
   });
   return out;
@@ -225,6 +262,36 @@ export function filterHiddenTopicText(text, tokens) {
     if (out.indexOf(v) < 0) out.push(v);
   });
   return out.join(',');
+}
+
+/**
+ * 按【精确等于】把隔离 token 从 note 文本的括号题材段里摘掉，其余文本一个字不动。
+ *
+ * 例：`filterHiddenNoteTopics('10.02%(水产品,农业,东方,羊字辈)', ban)` ⇒ `'10.02%(水产品,农业)'`
+ *     （ban 含 东方 / 羊字辈）
+ *
+ * 用户口径（2026-11-27）：双击竞价量弹出来的备注框、单击昨日成交量的黑色 toast
+ *   都属于「临时题材非生效日期还能看到它」的地方，必须一起隔离。
+ *
+ * 边界：
+ *   · 括号里被删空 ⇒ 整个括号去掉（⛔ 不留 `()`）；没括号 ⇒ 原样返回；
+ *   · 只动括号内、只删整段相等的词（与 core-word-string-purge 同口径）；
+ *   · 空 token ⇒ 文本逐字节不变（§11）。
+ *
+ * @param {string} text note 文本（`-1.60%(外贸,氢能源,羊字辈)`）
+ * @param {Set<string>|string[]|null} tokens hiddenTempCoreTokensOn 的返回
+ * @returns {string}
+ */
+export function filterHiddenNoteTopics(text, tokens) {
+  const raw = String(text == null ? '' : text).trim();
+  if (!raw) return raw;
+  const ban = _tokenSetOf(tokens);
+  if (ban.size === 0) return raw;
+  if (raw.indexOf('(') < 0 && raw.indexOf('（') < 0) return raw;
+  const replaced = raw.replace(NOTE_BRACKET_RE, function(_m, inner) {
+    return '(' + filterHiddenTopicText(inner, ban) + ')';
+  });
+  return replaced.replace(/\(\s*\)/g, '').trim();
 }
 
 /**

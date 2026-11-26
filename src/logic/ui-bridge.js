@@ -134,10 +134,12 @@ if (typeof _setCoreTopicsByDateResolver === 'function') {
     return effectiveCoreTopicsFor(date, getCoreTopics(), getTempCoreTopics(), getNextTradingDay);
   });
 }
-// 关停后隐藏股票名后的标签：只过滤显示/分组，⛔ 不写回 note / stock_topics。
+// [TEMP-CORE-SCOPE 2026-11-27] 临时题材只在生效窗口内可用：当天不生效（历史日 / 未来日 / 已关停 /
+//   判不出日期）⇒ 这些 token 从【分组、标签、选择理由、toast、备注框】里一并隔离；
+//   与主流核心词同名/同义时主流优先（第 4 参豁免），⛔ 只过滤显示/派生，不写回 note / stock_topics。
 if (typeof _setHiddenTopicTokensResolver === 'function') {
   _setHiddenTopicTokensResolver(function(date) {
-    return hiddenTempCoreTokensOn(date, getTempCoreTopics(), getNextTradingDay);
+    return hiddenTempCoreTokensOn(date, getTempCoreTopics(), getNextTradingDay, getCoreTopics());
   });
 }
 // [TEMP-CORE 窗口延续 2026-11-17] 注册「当日生效的临时词窗口」给分组层：

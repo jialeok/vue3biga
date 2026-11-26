@@ -294,7 +294,9 @@ import { _isAuctionWatchlistIndexReady } from '../data/watchlist-and-metrics.js'
 //   getCoreTopics() = 核心管理里那张表（用户「我在核心管理里把文化传媒放到 AI应用 那个大类了」）；
 //   getCoreTopicsVersion() = 响应式版本号（云端加载完成 / 用户改完核心词 ⇒ computed 自动重算）。
 //   ⛔ 规则层拿到的永远是「数组」而不是「自己去读表」（§5 Data 层职责）。
-import { getCoreTopics, getCoreTopicsForDate, getCoreTopicsVersion, isCoreTopicsCloudLoaded } from '../logic/topic/rules.js';
+import { getCoreTopics, getCoreTopicsForDate, getCoreTopicsVersion, isCoreTopicsCloudLoaded, getHiddenTopicTokensForDate } from '../logic/topic/rules.js';
+// [TEMP-CORE-SCOPE 2026-11-27] 老题材取词后按展示日隔离临时词（题材库并集缓存没有日期维度）
+import { filterHiddenTopicText } from '../logic/topic/temp-core-topic.js';
 // [TEMP-CORE 2026-11-17] 临时核心词：只在输入侧按当日换一张词表（规则 〇·a）
 import { getTempCoreTopicsToken, isTempCoreTopicsLoaded } from '../data/temp-core-topics.js';
 import { makeCoreTopicResolver } from '../logic/topic/core-category.js';
@@ -658,6 +660,12 @@ export function useTopicVolRatioBoard() {
     const p = readLeaderRankInputsForDates(dates).then(function(inputs) {
       if (currentDate.value !== d) return;                 // 竞态保护：期间切了日期 ⇒ 丢弃
       // 题材库：股票名 → 题材串。库还没建好 ⇒ 现建一次（⛔ 不因此静默退化成「没有题材」）。
+      // ★★ [TEMP-CORE-SCOPE 2026-11-27 用户口径] 但这个并集缓存【没有日期维度】
+      //   （stock_topics 一票一行、跨日期共享；scanDataSourceForTopics 还会并进近 66 天全部 note）
+      //   ⇒ 11-18 才建的临时词「羊字辈」会回灌到 11-04 的榜里，被当成老题材写进 11-12 的选择理由。
+      //   修法：取词后先按【展示日】的临时题材隔离表过滤（不生效的临时词一律不算数），
+      //   ⛔ 不改库、不改 note（与 getTopicGroups / getTopicsDisplay 同一口径）。
+      const __hiddenToks = getHiddenTopicTokensForDate(d);
       let cacheTried = false;
       const topicOf = function(name) {
         let set = lookupTopicsByName(name);
@@ -666,7 +674,8 @@ export function useTopicVolRatioBoard() {
           try { buildTopicCache(); } catch (e) { /* 题材库不可用 ⇒ 按判不出处理 */ }
           set = lookupTopicsByName(name);
         }
-        return (set && set.size > 0) ? Array.from(set).join(',') : '';
+        const raw = (set && set.size > 0) ? Array.from(set).join(',') : '';
+        return (raw && __hiddenToks.size > 0) ? filterHiddenTopicText(raw, __hiddenToks) : raw;
       };
       const res = detectLeaderFirstTopic(inputs, nm, {
         topicOf: topicOf,
