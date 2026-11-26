@@ -410,6 +410,24 @@ function _skipMapOf(date) {
  * §10：库还没建好 ⇒ 先建一次（幂等、纯内存）；仍然查不到 ⇒ 返回空串（该票不参与票级命判，
  *   但【块级】判据照常生效 —— ⛔ 不因为一只票查不到库就把整条规则关掉）。
  */
+/**
+ * ★★ [TEMP-CORE-SCOPE-2 2026-11-27 用户报障] 退潮行【落库的题材串】也来自跨日期并集
+ * （`collectDecisionData._libTopicOf` 读 stock_topics + buildTopicCache 并入近 66 天 note）⇒
+ * 11-18 才建的临时词「羊字辈」早就写在 11-04 / 11-13 那几行的 leader_topic 里。
+ * 不按【该行日期】过滤，第二十八条仍会把字辈线当退潮题材，写出
+ * 「【羊字辈】（老龙一 东方海洋）二次确认退潮后第 2 个交易日 = 切换日」。
+ * ⚠️ 只过滤读取值（显示 / 派生），⛔ 不改 tvrb_ebb_days 表（§11）。
+ * @param {string} date 该退潮行所属交易日
+ * @param {string} topic 落库题材串
+ * @returns {string}
+ */
+function _ebbTopicOnDate(date, topic) {
+  const raw = String(topic == null ? '' : topic);
+  if (!raw) return raw;
+  const ht = getHiddenTopicTokensForDate(date);
+  return ht.size > 0 ? filterHiddenTopicText(raw, ht) : raw;
+}
+
 function _tvrbStockTopicsText(name) {
   const nm = String(name || '').trim();
   if (!nm) return '';
@@ -1678,7 +1696,7 @@ export function useTopicVolRatioBoard() {
               date: histDates[i],
               prevDate: histDates[i + 1] || '',
               leaderStock: r.leaderStock,
-              leaderTopic: r.leaderTopic,
+              leaderTopic: _ebbTopicOnDate(histDates[i], r.leaderTopic),
               ebb: r.ebb
             });
           }

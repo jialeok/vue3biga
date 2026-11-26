@@ -24,6 +24,8 @@ import { getDragonLeadersForDisplay } from '../auction/dragon-group.js';
 import { getPrevSoldInheritedSet } from '../auction/inherited-sold.js';
 // [DIVERGE-TOPIC 2026-11-15] 同题材认亲统一用这一份「题材串切段」实现（§6 不另写正则）
 import { splitTopicSegments } from '../topic/core-category.js';
+// [TEMP-CORE-SCOPE 2026-11-27] 前五事实化的题材串要按【该日】隔离掉未生效的临时题材词
+import { getHiddenTopicTokensForDate } from '../topic/rules.js';
 // [GRAY-DRAGON 2026-09-26] 灰行（不在当日正式列表的继承票）的观察组来源，与早盘竞价同款（§6）
 import { getJingYestHighlightSetForDate } from '../auction/sort-rules.js';
 // [SEAL 2026-10-11 用户口径] 决策看板逐票「封单额 + 变化 + 连板」：口径与读取全在 seal-volume.js
@@ -1001,6 +1003,16 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
   // ⇒ 与 `data/stock-topics.js` 2026-09-19 的全局口径一致：共享题材库是跨看板题材的**唯一权威**，
   //   历史 note 只作「库里没有这只票」时的兜底。⛔ 别再把今日行放回第一位。
   // ⚠️ 保留整串（逗号连接）：第二十八条要按【题材段】（东方 / 羊字辈）认亲，只取一个会丢掉字辈线。
+  // ★★ [TEMP-CORE-SCOPE 2026-11-27 用户报障] 但这份「权威题材库」是【跨日期并集】：
+  //   stock_topics 一票一行，buildTopicCache 还并进近 66 天全部 note ⇒ 11-18 才建的临时词
+  //   「羊字辈」（东方海洋 / 阳光照明 / 光洋股份… 全是 11-18 写入）会回灌到 11-04 / 11-12 的前五事实里，
+  //   再被 `pickLeaderTopicSegment` 当【字辈线】选成退潮题材（[EBB-LINEAGE-FIRST]），
+  //   最后被第二十八条写成「【羊字辈】（老龙一 东方海洋）… 那天前十里有 2 只【羊字辈】」。
+  //   用户原话：「11月12日题材量比选股侧，提示板那里还有羊字辈字样，为什么？要修正，
+  //     我都说了你也验证了，最新建立羊字辈是在11月18日」。
+  //   ⇒ 在这里（前五事实的唯一产出口）按【该日】的临时题材隔离表剔除，下游 字辈线 / 退潮题材 /
+  //     老题材 / 新题材 一次收敛；⛔ 不动 stock_topics / note（只不把非生效日的临时词算成题材）。
+  const _hiddenToks = getHiddenTopicTokensForDate(date);
   const _libTopicOf = function(name) {
     try {
       const set = lookupTopicsByName(name);
@@ -1011,6 +1023,7 @@ function _ebbCtxOf(rows, topics, dragonMap, date, prevRangeMap, rangeMap, prevDa
         if (!c) return;
         if (/^题材\d+$/.test(c)) return;      // 「题材30」这类占位编号不是真题材
         if (c.length < 2) return;             // 单字符不是题材（§10 从紧）
+        if (_hiddenToks.has(c.toLowerCase())) return;   // ★ 非生效日的临时词：不算题材（见上）
         if (all.indexOf(c) < 0) all.push(c);
       });
       if (all.length === 0) return '';

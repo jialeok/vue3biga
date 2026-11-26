@@ -320,7 +320,9 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     //   （11-23 海立股份的说明从「按龙位」改成「题材内选票」）⇒ 存档文案变 ⇒ 33 → 34。
     // ★★ [ABN-TB-MKTDRAGON 2026-11-26 用户口径] 第三十四条·延伸的 D-2 触发源收成【市龙一】
     //   （11-24 北纬科技不是市龙一 ⇒ 不再触发「异动第三天」）⇒ 选股结论变 ⇒ 34 → 35。
-    expect(TVRB_RULES_VERSION).toBe(35);
+    // ★★ [TEMP-CORE-SCOPE 2026-11-27 用户报障] 前五事实化的题材串按该日隔离未生效的临时题材
+    //   （11-12 提示板不再出现 11-18 才建的「羊字辈」）⇒ 老题材 / 新题材结论变 ⇒ 35 → 36。
+    expect(TVRB_RULES_VERSION).toBe(36);
   });
 
   // ★★ [ABN-MAINBOARD-GUARD 2026-11-14] 第三十四条「全场十日涨幅最高票」只认主板。
@@ -452,7 +454,8 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     //   ★★ [DEV-RULE-AUC-ONLY 2026-11-25] 选股侧偏离一律竞价（11-24 华东重机解灰）⇒ 32 → 33
     //   ★★ [CASE-1123-HAILI 2026-11-26] 第二十九条通道文案 + 在列次数门控 ⇒ 33 → 34
     //   ★★ [ABN-TB-MKTDRAGON 2026-11-26] 三十四·b 的 D-2 触发源收成市龙一 ⇒ 34 → 35
-    expect(TVRB_RULES_VERSION).toBe(35);
+    //   ★★ [TEMP-CORE-SCOPE 2026-11-27] 前五事实化按该日隔离未生效的临时题材（11-12 不再取羊字辈）⇒ 35 → 36
+    expect(TVRB_RULES_VERSION).toBe(36);
     expect(_swCacheNo(readFileSync('public/sw.js', 'utf8'))).toBeGreaterThanOrEqual(67);
   });
 
