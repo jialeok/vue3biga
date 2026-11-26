@@ -106,6 +106,26 @@ describe('临时核心词 · 按日期生效（规则 〇·a）', () => {
     expect(effectiveCoreTopicsFor('', BASE, [TEMP], nextTradingDay)).toBe(BASE);
     expect(effectiveCoreTopicsFor('2026-11-13', BASE, [Object.assign({}, TEMP, { startDate: 'x' })], nextTradingDay)).toBe(BASE);
   });
+
+  // [TEMP-CORE-DEDUP 2026-11-26] 实测库里「羊字辈」被添加两次（id 4 / 5 完全同参）⇒
+  //   有效词表必须只出一份，否则同一题材在分组里出现两条、统计翻倍。
+  it('同名临时词重复多行 ⇒ 有效词表只保留一份（按 id 取第一条）', () => {
+    // 11-18(三) → 11-19(四) → 11-20(五) → 11-23(一)：本用例自己的交易日链
+    const CHAIN = ['2026-11-18', '2026-11-19', '2026-11-20', '2026-11-23'];
+    function nextInChain(d) {
+      const i = CHAIN.indexOf(d);
+      return i >= 0 && i + 1 < CHAIN.length ? CHAIN[i + 1] : null;
+    }
+    const a = { id: 4, name: '羊字辈', synonyms: ['羊字辈'], startDate: '2026-11-18', disabledFrom: null };
+    const b = { id: 5, name: '羊字辈', synonyms: ['羊字辈'], startDate: '2026-11-18', disabledFrom: null };
+    ['2026-11-18', '2026-11-19', '2026-11-20'].forEach(function(d) {
+      const eff = effectiveCoreTopicsFor(d, BASE, [b, a], nextInChain);
+      expect(eff.filter(function(c) { return c.name === '羊字辈'; })).toHaveLength(1);
+    });
+    // 区间末之后（11-23）⇒ 已过期，回主流题材
+    const expired = effectiveCoreTopicsFor('2026-11-23', BASE, [b, a], nextInChain);
+    expect(expired.filter(function(c) { return c.name === '羊字辈'; })).toHaveLength(0);
+  });
 });
 
 describe('临时词关停后隐藏股票后面的标签（只过滤显示，不删库）', () => {

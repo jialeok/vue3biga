@@ -151,7 +151,17 @@ export async function upsertTempCoreTopic(input) {
     start_date: startDate,
     updated_at: new Date().toISOString()
   };
-  if (isFinite(id) && id > 0) payload.id = id;
+  if (isFinite(id) && id > 0) {
+    payload.id = id;
+  } else {
+    // [TEMP-CORE-DEDUP 2026-11-26] 同名临时题材 ⛔ 不再 insert 第二条。
+    //   实测「羊字辈」被点了两次 ⇒ 库里 id 4 / 5 两行一模一样 ⇒
+    //   生效期同一题材算两遍、列表也出现两条，用户看到的是「怎么有两个」。
+    //   没传 id 时：同名行已存在 ⇒ 更新它（设置日 / 同义词），不存在才新增。
+    try { await ensureTempCoreTopics(); } catch (e) { /* 读失败就按新增走，§10 不猜已有数据 */ }
+    const exist = _rows.value.find(function(r) { return r.name === name; });
+    if (exist && exist.id) payload.id = exist.id;
+  }
   const { data, error } = await sb.from('core_topic_temp').upsert([payload], { onConflict: 'id' }).select(SELECT_FIELDS);
   if (error) throw error;
   const row = data && data[0];

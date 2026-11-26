@@ -87,6 +87,60 @@
           {{ formError }}
         </div>
       </div>
+      <!-- [TEMP-CORE-VISIBLE 2026-11-26 用户口径] 临时题材区块【上移 + 过期灰显常驻】：
+           ① 原来它排在「核心词列表」下方，而 .modal-content 有 300px 底部内边距 ⇒
+              核心词一多就要滚很久才看得到，用户会误判「临时题材没保存 / 消失了」；
+           ② 过期 / 关停的行以前没有任何视觉区分 ⇒ 现在灰显 + 状态标签，且常驻不消失，
+              复盘时能核对「那天到底有没有设过这个词」。 -->
+      <div
+        v-if="tempRows.length > 0 || tempLoadError"
+        style="margin-bottom: 14px; padding: 10px; border: 1px dashed #e2e8f0; border-radius: 8px;"
+      >
+        <div style="font-size: 12px; color: #6b7280; margin-bottom: 8px;">
+          临时题材（生效期按这些词归类；过期／关停后仍灰显保留在这里，方便核对）
+        </div>
+        <div
+          v-if="tempLoadError"
+          style="font-size: 12px; color: #dc2626; margin-bottom: 8px;"
+        >
+          {{ tempLoadError }}
+        </div>
+        <div
+          v-for="t in tempRows"
+          :key="t.id"
+          :style="t.visual.card"
+        >
+          <div :style="t.visual.title">
+            {{ t.name }}
+            <span :style="t.visual.badge">{{ t.visual.text }}</span>
+          </div>
+          <div :style="t.visual.sub">
+            同义词：{{ t.synonyms.length > 0 ? t.synonyms.join('、') : '无' }}
+          </div>
+          <div :style="t.visual.sub">
+            生效：{{ t.startDate }} ~ {{ t.endDate || '—' }}
+            <span v-if="t.disabledFrom">（{{ t.disabledFrom }} 起关停）</span>
+          </div>
+          <div style="margin-top: 7px; display: flex; gap: 6px;">
+            <button
+              type="button"
+              :disabled="saving"
+              style="padding: 4px 8px; font-size: 12px; border: none; border-radius: 4px; cursor: pointer; background: #fee2e2; color: #dc2626;"
+              @click="toggleTemp(t)"
+            >
+              {{ t.disabledFrom ? '恢复' : '关停' }}
+            </button>
+            <button
+              type="button"
+              :disabled="saving"
+              style="padding: 4px 8px; font-size: 12px; border: none; border-radius: 4px; cursor: pointer; background: #f1f5f9; color: #475569;"
+              @click="removeTemp(t)"
+            >
+              删除
+            </button>
+          </div>
+        </div>
+      </div>
       <div style="max-height: 400px; overflow-y: auto;">
         <div
           v-if="coreTopics.length === 0"
@@ -123,49 +177,6 @@
           >
             删除
           </button>
-        </div>
-      </div>
-      <!-- [TEMP-CORE 2026-11-17] 临时题材清单：生效期内参与归类，过期自动换回主流题材 -->
-      <div
-        v-if="tempTopics.length > 0"
-        style="margin-top: 16px; padding-top: 12px; border-top: 1px dashed #e2e8f0;"
-      >
-        <div style="font-size: 12px; color: #6b7280; margin-bottom: 8px;">
-          临时题材（生效期按这些词归类，过期／关停后自动用主流题材）
-        </div>
-        <div
-          v-for="t in tempTopics"
-          :key="t.id"
-          style="padding: 10px; border: 1px solid #fde68a; border-radius: 6px; margin-bottom: 8px; background: #fffbeb;"
-        >
-          <div style="font-weight: 600; color: #78350f; font-size: 13px;">
-            {{ t.name }}
-            <span
-              v-if="isTempStopped(t)"
-              style="font-size: 11px; color: #b91c1c; margin-left: 6px;"
-            >已关停</span>
-          </div>
-          <div style="font-size: 12px; color: #92400e; margin-top: 3px;">
-            同义词：{{ t.synonyms.length > 0 ? t.synonyms.join('、') : '无' }}
-          </div>
-          <div style="font-size: 12px; color: #92400e; margin-top: 3px;">
-            生效：{{ t.startDate }} ~ {{ tempEndDateOf(t) }}
-            <span v-if="t.disabledFrom">（{{ t.disabledFrom }} 起关停）</span>
-          </div>
-          <div style="margin-top: 7px; display: flex; gap: 6px;">
-            <button
-              type="button"
-              :disabled="saving"
-              style="padding: 4px 8px; font-size: 12px; border: none; border-radius: 4px; cursor: pointer; background: #fee2e2; color: #dc2626;"
-              @click="toggleTemp(t)"
-            >{{ isTempStopped(t) ? '恢复' : '关停' }}</button>
-            <button
-              type="button"
-              :disabled="saving"
-              style="padding: 4px 8px; font-size: 12px; border: none; border-radius: 4px; cursor: pointer; background: #f1f5f9; color: #475569;"
-              @click="removeTemp(t)"
-            >删除</button>
-          </div>
         </div>
       </div>
       <!-- ⚠️ 2026-09-20 移除【恢复默认】按钮：题材分类已整理完毕，该按钮会用默认词库整份覆盖
@@ -300,7 +311,7 @@ import { showToast, showWarningToast } from '../composables/useToast.js';
 import { useUiStore } from '../stores/uiStore.js';
 // [TEMP-CORE 2026-11-17] 临时题材：UI 不直连 Supabase（架构 §3），全部走 Data 层具名函数
 import {
-  getTempCoreTopics, upsertTempCoreTopic, setTempCoreTopicDisabled, deleteTempCoreTopic
+  getTempCoreTopics, ensureTempCoreTopics, upsertTempCoreTopic, setTempCoreTopicDisabled, deleteTempCoreTopic
 } from '../data/temp-core-topics.js';
 import { endDateOf } from '../logic/topic/temp-core-topic.js';
 import { getNextTradingDay } from '../logic/date/trading-day-helpers.js';
@@ -325,9 +336,60 @@ const uiStore = useUiStore();
 const isTempTopic = ref(false);
 const tempStartDate = ref('');
 const tempTopics = ref([]);
+/** 临时题材读取失败提示（§10：失败必须可见，⛔ 不许伪装成「没有临时题材」） */
+const tempLoadError = ref('');
 const tempEndDateText = computed(function() {
   const e = endDateOf(tempStartDate.value, 3, getNextTradingDay);
   return e || '—';
+});
+
+/**
+ * [TEMP-CORE-VISIBLE 2026-11-26] 临时题材【常驻 + 过期灰显】。
+ * 状态按【当前展示的交易日】判定 —— ⛔ 不按真实今天：回看 11-19 时，
+ * 当时仍在生效期的词不能被标成「已过期」。
+ * @returns {{text:string, card:string, title:string, sub:string, badge:string}}
+ */
+function tempVisual(t, viewDate) {
+  const end = tempEndDateOf(t);
+  const d = String(viewDate || '').trim();
+  let text = '生效中';
+  let dim = false;
+  if (t.disabledFrom) { text = '已关停'; dim = true; }
+  else if (d && end && d !== '—' && d > end) { text = '已过期'; dim = true; }
+  else if (d && t.startDate && d < t.startDate) { text = '未生效'; }
+  if (dim) {
+    return {
+      text: text,
+      card: 'padding: 10px; border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 8px; background: #f3f4f6;',
+      title: 'font-weight: 600; font-size: 13px; color: #9ca3af;',
+      sub: 'font-size: 12px; color: #9ca3af; margin-top: 3px;',
+      badge: 'font-size: 11px; margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: #e5e7eb; color: #6b7280;'
+    };
+  }
+  if (text === '未生效') {
+    return {
+      text: text,
+      card: 'padding: 10px; border: 1px dashed #fde68a; border-radius: 6px; margin-bottom: 8px; background: #fffbeb;',
+      title: 'font-weight: 600; font-size: 13px; color: #78350f;',
+      sub: 'font-size: 12px; color: #92400e; margin-top: 3px;',
+      badge: 'font-size: 11px; margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: #fef3c7; color: #b45309;'
+    };
+  }
+  return {
+    text: text,
+    card: 'padding: 10px; border: 1px solid #fde68a; border-radius: 6px; margin-bottom: 8px; background: #fffbeb;',
+    title: 'font-weight: 600; font-size: 13px; color: #78350f;',
+    sub: 'font-size: 12px; color: #92400e; margin-top: 3px;',
+    badge: 'font-size: 11px; margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: #ecfdf5; color: #047857;'
+  };
+}
+
+/** 渲染用行（带状态标签与配色）：过期 / 关停灰显，但【始终保留】在列表里 */
+const tempRows = computed(function() {
+  const viewDate = String(uiStore.currentDate || '').trim();
+  return tempTopics.value.map(function(t) {
+    return Object.assign({}, t, { endDate: tempEndDateOf(t), visual: tempVisual(t, viewDate) });
+  });
 });
 
 function refreshList() {
@@ -340,6 +402,13 @@ function open() {
   isTempTopic.value = false;
   tempStartDate.value = String(uiStore.currentDate || '').trim();
   visible.value = true;
+  // [TEMP-CORE-VISIBLE 2026-11-26] bootstrap 的 ensure 是异步的：冷启动后立刻点开弹窗时
+  //   临时词可能还没到货 ⇒ 这里补一次（会话缓存命中即零请求）。
+  //   失败必须可见（§10），⛔ 不许让「读取失败」看起来像「没有临时题材」。
+  tempLoadError.value = '';
+  ensureTempCoreTopics().then(refreshList).catch(function(e) {
+    tempLoadError.value = '临时题材读取失败：' + (e && e.message ? e.message : '未知错误');
+  });
 }
 function close() {
   visible.value = false;

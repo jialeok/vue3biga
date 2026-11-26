@@ -259,9 +259,13 @@ export function effectiveCoreTopicsFor(date, base, temps, nextTradingDay) {
     const n = String(c && c.name || '').trim();
     return !names.has(n);
   });
+  // [TEMP-CORE-DEDUP 2026-11-26] 同名临时词多行（历史重复添加）⇒ 只出一份，
+  //   ⛔ 否则同一个题材在分组里出现两条、统计翻倍。
+  const pushed = new Set();
   active.forEach(function(r) {
     const n = String(r && r.name || '').trim();
-    if (!n) return;
+    if (!n || pushed.has(n)) return;
+    pushed.add(n);
     const syn = Array.isArray(r.synonyms) ? r.synonyms.slice() : [];
     out.push({ name: n, synonyms: syn });
   });
