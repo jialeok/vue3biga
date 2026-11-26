@@ -94,10 +94,15 @@ import { TVRB_ABNORMAL_TOPIC_BAN_NONE } from '../logic/topicvolratio/tvrb-consta
 // ★★ [DEV-RULE 2026-11-25] 三十四条·b 的尺子从「十日涨幅 ＞97%（自定义）」换成
 //   「官方偏离值越「严重异常波动」红线」⇒ 判据统一走 `deviation-rule-facts.js`（§6 一把尺子）。
 import { isDeviationOverRedLine } from '../logic/auction/deviation-rule-facts.js';
-// ★ [ABN-TB] 「全市场最高票」的判据与规则层【同一把尺子】（§6）：maxRangePctOf + 只主板过滤。
-//   ⛔ 组合式不另写一遍「扫 Map 找最大值 / 按代码前缀判主板」。
-import { maxRangePctOf, makeAbnMainBoardFilter } from '../logic/topicvolratio/tvrb-plan.js';
-import { isMainBoardRankEligible } from '../logic/auction/limit-up.js';
+// ★★ [ABN-TB-MKTDRAGON 2026-11-26 用户口径 · 逐字] 三十四·b 的 D-2 触发源也收成【市龙一】：
+//   「11 月 24 日北纬科技不是市龙一（30 日涨幅最高的那只），它只是个股市异动行为，
+//     不能按市龙一的标准判监管异动，更不能影响题材。当时市龙一是冰山冷热，它是正常的。」
+//   ⇒ 判据与第三十五条 / 正文的市龙一【同一把尺子】（§6）：9:26 竞价口径 30 日涨幅榜
+//     `buildTvrbAuctionBoard30`（只主板 + 腿数达标 + 当日 9:25 名单内 + 降序），取 `rank[0]`。
+//   ⛔ 旧「D-2 十日涨幅最高票」已废除（那会把个股异动误升格成市龙一级异动）。
+import { readAuctionLegRange30Pct } from '../logic/auction/range30-auction-leg.js';
+import { readMarketMetricsForDate } from '../../data/market-metrics.js';
+import { buildTvrbAuctionBoard30 } from '../logic/topicvolratio/tvrb-auction-board30.js';
 // ★★ [R20-926 2026-10-24 用户口径] 买点侧【20日涨幅 · 9:26 竞价口径】的主板名次（说明文案用）：
 //   用户原话「买点侧的10日涨幅和20日涨幅的股票，如果有入选时也应该按照9点26分的口径……
 //     在上面说明时间他们的涨幅是多少排名第几就行了」。
@@ -490,21 +495,25 @@ export function useTopicVolRatioBoard() {
   const prevAuctionLeg10 = ref(null);
   const prevAuctionLeg10Date = ref('');
   /**
-   * ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】「异动后的第三天 ⇒ 同题材禁入」的两份输入：
-   *   `abnPrev2`      = 【前两个交易日】的 9:26 竞价口径十日涨幅（`readAuctionLegRangeMap(pd2)`，
-   *                     与买点侧今日选股同一个函数，§6）—— 用来找出「异动日那一天的触发源」；
-   *   `abnPrev2Notes` = 【前两个交易日】竞价名单每行的 note（`auction_watchlist`，一次 REST）——
+   * ★★ [ABN-TB 2026-11-17 用户口径 / ABN-TB-MKTDRAGON 2026-11-26 修订]
+   *   第三十四条【延伸】「异动后的第三天 ⇒ 同题材禁入」的两份输入：
+   *   `abnPrev2Leader` = 【前两个交易日】的**市龙一**（9:26 竞价口径 30 日涨幅第 1 名·主板，
+   *                     `buildTvrbAuctionBoard30` 同一把尺子，§6）—— 它是本延伸分支的【唯一】触发源；
+   *   `abnPrev2Notes`  = 【前两个交易日】竞价名单每行的 note（`auction_watchlist`，一次 REST）——
    *                     用来取出触发源当天的【细分题材串】，例：11-12 东方海洋 =
    *                     `10.02%(水产品,农业,东方,羊字辈)` ⇒ 这就是用户点名的「它题材的股票」。
    *   ⚠️ 为什么是「前两个交易日」而不是「上一个」：用户口径「次日本来现在的规则不能买，不变，
    *     在第三天都不能买它题材的股票」—— 次日由第三十四条原口径（全场空仓）负责，
    *     本条只在 D+2（= 前两个交易日那次异动）生效，D+3 起自动不生效（「第四天按正常流程走」）。
+   *   ⚠️ 为什么触发源必须是市龙一：11-24 北纬科技 10日偏离 +100.11% 越线，但它不是市龙一
+   *     （市龙一 = 冰山冷热，未越线）⇒ 用户口径「这只是个股异动行为，不能影响题材」。
+   *     ⛔ 旧实现取「D-2 十日涨幅最高票」= 把个股异动误升格，2026-11-26 已废除。
    *   ⚠️ 日期核对红线（与上面两份 rangeMap 同一条）：只认【日期对得上】的那份（§10 不拿旧日期顶替）。
-   *   ⚠️ 纯只读：合计 3 次 REST（竞价口径 2 次 + 名单 1 次），全部会话缓存 + 单飞（§32），
+   *   ⚠️ 纯只读：30 日榜两份读取器 + 名单 1 次，全部会话缓存 + 单飞（§32），
    *     不消耗猫抓额度、不发任何上游请求。
    */
-  const abnPrev2 = ref(null);
-  const abnPrev2Date = ref('');
+  const abnPrev2Leader = ref(null);
+  const abnPrev2LeaderDate = ref('');
   const abnPrev2Notes = ref(null);
   const abnPrev2NoteDate = ref('');
   /**
@@ -1523,7 +1532,7 @@ export function useTopicVolRatioBoard() {
       // ★★ [ABNORMAL-10D 2026-11-13] 没有上一交易日 ⇒ 「异动次日」判不出（判据缺一天，§10 不猜）
       prevAuctionLeg10.value = null; prevAuctionLeg10Date.value = '';
       // ★★ [ABN-TB 2026-11-17] 没有上一交易日 ⇒ 更没有「前两个交易日」⇒ 第三天同题材监控判不出
-      abnPrev2.value = null; abnPrev2Date.value = '';
+      abnPrev2Leader.value = null; abnPrev2LeaderDate.value = '';
       abnPrev2Notes.value = null; abnPrev2NoteDate.value = '';
       // ★ [BUY-SETTLE] 没有上一交易日 ⇒ 与「昨日」相关的两项不参与门控（见门控调用处传的 prevDate）
       prevRangeTriedDate.value = '';
@@ -1578,20 +1587,30 @@ export function useTopicVolRatioBoard() {
     //     找更早的日子会让禁令无限延长（那是与用户口径相反的方向）。
     const pd2 = getPreviousTradingDay(pd) || '';
     if (!pd2) {
-      abnPrev2.value = null; abnPrev2Date.value = '';
+      abnPrev2Leader.value = null; abnPrev2LeaderDate.value = '';
       abnPrev2Notes.value = null; abnPrev2NoteDate.value = '';
     } else {
-      // ① D-2 的 9:26 竞价口径十日涨幅（判「那一天有没有异动、异动的是哪只票」）
-      if (abnPrev2Date.value !== pd2) {
-        readAuctionLegRangeMap(pd2).then(function(m) {
+      // ① D-2 的【市龙一】= 9:26 竞价口径 30 日涨幅榜第 1 名·主板
+      //   ★★ [ABN-TB-MKTDRAGON 2026-11-26] 旧实现读的是「D-2 十日涨幅 Map 再挑最高票」，
+      //     与正文 11-25 已收窄的「只认市龙一」不一致 ⇒ 11-24 北纬科技（非市龙一）被误当触发源。
+      //     现在直接复用 `buildTvrbAuctionBoard30`（与第三十五条 / 市龙一~五标签同一份判据，§6）。
+      if (abnPrev2LeaderDate.value !== pd2) {
+        Promise.all([
+          readAuctionLegRange30Pct(pd2).catch(function() { return null; }),
+          readMarketMetricsForDate(pd2, 'auction').catch(function() { return null; })
+        ]).then(function(pair) {
           if (getPreviousTradingDay(getPreviousTradingDay(currentDate.value)) !== pd2) return;  // 竞态：期间切了日期 ⇒ 丢弃
-          abnPrev2.value = (m && m.size > 0) ? m : null;
-          abnPrev2Date.value = pd2;
+          const board = buildTvrbAuctionBoard30(pair[0], pair[1]);
+          const top = (board && board.ready && Array.isArray(board.rank) && board.rank.length > 0)
+            ? board.rank[0] : null;
+          const nm = top ? String(top.stock || '').trim() : '';
+          abnPrev2Leader.value = nm ? { name: nm, pct: top.pct } : null;
+          abnPrev2LeaderDate.value = pd2;
         }).catch(function(e) {
           if (getPreviousTradingDay(getPreviousTradingDay(currentDate.value)) !== pd2) return;
-          console.warn('[TVRB] 前两个交易日 9:26 竞价口径十日涨幅读取失败，异动第三天监控判不出:', e && e.message);
-          abnPrev2.value = null;
-          abnPrev2Date.value = pd2;
+          console.warn('[TVRB] 前两个交易日 9:26 竞价口径 30 日榜读取失败，异动第三天监控判不出:', e && e.message);
+          abnPrev2Leader.value = null;
+          abnPrev2LeaderDate.value = pd2;
         });
       }
       // ② D-2 竞价名单每行的 note（取那只票当天的【细分题材串】——
@@ -2141,52 +2160,54 @@ export function useTopicVolRatioBoard() {
         range20GaveUp: !!netHardStalled.value
       });
 
-      // ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】「异动后的第三天 ⇒ 同题材禁入」。
+      // ★★ [ABN-TB 2026-11-17 用户口径 / ABN-TB-MKTDRAGON 2026-11-26 修订]
+      //   第三十四条【延伸】「异动后的第三天 ⇒ 同题材禁入」。
       //
       //   用户原话：「记住总龙一第一次监管异动，之后两天，次日本来现在的规则不能买，不变，
       //     在第三天都不能买它题材的股票……也就是重点监控第三天，第四天按照正常流程走。」
+      //   ★★ 2026-11-26 补正（用户当场纠正）：触发源只能是【市龙一】——
+      //     「11 月 24 日北纬科技不是市龙一（30 日涨幅最高的那只），它只是个股市异动行为，
+      //       不能按市龙一的标准判监管异动，更不能影响题材。当时市龙一是冰山冷热，它是正常的。」
+      //     ⇒ 与正文（2026-11-25 MARKET-DRAGON-ONLY）完全对齐：非市龙一越线 = 个股异动，
+      //       只走第三十六条灰那一只，⛔ 不空仓、⛔ 不影响题材、⛔ 不产生「第三天」。
       //
       //   ★ 判据（全部只读、无副作用）：
       //     ① 目标日 = 【前两个交易日】= D-2（次日 D-1 由第三十四条原口径「全场空仓」负责）；
-      //     ② D-2 的 9:26 竞价口径里，主板票十日涨幅最高的那一只，**它自己的官方偏离值（D-2 收盘口径）
-      //        已越「严重异常波动」红线** ⇒ D-2 就是异动日，它就是触发源；
-      //     ★★ [DEV-RULE 2026-11-25 用户口径 · 第 4 点「接受位移，要按新口径覆盖的」]
-      //        ② 这一步的尺子从「十日涨幅 ＞97%（自定义）」换成**官方偏离值越红线**。
-      //        实测位移（11-25 真库 36 个交易日逐日复算）：异动日 11-12 → **11-11**（东方海洋 100.01%），
-      //        于是本条禁入日 11-16 → **11-13**。用户已确认接受这个位移并按要求重算历史。
-      //        ⚠️ 「哪一只」仍取十日涨幅最高的主板票（= 老口径的候选排序），只把「越没越线」换尺子——
-      //          偏离值要逐日腿，全市场扫描不可行，而「十日涨幅最高的那只」在事实上就是越线的那只。
+      //     ② D-2 的【市龙一】（9:26 竞价口径 30 日涨幅第 1 名·主板）**它自己的官方偏离值
+      //        （D-2 收盘口径）已越「严重异常波动」红线** ⇒ D-2 就是异动日，它就是触发源；
+      //        ⛔ 不再取「十日涨幅最高的那只」（旧口径，会把北纬科技这类个股异动误升格）；
       //     ③ 禁令集合 = 它 D-2 当天的细分题材（竞价名单 note）+ 它在题材库里的题材；
       //     ④ 今天（D）= 异动日 + 2 个交易日 ⇒ 禁令生效（`dayOffset = 2`，常量在 tvrb-constants）。
-      //   §10：D-2 那两份没读到 / 最高票的偏离值判不出 / 没越线 ⇒ 返回 NONE（= 不生效），
-      //     ⛔ 绝不把「没读到」当成「D-2 没异动」静默放行 —— 所以「读到了但题材缺失」返回的是
-      //     `unknown` 版（提示板会如实写「判不出」）。
+      //   §10：D-2 市龙一没读到 / 它的偏离值判不出 / 没越线 ⇒ 返回 NONE（= 不生效），
+      //     ⛔ 绝不把「没读到」当成「D-2 没异动」静默放行 —— 「读到了但题材缺失」返回 `unknown`
+      //     （提示板会如实写「判不出」）。
       const _abnTbTarget = pd ? (getPreviousTradingDay(pd) || '') : '';
       const _abnTbInput = (function() {
         // 没有「前两个交易日」（月初 / 空日历）⇒ 本条不适用（⛔ 不是「判不出」，是「用不上」）
         if (!_abnTbTarget) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
         // 还没读到 ⇒ 门控（buy-settle 第十五项）正在挂住买点侧；
         //   此刻给 NONE（= 不生效）而不是「判不出」，因为「还在读」不是结论（§10 不许把等待当结论）。
-        if (abnPrev2Date.value !== _abnTbTarget) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
-        const eligible = makeAbnMainBoardFilter(isMainBoardRankEligible, getStockCode);
-        const top = maxRangePctOf(abnPrev2.value, eligible);
-        if (!top) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
-        // ★ [DEV-RULE] D-2 那只票的**官方偏离值（D-2 收盘口径）** —— 由组合式算好注入（`byDate`）。
+        if (abnPrev2LeaderDate.value !== _abnTbTarget) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
+        const _leader = abnPrev2Leader.value;
+        const _leaderName = (_leader && _leader.name) ? String(_leader.name).trim() : '';
+        // D-2 没有市龙一（30 日榜判不出 / 榜为空）⇒ 本条不生效（说明区已由 notes 如实标注）
+        if (!_leaderName) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
+        // ★ D-2 市龙一的**官方偏离值（D-2 收盘口径）** —— 由组合式算好注入（`byDate`）。
         //   判不出（腿缺 / 还没算回来）⇒ 不生效：买点侧另有门控（buy-settle 第⑰项）会等它落地，
         //   ⛔ 这里不许「等不到就当成没异动」还往下走（那是静默放行）。
         const _dvByDate = (_dev.devFacts.value && _dev.devFacts.value.byDate instanceof Map)
           ? _dev.devFacts.value.byDate : null;
         const _dvD2Map = _dvByDate ? (_dvByDate.get(_abnTbTarget) || null) : null;
-        const _dvD2 = (_dvD2Map instanceof Map) ? (_dvD2Map.get(String(top.name).trim()) || null) : null;
+        const _dvD2 = (_dvD2Map instanceof Map) ? (_dvD2Map.get(_leaderName) || null) : null;
         if (!_dvD2 || !isDeviationOverRedLine(_dvD2)) return TVRB_ABNORMAL_TOPIC_BAN_NONE;
         // ★ 到这里才确定「今天 = 异动后的第三天」。细分题材取【D-2 当天竞价名单的 note】——
         //   题材库里 东方海洋 只有「水产品,农业」，缺「东方 / 羊字辈」（而「东方」正是临时核心词），
         //   只查库会把日出东方放行 —— 那正是本条要修的那个错。
         const noteRow = (abnPrev2NoteDate.value === _abnTbTarget && abnPrev2Notes.value)
-          ? abnPrev2Notes.value.get(top.name) : null;
+          ? abnPrev2Notes.value.get(_leaderName) : null;
         const libArr = [];
         try {
-          const set = lookupTopicsByName(top.name);
+          const set = lookupTopicsByName(_leaderName);
           if (set) set.forEach(function(t) { libArr.push(t); });
         } catch (e) { /* 题材库不可用 ⇒ 只用 note 那一份（§10 如实降级，⛔ 不猜） */ }
         // ⚠️ 两份都为空 ⇒ buildAbnormalTopicBan 返回 `unknown`（提示板写明「判不出」，§10 不静默放行）
@@ -2194,8 +2215,8 @@ export function useTopicVolRatioBoard() {
           dayOffset: 2,
           triggerDate: _abnTbTarget,
           todayDate: d,
-          leaderName: top.name,
-          leaderPct: top.pct,
+          leaderName: _leaderName,
+          leaderPct: _leader ? _leader.pct : null,
           // ★ [DEV-RULE] 换口径后必须把偏离事实一起交进去：阈值判据在纯函数里（§6 一把尺子），
           //   文案也要写「10日偏离 X 已越官方红线」而不是十日涨幅。
           leaderDev: _dvD2,
@@ -2547,12 +2568,13 @@ export function useTopicVolRatioBoard() {
         //   ⇒ 与 ⑬（20 日榜）同一个病：第三十五条吃的是另一把尺子，必须有自己的门。
         //   §10：「读过」就算落地（成功或失败）；判不出那支由 plan.notes 如实标注且不接管。
         top30BoardTried: _r30Ready || hasTvrbAuctionBoard30Verdict(d),
-        // ★★ [ABN-TB 2026-11-17 用户口径 · 第十五项] 第三十四条【延伸】「异动第三天 ⇒ 同题材禁入」
-        //   的两份输入（D-2 竞价口径十日涨幅 + D-2 竞价名单题材串）。
+        // ★★ [ABN-TB 2026-11-17 用户口径] 第三十四条【延伸】「异动第三天 ⇒ 同题材禁入」
+        //   的两份输入（D-2 的【市龙一】+ D-2 竞价名单题材串）。
         //   没读到就定稿 ⇒ 到货后会有票被剔除 ⇒ 屏幕上的票「消失」，正是用户最反感的换票。
         //   ⚠️ 目标日期在这里算（规则层 / 纯函数都不碰交易日历，§26）。
         abnThirdTarget: pd ? (getPreviousTradingDay(pd) || '') : '',
-        abnPrev2Date: abnPrev2Date.value,
+        // ★★ [ABN-TB-MKTDRAGON 2026-11-26] 触发源已收成【D-2 市龙一】⇒ 落地判据也换成「市龙一读过没有」。
+        abnPrev2LeaderDate: abnPrev2LeaderDate.value,
         abnPrev2NoteDate: abnPrev2NoteDate.value,
         // ★★ [DEV-RULE 2026-11-25 用户口径 · 第十七项] 官方偏离值事实（第三十四 / 三十六 / 三十六·b
         //   的规则输入）落地没有。与 ⑬ 20 日榜 / ⑯ 30 日榜同一个病：事实没到就定稿 ⇒
@@ -2843,9 +2865,12 @@ export function useTopicVolRatioBoard() {
   });
 
   /**
-   * ★ [DEV-RULE 2026-11-25] 三十四·b 的「D-2 触发源」票名 —— 必须也进偏离值取数名单。
-   *   为什么单独加：它是**前两个交易日**十日涨幅最高的主板票，今天多半既不在前十也不在买点侧，
-   *   不加进来，`byDate` 里就没有它 D-2 的偏离事实 ⇒ 三十四·b 永远判不出（静默失效）。
+   * ★ [DEV-RULE 2026-11-25 / ABN-TB-MKTDRAGON 2026-11-26] 三十四·b 的「D-2 触发源」票名 ——
+   *   必须也进偏离值取数名单。
+   *   为什么单独加：它是**前两个交易日**的【市龙一】（9:26 竞价口径 30 日涨幅第 1 名·主板），
+   *   今天多半既不在前十也不在买点侧，不加进来，`byDate` 里就没有它 D-2 的偏离事实
+   *   ⇒ 三十四·b 永远判不出（静默失效）。
+   *   ⚠️ 触发源已收成市龙一（旧「D-2 十日涨幅最高票」已废除，11-24 北纬科技误触发即由此而来）。
    *   ⚠️ 只进「取数名单」，⛔ 不进面板展示名单（`deviationUniverse`）。
    */
   const _abnTbLeaderName = computed(function() {
@@ -2853,14 +2878,9 @@ export function useTopicVolRatioBoard() {
     if (!d) return '';
     const pd = getPreviousTradingDay(d);
     const target = pd ? (getPreviousTradingDay(pd) || '') : '';
-    if (!target || abnPrev2Date.value !== target) return '';
-    try {
-      const top = maxRangePctOf(abnPrev2.value,
-        makeAbnMainBoardFilter(isMainBoardRankEligible, getStockCode));
-      return top && top.name ? String(top.name).trim() : '';
-    } catch (e) {
-      return '';                          // 名册不可用 ⇒ 判不出（§10 如实降级，⛔ 不猜）
-    }
+    if (!target || abnPrev2LeaderDate.value !== target) return '';
+    const leader = abnPrev2Leader.value;
+    return (leader && leader.name) ? String(leader.name).trim() : '';
   });
 
   /**

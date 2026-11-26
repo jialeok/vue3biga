@@ -318,7 +318,9 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     //   ⇒ 11-24 华东重机（收盘 near / 竞价 watch）解除灰化、回到买点侧 ⇒ 32 → 33。
     // ★★ [CASE-1123-HAILI 2026-11-26] 第二十九条通道文案与判定一致化 + 在列次数门控只认真数据
     //   （11-23 海立股份的说明从「按龙位」改成「题材内选票」）⇒ 存档文案变 ⇒ 33 → 34。
-    expect(TVRB_RULES_VERSION).toBe(34);
+    // ★★ [ABN-TB-MKTDRAGON 2026-11-26 用户口径] 第三十四条·延伸的 D-2 触发源收成【市龙一】
+    //   （11-24 北纬科技不是市龙一 ⇒ 不再触发「异动第三天」）⇒ 选股结论变 ⇒ 34 → 35。
+    expect(TVRB_RULES_VERSION).toBe(35);
   });
 
   // ★★ [ABN-MAINBOARD-GUARD 2026-11-14] 第三十四条「全场十日涨幅最高票」只认主板。
@@ -326,9 +328,8 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
   //   像历史日期的10月28日，为什么把非主板的也考虑在里面呢……只有主板的才有这个条件。」
   //   配套约束：候选池【一行未改】仍是 883410 + 观察组 + 龙头组 + 20 日补位
   //   （用户明确否决过「收窄成 883410 名单」的提议：「不要乱改啊……不要画蛇添足。」）
-  it('[ABN-MAINBOARD-GUARD] 主板过滤只剩「三十四·b 的 D-2 触发源」一个用点', () => {
+  it('[ABN-MAINBOARD-GUARD] 三十四·b 的 D-2 触发源必须走 30 日榜（⛔ 不许再「十日涨幅挑最高票」）', () => {
     const plan = readFileSync('src/logic/topicvolratio/tvrb-plan.js', 'utf8');
-    const eligibleLine = 'makeAbnMainBoardFilter(isMainBoardRankEligible, getStockCode)';
     // ① 工厂仍住在规则层（`tvrb-plan.js`）并对外导出 —— 判据唯一来源，⛔ 不许在视图里另写一份
     expect(plan).toContain('export function makeAbnMainBoardFilter');
     // ② ★★ [MARKET-DRAGON-ONLY 2026-11-25] 用点从「两个」收回到「一个」：
@@ -341,11 +342,14 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     expect(overlay).not.toContain('makeAbnMainBoardFilter(');
     expect(overlay).not.toContain('pickRedLineSource(');
     expect(overlay).not.toContain("import { resolveAbnormalFact, pickRedLineSource }");
+    // ③ ★★ [ABN-TB-MKTDRAGON 2026-11-26 用户口径] 三十四·b 的 D-2 触发源已收成【市龙一】：
+    //   必须复用 `buildTvrbAuctionBoard30`（9:26 竞价口径 30 日榜第 1 名·主板），
+    //   ⛔ 不许再从「D-2 十日涨幅 Map」里挑最高票 —— 那正是 11-24 北纬科技误触发的来源。
     const board = readFileSync('src/composables/useTopicVolRatioBoard.js', 'utf8');
-    expect(board).toContain(eligibleLine);
-    // ③ 择「全市场最高票」的那条路（三十四·b）仍走 maxRangePctOf + 同一个 eligible 过滤
+    expect(board).toContain('buildTvrbAuctionBoard30(pair[0], pair[1])');
+    expect(board).not.toContain('maxRangePctOf(abnPrev2');
+    expect(board).not.toContain('makeAbnMainBoardFilter(');
     expect(plan).toContain('export function maxRangePctOf');
-    expect(board).toContain('maxRangePctOf(abnPrev2.value, eligible)');
     // ④ ★★ [MARKET-DRAGON-ONLY 2026-11-25] 第三十四条的触发源：唯一 = 市龙一
     //   （`ebbCtx.mktDragon1`，来自 30 日涨幅榜第 1 名·主板）。「从一批票里挑越线最严重那只」
     //   的函数与它的依赖必须消失 —— 它们就是 11-24 误报全场空仓的直接来源。
@@ -447,7 +451,8 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     //   ★★ [HOT-TOPIC-SYNC 2026-11-25] hot 派生题材缓存重建（11-25 大消费补 4 只）⇒ 31 → 32
     //   ★★ [DEV-RULE-AUC-ONLY 2026-11-25] 选股侧偏离一律竞价（11-24 华东重机解灰）⇒ 32 → 33
     //   ★★ [CASE-1123-HAILI 2026-11-26] 第二十九条通道文案 + 在列次数门控 ⇒ 33 → 34
-    expect(TVRB_RULES_VERSION).toBe(34);
+    //   ★★ [ABN-TB-MKTDRAGON 2026-11-26] 三十四·b 的 D-2 触发源收成市龙一 ⇒ 34 → 35
+    expect(TVRB_RULES_VERSION).toBe(35);
     expect(_swCacheNo(readFileSync('public/sw.js', 'utf8'))).toBeGreaterThanOrEqual(67);
   });
 

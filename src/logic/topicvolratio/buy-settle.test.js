@@ -248,7 +248,7 @@ describe('resolveBuySettle · 买点侧选股输入门控', function() {
     it('★ 第 ⑮ 项：两份都读到该日期 ⇒ 放行（⛔ 不永久挂死）', function() {
       const D2 = '2026-11-11';
       expect(resolveBuySettle(full({
-        abnThirdTarget: D2, abnPrev2Date: D2, abnPrev2NoteDate: D2
+        abnThirdTarget: D2, abnPrev2LeaderDate: D2, abnPrev2NoteDate: D2
       })).settled).toBe(true);
     });
 
