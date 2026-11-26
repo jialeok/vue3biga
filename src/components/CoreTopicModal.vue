@@ -311,7 +311,7 @@ import { showToast, showWarningToast } from '../composables/useToast.js';
 import { useUiStore } from '../stores/uiStore.js';
 // [TEMP-CORE 2026-11-17] 临时题材：UI 不直连 Supabase（架构 §3），全部走 Data 层具名函数
 import {
-  getTempCoreTopics, ensureTempCoreTopics, upsertTempCoreTopic, setTempCoreTopicDisabled, deleteTempCoreTopic
+  getTempCoreTopics, refreshTempCoreTopics, upsertTempCoreTopic, setTempCoreTopicDisabled, deleteTempCoreTopic
 } from '../data/temp-core-topics.js';
 import { endDateOf } from '../logic/topic/temp-core-topic.js';
 import { getNextTradingDay } from '../logic/date/trading-day-helpers.js';
@@ -403,10 +403,13 @@ function open() {
   tempStartDate.value = String(uiStore.currentDate || '').trim();
   visible.value = true;
   // [TEMP-CORE-VISIBLE 2026-11-26] bootstrap 的 ensure 是异步的：冷启动后立刻点开弹窗时
-  //   临时词可能还没到货 ⇒ 这里补一次（会话缓存命中即零请求）。
+  //   临时词可能还没到货 ⇒ 这里补一次。
+  //   ★ 用 refresh（强制重读）而不是 ensure：启动那次若已失败（手机网络每个请求停 12~64s，
+  //     很容易超时），ensure 会因 30s 失败冷却直接抛错 ⇒ 弹窗永远是空列表、
+  //     用户看到的就是「临时题材根本没保存」。用户主动打开 = 必须真的去读一次。
   //   失败必须可见（§10），⛔ 不许让「读取失败」看起来像「没有临时题材」。
   tempLoadError.value = '';
-  ensureTempCoreTopics().then(refreshList).catch(function(e) {
+  refreshTempCoreTopics().then(refreshList).catch(function(e) {
     tempLoadError.value = '临时题材读取失败：' + (e && e.message ? e.message : '未知错误');
   });
 }
