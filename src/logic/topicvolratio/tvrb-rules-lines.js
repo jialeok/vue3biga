@@ -4,7 +4,7 @@
 // ⛔ 文案里的数字必须用 tvrb-constants.js 的常量拼接，不许写死 ——
 //   否则用户点开规则看到的条文与实际选股不一致（那比没有说明更坏）。
 
-import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_NO_BUY_TAG, EBB_SECOND_BUY_TAG, CASH_NO_BUY_TAG, WEAK_HUDDLE_TAG, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, NEW_DRAGON_TAG, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_TOPIC_BAN_TAG, ABNORMAL_TOPIC_BAN_DAY_OFFSET, TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG, TOP30_HUDDLE_TOP_N, TOP30_HUDDLE_PICK_COUNT } from './tvrb-constants.js';
+import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_NO_BUY_TAG, EBB_SECOND_BUY_TAG, EBB_TOPIC_BAN_TAG, CASH_NO_BUY_TAG, WEAK_HUDDLE_TAG, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, NEW_DRAGON_TAG, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_TOPIC_BAN_TAG, ABNORMAL_TOPIC_BAN_DAY_OFFSET, TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG, TOP30_HUDDLE_TOP_N, TOP30_HUDDLE_PICK_COUNT } from './tvrb-constants.js';
 // ★★ [DEV-RULE 2026-11-25] 手册第三十四条换官方口径 / 新增三十六、三十六·b ——
 //   阈值与标签一律取自 deviation-rule-facts（⛔ 手册里不许写死 100 / 200 / 0.9 这些数字）。
 import {
@@ -204,13 +204,14 @@ export function buildTvrbRulesLines() {
       '⚠️ 唯一的例外是第二十一条的那几只【' + EBB_SECOND_BUY_TAG + '】替补。',
     '　　买点侧（【二次确认退潮】）：【先按常规选股】—— 排除退潮题材本身（即使它还符合常规条件，' +
       '毕竟它退潮了）之后，按第一~七条的平均竞价量比规则照常选股（题材排名顺延）。' +
-      // ★★ [EBB-TOPIC-MEMBER 2026-11-27 用户口径] 排除粒度从【题材块】细化到【题材字段】
-      '　　★ 排除按【题材字段】算，不是只看题材块名：退潮题材是【东方】时，题材串里含有「东方」' +
-      '（例：日出东方 = 家电,热泵,东方）的票今天一律不进买点侧 —— 它虽然归在「大消费」块，' +
-      '但含有退潮题材字段，同样属于退潮题材票；题材串里没有该字段的（例：北纬科技 = 游戏,通信）照常可选。' +
-      '剔除后还要看【题材数量】：不足 ' + TVRB_MIN_COUNT + ' 只 ⇒ 该题材今天整块不入选、名额顺延到下一个题材；' +
-      '仍有 ' + TVRB_MIN_COUNT + ' 只及以上 ⇒ 按剔除后的数量取档（>8 只取 2 / 4~8 只取 1 / 4~6 只走收紧档），' +
-      '被剔除的那只不占名额、块内顺延下一只。' +
+      // ★★ [EBB-TOPIC-MEMBER 2026-11-27 用户口径] 排除粒度从【题材块】细化到【题材字段】，
+      //    但【不改任何选股结论】：题材数量 / 档位 / 候选顺延 / 选出哪只票 全按原规则，选完再灰化。
+      '　　★ 排除按【题材字段】算，不是只看题材块名：退潮题材是【东方】时，选出来的那只票如果' +
+      '题材串里含有「东方」（例：日出东方 = 家电,热泵,东方），它虽然归在「大消费」块、' +
+      '题材数量也照旧算 4 只，但它属于退潮题材的票 ⇒ 那一块【灰化】、该行打标签【' +
+      EBB_TOPIC_BAN_TAG + '】、行内写明原因，今天【不给买点】（不占名额、⛔ 不换票）。' +
+      '题材串里没有该字段的（例：北纬科技 = 游戏,通信）照常买。' +
+      '⚠️ 题材数量 / 档位 / 平均量比 / 顺延逻辑一个字都不改 —— 本条只是多了一个「看选出的那只票在不在退潮题材中」的判断。' +
       '选出的票 = 【补涨题材】，动作标签与常规完全同一套，行内说明会注明' +
       '「主线{题材}二次确认退潮，作为补涨题材选出的股票」。' +
       '★【退潮节点】大方向：主线题材出现退潮后，符合条件的新题材叫【补涨题材】——这是个很重要的节点，' +

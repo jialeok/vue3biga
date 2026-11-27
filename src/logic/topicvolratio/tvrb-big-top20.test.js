@@ -325,13 +325,12 @@ describe('tvrb · [AUTO-PICK-TOP20] 边界与回归锁', function() {
 
   it('调用链锁：计划层把 topicPool/coreRes 传进 _buildBlock，且池子没注入时不构造 opt', function() {
     const plan = readFileSync('src/logic/topicvolratio/tvrb-plan.js', 'utf8');
-    // ★★ [EBB-TOPIC-MEMBER 2026-11-27] 池子改名为 `bigPoolRaw`（退潮日要先剔掉含退潮题材字段的票，
-    //   `bigPool` = 过滤后的那一份）；契约不变：池子没注入 ⇒ 不构造 opt。
-    expect(plan).toContain('const bigPoolRaw = (o.ebbCtx && Array.isArray(o.ebbCtx.topicPool))');
+    // ★★ [EBB-TOPIC-MEMBER 2026-11-27] 池子 / 块对象 / 候选序列【一个字都不改】（退潮题材只做
+    //   选后灰化，在 `_applyEbbTopicBan` 收口），契约与原来完全一致。
+    expect(plan).toContain('const bigPool = (o.ebbCtx && Array.isArray(o.ebbCtx.topicPool))');
     // ★★ [TOPIC-INNER-SELECT 2026-11-17] 调用形态变了（第二题材走题材内选票时它的 opt 优先），
     //   但契约不变：`smallOpt || bigOpt` 仍是「没走特殊通道时的默认」，⛔ 不许只剩一个 opt。
-    //   ★ [EBB-TOPIC-MEMBER] 块对象改由 `_blkBlock` 传入（退潮日要把块上的 count 换成剔除后数量）。
-    expect(plan).toContain('_buildBlock(_blkBlock, buyDragonMap, tier, buyPctMap, buySkipNames,');
+    expect(plan).toContain('_buildBlock(b, buyDragonMap, tier, buyPctMap, buySkipNames,');
     // ★★ [CASE-1123-HAILI 2026-11-26] 判据提成 `_usedSecondTopicInner`（龙位文案也要用它），
     //   契约不变：`smallOpt || bigOpt` 仍是「没走第二十九条题材内选票时的默认」。
     expect(plan).toContain('const _usedSecondTopicInner = !!(out.blocks.length === 1 && secondTopicInnerOpt);');

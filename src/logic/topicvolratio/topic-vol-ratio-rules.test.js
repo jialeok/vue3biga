@@ -128,6 +128,8 @@ import {
 import { makeCoreTopicResolver } from '../topic/core-category.js';
 // ★★ [EBB-TOPIC-MEMBER 2026-11-27] 退潮题材【票级】判据（第二十条粒度细化）的唯一实现
 import { makeEbbTopicBan } from './tvrb-utils.js';
+// ★ [EBB-TOPIC-MEMBER 2026-11-27] 退潮题材字段级灰化的区别标签
+import { EBB_TOPIC_BAN_TAG } from './tvrb-constants.js';
 // ★ [AUCTION-YIZI-UNIFY 2026-11-16] 一字标签唯一来源（断言必须比对常量，⛔ 不写字面量）
 import { AUCTION_YIZI_WAIT_TAG } from './auction-yizi-tag.js';
 import {
@@ -5734,47 +5736,52 @@ describe('tvrb · [EBB-TOPIC-MEMBER] 二次确认退潮 ⇒ 退潮题材字段�
       .map(function(n, i) { return m(n, { aucVolRatio: 50 - i, aucShare: 6, code: '6010' + (i + 1) }); }));
   }
 
-  it('★ 剔除后不足 4 只 ⇒ 大消费整块不入选（买点侧只剩 AI应用 的北纬科技），日出东方不出票', function() {
-    // 大消费 4 只（含 日出东方）− 1 = 3 只 < 4 ⇒ 不入选；AI应用 9 只照常
+  it('★ 11-16 形：大消费照常入选并选出日出东方，但该块灰化 + 标签【题材退潮不选】+ 写明原因', function() {
+    // 大消费 4 只（含 日出东方）⇒ 题材数量 / 档位 / 选出哪只票 全按原规则（⛔ 不重算、不顺延）
     const dm = dragonMap([['日出东方', 1], ['九阳股份', 2], ['北纬科技', 1], ['甲一', 2]]);
     const p = buildTopicVolRatioPlan([bigTopic(['日出东方', '九阳股份', '家三', '家四']), aiTopic()], dm, {
       ebbCtx: ebbCtx(), ebbHistory: HIST, stockTopicsOf: topicsOf
     });
     expect(p.ebb.phase).toBe('second');
     expect(p.ebb.leaderTopic).toBe('东方');
-    // 大消费 不入选（不是「顺延给块外」）
-    expect(p.blocks.map(function(b) { return b.topic; })).toEqual(['AI应用']);
-    const ex = p.excludedTopics.map(function(t) { return t.topic; });
-    expect(ex).toContain('大消费');
-    const exBig = p.excludedTopics.filter(function(t) { return t.topic === '大消费'; })[0];
-    expect(exBig.count).toBe(4);
-    expect(exBig.buyableCount).toBe(3);
-    // 买点名单：北纬科技在内、日出东方不在
+    // 题材照常入选（大消费仍在 blocks 里，数量口径不变）
+    expect(p.blocks.map(function(b) { return b.topic; })).toEqual(['大消费', 'AI应用']);
+    expect(p.excludedTopics).toEqual([]);
+    const big = p.blocks[0];
+    expect(big.count).toBe(4);
+    // 照原规则选出日出东方（不是换票、不是顺延）
+    expect(big.picks.map(function(x) { return x.name; })).toEqual(['日出东方']);
+    const pick = big.picks[0];
+    // 灰块 + 区别标签 + 行内原因
+    expect(big.ebbTopicGray).toBe(true);
+    expect(pick.buyActionTag).toBe(EBB_TOPIC_BAN_TAG);
+    expect(pick.ebbTopicBlocked).toBe(true);
+    expect(pick.actionNote).toContain('家电,热泵,东方');
+    expect(pick.actionNote).toContain('【东方】');
+    expect(pick.actionNote).toContain('本题材本身是符合常规选股条件的');
+    // 今天不能下单 ⇒ 不计入买点名单；北纬科技照原规则选入
+    expect(p.buyNames.has('日出东方')).toBe(false);
     expect(p.buyNames.has('北纬科技')).toBe(true);
-    expect(p.buyNames.has('日出东方')).toBe(false);
-    // 说明必须点名「为什么剔除 + 剔除后几只 + 不足 4 只」
+    // AI应用 9 只 ⇒ big 档取 2 只，两只都能买 ⇒ 可买只数 = 2（大消费那只不计入）
+    expect(p.pickCount).toBe(2);
+    // 说明必须写清「题材数量/档位不变，只是这只票命中」
     const all = p.notes.join('\n');
-    expect(all).toContain('退潮题材字段排除');
-    expect(all).toContain('日出东方');
-    expect(all).toContain('家电,热泵,东方');
-    expect(all).toContain('剔除后剩 3 只');
-    expect(all).toContain('不足 4 只');
+    expect(all).toContain('常规选股结论【不变】');
+    expect(all).toContain('题材退潮不选');
   });
 
-  it('★ 剔除后仍有 4 只 ⇒ 按剔除后数量取档、块内顺延下一只（日出东方不占名额）', function() {
-    // 大消费 5 只 − 日出东方 = 4 只 ⇒ mid 档（取 1 只）⇒ 龙位顺延到 九阳股份
-    const dm = dragonMap([['日出东方', 1], ['九阳股份', 2], ['北纬科技', 1], ['甲一', 2]]);
-    const p = buildTopicVolRatioPlan([
-      bigTopic(['日出东方', '九阳股份', '家三', '家四', '家五']), aiTopic()
-    ], dm, { ebbCtx: ebbCtx(), ebbHistory: HIST, stockTopicsOf: topicsOf });
-    expect(p.blocks[0].topic).toBe('大消费');
-    expect(p.blocks[0].count).toBe(4);                       // 块上写的是【剔除后】的数量
-    expect(p.blocks[0].picks.map(function(x) { return x.name; })).toEqual(['九阳股份']);
-    expect(p.buyNames.has('日出东方')).toBe(false);
-    expect(p.notes.join('\n')).toContain('按 4 只的常规档位照常选股');
+  it('★ 选出的票题材串不含退潮字段 ⇒ 块不灰、照常买（北纬科技那种）', function() {
+    const dm = dragonMap([['北纬科技', 1], ['甲一', 2]]);
+    const p = buildTopicVolRatioPlan([aiTopic()], dm, {
+      ebbCtx: ebbCtx(), ebbHistory: HIST, stockTopicsOf: topicsOf
+    });
+    expect(p.blocks[0].picks.map(function(x) { return x.name; })).toContain('北纬科技');
+    expect(!!p.blocks[0].ebbTopicGray).toBe(false);
+    expect(p.buyNames.has('北纬科技')).toBe(true);
+    expect(p.blocks[0].picks[0].buyActionTag).not.toBe(EBB_TOPIC_BAN_TAG);
   });
 
-  it('★ 范围只限二次确认退潮日：普通日照旧（含「东方」字段的票照选）', function() {
+  it('★ 范围只限二次确认退潮日：普通日照旧（含「东方」字段的票照选、不灰）', function() {
     const dm = dragonMap([['日出东方', 1], ['九阳股份', 2]]);
     const p = buildTopicVolRatioPlan([bigTopic(['日出东方', '九阳股份', '家三', '家四'])], dm, {
       ebbCtx: { ready: false, leader: null }, stockTopicsOf: topicsOf
@@ -5782,6 +5789,7 @@ describe('tvrb · [EBB-TOPIC-MEMBER] 二次确认退潮 ⇒ 退潮题材字段�
     expect(p.blocks[0].topic).toBe('大消费');
     expect(p.blocks[0].picks.map(function(x) { return x.name; })).toEqual(['日出东方']);
     expect(p.buyNames.has('日出东方')).toBe(true);
+    expect(!!p.blocks[0].ebbTopicGray).toBe(false);
   });
 });
 

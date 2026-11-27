@@ -659,26 +659,30 @@ export function _applyAbnormalTopicBan(out, ban, topicsOf) {
 }
 
 /**
- * ══ [EBB-TOPIC-MEMBER 2026-11-27 用户口径] 第二十条买点侧分流 · 二次确认退潮 ⇒ 退潮题材【票级】收口 ══
+ * ══ [EBB-TOPIC-MEMBER 2026-11-27 用户口径] 第二十条买点侧分流 · 二次确认退潮 ⇒ 退潮题材【票级】灰化 ══
  *
- * 用户原话：「二次确认退潮了，你看退潮的是哪个题材，那个题材中包含哪些题材字段，
- *   有包含这些题材字段的股票当天都不能选进题材量比选股买点侧……比如它原来完整题材窜就是
- *   (家电,热泵,东方)……所以也是属于退潮题材，所以是不能选的。」
+ * 用户原话（11-27，逐字）：
+ *   「大消费是符合的，只是日出东方这只股票不符合而已，可以选出日出东方，但是必须要灰色块，
+ *     并打上区别标签题材退潮不选，并在下面写明原因（这类规律的股票，不指定这只），
+ *     北纬科技还是照原来规则选入的……你只是多了一个判断条件，就是看大消费选出的那只票是不是在
+ *     退潮题材中（就是我说的那个题材窜），如果在退潮题材中，就灰色，如果不在就是常规的就可以了，
+ *     其它不变。」
  *
- * 常规扫描已在【候选层】剔除了命中的票（不占名额、块内按常规顺延），这里只做【兜底收口】：
- * 那些不经过块候选序列的通道（第二十一条退潮替补 / 第三十·三十一·三十五条抱团与补涨），
- * 若仍选出了命中的票 ⇒ 改成【退潮题材不买】（灰化显示、剔出 `buyNames`、不计入「选股 N 只」）。
- *
- * ⛔ 票【绝不删】（用户「不能选入买点侧」= 不给买点，不是让它从屏幕上消失）。
+ * ⇒ 本条【不改任何选股结论】：题材数量 / 档位 / 候选顺延 / 选出哪只票，一律照原规则算完；
+ *   只在收口处多判一次「这只票的题材串里有没有退潮题材字段」，命中就：
+ *     ① 该块灰化（`b.ebbTopicGray = true`，视图与其它灰化块同一套 CSS）；
+ *     ② 该行动作标签换成【题材退潮不选】、行内说明写清「为什么」；
+ *     ③ 剔出 `buyNames`、不计入「选股 N 只」，并同步写一条块内说明。
+ * ⛔ 别的票（题材串不含退潮字段的）一个字都不改 —— 例如同日的北纬科技（游戏,通信）照常买。
  * ⛔ 客观数据（量比 / 涨幅 / 龙标 / 一字 / 停牌）一行不动；⛔ 卖点侧动作一行不动。
  *
  * @param {object} out buildTopicVolRatioPlan 正在组装的计划对象（原地改）
  * @param {{topics:string[],test:(n:string)=>boolean,segmentOf:(n:string)=>string,rawTopicsOf:(n:string)=>string}|null} ban
  *        `makeEbbTopicBan` 的返回（null / 无 `test` ⇒ 零副作用，§11）
- * @returns {{count:number, names:string[]}} 本次兜底剔掉的票（供提示板点名）
+ * @returns {{count:number, names:string[], grayBlocks:number}} 本次灰化的票（供提示板点名）
  */
 export function _applyEbbTopicBan(out, ban) {
-  const res = { count: 0, names: [] };
+  const res = { count: 0, names: [], grayBlocks: 0 };
   if (!out || !ban || typeof ban.test !== 'function') return res;
   const topicsText = (ban.topics || []).join('、');
   eachBuyBlock(out, function(b) {
@@ -693,24 +697,29 @@ export function _applyEbbTopicBan(out, ban) {
       p.holdTag = '';
       p.buyActionTag = EBB_TOPIC_BAN_TAG;
       p.buyActionTone = EBB_TOPIC_BAN_TONE;
-      // ★ 标记位：`_isBuyablePick` / `collectBuyNames` 据此不数它、不继承到次日卖点侧的原因链
+      // ★ 标记位：`_isBuyablePick` / `collectBuyNames` 据此不数它、不继承到次日卖点侧
       p.ebbTopicBlocked = true;
-      p.actionNote = '【第' + EBB_SECOND_RULE_NO + '条 · 二次确认退潮】退潮题材【' + topicsText + '】：' +
-        '本股题材串（' + (ban.rawTopicsOf(p.name) || '—') + '）含有退潮题材字段【' +
-        (ban.segmentOf(p.name) || '—') + '】⇒ 今天【不开新仓、不给买点】' +
+      p.actionNote = '【第' + EBB_SECOND_RULE_NO + '条 · 二次确认退潮】主线题材【' + topicsText +
+        '】今天二次确认退潮：本股题材串（' + (ban.rawTopicsOf(p.name) || '—') + '）里含有退潮题材字段【' +
+        (ban.segmentOf(p.name) || '—') + '】⇒ 它属于退潮题材的票，今天【不给买点】' +
         '（原本的【' + HOLD_TAG + '】/ 竞价买 / 尾盘买 / 先卖后买 等买点信号一律作废）。' +
-        '★ 为什么：主线题材二次确认退潮后，含该题材字段的票当天一律不买（用户口径：题材字段级，' +
-        '不是只看题材块名）—— 这类票今天买进去大概率跟着退潮。' +
+        '★ 注意：本题材本身是符合常规选股条件的，被否定的是【这一只票的题材串】，' +
+        '同题材其它不含该字段的票照常买。' +
         '⚠️ 客观数据与卖点侧动作照旧，只是今天不给买点。';
       res.names.push(String(p.name).trim());
       if (out.buyNames && typeof out.buyNames.delete === 'function') out.buyNames.delete(p.name);
     });
     if (hit > 0) {
       res.count += hit;
+      // ★ 用户「必须要灰色块」：整块灰化（与第二十九 / 三十二 / 三十四·延伸同一个视图入口）
+      b.ebbTopicGray = true;
+      res.grayBlocks++;
       if (!Array.isArray(b.notes)) b.notes = [];
-      b.notes.push('⚠️【第' + EBB_SECOND_RULE_NO + '条 · 二次确认退潮 · 退潮题材字段排除】' +
-        '本题材（或本通道）选出的 ' + hit + ' 只票题材串含退潮题材【' + topicsText +
-        '】⇒ 今天【一律不给买点】（灰化显示），已从买点名单移除；卖点侧动作不变。');
+      b.notes.push('⚠️【第' + EBB_SECOND_RULE_NO + '条 · 二次确认退潮】本题材【' + String(b.topic || '—') +
+        '】的常规选股结论【不变】（题材数量 / 档位 / 选出哪只票都照原规则），但选出的 ' + hit +
+        ' 只票里，' + res.names.slice(-hit).join('、') + ' 的题材串含退潮题材【' + topicsText +
+        '】⇒ 这一块灰化、这只票打【' + EBB_TOPIC_BAN_TAG + '】不给买点；' +
+        '其它题材（题材串不含该字段的）照常买。');
     }
   });
   return res;
@@ -1913,18 +1922,9 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
     ? pickBigTopicTop20(block, o.topicPool, o.coreRes, tier.pickCount, o.topicOwner)
     : null;
   const useTop20 = !!(topicTop20 && topicTop20.judge === 'hit');
-  const dragonCandsRaw = (Array.isArray(o.order) && o.order.length > 0)
+  const dragonCands = (Array.isArray(o.order) && o.order.length > 0)
     ? o.order
     : _dragonCandidates(block, dragonMap, pctMap);
-  // ★★ [EBB-TOPIC-MEMBER 2026-11-27 · 第二十六条粒度细化] 退潮题材「票级」排除。
-  //   用户原话：「退潮的是哪个题材，那个题材中包含哪些题材字段，有包含这些题材字段的股票
-  //   当天都不能选进题材量比选股买点侧」。命中者【不进候选】⇒ 不占名额，块内顺延下一只；
-  //   题材数量是否还够（`effCount < 4` 就不入选）由调用方（tvrb-plan 的档位计算）先判。
-  //   §11：不传 `opt.excludeName` ⇒ 候选序列逐项零变化。
-  const ebbExclude = (typeof o.excludeName === 'function') ? o.excludeName : null;
-  const dragonCands = ebbExclude
-    ? dragonCandsRaw.filter(function(c) { return !(c && ebbExclude(c.name)); })
-    : dragonCandsRaw;
   // ── 候选序列 ────────────────────────────────────────────────────────────────
   // 常规 = 龙位升序（_dragonCandidates）；big 档命中前十 ⇒ 【前十先排（按 20日涨幅名次升序）】，
   // 其后接【同题材其余成员（仍按龙位升序）】—— 这一截正是用户说的
