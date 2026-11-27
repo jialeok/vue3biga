@@ -120,5 +120,12 @@ describe('第二十八条 · 次日买（nextday-buy）', () => {
     expect(ov).toContain("'nextDayCarry'");
     // ⛔ 次日买的票不算「今天买过」⇒ 不许进次日卖点侧
     expect(ov).toContain('if (p.buyNextDay === true) return;');
+
+    // ★★ [NEXT-DAY-BUY-3 2026-11-28 用户报障·11-20] 冻结存档里没有承接块时必须能【展示层补算】，
+    //   否则「上一日存档没读完就冻结」的那一天永远看不到这块（11-20 实证）。
+    const comp = readFileSync('src/composables/useTopicVolRatioBoard.js', 'utf8');
+    expect(comp).toContain('buildNextDayCarryBlock(v, list)');
+    // 跨日输入还在读时⛔不许定稿（否则把「没有承接」冻结进库）
+    expect(comp).toContain("prevNextDayBuy.value.status === 'loading'");
   });
 });

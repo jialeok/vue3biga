@@ -259,7 +259,7 @@ import { readPlanSnapshot, writePlanSnapshot, isPlanSnapshotInputsSigSupported }
 //   ⇒ 冻结只保留买点结论；卖点段与分笔装饰恒取实时（§6：判据唯一实现在这个模块里）。
 import { eachBuyBlock, overlayLiveOnFrozen, collectBuyNames } from '../logic/topicvolratio/plan-live-overlay.js';
 // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 第二十八条的【次日承接】名单读取（纯函数，§6 单一真相）
-import { collectNextDayBuy } from '../logic/topicvolratio/nextday-buy.js';
+import { collectNextDayBuy, buildNextDayCarryBlock } from '../logic/topicvolratio/nextday-buy.js';
 // ★★ [ABNORMAL-ALL 2026-11-13 用户口径] 监管异动是【显示层总约束】：历史日读定稿存档（v4）
 //   时第三十四条规则层结果会被整个丢弃 ⇒ 上屏前统一叠加一次「空仓 + 全灰 + 不买」（⛔ 不改写存档）。
 import { applyAbnormalOverlay, isAbnormalAllGray, buildAbnormalFactFromMaps } from '../logic/topicvolratio/abnormal-overlay.js';
@@ -1819,7 +1819,7 @@ export function useTopicVolRatioBoard() {
    *
    * ⛔ 只继承一天：来源恒为上一交易日，⛔ 不再往更早翻（用户「不要无限继承」）。
    */
-  const prevNextDayBuy = ref({ date: '', names: null, note: '' });
+  const prevNextDayBuy = ref({ date: '', names: null, note: '', status: '' });
 
   // ★★ [RULES-BUMP-ALL 2026-11-14 用户口径] 这里原有一个 `_bjTodayKey()`（北京「今天」日期串），
   //   唯一用途是给 `allowRulesInvalidation` 传「今天 true / 历史日 false」，让规则升级只重算今天。
@@ -1854,13 +1854,18 @@ export function useTopicVolRatioBoard() {
     }
     prevBuyPlanNames.value = { date: prev, names: null, status: 'loading' };
     // ★★ [NEXT-DAY-BUY] 同一次异步读档里一起清空（⛔ 不许留着上一天的名字当今天的承接名单）
-    prevNextDayBuy.value = { date: prev, names: null, note: '' };
+    //   `status` 三态：'' 未开始 / 'loading' 读档中 / 'hit' 读到了（含「确实没有」= names: []）/ 'error' 读失败。
+    //   ⚠️ [NEXT-DAY-BUY-3 2026-11-28] `_persistPlanSnapshot` 靠 'loading' 拦住「跨日输入还没到就冻结结论」。
+    prevNextDayBuy.value = { date: prev, names: null, note: '', status: 'loading' };
     readPlanSnapshot(prev).then(function(res) {
       if (_disposed) return;
       if (String(currentDate.value || '').trim() !== key) return;   // 竞态：用户已经切走
       const r = res || { status: 'error', reason: 'empty-result' };
       if (r.status !== 'hit') {
         prevBuyPlanNames.value = { date: prev, names: null, status: r.status || 'error' };
+        // ★ 读不到 ⇒ 承接名单 names 保持 null（未知）⇒ 今天不渲染承接块（§10 不瞎猜）
+        //   ⚠️ status 必须离开 'loading'，否则 `_persistPlanSnapshot` 会一直被拦住（永远不定稿）。
+        prevNextDayBuy.value = { date: prev, names: null, note: '', status: 'error' };
         // ★ 读不到 ⇒ 承接名单 names 保持 null（未知）⇒ 今天不渲染承接块（§10 不瞎猜）
         _dbgLog('[TVRB-SELL-AUTO] 昨日 ' + prev + ' 的定稿存档不可用（' + (r.status || 'error') +
           '）⇒ 今日卖点侧只用「昨日买入/持有」标签，可能缺票（不会瞎猜）');
@@ -1869,6 +1874,7 @@ export function useTopicVolRatioBoard() {
       const dec = decodePlanSnapshot(r.row && r.row.plan);
       if (!dec.ok) {
         prevBuyPlanNames.value = { date: prev, names: null, status: 'corrupt' };
+        prevNextDayBuy.value = { date: prev, names: null, note: '', status: 'error' };
         _dbgLog('[TVRB-SELL-AUTO] 昨日 ' + prev + ' 存档解码失败（' + dec.reason +
           '）⇒ 今日卖点侧只用标签');
         return;
@@ -1882,7 +1888,8 @@ export function useTopicVolRatioBoard() {
       prevNextDayBuy.value = {
         date: prev,
         names: ndb ? ndb.names : [],
-        note: ndb ? ndb.note : ''
+        note: ndb ? ndb.note : '',
+        status: 'hit'
       };
       _dbgLog('[TVRB-SELL-AUTO] 昨日 ' + prev + ' 买点侧 ' + names.length + ' 只 ⇒ 今日卖点侧自动继承：' +
         (names.slice(0, 12).join('、') || '(空)') + (names.length > 12 ? ' …' : '') +
@@ -1891,7 +1898,7 @@ export function useTopicVolRatioBoard() {
       if (_disposed) return;
       if (String(currentDate.value || '').trim() !== key) return;
       prevBuyPlanNames.value = { date: prev, names: null, status: 'error' };
-      prevNextDayBuy.value = { date: prev, names: null, note: '' };
+      prevNextDayBuy.value = { date: prev, names: null, note: '', status: 'error' };
       _dbgLog('[TVRB-SELL-AUTO] 读昨日买点侧异常：' + String((e && e.message) || e));
     });
   }
@@ -3301,6 +3308,15 @@ export function useTopicVolRatioBoard() {
   function _persistPlanSnapshot(d, plan) {
     const key = String(d || '').trim();
     if (!key || !plan) return;
+    // ★★ [NEXT-DAY-BUY-3 2026-11-28 用户报障·11-20] 跨日输入还没落地 ⇒ 这一帧结论【不完整】，不许冻结。
+    //   11-20 实证：上一日（11-19）存档还在异步读，这一帧算出的 plan 里 `nextDayCarry = null`，
+    //   却被当成「已定稿」写进 `tvrb_plan_snapshot` ⇒ 存档已判新鲜 ⇒ 规则层不再重算 ⇒ 承接块永不出现。
+    //   ⇒ 只有 ['loading'] 拦（其余状态都算读过：读失败也要照常存，⛔ 不能因为读不到就永不定稿）。
+    if (prevNextDayBuy.value && prevNextDayBuy.value.status === 'loading') {
+      _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 上一日的 nextDayBuy 还在读 ⇒ 本次不存档' +
+        '（否则会把「没有次日承接」的错误结论冻结进去，11-20 实证）');
+      return;
+    }
     // ① 降级结论不入库（与日期无关，今天 / 历史日一视同仁）
     //
     // ★★ [HARD-STALL-PERSIST 2026-11-26 用户报障「11-23 当天没见这只票，现在又冒出来了」]
@@ -3736,7 +3752,32 @@ export function useTopicVolRatioBoard() {
    *   而且是【今天真要买】的那几只 —— 被 grayscale 吞掉就等于买点消失。
    *   没有上一日名单（读不到 / 那天没有）⇒ null ⇒ 视图 v-if 不渲染（§10 不拿空壳冒充结论）。
    */
-  const nextDayCarry = computed(() => (displayPlan.value && displayPlan.value.nextDayCarry) || null);
+  const nextDayCarry = computed(function() {
+    const p = displayPlan.value;
+    if (!p) return null;
+    // ① 规则层算出来的（新鲜重算 / 存档里已经带着）优先 —— 那一条连 buyNames / 计数都算好了
+    if (p.nextDayCarry) return p.nextDayCarry;
+    // ② 冻结存档里没有 ⇒ 展示层补算。
+    //   ★★ [NEXT-DAY-BUY-3 2026-11-28 用户报障·11-20] 「华东重机还是没有变化啊，也没有打上标签，
+    //      原版也没有见分块」。根因：11-20 的定稿是在「上一日（11-19）存档还没读完」那一帧冻住的，
+    //      那份 plan 里 `nextDayCarry = null`；而存档已判新鲜 ⇒ 规则层不会再算 ⇒ 承接块永远不出现。
+    //   ⇒ 承接块的来源本来就不是「今天算出来的结论」，而是【上一交易日存档的跨日输入】，
+    //      所以展示层完全可以从 `prevNextDayBuy` 独立补出来（§4 ViewModel，不产生第二个真相：
+    //      名单仍唯一来自 11-19 存档的 `newDragon.nextDayBuy`）。
+    //   ⚠️ 这张补算块【不进】 buyNames / 选股计数（那些只能用规则层那一份，⛔ 别在这里假装算过）。
+    const v = prevNextDayBuyForDay.value;
+    if (!v) return null;
+    if (p.buyDataGate && p.buyDataGate.blocked) return null;   // 数据缺失日：买点侧整体空仓
+    if (p.abnormal && p.abnormal.show) return null;            // 异动日：全场空仓
+    if (p.buyPending || p.divergePending) return null;         // 结果未定稿：不许先亮一块
+    // 反查代码 / 涨幅用（拿不到就留空，§10 不猜）
+    const list = [];
+    (p.blocks || []).forEach(function(b) {
+      const m = b && b.block && b.block.members;
+      if (Array.isArray(m)) m.forEach(function(x) { list.push(x); });
+    });
+    return buildNextDayCarryBlock(v, list);
+  });
   /**
    * ★★ [R10-BACKUP 2026-10-24 用户口径] 第二十九条【十日涨幅 · 在列次数候补】那一只的买点块。
    * ⚠️ 与 ebbBuy / divergeBuy / newDragon 同一约定：它【不在 blocks 里】，
