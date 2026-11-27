@@ -9,7 +9,7 @@
 
 import { TVRB_MIN_COUNT, TVRB_TOPIC_LIMIT, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_TOP_N, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TVRB_CASH_ALERT_NONE, NEW_DRAGON_TAG, NEW_DRAGON_LOOKBACK_DAYS, NEW_DRAGON_CERTIFY_TOP_N, NEW_DRAGON_FAMILY_MIN_COUNT, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_KIND_LEADER_NOW, TVRB_ABNORMAL_NONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG, EBB_SECOND_RULE_NO, EBB_TOPIC_BAN_TAG } from './tvrb-constants.js';
 import { pickFamilyNewDragon, splitTopicSegs, isLineageTopic } from './new-dragon-family.js';
-import { _normTopic, _sameTopicLoose, makeEbbTopicBan, ebbBanTopicsOf, _num, _pct2, _streakWord, _secondTopicLeaderInTop10, _range10RankMapOf, _closeRankOf, _rankTopEntries, _topicTop10Hits, _windowTextOf, _todayRankPhrase, _rankLabelOf, _oldTopicNameOf, _oldTopicBasisOf, _isBuyablePick } from './tvrb-utils.js';
+import { _normTopic, _sameTopicLoose, makeEbbTopicBan, ebbBanTopicsOf, buildLeaderEventTimeline, _num, _pct2, _streakWord, _secondTopicLeaderInTop10, _range10RankMapOf, _closeRankOf, _rankTopEntries, _topicTop10Hits, _windowTextOf, _todayRankPhrase, _rankLabelOf, _oldTopicNameOf, _oldTopicBasisOf, _isBuyablePick } from './tvrb-utils.js';
 import { detectEbbDay, secondEbbTopicOfPrevDay, buildEbbDayRecord } from './tvrb-ebb.js';
 import { _applyPrevEbbSecondNoBuy, _applyLeaderLimitDownNoBuy, _applySecondTopicVolWeakNoBuy, _applyEbbSellRules, _buildEbbPicksBlock, _applyEbbBuyRules, _applyCashAlertBuyRules, _applyDivergeNoBuyRules, _applyAbnormalNoBuyRules, _buildDivergeBuyBlock, _buildDivergeCashAlert, _buildWeakHuddleBlock, _buildLeaderLimitDownHuddleBlock, _buildCatchUpBlock, _buildTop30HuddleBlock, resolveTvrbTier, avgVolRatioOf, formatAvgVolRatio, buildCashAlert, _dragonCandidates, _buildBlock, _buildNewDragonBlock, _withAuctionLegPct, _buildRange10BackupBlock, _applyAbnormalTopicBan, _applyEbbTopicBan } from './tvrb-blocks.js';
 // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条「监管异动 · 十日涨幅硬上限」的事实判定
@@ -975,7 +975,13 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     // §10：把「今天为什么没有退潮判定」写清楚，⛔ 不能让人误以为「今天没退潮」
     // ★★ [LEADER-FIRST-TOPIC 2026-11-12] 题材一律写【老题材（大类）】而不是退潮行落库的那一段
     //   （用户原话：「我都说了提到题材的时候要说大类，你说农业（老龙一 东方海洋）」）。
-    out.notes.push('ℹ️【第二十八条 · 周期状态】' + (out.switchDay.leaderName || '老龙一') + '（' +
+    // ★★ [LEADER-TIMELINE 2026-11-27 用户口径] 第二十八条说明【上方】先给一条【总龙一事件轴】：
+  //   用户原话「你应该在28条说明上面标有总龙一的事件，包含题材，首次分歧，首次退潮、二次确认退潮等，
+  //   没有三次退潮……做一个时间历史事件小表在上面节省空间为准，这样我一看就知道，更加清晰」。
+  //   ⛔ 纯展示：只读 switchDay / ebbHistory / divergeFacts，不改任何判定；缺失一律占位「—」（§10）。
+  const _timeline = buildLeaderEventTimeline(out.switchDay, o.ebbHistory, o.divergeFacts, o.date, coreRes);
+  if (_timeline) out.notes.push(_timeline);
+  out.notes.push('ℹ️【第二十八条 · 周期状态】' + (out.switchDay.leaderName || '老龙一') + '（' +
       (_oldTopicNameOf(out.switchDay) || '—') + '）已于 ' + out.switchDay.ebbDate +
       ' 【二次确认退潮】⇒ 老周期结束；今天（第 2 个交易日）=【切换日】，按第二十八条选新龙，' +
       '今天【不再判退潮】（占比 / 停牌不再重开退潮事件）。' +

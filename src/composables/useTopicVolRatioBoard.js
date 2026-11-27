@@ -2407,6 +2407,12 @@ export function useTopicVolRatioBoard() {
         // ★★ [EBB-TOPIC-TEMP 2026-11-27] 当日【生效】的临时题材词：第二十条的禁买集合 =
         //   总龙原有题材 ∪（这里的词 ∩ 总龙题材串）⇒ 11-16「东方」牵连，日出东方灰化。
         tempTopicTokens: _tempTopicTokensOf(d),
+        // ★★ [LEADER-TIMELINE 2026-11-27] 第二十八条说明上方「总龙一事件轴」的【首次分歧】事实：
+        //   直接复用本日【已经算好】的分歧判定（市龙一 + 首次分歧日），⛔ 不新增任何请求、不参与选股。
+        //   判定不是这一天的 / 判不出 ⇒ 传 null（规则层留「—」，⛔ 不拿别的票的分歧日来拼）。
+        divergeFacts: (_ldVerdict && _ldVerdict.canJudge)
+          ? { stock: (_ldTop5[0] && _ldTop5[0].name) || '', firstDate: _ldVerdict.firstDivergenceYmd || '' }
+          : null,
         // ★★ [DEV-RULE 2026-11-25 用户口径] 官方偏离值事实（规则输入，⛔ 规则层不取数）：
         //   auto   = 自动口径（9:25 竞价 / 收盘）在今天的 Map ⇒ 第三十六条「逼近不买」+ 三十六·b「异动卖」
         //   byDate = 收盘口径的历史日 Map（含上一交易日）⇒ 第三十四条「异动次日」

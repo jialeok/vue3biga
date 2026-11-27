@@ -127,7 +127,7 @@ import {
 // ★★ [CORE-CAT 2026-10-22] 「题材 → 核心词大类」归一的唯一实现（文化传媒 ⇒ AI应用）
 import { makeCoreTopicResolver } from '../topic/core-category.js';
 // ★★ [EBB-TOPIC-MEMBER 2026-11-27] 退潮题材【票级】判据（第二十条粒度细化）的唯一实现
-import { makeEbbTopicBan, ebbBanTopicsOf } from './tvrb-utils.js';
+import { makeEbbTopicBan, ebbBanTopicsOf, buildLeaderEventTimeline } from './tvrb-utils.js';
 // ★ [EBB-TOPIC-MEMBER 2026-11-27] 退潮题材字段级灰化的区别标签
 import { EBB_TOPIC_BAN_TAG } from './tvrb-constants.js';
 // ★ [AUCTION-YIZI-UNIFY 2026-11-16] 一字标签唯一来源（断言必须比对常量，⛔ 不写字面量）
@@ -3073,6 +3073,23 @@ describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新
     expect(plan.newDragon.rank).toBeNull();          // ⛔ 不是题材排名，不给圆点
   });
 
+  it('★ 第二十八条说明【上方】必须有「总龙一事件轴」小表（用户 2026-11-27 口径）', function() {
+    // ⚠️ 事件轴写在「今天不判退潮」那条说明【上方】，它的前置闸门是 ebbCtx.ready ⇒ 必须置 true
+    const plan = build({ date: '2026-10-22', ebbCtx: { ready: true, top5: TOP5 } });
+    const all = plan.notes.join('\n');
+    expect(all).toContain('〔事件轴〕新华传媒');
+    expect(all).toContain('首次退潮 10-13');
+    expect(all).toContain('二次确认退潮 10-20');
+    expect(all).toContain('切换日 10-22〔本题〕');
+    expect(all).toContain('无三次退潮');
+    // 顺序：事件轴必须排在【第二十八条 · 周期状态】上面（notes 按数组顺序渲染）
+    expect(all.indexOf('〔事件轴〕')).toBeLessThan(all.indexOf('【第二十八条 · 周期状态】'));
+    // 省空间：整条只有一行
+    const line = plan.notes.filter(function(x) { return String(x).indexOf('〔事件轴〕') === 0; })[0];
+    expect(!!line).toBe(true);
+    expect(String(line).indexOf('\n')).toBe(-1);
+  });
+
   it('★ 新龙那一行的动作标签 = 【新龙买】，客观数据仍在（走过 finishBuyBlock）', function() {
     const plan = build();
     const picks = plan.newDragon.picks;
@@ -5936,5 +5953,41 @@ describe('tvrb · [EBB-TOPIC-TEMP] 退潮禁买集合 = 原有题材 + 临时题
     expect(ebbBanTopicsOf('水产品', '水产品,东方', null, res).tempTopics).toEqual([]);
     // 原有题材为空 ⇒ 只剩临时题材牵连
     expect(ebbBanTopicsOf('', '水产品,东方', ['东方'], res).topics).toEqual(['东方']);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ★★ [LEADER-TIMELINE 2026-11-27 用户口径] 第二十八条说明上方的「总龙一事件轴」小表（纯函数）。
+//   顺序 = 时间顺序：首次分歧 → 首次退潮 → 二次确认退潮 → 切换日；没有三次退潮。
+// ══════════════════════════════════════════════════════════════════════════════════════
+describe('tvrb · buildLeaderEventTimeline 事件轴（§6 纯函数）', function() {
+  const SD = { leaderName: '东方海洋', oldTopic: '羊字辈', ebbTopic: '水产品', ebbDate: '2026-11-16' };
+  const HIST = [
+    { date: '2026-11-04', leaderStock: '东方海洋', leaderTopic: '农业', ebb: false },
+    { date: '2026-11-10', leaderStock: '东方海洋', leaderTopic: '农业', ebb: true },
+    { date: '2026-11-16', leaderStock: '东方海洋', leaderTopic: '水产品', ebb: true }
+  ];
+
+  it('★ 11-18 形状：一行讲完 首次分歧 → 首次退潮 → 二次确认退潮 → 切换日 + 无三次退潮', function() {
+    const t = buildLeaderEventTimeline(SD, HIST, { stock: '东方海洋', firstDate: '2026-11-04' }, '2026-11-18');
+    expect(t).toBe('〔事件轴〕东方海洋 题材=羊字辈（退潮登记=水产品）：首次分歧 11-04 → 首次退潮 11-10 → ' +
+      '二次确认退潮 11-16 → 切换日 11-18〔本题〕｜无三次退潮（第二十七条：第三次以上不判）');
+    expect(t.indexOf('\n')).toBe(-1);
+  });
+
+  it('★ 分歧事实不属于本龙 / 找不到首次退潮 ⇒ 占位「—」，⛔ 不拿别的票的数据拼进来', function() {
+    const t = buildLeaderEventTimeline(
+      { leaderName: '文投控股', oldTopic: 'AI应用', ebbTopic: 'AI应用', ebbDate: '2026-11-17' },
+      [{ date: '2026-11-17', leaderStock: '文投控股', leaderTopic: 'AI应用', ebb: true }],
+      { stock: '华东重机', firstDate: '2026-11-05' }, '2026-11-19');
+    expect(t).toContain('首次分歧 —');
+    expect(t).toContain('首次退潮 —');
+    expect(t).toContain('二次确认退潮 11-17');
+    expect(t).not.toContain('华东重机');
+  });
+
+  it('★ 没有切换日 / 没有老龙一 ⇒ 空串（这一天不写事件轴，§11）', function() {
+    expect(buildLeaderEventTimeline(null, HIST, null, '2026-11-18')).toBe('');
+    expect(buildLeaderEventTimeline({ oldTopic: '羊字辈' }, HIST, null, '2026-11-18')).toBe('');
   });
 });

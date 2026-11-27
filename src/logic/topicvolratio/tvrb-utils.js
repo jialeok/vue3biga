@@ -183,6 +183,68 @@ export function makeEbbTopicBan(ebbTopics, topicsOf, coreRes) {
   };
 }
 
+/**
+ * ★★ [LEADER-TIMELINE 2026-11-27 用户口径] 第二十八条说明【上方】的「总龙一事件轴」小表（§6 唯一实现）。
+ *
+ * 用户原话：「你应该在28条说明上面标有总龙一的事件，包含题材，首次分歧，首次退潮，二次确认退潮等，
+ *   没有三次退潮，你看下顺序怎么安排，做下记录。做一个时间历史事件小表在上面节省空间为准，
+ *   这样我一看就知道，更加清晰」
+ *
+ * 输出固定【一行】（省空间），顺序 = 时间顺序：
+ *   〔事件轴〕东方海洋 题材=羊字辈（退潮登记=水产品）：首次分歧 11-04 → 首次退潮 11-10
+ *   → 二次确认退潮 11-16 → 切换日 11-18〔本题〕｜无三次退潮（第二十七条：第三次以上不判）
+ *
+ * ⛔ 「二次确认退潮」一律取 `switchDay.ebbDate`（第二十八条的起点，与提示板正文同源），
+ *    首次退潮 = 它之前【本龙或本题材】最近一次 ebb=true 的落库行（找不到 ⇒ 占位「—」，§10 不编）。
+ * ⛔ 「首次分歧」只认【属于本龙】的那份事实（`divergeFacts.stock === 老龙一`），否则留「—」——
+ *    拿别的票的分歧日拼进来会误导（§6 单一真相）。
+ * ⛔ 只读已注入的事实，不取数、不改任何选股判定（§4 / §11）。
+ *
+ * @param {{leaderName?:string, oldTopic?:string, ebbTopic?:string, ebbDate?:string}|null} switchDay 切换日判定
+ * @param {Array<{date:string, leaderStock:string, leaderTopic:string, ebb:boolean}>|null} ebbHistory 近 N 交易日落库行
+ * @param {{stock?:string, firstDate?:string}|null} divergeFacts 本日已算好的分歧判定（市龙一 + 首次分歧日）
+ * @param {string} today 展示日（= 切换日）
+ * @param {(raw:string)=>string} [coreRes] 大类归一函数（判「本题材」时用）
+ * @returns {string} 没有切换日 / 没有老龙一 ⇒ ''（调用方不写这一行，§11）
+ */
+export function buildLeaderEventTimeline(switchDay, ebbHistory, divergeFacts, today, coreRes) {
+  const sd = switchDay || null;
+  const name = String((sd && sd.leaderName) || '').trim();
+  if (!sd || !name) return '';
+  const md = function(d) {
+    const s = String(d === null || d === undefined ? '' : d).trim();
+    return s.length >= 10 ? s.slice(5) : (s || '—');
+  };
+  const secondEbb = String(sd.ebbDate || '').trim();
+  const ebbTopicNorm = _normTopic(sd.ebbTopic, coreRes);
+  // 首次退潮：二次确认退潮之前，本龙或本题材最近一次 ebb=true
+  let firstEbb = '';
+  (Array.isArray(ebbHistory) ? ebbHistory : []).forEach(function(r) {
+    const d = String((r && r.date) || '').trim();
+    if (!d || !r || r.ebb !== true) return;
+    if (secondEbb && d >= secondEbb) return;
+    const sameStock = String(r.leaderStock || '').trim() === name;
+    const sameTopic = !!ebbTopicNorm && _normTopic(r.leaderTopic, coreRes) === ebbTopicNorm;
+    if (!sameStock && !sameTopic) return;
+    if (d > firstEbb) firstEbb = d;
+  });
+  const df = divergeFacts || null;
+  const firstDiv = (df && String(df.stock || '').trim() === name) ? String(df.firstDate || '').trim() : '';
+  const topic = String(sd.oldTopic || '').trim();
+  const reg = String(sd.ebbTopic || '').trim();
+  const topicText = topic
+    ? ('题材=' + topic + (reg && _normTopic(reg, coreRes) !== _normTopic(topic, coreRes) ? '（退潮登记=' + reg + '）' : ''))
+    : (reg ? '题材=' + reg : '题材=—');
+  const parts = [
+    '首次分歧 ' + (firstDiv ? md(firstDiv) : '—'),
+    '首次退潮 ' + (firstEbb ? md(firstEbb) : '—'),
+    '二次确认退潮 ' + (secondEbb ? md(secondEbb) : '—'),
+    '切换日 ' + md(today) + '〔本题〕'
+  ];
+  return '〔事件轴〕' + name + ' ' + topicText + '：' + parts.join(' → ') +
+    '｜无三次退潮（第二十七条：第三次以上不判）';
+}
+
 /** 退潮日【允许看分笔卖】的股票名集合（§6：唯一的取名实现，判定与改写共用） */
 export function _ebbEligibleNames(ebb) {
   const set = new Set();
