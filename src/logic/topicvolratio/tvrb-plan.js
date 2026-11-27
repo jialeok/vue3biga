@@ -14,7 +14,7 @@ import { detectEbbDay, secondEbbTopicOfPrevDay, buildEbbDayRecord } from './tvrb
 import { _applyPrevEbbSecondNoBuy, _applyLeaderLimitDownNoBuy, _applySecondTopicVolWeakNoBuy, _applyEbbSellRules, _buildEbbPicksBlock, _applyEbbBuyRules, _applyCashAlertBuyRules, _applyDivergeNoBuyRules, _applyAbnormalNoBuyRules, _buildDivergeBuyBlock, _buildDivergeCashAlert, _buildWeakHuddleBlock, _buildLeaderLimitDownHuddleBlock, _buildCatchUpBlock, _buildTop30HuddleBlock, resolveTvrbTier, avgVolRatioOf, formatAvgVolRatio, buildCashAlert, _dragonCandidates, _buildBlock, _buildNewDragonBlock, _withAuctionLegPct, _buildRange10BackupBlock, _applyAbnormalTopicBan, _applyEbbTopicBan } from './tvrb-blocks.js';
 // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径 · 规则手册八修] 第二十八条「次日买」与「次日承接块」
 //    独立成一个模块（⛔ 不并进 tvrb-blocks 的当天买通道）：本文件的职责只是**接线**。
-import { markNextDayBuy, finalizeNextDayBuy, buildNextDayCarryBlock } from './nextday-buy.js';
+import { markNextDayBuy, finalizeNextDayBuy } from './nextday-buy.js';
 // ★★ [ABNORMAL-10D 2026-11-13 用户口径] 第三十四条「监管异动 · 十日涨幅硬上限」的事实判定
 //   （纯函数：把「总龙一昨日/今日十日涨幅 + 会被选中的票的十日涨幅」判成一块空仓标语）。
 //   ⛔ 阈值 / 文案全在 abnormal-10d.js + tvrb-constants.js，本文件只负责【注入事实】与【收口】。
@@ -1848,18 +1848,12 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     //   ⛔ 不许把标签塞进 NO_BUY_ACTION_TAGS（那一张表是「今天不给买点」，会让「选股 N 只」变 0）。
     if (out.newDragon) markNextDayBuy(out.newDragon, { date: String(o.date || '') });
 
-    // ★★ [NEXT-DAY-BUY] 第二十八条【次日承接】：把上一交易日存档里的 `nextDayBuy` 接进来。
-    //   三条硬约束（全部在 nextday-buy.js 头注释里）：
-    //     ① 只继承一天 —— 来源恒为上一日存档，本块自己不再产出 `nextDayBuy`；
-    //     ② 灰色行不继承 —— 名单在【上一日收口时】就已经剔掉了灰行（finalizeNextDayBuy），
-    //        万一存档是旧规则产物，本块仍会被今天的退潮牵连 / 逼近红线 / 异动收口再拦一次
-    //        （所以它必须建在下面那一串覆盖式改写【之前】）；
-    //     ③ 有说明文字 —— 文案在 nextday-buy.js（NEXT_DAY_BUY_NOTE），⛔ 别在视图里另写一份。
-    const _ndCarry = o.prevNextDayBuy || null;
-    if (_ndCarry && Array.isArray(_ndCarry.names) && _ndCarry.names.length > 0) {
-      out.nextDayCarry = buildNextDayCarryBlock(_ndCarry, list);
-      if (out.nextDayCarry) out.buy.nextDayCarry = out.nextDayCarry;
-    }
+    // ★★ [NEXT-DAY-BUY] 第二十八条【次日承接】块（昨天选、今天买）**不在这里建**。
+    //   它依赖「上一交易日的存档」，是异步跨日输入；一旦成为 plan 的依赖 ⇒ 每次切日期都会
+    //   先算一遍、等读档回来再整张重算一遍（用户实测「加载比之前慢很多」）。
+    //   ⇒ 改由展示层补算：`useTopicVolRatioBoard.js` 的 `nextDayCarry` computed
+    //     （名单仍唯一来自上一日存档的 `newDragon.nextDayBuy`，⛔ 不是第二个真相）。
+    //   ⛔ 别为了「顺手」把它加回 plan：会立刻把日期切换变回两次全量重算。
     // ★★ [NEW-DRAGON-CERTIFY / NEW-DRAGON-FAMILY 2026-11-12] 把「谁认证的谁、一共买几只」写进
     //   看板级说明（用户要「标清楚」）。family 路径（新题材 = 字号/字辈）优先，旧认证龙路径作兜底。
     const _cert = ndResult && ndResult.certifier;
@@ -2555,11 +2549,9 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //   留在名单里 ⇒ 卖点侧会因「今天又进买点」把它标成【持有】，与「今天不下单、明天才买」正面矛盾。
   //   ⛔ 别在这里补一句 `add` —— 明天由下面的【次日承接块】以「今天真要买」的身份进名单。
   //
-  // ★★ [NEXT-DAY-BUY] 第二十八条的【次日承接】块才是「今天真要买」的票 ⇒ 进名单（同一不变式）：
-  //   它若昨天已在卖点侧候选里，卖点侧要标【持有】而不是「竞价清仓」（同一天不可能既买又清）。
-  if (out.nextDayCarry) {
-    (out.nextDayCarry.picks || []).forEach(function(p) { if (p && p.name) out.buyNames.add(p.name); });
-  }
+  // ★★ [NEXT-DAY-BUY-4 2026-11-28] 【次日承接】块不在 plan 里（它是展示层补算的跨日块）
+  //   ⇒ 这里⛔ 不要再 forEach 往 buyNames 里加：那会让「今天没算过的票」混进当日买点名单，
+  //     卖点侧会误标【持有】（§6 单一真相：买点名单只能来自当天规则层算出的票）。
   // ★★ [R10-BACKUP 2026-10-24] 第二十九条的【十日涨幅候补】同样是「今天进买点」⇒ 进名单（同一不变式）：
   //   它若昨天已在卖点侧候选里，卖点侧要标【持有】而不是「竞价清仓」（同一天不可能既买又清）。
   if (out.range10Backup) {
@@ -2804,8 +2796,8 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   if (out.newDragon) _countUnique(out.newDragon.picks);
   // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 新龙今天【不下单】（标签 = 次日买）但它仍然是
   //   「今天选出来的票」⇒ 照旧计入（用户口径：「第二十八条选票是对的」）。
-  //   第二十八条的【次日承接】块同理：它就是今天真要买的那几只，必须计入。
-  if (out.nextDayCarry) _countUnique(out.nextDayCarry.picks);
+  // ★★ [NEXT-DAY-BUY-4 2026-11-28] 承接块不在这里计数：它不在 plan 里（展示层补算），
+  //   它的「1 只」由组件自己显示，⛔ 不许混进今日「选股 N 只」。
   // ★★ [R10-BACKUP 2026-10-24] 十日涨幅候补那一只同理（它就是今天能不能下单的那一只）
   if (out.range10Backup) _countUnique(out.range10Backup.picks);
   // ★★ [WEAK-HUDDLE 2026-10-27] 弱势切抱团那一只同理（今天唯一还能买的就是它）。

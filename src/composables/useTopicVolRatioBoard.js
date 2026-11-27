@@ -2358,10 +2358,13 @@ export function useTopicVolRatioBoard() {
         date: d,
         // ★★ [TVRB-DATA-GATE] 数据缺失 ⇒ 规则层直接清空买点侧（见 _clearBuySideForDataGate）
         dataGateBlocked: _dataGate.blocked,
-        // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 第二十八条【次日承接】的输入：
-        //   上一交易日存档里的 `newDragon.nextDayBuy`（灰行在上一日收口时已剔除）。
-        //   null = 今天没有承接（读不到 / 那天确实没有）⇒ 规则层恒不建块（§11 零渲染）。
-        prevNextDayBuy: prevNextDayBuyForDay.value,
+        // ★★ [NEXT-DAY-BUY-4 2026-11-28 用户报障「加载比之前慢很多」] ⛔ 这里【不再】把上一日的
+        //   nextDayBuy 注入规则层。原因（性能红线 §17 / §26）：
+        //   它是【异步】读档结果，一旦成为 plan 的依赖 ⇒ 每次切换日期都会「先算一遍（无承接）
+        //   → 上一日存档读完 → 整张 plan 再算一遍」，等于**每次切换都全量重算两次**；
+        //   而且第二份结论还会改 `selectionSig` ⇒ 触发第二次存档判定。
+        //   ⇒ 承接块改由**展示层**单独补算（见下面 `nextDayCarry` computed），规则层不再依赖跨日输入。
+        //   ⛔ 别再加回来 —— 那条路的结果只是「多一块展示块」，却要付两次全量重算的代价。
         ctx: {
           prevDragonNames: rec.prevDragonNames,
           prevBuyNames: rec.prevBuyNames,
@@ -3308,15 +3311,10 @@ export function useTopicVolRatioBoard() {
   function _persistPlanSnapshot(d, plan) {
     const key = String(d || '').trim();
     if (!key || !plan) return;
-    // ★★ [NEXT-DAY-BUY-3 2026-11-28 用户报障·11-20] 跨日输入还没落地 ⇒ 这一帧结论【不完整】，不许冻结。
-    //   11-20 实证：上一日（11-19）存档还在异步读，这一帧算出的 plan 里 `nextDayCarry = null`，
-    //   却被当成「已定稿」写进 `tvrb_plan_snapshot` ⇒ 存档已判新鲜 ⇒ 规则层不再重算 ⇒ 承接块永不出现。
-    //   ⇒ 只有 ['loading'] 拦（其余状态都算读过：读失败也要照常存，⛔ 不能因为读不到就永不定稿）。
-    if (prevNextDayBuy.value && prevNextDayBuy.value.status === 'loading') {
-      _dbgLog('[TVRB-SNAPSHOT] ' + key + ' 上一日的 nextDayBuy 还在读 ⇒ 本次不存档' +
-        '（否则会把「没有次日承接」的错误结论冻结进去，11-20 实证）');
-      return;
-    }
+    // ★★ [NEXT-DAY-BUY-4 2026-11-28] 这里【不再】因为「上一日 nextDayBuy 还在读」而拒绝存档：
+    //   承接块已改为展示层补算，规则层不再依赖跨日输入 ⇒ 这一帧的 plan 就是完整结论，
+    //   该冻结就冻结（否则每次切日期都要重算 ⇒ 用户实测「加载比之前慢很多」）。
+    //   历史教训（八修那一版）：用异步输入当存档闸门 ⇒ 存档永远冻不上 ⇒ 天天全量重算。
     // ① 降级结论不入库（与日期无关，今天 / 历史日一视同仁）
     //
     // ★★ [HARD-STALL-PERSIST 2026-11-26 用户报障「11-23 当天没见这只票，现在又冒出来了」]

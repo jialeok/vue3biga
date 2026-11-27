@@ -3292,43 +3292,14 @@ describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新
 
   // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径 · 规则手册八修] 第二十八条【次日承接】的三条硬约束
   //   （只继承一天 / 灰色行不继承 / 有说明文字）。
-  it('★★ [NEXT-DAY-BUY] 次日承接块：上一日 nextDayBuy 的票今天以【新龙买】进买点侧 + 进 buyNames', function() {
+  it('★★ [NEXT-DAY-BUY-4] 承接块**不在** plan 里（展示层补算）⇒ 规则层不再吃跨日输入、不再二次重算', function() {
+    // 即使把上一日名单塞进 opts，规则层也不该建块，更不该把它算进 buyNames / 选股数
     const plan = build({ prevNextDayBuy: { date: '2026-10-21', names: ['光洋股份'], note: '' } });
-    expect(plan.nextDayCarry).not.toBeNull();
-    expect(plan.nextDayCarry.isNextDayCarry).toBe(true);
-    expect(plan.nextDayCarry.ruleNo).toBe(SWITCH_RULE_NO);
-    const p = plan.nextDayCarry.picks[0];
-    expect(p.name).toBe('光洋股份');
-    // ★ 今天【真的买】⇒ 标签 = 新龙买（⛔ 不是「次日买」；次日买是昨天那一侧的标签）
-    expect(p.buyActionTag).toBe(NEXT_DAY_CARRY_TAG);
-    expect(p.buyNextDay).toBeUndefined();        // ⛔ 不会二次传递
-    expect(p.nameDel).toBeUndefined();           // ⛔ 不打删除符（今天就要下单）
-    expect(plan.buyNames.has('光洋股份')).toBe(true);
-    // 四个装饰器经 _buyBlocksOf / eachBuyBlock 遍历 ⇒ 必须挂进 buy 槽位
-    expect(plan.buy.nextDayCarry).toBe(plan.nextDayCarry);
-    // 说明文字必须讲清「为什么延迟一天买」（用户明确要求）
-    const txt = [plan.nextDayCarry.reason].concat(plan.nextDayCarry.notes || []).join('\n');
-    expect(txt).toContain('第三天');
-    expect(txt).toContain('反攻');
-  });
-
-  it('★★ [NEXT-DAY-BUY] 只继承一天：承接块自己不再产出 nextDayBuy，也不会串进今天的新龙名单', function() {
-    const plan = build({ prevNextDayBuy: { date: '2026-10-21', names: ['光洋股份'], note: '' } });
-    expect(plan.nextDayCarry).not.toBeNull();
-    // ① 承接块自身没有 nextDayBuy 字段（结构上就不可能 A→B→C 链式继承）
-    expect(plan.nextDayCarry.nextDayBuy).toBeUndefined();
-    // ② 今天新龙的 nextDayBuy 只来自今天自己选出的票，⛔ 不含昨天承接来的那只
-    expect(plan.newDragon.nextDayBuy).not.toBeNull();
-    expect(plan.newDragon.nextDayBuy.names).not.toContain('光洋股份');
+    expect(plan.nextDayCarry).toBeNull();
+    expect(plan.buy.nextDayCarry).toBeNull();
+    expect(plan.buyNames.has('光洋股份')).toBe(false);
+    // 今天新龙的 nextDayBuy 只来自今天自己选出的票（承接块不可能串进来 ⇒ 只继承一天）
     expect(plan.newDragon.nextDayBuy.names).toEqual(['冰山冷热']);
-  });
-
-  it('★★ [NEXT-DAY-BUY] 没有上一日名单（null / 空数组）⇒ 不建块（§11 零渲染）', function() {
-    const none = build({ prevNextDayBuy: null });
-    expect(none.nextDayCarry).toBeNull();
-    expect(none.buy.nextDayCarry).toBeNull();
-    const empty = build({ prevNextDayBuy: { date: '2026-10-21', names: [], note: '' } });
-    expect(empty.nextDayCarry).toBeNull();
   });
 
   it('切换日但【没有】符合条件的新龙 ⇒ 新龙行不出现 + 回落常规（仍只取一个题材）+ 原因可见', function() {
