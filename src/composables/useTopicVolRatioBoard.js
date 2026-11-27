@@ -428,6 +428,24 @@ function _ebbTopicOnDate(date, topic) {
   return ht.size > 0 ? filterHiddenTopicText(raw, ht) : raw;
 }
 
+/**
+ * ★★ [EBB-TOPIC-MEMBER 2026-11-27] 票名 ⇒ 该票题材串，且按【展示日】隔离临时题材词。
+ *
+ * 题材库（stock_topics + 近 66 天 note 并集）是跨日期的：11-18 才建的临时词「羊字辈」会出现在
+ * 11-16 的票题材串里。第二十条的【题材字段级】排除一旦吃到这种回灌，就会把当时根本不存在的
+ * 退潮题材字段当成命中 ⇒ 误杀。⇒ 与 `_ebbTopicOnDate` 同一条口径：只过滤读取值（§11 不改库）。
+ *
+ * @param {string} date 展示的交易日
+ * @returns {(name:string)=>string}
+ */
+function _tvrbStockTopicsOfDate(date) {
+  return function(name) {
+    const raw = _tvrbStockTopicsText(name);
+    if (!raw) return raw;
+    return _ebbTopicOnDate(date, raw);
+  };
+}
+
 function _tvrbStockTopicsText(name) {
   const nm = String(name || '').trim();
   if (!nm) return '';
@@ -2357,7 +2375,9 @@ export function useTopicVolRatioBoard() {
         //   `abnormalTopicBan` = 今天要不要执行 + 禁令题材集合（纯函数产出，见上方 _abnTbInput）；
         //   `stockTopicsOf`   = 票级认亲用的题材解析（块级命中的那一批不再逐票查，省开销）。
         abnormalTopicBan: _abnTbInput,
-        stockTopicsOf: _tvrbStockTopicsText,
+        // ★★ [EBB-TOPIC-MEMBER 2026-11-27] 票级题材解析按【展示日】隔离临时题材词：
+        //   同一个入口同时喂给 ① 第二十条退潮题材字段级排除 ② 第三十四条·延伸的票级认亲。
+        stockTopicsOf: _tvrbStockTopicsOfDate(d),
         // ★★ [DEV-RULE 2026-11-25 用户口径] 官方偏离值事实（规则输入，⛔ 规则层不取数）：
         //   auto   = 自动口径（9:25 竞价 / 收盘）在今天的 Map ⇒ 第三十六条「逼近不买」+ 三十六·b「异动卖」
         //   byDate = 收盘口径的历史日 Map（含上一交易日）⇒ 第三十四条「异动次日」

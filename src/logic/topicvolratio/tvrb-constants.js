@@ -796,6 +796,17 @@ export const ABNORMAL_TOPIC_BAN_DAY_OFFSET = 2;
 export const ABNORMAL_TOPIC_BAN_TAG = '异动同题材不买';
 /** 配色档：与【退潮不买 / 异动不买】同一档（深墨亮字，灰化容器下唯一还读得出来的档） */
 export const ABNORMAL_TOPIC_BAN_TONE = EBB_NO_BUY_TONE;
+/**
+ * ★★ [EBB-TOPIC-MEMBER 2026-11-27] 第二十六条粒度细化：退潮题材的【票级】排除标签。
+ * 用户原话：「二次确认退潮了……那个题材中包含哪些题材字段，有包含这些题材字段的股票
+ *   当天都不能选进题材量比选股买点侧」。常规扫描里命中的票【直接不进候选】（不占名额、块内顺延）；
+ * 本标签只用于 `_applyEbbTopicBan` 收口兜底的那些通道（21 退潮替补 / 29 十日候补 / 30 抱团 /
+ * 31 补涨 / 35 三十日抱团），把已经选出来的命中票改成【不给买点】并剔出 `buyNames`。
+ * ⛔ 不复用【异动同题材不买】：成因（退潮 vs 监管异动）与后果（只影响买点 vs 第三天禁入）都不同。
+ */
+export const EBB_TOPIC_BAN_TAG = '退潮题材不买';
+/** 配色档：与【退潮不买 / 异动同题材不买】同一档（三类「不给买点」必须长得一样） */
+export const EBB_TOPIC_BAN_TONE = EBB_NO_BUY_TONE;
 /** 未触发时的稳定返回值（同一引用 ⇒ 不白白触发下游重算 / 重渲染，§19） */
 export const TVRB_ABNORMAL_TOPIC_BAN_NONE = Object.freeze({
   active: false,
@@ -868,6 +879,8 @@ export const NO_BUY_ACTION_TAGS = [
     DIVERGE_NO_BUY_TAG,                    // 总龙分歧不买
     ABNORMAL_NO_BUY_TAG,                   // 异动不买
     ABNORMAL_TOPIC_BAN_TAG,                // 异动同题材不买
+    // ★ [EBB-TOPIC-MEMBER 2026-11-27] 第二十六条粒度细化：退潮题材的票级排除（收口兜底通道用）
+    EBB_TOPIC_BAN_TAG,                     // 退潮题材不买
     // ★ [DEV-RULE 2026-11-25 用户口径] 第三十六条：官方偏离值【逼近红线】⇒ 这只票不给买点。
     //   「有这个标签的，当天买点侧如果出现这只股票，是不能买的（可以显示灰块）」
     DEV_NEAR_RULE_TAG                      // 逼近红线不买

@@ -22,6 +22,8 @@ import {
   DIVERGE_NO_BUY_TAG,
   ABNORMAL_NO_BUY_TAG,
   ABNORMAL_TOPIC_BAN_TAG,
+  // ★ [EBB-TOPIC-MEMBER 2026-11-27] 退潮题材不买
+  EBB_TOPIC_BAN_TAG,
   TOP30_HUDDLE_TAG,
   CATCH_UP_TAG,
   WEAK_HUDDLE_TAG,
@@ -37,7 +39,7 @@ function read(rel) {
 }
 
 describe('[BUYABLE-COUNT] 「不买」标签总表', () => {
-  it('八枚已知「不买 / 不开新仓」标签全部登记', () => {
+  it('九枚已知「不买 / 不开新仓」标签全部登记', () => {
     expect(NO_BUY_ACTION_TAGS).toEqual([
       EBB_NO_BUY_TAG,
       CASH_NO_BUY_TAG,
@@ -46,6 +48,8 @@ describe('[BUYABLE-COUNT] 「不买」标签总表', () => {
       DIVERGE_NO_BUY_TAG,
       ABNORMAL_NO_BUY_TAG,
       ABNORMAL_TOPIC_BAN_TAG,
+      // ★★ [EBB-TOPIC-MEMBER 2026-11-27] 第二十条粒度细化：退潮题材字段级排除（收口兜底通道用）
+      EBB_TOPIC_BAN_TAG,
       DEV_NEAR_RULE_TAG
     ]);
     expect(new Set(NO_BUY_ACTION_TAGS).size).toBe(NO_BUY_ACTION_TAGS.length);   // 不许重复

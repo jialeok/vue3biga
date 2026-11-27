@@ -72,6 +72,70 @@ export function _sameTopicLoose(a, b, coreRes) {
   return xs.some(function(sx) { return ys.some(function(sy) { return sy === sx; }); });
 }
 
+/**
+ * ★★ [EBB-TOPIC-MEMBER 2026-11-27 · 第二十六条粒度细化] 退潮题材的【票级】判据。
+ *
+ * 用户报障（11-16 实证）：「二次确认退潮了，你看退潮的是哪个题材，那个题材中包含哪些题材字段，
+ *   有包含这些题材字段的股票当天都不能选进题材量比选股买点侧」。
+ * 旧口径只做【块级】排除（`_sameTopicLoose(b.topic, ebbSecondTopic)`）⇒ 只踢掉名字叫「东方」的题材块；
+ * 日出东方的题材串是 `家电,热泵,东方`，被归进「大消费」块（家电与大消费同义）⇒ 块名不是东方 ⇒ 放行。
+ * 本函数把判据细到【题材字段】：
+ *   · 退潮题材 T（如「东方」）先按同类分隔符切段、逐段过 `_normTopic`（大类归一，与判定同一把尺子）；
+ *   · 某票的题材串逐段同样归一后与 T 的任一段相等 ⇒ 命中（该票当天不进买点侧）。
+ *
+ * ⛔ 取不到题材串（没注入 `topicsOf` / 该票无题材）一律判【不命中】——
+ *    §10：判不出就不许替用户排除股票，宁可保留原结论。
+ *
+ * @param {string|string[]} ebbTopics 退潮题材串（本次只有 `ebb.leaderTopic` 一个）
+ * @param {(name:string)=>string} topicsOf 票名 ⇒ 题材串（由组合式按【展示日】隔离临时题材词后注入）
+ * @param {(raw:string)=>string} [coreRes] 大类归一函数
+ * @returns {{topics:string[],tokens:string[],segmentOf:(n:string)=>string,rawTopicsOf:(n:string)=>string,test:(n:string)=>boolean}|null}
+ *          判不出 / 无退潮题材 ⇒ null（调用方据此保持原口径）
+ */
+export function makeEbbTopicBan(ebbTopics, topicsOf, coreRes) {
+  const splitSegs = function(s) {
+    return String(s || '').split(/[,，/、+;；|]/).map(function(seg) { return seg.trim(); }).filter(Boolean);
+  };
+  const list = (Array.isArray(ebbTopics) ? ebbTopics : [ebbTopics])
+    .map(function(t) { return String(t === null || t === undefined ? '' : t).trim(); })
+    .filter(Boolean);
+  if (!list.length || typeof topicsOf !== 'function') return null;
+  const tokens = [];
+  list.forEach(function(t) {
+    splitSegs(_normTopic(t, coreRes) || t).forEach(function(seg) {
+      const s = _normTopic(seg, coreRes);
+      if (s && tokens.indexOf(s) < 0) tokens.push(s);
+    });
+  });
+  if (!tokens.length) return null;
+  // 单次调用的题材串缓存：同一天同一只票会被多个通道反复问（块内说明 / 候选过滤 / 收口各问一次）
+  const cache = new Map();
+  function segsOf(name) {
+    const key = String(name === null || name === undefined ? '' : name);
+    if (cache.has(key)) return cache.get(key);
+    let raw = '';
+    try { raw = String(topicsOf(key) || ''); } catch (e) { raw = ''; }
+    const segs = raw ? splitSegs(raw) : [];
+    cache.set(key, segs);
+    return segs;
+  }
+  function segmentOf(name) {
+    const segs = segsOf(name);
+    for (let i = 0; i < segs.length; i++) {
+      const n = _normTopic(segs[i], coreRes);
+      if (n && tokens.indexOf(n) >= 0) return segs[i];
+    }
+    return '';
+  }
+  return {
+    topics: list.slice(),
+    tokens: tokens.slice(),
+    segmentOf: segmentOf,
+    rawTopicsOf: function(name) { return segsOf(name).join(','); },
+    test: function(name) { return !!segmentOf(name); },
+  };
+}
+
 /** 退潮日【允许看分笔卖】的股票名集合（§6：唯一的取名实现，判定与改写共用） */
 export function _ebbEligibleNames(ebb) {
   const set = new Set();

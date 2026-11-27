@@ -126,6 +126,8 @@ import {
 } from './topic-vol-ratio-rules.js';
 // ★★ [CORE-CAT 2026-10-22] 「题材 → 核心词大类」归一的唯一实现（文化传媒 ⇒ AI应用）
 import { makeCoreTopicResolver } from '../topic/core-category.js';
+// ★★ [EBB-TOPIC-MEMBER 2026-11-27] 退潮题材【票级】判据（第二十条粒度细化）的唯一实现
+import { makeEbbTopicBan } from './tvrb-utils.js';
 // ★ [AUCTION-YIZI-UNIFY 2026-11-16] 一字标签唯一来源（断言必须比对常量，⛔ 不写字面量）
 import { AUCTION_YIZI_WAIT_TAG } from './auction-yizi-tag.js';
 import {
@@ -5683,5 +5685,133 @@ describe('tvrb · 第三十二条【题材龙一竞价跌停 ⇒ 弱势切抱团
     expect(all).toContain('11-02');
     expect(all).toContain('海洋王');
     expect(all).toContain('九阳股份');
+  });
+});
+
+// ── ★★ [EBB-TOPIC-MEMBER 2026-11-27 用户口径] 二次确认退潮 ⇒ 退潮题材【题材字段级】排除 ─────────
+//
+// 用户原话（11-16 实证）：「二次确认退潮了，你看退潮的是哪个题材，那个题材中包含哪些题材字段，
+//   有包含这些题材字段的股票当天都不能选进题材量比选股买点侧……比如它原来完整题材窜就是
+//   (家电,热泵,东方)，虽然选消费题材没错，它也属于消费，但它含有东方，所以也是属于退潮题材，
+//   所以是不能选的……比如选北纬科技是正确的，因为题材窜那里没有东方，它完整的是(游戏,通信)。」
+// 数量口径原话：「你要看题材数量，比如数量不足4（排除那只后），就不选，如果数量符合要求，
+//   可以顺延，就是排除那只后，按照常规数量层级选出来。规则范围像你说的二次确认退潮日，其它不变。」
+describe('tvrb · [EBB-TOPIC-MEMBER] 二次确认退潮 ⇒ 退潮题材字段级排除 + 剔除后数量取档', function() {
+  // 真实库题材串（2026-11-27 取证）：日出东方 = 家电,热泵,东方；北纬科技 = 游戏,通信
+  const TOPICS = {
+    '日出东方': '家电,热泵,东方',
+    '九阳股份': '家电',
+    '家三': '家电',
+    '家四': '家电',
+    '家五': '家电',
+    '北纬科技': '游戏,通信',
+    '甲一': 'AI应用', '甲二': 'AI应用', '甲三': 'AI应用', '甲四': 'AI应用',
+    '甲五': 'AI应用', '甲六': 'AI应用', '甲七': 'AI应用', '甲八': 'AI应用'
+  };
+  function topicsOf(name) { return TOPICS[String(name || '').trim()] || ''; }
+  function ebbCtx() {
+    return {
+      ready: true,
+      leader: { name: '东方海洋', pct: 130, topic: '东方', code: '002086', rank: 1, isYizi: false },
+      leaderSuspended: false,
+      leaderShare: 3.3,          // ＜ 龙头门槛 3.5% ⇒ 判据②（占比不达标）
+      siblingDragons: [],
+      secondInfo: null,
+      prevLeader: null,
+      buyPicks: [],
+      buyTrail: []
+    };
+  }
+  /** 近 10 天已有一次「东方」退潮事件 ⇒ 今天 = 二次确认 */
+  const HIST = [{ date: '2026-11-13', prevDate: '2026-11-12', leaderStock: '东方海洋', leaderTopic: '东方', ebb: true }];
+  function bigTopic(members) {
+    return block('大消费', 1, members.map(function(n, i) {
+      return m(n, { aucVolRatio: 60 - i, aucShare: 6, code: '6000' + (i + 1) });
+    }));
+  }
+  function aiTopic() {
+    return block('AI应用', 2, ['北纬科技', '甲一', '甲二', '甲三', '甲四', '甲五', '甲六', '甲七', '甲八']
+      .map(function(n, i) { return m(n, { aucVolRatio: 50 - i, aucShare: 6, code: '6010' + (i + 1) }); }));
+  }
+
+  it('★ 剔除后不足 4 只 ⇒ 大消费整块不入选（买点侧只剩 AI应用 的北纬科技），日出东方不出票', function() {
+    // 大消费 4 只（含 日出东方）− 1 = 3 只 < 4 ⇒ 不入选；AI应用 9 只照常
+    const dm = dragonMap([['日出东方', 1], ['九阳股份', 2], ['北纬科技', 1], ['甲一', 2]]);
+    const p = buildTopicVolRatioPlan([bigTopic(['日出东方', '九阳股份', '家三', '家四']), aiTopic()], dm, {
+      ebbCtx: ebbCtx(), ebbHistory: HIST, stockTopicsOf: topicsOf
+    });
+    expect(p.ebb.phase).toBe('second');
+    expect(p.ebb.leaderTopic).toBe('东方');
+    // 大消费 不入选（不是「顺延给块外」）
+    expect(p.blocks.map(function(b) { return b.topic; })).toEqual(['AI应用']);
+    const ex = p.excludedTopics.map(function(t) { return t.topic; });
+    expect(ex).toContain('大消费');
+    const exBig = p.excludedTopics.filter(function(t) { return t.topic === '大消费'; })[0];
+    expect(exBig.count).toBe(4);
+    expect(exBig.buyableCount).toBe(3);
+    // 买点名单：北纬科技在内、日出东方不在
+    expect(p.buyNames.has('北纬科技')).toBe(true);
+    expect(p.buyNames.has('日出东方')).toBe(false);
+    // 说明必须点名「为什么剔除 + 剔除后几只 + 不足 4 只」
+    const all = p.notes.join('\n');
+    expect(all).toContain('退潮题材字段排除');
+    expect(all).toContain('日出东方');
+    expect(all).toContain('家电,热泵,东方');
+    expect(all).toContain('剔除后剩 3 只');
+    expect(all).toContain('不足 4 只');
+  });
+
+  it('★ 剔除后仍有 4 只 ⇒ 按剔除后数量取档、块内顺延下一只（日出东方不占名额）', function() {
+    // 大消费 5 只 − 日出东方 = 4 只 ⇒ mid 档（取 1 只）⇒ 龙位顺延到 九阳股份
+    const dm = dragonMap([['日出东方', 1], ['九阳股份', 2], ['北纬科技', 1], ['甲一', 2]]);
+    const p = buildTopicVolRatioPlan([
+      bigTopic(['日出东方', '九阳股份', '家三', '家四', '家五']), aiTopic()
+    ], dm, { ebbCtx: ebbCtx(), ebbHistory: HIST, stockTopicsOf: topicsOf });
+    expect(p.blocks[0].topic).toBe('大消费');
+    expect(p.blocks[0].count).toBe(4);                       // 块上写的是【剔除后】的数量
+    expect(p.blocks[0].picks.map(function(x) { return x.name; })).toEqual(['九阳股份']);
+    expect(p.buyNames.has('日出东方')).toBe(false);
+    expect(p.notes.join('\n')).toContain('按 4 只的常规档位照常选股');
+  });
+
+  it('★ 范围只限二次确认退潮日：普通日照旧（含「东方」字段的票照选）', function() {
+    const dm = dragonMap([['日出东方', 1], ['九阳股份', 2]]);
+    const p = buildTopicVolRatioPlan([bigTopic(['日出东方', '九阳股份', '家三', '家四'])], dm, {
+      ebbCtx: { ready: false, leader: null }, stockTopicsOf: topicsOf
+    });
+    expect(p.blocks[0].topic).toBe('大消费');
+    expect(p.blocks[0].picks.map(function(x) { return x.name; })).toEqual(['日出东方']);
+    expect(p.buyNames.has('日出东方')).toBe(true);
+  });
+});
+
+describe('tvrb · makeEbbTopicBan 票级认亲（§6 纯函数）', function() {
+  const TOPICS = { '日出东方': '家电,热泵,东方', '北纬科技': '游戏,通信', '九阳股份': '家电' };
+  const topicsOf = function(n) { return TOPICS[n] || ''; };
+
+  it('题材串任一段命中退潮题材 ⇒ 命中（并给出命中的那一段与原始串）', function() {
+    const ban = makeEbbTopicBan(['东方'], topicsOf, null);
+    expect(ban).not.toBe(null);
+    expect(ban.test('日出东方')).toBe(true);
+    expect(ban.segmentOf('日出东方')).toBe('东方');
+    expect(ban.rawTopicsOf('日出东方')).toBe('家电,热泵,东方');
+    expect(ban.test('北纬科技')).toBe(false);
+  });
+
+  it('§10 判不出 ⇒ 返回 null（⛔ 不替用户排除股票）', function() {
+    expect(makeEbbTopicBan([], topicsOf, null)).toBe(null);
+    expect(makeEbbTopicBan([''], topicsOf, null)).toBe(null);
+    expect(makeEbbTopicBan(['东方'], null, null)).toBe(null);
+    // 注入了解析但该票没有题材串 ⇒ 不命中
+    const ban = makeEbbTopicBan(['东方'], topicsOf, null);
+    expect(ban.test('不存在的票')).toBe(false);
+  });
+
+  it('大类归一后认亲（家电 ⇒ 大消费 与退潮题材「大消费」同一把尺子）', function() {
+    const res = makeCoreTopicResolver([{ name: '大消费', synonyms: ['家电'] }]);
+    const ban = makeEbbTopicBan(['大消费'], topicsOf, res);
+    expect(ban.test('九阳股份')).toBe(true);          // 题材串 = 家电 ⇒ 归一成 大消费
+    expect(ban.test('日出东方')).toBe(true);          // 家电,热泵,东方 里也有 家电
+    expect(ban.test('北纬科技')).toBe(false);
   });
 });

@@ -10,7 +10,7 @@
 //
 // 外部依赖的口径说明（原 topic-vol-ratio-rules.js 头部的 import 注释，逐条搬过来）：
 
-import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_PICK_TONE, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, EBB_SECOND_BUY_TAG, EBB_SECOND_BUY_TONE, EBB_SECOND_RULE_NO, CASH_NO_BUY_TAG, CASH_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_BLOCK_TOPIC, WEAK_HUDDLE_TOP_N, WEAK_HUDDLE_TONE, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_BLOCK_TOPIC, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, CATCH_UP_TONE, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, SECOND_TOPIC_VOLWEAK_NO_BUY_TONE, DIVERGE_DIP_TAG, DIVERGE_FOLLOW_TAG, DIVERGE_NO_BUY_TAG, DIVERGE_BUY_TONE, DIVERGE_NO_BUY_TONE, DIVERGE_RULE_NO, TVRB_CASH_ALERT_NONE, SWITCH_RULE_NO, NEW_DRAGON_TAG, NEW_DRAGON_TONE, RANGE10_BACKUP_TONE, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_TOPIC_BAN_TAG, ABNORMAL_TOPIC_BAN_TONE, TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG, TOP30_HUDDLE_BLOCK_TOPIC, TOP30_HUDDLE_TONE, TOP30_HUDDLE_TOP_N } from './tvrb-constants.js';
+import { TVRB_MIN_COUNT, TVRB_MID_MAX, TVRB_PICK_MID, TVRB_PICK_BIG, TVRB_SMALL_TOPIC_MAX, TVRB_CASH_ALERT_AVG_VR, EBB_PICK_TAG, EBB_PICK_TONE, EBB_NO_BUY_TAG, EBB_NO_BUY_TONE, EBB_SECOND_BUY_TAG, EBB_SECOND_BUY_TONE, EBB_SECOND_RULE_NO, CASH_NO_BUY_TAG, CASH_NO_BUY_TONE, WEAK_HUDDLE_RULE_NO, WEAK_HUDDLE_TAG, WEAK_HUDDLE_BLOCK_TOPIC, WEAK_HUDDLE_TOP_N, WEAK_HUDDLE_TONE, CATCH_UP_RULE_NO, CATCH_UP_TAG, CATCH_UP_BLOCK_TOPIC, CATCH_UP_RANK_FROM, CATCH_UP_RANK_TO, CATCH_UP_MIN_COUNT, CATCH_UP_MAX_COUNT, CATCH_UP_MIN_STREAK, CATCH_UP_TONE, TOPIC_LEADER_LIMITDOWN_RULE_NO, TOPIC_LEADER_LIMITDOWN_TAG, TOPIC_LEADER_LIMITDOWN_BLOCK_TOPIC, TOPIC_LEADER_LIMITDOWN_NO_BUY_TAG, TOPIC_LEADER_LIMITDOWN_NO_BUY_TONE, SECOND_TOPIC_VOLWEAK_NO_BUY_TAG, SECOND_TOPIC_VOLWEAK_NO_BUY_TONE, DIVERGE_DIP_TAG, DIVERGE_FOLLOW_TAG, DIVERGE_NO_BUY_TAG, DIVERGE_BUY_TONE, DIVERGE_NO_BUY_TONE, DIVERGE_RULE_NO, TVRB_CASH_ALERT_NONE, SWITCH_RULE_NO, NEW_DRAGON_TAG, NEW_DRAGON_TONE, RANGE10_BACKUP_TONE, RANGE10_BACKUP_TAG, ABNORMAL_RULE_NO, ABNORMAL_NO_BUY_TAG, ABNORMAL_NO_BUY_TONE, ABNORMAL_KIND_NEXT_DAY, ABNORMAL_TOPIC_BAN_TAG, ABNORMAL_TOPIC_BAN_TONE, EBB_TOPIC_BAN_TAG, EBB_TOPIC_BAN_TONE, TOP30_HUDDLE_RULE_NO, TOP30_HUDDLE_TAG, TOP30_HUDDLE_BLOCK_TOPIC, TOP30_HUDDLE_TONE, TOP30_HUDDLE_TOP_N } from './tvrb-constants.js';
 // ★★ [RULE-35 2026-11-18 用户口径] 第三十五条【30日涨幅抱团】的判定纯函数（§6 唯一实现：
 //   「30日涨幅前三里与本灰色题材块同大类的、名次最靠前的那 1 只」只在这里算一次）。
 import { pickTop30Huddle } from './top30-huddle.js';
@@ -654,6 +654,64 @@ export function _applyAbnormalTopicBan(out, ban, topicsOf) {
       b.notes.push('⚠️ ' + lead + '本题材的票今天【一律不买】，其它题材不受影响（明天第四天恢复正常）。');
     }
     res.count += ownHit;
+  });
+  return res;
+}
+
+/**
+ * ══ [EBB-TOPIC-MEMBER 2026-11-27 用户口径] 第二十条买点侧分流 · 二次确认退潮 ⇒ 退潮题材【票级】收口 ══
+ *
+ * 用户原话：「二次确认退潮了，你看退潮的是哪个题材，那个题材中包含哪些题材字段，
+ *   有包含这些题材字段的股票当天都不能选进题材量比选股买点侧……比如它原来完整题材窜就是
+ *   (家电,热泵,东方)……所以也是属于退潮题材，所以是不能选的。」
+ *
+ * 常规扫描已在【候选层】剔除了命中的票（不占名额、块内按常规顺延），这里只做【兜底收口】：
+ * 那些不经过块候选序列的通道（第二十一条退潮替补 / 第三十·三十一·三十五条抱团与补涨），
+ * 若仍选出了命中的票 ⇒ 改成【退潮题材不买】（灰化显示、剔出 `buyNames`、不计入「选股 N 只」）。
+ *
+ * ⛔ 票【绝不删】（用户「不能选入买点侧」= 不给买点，不是让它从屏幕上消失）。
+ * ⛔ 客观数据（量比 / 涨幅 / 龙标 / 一字 / 停牌）一行不动；⛔ 卖点侧动作一行不动。
+ *
+ * @param {object} out buildTopicVolRatioPlan 正在组装的计划对象（原地改）
+ * @param {{topics:string[],test:(n:string)=>boolean,segmentOf:(n:string)=>string,rawTopicsOf:(n:string)=>string}|null} ban
+ *        `makeEbbTopicBan` 的返回（null / 无 `test` ⇒ 零副作用，§11）
+ * @returns {{count:number, names:string[]}} 本次兜底剔掉的票（供提示板点名）
+ */
+export function _applyEbbTopicBan(out, ban) {
+  const res = { count: 0, names: [] };
+  if (!out || !ban || typeof ban.test !== 'function') return res;
+  const topicsText = (ban.topics || []).join('、');
+  eachBuyBlock(out, function(b) {
+    if (!b || typeof b !== 'object') return;
+    const picks = Array.isArray(b.picks) ? b.picks : [];
+    let hit = 0;
+    picks.forEach(function(p) {
+      if (!p || !p.name) return;
+      if (!ban.test(p.name)) return;
+      hit++;
+      p.position = '';
+      p.holdTag = '';
+      p.buyActionTag = EBB_TOPIC_BAN_TAG;
+      p.buyActionTone = EBB_TOPIC_BAN_TONE;
+      // ★ 标记位：`_isBuyablePick` / `collectBuyNames` 据此不数它、不继承到次日卖点侧的原因链
+      p.ebbTopicBlocked = true;
+      p.actionNote = '【第' + EBB_SECOND_RULE_NO + '条 · 二次确认退潮】退潮题材【' + topicsText + '】：' +
+        '本股题材串（' + (ban.rawTopicsOf(p.name) || '—') + '）含有退潮题材字段【' +
+        (ban.segmentOf(p.name) || '—') + '】⇒ 今天【不开新仓、不给买点】' +
+        '（原本的【' + HOLD_TAG + '】/ 竞价买 / 尾盘买 / 先卖后买 等买点信号一律作废）。' +
+        '★ 为什么：主线题材二次确认退潮后，含该题材字段的票当天一律不买（用户口径：题材字段级，' +
+        '不是只看题材块名）—— 这类票今天买进去大概率跟着退潮。' +
+        '⚠️ 客观数据与卖点侧动作照旧，只是今天不给买点。';
+      res.names.push(String(p.name).trim());
+      if (out.buyNames && typeof out.buyNames.delete === 'function') out.buyNames.delete(p.name);
+    });
+    if (hit > 0) {
+      res.count += hit;
+      if (!Array.isArray(b.notes)) b.notes = [];
+      b.notes.push('⚠️【第' + EBB_SECOND_RULE_NO + '条 · 二次确认退潮 · 退潮题材字段排除】' +
+        '本题材（或本通道）选出的 ' + hit + ' 只票题材串含退潮题材【' + topicsText +
+        '】⇒ 今天【一律不给买点】（灰化显示），已从买点名单移除；卖点侧动作不变。');
+    }
   });
   return res;
 }
@@ -1855,9 +1913,18 @@ export function _buildBlock(block, dragonMap, tier, pctMap, skipBuyNames, opt) {
     ? pickBigTopicTop20(block, o.topicPool, o.coreRes, tier.pickCount, o.topicOwner)
     : null;
   const useTop20 = !!(topicTop20 && topicTop20.judge === 'hit');
-  const dragonCands = (Array.isArray(o.order) && o.order.length > 0)
+  const dragonCandsRaw = (Array.isArray(o.order) && o.order.length > 0)
     ? o.order
     : _dragonCandidates(block, dragonMap, pctMap);
+  // ★★ [EBB-TOPIC-MEMBER 2026-11-27 · 第二十六条粒度细化] 退潮题材「票级」排除。
+  //   用户原话：「退潮的是哪个题材，那个题材中包含哪些题材字段，有包含这些题材字段的股票
+  //   当天都不能选进题材量比选股买点侧」。命中者【不进候选】⇒ 不占名额，块内顺延下一只；
+  //   题材数量是否还够（`effCount < 4` 就不入选）由调用方（tvrb-plan 的档位计算）先判。
+  //   §11：不传 `opt.excludeName` ⇒ 候选序列逐项零变化。
+  const ebbExclude = (typeof o.excludeName === 'function') ? o.excludeName : null;
+  const dragonCands = ebbExclude
+    ? dragonCandsRaw.filter(function(c) { return !(c && ebbExclude(c.name)); })
+    : dragonCandsRaw;
   // ── 候选序列 ────────────────────────────────────────────────────────────────
   // 常规 = 龙位升序（_dragonCandidates）；big 档命中前十 ⇒ 【前十先排（按 20日涨幅名次升序）】，
   // 其后接【同题材其余成员（仍按龙位升序）】—— 这一截正是用户说的
