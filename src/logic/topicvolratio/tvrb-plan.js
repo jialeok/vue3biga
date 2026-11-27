@@ -971,6 +971,11 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   out.ebb = out.switchDay
     ? null
     : detectEbbDay(o.ebbCtx || null, o.prevEbbDay || null, o.ebbHistory || null, coreRes, o.ebbWindowFrom || '');
+  // ★★ [LEADER-TIMELINE 2026-11-27 用户口径·二修] 「总龙一事件轴」提到函数级：
+  //   ① 顶部提示板要它（排在第二十八条周期状态【上方】）；
+  //   ② 第二十八条那张卡片的【选择理由上方】也要它（用户 17:33 截图：卡片里没看到 ⇒ 说明只进 notes 不够）。
+  //   ⛔ 仍然只读 switchDay / ebbHistory / divergeFacts / date，零取数、零判定（§4 / §11）。
+  const _leaderTimeline = buildLeaderEventTimeline(out.switchDay, o.ebbHistory, o.divergeFacts, o.date, coreRes);
   if (out.switchDay && o.ebbCtx && o.ebbCtx.ready) {
     // §10：把「今天为什么没有退潮判定」写清楚，⛔ 不能让人误以为「今天没退潮」
     // ★★ [LEADER-FIRST-TOPIC 2026-11-12] 题材一律写【老题材（大类）】而不是退潮行落库的那一段
@@ -979,8 +984,7 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //   用户原话「你应该在28条说明上面标有总龙一的事件，包含题材，首次分歧，首次退潮、二次确认退潮等，
   //   没有三次退潮……做一个时间历史事件小表在上面节省空间为准，这样我一看就知道，更加清晰」。
   //   ⛔ 纯展示：只读 switchDay / ebbHistory / divergeFacts，不改任何判定；缺失一律占位「—」（§10）。
-  const _timeline = buildLeaderEventTimeline(out.switchDay, o.ebbHistory, o.divergeFacts, o.date, coreRes);
-  if (_timeline) out.notes.push(_timeline);
+  if (_leaderTimeline) out.notes.push(_leaderTimeline);
   out.notes.push('ℹ️【第二十八条 · 周期状态】' + (out.switchDay.leaderName || '老龙一') + '（' +
       (_oldTopicNameOf(out.switchDay) || '—') + '）已于 ' + out.switchDay.ebbDate +
       ' 【二次确认退潮】⇒ 老周期结束；今天（第 2 个交易日）=【切换日】，按第二十八条选新龙，' +
@@ -1784,6 +1788,8 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
         ? ((out.blocks[0].picks[0].dragonLabel || '') + out.blocks[0].picks[0].name)
         : ''
     );
+    // ★★ [LEADER-TIMELINE] 事件轴挂到卡片上（渲染在【选择理由】这一行上方，见 TvrbBuyBlock.vue）
+    if (out.newDragon && _leaderTimeline) out.newDragon.timeline = _leaderTimeline;
     if (out.newDragon) out.buy.newDragon = out.newDragon;
     // ★★ [NEW-DRAGON-CERTIFY / NEW-DRAGON-FAMILY 2026-11-12] 把「谁认证的谁、一共买几只」写进
     //   看板级说明（用户要「标清楚」）。family 路径（新题材 = 字号/字辈）优先，旧认证龙路径作兜底。

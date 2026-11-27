@@ -637,6 +637,21 @@
     white-space: nowrap;
 }
 
+/* ★★ [LEADER-TIMELINE 2026-11-27 用户口径] 第二十八条的「总龙一事件轴」一行小表：
+   首次分歧 → 首次退潮 → 二次确认退潮 → 切换日｜无三次退潮。
+   ⛔ 只在 Logic 层给了 block.timeline 才渲染；比「选择理由」更轻，像一行脚注 */
+.tvrb-timeline-line {
+    margin: 2px 0 3px;
+    padding: 2px 6px;
+    font-size: 11px;
+    line-height: 1.45;
+    color: #92400e;
+    background: #fffbeb;
+    border-left: 2px solid #f59e0b;
+    border-radius: 3px;
+    white-space: normal;
+}
+
 .tvrb-reason-line {
     margin: 2px 0 4px;
     font-size: 11px;

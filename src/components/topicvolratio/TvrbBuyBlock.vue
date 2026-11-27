@@ -53,6 +53,15 @@
         <span class="tvrb-topic">{{ headText }}</span>
       </div>
     </div>
+    <!-- ★★ [LEADER-TIMELINE 2026-11-27 用户口径] 第二十八条的「总龙一事件轴」一行小表：
+         首次分歧 → 首次退潮 → 二次确认退潮 → 切换日｜无三次退潮。
+         ⛔ 只在 Logic 层给了 block.timeline 才渲染（模板零判定，其它块一字不变）。 -->
+    <div
+      v-if="block.timeline"
+      class="tvrb-timeline-line tvrb-selectable"
+    >
+      {{ block.timeline }}
+    </div>
     <!-- 第二行：选择理由（本看板的选股口径）+ 规则编号（与决策看板买点段同一枚 ①） -->
     <div class="tvrb-reason-line tvrb-selectable">
       选择理由：{{ block.reason }}<span

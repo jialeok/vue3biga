@@ -3090,6 +3090,16 @@ describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新
     expect(String(line).indexOf('\n')).toBe(-1);
   });
 
+  it('★ 事件轴还必须挂在【第二十八条那张卡片】上（用户 17:33 截图：卡片里没看到）', function() {
+    const p = build({ date: '2026-10-22', ebbCtx: { ready: true, top5: TOP5 } });
+    expect(p.newDragon).not.toBeNull();
+    expect(String(p.newDragon.timeline || '')).toContain('〔事件轴〕新华传媒');
+    expect(String(p.newDragon.timeline || '')).toContain('无三次退潮');
+    expect(String(p.newDragon.timeline || '').indexOf('\n')).toBe(-1);
+    // 卡片自己的选择理由一个字不动（事件轴是【另起一行】渲染，⛔ 不拼进 reason）
+    expect(String(p.newDragon.reason || '')).not.toContain('〔事件轴〕');
+  });
+
   it('★ 新龙那一行的动作标签 = 【新龙买】，客观数据仍在（走过 finishBuyBlock）', function() {
     const plan = build();
     const picks = plan.newDragon.picks;
