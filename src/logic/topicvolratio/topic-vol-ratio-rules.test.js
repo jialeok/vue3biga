@@ -86,6 +86,8 @@ import {
   // ★★ [NEXT-DAY-BUY 2026-11-27 用户口径·八修] 第二十八条买点顺延到次日
   NEXT_DAY_BUY_TAG,
   NEXT_DAY_BUY_TONE,
+  // ★ 九修：次日承接块的标签 = 【继承买】
+  NEXT_DAY_CARRY_TAG,
   NEW_DRAGON_TOP_N,
   NEW_DRAGON_LOOKBACK_DAYS,
   NEW_DRAGON_CERTIFY_TOP_N,
@@ -3298,7 +3300,7 @@ describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新
     const p = plan.nextDayCarry.picks[0];
     expect(p.name).toBe('光洋股份');
     // ★ 今天【真的买】⇒ 标签 = 新龙买（⛔ 不是「次日买」；次日买是昨天那一侧的标签）
-    expect(p.buyActionTag).toBe(NEW_DRAGON_TAG);
+    expect(p.buyActionTag).toBe(NEXT_DAY_CARRY_TAG);
     expect(p.buyNextDay).toBeUndefined();        // ⛔ 不会二次传递
     expect(p.nameDel).toBeUndefined();           // ⛔ 不打删除符（今天就要下单）
     expect(plan.buyNames.has('光洋股份')).toBe(true);

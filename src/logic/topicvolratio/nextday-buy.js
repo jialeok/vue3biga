@@ -12,7 +12,15 @@
 //   **选票不变，只把买点推迟一个交易日**：
 //     · 切换日 T：新龙照旧被选出来（选几只 = 几只，`pickCount` 不变），但标签写【次日买】、
 //       股票名打删除符、⛔ 不进 `buyNames`（今天不买）；
-//     · T+1：把 T 存档里的 `nextDayBuy` 名单接进来，以【新龙买】的身份成为**今天真正的买点**。
+//     · T+1：把 T 存档里的 `nextDayBuy` 名单接进来，以【继承买】的身份成为**今天真正的买点**。
+//
+// ★★ [NEXT-DAY-BUY-2 2026-11-27 用户口径 · 规则手册九修] 承接块的标签 = 【继承买】：
+//   用户原话：「11月20日，华东重机如果是继承11月19日的，题材量比买点侧那里应该再打上标签继承买，
+//     不然我不知道是不是继承的票，还是其它规则选出的票，买点侧文字也要说明下。……
+//     因为有些规则它次日刚好也选了这只票。不区分的话，不知道来源。」
+//   ⇒ 同一只票今天可能「既被今天某条规则选中、又是昨天切换日的新龙」，两行都要显示，
+//     但标签必须能区分来源：今天现选的带各自标签，昨天选的这一行 = 【继承买】（⛔ 不再叫【新龙买】）。
+//     块内说明也改成简洁版（来源 / 灰行不继承两句话），⛔ 不再堆复盘细节。
 //
 // ── 三条硬约束（以后改这个文件先读这三条）──────────────────────────────────
 //   ① **只继承一天**：来源恒为【上一交易日存档】的 `plan.newDragon.nextDayBuy`；
@@ -38,10 +46,10 @@
 
 import {
   SWITCH_RULE_NO,
-  NEW_DRAGON_TAG,
-  NEW_DRAGON_TONE,
   NEXT_DAY_BUY_TAG,
-  NEXT_DAY_BUY_TONE
+  NEXT_DAY_BUY_TONE,
+  NEXT_DAY_CARRY_TAG,
+  NEXT_DAY_CARRY_TONE
 } from './tvrb-constants.js';
 import { _num, _findMemberByName, _isBuyablePick } from './tvrb-utils.js';
 import { formatRangePct } from '../decision/decision-rules.js';
@@ -86,7 +94,8 @@ export function markNextDayBuy(block, info) {
   block.notes.push('⏰【第二天才买 · 第二十八条】本块的选票结论【一个字都没改】' +
     '（谁被选中、选几只都照原规则），改的只是【买点时间】：' + dText +
     '今天只做观察、⛔ 不下单（股票名已打删除符 = 明天买，不是今天买）；' +
-    '下一交易日会自动出现在买点侧顶部的【次日承接 · 新龙】里，标签是【' + NEW_DRAGON_TAG + '】。' +
+    '下一交易日会自动出现在买点侧顶部的【次日承接 · 新龙】里，标签是【' + NEXT_DAY_CARRY_TAG + '】' +
+    '（= 昨天选、今天买；与今天现选的票分开展示，来源一眼可辨）。' +
     NEXT_DAY_BUY_NOTE);
   block.buyNextDay = true;
   block.buyNextDaySrcDate = d;
@@ -178,11 +187,16 @@ export function buildNextDayCarryBlock(carry, list) {
       pct: member ? _num(member.pct) : null,
       pctText: member ? formatRangePct(_num(member.pct)) : '',
       code: String((member && member.code) || '').trim(),
-      buyActionTag: NEW_DRAGON_TAG,
-      buyActionTone: NEW_DRAGON_TONE,
-      actionNote: '【第二十八条 · 次日承接】本只是 ' + srcDateText +
-        ' 切换日选出的新龙（老龙已彻底杀完的那一天），按用户口径【延迟一天买】' +
-        '⇒ 今天就是它真正该买的那一天。' + NEXT_DAY_BUY_NOTE
+      // ★★ [NEXT-DAY-BUY-2 2026-11-27 用户口径·九修] 标签 = 【继承买】：
+      //   用户「不然我不知道是不是继承的票，还是其它规则选出的票」。⛔ 不要写成【新龙买】——
+      //   同一只票今天可能也被别的规则选中并显示【新龙买】/ 其它标签，两行标签必须能区分来源。
+      buyActionTag: NEXT_DAY_CARRY_TAG,
+      buyActionTone: NEXT_DAY_CARRY_TONE,
+      actionNote: '【第二十八条 · 继承买】本只是 ' + srcDateText +
+        ' 切换日选出的新龙，按口径延后一天 ⇒ 今天才买。' +
+        '【继承买】= 来源是【上一交易日的第二十八条】，不是今天现选的票；' +
+        '若同一只票今天也被别的规则选中，会另有一行、带着那条规则自己的标签（来源不同，各看各的）。' +
+        NEXT_DAY_BUY_NOTE
     };
   });
 
@@ -197,16 +211,16 @@ export function buildNextDayCarryBlock(carry, list) {
     },
     mode: 'nextday-carry',
     ruleNo: SWITCH_RULE_NO,
-    reason: srcDateText + ' 是切换日（第二十八条）：那天选出的新龙【当天不下单】，' +
-      '顺延一个交易日到今天才买 —— ' + NEXT_DAY_BUY_NOTE,
+    // ★ 简洁版（用户「简洁版，只保留一只并打上标签」）：理由就两句话，
+    //   「来源 + 为什么延迟一天」，⛔ 不再堆复盘细节。
+    reason: srcDateText + ' 切换日（第二十八条）选出的新龙，当天不下单，顺延到今天买 —— ' +
+      '【继承买】= 昨天选、今天买；今天现选的票会另有一行、带它自己的标签。' + NEXT_DAY_BUY_NOTE,
     picks: picks,
     notes: [
-      '【本块从哪来】名单 = ' + srcDateText + ' 存档里第二十八条的 `nextDayBuy`（' + names.join('、') + '）。' +
-      '只继承【一天】：今天兑现完就结束，本块不会再往明天传（⛔ 不会无限继承）。',
-      '【灰色行已被挡在外面】' + srcDateText + ' 那天被灰掉的票（禁买 / 退潮牵连 / 逼近红线）' +
-      '一只都没进来 —— 灰色行没有买入的硬逻辑，继承它就会误买。',
-      '⚠️ 若同一只票今天也出现在其它买点通道（常规题材块 / 十日候补 等），那是【叠加确认】' +
-      '（两条独立通道同时成立），不是重复选错，两处各显示一行。'
+      '【来源】名单 = ' + srcDateText + ' 存档里第二十八条的 `nextDayBuy`（' + names.join('、') + '）；' +
+      '只继承【一天】，今天兑现完就结束（不会再往明天传）。',
+      '【灰色行不继承】' + srcDateText + ' 那天被灰掉的票（禁买 / 退潮牵连 / 逼近红线）一只都没进来 —— ' +
+      '灰色行没有买入的硬逻辑，继承它就会误买。'
     ],
     isNextDayCarry: true,
     nextDayCarrySrcDate: srcDate,

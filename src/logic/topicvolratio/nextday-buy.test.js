@@ -19,7 +19,7 @@ import {
   buildNextDayCarryBlock,
   collectNextDayBuy
 } from './nextday-buy.js';
-import { NEXT_DAY_BUY_TAG, NEW_DRAGON_TAG } from './tvrb-constants.js';
+import { NEXT_DAY_BUY_TAG, NEXT_DAY_CARRY_TAG } from './tvrb-constants.js';
 
 describe('第二十八条 · 次日买（nextday-buy）', () => {
   // ── ① 灰行不继承 ───────────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ describe('第二十八条 · 次日买（nextday-buy）', () => {
     expect(blk.isNextDayCarry).toBe(true);
     expect(blk.nextDayBuy).toBeUndefined();
     expect(blk.picks[0].buyNextDay).toBeUndefined();           // ⛔ 不会二次传递
-    expect(blk.picks[0].buyActionTag).toBe(NEW_DRAGON_TAG);    // 今天是真买
+    expect(blk.picks[0].buyActionTag).toBe(NEXT_DAY_CARRY_TAG); // ★ 九修：【继承买】= 昨天选、今天买
     expect(String(blk.reason) + blk.notes.join('\n')).toContain('第三天');
   });
 

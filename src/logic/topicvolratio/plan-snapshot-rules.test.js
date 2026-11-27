@@ -327,7 +327,7 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     // ★★ [EBB-TOPIC-TEMP 2026-11-27 用户口径] 二次确认退潮的禁买词集合 = 总龙原有题材 + 当日生效
     //   且总龙自己也沾的临时题材词（11-16 日出东方灰化 + 【题材退潮不选】）⇒ 38 → 39。
     //   ⇒ 选股结论变 ⇒ 36 → 37 → 38 → 39。
-    expect(TVRB_RULES_VERSION).toBe(46);
+    expect(TVRB_RULES_VERSION).toBe(47);
   });
 
   // ★★ [ABN-MAINBOARD-GUARD 2026-11-14] 第三十四条「全场十日涨幅最高票」只认主板。
@@ -463,7 +463,7 @@ describe('tvrb · [RULES-BUMP-ALL] 规则升级后历史日也重算', () => {
     //   ★★ [EBB-TOPIC-MEMBER 2026-11-27] 退潮题材排除粒度：题材块 → 题材字段（11-16 大消费不入选）⇒ 36 → 37 → 38
     //   ★★ [EBB-TOPIC-TEMP 2026-11-27] 禁买集合 = 原有题材 + 临时题材牵连（11-16 日出东方灰化）⇒ 38 → 39
     //   ★★ [NEXT-DAY-BUY 2026-11-27] 第二十八条买点顺延到次日 + 存档多一个 newDragon.nextDayBuy ⇒ 45 → 46
-    expect(TVRB_RULES_VERSION).toBe(46);
+    expect(TVRB_RULES_VERSION).toBe(47);
     expect(_swCacheNo(readFileSync('public/sw.js', 'utf8'))).toBeGreaterThanOrEqual(67);
   });
 
