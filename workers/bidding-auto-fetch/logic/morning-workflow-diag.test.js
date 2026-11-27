@@ -59,3 +59,44 @@ describe('9:25 组B 诊断的跨函数契约（防 ReferenceError 整轮崩）',
     expect(HELPERS).toContain('x.groupBReadFailures');
   });
 });
+
+// ============================================================================
+// [NARROW-RETRY / COVERAGE 2026-11-28] 2026-11-27 事故的两条静态锁
+//
+// 事故：09:29 的重试拿到一份【残响应】（只回当天一行 + 缺 um_vol/open_bid_pct/
+//   auc_vol_ratio 三列），旧代码 `items = retryItems` 整体替换 ⇒ 当天量比整列空白、
+//   历史行当轮全丢，而日志只有一句 ℹ️，完整性汇总仍是 ✅。
+// 契约：
+//   ① 重试只能【并集合并】，永远不许整体替换 items / fields；
+//   ② 覆盖率（今天有行但量比 0 只）必须是 ❌ 判据，不能只打日志；
+//   ③ 覆盖率要进 result ⇒ 由 index.js 写进 bidding_fetch_log.detail。
+// ============================================================================
+describe('[NARROW-RETRY 2026-11-28] 残响应不许抹掉量比整列', () => {
+  it('① 重试必须走 mergeNumcatData 列级并集（⛔ 不许整体替换）', () => {
+    expect(SRC).toContain('export function mergeNumcatData');
+    expect(SRC).toContain('mergeNumcatData({ fields: fields, items: items }, retryData)');
+    // 旧写法必须彻底消失
+    expect(SRC).not.toContain('items = retryItems');
+    expect(SRC).not.toContain('fields = retryFields');
+  });
+
+  it('② 列级并集必须按 (symbol, tradedate) 对齐、字段取并集', () => {
+    const fn = SRC.slice(SRC.indexOf('export function mergeNumcatData'));
+    expect(fn).toContain('fields.indexOf(f) < 0');
+    expect(fn).toContain("'symbol'");
+    expect(fn).toContain("'tradedate'");
+  });
+
+  it('③ 今天有行但竞价量比 0 只 ⇒ 完整性汇总必须 ❌（不能只打 ℹ️）', () => {
+    expect(SRC).toContain('function buildTodayCoverage');
+    expect(SRC).toContain('todayRatioFilled');
+    expect(SRC).toContain('今天竞价量比(auc_vol_ratio)');
+    expect(SRC).toContain('整列为空');
+  });
+
+  it('④ 覆盖率必须写进 result（否则 bidding_fetch_log 看不到事实）', () => {
+    expect(RUN_MORNING).toContain('todayRatioFilled: todayCov.ratioFilled');
+    expect(RUN_MORNING).toContain('todayRatioTotal: todayCov.total');
+  });
+});
+

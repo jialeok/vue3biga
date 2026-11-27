@@ -113,7 +113,14 @@ const REQUIRED = [
   //   ⚠️ 前者是函数名（跨文件被 index.js 调用，压缩不删），后者是日志字符串字面量；
   //      ⛔ 都不能换成注释里的标记（esbuild 会删注释）。
   'runPresenceRecompute',
-  '[presence] ✅ 在列次数'
+  '[presence] ✅ 在列次数',
+  // [NARROW-RETRY 2026-11-28] 2026-11-27 事故：09:29 的重试返回【残响应】（只回当天一行 +
+  //   缺 um_vol/open_bid_pct/auc_vol_ratio 三列），旧代码整体替换 items/fields ⇒ 当天竞价量比
+  //   整列空白（0/65）⇒ 题材量比选股侧报错、当天没选出票，而日志只有一句 ℹ️。
+  //   ⚠️ 'mergeNumcatData' 是函数名（跨作用域被调用，压缩不删）；'todayRatioFilled' 是
+  //      写进 bidding_fetch_log.detail 的字段名（不被 mangle）。⛔ 别换成注释里的标记。
+  'mergeNumcatData',
+  'todayRatioFilled'
 ];
 
 async function cf(url, accept) {

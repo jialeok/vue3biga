@@ -566,6 +566,86 @@ async function fetchAndWriteWatchlist(env, today, cache, logs) {
   };
 }
 
+// ============================================================================
+// ★★ [NARROW-RETRY 2026-11-28] 两次 daily_auc 响应必须【列级并集】合并，⛔ 不许整体替换
+// ----------------------------------------------------------------------------
+// 事故现场（2026-11-27，bidding_fetch_log 09:29 那一轮）：
+//   9:25 首次响应正常（宽表：四要素 + 历史 5 天都在），但当天那一行还没结算 ⇒ 触发重试；
+//   09:29 重试拿到今天了，可它是一份【残响应】：
+//     · 只回当天一行，11-23~11-26 的追溯行 0 条；
+//     · 缺 um_vol / open_bid_pct / auc_vol_ratio 三列。
+//   旧代码直接把重试结果整体替换进内存（items/fields 一把换掉）⇒
+//     ① 历史上那些「本该被刷新」的行当轮全丢；
+//     ② 列索引全部按残响应重建 ⇒ 即便别的行有量比也读不到；
+//     ③ 当天 auc_vol_ratio 整列为空 ⇒ 题材量比选股侧直接报错、当天没选出票。
+//   ⇒ 现在按「(symbol, tradedate) 行对齐 + 字段取并集 + 单元格谁有值用谁」合并：
+//     重试只能【补】，永远不会让数据集变窄（§10：宁可少一次请求，也不能把已有数据抹掉）。
+// ⚠️ 纯内存运算，零新增请求、零额外延迟（不碰 9:26 硬指标）。
+// ============================================================================
+/**
+ * 列级并集合并两份 numcat daily_auc 响应（纯函数，可单测）。
+ * @param {{fields:string[],items:Array<Array>}} base 先到的一份（通常是首次请求）
+ * @param {{fields:string[],items:Array<Array>}} next 后到的一份（通常是重试）
+ * @returns {{fields:string[],items:Array<Array>}} 合并结果；next 为空 ⇒ 原样返回 base
+ */
+export function mergeNumcatData(base, next) {
+  const bf = (base && Array.isArray(base.fields)) ? base.fields : [];
+  const bn = (base && Array.isArray(base.items)) ? base.items : [];
+  const nf = (next && Array.isArray(next.fields)) ? next.fields : [];
+  const ni = (next && Array.isArray(next.items)) ? next.items : [];
+  if (nf.length === 0 || ni.length === 0) return { fields: bf.slice(), items: bn.slice() };
+
+  // ① 字段并集：base 的顺序在前（列索引稳定），next 的新列追加在后
+  const fields = bf.slice();
+  nf.forEach(f => { if (fields.indexOf(f) < 0) fields.push(f); });
+
+  const bSym = bf.indexOf('symbol');
+  const bDate = bf.indexOf('tradedate');
+  const nSym = nf.indexOf('symbol');
+  const nDate = nf.indexOf('tradedate');
+
+  const blankRow = () => {
+    const a = new Array(fields.length);
+    for (let i = 0; i < a.length; i++) a[i] = '';
+    return a;
+  };
+  // 按字段名把一行搬到合并后的列序上；⛔ 空值不覆盖已有值（§10 缺值 ≠ 0）
+  const put = (out, srcRow, srcFields) => {
+    for (let i = 0; i < srcFields.length; i++) {
+      const ti = fields.indexOf(srcFields[i]);
+      if (ti < 0) continue;
+      const v = srcRow[i];
+      if (v === null || v === undefined) continue;
+      if (String(v).trim() === '') continue;
+      out[ti] = v;
+    }
+  };
+  const keyOf = (row, symI, dateI) => {
+    if (symI < 0 || dateI < 0) return '';
+    const s = String(row[symI] === undefined || row[symI] === null ? '' : row[symI]).trim();
+    const d = String(row[dateI] === undefined || row[dateI] === null ? '' : row[dateI]).trim();
+    return s && d ? (s + '|' + d) : '';
+  };
+
+  const map = new Map();
+  const out = [];
+  bn.forEach(row => {
+    const k = keyOf(row, bSym, bDate);
+    if (!k) { const r = blankRow(); put(r, row, bf); out.push(r); return; }
+    let r = map.get(k);
+    if (!r) { r = blankRow(); map.set(k, r); out.push(r); }
+    put(r, row, bf);
+  });
+  ni.forEach(row => {
+    const k = keyOf(row, nSym, nDate);
+    if (!k) return;   // 无主键的行不参与合并（写了也是脏行）
+    let r = map.get(k);
+    if (!r) { r = blankRow(); map.set(k, r); out.push(r); }
+    put(r, row, nf);
+  });
+  return { fields: fields, items: out };
+}
+
 // 3. 调 numcat daily_auc 获取竞价数据（含"今天缺失"延迟重试）
 async function fetchNumcatWithRetry(env, constituents, today, cache, logs) {
   const expectedDates = await recentTradingDays(cache, env, today, CONFIG.NUMCAT_RECENT_DAYS);
@@ -586,7 +666,7 @@ async function fetchNumcatWithRetry(env, constituents, today, cache, logs) {
     return { error: 'numcat 调用失败: ' + e.message };
   }
 
-  // ⚠️ 必须 let：重试可能返回更完整的 fields（四要素后到），要整体替换
+  // ⚠️ 必须 let：重试返回的列/行会用 mergeNumcatData 并进内存（⛔ 不是整体替换，见上方长注释）
   let fields = numcatData.fields || [];
   let items = numcatData.items || [];
   logs.push('numcat 返回 fields=' + JSON.stringify(fields) + ' items=' + items.length + '行');
@@ -639,17 +719,22 @@ async function fetchNumcatWithRetry(env, constituents, today, cache, logs) {
         await new Promise(r => setTimeout(r, waitMs));
         try {
           const retryData = await numcatDailyAuc(env, symbols, startYMD, endYMD, logs);
-          const retryItems = retryData.items || [];
-          const retryFields = retryData.fields && retryData.fields.length ? retryData.fields : fields;
-          const retryGotDates = computeGotDates(retryItems, retryFields);
-          if (retryGotDates.has(today)) {
-            items = retryItems;
-            fields = retryFields;
-            gotDates = retryGotDates;
-            missingDates = expectedDates.filter(d => !gotDates.has(d));
-            logs.push('✅ 重试第' + (attempt + 1) + '次成功拿到今天数据，items=' + items.length + '行');
+          // [NARROW-RETRY 2026-11-28] 列级并集合并，⛔ 绝不整体替换：
+          //   11-27 09:29 那份「只有当天一行 + 缺三列」的残响应就是这么把当天量比抹成整列空白的。
+          const merged = mergeNumcatData({ fields: fields, items: items }, retryData);
+          const retryGotDates = computeGotDates(merged.items, merged.fields);
+          const beforeRows = items.length;
+          const beforeCols = fields.length;
+          items = merged.items;
+          fields = merged.fields;
+          gotDates = retryGotDates;
+          missingDates = expectedDates.filter(d => !gotDates.has(d));
+          if (gotDates.has(today)) {
+            logs.push('✅ 重试第' + (attempt + 1) + '次成功拿到今天数据，items=' + items.length + '行' +
+              '（列级并集：行 ' + beforeRows + '→' + items.length + '，列 ' + beforeCols + '→' + fields.length + '）');
           } else {
-            logs.push('第' + (attempt + 1) + '次重试仍未拿到今天数据（items=' + retryItems.length + '行）');
+            logs.push('第' + (attempt + 1) + '次重试仍未拿到今天数据（合并后 items=' + items.length + '行' +
+              '，列 ' + beforeCols + '→' + fields.length + '）');
           }
         } catch (e) {
           logs.push('第' + (attempt + 1) + '次重试请求失败: ' + e.message);
@@ -1132,6 +1217,31 @@ async function writeMetricsForDates(env, metricsByDate, dateFilter, nowIso, logs
   return { totalMetricsWritten, metricsWriteFailures, dateKeys };
 }
 
+// 7b. [COVERAGE 2026-11-28] 今天这批 market_metrics 行的「关键列覆盖率」统计。
+//   纯内存统计，零请求、零额外延迟（不碰 9:26 硬指标）。
+//   为什么必须有：2026-11-27 当天 auc_vol_ratio 是 0/65 整列空白，可日志里只有一句
+//   ℹ️「四要素不全」，完整性汇总依旧是 ✅ ⇒ 用户 9:26 打开题材量比才发现选不出票。
+//   ⇒ 覆盖率要进汇总（❌/⚠️）并写进 bidding_fetch_log，让「上游残响应」当场可见。
+function buildTodayCoverage(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const count = (f) => {
+    let n = 0;
+    list.forEach(m => {
+      if (!m) return;
+      const v = (m[f] === undefined || m[f] === null) ? '' : m[f];
+      if (String(v).trim() !== '') n++;
+    });
+    return n;
+  };
+  return {
+    total: list.length,
+    ratioFilled: count('auc_vol_ratio'),
+    umVolFilled: count('um_vol'),
+    openBidFilled: count('open_bid_pct'),
+    volumeFilled: count('volume')
+  };
+}
+
 // 7. 构建数据完整性汇总
 //
 // 🔴 [CLOUD-0927-HEAL 2026-11-11] 原版只看 3 项（今天这个「日期」在不在 daily_auc /
@@ -1168,6 +1278,26 @@ function buildCompletenessSummary(today, missingDatesAfterNumcat, phantomDates, 
   //    以前完全不可见，次日龙头组整组缺数据却没人知道（标 ⚠️ 不标 ❌，它可能是正常空）。
   if (x.dragonRosterEmpty === true) {
     summaryParts.push('⚠️ 前一交易日 dragon_leaders 为空 ⇒ 龙头组不进今日抓取名单（前端评选未执行或读失败）');
+  }
+  // ⑤ [COVERAGE 2026-11-28] 竞价量比【整列为空】—— 2026-11-27 事故的直接判据。
+  //   用户后果不是「难看」，而是「不能买」：题材量比选股侧直接报错、当天选不出票。
+  //   ⇒ 只要今天有行、而 auc_vol_ratio 一只都没有，就必须 ❌，⛔ 不许被「✅ 数据完整」盖住。
+  const ratioTotal = Number(x.todayRatioTotal);
+  const ratioFilled = Number(x.todayRatioFilled);
+  if (isFinite(ratioTotal) && ratioTotal > 0) {
+    if (ratioFilled === 0) {
+      summaryParts.push('❌ 今天竞价量比(auc_vol_ratio) 0/' + ratioTotal +
+        ' 整列为空 ⇒ 题材量比选股侧会报错；9:26/9:27 兜底若仍失败，需手动 /fetch?point=extras&today=1（1 次额度）');
+    } else if (ratioFilled / ratioTotal < 0.6) {
+      summaryParts.push('⚠️ 今天竞价量比仅 ' + ratioFilled + '/' + ratioTotal + ' 只非空（<60%，上游可能是残响应）');
+    }
+  }
+  // ⑥ [COVERAGE 2026-11-28] 窗口只回 1 个交易日 —— 11-27 那份残响应的另一特征。
+  const returnedDates = Number(x.numcatDatesReturned);
+  const expectedN = Number(expectedDates && expectedDates.length);
+  if (isFinite(returnedDates) && isFinite(expectedN) && returnedDates === 1 && expectedN >= 3) {
+    summaryParts.push('⚠️ numcat 本次只返回 1 个交易日（窗口 ' + expectedN +
+      ' 天）⇒ 历史行本轮未刷新，大概率是上游残响应（次日窗口重刷会补）');
   }
   const completenessSummary = summaryParts.length > 0 ? summaryParts.join('；') : '✅ 本次 ' + expectedDates.length + ' 个交易日数据完整';
   logs.push('数据完整性汇总: ' + completenessSummary);
@@ -1327,6 +1457,17 @@ export async function runMorning(env) {
   //   误报成「P0 顶穿」——那正是排障日志里最不能失真的一个字段。
   const p0Overrun = todayWrite.totalMetricsWritten > 0 && bjSecondsOfDay() > P0_DEADLINE_BJ_SEC;
 
+  // ---- P0-③b [COVERAGE 2026-11-28] 落库后的覆盖率硬校验（纯内存统计，零请求）----
+  //   判据落地在 buildCompletenessSummary ⑤⑥：整列为空 ⇒ ❌，窗口只回 1 天 ⇒ ⚠️。
+  const todayCov = buildTodayCoverage(metricsByDate[today]);
+  logs.push('今天列覆盖率（' + todayCov.total + ' 行）: 竞价量比 ' + todayCov.ratioFilled +
+    '｜未匹配量 ' + todayCov.umVolFilled + '｜抢筹幅度 ' + todayCov.openBidFilled +
+    '｜竞价量 ' + todayCov.volumeFilled);
+  if (todayCov.total > 0 && todayCov.ratioFilled === 0) {
+    logs.push('❌ 今天竞价量比整列为空（0/' + todayCov.total + '）⇒ 题材量比选股侧会报错、当天选不出票；' +
+      '上游本次大概率是残响应（见下方 9:26/9:27 兜底与 P3 补漏日志）');
+  }
+
   // ---- P0-④ [AUC-SANE 2026-10-12] 越界竞价涨幅的真值修复（只在检测到越界时才付代价）----
   //   必须在 P1（区间涨幅）之前：T 腿取自 metricsByDate[today].auc_pct_chg，
   //   修晚了该股今天就拿不到十日涨幅 ⇒ 龙位算不出 ⇒ 真龙一照样被漏选（见函数头长注释）。
@@ -1392,7 +1533,11 @@ export async function runMorning(env) {
       rangeRows: rangeWritten,
       rangeWriteFailed: !!rangeWriteFailed,
       groupBReadFailures: groupBReadFailures,
-      dragonRosterEmpty: dragonRosterEmpty
+      dragonRosterEmpty: dragonRosterEmpty,
+      // [COVERAGE 2026-11-28] 今天关键列的覆盖率 + 本次真正回了几个交易日
+      todayRatioFilled: todayCov.ratioFilled,
+      todayRatioTotal: todayCov.total,
+      numcatDatesReturned: expectedDates.length - missingDatesAfterNumcat.length
     }
   );
   if (groupBReadFailures > 0) {
@@ -1456,6 +1601,13 @@ export async function runMorning(env) {
     metricsDates: dateKeys.length,
     metricsWritten: totalMetricsWritten,
     todayMetricsWritten: todayWrite.totalMetricsWritten,
+    // [COVERAGE 2026-11-28] 今天竞价量比覆盖率（进 bidding_fetch_log.detail，事后可核验）
+    todayRatioFilled: todayCov.ratioFilled,
+    todayRatioTotal: todayCov.total,
+    todayUmVolFilled: todayCov.umVolFilled,
+    todayOpenBidFilled: todayCov.openBidFilled,
+    numcatDatesReturned: expectedDates.length - missingDatesAfterNumcat.length,
+    numcatExpectedDates: expectedDates.length,
     elapsedMs: Date.now() - _t0,
     p0Overrun: p0Overrun,
     finishedAtBj: bjClock(),

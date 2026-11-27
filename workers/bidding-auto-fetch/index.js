@@ -215,6 +215,17 @@ async function persistRunResult(env, point, result) {
       dailyLegsWritten: r.dailyLegsWritten === undefined ? null : r.dailyLegsWritten,
       todayDataMissing: !!r.todayDataMissing,
       todayMetricsWritten: r.todayMetricsWritten === undefined ? null : r.todayMetricsWritten,
+      // ★★ [COVERAGE 2026-11-28] 9:25 那一趟「今天关键列覆盖率」的结构化留痕。
+      //   验收：todayRatioFilled=0 且 todayRatioTotal>0 ⇒ 当天竞价量比整列为空
+      //   （题材量比选股侧必然报错，2026-11-27 事故就是这一行数据整列缺失）。
+      //   ⛔ 别看 ok / completenessSummary 的 ✅ 就以为没问题 —— 它们是布尔与文案，
+      //     这几个数才是「上游到底给了几列」的事实。
+      todayRatioFilled: r.todayRatioFilled === undefined ? null : r.todayRatioFilled,
+      todayRatioTotal: r.todayRatioTotal === undefined ? null : r.todayRatioTotal,
+      todayUmVolFilled: r.todayUmVolFilled === undefined ? null : r.todayUmVolFilled,
+      todayOpenBidFilled: r.todayOpenBidFilled === undefined ? null : r.todayOpenBidFilled,
+      numcatDatesReturned: r.numcatDatesReturned === undefined ? null : r.numcatDatesReturned,
+      numcatExpectedDates: r.numcatExpectedDates === undefined ? null : r.numcatExpectedDates,
       metricsWritten: r.metricsWritten === undefined ? null : r.metricsWritten,
       rangeWritten: r.rangeWritten === undefined ? null : r.rangeWritten,
       // [CLOUD-0927-HEAL 2026-11-11] 9:27 自愈的结构化验收字段（⛔ 别用 ok 判断补写是否发生）
