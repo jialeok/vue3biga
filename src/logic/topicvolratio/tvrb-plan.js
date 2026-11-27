@@ -1025,25 +1025,43 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //      11-16 实测：落库题材「水产品」→农业 + 临时词「东方」（11-12~11-16 生效）⇒ {农业, 东方}
   //      ⇒ 日出东方（家电,热泵,东方）命中「东方」⇒ 灰；北纬科技（游戏,通信）不命中 ⇒ 照常买。
   //      ⛔ 羊字辈（11-18 才建）11-16 不生效、也不在 `tempTopicTokens` 里 ⇒ 不会牵连。
-  const ebbLeaderTopics = (ebbSecondTopic && out.ebb && out.ebb.leaderName &&
-    typeof o.stockTopicsOf === 'function')
-    ? (function() { try { return String(o.stockTopicsOf(out.ebb.leaderName) || ''); } catch (e) { return ''; } })()
+  //   ★★ [SWITCH-BAN 2026-11-27 用户口径·五修] **切换日也要用同一套牵连**（11-18 光洋股份被选出来不合理）。
+  //      用户原话：「11月18日28条选光洋股份就不合理……因为临时题材羊字辈刚好生效中，用东方海洋作为总龙一，
+  //        也会牵连到羊字辈……切换题材不可能还是切换之前的和东方海洋的题材，需要用牵连规则约束……
+  //        切换的题材被选中的些股票有没有涉及这些题材窜字段。如果涉及到就灰掉，如果不涉及到，就常规显示」。
+  //   ⇒ 老龙一的来源扩成「今天退潮那只 **或** 切换日的老龙一」；禁买词集合口径一个字不改：
+  //      { 原有题材（落库 / 老题材，归一大类） } ∪ { 当日生效且老龙一自己也沾的临时题材词 }。
+  //      11-18 实测：原有题材 水产品→农业 + 临时词 羊字辈（11-18~11-20 生效，东方海洋题材串含它）
+  //      ⇒ {农业, 羊字辈} ⇒ 光洋股份（机器人概念,低空经济,羊字辈）命中羊字辈 ⇒ 灰化、不给买点；
+  //      襄阳轴承（机器人概念,汽车零部件）不命中 ⇒ 照常买（它没被选上，但口径就是这样）。
+  const _banLeaderName = (out.ebb && out.ebb.leaderName) || (out.switchDay && out.switchDay.leaderName) || '';
+  const _banSourceTopic = out.ebb
+    ? out.ebb.leaderTopic
+    : ((out.switchDay && (out.switchDay.ebbTopic || out.switchDay.topic)) || '');
+  const ebbLeaderTopics = (_banLeaderName && typeof o.stockTopicsOf === 'function')
+    ? (function() { try { return String(o.stockTopicsOf(_banLeaderName) || ''); } catch (e) { return ''; } })()
     : '';
-  const ebbBanWords = ebbSecondTopic
-    ? ebbBanTopicsOf(ebbSecondTopic, ebbLeaderTopics, o.tempTopicTokens, coreRes)
+  const ebbBanWords = _banSourceTopic
+    ? ebbBanTopicsOf(_banSourceTopic, ebbLeaderTopics, o.tempTopicTokens, coreRes)
     : { topics: [], tempTopics: [] };
   const ebbTempTopics = ebbBanWords.tempTopics;
+  // true = 切换日（今天不判退潮，但老周期刚二次确认退潮结束）⇒ 文案讲「切换题材的票沾到老周期字段」
+  const ebbBanOnSwitch = !out.ebb && !!out.switchDay;
   const ebbTopicBan = ebbBanWords.topics.length
     ? makeEbbTopicBan(ebbBanWords.topics, o.stockTopicsOf, coreRes) : null;
   if (ebbTopicBan) {
-    out.notes.push('ℹ️【第二十条 · 二次确认退潮】退潮题材【' + ebbTopicBan.topics.join('、') +
-      '】按【题材字段】判定' +
+    out.notes.push((ebbBanOnSwitch
+      ? ('ℹ️【第二十八条 · 切换日】老周期退潮题材【' + ebbTopicBan.topics.join('、') + '】按【题材字段】判定')
+      : ('ℹ️【第二十条 · 二次确认退潮】退潮题材【' + ebbTopicBan.topics.join('、') + '】按【题材字段】判定')) +
       (ebbTempTopics.length
         ? '（原有题材 + 当日生效的临时题材【' + ebbTempTopics.join('、') + '】牵连，核心词的同义词一并算）'
         : '') +
       '：常规选股照旧（题材数量 / 档位 / 顺延都不变），但选出的票如果题材串里' +
       '含有这些字段（如 家电,热泵,东方），那一块会灰化、该行打【题材退潮不选】并写明原因；' +
-      '题材串里没有这些字段的票照常买。卖点侧照旧按退潮收紧（本条只影响买点）。');
+      '题材串里没有这些字段的票照常买。' +
+      (ebbBanOnSwitch
+        ? '切换出来的新题材（第二十八条那只）同样按这条判：沾到老周期字段就灰，不沾就照常买。'
+        : '卖点侧照旧按退潮收紧（本条只影响买点）。'));
   }
 
   // ── ★★ [R10-BACKUP 2026-10-24] 第二十九条的【前置判据】—— 必须在【选股扫描之前】就知道 ──
@@ -1793,6 +1811,22 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
     // ★★ [LEADER-TIMELINE 2026-11-27 用户口径·三修] 每个事件的【判定依据】跟在事件轴下面一行
     //   （用户原话「判断标准，你也写进去，比如首次分歧，判断依据是什么？每个事件都写下依据」）。
     if (out.newDragon) out.newDragon.timelineBasis = LEADER_EVENT_BASIS;
+    // ★★ [SWITCH-BAN 2026-11-27] 题材转换思路（用户：「你应该在说明文字那里标明下题材转换思路，
+    //   东方海洋之前是什么题材，今天是什么包含哪些题材。切换的题材被选中的些股票有没有涉及这些题材窜字段」）
+    if (out.newDragon) {
+      const _sd2 = out.switchDay || {};
+      const _oldT2 = _oldTopicNameOf(_sd2) || _sd2.topic || '—';
+      const _regT2 = _sd2.ebbTopic || _sd2.topic || '—';
+      const _banT2 = ebbTopicBan ? ebbTopicBan.topics.join('、') : '—';
+      out.newDragon.topicTransition = '〔题材转换〕' + (_sd2.leaderName || '老龙一') +
+        '：老周期题材 = ' + _oldT2 + '（退潮登记 = ' + _regT2 +
+        (_sd2.oldTopicDate ? ('，首霸 ' + String(_sd2.oldTopicDate).slice(5)) : '') + '）' +
+        '；它今天的题材串 = ' + (ebbLeaderTopics || '—') +
+        ' ⇒ 老周期禁买字段 = ' + _banT2 +
+        (ebbTempTopics.length ? ('（含当日生效的临时题材 ' + ebbTempTopics.join('、') + '）') : '') +
+        '；新题材【' + ((out.newDragon.block && out.newDragon.block.topic) || '—') +
+        '】的入选票沾到这些字段 ⇒ 灰化、不给买点（仍在老周期那条线上）；不沾 ⇒ 常规显示照常买。';
+    }
     if (out.newDragon) out.buy.newDragon = out.newDragon;
     // ★★ [NEW-DRAGON-CERTIFY / NEW-DRAGON-FAMILY 2026-11-12] 把「谁认证的谁、一共买几只」写进
     //   看板级说明（用户要「标清楚」）。family 路径（新题材 = 字号/字辈）优先，旧认证龙路径作兜底。
@@ -2585,7 +2619,7 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   //   ⚠️ 必须排在【卖点段之前】：剔出 buyNames 要赶在卖点判「今天又进买点 ⇒ 持有」之前
   //      （与 [ABN-TB] / [DEV-RULE] / [EBB-D1] 同一条不变式）。
   if (ebbTopicBan) {
-    const _ebbBan = _applyEbbTopicBan(out, ebbTopicBan, ebbTempTopics);
+    const _ebbBan = _applyEbbTopicBan(out, ebbTopicBan, ebbTempTopics, ebbBanOnSwitch);
     if (_ebbBan.count > 0) {
       out.notes.push('⚠️【第' + EBB_SECOND_RULE_NO + '条 · 二次确认退潮】今天常规选股结论【不变】，' +
         '但有 ' + _ebbBan.count + ' 只票的题材串含退潮题材【' + ebbTopicBan.topics.join('、') +

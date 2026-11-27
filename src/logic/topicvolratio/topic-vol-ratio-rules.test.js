@@ -3100,6 +3100,38 @@ describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新
     expect(String(p.newDragon.reason || '')).not.toContain('〔事件轴〕');
   });
 
+  it('★ 切换日：新题材选出的票若沾了老周期题材字段（11-18 临时题材羊字辈）⇒ 灰化、不给买点', function() {
+    // 11-18 真库：东方海洋 = 水产品,农业,东方,羊字辈；光洋股份 = 机器人概念,低空经济,羊字辈
+    // 这里用同一套机制的最小形状：老龙一 新华传媒 今天题材串含临时词「羊字辈」，新龙票也含 ⇒ 命中
+    const topics118 = function(n) {
+      const m = { '新华传媒': 'AI应用,羊字辈', '冰山冷热': '电子通信算力,羊字辈' };
+      return m[n] || '';
+    };
+    const p = build({
+      date: '2026-10-22',
+      ebbCtx: { ready: true, top5: TOP5 },
+      stockTopicsOf: topics118,
+      tempTopicTokens: ['羊字辈']
+    });
+    expect(p.switchDay).not.toBeNull();
+    expect(p.newDragon).not.toBeNull();
+    const nd = p.newDragon.picks[0];
+    expect(nd.name).toBe('冰山冷热');
+    expect(nd.ebbTopicBlocked).toBe(true);
+    expect(nd.buyActionTag).toBe(EBB_TOPIC_BAN_TAG);
+    expect(nd.actionNote).toContain('切换日');
+    expect(nd.actionNote).toContain('羊字辈');
+    expect(p.newDragon.ebbTopicGray).toBe(true);
+    expect(p.buyNames.has('冰山冷热')).toBe(false);
+    // 题材转换思路必须写在卡片上，且点名：老周期题材 / 今天的题材串 / 禁买字段
+    const tt = String(p.newDragon.topicTransition || '');
+    expect(tt).toContain('〔题材转换〕');
+    expect(tt).toContain('老周期题材');
+    expect(tt).toContain('它今天的题材串 = AI应用,羊字辈');
+    expect(tt).toContain('老周期禁买字段');
+    expect(p.notes.join('\n')).toContain('【第二十八条 · 切换日】老周期退潮题材');
+  });
+
   it('★ 事件轴下面必须给出【每个事件的判定依据】（用户 2026-11-27：判断标准也要写进去）', function() {
     const p = build({ date: '2026-10-22', ebbCtx: { ready: true, top5: TOP5 } });
     const b = String(p.newDragon.timelineBasis || '');

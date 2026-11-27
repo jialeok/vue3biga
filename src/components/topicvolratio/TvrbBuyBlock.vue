@@ -69,6 +69,14 @@
     >
       {{ block.timelineBasis }}
     </div>
+    <!-- ★★ [SWITCH-BAN 2026-11-27] 切换日的【题材转换思路】：老周期是什么题材、今天它有哪些题材段、
+         新题材入选票有没有沾到老周期字段（纯文案，Logic 层给；没有就不渲染） -->
+    <div
+      v-if="block.topicTransition"
+      class="tvrb-timeline-basis tvrb-selectable"
+    >
+      {{ block.topicTransition }}
+    </div>
     <!-- 第二行：选择理由（本看板的选股口径）+ 规则编号（与决策看板买点段同一枚 ①） -->
     <div class="tvrb-reason-line tvrb-selectable">
       选择理由：{{ block.reason }}<span

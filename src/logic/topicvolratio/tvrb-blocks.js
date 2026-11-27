@@ -683,7 +683,7 @@ export function _applyAbnormalTopicBan(out, ban, topicsOf) {
  *        只为文案点名「哪些词是临时题材牵连进来的」，⛔ 不参与判定）
  * @returns {{count:number, names:string[], grayBlocks:number}} 本次灰化的票（供提示板点名）
  */
-export function _applyEbbTopicBan(out, ban, tempTopics) {
+export function _applyEbbTopicBan(out, ban, tempTopics, onSwitch) {
   const res = { count: 0, names: [], grayBlocks: 0 };
   if (!out || !ban || typeof ban.test !== 'function') return res;
   const topicsText = (ban.topics || []).join('、');
@@ -707,9 +707,14 @@ export function _applyEbbTopicBan(out, ban, tempTopics) {
       p.buyActionTone = EBB_TOPIC_BAN_TONE;
       // ★ 标记位：`_isBuyablePick` / `collectBuyNames` 据此不数它、不继承到次日卖点侧
       p.ebbTopicBlocked = true;
-      p.actionNote = '【第' + EBB_SECOND_RULE_NO + '条 · 二次确认退潮】主线题材【' + topicsText +
-        '】今天二次确认退潮' + tempNote + '：本股题材串（' + (ban.rawTopicsOf(p.name) || '—') + '）里含有退潮题材字段【' +
-        (ban.segmentOf(p.name) || '—') + '】⇒ 它属于退潮题材的票，今天【不给买点】' +
+      p.actionNote = (onSwitch
+        ? ('【第二十八条 · 切换日】老周期题材【' + topicsText + '】已经二次确认退潮结束，今天是切换日' + tempNote +
+          '：本股题材串（' + (ban.rawTopicsOf(p.name) || '—') + '）里含有老周期题材字段【' + (ban.segmentOf(p.name) || '—') +
+          '】⇒ 它还挂在老周期那条线上，切换出来的新题材不能用它，今天【不给买点】' +
+          '（切换不该切回原来的题材线）。')
+        : ('【第' + EBB_SECOND_RULE_NO + '条 · 二次确认退潮】主线题材【' + topicsText +
+          '】今天二次确认退潮' + tempNote + '：本股题材串（' + (ban.rawTopicsOf(p.name) || '—') + '）里含有退潮题材字段【' +
+          (ban.segmentOf(p.name) || '—') + '】⇒ 它属于退潮题材的票，今天【不给买点】')) +
         '（原本的【' + HOLD_TAG + '】/ 竞价买 / 尾盘买 / 先卖后买 等买点信号一律作废）。' +
         '★ 注意：本题材本身是符合常规选股条件的，被否定的是【这一只票的题材串】，' +
         '同题材其它不含该字段的票照常买。' +
@@ -723,7 +728,8 @@ export function _applyEbbTopicBan(out, ban, tempTopics) {
       b.ebbTopicGray = true;
       res.grayBlocks++;
       if (!Array.isArray(b.notes)) b.notes = [];
-      b.notes.push('⚠️【第' + EBB_SECOND_RULE_NO + '条 · 二次确认退潮】本题材【' + String(b.topic || '—') +
+      b.notes.push((onSwitch ? '⚠️【第二十八条 · 切换日】' : ('⚠️【第' + EBB_SECOND_RULE_NO + '条 · 二次确认退潮】')) +
+        '本题材【' + String(b.topic || '—') +
         '】的常规选股结论【不变】（题材数量 / 档位 / 选出哪只票都照原规则），但选出的 ' + hit +
         ' 只票里，' + res.names.slice(-hit).join('、') + ' 的题材串含退潮题材【' + topicsText +
         '】' + tempNote + '⇒ 这一块灰化、这只票打【' + EBB_TOPIC_BAN_TAG + '】不给买点；' +
