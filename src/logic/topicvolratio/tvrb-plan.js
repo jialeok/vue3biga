@@ -2752,7 +2752,7 @@ export function buildTopicVolRatioPlan(topics, dragonMap, opts) {
   // ★★ [ABN-TB 2026-11-17] 第三十四条延伸的【同题材块】同理：整块灰化 ⇒ 不计入。
   out.blocks.forEach(function(blk) {
     if (blk && (blk.leaderLimitDownGray || blk.topicVolWeakGray || blk.abnormalTopicGray ||
-        // ★ [EBB-TOPIC-MEMBER 2026-11-27] 退潮题材字段命中 ⇒ 整块灰化、今天不给买点 ⇒ 不计入
+        // ★★ [ROW-GRAY 2026-11-27 用户口径·七修] 退潮命中的灰化已下移到【那一行】（p.noBuyRowGray +
         blk.ebbTopicGray)) return;
     _countUnique(blk.picks);
   });

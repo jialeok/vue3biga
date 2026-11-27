@@ -3122,7 +3122,9 @@ describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新
     expect(nd.buyActionTag).toBe(EBB_TOPIC_BAN_TAG);
     expect(nd.actionNote).toContain('切换日');
     expect(nd.actionNote).toContain('羊字辈');
-    expect(p.newDragon.ebbTopicGray).toBe(true);
+        // ★★ [ROW-GRAY 2026-11-27] 块不再灰（用户：不要整体显示灰），只灰被否的那一行
+    expect(!!p.newDragon.ebbTopicGray).toBe(false);
+    expect(p.newDragon.picks[0].noBuyRowGray).toBe(true);
     expect(p.buyNames.has('冰山冷热')).toBe(false);
     // 题材转换思路必须写在卡片上，且点名：老周期题材 / 今天的题材串 / 禁买字段
     const tt = String(p.newDragon.topicTransition || '');
@@ -3156,12 +3158,13 @@ describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新
     expect(out.buyNames.has('华胜天成')).toBe(false);
     expect(out.buyNames.has('华东重机')).toBe(true);          // ⛔ 可买名单不受牵连
     expect(out.blocks[0].picks[0].buyActionTag).toBe('新龙买'); // ⛔ 标签一个字不改
-    expect(out.blocks[0].ebbTopicGray).toBe(true);
+        expect(!!out.blocks[0].ebbTopicGray).toBe(false);       // ⛔ 块不灰
+    expect(out.blocks[0].picks[1].noBuyRowGray).toBe(true);  // ✅ 只灰这一行
     const notes = out.blocks[0].notes.join('\n');
-    expect(notes).toContain('没有');
-    expect(notes).toContain('华东重机（新龙买 · 竞价一字涨停 · 等下杀买）');
-    expect(notes).toContain('灰的是【这一块】的视觉');
-    expect(String(out.blocks[0].picks[0].actionNote)).toContain('本股没有被牵连');
+    expect(notes).toContain('华胜天成');
+    expect(notes).not.toContain('华东重机');   // 没被牵连的票不进灰名单、也不灰
+    expect(notes).toContain('整块【不灰】');   // 只灰这一行，同块其它票正常显示
+    expect(out.blocks[0].picks[0].noBuyRowGray).toBeUndefined();   // 没被牵连的票【不灰】
     expect(String(out.blocks[0].picks[0].actionNote)).toContain('（原文）');
   });
 
@@ -5860,7 +5863,7 @@ describe('tvrb · [EBB-TOPIC-MEMBER] 二次确认退潮 ⇒ 退潮题材字段�
     expect(big.picks.map(function(x) { return x.name; })).toEqual(['日出东方']);
     const pick = big.picks[0];
     // 灰块 + 区别标签 + 行内原因
-    expect(big.ebbTopicGray).toBe(true);
+    expect(!!big.ebbTopicGray).toBe(false);   // ⛔ 块不灰，只灰行
     expect(pick.buyActionTag).toBe(EBB_TOPIC_BAN_TAG);
     expect(pick.ebbTopicBlocked).toBe(true);
     expect(pick.actionNote).toContain('家电,热泵,东方');
@@ -5991,7 +5994,7 @@ describe('tvrb · [EBB-TOPIC-TEMP] 退潮禁买集合 = 原有题材 + 临时题
     expect(big.count).toBe(4);
     expect(big.picks.map(function(x) { return x.name; })).toEqual(['日出东方']);
     // 票级命中「东方」（临时题材牵连）⇒ 灰块 + 标签
-    expect(big.ebbTopicGray).toBe(true);
+    expect(!!big.ebbTopicGray).toBe(false);   // ⛔ 块不灰，只灰行
     const pick = big.picks[0];
     expect(pick.buyActionTag).toBe(EBB_TOPIC_BAN_TAG);
     expect(pick.ebbTopicBlocked).toBe(true);
@@ -6024,7 +6027,7 @@ describe('tvrb · [EBB-TOPIC-TEMP] 退潮禁买集合 = 原有题材 + 临时题
     });
     const big = p.blocks[0];
     expect(big.picks.map(function(x) { return x.name; })).toEqual(['百洋股份']);
-    expect(big.ebbTopicGray).toBe(true);
+    expect(!!big.ebbTopicGray).toBe(false);   // ⛔ 块不灰，只灰行
     expect(big.picks[0].buyActionTag).toBe(EBB_TOPIC_BAN_TAG);
     expect(p.buyNames.has('百洋股份')).toBe(false);
   });

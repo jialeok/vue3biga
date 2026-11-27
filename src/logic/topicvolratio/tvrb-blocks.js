@@ -707,6 +707,11 @@ export function _applyEbbTopicBan(out, ban, tempTopics, onSwitch) {
       p.buyActionTone = EBB_TOPIC_BAN_TONE;
       // ★ 标记位：`_isBuyablePick` / `collectBuyNames` 据此不数它、不继承到次日卖点侧
       p.ebbTopicBlocked = true;
+      // ★★ [ROW-GRAY 2026-11-27 用户口径·七修] 用户：「现在让它股票范围显示出来，不要整体显示灰，
+      //   哪个正常就消失出来，现在还是灰色的」⇒ 灰化从【整块】下移到【这一行】（复用既有的
+      //   `tvrb-row-nobuy-gray` 单行灰，与第三十六「逼近红线不买」同一个视图入口）。
+      //   ⛔ 块本身不灰：同块其它票正常显示，用户一眼能分出谁被否、谁没被否。
+      p.noBuyRowGray = true;
       p.actionNote = (onSwitch
         ? ('【第二十八条 · 切换日】老周期题材【' + topicsText + '】已经二次确认退潮结束，今天是切换日' + tempNote +
           '：本股题材串（' + (ban.rawTopicsOf(p.name) || '—') + '）里含有老周期题材字段【' + (ban.segmentOf(p.name) || '—') +
@@ -724,38 +729,16 @@ export function _applyEbbTopicBan(out, ban, tempTopics, onSwitch) {
     });
     if (hit > 0) {
       res.count += hit;
-      // ★ 用户「必须要灰色块」：整块灰化（与第二十九 / 三十二 / 三十四·延伸同一个视图入口）
-      b.ebbTopicGray = true;
+      // ★★ [ROW-GRAY 2026-11-27] ⛔ 不再设 b.ebbTopicGray（整块灰会让没被牵连的票也看着灰）。
+      //   `res.grayBlocks` 保留计数，但视图不再拿它做块级灰化。
       res.grayBlocks++;
       if (!Array.isArray(b.notes)) b.notes = [];
       b.notes.push((onSwitch ? '⚠️【第二十八条 · 切换日】' : ('⚠️【第' + EBB_SECOND_RULE_NO + '条 · 二次确认退潮】')) +
         '本题材【' + String(b.topic || '—') +
         '】的常规选股结论【不变】（题材数量 / 档位 / 选出哪只票都照原规则），但选出的 ' + hit +
         ' 只票里，' + res.names.slice(-hit).join('、') + ' 的题材串含退潮题材【' + topicsText +
-        '】' + tempNote + '⇒ 这一块灰化、这只票打【' + EBB_TOPIC_BAN_TAG + '】不给买点；' +
-        '其它题材（题材串不含该字段的）照常买。');
-      // ★★ [GRAY-WHY 2026-11-27 用户口径·六修] 用户：「11月19日，也是第28条，华东重机灰化的逻辑理由你没说，
-      //   华胜天成的已经在上面说了很清楚了，你要说明华东重机灰化的原因啊啊，写在上面」。
-      //   根因：灰化是【整块】的（同块一只被牵连 ⇒ 整块视觉变灰），所以没被牵连的那几只看起来也灰了，
-      //   说明里却只讲了被牵连的那只 ⇒ 必须补一段「它们为什么看着灰、但其实没被否」。
-      //   ⛔ 它们的标签 / 可买名单一个字都不改（灰的是这一块的视觉，不是把它们也否掉）。
-      const cleanPicks = picks.filter(function(p) { return p && p.name && !p.ebbTopicBlocked; });
-      const cleanText = cleanPicks.map(function(p) {
-        const tg = [p.buyActionTag, p.waitBuyTag].filter(Boolean).join(' · ');
-        return String(p.name) + (tg ? '（' + tg + '）' : '');
-      }).join('、');
-      if (cleanText) {
-        b.notes.push('ℹ️ 本块另外 ' + cleanPicks.length + ' 只票（' + cleanText + '）的题材串【不含】' +
-          (ban.topics || []).join('、') + ' 这些字段 ⇒ 它们【没有】被退潮题材牵连，买点照旧；' +
-          '这一块之所以整块变灰，只是因为同块有票（' + res.names.slice(-hit).join('、') +
-          '）被牵连 —— 灰的是【这一块】的视觉，不是把它们也否掉了。');
-        cleanPicks.forEach(function(p) {
-          const tg = [p.buyActionTag, p.waitBuyTag].filter(Boolean).join(' · ');
-          p.actionNote = '★ 本股题材串（' + (ban.rawTopicsOf(p.name) || '—') + '）【不含】退潮题材字段【' +
-            topicsText + '】⇒ 本股没有被牵连，买点照旧【' + (tg || '—') + '】；这一块整块变灰，' +
-            '是因为同块有票（' + res.names.slice(-hit).join('、') + '）被牵连。' + (p.actionNote || '');
-        });
-      }
+        '】' + tempNote + '⇒ 这只票打【' + EBB_TOPIC_BAN_TAG + '】、单独灰一行、不给买点；' +
+        '⚠️ 整块【不灰】——同块其它票正常显示，谁被否只否它自己。');
     }
   });
   return res;

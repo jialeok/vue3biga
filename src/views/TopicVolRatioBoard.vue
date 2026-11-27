@@ -262,7 +262,7 @@
               <div
                 v-if="top30Huddle"
                 class="tvrb-top30-huddle-only-buy"
-                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!top30Huddle.abnormalTopicGray || !!top30Huddle.ebbTopicGray) }"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!top30Huddle.abnormalTopicGray) }"
               >
                 <div class="tvrb-top30-huddle-only-label tvrb-selectable">
                   30日涨幅抱团 · 买点（第三十五条 · 从30日涨幅前三选，不是选题材）
@@ -289,7 +289,7 @@
               <div
                 v-if="weakHuddle"
                 class="tvrb-weak-huddle-only-buy"
-                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!weakHuddle.abnormalTopicGray || !!weakHuddle.ebbTopicGray) }"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!weakHuddle.abnormalTopicGray) }"
               >
                 <div class="tvrb-weak-huddle-only-label tvrb-selectable">
                   弱势切抱团 · 买点（第三十条 · 从市场龙头选，不是选题材）
@@ -317,7 +317,7 @@
               <div
                 v-if="catchUp"
                 class="tvrb-catchup-only-buy"
-                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!catchUp.abnormalTopicGray || !!catchUp.ebbTopicGray) }"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!catchUp.abnormalTopicGray) }"
               >
                 <div class="tvrb-catchup-only-label tvrb-selectable">
                   补涨题材 · 买点（第三十一条 · 20日涨幅第 6~10 名里只选连板票）
@@ -341,7 +341,7 @@
               <div
                 v-if="ebbBuy"
                 class="tvrb-ebb-only-buy"
-                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!ebbBuy.abnormalTopicGray || !!ebbBuy.ebbTopicGray) }"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!ebbBuy.abnormalTopicGray) }"
               >
                 <div class="tvrb-ebb-only-label tvrb-selectable">
                   {{ ebb && ebb.buyOnlyLabelText ? ebb.buyOnlyLabelText : '退潮替补 · 买点' }}
@@ -358,7 +358,7 @@
               <div
                 v-if="divergeBuy"
                 class="tvrb-diverge-only-buy"
-                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!divergeBuy.abnormalTopicGray || !!divergeBuy.ebbTopicGray) }"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!divergeBuy.abnormalTopicGray) }"
               >
                 <div class="tvrb-diverge-only-label tvrb-selectable">
                   总龙首次分歧 · 买点（第二十五条）
@@ -382,7 +382,7 @@
               <div
                 v-if="newDragon"
                 class="tvrb-newdragon-only-buy"
-                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!newDragon.abnormalTopicGray || !!newDragon.ebbTopicGray) }"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!newDragon.abnormalTopicGray) }"
               >
                 <div class="tvrb-newdragon-only-label tvrb-selectable">
                   新龙 / 新题材切换日 · 买点（第二十八条）
@@ -404,7 +404,7 @@
               <div
                 v-if="range10Backup"
                 class="tvrb-r10backup-only-buy"
-                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!range10Backup.abnormalTopicGray || !!range10Backup.ebbTopicGray) }"
+                :class="{ 'tvrb-abnormal-gray': abnormalGray || (!!range10Backup.abnormalTopicGray) }"
               >
                 <div class="tvrb-r10backup-only-label tvrb-selectable">
                   十日涨幅候补 · 买点（第二十九条 · 全市场选股，不是选题材）
@@ -437,7 +437,7 @@
                   v-for="b in blocks"
                   :key="'tvrb-buy-' + b.topic"
                   :block="b"
-                  :gray="!!b.prevEbbGray || !!b.leaderLimitDownGray || !!b.topicVolWeakGray || (!!b.abnormalTopicGray || !!b.ebbTopicGray)"
+                  :gray="!!b.prevEbbGray || !!b.leaderLimitDownGray || !!b.topicVolWeakGray || (!!b.abnormalTopicGray)"
                 />
               </div>
               <div
