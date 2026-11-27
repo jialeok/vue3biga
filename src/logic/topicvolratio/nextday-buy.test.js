@@ -113,7 +113,9 @@ describe('第二十八条 · 次日买（nextday-buy）', () => {
     expect(vue).toContain('  nextDayCarry,\n');
 
     const carry = readFileSync('src/components/topicvolratio/TvrbNextDayCarryBlock.vue', 'utf8');
-    expect(carry).toContain('block.block.topic');
+    // 2026-11-28「简洁美观」：标题/日期拆开成独立字段，说明收进可展开面板（三行卡片）
+    expect(carry).toContain('nextDayCarrySrcDate');
+    expect(carry).toContain('为什么是今天买？');
 
     // 承接块必须进「买点块清单」⇒ 装饰器 / 卖点继承 / 存档遍历都能看到它
     const ov = readFileSync('src/logic/topicvolratio/plan-live-overlay.js', 'utf8');

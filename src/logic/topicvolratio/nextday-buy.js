@@ -211,16 +211,16 @@ export function buildNextDayCarryBlock(carry, list) {
     },
     mode: 'nextday-carry',
     ruleNo: SWITCH_RULE_NO,
-    // ★ 简洁版（用户「简洁版，只保留一只并打上标签」）：理由就两句话，
-    //   「来源 + 为什么延迟一天」，⛔ 不再堆复盘细节。
-    reason: srcDateText + ' 切换日（第二十八条）选出的新龙，当天不下单，顺延到今天买 —— ' +
-      '【继承买】= 昨天选、今天买；今天现选的票会另有一行、带它自己的标签。' + NEXT_DAY_BUY_NOTE,
+    // ★ 一句话理由（2026-11-28 用户「简洁美观」）：卡片收起时只看到这一行 + 票行，
+    //   完整口径（第三天 / 老龙杀完 / 反攻号角）放在 notes 第 1 条，展开「为什么是今天买？」才看。
+    reason: srcDateText + ' 切换日选出的新龙【当天不买】，今天才买 —— 老龙已彻底杀完，新龙从今天开始反攻。',
     picks: picks,
     notes: [
-      '【来源】名单 = ' + srcDateText + ' 存档里第二十八条的 `nextDayBuy`（' + names.join('、') + '）；' +
+      NEXT_DAY_BUY_NOTE,
+      '名单来自 ' + srcDateText + ' 存档里第二十八条的 `nextDayBuy`（' + names.join('、') + '）：' +
       '只继承【一天】，今天兑现完就结束（不会再往明天传）。',
-      '【灰色行不继承】' + srcDateText + ' 那天被灰掉的票（禁买 / 退潮牵连 / 逼近红线）一只都没进来 —— ' +
-      '灰色行没有买入的硬逻辑，继承它就会误买。'
+      '那天被灰掉的票（禁买 / 退潮牵连 / 逼近红线）一只都没继承 —— 灰色行没有买入的硬逻辑，继承它就会误买。',
+      '若同一只票今天也被别的规则选中，会另有一行、带它自己的标签（来源不同，各看各的）。'
     ],
     isNextDayCarry: true,
     nextDayCarrySrcDate: srcDate,
