@@ -130,6 +130,7 @@ import { makeCoreTopicResolver } from '../topic/core-category.js';
 import { makeEbbTopicBan, ebbBanTopicsOf, buildLeaderEventTimeline } from './tvrb-utils.js';
 // ★ [EBB-TOPIC-MEMBER 2026-11-27] 退潮题材字段级灰化的区别标签
 import { EBB_TOPIC_BAN_TAG } from './tvrb-constants.js';
+import { _applyEbbTopicBan } from './tvrb-blocks.js';
 // ★ [AUCTION-YIZI-UNIFY 2026-11-16] 一字标签唯一来源（断言必须比对常量，⛔ 不写字面量）
 import { AUCTION_YIZI_WAIT_TAG } from './auction-yizi-tag.js';
 import {
@@ -3130,6 +3131,38 @@ describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新
     expect(tt).toContain('它今天的题材串 = AI应用,羊字辈');
     expect(tt).toContain('老周期禁买字段');
     expect(p.notes.join('\n')).toContain('【第二十八条 · 切换日】老周期退潮题材');
+  });
+
+  it('★ 块灰化要说明「同块没被牵连的那几只为什么看着灰」（11-19 华东重机）', function() {
+    const topicsOf = function(n) {
+      const m = { '华东重机': '电子/通信/算力', '华胜天成': 'AI应用,算力' };
+      return m[n] || '';
+    };
+    const ban = makeEbbTopicBan(['AI应用'], topicsOf);
+    const out = {
+      buyNames: new Set(['华东重机', '华胜天成']),
+      blocks: [{
+        topic: '新题材 · 电子/通信/算力',
+        picks: [
+          { name: '华东重机', buyActionTag: '新龙买', waitBuyTag: '竞价一字涨停 · 等下杀买', actionNote: '（原文）' },
+          { name: '华胜天成', buyActionTag: '竞价买', actionNote: '（原文）' }
+        ],
+        notes: []
+      }],
+      buy: { newDragon: null }
+    };
+    const res = _applyEbbTopicBan(out, ban, [], true);
+    expect(res.count).toBe(1);
+    expect(out.buyNames.has('华胜天成')).toBe(false);
+    expect(out.buyNames.has('华东重机')).toBe(true);          // ⛔ 可买名单不受牵连
+    expect(out.blocks[0].picks[0].buyActionTag).toBe('新龙买'); // ⛔ 标签一个字不改
+    expect(out.blocks[0].ebbTopicGray).toBe(true);
+    const notes = out.blocks[0].notes.join('\n');
+    expect(notes).toContain('没有');
+    expect(notes).toContain('华东重机（新龙买 · 竞价一字涨停 · 等下杀买）');
+    expect(notes).toContain('灰的是【这一块】的视觉');
+    expect(String(out.blocks[0].picks[0].actionNote)).toContain('本股没有被牵连');
+    expect(String(out.blocks[0].picks[0].actionNote)).toContain('（原文）');
   });
 
   it('★ 事件轴下面必须给出【每个事件的判定依据】（用户 2026-11-27：判断标准也要写进去）', function() {

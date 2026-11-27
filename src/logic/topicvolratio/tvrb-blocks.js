@@ -734,6 +734,28 @@ export function _applyEbbTopicBan(out, ban, tempTopics, onSwitch) {
         ' 只票里，' + res.names.slice(-hit).join('、') + ' 的题材串含退潮题材【' + topicsText +
         '】' + tempNote + '⇒ 这一块灰化、这只票打【' + EBB_TOPIC_BAN_TAG + '】不给买点；' +
         '其它题材（题材串不含该字段的）照常买。');
+      // ★★ [GRAY-WHY 2026-11-27 用户口径·六修] 用户：「11月19日，也是第28条，华东重机灰化的逻辑理由你没说，
+      //   华胜天成的已经在上面说了很清楚了，你要说明华东重机灰化的原因啊啊，写在上面」。
+      //   根因：灰化是【整块】的（同块一只被牵连 ⇒ 整块视觉变灰），所以没被牵连的那几只看起来也灰了，
+      //   说明里却只讲了被牵连的那只 ⇒ 必须补一段「它们为什么看着灰、但其实没被否」。
+      //   ⛔ 它们的标签 / 可买名单一个字都不改（灰的是这一块的视觉，不是把它们也否掉）。
+      const cleanPicks = picks.filter(function(p) { return p && p.name && !p.ebbTopicBlocked; });
+      const cleanText = cleanPicks.map(function(p) {
+        const tg = [p.buyActionTag, p.waitBuyTag].filter(Boolean).join(' · ');
+        return String(p.name) + (tg ? '（' + tg + '）' : '');
+      }).join('、');
+      if (cleanText) {
+        b.notes.push('ℹ️ 本块另外 ' + cleanPicks.length + ' 只票（' + cleanText + '）的题材串【不含】' +
+          (ban.topics || []).join('、') + ' 这些字段 ⇒ 它们【没有】被退潮题材牵连，买点照旧；' +
+          '这一块之所以整块变灰，只是因为同块有票（' + res.names.slice(-hit).join('、') +
+          '）被牵连 —— 灰的是【这一块】的视觉，不是把它们也否掉了。');
+        cleanPicks.forEach(function(p) {
+          const tg = [p.buyActionTag, p.waitBuyTag].filter(Boolean).join(' · ');
+          p.actionNote = '★ 本股题材串（' + (ban.rawTopicsOf(p.name) || '—') + '）【不含】退潮题材字段【' +
+            topicsText + '】⇒ 本股没有被牵连，买点照旧【' + (tg || '—') + '】；这一块整块变灰，' +
+            '是因为同块有票（' + res.names.slice(-hit).join('、') + '）被牵连。' + (p.actionNote || '');
+        });
+      }
     }
   });
   return res;
