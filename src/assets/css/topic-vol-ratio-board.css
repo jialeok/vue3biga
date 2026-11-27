@@ -652,6 +652,18 @@
     white-space: normal;
 }
 
+/* 事件轴下面那行「每个事件的判定依据」：比事件轴更轻，接在黄底条的下面 */
+.tvrb-timeline-basis {
+    margin: -1px 0 3px;
+    padding: 0 6px 3px;
+    font-size: 10px;
+    line-height: 1.45;
+    color: #a16207;
+    background: #fffbeb;
+    border-left: 2px solid #fcd34d;
+    border-radius: 0 0 3px 3px;
+}
+
 .tvrb-reason-line {
     margin: 2px 0 4px;
     font-size: 11px;

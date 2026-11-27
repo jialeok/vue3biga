@@ -62,6 +62,13 @@
     >
       {{ block.timeline }}
     </div>
+    <!-- ★★ [LEADER-TIMELINE 三修] 每个事件为什么这么判（纯文案，Logic 层给；没有就不渲染） -->
+    <div
+      v-if="block.timelineBasis"
+      class="tvrb-timeline-basis tvrb-selectable"
+    >
+      {{ block.timelineBasis }}
+    </div>
     <!-- 第二行：选择理由（本看板的选股口径）+ 规则编号（与决策看板买点段同一枚 ①） -->
     <div class="tvrb-reason-line tvrb-selectable">
       选择理由：{{ block.reason }}<span

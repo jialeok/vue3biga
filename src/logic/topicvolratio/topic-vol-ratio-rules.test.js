@@ -3100,6 +3100,21 @@ describe('tvrb · [SWITCH] 经 buildTopicVolRatioPlan：切换日买点侧 = 新
     expect(String(p.newDragon.reason || '')).not.toContain('〔事件轴〕');
   });
 
+  it('★ 事件轴下面必须给出【每个事件的判定依据】（用户 2026-11-27：判断标准也要写进去）', function() {
+    const p = build({ date: '2026-10-22', ebbCtx: { ready: true, top5: TOP5 } });
+    const b = String(p.newDragon.timelineBasis || '');
+    expect(b).toContain('〔依据〕');
+    // 四个事件各自的出处，一条都不能少
+    expect(b).toContain('第二十五条');            // 首次分歧 = 首板后首个竞价涨幅<0
+    expect(b).toContain('竞价涨幅 < 0');
+    expect(b).toContain('第二十条');              // 首次退潮 = 停牌 / 占比不达标
+    expect(b).toContain('3.5%');
+    expect(b).toContain('第二十七条');            // 二次确认 = 第 2 次事件，无第三次
+    expect(b).toContain('无第三次');
+    expect(b).toContain('第二十八条');            // 切换日 = 后第 2 个交易日
+    expect(b).toContain('第 2 个交易日');
+  });
+
   it('★ 新龙那一行的动作标签 = 【新龙买】，客观数据仍在（走过 finishBuyBlock）', function() {
     const plan = build();
     const picks = plan.newDragon.picks;
